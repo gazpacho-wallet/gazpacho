@@ -32,7 +32,7 @@ mut() { # mut NAME FILE SED-EXPRESSION WHAT-WAS-BROKEN
     echo "$name: BUILD ERROR (not a valid break-check)"; survived=$((survived + 1))
   else
     (cd "$build" && ctest >"$scratch/ctest.out" 2>&1)
-    failed=$(sed -n 's/^.*- \([a-z_0-9]*\) (Failed).*$/\1/p' "$scratch/ctest.out" | tr '\n' ' ')
+    failed=$(sed -n 's/^[[:space:]]*[0-9][0-9]* - \([a-z_0-9]*\) (.*$/\1/p' "$scratch/ctest.out" | tr '\n' ' ')
     if [ -n "$failed" ]; then
       echo "$name: caught by: $failed-- broke: $what"
     else
