@@ -14,6 +14,7 @@ The single place to start. It gathers what has been learned and decided, says ho
 | What is still undecided | `OPEN-QUESTIONS.md` |
 | How a factory forms | `LOBBY.md`, with research in `LOBBY-research.md` |
 | Lightning nodes a host can link to | `HOST-NODES.md` |
+| Public chain servers found to answer, and how they are used | `CHAIN-SERVERS.md` |
 | What existed at the start | `ASSESSMENT.md` |
 | Notes for the SuperScalar repo session | `handoff/` |
 | Illustrated pages (versioned) | `design.html`, `gazpacho-overview.html`, older versions in `history/` |
@@ -129,7 +130,7 @@ Newest first within each area. The date is when the owner decided.
 - New rules and features go through SIPs (SuperScalar Improvement Proposals), modelled on BIPs and bLIPs. Approval and shipping are separate; the record of ACKs and NACKs is kept.
 - Review: several different AI models on every engine as it is built; outside human reviewers and red-teamers before real funds.
 - Hand-off notes are local documents the owner points the other session to.
-- Chain servers: well-known public ones first; our own around launch.
+- Chain servers: well-known public ones first (checked list in `CHAIN-SERVERS.md`); our own around launch. No Bitcoin node of our own for now.
 - Reminders: in-app countdowns first; Nostr, email and phone notifications later.
 - Imported SuperScalar files are never edited here. Changes are requested from the SuperScalar repo.
 - Every safety rule has a test and a run with the rule removed that must fail.
@@ -176,7 +177,8 @@ Newest first within each area. The date is when the owner decided.
 
 ## 8. Practical facts
 
-- Builds and tests run on the VPS; another session works there too, so each task keeps to its own directory and uses the sandbox wrapper for anything that starts a Bitcoin node.
+- Builds and tests run on Gazpacho's own build server, in one folder. The server used earlier is left to the SuperScalar session.
+- The project runs no Bitcoin node of its own for now. It uses public chain servers, on signet (`CHAIN-SERVERS.md`).
 - Commits are authored as `8144225309 <8144225309@users.noreply.github.com>`.
 - Automated checks run on GitHub for every push: a normal build and one with memory-error checkers.
 - The owner's machine is sometimes short of memory; long-running local helpers may be stopped. Pages open from disk without them.

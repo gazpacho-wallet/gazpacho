@@ -24,6 +24,7 @@ CHAPTERS = [
  ("Signing round", "spec/signing-round.md", "Specification: messages, steps, one-time secrets, proving who broke a round."),
  ("The lobby", "docs/LOBBY.md", "How a factory forms: start rule, member conditions, troublemakers, what is public."),
  ("Host's Lightning node", "docs/HOST-NODES.md", "The nodes a host can link to and how hard each is."),
+ ("Chain servers", "docs/CHAIN-SERVERS.md", "Public chain servers found to answer, and how Gazpacho uses them."),
  ("While you are away", "docs/AWAY.md", "Reminders, and ways to act when the member is not at the app."),
  ("Testing", "docs/TESTING.md", "Levels, the simulator, invariants, scenarios, the bar for a release candidate."),
  ("SIPs: the process", "docs/sips/README.md", "SuperScalar Improvement Proposals: how rules and features are proposed and decided."),

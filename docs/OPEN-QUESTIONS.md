@@ -25,7 +25,7 @@ Kept current. Last updated 2026-11-11, after questions round 2.
 12. Acting while the member is away: pre-signed responses, unattended signing, hardware devices. See `AWAY.md`.
 13. Adding a member's own coins to their leaf in a live factory: needs a proper review.
 14. Waking members who are offline when a factory rotates.
-15. Which well-known public chain servers go in the default list.
+15. The default chain-server list for release: candidates are checked in `CHAIN-SERVERS.md`; a second independent testnet4 operator is still needed, and the operators' terms have not been read.
 
 ## For the SuperScalar repo session
 

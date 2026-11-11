@@ -345,3 +345,9 @@ Recorded here because they set what Gazpacho can expect from the files it import
 - Rewriting that repository's channel code is put off to the end of development, and done only if it proves necessary. Contained safety fixes continue.
 - The last commit before any removal is tagged.
 - That session will rework incoming payments to held invoices (the member keeps the payment secret) as a later step, after its bridge validation work merges. Gazpacho's four-operation node interface in `HOST-NODES.md` is the shared shape.
+
+## 25. Own build server; public chain servers (2026-11-11)
+
+- Gazpacho moved to its own build server; the server used earlier is left to the SuperScalar session.
+- Owner's decision: no Bitcoin node of our own for now; connect to public chain servers. Checked from the build server: two independent operators answer for signet on the HTTP explorer interface with the same tip, one on the Electrum protocol; testnet4 has one operator found. Detail in `CHAIN-SERVERS.md`.
+- Consequence: the chain port's HTTP backend is built first, the first vertical slice runs on signet, and regtest scenarios wait until a node we control exists. Until then those behaviours are tested in the simulator only.
