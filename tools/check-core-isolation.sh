@@ -3,8 +3,10 @@
 #
 # What a pass proves, for the object code as built:
 #   1. It calls nothing outside itself except four freestanding memory
-#      routines (memcpy, memcmp, memset, memmove). A call to fopen, time,
-#      getenv, malloc, printf or anything else is an undefined symbol.
+#      routines (memcpy, memcmp, memset, memmove, or their bounds-checked
+#      forms such as __memcpy_chk, which some toolchains substitute). A call
+#      to fopen, time, getenv, malloc, printf or anything else is an
+#      undefined symbol.
 #   2. It has no weak references: a weak symbol is a way to call something
 #      outside "only if it is there".
 #   3. It has no writable data: no globals, no static variables, nothing that
@@ -33,6 +35,8 @@ defined=$(printf '%s\n' "$symbols" | awk '$1 != "U" && $1 != "w" && $1 != "v" { 
 for sym in $(printf '%s\n' "$symbols" | awk '$1 == "U" { print $2 }' | sort -u); do
     case "$sym" in
         memcpy|memcmp|memset|memmove) continue ;;            # freestanding C
+        __memcpy_chk|__memset_chk|__memmove_chk) continue ;; # the same, as the C library's
+                                                             # hardened headers emit them
         __asan_*|__ubsan_*|__sanitizer_*) continue ;;        # checker builds
         __stack_chk_fail|_GLOBAL_OFFSET_TABLE_) continue ;;  # compiler support
     esac
