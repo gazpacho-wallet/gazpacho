@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gazpacho Questions 2</title>
+<style>
+:root{--bg:#fbf6ee;--card:#fff;--ink:#231a15;--mute:#6f6258;--line:#e6dac9;--tomato:#c8321f;--tomato-soft:#fbe3dc;--green:#2f7d4f;--green-soft:#dff1e4;--gold:#b7791f;--gold-soft:#fbefd2;--grey-soft:#efe9df}
+@media (prefers-color-scheme:dark){:root{--bg:#17120f;--card:#211a16;--ink:#f3ebe2;--mute:#b3a597;--line:#3a2f28;--tomato:#ff7a63;--tomato-soft:#44201a;--green:#6fcf97;--green-soft:#1c3a29;--gold:#f0c060;--gold-soft:#3d3015;--grey-soft:#2b231e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 system-ui,"Segoe UI",sans-serif}
+main{max-width:880px;margin:0 auto;padding:30px 18px 130px}
+h1{font-size:34px;margin:0 0 6px}h1 span{color:var(--tomato)}
+h2{font-size:24px;margin:44px 0 8px}
+h2 small{display:block;font-size:13px;font-weight:700;color:var(--tomato);letter-spacing:.08em;text-transform:uppercase}
+h3{font-size:19px;margin:0 0 8px}
+p{margin:6px 0 10px}.lead{color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:14px 0}
+.why{color:var(--mute);font-size:15.5px}
+label.opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:9px;margin:8px 0;cursor:pointer}
+label.opt:has(input:checked){border-color:var(--green);background:var(--green-soft)}
+label.opt input{margin-top:6px}
+.rec{display:inline-block;font-size:12px;font-weight:700;color:var(--green);border:1px solid var(--green);border-radius:99px;padding:0 8px;margin-left:6px}
+.cost{display:block;color:var(--mute);font-size:14.5px}
+textarea{width:100%;min-height:60px;margin-top:8px;padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font:inherit;font-size:15px}
+ul{margin:6px 0 8px;padding-left:22px}li{margin:4px 0}
+.note{border-left:4px solid var(--gold);background:var(--gold-soft);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.bar{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center}
+button{font:inherit;padding:9px 16px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer}
+button.primary{background:var(--tomato);color:#fff;border-color:var(--tomato);font-weight:700}
+#msg{color:var(--mute);font-size:14px;min-width:120px}
+</style>
+</head>
+<body>
+<main>
+<h1><span>Gazpacho</span> questions, round 2</h1>
+<p class="lead">Fourteen decisions that are yours, in three groups. Each has my recommendation and what it costs. Below them are the things I am checking myself, so you can see they are not forgotten, and a list of what I now treat as settled. Press "Copy answers" and paste the result back to me.</p>
+
+<div class="note"><b>Your correction, recorded.</b> New joining rules will usually need to look at balances, coins or other state to decide whether something is safe to sign. So adding a rule often means changing the code that decides what is safe to sign, not only a separate rules layer. The design now says so: that code is one well-tested module with defined inputs, and a new rule is a reviewed change to it. Question 12 asks how such rules should be shipped.</div>
+
+<div id="qs"></div>
+
+<h2><small>For me to resolve</small>Concerns I am carrying</h2>
+<div class="card">
+<p class="why">No answer needed. Add a note if you have a view or know someone who should look at one.</p>
+<ul>
+<li><b>The safety rule's exact definition.</b> "I can leave with at least what I am owed" must account for timelocks, payments in flight and fees.</li>
+<li><b>Proving who broke a signing round.</b> The method proposed is our own reasoning from the signing standard and has not had expert review.</li>
+<li><b>Lightning's taproot channel format.</b> I have only seen secondary sources and must read the specification itself.</li>
+<li><b>Holding a payment open on Eclair, LDK-based nodes and Nostr Wallet Connect.</b> Not verified.</li>
+<li><b>Host proofs.</b> Today's proofs show a host controls one channel or coin, not that it can fund the lobby it advertises.</li>
+<li><b>A member cannot complete an exit alone in the reference code.</b> The fee on the member's channel transaction is too low. It is in the hand-off note; Gazpacho replaces that code.</li>
+<li><b>Changes we need in the imported files:</b> randomness supplied by the caller, no direct printing, and a fixed rule for the order of members in the tree. Requested in the hand-off note.</li>
+<li><b>Adding your own coins to your leaf.</b> Our reasoning says other members are unaffected, but it needs a proper review.</li>
+<li><b>Timelock and deadline numbers</b> for the full layered tree.</li>
+<li><b>Waking members who are offline</b> when a factory rotates.</li>
+</ul>
+<textarea id="concerns" placeholder="Notes on any of these (optional)"></textarea>
+</div>
+
+<h2><small>Unless you object</small>What I now treat as settled</h2>
+<div class="card">
+<ul>
+<li>Voting and vote-to-remove are off. The host removes people; each member has a personal block list.</li>
+<li>No threshold key for the factory. Everyone signs.</li>
+<li>LND is the first host node, then Core Lightning, then others.</li>
+<li>The lobby, signing engine and proof-of-fault are written so they can be split out as their own library.</li>
+<li>Requests for changes to imported files go to the SuperScalar repo first.</li>
+<li>Illustrated pages keep their earlier versions behind a version switch.</li>
+<li>Members adding their own coins, swap-in and swap-out, and a watching service are after the first release.</li>
+</ul>
+<textarea id="settled" placeholder="Anything here you would decide differently"></textarea>
+</div>
+</main>
+
+<div class="bar">
+<button class="primary" id="copy">Copy answers</button>
+<button id="fill">Fill blanks with recommendations</button>
+<button id="clear">Clear all</button>
+<span id="msg"></span>
+</div>
+
+<script>
+const G=[
+["The lobby",[
+{id:"Q1",t:"When does signing happen?",
+ why:"Creating a factory needs every member's app to respond in the same signing rounds.",
+ o:[["Live, at a scheduled start time","Simple, and matches the game-lobby picture. People in awkward time zones may miss it.",1],
+    ["Spread over a long window, such as a day","Kinder across time zones. The host's capital waits, and one slow member holds up everyone."],
+    ["The host chooses per lobby","Most flexible. Two flows to build and test."]]},
+{id:"Q2",t:"Who is the first audience, and how many seats may go to people who bring nothing?",
+ why:"A member with no funds has nothing at stake, so the usual defences against time-wasters do not bite. On signet this hardly matters; it sets the default for later.",
+ o:[["Newcomers with no funds are the main audience; each host sets what share of seats they may take","Open by default. A lobby can be clogged by idle joiners until other defences exist.",1],
+    ["Members must show control of some coins to take a seat","Harder to clog. Shuts out exactly the people SuperScalar is meant to onboard."],
+    ["Invitation only at first","Safest. Not a public demo."]]},
+{id:"Q3",t:"Is a small deposit to join acceptable?",
+ why:"A deposit paid over Lightning deters people who join and never sign. It cannot be made trustless: a dishonest host could keep it.",
+ o:[["Not in the first version; revisit once we have seen real trolls","Nothing to build. Hosts have fewer tools at launch.",1],
+    ["Yes, optional, set by each host","A real deterrent. Members must trust the host with the deposit, and need funds before joining."]]},
+{id:"Q4",t:"Do members see who else is in the lobby before signing?",
+ why:"A personal block list only works if you can see who you would be signing with.",
+ o:[["Yes, as temporary names that exist only for that lobby","Block lists work. A little is revealed to other members.",1],
+    ["Yes, with whatever lasting identity each member chose to bring","More to judge people by. Less privacy."],
+    ["No, only the head-count","Most private. Block lists cannot work."]]},
+{id:"Q5",t:"Is a member's identity lasting, or new each time?",
+ why:"A lasting identity can build a record of showing up and signing. It also lets a host or observer link a person's factories together.",
+ o:[["New for each lobby by default; a member may choose to bring a lasting one","Private by default. Good behaviour only counts if you opt in.",1],
+    ["Lasting by default","History works out of the box. Weaker privacy."]]},
+{id:"Q6",t:"What goes on Nostr?",
+ why:"The earlier host list published only how to reach a host, and kept factory details off Nostr on purpose. You have said lobby listings live there.",
+ o:[["Each lobby's terms, size limits and start time are public; who joined never is","People can browse lobbies. A host's activity is visible to anyone.",1],
+    ["The same, plus how full each lobby is","Easier to pick a lobby that will start. Reveals more about demand."],
+    ["Only how to reach hosts; ask each host directly for its lobbies","Most private. Browsing is slow."]]},
+{id:"Q7",t:"May a host publish the factories it has funded as a track record?",
+ why:"It is the one kind of reputation that cannot be faked, because the funding is on chain.",
+ o:[["Yes, if the host chooses to","Members can prefer proven hosts. New hosts start with nothing to show.",1],
+    ["No","Nothing to build. Members have little to judge a host by."]]},
+{id:"Q8",t:"Which rule presets ship first?",
+ why:"A profile is a named set of rules. The research proposed four: Safety (simple operation only), Standard, Starter (for people with no funds) and Circle (invitation only).",
+ o:[["Standard and Safety first; Starter and Circle later","Two to build and test.",1],
+    ["All four","The whole range from day one. More to test."],
+    ["Standard only","Least work. No safety preset at launch."]]}
+]],
+["The product",[
+{id:"Q9",t:"Which chain servers does Gazpacho use out of the box?",
+ why:"With nothing configured, Gazpacho reads the chain from public servers and compares their answers.",
+ o:[["A short list of well-known public servers plus one we run","Dependable. We run and pay for a server.",1],
+    ["Well-known public servers only","Nothing to run. We depend entirely on others."],
+    ["Only our own","Fully under our control. Users must trust us, and it is a single point of failure."]]},
+{id:"Q10",t:"How does the app remind people they are needed?",
+ why:"The app knows the dates: open by, sign by, factory expires on.",
+ o:[["Countdowns in the app first; other channels later","Nothing extra to build. Useless to someone who never opens the app.",1],
+    ["Also a Nostr message to an identity the user provides","Reaches people outside the app. Ties a Nostr identity to the wallet unless handled carefully."],
+    ["Also email","Familiar. We would have to run a mail service and hold addresses."]]},
+{id:"Q11",t:"When does the repository become public?",
+ why:"It is private now.",
+ o:[["When the first factory runs in the simulator, with a clear 'not for real funds' notice","Early eyes on the design. Unfinished work is visible.",1],
+    ["Now","Most open. Little to show yet."],
+    ["At the first signet release","Polished first impression. No outside feedback until then."]]}
+]],
+["How we work",[
+{id:"Q12",t:"How are new joining and safety rules added later?",
+ why:"As you pointed out, a new rule usually means changing the code that decides what is safe to sign.",
+ o:[["Only as reviewed changes to that code, released in a new version","Slow to add a rule. The safety code stays small and fully tested.",1],
+    ["A rules language that hosts and members can write themselves","Fast and flexible. A new language is a new way to make dangerous mistakes."],
+    ["Reviewed code for anything that affects signing; simple settings for everything else","Flexible where it is harmless. Needs a clear line between the two."]]},
+{id:"Q13",t:"Who reviews the cryptography before anyone outside uses it?",
+ why:"The signing engine, the safety rule and the proof-of-fault scheme are where a mistake costs money.",
+ o:[["Independent AI review of every engine as it is built, then an outside human expert before real funds","No waiting during development. No human expert has looked before signet.",1],
+    ["The same, plus an outside human expert on the design before the signet release","A stronger signet release. Needs finding and probably paying someone."],
+    ["AI review only","Cheapest. I advise against it for real funds."]]},
+{id:"Q14",t:"How does the hand-off note reach the SuperScalar repo session?",
+ why:"It reports that a member cannot complete an exit alone in the reference code, and asks for three small changes.",
+ o:[["You paste it into that session","You see everything that passes between the two.",1],
+    ["I open issues on the SuperScalar repo from here","Faster. I would be writing to a repo this session no longer owns."]]}
+]]
+];
+const Q=G.flatMap(g=>g[1]);
+const KEY="gz-questions-2";
+let S={};try{S=JSON.parse(localStorage.getItem(KEY))||{}}catch(e){}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}};
+const L="ABC",box=document.getElementById("qs");
+G.forEach(g=>{
+  const h2=document.createElement("h2");h2.innerHTML="<small>Decisions for you</small>"+g[0];box.appendChild(h2);
+  g[1].forEach(q=>{
+    const d=document.createElement("div");d.className="card";
+    let h=`<h3>${q.id}. ${q.t}</h3><p class="why">${q.why}</p>`;
+    q.o.forEach((o,i)=>{h+=`<label class="opt"><input type="radio" name="${q.id}" value="${L[i]}"><span><b>${L[i]}.</b> ${o[0]}${o[2]?'<span class="rec">recommended</span>':''}<span class="cost">Cost: ${o[1]}</span></span></label>`});
+    h+=`<textarea data-q="${q.id}" placeholder="Your own answer or a note (optional)"></textarea>`;
+    d.innerHTML=h;box.appendChild(d);
+  });
+});
+function paint(){Q.forEach(q=>{
+  document.querySelectorAll(`input[name=${q.id}]`).forEach(r=>r.checked=(S[q.id]===r.value));
+  document.querySelector(`textarea[data-q=${q.id}]`).value=S[q.id+"n"]||"";});
+  document.getElementById("settled").value=S.settled||"";document.getElementById("concerns").value=S.concerns||"";}
+paint();
+document.addEventListener("change",e=>{if(e.target.type==="radio"){S[e.target.name]=e.target.value;save()}});
+document.addEventListener("input",e=>{if(e.target.dataset.q){S[e.target.dataset.q+"n"]=e.target.value;save()}if(e.target.id==="settled"){S.settled=e.target.value;save()}if(e.target.id==="concerns"){S.concerns=e.target.value;save()}});
+const msg=t=>{const m=document.getElementById("msg");m.textContent=t;setTimeout(()=>m.textContent="",3000)};
+document.getElementById("fill").onclick=()=>{Q.forEach(q=>{if(!S[q.id])S[q.id]=L[q.o.findIndex(o=>o[2])]});save();paint();msg("Blanks filled")};
+document.getElementById("clear").onclick=()=>{S={};save();paint();msg("Cleared")};
+document.getElementById("copy").onclick=async()=>{
+  let out="Gazpacho questions, round 2\n";
+  Q.forEach(q=>{const a=S[q.id];out+=`${q.id}: ${a?a+" - "+q.o[L.indexOf(a)][0]:"(no choice)"}\n`;if(S[q.id+"n"])out+=`  note: ${S[q.id+"n"]}\n`;});
+  out+=`Notes on concerns: ${S.concerns||"none"}\nSettled list changes: ${S.settled||"none"}\n`;
+  try{await navigator.clipboard.writeText(out);msg("Copied")}
+  catch(e){const t=document.createElement("textarea");t.value=out;document.body.appendChild(t);t.select();document.execCommand("copy");t.remove();msg("Copied")}
+};
+</script>
+</body>
+</html>

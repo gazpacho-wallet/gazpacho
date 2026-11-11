@@ -43,7 +43,7 @@ Decided for the first version:
 
 Later, as the owner expects, joining may require something scarce: control of coins, a record of signing in earlier factories, an identity the member chooses to bring. These must stay options a host can set, because a stricter host competes with someone who self-hosts with looser rules.
 
-**Extension point:** the rules that decide who may join, and how a member's app reacts to the lobby, sit behind one interface so new rules can be added in later releases without touching the signing or factory code.
+**Adding rules later.** A new joining rule usually has to look at balances, coins or other state to decide whether something is safe to sign. So adding one is normally a change to the code that decides what is safe to sign, not only to a separate rules layer (owner's correction, 2026-11-11). That code is therefore kept as one module with defined inputs and its own tests, and a new rule is a reviewed change to it. Only rules that cannot affect signing, such as how a lobby is displayed or filtered, are plain settings.
 
 ## Why not threshold signatures
 
