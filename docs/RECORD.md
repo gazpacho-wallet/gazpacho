@@ -351,3 +351,7 @@ Recorded here because they set what Gazpacho can expect from the files it import
 - Gazpacho moved to its own build server; the server used earlier is left to the SuperScalar session.
 - Owner's decision: no Bitcoin node of our own for now; connect to public chain servers. Checked from the build server: two independent operators answer for signet on the HTTP explorer interface with the same tip, one on the Electrum protocol; testnet4 has one operator found. Detail in `CHAIN-SERVERS.md`.
 - Consequence: the chain port's HTTP backend is built first, the first vertical slice runs on signet, and regtest scenarios wait until a node we control exists. Until then those behaviours are tested in the simulator only.
+
+## 26. Vertical slices (2026-11-11)
+
+Owner's decision: build vertical slices on signet and testnet as the work proceeds, rather than finishing every engine before anything can be run. Slice 1 forms a factory; slice 2 makes a payment; slice 3 has a member leave alone. Each uses only tested engines and never skips the safe-to-sign check. Detail in `SLICES.md`. The chain port's HTTP backend is started alongside M1 so slice 1 is not held up.

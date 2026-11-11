@@ -10,6 +10,7 @@ The single place to start. It gathers what has been learned and decided, says ho
 | The design currently in force | `DESIGN.md` |
 | The dated record of findings, reviews and decisions | `RECORD.md` |
 | The testing plan | `TESTING.md` |
+| The vertical slices | `SLICES.md` |
 | Specifications (safe-to-sign rule, signing round) | `../spec/` |
 | What is still undecided | `OPEN-QUESTIONS.md` |
 | How a factory forms | `LOBBY.md`, with research in `LOBBY-research.md` |
@@ -124,6 +125,8 @@ Newest first within each area. The date is when the owner decided.
 
 ### Hosts
 - A host links to a regular Lightning node through an adapter: LND first, then Core Lightning, then others. Later the built-in node holds ordinary channels itself.
+
+- Work proceeds in vertical slices on signet as soon as the engines they need are tested: form a factory, then a payment, then leaving alone. (11 Nov)
 
 ### Working method
 - The owner handles outside review. This session's job is to bring the software to release candidates fit for review.

@@ -142,12 +142,17 @@ SuperScalar Improvement Proposals, `docs/sips/`. Request in a set format, open d
 |---|---|---|
 | M0 | Reference code run end to end | Done |
 | M0b | Foundations imported with a test and automated checks | Done |
-| M1 | Simulator and signing round engine; a fixed-tree factory in the simulator | Next |
+| M1 | Core skeleton, simulator and signing round engine; a fixed-tree factory in the simulator | In progress |
+| Slice 1 | Form a factory on signet, shown in the local web interface | After M1 |
 | M2 | Channel and payment engines | |
+| Slice 2 | A payment on signet | After M2 |
 | M3 | Exit, watch and schedule engines | |
+| Slice 3 | A member leaves alone on signet | After M3 |
 | M4 | The full layered tree and rotation | |
-| M5 | Storage, transport, Bitcoin node and Electrum; regtest end to end | |
+| M5 | Hardening of the outer pieces; Electrum backend; a node of our own for controlled-chain tests | |
 | M6 | First release candidate on signet | |
+
+Slices are defined in `docs/SLICES.md`.
 
 ## 17. Not designed yet
 

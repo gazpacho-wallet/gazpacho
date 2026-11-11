@@ -26,6 +26,7 @@ CHAPTERS = [
  ("Host's Lightning node", "docs/HOST-NODES.md", "The nodes a host can link to and how hard each is."),
  ("Chain servers", "docs/CHAIN-SERVERS.md", "Public chain servers found to answer, and how Gazpacho uses them."),
  ("While you are away", "docs/AWAY.md", "Reminders, and ways to act when the member is not at the app."),
+ ("Vertical slices", "docs/SLICES.md", "What each runnable slice shows, what it needs, and when it is done."),
  ("Testing", "docs/TESTING.md", "Levels, the simulator, invariants, scenarios, the bar for a release candidate."),
  ("SIPs: the process", "docs/sips/README.md", "SuperScalar Improvement Proposals: how rules and features are proposed and decided."),
  ("SIPs: rule template", "docs/sips/template-rule.md", "The form for requesting a rule."),

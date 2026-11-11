@@ -40,12 +40,17 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 |---|---|---|
 | M0 | Reference code run end to end; foundations shown to separate; reference values recorded | Done |
 | M0b | Foundations imported into this repo with a build and a reference test | Done |
-| M1 | Simulator skeleton; signing round engine; a fixed-tree factory created in the simulator with funding signed last | Next |
+| M1 | Core skeleton and simulator; signing round engine; a fixed-tree factory created in the simulator with funding signed last | In progress |
+| **Slice 1** | **Form a factory on signet:** lobby, signing, funding last, shown in the local web interface | After M1 |
 | M2 | Channel engine on the standard taproot format; payment engine; invariants on | |
+| **Slice 2** | **A payment** between two members through the host, on signet | After M2 |
 | M3 | Exit, watch and schedule engines; crash and cheating runs pass | |
+| **Slice 3** | **Leaving alone:** a member exits on signet with the host stopped | After M3 |
 | M4 | The full layered tree; rotation into the next factory | |
-| M5 | Storage, Lightning transport, Bitcoin node and Electrum; regtest end to end | |
-| M6 | First release on signet: lobby, command line, host service, LND adapter, local web interface, our public host | |
+| M5 | Hardening of storage, transport and chain view; Electrum backend; a node of our own for controlled-chain tests | |
+| M6 | First release candidate on signet: lobby listings, host service, LND adapter, full local web interface, our public host | |
+
+Slices are defined in `SLICES.md`. Each pulls a thin, real version of the outer pieces forward so there is something to run early; the simulator stays the main safety net.
 
 After that: more node adapters and a browser of hosts; swap-in and swap-out; a watching service; the self-contained host; then the work for real funds (remaining design fixes, an outside audit, a capped beta).
 
@@ -69,6 +74,7 @@ After that: more node adapters and a browser of hosts; swap-in and swap-out; a w
 | `CHAIN-SERVERS.md` | Public chain servers found to answer, and how they are used |
 | `TESTING.md` | The testing plan |
 | `../spec/` | Specifications: the safe-to-sign rule, the signing round |
+| `SLICES.md` | The vertical slices: what each shows, needs, and when it is done |
 | `OPEN-QUESTIONS.md` | What is still undecided |
 | `sips/` | How rules and features are proposed and decided |
 | `AWAY.md` | Meeting a member's duties while they are away |
