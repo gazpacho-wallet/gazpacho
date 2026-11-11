@@ -65,6 +65,8 @@ After that: more node adapters and a browser of hosts; swap-in and swap-out; a w
 | `design.html`, `gazpacho-overview.html` | Illustrated versions, with earlier versions under `history/` |
 | `LOBBY.md`, `LOBBY-research.md` | The lobby design and the research behind it |
 | `HOST-NODES.md` | Lightning nodes a host can link to, and how hard each is |
+| `TESTING.md` | The testing plan |
+| `../spec/` | Specifications: the safe-to-sign rule, the signing round |
 | `OPEN-QUESTIONS.md` | What is still undecided |
 | `sips/` | How rules and features are proposed and decided |
 | `AWAY.md` | Meeting a member's duties while they are away |

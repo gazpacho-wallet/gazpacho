@@ -8,6 +8,8 @@ The single place to start. It gathers what has been learned and decided, says ho
 |---|---|
 | The short plan and milestones | `PLAN.md` |
 | The design, and the dated record of findings and decisions | `DESIGN.md` |
+| The testing plan | `TESTING.md` |
+| Specifications (safe-to-sign rule, signing round) | `../spec/` |
 | What is still undecided | `OPEN-QUESTIONS.md` |
 | How a factory forms | `LOBBY.md`, with research in `LOBBY-research.md` |
 | Lightning nodes a host can link to | `HOST-NODES.md` |
@@ -87,7 +89,7 @@ Newest first within each area. The date is when the owner decided.
 ### Product
 - Gazpacho is both host and member software, self-contained, C, signet first, quality before dates. (11 Nov)
 - Soup wallet is mothballed, kept for reference. The SuperScalar repo is maintained by another session. (11 Nov)
-- Home is `github.com/gazpacho-wallet/gazpacho`, MIT. The owner decided on 11 Nov to make it public now.
+- Home is `github.com/gazpacho-wallet/gazpacho`, MIT, public since 11 Nov 2026.
 - The screens are a local web interface served by the C program. No wallet-in-a-web-page. (11 Nov)
 
 ### Construction

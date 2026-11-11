@@ -2,7 +2,8 @@
 (function(){
   var V={
     design:[
-      {v:2,date:"2026-11-11",file:"design.html",note:"after design review 1"},
+      {v:3,date:"2026-11-11",file:"design.html",note:"first code in; lobby and SIPs settled"},
+      {v:2,date:"2026-11-11",file:"history/design-v2.html",note:"after design review 1"},
       {v:1,date:"2026-11-11",file:"history/design-v1.html",note:"first draft"}
     ],
     overview:[

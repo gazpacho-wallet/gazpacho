@@ -310,3 +310,11 @@ Found during the import, for the core's design:
 - **Signing timing default:** long gathering, short signing, software signs automatically within the member's conditions. A long signing window is a host option. Soup treated signing as slow (up to 24 hours per response); that remains possible but is not the default, because signing secrets are not stored and one dropout restarts the round.
 - **Proposals are SIPs:** SuperScalar Improvement Proposals, in `sips/`, with categories Rule, Protocol, Process and Informational, a rule-request template and a worked example.
 - **Review** is arranged by the owner. This session brings the software to release candidates.
+
+## 21. Public repository, specifications, testing plan (2026-11-11)
+
+- The repository is public (owner's decision), with private vulnerability reporting enabled.
+- Drafted: `spec/safety-rule.md` (nine member-side checks C1 to C9, three host-side rules, definitions of owed, exit value and exit time) and `spec/signing-round.md` (six messages, states, nonce rules, proof of fault, never left half-finished). Both are draft 1 and unreviewed; each ends with its open points.
+- Checked against BIP 327 directly: a secret nonce must never sign twice; partial signature verification exists for identifying a disruptive signer and requires untampered contributions; a dishonest combiner could otherwise blame an honest signer; the standard does not cover convincing a third party. Our signed-contribution scheme extends it and needs expert review.
+- `TESTING.md` sets out the testing plan: seven levels, the simulator, nine invariants, regtest scenarios, and the bar for a release candidate.
+- Illustrated design page is at version 3.

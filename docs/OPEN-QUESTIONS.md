@@ -6,7 +6,7 @@ Kept current. Last updated 2026-11-11, after questions round 2.
 
 1. **Numbers for the lobby:** largest lobby, default gathering time, signing timers, number of signing attempts. Recommended: settle from signet testing.
 2. **Who besides the owner can approve a SIP.**
-3. **Making the repository public:** decided, but waiting on one check: the hand-off note describes two unfixed problems in the public SuperScalar code. Publish as is, or hold that note back first?
+3. **Review of the two drafted specifications** (`spec/`): the open points at the end of each, and an expert look at the proof-of-fault scheme.
 4. **Is the full security catalogue from the earlier SuperScalar work copied into this repo** as reference, or left where it is?
 
 ## For this session to settle (research or build)
