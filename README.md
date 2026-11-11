@@ -8,7 +8,8 @@ One program lets you **join** a factory, where many people share a single on-cha
 
 - [Knowledge base: start here](docs/KNOWLEDGE-BASE.md)
 - [Plan](docs/PLAN.md)
-- [Design and decision record](docs/DESIGN.md)
+- [Design](docs/DESIGN.md), with the [dated record](docs/RECORD.md) of how it got there
+- [Testing plan](docs/TESTING.md) and [specifications](spec/)
 - [The lobby](docs/LOBBY.md)
 - [Lightning nodes a host can link to](docs/HOST-NODES.md)
 - [Open questions](docs/OPEN-QUESTIONS.md)

@@ -48,23 +48,42 @@ code{background:var(--grey-soft);padding:1px 6px;border-radius:5px;font-size:.92
 .step{position:relative;margin:0 0 18px}
 .step:before{content:"";position:absolute;left:-35px;top:6px;width:15px;height:15px;border-radius:50%;background:var(--tomato);border:3px solid var(--bg)}
 .step b{font-size:17px}.when{color:var(--gold);font-weight:700;font-size:14px;margin-left:8px}
+details.more{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:8px 0}
+details.more>summary{cursor:pointer;padding:10px 14px;font-weight:600;list-style-position:inside}
+details.more>summary:hover{background:var(--grey-soft);border-radius:10px}
+details.more[open]>summary{border-bottom:1px solid var(--line);border-radius:10px 10px 0 0}
+.more-body{padding:6px 16px 12px;font-size:16px}
+.more-body h3,.more-body h4{font-size:16.5px;margin:14px 0 4px}
+.more-body .src{color:var(--mute);font-size:13px;margin-top:12px}
+.tools{display:flex;gap:8px;justify-content:center;margin:14px 0 0}
+.tools button{font:inherit;font-size:14px;padding:5px 12px;border-radius:99px;border:1px solid var(--line);background:var(--card);color:var(--ink);cursor:pointer}
 footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </style>
 </head>
 <body>
-<script src="versions.js" data-doc="design" data-v="3" data-root=""></script>
+<script src="versions.js" data-doc="design" data-v="4" data-root=""></script>
 <header>
   <h1><span>Gazpacho</span> design</h1>
-  <p>How the wallet is put together, what it takes from the SuperScalar code, and how we prove it works. Version 3, 2026-11-11. The first code is in, and the lobby and review process are settled.</p>
+  <p>How the wallet is put together, what it takes from the SuperScalar code, and how we prove it works. Version 4, 2026-11-11. The page now carries the full detail in sections you can open, marked with a triangle.</p>
   <nav>
     <a href="#answers">Short answers</a><a href="#source">What we take</a><a href="#layers">Layers</a><a href="#loop">Core contract</a>
-    <a href="#engines">Engines</a><a href="#rule">The safety rule</a><a href="#wire">Messages</a><a href="#chain">Chain view</a><a href="#lobby">Lobby</a><a href="#hostnode">Host node</a><a href="#schedule">Reminders</a><a href="#local">Local interface</a><a href="#sips">SIPs</a><a href="#now">Where we are</a>
+    <a href="#engines">Engines</a><a href="#rule">The safety rule</a><a href="#wire">Messages</a><a href="#chain">Chain view</a><a href="#lobby">Lobby</a><a href="#hostnode">Host node</a><a href="#factory">The factory</a><a href="#local">Your side</a><a href="#sips">SIPs</a><a href="#now">Where we are</a><a href="#reference">Reference</a>
     <a href="#tests">Testing</a><a href="#steps">Milestones</a><a href="#hard">Why it's hard</a><a href="#open">Not designed yet</a>
   </nav>
+  <div class="tools"><button id="openall">Open every section</button><button id="closeall">Close every section</button></div>
 </header>
 <main>
 
-<div class="card" style="border-color:var(--green)"><h3>What changed in version 3</h3>
+<details class="more"><summary>What changed in this version</summary><div class="more-body">
+<h3>Version 4</h3>
+<ul>
+<li>The page keeps its earlier shape, and each part now has sections you can open for the full detail. They are filled from the project's documents by a script, so they stay in step.</li>
+<li>A new part on the factory itself.</li>
+<li>Reminders and the local interface are gathered under "Your side".</li>
+<li>A reference part at the end: glossary, how sure we are of each claim, risks, open questions.</li>
+<li>The page's source also carries the full documents and the list of sources, not displayed, for anyone working from the file alone.</li>
+</ul>
+<h3>Version 3</h3>
 <ul>
 <li><b>The first code is in.</b> SuperScalar's foundations are imported unchanged, with a test against recorded results and automated checks on every change.</li>
 <li><b>The reference code was run end to end.</b> Creation, payments and cooperative close work. A member leaving alone does not: that is in the channel code we are replacing.</li>
@@ -72,7 +91,7 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li><b>Rules change through SIPs</b>, SuperScalar Improvement Proposals.</li>
 <li><b>Two specifications are drafted:</b> the safe-to-sign rule and the signing round.</li>
 <li><b>The repository is public.</b></li>
-</ul></div>
+</ul></div></details>
 
 <h2 id="now"><small>Status</small>Where we are</h2>
 <div class="card tw"><table>
@@ -83,14 +102,75 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <tr><td>M1</td><td>Simulator and signing round engine; a fixed-tree factory created in the simulator</td><td>Next</td></tr>
 </table></div>
 
-<h2 id="answers"><small>Your questions</small>Short answers</h2>
-<div class="card tw"><table>
+<!--gz:status-->
+<details class="more"><summary>What the trial run of the reference code found</summary><div class="more-body"><p>Tested or read; see <code>RECORD.md</code> sections 16 and 18 and the hand-off note.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Fact</th>
+<th>How we know</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Creation, payments and cooperative close work for 4 members on regtest</td>
+<td>Run on 2026-11-11</td>
+</tr>
+<tr>
+<td>It has run 127 members on signet</td>
+<td>The project's own published record; not re-run by us</td>
+</tr>
+<tr>
+<td>A member cannot complete an exit alone: the channel transaction's fee is below the relay minimum</td>
+<td>Run on 2026-11-11</td>
+</tr>
+<tr>
+<td>The host funds before the tree is signed</td>
+<td>Read in the code by the earlier session</td>
+</tr>
+<tr>
+<td>Only the funding output pays members at expiry; every tree node still has a host-only timeout branch</td>
+<td>Read in the code by the earlier session</td>
+</tr>
+<tr>
+<td>Payment deadlines are fixed at 80, 40 and 18 blocks, far shorter than an exit</td>
+<td>Read in the code by the earlier session</td>
+</tr>
+<tr>
+<td>About 100 message types, in a private format</td>
+<td>Read on 2026-11-11</td>
+</tr>
+<tr>
+<td>16 low-level files build and run alone and reproduce real transaction IDs</td>
+<td>Built and tested on 2026-11-11</td>
+</tr>
+<tr>
+<td>Member order in the tree can depend on the C library's sort</td>
+<td>Read on 2026-11-11</td>
+</tr>
+<tr>
+<td>Individual partial signatures are never verified</td>
+<td>Read on 2026-11-11</td>
+</tr>
+<tr>
+<td>Randomness is read directly from the operating system, including for signing nonces</td>
+<td>Read on 2026-11-11</td>
+</tr>
+<tr>
+<td>The earlier session found and fixed several ways for a host to take members' funds (close paying only the host, liquidity change emptying a balance, and others)</td>
+<td>That session's work; fixes are being merged there</td>
+</tr>
+</tbody>
+</table></div><p class="src">From <code>docs/KNOWLEDGE-BASE.md</code></p></div></details>
+<!--/gz:status-->
+
+<details class="more"><summary>Four early questions, answered</summary><div class="more-body"><div class="card tw"><table>
 <tr><th>Question</th><th>Answer</th></tr>
 <tr><td><b>Is it really so simple?</b></td><td>No. The shape is simple; eight things inside it are hard. They are listed <a href="#hard">below</a>.</td></tr>
 <tr><td><b>Pulling in SuperScalar, or our own thing?</b></td><td>Both. We import its foundations (about 11,000 lines) unchanged, and write everything above them new.</td></tr>
 <tr><td><b>How do we get it tested end to end?</b></td><td>The core does no input or output, so a whole factory can run inside one test process, with crashes and cheating injected. Then the real programs run on regtest, signet and testnet.</td></tr>
 <tr><td><b>Is it all planned out?</b></td><td>The architecture and the test strategy are. Seven detailed pieces are <a href="#open">not designed yet</a>.</td></tr>
-</table></div>
+</table></div></div></details>
 
 <h2 id="source"><small>Relationship to the SuperScalar repo</small>What we take, and what we write</h2>
 <div class="card">
@@ -126,6 +206,15 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li>Fixes to the imported files go to the SuperScalar repo first, and we then update our copy.</li>
 <li>If we cannot wait for a fix, it goes in a short, listed patch queue, never a silent fork.</li>
 </ul>
+
+<!--gz:source-->
+<details class="more"><summary>Where the code comes from, in full</summary><div class="more-body"><ul>
+<li><strong>Imported unchanged</strong> from SuperScalar, pinned to a known version under <code>core/superscalar/</code>: tree building, group signing, timelock counter, ladder, transaction and script building, adaptor signatures, key derivation, recovery phrases, address and invoice encoding, fee helpers. 38 files. A manifest records each file's checksum, and a script refreshes the copy.</li>
+<li><strong>Written new:</strong> everything above that. SuperScalar's host and member code is the reference for behaviour, not a source of code.</li>
+<li><strong>Not edited here:</strong> a change to an imported file is requested from the SuperScalar repo. If it cannot wait it goes in a short, listed patch queue.</li>
+<li><strong>Reference results</strong> recorded from real SuperScalar runs catch any drift when the import is updated.</li>
+</ul><p class="src">From <code>docs/DESIGN.md</code></p></div></details>
+<!--/gz:source-->
 
 <h2 id="layers"><small>Logical layers</small>Six layers, four of them the core</h2>
 <div class="card">
@@ -186,8 +275,7 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
   <div class="card"><span class="pill p-green">Schedule</span><h3>Knows every date that matters</h3><p>Works out when the user must act: open the app, sign a rotation, move before a factory expires. Drives reminders.</p></div>
 </div>
 
-<h3 style="margin-top:26px">Why one signing engine matters</h3>
-<div class="card">
+<details class="more"><summary>Why one signing engine matters</summary><div class="more-body"><div class="card">
 <svg viewBox="0 0 900 250" role="img" aria-label="Seven message families collapse into one signing round engine">
   <text x="170" y="22" text-anchor="middle" font-weight="800" font-size="15">SuperScalar today</text>
   <g font-size="13">
@@ -210,7 +298,129 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
   <text x="700" y="206" text-anchor="middle" font-size="13" class="m">1 engine, 4 message kinds,</text>
   <text x="700" y="224" text-anchor="middle" font-size="13" class="m">one place to get right and to test</text>
 </svg>
-</div>
+</div></div></details>
+<!--gz:signing-->
+<details class="more"><summary>The six messages of a signing round</summary><div class="more-body"><p>Six kinds, carried as factory messages inside the Lightning connection.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Message</th>
+<th>From → to</th>
+<th>Carries</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>round_propose</code></td>
+<td>Host → member</td>
+<td>Purpose, attempt number, the parameters from which the member rebuilds the transactions, the ordered participant list, the deadlines for each step</td>
+</tr>
+<tr>
+<td><code>round_nonces</code></td>
+<td>Member → host</td>
+<td>The member's public nonce for each of its items, and the member's signature over the round identifier and those nonces</td>
+</tr>
+<tr>
+<td><code>round_all_nonces</code></td>
+<td>Host → member</td>
+<td>For each of the member's items: every signer's public nonce with that signer's signature</td>
+</tr>
+<tr>
+<td><code>round_partial_sigs</code></td>
+<td>Member → host</td>
+<td>The member's partial signature for each of its items, and the member's signature over the round identifier, a digest of the nonce set it used, and those partial signatures</td>
+</tr>
+<tr>
+<td><code>round_complete</code></td>
+<td>Host → member</td>
+<td>The final signatures for every transaction on the member's exit path</td>
+</tr>
+<tr>
+<td><code>round_abort</code></td>
+<td>Either way</td>
+<td>A reason, and evidence where fault can be shown</td>
+</tr>
+</tbody>
+</table></div>
+<p>Parameters are sent, not transactions. A member builds the transactions itself.</p>
+<p>Nonce sets for large factories are sent as a sequence of messages, one per item, ending with a marker that the set is complete.</p><p class="src">From <code>spec/signing-round.md</code></p></div></details>
+<details class="more"><summary>The steps, one by one</summary><div class="more-body"><ol>
+<li><strong>Propose.</strong> The host sends <code>round_propose</code> to every signer.</li>
+<li><strong>Check.</strong> Each member rebuilds the transactions, computes the round identifier, and runs the safe-to-sign checks. If they fail it sends <code>round_abort</code> and stops.</li>
+<li><strong>Nonces.</strong> Each member generates a fresh secret nonce per item and sends the public parts in <code>round_nonces</code>.</li>
+<li><strong>Distribute.</strong> When the host has every signer's nonces, it sends <code>round_all_nonces</code>.</li>
+<li><strong>Verify and sign.</strong> Each member checks every nonce's signature, confirms its own nonces are included unchanged, runs the safe-to-sign checks again, stores its record of what it is about to sign (see <code>safety-rule.md</code>, check C7), then sends <code>round_partial_sigs</code>.</li>
+<li><strong>Verify.</strong> The host verifies each partial signature as it arrives.</li>
+<li><strong>Complete.</strong> When all are in and valid, the host combines them, verifies each final signature, and sends <code>round_complete</code>.</li>
+<li><strong>Accept.</strong> Each member verifies the final signatures. Only then does it add the new transactions to what it holds.</li>
+</ol><p class="src">From <code>spec/signing-round.md</code></p></div></details>
+<details class="more"><summary>Rules for the one-time signing secrets</summary><div class="more-body"><p>From BIP 327, which says a secret nonce must never be used to sign twice, since that can reveal the signer's key.</p>
+<ul>
+<li>A secret nonce is generated from fresh randomness supplied to the core, together with the member's key, the aggregate key and the message when known.</li>
+<li>It lives in memory only. It is never written to storage and never included in a backup.</li>
+<li>It is erased as soon as it has been used to sign, or the round ends for any reason.</li>
+<li>If the program restarts during a round, the round is over for that member. It will take part in the next attempt with new nonces.</li>
+<li>A partial signature is produced only after the complete nonce set for that item has been received and checked.</li>
+</ul><p class="src">From <code>spec/signing-round.md</code></p></div></details>
+<details class="more"><summary>Proving who broke a round</summary><div class="more-body"><p>BIP 327 lets honest parties identify a signer who sent a bad partial signature, provided contributions cannot be tampered with in transit. It warns that whoever combines the nonces could otherwise blame an honest signer, and it says nothing about convincing a third party. The scheme below is our extension to cover both.</p>
+<p><strong>Every contribution is signed by its author</strong>, with the same key that takes part in the group signature:</p>
+<ul>
+<li>a member's <code>round_nonces</code> is signed over the round identifier and the nonces;</li>
+<li>a member's <code>round_partial_sigs</code> is signed over the round identifier, a digest of the full nonce set the member used, and the partial signatures.</li>
+</ul>
+<p><strong>What this proves:</strong></p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Fault</th>
+<th>Evidence</th>
+<th>Convinces a third party?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A member sent a bad partial signature</td>
+<td>Its signed nonces, its signed partial signature naming the nonce set, and that nonce set (each nonce signed by its owner). Anyone can run the standard verification and see it fail</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>The host changed someone's nonce before passing it on</td>
+<td>The changed nonce does not carry its owner's signature, so members reject it in step 5</td>
+<td>Not needed; it is caught at once</td>
+</tr>
+<tr>
+<td>The host gave different members different nonces of its own</td>
+<td>Two nonces for the same round and item, both signed by the host</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>The host claims a member's partial signature is bad when it is not</td>
+<td>The member's signed message names the nonce set it used; verification against that set succeeds</td>
+<td>Yes, the claim is disproved</td>
+</tr>
+<tr>
+<td>Someone did not answer</td>
+<td>Nothing</td>
+<td>No. Silence can only be observed, not proved</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>After a fault:</strong> the faulty or silent signers are removed together and the host starts a new attempt, with a new round identifier, for those who remain. The host's terms say how many attempts are made and what happens if too few members remain.</p><p class="src">From <code>spec/signing-round.md</code></p></div></details>
+<details class="more"><summary>Never left half-finished</summary><div class="more-body"><p>The danger in any round is that the host ends up holding complete signatures while a member does not.</p>
+<ul>
+<li><strong>A member treats a round as finished only when it holds valid final signatures for its whole exit path.</strong> Until then it behaves as if only the previous state exists: it accepts no payment and releases no secret that depends on the new one.</li>
+<li><strong>Creation:</strong> members have nothing at stake, and the host signs funding last.</li>
+<li><strong>Later rounds:</strong> the safe-to-sign checks require that the new state is at least as good for the member as the old one, and that the member's exit from any new output is signed before the transaction that creates it. So a host that withholds <code>round_complete</code> gains nothing: publishing the new state pays the member correctly, and the member can still use the old one.</li>
+<li>A member in the Unfinished state asks again on reconnect. If the host never answers, the member exits using what it holds.</li>
+</ul><p class="src">From <code>spec/signing-round.md</code></p></div></details>
+<details class="more"><summary>Open points on the signing round</summary><div class="more-body"><ol>
+<li><strong>Review of section 7</strong> by someone expert in MuSig2.</li>
+<li><strong>Whether the host should send its own partial signatures first</strong>, and pass every member's partial signatures to the others, so that members can complete transactions themselves and the host is never the only one holding the result.</li>
+<li><strong>Which key signs contributions.</strong> The factory key is the natural choice. Whether signing other messages with it is acceptable needs checking.</li>
+<li><strong>Size.</strong> How nonce sets are split for the largest factories, and the largest round we support.</li>
+<li><strong>Generating nonces early</strong>, at the ready check, to save a step. BIP 327 permits it with care; it conflicts with nothing above but removes one of the standard's safeguards.</li>
+</ol><p class="src">From <code>spec/signing-round.md</code></p></div></details>
+<!--/gz:signing-->
 
 <h2 id="rule"><small>Member-side safety</small>One rule before every signature</h2>
 <div class="card" style="text-align:center;border-color:var(--tomato)">
@@ -226,6 +436,141 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
   <div class="card"><h3>A restored backup never publishes</h3><p>An app restored from backup asks the host to prove the latest state and waits for the host to close. Publishing an old copy would look like cheating.</p></div>
   <div class="card"><h3>Exit fees come from the host's side</h3><p>The host is the funder, so the base fee on tree and channel transactions is built in. A member's own on-chain coins are only needed to raise the fee when the chain is busy.</p></div>
 </div>
+
+<!--gz:safety-->
+<details class="more"><summary>The nine checks a member's software runs</summary><div class="more-body"><p>A request is safe to sign only if all of these hold. Each is checked against data the member's software built or stored itself.</p>
+<p><strong>C1. Rebuilt, not received.</strong> The member's software constructs every transaction in the request itself, from the host's signed terms, the agreed ordered list of participant keys, and the member's own stored state. It signs only digests it computed. It never signs a transaction or digest supplied by another party.</p>
+<p><strong>C2. Own outputs are recognised by own keys.</strong> The member's software identifies which outputs are the member's by deriving the scripts from its own keys. Labels, indexes or positions stated in the request are not trusted.</p>
+<p><strong>C3. Value.</strong> The exit value of the resulting set is at least the amount owed after the request (section 4).</p>
+<p><strong>C4. Every state the adversary could publish is covered.</strong> For every transaction in the resulting set that the adversary could publish, including ones the request is meant to replace, one of these is true:
+- publishing it leaves the member able to reach at least the owed amount; or
+- the member holds what is needed to cancel it in time and still reach the owed amount.</p>
+<p><strong>C5. Time.</strong> The exit time of the resulting set, plus a margin, ends before the earliest moment at which anyone else gains a competing claim on any output on the member's exit path. Today the imported tree gives the host such a claim at each node's timeout, so that timeout bounds the exit.</p>
+<p><strong>C6. Children before parents.</strong> The member does not help complete a signature on a transaction that creates an output unless it already holds its own fully signed exit from that output. For example, a new channel commitment on a new leaf output is fully signed and in the member's hands before the member signs the leaf transaction that creates that output.</p>
+<p><strong>C7. One state per number.</strong> The member never contributes to two different transactions for the same position and state number in the same factory. Before sending a partial signature it stores a record of what it signed for that position and number, and refuses anything different later.</p>
+<p><strong>C8. Terms.</strong> The parameters used to build the transactions match the host's signed terms, and the terms and the actual member count satisfy the member's own conditions.</p>
+<p><strong>C9. Nothing in flight is stranded.</strong> A request that closes or replaces a channel is refused while a payment is in flight on it, unless the resulting set still lets the member claim or reclaim that payment.</p>
+<p>If any check fails, the member's software sends nothing for that request, tells the host it refused, and keeps its held set unchanged.</p><p class="src">From <code>spec/safety-rule.md</code></p></div></details>
+<details class="more"><summary>What the member is owed, operation by operation</summary><div class="more-body"><p>Always from the member's own records, never from the request.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Owed after the request</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Creating a factory</td>
+<td>Zero. Members start with nothing</td>
+</tr>
+<tr>
+<td>A payment in the channel</td>
+<td>The balance after the payment the member itself authorised or received, plus payments in flight the member can claim</td>
+</tr>
+<tr>
+<td>A liquidity change on the member's leaf</td>
+<td>The same channel balance as before. Liquidity may move toward the member, never away from the member's balance</td>
+</tr>
+<tr>
+<td>A change to a layer above the leaf</td>
+<td>Unchanged</td>
+</tr>
+<tr>
+<td>Rotation into a new factory</td>
+<td>The same total, across the old and new factories together, at every step</td>
+</tr>
+<tr>
+<td>A cooperative close</td>
+<td>The channel balance, paid to a script the member's software derived</td>
+</tr>
+<tr>
+<td>Another member's leaf or branch</td>
+<td>Unchanged; and normally the member is not a signer at all</td>
+</tr>
+</tbody>
+</table></div><p class="src">From <code>spec/safety-rule.md</code></p></div></details>
+<details class="more"><summary>How exit value and exit time are worked out</summary><div class="more-body"><p>The exit value of a set is computed by the member's software as follows.</p>
+<ol>
+<li>Find the member's exit path in the set: the newest fully signed transaction at each position from the funding output down, ending in outputs whose scripts the member alone can satisfy.</li>
+<li>Add up those final outputs.</li>
+<li>Subtract any fee the member must add that is not already built into the transactions.</li>
+<li>For payments in flight, count only those the member can certainly claim: it knows the secret and the deadline leaves enough time (section 6).</li>
+<li>Apply C4: if the adversary can publish a different transaction at some position, take the lowest result over every such choice, after the member's best available response.</li>
+</ol>
+<p>The answer is the least the member can end up with. It must be at least the owed amount.</p><p class="src">From <code>spec/safety-rule.md</code></p></div></details>
+<details class="more"><summary>The host's side</summary><div class="more-body"><p>The host's software runs the same module with the roles exchanged, plus three rules of its own.</p>
+<p><strong>H1. Funding last.</strong> The host does not sign the transaction that funds a factory until every tree transaction is fully signed and verified.</p>
+<p><strong>H2. Every partial signature is verified</strong> as it arrives, against its sender's key and nonce.</p>
+<p><strong>H3. No credit before it is covered.</strong> The host does not treat an operation as complete, and does not act on it for a member (forward a payment, release a secret), until the transactions that protect the host in the new state are fully signed.</p><p class="src">From <code>spec/safety-rule.md</code></p></div></details>
+<details class="more"><summary>What the rule does not protect against</summary><div class="more-body"><ul>
+<li><strong>Being ignored.</strong> A host can refuse service. The remedy is to leave.</li>
+<li><strong>A false view of the chain.</strong> The rule assumes the member's view of the chain is correct. That is the chain port's job.</li>
+<li><strong>Fees far above what was built in</strong>, if the member has no on-chain coins to add.</li>
+<li><strong>Loss of the held set.</strong> Backups are a separate mechanism.</li>
+<li><strong>Privacy.</strong> The host sees its members' payments.</li>
+</ul><p class="src">From <code>spec/safety-rule.md</code></p></div></details>
+<details class="more"><summary>Open points on the safety rule</summary><div class="more-body"><ol>
+<li><strong>Fees.</strong> How much of the exit's fee is built in at each level, and how the member's possible top-up is counted in step 3 of section 5.</li>
+<li><strong>Old states in the layered tree.</strong> C4 for the shrinking-timelock layers depends on the cancellation mechanism for the host's spare liquidity. That analysis has to be written out per layer.</li>
+<li><strong>Timeouts that favour the host.</strong> C5 is stricter than it would be if every tree output paid members at expiry. If the imported tree changes, the bound changes.</li>
+<li><strong>Rotation.</strong> "The same total across both factories at every step" needs a step-by-step statement for each rotation method.</li>
+<li><strong>Payments in flight</strong> during a liquidity change on the same leaf.</li>
+<li>Whether C7's record can ever be safely discarded.</li>
+</ol><p class="src">From <code>spec/safety-rule.md</code></p></div></details>
+<!--/gz:safety-->
+
+<h2 id="factory"><small>New in version 4</small>The factory itself</h2>
+<p class="lead">One on-chain output, shared by the host and every member, divided by a tree of transactions that are signed in advance and normally never published.</p>
+<div class="card">
+<svg viewBox="0 0 900 330" role="img" aria-label="A factory tree from the shared output down to members' channels">
+  <rect x="330" y="10" width="240" height="46" rx="10" fill="var(--tomato-soft)" stroke="var(--tomato)" stroke-width="2"/>
+  <text x="450" y="30" text-anchor="middle" font-weight="800" font-size="15">Shared output, on chain</text><text x="450" y="47" text-anchor="middle" font-size="12" class="m">everyone must sign to spend it</text>
+  <rect x="150" y="100" width="220" height="44" rx="9" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="260" y="127" text-anchor="middle" font-size="14">Branch</text>
+  <rect x="530" y="100" width="220" height="44" rx="9" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="640" y="127" text-anchor="middle" font-size="14">Branch</text>
+  <g font-size="13">
+  <rect x="40" y="190" width="190" height="94" rx="9" fill="var(--green-soft)" stroke="var(--green)"/><text x="135" y="212" text-anchor="middle" font-weight="700">Leaf</text><text x="135" y="234" text-anchor="middle">member 1's channel</text><text x="135" y="254" text-anchor="middle" class="m">+ host's spare liquidity</text>
+  <rect x="250" y="190" width="190" height="94" rx="9" fill="var(--green-soft)" stroke="var(--green)"/><text x="345" y="212" text-anchor="middle" font-weight="700">Leaf</text><text x="345" y="234" text-anchor="middle">member 2's channel</text><text x="345" y="254" text-anchor="middle" class="m">+ host's spare liquidity</text>
+  <rect x="460" y="190" width="190" height="94" rx="9" fill="var(--green-soft)" stroke="var(--green)"/><text x="555" y="212" text-anchor="middle" font-weight="700">Leaf</text><text x="555" y="234" text-anchor="middle">member 3's channel</text><text x="555" y="254" text-anchor="middle" class="m">+ host's spare liquidity</text>
+  <rect x="670" y="190" width="190" height="94" rx="9" fill="var(--green-soft)" stroke="var(--green)"/><text x="765" y="212" text-anchor="middle" font-weight="700">Leaf</text><text x="765" y="234" text-anchor="middle">member 4's channel</text><text x="765" y="254" text-anchor="middle" class="m">+ host's spare liquidity</text>
+  </g>
+  <line x1="400" y1="56" x2="270" y2="98" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="500" y1="56" x2="630" y2="98" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="220" y1="144" x2="140" y2="188" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="300" y1="144" x2="340" y2="188" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="600" y1="144" x2="560" y2="188" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="680" y1="144" x2="760" y2="188" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/>
+  <text x="450" y="316" text-anchor="middle" font-size="13" class="m">To leave alone, a member publishes only their own path: here, three transactions.</text>
+</svg>
+</div>
+<div class="grid">
+  <div class="card"><h3>The host funds it</h3><p>Members start at zero and are paid in over Lightning. The host signs the funding last, after the whole tree is signed.</p></div>
+  <div class="card"><h3>Payments stay in the channel</h3><p>A payment never changes the tree. Only a change of liquidity does, and that needs just the leaf's own signers.</p></div>
+  <div class="card"><h3>Layers move liquidity</h3><p>Upper levels can be re-signed so the host can shift spare liquidity between members. The first release ships these layers.</p></div>
+  <div class="card"><h3>It has an end date</h3><p>Before it expires, members move to the host's next factory. Software that hears nothing leaves by itself in time.</p></div>
+</div>
+<!--gz:factory-->
+<details class="more"><summary>How SuperScalar is meant to work</summary><div class="more-body"><p>From ZmnSCPxj's posts on Delving Bitcoin (topics 1143 and 1242) as read in earlier research. Not re-read today.</p>
+<ul>
+<li>One host and many members share one on-chain output that needs everyone's signature.</li>
+<li>The host funds everything. Members start at zero and are paid in over Lightning.</li>
+<li>A tree of pre-signed transactions gives each member an exit that needs nobody's help.</li>
+<li>Upper layers can be re-signed to move the host's spare liquidity between members. Leaves near the bottom need only a few members online to change.</li>
+<li>When a factory expires, members are meant to receive everything and the host nothing ("inversion of the timeout default"), which makes keeping the service running the host's financial duty.</li>
+<li>Factories last about 30 days plus about 3 days of winding down. A new one starts daily. Members move to a new factory by paying across over Lightning.</li>
+<li>A payment's final deadline must be at least the tree's total exit delay plus a margin.</li>
+<li>Arity 2 is suggested near the leaves, wider higher up, and fixed (stateless) near the root.</li>
+<li>Pseudo-Spilman leaves were designed for several members per leaf sharing the host's liquidity; the reference code uses one member per leaf.</li>
+</ul><p class="src">From <code>docs/KNOWLEDGE-BASE.md</code></p></div></details>
+<details class="more"><summary>Every decision about the factory</summary><div class="more-body"><ul>
+<li>The full layered SuperScalar tree in the first release; the fixed tree is built first.</li>
+<li>Pseudo-Spilman leaves, one member per leaf. Payments never change the tree; liquidity changes do.</li>
+<li>One funder per factory: the host. Members start at zero and are paid in over Lightning.</li>
+<li>The tree's shape for each size is fixed by the host's terms; members are placed in an agreed order, host first.</li>
+<li>Payment deadlines are computed from the factory's exit time plus a margin; payments with less headroom are refused.</li>
+<li>A member's software exits automatically before expiry if nothing else has happened.</li>
+<li>At wind-down a member pays their balance into the next factory over Lightning, or co-signs a close that funds the next factory directly.</li>
+<li>Target size 512 members; routine tests at smaller sizes.</li>
+<li>Not in the first release: JIT channels, swap-in and swap-out, members adding their own coins, several hosts per factory.</li>
+</ul><p class="src">From <code>docs/DESIGN.md</code></p></div></details>
+<!--/gz:factory-->
 
 <h2 id="wire"><small>Decided</small>Messages: Lightning's own wire language</h2>
 <p class="lead">A Gazpacho connection is an ordinary Lightning peer connection that also carries factory messages. We invent as little as possible.</p>
@@ -264,6 +609,14 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li>Keys never leave the app.</li>
 </ul>
 
+<!--gz:storage-->
+<details class="more"><summary>Storage and backup</summary><div class="more-body"><ul>
+<li>An append-only journal of typed records with periodic snapshots, encrypted at rest.</li>
+<li>The encrypted journal is also the backup: one copy with the host, one the user can export.</li>
+<li>A restored copy is never used to publish a channel state.</li>
+</ul><p class="src">From <code>docs/DESIGN.md</code></p></div></details>
+<!--/gz:storage-->
+
 <h2 id="lobby"><small>Settled in version 3</small>The lobby: how a factory forms</h2>
 <p class="lead">Creating a factory needs everyone's software online at once. The lobby is the waiting room, and it works like a game server.</p>
 <div class="card">
@@ -295,6 +648,155 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
   <div class="card"><h3>What is on Nostr</h3><p>Fixed terms, ranges, size and start time. Never who joined. Live details come from the host.</p></div>
 </div>
 
+<!--gz:lobby-->
+<details class="more"><summary>Stages, timing and the start rule in full</summary><div class="more-body"><div class="tw"><table>
+<thead>
+<tr>
+<th>Stage</th>
+<th>What happens</th>
+<th>Who moves it on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Draft</td>
+<td>The host sets the rules</td>
+<td>Host</td>
+</tr>
+<tr>
+<td>Open</td>
+<td>Listed; members join by connecting directly to the host</td>
+<td>Members joining; the start rule</td>
+</tr>
+<tr>
+<td>Ready check</td>
+<td>Each member's app confirms it is present and its conditions hold</td>
+<td>Timer</td>
+</tr>
+<tr>
+<td>Signing</td>
+<td>The group signing rounds; up to three attempts</td>
+<td>The signing engine</td>
+</tr>
+<tr>
+<td>Funding</td>
+<td>The host funds the factory</td>
+<td>Host; the chain</td>
+</tr>
+<tr>
+<td>Active</td>
+<td>The factory is live</td>
+<td></td>
+</tr>
+<tr>
+<td>Cancelled / Failed</td>
+<td>Too few members, or signing could not complete</td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Timing.</strong> A lobby has two clocks, both set by the host.</p>
+<ul>
+<li><em>Gathering</em> is long. A lobby can stay open for hours or days. Members join whenever they like, set their conditions, and can leave the app running to act for them.</li>
+<li><em>Signing</em> is short and happens at the scheduled start. The secrets used in a signing round are never stored, so each member's app must keep running from the first signing step to the second. If anyone drops out in between, the round restarts for everyone. A short window keeps that rare and cheap.</li>
+</ul>
+<p>A host that wants a slower pace can lengthen the signing timers and accept more restarts. It is one mechanism with different timer values, not two designs.</p>
+<p><strong>Who can find it, and who can join.</strong> Two separate settings:</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th></th>
+<th>Open to anyone</th>
+<th>By invitation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Listed on Nostr</strong></td>
+<td>A public lobby</td>
+<td>Visible, but a seat needs an invitation</td>
+</tr>
+<tr>
+<td><strong>Unlisted</strong></td>
+<td>Anyone with the link can join</td>
+<td>Private in practice</td>
+</tr>
+</tbody>
+</table></div>
+<p>Invitations are links, shown as QR codes. The host also sets what share of seats may go to members who bring nothing.</p>
+<p><strong>Start rule.</strong> Three numbers set by the host: a target, a minimum and a deadline.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Situation</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The lobby reaches the target</td>
+<td>It starts at once</td>
+</tr>
+<tr>
+<td>The deadline arrives with at least the minimum</td>
+<td>It starts with whoever is there</td>
+</tr>
+<tr>
+<td>The deadline arrives below the minimum</td>
+<td>It is cancelled, or the waiting members are carried over to the host's next lobby, as the host has set</td>
+</tr>
+</tbody>
+</table></div>
+<p>Example: target 50, minimum 30, deadline in three hours. At 50 it starts immediately. At the three-hour mark it starts if there are 30 or more, and quits otherwise.</p>
+<p>Details that make it work:</p>
+<ul>
+<li><strong>Only members whose software is connected and ready count.</strong> A held seat that never readies does not trigger a start.</li>
+<li><strong>Each member's own minimum is respected.</strong> A member who asked for at least 40 is not counted in a start at 35. The host's software finds the largest group whose own conditions that group satisfies.</li>
+<li><strong>Extra arrivals wait as standbys.</strong> They fill gaps left by anyone who fails to sign.</li>
+<li><strong>The count is checked again at signing.</strong> If non-signers take the group below the minimum, the factory is not created.</li>
+</ul>
+<p>This is the rule Soup wallet's design had (start when full, or at a deadline if a minimum is met), and the one coinjoin coordinators use. Soup re-opened the lobby with a new deadline on a shortfall; here that is the carry-over option, and cancelling is the default.</p>
+<p><strong>Why it fits SuperScalar.</strong></p>
+<ul>
+<li>The tree is built at the moment of starting, for exactly the members present. Its shape for each size is fixed by the host's terms, so every member's software builds the same tree.</li>
+<li>The host's funding scales with the number of members, and the host signs it last, after the whole tree is signed.</li>
+<li>A factory's on-chain cost is shared among its members. The minimum protects the host from funding a factory too small to be worth it, and tells members they are not joining an empty one.</li>
+<li>SuperScalar expects a host to start a new factory regularly. A deadline at a fixed time of day gives that rhythm; reaching the target early just starts that day's factory sooner.</li>
+</ul>
+<p>All of this is separate from the signing rounds. The start rule decides when and with whom; signing then proceeds as described below.</p>
+<p><strong>No-shows:</strong> members who do not answer in a signing attempt are removed together and the round reruns with those who remain, plus anyone waiting on standby.</p><p class="src">From <code>docs/LOBBY.md</code></p></div></details>
+<details class="more"><summary>What protects a member in a lobby</summary><div class="more-body"><ol>
+<li><strong>Member-set conditions, locked in.</strong> A member chooses conditions once: minimum number of members, minimum channel size, fee ceilings, a rule profile, and so on. The app marks the member ready only while every condition holds. If the host changes the rules so that one fails, the app un-readies or leaves.</li>
+<li><strong>The check at signing is the real guarantee.</strong> Whatever happened in the lobby, the app checks the actual tree it is asked to sign against the member's conditions and against the safety rule, and refuses if either fails. Nothing said in a lobby can carry a member into a factory they did not agree to.</li>
+<li><strong>Host terms are signed and versioned</strong>, so a member can show what was offered.</li>
+</ol><p class="src">From <code>docs/LOBBY.md</code></p></div></details>
+<details class="more"><summary>Dealing with troublemakers</summary><div class="more-body"><p>Decided for the first version:</p>
+<ul>
+<li><strong>No voting and no vote-to-remove.</strong> Every member signs for themselves, the host chooses who is in the tree, and identities cost nothing, so a vote cannot bind anyone and can be bought with fake members. The owner agreed to drop it for now.</li>
+<li><strong>The host removes people.</strong> It is the host's lobby and the host's capital.</li>
+<li><strong>Each member has a personal block list.</strong> A member's app can refuse to sign a tree that contains someone on it. This is the one removal power that cannot be overridden: any single member can decline, for any reason.</li>
+<li><strong>Names, chat and rule-change requests</strong> are three settings the host can switch off. With all off, members see only a head-count, and personal block lists have nothing to act on.</li>
+<li><strong>Names</strong> are temporary and exist only for that lobby, unless a member chooses otherwise.</li>
+<li><strong>Optional self-identification.</strong> A member may attach an identity to their seat. A Nostr key or a Lightning node key is proven by signing the lobby's challenge with it. A free-text field is allowed and is always shown as unverified.</li>
+<li><strong>History is kept locally.</strong> Each app remembers who showed up and signed and who stalled, and shows it to its own user. There is no global blacklist.</li>
+<li><strong>Proof of who broke a round.</strong> Every signing message is signed by its sender. A wrong partial signature can be proven to anyone; silence cannot.</li>
+</ul>
+<p>Later, as the owner expects, joining may require something scarce: control of coins, a record of signing in earlier factories, an identity the member chooses to bring. These must stay options a host can set, because a stricter host competes with someone who self-hosts with looser rules.</p>
+<p><strong>Adding rules later.</strong> A new joining rule usually has to look at balances, coins or other state to decide whether something is safe to sign. So adding one is normally a change to the code that decides what is safe to sign, not only to a separate rules layer (owner's correction, 2026-11-11). That code is therefore kept as one module with defined inputs and its own tests, and a new rule is a reviewed change to it. Only rules that cannot affect signing, such as how a lobby is displayed or filtered, are plain settings.</p><p class="src">From <code>docs/LOBBY.md</code></p></div></details>
+<details class="more"><summary>Why the factory key is never a threshold key</summary><div class="more-body"><p>A threshold key (for example FROST) lets a majority sign without the minority. For the output that holds everyone's money that is the opposite of what we want: a majority, which could be fake members or the host with friends, could spend a member's money without that member. The factory key stays "everyone signs", because that is what makes it safe to share.</p>
+<p>Threshold keys remain useful where one party splits its own key: a host run by several operators, or a member spreading their key across devices.</p><p class="src">From <code>docs/LOBBY.md</code></p></div></details>
+<details class="more"><summary>Removing someone from a live factory</summary><div class="more-body"><p>Once a factory is live, "removing" a member can only mean one of two things, and neither takes their money:</p>
+<ul>
+<li>they agree to leave, by co-signing a close or by paying their balance out; or</li>
+<li>their branch of the tree is published, which puts their balance on chain in their own control.</li>
+</ul>
+<p>Any change that needs everyone's signature, such as closing early, can be stopped by a single member. The design does not fight this with votes. It limits how often everyone is needed: day-to-day changes need only the members of one leaf or branch, and a member who will not cooperate at wind-down is left to the timeout tree while the others move on.</p><p class="src">From <code>docs/LOBBY.md</code></p></div></details>
+<details class="more"><summary>What is public, and host proofs</summary><div class="more-body"><p>A listing on Nostr carries what rarely changes: the terms the host has fixed, the acceptable range for the others, size limits, the start time and an expiry after which the listing disappears. It never says who joined.</p>
+<p>Anything live, such as how full the lobby is, is asked of the host directly. This keeps relays quiet and reveals less. The cost is that asking tells the host someone is interested and from which network address; connecting over Tor avoids the second.</p>
+<p>A host may publish the factories it has funded as a track record, since the funding is on chain anyway. Whether a member can prove past participation in the same way is being looked into; it would link that member's factories together, so it could only be by choice.</p>
+<p>The existing host proofs show control of one channel or one coin. A proof sized to the lobby a host advertises is still to be designed.</p><p class="src">From <code>docs/LOBBY.md</code></p></div></details>
+<!--/gz:lobby-->
+
 <h2 id="sips"><small>New in version 3</small>SIPs: how the rules change</h2>
 <p class="lead">SuperScalar Improvement Proposals, modelled on the processes Bitcoin and Lightning use. A new rule usually changes the code that decides what is safe to sign, so it is requested, discussed and decided in the open.</p>
 <div class="card">
@@ -311,6 +813,79 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </div>
 <p>Approval and shipping are separate decisions, so other factory software can adopt something we approve but do not ship. Four categories: Rule, Protocol, Process and Informational. There is a rule-request template with a worked example in <code>docs/sips/</code>.</p>
 
+<!--gz:sips-->
+<details class="more"><summary>Categories of SIP</summary><div class="more-body"><div class="tw"><table>
+<thead>
+<tr>
+<th>Category</th>
+<th>For</th>
+<th>Template</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Rule</strong></td>
+<td>A rule a host can set or a member can require: who may join, when a lobby starts, limits, deposits, profiles</td>
+<td><code>template-rule.md</code> (worked example: <code>example-rule-request.md</code>)</td>
+</tr>
+<tr>
+<td><strong>Protocol</strong></td>
+<td>Messages, the host's published terms, transaction construction, signing</td>
+<td><code>template-general.md</code></td>
+</tr>
+<tr>
+<td><strong>Process</strong></td>
+<td>How SIPs or releases work</td>
+<td><code>template-general.md</code></td>
+</tr>
+<tr>
+<td><strong>Informational</strong></td>
+<td>Guidance, analysis, recommended settings; changes no behaviour</td>
+<td><code>template-general.md</code></td>
+</tr>
+</tbody>
+</table></div><p class="src">From <code>docs/sips/README.md</code></p></div></details>
+<details class="more"><summary>Life of a SIP</summary><div class="more-body"><div class="tw"><table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Draft</td>
+<td>Written up using a template; not yet under discussion</td>
+</tr>
+<tr>
+<td>Discussion</td>
+<td>Open for comment. Reviewers reply with ACK (agree), NACK (object, with reasons) or a request for changes</td>
+</tr>
+<tr>
+<td>Approved</td>
+<td>The maintainers agree it is sound</td>
+</tr>
+<tr>
+<td>Rejected</td>
+<td>The maintainers do not agree it is sound. The reasons stay on record</td>
+</tr>
+<tr>
+<td>Shipped</td>
+<td>Included in a release, with the software and version noted</td>
+</tr>
+<tr>
+<td>Approved, not shipped</td>
+<td>Judged sound, but not included in Gazpacho releases, with the reason given (for example legal or product reasons). Other factory software is free to implement it</td>
+</tr>
+<tr>
+<td>Withdrawn</td>
+<td>The author gave it up</td>
+</tr>
+</tbody>
+</table></div>
+<p>Approval and shipping are separate decisions. A SIP can be approved and never shipped here, and the record says so plainly.</p><p class="src">From <code>docs/sips/README.md</code></p></div></details>
+<!--/gz:sips-->
+
 <h2 id="hostnode"><small>New in version 2</small>The host's Lightning node</h2>
 <p class="lead">A host connects its factory to the rest of Lightning through a regular node. Four operations are all Gazpacho needs from it.</p>
 <div class="card tw"><table>
@@ -322,22 +897,186 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </table></div>
 <p>One adapter interface, with an adapter per node type: the most widely used node first, then the others, aiming to cover every major implementation. Later, the built-in node learns to hold ordinary channels itself and a host needs nothing else.</p>
 
-<h2 id="schedule"><small>New in version 2</small>Reminders: the app knows when you are needed</h2>
-<div class="grid">
-  <div class="card"><h3>Open the app by…</h3><p>The latest date by which the app must be opened to stay protected against an old state. About two weeks in the first release.</p></div>
-  <div class="card"><h3>Sign the rotation by…</h3><p>When the factory winds down and the member should move to the next one.</p></div>
-  <div class="card"><h3>Factory expires on…</h3><p>The date after which the member's app exits automatically if nothing else has happened.</p></div>
-</div>
-<p>The schedule engine works these out from the factory's own parameters. The screens show them as countdowns, and reminders are built on top.</p>
+<!--gz:hostnode-->
+<details class="more"><summary>Every Lightning node compared</summary><div class="more-body"><p>Working list, 2026-11-11. A host connects its factory to the rest of Lightning through a regular node. Gazpacho needs four operations from it:</p>
+<ol>
+<li>Pay an invoice with a spending limit and a deadline, and return the payment secret.</li>
+<li>Create an invoice for a payment hash whose secret the node does not know, and hold the incoming payment open.</li>
+<li>Settle a held payment.</li>
+<li>Cancel a held payment.</li>
+</ol>
+<p>Every node can do the first. The other three are the deciding factor.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Node</th>
+<th>Share of public nodes</th>
+<th>Hold, settle, cancel</th>
+<th>How we would connect</th>
+<th>Difficulty</th>
+<th>Checked?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>LND</strong></td>
+<td>About 90%</td>
+<td>Built in (<code>AddHoldInvoice</code>, <code>SettleInvoice</code>, <code>CancelInvoice</code>)</td>
+<td>Its network interface, from outside the node</td>
+<td>Low</td>
+<td>Yes, against LND's interface definition</td>
+</tr>
+<tr>
+<td><strong>Core Lightning</strong></td>
+<td>About 5%</td>
+<td>Through the community <code>hold</code> plugin, not built in</td>
+<td>The plugin's commands, or our own small plugin</td>
+<td>Medium: a plugin must be installed in the node</td>
+<td>Yes, from secondary sources</td>
+</tr>
+<tr>
+<td><strong>Eclair</strong></td>
+<td>Under 1% of public nodes, but heavily used behind mobile wallets</td>
+<td>Not confirmed</td>
+<td>Probably a plugin written for Eclair</td>
+<td>Unknown, likely high</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>LDK-based nodes</strong></td>
+<td>Counted by volume, not node count; mostly private</td>
+<td>The library has the calls; whether each packaged node exposes them is not confirmed</td>
+<td>Per product</td>
+<td>Unknown</td>
+<td>No</td>
+</tr>
+<tr>
+<td><strong>Anything that speaks Nostr Wallet Connect</strong></td>
+<td>n/a</td>
+<td>A Core Lightning plugin implements hold methods over it; whether these are in the general standard is not confirmed</td>
+<td>One adapter for every wallet that supports the hold methods</td>
+<td>Low if the methods are standard</td>
+<td>Partly</td>
+</tr>
+<tr>
+<td><strong>Gazpacho's own built-in node</strong> (later)</td>
+<td>n/a</td>
+<td>Ours to build</td>
+<td>No adapter: the built-in node holds ordinary channels itself</td>
+<td>High; planned after the first releases</td>
+<td>n/a</td>
+</tr>
+</tbody>
+</table></div>
+<p>The share figures come from a single vendor's comparison and should be checked against a network explorer before being quoted.</p><p class="src">From <code>docs/HOST-NODES.md</code></p></div></details>
+<details class="more"><summary>Order of work, and what to verify for each</summary><div class="more-body"><ul>
+<li>LND: behaviour of a held payment across a node restart, and the longest it may be held.</li>
+<li>Core Lightning: which hold plugin to depend on, its maintenance status, and whether to ship our own.</li>
+<li>Nostr Wallet Connect: whether hold methods are part of the published standard and which wallets implement them.</li>
+<li>Eclair and LDK nodes: whether hold, settle and cancel are reachable at all without modifying the node.</li>
+<li>For all: that holding payments open does not harm the node's standing with its peers at the durations we need.</li>
+</ul>
+<p>Sources:
+- LND invoices interface: https://github.com/lightningnetwork/lnd/blob/master/lnrpc/invoicesrpc/invoices.proto
+- Core Lightning Nostr Wallet Connect plugin (hold methods): https://github.com/daywalker90/cln-nip47
+- Implementation shares (vendor comparison): https://www.spark.money/research/lightning-eclair-cln-lnd-implementation-comparison</p><p class="src">From <code>docs/HOST-NODES.md</code></p></div></details>
+<!--/gz:hostnode-->
 
-<h2 id="local"><small>New in version 2</small>The local web interface</h2>
-<p class="lead">The C program runs on your machine and shows its screens in your browser. Keys and channel state never enter the browser.</p>
-<div class="card"><ul>
-<li>It listens on the local machine only.</li>
-<li>It requires a login token created at start-up.</li>
-<li>It refuses requests that come from other websites.</li>
-<li>Remote viewing, for example of a home machine, goes through an encrypted tunnel with an access token that can be revoked.</li>
-</ul></div>
+<h2 id="local"><small>For the person using it</small>Your side</h2>
+<div class="grid">
+  <div class="card"><h3>Screens in your browser, program on your machine</h3><p>The C program serves its screens to the local machine only, with a start-up token, and refuses requests from other websites. Keys and channel state never enter the browser.</p></div>
+  <div class="card"><h3>The app knows when you are needed</h3><p>It works out three dates from the factory's own settings: open the app by, sign the rotation by, and the factory expires on. The screens show them as countdowns.</p></div>
+</div>
+<!--gz:away-->
+<details class="more"><summary>Reminders, and acting while the member is away</summary><div class="more-body"><p>Working note, 2026-11-11. A member has duties that fall on dates: open the app before an old state could cost them, sign when the factory rotates, leave before the factory expires. This note lists the ways to meet those duties when the person is not at the app, and what each needs. Nothing here beyond the first row of each table is in the first release.</p>
+<h2>Telling the person</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>What it needs</th>
+<th>State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Countdowns inside the app</td>
+<td>Nothing extra</td>
+<td>First release</td>
+</tr>
+<tr>
+<td>A Nostr message to an identity the user gives</td>
+<td>Care not to link that identity to the wallet for others</td>
+<td>Later</td>
+</tr>
+<tr>
+<td>Email</td>
+<td>A mail service, and holding addresses</td>
+<td>Later</td>
+</tr>
+<tr>
+<td>Phone push notifications, alarms</td>
+<td>A mobile app</td>
+<td>Later, with the mobile app</td>
+</tr>
+</tbody>
+</table></div>
+<p>The schedule engine in the core computes every date. All of the above only display or deliver what it produces.</p>
+<h2>Acting without the person</h2>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Way</th>
+<th>What it does</th>
+<th>What it needs</th>
+<th>Main risk</th>
+<th>Checked?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>The app stays running and acts by itself</td>
+<td>Answers an old state, signs a rotation that meets the member's conditions, exits before expiry</td>
+<td>A machine that stays on, and conditions set in advance</td>
+<td>The keys are on a machine that is always on</td>
+<td>Design only</td>
+</tr>
+<tr>
+<td>A watcher holding pre-signed responses</td>
+<td>Publishes the response to an old state</td>
+<td>The app hands over one response per state. No keys leave the app</td>
+<td>The watcher learns something about the channel; it must be kept up to date</td>
+<td>Design only; issue 2</td>
+</tr>
+<tr>
+<td>A watcher holding keys</td>
+<td>Could also sign rotations</td>
+<td>Trust in the watcher</td>
+<td>It can spend. Avoid unless the watcher is the member's own machine</td>
+<td>Not recommended</td>
+</tr>
+<tr>
+<td>A hardware signing device</td>
+<td>Keeps keys off the computer</td>
+<td>A device that supports the group-signing scheme the factory uses, and a way to approve without a person for unattended use</td>
+<td>Device support is not confirmed</td>
+<td>Not checked</td>
+</tr>
+</tbody>
+</table></div>
+<h2>What only the member can do</h2>
+<ul>
+<li><strong>Signing a rotation into a new factory</strong> needs the member's key. A watcher without keys cannot do it. If the member is away, the fallback is the automatic exit before expiry, or the host publishing the member's branch.</li>
+<li><strong>Changing conditions.</strong> Anything acting for the member acts only within the conditions the member set.</li>
+</ul>
+<h2>To investigate</h2>
+<ol>
+<li>Which duties can be met with pre-signed transactions alone, and how many must be handed over.</li>
+<li>Whether hardware signing devices support the group-signing scheme, and unattended use.</li>
+<li>How the app tells the member that a watcher has fallen behind.</li>
+<li>Phone operating-system limits on background work, for the mobile app.</li>
+</ol><p class="src">From <code>docs/AWAY.md</code></p></div></details>
+<!--/gz:away-->
 
 <h2 id="tests"><small>Proving it works</small>Testing, from the inside out</h2>
 <div class="card">
@@ -369,6 +1108,104 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li>The host's funding is never signed before every exit is signed.</li>
 </ol>
 <p class="lead" style="margin-bottom:0">For each rule there is also a run with the rule switched off, which must fail. That proves the test can catch the bug it exists for.</p></div>
+
+<!--gz:testing-->
+<details class="more"><summary>The seven levels of testing</summary><div class="more-body"><div class="tw"><table>
+<thead>
+<tr>
+<th>Level</th>
+<th>What runs</th>
+<th>What it proves</th>
+<th>When it runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1. Reference values</td>
+<td>The imported tree code against recorded transaction IDs from a real SuperScalar run</td>
+<td>The foundations still behave exactly as upstream</td>
+<td>Every push. In place now</td>
+</tr>
+<tr>
+<td>2. Standard vectors</td>
+<td>Official test vectors for signatures, group signing, key derivation, recovery phrases, invoices, and Lightning's own message and transaction vectors</td>
+<td>We agree with the standards byte for byte</td>
+<td>Every push</td>
+</tr>
+<tr>
+<td>3. Engine tests</td>
+<td>One engine at a time, fed events, checked on the actions it returns</td>
+<td>Each engine's rules</td>
+<td>Every push</td>
+</tr>
+<tr>
+<td>4. Simulator</td>
+<td>A host, many members, a pretend chain and a pretend network in one process</td>
+<td>The whole system under failure and attack</td>
+<td>Short run every push; long runs nightly</td>
+</tr>
+<tr>
+<td>5. Regtest</td>
+<td>The real programs with a real Bitcoin node and Electrum server</td>
+<td>The ports and programs, end to end</td>
+<td>Every push for a core set; all scenarios nightly</td>
+</tr>
+<tr>
+<td>6. Signet and testnet</td>
+<td>Our public host with scripted users</td>
+<td>It works on a real network over days</td>
+<td>Nightly, once M6 exists</td>
+</tr>
+<tr>
+<td>7. Release candidate</td>
+<td>Everything above, at full size and length, plus a clean install by hand</td>
+<td>Fit to hand to outside reviewers</td>
+<td>Before each release candidate</td>
+</tr>
+</tbody>
+</table></div><p class="src">From <code>docs/TESTING.md</code></p></div></details>
+<details class="more"><summary>What the simulator does</summary><div class="more-body"><p>The main safety net. It is possible because the core does no input or output.</p>
+<ul>
+<li><strong>Schedules:</strong> a seeded generator picks operations for every party: join, pay, receive, change liquidity, update a layer, rotate, close, exit.</li>
+<li><strong>Network faults:</strong> each message may be dropped, delayed, duplicated or reordered.</li>
+<li><strong>Crashes:</strong> each party may be stopped at every point where it saves or sends, and restarted from what it saved.</li>
+<li><strong>Cheating:</strong> scripted dishonest hosts and members try each attack in the threat list: paying a close to themselves, shrinking a balance, publishing an old state, sending a bad partial signature, withholding a result, altering a nonce.</li>
+<li><strong>After every step,</strong> the invariants below are checked.</li>
+<li><strong>On failure,</strong> the seed and schedule are saved so the case becomes a permanent test.</li>
+</ul><p class="src">From <code>docs/TESTING.md</code></p></div></details>
+<details class="more"><summary>The nine invariants</summary><div class="more-body"><p>Checked after every simulator step and at the end of every regtest scenario.</p>
+<ol>
+<li>Money is conserved across every state change.</li>
+<li>Every member can leave alone with at least what they are owed.</li>
+<li>No party signs two different states with the same number.</li>
+<li>Nothing is sent before it is saved.</li>
+<li>No secret nonce survives a restart or is used twice.</li>
+<li>No party's software publishes a state it has cancelled.</li>
+<li>Every payment deadline is later than the time needed to exit.</li>
+<li>The host's funding is never signed before every exit is signed.</li>
+<li>An honest party is never named as the cause of a failed signing round.</li>
+</ol><p class="src">From <code>docs/TESTING.md</code></p></div></details>
+<details class="more"><summary>Regtest scenarios</summary><div class="more-body"><p>Each runs through a Bitcoin node and again through an Electrum server.</p>
+<ul>
+<li>Lobby fills to target; lobby starts at the deadline; lobby misses its minimum.</li>
+<li>Join, receive, pay inside the factory, pay out through the host's Lightning node, receive from outside.</li>
+<li>Liquidity change; layer update; rotation into a new factory; cooperative close.</li>
+<li>A member exits alone with the host gone, through to spendable coins.</li>
+<li>The host publishes an old state; a member publishes an old state.</li>
+<li>Restart of each program in the middle of each operation.</li>
+<li>A member away for the whole response window.</li>
+<li>Restore from backup, then recover without publishing.</li>
+</ul><p class="src">From <code>docs/TESTING.md</code></p></div></details>
+<details class="more"><summary>The bar for a release candidate</summary><div class="more-body"><ul>
+<li>Every invariant has passing tests at all three of simulator, regtest and signet.</li>
+<li>Every safety rule has its rule-removed test.</li>
+<li>The long simulator run and the fuzzers have run clean for a day.</li>
+<li>Nightly scenarios have been green for seven nights.</li>
+<li>Each engine has had an independent review, and its findings are closed or recorded as accepted.</li>
+<li>The documents state what is unreviewed.</li>
+</ul>
+<p>Outside review then begins; the owner arranges it.</p><p class="src">From <code>docs/TESTING.md</code></p></div></details>
+<!--/gz:testing-->
 
 <h2 id="steps"><small>Order of work</small>Milestones</h2>
 <p class="lead">No dates: the instruction is quality first. Sizes will be estimated once M0 shows how much existing work carries over.</p>
@@ -416,6 +1253,170 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li><b>Members bringing their own coins into a factory</b>, and <b>several hosts sharing one factory.</b></li>
 </ul></div>
 
+<h2 id="reference"><small>Look things up</small>Reference</h2>
+<!--gz:reference-->
+<details class="more"><summary>Glossary</summary><div class="more-body"><div class="tw"><table>
+<thead>
+<tr>
+<th>Word</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Factory</td>
+<td>One on-chain output shared by a host and many members, from which each member gets a Lightning channel</td>
+</tr>
+<tr>
+<td>Host</td>
+<td>The party that funds a factory, co-signs everything in it and links it to the rest of Lightning. The SuperScalar papers call this the LSP</td>
+</tr>
+<tr>
+<td>Member</td>
+<td>Someone with a channel in a factory. The papers call this the client</td>
+</tr>
+<tr>
+<td>Tree</td>
+<td>The pre-signed transactions that divide the shared output down to each member's channel</td>
+</tr>
+<tr>
+<td>Leaf</td>
+<td>The last transaction on a member's branch, holding their channel and some of the host's spare liquidity</td>
+</tr>
+<tr>
+<td>Layer</td>
+<td>A level of the tree whose state can be replaced, using shrinking timelocks (Decker-Wattenhofer). Each adds about three days to an exit at mainnet settings</td>
+</tr>
+<tr>
+<td>Pseudo-Spilman leaf</td>
+<td>A leaf whose states are chained, each spending the last, so it needs no timelock</td>
+</tr>
+<tr>
+<td>Host's spare liquidity (L-stock)</td>
+<td>Funds on a leaf that the host can sell to a member as receiving capacity</td>
+</tr>
+<tr>
+<td>Exit</td>
+<td>Leaving a factory. Cooperative: everyone signs one transaction. Alone (unilateral): the member publishes their branch</td>
+</tr>
+<tr>
+<td>Rotation</td>
+<td>Moving members from a factory near its end into a new one</td>
+</tr>
+<tr>
+<td>Ladder</td>
+<td>Running many factories with staggered end dates, a new one starting each day</td>
+</tr>
+<tr>
+<td>Signing round</td>
+<td>One group signature: propose, exchange nonces, exchange partial signatures, combine</td>
+</tr>
+<tr>
+<td>Lobby</td>
+<td>The waiting room where members gather before a factory is created</td>
+</tr>
+<tr>
+<td>Terms</td>
+<td>The rules a host publishes for a factory</td>
+</tr>
+<tr>
+<td>Safety rule</td>
+<td>The member-side check before every signature: "after this, can I still leave alone with at least what I am owed?"</td>
+</tr>
+<tr>
+<td>Core</td>
+<td>Gazpacho's library that decides everything and touches nothing outside itself</td>
+</tr>
+<tr>
+<td>Port</td>
+<td>A replaceable connection from the core to the outside: storage, chain view, network</td>
+</tr>
+<tr>
+<td>Engine</td>
+<td>One of the core's decision-makers: signing round, channel, payment, exit, watch, lifecycle, schedule</td>
+</tr>
+<tr>
+<td>Held payment</td>
+<td>An incoming Lightning payment a node accepts but does not settle until told to</td>
+</tr>
+<tr>
+<td>SIP</td>
+<td>SuperScalar Improvement Proposal: the written request, discussion and decision record for a rule or feature. Categories: Rule, Protocol, Process, Informational</td>
+</tr>
+<tr>
+<td>Target, minimum, deadline</td>
+<td>A lobby's start rule: start at once at the target; at the deadline start if the minimum is met, otherwise cancel</td>
+</tr>
+<tr>
+<td>Never say</td>
+<td>"Staking". Say hosting, providing liquidity, fees</td>
+</tr>
+</tbody>
+</table></div><p class="src">From <code>docs/KNOWLEDGE-BASE.md</code></p></div></details>
+<details class="more"><summary>How sure we are of each claim</summary><div class="more-body"><h3>Checked today against a primary source or by running it</h3>
+<ul>
+<li>Lightning's message format, type ranges, typed fields and the odd/even rule (the messaging specification).</li>
+<li>Peer-storage messages exist in the specification.</li>
+<li>Core Lightning's dual-funding code received security fixes in four releases from August to November 2026 (its release notes).</li>
+<li>LND has hold, settle and cancel for invoices built in (its interface definition).</li>
+<li>Everything in section 4 marked as run, built or read on 2026-11-11.</li>
+</ul>
+<h3>From secondary sources only</h3>
+<ul>
+<li>Lightning's taproot channel format was merged into the specification in 2026 and ships in LND and Eclair.</li>
+<li>LND is about 90% of public nodes; Core Lightning about 5%.</li>
+<li>Core Lightning holds payments through a community plugin.</li>
+<li>A WebSocket carrier for Lightning connections is not standardised.</li>
+</ul>
+<h3>Our own reasoning, not yet reviewed</h3>
+<ul>
+<li>The scheme for proving who broke a signing round.</li>
+<li>That a member adding coins to their own leaf leaves other members unaffected.</li>
+<li>That swap-in is safe under three conditions (confirmations first, on-chain timeout after the channel deadline, refund after timeout). The technique is long established; our statement of it was not re-checked against sources.</li>
+<li>Estimates of size and effort.</li>
+</ul>
+<h3>Not yet known</h3>
+<ul>
+<li>Whether Eclair, LDK-based nodes and Nostr Wallet Connect can hold payments open in a way we can use.</li>
+<li>The timelock and deadline numbers for the full layered tree.</li>
+<li>How members who are offline at rotation are reached.</li>
+</ul><p class="src">From <code>docs/KNOWLEDGE-BASE.md</code></p></div></details>
+<details class="more"><summary>Risks we are carrying</summary><div class="more-body"><ol>
+<li>The channel update routine must be exactly right through crashes and reconnects.</li>
+<li>Channel state cannot be rebuilt from a recovery phrase.</li>
+<li>Members must be reachable at rotation and must watch the chain.</li>
+<li>Deadlines, timelocks and factory lifetime must agree for every tree shape.</li>
+<li>Public chain servers can hide a transaction.</li>
+<li>The imported tree code still has open design issues upstream.</li>
+<li>Gathering many people to sign at once, with people who join and never sign.</li>
+<li>Privacy: a host sees all of its members' payments.</li>
+</ol><p class="src">From <code>docs/KNOWLEDGE-BASE.md</code></p></div></details>
+<details class="more"><summary>Open questions</summary><div class="more-body"><p>Kept current. Last updated 2026-11-11, after questions round 2.</p>
+<h2>For the owner</h2>
+<ol>
+<li><strong>Numbers for the lobby:</strong> largest lobby, default gathering time, signing timers, number of signing attempts. Recommended: settle from signet testing.</li>
+<li><strong>Who besides the owner can approve a SIP.</strong></li>
+<li><strong>Review of the two drafted specifications</strong> (<code>spec/</code>): the open points at the end of each, and an expert look at the proof-of-fault scheme.</li>
+<li><strong>Is the full security catalogue from the earlier SuperScalar work copied into this repo</strong> as reference, or left where it is?</li>
+</ol>
+<h2>For this session to settle (research or build)</h2>
+<ol>
+<li>The precise definition of the member's safety rule.</li>
+<li>The signing round specification: messages, states, timers, and the proof of who broke a round. The proof scheme is our own reasoning and needs expert review.</li>
+<li>The timelock and deadline numbers for the full layered tree.</li>
+<li>Lightning's taproot channel format: confirm status and details against the specification itself.</li>
+<li>Holding payments open on Eclair, LDK-based nodes and Nostr Wallet Connect.</li>
+<li>A host proof of funds sized to the lobby it advertises.</li>
+<li>Whether members can prove past participation, and at what cost to privacy.</li>
+<li>Acting while the member is away: pre-signed responses, unattended signing, hardware devices. See <code>AWAY.md</code>.</li>
+<li>Adding a member's own coins to their leaf in a live factory: needs a proper review.</li>
+<li>Waking members who are offline when a factory rotates.</li>
+<li>Which well-known public chain servers go in the default list.</li>
+</ol>
+<h2>For the SuperScalar repo session</h2>
+<p>See <code>handoff/2026-11-11-to-superscalar.md</code>. Later: paying members at every tree output on expiry; a shared message specification.</p><p class="src">From <code>docs/OPEN-QUESTIONS.md</code></p></div></details>
+<!--/gz:reference-->
+
 <h2><small>Read next</small>The other documents</h2>
 <div class="card"><ul>
 <li><code>docs/KNOWLEDGE-BASE.md</code>: start here. Terms, facts, decisions in force, and how sure we are of each claim.</li>
@@ -424,7 +1425,79 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li><code>docs/LOBBY.md</code>, <code>docs/HOST-NODES.md</code>, <code>docs/AWAY.md</code>, <code>docs/sips/</code>.</li>
 </ul></div>
 
-<footer>Gazpacho design · version 3 · the short text version is <code>docs/DESIGN.md</code></footer>
+<footer>Gazpacho design · version 4 · the short text version is <code>docs/DESIGN.md</code></footer>
 </main>
+<!--gz:context-->
+<script type="application/json" id="gazpacho-context">
+{
+ "about": "Background for readers of this page's source. Not displayed. The Markdown files in the repository are authoritative; this is a copy taken when the page was built.",
+ "repository": "https://github.com/gazpacho-wallet/gazpacho",
+ "built": "2026-11-11",
+ "reading_order": [
+  "docs/KNOWLEDGE-BASE.md",
+  "docs/DESIGN.md",
+  "spec/safety-rule.md",
+  "spec/signing-round.md",
+  "docs/LOBBY.md",
+  "docs/TESTING.md",
+  "docs/OPEN-QUESTIONS.md",
+  "docs/RECORD.md"
+ ],
+ "wording": "Say host (the papers say LSP) and member (client). Never say staking; say hosting, providing liquidity, fees.",
+ "sources": [
+  {
+   "title": "SuperScalar original design (ZmnSCPxj)",
+   "url": "https://delvingbitcoin.org/t/superscalar-laddered-timeout-tree-structured-decker-wattenhofer-factories/1143"
+  },
+  {
+   "title": "SuperScalar with pseudo-Spilman leaves (ZmnSCPxj)",
+   "url": "https://delvingbitcoin.org/t/superscalar-laddered-timeout-tree-structured-decker-wattenhofer-factories-with-pseudo-spilman-leaves/1242"
+  },
+  {
+   "title": "SuperScalar reference implementation",
+   "url": "https://github.com/8144225309/SuperScalar"
+  },
+  {
+   "title": "Lightning messaging specification (BOLT 1)",
+   "url": "https://github.com/lightning/bolts/blob/master/01-messaging.md"
+  },
+  {
+   "title": "MuSig2 (BIP 327)",
+   "url": "https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki"
+  },
+  {
+   "title": "LSP transport (bLIP-50)",
+   "url": "https://github.com/lightning/blips/blob/master/blip-0050.md"
+  },
+  {
+   "title": "LND invoices interface",
+   "url": "https://github.com/lightningnetwork/lnd/blob/master/lnrpc/invoicesrpc/invoices.proto"
+  },
+  {
+   "title": "Core Lightning releases",
+   "url": "https://github.com/ElementsProject/lightning/releases"
+  }
+ ],
+ "documents": {
+  "docs/KNOWLEDGE-BASE.md": "# Gazpacho knowledge base\n\nThe single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-11. Update it whenever a decision is made or a fact is checked.\n\n## 1. Where everything is\n\n| Need | Document |\n|---|---|\n| The short plan and milestones | `PLAN.md` |\n| The design currently in force | `DESIGN.md` |\n| The dated record of findings, reviews and decisions | `RECORD.md` |\n| The testing plan | `TESTING.md` |\n| Specifications (safe-to-sign rule, signing round) | `../spec/` |\n| What is still undecided | `OPEN-QUESTIONS.md` |\n| How a factory forms | `LOBBY.md`, with research in `LOBBY-research.md` |\n| Lightning nodes a host can link to | `HOST-NODES.md` |\n| What existed at the start | `ASSESSMENT.md` |\n| Notes for the SuperScalar repo session | `handoff/` |\n| Illustrated pages (versioned) | `design.html` (carries the full detail in sections that open; rebuild with `tools/build-design-page.py` after editing a source document), `gazpacho-overview.html`, older versions in `history/` |\n| Questionnaires put to the owner | `design-review-1.html`, `questions-2.html` |\n| Imported code and its manifest | `../core/superscalar/IMPORT.md` |\n| How rules and features are proposed and decided (SIPs) | `sips/`, with a rule-request template and a worked example |\n| Meeting a member's duties while they are away | `AWAY.md` |\n| Deferred features | GitHub issues 1 (swap-in and swap-out), 2 (watching service), 3 (lobby deposit), 4 (reminders and acting while away) |\n\n## 2. Words we use\n\n| Word | Meaning |\n|---|---|\n| Factory | One on-chain output shared by a host and many members, from which each member gets a Lightning channel |\n| Host | The party that funds a factory, co-signs everything in it and links it to the rest of Lightning. The SuperScalar papers call this the LSP |\n| Member | Someone with a channel in a factory. The papers call this the client |\n| Tree | The pre-signed transactions that divide the shared output down to each member's channel |\n| Leaf | The last transaction on a member's branch, holding their channel and some of the host's spare liquidity |\n| Layer | A level of the tree whose state can be replaced, using shrinking timelocks (Decker-Wattenhofer). Each adds about three days to an exit at mainnet settings |\n| Pseudo-Spilman leaf | A leaf whose states are chained, each spending the last, so it needs no timelock |\n| Host's spare liquidity (L-stock) | Funds on a leaf that the host can sell to a member as receiving capacity |\n| Exit | Leaving a factory. Cooperative: everyone signs one transaction. Alone (unilateral): the member publishes their branch |\n| Rotation | Moving members from a factory near its end into a new one |\n| Ladder | Running many factories with staggered end dates, a new one starting each day |\n| Signing round | One group signature: propose, exchange nonces, exchange partial signatures, combine |\n| Lobby | The waiting room where members gather before a factory is created |\n| Terms | The rules a host publishes for a factory |\n| Safety rule | The member-side check before every signature: \"after this, can I still leave alone with at least what I am owed?\" |\n| Core | Gazpacho's library that decides everything and touches nothing outside itself |\n| Port | A replaceable connection from the core to the outside: storage, chain view, network |\n| Engine | One of the core's decision-makers: signing round, channel, payment, exit, watch, lifecycle, schedule |\n| Held payment | An incoming Lightning payment a node accepts but does not settle until told to |\n| SIP | SuperScalar Improvement Proposal: the written request, discussion and decision record for a rule or feature. Categories: Rule, Protocol, Process, Informational |\n| Target, minimum, deadline | A lobby's start rule: start at once at the target; at the deadline start if the minimum is met, otherwise cancel |\n| Never say | \"Staking\". Say hosting, providing liquidity, fees |\n\n## 3. How SuperScalar is meant to work\n\nFrom ZmnSCPxj's posts on Delving Bitcoin (topics 1143 and 1242) as read in earlier research. Not re-read today.\n\n- One host and many members share one on-chain output that needs everyone's signature.\n- The host funds everything. Members start at zero and are paid in over Lightning.\n- A tree of pre-signed transactions gives each member an exit that needs nobody's help.\n- Upper layers can be re-signed to move the host's spare liquidity between members. Leaves near the bottom need only a few members online to change.\n- When a factory expires, members are meant to receive everything and the host nothing (\"inversion of the timeout default\"), which makes keeping the service running the host's financial duty.\n- Factories last about 30 days plus about 3 days of winding down. A new one starts daily. Members move to a new factory by paying across over Lightning.\n- A payment's final deadline must be at least the tree's total exit delay plus a margin.\n- Arity 2 is suggested near the leaves, wider higher up, and fixed (stateless) near the root.\n- Pseudo-Spilman leaves were designed for several members per leaf sharing the host's liquidity; the reference code uses one member per leaf.\n\n## 4. What the reference code does today\n\nTested or read; see `RECORD.md` sections 16 and 18 and the hand-off note.\n\n| Fact | How we know |\n|---|---|\n| Creation, payments and cooperative close work for 4 members on regtest | Run on 2026-11-11 |\n| It has run 127 members on signet | The project's own published record; not re-run by us |\n| A member cannot complete an exit alone: the channel transaction's fee is below the relay minimum | Run on 2026-11-11 |\n| The host funds before the tree is signed | Read in the code by the earlier session |\n| Only the funding output pays members at expiry; every tree node still has a host-only timeout branch | Read in the code by the earlier session |\n| Payment deadlines are fixed at 80, 40 and 18 blocks, far shorter than an exit | Read in the code by the earlier session |\n| About 100 message types, in a private format | Read on 2026-11-11 |\n| 16 low-level files build and run alone and reproduce real transaction IDs | Built and tested on 2026-11-11 |\n| Member order in the tree can depend on the C library's sort | Read on 2026-11-11 |\n| Individual partial signatures are never verified | Read on 2026-11-11 |\n| Randomness is read directly from the operating system, including for signing nonces | Read on 2026-11-11 |\n| The earlier session found and fixed several ways for a host to take members' funds (close paying only the host, liquidity change emptying a balance, and others) | That session's work; fixes are being merged there |\n\n## 5. Decisions in force\n\nNewest first within each area. The date is when the owner decided.\n\n### Product\n- Gazpacho is both host and member software, self-contained, C, signet first, quality before dates. (11 Nov)\n- Soup wallet is mothballed, kept for reference. The SuperScalar repo is maintained by another session. (11 Nov)\n- Home is `github.com/gazpacho-wallet/gazpacho`, MIT, public since 11 Nov 2026.\n- The screens are a local web interface served by the C program. No wallet-in-a-web-page. (11 Nov)\n\n### Construction\n- Full layered tree in the first release; build the fixed tree first. Pseudo-Spilman leaves, one member per leaf. JIT channels off. Target 512 members, tested at 128 or 256.\n- One funder per factory: the host, who signs funding only after the whole tree is signed. Members start at zero.\n- The factory key always needs everyone's signature. No threshold key.\n- Lightning's standard taproot channel format for the channel; the old format archived and recoverable.\n- Lightning's own wire language; factory messages inside one custom message type.\n- Members adding their own coins, several hosts per factory, swap-in and swap-out: after the first release.\n\n### Safety\n- One member-side rule before every signature. Save before send. Signing secrets never stored. A restored backup never publishes its own state.\n- Exit fees are built in from the host's side; a small on-chain reserve is recommended, not required.\n- About two weeks to respond to an old state; the watch engine can also run as a separate process.\n- New joining or safety rules are normally changes to the safe-to-sign code itself, which is kept as one small, tested module.\n\n### Forming a factory\n- A lobby like a game server, with member conditions that are locked in. Gathering is long; signing is short at a scheduled start; the host sets both timers.\n- Newcomers with no funds are the main audience; each host sets their share of seats.\n- A lobby is listed or unlisted, and open or by invitation (QR invitations).\n- Names, chat and rule-change requests can each be switched off by the host. A member may attach a proven or free-text identity; identity is new per lobby by default.\n- Listings carry fixed terms, ranges, size and start time; live details come from the host. Hosts may publish a track record.\n- All four rule profiles ship: Safety, Standard, Starter, Circle. Deposits come in the release after the first.\n- No voting and no vote-to-remove. The host removes people; each member has a personal block list; history is kept locally.\n- Listings and host proofs on Nostr; everything else direct.\n- The lobby and signing coordination are written so they can become their own library.\n\n### Hosts\n- A host links to a regular Lightning node through an adapter: LND first, then Core Lightning, then others. Later the built-in node holds ordinary channels itself.\n\n### Working method\n- The owner handles outside review. This session's job is to bring the software to release candidates fit for review.\n- New rules and features go through SIPs (SuperScalar Improvement Proposals), modelled on BIPs and bLIPs. Approval and shipping are separate; the record of ACKs and NACKs is kept.\n- Review: several different AI models on every engine as it is built; outside human reviewers and red-teamers before real funds.\n- Hand-off notes are local documents the owner points the other session to.\n- Chain servers: well-known public ones first; our own around launch.\n- Reminders: in-app countdowns first; Nostr, email and phone notifications later.\n- Imported SuperScalar files are never edited here. Changes are requested from the SuperScalar repo.\n- Every safety rule has a test and a run with the rule removed that must fail.\n- Illustrated pages keep earlier versions behind a version switch.\n- Claims are checked against primary sources where money depends on them, and marked when they are not.\n\n## 6. How sure we are\n\n### Checked today against a primary source or by running it\n- Lightning's message format, type ranges, typed fields and the odd/even rule (the messaging specification).\n- Peer-storage messages exist in the specification.\n- Core Lightning's dual-funding code received security fixes in four releases from August to November 2026 (its release notes).\n- LND has hold, settle and cancel for invoices built in (its interface definition).\n- Everything in section 4 marked as run, built or read on 2026-11-11.\n\n### From secondary sources only\n- Lightning's taproot channel format was merged into the specification in 2026 and ships in LND and Eclair.\n- LND is about 90% of public nodes; Core Lightning about 5%.\n- Core Lightning holds payments through a community plugin.\n- A WebSocket carrier for Lightning connections is not standardised.\n\n### Our own reasoning, not yet reviewed\n- The scheme for proving who broke a signing round.\n- That a member adding coins to their own leaf leaves other members unaffected.\n- That swap-in is safe under three conditions (confirmations first, on-chain timeout after the channel deadline, refund after timeout). The technique is long established; our statement of it was not re-checked against sources.\n- Estimates of size and effort.\n\n### Not yet known\n- Whether Eclair, LDK-based nodes and Nostr Wallet Connect can hold payments open in a way we can use.\n- The timelock and deadline numbers for the full layered tree.\n- How members who are offline at rotation are reached.\n\n## 7. Risks we are carrying\n\n1. The channel update routine must be exactly right through crashes and reconnects.\n2. Channel state cannot be rebuilt from a recovery phrase.\n3. Members must be reachable at rotation and must watch the chain.\n4. Deadlines, timelocks and factory lifetime must agree for every tree shape.\n5. Public chain servers can hide a transaction.\n6. The imported tree code still has open design issues upstream.\n7. Gathering many people to sign at once, with people who join and never sign.\n8. Privacy: a host sees all of its members' payments.\n\n## 8. Practical facts\n\n- Builds and tests run on the VPS; another session works there too, so each task keeps to its own directory and uses the sandbox wrapper for anything that starts a Bitcoin node.\n- Commits are authored as `8144225309 <8144225309@users.noreply.github.com>`.\n- Automated checks run on GitHub for every push: a normal build and one with memory-error checkers.\n- The owner's machine is sometimes short of memory; long-running local helpers may be stopped. Pages open from disk without them.\n- Nothing is posted publicly, and nothing public is started, without the owner's say.\n",
+  "docs/DESIGN.md": "# Gazpacho design\n\nThe current design, consolidated. 2026-11-11.\n\nHow it got here, with dates, findings and superseded ideas, is in `RECORD.md`. Where the two differ, this file is the one in force. The illustrated version is `design.html`.\n\n## 1. What Gazpacho is\n\nOne program that lets a person join a SuperScalar channel factory as a **member** or run one as a **host**. It carries its own small Lightning node for factory channels and an ordinary on-chain wallet, and reads the chain through Electrum-style servers or the user's own node. It needs no modified node software. First releases are signet-only; the code for mainnet exists and is switched off.\n\n## 2. Where the code comes from\n\n- **Imported unchanged** from SuperScalar, pinned to a known version under `core/superscalar/`: tree building, group signing, timelock counter, ladder, transaction and script building, adaptor signatures, key derivation, recovery phrases, address and invoice encoding, fee helpers. 38 files. A manifest records each file's checksum, and a script refreshes the copy.\n- **Written new:** everything above that. SuperScalar's host and member code is the reference for behaviour, not a source of code.\n- **Not edited here:** a change to an imported file is requested from the SuperScalar repo. If it cannot wait it goes in a short, listed patch queue.\n- **Reference results** recorded from real SuperScalar runs catch any drift when the import is updated.\n\n## 3. Layers\n\n| Layer | Contents | Source |\n|---|---|---|\n| L5 Programs | `gazpacho` command line, host service, local web interface | new |\n| L4 Ports | storage, chain view, network, clock, randomness, host's Lightning node | new |\n| L3 Node | sessions, journal, timers, on-chain wallet, host terms, member and host roles | new |\n| L2 Engines | signing round, channel, payment, exit, watch, lifecycle, schedule | new |\n| L1 Factory model | tree, timelocks, leaves, exits, ladder | imported |\n| L0 Primitives | signatures, hashing, transactions, scripts, group signing | imported |\n\nL0 to L3 are the **core**: portable C with no system calls. Everything is C except the screens of the local web interface.\n\nThe lobby, the signing round engine and the proof-of-fault scheme are written without dependence on the factory code so they can be split out as a coordination library.\n\n## 4. The core contract\n\nAn **event** goes in and a list of **actions** comes out. The core never waits and never touches the outside world.\n\n- Events: a message arrived, a timer fired, something happened on chain, the user asked for something, storage confirmed a save.\n- Actions: save records as one atomic batch, send a message, broadcast a transaction, watch a script, set a timer, tell the user.\n- **Save before send.** The program around the core carries out actions in order and sends nothing until the save before it is safely stored. Enforced in one place for every engine.\n- Randomness and time are handed to the core, so a whole factory can be simulated repeatably.\n\n## 5. Engines\n\n| Engine | Job | Specification |\n|---|---|---|\n| Signing round | Every group signature: propose, nonces, partial signatures, combine. One engine for creation, leaf changes, layer updates, rotation and close | `spec/signing-round.md` |\n| Channel | One update routine: save, sign, verify the other side's cancellation of the old state, save, release our own. Updates arriving mid-update are queued | To write |\n| Payment | Invoices; incoming and outgoing payments; deadlines derived from exit time | To write |\n| Exit | Plans leaving alone: which transactions, in what order, when each is valid, how fees are paid | To write |\n| Watch | Knows every output that matters and the response if it is spent. Can run as a separate process | To write |\n| Lifecycle | Lobby, creation, liquidity changes, rotation, close | `docs/LOBBY.md` for the lobby; rest to write |\n| Schedule | Computes every date by which the user must act | To write |\n\n## 6. Safety\n\nThe full definition is `spec/safety-rule.md`. In brief:\n\n- **One rule before every signature:** sign only if, afterwards, the member can still leave alone, in time, with at least what they are owed, whatever everyone else does.\n- A member's software signs only transactions it rebuilt itself, recognises its outputs by its own keys, and never helps create an output without already holding its signed exit from it.\n- **The factory key always needs everyone's signature.** No threshold key.\n- **Sign before fund:** the host signs funding only after the whole tree is signed and verified.\n- **Every partial signature is verified** as it arrives.\n- **Signing secrets are never stored.** An interrupted round is abandoned.\n- **A restored backup never publishes** its own channel state. It asks the host to prove the latest and waits for the host to close.\n- **Exit fees** are built in from the host's side. A small on-chain reserve is recommended to members, not required.\n- **Away protection:** about two weeks to respond to an old state.\n- A new safety or joining rule is normally a reviewed change to the safe-to-sign module, proposed through a SIP.\n\n## 7. The factory\n\n- The full layered SuperScalar tree in the first release; the fixed tree is built first.\n- Pseudo-Spilman leaves, one member per leaf. Payments never change the tree; liquidity changes do.\n- One funder per factory: the host. Members start at zero and are paid in over Lightning.\n- The tree's shape for each size is fixed by the host's terms; members are placed in an agreed order, host first.\n- Payment deadlines are computed from the factory's exit time plus a margin; payments with less headroom are refused.\n- A member's software exits automatically before expiry if nothing else has happened.\n- At wind-down a member pays their balance into the next factory over Lightning, or co-signs a close that funds the next factory directly.\n- Target size 512 members; routine tests at smaller sizes.\n- Not in the first release: JIT channels, swap-in and swap-out, members adding their own coins, several hosts per factory.\n\n## 8. Messages and channel format\n\n- A Gazpacho connection is an ordinary Lightning peer connection that also carries factory messages.\n- Lightning's encrypted transport with the host's key pinned; over TCP, and over WebSocket where needed.\n- Lightning's message shape, session start and feature flags. No version numbers: unknown odd fields are skipped, unknown even ones refused.\n- Lightning's standard channel messages and its standard taproot channel format for the channel inside a leaf. The old SuperScalar channel format is archived and can be reinstated behind the channel engine's format interface.\n- Factory messages travel inside one custom message type, with an envelope naming the protocol, the factory and the message kind.\n- Large signing data is split across messages with a completion marker.\n- A member's backup is held by the host using Lightning's peer-storage messages.\n- Encoders and decoders are generated from tables in `spec/`, with test vectors and fuzzing.\n- The message specification itself is still to be written, and will be offered to the SuperScalar repo as the shared format.\n\n## 9. Storage and backup\n\n- An append-only journal of typed records with periodic snapshots, encrypted at rest.\n- The encrypted journal is also the backup: one copy with the host, one the user can export.\n- A restored copy is never used to publish a channel state.\n\n## 10. Chain view\n\n- Three choices: public Electrum-style servers (default), the user's own server, the user's own Bitcoin node.\n- Gazpacho checks block headers and checks confirmations against them, so a server cannot invent a confirmation. On signet, where blocks are signed, it compares several servers.\n- A server can hide a transaction, so Gazpacho asks more than one. Hosts should use their own node.\n- Default list: well-known public servers; one of ours is added around launch.\n\n## 11. Forming a factory\n\nFull detail in `docs/LOBBY.md`.\n\n- A lobby, like a game server. **Start rule:** a target, a minimum and a deadline. Reaching the target starts at once; at the deadline it starts if the minimum is met, and otherwise quits or carries members over.\n- Gathering is long; signing is short and automatic within each member's conditions.\n- A member's conditions are locked in, and are checked against the real tree at signing.\n- Listed on Nostr or unlisted; open or by invitation (QR codes).\n- No voting. The host removes people; each member has a personal block list; history is kept locally.\n- Host switches for names, chat and rule-change requests. Optional self-identification. Identity is new per lobby by default.\n- Four rule profiles: Safety, Standard, Starter, Circle.\n- Listings carry fixed terms, ranges, size and start time. Live details come from the host.\n\n## 12. The host\n\n- Runs Gazpacho continuously, with its own Bitcoin node recommended.\n- Links its factory to the rest of Lightning through a regular node, by an adapter with four operations: pay an invoice; create an invoice whose secret the node does not know and hold the payment; settle it; cancel it. LND first, then Core Lightning, then others. See `docs/HOST-NODES.md`.\n- Later the built-in node holds ordinary channels itself and no separate node is needed.\n- Publishes signed, versioned terms. May publish its funded factories as a track record.\n\n## 13. The user's side\n\n- **Screens:** a local web interface served by the C program on the local machine only, with a start-up token and refusal of requests from other sites. Keys and channel state never enter the browser.\n- **Reminders:** countdowns in the app first. Other channels and ways to act while away are in `docs/AWAY.md`.\n\n## 14. Changing the rules\n\nSuperScalar Improvement Proposals, `docs/sips/`. Request in a set format, open discussion, ACK or NACK on record, then separate decisions on approval and on shipping.\n\n## 15. Testing\n\n`docs/TESTING.md`: seven levels, a simulator that injects network faults, crashes and cheating, nine invariants checked after every step, and two tests for every safety rule.\n\n## 16. Milestones\n\n| | Outcome | State |\n|---|---|---|\n| M0 | Reference code run end to end | Done |\n| M0b | Foundations imported with a test and automated checks | Done |\n| M1 | Simulator and signing round engine; a fixed-tree factory in the simulator | Next |\n| M2 | Channel and payment engines | |\n| M3 | Exit, watch and schedule engines | |\n| M4 | The full layered tree and rotation | |\n| M5 | Storage, transport, Bitcoin node and Electrum; regtest end to end | |\n| M6 | First release candidate on signet | |\n\n## 17. Not designed yet\n\nSee `docs/OPEN-QUESTIONS.md` and the open points at the end of each specification.\n",
+  "docs/OPEN-QUESTIONS.md": "# Open questions\n\nKept current. Last updated 2026-11-11, after questions round 2.\n\n## For the owner\n\n1. **Numbers for the lobby:** largest lobby, default gathering time, signing timers, number of signing attempts. Recommended: settle from signet testing.\n2. **Who besides the owner can approve a SIP.**\n3. **Review of the two drafted specifications** (`spec/`): the open points at the end of each, and an expert look at the proof-of-fault scheme.\n4. **Is the full security catalogue from the earlier SuperScalar work copied into this repo** as reference, or left where it is?\n\n## For this session to settle (research or build)\n\n5. The precise definition of the member's safety rule.\n6. The signing round specification: messages, states, timers, and the proof of who broke a round. The proof scheme is our own reasoning and needs expert review.\n7. The timelock and deadline numbers for the full layered tree.\n8. Lightning's taproot channel format: confirm status and details against the specification itself.\n9. Holding payments open on Eclair, LDK-based nodes and Nostr Wallet Connect.\n10. A host proof of funds sized to the lobby it advertises.\n11. Whether members can prove past participation, and at what cost to privacy.\n12. Acting while the member is away: pre-signed responses, unattended signing, hardware devices. See `AWAY.md`.\n13. Adding a member's own coins to their leaf in a live factory: needs a proper review.\n14. Waking members who are offline when a factory rotates.\n15. Which well-known public chain servers go in the default list.\n\n## For the SuperScalar repo session\n\nSee `handoff/2026-11-11-to-superscalar.md`. Later: paying members at every tree output on expiry; a shared message specification.\n",
+  "docs/PLAN.md": "# Gazpacho wallet: plan\n\nUpdated 2026-11-11. This is the short plan. The reasoning and detail live in the documents listed at the end.\n\n## Mission\n\nGet SuperScalar into people's hands. Gazpacho is a professional proof-of-concept wallet and the flagship way into SuperScalar: one program that lets anyone join a channel factory or host one, with no Bitcoin node, no separate Lightning node and no modified node software required.\n\n## What it is\n\n- **Member and host in one program.** \"Host\" is what the SuperScalar design calls the LSP; \"member\" is its client.\n- **Self-contained.** Its own small Lightning node for the factory channel, an ordinary on-chain wallet, and a chain view through public Electrum-style servers or the user's own node.\n- **C throughout**, with a local web interface as the screens.\n- **Signet first.** Mainnet code paths exist but are switched off in releases until the bar for real funds is met.\n- **Quality first, no deadline.**\n\n## Decisions in force\n\n| Area | Decision |\n|---|---|\n| Source | SuperScalar's low-level files imported unchanged as a pinned copy; everything above them written new |\n| Structure | A core library with no outside access (events in, actions out), ports for storage, chain and network, thin programs on top |\n| Tree | The full layered SuperScalar tree in the first release; fixed tree built first. Pseudo-Spilman leaves. JIT channels off |\n| Funding | One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero |\n| Messages | Lightning's own wire language; factory messages inside one custom message type |\n| Channel | Lightning's standard taproot channel format; the old format archived and recoverable |\n| Safety | One member-side rule before every signature; save before send; signing secrets never stored; a restored backup never publishes |\n| Forming a factory | A lobby: long gathering, short signing at a scheduled start; listed or unlisted, open or by invitation; member conditions locked in; no voting; host removal and personal block lists; four rule profiles |\n| Changing the rules later | A public proposal process modelled on BIPs and bLIPs |\n| Host's link to Lightning | An adapter to a regular node: LND first, then Core Lightning, then others. Later the built-in node does it alone |\n| Away protection | About two weeks to open the app; the watch engine can also run as a separate process |\n| Reminders | The core knows every date by which the user must act |\n| Finding hosts | Listings and host proofs on Nostr; everything else direct |\n| Not in the first release | Swap-in and swap-out, a watching service, members adding their own coins, several hosts per factory |\n| Old projects | Soup wallet is mothballed and kept for reference. The SuperScalar repo is maintained by another session |\n\n## Milestones\n\n| | Outcome | State |\n|---|---|---|\n| M0 | Reference code run end to end; foundations shown to separate; reference values recorded | Done |\n| M0b | Foundations imported into this repo with a build and a reference test | Done |\n| M1 | Simulator skeleton; signing round engine; a fixed-tree factory created in the simulator with funding signed last | Next |\n| M2 | Channel engine on the standard taproot format; payment engine; invariants on | |\n| M3 | Exit, watch and schedule engines; crash and cheating runs pass | |\n| M4 | The full layered tree; rotation into the next factory | |\n| M5 | Storage, Lightning transport, Bitcoin node and Electrum; regtest end to end | |\n| M6 | First release on signet: lobby, command line, host service, LND adapter, local web interface, our public host | |\n\nAfter that: more node adapters and a browser of hosts; swap-in and swap-out; a watching service; the self-contained host; then the work for real funds (remaining design fixes, an outside audit, a capped beta).\n\n## How work is checked\n\n- Every safety rule has a test, and a run with the rule removed that must fail.\n- A simulator runs whole factories in one process with dropped messages, crashes at every save point and scripted cheating, checking the invariants after every step.\n- The real programs run on regtest, then signet and testnet.\n- Each engine gets an independent review before it is built on.\n\n## Documents\n\n| File | What it holds |\n|---|---|\n| `KNOWLEDGE-BASE.md` | Start here: glossary, facts, decisions in force, how sure we are of each claim |\n| `DESIGN.md` | The design currently in force |\n| `RECORD.md` | The dated record of findings, reviews and decisions |\n| `design.html`, `gazpacho-overview.html` | Illustrated versions, with earlier versions under `history/` |\n| `LOBBY.md`, `LOBBY-research.md` | The lobby design and the research behind it |\n| `HOST-NODES.md` | Lightning nodes a host can link to, and how hard each is |\n| `TESTING.md` | The testing plan |\n| `../spec/` | Specifications: the safe-to-sign rule, the signing round |\n| `OPEN-QUESTIONS.md` | What is still undecided |\n| `sips/` | How rules and features are proposed and decided |\n| `AWAY.md` | Meeting a member's duties while they are away |\n| `ASSESSMENT.md` | What existed at the start and what has to be built |\n| `handoff/` | Notes sent to the SuperScalar repo session |\n",
+  "docs/LOBBY.md": "# The lobby: how a factory forms\n\nDesign note 2, 2026-11-11. Based on `LOBBY-research.md` and the owner's decisions. Items marked **(open)** are in `OPEN-QUESTIONS.md`.\n\n## The idea\n\nCreating a factory needs the host and every member online at the same moment to sign. The lobby is the waiting room. It works like a game server: a host opens a lobby with rules, people join, and it starts when its conditions are met.\n\nNobody has money at risk in a lobby. Members put in nothing at creation, and the host signs its funding only after the whole tree is signed. The cost of bad behaviour is wasted time and, for the host, idle capital.\n\n## Stages\n\n| Stage | What happens | Who moves it on |\n|---|---|---|\n| Draft | The host sets the rules | Host |\n| Open | Listed; members join by connecting directly to the host | Members joining; the start rule |\n| Ready check | Each member's app confirms it is present and its conditions hold | Timer |\n| Signing | The group signing rounds; up to three attempts | The signing engine |\n| Funding | The host funds the factory | Host; the chain |\n| Active | The factory is live | |\n| Cancelled / Failed | Too few members, or signing could not complete | |\n\n**Timing.** A lobby has two clocks, both set by the host.\n\n- *Gathering* is long. A lobby can stay open for hours or days. Members join whenever they like, set their conditions, and can leave the app running to act for them.\n- *Signing* is short and happens at the scheduled start. The secrets used in a signing round are never stored, so each member's app must keep running from the first signing step to the second. If anyone drops out in between, the round restarts for everyone. A short window keeps that rare and cheap.\n\nA host that wants a slower pace can lengthen the signing timers and accept more restarts. It is one mechanism with different timer values, not two designs.\n\n**Who can find it, and who can join.** Two separate settings:\n\n| | Open to anyone | By invitation |\n|---|---|---|\n| **Listed on Nostr** | A public lobby | Visible, but a seat needs an invitation |\n| **Unlisted** | Anyone with the link can join | Private in practice |\n\nInvitations are links, shown as QR codes. The host also sets what share of seats may go to members who bring nothing.\n\n**Start rule.** Three numbers set by the host: a target, a minimum and a deadline.\n\n| Situation | What happens |\n|---|---|\n| The lobby reaches the target | It starts at once |\n| The deadline arrives with at least the minimum | It starts with whoever is there |\n| The deadline arrives below the minimum | It is cancelled, or the waiting members are carried over to the host's next lobby, as the host has set |\n\nExample: target 50, minimum 30, deadline in three hours. At 50 it starts immediately. At the three-hour mark it starts if there are 30 or more, and quits otherwise.\n\nDetails that make it work:\n\n- **Only members whose software is connected and ready count.** A held seat that never readies does not trigger a start.\n- **Each member's own minimum is respected.** A member who asked for at least 40 is not counted in a start at 35. The host's software finds the largest group whose own conditions that group satisfies.\n- **Extra arrivals wait as standbys.** They fill gaps left by anyone who fails to sign.\n- **The count is checked again at signing.** If non-signers take the group below the minimum, the factory is not created.\n\nThis is the rule Soup wallet's design had (start when full, or at a deadline if a minimum is met), and the one coinjoin coordinators use. Soup re-opened the lobby with a new deadline on a shortfall; here that is the carry-over option, and cancelling is the default.\n\n**Why it fits SuperScalar.**\n\n- The tree is built at the moment of starting, for exactly the members present. Its shape for each size is fixed by the host's terms, so every member's software builds the same tree.\n- The host's funding scales with the number of members, and the host signs it last, after the whole tree is signed.\n- A factory's on-chain cost is shared among its members. The minimum protects the host from funding a factory too small to be worth it, and tells members they are not joining an empty one.\n- SuperScalar expects a host to start a new factory regularly. A deadline at a fixed time of day gives that rhythm; reaching the target early just starts that day's factory sooner.\n\nAll of this is separate from the signing rounds. The start rule decides when and with whom; signing then proceeds as described below.\n\n**No-shows:** members who do not answer in a signing attempt are removed together and the round reruns with those who remain, plus anyone waiting on standby.\n\n## What protects a member\n\n1. **Member-set conditions, locked in.** A member chooses conditions once: minimum number of members, minimum channel size, fee ceilings, a rule profile, and so on. The app marks the member ready only while every condition holds. If the host changes the rules so that one fails, the app un-readies or leaves.\n2. **The check at signing is the real guarantee.** Whatever happened in the lobby, the app checks the actual tree it is asked to sign against the member's conditions and against the safety rule, and refuses if either fails. Nothing said in a lobby can carry a member into a factory they did not agree to.\n3. **Host terms are signed and versioned**, so a member can show what was offered.\n\n## Dealing with troublemakers\n\nDecided for the first version:\n\n- **No voting and no vote-to-remove.** Every member signs for themselves, the host chooses who is in the tree, and identities cost nothing, so a vote cannot bind anyone and can be bought with fake members. The owner agreed to drop it for now.\n- **The host removes people.** It is the host's lobby and the host's capital.\n- **Each member has a personal block list.** A member's app can refuse to sign a tree that contains someone on it. This is the one removal power that cannot be overridden: any single member can decline, for any reason.\n- **Names, chat and rule-change requests** are three settings the host can switch off. With all off, members see only a head-count, and personal block lists have nothing to act on.\n- **Names** are temporary and exist only for that lobby, unless a member chooses otherwise.\n- **Optional self-identification.** A member may attach an identity to their seat. A Nostr key or a Lightning node key is proven by signing the lobby's challenge with it. A free-text field is allowed and is always shown as unverified.\n- **History is kept locally.** Each app remembers who showed up and signed and who stalled, and shows it to its own user. There is no global blacklist.\n- **Proof of who broke a round.** Every signing message is signed by its sender. A wrong partial signature can be proven to anyone; silence cannot.\n\nLater, as the owner expects, joining may require something scarce: control of coins, a record of signing in earlier factories, an identity the member chooses to bring. These must stay options a host can set, because a stricter host competes with someone who self-hosts with looser rules.\n\n**Adding rules later.** A new joining rule usually has to look at balances, coins or other state to decide whether something is safe to sign. So adding one is normally a change to the code that decides what is safe to sign, not only to a separate rules layer (owner's correction, 2026-11-11). That code is therefore kept as one module with defined inputs and its own tests, and a new rule is a reviewed change to it. Only rules that cannot affect signing, such as how a lobby is displayed or filtered, are plain settings.\n\n## Why not threshold signatures\n\nA threshold key (for example FROST) lets a majority sign without the minority. For the output that holds everyone's money that is the opposite of what we want: a majority, which could be fake members or the host with friends, could spend a member's money without that member. The factory key stays \"everyone signs\", because that is what makes it safe to share.\n\nThreshold keys remain useful where one party splits its own key: a host run by several operators, or a member spreading their key across devices.\n\n## Removing someone from a live factory\n\nOnce a factory is live, \"removing\" a member can only mean one of two things, and neither takes their money:\n\n- they agree to leave, by co-signing a close or by paying their balance out; or\n- their branch of the tree is published, which puts their balance on chain in their own control.\n\nAny change that needs everyone's signature, such as closing early, can be stopped by a single member. The design does not fight this with votes. It limits how often everyone is needed: day-to-day changes need only the members of one leaf or branch, and a member who will not cooperate at wind-down is left to the timeout tree while the others move on.\n\n## Profiles\n\nNamed presets of rules. All four ship in the first release.\n\n| Profile | For | In short |\n|---|---|---|\n| Safety | Cautious users | Simple operation only; optional features off |\n| Standard | Most public lobbies | The defaults |\n| Starter | People arriving with no funds | Small channels, low requirements, limited seats |\n| Circle | People who know each other | Unlisted and by invitation |\n\n## What is public\n\nA listing on Nostr carries what rarely changes: the terms the host has fixed, the acceptable range for the others, size limits, the start time and an expiry after which the listing disappears. It never says who joined.\n\nAnything live, such as how full the lobby is, is asked of the host directly. This keeps relays quiet and reveals less. The cost is that asking tells the host someone is interested and from which network address; connecting over Tor avoids the second.\n\nA host may publish the factories it has funded as a track record, since the funding is on chain anyway. Whether a member can prove past participation in the same way is being looked into; it would link that member's factories together, so it could only be by choice.\n\nThe existing host proofs show control of one channel or one coin. A proof sized to the lobby a host advertises is still to be designed.\n\n## A separate library\n\nThe lobby, the signing round engine and the proof-of-fault scheme together are a general tool for coordinating large group signatures. They are written with no dependence on the factory code, so they can be split out as their own library.\n\n## First version\n\n- Gathering and signing timers; scheduled start with minimum and maximum size.\n- Listed or unlisted; open or by invitation, with QR invitations.\n- Member conditions and the check at signing.\n- Host removal, personal block lists, local history.\n- Switches for names, chat and rule-change requests. Chat itself may follow the first release.\n- Optional self-identification.\n- Signed signing messages; up to three signing attempts.\n- All four profiles.\n\nNext (issue 3): a deposit to deter people who join and never sign. Later: standby seats, joining requirements based on coins or history, member track records.\n\nNew rules arrive through the proposal process in `sips/`.\n",
+  "docs/TESTING.md": "# Testing plan\n\nHow Gazpacho is shown to work, from single functions up to public test networks. Updated 2026-11-11.\n\n## Principles\n\n1. **Every safety rule has two tests:** one showing the rule stops the attack, and one with the rule removed that must show a loss. The second proves the first can catch the bug it exists for.\n2. **The checker is independent of the code it checks.** Money is counted from the transactions themselves, not by the module under test.\n3. **Failures can be replayed.** Anything random is driven by a recorded seed.\n4. **Nothing is \"done\" on a claim.** A milestone is finished when its tests pass in the automated checks.\n\n## Levels\n\n| Level | What runs | What it proves | When it runs |\n|---|---|---|---|\n| 1. Reference values | The imported tree code against recorded transaction IDs from a real SuperScalar run | The foundations still behave exactly as upstream | Every push. In place now |\n| 2. Standard vectors | Official test vectors for signatures, group signing, key derivation, recovery phrases, invoices, and Lightning's own message and transaction vectors | We agree with the standards byte for byte | Every push |\n| 3. Engine tests | One engine at a time, fed events, checked on the actions it returns | Each engine's rules | Every push |\n| 4. Simulator | A host, many members, a pretend chain and a pretend network in one process | The whole system under failure and attack | Short run every push; long runs nightly |\n| 5. Regtest | The real programs with a real Bitcoin node and Electrum server | The ports and programs, end to end | Every push for a core set; all scenarios nightly |\n| 6. Signet and testnet | Our public host with scripted users | It works on a real network over days | Nightly, once M6 exists |\n| 7. Release candidate | Everything above, at full size and length, plus a clean install by hand | Fit to hand to outside reviewers | Before each release candidate |\n\n## The simulator\n\nThe main safety net. It is possible because the core does no input or output.\n\n- **Schedules:** a seeded generator picks operations for every party: join, pay, receive, change liquidity, update a layer, rotate, close, exit.\n- **Network faults:** each message may be dropped, delayed, duplicated or reordered.\n- **Crashes:** each party may be stopped at every point where it saves or sends, and restarted from what it saved.\n- **Cheating:** scripted dishonest hosts and members try each attack in the threat list: paying a close to themselves, shrinking a balance, publishing an old state, sending a bad partial signature, withholding a result, altering a nonce.\n- **After every step,** the invariants below are checked.\n- **On failure,** the seed and schedule are saved so the case becomes a permanent test.\n\n## Invariants\n\nChecked after every simulator step and at the end of every regtest scenario.\n\n1. Money is conserved across every state change.\n2. Every member can leave alone with at least what they are owed.\n3. No party signs two different states with the same number.\n4. Nothing is sent before it is saved.\n5. No secret nonce survives a restart or is used twice.\n6. No party's software publishes a state it has cancelled.\n7. Every payment deadline is later than the time needed to exit.\n8. The host's funding is never signed before every exit is signed.\n9. An honest party is never named as the cause of a failed signing round.\n\n## Regtest scenarios\n\nEach runs through a Bitcoin node and again through an Electrum server.\n\n- Lobby fills to target; lobby starts at the deadline; lobby misses its minimum.\n- Join, receive, pay inside the factory, pay out through the host's Lightning node, receive from outside.\n- Liquidity change; layer update; rotation into a new factory; cooperative close.\n- A member exits alone with the host gone, through to spendable coins.\n- The host publishes an old state; a member publishes an old state.\n- Restart of each program in the middle of each operation.\n- A member away for the whole response window.\n- Restore from backup, then recover without publishing.\n\n## Sizes\n\nRoutine runs use 4, 8 and 32 members. Nightly runs use 128 and 256. Release candidates run the target of 512.\n\n## Tooling\n\n- Automated checks on every push: a normal build and a build with memory-error and undefined-behaviour checkers. In place now.\n- To add as code arrives: fuzzing of every message decoder with a kept corpus; a thread-error checker for anything concurrent; coverage reports; a nightly job for the long runs.\n- Compiler warnings are errors.\n\n## Before a release candidate\n\n- Every invariant has passing tests at all three of simulator, regtest and signet.\n- Every safety rule has its rule-removed test.\n- The long simulator run and the fuzzers have run clean for a day.\n- Nightly scenarios have been green for seven nights.\n- Each engine has had an independent review, and its findings are closed or recorded as accepted.\n- The documents state what is unreviewed.\n\nOutside review then begins; the owner arranges it.\n",
+  "docs/HOST-NODES.md": "# Lightning nodes a host can link to\n\nWorking list, 2026-11-11. A host connects its factory to the rest of Lightning through a regular node. Gazpacho needs four operations from it:\n\n1. Pay an invoice with a spending limit and a deadline, and return the payment secret.\n2. Create an invoice for a payment hash whose secret the node does not know, and hold the incoming payment open.\n3. Settle a held payment.\n4. Cancel a held payment.\n\nEvery node can do the first. The other three are the deciding factor.\n\n| Node | Share of public nodes | Hold, settle, cancel | How we would connect | Difficulty | Checked? |\n|---|---|---|---|---|---|\n| **LND** | About 90% | Built in (`AddHoldInvoice`, `SettleInvoice`, `CancelInvoice`) | Its network interface, from outside the node | Low | Yes, against LND's interface definition |\n| **Core Lightning** | About 5% | Through the community `hold` plugin, not built in | The plugin's commands, or our own small plugin | Medium: a plugin must be installed in the node | Yes, from secondary sources |\n| **Eclair** | Under 1% of public nodes, but heavily used behind mobile wallets | Not confirmed | Probably a plugin written for Eclair | Unknown, likely high | No |\n| **LDK-based nodes** | Counted by volume, not node count; mostly private | The library has the calls; whether each packaged node exposes them is not confirmed | Per product | Unknown | No |\n| **Anything that speaks Nostr Wallet Connect** | n/a | A Core Lightning plugin implements hold methods over it; whether these are in the general standard is not confirmed | One adapter for every wallet that supports the hold methods | Low if the methods are standard | Partly |\n| **Gazpacho's own built-in node** (later) | n/a | Ours to build | No adapter: the built-in node holds ordinary channels itself | High; planned after the first releases | n/a |\n\nThe share figures come from a single vendor's comparison and should be checked against a network explorer before being quoted.\n\n## Order\n\n1. **LND** first: by far the most used, and it needs no code inside the node.\n2. **Core Lightning** second: already running on our server.\n3. **Nostr Wallet Connect** third, if its hold methods prove to be standard, because one adapter could cover many wallets and hosted nodes.\n4. **Eclair** and specific **LDK** nodes as demand shows.\n5. The **built-in node** removes the need for any of them.\n\n## To verify before building each adapter\n\n- LND: behaviour of a held payment across a node restart, and the longest it may be held.\n- Core Lightning: which hold plugin to depend on, its maintenance status, and whether to ship our own.\n- Nostr Wallet Connect: whether hold methods are part of the published standard and which wallets implement them.\n- Eclair and LDK nodes: whether hold, settle and cancel are reachable at all without modifying the node.\n- For all: that holding payments open does not harm the node's standing with its peers at the durations we need.\n\nSources:\n- LND invoices interface: https://github.com/lightningnetwork/lnd/blob/master/lnrpc/invoicesrpc/invoices.proto\n- Core Lightning Nostr Wallet Connect plugin (hold methods): https://github.com/daywalker90/cln-nip47\n- Implementation shares (vendor comparison): https://www.spark.money/research/lightning-eclair-cln-lnd-implementation-comparison\n",
+  "docs/AWAY.md": "# When the member is away\n\nWorking note, 2026-11-11. A member has duties that fall on dates: open the app before an old state could cost them, sign when the factory rotates, leave before the factory expires. This note lists the ways to meet those duties when the person is not at the app, and what each needs. Nothing here beyond the first row of each table is in the first release.\n\n## Telling the person\n\n| Channel | What it needs | State |\n|---|---|---|\n| Countdowns inside the app | Nothing extra | First release |\n| A Nostr message to an identity the user gives | Care not to link that identity to the wallet for others | Later |\n| Email | A mail service, and holding addresses | Later |\n| Phone push notifications, alarms | A mobile app | Later, with the mobile app |\n\nThe schedule engine in the core computes every date. All of the above only display or deliver what it produces.\n\n## Acting without the person\n\n| Way | What it does | What it needs | Main risk | Checked? |\n|---|---|---|---|---|\n| The app stays running and acts by itself | Answers an old state, signs a rotation that meets the member's conditions, exits before expiry | A machine that stays on, and conditions set in advance | The keys are on a machine that is always on | Design only |\n| A watcher holding pre-signed responses | Publishes the response to an old state | The app hands over one response per state. No keys leave the app | The watcher learns something about the channel; it must be kept up to date | Design only; issue 2 |\n| A watcher holding keys | Could also sign rotations | Trust in the watcher | It can spend. Avoid unless the watcher is the member's own machine | Not recommended |\n| A hardware signing device | Keeps keys off the computer | A device that supports the group-signing scheme the factory uses, and a way to approve without a person for unattended use | Device support is not confirmed | Not checked |\n\n## What only the member can do\n\n- **Signing a rotation into a new factory** needs the member's key. A watcher without keys cannot do it. If the member is away, the fallback is the automatic exit before expiry, or the host publishing the member's branch.\n- **Changing conditions.** Anything acting for the member acts only within the conditions the member set.\n\n## To investigate\n\n1. Which duties can be met with pre-signed transactions alone, and how many must be handed over.\n2. Whether hardware signing devices support the group-signing scheme, and unattended use.\n3. How the app tells the member that a watcher has fallen behind.\n4. Phone operating-system limits on background work, for the mobile app.\n",
+  "spec/safety-rule.md": "# The safe-to-sign rule\n\nSpecification draft 1, 2026-11-11. Status: for review. Nothing here has been reviewed by anyone outside this project.\n\nThis document defines the check a member's software runs before it contributes to any signature, and the matching check on the host's side. The code that implements it is one module, the only place where \"is this safe to sign?\" is decided.\n\n## 1. The rule in one sentence\n\nA member's software signs only if, once the signature exists, the member can still leave alone, in time, with at least what they are owed, whatever the host and every other member do.\n\n## 2. Terms\n\n| Term | Meaning |\n|---|---|\n| **Held set** | Every fully signed transaction the member holds, plus the secrets it has been given for cancelling old states |\n| **Request** | A proposal to create new signatures: for new transactions, or for transactions that replace existing ones |\n| **Resulting set** | The held set as it would be if the request completed |\n| **Exit path** | The chain of transactions from the factory's funding output down to outputs only the member controls |\n| **Owed** | The amount the member is entitled to, taken from the member's own records. Defined in section 4 |\n| **Exit value** | What the member can bring under their sole control by publishing transactions from a set, defined in section 5 |\n| **Exit time** | The number of blocks needed to complete an exit from a set, defined in section 6 |\n| **Adversary** | The host together with all other members. They may publish any transaction they hold a valid signature for, including old ones, at any time |\n\n## 3. The checks\n\nA request is safe to sign only if all of these hold. Each is checked against data the member's software built or stored itself.\n\n**C1. Rebuilt, not received.** The member's software constructs every transaction in the request itself, from the host's signed terms, the agreed ordered list of participant keys, and the member's own stored state. It signs only digests it computed. It never signs a transaction or digest supplied by another party.\n\n**C2. Own outputs are recognised by own keys.** The member's software identifies which outputs are the member's by deriving the scripts from its own keys. Labels, indexes or positions stated in the request are not trusted.\n\n**C3. Value.** The exit value of the resulting set is at least the amount owed after the request (section 4).\n\n**C4. Every state the adversary could publish is covered.** For every transaction in the resulting set that the adversary could publish, including ones the request is meant to replace, one of these is true:\n- publishing it leaves the member able to reach at least the owed amount; or\n- the member holds what is needed to cancel it in time and still reach the owed amount.\n\n**C5. Time.** The exit time of the resulting set, plus a margin, ends before the earliest moment at which anyone else gains a competing claim on any output on the member's exit path. Today the imported tree gives the host such a claim at each node's timeout, so that timeout bounds the exit.\n\n**C6. Children before parents.** The member does not help complete a signature on a transaction that creates an output unless it already holds its own fully signed exit from that output. For example, a new channel commitment on a new leaf output is fully signed and in the member's hands before the member signs the leaf transaction that creates that output.\n\n**C7. One state per number.** The member never contributes to two different transactions for the same position and state number in the same factory. Before sending a partial signature it stores a record of what it signed for that position and number, and refuses anything different later.\n\n**C8. Terms.** The parameters used to build the transactions match the host's signed terms, and the terms and the actual member count satisfy the member's own conditions.\n\n**C9. Nothing in flight is stranded.** A request that closes or replaces a channel is refused while a payment is in flight on it, unless the resulting set still lets the member claim or reclaim that payment.\n\nIf any check fails, the member's software sends nothing for that request, tells the host it refused, and keeps its held set unchanged.\n\n## 4. What the member is owed\n\nAlways from the member's own records, never from the request.\n\n| Operation | Owed after the request |\n|---|---|\n| Creating a factory | Zero. Members start with nothing |\n| A payment in the channel | The balance after the payment the member itself authorised or received, plus payments in flight the member can claim |\n| A liquidity change on the member's leaf | The same channel balance as before. Liquidity may move toward the member, never away from the member's balance |\n| A change to a layer above the leaf | Unchanged |\n| Rotation into a new factory | The same total, across the old and new factories together, at every step |\n| A cooperative close | The channel balance, paid to a script the member's software derived |\n| Another member's leaf or branch | Unchanged; and normally the member is not a signer at all |\n\n## 5. Exit value\n\nThe exit value of a set is computed by the member's software as follows.\n\n1. Find the member's exit path in the set: the newest fully signed transaction at each position from the funding output down, ending in outputs whose scripts the member alone can satisfy.\n2. Add up those final outputs.\n3. Subtract any fee the member must add that is not already built into the transactions.\n4. For payments in flight, count only those the member can certainly claim: it knows the secret and the deadline leaves enough time (section 6).\n5. Apply C4: if the adversary can publish a different transaction at some position, take the lowest result over every such choice, after the member's best available response.\n\nThe answer is the least the member can end up with. It must be at least the owed amount.\n\n## 6. Exit time\n\n1. Sum the waiting periods on the exit path: each relative timelock, plus a confirmation allowance for each transaction.\n2. Add the response window for a cancelled channel state, if the member's own channel transaction is delayed by one.\n3. The result, counted from now, must end before the bound in C5, with a margin set by the terms.\n\nA payment may be accepted only if its deadline is later than the exit time plus a margin, so that the member could still claim it on chain.\n\n## 7. The host's side\n\nThe host's software runs the same module with the roles exchanged, plus three rules of its own.\n\n**H1. Funding last.** The host does not sign the transaction that funds a factory until every tree transaction is fully signed and verified.\n\n**H2. Every partial signature is verified** as it arrives, against its sender's key and nonce.\n\n**H3. No credit before it is covered.** The host does not treat an operation as complete, and does not act on it for a member (forward a payment, release a secret), until the transactions that protect the host in the new state are fully signed.\n\n## 8. What this rule does not protect against\n\n- **Being ignored.** A host can refuse service. The remedy is to leave.\n- **A false view of the chain.** The rule assumes the member's view of the chain is correct. That is the chain port's job.\n- **Fees far above what was built in**, if the member has no on-chain coins to add.\n- **Loss of the held set.** Backups are a separate mechanism.\n- **Privacy.** The host sees its members' payments.\n\n## 9. How it is tested\n\nFor every check C1 to C9 and H1 to H3:\n\n1. A scenario in the simulator where the other side sends a request that violates the check. The software must refuse and its held set must be unchanged.\n2. The same scenario with the check switched off. The simulator's independent accounting, which replays what each party could actually publish on its pretend chain, must then show a loss. If it does not, either the check is unnecessary or the test is too weak.\n3. Honest scenarios for each operation, which must still succeed.\n\nThe simulator's accounting computes exit value independently of this module, from the transactions alone, so a mistake in the module is not hidden by the same mistake in the test.\n\n## 10. Open points\n\n1. **Fees.** How much of the exit's fee is built in at each level, and how the member's possible top-up is counted in step 3 of section 5.\n2. **Old states in the layered tree.** C4 for the shrinking-timelock layers depends on the cancellation mechanism for the host's spare liquidity. That analysis has to be written out per layer.\n3. **Timeouts that favour the host.** C5 is stricter than it would be if every tree output paid members at expiry. If the imported tree changes, the bound changes.\n4. **Rotation.** \"The same total across both factories at every step\" needs a step-by-step statement for each rotation method.\n5. **Payments in flight** during a liquidity change on the same leaf.\n6. Whether C7's record can ever be safely discarded.\n",
+  "spec/signing-round.md": "# The signing round\n\nSpecification draft 1, 2026-11-11. Status: for review. The part on proving fault (section 7) is this project's own design and has had no outside review.\n\nA signing round produces group signatures for a set of transactions. One engine runs every round in Gazpacho: creating a factory, changing a leaf, updating a layer, rotating, closing. It follows the MuSig2 standard (BIP 327) and uses the imported signing code.\n\n## 1. Parties and scope\n\n- The **coordinator** is the host. It is also a signer in every transaction.\n- **Members** are the other signers. Each talks only to the host.\n- A round covers one or more **items**. Each item is one transaction input to be signed, with its own set of signers. A member signs only the items on its own path.\n- The round engine does not decide whether signing is safe. It asks the safe-to-sign module (`safety-rule.md`) and obeys it.\n\n## 2. What identifies a round\n\n```\nround_id = hash( protocol name, factory identifier, purpose, attempt number,\n                 ordered list of participant keys, digest of every item )\n```\n\nAnything that changes any of these is a different round, with fresh nonces. Participants are ordered by an agreed rule, host first, so every party computes the same identifier and builds the same transactions.\n\n## 3. Messages\n\nSix kinds, carried as factory messages inside the Lightning connection.\n\n| Message | From → to | Carries |\n|---|---|---|\n| `round_propose` | Host → member | Purpose, attempt number, the parameters from which the member rebuilds the transactions, the ordered participant list, the deadlines for each step |\n| `round_nonces` | Member → host | The member's public nonce for each of its items, and the member's signature over the round identifier and those nonces |\n| `round_all_nonces` | Host → member | For each of the member's items: every signer's public nonce with that signer's signature |\n| `round_partial_sigs` | Member → host | The member's partial signature for each of its items, and the member's signature over the round identifier, a digest of the nonce set it used, and those partial signatures |\n| `round_complete` | Host → member | The final signatures for every transaction on the member's exit path |\n| `round_abort` | Either way | A reason, and evidence where fault can be shown |\n\nParameters are sent, not transactions. A member builds the transactions itself.\n\nNonce sets for large factories are sent as a sequence of messages, one per item, ending with a marker that the set is complete.\n\n## 4. Steps\n\n1. **Propose.** The host sends `round_propose` to every signer.\n2. **Check.** Each member rebuilds the transactions, computes the round identifier, and runs the safe-to-sign checks. If they fail it sends `round_abort` and stops.\n3. **Nonces.** Each member generates a fresh secret nonce per item and sends the public parts in `round_nonces`.\n4. **Distribute.** When the host has every signer's nonces, it sends `round_all_nonces`.\n5. **Verify and sign.** Each member checks every nonce's signature, confirms its own nonces are included unchanged, runs the safe-to-sign checks again, stores its record of what it is about to sign (see `safety-rule.md`, check C7), then sends `round_partial_sigs`.\n6. **Verify.** The host verifies each partial signature as it arrives.\n7. **Complete.** When all are in and valid, the host combines them, verifies each final signature, and sends `round_complete`.\n8. **Accept.** Each member verifies the final signatures. Only then does it add the new transactions to what it holds.\n\n## 5. States\n\n**Member**\n\n| State | Leaves on |\n|---|---|\n| Idle | `round_propose` → Checking |\n| Checking | Checks pass → Nonces sent. Checks fail → Aborted |\n| Nonces sent | `round_all_nonces` valid → Signed. Deadline or invalid → Aborted |\n| Signed | `round_complete` valid → Complete. Deadline → Unfinished |\n| Complete | |\n| Aborted | Secret nonces erased |\n| Unfinished | The member has signed but does not hold the result. See section 8 |\n\n**Host**: Collecting nonces → Collecting partial signatures → Complete, or Failed with a list of who did not answer or sent something invalid.\n\n## 6. Rules for secret nonces\n\nFrom BIP 327, which says a secret nonce must never be used to sign twice, since that can reveal the signer's key.\n\n- A secret nonce is generated from fresh randomness supplied to the core, together with the member's key, the aggregate key and the message when known.\n- It lives in memory only. It is never written to storage and never included in a backup.\n- It is erased as soon as it has been used to sign, or the round ends for any reason.\n- If the program restarts during a round, the round is over for that member. It will take part in the next attempt with new nonces.\n- A partial signature is produced only after the complete nonce set for that item has been received and checked.\n\n## 7. Who broke the round\n\nBIP 327 lets honest parties identify a signer who sent a bad partial signature, provided contributions cannot be tampered with in transit. It warns that whoever combines the nonces could otherwise blame an honest signer, and it says nothing about convincing a third party. The scheme below is our extension to cover both.\n\n**Every contribution is signed by its author**, with the same key that takes part in the group signature:\n\n- a member's `round_nonces` is signed over the round identifier and the nonces;\n- a member's `round_partial_sigs` is signed over the round identifier, a digest of the full nonce set the member used, and the partial signatures.\n\n**What this proves:**\n\n| Fault | Evidence | Convinces a third party? |\n|---|---|---|\n| A member sent a bad partial signature | Its signed nonces, its signed partial signature naming the nonce set, and that nonce set (each nonce signed by its owner). Anyone can run the standard verification and see it fail | Yes |\n| The host changed someone's nonce before passing it on | The changed nonce does not carry its owner's signature, so members reject it in step 5 | Not needed; it is caught at once |\n| The host gave different members different nonces of its own | Two nonces for the same round and item, both signed by the host | Yes |\n| The host claims a member's partial signature is bad when it is not | The member's signed message names the nonce set it used; verification against that set succeeds | Yes, the claim is disproved |\n| Someone did not answer | Nothing | No. Silence can only be observed, not proved |\n\n**After a fault:** the faulty or silent signers are removed together and the host starts a new attempt, with a new round identifier, for those who remain. The host's terms say how many attempts are made and what happens if too few members remain.\n\n## 8. Never left half-finished\n\nThe danger in any round is that the host ends up holding complete signatures while a member does not.\n\n- **A member treats a round as finished only when it holds valid final signatures for its whole exit path.** Until then it behaves as if only the previous state exists: it accepts no payment and releases no secret that depends on the new one.\n- **Creation:** members have nothing at stake, and the host signs funding last.\n- **Later rounds:** the safe-to-sign checks require that the new state is at least as good for the member as the old one, and that the member's exit from any new output is signed before the transaction that creates it. So a host that withholds `round_complete` gains nothing: publishing the new state pays the member correctly, and the member can still use the old one.\n- A member in the Unfinished state asks again on reconnect. If the host never answers, the member exits using what it holds.\n\n## 9. Timers\n\nSet by the host's terms and visible to members before they join. Starting values, to be tuned on signet:\n\n| Step | Default |\n|---|---|\n| Ready check before the first attempt | 60 seconds |\n| Nonces, per attempt | 30 seconds |\n| Partial signatures, per attempt | 30 seconds |\n| Attempts | 3 |\n\nA host may set longer signing timers. Members' software must then stay running throughout, because of section 6.\n\n## 10. Use of the imported code\n\n| Step | Function in `core/superscalar` |\n|---|---|\n| Build the tree | `factory_init_from_pubkeys`, `factory_set_arity`, `factory_set_funding`, `factory_build_tree`, with sequential placement selected so member order never depends on a sort |\n| Start signing for an item | `factory_session_init_node` |\n| Generate a nonce | `musig_generate_nonce` |\n| Record a signer's nonce | `factory_session_set_nonce`, then `factory_session_finalize_node` |\n| Produce a partial signature | `musig_create_partial_sig` |\n| Verify a partial signature | `musig_verify_partial_sig`. The imported code never calls this itself; the round engine must |\n| Record and combine | `factory_session_set_partial_sig`, `factory_session_complete_node` |\n| Verify the result | A standard signature check on each signed transaction |\n\nThe imported nonce generator reads randomness from the operating system directly. Until that is changed upstream, the engine cannot be simulated repeatably through that function; the hand-off note asks for a way to supply randomness.\n\n## 11. How it is tested\n\n1. Honest rounds of every purpose, at several sizes.\n2. Each message dropped, delayed, duplicated and reordered, at each step.\n3. A crash and restart of each party at each step. No secret nonce may survive a restart, and no party may sign twice.\n4. Each fault in section 7, checking that the right party is named and the evidence verifies, and that an honest party cannot be framed.\n5. A host that withholds `round_complete`: the member must lose nothing.\n6. Removal of each rule in turn (nonce signature check, partial signature verification, the C7 record), each of which must make a specific test fail.\n7. Fuzzing of every message decoder.\n\n## 12. Open points\n\n1. **Review of section 7** by someone expert in MuSig2.\n2. **Whether the host should send its own partial signatures first**, and pass every member's partial signatures to the others, so that members can complete transactions themselves and the host is never the only one holding the result.\n3. **Which key signs contributions.** The factory key is the natural choice. Whether signing other messages with it is acceptable needs checking.\n4. **Size.** How nonce sets are split for the largest factories, and the largest round we support.\n5. **Generating nonces early**, at the ready check, to save a step. BIP 327 permits it with care; it conflicts with nothing above but removes one of the standard's safeguards.\n",
+  "docs/sips/README.md": "# SuperScalar Improvement Proposals (SIPs)\n\nHow changes to rules and behaviour are requested, discussed and decided. Modelled on the processes Bitcoin (BIPs) and Lightning (bLIPs) use.\n\nSIPs are meant for anyone building SuperScalar factory software, not only Gazpacho. They live in this repository for now and can move to a home of their own.\n\n## Why\n\nNew joining rules, safety rules and protocol features usually change the code that decides what is safe to sign. Such changes are made in the open, one at a time, with a written record of who agreed and who objected. The record is kept even for proposals that are never shipped.\n\n## Categories\n\n| Category | For | Template |\n|---|---|---|\n| **Rule** | A rule a host can set or a member can require: who may join, when a lobby starts, limits, deposits, profiles | `template-rule.md` (worked example: `example-rule-request.md`) |\n| **Protocol** | Messages, the host's published terms, transaction construction, signing | `template-general.md` |\n| **Process** | How SIPs or releases work | `template-general.md` |\n| **Informational** | Guidance, analysis, recommended settings; changes no behaviour | `template-general.md` |\n\n## What needs a SIP\n\n- Anything that changes what a member or host will sign, or refuse to sign.\n- Any change to messages, the host's published terms, or lobby rules.\n- New rule profiles, joining requirements, deposits, reputation schemes.\n\nBug fixes and changes that cannot affect signing do not need one.\n\n## Life of a SIP\n\n| Status | Meaning |\n|---|---|\n| Draft | Written up using a template; not yet under discussion |\n| Discussion | Open for comment. Reviewers reply with ACK (agree), NACK (object, with reasons) or a request for changes |\n| Approved | The maintainers agree it is sound |\n| Rejected | The maintainers do not agree it is sound. The reasons stay on record |\n| Shipped | Included in a release, with the software and version noted |\n| Approved, not shipped | Judged sound, but not included in Gazpacho releases, with the reason given (for example legal or product reasons). Other factory software is free to implement it |\n| Withdrawn | The author gave it up |\n\nApproval and shipping are separate decisions. A SIP can be approved and never shipped here, and the record says so plainly.\n\n## Rules of the process\n\n- One SIP per file in this folder, named `sip-NNNN-short-title.md`, numbered in order of submission.\n- Every SIP states what it changes in the safe-to-sign rules, how it could be abused, and how it is tested.\n- A SIP that touches signing is not shipped without an independent review and a test that fails when the rule is removed.\n- The discussion record (who said ACK or NACK, and why) is linked from the SIP and is never deleted.\n\n## Open\n\nWho the maintainers are beyond the project owner.\n",
+  "docs/RECORD.md": "# Gazpacho design record\n\nThe dated history of the design: drafts, findings, reviews and the owner's decisions, in the order they happened. Earlier sections are kept as written and are superseded wherever a later section differs. The design currently in force is `DESIGN.md`.\n\nDraft 1, 2026-11-11. Illustrated version: `design.html`. This file is the short record of the decisions; items marked **(proposed)** await the owner's yes.\n\n## 1. Relationship to the SuperScalar repo\n\n- Gazpacho is its own codebase.\n- It **imports** SuperScalar's primitives as a pinned snapshot under `core/superscalar/`: tree builder, MuSig2 sessions, timelock counter, ladder, transaction and script builders, adaptor signatures, key handling. About 11,000 lines. **(proposed: vendored snapshot, not a live dependency)**\n- Changes to imported files go to the SuperScalar repo first, then we update the snapshot. No private forks of the primitives, except a clearly listed patch queue when we cannot wait.\n- Everything above the primitives is **written new**, using SuperScalar's host and member code as the reference for behaviour.\n- A differential test builds the same factory in both and requires identical transaction IDs.\n\n## 2. Layers\n\n| Layer | Contents | Source |\n|---|---|---|\n| L5 Apps | `gazpacho` command line, host service, web screens | new |\n| L4 Ports | storage, chain, network, clock, randomness, host's Lightning link | new |\n| L3 Node | sessions, journal, timers, on-chain wallet, host terms, member and host roles | new |\n| L2 Engines | signing round, channel, payment, exit, watch | new |\n| L1 Factory model | tree, timelocks, leaves, exits, ladder | imported |\n| L0 Primitives | secp256k1-zkp, hashing, transactions, scripts, MuSig2 | imported |\n\nL0–L3 are the core library: portable C with no system calls.\n\n## 3. Core contract\n\nOne entry point: an **event** goes in, a list of **actions** comes out. The core never blocks and never calls the outside world.\n\n- Events: message received, timer fired, chain event, user command, storage confirmed.\n- Actions: save records (one atomic batch), send message, broadcast transaction, watch script, set timer, tell the user.\n- **Save before send:** the shell runs an action list in order and does not send anything until the batch before it is safely stored. This is enforced once, in the shell runner, for every engine.\n\n## 4. Engines\n\n- **Signing round engine.** One state machine for every group signature: propose, nonces, partial signatures, done. SuperScalar has about 40 message types across seven separate families for this (create, close, leaf advance, path, state advance, sub-factory, reallocation). Here it is one engine, given \"what is being signed\" and an acceptance rule.\n- **Acceptance rule (member side).** Before contributing to any signature a member computes, from its own data only: \"after this, can I still exit alone with at least what I am owed?\" If not, it refuses. This single rule replaces per-ceremony checks.\n- **Channel engine.** One update routine: save new state, send signature, receive and verify revocation, save, release own secret. Handles reconnect and updates that arrive mid-update by queueing, never dropping.\n- **Payment engine.** Invoices, incoming and outgoing payments, deadlines derived from the tree's exit time.\n- **Exit engine.** Plans a unilateral exit: which transactions, in what order, when each becomes valid, and how fees are bumped from the on-chain wallet.\n- **Watch engine.** Lists what must be watched and what to do when each thing appears on chain.\n\n## 5. Decisions on behaviour\n\n- Sign before fund: the host signs its funding transaction only after the whole tree and every member's exit are signed. Built in from the first version.\n- One funder per factory (the host). Members start at zero; pay in over Lightning or swap in.\n- Pseudo-Spilman leaves, one member per leaf. Payments never change the tree; only liquidity changes do.\n- Payment deadlines are computed from the factory's exit time plus a margin. Payments with less headroom are refused.\n- Members exit automatically before the factory's expiry if the host has not rotated them.\n- Host terms are a published record; the member's limits are checked before any signing.\n\n## 6. Message format **(proposed, revised 2026-11-11)**\n\nDo not invent a format. Speak Lightning's own wire language, so a Gazpacho connection is an ordinary Lightning peer connection that also carries factory messages.\n\n- **Connection:** the BOLT 8 encrypted transport (Noise XK, the responder's key known in advance, which is exactly a pinned host key). Over TCP, and over WebSocket binary frames for browsers.\n- **Framing:** the BOLT 1 message: 2-byte type, payload, optional trailing fields. Maximum 65,535 bytes.\n- **Session:** the standard `init` (feature bits, chain), `ping`/`pong`, `error` and `warning`.\n- **Extending without breaking:** no version numbers. Feature bits say what each side supports; every message ends in a typed-field (TLV) stream; unknown odd fields and messages are ignored, unknown even ones are refused (\"it's ok to be odd\").\n- **Factory messages:** one odd message type in the custom range (32768 and above), carrying an envelope in the style of bLIP-56: protocol name, factory identifier, sub-message kind, then typed fields. About 15 sub-message kinds.\n- **Channel messages:** the standard BOLT 2 set (`update_add_htlc`, `commitment_signed`, `revoke_and_ack`, `channel_reestablish`, `stfu`), with the taproot-channel fields for signing nonces. Reconnect follows `channel_reestablish`, which is the most-reviewed part of Lightning.\n- **Large data:** group-signing data for hundreds of members exceeds one message. Send it as a sequence of small messages with an explicit \"complete\" marker, as Lightning's interactive transaction building does.\n- **Member backup at the host:** the standard peer storage messages (`peer_storage`, `peer_storage_retrieval`).\n- **Host terms and service requests:** binary typed fields in the first release; an LSPS-style (bLIP-50) interface can be added later for wallets that already speak it.\n- **How it is written:** message tables in `spec/`, in the same table form the BOLTs use. Encoders and decoders are generated from the tables, not written by hand. Every message has test vectors, and every decoder is fuzzed.\n- The specification is offered to the SuperScalar repo as the shared format, and written so it could be submitted as a bLIP.\n\n## 7. Storage\n\n- An append-only journal of typed records plus periodic snapshots.\n- Encrypted at rest.\n- The same journal, encrypted, is the off-device backup. The host also holds an opaque copy for the member.\n\n## 8. Chain port\n\n- Subscribe to a script; get a transaction's confirmation with proof; broadcast; fee estimate; chain tip.\n- Block headers are checked for proof of work, and confirmations are checked against headers, so a server cannot invent a confirmation. It can only hide one, which asking several servers addresses.\n- Backends: Electrum protocol, HTTP block explorer, Bitcoin node.\n\n## 9. Testing\n\n1. **Vectors and differential tests:** official cryptographic vectors; identical transaction IDs to SuperScalar.\n2. **Engine unit tests.**\n3. **Simulator:** host, N members, a simulated chain and a simulated network in one process, driven by a seed. It drops, delays and reorders messages, crashes any party at every save point, and plays scripted cheating peers. Invariants are checked after every step. This is the main safety net and is only possible because the core does no I/O.\n4. **Regtest end to end:** the real programs against a real Bitcoin node and Electrum server. Scenarios: join, pay, receive, swap in, liquidity change, rotation, cooperative close, forced exit, host disappears, host publishes an old state, member publishes an old state, restart in the middle of each ceremony.\n5. **Signet and testnet:** the public host with scripted users running nightly.\n6. **Always:** sanitizers, fuzzing of every message parser, and for each safety rule a run with the rule removed that must fail.\n\n### Invariants checked everywhere\n\n- Money is conserved across every state change.\n- Every member can exit alone with at least what they are owed, at every step.\n- No party signs two different states with the same number.\n- Nothing is sent before it is saved.\n- No party's software broadcasts a state it has revoked.\n- Every payment deadline is later than the time needed to exit.\n- The host's funding is never signed before every exit is signed.\n\n## 10. Milestones\n\n| | Outcome | Rough size |\n|---|---|---|\n| M0 | Trial run of SuperScalar on regtest; primitives imported; differential test | 1 week |\n| M1 | Simulator skeleton; signing round engine; a factory is created in the simulator | 2 weeks |\n| M2 | Channel and payment engines; invariants on | 2–3 weeks |\n| M3 | Exit and watch engines; crash and cheating schedules pass | 2 weeks |\n| M4 | Ports: SQLite, encrypted TCP, Bitcoin node and Electrum; regtest end to end | 2 weeks |\n| M5 | Command line, host service, host's Lightning link, public signet host, release | 2 weeks |\n| M6 | Web version | 3–4 weeks |\n\n## 11. Not designed yet\n\n- The message specification itself, field by field.\n- State tables for each engine.\n- The journal's record types.\n- The timelock and deadline schedule in numbers, for the chosen tree shape.\n- Full timeout inversion at every tree output: it is a change to the imported tree builder, so it is a request to the SuperScalar repo, or a listed local patch.\n- Waking members who are offline at rotation.\n- The self-contained host's ordinary Lightning channels.\n\n## 12. Why this is not simple\n\n- The channel update routine must be exactly right under crashes and reconnects.\n- Channel state cannot be rebuilt from a recovery phrase.\n- Members must be reachable at rotation and must watch the chain.\n- A forced exit needs on-chain funds for fees at the moment it is needed.\n- Deadlines, timelocks and factory lifetime must be mutually consistent for every tree shape.\n- A browser is a fragile place to keep channel state.\n- Public chain servers can hide transactions.\n- The imported tree code still has open design issues being fixed upstream.\n\n## 13. Review 1 (2026-11-11)\n\nFindings from a critical read of draft 1. Decisions pending in `design-review-1.html`.\n\nCorrected in this document's intent (text above to be revised once the decisions are in):\n\n- The \"identical transaction IDs\" test is vacuous for unchanged imported code. Replace with recorded reference results from SuperScalar runs, used to catch drift when the import is updated.\n- Header proof-of-work checking does not apply to signet (blocks are signed). On signet compare several servers; do the full check on testnet and mainnet.\n- Add a **lifecycle manager** (waiting room, creation, rotation, close) and the **swap-in flow** to the engine list.\n- Signing secrets are never stored. \"Save before send\" does not apply to them; an interrupted signing round is abandoned and restarted.\n- A restored backup never publishes its own channel state. It asks the host to prove the latest state and waits for the host to close.\n- The member's safety rule needs a precise definition (timelocks, in-flight payments, fees) and its own tests before any engine relies on it.\n- The browser can only reach hosts that offer a secure (certificate-backed) WebSocket.\n- Estimate revised: 13–15 weeks to a first release if the channel uses Lightning's standard taproot format.\n\nOpen, awaiting the owner:\n\n1. Tree for the first version: fixed tree with one member per leaf, or with a movable-liquidity layer.\n2. Who pays exit fees for a member with no on-chain coins.\n3. Protection while a member's app is closed: long response time, a watching service, or both.\n4. Channel on-chain format: Lightning's standard taproot channels, or the old code's own.\n5. How a factory fills and starts.\n6. Which regular Lightning node a host links to first (must be able to hold a payment open).\n7. Swap-in in the first release or the next.\n8. Which hosts the web version can reach.\n9. Schedule versus scope.\n\n## 14. Decisions from review 1 (owner's answers, 2026-11-11)\n\n1. **Tree:** the first release ships the full layered tree. Build order is fixed tree first, then the layers; the core is designed for the full tree from the start.\n2. **Exit fees:** a member with no balance has nothing to exit. For members with a balance, the base fee is built into the tree and commitment transactions and comes from the host's side (the host is the funder). The app recommends a small on-chain reserve for busy periods. At wind-down a member either pays their balance into the next factory over Lightning or co-signs a close that funds the next factory directly; either avoids an on-chain exit.\n3. **Away protection:** a long response window (about two weeks) in the first release. The watch engine is built so it can also run as a separate process: a service we offer, or one a user runs at home.\n4. **Channel format:** Lightning's standard taproot channel format, exactly. The old format is documented and retired.\n5. **Factory formation:** a lobby, like a game server. The host opens a lobby with rules; members join and mark themselves ready; the host starts when the start rule is met. Lobby listings and host proofs live on Nostr. Design note to be written (see below).\n6. **Host's Lightning node:** one small adapter interface; both LND and Core Lightning supported. LND is implemented first as the reference.\n7. **Swap-in:** not in the first release. Tracked as an issue together with swap-out.\n8. **Web screens:** a local interface. The `gazpacho` program serves its screens on the local machine only, and the browser is just the display. Keys and channel state stay in the C program. A wallet that runs wholly inside a browser page is not planned for now.\n9. **Schedule:** quality first; no deadline.\n\nConsequences for earlier sections:\n\n- §2: the web screens talk to the local program; the core is not compiled for the browser in the first releases.\n- §8 and review finding 9: the browser no longer connects to hosts or chain servers, so certificates and browser storage are not concerns.\n- §10: milestone M6 becomes \"local web interface\".\n\n### Lobby: first sketch (to be developed)\n\n- A host publishes a lobby: terms, minimum and maximum members, start rule, closing time. The listing and the host's proof of funds or channels are on Nostr; everything else is direct.\n- A member's app checks the terms against the member's limits before showing \"join\".\n- Joining is a direct connection to the host. The member appears in the lobby and can mark themselves ready.\n- Changing the rules: the host proposes new terms; each member accepts or leaves. There is no binding vote, because nothing binds anyone until they sign, and every member signs for themselves.\n- Start rule: minimum reached, and either all present are ready, or the host starts, or the closing time arrives.\n- At start, members who do not answer are dropped and the signing round restarts without them.\n- Open: a small refundable deposit to deter people who join and never sign; how much of the lobby state is public.\n\n### Host's Lightning node: the adapter interface\n\nFour operations are enough:\n\n1. Pay an invoice, with a spending limit and a deadline; report the payment secret on success.\n2. Create an invoice for a payment hash whose secret the node does not know, and hold the incoming payment open.\n3. Settle a held payment once the member has revealed the secret.\n4. Cancel a held payment.\n\nLND offers all four natively. Core Lightning offers 1 natively and needs a plugin for 2–4.\n\n## 15. Decisions and direction from the second discussion (2026-11-11)\n\n- **Reminders.** A schedule engine in the core computes every date by which the user must act (open the app to stay protected, sign a rotation, leave before expiry). The screens show countdowns; reminders are built on it.\n- **Old channel format is archived, not deleted.** Documented under `spec/archive/`, code reachable at a pinned SuperScalar version, and the channel engine keeps the on-chain format behind one interface so a different format can be plugged in later.\n- **Lobby requirements (owner):**\n  - Members set automatic join conditions (minimum members, minimum channel size, fee ceilings and so on). Once set they are locked in: a rule change can never carry a member into a factory that violates them.\n  - The host fixes the rules it cares about and leaves others open within ranges; members vote on the open ones.\n  - Members can vote to remove a participant; the software honours a proven majority.\n  - Several defences together: reputation, a deposit, vote-to-remove, others as research shows.\n  - Rule profiles, such as a safety profile that disables optional features.\n  - Research commissioned; results in `LOBBY-research.md`, design note to follow.\n- **Host's Lightning node.** The most widely used node first, then the others, aiming at every major implementation and at working across the whole Lightning network.\n- **Local web interface** confirmed: a web front end over the C program.\n- **Illustrated pages are versioned.** Earlier versions are kept under `docs/history/` and each page has a version switch (`docs/versions.js`).\n\n### Bringing a member's own coins into a live factory (analysis, not yet reviewed)\n\nThree ways exist; none is in the first release.\n\n| Way | Who signs | New capital for the factory? | Main risk |\n|---|---|---|---|\n| Swap-in (issue 1) | Member and host, outside the tree | No: uses liquidity the host already has on that member's side | Funds are locked until a timeout if the other side stalls |\n| Add the coins to the member's leaf | Only that leaf's signers | Yes | The member's coins must first be locked on chain under joint control, or the member could spend them elsewhere and void the new leaf state |\n| Add coins at creation | Everyone | Yes | Any contributor can abort the funding for all |\n\nThe second row is this project's own reasoning, not taken from a published design, and needs a proper review before it is relied on.\n\n## 16. M0 findings: what the reference code does today (2026-11-11)\n\nFrom a trial run of SuperScalar (main plus its start-up crash fix) on regtest with four members and the default leaf type.\n\n**What works**\n\n- Factory creation, four payments and a cooperative close ran correctly; final balances matched to the satoshi. Creation took about 2 seconds, each payment about 2 seconds.\n- A host-side forced close published and confirmed all 14 tree transactions.\n\n**What does not**\n\n- A member exiting alone, with the host gone, got all 14 tree transactions confirmed but could not publish its channel transaction: the fee built into it is below the relay minimum (154 against 167). So in the reference code today a member cannot complete an exit without the host. Gazpacho's channel engine replaces this code; the finding is passed to the SuperScalar repo.\n- The default factory size is too small to make a payment (channel reserve exceeds the balance).\n\n**Foundations: separable**\n\n- 16 of the 20 candidate files build and run alone, needing only the signature library and a general cryptography library: tree, group signing, timelock counter, ladder, transaction and script builders, adaptor signatures, key derivation, recovery phrases, address and invoice encoding, fee helpers.\n- 4 files are tied to the old database or channel code and are not imported as they are: keyfile, invoice, sweeper, on-chain wallet source. Gazpacho writes its own.\n- A standalone program built from the 16 files reproduces exactly the 14 tree transaction IDs of the real run. Reference values for 4 and 8 members are in `tests/reference/`.\n\n**Changes the imported files need before they fit the core's rules**\n\n- Randomness is read directly from the operating system in several places, including for every signing nonce. The core must be handed randomness by the program around it.\n- Diagnostic printing, one environment-variable hook and one test-only global variable in the tree builder.\n- Member positions in the tree follow connection order, not key order, and the transaction IDs depend on it. Gazpacho must fix the order by an explicit rule.\n\n**Message counts observed**\n\n- Creation: 2 round trips for the signing, 2 more to set up the channel.\n- A payment: 8 messages for the payer, 11 for the payee, all driven by the host.\n- Cooperative close: 5 messages, 2 round trips.\n\n## 17. Third discussion (2026-11-11)\n\n- **Voting and vote-to-remove are off** for now (owner). The lobby uses host removal, personal block lists and locally kept history. See `LOBBY.md`.\n- **No threshold key for the factory.** A key that a majority can use without the minority would let that majority spend a member's money. The factory stays \"everyone signs\". Threshold keys are fine where one party splits its own key.\n- **Removing someone from a live factory** can only mean they agree to leave or their branch is published; either way they keep their money. Anything needing every signature can be stopped by one member, so the design limits how often everyone is needed rather than voting.\n- **Identity and joining requirements** (control of coins, signing history, a chosen identity) will develop over time and must remain options a host sets. New joining rules usually need balances, coins or other state to decide what is safe to sign, so adding one is normally a reviewed change to the safe-to-sign module itself, which is kept small, with defined inputs and its own tests (owner's correction).\n- **Coordination as its own library.** The lobby, the signing round engine and the proof-of-fault scheme are written without dependence on the factory code so they can be split out.\n- **Host nodes** are listed with difficulty in `HOST-NODES.md`. LND first.\n- **A member adding coins to their own leaf** (later feature): other members never sign anything involving it, and nothing above that leaf changes, so their exits and balances are unaffected. The added coins sit in a separate on-chain output under joint control of that member and the host, so a cooperative close or rotation must spend that output in the same transaction that pays the member. It is an extension beyond the published SuperScalar design, and needs review. See `OPEN-QUESTIONS.md` item 18.\n- Documents reorganised: `PLAN.md` rewritten; `LOBBY.md`, `HOST-NODES.md`, `OPEN-QUESTIONS.md` and `handoff/` added.\n\n## 18. M0b: foundations imported (2026-11-11)\n\n- `core/superscalar/` holds 38 files copied unchanged from SuperScalar at commit `3de6120` (17 source files, 20 headers, the licence). `IMPORT.md` lists each with its SHA-256. `tools/update-import.sh` refreshes the copy and fails if the reference test stops passing.\n- The reference test (`tests/test_reference_tree.c`) builds 4- and 8-member trees and compares every transaction ID with recorded values, including the 14 IDs from a real regtest run. It passes in a normal build and under the address and undefined-behaviour sanitizers, with no compiler warnings.\n- Only the signature library and a general cryptography library are linked.\n\nFound during the import, for the core's design:\n\n- **Member order can depend on the C library.** The tree builder sorts members with a comparison that returns \"equal\" for everyone by default, and the C sort is not required to keep equal items in order. Gazpacho must put the keys in an agreed order (host first) and select the builder's \"sequential\" placement before building, so the tree never depends on the sort.\n- **Partial signatures are not checked individually.** A function to verify one member's partial signature exists but nothing calls it; only the final combined signature is checked. Gazpacho's signing engine must verify every partial signature as it arrives, which is also what makes it possible to name who broke a round.\n- Randomness, the clock, one environment variable, 37 diagnostic prints and one test global are reached directly from the imported files (exact lines are in the hand-off note).\n\n## 19. Decisions from questions round 2 (2026-11-11)\n\n**Lobby**\n\n- **Timing.** One mechanism with timers the host sets. Gathering is long: a lobby can stay open for hours or days and members can join at any time and leave their app to act for them. Signing itself is short and happens at the scheduled start. Reason: the secrets used in a signing round are never stored, so every member's app must stay running from the first signing step to the second, and anyone dropping out forces a restart for all. A short signing window keeps that cheap; a long gathering window gives the convenience. A host may lengthen the signing timers if it accepts more restarts.\n- **Audience.** Newcomers with no funds are the main audience. Each host sets the share of seats they may take.\n- **Visibility and admission are two separate settings.** A lobby is listed on Nostr or unlisted; and open to anyone or by invitation. Invitations are links, shown as QR codes. An unlisted, invitation-only lobby gives privacy in practice.\n- **Deposits:** not in the first release. Planned as the next step after it (issue 3).\n- **Names, chat and rule-change requests** are each a setting the host can switch off. With all three off, members see only a head-count.\n- **Optional self-identification.** A member may attach an identity to their seat. Standard kinds are proven by signing the lobby's challenge with that identity's key (a Nostr key, a Lightning node key). A free-text field is allowed and always shown as unverified.\n- **Identity** is new for each lobby by default; a member may choose to bring a lasting one.\n- **What is on Nostr.** A listing carries the terms the host has fixed and the acceptable range for the others, size limits, start time and an expiry. It changes rarely. Live details, such as how full a lobby is, are asked of the host directly.\n- **Track records.** A host may publish the factories it has funded. Whether members can likewise prove past participation by signing with keys or coins from earlier factories is to be investigated (it links a member's factories together, so it must be opt-in).\n- **Profiles:** all four ship: Safety, Standard, Starter, Circle.\n\n**Product**\n\n- **Chain servers:** well-known public servers at first; one of our own is added around launch.\n- **Reminders:** countdowns in the app first; then Nostr messages, email, and phone notifications with the mobile app. Ways to act while the member is away are collected in `AWAY.md`.\n- **The repository goes public now** (owner's decision), with `SECURITY.md` and `CONTRIBUTING.md` added first.\n\n**How we work**\n\n- **New rules and features follow a proposal process** modelled on BIPs and bLIPs: request in a set format, open discussion, ACK or NACK on record, then a separate decision on whether it ships. A proposal can be approved and not shipped, with the reason stated, so other factory software can adopt it. See `sips/`.\n- **Review:** independent AI review of every engine as it is built, by several different models; and before real funds, outside human reviewers, including people who try to break it. The owner arranges outside reviewers.\n- **Hand-off notes** are local documents; the owner pastes a short message pointing the other session to them.\n\n## 20. Lobby start rule and SIPs (2026-11-11)\n\n- **Start rule (owner):** a target, a minimum and a deadline. Reaching the target starts the lobby at once; at the deadline it starts if the minimum is met and is cancelled otherwise. Soup wallet's design had the same rule (`min_clients_to_start`, a force-start deadline, immediate start when full) and re-opened on a shortfall; here carry-over to the next lobby is an option and cancelling is the default. Coinjoin coordinators use the same pattern. Detail and the fit with SuperScalar are in `LOBBY.md`.\n- **Signing timing default:** long gathering, short signing, software signs automatically within the member's conditions. A long signing window is a host option. Soup treated signing as slow (up to 24 hours per response); that remains possible but is not the default, because signing secrets are not stored and one dropout restarts the round.\n- **Proposals are SIPs:** SuperScalar Improvement Proposals, in `sips/`, with categories Rule, Protocol, Process and Informational, a rule-request template and a worked example.\n- **Review** is arranged by the owner. This session brings the software to release candidates.\n\n## 21. Public repository, specifications, testing plan (2026-11-11)\n\n- The repository is public (owner's decision), with private vulnerability reporting enabled.\n- Drafted: `spec/safety-rule.md` (nine member-side checks C1 to C9, three host-side rules, definitions of owed, exit value and exit time) and `spec/signing-round.md` (six messages, states, nonce rules, proof of fault, never left half-finished). Both are draft 1 and unreviewed; each ends with its open points.\n- Checked against BIP 327 directly: a secret nonce must never sign twice; partial signature verification exists for identifying a disruptive signer and requires untampered contributions; a dishonest combiner could otherwise blame an honest signer; the standard does not cover convincing a third party. Our signed-contribution scheme extends it and needs expert review.\n- `TESTING.md` sets out the testing plan: seven levels, the simulator, nine invariants, regtest scenarios, and the bar for a release candidate.\n- Illustrated design page is at version 3.\n\n## 22. Design consolidated; design page version 4 (2026-11-11)\n\n- This file was `DESIGN.md` and is now the dated record. `DESIGN.md` is a consolidated statement of the design in force.\n- The illustrated page keeps its layout and gains sections that open for full detail, filled from the Markdown documents by `tools/build-design-page.py`. Its source also embeds the main documents and the source list, not displayed, for readers working from the file alone. Run the script after editing any source document.\n"
+ }
+}
+</script>
+<!--/gz:context-->
+<script>
+document.getElementById("openall").onclick=function(){document.querySelectorAll("details.more").forEach(function(d){d.open=true})};
+document.getElementById("closeall").onclick=function(){document.querySelectorAll("details.more").forEach(function(d){d.open=false})};
+</script>
 </body>
 </html>

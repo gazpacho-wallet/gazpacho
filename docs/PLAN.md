@@ -61,7 +61,8 @@ After that: more node adapters and a browser of hosts; swap-in and swap-out; a w
 | File | What it holds |
 |---|---|
 | `KNOWLEDGE-BASE.md` | Start here: glossary, facts, decisions in force, how sure we are of each claim |
-| `DESIGN.md` | The design and the record of decisions and findings |
+| `DESIGN.md` | The design currently in force |
+| `RECORD.md` | The dated record of findings, reviews and decisions |
 | `design.html`, `gazpacho-overview.html` | Illustrated versions, with earlier versions under `history/` |
 | `LOBBY.md`, `LOBBY-research.md` | The lobby design and the research behind it |
 | `HOST-NODES.md` | Lightning nodes a host can link to, and how hard each is |

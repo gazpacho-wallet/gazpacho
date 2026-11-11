@@ -7,7 +7,8 @@ The single place to start. It gathers what has been learned and decided, says ho
 | Need | Document |
 |---|---|
 | The short plan and milestones | `PLAN.md` |
-| The design, and the dated record of findings and decisions | `DESIGN.md` |
+| The design currently in force | `DESIGN.md` |
+| The dated record of findings, reviews and decisions | `RECORD.md` |
 | The testing plan | `TESTING.md` |
 | Specifications (safe-to-sign rule, signing round) | `../spec/` |
 | What is still undecided | `OPEN-QUESTIONS.md` |
@@ -15,7 +16,7 @@ The single place to start. It gathers what has been learned and decided, says ho
 | Lightning nodes a host can link to | `HOST-NODES.md` |
 | What existed at the start | `ASSESSMENT.md` |
 | Notes for the SuperScalar repo session | `handoff/` |
-| Illustrated pages (versioned) | `design.html`, `gazpacho-overview.html`, older versions in `history/` |
+| Illustrated pages (versioned) | `design.html` (carries the full detail in sections that open; rebuild with `tools/build-design-page.py` after editing a source document), `gazpacho-overview.html`, older versions in `history/` |
 | Questionnaires put to the owner | `design-review-1.html`, `questions-2.html` |
 | Imported code and its manifest | `../core/superscalar/IMPORT.md` |
 | How rules and features are proposed and decided (SIPs) | `sips/`, with a rule-request template and a worked example |
@@ -65,7 +66,7 @@ From ZmnSCPxj's posts on Delving Bitcoin (topics 1143 and 1242) as read in earli
 
 ## 4. What the reference code does today
 
-Tested or read; see `DESIGN.md` sections 16 and 18 and the hand-off note.
+Tested or read; see `RECORD.md` sections 16 and 18 and the hand-off note.
 
 | Fact | How we know |
 |---|---|
