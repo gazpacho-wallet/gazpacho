@@ -77,7 +77,10 @@ Tested or read; see `RECORD.md` sections 16 and 18 and the hand-off note.
 | It has run 127 members on signet | The project's own published record; not re-run by us |
 | A member cannot complete an exit alone on main: the channel transaction's fee is below the relay minimum. The SuperScalar session reports that its draft pull request 476 fixes this (the exit relays as a package with a fee-paying child) | Run on 2026-11-11; fix reported by the other session, not re-run by us |
 | Factories above 16 members in the reference code use several users per leaf on an older leaf type. One-member pseudo-Spilman leaves under wide upper levels have not been shown to work at 64, 127 or 512 members | Reported by the SuperScalar session on 2026-11-11 from its own runs |
-| The shared files cap a factory at 256 signers and 256 leaves, and 512 tree transactions | Read on 2026-11-11 |
+| The size figures in the shared headers (256 signers, 256 leaves, 512 tree transactions) are only defaults at the current import: the tree grows past them. One member per pseudo-Spilman leaf under wide upper levels builds, signs and verifies at 64, 127, 255, 512 and 1000 members, in one process with all keys | Built and run by us on 2026-11-11; under independent review |
+| Exit delay is 432 blocks (3 days) per timed level on a member's path; the leaf adds none. At 512 members: 3,888 blocks with two-way levels, 1,296 with two 16-way levels, 432 with those two levels fixed | Same run |
+| Limits that remain in the shared code: a level is at most 16 wide (15 if the node keeps its fee anchor); at most 8 levels; at most 8 timed layers; a pre-made nonce pool of 256 | Same run |
+| The shared code silently turns a small subtree under a wide level into one multi-member leaf, so small factories need different shapes from large ones | Same run |
 | The host funds before the tree is signed | Read in the code by the earlier session |
 | Only the funding output pays members at expiry; every tree node still has a host-only timeout branch | Read in the code by the earlier session |
 | Payment deadlines are fixed at 80, 40 and 18 blocks, far shorter than an exit | Read in the code by the earlier session |
@@ -168,7 +171,7 @@ Newest first within each area. The date is when the owner decided.
 
 ## 7. Risks we are carrying
 
-0. **The chosen leaf design is unproven at size.** Gazpacho's plan is one member per pseudo-Spilman leaf at up to 512 members. Nobody has run that shape above 16. It must be tested before anything is built on it; if it fails or its exits are too slow, several members per leaf is the fallback.
+0. **The chosen leaf design is proven only for building and one-process signing.** One member per pseudo-Spilman leaf works at up to 1000 members in that test. Still untested at size: signing by separate parties, state changes, a member building its own copy, and anything on a chain. The SuperScalar session is running the whole-program test.
 1. The channel update routine must be exactly right through crashes and reconnects.
 2. Channel state cannot be rebuilt from a recovery phrase.
 3. Members must be reachable at rotation and must watch the chain.

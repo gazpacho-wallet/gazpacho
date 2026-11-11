@@ -13,7 +13,7 @@ Kept current. Last updated 2026-11-11, after questions round 2.
 
 ## For this session to settle (research or build)
 
-5d. **Does one member per pseudo-Spilman leaf work at 64, 127, 255 and 512 members,** and how long is the exit? The SuperScalar session has offered to run it at 64 and 127. Gazpacho tests tree building and signing at those sizes at the start of M1. Until then the leaf decision is provisional.
+5d. **The table of tree shapes by size** that a host's terms may use, given the shape rules in `DESIGN.md` section 7, and how many timed levels the first release uses at each size (each costs 3 days of exit delay and 3 days of payment deadline).
 
 5. The precise definition of the member's safety rule.
 6. The signing round specification: messages, states, timers, and the proof of who broke a round. The proof scheme is our own reasoning and needs expert review.

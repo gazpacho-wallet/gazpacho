@@ -72,6 +72,7 @@ The full definition is `spec/safety-rule.md`. In brief:
 - Pseudo-Spilman leaves, one member per leaf. Payments never change the tree; liquidity changes do.
 - One funder per factory: the host. Members start at zero and are paid in over Lightning.
 - The tree's shape for each size is fixed by the host's terms; members are placed in an agreed order, host first.
+- Shape rules, from the scale check: a level is at most 15 wide; a wide level is used only where every subtree under it has more members than the width; two-way trees are not used at size (27 days to exit at 512 members); upper levels are fixed where possible, since each timed level adds 3 days to an exit. Small factories (4, 8, 32) have their own shapes.
 - Payment deadlines are computed from the factory's exit time plus a margin; payments with less headroom are refused.
 - A member's software exits automatically before expiry if nothing else has happened.
 - At wind-down a member pays their balance into the next factory over Lightning, or co-signs a close that funds the next factory directly.

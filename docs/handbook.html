@@ -207,6 +207,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c17-6-finding-partial-signatures-are-never-v" title="6. Finding: partial signatures are never verified individually">6. Finding: partial signatures are never verified individually</a>
 <a class="sec" href="#c17-7-request-raise-the-size-limit" title="7. Request: raise the size limit">7. Request: raise the size limit</a>
 <a class="sec" href="#c17-8-requests-about-planned-removals" title="8. Requests about planned removals">8. Requests about planned removals</a>
+<a class="sec" href="#c17-9-findings-from-a-scale-check-of-the-tre" title="9. Findings from a scale check of the tree builder (at `e657395`)">9. Findings from a scale check of the tree builder (at `e657395`)</a>
 <a class="sec" href="#c17-for-reference" title="For reference">For reference</a>
 <a class="sec" href="#c17-coming-later" title="Coming later">Coming later</a>
 <div class="group">Background</div>
@@ -237,6 +238,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c18-24-the-owner-s-decisions-for-the-supersc" title="24. The owner&#x27;s decisions for the SuperScalar repository (2026-11-11)">24. The owner&#x27;s decisions for the SuperScalar repository (2026-11-11)</a>
 <a class="sec" href="#c18-25-own-build-server-public-chain-servers" title="25. Own build server; public chain servers (2026-11-11)">25. Own build server; public chain servers (2026-11-11)</a>
 <a class="sec" href="#c18-26-vertical-slices-2026-11-11" title="26. Vertical slices (2026-11-11)">26. Vertical slices (2026-11-11)</a>
+<a class="sec" href="#c18-27-first-original-code-core-and-simulato" title="27. First original code: core and simulator skeletons, and the scale check (2026-11-11)">27. First original code: core and simulator skeletons, and the scale check (2026-11-11)</a>
 <a class="ch" href="#c19">Lobby research</a>
 <a class="sec" href="#c19-summary" title="Summary">Summary</a>
 <a class="sec" href="#c19-a1-prior-work-by-the-same-owner" title="A1. Prior work by the same owner">A1. Prior work by the same owner</a>
@@ -495,8 +497,20 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>Reported by the SuperScalar session on 2026-11-11 from its own runs</td>
 </tr>
 <tr>
-<td>The shared files cap a factory at 256 signers and 256 leaves, and 512 tree transactions</td>
-<td>Read on 2026-11-11</td>
+<td>The size figures in the shared headers (256 signers, 256 leaves, 512 tree transactions) are only defaults at the current import: the tree grows past them. One member per pseudo-Spilman leaf under wide upper levels builds, signs and verifies at 64, 127, 255, 512 and 1000 members, in one process with all keys</td>
+<td>Built and run by us on 2026-11-11; under independent review</td>
+</tr>
+<tr>
+<td>Exit delay is 432 blocks (3 days) per timed level on a member's path; the leaf adds none. At 512 members: 3,888 blocks with two-way levels, 1,296 with two 16-way levels, 432 with those two levels fixed</td>
+<td>Same run</td>
+</tr>
+<tr>
+<td>Limits that remain in the shared code: a level is at most 16 wide (15 if the node keeps its fee anchor); at most 8 levels; at most 8 timed layers; a pre-made nonce pool of 256</td>
+<td>Same run</td>
+</tr>
+<tr>
+<td>The shared code silently turns a small subtree under a wide level into one multi-member leaf, so small factories need different shapes from large ones</td>
+<td>Same run</td>
 </tr>
 <tr>
 <td>The host funds before the tree is signed</td>
@@ -623,7 +637,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>How members who are offline at rotation are reached.</li>
 </ul></div></details>
 <details id="c1-7-risks-we-are-carrying"><summary>7. Risks we are carrying</summary><div class="body"><ol>
-<li><strong>The chosen leaf design is unproven at size.</strong> Gazpacho's plan is one member per pseudo-Spilman leaf at up to 512 members. Nobody has run that shape above 16. It must be tested before anything is built on it; if it fails or its exits are too slow, several members per leaf is the fallback.</li>
+<li><strong>The chosen leaf design is proven only for building and one-process signing.</strong> One member per pseudo-Spilman leaf works at up to 1000 members in that test. Still untested at size: signing by separate parties, state changes, a member building its own copy, and anything on a chain. The SuperScalar session is running the whole-program test.</li>
 <li>The channel update routine must be exactly right through crashes and reconnects.</li>
 <li>Channel state cannot be rebuilt from a recovery phrase.</li>
 <li>Members must be reachable at rotation and must watch the chain.</li>
@@ -992,6 +1006,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Pseudo-Spilman leaves, one member per leaf. Payments never change the tree; liquidity changes do.</li>
 <li>One funder per factory: the host. Members start at zero and are paid in over Lightning.</li>
 <li>The tree's shape for each size is fixed by the host's terms; members are placed in an agreed order, host first.</li>
+<li>Shape rules, from the scale check: a level is at most 15 wide; a wide level is used only where every subtree under it has more members than the width; two-way trees are not used at size (27 days to exit at 512 members); upper levels are fixed where possible, since each timed level adds 3 days to an exit. Small factories (4, 8, 32) have their own shapes.</li>
 <li>Payment deadlines are computed from the factory's exit time plus a margin; payments with less headroom are refused.</li>
 <li>A member's software exits automatically before expiry if nothing else has happened.</li>
 <li>At wind-down a member pays their balance into the next factory over Lightning, or co-signs a close that funds the next factory directly.</li>
@@ -2484,7 +2499,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Is the full security catalogue from the earlier SuperScalar work copied into this repo</strong> as reference, or left where it is?</li>
 </ol>
 <p>5c. <strong>Raising the 256-member limit</strong> in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now.</p></div></details>
-<details id="c16-for-this-session-to-settle-research-or-b"><summary>For this session to settle (research or build)</summary><div class="body"><p>5d. <strong>Does one member per pseudo-Spilman leaf work at 64, 127, 255 and 512 members,</strong> and how long is the exit? The SuperScalar session has offered to run it at 64 and 127. Gazpacho tests tree building and signing at those sizes at the start of M1. Until then the leaf decision is provisional.</p>
+<details id="c16-for-this-session-to-settle-research-or-b"><summary>For this session to settle (research or build)</summary><div class="body"><p>5d. <strong>The table of tree shapes by size</strong> that a host's terms may use, given the shape rules in <code>DESIGN.md</code> section 7, and how many timed levels the first release uses at each size (each costs 3 days of exit delay and 3 days of payment deadline).</p>
 <ol>
 <li>The precise definition of the member's safety rule.</li>
 <li>The signing round specification: messages, states, timers, and the proof of who broke a round. The proof scheme is our own reasoning and needs expert review.</li>
@@ -2537,6 +2552,16 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Tag the last commit before the removals, so the old channel format and the outside-peer code stay reachable.</li>
 <li>Say when a merge touches any of the 17 imported files, and when one changes the tree's transactions (for example the tree-fees change or paying members at every output on expiry), so Gazpacho's reference values are regenerated.</li>
 </ul></div></details>
+<details id="c17-9-findings-from-a-scale-check-of-the-tre"><summary>9. Findings from a scale check of the tree builder (at `e657395`)</summary><div class="body"><p>Gazpacho built and signed one-user pseudo-Spilman leaves under wide upper levels at 16 to 1000 users, in one process, in Release and under AddressSanitizer + UBSan. Every valid shape built, signed and verified, including 512 and 1000. The size limits in <code>factory.h</code> are now only defaults, so item 7 above is largely answered. Defects found, none fixed here:</p>
+<ol>
+<li><code>src/factory.c:148</code> (<code>node_nsequence</code>): out-of-bounds read at index -1 of <code>dw_counter_t.layers[8]</code> when a leaf that is not pseudo-Spilman sits inside the fixed (static) levels (<code>factory.c:1652</code>, <code>:1669</code>). In Release it appears to work and reports a 0-block delay.</li>
+<li><code>src/dw_state.c:46</code> (<code>dw_counter_init</code>), reached from <code>factory.c:826</code> and <code>:884</code>: out-of-bounds write. <code>factory_init</code> sets the layer count to depth + 1 without the cap of 8. From 257 users the count is 9; from 513 it is 10. The next <code>factory_set_arity</code> call re-initialises correctly, so calling it straight after init avoids the problem.</li>
+<li><code>factory_early_warning_time</code> (<code>factory.c:4900</code>) and <code>factory_compute_ewt_for_shape</code> (<code>:4945</code>) under-report the exit delay by 432 blocks for each timed level beyond 8: they return 3,024 where the transactions sum to 3,456 (255 users, two-way), 3,888 (512) and 4,320 (1000).</li>
+<li><code>factory_append_tree_anchor</code> (<code>factory.c:501</code>) silently drops the anchor on a node with 16 outputs while still deducting its 240 sats.</li>
+<li><code>subtree_is_leaf</code> (<code>factory.c:949-956</code>) silently changes the leaf type when a wide level meets a subtree with no more users than the width.</li>
+<li>Read, not run: <code>apply_l_stock_hashlock</code> (<code>factory.c:393</code>) ignores a host-supplied leaf hash for node indexes of 512 or more.</li>
+</ol>
+<p>Other limits that remain: <code>FACTORY_MAX_OUTPUTS</code> 16 (a level is at most 16 wide, 15 with its anchor), <code>FACTORY_MAX_LEVELS</code> 8 (longer width lists are silently truncated), <code>DW_MAX_LAYERS</code> 8, <code>MUSIG_NONCE_POOL_MAX</code> 256. Detail and the full table: <code>docs/notes/tree-scale-check.md</code> in the Gazpacho repository (pull request 5).</p></div></details>
 <details id="c17-for-reference"><summary>For reference</summary><div class="body"><ul>
 <li>16 files build and run standalone with only secp256k1-zkp and libcrypto: factory, musig, dw_state, ladder, tx_builder, tapscript, adaptor, shachain, util, hd_key, bip39, bech32m, crypto_aead, fee, htlc_fee_bump, bolt11.</li>
 <li>A standalone program built from them reproduces the 14 on-chain tree transaction IDs of the real run exactly.</li>
@@ -2946,6 +2971,13 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Consequence: the chain port's HTTP backend is built first, the first vertical slice runs on signet, and regtest scenarios wait until a node we control exists. Until then those behaviours are tested in the simulator only.</li>
 </ul></div></details>
 <details id="c18-26-vertical-slices-2026-11-11"><summary>26. Vertical slices (2026-11-11)</summary><div class="body"><p>Owner's decision: build vertical slices on signet and testnet as the work proceeds, rather than finishing every engine before anything can be run. Slice 1 forms a factory; slice 2 makes a payment; slice 3 has a member leave alone. Each uses only tested engines and never skips the safe-to-sign check. Detail in <code>SLICES.md</code>. The chain port's HTTP backend is started alongside M1 so slice 1 is not held up.</p></div></details>
+<details id="c18-27-first-original-code-core-and-simulato"><summary>27. First original code: core and simulator skeletons, and the scale check (2026-11-11)</summary><div class="body"><ul>
+<li>Pull request 5 adds the core skeleton (events, actions, ports, the save-before-send runner, an empty node), the simulator skeleton (pretend storage, network and chain, crash injection, two invariants) and a scale check. Under independent review before merging.</li>
+<li><strong>Scale check result:</strong> one member per pseudo-Spilman leaf under wide upper levels builds, signs and verifies at up to 1000 members in a one-process test. The earlier worry that the leaf design was unproven at size is answered for building and signing; whole-program behaviour at size is still to be shown.</li>
+<li><strong>Exit delay</strong> is 3 days per timed level. This makes the choice of how many timed levels to ship a direct trade between moving liquidity and exit time, and rules out two-way trees at size.</li>
+<li>Six defects were found in the imported tree code outside the valid shapes or in reporting functions, and added to the hand-off note.</li>
+<li>The agent was locked out of the build server's remote login for about 25 minutes, probably by a rate limit on rapid connections. Agents are now told to do long work in one session.</li>
+</ul></div></details>
 </section>
 <section class="chapter" id="c19"><h2>Lobby research</h2><p class="desc">Background: how comparable systems gather people and handle those who stall, with sources.</p><p class="file">Lobby: research and design note · <code>docs/LOBBY-research.md</code></p>
 <div class="intro"><p>Research note, 2026-11-11. Status: proposal for the owner's decision. Nothing here is decided.</p>

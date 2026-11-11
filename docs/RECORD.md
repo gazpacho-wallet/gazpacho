@@ -355,3 +355,11 @@ Recorded here because they set what Gazpacho can expect from the files it import
 ## 26. Vertical slices (2026-11-11)
 
 Owner's decision: build vertical slices on signet and testnet as the work proceeds, rather than finishing every engine before anything can be run. Slice 1 forms a factory; slice 2 makes a payment; slice 3 has a member leave alone. Each uses only tested engines and never skips the safe-to-sign check. Detail in `SLICES.md`. The chain port's HTTP backend is started alongside M1 so slice 1 is not held up.
+
+## 27. First original code: core and simulator skeletons, and the scale check (2026-11-11)
+
+- Pull request 5 adds the core skeleton (events, actions, ports, the save-before-send runner, an empty node), the simulator skeleton (pretend storage, network and chain, crash injection, two invariants) and a scale check. Under independent review before merging.
+- **Scale check result:** one member per pseudo-Spilman leaf under wide upper levels builds, signs and verifies at up to 1000 members in a one-process test. The earlier worry that the leaf design was unproven at size is answered for building and signing; whole-program behaviour at size is still to be shown.
+- **Exit delay** is 3 days per timed level. This makes the choice of how many timed levels to ship a direct trade between moving liquidity and exit time, and rules out two-way trees at size.
+- Six defects were found in the imported tree code outside the valid shapes or in reporting functions, and added to the hand-off note.
+- The agent was locked out of the build server's remote login for about 25 minutes, probably by a rate limit on rapid connections. Agents are now told to do long work in one session.
