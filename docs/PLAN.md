@@ -38,7 +38,7 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 | | Outcome | State |
 |---|---|---|
 | M0 | Reference code run end to end; foundations shown to separate; reference values recorded | Done |
-| M0b | Foundations imported into this repo with a build and a reference test | In progress |
+| M0b | Foundations imported into this repo with a build and a reference test | Done |
 | M1 | Simulator skeleton; signing round engine; a fixed-tree factory created in the simulator with funding signed last | Next |
 | M2 | Channel engine on the standard taproot format; payment engine; invariants on | |
 | M3 | Exit, watch and schedule engines; crash and cheating runs pass | |

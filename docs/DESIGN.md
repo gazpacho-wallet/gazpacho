@@ -264,3 +264,15 @@ From a trial run of SuperScalar (main plus its start-up crash fix) on regtest wi
 - **Host nodes** are listed with difficulty in `HOST-NODES.md`. LND first.
 - **A member adding coins to their own leaf** (later feature): other members never sign anything involving it, and nothing above that leaf changes, so their exits and balances are unaffected. The added coins sit in a separate on-chain output under joint control of that member and the host, so a cooperative close or rotation must spend that output in the same transaction that pays the member. It is an extension beyond the published SuperScalar design, and needs review. See `OPEN-QUESTIONS.md` item 18.
 - Documents reorganised: `PLAN.md` rewritten; `LOBBY.md`, `HOST-NODES.md`, `OPEN-QUESTIONS.md` and `handoff/` added.
+
+## 18. M0b: foundations imported (2026-11-11)
+
+- `core/superscalar/` holds 38 files copied unchanged from SuperScalar at commit `3de6120` (17 source files, 20 headers, the licence). `IMPORT.md` lists each with its SHA-256. `tools/update-import.sh` refreshes the copy and fails if the reference test stops passing.
+- The reference test (`tests/test_reference_tree.c`) builds 4- and 8-member trees and compares every transaction ID with recorded values, including the 14 IDs from a real regtest run. It passes in a normal build and under the address and undefined-behaviour sanitizers, with no compiler warnings.
+- Only the signature library and a general cryptography library are linked.
+
+Found during the import, for the core's design:
+
+- **Member order can depend on the C library.** The tree builder sorts members with a comparison that returns "equal" for everyone by default, and the C sort is not required to keep equal items in order. Gazpacho must put the keys in an agreed order (host first) and select the builder's "sequential" placement before building, so the tree never depends on the sort.
+- **Partial signatures are not checked individually.** A function to verify one member's partial signature exists but nothing calls it; only the final combined signature is checked. Gazpacho's signing engine must verify every partial signature as it arrives, which is also what makes it possible to name who broke a round.
+- Randomness, the clock, one environment variable, 37 diagnostic prints and one test global are reached directly from the imported files (exact lines are in the hand-off note).

@@ -1,0 +1,132 @@
+#ifndef SUPERSCALAR_TX_BUILDER_H
+#define SUPERSCALAR_TX_BUILDER_H
+
+#include "types.h"
+#include <secp256k1_extrakeys.h>
+
+/* Serialization primitives */
+void tx_buf_write_u8(tx_buf_t *buf, uint8_t val);
+void tx_buf_write_u16_le(tx_buf_t *buf, uint16_t val);
+void tx_buf_write_u32_le(tx_buf_t *buf, uint32_t val);
+void tx_buf_write_u64_le(tx_buf_t *buf, uint64_t val);
+void tx_buf_write_varint(tx_buf_t *buf, uint64_t val);
+void tx_buf_write_bytes(tx_buf_t *buf, const unsigned char *data, size_t len);
+
+/* P2TR scriptPubKey: OP_1 <32-byte-x-only-key>. out34 must be >= 34 bytes. */
+void build_p2tr_script_pubkey(unsigned char *out34, const secp256k1_xonly_pubkey *key);
+
+typedef struct {
+    uint64_t amount_sats;
+    unsigned char script_pubkey[34];
+    size_t script_pubkey_len;
+} tx_output_t;
+
+/* Build unsigned single-input tx with custom nLockTime. */
+int build_unsigned_tx_with_locktime(
+    tx_buf_t *out,
+    unsigned char *txid_out32,     /* can be NULL */
+    const unsigned char *funding_txid,
+    uint32_t funding_vout,
+    uint32_t nsequence,
+    uint32_t nlocktime,
+    const tx_output_t *outputs,
+    size_t n_outputs
+);
+
+/* Build unsigned single-input tx (nVersion=2, nLockTime=0). */
+int build_unsigned_tx(
+    tx_buf_t *out,
+    unsigned char *txid_out32,     /* can be NULL */
+    const unsigned char *funding_txid,
+    uint32_t funding_vout,
+    uint32_t nsequence,
+    const tx_output_t *outputs,
+    size_t n_outputs
+);
+
+/* Build unsigned single-input tx with explicit nVersion (use 2 for standard, 3 for CPFP/TRUC).
+   All other fields identical to build_unsigned_tx. */
+int build_unsigned_tx_v(
+    tx_buf_t *out,
+    unsigned char *txid_out32,     /* can be NULL */
+    const unsigned char *funding_txid,
+    uint32_t funding_vout,
+    uint32_t nsequence,
+    const tx_output_t *outputs,
+    size_t n_outputs,
+    uint32_t nVersion
+);
+
+/* Multi-input variant. Each tx_input_t describes one (prev_txid, prev_vout,
+   nsequence) triple.  Used by PS sub-factory chain advance (chain[N+1]
+   spends ALL k+1 vouts of chain[N] — see #207 fix for the full design).
+   txids are 32-byte internal-byte-order (little-endian when written to the
+   wire format, matching build_unsigned_tx's `funding_txid` layout). */
+typedef struct {
+    unsigned char prev_txid[32];
+    uint32_t      prev_vout;
+    uint32_t      nsequence;
+} tx_input_t;
+
+int build_unsigned_tx_multi(
+    tx_buf_t *out,
+    unsigned char *txid_out32,     /* can be NULL */
+    const tx_input_t *inputs,
+    size_t n_inputs,
+    const tx_output_t *outputs,
+    size_t n_outputs,
+    uint32_t nVersion,             /* 2 standard, 3 TRUC */
+    uint32_t nlocktime
+);
+
+/* BIP-341 sighash (key-path, SIGHASH_DEFAULT). */
+int compute_taproot_sighash(
+    unsigned char *sighash_out32,
+    const unsigned char *unsigned_tx,
+    size_t tx_len,
+    uint32_t input_index,
+    const unsigned char *prev_scriptpubkey,
+    size_t prev_spk_len,
+    uint64_t prev_amount,
+    uint32_t nsequence
+);
+
+/* BIP-341 sighash (key-path, SIGHASH_DEFAULT) for a multi-input tx built by
+   build_unsigned_tx_multi.  Hashes the full prev{outpoints, amounts, scripts,
+   sequences} sets per BIP-341 §4.2 and binds to input_index.  Each per-input
+   array must have n_inputs entries.  prev_scriptpubkeys is an array of
+   pointers (so callers can pass non-contiguous SPKs without copying). */
+int compute_taproot_sighash_multi(
+    unsigned char *sighash_out32,
+    const unsigned char *unsigned_tx,
+    size_t tx_len,
+    uint32_t input_index,
+    size_t n_inputs,
+    const unsigned char * const *prev_scriptpubkeys,
+    const size_t *prev_spk_lens,
+    const uint64_t *prev_amounts,
+    const uint32_t *nsequences
+);
+
+/* Attach 64-byte Schnorr witness to unsigned tx. */
+int finalize_signed_tx(
+    tx_buf_t *out,
+    const unsigned char *unsigned_tx,
+    size_t unsigned_tx_len,
+    const unsigned char *sig64
+);
+
+/* Attach N 64-byte Schnorr witnesses (one per input) to a multi-input
+   unsigned tx built by build_unsigned_tx_multi.  Each witness is a single
+   64-byte schnorr key-path signature (SIGHASH_DEFAULT, no annex), serialized
+   in segwit format: per-input { varint(n_items=1) || varint(64) || sig64 }.
+   sig64s is a contiguous buffer of n_inputs * 64 bytes. */
+int finalize_signed_tx_multi(
+    tx_buf_t *out,
+    const unsigned char *unsigned_tx,
+    size_t unsigned_tx_len,
+    size_t n_inputs,
+    const unsigned char *sig64s
+);
+
+#endif /* SUPERSCALAR_TX_BUILDER_H */

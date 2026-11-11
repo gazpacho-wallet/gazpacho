@@ -1,0 +1,22 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitize: [OFF, ON]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=${{ matrix.sanitize }}
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

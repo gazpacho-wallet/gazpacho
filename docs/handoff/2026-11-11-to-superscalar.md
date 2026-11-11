@@ -43,6 +43,18 @@ A log callback, and moving the test hooks behind a build flag, would do.
 
 Tree transaction IDs depend on each participant's slot, and slot order today is the order in which clients connect. Two parties can only build the same tree if they are told the order. Either a canonical rule (for example, sorted by public key) or an explicit order carried in the proposal and checked by every client would remove the dependence on connection timing.
 
+## 5. Finding: tree order can depend on the C library's sort
+
+`factory_init_from_pubkeys` and `factory_init` set `placement_mode = PLACEMENT_TIMEZONE_CLUSTER` (`factory.c:888`, `:830`). `factory_build_tree` then sorts the clients with `cmp_timezone_cluster` (`factory.c:24-35`). `profiles[]` is zero-filled by default, so every comparison returns 0 and the result depends on how `qsort` orders equal elements, which the C standard leaves open. On glibc 2.39 the order comes out as 1..N. On another C library two honest parties could build different trees.
+
+Suggested: default to `PLACEMENT_SEQUENTIAL`, or add a final tie-break on participant index in the comparison.
+
+## 6. Finding: partial signatures are never verified individually
+
+`musig_verify_partial_sig` exists (`musig.c:423`) but has no caller. `factory_session_set_partial_sig` stores each partial signature unchecked, and `factory_session_complete_node` aggregates without checking. Only the final aggregate is verified (`factory_verify_all`). A bad partial signature is therefore detected only as a failed aggregate, with no way to tell who sent it.
+
+(Line numbers in sections 2 to 6 are at `3de6120`. At that commit the direct randomness reads are `musig.c:9-14`, `factory.c:3687-3697` and `bip39.c:262-265`; there are 37 `fprintf(stderr, ...)` calls in `factory.c`; the clock is read in `fee_estimator_static.c:45` and `:59`.)
+
 ## For reference
 
 - 16 files build and run standalone with only secp256k1-zkp and libcrypto: factory, musig, dw_state, ladder, tx_builder, tapscript, adaptor, shachain, util, hd_key, bip39, bech32m, crypto_aead, fee, htlc_fee_bump, bolt11.

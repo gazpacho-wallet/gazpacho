@@ -1,0 +1,238 @@
+#ifndef SUPERSCALAR_MUSIG_H
+#define SUPERSCALAR_MUSIG_H
+
+#include <secp256k1.h>
+#include <secp256k1_extrakeys.h>
+#include <secp256k1_schnorrsig.h>
+#include <secp256k1_musig.h>
+
+#include <stddef.h>
+
+typedef struct {
+    secp256k1_xonly_pubkey agg_pubkey;
+    secp256k1_musig_keyagg_cache cache;
+} musig_keyagg_t;
+
+/* Aggregate N pubkeys into a single x-only key. */
+int musig_aggregate_keys(
+    const secp256k1_context *ctx,
+    musig_keyagg_t *out,
+    const secp256k1_pubkey *pubkeys,
+    size_t n_pubkeys
+);
+
+/* All-local MuSig2 signing. Produces a 64-byte BIP-340 Schnorr sig. */
+int musig_sign_all_local(
+    const secp256k1_context *ctx,
+    unsigned char *sig64_out,
+    const unsigned char *msg32,
+    const secp256k1_keypair *keypairs,
+    size_t n_signers,
+    const musig_keyagg_t *keyagg
+);
+
+/* MuSig2 signing with taproot key-path tweak. Modifies keyagg. */
+int musig_sign_taproot(
+    const secp256k1_context *ctx,
+    unsigned char *sig64_out,
+    const unsigned char *msg32,
+    const secp256k1_keypair *keypairs,
+    size_t n_signers,
+    musig_keyagg_t *keyagg,
+    const unsigned char *merkle_root  /* NULL for keypath-only */
+);
+
+/* --- Serialization sizes --- */
+#define MUSIG_PUBNONCE_SERIALIZED_SIZE    66
+#define MUSIG_PARTIAL_SIG_SERIALIZED_SIZE 32
+
+/* --- Nonce pool (client-side pre-generation) --- */
+#define MUSIG_NONCE_POOL_MAX 256
+
+typedef struct {
+    secp256k1_musig_secnonce secnonce;
+    secp256k1_musig_pubnonce pubnonce;
+} musig_nonce_pair_t;
+
+typedef struct {
+    musig_nonce_pair_t nonces[MUSIG_NONCE_POOL_MAX];
+    size_t count;       /* total generated */
+    size_t next_unused; /* index of next available */
+} musig_nonce_pool_t;
+
+/* --- Signing session (one per transaction being signed) --- */
+#define MUSIG_SESSION_MAX_SIGNERS 256  /* max signers in one MuSig2 signing
+   session = LSP + up to 255 clients.  Raised 128 -> 256: MuSig2/Schnorr has no
+   such limit (verified by aggregating + signing + BIP-340-verifying up to 2048
+   signers), and the distributed session path (set_pubnonce/finalize/partial/agg)
+   is valgrind-clean at 256 with clean rejection past it.  See the standalone
+   proofs tools/test_musig_scale.c and tools/test_musig_session_scale.c.
+   secp256k1's aggregation takes size_t; this fixed array is the only cap. */
+
+#define MUSIG_SESSION_SMALL 8  /* sessions with <= this many signers use the inline
+                                  buffer: no heap, safe on uninitialized stack
+                                  sessions, no free needed (channel 2-of-2 etc.).
+                                  Larger sessions (big factory subtree nodes) are
+                                  heap-allocated to n_signers and MUST be released
+                                  with musig_session_free — factory_free does. */
+
+typedef struct {
+    secp256k1_musig_pubnonce *pubnonces; /* points at pubnonces_small when
+                                            n_signers <= MUSIG_SESSION_SMALL, else a
+                                            heap array sized to n_signers (subtree
+                                            size, not the global max — keeps a large
+                                            factory's tree O(N log N), not O(N^2)). */
+    size_t pubnonces_cap;                /* usable capacity of pubnonces[] */
+    secp256k1_musig_pubnonce pubnonces_small[MUSIG_SESSION_SMALL];
+    secp256k1_musig_aggnonce aggnonce;
+    secp256k1_musig_session session;
+    secp256k1_musig_keyagg_cache cache;  /* working copy, potentially tweaked */
+    secp256k1_xonly_pubkey agg_pubkey;   /* internal key (pre-tweak) */
+    unsigned char msg32[32];
+    size_t n_signers;
+    int nonces_collected;                /* count of pubnonces received */
+    int session_ready;                   /* nonce_process completed */
+} musig_signing_session_t;
+
+/* Free the dynamic pubnonces of a session (idempotent; safe on a zero-inited
+   or already-freed session).  Does not touch the enclosing struct otherwise. */
+void musig_session_free(musig_signing_session_t *session);
+
+/* --- Nonce pool functions --- */
+
+/* Generate a pool of N nonce pairs. Client calls this once at factory creation.
+   seckey + pubkey: required (NONNULL by secp256k1 API).
+   keyagg_cache: optional, pass for improved security if known.
+
+   Pool size guide: n_nodes_participated * n_epochs.
+   e.g., Client A in 4 nodes, 16 epochs -> pool of 64. */
+int musig_nonce_pool_generate(
+    const secp256k1_context *ctx,
+    musig_nonce_pool_t *pool,
+    size_t count,
+    const unsigned char *seckey32,
+    const secp256k1_pubkey *pubkey,
+    const secp256k1_musig_keyagg_cache *keyagg_cache  /* optional, may be NULL */
+);
+
+/* Get next unused nonce pair. Returns pointers to secnonce (client keeps)
+   and copies pubnonce to pubnonce_out (send to LSP). Returns 0 if exhausted. */
+int musig_nonce_pool_next(
+    musig_nonce_pool_t *pool,
+    secp256k1_musig_secnonce **secnonce_out,
+    secp256k1_musig_pubnonce *pubnonce_out
+);
+
+/* How many unused nonces remain */
+size_t musig_nonce_pool_remaining(const musig_nonce_pool_t *pool);
+
+/* --- Serialization (wire protocol) --- */
+
+int musig_pubnonce_serialize(
+    const secp256k1_context *ctx,
+    unsigned char *out66,
+    const secp256k1_musig_pubnonce *nonce
+);
+
+int musig_pubnonce_parse(
+    const secp256k1_context *ctx,
+    secp256k1_musig_pubnonce *nonce,
+    const unsigned char *in66
+);
+
+int musig_partial_sig_serialize(
+    const secp256k1_context *ctx,
+    unsigned char *out32,
+    const secp256k1_musig_partial_sig *sig
+);
+
+int musig_partial_sig_parse(
+    const secp256k1_context *ctx,
+    secp256k1_musig_partial_sig *sig,
+    const unsigned char *in32
+);
+
+/* --- Split-round signing session --- */
+
+/* Initialize a signing session with a keyagg result.
+   Copies keyagg_cache internally (will be tweaked in finalize step). */
+void musig_session_init(
+    musig_signing_session_t *session,
+    const musig_keyagg_t *keyagg,
+    size_t n_signers
+);
+
+/* Add a signer's pubnonce. signer_index: 0..n_signers-1.
+   Returns 1 on success, 0 on error. */
+int musig_session_set_pubnonce(
+    musig_signing_session_t *session,
+    size_t signer_index,
+    const secp256k1_musig_pubnonce *pubnonce
+);
+
+/* Finalize round 1: aggregate nonces, apply taproot tweak, create session.
+   Must be called after all pubnonces are set.
+   merkle_root: NULL for key-path-only, non-NULL for taproot script tree.
+   adaptor: NULL normally. Non-NULL for adaptor signatures (PTLC key turnover).
+   Applies taproot xonly tweak to session's keyagg cache copy. */
+int musig_session_finalize_nonces(
+    const secp256k1_context *ctx,
+    musig_signing_session_t *session,
+    const unsigned char *msg32,
+    const unsigned char *merkle_root,
+    const secp256k1_pubkey *adaptor       /* NULL for normal, non-NULL for PTLC */
+);
+
+/* #53-B3a: finalize a session signing the RAW aggregate key — NO taproot tweak
+   (not even BIP-86).  Matches musig_sign_all_local.  Use for tapscript SCRIPT-PATH
+   spends whose OP_CHECKSIG verifies the untweaked agg/internal key (e.g. the Leaf-P
+   L-stock poison).  Do NOT use for key-path spends (use musig_session_finalize_nonces
+   with the matching merkle_root). */
+int musig_session_finalize_nonces_untweaked(
+    const secp256k1_context *ctx,
+    musig_signing_session_t *session,
+    const unsigned char *msg32
+);
+
+/* Produce a partial signature. Uses secnonce (zeroed after -- single use!).
+   keypair: this signer's keypair. */
+int musig_create_partial_sig(
+    const secp256k1_context *ctx,
+    secp256k1_musig_partial_sig *partial_sig_out,
+    secp256k1_musig_secnonce *secnonce,
+    const secp256k1_keypair *keypair,
+    const musig_signing_session_t *session
+);
+
+/* Verify one signer's partial sig. Optional but recommended.
+   pubnonce: that signer's pubnonce (from set_pubnonce step).
+   pubkey: that signer's pubkey (must match keyagg order). */
+int musig_verify_partial_sig(
+    const secp256k1_context *ctx,
+    const secp256k1_musig_partial_sig *partial_sig,
+    const secp256k1_musig_pubnonce *pubnonce,
+    const secp256k1_pubkey *pubkey,
+    const musig_signing_session_t *session
+);
+
+/* Aggregate all partial sigs into final 64-byte Schnorr signature. */
+int musig_aggregate_partial_sigs(
+    const secp256k1_context *ctx,
+    unsigned char *sig64_out,
+    const musig_signing_session_t *session,
+    const secp256k1_musig_partial_sig *partial_sigs,
+    size_t n_sigs
+);
+
+/* --- Convenience: ad-hoc single nonce generation (no pool) --- */
+
+int musig_generate_nonce(
+    const secp256k1_context *ctx,
+    secp256k1_musig_secnonce *secnonce_out,
+    secp256k1_musig_pubnonce *pubnonce_out,
+    const unsigned char *seckey32,
+    const secp256k1_pubkey *pubkey,
+    const secp256k1_musig_keyagg_cache *keyagg_cache  /* optional */
+);
+
+#endif /* SUPERSCALAR_MUSIG_H */
