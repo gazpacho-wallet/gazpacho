@@ -185,4 +185,5 @@ Newest first within each area. The date is when the owner decided.
 - Commits are authored as `8144225309 <8144225309@users.noreply.github.com>`.
 - Automated checks run on GitHub for every push: a normal build and one with memory-error checkers.
 - The owner's machine is sometimes short of memory; long-running local helpers may be stopped. Pages open from disk without them.
+- Test transactions use a fee rate of 0.1 satoshi per virtual byte to preserve test coins (owner's instruction, 11 Nov). Anchor outputs for adding fees later are an accepted option. If a transaction at that rate does not spread, find out why before paying more.
 - Nothing is posted publicly, and nothing public is started, without the owner's say.
