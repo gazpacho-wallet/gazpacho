@@ -649,6 +649,16 @@ static void test_refusal_is_whole_and_fatal(void)
     CHECK(gz_runner_submit(&r, &l) == GZ_ERR_REFUSED);
     CHECK(g_log_n == 0 && gz_runner_failed(&r));
 
+    /* Too many bytes once what is already held is counted: 16 of 20 are in
+     * use, so 8 more do not fit although 8 alone would. */
+    log_reset();
+    CHECK(gz_runner_init(&r, slots, 4, bytes, 20, INCARNATION, record_execute, NULL) == GZ_OK);
+    list_begin(); add_save(100); add_send(1); add_send(2);
+    CHECK(gz_runner_submit(&r, &l) == GZ_OK && gz_runner_held(&r) == 2);
+    list_begin(); add_send(3);
+    CHECK(gz_runner_submit(&r, &l) == GZ_ERR_REFUSED);
+    CHECK(RELEASED(100) && gz_runner_failed(&r) && gz_runner_held(&r) == 2);
+
     /* More unconfirmed batches than the bound. */
     log_reset();
     CHECK(gz_runner_init(&r, slots, 4, bytes, sizeof bytes, INCARNATION, record_execute, NULL) == GZ_OK);
