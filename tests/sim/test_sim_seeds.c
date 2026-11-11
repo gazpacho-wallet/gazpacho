@@ -1,35 +1,80 @@
-/* Many seeds through the simulator with every fault switched on.
+/* Many seeds through the simulator.
  *
- * For each seed: a run with both invariants on must not fail; every tenth
- * seed is run a second time on its own and the two traces compared byte for
- * byte; and the same seed with a deliberately faulty node (defined here) must
- * be caught by "nothing is sent before it is saved".
+ * For each seed: a run with every invariant on, including "same seed, same
+ * run" in lockstep, must not fail; every tenth seed is run a second time on
+ * its own and the two traces compared byte for byte; and the same seed with a
+ * deliberately faulty program (sim_nodes.h) must be caught by "nothing is
+ * sent before it is saved" whenever that program saved anything.
  *
- * usage: test_sim_seeds [SEEDS [STEPS [FIRST_SEED]]]   (default 1000 400 1) */
-#include "sim.h"
+ * Odd seeds use the placeholder ping node, even seeds the multi node.
+ *
+ * usage: test_sim_seeds [SEEDS [STEPS [FIRST_SEED [PROFILE]]]]   (default 1000 400 1 0)
+ *
+ * Profiles:
+ *   0  every fault at a moderate rate, 2 to 6 nodes
+ *   1  no faults at all, a ping every step
+ *   2  every message duplicated, delayed and reordered, storage slow, a crash,
+ *      a ping and a block every step
+ *   3  every probability at 1: every message dropped, a crash every step
+ *   4  one node, a ping every step, storage always slow
+ *   5  one node, crash half the steps, duplicates and reordering
+ *   6  64 nodes, delays of length zero, confirmation depth zero
+ *   7  a different random configuration for every seed
+ *   8  one node, instant storage, a crash every step
+ *   9  a crash inside every release, storage that fails often */
+#include "sim_nodes.h"
 #include "../check.h"
-#include <stdlib.h>
-#include <string.h>
 
-static sim_config_t config_for(uint64_t seed)
+static uint64_t g_lcg;
+static uint32_t pick(uint32_t bound)
+{
+    g_lcg = g_lcg * 6364136223846793005ull + 1442695040888963407ull;
+    return (uint32_t)(g_lcg >> 33) % bound;
+}
+static uint32_t any_pm(void) { uint32_t k = pick(4); return k == 0 ? 0 : k == 1 ? 1000 : pick(1001); }
+
+static sim_config_t config_for(int profile, uint64_t seed)
 {
     sim_config_t c;
     memset(&c, 0, sizeof c);
-    c.seed = seed;
-    c.n_nodes = 2 + (uint32_t)(seed % 5);
-    c.drop_pm = 100; c.duplicate_pm = 100; c.delay_pm = 200; c.max_delay_steps = 6; c.reorder_pm = 200;
-    c.save_delay_pm = 400; c.max_save_delay_steps = 4; c.save_never_pm = 5;
-    c.crash_pm = 20; c.ping_pm = 400; c.block_pm = 50;
-    c.confirm_depth = 3;
+    c.seed = seed; c.n_nodes = 3; c.confirm_depth = 3; c.allow_refusals = 1;
+    if (seed % 2 == 0) c.ops = multi_ops();
+    switch (profile) {
+    case 0:
+        c.n_nodes = 2 + (uint32_t)(seed % 5);
+        c.drop_pm = 100; c.duplicate_pm = 100; c.delay_pm = 200; c.max_delay_steps = 6; c.reorder_pm = 200;
+        c.save_delay_pm = 400; c.max_save_delay_steps = 4; c.save_never_pm = 5; c.save_fail_pm = 5;
+        c.confirm_delay_pm = 300; c.max_confirm_delay_steps = 3;
+        c.crash_pm = 20; c.crash_in_release_pm = 10; c.ping_pm = 400; c.block_pm = 50;
+        break;
+    case 1: c.ping_pm = 1000; break;
+    case 2: c.duplicate_pm = 1000; c.delay_pm = 1000; c.max_delay_steps = 50; c.reorder_pm = 1000;
+            c.save_delay_pm = 1000; c.max_save_delay_steps = 20; c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 20;
+            c.crash_pm = 1000; c.ping_pm = 1000; c.block_pm = 1000; break;
+    case 3: c.drop_pm = c.duplicate_pm = c.delay_pm = c.reorder_pm = c.save_delay_pm = c.save_never_pm = 1000;
+            c.save_fail_pm = c.confirm_delay_pm = c.crash_pm = c.crash_in_release_pm = c.ping_pm = c.block_pm = 1000;
+            c.max_delay_steps = 9; c.max_save_delay_steps = 9; c.max_confirm_delay_steps = 9; break;
+    case 4: c.n_nodes = 1; c.save_delay_pm = 1000; c.max_save_delay_steps = 4; c.ping_pm = 1000; break;
+    case 5: c.n_nodes = 1; c.crash_pm = 500; c.save_delay_pm = 1000; c.max_save_delay_steps = 1;
+            c.duplicate_pm = 500; c.reorder_pm = 500; c.ping_pm = 1000; break;
+    case 6: c.n_nodes = 64; c.delay_pm = 1000; c.max_delay_steps = 0; c.save_delay_pm = 1000; c.max_save_delay_steps = 0;
+            c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 0; c.confirm_depth = 0;
+            c.ping_pm = 1000; c.block_pm = 1000; c.crash_pm = 300; c.reorder_pm = 1000; c.duplicate_pm = 1000; break;
+    case 7:
+        g_lcg = seed * 0x9E3779B97F4A7C15ull + 12345;
+        c.n_nodes = 1 + pick(9);
+        c.drop_pm = any_pm() / 2; c.duplicate_pm = any_pm(); c.delay_pm = any_pm(); c.max_delay_steps = pick(30);
+        c.reorder_pm = any_pm(); c.save_delay_pm = any_pm(); c.max_save_delay_steps = pick(12);
+        c.save_never_pm = pick(3) ? 0 : pick(30); c.save_fail_pm = pick(3) ? 0 : pick(200);
+        c.confirm_delay_pm = any_pm(); c.max_confirm_delay_steps = pick(12);
+        c.crash_pm = pick(3) ? pick(100) : any_pm(); c.crash_in_release_pm = pick(3) ? pick(100) : any_pm();
+        c.ping_pm = 200 + pick(801); c.block_pm = any_pm(); c.confirm_depth = pick(5);
+        break;
+    case 8: c.n_nodes = 1; c.crash_pm = 1000; c.ping_pm = 1000; break;
+    default: c.crash_in_release_pm = 1000; c.save_fail_pm = 200; c.save_delay_pm = 500; c.max_save_delay_steps = 3;
+             c.confirm_delay_pm = 500; c.max_confirm_delay_steps = 3; c.ping_pm = 1000; c.duplicate_pm = 300; break;
+    }
     return c;
-}
-
-/* FAULTY ON PURPOSE: carries out every action at once, without the runner. */
-static gz_status_t eager_release(void *ctx, sim_t *sim, uint32_t index, const gz_action_list_t *list)
-{
-    (void)ctx;
-    for (size_t i = 0; i < list->count; i++) sim_execute(sim, index, &list->slots[i]);
-    return GZ_OK;
 }
 
 static int cmp_u64(const void *a, const void *b)
@@ -43,30 +88,32 @@ int main(int argc, char **argv)
     uint64_t seeds = argc > 1 ? strtoull(argv[1], NULL, 10) : 1000;
     uint64_t steps = argc > 2 ? strtoull(argv[2], NULL, 10) : 400;
     uint64_t first = argc > 3 ? strtoull(argv[3], NULL, 10) : 1;
+    int profile = argc > 4 ? atoi(argv[4]) : 0;
     uint64_t *hashes = calloc(seeds ? seeds : 1, sizeof *hashes);
-    uint64_t failed = 0, replays = 0, replay_mismatch = 0, faulty_caught = 0, distinct = 0;
-    sim_stats_t total;
-    memset(&total, 0, sizeof total);
+    uint64_t failed = 0, replays = 0, replay_mismatch = 0, faulty_saved = 0, faulty_caught = 0, faulty_wrongly = 0, distinct = 0;
+    sim_stats_t t;
+    memset(&t, 0, sizeof t);
     if (!hashes) return 2;
 
     for (uint64_t i = 0; i < seeds; i++) {
-        sim_config_t c = config_for(first + i);
+        sim_config_t c = config_for(profile, first + i);
         c.check_same_seed = 1;
         sim_t *sim = sim_create(&c);
         sim_run(sim, steps);
         if (sim_failed(sim)) {
-            failed++;
-            printf("seed %llu FAILED at step %llu: %s\n", (unsigned long long)c.seed,
-                   (unsigned long long)sim_failure_step(sim), sim_failure_reason(sim));
+            if (failed++ < 5)
+                printf("seed %llu FAILED at step %llu: %s\n", (unsigned long long)c.seed,
+                       (unsigned long long)sim_failure_step(sim), sim_failure_reason(sim));
         }
         hashes[i] = sim_trace_hash(sim);
         const sim_stats_t *s = sim_stats(sim);
-        total.messages_sent += s->messages_sent; total.messages_dropped += s->messages_dropped;
-        total.messages_duplicated += s->messages_duplicated; total.messages_delayed += s->messages_delayed;
-        total.messages_delivered += s->messages_delivered; total.deliveries_reordered += s->deliveries_reordered;
-        total.world_replies += s->world_replies; total.saves_durable += s->saves_durable;
-        total.saves_lost += s->saves_lost; total.crashes += s->crashes; total.blocks += s->blocks;
-        total.lists_refused += s->lists_refused; total.handle_errors += s->handle_errors;
+        t.messages_sent += s->messages_sent; t.messages_dropped += s->messages_dropped;
+        t.messages_duplicated += s->messages_duplicated; t.messages_delayed += s->messages_delayed;
+        t.messages_delivered += s->messages_delivered; t.deliveries_reordered += s->deliveries_reordered;
+        t.world_replies += s->world_replies; t.saves_durable += s->saves_durable; t.saves_lost += s->saves_lost;
+        t.confirmations += s->confirmations; t.stale_confirmations += s->stale_confirmations;
+        t.storage_failures += s->storage_failures; t.crashes += s->crashes; t.crashes_in_release += s->crashes_in_release;
+        t.blocks += s->blocks; t.lists_refused += s->lists_refused; t.handle_errors += s->handle_errors;
 
         if (i % 10 == 0) {
             c.check_same_seed = 0;
@@ -80,11 +127,15 @@ int main(int argc, char **argv)
         }
         sim_destroy(sim);
 
-        c = config_for(first + i);
+        c = config_for(profile, first + i);
         c.ops.release = eager_release;
         sim_t *bad = sim_create(&c);
         sim_run(bad, steps);
-        faulty_caught += (uint64_t)sim_failed(bad);
+        uint64_t saved = sim_stats(bad)->saves_durable + sim_stats(bad)->saves_lost;
+        for (uint32_t n = 0; n < c.n_nodes; n++) saved += sim_storage_pending(sim_node_storage(bad, n));
+        faulty_saved += saved > 0;
+        faulty_caught += saved > 0 && sim_failed(bad);
+        faulty_wrongly += saved == 0 && sim_failed(bad);
         sim_destroy(bad);
     }
 
@@ -92,29 +143,32 @@ int main(int argc, char **argv)
     for (uint64_t i = 0; i < seeds; i++) distinct += i == 0 || hashes[i] != hashes[i - 1];
     free(hashes);
 
-    printf("seeds %llu (from %llu), %llu steps each\n", (unsigned long long)seeds,
-           (unsigned long long)first, (unsigned long long)steps);
-    printf("  runs that failed an invariant: %llu\n", (unsigned long long)failed);
-    printf("  distinct traces: %llu\n", (unsigned long long)distinct);
-    printf("  separate re-runs compared byte for byte: %llu, differing: %llu\n",
-           (unsigned long long)replays, (unsigned long long)replay_mismatch);
-    printf("  faulty-node runs caught: %llu of %llu\n", (unsigned long long)faulty_caught, (unsigned long long)seeds);
+#define N(x) ((unsigned long long)(x))
+    printf("profile %d: seeds %llu (from %llu), %llu steps each\n", profile, N(seeds), N(first), N(steps));
+    printf("  runs that failed an invariant: %llu\n", N(failed));
+    printf("  distinct traces: %llu\n", N(distinct));
+    printf("  separate re-runs compared byte for byte: %llu, differing: %llu\n", N(replays), N(replay_mismatch));
+    printf("  faulty-program runs caught: %llu of the %llu in which it saved anything (and %llu flagged without a save)\n",
+           N(faulty_caught), N(faulty_saved), N(faulty_wrongly));
     printf("  totals: sent %llu, dropped %llu, duplicated %llu, delayed %llu, delivered %llu, reordered %llu,\n"
-           "          replies to the world %llu, saves stored %llu, saves lost in crashes %llu, crashes %llu,\n"
-           "          blocks %llu, lists refused %llu, handle errors %llu\n",
-           (unsigned long long)total.messages_sent, (unsigned long long)total.messages_dropped,
-           (unsigned long long)total.messages_duplicated, (unsigned long long)total.messages_delayed,
-           (unsigned long long)total.messages_delivered, (unsigned long long)total.deliveries_reordered,
-           (unsigned long long)total.world_replies, (unsigned long long)total.saves_durable,
-           (unsigned long long)total.saves_lost, (unsigned long long)total.crashes,
-           (unsigned long long)total.blocks, (unsigned long long)total.lists_refused,
-           (unsigned long long)total.handle_errors);
+           "          replies to the world %llu, saves stored %llu, saves lost %llu, confirmations %llu, stale %llu,\n"
+           "          storage failures %llu, crashes %llu (inside a release %llu), blocks %llu, lists refused %llu,\n"
+           "          handle errors %llu\n",
+           N(t.messages_sent), N(t.messages_dropped), N(t.messages_duplicated), N(t.messages_delayed),
+           N(t.messages_delivered), N(t.deliveries_reordered), N(t.world_replies), N(t.saves_durable), N(t.saves_lost),
+           N(t.confirmations), N(t.stale_confirmations), N(t.storage_failures), N(t.crashes), N(t.crashes_in_release),
+           N(t.blocks), N(t.lists_refused), N(t.handle_errors));
 
     CHECK(failed == 0);
-    CHECK(distinct == seeds);
     CHECK(replay_mismatch == 0);
-    CHECK(faulty_caught == seeds);
-    CHECK(total.messages_dropped && total.messages_duplicated && total.messages_delayed &&
-          total.deliveries_reordered && total.crashes && total.saves_lost && total.world_replies);
+    CHECK(faulty_caught == faulty_saved && faulty_wrongly == 0);
+    CHECK(t.handle_errors == 0);
+    if (profile == 0) {
+        CHECK(distinct == seeds);
+        CHECK(faulty_saved == seeds);
+        CHECK(t.messages_dropped && t.messages_duplicated && t.messages_delayed && t.deliveries_reordered &&
+              t.crashes && t.crashes_in_release && t.saves_lost && t.world_replies && t.stale_confirmations &&
+              t.storage_failures && t.confirmations);
+    }
     return check_done();
 }

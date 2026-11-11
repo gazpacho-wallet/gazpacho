@@ -44,7 +44,7 @@ typedef struct {
         struct { uint64_t timer_id; } timer;                    /* TIMER_FIRED */
         gz_chain_event_t chain;                                 /* CHAIN */
         struct { gz_bytes_t bytes; } user;                      /* USER_COMMAND: opaque for now */
-        struct { uint64_t batch_id; } storage;                  /* STORAGE_CONFIRMED */
+        struct { gz_batch_id_t batch; } storage;                /* STORAGE_CONFIRMED */
     } u;
 } gz_event_t;
 
