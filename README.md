@@ -7,6 +7,7 @@ One program lets you **join** a factory, where many people share a single on-cha
 **Status: planning. Nothing here is usable yet. The first release will be signet-only.**
 
 - [Knowledge base: start here](docs/KNOWLEDGE-BASE.md)
+- Everything in one page: `docs/handbook.html` (open it from disk)
 - [Plan](docs/PLAN.md)
 - [Design](docs/DESIGN.md), with the [dated record](docs/RECORD.md) of how it got there
 - [Testing plan](docs/TESTING.md) and [specifications](spec/)

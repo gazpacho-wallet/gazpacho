@@ -321,7 +321,7 @@ Found during the import, for the core's design:
 - `TESTING.md` sets out the testing plan: seven levels, the simulator, nine invariants, regtest scenarios, and the bar for a release candidate.
 - Illustrated design page is at version 3.
 
-## 22. Design consolidated; design page version 4 (2026-11-11)
+## 22. Design consolidated; handbook page (2026-11-11)
 
 - This file was `DESIGN.md` and is now the dated record. `DESIGN.md` is a consolidated statement of the design in force.
-- The illustrated page keeps its layout and gains sections that open for full detail, filled from the Markdown documents by `tools/build-design-page.py`. Its source also embeds the main documents and the source list, not displayed, for readers working from the file alone. Run the script after editing any source document.
+- `docs/handbook.html` is a separate page holding every project document: a list of contents when closed, the complete text when opened, with a side menu and a find box. It is generated from the Markdown documents by `tools/build-handbook.py`; run the script after editing any document. The illustrated `design.html` stays as it was at version 3 (an earlier attempt to fold the detail into it was withdrawn at the owner's request).

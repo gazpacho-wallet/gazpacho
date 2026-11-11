@@ -16,7 +16,8 @@ The single place to start. It gathers what has been learned and decided, says ho
 | Lightning nodes a host can link to | `HOST-NODES.md` |
 | What existed at the start | `ASSESSMENT.md` |
 | Notes for the SuperScalar repo session | `handoff/` |
-| Illustrated pages (versioned) | `design.html` (carries the full detail in sections that open; rebuild with `tools/build-design-page.py` after editing a source document), `gazpacho-overview.html`, older versions in `history/` |
+| Illustrated pages (versioned) | `design.html`, `gazpacho-overview.html`, older versions in `history/` |
+| Everything in one file | `handbook.html`: a list of contents when closed, the full text of every document when opened. Rebuild with `tools/build-handbook.py` after editing any document |
 | Questionnaires put to the owner | `design-review-1.html`, `questions-2.html` |
 | Imported code and its manifest | `../core/superscalar/IMPORT.md` |
 | How rules and features are proposed and decided (SIPs) | `sips/`, with a rule-request template and a worked example |
