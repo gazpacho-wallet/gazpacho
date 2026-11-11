@@ -56,3 +56,4 @@ target_compile_definitions(test_reference_tree PRIVATE
   GZ_REFERENCE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/superscalar-tree-txids.txt")
 add_test(NAME reference_tree
   COMMAND test_reference_tree ${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/superscalar-tree-txids.txt)
+add_subdirectory(wallet)
