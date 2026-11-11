@@ -81,7 +81,8 @@ check "accept the same outpoint listed twice" $E \
   'if (output_cmp(&out[k - 1], &out[k]) == 0) goto done; /* same outpoint twice */' ''
 check "accept upper-case or non-canonical hex" $C \
   "if (c >= 'a' && c <= 'f') return c - 'a' + 10;" \
-  "if (c >= 'a' && c <= 'f') return c - 'a' + 10; if (c >= 'A' && c <= 'F') return c - 'A' + 10;"
+  "if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;"
 check "accept a non-canonical length inside a transaction" $C \
   'if (v < min) return false;' '(void)min;'
 check "accept a transaction with bytes left over" $C \
@@ -153,7 +154,8 @@ check "confirm without checking the header is the block in the status" $V \
 check "confirm without checking the proof is for the same height" $V \
   'if (out->proof.block_height != out->status.height) return GZ_CHAIN_BAD_PROOF;' ''
 check "confirm without checking proof of work" $V \
-  'if (gz_header_check_pow(out->header, network) != GZ_POW_OK) return GZ_CHAIN_BAD_PROOF;' ''
+  'if (gz_header_check_pow(out->header, network) != GZ_POW_OK) return GZ_CHAIN_BAD_PROOF;' \
+  '(void)network;'
 check "confirm although the server offers no proof" $V \
   'if (r == GZ_CHAIN_NOT_FOUND) return GZ_CHAIN_BAD_PROOF; /* confirmed but no proof offered */' \
   'if (r == GZ_CHAIN_NOT_FOUND) return GZ_CHAIN_OK;'
@@ -166,7 +168,8 @@ check "proof of work: do not compare the hash with the target" $H \
 check "proof of work: allow any target however easy" $H \
   'if (memcmp(target, limit, GZ_HASH_LEN) > 0) return GZ_POW_TOO_EASY;' ''
 check "header link check that always passes" $H \
-  'return memcmp(h, next + 4, GZ_HASH_LEN) == 0;' '(void)h; return true;'
+  'return memcmp(h, next + 4, GZ_HASH_LEN) == 0;' '(void)next;
+  return true;'
 
 echo "== the tool"
 check "gz-chain does not refuse broadcast on mainnet" $G \

@@ -955,6 +955,19 @@ static void test_confirm_tx_single_server(test_state *T) {
   /* the same answers fail a proof-of-work network's rules */
   CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_MAINNET, a, &conf), GZ_CHAIN_BAD_PROOF);
 
+  /* A proof whose branch is right but which says it is for another height
+   * than the status: the server contradicts itself. */
+  size_t plen;
+  char *moved = test_read_data("tx_a_merkle_proof.json", &plen);
+  char *digits = strstr(moved, "329438");
+  CHECK(digits != NULL);
+  if (digits != NULL) memcpy(digits, "329439", 6);
+  fake_set(&x.fake, false, BASE "/tx/" TX_A "/merkle-proof", 200, moved);
+  CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, &conf), GZ_CHAIN_BAD_PROOF);
+  fake_set_file(&x.fake, BASE "/tx/" TX_A "/merkle-proof", 200, "tx_a_merkle_proof.json");
+  CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, &conf), GZ_CHAIN_OK);
+  free(moved);
+
   /* A server invents a confirmation for a transaction that is not in the
    * block (TX_NONE), and backs it with a real proof belonging to TX_A. */
   fake_set_file(&x.fake, BASE "/tx/" TX_NONE "/status", 200, "tx_a_status.json");
