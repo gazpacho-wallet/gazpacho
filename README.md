@@ -6,6 +6,7 @@ One program lets you **join** a factory, where many people share a single on-cha
 
 **Status: planning. Nothing here is usable yet. The first release will be signet-only.**
 
+- [Knowledge base: start here](docs/KNOWLEDGE-BASE.md)
 - [Plan](docs/PLAN.md)
 - [Design and decision record](docs/DESIGN.md)
 - [The lobby](docs/LOBBY.md)
