@@ -55,6 +55,17 @@ Suggested: default to `PLACEMENT_SEQUENTIAL`, or add a final tie-break on partic
 
 (Line numbers in sections 2 to 6 are at `3de6120`. At that commit the direct randomness reads are `musig.c:9-14`, `factory.c:3687-3697` and `bip39.c:262-265`; there are 37 `fprintf(stderr, ...)` calls in `factory.c`; the clock is read in `fee_estimator_static.c:45` and `:59`.)
 
+## 7. Request: raise the size limit
+
+`FACTORY_MAX_SIGNERS` and `FACTORY_MAX_LEAVES` are 256 in `factory.h` (the host plus up to 255 members). The owner's target is 512 members per factory, then 1,024.
+
+## 8. Requests about planned removals
+
+- Remove the older leaf types, not the timed layers above the leaves: Gazpacho's first release ships the full layered tree.
+- Before deleting the older leaf types, confirm that pseudo-Spilman leaves under wide upper levels build and sign at the target sizes; the repository's own shape table uses the older types above 16 members.
+- Tag the last commit before the removals, so the old channel format and the outside-peer code stay reachable.
+- Say when a merge touches any of the 17 imported files, and when one changes the tree's transactions (for example the tree-fees change or paying members at every output on expiry), so Gazpacho's reference values are regenerated.
+
 ## For reference
 
 - 16 files build and run standalone with only secp256k1-zkp and libcrypto: factory, musig, dw_state, ladder, tx_builder, tapscript, adaptor, shachain, util, hd_key, bip39, bech32m, crypto_aead, fee, htlc_fee_bump, bolt11.

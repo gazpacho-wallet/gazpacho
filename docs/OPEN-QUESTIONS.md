@@ -9,6 +9,10 @@ Kept current. Last updated 2026-11-11, after questions round 2.
 3. **Review of the two drafted specifications** (`spec/`): the open points at the end of each, and an expert look at the proof-of-fault scheme.
 4. **Is the full security catalogue from the earlier SuperScalar work copied into this repo** as reference, or left where it is?
 
+5a. **Should the SuperScalar repository still rebuild its own channel code,** now that Gazpacho is building the channel on Lightning's standard format? Suggested: no; it keeps its current channel code with the safety fixes under way and concentrates on the shared low-level files and the construction fixes.
+5b. **Light-client mode in the reference programs:** remove or disable it (suggested, since Gazpacho covers running without a Bitcoin node), or still fix it there?
+5c. **Raising the 256-member limit** in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now.
+
 ## For this session to settle (research or build)
 
 5. The precise definition of the member's safety rule.

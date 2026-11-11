@@ -191,6 +191,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c15-4-request-a-defined-rule-for-participant" title="4. Request: a defined rule for participant order">4. Request: a defined rule for participant order</a>
 <a class="sec" href="#c15-5-finding-tree-order-can-depend-on-the-c" title="5. Finding: tree order can depend on the C library&#x27;s sort">5. Finding: tree order can depend on the C library&#x27;s sort</a>
 <a class="sec" href="#c15-6-finding-partial-signatures-are-never-v" title="6. Finding: partial signatures are never verified individually">6. Finding: partial signatures are never verified individually</a>
+<a class="sec" href="#c15-7-request-raise-the-size-limit" title="7. Request: raise the size limit">7. Request: raise the size limit</a>
+<a class="sec" href="#c15-8-requests-about-planned-removals" title="8. Requests about planned removals">8. Requests about planned removals</a>
 <a class="sec" href="#c15-for-reference" title="For reference">For reference</a>
 <a class="sec" href="#c15-coming-later" title="Coming later">Coming later</a>
 <div class="group">Background</div>
@@ -2217,7 +2219,10 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Who besides the owner can approve a SIP.</strong></li>
 <li><strong>Review of the two drafted specifications</strong> (<code>spec/</code>): the open points at the end of each, and an expert look at the proof-of-fault scheme.</li>
 <li><strong>Is the full security catalogue from the earlier SuperScalar work copied into this repo</strong> as reference, or left where it is?</li>
-</ol></div></details>
+</ol>
+<p>5a. <strong>Should the SuperScalar repository still rebuild its own channel code,</strong> now that Gazpacho is building the channel on Lightning's standard format? Suggested: no; it keeps its current channel code with the safety fixes under way and concentrates on the shared low-level files and the construction fixes.
+5b. <strong>Light-client mode in the reference programs:</strong> remove or disable it (suggested, since Gazpacho covers running without a Bitcoin node), or still fix it there?
+5c. <strong>Raising the 256-member limit</strong> in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now.</p></div></details>
 <details id="c14-for-this-session-to-settle-research-or-b"><summary>For this session to settle (research or build)</summary><div class="body"><ol>
 <li>The precise definition of the member's safety rule.</li>
 <li>The signing round specification: messages, states, timers, and the proof of who broke a round. The proof scheme is our own reasoning and needs expert review.</li>
@@ -2263,6 +2268,13 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p>Suggested: default to <code>PLACEMENT_SEQUENTIAL</code>, or add a final tie-break on participant index in the comparison.</p></div></details>
 <details id="c15-6-finding-partial-signatures-are-never-v"><summary>6. Finding: partial signatures are never verified individually</summary><div class="body"><p><code>musig_verify_partial_sig</code> exists (<code>musig.c:423</code>) but has no caller. <code>factory_session_set_partial_sig</code> stores each partial signature unchecked, and <code>factory_session_complete_node</code> aggregates without checking. Only the final aggregate is verified (<code>factory_verify_all</code>). A bad partial signature is therefore detected only as a failed aggregate, with no way to tell who sent it.</p>
 <p>(Line numbers in sections 2 to 6 are at <code>3de6120</code>. At that commit the direct randomness reads are <code>musig.c:9-14</code>, <code>factory.c:3687-3697</code> and <code>bip39.c:262-265</code>; there are 37 <code>fprintf(stderr, ...)</code> calls in <code>factory.c</code>; the clock is read in <code>fee_estimator_static.c:45</code> and <code>:59</code>.)</p></div></details>
+<details id="c15-7-request-raise-the-size-limit"><summary>7. Request: raise the size limit</summary><div class="body"><p><code>FACTORY_MAX_SIGNERS</code> and <code>FACTORY_MAX_LEAVES</code> are 256 in <code>factory.h</code> (the host plus up to 255 members). The owner's target is 512 members per factory, then 1,024.</p></div></details>
+<details id="c15-8-requests-about-planned-removals"><summary>8. Requests about planned removals</summary><div class="body"><ul>
+<li>Remove the older leaf types, not the timed layers above the leaves: Gazpacho's first release ships the full layered tree.</li>
+<li>Before deleting the older leaf types, confirm that pseudo-Spilman leaves under wide upper levels build and sign at the target sizes; the repository's own shape table uses the older types above 16 members.</li>
+<li>Tag the last commit before the removals, so the old channel format and the outside-peer code stay reachable.</li>
+<li>Say when a merge touches any of the 17 imported files, and when one changes the tree's transactions (for example the tree-fees change or paying members at every output on expiry), so Gazpacho's reference values are regenerated.</li>
+</ul></div></details>
 <details id="c15-for-reference"><summary>For reference</summary><div class="body"><ul>
 <li>16 files build and run standalone with only secp256k1-zkp and libcrypto: factory, musig, dw_state, ladder, tx_builder, tapscript, adaptor, shachain, util, hd_key, bip39, bech32m, crypto_aead, fee, htlc_fee_bump, bolt11.</li>
 <li>A standalone program built from them reproduces the 14 on-chain tree transaction IDs of the real run exactly.</li>
