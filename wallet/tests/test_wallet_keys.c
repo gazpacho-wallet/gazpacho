@@ -1,8 +1,10 @@
 /* Unit tests for gazpacho_wallet_keys.
  *
- * The official BIP vectors are run by test_wallet_vectors.  This file tests
- * what the vectors do not reach: the test networks, refusals, limits, hygiene,
- * the key-path signing key, and what the imported hd_key.c does and does not do.
+ * The official BIP vectors are run by test_wallet_vectors and BIP 32's forced
+ * rare cases by test_wallet_rare.  This file tests what those do not reach:
+ * the test networks, refusals, limits, hygiene, overlapping arguments, reason
+ * codes, the key-path signing key, and what the imported hd_key.c does and
+ * does not do.
  */
 #include <stdio.h>
 #include <string.h>
@@ -496,7 +498,7 @@ static void test_addresses(void) {
     /* scriptPubKey layout. */
     {
         unsigned char spk[34];
-        gzw_p2tr_script_pubkey(key, spk);
+        CHECK(gzw_p2tr_script_pubkey(key, spk));
         CHECK(spk[0] == 0x51 && spk[1] == 0x20 && memcmp(spk + 2, key, 32) == 0);
     }
 }
@@ -673,6 +675,403 @@ static void test_signing(const secp256k1_context *ctx) {
     gzw_wipe(&untweaked, sizeof(untweaked));
 }
 
+/* ---- cases added after the review of pull request 6 ------------------------ */
+
+/* Bech32 checksum arithmetic, repeated here so that the test can build
+   strings the library's own encoder refuses to make. */
+static uint32_t t_polymod_step(uint32_t c, unsigned v) {
+    unsigned c0 = c >> 25;
+    c = ((c & 0x1ffffffu) << 5) ^ v;
+    if (c0 & 1) c ^= 0x3b6a57b2u;
+    if (c0 & 2) c ^= 0x26508e6du;
+    if (c0 & 4) c ^= 0x1ea119fau;
+    if (c0 & 8) c ^= 0x3d4233ddu;
+    if (c0 & 16) c ^= 0x2a1462b3u;
+    return c;
+}
+
+/* A correctly checksummed Bech32m string: hrp, '1', ndata symbols, checksum. */
+static void t_make_bech32m(const char *hrp, size_t ndata, char *out) {
+    static const char charset[] = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    size_t hrp_len = strlen(hrp), pos = 0;
+    uint32_t c = 1;
+    for (size_t i = 0; i < hrp_len; i++) c = t_polymod_step(c, (unsigned char)hrp[i] >> 5);
+    c = t_polymod_step(c, 0);
+    for (size_t i = 0; i < hrp_len; i++) c = t_polymod_step(c, (unsigned char)hrp[i] & 31);
+    memcpy(out, hrp, hrp_len);
+    pos = hrp_len;
+    out[pos++] = '1';
+    for (size_t i = 0; i < ndata; i++) {
+        unsigned v = (unsigned)((i * 7 + 3) & 31);
+        c = t_polymod_step(c, v);
+        out[pos++] = charset[v];
+    }
+    for (int i = 0; i < 6; i++) c = t_polymod_step(c, 0);
+    c ^= 0x2bc830a3u;
+    for (int i = 0; i < 6; i++) out[pos++] = charset[(c >> (5 * (5 - i))) & 31];
+    out[pos] = '\0';
+}
+
+static void test_bech32_length(void) {
+    char s[256];
+    /* Short prefix "a": 2 + ndata + 6 characters in all. */
+    t_make_bech32m("a", 82, s);
+    CHECK(strlen(s) == 90);
+    CHECK(gzw_bech32_check(s) == GZW_BECH32_BECH32M); /* the builder is right */
+    t_make_bech32m("a", 83, s);
+    CHECK(strlen(s) == 91);
+    CHECK(gzw_bech32_check(s) == GZW_BECH32_NONE); /* one character too long */
+    t_make_bech32m("a", 120, s);
+    CHECK(gzw_bech32_check(s) == GZW_BECH32_NONE);
+    t_make_bech32m("tb", 200, s);
+    CHECK(gzw_bech32_check(s) == GZW_BECH32_NONE);
+    CHECK(gzw_bech32_check(NULL) == GZW_BECH32_NONE);
+    CHECK(gzw_bech32_check("") == GZW_BECH32_NONE);
+    /* A taproot-shaped address that is too long is not an address either. */
+    {
+        unsigned char prog[40];
+        size_t plen = 0;
+        int version = -1;
+        t_make_bech32m("tb", 100, s);
+        CHECK(!gzw_segwit_address_decode("tb", s, &version, prog, &plen));
+    }
+}
+
+static void test_parity(const secp256k1_context *ctx) {
+    gzw_xprv master;
+    int seen[2] = {0, 0};
+
+    CHECK(public_master(ctx, &master));
+    for (uint32_t index = 0; index < 24; index++) {
+        gzw_bip86_output o;
+        secp256k1_keypair kp;
+        secp256k1_pubkey full;
+        unsigned char q[32], ser[33];
+        size_t len = 33;
+        int parity = -1;
+
+        CHECK(gzw_bip86_tweaked_keypair(ctx, &master, GZW_NET_SIGNET, 0, 0, index, &kp, &o, NULL));
+        CHECK(gzw_taproot_output_key(ctx, o.internal_key, q, &parity));
+        CHECK(memcmp(q, o.output_key, 32) == 0);
+        /* The full public key of the signing pair says which Y the output
+           key has: 02 even, 03 odd. */
+        CHECK(secp256k1_keypair_pub(ctx, &full, &kp));
+        CHECK(secp256k1_ec_pubkey_serialize(ctx, ser, &len, &full, SECP256K1_EC_COMPRESSED));
+        CHECK(parity == (ser[0] == 0x03));
+        CHECK(parity == 0 || parity == 1);
+        if (parity == 0 || parity == 1) seen[parity] = 1;
+        CHECK(gzw_taproot_output_key(ctx, o.internal_key, q, NULL)); /* NULL allowed */
+    }
+    CHECK(seen[0] && seen[1]);
+    gzw_wipe(&master, sizeof(master));
+}
+
+static void test_aliasing(const secp256k1_context *ctx) {
+    gzw_xprv master, a, b;
+    gzw_xpub pa, pb;
+    unsigned char key[32], q[32], buf[34], sk[32], q2[32];
+    secp256k1_keypair kp;
+    uint32_t path[2] = {0, 3};
+
+    CHECK(public_master(ctx, &master));
+
+    /* Account key written over the master key it came from. */
+    CHECK(gzw_bip86_account_xprv(ctx, &master, GZW_NET_SIGNET, 0, &a, NULL));
+    b = master;
+    CHECK(gzw_bip86_account_xprv(ctx, &b, GZW_NET_SIGNET, 0, &b, NULL));
+    CHECK(memcmp(a.key, b.key, 32) == 0 && memcmp(a.chain_code, b.chain_code, 32) == 0);
+    CHECK(b.depth == 3);
+    /* ...and on failure the shared object is zeroed (b is no longer a master). */
+    CHECK(!gzw_bip86_account_xprv(ctx, &b, GZW_NET_SIGNET, 0, &b, NULL));
+    CHECK(all_zero(&b, sizeof(b)));
+
+    /* Child and path derivation in place. */
+    CHECK(gzw_bip32_derive_priv(ctx, &a, path, 2, &b, NULL));
+    CHECK(gzw_bip32_derive_priv(ctx, &a, path, 2, &a, NULL));
+    CHECK(memcmp(a.key, b.key, 32) == 0 && a.depth == 5);
+    CHECK(gzw_bip32_neuter(ctx, &master, &pa));
+    CHECK(gzw_bip32_derive_pub(ctx, &pa, path, 2, &pb, NULL));
+    CHECK(gzw_bip32_derive_pub(ctx, &pa, path, 2, &pa, NULL));
+    CHECK(memcmp(pa.pubkey, pb.pubkey, 33) == 0 && pa.depth == 2);
+    /* In place and failing: the input is zeroed. */
+    b = master;
+    b.depth = 255;
+    CHECK(!gzw_bip32_child_priv(ctx, &b, 0, &b, NULL));
+    CHECK(all_zero(&b, sizeof(b)));
+    CHECK(!gzw_bip32_child_pub(ctx, &pa, GZW_HARDENED, &pa, NULL));
+    CHECK(all_zero(&pa, sizeof(pa)));
+
+    /* Output key written over the internal key. */
+    CHECK(gzw_bip32_neuter(ctx, &a, &pb));
+    memcpy(key, pb.pubkey + 1, 32);
+    CHECK(gzw_taproot_output_key(ctx, key, q, NULL));
+    CHECK(memcmp(q, key, 32) != 0);
+    CHECK(gzw_taproot_output_key(ctx, key, key, NULL));
+    CHECK(memcmp(q, key, 32) == 0);
+
+    /* Output key written over the private key it was made from. */
+    memcpy(sk, a.key, 32);
+    CHECK(gzw_taproot_tweak_seckey(ctx, sk, &kp, q2));
+    CHECK(gzw_taproot_tweak_seckey(ctx, sk, &kp, sk));
+    CHECK(memcmp(sk, q2, 32) == 0);
+    CHECK(memcmp(q, q2, 32) == 0);
+
+    /* scriptPubKey built in the buffer that holds the key. */
+    memcpy(buf, q, 32);
+    CHECK(gzw_p2tr_script_pubkey(buf, buf));
+    CHECK(buf[0] == 0x51 && buf[1] == 0x20 && memcmp(buf + 2, q, 32) == 0);
+    memcpy(buf + 2, q, 32);
+    CHECK(gzw_p2tr_script_pubkey(buf + 2, buf));
+    CHECK(buf[0] == 0x51 && buf[1] == 0x20 && memcmp(buf + 2, q, 32) == 0);
+
+    /* NULL arguments of gzw_p2tr_script_pubkey. */
+    memset(buf, 0xff, sizeof(buf));
+    CHECK(!gzw_p2tr_script_pubkey(NULL, buf));
+    CHECK(all_zero(buf, sizeof(buf)));
+    CHECK(!gzw_p2tr_script_pubkey(q, NULL));
+    CHECK(!gzw_p2tr_script_pubkey(NULL, NULL));
+
+    gzw_wipe(&master, sizeof(master));
+    gzw_wipe(&a, sizeof(a));
+    gzw_wipe(&b, sizeof(b));
+    gzw_wipe(&kp, sizeof(kp));
+    gzw_wipe(sk, sizeof(sk));
+}
+
+static void test_reasons(const secp256k1_context *ctx) {
+    unsigned char seed[32];
+    gzw_xprv master, a, bad;
+    gzw_xpub mp, pa, badp;
+    gzw_bip86_output o;
+    secp256k1_keypair kp;
+    gzw_reason why;
+    uint32_t hard_path[1] = {GZW_HARDENED};
+
+    for (size_t i = 0; i < 32; i++) seed[i] = (unsigned char)(i + 1);
+
+    why = GZW_REASON_INTERNAL;
+    CHECK(gzw_bip32_master(ctx, seed, 32, &master, &why) && why == GZW_REASON_OK);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_master(ctx, seed, 15, &a, &why) && why == GZW_REASON_BAD_ARGUMENT);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_master(ctx, NULL, 32, &a, &why) && why == GZW_REASON_BAD_ARGUMENT);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_master(ctx, seed, 32, NULL, &why) && why == GZW_REASON_BAD_ARGUMENT);
+    CHECK(gzw_bip32_neuter(ctx, &master, &mp));
+
+    /* child_priv */
+    why = GZW_REASON_INTERNAL;
+    CHECK(gzw_bip32_child_priv(ctx, &master, 0, &a, &why) && why == GZW_REASON_OK);
+    bad = master;
+    bad.depth = 255;
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_child_priv(ctx, &bad, 0, &a, &why) && why == GZW_REASON_BAD_ARGUMENT);
+    bad = master;
+    memset(bad.key, 0, 32);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_child_priv(ctx, &bad, 0, &a, &why) && why == GZW_REASON_INVALID_KEY);
+    memset(bad.key, 0xff, 32); /* not below the group order */
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_child_priv(ctx, &bad, GZW_HARDENED, &a, &why) &&
+          why == GZW_REASON_INVALID_KEY);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_child_priv(ctx, NULL, 0, &a, &why) && why == GZW_REASON_BAD_ARGUMENT);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_derive_priv(ctx, &bad, hard_path, 1, &a, &why) &&
+          why == GZW_REASON_INVALID_KEY);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_derive_priv(ctx, &master, NULL, 1, &a, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT);
+    why = GZW_REASON_INTERNAL;
+    CHECK(gzw_bip32_derive_priv(ctx, &master, hard_path, 1, &a, &why) && why == GZW_REASON_OK);
+
+    /* child_pub */
+    why = GZW_REASON_INTERNAL;
+    CHECK(gzw_bip32_child_pub(ctx, &mp, 0, &pa, &why) && why == GZW_REASON_OK);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_child_pub(ctx, &mp, GZW_HARDENED, &pa, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_derive_pub(ctx, &mp, hard_path, 1, &pa, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT);
+    badp = mp;
+    memset(badp.pubkey + 1, 0, 32);
+    badp.pubkey[32] = 7; /* no point has x = 7 */
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_child_pub(ctx, &badp, 0, &pa, &why) && why == GZW_REASON_INVALID_KEY);
+    badp = mp;
+    badp.depth = 255;
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip32_child_pub(ctx, &badp, 0, &pa, &why) && why == GZW_REASON_BAD_ARGUMENT);
+
+    /* BIP 86 layer */
+    why = GZW_REASON_INTERNAL;
+    CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 0, 0, 0, &o, &why) &&
+          why == GZW_REASON_OK);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 0, 2, 0, &o, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip86_output_from_master(ctx, &a, GZW_NET_SIGNET, 0, 0, 0, &o, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT); /* a is not a master key */
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip86_output_from_master(ctx, &master, (gzw_network)17, 0, 0, 0, &o, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT);
+    bad = master;
+    memset(bad.key, 0, 32);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip86_output_from_master(ctx, &bad, GZW_NET_SIGNET, 0, 0, 0, &o, &why) &&
+          why == GZW_REASON_INVALID_KEY);
+    why = GZW_REASON_INTERNAL;
+    CHECK(gzw_bip86_tweaked_keypair(ctx, &master, GZW_NET_SIGNET, 0, 0, 0, &kp, &o, &why) &&
+          why == GZW_REASON_OK);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip86_tweaked_keypair(ctx, &master, GZW_NET_SIGNET, 0, 0, GZW_HARDENED, &kp,
+                                     &o, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT);
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip86_account_xpub(ctx, &a, GZW_NET_SIGNET, 0, &pa, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT);
+    why = GZW_REASON_INTERNAL;
+    CHECK(gzw_bip86_account_xpub(ctx, &master, GZW_NET_SIGNET, 0, &pa, &why) &&
+          why == GZW_REASON_OK);
+
+    /* The account key rule of gzw_bip86_output_from_xpub: depth 3 exactly,
+       and the right account. */
+    why = GZW_REASON_INTERNAL;
+    CHECK(gzw_bip86_output_from_xpub(ctx, &pa, GZW_NET_SIGNET, 0, 0, 0, &o, &why) &&
+          why == GZW_REASON_OK);
+    badp = pa;
+    badp.depth = 4;
+    why = GZW_REASON_OK;
+    memset(&o, 0xff, sizeof(o));
+    CHECK(!gzw_bip86_output_from_xpub(ctx, &badp, GZW_NET_SIGNET, 0, 0, 0, &o, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT);
+    CHECK(all_zero(&o, sizeof(o)));
+    badp.depth = 2;
+    CHECK(!gzw_bip86_output_from_xpub(ctx, &badp, GZW_NET_SIGNET, 0, 0, 0, &o, NULL));
+    badp.depth = 0;
+    CHECK(!gzw_bip86_output_from_xpub(ctx, &badp, GZW_NET_SIGNET, 0, 0, 0, &o, NULL));
+    why = GZW_REASON_OK;
+    CHECK(!gzw_bip86_output_from_xpub(ctx, &pa, GZW_NET_SIGNET, 1, 0, 0, &o, &why) &&
+          why == GZW_REASON_BAD_ARGUMENT);
+
+    /* Every reason has its own fixed text. */
+    {
+        static const gzw_reason all[] = {GZW_REASON_OK, GZW_REASON_BAD_ARGUMENT,
+                                         GZW_REASON_INVALID_KEY, GZW_REASON_INVALID_CHILD,
+                                         GZW_REASON_INTERNAL};
+        for (size_t i = 0; i < 5; i++) {
+            CHECK(gzw_reason_text(all[i]) != NULL && gzw_reason_text(all[i])[0] != '\0');
+            for (size_t j = i + 1; j < 5; j++)
+                CHECK(strcmp(gzw_reason_text(all[i]), gzw_reason_text(all[j])) != 0);
+        }
+        CHECK(gzw_reason_text((gzw_reason)99) != NULL);
+    }
+
+    gzw_wipe(&master, sizeof(master));
+    gzw_wipe(&a, sizeof(a));
+    gzw_wipe(&bad, sizeof(bad));
+    gzw_wipe(&kp, sizeof(kp));
+}
+
+static void test_key_text(const secp256k1_context *ctx) {
+    static const gzw_network nets[] = {GZW_NET_MAINNET, GZW_NET_TESTNET, GZW_NET_TESTNET4,
+                                       GZW_NET_SIGNET, GZW_NET_REGTEST};
+    gzw_xprv master, back;
+    gzw_xpub pub, pback, badp;
+    char s[GZW_XKEY_STR_MAX], with_one[GZW_XKEY_STR_MAX + 2];
+    int is_mainnet;
+
+    CHECK(public_master(ctx, &master));
+    CHECK(gzw_bip32_neuter(ctx, &master, &pub));
+
+    /* The network picks the version bytes; it is not a yes/no flag.
+       (GZW_NET_MAINNET is 0: with a flag, passing a network would invert it.) */
+    for (size_t i = 0; i < 5; i++) {
+        int want_main = (nets[i] == GZW_NET_MAINNET);
+        CHECK(gzw_xprv_to_string(&master, nets[i], s));
+        CHECK(strncmp(s, want_main ? "xprv" : "tprv", 4) == 0);
+        is_mainnet = -1;
+        CHECK(gzw_xprv_from_string(ctx, s, &back, &is_mainnet) && is_mainnet == want_main);
+        CHECK(gzw_xpub_to_string(&pub, nets[i], s));
+        CHECK(strncmp(s, want_main ? "xpub" : "tpub", 4) == 0);
+        is_mainnet = -1;
+        CHECK(gzw_xpub_from_string(ctx, s, &pback, &is_mainnet) && is_mainnet == want_main);
+    }
+    memset(s, 0x55, sizeof(s));
+    CHECK(!gzw_xprv_to_string(&master, (gzw_network)17, s));
+    CHECK(all_zero(s, sizeof(s)));
+    memset(s, 0x55, sizeof(s));
+    CHECK(!gzw_xpub_to_string(&pub, (gzw_network)17, s));
+    CHECK(all_zero(s, sizeof(s)));
+    CHECK(!gzw_xpub_to_string(&pub, (gzw_network)-1, s));
+
+    /* A public key whose first byte is not 02 or 03 is not written. */
+    {
+        static const unsigned char bad_prefix[] = {0x00, 0x01, 0x04, 0x06, 0xff};
+        for (size_t i = 0; i < sizeof(bad_prefix); i++) {
+            badp = pub;
+            badp.pubkey[0] = bad_prefix[i];
+            memset(s, 0x55, sizeof(s));
+            CHECK(!gzw_xpub_to_string(&badp, GZW_NET_SIGNET, s));
+            CHECK(all_zero(s, sizeof(s)));
+        }
+    }
+
+    /* Extra leading '1' characters stand for extra zero bytes in Base58, so
+       the text is no longer an extended key. */
+    CHECK(gzw_xpub_to_string(&pub, GZW_NET_SIGNET, s));
+    CHECK(gzw_xpub_from_string(ctx, s, &pback, NULL));
+    snprintf(with_one, sizeof(with_one), "1%s", s);
+    CHECK(!gzw_xpub_from_string(ctx, with_one, &pback, NULL));
+    CHECK(gzw_xprv_to_string(&master, GZW_NET_SIGNET, s));
+    CHECK(gzw_xprv_from_string(ctx, s, &back, NULL));
+    snprintf(with_one, sizeof(with_one), "1%s", s);
+    CHECK(!gzw_xprv_from_string(ctx, with_one, &back, NULL));
+    CHECK(all_zero(&back, sizeof(back)));
+
+    gzw_wipe(&master, sizeof(master));
+    gzw_wipe(&back, sizeof(back));
+    gzw_wipe(s, sizeof(s));
+    gzw_wipe(with_one, sizeof(with_one));
+}
+
+static void test_review_misc(const secp256k1_context *ctx) {
+    unsigned char seed[64];
+    gzw_xprv master;
+    gzw_bip86_output t3, t4, sg;
+    gzw_network net = GZW_NET_MAINNET;
+
+    /* Passphrase bytes: 0x7f is the last one accepted, 0x80 the first refused. */
+    CHECK(gzw_phrase_to_seed(PUBLIC_PHRASE, "\x7f", seed));
+    memset(seed, 0xff, sizeof(seed));
+    CHECK(!gzw_phrase_to_seed(PUBLIC_PHRASE, "\x80", seed));
+    CHECK(all_zero(seed, sizeof(seed)));
+    CHECK(!gzw_phrase_to_seed(PUBLIC_PHRASE, "a\x80", seed));
+    CHECK(!gzw_phrase_to_seed(PUBLIC_PHRASE, "\xff", seed));
+
+    /* testnet4 is a network of its own, although today it shares the address
+       prefix and the coin type with testnet and signet, so the three give the
+       same addresses for the same phrase. */
+    CHECK(GZW_NET_TESTNET4 != GZW_NET_TESTNET && GZW_NET_TESTNET4 != GZW_NET_SIGNET);
+    CHECK(gzw_network_from_name("testnet4", &net) && net == GZW_NET_TESTNET4);
+    CHECK(gzw_network_from_name("testnet", &net) && net == GZW_NET_TESTNET);
+    CHECK(strcmp(gzw_network_name(GZW_NET_TESTNET4), "testnet4") == 0);
+    CHECK(strcmp(gzw_network_name(GZW_NET_TESTNET), "testnet") == 0);
+    CHECK(!gzw_network_from_name("testnet3", &net));
+    CHECK(!gzw_network_from_name("testnet-4", &net));
+    CHECK(!gzw_network_from_name("testnet44", &net));
+    CHECK(!gzw_network_from_name("testnet ", &net));
+    CHECK(public_master(ctx, &master));
+    CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_TESTNET, 0, 0, 2, &t3, NULL));
+    CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_TESTNET4, 0, 0, 2, &t4, NULL));
+    CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 0, 0, 2, &sg, NULL));
+    CHECK(strcmp(t3.address, t4.address) == 0 && strcmp(t4.address, sg.address) == 0);
+    CHECK(memcmp(t3.path, t4.path, sizeof(t3.path)) == 0);
+    gzw_wipe(&master, sizeof(master));
+}
+
 int main(void) {
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!ctx) {
@@ -686,6 +1085,12 @@ int main(void) {
     test_addresses();
     test_bip86(ctx);
     test_signing(ctx);
+    test_bech32_length();
+    test_parity(ctx);
+    test_aliasing(ctx);
+    test_reasons(ctx);
+    test_key_text(ctx);
+    test_review_misc(ctx);
     secp256k1_context_destroy(ctx);
 
     printf("test_wallet_keys: %d checks, %d failed\n", checks, failures);
