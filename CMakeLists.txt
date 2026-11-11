@@ -62,3 +62,37 @@ add_test(NAME reference_tree
 add_executable(tree_shapes tests/scale/tree_shapes.c)
 target_link_libraries(tree_shapes PRIVATE gazpacho_superscalar)
 target_compile_options(tree_shapes PRIVATE -Wall -Wextra -Werror)
+
+# --- Gazpacho core: new code, portable C with no system calls -----------------
+# -Werror applies to new code only; the imported files above keep their own flags.
+set(GZ_NEW_CODE_WARNINGS -Wall -Wextra -Werror)
+
+add_library(gazpacho_core STATIC
+  core/gazpacho/action.c
+  core/gazpacho/runner.c
+  core/gazpacho/node.c)
+target_include_directories(gazpacho_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
+target_compile_options(gazpacho_core PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+# --- Simulator: deterministic harness around the core. Never linked into it. ---
+add_library(gazpacho_sim STATIC sim/rng.c sim/sim.c)
+target_include_directories(gazpacho_sim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sim)
+target_link_libraries(gazpacho_sim PUBLIC gazpacho_core)
+target_compile_options(gazpacho_sim PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+function(gz_add_test name source library)
+  add_executable(test_${name} ${source})
+  target_link_libraries(test_${name} PRIVATE ${library})
+  target_compile_options(test_${name} PRIVATE ${GZ_NEW_CODE_WARNINGS})
+  add_test(NAME ${name} COMMAND test_${name} ${ARGN})
+endfunction()
+
+gz_add_test(action    tests/core/test_action.c    gazpacho_core)
+gz_add_test(runner    tests/core/test_runner.c    gazpacho_core)
+gz_add_test(node      tests/core/test_node.c      gazpacho_core)
+gz_add_test(rng       tests/sim/test_rng.c        gazpacho_sim)
+gz_add_test(sim       tests/sim/test_sim.c        gazpacho_sim)
+gz_add_test(sim_seeds tests/sim/test_sim_seeds.c  gazpacho_sim 1000 400)
+
+add_test(NAME core_no_system_calls
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-symbols.sh $<TARGET_FILE:gazpacho_core>)

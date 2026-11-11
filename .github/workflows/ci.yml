@@ -19,4 +19,8 @@ jobs:
       - name: Build
         run: cmake --build build -j
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        # Reference tree, core (action list, runner, node, no system calls),
+        # simulator (generator, harness, 1,000 seeds).
+        run: ctest --test-dir build --output-on-failure --timeout 600
+      - name: Scale check, one small case
+        run: ./build/tree_shapes 64 8,ps 0
