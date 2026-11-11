@@ -19,8 +19,9 @@ jobs:
       - name: Build
         run: cmake --build build -j
       - name: Test
-        # Reference tree, core (action list, runner, node, no system calls),
-        # simulator (generator, harness, 1,000 seeds).
+        # Reference tree; core (action list, runner, node, isolation check and
+        # its negative test); simulator (generator, harness, known trace,
+        # 1,000 seeds, nine extreme fault profiles).
         run: ctest --test-dir build --output-on-failure --timeout 600
-      - name: Scale check, one small case
-        run: ./build/tree_shapes 64 8,ps 0
+      - name: Scale check, one small case and the two defect reproductions
+        run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects

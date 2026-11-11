@@ -78,7 +78,7 @@ static void test_save_copies_records(void)
     uint8_t one[5] = {1, 1, 1, 1, 1}, two[2] = {2, 2};
     gz_record_t records[3] = {{100, {one, 5}}, {200, {two, 2}}, {300, {NULL, 0}}};
     gz_action_t a = {.kind = GZ_ACTION_SAVE};
-    a.u.save.batch_id = 77;
+    a.u.save.batch.sequence = 77;
     a.u.save.records = records;
     a.u.save.n_records = 3;
     /* Start the byte block at an odd address so the record array must be aligned. */
@@ -87,7 +87,7 @@ static void test_save_copies_records(void)
     memset(one, 0, sizeof one); memset(two, 0, sizeof two); memset(records, 0, sizeof records);
 
     const gz_action_t *got = &list.slots[0];
-    CHECK(got->kind == GZ_ACTION_SAVE && got->u.save.batch_id == 77 && got->u.save.n_records == 3);
+    CHECK(got->kind == GZ_ACTION_SAVE && got->u.save.batch.sequence == 77 && got->u.save.n_records == 3);
     CHECK((uintptr_t)got->u.save.records % _Alignof(gz_record_t) == 0);
     CHECK(got->u.save.records[0].type == 100 && got->u.save.records[0].bytes.len == 5 &&
           got->u.save.records[0].bytes.data[4] == 1);
@@ -100,6 +100,10 @@ static void test_save_copies_records(void)
     a.u.save.records = NULL;
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
     CHECK(list.slots[1].u.save.n_records == 0 && list.slots[1].u.save.records == NULL);
+
+    a.u.save.records = records;     /* a stray pointer with a zero count is not kept */
+    CHECK(gz_action_list_add(&list, &a) == GZ_OK);
+    CHECK(list.slots[2].u.save.n_records == 0 && list.slots[2].u.save.records == NULL);
 }
 
 static void test_full_list_is_left_unchanged(void)
@@ -121,9 +125,28 @@ static void test_full_list_is_left_unchanged(void)
     CHECK(gz_action_list_add(&list, &save) == GZ_ERR_NO_SPACE);
     CHECK(list.count == 1 && list.used == used);
 
-    save.u.save.n_records = (size_t)-1 / 2;                         /* absurd count: no overflow */
+    save.u.save.n_records = (size_t)-1 / 2;                         /* absurd count */
     CHECK(gz_action_list_add(&list, &save) == GZ_ERR_NO_SPACE);
     CHECK(list.count == 1 && list.used == used);
+
+    /* A count chosen so that count * sizeof(gz_record_t) wraps round to a
+     * few bytes. Without the guard on the count the array would seem to fit
+     * and records would be written over the block before the bytes ran out.
+     * The block must come back untouched. */
+    gz_record_t many[16];
+    int untouched = 1;
+    for (int i = 0; i < 16; i++) many[i] = (gz_record_t){(uint32_t)i, {big, 30}};
+    memset(bytes, 0xaa, sizeof bytes);
+    gz_action_list_init(&list, slots, 2, bytes, sizeof bytes);
+    save.u.save.records = many;
+    save.u.save.n_records = (size_t)-1 / sizeof(gz_record_t) + 1;
+    CHECK(save.u.save.n_records * sizeof(gz_record_t) < sizeof(gz_record_t));
+    CHECK(gz_action_list_add(&list, &save) == GZ_ERR_NO_SPACE);
+    for (size_t i = 0; i < sizeof bytes; i++) untouched &= bytes[i] == 0xaa;
+    CHECK(untouched && list.count == 0 && list.used == 0);
+    gz_action_list_init(&list, slots, 2, bytes, sizeof bytes);
+    a = send_action(1, big, 200);
+    CHECK(gz_action_list_add(&list, &a) == GZ_OK);
 
     a = send_action(2, big, 1);
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);

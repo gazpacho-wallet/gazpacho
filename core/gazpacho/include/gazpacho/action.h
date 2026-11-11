@@ -2,8 +2,15 @@
  * that carries them out of one step.
  *
  * The core returns actions in the order they must be carried out. The runner
- * (runner.h) enforces that nothing is sent before the save ahead of it is
+ * (runner.h) enforces that nothing is sent before the saves ahead of it are
  * stored.
+ *
+ * Order matters in one more way. Actions other than saves are carried out in
+ * the order listed, and a send, broadcast or notify waits until every save
+ * listed before it is stored. So A TIMER THAT TIMES OUT A SEND MUST COME AFTER
+ * THAT SEND IN THE LIST. Placed after, the timer is set only when the message
+ * has actually left. Placed before, it would be set at once while the message
+ * still waits for storage, and could fire before the message was ever sent.
  *
  * Memory. An action list uses a caller-provided arena: the caller hands over an
  * array of action slots and a block of bytes, and the list copies every
@@ -42,9 +49,14 @@ typedef struct {
 typedef struct {
     gz_action_kind_t kind;
     union {
-        /* SAVE: all records are stored or none. `batch_id` comes back in the
-         * GZ_EVENT_STORAGE_CONFIRMED event once the batch is safely stored. */
-        struct { uint64_t batch_id; const gz_record_t *records; size_t n_records; } save;
+        /* SAVE: all records are stored or none. `batch` is not chosen by the
+         * node: whatever it holds when the list is submitted is ignored, and
+         * the runner writes the identifier it issues before the executor sees
+         * the action. The same identifier comes back in the
+         * GZ_EVENT_STORAGE_CONFIRMED event once the batch is safely stored.
+         * A batch with no records is still a batch: it is stored, confirmed
+         * and waited for like any other. */
+        struct { gz_batch_id_t batch; const gz_record_t *records; size_t n_records; } save;
         struct { uint64_t peer_id; gz_bytes_t bytes; } send;       /* SEND */
         struct { gz_bytes_t tx; } broadcast;                       /* BROADCAST */
         struct { gz_bytes_t script; } watch;                       /* WATCH */
