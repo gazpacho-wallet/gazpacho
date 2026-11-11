@@ -16,7 +16,7 @@ The single place to start. It gathers what has been learned and decided, says ho
 | Illustrated pages (versioned) | `design.html`, `gazpacho-overview.html`, older versions in `history/` |
 | Questionnaires put to the owner | `design-review-1.html`, `questions-2.html` |
 | Imported code and its manifest | `../core/superscalar/IMPORT.md` |
-| How rules and features are proposed and decided | `proposals/` |
+| How rules and features are proposed and decided (SIPs) | `sips/`, with a rule-request template and a worked example |
 | Meeting a member's duties while they are away | `AWAY.md` |
 | Deferred features | GitHub issues 1 (swap-in and swap-out), 2 (watching service), 3 (lobby deposit), 4 (reminders and acting while away) |
 
@@ -43,6 +43,8 @@ The single place to start. It gathers what has been learned and decided, says ho
 | Port | A replaceable connection from the core to the outside: storage, chain view, network |
 | Engine | One of the core's decision-makers: signing round, channel, payment, exit, watch, lifecycle, schedule |
 | Held payment | An incoming Lightning payment a node accepts but does not settle until told to |
+| SIP | SuperScalar Improvement Proposal: the written request, discussion and decision record for a rule or feature. Categories: Rule, Protocol, Process, Informational |
+| Target, minimum, deadline | A lobby's start rule: start at once at the target; at the deadline start if the minimum is met, otherwise cancel |
 | Never say | "Staking". Say hosting, providing liquidity, fees |
 
 ## 3. How SuperScalar is meant to work
@@ -117,7 +119,8 @@ Newest first within each area. The date is when the owner decided.
 - A host links to a regular Lightning node through an adapter: LND first, then Core Lightning, then others. Later the built-in node holds ordinary channels itself.
 
 ### Working method
-- New rules and features go through a proposal process modelled on BIPs and bLIPs. Approval and shipping are separate; the record of ACKs and NACKs is kept.
+- The owner handles outside review. This session's job is to bring the software to release candidates fit for review.
+- New rules and features go through SIPs (SuperScalar Improvement Proposals), modelled on BIPs and bLIPs. Approval and shipping are separate; the record of ACKs and NACKs is kept.
 - Review: several different AI models on every engine as it is built; outside human reviewers and red-teamers before real funds.
 - Hand-off notes are local documents the owner points the other session to.
 - Chain servers: well-known public ones first; our own around launch.

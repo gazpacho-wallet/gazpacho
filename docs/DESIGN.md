@@ -300,6 +300,13 @@ Found during the import, for the core's design:
 
 **How we work**
 
-- **New rules and features follow a proposal process** modelled on BIPs and bLIPs: request in a set format, open discussion, ACK or NACK on record, then a separate decision on whether it ships. A proposal can be approved and not shipped, with the reason stated, so other factory software can adopt it. See `proposals/`.
+- **New rules and features follow a proposal process** modelled on BIPs and bLIPs: request in a set format, open discussion, ACK or NACK on record, then a separate decision on whether it ships. A proposal can be approved and not shipped, with the reason stated, so other factory software can adopt it. See `sips/`.
 - **Review:** independent AI review of every engine as it is built, by several different models; and before real funds, outside human reviewers, including people who try to break it. The owner arranges outside reviewers.
 - **Hand-off notes** are local documents; the owner pastes a short message pointing the other session to them.
+
+## 20. Lobby start rule and SIPs (2026-11-11)
+
+- **Start rule (owner):** a target, a minimum and a deadline. Reaching the target starts the lobby at once; at the deadline it starts if the minimum is met and is cancelled otherwise. Soup wallet's design had the same rule (`min_clients_to_start`, a force-start deadline, immediate start when full) and re-opened on a shortfall; here carry-over to the next lobby is an option and cancelling is the default. Coinjoin coordinators use the same pattern. Detail and the fit with SuperScalar are in `LOBBY.md`.
+- **Signing timing default:** long gathering, short signing, software signs automatically within the member's conditions. A long signing window is a host option. Soup treated signing as slow (up to 24 hours per response); that remains possible but is not the default, because signing secrets are not stored and one dropout restarts the round.
+- **Proposals are SIPs:** SuperScalar Improvement Proposals, in `sips/`, with categories Rule, Protocol, Process and Informational, a rule-request template and a worked example.
+- **Review** is arranged by the owner. This session brings the software to release candidates.

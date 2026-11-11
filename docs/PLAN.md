@@ -66,7 +66,7 @@ After that: more node adapters and a browser of hosts; swap-in and swap-out; a w
 | `LOBBY.md`, `LOBBY-research.md` | The lobby design and the research behind it |
 | `HOST-NODES.md` | Lightning nodes a host can link to, and how hard each is |
 | `OPEN-QUESTIONS.md` | What is still undecided |
-| `proposals/` | How rules and features are proposed and decided |
+| `sips/` | How rules and features are proposed and decided |
 | `AWAY.md` | Meeting a member's duties while they are away |
 | `ASSESSMENT.md` | What existed at the start and what has to be built |
 | `handoff/` | Notes sent to the SuperScalar repo session |

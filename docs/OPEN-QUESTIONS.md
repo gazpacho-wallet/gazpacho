@@ -5,8 +5,8 @@ Kept current. Last updated 2026-11-11, after questions round 2.
 ## For the owner
 
 1. **Numbers for the lobby:** largest lobby, default gathering time, signing timers, number of signing attempts. Recommended: settle from signet testing.
-2. **The name of the proposal documents** (see `proposals/`), and who besides the owner can approve one.
-3. **Outside reviewers:** who is asked, and when. The owner arranges this.
+2. **Who besides the owner can approve a SIP.**
+3. **Making the repository public:** decided, but waiting on one check: the hand-off note describes two unfixed problems in the public SuperScalar code. Publish as is, or hold that note back first?
 4. **Is the full security catalogue from the earlier SuperScalar work copied into this repo** as reference, or left where it is?
 
 ## For this session to settle (research or build)

@@ -1,5 +1,6 @@
-# NNNN: Title
+# SIP-NNNN: Title
 
+- Category: Protocol / Process / Informational
 - Status: Draft
 - Author:
 - Created:

@@ -36,7 +36,33 @@ A host that wants a slower pace can lengthen the signing timers and accept more 
 
 Invitations are links, shown as QR codes. The host also sets what share of seats may go to members who bring nothing.
 
-**Start rule:** never below the minimum size. Then either everyone present is ready, or the host starts, or the closing time arrives.
+**Start rule.** Three numbers set by the host: a target, a minimum and a deadline.
+
+| Situation | What happens |
+|---|---|
+| The lobby reaches the target | It starts at once |
+| The deadline arrives with at least the minimum | It starts with whoever is there |
+| The deadline arrives below the minimum | It is cancelled, or the waiting members are carried over to the host's next lobby, as the host has set |
+
+Example: target 50, minimum 30, deadline in three hours. At 50 it starts immediately. At the three-hour mark it starts if there are 30 or more, and quits otherwise.
+
+Details that make it work:
+
+- **Only members whose software is connected and ready count.** A held seat that never readies does not trigger a start.
+- **Each member's own minimum is respected.** A member who asked for at least 40 is not counted in a start at 35. The host's software finds the largest group whose own conditions that group satisfies.
+- **Extra arrivals wait as standbys.** They fill gaps left by anyone who fails to sign.
+- **The count is checked again at signing.** If non-signers take the group below the minimum, the factory is not created.
+
+This is the rule Soup wallet's design had (start when full, or at a deadline if a minimum is met), and the one coinjoin coordinators use. Soup re-opened the lobby with a new deadline on a shortfall; here that is the carry-over option, and cancelling is the default.
+
+**Why it fits SuperScalar.**
+
+- The tree is built at the moment of starting, for exactly the members present. Its shape for each size is fixed by the host's terms, so every member's software builds the same tree.
+- The host's funding scales with the number of members, and the host signs it last, after the whole tree is signed.
+- A factory's on-chain cost is shared among its members. The minimum protects the host from funding a factory too small to be worth it, and tells members they are not joining an empty one.
+- SuperScalar expects a host to start a new factory regularly. A deadline at a fixed time of day gives that rhythm; reaching the target early just starts that day's factory sooner.
+
+All of this is separate from the signing rounds. The start rule decides when and with whom; signing then proceeds as described below.
 
 **No-shows:** members who do not answer in a signing attempt are removed together and the round reruns with those who remain, plus anyone waiting on standby.
 
@@ -116,4 +142,4 @@ The lobby, the signing round engine and the proof-of-fault scheme together are a
 
 Next (issue 3): a deposit to deter people who join and never sign. Later: standby seats, joining requirements based on coins or history, member track records.
 
-New rules arrive through the proposal process in `proposals/`.
+New rules arrive through the proposal process in `sips/`.

@@ -12,7 +12,7 @@ One program lets you **join** a factory, where many people share a single on-cha
 - [The lobby](docs/LOBBY.md)
 - [Lightning nodes a host can link to](docs/HOST-NODES.md)
 - [Open questions](docs/OPEN-QUESTIONS.md)
-- [Proposing a rule or feature](docs/proposals/README.md)
+- [Proposing a rule or feature](docs/sips/README.md)
 - [Contributing](CONTRIBUTING.md) and [security](SECURITY.md)
 - [What existed at the start and what has to be built](docs/ASSESSMENT.md)
 

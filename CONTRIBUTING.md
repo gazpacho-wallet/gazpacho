@@ -9,7 +9,7 @@ Read `docs/KNOWLEDGE-BASE.md`. It maps the documents, defines the terms, lists t
 ## Ways to help
 
 - **Review the design.** Open an issue saying what is wrong or missing in `docs/DESIGN.md`, `docs/LOBBY.md` or the specifications as they appear.
-- **Propose a rule or feature.** Use the process in `docs/proposals/`.
+- **Propose a rule or feature.** Use the process in `docs/sips/`.
 - **Report a security problem** privately. See `SECURITY.md`.
 
 ## Code
