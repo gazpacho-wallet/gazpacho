@@ -9,8 +9,11 @@
 /* Published counts, so a vector silently dropped by the generator is noticed:
    BIP 39 English 24; BIP 32 chains 6+6+2+3 = 17; BIP 32 invalid keys 16;
    BIP 86 root + account + 3 addresses = 5; BIP 350 Bech32m valid 7, invalid 14;
-   BIP 350 segwit valid 8, invalid 15; BIP 341 no-script-tree cases 1 + 1. */
-static const int expected_cases[GZW_VECTOR_GROUPS] = {24, 17, 16, 5, 7, 14, 8, 15, 2};
+   BIP 350 segwit valid 8, invalid 15; BIP 341 no-script-tree cases 1 + 1;
+   BIP 173 Bech32 valid 7, invalid 12; BIP 173 addresses 6, invalid 10;
+   BIP 340 vectors 0 to 18 = 19.  162 in all. */
+static const int expected_cases[GZW_VECTOR_GROUPS] = {24, 17, 16, 5, 7, 14, 8, 15, 2,
+                                                      7,  12, 6,  10, 19};
 
 int main(void) {
     gzw_vector_group groups[GZW_VECTOR_GROUPS];

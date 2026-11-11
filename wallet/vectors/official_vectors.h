@@ -14,7 +14,7 @@ typedef struct {
     int failed;         /* vectors that did not give the published result */
 } gzw_vector_group;
 
-#define GZW_VECTOR_GROUPS 9
+#define GZW_VECTOR_GROUPS 14
 
 /* Run every group.  Fills groups[] and returns 1 only if every vector in
    every group passed and every group ran at least one vector.  Does no I/O. */

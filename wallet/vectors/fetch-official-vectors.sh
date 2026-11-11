@@ -6,7 +6,7 @@ dir="$1"
 BIPS=b34d9f751791d4feb22feff4f2ed00bcac83961b      # github.com/bitcoin/bips
 MNEMONIC=b57a5ad77a981e743f4167ab2f7927a55c1e82a8  # github.com/trezor/python-mnemonic
 mkdir -p "$dir"
-for f in bip-0032.mediawiki bip-0086.mediawiki bip-0350.mediawiki bip-0341/wallet-test-vectors.json; do
+for f in bip-0032.mediawiki bip-0086.mediawiki bip-0173.mediawiki bip-0350.mediawiki bip-0340/test-vectors.csv bip-0341/wallet-test-vectors.json; do
   curl -sfL -o "$dir/$(basename "$f")" "https://raw.githubusercontent.com/bitcoin/bips/$BIPS/$f"
 done
 # BIP 39's "Test vectors" section points to this file.

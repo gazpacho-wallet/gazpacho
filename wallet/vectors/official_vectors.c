@@ -285,6 +285,61 @@ static int one_segwit_invalid(const struct gzv_reason *v) {
     return 1;
 }
 
+/* ---- BIP 173 -------------------------------------------------------------- */
+
+/* BIP 173 lists six "valid" addresses.  BIP 350 changed the rule for witness
+   versions 1 to 16 (they now need the Bech32m checksum), so of those six only
+   the version-0 ones are still addresses; the others must now be refused. */
+static int one_bip173_segwit(const struct gzv_segwit *v) {
+    char lower[GZW_ADDRESS_MAX];
+    unsigned char prog[40];
+    size_t plen = 0;
+    int version = -1;
+    const char *hrp;
+
+    lower_copy(v->address, lower, sizeof(lower));
+    hrp = (lower[0] == 'b') ? "bc" : "tb";
+    /* Every one of them is a well-formed Bech32 string. */
+    if (gzw_bech32_check(v->address) != GZW_BECH32_BECH32) return 0;
+    if (strncmp(v->script_pubkey, "00", 2) == 0) return one_segwit_valid(v);
+    return !gzw_segwit_address_decode(hrp, v->address, &version, prog, &plen);
+}
+
+/* ---- BIP 340 -------------------------------------------------------------- */
+
+/* The signature library as pinned and built here, against the BIP 340
+   vectors: signing reproduces the published signature and verification gives
+   the published verdict.  This is the scheme a key-path spend is signed with. */
+static int one_bip340(const secp256k1_context *ctx, const struct gzv_bip340 *v) {
+    unsigned char sk[32], pk[32], aux[32], msg[128], sig[64], made[64], pk_from_sk[32];
+    secp256k1_xonly_pubkey xonly;
+    int msg_len = unhex(v->message, msg, sizeof(msg));
+    int verified;
+
+    if (msg_len < 0) return 0;
+    if (unhex(v->public_key, pk, 32) != 32 || unhex(v->signature, sig, 64) != 64) return 0;
+
+    if (v->secret_key[0] != '\0') {
+        secp256k1_keypair kp;
+        secp256k1_xonly_pubkey kp_pub;
+        secp256k1_schnorrsig_extraparams extra = SECP256K1_SCHNORRSIG_EXTRAPARAMS_INIT;
+        if (unhex(v->secret_key, sk, 32) != 32 || unhex(v->aux_rand, aux, 32) != 32) return 0;
+        if (!secp256k1_keypair_create(ctx, &kp, sk)) return 0;
+        if (!secp256k1_keypair_xonly_pub(ctx, &kp_pub, NULL, &kp)) return 0;
+        if (!secp256k1_xonly_pubkey_serialize(ctx, pk_from_sk, &kp_pub)) return 0;
+        if (memcmp(pk_from_sk, pk, 32) != 0) return 0;
+        extra.ndata = aux;
+        if (!secp256k1_schnorrsig_sign_custom(ctx, made, msg, (size_t)msg_len, &kp, &extra))
+            return 0;
+        if (memcmp(made, sig, 64) != 0) return 0;
+    }
+
+    /* A public key that is not on the curve cannot verify anything. */
+    verified = secp256k1_xonly_pubkey_parse(ctx, &xonly, pk) &&
+               secp256k1_schnorrsig_verify(ctx, sig, msg, (size_t)msg_len, &xonly);
+    return verified == v->valid;
+}
+
 /* ---- BIP 341 -------------------------------------------------------------- */
 
 static int one_bip341_spk(const secp256k1_context *ctx,
@@ -294,7 +349,7 @@ static int one_bip341_spk(const secp256k1_context *ctx,
     if (unhex(v->internal_key, internal, 32) != 32) return 0;
     if (!gzw_taproot_output_key(ctx, internal, q, NULL)) return 0;
     if (!hex_equals(v->output_key, q, 32)) return 0;
-    gzw_p2tr_script_pubkey(q, spk);
+    if (!gzw_p2tr_script_pubkey(q, spk)) return 0;
     if (!hex_equals(v->script_pubkey, spk, 34)) return 0;
     if (!gzw_p2tr_address(GZW_NET_MAINNET, q, address)) return 0;
     return strcmp(address, v->address) == 0;
@@ -338,6 +393,11 @@ int gzw_official_vectors_run(const secp256k1_context *ctx,
         "BIP 350 valid segwit addresses",
         "BIP 350 invalid segwit addresses refused",
         "BIP 341 wallet vectors with no script tree (output key, key-path signature)",
+        "BIP 173 valid Bech32 strings",
+        "BIP 173 invalid Bech32 strings refused",
+        "BIP 173 addresses (version 0 accepted; version 1+ refused since BIP 350)",
+        "BIP 173 invalid segwit addresses refused",
+        "BIP 340 signature vectors (the pinned secp256k1 library: sign and verify)",
     };
     int all = 1;
 
@@ -376,6 +436,16 @@ int gzw_official_vectors_run(const secp256k1_context *ctx,
         RUN(8, one_bip341_spk(ctx, &GZV_BIP341_SPK[i]));
     for (size_t i = 0; i < COUNT(GZV_BIP341_KEYPATH); i++)
         RUN(8, one_bip341_keypath(ctx, &GZV_BIP341_KEYPATH[i]));
+    for (size_t i = 0; i < COUNT(GZV_BECH32_VALID); i++)
+        RUN(9, gzw_bech32_check(GZV_BECH32_VALID[i]) == GZW_BECH32_BECH32);
+    for (size_t i = 0; i < COUNT(GZV_BECH32_INVALID); i++)
+        RUN(10, gzw_bech32_check(GZV_BECH32_INVALID[i].str) != GZW_BECH32_BECH32);
+    for (size_t i = 0; i < COUNT(GZV_BIP173_SEGWIT); i++)
+        RUN(11, one_bip173_segwit(&GZV_BIP173_SEGWIT[i]));
+    for (size_t i = 0; i < COUNT(GZV_BIP173_SEGWIT_INVALID); i++)
+        RUN(12, one_segwit_invalid(&GZV_BIP173_SEGWIT_INVALID[i]));
+    for (size_t i = 0; i < COUNT(GZV_BIP340); i++)
+        RUN(13, one_bip340(ctx, &GZV_BIP340[i]));
 #undef RUN
 
     for (int g = 0; g < GZW_VECTOR_GROUPS; g++)

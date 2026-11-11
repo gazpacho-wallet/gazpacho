@@ -8,10 +8,13 @@ recording the commit and the SHA-256 of every file it read.
 usage: gen-official-vectors.py SRC_DIR OUT_FILE
 
 SRC_DIR must hold (fetch with fetch-official-vectors.sh):
-  bip-0032.mediawiki, bip-0086.mediawiki, bip-0350.mediawiki,
-  wallet-test-vectors.json (bip-0341/), bip39-vectors.json, SOURCES
+  bip-0032.mediawiki, bip-0086.mediawiki, bip-0173.mediawiki,
+  bip-0350.mediawiki, wallet-test-vectors.json (bip-0341/),
+  test-vectors.csv (bip-0340/), bip39-vectors.json, SOURCES
 """
+import csv
 import hashlib
+import io
 import json
 import os
 import re
@@ -23,6 +26,8 @@ FILES = {
     "bip-0032.mediawiki": "bips",
     "bip-0086.mediawiki": "bips",
     "bip-0350.mediawiki": "bips",
+    "bip-0173.mediawiki": "bips",
+    "test-vectors.csv": "bips",
     "wallet-test-vectors.json": "bips",
     "bip39-vectors.json": "python-mnemonic",
 }
@@ -30,6 +35,8 @@ URLS = {
     "bip-0032.mediawiki": "https://github.com/bitcoin/bips/blob/%s/bip-0032.mediawiki",
     "bip-0086.mediawiki": "https://github.com/bitcoin/bips/blob/%s/bip-0086.mediawiki",
     "bip-0350.mediawiki": "https://github.com/bitcoin/bips/blob/%s/bip-0350.mediawiki",
+    "bip-0173.mediawiki": "https://github.com/bitcoin/bips/blob/%s/bip-0173.mediawiki",
+    "test-vectors.csv": "https://github.com/bitcoin/bips/blob/%s/bip-0340/test-vectors.csv",
     "wallet-test-vectors.json": "https://github.com/bitcoin/bips/blob/%s/bip-0341/wallet-test-vectors.json",
     "bip39-vectors.json": "https://github.com/trezor/python-mnemonic/blob/%s/vectors.json",
 }
@@ -252,10 +259,67 @@ for x in kp:
         cstr(wit[:128])))
 emit("};")
 emit("")
+# ---- BIP 173 --------------------------------------------------------------
+t173 = texts["bip-0173.mediawiki"]
+t173 = t173[t173.index("===Test vectors==="):t173.index("===Checksum design===")]
+p1, rest = t173.split("The following string are not valid Bech32 (with reason for invalidity):")
+p2, rest = rest.split("The following list gives valid segwit addresses")
+p3, p4 = rest.split("The following list gives invalid segwit addresses")
+b_valid = re.findall(r"^\* <tt>(.*?)</tt>", p1, re.M)
+b_invalid = []
+for line in p2.splitlines():
+    m = re.match(r"\* (?:0x([0-9A-F]{2}) \+ )?<tt>(.*?)</tt>(?: \+ 0x([0-9A-F]{2}))?: (.*)$", line)
+    if m:
+        pre = chr(int(m.group(1), 16)) if m.group(1) else ""
+        post = chr(int(m.group(3), 16)) if m.group(3) else ""
+        b_invalid.append((pre + m.group(2) + post, m.group(4)))
+a_valid = re.findall(r"^\* <tt>(.*)</tt>: <tt>([0-9a-f]+)</tt>$", p3, re.M)
+a_invalid = re.findall(r"^\* <tt>(.*)</tt>: (.*)$", p4, re.M)
+assert len(b_valid) == 7 and len(b_invalid) == 12, (b_valid, b_invalid)
+assert len(a_valid) == 6 and len(a_invalid) == 10, (a_valid, a_invalid)
+emit("/* BIP 173: valid Bech32 strings. */")
+emit("static const char *const GZV_BECH32_VALID[] = {")
+for x in b_valid:
+    emit("    %s," % cstr(x))
+emit("};")
+emit("/* BIP 173: strings that are not valid Bech32, with the stated reason. */")
+emit("static const struct gzv_reason GZV_BECH32_INVALID[] = {")
+for x, why in b_invalid:
+    emit("    {%s, %s}," % (cstr(x), cstr(why)))
+emit("};")
+emit("/* BIP 173: the addresses it lists as valid, with their scriptPubKey.  Those of")
+emit("   witness version 1 and above are no longer valid since BIP 350. */")
+emit("static const struct gzv_segwit GZV_BIP173_SEGWIT[] = {")
+for addr, spk_hex in a_valid:
+    emit("    {%s,\n     %s}," % (cstr(addr), cstr(spk_hex)))
+emit("};")
+emit("/* BIP 173: invalid segwit addresses, with the stated reason. */")
+emit("static const struct gzv_reason GZV_BIP173_SEGWIT_INVALID[] = {")
+for addr, why in a_invalid:
+    emit("    {%s,\n     %s}," % (cstr(addr), cstr(why)))
+emit("};")
+emit("")
+
+# ---- BIP 340 --------------------------------------------------------------
+rows340 = list(csv.DictReader(io.StringIO(texts["test-vectors.csv"])))
+assert [int(r["index"]) for r in rows340] == list(range(19)), rows340
+emit("/* BIP 340 test vectors (bip-0340/test-vectors.csv).  secret_key and aux_rand are")
+emit("   empty for verification-only vectors. */")
+emit("struct gzv_bip340 { int index; const char *secret_key, *public_key, *aux_rand, *message, *signature; int valid; };")
+emit("static const struct gzv_bip340 GZV_BIP340[] = {")
+for r in rows340:
+    assert r["verification result"] in ("TRUE", "FALSE")
+    emit("    {%d, %s,\n     %s,\n     %s,\n     %s,\n     %s,\n     %d}," % (
+        int(r["index"]), cstr(r["secret key"]), cstr(r["public key"]), cstr(r["aux_rand"]),
+        cstr(r["message"]), cstr(r["signature"]), 1 if r["verification result"] == "TRUE" else 0))
+emit("};")
+emit("")
 emit("#endif /* GZW_OFFICIAL_VECTORS_DATA_H */")
 
 with open(out_path, "w", newline="\n") as f:
     f.write("\n".join(lines) + "\n")
-print("wrote %s: bip39=%d bip32=%d bip32-invalid=%d bip86=%d bech32m=%d+%d segwit=%d+%d bip341=%d+%d" % (
+print("wrote %s: bip39=%d bip32=%d bip32-invalid=%d bip86=%d bech32m=%d+%d segwit=%d+%d bip341=%d+%d "
+      "bip173=%d+%d addresses=%d+%d bip340=%d" % (
     out_path, len(v39), len(rows), len(invalid), len(blocks) - 2, len(g_valid),
-    len(g_invalid), len(s_valid), len(s_invalid), len(spk), len(kp)))
+    len(g_invalid), len(s_valid), len(s_invalid), len(spk), len(kp),
+    len(b_valid), len(b_invalid), len(a_valid), len(a_invalid), len(rows340)))

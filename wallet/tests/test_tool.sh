@@ -17,7 +17,7 @@ refuse() { # refuse DESCRIPTION COMMAND...   (the command must fail)
 # --- verify-vectors ---------------------------------------------------------
 "$tool" verify-vectors >"$dir/vv.out" 2>&1; rc=$?
 check "verify-vectors exits 0" test "$rc" = 0
-check "verify-vectors prints PASS" grep -q '^PASS: all 108 official vectors pass$' "$dir/vv.out"
+check "verify-vectors prints PASS" grep -q '^PASS: all 162 official vectors pass$' "$dir/vv.out"
 refuse "verify-vectors prints no FAIL" grep -q FAIL "$dir/vv.out"
 
 # --- mainnet is refused -----------------------------------------------------
