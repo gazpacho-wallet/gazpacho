@@ -335,3 +335,13 @@ Gazpacho answered that session's "decisions v3" questions (local note, not in th
 - **New fact for Gazpacho:** every factory above 16 members in the reference code, including its 64- and 127-member runs, used several users per leaf on the older leaf type. Gazpacho's one-member-per-leaf plan is therefore unproven at size and is now treated as provisional until tested.
 - **Our findings confirmed by that session:** the member-order dependence on the C library, the unverified partial signatures, and the 256 limit. It reports draft 476 fixes the failed member exit, and that earlier drafts raising the size limit will be brought forward.
 - **Re-import:** the copy under `core/superscalar/` was updated from `3de6120` to `e657395`. The changes to imported files were additions (leak fixes, a stack-overflow fix beyond 8 leaves, a leaf snapshot helper). The reference test still passes with unchanged transaction IDs.
+
+## 24. The owner's decisions for the SuperScalar repository (2026-11-11)
+
+Recorded here because they set what Gazpacho can expect from the files it imports.
+
+- The SuperScalar repository does not mirror Gazpacho. It keeps pseudo-Spilman leaves and JIT channels, tests them and fixes what is broken, and proves tree shapes at target sizes before removing anything.
+- Light-client mode there is left for later; its issue stays open.
+- Rewriting that repository's channel code is put off to the end of development, and done only if it proves necessary. Contained safety fixes continue.
+- The last commit before any removal is tagged.
+- That session will rework incoming payments to held invoices (the member keeps the payment secret) as a later step, after its bridge validation work merges. Gazpacho's four-operation node interface in `HOST-NODES.md` is the shared shape.

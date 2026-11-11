@@ -220,6 +220,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c16-21-public-repository-specifications-test" title="21. Public repository, specifications, testing plan (2026-11-11)">21. Public repository, specifications, testing plan (2026-11-11)</a>
 <a class="sec" href="#c16-22-design-consolidated-handbook-page-202" title="22. Design consolidated; handbook page (2026-11-11)">22. Design consolidated; handbook page (2026-11-11)</a>
 <a class="sec" href="#c16-23-exchange-with-the-superscalar-session" title="23. Exchange with the SuperScalar session (2026-11-11)">23. Exchange with the SuperScalar session (2026-11-11)</a>
+<a class="sec" href="#c16-24-the-owner-s-decisions-for-the-supersc" title="24. The owner&#x27;s decisions for the SuperScalar repository (2026-11-11)">24. The owner&#x27;s decisions for the SuperScalar repository (2026-11-11)</a>
 <a class="ch" href="#c17">Lobby research</a>
 <a class="sec" href="#c17-summary" title="Summary">Summary</a>
 <a class="sec" href="#c17-a1-prior-work-by-the-same-owner" title="A1. Prior work by the same owner">A1. Prior work by the same owner</a>
@@ -2230,9 +2231,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Review of the two drafted specifications</strong> (<code>spec/</code>): the open points at the end of each, and an expert look at the proof-of-fault scheme.</li>
 <li><strong>Is the full security catalogue from the earlier SuperScalar work copied into this repo</strong> as reference, or left where it is?</li>
 </ol>
-<p>5a. <strong>Should the SuperScalar repository still rebuild its own channel code,</strong> now that Gazpacho is building the channel on Lightning's standard format? Suggested: no; it keeps its current channel code with the safety fixes under way and concentrates on the shared low-level files and the construction fixes.
-5b. <strong>Light-client mode in the reference programs:</strong> remove or disable it (suggested, since Gazpacho covers running without a Bitcoin node), or still fix it there?
-5c. <strong>Raising the 256-member limit</strong> in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now.</p></div></details>
+<p>5c. <strong>Raising the 256-member limit</strong> in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now.</p></div></details>
 <details id="c14-for-this-session-to-settle-research-or-b"><summary>For this session to settle (research or build)</summary><div class="body"><p>5d. <strong>Does one member per pseudo-Spilman leaf work at 64, 127, 255 and 512 members,</strong> and how long is the exit? The SuperScalar session has offered to run it at 64 and 127. Gazpacho tests tree building and signing at those sizes at the start of M1. Until then the leaf decision is provisional.</p>
 <ol>
 <li>The precise definition of the member's safety rule.</li>
@@ -2680,6 +2679,14 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>New fact for Gazpacho:</strong> every factory above 16 members in the reference code, including its 64- and 127-member runs, used several users per leaf on the older leaf type. Gazpacho's one-member-per-leaf plan is therefore unproven at size and is now treated as provisional until tested.</li>
 <li><strong>Our findings confirmed by that session:</strong> the member-order dependence on the C library, the unverified partial signatures, and the 256 limit. It reports draft 476 fixes the failed member exit, and that earlier drafts raising the size limit will be brought forward.</li>
 <li><strong>Re-import:</strong> the copy under <code>core/superscalar/</code> was updated from <code>3de6120</code> to <code>e657395</code>. The changes to imported files were additions (leak fixes, a stack-overflow fix beyond 8 leaves, a leaf snapshot helper). The reference test still passes with unchanged transaction IDs.</li>
+</ul></div></details>
+<details id="c16-24-the-owner-s-decisions-for-the-supersc"><summary>24. The owner&#x27;s decisions for the SuperScalar repository (2026-11-11)</summary><div class="body"><p>Recorded here because they set what Gazpacho can expect from the files it imports.</p>
+<ul>
+<li>The SuperScalar repository does not mirror Gazpacho. It keeps pseudo-Spilman leaves and JIT channels, tests them and fixes what is broken, and proves tree shapes at target sizes before removing anything.</li>
+<li>Light-client mode there is left for later; its issue stays open.</li>
+<li>Rewriting that repository's channel code is put off to the end of development, and done only if it proves necessary. Contained safety fixes continue.</li>
+<li>The last commit before any removal is tagged.</li>
+<li>That session will rework incoming payments to held invoices (the member keeps the payment secret) as a later step, after its bridge validation work merges. Gazpacho's four-operation node interface in <code>HOST-NODES.md</code> is the shared shape.</li>
 </ul></div></details>
 </section>
 <section class="chapter" id="c17"><h2>Lobby research</h2><p class="desc">Background: how comparable systems gather people and handle those who stall, with sources.</p><p class="file">Lobby: research and design note · <code>docs/LOBBY-research.md</code></p>
