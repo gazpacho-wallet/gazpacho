@@ -155,3 +155,42 @@ Open, awaiting the owner:
 7. Swap-in in the first release or the next.
 8. Which hosts the web version can reach.
 9. Schedule versus scope.
+
+## 14. Decisions from review 1 (owner's answers, 2026-11-11)
+
+1. **Tree:** the first release ships the full layered tree. Build order is fixed tree first, then the layers; the core is designed for the full tree from the start.
+2. **Exit fees:** a member with no balance has nothing to exit. For members with a balance, the base fee is built into the tree and commitment transactions and comes from the host's side (the host is the funder). The app recommends a small on-chain reserve for busy periods. At wind-down a member either pays their balance into the next factory over Lightning or co-signs a close that funds the next factory directly; either avoids an on-chain exit.
+3. **Away protection:** a long response window (about two weeks) in the first release. The watch engine is built so it can also run as a separate process: a service we offer, or one a user runs at home.
+4. **Channel format:** Lightning's standard taproot channel format, exactly. The old format is documented and retired.
+5. **Factory formation:** a lobby, like a game server. The host opens a lobby with rules; members join and mark themselves ready; the host starts when the start rule is met. Lobby listings and host proofs live on Nostr. Design note to be written (see below).
+6. **Host's Lightning node:** one small adapter interface; both LND and Core Lightning supported. LND is implemented first as the reference.
+7. **Swap-in:** not in the first release. Tracked as an issue together with swap-out.
+8. **Web screens:** a local interface. The `gazpacho` program serves its screens on the local machine only, and the browser is just the display. Keys and channel state stay in the C program. A wallet that runs wholly inside a browser page is not planned for now.
+9. **Schedule:** quality first; no deadline.
+
+Consequences for earlier sections:
+
+- §2: the web screens talk to the local program; the core is not compiled for the browser in the first releases.
+- §8 and review finding 9: the browser no longer connects to hosts or chain servers, so certificates and browser storage are not concerns.
+- §10: milestone M6 becomes "local web interface".
+
+### Lobby: first sketch (to be developed)
+
+- A host publishes a lobby: terms, minimum and maximum members, start rule, closing time. The listing and the host's proof of funds or channels are on Nostr; everything else is direct.
+- A member's app checks the terms against the member's limits before showing "join".
+- Joining is a direct connection to the host. The member appears in the lobby and can mark themselves ready.
+- Changing the rules: the host proposes new terms; each member accepts or leaves. There is no binding vote, because nothing binds anyone until they sign, and every member signs for themselves.
+- Start rule: minimum reached, and either all present are ready, or the host starts, or the closing time arrives.
+- At start, members who do not answer are dropped and the signing round restarts without them.
+- Open: a small refundable deposit to deter people who join and never sign; how much of the lobby state is public.
+
+### Host's Lightning node: the adapter interface
+
+Four operations are enough:
+
+1. Pay an invoice, with a spending limit and a deadline; report the payment secret on success.
+2. Create an invoice for a payment hash whose secret the node does not know, and hold the incoming payment open.
+3. Settle a held payment once the member has revealed the secret.
+4. Cancel a held payment.
+
+LND offers all four natively. Core Lightning offers 1 natively and needs a plugin for 2–4.
