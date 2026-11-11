@@ -49,13 +49,21 @@ One entry point: an **event** goes in, a list of **actions** comes out. The core
 - Members exit automatically before the factory's expiry if the host has not rotated them.
 - Host terms are a published record; the member's limits are checked before any signing.
 
-## 6. Message format **(proposed)**
+## 6. Message format **(proposed, revised 2026-11-11)**
 
-- Binary, typed fields that can be extended, with a version number.
-- Envelope: protocol name, factory identifier, message kind.
-- About 15 message kinds, not about 100.
-- Encrypted connection with the host's key pinned, over TCP or WebSocket.
-- Written as a specification in `spec/`, offered to the SuperScalar repo as the candidate shared format.
+Do not invent a format. Speak Lightning's own wire language, so a Gazpacho connection is an ordinary Lightning peer connection that also carries factory messages.
+
+- **Connection:** the BOLT 8 encrypted transport (Noise XK, the responder's key known in advance, which is exactly a pinned host key). Over TCP, and over WebSocket binary frames for browsers.
+- **Framing:** the BOLT 1 message: 2-byte type, payload, optional trailing fields. Maximum 65,535 bytes.
+- **Session:** the standard `init` (feature bits, chain), `ping`/`pong`, `error` and `warning`.
+- **Extending without breaking:** no version numbers. Feature bits say what each side supports; every message ends in a typed-field (TLV) stream; unknown odd fields and messages are ignored, unknown even ones are refused ("it's ok to be odd").
+- **Factory messages:** one odd message type in the custom range (32768 and above), carrying an envelope in the style of bLIP-56: protocol name, factory identifier, sub-message kind, then typed fields. About 15 sub-message kinds.
+- **Channel messages:** the standard BOLT 2 set (`update_add_htlc`, `commitment_signed`, `revoke_and_ack`, `channel_reestablish`, `stfu`), with the taproot-channel fields for signing nonces. Reconnect follows `channel_reestablish`, which is the most-reviewed part of Lightning.
+- **Large data:** group-signing data for hundreds of members exceeds one message. Send it as a sequence of small messages with an explicit "complete" marker, as Lightning's interactive transaction building does.
+- **Member backup at the host:** the standard peer storage messages (`peer_storage`, `peer_storage_retrieval`).
+- **Host terms and service requests:** binary typed fields in the first release; an LSPS-style (bLIP-50) interface can be added later for wallets that already speak it.
+- **How it is written:** message tables in `spec/`, in the same table form the BOLTs use. Encoders and decoders are generated from the tables, not written by hand. Every message has test vectors, and every decoder is fuzzed.
+- The specification is offered to the SuperScalar repo as the shared format, and written so it could be submitted as a bLIP.
 
 ## 7. Storage
 
