@@ -151,7 +151,7 @@ static int master_from_phrase(const secp256k1_context *ctx, const char *phrase,
                               gzw_xprv *master) {
     unsigned char seed[64];
     int ok = gzw_phrase_to_seed(phrase, NULL, seed) &&
-             gzw_bip32_master(ctx, seed, sizeof(seed), master);
+             gzw_bip32_master(ctx, seed, sizeof(seed), master, NULL);
     gzw_wipe(seed, sizeof(seed));
     return ok;
 }
@@ -219,7 +219,7 @@ static int cmd_new(const char *network, const char *out_path) {
     }
     if (!gzw_phrase_from_entropy(entropy, phrase) ||
         !master_from_phrase(ctx, phrase, &master) ||
-        !gzw_bip86_output_from_master(ctx, &master, net, 0, 0, 0, &first)) {
+        !gzw_bip86_output_from_master(ctx, &master, net, 0, 0, 0, &first, NULL)) {
         fprintf(stderr, "error: key derivation failed\n");
         goto done;
     }
@@ -240,10 +240,10 @@ static int cmd_new(const char *network, const char *out_path) {
     /* Read the file back and derive again from what is really on disk. */
     if (!read_phrase_file(out_path, reread) ||
         !master_from_phrase(ctx, reread, &master) ||
-        !gzw_bip86_output_from_master(ctx, &master, net, 0, 0, 0, &check) ||
+        !gzw_bip86_output_from_master(ctx, &master, net, 0, 0, 0, &check, NULL) ||
         strcmp(first.address, check.address) != 0 ||
-        !gzw_bip86_account_xpub(ctx, &master, net, 0, &acct) ||
-        !gzw_xpub_to_string(&acct, 0, xpub_str) ||
+        !gzw_bip86_account_xpub(ctx, &master, net, 0, &acct, NULL) ||
+        !gzw_xpub_to_string(&acct, GZW_NET_SIGNET, xpub_str) ||
         !gzw_path_to_string(check.path, 3, path_str, sizeof(path_str))) {
         fprintf(stderr, "error: the file read back does not give the same address\n");
         goto done;
@@ -302,7 +302,7 @@ static int cmd_address(const char *network, const char *in_path, const char *ind
     if (!read_phrase_file(in_path, phrase)) goto done;
     if (!master_from_phrase(ctx, phrase, &master) ||
         !gzw_bip86_output_from_master(ctx, &master, net, 0, change ? 1u : 0u,
-                                      (uint32_t)index, &o) ||
+                                      (uint32_t)index, &o, NULL) ||
         !gzw_path_to_string(o.path, 5, path_str, sizeof(path_str))) {
         fprintf(stderr, "error: key derivation failed\n");
         goto done;

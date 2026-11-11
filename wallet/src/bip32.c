@@ -5,6 +5,8 @@
  * serialisation, all of which BIP 86 needs. */
 #include "gazpacho/wallet_keys.h"
 
+#include "internal.h"
+
 #include <string.h>
 
 #include <openssl/crypto.h>
@@ -22,6 +24,22 @@ int gzw_ct_equal(const void *a, const void *b, size_t len) {
     if (len == 0) return 1;
     if (!a || !b) return 0;
     return CRYPTO_memcmp(a, b, len) == 0;
+}
+
+const char *gzw_reason_text(gzw_reason reason) {
+    switch (reason) {
+    case GZW_REASON_OK:
+        return "no failure";
+    case GZW_REASON_BAD_ARGUMENT:
+        return "an argument is missing or out of range";
+    case GZW_REASON_INVALID_KEY:
+        return "a key passed in is not a valid key";
+    case GZW_REASON_INVALID_CHILD:
+        return "this index has no valid key (BIP 32); use the next index";
+    case GZW_REASON_INTERNAL:
+        return "an internal check failed";
+    }
+    return "unknown reason";
 }
 
 /* ---- helpers -------------------------------------------------------------- */
@@ -77,46 +95,59 @@ static int seckey_to_pubkey33(const secp256k1_context *ctx,
 
 int gzw_bip32_master(const secp256k1_context *ctx,
                      const unsigned char *seed, size_t seed_len,
-                     gzw_xprv *out) {
+                     gzw_xprv *out, gzw_reason *why) {
     static const unsigned char hmac_key[12] = {'B', 'i', 't', 'c', 'o', 'i',
                                                'n', ' ', 's', 'e', 'e', 'd'};
     unsigned char I[64];
-    int ok = 0;
+    gzw_reason r = GZW_REASON_BAD_ARGUMENT;
 
+    gzw_set_reason(why, r);
     if (!out) return 0;
-    gzw_wipe(out, sizeof(*out));
+    memset(out, 0, sizeof(*out));
     if (!ctx || !seed || seed_len < 16 || seed_len > 64) return 0;
 
+    r = GZW_REASON_INTERNAL;
     if (!hmac_sha512(hmac_key, sizeof(hmac_key), seed, seed_len, I)) goto done;
-    /* The left half must be a valid private key: not 0 and below the order. */
+    /* The left half must be a valid private key: not 0 and below the order.
+       If it is not, this seed has no master key. */
+    r = GZW_REASON_INVALID_CHILD;
     if (!secp256k1_ec_seckey_verify(ctx, I)) goto done;
 
     memcpy(out->key, I, 32);
     memcpy(out->chain_code, I + 32, 32);
-    ok = 1;
+    r = GZW_REASON_OK;
 
 done:
     gzw_wipe(I, sizeof(I));
-    if (!ok) gzw_wipe(out, sizeof(*out));
-    return ok;
+    if (r != GZW_REASON_OK) gzw_wipe(out, sizeof(*out));
+    gzw_set_reason(why, r);
+    return r == GZW_REASON_OK;
 }
 
 int gzw_bip32_child_priv(const secp256k1_context *ctx, const gzw_xprv *parent,
-                         uint32_t index, gzw_xprv *out) {
+                         uint32_t index, gzw_xprv *out, gzw_reason *why) {
     unsigned char data[37];
     unsigned char I[64];
     unsigned char parent_pub[33];
     gzw_xprv child;
-    int ok = 0;
+    gzw_reason r = GZW_REASON_BAD_ARGUMENT;
 
+    gzw_set_reason(why, r);
     if (!out) return 0;
     if (!ctx || !parent) {
         gzw_wipe(out, sizeof(*out));
         return 0;
     }
+    /* Everything is computed into child and copied to out at the end, so out
+       may be the same object as parent. */
     memset(&child, 0, sizeof(child));
+    memset(data, 0, sizeof(data));
+    memset(I, 0, sizeof(I));
 
     if (parent->depth == 255) goto done;
+    r = GZW_REASON_INVALID_KEY;
+    if (!secp256k1_ec_seckey_verify(ctx, parent->key)) goto done;
+    r = GZW_REASON_INTERNAL;
     if (!seckey_to_pubkey33(ctx, parent->key, parent_pub)) goto done;
 
     if (index & GZW_HARDENED) {
@@ -132,55 +163,67 @@ int gzw_bip32_child_priv(const secp256k1_context *ctx, const gzw_xprv *parent,
     if (!hmac_sha512(parent->chain_code, 32, data, sizeof(data), I)) goto done;
 
     /* k_i = parse256(I_L) + k_par (mod n).  The library call fails if I_L is
-       not below the order or the sum is zero, the two invalid cases. */
+       not below the order or the sum is zero: BIP 32's two invalid cases, in
+       which this index has no key and the caller goes on to the next one.
+       (The parent key was checked above, so nothing else can make it fail.) */
     memcpy(child.key, parent->key, 32);
+    r = GZW_REASON_INVALID_CHILD;
     if (!secp256k1_ec_seckey_tweak_add(ctx, child.key, I)) goto done;
 
     memcpy(child.chain_code, I + 32, 32);
     child.depth = (uint8_t)(parent->depth + 1);
     child.child_number = index;
+    r = GZW_REASON_INTERNAL;
     if (!key_fingerprint(parent_pub, child.parent_fingerprint)) goto done;
-    ok = 1;
+    r = GZW_REASON_OK;
 
 done:
     gzw_wipe(data, sizeof(data));
     gzw_wipe(I, sizeof(I));
-    if (ok)
+    if (r == GZW_REASON_OK)
         *out = child;
     else
         gzw_wipe(out, sizeof(*out));
     gzw_wipe(&child, sizeof(child));
-    return ok;
+    gzw_set_reason(why, r);
+    return r == GZW_REASON_OK;
 }
 
 int gzw_bip32_child_pub(const secp256k1_context *ctx, const gzw_xpub *parent,
-                        uint32_t index, gzw_xpub *out) {
+                        uint32_t index, gzw_xpub *out, gzw_reason *why) {
     unsigned char data[37];
     unsigned char I[64];
     secp256k1_pubkey pub;
     gzw_xpub child;
     size_t len = 33;
-    int ok = 0;
+    gzw_reason r = GZW_REASON_BAD_ARGUMENT;
 
+    gzw_set_reason(why, r);
     if (!out) return 0;
     if (!ctx || !parent) {
         memset(out, 0, sizeof(*out));
         return 0;
     }
     memset(&child, 0, sizeof(child));
+    memset(I, 0, sizeof(I));
 
     /* A hardened child needs the parent private key. */
     if (index & GZW_HARDENED) goto done;
     if (parent->depth == 255) goto done;
+    r = GZW_REASON_INVALID_KEY;
     if (!secp256k1_ec_pubkey_parse(ctx, &pub, parent->pubkey, 33)) goto done;
 
     memcpy(data, parent->pubkey, 33);
     put_be32(data + 33, index);
+    r = GZW_REASON_INTERNAL;
     if (!hmac_sha512(parent->chain_code, 32, data, sizeof(data), I)) goto done;
 
     /* K_i = point(parse256(I_L)) + K_par.  Fails if I_L is not below the
-       order or the result is the point at infinity. */
+       order or the result is the point at infinity: BIP 32's invalid cases,
+       use the next index. */
+    r = GZW_REASON_INVALID_CHILD;
     if (!secp256k1_ec_pubkey_tweak_add(ctx, &pub, I)) goto done;
+    r = GZW_REASON_INTERNAL;
     if (!secp256k1_ec_pubkey_serialize(ctx, child.pubkey, &len, &pub,
                                        SECP256K1_EC_COMPRESSED) ||
         len != 33)
@@ -190,16 +233,19 @@ int gzw_bip32_child_pub(const secp256k1_context *ctx, const gzw_xpub *parent,
     child.depth = (uint8_t)(parent->depth + 1);
     child.child_number = index;
     if (!key_fingerprint(parent->pubkey, child.parent_fingerprint)) goto done;
-    ok = 1;
+    r = GZW_REASON_OK;
 
 done:
     /* Not private, but the chain code half lets siblings be derived. */
     gzw_wipe(I, sizeof(I));
-    if (ok)
+    gzw_wipe(data, sizeof(data));
+    if (r == GZW_REASON_OK)
         *out = child;
     else
         memset(out, 0, sizeof(*out));
-    return ok;
+    gzw_wipe(&child, sizeof(child));
+    gzw_set_reason(why, r);
+    return r == GZW_REASON_OK;
 }
 
 int gzw_bip32_neuter(const secp256k1_context *ctx, const gzw_xprv *xprv,
@@ -224,10 +270,13 @@ int gzw_bip32_neuter(const secp256k1_context *ctx, const gzw_xprv *xprv,
 }
 
 int gzw_bip32_derive_priv(const secp256k1_context *ctx, const gzw_xprv *start,
-                          const uint32_t *path, size_t path_len, gzw_xprv *out) {
+                          const uint32_t *path, size_t path_len, gzw_xprv *out,
+                          gzw_reason *why) {
     gzw_xprv cur;
+    gzw_reason r = GZW_REASON_OK;
     int ok = 1;
 
+    gzw_set_reason(why, GZW_REASON_BAD_ARGUMENT);
     if (!out) return 0;
     if (!ctx || !start || (!path && path_len > 0)) {
         gzw_wipe(out, sizeof(*out));
@@ -235,20 +284,24 @@ int gzw_bip32_derive_priv(const secp256k1_context *ctx, const gzw_xprv *start,
     }
     cur = *start;
     for (size_t i = 0; i < path_len && ok; i++)
-        ok = gzw_bip32_child_priv(ctx, &cur, path[i], &cur);
+        ok = gzw_bip32_child_priv(ctx, &cur, path[i], &cur, &r);
     if (ok)
         *out = cur;
     else
         gzw_wipe(out, sizeof(*out));
     gzw_wipe(&cur, sizeof(cur));
+    gzw_set_reason(why, r);
     return ok;
 }
 
 int gzw_bip32_derive_pub(const secp256k1_context *ctx, const gzw_xpub *start,
-                         const uint32_t *path, size_t path_len, gzw_xpub *out) {
+                         const uint32_t *path, size_t path_len, gzw_xpub *out,
+                         gzw_reason *why) {
     gzw_xpub cur;
+    gzw_reason r = GZW_REASON_OK;
     int ok = 1;
 
+    gzw_set_reason(why, GZW_REASON_BAD_ARGUMENT);
     if (!out) return 0;
     if (!ctx || !start || (!path && path_len > 0)) {
         memset(out, 0, sizeof(*out));
@@ -256,11 +309,13 @@ int gzw_bip32_derive_pub(const secp256k1_context *ctx, const gzw_xpub *start,
     }
     cur = *start;
     for (size_t i = 0; i < path_len && ok; i++)
-        ok = gzw_bip32_child_pub(ctx, &cur, path[i], &cur);
+        ok = gzw_bip32_child_pub(ctx, &cur, path[i], &cur, &r);
     if (ok)
         *out = cur;
     else
         memset(out, 0, sizeof(*out));
+    gzw_wipe(&cur, sizeof(cur));
+    gzw_set_reason(why, r);
     return ok;
 }
 
@@ -390,12 +445,20 @@ static int xkey_to_string(const unsigned char version[4], uint8_t depth,
     return ok;
 }
 
-int gzw_xprv_to_string(const gzw_xprv *xprv, int mainnet,
+/* 1 for mainnet, 0 for a test network, -1 for a value outside the enum. */
+static int version_is_mainnet(gzw_network net) {
+    uint32_t coin = 0;
+    if (!gzw_network_coin_type(net, &coin)) return -1;
+    return net == GZW_NET_MAINNET;
+}
+
+int gzw_xprv_to_string(const gzw_xprv *xprv, gzw_network net,
                        char out[GZW_XKEY_STR_MAX]) {
     unsigned char keydata[33];
+    int mainnet = version_is_mainnet(net);
     int ok;
     if (!out) return 0;
-    if (!xprv) {
+    if (!xprv || mainnet < 0) {
         gzw_wipe(out, GZW_XKEY_STR_MAX);
         return 0;
     }
@@ -408,10 +471,12 @@ int gzw_xprv_to_string(const gzw_xprv *xprv, int mainnet,
     return ok;
 }
 
-int gzw_xpub_to_string(const gzw_xpub *xpub, int mainnet,
+int gzw_xpub_to_string(const gzw_xpub *xpub, gzw_network net,
                        char out[GZW_XKEY_STR_MAX]) {
+    int mainnet = version_is_mainnet(net);
     if (!out) return 0;
-    if (!xpub || (xpub->pubkey[0] != 0x02 && xpub->pubkey[0] != 0x03)) {
+    if (!xpub || mainnet < 0 ||
+        (xpub->pubkey[0] != 0x02 && xpub->pubkey[0] != 0x03)) {
         memset(out, 0, GZW_XKEY_STR_MAX);
         return 0;
     }
@@ -454,7 +519,7 @@ static int xkey_decode(const char *str, unsigned char raw[XKEY_FULL],
 }
 
 int gzw_xprv_from_string(const secp256k1_context *ctx, const char *str,
-                         gzw_xprv *out, int *mainnet_out) {
+                         gzw_xprv *out, int *is_mainnet_out) {
     unsigned char raw[XKEY_FULL];
     int is_private = 0, mainnet = 0;
     int ok = 0;
@@ -473,7 +538,7 @@ int gzw_xprv_from_string(const secp256k1_context *ctx, const char *str,
     out->child_number = get_be32(raw + 9);
     memcpy(out->chain_code, raw + 13, 32);
     memcpy(out->key, raw + 46, 32);
-    if (mainnet_out) *mainnet_out = mainnet;
+    if (is_mainnet_out) *is_mainnet_out = mainnet;
     ok = 1;
 
 done:
@@ -483,7 +548,7 @@ done:
 }
 
 int gzw_xpub_from_string(const secp256k1_context *ctx, const char *str,
-                         gzw_xpub *out, int *mainnet_out) {
+                         gzw_xpub *out, int *is_mainnet_out) {
     unsigned char raw[XKEY_FULL];
     secp256k1_pubkey pub;
     int is_private = 0, mainnet = 0;
@@ -503,7 +568,7 @@ int gzw_xpub_from_string(const secp256k1_context *ctx, const char *str,
     out->child_number = get_be32(raw + 9);
     memcpy(out->chain_code, raw + 13, 32);
     memcpy(out->pubkey, raw + 45, 33);
-    if (mainnet_out) *mainnet_out = mainnet;
+    if (is_mainnet_out) *is_mainnet_out = mainnet;
     ok = 1;
 
 done:

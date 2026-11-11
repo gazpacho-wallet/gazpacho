@@ -24,12 +24,15 @@ int gzw_phrase_from_entropy(const unsigned char entropy32[32],
     int ok = 0;
 
     if (!phrase_out) return 0;
-    phrase_out[0] = '\0';
-    if (!entropy32) return 0;
+    if (!entropy32) {
+        phrase_out[0] = '\0';
+        return 0;
+    }
 
     /* 256 bits of entropy followed by the first 8 bits of its SHA-256. */
     memcpy(buf, entropy32, 32);
-    SHA256(entropy32, 32, hash);
+    phrase_out[0] = '\0';
+    SHA256(buf, 32, hash);
     buf[32] = hash[0];
 
     /* 264 bits = 24 groups of 11 bits, most significant bit first. */
@@ -51,7 +54,7 @@ int gzw_phrase_from_entropy(const unsigned char entropy32[32],
     /* Decode what was written and require the same entropy back. */
     memset(back, 0, sizeof(back));
     if (bip39_mnemonic_to_entropy(phrase_out, back, sizeof(back)) != 32) goto done;
-    if (!gzw_ct_equal(back, entropy32, 32)) goto done;
+    if (!gzw_ct_equal(back, buf, 32)) goto done;
     ok = 1;
 
 done:

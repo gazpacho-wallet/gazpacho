@@ -85,8 +85,8 @@ static int one_bip39(const secp256k1_context *ctx, const struct gzv_bip39 *v) {
     if (!gzw_phrase_to_seed(v->phrase, "TREZOR", seed)) return 0;
     if (!hex_equals(v->seed_hex, seed, 64)) return 0;
 
-    if (!gzw_bip32_master(ctx, seed, 64, &master)) return 0;
-    if (!gzw_xprv_to_string(&master, 1, xprv_str)) return 0;
+    if (!gzw_bip32_master(ctx, seed, 64, &master, NULL)) return 0;
+    if (!gzw_xprv_to_string(&master, GZW_NET_MAINNET, xprv_str)) return 0;
     return strcmp(xprv_str, v->xprv) == 0;
 }
 
@@ -103,23 +103,23 @@ static int one_bip32(const secp256k1_context *ctx, const struct gzv_bip32 *v) {
     int n = parse_path(v->path, path, COUNT(path));
 
     if (seed_len < 0 || n < 0) return 0;
-    if (!gzw_bip32_master(ctx, seed, (size_t)seed_len, &master)) return 0;
-    if (!gzw_bip32_derive_priv(ctx, &master, path, (size_t)n, &key)) return 0;
+    if (!gzw_bip32_master(ctx, seed, (size_t)seed_len, &master, NULL)) return 0;
+    if (!gzw_bip32_derive_priv(ctx, &master, path, (size_t)n, &key, NULL)) return 0;
 
     /* The derived private key and its public key, as text. */
-    if (!gzw_xprv_to_string(&key, 1, str) || strcmp(str, v->xprv) != 0) return 0;
+    if (!gzw_xprv_to_string(&key, GZW_NET_MAINNET, str) || strcmp(str, v->xprv) != 0) return 0;
     if (!gzw_bip32_neuter(ctx, &key, &pub)) return 0;
-    if (!gzw_xpub_to_string(&pub, 1, str) || strcmp(str, v->xpub) != 0) return 0;
+    if (!gzw_xpub_to_string(&pub, GZW_NET_MAINNET, str) || strcmp(str, v->xpub) != 0) return 0;
 
     /* The published text parses and writes back unchanged. */
     if (!gzw_xprv_from_string(ctx, v->xprv, &parsed_prv, &mainnet) || !mainnet)
         return 0;
-    if (!gzw_xprv_to_string(&parsed_prv, 1, str) || strcmp(str, v->xprv) != 0)
+    if (!gzw_xprv_to_string(&parsed_prv, GZW_NET_MAINNET, str) || strcmp(str, v->xprv) != 0)
         return 0;
     if (memcmp(parsed_prv.key, key.key, 32) != 0) return 0;
     if (!gzw_xpub_from_string(ctx, v->xpub, &parsed_pub, &mainnet) || !mainnet)
         return 0;
-    if (!gzw_xpub_to_string(&parsed_pub, 1, str) || strcmp(str, v->xpub) != 0)
+    if (!gzw_xpub_to_string(&parsed_pub, GZW_NET_MAINNET, str) || strcmp(str, v->xpub) != 0)
         return 0;
     /* A private key string is not a public key and the reverse. */
     if (gzw_xpub_from_string(ctx, v->xprv, &parsed_pub, NULL)) return 0;
@@ -127,16 +127,16 @@ static int one_bip32(const secp256k1_context *ctx, const struct gzv_bip32 *v) {
 
     if (n > 0) {
         uint32_t last = path[n - 1];
-        if (!gzw_bip32_derive_priv(ctx, &master, path, (size_t)n - 1, &parent))
+        if (!gzw_bip32_derive_priv(ctx, &master, path, (size_t)n - 1, &parent, NULL))
             return 0;
         if (!gzw_bip32_neuter(ctx, &parent, &parent_pub)) return 0;
         if (last & GZW_HARDENED) {
             /* No public derivation of a hardened child. */
-            if (gzw_bip32_child_pub(ctx, &parent_pub, last, &child_pub)) return 0;
+            if (gzw_bip32_child_pub(ctx, &parent_pub, last, &child_pub, NULL)) return 0;
         } else {
             /* Public derivation reaches the same extended public key. */
-            if (!gzw_bip32_child_pub(ctx, &parent_pub, last, &child_pub)) return 0;
-            if (!gzw_xpub_to_string(&child_pub, 1, str) ||
+            if (!gzw_bip32_child_pub(ctx, &parent_pub, last, &child_pub, NULL)) return 0;
+            if (!gzw_xpub_to_string(&child_pub, GZW_NET_MAINNET, str) ||
                 strcmp(str, v->xpub) != 0)
                 return 0;
         }
@@ -158,7 +158,7 @@ static int one_bip32_invalid(const secp256k1_context *ctx,
 static int bip86_master(const secp256k1_context *ctx, gzw_xprv *master) {
     unsigned char seed[64];
     if (!gzw_phrase_to_seed(GZV_BIP86_PHRASE, NULL, seed)) return 0;
-    return gzw_bip32_master(ctx, seed, 64, master);
+    return gzw_bip32_master(ctx, seed, 64, master, NULL);
 }
 
 static int bip86_root(const secp256k1_context *ctx) {
@@ -166,10 +166,10 @@ static int bip86_root(const secp256k1_context *ctx) {
     gzw_xpub pub;
     char str[GZW_XKEY_STR_MAX];
     if (!bip86_master(ctx, &master)) return 0;
-    if (!gzw_xprv_to_string(&master, 1, str) || strcmp(str, GZV_BIP86_ROOT_XPRV) != 0)
+    if (!gzw_xprv_to_string(&master, GZW_NET_MAINNET, str) || strcmp(str, GZV_BIP86_ROOT_XPRV) != 0)
         return 0;
     if (!gzw_bip32_neuter(ctx, &master, &pub)) return 0;
-    return gzw_xpub_to_string(&pub, 1, str) && strcmp(str, GZV_BIP86_ROOT_XPUB) == 0;
+    return gzw_xpub_to_string(&pub, GZW_NET_MAINNET, str) && strcmp(str, GZV_BIP86_ROOT_XPUB) == 0;
 }
 
 static int bip86_account(const secp256k1_context *ctx) {
@@ -177,12 +177,12 @@ static int bip86_account(const secp256k1_context *ctx) {
     gzw_xpub pub;
     char str[GZW_XKEY_STR_MAX];
     if (!bip86_master(ctx, &master)) return 0;
-    if (!gzw_bip86_account_xprv(ctx, &master, GZW_NET_MAINNET, 0, &acct)) return 0;
-    if (!gzw_xprv_to_string(&acct, 1, str) ||
+    if (!gzw_bip86_account_xprv(ctx, &master, GZW_NET_MAINNET, 0, &acct, NULL)) return 0;
+    if (!gzw_xprv_to_string(&acct, GZW_NET_MAINNET, str) ||
         strcmp(str, GZV_BIP86_ACCOUNT_XPRV) != 0)
         return 0;
-    if (!gzw_bip86_account_xpub(ctx, &master, GZW_NET_MAINNET, 0, &pub)) return 0;
-    return gzw_xpub_to_string(&pub, 1, str) &&
+    if (!gzw_bip86_account_xpub(ctx, &master, GZW_NET_MAINNET, 0, &pub, NULL)) return 0;
+    return gzw_xpub_to_string(&pub, GZW_NET_MAINNET, str) &&
            strcmp(str, GZV_BIP86_ACCOUNT_XPUB) == 0;
 }
 
@@ -214,14 +214,14 @@ static int one_bip86(const secp256k1_context *ctx, const struct gzv_bip86 *v) {
     if (memcmp(want, path, sizeof(path)) != 0) return 0;
 
     if (!bip86_master(ctx, &master)) return 0;
-    if (!gzw_bip32_derive_priv(ctx, &master, path, 5, &leaf)) return 0;
-    if (!gzw_xprv_to_string(&leaf, 1, str) || strcmp(str, v->xprv) != 0) return 0;
+    if (!gzw_bip32_derive_priv(ctx, &master, path, 5, &leaf, NULL)) return 0;
+    if (!gzw_xprv_to_string(&leaf, GZW_NET_MAINNET, str) || strcmp(str, v->xprv) != 0) return 0;
     if (!gzw_bip32_neuter(ctx, &leaf, &leaf_pub)) return 0;
-    if (!gzw_xpub_to_string(&leaf_pub, 1, str) || strcmp(str, v->xpub) != 0) return 0;
+    if (!gzw_xpub_to_string(&leaf_pub, GZW_NET_MAINNET, str) || strcmp(str, v->xpub) != 0) return 0;
 
     /* From the master key. */
     if (!gzw_bip86_output_from_master(ctx, &master, GZW_NET_MAINNET, 0, path[3],
-                                      path[4], &o))
+                                      path[4], &o, NULL))
         return 0;
     if (!output_matches(&o, v, path)) return 0;
 
@@ -230,13 +230,13 @@ static int one_bip86(const secp256k1_context *ctx, const struct gzv_bip86 *v) {
         !mainnet)
         return 0;
     if (!gzw_bip86_output_from_xpub(ctx, &acct_pub, GZW_NET_MAINNET, 0, path[3],
-                                    path[4], &o))
+                                    path[4], &o, NULL))
         return 0;
     if (!output_matches(&o, v, path)) return 0;
 
     /* The signing key pair belongs to the published output key. */
     if (!gzw_bip86_tweaked_keypair(ctx, &master, GZW_NET_MAINNET, 0, path[3],
-                                   path[4], &kp, &o))
+                                   path[4], &kp, &o, NULL))
         return 0;
     if (!output_matches(&o, v, path)) return 0;
     if (!secp256k1_keypair_xonly_pub(ctx, &kp_pub, NULL, &kp)) return 0;
