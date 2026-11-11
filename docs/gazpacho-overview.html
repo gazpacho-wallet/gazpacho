@@ -62,6 +62,7 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </style>
 </head>
 <body>
+<script src="versions.js" data-doc="overview" data-v="2" data-root=""></script>
 <header class="hero">
   <svg viewBox="0 0 120 84" style="width:120px;margin:0 auto" aria-hidden="true">
     <ellipse cx="60" cy="38" rx="50" ry="14" fill="var(--tomato)"/>
@@ -185,22 +186,22 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <svg viewBox="0 0 900 330" role="img" aria-label="Architecture layers">
   <rect x="40" y="20" width="250" height="56" rx="10" fill="var(--blue-soft)" stroke="var(--blue)"/><text x="165" y="54" text-anchor="middle" font-size="15" font-weight="700">Command line (C)</text>
   <rect x="325" y="20" width="250" height="56" rx="10" fill="var(--blue-soft)" stroke="var(--blue)"/><text x="450" y="54" text-anchor="middle" font-size="15" font-weight="700">Host service (C)</text>
-  <rect x="610" y="20" width="250" height="56" rx="10" fill="var(--blue-soft)" stroke="var(--blue)"/><text x="735" y="46" text-anchor="middle" font-size="15" font-weight="700">Web screens</text><text x="735" y="65" text-anchor="middle" font-size="12" class="t-mute">HTML + JavaScript, kept thin</text>
+  <rect x="610" y="20" width="250" height="56" rx="10" fill="var(--blue-soft)" stroke="var(--blue)"/><text x="735" y="46" text-anchor="middle" font-size="15" font-weight="700">Local web interface</text><text x="735" y="65" text-anchor="middle" font-size="12" class="t-mute">screens in your browser, served locally</text>
   <rect x="40" y="100" width="820" height="110" rx="14" fill="var(--tomato-soft)" stroke="var(--tomato)" stroke-width="2"/>
   <text x="450" y="130" text-anchor="middle" font-size="19" font-weight="800">Core library (portable C)</text>
   <text x="450" y="156" text-anchor="middle" font-size="14">tree · signing · ceremonies · channel · on-chain wallet · host terms and checks</text>
   <text x="450" y="182" text-anchor="middle" font-size="13" class="t-mute">No networking, storage or chain access of its own. A message comes in; a message and "what to save" come out.</text>
-  <text x="450" y="200" text-anchor="middle" font-size="13" class="t-mute">For the browser, the same C is compiled to WebAssembly.</text>
+  <text x="450" y="200" text-anchor="middle" font-size="13" class="t-mute">The web screens are served by the C program on your own machine.</text>
   <rect x="40" y="236" width="250" height="70" rx="10" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="165" y="264" text-anchor="middle" font-size="15" font-weight="700">Storage</text><text x="165" y="286" text-anchor="middle" font-size="12" class="t-mute">SQLite · browser storage</text>
   <rect x="325" y="236" width="250" height="70" rx="10" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="450" y="264" text-anchor="middle" font-size="15" font-weight="700">Chain view</text><text x="450" y="286" text-anchor="middle" font-size="12" class="t-mute">Electrum · HTTP explorer · own node</text>
   <rect x="610" y="236" width="250" height="70" rx="10" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="735" y="264" text-anchor="middle" font-size="15" font-weight="700">Connection</text><text x="735" y="286" text-anchor="middle" font-size="12" class="t-mute">TCP · WebSocket, encrypted</text>
 </svg>
 </div>
-<p>Almost everything is C. The one exception is the web screens, which a browser requires to be HTML and JavaScript.</p>
+<p>Almost everything is C. The one exception is the screens of the local web interface, which a browser requires to be HTML and JavaScript. Keys and channel state stay in the C program.</p>
 <pre>core/    the library: tree, signing, ceremonies, channel, wallet, terms
 ports/   storage, chain and connection backends
 cli/     the gazpacho program (member and host modes)
-web/     WebAssembly build and web screens
+web/     screens for the local web interface
 spec/    message format and host terms
 tests/   unit, regtest, signet, testnet
 infra/   how our public services are deployed
@@ -226,13 +227,15 @@ docs/    plan, assessment, guides</pre>
 </table></div>
 
 <h2><small>Order of work</small>Roadmap</h2>
-<p class="lead">Estimates are rough guesses made before any Gazpacho code exists. A one-day trial run comes first to firm them up.</p>
+<p class="lead">No dates: quality first. The details are in <a href="design.html">the design page</a>.</p>
 <div class="road">
-  <div class="step"><b>Command-line release on signet</b><span class="when">8–12 weeks</span><br>Install, join our factory, receive, pay, swap in, force-exit. The core library is built here.</div>
-  <div class="step"><b>Web release on signet</b><span class="when">+ 3–4 weeks</span><br>The same from a browser, with encrypted off-device backup.</div>
-  <div class="step"><b>Hosting release</b><span class="when">+ 3–4 weeks</span><br>Anyone can host, linked to their own Lightning node. A browser of hosts and their terms.</div>
-  <div class="step later"><b>Self-contained host</b><span class="when">open</span><br>The built-in node learns to hold ordinary Lightning channels, so a host needs only Gazpacho.</div>
-  <div class="step later"><b>Real funds</b><span class="when">open</span><br>After the remaining design fixes, an outside audit, and a capped beta.</div>
+  <div class="step"><b>Ground truth</b><span class="when">running now</span><br>Run the reference code end to end and study what carries over.</div>
+  <div class="step"><b>The core, proven in a simulator</b><br>Signing, channel, payments, exits and watching, with crashes and cheating injected.</div>
+  <div class="step"><b>The full layered tree</b><br>Hosts can move liquidity between members; members roll into the next factory.</div>
+  <div class="step"><b>First release on signet</b><br>Lobby, command line, host service, local web interface, our public host.</div>
+  <div class="step later"><b>Hosting for everyone</b><br>Adapters for every major Lightning node; a browser of hosts and their terms.</div>
+  <div class="step later"><b>Self-contained host</b><br>The built-in node holds ordinary Lightning channels, so a host needs only Gazpacho.</div>
+  <div class="step later"><b>Real funds</b><br>After the remaining design fixes, an outside audit, and a capped beta.</div>
 </div>
 
 <h2><small>Decided</small>What is settled</h2>
@@ -240,19 +243,21 @@ docs/    plan, assessment, guides</pre>
 <li>Gazpacho is both member and host software. Soup wallet is mothballed.</li>
 <li>First release is signet-only. Mainnet code is present but switched off.</li>
 <li>One funder per factory at first: the host. Members start at zero.</li>
-<li>Pseudo-Spilman leaves only. JIT channels are off. Target 512 members per factory.</li>
-<li>As much C as possible. Web is the first graphical screen.</li>
-<li>Nostr is used only for finding hosts, from the second release.</li>
-<li>The message format may be revised, here and in the SuperScalar repo, toward one shared format.</li>
+<li>The full layered SuperScalar tree in the first release. Pseudo-Spilman leaves. JIT channels off.</li>
+<li>Lightning's own wire language and its standard taproot channel format.</li>
+<li>Factories form in a lobby, like a game server. Listings and host proofs live on Nostr.</li>
+<li>A host links to a regular Lightning node through an adapter; every major node is to be supported.</li>
+<li>The screens are a local web interface over a C program.</li>
+<li>Protection while away: about two weeks to open the app; a separate watching service later.</li>
+<li>As much C as possible. Quality first, no deadline.</li>
 <li>Home: <code>github.com/gazpacho-wallet/gazpacho</code>, MIT licence.</li>
 </ul></div>
 
-<h2><small>Still open</small>Waiting on a decision</h2>
+<h2><small>Still open</small>In progress</h2>
 <div class="card"><ol>
-<li>Create the <code>gazpacho-wallet</code> organization on GitHub (the name is free).</li>
-<li>Hosting order: link to a regular Lightning node first and self-contained later, or self-contained from the start with hosting arriving later.</li>
+<li>The lobby's details: voting, removal, deposits, reputation. Research is under way.</li>
 <li>Which public chain servers ship in the default list.</li>
-<li>Who drafts the shared message format, and when.</li>
+<li>The shared message specification, to be written and offered to the SuperScalar repo.</li>
 </ol></div>
 
 <div class="note"><b>Honest limits.</b> Nothing here is built yet. The reference code this starts from has known safety gaps that another team is fixing, and "a member can always leave" is the design goal, not yet the proven state of the code. That is why the first releases are signet-only.</div>

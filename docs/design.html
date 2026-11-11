@@ -52,16 +52,28 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </style>
 </head>
 <body>
+<script src="versions.js" data-doc="design" data-v="2" data-root=""></script>
 <header>
   <h1><span>Gazpacho</span> design</h1>
-  <p>How the wallet is put together, what it takes from the SuperScalar code, and how we prove it works. Draft 1, 2026-11-11.</p>
+  <p>How the wallet is put together, what it takes from the SuperScalar code, and how we prove it works. Version 2, 2026-11-11, after design review 1.</p>
   <nav>
     <a href="#answers">Short answers</a><a href="#source">What we take</a><a href="#layers">Layers</a><a href="#loop">Core contract</a>
-    <a href="#engines">Engines</a><a href="#rule">The safety rule</a><a href="#wire">Messages</a><a href="#chain">Chain view</a>
+    <a href="#engines">Engines</a><a href="#rule">The safety rule</a><a href="#wire">Messages</a><a href="#chain">Chain view</a><a href="#lobby">Lobby</a><a href="#hostnode">Host node</a><a href="#schedule">Reminders</a><a href="#local">Local interface</a>
     <a href="#tests">Testing</a><a href="#steps">Milestones</a><a href="#hard">Why it's hard</a><a href="#open">Not designed yet</a>
   </nav>
 </header>
 <main>
+
+<div class="card" style="border-color:var(--green)"><h3>What changed in version 2</h3>
+<ul>
+<li><b>Messages:</b> we speak Lightning's own wire language instead of inventing a format.</li>
+<li><b>Channel:</b> Lightning's standard taproot channel format. The old format is archived, not deleted.</li>
+<li><b>Tree:</b> the first release ships the full layered tree; we build the fixed tree first.</li>
+<li><b>Web:</b> a local interface served by the C program. No wallet-in-a-web-page.</li>
+<li><b>New parts:</b> a lobby for forming factories, an adapter for the host's Lightning node, and a schedule that knows when the user must act.</li>
+<li><b>Corrections from the review:</b> safe recovery from backup, signing secrets never stored, exit fees, a precise definition of the safety rule.</li>
+<li><b>No deadline.</b> Quality first.</li>
+</ul></div>
 
 <h2 id="answers"><small>Your questions</small>Short answers</h2>
 <div class="card tw"><table>
@@ -98,8 +110,8 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
   <line x1="370" y1="170" x2="516" y2="170" stroke="var(--gold)" stroke-width="3" stroke-dasharray="7 5" marker-end="url(#a)"/>
   <text x="443" y="160" text-anchor="middle" font-size="12" font-weight="700" style="fill:var(--gold)">read, rewrite</text>
   <text x="443" y="84" text-anchor="middle" font-size="12" class="m">not taken</text>
-  <text x="690" y="84" text-anchor="middle" font-size="13" class="m">A test builds the same factory in both</text>
-  <text x="690" y="102" text-anchor="middle" font-size="13" class="m">and requires identical transaction IDs.</text>
+  <text x="690" y="84" text-anchor="middle" font-size="13" class="m">Reference results recorded from SuperScalar</text>
+  <text x="690" y="102" text-anchor="middle" font-size="13" class="m">catch any drift when the copy is updated.</text>
 </svg>
 </div>
 <ul>
@@ -112,14 +124,14 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <svg viewBox="0 0 900 470" role="img" aria-label="The six layers of Gazpacho">
   <g font-size="14">
   <rect x="150" y="14" width="720" height="62" rx="10" fill="var(--blue-soft)" stroke="var(--blue)"/>
-  <text x="170" y="40" font-weight="800" font-size="16">L5  Apps</text><text x="170" y="62" class="m">command line · host service · web screens</text>
+  <text x="170" y="40" font-weight="800" font-size="16">L5  Apps</text><text x="170" y="62" class="m">command line · host service · local web interface</text>
   <rect x="150" y="86" width="720" height="62" rx="10" fill="var(--gold-soft)" stroke="var(--gold)"/>
   <text x="170" y="112" font-weight="800" font-size="16">L4  Ports</text><text x="170" y="134" class="m">storage · chain view · connection · clock · randomness · host's Lightning link</text>
   <rect x="140" y="160" width="740" height="296" rx="14" fill="none" stroke="var(--tomato)" stroke-width="2" stroke-dasharray="7 5"/>
   <rect x="150" y="170" width="720" height="62" rx="10" fill="var(--tomato-soft)" stroke="var(--tomato)"/>
   <text x="170" y="196" font-weight="800" font-size="16">L3  Node</text><text x="170" y="218" class="m">sessions · journal · timers · on-chain wallet · host terms · member and host roles</text>
   <rect x="150" y="242" width="720" height="62" rx="10" fill="var(--tomato-soft)" stroke="var(--tomato)"/>
-  <text x="170" y="268" font-weight="800" font-size="16">L2  Engines</text><text x="170" y="290" class="m">signing round · channel · payment · exit · watch</text>
+  <text x="170" y="268" font-weight="800" font-size="16">L2  Engines</text><text x="170" y="290" class="m">signing round · channel · payment · exit · watch · lifecycle · schedule</text>
   <rect x="150" y="314" width="720" height="62" rx="10" fill="var(--green-soft)" stroke="var(--green)"/>
   <text x="170" y="340" font-weight="800" font-size="16">L1  Factory model</text><text x="170" y="362" class="m">tree · timelocks · leaves · exits · ladder</text>
   <rect x="150" y="386" width="720" height="62" rx="10" fill="var(--green-soft)" stroke="var(--green)"/>
@@ -134,10 +146,10 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
   <text x="70" y="334" text-anchor="middle" font-size="12" class="m">no system calls</text>
 </svg>
 </div>
-<p>Each layer only calls the one below it. All of L0 to L5 is C, except the web screens.</p>
+<p>Each layer only calls the one below it. All of L0 to L5 is C, except the screens of the local web interface, which are HTML and JavaScript served by the C program.</p>
 
 <h2 id="loop"><small>The core contract</small>An event goes in, a list of actions comes out</h2>
-<p class="lead">The core never waits, never opens a connection and never touches a disk. It is told what happened and answers with what to do. That is what lets the same code run on a desktop, in a browser, and inside a test.</p>
+<p class="lead">The core never waits, never opens a connection and never touches a disk. It is told what happened and answers with what to do. That is what lets the same code run on any machine and inside a test.</p>
 <div class="card">
 <svg viewBox="0 0 900 300" role="img" aria-label="Events enter the core and actions leave it">
   <rect x="20" y="30" width="230" height="240" rx="12" fill="var(--blue-soft)" stroke="var(--blue)"/>
@@ -155,13 +167,15 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </div>
 <div class="note"><b>Save before send.</b> The program around the core carries out the actions in order, and sends nothing until the save before it is safely stored. This one rule is enforced in one place, for everything. In the old code each of about 15 paths chose its own order, which is where most of its bugs came from.</div>
 
-<h2 id="engines"><small>Layer 2</small>Five engines</h2>
+<h2 id="engines"><small>Layer 2</small>Seven engines</h2>
 <div class="grid">
   <div class="card"><span class="pill p-tomato">Signing round</span><h3>One engine for every group signature</h3><p>Propose, collect nonces, collect partial signatures, finish. Used for creating a factory, changing liquidity, rotating and closing.</p></div>
   <div class="card"><span class="pill p-tomato">Channel</span><h3>One update routine</h3><p>Save the new state, send the signature, check the other side's revocation, save, release our secret. Updates that arrive mid-update wait in a queue.</p></div>
   <div class="card"><span class="pill p-gold">Payment</span><h3>Invoices and deadlines</h3><p>Incoming and outgoing payments. Deadlines are worked out from how long the factory takes to exit.</p></div>
   <div class="card"><span class="pill p-green">Exit</span><h3>Leaving without the host</h3><p>Plans which transactions to publish, in what order, when each becomes valid, and how to pay their fees.</p></div>
-  <div class="card"><span class="pill p-blue">Watch</span><h3>Eyes on the chain</h3><p>Knows every output that matters and what to do if each one is spent.</p></div>
+  <div class="card"><span class="pill p-blue">Watch</span><h3>Eyes on the chain</h3><p>Knows every output that matters and what to do if each one is spent. Built so it can also run as a separate process, at home or as a service.</p></div>
+  <div class="card"><span class="pill p-gold">Lifecycle</span><h3>From lobby to wind-down</h3><p>Runs a factory's life: the lobby, creation, liquidity changes, rotation into the next factory, and closing.</p></div>
+  <div class="card"><span class="pill p-green">Schedule</span><h3>Knows every date that matters</h3><p>Works out when the user must act: open the app, sign a rotation, move before a factory expires. Drives reminders.</p></div>
 </div>
 
 <h3 style="margin-top:26px">Why one signing engine matters</h3>
@@ -197,14 +211,31 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </div>
 <p>In the old code each ceremony had its own checks, and several were missing. A cooperative close that paid only the host was accepted, and so was a liquidity change that emptied a member's balance. One rule, applied by the signing engine to every request, covers both of those and whatever ceremony is added later.</p>
 <p>The same idea runs on the host's side: its funding transaction is signed only after the whole tree and every member's exit are signed.</p>
-
-<h2 id="wire"><small>Proposed</small>Messages</h2>
+<div class="note"><b>From the review.</b> "What I can leave with" has to account for timelocks, payments in flight and fees. So the rule gets a precise written definition and its own test suite before any engine relies on it.</div>
+<h3>Three more rules the review added</h3>
 <div class="grid">
-  <div class="card"><h3>Compact and versioned</h3><p>Binary messages with typed fields that can be extended later without breaking older software.</p></div>
-  <div class="card"><h3>About 15 kinds</h3><p>The old code has about 100 message types, built up over several generations.</p></div>
-  <div class="card"><h3>Encrypted, host key pinned</h3><p>The same messages travel over an ordinary connection or a WebSocket, so the browser version needs nothing special.</p></div>
+  <div class="card"><h3>Signing secrets are never stored</h3><p>If a signing round is interrupted, it is abandoned and restarted with fresh secrets.</p></div>
+  <div class="card"><h3>A restored backup never publishes</h3><p>An app restored from backup asks the host to prove the latest state and waits for the host to close. Publishing an old copy would look like cheating.</p></div>
+  <div class="card"><h3>Exit fees come from the host's side</h3><p>The host is the funder, so the base fee on tree and channel transactions is built in. A member's own on-chain coins are only needed to raise the fee when the chain is busy.</p></div>
 </div>
-<p>The format is written as a specification in <code>spec/</code>, and offered to the SuperScalar repo as the candidate for the shared format.</p>
+
+<h2 id="wire"><small>Decided</small>Messages: Lightning's own wire language</h2>
+<p class="lead">A Gazpacho connection is an ordinary Lightning peer connection that also carries factory messages. We invent as little as possible.</p>
+<div class="card tw"><table>
+<tr><th>Need</th><th>What we use</th><th>Whose</th></tr>
+<tr><td>Encrypted connection with a pinned host key</td><td>Lightning's transport handshake</td><td>Lightning standard</td></tr>
+<tr><td>Message shape and session start</td><td>Type number, content, optional extra fields; feature flags exchanged at start</td><td>Lightning standard</td></tr>
+<tr><td>Growing without breaking old software</td><td>No version numbers. Unknown odd-numbered fields are skipped, unknown even ones are refused</td><td>Lightning standard</td></tr>
+<tr><td>The channel: pay, sign, revoke, reconnect, pause</td><td>The standard channel messages, taproot format</td><td>Lightning standard</td></tr>
+<tr><td>Member's backup held by the host</td><td>The standard peer-storage messages</td><td>Lightning standard</td></tr>
+<tr><td>Factory messages</td><td>One custom message type with an envelope: protocol name, factory, kind. About 15 kinds</td><td>Ours, in the style of bLIP-56</td></tr>
+<tr><td>Signing data for hundreds of members</td><td>A sequence of small messages with a "complete" marker</td><td>Ours, following Lightning's practice</td></tr>
+</table></div>
+<ul>
+<li>Encoding and decoding code is generated from tables in <code>spec/</code>, with test vectors for every message and fuzzing of every decoder.</li>
+<li>The old channel format is documented in <code>spec/archive/</code> and its code stays reachable at a pinned SuperScalar version. The channel engine keeps the on-chain format behind one interface, so another format can be plugged in later.</li>
+<li>The specification is offered to the SuperScalar repo as the shared format.</li>
+</ul>
 
 <h2 id="chain"><small>Layer 4</small>Chain view that cannot be lied to, only starved</h2>
 <div class="card">
@@ -220,10 +251,61 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </svg>
 </div>
 <ul>
-<li><b>A server cannot invent a confirmation.</b> Gazpacho checks the proof of work on block headers and checks each confirmation against them.</li>
+<li><b>A server cannot invent a confirmation.</b> Gazpacho checks the proof of work on block headers and checks each confirmation against them. On signet, where blocks are signed rather than mined, it compares several servers instead.</li>
 <li><b>A server can hide a transaction.</b> So Gazpacho asks more than one, and anyone can point it at their own node.</li>
 <li>Keys never leave the app.</li>
 </ul>
+
+<h2 id="lobby"><small>New in version 2 · research in progress</small>The lobby: how a factory forms</h2>
+<p class="lead">Creating a factory needs everyone online at once. The lobby is the waiting room, and it works like a game server.</p>
+<div class="card">
+<svg viewBox="0 0 900 150" role="img" aria-label="Lobby stages">
+  <g font-size="14">
+  <rect x="10" y="40" width="150" height="64" rx="10" fill="var(--blue-soft)" stroke="var(--blue)"/><text x="85" y="68" text-anchor="middle" font-weight="700">Host opens</text><text x="85" y="88" text-anchor="middle" font-size="12" class="m">rules listed on Nostr</text>
+  <rect x="195" y="40" width="150" height="64" rx="10" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="270" y="68" text-anchor="middle" font-weight="700">Members join</text><text x="270" y="88" text-anchor="middle" font-size="12" class="m">direct to the host</text>
+  <rect x="380" y="40" width="150" height="64" rx="10" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="455" y="68" text-anchor="middle" font-weight="700">Ready check</text><text x="455" y="88" text-anchor="middle" font-size="12" class="m">by hand or automatic</text>
+  <rect x="565" y="40" width="150" height="64" rx="10" fill="var(--tomato-soft)" stroke="var(--tomato)"/><text x="640" y="68" text-anchor="middle" font-weight="700">Signing</text><text x="640" y="88" text-anchor="middle" font-size="12" class="m">no-shows are dropped</text>
+  <rect x="750" y="40" width="140" height="64" rx="10" fill="var(--green-soft)" stroke="var(--green)"/><text x="820" y="68" text-anchor="middle" font-weight="700">Host funds</text><text x="820" y="88" text-anchor="middle" font-size="12" class="m">factory is live</text>
+  </g>
+  <line x1="160" y1="72" x2="191" y2="72" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="345" y1="72" x2="376" y2="72" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="530" y1="72" x2="561" y2="72" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="715" y1="72" x2="746" y2="72" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/>
+  <text x="450" y="134" text-anchor="middle" font-size="13" class="m">Nobody has money at risk until the last step, and the host only funds after everything is signed.</text>
+</svg>
+</div>
+<div class="grid">
+  <div class="card"><h3>Your conditions are locked in</h3><p>A member sets conditions once, such as a minimum number of members or channel size. If the lobby's rules change, the app un-readies or leaves. The final guard is at signing: the app checks the real tree against those conditions.</p></div>
+  <div class="card"><h3>Votes on open rules</h3><p>The host fixes what it cares about and leaves other rules open within ranges it will accept. Members' votes settle the open ones.</p></div>
+  <div class="card"><h3>Protection from griefers</h3><p>Several defences together: reputation, a deposit, a vote to remove a participant, and proof of who broke a signing round.</p></div>
+  <div class="card"><h3>Rule profiles</h3><p>Named presets, such as a safety profile that switches off optional features in favour of simple operation.</p></div>
+</div>
+<div class="note">A research task is under way on how other systems handle this: coinjoin coordinators, shared-output protocols, game lobbies, and reputation on Nostr. The lobby design note follows it. Voting and vote-to-remove need care, because identities are cheap and every member signs for themselves.</div>
+
+<h2 id="hostnode"><small>New in version 2</small>The host's Lightning node</h2>
+<p class="lead">A host connects its factory to the rest of Lightning through a regular node. Four operations are all Gazpacho needs from it.</p>
+<div class="card tw"><table>
+<tr><th>Operation</th><th>Why</th></tr>
+<tr><td>Pay an invoice, with a spending limit and deadline</td><td>A member pays someone outside the factory</td></tr>
+<tr><td>Create an invoice whose secret the node does not know, and hold the payment open</td><td>Someone outside pays a member; the member keeps the secret until the money is locked in their channel</td></tr>
+<tr><td>Settle a held payment</td><td>The member has revealed the secret</td></tr>
+<tr><td>Cancel a held payment</td><td>The member could not be paid</td></tr>
+</table></div>
+<p>One adapter interface, with an adapter per node type: the most widely used node first, then the others, aiming to cover every major implementation. Later, the built-in node learns to hold ordinary channels itself and a host needs nothing else.</p>
+
+<h2 id="schedule"><small>New in version 2</small>Reminders: the app knows when you are needed</h2>
+<div class="grid">
+  <div class="card"><h3>Open the app by…</h3><p>The latest date by which the app must be opened to stay protected against an old state. About two weeks in the first release.</p></div>
+  <div class="card"><h3>Sign the rotation by…</h3><p>When the factory winds down and the member should move to the next one.</p></div>
+  <div class="card"><h3>Factory expires on…</h3><p>The date after which the member's app exits automatically if nothing else has happened.</p></div>
+</div>
+<p>The schedule engine works these out from the factory's own parameters. The screens show them as countdowns, and reminders are built on top.</p>
+
+<h2 id="local"><small>New in version 2</small>The local web interface</h2>
+<p class="lead">The C program runs on your machine and shows its screens in your browser. Keys and channel state never enter the browser.</p>
+<div class="card"><ul>
+<li>It listens on the local machine only.</li>
+<li>It requires a login token created at start-up.</li>
+<li>It refuses requests that come from other websites.</li>
+<li>Remote viewing, for example of a home machine, goes through an encrypted tunnel with an access token that can be revoked.</li>
+</ul></div>
 
 <h2 id="tests"><small>Proving it works</small>Testing, from the inside out</h2>
 <div class="card">
@@ -233,7 +315,7 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
   <path d="M335 86 L565 86 L600 148 L300 148 Z" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="450" y="124" text-anchor="middle" font-weight="700">Regtest, end to end</text>
   <path d="M295 158 L605 158 L650 232 L250 232 Z" fill="var(--tomato-soft)" stroke="var(--tomato)" stroke-width="2"/><text x="450" y="192" text-anchor="middle" font-weight="800" font-size="16">The simulator</text><text x="450" y="214" text-anchor="middle" font-size="13" class="m">the main safety net</text>
   <path d="M245 242 L655 242 L690 296 L210 296 Z" fill="var(--green-soft)" stroke="var(--green)"/><text x="450" y="276" text-anchor="middle" font-weight="700">Engine tests</text>
-  <path d="M205 306 L695 306 L720 348 L180 348 Z" fill="var(--green-soft)" stroke="var(--green)"/><text x="450" y="333" text-anchor="middle" font-weight="700">Test vectors · same transaction IDs as SuperScalar</text>
+  <path d="M205 306 L695 306 L720 348 L180 348 Z" fill="var(--green-soft)" stroke="var(--green)"/><text x="450" y="333" text-anchor="middle" font-weight="700">Test vectors · reference results from SuperScalar</text>
   </g>
   <g font-size="13"><text x="20" y="52" class="m">real network, nightly</text><text x="20" y="122" class="m">real programs, real node</text><text x="20" y="200" class="m">a whole factory in one process</text><text x="20" y="274" class="m">one engine at a time</text><text x="20" y="332" class="m">the foundations</text></g>
 </svg>
@@ -257,15 +339,15 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <p class="lead" style="margin-bottom:0">For each rule there is also a run with the rule switched off, which must fail. That proves the test can catch the bug it exists for.</p></div>
 
 <h2 id="steps"><small>Order of work</small>Milestones</h2>
-<p class="lead">Sizes are rough guesses made before any Gazpacho code exists.</p>
+<p class="lead">No dates: the instruction is quality first. Sizes will be estimated once M0 shows how much existing work carries over.</p>
 <div class="road">
-  <div class="step"><b>M0 · Ground truth</b><span class="when">1 week</span><br>Run SuperScalar on regtest: join, pay, force-exit. Import the foundations. Identical-transaction-ID test passes.</div>
-  <div class="step"><b>M1 · First factory in the simulator</b><span class="when">2 weeks</span><br>Simulator skeleton and the signing round engine. A factory is created, with funding signed last.</div>
-  <div class="step"><b>M2 · Payments</b><span class="when">2–3 weeks</span><br>Channel and payment engines. Invariants switched on.</div>
-  <div class="step"><b>M3 · Leaving and watching</b><span class="when">2 weeks</span><br>Exit and watch engines. Crash and cheating runs pass.</div>
-  <div class="step"><b>M4 · The real world</b><span class="when">2 weeks</span><br>Storage, encrypted connection, Bitcoin node and Electrum. Regtest end to end.</div>
-  <div class="step"><b>M5 · First release</b><span class="when">2 weeks</span><br>Command line, host service, the host's Lightning link, our public signet host.</div>
-  <div class="step"><b>M6 · Web</b><span class="when">3–4 weeks</span><br>The core compiled for the browser, web screens, off-device backup.</div>
+  <div class="step"><b>M0 · Ground truth</b><span class="when">running now</span><br>Run SuperScalar on regtest: join, pay, close, force-exit. Study how cleanly the foundations separate. Record reference results.</div>
+  <div class="step"><b>M1 · First factory in the simulator</b><br>Simulator skeleton and the signing round engine. A fixed-tree factory is created, with funding signed last.</div>
+  <div class="step"><b>M2 · Payments</b><br>Channel engine on Lightning's standard taproot format, and the payment engine. Invariants switched on.</div>
+  <div class="step"><b>M3 · Leaving and watching</b><br>Exit, watch and schedule engines. Crash and cheating runs pass.</div>
+  <div class="step"><b>M4 · The full tree</b><br>The layers that let a host move liquidity between members. Rotation into the next factory.</div>
+  <div class="step"><b>M5 · The real world</b><br>Storage, Lightning transport, Bitcoin node and Electrum. Regtest end to end.</div>
+  <div class="step"><b>M6 · First release on signet</b><br>Lobby, command line, host service, the host's Lightning node adapter, the local web interface, our public signet host.</div>
 </div>
 
 <h2 id="hard"><small>Honest view</small>Why this is not simple</h2>
@@ -275,7 +357,7 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
   <div class="card"><h3>3. Being reachable</h3><p>Members must sign at rotation and must watch the chain. Phones and browser tabs are usually asleep.</p></div>
   <div class="card"><h3>4. Exit fees</h3><p>Leaving without the host needs on-chain funds for fees at the moment it is needed.</p></div>
   <div class="card"><h3>5. Time</h3><p>Payment deadlines, tree timelocks and factory lifetime must agree for every tree shape.</p></div>
-  <div class="card"><h3>6. The browser</h3><p>It is a fragile place to keep channel state, and whoever serves the page controls the code.</p></div>
+  <div class="card"><h3>6. Gathering people</h3><p>Everyone must be online at once to create a factory, and anyone who stalls can waste everyone's time.</p></div>
   <div class="card"><h3>7. Public servers</h3><p>They can hide a transaction. In a factory, a hidden transaction can cost money.</p></div>
   <div class="card"><h3>8. The foundations</h3><p>The imported tree code still has open design issues that are being fixed in the SuperScalar repo.</p></div>
 </div>
@@ -285,21 +367,23 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li>The message specification, field by field.</li>
 <li>State tables for each engine.</li>
 <li>The record types in the journal.</li>
-<li>The timelock and deadline schedule in actual numbers.</li>
-<li>Paying members, not the host, at every tree output when a factory expires. This is a change to the imported tree builder.</li>
+<li>The timelock and deadline schedule in actual numbers, for the full tree.</li>
+<li>The precise definition of the member's safety rule.</li>
+<li>The lobby: voting, removal, deposits and reputation. Research is under way.</li>
+<li>Paying members, not the host, at every tree output when a factory expires. Requested from the SuperScalar repo.</li>
 <li>Waking members who are offline when a factory rotates.</li>
 <li>Ordinary Lightning channels for a self-contained host.</li>
-</ol>
-<p class="lead" style="margin-bottom:0">Items 1 to 4 are written during M0 and M1. Items 5 to 7 are needed before real funds, not before signet.</p></div>
-
-<div class="ask"><b>Three choices I need confirmed</b>
-<ol style="margin-bottom:0">
-<li>Import the foundations as a pinned copy inside our repo (recommended), not as a live link to the SuperScalar repo.</li>
-<li>Write our own compact message format now and offer it as the shared one (recommended), not reuse today's format.</li>
-<li>For item 5 above: ask the SuperScalar repo for the change (recommended), or patch our copy.</li>
 </ol></div>
 
-<footer>Gazpacho design · draft 1 · the short text version is <code>docs/DESIGN.md</code></footer>
+<h2><small>Tracked for later</small>Deliberately not in the first release</h2>
+<div class="card"><ul>
+<li><b>Swap-in and swap-out</b> between on-chain bitcoin and a factory channel. Issue 1.</li>
+<li><b>A watching service</b> that runs without the app. Issue 2.</li>
+<li><b>Members bringing their own coins into a factory</b> at creation or through a leaf.</li>
+<li><b>Several hosts sharing one factory.</b></li>
+</ul></div>
+
+<footer>Gazpacho design · version 2 · the short text version is <code>docs/DESIGN.md</code></footer>
 </main>
 </body>
 </html>

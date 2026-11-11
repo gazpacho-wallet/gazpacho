@@ -194,3 +194,30 @@ Four operations are enough:
 4. Cancel a held payment.
 
 LND offers all four natively. Core Lightning offers 1 natively and needs a plugin for 2–4.
+
+## 15. Decisions and direction from the second discussion (2026-11-11)
+
+- **Reminders.** A schedule engine in the core computes every date by which the user must act (open the app to stay protected, sign a rotation, leave before expiry). The screens show countdowns; reminders are built on it.
+- **Old channel format is archived, not deleted.** Documented under `spec/archive/`, code reachable at a pinned SuperScalar version, and the channel engine keeps the on-chain format behind one interface so a different format can be plugged in later.
+- **Lobby requirements (owner):**
+  - Members set automatic join conditions (minimum members, minimum channel size, fee ceilings and so on). Once set they are locked in: a rule change can never carry a member into a factory that violates them.
+  - The host fixes the rules it cares about and leaves others open within ranges; members vote on the open ones.
+  - Members can vote to remove a participant; the software honours a proven majority.
+  - Several defences together: reputation, a deposit, vote-to-remove, others as research shows.
+  - Rule profiles, such as a safety profile that disables optional features.
+  - Research commissioned; results in `LOBBY-research.md`, design note to follow.
+- **Host's Lightning node.** The most widely used node first, then the others, aiming at every major implementation and at working across the whole Lightning network.
+- **Local web interface** confirmed: a web front end over the C program.
+- **Illustrated pages are versioned.** Earlier versions are kept under `docs/history/` and each page has a version switch (`docs/versions.js`).
+
+### Bringing a member's own coins into a live factory (analysis, not yet reviewed)
+
+Three ways exist; none is in the first release.
+
+| Way | Who signs | New capital for the factory? | Main risk |
+|---|---|---|---|
+| Swap-in (issue 1) | Member and host, outside the tree | No: uses liquidity the host already has on that member's side | Funds are locked until a timeout if the other side stalls |
+| Add the coins to the member's leaf | Only that leaf's signers | Yes | The member's coins must first be locked on chain under joint control, or the member could spend them elsewhere and void the new leaf state |
+| Add coins at creation | Everyone | Yes | Any contributor can abort the funding for all |
+
+The second row is this project's own reasoning, not taken from a published design, and needs a proper review before it is relied on.
