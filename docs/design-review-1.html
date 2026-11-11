@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gazpacho Design Review</title>
+<style>
+:root{--bg:#fbf6ee;--card:#fff;--ink:#231a15;--mute:#6f6258;--line:#e6dac9;--tomato:#c8321f;--tomato-soft:#fbe3dc;--green:#2f7d4f;--green-soft:#dff1e4;--gold:#b7791f;--gold-soft:#fbefd2;--grey-soft:#efe9df}
+@media (prefers-color-scheme:dark){:root{--bg:#17120f;--card:#211a16;--ink:#f3ebe2;--mute:#b3a597;--line:#3a2f28;--tomato:#ff7a63;--tomato-soft:#44201a;--green:#6fcf97;--green-soft:#1c3a29;--gold:#f0c060;--gold-soft:#3d3015;--grey-soft:#2b231e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 system-ui,"Segoe UI",sans-serif}
+main{max-width:880px;margin:0 auto;padding:30px 18px 130px}
+h1{font-size:34px;margin:0 0 6px}h1 span{color:var(--tomato)}
+h2{font-size:24px;margin:44px 0 8px}
+h3{font-size:19px;margin:0 0 8px}
+p{margin:6px 0 10px}.lead{color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:14px 0}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:540px;font-size:15.5px}
+th,td{text-align:left;vertical-align:top;padding:9px 10px;border-bottom:1px solid var(--line)}
+th{font-size:13px;color:var(--mute)}
+.sev{font-weight:700;white-space:nowrap}.s1{color:var(--tomato)}.s2{color:var(--gold)}.s3{color:var(--green)}
+.why{color:var(--mute);font-size:15.5px}
+label.opt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:9px;margin:8px 0;cursor:pointer}
+label.opt:has(input:checked){border-color:var(--green);background:var(--green-soft)}
+label.opt input{margin-top:6px}
+.rec{display:inline-block;font-size:12px;font-weight:700;color:var(--green);border:1px solid var(--green);border-radius:99px;padding:0 8px;margin-left:6px}
+.cost{display:block;color:var(--mute);font-size:14.5px}
+textarea{width:100%;min-height:60px;margin-top:8px;padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--bg);color:var(--ink);font:inherit;font-size:15px}
+ul{margin:6px 0 8px;padding-left:22px}li{margin:4px 0}
+.bar{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center;align-items:center}
+button{font:inherit;padding:9px 16px;border-radius:9px;border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer}
+button.primary{background:var(--tomato);color:#fff;border-color:var(--tomato);font-weight:700}
+#msg{color:var(--mute);font-size:14px;min-width:120px}
+</style>
+</head>
+<body>
+<main>
+<h1><span>Gazpacho</span> design review 1</h1>
+<p class="lead">I went back through design draft 1 looking for what is wrong, missing or too optimistic. The findings are first. Below them are nine decisions for you, each with my recommendation and its cost, and a list of points I intend to treat as settled. Press "Copy answers" and paste the result back to me.</p>
+
+<h2>What the review found</h2>
+<div class="card tw"><table>
+<tr><th>#</th><th>Finding</th><th>Weight</th><th>Handled by</th></tr>
+<tr><td>1</td><td><b>The tree could be far simpler for a first version.</b> With one member per leaf and fixed upper levels, the tree needs no shrinking-timelock layers at all. Exits are fast and almost no group signing happens after creation. The cost is that the host's spare liquidity is fixed per member.</td><td class="sev s1">Large</td><td>Question 1</td></tr>
+<tr><td>2</td><td><b>A new member cannot pay for their own exit.</b> Members start with nothing on chain, but a forced exit needs on-chain fees. Draft 1 did not say where those come from.</td><td class="sev s1">Large</td><td>Question 2</td></tr>
+<tr><td>3</td><td><b>"Watching while the app runs" does not protect a member who is away.</b> If the host publishes an old channel state, the member has a limited time to answer.</td><td class="sev s1">Large</td><td>Question 3</td></tr>
+<tr><td>4</td><td><b>The channel's on-chain format was left unsaid.</b> The old code's payment scripts have known flaws. Lightning now has a finished taproot channel format.</td><td class="sev s1">Large</td><td>Question 4</td></tr>
+<tr><td>5</td><td><b>How members gather was not designed.</b> Creating a factory needs every member online at once. There has to be a waiting room and a start time.</td><td class="sev s2">Medium</td><td>Question 5</td></tr>
+<tr><td>6</td><td><b>Receiving through the host's regular node needs a specific node feature.</b> The member must keep the payment secret until the money is locked in their channel. The host's node has to be able to hold a payment open meanwhile.</td><td class="sev s2">Medium</td><td>Question 6</td></tr>
+<tr><td>7</td><td><b>A restored backup is dangerous.</b> Publishing from an old copy looks like cheating and loses funds. Draft 1 described backup but not safe recovery.</td><td class="sev s2">Medium</td><td>Settled list</td></tr>
+<tr><td>8</td><td><b>Signing secrets must never be saved.</b> "Save before send" does not apply to them. A signing round interrupted by a crash is abandoned and restarted with fresh ones.</td><td class="sev s2">Medium</td><td>Settled list</td></tr>
+<tr><td>9</td><td><b>The browser needs secure connections.</b> A web page can only connect to a host that has a web certificate. Community hosts would each need one.</td><td class="sev s2">Medium</td><td>Question 8</td></tr>
+<tr><td>10</td><td><b>The "one safety rule" was oversold.</b> It is the right principle, but working out "what can I leave with" covers timelocks, in-flight payments and fees. It needs its own precise definition and its own tests.</td><td class="sev s2">Medium</td><td>Settled list</td></tr>
+<tr><td>11</td><td><b>The "same transaction IDs" test proves little.</b> We import the tree code unchanged, so it would match by construction. It is replaced by recorded reference results that catch drift when the import is updated.</td><td class="sev s3">Small</td><td>Fixed in the design</td></tr>
+<tr><td>12</td><td><b>Checking block headers is harder on signet.</b> Signet blocks are signed, not mined in the usual way. On signet we compare several servers; the full check is for testnet and mainnet.</td><td class="sev s3">Small</td><td>Fixed in the design</td></tr>
+<tr><td>13</td><td><b>Missing pieces:</b> a lifecycle manager for joining, rotating and closing, and the swap-in flow were not among the five engines.</td><td class="sev s3">Small</td><td>Fixed in the design</td></tr>
+<tr><td>14</td><td><b>The estimate was optimistic.</b> Building the channel on Lightning's standard format is more work than draft 1 allowed. A first release is more likely 13 to 15 weeks than 11 to 12.</td><td class="sev s2">Medium</td><td>Question 9</td></tr>
+</table></div>
+
+<h2>Decisions for you</h2>
+<div id="qs"></div>
+
+<h2>Points I will treat as settled</h2>
+<div class="card">
+<p class="why">Object to any of these in the box.</p>
+<ul>
+<li><b>Message format:</b> speak Lightning's own wire language and carry factory messages inside one custom message type. No private format.</li>
+<li><b>Foundations:</b> imported as a pinned copy inside our repo. Changes go to the SuperScalar repo first.</li>
+<li><b>Changes to the tree builder</b> (such as paying members at every output on expiry): requested from the SuperScalar repo, not patched privately.</li>
+<li><b>Safe recovery:</b> an app restored from backup never publishes its own copy of a channel. It asks the host for proof of the latest state and waits for the host to close.</li>
+<li><b>Signing secrets:</b> never written to storage. An interrupted signing round is abandoned.</li>
+<li><b>Backup location:</b> an encrypted copy held by the host using Lightning's standard peer-storage messages, plus a file the user can export.</li>
+<li><b>The safety rule:</b> written as a precise definition with its own test suite before any engine uses it.</li>
+<li><b>Sign before fund</b>, <b>save before send</b>, and <b>deadlines derived from exit time</b>, as in draft 1.</li>
+<li><b>Signet lifetimes:</b> factories on our signet host live about a week, so testers see a rotation. Real lifetimes are a setting.</li>
+</ul>
+<textarea id="settled" placeholder="Anything in this list you would decide differently"></textarea>
+</div>
+</main>
+
+<div class="bar">
+<button class="primary" id="copy">Copy answers</button>
+<button id="fill">Fill blanks with recommendations</button>
+<button id="clear">Clear all</button>
+<span id="msg"></span>
+</div>
+
+<script>
+const Q=[
+{id:"Q1",t:"How much of the SuperScalar tree does the first version use?",
+ why:"SuperScalar's full design has layers of shrinking timelocks so the host can move spare liquidity between members. Each layer adds about three days to an exit and needs groups of members online to sign.",
+ o:[["Fixed tree with one member per leaf first. Add one movable-liquidity layer in the release after","Simplest and safest start. Exits take hours, not days. But the first release does not show liquidity moving between members, which is SuperScalar's signature feature.",1],
+    ["One movable-liquidity layer above the leaves from the first release","Shows the signature feature at launch. Adds roughly 2 to 3 weeks, three days of exit delay, and group signing among leaf neighbours."],
+    ["The full layered tree from the first release","Closest to the paper. Adds the most time and the longest exits and payment deadlines."]]},
+{id:"Q2",t:"Who pays the on-chain fees when a member is forced to exit?",
+ why:"A member who joined with nothing has no on-chain coins. Without an answer, their right to leave is theoretical.",
+ o:[["A basic fee is built into the exit transactions and funded by the host at creation; the app also asks members to keep a small on-chain reserve for busy times","The host puts in a little extra per member. Exits always work at quiet times; the reserve covers busy times.",1],
+    ["Members must hold an on-chain reserve before they can join","Simple for us. Kills the 'join with nothing' experience."],
+    ["The host pays all exit fees","Best for members. Open-ended cost for hosts, and a member could force costs on a host."]]},
+{id:"Q3",t:"How is a member protected while their app is closed?",
+ why:"If the host publishes an old channel state, the member's app must respond within a time limit. A closed browser tab cannot.",
+ o:[["A long time limit, about two weeks, so opening the app now and then is enough; a watching service comes later","No new service to build. If a host ever force-closes, its own money is locked for two weeks, which hosts may dislike.",1],
+    ["Build a watching service for the first release","Members are covered even if away for months. Adds roughly 2 to 3 weeks and a service we must run."],
+    ["Both","Strongest. The most work."]]},
+{id:"Q4",t:"Which on-chain format does the channel inside a leaf use?",
+ why:"The old code has its own payment scripts with known flaws. Lightning's taproot channel format was merged into the specification in 2026 and ships in LND and Eclair, according to secondary sources I have not checked against the specification itself.",
+ o:[["Lightning's standard taproot channel format, exactly","The most reviewed option, and what a self-contained host needs later anyway. More to build than patching the old scripts.",1],
+    ["Keep the old code's format and fix its flaws","Less work now. We own a private format forever, and it blocks talking to regular Lightning nodes."]]},
+{id:"Q5",t:"How does a factory fill and start?",
+ why:"Every member must be online at the same moment to sign at creation. SuperScalar's design has a new factory start each day.",
+ o:[["A waiting room with a scheduled start; whoever is present at the start time is in","Predictable. A member may wait up to a day. Matches the daily ladder.",1],
+    ["Start as soon as enough members are waiting","Faster when busy. Unpredictable when quiet."],
+    ["Both: start when full, or at the scheduled time, whichever comes first","Best experience. Slightly more to build and test."]]},
+{id:"Q6",t:"Which regular Lightning node does a host link to first?",
+ why:"The host's node must be able to hold an incoming payment open until the member releases the secret. LND has this built in. Core Lightning needs a plugin.",
+ o:[["LND first, Core Lightning second","Cleanest route to a correct design. Our existing signet setup uses Core Lightning, so the VPS needs an LND node.",1],
+    ["Core Lightning first, with a small plugin","Reuses what is already running. One more component to write and secure."],
+    ["Both at the first hosting release","Widest reach. Twice the adapter work and testing."]]},
+{id:"Q7",t:"Does the first release include swap-in?",
+ why:"Swap-in lets a member move on-chain bitcoin into their factory channel. Without it, the only way in is a Lightning payment from another wallet.",
+ o:[["No. Lightning payments in only; swap-in follows in the next release","Saves 1 to 2 weeks. Testers need another Lightning wallet or our faucet.",1],
+    ["Yes","A complete story from day one. Adds 1 to 2 weeks and another flow to secure."]]},
+{id:"Q8",t:"Which hosts can the web version connect to?",
+ why:"Browsers only allow secure connections, which need a web certificate on the host's side.",
+ o:[["Our own host only at first; community hosts are reached from the installed program","No extra work. Web users cannot choose a host yet.",1],
+    ["Build a relay so the web version can reach any host","Web users can choose. A relay is another service to run, and it sees who connects to whom."],
+    ["Require every host to have a web certificate","No relay. Raises the bar for running a host."]]},
+{id:"Q9",t:"The honest estimate is 13 to 15 weeks to a first release. What gives?",
+ why:"Draft 1 said 11 to 12. Using Lightning's standard channel format properly is the difference.",
+ o:[["Keep the quality bar and accept 13 to 15 weeks","Later first release. Nothing is cut that we would regret.",1],
+    ["Show a developer preview at about week 8: one host and members in the simulator and on regtest, no public release","Something to show early. It is a demo, not a product."],
+    ["Cut scope to hit 11 to 12 weeks","I would have to cut tests or the standard channel format, and I advise against both."]]}
+];
+const KEY="gz-design-review-1";
+let S={};try{S=JSON.parse(localStorage.getItem(KEY))||{}}catch(e){}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}};
+const L="ABC",box=document.getElementById("qs");
+Q.forEach(q=>{
+  const d=document.createElement("div");d.className="card";
+  let h=`<h3>${q.id}. ${q.t}</h3><p class="why">${q.why}</p>`;
+  q.o.forEach((o,i)=>{h+=`<label class="opt"><input type="radio" name="${q.id}" value="${L[i]}"><span><b>${L[i]}.</b> ${o[0]}${o[2]?'<span class="rec">recommended</span>':''}<span class="cost">Cost: ${o[1]}</span></span></label>`});
+  h+=`<textarea data-q="${q.id}" placeholder="Your own answer or a note (optional)"></textarea>`;
+  d.innerHTML=h;box.appendChild(d);
+});
+function paint(){Q.forEach(q=>{
+  document.querySelectorAll(`input[name=${q.id}]`).forEach(r=>r.checked=(S[q.id]===r.value));
+  document.querySelector(`textarea[data-q=${q.id}]`).value=S[q.id+"n"]||"";});
+  document.getElementById("settled").value=S.settled||"";}
+paint();
+document.addEventListener("change",e=>{if(e.target.type==="radio"){S[e.target.name]=e.target.value;save()}});
+document.addEventListener("input",e=>{if(e.target.dataset.q){S[e.target.dataset.q+"n"]=e.target.value;save()}if(e.target.id==="settled"){S.settled=e.target.value;save()}});
+const msg=t=>{const m=document.getElementById("msg");m.textContent=t;setTimeout(()=>m.textContent="",3000)};
+document.getElementById("fill").onclick=()=>{Q.forEach(q=>{if(!S[q.id])S[q.id]=L[q.o.findIndex(o=>o[2])]});save();paint();msg("Blanks filled")};
+document.getElementById("clear").onclick=()=>{S={};save();paint();msg("Cleared")};
+document.getElementById("copy").onclick=async()=>{
+  let out="Gazpacho design review 1\n";
+  Q.forEach(q=>{const a=S[q.id];out+=`${q.id}: ${a?a+" - "+q.o[L.indexOf(a)][0]:"(no choice)"}\n`;if(S[q.id+"n"])out+=`  note: ${S[q.id+"n"]}\n`;});
+  out+=`Settled list changes: ${S.settled||"none"}\n`;
+  try{await navigator.clipboard.writeText(out);msg("Copied")}
+  catch(e){const t=document.createElement("textarea");t.value=out;document.body.appendChild(t);t.select();document.execCommand("copy");t.remove();msg("Copied")}
+};
+</script>
+</body>
+</html>

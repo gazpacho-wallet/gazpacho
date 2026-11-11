@@ -128,3 +128,30 @@ Do not invent a format. Speak Lightning's own wire language, so a Gazpacho conne
 - A browser is a fragile place to keep channel state.
 - Public chain servers can hide transactions.
 - The imported tree code still has open design issues being fixed upstream.
+
+## 13. Review 1 (2026-11-11)
+
+Findings from a critical read of draft 1. Decisions pending in `design-review-1.html`.
+
+Corrected in this document's intent (text above to be revised once the decisions are in):
+
+- The "identical transaction IDs" test is vacuous for unchanged imported code. Replace with recorded reference results from SuperScalar runs, used to catch drift when the import is updated.
+- Header proof-of-work checking does not apply to signet (blocks are signed). On signet compare several servers; do the full check on testnet and mainnet.
+- Add a **lifecycle manager** (waiting room, creation, rotation, close) and the **swap-in flow** to the engine list.
+- Signing secrets are never stored. "Save before send" does not apply to them; an interrupted signing round is abandoned and restarted.
+- A restored backup never publishes its own channel state. It asks the host to prove the latest state and waits for the host to close.
+- The member's safety rule needs a precise definition (timelocks, in-flight payments, fees) and its own tests before any engine relies on it.
+- The browser can only reach hosts that offer a secure (certificate-backed) WebSocket.
+- Estimate revised: 13–15 weeks to a first release if the channel uses Lightning's standard taproot format.
+
+Open, awaiting the owner:
+
+1. Tree for the first version: fixed tree with one member per leaf, or with a movable-liquidity layer.
+2. Who pays exit fees for a member with no on-chain coins.
+3. Protection while a member's app is closed: long response time, a watching service, or both.
+4. Channel on-chain format: Lightning's standard taproot channels, or the old code's own.
+5. How a factory fills and starts.
+6. Which regular Lightning node a host links to first (must be able to hold a payment open).
+7. Swap-in in the first release or the next.
+8. Which hosts the web version can reach.
+9. Schedule versus scope.
