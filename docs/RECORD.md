@@ -363,3 +363,18 @@ Owner's decision: build vertical slices on signet and testnet as the work procee
 - **Exit delay** is 3 days per timed level. This makes the choice of how many timed levels to ship a direct trade between moving liquidity and exit time, and rules out two-way trees at size.
 - Six defects were found in the imported tree code outside the valid shapes or in reporting functions, and added to the hand-off note.
 - The agent was locked out of the build server's remote login for about 25 minutes, probably by a rate limit on rapid connections. Agents are now told to do long work in one session.
+
+## 28. Independent review of the core and simulator skeletons (2026-11-11)
+
+Verdict: merge after fixes. The reviewer could not make the runner release anything early in about 43 million checked releases, but found problems in how the frame would be used next. Decisions taken and written into `DESIGN.md` section 4:
+
+- Storage is a journal with in-order confirmation; saves are never held behind sends.
+- A save's identity is issued by the runner and never reused, so a late confirmation from before a restart cannot release a send whose save was lost.
+- A refused step and a storage failure are fatal for the node, which is rebuilt from storage.
+- A node has a start step, so it can resend and re-arm after a restart.
+- The simulator must be able to crash a node between any two released actions, express "durable but not yet confirmed", and detect storage that loses or alters a durable batch.
+- The check that the core touches nothing outside itself was much weaker than its name; it is being strengthened.
+- The scale check's signature verification is being made independent of the imported hashing code.
+- An out-of-bounds write in the imported timelock counter happens on every factory of 257 members or more and is repaired only by the next call that sets the tree's shape. The hand-off note is corrected.
+
+The builder is applying the fixes; a second review follows.

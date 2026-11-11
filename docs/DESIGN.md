@@ -37,6 +37,11 @@ An **event** goes in and a list of **actions** comes out. The core never waits a
 - Events: a message arrived, a timer fired, something happened on chain, the user asked for something, storage confirmed a save.
 - Actions: save records as one atomic batch, send a message, broadcast a transaction, watch a script, set a timer, tell the user.
 - **Save before send.** The program around the core carries out actions in order and sends nothing until the save before it is safely stored. Enforced in one place for every engine.
+- **Storage is a journal.** Saves go to storage at once, in the order they were made, and become durable in that order. A send, broadcast or notification waits until every save made before it is durable. Confirmations arrive in order; one out of order is an error.
+- **A save's identity is never reused.** Each is numbered by the runner with the program's start count and a sequence. A late confirmation from before a restart is ignored and can never release anything.
+- **A refused step is fatal for that node.** If the runner cannot accept a step, the node's memory is ahead of what was saved, so the program stops the node and rebuilds it from storage. A storage failure does the same.
+- **A node has a start step** that returns actions, so after a restart it can re-arm timers, watch again and resend what was saved but never sent.
+- **A timer that times out a message comes after that message** in the list of actions, so a slow save cannot make a deadline pass before the request has left.
 - Randomness and time are handed to the core, so a whole factory can be simulated repeatably.
 
 ## 5. Engines

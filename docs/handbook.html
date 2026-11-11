@@ -239,6 +239,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c18-25-own-build-server-public-chain-servers" title="25. Own build server; public chain servers (2026-11-11)">25. Own build server; public chain servers (2026-11-11)</a>
 <a class="sec" href="#c18-26-vertical-slices-2026-11-11" title="26. Vertical slices (2026-11-11)">26. Vertical slices (2026-11-11)</a>
 <a class="sec" href="#c18-27-first-original-code-core-and-simulato" title="27. First original code: core and simulator skeletons, and the scale check (2026-11-11)">27. First original code: core and simulator skeletons, and the scale check (2026-11-11)</a>
+<a class="sec" href="#c18-28-independent-review-of-the-core-and-si" title="28. Independent review of the core and simulator skeletons (2026-11-11)">28. Independent review of the core and simulator skeletons (2026-11-11)</a>
 <a class="ch" href="#c19">Lobby research</a>
 <a class="sec" href="#c19-summary" title="Summary">Summary</a>
 <a class="sec" href="#c19-a1-prior-work-by-the-same-owner" title="A1. Prior work by the same owner">A1. Prior work by the same owner</a>
@@ -940,6 +941,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Events: a message arrived, a timer fired, something happened on chain, the user asked for something, storage confirmed a save.</li>
 <li>Actions: save records as one atomic batch, send a message, broadcast a transaction, watch a script, set a timer, tell the user.</li>
 <li><strong>Save before send.</strong> The program around the core carries out actions in order and sends nothing until the save before it is safely stored. Enforced in one place for every engine.</li>
+<li><strong>Storage is a journal.</strong> Saves go to storage at once, in the order they were made, and become durable in that order. A send, broadcast or notification waits until every save made before it is durable. Confirmations arrive in order; one out of order is an error.</li>
+<li><strong>A save's identity is never reused.</strong> Each is numbered by the runner with the program's start count and a sequence. A late confirmation from before a restart is ignored and can never release anything.</li>
+<li><strong>A refused step is fatal for that node.</strong> If the runner cannot accept a step, the node's memory is ahead of what was saved, so the program stops the node and rebuilds it from storage. A storage failure does the same.</li>
+<li><strong>A node has a start step</strong> that returns actions, so after a restart it can re-arm timers, watch again and resend what was saved but never sent.</li>
+<li><strong>A timer that times out a message comes after that message</strong> in the list of actions, so a slow save cannot make a deadline pass before the request has left.</li>
 <li>Randomness and time are handed to the core, so a whole factory can be simulated repeatably.</li>
 </ul></div></details>
 <details id="c3-5-engines"><summary>5. Engines</summary><div class="body"><div class="tw"><table>
@@ -2555,7 +2561,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <details id="c17-9-findings-from-a-scale-check-of-the-tre"><summary>9. Findings from a scale check of the tree builder (at `e657395`)</summary><div class="body"><p>Gazpacho built and signed one-user pseudo-Spilman leaves under wide upper levels at 16 to 1000 users, in one process, in Release and under AddressSanitizer + UBSan. Every valid shape built, signed and verified, including 512 and 1000. The size limits in <code>factory.h</code> are now only defaults, so item 7 above is largely answered. Defects found, none fixed here:</p>
 <ol>
 <li><code>src/factory.c:148</code> (<code>node_nsequence</code>): out-of-bounds read at index -1 of <code>dw_counter_t.layers[8]</code> when a leaf that is not pseudo-Spilman sits inside the fixed (static) levels (<code>factory.c:1652</code>, <code>:1669</code>). In Release it appears to work and reports a 0-block delay.</li>
-<li><code>src/dw_state.c:46</code> (<code>dw_counter_init</code>), reached from <code>factory.c:826</code> and <code>:884</code>: out-of-bounds write. <code>factory_init</code> sets the layer count to depth + 1 without the cap of 8. From 257 users the count is 9; from 513 it is 10. The next <code>factory_set_arity</code> call re-initialises correctly, so calling it straight after init avoids the problem.</li>
+<li><code>src/dw_state.c:46</code> (<code>dw_counter_init</code>), reached from <code>factory.c:826</code> and <code>:884</code>: out-of-bounds write on every factory of 257 users or more. <code>factory_init</code> sets the layer count to depth + 1 without the cap of 8, so from 257 users it is 9 and from 513 it is 10, and <code>layers[8]</code> of an 8-element array is initialised. That element overlays the counter's own <code>n_layers</code>, <code>total_states</code> and <code>current_epoch</code>, and what ends up in them differs by optimisation level (an independent reviewer measured <code>n_layers=144, total_states=4</code> at <code>-O0</code> to <code>-O2</code> and 9 and 262144 at <code>-O3</code>). The sanitizers do not flag the 9-layer case because the write stays inside the enclosing struct. Only the following <code>factory_set_arity</code> or <code>factory_set_level_arity</code> call repairs the counter, so any code path that uses the counter between init and that call is working on garbage.</li>
 <li><code>factory_early_warning_time</code> (<code>factory.c:4900</code>) and <code>factory_compute_ewt_for_shape</code> (<code>:4945</code>) under-report the exit delay by 432 blocks for each timed level beyond 8: they return 3,024 where the transactions sum to 3,456 (255 users, two-way), 3,888 (512) and 4,320 (1000).</li>
 <li><code>factory_append_tree_anchor</code> (<code>factory.c:501</code>) silently drops the anchor on a node with 16 outputs while still deducting its 240 sats.</li>
 <li><code>subtree_is_leaf</code> (<code>factory.c:949-956</code>) silently changes the leaf type when a wide level meets a subtree with no more users than the width.</li>
@@ -2978,6 +2984,18 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Six defects were found in the imported tree code outside the valid shapes or in reporting functions, and added to the hand-off note.</li>
 <li>The agent was locked out of the build server's remote login for about 25 minutes, probably by a rate limit on rapid connections. Agents are now told to do long work in one session.</li>
 </ul></div></details>
+<details id="c18-28-independent-review-of-the-core-and-si"><summary>28. Independent review of the core and simulator skeletons (2026-11-11)</summary><div class="body"><p>Verdict: merge after fixes. The reviewer could not make the runner release anything early in about 43 million checked releases, but found problems in how the frame would be used next. Decisions taken and written into <code>DESIGN.md</code> section 4:</p>
+<ul>
+<li>Storage is a journal with in-order confirmation; saves are never held behind sends.</li>
+<li>A save's identity is issued by the runner and never reused, so a late confirmation from before a restart cannot release a send whose save was lost.</li>
+<li>A refused step and a storage failure are fatal for the node, which is rebuilt from storage.</li>
+<li>A node has a start step, so it can resend and re-arm after a restart.</li>
+<li>The simulator must be able to crash a node between any two released actions, express "durable but not yet confirmed", and detect storage that loses or alters a durable batch.</li>
+<li>The check that the core touches nothing outside itself was much weaker than its name; it is being strengthened.</li>
+<li>The scale check's signature verification is being made independent of the imported hashing code.</li>
+<li>An out-of-bounds write in the imported timelock counter happens on every factory of 257 members or more and is repaired only by the next call that sets the tree's shape. The hand-off note is corrected.</li>
+</ul>
+<p>The builder is applying the fixes; a second review follows.</p></div></details>
 </section>
 <section class="chapter" id="c19"><h2>Lobby research</h2><p class="desc">Background: how comparable systems gather people and handle those who stall, with sources.</p><p class="file">Lobby: research and design note · <code>docs/LOBBY-research.md</code></p>
 <div class="intro"><p>Research note, 2026-11-11. Status: proposal for the owner's decision. Nothing here is decided.</p>
