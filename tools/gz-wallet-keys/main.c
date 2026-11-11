@@ -10,6 +10,23 @@
  *
  * The phrase file holds the 24 words on one line, in plain text, readable by
  * its owner only (mode 0600).  No BIP 39 passphrase is used.
+ *
+ * How "new" writes the file:
+ *   1. the phrase goes to a temporary file FILE.tmp-<random> in the same
+ *      directory, created with O_EXCL and mode 0600, and is synced to disk;
+ *   2. the temporary file is read back and the address derived again from
+ *      what is really on disk;
+ *   3. the temporary file is hard-linked to FILE.  link() fails if FILE
+ *      exists, so an existing file is never replaced, and FILE never exists
+ *      half-written;
+ *   4. the temporary name is removed and the directory is synced to disk;
+ *   5. only then are the address and the account public key printed.
+ * If the program is killed in between, FILE does not exist; a FILE.tmp-*
+ * file may be left behind and can be deleted.
+ *
+ * Exit status: 0 success; 1 failure, nothing was created; 2 wrong usage;
+ * 3 ("new" only) the phrase file was created but the address could not be
+ * written to standard output: run "address" on the file to see it.
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -31,6 +48,9 @@
 
 #define PHRASE_FILE_MAX 1024
 
+/* Set when standard output was already closed at start (see main). */
+static int stdout_was_closed = 0;
+
 static int usage(void) {
     fprintf(stderr,
             "usage:\n"
@@ -46,6 +66,13 @@ static int usage(void) {
     return 2;
 }
 
+/* Push what was printed to standard output and say whether it got there. */
+static int stdout_delivered(void) {
+    if (stdout_was_closed) return 0;
+    if (fflush(stdout) != 0) return 0;
+    return !ferror(stdout);
+}
+
 /* Fill buf from the operating system's random source. */
 static int os_random(unsigned char *buf, size_t len) {
     size_t got = 0;
@@ -55,6 +82,7 @@ static int os_random(unsigned char *buf, size_t len) {
             if (errno == EINTR) continue;
             return 0;
         }
+        if (n == 0) return 0; /* a source that gives nothing is broken */
         got += (size_t)n;
     }
     return 1;
@@ -91,19 +119,30 @@ static int parse_network(const char *name, gzw_network *net) {
 }
 
 /* Read a phrase file into phrase (PHRASE_FILE_MAX + 1 bytes).  The file must
-   be a regular file that only its owner can read. */
+   be a regular file, not reached through a symbolic link, owned by the user
+   running the program and readable by nobody else. */
 static int read_phrase_file(const char *path, char *phrase) {
     struct stat st;
     size_t got = 0;
-    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    /* O_NOFOLLOW: not through a symbolic link.  O_NONBLOCK: opening a FIFO
+       returns at once instead of waiting for a writer (it has no effect on a
+       regular file).  O_NOCTTY: a terminal device does not become ours. */
+    int fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
     int ok = 0;
 
     if (fd < 0) {
-        fprintf(stderr, "error: cannot open the phrase file: %s\n", strerror(errno));
+        if (errno == ELOOP)
+            fprintf(stderr, "refused: the phrase file is a symbolic link\n");
+        else
+            fprintf(stderr, "error: cannot open the phrase file: %s\n", strerror(errno));
         return 0;
     }
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        fprintf(stderr, "error: the phrase file is not a regular file\n");
+        fprintf(stderr, "refused: the phrase file is not a regular file\n");
+        goto done;
+    }
+    if (st.st_uid != geteuid()) {
+        fprintf(stderr, "refused: the phrase file belongs to another user\n");
         goto done;
     }
     if ((st.st_mode & 077) != 0) {
@@ -112,7 +151,7 @@ static int read_phrase_file(const char *path, char *phrase) {
         goto done;
     }
     if (st.st_size <= 0 || st.st_size > PHRASE_FILE_MAX) {
-        fprintf(stderr, "error: the phrase file is empty or too large\n");
+        fprintf(stderr, "refused: the phrase file is empty or too large\n");
         goto done;
     }
     while (got < (size_t)st.st_size) {
@@ -126,7 +165,7 @@ static int read_phrase_file(const char *path, char *phrase) {
     }
     phrase[got] = '\0';
     if (strlen(phrase) != got) {
-        fprintf(stderr, "error: the phrase file is not text\n");
+        fprintf(stderr, "refused: the phrase file is not text (it holds a zero byte)\n");
         goto done;
     }
     {
@@ -167,17 +206,43 @@ static int write_all(int fd, const char *buf, size_t len) {
     return 1;
 }
 
+/* Sync the directory that holds path, so that the name itself is on disk. */
+static int sync_directory_of(const char *path) {
+    const char *slash = strrchr(path, '/');
+    char *dir;
+    int fd, ok;
+
+    if (!slash) {
+        dir = strdup(".");
+    } else if (slash == path) {
+        dir = strdup("/");
+    } else {
+        dir = strndup(path, (size_t)(slash - path));
+    }
+    if (!dir) return 0;
+    fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    free(dir);
+    if (fd < 0) return 0;
+    ok = fsync(fd) == 0;
+    if (close(fd) != 0) ok = 0;
+    return ok;
+}
+
 static int cmd_new(const char *network, const char *out_path) {
+    static const char hex[] = "0123456789abcdef";
     gzw_network net;
     secp256k1_context *ctx = NULL;
-    unsigned char entropy[32];
+    unsigned char entropy[32], suffix[8];
     char phrase[GZW_PHRASE_MAX];
     char reread[PHRASE_FILE_MAX + 1];
     char xpub_str[GZW_XKEY_STR_MAX], path_str[GZW_PATH_STR_MAX];
+    char *tmp_path = NULL;
+    struct stat st;
     gzw_xprv master;
     gzw_xpub acct;
     gzw_bip86_output first, check;
-    int fd = -1, created = 0, rc = 1;
+    size_t out_len, pos;
+    int fd = -1, tmp_created = 0, linked = 0, rc = 1;
 
     memset(&master, 0, sizeof(master));
     memset(phrase, 0, sizeof(phrase));
@@ -185,8 +250,15 @@ static int cmd_new(const char *network, const char *out_path) {
     memset(entropy, 0, sizeof(entropy));
 
     if (!parse_network(network, &net)) return 1;
-    if (!out_path) {
+    if (!out_path || out_path[0] == '\0') {
         fprintf(stderr, "error: --out FILE is required\n");
+        return 1;
+    }
+    /* Refuse early if the name is taken (by anything, even a dangling
+       symbolic link).  The link() below is what guarantees it. */
+    if (lstat(out_path, &st) == 0) {
+        fprintf(stderr, "refused: the output file already exists; a phrase "
+                        "file is never overwritten\n");
         return 1;
     }
     ctx = make_context();
@@ -195,25 +267,7 @@ static int cmd_new(const char *network, const char *out_path) {
         return 1;
     }
 
-    /* Create the file first: O_EXCL fails if anything is already there, so an
-       existing phrase can never be replaced. */
-    fd = open(out_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-    if (fd < 0) {
-        if (errno == EEXIST)
-            fprintf(stderr, "refused: the output file already exists; a phrase "
-                            "file is never overwritten\n");
-        else
-            fprintf(stderr, "error: cannot create the output file: %s\n",
-                    strerror(errno));
-        goto done;
-    }
-    created = 1;
-    if (fchmod(fd, 0600) != 0) {
-        fprintf(stderr, "error: cannot set the output file's mode\n");
-        goto done;
-    }
-
-    if (!os_random(entropy, sizeof(entropy))) {
+    if (!os_random(entropy, sizeof(entropy)) || !os_random(suffix, sizeof(suffix))) {
         fprintf(stderr, "error: cannot read the system's random source\n");
         goto done;
     }
@@ -225,39 +279,101 @@ static int cmd_new(const char *network, const char *out_path) {
     }
     gzw_wipe(&master, sizeof(master));
 
+    /* The temporary name: FILE.tmp-<16 hex digits>, in the same directory. */
+    out_len = strlen(out_path);
+    tmp_path = malloc(out_len + 5 + 2 * sizeof(suffix) + 1);
+    if (!tmp_path) {
+        fprintf(stderr, "error: out of memory\n");
+        goto done;
+    }
+    memcpy(tmp_path, out_path, out_len);
+    memcpy(tmp_path + out_len, ".tmp-", 5);
+    pos = out_len + 5;
+    for (size_t i = 0; i < sizeof(suffix); i++) {
+        tmp_path[pos++] = hex[suffix[i] >> 4];
+        tmp_path[pos++] = hex[suffix[i] & 15];
+    }
+    tmp_path[pos] = '\0';
+
+    /* Mode 0600 from the moment the file exists; it is never wider. */
+    fd = open(tmp_path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        fprintf(stderr, "error: cannot create a file next to the output file: %s\n",
+                strerror(errno));
+        goto done;
+    }
+    tmp_created = 1;
+
     if (!write_all(fd, phrase, strlen(phrase)) || !write_all(fd, "\n", 1) ||
         fsync(fd) != 0) {
-        fprintf(stderr, "error: cannot write the output file\n");
+        fprintf(stderr, "error: cannot write the phrase file\n");
         goto done;
     }
     if (close(fd) != 0) {
         fd = -1;
-        fprintf(stderr, "error: cannot close the output file\n");
+        fprintf(stderr, "error: cannot close the phrase file\n");
         goto done;
     }
     fd = -1;
 
     /* Read the file back and derive again from what is really on disk. */
-    if (!read_phrase_file(out_path, reread) ||
+    if (!read_phrase_file(tmp_path, reread) ||
         !master_from_phrase(ctx, reread, &master) ||
         !gzw_bip86_output_from_master(ctx, &master, net, 0, 0, 0, &check, NULL) ||
         strcmp(first.address, check.address) != 0 ||
         !gzw_bip86_account_xpub(ctx, &master, net, 0, &acct, NULL) ||
-        !gzw_xpub_to_string(&acct, GZW_NET_SIGNET, xpub_str) ||
+        !gzw_xpub_to_string(&acct, net, xpub_str) ||
         !gzw_path_to_string(check.path, 3, path_str, sizeof(path_str))) {
         fprintf(stderr, "error: the file read back does not give the same address\n");
         goto done;
     }
 
+    /* Give the file its real name.  link() never replaces an existing name. */
+    if (link(tmp_path, out_path) != 0) {
+        if (errno == EEXIST)
+            fprintf(stderr, "refused: the output file already exists; a phrase "
+                            "file is never overwritten\n");
+        else
+            fprintf(stderr, "error: cannot give the phrase file its name: %s\n",
+                    strerror(errno));
+        goto done;
+    }
+    linked = 1;
+    if (unlink(tmp_path) != 0) {
+        fprintf(stderr, "error: cannot remove the temporary file\n");
+        goto done;
+    }
+    tmp_created = 0;
+    /* The name must be on disk before anyone is told the address. */
+    if (!sync_directory_of(out_path)) {
+        fprintf(stderr, "error: cannot sync the directory of the phrase file\n");
+        goto done;
+    }
+
     printf("address: %s\n", check.address);
     printf("account xpub (%s): %s\n", path_str, xpub_str);
+    if (!stdout_delivered()) {
+        /* The file is complete and on disk; keep it and say how to proceed. */
+        fprintf(stderr, "error: the phrase file was written, but the address could "
+                        "not be written to standard output; run the address "
+                        "command on the file to see it\n");
+        rc = 3;
+        linked = 0; /* keep the file */
+        goto done;
+    }
     rc = 0;
 
 done:
     if (fd >= 0) close(fd);
-    /* Do not leave a file behind that was not completely written and checked. */
-    if (rc != 0 && created) unlink(out_path);
+    /* Leave nothing behind that was not completely written and checked. */
+    if (tmp_created) unlink(tmp_path);
+    if (rc == 1 && linked) unlink(out_path);
+    if (tmp_path) {
+        gzw_wipe(tmp_path, strlen(tmp_path));
+        free(tmp_path);
+    }
     gzw_wipe(entropy, sizeof(entropy));
+    gzw_wipe(suffix, sizeof(suffix));
     gzw_wipe(phrase, sizeof(phrase));
     gzw_wipe(reread, sizeof(reread));
     gzw_wipe(&master, sizeof(master));
@@ -273,6 +389,7 @@ static int cmd_address(const char *network, const char *in_path, const char *ind
     char path_str[GZW_PATH_STR_MAX], spk_hex[69];
     gzw_xprv master;
     gzw_bip86_output o;
+    gzw_reason why = GZW_REASON_OK;
     unsigned long index = 0;
     int rc = 1;
 
@@ -300,11 +417,15 @@ static int cmd_address(const char *network, const char *in_path, const char *ind
         return 1;
     }
     if (!read_phrase_file(in_path, phrase)) goto done;
-    if (!master_from_phrase(ctx, phrase, &master) ||
-        !gzw_bip86_output_from_master(ctx, &master, net, 0, change ? 1u : 0u,
-                                      (uint32_t)index, &o, NULL) ||
-        !gzw_path_to_string(o.path, 5, path_str, sizeof(path_str))) {
+    if (!master_from_phrase(ctx, phrase, &master)) {
         fprintf(stderr, "error: key derivation failed\n");
+        goto done;
+    }
+    if (!gzw_bip86_output_from_master(ctx, &master, net, 0, change ? 1u : 0u,
+                                      (uint32_t)index, &o, &why) ||
+        !gzw_path_to_string(o.path, 5, path_str, sizeof(path_str))) {
+        /* A fixed text; for BIP 32's invalid case it says to use the next index. */
+        fprintf(stderr, "error: key derivation failed: %s\n", gzw_reason_text(why));
         goto done;
     }
     for (size_t i = 0; i < 34; i++)
@@ -313,6 +434,10 @@ static int cmd_address(const char *network, const char *in_path, const char *ind
     printf("address: %s\n", o.address);
     printf("scriptPubKey: %s\n", spk_hex);
     printf("path: %s\n", path_str);
+    if (!stdout_delivered()) {
+        fprintf(stderr, "error: cannot write to standard output\n");
+        goto done;
+    }
     rc = 0;
 
 done:
@@ -334,17 +459,21 @@ static int cmd_verify_vectors(void) {
     all = gzw_official_vectors_run(ctx, groups);
     secp256k1_context_destroy(ctx);
     for (int g = 0; g < GZW_VECTOR_GROUPS; g++) {
-        printf("%s  %2d/%2d  %s\n", groups[g].failed == 0 && groups[g].cases > 0 ? "pass" : "FAIL",
+        printf("%s  %2d/%2d  %s\n",
+               groups[g].failed == 0 && groups[g].cases > 0 ? "pass" : "FAIL",
                groups[g].cases - groups[g].failed, groups[g].cases, groups[g].name);
         total += groups[g].cases;
         failed += groups[g].failed;
     }
-    if (all) {
+    if (all)
         printf("PASS: all %d official vectors pass\n", total);
-        return 0;
+    else
+        printf("FAIL: %d of %d official vectors failed\n", failed, total);
+    if (!stdout_delivered()) {
+        fprintf(stderr, "error: cannot write to standard output\n");
+        return 1;
     }
-    printf("FAIL: %d of %d official vectors failed\n", failed, total);
-    return 1;
+    return all ? 0 : 1;
 }
 
 int main(int argc, char **argv) {
@@ -357,6 +486,18 @@ int main(int argc, char **argv) {
 #ifdef __linux__
     prctl(PR_SET_DUMPABLE, 0);
 #endif
+
+    /* If a standard descriptor is closed, the next file opened would take its
+       number and output meant for the terminal could land in that file.
+       Occupy closed ones with /dev/null, and remember a closed standard
+       output so that the commands report that nothing could be printed. */
+    for (int fd = 0; fd <= 2; fd++) {
+        if (fcntl(fd, F_GETFD) == -1 && errno == EBADF) {
+            int nfd = open("/dev/null", fd == 0 ? O_RDONLY : O_WRONLY);
+            if (nfd != fd) return 1;
+            if (fd == 1) stdout_was_closed = 1;
+        }
+    }
 
     if (argc < 2) return usage();
     for (int i = 2; i < argc; i++) {
