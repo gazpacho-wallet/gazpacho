@@ -279,7 +279,7 @@ static size_t scenario_random(driver_t *d, uint64_t seed, int confirm_everything
         }
     }
     while (confirm_everything_at_end && (n_pending = open_saves(pending)) > 0)
-        d->confirm(d, pending[0]);
+        if (d->confirm(d, pending[0]) != GZ_OK) break;     /* a runner that lost track: stop, the checks will say so */
     return accepted;
 }
 
