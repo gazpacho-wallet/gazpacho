@@ -45,6 +45,7 @@ def section(rel, heading):
 
 def render(md):
     html = markdown.markdown(md, extensions=["tables", "fenced_code"])
+    html = re.sub(r"<(/?)h[1-3]>", r"<h4>", html)   # headings inside a section stay small
     return html.replace("<table>", '<div class="tw"><table>').replace("</table>", "</table></div>")
 
 def details(title, source_note, md):

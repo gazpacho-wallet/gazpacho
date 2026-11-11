@@ -989,7 +989,7 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </div>
 <!--gz:away-->
 <details class="more"><summary>Reminders, and acting while the member is away</summary><div class="more-body"><p>Working note, 2026-11-11. A member has duties that fall on dates: open the app before an old state could cost them, sign when the factory rotates, leave before the factory expires. This note lists the ways to meet those duties when the person is not at the app, and what each needs. Nothing here beyond the first row of each table is in the first release.</p>
-<h2>Telling the person</h2>
+<h4>Telling the person<h4>
 <div class="tw"><table>
 <thead>
 <tr>
@@ -1022,7 +1022,7 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </tbody>
 </table></div>
 <p>The schedule engine in the core computes every date. All of the above only display or deliver what it produces.</p>
-<h2>Acting without the person</h2>
+<h4>Acting without the person<h4>
 <div class="tw"><table>
 <thead>
 <tr>
@@ -1064,12 +1064,12 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </tr>
 </tbody>
 </table></div>
-<h2>What only the member can do</h2>
+<h4>What only the member can do<h4>
 <ul>
 <li><strong>Signing a rotation into a new factory</strong> needs the member's key. A watcher without keys cannot do it. If the member is away, the fallback is the automatic exit before expiry, or the host publishing the member's branch.</li>
 <li><strong>Changing conditions.</strong> Anything acting for the member acts only within the conditions the member set.</li>
 </ul>
-<h2>To investigate</h2>
+<h4>To investigate<h4>
 <ol>
 <li>Which duties can be met with pre-signed transactions alone, and how many must be handed over.</li>
 <li>Whether hardware signing devices support the group-signing scheme, and unattended use.</li>
@@ -1353,7 +1353,7 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 </tr>
 </tbody>
 </table></div><p class="src">From <code>docs/KNOWLEDGE-BASE.md</code></p></div></details>
-<details class="more"><summary>How sure we are of each claim</summary><div class="more-body"><h3>Checked today against a primary source or by running it</h3>
+<details class="more"><summary>How sure we are of each claim</summary><div class="more-body"><h4>Checked today against a primary source or by running it<h4>
 <ul>
 <li>Lightning's message format, type ranges, typed fields and the odd/even rule (the messaging specification).</li>
 <li>Peer-storage messages exist in the specification.</li>
@@ -1361,21 +1361,21 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li>LND has hold, settle and cancel for invoices built in (its interface definition).</li>
 <li>Everything in section 4 marked as run, built or read on 2026-11-11.</li>
 </ul>
-<h3>From secondary sources only</h3>
+<h4>From secondary sources only<h4>
 <ul>
 <li>Lightning's taproot channel format was merged into the specification in 2026 and ships in LND and Eclair.</li>
 <li>LND is about 90% of public nodes; Core Lightning about 5%.</li>
 <li>Core Lightning holds payments through a community plugin.</li>
 <li>A WebSocket carrier for Lightning connections is not standardised.</li>
 </ul>
-<h3>Our own reasoning, not yet reviewed</h3>
+<h4>Our own reasoning, not yet reviewed<h4>
 <ul>
 <li>The scheme for proving who broke a signing round.</li>
 <li>That a member adding coins to their own leaf leaves other members unaffected.</li>
 <li>That swap-in is safe under three conditions (confirmations first, on-chain timeout after the channel deadline, refund after timeout). The technique is long established; our statement of it was not re-checked against sources.</li>
 <li>Estimates of size and effort.</li>
 </ul>
-<h3>Not yet known</h3>
+<h4>Not yet known<h4>
 <ul>
 <li>Whether Eclair, LDK-based nodes and Nostr Wallet Connect can hold payments open in a way we can use.</li>
 <li>The timelock and deadline numbers for the full layered tree.</li>
@@ -1392,14 +1392,14 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li>Privacy: a host sees all of its members' payments.</li>
 </ol><p class="src">From <code>docs/KNOWLEDGE-BASE.md</code></p></div></details>
 <details class="more"><summary>Open questions</summary><div class="more-body"><p>Kept current. Last updated 2026-11-11, after questions round 2.</p>
-<h2>For the owner</h2>
+<h4>For the owner<h4>
 <ol>
 <li><strong>Numbers for the lobby:</strong> largest lobby, default gathering time, signing timers, number of signing attempts. Recommended: settle from signet testing.</li>
 <li><strong>Who besides the owner can approve a SIP.</strong></li>
 <li><strong>Review of the two drafted specifications</strong> (<code>spec/</code>): the open points at the end of each, and an expert look at the proof-of-fault scheme.</li>
 <li><strong>Is the full security catalogue from the earlier SuperScalar work copied into this repo</strong> as reference, or left where it is?</li>
 </ol>
-<h2>For this session to settle (research or build)</h2>
+<h4>For this session to settle (research or build)<h4>
 <ol>
 <li>The precise definition of the member's safety rule.</li>
 <li>The signing round specification: messages, states, timers, and the proof of who broke a round. The proof scheme is our own reasoning and needs expert review.</li>
@@ -1413,7 +1413,7 @@ footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
 <li>Waking members who are offline when a factory rotates.</li>
 <li>Which well-known public chain servers go in the default list.</li>
 </ol>
-<h2>For the SuperScalar repo session</h2>
+<h4>For the SuperScalar repo session<h4>
 <p>See <code>handoff/2026-11-11-to-superscalar.md</code>. Later: paying members at every tree output on expiry; a shared message specification.</p><p class="src">From <code>docs/OPEN-QUESTIONS.md</code></p></div></details>
 <!--/gz:reference-->
 
