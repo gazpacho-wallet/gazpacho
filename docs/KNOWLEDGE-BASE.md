@@ -16,7 +16,9 @@ The single place to start. It gathers what has been learned and decided, says ho
 | Illustrated pages (versioned) | `design.html`, `gazpacho-overview.html`, older versions in `history/` |
 | Questionnaires put to the owner | `design-review-1.html`, `questions-2.html` |
 | Imported code and its manifest | `../core/superscalar/IMPORT.md` |
-| Deferred features | GitHub issues 1 (swap-in and swap-out) and 2 (watching service) |
+| How rules and features are proposed and decided | `proposals/` |
+| Meeting a member's duties while they are away | `AWAY.md` |
+| Deferred features | GitHub issues 1 (swap-in and swap-out), 2 (watching service), 3 (lobby deposit), 4 (reminders and acting while away) |
 
 ## 2. Words we use
 
@@ -83,7 +85,7 @@ Newest first within each area. The date is when the owner decided.
 ### Product
 - Gazpacho is both host and member software, self-contained, C, signet first, quality before dates. (11 Nov)
 - Soup wallet is mothballed, kept for reference. The SuperScalar repo is maintained by another session. (11 Nov)
-- Home is `github.com/gazpacho-wallet/gazpacho`, MIT, private for now. (11 Nov)
+- Home is `github.com/gazpacho-wallet/gazpacho`, MIT. The owner decided on 11 Nov to make it public now.
 - The screens are a local web interface served by the C program. No wallet-in-a-web-page. (11 Nov)
 
 ### Construction
@@ -101,7 +103,12 @@ Newest first within each area. The date is when the owner decided.
 - New joining or safety rules are normally changes to the safe-to-sign code itself, which is kept as one small, tested module.
 
 ### Forming a factory
-- A lobby like a game server, with a scheduled start and member conditions that are locked in.
+- A lobby like a game server, with member conditions that are locked in. Gathering is long; signing is short at a scheduled start; the host sets both timers.
+- Newcomers with no funds are the main audience; each host sets their share of seats.
+- A lobby is listed or unlisted, and open or by invitation (QR invitations).
+- Names, chat and rule-change requests can each be switched off by the host. A member may attach a proven or free-text identity; identity is new per lobby by default.
+- Listings carry fixed terms, ranges, size and start time; live details come from the host. Hosts may publish a track record.
+- All four rule profiles ship: Safety, Standard, Starter, Circle. Deposits come in the release after the first.
 - No voting and no vote-to-remove. The host removes people; each member has a personal block list; history is kept locally.
 - Listings and host proofs on Nostr; everything else direct.
 - The lobby and signing coordination are written so they can become their own library.
@@ -110,6 +117,11 @@ Newest first within each area. The date is when the owner decided.
 - A host links to a regular Lightning node through an adapter: LND first, then Core Lightning, then others. Later the built-in node holds ordinary channels itself.
 
 ### Working method
+- New rules and features go through a proposal process modelled on BIPs and bLIPs. Approval and shipping are separate; the record of ACKs and NACKs is kept.
+- Review: several different AI models on every engine as it is built; outside human reviewers and red-teamers before real funds.
+- Hand-off notes are local documents the owner points the other session to.
+- Chain servers: well-known public ones first; our own around launch.
+- Reminders: in-app countdowns first; Nostr, email and phone notifications later.
 - Imported SuperScalar files are never edited here. Changes are requested from the SuperScalar repo.
 - Every safety rule has a test and a run with the rule removed that must fail.
 - Illustrated pages keep earlier versions behind a version switch.

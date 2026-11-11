@@ -1,6 +1,6 @@
 # The lobby: how a factory forms
 
-Design note 1, 2026-11-11. Based on `LOBBY-research.md` and the owner's decisions. Items marked **(open)** are in `OPEN-QUESTIONS.md`.
+Design note 2, 2026-11-11. Based on `LOBBY-research.md` and the owner's decisions. Items marked **(open)** are in `OPEN-QUESTIONS.md`.
 
 ## The idea
 
@@ -20,6 +20,22 @@ Nobody has money at risk in a lobby. Members put in nothing at creation, and the
 | Active | The factory is live | |
 | Cancelled / Failed | Too few members, or signing could not complete | |
 
+**Timing.** A lobby has two clocks, both set by the host.
+
+- *Gathering* is long. A lobby can stay open for hours or days. Members join whenever they like, set their conditions, and can leave the app running to act for them.
+- *Signing* is short and happens at the scheduled start. The secrets used in a signing round are never stored, so each member's app must keep running from the first signing step to the second. If anyone drops out in between, the round restarts for everyone. A short window keeps that rare and cheap.
+
+A host that wants a slower pace can lengthen the signing timers and accept more restarts. It is one mechanism with different timer values, not two designs.
+
+**Who can find it, and who can join.** Two separate settings:
+
+| | Open to anyone | By invitation |
+|---|---|---|
+| **Listed on Nostr** | A public lobby | Visible, but a seat needs an invitation |
+| **Unlisted** | Anyone with the link can join | Private in practice |
+
+Invitations are links, shown as QR codes. The host also sets what share of seats may go to members who bring nothing.
+
 **Start rule:** never below the minimum size. Then either everyone present is ready, or the host starts, or the closing time arrives.
 
 **No-shows:** members who do not answer in a signing attempt are removed together and the round reruns with those who remain, plus anyone waiting on standby.
@@ -37,7 +53,9 @@ Decided for the first version:
 - **No voting and no vote-to-remove.** Every member signs for themselves, the host chooses who is in the tree, and identities cost nothing, so a vote cannot bind anyone and can be bought with fake members. The owner agreed to drop it for now.
 - **The host removes people.** It is the host's lobby and the host's capital.
 - **Each member has a personal block list.** A member's app can refuse to sign a tree that contains someone on it. This is the one removal power that cannot be overridden: any single member can decline, for any reason.
-- **Chat.** People can talk a problem through. Optional, and carried by the host connection.
+- **Names, chat and rule-change requests** are three settings the host can switch off. With all off, members see only a head-count, and personal block lists have nothing to act on.
+- **Names** are temporary and exist only for that lobby, unless a member chooses otherwise.
+- **Optional self-identification.** A member may attach an identity to their seat. A Nostr key or a Lightning node key is proven by signing the lobby's challenge with it. A free-text field is allowed and is always shown as unverified.
 - **History is kept locally.** Each app remembers who showed up and signed and who stalled, and shows it to its own user. There is no global blacklist.
 - **Proof of who broke a round.** Every signing message is signed by its sender. A wrong partial signature can be proven to anyone; silence cannot.
 
@@ -62,20 +80,24 @@ Any change that needs everyone's signature, such as closing early, can be stoppe
 
 ## Profiles
 
-Named presets of rules. Proposed by the research; details **(open)**:
+Named presets of rules. All four ship in the first release.
 
 | Profile | For | In short |
 |---|---|---|
 | Safety | Cautious users | Simple operation only; optional features off |
 | Standard | Most public lobbies | The defaults |
 | Starter | People arriving with no funds | Small channels, low requirements, limited seats |
-| Circle | People who know each other | Invitation only |
+| Circle | People who know each other | Unlisted and by invitation |
 
 ## What is public
 
-**(open)** The earlier host-list design published only how to reach a host, and kept factory details off Nostr on purpose. Listing lobbies there reverses that. The proposal: a lobby listing carries the terms, size limits and start time; who has joined stays between the host and the members.
+A listing on Nostr carries what rarely changes: the terms the host has fixed, the acceptable range for the others, size limits, the start time and an expiry after which the listing disappears. It never says who joined.
 
-The existing host proofs show control of one channel or one coin. They do not show the host can fund the lobby it advertises. A proof sized to the lobby is **(open)**.
+Anything live, such as how full the lobby is, is asked of the host directly. This keeps relays quiet and reveals less. The cost is that asking tells the host someone is interested and from which network address; connecting over Tor avoids the second.
+
+A host may publish the factories it has funded as a track record, since the funding is on chain anyway. Whether a member can prove past participation in the same way is being looked into; it would link that member's factories together, so it could only be by choice.
+
+The existing host proofs show control of one channel or one coin. A proof sized to the lobby a host advertises is still to be designed.
 
 ## A separate library
 
@@ -83,11 +105,15 @@ The lobby, the signing round engine and the proof-of-fault scheme together are a
 
 ## First version
 
-- Scheduled start with minimum, maximum and closing time.
+- Gathering and signing timers; scheduled start with minimum and maximum size.
+- Listed or unlisted; open or by invitation, with QR invitations.
 - Member conditions and the check at signing.
 - Host removal, personal block lists, local history.
-- Signed signing messages.
-- Up to three signing attempts.
-- One profile (Standard), with Safety next.
+- Switches for names, chat and rule-change requests. Chat itself may follow the first release.
+- Optional self-identification.
+- Signed signing messages; up to three signing attempts.
+- All four profiles.
 
-Later: deposits, standby seats, chat, further profiles, joining requirements based on coins or history.
+Next (issue 3): a deposit to deter people who join and never sign. Later: standby seats, joining requirements based on coins or history, member track records.
+
+New rules arrive through the proposal process in `proposals/`.

@@ -25,7 +25,8 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 | Messages | Lightning's own wire language; factory messages inside one custom message type |
 | Channel | Lightning's standard taproot channel format; the old format archived and recoverable |
 | Safety | One member-side rule before every signature; save before send; signing secrets never stored; a restored backup never publishes |
-| Forming a factory | A lobby with a scheduled start; member conditions locked in; no voting; host removal and personal block lists |
+| Forming a factory | A lobby: long gathering, short signing at a scheduled start; listed or unlisted, open or by invitation; member conditions locked in; no voting; host removal and personal block lists; four rule profiles |
+| Changing the rules later | A public proposal process modelled on BIPs and bLIPs |
 | Host's link to Lightning | An adapter to a regular node: LND first, then Core Lightning, then others. Later the built-in node does it alone |
 | Away protection | About two weeks to open the app; the watch engine can also run as a separate process |
 | Reminders | The core knows every date by which the user must act |
@@ -65,5 +66,7 @@ After that: more node adapters and a browser of hosts; swap-in and swap-out; a w
 | `LOBBY.md`, `LOBBY-research.md` | The lobby design and the research behind it |
 | `HOST-NODES.md` | Lightning nodes a host can link to, and how hard each is |
 | `OPEN-QUESTIONS.md` | What is still undecided |
+| `proposals/` | How rules and features are proposed and decided |
+| `AWAY.md` | Meeting a member's duties while they are away |
 | `ASSESSMENT.md` | What existed at the start and what has to be built |
 | `handoff/` | Notes sent to the SuperScalar repo session |

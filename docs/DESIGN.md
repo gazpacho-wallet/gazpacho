@@ -276,3 +276,30 @@ Found during the import, for the core's design:
 - **Member order can depend on the C library.** The tree builder sorts members with a comparison that returns "equal" for everyone by default, and the C sort is not required to keep equal items in order. Gazpacho must put the keys in an agreed order (host first) and select the builder's "sequential" placement before building, so the tree never depends on the sort.
 - **Partial signatures are not checked individually.** A function to verify one member's partial signature exists but nothing calls it; only the final combined signature is checked. Gazpacho's signing engine must verify every partial signature as it arrives, which is also what makes it possible to name who broke a round.
 - Randomness, the clock, one environment variable, 37 diagnostic prints and one test global are reached directly from the imported files (exact lines are in the hand-off note).
+
+## 19. Decisions from questions round 2 (2026-11-11)
+
+**Lobby**
+
+- **Timing.** One mechanism with timers the host sets. Gathering is long: a lobby can stay open for hours or days and members can join at any time and leave their app to act for them. Signing itself is short and happens at the scheduled start. Reason: the secrets used in a signing round are never stored, so every member's app must stay running from the first signing step to the second, and anyone dropping out forces a restart for all. A short signing window keeps that cheap; a long gathering window gives the convenience. A host may lengthen the signing timers if it accepts more restarts.
+- **Audience.** Newcomers with no funds are the main audience. Each host sets the share of seats they may take.
+- **Visibility and admission are two separate settings.** A lobby is listed on Nostr or unlisted; and open to anyone or by invitation. Invitations are links, shown as QR codes. An unlisted, invitation-only lobby gives privacy in practice.
+- **Deposits:** not in the first release. Planned as the next step after it (issue 3).
+- **Names, chat and rule-change requests** are each a setting the host can switch off. With all three off, members see only a head-count.
+- **Optional self-identification.** A member may attach an identity to their seat. Standard kinds are proven by signing the lobby's challenge with that identity's key (a Nostr key, a Lightning node key). A free-text field is allowed and always shown as unverified.
+- **Identity** is new for each lobby by default; a member may choose to bring a lasting one.
+- **What is on Nostr.** A listing carries the terms the host has fixed and the acceptable range for the others, size limits, start time and an expiry. It changes rarely. Live details, such as how full a lobby is, are asked of the host directly.
+- **Track records.** A host may publish the factories it has funded. Whether members can likewise prove past participation by signing with keys or coins from earlier factories is to be investigated (it links a member's factories together, so it must be opt-in).
+- **Profiles:** all four ship: Safety, Standard, Starter, Circle.
+
+**Product**
+
+- **Chain servers:** well-known public servers at first; one of our own is added around launch.
+- **Reminders:** countdowns in the app first; then Nostr messages, email, and phone notifications with the mobile app. Ways to act while the member is away are collected in `AWAY.md`.
+- **The repository goes public now** (owner's decision), with `SECURITY.md` and `CONTRIBUTING.md` added first.
+
+**How we work**
+
+- **New rules and features follow a proposal process** modelled on BIPs and bLIPs: request in a set format, open discussion, ACK or NACK on record, then a separate decision on whether it ships. A proposal can be approved and not shipped, with the reason stated, so other factory software can adopt it. See `proposals/`.
+- **Review:** independent AI review of every engine as it is built, by several different models; and before real funds, outside human reviewers, including people who try to break it. The owner arranges outside reviewers.
+- **Hand-off notes** are local documents; the owner pastes a short message pointing the other session to them.
