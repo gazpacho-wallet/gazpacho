@@ -1,0 +1,85 @@
+Reference tree-node txids from /root/gz-m0-out/standalone/gz_tree (built from the candidate import set only; see REPORT.md section C).
+Source: SuperScalar 2cebbdf + cherry-picks b812be3 292fbe1 (src/factory.c etc. unchanged by those; they touch lsp.c / tools only).
+
+Inputs (identical for every run below):
+  participant 0 = LSP, 1..N = clients in slot order; seckey of participant i = 32-byte big-endian integer (i+1)
+     LSP=0x00..01, client1=0x00..02, client2=0x00..03, ... (pubkey of 0x01 = 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
+  funding outpoint: txid (display order) aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, vout 0, amount 1000000 sats
+  funding scriptPubKey: P2TR of musig_aggregate_keys(all N+1 pubkeys in slot order) tweaked with sha256_tagged("TapTweak", agg_xonly) (no script tree), as superscalar_lsp computes it
+  cltv_timeout 1000, step_blocks 10, states_per_layer 4 (the superscalar_lsp defaults), leaf arity = FACTORY_ARITY_PS (superscalar_lsp default --arity 3), use_tree_anchor=1, fee_per_tx = 200 (factory default; no fee estimator), placement mode = factory_init_from_pubkeys default (timezone-cluster)
+  txid = double-SHA256 of the unsigned (non-witness) serialization, shown in display (reversed) byte order. Txids do not depend on signatures (taproot).
+  command: ./gz_tree N aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0 1000000 1000
+
+================ N=4 clients (5 participants) ================
+(run twice, outputs byte-identical)
+funding_spk 51201145068e9e69d426a5ff05549292b2a8b612bc7d9182b97edc445b140b4172eb
+n_clients 4 n_nodes 14 fee_per_tx 200 cltv 1000 step 10 states_per_layer 4
+node 0 type kickoff parent -1 vout 0 n_outputs 2 unsigned_len 107 txid cd9a37fdb42c285d03234c83ce0d71849d0babb0a31f5ffd7c5c620394866488
+node 1 type state parent 0 vout 0 n_outputs 3 unsigned_len 150 txid 20eab9b6e0755490ad41bcf87dee87f6259630413a8d60900271600c4827c512
+node 2 type kickoff parent 1 vout 0 n_outputs 2 unsigned_len 107 txid 3ea7def16a65feee7c6368257f0936489536e9ad1adb39470fe0d2fdde6eaa72
+node 3 type state parent 2 vout 0 n_outputs 3 unsigned_len 150 txid 62dccf20f442b12d835cd5918b2ebd95484280a7fe34362c2dd0a220ae791b2f
+node 4 type kickoff parent 3 vout 0 n_outputs 2 unsigned_len 107 txid de9359fd879f6925548bfe5d2489387c7ecdd4eac50f8fe681d20d0a5176b6ec
+node 5 type state parent 4 vout 0 n_outputs 3 unsigned_len 150 txid dd3bb2ca10a200a5fafbd7fe4b4e7170431862fb886857559950f41a8542700a
+node 6 type kickoff parent 3 vout 1 n_outputs 2 unsigned_len 107 txid 85422b245dcc3db20c003d2fc007032a48437d2954c46c70087ad496aa9121c3
+node 7 type state parent 6 vout 0 n_outputs 3 unsigned_len 150 txid d1b708ece1aab7decf1ab768a8f1d697862e3d9a23c454011dffb5bb07a78c9f
+node 8 type kickoff parent 1 vout 1 n_outputs 2 unsigned_len 107 txid 3b2175cb723b7d1c6d75290f3ba67de150c6f65b5a7473600eaa0729afedcdfb
+node 9 type state parent 8 vout 0 n_outputs 3 unsigned_len 150 txid f435998ce3a7989a45702e51561473d2fa433088b443dac60e9e2c4e1cc089d7
+node 10 type kickoff parent 9 vout 0 n_outputs 2 unsigned_len 107 txid a3c2588208b46b4a362d1e41a20ebdc4d912a7753a0af64402eb1095320a3fe1
+node 11 type state parent 10 vout 0 n_outputs 3 unsigned_len 150 txid 48aa2ac5465f86d0edaa66785e58226b68f72b05e29de1eb81f811d85697c600
+node 12 type kickoff parent 9 vout 1 n_outputs 2 unsigned_len 107 txid bd92533b1d344ea4d3af9e8dc13eec40803209ddbb2a0daffcc815dba4d4e8f4
+node 13 type state parent 12 vout 0 n_outputs 3 unsigned_len 150 txid fc22c6615e62c9b6869c1add985b138d19d7699092455e68aa1a55617b450caf
+
+================ N=8 clients (9 participants) ================
+(run twice, outputs byte-identical)
+funding_spk 51207a8729a009ac8edbe46012f534883d623c7cc796a5cdae2003599831eb406ec3
+n_clients 8 n_nodes 30 fee_per_tx 200 cltv 1000 step 10 states_per_layer 4
+node 0 type kickoff parent -1 vout 0 n_outputs 2 unsigned_len 107 txid a50a32fcac51e6830d9cfac1d6a38521733b9071f52b59c71cd3f0dd820c9248
+node 1 type state parent 0 vout 0 n_outputs 3 unsigned_len 150 txid b04539520f3cd195c46599e94c0c78d90638144125d762fe74a41492b477efb2
+node 2 type kickoff parent 1 vout 0 n_outputs 2 unsigned_len 107 txid 38b7597280a176b94a006495ec9e257bdae8d1bcd0d987fa3205cb5969efd091
+node 3 type state parent 2 vout 0 n_outputs 3 unsigned_len 150 txid 194197dc7365852fdddb9d0e28856a203e7100cf349fc6d743c4ad65981dcb87
+node 4 type kickoff parent 3 vout 0 n_outputs 2 unsigned_len 107 txid 2da649d025ec66a00c2359b37358e3579b48fd367458f9429b4a8007e72df9bf
+node 5 type state parent 4 vout 0 n_outputs 3 unsigned_len 150 txid 37ecf9442c60086d88583e3a12d7f128656ae1631abbbeb2b2049eaffb503fac
+node 6 type kickoff parent 5 vout 0 n_outputs 2 unsigned_len 107 txid b9031958035efc8e0fffb77838b5af38f62bc88868949978448e0974161a51a1
+node 7 type state parent 6 vout 0 n_outputs 3 unsigned_len 150 txid 40db361b79654fc3fca4830f26989d89ac82ba2d76de99faf3749d9d91260e23
+node 8 type kickoff parent 5 vout 1 n_outputs 2 unsigned_len 107 txid 1feded249da9f9dedce631ed62d8e4d348a26a8902e3d048465b3c6771f94d1e
+node 9 type state parent 8 vout 0 n_outputs 3 unsigned_len 150 txid 6b4fe56862b6adff76c13777b1c93c737fb7642563fa86f77b1753f854554f9e
+node 10 type kickoff parent 3 vout 1 n_outputs 2 unsigned_len 107 txid ccfe8ee531b1caac196e5eabfca2a2832c8e734f8ae5e159190a4b8ffb995f65
+node 11 type state parent 10 vout 0 n_outputs 3 unsigned_len 150 txid 33a07b42ab682ffe56ee71cea3aea3e03875f942424b9e5748da6df535d50b06
+node 12 type kickoff parent 11 vout 0 n_outputs 2 unsigned_len 107 txid 884cdaa86d4862bfa47719db63e06fad7e7398fefade9707d4cd871c94c4c680
+node 13 type state parent 12 vout 0 n_outputs 3 unsigned_len 150 txid edbbc4e6026aca0341681135795065c4ed9b398ff1746601e16efa650556a855
+node 14 type kickoff parent 11 vout 1 n_outputs 2 unsigned_len 107 txid c5057c7c9400ffc5d08cf73334e387038d3caa07e0f79cc056b0d2656c33a0e4
+node 15 type state parent 14 vout 0 n_outputs 3 unsigned_len 150 txid b400a1e853ffff6806193372015c00c19da62073b933f7cc54de21d66ad04278
+node 16 type kickoff parent 1 vout 1 n_outputs 2 unsigned_len 107 txid a97dc85799c469d68a927ca40b51a8a37beb4322af5966785696aee61ac753a4
+node 17 type state parent 16 vout 0 n_outputs 3 unsigned_len 150 txid 653434b57f6f1e1f19f8cdde1a262bbe62fda713690300555bd73d3f3f28b70d
+node 18 type kickoff parent 17 vout 0 n_outputs 2 unsigned_len 107 txid a701acc6f0770db61af0a6971e202c9135f3b2d9d9a92ab8da3cdfa3e8550ba4
+node 19 type state parent 18 vout 0 n_outputs 3 unsigned_len 150 txid 0dd096c06bdeaeb1cd84f797c74a2a2ca550ae66a781c83bcf65b02833170562
+node 20 type kickoff parent 19 vout 0 n_outputs 2 unsigned_len 107 txid 1650ec5b755e2795c29a171bfd07e0f7b268770c47e128a59fae4ccc7fe153f1
+node 21 type state parent 20 vout 0 n_outputs 3 unsigned_len 150 txid 12fb4f6176685f96764ffca0461ec49de24771d02141b2e19bc177d9d4d6ad0f
+node 22 type kickoff parent 19 vout 1 n_outputs 2 unsigned_len 107 txid 722db42b5baf983519e68859b5c5023f92b7eee7e7935f36fc4241e48af9437e
+node 23 type state parent 22 vout 0 n_outputs 3 unsigned_len 150 txid 668c0613e584c8b6810b0c05f4f8ed693e1724d890ef825140c57dafa8500572
+node 24 type kickoff parent 17 vout 1 n_outputs 2 unsigned_len 107 txid d00e0b6445152dea79e84dd6b16c301beb2ad3b2253f48f1f9cb560c6b54279d
+node 25 type state parent 24 vout 0 n_outputs 3 unsigned_len 150 txid 332968e348984faed9c55e8dc61df2ec30f0064dca5235c1cb04498dff198906
+node 26 type kickoff parent 25 vout 0 n_outputs 2 unsigned_len 107 txid 3ad063250e364a18941e179c180b195c658b430f06ece8ad51e4d965e726e791
+node 27 type state parent 26 vout 0 n_outputs 3 unsigned_len 150 txid 4b07051e61a255f294634d39c745905e5f547de2493ff7562655e07ce8403a21
+node 28 type kickoff parent 25 vout 1 n_outputs 2 unsigned_len 107 txid 3ea0a9485ed214f03ae84a8be377f3d9ec7ac42b206987bf6c6a5da7622f71bd
+node 29 type state parent 28 vout 0 n_outputs 3 unsigned_len 150 txid bec7d4b3c7ab01b3c8838b23dc644eda798d9aa3c6074543d4d4d0078dfa718d
+
+Cross-check against a real regtest run (runA2_force, 4 clients): all 14 txids produced by gz_tree equal the 14 on-chain tree txids
+  command: GZ_KEYS=1,2,3,5,4 ./gz_tree 4 303946d2e446b1ff7141f96c1d9b44e08fa40ca424362a6f457a59347f93ce2f 0 1000000 247
+  (GZ_KEYS=1,2,3,5,4 because the real LSP assigned slot 3 to the client with seckey 5 and slot 4 to seckey 4: slot order is TCP accept order, not key order;
+   funding txid/cltv 247 are the real run's values. Real txids: tree_node_0 3d6ed6ab...bede ... tree_node_13 0e984357...4717, in /root/gz-m0-out/runA2_force/lsp.log)
+funding_spk 5120d9c1e28bac725895afe722f41fdbeaac45e3e8847a996a77f474092d664e9978 5120d9c1e28bac725895afe722f41fdbeaac45e3e8847a996a77f474092d664e9978
+node 0 3d6ed6ab9a02b3ac2bf41cba4d001822b86d907ded2127bac014b2c863e2bede
+node 1 fa316ecce0dfdf86bb9506d2f956a35b0581d9d152d388570f97c45cae063c5a
+node 2 c277b9b58328e2edc994276c8f95d4e1abbd70d22fd45be581ea50523da6614a
+node 3 53774ae5cf04674af4677a7d0a3f4f6a4428be6d404c6d099964312f52048eb0
+node 4 e24071e00087b4bf7a9d92986e11fd5c01a375d86fe6340b0135ea3a38d0acdd
+node 5 3ff98a5f1333a28fa3ebf5e10763afbe9969581dd8437526f6b9d9e34062696b
+node 6 2adccc3c90fb7529ea4e3694e0348f8af69df3ee8ad51f5b0cae48d835f7b2af
+node 7 713584e1d3cd0497e7bb4fc46cdbd16a5d5a8c7d4582adc67b7d811d6afb72f5
+node 8 674b67f4a6fe8878d4b04ef19821352cfc7efb4fb686bf18e653cb99303b90e4
+node 9 6496ae18fee4df9c883e0dfdcd5496f160944c81c7677d8ade014657a04e1f4b
+node 10 ccbcd4ed04cdf7b54011dbe103e693351a8b65de07808bc558f194f4182a9e6c
+node 11 e07c4a1b3217225615c1885fc892b6cbab404dc88ed3ddc106c7cf3cda4ff766
+node 12 0048c64a9835b0c467535c29761557919e91a9dadfc0900a45990414ce61b36d
+node 13 0e9843571563d1e71297cd4e9220526a114bba8f086533969cfe0ed1f3ec4717

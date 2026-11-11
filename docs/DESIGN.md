@@ -221,3 +221,35 @@ Three ways exist; none is in the first release.
 | Add coins at creation | Everyone | Yes | Any contributor can abort the funding for all |
 
 The second row is this project's own reasoning, not taken from a published design, and needs a proper review before it is relied on.
+
+## 16. M0 findings: what the reference code does today (2026-11-11)
+
+From a trial run of SuperScalar (main plus its start-up crash fix) on regtest with four members and the default leaf type.
+
+**What works**
+
+- Factory creation, four payments and a cooperative close ran correctly; final balances matched to the satoshi. Creation took about 2 seconds, each payment about 2 seconds.
+- A host-side forced close published and confirmed all 14 tree transactions.
+
+**What does not**
+
+- A member exiting alone, with the host gone, got all 14 tree transactions confirmed but could not publish its channel transaction: the fee built into it is below the relay minimum (154 against 167). So in the reference code today a member cannot complete an exit without the host. Gazpacho's channel engine replaces this code; the finding is passed to the SuperScalar repo.
+- The default factory size is too small to make a payment (channel reserve exceeds the balance).
+
+**Foundations: separable**
+
+- 16 of the 20 candidate files build and run alone, needing only the signature library and a general cryptography library: tree, group signing, timelock counter, ladder, transaction and script builders, adaptor signatures, key derivation, recovery phrases, address and invoice encoding, fee helpers.
+- 4 files are tied to the old database or channel code and are not imported as they are: keyfile, invoice, sweeper, on-chain wallet source. Gazpacho writes its own.
+- A standalone program built from the 16 files reproduces exactly the 14 tree transaction IDs of the real run. Reference values for 4 and 8 members are in `tests/reference/`.
+
+**Changes the imported files need before they fit the core's rules**
+
+- Randomness is read directly from the operating system in several places, including for every signing nonce. The core must be handed randomness by the program around it.
+- Diagnostic printing, one environment-variable hook and one test-only global variable in the tree builder.
+- Member positions in the tree follow connection order, not key order, and the transaction IDs depend on it. Gazpacho must fix the order by an explicit rule.
+
+**Message counts observed**
+
+- Creation: 2 round trips for the signing, 2 more to set up the channel.
+- A payment: 8 messages for the payer, 11 for the payee, all driven by the host.
+- Cooperative close: 5 messages, 2 round trips.
