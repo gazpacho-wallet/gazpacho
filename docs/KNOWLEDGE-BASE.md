@@ -73,7 +73,9 @@ Tested or read; see `RECORD.md` sections 16 and 18 and the hand-off note.
 |---|---|
 | Creation, payments and cooperative close work for 4 members on regtest | Run on 2026-11-11 |
 | It has run 127 members on signet | The project's own published record; not re-run by us |
-| A member cannot complete an exit alone: the channel transaction's fee is below the relay minimum | Run on 2026-11-11 |
+| A member cannot complete an exit alone on main: the channel transaction's fee is below the relay minimum. The SuperScalar session reports that its draft pull request 476 fixes this (the exit relays as a package with a fee-paying child) | Run on 2026-11-11; fix reported by the other session, not re-run by us |
+| Factories above 16 members in the reference code use several users per leaf on an older leaf type. One-member pseudo-Spilman leaves under wide upper levels have not been shown to work at 64, 127 or 512 members | Reported by the SuperScalar session on 2026-11-11 from its own runs |
+| The shared files cap a factory at 256 signers and 256 leaves, and 512 tree transactions | Read on 2026-11-11 |
 | The host funds before the tree is signed | Read in the code by the earlier session |
 | Only the funding output pays members at expiry; every tree node still has a host-only timeout branch | Read in the code by the earlier session |
 | Payment deadlines are fixed at 80, 40 and 18 blocks, far shorter than an exit | Read in the code by the earlier session |
@@ -162,6 +164,7 @@ Newest first within each area. The date is when the owner decided.
 
 ## 7. Risks we are carrying
 
+0. **The chosen leaf design is unproven at size.** Gazpacho's plan is one member per pseudo-Spilman leaf at up to 512 members. Nobody has run that shape above 16. It must be tested before anything is built on it; if it fails or its exits are too slow, several members per leaf is the fallback.
 1. The channel update routine must be exactly right through crashes and reconnects.
 2. Channel state cannot be rebuilt from a recovery phrase.
 3. Members must be reachable at rotation and must watch the chain.

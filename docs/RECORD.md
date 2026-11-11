@@ -325,3 +325,13 @@ Found during the import, for the core's design:
 
 - This file was `DESIGN.md` and is now the dated record. `DESIGN.md` is a consolidated statement of the design in force.
 - `docs/handbook.html` is a separate page holding every project document: a list of contents when closed, the complete text when opened, with a side menu and a find box. It is generated from the Markdown documents by `tools/build-handbook.py`; run the script after editing any document. The illustrated `design.html` stays as it was at version 3 (an earlier attempt to fold the detail into it was withdrawn at the owner's request).
+
+## 23. Exchange with the SuperScalar session (2026-11-11)
+
+Gazpacho answered that session's "decisions v3" questions (local note, not in the repository) and it replied.
+
+- **Agreed by both:** pay members at every tree output on expiry; payments do not touch the tree; deadlines from the tree; sign before fund, with the funding transaction built first and signed last from inputs whose ID cannot change; the member keeps the payment secret; the node link as four operations (pay, create a held invoice, settle, cancel); tag the last commit before removals.
+- **Its position changed on three points after our response:** it will not remove the older leaf types until one-member pseudo-Spilman leaves under wide upper levels are proven at the target sizes; it agrees light-client mode in the reference programs should be disabled rather than fixed; and it would not rebuild the reference channel code, provided the reference programs refuse to run on mainnet outright, the documents say they are for regtest and signet, and the cheap serious fixes still land. The owner decides these.
+- **New fact for Gazpacho:** every factory above 16 members in the reference code, including its 64- and 127-member runs, used several users per leaf on the older leaf type. Gazpacho's one-member-per-leaf plan is therefore unproven at size and is now treated as provisional until tested.
+- **Our findings confirmed by that session:** the member-order dependence on the C library, the unverified partial signatures, and the 256 limit. It reports draft 476 fixes the failed member exit, and that earlier drafts raising the size limit will be brought forward.
+- **Re-import:** the copy under `core/superscalar/` was updated from `3de6120` to `e657395`. The changes to imported files were additions (leak fixes, a stack-overflow fix beyond 8 leaves, a leaf snapshot helper). The reference test still passes with unchanged transaction IDs.

@@ -219,6 +219,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c16-20-lobby-start-rule-and-sips-2026-11-11" title="20. Lobby start rule and SIPs (2026-11-11)">20. Lobby start rule and SIPs (2026-11-11)</a>
 <a class="sec" href="#c16-21-public-repository-specifications-test" title="21. Public repository, specifications, testing plan (2026-11-11)">21. Public repository, specifications, testing plan (2026-11-11)</a>
 <a class="sec" href="#c16-22-design-consolidated-handbook-page-202" title="22. Design consolidated; handbook page (2026-11-11)">22. Design consolidated; handbook page (2026-11-11)</a>
+<a class="sec" href="#c16-23-exchange-with-the-superscalar-session" title="23. Exchange with the SuperScalar session (2026-11-11)">23. Exchange with the SuperScalar session (2026-11-11)</a>
 <a class="ch" href="#c17">Lobby research</a>
 <a class="sec" href="#c17-summary" title="Summary">Summary</a>
 <a class="sec" href="#c17-a1-prior-work-by-the-same-owner" title="A1. Prior work by the same owner">A1. Prior work by the same owner</a>
@@ -461,8 +462,16 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>The project's own published record; not re-run by us</td>
 </tr>
 <tr>
-<td>A member cannot complete an exit alone: the channel transaction's fee is below the relay minimum</td>
-<td>Run on 2026-11-11</td>
+<td>A member cannot complete an exit alone on main: the channel transaction's fee is below the relay minimum. The SuperScalar session reports that its draft pull request 476 fixes this (the exit relays as a package with a fee-paying child)</td>
+<td>Run on 2026-11-11; fix reported by the other session, not re-run by us</td>
+</tr>
+<tr>
+<td>Factories above 16 members in the reference code use several users per leaf on an older leaf type. One-member pseudo-Spilman leaves under wide upper levels have not been shown to work at 64, 127 or 512 members</td>
+<td>Reported by the SuperScalar session on 2026-11-11 from its own runs</td>
+</tr>
+<tr>
+<td>The shared files cap a factory at 256 signers and 256 leaves, and 512 tree transactions</td>
+<td>Read on 2026-11-11</td>
 </tr>
 <tr>
 <td>The host funds before the tree is signed</td>
@@ -584,6 +593,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>How members who are offline at rotation are reached.</li>
 </ul></div></details>
 <details id="c1-7-risks-we-are-carrying"><summary>7. Risks we are carrying</summary><div class="body"><ol>
+<li><strong>The chosen leaf design is unproven at size.</strong> Gazpacho's plan is one member per pseudo-Spilman leaf at up to 512 members. Nobody has run that shape above 16. It must be tested before anything is built on it; if it fails or its exits are too slow, several members per leaf is the fallback.</li>
 <li>The channel update routine must be exactly right through crashes and reconnects.</li>
 <li>Channel state cannot be rebuilt from a recovery phrase.</li>
 <li>Members must be reachable at rotation and must watch the chain.</li>
@@ -2223,7 +2233,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p>5a. <strong>Should the SuperScalar repository still rebuild its own channel code,</strong> now that Gazpacho is building the channel on Lightning's standard format? Suggested: no; it keeps its current channel code with the safety fixes under way and concentrates on the shared low-level files and the construction fixes.
 5b. <strong>Light-client mode in the reference programs:</strong> remove or disable it (suggested, since Gazpacho covers running without a Bitcoin node), or still fix it there?
 5c. <strong>Raising the 256-member limit</strong> in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now.</p></div></details>
-<details id="c14-for-this-session-to-settle-research-or-b"><summary>For this session to settle (research or build)</summary><div class="body"><ol>
+<details id="c14-for-this-session-to-settle-research-or-b"><summary>For this session to settle (research or build)</summary><div class="body"><p>5d. <strong>Does one member per pseudo-Spilman leaf work at 64, 127, 255 and 512 members,</strong> and how long is the exit? The SuperScalar session has offered to run it at 64 and 127. Gazpacho tests tree building and signing at those sizes at the start of M1. Until then the leaf decision is provisional.</p>
+<ol>
 <li>The precise definition of the member's safety rule.</li>
 <li>The signing round specification: messages, states, timers, and the proof of who broke a round. The proof scheme is our own reasoning and needs expert review.</li>
 <li>The timelock and deadline numbers for the full layered tree.</li>
@@ -2661,6 +2672,14 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <details id="c16-22-design-consolidated-handbook-page-202"><summary>22. Design consolidated; handbook page (2026-11-11)</summary><div class="body"><ul>
 <li>This file was <code>DESIGN.md</code> and is now the dated record. <code>DESIGN.md</code> is a consolidated statement of the design in force.</li>
 <li><code>docs/handbook.html</code> is a separate page holding every project document: a list of contents when closed, the complete text when opened, with a side menu and a find box. It is generated from the Markdown documents by <code>tools/build-handbook.py</code>; run the script after editing any document. The illustrated <code>design.html</code> stays as it was at version 3 (an earlier attempt to fold the detail into it was withdrawn at the owner's request).</li>
+</ul></div></details>
+<details id="c16-23-exchange-with-the-superscalar-session"><summary>23. Exchange with the SuperScalar session (2026-11-11)</summary><div class="body"><p>Gazpacho answered that session's "decisions v3" questions (local note, not in the repository) and it replied.</p>
+<ul>
+<li><strong>Agreed by both:</strong> pay members at every tree output on expiry; payments do not touch the tree; deadlines from the tree; sign before fund, with the funding transaction built first and signed last from inputs whose ID cannot change; the member keeps the payment secret; the node link as four operations (pay, create a held invoice, settle, cancel); tag the last commit before removals.</li>
+<li><strong>Its position changed on three points after our response:</strong> it will not remove the older leaf types until one-member pseudo-Spilman leaves under wide upper levels are proven at the target sizes; it agrees light-client mode in the reference programs should be disabled rather than fixed; and it would not rebuild the reference channel code, provided the reference programs refuse to run on mainnet outright, the documents say they are for regtest and signet, and the cheap serious fixes still land. The owner decides these.</li>
+<li><strong>New fact for Gazpacho:</strong> every factory above 16 members in the reference code, including its 64- and 127-member runs, used several users per leaf on the older leaf type. Gazpacho's one-member-per-leaf plan is therefore unproven at size and is now treated as provisional until tested.</li>
+<li><strong>Our findings confirmed by that session:</strong> the member-order dependence on the C library, the unverified partial signatures, and the 256 limit. It reports draft 476 fixes the failed member exit, and that earlier drafts raising the size limit will be brought forward.</li>
+<li><strong>Re-import:</strong> the copy under <code>core/superscalar/</code> was updated from <code>3de6120</code> to <code>e657395</code>. The changes to imported files were additions (leak fixes, a stack-overflow fix beyond 8 leaves, a leaf snapshot helper). The reference test still passes with unchanged transaction IDs.</li>
 </ul></div></details>
 </section>
 <section class="chapter" id="c17"><h2>Lobby research</h2><p class="desc">Background: how comparable systems gather people and handle those who stall, with sources.</p><p class="file">Lobby: research and design note · <code>docs/LOBBY-research.md</code></p>
