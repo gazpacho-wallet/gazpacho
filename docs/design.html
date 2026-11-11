@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gazpacho Design</title>
+<style>
+:root{
+  --bg:#fbf6ee;--card:#ffffff;--ink:#231a15;--mute:#6f6258;--line:#e6dac9;
+  --tomato:#c8321f;--tomato-soft:#fbe3dc;--green:#2f7d4f;--green-soft:#dff1e4;
+  --gold:#b7791f;--gold-soft:#fbefd2;--blue:#2b5f9e;--blue-soft:#dde9f8;--grey-soft:#efe9df;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#17120f;--card:#211a16;--ink:#f3ebe2;--mute:#b3a597;--line:#3a2f28;
+  --tomato:#ff7a63;--tomato-soft:#44201a;--green:#6fcf97;--green-soft:#1c3a29;
+  --gold:#f0c060;--gold-soft:#3d3015;--blue:#8db8f0;--blue-soft:#1b2c44;--grey-soft:#2b231e;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.6 system-ui,"Segoe UI",sans-serif}
+main{max-width:980px;margin:0 auto;padding:0 18px 80px}
+header{padding:44px 18px 30px;text-align:center;background:radial-gradient(circle at 25% 10%,var(--tomato-soft),transparent 55%),radial-gradient(circle at 80% 20%,var(--blue-soft),transparent 55%)}
+header h1{font-size:clamp(32px,6vw,52px);margin:0 0 6px;letter-spacing:-.5px}
+header h1 span{color:var(--tomato)}
+header p{max-width:680px;margin:0 auto;color:var(--mute)}
+nav{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:20px auto 0;max-width:900px}
+nav a{font-size:14px;text-decoration:none;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:99px;padding:4px 12px}
+h2{font-size:26px;margin:56px 0 6px;scroll-margin-top:12px}
+h2 small{display:block;font-size:13px;font-weight:700;color:var(--tomato);letter-spacing:.08em;text-transform:uppercase}
+h3{font-size:19px;margin:0 0 6px}
+p{margin:8px 0 12px}.lead{color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:14px 0}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}.grid .card{margin:0}
+.pill{display:inline-block;font-size:12px;font-weight:700;border-radius:99px;padding:2px 10px;margin-bottom:8px}
+.p-green{background:var(--green-soft);color:var(--green)}.p-tomato{background:var(--tomato-soft);color:var(--tomato)}
+.p-gold{background:var(--gold-soft);color:var(--gold)}.p-blue{background:var(--blue-soft);color:var(--blue)}
+ul,ol{margin:6px 0 4px;padding-left:22px}li{margin:4px 0}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:540px;font-size:15.5px}
+th,td{text-align:left;vertical-align:top;padding:9px 10px;border-bottom:1px solid var(--line)}
+th{font-size:13px;color:var(--mute)}
+svg{width:100%;height:auto;display:block}
+svg text{font-family:system-ui,"Segoe UI",sans-serif;fill:var(--ink)}
+.m{fill:var(--mute)!important}
+.note{border-left:4px solid var(--gold);background:var(--gold-soft);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.ask{border-left:4px solid var(--tomato);background:var(--tomato-soft);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+code{background:var(--grey-soft);padding:1px 6px;border-radius:5px;font-size:.92em}
+.road{margin:18px 0 0;padding-left:26px;border-left:3px solid var(--line)}
+.step{position:relative;margin:0 0 18px}
+.step:before{content:"";position:absolute;left:-35px;top:6px;width:15px;height:15px;border-radius:50%;background:var(--tomato);border:3px solid var(--bg)}
+.step b{font-size:17px}.when{color:var(--gold);font-weight:700;font-size:14px;margin-left:8px}
+footer{color:var(--mute);font-size:14px;margin-top:50px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1><span>Gazpacho</span> design</h1>
+  <p>How the wallet is put together, what it takes from the SuperScalar code, and how we prove it works. Draft 1, 2026-11-11.</p>
+  <nav>
+    <a href="#answers">Short answers</a><a href="#source">What we take</a><a href="#layers">Layers</a><a href="#loop">Core contract</a>
+    <a href="#engines">Engines</a><a href="#rule">The safety rule</a><a href="#wire">Messages</a><a href="#chain">Chain view</a>
+    <a href="#tests">Testing</a><a href="#steps">Milestones</a><a href="#hard">Why it's hard</a><a href="#open">Not designed yet</a>
+  </nav>
+</header>
+<main>
+
+<h2 id="answers"><small>Your questions</small>Short answers</h2>
+<div class="card tw"><table>
+<tr><th>Question</th><th>Answer</th></tr>
+<tr><td><b>Is it really so simple?</b></td><td>No. The shape is simple; eight things inside it are hard. They are listed <a href="#hard">below</a>.</td></tr>
+<tr><td><b>Pulling in SuperScalar, or our own thing?</b></td><td>Both. We import its foundations (about 11,000 lines) unchanged, and write everything above them new.</td></tr>
+<tr><td><b>How do we get it tested end to end?</b></td><td>The core does no input or output, so a whole factory can run inside one test process, with crashes and cheating injected. Then the real programs run on regtest, signet and testnet.</td></tr>
+<tr><td><b>Is it all planned out?</b></td><td>The architecture and the test strategy are. Seven detailed pieces are <a href="#open">not designed yet</a>.</td></tr>
+</table></div>
+
+<h2 id="source"><small>Relationship to the SuperScalar repo</small>What we take, and what we write</h2>
+<div class="card">
+<svg viewBox="0 0 900 330" role="img" aria-label="What Gazpacho imports from SuperScalar and what it writes new">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--mute)"/></marker></defs>
+  <text x="200" y="26" text-anchor="middle" font-weight="800" font-size="17">SuperScalar repo</text>
+  <text x="690" y="26" text-anchor="middle" font-weight="800" font-size="17">Gazpacho</text>
+  <rect x="30" y="40" width="340" height="80" rx="10" fill="var(--grey-soft)" stroke="var(--line)"/>
+  <text x="200" y="72" text-anchor="middle" font-size="15" font-weight="700">Extras</text>
+  <text x="200" y="94" text-anchor="middle" font-size="13" class="m">gossip, route-finding, JIT, splicing… ~30,000 lines</text>
+  <rect x="30" y="130" width="340" height="80" rx="10" fill="var(--gold-soft)" stroke="var(--gold)"/>
+  <text x="200" y="162" text-anchor="middle" font-size="15" font-weight="700">Host and member logic</text>
+  <text x="200" y="184" text-anchor="middle" font-size="13" class="m">ceremonies, channel, database… ~35,000 lines</text>
+  <rect x="30" y="220" width="340" height="80" rx="10" fill="var(--green-soft)" stroke="var(--green)"/>
+  <text x="200" y="252" text-anchor="middle" font-size="15" font-weight="700">Foundations</text>
+  <text x="200" y="274" text-anchor="middle" font-size="13" class="m">tree, signing, timelocks, transactions… ~11,000 lines</text>
+  <rect x="520" y="130" width="340" height="80" rx="10" fill="var(--tomato-soft)" stroke="var(--tomato)" stroke-width="2"/>
+  <text x="690" y="162" text-anchor="middle" font-size="15" font-weight="700">Engines and node: written new</text>
+  <text x="690" y="184" text-anchor="middle" font-size="13" class="m">old code is the reference for behaviour</text>
+  <rect x="520" y="220" width="340" height="80" rx="10" fill="var(--green-soft)" stroke="var(--green)"/>
+  <text x="690" y="252" text-anchor="middle" font-size="15" font-weight="700">Foundations: imported copy</text>
+  <text x="690" y="274" text-anchor="middle" font-size="13" class="m">pinned to a known version</text>
+  <line x1="370" y1="260" x2="516" y2="260" stroke="var(--green)" stroke-width="3" marker-end="url(#a)"/>
+  <text x="443" y="250" text-anchor="middle" font-size="12" font-weight="700" style="fill:var(--green)">copy as is</text>
+  <line x1="370" y1="170" x2="516" y2="170" stroke="var(--gold)" stroke-width="3" stroke-dasharray="7 5" marker-end="url(#a)"/>
+  <text x="443" y="160" text-anchor="middle" font-size="12" font-weight="700" style="fill:var(--gold)">read, rewrite</text>
+  <text x="443" y="84" text-anchor="middle" font-size="12" class="m">not taken</text>
+  <text x="690" y="84" text-anchor="middle" font-size="13" class="m">A test builds the same factory in both</text>
+  <text x="690" y="102" text-anchor="middle" font-size="13" class="m">and requires identical transaction IDs.</text>
+</svg>
+</div>
+<ul>
+<li>Fixes to the imported files go to the SuperScalar repo first, and we then update our copy.</li>
+<li>If we cannot wait for a fix, it goes in a short, listed patch queue, never a silent fork.</li>
+</ul>
+
+<h2 id="layers"><small>Logical layers</small>Six layers, four of them the core</h2>
+<div class="card">
+<svg viewBox="0 0 900 470" role="img" aria-label="The six layers of Gazpacho">
+  <g font-size="14">
+  <rect x="150" y="14" width="720" height="62" rx="10" fill="var(--blue-soft)" stroke="var(--blue)"/>
+  <text x="170" y="40" font-weight="800" font-size="16">L5  Apps</text><text x="170" y="62" class="m">command line · host service · web screens</text>
+  <rect x="150" y="86" width="720" height="62" rx="10" fill="var(--gold-soft)" stroke="var(--gold)"/>
+  <text x="170" y="112" font-weight="800" font-size="16">L4  Ports</text><text x="170" y="134" class="m">storage · chain view · connection · clock · randomness · host's Lightning link</text>
+  <rect x="140" y="160" width="740" height="296" rx="14" fill="none" stroke="var(--tomato)" stroke-width="2" stroke-dasharray="7 5"/>
+  <rect x="150" y="170" width="720" height="62" rx="10" fill="var(--tomato-soft)" stroke="var(--tomato)"/>
+  <text x="170" y="196" font-weight="800" font-size="16">L3  Node</text><text x="170" y="218" class="m">sessions · journal · timers · on-chain wallet · host terms · member and host roles</text>
+  <rect x="150" y="242" width="720" height="62" rx="10" fill="var(--tomato-soft)" stroke="var(--tomato)"/>
+  <text x="170" y="268" font-weight="800" font-size="16">L2  Engines</text><text x="170" y="290" class="m">signing round · channel · payment · exit · watch</text>
+  <rect x="150" y="314" width="720" height="62" rx="10" fill="var(--green-soft)" stroke="var(--green)"/>
+  <text x="170" y="340" font-weight="800" font-size="16">L1  Factory model</text><text x="170" y="362" class="m">tree · timelocks · leaves · exits · ladder</text>
+  <rect x="150" y="386" width="720" height="62" rx="10" fill="var(--green-soft)" stroke="var(--green)"/>
+  <text x="170" y="412" font-weight="800" font-size="16">L0  Primitives</text><text x="170" y="434" class="m">signatures · hashing · transactions · scripts · group signing</text>
+  </g>
+  <text x="70" y="50" text-anchor="middle" font-size="13" class="m">written new</text>
+  <text x="70" y="122" text-anchor="middle" font-size="13" class="m">written new</text>
+  <text x="70" y="240" text-anchor="middle" font-size="13" font-weight="700" style="fill:var(--tomato)">written new</text>
+  <text x="70" y="385" text-anchor="middle" font-size="13" font-weight="700" style="fill:var(--green)">imported</text>
+  <text x="70" y="300" text-anchor="middle" font-size="13" font-weight="800" style="fill:var(--tomato)">THE CORE</text>
+  <text x="70" y="318" text-anchor="middle" font-size="12" class="m">portable C</text>
+  <text x="70" y="334" text-anchor="middle" font-size="12" class="m">no system calls</text>
+</svg>
+</div>
+<p>Each layer only calls the one below it. All of L0 to L5 is C, except the web screens.</p>
+
+<h2 id="loop"><small>The core contract</small>An event goes in, a list of actions comes out</h2>
+<p class="lead">The core never waits, never opens a connection and never touches a disk. It is told what happened and answers with what to do. That is what lets the same code run on a desktop, in a browser, and inside a test.</p>
+<div class="card">
+<svg viewBox="0 0 900 300" role="img" aria-label="Events enter the core and actions leave it">
+  <rect x="20" y="30" width="230" height="240" rx="12" fill="var(--blue-soft)" stroke="var(--blue)"/>
+  <text x="135" y="58" text-anchor="middle" font-weight="800" font-size="16">Events in</text>
+  <g font-size="14"><text x="40" y="92">• a message arrived</text><text x="40" y="120">• a timer fired</text><text x="40" y="148">• something happened on chain</text><text x="40" y="176">• the user asked for something</text><text x="40" y="204">• storage confirmed a save</text></g>
+  <rect x="335" y="80" width="230" height="140" rx="16" fill="var(--tomato-soft)" stroke="var(--tomato)" stroke-width="2"/>
+  <text x="450" y="140" text-anchor="middle" font-weight="800" font-size="20">Core</text>
+  <text x="450" y="166" text-anchor="middle" font-size="13" class="m">decides, never acts</text>
+  <rect x="650" y="30" width="230" height="240" rx="12" fill="var(--green-soft)" stroke="var(--green)"/>
+  <text x="765" y="58" text-anchor="middle" font-weight="800" font-size="16">Actions out</text>
+  <g font-size="14"><text x="670" y="92" font-weight="700">1. save these records</text><text x="670" y="120">2. send this message</text><text x="670" y="148">• broadcast this transaction</text><text x="670" y="176">• watch this output</text><text x="670" y="204">• set a timer</text><text x="670" y="232">• tell the user</text></g>
+  <line x1="250" y1="150" x2="331" y2="150" stroke="var(--mute)" stroke-width="3" marker-end="url(#a)"/>
+  <line x1="565" y1="150" x2="646" y2="150" stroke="var(--mute)" stroke-width="3" marker-end="url(#a)"/>
+</svg>
+</div>
+<div class="note"><b>Save before send.</b> The program around the core carries out the actions in order, and sends nothing until the save before it is safely stored. This one rule is enforced in one place, for everything. In the old code each of about 15 paths chose its own order, which is where most of its bugs came from.</div>
+
+<h2 id="engines"><small>Layer 2</small>Five engines</h2>
+<div class="grid">
+  <div class="card"><span class="pill p-tomato">Signing round</span><h3>One engine for every group signature</h3><p>Propose, collect nonces, collect partial signatures, finish. Used for creating a factory, changing liquidity, rotating and closing.</p></div>
+  <div class="card"><span class="pill p-tomato">Channel</span><h3>One update routine</h3><p>Save the new state, send the signature, check the other side's revocation, save, release our secret. Updates that arrive mid-update wait in a queue.</p></div>
+  <div class="card"><span class="pill p-gold">Payment</span><h3>Invoices and deadlines</h3><p>Incoming and outgoing payments. Deadlines are worked out from how long the factory takes to exit.</p></div>
+  <div class="card"><span class="pill p-green">Exit</span><h3>Leaving without the host</h3><p>Plans which transactions to publish, in what order, when each becomes valid, and how to pay their fees.</p></div>
+  <div class="card"><span class="pill p-blue">Watch</span><h3>Eyes on the chain</h3><p>Knows every output that matters and what to do if each one is spent.</p></div>
+</div>
+
+<h3 style="margin-top:26px">Why one signing engine matters</h3>
+<div class="card">
+<svg viewBox="0 0 900 250" role="img" aria-label="Seven message families collapse into one signing round engine">
+  <text x="170" y="22" text-anchor="middle" font-weight="800" font-size="15">SuperScalar today</text>
+  <g font-size="13">
+  <rect x="30" y="34" width="135" height="30" rx="7" fill="var(--grey-soft)" stroke="var(--line)"/><text x="97" y="54" text-anchor="middle">create</text>
+  <rect x="175" y="34" width="135" height="30" rx="7" fill="var(--grey-soft)" stroke="var(--line)"/><text x="242" y="54" text-anchor="middle">close</text>
+  <rect x="30" y="72" width="135" height="30" rx="7" fill="var(--grey-soft)" stroke="var(--line)"/><text x="97" y="92" text-anchor="middle">leaf advance</text>
+  <rect x="175" y="72" width="135" height="30" rx="7" fill="var(--grey-soft)" stroke="var(--line)"/><text x="242" y="92" text-anchor="middle">path</text>
+  <rect x="30" y="110" width="135" height="30" rx="7" fill="var(--grey-soft)" stroke="var(--line)"/><text x="97" y="130" text-anchor="middle">state advance</text>
+  <rect x="175" y="110" width="135" height="30" rx="7" fill="var(--grey-soft)" stroke="var(--line)"/><text x="242" y="130" text-anchor="middle">sub-factory</text>
+  <rect x="102" y="148" width="135" height="30" rx="7" fill="var(--grey-soft)" stroke="var(--line)"/><text x="169" y="168" text-anchor="middle">reallocation</text>
+  </g>
+  <text x="170" y="206" text-anchor="middle" font-size="13" class="m">7 separate families, about 40 message types,</text>
+  <text x="170" y="224" text-anchor="middle" font-size="13" class="m">each with its own checks</text>
+  <line x1="340" y1="106" x2="520" y2="106" stroke="var(--tomato)" stroke-width="3" marker-end="url(#a)"/>
+  <text x="700" y="22" text-anchor="middle" font-weight="800" font-size="15">Gazpacho</text>
+  <rect x="540" y="50" width="320" height="112" rx="14" fill="var(--tomato-soft)" stroke="var(--tomato)" stroke-width="2"/>
+  <text x="700" y="88" text-anchor="middle" font-weight="800" font-size="17">Signing round engine</text>
+  <text x="700" y="112" text-anchor="middle" font-size="13">given: what is being signed</text>
+  <text x="700" y="132" text-anchor="middle" font-size="13">and: the one safety rule</text>
+  <text x="700" y="206" text-anchor="middle" font-size="13" class="m">1 engine, 4 message kinds,</text>
+  <text x="700" y="224" text-anchor="middle" font-size="13" class="m">one place to get right and to test</text>
+</svg>
+</div>
+
+<h2 id="rule"><small>Member-side safety</small>One rule before every signature</h2>
+<div class="card" style="text-align:center;border-color:var(--tomato)">
+  <p style="font-size:21px;margin:6px 0"><b>"After I sign this, can I still leave alone, with at least what I'm owed?"</b></p>
+  <p class="lead" style="margin:0">The member answers from its own data only. If the answer is no, it refuses and sends nothing.</p>
+</div>
+<p>In the old code each ceremony had its own checks, and several were missing. A cooperative close that paid only the host was accepted, and so was a liquidity change that emptied a member's balance. One rule, applied by the signing engine to every request, covers both of those and whatever ceremony is added later.</p>
+<p>The same idea runs on the host's side: its funding transaction is signed only after the whole tree and every member's exit are signed.</p>
+
+<h2 id="wire"><small>Proposed</small>Messages</h2>
+<div class="grid">
+  <div class="card"><h3>Compact and versioned</h3><p>Binary messages with typed fields that can be extended later without breaking older software.</p></div>
+  <div class="card"><h3>About 15 kinds</h3><p>The old code has about 100 message types, built up over several generations.</p></div>
+  <div class="card"><h3>Encrypted, host key pinned</h3><p>The same messages travel over an ordinary connection or a WebSocket, so the browser version needs nothing special.</p></div>
+</div>
+<p>The format is written as a specification in <code>spec/</code>, and offered to the SuperScalar repo as the candidate for the shared format.</p>
+
+<h2 id="chain"><small>Layer 4</small>Chain view that cannot be lied to, only starved</h2>
+<div class="card">
+<svg viewBox="0 0 900 190" role="img" aria-label="Gazpacho checks answers from chain servers">
+  <rect x="20" y="50" width="200" height="90" rx="12" fill="var(--tomato-soft)" stroke="var(--tomato)"/>
+  <text x="120" y="88" text-anchor="middle" font-weight="800" font-size="16">Gazpacho</text><text x="120" y="110" text-anchor="middle" font-size="13" class="m">checks every answer</text>
+  <rect x="340" y="14" width="210" height="46" rx="9" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="445" y="43" text-anchor="middle" font-size="14">public server A</text>
+  <rect x="340" y="72" width="210" height="46" rx="9" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="445" y="101" text-anchor="middle" font-size="14">public server B</text>
+  <rect x="340" y="130" width="210" height="46" rx="9" fill="var(--green-soft)" stroke="var(--green)"/><text x="445" y="159" text-anchor="middle" font-size="14">or your own node</text>
+  <rect x="680" y="50" width="200" height="90" rx="12" fill="var(--grey-soft)" stroke="var(--line)"/><text x="780" y="100" text-anchor="middle" font-size="15">Bitcoin network</text>
+  <line x1="220" y1="80" x2="336" y2="40" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="220" y1="95" x2="336" y2="95" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="220" y1="110" x2="336" y2="150" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/>
+  <line x1="550" y1="38" x2="676" y2="80" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="550" y1="95" x2="676" y2="95" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/><line x1="550" y1="152" x2="676" y2="110" stroke="var(--mute)" stroke-width="2" marker-end="url(#a)"/>
+</svg>
+</div>
+<ul>
+<li><b>A server cannot invent a confirmation.</b> Gazpacho checks the proof of work on block headers and checks each confirmation against them.</li>
+<li><b>A server can hide a transaction.</b> So Gazpacho asks more than one, and anyone can point it at their own node.</li>
+<li>Keys never leave the app.</li>
+</ul>
+
+<h2 id="tests"><small>Proving it works</small>Testing, from the inside out</h2>
+<div class="card">
+<svg viewBox="0 0 900 360" role="img" aria-label="Testing pyramid">
+  <g font-size="14">
+  <path d="M370 20 L530 20 L560 76 L340 76 Z" fill="var(--blue-soft)" stroke="var(--blue)"/><text x="450" y="54" text-anchor="middle" font-weight="700">Signet and testnet</text>
+  <path d="M335 86 L565 86 L600 148 L300 148 Z" fill="var(--gold-soft)" stroke="var(--gold)"/><text x="450" y="124" text-anchor="middle" font-weight="700">Regtest, end to end</text>
+  <path d="M295 158 L605 158 L650 232 L250 232 Z" fill="var(--tomato-soft)" stroke="var(--tomato)" stroke-width="2"/><text x="450" y="192" text-anchor="middle" font-weight="800" font-size="16">The simulator</text><text x="450" y="214" text-anchor="middle" font-size="13" class="m">the main safety net</text>
+  <path d="M245 242 L655 242 L690 296 L210 296 Z" fill="var(--green-soft)" stroke="var(--green)"/><text x="450" y="276" text-anchor="middle" font-weight="700">Engine tests</text>
+  <path d="M205 306 L695 306 L720 348 L180 348 Z" fill="var(--green-soft)" stroke="var(--green)"/><text x="450" y="333" text-anchor="middle" font-weight="700">Test vectors · same transaction IDs as SuperScalar</text>
+  </g>
+  <g font-size="13"><text x="20" y="52" class="m">real network, nightly</text><text x="20" y="122" class="m">real programs, real node</text><text x="20" y="200" class="m">a whole factory in one process</text><text x="20" y="274" class="m">one engine at a time</text><text x="20" y="332" class="m">the foundations</text></g>
+</svg>
+</div>
+<div class="grid">
+  <div class="card"><span class="pill p-tomato">The simulator</span><h3>A whole factory in one process</h3>
+    <ul><li>A host, any number of members, a pretend chain and a pretend network.</li><li>Driven by a seed, so every failure can be replayed exactly.</li><li>It drops, delays and reorders messages.</li><li>It crashes any party at every save point and restarts it.</li><li>It plays scripted cheating hosts and members.</li><li>After every step it checks the invariants below.</li></ul></div>
+  <div class="card"><span class="pill p-gold">Regtest scenarios</span><h3>The real programs</h3>
+    <ul><li>Join, receive, pay, swap in.</li><li>Liquidity change, rotation, cooperative close.</li><li>Forced exit; host disappears.</li><li>Host publishes an old state; member publishes an old state.</li><li>Restart in the middle of each ceremony.</li><li>Chain view through a Bitcoin node and through an Electrum server.</li></ul></div>
+</div>
+<h3 style="margin-top:22px">Invariants checked at every step</h3>
+<div class="card"><ol>
+<li>Money is conserved across every state change.</li>
+<li>Every member can leave alone with at least what they are owed.</li>
+<li>No party signs two different states with the same number.</li>
+<li>Nothing is sent before it is saved.</li>
+<li>No party's software publishes a state it has revoked.</li>
+<li>Every payment deadline is later than the time needed to exit.</li>
+<li>The host's funding is never signed before every exit is signed.</li>
+</ol>
+<p class="lead" style="margin-bottom:0">For each rule there is also a run with the rule switched off, which must fail. That proves the test can catch the bug it exists for.</p></div>
+
+<h2 id="steps"><small>Order of work</small>Milestones</h2>
+<p class="lead">Sizes are rough guesses made before any Gazpacho code exists.</p>
+<div class="road">
+  <div class="step"><b>M0 · Ground truth</b><span class="when">1 week</span><br>Run SuperScalar on regtest: join, pay, force-exit. Import the foundations. Identical-transaction-ID test passes.</div>
+  <div class="step"><b>M1 · First factory in the simulator</b><span class="when">2 weeks</span><br>Simulator skeleton and the signing round engine. A factory is created, with funding signed last.</div>
+  <div class="step"><b>M2 · Payments</b><span class="when">2–3 weeks</span><br>Channel and payment engines. Invariants switched on.</div>
+  <div class="step"><b>M3 · Leaving and watching</b><span class="when">2 weeks</span><br>Exit and watch engines. Crash and cheating runs pass.</div>
+  <div class="step"><b>M4 · The real world</b><span class="when">2 weeks</span><br>Storage, encrypted connection, Bitcoin node and Electrum. Regtest end to end.</div>
+  <div class="step"><b>M5 · First release</b><span class="when">2 weeks</span><br>Command line, host service, the host's Lightning link, our public signet host.</div>
+  <div class="step"><b>M6 · Web</b><span class="when">3–4 weeks</span><br>The core compiled for the browser, web screens, off-device backup.</div>
+</div>
+
+<h2 id="hard"><small>Honest view</small>Why this is not simple</h2>
+<div class="grid">
+  <div class="card"><h3>1. The channel routine</h3><p>It must be exactly right through crashes and reconnects. One wrong order can lose money.</p></div>
+  <div class="card"><h3>2. Backups</h3><p>Channel state cannot be rebuilt from a recovery phrase. It has to be saved off the device, continuously.</p></div>
+  <div class="card"><h3>3. Being reachable</h3><p>Members must sign at rotation and must watch the chain. Phones and browser tabs are usually asleep.</p></div>
+  <div class="card"><h3>4. Exit fees</h3><p>Leaving without the host needs on-chain funds for fees at the moment it is needed.</p></div>
+  <div class="card"><h3>5. Time</h3><p>Payment deadlines, tree timelocks and factory lifetime must agree for every tree shape.</p></div>
+  <div class="card"><h3>6. The browser</h3><p>It is a fragile place to keep channel state, and whoever serves the page controls the code.</p></div>
+  <div class="card"><h3>7. Public servers</h3><p>They can hide a transaction. In a factory, a hidden transaction can cost money.</p></div>
+  <div class="card"><h3>8. The foundations</h3><p>The imported tree code still has open design issues that are being fixed in the SuperScalar repo.</p></div>
+</div>
+
+<h2 id="open"><small>Gaps</small>Not designed yet</h2>
+<div class="card"><ol>
+<li>The message specification, field by field.</li>
+<li>State tables for each engine.</li>
+<li>The record types in the journal.</li>
+<li>The timelock and deadline schedule in actual numbers.</li>
+<li>Paying members, not the host, at every tree output when a factory expires. This is a change to the imported tree builder.</li>
+<li>Waking members who are offline when a factory rotates.</li>
+<li>Ordinary Lightning channels for a self-contained host.</li>
+</ol>
+<p class="lead" style="margin-bottom:0">Items 1 to 4 are written during M0 and M1. Items 5 to 7 are needed before real funds, not before signet.</p></div>
+
+<div class="ask"><b>Three choices I need confirmed</b>
+<ol style="margin-bottom:0">
+<li>Import the foundations as a pinned copy inside our repo (recommended), not as a live link to the SuperScalar repo.</li>
+<li>Write our own compact message format now and offer it as the shared one (recommended), not reuse today's format.</li>
+<li>For item 5 above: ask the SuperScalar repo for the change (recommended), or patch our copy.</li>
+</ol></div>
+
+<footer>Gazpacho design · draft 1 · the short text version is <code>docs/DESIGN.md</code></footer>
+</main>
+</body>
+</html>
