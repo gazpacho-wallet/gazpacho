@@ -7,7 +7,11 @@ One program lets you **join** a factory, where many people share a single on-cha
 **Status: planning. Nothing here is usable yet. The first release will be signet-only.**
 
 - [Plan](docs/PLAN.md)
-- [What exists and what has to be built](docs/ASSESSMENT.md)
+- [Design and decision record](docs/DESIGN.md)
+- [The lobby](docs/LOBBY.md)
+- [Lightning nodes a host can link to](docs/HOST-NODES.md)
+- [Open questions](docs/OPEN-QUESTIONS.md)
+- [What existed at the start and what has to be built](docs/ASSESSMENT.md)
 
 ## Licence
 

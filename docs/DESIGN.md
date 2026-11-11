@@ -253,3 +253,14 @@ From a trial run of SuperScalar (main plus its start-up crash fix) on regtest wi
 - Creation: 2 round trips for the signing, 2 more to set up the channel.
 - A payment: 8 messages for the payer, 11 for the payee, all driven by the host.
 - Cooperative close: 5 messages, 2 round trips.
+
+## 17. Third discussion (2026-11-11)
+
+- **Voting and vote-to-remove are off** for now (owner). The lobby uses host removal, personal block lists and locally kept history. See `LOBBY.md`.
+- **No threshold key for the factory.** A key that a majority can use without the minority would let that majority spend a member's money. The factory stays "everyone signs". Threshold keys are fine where one party splits its own key.
+- **Removing someone from a live factory** can only mean they agree to leave or their branch is published; either way they keep their money. Anything needing every signature can be stopped by one member, so the design limits how often everyone is needed rather than voting.
+- **Identity and joining requirements** (control of coins, signing history, a chosen identity) will develop over time and must remain options a host sets. The joining rules sit behind one interface so new rules can be added later.
+- **Coordination as its own library.** The lobby, the signing round engine and the proof-of-fault scheme are written without dependence on the factory code so they can be split out.
+- **Host nodes** are listed with difficulty in `HOST-NODES.md`. LND first.
+- **A member adding coins to their own leaf** (later feature): other members never sign anything involving it, and nothing above that leaf changes, so their exits and balances are unaffected. The added coins sit in a separate on-chain output under joint control of that member and the host, so a cooperative close or rotation must spend that output in the same transaction that pays the member. It is an extension beyond the published SuperScalar design, and needs review. See `OPEN-QUESTIONS.md` item 18.
+- Documents reorganised: `PLAN.md` rewritten; `LOBBY.md`, `HOST-NODES.md`, `OPEN-QUESTIONS.md` and `handoff/` added.
