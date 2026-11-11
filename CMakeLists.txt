@@ -56,3 +56,9 @@ target_compile_definitions(test_reference_tree PRIVATE
   GZ_REFERENCE_FILE="${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/superscalar-tree-txids.txt")
 add_test(NAME reference_tree
   COMMAND test_reference_tree ${CMAKE_CURRENT_SOURCE_DIR}/tests/reference/superscalar-tree-txids.txt)
+
+# Scale check of the planned tree shape. Built so it keeps compiling; run by hand
+# (see docs/notes/tree-scale-check.md), not registered with CTest.
+add_executable(tree_shapes tests/scale/tree_shapes.c)
+target_link_libraries(tree_shapes PRIVATE gazpacho_superscalar)
+target_compile_options(tree_shapes PRIVATE -Wall -Wextra -Werror)
