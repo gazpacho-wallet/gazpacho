@@ -4,8 +4,9 @@ no code with gazpacho_wallet_keys, for comparison with gz-wallet-keys.
 
 usage: crosscheck.py PHRASE_FILE NETWORK [INDEX]     (NETWORK: signet, testnet, regtest)
 
-Needs the Python packages embit and buidl (not installed system-wide; use a
-virtual environment).  The phrase is read from the file inside this process
+This check is run by hand.  It is not part of CTest or CI, because it needs
+the third-party Python packages embit and buidl (install them in a virtual
+environment, not system-wide) and a phrase file.  The phrase is read from the file inside this process
 and is never printed.  Output: one line per implementation with the address,
 scriptPubKey and account extended public key for m/86'/1'/0'/0/INDEX.
 """
