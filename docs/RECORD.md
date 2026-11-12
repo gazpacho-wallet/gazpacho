@@ -392,3 +392,5 @@ The builder is applying the fixes; a second review follows.
 - **A point they added:** payouts must be signed in every round that creates a shared output, including liquidity changes on a leaf, not only at creation. Written into `spec/signing-round.md`.
 - **Not to plan around:** their Core Lightning hold plugin and their whole-program scale test are far off.
 - They are not building a second signing engine and will assess adopting Gazpacho's once it is reviewed.
+
+- Closing the exchange: the SuperScalar session concurs on all points. Its round 2 specification will state the host's deadline for forcing out a non-cooperating member. One rule added to our safe-to-sign specification at its request (H4): the host always holds its own signed, current channel transaction for every channel. Round 1 will be announced by them with the list of changed files.

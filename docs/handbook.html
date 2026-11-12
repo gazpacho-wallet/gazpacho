@@ -1259,7 +1259,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <details id="c4-7-the-host-s-side"><summary>7. The host&#x27;s side</summary><div class="body"><p>The host's software runs the same module with the roles exchanged, plus three rules of its own.</p>
 <p><strong>H1. Funding last.</strong> The host does not sign the transaction that funds a factory until every tree transaction is fully signed and verified.</p>
 <p><strong>H2. Every partial signature is verified</strong> as it arrives, against its sender's key and nonce.</p>
-<p><strong>H3. No credit before it is covered.</strong> The host does not treat an operation as complete, and does not act on it for a member (forward a payment, release a secret), until the transactions that protect the host in the new state are fully signed.</p></div></details>
+<p><strong>H3. No credit before it is covered.</strong> The host does not treat an operation as complete, and does not act on it for a member (forward a payment, release a secret), until the transactions that protect the host in the new state are fully signed.</p>
+<p><strong>H4. The host always holds its own signed channel state.</strong> From the moment a channel exists, the host holds a signed, broadcastable channel transaction of its own for it, kept current through every update. Without it the host cannot force a non-cooperating member's branch to settle by real balances before the end-date payouts become valid. The standard Lightning channel format gives each side its own; the engine must never let the host's lag behind the member's. (Added 2026-11-11, from the SuperScalar session; in the reference code only the member's side is guaranteed one.)</p></div></details>
 <details id="c4-8-what-this-rule-does-not-protect-agains"><summary>8. What this rule does not protect against</summary><div class="body"><ul>
 <li><strong>Being ignored.</strong> A host can refuse service. The remedy is to leave.</li>
 <li><strong>A false view of the chain.</strong> The rule assumes the member's view of the chain is correct. That is the chain port's job.</li>
@@ -1267,7 +1268,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Loss of the held set.</strong> Backups are a separate mechanism.</li>
 <li><strong>Privacy.</strong> The host sees its members' payments.</li>
 </ul></div></details>
-<details id="c4-9-how-it-is-tested"><summary>9. How it is tested</summary><div class="body"><p>For every check C1 to C9 and H1 to H3:</p>
+<details id="c4-9-how-it-is-tested"><summary>9. How it is tested</summary><div class="body"><p>For every check C1 to C9 and H1 to H4:</p>
 <ol>
 <li>A scenario in the simulator where the other side sends a request that violates the check. The software must refuse and its held set must be unchanged.</li>
 <li>The same scenario with the check switched off. The simulator's independent accounting, which replays what each party could actually publish on its pretend chain, must then show a loss. If it does not, either the check is unnecessary or the test is too weak.</li>
@@ -3128,7 +3129,12 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Their proposed answers for round 2:</strong> each member is paid their full initial channel capacity; the node's signers sign in the same rounds as the tree; lock times are staggered with deeper payouts valid later; the host's spare liquidity goes to the members under that node; payouts carry an anchor; the channel outputs lose the host-only timeout branch too. Gazpacho concurs in outline and will review the specification.</li>
 <li><strong>A point they added:</strong> payouts must be signed in every round that creates a shared output, including liquidity changes on a leaf, not only at creation. Written into <code>spec/signing-round.md</code>.</li>
 <li><strong>Not to plan around:</strong> their Core Lightning hold plugin and their whole-program scale test are far off.</li>
-<li>They are not building a second signing engine and will assess adopting Gazpacho's once it is reviewed.</li>
+<li>
+<p>They are not building a second signing engine and will assess adopting Gazpacho's once it is reviewed.</p>
+</li>
+<li>
+<p>Closing the exchange: the SuperScalar session concurs on all points. Its round 2 specification will state the host's deadline for forcing out a non-cooperating member. One rule added to our safe-to-sign specification at its request (H4): the host always holds its own signed, current channel transaction for every channel. Round 1 will be announced by them with the list of changed files.</p>
+</li>
 </ul></div></details>
 </section>
 <section class="chapter" id="c20"><h2>Lobby research</h2><p class="desc">Background: how comparable systems gather people and handle those who stall, with sources.</p><p class="file">Lobby: research and design note · <code>docs/LOBBY-research.md</code></p>

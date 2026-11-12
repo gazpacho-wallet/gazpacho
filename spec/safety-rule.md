@@ -91,6 +91,8 @@ The host's software runs the same module with the roles exchanged, plus three ru
 
 **H3. No credit before it is covered.** The host does not treat an operation as complete, and does not act on it for a member (forward a payment, release a secret), until the transactions that protect the host in the new state are fully signed.
 
+**H4. The host always holds its own signed channel state.** From the moment a channel exists, the host holds a signed, broadcastable channel transaction of its own for it, kept current through every update. Without it the host cannot force a non-cooperating member's branch to settle by real balances before the end-date payouts become valid. The standard Lightning channel format gives each side its own; the engine must never let the host's lag behind the member's. (Added 2026-11-11, from the SuperScalar session; in the reference code only the member's side is guaranteed one.)
+
 ## 8. What this rule does not protect against
 
 - **Being ignored.** A host can refuse service. The remedy is to leave.
@@ -101,7 +103,7 @@ The host's software runs the same module with the roles exchanged, plus three ru
 
 ## 9. How it is tested
 
-For every check C1 to C9 and H1 to H3:
+For every check C1 to C9 and H1 to H4:
 
 1. A scenario in the simulator where the other side sends a request that violates the check. The software must refuse and its held set must be unchanged.
 2. The same scenario with the check switched off. The simulator's independent accounting, which replays what each party could actually publish on its pretend chain, must then show a loss. If it does not, either the check is unnecessary or the test is too weak.
