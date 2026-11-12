@@ -398,8 +398,90 @@ static void test_more(void)
     memfs_free(&fs);
 }
 
+/* A small journal written by the journal itself (three incarnations, marked
+ * and unmarked batches), cut at every length and damaged at every byte with
+ * two different bit flips. The expected outcome is worked out from the entry
+ * map alone: a cut is a torn tail at the entry it falls in (or clean on a
+ * boundary); damage to entry k is corruption if a sync mark starts after k,
+ * else a torn tail cut at k. Corruption must leave the file untouched; a cut
+ * must keep exactly the bytes before k. */
+static void test_every_byte(void)
+{
+    memfs_t fs;
+    gz_journal_status_t st;
+    memfs_init(&fs);
+    for (uint64_t inc = 1; inc <= 3; inc++) {
+        gz_journal_t *j = open_on(&fs, 0, 0, 0, &st, NULL);
+        for (uint64_t s = 1; s <= 3; s++) {
+            CHECK(save_n(j, inc, s, (size_t)(s * 5), 0x00020006) == GZ_JOURNAL_OK);
+            if (inc < 3 && s != 2) gz_journal_flush(j);
+        }
+        gz_journal_close(j); /* the last batches of each run stay unmarked */
+    }
+    size_t len;
+    const uint8_t *cur = memfs_get(&fs, H_JOURNAL, &len);
+    uint8_t *orig = malloc(len), *d = malloc(len);
+    memcpy(orig, cur, len);
+    memfs_free(&fs);
+    /* The entry map. */
+    uint64_t start[128], last_mark = 0;
+    size_t n = 0;
+    for (uint64_t p = 48; p < len; n++) {
+        start[n] = p;
+        if (orig[p + 4] == GZ_JOURNAL_KIND_MARK) last_mark = p;
+        p += 12 + ((uint64_t)orig[p] << 24 | (uint64_t)orig[p + 1] << 16 | (uint64_t)orig[p + 2] << 8 | orig[p + 3]);
+    }
+    start[n] = len;
+    int bad = 0, cases = 0;
+    for (size_t cut = 0; cut <= len; cut++) {
+        gz_journal_open_info_t info;
+        memfs_init(&fs);
+        memfs_put(&fs, H_JOURNAL, orig, cut);
+        gz_journal_t *j = open_on(&fs, 0, 0, 0, &st, &info);
+        size_t k = 0; /* the last entry starting at or before the cut */
+        while (k < n && start[k + 1] <= cut) k++;
+        uint64_t v = k < n && start[k] < cut ? start[k] : cut;
+        if (cut < 48) bad += st != GZ_JOURNAL_ERR_HEADER;
+        else bad += st != GZ_JOURNAL_OK || info.scan.valid_end != v || info.cut_bytes != cut - v;
+        gz_journal_close(j);
+        memfs_free(&fs);
+        cases++;
+    }
+    for (size_t i = 0; i < len; i++)
+        for (int f = 0; f < 2; f++) {
+            memcpy(d, orig, len);
+            d[i] ^= f ? 0x80 : 0x01;
+            gz_journal_open_info_t info;
+            memfs_init(&fs);
+            memfs_put(&fs, H_JOURNAL, d, len);
+            gz_journal_t *j = open_on(&fs, 0, 0, 0, &st, &info);
+            size_t now;
+            const uint8_t *after = memfs_get(&fs, H_JOURNAL, &now);
+            if (i < 48) {
+                bad += st != GZ_JOURNAL_ERR_HEADER || now != len;
+            } else {
+                size_t k = 0;
+                while (start[k + 1] <= i) k++;
+                if (last_mark > start[k]) /* a mark starts after the damaged entry */
+                    bad += st != GZ_JOURNAL_ERR_CORRUPT || info.scan.error_at != start[k] || now != len ||
+                           memcmp(after, d, len) != 0;
+                else
+                    bad += st != GZ_JOURNAL_OK || info.scan.valid_end != start[k] ||
+                           now != start[k] + 74 || memcmp(after, orig, start[k]) != 0;
+            }
+            gz_journal_close(j);
+            memfs_free(&fs);
+            cases++;
+        }
+    printf("  every byte: %zu-byte journal, %zu entries, %d cuts and flips\n", len, n, cases);
+    CHECK(bad == 0 && n > 15 && last_mark > 48);
+    free(orig);
+    free(d);
+}
+
 int main(void)
 {
+    test_every_byte();
     test_more();
     test_constants();
     test_scan_edges();
