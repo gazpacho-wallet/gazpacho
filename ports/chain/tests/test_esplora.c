@@ -1489,10 +1489,16 @@ static void test_confirm_tx_tree_shape(test_state *T) {
   if (at != NULL) memcpy(at, "\"tx_count\":100", 14);
   fake_set(&x.fake, false, BASE "/block/" HASH_329438, 200, json);
   CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, 6, &conf), GZ_CHAIN_BAD_PROOF);
+  /* the coinbase itself has no second proof to cross-check with: only the
+   * depth rule catches the understated count there */
+  uint8_t cbid[GZ_HASH_LEN];
+  test_hash(TX_COINBASE, cbid);
+  CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, cbid, 6, &conf), GZ_CHAIN_BAD_PROOF);
   /* ...or overstates it */
   if (at != NULL) memcpy(at, "\"tx_count\":999", 14);
   fake_set(&x.fake, false, BASE "/block/" HASH_329438, 200, json);
   CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, 6, &conf), GZ_CHAIN_BAD_PROOF);
+  CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, cbid, 6, &conf), GZ_CHAIN_BAD_PROOF);
   free(json);
   fake_set_file(&x.fake, BASE "/block/" HASH_329438, 200, "block_329438.json");
 
