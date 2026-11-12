@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the compiled CTest tests of a build under valgrind's memcheck.
 
-    python -I tools/valgrind-tests.py BUILD_DIR [--exclude REGEX] [--include REGEX]
+    python -I tools/valgrind-tests.py BUILD_DIR [-j N] [--exclude REGEX] [--include REGEX]
 
 Asks CTest for the registered tests (ctest --show-only=json-v1) and runs each
 one whose command is a program built in BUILD_DIR, with the same arguments and
@@ -13,9 +13,12 @@ working directory, under
 Tests run through sh or python (the isolation checks, the tool scripts) are
 left out: valgrind would check the shell, not our code. A test fails if it
 fails on its own or if valgrind reports a memory error or a definite leak.
-Exits 1 if any test failed. Standard library only.
+Tests run N at a time (default: the number of processors); each test's own
+output is printed in one piece when it finishes. Exits 1 if any test failed.
+Standard library only.
 """
 import argparse
+import concurrent.futures
 import json
 import os
 import re
@@ -32,6 +35,8 @@ def main():
     ap.add_argument("build")
     ap.add_argument("--exclude", default=None, help="skip tests whose name matches")
     ap.add_argument("--include", default=None, help="run only tests whose name matches")
+    ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1)
+    ap.add_argument("-v", "--verbose", action="store_true", help="print every test's output")
     args = ap.parse_args()
     build = os.path.abspath(args.build)
 
@@ -39,7 +44,7 @@ def main():
         ["ctest", "--test-dir", build, "--show-only=json-v1"],
         check=True, capture_output=True, text=True).stdout)
 
-    failed, ran, skipped = [], 0, []
+    jobs, skipped = [], []
     for t in info.get("tests", []):
         name, cmd = t["name"], t.get("command") or []
         if args.include and not re.search(args.include, name):
@@ -53,13 +58,25 @@ def main():
         for p in t.get("properties", []):
             if p.get("name") == "WORKING_DIRECTORY":
                 cwd = p["value"]
+        jobs.append((name, cmd, cwd))
+
+    def run(job):
+        name, cmd, cwd = job
         start = time.time()
-        r = subprocess.run(VALGRIND + cmd, cwd=cwd)
-        ran += 1
-        status = "ok" if r.returncode == 0 else "FAILED (exit %d)" % r.returncode
-        print("%-40s %s  %.1fs" % (name, status, time.time() - start), flush=True)
-        if r.returncode != 0:
-            failed.append(name)
+        r = subprocess.run(VALGRIND + cmd, cwd=cwd, stdout=subprocess.PIPE,
+                           stderr=subprocess.STDOUT, text=True, errors="replace")
+        return name, r.returncode, r.stdout, time.time() - start
+
+    failed, ran = [], 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        for name, code, output, secs in pool.map(run, jobs):
+            ran += 1
+            status = "ok" if code == 0 else "FAILED (exit %d)" % code
+            if code != 0 or args.verbose:
+                sys.stdout.write(output)
+            print("%-40s %s  %.1fs" % (name, status, secs), flush=True)
+            if code != 0:
+                failed.append(name)
 
     print("not run under valgrind (script tests): %s" % (", ".join(skipped) or "none"))
     if failed:

@@ -175,10 +175,7 @@ jobs:
       - name: Build
         run: cmake --build build -j
       - name: Test
-        # Left out: the symbol checks (core isolation, wallet no-I/O). They read
-        # the compiled objects, which here are full of MSan's own symbols, and
-        # they run in every other build.
-        run: ctest --test-dir build --output-on-failure --timeout 900 -LE slow -E 'isolation|no_io'
+        run: ctest --test-dir build --output-on-failure --timeout 900 -LE slow
 
   valgrind:
     name: valgrind

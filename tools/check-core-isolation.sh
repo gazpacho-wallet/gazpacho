@@ -45,11 +45,15 @@ for sym in $(printf '%s\n' "$symbols" | awk '$1 == "U" { print $2 }' | sort -u);
 done
 
 for sym in $(printf '%s\n' "$symbols" | awk '$1 == "w" || $1 == "v" || $1 == "W" || $1 == "V" { print $2 }' | sort -u); do
+    case "$sym" in
+        __start_asan_globals|__stop_asan_globals) continue ;; # clang's ASan: bounds of
+                                                              # its own globals section
+    esac
     report "weak symbol" "$sym"
 done
 
 for sym in $(printf '%s\n' "$symbols" | awk '$1 ~ /^[bBdDcCsSgG]$/ { print $2 }' | sort -u); do
-    case "$sym" in __asan_*|__ubsan_*|__sanitizer_*) continue ;; esac
+    case "$sym" in __asan_*|___asan_*|__ubsan_*|__sanitizer_*) continue ;; esac
     report "writable data" "$sym"
 done
 
