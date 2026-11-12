@@ -221,3 +221,43 @@ add_subdirectory(wallet)
 
 # --- chain view port (Esplora backend, comparing backend, gz-chain) ------------
 add_subdirectory(ports/chain)
+
+# --- Storage journal (spec/journal.md): the outer layer's file storage. -------
+# POSIX file I/O, so it is not part of the core and not under its isolation
+# check. Everything it asks of the operating system goes through a table the
+# tests replace (tests/journal/memfs.c) to fail or crash at any write or sync.
+add_library(gazpacho_journal STATIC ports/storage/journal.c)
+set_target_properties(gazpacho_journal PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_journal PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ports/storage)
+target_link_libraries(gazpacho_journal PUBLIC gazpacho_core gazpacho_superscalar)
+target_compile_options(gazpacho_journal PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
+
+add_executable(gz-journal tools/gz-journal.c)
+target_link_libraries(gz-journal PRIVATE gazpacho_journal)
+target_compile_options(gz-journal PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+add_library(gazpacho_journal_testfs STATIC tests/journal/memfs.c)
+target_link_libraries(gazpacho_journal_testfs PUBLIC gazpacho_journal)
+target_compile_options(gazpacho_journal_testfs PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+gz_add_test(journal       tests/journal/test_journal.c       gazpacho_journal_testfs)
+# Crash before every write and sync point, power-loss settles, process kills,
+# the real node; and the "rule removed" run that must find a loss.
+gz_add_test(journal_crash tests/journal/test_journal_crash.c gazpacho_journal_testfs)
+gz_add_test(journal_fuzz  tests/journal/test_journal_fuzz.c  gazpacho_journal_testfs 100000 1)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  # 10,000 random journals against the independent reader written from the spec.
+  add_test(NAME journal_crosscheck
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/journal/crosscheck.py
+            $<TARGET_FILE:gz-journal> 10000 1)
+endif()
+if(GZ_VALGRIND AND NOT GZ_SANITIZE)
+  add_test(NAME valgrind_journal COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_journal>)
+  add_test(NAME valgrind_journal_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_journal_fuzz> 3000 7)
+  # A simulated crash abandons what an open had allocated, as a real crash
+  # does, so this one runs without the leak check.
+  add_test(NAME valgrind_journal_crash
+    COMMAND ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes --leak-check=no
+            $<TARGET_FILE:test_journal_crash>)
+endif()
