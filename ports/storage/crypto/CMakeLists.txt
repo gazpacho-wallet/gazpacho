@@ -33,6 +33,18 @@ endif()
 # MSan cannot see what assembly writes; none of it is used here.
 string(TOUPPER "${CMAKE_BUILD_TYPE}" _bt)
 set(_sodium_cflags "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_bt}}")
+# Under MemorySanitizer, libsodium's SIMD code paths (chosen at run time by
+# CPU detection) use intrinsics MSan does not model, and it reports Argon2's
+# output as uninitialised. Automake puts CPPFLAGS after the configure-time
+# -D definitions, so -U here leaves only the portable reference code. No
+# documented configure option does this: --disable-asm covers assembly files
+# only, and 1.0.22's other switches (ssp, pie, blocking-random, minimal,
+# pthreads, safecode, ctgrind, retpoline, debug, opt, soname-versions) do not
+# touch the intrinsics. The names are those configure.ac defines.
+set(_sodium_cppflags "")
+if(CMAKE_C_FLAGS MATCHES "-fsanitize=memory")
+  set(_sodium_cppflags "-UHAVE_MMINTRIN_H -UHAVE_EMMINTRIN_H -UHAVE_PMMINTRIN_H -UHAVE_TMMINTRIN_H -UHAVE_SMMINTRIN_H -UHAVE_AVXINTRIN_H -UHAVE_AVX2INTRIN_H -UHAVE_AVX512FINTRIN_H -UHAVE_WMMINTRIN_H -UHAVE_RDRAND -UHAVE_ARMCRYPTO")
+endif()
 set(_sodium_prefix ${CMAKE_BINARY_DIR}/libsodium)
 set(_sodium_lib ${_sodium_prefix}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}sodium${CMAKE_STATIC_LIBRARY_SUFFIX})
 ExternalProject_Add(libsodium_ext
@@ -44,7 +56,8 @@ ExternalProject_Add(libsodium_ext
   CONFIGURE_COMMAND <SOURCE_DIR>/configure --prefix=<INSTALL_DIR> --libdir=<INSTALL_DIR>/lib
     --disable-shared --enable-static --with-pic --disable-asm --disable-dependency-tracking
     --disable-silent-rules
-    CC=${CMAKE_C_COMPILER} "CFLAGS=${_sodium_cflags}" "LDFLAGS=${CMAKE_EXE_LINKER_FLAGS}"
+    CC=${CMAKE_C_COMPILER} "CFLAGS=${_sodium_cflags}" "CPPFLAGS=${_sodium_cppflags}"
+    "LDFLAGS=${CMAKE_EXE_LINKER_FLAGS}"
   BUILD_COMMAND $(MAKE)
   INSTALL_COMMAND $(MAKE) install
   BUILD_BYPRODUCTS ${_sodium_lib}
