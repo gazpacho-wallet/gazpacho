@@ -121,3 +121,5 @@ add_test(NAME core_isolation_refuses_sneaky_object
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation/vla.c
           ${CMAKE_CURRENT_BINARY_DIR}
           ${GZ_CORE_FLAGS_TEXT})
+
+add_subdirectory(wallet)
