@@ -72,6 +72,12 @@ typedef struct {
     int dying;                  /* crashed inside a release: nothing more is carried out */
     int died_this_step;
     uint64_t crash_countdown;   /* executor calls left before an armed crash, or NOT_ARMED */
+    int storage_failed;         /* this incarnation's storage has failed: nothing more may be carried out */
+
+    int starting;               /* the node's start has not finished */
+    size_t start_steps;         /* start steps taken by this incarnation */
+    queued_t *deferred; size_t n_deferred, cap_deferred;   /* events held back until the start finishes */
+    batch_t *orphans; size_t n_orphans, cap_orphans;       /* an earlier program's pending batches */
 
     /* What the harness observed this node emit since it was last built, for
      * the save-before-send check. Kept apart from the runner on purpose, and
@@ -294,6 +300,8 @@ static blob_t encode_records(const gz_action_t *save)
     return b;
 }
 
+static void fail_storage(slot_t *s);
+
 /* Take a save batch and decide, from the schedule, what becomes of it. */
 static void storage_accept(slot_t *s, const gz_action_t *save)
 {
@@ -307,6 +315,14 @@ static void storage_accept(slot_t *s, const gz_action_t *save)
     int confirm_late = sim_rng_chance(&sim->rng, c->confirm_delay_pm);
     uint64_t confirm_extra = 1 + sim_rng_below(&sim->rng, c->max_confirm_delay_steps ? c->max_confirm_delay_steps : 1);
 
+    int fails_inline = !c->ops.release && sim_rng_chance(&sim->rng, c->save_fail_inline_pm);
+    if (fails_inline) {     /* storage that writes as it is called finds out at once, inside the executor */
+        sim->stats.inline_storage_failures++;
+        trace(sim, "storage-failed-inline node=%u", s->index);
+        sim->stats.saves_lost++;
+        fail_storage(s);
+        return;
+    }
     batch_t b = {save->u.save.batch, encode_records(save), records_digest(save), s->incarnation, 0, NEVER, fails};
     b.durable_at = never ? NEVER : sim->step + (late ? extra : 0);
     if (st->n_pending && st->pending[st->n_pending - 1].durable_at > b.durable_at)
@@ -330,6 +346,7 @@ static void fail_storage(slot_t *s)
     for (size_t i = 0; i < s->storage.n_pending; i++) free(s->storage.pending[i].blob.bytes);
     s->storage.n_pending = 0;
     if (!sim->cfg.ops.release) (void)gz_runner_storage_failed(&s->runner);
+    s->storage_failed = 1;
     s->needs_rebuild = 1;
 }
 
@@ -378,8 +395,11 @@ static void check_storage(slot_t *s)
     }
 }
 
+static void discard_orphans(slot_t *s);
+
 /* A restore from an older backup: storage goes back to its oldest `keep`
- * batches, no confirmation from before can arrive, and the node restarts. */
+ * batches, nothing pending and no confirmation from before can arrive, and
+ * the node restarts. */
 static void restore(slot_t *s, size_t keep)
 {
     sim_t *sim = s->sim;
@@ -387,9 +407,18 @@ static void restore(slot_t *s, size_t keep)
     if (keep > st->n_durable) keep = st->n_durable;
     sim->stats.restores++;
     trace(sim, "restore node=%u keeps=%zu of=%zu", s->index, keep, st->n_durable);
-    if (sim->cfg.restore_repeats_random) s->repeat_stream = keep ? st->durable[keep - 1].node_incarnation : 1;
+    if (sim->cfg.restore_repeats_random) {
+        s->repeat_stream = keep ? st->durable[keep - 1].node_incarnation : 1;
+        sim->stats.restores_repeating++;
+    }
     for (size_t i = keep; i < st->n_durable; i++) free(st->durable[i].blob.bytes);
     st->n_durable = s->n_shadow = st->next_confirm = keep;
+    /* Storage is opened afresh: nothing the program had handed over can still
+     * complete into the restored copy. */
+    sim->stats.saves_lost += st->n_pending;
+    for (size_t i = 0; i < st->n_pending; i++) free(st->pending[i].blob.bytes);
+    st->n_pending = 0;
+    discard_orphans(s);
     s->needs_rebuild = 1;
 }
 
@@ -670,6 +699,10 @@ static void add_watch(slot_t *s, gz_bytes_t script)
 void sim_execute(sim_t *sim, uint32_t index, const gz_action_t *a)
 {
     slot_t *s = &sim->slots[index];
+    if (s->storage_failed) {
+        violate(sim, "an action was carried out after its program's storage had failed");
+        return;
+    }
     switch (a->kind) {
     case GZ_ACTION_SAVE:
         note_stored(s, a);
@@ -744,7 +777,10 @@ static void release_list(slot_t *s, const gz_action_list_t *list, int is_start)
     gz_status_t st = sim->cfg.ops.release
         ? sim->cfg.ops.release(sim->ops_ctx, sim, s->index, list)
         : gz_runner_submit(&s->runner, list);
-    if (st != GZ_OK) {
+    if (st != GZ_OK && s->storage_failed) {            /* storage failed while the list was carried out */
+        trace(sim, "list-stopped node=%u: storage failed", s->index);
+        s->needs_rebuild = 1;
+    } else if (st != GZ_OK) {
         sim->stats.lists_refused++;
         trace(sim, "refused node=%u actions=%zu status=%d", s->index, list->count, (int)st);
         if (is_start) violate(sim, "a node's start actions were refused");
@@ -773,30 +809,90 @@ static uint64_t clock_now(void *ctx)
     return now < 0 ? 0 : (uint64_t)now;
 }
 
-/* Run the node's start, one step at a time, each step's actions going through
- * its program before the next is asked for. */
-static void start_node(slot_t *s)
+/* The extra invariants only. Run just before a node is destroyed, so that they
+ * see its last state; the built-in ones are judged after the step. */
+static void check_extra_invariants(sim_t *sim);
+
+/* A batch an earlier program handed over completes now, late. It takes its
+ * place in the journal before any batch of a later incarnation. */
+static void land_orphan(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    struct sim_storage *st = &s->storage;
+    batch_t b = s->orphans[0];
+    memmove(s->orphans, s->orphans + 1, --s->n_orphans * sizeof *s->orphans);
+    size_t at = st->n_durable;
+    while (at > 0 && st->durable[at - 1].id.incarnation > b.id.incarnation) at--;
+    b.durable_at = b.confirm_at = sim->step;
+    st->durable = grow(st->durable, &st->cap_durable, st->n_durable + 1, sizeof *st->durable);
+    s->shadow = grow(s->shadow, &s->cap_shadow, s->n_shadow + 1, sizeof *s->shadow);
+    memmove(st->durable + at + 1, st->durable + at, (st->n_durable - at) * sizeof *st->durable);
+    memmove(s->shadow + at + 1, s->shadow + at, (s->n_shadow - at) * sizeof *s->shadow);
+    st->durable[at] = b;
+    s->shadow[at] = (shadow_t){b.id, b.digest};
+    st->n_durable++;
+    s->n_shadow++;
+    if (at < st->next_confirm) st->next_confirm++;      /* its program is dead: no confirmation */
+    sim->stats.saves_durable++;
+    sim->stats.late_landings++;
+    trace(sim, "late-landing node=%u batch=%llu.%llu at=%zu", s->index,
+          (unsigned long long)b.id.incarnation, (unsigned long long)b.id.sequence, at);
+}
+
+/* What an earlier program left pending is gone for good. */
+static void discard_orphans(slot_t *s)
+{
+    s->sim->stats.saves_lost += s->n_orphans;
+    for (size_t i = 0; i < s->n_orphans; i++) free(s->orphans[i].blob.bytes);
+    s->n_orphans = 0;
+}
+
+/* The start has finished: storage settles what is left of the earlier
+ * program, and the events held back are handed on. */
+static void finish_start(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    s->starting = 0;
+    discard_orphans(s);
+    trace(sim, "started node=%u steps=%zu held-back=%zu", s->index, s->start_steps, s->n_deferred);
+    for (size_t i = 0; i < s->n_deferred; i++) {
+        sim->queue = grow(sim->queue, &sim->cap_queue, sim->q_len + 1, sizeof *sim->queue);
+        sim->queue[sim->q_len++] = s->deferred[i];
+    }
+    s->n_deferred = 0;
+}
+
+/* Go on with the node's start, one step at a time, each step's actions going
+ * through its program before the next is asked for, until it finishes, waits
+ * for a confirmation, or the node stops. */
+static void continue_start(slot_t *s)
 {
     sim_t *sim = s->sim;
     gz_action_t slots[STEP_SLOTS];
     uint8_t bytes[STEP_BYTES];
     gz_action_list_t list;
-    int more = 1;
-    for (size_t step = 0; more && !s->needs_rebuild && !sim->violation; step++) {
+    while (s->starting && !s->needs_rebuild && !sim->violation) {
+        int more = 1;
+        if (s->n_orphans && sim_rng_chance(&sim->rng, sim->cfg.late_save_pm)) land_orphan(s);
         gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
-        more = 0;
-        if (step == MAX_START_STEPS || sim->cfg.ops.start(s->node, &list, &more) != GZ_OK) {
+        gz_status_t st = s->start_steps++ == MAX_START_STEPS ? GZ_ERR_NO_SPACE : sim->cfg.ops.start(s->node, &list, &more);
+        if (st == GZ_WAITING) {
+            trace(sim, "start-waiting node=%u", s->index);
+            return;
+        }
+        if (st != GZ_OK) {
             sim->stats.handle_errors++;
-            trace(sim, "start-error node=%u", s->index);
+            trace(sim, "start-error node=%u status=%d", s->index, (int)st);
             violate(sim, "a node failed to start");
             return;
         }
         release_list(s, &list, 1);
+        if (!more && !s->needs_rebuild) finish_start(s);
     }
 }
 
-/* Build the node from its storage under a new incarnation, run its start and
- * tell it which of its links are up. */
+/* Build the node from its storage under a new incarnation, start it and tell
+ * it which of its links are up (news it gets once its start has finished). */
 static void build_node(slot_t *s)
 {
     sim_t *sim = s->sim;
@@ -811,10 +907,13 @@ static void build_node(slot_t *s)
     s->storage.reader_incarnation = s->incarnation;
     s->node = sim->cfg.ops.create(sim->ops_ctx, s->index, &s->ports, &s->storage);
     if (!s->node) abort();
-    if (sim->cfg.ops.start) start_node(s);
     for (uint32_t n = 0; n < sim->cfg.n_nodes; n++)
         if (n != s->index && link_is_up(sim, s->index, n)) tell_peer(s, n, 1);
     if (link_is_up(sim, s->index, SIM_WORLD_PEER)) tell_peer(s, SIM_WORLD_PEER, 1);
+    s->start_steps = 0;
+    s->starting = sim->cfg.ops.start != NULL;
+    if (s->starting) continue_start(s);
+    else discard_orphans(s);
 }
 
 static void free_blobs(blob_t *blobs, size_t n)
@@ -823,20 +922,30 @@ static void free_blobs(blob_t *blobs, size_t n)
 }
 
 /* A crash: destroy everything of the node except its durable storage, then
- * build it again. Its peers see the connection drop and come back. */
+ * build it again. Its peers see the connection drop and come back. What the
+ * dead program had handed to storage and was still pending is lost, or, with
+ * late_save_pm, may still complete while the new program starts. */
 static void rebuild(slot_t *s)
 {
     sim_t *sim = s->sim;
     sim->stats.crashes++;
-    sim->stats.saves_lost += s->storage.n_pending;
-    trace(sim, "crash node=%u lost-saves=%zu held-actions=%zu", s->index, s->storage.n_pending,
+    trace(sim, "crash node=%u pending-saves=%zu held-actions=%zu", s->index, s->storage.n_pending,
           sim->cfg.ops.release ? (size_t)0 : gz_runner_held(&s->runner));
+    check_extra_invariants(sim);
     sim->cfg.ops.destroy(sim->ops_ctx, s->node);
-    for (size_t i = 0; i < s->storage.n_pending; i++) free(s->storage.pending[i].blob.bytes);
+    discard_orphans(s);
+    if (sim->cfg.late_save_pm) {
+        s->orphans = grow(s->orphans, &s->cap_orphans, s->storage.n_pending, sizeof *s->orphans);
+        memcpy(s->orphans, s->storage.pending, s->storage.n_pending * sizeof *s->orphans);
+        s->n_orphans = s->storage.n_pending;
+    } else {
+        sim->stats.saves_lost += s->storage.n_pending;
+        for (size_t i = 0; i < s->storage.n_pending; i++) free(s->storage.pending[i].blob.bytes);
+    }
     free_blobs(s->watches, s->n_watches);
     s->storage.n_pending = s->n_timers = s->n_watches = 0;
     s->n_emitted_saves = s->n_saves_stored = s->n_saves_durable = s->n_expected = s->head_expected = 0;
-    s->needs_rebuild = s->dying = 0;
+    s->needs_rebuild = s->dying = s->storage_failed = 0;
     s->crash_countdown = NOT_ARMED;
     build_node(s);
     for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
@@ -891,8 +1000,10 @@ static int outlives_a_crash(gz_event_kind_t kind)
     return kind == GZ_EVENT_MESSAGE_RECEIVED || kind == GZ_EVENT_CHAIN;
 }
 
-/* Handle one queued event: give it to its node and carry out what comes back. */
-static void process(sim_t *sim, const queued_t *q)
+/* Handle one queued event: give it to its node and carry out what comes back.
+ * Returns 1 if the event was held back until the node's start finishes (the
+ * event, and its bytes, are then kept), 0 if it is done with. */
+static int process(sim_t *sim, const queued_t *q)
 {
     slot_t *s = &sim->slots[q->node];
     gz_action_t slots[STEP_SLOTS];
@@ -900,20 +1011,30 @@ static void process(sim_t *sim, const queued_t *q)
     gz_action_list_t list;
 
     if (q->ev.kind == GZ_EVENT_STORAGE_CONFIRMED) {
-        if (!accept_confirmation(s, q)) return;
+        if (!accept_confirmation(s, q)) return 0;
+    } else if (s->starting) {
+        s->deferred = grow(s->deferred, &s->cap_deferred, s->n_deferred + 1, sizeof *s->deferred);
+        s->deferred[s->n_deferred++] = *q;
+        return 1;
     } else if (q->node_incarnation != s->incarnation && !outlives_a_crash(q->ev.kind)) {
         sim->stats.events_not_delivered++;
         trace(sim, "not-delivered node=%u event=%d from-incarnation=%llu", s->index, (int)q->ev.kind,
               (unsigned long long)q->node_incarnation);
-        return;
+        if (q->ev.kind == GZ_EVENT_USER_COMMAND) {      /* the user is told, not left wondering */
+            sim->stats.commands_not_done++;
+            trace(sim, "ui node=%u command-not-done: the app restarted", s->index);
+        }
+        return 0;
     }
     gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
     if (sim->cfg.ops.handle(s->node, &q->ev, &list) != GZ_OK) {
         sim->stats.handle_errors++;
         trace(sim, "handle-error node=%u event=%d", s->index, (int)q->ev.kind);
-        return;
+        return 0;
     }
     release_list(s, &list, 0);
+    if (q->ev.kind == GZ_EVENT_STORAGE_CONFIRMED && s->starting) continue_start(s);
+    return 0;
 }
 
 /* Handle queued events until none are left. Handling one may queue more. */
@@ -921,8 +1042,7 @@ static void drain(sim_t *sim)
 {
     while (sim->q_head < sim->q_len) {
         queued_t q = sim->queue[sim->q_head++];
-        process(sim, &q);
-        free(q.blob.bytes);
+        if (!process(sim, &q)) free(q.blob.bytes);
         service(&sim->slots[q.node]);
     }
     sim->q_head = sim->q_len = 0;
@@ -1006,6 +1126,13 @@ static void fail(sim_t *sim, const char *reason)
     sim->failure_step = sim->step;
     sim->failure_reason = reason;
     trace(sim, "FAILED %s", reason);
+}
+
+static void check_extra_invariants(sim_t *sim)
+{
+    const char *why = "an invariant failed";
+    for (size_t i = 0; i < sim->n_invariants && !sim->failed; i++)
+        if (!sim->invariants[i].check(sim, sim->invariants[i].ctx, &why)) fail(sim, why);
 }
 
 static void check_invariants(sim_t *sim)
@@ -1160,6 +1287,9 @@ void sim_destroy(sim_t *sim)
         for (size_t i = 0; i < s->storage.n_durable; i++) free(s->storage.durable[i].blob.bytes);
         free_blobs(s->watches, s->n_watches);
         free(s->storage.pending); free(s->storage.durable);
+        for (size_t i = 0; i < s->n_deferred; i++) free(s->deferred[i].blob.bytes);
+        for (size_t i = 0; i < s->n_orphans; i++) free(s->orphans[i].blob.bytes);
+        free(s->deferred); free(s->orphans);
         free(s->watches); free(s->timers); free(s->draws); free(s->emitted_saves); free(s->expected); free(s->shadow);
     }
     for (size_t i = sim->q_head; i < sim->q_len; i++) free(sim->queue[i].blob.bytes);
@@ -1201,6 +1331,7 @@ uint64_t sim_trace_hash(const sim_t *sim) { return sim->trace_hash; }
 const sim_stats_t *sim_stats(const sim_t *sim) { return &sim->stats; }
 uint32_t sim_chain_height(const sim_t *sim) { return sim->height; }
 uint64_t sim_node_incarnation(const sim_t *sim, uint32_t index) { return sim->slots[index].incarnation; }
+int sim_node_starting(const sim_t *sim, uint32_t index) { return sim->slots[index].starting; }
 size_t sim_node_draw_count(const sim_t *sim, uint32_t index) { return sim->slots[index].n_draws; }
 const sim_draw_t *sim_node_draw(const sim_t *sim, uint32_t index, size_t i) { return &sim->slots[index].draws[i]; }
 
@@ -1331,7 +1462,7 @@ void sim_jump_clock(sim_t *sim, int64_t delta)
 static void quiesce(sim_t *sim)
 {
     sim_config_t *c = &sim->cfg;
-    c->drop_pm = c->duplicate_pm = c->link_flap_pm = c->save_never_pm = c->save_fail_pm = 0;
+    c->drop_pm = c->duplicate_pm = c->link_flap_pm = c->save_never_pm = c->save_fail_pm = c->save_fail_inline_pm = 0;
     c->crash_pm = c->crash_in_release_pm = c->restore_pm = c->ping_pm = 0;
     c->block_pm = c->reorg_pm = c->clock_jump_pm = 0;
     trace(sim, "quiet from here: %zu messages in flight discarded", sim->n_net);

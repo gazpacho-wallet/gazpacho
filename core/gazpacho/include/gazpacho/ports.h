@@ -18,9 +18,9 @@
 #include "gazpacho/action.h"
 
 /* What a draw of random bytes is for. The tag changes nothing about the bytes
- * in production. It is there so a test harness can keep a log of every draw
- * and check rules about particular kinds, above all that a one-time secret is
- * never produced twice. */
+ * and proves nothing: a test harness logs it, nothing more. Whether one-time
+ * secrets repeat is checked on the secrets themselves, never on what the
+ * port was asked for. */
 #define GZ_RANDOM_OTHER  0u
 #define GZ_RANDOM_SECRET 1u     /* a one-time secret: must never repeat */
 
@@ -29,11 +29,15 @@
  * generator; in the simulator it is a seeded generator, which is what makes a
  * run repeatable.
  *
- * A program restored from a backup or a snapshot must not come back with a
- * generator that repeats what it produced before. The core cannot see that
- * from inside, so engines must not rely on the port alone for anything whose
- * reuse is fatal; the simulator has a fault that makes the port repeat after
- * a restore, to catch code that does. */
+ * The port may repeat itself: a machine restored from a snapshot comes back
+ * with its generator's state, and the core cannot see that from inside. An
+ * engine must therefore not derive anything whose reuse is fatal from the
+ * port alone, nor from anything a restore can rewind (a counter in the
+ * journal, for example). It must mix in something that never repeats, such
+ * as the runner's incarnation, which the surrounding program keeps out of
+ * reach of a restore (runner.h). The simulator has a fault that makes the
+ * port repeat after a restore, and an invariant over the secrets nodes
+ * actually used, to catch code that gets this wrong. */
 typedef struct {
     void (*fill)(void *ctx, uint32_t purpose, uint8_t *out, size_t len);
     void *ctx;
@@ -70,7 +74,21 @@ typedef struct {
  *   rewind  Go back to before the oldest batch.
  *
  * `incarnation` is the incarnation the node is starting under: the number
- * given to its runner. Every batch in storage has a smaller one. */
+ * given to its runner. Batches saved before the start have a smaller one;
+ * those its own runner saves during the start have this one. The node
+ * refuses storage that holds a later one, or whose identifiers do not
+ * strictly increase (GZ_ERR_CORRUPT).
+ *
+ * STORAGE MAY CHANGE DURING A START, between two calls of gz_node_start, but
+ * only by gaining batches, never by losing or altering one:
+ *   - batches the starting node's own runner hands over, as they become
+ *     durable;
+ *   - batches an earlier program handed over before it stopped, which a slow
+ *     storage layer may complete late. They take their place in the journal
+ *     before any batch of the new incarnation. Every such batch must be
+ *     settled, durable or gone for good, by the time the start finishes:
+ *     once a call of gz_node_start has set `*more` to 0, storage may not
+ *     gain any more of them. */
 typedef struct {
     int (*next)(void *ctx, gz_stored_batch_t *batch);
     void (*rewind)(void *ctx);

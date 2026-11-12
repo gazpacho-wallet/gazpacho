@@ -39,7 +39,12 @@
  *   confirmed the runner has released the reply, and the node saves a "sent"
  *   record naming the serial. At start the node resends, oldest first, the
  *   reply to every stored ping with no stored "sent" record, and then saves
- *   "sent" records for them. */
+ *   "sent" records naming exactly the replies this start resent.
+ *
+ *   A start completes whatever the number of stored replies, provided the
+ *   program delivers storage confirmations to the node between start steps
+ *   (see gz_node_start). No bound on the number of stored replies remains;
+ *   the cost is time: each start step walks storage a few times. */
 #ifndef GAZPACHO_NODE_H
 #define GAZPACHO_NODE_H
 
@@ -67,8 +72,12 @@
 /* Most save batches the node may have awaiting confirmation. */
 #define GZ_NODE_MAX_AWAITING 64
 
-/* Most replies one call of gz_node_start resends. */
+/* Most replies one call of gz_node_start resends, or records as sent. */
 #define GZ_NODE_START_CHUNK 8
+
+/* Most of its own batches the node lets await confirmation while it starts.
+ * Beyond this a start step returns GZ_WAITING. */
+#define GZ_NODE_START_AWAITING 4
 
 /* Caller-allocated; treat the fields as private. Holds no pointers of its own
  * besides the ports' context pointers, so it needs no destroy call. */
@@ -76,6 +85,7 @@ typedef struct {
     gz_ports_t ports;
     uint64_t next_serial;
     uint64_t start_done_to;     /* the current pass of the start has dealt with every stored ping up to this serial */
+    uint64_t start_resent_to;   /* while recording: the resending pass went this far */
     int start_recording;        /* the start has resent everything and is now saving the "sent" records */
     /* The node's save batches not yet confirmed, oldest first: the serial of
      * the ping each one recorded, or 0 for a batch of "sent" records. */
@@ -92,29 +102,45 @@ gz_status_t gz_node_init(gz_node_t *node, const gz_ports_t *ports);
  *
  *     do {
  *         empty the list;
- *         gz_node_start(node, storage, list, &more);   // must return GZ_OK
+ *         st = gz_node_start(node, storage, list, &more);
+ *         if (st == GZ_WAITING) {                       // nothing appended
+ *             wait for storage to confirm a batch, and give the node that
+ *             confirmation (GZ_EVENT_STORAGE_CONFIRMED, through gz_node_handle);
+ *             continue;
+ *         }
+ *         if (st != GZ_OK) stop: the start failed;
  *         give the list to the runner;                  // must be accepted
  *     } while (more);
  *
- * No event may be given to the node before a call has set `*more` to 0. A
- * start that returns an error, or whose list the runner refuses, is fatal:
- * the node must not be used, and the program must not carry on as if it had
- * started.
+ * While a node starts, the only events it may be given are the storage
+ * confirmations its runner accepts, between steps. Every other event waits
+ * until a call has set `*more` to 0. A start that returns an error other than
+ * GZ_WAITING, or whose list the runner refuses, is fatal: the node must not
+ * be used, and the program must not carry on as if it had started.
+ *
+ * Storage may change between steps, but only by gaining batches: those the
+ * node's own runner hands over, and those an earlier program handed over that
+ * storage completes late. The second kind must be settled, durable or gone
+ * for good, by the time the start finishes (ports.h).
  *
  * `storage` reads back what storage holds (ports.h). It is used only during
  * the call, and may be walked more than once.
  *
  * For now: each call resends, oldest first, up to GZ_NODE_START_CHUNK replies
  * to stored pings that have no stored "sent" record. Once all have been
- * resent, each further call saves one "sent" record covering up to that many
- * of them. The saves come last, in steps of their own, so that no resent
- * reply waits for one of them to be confirmed. See "what the placeholder
- * guarantees".
+ * resent, each further call saves one "sent" record naming up to that many of
+ * the replies this start resent; it waits (GZ_WAITING) while
+ * GZ_NODE_START_AWAITING of its batches await confirmation. A stored ping that
+ * became durable after resending passed it is resent before it is recorded.
+ * The saves come last, so that no resent reply waits for one of them to be
+ * confirmed. See "what the placeholder guarantees".
  *
- * Returns GZ_OK; GZ_ERR_ARGUMENT if an argument or a reader function is NULL;
- * GZ_ERR_NO_SPACE if the actions do not fit or GZ_NODE_MAX_AWAITING batches
- * already await confirmation. On any error `actions_out` is exactly as it
- * was. */
+ * Returns GZ_OK; GZ_WAITING as above; GZ_ERR_ARGUMENT if an
+ * argument or a reader function is NULL; GZ_ERR_CORRUPT if storage is not a
+ * journal (identifiers not strictly increasing, or one from an incarnation
+ * later than `storage->incarnation`); GZ_ERR_NO_SPACE if the actions do not
+ * fit. On anything but GZ_OK, `*more`, `actions_out` and the node are exactly
+ * as they were. */
 gz_status_t gz_node_start(gz_node_t *node, const gz_storage_reader_t *storage,
                           gz_action_list_t *actions_out, int *more);
 

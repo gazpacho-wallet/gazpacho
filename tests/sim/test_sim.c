@@ -276,7 +276,7 @@ static void test_crash_while_a_save_is_pending(void)
     CHECK(sim_storage_pending(st) == 1 && sim_storage_count(st) == 0);   /* handed over, not yet durable */
     sim_crash_node(sim, 0);
     CHECK(sim_stats(sim)->crashes == 1 && sim_stats(sim)->saves_lost == 1);
-    CHECK(trace_has(sim, "crash node=0 lost-saves=1 held-actions=1"));
+    CHECK(trace_has(sim, "crash node=0 pending-saves=1 held-actions=1"));
     CHECK(sim_node_incarnation(sim, 0) == 2 && sim_node_incarnation(sim, 1) == 1);
     CHECK(sim_run(sim, 40) == 40);
     CHECK(sim_storage_count(st) == 0 && sim_storage_pending(st) == 0);
@@ -863,7 +863,8 @@ static void test_start_in_steps_through_the_runner(void)
 static int g_start_calls;
 static gz_status_t failing_start(void *node, gz_action_list_t *out, int *more)
 {
-    (void)node; (void)out; (void)more;
+    (void)node; (void)out;
+    *more = 0;
     return ++g_start_calls >= 3 ? GZ_ERR_NO_SPACE : GZ_OK;     /* the first node starts; a later start fails */
 }
 static gz_status_t refusing_release(void *ctx, sim_t *sim, uint32_t index, const gz_action_list_t *list)
@@ -959,55 +960,282 @@ static void test_restore_from_an_older_backup(void)
     sim_destroy(sim);
 }
 
-/* An invariant written the way the engines' will be: over the log of what
- * each node drew from its random port. No secret may be drawn twice. */
-static int no_secret_twice(const sim_t *sim, void *ctx, const char **why)
+/* ---- one-time secrets: judged on the secrets used, not on the draws ---- */
+
+/* Run a multi node, made to use its secrets in `mode`, through two commands,
+ * a restore to just after the first, and two more commands. Returns 1 if the
+ * invariant over the secrets used failed. */
+static int run_secrets(secret_mode_t mode, int repeats, size_t *judged)
 {
-    uint32_t n_nodes = *(const uint32_t *)ctx;
-    for (uint32_t node = 0; node < n_nodes; node++)
-        for (size_t i = 0; i < sim_node_draw_count(sim, node); i++)
-            for (size_t k = i + 1; k < sim_node_draw_count(sim, node); k++) {
-                const sim_draw_t *a = sim_node_draw(sim, node, i), *b = sim_node_draw(sim, node, k);
-                if (a->purpose != GZ_RANDOM_SECRET || b->purpose != GZ_RANDOM_SECRET) continue;
-                if (a->len == b->len && memcmp(a->bytes, b->bytes, a->len < 32 ? a->len : 32) == 0) {
-                    *why = "a one-time secret was drawn twice";
-                    return 0;
-                }
-            }
-    return 1;
+    sim_config_t c = quiet_config(61, 1);
+    secret_watch_t w;
+    memset(&w, 0, sizeof w);
+    w.n_nodes = 1;
+    c.ops = multi_ops();
+    c.restore_repeats_random = repeats;
+    g_secret_mode = mode;
+    sim_t *sim = sim_create(&c);
+    CHECK(sim_add_invariant(sim, no_secret_used_twice, &w) == 1);
+    sim_user_command(sim, 0, (const uint8_t *)"a", 1);
+    sim_run(sim, 5);
+    size_t keep = sim_storage_count(sim_node_storage(sim, 0));
+    sim_user_command(sim, 0, (const uint8_t *)"b", 1);
+    sim_run(sim, 5);
+    sim_restore_backup(sim, 0, keep);
+    sim_user_command(sim, 0, (const uint8_t *)"c", 1);
+    sim_run(sim, 5);
+    sim_user_command(sim, 0, (const uint8_t *)"d", 1);
+    sim_run(sim, 5);
+    int failed = sim_failed(sim);
+    if (failed) CHECK(strcmp(sim_failure_reason(sim), "a one-time secret was used twice") == 0);
+    *judged = w.checked;
+    sim_destroy(sim);
+    secret_watch_free(&w);
+    g_secret_mode = SECRET_CORRECT;
+    return failed;
 }
 
-/* FAULTY ON PURPOSE (the probe's 'K' command): a node that takes a one-time
- * secret straight from the random port. Harmless while the port never
- * repeats. Restored from a snapshot whose generator repeats, it produces a
- * secret it has produced before, and the invariant over the draw log says so. */
-static void test_a_repeating_generator_exposes_a_naive_node(void)
+static void test_secrets_are_judged_on_what_was_used(void)
 {
-    for (int repeats = 0; repeats <= 1; repeats++) {
-        sim_config_t c = probe_config(2);
-        uint32_t n_nodes = 2;
-        c.restore_repeats_random = repeats;
-        sim_t *sim = sim_create(&c);
-        CHECK(sim_add_invariant(sim, no_secret_twice, &n_nodes) == 1);
-        sim_user_command(sim, 0, (const uint8_t *)"K", 1);
-        sim_user_command(sim, 0, (const uint8_t *)"K", 1);
-        sim_user_command(sim, 0, (const uint8_t *)"R", 1);      /* a draw that is not a secret */
-        sim_crash_node(sim, 0);                                 /* an ordinary crash never repeats the stream */
-        sim_user_command(sim, 0, (const uint8_t *)"K", 1);
-        CHECK(!sim_failed(sim) && sim_node_draw_count(sim, 0) == 4);
-        CHECK(sim_node_draw(sim, 0, 0)->purpose == GZ_RANDOM_SECRET && sim_node_draw(sim, 0, 2)->purpose == GZ_RANDOM_OTHER);
-        CHECK(sim_node_draw(sim, 0, 0)->incarnation == 1 && sim_node_draw(sim, 0, 3)->incarnation == 2 && sim_node_draw(sim, 0, 0)->len == 8);
-        CHECK(memcmp(sim_node_draw(sim, 0, 0)->bytes, sim_storage_batch_bytes(sim_node_storage(sim, 0), 0, NULL) + 8, 8) == 0);
+    size_t judged = 0;
+    /* The correct node mixes in its incarnation: passes, even when the port repeats. */
+    CHECK(!run_secrets(SECRET_CORRECT, 1, &judged) && judged == 4);
+    CHECK(!run_secrets(SECRET_CORRECT, 0, &judged) && judged == 4);
+    /* A node taking its secret from the port alone is caught when the port repeats,
+     * whatever tag it gave its draws. */
+    CHECK(run_secrets(SECRET_NAIVE, 1, &judged));
+    CHECK(run_secrets(SECRET_NAIVE_UNTAGGED, 1, &judged));
+    CHECK(!run_secrets(SECRET_NAIVE, 0, &judged));         /* harmless while the port never repeats */
+    /* A node deriving its secret from a counter in the journal is caught after a
+     * restore, with no help from the port at all. */
+    CHECK(run_secrets(SECRET_JOURNAL_COUNTER, 0, &judged));
+}
 
-        sim_restore_backup(sim, 0, 1);                          /* back to just after the first secret */
-        sim_user_command(sim, 0, (const uint8_t *)"K", 1);
-        if (repeats) {
-            CHECK(sim_failed(sim) && strcmp(sim_failure_reason(sim), "a one-time secret was drawn twice") == 0);
-        } else {
-            CHECK(!sim_failed(sim) && sim_node_draw_count(sim, 0) == 5);
-        }
+/* The secrets an incarnation used just before it crashed are judged too: the
+ * invariant looks at the node before it is destroyed. */
+static void test_secrets_of_a_crashing_node_are_judged(void)
+{
+    sim_config_t c = quiet_config(62, 1);
+    secret_watch_t w;
+    memset(&w, 0, sizeof w);
+    w.n_nodes = 1;
+    c.ops = multi_ops();
+    sim_t *sim = sim_create(&c);
+    CHECK(sim_add_invariant(sim, no_secret_used_twice, &w) == 1);
+    sim_crash_after_releases(sim, 0, 0);                    /* dies handing over the first action of its answer */
+    sim_user_command(sim, 0, (const uint8_t *)"a", 1);
+    CHECK(!sim_failed(sim) && sim_node_incarnation(sim, 0) == 2 && w.checked == 1);
+    sim_destroy(sim);
+    secret_watch_free(&w);
+}
+
+/* After a restore with the repeating fault, the random port gives the stream
+ * of the incarnation that wrote the newest batch the backup kept; after a
+ * restore to nothing, that of the first incarnation. Both scheduled and
+ * hand-driven restores do it. */
+static void test_which_stream_a_restore_repeats(void)
+{
+    sim_config_t c = probe_config(1);
+    c.restore_repeats_random = 1;
+    sim_t *sim = sim_create(&c);
+    sim_user_command(sim, 0, (const uint8_t *)"R", 1);      /* incarnation 1: draw, saved */
+    sim_crash_node(sim, 0);
+    sim_user_command(sim, 0, (const uint8_t *)"R", 1);      /* incarnation 2: draw, saved */
+    sim_crash_node(sim, 0);                                 /* incarnation 3 */
+    CHECK(sim_storage_count(sim_node_storage(sim, 0)) == 2);
+    sim_restore_backup(sim, 0, 2);                          /* the newest kept was written by incarnation 2 */
+    sim_user_command(sim, 0, (const uint8_t *)"R", 1);
+    size_t n = sim_node_draw_count(sim, 0);
+    CHECK(n == 3 && memcmp(sim_node_draw(sim, 0, 2)->bytes, sim_node_draw(sim, 0, 1)->bytes, 8) == 0);
+    CHECK(memcmp(sim_node_draw(sim, 0, 2)->bytes, sim_node_draw(sim, 0, 0)->bytes, 8) != 0);
+    sim_restore_backup(sim, 0, 0);                          /* nothing kept: the first stream */
+    sim_user_command(sim, 0, (const uint8_t *)"R", 1);
+    CHECK(sim_node_draw_count(sim, 0) == 4 && memcmp(sim_node_draw(sim, 0, 3)->bytes, sim_node_draw(sim, 0, 0)->bytes, 8) == 0);
+    CHECK(sim_stats(sim)->restores_repeating == 2 && !sim_failed(sim));
+    sim_destroy(sim);
+
+    /* Scheduled restores repeat the stream too: a naive node is caught by them. */
+    sim_config_t d = busy_config(63);
+    secret_watch_t w;
+    memset(&w, 0, sizeof w);
+    w.n_nodes = 4;
+    d.ops = multi_ops();
+    d.restore_pm = 100; d.restore_repeats_random = 1;
+    d.crash_pm = d.crash_in_release_pm = 0;
+    g_secret_mode = SECRET_NAIVE;
+    sim = sim_create(&d);
+    CHECK(sim_add_invariant(sim, no_secret_used_twice, &w) == 1);
+    sim_run(sim, 2000);
+    CHECK(sim_failed(sim) && strcmp(sim_failure_reason(sim), "a one-time secret was used twice") == 0);
+    CHECK(sim_stats(sim)->restores_repeating > 0);
+    sim_destroy(sim);
+    secret_watch_free(&w);
+    g_secret_mode = SECRET_CORRECT;
+}
+
+/* ---- a start that waits, and what happens to events meanwhile ---- */
+
+/* A test node whose start waits: it asks for one save, then waits until that
+ * save is confirmed, three times over, sending a notify after each. */
+typedef struct { int saves, confirmed, handled_messages, handled_commands; uint64_t steps_of[16]; uint64_t incarnation; } waiter_t;
+static waiter_t g_waiter;
+static void *waiter_create(void *ctx, uint32_t index, const gz_ports_t *ports, const sim_storage_t *storage)
+{
+    (void)ctx; (void)index; (void)ports;
+    g_waiter.saves = g_waiter.confirmed = 0;
+    g_waiter.incarnation = sim_storage_incarnation(storage);
+    return &g_waiter;
+}
+static gz_status_t waiter_start(void *node, gz_action_list_t *out, int *more)
+{
+    waiter_t *w = node;
+    if (w->incarnation < 16) w->steps_of[w->incarnation]++;
+    if (w->saves > w->confirmed) return GZ_WAITING;
+    *more = w->saves < 3;
+    if (!*more) return GZ_OK;
+    w->saves++;
+    gz_status_t st = multi_save(out, 7, (const uint8_t *)"w", 1);
+    return st == GZ_OK ? multi_add(out, GZ_ACTION_NOTIFY, (uint64_t)w->saves, NULL, 0) : st;
+}
+static gz_status_t waiter_handle(void *node, const gz_event_t *ev, gz_action_list_t *out)
+{
+    waiter_t *w = node;
+    (void)out;
+    if (ev->kind == GZ_EVENT_STORAGE_CONFIRMED) w->confirmed++;
+    if (ev->kind == GZ_EVENT_MESSAGE_RECEIVED) w->handled_messages++;
+    if (ev->kind == GZ_EVENT_USER_COMMAND) w->handled_commands++;
+    return GZ_OK;
+}
+
+static sim_config_t waiter_config(void)
+{
+    sim_config_t c = quiet_config(71, 1);
+    c.ops = (sim_node_ops_t){.create = waiter_create, .destroy = probe_destroy, .start = waiter_start, .handle = waiter_handle};
+    c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 3;
+    memset(&g_waiter, 0, sizeof g_waiter);
+    return c;
+}
+
+static void test_a_start_that_waits_for_confirmations(void)
+{
+    sim_config_t c = waiter_config();
+    const uint8_t hello[2] = {1, 2};
+    sim_t *sim = sim_create(&c);
+    CHECK(sim_node_starting(sim, 0) && g_waiter.saves == 1);
+    sim_send_message(sim, SIM_WORLD_PEER, 0, hello, 2);
+    sim_user_command(sim, 0, (const uint8_t *)"x", 1);
+    CHECK(g_waiter.handled_commands == 0);                  /* held back while the start waits */
+    CHECK(sim_run(sim, 30) == 30 && !sim_failed(sim));
+    CHECK(!sim_node_starting(sim, 0) && g_waiter.saves == 3 && g_waiter.confirmed == 3);
+    CHECK(g_waiter.handled_messages == 1 && g_waiter.handled_commands == 1);   /* handed on afterwards, in order */
+    CHECK(trace_count(sim, "notify node=0") == 3 && trace_has(sim, "start-waiting node=0"));
+    sim_destroy(sim);
+}
+
+/* While a start waits, a message and a command arrive and the node crashes.
+ * The message reaches the rebuilt node once its own start finishes; the
+ * command does not, and the user interface is told it was not done. */
+static void test_events_held_back_across_a_crash(void)
+{
+    sim_config_t c = waiter_config();
+    const uint8_t hello[2] = {1, 2};
+    sim_t *sim = sim_create(&c);
+    CHECK(sim_run(sim, 2) == 2);                            /* the message is delivered while the start waits */
+    sim_send_message(sim, SIM_WORLD_PEER, 0, hello, 2);
+    CHECK(sim_run(sim, 1) == 1);
+    sim_user_command(sim, 0, (const uint8_t *)"x", 1);
+    CHECK(sim_node_starting(sim, 0) && g_waiter.handled_messages == 0 && g_waiter.handled_commands == 0);
+    sim_crash_node(sim, 0);
+    CHECK(sim_run(sim, 40) == 40 && !sim_failed(sim) && !sim_node_starting(sim, 0));
+    CHECK(g_waiter.handled_messages == 1 && g_waiter.handled_commands == 0);
+    CHECK(sim_stats(sim)->commands_not_done == 1 && trace_has(sim, "ui node=0 command-not-done: the app restarted"));
+    sim_destroy(sim);
+}
+
+/* A node that dies inside a start step is not asked for another step: it is
+ * rebuilt, and the new incarnation starts from the beginning. */
+static void test_a_start_stops_when_the_node_dies(void)
+{
+    sim_config_t c = waiter_config();
+    c.confirm_delay_pm = 0;
+    c.crash_in_release_pm = 1000;                           /* the first program dies at its first action */
+    sim_t *sim = sim_create(&c);
+    CHECK(!sim_failed(sim) && sim_node_incarnation(sim, 0) == 2 && !sim_node_starting(sim, 0));
+    CHECK(g_waiter.steps_of[1] == 1 && g_waiter.steps_of[2] > 3);  /* the dead one was asked for no second step */
+    sim_destroy(sim);
+}
+
+/* An armed crash belongs to the program it was armed for: if that program
+ * crashes some other way first, its successor does not inherit it. */
+static void test_an_armed_crash_does_not_outlive_its_program(void)
+{
+    sim_config_t c = probe_config(1);
+    sim_t *sim = sim_create(&c);
+    sim_crash_after_releases(sim, 0, 5);
+    sim_crash_node(sim, 0);
+    for (int i = 0; i < 10; i++) sim_user_command(sim, 0, (const uint8_t *)"N\x01", 2);
+    CHECK(!sim_failed(sim) && sim_node_incarnation(sim, 0) == 2 && sim_stats(sim)->crashes_in_release == 0);
+    sim_destroy(sim);
+}
+
+/* ---- storage that completes a dead program's batch during the next start ---- */
+
+/* Ping A is durable and its confirmation is far off. Ping B is handed to
+ * storage and the program dies before B is durable. B completes while the new
+ * program starts, after the start has resent A. B's reply must still leave. */
+static void test_a_batch_that_completes_late_is_resent(void)
+{
+    for (int late = 0; late <= 1; late++) {
+        sim_config_t c = quiet_config(73, 1);
+        c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 1000;
+        c.save_delay_pm = 1000; c.max_save_delay_steps = 5;
+        c.late_save_pm = late ? 1000 : 0;
+        sim_t *sim = sim_create(&c);
+        const sim_storage_t *st = sim_node_storage(sim, 0);
+        world_ping(sim, 0, 0xa);
+        CHECK(sim_run(sim, 7) == 7 && sim_storage_count(st) == 1 && sim_storage_unconfirmed(st) == 1);
+        world_ping(sim, 0, 0xb);
+        CHECK(sim_run(sim, 1) == 1 && sim_storage_pending(st) == 1);
+        sim_crash_node(sim, 0);                             /* B was handed over and is not durable */
+        CHECK(!sim_failed(sim) && sim_node_incarnation(sim, 0) == 2);
+        CHECK(sim_stats(sim)->late_landings == (uint64_t)late);
+        CHECK(trace_has(sim, "late-landing node=0 batch=1.2 at=1") == late);
+        sim_quiesce(sim);
+        CHECK(sim_run(sim, 1100) == 1100 && !sim_failed(sim));
+        CHECK(saved_replies_not_sent(sim, 1) == 0);
+        CHECK(sim_stats(sim)->node_sends == 1 + (uint64_t)late);       /* A resent, and B if it completed */
         sim_destroy(sim);
     }
+
+    sim_config_t c = busy_config(75);                       /* and from the schedule */
+    c.late_save_pm = 500;
+    c.check_same_seed = 1;
+    sim_t *sim = sim_create(&c);
+    CHECK(sim_run(sim, 2000) == 2000 && sim_stats(sim)->late_landings > 0);
+    sim_destroy(sim);
+}
+
+/* ---- storage that fails inside the executor ---- */
+
+static void test_storage_failure_inside_the_executor(void)
+{
+    sim_config_t c = quiet_config(77, 1);
+    c.ops = multi_ops();
+    c.save_fail_inline_pm = 1000;
+    sim_t *sim = sim_create(&c);
+    sim_user_command(sim, 0, (const uint8_t *)"a", 1);      /* the first save fails as it is handed over */
+    CHECK(!sim_failed(sim) && sim_stats(sim)->inline_storage_failures >= 1);
+    CHECK(sim_node_incarnation(sim, 0) == 2 && sim_storage_count(sim_node_storage(sim, 0)) == 0);
+    CHECK(!trace_has(sim, "notify node=0 code=1") && sim_stats(sim)->messages_sent == 0);
+    sim_destroy(sim);
+
+    c = busy_config(79);                                    /* and from the schedule, with every check on */
+    c.ops = multi_ops();
+    c.save_fail_inline_pm = 30;
+    c.check_same_seed = 1;
+    sim = sim_create(&c);
+    CHECK(sim_run(sim, 1500) == 1500 && sim_stats(sim)->inline_storage_failures > 10);
+    sim_destroy(sim);
 }
 
 static int awaiting_is_bounded(const sim_t *sim, void *ctx, const char **why)
@@ -1360,7 +1588,15 @@ int main(void)
     test_start_in_steps_through_the_runner();
     test_a_failed_start_is_fatal();
     test_restore_from_an_older_backup();
-    test_a_repeating_generator_exposes_a_naive_node();
+    test_secrets_are_judged_on_what_was_used();
+    test_secrets_of_a_crashing_node_are_judged();
+    test_which_stream_a_restore_repeats();
+    test_a_start_that_waits_for_confirmations();
+    test_events_held_back_across_a_crash();
+    test_a_start_stops_when_the_node_dies();
+    test_an_armed_crash_does_not_outlive_its_program();
+    test_a_batch_that_completes_late_is_resent();
+    test_storage_failure_inside_the_executor();
     test_invariants_can_look_inside_a_node();
     test_links();
     test_reorganisation_and_never_confirming();

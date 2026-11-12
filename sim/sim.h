@@ -52,6 +52,25 @@
  *   A refusal fails the run unless allow_refusals is set. A node whose start
  *   returns an error, or whose start list is refused, fails the run.
  *
+ *   A start may take several steps, and may wait (GZ_WAITING) for one of the
+ *   node's batches to be confirmed. While it starts, a node is given only the
+ *   storage confirmations its runner accepts; every other event for it is
+ *   held back, in order, and handed on once the start has finished.
+ *
+ *   A user command that does not reach a node because the program stopped
+ *   before handling it is not dropped silently: the user interface is told
+ *   that it was not done because the app restarted (in the trace, and in
+ *   commands_not_done).
+ *
+ *   Late completion (late_save_pm): a batch the dead program had handed to
+ *   storage and that was still pending may complete during the next start,
+ *   between two start steps. It takes its place in the journal before every
+ *   batch of the new incarnation. Whatever is still pending when the start
+ *   finishes is gone for good, as ports.h requires.
+ *
+ *   Invariants added with sim_add_invariant are also checked just before a
+ *   node is destroyed, so they can see its last state.
+ *
  * PRETEND STORAGE is a journal. A batch handed to it is "pending" until the
  * step the schedule chose: this step, a later one, or never. Batches become
  * durable in the order received. The confirmation of a durable batch is
@@ -63,11 +82,14 @@
  *     The new runner must report it stale and release nothing.
  * A batch may also fail (save_fail_pm, sim_fail_storage): it and everything
  * pending behind it are discarded, the runner is told, and the node is
- * rebuilt.
+ * rebuilt. With save_fail_inline_pm storage fails as a save is handed over,
+ * and tells the runner from inside the executor; from then on the harness
+ * treats any action carried out for that program as a violation.
  *
  * RESTORE FROM AN OLDER BACKUP (restore_pm, sim_restore_backup). A node's
  * storage is rolled back to an earlier durable point: the newer batches are
- * gone, and no confirmation from before the restore arrives afterwards. The
+ * gone, what was pending is lost (it cannot complete into the restored copy),
+ * and no confirmation from before the restore arrives afterwards. The
  * node is rebuilt under a new, greater incarnation, as the runner's duty
  * requires. By default its random port then gives a fresh stream, like after
  * any crash. With restore_repeats_random the port instead repeats the stream
@@ -188,6 +210,10 @@ typedef struct {
     uint32_t max_save_delay_steps;
     uint32_t save_never_pm;       /* a save never completes */
     uint32_t save_fail_pm;        /* a save fails when its turn comes */
+    uint32_t save_fail_inline_pm; /* a save fails as it is handed over, and storage reports it from
+                                     inside the executor (only for programs with the default runner) */
+    uint32_t late_save_pm;        /* per start step: a batch the previous program left pending
+                                     completes now, late (see "late completion" above) */
     uint32_t confirm_delay_pm;    /* a confirmation comes 1..max_confirm_delay_steps after durability */
     uint32_t max_confirm_delay_steps;
 
@@ -234,6 +260,10 @@ typedef struct {
     uint64_t confirmations;       /* accepted by a runner (or delivered to a faulty program) */
     uint64_t stale_confirmations; /* arrived for an incarnation that had crashed */
     uint64_t storage_failures;
+    uint64_t inline_storage_failures; /* of those, reported from inside the executor */
+    uint64_t late_landings;       /* batches of a dead program that completed during the next start */
+    uint64_t commands_not_done;   /* user commands not delivered because the app restarted */
+    uint64_t restores_repeating;  /* restores after which the random port repeats */
     uint64_t crashes;             /* every rebuild, whatever caused it */
     uint64_t crashes_in_release;
     uint64_t restores;
@@ -306,6 +336,9 @@ uint32_t sim_chain_height(const sim_t *sim);
 /* How many times node `index` has been built: 1 until its first crash. This
  * is the incarnation its runner was given. */
 uint64_t sim_node_incarnation(const sim_t *sim, uint32_t index);
+
+/* 1 while node `index` has not finished its start. */
+int sim_node_starting(const sim_t *sim, uint32_t index);
 
 /* --- Looking inside, for invariants and tests. --- */
 

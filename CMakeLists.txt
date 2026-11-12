@@ -70,7 +70,12 @@ set(GZ_NEW_CODE_WARNINGS -Wall -Wextra -Werror)
 # The core is strict C11 (no GNU extensions), freestanding, with no
 # variable-length arrays and no floating point or vector registers.
 # tools/check-core-isolation.sh checks the result.
-set(GZ_CORE_FLAGS -pedantic -Wvla -ffreestanding -mgeneral-regs-only)
+set(GZ_CORE_FLAGS -pedantic -Wvla -ffreestanding)
+# -mgeneral-regs-only (no floating-point or vector registers, so the isolation
+# check need not reason about them) exists only on x86 and AArch64.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i[0-9]86|AMD64|aarch64|arm64")
+  list(APPEND GZ_CORE_FLAGS -mgeneral-regs-only)
+endif()
 set(GZ_CORE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/action.c
   ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/runner.c
