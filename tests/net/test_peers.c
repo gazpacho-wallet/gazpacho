@@ -277,10 +277,13 @@ static void test_basic(void)
 
 /* An idle connection stays open for many times the old 30 s idle cut (here
  * scaled down: recv_ms 400, idle 3 s), kept alive by pings. */
+/* The peer pings at most once per 50 ms, so at most 16 in one 800 ms
+ * window: 25 is never reached in a window, but is well passed in 4 s if the
+ * window never restarts. */
 static void short_recv(gz_peers_config_t *c)
 {
     c->recv_ms = 400;
-    c->max_pings = 100; /* the peer pings ten times a second here */
+    c->max_pings = 25;
 }
 
 static void test_keepalive(void)
@@ -289,12 +292,12 @@ static void test_keepalive(void)
     gz_peers_stats_t hs, ms_;
     static const uint8_t zero[32];
     gz_peer_event_t *e;
-    hc = pair(100, 1500, short_recv, &mc, NULL);
-    pump(3000);
+    hc = pair(50, 800, short_recv, &mc, NULL);
+    pump(4000);
     CHECK(quiet(0, GZ_PEER_EV_CLOSED, 0) && quiet(1, GZ_PEER_EV_CLOSED, 0));
     gz_peers_stats(S[0].p, &hs);
     gz_peers_stats(S[1].p, &ms_);
-    CHECK(hs.pings_sent + ms_.pings_sent >= 10);
+    CHECK(hs.pings_sent + ms_.pings_sent >= 20);
     CHECK(hs.pongs_received == hs.pings_sent || hs.pongs_received + 1 == hs.pings_sent);
     CHECK(ms_.pongs_received == ms_.pings_sent || ms_.pongs_received + 1 == ms_.pings_sent);
     CHECK(hs.pongs_sent == hs.pings_received && ms_.pongs_sent == ms_.pings_received);
@@ -308,7 +311,7 @@ static void test_keepalive(void)
 
 /* ------------------------------------------------ hostile members */
 
-enum { CH_SILENT, CH_BAD_PONG, CH_TRICKLE, CH_PING_FIRST, CH_NO_READ };
+enum { CH_SILENT, CH_BAD_PONG, CH_TRICKLE, CH_PING_FIRST, CH_NO_READ, CH_SHORT };
 
 static pid_t child(uint16_t port, int how)
 {
@@ -329,6 +332,13 @@ static pid_t child(uint16_t port, int how)
     gz_ln_init_write(GZ_LN_CHAIN_SIGNET, m, sizeof m, &n);
     if (gz_conn_send(c, m, n) || gz_conn_recv(c, m, sizeof m, &n) || m[1] != GZ_LN_INIT) _exit(2);
     if (how == CH_SILENT || how == CH_NO_READ) {
+        sleep(20);
+        _exit(0);
+    }
+    if (how == CH_SHORT) {
+        /* A one-byte message: shorter than its type. */
+        m[0] = 0x80;
+        gz_conn_send(c, m, 1);
         sleep(20);
         _exit(0);
     }
@@ -404,6 +414,8 @@ static void test_hostile(void)
     hostile(CH_TRICKLE, GZ_PEER_WHY_TIMEOUT_MESSAGE, NULL, 20000, 30000);
     /* Anything before init. */
     hostile(CH_PING_FIRST, GZ_PEER_WHY_INIT, "first message is not init", 20000, 30000);
+    /* A message shorter than its 2-byte type. */
+    hostile(CH_SHORT, GZ_PEER_WHY_PROTOCOL, "message shorter than its type", 20000, 30000);
     /* A member that never reads. */
     hostile(CH_NO_READ, GZ_PEER_WHY_TIMEOUT_SEND, NULL, 20000, 30000);
 }

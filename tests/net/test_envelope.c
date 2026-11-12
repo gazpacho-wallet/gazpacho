@@ -290,9 +290,9 @@ static void test_special_records(void)
     {
         static const char *good[] = {"Ana", "\xc3\xa9t\xc3\xa9", "\xe2\x82\xac", "\xf0\x9f\x8d\x85"};
         static const char *bad[] = {"\xc0\xaf", "\xe0\x80\xaf", "\xed\xa0\x80", "\xf4\x90\x80\x80", "\xc3", "\x80",
-                                    "\xf5\x80\x80\x80", "\xe2\x82"};
+                                    "\xf5\x80\x80\x80", "\xe2\x82", "\xc3\x41", "\xe2\x82\x41"};
         size_t g;
-        for (g = 0; g < 4 + 8; g++) {
+        for (g = 0; g < 4 + 10; g++) {
             const char *s = g < 4 ? good[g] : bad[g - 4];
             gz_tlv_writer_init(&w, body, sizeof body);
             gz_tlv_put(&w, 2, v, 33);
@@ -421,6 +421,10 @@ static void test_read(void)
     CHECK(gz_env_read(msg, mk(28, SCOPE, "040100020100060400000000080200000a020000", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_REFUSE);
     CHECK(gz_env_read(msg, mk(28, SCOPE, "020100040100060400000000080200000a0300 00", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_REFUSE);
     CHECK(gz_env_read(msg, mk(28, SCOPE, "", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_REFUSE);
+    /* An unknown odd record one byte longer than what is left: refused for
+     * its length, though it would be skipped. */
+    CHECK(gz_env_read(msg, mk(28, SCOPE, "020100040100060400000000080200000a0200000b0200", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_REFUSE &&
+          why && strcmp(why, "record past the end") == 0);
     /* A record type past 2^16, odd, is skipped like any unknown odd record. */
     CHECK(gz_env_read(msg, mk(28, SCOPE, "020100040100060400000000080200000a020000fe0001000100", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_DELIVER);
     /* A changed odd record before the signature fails the signature (test 4). */
@@ -589,6 +593,16 @@ static void test_split(void)
     CHECK(feed(&r, msg, hand_part(tid, 68, 65001, 0, 1, whole, 65000, msg), &out) == GZ_ENV_REFUSE);
     CHECK(feed(&r, msg, hand_part(tid, 68, 18 * 65000, 0, 18, whole, 65000, msg), &out) == GZ_ENV_REFUSE);
     CHECK(feed(&r, msg, hand_part(tid, 68, (uint32_t)len, 3, 3, whole, 10000, msg), &out) == GZ_ENV_REFUSE);
+    CHECK(feed(&r, msg, hand_part(tid, 68, (uint32_t)len, 3, 3, whole, 65000, msg), &out) == GZ_ENV_REFUSE);
+    /* A one-part "transfer", even with the right transfer_id for a valid
+     * message: refused (count is at least 2). */
+    {
+        static uint8_t small[65000];
+        uint8_t stid[32];
+        size_t sl = valid_body(60000, small);
+        gz_env_transfer_id(secp, 68, small, sl, stid);
+        CHECK(feed(&r, msg, hand_part(stid, 68, (uint32_t)sl, 0, 1, small, sl, msg), &out) == GZ_ENV_REFUSE);
+    }
     CHECK(feed(&r, msg, hand_part(tid, 68, (uint32_t)len, 1, 3, whole, 64999, msg), &out) == GZ_ENV_REFUSE);
     CHECK(feed(&r, msg, hand_part(tid, 68, (uint32_t)len, 2, 3, whole, len - 130000 + 1, msg), &out) == GZ_ENV_REFUSE);
     CHECK(feed(&r, msg, hand_part(tid, 68, (uint32_t)len, 2, 3, whole, len - 130000 - 1, msg), &out) == GZ_ENV_REFUSE);

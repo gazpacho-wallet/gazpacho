@@ -244,3 +244,14 @@ peers-was-connected-always	ports/net/peers.c	n->ev.was_connected = c->init_got;	
 peers-event-node-missing	ports/net/peers.c	if (c->have_id) memcpy(n->ev.node_id, c->node_id, 33);	
 peers-handshake-as-crypto	ports/net/peers.c	fail_noise(p, c, GZ_PEER_WHY_HANDSHAKE, ne);\n            return 0;\n        }\n        if (!q_raw(c, act, GZ_NOISE_ACT2_LEN))	fail_noise(p, c, GZ_PEER_WHY_CRYPTO, ne);\n            return 0;\n        }\n        if (!q_raw(c, act, GZ_NOISE_ACT2_LEN))
 peers-connected-twice	ports/net/peers.c	c->init_got = 1;\n        push_event(p, c, GZ_PEER_EV_CONNECTED);	push_event(p, c, GZ_PEER_EV_CONNECTED);
+# Triage of the survivors of the lobby mutants (2026-11-12; 113 run, 110 killed):
+# peers-ping-same-length: equivalent. With one ping outstanding and BOLT 8
+#   delivering in order, a late pong cannot arrive; the varying length is
+#   defence in depth only.
+# peers-refuse-no-flush: not observable on loopback. The warning is queued
+#   and written in the same poll round, before the timers run, so closing
+#   "at once" still sends it. A slow link would show the difference.
+# peers-pong-queue-cap-off: not testable deterministically. With the ping
+#   flood limit (10 per window) a peer that never reads can make us queue at
+#   most about 650 KB of pongs, under the 4 MiB cap, and the kernel's socket
+#   buffers absorb most of it. The cap is defence in depth.
