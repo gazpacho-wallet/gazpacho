@@ -166,7 +166,6 @@ typedef struct {
     uint8_t nonce_sig[GZ_SIGN_MAX_ITEMS][GZ_SIGN_MAX_SIGNERS][64];
     uint8_t psig[GZ_SIGN_MAX_ITEMS][GZ_SIGN_MAX_SIGNERS][32];
     secp256k1_musig_session session[GZ_SIGN_MAX_ITEMS];
-    uint8_t have_session[GZ_SIGN_MAX_ITEMS];
     uint8_t final_sig[GZ_SIGN_MAX_ITEMS][64];
     uint8_t have_final[GZ_SIGN_MAX_ITEMS];
     /* secret nonces: memory only; serial 0 = none */

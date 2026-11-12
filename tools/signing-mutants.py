@@ -135,9 +135,9 @@ def main():
         elif a == "--names": names = set(l.strip() for l in open(rest.pop(0)) if l.strip())
         else: builds.append(a)
     if mode == "rules":
-        variants, args, timeout = rule_variants(src), [], 1800
+        variants, args, timeout = rule_variants(src), [], 5400
     else:
-        variants, args, timeout = mutant_variants(src, only), [], 600   # the full suite, stopping at the first failing section
+        variants, args, timeout = mutant_variants(src, only), [], 5400   # the full suite, stopping at the first failing section
         if names is not None: variants = [v for v in variants if v[0] in names]
         if limit: variants = variants[:limit]
     q = queue.Queue()

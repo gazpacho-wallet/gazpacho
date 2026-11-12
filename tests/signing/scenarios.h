@@ -298,12 +298,12 @@ static uint64_t sc_member_restart_signed(void)
 static uint64_t sc_tier_abort(void)
 {
     harness_t h;
-    h_init(&h, 3);
-    CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+    h_init(&h, 4);
+    CHECK(h_begin(&h, 2, 4, 0) == GZ_OK);
     const gz_sign_round_t *r = h_newest(&h, 0);
-    uint32_t j = 1;
-    while (j <= 3 && items_of(r, j, 1, NULL) == 0) j++;
-    CHECK(j <= 3);
+    uint32_t j = 1;                     /* a member with items in tier 1, not as many as in tier 0 */
+    while (j <= 4 && (items_of(r, j, 1, NULL) == 0 || items_of(r, j, 1, NULL) == items_of(r, j, 0, NULL))) j++;
+    CHECK(j <= 4);
     flush_until(&h, j, GZ_MSG_NONCES, 2);
     uint32_t list[GZ_SIGN_MAX_ITEMS];
     int n = items_of(r, j, 1, list);
@@ -317,8 +317,8 @@ static uint64_t sc_tier_abort(void)
     /* an abort that is not the host's changes nothing */
     uint32_t k = j == 1 ? 2 : 1;
     harness_t h2;
-    h_init(&h2, 3);
-    CHECK(h_begin(&h2, 2, 3, 0) == GZ_OK);
+    h_init(&h2, 4);
+    CHECK(h_begin(&h2, 2, 4, 0) == GZ_OK);
     flush_until(&h2, j, GZ_MSG_NONCES, 2);
     len = make_abort(ab, h_newest(&h2, 0)->id, GZ_WHY_DEADLINE, 0xff, k);
     h_inject(&h2, 0, j, ab, len);
@@ -777,6 +777,20 @@ static uint64_t sc_proposals(void)
     h_inject(&h, 0, 1, bad, p5->len);
     CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_DUPLICATES] == 1);         /* a known identifier: the saved answer (counters restarted) */
     CHECK(h.p[1].e->n_known == 2);
+    /* the refused list full: a new round cannot be held. Refused as busy, nothing signed */
+    gz_sign_t *e1 = h.p[1].e;
+    while (e1->n_known < GZ_SIGN_MAX_KNOWN) {
+        memset(e1->known[e1->n_known], 0xee, 32);
+        e1->known[e1->n_known][0] = (uint8_t)e1->n_known; e1->known[e1->n_known][1] = (uint8_t)(e1->n_known >> 8);
+        e1->n_known++;
+    }
+    n_nonces = h_count_kind(&h, 1, GZ_MSG_NONCES);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    long pi = q_find(&h, 0, 1, GZ_MSG_PROPOSE);
+    CHECK(pi >= 0);
+    h_deliver(&h, (size_t)pi, 0);
+    CHECK(check_abort(&h.sent[h.n_sent - 1], GZ_WHY_BUSY, 0xff, 0, NULL) && h_count_kind(&h, 1, GZ_MSG_NONCES) == n_nonces);
+    CHECK(e1->n_known == GZ_SIGN_MAX_KNOWN && h_find(&h, 1, h_newest(&h, 0)->id) == NULL);
     uint64_t d = h_digest(&h);
     h_free(&h);
 

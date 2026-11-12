@@ -333,7 +333,6 @@ static int make_session(gz_sign_t *e, gz_sign_round_t *r, int i)
     }
     if (!secp256k1_musig_nonce_agg(e->cfg.ctx, &agg, ptrs, it->n_signers) ||
         !secp256k1_musig_nonce_process(e->cfg.ctx, &r->session[i], &agg, r->digest[i], &r->cache[i], NULL)) return 0;
-    r->have_session[i] = 1;
     return 1;
 }
 

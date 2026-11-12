@@ -456,6 +456,71 @@ static void eng_init(gz_sign_t *e, w_builder_t *b, uint32_t g)
     CHECK(gz_sign_init(e, &c, &ports, 7) == GZ_OK);
 }
 
+/* Up to n participants: fresh keys that sign nothing. */
+static void grow_participants(gz_sign_def_t *d, int n)
+{
+    for (int g = d->n_participants; g < n && g < GZ_SIGN_MAX_PARTICIPANTS; g++) {
+        uint8_t sk[32];
+        secp256k1_keypair kp;
+        secp256k1_pubkey pk;
+        secp256k1_xonly_pubkey x;
+        size_t l = 33;
+        w_secret("test/factory", 100u + (uint32_t)g, sk);
+        if (!secp256k1_keypair_create(w_ctx(), &kp, sk) || !secp256k1_keypair_pub(w_ctx(), &pk, &kp) ||
+            !secp256k1_ec_pubkey_serialize(w_ctx(), d->participants[g].factory_key, &l, &pk, SECP256K1_EC_COMPRESSED)) abort();
+        w_secret("test/contribution", 100u + (uint32_t)g, sk);
+        if (!secp256k1_keypair_create(w_ctx(), &kp, sk) || !secp256k1_keypair_xonly_pub(w_ctx(), &x, NULL, &kp) ||
+            !secp256k1_xonly_pubkey_serialize(w_ctx(), d->participants[g].contribution_key, &x)) abort();
+        d->participants[g].peer = 100u + (uint32_t)g;
+    }
+    d->n_participants = (uint8_t)n;
+}
+
+/* Item `it` signed by participants 0..n-1, its spent script made to match. */
+static void all_sign(gz_sign_def_t *d, gz_sign_item_t *it, int n)
+{
+    secp256k1_pubkey pks[GZ_SIGN_MAX_SIGNERS], tw_pk;
+    const secp256k1_pubkey *ptr[GZ_SIGN_MAX_SIGNERS];
+    secp256k1_xonly_pubkey agg, x;
+    secp256k1_musig_keyagg_cache c;
+    uint8_t ser[32], tw[32];
+    gz_sha256_t th;
+    it->n_signers = (uint8_t)n;
+    for (int k = 0; k < n; k++) {
+        it->signers[k] = (uint8_t)k;
+        if (!secp256k1_ec_pubkey_parse(w_ctx(), &pks[k], d->participants[k].factory_key, 33)) abort();
+        ptr[k] = &pks[k];
+    }
+    if (!secp256k1_musig_pubkey_agg(w_ctx(), NULL, &agg, &c, ptr, (size_t)n) || !secp256k1_xonly_pubkey_serialize(w_ctx(), ser, &agg)) abort();
+    gz_tagged_init(&th, "TapTweak");
+    gz_sha256_write(&th, ser, 32);
+    if (it->has_merkle_root) gz_sha256_write(&th, it->merkle_root, 32);
+    gz_sha256_done(&th, tw);
+    if (!secp256k1_musig_pubkey_xonly_tweak_add(w_ctx(), &tw_pk, &c, tw) || !secp256k1_xonly_pubkey_from_pubkey(w_ctx(), &x, NULL, &tw_pk) ||
+        !secp256k1_xonly_pubkey_serialize(w_ctx(), it->spent_script + 2, &x)) abort();
+}
+
+/* The item's transaction grown to exactly `len` bytes with one more output (it must still parse). */
+static void pad_tx(gz_sign_item_t *it, size_t len)
+{
+    uint8_t t[GZ_SIGN_MAX_TX + 64];
+    gz_tx_t tx;
+    if (!gz_tx_parse(it->tx, it->tx_len, &tx) || tx.outputs_at < 1) abort();
+    size_t at = tx.outputs_end, add = len - it->tx_len;
+    memcpy(t, it->tx, at);
+    while (add) {                                  /* outputs of at most 252 script bytes (a one-byte length) */
+        size_t script = add - 9 > 252 ? (add - 9 - 252 < 9 ? add - 9 - 9 : 252) : add - 9;
+        t[tx.outputs_at - 1]++;                    /* the output count (one byte here) */
+        memset(t + at, 0, 8);
+        t[at + 8] = (uint8_t)script;
+        memset(t + at + 9, 0x6a, script);
+        at += 9 + script; add -= 9 + script;
+    }
+    memcpy(t + at, it->tx + it->tx_len - 4, 4);
+    if (len <= GZ_SIGN_MAX_TX) { memcpy(it->tx, t, len); it->tx_len = (uint16_t)len; }
+    else it->tx_len = (uint16_t)len;               /* past the limit: refused before its bytes are read */
+}
+
 static void damage(gz_sign_def_t *d, int which)
 {
     gz_sign_item_t *it = &d->items[d->n_items - 1];
@@ -488,7 +553,29 @@ static void damage(gz_sign_def_t *d, int which)
             !secp256k1_xonly_pubkey_serialize(w_ctx(), d->participants[1].contribution_key, &x)) abort();
         break;
     }
-    case 21: d->purpose ^= 1; break;               /* accepted: another purpose */    default: break;
+    case 21: d->purpose ^= 1; break;               /* accepted: another purpose */
+    /* at the limits: accepted (22 to 26); one past them: refused (27 to 30) */
+    case 22: case 25: case 29: grow_participants(d, which == 29 ? GZ_SIGN_MAX_PARTICIPANTS + 1 : GZ_SIGN_MAX_PARTICIPANTS);
+        if (which == 25) all_sign(d, it, GZ_SIGN_MAX_SIGNERS);
+        break;
+    case 23: d->n_tiers = GZ_SIGN_MAX_TIERS;
+        for (int i = 0; i < d->n_items; i++) d->items[i].tier = (uint8_t)(i * GZ_SIGN_MAX_TIERS / d->n_items);
+        break;
+    case 24: case 28:
+        for (int i = d->n_items; i < GZ_SIGN_MAX_ITEMS; i++) d->items[i] = d->items[i % 10];
+        d->n_items = which == 24 ? GZ_SIGN_MAX_ITEMS : GZ_SIGN_MAX_ITEMS;
+        if (which == 28) d->items[GZ_SIGN_MAX_ITEMS - 1].tx_len = 0;
+        break;
+    case 26: case 27: pad_tx(&d->items[0], which == 26 ? GZ_SIGN_MAX_TX : GZ_SIGN_MAX_TX + 1); break;
+    case 30: d->n_participants = 2; break;         /* members dropped from the list, still signers: refused */
+    case 31: {                                     /* two participants' contribution keys exchanged */
+        uint8_t t[32];
+        memcpy(t, d->participants[1].contribution_key, 32);
+        memcpy(d->participants[1].contribution_key, d->participants[2].contribution_key, 32);
+        memcpy(d->participants[2].contribution_key, t, 32);
+        break;
+    }
+    default: break;
     }
 }
 
@@ -530,11 +617,52 @@ static void test_definitions(int print)
         CHECK(m == 0);
     }
     /* Whatever changes the definition or the parameters changes the identifier. */
-    for (int which = 19; which <= 21; which++) {
+    for (int which = 19; which <= 26; which++) {
         b.which = which;
         size_t m = begin_proposal(&b, 0, other, sizeof other);
         if (!(m > 0 && memcmp(other + 3, clean + 3, 32) != 0)) printf("  definition change %d: not accepted with a new identifier\n", which);
         CHECK(m > 0 && memcmp(other + 3, clean + 3, 32) != 0);
+    }
+    for (int which = 27; which <= 30; which++) {
+        b.which = which;
+        size_t m = begin_proposal(&b, 0, other, sizeof other);
+        if (m) printf("  definition damage %d was accepted\n", which);
+        CHECK(m == 0);
+    }
+    /* exchanged contribution keys: the host (participant 0) accepts; the member whose factory key is
+     * at one place and whose contribution key at another must not take a seat */
+    {
+        static gz_sign_t mem;
+        static gz_action_t ms[16];
+        static uint8_t mb[4096];
+        gz_action_list_t ml;
+        gz_event_t ev;
+        gz_sign_msg_t msg;
+        b.which = 31;
+        size_t m = begin_proposal(&b, 0, other, sizeof other);
+        CHECK(m > 0);
+        eng_init(&mem, &b, 1);
+        gz_action_list_init(&ml, ms, 16, mb, sizeof mb);
+        memset(&ev, 0, sizeof ev);
+        ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.bytes.data = other; ev.u.message.bytes.len = m;
+        CHECK(gz_sign_handle(&mem, &ev, &ml) == GZ_OK && ml.count == 1 && ml.slots[0].kind == GZ_ACTION_SEND);
+        CHECK(ml.count == 1 && gz_sign_decode(ml.slots[0].u.send.bytes.data, ml.slots[0].u.send.bytes.len, &msg) &&
+              msg.kind == GZ_MSG_ABORT && msg.reason == GZ_WHY_INVALID_ROUND && gz_sign_latest(&mem) == NULL);
+        gz_sign_wipe(&mem);
+    }
+    /* the smallest round: the host and one member */
+    {
+        static gz_sign_t host;
+        static gz_action_t hs[16];
+        static uint8_t hb[4096];
+        gz_action_list_t hl;
+        uint8_t p[9];
+        b.which = 0;
+        eng_init(&host, &b, 0);
+        gz_action_list_init(&hl, hs, 16, hb, sizeof hb);
+        w_params(p, 1, 1, w_mask(1), 0);
+        CHECK(gz_sign_begin(&host, p, 9, &hl) == GZ_OK && hl.count == 2);
+        gz_sign_wipe(&host);
     }
     size_t m;
     b.which = 0;
@@ -579,12 +707,12 @@ static const uint64_t SC_KNOWN[N_SCENARIOS] = {
     0x978d9a1535674011ull, /* duplicates */
     0xa4e8bbfccfbaf10aull, /* member-restart-nonces */
     0xf4e77bdf3acc21e4ull, /* member-restart-signed */
-    0x61f7ab39be89056aull, /* tier-abort */
+    0xe5be8b1463379529ull, /* tier-abort */
     0xd65ef2260e583109ull, /* host-restarts */
     0x054e46de38d6cb39ull, /* timers */
     0x70a1e6d72cd4d9fdull, /* host-faults */
     0x5fe72522b7781190ull, /* member-faults */
-    0xbfe938e5e191d70aull, /* proposals */
+    0x177349a7136828dfull, /* proposals */
     0x718a55599b98c78eull, /* journal */
 };
 
