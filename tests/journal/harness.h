@@ -313,7 +313,10 @@ static inline int open_points(const uint8_t *seed, size_t seed_len, int crash, i
         int hit = crash ? fs.crashed : fs.points >= p;
         gz_journal_close(j);
         if (!hit) { memfs_free(&fs); return runs; }
-        if (!crash && st == GZ_JOURNAL_OK) { CHECK(st != GZ_JOURNAL_OK); }
+        if (!crash) {
+            /* A failed open returns an error and leaves no descriptor open. */
+            CHECK(st != GZ_JOURNAL_OK && memfs_open_fds(&fs) == 0 && fs.bad_closes == 0);
+        }
         memfs_settle(&fs, mode, p);
         gz_journal_open_info_t info;
         gz_journal_t *k = h_open_on(&fs, &st, &info);

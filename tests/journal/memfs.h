@@ -61,6 +61,8 @@ typedef struct {
     int fail_mode;
     uint64_t fail_only_sync;           /* with fail_at: count only syncs */
     uint64_t capacity;                 /* 0: unlimited */
+    size_t max_read;                   /* a read returns at most this; 0: unlimited */
+    int bad_closes;                    /* closes of a descriptor that was not open */
     int crashed;
     jmp_buf *crash_jump;
     /* Called after every successful file sync with the inode's durable length. */
@@ -79,5 +81,7 @@ const uint8_t *memfs_get(const memfs_t *m, const char *path, size_t *len);
 /* Replace a file's contents, durably (to set up a test). */
 void memfs_put(memfs_t *m, const char *path, const uint8_t *data, size_t len);
 void memfs_copy(memfs_t *dst, const memfs_t *src);
+/* Number of descriptors open now. */
+int memfs_open_fds(const memfs_t *m);
 
 #endif

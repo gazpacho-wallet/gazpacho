@@ -96,9 +96,10 @@ def mutants(text):
             yield i, re.sub(r"\S.*", ";", line, count=1)
 
 
-def run(cmd, timeout, cwd):
+def run(cmd, timeout, cwd, leaks):
+    env = dict(os.environ, ASAN_OPTIONS="detect_leaks=%d" % leaks)
     p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
+                         start_new_session=True, env=env)
     try:
         return p.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -132,7 +133,8 @@ def check(job):
                    os.path.join(d, "gz-journal"), "2000", "3"]
         else:
             cmd = [os.path.join(d, name), *args]
-        r = run(cmd, timeout, d)
+        # The crash sweeps abandon memory on purpose, as a crash does.
+        r = run(cmd, timeout, d, 0 if name == "test_journal_crash" else 1)
         if r != 0:
             subprocess.run(["rm", "-rf", d])
             return n, lineno, new_line, "killed by %s%s%s" % ("sanitizers in " if san else "", name,
@@ -161,7 +163,6 @@ def common_objects(name, flags):
 
 def main():
     os.makedirs(WORK, exist_ok=True)
-    os.environ["ASAN_OPTIONS"] = "detect_leaks=1"
     text = open(JOURNAL).read()
     objs = common_objects("common", CFLAGS)
     san_objs = common_objects("common-san", CFLAGS + SAN)

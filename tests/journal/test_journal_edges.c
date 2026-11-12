@@ -321,8 +321,86 @@ static void test_open_points(void)
     CHECK(runs >= 15); /* 10 points creating, 6 cutting */
 }
 
+/* Found by the second mutation run: descriptors, index growth past 64
+ * batches, reads that return little, a lone batch over the unsynced bound,
+ * another valid batch where a durable one was, and a refused open that must
+ * leave the file as it was. */
+static void test_more(void)
+{
+    memfs_t fs;
+    gz_journal_status_t st;
+    gz_journal_open_info_t info;
+    memfs_init(&fs);
+    gz_journal_t *j = open_on(&fs, 0, 0, 0, &st, NULL);
+    CHECK(st == GZ_JOURNAL_OK && memfs_open_fds(&fs) == 1);
+    static uint8_t g[66];
+    h_guard_bytes(g, 1);
+    gz_record_t gr = {GZ_RECORD_GUARD, {g, 66}};
+    gz_action_t a = {.kind = GZ_ACTION_SAVE};
+    a.u.save.batch = (gz_batch_id_t){1, 1};
+    a.u.save.records = &gr;
+    a.u.save.n_records = 1;
+    CHECK(gz_journal_save(j, &a) == GZ_JOURNAL_OK && gz_journal_flush(j) == GZ_JOURNAL_OK);
+    CHECK(memfs_open_fds(&fs) == 1); /* the guard's temporary file is closed */
+    for (uint64_t s = 2; s <= 200; s++) {
+        CHECK(save_n(j, 1, s, 3, 0x7e570001) == GZ_JOURNAL_OK);
+        if (s % 7 == 0 || s == 200) CHECK(gz_journal_flush(j) == GZ_JOURNAL_OK);
+    }
+    gz_storage_reader_t rd = gz_journal_reader(j);
+    gz_stored_batch_t sb;
+    uint64_t k = 0;
+    while (rd.next(rd.ctx, &sb)) k += sb.id.sequence == k + 1;
+    CHECK(k == 200 && !gz_journal_failed(j));
+    gz_journal_close(j);
+    CHECK(memfs_open_fds(&fs) == 0 && fs.bad_closes == 0);
+    /* Reads that return 7 bytes at a time. */
+    fs.max_read = 7;
+    j = open_on(&fs, 0, 0, 0, &st, &info);
+    CHECK(st == GZ_JOURNAL_OK && info.scan.n_batches == 200 && info.scan.verdict == GZ_JOURNAL_CLEAN);
+    rd = gz_journal_reader(j);
+    k = 0;
+    while (rd.next(rd.ctx, &sb)) k += sb.id.sequence == k + 1 && sb.n_records == 1;
+    CHECK(k == 200 && !gz_journal_failed(j));
+    gz_journal_close(j);
+    fs.max_read = 0;
+    /* A refused open leaves the file as it was, and nothing open. */
+    size_t before, after;
+    memfs_get(&fs, H_JOURNAL, &before);
+    j = open_on(&fs, 0, before + 73, 0, &st, NULL);
+    memfs_get(&fs, H_JOURNAL, &after);
+    CHECK(st == GZ_JOURNAL_ERR_FULL && j == NULL && after == before);
+    CHECK(memfs_open_fds(&fs) == 0 && fs.bad_closes == 0);
+    memfs_free(&fs);
+
+    /* One batch larger than the unsynced bound, right after an open: there
+     * is nothing unsynced to make durable first, so no extra mark. */
+    memfs_init(&fs);
+    j = open_on(&fs, 0, 0, 40, &st, NULL);
+    CHECK(save_n(j, 1, 1, 10, 0x7e570001) == GZ_JOURNAL_OK && marks_in(&fs) == 1);
+    CHECK(save_n(j, 1, 2, 10, 0x7e570001) == GZ_JOURNAL_OK && marks_in(&fs) == 2);
+    gz_journal_close(j);
+    memfs_free(&fs);
+
+    /* Another valid batch, shorter, written over a durable one. */
+    memfs_init(&fs);
+    j = open_on(&fs, 0, 0, 0, &st, NULL);
+    CHECK(save_n(j, 1, 1, 20, 0x7e570001) == GZ_JOURNAL_OK && gz_journal_flush(j) == GZ_JOURNAL_OK);
+    size_t len;
+    const uint8_t *cur = memfs_get(&fs, H_JOURNAL, &len);
+    uint8_t *d = malloc(len);
+    memcpy(d, cur, len);
+    one_batch(d + 122, 1, 1, 0x7e570001, 2);
+    memfs_put(&fs, H_JOURNAL, d, len);
+    rd = gz_journal_reader(j);
+    CHECK(rd.next(rd.ctx, &sb) == 0 && gz_journal_failed(j));
+    free(d);
+    gz_journal_close(j);
+    memfs_free(&fs);
+}
+
 int main(void)
 {
+    test_more();
     test_constants();
     test_scan_edges();
     test_limit_edges();

@@ -405,6 +405,18 @@ static int write_all(gz_journal_t *j, int fd, const uint8_t *buf, size_t len, ui
     return r >= 0 && (size_t)r == len; /* a short write is a failure, never retried */
 }
 
+/* Read exactly `len` bytes at `off`; a read may return fewer, so loop. 0 on
+ * an error or an end of file before `len`. */
+static int read_all(gz_journal_t *j, uint8_t *buf, uint64_t len, uint64_t off)
+{
+    for (uint64_t got = 0; got < len;) {
+        long r = j->os.pread(j->os.ctx, j->fd, buf + got, (size_t)(len - got), off + got);
+        if (r <= 0) return 0;
+        got += (uint64_t)r;
+    }
+    return 1;
+}
+
 static int index_add(gz_journal_t *j, uint64_t off, uint32_t size)
 {
     if (j->n_idx == j->cap_idx) {
@@ -520,11 +532,7 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
     if (size > j->hard_limit) { st = GZ_JOURNAL_ERR_FULL; goto out; }
     data = malloc(size ? (size_t)size : 1);
     if (!data) { st = GZ_JOURNAL_ERR_NO_MEMORY; goto out; }
-    for (uint64_t got = 0; got < size;) {
-        long r = j->os.pread(j->os.ctx, j->fd, data + got, (size_t)(size - got), got);
-        if (r <= 0) { st = GZ_JOURNAL_ERR_IO; goto out; }
-        got += (uint64_t)r;
-    }
+    if (!read_all(j, data, size, 0)) { st = GZ_JOURNAL_ERR_IO; goto out; }
     collect_t c = {j, 0};
     st = gz_journal_scan(data, (size_t)size, j->chain, &info->scan, collect, &c);
     if (st != GZ_JOURNAL_OK) goto out;
@@ -707,9 +715,8 @@ static int reader_next(void *ctx, gz_stored_batch_t *batch)
         j->rbuf_cap = size;
     }
     entry_t e;
-    long r = j->os.pread(j->os.ctx, j->fd, j->rbuf, size, off);
     /* Read back and checked again: what was durable must still be there. */
-    if (r < 0 || (uint32_t)r != size || !entry_at(j->rbuf, size, off, &e) ||
+    if (!read_all(j, j->rbuf, size, off) || !entry_at(j->rbuf, size, off, &e) ||
         e.kind != GZ_JOURNAL_KIND_BATCH || e.size != size) {
         fail(j, GZ_JOURNAL_ERR_IO);
         return 0;

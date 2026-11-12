@@ -149,7 +149,7 @@ static int m_open(void *ctx, const char *path, int how)
 static int m_close(void *ctx, int fd)
 {
     memfs_t *m = ctx;
-    if (!fd_ok(m, fd)) { errno = EBADF; return -1; }
+    if (!fd_ok(m, fd)) { m->bad_closes++; errno = EBADF; return -1; }
     memfs_inode_t *n = &m->inode[m->fd_inode[fd]];
     if (n->lock_fd == fd) n->lock_fd = -1;
     m->fd_inode[fd] = -1;
@@ -163,6 +163,7 @@ static long m_pread(void *ctx, int fd, void *buf, size_t len, uint64_t off)
     memfs_inode_t *n = &m->inode[m->fd_inode[fd]];
     if (off >= n->vol_len) return 0;
     if (len > n->vol_len - off) len = n->vol_len - (size_t)off;
+    if (m->max_read && len > m->max_read) len = m->max_read;
     memcpy(buf, n->vol + off, len);
     return (long)len;
 }
@@ -367,6 +368,13 @@ void memfs_put(memfs_t *m, const char *path, const uint8_t *data, size_t len)
     n->dur = xrealloc(n->dur, len);
     if (len) { memcpy(n->vol, data, len); memcpy(n->dur, data, len); }
     n->vol_len = n->dur_len = len;
+}
+
+int memfs_open_fds(const memfs_t *m)
+{
+    int n = 0;
+    for (int i = 0; i < MEMFS_FDS; i++) n += m->fd_inode[i] >= 0;
+    return n;
 }
 
 void memfs_copy(memfs_t *dst, const memfs_t *src)
