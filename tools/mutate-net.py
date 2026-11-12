@@ -22,12 +22,18 @@ TESTS = [  # name, sources, arguments, extra link flags
     ("frame", ["tests/net/test_frame.c"], ["3000"], []),
     ("wipes", ["tests/net/test_wipes.c"], [], ["-Wl,--wrap=gz_net_wipe,--wrap=HMAC"]),
     ("conn", ["tests/net/test_conn.c"], [], []),
+    ("envelope", ["tests/net/test_envelope.c"], [], []),
+    ("lnmsg", ["tests/net/test_lnmsg.c"], [], []),
+    ("peers", ["tests/net/test_peers.c"], [], []),
+    ("fuzz_envelope", ["tests/net/fuzz_envelope.c", "tests/net/fuzz_main.c"], ["5000"], []),
     ("fuzz_noise", ["tests/net/fuzz_noise.c", "tests/net/fuzz_main.c"], ["30000"], []),
     ("fuzz_tlv", ["tests/net/fuzz_tlv.c", "tests/net/fuzz_main.c"], ["100000"], []),
     ("net_peer", ["tests/net/net_peer.c"], None, []),  # built only, for gz_net
-    ("gz_net", ["tools/gz-net/gz-net.c"], None, []),   # run through tests/net/test_gz_net.sh
+    ("gz_net", ["tools/gz-net/gz-net.c"], None, []),   # run through tests/net/test_gz_net.sh and test_keepalive.sh
 ]
-LIB = ["ports/net/noise.c", "ports/net/frame.c", "ports/net/conn.c", "ports/net/wipe.c"]
+LIB = ["ports/net/noise.c", "ports/net/frame.c", "ports/net/conn.c", "ports/net/wipe.c",
+       "ports/net/envelope.c", "ports/net/lnmsg.c", "ports/net/peers.c"]
+KEEPALIVE_ARGS = ["3", "100", "1000"]  # seconds, ping_ms, pong_ms: short, as in CI
 
 
 def unescape(text):
@@ -92,15 +98,17 @@ def run_all(work, inc, lib):
         if name == "net_peer":
             continue
         if args is None:
-            cmd = ["sh", os.path.join(work, "tests/net/test_gz_net.sh"), exe, os.path.join(work, "net_peer.bin")]
+            cmds = [("gz_net", ["sh", os.path.join(work, "tests/net/test_gz_net.sh"), exe, os.path.join(work, "net_peer.bin")]),
+                    ("keepalive", ["sh", os.path.join(work, "tests/net/test_keepalive.sh"), exe] + KEEPALIVE_ARGS)]
         else:
-            cmd = [exe] + args
-        try:
-            rc = subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90, cwd=work)
-        except subprocess.TimeoutExpired:
-            rc = "timeout"
-        if rc != 0:
-            caught.append(name if rc != "timeout" else name + "(timeout)")
+            cmds = [(name, [exe] + args)]
+        for label, cmd in cmds:
+            try:
+                rc = subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120, cwd=work)
+            except subprocess.TimeoutExpired:
+                rc = "timeout"
+            if rc != 0:
+                caught.append(label if rc != "timeout" else label + "(timeout)")
     return caught
 
 

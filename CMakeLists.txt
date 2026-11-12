@@ -132,7 +132,8 @@ add_test(NAME core_isolation_refuses_sneaky_object
 # --- Transport (ports/net): BOLT 8 and BOLT 1, outside the core ----------------
 # Strict C11 like the core, but not freestanding: conn.c uses POSIX sockets.
 # noise.c and frame.c do no input or output (spec/transport.md).
-add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c)
+add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c
+            ports/net/envelope.c ports/net/lnmsg.c ports/net/peers.c)
 set_target_properties(gazpacho_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_net PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/ports/net ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
@@ -146,6 +147,9 @@ target_compile_options(gz-net PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(net_noise tests/net/test_noise.c gazpacho_net)
 gz_add_test(net_frame tests/net/test_frame.c gazpacho_net 20000)
 gz_add_test(net_conn  tests/net/test_conn.c  gazpacho_net)
+gz_add_test(net_envelope tests/net/test_envelope.c gazpacho_net)
+gz_add_test(net_lnmsg tests/net/test_lnmsg.c gazpacho_net)
+gz_add_test(net_peers tests/net/test_peers.c gazpacho_net)
 # Every wipe of a stack secret is counted, and HMAC is made to fail on demand
 # (GNU ld's --wrap; review of PR 10, section 6).
 gz_add_test(net_wipes tests/net/test_wipes.c gazpacho_net)
@@ -156,6 +160,17 @@ target_link_libraries(net_peer PRIVATE gazpacho_net)
 target_compile_options(net_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 add_test(NAME net_gz_net COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_gz_net.sh
          $<TARGET_FILE:gz-net> $<TARGET_FILE:net_peer>)
+# Two processes hold a lobby connection with pings: 4 s at a 100 ms ping in
+# CI; with -DGZ_LONG_TESTS=ON also six minutes at messages.md's 15 s ping and
+# 30 s pong timeout (not run in CI).
+add_test(NAME net_keepalive COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_keepalive.sh
+         $<TARGET_FILE:gz-net> 4 100 1000)
+option(GZ_LONG_TESTS "Register the long keep-alive test (six minutes)" OFF)
+if(GZ_LONG_TESTS)
+  add_test(NAME net_keepalive_long COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_keepalive.sh
+           $<TARGET_FILE:gz-net> 360 15000 30000)
+  set_tests_properties(net_keepalive_long PROPERTIES TIMEOUT 600 LABELS slow)
+endif()
 # gz-net against an independent Python BOLT 8 peer (the PR 10 reviewer's),
 # in both roles past key rotation. Opt-in: needs python3 and `cryptography`.
 # It should run in the automated checks wherever `cryptography` is installed
@@ -169,10 +184,14 @@ endif()
 # -DGZ_LIBFUZZER=ON (clang), linked with libFuzzer instead and run by
 # tools/run-fuzz.sh (docs/notes/ci.md).
 option(GZ_LIBFUZZER "Build the fuzz targets with libFuzzer (clang)" OFF)
-foreach(target noise tlv)
+# fuzz_envelope runs fewer plain-driver inputs: some build 65,000-byte parts.
+foreach(target noise tlv envelope)
   if(GZ_LIBFUZZER)
     add_executable(fuzz_${target} tests/net/fuzz_${target}.c)
     target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer)
+  elseif(target STREQUAL "envelope")
+    add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
+    add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 5000)
   else()
     add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
     add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 200000)
