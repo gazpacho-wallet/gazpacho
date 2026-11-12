@@ -3,10 +3,17 @@
 # says add_subdirectory(ports/chain).
 
 option(GZ_LIVE_TESTS "Add the opt-in test that queries the public signet chain servers" OFF)
+# Warnings are always on. Treating them as errors is for the project's own
+# checks (CI turns it on); someone building with a newer compiler should not
+# be stopped by a warning that compiler has just learned.
+option(GZ_WERROR "Treat compiler warnings in ports/chain as errors" OFF)
 
 find_package(OpenSSL REQUIRED) # libcrypto only (SHA-256)
 
-set(GZ_CHAIN_WARNINGS -Wall -Wextra -Werror)
+set(GZ_CHAIN_WARNINGS -Wall -Wextra)
+if(GZ_WERROR)
+  list(APPEND GZ_CHAIN_WARNINGS -Werror)
+endif()
 
 add_library(gazpacho_chain STATIC chain.c headers.c verify.c json.c esplora.c multi.c)
 target_include_directories(gazpacho_chain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -15,7 +22,7 @@ target_compile_options(gazpacho_chain PRIVATE ${GZ_CHAIN_WARNINGS})
 
 # The HTTPS transport and the tool need libcurl. The library and its unit
 # tests do not, so a machine without the curl development package still
-# builds and tests everything else.
+# builds and tests everything else. The transport is POSIX only.
 find_package(CURL QUIET)
 if(CURL_FOUND)
   add_library(gazpacho_chain_curl STATIC http_curl.c)
@@ -37,7 +44,7 @@ target_compile_options(gazpacho_chain_test_support PRIVATE ${GZ_CHAIN_WARNINGS})
 target_compile_definitions(gazpacho_chain_test_support PRIVATE
   GZ_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 
-foreach(t json headers esplora multi fuzz)
+foreach(t json headers esplora multi model fuzz)
   add_executable(chain_test_${t} tests/test_${t}.c)
   target_link_libraries(chain_test_${t} PRIVATE gazpacho_chain_test_support)
   target_compile_options(chain_test_${t} PRIVATE ${GZ_CHAIN_WARNINGS})
@@ -53,6 +60,20 @@ if(CURL_FOUND)
   add_test(NAME chain_tool_usage COMMAND gz-chain --help)
   set_tests_properties(chain_tool_usage PROPERTIES PASS_REGULAR_EXPRESSION "usage: gz-chain")
 
+  # The real transport and the tool against servers started on this machine
+  # only (127.0.0.1): a hostile HTTP server, HTTPS servers with bad
+  # certificates, and two small Esplora look-alikes. Needs python3 and the
+  # openssl command; skipped (not failed) without them. Takes some seconds
+  # because it waits out real time limits, hence the label.
+  add_executable(chain_test_transport tests/test_transport.c)
+  target_link_libraries(chain_test_transport PRIVATE gazpacho_chain_curl)
+  target_compile_options(chain_test_transport PRIVATE ${GZ_CHAIN_WARNINGS})
+  add_test(NAME chain_local_servers
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/local-servers.sh
+            $<TARGET_FILE:chain_test_transport> $<TARGET_FILE:gz-chain>
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_BINARY_DIR}/local-servers)
+  set_tests_properties(chain_local_servers PROPERTIES LABELS "slow" TIMEOUT 240 SKIP_RETURN_CODE 77)
+
   # Opt-in only: talks to mempool.space and blockstream.info on signet.
   # Never part of the default ctest run or of CI.
   if(GZ_LIVE_TESTS)
@@ -60,6 +81,6 @@ if(CURL_FOUND)
     target_link_libraries(chain_test_live PRIVATE gazpacho_chain_test_support gazpacho_chain_curl)
     target_compile_options(chain_test_live PRIVATE ${GZ_CHAIN_WARNINGS})
     add_test(NAME chain_live COMMAND chain_test_live)
-    set_tests_properties(chain_live PROPERTIES TIMEOUT 300)
+    set_tests_properties(chain_live PROPERTIES TIMEOUT 600)
   endif()
 endif()
