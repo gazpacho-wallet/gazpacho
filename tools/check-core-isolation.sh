@@ -53,6 +53,11 @@
 set -eu
 sanitized=0
 if [ "$1" = "--sanitized" ]; then sanitized=1; shift; fi
+# --allow FILE: further exact symbol names, one per line, that the library may
+# call outside itself (the signing engine's calls into secp256k1-zkp and the
+# core's action list). Still an allow-list of exact names.
+allow=""
+if [ "$1" = "--allow" ]; then allow="$2"; shift 2; fi
 lib="$1"; shift
 cc=""; cflags=""
 if [ "${1:-}" = "--sources" ]; then shift; cc="$1"; cflags="$2"; shift 2; else set --; fi
@@ -67,6 +72,7 @@ allowed_outside() {
         __memcpy_chk|__memset_chk|__memmove_chk) return 0 ;;
         __stack_chk_fail|_GLOBAL_OFFSET_TABLE_) return 0 ;;
     esac
+    if [ -n "$allow" ] && grep -qxF -- "$1" "$allow"; then return 0; fi
     if [ "$sanitized" -eq 1 ]; then
         case "$1" in __asan_*|__ubsan_*|__sanitizer_*) return 0 ;; esac
     fi
@@ -149,7 +155,10 @@ esac
 # header includes are resolved first. Needs the compiler and the core's flags.
 for src in "$@"; do
     if [ -n "$cc" ]; then
-        text=$("$cc" $cflags -E -P "$src" 2>/dev/null || echo "preprocess failed")
+        if ! text=$("$cc" $cflags -E -P "$src" 2>/dev/null); then
+            report "source that does not preprocess" "$src"
+            continue
+        fi
     else
         text=$(cat "$src")
     fi

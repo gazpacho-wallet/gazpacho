@@ -119,11 +119,14 @@ endforeach()
 if(GZ_SANITIZE)
   set(GZ_ISOLATION_MODE --sanitized)    # the checkers add writable sections of their own
 endif()
+string(JOIN " " GZ_CORE_FLAGS_TEXT -std=c11 ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+# The source scan needs the compiler and the flags, include paths too: before
+# this, the sources were passed in their place and nothing was preprocessed.
+set(GZ_CORE_SCAN_FLAGS "${GZ_CORE_FLAGS_TEXT} -I${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include")
 add_test(NAME core_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
-          $<TARGET_FILE:gazpacho_core> --sources ${GZ_CORE_SOURCES})
+          $<TARGET_FILE:gazpacho_core> --sources ${CMAKE_C_COMPILER} "${GZ_CORE_SCAN_FLAGS}" ${GZ_CORE_SOURCES})
 add_library(isolation_sneaky OBJECT tests/isolation/sneaky.c)
-string(JOIN " " GZ_CORE_FLAGS_TEXT -std=c11 ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
 add_test(NAME core_isolation_refuses_sneaky_object
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation/check-sneaky.sh
           ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh
@@ -132,6 +135,32 @@ add_test(NAME core_isolation_refuses_sneaky_object
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation
           ${CMAKE_CURRENT_BINARY_DIR}
           ${GZ_CORE_FLAGS_TEXT})
+
+# --- Signing round engine: portable C11 like the core, sans-I/O, calling only
+# secp256k1-zkp (an exact allow-list) and the core's action list. ---
+set(GZ_SIGNING_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/sign_tx.c)
+add_library(gazpacho_signing STATIC ${GZ_SIGNING_SOURCES})
+set_target_properties(gazpacho_signing PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_signing PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include)
+target_link_libraries(gazpacho_signing PUBLIC gazpacho_core secp256k1)
+target_compile_options(gazpacho_signing PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+
+add_executable(test_signing tests/signing/test_signing.c)
+target_link_libraries(test_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar)
+target_compile_options(test_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME signing COMMAND test_signing)
+add_executable(fuzz_signing tests/signing/fuzz_signing.c)
+target_link_libraries(fuzz_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar)
+target_compile_options(fuzz_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME signing_fuzz COMMAND fuzz_signing 20000 20)
+add_test(NAME signing_isolation
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          --allow ${CMAKE_CURRENT_SOURCE_DIR}/tools/signing-allowed-calls.txt
+          $<TARGET_FILE:gazpacho_signing> --sources ${CMAKE_C_COMPILER}
+          "${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include -I${secp256k1-zkp_SOURCE_DIR}/include"
+          ${GZ_SIGNING_SOURCES})
 
 # The same tests under valgrind's memcheck with origin tracking, which sees
 # what the compiler-based checkers cannot: uninitialised bytes, padding

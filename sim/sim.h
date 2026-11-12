@@ -187,6 +187,10 @@ typedef struct {
      * the harness only keeps confirmations of dead incarnations away from the
      * node. */
     gz_status_t (*confirm)(void *ops_ctx, sim_t *sim, uint32_t index, gz_batch_id_t batch);
+    /* May be NULL. Called with every send a node's program actually carries
+     * out, as it leaves, before the network's faults: what left, not what
+     * was listed. For invariants over what parties sent. */
+    void (*observe)(void *ops_ctx, uint32_t index, const gz_action_t *send);
     /* Passed back as `ops_ctx`. With check_same_seed the second simulator is
      * given `twin_ctx` instead, so the two never share state: set it to a
      * separate object prepared the same way. */
@@ -241,6 +245,11 @@ typedef struct {
     /* Run a second simulator with the same configuration in lockstep and check
      * after every step that both traces are identical ("same seed, same run"). */
     int check_same_seed;
+
+    /* Buffer sizes; 0 keeps the defaults (16 actions and 4,096 bytes per
+     * node step, 64 actions and 16,384 bytes held by a node's runner). */
+    uint32_t step_slots, runner_slots;
+    size_t step_bytes, runner_bytes;
 
     sim_node_ops_t ops;
 } sim_config_t;
