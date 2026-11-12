@@ -236,6 +236,17 @@ static void test_messages_and_writer(void)
     /* Truncated integers. */
     CHECK(gz_tu_write(0, t) == 0 && gz_tu_write(1, t) == 1 && gz_tu_write(256, t) == 2);
     CHECK(gz_tu_write(UINT64_MAX, t) == 8 && all_zero(t, 0) && t[0] == 0xff && t[7] == 0xff);
+    {
+        /* The largest value writes exactly eight bytes and nothing past them. */
+        uint8_t nine[9];
+        size_t k, ff = 0;
+        memset(nine, 0x5a, sizeof nine);
+        CHECK(gz_tu_write(UINT64_MAX, nine) == 8 && nine[8] == 0x5a);
+        for (k = 0; k < 8; k++) ff += nine[k] == 0xff;
+        CHECK(ff == 8);
+        memset(nine, 0x5a, sizeof nine);
+        CHECK(gz_tu_write(0x0100000000000000ULL, nine) == 8 && nine[0] == 1 && nine[7] == 0 && nine[8] == 0x5a);
+    }
     CHECK(gz_tu_write(0x0102030405ULL, t) == 5 && eqhex(t, 5, "0102030405"));
     CHECK(gz_tu_read((const uint8_t *)"\x01\x00\x00\x00\x00", 5, 4, &v) == GZ_FRAME_INVALID);
     CHECK(gz_tu_read((const uint8_t *)"\x01\x00\x00\x00", 4, 4, &v) == GZ_FRAME_OK && v == 0x01000000);

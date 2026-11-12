@@ -53,7 +53,7 @@ size_t gz_tu_write(uint64_t v, uint8_t out[8])
 {
     size_t n = 0, i;
     uint64_t t;
-    for (t = v; t; t >>= 8) n++;
+    for (t = v; t != 0 && n < 8; t >>= 8) n++; /* n <= 8 always; the bound tells the compiler */
     for (i = 0; i < n; i++) out[i] = (uint8_t)(v >> (8 * (n - 1 - i)));
     return n;
 }
