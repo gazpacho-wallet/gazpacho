@@ -2,6 +2,7 @@
 """Check that the wallet key library cannot reach the outside world.
 
 usage: check_no_io.py WALLET_LIB [IMPORTED_LIB] [--expect-fail NAME[|NAME...]]
+                      [--also-allow NAME[|NAME...]]
 
 The rule is an allow-list.  Every symbol the wallet library's objects ask the
 linker for must be on the list below, or be defined by the wallet library
@@ -27,6 +28,10 @@ objects none beyond the listed exceptions.
 What this check cannot see: calls made through function pointers handed in
 by a caller (the library takes none), and what the allowed libcrypto and
 secp256k1 functions do inside (neither does I/O in the functions used).
+
+--also-allow adds names to the allow-list for this run only (the wallet
+transaction library uses it for the signing calls and the key library
+functions it calls).
 
 --expect-fail turns the result round, for the negative tests: the check must
 fail, and one of the given names must be among the symbols it objects to.
@@ -126,6 +131,11 @@ def allowed(name, extra=()):
 def main():
     args = sys.argv[1:]
     expect = None
+    also = set()
+    if "--also-allow" in args:
+        i = args.index("--also-allow")
+        also = set(args[i + 1].split("|"))
+        del args[i:i + 2]
     if "--expect-fail" in args:
         i = args.index("--expect-fail")
         expect = args[i + 1].split("|")
@@ -150,7 +160,7 @@ def main():
                     problems.append((name, "%s uses the imported function %s, which is not "
                                            "on the list of imported functions it may use"
                                      % (member, name)))
-            elif not allowed(name):
+            elif not allowed(name, also):
                 problems.append((name, "%s references %s, which is not on the allow-list"
                                  % (member, name)))
         for name in sorted(state):
