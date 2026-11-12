@@ -30,7 +30,8 @@ plan >"$dir/plan2" 2>/dev/null
 check plan-deterministic cmp -s "$dir/plan1" "$dir/plan2"
 check plan-fee grep -qx 'fee 22' "$dir/plan1"
 check plan-vsize grep -qx 'vsize 212' "$dir/plan1"
-check plan-change grep -qx "change 29978 at m/86'/coin'/0'/1/3" "$dir/plan1"
+check plan-change grep -qx "change 29978 at m/86'/1'/0'/1/3" "$dir/plan1"
+check plan-path-no-placeholder sh -c "! grep -q \"coin'\" '$dir/plan1'"
 check plan-no-signed-without-release sh -c "! grep -q '^signed' '$dir/plan1'"
 plan --release >"$dir/rel" 2>/dev/null; check release-ok [ $? -eq 0 ]
 sed -n 's/^signed //p' "$dir/rel" > "$dir/hex"

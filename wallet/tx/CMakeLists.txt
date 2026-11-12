@@ -70,3 +70,6 @@ target_compile_definitions(gz-wallet-tx PRIVATE
 target_compile_options(gz-wallet-tx PRIVATE ${GZW_WARNINGS})
 add_test(NAME wallet_tx_tool
   COMMAND sh ${GZT_TESTS}/test_tool.sh $<TARGET_FILE:gz-wallet-tx> ${CMAKE_CURRENT_BINARY_DIR}/tool-test)
+add_test(NAME wallet_tx_tool_chain
+  COMMAND sh ${GZT_TESTS}/test_tool_chain.sh $<TARGET_FILE:gz-wallet-tx> ${CMAKE_CURRENT_BINARY_DIR}/tool-chain-test)
+set_tests_properties(wallet_tx_tool_chain PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
