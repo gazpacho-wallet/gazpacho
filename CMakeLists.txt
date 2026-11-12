@@ -146,8 +146,11 @@ add_test(NAME core_isolation_refuses_sneaky_object
 # included, reaching a decision or an output. The tests compare or digest
 # everything the core hands out, so such bytes show. Registered only where
 # valgrind is installed, and not in the sanitizer build (the two do not mix).
+# GZ_VALGRIND_TESTS=OFF leaves them out (the wallet break-checks do, as the
+# core cannot notice a wallet fault and they would run once per fault).
+option(GZ_VALGRIND_TESTS "Register the core tests again under valgrind, where it is installed" ON)
 find_program(GZ_VALGRIND valgrind)
-if(GZ_VALGRIND AND NOT GZ_SANITIZE)
+if(GZ_VALGRIND AND GZ_VALGRIND_TESTS AND NOT GZ_SANITIZE)
   set(GZ_MEMCHECK ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes --leak-check=full)
   foreach(name action runner node rng sim sim_known_trace)
     add_test(NAME valgrind_${name} COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_${name}>)
