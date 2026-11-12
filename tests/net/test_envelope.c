@@ -375,6 +375,8 @@ static void test_read(void)
     CHECK(gz_env_read(msg, mk(128, SCOPE, "fd", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_IGNORE);
     CHECK(gz_env_read(msg, mk(130, ZERO, "0201ff", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_IGNORE);
     CHECK(gz_env_read(msg, mk(159, SCOPE, "", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_IGNORE);
+    CHECK(gz_env_read(msg, mk(158, SCOPE, "", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_IGNORE);
+    CHECK(gz_env_read(msg, mk(128, SCOPE, "", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_IGNORE);
     CHECK(gz_env_read(msg, mk(160, SCOPE, "", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE);
     CHECK(gz_env_read(msg, mk(126, SCOPE, "", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE);
     /* hello, with and without a scope; never from the host. */
@@ -393,7 +395,8 @@ static void test_read(void)
     /* Too short: under the tag, and between the tag and the full header. */
     CHECK(gz_env_read(m1, 5, GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE);
     CHECK(gz_env_read(m1, 6, GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE);
-    CHECK(gz_env_read(m1, 39, GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE);
+    CHECK(gz_env_read(m1, 39, GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE && why &&
+          strcmp(why, "factory message too short") == 0);
     CHECK(gz_env_read(m1, 40, GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE); /* ready without records */
     /* Not type 52791 at all. */
     m1[1] ^= 2;

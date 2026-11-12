@@ -8,8 +8,10 @@ Each mutant is applied to a scratch copy (never to the source tree), the
 transport and its tests are built there, and every test is run. A mutant no
 test notices is a survivor.
 
-usage: tools/mutate-net.py SOURCE-DIR BUILD-DIR [NAME...]
+usage: tools/mutate-net.py [--first] SOURCE-DIR BUILD-DIR [NAME...]
 BUILD-DIR is a configured CMake build, used only to find libsecp256k1.
+--first stops at the first test that notices a mutant (much faster; the
+report then names only that test).
 """
 import os
 import shutil
@@ -17,13 +19,13 @@ import subprocess
 import sys
 import tempfile
 
-TESTS = [  # name, sources, arguments, extra link flags
+TESTS = [  # name, sources, arguments, extra link flags; fast ones first
     ("noise", ["tests/net/test_noise.c"], [], []),
     ("frame", ["tests/net/test_frame.c"], ["3000"], []),
-    ("wipes", ["tests/net/test_wipes.c"], [], ["-Wl,--wrap=gz_net_wipe,--wrap=HMAC"]),
-    ("conn", ["tests/net/test_conn.c"], [], []),
     ("envelope", ["tests/net/test_envelope.c"], [], []),
     ("lnmsg", ["tests/net/test_lnmsg.c"], [], []),
+    ("wipes", ["tests/net/test_wipes.c"], [], ["-Wl,--wrap=gz_net_wipe,--wrap=HMAC"]),
+    ("conn", ["tests/net/test_conn.c"], [], []),
     ("peers", ["tests/net/test_peers.c"], [], []),
     ("fuzz_envelope", ["tests/net/fuzz_envelope.c", "tests/net/fuzz_main.c"], ["5000"], []),
     ("fuzz_noise", ["tests/net/fuzz_noise.c", "tests/net/fuzz_main.c"], ["30000"], []),
@@ -80,7 +82,7 @@ def apply(path, old, new, nth):
     return None
 
 
-def run_all(work, inc, lib):
+def run_all(work, inc, lib, first=False):
     cc = ["gcc", "-std=c11", "-O1", "-w", "-I", work + "/ports/net", "-I", work + "/core/gazpacho/include", "-I", inc]
     objs = []
     for src in LIB:
@@ -94,6 +96,8 @@ def run_all(work, inc, lib):
         if subprocess.call(cc + [os.path.join(work, s) for s in srcs] + objs + [lib, "-lcrypto"] + ldflags + ["-o", exe],
                            stderr=subprocess.DEVNULL) != 0:
             caught.append(name + "(build)")
+            if first:
+                return caught
             continue
         if name == "net_peer":
             continue
@@ -109,6 +113,8 @@ def run_all(work, inc, lib):
                 rc = "timeout"
             if rc != 0:
                 caught.append(label if rc != "timeout" else label + "(timeout)")
+                if first:
+                    return caught
     return caught
 
 
@@ -116,8 +122,14 @@ def main():
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
-    src, build = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
-    only = set(sys.argv[3:])
+    argv = sys.argv[1:]
+    first = "--first" in argv
+    argv = [a for a in argv if a != "--first"]
+    if len(argv) < 2:
+        print(__doc__)
+        return 2
+    src, build = os.path.abspath(argv[0]), os.path.abspath(argv[1])
+    only = set(argv[2:])
     inc, lib = secp_paths(build)
     mutants = []
     with open(os.path.join(src, "tests/net/mutants.txt")) as f:
@@ -142,7 +154,7 @@ def main():
                     print("NOT APPLIED %-28s %s" % (name, err), flush=True)
                     broken.append(name)
                     continue
-            caught = run_all(work, inc, lib)
+            caught = run_all(work, inc, lib, first and name != "baseline")
         finally:
             shutil.rmtree(work, ignore_errors=True)
         if name == "baseline":

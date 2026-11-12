@@ -1,12 +1,13 @@
-# Transport, first cut (draft 2, reviewed)
+# Transport (draft 3)
 
-The connection between Gazpacho programs for slice 1: Lightning's encrypted, authenticated connection (BOLT 8) carrying Lightning's message format (BOLT 1). Draft 1 was written 2026-11-11 before the code. Draft 2 (2026-11-12) answers the independent review of pull request 10 (`notes/review-pr10-transport.md`, findings F1 to F10).
+The connection between Gazpacho programs for slice 1: Lightning's encrypted, authenticated connection (BOLT 8) carrying Lightning's message format (BOLT 1). Draft 1 was written 2026-11-11 before the code. Draft 2 (2026-11-12) answers the independent review of pull request 10 (`notes/review-pr10-transport.md`, findings F1 to F10). **Draft 3** (2026-11-12) adds lobby connections: many connections over one poll loop, BOLT 1's `init`, ping and pong, the factory envelope of `messages.md` sections 3 to 5, and events that report every outcome (section "Lobby connections"). Draft 3's additions have **not been reviewed**; drafts 1 and 2 were.
 
 **Reviewed.** The two rounds of that review (`notes/review-pr10-transport.md` and `notes/review-pr10-transport-r2.md`) count as this specification's review under checklist item 1 (decided 2026-11-12). **Exception to item 1:** the specification was reviewed after the code was written, not before; that cannot be repaired for this piece and is recorded here, as is the pull request's size (item 24). Small changes after the second round (findings N1 to N6) are noted where they apply.
 
 ## Scope
 
-- Slice 1 only: a member connects directly to the host's address (given to it by hand) and pins the host's key. No Nostr, no address gossip, no `init` exchange, no ping and pong of BOLT 1's types 18 and 19, no reconnection logic.
+- Slice 1 only: a member connects directly to the host's address (given to it by hand) and pins the host's key. No Nostr, no address gossip, no reconnection logic (a caller that is told a connection closed connects again).
+- Two layers. `conn.c` (drafts 1 and 2) is one blocking connection with no `init` and no ping; `gz-net listen` and `connect` and the BOLT 8 tests use it. `peers.c` (draft 3) is what lobbies use: `init`, ping and pong, the factory envelope, and events.
 - The transport lives outside the core, in `ports/net/`. The core never calls it. A program moves bytes between the transport and the core's send actions and message events.
 
 ## Pieces
@@ -16,7 +17,10 @@ The connection between Gazpacho programs for slice 1: Lightning's encrypted, aut
 | `ports/net/noise.c` | BOLT 8 state machine: the three acts, then encrypt and decrypt with key rotation | None. Bytes in, bytes out. Randomness comes from a callback (`gz_random_port_t`, the core's own port type) |
 | `ports/net/frame.c` | BOLT 1 message framing, BigSize, a strict TLV reader and writer, truncated integers | None |
 | `ports/net/conn.c` | POSIX TCP: listen, accept, connect, with timeouts and a size cap, driving the state machine | Sockets and the monotonic clock |
-| `tools/gz-net/gz-net.c` | `listen` and `connect`: handshake, then a ping and pong of custom message type 32769 | The above, and the system's randomness (`getrandom` on Linux, `getentropy` elsewhere; a failure ends the program) |
+| `ports/net/envelope.c` | The factory envelope (`messages.md` 3 to 5): reading with every record table, writing, splitting and reassembly, `msg_hash`; the bLIP-56 byte mapping (vectors M0, M3; not used in slice 1) | None. The reassembly buffer of one transfer (at most 1 MiB) is the only allocation |
+| `ports/net/lnmsg.c` | BOLT 1's `init`, `ping`, `pong`, `warning`, `error` | None |
+| `ports/net/peers.c` | Lobby connections: a step-wise handshake for each connection, all driven by one `poll`, `init`, keep-alive, the envelope, events | Sockets and the monotonic clock |
+| `tools/gz-net/gz-net.c` | `listen` and `connect`: handshake, then a ping and pong of custom message type 32769. `serve` and `join`: a lobby connection held with pings, `hello` answered by `lobby_status` | The above, and the system's randomness (`getrandom` on Linux, `getentropy` elsewhere; a failure ends the program) |
 
 Cryptography: ECDH from libsecp256k1's ECDH module, whose default hash is SHA-256 of the compressed shared point, exactly BOLT 8's `ECDH`. ChaCha20-Poly1305, SHA-256 and HMAC-SHA256 from OpenSSL's libcrypto, as the imported code already uses. HKDF is the two HMAC steps of RFC 5869 written out (extract, then two blocks of expand with empty `info`), because BOLT 8 gives the intermediate values to check them against.
 
@@ -49,11 +53,35 @@ Sockets are non-blocking and close-on-exec, set in the same call that makes them
 
 A peer's close never raises SIGPIPE: writes use `MSG_NOSIGNAL` where the system has it, otherwise each socket gets `SO_NOSIGPIPE`; a system with neither does not build `conn.c` (it stops with an error rather than fall back silently). The tests run with SIGPIPE at its default action.
 
+## Lobby connections (draft 3)
+
+A lobby gathers for hours (`messages.md` section 2), so a host keeps many members connected and idle. `ports/net/peers.c` does this; `conn.c` is unchanged.
+
+L1. **One loop.** Every connection, listening socket and timer is served by one `poll`. The BOLT 8 acts are read and written step by step as bytes arrive, so a peer that is silent or slow in its handshake holds only its own slot until its deadline, and every other member is served meanwhile. This settles review finding F2 in favour of the step-wise handshake (no threads).
+
+L2. **Deadlines.** For a connection we make, TCP connect, the three acts and the peer's `init` must all be done within `handshake_ms` (10 s) of the call; for one we accept, within `handshake_ms` of the accept. Once a message has started (its first header byte read), the whole message must arrive within `recv_ms` (30 s): a peer that trickles bytes is closed. Between messages there is no deadline: an idle connection is kept by L4, not cut. Queued bytes that make no progress for `send_ms` (10 s) close the connection.
+
+L3. **`init`.** Each side sends `init` as soon as its handshake is done: no global features, no features (a build without discovery sets no bit, `messages.md` section 2), and `networks` (TLV 1) holding exactly the chain hash the program is configured for, signet in slice 1. The peer's first message must be `init`; its features must hold no even bit (this program knows no feature, so every even bit is an unknown required one, BOLT 1); its `networks` must be exactly our chain; `remote_addr` and other odd records are skipped. Anything else is refused. Nothing but `init` can be sent before the peer's `init` has been accepted. A second `init` is refused.
+
+L4. **Ping and pong.** After `ping_ms` (15 s) without a whole message from the peer, a side sends `ping` with `num_pong_bytes` cycling through 1 to 16 and no ignored bytes, and waits for its `pong`; at most one ping is outstanding. A `pong` whose length is not the one asked for is refused; a `pong` not asked for is ignored. No `pong` within `pong_ms` (30 s) closes the connection. A received `ping` is answered with exactly `num_pong_bytes` zero bytes, unless it asks for 65,532 or more, which BOLT 1 says to ignore, or the peer is not reading (its queue is full). More than `max_pings` (10) pings in one `pong_ms` window are refused.
+
+L5. **Refusing.** "Refuse" (`messages.md` section 1) is: stop reading, queue a `warning` with an all-zero `channel_id` and a short ASCII reason, close once it is written or after `send_ms`. A received `error` closes at once; a received `warning` is reported and the connection kept. An unknown odd message type is ignored; an unknown even type is refused.
+
+L6. **Factory messages.** Type 52791 is read with `envelope.c` as `messages.md` sections 3 to 5 say: the receiving side is the host on connections it accepted and the member on connections it made, which decides the direction rule. A wrong protocol tag is ignored, with one `warning` per connection. Parts are put back together per connection, one transfer at a time, at most 1 MiB; an incomplete transfer is dropped with its connection. Only the host splits: `gz_peers_send` refuses records over 65,495 bytes on a connection it made.
+
+L7. **Events.** `gz_peers_poll` returns one event at a time: `CONNECTED` (handshake and `init` done), `MESSAGE` (a whole factory message, after reassembly), `WARNING`, `CLOSED`. Each names the connection (an id never reused) and, once the handshake has proved it, the peer's node id (its static key; for a connection we make, the pin). `CLOSED` says why: lost, refused, a timeout (connect, handshake, pong, message, send), the handshake, our member check, `init`, our refusal of a message (with the reason), the peer's `error` (with its text), decryption, a socket error, or our own `gz_peers_refuse`. A connection closed with `gz_peers_close` gives no event. Nothing fails silently.
+
+L8. **Keys.** A connection we make may use its own static key (`messages.md` section 2: a fresh key per new connection, or the seat's key); otherwise the configured one. The host's member check (rule 13) is required, as for `conn.c`.
+
+L9. **Bounds.** At most `max_conns` (64) connections: one accepted beyond that is closed at once. At most `max_queue` (4 MiB) unsent bytes per connection: a send that would exceed it returns "full" and keeps the connection. Every decrypted message is wiped after it is handled.
+
 ## Limits of this cut
 
-- Accept and handshake are one blocking call. While a peer is in its handshake the host serves nobody else, so one silent or slow peer holds the host for up to the handshake timeout, and a peer that does so again and again keeps members out. Acceptable for slice 1, where a host waits for a few members it is told about; not for a host serving members. Before that: a step-wise handshake driven by one `poll` over many connections (the state machine already allows it), or a capped number of connection threads or processes. Decided 2026-11-12 after review finding F2. **Open:** which of the two is not decided; neither review round decided it, and it must be decided before a host serves members. If threads are chosen, the atomic close-on-exec above matters.
-- The idle timeout and the per-message deadline are the same timeout. A member idle for 30 s is cut off. Before members stay connected, split the two and add BOLT 1's ping and pong.
-- POSIX only. Windows needs its own `conn` behind the same header (and `fd` as an opaque handle).
+- `conn.c`'s accept and handshake are one blocking call (review finding F2). Lobbies use `peers.c` instead (L1), so this now limits only `gz-net listen` and the tests that use `conn.c`.
+- In `conn.c` the idle timeout and the per-message deadline are still the same timeout: a `conn.c` connection idle for 30 s is cut off. `peers.c` splits the two (L2, L4).
+- `peers.c` connects to the first address a numeric host gives; it does not try the others.
+- POSIX only. Windows needs its own `conn` and `peers` behind the same headers (and `fd` as an opaque handle).
+- The randomness port still cannot report a failure (review finding F7, decision 12); `gz-net` ends the program instead. Changing the port belongs to the core.
 
 ## Decisions where BOLT 8, BOLT 1 and our documents are silent
 
@@ -71,6 +99,23 @@ All twelve were confirmed by the review of PR 10 (decisions 1 to 10 in round 1, 
 10. A static key is read from a file of exactly 64 hex digits and an optional line end, never from the command line, so it does not appear in process listings. Pins, ports and counts are parsed strictly too: anything else in them is refused.
 11. A `gz_conn_t` starts zeroed and is reusable after it is closed. Accept or connect on one that is still open is refused and leaves it working (it would otherwise leak its socket). Closing a zeroed one closes no descriptor.
 12. The randomness port cannot report a failure, so `gz-net` ends the program if the system's randomness cannot be read rather than continue with weak values. It reads with `getrandom` (or `getentropy`), so no buffer of future key bytes stays in the process (N3). Letting the core's port report failures is left to the core.
+
+Draft 3 adds these, where BOLT 1 and `messages.md` leave a choice (not yet reviewed):
+
+13. "Silence" before a ping means no whole message received from the peer; what we send does not count. So when both sides are idle, whichever timer runs out first pings, and the other side, having just heard from it, usually does not.
+14. A `pong` must have exactly the length the outstanding ping asked for, or the connection is refused (BOLT 1 allows failing it). A `pong` with no ping outstanding is ignored.
+15. Ping lengths cycle through 1 to 16, so a late `pong` cannot pass for the current one; no ignored bytes are sent.
+16. The ping flood limit (BOLT 1: a node "SHOULD fail" a peer that sends far more than one ping per 30 seconds) is more than 10 pings in one `pong_ms` window, configurable. `gz-net` raises it to 10 plus three times its own ping rate, for its fast test settings.
+17. The peer's `init` must arrive within the handshake deadline. A message other than `init` first is refused with the reason "first message is not init"; a second `init` is refused.
+18. `networks` must be present and hold exactly one chain hash, ours. Missing `networks` is refused like a wrong one.
+19. A warning before closing is sent for every refusal after the handshake, including `init` failures; there is none for handshake failures (nothing can be encrypted yet) and none for the member check (rule 13: closed at once).
+20. Kind 2 (`part`) is treated as host to member only: a host refuses a part as a kind in the wrong direction (`messages.md` 5: "members send no parts in slice 1").
+21. A part whose `transfer_id` is the open transfer's but whose `inner_kind`, `total_len`, `count` or `scope` differ is refused. A transfer whose whole message would have fitted one envelope (65,001 to 65,495 bytes) is accepted: the receiving rules of section 5 do not refuse it, though a sender never makes one.
+22. Records whose encoding `messages.md` leaves open (`evidence`, `all_partials`, `payouts`, `penalties`) are skipped as unknown odd records; `distribution` (44) is refused as an unknown even record, as 7.2 says for slice 1.
+23. `round_all_nonces` items are checked for shape only: whole blocks, 1 to 256 items, at least one signer each. Whether they match the round is the signing engine's check. Likewise every other semantic check (signatures, versions, seat rules) is above the transport; `gz_peers_refuse` lets the engine refuse.
+24. "ASCII" (`round_abort`'s `detail`, warning texts) means printable ASCII, 0x20 to 0x7e. `display_name`'s UTF-8 must be well formed (RFC 3629: no overlong forms, no surrogates, nothing above U+10FFFF).
+25. This build has no discovery, so every discovery kind (128 to 159) is ignored, whatever it holds. A reassembled message of an unknown odd kind is ignored.
+26. Defaults: 64 connections, 4 MiB of unsent bytes per connection. A send over the queue limit returns an error instead of closing; an accept over the connection limit is closed at once without an event.
 
 ## Tests, listed before the code
 
@@ -91,3 +136,5 @@ A randomised TLV test against an independent model: a generator that builds stre
 Fuzz targets, written for libFuzzer and also built with a plain driver for the build server (which has no clang): the decrypting reader, and the TLV parser.
 
 Mutation run: a list of deliberate small faults in `ports/net/`, each built and tested in a scratch copy, reporting which no test catches.
+
+Added in draft 3: vectors M0 to M3 of `messages.md` byte for byte (M1's signature verified, M3 to M1 and back); every kind's record table, written in the test from the specification, at every limit (each required record missing, each size one byte short and long, each list one byte off and one entry past its bounds, an unknown even and odd record, a record after 240, a zero scope, the wrong direction); kinds, tags, discovery and the largest 65,535-byte message; splitting at the thresholds and at 1 MiB, in order, reversed and scrambled, and every hostile part of `messages.md` tests 9 to 14; `init`, ping, pong, warning and error, malformed at every field; between processes, a host and members over one loop: messages both ways with node ids, a 1 MiB message in parts, a fresh key per connection, an idle connection kept by pings far past the old idle cut, a silent connection not delaying another member's handshake, and each failure reported as its event (refused, handshake and pong timeouts, wrong pin, other chain, member check, connection limit, a message never finished, a peer that never reads, a pong of the wrong length, `init` not first, refusals with their warnings, a peer's error); `gz-net serve` and `join` holding a connection for 4 s at a 100 ms ping (six minutes at 15 s with `-DGZ_LONG_TESTS=ON`); the Python peer speaking `init`, ping, pong, `hello` and `lobby_status` against `gz-net` in both roles; a fuzz target `fuzz_envelope`; and mutants for the three new files.

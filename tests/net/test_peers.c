@@ -224,6 +224,23 @@ static void test_basic(void)
     e = expect(1, GZ_PEER_EV_MESSAGE, 60000);
     CHECK(e && e->records_len == n && memcmp(e->records, big, n) == 0);
     CHECK(gz_peers_send(S[0].p, hc, 68, SCOPE, big, GZ_ENV_MAX_WHOLE + 1) == GZ_PEERS_ERR_TOO_BIG);
+    /* The send queue holds at most 4 MiB: without polling nothing is
+     * written, so the fourth 1 MiB message does not fit. The three that did
+     * arrive whole. */
+    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_ROUND_ALL_NONCES, SCOPE, big, n) == GZ_PEERS_OK);
+    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_ROUND_ALL_NONCES, SCOPE, big, n) == GZ_PEERS_OK);
+    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_ROUND_ALL_NONCES, SCOPE, big, n) == GZ_PEERS_OK);
+    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_ROUND_ALL_NONCES, SCOPE, big, n) == GZ_PEERS_ERR_FULL);
+    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_LOBBY_STATUS, SCOPE, STATUS, sizeof STATUS) == GZ_PEERS_OK);
+    {
+        int k;
+        for (k = 0; k < 3; k++) {
+            e = expect(1, GZ_PEER_EV_MESSAGE, 60000);
+            CHECK(e && e->kind == 68 && e->records_len == n);
+        }
+        e = expect(1, GZ_PEER_EV_MESSAGE, 10000);
+        CHECK(e && e->kind == 28);
+    }
     /* A member sends no parts. */
     CHECK(gz_peers_send(S[1].p, mc, GZ_ENV_KIND_ROUND_NONCES, SCOPE, big, GZ_ENV_MAX_RECORDS + 1) == GZ_PEERS_ERR_TOO_BIG);
     /* Bad calls. */
@@ -363,7 +380,9 @@ static void hostile(int how, gz_peer_why_t want, const char *text, int ping, int
                 if (pe != GZ_PEERS_OK) break;
                 pump(5);
             }
-            CHECK(pe == GZ_PEERS_ERR_FULL);
+            /* Under valgrind the send deadline may pass before the queue is
+             * full; the queue limit itself is tested in test_basic. */
+            CHECK(pe == GZ_PEERS_ERR_FULL || pe == GZ_PEERS_ERR_NO_CONN);
         }
     }
     e = expect(0, GZ_PEER_EV_CLOSED, 8000);
