@@ -378,3 +378,9 @@ Verdict: merge after fixes. The reviewer could not make the runner release anyth
 - An out-of-bounds write in the imported timelock counter happens on every factory of 257 members or more and is repaired only by the next call that sets the tree's shape. The hand-off note is corrected.
 
 The builder is applying the fixes; a second review follows.
+
+## 29. Working alongside the SuperScalar repo (2026-11-11)
+
+- Owner's instruction: where the SuperScalar session is already working on something, Gazpacho may wait and check their work when it is done, and must note when it does so. `OPEN-QUESTIONS.md` now has a "Waiting on the SuperScalar repo" table for this.
+- A second hand-off note asks that the end-date payout at every level land together with the other changes to the tree's transactions (their tree-fees work), instead of months later, so the tree changes once.
+- The interface prototype was started: plain web pages driven by fake data, with a written proposal for the local interface between screens and program.

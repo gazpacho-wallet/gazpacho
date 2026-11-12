@@ -34,6 +34,7 @@ CHAPTERS = [
  ("SIPs: general template", "docs/sips/template-general.md", "The form for protocol, process and informational proposals."),
  ("Open questions", "docs/OPEN-QUESTIONS.md", "What is still undecided, and who settles it."),
  ("Hand-off to SuperScalar", "docs/handoff/2026-11-11-to-superscalar.md", "Findings and requests for the SuperScalar repository."),
+ ("Hand-off: end-date payout", "docs/handoff/2026-11-11-end-date-payout.md", "Why the payout at every level should land with the other tree changes."),
  ("Record", "docs/RECORD.md", "Background: the dated history of drafts, findings, reviews and decisions. Earlier sections are superseded where later ones differ."),
  ("Lobby research", "docs/LOBBY-research.md", "Background: how comparable systems gather people and handle those who stall, with sources."),
  ("Starting assessment", "docs/ASSESSMENT.md", "Background: what existed at the start. Its estimates are superseded."),

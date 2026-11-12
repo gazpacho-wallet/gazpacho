@@ -27,6 +27,26 @@ Kept current. Last updated 2026-11-11, after questions round 2.
 14. Waking members who are offline when a factory rotates.
 15. The default chain-server list for release: candidates are checked in `CHAIN-SERVERS.md`; a second independent testnet4 operator is still needed, and the operators' terms have not been read.
 
-## For the SuperScalar repo session
+## Waiting on the SuperScalar repo
 
-See `handoff/2026-11-11-to-superscalar.md`. Later: paying members at every tree output on expiry; a shared message specification.
+Work Gazpacho deliberately does not do itself. It waits, re-imports when the change lands, checks the result, and notes here when that check starts and what it found.
+
+| Waiting for | Why we wait instead of doing it | Needed by | Our check when it lands |
+|---|---|---|---|
+| Tree fees (their pull request 476) | Changes the tree's transactions in the shared files | Slice 3 (a member leaving alone) | Re-import; new reference values; scale check; confirm a lone exit completes |
+| Payout to members at every level on the end date | Shared files; changes every transaction ID | Before real funds; shape wanted early | Re-import; new reference values; review the division rule and lock times; loosen our exit rule to match |
+| A defined order for participants | Shared files | M1 works around it; wanted before release | Confirm two builds on different systems give identical trees |
+| Timelock-counter overwrite at 257 members and above | Shared files | Before any run above 256 members outside the simulator | Confirm with the reviewer's reproduction |
+| Exit-delay functions under-reporting on deep trees | Shared files | Before payment deadlines are computed from them | Compare with our own sum from the transactions |
+| Caller-supplied randomness | Shared files | Repeatable signing in the simulator; M1 wraps around it meanwhile | Remove our wrapper |
+| Verifying each partial signature inside the tree code | Shared files | Not blocking: our signing engine verifies them itself | None needed |
+| A Core Lightning plugin for holding payments | Their bridge rework | Core Lightning adapter, after LND | Review and reuse |
+| Their whole-program scale test at 64, 127 and 255 | Their programs | Confidence in the leaf design at size | Compare with our one-process results |
+
+Nothing has landed yet, so no check has started.
+
+## Notes sent to the SuperScalar repo session
+
+- `handoff/2026-11-11-to-superscalar.md`: findings from running and importing the reference code, and from the scale check.
+- `handoff/2026-11-11-end-date-payout.md`: why the end-date payout should land with the other tree-transaction changes, and what needs deciding in it.
+- A shared message specification will follow.
