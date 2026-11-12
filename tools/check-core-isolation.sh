@@ -49,7 +49,10 @@
 #   - In a --sanitized build the writable-section test is skipped (the checkers
 #     add their own), and the checkers' own names (__asan_*, __ubsan_*,
 #     __sanitizer_*, __msan_*, and the __start_/__stop_asan_* section bounds)
-#     are allowed as outside, weak or data symbols; the other tests still run.
+#     are allowed as outside, weak or data symbols. MemorySanitizer keeps its
+#     state in thread-local variables reached through %fs, so there the
+#     segment-register test is replaced by a narrower one: every thread-local
+#     reference in the object must name a checker. The other tests still run.
 #
 # usage: check-core-isolation.sh [--sanitized] LIBRARY-OR-OBJECT
 #            [--sources COMPILER "CFLAGS" FILE...]
@@ -143,8 +146,17 @@ case "$(uname -m)" in
         for insn in $(printf '%s\n' "$code" | grep -Eow "$banned|int +\\\$0x80" | sed 's/ .*//' | sort -u); do
             report "instruction" "$insn"
         done
-        if printf '%s\n' "$code" | grep -E '%[fg]s:' | grep -qv '%fs:0x28'; then
-            report "instruction" "segment register access"
+        if [ "$sanitized" -eq 0 ]; then
+            if printf '%s\n' "$code" | grep -E '%[fg]s:' | grep -qv '%fs:0x28'; then
+                report "instruction" "segment register access"
+            fi
+        else
+            for sym in $(objdump -r "$lib" 2>/dev/null |
+                         awk '$2 ~ /^R_X86_64_(TPOFF|GOTTPOFF|TLS|DTPOFF|GOTPC32_TLSDESC)/ { print $3 }' |
+                         sed 's/[-+]0x[0-9a-f]*$//' | sort -u); do
+                case "$sym" in __asan_*|__ubsan_*|__sanitizer_*|__msan_*) continue ;; esac
+                report "thread-local reference" "$sym"
+            done
         fi
         if printf '%s\n' "$code" | grep -Eq '\$0xffffffffff6[0-9a-f]{5}|\*0x[0-9a-f]{6,}'; then
             report "instruction" "call or jump to a fixed address"
