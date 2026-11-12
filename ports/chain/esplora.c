@@ -292,7 +292,7 @@ bool gz_es_parse_fee_estimates(const char *s, size_t len, gz_fee_estimates *out)
     if (!gz_parse_u64(s + key->start, key->end - key->start, &target)) return false;
     if (target < 1 || target > GZ_ES_MAX_FEE_TARGET) return false;
     /* sat/vB with a fraction -> sat per 1000 vB, rounded up */
-    if (!gz_json_decimal_scaled(s, val, 3, &rate) || rate > GZ_MAX_MONEY) return false;
+    if (!gz_json_decimal_scaled(s, val, 3, &rate) || rate > GZ_FEE_MAX_SAT_PER_KVB) return false;
     f.entries[m].target = (uint16_t)target;
     f.entries[m].sat_per_kvb = rate;
     i = val->next;
@@ -304,6 +304,111 @@ bool gz_es_parse_fee_estimates(const char *s, size_t len, gz_fee_estimates *out)
   }
   *out = f;
   return true;
+}
+
+/* A JSON number written as an integer, with an optional minus sign. */
+static bool tok_is_integer(const char *s, const gz_json_tok *t) {
+  if (t->type != GZ_JSON_NUMBER) return false;
+  size_t i = t->start;
+  if (i < t->end && s[i] == '-') i++;
+  if (i >= t->end) return false;
+  for (; i < t->end; i++) {
+    if (s[i] < '0' || s[i] > '9') return false;
+  }
+  return true;
+}
+
+bool gz_es_parse_block(const char *s, size_t len, gz_es_block *out) {
+  enum {
+    F_ID = 1, F_HEIGHT = 2, F_VERSION = 4, F_TIME = 8, F_COUNT = 16, F_SIZE = 32, F_WEIGHT = 64,
+    F_ROOT = 128, F_PREV = 256, F_MEDIAN = 512, F_NONCE = 1024, F_BITS = 2048, F_DIFF = 4096,
+    F_ALL = 8191
+  };
+  gz_json_tok toks[40];
+  size_t n;
+  unsigned seen = 0;
+  gz_es_block b;
+  uint8_t ignored_hash[GZ_HASH_LEN];
+  uint32_t ignored32;
+  uint64_t ignored64;
+  memset(&b, 0, sizeof b);
+  if (s == NULL || out == NULL) return false;
+  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (toks[0].type != GZ_JSON_OBJECT) return false;
+  size_t i = 1;
+  for (uint32_t m = 0; m < toks[0].size; m++) {
+    const gz_json_tok *key = &toks[i], *val = &toks[i + 1];
+    if (gz_json_str_eq(s, key, "id")) {
+      if (!tok_hash(s, val, b.id)) return false;
+      seen |= F_ID;
+    } else if (gz_json_str_eq(s, key, "height")) {
+      if (!tok_u32(s, val, GZ_MAX_HEIGHT, &b.height)) return false;
+      seen |= F_HEIGHT;
+    } else if (gz_json_str_eq(s, key, "version")) {
+      if (!tok_is_integer(s, val)) return false;
+      seen |= F_VERSION;
+    } else if (gz_json_str_eq(s, key, "timestamp")) {
+      if (!tok_u32(s, val, UINT32_MAX, &ignored32)) return false;
+      seen |= F_TIME;
+    } else if (gz_json_str_eq(s, key, "tx_count")) {
+      if (!tok_u32(s, val, GZ_MAX_BLOCK_TXS, &b.tx_count) || b.tx_count == 0) return false;
+      seen |= F_COUNT;
+    } else if (gz_json_str_eq(s, key, "size")) {
+      if (!gz_json_u64(s, val, &ignored64)) return false;
+      seen |= F_SIZE;
+    } else if (gz_json_str_eq(s, key, "weight")) {
+      if (!gz_json_u64(s, val, &ignored64)) return false;
+      seen |= F_WEIGHT;
+    } else if (gz_json_str_eq(s, key, "merkle_root")) {
+      if (!tok_hash(s, val, b.merkle_root)) return false;
+      seen |= F_ROOT;
+    } else if (gz_json_str_eq(s, key, "previousblockhash")) {
+      /* null for block 0 */
+      if (val->type != GZ_JSON_NULL && !tok_hash(s, val, ignored_hash)) return false;
+      seen |= F_PREV;
+    } else if (gz_json_str_eq(s, key, "mediantime")) {
+      if (!tok_u32(s, val, UINT32_MAX, &ignored32)) return false;
+      seen |= F_MEDIAN;
+    } else if (gz_json_str_eq(s, key, "nonce")) {
+      if (!tok_u32(s, val, UINT32_MAX, &ignored32)) return false;
+      seen |= F_NONCE;
+    } else if (gz_json_str_eq(s, key, "bits")) {
+      if (!tok_u32(s, val, UINT32_MAX, &ignored32)) return false;
+      seen |= F_BITS;
+    } else if (gz_json_str_eq(s, key, "difficulty")) {
+      if (val->type != GZ_JSON_NUMBER) return false;
+      seen |= F_DIFF;
+    } else {
+      return false;
+    }
+    i = val->next;
+  }
+  if (seen != F_ALL) return false;
+  *out = b;
+  return true;
+}
+
+bool gz_es_reason_is_already_known(const char *reason) {
+  /* The phrases Bitcoin Core uses when it refuses a transaction it has:
+   * RPC error -27, and the mempool's reject reasons. Compared in lower case. */
+  static const char *const phrases[] = {
+      "already in block chain",  "already in utxo set", "txn-already-in-mempool",
+      "txn-already-known",       "already in mempool",  "already known",
+      "already have transaction",
+  };
+  char lower[GZ_REASON_MAX];
+  if (reason == NULL) return false;
+  size_t n = strlen(reason);
+  if (n >= sizeof lower) n = sizeof lower - 1;
+  for (size_t i = 0; i < n; i++) {
+    char c = reason[i];
+    lower[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+  }
+  lower[n] = '\0';
+  for (size_t i = 0; i < sizeof phrases / sizeof phrases[0]; i++) {
+    if (strstr(lower, phrases[i]) != NULL) return true;
+  }
+  return false;
 }
 
 /* ======================================================================== */
@@ -322,17 +427,19 @@ bool gz_es_parse_fee_estimates(const char *s, size_t len, gz_fee_estimates *out)
 #define ES_CAP_FEES 8192
 #define ES_CAP_BROADCAST 4096
 #define ES_UTXO_BYTES_EACH 320
-/* Largest transaction gz_chain_broadcast will send. */
-#define ES_MAX_BROADCAST_BYTES 400000
+#define ES_CAP_BLOCK 1024
 
 typedef struct esplora {
   gz_http http;
   gz_esplora_config cfg;
+  gz_chain_info info;
   char base[GZ_ESPLORA_URL_MAX + 1];
   uint8_t *buf; /* the one response buffer, cfg.max_response_bytes long */
   bool has_last;
   uint64_t last_ms; /* when the previous request started */
 } esplora;
+
+static bool is_blank(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 
 static void hex_plain(const uint8_t *in, size_t len, char *out) {
   static const char digits[] = "0123456789abcdef";
@@ -526,7 +633,7 @@ static gz_chain_result es_tx_status(void *ctx, const uint8_t txid[GZ_HASH_LEN],
     out->height = st.height;
     memcpy(out->block_hash, st.block_hash, GZ_HASH_LEN);
     out->tip_height = tip;
-    out->confirmations = tip - st.height + 1;
+    out->claimed_confirmations = tip - st.height + 1; /* a claim: the tip is not checked */
     return GZ_CHAIN_OK;
   }
   /* Esplora answers {"confirmed":false} both for a mempool transaction and
@@ -556,12 +663,14 @@ static gz_chain_result es_raw_tx(void *ctx, const uint8_t txid[GZ_HASH_LEN], uin
 }
 
 static gz_chain_result es_script_outputs(void *ctx, const uint8_t *script, size_t script_len,
-                                         gz_chain_output *out, size_t cap, size_t *count) {
+                                         gz_chain_output *out, size_t cap, size_t *count,
+                                         bool *unconfirmed_differs) {
   esplora *es = ctx;
   uint8_t sh[GZ_HASH_LEN];
   char hex[2 * GZ_HASH_LEN + 1], path[ES_PATH_MAX];
   long status;
   size_t len;
+  *unconfirmed_differs = false; /* one server cannot differ from itself */
   if (cap > GZ_ES_MAX_UTXOS) cap = GZ_ES_MAX_UTXOS;
   gz_script_hash(script, script_len, sh);
   hex_plain(sh, GZ_HASH_LEN, hex); /* not reversed: verified against both servers */
@@ -615,7 +724,8 @@ static gz_chain_result es_broadcast(void *ctx, const uint8_t *raw, size_t raw_le
   long status = 0;
   size_t len = 0;
   memset(out, 0, sizeof *out);
-  if (raw_len > ES_MAX_BROADCAST_BYTES || !gz_txid_from_raw(raw, raw_len, want)) {
+  /* gz_chain_broadcast has already refused anything over GZ_TX_MAX_BYTES */
+  if (!gz_txid_from_raw(raw, raw_len, want)) {
     out->result = GZ_CHAIN_INVALID_ARG;
     return out->result;
   }
@@ -634,8 +744,15 @@ static gz_chain_result es_broadcast(void *ctx, const uint8_t *raw, size_t raw_le
     return r;
   }
   if (status == 200) {
-    /* accept only the txid of what we sent */
-    if (!gz_hash_from_hex(body_of(es), len, got) || memcmp(got, want, GZ_HASH_LEN) != 0) {
+    /* The body is the txid, possibly with white space or a newline around
+     * it. Accept only the txid of what we sent. */
+    const char *body = body_of(es);
+    while (len > 0 && is_blank(body[len - 1])) len--;
+    while (len > 0 && is_blank(body[0])) {
+      body++;
+      len--;
+    }
+    if (!gz_hash_from_hex(body, len, got) || memcmp(got, want, GZ_HASH_LEN) != 0) {
       out->result = GZ_CHAIN_MALFORMED;
       return out->result;
     }
@@ -651,6 +768,18 @@ static gz_chain_result es_broadcast(void *ctx, const uint8_t *raw, size_t raw_le
     }
     out->reason[n] = '\0';
     out->result = GZ_CHAIN_REJECTED;
+    /* "I already have it" is what a second broadcast of a good transaction
+     * gets. Believe it only if the server then shows the transaction. */
+    if (gz_es_reason_is_already_known(out->reason)) {
+      gz_tx_status st;
+      memset(&st, 0, sizeof st);
+      if (es_tx_status(es, want, &st) == GZ_CHAIN_OK &&
+          (st.state == GZ_TX_MEMPOOL || st.state == GZ_TX_CONFIRMED)) {
+        memcpy(out->txid, want, GZ_HASH_LEN);
+        out->already_known = true;
+        out->result = GZ_CHAIN_OK;
+      }
+    }
     return out->result;
   }
   out->result = GZ_CHAIN_MALFORMED;
@@ -670,6 +799,41 @@ static gz_chain_result es_fee_estimates(void *ctx, gz_fee_estimates *out) {
   return GZ_CHAIN_OK;
 }
 
+static gz_chain_result es_block_summary(void *ctx, uint32_t height, gz_block_summary *out) {
+  esplora *es = ctx;
+  uint8_t hash[GZ_HASH_LEN];
+  char hex[2 * GZ_HASH_LEN + 1], path[ES_PATH_MAX];
+  gz_es_block block;
+  long status;
+  size_t len;
+  gz_chain_result r = es_block_hash(es, height, hash);
+  if (r != GZ_CHAIN_OK) return r;
+  gz_hash_to_hex(hash, hex);
+
+  snprintf(path, sizeof path, "/block/%s", hex);
+  r = es_get(es, path, ES_CAP_BLOCK, &status, &len);
+  if (r != GZ_CHAIN_OK) return r;
+  if (status != 200) return status == 404 ? GZ_CHAIN_MALFORMED : status_meaning(status);
+  if (!gz_es_parse_block(body_of(es), len, &block)) return GZ_CHAIN_MALFORMED;
+  /* it must describe the block it was asked about */
+  if (memcmp(block.id, hash, GZ_HASH_LEN) != 0 || block.height != height) return GZ_CHAIN_MALFORMED;
+
+  snprintf(path, sizeof path, "/block/%s/txid/0", hex);
+  r = es_get(es, path, ES_CAP_HASH, &status, &len);
+  if (r != GZ_CHAIN_OK) return r;
+  if (status != 200) return status == 404 ? GZ_CHAIN_MALFORMED : status_meaning(status);
+  if (!gz_hash_from_hex(body_of(es), len, out->coinbase_txid)) return GZ_CHAIN_MALFORMED;
+  memcpy(out->hash, hash, GZ_HASH_LEN);
+  out->tx_count = block.tx_count;
+  return GZ_CHAIN_OK;
+}
+
+static bool es_describe(void *ctx, gz_chain_info *out) {
+  const esplora *es = ctx;
+  *out = es->info;
+  return true;
+}
+
 static void es_destroy(void *ctx) {
   esplora *es = ctx;
   if (es == NULL) return;
@@ -678,9 +842,19 @@ static void es_destroy(void *ctx) {
 }
 
 static const gz_chain_ops es_ops = {
-    es_tip,       es_block_hash,   es_block_header, es_tx_status,     es_script_outputs,
-    es_outspend,  es_raw_tx,       es_merkle_proof, es_broadcast,     es_fee_estimates,
-    es_destroy,
+    .tip = es_tip,
+    .block_hash = es_block_hash,
+    .block_header = es_block_header,
+    .block_summary = es_block_summary,
+    .tx_status = es_tx_status,
+    .script_outputs = es_script_outputs,
+    .outspend = es_outspend,
+    .raw_tx = es_raw_tx,
+    .merkle_proof = es_merkle_proof,
+    .broadcast = es_broadcast,
+    .fee_estimates = es_fee_estimates,
+    .describe = es_describe,
+    .destroy = es_destroy,
 };
 
 void gz_esplora_config_default(gz_esplora_config *cfg) {
@@ -693,28 +867,106 @@ void gz_esplora_config_default(gz_esplora_config *cfg) {
   cfg->max_response_bytes = 512 * 1024;
 }
 
-static bool url_ok(const char *url) {
+static char lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c; }
+
+static bool is_loopback_host(const char *host) {
+  return strcmp(host, "localhost") == 0 || strcmp(host, "127.0.0.1") == 0 ||
+         strcmp(host, "[::1]") == 0;
+}
+
+/*
+ * Checks a base address and fills info->host (lowercase, no port) and
+ * info->endpoint (lowercase scheme and host, default port dropped, path as
+ * given). Plain http is allowed for this machine only.
+ */
+static bool url_parse(const char *url, gz_chain_info *info) {
   size_t n = strlen(url);
   size_t scheme;
+  bool https;
   if (strncmp(url, "https://", 8) == 0) {
     scheme = 8;
+    https = true;
   } else if (strncmp(url, "http://", 7) == 0) {
     scheme = 7;
+    https = false;
   } else {
     return false;
   }
   if (n <= scheme || n > GZ_ESPLORA_URL_MAX || url[n - 1] == '/') return false;
-  for (size_t i = scheme; i < n; i++) {
+
+  /* host[:port] runs to the first slash */
+  size_t auth_end = scheme;
+  while (auth_end < n && url[auth_end] != '/') auth_end++;
+  size_t host_end = auth_end, port_at = 0;
+  bool bracketed = url[scheme] == '[';
+  if (bracketed) {
+    /* only the loopback address is accepted in brackets */
+    if (auth_end - scheme < 5 || strncmp(url + scheme, "[::1]", 5) != 0) return false;
+    host_end = scheme + 5;
+    if (host_end < auth_end) {
+      if (url[host_end] != ':') return false;
+      port_at = host_end + 1;
+    }
+  } else {
+    for (size_t i = scheme; i < auth_end; i++) {
+      if (url[i] == ':') {
+        host_end = i;
+        port_at = i + 1;
+        break;
+      }
+    }
+  }
+  if (host_end == scheme || host_end - scheme >= GZ_HOST_MAX) return false;
+  for (size_t i = scheme; i < host_end; i++) {
     char c = url[i];
     bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-              c == '.' || c == '-' || c == '_' || c == '~' || c == ':' || c == '/';
+              c == '.' || c == '-' || bracketed;
     if (!ok) return false;
+    info->host[i - scheme] = lower(c);
+  }
+  info->host[host_end - scheme] = '\0';
+  unsigned long port = 0;
+  if (port_at != 0) {
+    if (port_at == auth_end || auth_end - port_at > 5) return false;
+    for (size_t i = port_at; i < auth_end; i++) {
+      if (url[i] < '0' || url[i] > '9') return false;
+      port = port * 10 + (unsigned long)(url[i] - '0');
+    }
+    if (port == 0 || port > 65535) return false;
+  }
+  for (size_t i = auth_end; i < n; i++) {
+    char c = url[i];
+    bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '.' || c == '-' || c == '_' || c == '~' || c == '/';
+    if (!ok) return false;
+  }
+  if (!https && !is_loopback_host(info->host)) return false;
+
+  bool default_port = port == 0 || port == (https ? 443ul : 80ul);
+  int w;
+  if (default_port) {
+    w = snprintf(info->endpoint, sizeof info->endpoint, "%s://%s%s", https ? "https" : "http",
+                 info->host, url + auth_end);
+  } else {
+    w = snprintf(info->endpoint, sizeof info->endpoint, "%s://%s:%lu%s", https ? "https" : "http",
+                 info->host, port, url + auth_end);
+  }
+  return w > 0 && (size_t)w < sizeof info->endpoint;
+}
+
+static bool operator_ok(const char *id) {
+  size_t n = strlen(id);
+  if (n == 0 || n >= GZ_OPERATOR_MAX) return false;
+  for (size_t i = 0; i < n; i++) {
+    char c = id[i];
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-')) return false;
   }
   return true;
 }
 
 gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *http,
                                   gz_chain *out) {
+  gz_chain_info info;
   if (out != NULL) {
     out->ctx = NULL;
     out->ops = NULL;
@@ -722,7 +974,14 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
   if (cfg == NULL || http == NULL || out == NULL || cfg->base_url == NULL) return GZ_CHAIN_INVALID_ARG;
   if (http->request == NULL || http->now_ms == NULL || http->sleep_ms == NULL)
     return GZ_CHAIN_INVALID_ARG;
-  if (!url_ok(cfg->base_url)) return GZ_CHAIN_INVALID_ARG;
+  memset(&info, 0, sizeof info);
+  if (!url_parse(cfg->base_url, &info)) return GZ_CHAIN_INVALID_ARG;
+  if (cfg->operator_id != NULL) {
+    if (!operator_ok(cfg->operator_id)) return GZ_CHAIN_INVALID_ARG;
+    memcpy(info.operator_id, cfg->operator_id, strlen(cfg->operator_id) + 1);
+  } else if (!gz_operator_from_host(info.host, info.operator_id)) {
+    return GZ_CHAIN_INVALID_ARG;
+  }
   if (cfg->timeout_ms == 0 || cfg->timeout_ms > 120000 || cfg->max_attempts == 0 ||
       cfg->max_attempts > 8 || cfg->backoff_ms > ES_MAX_BACKOFF_MS ||
       cfg->min_interval_ms > 60000 || cfg->max_response_bytes < 4096 ||
@@ -737,8 +996,10 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
   }
   es->http = *http;
   es->cfg = *cfg;
+  es->info = info;
   memcpy(es->base, cfg->base_url, strlen(cfg->base_url) + 1);
   es->cfg.base_url = es->base;
+  es->cfg.operator_id = es->info.operator_id;
   out->ctx = es;
   out->ops = &es_ops;
   return GZ_CHAIN_OK;

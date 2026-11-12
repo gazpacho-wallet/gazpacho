@@ -47,7 +47,25 @@ gz_es_parse_result gz_es_parse_utxos(const char *s, size_t len, gz_chain_output 
 /* {"block_height":N,"merkle":["..",...],"pos":N} with pos below 2^depth. */
 bool gz_es_parse_merkle_proof(const char *s, size_t len, gz_merkle_proof *out);
 /* {"1":87.882,"2":87.882,...}: keys are targets 1..GZ_ES_MAX_FEE_TARGET,
- * values non-negative decimals in sat/vB. Output sorted by target. */
+ * values non-negative decimals in sat/vB, none above GZ_FEE_MAX_SAT_PER_KVB
+ * once converted. Output sorted by target. */
 bool gz_es_parse_fee_estimates(const char *s, size_t len, gz_fee_estimates *out);
+
+typedef struct gz_es_block {
+  uint8_t id[GZ_HASH_LEN];
+  uint32_t height;
+  uint32_t tx_count;
+  uint8_t merkle_root[GZ_HASH_LEN];
+} gz_es_block;
+
+/* {"id":"..","height":N,"version":N,"timestamp":N,"tx_count":N,"size":N,
+ *  "weight":N,"merkle_root":"..","previousblockhash":".." or null,
+ *  "mediantime":N,"nonce":N,"bits":N,"difficulty":number}: exactly these
+ * thirteen fields. tx_count must be 1..GZ_MAX_BLOCK_TXS. */
+bool gz_es_parse_block(const char *s, size_t len, gz_es_block *out);
+
+/* True if a server's refusal text says it already has the transaction
+ * (in a block, in its mempool, or its outputs already exist). */
+bool gz_es_reason_is_already_known(const char *reason);
 
 #endif /* GAZPACHO_CHAIN_ESPLORA_PARSE_H */
