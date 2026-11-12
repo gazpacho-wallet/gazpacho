@@ -45,9 +45,24 @@ Agreed with the SuperScalar session, 2026-11-11. One member per leaf (K = 1) is 
 - A member holding more than its coverage keeps a small on-chain coin, so it can leave alone at its real balance.
 - The host must fully back what it promises.
 - Moving to the next factory resets coverage.
-- Every sale spends only the spare liquidity; existing channels stay where they are (planned in SuperScalar as the next leaf fix).
+- Every sale spends only the spare liquidity and creates a **new channel** for the buyer; existing channels stay where they are (planned in SuperScalar for 1.1.0; today's code instead grows the existing channel and moves every channel). So in 1.1.0 a member can hold several channels in one factory: "my money" adds them up, the channel list shows each, and a payment may be split across them.
 
 Interface consequences for 1.1.0: a "covered" figure under "my money"; a warning tier as the balance approaches it; a recommended on-chain reserve that becomes a requirement to receive past coverage (Gazpacho may be stricter than the reference: proposed, not decided).
+
+### 6. Questions 3 answered (2026-11-11)
+
+**"Fits only now"** (answer A): kept as a label, listed with the lobbies that do not fit, one tap showing the numbers.
+
+**Where coins go** (answer A now; B and C planned). The owner read this as payout destinations and wants all three:
+- 1.0.0: one wallet; coins from a factory come back to it, with an amount set aside for hosting.
+- 1.1.0: choose derived addresses of the same wallet per factory (fresh address each time, so factories are not linked by address).
+- 1.1.0 or later: pay out to an outside wallet, such as a hardware wallet, that Gazpacho does not control.
+- Constraint found: transactions signed in advance (the end-date payout, the tree, the channel's own closing outputs) fix their destination when they are signed. An outside address must be given before the factory forms and stays for its life, and the tree builder must accept a destination per member (a request to SuperScalar, alongside the caller-supplied channel script). Cooperative closes and moves can pay anywhere chosen at that moment. An outside address must be proven before use (shown on the hardware wallet's screen, or a signed message), because a wrong address loses the coins.
+- A hardware wallet cannot be the factory signer today (no group-signing support, and the factory needs an online signer); see `docs/AWAY.md`.
+
+**Hosting on phones** (answer A, with C as an option): a Hosting tab always, which also advertises hosting; "header until you host" offered as a setting. Compare both later with screenshots. Any A/B comparison is done with testers, never with tracking inside the app.
+
+**On-chain reserve** (answer A): no reserve required or recommended in 1.0.0. Members who receive nothing, or who move to the next factory, never need one; only a member who chooses to leave alone pays fees. Use pay-to-anchor outputs so the host or anyone can raise a fee, and build a "speed up a stuck transaction" action. Document and plan the alternatives (fee tiers signed in advance, paying the fee from the member's own output, a paid fee-bump helper) and show A/B samples later.
 
 ### 3. Buying receiving room is for 1.1.0
 
