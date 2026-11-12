@@ -49,7 +49,7 @@ Every storage-layer secret (the passphrase and its NFC copy, PK, MSK, every subk
 ### Results on the build server, 2026-11-12
 
 - **Vectors**: every section E value reproduced byte for byte with libsodium 1.0.22, E2r (256 MiB) included. No mismatch with `tools/spec-vectors.py`.
-- gcc Release and gcc ASan+UBSan: all storage tests pass. valgrind memcheck (RelWithDebInfo, `tools/valgrind-tests.py --include '^storage'`): all eight compiled tests clean, E2r excluded. `storage_ctime` passes under memcheck with the one suppression. clang, MSan and libFuzzer run in CI (the build server has no clang).
+- gcc Release and gcc ASan+UBSan: all storage tests pass. valgrind memcheck (RelWithDebInfo, `tools/valgrind-tests.py --include '^storage'`): all eight compiled tests clean, E2r excluded. `storage_ctime` passes under memcheck with the one suppression. clang ASan+UBSan and libFuzzer run in CI. MSan (clang 18, the CI job's flags, RelWithDebInfo) also ran on the build server: before the `_FORTIFY_SOURCE` fix in `CMakeLists.txt` (`ci.md`, "libsodium and utf8proc in every job"), `storage_vectors`, `storage_formats`, `storage_files` and `storage_vector_e2r` failed with Argon2's output reported as uninitialised, the same four as in CI; after it, all the storage tests MSan's job runs pass.
 - Crash test: set-up has 37 operating-system calls; a crash at each left either no wallet (9) or a wallet that starts as a restore (27) or normally (the last call); passphrase change has 13 calls and after each crash exactly one of the two passphrases opens.
 
 ### Mutation (`tools/mutate-storage.py`, `tests/mutants.txt`)

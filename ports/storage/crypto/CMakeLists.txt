@@ -33,17 +33,31 @@ endif()
 # MSan cannot see what assembly writes; none of it is used here.
 string(TOUPPER "${CMAKE_BUILD_TYPE}" _bt)
 set(_sodium_cflags "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_bt}}")
-# Under MemorySanitizer, libsodium's SIMD code paths (chosen at run time by
-# CPU detection) use intrinsics MSan does not model, and it reports Argon2's
-# output as uninitialised. Automake puts CPPFLAGS after the configure-time
-# -D definitions, so -U here leaves only the portable reference code. No
-# documented configure option does this: --disable-asm covers assembly files
-# only, and 1.0.22's other switches (ssp, pie, blocking-random, minimal,
-# pthreads, safecode, ctgrind, retpoline, debug, opt, soname-versions) do not
-# touch the intrinsics. The names are those configure.ac defines.
+# Under MemorySanitizer two things are switched off in libsodium, both through
+# CPPFLAGS; every other job builds libsodium as its configure sets it.
+#
+# _FORTIFY_SOURCE. On glibc, libsodium's configure adds -D_FORTIFY_SOURCE=3,
+# and clang then compiles each memcpy whose destination size is known only at
+# run time (store64_le writing Argon2's final block in argon2_finalize, the
+# BLAKE2b buffer, Argon2's encoder) as a call to glibc's __memcpy_chk. MSan
+# intercepts memcpy but not __memcpy_chk, so the bytes it writes keep their
+# "uninitialised" shadow: Argon2's output, and every key and tag derived from
+# it, were reported as uninitialised. -D_FORTIFY_SOURCE=0 makes configure's
+# check find the macro already defined, so it adds nothing (a -U would not
+# do: configure appends its -D after it).
+#
+# The SIMD code paths, chosen at run time by CPU detection. Automake puts
+# CPPFLAGS after the configure-time -D definitions, so -U here leaves only the
+# portable reference code, and the code MSan checks does not depend on the
+# runner's CPU. (They were turned off first, when the report above was thought
+# to come from them.) No documented configure option does this: --disable-asm
+# covers assembly files only, and 1.0.22's other switches (ssp, pie,
+# blocking-random, minimal, pthreads, safecode, ctgrind, retpoline, debug,
+# opt, soname-versions) do not touch the intrinsics. The names are those
+# configure.ac defines.
 set(_sodium_cppflags "")
 if(CMAKE_C_FLAGS MATCHES "-fsanitize=memory")
-  set(_sodium_cppflags "-UHAVE_MMINTRIN_H -UHAVE_EMMINTRIN_H -UHAVE_PMMINTRIN_H -UHAVE_TMMINTRIN_H -UHAVE_SMMINTRIN_H -UHAVE_AVXINTRIN_H -UHAVE_AVX2INTRIN_H -UHAVE_AVX512FINTRIN_H -UHAVE_WMMINTRIN_H -UHAVE_RDRAND -UHAVE_ARMCRYPTO")
+  set(_sodium_cppflags "-D_FORTIFY_SOURCE=0 -UHAVE_MMINTRIN_H -UHAVE_EMMINTRIN_H -UHAVE_PMMINTRIN_H -UHAVE_TMMINTRIN_H -UHAVE_SMMINTRIN_H -UHAVE_AVXINTRIN_H -UHAVE_AVX2INTRIN_H -UHAVE_AVX512FINTRIN_H -UHAVE_WMMINTRIN_H -UHAVE_RDRAND -UHAVE_ARMCRYPTO")
 endif()
 set(_sodium_prefix ${CMAKE_BINARY_DIR}/libsodium)
 set(_sodium_lib ${_sodium_prefix}/lib/${CMAKE_STATIC_LIBRARY_PREFIX}sodium${CMAKE_STATIC_LIBRARY_SUFFIX})
