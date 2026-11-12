@@ -516,7 +516,8 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
     /* 2 to 4. Read, check the header, scan, judge the tail. */
     uint64_t size;
     if (j->os.size(j->os.ctx, j->fd, &size) != 0) { st = GZ_JOURNAL_ERR_IO; goto out; }
-    if (size > j->hard_limit + GZ_JOURNAL_ENTRY_MAX + 12) { st = GZ_JOURNAL_ERR_FULL; goto out; }
+    /* The writer never passes the hard limit, so a larger file is not read. */
+    if (size > j->hard_limit) { st = GZ_JOURNAL_ERR_FULL; goto out; }
     data = malloc(size ? (size_t)size : 1);
     if (!data) { st = GZ_JOURNAL_ERR_NO_MEMORY; goto out; }
     for (uint64_t got = 0; got < size;) {

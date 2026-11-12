@@ -392,8 +392,28 @@ static int node_sweep(int *runs)
     }
 }
 
+/* Every point of an open that creates the file, and of one that cuts a torn
+ * tail, crashed under each settle (the failed variant is in test_journal_edges.c). */
+static void open_crashes(void)
+{
+    uint8_t torn[300];
+    size_t n = gz_journal_encode_header(torn, gz_journal_chain_signet);
+    n += gz_journal_encode_small(torn + n, 1, 1, 0);
+    n += gz_journal_encode_small(torn + n, 3, 1, n);
+    gz_record_t r = {0x7e570001, {(const uint8_t *)"abcd", 4}};
+    n += gz_journal_encode_batch(torn + n, (gz_batch_id_t){1, 1}, &r, 1);
+    n += gz_journal_encode_small(torn + n, 3, 1, n);
+    n += gz_journal_encode_batch(torn + n, (gz_batch_id_t){1, 2}, &r, 1) - 5;
+    int runs = 0;
+    for (int seeded = 0; seeded < 2; seeded++)
+        for (int mode = 0; mode < 3; mode++) runs += open_points(seeded ? torn : NULL, n, 1, mode);
+    printf("  open crash points: %d runs\n", runs);
+    CHECK(runs >= 45); /* 10 points creating, 6 cutting, three settles each */
+}
+
 int main(void)
 {
+    open_crashes();
     sweep();
     printf("  writer crash sweep: %d points, %d reopenings, %d with a flipped unsynced batch\n",
            sweep_points, sweep_runs, flip_runs);

@@ -241,6 +241,7 @@ target_link_libraries(gazpacho_journal_testfs PUBLIC gazpacho_journal)
 target_compile_options(gazpacho_journal_testfs PRIVATE ${GZ_NEW_CODE_WARNINGS})
 
 gz_add_test(journal       tests/journal/test_journal.c       gazpacho_journal_testfs)
+gz_add_test(journal_edges tests/journal/test_journal_edges.c gazpacho_journal_testfs)
 # Crash before every write and sync point, power-loss settles, process kills,
 # the real node; and the "rule removed" run that must find a loss.
 gz_add_test(journal_crash tests/journal/test_journal_crash.c gazpacho_journal_testfs)
@@ -251,9 +252,14 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME journal_crosscheck
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/journal/crosscheck.py
             $<TARGET_FILE:gz-journal> 10000 1)
+  # The tool's verdicts and exit codes; its dump never prints record bytes.
+  add_test(NAME journal_tool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/journal/test_tool.py
+            $<TARGET_FILE:gz-journal>)
 endif()
 if(GZ_VALGRIND AND NOT GZ_SANITIZE)
   add_test(NAME valgrind_journal COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_journal>)
+  add_test(NAME valgrind_journal_edges COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_journal_edges>)
   add_test(NAME valgrind_journal_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_journal_fuzz> 3000 7)
   # A simulated crash abandons what an open had allocated, as a real crash
   # does, so this one runs without the leak check.

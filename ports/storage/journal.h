@@ -182,8 +182,9 @@ typedef struct {
 } gz_journal_open_info_t;
 
 /* Open (or create) the journal and start a new incarnation (spec section 5).
- * On anything but GZ_JOURNAL_OK nothing is held open, `*out` is NULL and,
- * for a refusal, the file is untouched. `info` may be NULL. */
+ * On anything but GZ_JOURNAL_OK nothing is held open and `*out` is NULL. A
+ * refusal by the scan (header, network, corrupt, order, unknown record)
+ * leaves the file untouched. `info` may be NULL. */
 gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_t *config,
                                     gz_journal_open_info_t *info);
 

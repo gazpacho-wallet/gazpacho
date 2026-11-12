@@ -271,4 +271,71 @@ static inline int h_verify(h_t *h, int oracle, int quiet)
     return bad;
 }
 
+#ifdef CHECK
+static inline gz_journal_t *h_open_on(memfs_t *fs, gz_journal_status_t *st, gz_journal_open_info_t *info)
+{
+    gz_journal_t *j = NULL;
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 3, &fs->os, 0, 0, 0};
+    *st = gz_journal_open(&j, &cfg, info);
+    return j;
+}
+
+/* One open on `fs`, failed or crashed at point `p`. Returns the journal if
+ * the open returned one. */
+static inline gz_journal_t *h_open_attempt(memfs_t *fs, int crash, uint64_t p, gz_journal_status_t *st)
+{
+    jmp_buf jb;
+    gz_journal_t *volatile j = NULL;
+    fs->crash_jump = &jb;
+    if (crash) fs->crash_at = p;
+    else { fs->fail_at = p; fs->fail_mode = MEMFS_FAIL_ERROR; }
+    *st = GZ_JOURNAL_OK;
+    if (setjmp(jb) == 0) {
+        gz_journal_t *jo = h_open_on(fs, st, NULL);
+        j = jo;
+    }
+    return j;
+}
+
+/* Every point of an open that creates the file, or that cuts a torn tail,
+ * failed (crash 0) or crashed (crash 1) in turn, then the disk settled as
+ * `mode`. The next clean open must succeed, and the file must be a valid
+ * journal that still holds what the seed had durable. */
+static inline int open_points(const uint8_t *seed, size_t seed_len, int crash, int mode)
+{
+    int runs = 0;
+    for (uint64_t p = 1;; p++) {
+        memfs_t fs;
+        memfs_init(&fs);
+        if (seed) memfs_put(&fs, H_JOURNAL, seed, seed_len);
+        gz_journal_status_t st;
+        gz_journal_t *j = h_open_attempt(&fs, crash, p, &st);
+        int hit = crash ? fs.crashed : fs.points >= p;
+        gz_journal_close(j);
+        if (!hit) { memfs_free(&fs); return runs; }
+        if (!crash && st == GZ_JOURNAL_OK) { CHECK(st != GZ_JOURNAL_OK); }
+        memfs_settle(&fs, mode, p);
+        gz_journal_open_info_t info;
+        gz_journal_t *k = h_open_on(&fs, &st, &info);
+        int ok = st == GZ_JOURNAL_OK && info.incarnation >= 1;
+        if (k) {
+            size_t len;
+            const uint8_t *d = memfs_get(&fs, H_JOURNAL, &len);
+            gz_journal_scan_t s;
+            ok = ok && gz_journal_scan(d, len, gz_journal_chain_signet, &s, NULL, NULL) == GZ_JOURNAL_OK &&
+                 s.verdict == GZ_JOURNAL_CLEAN && s.highest_incarnation == info.incarnation;
+            /* The seed's batch (1, 1) was durable before: still there. */
+            if (seed) ok = ok && s.n_batches == 1 && info.incarnation >= 2;
+        }
+        if (!ok) printf("  open %s at point %llu (mode %d): %s\n", crash ? "crash" : "failure",
+                        (unsigned long long)p, mode, gz_journal_status_name(st));
+        CHECK(ok);
+        gz_journal_close(k);
+        memfs_free(&fs);
+        runs++;
+    }
+}
+
+#endif
+
 #endif
