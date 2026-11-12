@@ -38,13 +38,18 @@ else()
 endif()
 
 # --- tests (fake transport, recorded answers; no network) ---------------------
+# GZ_CHAIN_TESTS=OFF leaves them out. wallet/tests/break-checks.sh builds a
+# copy of the whole tree for every fault it injects into the wallet code and
+# runs its tests; nothing in the wallet uses this port, so it turns these off.
+option(GZ_CHAIN_TESTS "Build and register the chain port's tests" ON)
+if(GZ_CHAIN_TESTS)
 add_library(gazpacho_chain_test_support STATIC tests/test_support.c)
 target_link_libraries(gazpacho_chain_test_support PUBLIC gazpacho_chain)
 target_compile_options(gazpacho_chain_test_support PRIVATE ${GZ_CHAIN_WARNINGS})
 target_compile_definitions(gazpacho_chain_test_support PRIVATE
   GZ_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
 
-foreach(t json headers esplora multi model fuzz)
+foreach(t json headers esplora multi confirm model fuzz)
   add_executable(chain_test_${t} tests/test_${t}.c)
   target_link_libraries(chain_test_${t} PRIVATE gazpacho_chain_test_support)
   target_compile_options(chain_test_${t} PRIVATE ${GZ_CHAIN_WARNINGS})
@@ -53,10 +58,10 @@ endforeach()
 
 if(CURL_FOUND)
   # The tool must refuse to broadcast on mainnet, before touching the network.
+  # The refusal exits 2; the wrapper checks that exit status and the text.
   add_test(NAME chain_tool_refuses_mainnet_broadcast
-    COMMAND gz-chain --network mainnet broadcast 00)
-  set_tests_properties(chain_tool_refuses_mainnet_broadcast PROPERTIES
-    PASS_REGULAR_EXPRESSION "refusing to broadcast on mainnet")
+    COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/expect-exit.sh 2 "refusing to broadcast on mainnet"
+            $<TARGET_FILE:gz-chain> --network mainnet broadcast 00)
   add_test(NAME chain_tool_usage COMMAND gz-chain --help)
   set_tests_properties(chain_tool_usage PROPERTIES PASS_REGULAR_EXPRESSION "usage: gz-chain")
 
@@ -84,3 +89,4 @@ if(CURL_FOUND)
     set_tests_properties(chain_live PROPERTIES TIMEOUT 600)
   endif()
 endif()
+endif() # GZ_CHAIN_TESTS

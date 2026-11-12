@@ -57,36 +57,70 @@ expect() { # expect NAME WANT_EXIT REGEX command...
 TXA=8690387a65262437580d45b77f1cb0792faff46cecb72c5ee22390e5193a6c9a
 TXN=0000000000000000000000000000000000000000000000000000000000000001
 
+# The two look-alikes are on this machine, which is one operator under all
+# its names: each is given an operator name, as a configured list would.
+A="--server $H/honest --operator first-operator"
+L=http://localhost:$HTTP_PORT
+TXSP=ee18add119d09dc5b01cde93367391947495b656c30c5935cbde8374aa9d944b
+
 expect "two honest servers agree on the tip" 0 "verdict: ok .servers of 2 operators" \
-  "$tool" --server $H/honest --server http://localhost:$HTTP_PORT/honest2 tip
+  "$tool" $A --server $L/honest2 --operator second-operator tip
 expect "proof of a real transaction exits 0" 0 "2 confirmation\(s\) checked" \
-  "$tool" --server $H/honest --server http://localhost:$HTTP_PORT/honest2 proof $TXA
+  "$tool" $A --server $L/honest2 --operator second-operator proof $TXA
 expect "proof of an unknown transaction exits 1" 1 "unknown to the server" \
-  "$tool" --server $H/honest --server http://localhost:$HTTP_PORT/honest2 proof $TXN
+  "$tool" $A --server $L/honest2 --operator second-operator proof $TXN
 expect "a server hiding a transaction: disagreement exits 1" 1 "contradict each other" \
-  "$tool" --server $H/honest --server http://localhost:$HTTP_PORT/hider tx $TXA
+  "$tool" $A --server $L/hider --operator second-operator tx $TXA
+expect "proof against a hiding server exits 1 (review g8)" 1 "verdict: servers-disagree" \
+  "$tool" $A --server $L/hider --operator second-operator proof $TXA
+if printf '%s\n' "$out" | grep -q "^transaction:"; then
+  echo "FAIL a failed proof still printed a transaction line"; fail=1
+fi
+expect "a server behind: lag exits 1 (review g7)" 1 "verdict: server-lagging" \
+  "$tool" $A --server $L/behind --operator second-operator tx $TXSP
+expect "fee estimates too far apart exit 1 (review g6)" 1 "verdict: servers-disagree" \
+  "$tool" $A --server $L/feehigh --operator second-operator fee
+expect "fee on signet uses 0.1 sat/vB" 0 "0.100 sat/vB, the fixed test-network rate" \
+  "$tool" $A --server $L/honest2 --operator second-operator fee
+expect "fee on signet uses 0.1 sat/vB even when estimates disagree" 1 "0.100 sat/vB, the fixed test-network rate" \
+  "$tool" $A --server $L/feehigh --operator second-operator fee
 expect "one server only: never 'agree'" 1 "warning: fewer than two operators" \
   "$tool" --server $H/honest tip
 if printf '%s' "$out" | grep -q "operators give this answer"; then
   echo "FAIL one server only printed an agreed answer"; fail=1
 fi
+expect "this machine under two names is one operator" 1 "of 1 operator" \
+  "$tool" --server $H/honest --server $L/honest2 tip
 expect "the same server twice is refused" 2 "cannot be compared with itself" \
   "$tool" --server $H/honest --server $H/honest tip
 expect "two paths on one host are refused" 2 "cannot be compared with itself" \
   "$tool" --server $H/honest --server $H/honest2 tip
+expect "two paths on one host are refused, whatever the operator names" 2 "cannot be compared with itself" \
+  "$tool" $A --server $H/honest2 --operator second-operator tip
+expect "localhost and localhost. are one host" 2 "cannot be compared with itself" \
+  "$tool" --server $L/honest --server http://localhost.:$HTTP_PORT/honest2 tip
+# review A: refused when the servers are created, before anything is sent
+expect "mempool.space and mempool.space. are one host" 2 "cannot be compared with itself" \
+  "$tool" --server https://mempool.space/signet/api --server https://mempool.space./signet/api tip
+expect "blockstream.info and blockstream.info. are one host" 2 "cannot be compared with itself" \
+  "$tool" --server https://blockstream.info/signet/api --server https://blockstream.info./signet/api tip
+expect "an operator name must be canonical" 2 "--operator NAME" \
+  "$tool" --server $H/honest --operator First tip
+expect "an operator name needs a server before it" 2 "--operator NAME" \
+  "$tool" --operator first tip
+expect "user information in an address is refused" 2 "not a usable server address" \
+  "$tool" --server http://localhost:1@mempool.space/signet/api --server $H/honest tip
 expect "plain http to a public address is refused" 2 "not a usable server address" \
   "$tool" --server http://mempool.space/signet/api --server $H/honest tip
 expect "a mainnet server under --network signet is not counted" 1 "wrong-network" \
-  "$tool" --server $H/honest --server http://localhost:$HTTP_PORT/mainnet tip
+  "$tool" $A --server $L/mainnet --operator second-operator tip
 : > posts.log
 expect "broadcast is refused when a server is on mainnet, whatever the flag" 2 "is a mainnet server" \
-  "$tool" --network signet --server $H/honest --server http://localhost:$HTTP_PORT/mainnet \
+  "$tool" --network signet $A --server $L/mainnet --operator second-operator \
   broadcast "$(cat "$tests/data/tx_a_hex.txt")"
 if [ -s posts.log ]; then echo "FAIL a transaction was posted to a server"; cat posts.log; fail=1; fi
 expect "broadcast --network mainnet is refused before any request" 2 "refusing to broadcast on mainnet" \
   "$tool" --network mainnet --server $H/honest broadcast "$(cat "$tests/data/tx_a_hex.txt")"
 if [ -s posts.log ]; then echo "FAIL a transaction was posted to a server"; fail=1; fi
-expect "fee on signet uses 0.1 sat/vB" 0 "0.100 sat/vB, the fixed test-network rate" \
-  "$tool" --server $H/honest --server http://localhost:$HTTP_PORT/honest2 fee
 
 exit $fail

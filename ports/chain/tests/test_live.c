@@ -60,6 +60,8 @@ static void test_two_signet_servers_agree(test_state *T) {
     CHECK_RESULT(gz_esplora_create(&cfg, &x.http, &x.server[i]), GZ_CHAIN_OK);
   }
   gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = x.http.now_ms;
+  mc.clock_ctx = x.http.ctx;
   CHECK_RESULT(gz_multi_create(&mc, x.server, 2, &x.multi), GZ_CHAIN_OK);
   const gz_multi_report *rep = gz_multi_last_report(&x.multi);
   char hex[65];

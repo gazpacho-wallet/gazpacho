@@ -22,6 +22,15 @@ static int checks, failed;
     }                                                                            \
   } while (0)
 
+#define T_CHECK_URL(cond, what)                                                       \
+  do {                                                                                \
+    checks++;                                                                         \
+    if (!(cond)) {                                                                    \
+      failed++;                                                                       \
+      fprintf(stderr, "  %s:%d: check failed for %s: %s\n", __FILE__, __LINE__, what, #cond); \
+    }                                                                                 \
+  } while (0)
+
 typedef struct result {
   gz_http_result r;
   long status;
@@ -137,15 +146,43 @@ int main(int argc, char **argv) {
   static const char *not_local[] = {
       "http://192.0.2.1/ok",          "http://example.com/ok",
       "http://localhost.example.com/", "http://127.0.0.1.example.com/",
-      "http://127.0.0.2/ok",          "ftp://127.0.0.1/ok",
+      "http://127.0.0.2/ok", /* address-check: allow (loopback range, not one of the three names) */
+      "ftp://127.0.0.1/ok",
       "file:///etc/hostname",         "gopher://127.0.0.1/",
       "127.0.0.1/ok",
+      /* review E: the part before '@' is user information, the host is after it */
+      "http://localhost:1@review-check.invalid/api",
+      "http://127.0.0.1:1@review-check.invalid/api",
+      "http://[::1]:80@review-check.invalid/api",
+      "http://localhost@review-check.invalid/api",
+      "http://localhost%40review-check.invalid/api",
+      "http://localhost\\@review-check.invalid/api",
+      "http://LOCALHOST/ok",           /* only the canonical spelling */
+      "http://localhost./ok",
+      "http://[::1/ok",                /* no closing bracket */
+      "http://localhost:/ok",          /* a colon and no port */
+      "http://localhost:123456/ok",
+      "http://localhost:80x/ok",
   };
   for (size_t i = 0; i < sizeof not_local / sizeof not_local[0]; i++) {
     r = get(&h, not_local[i], 100, 4000);
-    CHECK(r.r == GZ_HTTP_E_FAILED);
-    CHECK(r.elapsed_ms < 500);
+    T_CHECK_URL(r.r == GZ_HTTP_E_FAILED && r.elapsed_ms < 500, not_local[i]);
   }
+  /* user information is refused over https too, before anything is sent */
+  snprintf(url, sizeof url, "https://user@localhost:%s/ok", argv[2]);
+  r = get(&trusting, url, 100, 5000);
+  T_CHECK_URL(r.r == GZ_HTTP_E_FAILED && r.elapsed_ms < 500, url);
+  snprintf(url, sizeof url, "https://user:pw@localhost:%s/ok", argv[2]);
+  r = get(&trusting, url, 100, 5000);
+  T_CHECK_URL(r.r == GZ_HTTP_E_FAILED && r.elapsed_ms < 500, url);
+  /* the same server without it is reached (the positive control below) */
+  /* a path, a query and a fragment after the authority are fine */
+  snprintf(url, sizeof url, "%s/ok?x=1", base);
+  r = get(&h, url, 100, 3000);
+  CHECK(r.r == GZ_HTTP_OK && r.status == 404);
+  snprintf(url, sizeof url, "http://[::1]:%s/ok", argv[1]);
+  r = get(&h, url, 100, 3000);
+  CHECK(r.r == GZ_HTTP_OK || r.r == GZ_HTTP_E_CONNECT); /* allowed; the server listens on IPv4 only */
   /* a request without a time limit is refused */
   snprintf(url, sizeof url, "%s/ok", base);
   r = get(&h, url, 100, 0);

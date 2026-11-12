@@ -161,7 +161,7 @@ static gz_http_result fake_request(void *ctx, const gz_http_request *req, uint8_
   return GZ_HTTP_OK;
 }
 
-static uint64_t fake_now(void *ctx) { return ((fake_http *)ctx)->now_ms; }
+uint64_t fake_clock(void *ctx) { return ((fake_http *)ctx)->now_ms; }
 
 static void fake_sleep(void *ctx, uint32_t ms) {
   fake_http *f = ctx;
@@ -171,7 +171,7 @@ static void fake_sleep(void *ctx, uint32_t ms) {
 }
 
 gz_http fake_transport(fake_http *f) {
-  gz_http h = {f, fake_request, fake_now, fake_sleep};
+  gz_http h = {f, fake_request, fake_clock, fake_sleep};
   return h;
 }
 

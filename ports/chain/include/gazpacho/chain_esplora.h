@@ -20,13 +20,18 @@ typedef struct gz_esplora_config {
    * "https://mempool.space/signet/api". Must start with https://. Plain
    * http:// is accepted only when the host is this machine (localhost,
    * 127.0.0.1 or [::1]), for a server the user runs. Only letters, digits
-   * and . - _ ~ : / characters (and the brackets of [::1]); at most
-   * GZ_ESPLORA_URL_MAX characters. Copied. */
+   * and . - _ ~ : / characters (and the brackets of [::1]); no user
+   * information ("user@"); at most GZ_ESPLORA_URL_MAX characters. The host
+   * is put into its one canonical form by gz_host_normalise (case, one
+   * trailing dot) and refused if it has none; requests are sent to the
+   * canonical address. Copied. */
   const char *base_url;
-  /* Optional. Who runs this server, for counting independent operators in
-   * the comparing backend. NULL: derived from the host name by
-   * gz_operator_from_host. Lowercase letters, digits, dots and dashes, at
-   * most GZ_OPERATOR_MAX - 1 characters. Copied. */
+  /* Optional, but server lists should always give it. Who runs this
+   * server, for counting independent operators in the comparing backend.
+   * NULL: derived from the host name by gz_operator_from_host, a rule of
+   * thumb. Must be in canonical form (gz_operator_name_valid): lowercase
+   * letters, digits, dots and dashes, at most GZ_OPERATOR_MAX - 1
+   * characters. Copied. */
   const char *operator_id;
   /* Limit for each single request. */
   uint32_t timeout_ms;

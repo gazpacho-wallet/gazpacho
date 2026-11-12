@@ -1134,6 +1134,17 @@ static void test_choose_fee_rate(test_state *T) {
   CHECK(c.sat_per_kvb == 80500);
   CHECK_RESULT(gz_chain_choose_fee_rate(&x.chain, GZ_NET_MAINNET, 1, 30000, &c), GZ_CHAIN_OK);
   CHECK(c.sat_per_kvb == 30000 && c.capped);
+  /* every listed target slower than the one asked for: no rate, rather than
+   * a slower target's lower one */
+  fake_set(&x.fake, false, BASE "/fee-estimates", 200, "{\"6\":20,\"144\":2}");
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.chain, GZ_NET_MAINNET, 2, 200000, &c), GZ_CHAIN_NOT_FOUND);
+  CHECK(c.sat_per_kvb == 0 && c.source == GZ_FEE_FROM_NONE);
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.chain, GZ_NET_MAINNET, 6, 200000, &c), GZ_CHAIN_OK);
+  CHECK(c.sat_per_kvb == 20000);
+  /* entries in any order: still the highest target not above the one asked */
+  fake_set(&x.fake, false, BASE "/fee-estimates", 200, "{\"144\":2,\"1\":80,\"6\":20}");
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.chain, GZ_NET_MAINNET, 100, 200000, &c), GZ_CHAIN_OK);
+  CHECK(c.sat_per_kvb == 20000);
   /* a server cannot talk the rate down to nothing */
   fake_set(&x.fake, false, BASE "/fee-estimates", 200, "{\"1\":0,\"6\":0.01}");
   CHECK_RESULT(gz_chain_choose_fee_rate(&x.chain, GZ_NET_MAINNET, 6, 200000, &c), GZ_CHAIN_OK);
@@ -1314,11 +1325,33 @@ static void test_describe_and_addresses(test_state *T) {
   CHECK(strcmp(info.operator_id, "my-own-node") == 0);
   CHECK(strcmp(info.endpoint, "https://esplora.internal.example.org:8443/api") == 0);
   gz_chain_destroy(&c);
-  cfg.operator_id = "Not Allowed!";
-  CHECK_RESULT(gz_esplora_create(&cfg, &http, &c), GZ_CHAIN_INVALID_ARG);
-  cfg.operator_id = "";
-  CHECK_RESULT(gz_esplora_create(&cfg, &http, &c), GZ_CHAIN_INVALID_ARG);
+  /* operator names are accepted only in their one canonical spelling */
+  static const char *const bad_names[] = {"Not Allowed!", "", "Acme", "acme.", ".acme", "a..b",
+                                          "-acme", "acme-"};
+  for (size_t i = 0; i < sizeof bad_names / sizeof bad_names[0]; i++) {
+    cfg.operator_id = bad_names[i];
+    CHECK_RESULT(gz_esplora_create(&cfg, &http, &c), GZ_CHAIN_INVALID_ARG);
+  }
   cfg.operator_id = NULL;
+
+  /* A host is kept in its one canonical form: one trailing dot (the DNS
+   * root) removed, lower case. Requests go to the canonical address. */
+  cfg.base_url = "https://Chain.TEST.:443/signet/api";
+  CHECK_RESULT(gz_esplora_create(&cfg, &http, &c), GZ_CHAIN_OK);
+  CHECK(gz_chain_describe(&c, &info));
+  CHECK(strcmp(info.host, "chain.test") == 0 && strcmp(info.operator_id, "chain.test") == 0);
+  CHECK(strcmp(info.endpoint, BASE) == 0);
+  fake_set(&fake, false, BASE "/blocks/tip/height", 200, "329439");
+  fake_set(&fake, false, BASE "/block-height/329439", 200, HASH_329439);
+  gz_chain_tip tip;
+  CHECK_RESULT(gz_chain_tip_get(&c, &tip), GZ_CHAIN_OK);
+  CHECK(fake_hits(&fake, false, BASE "/blocks/tip/height") == 1 && fake.unexpected == 0);
+  gz_chain_destroy(&c);
+  cfg.base_url = "https://mempool.space./signet/api";
+  CHECK_RESULT(gz_esplora_create(&cfg, &http, &c), GZ_CHAIN_OK);
+  CHECK(gz_chain_describe(&c, &info) && strcmp(info.host, "mempool.space") == 0);
+  CHECK(strcmp(info.operator_id, "mempool.space") == 0); /* not "space." */
+  gz_chain_destroy(&c);
 
   /* plain http: this machine only */
   static const char *local[] = {"http://localhost:3002/api", "http://127.0.0.1:3002",
@@ -1333,7 +1366,7 @@ static void test_describe_and_addresses(test_state *T) {
       "http://198.51.100.10:3002/api",
       "http://localhost.evil.example/api",
       "http://127.0.0.1.evil.example/api",
-      "http://127.0.0.2/api",
+      "http://127.0.0.2/api", /* address-check: allow (loopback range, not one of the three names) */
       "https://[2001:db8::1]/api", /* only the loopback address may be bracketed */
       "https://mempool.space:0/api",
       "https://mempool.space:65536/api",
@@ -1341,6 +1374,26 @@ static void test_describe_and_addresses(test_state *T) {
       "https://mempool.space:/api",
       "https://:443/api",
       "https://mem_pool.space/api",
+      /* review A and E: spellings that are not one canonical host */
+      "https://mempool.space../api",
+      "https://.mempool.space/api",
+      "https://mem..pool.space/api",
+      "https://-mempool.space/api",
+      "https://mempool-.space/api",
+      "https://user@mempool.space/api",
+      "https://localhost:1@mempool.space/api",
+      "http://localhost:1@mempool.space/api",
+      "https://mempool.space%2e/api",
+      "https://m\xc3\xa9mpool.space/api", /* Unicode: only the punycode form is accepted */
+      "https://192.0.02.4/api",          /* numeric forms resolvers read as addresses */
+      "https://192.0.2/api",
+      "https://16909060/api",
+      "https://0x7f.0.0.1/api",
+      "https://192.0.2.256/api",
+      "https://example.123/api",
+      "http://127.1/api",
+      "http://localhost../api",
+      "https://[::1]./api",
   };
   for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
     cfg.base_url = refused[i];
@@ -1566,6 +1619,8 @@ static void test_confirm_tx_header_chain(test_state *T) {
   /* The reviewer's case: a server claiming a tip a million blocks up. The
    * claim is passed on as a claim; the checked number does not move. */
   fake_set(&x.fake, false, BASE "/blocks/tip/height", 200, "1329439");
+  fake_set(&x.fake, false, BASE "/block-height/1329439", 200,
+           "1111111111111111111111111111111111111111111111111111111111111111");
   CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, 6, &conf), GZ_CHAIN_OK);
   CHECK(conf.status.claimed_confirmations == 1000002);
   CHECK(conf.checked_confirmations == 2);
@@ -1588,6 +1643,44 @@ static void test_confirm_tx_header_chain(test_state *T) {
   /* more is asked for than the limit: cut to the limit, still two here */
   CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, 1000000, &conf), GZ_CHAIN_OK);
   CHECK(conf.checked_confirmations == 2);
+
+  /* Review v11: the later header links to ours, hashes to the block hash the
+   * server gives for its height, and fails its own proof of work (another
+   * nonce). Asked to count it, the check fails. */
+  size_t len = 0, raw_len = 0;
+  uint8_t hdr[GZ_HEADER_LEN], hh[GZ_HASH_LEN];
+  char *hex = test_read_data("header_329439.txt", &len);
+  CHECK(gz_hex_decode(hex, 2 * GZ_HEADER_LEN, hdr, sizeof hdr, &raw_len) && raw_len == GZ_HEADER_LEN);
+  free(hex);
+  CHECK(gz_header_check_pow(hdr, GZ_NET_SIGNET) == GZ_POW_OK);
+  do {
+    hdr[76]++;
+  } while (gz_header_check_pow(hdr, GZ_NET_SIGNET) == GZ_POW_OK);
+  char hash_hex[65], hdr_hex[2 * GZ_HEADER_LEN + 1], url[FAKE_URL_MAX];
+  gz_header_hash(hdr, hh);
+  gz_hash_to_hex(hh, hash_hex);
+  for (int i = 0; i < GZ_HEADER_LEN; i++) snprintf(hdr_hex + 2 * i, 3, "%02x", hdr[i]);
+  fake_set(&x.fake, false, BASE "/block-height/329439", 200, hash_hex);
+  snprintf(url, sizeof url, BASE "/block/%s/header", hash_hex);
+  fake_set(&x.fake, false, url, 200, hdr_hex);
+  uint8_t h38[GZ_HEADER_LEN];
+  CHECK_RESULT(gz_chain_block_header(&x.chain, 329438, h38), GZ_CHAIN_OK);
+  CHECK(gz_header_links(h38, hdr)); /* it does link */
+  CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, 2, &conf), GZ_CHAIN_BAD_PROOF);
+  CHECK(conf.checked_confirmations == 0);
+  CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, 1, &conf), GZ_CHAIN_OK);
+  fake_set(&x.fake, false, BASE "/block-height/329439", 200, HASH_329439);
+
+  /* Review D, one server: the count stops at the server's own tip, and no
+   * header above it is asked for */
+  fake_set(&x.fake, false, BASE "/blocks/tip/height", 200, "329438");
+  fake_set(&x.fake, false, BASE "/tx/" TX_A "/status", 200,
+           "{\"confirmed\":true,\"block_height\":329438,\"block_hash\":\"" HASH_329438
+           "\",\"block_time\":1793823982}");
+  unsigned before = fake_hits(&x.fake, false, BASE "/block/" HASH_329439 "/header");
+  CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, 6, &conf), GZ_CHAIN_OK);
+  CHECK(conf.checked_confirmations == 1);
+  CHECK(fake_hits(&x.fake, false, BASE "/block/" HASH_329439 "/header") == before);
   fx_close(&x);
 }
 

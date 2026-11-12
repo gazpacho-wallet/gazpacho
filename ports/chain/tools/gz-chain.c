@@ -20,15 +20,30 @@
 
 #define MAX_OUTPUTS 256
 
-/* The servers listed in docs/CHAIN-SERVERS.md, per network. */
-static const char *const DEFAULT_SIGNET[] = {"https://mempool.space/signet/api",
-                                             "https://blockstream.info/signet/api", NULL};
-static const char *const DEFAULT_TESTNET4[] = {"https://mempool.space/testnet4/api", NULL};
-static const char *const DEFAULT_TESTNET3[] = {"https://blockstream.info/testnet/api", NULL};
-static const char *const DEFAULT_MAINNET[] = {"https://mempool.space/api",
-                                              "https://blockstream.info/api", NULL};
+/* The servers listed in docs/CHAIN-SERVERS.md, per network, each with its
+ * operator named, so the count of operators never rests on the host-name
+ * rule of thumb. */
+typedef struct server_entry {
+  const char *url;
+  const char *operator_id;
+} server_entry;
 
-static const char *const *default_servers(gz_network n) {
+#define MEMPOOL_SPACE "mempool.space"
+#define BLOCKSTREAM "blockstream.info"
+static const server_entry DEFAULT_SIGNET[] = {{"https://mempool.space/signet/api", MEMPOOL_SPACE},
+                                              {"https://blockstream.info/signet/api", BLOCKSTREAM},
+                                              {NULL, NULL}};
+static const server_entry DEFAULT_TESTNET4[] = {
+    {"https://mempool.space/testnet4/api", MEMPOOL_SPACE},
+    {"https://blockstream.info/testnet4/api", BLOCKSTREAM},
+    {NULL, NULL}};
+static const server_entry DEFAULT_TESTNET3[] = {{"https://blockstream.info/testnet/api", BLOCKSTREAM},
+                                                {NULL, NULL}};
+static const server_entry DEFAULT_MAINNET[] = {{"https://mempool.space/api", MEMPOOL_SPACE},
+                                               {"https://blockstream.info/api", BLOCKSTREAM},
+                                               {NULL, NULL}};
+
+static const server_entry *default_servers(gz_network n) {
   switch (n) {
     case GZ_NET_SIGNET: return DEFAULT_SIGNET;
     case GZ_NET_TESTNET4: return DEFAULT_TESTNET4;
@@ -41,8 +56,8 @@ static const char *const *default_servers(gz_network n) {
 
 static void usage(FILE *to) {
   fprintf(to,
-          "usage: gz-chain [--network signet|testnet4|testnet|mainnet] [--server URL]...\n"
-          "                [--confirmations N] COMMAND\n"
+          "usage: gz-chain [--network signet|testnet4|testnet|mainnet]\n"
+          "                [--server URL [--operator NAME]]... [--confirmations N] COMMAND\n"
           "\n"
           "commands:\n"
           "  tip                    best block height and hash\n"
@@ -55,8 +70,11 @@ static void usage(FILE *to) {
           "  broadcast HEX          send a transaction (refused on mainnet)\n"
           "\n"
           "The network defaults to signet. Without --server, the servers listed in\n"
-          "docs/CHAIN-SERVERS.md for the network are used. Addresses must be https, except\n"
-          "http for a server on this machine (localhost, 127.0.0.1, [::1]).\n"
+          "docs/CHAIN-SERVERS.md for the network are used, each with its operator named.\n"
+          "Addresses must be https, except http for a server on this machine (localhost,\n"
+          "127.0.0.1, [::1]). --operator names who runs the server given just before it\n"
+          "(lowercase letters, digits, '.', '-'); without it the operator is guessed from\n"
+          "the host name, and all of this machine's names are one operator.\n"
           "\n"
           "What the verdict means: every server is first checked to be on the network\n"
           "named. For tip, tx, script, outspend and proof, an answer is given only when\n"
@@ -71,6 +89,7 @@ typedef struct app {
   uint32_t want_confirmations;
   size_t n;
   const char *urls[GZ_MULTI_MAX_SERVERS];
+  const char *operators[GZ_MULTI_MAX_SERVERS]; /* NULL: from the host name */
   gz_chain servers[GZ_MULTI_MAX_SERVERS];
   gz_chain multi;
   gz_http http;
@@ -95,7 +114,8 @@ static int verdict_line(const app *a, gz_chain_result r) {
     case GZ_CHAIN_NOT_FOUND: printf(" (the servers all say it does not exist)\n"); return 1;
     case GZ_CHAIN_DISAGREE: printf(" (the servers contradict each other: NOT confirmed)\n"); return 1;
     case GZ_CHAIN_LAG:
-      printf(" (one server is a block behind: no answer yet, ask again)\n");
+      printf(" (a server is behind by up to %u blocks: no answer yet, ask again)\n",
+             GZ_MULTI_LAG_MAX_BLOCKS);
       return 1;
     case GZ_CHAIN_NO_QUORUM:
       printf(" (fewer than two operators answered: cannot confirm)\n");
@@ -439,6 +459,14 @@ int main(int argc, char **argv) {
         return 2;
       }
       a.urls[a.n++] = argv[i];
+    } else if (strcmp(argv[i], "--operator") == 0) {
+      if (++i >= argc || a.n == 0 || a.operators[a.n - 1] != NULL ||
+          !gz_operator_name_valid(argv[i])) {
+        fprintf(stderr, "gz-chain: --operator NAME follows a --server, once, and NAME is\n"
+                        "          lowercase letters, digits, '.' and '-'\n");
+        return 2;
+      }
+      a.operators[a.n - 1] = argv[i];
     } else if (argv[i][0] == '-' && argv[i][1] == '-') {
       fprintf(stderr, "gz-chain: unknown option %s\n", argv[i]);
       return 2;
@@ -472,9 +500,10 @@ int main(int argc, char **argv) {
   }
 
   if (a.n == 0) {
-    const char *const *d = default_servers(a.network);
-    while (d[a.n] != NULL && a.n < GZ_MULTI_MAX_SERVERS) {
-      a.urls[a.n] = d[a.n];
+    const server_entry *d = default_servers(a.network);
+    while (d[a.n].url != NULL && a.n < GZ_MULTI_MAX_SERVERS) {
+      a.urls[a.n] = d[a.n].url;
+      a.operators[a.n] = d[a.n].operator_id;
       a.n++;
     }
   }
@@ -488,6 +517,7 @@ int main(int argc, char **argv) {
     gz_esplora_config cfg;
     gz_esplora_config_default(&cfg);
     cfg.base_url = a.urls[made];
+    cfg.operator_id = a.operators[made];
     if (gz_esplora_create(&cfg, &a.http, &a.servers[made]) != GZ_CHAIN_OK) {
       fprintf(stderr,
               "gz-chain: not a usable server address: %s\n"
@@ -500,6 +530,8 @@ int main(int argc, char **argv) {
   gz_multi_config mc;
   gz_multi_config_default(&mc, a.network);
   mc.max_outputs = MAX_OUTPUTS;
+  mc.now_ms = a.http.now_ms;
+  mc.clock_ctx = a.http.ctx;
   if (gz_multi_create(&mc, a.servers, a.n, &a.multi) != GZ_CHAIN_OK) {
     fprintf(stderr, "gz-chain: the same server or the same host was given more than once;\n"
                     "          a server cannot be compared with itself\n");

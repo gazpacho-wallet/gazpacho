@@ -384,16 +384,100 @@ static void test_operator_from_host(test_state *T) {
   CHECK(gz_operator_from_host("mempool.space", op) && strcmp(op, "mempool.space") == 0);
   CHECK(gz_operator_from_host("api.mempool.space", op) && strcmp(op, "mempool.space") == 0);
   CHECK(gz_operator_from_host("a.b.c.Blockstream.INFO", op) && strcmp(op, "blockstream.info") == 0);
-  CHECK(gz_operator_from_host("localhost", op) && strcmp(op, "localhost") == 0);
-  CHECK(gz_operator_from_host("127.0.0.1", op) && strcmp(op, "127.0.0.1") == 0);
+  /* this machine is one operator under each of its names */
+  CHECK(gz_operator_from_host("localhost", op) && strcmp(op, "this-machine") == 0);
+  CHECK(gz_operator_from_host("127.0.0.1", op) && strcmp(op, "this-machine") == 0);
+  CHECK(gz_operator_from_host("[::1]", op) && strcmp(op, "this-machine") == 0);
+  CHECK(gz_operator_from_host("LocalHost.", op) && strcmp(op, "this-machine") == 0);
   CHECK(gz_operator_from_host("203.0.113.3", op) && strcmp(op, "203.0.113.3") == 0); /* not "113.3" */
-  CHECK(gz_operator_from_host("[::1]", op) && strcmp(op, "[::1]") == 0);
+  /* review A: a trailing dot is the same host, so the same operator */
+  CHECK(gz_operator_from_host("mempool.space.", op) && strcmp(op, "mempool.space") == 0);
+  CHECK(gz_operator_from_host("blockstream.info.", op) && strcmp(op, "blockstream.info") == 0);
+  CHECK(gz_operator_from_host("api.Mempool.Space.", op) && strcmp(op, "mempool.space") == 0);
+  CHECK(gz_operator_from_host("203.0.113.3.", op) && strcmp(op, "203.0.113.3") == 0);
+  CHECK(gz_operator_from_host("XN--BCHER-KVA.example", op) && strcmp(op, "xn--bcher-kva.example") == 0);
+  CHECK(!gz_operator_from_host("mempool.space..", op) && op[0] == '\0');
+  CHECK(!gz_operator_from_host("0203.0.113.3", op));
   CHECK(!gz_operator_from_host("", op));
   CHECK(!gz_operator_from_host(NULL, op));
   char longhost[300];
   memset(longhost, 'a', sizeof longhost - 1);
   longhost[sizeof longhost - 1] = '\0';
   CHECK(!gz_operator_from_host(longhost, op));
+}
+
+static void test_host_normalise(test_state *T) {
+  char out[GZ_HOST_MAX];
+  static const struct {
+    const char *in, *want;
+  } good[] = {
+      {"mempool.space", "mempool.space"},       {"mempool.space.", "mempool.space"},
+      {"MEMPOOL.Space", "mempool.space"},       {"MEMPOOL.SPACE.", "mempool.space"},
+      {"xn--bcher-kva.example", "xn--bcher-kva.example"},
+      {"XN--BCHER-KVA.EXAMPLE.", "xn--bcher-kva.example"},
+      {"localhost", "localhost"},               {"localhost.", "localhost"},
+      {"127.0.0.1", "127.0.0.1"},               {"127.0.0.1.", "127.0.0.1"},
+      {"[::1]", "[::1]"},                       {"0.0.0.0", "0.0.0.0"},
+      {"203.0.113.255", "203.0.113.255"},   {"a-b.c", "a-b.c"},
+      {"1password.example", "1password.example"}, {"x", "x"},
+  };
+  for (size_t i = 0; i < sizeof good / sizeof good[0]; i++) {
+    T->checks++;
+    if (!gz_host_normalise(good[i].in, strlen(good[i].in), out) || strcmp(out, good[i].want) != 0) {
+      T->failed++;
+      fprintf(stderr, "  %s: wanted %s, got %s\n", good[i].in, good[i].want, out);
+    }
+  }
+  static const char *const bad[] = {
+      "", ".", "..", "mempool.space..", ".mempool.space", "mem..pool", "-a.space", "a-.space",
+      "a.-b", "user@mempool.space", "mempool.space:443", "mempool.space/api", "mempool%2espace",
+      "m\xc3\xa9mpool.space", "mem pool.space", "mem_pool.space", "[::2]", "[0:0:0:0:0:0:0:1]",
+      "[::1]x", "127.1", "127.0.1", "0x7f.0.0.1", "0x7f000001", "2130706433", "127.000.0.1",
+      "192.0.02.4", "192.0.2.256", "192.0.2.4.5", "a.123", "192.0.2.4..", "localhost..",
+  };
+  for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+    T->checks++;
+    if (gz_host_normalise(bad[i], strlen(bad[i]), out) || out[0] != '\0') {
+      T->failed++;
+      fprintf(stderr, "  accepted host %s as %s\n", bad[i], out);
+    }
+  }
+  /* exactly 63 characters in a label, not 64; the whole name below GZ_HOST_MAX */
+  char label[80];
+  memset(label, 'a', 64);
+  label[64] = '\0';
+  CHECK(!gz_host_normalise(label, 64, out));
+  CHECK(gz_host_normalise(label, 63, out) && strlen(out) == 63);
+  char longname[GZ_HOST_MAX + 2];
+  for (size_t i = 0; i < sizeof longname - 1; i++) longname[i] = (i % 2) ? '.' : 'a';
+  longname[sizeof longname - 1] = '\0';
+  CHECK(!gz_host_normalise(longname, strlen(longname), out));
+  CHECK(gz_host_normalise(longname, GZ_HOST_MAX - 1, out)); /* "a.a. ... .a", 127 characters */
+  longname[GZ_HOST_MAX - 1] = '.';
+  CHECK(gz_host_normalise(longname, GZ_HOST_MAX, out)); /* the same with the root dot */
+  CHECK(strlen(out) == GZ_HOST_MAX - 1);
+  CHECK(!gz_host_normalise(NULL, 3, out));
+  /* the length given is what is read: no terminator needed */
+  CHECK(gz_host_normalise("mempool.space/signet", 13, out) && strcmp(out, "mempool.space") == 0);
+  CHECK(gz_host_is_loopback("localhost") && gz_host_is_loopback("127.0.0.1") &&
+        gz_host_is_loopback("[::1]"));
+  CHECK(!gz_host_is_loopback("localhost.") && !gz_host_is_loopback("LOCALHOST") &&
+        !gz_host_is_loopback("127.0.0.2") && /* address-check: allow (loopback range) */
+        !gz_host_is_loopback(NULL));
+}
+
+static void test_operator_names(test_state *T) {
+  static const char *const good[] = {"acme", "mempool.space", "my-own-node", "op1", "a.b.c", "0"};
+  static const char *const bad[] = {"",     "Acme", "acme.", ".acme", "a..b", "-acme",
+                                    "acme-", "a b",  "a_b",   "a@b",  NULL};
+  for (size_t i = 0; i < sizeof good / sizeof good[0]; i++) CHECK(gz_operator_name_valid(good[i]));
+  for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) CHECK(!gz_operator_name_valid(bad[i]));
+  char longname[GZ_OPERATOR_MAX + 1];
+  memset(longname, 'a', sizeof longname - 1);
+  longname[sizeof longname - 1] = '\0';
+  CHECK(!gz_operator_name_valid(longname));
+  longname[GZ_OPERATOR_MAX - 1] = '\0';
+  CHECK(gz_operator_name_valid(longname));
 }
 
 /* ---- transactions that must be refused ---- */
@@ -481,6 +565,31 @@ static void test_64_byte_transaction_refused(test_state *T) {
   CHECK(len == 63 && gz_txid_from_raw(tx, len, txid));
   len = put_tx(tx, 1, 1, 5);
   CHECK(len == 65 && gz_txid_from_raw(tx, len, txid));
+
+  /* Review c13: the rule measures the serialization WITHOUT witness data.
+   * The 64-byte body with a witness added (69 bytes in all) is refused... */
+  uint8_t sw[80];
+  len = put_tx(tx, 1, 1, 4);
+  size_t p = 0;
+  memcpy(sw, tx, 4); p = 4;
+  sw[p++] = 0x00; sw[p++] = 0x01;      /* marker, flag */
+  memcpy(sw + p, tx + 4, 56); p += 56; /* inputs and outputs */
+  sw[p++] = 0x01;                      /* one witness item */
+  sw[p++] = 0x01; sw[p++] = 0x42;      /* of one byte */
+  memcpy(sw + p, tx + 60, 4); p += 4;  /* locktime */
+  CHECK(p == 69 && !gz_txid_from_raw(sw, p, txid));
+  /* ...and a segwit transaction that is 64 bytes only WITH its witness (60
+   * without) is an ordinary one */
+  len = put_tx(tx, 1, 1, 0);
+  CHECK(len == 60);
+  memcpy(sw, tx, 4); p = 4;
+  sw[p++] = 0x00; sw[p++] = 0x01;
+  memcpy(sw + p, tx + 4, 52); p += 52;
+  sw[p++] = 0x01; sw[p++] = 0x00;      /* one witness item, empty */
+  memcpy(sw + p, tx + 56, 4); p += 4;
+  CHECK(p == 64 && gz_txid_from_raw(sw, p, txid));
+  uint8_t legacy_id[GZ_HASH_LEN];
+  CHECK(gz_txid_from_raw(tx, len, legacy_id) && memcmp(legacy_id, txid, GZ_HASH_LEN) == 0);
 
   /* Why: the two halves of 64 bytes are a left and a right Merkle node. The
    * real block's first two txids, glued together, hash to an inner node of
@@ -571,6 +680,8 @@ int main(void) {
   RUN(test_network_identity);
   RUN(test_signet_pow_limit);
   RUN(test_operator_from_host);
+  RUN(test_host_normalise);
+  RUN(test_operator_names);
   RUN(test_tx_shapes_refused);
   RUN(test_64_byte_transaction_refused);
   RUN(test_merkle_depth_for_count);

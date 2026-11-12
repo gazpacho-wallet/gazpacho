@@ -14,7 +14,8 @@
  *   GZ_CHAIN_WRONG_NETWORK to everything and is never sent a broadcast.
  * - The same server cannot be given twice: creation refuses two handles to
  *   one backend, two backends with the same address, and two backends on the
- *   same host.
+ *   same host. Hosts are compared in the canonical form of
+ *   gz_host_normalise, so "mempool.space." is "mempool.space".
  * - The quorum counts OPERATORS, not servers. Two servers of one operator
  *   (as named by gz_chain_describe) count once.
  *
@@ -29,9 +30,21 @@
  *    way, that failure code, so the caller can tell why.
  *  - Usable replies that contradict each other about confirmed data:
  *    GZ_CHAIN_DISAGREE, even if a majority agrees. There is no vote.
- *  - The same, when the servers' tips show one of them a block behind on the
- *    same chain: GZ_CHAIN_LAG. Ask again shortly. A server can fake being
- *    behind, so a lag that persists must be treated as disagreement.
+ *  - The same contradiction is GZ_CHAIN_LAG instead only when it has the
+ *    shape of a server being behind, all of:
+ *      . the disputed item (a block, a confirmation, a confirmed spend, a
+ *        confirmed output) lies at a height ABOVE the tip of every server
+ *        that lacks it, and at or below the tip of every server that has it
+ *        (for an output that one server no longer lists: that server shows
+ *        it spent in a block above the tip of the server that lists it);
+ *      . the tips lie on one chain and differ by at most tip_slack, which is
+ *        at most GZ_MULTI_LAG_MAX_BLOCKS;
+ *      . lag has not been seen continuously for more than
+ *        GZ_MULTI_LAG_MAX_MS (by the configured clock). The period ends when
+ *        a call sees every server at the same tip.
+ *    Anything at or below the lower server's tip that servers disagree
+ *    about is GZ_CHAIN_DISAGREE: a server cannot turn a contradiction into
+ *    lag by naming the block before the honest server's tip.
  *  - Otherwise GZ_CHAIN_OK (or GZ_CHAIN_NOT_FOUND) with the common answer.
  *
  * Unconfirmed data (mempool contents) differs between honest servers all the
@@ -41,18 +54,19 @@
  *
  * Per call:
  *  - tip: the reported tips may differ in height by at most tip_slack
- *    (default 1). The answer is the lowest reported tip, and every server
+ *    (default 3). The answer is the lowest reported tip, and every server
  *    that reported a higher tip is asked for its block hash at that lower
  *    height, which must match exactly. Same height with different hashes
  *    disagrees. More than tip_slack apart disagrees.
  *  - block_hash, block_header, block_summary, merkle_proof: every field
- *    identical. One server having it and another not: LAG if the tips show
- *    lag, else DISAGREE.
+ *    identical. One server having it and another not: LAG if it has the lag
+ *    shape above (the block's height; for a proof, the proof's height),
+ *    else DISAGREE.
  *  - tx_status: all confirmed: same height and block hash required; the
  *    claimed confirmation count returned is the lowest (still a claim).
  *    None confirmed: OK; the state is "mempool" or "unknown" if all say so,
  *    else "unknown" with unconfirmed_differs set. Some confirmed and some
- *    not: LAG if the tips show lag, else DISAGREE.
+ *    not: LAG if it has the lag shape, else DISAGREE.
  *  - outspend: the same pattern. A confirmed spend must be reported
  *    identically by all. No confirmed spend: OK; "not spent", or the
  *    unconfirmed spend if all report the same one, else "not spent" with
@@ -60,22 +74,34 @@
  *    spend on some servers only: LAG or DISAGREE.
  *  - script_outputs: the confirmed outputs must be identical on all servers,
  *    else LAG or DISAGREE. The answer is those plus the unconfirmed outputs
- *    every server lists; unconfirmed_differs says some were left out.
+ *    every server lists; unconfirmed_differs is set when any server's list
+ *    is not exactly the answer. A list naming one outpoint twice counts as
+ *    a malformed reply.
  *  - raw_tx: every byte identical. Each server's bytes must already hash to
  *    the txid, but the txid does not cover witness data, so the full
- *    serializations are compared as well.
+ *    serializations are compared as well. A transaction one server has and
+ *    another lacks is DISAGREE (it has no height to judge lag by).
  *  - broadcast: sent to every server on the right network; GZ_CHAIN_OK if at
  *    least one accepts (or already has it). Every server's result is in the
  *    report. Accepted is not the same as relayed: follow up with tx_status.
  *  - fee_estimates: opinions, not facts. At least a quorum of operators must
- *    answer. For each target every answering server lists, the result is the
- *    LOWEST rate given, cut at fee_ceiling_sat_per_kvb, so no single server
- *    can raise what the user pays. If for any such target the highest rate
- *    is more than fee_disagree_factor times the lowest plus
- *    fee_disagree_slack_sat_per_kvb, the call returns GZ_CHAIN_DISAGREE
- *    instead. A single server CAN lower the result (down to the limit that
- *    rule allows); gz_chain_choose_fee_rate applies a floor. On test
- *    networks that function ignores estimates altogether.
+ *    answer the call. The result has an entry for each target any of them
+ *    lists. A server ANSWERS FOR a target T with its estimate for the
+ *    highest target it lists that is not above T (T itself or a faster
+ *    target, so never a lower rate than T needs); a server that lists
+ *    nothing at or below T does not answer for T. For each T, only the
+ *    servers answering for T count: fewer than a quorum of operators and T
+ *    is left out; otherwise the entry is the LOWEST rate they give, cut at
+ *    fee_ceiling_sat_per_kvb, so no single server can raise what the user
+ *    pays. If for any T the highest of those rates is more than
+ *    fee_disagree_factor times the lowest plus
+ *    fee_disagree_slack_sat_per_kvb, the call returns GZ_CHAIN_DISAGREE.
+ *    So a single server can lower a target's rate only to about
+ *    1/fee_disagree_factor of what the others give FOR THAT TARGET, less
+ *    the slack: leaving targets out removes it from the targets it left
+ *    out, it does not let its other estimates stand in for them. At most
+ *    GZ_FEE_MAX_TARGETS targets are kept (the lowest). On test networks
+ *    gz_chain_choose_fee_rate ignores estimates altogether.
  */
 #ifndef GAZPACHO_CHAIN_MULTI_H
 #define GAZPACHO_CHAIN_MULTI_H
@@ -88,13 +114,25 @@ extern "C" {
 
 #define GZ_MULTI_MAX_SERVERS 8
 
+/* The limits on lag (see "Verdicts" above). A difference counts as lag only
+ * while the servers' tips are at most GZ_MULTI_LAG_MAX_BLOCKS apart, and
+ * only until lag has been seen continuously for GZ_MULTI_LAG_MAX_MS,
+ * whichever limit is reached first; beyond either it is GZ_CHAIN_DISAGREE. */
+#define GZ_MULTI_LAG_MAX_BLOCKS 3u
+#define GZ_MULTI_LAG_MAX_MS (30u * 60u * 1000u)
+
 typedef struct gz_multi_config {
   /* The network every server must be on. Required. */
   gz_network network;
   /* Independent operators that must give a usable reply. At least 2. */
   uint32_t quorum;
-  /* Largest tip height difference still treated as the same chain. 0..6. */
+  /* Largest tip height difference still treated as one chain (for the tip
+   * and for lag). 0..GZ_MULTI_LAG_MAX_BLOCKS; default the maximum. */
   uint32_t tip_slack;
+  /* The clock lag is timed by: milliseconds, never going backwards (the
+   * transport's now_ms fits). Required. */
+  uint64_t (*now_ms)(void *clock_ctx);
+  void *clock_ctx;
   /* Most outputs kept per server for script_outputs. 1..4096. */
   size_t max_outputs;
   /* Combined fee estimates are cut at this rate. Supplied by the caller;
@@ -105,8 +143,9 @@ typedef struct gz_multi_config {
   uint64_t fee_disagree_slack_sat_per_kvb;
 } gz_multi_config;
 
-/* quorum 2, tip_slack 1, max_outputs 256, fee ceiling 200,000 sat/kvB
- * (200 sat/vB), fee factor 3, fee slack 1000 sat/kvB (1 sat/vB). */
+/* quorum 2, tip_slack GZ_MULTI_LAG_MAX_BLOCKS, max_outputs 256, fee ceiling
+ * 200,000 sat/kvB (200 sat/vB), fee factor 3, fee slack 1000 sat/kvB
+ * (1 sat/vB). No clock: the caller must set now_ms. */
 void gz_multi_config_default(gz_multi_config *cfg, gz_network network);
 
 typedef enum gz_chain_call {
@@ -170,7 +209,9 @@ typedef struct gz_multi_report {
  *
  * Returns GZ_CHAIN_INVALID_ARG, and creates nothing, if any two servers are
  * the same backend, have the same normalised address, or are on the same
- * host. Servers that cannot say who they talk to (no describe function) are
+ * host, if a server describes itself with a host gz_host_normalise refuses
+ * or an operator name not in canonical form, or if the configuration has no
+ * clock. Servers that cannot say who they talk to (no describe function) are
  * told apart by handle only and each counts as its own operator; that is for
  * tests and for backends that are not network servers.
  *

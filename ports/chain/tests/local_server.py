@@ -11,7 +11,8 @@ One plain-HTTP server offers:
     /redir, /slow, /trickle, /gzip, /hugeheader, /agent, /post);
   - small Esplora look-alikes under /<persona>/..., built from the recorded
     signet answers in DATADIR. Personas: honest, honest2 (the same answers),
-    hider (hides transaction A), mainnet (claims mainnet's block 0).
+    hider (hides transaction A), mainnet (claims mainnet's block 0), behind
+    (has not seen block 329439), feehigh (another operator's fee estimates).
 Three HTTPS servers offer /ok with, in turn: a certificate for localhost
 signed by the test authority; one for another name signed by the same
 authority; a self-signed one. Every POST is logged to WORKDIR/posts.log.
@@ -69,6 +70,8 @@ def honest_routes():
         "/tx/%s/outspend/0" % TX_A: "tx_a_outspend_0.json",
         "/tx/%s/outspend/2" % TX_A: "tx_a_outspend_2.json",
         "/tx/%s/hex" % TX_CB: "tx_coinbase_hex.txt",
+        "/tx/%s/status" % TX_SP: "tx_spender_status.json",
+        "/tx/%s/hex" % TX_SP: "tx_spender_hex.txt",
         "/tx/%s/merkle-proof" % TX_CB: "tx_coinbase_merkle_proof.json",
         "/scripthash/%s/utxo" % SCRIPT_KEY: "utxo_script_a2.json",
     }
@@ -78,10 +81,16 @@ def honest_routes():
 
 
 PERSONAS = {"honest": honest_routes(), "honest2": honest_routes(), "hider": honest_routes(),
-            "mainnet": honest_routes()}
+            "mainnet": honest_routes(), "behind": honest_routes(), "feehigh": honest_routes()}
 PERSONAS["hider"]["/tx/%s/status" % TX_A] = (200, b'{"confirmed":false}')
 PERSONAS["hider"]["/tx/%s/hex" % TX_A] = (404, b"Transaction not found")
 PERSONAS["mainnet"]["/block-height/0"] = (200, GENESIS_MAINNET.encode())
+# has not seen block 329439 yet: the spender is still in its mempool
+PERSONAS["behind"]["/blocks/tip/height"] = (200, b"329438")
+PERSONAS["behind"]["/block-height/329439"] = (404, b"Block not found")
+PERSONAS["behind"]["/tx/%s/status" % TX_SP] = (200, b'{"confirmed":false}')
+# the other operator's recorded estimates: 10 against 1 sat/vB for the next block
+PERSONAS["feehigh"]["/fee-estimates"] = (200, data("fee_estimates_blockstream.json"))
 POST_ANSWER = (400, data("post_known_blockstream.txt"))
 post_lock = threading.Lock()
 

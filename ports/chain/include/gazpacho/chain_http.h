@@ -73,7 +73,13 @@ typedef struct gz_http_curl_config {
  *
  * - HTTPS only. Plain http is accepted for exactly three hosts, this machine
  *   under its usual names: localhost, 127.0.0.1 and [::1]. Any other http
- *   address is refused before anything is sent (GZ_HTTP_E_FAILED).
+ *   address is refused before anything is sent (GZ_HTTP_E_FAILED). The host
+ *   is read from the URL's authority by a strict parser, and libcurl's own
+ *   parse of the URL must find the same host; the request is made with that
+ *   parsed URL. A URL with user information ("user@host",
+ *   "localhost:1@other-host"), percent-encoding or any other character
+ *   outside a plain host and port in its authority is refused, whatever the
+ *   scheme.
  * - The server's certificate and host name are always verified.
  * - Redirects are not followed; a 3xx status is returned as it is.
  * - The body is counted as it arrives and the transfer is stopped as soon as

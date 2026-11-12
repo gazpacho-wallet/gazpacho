@@ -110,6 +110,9 @@ typedef struct fake_http {
 void fake_init(fake_http *f);
 void fake_free(fake_http *f);
 gz_http fake_transport(fake_http *f);
+/* The fake transport's clock (milliseconds), for gz_multi_config.now_ms with
+ * the fake as clock_ctx. Tests move it by changing now_ms. */
+uint64_t fake_clock(void *ctx);
 /* A route that answers for ever. Replaces an earlier permanent route for the
  * same method and address. */
 void fake_set(fake_http *f, bool post, const char *url, long status, const char *body);

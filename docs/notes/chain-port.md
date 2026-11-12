@@ -1,6 +1,6 @@
 # The chain port
 
-How Gazpacho reads the chain through public chain servers. Written 2026-11-11 with the first version of the code in `ports/chain/`, revised 2026-11-12 after an independent review (pull request 7). "Verified" means checked from the project's build server against the live servers on those dates.
+How Gazpacho reads the chain through public chain servers. Written 2026-11-11 with the first version of the code in `ports/chain/`, revised 2026-11-12 after an independent review (pull request 7), and again the same day after the second round of that review (section 15). "Verified" means checked from the project's build server against the live servers on those dates.
 
 ## 1. What it is
 
@@ -34,7 +34,7 @@ All network traffic, the clock and sleeping go through a small transport interfa
 | `gz_chain_confirm_tx` | Is this transaction really confirmed, how deep? | A checked result: see section 6 |
 | `gz_chain_choose_fee_rate` | Which fee rate should I use? | The policy in section 7 |
 
-Helpers that need no server: `gz_header_hash`, `gz_header_links`, `gz_header_check_pow`, `gz_merkle_verify`, `gz_merkle_depth_for_count`, `gz_txid_from_raw`, `gz_tx_is_coinbase`, `gz_network_genesis`, `gz_operator_from_host`.
+Helpers that need no server: `gz_header_hash`, `gz_header_links`, `gz_header_check_pow`, `gz_merkle_verify`, `gz_merkle_depth_for_count`, `gz_txid_from_raw`, `gz_tx_is_coinbase`, `gz_network_genesis`, `gz_host_normalise`, `gz_host_is_loopback`, `gz_operator_from_host`, `gz_operator_name_valid`.
 
 ### Result codes
 
@@ -49,7 +49,7 @@ Helpers that need no server: `gz_header_hash`, `gz_header_links`, `gz_header_che
 | `GZ_CHAIN_BAD_PROOF` | Well formed but failed a check against data it must match |
 | `GZ_CHAIN_WRONG_NETWORK` | The server's block 0 is not the genesis block of the network asked for |
 | `GZ_CHAIN_DISAGREE` | Comparing backend: servers contradict each other about confirmed data. Not confirmed |
-| `GZ_CHAIN_LAG` | Comparing backend: the difference is what one server being a block behind looks like. Ask again shortly; if it persists, treat as disagreement |
+| `GZ_CHAIN_LAG` | Comparing backend: the difference has the shape of a server being behind: the disputed item lies above the tip of every server that lacks it, the tips are at most 3 blocks apart on one chain, and this has lasted at most 30 minutes (section 5). Ask again shortly. Past either limit the backend returns disagreement itself |
 | `GZ_CHAIN_NO_QUORUM` | Comparing backend: fewer than two operators gave a usable answer. Not confirmed |
 | `GZ_CHAIN_INVALID_ARG`, `GZ_CHAIN_NO_MEMORY` | Caller error; out of memory |
 
@@ -102,7 +102,7 @@ Everything a server returns is treated as hostile.
 - **Transactions.** `gz_txid_from_raw` requires at least one input and one output, canonical length encodings, every length within the buffer, and no bytes left over. It refuses a transaction whose serialization without witness is exactly 64 bytes, because 64 bytes are also two Merkle nodes (see section 6).
 - **Retries.** At most 3 tries, waiting 0.5 s then 1 s (never more than 30 s), only when the server could not be reached or answered 429 or 5xx. A definite answer is never retried. A broadcast is not repeated after a timeout or a 5xx, because the server may already have acted.
 - **Request rate.** At least 250 ms between requests to one server.
-- **Addresses.** `https://` only. Plain `http://` is accepted for exactly three hosts, this machine under its usual names: `localhost`, `127.0.0.1`, `[::1]`. The backend refuses anything else at creation and the transport refuses it again before sending. Certificates and host names are always verified; a different certificate authority file can be given for a user's own server. Redirects are not followed.
+- **Addresses.** `https://` only. Plain `http://` is accepted for exactly three hosts, this machine under its usual names: `localhost`, `127.0.0.1`, `[::1]`. The backend refuses anything else at creation and the transport refuses it again before sending. Every host is put into one canonical form by one function, `gz_host_normalise`: lower case, one trailing dot (the DNS root) removed, labels of 1 to 63 letters, digits and inner dashes; a name in Unicode is refused, so only its punycode (`xn--`) spelling is accepted; a name whose last label starts with a digit must be a dotted IPv4 address in canonical form (so `127.1`, `0x7f.0.0.1`, `2130706433` and `127.000.0.1`, which resolvers read as addresses, are refused); the only bracketed host is `[::1]`. User information (`user@`), percent-encoding and anything else in the authority are refused. Requests are sent to the canonical address, not to the spelling given. The transport parses the authority itself (host, then an optional port of 1 to 5 digits, then `/`, `?`, `#` or the end; nothing else), requires libcurl's own parse of the URL to find the same host and no user or password, and makes the request with that parsed URL; it refuses user information over https too. Certificates and host names are always verified; a different certificate authority file can be given for a user's own server. Redirects are not followed.
 
 Why our own JSON tokenizer and not cJSON: the answers are small flat objects, and the strictness wanted (duplicate keys refused, no trailing bytes, exact integers, a bound on everything) is most of the work. cJSON would have added about 3000 lines, converts numbers through floating point, accepts duplicate keys, and allocates per node in proportion to the input.
 
@@ -111,8 +111,8 @@ Why our own JSON tokenizer and not cJSON: the answers are small flat objects, an
 ### Who counts
 
 - **Right network.** Before a server's answer counts, its block 0 must be the genesis block of the configured network. This is checked on first use and remembered. A server on another chain answers `GZ_CHAIN_WRONG_NETWORK` to every call and is never sent a broadcast. If the check could not be made (server down), it is tried again on the next call.
-- **No duplicates.** Creation refuses two handles to one backend, two backends with the same normalised address (scheme and host lower-cased, default port dropped), and two backends on the same host, whatever operator name they are given.
-- **Operators, not servers.** The quorum (default and minimum 2) counts distinct operators. A backend's operator is the name given in its configuration, or else the last two labels of its host name (`api.mempool.space` → `mempool.space`; an IP address counts as itself). Two hosts of one operator are one voice. This rule of thumb cannot know that two unrelated-looking names belong to one company: the server list must be chosen with that in mind.
+- **No duplicates.** Creation refuses two handles to one backend, two backends with the same normalised address (canonical host, lower-case scheme, default port dropped), and two backends on the same host, whatever operator name they are given. Hosts are compared in the canonical form above, including hosts that a third-party backend reports through `gz_chain_describe` (a host that has no canonical form, or an operator name not in canonical form, makes creation fail). So `mempool.space` and `mempool.space.` are one host, refused as a pair.
+- **Operators, not servers.** The quorum (default and minimum 2) counts distinct operators. A backend's operator is the name given in its configuration (canonical spelling only: lowercase letters, digits, inner dots and dashes, no empty label), or else derived from the canonical host: this machine's three names are one operator, `this-machine`; a dotted IPv4 address is its own operator; otherwise the last two labels (`api.mempool.space` -> `mempool.space`). Two hosts of one operator are one voice. This rule of thumb cannot know that two unrelated-looking names belong to one company, and it counts two numeric addresses as two operators, so configured lists name their operators: `gz-chain`'s default lists do (`mempool.space`, `blockstream.info`), and `--operator NAME` names the operator of a server given on the command line.
 
 ### Verdicts
 
@@ -120,7 +120,7 @@ A server's reply is **usable** if it is an answer or a clear "not found". Anythi
 
 1. Usable replies from fewer than two operators: **no quorum**; or, if every server failed in the same way, that failure (all unreachable, all on the wrong network).
 2. Usable replies that contradict each other about **confirmed** data: **servers disagree**, even when a majority agrees. There is no vote.
-3. A contradiction of the kind one server being a block behind produces: **lag**. "That kind" means one server has a block, a confirmation or a confirmed spend that another does not, and their tips differ by at most `tip_slack` (default 1) and lie on one chain (the higher server has the lower server's tip at that height). Any other pattern is disagreement.
+3. A contradiction is **lag** only when it has the shape of servers behind one another, all of: (a) the disputed item (a block, a confirmation, a confirmed spend, a confirmed output) lies at a height **above the tip of every server that lacks it**, and not above the tip of any server that has it; for an output one server no longer lists, that server must show it spent by a confirmed transaction in a block above the tip of the server that still lists it; (b) the tips lie on one chain (each higher server has the lowest tip at that height) and differ by at most `tip_slack`, which is at most `GZ_MULTI_LAG_MAX_BLOCKS` = 3 (the default); (c) lag has not been seen continuously for more than `GZ_MULTI_LAG_MAX_MS` = 30 minutes, by the clock the caller supplies; the period ends when a call sees every server at one tip. Anything at or below the lower server's tip that servers disagree about is **disagreement**: a server cannot turn a contradiction into lag by naming the block before the honest server's tip. A transaction one server has and another lacks (raw bytes) has no height to judge by and is disagreement.
 4. Differences only about **unconfirmed** data never block the answer: the confirmed, agreed part is returned and a flag (`unconfirmed_differs`) says the rest differs. Anyone can put a transaction in one server's mempool; it must not be able to blank a user's view.
 5. Otherwise the common answer.
 
@@ -130,18 +130,18 @@ Every server's own reply to the last call can be read with `gz_multi_last_report
 
 | Call | Rule |
 |---|---|
-| Tip | Heights may differ by at most `tip_slack`. The answer is the **lowest** tip, and every higher server must have the same block at that height. Same height with different hashes disagrees |
-| Block hash, header, summary, Merkle proof | Every field identical. Present on one, absent on another: lag or disagreement as above |
+| Tip | Heights may differ by at most `tip_slack` (default 3). The answer is the **lowest** tip, and every higher server must have the same block at that height. Same height with different hashes disagrees. Every server at one tip ends a period of lag |
+| Block hash, header, summary, Merkle proof | Every field identical. Present on one, absent on another: lag if the block's height (for a proof, the proof's height) is above the tip of every server lacking it, else disagreement |
 | Transaction status | All confirmed: same height **and** same block hash; the claimed count returned is the lowest. None confirmed: an answer — "mempool" if all have it there, else "unknown", flagged if some have it. Some confirmed and some not: lag or disagreement |
 | Outspend | A confirmed spend must be identical on every server (spender, input, height, block). No confirmed spend: an answer — the unconfirmed spend if all report the same one, else "not spent", flagged if any reports one. A confirmed spend on some servers only: lag or disagreement |
-| Outputs of a script | The confirmed outputs identical everywhere, else lag or disagreement. The answer: those, plus the unconfirmed outputs every server lists identically; flagged if any were left out |
-| Raw transaction | Every byte identical; each server's bytes are first rechecked to hash to the txid (the txid does not cover witness data) |
+| Outputs of a script | The confirmed outputs identical everywhere, else lag (each difference new above the lacking server's tip, or spent above the listing server's tip) or disagreement. The answer: those, plus the unconfirmed outputs every server lists; flagged if any server's list is not exactly the answer. A list naming one outpoint twice is a malformed reply |
+| Raw transaction | Every byte identical; each server's bytes are first rechecked to hash to the txid (the txid does not cover witness data). Present on one, absent on another: disagreement |
 | Broadcast | Sent to every server on the right network. Success if any accepts and returns the right txid, or says it already has it and then shows it. Each server's result is kept. Accepted is not relayed: follow up with the status |
 | Fee estimates | Never an agreed fact; see section 7 |
 
 Consequences:
 
-- Lag and unconfirmed differences are normal for a few seconds around a new block or transaction. Callers should treat lag as "not yet, ask again", and persistent lag as disagreement, because a dishonest server can pretend to be behind.
+- Lag and unconfirmed differences are normal for a few seconds around a new block or transaction. Lag is "not yet, ask again". A dishonest server can still pretend to be behind, but only about items above its claimed tip, and only within the limits: at most 3 blocks, at most 30 minutes; after that the comparing backend itself answers disagreement. Hiding anything at or below its own claimed tip is disagreement at once.
 - A server that is permanently behind, broken or dishonest makes a two-operator setup permanently unable to confirm. That is the safe direction, and the reason three operators are better than two.
 
 ## 6. Confirmations: what is checked and what is trusted
@@ -153,7 +153,7 @@ Consequences:
 3. the header at the stated height hashes to the stated block hash and meets its own proof-of-work target for `network`;
 4. the Merkle branch is for that height, has exactly the depth implied by the block's transaction count, places the transaction below that count, and leads from the txid to the header's Merkle root; the fold refuses a step where our node sits on the right with an identical node on its left (the copy Bitcoin makes of an odd row's last node, which no transaction occupies);
 5. the block's first transaction is fetched, must be a coinbase, and its own branch from position 0 must have the same depth and reach the same root — the server cannot choose a depth that does not fit a real tree;
-6. up to `want - 1` later headers (at most 144) are fetched; each must link to the one before and meet its proof-of-work target.
+6. the tip is read (on the comparing backend: the agreed, lowest tip) and up to `want - 1` later headers (at most 144), none above that tip, are fetched; each must link to the one before and meet its proof-of-work target. A server that has already seen a newer block therefore never stalls a confirmation: the count stops at the agreed tip. Servers disagreeing about a header at or below it is disagreement.
 
 The result carries `checked_confirmations`: 1 for the block plus one per linked header, never more than asked for, fewer if the chain is not that long yet. `status.claimed_confirmations`, the server's own count from the tip it claims, is passed along only as a claim: a server claiming a tip a million blocks up changes the claim and not the checked number. On any failure the output is cleared; nothing half-checked is returned as if confirmed.
 
@@ -180,10 +180,10 @@ What else is trusted rather than checked:
 Fee estimates are opinions. Nothing can check them, and the comparing backend never reports them as agreed facts.
 
 - **Test networks.** `gz_chain_choose_fee_rate` returns a fixed 0.1 sat/vB (100 sat/kvB) on signet, testnet3 and testnet4 and asks no server. Estimates there are advisory only. (Owner's preference: 0.1 sat/vB on test networks.)
-- **Mainnet.** The comparing backend's combined estimate, for each target every answering operator lists, is the **lowest** rate given, cut at the configured ceiling (default 200 sat/vB). If for any such target the highest rate is more than 3 times the lowest plus 1 sat/vB, the call returns `GZ_CHAIN_DISAGREE` instead. `gz_chain_choose_fee_rate` then picks the entry for the target, raises it to a floor of 0.1 sat/vB, and cuts it at a ceiling the **caller must supply**.
+- **Mainnet.** A server **answers for** a target T with its estimate for the highest target it lists that is not above T (T itself or a faster target, so never a lower rate than T needs); a server that lists nothing at or below T does not answer for T. The comparing backend's combined table has an entry for each target any answering server lists; for each, only the servers answering for that target count. Fewer than a quorum of operators answer for it: the target is left out. Otherwise the entry is the **lowest** rate they give, cut at the configured ceiling (default 200 sat/vB); if the highest of those rates is more than 3 times the lowest plus 1 sat/vB, the call returns `GZ_CHAIN_DISAGREE` instead. `gz_chain_choose_fee_rate` then picks the entry for the highest target not above the one asked for (never a slower one: if every entry is slower, there is no rate, `GZ_CHAIN_NOT_FOUND`), raises it to a floor of 0.1 sat/vB, and cuts it at a ceiling the **caller must supply**.
 - **Single server.** Its parser refuses any rate above 5000 sat/vB as malformed.
 
-Consequences: no single server can raise what the user pays. A single server can lower it, by at most the spread the disagreement rule allows (to about a third of the others' rate, less 1 sat/vB), and not below the floor. A transaction that pays too little is slow, not lost, and can be bumped; one that pays too much loses money for good. That is why the lowest is taken.
+Consequences: no single server can raise what the user pays. A single server can lower a target's rate only to what the disagreement rule allows against the others' rates **for that same target** (about a third of theirs, less 1 sat/vB), and not below the floor. Leaving targets out does not get round it: a server that omits a target simply does not take part in it, and its estimates for slower targets never stand in for a faster one (the reviewer's case, one server answering only `{"1008":2}` against honest servers at 40 sat/vB for 6 blocks, now gives no 6-block rate with two servers, and the honest servers' rate with three; tested). A transaction that pays too little is slow, not lost, and can be bumped; one that pays too much loses money for good. That is why the lowest is taken.
 
 The live servers' signet answers (1 and 10 sat/vB for the next block) count as a disagreement under this rule. That is expected: on signet the estimates are not used.
 
@@ -195,12 +195,12 @@ Assume one of the configured servers is dishonest and at least one other, of ano
 
 - Make the wallet accept an **invented confirmation**. The honest server contradicts it, so the comparing backend returns disagreement. Separately, `gz_chain_confirm_tx` requires the transaction, a header chain and a Merkle branch of the right shape; a transaction not in the block has no valid branch. Both are tested, including the case where every server tells the same lie and only the proof catches it.
 - Inflate the **confirmation count**: it is counted along linked headers.
-- **Hide a confirmed spend** of a watched output unnoticed: the result is disagreement (or, briefly, lag), with the honest answer in the report.
+- **Hide a confirmed spend** of a watched output unnoticed: the result is disagreement, with the honest answer in the report; lag only while the spend is in a block above the hiding server's claimed tip, for at most 3 blocks or 30 minutes.
 - **Hide or invent a confirmed deposit**: confirmed outputs must match exactly.
 - **Blank the view by spamming the mempool**: unconfirmed differences are flagged, not fatal.
 - Substitute a **different transaction** for a txid, or alter its witness unnoticed.
 - Put the wallet on a **different chain** quietly: block 0, block hashes, headers and tips are checked or compared. A server on another network is excluded and never sent a broadcast.
-- Pass itself off as **two servers**: duplicates are refused and the quorum counts operators.
+- Pass itself off as **two servers**: duplicates are refused, hosts are compared in one canonical spelling (case, trailing dot, numeric forms), and the quorum counts operators.
 - **Set the fee rate** upwards.
 - Learn or take any **secret**.
 - Exhaust memory or hang the program: sizes and times are capped.
@@ -208,8 +208,8 @@ Assume one of the configured servers is dishonest and at least one other, of ano
 **Can:**
 
 - **Deny service.** One dishonest or broken operator out of two stops confirmations. With three, a server that is down or malformed is ignored, but one that sends well-formed contradictions still blocks. The user is told; nothing false is accepted. For a member with a deadline this matters: persistent disagreement must be shown early, and the user must be able to change servers.
-- **Pretend to lag**, which delays answers the same way.
-- **Lower the fee rate** a little (section 7).
+- **Pretend to lag**, which delays answers the same way, only about items above its claimed tip and for at most 3 blocks or 30 minutes.
+- **Lower the fee rate** a little, within the disagreement rule for each target (section 7).
 - **Accept a broadcast and not relay it.** It also goes to the others.
 - **Learn things** (section 9).
 
@@ -264,13 +264,13 @@ Tested from the build server on 2026-11-11. "Answered" means it returned the rig
 The design documents settle that answers are compared across operators and that a disagreement means "not confirmed". These finer points were not settled anywhere and were decided here; each can be changed.
 
 1. **No majority vote.** With three servers, one well-formed contradiction blocks an answer. Two colluding servers cannot outvote an honest one silently; the cost is that one bad server can block.
-2. **Lag is its own result**, and is recognised only from the servers' tips (at most one block apart, same chain). A server can fake it.
+2. **Lag is its own result**, recognised only when the disputed item lies above the lower server's tip, within 3 blocks of tip difference and 30 minutes (`GZ_MULTI_LAG_MAX_BLOCKS`, `GZ_MULTI_LAG_MAX_MS` in `chain_multi.h`), whichever limit is reached first; beyond either it is disagreement. Decided by the owner's coordinator after the second review.
 3. **Unconfirmed differences never block**; they are flagged, and only unconfirmed data every server reports is returned.
 4. **The lowest tip** is the agreed tip.
-5. **Operators** are named in configuration or taken from the last two labels of the host name; one host can never be two servers.
+5. **Operators** are named in configuration (and in `gz-chain`'s default lists), or taken from the canonical host: this machine's names are one operator, otherwise the last two labels; one host can never be two servers, in any spelling.
 6. **Network identity** is block 0, checked once per server and remembered.
-7. **Fees**: fixed 0.1 sat/vB on test networks; on mainnet the lowest estimate, a factor-of-3-plus-1-sat/vB disagreement rule, a caller-supplied ceiling, a 0.1 sat/vB floor, and a 5000 sat/vB limit on any single answer.
-8. **Confirmation depth**: at most 144 headers are followed per check.
+7. **Fees**: fixed 0.1 sat/vB on test networks; on mainnet, per target, the lowest estimate of the servers answering for that target (a server answers with its highest listed target not above it), a factor-of-3-plus-1-sat/vB disagreement rule, a caller-supplied ceiling, a 0.1 sat/vB floor, never a slower target's rate, and a 5000 sat/vB limit on any single answer.
+8. **Confirmation depth**: at most 144 headers are followed per check, and none above the agreed tip.
 9. **"Already known"** on broadcast is success only if the server then shows the transaction in its mempool or confirmed.
 10. **64-byte transactions** are refused outright, as no wallet makes them.
 11. **Plain http** only for this machine's loopback names, for a user's own server.
@@ -279,37 +279,41 @@ The design documents settle that answers are compared across operators and that 
 
 ## 13. Testing
 
-How to run: `ctest` runs everything except the live test; `ctest -LE slow` skips the local-server test; `cmake -DGZ_LIVE_TESTS=ON` and `ctest -R chain_live` runs the live test. `python3 -I ports/chain/tests/break_checks.py BUILD_DIR` runs the break-checks.
+How to run: `ctest` runs everything except the live test (`-DGZ_CHAIN_TESTS=OFF` leaves this port's tests out of the build); `ctest -LE slow` skips the local-server test; `cmake -DGZ_LIVE_TESTS=ON` and `ctest -R chain_live` runs the live test. `python3 -I ports/chain/tests/break_checks.py BUILD_DIR` runs the break-checks.
 
 | Test | What it covers |
 |---|---|
 | `chain_json` | The tokenizer: valid and invalid JSON, duplicate keys, depth and size limits, exact numbers |
-| `chain_headers` | Header parsing, hashing, links, proof of work on mainnet, testnet4 and signet headers, targets, txid computation, refused transaction shapes (no inputs, no outputs, 64 bytes, wrapping lengths), Merkle proofs on real signet data including tampered proofs, wrong blocks, the duplicated-node position, depth for a count, network identity, operator names |
+| `chain_headers` | Header parsing, hashing, links, proof of work on mainnet, testnet4 and signet headers, targets, txid computation, refused transaction shapes (no inputs, no outputs, 64 bytes without witness, both ways for segwit, wrapping lengths), Merkle proofs on real signet data including tampered proofs, wrong blocks, the duplicated-node position, depth for a count, network identity, host normalisation (every accepted and refused spelling), operator names |
 | `chain_esplora` | Every call against the fake transport with recorded answers; every malformed-answer case listed in the file; time limits, retries, backoff cap, rate limit, size caps; addresses; network check; fee policy; broadcast trimming and "already known"; checked confirmations, including invented confirmations, lies about the tree's shape and the coinbase, and invented tips |
-| `chain_multi` | The comparing backend over two and three servers: agreement, every kind of contradiction, lag, unconfirmed differences, duplicate servers, one operator under two names, a server on the wrong network, servers down, lying servers, broadcast, fees |
-| `chain_model` | 20,000 random situations (one to four servers, one to three operators, up or down, right network or not, three tip heights, two chains, independent claims about a transaction, a spend, a block and a fee). Expected verdicts come from functions written from the rules in this document, which share no code with `multi.c`. `GZ_MODEL_SEED`, `GZ_MODEL_ROUNDS` replay or lengthen |
+| `chain_multi` | The comparing backend over two and three servers: agreement, every kind of contradiction, lag and its three conditions (item above the lower tip, 3 blocks, 30 minutes), lag for output lists, unconfirmed differences and their flag, duplicate servers and one host under several spellings, one operator under two names, a server on the wrong network, servers down, lying servers, broadcast, fees with targets left out, confirmations counted to the agreed tip |
+| `chain_model` | 20,000 random situations (one to four servers, one to three operators, up or down, right network or not, five tip heights, two chains, independent claims about a transaction and a spend at a height drawn per situation, a block, and a fee for one of two targets). Expected verdicts come from functions written from the rules in this document, which share no code with `multi.c`. `GZ_MODEL_SEED`, `GZ_MODEL_ROUNDS` replay or lengthen |
+| `chain_confirm` | `gz_chain_confirm_tx` against a backend serving fabricated blocks with valid signet proof of work (nonces in `tests/fab_nonces.h`, made again with `GZ_FAB_GRIND=1`): each coinbase step on its own against a block holding 64-byte transactions, the summary naming the block, the bytes rechecked against the id, the position below the count, the depth cap on a 147-header chain |
 | `chain_fuzz` | Seeded mutation of 13 recorded answers fed to every parser, under the sanitizer build. A real fuzzer (libFuzzer or AFL++) should be attached to `gz_json_parse`, the eight `gz_es_parse_*` functions and `gz_txid_from_raw`, with `tests/data/` as corpus |
-| `chain_local_servers` (label `slow`) | The real libcurl transport against servers on 127.0.0.1: a hostile HTTP server (oversized, endless, compressed, slow, dripping, redirecting, huge headers) and three HTTPS servers with a good certificate, one for another name, and a self-signed one; then `gz-chain` end to end against small Esplora look-alikes (agreement, hiding, one operator, duplicates, a mainnet server, broadcast refusals, fee). Needs python3 and openssl; skipped without them |
+| `chain_local_servers` (label `slow`) | The real libcurl transport against servers on 127.0.0.1: a hostile HTTP server (oversized, endless, compressed, slow, dripping, redirecting, huge headers), addresses with user information and other malformed authorities, and three HTTPS servers with a good certificate, one for another name, and a self-signed one; then `gz-chain` end to end against small Esplora look-alikes (agreement, hiding, lag, fee disagreement, one machine under two names, duplicates and trailing dots, operator names, a mainnet server, broadcast refusals, fee) with each exit code. Needs python3 and openssl; skipped without them |
 | `chain_tool_*` | The tool's mainnet refusal and usage text |
 | `chain_live` (opt-in) | The two public signet servers: tip, a known transaction, a checked confirmation 6 deep, a spend, a script, raw bytes, fees, network |
 
-Counts on 2026-11-12, identical in the Release and the AddressSanitizer + UBSan builds (gcc 15.2, `-Wall -Wextra -Werror`):
+Counts on 2026-11-12 after the second review, identical in the Release and the AddressSanitizer + UBSan builds (gcc 15.2, `-Wall -Wextra -Werror`):
 
 | Test | Test functions | Checks |
 |---|---|---|
 | `chain_json` | 8 | 105 |
-| `chain_headers` | 20 | 186 |
-| `chain_esplora` | 35 | 674 |
-| `chain_multi` | 21 | 383 |
-| `chain_model` | 1 (20,000 random situations, 4 calls each) | 6 |
+| `chain_headers` | 22 | 274 |
+| `chain_esplora` | 35 | 724 |
+| `chain_multi` | 29 | 482 |
+| `chain_confirm` | 5 | 177 |
+| `chain_model` | 1 (20,000 random situations, 4 calls each) | 9 |
 | `chain_fuzz` | 2 (40,000 mutations of each of 13 answers, plus 20,000 random inputs and every prefix) | 10 |
-| `chain_local_servers` | transport 42 checks, tool 12 cases | 54 |
+| `chain_local_servers` | transport 49 checks, tool 24 cases | 73 |
 | `chain_tool_refuses_mainnet_broadcast`, `chain_tool_usage` | 2 | 2 |
 | `chain_live` (opt-in) | 2 | 35 |
 
-`ctest` runs 10 tests, all passing; `ctest -LE slow` runs the 9 that need no local servers (the existing `reference_tree` test is one of the 10). The live test passed on 2026-11-12 against both signet servers (tip 330469, both agreeing).
+`ctest -R '^chain_'` runs 10 tests, all passing; `ctest -R '^chain_' -LE slow` runs the 9 that need no local servers. The live test was not re-run after the second review (it reads only signet). Under valgrind (`tools/valgrind-tests.py --include '^chain_'`, RelWithDebInfo) the 8 test programs are clean; the two script tests are not run under it. The clang jobs (plain, ASan+UBSan, MemorySanitizer) could not be run on the build server, which has no clang; CI runs them.
 
-Break-checks (`break_checks.py`, 125 behaviours, each removed in turn): on the sanitizer build, one full run, 125 caught, 0 survived. On the Release build, a full run first caught 114, with 8 survivors and 3 checks that did not compile; the survivors were 2 missing tests, 3 cases where a second check also guarded the behaviour (the break-check now removes both), 2 missing tests of the weaker path, and 1 test pattern that was too loose. After the fixes, those 11 were re-run and all were caught. The checks marked as defence in depth under "Not tested" are not in the list.
+Break-checks (`break_checks.py`, 163 behaviours after the second review, each removed in turn; 38 are new, for findings A to F and for the review's surviving mutations): on the sanitizer build, 163 caught, 0 survived. (The first version of the list had 125, all caught on 2026-11-12 before this round.) Three new entries first did not compile under `-Werror` and were corrected; one (lag for an item with no height) was dropped as equivalent: the height rule itself already refuses it, the early return only saves the tip requests. Two entries remove two checks together because each alone is covered by the other: the transport's strict authority parser and libcurl's own parse both refuse user information (h8), and, as before, the transport's body cap and libcurl's size limit (h4).
+
+The second review's 18 surviving mutations and the 6 it could not compile were ported to the fixed code (made to compile) and rerun on the sanitizer build: 20 caught, 4 survived. Survivors: `e27` (the raw-transaction length check after the fetch, equivalent: the fetch is already capped at the caller's room), `t4` (the body cap in the write callback, equivalent with this libcurl: `CURLOPT_MAXFILESIZE_LARGE` stops the transfer first, also without a stated length), `t8` (both protocols allowed, equivalent: the URL is checked to be https, or http for loopback, before the request, and redirects are not followed), and `g8'` (the tool's proof command printing a result line after a failed check; its exit status was already 1, because a failed check clears the result; now killed by a tool test that no transaction line is printed, and caught as break-check g9).
 
 ### Not tested
 
@@ -319,7 +323,7 @@ Break-checks (`break_checks.py`, 125 behaviours, each removed in turn): on the s
 - Concurrency: the port is single-threaded by design; nothing tests use from several threads.
 - The transport on anything but Linux.
 - That `curl_easy_setopt` failures are handled: they cannot be provoked in a test (they occur only on out-of-memory or an old libcurl).
-- Some checks are kept as defence in depth although another check already catches every case the tests can build: the per-call raw-transaction size check in `esplora.c` (the transport cap catches it first), the "position below the transaction count" check and the coinbase-is-a-coinbase check in `verify.c` (the duplicated-node rule and the Merkle fold catch the cases), the address-equality check in `multi.c` (the same-host check catches it first), the comparing backend's own fee limit (the parser's limit catches it first), the cap on confirmation depth, and the proof-of-work check on later headers (all real signet headers pass it). Removing any of these makes no test fail; that is listed honestly in the break-check results.
+- Some checks are kept as defence in depth although another check already catches every case the tests can build: the per-call raw-transaction size check in `esplora.c` (the fetch is capped at the caller's room; review e27), the address-equality check in `multi.c` (the same-host check catches it first), the comparing backend's own fee limit (the parser's limit catches it first), the transport's own body-size check and its protocol restriction (libcurl's size limit, and the URL check with no redirects; review t4, t8), each of the two refusals of user information in the transport on its own (the other refuses first), and the early return for an item with no height in the lag rule. Removing any one of these makes no test fail. The coinbase steps, the position check, the bytes-against-id check, the summary-names-the-block check, the proof of work of later headers and the depth cap were in this list before the second review; each is now tested on its own (`chain_confirm`, `chain_esplora`).
 
 ## 14. Open questions
 
@@ -328,8 +332,22 @@ Break-checks (`break_checks.py`, 125 behaviours, each removed in turn): on the s
 3. **Proving a spend.** When servers disagree about a spend, fetch the claimed spender and check that it really spends the output (and its signature). Then a hidden spend becomes a proven one. Belongs with the watch engine.
 4. **Header chains on proof-of-work networks.** Only each header's own target is checked. Mainnet use needs difficulty rules or pinned known blocks.
 5. **Unknown fields.** A server adding a field to an answer makes it malformed here. Deliberately strict; it could take a server out after an upgrade on their side.
-6. **Persistent lag and disagreement**: how long the program waits before telling the user. Not decided.
+6. **Persistent disagreement**: how long the program waits before telling the user. Persistent lag is now bounded in the library (3 blocks or 30 minutes, then disagreement); what the program shows, and when, is not decided.
 7. **Privacy** (section 9): Tor, or the user's own server. Neither built.
 8. **Blocking calls.** Servers are asked one after another; a slow one delays the others by up to its time limit times its retries. The program around the core needs the calls off its main loop.
-9. **Default lists.** `gz-chain` uses `docs/CHAIN-SERVERS.md`. Testnet4 now has two HTTP operators (section 11); the list and the line in `docs/SLICES.md` about testnet4 can be updated by whoever owns those files.
+9. **Default lists.** `gz-chain` uses `docs/CHAIN-SERVERS.md`, with each server's operator named. Testnet4 now lists both HTTP operators (mempool.space and blockstream.info); testnet3 still has one in the list. The line in `docs/SLICES.md` about testnet4 can be updated by whoever owns that file.
 10. **Signet block signatures.** Not verified, by decision. Verifying them would make signet confirmations checkable against the signet's known signing key, not just compared.
+
+## 15. Changes after the second review
+
+The second round of the independent review (2026-11-12) returned "merge after fixes" with findings A to G. What changed, and the test that shows each fix (each fails on the code before it; the break-checks and the mutation rerun below remove each fix again and require a test to fail):
+
+- **A. One operator under two spellings.** All host normalisation is now one function, `gz_host_normalise` (section 4): case, one trailing dot, Unicode refused in favour of punycode, numeric forms other than canonical dotted IPv4 refused, user information and ports never part of a host. `url_parse`, `gz_operator_from_host` and the comparing backend's creation (for hosts any backend describes) all use it; requests go to the canonical address. This machine's three names are one operator. Operator names are accepted only in canonical spelling. `gz-chain`'s default lists name their operators, and `--operator` names one on the command line. Tests: `test_one_host_two_spellings` and `test_described_hosts_are_normalised` (`chain_multi`, including the reviewer's two pairs), `test_host_normalise`, `test_operator_names`, `test_operator_from_host` (`chain_headers`), the address cases in `test_describe_and_addresses` (`chain_esplora`), and the tool cases for both pairs and for `localhost.` in `local-servers.sh`.
+- **B. Lag from the tips alone.** Lag now needs the disputed item above the tip of every server lacking it (section 5, rule 3), at most `GZ_MULTI_LAG_MAX_BLOCKS` = 3 blocks of tip difference and at most `GZ_MULTI_LAG_MAX_MS` = 30 minutes of continuous lag, whichever comes first (both named constants in `chain_multi.h`; the comparing backend now needs a clock in its configuration). Output lists use the same rule, with a confirmed spend above the listing server's tip as the explanation for an output gone. Tests: `test_lag_needs_the_item_above_the_lower_tip` (the reviewer's R2, R2c, R2b), `test_lag_for_output_lists`, `test_lag_has_limits` (the 30-minute and 3-block limits, and the end of a lag period), the updated `chain_model` (heights of the transaction and spend drawn per situation, tips over five heights).
+- **C. Fees lowered by leaving targets out.** Per target, only the servers answering for it count, and a slower target never stands in for a faster one (section 7). Tests: `test_fee_targets_left_out` (`chain_multi`: the reviewer's 40 against 2 sat/vB case with two and three servers, the edge of the factor rule for one target, test networks at 0.1 sat/vB with no request), the single-server cases in `test_choose_fee_rate` (`chain_esplora`), and the fee part of `chain_model` (servers listing only the slow target).
+- **D. A server a block ahead stalled confirmations.** `gz_chain_confirm_tx` reads the agreed tip and follows headers only up to it (section 6). Tests: `test_confirmation_counts_to_the_agreed_tip` (`chain_multi`, the reviewer's R5) and the single-server case at the end of `test_confirm_tx_header_chain`. A server claiming a tip far ahead of the others now makes a confirmation of more than one block disagree (there is no agreed tip); asked for one confirmation, the block is still checked (`test_invented_tip_does_not_raise_confirmations`).
+- **E. Loopback check fooled by user information.** The transport parses the authority strictly, refuses user information, percent-encoding and anything else outside host and port, requires libcurl's parse to agree, and sends with that parsed URL (section 4). Tests: the reviewer's three URLs and the other refused forms in `not_local`, and user information over https, in `test_transport.c`.
+- **F. Missing tests.** New test program `chain_confirm`: a backend serving fabricated blocks whose headers meet signet's proof-of-work limit (nonces ground once, `tests/fab_nonces.h`). It shows each coinbase step stopping an attack on its own, with every other check passing: a 64-byte transaction inside a block lets a server claim a transaction one level below it, and only the coinbase branch's depth (v6), that branch's fold (v8), that the first transaction is a coinbase (v7) with exactly one input (c14), or that no coinbase sits later (v9) stops it. So these steps are not merely defence in depth behind the 64-byte rule: the 64-byte rule stops a 64-byte transaction being confirmed, the coinbase steps stop one being used as a ladder. The same program tests the summary naming the block (v5), the bytes rechecked against the id (v2), the position below the count (v4) and the cap on depth with a 147-header chain (v14). `chain_headers` tests the 64-byte rule on segwit transactions both ways (c13); `chain_esplora` alters a later header's nonce (v11). The unconfirmed-differences flag for output lists is now one rule (a list differs exactly when it is not as long as the answer), tested with the extra output on each of three servers in turn; a backend naming an outpoint twice is a malformed reply. Tool exit codes for fee disagreement, lag and a failed proof are tested in `local-servers.sh` (g6, g7, g8).
+- **G.** Testnet4's second operator is in `docs/CHAIN-SERVERS.md` and the default list. `chain.h` now says that the mainnet refusal lives in the program, not the library. The two Electrum servers known only by numeric address are no longer named in section 11.
+
+Rebased onto `main` after the CI hardening (top-level `CMakeLists.txt`: both the wallet library and this port are added). Two adjustments for the CI jobs there: the tool's mainnet-refusal test now runs through `tests/expect-exit.sh` (it must exit 2, and `tools/valgrind-tests.py` requires exit 0 from the programs it runs, so it is listed there as a script test); and a new option `GZ_CHAIN_TESTS` (default ON) leaves this port's tests out, which `wallet/tests/break-checks.sh` now sets in the copy it builds for each wallet fault (none of this port's tests can notice a wallet fault, and the slow local-server test would run once per fault). No IP address other than 127.0.0.1 and the RFC 5737 ranges is left in the port; the three test lines that must hold `127.0.0.2` to show it refused carry `address-check: allow`.

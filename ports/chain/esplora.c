@@ -867,17 +867,13 @@ void gz_esplora_config_default(gz_esplora_config *cfg) {
   cfg->max_response_bytes = 512 * 1024;
 }
 
-static char lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c; }
-
-static bool is_loopback_host(const char *host) {
-  return strcmp(host, "localhost") == 0 || strcmp(host, "127.0.0.1") == 0 ||
-         strcmp(host, "[::1]") == 0;
-}
-
 /*
- * Checks a base address and fills info->host (lowercase, no port) and
- * info->endpoint (lowercase scheme and host, default port dropped, path as
- * given). Plain http is allowed for this machine only.
+ * Checks a base address and fills info->host (canonical form from
+ * gz_host_normalise, no port) and info->endpoint (lowercase scheme, that
+ * host, default port dropped, path as given). Requests are sent to the
+ * endpoint, so the wire sees one spelling too. Plain http is allowed for
+ * this machine only. User information ("user@") is refused: '@' is not a
+ * host character.
  */
 static bool url_parse(const char *url, gz_chain_info *info) {
   size_t n = strlen(url);
@@ -916,15 +912,8 @@ static bool url_parse(const char *url, gz_chain_info *info) {
       }
     }
   }
-  if (host_end == scheme || host_end - scheme >= GZ_HOST_MAX) return false;
-  for (size_t i = scheme; i < host_end; i++) {
-    char c = url[i];
-    bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-              c == '.' || c == '-' || bracketed;
-    if (!ok) return false;
-    info->host[i - scheme] = lower(c);
-  }
-  info->host[host_end - scheme] = '\0';
+  /* the one normalisation of host names (trailing dot, case, numeric forms) */
+  if (!gz_host_normalise(url + scheme, host_end - scheme, info->host)) return false;
   unsigned long port = 0;
   if (port_at != 0) {
     if (port_at == auth_end || auth_end - port_at > 5) return false;
@@ -940,7 +929,7 @@ static bool url_parse(const char *url, gz_chain_info *info) {
               c == '.' || c == '-' || c == '_' || c == '~' || c == '/';
     if (!ok) return false;
   }
-  if (!https && !is_loopback_host(info->host)) return false;
+  if (!https && !gz_host_is_loopback(info->host)) return false;
 
   bool default_port = port == 0 || port == (https ? 443ul : 80ul);
   int w;
@@ -952,16 +941,6 @@ static bool url_parse(const char *url, gz_chain_info *info) {
                  info->host, port, url + auth_end);
   }
   return w > 0 && (size_t)w < sizeof info->endpoint;
-}
-
-static bool operator_ok(const char *id) {
-  size_t n = strlen(id);
-  if (n == 0 || n >= GZ_OPERATOR_MAX) return false;
-  for (size_t i = 0; i < n; i++) {
-    char c = id[i];
-    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-')) return false;
-  }
-  return true;
 }
 
 gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *http,
@@ -977,7 +956,7 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
   memset(&info, 0, sizeof info);
   if (!url_parse(cfg->base_url, &info)) return GZ_CHAIN_INVALID_ARG;
   if (cfg->operator_id != NULL) {
-    if (!operator_ok(cfg->operator_id)) return GZ_CHAIN_INVALID_ARG;
+    if (!gz_operator_name_valid(cfg->operator_id)) return GZ_CHAIN_INVALID_ARG;
     memcpy(info.operator_id, cfg->operator_id, strlen(cfg->operator_id) + 1);
   } else if (!gz_operator_from_host(info.host, info.operator_id)) {
     return GZ_CHAIN_INVALID_ARG;
@@ -997,7 +976,8 @@ gz_chain_result gz_esplora_create(const gz_esplora_config *cfg, const gz_http *h
   es->http = *http;
   es->cfg = *cfg;
   es->info = info;
-  memcpy(es->base, cfg->base_url, strlen(cfg->base_url) + 1);
+  /* requests go to the canonical address, never to the spelling given */
+  memcpy(es->base, info.endpoint, strlen(info.endpoint) + 1);
   es->cfg.base_url = es->base;
   es->cfg.operator_id = es->info.operator_id;
   out->ctx = es;

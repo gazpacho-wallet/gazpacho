@@ -12,6 +12,13 @@ static const char *const BASES[3] = {"https://one.test/api", "https://two.test/a
 #define B1 "https://two.test/api"
 #define B2 "https://three.test/api"
 
+/* The clock lag is timed by. Tests move it by hand. */
+static uint64_t clock_now_ms = 1000000;
+static uint64_t test_clock(void *ctx) {
+  (void)ctx;
+  return clock_now_ms;
+}
+
 typedef struct mfx {
   size_t n;
   fake_http fake[3];
@@ -33,6 +40,7 @@ static void mfx_open(mfx *x, size_t n) {
     if (gz_esplora_create(&cfg, &http, &x->server[i]) != GZ_CHAIN_OK) exit(2);
   }
   gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
   if (gz_multi_create(&mc, x->server, n, &x->multi) != GZ_CHAIN_OK) exit(2);
 }
 
@@ -180,6 +188,7 @@ static void test_duplicate_servers_refused(test_state *T) {
   mfx_open(&x, 2);
   fake_init(&fake);
   gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
 
   /* the same handle twice */
   pair[0] = x.server[0];
@@ -232,6 +241,7 @@ static void test_one_operator_is_not_two(test_state *T) {
   s[1] = make_server(&fake[1], "https://b.bigco.test/api", NULL);
   s[2] = make_server(&fake[2], B2, NULL);
   gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
 
   CHECK_RESULT(gz_multi_create(&mc, s, 2, &m), GZ_CHAIN_OK);
   CHECK(gz_multi_operator_count(&m) == 1);
@@ -325,8 +335,10 @@ static void test_wrong_network_server_never_counts(test_state *T) {
   gz_multi_config mc;
   gz_chain m;
   gz_multi_config_default(&mc, GZ_NET_INVALID);
+  mc.now_ms = test_clock;
   CHECK_RESULT(gz_multi_create(&mc, x.server, 2, &m), GZ_CHAIN_INVALID_ARG);
   memset(&mc, 0, sizeof mc);
+  mc.now_ms = test_clock;
   mc.quorum = 2;
   mc.max_outputs = 16;
   mc.fee_ceiling_sat_per_kvb = 1000;
@@ -357,12 +369,18 @@ static void test_tip_rule(test_state *T) {
   CHECK(tip.height == 329438);
   fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329439");
 
-  /* two blocks apart: more than a block arriving late explains */
+  /* two blocks apart, on one chain: within GZ_MULTI_LAG_MAX_BLOCKS */
   fake_set(&x.fake[0], false, B0 "/blocks/tip/height", 200, "329437");
+  CHECK_RESULT(gz_chain_tip_get(&x.multi, &tip), GZ_CHAIN_OK);
+  CHECK(tip.height == 329437 && memcmp(tip.hash, k.h37, GZ_HASH_LEN) == 0);
+  /* four apart: more than blocks arriving late explains */
+  fake_set(&x.fake[0], false, B0 "/blocks/tip/height", 200, "329435");
+  fake_set(&x.fake[0], false, B0 "/block-height/329435", 200,
+           "1111111111111111111111111111111111111111111111111111111111111111");
   CHECK_RESULT(gz_chain_tip_get(&x.multi, &tip), GZ_CHAIN_DISAGREE);
   CHECK(tip.height == 0);
   CHECK(rep->verdict == GZ_CHAIN_DISAGREE);
-  CHECK(rep->answers[0].u.tip.height == 329437 && rep->answers[1].u.tip.height == 329439);
+  CHECK(rep->answers[0].u.tip.height == 329435 && rep->answers[1].u.tip.height == 329439);
 
   /* one block apart, but the server ahead is on a different chain: its
    * block at the lower height is not the lower server's tip */
@@ -510,13 +528,474 @@ static void test_lag_is_not_disagreement(test_state *T) {
   CHECK_RESULT(gz_chain_tx_status(&x.multi, k.a, &st), GZ_CHAIN_OK);
   CHECK(st.state == GZ_TX_CONFIRMED);
 
-  /* A server two blocks behind is not "lagging by a block". */
+  /* Two blocks behind is still lag (up to GZ_MULTI_LAG_MAX_BLOCKS)... */
   fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329437");
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_LAG);
+  /* ...four behind is not. */
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329435");
   CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_DISAGREE);
   /* A server "one behind" on a different chain is not lagging either. */
   fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329438");
   fake_set(&x.fake[1], false, B1 "/block-height/329438", 200, HASH_329437);
   CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_DISAGREE);
+  mfx_close(&x);
+}
+
+/* A backend that is not a network server: block 0 is signet's, nothing else. */
+typedef struct stub {
+  int broadcasts;
+} stub;
+
+static gz_chain_result stub_block_hash(void *ctx, uint32_t height, uint8_t out[GZ_HASH_LEN]) {
+  (void)ctx;
+  if (height != 0) return GZ_CHAIN_NOT_FOUND;
+  test_hash(GENESIS_SIGNET, out);
+  return GZ_CHAIN_OK;
+}
+
+/* ---- lag is only lag when the item is above the lower tip (review B) ---- */
+
+static void test_lag_needs_the_item_above_the_lower_tip(test_state *T) {
+  mfx x;
+  ids k;
+  gz_tx_status st;
+  gz_outspend o;
+  uint8_t h[GZ_HASH_LEN];
+  gz_chain_output outs[4];
+  size_t n;
+  mfx_open(&x, 2);
+  ids_init(&k);
+  /* R2: server two names the block before the honest tip as its own tip,
+   * and denies transaction A, confirmed at 329438: a block it claims to
+   * have. That is a contradiction, not lag. */
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329438");
+  fake_set(&x.fake[1], false, B1 "/block-height/329439", 404, "Block not found");
+  fake_set(&x.fake[1], false, B1 "/tx/" TX_A "/status", 200, "{\"confirmed\":false}");
+  fake_set(&x.fake[1], false, B1 "/tx/" TX_A "/hex", 404, "Transaction not found");
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.a, &st), GZ_CHAIN_DISAGREE);
+  CHECK(st.state == GZ_TX_UNKNOWN);
+  /* the block at 329439 itself, which that server has not seen: lag */
+  CHECK_RESULT(gz_chain_block_hash(&x.multi, 329439, h), GZ_CHAIN_LAG);
+  /* R2b, the genuine shape: the spend of A:0 is in block 329439, above the
+   * tip of the server that does not report it */
+  fake_set(&x.fake[1], false, B1 "/tx/" TX_A "/outspend/0", 200, "{\"spent\":false}");
+  CHECK_RESULT(gz_chain_outspend(&x.multi, k.a, 0, &o), GZ_CHAIN_LAG);
+  /* ...and a spend in block 329438 hidden by that server is not */
+  fake_set(&x.fake[0], false, B0 "/tx/" TX_A "/outspend/0", 200,
+           "{\"spent\":true,\"txid\":\"" TX_SPENDER "\",\"vin\":0,\"status\":" CONFIRMED_38 "}");
+  CHECK_RESULT(gz_chain_outspend(&x.multi, k.a, 0, &o), GZ_CHAIN_DISAGREE);
+  fake_set_file(&x.fake[0], B0 "/tx/" TX_A "/outspend/0", 200, "tx_a_outspend_0.json");
+  /* a confirmed output at 329438 that the server at 329438 does not list */
+  fake_set(&x.fake[1], false, B1 "/scripthash/" SCRIPT_A2_HASH "/utxo", 200, "[]");
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, NULL),
+               GZ_CHAIN_DISAGREE);
+  mfx_close(&x);
+
+  /* R2c: honest server at 329440, the other at 329439 denies a transaction
+   * confirmed at 329438 */
+  mfx_open(&x, 2);
+  fake_set(&x.fake[0], false, B0 "/blocks/tip/height", 200, "329440");
+  fake_set(&x.fake[0], false, B0 "/block-height/329440", 200,
+           "1111111111111111111111111111111111111111111111111111111111111111");
+  fake_set(&x.fake[1], false, B1 "/tx/" TX_A "/status", 200, "{\"confirmed\":false}");
+  fake_set(&x.fake[1], false, B1 "/tx/" TX_A "/hex", 404, "Transaction not found");
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.a, &st), GZ_CHAIN_DISAGREE);
+  /* while block 329440, which it has not seen, is lag */
+  CHECK_RESULT(gz_chain_block_hash(&x.multi, 329440, h), GZ_CHAIN_LAG);
+  mfx_close(&x);
+}
+
+static void test_lag_for_output_lists(test_state *T) {
+  mfx x;
+  ids k;
+  gz_chain_output outs[4];
+  size_t n;
+  mfx_open(&x, 2);
+  ids_init(&k);
+  const char *url0 = B0 "/scripthash/" SCRIPT_A2_HASH "/utxo";
+  const char *url1 = B1 "/scripthash/" SCRIPT_A2_HASH "/utxo";
+  /* Output A:0 was spent in block 329439. Server two, at 329438, still
+   * lists it; server one, at 329439, no longer does and shows the spend. */
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329438");
+  fake_set(&x.fake[1], false, B1 "/block-height/329439", 404, "Block not found");
+  fake_set(&x.fake[0], false, url0, 200, "[]");
+  fake_set(&x.fake[1], false, url1, 200,
+           "[{\"txid\":\"" TX_A "\",\"vout\":0,\"status\":" CONFIRMED_38 ",\"value\":5000}]");
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, NULL),
+               GZ_CHAIN_LAG);
+  /* the same, but the higher server shows no such spend: it hides an output */
+  fake_set(&x.fake[0], false, B0 "/tx/" TX_A "/outspend/0", 200, "{\"spent\":false}");
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, NULL),
+               GZ_CHAIN_DISAGREE);
+  /* ...or shows it spent in a block the lower server has already seen */
+  fake_set(&x.fake[0], false, B0 "/tx/" TX_A "/outspend/0", 200,
+           "{\"spent\":true,\"txid\":\"" TX_SPENDER "\",\"vin\":0,\"status\":" CONFIRMED_38 "}");
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, NULL),
+               GZ_CHAIN_DISAGREE);
+  /* ...or spent by a transaction still in its mempool */
+  fake_set(&x.fake[0], false, B0 "/tx/" TX_A "/outspend/0", 200,
+           "{\"spent\":true,\"txid\":\"" TX_SPENDER "\",\"vin\":0,\"status\":{\"confirmed\":false}}");
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, NULL),
+               GZ_CHAIN_DISAGREE);
+  fake_set_file(&x.fake[0], B0 "/tx/" TX_A "/outspend/0", 200, "tx_a_outspend_0.json");
+  /* the same outpoint confirmed on both with different amounts: never lag */
+  fake_set(&x.fake[0], false, url0, 200,
+           "[{\"txid\":\"" TX_A "\",\"vout\":0,\"status\":" CONFIRMED_38 ",\"value\":5001}]");
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, NULL),
+               GZ_CHAIN_DISAGREE);
+  /* the servers level again, one still listing the spent output */
+  fake_set(&x.fake[0], false, url0, 200, "[]");
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329439");
+  fake_set_file(&x.fake[1], B1 "/block-height/329439", 200, "block_hash_329439.txt");
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, NULL),
+               GZ_CHAIN_DISAGREE);
+  /* a new output confirmed at 329439 listed only by the server at 329438 */
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329438");
+  fake_set(&x.fake[1], false, B1 "/block-height/329439", 404, "Block not found");
+  fake_set(&x.fake[1], false, url1, 200,
+           "[{\"txid\":\"" TX_SPENDER "\",\"vout\":0,\"status\":" CONFIRMED_39 ",\"value\":7}]");
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, NULL),
+               GZ_CHAIN_DISAGREE);
+  mfx_close(&x);
+}
+
+static void test_lag_has_limits(test_state *T) {
+  mfx x;
+  ids k;
+  gz_tx_status st;
+  gz_chain_tip tip;
+  mfx_open(&x, 2);
+  ids_init(&k);
+  /* server two has not seen block 329439, which holds the spender */
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329438");
+  fake_set(&x.fake[1], false, B1 "/block-height/329439", 404, "Block not found");
+  fake_set(&x.fake[1], false, B1 "/tx/" TX_SPENDER "/status", 200, "{\"confirmed\":false}");
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_LAG);
+  /* still lag just inside GZ_MULTI_LAG_MAX_MS of when it was first seen */
+  clock_now_ms += GZ_MULTI_LAG_MAX_MS;
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_LAG);
+  /* one millisecond more and it is disagreement */
+  clock_now_ms += 1;
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_DISAGREE);
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_DISAGREE);
+  /* the lagging server catches up: the servers are seen level, the period ends */
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329439");
+  fake_set_file(&x.fake[1], B1 "/block-height/329439", 200, "block_hash_329439.txt");
+  CHECK_RESULT(gz_chain_tip_get(&x.multi, &tip), GZ_CHAIN_OK);
+  /* behind again later: a new period starts, lag again */
+  clock_now_ms += 60000;
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329438");
+  fake_set(&x.fake[1], false, B1 "/block-height/329439", 404, "Block not found");
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_LAG);
+  /* a period also ends when a comparison finds the tips level */
+  clock_now_ms += GZ_MULTI_LAG_MAX_MS + 1;
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329439");
+  fake_set_file(&x.fake[1], B1 "/block-height/329439", 200, "block_hash_329439.txt");
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_DISAGREE); /* same tip */
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329438");
+  fake_set(&x.fake[1], false, B1 "/block-height/329439", 404, "Block not found");
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_LAG);
+
+  /* the block limit: three behind is lag, four is not */
+  static const char *const far[] = {"329436", "329435"};
+  static const char *const far_hash =
+      "1111111111111111111111111111111111111111111111111111111111111111";
+  fake_set(&x.fake[0], false, B0 "/block-height/329436", 200, far_hash);
+  fake_set(&x.fake[1], false, B1 "/block-height/329436", 200, far_hash);
+  fake_set(&x.fake[0], false, B0 "/block-height/329435", 200, far_hash);
+  fake_set(&x.fake[1], false, B1 "/block-height/329435", 200, far_hash);
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, far[0]);
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_LAG);
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, far[1]);
+  CHECK_RESULT(gz_chain_tx_status(&x.multi, k.spender, &st), GZ_CHAIN_DISAGREE);
+  mfx_close(&x);
+}
+
+/* ---- review D: one server a block ahead does not stall a confirmation ---- */
+
+static void test_confirmation_counts_to_the_agreed_tip(test_state *T) {
+  mfx x;
+  ids k;
+  gz_confirmation conf;
+  uint8_t hdr[GZ_HEADER_LEN], hh[GZ_HASH_LEN];
+  char hex[65], hdrhex[2 * GZ_HEADER_LEN + 1], url[FAKE_URL_MAX];
+  mfx_open(&x, 2);
+  ids_init(&k);
+  CHECK_RESULT(gz_chain_confirm_tx(&x.multi, GZ_NET_SIGNET, k.a, 6, &conf), GZ_CHAIN_OK);
+  CHECK(conf.checked_confirmations == 2);
+  /* server one learns of block 329440 first (R5) */
+  memset(hdr, 0x5a, sizeof hdr);
+  memcpy(hdr + 4, k.h39, GZ_HASH_LEN);
+  gz_header_hash(hdr, hh);
+  gz_hash_to_hex(hh, hex);
+  for (int i = 0; i < GZ_HEADER_LEN; i++) snprintf(hdrhex + 2 * i, 3, "%02x", hdr[i]);
+  fake_set(&x.fake[0], false, B0 "/blocks/tip/height", 200, "329440");
+  fake_set(&x.fake[0], false, B0 "/block-height/329440", 200, hex);
+  snprintf(url, sizeof url, B0 "/block/%s/header", hex);
+  fake_set(&x.fake[0], false, url, 200, hdrhex);
+  CHECK_RESULT(gz_chain_confirm_tx(&x.multi, GZ_NET_SIGNET, k.a, 6, &conf), GZ_CHAIN_OK);
+  CHECK(conf.checked_confirmations == 2);
+  CHECK(fake_hits(&x.fake[0], false, url) == 0); /* the header above the agreed tip: not asked */
+  CHECK_RESULT(gz_chain_confirm_tx(&x.multi, GZ_NET_SIGNET, k.a, 2, &conf), GZ_CHAIN_OK);
+  CHECK(conf.checked_confirmations == 2);
+  /* the servers disagree about a header at or below the agreed tip: not
+   * confirmed (it is not lag either) */
+  fake_set(&x.fake[1], false, B1 "/block-height/329439", 404, "Block not found");
+  fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "329439");
+  CHECK(gz_chain_confirm_tx(&x.multi, GZ_NET_SIGNET, k.a, 6, &conf) != GZ_CHAIN_OK);
+  CHECK(conf.checked_confirmations == 0);
+  mfx_close(&x);
+}
+
+/* ---- review C: a server that leaves fee targets out ---- */
+
+static void open_mainnet(mfx *x, size_t n) {
+  mfx_open(x, n);
+  gz_chain_destroy(&x->multi);
+  gz_multi_config mc;
+  gz_multi_config_default(&mc, GZ_NET_MAINNET);
+  mc.now_ms = test_clock;
+  fake_set(&x->fake[0], false, B0 "/block-height/0", 200, GENESIS_MAINNET);
+  fake_set(&x->fake[1], false, B1 "/block-height/0", 200, GENESIS_MAINNET);
+  if (n > 2) fake_set(&x->fake[2], false, B2 "/block-height/0", 200, GENESIS_MAINNET);
+  if (gz_multi_create(&mc, x->server, n, &x->multi) != GZ_CHAIN_OK) exit(2);
+}
+
+static void test_fee_targets_left_out(test_state *T) {
+  mfx x;
+  gz_fee_estimates f;
+  gz_fee_choice c;
+  static const char *const honest = "{\"1\":60,\"2\":55,\"3\":50,\"6\":40,\"144\":10,\"1008\":2}";
+  static const char *const honest2 = "{\"1\":61,\"2\":55,\"3\":50,\"6\":39,\"144\":10,\"1008\":2}";
+  open_mainnet(&x, 2);
+  /* R3: two honest servers: 40 sat/vB for 6 blocks */
+  fake_set(&x.fake[0], false, B0 "/fee-estimates", 200, honest);
+  fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, honest2);
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_MAINNET, 6, 200000, &c), GZ_CHAIN_OK);
+  CHECK(c.sat_per_kvb == 39000);
+  /* R3b, the reviewer's case: one server answers only {"1008":2}. It does
+   * not answer for 6 blocks, so there is no agreed 6-block rate: no rate,
+   * and certainly not its 2 sat/vB. */
+  fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, "{\"1008\":2}");
+  CHECK_RESULT(gz_chain_fee_estimates(&x.multi, &f), GZ_CHAIN_OK);
+  CHECK(f.count == 1 && f.entries[0].target == 1008 && f.entries[0].sat_per_kvb == 2000);
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_MAINNET, 6, 200000, &c), GZ_CHAIN_NOT_FOUND);
+  CHECK(c.sat_per_kvb == 0 && c.source == GZ_FEE_FROM_NONE);
+  /* ...the rate it does answer for is still usable for that target */
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_MAINNET, 1008, 200000, &c), GZ_CHAIN_OK);
+  CHECK(c.sat_per_kvb == 2000);
+  /* a server listing one fast target answers for every slower one with it,
+   * and is then held to the rule against the others: 2 against 40 */
+  fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, "{\"1\":2}");
+  CHECK_RESULT(gz_chain_fee_estimates(&x.multi, &f), GZ_CHAIN_DISAGREE);
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_MAINNET, 6, 200000, &c), GZ_CHAIN_DISAGREE);
+  /* at the edge of the documented limit: 40 is 3 times 13 plus 1 */
+  fake_set(&x.fake[0], false, B0 "/fee-estimates", 200, "{\"6\":40}");
+  fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, "{\"6\":13}");
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_MAINNET, 6, 200000, &c), GZ_CHAIN_OK);
+  CHECK(c.sat_per_kvb == 13000);
+  fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, "{\"6\":12.999}");
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_MAINNET, 6, 200000, &c), GZ_CHAIN_DISAGREE);
+  /* test networks: the fixed 0.1 sat/vB, and no server is asked */
+  unsigned before = x.fake[0].requests + x.fake[1].requests;
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_SIGNET, 6, 200000, &c), GZ_CHAIN_OK);
+  CHECK(c.sat_per_kvb == 100 && c.source == GZ_FEE_FROM_TEST_DEFAULT);
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_TESTNET4, 6, 200000, &c), GZ_CHAIN_OK);
+  CHECK(c.sat_per_kvb == 100);
+  CHECK(x.fake[0].requests + x.fake[1].requests == before);
+  mfx_close(&x);
+
+  /* three servers, one leaving targets out: the 6-block rate comes from the
+   * two that answer for it */
+  open_mainnet(&x, 3);
+  fake_set(&x.fake[0], false, B0 "/fee-estimates", 200, honest);
+  fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, "{\"1008\":2}");
+  fake_set(&x.fake[2], false, B2 "/fee-estimates", 200, honest2);
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_MAINNET, 6, 200000, &c), GZ_CHAIN_OK);
+  CHECK(c.sat_per_kvb == 39000);
+  /* a slower target than any listed is never used for a faster one */
+  fake_set(&x.fake[0], false, B0 "/fee-estimates", 200, "{\"6\":40}");
+  fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, "{\"6\":39.5}");
+  fake_set(&x.fake[2], false, B2 "/fee-estimates", 200, "{\"6\":39}");
+  CHECK_RESULT(gz_chain_choose_fee_rate(&x.multi, GZ_NET_MAINNET, 2, 200000, &c), GZ_CHAIN_NOT_FOUND);
+  mfx_close(&x);
+}
+
+/* ---- review A: one operator, two spellings ---- */
+
+static void test_one_host_two_spellings(test_state *T) {
+  fake_http fake;
+  gz_multi_config mc;
+  gz_chain m;
+  fake_init(&fake);
+  gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
+  /* the reviewer's pairs, and other spellings of one host */
+  static const char *const pairs[][2] = {
+      {"https://mempool.space/signet/api", "https://mempool.space./signet/api"},
+      {"https://blockstream.info/signet/api", "https://blockstream.info./signet/api"},
+      {"https://mempool.space/signet/api", "https://MEMPOOL.SPACE./signet/api"},
+      {"https://mempool.space/signet/api", "https://mempool.space.:443/signet/api"},
+      {"https://xn--bcher-kva.example/api", "https://XN--BCHER-KVA.example./api"},
+      {"https://192.0.2.7/api", "https://192.0.2.7./api"},
+      {"http://localhost:3002/api", "http://localhost.:3003/api"},
+  };
+  for (size_t i = 0; i < sizeof pairs / sizeof pairs[0]; i++) {
+    gz_chain s[2];
+    s[0] = make_server(&fake, pairs[i][0], NULL);
+    s[1] = make_server(&fake, pairs[i][1], NULL);
+    T->checks++;
+    if (gz_multi_create(&mc, s, 2, &m) != GZ_CHAIN_INVALID_ARG) {
+      T->failed++;
+      fprintf(stderr, "  %s and %s counted as two servers (%zu operators)\n", pairs[i][0],
+              pairs[i][1], gz_multi_operator_count(&m));
+      gz_chain_destroy(&m);
+    }
+    gz_chain_destroy(&s[0]);
+    gz_chain_destroy(&s[1]);
+  }
+  /* this machine under two of its names: two servers, one operator */
+  gz_chain s[2];
+  s[0] = make_server(&fake, "http://localhost:3002/api", NULL);
+  s[1] = make_server(&fake, "http://127.0.0.1:3003/api", NULL);
+  CHECK_RESULT(gz_multi_create(&mc, s, 2, &m), GZ_CHAIN_OK);
+  CHECK(gz_multi_operator_count(&m) == 1);
+  gz_chain_tip tip;
+  CHECK(gz_chain_tip_get(&m, &tip) != GZ_CHAIN_OK); /* nothing to answer; fills the report */
+  CHECK(strcmp(gz_multi_last_report(&m)->operators[0], "this-machine") == 0);
+  CHECK(strcmp(gz_multi_last_report(&m)->operators[1], "this-machine") == 0);
+  gz_chain_destroy(&m);
+  gz_chain_destroy(&s[0]);
+  gz_chain_destroy(&s[1]);
+  /* named operators are taken as named */
+  s[0] = make_server(&fake, "http://localhost:3002/api", "first-server");
+  s[1] = make_server(&fake, "http://127.0.0.1:3003/api", "second-server");
+  CHECK_RESULT(gz_multi_create(&mc, s, 2, &m), GZ_CHAIN_OK);
+  CHECK(gz_multi_operator_count(&m) == 2);
+  gz_chain_destroy(&m);
+  gz_chain_destroy(&s[0]);
+  gz_chain_destroy(&s[1]);
+  fake_free(&fake);
+}
+
+/* A backend that describes itself, as any third-party one may. */
+typedef struct described {
+  const char *host;
+  const char *operator_id;
+} described;
+
+static bool described_info(void *ctx, gz_chain_info *out) {
+  const described *d = ctx;
+  snprintf(out->host, sizeof out->host, "%s", d->host);
+  snprintf(out->operator_id, sizeof out->operator_id, "%s", d->operator_id);
+  return true;
+}
+
+static void test_described_hosts_are_normalised(test_state *T) {
+  gz_multi_config mc;
+  gz_chain m;
+  gz_chain_ops ops;
+  memset(&ops, 0, sizeof ops);
+  ops.block_hash = stub_block_hash;
+  ops.describe = described_info;
+  gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
+  described a = {"mempool.space", "x"}, b = {"Mempool.Space.", "y"};
+  gz_chain two[2] = {{&a, &ops}, {&b, &ops}};
+  CHECK_RESULT(gz_multi_create(&mc, two, 2, &m), GZ_CHAIN_INVALID_ARG); /* one host */
+  b.host = "mempool.space..";
+  CHECK_RESULT(gz_multi_create(&mc, two, 2, &m), GZ_CHAIN_INVALID_ARG); /* not a host */
+  b.host = "other.example";
+  b.operator_id = "X.";
+  CHECK_RESULT(gz_multi_create(&mc, two, 2, &m), GZ_CHAIN_INVALID_ARG); /* not a canonical name */
+  b.operator_id = "y";
+  CHECK_RESULT(gz_multi_create(&mc, two, 2, &m), GZ_CHAIN_OK);
+  CHECK(gz_multi_operator_count(&m) == 2);
+  gz_chain_destroy(&m);
+}
+
+/* ---- the unconfirmed_differs flag for output lists (review m22', m49) ---- */
+
+static gz_chain_result twice_outputs(void *ctx, const uint8_t *script, size_t script_len,
+                                     gz_chain_output *out, size_t cap, size_t *count,
+                                     bool *differs) {
+  (void)ctx;
+  (void)script;
+  (void)script_len;
+  (void)differs;
+  if (cap < 2) return GZ_CHAIN_TOO_LARGE;
+  memset(out, 0, 2 * sizeof *out);
+  test_hash(TX_A, out[0].txid);
+  out[0].vout = 2;
+  out[0].value = 43000;
+  out[0].confirmed = true;
+  out[0].height = 329438;
+  test_hash(HASH_329438, out[0].block_hash);
+  out[1] = out[0]; /* the same outpoint again */
+  *count = 2;
+  return GZ_CHAIN_OK;
+}
+
+static void test_output_list_flag(test_state *T) {
+  mfx x;
+  ids k;
+  gz_chain_output outs[4];
+  size_t n;
+  bool differs;
+  mfx_open(&x, 3);
+  ids_init(&k);
+  const gz_multi_report *rep = gz_multi_last_report(&x.multi);
+  const char *extra = "{\"txid\":\"" TX_B "\",\"vout\":0,\"status\":{\"confirmed\":false},\"value\":1}";
+  char body[512];
+  /* every server lists exactly the answer: no flag */
+  differs = true;
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, &differs),
+               GZ_CHAIN_OK);
+  CHECK(n == 1 && !differs && !rep->unconfirmed_differs);
+  /* one server, in each position in turn, lists an extra unconfirmed output */
+  snprintf(body, sizeof body, "[" UTXO_A2_CONFIRMED ",%s]", extra);
+  for (size_t i = 0; i < 3; i++) {
+    fake_set(&x.fake[i], false, i == 0   ? B0 "/scripthash/" SCRIPT_A2_HASH "/utxo"
+                                : i == 1 ? B1 "/scripthash/" SCRIPT_A2_HASH "/utxo"
+                                         : B2 "/scripthash/" SCRIPT_A2_HASH "/utxo",
+             200, body);
+    differs = false;
+    CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, &differs),
+                 GZ_CHAIN_OK);
+    CHECK(n == 1 && differs && rep->unconfirmed_differs);
+    fake_set_file(&x.fake[i], i == 0   ? B0 "/scripthash/" SCRIPT_A2_HASH "/utxo"
+                              : i == 1 ? B1 "/scripthash/" SCRIPT_A2_HASH "/utxo"
+                                       : B2 "/scripthash/" SCRIPT_A2_HASH "/utxo",
+                  200, "utxo_script_a2.json");
+  }
+  /* two servers list it and the third does not: still left out, flagged */
+  fake_set(&x.fake[0], false, B0 "/scripthash/" SCRIPT_A2_HASH "/utxo", 200, body);
+  fake_set(&x.fake[2], false, B2 "/scripthash/" SCRIPT_A2_HASH "/utxo", 200, body);
+  differs = false;
+  CHECK_RESULT(gz_chain_script_outputs(&x.multi, k.script, k.script_len, outs, 4, &n, &differs),
+               GZ_CHAIN_OK);
+  CHECK(n == 1 && differs);
+  mfx_close(&x);
+
+  /* a backend naming one outpoint twice gives a malformed reply, not a vote */
+  mfx_open(&x, 2);
+  gz_chain_ops ops;
+  gz_multi_config mc;
+  gz_chain m;
+  stub st = {0};
+  memset(&ops, 0, sizeof ops);
+  ops.block_hash = stub_block_hash;
+  ops.script_outputs = twice_outputs;
+  gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
+  gz_chain three[3] = {x.server[0], x.server[1], {&st, &ops}};
+  CHECK_RESULT(gz_multi_create(&mc, three, 3, &m), GZ_CHAIN_OK);
+  differs = true;
+  CHECK_RESULT(gz_chain_script_outputs(&m, k.script, k.script_len, outs, 4, &n, &differs),
+               GZ_CHAIN_OK);
+  CHECK(n == 1 && !differs);
+  CHECK(gz_multi_last_report(&m)->answers[2].result == GZ_CHAIN_MALFORMED);
+  gz_chain_destroy(&m);
   mfx_close(&x);
 }
 
@@ -743,17 +1222,6 @@ static void test_disagree_raw_tx_and_proof(test_state *T) {
 
 /* ---- backends that are not what they say ---- */
 
-typedef struct stub {
-  int broadcasts;
-} stub;
-
-static gz_chain_result stub_block_hash(void *ctx, uint32_t height, uint8_t out[GZ_HASH_LEN]) {
-  (void)ctx;
-  if (height != 0) return GZ_CHAIN_NOT_FOUND;
-  test_hash(GENESIS_SIGNET, out);
-  return GZ_CHAIN_OK;
-}
-
 /* Fails, but writes into the caller's buffer first. */
 static gz_chain_result scribble_raw_tx(void *ctx, const uint8_t txid[GZ_HASH_LEN], uint8_t *buf,
                                        size_t cap, size_t *len) {
@@ -797,6 +1265,7 @@ static void test_backends_are_not_taken_at_their_word(test_state *T) {
   mfx_open(&x, 2);
   ids_init(&k);
   gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
   memset(&ops, 0, sizeof ops);
   ops.block_hash = stub_block_hash;
 
@@ -887,10 +1356,18 @@ static void test_invented_tip_does_not_raise_confirmations(test_state *T) {
   ids_init(&k);
   /* one server claims a tip a million blocks up */
   fake_set(&x.fake[1], false, B1 "/blocks/tip/height", 200, "1329439");
+  fake_set(&x.fake[1], false, B1 "/block-height/1329439", 200,
+           "1111111111111111111111111111111111111111111111111111111111111111");
+  fake_set(&x.fake[0], false, B0 "/block-height/1329439", 200,
+           "1111111111111111111111111111111111111111111111111111111111111111");
   CHECK_RESULT(gz_chain_tx_status(&x.multi, k.a, &st), GZ_CHAIN_OK);
   CHECK(st.claimed_confirmations == 2); /* the lower claim */
-  CHECK_RESULT(gz_chain_confirm_tx(&x.multi, GZ_NET_SIGNET, k.a, 6, &conf), GZ_CHAIN_OK);
-  CHECK(conf.checked_confirmations == 2);
+  /* counting needs an agreed tip, and there is none */
+  CHECK_RESULT(gz_chain_confirm_tx(&x.multi, GZ_NET_SIGNET, k.a, 6, &conf), GZ_CHAIN_DISAGREE);
+  CHECK(conf.checked_confirmations == 0);
+  /* the block itself is still checked when no later header is wanted */
+  CHECK_RESULT(gz_chain_confirm_tx(&x.multi, GZ_NET_SIGNET, k.a, 1, &conf), GZ_CHAIN_OK);
+  CHECK(conf.checked_confirmations == 1);
   /* both do: the claim goes up, the checked number does not */
   fake_set(&x.fake[0], false, B0 "/blocks/tip/height", 200, "1329439");
   CHECK_RESULT(gz_chain_confirm_tx(&x.multi, GZ_NET_SIGNET, k.a, 6, &conf), GZ_CHAIN_OK);
@@ -1094,13 +1571,24 @@ static void test_fee_rule(test_state *T) {
   mfx_open(&x, 2);
   const gz_multi_report *rep = gz_multi_last_report(&x.multi);
 
-  /* only targets every server lists; the LOWER rate for each */
+  /* Every target listed; for each, the LOWER rate of the servers answering
+   * for it. A server answers for a target with its estimate for the
+   * highest target it lists not above it: for 144, server two's 6-block
+   * rate; for 1008, server one's 144-block rate. */
   fake_set(&x.fake[0], false, B0 "/fee-estimates", 200, "{\"1\":5.5,\"6\":2,\"144\":1}");
   fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, "{\"1\":4,\"6\":3.25,\"1008\":1}");
   CHECK_RESULT(gz_chain_fee_estimates(&x.multi, &f), GZ_CHAIN_OK);
-  CHECK(f.count == 2);
+  CHECK(f.count == 4);
   CHECK(f.entries[0].target == 1 && f.entries[0].sat_per_kvb == 4000);
   CHECK(f.entries[1].target == 6 && f.entries[1].sat_per_kvb == 2000);
+  CHECK(f.entries[2].target == 144 && f.entries[2].sat_per_kvb == 1000);
+  CHECK(f.entries[3].target == 1008 && f.entries[3].sat_per_kvb == 1000);
+  /* a target only one server can answer for is left out */
+  fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, "{\"6\":3.25}");
+  CHECK_RESULT(gz_chain_fee_estimates(&x.multi, &f), GZ_CHAIN_OK);
+  CHECK(f.count == 2 && f.entries[0].target == 6 && f.entries[1].target == 144);
+  fake_set(&x.fake[1], false, B1 "/fee-estimates", 200, "{\"1\":4,\"6\":3.25,\"1008\":1}");
+  CHECK_RESULT(gz_chain_fee_estimates(&x.multi, &f), GZ_CHAIN_OK);
   CHECK(rep->answers[0].u.fees.count == 3 && rep->answers[1].u.fees.entries[0].sat_per_kvb == 4000);
 
   /* The reviewer's case: one server at 0.1 sat/vB, one at 2000. No single
@@ -1157,6 +1645,7 @@ static void test_fee_rule(test_state *T) {
   gz_multi_config mc;
   gz_chain m;
   gz_multi_config_default(&mc, GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
   CHECK(mc.fee_ceiling_sat_per_kvb == 200000 && mc.fee_disagree_factor == 3);
   mc.fee_ceiling_sat_per_kvb = 0;
   CHECK_RESULT(gz_multi_create(&mc, x.server, 2, &m), GZ_CHAIN_INVALID_ARG);
@@ -1190,16 +1679,20 @@ static void test_create_and_single_server(test_state *T) {
   mfx_open(&x, 2);
   ids_init(&k);
   gz_multi_config_default(&mc, GZ_NET_SIGNET);
-  CHECK(mc.quorum == 2 && mc.tip_slack == 1 && mc.network == GZ_NET_SIGNET);
+  mc.now_ms = test_clock;
+  CHECK(mc.quorum == 2 && mc.tip_slack == GZ_MULTI_LAG_MAX_BLOCKS && mc.network == GZ_NET_SIGNET);
   CHECK_RESULT(gz_multi_create(&mc, x.server, 0, &m), GZ_CHAIN_INVALID_ARG);
   CHECK_RESULT(gz_multi_create(&mc, NULL, 2, &m), GZ_CHAIN_INVALID_ARG);
   mc.quorum = 1; /* an "agreement" of one server is refused outright */
   CHECK_RESULT(gz_multi_create(&mc, x.server, 2, &m), GZ_CHAIN_INVALID_ARG);
   CHECK(m.ctx == NULL);
   mc.quorum = 2;
-  mc.tip_slack = 7; /* "the same chain" cannot be stretched without bound */
+  mc.tip_slack = GZ_MULTI_LAG_MAX_BLOCKS + 1; /* "the same chain" has a bound */
   CHECK_RESULT(gz_multi_create(&mc, x.server, 2, &m), GZ_CHAIN_INVALID_ARG);
-  mc.tip_slack = 1;
+  mc.tip_slack = GZ_MULTI_LAG_MAX_BLOCKS;
+  mc.now_ms = NULL; /* lag must be timed */
+  CHECK_RESULT(gz_multi_create(&mc, x.server, 2, &m), GZ_CHAIN_INVALID_ARG);
+  mc.now_ms = test_clock;
   gz_chain empty[2] = {{NULL, NULL}, {NULL, NULL}};
   CHECK_RESULT(gz_multi_create(&mc, empty, 2, &m), GZ_CHAIN_INVALID_ARG);
 
@@ -1252,6 +1745,14 @@ int main(void) {
   RUN(test_disagree_block_hash_and_header);
   RUN(test_disagree_tx_status);
   RUN(test_lag_is_not_disagreement);
+  RUN(test_lag_needs_the_item_above_the_lower_tip);
+  RUN(test_lag_for_output_lists);
+  RUN(test_lag_has_limits);
+  RUN(test_confirmation_counts_to_the_agreed_tip);
+  RUN(test_fee_targets_left_out);
+  RUN(test_one_host_two_spellings);
+  RUN(test_described_hosts_are_normalised);
+  RUN(test_output_list_flag);
   RUN(test_unconfirmed_differences_do_not_blank_the_view);
   RUN(test_lying_server_omits_a_spend);
   RUN(test_disagree_script_outputs);

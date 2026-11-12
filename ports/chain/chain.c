@@ -129,39 +129,112 @@ void gz_script_hash(const uint8_t *script, size_t len, uint8_t out[GZ_HASH_LEN])
 
 /* ---- operators ---------------------------------------------------------- */
 
-bool gz_operator_from_host(const char *host, char out[GZ_OPERATOR_MAX]) {
-  if (host == NULL || out == NULL) return false;
-  size_t n = strlen(host);
-  if (n == 0 || n >= GZ_HOST_MAX) return false;
-  /* an IP address (bracketed or with colons: version 6; digits and dots
-   * only: version 4) is its own operator */
-  bool numeric = host[0] == '[' || strchr(host, ':') != NULL;
-  size_t dots = 0;
-  if (!numeric) {
-    numeric = true;
-    for (size_t i = 0; i < n; i++) {
-      if (host[i] == '.') dots++;
-      if (!((host[i] >= '0' && host[i] <= '9') || host[i] == '.')) numeric = false;
+/* The operator name given to every name of this machine. */
+#define LOOPBACK_OPERATOR "this-machine"
+
+static bool is_digit(char c) { return c >= '0' && c <= '9'; }
+
+/* Four decimal numbers 0-255 separated by dots, no leading zeros. */
+static bool canonical_ipv4(const char *s, size_t n) {
+  size_t i = 0;
+  for (int part = 0; part < 4; part++) {
+    size_t start = i;
+    unsigned v = 0;
+    while (i < n && is_digit(s[i]) && i - start < 3) v = v * 10 + (unsigned)(s[i++] - '0');
+    size_t digits = i - start;
+    if (digits == 0 || v > 255 || (digits > 1 && s[start] == '0')) return false;
+    if (part < 3) {
+      if (i >= n || s[i] != '.') return false;
+      i++;
     }
   }
-  const char *start = host;
-  if (!numeric && dots >= 2) {
-    /* keep the last two labels */
+  return i == n;
+}
+
+static bool normalise_into(const char *in, size_t len, char out[GZ_HOST_MAX]) {
+  if (in == NULL) return false;
+  if (len > 0 && in[len - 1] == '.') len--; /* the DNS root: one trailing dot */
+  if (len == 0 || len >= GZ_HOST_MAX) return false;
+  if (in[0] == '[') {
+    /* the IPv6 loopback address is the only bracketed host accepted */
+    if (len != 5 || memcmp(in, "[::1]", 5) != 0) return false;
+    memcpy(out, "[::1]", 6);
+    return true;
+  }
+  size_t label = 0, last_label = 0;
+  for (size_t i = 0; i < len; i++) {
+    char c = in[i];
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    if (c == '.') {
+      /* an empty label, or one that ends with '-' */
+      if (label == 0 || out[i - 1] == '-') return false;
+      label = 0;
+      last_label = i + 1;
+    } else if ((c >= 'a' && c <= 'z') || is_digit(c) || c == '-') {
+      if (label == 0 && c == '-') return false;
+      if (++label > 63) return false;
+    } else {
+      return false; /* not part of a host name: '@', '%', ':', '/', non-ASCII... */
+    }
+    out[i] = c;
+  }
+  if (label == 0 || out[len - 1] == '-') return false;
+  out[len] = '\0';
+  /* a last label that starts with a digit is read as an address by
+   * resolvers: only the canonical dotted IPv4 form is accepted */
+  if (is_digit(out[last_label]) && !canonical_ipv4(out, len)) return false;
+  return true;
+}
+
+bool gz_host_normalise(const char *in, size_t len, char out[GZ_HOST_MAX]) {
+  if (out == NULL) return false;
+  if (normalise_into(in, len, out)) return true;
+  out[0] = '\0'; /* nothing half-written is left behind */
+  return false;
+}
+
+bool gz_host_is_loopback(const char *host) {
+  return host != NULL && (strcmp(host, "localhost") == 0 || strcmp(host, "127.0.0.1") == 0 ||
+                          strcmp(host, "[::1]") == 0);
+}
+
+bool gz_operator_from_host(const char *host, char out[GZ_OPERATOR_MAX]) {
+  char norm[GZ_HOST_MAX];
+  if (out == NULL) return false;
+  out[0] = '\0';
+  if (host == NULL || !gz_host_normalise(host, strlen(host), norm)) return false;
+  const char *start = norm;
+  if (gz_host_is_loopback(norm)) {
+    start = LOOPBACK_OPERATOR; /* one machine is one operator, by any name */
+  } else if (!canonical_ipv4(norm, strlen(norm))) {
+    /* keep the last two labels; an address is its own operator */
     size_t seen = 0;
-    for (size_t i = n; i > 0; i--) {
-      if (host[i - 1] == '.' && ++seen == 2) {
-        start = host + i;
+    for (size_t i = strlen(norm); i > 0; i--) {
+      if (norm[i - 1] == '.' && ++seen == 2) {
+        start = norm + i;
         break;
       }
     }
   }
   size_t m = strlen(start);
-  if (m == 0 || m >= GZ_OPERATOR_MAX) return false;
-  for (size_t i = 0; i < m; i++) {
-    char c = start[i];
-    out[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+  if (m >= GZ_OPERATOR_MAX) return false;
+  memcpy(out, start, m + 1);
+  return true;
+}
+
+bool gz_operator_name_valid(const char *id) {
+  if (id == NULL) return false;
+  size_t n = strlen(id);
+  if (n == 0 || n >= GZ_OPERATOR_MAX) return false;
+  for (size_t i = 0; i < n; i++) {
+    char c = id[i];
+    bool edge = i == 0 || i == n - 1;
+    if (c == '.' || c == '-') {
+      if (edge || (c == '.' && id[i - 1] == '.')) return false;
+    } else if (!((c >= 'a' && c <= 'z') || is_digit(c))) {
+      return false;
+    }
   }
-  out[m] = '\0';
   return true;
 }
 
@@ -446,14 +519,17 @@ gz_chain_result gz_chain_choose_fee_rate(const gz_chain *c, gz_network network, 
   }
   gz_chain_result r = gz_chain_fee_estimates(c, &est);
   if (r != GZ_CHAIN_OK) return r;
-  if (est.count == 0 || est.count > GZ_FEE_MAX_TARGETS) return GZ_CHAIN_NOT_FOUND;
-  /* entries are sorted by target: take the last one not above `target`,
-   * or the first if every listed target is above it */
-  size_t pick = 0;
+  if (est.count > GZ_FEE_MAX_TARGETS) return GZ_CHAIN_MALFORMED;
+  /* the highest listed target not above `target`: the target asked for or
+   * a faster one. A slower one would ask for less than is needed, so if
+   * every listed target is above `target` there is no rate. */
+  const gz_fee_estimate *pick = NULL;
   for (size_t i = 0; i < est.count; i++) {
-    if (est.entries[i].target <= target) pick = i;
+    const gz_fee_estimate *e = &est.entries[i];
+    if (e->target <= target && (pick == NULL || e->target > pick->target)) pick = e;
   }
-  uint64_t rate = est.entries[pick].sat_per_kvb;
+  if (pick == NULL) return GZ_CHAIN_NOT_FOUND;
+  uint64_t rate = pick->sat_per_kvb;
   if (rate > GZ_FEE_MAX_SAT_PER_KVB) return GZ_CHAIN_MALFORMED;
   out->source = GZ_FEE_FROM_SERVERS;
   if (rate < GZ_FEE_MIN_SAT_PER_KVB) rate = GZ_FEE_MIN_SAT_PER_KVB;

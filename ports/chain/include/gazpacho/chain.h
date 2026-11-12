@@ -116,9 +116,11 @@ typedef enum gz_chain_result {
    * than the quorum requires, so nothing could be compared. */
   GZ_CHAIN_NO_QUORUM = 21,
   /* Comparing backend only: the servers differ, and the difference is what
-   * one server being a block behind another looks like (their tips differ by
-   * an allowed amount and are on one chain). Ask again shortly. Not an
-   * answer; if it persists, treat it as GZ_CHAIN_DISAGREE. */
+   * one server being behind another looks like: the disputed item lies above
+   * the tip of every server that lacks it, the tips are on one chain and at
+   * most GZ_MULTI_LAG_MAX_BLOCKS apart, and this has lasted no longer than
+   * GZ_MULTI_LAG_MAX_MS (chain_multi.h). Ask again shortly. Not an answer.
+   * Past either limit the backend itself returns GZ_CHAIN_DISAGREE. */
   GZ_CHAIN_LAG = 22,
 
   /* The caller passed something invalid. Nothing was sent. */
@@ -354,7 +356,10 @@ gz_chain_result gz_chain_merkle_proof(const gz_chain *c, const uint8_t txid[GZ_H
  * and returned the txid computed from `raw`, or refused it as already known
  * and was then seen to have it (out->already_known). GZ_CHAIN_REJECTED
  * carries the server's reason. A transaction that does not parse, or is
- * larger than GZ_TX_MAX_BYTES, is GZ_CHAIN_INVALID_ARG and is not sent. */
+ * larger than GZ_TX_MAX_BYTES, is GZ_CHAIN_INVALID_ARG and is not sent.
+ * The library itself does not refuse mainnet: a backend for mainnet servers
+ * broadcasts. The refusal to broadcast on mainnet lives in the program
+ * (gz-chain refuses it, by flag and by each server's block 0). */
 gz_chain_result gz_chain_broadcast(const gz_chain *c, const uint8_t *raw, size_t len,
                                    gz_broadcast_result *out);
 
@@ -409,12 +414,16 @@ typedef struct gz_fee_choice {
  * On testnet3, testnet4 and signet the answer is the fixed rate
  * GZ_FEE_TEST_DEFAULT_SAT_PER_KVB (0.1 sat/vB) and no server is asked:
  * estimates there are advisory only. On mainnet the backend's estimates are
- * used: the entry with the highest target not above `target` (or the lowest
- * target listed, if all are above), raised to GZ_FEE_MIN_SAT_PER_KVB if
- * below it, then cut at the ceiling. Used on the comparing backend that
- * estimate is the lowest any agreeing server gave, so no single server can
- * raise it; a server can lower it, within the comparing backend's
- * disagreement rule and down to the floor.
+ * used: the entry with the highest target not above `target`, that is the
+ * requested target or a faster one, which never asks for less than the
+ * requested target needs. If every listed target is above `target` there is
+ * no rate (GZ_CHAIN_NOT_FOUND): a slower target is never used in its place.
+ * The rate is raised to GZ_FEE_MIN_SAT_PER_KVB if below it, then cut at the
+ * ceiling. Used on the comparing backend, each target's estimate comes only
+ * from servers that answered for that same target (chain_multi.h) and is the
+ * lowest they gave, so no single server can raise it; a server can lower it
+ * only within the comparing backend's disagreement rule, and not by leaving
+ * targets out.
  */
 gz_chain_result gz_chain_choose_fee_rate(const gz_chain *c, gz_network network, uint16_t target,
                                          uint64_t ceiling_sat_per_kvb, gz_fee_choice *out);
@@ -454,13 +463,51 @@ bool gz_txid_from_raw(const uint8_t *raw, size_t len, uint8_t txid[GZ_HASH_LEN])
  * coinbase: one input, spending the all-zero txid at index 0xffffffff. */
 bool gz_tx_is_coinbase(const uint8_t *raw, size_t len);
 
-/* The operator a host name belongs to, for counting independent operators:
- * the last two labels of the name ("api.mempool.space" -> "mempool.space"),
- * or the whole text for an IP address or a single label. It is a rule of
- * thumb, not knowledge: it treats "a.co.uk" and "b.co.uk" as one operator
- * (the safe direction) and cannot know that two unrelated names belong to
- * one company. Writes lowercase text; false if `host` is empty or too long. */
+/*
+ * The one place a host name is put into its canonical form, so that two
+ * spellings of one host can never count as two hosts or two operators.
+ * Reads `len` bytes of `in` (no terminator needed) and writes the canonical
+ * form, zero-terminated, to `out`:
+ *  - letters are lower-cased ("MEMPOOL.space" -> "mempool.space"; this also
+ *    covers the "XN--" prefix of a punycode label);
+ *  - one trailing dot, the DNS root, is removed ("mempool.space." ->
+ *    "mempool.space"); two are refused;
+ *  - only ASCII letters, digits, '-' and '.' are allowed, so a name in
+ *    Unicode is refused and only its punycode (xn--) form is accepted: one
+ *    name has one spelling;
+ *  - every label is 1 to 63 characters and does not begin or end with '-';
+ *  - a name whose last label begins with a digit must be an IPv4 address in
+ *    its canonical dotted form (four decimal numbers 0-255, no leading
+ *    zeros): "127.1", "0x7f.0.0.1", "2130706433" and "127.000.0.1", which
+ *    resolvers read as addresses, are refused;
+ *  - the only bracketed form accepted is "[::1]", the IPv6 loopback address.
+ * A port, user information ('@'), percent-encoding or a path is not part of
+ * a host and is refused. Returns false if `in` is not acceptable; `out` is
+ * then an empty string.
+ */
+bool gz_host_normalise(const char *in, size_t len, char out[GZ_HOST_MAX]);
+
+/* True for the host names of this machine that addresses may use:
+ * "localhost", "127.0.0.1" and "[::1]" (canonical forms only). */
+bool gz_host_is_loopback(const char *host);
+
+/* The operator a host name belongs to, for counting independent operators.
+ * The host is first put through gz_host_normalise. Then: this machine's
+ * names (localhost, 127.0.0.1, [::1]) are all one operator, "this-machine";
+ * an IPv4 address is its own operator; otherwise the last two labels of the
+ * name ("api.mempool.space" -> "mempool.space"). It is a rule of thumb, not
+ * knowledge: it treats "a.co.uk" and "b.co.uk" as one operator (the safe
+ * direction), counts two addresses as two, and cannot know that two
+ * unrelated names belong to one company. That is why server lists should
+ * name their operators (gz_esplora_config.operator_id). Writes lowercase
+ * text; false if `host` is not a host gz_host_normalise accepts. */
 bool gz_operator_from_host(const char *host, char out[GZ_OPERATOR_MAX]);
+
+/* True if `id` is an operator name in canonical form: 1 to GZ_OPERATOR_MAX-1
+ * characters, lowercase letters, digits, '-' and '.', not beginning or
+ * ending with '.' or '-', and no empty label (".."). Only canonical names
+ * are accepted anywhere, so one operator has one spelling. */
+bool gz_operator_name_valid(const char *id);
 
 /* ---- block headers (headers.c) ---------------------------------------- */
 
@@ -564,8 +611,12 @@ typedef struct gz_confirmation {
  *   5. the block's first transaction is fetched, is a coinbase, and its own
  *      branch from position 0 has the same depth and reaches the same root,
  *      which pins the depth of the tree to something the server cannot choose;
- *   6. up to `want_confirmations` - 1 later headers are fetched; each must
- *      link to the one before and meet its proof-of-work target.
+ *   6. the tip is read (on the comparing backend: the agreed, lowest tip),
+ *      and up to `want_confirmations` - 1 later headers, none above that
+ *      tip, are fetched; each must link to the one before and meet its
+ *      proof-of-work target. A server one block ahead of the others
+ *      therefore never stalls a confirmation: the count simply stops at the
+ *      agreed tip.
  * `want_confirmations` is cut to 1..GZ_CONFIRM_MAX_DEPTH.
  *
  * Returns GZ_CHAIN_OK with the state in out->status. Unknown and mempool are

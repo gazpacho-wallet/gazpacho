@@ -71,11 +71,17 @@ static gz_chain_result check_confirmed(const gz_chain *c, gz_network network,
   }
   out->checked_confirmations = 1;
 
-  /* 6. later headers, each linking to the one before */
+  /* 6. later headers, each linking to the one before, up to the tip. On the
+   * comparing backend that is the agreed (lowest) tip, so a server that has
+   * already seen a newer block does not stall the count. */
+  if (want < 2) return GZ_CHAIN_OK;
+  gz_chain_tip tip;
+  r = gz_chain_tip_get(c, &tip);
+  if (r != GZ_CHAIN_OK) return r;
   uint8_t prev[GZ_HEADER_LEN], next[GZ_HEADER_LEN];
   memcpy(prev, out->header, GZ_HEADER_LEN);
   for (uint32_t k = 1; k < want; k++) {
-    if (height > GZ_MAX_HEIGHT - k) break;
+    if (height > GZ_MAX_HEIGHT - k || height + k > tip.height) break;
     r = gz_chain_block_header(c, height + k, next);
     if (r == GZ_CHAIN_NOT_FOUND) break; /* the chain is not that long yet */
     if (r != GZ_CHAIN_OK) return r;
