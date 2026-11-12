@@ -86,6 +86,9 @@ build_case 50 && {
 }
 
 echo "-- a sanitized build exempts the checkers' own names, but not ordinary ones"
+out=$(sh "$checker" --sanitized "$object" 2>&1) && fail "the sneaky object passed --sanitized" ||
+    { printf '%s\n' "$out" | grep -q "^FOUND weak symbol: getenv$" && echo "ok: a weak getenv is still refused under --sanitized" ||
+      fail "a weak getenv is not refused under --sanitized"; }
 build_case 24 && {
     sh "$checker" --sanitized "$work/case-24.o" >/dev/null 2>&1 && echo "ok: case 24 (checker name) passes --sanitized" ||
         fail "case 24 refused even under --sanitized"
@@ -103,11 +106,19 @@ for n in 50 51; do
         { fail "case $n (honest table) refused"; sh "$checker" "$work/case-$n.o" 2>&1 | grep '^FOUND'; }
 done
 
-echo "-- refused by the compiler, not the check"
-for n in 40; do
-    if build_case "$n" 2>/dev/null; then fail "case $n compiled; the compiler was relied on to reject it"
-    else echo "ok: case $n rejected by the compiler"; fi
-done
+echo "-- floating point: refused by the compiler, or on x86 by the check where the compiler accepts it"
+if ! build_case 40 2>/dev/null; then echo "ok: case 40 rejected by the compiler"
+elif [ "$x86" -eq 1 ]; then refuses_object 40 "(instruction: floating-point or vector register|outside symbol: .*)\$"
+else fail "case 40 compiled; the compiler was relied on to reject it"; fi
+if [ "$x86" -eq 1 ]; then   # the same source without -mgeneral-regs-only: the check alone must refuse it
+    without_gro=$(printf '%s' "$flags" | sed 's/-mgeneral-regs-only//')
+    if "$cc" $without_gro -I"$dir" -DCASE=40 -c "$dir/cases.c" -o "$work/case-40-fp.o" 2>/dev/null; then
+        out=$(sh "$checker" "$work/case-40-fp.o" 2>&1) && fail "floating-point code passed the check" ||
+            { printf '%s\n' "$out" | grep -q "^FOUND instruction: floating-point or vector register$" &&
+              echo "ok: floating-point code refused by the check" ||
+              { fail "floating-point code refused, but not for its registers"; printf '%s\n' "$out"; }; }
+    else fail "case 40 does not compile even without -mgeneral-regs-only"; fi
+fi
 # A variable-length array must be rejected, and the same file must compile once
 # -Wvla is taken out of the flags (so it is rejected for that reason).
 without=$(printf '%s' "$flags" | sed 's/-Wvla//')
