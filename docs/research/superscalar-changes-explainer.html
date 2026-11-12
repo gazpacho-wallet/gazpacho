@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SuperScalar changes, checked against the design</title>
+<style>
+:root{--bg:#faf6ef;--card:#fff;--ink:#22190f;--soft:#6b5d4d;--line:#e4d9c8;--red:#b3261e;
+--ok-bg:#dff0e3;--ok:#1d5e33;--add-bg:#e2ebf8;--add:#234a86;--nar-bg:#fbeecb;--nar:#7a5200;--bad-bg:#fbdfdc;--bad:#8f1d17;--code:#f1e9da}
+@media (prefers-color-scheme:dark){:root{--bg:#191512;--card:#231d18;--ink:#f1e8da;--soft:#b3a591;--line:#3b3129;--red:#f08a80;
+--ok-bg:#1c3a26;--ok:#9fdcb1;--add-bg:#1d2e4a;--add:#a9c6f5;--nar-bg:#443409;--nar:#f3d27e;--bad-bg:#4a1c19;--bad:#f5aaa3;--code:#30271f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:1060px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:30px;margin:0 0 6px}h1 span{color:var(--red)}
+h2{font-size:21px;margin:38px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:22px 0 6px}
+p{margin:8px 0;max-width:78ch}.soft{color:var(--soft);font-size:14px}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+nav a{padding:5px 11px;border:1px solid var(--line);border-radius:999px;color:var(--ink);text-decoration:none;font-size:14px;background:var(--card)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0}
+.answer{border-left:6px solid var(--red)}
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card);margin:10px 0}
+table{border-collapse:collapse;width:100%;min-width:720px;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:9px 11px;border-bottom:1px solid var(--line)}
+th{font-size:13px;color:var(--soft);font-weight:600;background:var(--bg)}
+tr:last-child td{border-bottom:0}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:12.5px;font-weight:700;white-space:nowrap}
+.ok{background:var(--ok-bg);color:var(--ok)}.add{background:var(--add-bg);color:var(--add)}
+.nar{background:var(--nar-bg);color:var(--nar)}.bad{background:var(--bad-bg);color:var(--bad)}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13.5px}
+.legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+.legend div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:14px}
+.count{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0}
+.count div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.count b{display:block;font-size:26px}
+ul{margin:6px 0 6px 20px;padding:0}li{margin:4px 0;max-width:76ch}
+details{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin:8px 0}
+summary{cursor:pointer;font-weight:600}
+</style>
+</head>
+<body>
+<main>
+<h1>Super<span>Scalar</span>: what is being changed, and does it still match the design?</h1>
+<p class="soft">Written by the Gazpacho session, 2026-11-11. Sources: the SuperScalar session's two messages of today, its draft specification and its own review
+(the draft and its review, kept in a local folder), and the raw text of the two design posts by ZmnSCPxj
+(Delving Bitcoin topics 1143 and 1242). "Host" is the service provider; "member" is a user.</p>
+
+<nav>
+<a href="#answer">Short answer</a><a href="#legend">How to read it</a><a href="#today">The code today</a>
+<a href="#merged">Merged today</a><a href="#running">In progress</a><a href="#round1">Round 1</a>
+<a href="#round2">Round 2: end-date payout</a><a href="#tension">Where it strains the design</a>
+<a href="#decide">Decisions waiting</a><a href="#unverified">Not verified</a>
+</nav>
+
+<div class="card answer" id="answer">
+<h3 style="margin-top:0">Short answer</h3>
+<p><b>Nothing they plan conflicts with the original design. Most of it moves the code towards the design, which the code does not yet match.</b></p>
+<ul>
+<li><b>The trustless claim is the design's, not yet the code's.</b> On the main branch today a member trusts the host in three places. The planned work removes all three.</li>
+<li><b>Some planned parts are new design</b> that the posts do not contain. They are reasonable, but they are theirs, and should be labelled and reviewed as such.</li>
+<li><b>Two things narrow the design on purpose:</b> one member per leaf, and liquidity sales switched off for now. The first costs flexibility for good. The second is temporary but means the "dynamic" part of the design does not work yet.</li>
+<li><b>Four points strain the design's intention</b> and need a decision by you, not by either AI. They are in <a href="#tension">section 6</a>.</li>
+</ul>
+</div>
+
+<div class="count">
+<div><b>15</b>items that bring the code up to the design</div>
+<div><b>9</b>additions beyond the design posts</div>
+<div><b>5</b>items that narrow or switch off part of the design</div>
+<div><b>4</b>points of strain needing your decision</div>
+</div>
+
+<h2 id="legend">How to read the tables</h2>
+<div class="legend">
+<div><span class="pill ok">Matches design</span><br>The posts describe this. The code is catching up.</div>
+<div><span class="pill add">Addition</span><br>Not in the posts. New design by the SuperScalar session. Does not contradict the posts.</div>
+<div><span class="pill nar">Narrows</span><br>Removes or switches off something the design allows.</div>
+<div><span class="pill bad">Conflicts</span><br>Contradicts the design or the trustless claim.</div>
+</div>
+
+<h2 id="today">1. Where the code stands today (their own assessment)</h2>
+<p>This is the starting point, as stated by the SuperScalar session and confirmed line by line in its review. These are the conflicts with the trustless claim. They are in the present code, not in the plan.</p>
+<div class="wrap"><table>
+<tr><th>Fact about the main branch today</th><th>Against the design?</th><th>Planned fix</th></tr>
+<tr><td>Below the top of the tree, the host can spend every output alone once its timeout passes.</td><td><span class="pill bad">Conflicts</span> The design says to replace this with a payout to members.</td><td>End-date payout (round 2)</td></tr>
+<tr><td>The host can pay in the funding before the tree is fully signed.</td><td><span class="pill bad">Conflicts</span> with "sign everything, then fund".</td><td>Sign before fund</td></tr>
+<tr><td>The host never holds a channel state it can publish. A member holds none straight after the channel opens.</td><td><span class="pill bad">Conflicts</span> A channel needs both sides able to close.</td><td>Two-sided channel states; a signed first state at opening</td></tr>
+<tr><td>During rotation, members hand over their old keys before the new factory exists. For a while they hold only the host's promise.</td><td><span class="pill bad">Conflicts</span> with trustless rotation.</td><td>Rotation order (decision D)</td></tr>
+<tr><td>A factory made by rotation gets an end date 1,008 blocks after creation, far before its 30-day life ends.</td><td><span class="pill bad">Conflicts</span> A plain defect.</td><td>One function sets every end date</td></tr>
+<tr><td>Signing of the one existing payout may fail silently and the factory is created anyway.</td><td><span class="pill bad">Conflicts</span></td><td>Failure to sign a payout stops the round</td></tr>
+</table></div>
+<p class="soft">The SuperScalar session's own words: "it is not safe for real funds, and I would not call it trustless until the three fixes above are merged and tested."</p>
+
+<h2 id="merged">2. Merged today</h2>
+<div class="wrap"><table>
+<tr><th>Change</th><th>What it does</th><th>Verdict</th></tr>
+<tr><td>#481</td><td>A payment never advances a leaf. The member's program refuses every tree advance.</td><td><span class="pill nar">Narrows</span> Safe, but tree updates are part of the design. Off until channels can move to a new output.</td></tr>
+<tr><td>#478</td><td>Liquidity purchases are refused outright, because the old path let the host choose the amounts. The sale mechanism itself (a chain extension on a shared leaf) is built and tested; it is switched off, not missing.</td><td><span class="pill nar">Narrows</span> Selling liquidity is the design's main "dynamic" feature. Off for now.</td></tr>
+<tr><td>#480</td><td>Fixes to the invoice decoder and its signature check.</td><td><span class="pill ok">Matches design</span> Ordinary bug fixes.</td></tr>
+<tr><td>#479, #469, #457</td><td>Described to us only as closing "real theft and exit paths", each with a test that fails when the fix is removed.</td><td>Not described in enough detail to judge. See <a href="#unverified">section 8</a>.</td></tr>
+</table></div>
+<p>No tree transaction changed in any of these.</p>
+
+<h2 id="running">3. In progress or announced</h2>
+<div class="wrap"><table>
+<tr><th>Work</th><th>What it does</th><th>Verdict</th></tr>
+<tr><td>#483 rotation fixes</td><td>Repairs to the move from one factory to the next.</td><td><span class="pill ok">Matches design</span> Detail not seen.</td></tr>
+<tr><td>Forced-exit fix</td><td>Repairs to leaving without the host's help.</td><td><span class="pill ok">Matches design</span> The exit is the base of the trustless claim.</td></tr>
+<tr><td>JIT stage 0 re-run</td><td>Re-testing channels opened on demand outside the tree. They are switched off.</td><td><span class="pill nar">Narrows</span> for now. These are an extra, not in the core design.</td></tr>
+<tr><td>Not coming soon</td><td>The Core Lightning plugin for held payments, and a whole-program test at scale.</td><td>No effect on the design. It limits what has been proven.</td></tr>
+</table></div>
+
+<h2 id="round1">4. Round 1 (this week): changes the tree's transactions once</h2>
+<div class="wrap"><table>
+<tr><th>Change</th><th>What it does</th><th>Verdict</th></tr>
+<tr><td>#476 tree fees</td><td>Exact fees by size on every tree transaction, version 3 transactions, an anchor output for raising the fee later, and the ability to raise it again. Fixes the exit that failed because its fee was too low.</td><td><span class="pill add">Addition</span> The posts mention anchors; the exact fee rules are engineering. Needed for any exit to confirm.</td></tr>
+<tr><td>Counter overwrite at 257 members and above</td><td>Defect found by our scale check.</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>Exit delay under-reported on deep trees</td><td>A member was told a shorter wait than the real one.</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>Member order depending on the system's sort routine</td><td>Tie-break added; today's order kept.</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>Anchor silently dropped on a 16-output node</td><td>Defect.</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>Two leaf-type issues</td><td>From our hand-off note.</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>Channel output script supplied by the caller</td><td>Our request, accepted "if it is small". Lets Gazpacho use the standard Lightning channel output.</td><td><span class="pill add">Addition</span> Interface only.</td></tr>
+</table></div>
+
+<h2 id="round2">5. Round 2: the end-date payout</h2>
+<p>The design posts call this "inversion of the timeout default". At the end date the money goes to the members, not the host, so the host must close properly or lose it. This is the property the trustless claim rests on.</p>
+
+<h3>5a. Parts that follow the posts</h3>
+<div class="wrap"><table>
+<tr><th>Planned</th><th>The posts</th><th>Verdict</th></tr>
+<tr><td>Remove every script that lets the host spend alone after a date.</td><td>"instead of an L &amp; CLTV branch at each output, we have an alternate nLockTime'd transaction"</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>A pre-signed, time-locked payout on shared outputs, paying members only.</td><td>"without any funds going to the LSP"</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>Each member is paid its full channel size.</td><td>"equal to the total channel capacity of that client"</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>Payouts are signed in the same round that creates the output, including each extension of a leaf.</td><td>"signed at the same setup stage that creates the tree nodes"</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>The host must publish and pay for the path of a silent member before the date.</td><td>"the LSP must initiate the unilateral exit itself, and pay"</td><td><span class="pill ok">Matches design</span></td></tr>
+<tr><td>The host keeps its delayed claim on its own spare liquidity.</td><td>The posts keep "L &amp; CSV" on that output.</td><td><span class="pill ok">Matches design</span></td></tr>
+</table></div>
+
+<h3>5b. Parts that are new design</h3>
+<div class="wrap"><table>
+<tr><th>Planned</th><th>Why it is new</th><th>Verdict</th></tr>
+<tr><td>Lock times get later at each deeper level.</td><td>The posts use one date for the whole tree. The stagger lets a host that starts on time always finish.</td><td><span class="pill add">Addition</span> They agreed to label it as new.</td></tr>
+<tr><td>The host's spare liquidity is divided leaf by leaf.</td><td>The posts say "split evenly among all clients".</td><td><span class="pill add">Addition</span> Better than the posts: payouts higher up stay correct after a sale.</td></tr>
+<tr><td>A deadline for the host, with separate allowances for confirmation time, outages and chain reorganisations.</td><td>The posts say only that the host must act "early".</td><td><span class="pill add">Addition</span> Values still to be chosen (decision B).</td></tr>
+<tr><td>No payout on kickoff outputs (planned revision).</td><td>The first post has none there. The draft had added them; that caused the 444-block early start.</td><td><span class="pill ok">Matches design</span> once revised.</td></tr>
+<tr><td>Above about 230 members, sign the top payout at a high fee from the tree's fee reserve.</td><td>The posts assume members can raise the fee from their own outputs.</td><td><span class="pill add">Addition</span> Our suggestion, accepted.</td></tr>
+<tr><td>A limit on payments in flight per channel.</td><td>Not in the posts. Without it a member can make the host's channel state too large to publish.</td><td><span class="pill add">Addition</span> Needed.</td></tr>
+<tr><td>Two-step signing rounds: harmless transactions first, then the ones that create outputs; the host checks every signature before releasing any.</td><td>The posts do not specify round order.</td><td><span class="pill add">Addition</span> Needed. Gazpacho's signing specification has the same rule.</td></tr>
+<tr><td>Rules for channel states on outputs that were replaced.</td><td>The posts sketch this only.</td><td><span class="pill add">Addition</span> Rated a blocker by their own review; not yet written.</td></tr>
+</table></div>
+
+<h3>5c. Parts that narrow the design</h3>
+<div class="wrap"><table>
+<tr><th>Planned</th><th>What is lost</th><th>Verdict</th></tr>
+<tr><td>One member per leaf only (proposed for the end-date payout).</td><td>The posts put two or more members on a leaf so the host can shift spare liquidity between them cheaply. With one member, spare liquidity can only go to that member; moving it elsewhere needs a round of the whole tree.<br><b>Correction, 2026-11-11:</b> the shared leaf is already built. The tree builder makes K members per sub-factory sharing the spare liquidity, K sub-factories per leaf (<code>factory_set_ps_subfactory_arity</code>, <code>factory_subfactory_chain_advance_unsigned</code>), with a penalty for a stale chain and tests. It is off by default (K = 1) and switched off in use by #478 and #481. Gazpacho already imports this code. The SuperScalar session now plans to move the default towards K &gt; 1, which conflicts with this row: see below.</td><td><span class="pill nar">Narrows</span> A deliberate trade, now in tension with the shared leaf that exists: see below.</td></tr>
+<tr><td>Round 2 lands in two steps: tree outputs first, channel outputs later.</td><td>Between the steps the host keeps a timeout claim on channel outputs.</td><td><span class="pill nar">Narrows</span> Temporary. The caller-supplied script may remove the gap.</td></tr>
+</table></div>
+<details><summary>Why one member per leaf is the safe choice</summary>
+<p>The second post warns about this itself. With a shared leaf, a member who buys the spare liquidity and then receives payments can hold more than its payout covers. The host then gains by letting the payout fire. The post describes the protection as "limited coverage", like deposit insurance. With one member per leaf the payout equals the whole leaf, which the member's balance can never exceed, so the protection is complete. Their review found the shared-leaf case to be a real loss of member money and rated it a blocker for those shapes.</p>
+<p><b>The tension, as of 2026-11-11.</b> The shared leaf (K &gt; 1) is built and is what the design posts describe. The end-date payout, as drafted, is only fully safe with one member per leaf. Both cannot be the default without one of the fixes the review lists: re-sign the payouts above a leaf whenever liquidity moves inside it (a round of the whole tree); or cap each member's balance at its covered amount until then; or keep K &gt; 1 only before the end-date payout exists and accept the "limited coverage" the second post describes. This needs one decision shared by both projects.</p>
+</details>
+
+<h2 id="tension">6. Where the plan strains the design's intention</h2>
+<p>None of these breaks the design. Each is a place where what a member or host can be promised is weaker, or costlier, than a first reading of the posts suggests.</p>
+<div class="wrap"><table>
+<tr><th>Point</th><th>What it means</th><th>Who decides</th></tr>
+<tr><td><b>A missed deadline is a race, not a forfeit.</b></td><td>The posts say the host "risks loss of all funds". That is accurate: it is a risk. A late host can still publish and sometimes win. So members cannot be promised full capacity when the host is late, and members must keep watching after the end date.</td><td>You: what members are told (decision B).</td></tr>
+<tr><td><b>Members gain when the host fails.</b></td><td>A member with a zero balance is paid its full capacity if the payout fires. The posts accept this because the host always has something to lose. With seats that cost nothing it invites stalling and mass silence.</td><td>You: whether a seat costs something.</td></tr>
+<tr><td><b>Offline members are the normal case on phones.</b></td><td>Today an absent member costs the host nothing. After the change each absent member costs the host a forced path on chain at every rotation, with a hard deadline. The posts intend the host to pay; the size of the bill at hundreds of members has not been measured.</td><td>You: decision E.</td></tr>
+<tr><td><b>Rotation has a trust window either way.</b></td><td>Old order: members briefly hold only the host's promise. New order: the host briefly owes in both factories and needs funds for both. The trustless choice is the new order, with the new funding confirmed before a member gives up its old key.</td><td>You: decision D.</td></tr>
+</table></div>
+
+<h2 id="decide">7. The five decisions the SuperScalar session is waiting for</h2>
+<div class="wrap"><table>
+<tr><th></th><th>Decision</th><th>Gazpacho's view</th></tr>
+<tr><td>A</td><td>Payouts on kickoff outputs, none, or with a relative delay.</td><td>None, as in the first post. Both reviews agree.</td></tr>
+<tr><td>B</td><td>How much allowance for outages and congestion, and what a missed deadline is said to mean.</td><td>Separate allowances with real slack. Tell members it is a race.</td></tr>
+<tr><td>C</td><td>One-member leaves only.</td><td>Yes. It is the only shape with complete protection, and the shape Gazpacho already chose.</td></tr>
+<tr><td>D</td><td>Rotation order.</td><td>New factory first and confirmed, then keys. The host carries the cost, not the member.</td></tr>
+<tr><td>E</td><td>Cost of offline members, and who pays to raise a payout's fee.</td><td>Tied to the seat-cost question. Measure the cost before choosing.</td></tr>
+</table></div>
+
+<h2 id="unverified">8. What this page has not verified</h2>
+<ul>
+<li>I have not read the code of #479, #469, #457, #478, #480, #481 or #483. Their descriptions are the SuperScalar session's.</li>
+<li>The draft's scale figures and its fee-relay statements are inferred by its author, not measured.</li>
+<li>The lock-time arithmetic was re-derived by their reviewer and checked by me on paper. Nothing has been built or run.</li>
+<li>The reviewed version of the specification does not exist yet. This page describes the draft plus the revisions they said they plan.</li>
+<li>The counts at the top are my own grouping of the rows on this page.</li>
+</ul>
+</main>
+</body>
+</html>

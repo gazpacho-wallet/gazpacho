@@ -22,6 +22,9 @@ What every piece of work must satisfy before it is handed to review. It is made 
 10. **Tests do not match loosely.** A test that searched output for the letters "prv" failed once in a few hundred runs when those letters appeared in a random address. Match the exact thing.
 11. **Fault settings are shown to do something.** Two simulator profiles exercised nothing because every node died first. A test of a fault must fail if the fault never happened.
 12. **Results are reported with counts, and with what was not tested.**
+28. **Invariants check the property itself, not a proxy.** An invariant that checks something which usually goes with the property (a count, a flag, a state name) passes when the property fails.
+29. **Mutation runners kill their children on timeout.** A mutant that hangs must be stopped with everything it started; hung mutants once loaded the build server for hours. (Added 2026-11-12)
+30. **A new protection gets a cross-check against an independent implementation** wherever one can be written. The Python BOLT 8 peer, the independent signature-hash code and the independent parser each paid off. Numbers 27 onwards are added where they belong, not renumbered, so references to earlier items stay valid. (Added 2026-11-12)
 
 ## State and storage
 
@@ -30,6 +33,7 @@ What every piece of work must satisfy before it is handed to review. It is made 
 15. **Anything that makes memory run ahead of storage is fatal for that node**: a refused step, a storage failure, storage answering out of order. The node stops and is rebuilt from what was saved.
 16. **After a restart, everything saved and not known to be acknowledged is sent again.** So every message must be safe to receive twice, and out of order with newer messages.
 17. **One-time signing secrets are never stored**, and a restored backup must not be able to make one repeat.
+27. **A save made early in a start holds back every later send; start records last.** In a node's start step, a save comes before every send that follows it, so a save placed early delays all the resends behind it. Records written at start go last.
 
 ## Code
 

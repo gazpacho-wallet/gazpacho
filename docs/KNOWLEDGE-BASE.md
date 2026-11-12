@@ -1,6 +1,6 @@
 # Gazpacho knowledge base
 
-The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-11. Update it whenever a decision is made or a fact is checked.
+The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.
 
 ## 1. Where everything is
 
@@ -10,18 +10,21 @@ The single place to start. It gathers what has been learned and decided, says ho
 | The design currently in force | `DESIGN.md` |
 | The dated record of findings, reviews and decisions | `RECORD.md` |
 | What every piece of work must satisfy before review | `ENGINEERING-CHECKLIST.md` |
-| The testing plan | `TESTING.md` |
-| The vertical slices | `SLICES.md` |
-| Specifications (safe-to-sign rule, signing round) | `../spec/` |
+| What runs today, and the testing plan | `TESTING.md` |
+| The vertical slices | `SLICES.md`; Slice 1's work table and merge order in `SLICE1-WORK.md` |
+| Specifications: protocol map, safe-to-sign rule, signing round, messages, host terms, journal, discovery (transport on branch `transport`) | `../spec/`, starting at `PROTOCOL.md` |
+| Threat model | `THREAT-MODEL.md` |
+| Reviews, and the ledger of every review round | `reviews/README.md` |
 | What is still undecided | `OPEN-QUESTIONS.md` |
 | How a factory forms | `LOBBY.md`, with research in `LOBBY-research.md` |
 | Lightning nodes a host can link to | `HOST-NODES.md` |
 | Public chain servers found to answer, and how they are used | `CHAIN-SERVERS.md` |
 | What existed at the start | `ASSESSMENT.md` |
-| Notes for the SuperScalar repo session | `handoff/` |
+| Notes for the SuperScalar repo session, and the ledger of every request | `handoff/`, `handoff/README.md` |
 | Illustrated pages (versioned) | `design.html`, `gazpacho-overview.html`, older versions in `history/` |
 | Everything in one file | `handbook.html`: a list of contents when closed, the full text of every document when opened. Rebuild with `tools/build-handbook.py` after editing any document |
-| Questionnaires put to the owner | `design-review-1.html`, `questions-2.html` |
+| Questionnaires put to the owner | `design-review-1.html`, `questions-2.html`, `questions-4-release.html` (answered: decisions 9 and 10), `questions-5-decisions.html` (decisions made for the owner, awaiting answers). Questions 3 is on branch `ux-concepts` |
+| Owner decisions 1 to 10 | `ux/decisions.md` |
 | Imported code and its manifest | `../core/superscalar/IMPORT.md` |
 | How rules and features are proposed and decided (SIPs) | `sips/`, with a rule-request template and a worked example |
 | Meeting a member's duties while they are away | `AWAY.md` |
@@ -66,7 +69,7 @@ From ZmnSCPxj's posts on Delving Bitcoin (topics 1143 and 1242) as read in earli
 - Factories last about 30 days plus about 3 days of winding down. A new one starts daily. Members move to a new factory by paying across over Lightning.
 - A payment's final deadline must be at least the tree's total exit delay plus a margin.
 - Arity 2 is suggested near the leaves, wider higher up, and fixed (stateless) near the root.
-- Pseudo-Spilman leaves were designed for several members per leaf sharing the host's liquidity; the reference code uses one member per leaf.
+- Pseudo-Spilman leaves were designed for several members per leaf sharing the host's liquidity. The reference code builds that shape too (corrected 2026-11-11): `factory_set_ps_subfactory_arity(K)` gives K members per sub-factory sharing the spare liquidity and K sub-factories per leaf (K² members), and `factory_subfactory_chain_advance_unsigned` sells liquidity by extending the chain, with a penalty for a stale chain. Both are in Gazpacho's import (`core/superscalar/src/factory.c:1059`, `:2971`). The default is K = 1, and the SuperScalar programs switch sales and advances off for now (#478, #481). Known divergence (corrected again 2026-11-11 by the SuperScalar shared-leaf study, and confirmed in our copy at `factory.c` around line 3007): every sale, the first included, spends all K+1 outputs of the previous step and grows the buyer's existing channel, so every channel on that sub-factory moves. The designer's shape, planned by SuperScalar for 1.1.0, is one input (the spare liquidity) and two outputs: a new channel for the buyer and the remaining stock. Channels then never move, and a member can hold several channels. Also found by the study, all to fix before shared leaves: the stale-chain penalty probably fires on honest exits; the exit-time check ignores K; the member-to-leaf mapping is wrong for K = 3 at 64 to 512 members; no second-spend guard on the shared stock; a host "funding reorged" message resets sale state without the member checking the chain. The orchestration around it (`lsp_subfactory_chain_advance`) is program code Gazpacho does not import.
 
 ## 4. What the reference code does today
 
@@ -101,19 +104,24 @@ Newest first within each area. The date is when the owner decided.
 - Soup wallet is mothballed, kept for reference. The SuperScalar repo is maintained by another session. (11 Nov)
 - Home is `github.com/gazpacho-wallet/gazpacho`, MIT, public since 11 Nov 2026.
 - The screens are a local web interface served by the C program. No wallet-in-a-web-page. (11 Nov)
+- No role question; everyone can host; hosting always visible. Fees in 1.0.0 (proposed, owner to confirm): per payment, plus an optional joining fee from the first payment received. Payout to one wallet in 1.0.0, derived per-factory addresses in 1.1.0, outside wallet later. Receiving room, splicing, on-demand channels and shared leaves with sales are 1.1.0. Detail in `ux/decisions.md`, summary in `DESIGN.md` and `PLAN.md`. (11 Nov)
+- Interface: layout concept H is the base, with the critique's fixes and the owner's answers still to apply. (12 Nov)
 
 ### Construction
-- Full layered tree in the first release; build the fixed tree first. Pseudo-Spilman leaves, one member per leaf. JIT channels off. Target 512 members, tested at 128 or 256.
+- **1.0.0 trees are advanceless** (owner, 2026-11-12, questions 4): every interior level fixed, no timed (Decker-Wattenhofer) levels; timed levels and layer updates arrive with 1.1.0 and liquidity sales. This replaces the earlier "full layered tree in the first release". 1.0.0 seats are free (protected by invitation-only lobbies, host removal and standbys), then a proof of a coin or channel, then a per-lobby choice of options. Pseudo-Spilman leaves, one member per leaf. JIT channels off. Target 512 members, tested at 128 or 256.
 - One funder per factory: the host, who signs funding only after the whole tree is signed. Members start at zero.
 - The factory key always needs everyone's signature. No threshold key.
 - Lightning's standard taproot channel format for the channel; the old format archived and recoverable.
+- Our own odd envelope (type 52791) is the message specification; bLIP-56 is an adapter; signatures are always over our native bytes (owner chose "option 3" after a comparison, 12 Nov; `spec/messages.md`). The 4-byte tag stays for Slice 1; the 32-byte protocol id is signed only together with renaming the tags, once the shared name is agreed with SuperScalar.
+- The standard is layered: transport, envelope, group coordination (a separate library), SuperScalar operations, channels, discovery, each with formats, state machines, acceptance rules and vectors (12 Nov; `spec/PROTOCOL.md`).
+- Long-term aim: factories as a core part of Lightning. Path: our odd type now, bLIP-56's even type via the adapter, our own feature bit, then a BOLT, as dual funding and splicing went (12 Nov; `PLAN.md`).
 - Lightning's own wire language; factory messages inside one custom message type.
 - Members adding their own coins, several hosts per factory, swap-in and swap-out: after the first release.
 
 ### Safety
 - One member-side rule before every signature. Save before send. Signing secrets never stored. A restored backup never publishes its own state.
-- Exit fees are built in from the host's side; a small on-chain reserve is recommended, not required.
-- About two weeks to respond to an old state; the watch engine can also run as a separate process.
+- Exit fees are built in from the host's side, and tree transactions carry pay-to-anchor outputs so anyone can raise a fee. No on-chain reserve is required or recommended in 1.0.0; only a member who chooses to leave alone pays fees (owner decision 6, 11 Nov). In 1.1.0 a member holding more than its coverage keeps a small on-chain coin (decision 5).
+- About two weeks to respond to an old state in 1.0.0: the channel's revocation window, set by the terms; the design's figure, not measured (`spec/safety-rule.md` section 7). It holds below a timed layer only if the channel engine keeps every old anchor current; in 1.1.0 a member above its coverage may have under a day. The watch engine can also run as a separate process.
 - New joining or safety rules are normally changes to the safe-to-sign code itself, which is kept as one small, tested module.
 
 ### Forming a factory
@@ -124,7 +132,7 @@ Newest first within each area. The date is when the owner decided.
 - Listings carry fixed terms, ranges, size and start time; live details come from the host. Hosts may publish a track record.
 - All four rule profiles ship: Safety, Standard, Starter, Circle. Deposits come in the release after the first.
 - No voting and no vote-to-remove. The host removes people; each member has a personal block list; history is kept locally.
-- Listings and host proofs on Nostr; everything else direct.
+- Discovery over Lightning first, Nostr as an optional annex (12 Nov; `spec/discovery.md` draft 2): one odd feature bit, no host card; a host is whoever sends lobby beacons; beacons relayed among factory-capable nodes; opt-in store nodes serve listings; a pool request for catch-up and light clients. Proofs (anchors) are needed only on Nostr. The demo ships the bit, direct queries and Nostr; beacons and store nodes next. Live state, joining and signing stay direct.
 - The lobby and signing coordination are written so they can become their own library.
 
 ### Hosts
@@ -167,7 +175,7 @@ Newest first within each area. The date is when the owner decided.
 
 ### Not yet known
 - Whether Eclair, LDK-based nodes and Nostr Wallet Connect can hold payments open in a way we can use.
-- The timelock and deadline numbers for the full layered tree.
+- The timelock and deadline numbers for 1.0.0's advanceless trees, and later for 1.1.0's timed levels.
 - How members who are offline at rotation are reached.
 
 ## 7. Risks we are carrying
@@ -191,3 +199,4 @@ Newest first within each area. The date is when the owner decided.
 - The owner's machine is sometimes short of memory; long-running local helpers may be stopped. Pages open from disk without them.
 - Test transactions use a fee rate of 0.1 satoshi per virtual byte to preserve test coins (owner's instruction, 11 Nov). Anchor outputs for adding fees later are an accepted option. If a transaction at that rate does not spread, find out why before paying more.
 - Nothing is posted publicly, and nothing public is started, without the owner's say.
+- The build server allows each agent one SSH connection per 60 seconds. Long jobs (mutation runs, scale checks) are started detached and their results read later, not held open over a connection. (Found 12 Nov)

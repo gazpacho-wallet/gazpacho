@@ -117,9 +117,15 @@ Named presets of rules. All four ship in the first release.
 
 ## What is public
 
-A listing on Nostr carries what rarely changes: the terms the host has fixed, the acceptable range for the others, size limits, the start time and an expiry after which the listing disappears. It never says who joined.
+How people find a lobby is specified in `spec/discovery.md` (draft 2). In short:
 
-Anything live, such as how full the lobby is, is asked of the host directly. This keeps relays quiet and reveals less. The cost is that asking tells the host someone is interested and from which network address; connecting over Tor avoids the second.
+- A Gazpacho node sets one odd factory feature bit in its Lightning node announcement, so factory nodes can find each other through ordinary gossip.
+- A host announces a new lobby with a small signed **beacon** (who, which lobby, when), relayed between factory nodes; no terms ride in it.
+- The **listing** is the host's signed outer terms record, identical on every path. It never says who joined. Anyone interested fetches it from a **store node** that keeps listings, or from the host, after a random delay.
+- Phones and other light clients ask one or two store nodes for the current **pool** of beacons and listings, by onion message where possible, and check every signature themselves.
+- Nostr remains an optional annex carrying the same signed records, with stated conditions for retiring it.
+
+Anything live, such as how full the lobby is, is asked of the host directly. Asking tells the host someone is interested; by onion message it does not learn who or from where.
 
 A host may publish the factories it has funded as a track record, since the funding is on chain anyway. Whether a member can prove past participation in the same way is being looked into; it would link that member's factories together, so it could only be by choice.
 

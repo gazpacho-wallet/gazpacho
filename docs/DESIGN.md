@@ -1,6 +1,6 @@
 # Gazpacho design
 
-The current design, consolidated. 2026-11-11.
+The current design, consolidated. 2026-11-11; owner decisions of 11 and 12 Nov added 2026-11-12; contradictions found by the gap review corrected 2026-11-12.
 
 How it got here, with dates, findings and superseded ideas, is in `RECORD.md`. Where the two differ, this file is the one in force. The illustrated version is `design.html`.
 
@@ -66,35 +66,39 @@ The full definition is `spec/safety-rule.md`. In brief:
 - **Sign before fund:** the host signs funding only after the whole tree is signed and verified.
 - **Every partial signature is verified** as it arrives.
 - **Signing secrets are never stored.** An interrupted round is abandoned.
-- **A restored backup never publishes** its own channel state. It asks the host to prove the latest and waits for the host to close.
-- **Exit fees** are built in from the host's side. A small on-chain reserve is recommended to members, not required.
-- **Away protection:** about two weeks to respond to an old state.
+- **A restored backup never publishes its own channel state automatically.** It asks the host to prove the latest and waits for the host to close. If the host has not closed by its forcing date, publishing is offered as the person's own choice, with the risk stated (`spec/exit.md` 5.7).
+- **The exit deadline is the leaf's timeout.** Every tree output carries a host-only timeout; the binding one is the member's leaf's, at **E − 10·d** (E the end height, d the leaf's depth), and the member's commitment must be buried before it. The member starts leaving alone by that height less burial, one confirmation allowance per missing transaction (d + 3 of them) and margins: 50 to 82 blocks before E at Slice 1's signet constants (`spec/exit.md` 4, `spec/safety-rule.md` C5).
+- **A locked wallet keeps watching** (from Slice 3): a watcher publishes the member's tree path and answers old host states from already-signed transactions, but the last step, the member's own commitment, needs the passphrase by a stated `unlock_by` (`spec/exit.md` 5.6). Its files never hold a commitment of the member's own.
+- **Exit fees** are built in from the host's side, with pay-to-anchor outputs so anyone can raise a fee. No on-chain reserve is required or recommended in 1.0.0 (owner decision 6); in 1.1.0 a member above its coverage keeps a small on-chain coin (decision 5).
+- **Away protection:** about two weeks to respond to an old state in 1.0.0, the channel's revocation window (the design's figure, not measured; `spec/safety-rule.md` sections 7 and 8). In 1.1.0 a member above its coverage may have under a day.
 - A new safety or joining rule is normally a reviewed change to the safe-to-sign module, proposed through a SIP.
 
 ## 7. The factory
 
-- The full layered SuperScalar tree in the first release; the fixed tree is built first.
-- Pseudo-Spilman leaves, one member per leaf. Payments never change the tree; liquidity changes do.
+- **1.0.0 trees are advanceless** (owner decision 9, 2026-11-12): every interior level is fixed, with no timed (Decker-Wattenhofer) levels. Timed levels and layer updates arrive with 1.1.0, together with liquidity sales. Extending a factory's life always means rotation to a new funding output; refresh in place is never used. This replaces the earlier "full layered tree in the first release".
+- Pseudo-Spilman leaves, one member per leaf. Payments never change the tree. In 1.0.0 nothing changes the tree after creation; liquidity changes arrive with 1.1.0.
 - One funder per factory: the host. Members start at zero and are paid in over Lightning.
 - The tree's shape for each size is fixed by the host's terms; members are placed in an agreed order, host first.
-- Shape rules, from the scale check: a level is at most 15 wide; a wide level is used only where every subtree under it has more members than the width; two-way trees are not used at size (27 days to exit at 512 members); upper levels are fixed where possible, since each timed level adds 3 days to an exit. Small factories (4, 8, 32) have their own shapes.
+- Shape rules, from the scale check: a level is at most 15 wide; a wide level is used only where every subtree under it has more members than the width; two-way trees are not used at size (27 days to exit at 512 members); each timed level adds 3 days to an exit, so in 1.0.0 every level is fixed. Small factories (4, 8, 32) have their own shapes.
 - Payment deadlines are computed from the factory's exit time plus a margin; payments with less headroom are refused.
 - A member's software exits automatically before expiry if nothing else has happened.
 - At wind-down a member pays their balance into the next factory over Lightning, or co-signs a close that funds the next factory directly.
 - Target size 512 members; routine tests at smaller sizes.
 - Not in the first release: JIT channels, swap-in and swap-out, members adding their own coins, several hosts per factory.
+- **Shared leaves come with sales in 1.1.0** (agreed with SuperScalar, 11 Nov). 1.0.0 has one member per leaf (K = 1). In 1.1.0 shared leaves (K > 1) arrive with sales of receiving room under the design's "limited coverage": each member's coverage is fixed when the factory is built and shown beside the balance. Each sale spends only the host's spare liquidity and makes a **new channel** for the buyer; existing channels never move, so a member can hold several channels in one factory (`ux/decisions.md` 5).
 
 ## 8. Messages and channel format
 
 - A Gazpacho connection is an ordinary Lightning peer connection that also carries factory messages.
 - Lightning's encrypted transport with the host's key pinned; over TCP, and over WebSocket where needed.
 - Lightning's message shape, session start and feature flags. No version numbers: unknown odd fields are skipped, unknown even ones refused.
-- Lightning's standard channel messages and its standard taproot channel format for the channel inside a leaf. The old SuperScalar channel format is archived and can be reinstated behind the channel engine's format interface.
+- Lightning's standard channel messages, and a taproot channel for the channel inside a leaf that departs from Lightning's standard taproot format in two places (`spec/exit.md` 10.1): its funding output is the leaf's output, tweaked with the host's timeout leaf (CH-3), not a BIP 86 key; and the member's commitment pays a fee fixed in advance and carries an anchor a member without coins can use, preferably as a TRUC transaction with a member-keyed anchor (CH-2). The old SuperScalar channel format is archived and can be reinstated behind the channel engine's format interface.
 - Factory messages travel inside one custom message type, with an envelope naming the protocol, the factory and the message kind.
 - Large signing data is split across messages with a completion marker.
 - A member's backup is held by the host using Lightning's peer-storage messages.
-- Encoders and decoders are generated from tables in `spec/`, with test vectors and fuzzing.
-- The message specification itself is still to be written, and will be offered to the SuperScalar repo as the shared format.
+- Encoders and decoders are to be generated from tables in `spec/`, with test vectors and fuzzing. No generator exists yet: `tools/spec-vectors.py` only prints vectors, and the transport's code is written by hand.
+- The message specification is `spec/messages.md`. **Our own odd envelope (type 52791) is the specification**; bLIP-56 is carried by an adapter, and signatures are always over our native bytes (owner's choice, 2026-11-12). It is offered to the SuperScalar repo as the shared format.
+- **A layered standard** (`spec/PROTOCOL.md`): transport, envelope, group coordination (a separate library), SuperScalar operations, channels and discovery are separate layers, each with its formats, state machines, acceptance rules and test vectors (owner, 2026-11-12).
 
 ## 9. Storage and backup
 
@@ -116,11 +120,12 @@ Full detail in `docs/LOBBY.md`.
 - A lobby, like a game server. **Start rule:** a target, a minimum and a deadline. Reaching the target starts at once; at the deadline it starts if the minimum is met, and otherwise quits or carries members over.
 - Gathering is long; signing is short and automatic within each member's conditions.
 - A member's conditions are locked in, and are checked against the real tree at signing.
-- Listed on Nostr or unlisted; open or by invitation (QR codes).
+- Listed or unlisted; open or by invitation (QR codes). A listing is one signed record, the same bytes on every path (`spec/discovery.md` draft 2): asked of the host over Lightning; announced by a small signed beacon relayed among factory-capable nodes and served by opt-in store nodes; and, optionally, on Nostr. One odd feature bit marks a factory-capable node; a host is whoever sends beacons. The signet demo wallet ships the bit, direct queries and Nostr; beacons and store nodes come next. Slice 1 uses none of these: the member is given the host's address directly (`SLICES.md`). Which release the demo wallet is remains open (`OPEN-QUESTIONS.md`).
 - No voting. The host removes people; each member has a personal block list; history is kept locally.
 - Host switches for names, chat and rule-change requests. Optional self-identification. Identity is new per lobby by default.
 - Four rule profiles: Safety, Standard, Starter, Circle.
 - Listings carry fixed terms, ranges, size and start time. Live details come from the host.
+- **Terms** (owner decision 1, `spec/terms.md`): a lobby's outer rules are fixed when it opens; adjustable terms move only inside signed ranges; values freeze at the ready check; the outer rules' digest is the rules fingerprint and the lobby's identity. Changing an outer rule makes a new lobby.
 
 ## 12. The host
 
@@ -128,10 +133,13 @@ Full detail in `docs/LOBBY.md`.
 - Links its factory to the rest of Lightning through a regular node, by an adapter with four operations: pay an invoice; create an invoice whose secret the node does not know and hold the payment; settle it; cancel it. LND first, then Core Lightning, then others. See `docs/HOST-NODES.md`.
 - Later the built-in node holds ordinary channels itself and no separate node is needed.
 - Publishes signed, versioned terms. May publish its funded factories as a track record.
+- **Fees in 1.0.0** (proposed after the owner's direction, decision 2; owner to confirm): a per-payment fee (a base amount plus a proportion), and an optional joining fee taken from the first payment received. The fee for extra receiving room comes in 1.1.0. A host cannot take any charge the member has not signed.
 
 ## 13. The user's side
 
-- **Screens:** a local web interface served by the C program on the local machine only, with a start-up token and refusal of requests from other sites. Keys and channel state never enter the browser.
+- **No role question** (owner decision 4): everyone can be member and host. The app never asks "member or host?"; hosting is always visible, with a calm starting page until the person hosts something.
+- **Where coins go** (owner decision 6): 1.0.0 pays out to one wallet; 1.1.0 adds derived addresses of the same wallet per factory; an outside or cold wallet comes later. A destination is fixed before the factory forms, because pre-signed transactions fix it, and an outside address is proven before use. The tree builder must accept a destination per member (a request to SuperScalar, `handoff/2026-11-12-to-superscalar.md`, E2).
+- **Screens:** a local web interface served by the C program on the local machine only, with sign-in by the wallet passphrase, which also decrypts the files (owner decisions 13 and 14; first run protected by a one-use start token the program opens itself), a session token kept out of cookies, and refusal of requests from other sites (`spec/local-api.md`). Slice 1 ships with it, and every Slice 1 action is done through it (owner decision 11). Keys and channel state never enter the browser, with one exception: the 24 words may be shown in it, and typed into it for the backup check and a restore, under fixed key-handling rules (owner decision 12, 2026-11-12, which replaces the earlier "never"): loopback only; shown at creation and on reveal after a fresh sign-in; never in URLs, logs, events, caches or page storage; no clipboard copy by default; cleared from the page after display; the check never says which position is wrong; attempt limits; the program wipes its copies after use (`spec/local-api.md` section 12.7).
 - **Reminders:** countdowns in the app first. Other channels and ways to act while away are in `docs/AWAY.md`.
 
 ## 14. Changing the rules
@@ -140,7 +148,7 @@ SuperScalar Improvement Proposals, `docs/sips/`. Request in a set format, open d
 
 ## 15. Testing
 
-`docs/TESTING.md`: seven levels, a simulator that injects network faults, crashes and cheating, nine invariants checked after every step, and two tests for every safety rule.
+`docs/TESTING.md`, in two parts. What runs today: reference values, wallet key vectors, the core and simulator tests with four invariants, sanitizer builds on GitHub. Planned: seven levels, a simulator that injects network faults, crashes and cheating, nine invariants checked after every step, and two tests for every safety rule.
 
 ## 16. Milestones
 
@@ -148,13 +156,13 @@ SuperScalar Improvement Proposals, `docs/sips/`. Request in a set format, open d
 |---|---|---|
 | M0 | Reference code run end to end | Done |
 | M0b | Foundations imported with a test and automated checks | Done |
-| M1 | Core skeleton, simulator and signing round engine; a fixed-tree factory in the simulator | In progress |
+| M1 | Core skeleton, simulator and signing round engine; a fixed-tree factory in the simulator | In progress: core skeleton merged; follow-up in pull request 9; the signing round engine is built on the build server but not yet in a pull request (`SLICE1-WORK.md`) |
 | Slice 1 | Form a factory on signet, shown in the local web interface | After M1 |
 | M2 | Channel and payment engines | |
 | Slice 2 | A payment on signet | After M2 |
 | M3 | Exit, watch and schedule engines | |
 | Slice 3 | A member leaves alone on signet | After M3 |
-| M4 | The full layered tree and rotation | |
+| M4 | Rotation; advanceless trees in 1.0.0 (timed levels and layer updates in 1.1.0) | |
 | M5 | Hardening of the outer pieces; Electrum backend; a node of our own for controlled-chain tests | |
 | M6 | First release candidate on signet | |
 

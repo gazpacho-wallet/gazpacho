@@ -2,7 +2,7 @@
 
 Decided 2026-11-11. A slice is one complete path through every layer that a person can run and watch, on a public test network. Slices are built as soon as the engines they need have passed their simulator tests, instead of waiting until every engine exists.
 
-Network: **signet first**, through public chain servers (`CHAIN-SERVERS.md`). Testnet4 is added when a second independent server is found for it.
+Network: **signet first**, through public chain servers (`CHAIN-SERVERS.md`). A second independent testnet4 server has been found (`CHAIN-SERVERS.md`), so testnet4 can be added; no slice is scheduled on it yet.
 
 ## Rules for every slice
 
@@ -14,11 +14,13 @@ Network: **signet first**, through public chain servers (`CHAIN-SERVERS.md`). Te
 
 ## Slice 1: form a factory
 
+Who is building each piece, on which branch, and the merge order: `SLICE1-WORK.md`.
+
 **What you see:** a host opens a lobby; members join; when the start rule is met their software signs; the host funds last; the funding transaction confirms on signet; the screen shows the lobby, the tree and the confirmation.
 
 | Needs | From |
 |---|---|
-| Core skeleton and simulator | M1, first piece (in progress) |
+| Core skeleton and simulator | M1, first piece (merged; follow-up in pull request 9) |
 | Signing round engine and the creation checks of the safe-to-sign rule | M1, second piece |
 | Lobby with target, minimum and deadline | Lifecycle engine, first cut |
 | Chain view over the HTTP explorer interface, comparing two servers | Chain port (started alongside M1) |
@@ -30,7 +32,9 @@ Network: **signet first**, through public chain servers (`CHAIN-SERVERS.md`). Te
 
 **Not in slice 1:** payments, liquidity changes, rotation, exits, the host's Lightning node, Nostr listings (the member is given the host's address directly), invitations, profiles beyond Standard.
 
-**Done when:** one host and at least three members on separate processes form a factory on signet from a clean start, twice in a row, by following the walkthrough; the automated run does the same; and a member whose conditions are not met is seen to refuse.
+**Through the interface** (owner decision 11, 2026-11-12, `ux/decisions.md`): Slice 1 ships with the local web interface in place, and every Slice 1 action is done through it: creating or restoring a wallet, the backup check of the 24 words, conditions, finding and joining a lobby, hosting a lobby, the signing moment and refusals, and the live factory. The command line is for start-up and diagnostics. The calls are in `spec/local-api.md`, section 2.1.
+
+**Done when:** one host and at least three members on separate processes form a factory on signet from a clean start, twice in a row, by following the walkthrough **in the interface**; the automated run does the same through the same local API; and a member whose conditions are not met is seen to refuse, on the screen.
 
 ## Slice 2: a payment
 
@@ -50,7 +54,9 @@ Needs the exit, watch and schedule engines (M3).
 
 ## Later slices
 
-Liquidity changes and rotation (the layered tree, M4); paying and being paid across the wider Lightning network through the host's node; finding hosts through Nostr.
+Rotation into the next factory (M4); paying and being paid across the wider Lightning network through the host's node; finding hosts through discovery (`spec/discovery.md`). Liquidity changes and timed levels are 1.1.0 (owner decision 9).
+
+**Many factories and rolling forward** (1.1.0, `MULTI-FACTORY.md`): one member in three factories with two hosts moves its balance from an ending factory into a live one over Lightning, by a standing rule and without anyone acting, and the app settles to chain by its own deadline when no lobby is available.
 
 ## Where slices run
 
