@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discovery designs compared</title>
+<style>
+:root{--bg:#faf6ef;--card:#fff;--ink:#22190f;--soft:#6b5d4d;--line:#e4d9c8;--red:#b3261e;--code:#f1e9da;
+--a:#234a86;--a-bg:#e2ebf8;--b:#7a5200;--b-bg:#fbeecb;--ok:#1d5e33;--ok-bg:#dff0e3;--bad:#8f1d17;--bad-bg:#fbdfdc;
+--host:#b3261e;--node:#234a86;--lite:#1d5e33;--nostr:#7a5200}
+@media (prefers-color-scheme:dark){:root{--bg:#191512;--card:#231d18;--ink:#f1e8da;--soft:#b3a591;--line:#3b3129;--red:#f08a80;--code:#30271f;
+--a:#a9c6f5;--a-bg:#1d2e4a;--b:#f3d27e;--b-bg:#443409;--ok:#9fdcb1;--ok-bg:#1c3a26;--bad:#f5aaa3;--bad-bg:#4a1c19;
+--host:#f08a80;--node:#a9c6f5;--lite:#9fdcb1;--nostr:#f3d27e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:29px;margin:0 0 6px;line-height:1.2}h1 span{color:var(--red)}
+h2{font-size:21px;margin:38px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:20px 0 6px}
+p{margin:8px 0;max-width:80ch}.soft{color:var(--soft);font-size:14px}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+nav a{padding:5px 11px;border:1px solid var(--line);border-radius:999px;color:var(--ink);text-decoration:none;font-size:14px;background:var(--card)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0}
+.answer{border-left:6px solid var(--red)}
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card);margin:10px 0}
+table{border-collapse:collapse;width:100%;font-size:14.5px}
+table.wide{min-width:880px}table.mid{min-width:640px}
+th,td{text-align:left;vertical-align:top;padding:9px 11px;border-bottom:1px solid var(--line)}
+th{font-size:13px;color:var(--soft);font-weight:600;background:var(--bg)}
+tr:last-child td{border-bottom:0}
+td:first-child{font-weight:600;min-width:140px}
+tr.rec td{background:var(--ok-bg)}
+.g,.m,.p{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap;margin-bottom:3px}
+.g{background:var(--ok-bg);color:var(--ok)}.m{background:var(--b-bg);color:var(--b)}.p{background:var(--bad-bg);color:var(--bad)}
+td small{display:block;color:var(--soft);font-size:12.5px;line-height:1.35}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13.5px}
+ul,ol{margin:6px 0 6px 20px;padding:0}li{margin:4px 0;max-width:78ch}
+.opt{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:10px 0}
+.opt.rec{border:2px solid var(--red)}
+.opt h3{margin:0 0 4px}
+.tag{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;background:var(--ok-bg);color:var(--ok)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+.fig{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px;margin:12px 0}
+.fig svg{width:100%;height:auto;display:block}
+.fig svg text{fill:var(--ink);font:13px system-ui,Segoe UI,Roboto,sans-serif}
+.fig svg .s{fill:var(--soft);font-size:11.5px}
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:13px;color:var(--soft);margin:6px 4px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+a{color:var(--a)}
+</style>
+</head>
+<body>
+<main>
+<h1>Finding lobbies: six designs, <span>one recommendation</span></h1>
+<p class="soft">2026-11-12. Companion to <code>notes/peering-research.md</code>, which holds every source and its mark (VERIFIED = read this session; RECALLED = from memory). Earlier evidence is in <code>notes/discovery-research.md</code>. Nothing here has been posted anywhere.</p>
+
+<nav><a href="#answer">Short answer</a><a href="#designs">The six designs</a><a href="#compare">Side by side</a><a href="#diagram">Design D drawn</a><a href="#params">Peering rules</a><a href="#relay">How a beacon travels</a><a href="#light">Light clients</a><a href="#boot">Few nodes</a><a href="#attacks">Attacks</a><a href="#bitcoin">Bitcoin relay lessons</a><a href="#precedents">Precedents</a><a href="#nostr">Nostr verdict</a></nav>
+<p class="soft">Updated for the ideas ledger (A1, A3, A6): <b>one</b> factory bit (a host is whoever sends beacons), a per-connection "lobby store" flag, immediate relay, store nodes, and a pool request.</p>
+
+<div class="card answer" id="answer">
+<h3 style="margin-top:0">Short answer</h3>
+<ul>
+<li><b>Best design: D</b> (feature bits, host queries, and a capped beacon overlay), with Nostr kept as an optional fallback.</li>
+<li><b>Best peering technique:</b> pick overlay peers yourself from the Lightning gossip graph, not from what other peers tell you. Lightning gossip already lists every factory node, and each one paid for a funded channel. That is the strongest Sybil filter any of the precedents had.</li>
+<li><b>Shape:</b> 6 links (4 to 8), at least 3 that you chose yourself, at most 2 hosts, at most 2 per address group, 2 kept across restarts, one swapped daily, plus an hourly short "scout" check against a random factory node.</li>
+<li><b>Relay:</b> push the whole beacon (153 bytes) to every overlay link, immediately. At these volumes, "announce the id first, send on request" saves almost nothing and adds a round trip. Bitcoin's announce-then-fetch belongs one level up: the beacon is the announcement, and the listing is fetched, from a store peer first and the host last, after a random delay.</li>
+<li><b>Catch-up:</b> the pool request now. Later, each host numbers its beacons, so a node can catch up by trading "highest number seen per host". No sketch maths is needed below about 10,000 hosts.</li>
+<li><b>The spec should fix now</b> the beacon rules, immediate relay, the store flag and store duties, the fetch order, the pool request, orphan limits and misbehaviour classes. It should <b>only reserve</b> have-summaries and store-to-store sync. Scoring stays local and off the wire (<a href="#bitcoin">details</a>).</li>
+<li><b>Nostr:</b> keep it, as an optional fallback. Retire it only when the measured conditions in <a href="#nostr">the verdict</a> hold for six months. Taproot channel gossip comes first.</li>
+</ul>
+</div>
+
+<h2 id="designs">The six designs</h2>
+<div class="grid">
+<div class="opt"><h3>A. Soup's coordinator plus Nostr</h3><p>A coordinator checks each host's proof and posts a "vouch" on Nostr. Wallets trust the coordinator's key. This is the owner's earlier, working system.</p></div>
+<div class="opt"><h3>B. Nostr listings only</h3><p>Hosts post signed lobby listings on Nostr, each backed by a coin or channel. Every wallet checks the backing itself. No coordinator.</p></div>
+<div class="opt"><h3>C. Hosting bit plus queries</h3><p>Gossip says who hosts. A wallet asks each host, by onion message, for its lobbies. Nothing is relayed.</p></div>
+<div class="opt rec"><h3>D. C plus beacon overlay <span class="tag">Recommended</span></h3><p>As C, and hosts also send a tiny signed "new lobby" beacon. Factory nodes pass it to each other over a small overlay that follows the peering rules below.</p></div>
+<div class="opt"><h3>E. Naive sub-gossip</h3><p>Every factory node relays every lobby announcement to every other, with no caps or peering rules.</p></div>
+<div class="opt"><h3>F. Lobbies in ordinary gossip</h3><p>Lobby records ride in Lightning's own gossip, so all of the roughly 6,000 public nodes carry them.</p></div>
+</div>
+
+<h2 id="compare">Side by side</h2>
+<p class="soft">Green is good, amber is mixed, red is poor. Ratings are judgements from the evidence in the notes file.</p>
+<div class="wrap"><table class="wide">
+<tr><th>Criterion</th><th>A. Coordinator + Nostr</th><th>B. Nostr only</th><th>C. Bit + queries</th><th>D. Bit + queries + beacons</th><th>E. Naive sub-gossip</th><th>F. Ordinary gossip</th></tr>
+<tr><td>Spam resistance</td>
+<td><span class="g">Good</span><small>Coordinator checks proofs and rate-limits</small></td>
+<td><span class="m">Mixed</span><small>Anchors cap listings per coin; relays cannot check, wallets must</small></td>
+<td><span class="g">Good</span><small>A host lists only its own lobbies, at most 4</small></td>
+<td><span class="g">Good</span><small>Beacon accepted only from a host in gossip with the bit; 4 per host</small></td>
+<td><span class="p">Poor</span><small>No caps: one host can fill everyone's store</small></td>
+<td><span class="m">Mixed</span><small>Gossip limits apply, but every node pays for it</small></td></tr>
+<tr><td>Censorship resistance</td>
+<td><span class="p">Poor</span><small>The coordinator can refuse a host</small></td>
+<td><span class="m">Mixed</span><small>Many relays, but each may drop; a few big relays hold most data</small></td>
+<td><span class="g">Good</span><small>Only the host answers about itself</small></td>
+<td><span class="g">Good</span><small>Many paths, the mix rule, scouts; queries still reach the host</small></td>
+<td><span class="m">Mixed</span><small>Many paths, but no defence against an eclipse</small></td>
+<td><span class="g">Good</span><small>The whole network carries it</small></td></tr>
+<tr><td>Privacy of the browser</td>
+<td><span class="g">Good</span><small>The relay sees a subscription; the host sees nothing</small></td>
+<td><span class="g">Good</span><small>As A</small></td>
+<td><span class="m">Mixed</span><small>Each host sees a query (not who, by onion)</small></td>
+<td><span class="g">Good</span><small>Browsing beacons touches no host; only the chosen lobby is queried</small></td>
+<td><span class="g">Good</span><small>As D</small></td>
+<td><span class="g">Good</span><small>Everyone has everything</small></td></tr>
+<tr><td>Light clients</td>
+<td><span class="g">Good</span><small>Any Nostr relay over a websocket</small></td>
+<td><span class="g">Good</span><small>As A; plus 2 or 3 chain lookups per anchor</small></td>
+<td><span class="p">Poor</span><small>No graph, so no host list without a helper</small></td>
+<td><span class="m">Mixed</span><small>Ask 2 or more storing factory nodes by onion message; verify everything</small></td>
+<td><span class="m">Mixed</span><small>As D, without the checks</small></td>
+<td><span class="p">Poor</span><small>Rapid Gossip Sync drops extra fields</small></td></tr>
+<tr><td>Bandwidth</td>
+<td><span class="g">Low</span></td>
+<td><span class="m">Low to mixed</span><small>Nostr readers download the same event many times</small></td>
+<td><span class="m">Grows with hosts</span><small>Each user polls every host</small></td>
+<td><span class="g">Low</span><small>About 1.7 MB a day per node at 1,000 hosts</small></td>
+<td><span class="p">Unbounded</span></td>
+<td><span class="p">High, for everyone</span><small>Lands on 6,000 nodes that do not care</small></td></tr>
+<tr><td>Implementation work</td>
+<td><span class="g">Exists</span></td>
+<td><span class="g">Small</span></td>
+<td><span class="g">Small to medium</span><small>Onion messages are the hard part</small></td>
+<td><span class="m">Medium to large</span><small>C, plus peer manager, store, reconciliation, tests</small></td>
+<td><span class="m">Medium</span></td>
+<td><span class="p">Very large</span><small>A BOLT change every implementation must accept</small></td></tr>
+<tr><td>Lightning-native</td>
+<td><span class="p">No</span></td>
+<td><span class="p">No</span></td>
+<td><span class="g">Yes</span><small>Bits as LSPS does; queries as BOLT 12 does</small></td>
+<td><span class="g">Yes</span><small>An opt-in overlay of odd messages</small></td>
+<td><span class="g">Yes</span></td>
+<td><span class="m">In form only</span><small>Against gossip's routing-only norm</small></td></tr>
+<tr><td>Outside systems needed</td>
+<td><span class="p">Nostr and a coordinator</span></td>
+<td><span class="p">Nostr</span></td>
+<td><span class="g">None</span></td>
+<td><span class="g">None</span><small>Nostr optional</small></td>
+<td><span class="g">None</span></td>
+<td><span class="g">None</span></td></tr>
+<tr><td>Bootstrapping (few nodes)</td>
+<td><span class="g">Easy</span></td>
+<td><span class="g">Easy</span></td>
+<td><span class="g">Easy</span><small>Ask the few hosts</small></td>
+<td><span class="m">Degrades to C</span><small>Fine: below 8 factory nodes, everyone links to everyone</small></td>
+<td><span class="m">Same as D</span></td>
+<td><span class="p">Not reachable</span><small>Needs implementers first</small></td></tr>
+<tr><td>Hosts not in gossip<br><small>(taproot or private channels)</small></td>
+<td><span class="g">Yes</span><small>Coin proof tier</small></td>
+<td><span class="g">Yes</span><small>Coin anchor</small></td>
+<td><span class="m">By invitation</span></td>
+<td><span class="m">By invitation</span><small>Beacons need the host in gossip</small></td>
+<td><span class="m">Depends</span></td>
+<td><span class="p">No</span></td></tr>
+<tr class="rec"><td>Verdict</td>
+<td>Retire the coordinator</td><td>Keep as annex</td><td>Core, ship first</td><td><b>Target design</b></td><td>Do not build</td><td>Do not propose</td></tr>
+</table></div>
+
+<h2 id="diagram">Design D, drawn</h2>
+<div class="fig">
+<svg viewBox="0 0 760 470" role="img" aria-label="Design D: gossip graph with factory and hosting bits, beacon overlay among factory nodes, light client querying two storing nodes, optional Nostr annex">
+<defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--soft)"/></marker>
+<marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--lite)"/></marker>
+</defs>
+<!-- layer 1: gossip graph -->
+<rect x="10" y="10" width="740" height="300" rx="14" fill="none" stroke="var(--line)" stroke-width="2"/>
+<text x="24" y="32">Layer 1: Lightning gossip graph (about 6,000 public nodes)</text>
+<text x="24" y="50" class="s">One odd bit F (factory-capable) in node_announcement. Ordinary nodes relay it without understanding. A host is an F node that sends beacons.</text>
+<!-- ordinary nodes -->
+<g fill="var(--line)">
+<circle cx="60" cy="110" r="7"/><circle cx="100" cy="260" r="7"/><circle cx="700" cy="90" r="7"/><circle cx="720" cy="250" r="7"/><circle cx="390" cy="290" r="7"/><circle cx="240" cy="75" r="7"/><circle cx="560" cy="70" r="7"/><circle cx="60" cy="190" r="7"/>
+</g>
+<!-- overlay links -->
+<g stroke="var(--node)" stroke-width="2.2" fill="none">
+<line x1="200" y1="140" x2="330" y2="110"/><line x1="200" y1="140" x2="250" y2="230"/>
+<line x1="330" y1="110" x2="470" y2="120"/><line x1="330" y1="110" x2="400" y2="200"/>
+<line x1="250" y1="230" x2="400" y2="200"/><line x1="470" y1="120" x2="600" y2="160"/>
+<line x1="400" y1="200" x2="540" y2="240"/><line x1="600" y1="160" x2="540" y2="240"/>
+<line x1="470" y1="120" x2="540" y2="240"/><line x1="200" y1="140" x2="130" y2="200"/><line x1="130" y1="200" x2="250" y2="230"/>
+</g>
+<!-- scout -->
+<line x1="600" y1="160" x2="130" y2="200" stroke="var(--soft)" stroke-width="1.5" stroke-dasharray="3 5"/>
+<text x="300" y="168" class="s">scout: short hourly check</text>
+<!-- hosts -->
+<g fill="var(--host)"><circle cx="330" cy="110" r="13"/><circle cx="540" cy="240" r="13"/><circle cx="130" cy="200" r="13"/></g>
+<text x="314" y="88">Host</text><text x="555" y="270">Host</text><text x="88" y="232">Host</text>
+<!-- factory nodes -->
+<g fill="var(--node)"><circle cx="200" cy="140" r="11"/><circle cx="250" cy="230" r="11"/><circle cx="470" cy="120" r="11"/><circle cx="400" cy="200" r="11"/><circle cx="600" cy="160" r="11"/></g>
+<g fill="var(--bg)" stroke="var(--node)" stroke-width="2"><circle cx="470" cy="120" r="5"/><circle cx="400" cy="200" r="5"/><circle cx="250" cy="230" r="5"/></g>
+<text x="612" y="150">Factory node</text>
+<text x="482" y="108" class="s">store node</text>
+<!-- beacon -->
+<rect x="350" y="98" width="70" height="20" rx="5" fill="var(--b-bg)" stroke="var(--nostr)"/>
+<text x="356" y="113" style="font-size:11.5px">beacon 153 B</text>
+<text x="24" y="296" class="s">Layer 2: any wallet may ask a host directly, by onion message, for its signed lobby list (not drawn).</text>
+<!-- light client -->
+<rect x="240" y="350" width="190" height="56" rx="10" fill="var(--ok-bg)" stroke="var(--lite)" stroke-width="2"/>
+<text x="254" y="374">Light client (phone)</text>
+<text x="254" y="394" class="s">no graph; has a chain server</text>
+<path d="M300,350 C300,300 390,260 400,212" stroke="var(--lite)" stroke-width="2" fill="none" marker-end="url(#arg)"/>
+<path d="M380,350 C420,300 470,190 470,134" stroke="var(--lite)" stroke-width="2" fill="none" marker-end="url(#arg)"/>
+<text x="440" y="330" class="s">pool request to 1 or 2 store nodes,</text>
+<text x="440" y="346" class="s">by onion message; plus host proofs</text>
+<!-- nostr -->
+<rect x="560" y="350" width="180" height="56" rx="10" fill="none" stroke="var(--nostr)" stroke-width="2" stroke-dasharray="6 5"/>
+<text x="574" y="374">Nostr annex (optional)</text>
+<text x="574" y="394" class="s">same signed records</text>
+<line x1="560" y1="378" x2="434" y2="378" stroke="var(--nostr)" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#ar)"/>
+<text x="24" y="440" class="s">Every record is signed by the host key. A relay, a storing node or a Nostr relay can hide a beacon, but cannot forge one.</text>
+<text x="24" y="458" class="s">Joining and signing always use a direct connection to the host.</text>
+</svg>
+<div class="legend"><span><i style="background:var(--host)"></i>Host (F bit; sends beacons)</span><span><i style="background:var(--node)"></i>Factory node (F bit); hollow centre = store node</span><span><i style="background:var(--line)"></i>Ordinary Lightning node</span><span><i style="background:var(--lite)"></i>Light-client path</span></div>
+</div>
+
+<h2 id="params">The recommended peering rules</h2>
+<p>The rules borrow from three proven systems. Bitcoin Core supplies outbound-first slots, address-group diversity, anchors and feelers. libp2p gossipsub (used by Ethereum and Filecoin) supplies the mesh size, an outbound quota and peer scoring. Lightning gossip supplies the member list and its Sybil cost.</p>
+<div class="wrap"><table class="mid">
+<tr><th>Rule</th><th>Value</th><th>Why</th></tr>
+<tr><td>Who can be a peer</td><td>A node in your gossip graph with the F bit and a reachable address. Its oldest announced channel must be at least 1,008 blocks (a week) old. This drops to 144 blocks while there are fewer than 16 such nodes</td><td>Every candidate has a funded channel. The age floor makes a fresh Sybil wait a week</td></tr>
+<tr><td>How you pick</td><td>Choose an address group at random, then a node in it at random. Never take peer suggestions from other peers</td><td>Sybils packed into one network range get one ticket, as Bitcoin's address buckets do. The gossip graph replaces gossipsub's "peer exchange", a known Sybil entry point</td></tr>
+<tr><td>Links (D)</td><td>Target 6; low 4; high 8</td><td>gossipsub uses 6, 4 and 12. Ethereum uses 8, 6 and 12. Beacons are rare, so fewer links are enough</td></tr>
+<tr><td>Chosen by you (D<sub>out</sub>)</td><td>At least 3 links you opened. When full, accept new inbound links only if you still need outbound ones</td><td>gossipsub's rule: an inbound flood "can never fully take over" the mesh</td></tr>
+<tr><td>Mix</td><td>At least half are factory nodes that are not hosts (a host is a node whose beacons you hold). At most 2 are hosts. At least 1 (2 when possible) is a store node, learned from the store flag in the handshake</td><td>A host may withhold a rival's beacon. Neutral relays dilute that. Storing peers make catch-up possible</td></tr>
+<tr><td>Diversity</td><td>Outbound: one per address group. All links: at most 2 per group. A group is IPv4 /16, IPv6 /32, or an AS number when a map is loaded. Tor addresses use Bitcoin Core's grouping</td><td>Bitcoin Core makes one outbound per group; discv5 allows 2 per /24 per bucket</td></tr>
+<tr><td>Anchors</td><td>Keep the 2 best outbound links across restarts</td><td>Bitcoin Core's anchors: a restart must not hand all slots to whoever answers first</td></tr>
+<tr><td>Rotation</td><td>Replace one non-anchor outbound link every 24 hours, at a random time</td><td>Matches the daily lobby rhythm. Slow churn heals a quiet eclipse without inviting a fast one</td></tr>
+<tr><td>Scout</td><td>Every hour, plus on waking: open one short link to a random eligible node, compare beacon sets, then close it</td><td>Bitcoin's feeler and extra block-relay links. It detects withholding and heals partitions</td></tr>
+<tr><td>Score (local, never shared)</td><td>Plus: first delivery of a new valid beacon. Minus: invalid beacons (squared), beacons the scout found that this peer never sent, rate breaches. Below zero: drop the link; 24-hour back-off for a bad signature</td><td>gossipsub's P2, P3, P4 and P7 terms, scaled for a slow channel</td></tr>
+<tr><td>Eviction when full</td><td>Never break the outbound quota, mix or anchors. Keep the 4 best scores, then drop at random</td><td>gossipsub's D<sub>score</sub>; Bitcoin protects peers by group and usefulness</td></tr>
+<tr><td>Rate limits</td><td>At most 4 live beacons per host. At most 8 new beacon numbers per host per 144 blocks. Per link, at most 1 beacon a second, bursts of 20</td><td>Bounds churn spam ("withdraw and re-issue") within the cap</td></tr>
+</table></div>
+
+<h2 id="relay">How a beacon travels</h2>
+<ol>
+<li>The host signs a beacon: host key, lobby digest, open height, deadline height, sequence number. 153 bytes.</li>
+<li>It sends it to all its overlay links at once (gossipsub calls this "flood publishing").</li>
+<li>Each node checks it. It needs a valid signature and a host in gossip with the F bit. The deadline must be in the future and the host must be within its cap. The node forwards it at once to every overlay link except the sender and links that already have it.</li>
+<li>If the host is not in the node's gossip yet, the beacon waits as an "orphan" for up to 20 minutes, like Bitcoin's orphan transactions. It is re-checked when the host's announcement arrives, and the sender is not blamed.</li>
+<li>Duplicates are dropped by beacon id, and an id is marked "seen" only after its signature checks out (the lesson of Bitcoin's wtxid relay).</li>
+<li>Store nodes fetch each beacon's listing after a random 0 to 60 seconds and keep it until the deadline. Other nodes remember only the id. When a wallet wants a listing it asks a store peer first ("don't have" comes back at once), then the host after a random delay.</li>
+<li><b>No "announce, then send on request".</b> At 1,000 hosts that would save about 1 MB a day and cost a round trip on every beacon. That mode suits Ethereum's busy topics, not a few beacons per host per day.</li>
+</ol>
+<h3>Catch-up after being offline</h3>
+<ul>
+<li>On connecting, and at most once an hour, a node sends a <b>pool request</b> (like Bitcoin's <code>mempool</code> message). The peer replies with the live beacons it holds that match the request's filter.</li>
+<li>Reserved for later, above about 500 hosts: send the highest sequence number held for each host, plus 4 bytes of that beacon's id (about 16 bytes per host). The peer sends only newer or different beacons. This is exact and needs no sketches.</li>
+<li>Catch up from 2 peers in different address groups, so one peer cannot hide a beacon.</li>
+<li>Sketch-based reconciliation (Erlay's minisketch) or range-based reconciliation (Nostr's NIP-77) are only worth it above about 10,000 hosts.</li>
+</ul>
+<div class="wrap"><table class="mid">
+<tr><th>Hosts</th><th>New beacons a day</th><th>Received per node a day (6 links)</th><th>Full catch-up</th><th>Summary catch-up</th></tr>
+<tr><td>10</td><td>about 15</td><td>about 17 KB</td><td>about 4 KB</td><td>not needed</td></tr>
+<tr><td>100</td><td>about 150</td><td>about 174 KB</td><td>about 40 KB</td><td>about 1.6 KB</td></tr>
+<tr><td>1,000</td><td>about 1,500</td><td>about 1.7 MB</td><td>about 390 KB</td><td>about 16 KB</td></tr>
+</table></div>
+<p class="soft">Assumes 1.5 new beacons per host a day, 193 bytes per beacon on the wire, and about 2 live beacons per host. For scale: Lightning gossip is about 103 MB of unique data a day.</p>
+
+<h2 id="light">Light clients</h2>
+<ol>
+<li>Pick 1 or 2 store nodes (2 is safer), from the built-in list, the current host, or an invitation. At least one should not be a host.</li>
+<li>Send each a pool request by onion message, through your own channel peer, with a fresh blinded reply path. The node learns that someone asked, not who. Without an onion path, use a short-lived Tor connection (Bitcoin Core's "private broadcast" works this way).</li>
+<li>Check every beacon's signature. Merge the answers: a node can leave beacons out but cannot forge one.</li>
+<li>For each new host, ask (the same node or another) for its proof: its <code>node_announcement</code> with the F bit, and one of its <code>channel_announcement</code>s. Check the signatures. Then check the channel's output through your chain server: 2 or 3 lookups, cached for 144 blocks.</li>
+<li>Pick a lobby, then ask that host for the listing and terms, as in design C.</li>
+</ol>
+<p class="soft">At 100 hosts the answer fits one 32 KB onion reply. At 1,000 hosts it is about ten, so the request asks for pages by host key.</p>
+
+<h2 id="boot">When factory nodes are few</h2>
+<div class="wrap"><table class="mid">
+<tr><th>Factory nodes in gossip</th><th>What happens</th></tr>
+<tr><td>Fewer than 8</td><td>Everyone links to everyone. Wallets mostly ask each host directly (design C). The overlay costs nothing and proves the code.</td></tr>
+<tr><td>8 to 50</td><td>Normal rules with the relaxed age floor (144 blocks). If there are too few non-hosting nodes, fill with hosts, and scout every 20 minutes instead of hourly. A built-in seed list covers nodes whose gossip is incomplete.</td></tr>
+<tr><td>More than 50</td><td>Full rules. The mix and diversity limits start to bite, which is what they are for.</td></tr>
+</table></div>
+<p>Partitions heal by themselves. Every node draws its scouts and rotations from the whole gossip graph, not from its overlay neighbours. Any two clusters therefore keep meeting.</p>
+<p class="soft">Honest caveat: early on, almost every factory node will be a host. Non-hosting factory nodes appear only when members or routing nodes run factory-capable software on servers. Until then the "half non-host" rule is a target, not a guarantee.</p>
+
+<h2 id="attacks">Attacks and defences</h2>
+<div class="wrap"><table class="wide">
+<tr><th>Attack</th><th>D (recommended)</th><th>E (naive)</th><th>B (Nostr only)</th><th>Precedent</th></tr>
+<tr><td>Sybil factory nodes flood the overlay</td><td>Each Sybil needs a funded, announced channel a week old. Picking by address group gives a packed range one ticket. At least 3 links are chosen by you. Peers are never taken from other peers' suggestions</td><td>Each Sybil only needs the bit</td><td>Nostr keys are free; anchors limit listings, not readers' bandwidth</td><td>Bitcoin address buckets; gossipsub D<sub>out</sub>; Lightning gossip's channel rule</td></tr>
+<tr><td>Eclipse: a member sees only one host's lobbies</td><td>At most 2 hosts per member. Hourly scouts compare sets. Anchors survive restarts. Daily rotation. Light clients ask 2 or more nodes</td><td>Possible: nothing stops a host taking every slot</td><td>Read from several relays (NIP-65 suggests 2 to 4)</td><td>Bitcoin anchors and feelers; gossipsub flood publishing; BIP 157 "at least one honest peer"</td></tr>
+<tr><td>Beacon withholding</td><td>Scouts catch missing beacons. The score drops peers that never deliver. Catch-up from 2 groups. The host still answers queries itself</td><td>Undetected</td><td>A relay can drop events silently</td><td>gossipsub P3 delivery score; Bitcoin's extra block-relay link</td></tr>
+<tr><td>Spam within the caps</td><td>4 live per host. 8 new numbers per host per day. Per-link rate limit. Each host needs a channel</td><td>No caps</td><td>Allowance per anchor value</td><td>LND gossip ban score; Core Lightning 300 s spacing</td></tr>
+<tr><td>Partition or bootstrapping with few nodes</td><td>Full mesh below 8 nodes. Scouts draw from the whole graph. Falls back to querying hosts</td><td>Same graph, no scouts</td><td>None: relays are always there</td><td>Bitcoin DNS seeds; gossipsub bootstrappers</td></tr>
+<tr><td>Privacy: who wants lobbies</td><td>Overlay nodes already show the F bit. Light clients ask by onion message: "someone asked". Hosts see nothing until a lobby is chosen</td><td>Same</td><td>The relay sees your IP and filter</td><td>BOLT 4 blinded reply paths; BIP 157 vs BIP 37</td></tr>
+<tr><td>A host lists different lobbies to different askers</td><td>Beacons are public and numbered, so a lie is visible</td><td>Same</td><td>Same</td><td>Signed, sequenced records (like ENR <code>seq</code>)</td></tr>
+</table></div>
+
+<h2 id="bitcoin">Bitcoin's relay lessons, one by one</h2>
+<p>Each pattern was checked in Bitcoin Core's code or the BIP. "Applies" means a rule goes into <code>discovery.md</code>.</p>
+<div class="wrap"><table class="wide">
+<tr><th>Bitcoin pattern</th><th>Verdict</th><th>Rule for Gazpacho</th></tr>
+<tr><td>Announce, then fetch (<code>inv</code> / <code>getdata</code>)</td><td><span class="g">Applies, one level up</span></td><td>The beacon is the announcement; the listing is fetched. Ask one source at a time: a store peer first, then, after "don't have" or 30 s, the next. The host goes last, after a random 0 to 60 s. At most 16 requests in flight per peer. (Core: 60 s, 100 in flight)</td></tr>
+<tr><td>Per-peer queue and "already knows it" filter</td><td><span class="g">Applies</span></td><td>Never send a beacon to a link that sent it or was sent it</td></tr>
+<tr><td>Random (Poisson) delays, 5 s inbound and 2 s outbound</td><td><span class="m">Only for fetching</span></td><td>Beacons are signed in public, so there is no origin to hide: relay at once. Jitter the listing fetch so a host is not hit by every store node together</td></tr>
+<tr><td><code>feefilter</code> (BIP 133)</td><td><span class="m">Only for pool requests</span></td><td>Relay links carry every beacon, or the overlay would split by interest. The pool request carries filter fields (size range, profile)</td></tr>
+<tr><td>Mempool size limit and eviction</td><td><span class="g">Applies, lightly</span></td><td>The store is already bounded by hosts × 4. A store node may cap it. When full, it evicts from the host with the most entries first, then by nearest deadline</td></tr>
+<tr><td>Orphan transactions</td><td><span class="g">Applies</span></td><td>A beacon from a host not yet in gossip is held: at most 8 per link and 64 in all, for 20 minutes. It is re-checked when the host's announcement arrives. It is not relayed, and the sender is not blamed</td></tr>
+<tr><td>Mempool saved across restarts</td><td><span class="g">Applies to store nodes</span></td><td>Save beacons and listings at shutdown; reload, dropping expired ones</td></tr>
+<tr><td>Wallet rebroadcast</td><td><span class="g">Applies</span></td><td>A host re-sends its live beacons to each new link, and to all links every 6 to 12 hours</td></tr>
+<tr><td>wtxid relay (BIP 339): pick the right id</td><td><span class="g">Applies: key lesson</span></td><td>The beacon id covers everything but the signature. Mark an id "seen" only after the signature checks, so a forged copy cannot block the real one. A higher sequence replaces. If one host signs two beacons with the same sequence, keep the lower id so every node agrees</td></tr>
+<tr><td>Package relay (BIP 331)</td><td><span class="p">Not now</span></td><td>A beacon's "parent" is the host's gossip, which arrives anyway. Revisit if orphans are common</td></tr>
+<tr><td>Erlay (BIP 330), minisketch</td><td><span class="m">Reserve</span></td><td>Only above about 10,000 hosts. Ids must commit to content</td></tr>
+<tr><td>Dandelion (BIP 156)</td><td><span class="p">Does not apply</span></td><td>It hides who sent a transaction; a beacon is signed by its host on purpose. Asker privacy comes from onion messages. Core dropped Dandelion over DoS concerns</td></tr>
+<tr><td>Handshake flags (<code>fRelay</code>, <code>wtxidrelay</code>)</td><td><span class="g">Applies</span></td><td>The lobby store flag is sent once in the factory handshake and cannot change on that connection</td></tr>
+<tr><td><code>mempool</code> message (BIP 35)</td><td><span class="g">This is the pool request</span></td><td>Core restricts it because it is costly. Answer once per connection and at most once an hour, filtered and paged</td></tr>
+<tr><td>Misbehaving peers</td><td><span class="g">Applies</span></td><td>Core now simply disconnects and discourages, with no points. <b>Reject</b> (bad signature, malformed, too long-lived): drop the link for 24 h. <b>Ignore</b> (orphan, expired, duplicate, over the churn limit): drop the beacon quietly</td></tr>
+<tr><td>Nostr NIP-77 (Negentropy)</td><td><span class="m">Reserve</span></td><td>A good fit for store-to-store sync at very large scale. Per-host sequence numbers do the job below that</td></tr>
+</table></div>
+
+<h3>What <code>discovery.md</code> should fix now</h3>
+<div class="wrap"><table class="mid">
+<tr><th>Status</th><th>Items</th></tr>
+<tr><td>Normative now</td><td>Beacon record, id, signature, caps, life, sequence, replacement, withdrawal, tie-break. Acceptance rules, orphan limits, the Reject and Ignore classes. Immediate relay. The store flag and store duties: fetch with jitter, keep until expiry, answer with the listing or "don't have" at once, answer pool requests. Fetch order: store peer, then host. The pool request. The per-host churn limit. Host rebroadcast (SHOULD)</td></tr>
+<tr><td>Recommended policy (informative)</td><td>The peering rules above, store size and eviction, persistence. Bitcoin keeps all of this in code, not in BIPs</td></tr>
+<tr><td>Reserved only</td><td>Periodic have-summaries; store-to-store sync; bundling host proofs with beacons. A kind number and one sentence each</td></tr>
+<tr><td>Never on the wire</td><td>Scoring of links and store nodes. It is local, as in gossipsub and Bitcoin. The spec says only that a node may prefer store peers that actually answer</td></tr>
+</table></div>
+
+<h2 id="precedents">Precedents</h2>
+<div class="wrap"><table class="mid">
+<tr><th>System</th><th>What Gazpacho borrows</th><th>Link</th></tr>
+<tr><td>Bitcoin Core segwit peering</td><td>Prefer and keep outbound peers with a needed service bit</td><td><a href="https://github.com/bitcoin/bitcoin/pull/9082">PR 9082</a>, <a href="https://github.com/bitcoin/bitcoin/pull/9072">PR 9072</a></td></tr>
+<tr><td>Bitcoin Core outbound design</td><td>8 full-relay and 2 block-relay links, feelers, anchors, one outbound per address group</td><td><a href="https://github.com/bitcoin/bitcoin/blob/master/src/net.h">net.h</a>, <a href="https://github.com/bitcoin/bitcoin/blob/master/src/addrman.h">addrman.h</a></td></tr>
+<tr><td>Full-RBF peering</td><td>A fork reserved slots for peers with a policy bit: a minority overlay inside Bitcoin</td><td><a href="https://github.com/bitcoin/bitcoin/pull/25600">PR 25600</a></td></tr>
+<tr><td>Libre Relay (Peter Todd's fork)</td><td>Service bit 29 and 4 extra outbound slots that accept only flagged peers, on top of the normal 8 + 2</td><td><a href="https://github.com/petertodd/bitcoin/tree/libre-relay-v31.2">libre-relay-v31.2</a></td></tr>
+<tr><td>bLIP-32 DNS resolvers</td><td>Find the service by an odd bit in gossip, then ask it by onion message</td><td><a href="https://github.com/lightning/blips/blob/master/blip-0032.md">bLIP-32</a></td></tr>
+<tr><td>Bitcoin relay (wtxid, orphans, <code>mempool</code>)</td><td>Choose ids that commit to content; hold early arrivals; a bounded "send me your pool" request</td><td><a href="https://github.com/bitcoin/bips/blob/master/bip-0339.mediawiki">BIP 339</a>, <a href="https://github.com/bitcoin/bitcoin/blob/master/src/node/txorphanage.h">txorphanage.h</a>, <a href="https://github.com/bitcoin/bips/blob/master/bip-0035.mediawiki">BIP 35</a></td></tr>
+<tr><td>Ethereum ENR and subnets</td><td>Advertise roles in a signed record; find peers by random walk plus filter; keep minimum peers per subnet</td><td><a href="https://github.com/ethereum/consensus-specs/blob/master/specs/phase0/p2p-interface.md">p2p-interface.md</a>, <a href="https://github.com/ethereum/devp2p/blob/master/enr.md">enr.md</a></td></tr>
+<tr><td>gossipsub v1.1</td><td>Mesh size, outbound quota, scoring, flood publishing, back-off</td><td><a href="https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/gossipsub-v1.1.md">spec</a>, <a href="https://arxiv.org/abs/2007.02754">attack paper</a></td></tr>
+<tr><td>discv5</td><td>At most 2 nodes per /24 per bucket; prefer contacts you found yourself</td><td><a href="https://github.com/ethereum/devp2p/blob/master/discv5/discv5-rationale.md">rationale</a></td></tr>
+<tr><td>Erlay and minisketch</td><td>Reconcile sets instead of flooding, when sets are large</td><td><a href="https://github.com/bitcoin/bips/blob/master/bip-0330.mediawiki">BIP 330</a></td></tr>
+<tr><td>Nostr NIP-77</td><td>Range-based set reconciliation, already used by relays</td><td><a href="https://github.com/nostr-protocol/nips/blob/master/77.md">NIP-77</a></td></tr>
+<tr><td>Lightning gossip sync</td><td>Sync from a few peers, rotate them; LND keeps 3 active syncers</td><td><a href="https://github.com/lightningnetwork/lnd/blob/master/sample-lnd.conf">sample-lnd.conf</a>, <a href="https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/gossip.rs">LDK gossip.rs</a></td></tr>
+<tr><td>Lightning channel-less peers</td><td>Overlay links without channels fit default limits (LDK 2,500; Eclair 64 inbound; LND 100 restricted slots)</td><td><a href="https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/ln/channelmanager.rs">LDK</a>, <a href="https://github.com/ACINQ/eclair/blob/master/eclair-core/src/main/resources/reference.conf">Eclair</a></td></tr>
+<tr><td>BIP 157 light clients</td><td>Ask several peers; one honest peer is enough when data is verifiable</td><td><a href="https://github.com/bitcoin/bips/blob/master/bip-0157.mediawiki">BIP 157</a></td></tr>
+</table></div>
+
+<h2 id="nostr">Nostr verdict</h2>
+<div class="card answer">
+<p><b>Keep Nostr as an optional fallback now. Plan to retire it, but only when every condition below has held for six months.</b> Do not expect that before taproot channels can be announced in gossip.</p>
+</div>
+<h3>What Nostr does that the overlay cannot</h3>
+<ul>
+<li><b>Hosts outside gossip.</b> A host with only taproot or private channels is invisible to the overlay. Nostr with a coin anchor lists it. Taproot gossip is still an open proposal.</li>
+<li><b>Zero-state users.</b> A brand-new phone with no channel can read a Nostr relay over a websocket. The overlay needs a Lightning connection first.</li>
+<li><b>Independent failure.</b> If onion messages are rate-limited or the overlay is attacked, Nostr still works, and the reverse.</li>
+<li><b>Full listings for browsing.</b> Nostr can carry the whole listing. Beacons are deliberately tiny pointers.</li>
+</ul>
+<h3>What the overlay does better</h3>
+<ul>
+<li>No outside operators. Measured Nostr relays: the largest held 73% of posts, about 20% were down more than 40% of the time, and most free relays cannot cover their costs.</li>
+<li>The Sybil cost is a funded channel, checked by every node, not a free key.</li>
+<li>No coordinator, and nothing about Gazpacho users visible to non-Lightning services.</li>
+</ul>
+<h3>Conditions to retire the Nostr annex</h3>
+<div class="wrap"><table class="mid">
+<tr><th>Condition</th><th>Measured how</th><th>Threshold</th></tr>
+<tr><td>Overlay size</td><td>Count F-bit nodes in gossip, and their operators and address groups</td><td>At least 30 factory nodes, from at least 10 operators, in at least 10 address groups</td></tr>
+<tr><td>Store nodes</td><td>Nodes answering pool requests and listing requests</td><td>At least 5, from at least 3 operators; no operator over a third</td></tr>
+<tr><td>Completeness</td><td>A monitor compares light-client answers with a full overlay node</td><td>At least 99% of beacons reach a light client within 10 minutes, for 30 days</td></tr>
+<tr><td>Light-client path</td><td>Onion queries from phones through ordinary LSPs</td><td>At least 99% answered within 30 seconds, with retries</td></tr>
+<tr><td>Hosts outside gossip</td><td>Taproot gossip status; hosts listed only on Nostr</td><td>Taproot gossip in at least two implementations, or under 5% of hosts listed only on Nostr</td></tr>
+<tr><td>New users</td><td>First-run path without Nostr</td><td>A built-in list of storing nodes plus a direct (Tor) connection works on a fresh install</td></tr>
+<tr><td>Availability</td><td>Uptime of storing nodes</td><td>At least 3 storing nodes up at all times, over 90 days</td></tr>
+</table></div>
+<p class="soft">Retiring means "off by default and out of the specification's main text". Wallets may still read Nostr. The signed records are identical on every path, so turning the annex off or on again needs no format change.</p>
+</main>
+</body>
+</html>
