@@ -319,6 +319,8 @@ static void test_keepalive(void)
 
 /* ------------------------------------------------ hostile members */
 
+static int ctl[2] = {-1, -1}; /* the parent's orders to a CH_JUNK child */
+
 enum { CH_SILENT, CH_BAD_PONG, CH_TRICKLE, CH_PING_FIRST, CH_NO_READ, CH_SHORT, CH_EVEN_FEATURE, CH_JUNK };
 
 /* Reads until the host closes; 5 if a warning came (none may come before
@@ -357,13 +359,13 @@ static pid_t child(uint16_t port, int how)
     gz_ln_init_write(GZ_LN_CHAIN_SIGNET, m, sizeof m, &n);
     if (gz_conn_send(c, m, n) || gz_conn_recv(c, m, sizeof m, &n) || m[1] != GZ_LN_INIT) _exit(2);
     if (how == CH_JUNK) {
-        /* Never reads; after a second sends bytes the host must not read
-         * while it refuses; after three seconds hangs up. */
-        uint8_t junk[1000];
+        /* Never reads. On the parent's first byte it sends bytes the host
+         * must not read while it refuses; on the second it hangs up. */
+        uint8_t junk[1000], b;
         memset(junk, 0x77, sizeof junk);
-        sleep(1);
+        if (read(ctl[0], &b, 1) != 1) _exit(4);
         if (write(c->fd, junk, sizeof junk) != (ssize_t)sizeof junk) _exit(3);
-        sleep(2);
+        if (read(ctl[0], &b, 1) != 1) _exit(4);
         _exit(0);
     }
     if (how == CH_SILENT || how == CH_NO_READ) {
@@ -970,6 +972,7 @@ static void test_refusing(void)
     int i;
     S[0].p = mk(HOST_KEY, 20000, 30000, NULL, slow_send);
     CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+    CHECK(pipe(ctl) == 0);
     pid = child(port, CH_JUNK);
     e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
     CHECK(e != NULL);
@@ -981,16 +984,21 @@ static void test_refusing(void)
             if (gz_peers_send(S[0].p, hc, 68, SCOPE, big, GZ_ENV_MAX_WHOLE) != GZ_PEERS_OK) break;
         pump(300);
         CHECK(gz_peers_refuse(S[0].p, hc, "enough") == GZ_PEERS_OK);
-        t0 = ms();
-        pump(1200); /* the child's bytes arrive meanwhile */
+        CHECK(write(ctl[1], "j", 1) == 1);
+        pump(500); /* the child's bytes arrive meanwhile */
         c0 = clock();
         end = ms() + 1000;
         while (ms() < end) CHECK(!gz_peers_poll(S[0].p, (int)(end - ms()), &ev));
         CHECK((double)(clock() - c0) / CLOCKS_PER_SEC < 0.5);
+        /* The hang-up ends the refusal well before send_ms (6 s). */
+        CHECK(write(ctl[1], "q", 1) == 1);
+        t0 = ms();
         e = expect(0, GZ_PEER_EV_CLOSED, 8000);
-        CHECK(e && e->why == GZ_PEER_WHY_LOCAL && ms() - t0 < 5000);
+        CHECK(e && e->why == GZ_PEER_WHY_LOCAL && ms() - t0 < 4000);
     }
     reap(pid);
+    close(ctl[0]);
+    close(ctl[1]);
     free_sides();
 }
 

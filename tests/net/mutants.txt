@@ -170,12 +170,12 @@ env-reasm-total-bound	ports/net/envelope.c	if (total > GZ_ENV_MAX_WHOLE || count
 env-reasm-count-min	ports/net/envelope.c	count < 2 || count > GZ_ENV_MAX_PARTS	count < 1 || count > GZ_ENV_MAX_PARTS
 env-reasm-count-consistent	ports/net/envelope.c	count != (total + GZ_ENV_PART_DATA - 1) / GZ_ENV_PART_DATA)	count < (total + GZ_ENV_PART_DATA - 1) / GZ_ENV_PART_DATA)
 env-reasm-index	ports/net/envelope.c	if (index >= count) return reasm_refuse	if (index > count) return reasm_refuse
-env-reasm-dlen	ports/net/envelope.c	if (data->len != want) return	if (data->len > want) return
-env-reasm-new-transfer-kept	ports/net/envelope.c	if (r->buf && memcmp(r->transfer_id, tid->value, 32) != 0) gz_env_reasm_reset(r);	
+env-reasm-dlen	ports/net/envelope.c	if (dlen != want) return	if (dlen > want) return
+env-reasm-new-transfer-kept	ports/net/envelope.c	if (r->buf && memcmp(r->transfer_id, tid, 32) != 0) gz_env_reasm_reset(r);	
 env-reasm-scope-ignored	ports/net/envelope.c	memcmp(r->scope, part->scope, 32) != 0)	0)
 env-reasm-total-ignored	ports/net/envelope.c	if (r->inner_kind != inner || r->total_len != total ||	if (r->inner_kind != inner ||
 env-reasm-dup-other-data	ports/net/envelope.c	return reasm_refuse(r, reason, "part repeated with other data");	return GZ_ENV_IGNORE;
-env-reasm-dup-refused	ports/net/envelope.c	if (memcmp(r->buf + off, data->value, want) == 0) return GZ_ENV_IGNORE;	
+env-reasm-dup-refused	ports/net/envelope.c	if (memcmp(r->buf + off, data, want) == 0) return GZ_ENV_IGNORE;	
 env-reasm-tid-unchecked	ports/net/envelope.c	if (memcmp(check, r->transfer_id, 32) != 0) return reasm_refuse(r, reason, "transfer_id does not match");	
 env-reasm-no-check	ports/net/envelope.c	v = gz_env_check(inner, r->scope, r->buf, total, at, reason);	v = GZ_ENV_DELIVER;
 env-reasm-complete-early	ports/net/envelope.c	if (r->held != (1u << count) - 1u) return GZ_ENV_HELD;	if ((r->held | 1u) != (1u << count) - 1u) return GZ_ENV_HELD;
@@ -231,10 +231,10 @@ peers-member-check-skipped	ports/net/peers.c	if (!p->cfg.is_member(c->node_id, p
 peers-member-sends-parts	ports/net/peers.c	if (c->outbound || !(count = gz_env_part_count(records_len))) return GZ_PEERS_ERR_TOO_BIG;	if (!(count = gz_env_part_count(records_len))) return GZ_PEERS_ERR_TOO_BIG;
 peers-no-reassembly	ports/net/peers.c	v = gz_env_reasm_add(&c->reasm, &env, at, p->cfg.secp, &whole, &reason);	v = GZ_ENV_HELD;
 peers-side-swapped	ports/net/peers.c	gz_env_side_t at = c->outbound ? GZ_ENV_AT_MEMBER : GZ_ENV_AT_HOST;	gz_env_side_t at = c->outbound ? GZ_ENV_AT_HOST : GZ_ENV_AT_MEMBER;
-peers-max-conns-off	ports/net/peers.c	if (p->n_conns >= p->cfg.max_conns || !prepare_socket(fd)	if (p->n_conns > p->cfg.max_conns || !prepare_socket(fd)
+peers-max-conns-off	ports/net/peers.c	if (p->n_conns >= p->cap || !prepare_socket(fd)	if (!prepare_socket(fd)
 peers-send-before-init	ports/net/peers.c	if (!c->init_got) return GZ_PEERS_ERR_NOT_READY;	
 peers-queue-cap-off	ports/net/peers.c	if (queued(c) + records_len + count * (2 + GZ_ENV_HDR_LEN + 100 + 34) > p->cfg.max_queue) return GZ_PEERS_ERR_FULL;	
-peers-refuse-no-warning	ports/net/peers.c	if (c->phase == PH_OPEN && !gz_ln_alert_write(GZ_LN_WARNING, reason, p->out, sizeof p->out, &n))	if (0)
+peers-refuse-no-warning	ports/net/peers.c	if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(GZ_LN_WARNING, reason, p->out, sizeof p->out, &n))	if (0)
 peers-refuse-no-flush	ports/net/peers.c	c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);	c->close_by = now_ms();
 peers-pong-queue-cap-off	ports/net/peers.c	if (queued(c) + v + 4 > p->cfg.max_queue) return; /* the peer is not reading; its pong waits */	
 peers-node-id-missing	ports/net/peers.c	c->have_id = 1;\n        if (!p->cfg.is_member	c->have_id = 0;\n        if (!p->cfg.is_member
