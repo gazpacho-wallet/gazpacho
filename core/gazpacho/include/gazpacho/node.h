@@ -5,7 +5,23 @@
  * saved record to sent reply, and the path from stored record to resent reply
  * after a restart, are exercised end to end by the tests and the simulator.
  * The ping is not part of any Gazpacho protocol and will be removed when the
- * first engine arrives. */
+ * first engine arrives.
+ *
+ * WHAT THE PLACEHOLDER GUARANTEES
+ *
+ *   At least once. If the record of a ping is durable, the reply to it leaves
+ *   the node at least once, provided the node goes on running or is started
+ *   again. The peer may see a reply twice, or more often: the node cannot
+ *   tell a reply that left just before a crash from one that did not, so
+ *   after a restart it sends again every reply it has no stored record of
+ *   having sent. It is NOT exactly once, and a ping whose record never became
+ *   durable gets no reply at all.
+ *
+ *   How: each ping is saved with a serial number. When that batch is
+ *   confirmed the runner has released the reply, and the node saves a "sent"
+ *   record naming the serial. At start the node resends, oldest first, the
+ *   reply to every stored ping with no stored "sent" record, then saves one
+ *   "sent" record for all of them. */
 #ifndef GAZPACHO_NODE_H
 #define GAZPACHO_NODE_H
 
@@ -19,16 +35,30 @@
 #define GZ_PING_PREFIX_LEN  4
 #define GZ_PING_MAX_PAYLOAD 64
 
-/* Type tag of the record saved for each answered ping: an 8-byte big-endian
- * clock stamp, the 8-byte big-endian identifier of the peer that sent the
- * ping, then the ping's payload. */
+/* Record saved for each ping: an 8-byte big-endian clock stamp, the 8-byte
+ * big-endian identifier of the peer that sent it, an 8-byte big-endian serial
+ * number (counting from 1, never reused by this node's storage), then the
+ * ping's payload. */
 #define GZ_RECORD_TEST_PING   0x7e570001u
-#define GZ_PING_RECORD_HEADER 16
+#define GZ_PING_RECORD_HEADER 24
+
+/* Record saved once replies are known to have been released: one or more
+ * 8-byte big-endian serial numbers. */
+#define GZ_RECORD_TEST_PING_SENT 0x7e570002u
+
+/* Most save batches the node may have awaiting confirmation, and most replies
+ * one start can resend. */
+#define GZ_NODE_MAX_AWAITING 64
 
 /* Caller-allocated; treat the fields as private. Holds no pointers of its own
  * besides the ports' context pointers, so it needs no destroy call. */
 typedef struct {
     gz_ports_t ports;
+    uint64_t next_serial;
+    /* The node's save batches not yet confirmed, oldest first: the serial of
+     * the ping each one recorded, or 0 for a batch of "sent" records. */
+    uint64_t awaiting[GZ_NODE_MAX_AWAITING];
+    size_t awaiting_head, n_awaiting;
 } gz_node_t;
 
 /* Prepare a node. `ports` is copied.
@@ -42,14 +72,14 @@ gz_status_t gz_node_init(gz_node_t *node, const gz_ports_t *ports);
  * other step. This is where a node re-arms its timers, registers its watches
  * again and sends again what it had saved but may not have sent.
  *
- * For now: if storage holds a ping record, the reply to the newest one is
- * sent again, because the node cannot know whether it left before the stop.
- * The peer may therefore see a reply twice; it never misses one that was
- * saved.
+ * For now: the reply to every stored ping that has no stored "sent" record is
+ * sent again, oldest first, followed by a save of one "sent" record covering
+ * them. See "what the placeholder guarantees" above.
  *
  * Returns GZ_OK; GZ_ERR_ARGUMENT if `node` or `actions_out` is NULL, or
- * `stored` is NULL with a count; GZ_ERR_NO_SPACE if the actions do not fit.
- * On any error `actions_out` is exactly as it was. */
+ * `stored` is NULL with a count; GZ_ERR_NO_SPACE if the actions do not fit or
+ * more than GZ_NODE_MAX_AWAITING replies would have to be resent. On any
+ * error `actions_out` is exactly as it was and the node must not be used. */
 gz_status_t gz_node_start(gz_node_t *node, const gz_record_t *stored, size_t n_stored,
                           gz_action_list_t *actions_out);
 
@@ -59,11 +89,14 @@ gz_status_t gz_node_start(gz_node_t *node, const gz_record_t *stored, size_t n_s
  * call (see event.h).
  *
  * For now: a ping message produces a save of one GZ_RECORD_TEST_PING record
- * followed by a send of the reply to the peer that sent the ping. Every other
- * event produces no actions.
+ * followed by a send of the reply to the peer that sent the ping. The
+ * confirmation of that batch produces a save of a GZ_RECORD_TEST_PING_SENT
+ * record. Every other event produces no actions.
  *
  * Returns GZ_OK; GZ_ERR_ARGUMENT if an argument is NULL; GZ_ERR_NO_SPACE if
- * the actions do not fit. On any error `actions_out` is exactly as it was. */
+ * the actions do not fit or GZ_NODE_MAX_AWAITING batches already await
+ * confirmation. On any error `actions_out` and the node are exactly as they
+ * were. */
 gz_status_t gz_node_handle(gz_node_t *node, const gz_event_t *event,
                            gz_action_list_t *actions_out);
 

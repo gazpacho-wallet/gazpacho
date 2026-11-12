@@ -4,7 +4,9 @@
  * run" in lockstep, must not fail; every tenth seed is run a second time on
  * its own and the two traces compared byte for byte; and the same seed with a
  * deliberately faulty program (sim_nodes.h) must be caught by "nothing is
- * sent before it is saved" whenever that program saved anything.
+ * sent before it is saved" whenever that program saved anything. Runs of the
+ * placeholder ping node then get a quiet tail, after which every reply that
+ * was saved must have left its node ("saved, so eventually sent").
  *
  * Odd seeds use the placeholder ping node, even seeds the multi node.
  *
@@ -91,6 +93,7 @@ int main(int argc, char **argv)
     int profile = argc > 4 ? atoi(argv[4]) : 0;
     uint64_t *hashes = calloc(seeds ? seeds : 1, sizeof *hashes);
     uint64_t failed = 0, replays = 0, replay_mismatch = 0, faulty_saved = 0, faulty_caught = 0, faulty_wrongly = 0, distinct = 0;
+    uint64_t tail_runs = 0, never_sent = 0;
     sim_stats_t t;
     memset(&t, 0, sizeof t);
     if (!hashes) return 2;
@@ -125,6 +128,13 @@ int main(int argc, char **argv)
             if (la != lb || memcmp(ta, tb, la) != 0) replay_mismatch++;
             sim_destroy(again);
         }
+        if (!c.ops.create && !sim_failed(sim)) {        /* the ping node: a quiet tail, then the check */
+            sim_quiesce(sim);
+            sim_run(sim, 120);
+            tail_runs++;
+            never_sent += saved_replies_not_sent(sim, c.n_nodes);
+            failed += (uint64_t)sim_failed(sim);
+        }
         sim_destroy(sim);
 
         c = config_for(profile, first + i);
@@ -150,6 +160,7 @@ int main(int argc, char **argv)
     printf("  separate re-runs compared byte for byte: %llu, differing: %llu\n", N(replays), N(replay_mismatch));
     printf("  faulty-program runs caught: %llu of the %llu in which it saved anything (and %llu flagged without a save)\n",
            N(faulty_caught), N(faulty_saved), N(faulty_wrongly));
+    printf("  saved replies never sent after a quiet tail: %llu (over %llu ping-node runs)\n", N(never_sent), N(tail_runs));
     printf("  totals: sent %llu, dropped %llu, duplicated %llu, delayed %llu, delivered %llu, reordered %llu,\n"
            "          replies to the world %llu, saves stored %llu, saves lost %llu, confirmations %llu, stale %llu,\n"
            "          storage failures %llu, crashes %llu (inside a release %llu), blocks %llu, lists refused %llu,\n"
@@ -160,6 +171,7 @@ int main(int argc, char **argv)
            N(t.blocks), N(t.lists_refused), N(t.handle_errors));
 
     CHECK(failed == 0);
+    CHECK(never_sent == 0);
     CHECK(replay_mismatch == 0);
     CHECK(faulty_caught == faulty_saved && faulty_wrongly == 0);
     CHECK(t.handle_errors == 0);

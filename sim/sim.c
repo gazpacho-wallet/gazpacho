@@ -9,6 +9,8 @@
 
 #define STEP_SLOTS     16      /* actions one node step may return */
 #define STEP_BYTES     4096
+#define START_SLOTS    80      /* actions a node's start may return */
+#define START_BYTES    8192
 #define RUNNER_SLOTS   64      /* actions one node's runner may hold */
 #define RUNNER_BYTES   16384
 #define MAX_INVARIANTS 8
@@ -665,8 +667,8 @@ static uint64_t clock_now(void *ctx) { return ((slot_t *)ctx)->sim->step; }
 static void build_node(slot_t *s)
 {
     sim_t *sim = s->sim;
-    gz_action_t slots[STEP_SLOTS];
-    uint8_t bytes[STEP_BYTES];
+    gz_action_t slots[START_SLOTS];
+    uint8_t bytes[START_BYTES];
     gz_action_list_t list;
 
     s->incarnation++;
@@ -677,10 +679,11 @@ static void build_node(slot_t *s)
     s->node = sim->cfg.ops.create(sim->ops_ctx, s->index, &s->ports, &s->storage);
     if (!s->node) abort();
     if (!sim->cfg.ops.start) return;
-    gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
+    gz_action_list_init(&list, slots, START_SLOTS, bytes, START_BYTES);
     if (sim->cfg.ops.start(s->node, &list) != GZ_OK) {
         sim->stats.handle_errors++;
         trace(sim, "start-error node=%u", s->index);
+        violate(sim, "a node failed to start");
         return;
     }
     release_list(s, &list, 1);
@@ -1036,6 +1039,23 @@ void sim_fail_storage(sim_t *sim, uint32_t index)
     fail_storage_now(sim, index);
     if (sim->twin) fail_storage_now(sim->twin, index);
     check_invariants(sim);
+}
+
+static void quiesce(sim_t *sim)
+{
+    sim_config_t *c = &sim->cfg;
+    c->drop_pm = c->duplicate_pm = c->save_never_pm = c->save_fail_pm = 0;
+    c->crash_pm = c->crash_in_release_pm = c->ping_pm = c->block_pm = 0;
+    trace(sim, "quiet from here: %zu messages in flight discarded", sim->n_net);
+    for (size_t i = 0; i < sim->n_net; i++) free(sim->net[i].blob.bytes);
+    sim->n_net = 0;
+}
+
+void sim_quiesce(sim_t *sim)
+{
+    if (sim->failed) return;
+    quiesce(sim);
+    if (sim->twin) quiesce(sim->twin);
 }
 
 void sim_send_message(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len)

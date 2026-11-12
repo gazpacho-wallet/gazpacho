@@ -61,19 +61,25 @@ static void test_ping_is_stored_then_answered(void)
     world_ping(sim, 0, 0x5a);
     CHECK(sim_run(sim, 1) == 1);
     const sim_storage_t *st = sim_node_storage(sim, 0);
-    CHECK(sim_storage_count(st) == 1 && same_batch(sim_storage_batch_id(st, 0), 1, 1));
+    /* Two batches: the ping, and (once that was confirmed and the reply released) the record that it was sent. */
+    CHECK(sim_storage_count(st) == 2 && same_batch(sim_storage_batch_id(st, 0), 1, 1) && same_batch(sim_storage_batch_id(st, 1), 1, 2));
     CHECK(sim_storage_pending(st) == 0 && sim_storage_unconfirmed(st) == 0);
     CHECK(sim_stats(sim)->world_replies == 0);          /* the reply is still in flight */
     CHECK(sim_run(sim, 1) == 1);
-    CHECK(sim_stats(sim)->world_replies == 1 && sim_stats(sim)->confirmations == 1);
+    CHECK(sim_stats(sim)->world_replies == 1 && sim_stats(sim)->confirmations == 2);
 
     size_t len = 0;
     const uint8_t *b = sim_storage_batch_bytes(st, 0, &len);
-    const uint8_t want[25] = {0x01, 0x00, 0x57, 0x7e,  17, 0, 0, 0,          /* type, length */
+    const uint8_t want[33] = {0x01, 0x00, 0x57, 0x7e,  25, 0, 0, 0,          /* type, length */
                               0, 0, 0, 0, 0, 0, 0, 1,                         /* clock stamp: step 1 */
                               0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, /* the peer: the world */
+                              0, 0, 0, 0, 0, 0, 0, 1,                         /* serial 1 */
                               0x5a};
     CHECK(len == sizeof want && memcmp(b, want, len) == 0);
+    const uint8_t sent[16] = {0x02, 0x00, 0x57, 0x7e,  8, 0, 0, 0,  0, 0, 0, 0, 0, 0, 0, 1};   /* "sent": serial 1 */
+    b = sim_storage_batch_bytes(st, 1, &len);
+    CHECK(len == sizeof sent && memcmp(b, sent, len) == 0);
+    CHECK(saved_replies_not_sent(sim, 2) == 0);
     CHECK(sim_storage_count(sim_node_storage(sim, 1)) == 0);
     CHECK(!sim_failed(sim) && sim_step_count(sim) == 2 && sim_node_incarnation(sim, 0) == 1);
     sim_destroy(sim);
@@ -213,7 +219,7 @@ static void test_duplicate(void)
     CHECK(sim_run(sim, 30) == 30);
     const sim_stats_t *s = sim_stats(sim);
     CHECK(s->messages_sent == 3 && s->messages_duplicated == 3);    /* the ping and its two replies */
-    CHECK(sim_storage_count(sim_node_storage(sim, 0)) == 2);        /* the node saw the ping twice */
+    CHECK(sim_storage_count(sim_node_storage(sim, 0)) == 4);        /* the node saw the ping twice: two pings, two sent records */
     CHECK(s->world_replies == 4 && s->messages_delivered == 6);
     sim_destroy(sim);
 }
@@ -232,7 +238,7 @@ static void test_delay(void)
     CHECK(sim_run(sim, 1) == 1);
     CHECK(sim_stats(sim)->messages_delivered == 0 && sim_stats(sim)->messages_delayed == 1);
     CHECK(sim_run(sim, 5) == 5);                        /* at most 1 + 5 steps after sending */
-    CHECK(sim_stats(sim)->messages_delivered >= 1 && sim_storage_count(sim_node_storage(sim, 0)) == 1);
+    CHECK(sim_stats(sim)->messages_delivered >= 1 && sim_storage_count(sim_node_storage(sim, 0)) == 2);
     sim_destroy(sim);
 }
 
@@ -252,7 +258,7 @@ static void test_reorder(void)
     CHECK(!trace_has(sim, "1 deliver seq=0 ") && trace_has(sim, "1 deliver seq="));
     CHECK(sim_stats(sim)->deliveries_reordered == 1);
     CHECK(sim_run(sim, 30) == 30);
-    CHECK(sim_storage_count(sim_node_storage(sim, 0)) == 4);        /* all four still arrive */
+    CHECK(sim_storage_count(sim_node_storage(sim, 0)) == 8);        /* all four still arrive */
     sim_destroy(sim);
 }
 
@@ -277,7 +283,7 @@ static void test_crash_while_a_save_is_pending(void)
 
     world_ping(sim, 0, 2);                              /* the rebuilt node works, under new identifiers */
     CHECK(sim_run(sim, 40) == 40);
-    CHECK(sim_storage_count(st) == 1 && same_batch(sim_storage_batch_id(st, 0), 2, 1));
+    CHECK(sim_storage_count(st) == 2 && same_batch(sim_storage_batch_id(st, 0), 2, 1));
     CHECK(sim_stats(sim)->world_replies == 1 && !sim_failed(sim));
     sim_destroy(sim);
 }
@@ -297,14 +303,41 @@ static void test_crash_between_durable_and_confirmed(void)
     CHECK(sim_stats(sim)->messages_sent == 1);          /* only the ping: the reply is held */
 
     sim_crash_node(sim, 0);
-    CHECK(sim_storage_count(st) == 1 && sim_stats(sim)->saves_lost == 0);   /* durable: not lost */
+    CHECK(sim_stats(sim)->saves_lost == 0 && same_batch(sim_storage_batch_id(st, 0), 1, 1));   /* durable: not lost */
     CHECK(sim_stats(sim)->messages_sent == 2);          /* the start resent the saved reply */
+    CHECK(sim_storage_count(st) == 2 && same_batch(sim_storage_batch_id(st, 1), 2, 1));       /* and recorded that */
     world_ping(sim, 0, 0x44);                           /* the new runner has a batch of its own in play */
     CHECK(sim_run(sim, 14) == 14);                      /* when the old batch's confirmation arrives */
-    CHECK(sim_stats(sim)->stale_confirmations == 1 && sim_stats(sim)->confirmations == 1);
+    CHECK(sim_stats(sim)->stale_confirmations == 1 && sim_stats(sim)->confirmations >= 2);   /* the new incarnation's own batches */
     CHECK(trace_has(sim, "confirmation-ignored node=0 batch=1.1"));
     CHECK(sim_stats(sim)->world_replies == 2 && !sim_failed(sim));
     sim_destroy(sim);
+}
+
+/* Two pings are saved and the node crashes before either batch is confirmed.
+ * Both replies must still leave: "saved, so eventually sent". */
+static void test_every_saved_reply_is_sent_after_a_crash(void)
+{
+    size_t both_durable = 0;
+    for (uint64_t seed = 1; seed <= 100; seed++) {
+        sim_config_t c = quiet_config(seed, 1);
+        c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 6;
+        sim_t *sim = sim_create(&c);
+        world_ping(sim, 0, 1);
+        world_ping(sim, 0, 2);
+        CHECK(sim_run(sim, 2) == 2);
+        const sim_storage_t *st = sim_node_storage(sim, 0);
+        if (sim_storage_count(st) == 2 && sim_storage_unconfirmed(st) == 2) {
+            both_durable++;
+            CHECK(saved_replies_not_sent(sim, 1) == 2);     /* both durable, and neither reply has left yet */
+        }
+        sim_crash_node(sim, 0);
+        sim_quiesce(sim);
+        CHECK(sim_run(sim, 40) == 40 && !sim_failed(sim));
+        CHECK(saved_replies_not_sent(sim, 1) == 0);
+        sim_destroy(sim);
+    }
+    CHECK(both_durable >= 50);                          /* the case in question really was produced */
 }
 
 static uint64_t stamp_of(const sim_storage_t *st, size_t i)
@@ -322,15 +355,16 @@ static void test_storage_survives_a_crash(void)
     for (uint8_t i = 1; i <= 4; i++) world_ping(sim, 0, i);
     CHECK(sim_run(sim, 10) == 10);
     const sim_storage_t *st = sim_node_storage(sim, 0);
-    CHECK(sim_storage_count(st) == 4 && sim_stats(sim)->world_replies == 4);
+    CHECK(sim_storage_count(st) == 8 && sim_stats(sim)->world_replies == 4);   /* four pings, four "sent" */
     world_ping(sim, 0, 5);                              /* in flight across the crash */
     sim_crash_node(sim, 0);
-    CHECK(sim_storage_count(st) == 4);
-    for (size_t i = 0; i < 4; i++) CHECK(same_batch(sim_storage_batch_id(st, i), 1, i + 1));
+    CHECK(sim_storage_count(st) == 8);
+    for (size_t i = 0; i < 8; i++) CHECK(same_batch(sim_storage_batch_id(st, i), 1, i + 1));
+    CHECK(sim_stats(sim)->messages_sent == 9);          /* every reply is recorded as sent: the start resends none */
     CHECK(sim_run(sim, 10) == 10);
-    CHECK(sim_storage_count(st) == 5 && same_batch(sim_storage_batch_id(st, 4), 2, 1));
-    CHECK(stamp_of(st, 0) == 1 && stamp_of(st, 4) == 11);   /* the clock carries on across the crash */
-    CHECK(sim_stats(sim)->world_replies == 6);          /* four, the resent fourth, and the fifth */
+    CHECK(sim_storage_count(st) == 10 && same_batch(sim_storage_batch_id(st, 8), 2, 1));
+    CHECK(stamp_of(st, 0) == 1 && stamp_of(st, 8) == 11);   /* the clock carries on across the crash */
+    CHECK(sim_stats(sim)->world_replies == 5 && saved_replies_not_sent(sim, 2) == 0);
     sim_crash_node(sim, 7);                             /* no such node: ignored */
     CHECK(sim_stats(sim)->crashes == 1 && !sim_failed(sim));
     sim_destroy(sim);
@@ -851,6 +885,7 @@ int main(void)
     test_reorder();
     test_crash_while_a_save_is_pending();
     test_crash_between_durable_and_confirmed();
+    test_every_saved_reply_is_sent_after_a_crash();
     test_storage_survives_a_crash();
     test_storage_that_never_completes();
     test_storage_failure();
