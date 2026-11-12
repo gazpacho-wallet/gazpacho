@@ -330,8 +330,216 @@ static void test_merkle_shape_limits(test_state *T) {
   CHECK(!gz_merkle_verify(txid, &p, NULL));
 }
 
+/* ---- networks: zero is not a network ---- */
+
+static void test_network_identity(test_state *T) {
+  gz_network zeroed;
+  uint8_t g[GZ_HASH_LEN], want[GZ_HASH_LEN], hdr[GZ_HEADER_LEN];
+  memset(&zeroed, 0, sizeof zeroed);
+  CHECK(zeroed == GZ_NET_INVALID); /* a zeroed setting never means mainnet */
+  CHECK(!gz_network_valid(zeroed));
+  CHECK(!gz_network_valid((gz_network)5));
+  CHECK(gz_network_valid(GZ_NET_MAINNET) && gz_network_valid(GZ_NET_SIGNET));
+  CHECK(!gz_network_is_test(GZ_NET_MAINNET) && !gz_network_is_test(GZ_NET_INVALID));
+  CHECK(gz_network_is_test(GZ_NET_SIGNET) && gz_network_is_test(GZ_NET_TESTNET3) &&
+        gz_network_is_test(GZ_NET_TESTNET4));
+  CHECK(strcmp(gz_network_name(GZ_NET_INVALID), "invalid") == 0);
+  CHECK(strcmp(gz_network_name((gz_network)77), "invalid") == 0);
+  CHECK(!gz_network_from_name("invalid", &zeroed));
+  CHECK(!gz_network_genesis(GZ_NET_INVALID, g));
+  static const struct {
+    gz_network n;
+    const char *hex;
+  } all[] = {{GZ_NET_MAINNET, GENESIS_MAINNET},
+             {GZ_NET_TESTNET3, GENESIS_TESTNET3},
+             {GZ_NET_TESTNET4, GENESIS_TESTNET4},
+             {GZ_NET_SIGNET, GENESIS_SIGNET}};
+  for (size_t i = 0; i < 4; i++) {
+    test_hash(all[i].hex, want);
+    CHECK(gz_network_genesis(all[i].n, g) && memcmp(g, want, GZ_HASH_LEN) == 0);
+  }
+  /* the mainnet constant is the hash of the recorded mainnet block 0 */
+  load_header("mainnet_header_0.txt", hdr);
+  gz_header_hash(hdr, g);
+  test_hash(GENESIS_MAINNET, want);
+  CHECK(memcmp(g, want, GZ_HASH_LEN) == 0);
+  /* proof of work for no network at all is refused, not treated as some default */
+  CHECK(gz_header_check_pow(hdr, GZ_NET_INVALID) == GZ_POW_BAD_NETWORK);
+  CHECK(gz_header_check_pow(hdr, (gz_network)9) == GZ_POW_BAD_NETWORK);
+}
+
+static void test_signet_pow_limit(test_state *T) {
+  /* a header claiming regtest's target (the easiest there is) is too easy
+   * for signet, whatever its hash */
+  uint8_t h[GZ_HEADER_LEN];
+  load_header("header_329438.txt", h);
+  h[72] = 0xff; h[73] = 0xff; h[74] = 0x7f; h[75] = 0x20; /* 0x207fffff */
+  CHECK(gz_header_check_pow(h, GZ_NET_SIGNET) == GZ_POW_TOO_EASY);
+  h[72] = 0xaf; h[73] = 0x77; h[74] = 0x03; h[75] = 0x1e; /* one above signet's limit */
+  CHECK(gz_header_check_pow(h, GZ_NET_SIGNET) == GZ_POW_TOO_EASY);
+}
+
+static void test_operator_from_host(test_state *T) {
+  char op[GZ_OPERATOR_MAX];
+  CHECK(gz_operator_from_host("mempool.space", op) && strcmp(op, "mempool.space") == 0);
+  CHECK(gz_operator_from_host("api.mempool.space", op) && strcmp(op, "mempool.space") == 0);
+  CHECK(gz_operator_from_host("a.b.c.Blockstream.INFO", op) && strcmp(op, "blockstream.info") == 0);
+  CHECK(gz_operator_from_host("localhost", op) && strcmp(op, "localhost") == 0);
+  CHECK(gz_operator_from_host("127.0.0.1", op) && strcmp(op, "127.0.0.1") == 0);
+  CHECK(gz_operator_from_host("203.0.113.3", op) && strcmp(op, "203.0.113.3") == 0); /* not "113.3" */
+  CHECK(gz_operator_from_host("[::1]", op) && strcmp(op, "[::1]") == 0);
+  CHECK(!gz_operator_from_host("", op));
+  CHECK(!gz_operator_from_host(NULL, op));
+  char longhost[300];
+  memset(longhost, 'a', sizeof longhost - 1);
+  longhost[sizeof longhost - 1] = '\0';
+  CHECK(!gz_operator_from_host(longhost, op));
+}
+
+/* ---- transactions that must be refused ---- */
+
+static size_t put_tx(uint8_t *out, unsigned n_in, unsigned n_out, size_t out_script_len) {
+  /* a legacy transaction with empty input scripts and outputs of the given
+   * script length (below 253) */
+  size_t p = 0;
+  out[p++] = 2; out[p++] = 0; out[p++] = 0; out[p++] = 0;
+  out[p++] = (uint8_t)n_in;
+  for (unsigned i = 0; i < n_in; i++) {
+    memset(out + p, 0x11, 36); p += 36;
+    out[p++] = 0;
+    memset(out + p, 0xff, 4); p += 4;
+  }
+  out[p++] = (uint8_t)n_out;
+  for (unsigned i = 0; i < n_out; i++) {
+    memset(out + p, 0, 8); p += 8;
+    out[p++] = (uint8_t)out_script_len;
+    memset(out + p, 0x51, out_script_len); p += out_script_len;
+  }
+  memset(out + p, 0, 4); p += 4;
+  return p;
+}
+
+static void test_tx_shapes_refused(test_state *T) {
+  uint8_t tx[512], txid[GZ_HASH_LEN];
+  size_t len = put_tx(tx, 1, 1, 6);
+  CHECK(len == 4 + 1 + 41 + 1 + 15 + 4);
+  CHECK(gz_txid_from_raw(tx, len, txid)); /* the builder makes valid transactions */
+  len = put_tx(tx, 0, 1, 6); /* no inputs */
+  CHECK(!gz_txid_from_raw(tx, len, txid));
+  len = put_tx(tx, 1, 0, 6); /* no outputs */
+  CHECK(!gz_txid_from_raw(tx, len, txid));
+  len = put_tx(tx, 2, 0, 6);
+  CHECK(!gz_txid_from_raw(tx, len, txid));
+  len = put_tx(tx, 0, 0, 6);
+  CHECK(!gz_txid_from_raw(tx, len, txid));
+  CHECK(!gz_tx_is_coinbase(tx, len));
+}
+
+static void test_64_byte_transaction_refused(test_state *T) {
+  /* One input, one output, a 4-byte output script: 4+1+41+1+9+4+4 = 64. */
+  uint8_t tx[512], txid[GZ_HASH_LEN], node[GZ_HASH_LEN];
+  size_t len = put_tx(tx, 1, 1, 4);
+  CHECK(len == 64);
+  CHECK(!gz_txid_from_raw(tx, len, txid));
+  /* one byte either side is an ordinary transaction */
+  len = put_tx(tx, 1, 1, 3);
+  CHECK(len == 63 && gz_txid_from_raw(tx, len, txid));
+  len = put_tx(tx, 1, 1, 5);
+  CHECK(len == 65 && gz_txid_from_raw(tx, len, txid));
+
+  /* Why: the two halves of 64 bytes are a left and a right Merkle node. The
+   * real block's first two txids, glued together, hash to an inner node of
+   * block 329438, and a proof one step shorter "proves" that node. */
+  uint8_t h38[GZ_HEADER_LEN], a[GZ_HASH_LEN], cb[GZ_HASH_LEN], pair[64];
+  gz_merkle_proof pa, shorter;
+  load_header("header_329438.txt", h38);
+  load_proof("tx_a_merkle_proof.json", &pa);
+  test_hash(TX_A, a);
+  test_hash(TX_COINBASE, cb);
+  memcpy(pair, cb, 32);
+  memcpy(pair + 32, a, 32);
+  gz_sha256d(pair, 64, node);
+  memset(&shorter, 0, sizeof shorter);
+  shorter.block_height = pa.block_height;
+  shorter.pos = 0;
+  shorter.depth = pa.depth - 1;
+  memcpy(shorter.nodes, pa.nodes + 1, (size_t)shorter.depth * GZ_HASH_LEN);
+  CHECK(gz_merkle_verify(node, &shorter, h38)); /* the branch alone cannot tell */
+  CHECK(!gz_txid_from_raw(pair, 64, txid));     /* but no 64-byte "transaction" is accepted */
+  /* and the depth is wrong for a block of 243 transactions */
+  CHECK(shorter.depth != gz_merkle_depth_for_count(243));
+  CHECK(pa.depth == gz_merkle_depth_for_count(243));
+}
+
+static void test_merkle_depth_for_count(test_state *T) {
+  CHECK(gz_merkle_depth_for_count(0) == 0);
+  CHECK(gz_merkle_depth_for_count(1) == 0);
+  CHECK(gz_merkle_depth_for_count(2) == 1);
+  CHECK(gz_merkle_depth_for_count(3) == 2);
+  CHECK(gz_merkle_depth_for_count(4) == 2);
+  CHECK(gz_merkle_depth_for_count(5) == 3);
+  CHECK(gz_merkle_depth_for_count(74) == 7);
+  CHECK(gz_merkle_depth_for_count(128) == 7);
+  CHECK(gz_merkle_depth_for_count(129) == 8);
+  CHECK(gz_merkle_depth_for_count(243) == 8);
+  CHECK(gz_merkle_depth_for_count(256) == 8);
+  CHECK(gz_merkle_depth_for_count(257) == 9);
+  CHECK(gz_merkle_depth_for_count(UINT32_MAX) == 32);
+}
+
+static void test_merkle_duplicated_last_position_refused(test_state *T) {
+  /* A block of three transactions a, b, c. Bitcoin pairs c with a copy of
+   * itself. Position 2 is c; "position 3" is that copy and is no transaction. */
+  uint8_t a[GZ_HASH_LEN], b[GZ_HASH_LEN], c[GZ_HASH_LEN], ab[GZ_HASH_LEN], cc[GZ_HASH_LEN];
+  uint8_t pair[64], header[GZ_HEADER_LEN], root[GZ_HASH_LEN];
+  gz_merkle_proof p;
+  memset(a, 0xa1, sizeof a);
+  memset(b, 0xb2, sizeof b);
+  memset(c, 0xc3, sizeof c);
+  memcpy(pair, a, 32); memcpy(pair + 32, b, 32); gz_sha256d(pair, 64, ab);
+  memcpy(pair, c, 32); memcpy(pair + 32, c, 32); gz_sha256d(pair, 64, cc);
+  memcpy(pair, ab, 32); memcpy(pair + 32, cc, 32); gz_sha256d(pair, 64, root);
+  memset(header, 0, sizeof header);
+  memcpy(header + 36, root, 32);
+
+  memset(&p, 0, sizeof p);
+  p.depth = 2;
+  p.pos = 2;
+  memcpy(p.nodes[0], c, 32);
+  memcpy(p.nodes[1], ab, 32);
+  CHECK(gz_merkle_verify(c, &p, header)); /* the real last transaction */
+  p.pos = 3;
+  CHECK(!gz_merkle_verify(c, &p, header)); /* its copy */
+  CHECK(!gz_merkle_root_from_proof(c, &p, root));
+  /* an ordinary left-hand position in the same tree still verifies */
+  p.pos = 0;
+  memcpy(p.nodes[0], b, 32);
+  memcpy(p.nodes[1], cc, 32);
+  CHECK(gz_merkle_verify(a, &p, header));
+  p.pos = 1; /* b, with a on its left: different nodes, so allowed */
+  memcpy(p.nodes[0], a, 32);
+  CHECK(gz_merkle_verify(b, &p, header));
+  /* a real coinbase check on recorded data */
+  uint8_t raw[1024];
+  size_t len = load_tx("tx_coinbase_hex.txt", raw, sizeof raw);
+  CHECK(gz_tx_is_coinbase(raw, len));
+  len = load_tx("tx_a_hex.txt", raw, sizeof raw);
+  CHECK(!gz_tx_is_coinbase(raw, len));
+  len = load_tx("mainnet_legacy_tx_hex.txt", raw, sizeof raw);
+  CHECK(!gz_tx_is_coinbase(raw, len));
+  CHECK(!gz_tx_is_coinbase(raw, 10));
+  CHECK(!gz_tx_is_coinbase(NULL, 100));
+}
+
 int main(void) {
   test_state state = {0, 0, 0}, *T = &state;
+  RUN(test_network_identity);
+  RUN(test_signet_pow_limit);
+  RUN(test_operator_from_host);
+  RUN(test_tx_shapes_refused);
+  RUN(test_64_byte_transaction_refused);
+  RUN(test_merkle_depth_for_count);
+  RUN(test_merkle_duplicated_last_position_refused);
   RUN(test_hex_helpers);
   RUN(test_names);
   RUN(test_header_parse_and_hash);

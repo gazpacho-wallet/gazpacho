@@ -35,6 +35,8 @@ static corpus_item corpus[] = {
     {"block_hash_329438.txt", NULL, 0},
     {"tx_a_hex.txt", NULL, 0},
     {"post_known_mempool.txt", NULL, 0},
+    {"block_329438.json", NULL, 0},
+    {"tx_coinbase_hex.txt", NULL, 0},
 };
 #define CORPUS_COUNT (sizeof corpus / sizeof corpus[0])
 
@@ -42,7 +44,7 @@ typedef struct fuzz_ctx {
   uint8_t tx_a[GZ_HASH_LEN];
   uint8_t header[GZ_HEADER_LEN];
   gz_merkle_proof real_proof;
-  unsigned long accepted[8];
+  unsigned long accepted[9];
   unsigned long forged; /* damaged proofs that still verified: must stay 0 */
   unsigned long broken; /* invariant violations: must stay 0 */
 } fuzz_ctx;
@@ -159,6 +161,12 @@ static void run_parsers(fuzz_ctx *fz, const char *in, size_t len) {
     }
   }
 
+  gz_es_block blk;
+  if (gz_es_parse_block(in, len, &blk)) {
+    fz->accepted[8]++;
+    if (blk.tx_count == 0 || blk.tx_count > GZ_MAX_BLOCK_TXS || blk.height > GZ_MAX_HEIGHT) fz->broken++;
+  }
+
   uint32_t height;
   uint8_t hdr[GZ_HEADER_LEN], hash[GZ_HASH_LEN];
   if (gz_es_parse_height(in, len, &height)) {
@@ -215,7 +223,7 @@ static void test_mutated_answers(test_state *T) {
   }
   /* every recorded answer is accepted by its own parser when undamaged */
   CHECK(fz.accepted[1] == 1 && fz.accepted[2] == 2 && fz.accepted[3] == 1);
-  CHECK(fz.accepted[4] == 1 && fz.accepted[5] == 2 && fz.accepted[7] == 1);
+  CHECK(fz.accepted[4] == 1 && fz.accepted[5] == 2 && fz.accepted[7] == 2 && fz.accepted[8] == 1);
 
   uint64_t rng = seed;
   for (size_t c = 0; c < CORPUS_COUNT; c++) {
@@ -236,9 +244,9 @@ static void test_mutated_answers(test_state *T) {
     free(work);
   }
   printf("accepted after damage: json %lu, status %lu, outspend %lu, utxo %lu, proof %lu, "
-         "fees %lu, height %lu, tx %lu\n",
+         "fees %lu, height %lu, tx %lu, block %lu\n",
          fz.accepted[0], fz.accepted[1], fz.accepted[2], fz.accepted[3], fz.accepted[4],
-         fz.accepted[5], fz.accepted[6], fz.accepted[7]);
+         fz.accepted[5], fz.accepted[6], fz.accepted[7], fz.accepted[8]);
   CHECK(fz.broken == 0);
   CHECK(fz.forged == 0);
   for (size_t c = 0; c < CORPUS_COUNT; c++) free(corpus[c].data);
@@ -274,6 +282,7 @@ static void test_garbage_and_prefixes(test_state *T) {
   /* no strict prefix of a JSON answer is itself accepted by its parser */
   CHECK(fz.accepted[1] == 0 && fz.accepted[2] == 0 && fz.accepted[3] == 0);
   CHECK(fz.accepted[4] == 0 && fz.accepted[5] == 0);
+  CHECK(fz.accepted[8] == 0);
 }
 
 int main(void) {

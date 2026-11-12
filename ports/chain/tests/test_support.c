@@ -193,6 +193,16 @@ void fake_load_honest(fake_http *f, const char *base, bool blockstream) {
       {"/tx/" TX_A "/merkle-proof", 200, "tx_a_merkle_proof.json"},
       {"/tx/" TX_A "/outspend/0", 200, "tx_a_outspend_0.json"},
       {"/tx/" TX_A "/outspend/2", 200, "tx_a_outspend_2.json"},
+      {"/block/" HASH_329438, 200, "block_329438.json"},
+      {"/block/" HASH_329438 "/txid/0", 200, "block_329438_txid_0.txt"},
+      {"/block/" HASH_329439, 200, "block_329439.json"},
+      {"/block/" HASH_329439 "/txid/0", 200, "block_329439_txid_0.txt"},
+      {"/tx/" TX_COINBASE "/status", 200, "tx_a_status.json"},
+      {"/tx/" TX_COINBASE "/hex", 200, "tx_coinbase_hex.txt"},
+      {"/tx/" TX_COINBASE "/merkle-proof", 200, "tx_coinbase_merkle_proof.json"},
+      {"/tx/" TX_COINBASE_39 "/hex", 200, "tx_coinbase_329439_hex.txt"},
+      {"/tx/" TX_COINBASE_39 "/merkle-proof", 200, "tx_coinbase_329439_merkle_proof.json"},
+      {"/tx/" TX_B "/hex", 200, "tx_b_hex.txt"},
       {"/tx/" TX_B "/status", 200, "tx_b_status.json"},
       {"/tx/" TX_B "/merkle-proof", 200, "tx_b_merkle_proof.json"},
       {"/tx/" TX_SPENDER "/status", 200, "tx_spender_status.json"},
@@ -206,6 +216,8 @@ void fake_load_honest(fake_http *f, const char *base, bool blockstream) {
   }
   snprintf(url, sizeof url, "%s/blocks/tip/height", base);
   fake_set(f, false, url, 200, "329439");
+  snprintf(url, sizeof url, "%s/block-height/0", base);
+  fake_set(f, false, url, 200, GENESIS_SIGNET);
   snprintf(url, sizeof url, "%s/block-height/329440", base);
   fake_set(f, false, url, 404, "Block not found");
   snprintf(url, sizeof url, "%s/fee-estimates", base);
