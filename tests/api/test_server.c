@@ -1042,8 +1042,11 @@ static void test_flood(void)
     x.fake.pp_delay_ms = 400;
     if (fx_go(&x)) { CHECK(0); return; }
     atomic_fetch_add(&clock_off, 901 * 1000);
+    /* frozen: under valgrind the 20 requests may take longer than the one-second delay to arrive */
+    clock_freeze(1);
     for (i = 0; i < 20; i++) { a[i].x = &x; pthread_create(&th[i], NULL, flood_one, &a[i]); }
     for (i = 0; i < 20; i++) pthread_join(th[i], NULL);
+    clock_freeze(0);
     for (i = 0; i < 20; i++) {
         if (a[i].status == 401) wrong++;
         else if (a[i].status == 429) limited++;
