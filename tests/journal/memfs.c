@@ -25,6 +25,7 @@ static int point(memfs_t *m, int is_sync)
 {
     if (m->fail_only_sync && !is_sync) return 0;
     m->points++;
+    if (m->fail_at && m->points > m->fail_at && is_sync != 2) m->after_fail++; /* 2: an unlink, cleanup */
     if (m->crash_at && m->points == m->crash_at) {
         m->crashed = 1;
         longjmp(*m->crash_jump, 1);
@@ -273,7 +274,7 @@ static int m_rename(void *ctx, const char *from, const char *to)
 static int m_unlink(void *ctx, const char *path)
 {
     memfs_t *m = ctx;
-    if (point(m, 0)) { errno = EIO; return -1; }
+    if (point(m, 2)) { errno = EIO; return -1; }
     int a = find(m->vol, path);
     if (a < 0) { errno = ENOENT; return -1; }
     m->vol[a].inode = -1;

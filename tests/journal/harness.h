@@ -316,6 +316,8 @@ static inline int open_points(const uint8_t *seed, size_t seed_len, int crash, i
         if (!crash) {
             /* A failed open returns an error and leaves no descriptor open. */
             CHECK(st != GZ_JOURNAL_OK && memfs_open_fds(&fs) == 0 && fs.bad_closes == 0);
+            /* ... and writes or syncs nothing after the failure (an unlink to clean up may follow). */
+            CHECK(fs.after_fail == 0);
         }
         memfs_settle(&fs, mode, p);
         gz_journal_open_info_t info;

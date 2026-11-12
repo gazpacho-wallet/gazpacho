@@ -166,6 +166,7 @@ static int entry_at(const uint8_t *q, uint64_t avail, uint64_t pos, entry_t *e)
     uint32_t length = get32(q);
     if (length < GZ_JOURNAL_ENTRY_MIN || length > GZ_JOURNAL_ENTRY_MAX) return 0;
     if (avail - 4 < (uint64_t)length + 8) return 0;
+    e->size = 4 + (uint64_t)length + 8; /* set even for an invalid entry: nothing reads it unset */
     e->kind = q[4];
     if (e->kind < GZ_JOURNAL_KIND_INCARNATION || e->kind > GZ_JOURNAL_KIND_MARK) return 0;
     if (e->kind != GZ_JOURNAL_KIND_BATCH && length != 25) return 0;
@@ -174,7 +175,6 @@ static int entry_at(const uint8_t *q, uint64_t avail, uint64_t pos, entry_t *e)
     e->sequence = get64(q + 13);
     e->payload = q + 21;
     e->payload_len = length - 17;
-    e->size = 4 + (uint64_t)length + 8;
     e->value = e->kind == GZ_JOURNAL_KIND_BATCH ? 0 : get64(q + 21);
     if (e->kind == GZ_JOURNAL_KIND_MARK && e->value != pos) return 0;
     if (e->kind == GZ_JOURNAL_KIND_BATCH &&

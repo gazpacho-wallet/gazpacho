@@ -63,6 +63,7 @@ typedef struct {
     uint64_t capacity;                 /* 0: unlimited */
     size_t max_read;                   /* a read returns at most this; 0: unlimited */
     int bad_closes;                    /* closes of a descriptor that was not open */
+    uint64_t after_fail;               /* points passed after the failed one */
     int crashed;
     jmp_buf *crash_jump;
     /* Called after every successful file sync with the inode's durable length. */
