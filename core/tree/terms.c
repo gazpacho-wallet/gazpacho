@@ -226,6 +226,24 @@ gz_terms_err_t gz_terms_check_shapes(const gz_shape_entry_t *es, size_t n_entrie
     return GZ_TERMS_OK;
 }
 
+/* Every member count a lobby can start with (minimum to target, at most the
+ * 256 a factory may have) gives a tree that can be funded: R(root) fits the
+ * money supply, and is at least the import's minimum (factory_build_tree),
+ * which terms.md 4.2 does not state. Otherwise every member would refuse at
+ * signing; refusing on receipt saves the lobby (review A, S3). */
+static gz_terms_err_t check_fundable(const gz_terms_outer_t *t)
+{
+    uint32_t n, top = t->target < GZ_TREE_MAX_MEMBERS ? t->target : GZ_TREE_MAX_MEMBERS;
+    for (n = t->minimum; n <= top; n++) {
+        gz_tree_params_t p;
+        if (gz_tree_params(t, n, &p) != GZ_TREE_P_OK) return GZ_TERMS_E_UNFUNDABLE;
+        if (p.funding_amount > SUPPLY_SAT
+            || p.funding_amount < 2 * (2 * (uint64_t)n - 1) * p.fee_per_tx + 1092 * (uint64_t)n)
+            return GZ_TERMS_E_UNFUNDABLE;
+    }
+    return GZ_TERMS_OK;
+}
+
 gz_terms_err_t gz_terms_check_outer(const gz_terms_outer_t *t, const gz_terms_policy_t *pol)
 {
     size_t i;
@@ -249,6 +267,7 @@ gz_terms_err_t gz_terms_check_outer(const gz_terms_outer_t *t, const gz_terms_po
     if (t->switches & ~7u) return GZ_TERMS_E_SWITCHES;
     for (i = 0; i < t->n_adj; i++)
         if (t->adj[i].min > t->adj[i].max || t->adj[i].max > adj_ceiling(t->adj[i].type)) return GZ_TERMS_E_RANGE;
+    if ((e = check_fundable(t)) != GZ_TERMS_OK) return e;
     if (pol->slice1 && (t->profile != 2 || t->on_shortfall != 0 || t->switches != 0)) return GZ_TERMS_E_SLICE1;
     return GZ_TERMS_OK;
 }
@@ -546,6 +565,7 @@ static const char ERR_NAMES[] =
     "shape_leaf_kind\0"
     "shape_target\0"
     "shape_split\0"
+    "unfundable\0"
     "chain\0"
     "slice1\0"
     "version\0"

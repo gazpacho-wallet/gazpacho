@@ -351,6 +351,7 @@ typedef enum {
     GZ_CHK_C8_LSTOCK_DELAY,       /* outside the member's range, or 0, or above 65,535 */
     GZ_CHK_C8_END_ZERO,           /* end height 0: no timeouts at all */
     GZ_CHK_C8_END_WINDOW,         /* not within 6 blocks of tip + lifetime + wind-down */
+    GZ_CHK_C8_END_LOCKTIME,       /* 500,000,000 or more: a lock time read as a Unix time */
     GZ_CHK_C8_EXIT_TIME,          /* leave_by is before the funding deadline + B + 1 */
     GZ_CHK_C8_UNDERFUNDED,        /* a node cannot pay its fee and anchor */
     GZ_CHK_C8_DUST,               /* a channel below 546 */
@@ -493,7 +494,18 @@ typedef enum {
     GZ_C11_ABANDONED,      /* not buried by the deadline, or buried late and the time checks fail */
     GZ_C11_MISMATCH        /* the output at the outpoint is not the held tree's: never live */
 } gz_c11_t;
+/* Buried by the deadline: live only if exit.md 4.4's signing-time check
+ * holds with the real deadline (ack tip + funding deadline). Buried later:
+ * live only with the whole tree held and leave_by >= tip + 1. */
 gz_c11_t gz_tree_c11(const gz_tree_c11_in_t *in);
+
+/* Run just before sending round_ack (review A, R1): the signing-time check
+ * of exit.md 4.4 again, now that the funding deadline's start is known
+ * (`ack_tip`, the member's tip as it acks). 1: ack; 0: do not ack (the
+ * creation then becomes Abandoned at its unfinished deadline; the host cannot
+ * fund without every ack, H1). The check at proposal time used the
+ * proposal's tip, which a host that delays round_complete can make stale. */
+int gz_tree_may_ack(uint32_t end_height, uint8_t own_depth, uint32_t ack_tip, const gz_tree_conditions_t *cond);
 
 /* ----------------------------------------------------- the host: H1 */
 
@@ -506,6 +518,7 @@ typedef struct {
     const uint8_t *to_sign_tx; size_t to_sign_len;     /* what the host is about to sign */
     /* The scripts of the outputs the funding transaction spends, in input order. */
     const uint8_t *const *prev_scripts; const size_t *prev_script_lens;
+    size_t n_prev;                     /* how many: must equal the transaction's inputs */
 } gz_tree_h1_in_t;
 typedef enum {
     GZ_H1_OK = 0,
@@ -514,7 +527,9 @@ typedef enum {
     GZ_H1_TX_DIFFERS,       /* not exactly the transaction in the proposal */
     GZ_H1_TX_INVALID,       /* the proposed transaction does not parse */
     GZ_H1_NOT_SEGWIT,       /* an input spends a non-witness output, or has a scriptSig */
-    GZ_H1_ARGUMENT
+    GZ_H1_ARGUMENT,
+    GZ_H1_EMPTY,            /* no member or no tree transaction: nothing to fund */
+    GZ_H1_PREV_COUNT        /* not one spent script per input */
 } gz_h1_t;
 /* Returns GZ_H1_OK only if the host may sign the funding now; `at` (may be
  * NULL) names the member, node or input that failed. */

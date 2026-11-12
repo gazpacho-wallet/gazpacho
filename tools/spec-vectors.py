@@ -3057,7 +3057,7 @@ T8_HOST = compressed(test_key("host"))
 T8_MEMBERS = [compressed(test_key(f"member {i} factory")) for i in range(1, 17)]
 T8_FUND = hashlib.sha256(b"gazpacho test funding").digest()
 T8_E = 290_000 + 144 + 36
-t8_first = {}
+t8_first, t8_all = {}, {}
 for n in (3, 4, 8, 16):
     levels = (SHAPE_T1[0][1] if n <= 4 else SHAPE_T1[1][1]) + [LEAF_PS]
     fee = 17 if n <= 4 else 26
@@ -3067,10 +3067,25 @@ for n in (3, 4, 8, 16):
     assert nodes[0]["script"] == fs                       # the root spends the BIP 86 aggregate
     assert all(n_["amount"] - sum(a for a, _ in n_["outs"]) == fee for n_ in nodes)
     t8_first[n] = nodes[0]["txid"][::-1].hex()
+    t8_all[n] = [nd["txid"][::-1].hex() for nd in nodes]
     print(f"  {n:2d} members: funding {amount}, {len(nodes)} transactions, root txid {t8_first[n]}")
     for i, nd in enumerate(nodes):
         print(f"    node {i:2d} {nd['kind']:12s} signers {len(nd['keys']):2d} txid {nd['txid'][::-1].hex()}")
-# The root txids pinned by core/tree (every node is pinned there; all 85 agree).
+# Every txid pinned by core/tree, node by node (review A, R3).
+import os
+t8_ref = {}
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tests", "reference",
+                       "tree-from-terms-txids.txt"), encoding="ascii") as f:
+    for line in f:
+        w = line.split()
+        if w and w[0] == "n":
+            t8_ref.setdefault(int(w[1]), []).append((int(w[3]), w[-1]))
+assert sorted(t8_ref) == [3, 4, 8, 16]
+for n, rows in t8_ref.items():
+    assert [i for i, _ in rows] == list(range(len(t8_all[n])))
+    assert [h for _, h in rows] == t8_all[n], n
+assert sum(len(v) for v in t8_all.values()) == 85
+print("  all 85 txids equal tests/reference/tree-from-terms-txids.txt")
 assert t8_first == {
     3: "0f63466fed881f5711b10239812928dcd0a49cf56309ea8e1606d473e407c9e4",
     4: "999ac375c25398ec6418b687429ca1b59def2a97a33b26ed03418a983f269e7d",

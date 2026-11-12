@@ -111,8 +111,43 @@ def main():
             if 1 <= len(b) <= maxbytes:
                 return b
 
+    SUPPLY = 2_100_000_000_000_000
+
+    def max_children(levels, m, d=0):
+        # terms.md 4.2's split rule, restated: the most outputs of any tree
+        # transaction (2 for the leaf transaction), for V.
+        a = levels[d] if d < len(levels) else levels[-1]
+        if a == R["LEAF_PS"]:
+            if m == 1:
+                return 2
+            kids = [m // 2, m - m // 2]
+        else:
+            kids, rem = [], m
+            for j in range(a):
+                if rem == 0:
+                    break
+                c = -(-rem // (a - j))
+                kids.append(c)
+                rem -= c
+        return max([len(kids)] + [max_children(levels, k, d + 1) for k in kids])
+
+    def unfundable(recs, shapes):
+        # Review A, S3: every member count from minimum to target (at most 256)
+        # must give R(root) within the money supply and at least the import's
+        # minimum 2 (2n - 1) fee + 1,092 n.
+        d = dict(recs)
+        mn, tg = int.from_bytes(d[12], "big"), int.from_bytes(d[10], "big")
+        rate, ch = int.from_bytes(d[32], "big"), int.from_bytes(d[30], "big")
+        for n in range(mn, min(tg, 256) + 1):
+            levels = levels_of(next(e for e in shapes if e[0] >= n)[1])
+            fee = -(-rate * R["x_vsize_tree"](max_children(levels, n)) // 1000)
+            r = R["funding_requirement"](levels, n, ch, fee, 240)
+            if r > SUPPLY or r < 2 * (2 * n - 1) * fee + 1092 * n:
+                return True
+        return False
+
     def rand_terms():
-        target = rnd.choice([3, 4, 8, 16, rnd.randint(3, 300)])
+        target = rnd.choice([3, 4, 8, 16, rnd.randint(3, 40), rnd.randint(3, 300) if rnd.random() < 0.15 else 20])
         shapes = rand_shapes(target)
         budget_lo = rnd.randint(60_000, 600_000)
         recs = [(2, SIGNET if rnd.random() < 0.8 else bytes(rnd.getrandbits(8) for _ in range(32)))]
@@ -196,6 +231,9 @@ def main():
             recs, shapes, ranges, unknown = rand_terms()
             outer = R["tlv"](recs)
             digest = R["tagged_hash"]("gazpacho/terms/outer", outer).hex()
+            if unfundable(recs, shapes):
+                ask(f"outer {outer.hex()}", f"unfundable {digest} -", "outer-unfundable")
+                continue
             ask(f"outer {outer.hex()}", f"ok {digest} " + (outer.hex() if not unknown else "*"), "outer")
             # The tree terms.md 4.2 derives, for a member count the table covers.
             top = min(shapes[-1][0], 256)

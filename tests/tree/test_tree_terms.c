@@ -514,9 +514,17 @@ static void test_bounds(void)
     bound_u32(28, 1, 0, GZ_TERMS_E_WINDDOWN);
     bound_u32(28, 52560, 52561, GZ_TERMS_E_WINDDOWN);
     bound_u64(30, 546, 545, GZ_TERMS_E_CHANNEL);
-    bound_u64(30, 2100000000000000ull, 2100000000000001ull, GZ_TERMS_E_CHANNEL);
+    {   /* channel_sat's ceiling passes its bound; T1's tree then exceeds the money supply. */
+        rec_t r2; uint8_t b8[8];
+        u64be(b8, 2100000000000001ull); t1_with(&r2, 30, b8, 8, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_CHANNEL);
+        u64be(b8, 2100000000000000ull); t1_with(&r2, 30, b8, 8, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_UNFUNDABLE);
+    }
     bound_u32(32, 1, 0, GZ_TERMS_E_FEERATE);
-    bound_u32(32, 1000000, 1000001, GZ_TERMS_E_FEERATE);
+    {   /* the fee rate's ceiling passes its bound; T1's tree is then below the import's minimum. */
+        rec_t r2; uint8_t b4[4];
+        u32be(b4, 1000001); t1_with(&r2, 32, b4, 4, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_FEERATE);
+        u32be(b4, 1000000); t1_with(&r2, 32, b4, 4, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_UNFUNDABLE);
+    }
     /* Step timeout above 600,000 (with the budget raised to keep it valid). */
     {
         uint8_t b[4];
@@ -745,6 +753,7 @@ static void names(void)
         {GZ_TERMS_E_SHAPE_LEAF_KIND, "shape_leaf_kind"},
         {GZ_TERMS_E_SHAPE_TARGET, "shape_target"},
         {GZ_TERMS_E_SHAPE_SPLIT, "shape_split"},
+        {GZ_TERMS_E_UNFUNDABLE, "unfundable"},
         {GZ_TERMS_E_CHAIN, "chain"},
         {GZ_TERMS_E_SLICE1, "slice1"},
         {GZ_TERMS_E_VERSION, "version"},
@@ -761,8 +770,51 @@ static void names(void)
     for (i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) CHECK(strcmp(gz_terms_err_name(NAMES[i].e), NAMES[i].n) == 0);
 }
 
+/* Terms no member could ever sign (review A, S3), each at its boundary. */
+static void test_fundable(void)
+{
+    gz_terms_outer_t t, d;
+    uint8_t b[GZ_TERMS_OUTER_MAX];
+    size_t n;
+    /* The import's minimum: 4 members, channel 546; fee rate 5,269 (fee 880,
+     * R = minimum = 16,688) passes; 5,270 (fee 881, R 16,699 < 16,702) does not. */
+    t1_terms(&t);
+    t.minimum = 4; t.target = 4; t.channel_sat = 546;
+    t.tree_feerate = 5269;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
+    t.tree_feerate = 5270;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+    /* Review A's probe P11: T1 with channel 546 and fee rate 1,000,000. */
+    t1_terms(&t);
+    t.channel_sat = 546; t.tree_feerate = 1000000;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+    /* The money supply: 3 members (R = 8 channel + 2,827 at fee 17).
+     * 262,499,999,999,646 gives 2,099,999,999,999,995; one more, 2,100,000,000,000,003. */
+    t1_terms(&t);
+    t.minimum = 3; t.target = 3;
+    t.channel_sat = 262499999999646ull;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
+    t.channel_sat = 262499999999647ull;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+    /* Only member counts the lobby can start with count: with minimum 5, the
+     * 4-member tree's minimum does not matter. */
+    t1_terms(&t);
+    t.channel_sat = 546; t.tree_feerate = 5270; t.minimum = 5; t.target = 5;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
+    t.minimum = 4;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+}
+
 int main(void)
 {
+    test_fundable();
     test_sha256();
     test_target_edge();
     test_vectors();

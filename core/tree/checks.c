@@ -20,7 +20,7 @@ uint16_t gz_tree_reason(gz_chk_t c)
     case GZ_CHK_C8_MEMBERS_TERMS: case GZ_CHK_C8_MEMBERS_OWN: case GZ_CHK_C8_NO_SHAPE: case GZ_CHK_C8_SHAPE:
     case GZ_CHK_C8_FIXED_LEVELS: case GZ_CHK_C8_FEE_RULE: case GZ_CHK_C8_FEE_CEILING:
     case GZ_CHK_C8_FUNDING_RULE: case GZ_CHK_C8_LSTOCK_DELAY: case GZ_CHK_C8_END_ZERO:
-    case GZ_CHK_C8_END_WINDOW: case GZ_CHK_C8_EXIT_TIME: case GZ_CHK_C8_UNDERFUNDED: case GZ_CHK_C8_DUST:
+    case GZ_CHK_C8_END_WINDOW: case GZ_CHK_C8_END_LOCKTIME: case GZ_CHK_C8_EXIT_TIME: case GZ_CHK_C8_UNDERFUNDED: case GZ_CHK_C8_DUST:
     case GZ_CHK_C8_IMPORT_MINIMUM: case GZ_CHK_C8_LEAF_KIND: case GZ_CHK_C8_OWN_LEAF:
     case GZ_CHK_C8_CHANNEL_TERMS: case GZ_CHK_C8_CHANNEL_OWN: case GZ_CHK_C6_TIERS:
         return GZ_REASON_CONDITIONS;
@@ -79,6 +79,7 @@ static const char CHK_NAMES[] =
     "c8_lstock_delay\0"
     "c8_end_zero\0"
     "c8_end_window\0"
+    "c8_end_locktime\0"
     "c8_exit_time\0"
     "c8_underfunded\0"
     "c8_dust\0"
@@ -138,12 +139,14 @@ static int check_participants(const gz_tree_member_in_t *in, const gz_tree_propo
         if (!in->crypto->point_valid(in->crypto->ctx, ps[i].factory_key)
             || !in->crypto->point_valid(in->crypto->ctx, ps[i].contribution_key))
             return fail(v, GZ_CHK_C1_BAD_KEY, (int32_t)i);
+    /* Distinct as x coordinates: P and -P are one BIP 340 key (review A, S1). */
     for (i = 0; i < np; i++) {
-        if (tr_eq(ps[i].factory_key, ps[i].contribution_key, 33)) return fail(v, GZ_CHK_C1_DUPLICATE_KEY, (int32_t)i);
+        if (tr_eq(ps[i].factory_key + 1, ps[i].contribution_key + 1, 32)) return fail(v, GZ_CHK_C1_DUPLICATE_KEY, (int32_t)i);
         for (j = i + 1; j < np; j++)
-            if (tr_eq(ps[i].factory_key, ps[j].factory_key, 33) || tr_eq(ps[i].contribution_key, ps[j].contribution_key, 33)
-                || tr_eq(ps[i].factory_key, ps[j].contribution_key, 33)
-                || tr_eq(ps[i].contribution_key, ps[j].factory_key, 33))
+            if (tr_eq(ps[i].factory_key + 1, ps[j].factory_key + 1, 32)
+                || tr_eq(ps[i].contribution_key + 1, ps[j].contribution_key + 1, 32)
+                || tr_eq(ps[i].factory_key + 1, ps[j].contribution_key + 1, 32)
+                || tr_eq(ps[i].contribution_key + 1, ps[j].factory_key + 1, 32))
                 return fail(v, GZ_CHK_C1_DUPLICATE_KEY, (int32_t)j);
     }
     if (!tr_eq(ps[0].contribution_key, in->outer->host_key, 33)) return fail(v, GZ_CHK_C1_HOST_KEY, 0);
@@ -364,6 +367,8 @@ void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_
     if (E == 0) { fail(v, GZ_CHK_C8_END_ZERO, -1); return; }
     expect = (int64_t)in->tip + o->lifetime_blocks + o->winddown_blocks;
     if (E > expect + cond->end_window || E < expect - cond->end_window) { fail(v, GZ_CHK_C8_END_WINDOW, -1); return; }
+    /* Lock times from 500,000,000 are Unix times, already past (review A, S2). */
+    if (E >= 500000000) { fail(v, GZ_CHK_C8_END_LOCKTIME, -1); return; }
     if (!gz_exit_signing_check(E, prm.depth[own], (int64_t)in->tip + cond->funding_deadline_blocks, &cond->exit)) {
         fail(v, GZ_CHK_C8_EXIT_TIME, (int32_t)own);
         return;
@@ -449,7 +454,7 @@ int gz_tree_c4d_dead(const uint8_t *funding_tx, size_t len, const uint8_t spent[
 
 gz_c11_t gz_tree_c11(const gz_tree_c11_in_t *in)
 {
-    int64_t deadline;
+    int64_t deadline, leave_by;
     if (!in || !in->cond || !in->funding_script) return GZ_C11_WAIT;
     deadline = (int64_t)in->ack_tip + in->cond->funding_deadline_blocks;
     if (in->seen && (in->seen_amount != in->funding_amount || in->seen_script_len != 34 || !in->seen_script
@@ -457,14 +462,24 @@ gz_c11_t gz_tree_c11(const gz_tree_c11_in_t *in)
         return GZ_C11_MISMATCH;
     if (!in->seen || in->confirmations < in->cond->exit.B)
         return (int64_t)in->tip > deadline ? GZ_C11_ABANDONED : GZ_C11_WAIT;
-    if ((int64_t)in->buried_at <= deadline) return GZ_C11_LIVE;
+    leave_by = gz_exit_leave_by(in->end_height, in->own_depth, (uint32_t)in->own_depth + 3, &in->cond->exit);
+    /* On time: the signing-time check, with the deadline that really applies
+     * (the ack's tip + the funding deadline; review A, R1). A member that ran
+     * gz_tree_may_ack never gets here with it failing; a caller that did not
+     * still never sees a factory live after its leave_by. */
+    if ((int64_t)in->buried_at <= deadline)
+        return gz_exit_signing_check(in->end_height, in->own_depth, deadline, &in->cond->exit) ? GZ_C11_LIVE
+                                                                                                 : GZ_C11_ABANDONED;
     /* Buried late: live only with the whole signed tree held and the time
      * check passing again now (one block of being live left before leave_by). */
-    if (in->holds_whole_tree
-        && gz_exit_leave_by(in->end_height, in->own_depth, (uint32_t)in->own_depth + 3, &in->cond->exit)
-               >= (int64_t)in->tip + 1)
-        return GZ_C11_LIVE;
+    if (in->holds_whole_tree && leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;
     return GZ_C11_ABANDONED;
+}
+
+int gz_tree_may_ack(uint32_t end_height, uint8_t own_depth, uint32_t ack_tip, const gz_tree_conditions_t *cond)
+{
+    if (!cond) return 0;
+    return gz_exit_signing_check(end_height, own_depth, (int64_t)ack_tip + cond->funding_deadline_blocks, &cond->exit);
 }
 
 /* BIP 141: a witness program is a version byte (OP_0, OP_1..OP_16) and one
@@ -486,6 +501,7 @@ gz_h1_t gz_tree_h1(const gz_tree_h1_in_t *in, size_t *at)
     *at = 0;
     if (!in || (in->n_members && !in->acked) || (in->n_nodes && !in->signed_ok) || !in->proposed_tx || !in->to_sign_tx)
         return GZ_H1_ARGUMENT;
+    if (in->n_members == 0 || in->n_nodes == 0) return GZ_H1_EMPTY;
     for (i = 0; i < in->n_members; i++)
         if (!in->acked[i]) { *at = i; return GZ_H1_ACK_MISSING; }
     for (i = 0; i < in->n_nodes; i++)
@@ -494,6 +510,7 @@ gz_h1_t gz_tree_h1(const gz_tree_h1_in_t *in, size_t *at)
         return GZ_H1_TX_DIFFERS;
     if (!gz_tx_parse(in->proposed_tx, in->proposed_len, &info)) return GZ_H1_TX_INVALID;
     if (!in->prev_scripts || !in->prev_script_lens) return GZ_H1_ARGUMENT;
+    if (in->n_prev != info.n_in) return GZ_H1_PREV_COUNT;
     for (i = 0; i < info.n_in; i++) {
         size_t script_len;
         if (!gz_tx_input(in->proposed_tx, in->proposed_len, &info, i, NULL, &script_len, NULL)) return GZ_H1_TX_INVALID;

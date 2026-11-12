@@ -73,6 +73,9 @@ typedef enum {
     GZ_TERMS_E_SHAPE_LEAF_KIND,   /* not 3 */
     GZ_TERMS_E_SHAPE_TARGET,      /* the last entry is below the target */
     GZ_TERMS_E_SHAPE_SPLIT,       /* section 4.3: some n makes a leaf with m <= a members */
+    GZ_TERMS_E_UNFUNDABLE,        /* for some member count from minimum to target (at most 256),
+                                     R(root) is above the money supply or 64 bits, or below the
+                                     import's minimum funding 2 (2n - 1) fee + 1,092 n (review A, S3) */
     /* Slice 1 profile (sections 3 and 7 step 4) */
     GZ_TERMS_E_CHAIN,             /* not signet */
     GZ_TERMS_E_SLICE1,            /* a value Slice 1 refuses: profile, shortfall, switches */

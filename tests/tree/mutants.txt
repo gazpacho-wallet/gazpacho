@@ -145,9 +145,9 @@ c8a-ready-digest	core/tree/checks.c	 || !tr_eq(in->ready_current_digest, in->fro
 c8a-outer	core/tree/checks.c	if (!tr_eq(in->ready_outer_digest, in->outer_digest, 32) ||	if (
 c1-too-many	core/tree/checks.c	np > GZ_TREE_MAX_MEMBERS + 1) return fail(v, GZ_CHK_C1_PARTICIPANTS, -1);	np > GZ_TREE_MAX_MEMBERS + 2) return fail(v, GZ_CHK_C1_PARTICIPANTS, -1);
 c1-key-validity	core/tree/checks.c	            || !in->crypto->point_valid(in->crypto->ctx, ps[i].contribution_key))	)
-c1-dup-same-entry	core/tree/checks.c	if (tr_eq(ps[i].factory_key, ps[i].contribution_key, 33)) return fail(v, GZ_CHK_C1_DUPLICATE_KEY, (int32_t)i);	
-c1-dup-factory	core/tree/checks.c	if (tr_eq(ps[i].factory_key, ps[j].factory_key, 33) ||	if (
-c1-dup-cross	core/tree/checks.c	                || tr_eq(ps[i].factory_key, ps[j].contribution_key, 33)\n	\n
+c1-dup-same-entry	core/tree/checks.c	if (tr_eq(ps[i].factory_key + 1, ps[i].contribution_key + 1, 32)) return fail(v, GZ_CHK_C1_DUPLICATE_KEY, (int32_t)i);	
+c1-dup-factory	core/tree/checks.c	            if (tr_eq(ps[i].factory_key + 1, ps[j].factory_key + 1, 32)\n                ||	            if (0\n                ||
+c1-dup-cross	core/tree/checks.c	                || tr_eq(ps[i].factory_key + 1, ps[j].contribution_key + 1, 32)\n	\n
 c1-host-key	core/tree/checks.c	if (!tr_eq(ps[0].contribution_key, in->outer->host_key, 33)) return fail(v, GZ_CHK_C1_HOST_KEY, 0);	
 binding-factory	core/tree/checks.c	if (!in->crypto->verify(in->crypto->ctx, h, q->factory_key, q->bind_by_factory)\n	if (0\n
 binding-contribution	core/tree/checks.c	            || !in->crypto->verify(in->crypto->ctx, h, q->contribution_key, q->bind_by_contribution))	)
@@ -204,9 +204,9 @@ c4d-self	core/tree/checks.c	    if (tr_eq(txid, spender_txid, 32)) return 0;
 c4d-any-input	core/tree/checks.c	&& tr_eq(op, spent, 36)) return 1;	&& tr_eq(op, spent, 32)) return 1;
 c11-deadline	core/tree/checks.c	return (int64_t)in->tip > deadline ? GZ_C11_ABANDONED : GZ_C11_WAIT;	return (int64_t)in->tip >= deadline ? GZ_C11_ABANDONED : GZ_C11_WAIT;
 c11-burial	core/tree/checks.c	if (!in->seen || in->confirmations < in->cond->exit.B)	if (!in->seen || in->confirmations + 1 < in->cond->exit.B)
-c11-on-time	core/tree/checks.c	if ((int64_t)in->buried_at <= deadline) return GZ_C11_LIVE;	if ((int64_t)in->buried_at <= deadline + 1) return GZ_C11_LIVE;
-c11-late-margin	core/tree/checks.c	               >= (int64_t)in->tip + 1)	               >= (int64_t)in->tip)
-c11-late-tree	core/tree/checks.c	    if (in->holds_whole_tree\n	    if (1\n
+c11-on-time	core/tree/checks.c	    if ((int64_t)in->buried_at <= deadline)\n        return gz_exit	    if ((int64_t)in->buried_at <= deadline + 1)\n        return gz_exit
+c11-late-margin	core/tree/checks.c	if (in->holds_whole_tree && leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;	if (in->holds_whole_tree && leave_by >= (int64_t)in->tip) return GZ_C11_LIVE;
+c11-late-tree	core/tree/checks.c	if (in->holds_whole_tree && leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;	if (1 && leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;
 c11-amount	core/tree/checks.c	if (in->seen && (in->seen_amount != in->funding_amount ||	if (in->seen && (
 h1-ack	core/tree/checks.c	if (!in->acked[i]) { *at = i; return GZ_H1_ACK_MISSING; }	
 h1-ack-first	core/tree/checks.c	    for (i = 0; i < in->n_members; i++)\n        if (!in->acked[i])	    for (i = 1; i < in->n_members; i++)\n        if (!in->acked[i])
@@ -253,3 +253,34 @@ c8-deadline-sigs	core/tree/checks.c	|| p->sigs_due_ms > o->step_timeout_ms) {	||
 # equivalent c5-path: the path is rebuilt from the rules, so every output kind and timeout is the expected one; kept as defence in depth
 # equivalent glue-placement: with every profile zero the import's placement sort leaves the order unchanged on this C library; the write stays because signing-round.md 4.1 requires it and another qsort may reorder
 # equivalent glue-point-prefix: secp256k1_ec_pubkey_parse accepts only prefixes 2 and 3 for 33 bytes
+# --- after review A of PR 24
+c11-ontime-boundary	core/tree/checks.c	    if ((int64_t)in->buried_at <= deadline)\n        return gz_exit_signing_check	    if ((int64_t)in->buried_at < deadline)\n        return gz_exit_signing_check
+# Review A's equivalent mutants (its M12, M14, M15, M16, M26, M52, M59), listed here too
+leaf-signers-2	core/tree/checks.c	(leaf && im->node[i].n_signers != 2)	(0)
+c5-path-length	core/tree/checks.c	if (idx >= 0 || n != d + 2)	if (idx >= 0)
+c5-timeout-direction	core/tree/checks.c	(int64_t)nd->cltv != want)	(int64_t)nd->cltv > want)
+c7-found-once	core/tree/checks.c	if (found != 1)	if (found < 1)
+own-leaf-position	core/tree/checks.c	 || t->node[t->leaf_state[own]].first != own)	)
+leaf-tx-outputs-1	core/tree/shape.c	if (tr_level(levels, nl, d) == GZ_TERMS_LEAF_PS && m == 1) return 2;	if (tr_level(levels, nl, d) == GZ_TERMS_LEAF_PS && m == 1) return 1;
+split-leaves-count	core/tree/terms.c	 || leaves != m)	)
+# equivalent leaf-signers-2: check_import already requires n_signers == 1 + count on every node, and a rebuilt leaf has count 1
+# equivalent c5-path-length: the rebuilt tree's leaf is at depth d with d + 1 ancestors
+# equivalent c5-timeout-direction: on a rebuilt tree every timeout equals exit.md 4.1's
+# equivalent c7-found-once: the duplicate-key check makes two seats with the member's keys impossible
+# equivalent own-leaf-position: with sequential placement member i's leaf is leaf i
+# equivalent leaf-tx-outputs-1: every interior node has at least 2 children, so V never comes from the leaf transaction's 2
+# equivalent split-leaves-count: tr_split returns 1 only after placing every member
+c11-ontime-time	core/tree/checks.c	        return gz_exit_signing_check(in->end_height, in->own_depth, deadline, &in->cond->exit) ? GZ_C11_LIVE	        return 1 ? GZ_C11_LIVE
+c11-ontime-deadline	core/tree/checks.c	gz_exit_signing_check(in->end_height, in->own_depth, deadline, &in->cond->exit)	gz_exit_signing_check(in->end_height, in->own_depth, deadline - 1, &in->cond->exit)
+c11-not-seen	core/tree/checks.c	if (!in->seen || in->confirmations < in->cond->exit.B)	if (in->confirmations < in->cond->exit.B)
+may-ack-deadline	core/tree/checks.c	(int64_t)ack_tip + cond->funding_deadline_blocks, &cond->exit);	(int64_t)ack_tip, &cond->exit);
+h1-empty	core/tree/checks.c	if (in->n_members == 0 || in->n_nodes == 0) return GZ_H1_EMPTY;	
+h1-prev-count	core/tree/checks.c	if (in->n_prev != info.n_in) return GZ_H1_PREV_COUNT;	
+dup-parity	core/tree/checks.c	            if (tr_eq(ps[i].factory_key + 1, ps[j].factory_key + 1, 32)	            if (tr_eq(ps[i].factory_key, ps[j].factory_key, 33)
+dup-parity-self	core/tree/checks.c	if (tr_eq(ps[i].factory_key + 1, ps[i].contribution_key + 1, 32))	if (tr_eq(ps[i].factory_key, ps[i].contribution_key, 33))
+end-locktime	core/tree/checks.c	if (E >= 500000000)	if (E > 500000000)
+fundable-supply	core/tree/terms.c	if (p.funding_amount > SUPPLY_SAT	if (0
+fundable-minimum	core/tree/terms.c	            || p.funding_amount < 2 * (2 * (uint64_t)n - 1) * p.fee_per_tx + 1092 * (uint64_t)n)	            )
+fundable-last-n	core/tree/terms.c	for (n = t->minimum; n <= top; n++) {	for (n = t->minimum; n < top; n++) {
+fundable-from-3	core/tree/terms.c	for (n = t->minimum; n <= top; n++) {	for (n = 3; n <= top; n++) {
+funding-prefix	core/tree/checks.c	if (p->funding_script[0] != 0x51 || p->funding_script[1] != 0x20 ||	if (

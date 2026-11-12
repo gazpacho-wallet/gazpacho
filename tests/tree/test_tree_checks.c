@@ -255,6 +255,16 @@ static void c1_participants(void)
     memcpy(S.parts[3].contribution_key, S.parts[1].factory_key, 33); EXPECT(GZ_CHK_C1_DUPLICATE_KEY, 1);
     scenario(4, 2);
     memcpy(S.parts[1].contribution_key, S.parts[1].factory_key, 33); EXPECT(GZ_CHK_C1_DUPLICATE_KEY, 1);
+    /* P and -P are one BIP 340 key (review A, S1): another member's key with the other parity. */
+    scenario(4, 2);
+    memcpy(S.parts[3].factory_key, S.parts[1].factory_key, 33); S.parts[3].factory_key[0] ^= 1;
+    CHECK(CR.point_valid(CR.ctx, S.parts[3].factory_key)); EXPECT(GZ_CHK_C1_DUPLICATE_KEY, 1);
+    scenario(4, 2);
+    memcpy(S.parts[3].contribution_key, S.parts[2].factory_key, 33); S.parts[3].contribution_key[0] ^= 1;
+    EXPECT(GZ_CHK_C1_DUPLICATE_KEY, 1);
+    scenario(4, 2);
+    memcpy(S.parts[2].contribution_key, S.parts[2].factory_key, 33); S.parts[2].contribution_key[0] ^= 1;
+    EXPECT(GZ_CHK_C1_DUPLICATE_KEY, 1);
     scenario(4, 2);
     memcpy(S.parts[3].factory_key, S.parts[0].contribution_key, 33); EXPECT(GZ_CHK_C1_DUPLICATE_KEY, 1);
     /* the host's contribution key is its long-term key (signing-round.md 2) */
@@ -409,6 +419,11 @@ static void c8_heights(void)
     scenario(3, 2);
     S.cond.funding_deadline_blocks = 110; OK();
     S.cond.funding_deadline_blocks = 111; EXPECT(GZ_CHK_C8_EXIT_TIME, 9);
+    /* Heights only: E below 500,000,000 (review A, S2). expect = tip + 180. */
+    scenario(3, 1);
+    S.in.tip = 499999819u; S.p.end_height = 499999999u; OK();
+    S.p.end_height = 500000000u; EXPECT(GZ_CHK_C8_END_LOCKTIME, 9);
+    S.p.end_height = 500000005u; EXPECT(GZ_CHK_C8_END_LOCKTIME, 9);
     /* The same with a shorter life: E moves with the tip. */
     scenario(3, 2);
     S.outer.lifetime_blocks = 144 - 74; S.outer.winddown_blocks = 36;
@@ -443,6 +458,13 @@ static void c1_funding(void)
     S.p.funding_script_len = 34;
     memcpy(other, S.p.funding_script, 34); other[33] ^= 1;
     set_funding(&S, S.p.funding_amount, other); EXPECT(GZ_CHK_C1_FUNDING_SCRIPT, 1);
+    /* The right key under another prefix (review A, M09): a P2WSH 00 20 || Q, and 51 21 || Q. */
+    scenario(4, 2);
+    S.p.funding_script[0] = 0x00; refund(); EXPECT(GZ_CHK_C1_NOT_AGGREGATE, 1);
+    scenario(4, 2);
+    S.p.funding_script[1] = 0x21; refund(); EXPECT(GZ_CHK_C1_NOT_AGGREGATE, 1);
+    scenario(4, 2);
+    memcpy(other, S.p.funding_script, 34); other[33] ^= 1;
     /* Both the proposal and the transaction name a script that is not the aggregate. */
     memcpy(S.p.funding_script, other, 34); refund(); EXPECT(GZ_CHK_C1_NOT_AGGREGATE, 1);
     /* The aggregate in another order is another key. */
@@ -673,6 +695,30 @@ static void c4d_c10_c11_h1(void)
     c.buried_at = TIP + 37; c.tip = TIP + 113; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
     c.tip = TIP + 114; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
     c.tip = TIP + 113; c.holds_whole_tree = 0; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
+    /* The on-time branch alone (M31): buried at the deadline without the late
+     * branch's help is live; one block later it is not. */
+    c.holds_whole_tree = 0; c.buried_at = TIP + 36; c.tip = TIP + 36; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
+    c.buried_at = TIP + 37; c.tip = TIP + 37; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
+    c.holds_whole_tree = 1;
+    /* Review A's probe P1 (R1): leave_by(d = 2) = TIP + 114. The ack came at
+     * TIP + 100, so the deadline is TIP + 136; funding buried at TIP + 130 is
+     * on time, yet leave_by has passed: never live. The same check at the ack
+     * (gz_tree_may_ack) refuses to ack. Its boundary: ack at TIP + 74 gives
+     * deadline TIP + 110 and 114 >= 110 + 3 + 1. */
+    c.ack_tip = TIP + 100; c.buried_at = TIP + 130; c.tip = TIP + 130; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
+    c.ack_tip = TIP + 74; c.buried_at = TIP + 100; c.tip = TIP + 100; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
+    c.ack_tip = TIP + 75; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
+    CHECK(gz_tree_may_ack(TIP + 180, 2, TIP + 74, &cond) == 1);
+    CHECK(gz_tree_may_ack(TIP + 180, 2, TIP + 75, &cond) == 0);
+    CHECK(gz_tree_may_ack(TIP + 180, 2, TIP + 100, &cond) == 0);
+    CHECK(gz_tree_may_ack(TIP + 180, 1, TIP + 90, &cond) == 1);   /* d = 1: leave_by TIP + 130 */
+    CHECK(gz_tree_may_ack(TIP + 180, 1, TIP + 91, &cond) == 0);
+    CHECK(gz_tree_may_ack(TIP + 180, 1, TIP + 90, NULL) == 0);
+    c.ack_tip = TIP;
+    /* Not seen, with a stale confirmation count (M36): never live. */
+    c.seen = 0; c.confirmations = 5; c.buried_at = TIP + 10; c.tip = TIP + 20; CHECK(gz_tree_c11(&c) == GZ_C11_WAIT);
+    c.tip = TIP + 37; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
+    c.seen = 1;
     /* H1. */
     memset(v0_21, 0, sizeof v0_21); v0_21[1] = 21;
     memcpy(p2tr, script, 34);
@@ -680,8 +726,14 @@ static void c4d_c10_c11_h1(void)
     memset(&h, 0, sizeof h);
     h.n_members = 4; h.acked = acked; h.n_nodes = 8; h.signed_ok = signed_ok;
     h.proposed_tx = S.ftx; h.proposed_len = S.ftx_len; h.to_sign_tx = S.ftx; h.to_sign_len = S.ftx_len;
-    h.prev_scripts = prev; h.prev_script_lens = prev_len;
+    h.prev_scripts = prev; h.prev_script_lens = prev_len; h.n_prev = 1;
     CHECK(gz_tree_h1(&h, &at) == GZ_H1_OK);
+    /* Nothing to fund is not "may fund" (review A, R2), and one spent script per input. */
+    h.n_members = 0; CHECK(gz_tree_h1(&h, &at) == GZ_H1_EMPTY); h.n_members = 4;
+    h.n_nodes = 0; CHECK(gz_tree_h1(&h, &at) == GZ_H1_EMPTY); h.n_nodes = 8;
+    h.n_prev = 0; CHECK(gz_tree_h1(&h, &at) == GZ_H1_PREV_COUNT);
+    h.n_prev = 2; CHECK(gz_tree_h1(&h, &at) == GZ_H1_PREV_COUNT);
+    h.n_prev = 1; CHECK(gz_tree_h1(&h, &at) == GZ_H1_OK);
     acked[3] = 0; CHECK(gz_tree_h1(&h, &at) == GZ_H1_ACK_MISSING && at == 3); acked[3] = 1;
     acked[0] = 0; CHECK(gz_tree_h1(&h, &at) == GZ_H1_ACK_MISSING && at == 0); acked[0] = 1;
     signed_ok[7] = 0; CHECK(gz_tree_h1(&h, &at) == GZ_H1_UNSIGNED && at == 7); signed_ok[7] = 1;
@@ -769,6 +821,7 @@ static void names(void)
         {GZ_CHK_C8_LSTOCK_DELAY, "c8_lstock_delay"},
         {GZ_CHK_C8_END_ZERO, "c8_end_zero"},
         {GZ_CHK_C8_END_WINDOW, "c8_end_window"},
+        {GZ_CHK_C8_END_LOCKTIME, "c8_end_locktime"},
         {GZ_CHK_C8_EXIT_TIME, "c8_exit_time"},
         {GZ_CHK_C8_UNDERFUNDED, "c8_underfunded"},
         {GZ_CHK_C8_DUST, "c8_dust"},

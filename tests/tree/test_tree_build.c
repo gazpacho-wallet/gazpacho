@@ -157,7 +157,7 @@ static void read_reference(const char *path)
     while (fgets(buf, sizeof buf, fp) && NREF < 2000) {
         size_t l = strlen(buf);
         while (l && (buf[l - 1] == '\n' || buf[l - 1] == '\r')) buf[--l] = 0;
-        if (strncmp(buf, "n ", 2) == 0) snprintf(REF[NREF++], 128, "%s", buf);
+        if (strncmp(buf, "n ", 2) == 0) snprintf(REF[NREF++], 128, "%.127s", buf);
     }
     fclose(fp);
 }
@@ -364,6 +364,10 @@ static void refusals(void)
     CHECK(gz_tree_requirement(L3, 1, 4, 546, 880, &R));
     in.funding_amount = R;
     CHECK(R == 16688);
+    in.funding_amount = R - 1;                         /* the import's minimum - 1 (review A, M43) */
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_IMPORT_MINIMUM);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
+    in.funding_amount = R;
     CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_OK);
     CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_OK && same_as_import(&TREE, &IMPORT));
     in.fee_per_tx = 881;
