@@ -80,3 +80,11 @@ Buying liquidity, splicing and channels opened on demand are not in 1.0.0. They 
 ### 8. The shared protocol identifier (owner, 2026-11-12)
 
 `factory_protocol_id` = SHA-256 of the UTF-8 bytes `SuperScalar/1` (hex `53757065725363616c61722f31`) = `c3a082d0fcb768d76999f4f8ad672f7110fbef6a13a1697686c7073961c842f1`. This follows bLIP-56's recommended form. It replaces the two other values found in use: the zero-padded ASCII "SuperScalar/v1" in the superscalar-cln plugin, and SHA256("SuperScalar" ‖ "0") in an April research note. To be recorded in superscalar-docs and adopted by superscalar-cln, the SuperScalar reference and Gazpacho. Gazpacho keeps sequential member placement (no timezone buckets), for privacy.
+
+### 9. 1.0.0 trees are advanceless (owner, 2026-11-12, questions 4)
+
+No timed (Decker-Wattenhofer) levels in 1.0.0: every interior level is fixed. Nothing in 1.0.0 would update a timed layer (one member per leaf, no sales, payments never advance the tree, members move by rotation), so timed levels would only lengthen exits and payment deadlines. Timed levels and layer updates arrive with 1.1.0, together with liquidity sales. Consequences: no tree race, so no on-chain reserve is needed (O2 resolved); refresh-in-place is not used (extending a factory means rotation); safe absence is set by the channel's own revocation delay (value to be set in the channel specification). Proposed to SuperScalar as their default too (`docs/handoff/2026-11-12-advanceless-default.md`). This replaces the earlier decision "full layered tree in the first release".
+
+### 10. Seats (owner, 2026-11-12, questions 4)
+
+1.0.0: seats are free, protected by invitation-only lobbies, host removal before the start, standby seats and the signing time budget. Next: a proof of control of a coin or channel for public lobbies, with a share of newcomer seats that need none. Later: the host chooses per lobby among several options in its terms (free, proof, deposit, and others).

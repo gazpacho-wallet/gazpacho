@@ -603,7 +603,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </ul>
 <h4>Construction</h4>
 <ul>
-<li>Full layered tree in the first release; build the fixed tree first. Pseudo-Spilman leaves, one member per leaf. JIT channels off. Target 512 members, tested at 128 or 256.</li>
+<li><strong>1.0.0 trees are advanceless</strong> (owner, 2026-11-12, questions 4): every interior level fixed, no timed (Decker-Wattenhofer) levels; timed levels and layer updates arrive with 1.1.0 and liquidity sales. This replaces the earlier "full layered tree in the first release". 1.0.0 seats are free (protected by invitation-only lobbies, host removal and standbys), then a proof of a coin or channel, then a per-lobby choice of options. Pseudo-Spilman leaves, one member per leaf. JIT channels off. Target 512 members, tested at 128 or 256.</li>
 <li>One funder per factory: the host, who signs funding only after the whole tree is signed. Members start at zero.</li>
 <li>The factory key always needs everyone's signature. No threshold key.</li>
 <li>Lightning's standard taproot channel format for the channel; the old format archived and recoverable.</li>
@@ -835,7 +835,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>M4</td>
-<td>The full layered tree; rotation into the next factory</td>
+<td>Rotation into the next factory (1.0.0 trees are advanceless: fixed levels only); the full layered tree with timed levels and layer updates moves to 1.1.0 with liquidity sales</td>
 <td></td>
 </tr>
 <tr>
@@ -1229,7 +1229,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>M4</td>
-<td>The full layered tree and rotation</td>
+<td>Rotation; advanceless trees in 1.0.0 (timed levels and layer updates in 1.1.0)</td>
 <td></td>
 </tr>
 <tr>
@@ -1706,7 +1706,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>C12. After a restore, sign nothing with old keys.</strong> A restored node signs only with keys of its current restore epoch, and contributes to a request only through C7's fresh-key rule: its own entry must be its current key for that lobby. It never derives a key of an earlier epoch in order to sign, so it cannot sign with one, whatever the request names, and whether or not the backup knew of the factory or round. This is how C12 is implemented; no step tries to recognise an old key in a request (review 3, F3: a restored node does not know the epochs and indexes used after the backup, so it could not). The recovery procedure (a recovery close or exit after the host proves the latest state, <code>DESIGN.md</code> sections 6 and 9) is <strong>not specified in draft 4</strong>; it belongs with the exit engine (Slice 3), and it alone may ever derive old keys. Section 9 gives the rules.</p>
 <p><strong>C13. A payment is a signature.</strong> Accepting or making a payment signs new channel states, so it runs this module like any other request. A member with an unbroadcast cooperative close in its exposed set therefore refuses further payments on that channel.</p>
 <p>If any check fails, the member's software sends nothing for that request, tells the host it refused, and keeps its sets unchanged.</p></div></details>
-<details id="c4-4-tree-changes-and-the-channel"><summary>4. Tree changes and the channel</summary><div class="body"><p>A channel is funded by an output of a leaf transaction. When the tree under a channel changes, that output changes. In 1.0.0 that happens only through <strong>a state update in a timed layer</strong>, which rebuilds every transaction below it, so every channel below gains a new anchor, and through rotation. Leaf changes are 1.1.0 work (section 4.2).</p>
+<details id="c4-4-tree-changes-and-the-channel"><summary>4. Tree changes and the channel</summary><div class="body"><p>A channel is funded by an output of a leaf transaction. When the tree under a channel changes, that output changes. In 1.0.0 trees are advanceless (owner decision 9, 2026-11-12: fixed levels only), so it happens only through rotation, which creates a new factory and a new funding output. From 1.1.0, <strong>a state update in a timed layer</strong> also changes it: it rebuilds every transaction below it, so every channel below gains a new anchor. Leaf changes are 1.1.0 work (section 4.2).</p>
 <h4>4.1 Rules for the channel engine</h4>
 <p>These are requirements on the channel engine, which is not specified yet (section 4.3).</p>
 <ol>
@@ -4027,13 +4027,13 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tbody>
 <tr>
 <td>O1</td>
-<td><strong>Timed levels in 1.0.0.</strong> The safety rule's reasoning (<code>spec/safety-rule.md</code> section 8 and open point 1, from draft 3) is that nothing in 1.0.0 updates a timed layer, so a timed layer can cause no loss, only a longer exit. That reasoning has not been checked against the design posts. Decide how many timed levels 1.0.0 uses; before relying on the reasoning, verify it by a simulator test and against the posts</td>
-<td>The shape table (5d); payment deadlines; 1.0.0</td>
+<td><strong>Timed levels in 1.0.0. Decided (owner, 2026-11-12):</strong> none. 1.0.0 trees are advanceless (fixed levels only); timed levels and layer updates arrive with 1.1.0 and liquidity sales. Still to do: confirm with a simulator test that no 1.0.0 operation advances a layer, and correct <code>spec/safety-rule.md</code> where it assumes timed-layer updates in 1.0.0</td>
+<td>Decided</td>
 </tr>
 <tr>
 <td>O2</td>
-<td><strong>On-chain reserve against timed levels.</strong> "No on-chain reserve in 1.0.0" (decision 6) conflicts with O1 if a member could ever need fee coins to win a race at a timed level. The conflict goes away if 1.0.0 makes no timed-layer updates. Confirm that 1.0.0 makes none, or revisit the reserve</td>
-<td>1.0.0</td>
+<td><strong>On-chain reserve against timed levels. Resolved by O1:</strong> with no timed levels in 1.0.0 there is no tree race to fund, so "no on-chain reserve in 1.0.0" stands</td>
+<td>Resolved</td>
 </tr>
 <tr>
 <td>O3</td>
@@ -4047,8 +4047,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>O5</td>
-<td><strong>Seat cost.</strong> Seats are free, so one peer can exhaust the host's seat creations and stall a lobby (a liveness weakness, <code>spec/messages.md</code> limits). Decide whether a seat costs something (a small payment, a proof, a deposit) and when</td>
-<td>Public listed lobbies beyond Slice 1; links to the lobby deposit (issue 3)</td>
+<td><strong>Seat cost. Decided (owner, 2026-11-12):</strong> 1.0.0 seats are free, protected by invitation-only lobbies, host removal before the start, standby seats and the signing time budget. Next: a proof of a coin or channel for public lobbies (questions 4, option B). Later: a per-lobby choice among several options in the terms (option D). The seat-cap liveness weakness in <code>spec/messages.md</code> stands until B</td>
+<td>Decided</td>
 </tr>
 <tr>
 <td>O6</td>

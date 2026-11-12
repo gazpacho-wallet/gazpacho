@@ -160,7 +160,7 @@ SuperScalar Improvement Proposals, `docs/sips/`. Request in a set format, open d
 | Slice 2 | A payment on signet | After M2 |
 | M3 | Exit, watch and schedule engines | |
 | Slice 3 | A member leaves alone on signet | After M3 |
-| M4 | The full layered tree and rotation | |
+| M4 | Rotation; advanceless trees in 1.0.0 (timed levels and layer updates in 1.1.0) | |
 | M5 | Hardening of the outer pieces; Electrum backend; a node of our own for controlled-chain tests | |
 | M6 | First release candidate on signet | |
 

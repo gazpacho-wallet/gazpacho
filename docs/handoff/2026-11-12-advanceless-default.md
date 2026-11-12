@@ -49,4 +49,4 @@ The builder already supports it: Gazpacho built trees of 3, 4, 5, 8 and 16 membe
 3. Refuse refresh-in-place for a tree with no state layers (nuance 1), or confirm it already is.
 4. When advances return, keep the advanceless shape available as an option, since some hosts may prefer short exits over mid-life rebalancing.
 
-Gazpacho's 1.0.0 builds advanceless trees (owner's leaning, recorded as open question O1 until confirmed); Slice 1 on signet already does.
+Gazpacho's 1.0.0 builds advanceless trees (owner's decision, 2026-11-12); Slice 1 on signet already does.

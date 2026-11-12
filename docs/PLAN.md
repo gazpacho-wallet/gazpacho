@@ -46,7 +46,7 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 | **Slice 2** | **A payment** between two members through the host, on signet | After M2 |
 | M3 | Exit, watch and schedule engines; crash and cheating runs pass | |
 | **Slice 3** | **Leaving alone:** a member exits on signet with the host stopped | After M3 |
-| M4 | The full layered tree; rotation into the next factory | |
+| M4 | Rotation into the next factory (1.0.0 trees are advanceless: fixed levels only); the full layered tree with timed levels and layer updates moves to 1.1.0 with liquidity sales | |
 | M5 | Hardening of storage, transport and chain view; Electrum backend; a node of our own for controlled-chain tests | |
 | M6 | First release candidate on signet: lobby listings, host service, LND adapter, full local web interface, our public host | |
 

@@ -174,7 +174,7 @@ If any check fails, the member's software sends nothing for that request, tells 
 
 ## 4. Tree changes and the channel
 
-A channel is funded by an output of a leaf transaction. When the tree under a channel changes, that output changes. In 1.0.0 that happens only through **a state update in a timed layer**, which rebuilds every transaction below it, so every channel below gains a new anchor, and through rotation. Leaf changes are 1.1.0 work (section 4.2).
+A channel is funded by an output of a leaf transaction. When the tree under a channel changes, that output changes. In 1.0.0 trees are advanceless (owner decision 9, 2026-11-12: fixed levels only), so it happens only through rotation, which creates a new factory and a new funding output. From 1.1.0, **a state update in a timed layer** also changes it: it rebuilds every transaction below it, so every channel below gains a new anchor. Leaf changes are 1.1.0 work (section 4.2).
 
 ### 4.1 Rules for the channel engine
 

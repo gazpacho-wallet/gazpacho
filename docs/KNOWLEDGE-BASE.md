@@ -105,7 +105,7 @@ Newest first within each area. The date is when the owner decided.
 - Interface: layout concept H is the base, with the critique's fixes and the owner's answers still to apply. (12 Nov)
 
 ### Construction
-- Full layered tree in the first release; build the fixed tree first. Pseudo-Spilman leaves, one member per leaf. JIT channels off. Target 512 members, tested at 128 or 256.
+- **1.0.0 trees are advanceless** (owner, 2026-11-12, questions 4): every interior level fixed, no timed (Decker-Wattenhofer) levels; timed levels and layer updates arrive with 1.1.0 and liquidity sales. This replaces the earlier "full layered tree in the first release". 1.0.0 seats are free (protected by invitation-only lobbies, host removal and standbys), then a proof of a coin or channel, then a per-lobby choice of options. Pseudo-Spilman leaves, one member per leaf. JIT channels off. Target 512 members, tested at 128 or 256.
 - One funder per factory: the host, who signs funding only after the whole tree is signed. Members start at zero.
 - The factory key always needs everyone's signature. No threshold key.
 - Lightning's standard taproot channel format for the channel; the old format archived and recoverable.
