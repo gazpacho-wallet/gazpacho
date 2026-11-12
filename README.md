@@ -2,7 +2,7 @@
 
 A self-contained Bitcoin Lightning wallet for [SuperScalar](https://github.com/8144225309/SuperScalar) channel factories.
 
-One program lets you **join** a factory, where many people share a single on-chain output and each gets a Lightning channel, or **host** one. It needs no Bitcoin node, no separate Lightning node and no modified node software: Gazpacho carries its own small Lightning node and reads the chain from Electrum-style servers, or from your own node if you have one.
+One program lets you **join** a factory, where many people share a single on-chain output and each gets a Lightning channel, or **host** one. It needs no Bitcoin node, no separate Lightning node and no modified node software: Gazpacho carries its own small Lightning node and reads the chain from public Esplora servers (the HTTP interface of mempool.space and blockstream.info), comparing the answers of at least two operators. A server of your own can be added beside them.
 
 **Status: planning. Nothing here is usable yet. The first release will be signet-only.**
 
