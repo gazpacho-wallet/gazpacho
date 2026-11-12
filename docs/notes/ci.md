@@ -2,7 +2,7 @@
 
 What `.github/workflows/ci.yml` runs, what each job guards, and how to run the same check on your own machine. Written 2026-11-12 with the CI hardening branch (PR 16); brought up to date the same day, after the transport, chain view and wallet transactions merged.
 
-CI runs on every pull request and on every push to `main`. All jobs run in parallel on GitHub's `ubuntu-24.04` runners; the longest is the gcc build without sanitizers (the wallet break-checks), about 12 to 20 minutes. Everything else finishes in a few minutes.
+CI runs on every pull request and on every push to `main`. All jobs run in parallel on GitHub's `ubuntu-24.04` runners; the longest is the gcc build without sanitizers (the wallet break-checks, 20 to 28 minutes of it), about 25 to 30 minutes, under a 45-minute limit. Everything else finishes in a few minutes.
 
 ## Rules for the workflow file
 
