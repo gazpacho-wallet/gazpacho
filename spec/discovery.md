@@ -1,12 +1,29 @@
 # Discovery: finding hosts and their lobbies
 
-Specification draft 4, 2026-11-12. Status: not reviewed. Draft 4 answers the second independent review, of draft 3 (`notes/review-discovery-d3.md`, cited as **N** with its finding: N1). Draft 3 answered the first review, of draft 2 (`notes/review-discovery-d2.md`, cited as **RV**: RV 2). Draft 2 applied the owner's discovery decisions (`docs/research/ideas-ledger.md` section A, cited as **ledger**) and the peering research (`docs/research/peering-research.md`, cited as **PR**). Background: `docs/research/discovery-research.md` (**DR**). Items marked **(open)** are in section 22. Numbers marked **candidate** are reproducible random picks, not final (section 2). Fields and numbers marked **proposed** wait for the owner.
+Specification draft 4.1, 2026-11-12. Status: draft 4 confirmed by a third review (`docs/reviews/review-discovery-d4-confirm.md`, cited as **E** with its item: E1); draft 4.1 applies its seven small changes and is not itself reviewed. Draft 4 answers the second independent review, of draft 3 (`docs/reviews/review-discovery-d3.md`, cited as **N** with its finding: N1). Draft 3 answered the first review, of draft 2 (`docs/reviews/review-discovery-d2.md`, cited as **RV**: RV 2). Draft 2 applied the owner's discovery decisions (`docs/research/ideas-ledger.md` section A, cited as **ledger**) and the peering research (`docs/research/peering-research.md`, cited as **PR**). Background: `docs/research/discovery-research.md` (**DR**). Items marked **(open)** are in section 22. Numbers marked **candidate** are reproducible random picks, not final (section 2). Fields and numbers marked **proposed** wait for the owner.
 
 Conventions (integers, `point`, `sig`, `outpoint`, `TH`, "refuse", "ignore") are those of `messages.md` section 1, except that **discovery kinds are never refused**: every case `messages.md` would refuse is ignored (`messages.md` 4.1). TLV encoding is canonical as in `terms.md` section 2. Words: **host**, **member** as in `PROTOCOL.md`. **Listed** lobby: a lobby the host chooses to make public. Circle lobbies (profile 4) are never listed. **F node**: a node that sets the factory feature bit (section 3).
 
 **What each section is.** Every section heading says **(normative)** or **(informative)**. Normative text is what two implementations need to work together. Informative text gives recommended defaults; peers need not agree on it. Tests in section 21 are tagged **[C]** (needed for the demo wallet, design C), **[D]** (design D) or **[Di]** (design D, Gazpacho's own informative policy).
 
-## 0. Changes from draft 3 (informative)
+## 0. Changes in draft 4.1 (informative)
+
+The confirmation review found design C ready and design D ready after small changes, with no rework.
+
+| E | Item | How draft 4.1 handles it | Where |
+|---|---|---|---|
+| 1 | Junk from unpriced keys could fill the pending pool and evict an honest beacon | A known host is price-checked (B7) **before** a beacon is held pending; a node that is not behind holds at most 12 blocks ahead, not 144; over 64, evict the oldest pending beacon **of the link holding the most**, as for orphans. Vector D28 | 8.3 (B6), 8.4 (R-P1) |
+| 2 | Beacons from an asked-for pool page were relayed without the arrival cap | Held as before, but **relayed only if they also pass B9 (b)**, and then counted. Vector D29 | 8.3 (B9), 8.5 (RL1) |
+| 3 | The tombstone cap could evict a tombstone still needed; 8.6 disagreed with B10 | The allowance + 4 cap applies only to tombstones that withdraw **no beacon this node held**. A tombstone of a held beacon is kept until `open_height` + 1,008, bounded by B9. 8.6 aligned. Vector D30 | 8.3 (B10), 8.6 |
+| 4 | The penalty-only score could be steered to drop honest links | A miss counts only when the beacon also arrived **through an anchor link or a link older than the penalised one, or from a scout**; at most **−2** per link per 144 blocks | 13.6 |
+| 5 | The post-block catch-up could be dropped by PL3's hourly limit | A node that starts behind sends **one** catch-up once both its gossip sync (PL6) and its block sync (R-P3) are done. A node that falls behind later sends its catch-up to peers it has not asked in the last hour (a new link or a scout) | 8.4 (R-P3), 11.4 (PL6) |
+| 6 | Wording | (a) Q4 accepts `too_large`; (b) 12 says up to 8 channels; (c) section 19's `lobby_salt` row is done; (d) `pool`'s `token` is now type 9, as in `pool_request`, `too_large` type 11, and the table is in type order | 6.5, 12, 19, 11.4 |
+| 7 | The restore rule trusted a lagging chain view | After a start or restore, a host also waits until its tip agrees, within 1 block, with a second source (another chain server or its peers' tips), plus 2 blocks of margin | 8.1 |
+| N1 residual | Many attacker Tor connections still share the Tor total | Open point 17, now marked **before mainnet**. S8 no longer evicts the idle client first | 22, 11.1 |
+
+New vectors D28 to D30 run through the reference reader; each fails on draft 4's rules. No existing vector's bytes changed.
+
+## 0.1 Changes from draft 3 (informative)
 
 Draft 2 to draft 3 is recorded in draft 3's own section 0 (commit `0cbc164`); draft 1 to draft 2 in commit `fcf1de4`. The second review found design C "ready after small changes" and design D "ready after listed changes; no rework needed".
 
@@ -253,7 +270,7 @@ The same records in an ordinary type-52791 envelope (`messages.md` 4), with **`s
 | Q1 | `lobby_index`: decodes canonically within 640 bytes; `chain` equals the request's; `host_key` equals the node queried (native: the connection's BOLT 8 key; onion: the node routed to); `index_sig` verifies; `as_of_height` within 6 blocks of the asker's tip; entries as in 6.1. Otherwise drop |
 | Q2 | Index entries are **hints**. The asker fetches a listing before showing anything as a lobby |
 | Q3 | (Withdrawn in draft 2: the card rule) |
-| Q4 | `listing`: exactly one of records 2, 4, 6. A listing passes 5.2, its `outer_digest` equals the one requested, and its `host_key` equals the host's (the host queried, or the beacon's `host_id` when it came from a store node). A withdrawal passes W1 and names the requested lobby and the host's key; the asker then holds it (5.3). `unknown` must name the requested digest and come from the host itself. Otherwise drop |
+| Q4 | `listing`: exactly one of records 2, 4, 6, 8. A listing passes 5.2, its `outer_digest` equals the one requested, and its `host_key` equals the host's (the host queried, or the beacon's `host_id` when it came from a store node). A withdrawal passes W1 and names the requested lobby and the host's key; the asker then holds it (5.3). `unknown` must name the requested digest and come from the host itself. `too_large` (record 8, onion only) makes the asker retry once with a request of the size it names. Otherwise drop |
 | Q5 | Answers not asked for, or after 30 s: drop |
 
 ## 7. Host list (normative; design D)
@@ -283,7 +300,7 @@ For a light client that needs to check hosts (12 step 4), from its own node, its
 | 4 | `outer_digest` | 32 | The lobby's identifier |
 | 6 | `open_height` | `u32` | Height at which the lobby opened |
 | 8 | `deadline_height` | `u32` | `open_height` ≤ `deadline_height` ≤ `open_height` + 1,008. The beacon expires here |
-| 10 | `sequence` | `u32` | **Height × 16 + counter**: the host's tip when it signs, times 16, plus a counter 0 to 15 for beacons signed at the same height. Strictly increasing per host. A host restored from its seed continues from its tip, so nothing is lost on restore (RV 16). **After a start or a restore, a host signs no beacon until its tip is above the height at which it started**, so it never repeats a sequence it may have signed before (N11) |
+| 10 | `sequence` | `u32` | **Height × 16 + counter**: the host's tip when it signs, times 16, plus a counter 0 to 15 for beacons signed at the same height. Strictly increasing per host. A host restored from its seed continues from its tip, so nothing is lost on restore (RV 16). **After a start or a restore, a host signs no beacon until its tip is at least 2 blocks above the height at which it started, and that tip agrees within 1 block with a second source** (another chain server, or the tips its peers report), so a lagging chain view cannot make it repeat a sequence it may have signed before (N11, E7) |
 | 12 | `profile` | `u8` | **Proposed.** The outer record's profile: 1, 2 or 3 |
 | 14 | `channel_sat` | `u64` | **Proposed.** The outer record's `channel_sat` (`terms.md` type 30): at least 546 |
 | 15 to 239, odd | Unknown odd records | | Allowed, skipped, covered by the signature and **relayed unchanged** (RV 5) |
@@ -322,13 +339,13 @@ A node runs these on every beacon it receives, in this order, whether by relay o
 | B3 | Records 2, 4, 6, 8, 10, 12, 14, 240 present; no unknown even record; `profile` is 1, 2 or 3; `channel_sat` ≥ 546; `open_height` ≤ `deadline_height` ≤ `open_height` + 1,008 | Ignore (a newer version may allow it) |
 | B4 | `beacon_id` already in the seen-set | Ignore (duplicate) |
 | B5 | `beacon_sig` verifies under `host_id` | **Reject** |
-| B6 | **Heights.** `sequence` ÷ 16 ≥ `open_height`. `open_height` ≤ tip + 6 and `sequence` ÷ 16 ≤ tip + 6. A live beacon: `deadline_height` > tip. A withdrawal: `open_height` + 1,008 > tip | Ignore. A beacon ahead of this node's tip by more than 6 but at most 144 blocks is held **pending** (8.4) and re-checked at each new block (vectors D22, D25) |
+| B6 | **Heights.** `sequence` ÷ 16 ≥ `open_height`. `open_height` ≤ tip + 6 and `sequence` ÷ 16 ≤ tip + 6. A live beacon: `deadline_height` > tip. A withdrawal: `open_height` + 1,008 > tip | Ignore. A beacon ahead of this node's tip by more than 6 blocks, but at most 144 (at most 12 for a node that is not behind its peers), is held **pending** (8.4) and re-checked at each new block, unless its host is known and fails B7's price, which is checked first (E1; vectors D22, D25, D28) |
 | B7 | **Host in the graph, at a price.** `host_id` has a `node_announcement` that sets 449. Let V = the sum, over its announced channels at least **144 blocks** old, of half of each channel's capacity. The host's **beacon allowance** is 0 if V < `unit` / 4, else `min(4, max(1, floor(V / unit)))`, with `unit` 1,000,000 sat on mainnet and 10,000 on signet | Host unknown: hold as an **orphan** (8.4). Known, allowance 0: Ignore |
 | B8 | **Sequence.** (a) A held beacon or tombstone with the same `host_id` and `outer_digest`: a tombstone is final (a live beacon after it is ignored); otherwise the newcomer's `sequence` must be higher, and it replaces the held one. (b) A held beacon or tombstone with the same `host_id` and the same `sequence`, different `beacon_id`: keep the **lower `beacon_id`** (vector D17) | Ignore the loser. If the newcomer is lower, it replaces the held one |
-| B9 | **Churn** (RV 1, N4). If `sequence` is not yet in this node's memory for the host, it is a **new number**; beacons and withdrawals alike. (a) **By height part:** after counting it, no 144-block window of height parts (`sequence` ÷ 16) may hold more than **8** of the host's new numbers. (b) **By arrival:** at most **8** new numbers per host accepted while this node's tip moved through any 144 blocks; numbers from a `pool` page this node asked for are exempt from (b), not from (a). Every accepted beacon counts, whatever the order it arrived in (vector D24) | Ignore. **Never held, never relayed** (PR B8, R2) |
-| B10 | **Caps.** Live beacons: at most the host's allowance (B7). Tombstones: at most the allowance + 4. Over a cap, keep the highest `sequence`s of that kind; if the newcomer is the lowest, ignore it. A withdrawal that replaces the host's held beacon for the same lobby does not add a live beacon (N4) | Evict the lowest of that kind, or Ignore the newcomer |
+| B9 | **Churn** (RV 1, N4). If `sequence` is not yet in this node's memory for the host, it is a **new number**; beacons and withdrawals alike. (a) **By height part:** after counting it, no 144-block window of height parts (`sequence` ÷ 16) may hold more than **8** of the host's new numbers. (b) **By arrival:** at most **8** new numbers per host accepted while this node's tip moved through any 144 blocks; numbers from a `pool` page this node asked for are exempt from (b) for acceptance, not from (a), and such a number is **relayed only if it also passes (b)**, and is then counted (E2). Every accepted beacon counts, whatever the order it arrived in (vectors D24, D29) | Ignore. **Never held, never relayed** (PR B8, R2) |
+| B10 | **Caps.** Live beacons: at most the host's allowance (B7). **Orphan tombstones**, which withdraw no beacon this node held: at most the allowance + 4. Over a cap, keep the highest `sequence`s of that kind; if the newcomer is the lowest, ignore it. A tombstone that withdraws a beacon this node held is never evicted by this cap: it is kept until `open_height` + 1,008, bounded by B9 (E3; vector D30) | Evict the lowest of that kind, or Ignore the newcomer |
 
-Then: hold the beacon (or tombstone), record its `sequence` in the host's memory, add `beacon_id` to the seen-set, and relay it (8.5).
+Then: hold the beacon (or tombstone), record its `sequence` in the host's memory, add `beacon_id` to the seen-set, and relay it (8.5), except a beacon from a `pool` page that B9 (b) does not let through (E2).
 
 ### 8.4 Orphans
 
@@ -341,16 +358,16 @@ A beacon may arrive before its host's gossip.
 | R-O3 | Over 8 on one link: evict that link's oldest. Over 64: evict the oldest orphan of the link holding the most |
 | R-O4 | On each new `node_announcement` or `channel_announcement`, re-check orphans it names; one that now passes B7 continues at B8 |
 | R-O5 | Two copies of one orphan (same `beacon_id`) are one orphan |
-| R-P1 | **Pending** (N7): a beacon that passes B1 to B5 and is ahead of this node's tip (B6) by at most 144 blocks is held pending. Not seen, not relayed, not held against the sender. At most **8** per link and **64** in total, oldest evicted first |
+| R-P1 | **Pending** (N7, E1): a beacon that passes B1 to B5 and is ahead of this node's tip (B6) is held pending if it is at most **144** blocks ahead, or at most **12** for a node whose tip is within 6 blocks of its peers'; and, if its host is in the graph, only if the host passes B7's price. Not seen, not relayed, not held against the sender. At most **8** per link (over it, evict that link's oldest) and **64** in total (over it, evict the oldest pending beacon of the link holding the most), so no link can evict another link's pending beacons while holding fewer (vector D28) |
 | R-P2 | At each new block, re-offer every pending beacon from B1. One still ahead stays pending. A pending beacon is dropped after 6 hours |
-| R-P3 | A node that was more than 6 blocks behind when it started also sends a catch-up `pool_request` once its tip is within 6 blocks of its peers' (PL6) |
+| R-P3 | A node that is more than 6 blocks behind when it starts sends **one** catch-up (PL6) once **both** its gossip sync and its block sync are done (tip within 6 blocks of its peers'). A node that falls more than 6 blocks behind later sends its catch-up, once caught up, to peers it has not sent a new `pool_request` in the last hour (a new link or a scout), so PL3 does not drop it (E5) |
 | R-O6 | **Pool-answer orphans** (RV 8): orphans from `pool` answers this node asked for are bounded separately, at most **256** in total, 20 minutes each, oldest first. A node SHOULD NOT send a catch-up `pool_request` before its gossip sync is done (PL6), so few of these arise |
 
 ### 8.5 Relay
 
 | Rule | Text |
 |---|---|
-| RL1 | **Immediately** after accepting a beacon, a node sends it to every overlay link whose `beacon_filter` matches (10.2), except the link it came from and links known to have it (ledger A6). Never to light clients (they ask) |
+| RL1 | **Immediately** after accepting a beacon (a beacon from a `pool` page only if B9 (b) lets it through, E2), a node sends it to every overlay link whose `beacon_filter` matches (10.2), except the link it came from and links known to have it (ledger A6). Never to light clients (they ask) |
 | RL2 | **Known set.** Per link, a node remembers the `beacon_id`s sent to or received from it while they are held, and never sends a beacon to a link known to have it |
 | RL3 | **Outgoing queue** per link: at most 64 beacons waiting, and at most 4 from one host. Beyond that, drop the waiting beacon whose host has the **lowest weight** (V × min(age of oldest channel, 1,008) / 1,008, as A7); ties, the oldest waiting. A burst from many cheap hosts cannot push out a heavier host's beacon (RV 4) |
 | RL4 | **Per-link rate** for relayed beacons: at most **1 a second**, bursts of **20**. More are ignored. It does not apply to beacons inside a `pool` answer this node asked for, which are bounded by the page (11.4) |
@@ -361,7 +378,7 @@ A beacon may arrive before its host's gossip.
 ### 8.6 Seen-set, held set, memory, persistence
 
 - **Seen-set:** the `beacon_id`s accepted, each kept until its `deadline_height` (a tombstone: `open_height` + 1,008). Size at least `min(262,144, max(4,096, 64 × F))` entries, where F is the number of nodes in the graph that set 449: 40 bytes each, at most 10.5 MB (vector D10). When full, evict the oldest entry whose beacon is no longer held. A lost entry is not always harmless: B8 against the held set, the tombstones and the per-host memory must still drop the copy that comes back.
-- **Held set:** live beacons (at most 4 per host, 166 bytes each) and tombstones (bounded by B9: at most 8 per 144 blocks per host).
+- **Held set:** live beacons (at most the allowance, at most 4 per host, 166 bytes each); tombstones of beacons this node held (kept until `open_height` + 1,008, bounded by B9: at most 8 new numbers per 144 blocks per host, so at most 56 over a lifetime); and orphan tombstones (at most the allowance + 4 per host, B10).
 - **Per host:** every accepted `sequence` and its height part, kept until 1,008 blocks after that host's last beacon's `deadline_height` (B8, B9).
 - **Persistence.** A store node MUST, and other relays SHOULD, keep the held set with its tombstones, the seen-set and the per-host memory across restarts, as Bitcoin Core keeps its mempool (PR F7). On start it drops expired entries and re-checks every host against the graph (B7); a beacon whose host fails is dropped, not orphaned.
 
@@ -479,7 +496,7 @@ A store node is a relay that sent `store` = 1. While the connection lasts it MUS
 | S5 Pool | Answer `pool_request` on overlay and client links (11.4) |
 | S6 Persist | Keep its store, tombstones and seen-set across restarts (8.6) |
 | S7 Limits | Per overlay link, at most 16 `listing_request`s in flight and 20 per 10 s |
-| S8 Clients | Serve client links outside the overlay's slot count, with their own budget: per client, at most 20 `listing_request`s per 10 s and the pool limits of PL3. Clearnet: at most 4 client links per address group. **Tor:** client links are counted per connection, not per group, and served in turn (H2); **informative default:** up to 64 client links in total, of which up to 48 may be Tor; when full, a new client replaces the client idle longest (N1) |
+| S8 Clients | Serve client links outside the overlay's slot count, with their own budget: per client, at most 20 `listing_request`s per 10 s and the pool limits of PL3. Clearnet: at most 4 client links per address group. **Tor:** client links are counted per connection, not per group, and served in turn (H2); **informative default:** up to 64 client links in total, of which up to 48 may be Tor; when full, a new client is refused unless a client without a proven resource (a channel or a seat) has been idle more than 10 minutes, which it then replaces; a busy client never pushes out a client that proved a resource (N1; confirmation review, N1 status) |
 
 A store node MAY cap its store; when full it evicts the lowest-weight host's listings first (A7's weight), then the nearest deadline, and never evicts to make room for a host already at its allowance.
 
@@ -523,8 +540,8 @@ A node asks an F node for the live beacons and tombstones it holds (ledger A3). 
 | 2 | `chain` | 32 | Equals the request's |
 | 4 | `beacons` | 0 or more | Entries, each `u16` length then a beacon's records. Increasing `host_id`, then increasing `sequence`. One host's entries may span pages (N4) |
 | 5 | `next` | 37 | Present when more remain: the (`host_id`, `sequence`) of the last entry in this page |
-| 9 | `too_large` | `u16` | Onion only: not even one entry fits the request's onion; the value is the size the asker must send (N9) |
-| 7 | `token` | 8 | With `next` only: a fresh one-use value, chosen by the answerer |
+| 9 | `token` | 8 | With `next` only: a fresh one-use value, chosen by the answerer. The same type as `pool_request`'s `token` (E6) |
+| 11 | `too_large` | `u16` | Onion only: not even one entry fits the request's onion; the value is the size the asker must send (N9). (In `listing` the same meaning is record 8) |
 
 | Rule | Text |
 |---|---|
@@ -533,7 +550,7 @@ A node asks an F node for the live beacons and tombstones it holds (ledger A3). 
 | PL3 | **Rates** (RV 8, N1, N2, N9). A request **without `token`** is a new request, with or without `after`. New requests: over an overlay or client link, one per connection and at most one an hour per peer; and, across all clearnet connections, at most **4 an hour per address group**. Tor connections are limited per connection only, served in turn as H2, with a total of 128 new requests an hour. By onion message: within H2's onion budget, at most one new request per 60 s per incoming peer. **A continuation** (with `after` and `token`) is free only if `after` and `token` equal a `next` and `token` this answerer issued within the last 60 s, natively on the same connection, or by onion message to anyone holding the token (so each page may use a fresh reply path, O4). Each token is used once. Anything else is dropped silently (vector D26) |
 | PL4 | Store nodes MUST answer on overlay and client links, and SHOULD answer by onion message within H2's onion budget. Other relays SHOULD answer over overlay links (Bitcoin Core gates BIP 35 `mempool` for bandwidth and fingerprinting reasons; these limits play that role) |
 | PL5 | The asker runs 8.3 on every beacon in the answer, in order. RL4 does not apply (RL4); orphans go to R-O6. A light client checks hosts as 12 says |
-| PL6 | **Catch-up.** A relay sends one `pool_request` with no filter to at least one store peer, if it has one, and to one other overlay link in a different address group, **after its initial gossip sync is done**: when every gossip peer it asked for a full sync has finished it, or when no new `node_announcement` that sets 449 has arrived for 10 minutes, whichever comes first, and **at the latest 30 minutes** after start (N3). It does so again after catching up on blocks (R-P3) |
+| PL6 | **Catch-up.** A relay sends one `pool_request` with no filter to at least one store peer, if it has one, and to one other overlay link in a different address group, **after its initial gossip sync is done**: when every gossip peer it asked for a full sync has finished it, or when no new `node_announcement` that sets 449 has arrived for 10 minutes, whichever comes first, and **at the latest 30 minutes** after start (N3). A node that starts behind waits for its block sync too and sends one catch-up (R-P3, E5) |
 
 Size: about 2 live entries and 1.5 tombstones per host, 168 bytes each: about 59 KB at 100 hosts, 588 KB at 1,000 (several pages). The worst case for one host is its allowance plus allowance + 4 tombstones, at most 12 entries.
 
@@ -558,7 +575,7 @@ A light client has a chain server but no gossip graph.
 1. **Choose 2 store nodes run by different operators**, from the built-in list or an invitation. At least one should not be a host. A light client whose store nodes are all run by one operator **can be censored completely by that operator**: signatures stop forgery, not omission, and the union of sources is complete only if one source is complete.
 2. **Connect directly**, over Tor where possible, send `overlay_init` with `store` = 0 and `client` = 1, then `pool_request` with the user's filter, following `next` and `token`. Over Tor, the store node counts the client per connection (S8), so other Tor clients do not use up its budget.
 3. **Check each beacon**: B2 to B6 and B8 to B10 against the chain server's tip.
-4. **Check each new host** (B7) with `host_list_request` naming it (7, D19) to the same store node or another: the `node_announcement` with bit 449 and up to 4 `channel_announcement`s; signatures; then each channel through the chain server (3 lookups on Electrum, 4 on Esplora, A1); then the price. Cache for 144 blocks. A client that skips this trusts the store node for B7 and says so in its interface.
+4. **Check each new host** (B7) with `host_list_request` naming it (7, D19) to the same store node or another: the `node_announcement` with bit 449 and up to 8 `channel_announcement`s; signatures; then each channel through the chain server (3 lookups on Electrum, 4 on Esplora, A1); then the price. Cache for 144 blocks. A client that skips this trusts the store node for B7 and says so in its interface.
 5. **Merge** answers from both sources.
 6. **Fetch listings** from the same store node; the host only on `listing_not_held`.
 7. **Then** query the chosen host for live state (`hello`) and join directly.
@@ -626,7 +643,7 @@ Peers need not agree on this section. Its numbers are recommended defaults from 
 | Term | Sign | Rule |
 |---|---|---|
 | First delivery | — | **Dropped** in draft 4: any credit for delivering beacons can be farmed by an attacker that delivers its own hosts' beacons (N5). Scores are penalties only |
-| Missed delivery | − | −1 for each beacon that arrived on at least 2 other links in 2 other address groups, or from a scout, and that this link, linked since before its `open_height`, never sent within 10 min. At most −1 per host per 144 blocks. Counted only after 20 beacons in the window |
+| Missed delivery | − | −1 for each beacon that this link, linked since before its `open_height`, never sent within 10 min, **counted only if** the beacon also reached this node through an anchor link, through a link older than this one, or from a scout (E4). At most −1 per host and **at most −2 in total per link per 144 blocks**. Counted only after 20 beacons in the window. An attacker that sends its own hosts' beacons only through its own links cannot charge an older honest link |
 | Behaviour | − (squared) | Over RL4, reconnecting during a back-off, filter churn |
 | Store peer | − | `listing_not_held` for listings it should hold (beacons more than 10 min old) |
 
@@ -795,7 +812,7 @@ Keep Nostr as an optional fallback now; when design D ships, use the overlay fir
 | `LOBBY.md` "What is public" | Beacons, store nodes, the pool request | Done (commit `a4fd3bc`); withdrawals to add |
 | `PROTOCOL.md` 7, 8, 10 | Kinds, tags (`gazpacho/withdrawal`), the bit | Done in draft 3; draft 4 references updated |
 | `messages.md` open point 1 | Matches `messages.md` 2 (the bit is set by builds with discovery) | Done in draft 4 |
-| `terms.md` 3 (`lobby_salt`) | "16 random bytes, fresh for every lobby, never reused" (W4) | **Not done**: outside this edit; for the terms editor |
+| `terms.md` 3 (`lobby_salt`) | "MUST draw a fresh salt … MUST NOT reuse one" (W4) | Done (`terms.md` row 6) |
 
 ## 20. Test vectors (normative)
 
@@ -992,6 +1009,12 @@ ce37677a6601 0089 00…00 (32)
 
 **D23. Listing reader (RV 2).** D4 and D4w in either order: nothing shown. A withdrawal of T1 signed by `other host`: ignored, D4 shown. A replay of four old listings of the test host (start 290,000) beside its new lobby (start 290,100), at tip 290,101: the new lobby is shown (the cap keeps the latest start). With the four old lobbies' withdrawals present: only the new lobby is shown.
 
+**D28. Pending pool against junk (E1).** A node at tip 290,000 holds one honest beacon 10 blocks ahead from link `good`, pending. 72 beacons of an unknown host, 10 blocks ahead, arrive over 9 other links, 8 each: the pool holds 64 and **the honest beacon survives** (draft 4: evicted). A beacon of a known host whose half-capacity is 2,499 sat is ignored at B7 before it is held pending. A node that is not behind does not hold a beacon 100 blocks ahead.
+
+**D29. Pool pages and the arrival cap (E2).** D24's 56 back-dated beacons arriving in a `pool` page this node asked for: accepted (the newest held, allowance 1), **8 relayed** (draft 4: 56). D24's 56 orphan withdrawals from a page: 8 relayed, 5 held.
+
+**D30. Tombstones of held beacons (E3).** A host with allowance 1 opens and withdraws one lobby a day for 6 days: **all 6 tombstones are kept** (draft 4 evicted the oldest at the allowance + 4 = 5). Day 1's beacon offered again after the seen-set lost it: ignored by its tombstone.
+
 Not yet vectors **(open, point 11)**: a channel anchor and a `host_list` entry (real BOLT 7 messages with ECDSA signatures).
 
 ## 21. Tests (normative)
@@ -1046,6 +1069,10 @@ Decoders are generated from the tables and fuzzed, as in `messages.md` 12.
 33. [D] D20 in full, and a host restored from its seed: it signs its first beacon at the next block, never repeating a sequence, and the beacon is accepted (8.1).
 33a. [D] D24 in full: 56 back-dated beacons relayed at most 8; 56 withdrawals for unknown lobbies relayed at most 8; from asked-for pages at most allowance + 4 tombstones held.
 33b. [D] D25 in full: a node 10 blocks behind accepts a beacon at its next block without a second offer, and relays it.
+33c. [D] D28, D29 and D30 in full (E1 to E3).
+33d. [D] A phone that starts 50 blocks behind sends exactly one catch-up, after both its gossip and block sync, and it is answered (E5).
+33e. [D] A host restored on a device whose chain server lags 3 blocks signs nothing until a second source agrees (E7).
+33f. [Di] An attacker with 2 links and 11 priced hosts publishing only through its own links does not drive an older honest link below zero (13.6, E4).
 34. [D] A host with half-capacity 2,499 sat on signet, or channels 143 blocks old: its beacons are ignored. With 20,000 sat: 2 live beacons allowed (B7, B10).
 35. [D] 100 cheap hosts release 4 beacons each at once: a heavier host's beacon waiting in the same queues is not dropped (RL3).
 36. [D] A link sending 100 relayed beacons in one second: 20 accepted, then 1 a second (RL4). A `pool` page of 356 beacons that this node asked for: all checked.
@@ -1098,5 +1125,5 @@ Decoders are generated from the tables and fuzzed, as in `messages.md` 12.
 14. **No incentive to run a store node.** N2 needs at least 5 from 3 operators before Nostr can go.
 15. **The Tor-only group** (13.2) caps links to most of today's network at 3. Measure on signet and mainnet before tuning.
 16. **The churn limit binds busy hosts.** 8 new numbers per 144 blocks is 4 opens and 4 withdrawals a day. A host that opens more lobbies than that reaches it, and its later beacons are ignored at some nodes or all (two nodes may disagree on which ninth beacon they dropped). A ladder host opening one or two lobbies a day is well inside it. Raise to 12 if the owner wants more headroom.
-17. **Tor budgets** (H2, S8, PL3): per-connection turns stop one Tor client from starving the rest, but many Tor connections from one attacker still share the Tor total with honest ones. Connections with a channel or seat go first; a small proof of work for Tor askers is the next step if needed.
+17. **Tor budgets, before mainnet** (H2, S8, PL3): per-connection turns stop one Tor client from starving the rest, but many Tor connections from one attacker still share the Tor total with honest ones. With 8 index requests per 10 s and N attacker connections, an honest newcomer waits about N / 8 × 10 s, past the 30 s timeout once N > 24. Connections with a channel or seat go first, but a new browsing user has neither. Acceptable on signet; **must be solved before mainnet**, for example by a small proof of work for Tor askers without a resource, or a larger Tor total for hosts that can afford it.
 18. **The overlay eligibility price** (E1: `unit` / 16) and the Tor-only cap of 3 links: to tune on signet.
