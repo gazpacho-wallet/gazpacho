@@ -32,3 +32,13 @@ add_test(NAME wallet_tx_no_io
   COMMAND ${Python3_EXECUTABLE} ${GZW_TESTS}/check_no_io.py $<TARGET_FILE:gazpacho_wallet_tx>
           --also-allow "secp256k1_schnorrsig_sign32|secp256k1_schnorrsig_verify|gzw_wipe|gzw_ct_equal|gzw_bip86_output_from_master|gzw_bip86_tweaked_keypair")
 
+# The tool.  Its chain commands are compiled in when the chain port's libcurl
+# target exists anywhere in the build (it is on another branch for now).
+add_executable(gz-wallet-tx ${GZ_ROOT}/tools/gz-wallet-tx/main.c)
+target_link_libraries(gz-wallet-tx PRIVATE gazpacho_wallet_tx
+  $<$<TARGET_EXISTS:gazpacho_chain_curl>:gazpacho_chain_curl>)
+target_compile_definitions(gz-wallet-tx PRIVATE
+  $<$<TARGET_EXISTS:gazpacho_chain_curl>:GZT_WITH_CHAIN>)
+target_compile_options(gz-wallet-tx PRIVATE ${GZW_WARNINGS})
+add_test(NAME wallet_tx_tool
+  COMMAND sh ${GZT_TESTS}/test_tool.sh $<TARGET_FILE:gz-wallet-tx> ${CMAKE_CURRENT_BINARY_DIR}/tool-test)
