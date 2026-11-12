@@ -724,6 +724,68 @@ static void c4d_c10_c11_h1(void)
     }
 }
 
+/* Every check's name, against its enum value (the names are a list in enum order). */
+static void names(void)
+{
+    static const struct { gz_chk_t c; const char *n; } NAMES[] = {
+        {GZ_CHK_OK, "ok"},
+        {GZ_CHK_C8A_PURPOSE, "c8a_purpose"},
+        {GZ_CHK_C8A_VERSION, "c8a_version"},
+        {GZ_CHK_C8A_DIGEST, "c8a_digest"},
+        {GZ_CHK_C8A_READY_OUTER, "c8a_ready_outer"},
+        {GZ_CHK_C1_PARTICIPANTS, "c1_participants"},
+        {GZ_CHK_C1_DUPLICATE_KEY, "c1_duplicate_key"},
+        {GZ_CHK_C1_BAD_KEY, "c1_bad_key"},
+        {GZ_CHK_C1_HOST_KEY, "c1_host_key"},
+        {GZ_CHK_C1_FUNDING_TX, "c1_funding_tx"},
+        {GZ_CHK_C1_FUNDING_TXID, "c1_funding_txid"},
+        {GZ_CHK_C1_FUNDING_VOUT, "c1_funding_vout"},
+        {GZ_CHK_C1_FUNDING_AMOUNT, "c1_funding_amount"},
+        {GZ_CHK_C1_FUNDING_SCRIPT_LEN, "c1_funding_script_len"},
+        {GZ_CHK_C1_FUNDING_SCRIPT, "c1_funding_script"},
+        {GZ_CHK_C1_NOT_AGGREGATE, "c1_not_aggregate"},
+        {GZ_CHK_C1_IMPORT_DIFFERS, "c1_import_differs"},
+        {GZ_CHK_C1_IMPORT_FAILED, "c1_import_failed"},
+        {GZ_CHK_BINDING, "binding"},
+        {GZ_CHK_C7_NOT_MY_KEY, "c7_not_my_key"},
+        {GZ_CHK_C10_BUSY, "c10_busy"},
+        {GZ_CHK_C7_OTHER_TREE, "c7_other_tree"},
+        {GZ_CHK_C8_PLACEMENT, "c8_placement"},
+        {GZ_CHK_C8_ANCHORS, "c8_anchors"},
+        {GZ_CHK_C8_K, "c8_k"},
+        {GZ_CHK_C8_LAYER_STEP, "c8_layer_step"},
+        {GZ_CHK_C8_LAYER_STATES, "c8_layer_states"},
+        {GZ_CHK_C8_HASHES, "c8_hashes"},
+        {GZ_CHK_C8_DISTRIBUTION, "c8_distribution"},
+        {GZ_CHK_C8_DEADLINES, "c8_deadlines"},
+        {GZ_CHK_C8_MEMBERS_TERMS, "c8_members_terms"},
+        {GZ_CHK_C8_MEMBERS_OWN, "c8_members_own"},
+        {GZ_CHK_C8_NO_SHAPE, "c8_no_shape"},
+        {GZ_CHK_C8_SHAPE, "c8_shape"},
+        {GZ_CHK_C8_FIXED_LEVELS, "c8_fixed_levels"},
+        {GZ_CHK_C8_FEE_RULE, "c8_fee_rule"},
+        {GZ_CHK_C8_FEE_CEILING, "c8_fee_ceiling"},
+        {GZ_CHK_C8_FUNDING_RULE, "c8_funding_rule"},
+        {GZ_CHK_C8_LSTOCK_DELAY, "c8_lstock_delay"},
+        {GZ_CHK_C8_END_ZERO, "c8_end_zero"},
+        {GZ_CHK_C8_END_WINDOW, "c8_end_window"},
+        {GZ_CHK_C8_EXIT_TIME, "c8_exit_time"},
+        {GZ_CHK_C8_UNDERFUNDED, "c8_underfunded"},
+        {GZ_CHK_C8_DUST, "c8_dust"},
+        {GZ_CHK_C8_IMPORT_MINIMUM, "c8_import_minimum"},
+        {GZ_CHK_C8_LEAF_KIND, "c8_leaf_kind"},
+        {GZ_CHK_C8_OWN_LEAF, "c8_own_leaf"},
+        {GZ_CHK_C8_CHANNEL_TERMS, "c8_channel_terms"},
+        {GZ_CHK_C8_CHANNEL_OWN, "c8_channel_own"},
+        {GZ_CHK_C6_TIERS, "c6_tiers"},
+        {GZ_CHK_C5_UNKNOWN_PATH, "c5_unknown_path"},
+        {GZ_CHK_CRYPTO, "crypto"},
+        {GZ_CHK_ARGUMENT, "argument"},
+    };
+    size_t i;
+    for (i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) CHECK(strcmp(gz_chk_name(NAMES[i].c), NAMES[i].n) == 0);
+}
+
 int main(void)
 {
     gz_tree_secp_crypto(test_ctx(), &CR);
@@ -741,5 +803,6 @@ int main(void)
     crypto_and_arguments();
     identities();
     c4d_c10_c11_h1();
+    names();
     return check_done();
 }

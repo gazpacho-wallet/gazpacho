@@ -34,64 +34,75 @@ uint16_t gz_tree_reason(gz_chk_t c)
     return GZ_REASON_UNSAFE;
 }
 
+/* Names, NUL-separated, in enum order (generated from tree.h; test_tree_checks
+ * checks every one). A table of pointers would need relocations, which the
+ * isolation check reads as writable data in a sanitizer build. */
+static const char CHK_NAMES[] =
+    "ok\0"
+    "c8a_purpose\0"
+    "c8a_version\0"
+    "c8a_digest\0"
+    "c8a_ready_outer\0"
+    "c1_participants\0"
+    "c1_duplicate_key\0"
+    "c1_bad_key\0"
+    "c1_host_key\0"
+    "c1_funding_tx\0"
+    "c1_funding_txid\0"
+    "c1_funding_vout\0"
+    "c1_funding_amount\0"
+    "c1_funding_script_len\0"
+    "c1_funding_script\0"
+    "c1_not_aggregate\0"
+    "c1_import_differs\0"
+    "c1_import_failed\0"
+    "binding\0"
+    "c7_not_my_key\0"
+    "c10_busy\0"
+    "c7_other_tree\0"
+    "c8_placement\0"
+    "c8_anchors\0"
+    "c8_k\0"
+    "c8_layer_step\0"
+    "c8_layer_states\0"
+    "c8_hashes\0"
+    "c8_distribution\0"
+    "c8_deadlines\0"
+    "c8_members_terms\0"
+    "c8_members_own\0"
+    "c8_no_shape\0"
+    "c8_shape\0"
+    "c8_fixed_levels\0"
+    "c8_fee_rule\0"
+    "c8_fee_ceiling\0"
+    "c8_funding_rule\0"
+    "c8_lstock_delay\0"
+    "c8_end_zero\0"
+    "c8_end_window\0"
+    "c8_exit_time\0"
+    "c8_underfunded\0"
+    "c8_dust\0"
+    "c8_import_minimum\0"
+    "c8_leaf_kind\0"
+    "c8_own_leaf\0"
+    "c8_channel_terms\0"
+    "c8_channel_own\0"
+    "c6_tiers\0"
+    "c5_unknown_path\0"
+    "crypto\0"
+    "argument\0"
+    ;
+
 const char *gz_chk_name(gz_chk_t c)
 {
-    switch (c) {
-    case GZ_CHK_OK: return "ok";
-    case GZ_CHK_C8A_PURPOSE: return "c8a_purpose";
-    case GZ_CHK_C8A_VERSION: return "c8a_version";
-    case GZ_CHK_C8A_DIGEST: return "c8a_digest";
-    case GZ_CHK_C8A_READY_OUTER: return "c8a_ready_outer";
-    case GZ_CHK_C1_PARTICIPANTS: return "c1_participants";
-    case GZ_CHK_C1_DUPLICATE_KEY: return "c1_duplicate_key";
-    case GZ_CHK_C1_BAD_KEY: return "c1_bad_key";
-    case GZ_CHK_C1_HOST_KEY: return "c1_host_key";
-    case GZ_CHK_C1_FUNDING_TX: return "c1_funding_tx";
-    case GZ_CHK_C1_FUNDING_TXID: return "c1_funding_txid";
-    case GZ_CHK_C1_FUNDING_VOUT: return "c1_funding_vout";
-    case GZ_CHK_C1_FUNDING_AMOUNT: return "c1_funding_amount";
-    case GZ_CHK_C1_FUNDING_SCRIPT_LEN: return "c1_funding_script_len";
-    case GZ_CHK_C1_FUNDING_SCRIPT: return "c1_funding_script";
-    case GZ_CHK_C1_NOT_AGGREGATE: return "c1_not_aggregate";
-    case GZ_CHK_C1_IMPORT_DIFFERS: return "c1_import_differs";
-    case GZ_CHK_C1_IMPORT_FAILED: return "c1_import_failed";
-    case GZ_CHK_BINDING: return "binding";
-    case GZ_CHK_C7_NOT_MY_KEY: return "c7_not_my_key";
-    case GZ_CHK_C10_BUSY: return "c10_busy";
-    case GZ_CHK_C7_OTHER_TREE: return "c7_other_tree";
-    case GZ_CHK_C8_PLACEMENT: return "c8_placement";
-    case GZ_CHK_C8_ANCHORS: return "c8_anchors";
-    case GZ_CHK_C8_K: return "c8_k";
-    case GZ_CHK_C8_LAYER_STEP: return "c8_layer_step";
-    case GZ_CHK_C8_LAYER_STATES: return "c8_layer_states";
-    case GZ_CHK_C8_HASHES: return "c8_hashes";
-    case GZ_CHK_C8_DISTRIBUTION: return "c8_distribution";
-    case GZ_CHK_C8_DEADLINES: return "c8_deadlines";
-    case GZ_CHK_C8_MEMBERS_TERMS: return "c8_members_terms";
-    case GZ_CHK_C8_MEMBERS_OWN: return "c8_members_own";
-    case GZ_CHK_C8_NO_SHAPE: return "c8_no_shape";
-    case GZ_CHK_C8_SHAPE: return "c8_shape";
-    case GZ_CHK_C8_FIXED_LEVELS: return "c8_fixed_levels";
-    case GZ_CHK_C8_FEE_RULE: return "c8_fee_rule";
-    case GZ_CHK_C8_FEE_CEILING: return "c8_fee_ceiling";
-    case GZ_CHK_C8_FUNDING_RULE: return "c8_funding_rule";
-    case GZ_CHK_C8_LSTOCK_DELAY: return "c8_lstock_delay";
-    case GZ_CHK_C8_END_ZERO: return "c8_end_zero";
-    case GZ_CHK_C8_END_WINDOW: return "c8_end_window";
-    case GZ_CHK_C8_EXIT_TIME: return "c8_exit_time";
-    case GZ_CHK_C8_UNDERFUNDED: return "c8_underfunded";
-    case GZ_CHK_C8_DUST: return "c8_dust";
-    case GZ_CHK_C8_IMPORT_MINIMUM: return "c8_import_minimum";
-    case GZ_CHK_C8_LEAF_KIND: return "c8_leaf_kind";
-    case GZ_CHK_C8_OWN_LEAF: return "c8_own_leaf";
-    case GZ_CHK_C8_CHANNEL_TERMS: return "c8_channel_terms";
-    case GZ_CHK_C8_CHANNEL_OWN: return "c8_channel_own";
-    case GZ_CHK_C6_TIERS: return "c6_tiers";
-    case GZ_CHK_C5_UNKNOWN_PATH: return "c5_unknown_path";
-    case GZ_CHK_CRYPTO: return "crypto";
-    case GZ_CHK_ARGUMENT: return "argument";
+    const char *p = CHK_NAMES;
+    int i;
+    if ((int)c < (int)GZ_CHK_OK || (int)c > (int)GZ_CHK_ARGUMENT) return "unknown";
+    for (i = 0; i < (int)c; i++) {
+        while (*p) p++;
+        p++;
     }
-    return "unknown";
+    return p;
 }
 
 static int fail(gz_tree_verdict_t *v, gz_chk_t c, int32_t at)

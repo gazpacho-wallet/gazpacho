@@ -511,52 +511,62 @@ gz_terms_class_t gz_terms_classify(const gz_terms_outer_t *o, const gz_terms_cur
     return cls;
 }
 
+/* Names, NUL-separated, in enum order (test_tree_terms checks every one).
+ * Not a table of pointers: see checks.c. */
+static const char ERR_NAMES[] =
+    "ok\0"
+    "too_long\0"
+    "truncated\0"
+    "not_minimal\0"
+    "order\0"
+    "unknown_even\0"
+    "reserved_type\0"
+    "type_not_allowed\0"
+    "length\0"
+    "missing\0"
+    "utf8\0"
+    "host_key\0"
+    "profile\0"
+    "target\0"
+    "minimum\0"
+    "shortfall\0"
+    "ready_window\0"
+    "signing_budget\0"
+    "step_timeout\0"
+    "lifetime\0"
+    "winddown\0"
+    "channel\0"
+    "feerate\0"
+    "switches\0"
+    "range\0"
+    "shape_encoding\0"
+    "shape_max_members\0"
+    "shape_n_interior\0"
+    "shape_width\0"
+    "shape_leaf_kind\0"
+    "shape_target\0"
+    "shape_split\0"
+    "chain\0"
+    "slice1\0"
+    "version\0"
+    "adj_set\0"
+    "adj_value\0"
+    "scope\0"
+    "pinned_key\0"
+    "outer_sig\0"
+    "current_sig\0"
+    "outer_digest\0"
+    "argument\0"
+    ;
+
 const char *gz_terms_err_name(gz_terms_err_t e)
 {
-    switch (e) {
-    case GZ_TERMS_OK: return "ok";
-    case GZ_TERMS_E_TOO_LONG: return "too_long";
-    case GZ_TERMS_E_TRUNCATED: return "truncated";
-    case GZ_TERMS_E_NOT_MINIMAL: return "not_minimal";
-    case GZ_TERMS_E_ORDER: return "order";
-    case GZ_TERMS_E_UNKNOWN_EVEN: return "unknown_even";
-    case GZ_TERMS_E_RESERVED_TYPE: return "reserved_type";
-    case GZ_TERMS_E_TYPE_NOT_ALLOWED: return "type_not_allowed";
-    case GZ_TERMS_E_LENGTH: return "length";
-    case GZ_TERMS_E_MISSING: return "missing";
-    case GZ_TERMS_E_UTF8: return "utf8";
-    case GZ_TERMS_E_HOST_KEY: return "host_key";
-    case GZ_TERMS_E_PROFILE: return "profile";
-    case GZ_TERMS_E_TARGET: return "target";
-    case GZ_TERMS_E_MINIMUM: return "minimum";
-    case GZ_TERMS_E_SHORTFALL: return "shortfall";
-    case GZ_TERMS_E_READY_WINDOW: return "ready_window";
-    case GZ_TERMS_E_SIGNING_BUDGET: return "signing_budget";
-    case GZ_TERMS_E_STEP_TIMEOUT: return "step_timeout";
-    case GZ_TERMS_E_LIFETIME: return "lifetime";
-    case GZ_TERMS_E_WINDDOWN: return "winddown";
-    case GZ_TERMS_E_CHANNEL: return "channel";
-    case GZ_TERMS_E_FEERATE: return "feerate";
-    case GZ_TERMS_E_SWITCHES: return "switches";
-    case GZ_TERMS_E_RANGE: return "range";
-    case GZ_TERMS_E_SHAPE_ENCODING: return "shape_encoding";
-    case GZ_TERMS_E_SHAPE_MAX_MEMBERS: return "shape_max_members";
-    case GZ_TERMS_E_SHAPE_N_INTERIOR: return "shape_n_interior";
-    case GZ_TERMS_E_SHAPE_WIDTH: return "shape_width";
-    case GZ_TERMS_E_SHAPE_LEAF_KIND: return "shape_leaf_kind";
-    case GZ_TERMS_E_SHAPE_TARGET: return "shape_target";
-    case GZ_TERMS_E_SHAPE_SPLIT: return "shape_split";
-    case GZ_TERMS_E_CHAIN: return "chain";
-    case GZ_TERMS_E_SLICE1: return "slice1";
-    case GZ_TERMS_E_VERSION: return "version";
-    case GZ_TERMS_E_ADJ_SET: return "adj_set";
-    case GZ_TERMS_E_ADJ_VALUE: return "adj_value";
-    case GZ_TERMS_E_SCOPE: return "scope";
-    case GZ_TERMS_E_PINNED_KEY: return "pinned_key";
-    case GZ_TERMS_E_OUTER_SIG: return "outer_sig";
-    case GZ_TERMS_E_CURRENT_SIG: return "current_sig";
-    case GZ_TERMS_E_OUTER_DIGEST: return "outer_digest";
-    case GZ_TERMS_E_ARGUMENT: return "argument";
+    const char *p = ERR_NAMES;
+    int i;
+    if ((int)e < (int)GZ_TERMS_OK || (int)e > (int)GZ_TERMS_E_ARGUMENT) return "unknown";
+    for (i = 0; i < (int)e; i++) {
+        while (*p) p++;
+        p++;
     }
-    return "unknown";
+    return p;
 }

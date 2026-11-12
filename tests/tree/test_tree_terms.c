@@ -709,6 +709,58 @@ static void test_target_edge(void)
     CHECK(gz_terms_encode_outer(&t, b, sizeof b) == 0);
 }
 
+/* Every refusal's name, against its enum value. */
+static void names(void)
+{
+    static const struct { gz_terms_err_t e; const char *n; } NAMES[] = {
+        {GZ_TERMS_OK, "ok"},
+        {GZ_TERMS_E_TOO_LONG, "too_long"},
+        {GZ_TERMS_E_TRUNCATED, "truncated"},
+        {GZ_TERMS_E_NOT_MINIMAL, "not_minimal"},
+        {GZ_TERMS_E_ORDER, "order"},
+        {GZ_TERMS_E_UNKNOWN_EVEN, "unknown_even"},
+        {GZ_TERMS_E_RESERVED_TYPE, "reserved_type"},
+        {GZ_TERMS_E_TYPE_NOT_ALLOWED, "type_not_allowed"},
+        {GZ_TERMS_E_LENGTH, "length"},
+        {GZ_TERMS_E_MISSING, "missing"},
+        {GZ_TERMS_E_UTF8, "utf8"},
+        {GZ_TERMS_E_HOST_KEY, "host_key"},
+        {GZ_TERMS_E_PROFILE, "profile"},
+        {GZ_TERMS_E_TARGET, "target"},
+        {GZ_TERMS_E_MINIMUM, "minimum"},
+        {GZ_TERMS_E_SHORTFALL, "shortfall"},
+        {GZ_TERMS_E_READY_WINDOW, "ready_window"},
+        {GZ_TERMS_E_SIGNING_BUDGET, "signing_budget"},
+        {GZ_TERMS_E_STEP_TIMEOUT, "step_timeout"},
+        {GZ_TERMS_E_LIFETIME, "lifetime"},
+        {GZ_TERMS_E_WINDDOWN, "winddown"},
+        {GZ_TERMS_E_CHANNEL, "channel"},
+        {GZ_TERMS_E_FEERATE, "feerate"},
+        {GZ_TERMS_E_SWITCHES, "switches"},
+        {GZ_TERMS_E_RANGE, "range"},
+        {GZ_TERMS_E_SHAPE_ENCODING, "shape_encoding"},
+        {GZ_TERMS_E_SHAPE_MAX_MEMBERS, "shape_max_members"},
+        {GZ_TERMS_E_SHAPE_N_INTERIOR, "shape_n_interior"},
+        {GZ_TERMS_E_SHAPE_WIDTH, "shape_width"},
+        {GZ_TERMS_E_SHAPE_LEAF_KIND, "shape_leaf_kind"},
+        {GZ_TERMS_E_SHAPE_TARGET, "shape_target"},
+        {GZ_TERMS_E_SHAPE_SPLIT, "shape_split"},
+        {GZ_TERMS_E_CHAIN, "chain"},
+        {GZ_TERMS_E_SLICE1, "slice1"},
+        {GZ_TERMS_E_VERSION, "version"},
+        {GZ_TERMS_E_ADJ_SET, "adj_set"},
+        {GZ_TERMS_E_ADJ_VALUE, "adj_value"},
+        {GZ_TERMS_E_SCOPE, "scope"},
+        {GZ_TERMS_E_PINNED_KEY, "pinned_key"},
+        {GZ_TERMS_E_OUTER_SIG, "outer_sig"},
+        {GZ_TERMS_E_CURRENT_SIG, "current_sig"},
+        {GZ_TERMS_E_OUTER_DIGEST, "outer_digest"},
+        {GZ_TERMS_E_ARGUMENT, "argument"},
+    };
+    size_t i;
+    for (i = 0; i < sizeof NAMES / sizeof NAMES[0]; i++) CHECK(strcmp(gz_terms_err_name(NAMES[i].e), NAMES[i].n) == 0);
+}
+
 int main(void)
 {
     test_sha256();
@@ -719,5 +771,6 @@ int main(void)
     test_bounds();
     test_shapes();
     test_versions_and_classes();
+    names();
     return check_done();
 }
