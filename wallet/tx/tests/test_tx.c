@@ -811,6 +811,19 @@ static void test_boundaries(void) {
         raw[wc] = (uint8_t)(0xfd + k);
         memset(raw + wc + 1, 0, 4);
         if (parse_raw(wc + 5) != GZT_ERR_PARSE) cut_count_ok = 0;
+        /* the same where the count read before it was 0 (the review's input
+           B): witnesses {one empty item}, {}, then the cut count.  A parser
+           that kept the stale 0 as the count would accept, with the four
+           bytes as the lock time */
+        n = make(1, 3, 0, 1, 1000, 34, 1, 0);
+        size_t ws = n - 4 - 6; /* 01 00 | 01 00 | 01 00, then the lock time */
+        CHECK(raw[ws] == 1 && raw[ws + 1] == 0 && raw[ws + 4] == 1);
+        raw[ws + 2] = 0;                     /* input 1: no witness items */
+        raw[ws + 3] = (uint8_t)(0xfd + k);   /* input 2: the cut count */
+        memset(raw + ws + 4, 0, 4);
+        if (parse_raw(ws + 8) != GZT_ERR_PARSE) cut_count_ok = 0;
+        raw[ws + 3] = 0;                     /* with a real 0 there it parses */
+        if (parse_raw(ws + 8) != GZT_OK) cut_count_ok = 0;
     }
     CHECK(cut_count_ok);
 
