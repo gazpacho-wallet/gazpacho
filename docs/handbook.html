@@ -68,6 +68,10 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c2-what-it-is" title="What it is">What it is</a>
 <a class="sec" href="#c2-decisions-in-force" title="Decisions in force">Decisions in force</a>
 <a class="sec" href="#c2-milestones" title="Milestones">Milestones</a>
+<a class="sec" href="#c2-after-the-release-candidate" title="After the release candidate">After the release candidate</a>
+<a class="sec" href="#c2-steps-towards-real-funds" title="Steps towards real funds">Steps towards real funds</a>
+<a class="sec" href="#c2-releases" title="Releases">Releases</a>
+<a class="sec" href="#c2-work-list" title="Work list">Work list</a>
 <a class="sec" href="#c2-how-work-proceeds" title="How work proceeds">How work proceeds</a>
 <a class="sec" href="#c2-how-work-is-checked" title="How work is checked">How work is checked</a>
 <a class="sec" href="#c2-documents" title="Documents">Documents</a>
@@ -307,7 +311,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <main>
 <p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-12 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
 <section class="chapter" id="c1"><h2>Start here</h2><p class="desc">Terms, facts, decisions in force, and how sure we are of each claim.</p><p class="file">Gazpacho knowledge base · <code>docs/KNOWLEDGE-BASE.md</code></p>
-<div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-11. Update it whenever a decision is made or a fact is checked.</p></div>
+<div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.</p></div>
 <details id="c1-1-where-everything-is"><summary>1. Where everything is</summary><div class="body"><div class="tw"><table>
 <thead>
 <tr>
@@ -594,6 +598,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Soup wallet is mothballed, kept for reference. The SuperScalar repo is maintained by another session. (11 Nov)</li>
 <li>Home is <code>github.com/gazpacho-wallet/gazpacho</code>, MIT, public since 11 Nov 2026.</li>
 <li>The screens are a local web interface served by the C program. No wallet-in-a-web-page. (11 Nov)</li>
+<li>No role question; everyone can host; hosting always visible. Fees in 1.0.0 (proposed, owner to confirm): per payment, plus an optional joining fee from the first payment received. Payout to one wallet in 1.0.0, derived per-factory addresses in 1.1.0, outside wallet later. Receiving room, splicing, on-demand channels and shared leaves with sales are 1.1.0. Detail in <code>ux/decisions.md</code>, summary in <code>DESIGN.md</code> and <code>PLAN.md</code>. (11 Nov)</li>
+<li>Interface: layout concept H is the base, with the critique's fixes and the owner's answers still to apply. (12 Nov)</li>
 </ul>
 <h4>Construction</h4>
 <ul>
@@ -601,6 +607,9 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>One funder per factory: the host, who signs funding only after the whole tree is signed. Members start at zero.</li>
 <li>The factory key always needs everyone's signature. No threshold key.</li>
 <li>Lightning's standard taproot channel format for the channel; the old format archived and recoverable.</li>
+<li>Our own odd envelope (type 52791) is the message specification; bLIP-56 is an adapter; signatures are always over our native bytes (owner chose "option 3" after a comparison, 12 Nov; <code>spec/messages.md</code>). The 4-byte tag stays for Slice 1; the 32-byte protocol id is signed only together with renaming the tags, once the shared name is agreed with SuperScalar.</li>
+<li>The standard is layered: transport, envelope, group coordination (a separate library), SuperScalar operations, channels, discovery, each with formats, state machines, acceptance rules and vectors (12 Nov; <code>spec/PROTOCOL.md</code>).</li>
+<li>Long-term aim: factories as a core part of Lightning. Path: our odd type now, bLIP-56's even type via the adapter, our own feature bit, then a BOLT, as dual funding and splicing went (12 Nov; <code>PLAN.md</code>).</li>
 <li>Lightning's own wire language; factory messages inside one custom message type.</li>
 <li>Members adding their own coins, several hosts per factory, swap-in and swap-out: after the first release.</li>
 </ul>
@@ -692,10 +701,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>The owner's machine is sometimes short of memory; long-running local helpers may be stopped. Pages open from disk without them.</li>
 <li>Test transactions use a fee rate of 0.1 satoshi per virtual byte to preserve test coins (owner's instruction, 11 Nov). Anchor outputs for adding fees later are an accepted option. If a transaction at that rate does not spread, find out why before paying more.</li>
 <li>Nothing is posted publicly, and nothing public is started, without the owner's say.</li>
+<li>The build server allows each agent one SSH connection per 60 seconds. Long jobs (mutation runs, scale checks) are started detached and their results read later, not held open over a connection. (Found 12 Nov)</li>
 </ul></div></details>
 </section>
 <section class="chapter" id="c2"><h2>Plan</h2><p class="desc">The mission, the decisions in force in one table, and the milestones.</p><p class="file">Gazpacho wallet: plan · <code>docs/PLAN.md</code></p>
-<div class="intro"><p>Updated 2026-11-11. This is the short plan. The reasoning and detail live in the documents listed at the end.</p></div>
+<div class="intro"><p>Updated 2026-11-12. This is the short plan. The reasoning and detail live in the documents listed at the end.</p></div>
 <details id="c2-mission"><summary>Mission</summary><div class="body"><p>Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept wallet and the flagship way into SuperScalar: one program that lets anyone join a channel factory or host one, with no Bitcoin node, no separate Lightning node and no modified node software required.</p></div></details>
 <details id="c2-what-it-is"><summary>What it is</summary><div class="body"><ul>
 <li><strong>Member and host in one program.</strong> "Host" is what the SuperScalar design calls the LSP; "member" is its client.</li>
@@ -730,7 +740,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Messages</td>
-<td>Lightning's own wire language; factory messages inside one custom message type</td>
+<td>Lightning's own wire language; factory messages inside one custom odd message type (52791), which is the specification; bLIP-56 through an adapter</td>
 </tr>
 <tr>
 <td>Channel</td>
@@ -840,8 +850,60 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 </tbody>
 </table></div>
-<p>Slices are defined in <code>SLICES.md</code>. Each pulls a thin, real version of the outer pieces forward so there is something to run early; the simulator stays the main safety net.</p>
-<p>After that: more node adapters and a browser of hosts; swap-in and swap-out; a watching service; the self-contained host; then the work for real funds (remaining design fixes, an outside audit, a capped beta).</p></div></details>
+<p>Slices are defined in <code>SLICES.md</code>. Each pulls a thin, real version of the outer pieces forward so there is something to run early; the simulator stays the main safety net.</p></div></details>
+<details id="c2-after-the-release-candidate"><summary>After the release candidate</summary><div class="body"><p>More node adapters and a browser of hosts; swap-in and swap-out; a watching service; the self-contained host.</p>
+<p><strong>Towards a Lightning standard</strong> (owner, 2026-11-12). The long-term aim is factories as a core part of Lightning. The path, as dual funding and splicing went: our own odd message type now (<code>spec/messages.md</code>); bLIP-56's even type through the adapter; a feature bit of our own; then a BOLT (<code>spec/PROTOCOL.md</code>).</p></div></details>
+<details id="c2-steps-towards-real-funds"><summary>Steps towards real funds</summary><div class="body"><ol>
+<li>Remaining design fixes, including the SuperScalar requests marked "before real funds".</li>
+<li><strong>Legal advice before anyone hosts on mainnet.</strong> Whether running a host, or publishing host software, brings duties under money-transmission or similar law in the places it is used. Prosecutors in the Samourai case treated developers of non-custodial software as money transmitters. Gazpacho does not give legal advice; this step is advice from a lawyer, for the project and for hosts (<code>OPEN-QUESTIONS.md</code>).</li>
+<li>An outside audit.</li>
+<li>A capped beta.</li>
+</ol></div></details>
+<details id="c2-releases"><summary>Releases</summary><div class="body"><div class="tw"><table>
+<thead>
+<tr>
+<th>Release</th>
+<th>In it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.0.0</td>
+<td>The milestones above. One member per leaf. Fees (proposed, owner to confirm): per payment, and an optional joining fee from the first payment received. Payout to one wallet. No on-chain reserve</td>
+</tr>
+<tr>
+<td>1.1.0</td>
+<td>Buying receiving room, splicing and channels opened on demand: built and documented with this goal, the interface kept hidden until then. Shared leaves (K &gt; 1) with sales under "limited coverage", each sale a new channel, so several channels per member. Derived payout addresses per factory</td>
+</tr>
+<tr>
+<td>Later</td>
+<td>Payout to an outside or cold wallet</td>
+</tr>
+</tbody>
+</table></div></div></details>
+<details id="c2-work-list"><summary>Work list</summary><div class="body"><p>Items decided by the owner that are not yet tied to a milestone (<code>ux/decisions.md</code>).</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A "speed up a stuck transaction" action, using the pay-to-anchor outputs. Document the alternatives (fee tiers signed in advance, paying the fee from the member's own output, a paid helper) and prepare A/B samples for testers later</td>
+<td>Decision 6, on-chain reserve</td>
+</tr>
+<tr>
+<td>The dedication: About &gt; Dedication, Credits, Licences; one line on the last first-run screen; one line under <code>gazpacho --version</code></td>
+<td>Decision 7 (proposed, owner to confirm)</td>
+</tr>
+<tr>
+<td>The interface starts from layout concept H, with the critique's fixes and the owner's answers still to apply</td>
+<td>Interface critique, 2026-11-12</td>
+</tr>
+</tbody>
+</table></div></div></details>
 <details id="c2-how-work-proceeds"><summary>How work proceeds</summary><div class="body"><ol>
 <li><strong>Specification</strong>, written before code.</li>
 <li><strong>Review of the specification</strong> by an agent that did not write it.</li>
@@ -930,7 +992,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </table></div></div></details>
 </section>
 <section class="chapter" id="c3"><h2>Design</h2><p class="desc">The design currently in force, consolidated.</p><p class="file">Gazpacho design · <code>docs/DESIGN.md</code></p>
-<div class="intro"><p>The current design, consolidated. 2026-11-11.</p>
+<div class="intro"><p>The current design, consolidated. 2026-11-11; owner decisions of 11 and 12 Nov added 2026-11-12.</p>
 <p>How it got here, with dates, findings and superseded ideas, is in <code>RECORD.md</code>. Where the two differ, this file is the one in force. The illustrated version is <code>design.html</code>.</p></div>
 <details id="c3-1-what-gazpacho-is"><summary>1. What Gazpacho is</summary><div class="body"><p>One program that lets a person join a SuperScalar channel factory as a <strong>member</strong> or run one as a <strong>host</strong>. It carries its own small Lightning node for factory channels and an ordinary on-chain wallet, and reads the chain through Electrum-style servers or the user's own node. It needs no modified node software. First releases are signet-only; the code for mainnet exists and is switched off.</p></div></details>
 <details id="c3-2-where-the-code-comes-from"><summary>2. Where the code comes from</summary><div class="body"><ul>
@@ -1064,6 +1126,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>At wind-down a member pays their balance into the next factory over Lightning, or co-signs a close that funds the next factory directly.</li>
 <li>Target size 512 members; routine tests at smaller sizes.</li>
 <li>Not in the first release: JIT channels, swap-in and swap-out, members adding their own coins, several hosts per factory.</li>
+<li><strong>Shared leaves come with sales in 1.1.0</strong> (agreed with SuperScalar, 11 Nov). 1.0.0 has one member per leaf (K = 1). In 1.1.0 shared leaves (K &gt; 1) arrive with sales of receiving room under the design's "limited coverage": each member's coverage is fixed when the factory is built and shown beside the balance. Each sale spends only the host's spare liquidity and makes a <strong>new channel</strong> for the buyer; existing channels never move, so a member can hold several channels in one factory (<code>ux/decisions.md</code> 5).</li>
 </ul></div></details>
 <details id="c3-8-messages-and-channel-format"><summary>8. Messages and channel format</summary><div class="body"><ul>
 <li>A Gazpacho connection is an ordinary Lightning peer connection that also carries factory messages.</li>
@@ -1074,7 +1137,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Large signing data is split across messages with a completion marker.</li>
 <li>A member's backup is held by the host using Lightning's peer-storage messages.</li>
 <li>Encoders and decoders are generated from tables in <code>spec/</code>, with test vectors and fuzzing.</li>
-<li>The message specification itself is still to be written, and will be offered to the SuperScalar repo as the shared format.</li>
+<li>The message specification is <code>spec/messages.md</code>. <strong>Our own odd envelope (type 52791) is the specification</strong>; bLIP-56 is carried by an adapter, and signatures are always over our native bytes (owner's choice, 2026-11-12). It is offered to the SuperScalar repo as the shared format.</li>
+<li><strong>A layered standard</strong> (<code>spec/PROTOCOL.md</code>): transport, envelope, group coordination (a separate library), SuperScalar operations, channels and discovery are separate layers, each with its formats, state machines, acceptance rules and test vectors (owner, 2026-11-12).</li>
 </ul></div></details>
 <details id="c3-9-storage-and-backup"><summary>9. Storage and backup</summary><div class="body"><ul>
 <li>An append-only journal of typed records with periodic snapshots, encrypted at rest.</li>
@@ -1097,14 +1161,18 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Host switches for names, chat and rule-change requests. Optional self-identification. Identity is new per lobby by default.</li>
 <li>Four rule profiles: Safety, Standard, Starter, Circle.</li>
 <li>Listings carry fixed terms, ranges, size and start time. Live details come from the host.</li>
+<li><strong>Terms</strong> (owner decision 1, <code>spec/terms.md</code>): a lobby's outer rules are fixed when it opens; adjustable terms move only inside signed ranges; values freeze at the ready check; the outer rules' digest is the rules fingerprint and the lobby's identity. Changing an outer rule makes a new lobby.</li>
 </ul></div></details>
 <details id="c3-12-the-host"><summary>12. The host</summary><div class="body"><ul>
 <li>Runs Gazpacho continuously, with its own Bitcoin node recommended.</li>
 <li>Links its factory to the rest of Lightning through a regular node, by an adapter with four operations: pay an invoice; create an invoice whose secret the node does not know and hold the payment; settle it; cancel it. LND first, then Core Lightning, then others. See <code>docs/HOST-NODES.md</code>.</li>
 <li>Later the built-in node holds ordinary channels itself and no separate node is needed.</li>
 <li>Publishes signed, versioned terms. May publish its funded factories as a track record.</li>
+<li><strong>Fees in 1.0.0</strong> (proposed after the owner's direction, decision 2; owner to confirm): a per-payment fee (a base amount plus a proportion), and an optional joining fee taken from the first payment received. The fee for extra receiving room comes in 1.1.0. A host cannot take any charge the member has not signed.</li>
 </ul></div></details>
 <details id="c3-13-the-user-s-side"><summary>13. The user&#x27;s side</summary><div class="body"><ul>
+<li><strong>No role question</strong> (owner decision 4): everyone can be member and host. The app never asks "member or host?"; hosting is always visible, with a calm starting page until the person hosts something.</li>
+<li><strong>Where coins go</strong> (owner decision 6): 1.0.0 pays out to one wallet; 1.1.0 adds derived addresses of the same wallet per factory; an outside or cold wallet comes later. A destination is fixed before the factory forms, because pre-signed transactions fix it, and an outside address is proven before use. The tree builder must accept a destination per member (a request to SuperScalar, <code>handoff/2026-11-12-to-superscalar.md</code>, E2).</li>
 <li><strong>Screens:</strong> a local web interface served by the C program on the local machine only, with a start-up token and refusal of requests from other sites. Keys and channel state never enter the browser.</li>
 <li><strong>Reminders:</strong> countdowns in the app first. Other channels and ways to act while away are in <code>docs/AWAY.md</code>.</li>
 </ul></div></details>
@@ -1956,7 +2024,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Whether senders' limit on total timelock leaves room for a payment to a member whose exit takes six to nine days.</li>
 <li>The confirmation allowance per transaction, which is the largest unknown in exit time.</li>
 <li>Whether the restore guard can live somewhere a lost phone does not take with it, beyond the user's own export.</li>
-<li><code>THREAT-MODEL.md</code> (outside these five specifications) still says the journal is encrypted at rest and lists no gap for two trees on one output; both overstate (review 3, F16). For whoever owns it.</li>
+<li>Closed: <code>THREAT-MODEL.md</code> now says the journal is not encrypted in Slice 1 and lists the missing tests for two trees on one output (review 3, F16).</li>
 </ol>
 <p>Closed since draft 3: former open point 9 (<code>KNOWLEDGE-BASE.md</code> section 5 and <code>DESIGN.md</code> section 6 corrected after review 3, L6) and former open point 10 (<code>messages.md</code>, <code>terms.md</code> and <code>journal.md</code> draft 2 follow this draft). The Slice 1 decisions of section 12 are now proposed values.</p>
 <p>Closed since draft 2: former open point 3 (how value moves into a one-member leaf: it does not, section 4.2) and former open point 4 (timeout order: C5).</p></div></details>
@@ -2209,7 +2277,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>S1. Save before the first nonce of a tier.</strong> Before a party sends its nonces for a tier, it saves durably: the round identifier, the proposal's bytes, and the tier and item indices it is about to send nonces for (<code>journal.md</code> records <code>round_started</code> and <code>round_proposal</code>).</li>
 <li><strong>S2. One nonce and one partial signature per (round, item), ever.</strong> A party never sends two different nonces, or two different partial signatures, for one (round identifier, item index). After a restart, an item whose nonce was sent before the restart can never be signed, because its secret nonce is gone. For such an item the party answers only <code>round_abort</code>. It never generates a new nonce for it.</li>
 <li><strong>S3. Resend saved bytes.</strong> A message re-sent after a reconnect is the saved bytes, never a new signature. Public nonces are not resent after a restart (S2).</li>
-<li><strong>S4. A new attempt has a new host random value</strong> and so a new identifier.</li>
+<li><strong>S4. A new attempt has a new host random value</strong> and so a new identifier. <em>(Added after the signing engine build, 2026-11-12.)</em> The host's random value is not fresh randomness alone: it is a tagged hash of the randomness port's bytes, the node's <strong>incarnation</strong> (the runner's count of starts, saved before the node does anything else) and a <strong>counter</strong> that the host increments for every attempt it proposes in that incarnation. The engine builder found that a host restored from an old backup whose randomness repeated re-created a round identifier its members had already signed under. With the incarnation and the counter mixed in, two attempts never share a host random value even when the random source repeats.</li>
 <li><strong>S5. No contribution with a recovery-only key.</strong> A party contributes only to a round whose participant list contains, exactly once, its <strong>current</strong> key for that lobby (<code>safety-rule.md</code> C7, "Fresh funding output"); otherwise it answers <code>round_abort</code> reason 12. A restored party never derives a key from before the restore, so a replayed proposal, which names the old key, always fails this check; no step tries to recognise the old key (<code>safety-rule.md</code> section 9, R4). This is what stops a host from replaying a proposal to a restored member to collect a second signed nonce under an old identifier (review 2, N1).</li>
 <li><strong>S6. One proposal per identifier.</strong> Every case is keyed on the round identifier, never on the proposal's bytes. A proposal whose identifier the party has saved is the saved proposal, whatever its other fields say (check identifier, attempt, terms version, deadlines, bindings): the party answers as the saved round's state requires (<code>messages.md</code> 7.2) and generates nothing new. If its bytes differ from the saved ones and it is validly signed, it is kept as evidence that the host signed two proposals under one identifier (review 3, F10).</li>
 </ul></div></details>
@@ -2527,7 +2595,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tbody>
 <tr>
 <td><code>session_id32</code></td>
-<td>32 bytes from the core's <strong>randomness port</strong>, with the request tagged <strong>secret</strong> (a contract change, section 12.1)</td>
+<td><code>TH("gazpacho/session-id", secret port bytes ‖ incarnation ‖ counter)</code>: 32 bytes from the core's <strong>randomness port</strong>, with the request tagged <strong>secret</strong> (a contract change, section 12.1), hashed with the node's incarnation and an in-memory counter (rule below; added after the signing engine build)</td>
 </tr>
 <tr>
 <td><code>seckey</code></td>
@@ -2555,6 +2623,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>Rules.</strong></p>
 <ul>
 <li><strong>The randomness port, tagged secret.</strong> In release builds a secret request reads the operating system's random source at the moment of the call. The bytes go only to the caller. They are never journaled, logged, put in an event, or produced by a generator whose state is saved or can be restored. Randomness that <strong>is</strong> saved (the restore epoch, <code>safety-rule.md</code> R2; the host's random values, check identifiers and lobby salts, which travel in messages) uses the ordinary, untagged request.</li>
+<li><strong>How <code>session_id32</code> is formed</strong> <em>(added after the signing engine build, 2026-11-12; the engine builder's decision, now the rule)</em>. <code>session_id32 = TH("gazpacho/session-id", s ‖ incarnation ‖ counter)</code>, where <code>s</code> is 32 bytes from a secret-tagged request, <code>incarnation</code> is the node's saved count of starts (8 bytes, big-endian), and <code>counter</code> is an 8-byte big-endian count kept in memory only, starting at zero in each incarnation and incremented for every <code>session_id32</code> made. Neither the result nor <code>s</code> is saved. The incarnation and counter add no secrecy; they make sure that a repeating random source (a restored backup, a copied machine, a seeded simulator) still never gives two nonce calls the same <code>session_id32</code> within or across incarnations. The fresh secret bytes remain the protection.</li>
 <li><strong>Seeded only in the simulator.</strong> The core is handed its randomness so that a factory can be simulated from a seed (<code>DESIGN.md</code> section 4). The seeded source exists only in simulator builds and cannot be linked into a release build.</li>
 <li><strong>Not used from the import:</strong> <code>musig_generate_nonce</code> and the import's nonce pool. Both read <code>/dev/urandom</code> themselves, so they cannot take the port's randomness and fail where there is no such file, including a native Windows build; and <code>musig_generate_nonce</code> passes no message and no extra input [C: <code>src/musig.c:9-15</code>, <code>:171-209</code>, <code>:463-480</code>]. No imported file needs editing for this: the import itself calls <code>secp256k1_musig_nonce_gen</code> with a message [C: <code>src/musig.c:75-77</code>] and with an extra input [C: <code>:198-201</code>].</li>
 <li><strong>Memory only.</strong> A secret nonce lives in memory only, and is erased as soon as it has signed or the round ends for any reason. The library itself zeroes a secret nonce when it signs and aborts if handed an all-zero one [S: <code>secp256k1_musig_partial_sign</code>, same header].</li>
@@ -3489,6 +3558,9 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Tests do not match loosely.</strong> A test that searched output for the letters "prv" failed once in a few hundred runs when those letters appeared in a random address. Match the exact thing.</li>
 <li><strong>Fault settings are shown to do something.</strong> Two simulator profiles exercised nothing because every node died first. A test of a fault must fail if the fault never happened.</li>
 <li><strong>Results are reported with counts, and with what was not tested.</strong></li>
+<li><strong>Invariants check the property itself, not a proxy.</strong> An invariant that checks something which usually goes with the property (a count, a flag, a state name) passes when the property fails.</li>
+<li><strong>Mutation runners kill their children on timeout.</strong> A mutant that hangs must be stopped with everything it started; hung mutants once loaded the build server for hours. (Added 2026-11-12)</li>
+<li><strong>A new protection gets a cross-check against an independent implementation</strong> wherever one can be written. The Python BOLT 8 peer, the independent signature-hash code and the independent parser each paid off. Numbers 27 onwards are added where they belong, not renumbered, so references to earlier items stay valid. (Added 2026-11-12)</li>
 </ol></div></details>
 <details id="c11-state-and-storage"><summary>State and storage</summary><div class="body"><ol>
 <li><strong>Save before send</strong>, enforced by the runner, never by convention in each engine.</li>
@@ -3496,6 +3568,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Anything that makes memory run ahead of storage is fatal for that node</strong>: a refused step, a storage failure, storage answering out of order. The node stops and is rebuilt from what was saved.</li>
 <li><strong>After a restart, everything saved and not known to be acknowledged is sent again.</strong> So every message must be safe to receive twice, and out of order with newer messages.</li>
 <li><strong>One-time signing secrets are never stored</strong>, and a restored backup must not be able to make one repeat.</li>
+<li><strong>A save made early in a start holds back every later send; start records last.</strong> In a node's start step, a save comes before every send that follows it, so a save placed early delays all the resends behind it. Records written at start go last.</li>
 </ol></div></details>
 <details id="c11-code"><summary>Code</summary><div class="body"><ol>
 <li><strong>The core calls nothing outside itself</strong>: no files, network, clock, randomness source, environment, printing, or global state. No inline assembly. The isolation check must pass.</li>
@@ -3927,14 +4000,56 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </table></div></div></details>
 </section>
 <section class="chapter" id="c17"><h2>Open questions</h2><p class="desc">What is still undecided, and who settles it.</p><p class="file">Open questions · <code>docs/OPEN-QUESTIONS.md</code></p>
-<div class="intro"><p>Kept current. Last updated 2026-11-11, after questions round 2.</p></div>
+<div class="intro"><p>Kept current. Last updated 2026-11-12, after the ideas ledger of that day.</p></div>
 <details id="c17-for-the-owner"><summary>For the owner</summary><div class="body"><ol>
 <li><strong>Numbers for the lobby:</strong> largest lobby, default gathering time, signing timers, number of signing attempts. Recommended: settle from signet testing.</li>
 <li><strong>Who besides the owner can approve a SIP.</strong></li>
 <li><strong>Review of the two drafted specifications</strong> (<code>spec/</code>): the open points at the end of each, and an expert look at the proof-of-fault scheme.</li>
 <li><strong>Is the full security catalogue from the earlier SuperScalar work copied into this repo</strong> as reference, or left where it is?</li>
 </ol>
-<p>5c. <strong>Raising the 256-member limit</strong> in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now.</p></div></details>
+<p>5c. <strong>Raising the 256-member limit</strong> in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now. (Requested as E3 and E4 in <code>handoff/2026-11-12-to-superscalar.md</code>.)</p>
+<p>Added 2026-11-12. "Blocks" says what cannot finish until the question is answered.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Question for the owner</th>
+<th>Blocks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>O1</td>
+<td><strong>Timed levels in 1.0.0.</strong> The safety rule's reasoning (<code>spec/safety-rule.md</code> section 8 and open point 1, from draft 3) is that nothing in 1.0.0 updates a timed layer, so a timed layer can cause no loss, only a longer exit. That reasoning has not been checked against the design posts. Decide how many timed levels 1.0.0 uses; before relying on the reasoning, verify it by a simulator test and against the posts</td>
+<td>The shape table (5d); payment deadlines; 1.0.0</td>
+</tr>
+<tr>
+<td>O2</td>
+<td><strong>On-chain reserve against timed levels.</strong> "No on-chain reserve in 1.0.0" (decision 6) conflicts with O1 if a member could ever need fee coins to win a race at a timed level. The conflict goes away if 1.0.0 makes no timed-layer updates. Confirm that 1.0.0 makes none, or revisit the reserve</td>
+<td>1.0.0</td>
+</tr>
+<tr>
+<td>O3</td>
+<td><strong>Legal advice before anyone hosts on mainnet.</strong> Whether to take a lawyer's advice, for the project and for hosts, on money-transmission and similar law before mainnet hosting is switched on. Prosecutors in the Samourai case treated developers of non-custodial software as money transmitters. Gazpacho does not give legal advice and makes no claim either way (<code>PLAN.md</code>, steps towards real funds)</td>
+<td>Mainnet hosting; not signet work</td>
+</tr>
+<tr>
+<td>O4</td>
+<td><strong>Proposing bLIP-56 amendments</strong> (an odd message type, taproot nonces, no "forget a channel" without evidence). Needs the owner's permission before anything is posted</td>
+<td>Nothing in Slice 1; the standard path (<code>PLAN.md</code>)</td>
+</tr>
+<tr>
+<td>O5</td>
+<td><strong>Seat cost.</strong> Seats are free, so one peer can exhaust the host's seat creations and stall a lobby (a liveness weakness, <code>spec/messages.md</code> limits). Decide whether a seat costs something (a small payment, a proof, a deposit) and when</td>
+<td>Public listed lobbies beyond Slice 1; links to the lobby deposit (issue 3)</td>
+</tr>
+<tr>
+<td>O6</td>
+<td><strong>Phones and the signing window.</strong> A phone must have the app open during the signing window to move into a new factory. Is a companion device (an always-on machine the member owns that signs within the member's conditions) the answer, and when? To research with mobile</td>
+<td>Rotation on phones; mobile release</td>
+</tr>
+</tbody>
+</table></div></div></details>
 <details id="c17-for-this-session-to-settle-research-or-b"><summary>For this session to settle (research or build)</summary><div class="body"><p>Found in the plan review of 2026-11-11:</p>
 <ul>
 <li><strong>Can Lightning's standard taproot channel format be used when the channel's funding output is off chain and moves?</strong> The decision to use it rests on secondary sources. Groundwork from the specification itself is under way (<code>notes/channel-groundwork.md</code>, local).</li>
@@ -4008,6 +4123,12 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>Remove our wrapper</td>
 </tr>
 <tr>
+<td>The nine requests of 12 Nov (<code>handoff/2026-11-12-to-superscalar.md</code>): channel script, payout destination, layer-counter bound, hashes at index 512+, placement setter, session leak, split by member count, shared name, single-input sale with shared-leaf prerequisites</td>
+<td>Shared files; one note so they can plan rounds</td>
+<td>Each request is marked Slice 1, 1.0.0 or 1.1.0; none blocks Slice 1</td>
+<td>As each request says</td>
+</tr>
+<tr>
 <td>Verifying each partial signature inside the tree code</td>
 <td>Shared files</td>
 <td>Not blocking: our signing engine verifies them itself</td>
@@ -4031,6 +4152,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <details id="c17-notes-sent-to-the-superscalar-repo-sessi"><summary>Notes sent to the SuperScalar repo session</summary><div class="body"><ul>
 <li><code>handoff/2026-11-11-to-superscalar.md</code>: findings from running and importing the reference code, and from the scale check.</li>
 <li><code>handoff/2026-11-11-end-date-payout.md</code>: why the end-date payout should land with the other tree-transaction changes, and what needs deciding in it.</li>
+<li><code>handoff/2026-11-12-to-superscalar.md</code>: nine requests (E1 to E9), each marked with what it blocks.</li>
 <li>A shared message specification will follow.</li>
 </ul></div></details>
 </section>

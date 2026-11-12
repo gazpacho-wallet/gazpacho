@@ -1,6 +1,6 @@
 # Gazpacho wallet: plan
 
-Updated 2026-11-11. This is the short plan. The reasoning and detail live in the documents listed at the end.
+Updated 2026-11-12. This is the short plan. The reasoning and detail live in the documents listed at the end.
 
 ## Mission
 
@@ -22,7 +22,7 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 | Structure | A core library with no outside access (events in, actions out), ports for storage, chain and network, thin programs on top |
 | Tree | The full layered SuperScalar tree in the first release; fixed tree built first. Pseudo-Spilman leaves. JIT channels off |
 | Funding | One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero |
-| Messages | Lightning's own wire language; factory messages inside one custom message type |
+| Messages | Lightning's own wire language; factory messages inside one custom odd message type (52791), which is the specification; bLIP-56 through an adapter |
 | Channel | Lightning's standard taproot channel format; the old format archived and recoverable |
 | Safety | One member-side rule before every signature; save before send; signing secrets never stored; a restored backup never publishes |
 | Forming a factory | A lobby: long gathering, short signing at a scheduled start; listed or unlisted, open or by invitation; member conditions locked in; no voting; host removal and personal block lists; four rule profiles |
@@ -52,7 +52,36 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 
 Slices are defined in `SLICES.md`. Each pulls a thin, real version of the outer pieces forward so there is something to run early; the simulator stays the main safety net.
 
-After that: more node adapters and a browser of hosts; swap-in and swap-out; a watching service; the self-contained host; then the work for real funds (remaining design fixes, an outside audit, a capped beta).
+## After the release candidate
+
+More node adapters and a browser of hosts; swap-in and swap-out; a watching service; the self-contained host.
+
+**Towards a Lightning standard** (owner, 2026-11-12). The long-term aim is factories as a core part of Lightning. The path, as dual funding and splicing went: our own odd message type now (`spec/messages.md`); bLIP-56's even type through the adapter; a feature bit of our own; then a BOLT (`spec/PROTOCOL.md`).
+
+## Steps towards real funds
+
+1. Remaining design fixes, including the SuperScalar requests marked "before real funds".
+2. **Legal advice before anyone hosts on mainnet.** Whether running a host, or publishing host software, brings duties under money-transmission or similar law in the places it is used. Prosecutors in the Samourai case treated developers of non-custodial software as money transmitters. Gazpacho does not give legal advice; this step is advice from a lawyer, for the project and for hosts (`OPEN-QUESTIONS.md`).
+3. An outside audit.
+4. A capped beta.
+
+## Releases
+
+| Release | In it |
+|---|---|
+| 1.0.0 | The milestones above. One member per leaf. Fees (proposed, owner to confirm): per payment, and an optional joining fee from the first payment received. Payout to one wallet. No on-chain reserve |
+| 1.1.0 | Buying receiving room, splicing and channels opened on demand: built and documented with this goal, the interface kept hidden until then. Shared leaves (K > 1) with sales under "limited coverage", each sale a new channel, so several channels per member. Derived payout addresses per factory |
+| Later | Payout to an outside or cold wallet |
+
+## Work list
+
+Items decided by the owner that are not yet tied to a milestone (`ux/decisions.md`).
+
+| Item | Source |
+|---|---|
+| A "speed up a stuck transaction" action, using the pay-to-anchor outputs. Document the alternatives (fee tiers signed in advance, paying the fee from the member's own output, a paid helper) and prepare A/B samples for testers later | Decision 6, on-chain reserve |
+| The dedication: About > Dedication, Credits, Licences; one line on the last first-run screen; one line under `gazpacho --version` | Decision 7 (proposed, owner to confirm) |
+| The interface starts from layout concept H, with the critique's fixes and the owner's answers still to apply | Interface critique, 2026-11-12 |
 
 ## How work proceeds
 

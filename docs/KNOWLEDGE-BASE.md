@@ -1,6 +1,6 @@
 # Gazpacho knowledge base
 
-The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-11. Update it whenever a decision is made or a fact is checked.
+The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.
 
 ## 1. Where everything is
 
@@ -101,12 +101,17 @@ Newest first within each area. The date is when the owner decided.
 - Soup wallet is mothballed, kept for reference. The SuperScalar repo is maintained by another session. (11 Nov)
 - Home is `github.com/gazpacho-wallet/gazpacho`, MIT, public since 11 Nov 2026.
 - The screens are a local web interface served by the C program. No wallet-in-a-web-page. (11 Nov)
+- No role question; everyone can host; hosting always visible. Fees in 1.0.0 (proposed, owner to confirm): per payment, plus an optional joining fee from the first payment received. Payout to one wallet in 1.0.0, derived per-factory addresses in 1.1.0, outside wallet later. Receiving room, splicing, on-demand channels and shared leaves with sales are 1.1.0. Detail in `ux/decisions.md`, summary in `DESIGN.md` and `PLAN.md`. (11 Nov)
+- Interface: layout concept H is the base, with the critique's fixes and the owner's answers still to apply. (12 Nov)
 
 ### Construction
 - Full layered tree in the first release; build the fixed tree first. Pseudo-Spilman leaves, one member per leaf. JIT channels off. Target 512 members, tested at 128 or 256.
 - One funder per factory: the host, who signs funding only after the whole tree is signed. Members start at zero.
 - The factory key always needs everyone's signature. No threshold key.
 - Lightning's standard taproot channel format for the channel; the old format archived and recoverable.
+- Our own odd envelope (type 52791) is the message specification; bLIP-56 is an adapter; signatures are always over our native bytes (owner chose "option 3" after a comparison, 12 Nov; `spec/messages.md`). The 4-byte tag stays for Slice 1; the 32-byte protocol id is signed only together with renaming the tags, once the shared name is agreed with SuperScalar.
+- The standard is layered: transport, envelope, group coordination (a separate library), SuperScalar operations, channels, discovery, each with formats, state machines, acceptance rules and vectors (12 Nov; `spec/PROTOCOL.md`).
+- Long-term aim: factories as a core part of Lightning. Path: our odd type now, bLIP-56's even type via the adapter, our own feature bit, then a BOLT, as dual funding and splicing went (12 Nov; `PLAN.md`).
 - Lightning's own wire language; factory messages inside one custom message type.
 - Members adding their own coins, several hosts per factory, swap-in and swap-out: after the first release.
 
@@ -191,3 +196,4 @@ Newest first within each area. The date is when the owner decided.
 - The owner's machine is sometimes short of memory; long-running local helpers may be stopped. Pages open from disk without them.
 - Test transactions use a fee rate of 0.1 satoshi per virtual byte to preserve test coins (owner's instruction, 11 Nov). Anchor outputs for adding fees later are an accepted option. If a transaction at that rate does not spread, find out why before paying more.
 - Nothing is posted publicly, and nothing public is started, without the owner's say.
+- The build server allows each agent one SSH connection per 60 seconds. Long jobs (mutation runs, scale checks) are started detached and their results read later, not held open over a connection. (Found 12 Nov)

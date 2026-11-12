@@ -1,6 +1,6 @@
 # Gazpacho design
 
-The current design, consolidated. 2026-11-11.
+The current design, consolidated. 2026-11-11; owner decisions of 11 and 12 Nov added 2026-11-12.
 
 How it got here, with dates, findings and superseded ideas, is in `RECORD.md`. Where the two differ, this file is the one in force. The illustrated version is `design.html`.
 
@@ -83,6 +83,7 @@ The full definition is `spec/safety-rule.md`. In brief:
 - At wind-down a member pays their balance into the next factory over Lightning, or co-signs a close that funds the next factory directly.
 - Target size 512 members; routine tests at smaller sizes.
 - Not in the first release: JIT channels, swap-in and swap-out, members adding their own coins, several hosts per factory.
+- **Shared leaves come with sales in 1.1.0** (agreed with SuperScalar, 11 Nov). 1.0.0 has one member per leaf (K = 1). In 1.1.0 shared leaves (K > 1) arrive with sales of receiving room under the design's "limited coverage": each member's coverage is fixed when the factory is built and shown beside the balance. Each sale spends only the host's spare liquidity and makes a **new channel** for the buyer; existing channels never move, so a member can hold several channels in one factory (`ux/decisions.md` 5).
 
 ## 8. Messages and channel format
 
@@ -94,7 +95,8 @@ The full definition is `spec/safety-rule.md`. In brief:
 - Large signing data is split across messages with a completion marker.
 - A member's backup is held by the host using Lightning's peer-storage messages.
 - Encoders and decoders are generated from tables in `spec/`, with test vectors and fuzzing.
-- The message specification itself is still to be written, and will be offered to the SuperScalar repo as the shared format.
+- The message specification is `spec/messages.md`. **Our own odd envelope (type 52791) is the specification**; bLIP-56 is carried by an adapter, and signatures are always over our native bytes (owner's choice, 2026-11-12). It is offered to the SuperScalar repo as the shared format.
+- **A layered standard** (`spec/PROTOCOL.md`): transport, envelope, group coordination (a separate library), SuperScalar operations, channels and discovery are separate layers, each with its formats, state machines, acceptance rules and test vectors (owner, 2026-11-12).
 
 ## 9. Storage and backup
 
@@ -121,6 +123,7 @@ Full detail in `docs/LOBBY.md`.
 - Host switches for names, chat and rule-change requests. Optional self-identification. Identity is new per lobby by default.
 - Four rule profiles: Safety, Standard, Starter, Circle.
 - Listings carry fixed terms, ranges, size and start time. Live details come from the host.
+- **Terms** (owner decision 1, `spec/terms.md`): a lobby's outer rules are fixed when it opens; adjustable terms move only inside signed ranges; values freeze at the ready check; the outer rules' digest is the rules fingerprint and the lobby's identity. Changing an outer rule makes a new lobby.
 
 ## 12. The host
 
@@ -128,9 +131,12 @@ Full detail in `docs/LOBBY.md`.
 - Links its factory to the rest of Lightning through a regular node, by an adapter with four operations: pay an invoice; create an invoice whose secret the node does not know and hold the payment; settle it; cancel it. LND first, then Core Lightning, then others. See `docs/HOST-NODES.md`.
 - Later the built-in node holds ordinary channels itself and no separate node is needed.
 - Publishes signed, versioned terms. May publish its funded factories as a track record.
+- **Fees in 1.0.0** (proposed after the owner's direction, decision 2; owner to confirm): a per-payment fee (a base amount plus a proportion), and an optional joining fee taken from the first payment received. The fee for extra receiving room comes in 1.1.0. A host cannot take any charge the member has not signed.
 
 ## 13. The user's side
 
+- **No role question** (owner decision 4): everyone can be member and host. The app never asks "member or host?"; hosting is always visible, with a calm starting page until the person hosts something.
+- **Where coins go** (owner decision 6): 1.0.0 pays out to one wallet; 1.1.0 adds derived addresses of the same wallet per factory; an outside or cold wallet comes later. A destination is fixed before the factory forms, because pre-signed transactions fix it, and an outside address is proven before use. The tree builder must accept a destination per member (a request to SuperScalar, `handoff/2026-11-12-to-superscalar.md`, E2).
 - **Screens:** a local web interface served by the C program on the local machine only, with a start-up token and refusal of requests from other sites. Keys and channel state never enter the browser.
 - **Reminders:** countdowns in the app first. Other channels and ways to act while away are in `docs/AWAY.md`.
 

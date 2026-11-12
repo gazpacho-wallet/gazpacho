@@ -1,6 +1,6 @@
 # Open questions
 
-Kept current. Last updated 2026-11-11, after questions round 2.
+Kept current. Last updated 2026-11-12, after the ideas ledger of that day.
 
 ## For the owner
 
@@ -9,7 +9,18 @@ Kept current. Last updated 2026-11-11, after questions round 2.
 3. **Review of the two drafted specifications** (`spec/`): the open points at the end of each, and an expert look at the proof-of-fault scheme.
 4. **Is the full security catalogue from the earlier SuperScalar work copied into this repo** as reference, or left where it is?
 
-5c. **Raising the 256-member limit** in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now.
+5c. **Raising the 256-member limit** in the shared files toward the 512 target: confirm it is work for the SuperScalar repository now. (Requested as E3 and E4 in `handoff/2026-11-12-to-superscalar.md`.)
+
+Added 2026-11-12. "Blocks" says what cannot finish until the question is answered.
+
+| # | Question for the owner | Blocks |
+|---|---|---|
+| O1 | **Timed levels in 1.0.0.** The safety rule's reasoning (`spec/safety-rule.md` section 8 and open point 1, from draft 3) is that nothing in 1.0.0 updates a timed layer, so a timed layer can cause no loss, only a longer exit. That reasoning has not been checked against the design posts. Decide how many timed levels 1.0.0 uses; before relying on the reasoning, verify it by a simulator test and against the posts | The shape table (5d); payment deadlines; 1.0.0 |
+| O2 | **On-chain reserve against timed levels.** "No on-chain reserve in 1.0.0" (decision 6) conflicts with O1 if a member could ever need fee coins to win a race at a timed level. The conflict goes away if 1.0.0 makes no timed-layer updates. Confirm that 1.0.0 makes none, or revisit the reserve | 1.0.0 |
+| O3 | **Legal advice before anyone hosts on mainnet.** Whether to take a lawyer's advice, for the project and for hosts, on money-transmission and similar law before mainnet hosting is switched on. Prosecutors in the Samourai case treated developers of non-custodial software as money transmitters. Gazpacho does not give legal advice and makes no claim either way (`PLAN.md`, steps towards real funds) | Mainnet hosting; not signet work |
+| O4 | **Proposing bLIP-56 amendments** (an odd message type, taproot nonces, no "forget a channel" without evidence). Needs the owner's permission before anything is posted | Nothing in Slice 1; the standard path (`PLAN.md`) |
+| O5 | **Seat cost.** Seats are free, so one peer can exhaust the host's seat creations and stall a lobby (a liveness weakness, `spec/messages.md` limits). Decide whether a seat costs something (a small payment, a proof, a deposit) and when | Public listed lobbies beyond Slice 1; links to the lobby deposit (issue 3) |
+| O6 | **Phones and the signing window.** A phone must have the app open during the signing window to move into a new factory. Is a companion device (an always-on machine the member owns that signs within the member's conditions) the answer, and when? To research with mobile | Rotation on phones; mobile release |
 
 ## For this session to settle (research or build)
 
@@ -51,6 +62,7 @@ Work Gazpacho deliberately does not do itself. It waits, re-imports when the cha
 | Timelock-counter overwrite at 257 members and above | Shared files | Before any run above 256 members outside the simulator | Confirm with the reviewer's reproduction |
 | Exit-delay functions under-reporting on deep trees | Shared files | Before payment deadlines are computed from them | Compare with our own sum from the transactions |
 | Caller-supplied randomness | Shared files | Repeatable signing in the simulator; M1 wraps around it meanwhile | Remove our wrapper |
+| The nine requests of 12 Nov (`handoff/2026-11-12-to-superscalar.md`): channel script, payout destination, layer-counter bound, hashes at index 512+, placement setter, session leak, split by member count, shared name, single-input sale with shared-leaf prerequisites | Shared files; one note so they can plan rounds | Each request is marked Slice 1, 1.0.0 or 1.1.0; none blocks Slice 1 | As each request says |
 | Verifying each partial signature inside the tree code | Shared files | Not blocking: our signing engine verifies them itself | None needed |
 | A Core Lightning plugin for holding payments | Their bridge rework. **They say this is far off; do not plan around it.** LND comes first for us anyway; if we reach the Core Lightning adapter before they do, we write the plugin | Core Lightning adapter | Review and reuse if theirs exists by then |
 | Their whole-program scale test at 64, 127 and 255 | **Far off on their side; do not plan around it.** Size is covered by our one-process scale check now and by our own simulator and slices later | Not blocking | Compare if it arrives |
@@ -61,4 +73,5 @@ Nothing has landed yet, so no check has started.
 
 - `handoff/2026-11-11-to-superscalar.md`: findings from running and importing the reference code, and from the scale check.
 - `handoff/2026-11-11-end-date-payout.md`: why the end-date payout should land with the other tree-transaction changes, and what needs deciding in it.
+- `handoff/2026-11-12-to-superscalar.md`: nine requests (E1 to E9), each marked with what it blocks.
 - A shared message specification will follow.

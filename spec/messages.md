@@ -83,7 +83,7 @@ The payload of a type-52791 message:
 |---|---|---|---|
 | 0 | `protocol` | 4 | The bytes `67 7a 66 01` ("gzf" and 1). Anything else: ignore, and send a `warning` once per connection |
 | 4 | `kind` | `u16` | Section 4.1 |
-| 6 | `scope` | 32 | The lobby identifier: the outer terms digest (`terms.md` section 6). All zero only in `hello` |
+| 6 | `scope` | 32 | The lobby identifier: the outer terms digest (`terms.md` section 6). All zero only in `hello` and in the discovery kinds 128 to 159 (`discovery.md`), which belong to no lobby |
 | 38 | `records` | rest | A BOLT 1 TLV stream (section 4.2) |
 
 Sizes: the envelope is at most 65,533 bytes (65,535 less the 2-byte type), so `records` is at most **65,495 bytes**.
@@ -118,7 +118,9 @@ Why a `protocol` field when Lightning uses no version numbers: it is not a versi
 | 80 | `round_status_request` | member → host | 7.10 | Yes |
 | 81 | `factory_funded` | host → member | 7.11 | Optional hint |
 
-Numbering: lobby kinds from 16, round kinds from 64, so each group has room for more than twenty additions without interleaving. 0 is never used, so an all-zero envelope is invalid.
+Kinds 128 to 159 are reserved for discovery and defined in `discovery.md`; they always carry an all-zero `scope`, and one with any other `scope` is refused.
+
+Numbering: lobby kinds from 16, round kinds from 64, discovery kinds from 128, so each group has room for more than twenty additions without interleaving. 0 is never used, so an all-zero envelope is invalid.
 
 A kind sent in the wrong direction (for example `ready` from the host) is refused.
 
@@ -250,7 +252,7 @@ Sent first after `init`, and after every reconnect.
 |---|---|---|---|
 | — | none | | |
 
-- `scope` all zero: the host answers with one `terms_offer` for each lobby it has open, at most 16. A slice 1 host has one. Listing belongs to Nostr later; 16 bounds the answer.
+- `scope` all zero: the host answers with one `terms_offer` for each **listed** lobby it has open, at most 16. An unlisted lobby is never named in this answer; a member reaches it only with its identifier, from an invitation. A slice 1 host has one. Listing belongs to Nostr later; 16 bounds the answer.
 - `scope` a lobby identifier: the host answers with that lobby's `terms_offer`, then `lobby_status` for this key's seat. For an unknown lobby, `lobby_status` with lobby state 0 alone.
 - Duplicates: answered again, at most once per second per connection; more are ignored. A connection that sends more than 20 ignored `hello`s is closed. One `hello` per connection is normal; the limits stop a peer from making the host send terms in a loop. Answers to scope-zero `hello`s are also limited across all connections to 4 per second (review 3, F13: up to 16 offers of about 5 KB each per small request).
 
