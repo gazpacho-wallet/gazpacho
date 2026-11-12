@@ -44,7 +44,7 @@ Locally: `python -I tools/check-no-addresses.py` (or name files, relative to the
 
 ### specification vectors
 
-Guards: the test vectors printed in the specifications are still what `tools/spec-vectors.py` computes, and the script's own self-checks (the BIP 340 test vector, the split and funding rules) pass. The job runs `python3 -I tools/spec-vectors.py` and fails on a non-zero exit. On a branch without the script (today, `main`) it prints a notice and passes. The script uses the standard library only.
+Guards: the test vectors printed in the specifications are still what `tools/spec-vectors.py` computes, and the script's own self-checks (the BIP 340 test vector, the split and funding rules) pass. The job runs `python3 -I tools/spec-vectors.py` and fails on a non-zero exit. On a branch without the script (today, `main`) it prints a notice and passes. The script uses the standard library only; its elliptic-curve arithmetic is pure Python, so it takes about five minutes (`specs-slice1`, checked by hand on 2026-11-12: exit 0).
 
 Locally: `python -I tools/spec-vectors.py`
 
@@ -134,6 +134,15 @@ Locally (Linux, clang 18):
       -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
     cmake --build build-fuzz -j
     sh tools/run-fuzz.sh build-fuzz 60
+
+## What the second compiler changed in the symbol checks
+
+The first clang runs failed two existing tests on `main`, not because the code changed but because the checks only knew gcc's output:
+
+- `wallet_keys_no_io` (`wallet/tests/check_no_io.py`): clang emits `bcmp` for a `memcmp` whose result is only compared with zero, and `memchr` for a byte-search loop. Both are now on the allow-list beside `memcmp` and `strchr`. Under clang's ASan it also saw `__start_asan_globals` and `__stop_asan_globals` (weak references to ASan's section bounds), `___asan_globals_registered`, and `switch.table.<function>` lookup tables shown as data; these are accepted by prefix, each with its reason in the file.
+- `core_isolation` (`tools/check-core-isolation.sh`): the same ASan names, and under MSan the `__msan_*` runtime calls and its weak `__msan_track_origins`. Accepted by exact name or the sanitizer prefix, as `__asan_*` already was.
+
+The negative tests of both checks (the sneaky object, the five bad libraries) still fail as they must in every build.
 
 ## What CI does not do
 

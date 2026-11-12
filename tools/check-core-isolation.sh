@@ -37,7 +37,7 @@ for sym in $(printf '%s\n' "$symbols" | awk '$1 == "U" { print $2 }' | sort -u);
         memcpy|memcmp|memset|memmove) continue ;;            # freestanding C
         __memcpy_chk|__memset_chk|__memmove_chk) continue ;; # the same, as the C library's
                                                              # hardened headers emit them
-        __asan_*|__ubsan_*|__sanitizer_*) continue ;;        # checker builds
+        __asan_*|__ubsan_*|__sanitizer_*|__msan_*) continue ;; # checker builds
         __stack_chk_fail|_GLOBAL_OFFSET_TABLE_) continue ;;  # compiler support
     esac
     if printf '%s\n' "$defined" | grep -qx "$sym"; then continue; fi
@@ -48,12 +48,13 @@ for sym in $(printf '%s\n' "$symbols" | awk '$1 == "w" || $1 == "v" || $1 == "W"
     case "$sym" in
         __start_asan_globals|__stop_asan_globals) continue ;; # clang's ASan: bounds of
                                                               # its own globals section
+        __msan_track_origins) continue ;;                     # MSan: its origin-tracking flag
     esac
     report "weak symbol" "$sym"
 done
 
 for sym in $(printf '%s\n' "$symbols" | awk '$1 ~ /^[bBdDcCsSgG]$/ { print $2 }' | sort -u); do
-    case "$sym" in __asan_*|___asan_*|__ubsan_*|__sanitizer_*) continue ;; esac
+    case "$sym" in __asan_*|___asan_*|__ubsan_*|__sanitizer_*|__msan_*) continue ;; esac
     report "writable data" "$sym"
 done
 
