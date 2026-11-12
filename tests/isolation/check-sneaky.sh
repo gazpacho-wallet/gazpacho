@@ -93,6 +93,19 @@ build_case 24 && {
     sh "$checker" --sanitized "$work/case-24.o" >/dev/null 2>&1 && echo "ok: case 24 (checker name) passes --sanitized" ||
         fail "case 24 refused even under --sanitized"
 }
+if [ "$x86" -eq 1 ]; then   # thread-local state of its own is still caught under --sanitized
+    build_case 22 && {
+        out=$(sh "$checker" --sanitized "$work/case-22.o" 2>&1) && fail "case 22 (thread-local) passed --sanitized" ||
+            { printf '%s\n' "$out" | grep -q "^FOUND thread-local reference: " &&
+              echo "ok: case 22 (thread-local) refused under --sanitized for its thread-local reference" ||
+              { fail "case 22 refused under --sanitized, but not for its thread-local reference"; printf '%s\n' "$out"; }; }
+    }
+    build_case 18 && {
+        sh "$checker" --sanitized "$work/case-18.o" >/dev/null 2>&1 &&
+            echo "note: case 18 (%gs read) passes --sanitized, as the segment-register test is replaced there" ||
+            echo "note: case 18 refused under --sanitized"
+    }
+fi
 build_case 19 && {   # real writable data is still caught: symbol test runs under --sanitized
     sh "$checker" --sanitized "$work/case-19.o" >/dev/null 2>&1 &&
         echo "note: case 19 (nameless .data) passes --sanitized, as the section test is off there" ||
