@@ -87,3 +87,32 @@ The library itself calls none of them: it takes coins and returns bytes.
 
 Review of this specification by another party; a journal; anti-fee-sniping; child-pays-for-parent; script-path spends; scanning with a gap limit beyond a fixed range in the tool.
 
+## 9. Mutation results (2026-11-12)
+
+`wallet/tx/tests/mutate.py` changes one thing at a time in `wallet/tx/src` (comparisons, logical and arithmetic operators, integer constants, returned error codes, negations, one-line statements removed), rebuilds the four test programs and the tool against the mutant and runs them with the tool test. The tool itself was not mutated.
+
+| Round | Build | Mutants | Caught | Survived | Did not compile |
+|---|---|---|---|---|---|
+| 1 | plain | 983 | 734 | 246 | 3 |
+| 2, after tests for NULL arguments, boundaries, the 64-coin cut-off | AddressSanitizer and UBSan | 976 | 868 | 105 | 3 |
+| 3, the 105 again after tests for caps on output 0 and stale items, exact-size buffers, the auxiliary-randomness rule | AddressSanitizer and UBSan | 105 | 8 | 97 | 0 |
+
+So 976 mutants, 876 caught, 97 surviving. The source changed between rounds in three places the run pointed to: a needless "released" state was removed from the funding, a duplicated script-length check was removed from the funding builder (coin selection already refuses it), and the SIGHASH_SINGLE output writer now checks its own overflow.
+
+**Named rule removals** (checklist item 7), all in round 2: 21 rules; 19 are caught (mainnet name, rate above ceiling, real rate above ceiling, server rate above ceiling, dust payment, dust change, witness-only destination, duplicate coins, signing key equals the spent script, verify after sign, change index not a spent coin's, release needs the txid, release needs a build, wipe on failure, trailing bytes, minimal compact size, superfluous witness, 21 million limit, length within the input). Two survive and are second lines, not tested protections:
+- *a coin's script is its key* (funding builder): `gzt_sign_keypath` refuses the same thing one step later, and that refusal is tested;
+- *the signed size is the size the fee was paid for*: a self-check that cannot fail while the size formula and the serialiser agree, which the size test checks for 1 to 64 inputs.
+
+**The 95 other survivors**, judged by reading each one:
+
+| Kind | Count | Why no test can see it |
+|---|---|---|
+| A larger array size in a declaration or a parameter | 28 | no behaviour changes |
+| 1 changed to 2 where only truth matters | 8 | same truth value |
+| A wipe of a local copy removed | 10 | not visible from outside; the key library's review checked wiping by scanning stack memory, which was not repeated here |
+| Failure paths that cannot be reached, and self-checks | 17 | key derivation that fails only in BIP 32's 1-in-2^127 case, writers whose buffers are sized for the caps, the txid of a transaction just built, the signed-size and fee self-checks |
+| Parser: the input has ended anyway (8), compact-size widths under the caps (2), a clamp never reached (3) | 13 | a failed read inside a compact size, or a field that reaches the very end, ends in `GZT_ERR_PARSE` at the next read; every value that needs the 0xfd form is above every cap. Some of these mutants read an uninitialised value first, which valgrind would show and these tests do not |
+| Order of operations: a comparison inside a branch that already excludes equality, fields zeroed before being set, bytes overwritten later, witness items beyond the count never written | 15 | same result |
+| One byte too many compared or copied inside a structure | 4 | the extra byte is the next field (the output index) in every case; `gzw_ct_equal` is in the key library, which the mutation build does not instrument |
+
+None was judged a missing test after round 3. A reviewer should re-check that judgement, especially the 13 parser ones.
