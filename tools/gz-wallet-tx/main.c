@@ -359,6 +359,8 @@ out:
 #ifdef GZT_WITH_CHAIN
 static const char *const SIGNET_SERVERS[2] = {"https://mempool.space/signet/api",
                                               "https://blockstream.info/signet/api"};
+/* who runs each, named rather than guessed from the host name */
+static const char *const SIGNET_OPERATORS[2] = {"mempool.space", "blockstream.info"};
 
 typedef struct {
     gz_http http;
@@ -373,13 +375,16 @@ static int chain_open(chain_view *cv, gzt_network net) {
         fprintf(stderr, "gz-wallet-tx: the chain commands support signet only\n");
         return 0;
     }
-    if (!gz_http_curl_create(&cv->http, false)) return 0;
+    if (!gz_http_curl_create(&cv->http, NULL)) return 0;
     for (int i = 0; i < 2; i++) {
         gz_esplora_config_default(&cfg);
         cfg.base_url = SIGNET_SERVERS[i];
+        cfg.operator_id = SIGNET_OPERATORS[i];
         if (gz_esplora_create(&cfg, &cv->http, &cv->servers[i]) != GZ_CHAIN_OK) return 0;
     }
-    gz_multi_config_default(&mc);
+    gz_multi_config_default(&mc, GZ_NET_SIGNET);
+    mc.now_ms = cv->http.now_ms; /* the clock lag is timed by */
+    mc.clock_ctx = cv->http.ctx;
     return gz_multi_create(&mc, cv->servers, 2, &cv->multi) == GZ_CHAIN_OK;
 }
 
@@ -414,20 +419,20 @@ static int cmd_fund(const secp256k1_context *ctx, const args *a) {
     }
     if (!master_from_file(ctx, a->in, &master)) goto out;
     if (!strcmp(a->feerate, "server")) {
-        gz_fee_estimates est;
-        gz_chain_result r = gz_chain_fee_estimates(&cv.multi, &est);
-        if (r != GZ_CHAIN_OK || est.count == 0) {
+        /* the chain port's policy for 6 blocks: on signet the fixed test-network
+         * rate; elsewhere the servers' combined estimate for that target or a
+         * faster one, never a slower one's */
+        gz_fee_choice choice;
+        gz_chain_result r = gz_chain_choose_fee_rate(&cv.multi, GZ_NET_SIGNET, 6,
+                                                     req.fee.ceiling.sat_per_kvb, &choice);
+        if (r != GZ_CHAIN_OK) {
             fprintf(stderr, "gz-wallet-tx: no fee estimate: %s\n", gz_chain_result_name(r));
             goto out;
         }
-        size_t pick = est.count - 1; /* the first target of at least 6 blocks */
-        for (size_t i = 0; i < est.count; i++)
-            if (est.entries[i].target >= 6) { pick = i; break; }
-        gzt_err e = gzt_feerate_from_server(est.entries[pick].sat_per_kvb, req.fee.ceiling,
-                                            &req.fee.rate);
+        gzt_err e = gzt_feerate_from_server(choice.sat_per_kvb, req.fee.ceiling, &req.fee.rate);
         if (e) {
             fprintf(stderr, "gz-wallet-tx: server rate %llu sat/kvB refused: %s\n",
-                    (unsigned long long)est.entries[pick].sat_per_kvb, gzt_err_text(e));
+                    (unsigned long long)choice.sat_per_kvb, gzt_err_text(e));
             goto out;
         }
     }
@@ -439,7 +444,8 @@ static int cmd_fund(const secp256k1_context *ctx, const args *a) {
             size_t count = 0;
             memset(&c, 0, sizeof c);
             if (!coin_at(ctx, &master, net, change, i, &c)) goto out;
-            gz_chain_result r = gz_chain_script_outputs(&cv.multi, c.script, 34, outs, 64, &count);
+            gz_chain_result r =
+                gz_chain_script_outputs(&cv.multi, c.script, 34, outs, 64, &count, NULL);
             if (r != GZ_CHAIN_OK) {
                 fprintf(stderr, "gz-wallet-tx: coin lookup failed: %s\n", gz_chain_result_name(r));
                 goto out;
@@ -494,14 +500,16 @@ static int cmd_confirm(const args *a) {
     if (!get_network(a->network, &net)) return 1;
     if (!a->txid || !txid_from_hex(a->txid, txid)) return usage();
     if (chain_open(&cv, net)) {
-        gz_chain_result r = gz_chain_confirm_tx(&cv.multi, GZ_NET_SIGNET, txid, &conf);
+        gz_chain_result r = gz_chain_confirm_tx(&cv.multi, GZ_NET_SIGNET, txid, 6, &conf);
         if (r != GZ_CHAIN_OK) {
             fprintf(stderr, "gz-wallet-tx: %s\n", gz_chain_result_name(r));
         } else {
             const char *st = conf.status.state == GZ_TX_CONFIRMED ? "confirmed"
                              : conf.status.state == GZ_TX_MEMPOOL ? "mempool" : "unknown";
+            /* the count checked along linked headers (at most 6 asked for),
+             * not the servers' claim */
             printf("state %s\nheight %u\nconfirmations %u\n", st, conf.status.height,
-                   conf.status.confirmations);
+                   conf.checked_confirmations);
             rc = 0;
         }
     }
