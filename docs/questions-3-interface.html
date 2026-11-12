@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gazpacho questions 3: interface</title>
+<style>
+:root{--bg:#faf6ef;--card:#fff;--ink:#22190f;--soft:#6b5d4d;--line:#e4d9c8;--red:#b3261e;--code:#f1e9da;--pick:#fbe9e7;--rec:#1d5e33;--rec-bg:#dff0e3}
+@media (prefers-color-scheme:dark){:root{--bg:#191512;--card:#231d18;--ink:#f1e8da;--soft:#b3a591;--line:#3b3129;--red:#f08a80;--code:#30271f;--pick:#3a211d;--rec:#9fdcb1;--rec-bg:#1c3a26}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:900px;margin:0 auto;padding:28px 16px 120px}
+h1{font-size:28px;margin:0 0 6px}h1 span{color:var(--red)}
+p{margin:8px 0}.soft{color:var(--soft);font-size:14px}
+.q{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:20px 0}
+.q h2{font-size:20px;margin:0 0 4px}
+.q .num{color:var(--red);font-weight:800;margin-right:6px}
+.why{border-left:4px solid var(--line);padding:2px 0 2px 12px;margin:10px 0;color:var(--soft);font-size:14.5px}
+.opt{display:block;border:1px solid var(--line);border-radius:10px;padding:10px 12px 10px 40px;margin:8px 0;position:relative;cursor:pointer}
+.opt input{position:absolute;left:13px;top:14px;width:17px;height:17px;accent-color:var(--red)}
+.opt:has(input:checked){background:var(--pick);border-color:var(--red)}
+.opt b{display:block}
+.opt span{font-size:14px;color:var(--soft)}
+.tag{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;background:var(--rec-bg);color:var(--rec);vertical-align:1px}
+.rec{background:var(--rec-bg);border-radius:10px;padding:10px 12px;margin:12px 0 4px;font-size:14.5px}
+.rec b{color:var(--rec)}
+textarea{width:100%;min-height:58px;margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;font-size:14.5px}
+.mock{font:13px/1.45 ui-monospace,Consolas,monospace;background:var(--code);border-radius:8px;padding:8px 10px;margin:8px 0;white-space:pre-wrap}
+#out{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap}
+#out button{padding:10px 18px;border-radius:10px;border:0;background:var(--red);color:#fff;font:700 15px system-ui;cursor:pointer}
+#out span{font-size:14px;color:var(--soft)}
+#result{display:none;max-width:900px;margin:0 auto 20px}
+#result textarea{min-height:220px;font:13px/1.45 ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+<main>
+<h1>Gazpacho questions 3: <span>the interface</span></h1>
+<p class="soft">2026-11-11. Four questions the layout concepts raised. Each has options, an explanation and my recommendation. Pick one per question, add a note if you like, then press "Copy my answers" at the bottom and paste them back to me. Nothing is sent anywhere; the page only fills a text box and copies it.</p>
+
+<section class="q" data-q="1">
+<h2><span class="num">1</span>"Fits only now": the label for a lobby that fits today but could stop fitting</h2>
+<p>A lobby's adjustable terms have a signed range, and the host may move the value inside it until the ready check. By your earlier decision, the app compares your limit with the <b>whole range</b>, so you can never be switched at the last second.</p>
+<p>That leaves one awkward case. Your limit on the joining fee is 2,000 sats. The lobby charges 1,800 now, but may move anywhere up to 2,500. Today's value fits; the range does not.</p>
+<div class="mock">Paprika Post   Joining fee 1,800 now (may move 1,000 to 2,500)   Your limit 2,000</div>
+<div class="why">Concept D called this "Fits only now" and listed it with the lobbies that do not fit. If you have chosen the looser condition ("ready me while the current value fits"), the same lobby counts as fitting.</div>
+<label class="opt"><input type="radio" name="q1" value="A: 'Fits only now', listed with the lobbies that do not fit"><b>A. "Fits only now", in the "does not fit" group <span class="tag">Recommended</span></b><span>Honest by default. One tap on it shows "fits at 1,800 today; the host may raise it to 2,500, above your limit of 2,000".</span></label>
+<label class="opt"><input type="radio" name="q1" value="B: a sentence instead of a label, e.g. 'Fits today, may rise above your limit'"><b>B. A sentence, not a label</b><span>"Fits today; may rise above your limit." Clearer for newcomers, longer in a crowded list.</span></label>
+<label class="opt"><input type="radio" name="q1" value="C: its own third group, 'Might fit', between fits and does not fit"><b>C. Its own group, "Might fit"</b><span>Three groups instead of two. More visible, but it suggests the app might sign it, which by default it will not.</span></label>
+<label class="opt"><input type="radio" name="q1" value="D: hide it unless the looser condition is on"><b>D. Hide it unless the looser condition is on</b><span>Simplest list. Hides lobbies a member may want to know about, against the rule "do not hide, grey out with a reason".</span></label>
+<div class="rec"><b>Recommendation: A.</b> It keeps the safe default visible and explains itself in one tap. The research rule we adopted is "never hide a lobby that does not fit; grey it with the reason".</div>
+<textarea placeholder="Note (optional)"></textarea>
+</section>
+
+<section class="q" data-q="2">
+<h2><span class="num">2</span>Hosting funds: one wallet or two?</h2>
+<p>Everyone can host. A host needs a large amount on chain: in the sample, 22.5 to 37.5 million sats for one lobby. The question is whether that sits in the same wallet as the person's own coins.</p>
+<div class="why">Hosting also needs a linked Lightning node, which is separate whatever you choose here. This question is only about the on-chain coins that fund factories.</div>
+<label class="opt"><input type="radio" name="q2" value="A: one wallet, with an amount set aside for hosting"><b>A. One wallet, with an amount "set aside for hosting" <span class="tag">Recommended</span></b><span>One phrase, one backup. "My money" shows three places: free on chain, set aside for hosting, inside factories. The host sets a ceiling on how much hosting may use, so a large lobby cannot empty the person's spending coins by surprise.</span></label>
+<label class="opt"><input type="radio" name="q2" value="B: a separate hosting wallet (separate account under the same phrase)"><b>B. A separate hosting account under the same phrase</b><span>A second account derived from the same 24 words. Clean separation of books and privacy between personal and hosting coins; still one phrase. Slightly more to explain, and moving funds between them is a transaction.</span></label>
+<label class="opt"><input type="radio" name="q2" value="C: a fully separate hosting wallet with its own phrase"><b>C. A fully separate wallet with its own phrase</b><span>Strongest separation, suited to a business. Two phrases and two backups to keep; easy to lose one.</span></label>
+<div class="rec"><b>Recommendation: A for 1.0.0, with B as a later option for serious hosts.</b> Most people who host will start small and occasionally. One wallet with a ceiling is the least to get wrong. B is cheap to add later because the keys already follow the standard account structure.</div>
+<textarea placeholder="Note (optional)"></textarea>
+</section>
+
+<section class="q" data-q="3">
+<h2><span class="num">3</span>Hosting on phones: a tab, or somewhere quieter?</h2>
+<p>You decided everyone can always host, with no role question. On a computer that costs nothing: the side menu has room. On a phone, the bottom bar holds four or five tabs, and a Hosting tab takes one from members who never host.</p>
+<div class="mock">Phone, option A:   Home · Pay · Lobbies · Activity · Host
+Phone, option B:   Home · Pay · Lobbies · Activity      (Host in the top-right menu)
+Phone, option C:   Home · Pay · Lobbies · Activity      (Host appears as a tab once you host)</div>
+<div class="why">Concepts A and D gave Hosting a tab; concept G put it in the header on phones. The critique noted a daily host may overlook a header link.</div>
+<label class="opt"><input type="radio" name="q3" value="A: always a tab on phones too"><b>A. Always a tab, on phones too</b><span>Hosting is equal and obvious. Members who never host lose a tab slot, and Settings moves into a menu.</span></label>
+<label class="opt"><input type="radio" name="q3" value="B: on phones, in the header menu"><b>B. In the header menu on phones</b><span>Members keep their tabs. Hosting is always one tap away, never hidden, but less visible.</span></label>
+<label class="opt"><input type="radio" name="q3" value="C: header menu until the person hosts something, then a tab"><b>C. In the header menu until you host something, then a tab <span class="tag">Recommended</span></b><span>No question asked, nothing switched on: the layout simply follows what the person does. A member's phone stays uncluttered; a host gets a tab as soon as they have a lobby or a factory. It still meets your rule: hosting is always available to everyone.</span></label>
+<div class="rec"><b>Recommendation: C.</b> It keeps "everyone can always host" without a role question, and puts the tab where the work is. The one cost is that the phone layout changes once, on the first hosted lobby; the app says so in one line when it happens.</div>
+<textarea placeholder="Note (optional)"></textarea>
+</section>
+
+<section class="q" data-q="4">
+<h2><span class="num">4</span>A small on-chain reserve for members</h2>
+<p>Members start with nothing and need nothing to join. But leaving alone means putting transactions on chain. Those carry fees fixed when the factory was built, plus an anchor that lets someone add more fee later. In a fee spike, the fixed fees may be too low, and only a member with some on-chain coins can add more.</p>
+<div class="why">The channel research also found a related gap: the standard taproot channel's follow-up transactions for payments in flight carry no fee of their own, so a member with no coins cannot claim them in a spike. Both point the same way. In 1.1.0, a reserve is also how a member with a shared leaf leaves at more than its coverage.</div>
+<label class="opt"><input type="radio" name="q4" value="A: no reserve; rely on the fees built in"><b>A. No reserve: rely on the fees built into the factory</b><span>Simplest; keeps "start with nothing" exactly. Leaving alone may stall in a fee spike until fees fall.</span></label>
+<label class="opt"><input type="radio" name="q4" value="B: recommend a reserve, warn when below it, never require it"><b>B. Recommend a reserve, show it, warn when below it; never require it <span class="tag">Recommended</span></b><span>The app suggests an amount (for example 20,000 sats on mainnet, shown in the Checks card) and explains what it is for. Joining stays open to members with nothing. The app can fill the reserve automatically from the first payments received, if the member allows.</span></label>
+<label class="opt"><input type="radio" name="q4" value="C: recommend in 1.0.0; require it in 1.1.0 only to receive past coverage on a shared leaf"><b>C. As B, and in 1.1.0 require it only to receive past one's coverage</b><span>B now; in 1.1.0, a member on a shared leaf cannot receive more than its coverage unless it holds the reserve that lets it leave at its real balance. Stricter than the reference code, which only warns.</span></label>
+<label class="opt"><input type="radio" name="q4" value="D: require a reserve to join"><b>D. Require a reserve to join</b><span>Safest for the member, but breaks "members start at zero", the main way new people get onto Lightning through Gazpacho.</span></label>
+<div class="rec"><b>Recommendation: C.</b> B for 1.0.0 keeps the door open to people with nothing while being honest about fee spikes. In 1.1.0 the requirement applies only where the money is genuinely above what the payout protects, which is exactly where the design itself says a member needs on-chain coins.</div>
+<textarea placeholder="Note (optional)"></textarea>
+</section>
+
+<section class="q" data-q="5">
+<h2><span class="num">5</span>Anything else?</h2>
+<p class="soft">Optional: anything about the concepts, the viewer, or the questions above.</p>
+<textarea placeholder="Anything else (optional)"></textarea>
+</section>
+
+<div id="result"><p class="soft">Copied. If copying was blocked, select the text below and copy it yourself.</p><textarea readonly></textarea></div>
+</main>
+
+<div id="out"><button type="button" id="copy">Copy my answers</button><span id="count">0 of 4 answered</span></div>
+
+<script>
+const qs = [...document.querySelectorAll('.q')];
+function update(){
+  const n = qs.filter(q => q.querySelector('input:checked')).length;
+  document.getElementById('count').textContent = n + ' of 4 answered';
+}
+document.addEventListener('change', update);
+document.getElementById('copy').addEventListener('click', async () => {
+  const lines = ['Gazpacho questions 3 (interface): answers', ''];
+  for (const q of qs) {
+    const title = q.querySelector('h2').textContent.trim();
+    const pick = q.querySelector('input:checked');
+    const note = q.querySelector('textarea').value.trim();
+    if (!pick && !note) continue;
+    lines.push(title);
+    if (pick) lines.push('  Choice: ' + pick.value);
+    if (note) lines.push('  Note: ' + note.replace(/\n/g, '\n        '));
+    lines.push('');
+  }
+  const text = lines.join('\n');
+  const box = document.querySelector('#result textarea');
+  box.value = text;
+  document.getElementById('result').style.display = 'block';
+  try { await navigator.clipboard.writeText(text); } catch (e) { box.select(); }
+  document.getElementById('result').scrollIntoView({behavior: 'smooth'});
+});
+</script>
+</body>
+</html>

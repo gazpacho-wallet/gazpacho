@@ -66,7 +66,7 @@ From ZmnSCPxj's posts on Delving Bitcoin (topics 1143 and 1242) as read in earli
 - Factories last about 30 days plus about 3 days of winding down. A new one starts daily. Members move to a new factory by paying across over Lightning.
 - A payment's final deadline must be at least the tree's total exit delay plus a margin.
 - Arity 2 is suggested near the leaves, wider higher up, and fixed (stateless) near the root.
-- Pseudo-Spilman leaves were designed for several members per leaf sharing the host's liquidity; the reference code uses one member per leaf.
+- Pseudo-Spilman leaves were designed for several members per leaf sharing the host's liquidity. The reference code builds that shape too (corrected 2026-11-11): `factory_set_ps_subfactory_arity(K)` gives K members per sub-factory sharing the spare liquidity and K sub-factories per leaf (K² members), and `factory_subfactory_chain_advance_unsigned` sells liquidity by extending the chain, with a penalty for a stale chain. Both are in Gazpacho's import (`core/superscalar/src/factory.c:1059`, `:2971`). The default is K = 1, and the SuperScalar programs switch sales and advances off for now (#478, #481). Known divergence: the first sale spends only the spare liquidity, as designed; later sales spend every output of the previous step, so channels move. The orchestration around it (`lsp_subfactory_chain_advance`) is program code Gazpacho does not import.
 
 ## 4. What the reference code does today
 
