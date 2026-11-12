@@ -10,7 +10,7 @@
 # a leak, an undefined-behaviour report or a timeout; libFuzzer prints the
 # failing input (as bytes and Base64) in the log.
 set -eu
-build=$1
+build=$(cd "$1" && pwd)   # absolute: the script changes directory before running the targets
 secs=${2:-60}
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
