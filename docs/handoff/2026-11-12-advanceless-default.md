@@ -50,3 +50,9 @@ The builder already supports it: Gazpacho built trees of 3, 4, 5, 8 and 16 membe
 4. When advances return, keep the advanceless shape available as an option, since some hosts may prefer short exits over mid-life rebalancing.
 
 Gazpacho's 1.0.0 builds advanceless trees (owner's decision, 2026-11-12); Slice 1 on signet already does.
+
+## Their reply (2026-11-12)
+
+The SuperScalar session agrees in principle: the proposal is sound for 1.0, a temporary narrowing that takes away nothing the design promises, and it removes the old-tree-state risk. Before it becomes their default they will (1) build, sign and exit an all-static tree with one member per leaf at 4, 64 and 512 members on regtest (a fixed node holds at most 15 children with anchors, which sets the depth), (2) check every path that assumes at least one state layer, and (3) refuse refresh-in-place when there are no state layers.
+
+**Their finding that goes further than ours:** under the end-date payout, refresh-in-place cannot extend a factory's life even with state layers, because the old payout transaction stays valid at the old date. So refresh-in-place is to be refused whatever the shape once the payout lands, and **extending a factory's life always means rotation to a new funding output.** Gazpacho adopts this as a rule: there is one way to extend a factory, rotation; refresh-in-place is never used.
