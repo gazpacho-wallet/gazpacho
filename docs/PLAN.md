@@ -54,6 +54,18 @@ Slices are defined in `SLICES.md`. Each pulls a thin, real version of the outer 
 
 After that: more node adapters and a browser of hosts; swap-in and swap-out; a watching service; the self-contained host; then the work for real funds (remaining design fixes, an outside audit, a capped beta).
 
+## How work proceeds
+
+1. **Specification**, written before code.
+2. **Review of the specification** by an agent that did not write it.
+3. **Build**, against `ENGINEERING-CHECKLIST.md`, including the builder's own mutation testing.
+4. **Pull request**, kept small; automated checks must pass.
+5. **Review of the code** by an agent that did not write it, which tries to break it.
+6. **Fixes**, then a second review of what changed.
+7. **Merge**, then the knowledge base and handbook are updated.
+
+Work that does not depend on the server (specifications, research, reviews of text) runs alongside work that does (building and testing), so the critical path is never waiting for a document.
+
 ## How work is checked
 
 - Every safety rule has a test, and a run with the rule removed that must fail.

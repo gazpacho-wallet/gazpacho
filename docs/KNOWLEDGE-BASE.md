@@ -9,6 +9,7 @@ The single place to start. It gathers what has been learned and decided, says ho
 | The short plan and milestones | `PLAN.md` |
 | The design currently in force | `DESIGN.md` |
 | The dated record of findings, reviews and decisions | `RECORD.md` |
+| What every piece of work must satisfy before review | `ENGINEERING-CHECKLIST.md` |
 | The testing plan | `TESTING.md` |
 | The vertical slices | `SLICES.md` |
 | Specifications (safe-to-sign rule, signing round) | `../spec/` |

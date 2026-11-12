@@ -394,3 +394,14 @@ The builder is applying the fixes; a second review follows.
 - They are not building a second signing engine and will assess adopting Gazpacho's once it is reviewed.
 
 - Closing the exchange: the SuperScalar session concurs on all points. Its round 2 specification will state the host's deadline for forcing out a non-cooperating member. One rule added to our safe-to-sign specification at its request (H4): the host always holds its own signed, current channel transaction for every channel. Round 1 will be announced by them with the list of changed files.
+
+## 31. Review of the plan and workflow (2026-11-11)
+
+Asked by the owner whether the development plan is solid. Findings:
+
+- **The critical path was waiting on documents.** The channel engine is the longest piece and had no specification; the two existing specifications were unreviewed while the signing engine was about to be built from them. Both are now being worked on alongside the build work: an adversarial review of the two specifications with a threat model, and groundwork for the channel specification from Lightning's own documents.
+- **The biggest unretired technical risk** is whether Lightning's standard taproot channel format works unchanged for a channel whose funding output is off chain and moves. Being established from primary sources now.
+- **Reviews are finding what builders should have found.** Each first review returned a long list. `ENGINEERING-CHECKLIST.md` records those lessons and goes into every builder's instructions; mutation testing becomes the builder's job.
+- **Pull requests were too large.** They are to be kept to one piece of work.
+- **Gaps recorded in `OPEN-QUESTIONS.md`:** package submission through public chain servers; the terms record and message specifications; other compilers and a Windows build; a nightly run; the number of timed levels.
+- **An opportunity:** once the core frame merges, wire the placeholder node end to end through a real connection, a real journal and the interface, before the signing engine exists. Slice 1 then becomes replacing the placeholder, not first-time integration.

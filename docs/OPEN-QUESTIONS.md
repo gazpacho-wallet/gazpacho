@@ -13,6 +13,18 @@ Kept current. Last updated 2026-11-11, after questions round 2.
 
 ## For this session to settle (research or build)
 
+Found in the plan review of 2026-11-11:
+
+- **Can Lightning's standard taproot channel format be used when the channel's funding output is off chain and moves?** The decision to use it rests on secondary sources. Groundwork from the specification itself is under way (`notes/channel-groundwork.md`, local).
+- **Can a whole exit path be confirmed through public chain servers?** A forced exit publishes a chain of pre-signed transactions with small built-in fees and a fee-paying child. That needs the server to accept a parent and child together. Not yet checked for the public servers we use. Without it, slice 3 needs our own node.
+- **A threat model** does not exist as a document. One is being drafted with the specification review.
+- **The host's terms record** (what Soup called the policy) has no specification, and the lobby and the signing round both need it.
+- **The message specification** has to exist before the signing engine sends anything.
+- **Builds other than Linux with one compiler.** The goal is that anyone can run it, and the owner's machine runs Windows. A second compiler and a Windows build should be in the automated checks before the outer pieces grow.
+- **Long test runs happen only when an agent chooses to run them.** A nightly run on the build server, with results kept, is not set up.
+- **How many timed levels each factory size uses** (each costs three days of exit time): needs the owner.
+
+
 5d. **The table of tree shapes by size** that a host's terms may use, given the shape rules in `DESIGN.md` section 7, and how many timed levels the first release uses at each size (each costs 3 days of exit delay and 3 days of payment deadline).
 
 5. The precise definition of the member's safety rule.
