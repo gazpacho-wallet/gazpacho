@@ -87,6 +87,8 @@
  *   every action it still held are gone. That is safe because a held action
  *   was never given to the executor. A batch that was handed to storage may
  *   or may not have become durable; the restarted node finds out from storage.
+ *   Storage may still complete such a batch while the restarted node starts,
+ *   but not after its start has finished (ports.h).
  *
  * AN EMPTY LIST succeeds and releases nothing. A SAVE WITH NO RECORDS is a
  * batch like any other.

@@ -15,7 +15,10 @@ typedef enum {
     GZ_ERR_REENTRANT,       /* the runner was called from inside its own executor callback */
     GZ_ERR_STALE_BATCH,     /* a confirmation for a batch issued before the last restart: ignored */
     GZ_ERR_UNKNOWN_BATCH,   /* a confirmation for a batch never issued, or already confirmed */
-    GZ_ERR_OUT_OF_ORDER     /* a confirmation that skips an earlier unconfirmed batch */
+    GZ_ERR_OUT_OF_ORDER,    /* a confirmation that skips an earlier unconfirmed batch */
+    GZ_ERR_CORRUPT,         /* storage does not hold the journal the contract describes */
+    GZ_WAITING              /* not an error: nothing can be done until one of the node's
+                               batches is confirmed; nothing was appended (node.h) */
 } gz_status_t;
 
 /* Identifier of one save batch. Issued by the runner, never by a node, and

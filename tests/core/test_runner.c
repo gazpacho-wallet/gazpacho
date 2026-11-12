@@ -11,6 +11,7 @@
  * The tests use only the runner's documented functions. */
 #include "gazpacho/runner.h"
 #include "../check.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define INCARNATION 7
@@ -1048,6 +1049,71 @@ static void test_wrong_runners_are_caught(void)
     CHECK(sloppy_caught == 50 && sloppy_off_model == 50);
 }
 
+/* Compaction exactly at the edge of the byte block. In a 23-byte block, an
+ * 8-byte and a 2-byte payload are held; the first is released, freeing 8
+ * bytes at the front and leaving 13 free at the back; a 14-byte payload
+ * arrives. Unless the held payload is moved down first, the new one runs one
+ * byte past the block. The block is an allocation of its own, so the memory
+ * checkers see an overrun, and in the second round it is followed by a guard
+ * byte that a build without them checks. */
+static uint8_t g_edge_seen[3][16];
+static size_t g_edge_len[3], g_edge_n;
+static void edge_execute(void *ctx, const gz_action_t *a)
+{
+    (void)ctx;
+    const gz_bytes_t *b = a->kind == GZ_ACTION_SEND ? &a->u.send.bytes : a->kind == GZ_ACTION_WATCH ? &a->u.watch.script : NULL;
+    if (!b || g_edge_n >= 3) return;
+    memcpy(g_edge_seen[g_edge_n], b->data, b->len);
+    g_edge_len[g_edge_n++] = b->len;
+}
+
+static void test_compaction_at_the_edge_of_the_block(void)
+{
+    enum { BLOCK = 23 };
+    static gz_runner_slot_t slots[4];
+    static const uint8_t eight[8] = {8, 8, 8, 8, 8, 8, 8, 8}, two[2] = {2, 2};
+    static const uint8_t fourteen[14] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
+    for (int guarded = 0; guarded <= 1; guarded++) {
+        uint8_t *block = malloc(BLOCK + (size_t)guarded);
+        gz_runner_t r;
+        if (!block) { CHECK(0); return; }
+        if (guarded) block[BLOCK] = 0xa5;
+        g_edge_n = 0;
+        CHECK(gz_runner_init(&r, slots, 4, block, BLOCK, INCARNATION, edge_execute, NULL) == GZ_OK);
+        gz_action_t first = plain_send(eight, 8), second = plain_send(two, 2), watch = {.kind = GZ_ACTION_WATCH};
+        watch.u.watch.script = (gz_bytes_t){fourteen, sizeof fourteen};
+        list_begin(); add_save(100);
+        CHECK(gz_action_list_add(&l, &first) == GZ_OK);
+        add_save(101);
+        CHECK(gz_action_list_add(&l, &second) == GZ_OK);
+        CHECK(gz_runner_submit(&r, &l) == GZ_OK && gz_runner_held(&r) == 2);
+        CHECK(gz_runner_confirm(&r, batch(INCARNATION, 1)) == GZ_OK && gz_runner_held(&r) == 1);
+        list_begin();
+        CHECK(gz_action_list_add(&l, &watch) == GZ_OK);
+        CHECK(gz_runner_submit(&r, &l) == GZ_OK && gz_runner_held(&r) == 2);
+        if (guarded) CHECK(block[BLOCK] == 0xa5);
+        CHECK(gz_runner_confirm(&r, batch(INCARNATION, 2)) == GZ_OK && gz_runner_held(&r) == 0);
+        CHECK(g_edge_n == 3 && g_edge_len[0] == 8 && g_edge_len[1] == 2 && g_edge_len[2] == 14);
+        CHECK(memcmp(g_edge_seen[1], two, 2) == 0 && memcmp(g_edge_seen[2], fourteen, 14) == 0);
+        free(block);
+    }
+}
+
+/* A failed runner answers every submit with GZ_ERR_FAILED, even a list it
+ * could not have taken anyway. */
+static void test_a_failed_runner_refuses_everything_the_same_way(void)
+{
+    static gz_runner_slot_t slots[1];
+    gz_runner_t r;
+    log_reset();
+    CHECK(gz_runner_init(&r, slots, 1, NULL, 0, INCARNATION, record_execute, NULL) == GZ_OK);
+    CHECK(gz_runner_storage_failed(&r) == GZ_OK);
+    list_begin(); add_save(1); add_send(2); add_send(3);            /* would not fit */
+    CHECK(gz_runner_submit(&r, &l) == GZ_ERR_FAILED && g_log_n == 0);
+    list_begin();
+    CHECK(gz_runner_submit(&r, &l) == GZ_ERR_FAILED);
+}
+
 int main(void)
 {
     test_arguments();
@@ -1072,6 +1138,8 @@ int main(void)
     test_byte_bound_is_exact();
     test_empty_payload_is_not_a_pointer_into_the_list();
     test_unknown_kinds_are_refused();
+    test_compaction_at_the_edge_of_the_block();
+    test_a_failed_runner_refuses_everything_the_same_way();
     test_queue_room_is_reused_without_draining();
     test_steady_load_is_never_refused();
     test_submitted_list_may_be_reused_at_once();
