@@ -1,6 +1,6 @@
 # Continuous integration
 
-What `.github/workflows/ci.yml` runs, what each job guards, and how to run the same check on your own machine. Written 2026-11-12 with the CI hardening branch.
+What `.github/workflows/ci.yml` runs, what each job guards, and how to run the same check on your own machine. Written 2026-11-12 with the CI hardening branch (PR 16); brought up to date the same day, after the transport, chain view and wallet transactions merged.
 
 CI runs on every pull request and on every push to `main`. All jobs run in parallel on GitHub's `ubuntu-24.04` runners; the longest is the gcc build without sanitizers (the wallet break-checks), about 12 to 20 minutes. Everything else finishes in a few minutes.
 
@@ -44,7 +44,11 @@ Locally: `python -I tools/check-no-addresses.py` (or name files, relative to the
 
 ### specification vectors
 
-Guards: the test vectors printed in the specifications are still what `tools/spec-vectors.py` computes, and the script's own self-checks (the BIP 340 test vector, the split and funding rules) pass. The job runs `python3 -I tools/spec-vectors.py` and fails on a non-zero exit. On a branch without the script (today, `main`) it prints a notice and passes. The script uses the standard library only; its elliptic-curve arithmetic is pure Python, so it takes about five minutes (`specs-slice1`, checked by hand on 2026-11-12: exit 0).
+Guards: `tools/spec-vectors.py` runs to the end and its own self-checks pass (the BIP 340 test vector, the split and funding rules, and its other asserts). The job runs `python3 -I tools/spec-vectors.py` and fails on a non-zero exit.
+
+**What it does not guard:** the script reads no specification. It prints the vectors; it does not compare them with the hex printed in the specifications. A vector edited by hand in a specification, or a change to the script whose output was never pasted back, passes this job. That comparison is still done by hand, in review. A check that compares the two is not scheduled (`TESTING.md`, Part 2).
+
+The script has been on `main` since PR 13 (the Slice 1 specifications). On a branch without it the job prints a notice and passes. The script uses the standard library only; its elliptic-curve arithmetic is pure Python, so it takes about five minutes (`specs-slice1`, checked by hand on 2026-11-12: exit 0).
 
 Locally: `python -I tools/spec-vectors.py`
 
@@ -106,9 +110,11 @@ Locally (Linux, valgrind installed):
 
 ### libFuzzer, 60 s per target
 
-Guards: every parser of outside input keeps being fuzzed (checklist item 20), with coverage guidance, ASan and UBSan. The job looks for `LLVMFuzzerTestOneInput` in the C sources. If there is none (today, `main`), it prints a notice and passes. Otherwise it builds the tree with clang, `-fsanitize=fuzzer-no-link,address,undefined` and `-DGZ_LIBFUZZER=ON`, and `tools/run-fuzz.sh` runs every executable named `fuzz_*` for 60 seconds. It fails on any crash, leak, sanitizer report or 10-second input, and libFuzzer prints the failing input in the log. If the sources define fuzz targets but no `fuzz_*` executable was built, it fails, so a target cannot drop out of the job by being renamed.
+Guards: every parser of outside input keeps being fuzzed (checklist item 20), with coverage guidance, ASan and UBSan. The job looks for `LLVMFuzzerTestOneInput` in the C sources. If there is none (a branch from before PR 10), it prints a notice and passes. Otherwise it builds the tree with clang, `-fsanitize=fuzzer-no-link,address,undefined` and `-DGZ_LIBFUZZER=ON`, and `tools/run-fuzz.sh` runs every executable named `fuzz_*` for 60 seconds. It fails on any crash, leak, sanitizer report or 10-second input, and libFuzzer prints the failing input in the log. If the sources define fuzz targets but no `fuzz_*` executable was built, it fails, so a target cannot drop out of the job by being renamed.
 
-How a branch adds its fuzz targets. Branches today (`transport`, `wallet-tx`, `wallet-tx-lib`) build each target with a plain driver and run it as a CTest test; keep that, and add the libFuzzer form:
+The targets on `main` today: `fuzz_noise` and `fuzz_tlv` (the transport's BOLT 8 and TLV decoders, since PR 10) and `fuzz_tx_parse` (the wallet's transaction parser, since PR 11). The chain view's fuzz test (`chain_fuzz`, `ports/chain/tests/test_fuzz.c`) has only a plain driver: it runs as a CTest test in every build, but not in this job.
+
+How a branch adds a fuzz target. The targets on `main` are built both ways: with a plain driver as a CTest test normally, and in the libFuzzer form when `GZ_LIBFUZZER` is ON (declared once, at the top of `CMakeLists.txt`). A new target does the same:
 
 1. Name the executable `fuzz_<name>` and define `int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)` in its source. Keep `main` in a separate driver file.
 2. In CMake, when `GZ_LIBFUZZER` is ON, build the target without the driver and link it with `-fsanitize=fuzzer`, and do not register the plain-driver CTest test:
@@ -146,7 +152,7 @@ The negative tests of both checks (the sneaky object, the five bad libraries) st
 
 ## What CI does not do
 
-- **It is not yet a gate.** Nothing makes these checks required before a merge; that is a repository setting (branch protection on `main` with the jobs above as required checks).
+- **It does not require a review.** Since 2026-11-12, branch protection on `main` requires all 11 jobs above to pass on a branch that is up to date with `main`, applies to administrators too, and refuses force pushes and deletions. It does not require an approving GitHub review: reviews are kept as files in `docs/reviews/`, and their rule is checked by people, not by GitHub.
 - **A pull request with merge conflicts gets no run.** GitHub runs `pull_request` workflows on the merge of the branch into its base; while the pull request conflicts there is no merge to test, and no run starts, however many commits are pushed. Rebase on `main` to get a result.
 - **Pushes to other branches do not run CI** on their own (the `push` trigger is `main` only); a branch is tested through its pull request.
 - **No Windows or macOS build**, no 32-bit build, no regtest node, no reproducible-build check, no mutation testing.

@@ -1,9 +1,203 @@
 # Review: wallet transactions library (`wallet-tx-lib`)
 
+*Round 1 was archived earlier. Round 2 was added on 2026-11-12 from the coordinator's notes; the file now holds both rounds, newest first. Server folders are named in words, under the rule against local paths.*
+
+# Round 2 (2026-11-12): `wallet-tx-lib` 37a82d1, `wallet-tx` 4ccbe4e
+
+Ranges reviewed: f3a5c79..37a82d1 (library fixes and tests) and 8ed8ce4..4ccbe4e (merges of those, tool changes, builder's mutation round 4). The library sources are the same on both heads.
+
+Built on the server in a folder on the build server from a bundle of the pushed `wallet-tx` (checked out at 4ccbe4e), in release and ASan+UBSan builds (GCC 15.2). All 17 wallet tests pass in both. There are no warnings in project code.
+
+CI facts come from GitHub's runs on the open pull requests: #11 is wallet-tx-lib -> main, #12 is wallet-tx -> wallet-tx-lib.
+
+## Verdict (round 2)
+
+**Merge after one fix: the required libFuzzer job.**
+
+- Every round-1 finding is fixed or properly documented, with tests.
+- The release gate now holds against every edit I tried.
+- The parser gaps are pinned.
+- The new code passes my probes, the differential checks, a fresh fuzz run, valgrind and my mutation run (section R4).
+- Two small test gaps remain from round 1: the vout tie-break and the push byte 0x20 (R4, c06 and h02). They do not block the merge.
+- What blocks the merge is CI, not the library: PR #11 fails the required **libFuzzer** job (R2.1). Even after that is fixed, the wallet fuzz target would pass the job without fuzzing anything, until the branch adopts main's `GZ_LIBFUZZER` form.
+
+## R1. Round-1 findings: fixed or not
+
+| Round 1 | Status | Evidence |
+|---|---|---|
+| M1 gate trusts `info.txid`; no caps check; signed bytes in the struct | **Fixed** | See below |
+| M2 parser rules tx.c:266 / tx.c:259 not pinned | **Fixed** | See below |
+| M3 funding accepts any witness program | **Fixed** | See below |
+| L1 rounding over the ceiling vs claims | **Fixed (wording)** | Note 1.5, 1.7.5 and the header now say "rounded up to a whole satoshi, less than 1 sat over", with my 108 sat/kvB example |
+| L2 network enums interchangeable | **Fixed** | See below |
+| L3 partial signed bytes on a short buffer | **Fixed** | Probe `short-buffer: rc=12 len=0 zeroed=1 beyond-cap-untouched=1` |
+| L4 signed bytes in dead stack | **Fixed** | See below |
+| L5 change index of unconfirmed coins | **Fixed** | See below |
+| L6 FUNDS where the cap is the limit | **Fixed** | `GZT_ERR_LIMIT` (`funding.c` end of `gzt_select_coins`). Probes: 4,096 dust coins needing 65 inputs gives `rc=4`; more than all coins gives `rc=8`; only 64 coins offered gives `rc=8` |
+| L7 claims; hardened account | **Fixed** | See below |
+| L8 portability, stack | **Documented** | Note section 7 |
+| Round-1 mutation survivors: vout tie, push byte 0x20 | **Not addressed** | These two came from my round-1 log, which the builder did not have. Both still survive on the new code (R4, c06 and h02): two one-line tests are missing |
+
+M1 (release gate):
+- The funding now holds no signature. Release signs, after `held_ok` (`funding.c`) has checked state, caps, no held witness, the recomputed txid against both `expect_txid` and `info.txid`, the output count, the funding amount and the balance.
+- Probes (all `rc=11 STATE`, with the buffer zeroed):
+  - forged `info.txid`, with either expectation;
+  - edited value;
+  - edited script with `expect` real;
+  - `n_in` 200, `n_out` 17;
+  - held witness;
+  - spent amount +1;
+  - state 0;
+  - `has_change` flipped.
+- Further probes: `info.vsize`+1 gives `rc=13`; another master key, an edited key index or change gives `rc=9`.
+- No signature is in the held struct (`sig-in-held-struct=0`).
+- A consistent edit asked for with its own new txid is released (`rc=0`, the txid is the one asked for). That is the right property: what is released always has the txid the caller asked for.
+- Under ASan+UBSan all 39 probes run clean.
+
+M2 (parser):
+- New tests pin all three forms (`test_tx.c:836-887`), including input B, after a zero count with `fd`/`fe`/`ff`.
+- My inputs A, A2 and B give `rc=3` on the new code.
+- In my mutation run both mutants are now caught (R4).
+
+M3 (funding destination):
+- The funding now requires `OP_1 0x20 <32>`. Probes: P2WSH, v2-32, v1-31 and v1 with length 35 all give `rc=5`.
+- Selection refuses 2-byte programs (P2A `rc=5`) and accepts 3-byte ones (65-byte minimum met).
+
+L2 (network type):
+- `gzt_network` is now a one-member struct.
+- My probe `rv2_enum.c` gives 5 compile errors out of 5: gzw value as argument, plain integer, assignment from `gzw_network`, gzt value to the key library, and `==` on the struct.
+
+L4 (signed bytes in dead stack):
+- `gzt_tx_weight` now counts instead of serialising; `hash_form` and the signer wipe their copies.
+- My stack scan (release build) finds no signature after build or after release: `after-release-stack=0 after-build-stack=0`. The note says this was shown "by reading the code, not by a stack scan"; it is now also shown by a scan.
+
+L5 (change index of unconfirmed coins):
+- There is a new `used_change_indexes` list, and the tool lists unconfirmed change coins in it.
+- Probes: index in the list gives `rc=1`; not in the list gives `rc=0`; NULL list with a count gives `rc=1`.
+
+L7 (claims; hardened account):
+- The size-test claim is now true: the new tests cover every input count 1..64, with P2TR and P2WPKH.
+- The rebuild claim is corrected.
+- The round-3 overruling is recorded.
+- Account 2^31 now gives `GZT_ERR_ARG` (probe `rc=1`).
+
+## R2. New findings
+
+**R2.1 (blocks merge): the required libFuzzer job fails on PR #11, and once it runs it would fuzz nothing.**
+- Run 43194885975 on 37a82d1: every job passes except "libFuzzer, 60 s per target": `tools/run-fuzz.sh: 35: build/wallet/tx/fuzz_tx_parse: not found`.
+- Cause 1 is on main: `run-fuzz.sh` finds targets under the relative `build` directory, then runs `"$t"` after `cd "$work"`, so the relative path no longer resolves. Fix in main: make `build` absolute (`build=$(cd "$1" && pwd)`). On main the job never reached this line, because there were no fuzz targets.
+- Cause 2 is on the branch: `wallet/tx/CMakeLists.txt` ignores `GZ_LIBFUZZER`, so `fuzz_tx_parse` keeps its built-in `main`. Under run-fuzz.sh it gets `-max_total_time=60 …` as its first argument, `strtoul` reads that as 0 rounds, and the final check (`accepted - before == 2 && accepted > 0`) passes. So the job would go green after 0 fuzz inputs.
+- Fix on the branch, as `docs/notes/ci.md` on main asks:
+  - when `GZ_LIBFUZZER` is ON, build `fuzz_tx_parse` with `-DGZT_LIBFUZZER`, link it with `-fsanitize=fuzzer`, and do not register `wallet_tx_fuzz`;
+  - otherwise keep the plain driver;
+  - optionally add the two BIP 341 transactions as `fuzz/corpus/tx_parse/`.
+- Also make the driver refuse a non-numeric argument, so this kind of vacuous pass cannot happen again.
+
+**R2.2 (low, documented): spent amounts and key paths are not bound by the txid.** A consistent edit of a spent amount and `info.fee` together passes `held_ok`, is signed and released (probe `spent-amount+1,fee+1: rc=0`). The network refuses the signatures, because BIP 341 commits to the amounts. Note section 7 states this limit honestly. Two ways to close it:
+- at build, store a hash of the spent outputs and key paths with the txid and check it at release (still editable by a writer, but it catches corruption as the txid check does);
+- or accept the limit as written.
+
+An edited network id with the same coin type (signet to testnet3) also releases the same transaction (`rc=0`); this is harmless.
+
+**R2.3 (low): the `GZT_NET_*` macros are C compound literals.** `((gzt_network){1})` is not standard C++. The header has an `extern "C"` guard for C++ users; MSVC in C++ mode refuses it, while GCC and clang accept it as an extension. The C build is unaffected: clang-18 plain, ASan and MSan all pass in CI. If C++ callers matter (mobile wrappers), provide `static const gzt_network` objects or an inline constructor instead.
+
+**R2.4 (info): the tool cannot see change indexes whose coins were all spent.** The servers list unspent outputs only. The tool's header comment says so. This is for the journal (note section 2), not a library issue.
+
+## R3. CI jobs on these branches
+
+Run 43194885975, PR #11 (37a82d1 merged into main):
+
+| Job | Result | Remark |
+|---|---|---|
+| gcc build OFF / ON | pass | |
+| clang plain / ASan+UBSan | pass | |
+| clang MemorySanitizer | pass | |
+| valgrind | pass | |
+| no addresses or local paths | pass | I also ran main's `check-no-addresses.py` on the 4ccbe4e tree: PASS, 88 files |
+| handbook | pass | `docs/notes/wallet-tx.md` is not a handbook chapter |
+| spec vectors | pass | |
+| import check | pass | |
+| **libFuzzer** | **fail** | R2.1 |
+
+PR #12 (wallet-tx -> wallet-tx-lib) ran only the gcc build jobs (both passed on 4ccbe4e). Its base still has the old workflow, so clang, MSan, valgrind and fuzz have not run on the tool and `mutate.py` changes. The tool adds no fuzz target, so once #11 is merged and #12 is retargeted to main, only R2.1 should matter.
+
+`git merge-tree` of main with each branch: no conflicts.
+
+My own valgrind run of `test_tx`, `test_tx_vectors` and `test_tx_faults` (CI flags: full leak check, track origins): exit 0, no reports. `fuzz_tx_parse 200000` under valgrind: exit 0.
+
+## R4. Reviewer's mutation run on the new code
+
+I wrote 71 hand-written mutants (`tools/r2/rv2_mutate.py`):
+- 13 in `held_ok`, 9 in release, 3 in signing, 9 in the build, 5 in the new selection code (plus the round-1 vout survivor);
+- 6 in the counted weight, 20 in the parser, 3 in networks, 2 in the signer.
+
+Each was rebuilt and run against `ctest -R ^wallet_tx` (vectors, unit tests, faults, fuzz 200,000, no-I/O, tool test). Every command ran in its own process group with a group kill on timeout, so no program was left running.
+
+**Release build: 69 run, 49 caught, 18 survived, 2 did not compile** (g05 and r09 leave a variable unused, which `-Werror` refuses). The survivors were then re-run under ASan+UBSan, except those already equivalent by reading. The ASan pass also added the two round-1 survivors in unchanged code (c06, h02). Results:
+- **ASan+UBSan pass:** g02, p09 and p10 caught; p16, c06 and h02 survived. h01 (a wipe) was still running at my last look; ASan cannot see a removed wipe, and it survived the release build.
+- **Overall: 71 mutants, 52 caught, 2 did not compile, 17 survived.** Of the 17, two are real (if small) test gaps: c06 and h02. The other 15 are equivalent or untested wipes.
+
+| Survivor | Judgement |
+|---|---|
+| g02 caps not checked in `held_ok` | **caught under ASan+UBSan** (the copy and the txid computation go past the arrays); as the builder said |
+| p09 marker read past the end, p10 flag read past the end | **caught under ASan+UBSan** (exact-size buffer test); one-byte over-reads, invisible without the checkers |
+| g08 output count, g12 output value cap, g13 fee cap | equivalent: second lines (the recomputed txid binds the count; the balance check catches any single amount edit) |
+| r02 release size check, b06 coin script check, b08 build size check | equivalent: second lines, as the builder says |
+| b02 build does not check push byte 0x20 | equivalent: `gzt_select_coins` then refuses the script as not a witness program |
+| c02 LIMIT test without `n_coins > 64` | equivalent: with 64 or fewer coins all are tried, so the loop has already succeeded or overpaid |
+| w03, w05 compact-size widths in the counted weight | equivalent under the caps (every length is below 0xfd) |
+| r05, r06, w06, h01 wipes of local copies | untested by design, as the builder says. My stack scan (R1, L4) shows the wipes work today; no test would see one removed. Acceptable, but a stack-scan test like the key library's would close it |
+| p16 zero inputs | equivalent (shown in round 1: a `00` count is read as the marker, then the superfluous-witness rule refuses) |
+| c06 vout tie-break reversed (round-1 survivor) | **real gap (low)**. In the model test, every coin has a distinct txid (`txid[1] = i`), so two coins equal in amount and txid never occur, and the vout tie-break is never exercised. Add one case: same txid and amount, vouts 7/3/5, and expect the order 3, 5 (my round-1 probe: `selected=1,2`) |
+| h02 push byte 0x20 unchecked in `gzt_sign_keypath` (round-1 survivor) | **real gap (low)**. With the check removed, a spent script `51 21 <32 bytes>` (34 bytes, not a witness program) would be signed for when its bytes 2..33 are the key. Add one refusal test with `script[1] = 0x21` |
+
+Every release-gate rule that matters is caught:
+- state, held witness;
+- the recomputed txid against `info.txid`, the round-1 behaviour (g06), and the 31-byte compare;
+- funding amount, balance, spent-amount cap;
+- non-master key, cap off by one, out not wiped, length and copy off by one;
+- same aux for every input, network ignored, key of input 0.
+
+The round-1 parser gaps (p01, p02) are caught, and so are all the canonical-form, cap and limit mutants.
+
+## R5. The builder's round-4 judgement (98 survivors)
+
+The survivor list itself was not in the repository, only the categories in note section 9. So I re-checked by category against the code, and covered the gate and parser lines directly with my own mutants (R4).
+- The categories are plausible.
+- The six release-gate "second lines" (21-million checks at exactly 21 M; output and fee checks) are equivalent as described: `held_ok` checks the balance in a way that any single edit of an amount or the fee breaks.
+- I disagree on two: the vout tie-break and the push byte 0x20 in `gzt_sign_keypath`. Both survive my runs (R4: c06, h02) and are real, small test gaps. If the builder's round 4 lists them among its 98, they are misjudged as equivalent.
+
+## R6. Other checks on the new code
+
+- **Differential sighash:** 303,589 (input, hash type) cases against my BIP 341 model: 0 mismatches.
+- **Differential parser:** 400,000 inputs: 0 mismatches, 0 round-trip failures.
+- **Fuzz on a new seed** (0x5be0cd19137e2179): 20,000,000 inputs in the release build and 2,000,000 under ASan+UBSan. All properties held, including the new counted-weight check.
+- **Aux and signing:** the same aux at release gives identical bytes; another aux gives other bytes and the same txid.
+
+## R6b. Server state
+
+- At my last look, the ASan pass of my mutation run was finishing its last mutant (h01). It restores the source when it ends, and every command runs in its own process group under a timeout.
+- The builder's hung test programs from round 1 (pids 153613, 154055, 165643, 170678, 170671) were gone by round 2: `ps` showed none.
+- My round-1 run left nothing running.
+- Work is in a folder on the build server only (round 2 in `r2/`).
+
+## R7. Not tested in round 2
+
+- clang locally: clang is not on the server; clang results come from CI.
+- libFuzzer (R2.1).
+- C++ inclusion of the header.
+- A real broadcast.
+- The builder's individual survivor list (not in the repository).
+- Mutation of the tool.
+
+---
+
+# Round 1 (2026-11-12): `wallet-tx-lib` f3a5c79
+
 Reviewer: independent agent that did not write the code. Date 2026-11-12.
 Scope: branch `wallet-tx-lib` of gazpacho-wallet/gazpacho, commits 024b209 (spec) and f3a5c79 (code) on e6fac8e, library `gazpacho_wallet_tx` in `wallet/tx/`, spec `docs/notes/wallet-tx.md`. The stacked branch `wallet-tx` (1ec2dad tool, 8ed8ce4 mutation script) was read only for how the tool uses the library and for the builder's mutation results. The library sources are byte-identical on both branches (`git diff f3a5c79 8ed8ce4 -- wallet/tx/src wallet/tx/include` is empty).
 
-Work done on the build server in `/root/gz/review-wallet-tx/` only (a copy of the builder's tree at 8ed8ce4; release and AddressSanitizer+UBSan builds configured there, secp256k1-zkp source reused read-only from `/root/gz/build-rel/_deps`). Nothing pushed, committed or posted; no coins, no network calls beyond ssh.
+Work done on the build server in a folder on the build server only (a copy of the builder's tree at 8ed8ce4; release and AddressSanitizer+UBSan builds configured there, secp256k1-zkp source reused read-only from a folder on the build server). Nothing pushed, committed or posted; no coins, no network calls beyond ssh.
 
 ## Verdict
 
@@ -11,14 +205,14 @@ Work done on the build server in `/root/gz/review-wallet-tx/` only (a copy of th
 
 ## Findings, ranked
 
-Line numbers are of the files on `wallet-tx-lib` (f3a5c79). "Probe" means a program of mine (`/root/gz/review-wallet-tx/tools/rv/`, copies in the reviewer's scratch area) linked against the built library; its printed result is quoted.
+Line numbers are of the files on `wallet-tx-lib` (f3a5c79). "Probe" means a program of mine (a folder on the build server, copies in the reviewer's scratch area) linked against the built library; its printed result is quoted.
 
 ### Medium
 
 **M1. The release gate checks the txid against a caller-writable copy and never against the transaction it hands out.** `funding.c:343-353`: `gzt_funding_release` compares `expect_txid` with `f->info.txid`, a public member that the caller reads (the tool passes `f.info.txid` straight back, `tools/gz-wallet-tx/main.c:332,445`) and can overwrite. It then serialises `f->priv_tx` with `f->priv_sigs` without recomputing the txid or checking caps.
 - Probe: write `0x42…42` into `info.txid` of a built funding, then release with that value. Result: `rc=0 released=1 real-txid-differs-from-expect=1`. The bytes come out, and their txid is not the one the caller asked for.
 - Probe: change `priv_tx.out[0].value` and `n_out` after the build. Result: `rc=0 txid-differs-from-expect=1`. A transaction with invalid signatures, and another txid, is released.
-- `funding.c:346` loops `i < signed_tx.n_in` and writes `signed_tx.in[i]` before any cap check. A held funding with `n_in` above 64 (a corrupted or restored struct) writes past the local `gzt_tx`. Probe RV_NIN (n_in set to 200, ASan build): the program exited 1, but no ASan report matched my filter, and I could not open its full output (`/root/gz/review-wallet-tx/san-probe2.out`) before server access was stopped. So this one is shown by reading the code, not yet by a run.
+- `funding.c:346` loops `i < signed_tx.n_in` and writes `signed_tx.in[i]` before any cap check. A held funding with `n_in` above 64 (a corrupted or restored struct) writes past the local `gzt_tx`. Probe RV_NIN (n_in set to 200, ASan+UBSan build): `funding.c:207:21: runtime error: index 64 out of bounds for type 'gzt_txin [64]'` (read back in round 2 from a folder on the build server).
 - Why it matters: the whole point of the gate (note 1.8, 2) is that what is broadcast is exactly the txid the signed tree spends. Today that holds only while nothing touches the struct, and the note itself says C cannot stop that (section 7).
 - Fix: in release, run the cap check on `priv_tx`, recompute its txid, and require it to equal both `expect_txid` and `info.txid` before serialising. Wipe `out` on every failure (see L3). Better still, consider signing at release time instead of at build time: the build can still sign, verify and discard to prove signability and fix the size. Then holding or copying a `gzt_funding` yields nothing, and "no signed bytes before release" becomes literally true instead of a convention. The txid does not change: the selection is deterministic and the witness is not part of the txid.
 
@@ -201,13 +395,12 @@ Claim corrections are listed under L1, L4 and L7, and in M1 (note 1.8 "refuses a
 - the writer overflow;
 - the builder's survivors tx.c:266 and tx.c:259.
 
-The run started detached on the server against the release build. Server access then ended (firewall pause, then permission refusals) before I could read `/root/gz/review-wallet-tx/mut-rel.log`. Survivor counts are therefore not reported here.
-
-What is established without that log:
-- the builder's survivors tx.c:266 and tx.c:259 are not equivalent (`rv_noncanon.c`: their mutated parsers accept non-canonical inputs that the real parser refuses);
-- 9 of the builder's 13 parser survivors are equivalent (section 4).
-
-Reading the log is the first thing to finish.
+Result (release build, log a folder on the build server, read in round 2): **76 mutants: 66 caught, 8 survived, 2 did not compile.** Survivors:
+- `tx.c:266` and `tx.c:259` (the builder's two, re-run): real gaps, see M2.
+- `funding.c:14` vout tie-break reversed: a real gap (no test has two coins equal in amount and txid). My probe shows the code orders correctly; the tests do not pin it.
+- `sighash.c:121` push byte `0x20` not checked: a small real gap (a 34-byte spent script `51 xx <32>` with `xx != 0x20` would be signed for).
+- `tx.c:285` zero inputs: equivalent (with no inputs, a `00` where the count goes is read as the segwit marker, and a segwit form with no inputs fails the superfluous-witness rule).
+- `funding.c:150` coin script check, `funding.c:175` signed-size self-check, `funding.c:176` fee-ceiling self-check: second lines, equivalent as the builder says.
 
 ### 9. Build hygiene, no-I/O, size
 
@@ -220,7 +413,7 @@ Reading the log is the first thing to finish.
 
 ## What I did not test
 
-- The result of my 75-mutant run, and of the ASan run of the n_in = 200 probe: both ran or are running on the server, but I could not read their logs (sections 8 and M1).
+- (Round 1's mutation and ASan results were read back in round 2 and are filled in above.)
 
 - Clang and MSVC behaviour for the enum confusion.
 - macOS, iOS and Android builds.
