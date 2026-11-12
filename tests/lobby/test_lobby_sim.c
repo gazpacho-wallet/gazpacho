@@ -159,7 +159,8 @@ static int run(uint64_t seed, int profile, unsigned long *tot)
         }
         /* the host's hand-off: itself first, each member's own factory key, every
          * binding valid, the build parameters of T1 for that many members */
-        if (!w_params_ok(hh, hh->n_participants - 1) || memcmp(hh->participants[0], w.node[0].keys.key[1].pub, 33) != 0 ||
+        if (!w_params_ok(hh, hh->n_participants - 1) || hh->role != 1 || hh->min_members != 0 || hh->start_len != 0 ||
+            hh->signers != hh->n_participants || memcmp(hh->participants[0], w.node[0].keys.key[1].pub, 33) != 0 ||
             memcmp(hh->factory[0], w.node[0].keys.key[3].pub, 33) != 0) {
             printf("seed %llu: host hand-off parameters\n", (unsigned long long)seed);
             ok = 0;

@@ -366,6 +366,33 @@ static void test_m2(void)
     CHECK(gz_lobby_decode(p0, n0 - 1, &m0) == GZ_DEC_REFUSE);   /* short data, length past end */
     CHECK(gz_lobby_decode(p0, n0, &m0) == GZ_DEC_OK);
     CHECK(gz_part_build(68, scope, body, 65495, 0, p0, sizeof p0) == 0);   /* fits: never split */
+    {   /* rule 4: another transfer replaces the open one; a part of another scope is another transfer */
+        static uint8_t body2[76800], q0[65200], q1[12000], small[70000];
+        static gz_part_reasm_t r2;
+        gz_lobby_msg_t a0, b0, b1;
+        uint8_t sc2[32];
+        size_t qn0, qn1;
+        for (i = 0; i < sizeof body2; i++) body2[i] = (uint8_t)(i * 3);
+        n0 = gz_part_build(68, scope, body, sizeof body, 0, p0, sizeof p0);
+        qn0 = gz_part_build(68, scope, body2, sizeof body2, 0, q0, sizeof q0);
+        qn1 = gz_part_build(68, scope, body2, sizeof body2, 1, q1, sizeof q1);
+        gz_lobby_decode(p0, n0, &a0); gz_lobby_decode(q0, qn0, &b0); gz_lobby_decode(q1, qn1, &b1);
+        gz_part_reasm_init(&r2, reasm, sizeof reasm);
+        CHECK(gz_part_feed(&r2, &a0, &k, sc, &out, &ol) == 0);
+        CHECK(gz_part_feed(&r2, &b1, &k, sc, &out, &ol) == 0);       /* A dropped */
+        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == 1 && ol == sizeof body2 && memcmp(out, body2, ol) == 0);
+        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == 0);       /* a new transfer after completion */
+        memset(sc2, 0x22, 32);
+        qn1 = gz_part_build(68, sc2, body2, sizeof body2, 1, q1, sizeof q1);
+        gz_lobby_decode(q1, qn1, &b1);
+        CHECK(gz_part_feed(&r2, &b1, &k, sc, &out, &ol) == 0);       /* another scope: the open one dropped */
+        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == 0);       /* so this one starts again, not completes */
+        gz_part_reasm_init(&r2, small, sizeof small);
+        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == -1);      /* more than the buffer holds */
+        b0.kind = GZ_KIND_READY;
+        gz_part_reasm_init(&r2, reasm, sizeof reasm);
+        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == -1);      /* not a part */
+    }
 }
 
 /* messages.md test 3 to 8 on M1-shaped messages. */
@@ -762,6 +789,122 @@ static void test_kinds(lt_signer_t *member)
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, opt ? od : (const uint8_t *)"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
         n = gz_lobby_enc_done(&e);
         CHECK(n == 40 && gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_HELLO);
+    }
+    /* the shortest inputs: not ours, a broken tag, too short for an envelope */
+    {
+        static const struct { const char *hex; int code; } s[] = {
+            {"", GZ_DEC_IGNORE}, {"ce", GZ_DEC_IGNORE}, {"ce37", GZ_DEC_BADTAG}, {"ce37677a66", GZ_DEC_BADTAG},
+            {"ce37677a6601", GZ_DEC_REFUSE}, {"ce36677a6601", GZ_DEC_IGNORE},
+        };
+        size_t k;
+        for (k = 0; k < sizeof s / sizeof s[0]; k++) {
+            uint8_t *h = malloc(8);
+            size_t hn = lt_unhex(s[k].hex, h, 8);
+            CHECK(gz_lobby_decode(h, hn, &m) == s[k].code);
+            free(h);
+        }
+    }
+    /* discovery kinds 128 to 159 are ignored; 160 is an unknown even kind */
+    {
+        static const struct { uint16_t kind; int code; } d[] = {
+            {126, GZ_DEC_REFUSE}, {127, GZ_DEC_IGNORE}, {128, GZ_DEC_IGNORE}, {158, GZ_DEC_IGNORE},
+            {159, GZ_DEC_IGNORE}, {160, GZ_DEC_REFUSE}, {82, GZ_DEC_REFUSE}, {83, GZ_DEC_IGNORE}, {62, GZ_DEC_REFUSE},
+        };
+        size_t k;
+        for (k = 0; k < sizeof d / sizeof d[0]; k++) {
+            gz_lobby_enc_start(&e, buf, sizeof buf, d[k].kind, od);
+            n = gz_lobby_enc_done(&e);
+            CHECK(gz_lobby_decode(buf, n, &m) == d[k].code);
+        }
+    }
+    /* a part without its transfer id, or without any one required record */
+    {
+        static uint8_t body[70000], p0[66000];
+        size_t k, pn;
+        for (k = 0; k < sizeof body; k++) body[k] = (uint8_t)k;
+        pn = gz_part_build(68, od, body, sizeof body, 1, p0, sizeof p0);
+        CHECK(gz_lobby_decode(p0, pn, &m) == GZ_DEC_OK);
+        memmove(p0 + 40, p0 + 40 + 34, pn - 40 - 34);                /* drop record 2 */
+        CHECK(gz_lobby_decode(p0, pn - 34, &m) == GZ_DEC_REFUSE);
+    }
+    /* the encoder at exactly its buffer's size, and one byte short; a signature it cannot make */
+    {
+        uint8_t small[200];
+        lt_signer_t ns = *member;
+        gz_lobby_crypto_t cn = lt_crypto(&ns);
+        gz_lobby_enc_start(&e, small, 40, GZ_KIND_HELLO, od);
+        CHECK(gz_lobby_enc_done(&e) == 40);
+        gz_lobby_enc_start(&e, small, 39, GZ_KIND_HELLO, od);
+        CHECK(gz_lobby_enc_done(&e) == 0);
+        gz_lobby_enc_start(&e, small, 44, GZ_KIND_UNREADY, od);
+        gz_lobby_enc_u16(&e, 1, 2);
+        CHECK(gz_lobby_enc_done(&e) == 44);
+        gz_lobby_enc_start(&e, small, 43, GZ_KIND_UNREADY, od);
+        gz_lobby_enc_u16(&e, 1, 2);
+        CHECK(gz_lobby_enc_done(&e) == 0 && gz_lobby_enc_sign(&e, &cr, 2) == 0);   /* nothing signed after an overflow */
+        gz_lobby_enc_start(&e, small, 110, GZ_KIND_CANCEL, od);
+        gz_lobby_enc_u16(&e, 2, 1);
+        CHECK(gz_lobby_enc_sign(&e, &cr, 2) == 110);
+        gz_lobby_enc_start(&e, small, 109, GZ_KIND_CANCEL, od);
+        gz_lobby_enc_u16(&e, 2, 1);
+        CHECK(gz_lobby_enc_sign(&e, &cr, 2) == 0);
+        ns.fail_sign = 1;
+        gz_lobby_enc_start(&e, small, sizeof small, GZ_KIND_CANCEL, od);
+        gz_lobby_enc_u16(&e, 2, 1);
+        CHECK(gz_lobby_enc_sign(&e, &cn, 2) == 0);
+    }
+    /* the BOLT 1 warning, byte for byte */
+    {
+        uint8_t w[64];
+        size_t wn = gz_lobby_warning("abc", w, sizeof w);
+        CHECK(wn == 39 && w[0] == 0 && w[1] == 1 && w[34] == 0 && w[35] == 3 && memcmp(w + 36, "abc", 3) == 0);
+        for (wn = 2; wn < 34; wn++) CHECK(w[wn] == 0);
+        CHECK(gz_lobby_warning("abc", w, 39) == 39 && gz_lobby_warning("abc", w, 38) == 0);
+        CHECK(gz_lobby_warning("", w, 36) == 36);
+    }
+    /* parts: a total one byte past a whole part, and the largest body */
+    {
+        static uint8_t body[GZ_PART_MAX_BODY], pp[66000];
+        size_t pn;
+        uint16_t cnt = gz_part_count(130001);
+        CHECK(cnt == 3);
+        pn = gz_part_build(68, od, body, 130001, 2, pp, sizeof pp);
+        CHECK(pn > 0 && gz_lobby_decode(pp, pn, &m) == GZ_DEC_OK && m.count == 3 && m.data_len == 1);
+        pn = gz_part_build(68, od, body, GZ_PART_MAX_BODY, 16, pp, sizeof pp);
+        CHECK(pn > 0 && gz_lobby_decode(pp, pn, &m) == GZ_DEC_OK && m.count == 17 && m.index == 16);
+        CHECK(gz_part_build(68, od, body, GZ_PART_MAX_BODY, 17, pp, sizeof pp) == 0);
+        CHECK(gz_part_build(GZ_KIND_PART, od, body, 130001, 0, pp, sizeof pp) == 0);
+    }
+    /* a scope of zeros only in hello; one nonzero byte anywhere makes a scope */
+    {
+        uint8_t sc[32];
+        size_t k;
+        memset(sc, 0, 32);
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_UNREADY, sc);
+        n = gz_lobby_enc_done(&e);
+        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_REFUSE);
+        for (k = 0; k < 32; k += 31) {
+            memset(sc, 0, 32);
+            sc[k] = 1;
+            gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_UNREADY, sc);
+            n = gz_lobby_enc_done(&e);
+            CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK);
+        }
+    }
+    /* the display name: 1 to 32 bytes */
+    {
+        size_t L;
+        uint8_t nm[40];
+        memset(nm, 'n', sizeof nm);
+        for (L = 0; L <= 33; L += (L == 1 ? 31 : 1)) {
+            gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, od);
+            gz_lobby_enc_record(&e, 2, member->key[3].pub, 33);
+            gz_lobby_enc_record(&e, 4, a, 64);
+            gz_lobby_enc_record(&e, 6, a, 64);
+            gz_lobby_enc_record(&e, 7, nm, L);
+            n = gz_lobby_enc_done(&e);
+            CHECK((gz_lobby_decode(buf, n, &m) == GZ_DEC_OK) == (L >= 1 && L <= 32));
+        }
     }
     /* required records, each missing in turn, from a signed kind */
     {

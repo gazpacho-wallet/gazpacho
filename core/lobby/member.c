@@ -161,19 +161,22 @@ static gz_status_t evaluate(gz_lobby_member_t *m, gz_action_list_t *out)
         TRY(gz_la_save(out, recs, 2));
         if (m->connected) { m->sent_here = 1; TRY(gz_la_send(out, m->host_peer, m->join_msg, m->join_len)); }
     }
-    if (ok && m->joined && !m->frozen && !m->user_unready && (!m->ready || m->ready_version != m->values.version))
-        return send_ready(m, NULL, NULL, 0, out);
-    if (!ok && (cls != m->last_class || term != m->last_term)) {
+    if (ok) {
+        m->last_class = 0;                            /* a later refusal is told again */
+        if (m->joined && !m->frozen && !m->user_unready && (!m->ready || m->ready_version != m->values.version))
+            return send_ready(m, NULL, NULL, 0, out);
+        return GZ_OK;
+    }
+    if (m->ready) {                                   /* whatever was told before: unready now */
         m->last_class = cls;
         m->last_term = term;
-        if (m->ready) {
-            TRY(unready(m, 1, out));
-            return note2(out, GZ_NOTE_UNREADY, (uint8_t)cls, term);
-        }
-        return note2(out, GZ_NOTE_REFUSED, (uint8_t)cls, term);
+        TRY(unready(m, 1, out));
+        return note2(out, GZ_NOTE_UNREADY, (uint8_t)cls, term);
     }
-    if (ok) m->last_class = 0;
-    return GZ_OK;
+    if (cls == m->last_class && term == m->last_term) return GZ_OK;   /* told already */
+    m->last_class = cls;
+    m->last_term = term;
+    return note2(out, GZ_NOTE_REFUSED, (uint8_t)cls, term);
 }
 
 static gz_status_t on_check(gz_lobby_member_t *m, const uint8_t *raw, size_t len, const gz_lobby_msg_t *g,
