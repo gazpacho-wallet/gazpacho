@@ -3163,8 +3163,15 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 </tbody>
 </table></div></div></details>
-<details id="c6-what-is-public"><summary>What is public</summary><div class="body"><p>A listing on Nostr carries what rarely changes: the terms the host has fixed, the acceptable range for the others, size limits, the start time and an expiry after which the listing disappears. It never says who joined.</p>
-<p>Anything live, such as how full the lobby is, is asked of the host directly. This keeps relays quiet and reveals less. The cost is that asking tells the host someone is interested and from which network address; connecting over Tor avoids the second.</p>
+<details id="c6-what-is-public"><summary>What is public</summary><div class="body"><p>How people find a lobby is specified in <code>spec/discovery.md</code> (draft 2). In short:</p>
+<ul>
+<li>A Gazpacho node sets one odd factory feature bit in its Lightning node announcement, so factory nodes can find each other through ordinary gossip.</li>
+<li>A host announces a new lobby with a small signed <strong>beacon</strong> (who, which lobby, when), relayed between factory nodes; no terms ride in it.</li>
+<li>The <strong>listing</strong> is the host's signed outer terms record, identical on every path. It never says who joined. Anyone interested fetches it from a <strong>store node</strong> that keeps listings, or from the host, after a random delay.</li>
+<li>Phones and other light clients ask one or two store nodes for the current <strong>pool</strong> of beacons and listings, by onion message where possible, and check every signature themselves.</li>
+<li>Nostr remains an optional annex carrying the same signed records, with stated conditions for retiring it.</li>
+</ul>
+<p>Anything live, such as how full the lobby is, is asked of the host directly. Asking tells the host someone is interested; by onion message it does not learn who or from where.</p>
 <p>A host may publish the factories it has funded as a track record, since the funding is on chain anyway. Whether a member can prove past participation in the same way is being looked into; it would link that member's factories together, so it could only be by choice.</p>
 <p>The existing host proofs show control of one channel or one coin. A proof sized to the lobby a host advertises is still to be designed.</p></div></details>
 <details id="c6-a-separate-library"><summary>A separate library</summary><div class="body"><p>The lobby, the signing round engine and the proof-of-fault scheme together are a general tool for coordinating large group signatures. They are written with no dependence on the factory code, so they can be split out as their own library.</p></div></details>

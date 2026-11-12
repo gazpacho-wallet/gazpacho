@@ -343,7 +343,7 @@ current_sig    = 7a692794d41ad38a845e6533b2499b197a3d63d86f196d274a14d4aa33478bf
 4. **Timed layers and channel terms** in the record, when those slices come. Timed layers will need a new even leaf or level description, and C8's bound on step × (states − 1) (review 3, F23).
 5. **Whether `host_key` should be a separate signing key** bound to the BOLT 8 key, rather than the BOLT 8 key itself (`messages.md` open point 9).
 6. **Unequal channels.** The import splits a node's coins equally between its children, so members under smaller subtrees get larger channels (section 4.2). A request to SuperScalar: split by subtree size, so that the funding amount is close to n × the leaf requirement.
-7. **The listing on Nostr** will carry the outer record. Whether it is the same bytes or a summary is for the Nostr slice.
+7. Closed: a listing carries exactly the outer record, the same bytes on every carrier (Lightning query, store node, Nostr); see `discovery.md`.
 8. **Slice 1 lifetime**: 144 blocks plus 36 of wind-down in T1, so the host recovers its signet coins within about a day and a half (`safety-rule.md` section 12) — **proposed, owner to confirm**.
 
 Closed in draft 2: draft 1's open point 6 (shape validity is now a static check, section 4.3) and open point 8 (lobby-constant tree parameters stay in the proposal, as `signing-round.md` draft 4 section 4.1 decides).
