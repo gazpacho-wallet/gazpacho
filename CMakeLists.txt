@@ -13,6 +13,13 @@ if(GZ_SANITIZE)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
+# Fuzz targets (none on main yet). Every target is an executable named
+# fuzz_<name> whose source defines LLVMFuzzerTestOneInput. With this option ON
+# (clang only), a target links with -fsanitize=fuzzer and without the plain
+# driver that runs it as a CTest test; CI's fuzz job then runs each fuzz_*
+# for 60 seconds. See docs/notes/ci.md.
+option(GZ_LIBFUZZER "Link fuzz_* targets against clang's libFuzzer instead of the plain driver" OFF)
+
 # --- secp256k1-zkp at the exact commit SuperScalar pins, same modules ---------
 # Mirrors SuperScalar CMakeLists.txt lines 80-95. tools/update-import.sh checks this tag
 # against the pinned SuperScalar commit's CMakeLists.txt.
@@ -121,5 +128,57 @@ add_test(NAME core_isolation_refuses_sneaky_object
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation/vla.c
           ${CMAKE_CURRENT_BINARY_DIR}
           ${GZ_CORE_FLAGS_TEXT})
+
+# --- Transport (ports/net): BOLT 8 and BOLT 1, outside the core ----------------
+# Strict C11 like the core, but not freestanding: conn.c uses POSIX sockets.
+# noise.c and frame.c do no input or output (spec/transport.md).
+add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c)
+set_target_properties(gazpacho_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_net PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/ports/net ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
+target_link_libraries(gazpacho_net PUBLIC secp256k1 OpenSSL::Crypto)
+target_compile_options(gazpacho_net PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
+
+add_executable(gz-net tools/gz-net/gz-net.c)
+target_link_libraries(gz-net PRIVATE gazpacho_net)
+target_compile_options(gz-net PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+gz_add_test(net_noise tests/net/test_noise.c gazpacho_net)
+gz_add_test(net_frame tests/net/test_frame.c gazpacho_net 20000)
+gz_add_test(net_conn  tests/net/test_conn.c  gazpacho_net)
+# Every wipe of a stack secret is counted, and HMAC is made to fail on demand
+# (GNU ld's --wrap; review of PR 10, section 6).
+gz_add_test(net_wipes tests/net/test_wipes.c gazpacho_net)
+target_link_options(test_net_wipes PRIVATE "LINKER:--wrap=gz_net_wipe,--wrap=HMAC")
+# A peer for gz-net's tests: unknown even and odd messages, a wrong pong.
+add_executable(net_peer tests/net/net_peer.c)
+target_link_libraries(net_peer PRIVATE gazpacho_net)
+target_compile_options(net_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME net_gz_net COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_gz_net.sh
+         $<TARGET_FILE:gz-net> $<TARGET_FILE:net_peer>)
+# gz-net against an independent Python BOLT 8 peer (the PR 10 reviewer's),
+# in both roles past key rotation. Opt-in: needs python3 and `cryptography`.
+# It should run in the automated checks wherever `cryptography` is installed
+# (review of PR 10, round 2, N6; for the CI hardening work).
+option(GZ_INTEROP_PY "Run gz-net against the independent Python BOLT 8 peer" OFF)
+if(GZ_INTEROP_PY)
+  add_test(NAME net_interop_py COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/interop/run.sh
+           $<TARGET_FILE:gz-net> ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/interop/bolt8_peer.py)
+endif()
+# Fuzz targets. Normally with the plain driver, as CTest tests; with
+# -DGZ_LIBFUZZER=ON (clang), linked with libFuzzer instead and run by
+# tools/run-fuzz.sh (docs/notes/ci.md).
+option(GZ_LIBFUZZER "Build the fuzz targets with libFuzzer (clang)" OFF)
+foreach(target noise tlv)
+  if(GZ_LIBFUZZER)
+    add_executable(fuzz_${target} tests/net/fuzz_${target}.c)
+    target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer)
+  else()
+    add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
+    add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 200000)
+  endif()
+  target_link_libraries(fuzz_${target} PRIVATE gazpacho_net)
+  target_compile_options(fuzz_${target} PRIVATE ${GZ_NEW_CODE_WARNINGS})
+endforeach()
 
 add_subdirectory(wallet)

@@ -3,15 +3,31 @@ on:
   push:
     branches: [main]
   pull_request:
+
+# The token GitHub gives each job can only read the repository. No job here
+# needs more; a job that does must ask for it itself.
+permissions:
+  contents: read
+
+# A newer push to the same pull request cancels the run it makes stale.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every third-party action is pinned to a full commit SHA; the comment names
+# the release. Update both together. What each job guards: docs/notes/ci.md.
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         sanitize: [OFF, ON]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev
       - name: Configure
@@ -25,3 +41,194 @@ jobs:
         run: ctest --test-dir build --output-on-failure --timeout 600
       - name: Scale check, one small case and the two defect reproductions
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
+
+  import-check:
+    name: imported SuperScalar files unchanged
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: sh tools/check-import.sh
+
+  no-addresses:
+    name: no addresses or local paths
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 -I tools/check-no-addresses.py
+
+  spec-vectors:
+    name: specification vectors
+    runs-on: ubuntu-24.04
+    # Pure-Python elliptic-curve arithmetic: about five minutes on specs-slice1.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Recompute the vectors printed in the specifications
+        run: |
+          if [ ! -f tools/spec-vectors.py ]; then
+            echo "::notice::tools/spec-vectors.py is not on this branch; nothing to check."
+            exit 0
+          fi
+          python3 -I tools/spec-vectors.py
+
+  handbook:
+    name: handbook up to date
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Markdown renderer
+        run: |
+          python3 -m venv "$RUNNER_TEMP/hb"
+          "$RUNNER_TEMP/hb/bin/python" -m pip install --quiet --require-hashes -r tools/handbook-requirements.txt
+      - name: Rebuild docs/handbook.html and compare
+        # The two lines that carry the build date are the only ones allowed to
+        # differ; everything else must match the committed page.
+        run: |
+          "$RUNNER_TEMP/hb/bin/python" -I tools/build-handbook.py
+          git diff --exit-code \
+            -I '^<p class="lead">Every project document in one file\.' \
+            -I '^ "built": "[0-9-]*",$' \
+            -- docs/handbook.html \
+            || { echo "::error::docs/handbook.html is stale: run python tools/build-handbook.py and commit it."; exit 1; }
+
+  clang:
+    name: clang (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: plain
+            sanitize: OFF
+          - name: ASan+UBSan
+            sanitize: ON
+    env:
+      CC: clang-18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake clang-18 libclang-rt-18-dev libssl-dev
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=${{ matrix.sanitize }} -DGZW_BREAK_CHECKS=OFF
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        # The slow wallet break-checks run in the gcc build only.
+        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow
+
+  msan:
+    name: clang MemorySanitizer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CC: clang-18
+      OPENSSL_VERSION: 3.0.22
+      OPENSSL_SHA256: 67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake clang-18 libclang-rt-18-dev
+      - name: Cache OpenSSL built with MemorySanitizer
+        id: openssl-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/openssl-msan
+          key: openssl-${{ env.OPENSSL_VERSION }}-msan-clang18-ubuntu24.04-v1
+      - name: Build OpenSSL with MemorySanitizer
+        # Every library the tests call must be instrumented, or MSan reports
+        # the bytes it returns as uninitialised. libcrypto only, static.
+        if: steps.openssl-cache.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o openssl.tar.gz "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
+          echo "$OPENSSL_SHA256  openssl.tar.gz" | sha256sum --check --strict
+          tar xzf openssl.tar.gz
+          cd "openssl-$OPENSSL_VERSION"
+          ./Configure linux-x86_64-clang enable-msan no-asm no-shared no-tests no-module \
+            --prefix="$HOME/openssl-msan" --libdir=lib CC=clang-18 \
+            CFLAGS="-fsanitize-memory-track-origins -fno-omit-frame-pointer -g -O1" > /dev/null
+          make -j"$(nproc)" build_libs > /dev/null
+          make install_dev > /dev/null
+      - name: Configure
+        # secp256k1's x86-64 assembly is off: MSan cannot see what assembly writes.
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF
+          -DCMAKE_C_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=memory"
+          -DSECP256K1_ASM=OFF
+          -DOPENSSL_ROOT_DIR="$HOME/openssl-msan" -DOPENSSL_USE_STATIC_LIBS=TRUE
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 900 -LE slow
+
+  valgrind:
+    name: valgrind
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev valgrind
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF
+      - name: Build
+        run: cmake --build build -j
+      - name: Every compiled test under memcheck
+        # The 1,000-seed simulator run takes over eight minutes under valgrind;
+        # 200 seeds of the same length here, all 1,000 in every other build.
+        run: python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0"
+
+  fuzz:
+    name: libFuzzer, 60 s per target
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CC: clang-18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Look for fuzz targets
+        id: find
+        run: |
+          if git grep -q -l LLVMFuzzerTestOneInput -- '*.c'; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            git grep -l LLVMFuzzerTestOneInput -- '*.c'
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No fuzz targets on this branch (no LLVMFuzzerTestOneInput); nothing to run."
+          fi
+      - name: Install dependencies
+        if: steps.find.outputs.found == 'true'
+        run: sudo apt-get update && sudo apt-get install -y cmake clang-18 libclang-rt-18-dev libssl-dev
+      - name: Configure
+        if: steps.find.outputs.found == 'true'
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF -DGZ_LIBFUZZER=ON
+          -DCMAKE_C_FLAGS="-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        if: steps.find.outputs.found == 'true'
+        run: cmake --build build -j
+      - name: Run each target for 60 seconds
+        if: steps.find.outputs.found == 'true'
+        run: sh tools/run-fuzz.sh build 60
