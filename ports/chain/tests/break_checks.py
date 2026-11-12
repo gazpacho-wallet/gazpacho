@@ -288,8 +288,7 @@ CHECKS = [
      "CURLOPT_FOLLOWLOCATION, 0L)", "CURLOPT_FOLLOWLOCATION, 1L)", SLOW),
     ("h4 body size cap not enforced while reading, nor by libcurl (review t4)", T,
      [("if (n > s->cap - s->len) {", "if (0) {"),
-      ("  ok = ok && curl_easy_setopt(e, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)cap) == CURLE_OK;
-", "")],
+      ("  ok = ok && curl_easy_setopt(e, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)cap) == CURLE_OK;\n", "")],
      None, SLOW),
     ("h5 plain http to any host (review t5)", T,
      "if (!https && !local_http) return GZ_HTTP_E_FAILED;", "(void)local_http;", SLOW),
