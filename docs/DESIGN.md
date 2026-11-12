@@ -67,8 +67,8 @@ The full definition is `spec/safety-rule.md`. In brief:
 - **Every partial signature is verified** as it arrives.
 - **Signing secrets are never stored.** An interrupted round is abandoned.
 - **A restored backup never publishes** its own channel state. It asks the host to prove the latest and waits for the host to close.
-- **Exit fees** are built in from the host's side. A small on-chain reserve is recommended to members, not required.
-- **Away protection:** about two weeks to respond to an old state.
+- **Exit fees** are built in from the host's side, with pay-to-anchor outputs so anyone can raise a fee. No on-chain reserve is required or recommended in 1.0.0 (owner decision 6); in 1.1.0 a member above its coverage keeps a small on-chain coin (decision 5).
+- **Away protection:** about two weeks to respond to an old state in 1.0.0, the channel's revocation window (the design's figure, not measured; `spec/safety-rule.md` sections 7 and 8). In 1.1.0 a member above its coverage may have under a day.
 - A new safety or joining rule is normally a reviewed change to the safe-to-sign module, proposed through a SIP.
 
 ## 7. The factory

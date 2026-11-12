@@ -38,7 +38,7 @@ Checked after every simulator step and at the end of every regtest scenario.
 
 1. Money is conserved across every state change.
 2. Every member can leave alone with at least what they are owed.
-3. No party signs two different states with the same number.
+3. A party signs two different transactions that spend the same output only where the safe-to-sign rule allows it (`spec/safety-rule.md` C7): never two trees on one funding output; two cooperative closes only if each pays it at least what it is owed; and one channel state number only for the same state on each of a channel's live anchors, with one revocation secret (section 4.1 rule 1). It never sends two different nonces or partial signatures for one round and item.
 4. Nothing is sent before it is saved.
 5. No secret nonce survives a restart or is used twice.
 6. No party's software publishes a state it has cancelled.
