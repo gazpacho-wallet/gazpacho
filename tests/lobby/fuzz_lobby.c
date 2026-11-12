@@ -170,13 +170,16 @@ int main(int argc, char **argv)
         const blob_t *src = &corpus[sim_rng_below(&R, (uint64_t)n_corpus)];
         gz_status_t st;
         gz_record_t rec;
+        uint8_t *x;
         n = mutate(src, buf);
+        x = malloc(n ? n : 1);              /* exactly n bytes: an over-read is caught */
+        memcpy(x, buf, n);
         /* 1. the envelope and every lobby message */
-        if (gz_lobby_decode(buf, n, &m) == GZ_DEC_OK) {
+        if (gz_lobby_decode(x, n, &m) == GZ_DEC_OK) {
             ok_msg++;
-            if (!inside(buf, n, m.sig, 64) || !inside(buf, n, m.outer, m.outer_len) || !inside(buf, n, m.current, m.current_len) ||
-                !inside(buf, n, m.factory_key, 33) || !inside(buf, n, m.check_id, 32) || !inside(buf, n, m.data, m.data_len) ||
-                !inside(buf, n, m.display_name, m.display_name_len) || m.signed_len > n - 2)
+            if (!inside(x, n, m.sig, 64) || !inside(x, n, m.outer, m.outer_len) || !inside(x, n, m.current, m.current_len) ||
+                !inside(x, n, m.factory_key, 33) || !inside(x, n, m.check_id, 32) || !inside(x, n, m.data, m.data_len) ||
+                !inside(x, n, m.display_name, m.display_name_len) || m.signed_len > n - 2)
                 field_bad++;
             if (m.kind == GZ_KIND_PART) {
                 uint16_t k; uint8_t sc[32]; const uint8_t *body; size_t bl;
@@ -184,22 +187,22 @@ int main(int argc, char **argv)
             }
         }
         /* 2. both terms records */
-        if (gz_terms_outer_decode(buf, n, &o)) {
+        if (gz_terms_outer_decode(x, n, &o)) {
             static uint8_t again[GZ_TERMS_OUTER_MAX];
             size_t an = gz_terms_outer_encode(&o, again, sizeof again);
             ok_outer++;
-            if (all_known(buf, n) && (an != n || memcmp(again, buf, n) != 0)) canon_bad++;
-            if (!gz_terms_outer_decode(buf, n, &o2) || memcmp(&o, &o2, sizeof o) != 0) canon_bad++;
+            if (all_known(x, n) && (an != n || memcmp(again, x, n) != 0)) canon_bad++;
+            if (!gz_terms_outer_decode(x, n, &o2) || memcmp(&o, &o2, sizeof o) != 0) canon_bad++;
         }
-        if (gz_terms_current_decode(buf, n, &T1O, SCOPE, &c)) {
+        if (gz_terms_current_decode(x, n, &T1O, SCOPE, &c)) {
             uint8_t again[GZ_TERMS_CURRENT_MAX];
             size_t an = gz_terms_current_encode(&c, &T1O, again, sizeof again);
             ok_cur++;
-            if (an != n || memcmp(again, buf, n) != 0) canon_bad++;
+            if (an != n || memcmp(again, x, n) != 0) canon_bad++;
         }
         /* 3. the record readers */
         rec.type = 0x00010002u + 2u * (uint32_t)sim_rng_below(&R, 13);
-        rec.bytes.data = buf; rec.bytes.len = n;
+        rec.bytes.data = x; rec.bytes.len = n;
         if (i % 64 == 0) {
             gz_lobby_host_init(&host, &ports, &hc, NULL, &cfg);
             gz_lobby_member_init(&mem, &ports, &mc, NULL, &cond, SCOPE, HOST.key[1].pub, MEM.key[2].pub, MEM.key[3].pub, 1);
@@ -219,13 +222,14 @@ int main(int argc, char **argv)
         if (st != GZ_OK && st != GZ_ERR_CORRUPT) engine_bad++;
         /* 4. both engines, fed the bytes as a message */
         memset(&in, 0, sizeof in);
-        in.kind = GZ_LIN_MESSAGE; in.bytes = buf; in.len = n;
+        in.kind = GZ_LIN_MESSAGE; in.bytes = x; in.len = n;
         in.peer_id = 7;
         gz_action_list_init(&l, slots, 256, abytes, sizeof abytes);
         if (gz_lobby_host_handle(&host, &in, &l) != GZ_OK) engine_bad++;
         in.peer_id = 1;
         gz_action_list_init(&l, slots, 256, abytes, sizeof abytes);
         if (gz_lobby_member_handle(&mem, &in, &l) != GZ_OK) engine_bad++;
+        free(x);
     }
     printf("fuzz: %lu inputs; accepted %lu messages, %lu outer, %lu current, %lu reassembled; "
            "%lu field, %lu encoding, %lu engine problems\n",

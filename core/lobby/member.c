@@ -457,7 +457,8 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
         memcpy(m->start_msg, p, len); m->start_len = len; m->role = g.role;
         return GZ_OK;
     case GZ_REC_LOBBY_ENDED:
-        if (len < 5) return GZ_ERR_CORRUPT;
+        at = 3;
+        if (len < 5 || !gz_la_get_blob(p, len, &at, &a, &an) || at != len) return GZ_ERR_CORRUPT;
         m->ended = 1;
         m->ready = 0;
         if (p[0] == 0) m->left = 1; else m->lobby_state = p[0];

@@ -71,42 +71,55 @@ static uint8_t seat_state_shown(const gz_lobby_host_t *h, const gz_lobby_seat_t 
     return s->state;
 }
 
-/* lobby_status to one connection; `seat` -1 shows the seat as it is. */
-static gz_status_t send_status(gz_lobby_host_t *h, gz_lobby_conn_t *c, int seat, int with_reason, uint16_t reason,
-                               int lobby_state, gz_action_list_t *out)
+/* lobby_status for one connection; `seat` -1 shows the seat as it is. */
+static size_t build_status(gz_lobby_host_t *h, const gz_lobby_conn_t *c, int seat, int with_reason,
+                           uint16_t reason, int lobby_state, uint8_t buf[GZ_LOBBY_STATUS_MAX])
 {
     gz_lobby_enc_t e;
-    uint8_t buf[128];
     uint16_t joined, ready;
     uint32_t rc;
     const gz_lobby_seat_t *s = seat_of(h, c->key);
     counts(h, &joined, &ready, &rc);
-    gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_LOBBY_STATUS, h->scope);
+    gz_lobby_enc_start(&e, buf, GZ_LOBBY_STATUS_MAX, GZ_KIND_LOBBY_STATUS, h->scope);
     gz_lobby_enc_u8(&e, 2, (uint8_t)lobby_state);
     gz_lobby_enc_u8(&e, 4, seat >= 0 ? (uint8_t)seat : lobby_state ? seat_state_shown(h, s) : GZ_SEAT_NONE);
     gz_lobby_enc_u32(&e, 6, lobby_state ? h->values.version : 0);
     gz_lobby_enc_u16(&e, 8, lobby_state ? joined : 0);
     gz_lobby_enc_u16(&e, 10, lobby_state ? ready : 0);
     if (with_reason) gz_lobby_enc_u16(&e, 13, reason);
+    return gz_lobby_enc_done(&e);
+}
+
+static gz_status_t send_status(gz_lobby_host_t *h, gz_lobby_conn_t *c, int seat, int with_reason, uint16_t reason,
+                               int lobby_state, gz_action_list_t *out)
+{
+    c->status_len = build_status(h, c, seat, with_reason, reason, lobby_state, c->status_msg);
     c->status_ms = now_ms(h);
     c->status_pending = 0;
-    return gz_la_send(out, c->peer_id, buf, gz_lobby_enc_done(&e));
+    return gz_la_send(out, c->peer_id, c->status_msg, c->status_len);
 }
+
+static int with_reason(const gz_lobby_host_t *h) { return h->state >= GZ_LOBBY_CANCELLED && h->end_reason; }
 
 static gz_status_t status(gz_lobby_host_t *h, gz_lobby_conn_t *c, gz_action_list_t *out)
 {
-    return send_status(h, c, -1, h->state >= GZ_LOBBY_CANCELLED && h->end_reason, h->end_reason, h->state, out);
+    return send_status(h, c, -1, with_reason(h), h->end_reason, h->state, out);
 }
 
-/* lobby_status to every seat, at most once a second per seat. */
+/* lobby_status to every seat whose view changed, at most once a second per
+ * seat (messages.md 6.7): a seat that already holds this status gets nothing. */
 static gz_status_t broadcast(gz_lobby_host_t *h, gz_action_list_t *out)
 {
     int i, wait = 0;
     uint64_t now = now_ms(h);
+    uint8_t now_msg[GZ_LOBBY_STATUS_MAX];
     for (i = 0; i < GZ_LOBBY_MAX_CONNS; i++) {
         gz_lobby_conn_t *c = &h->conns[i];
         gz_lobby_seat_t *s;
+        size_t n;
         if (!c->used || !(s = seat_of(h, c->key)) || !(is_in(s) || h->state >= GZ_LOBBY_CANCELLED)) continue;
+        n = build_status(h, c, -1, with_reason(h), h->end_reason, h->state, now_msg);
+        if (n == c->status_len && memcmp(now_msg, c->status_msg, n) == 0) { c->status_pending = 0; continue; }
         if (now - c->status_ms >= 1000 || now < c->status_ms) TRY(status(h, c, out));
         else { c->status_pending = 1; wait = 1; }
     }
@@ -467,9 +480,7 @@ gz_status_t gz_lobby_host_handle(gz_lobby_host_t *h, const gz_lobby_input_t *in,
     case GZ_LIN_TIMER:
         if (in->timer_id == GZ_LOBBY_TIMER_WINDOW) return window_closed(h, out);
         if (in->timer_id == GZ_LOBBY_TIMER_STATUS) {
-            for (i = 0; i < GZ_LOBBY_MAX_CONNS; i++)
-                if (h->conns[i].used && h->conns[i].status_pending) TRY(status(h, &h->conns[i], out));
-            return GZ_OK;
+            return broadcast(h, out);
         }
         if (in->timer_id == GZ_LOBBY_TIMER_DEADLINE && h->state == GZ_LOBBY_OPEN) {
             uint64_t now = now_ms(h), at = h->terms.deadline * 1000;
@@ -658,7 +669,9 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
     case GZ_REC_LOBBY_ENDED:
         if (len < 5) return GZ_ERR_CORRUPT;
         at = 3;
-        if (!gz_la_get_blob(p, len, &at, &a, &an) || an > GZ_LOBBY_MAX_SAVED_MSG) return GZ_ERR_CORRUPT;
+        if (!gz_la_get_blob(p, len, &at, &a, &an) || at != len || an > GZ_LOBBY_MAX_SAVED_MSG ||
+            (p[0] != GZ_LOBBY_CANCELLED && p[0] != GZ_LOBBY_FAILED))
+            return GZ_ERR_CORRUPT;
         h->state = p[0];
         h->end_reason = (uint16_t)gz_lw_get(p + 1, 2);
         memcpy(h->cancel_msg, a, an);

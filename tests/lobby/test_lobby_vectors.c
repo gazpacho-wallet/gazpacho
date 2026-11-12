@@ -2,6 +2,7 @@
  * and the encoding tests of terms.md 12 and messages.md 12 (1 to 11). */
 #include "../check.h"
 #include "lobby_test.h"
+#include "../../core/lobby/lobby_internal.h"
 #include <stdlib.h>
 
 static uint8_t t1[512], t2[128], t3[128];
@@ -144,6 +145,7 @@ static void test_terms_bounds(void)
         {20, 600000, 59999}, {20, 86400000, 86400001}, {22, 60000, 59999}, {26, 52560, 52561},
         {26, 1, 0}, {28, 52560, 52561}, {30, 546, 545}, {30, 2100000000000000ull, 2100000000000001ull},
         {32, 1, 0}, {32, 1000000, 1000001}, {34, 7, 8}, {8, 4, 5}, {8, 1, 0}, {16, 1, 2},
+        {22, 600000, 600001}, {28, 1, 0}, {18, 30000, 999}, {20, 60000, 59999},
         {64, 2100000000000000ull, 2100000000000001ull}, {66, 4294967295ull, 4294967296ull},
     };
     size_t i;
@@ -248,6 +250,35 @@ static void test_terms_bounds(void)
         CHECK(!gz_terms_current_decode(big, t2n, &o, od, &cc));
         memcpy(big, t2, t2n);
         CHECK(gz_terms_current_decode(big, t2n, &o, od, &cc));
+        CHECK(!gz_terms_current_decode(t2 + 34, t2n - 34, &o, od, &cc));        /* no outer digest */
+        {   /* values at the bottom of their ranges; an odd adjustable term 127 */
+            static gz_terms_outer_t o3;
+            uint8_t r3[400], c3[128], d3[32];
+            size_t r3n, c3n;
+            gz_terms_current_t v;
+            gz_terms_current_decode(t2, t2n, &o, od, &v);
+            v.adj_value[0] = 0; v.adj_value[2] = 100;
+            c3n = gz_terms_current_encode(&v, &o, c3, sizeof c3);
+            CHECK(c3n == t2n && gz_terms_current_decode(c3, c3n, &o, od, &cc));
+            CHECK(gz_terms_current_encode(&v, &o, c3, t2n) == t2n && gz_terms_current_encode(&v, &o, c3, t2n - 1) == 0);
+            v.adj_value[2] = 99;
+            c3n = gz_terms_current_encode(&v, &o, c3, sizeof c3);
+            CHECK(!gz_terms_current_decode(c3, c3n, &o, od, &cc));
+            o3 = o;
+            o3.adj[3].type = 127; o3.adj[3].min = 5; o3.adj[3].max = 9; o3.n_adj = 4;
+            r3n = gz_terms_outer_encode(&o3, r3, sizeof r3);
+            CHECK(gz_terms_outer_decode(r3, r3n, &o3) && o3.n_adj == 4);
+            gz_terms_outer_digest(r3, r3n, d3);
+            v.adj_value[2] = 100; memcpy(v.outer_digest, d3, 32);
+            v.n_adj = 4; v.adj_type[3] = 127; v.adj_value[3] = 9;
+            c3n = gz_terms_current_encode(&v, &o3, c3, sizeof c3);
+            CHECK(gz_terms_current_decode(c3, c3n, &o3, d3, &cc) && cc.n_adj == 4 && cc.adj_value[3] == 9);
+            v.n_adj = 3;                                 /* without it: refused */
+            c3n = gz_terms_current_encode(&v, &o3, c3, sizeof c3);
+            CHECK(!gz_terms_current_decode(c3, c3n, &o3, d3, &cc));
+        }
+        memcpy(big, t2, 34); memcpy(big + 34, t2 + 40, t2n - 40);
+        CHECK(!gz_terms_current_decode(big, t2n - 6, &o, od, &cc));            /* no version */
     }
 }
 
@@ -408,6 +439,344 @@ static void test_envelope(lt_signer_t *member)
     CHECK(gz_lobby_decode(buf, 65536, &m) == GZ_DEC_REFUSE);
 }
 
+/* SHA-256 at every length around the padding boundaries, written whole and in
+ * pieces; references from Python's hashlib. */
+static void test_sha256(void)
+{
+    gz_lobby_sha256_t acc, s;
+    uint8_t d[32], msg[1000];
+    size_t L, i, at;
+    gz_lobby_sha256_init(&s);
+    gz_lobby_sha256_done(&s, d);
+    CHECK(hexeq(d, 32, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+    gz_lobby_sha256_init(&s);
+    gz_lobby_sha256_write(&s, (const uint8_t *)"abc", 3);
+    gz_lobby_sha256_done(&s, d);
+    CHECK(hexeq(d, 32, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+    gz_lobby_sha256_init(&acc);
+    for (L = 0; L < 200; L++) {
+        for (i = 0; i < L; i++) msg[i] = (uint8_t)((i * 7 + L) % 256);
+        gz_lobby_sha256_init(&s);
+        gz_lobby_sha256_write(&s, msg, L);
+        gz_lobby_sha256_done(&s, d);
+        gz_lobby_sha256_write(&acc, d, 32);
+    }
+    gz_lobby_sha256_done(&acc, d);
+    CHECK(hexeq(d, 32, "8c7c9ff69da76fc28823a1cb97268672663e628e1ea955868b16db46bab0545d"));
+    for (i = 0; i < 1000; i++) msg[i] = (uint8_t)((i * 13 + 5) % 256);
+    gz_lobby_sha256_init(&s);
+    for (at = 0, L = 1; at < 1000; at += L, L = L % 13 + 1)
+        gz_lobby_sha256_write(&s, msg + at, at + L <= 1000 ? L : 1000 - at);
+    gz_lobby_sha256_done(&s, d);
+    CHECK(hexeq(d, 32, "7994e00959d889b2edd138584884b26ecd04053d86779cb88d89202dea18e599"));
+}
+
+/* UTF-8 in the alias (record 3): every edge of well-formedness. */
+static void test_utf8(void)
+{
+    static const struct { const char *hex; int ok; } v[] = {
+        {"41", 1}, {"7f", 1}, {"c280", 1}, {"c1bf", 0}, {"c0a9", 0}, {"dfbf", 1}, {"e0a080", 1}, {"e09fbf", 0},
+        {"ed9fbf", 1}, {"eda080", 0}, {"edbfbf", 0}, {"ee8080", 1}, {"efbfbf", 1}, {"f0908080", 1},
+        {"f08fbfbf", 0}, {"f48fbfbf", 1}, {"f4908080", 0}, {"f5808080", 0}, {"80", 0}, {"bf", 0},
+        {"e282", 0}, {"c3", 0}, {"f09080", 0}, {"c341", 0}, {"e241ac", 0}, {"f09041bf", 0}, {"41c3a9", 1},
+        {"e282ac41", 1}, {"f09f9880", 1}, {"fe", 0}, {"ff", 0},
+    };
+    size_t i;
+    for (i = 0; i < sizeof v / sizeof v[0]; i++) {
+        uint8_t r[300], u[8];
+        size_t un = lt_unhex(v[i].hex, u, sizeof u), k = 0;
+        memcpy(r, t1, 34); k = 34;
+        r[k++] = 3; r[k++] = (uint8_t)un; memcpy(r + k, u, un); k += un;
+        memcpy(r + k, t1 + 34, t1n - 34); k += t1n - 34;
+        if (outer_ok(r, k) != v[i].ok) printf("  utf8 %s\n", v[i].hex);
+        CHECK(outer_ok(r, k) == v[i].ok);
+    }
+}
+
+/* Shapes: the first entry may cover 3; the split must place every member;
+ * the shape for an unchecked table is refused where it breaks. */
+static void test_shapes(void)
+{
+    static gz_terms_outer_t x, y;
+    uint8_t buf[600], lv[8], nl, d;
+    size_t n;
+    uint16_t k;
+    x = o;
+    x.n_shapes = 3;
+    x.shapes[2] = x.shapes[1];
+    x.shapes[1] = x.shapes[0];
+    x.shapes[0].max_members = 3;
+    n = gz_terms_outer_encode(&x, buf, sizeof buf);
+    CHECK(gz_terms_outer_decode(buf, n, &y) && y.n_shapes == 3 && y.shapes[0].max_members == 3);
+    x.shapes[0].max_members = 2;                       /* below 3 */
+    n = gz_terms_outer_encode(&x, buf, sizeof buf);
+    CHECK(!gz_terms_outer_decode(buf, n, &y));
+    /* T7 with the leaves counted: every n from 3 to 16 gives n leaves (the decoder checks it) */
+    for (k = 3; k <= 16; k++) CHECK(gz_terms_shape_for(&o, k, lv, &nl, &d));
+    CHECK(!gz_terms_shape_for(&o, 0, lv, &nl, &d) && !gz_terms_shape_for(&o, 1000, lv, &nl, &d));
+    /* an unchecked table: draft 1's [4] at 3 members, and [4,4,3] at 17 */
+    x = o;
+    x.n_shapes = 1; x.shapes[0].max_members = 20; x.shapes[0].n_interior = 1; x.shapes[0].interior[0] = 4;
+    CHECK(!gz_terms_shape_for(&x, 3, lv, &nl, &d) && gz_terms_shape_for(&x, 5, lv, &nl, &d) && d == 2);
+    x.shapes[0].n_interior = 2; x.shapes[0].interior[1] = 4;
+    CHECK(!gz_terms_shape_for(&x, 17, lv, &nl, &d) && !gz_terms_shape_for(&x, 19, lv, &nl, &d));
+    CHECK(gz_terms_shape_for(&x, 20, lv, &nl, &d) && nl == 3 && lv[0] == 4 && lv[1] == 4 && lv[2] == 3 && d == 3);
+}
+
+/* T1 with a display record (3 alias or 5 description) of `len` bytes 'a'
+ * inserted in its place, or with the host key's first byte replaced. */
+static int with_display(int type, size_t len)
+{
+    uint8_t r[700];
+    size_t k = 0, at = type == 3 ? 34 : 69;            /* after chain (34) or after host_key (34 + 35) */
+    memcpy(r, t1, at); k = at;
+    r[k++] = (uint8_t)type;
+    if (len < 253) r[k++] = (uint8_t)len;
+    else { r[k++] = 0xfd; r[k++] = (uint8_t)(len >> 8); r[k++] = (uint8_t)len; }
+    memset(r + k, 'a', len); k += len;
+    memcpy(r + k, t1 + at, t1n - at); k += t1n - at;
+    if (outer_ok(r, k)) {                               /* accepted: and it is canonical */
+        static gz_terms_outer_t d;
+        uint8_t again[700];
+        gz_terms_outer_decode(r, k, &d);
+        if (gz_terms_outer_encode(&d, again, sizeof again) != k || memcmp(again, r, k) != 0) return -1;
+        return 1;
+    }
+    return 0;
+}
+
+static void test_display_and_key(void)
+{
+    uint8_t r[300];
+    CHECK(!with_display(3, 0) && with_display(3, 1) == 1 && with_display(3, 32) == 1 && !with_display(3, 33));
+    CHECK(!with_display(5, 0) && with_display(5, 1) == 1 && with_display(5, 280) == 1 && !with_display(5, 281));
+    memcpy(r, t1, t1n);
+    CHECK(r[34] == 4 && r[35] == 33 && r[36] == 2);
+    r[36] = 3; CHECK(outer_ok(r, t1n));               /* odd y: a valid prefix (the point itself is the engines' check) */
+    r[36] = 4; CHECK(!outer_ok(r, t1n));
+    r[36] = 0; CHECK(!outer_ok(r, t1n));
+}
+
+/* The outer record's size limit, reached with an unknown odd record. */
+static void test_outer_size(void)
+{
+    static uint8_t r[4200];
+    size_t L, k, n;
+    for (L = 3866; L <= 3868; L++) {
+        k = t1n - 54;                                  /* just before record 64 */
+        memcpy(r, t1, k);
+        n = k;
+        r[n++] = 63; r[n++] = 0xfd; r[n++] = (uint8_t)(L >> 8); r[n++] = (uint8_t)L;
+        memset(r + n, 0x55, L); n += L;
+        memcpy(r + n, t1 + k, 54); n += 54;
+        CHECK(n == 225 + 4 + L);
+        CHECK(outer_ok(r, n) == (n <= 4096));
+    }
+    CHECK(!outer_ok(t1, 0));
+}
+
+/* T1 with the shape table (record 24) replaced by raw bytes. */
+static size_t with_shape_bytes(const uint8_t *sv, size_t sn, uint8_t *out)
+{
+    size_t k = 0, at = 0;
+    while (k < t1n) {                                  /* every T1 record has a 1-byte type and length */
+        size_t vl = t1[k + 1];
+        if (t1[k] == 24) {
+            out[at++] = 24;
+            if (sn < 253) out[at++] = (uint8_t)sn;
+            else { out[at++] = 0xfd; out[at++] = (uint8_t)(sn >> 8); out[at++] = (uint8_t)sn; }
+            memcpy(out + at, sv, sn); at += sn;
+        } else { memcpy(out + at, t1 + k, 2 + vl); at += 2 + vl; }
+        k += 2 + vl;
+    }
+    return at;
+}
+
+static size_t with_shapes(const char *hex, uint8_t *out)
+{
+    uint8_t sv[256];
+    return with_shape_bytes(sv, lt_unhex(hex, sv, sizeof sv), out);
+}
+
+/* Every fixed-size value of T1 one byte short and one byte long (terms.md
+ * test 2), and the longest shape table, 1,000 bytes, and one entry more. */
+static void test_record_sizes(void)
+{
+    static uint8_t r[1400], sv[1004];
+    size_t k = 0, n, i;
+    int refused = 0, tried = 0;
+    while (k < t1n) {
+        size_t vl = t1[k + 1];
+        int d;
+        for (d = -1; d <= 1; d += 2) {
+            if (t1[k] == 24) break;                     /* the shape table has its own tests */
+            memcpy(r, t1, k + 1);
+            r[k + 1] = (uint8_t)(vl + d);
+            n = k + 2;
+            memcpy(r + n, t1 + k + 2, d < 0 ? vl - 1 : vl); n += d < 0 ? vl - 1 : vl;
+            if (d > 0) r[n++] = 0;
+            memcpy(r + n, t1 + k + 2 + vl, t1n - k - 2 - vl); n += t1n - k - 2 - vl;
+            tried++;
+            refused += !outer_ok(r, n);
+        }
+        k += 2 + vl;
+    }
+    CHECK(tried == 2 * 19 && refused == tried);
+    for (i = 0; i < 250; i++) {                         /* {4, 5, ..., 253}: each [3] */
+        sv[4 * i] = 0; sv[4 * i + 1] = (uint8_t)(4 + i); sv[4 * i + 2] = 0; sv[4 * i + 3] = 3;
+    }
+    n = with_shape_bytes(sv, 1000, r);
+    CHECK(outer_ok(r, n));
+    {   /* and the longest table encodes back to the same bytes, into a buffer of exactly its size */
+        static gz_terms_outer_t d;
+        static uint8_t again[1400];
+        CHECK(gz_terms_outer_decode(r, n, &d) && d.n_shapes == 250);
+        CHECK(gz_terms_outer_encode(&d, again, n) == n && memcmp(again, r, n) == 0);
+        CHECK(gz_terms_outer_encode(&d, again, n - 1) == 0);
+        d.shapes[0].n_interior = 6;                     /* six interior levels: encodable (the split refuses it) */
+        CHECK(gz_terms_outer_encode(&d, again, sizeof again) == 0);   /* 1,006 bytes: more than a table holds */
+        d.n_shapes = 2;
+        CHECK(gz_terms_outer_encode(&d, again, sizeof again) > 0);
+    }
+    sv[1000] = 0; sv[1001] = 0xfe; sv[1002] = 0; sv[1003] = 3;
+    n = with_shape_bytes(sv, 1004, r);
+    CHECK(!outer_ok(r, n));
+}
+
+/* Each bound of a shape entry, on the last entry, after entries that would
+ * already cover the target: so only that bound can refuse the record. */
+static void test_shape_bytes(void)
+{
+    static const struct { const char *hex; int ok; } v[] = {
+        {"000400030010010403", 1},
+        {"00040003001001040300140104", 0},             /* the last entry lacks its leaf kind */
+        {"0004000300100104030014", 0},                 /* two bytes of an entry */
+        {"000400030010010403001401", 0},
+        {"00040003001001040300140104 02", 0},          /* leaf kind 2 */
+        {"00040003001001040300140104 03", 1},
+        {"0004000300100104 03 03e8010403", 1},         /* 1,000 */
+        {"0004000300100104 03 03e9010403", 0},         /* 1,001 */
+        {"0004000300100104 03 0010010403", 0},         /* not increasing */
+        {"0004000300100104 03 0014010303", 0},         /* width 3 */
+        {"0004000300100104 03 0014011003", 0},         /* width 16 */
+        {"0004000300050204040300100104 03", 0},        /* an entry for 5 alone, [4,4,3]: refused at 5 */
+        {"00030003000400030010010403", 1},             /* the first entry may cover 3 */
+        {"00020003000400030010010403", 0},             /* but not 2 */
+    };
+    size_t i;
+    for (i = 0; i < sizeof v / sizeof v[0]; i++) {
+        uint8_t r[400];
+        size_t n = with_shapes(v[i].hex, r);
+        if (outer_ok(r, n) != v[i].ok) printf("  shape bytes %s\n", v[i].hex);
+        CHECK(outer_ok(r, n) == v[i].ok);
+    }
+    {   /* width 7 covering 17 to 20: 17 splits as 3,3,3,2,2,2,2 above leaf kind 3: valid */
+        uint8_t r[400];
+        size_t n = with_shapes("000400030010010403 0014010703", r);
+        CHECK(outer_ok(r, n));
+        n = with_shapes("000400030010010403 0011010f03", r);   /* width 15 at 17: valid */
+        CHECK(outer_ok(r, n));
+        n = with_shapes("00040003 000f010f03", r);              /* width 15 at 5 to 15: refused */
+        CHECK(!outer_ok(r, n));
+    }
+}
+
+/* BigSize at every boundary of its forms, minimal or not, whole or cut short. */
+static void test_bigsize(void)
+{
+    static const struct { const char *hex; int ok; uint64_t v; } t[] = {
+        {"00", 1, 0}, {"fc", 1, 252}, {"fd00fd", 1, 253}, {"fd00fc", 0, 0}, {"fdffff", 1, 65535},
+        {"fe00010000", 1, 65536}, {"fe0000ffff", 0, 0}, {"feffffffff", 1, 4294967295ull},
+        {"ff0000000100000000", 1, 4294967296ull}, {"ff00000000ffffffff", 0, 0},
+        {"ffffffffffffffffff", 1, 0xffffffffffffffffull}, {"fd00", 0, 0}, {"fe000100", 0, 0},
+        {"ff00000001000000", 0, 0}, {"", 0, 0},
+    };
+    size_t i;
+    for (i = 0; i < sizeof t / sizeof t[0]; i++) {
+        uint8_t b[16], o2[16];
+        size_t n = lt_unhex(t[i].hex, b, sizeof b), at = 0;
+        uint64_t v = 7;
+        int ok = gz_lw_bigsize(b, n, &at, &v);
+        CHECK(ok == t[i].ok);
+        if (ok) CHECK(v == t[i].v && at == n && gz_lw_put_bigsize(o2, v) == n && memcmp(o2, b, n) == 0);
+        else CHECK(at == 0);
+    }
+}
+
+/* Every lobby kind, with each optional record present and absent, decodes to
+ * the values it was built with (messages.md test 2). */
+static void test_kinds(lt_signer_t *member)
+{
+    gz_lobby_crypto_t cr = lt_crypto(member);
+    gz_lobby_enc_t e;
+    gz_lobby_msg_t m;
+    uint8_t buf[700], a[64], k32[32];
+    size_t n;
+    int opt;
+    memset(a, 0x33, sizeof a);
+    memset(k32, 0x44, 32);
+    for (opt = 0; opt < 2; opt++) {
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, od);
+        gz_lobby_enc_record(&e, 2, member->key[3].pub, 33);
+        gz_lobby_enc_record(&e, 4, a, 64);
+        gz_lobby_enc_record(&e, 6, a, 64);
+        if (opt) gz_lobby_enc_record(&e, 7, (const uint8_t *)"Ana", 3);
+        n = gz_lobby_enc_done(&e);
+        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_JOIN && memcmp(m.factory_key, member->key[3].pub, 33) == 0);
+        CHECK(m.bind_by_factory == buf + 40 + 35 + 2 && (opt ? m.display_name_len == 3 && memcmp(m.display_name, "Ana", 3) == 0 : m.display_name == NULL));
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_UNREADY, od);
+        if (opt) gz_lobby_enc_u16(&e, 1, 2);
+        n = gz_lobby_enc_done(&e);
+        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.has_reason == opt && m.reason == (opt ? 2 : 0));
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_LEAVE, od);
+        if (opt) gz_lobby_enc_u16(&e, 1, 3);
+        n = gz_lobby_enc_done(&e);
+        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_LEAVE && m.has_reason == opt && m.reason == (opt ? 3 : 0));
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_LOBBY_STATUS, od);
+        gz_lobby_enc_u8(&e, 2, 3); gz_lobby_enc_u8(&e, 4, 4); gz_lobby_enc_u32(&e, 6, 77);
+        gz_lobby_enc_u16(&e, 8, 300); gz_lobby_enc_u16(&e, 10, 299);
+        if (opt) gz_lobby_enc_u16(&e, 13, 12);
+        n = gz_lobby_enc_done(&e);
+        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.lobby_state == 3 && m.seat_state == 4 && m.version == 77);
+        CHECK(m.joined == 300 && m.ready == 299 && m.has_reason == opt && m.reason == (opt ? 12 : 0) && !m.sig);
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_READY, od);
+        gz_lobby_enc_record(&e, 2, od, 32); gz_lobby_enc_u32(&e, 4, 9); gz_lobby_enc_record(&e, 6, k32, 32);
+        if (opt) { gz_lobby_enc_record(&e, 8, a, 32); gz_lobby_enc_u16(&e, 11, 40); }
+        n = gz_lobby_enc_sign(&e, &cr, 2);
+        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.version == 9 && memcmp(m.current_digest, k32, 32) == 0);
+        CHECK(m.has_check_id == opt && m.has_min_members == opt && m.min_members == (opt ? 40 : 0) && m.signed_len == n - 2 - 66);
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_READY_CHECK, od);
+        gz_lobby_enc_record(&e, 2, a, 32); gz_lobby_enc_u32(&e, 4, 5); gz_lobby_enc_record(&e, 6, k32, 32);
+        gz_lobby_enc_u32(&e, 8, 123456);
+        if (opt) gz_lobby_enc_record(&e, 9, a, 5);
+        n = gz_lobby_enc_sign(&e, &cr, 2);
+        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.version == 5 && m.answer_within_ms == 123456 && memcmp(m.check_id, a, 32) == 0);
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_START, od);
+        gz_lobby_enc_record(&e, 2, a, 32); gz_lobby_enc_u8(&e, 4, 2); gz_lobby_enc_u16(&e, 6, 513);
+        n = gz_lobby_enc_sign(&e, &cr, 2);
+        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.role == 2 && m.signers == 513 && m.has_check_id);
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_CANCEL, od);
+        gz_lobby_enc_u16(&e, 2, 3);
+        n = gz_lobby_enc_sign(&e, &cr, 2);
+        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.reason == 3 && m.sig == buf + n - 64);
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, opt ? od : (const uint8_t *)"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+        n = gz_lobby_enc_done(&e);
+        CHECK(n == 40 && gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_HELLO);
+    }
+    /* required records, each missing in turn, from a signed kind */
+    {
+        int miss;
+        for (miss = 0; miss < 3; miss++) {
+            gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_START, od);
+            if (miss != 0) gz_lobby_enc_record(&e, 2, a, 32);
+            if (miss != 1) gz_lobby_enc_u8(&e, 4, 1);
+            if (miss != 2) gz_lobby_enc_u16(&e, 6, 4);
+            n = gz_lobby_enc_sign(&e, &cr, 2);
+            CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_REFUSE);
+        }
+    }
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -422,5 +791,14 @@ int main(void)
     test_m1(&member);
     test_m2();
     test_envelope(&member);
+    test_sha256();
+    test_utf8();
+    test_shapes();
+    test_shape_bytes();
+    test_outer_size();
+    test_display_and_key();
+    test_record_sizes();
+    test_bigsize();
+    test_kinds(&member);
     return check_done();
 }

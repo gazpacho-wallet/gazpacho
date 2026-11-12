@@ -55,6 +55,15 @@ static int note(uint32_t code, int a, int b)
     return 0;
 }
 
+static int timers(uint64_t id)
+{
+    size_t i;
+    int c = 0;
+    for (i = 0; i < A.l.count; i++)
+        c += A.s[i].kind == GZ_ACTION_SET_TIMER && A.s[i].u.set_timer.timer_id == id;
+    return c;
+}
+
 /* The last send of `kind`, decoded. */
 static int last_sent(int kind, gz_lobby_msg_t *m, const uint8_t **raw, size_t *n)
 {
@@ -89,7 +98,8 @@ static size_t T1N, T2N, T3N;
 static gz_terms_outer_t T1O;
 static uint64_t CLOCK = W_T0;
 static uint64_t c_now(void *ctx) { (void)ctx; return CLOCK; }
-static void c_rand(void *ctx, uint32_t p, uint8_t *o, size_t n) { (void)ctx; (void)p; memset(o, 0x5a, n); }
+static uint8_t RAND_NEXT = 0x5a;
+static void c_rand(void *ctx, uint32_t p, uint8_t *o, size_t n) { (void)ctx; (void)p; memset(o, RAND_NEXT++, n); }
 
 static gz_ports_t ports(void)
 {
@@ -386,6 +396,138 @@ static void test_member_classes(void)
     }
 }
 
+static size_t status_msg(uint8_t *buf, size_t cap, uint8_t lobby, uint8_t seat, uint32_t version, int reason)
+{
+    gz_lobby_enc_t e;
+    gz_lobby_enc_start(&e, buf, cap, GZ_KIND_LOBBY_STATUS, SCOPE);
+    gz_lobby_enc_u8(&e, 2, lobby);
+    gz_lobby_enc_u8(&e, 4, seat);
+    gz_lobby_enc_u32(&e, 6, version);
+    gz_lobby_enc_u16(&e, 8, 1);
+    gz_lobby_enc_u16(&e, 10, 1);
+    if (reason >= 0) gz_lobby_enc_u16(&e, 13, (uint16_t)reason);
+    return gz_lobby_enc_done(&e);
+}
+
+/* The member's answers to lobby_status, its records and its restart. */
+static void test_member_details(void)
+{
+    static gz_lobby_member_t m, m2;
+    static uint8_t offer2[8000];
+    gz_lobby_conditions_t cond = lt_cond_fits();
+    uint8_t buf[600], cd2[32], chk[32], x[600];
+    size_t n2, n, xn, i, j;
+    gz_record_t recs[32];
+    uint8_t *store[32];
+    size_t nrec = 0;
+    gz_lobby_input_t in;
+    gz_terms_current_digest(T2, T2N, cd2);
+    cond.min_members = 3;
+    member_up(&m, &cond);
+    n2 = offer(offer2, sizeof offer2, SCOPE, T1, T1N, T2, T2N, &HOST);
+#define MKEEP() for (i = 0; i < A.l.count; i++) if (A.s[i].kind == GZ_ACTION_SAVE) \
+    for (j = 0; j < A.s[i].u.save.n_records; j++) { recs[nrec] = A.s[i].u.save.records[j]; \
+        store[nrec] = malloc(recs[nrec].bytes.len + 1); \
+        memcpy(store[nrec], recs[nrec].bytes.data, recs[nrec].bytes.len); recs[nrec].bytes.data = store[nrec]; nrec++; }
+    feed(&m, offer2, n2); MKEEP();
+    {   /* the ready carries the member's own minimum */
+        gz_lobby_msg_t g;
+        CHECK(last_sent(GZ_KIND_READY, &g, NULL, NULL) && g.has_min_members && g.min_members == 3 && !g.has_check_id);
+    }
+    /* the answer to hello, before our join arrived: nothing resent */
+    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_NONE, 1, -1);
+    CHECK(feed(&m, buf, n) == GZ_OK && sends(GZ_KIND_JOIN) == 0 && note(GZ_NOTE_SEAT, GZ_LOBBY_OPEN, GZ_SEAT_NONE));
+    CHECK(feed(&m, buf, n) == GZ_OK && A.l.count == 0);                 /* the same status: nothing new */
+    /* Joined at the version we are ready for: the host lost our ready; at most 3 times */
+    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_JOINED, 1, -1);
+    for (i = 0; i < 5; i++) {
+        CHECK(feed(&m, buf, n) == GZ_OK && sends(GZ_KIND_READY) == (i < 3) && sends(GZ_KIND_JOIN) == (i < 3) && !any_save());
+    }
+    /* a newer version than we know: fetch the terms */
+    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_READY, 2, -1);
+    CHECK(feed(&m, buf, n) == GZ_OK && sends(GZ_KIND_HELLO) == 1);
+    /* refused for a limit: try again later, by a timer, then join and ready again */
+    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_REFUSED, 1, -1);
+    CHECK(feed(&m, buf, n) == GZ_OK && timers(GZ_LOBBY_TIMER_RETRY) == 1 && sends(GZ_KIND_JOIN) == 0);
+    memset(&in, 0, sizeof in);
+    in.kind = GZ_LIN_TIMER; in.timer_id = GZ_LOBBY_TIMER_RETRY;
+    acts_reset();
+    CHECK(gz_lobby_member_handle(&m, &in, &A.l) == GZ_OK && sends(GZ_KIND_JOIN) == 1 && sends(GZ_KIND_READY) == 1 && !any_save());
+    in.timer_id = GZ_LOBBY_TIMER_STATUS;                               /* not the member's timer */
+    acts_reset();
+    CHECK(gz_lobby_member_handle(&m, &in, &A.l) == GZ_OK && A.l.count == 0);
+    for (i = 0; i < 29; i++) feed(&m, buf, n);
+    CHECK(feed(&m, buf, n) == GZ_OK && timers(GZ_LOBBY_TIMER_RETRY) == 0);   /* 30 tries per connection */
+    /* the ready check, then a start for it, then restart from the records */
+    memset(chk, 0x41, 32);
+    xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk, 1, cd2, 30000, 0, &HOST);
+    CHECK(feed(&m, x, xn) == GZ_OK && saves(GZ_REC_FREEZE) == 1 && sends(GZ_KIND_READY) == 1 && before(GZ_KIND_READY, GZ_REC_FREEZE));
+    MKEEP();
+    {
+        gz_lobby_msg_t g;
+        CHECK(last_sent(GZ_KIND_READY, &g, NULL, NULL) && g.has_check_id && memcmp(g.check_id, chk, 32) == 0 && g.min_members == 3);
+    }
+    xn = host_msg(x, sizeof x, GZ_KIND_START, chk, 0, NULL, 0, 2, &HOST);   /* not chosen: no hand-off */
+    CHECK(feed(&m, x, xn) == GZ_OK && saves(GZ_REC_START_RECEIVED) == 1 && note(GZ_NOTE_STARTED, 2, -1) && m.role == 2);
+    MKEEP();
+    member_up(&m2, &cond);
+    for (i = 0; i < nrec; i++) CHECK(gz_lobby_member_restore(&m2, &recs[i]) == GZ_OK);
+    CHECK(m2.joined && m2.ready && m2.frozen && m2.frozen_version == 1 && memcmp(m2.frozen_digest, cd2, 32) == 0);
+    CHECK(m2.has_answered && memcmp(m2.answered_check, chk, 32) == 0 && m2.role == 2 && m2.start_len == m.start_len);
+    CHECK(memcmp(m2.start_msg, m.start_msg, m.start_len) == 0 && m2.ready_len == m.ready_len &&
+          memcmp(m2.ready_msg, m.ready_msg, m.ready_len) == 0 && m2.ready_version == 1);
+    CHECK(m2.join_len == m.join_len && memcmp(m2.join_msg, m.join_msg, m.join_len) == 0 && m2.saved_version == 1);
+    CHECK(m2.outer_len == T1N && memcmp(m2.outer, T1, T1N) == 0 && m2.current_len == T2N && memcmp(m2.current, T2, T2N) == 0);
+    CHECK(memcmp(m2.outer_sig, m.outer_sig, 64) == 0 && memcmp(m2.current_sig, m.current_sig, 64) == 0 && m2.have_terms);
+    CHECK(!m2.ended && !m2.left && !m2.user_unready);
+    /* the restarted member answers the same check with the same saved bytes */
+    xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk, 1, cd2, 30000, 0, &HOST);
+    CHECK(feed(&m2, x, xn) == GZ_OK && sends(GZ_KIND_READY) == 1 && !any_save());
+    {
+        const uint8_t *r; size_t rn;
+        gz_lobby_msg_t g;
+        CHECK(last_sent(GZ_KIND_READY, &g, &r, &rn) && rn == m.ready_len && memcmp(r, m.ready_msg, rn) == 0);
+    }
+    /* removed, or refused as invalid: the end */
+    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_REMOVED, 1, -1);
+    CHECK(feed(&m2, buf, n) == GZ_OK && m2.ended && !m2.ready);
+    CHECK(feed(&m2, offer2, n2) == GZ_OK && A.l.count == 0);
+    member_up(&m2, &cond);
+    feed(&m2, offer2, n2);
+    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_REFUSED, 1, 5);
+    CHECK(feed(&m2, buf, n) == GZ_OK && m2.ended && timers(GZ_LOBBY_TIMER_RETRY) == 0);
+    /* a start that is not well formed: refused */
+    member_up(&m2, &cond);
+    feed(&m2, offer2, n2);
+    xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk, 1, cd2, 30000, 0, &HOST);
+    feed(&m2, x, xn);
+    xn = host_msg(x, sizeof x, GZ_KIND_START, chk, 0, NULL, 0, 3, &HOST);   /* role 3 */
+    CHECK(feed(&m2, x, xn) == GZ_OK && sends(1) == 1 && !any_save());
+    /* a leave from the user: saved, then sent; a second one refused */
+    acts_reset();
+    CHECK(gz_lobby_member_leave(&m2, &A.l) == GZ_OK && before(GZ_KIND_LEAVE, GZ_REC_LOBBY_ENDED) && m2.ended && m2.left);
+    acts_reset();
+    CHECK(gz_lobby_member_leave(&m2, &A.l) == GZ_ERR_ARGUMENT && gz_lobby_member_unready(&m2, &A.l) == GZ_ERR_ARGUMENT);
+    /* new conditions take effect at once: a looser limit readies, a tighter one unreadies */
+    {
+        gz_lobby_conditions_t c2 = lt_cond_fits();
+        c2.adj_max[0] = 1000;
+        member_up(&m2, &c2);
+        CHECK(feed(&m2, offer2, n2) == GZ_OK && sends(GZ_KIND_JOIN) == 0 && note(GZ_NOTE_REFUSED, GZ_FIT_NOW, 64));
+        c2.current_only = 1;
+        acts_reset();
+        CHECK(gz_lobby_member_set_conditions(&m2, &c2, &A.l) == GZ_OK && sends(GZ_KIND_JOIN) == 1 && sends(GZ_KIND_READY) == 1);
+        c2.adj_max[0] = 400;
+        acts_reset();
+        CHECK(gz_lobby_member_set_conditions(&m2, &c2, &A.l) == GZ_OK && sends(GZ_KIND_UNREADY) == 1 &&
+              note(GZ_NOTE_UNREADY, GZ_FIT_NO, 64));
+        acts_reset();
+        CHECK(gz_lobby_member_set_conditions(&m2, &c2, &A.l) == GZ_OK && sends(GZ_KIND_UNREADY) == 0 &&
+              note(GZ_NOTE_REFUSED, GZ_FIT_NO, 64));       /* already unready: told again, nothing sent */
+    }
+    for (i = 0; i < nrec; i++) free(store[i]);
+}
+
 /* -------------------------------------------- host, hostile members */
 
 static gz_lobby_host_t H;
@@ -479,6 +621,15 @@ static void test_host_hostile(void)
         for (i = 0; i < 20; i++) { hin(GZ_LIN_MESSAGE, 1, buf, n); CHECK(A.l.count == 0); }
         hin(GZ_LIN_MESSAGE, 1, buf, n);
         CHECK(sends(1) == 1 && note(GZ_NOTE_CLOSE, -1, -1));
+        {   /* the close names the connection: the 8-byte peer id */
+            size_t q;
+            int named = 0;
+            for (q = 0; q < A.l.count; q++)
+                if (A.s[q].kind == GZ_ACTION_NOTIFY && A.s[q].u.notify.code == GZ_NOTE_CLOSE)
+                    named = A.s[q].u.notify.bytes.len == 8 && memcmp(A.s[q].u.notify.bytes.data, "\0\0\0\0\0\0\x03\xe9", 8) == 0;
+            CHECK(named);
+            CHECK(A.s[0].kind == GZ_ACTION_SEND && A.s[0].u.send.peer_id == W_PEER(1));
+        }
         CLOCK += 1000;
         hin(GZ_LIN_MESSAGE, 2, buf, n);
         CHECK(sends(GZ_KIND_TERMS_OFFER) == 1);
@@ -551,6 +702,8 @@ static void test_host_hostile(void)
         }
         CHECK(saved == 9);                     /* the join used one of the ten */
         CHECK(H.seats[1].state == GZ_SEAT_READY);
+        hin(GZ_LIN_MESSAGE, 2, un, unn);       /* past the limit a change is ignored: nothing sent */
+        CHECK(A.l.count == 0 && H.seats[1].state == GZ_SEAT_READY);
         CLOCK += 600000;
         hin(GZ_LIN_MESSAGE, 2, un, unn);
         CHECK(saves(GZ_REC_SEAT) == 1 && status_seat() == GZ_SEAT_JOINED);
@@ -569,8 +722,37 @@ static void test_host_hostile(void)
             CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && saves(GZ_REC_SEAT) == 1 && status_seat() == GZ_SEAT_JOINED);
         }
     }
+    /* the limit's edge: ten changes at one instant; refused 599,999 ms later, allowed at 600,000 */
+    {
+        uint8_t un[64], lv[64];
+        size_t unn, lvn, rn;
+        uint64_t t0;
+        gz_lobby_enc_t e;
+        gz_lobby_enc_start(&e, un, sizeof un, GZ_KIND_UNREADY, SCOPE);
+        unn = gz_lobby_enc_done(&e);
+        gz_lobby_enc_start(&e, lv, sizeof lv, GZ_KIND_LEAVE, SCOPE);
+        lvn = gz_lobby_enc_done(&e);
+        CLOCK += 2000;
+        t0 = CLOCK;
+        n = join_msg(buf, sizeof buf, 5, MEM[5].key[3].pub, 5, 5);
+        CHECK(hin(GZ_LIN_MESSAGE, 5, buf, n) == GZ_OK && saves(GZ_REC_SEAT) == 1);
+        {
+            uint8_t rd[300];
+            rn = ready_msg(rd, sizeof rd, 5, 2, cd3, NULL, 0);
+            for (i = 0; i < 9; i++) {
+                if (i % 2 == 0) hin(GZ_LIN_MESSAGE, 5, rd, rn); else hin(GZ_LIN_MESSAGE, 5, un, unn);
+                CHECK(saves(GZ_REC_SEAT) == 1);
+            }
+        }
+        CLOCK = t0 + 599999;
+        CHECK(hin(GZ_LIN_MESSAGE, 5, un, unn) == GZ_OK && A.l.count == 0);
+        CLOCK = t0 + 600000;
+        CHECK(hin(GZ_LIN_MESSAGE, 5, un, unn) == GZ_OK && saves(GZ_REC_SEAT) == 1 && status_seat() == GZ_SEAT_JOINED);
+        CHECK(hin(GZ_LIN_MESSAGE, 5, lv, lvn) == GZ_OK && saves(GZ_REC_SEAT) == 1 && status_seat() == GZ_SEAT_LEFT);
+    }
     /* removal before the start: the seat cannot come back */
     acts_reset();
+    WHO = 2;
     CHECK(gz_lobby_host_remove(&H, MEM[2].key[2].pub, &A.l) == GZ_OK && saves(GZ_REC_SEAT) == 1 && status_seat() == GZ_SEAT_REMOVED);
     CLOCK += 2000;
     hin(GZ_LIN_DISCONNECTED, 2, NULL, 0);
@@ -613,7 +795,7 @@ static void test_host_hostile(void)
             in.timer_id = GZ_LOBBY_TIMER_WINDOW;
             acts_reset();
             /* two answered: below the minimum, and the deadline has passed: cancelled */
-            CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && sends(GZ_KIND_START) == 0 && sends(GZ_KIND_CANCEL) == 4);
+            CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && sends(GZ_KIND_START) == 0 && sends(GZ_KIND_CANCEL) == 5);
             CHECK(saves(GZ_REC_LOBBY_ENDED) == 1 && H.state == GZ_LOBBY_CANCELLED && before(GZ_KIND_CANCEL, GZ_REC_LOBBY_ENDED));
         }
     }
@@ -628,7 +810,7 @@ static void test_host_restart(void)
     size_t n, i;
     gz_record_t recs[64];
     uint8_t *store[64];
-    size_t nrec = 0, k;
+    size_t nrec = 0, k, kk;
     gz_ports_t p = ports();
     gz_lobby_crypto_t cr = lt_crypto(&HOST);
     gz_lobby_host_config_t cfg;
@@ -636,8 +818,8 @@ static void test_host_restart(void)
     gz_terms_current_digest(T3, T3N, cd3);
     CLOCK = W_T0;
     host_open(0);
-#define KEEP() for (i = 0; i < A.l.count; i++) if (A.s[i].kind == GZ_ACTION_SAVE) \
-    for (k = 0; k < A.s[i].u.save.n_records; k++) { recs[nrec] = A.s[i].u.save.records[k]; \
+#define KEEP() for (kk = 0; kk < A.l.count; kk++) if (A.s[kk].kind == GZ_ACTION_SAVE) \
+    for (k = 0; k < A.s[kk].u.save.n_records; k++) { recs[nrec] = A.s[kk].u.save.records[k]; \
         store[nrec] = malloc(recs[nrec].bytes.len + 1); memcpy(store[nrec], recs[nrec].bytes.data, recs[nrec].bytes.len); \
         recs[nrec].bytes.data = store[nrec]; nrec++; }
     KEEP();
@@ -648,14 +830,12 @@ static void test_host_restart(void)
         KEEP();
     }
     for (i = 1; i <= 3; i++) {
-        size_t j = i;
-        hin(GZ_LIN_CONNECTED, (int)j, NULL, 0);
+        hin(GZ_LIN_CONNECTED, (int)i, NULL, 0);
         CLOCK += 1000;
-        n = join_msg(buf, sizeof buf, (int)j, MEM[j].key[3].pub, (int)j, (int)j);
-        hin(GZ_LIN_MESSAGE, (int)j, buf, n); KEEP();
-        n = ready_msg(buf, sizeof buf, (int)j, 2, cd3, NULL, 0);
-        hin(GZ_LIN_MESSAGE, (int)j, buf, n); KEEP();
-        i = j;
+        n = join_msg(buf, sizeof buf, (int)i, MEM[i].key[3].pub, (int)i, (int)i);
+        hin(GZ_LIN_MESSAGE, (int)i, buf, n); KEEP();
+        n = ready_msg(buf, sizeof buf, (int)i, 2, cd3, NULL, 0);
+        hin(GZ_LIN_MESSAGE, (int)i, buf, n); KEEP();
     }
     CLOCK = 1794441600000ull;
     memset(&in, 0, sizeof in);
@@ -682,6 +862,19 @@ static void test_host_restart(void)
     for (i = 0; i < nrec; i++) CHECK(gz_lobby_host_restore(&H2, &recs[i]) == GZ_OK);
     CHECK(H2.frozen && H2.values.version == 2 && H2.state == GZ_LOBBY_CANCELLED && H2.n_seats == 3);
     CHECK(memcmp(H2.current, T3, T3N) == 0 && H2.seats[2].min_members == 4);
+    /* every saved field of every seat comes back as it was */
+    for (i = 0; i < 3; i++) {
+        const gz_lobby_seat_t *a = &H.seats[i], *b = &H2.seats[i];
+        CHECK(memcmp(a->ckey, b->ckey, 33) == 0 && memcmp(a->fkey, b->fkey, 33) == 0);
+        CHECK(memcmp(a->bind_f, b->bind_f, 64) == 0 && memcmp(a->bind_c, b->bind_c, 64) == 0);
+        CHECK(a->state == b->state && a->min_members == b->min_members && a->ready_version == b->ready_version);
+        CHECK(a->join_seq == b->join_seq && a->join_seq == i + 1 && a->ready_len == b->ready_len && a->ready_len > 0);
+        CHECK(memcmp(a->ready_msg, b->ready_msg, a->ready_len) == 0 && b->ready_version == 2);
+    }
+    CHECK(memcmp(H2.scope, H.scope, 32) == 0 && memcmp(H2.current_digest, H.current_digest, 32) == 0);
+    CHECK(memcmp(H2.outer_sig, H.outer_sig, 64) == 0 && memcmp(H2.current_sig, H.current_sig, 64) == 0);
+    CHECK(H2.end_reason == 1 && H2.cancel_len == H.cancel_len && memcmp(H2.cancel_msg, H.cancel_msg, H.cancel_len) == 0);
+    CHECK(H2.next_seq == 3 && memcmp(&H2.me, &H.me, sizeof H.me) == 0);
     acts_reset();
     CHECK(gz_lobby_host_resume(&H2, &A.l) == GZ_OK);
     /* a damaged record stops the start */
@@ -693,6 +886,328 @@ static void test_host_restart(void)
         CHECK(gz_lobby_host_restore(&H3, &bad) == GZ_ERR_CORRUPT);
     }
     for (i = 0; i < nrec; i++) free(store[i]);
+}
+
+/* The last lobby_status sent to member `who`, decoded; 0 if none. */
+static int status_to(int who, gz_lobby_msg_t *g)
+{
+    size_t i;
+    int found = 0;
+    for (i = 0; i < A.l.count; i++)
+        if (kind_of(&A.s[i]) == GZ_KIND_LOBBY_STATUS && A.s[i].u.send.peer_id == W_PEER(who)) {
+            gz_lobby_decode(A.s[i].u.send.bytes.data, A.s[i].u.send.bytes.len, g);
+            found = 1;
+        }
+    return found;
+}
+
+static size_t hello_msg(uint8_t *buf, size_t cap, const uint8_t *scope)
+{
+    gz_lobby_enc_t e;
+    gz_lobby_enc_start(&e, buf, cap, GZ_KIND_HELLO, scope);
+    return gz_lobby_enc_done(&e);
+}
+
+/* Smaller host duties: status contents and their pacing, scope-zero hello,
+ * seat states during signing, damaged records. */
+static void test_host_details(void)
+{
+    static const uint8_t zero[32];
+    uint8_t buf[600], cd2[32], other[32];
+    size_t n;
+    int i;
+    gz_lobby_msg_t g;
+    gz_lobby_input_t in;
+    gz_terms_current_digest(T2, T2N, cd2);
+    CLOCK = W_T0 - 3600000;
+    host_open(0);
+    for (i = 1; i <= 6; i++) hin(GZ_LIN_CONNECTED, i, NULL, 0);
+    /* an unknown lobby: status with lobby state 0 and nothing else */
+    memcpy(other, SCOPE, 32); other[5] ^= 1;
+    n = hello_msg(buf, sizeof buf, other);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && sends(GZ_KIND_TERMS_OFFER) == 0 && status_to(1, &g));
+    CHECK(g.lobby_state == 0 && g.seat_state == 0 && g.version == 0 && g.joined == 0 && g.ready == 0 && !g.has_reason);
+    /* scope zero: an unlisted lobby is never named */
+    CLOCK += 1000;
+    n = hello_msg(buf, sizeof buf, zero);
+    CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && A.l.count == 0);
+    CLOCK += 1000;
+    H.cfg.listed = 1;                                   /* listed: at most 4 answers a second in all */
+    for (i = 3; i <= 6; i++) { hin(GZ_LIN_MESSAGE, i, buf, n); CHECK(sends(GZ_KIND_TERMS_OFFER) == 1); }
+    hin(GZ_LIN_MESSAGE, 1, buf, n);
+    CHECK(A.l.count == 0);
+    CLOCK += 1000;
+    hin(GZ_LIN_MESSAGE, 1, buf, n);
+    CHECK(sends(GZ_KIND_TERMS_OFFER) == 1);
+    H.cfg.listed = 0;
+    /* broadcasts reach every seat, the first connection too, at most once a second */
+    n = join_msg(buf, sizeof buf, 1, MEM[1].key[3].pub, 1, 1);
+    hin(GZ_LIN_MESSAGE, 1, buf, n);
+    CLOCK += 1000;
+    n = join_msg(buf, sizeof buf, 2, MEM[2].key[3].pub, 2, 2);
+    hin(GZ_LIN_MESSAGE, 2, buf, n);
+    CHECK(status_to(1, &g) && g.joined == 2 && g.seat_state == GZ_SEAT_JOINED && timers(GZ_LOBBY_TIMER_STATUS) == 0);
+    CLOCK += 300;
+    n = ready_msg(buf, sizeof buf, 2, 1, cd2, NULL, 0);
+    hin(GZ_LIN_MESSAGE, 2, buf, n);
+    CHECK(!status_to(1, &g) && timers(GZ_LOBBY_TIMER_STATUS) == 1);   /* member 1 waits */
+    CLOCK += 1000;
+    memset(&in, 0, sizeof in);
+    in.kind = GZ_LIN_TIMER; in.timer_id = GZ_LOBBY_TIMER_STATUS;
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && status_to(1, &g) && g.ready == 1 && !status_to(2, &g));
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && A.l.count == 0);   /* nothing left waiting */
+    /* the deadline timer before the deadline sets itself again */
+    in.timer_id = GZ_LOBBY_TIMER_DEADLINE;
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && timers(GZ_LOBBY_TIMER_DEADLINE) == 1);
+    CHECK(A.s[0].u.set_timer.delay_ms == 1794441600000ull - CLOCK);
+    /* to the start: four ready, one asks for at least 5 */
+    for (i = 3; i <= 4; i++) {
+        CLOCK += 1000;
+        n = join_msg(buf, sizeof buf, i, MEM[i].key[3].pub, i, i);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+    }
+    for (i = 1; i <= 4; i++) {
+        n = ready_msg(buf, sizeof buf, i, 1, cd2, NULL, (uint16_t)(i == 4 ? 5 : 0));
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+    }
+    CLOCK = 1794441600000ull;
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && sends(GZ_KIND_READY_CHECK) == 4);
+    {
+        uint8_t chk[32];
+        const uint8_t *raw;
+        size_t rawn, q;
+        last_sent(GZ_KIND_READY_CHECK, &g, &raw, &rawn);
+        memcpy(chk, g.check_id, 32);
+        CHECK(g.version == 1 && memcmp(g.current_digest, cd2, 32) == 0 && g.answer_within_ms == 30000);
+        CHECK(gz_la_verified(&H.crypto, raw, &g, HOST.key[1].pub));
+        for (q = 0; q < A.l.count; q++)        /* freeze: check id, version, digest, the signed check */
+            if (A.s[q].kind == GZ_ACTION_SAVE && A.s[q].u.save.records[0].type == GZ_REC_FREEZE) {
+                const uint8_t *r = A.s[q].u.save.records[0].bytes.data;
+                CHECK(A.s[q].u.save.records[0].bytes.len == 70 + rawn && memcmp(r, chk, 32) == 0);
+                CHECK(r[35] == 1 && memcmp(r + 36, cd2, 32) == 0 && memcmp(r + 70, raw, rawn) == 0);
+            }
+        for (i = 1; i <= 4; i++) {
+            n = ready_msg(buf, sizeof buf, i, 1, cd2, chk, (uint16_t)(i == 4 ? 5 : 0));
+            hin(GZ_LIN_MESSAGE, i, buf, n);
+            CHECK(status_to(i, &g) && g.lobby_state == GZ_LOBBY_READY_CHECK);
+        }
+    }
+    in.timer_id = GZ_LOBBY_TIMER_WINDOW;
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && sends(GZ_KIND_START) == 4 && H.state == GZ_LOBBY_SIGNING);
+    {
+        gz_lobby_msg_t st;
+        int role[5] = {0, 0, 0, 0, 0};
+        size_t q;
+        for (q = 0; q < A.l.count; q++)
+            if (kind_of(&A.s[q]) == GZ_KIND_START) {
+                gz_lobby_decode(A.s[q].u.send.bytes.data, A.s[q].u.send.bytes.len, &st);
+                role[A.s[q].u.send.peer_id - 1000] = st.role;
+                CHECK(st.signers == 4);
+            }
+        CHECK(role[1] == 1 && role[2] == 1 && role[3] == 1 && role[4] == 2);
+    }
+    /* seat states during signing: chosen 3, not chosen 4; the start resent to the chosen only */
+    CLOCK += 2000;
+    for (i = 1; i <= 4; i++) {
+        n = hello_msg(buf, sizeof buf, SCOPE);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+        CHECK(status_to(i, &g) && g.lobby_state == GZ_LOBBY_SIGNING && g.seat_state == (i < 4 ? GZ_SEAT_CHOSEN : GZ_SEAT_NOT_CHOSEN));
+        CHECK(sends(GZ_KIND_START) == (i < 4));
+    }
+    /* a chosen seat's unready is ignored; a standby's ready is answered and changes nothing */
+    {
+        uint8_t un[64];
+        gz_lobby_enc_t e;
+        gz_lobby_enc_start(&e, un, sizeof un, GZ_KIND_UNREADY, SCOPE);
+        CHECK(hin(GZ_LIN_MESSAGE, 1, un, gz_lobby_enc_done(&e)) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_CHOSEN);
+    }
+    /* the end: cancel, and the reason in every later status */
+    acts_reset();
+    CHECK(gz_lobby_host_cancel(&H, 0, &A.l) == GZ_ERR_ARGUMENT && gz_lobby_host_cancel(&H, 4, &A.l) == GZ_ERR_ARGUMENT);
+    CHECK(gz_lobby_host_cancel(&H, 3, &A.l) == GZ_OK && H.state == GZ_LOBBY_FAILED && sends(GZ_KIND_CANCEL) == 4);
+    CLOCK += 2000;
+    n = hello_msg(buf, sizeof buf, SCOPE);
+    hin(GZ_LIN_MESSAGE, 2, buf, n);
+    CHECK(status_to(2, &g) && g.lobby_state == GZ_LOBBY_FAILED && g.has_reason && g.reason == 3 && sends(GZ_KIND_CANCEL) == 1);
+    acts_reset();
+    CHECK(gz_lobby_host_cancel(&H, 2, &A.l) == GZ_ERR_ARGUMENT && gz_lobby_host_remove(&H, MEM[1].key[2].pub, &A.l) == GZ_ERR_ARGUMENT);
+    /* damaged records of every type stop a start, at every short length */
+    {
+        static gz_lobby_host_t H2;
+        static gz_lobby_member_t M2;
+        gz_ports_t p = ports();
+        gz_lobby_crypto_t cr = lt_crypto(&HOST);
+        gz_lobby_host_config_t cfg;
+        gz_lobby_conditions_t cond = lt_cond_fits();
+        uint32_t t;
+        size_t len;
+        int bad_host = 0, bad_member = 0;
+        memset(&cfg, 0, sizeof cfg);
+        for (t = GZ_REC_LOBBY_OPENED; t <= GZ_REC_LOBBY_STATE; t += 2) {
+            if (t == 0x00010004u) continue;
+            for (len = 0; len < 6; len++) {
+                gz_record_t r;
+                uint8_t *b = malloc(len + 1);
+                memset(b, 0xff, len + 1);
+                r.type = t; r.bytes.data = b; r.bytes.len = len;
+                gz_lobby_host_init(&H2, &p, &cr, NULL, &cfg);
+                if (gz_lobby_host_restore(&H2, &r) != GZ_ERR_CORRUPT && t != GZ_REC_TERMS_RECEIVED &&
+                    t != GZ_REC_JOINED && t != GZ_REC_READY_SENT && t != GZ_REC_HOST_FAULT && t != GZ_REC_START_RECEIVED)
+                    bad_host++;
+                gz_lobby_member_init(&M2, &p, &cr, NULL, &cond, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 1);
+                if (gz_lobby_member_restore(&M2, &r) != GZ_ERR_CORRUPT &&
+                    (t == GZ_REC_TERMS_RECEIVED || t == GZ_REC_FREEZE || t == GZ_REC_LOBBY_ENDED ||
+                     (t == GZ_REC_READY_SENT && len > 1) || (t == GZ_REC_START_RECEIVED && len > 0)))
+                    bad_member++;
+                free(b);
+            }
+        }
+        CHECK(bad_host == 0 && bad_member == 0);
+    }
+}
+
+/* The ready check: an answer withdrawn by unready no longer counts; a failed
+ * check before the deadline leaves the lobby Open, and the next change starts
+ * a new check with a new identifier. */
+static void test_host_checks(void)
+{
+    uint8_t buf[600], cd2[32], chk[32], un[64];
+    size_t n, unn;
+    int i;
+    gz_lobby_msg_t g;
+    gz_lobby_input_t in;
+    gz_lobby_enc_t e;
+    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lobby_enc_start(&e, un, sizeof un, GZ_KIND_UNREADY, SCOPE);
+    unn = gz_lobby_enc_done(&e);
+    CLOCK = W_T0 - 3600000;
+    host_open(0);
+    for (i = 1; i <= 8; i++) {
+        hin(GZ_LIN_CONNECTED, i, NULL, 0);
+        CLOCK += 1000;
+        n = join_msg(buf, sizeof buf, i, MEM[i].key[3].pub, i, i);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+        n = ready_msg(buf, sizeof buf, i, 1, cd2, NULL, 0);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+        CHECK(sends(GZ_KIND_READY_CHECK) == (i == 8 ? 8 : 0));     /* the target starts the check at once */
+    }
+    CHECK(H.state == GZ_LOBBY_READY_CHECK && last_sent(GZ_KIND_READY_CHECK, &g, NULL, NULL));
+    memcpy(chk, g.check_id, 32);
+    n = ready_msg(buf, sizeof buf, 1, 1, cd2, chk, 0);
+    hin(GZ_LIN_MESSAGE, 1, buf, n);                                 /* answers, */
+    CHECK(sends(GZ_KIND_READY_CHECK) == 0);                          /* (no second check while one is open) */
+    hin(GZ_LIN_MESSAGE, 1, un, unn);                                /* withdraws, */
+    CHECK(sends(GZ_KIND_READY_CHECK) == 0 && saves(GZ_REC_SEAT) == 1);
+    n = ready_msg(buf, sizeof buf, 1, 1, cd2, NULL, 0);
+    hin(GZ_LIN_MESSAGE, 1, buf, n);                                 /* and is ready again without answering */
+    CHECK(sends(GZ_KIND_READY_CHECK) == 0);
+    for (i = 2; i <= 3; i++) {
+        n = ready_msg(buf, sizeof buf, i, 1, cd2, chk, 0);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+        CHECK(sends(GZ_KIND_READY_CHECK) == 0 && !any_save());
+    }
+    memset(&in, 0, sizeof in);
+    in.kind = GZ_LIN_TIMER; in.timer_id = GZ_LOBBY_TIMER_WINDOW;
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && sends(GZ_KIND_START) == 0 && sends(GZ_KIND_CANCEL) == 0);
+    CHECK(H.state == GZ_LOBBY_OPEN && H.frozen && !any_save());
+    {   /* frozen for ever: no new values, though Open again */
+        uint64_t v[3] = {600, 1000, 1000};
+        acts_reset();
+        CHECK(gz_lobby_host_set_values(&H, v, 3, &A.l) == GZ_ERR_ARGUMENT && A.l.count == 0);
+    }
+    /* Member 1 changed during that check, so the next input starts a new one;
+     * after a check in which nothing changed, nothing starts one until a change. */
+    CLOCK += 5000;
+    n = ready_msg(buf, sizeof buf, 4, 1, cd2, NULL, 0);
+    CHECK(hin(GZ_LIN_MESSAGE, 4, buf, n) == GZ_OK && sends(GZ_KIND_READY_CHECK) == 8 && saves(GZ_REC_FREEZE) == 0);
+    CHECK(last_sent(GZ_KIND_READY_CHECK, &g, NULL, NULL) && memcmp(g.check_id, chk, 32) != 0);
+    memcpy(chk, g.check_id, 32);
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && sends(GZ_KIND_START) == 0 && H.state == GZ_LOBBY_OPEN);
+    CHECK(hin(GZ_LIN_MESSAGE, 4, buf, n) == GZ_OK && sends(GZ_KIND_READY_CHECK) == 0);   /* a duplicate */
+    hin(GZ_LIN_MESSAGE, 5, un, unn);
+    CHECK(sends(GZ_KIND_READY_CHECK) == 0);                          /* 7 ready: below the target */
+    n = ready_msg(buf, sizeof buf, 5, 1, cd2, NULL, 0);
+    CHECK(hin(GZ_LIN_MESSAGE, 5, buf, n) == GZ_OK && sends(GZ_KIND_READY_CHECK) == 8 && saves(GZ_REC_FREEZE) == 0);
+    CHECK(last_sent(GZ_KIND_READY_CHECK, &g, NULL, NULL) && memcmp(g.check_id, chk, 32) != 0 && g.version == 1);
+    /* no standby seats: a join during the check is refused, the seat is not made */
+    hin(GZ_LIN_CONNECTED, 9, NULL, 0);
+    CLOCK += 1000;
+    n = join_msg(buf, sizeof buf, 9, MEM[9].key[3].pub, 9, 9);
+    CHECK(hin(GZ_LIN_MESSAGE, 9, buf, n) == GZ_OK && status_seat() == GZ_SEAT_REFUSED && !any_save() && H.n_seats == 8);
+    /* a removal during the check: the seat gets no start */
+    acts_reset();
+    CHECK(gz_lobby_host_remove(&H, MEM[2].key[2].pub, &A.l) == GZ_OK && saves(GZ_REC_SEAT) == 1);
+    memcpy(chk, g.check_id, 32);
+    for (i = 1; i <= 8; i++) {                                       /* member 3, an answer last time, is silent */
+        if (i == 3) continue;
+        n = ready_msg(buf, sizeof buf, i, 1, cd2, chk, 0);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+    }
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && sends(GZ_KIND_START) == 6 && H.state == GZ_LOBBY_SIGNING);
+    {
+        size_t q;
+        for (q = 0; q < A.l.count; q++)
+            CHECK(kind_of(&A.s[q]) != GZ_KIND_START || (A.s[q].u.send.peer_id != W_PEER(2) && A.s[q].u.send.peer_id != W_PEER(3)));
+        /* start_sent: the check, then each started seat's key and its exact start bytes */
+        for (q = 0; q < A.l.count; q++)
+            if (A.s[q].kind == GZ_ACTION_SAVE && A.s[q].u.save.records[0].type == GZ_REC_START_SENT) {
+                const uint8_t *r = A.s[q].u.save.records[0].bytes.data;
+                size_t rl = A.s[q].u.save.records[0].bytes.len, at = 34, k, sent = 0;
+                CHECK(memcmp(r, chk, 32) == 0 && r[32] == 0 && r[33] == 6);
+                for (k = 0; k < 6 && at + 35 <= rl; k++) {
+                    const uint8_t *b; size_t bn, j;
+                    at += 33;
+                    CHECK(gz_la_get_blob(r, rl, &at, &b, &bn));
+                    for (j = 0; j < A.l.count; j++)
+                        if (kind_of(&A.s[j]) == GZ_KIND_START && A.s[j].u.send.bytes.len == bn &&
+                            memcmp(A.s[j].u.send.bytes.data, b, bn) == 0 &&
+                            memcmp(r + at - bn - 2 - 33, MEM[A.s[j].u.send.peer_id - 1000].key[2].pub, 33) == 0)
+                            sent++;
+                }
+                CHECK(sent == 6 && at == rl);
+            }
+    }
+    /* the window timer again: nothing (the check is closed) */
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && A.l.count == 0);
+}
+
+/* At most 4 x target seats are ever created (messages.md 6, review 3 F13), and
+ * joins are closed outside Open when the lobby has no standby seats. */
+static void test_host_creations(void)
+{
+    uint8_t buf[600], lv[64];
+    size_t n, lvn;
+    int c;
+    gz_lobby_enc_t e;
+    gz_lobby_enc_start(&e, lv, sizeof lv, GZ_KIND_LEAVE, SCOPE);
+    lvn = gz_lobby_enc_done(&e);
+    CLOCK = W_T0 - 3600000;
+    host_open(0);
+    for (c = 0; c <= 32; c++) {
+        int who = 1 + c % 11;
+        CLOCK += 1000;
+        hin(GZ_LIN_DISCONNECTED, who, NULL, 0);
+        hin(GZ_LIN_CONNECTED, who, NULL, 0);
+        n = join_msg(buf, sizeof buf, who, MEM[who].key[3].pub, who, who);
+        hin(GZ_LIN_MESSAGE, who, buf, n);
+        if (c < 32) {
+            CHECK(status_seat() == GZ_SEAT_JOINED && saves(GZ_REC_SEAT) == 1);
+            hin(GZ_LIN_MESSAGE, who, lv, lvn);
+            CHECK(status_seat() == GZ_SEAT_LEFT);
+        } else {
+            CHECK(status_seat() == GZ_SEAT_REFUSED && !any_save());          /* the 33rd */
+        }
+    }
+    CHECK(H.created == 32);
 }
 
 /* ---------------------------------------------------- world scenarios */
@@ -726,9 +1241,11 @@ static void test_world_basic(void)
         CHECK(w.failures == 0 && w.node[0].host->state == GZ_LOBBY_SIGNING);
         CHECK(w.node[0].n_handoffs == 1 && w.node[0].handoffs[0].n_participants == 4 && w.node[0].handoffs[0].signers == 4);
         CHECK(memcmp(w.node[0].handoffs[0].participants[0], w.node[0].keys.key[1].pub, 33) == 0);
-        CHECK(memcmp(w.node[0].handoffs[0].digest, cd2, 32) == 0);
+        CHECK(memcmp(w.node[0].handoffs[0].digest, cd2, 32) == 0 && w_params_ok(&w.node[0].handoffs[0], 3));
+        CHECK(memcmp(w.node[0].handoffs[0].factory[0], w.node[0].keys.key[3].pub, 33) == 0);
         for (i = 1; i <= 3; i++) {
             CHECK(chosen_of(&w, i) && w.node[i].handoffs[0].signers == 4);
+            CHECK(w_params_ok(&w.node[i].handoffs[0], 3) && w.node[i].handoffs[0].start_len > 0);
             CHECK(memcmp(w.node[i].handoffs[0].check, w.node[0].handoffs[0].check, 32) == 0);
             CHECK(memcmp(w.node[i].handoffs[0].digest, cd2, 32) == 0);
             CHECK(w_count_recs(&w.node[i], GZ_REC_START_RECEIVED) == 1 && w_count_recs(&w.node[i], GZ_REC_FREEZE) == 1);
@@ -740,7 +1257,7 @@ static void test_world_basic(void)
     w_start(&w);
     w_run(&w, 2000, 0);
     CHECK(w.failures == 0 && w.node[0].host->state == GZ_LOBBY_SIGNING && w.now < 1794441600000ull);
-    CHECK(w.node[0].n_handoffs == 1 && w.node[0].handoffs[0].n_participants == 9);
+    CHECK(w.node[0].n_handoffs == 1 && w.node[0].handoffs[0].n_participants == 9 && w_params_ok(&w.node[0].handoffs[0], 8));
     w_free(&w);
     /* Slice 1: a member whose conditions are not met refuses, with the reason */
     cond.chan_min = 200000;
@@ -765,7 +1282,8 @@ static void test_world_basic(void)
     w_start(&w);
     w_run(&w, 13000, 0);
     CHECK(w.node[0].host->state == GZ_LOBBY_SIGNING && w.node[0].handoffs[0].n_participants == 4);
-    CHECK(!chosen_of(&w, 2) && w_has_note(&w.node[2], GZ_NOTE_STARTED, 2, -1));
+    CHECK(!chosen_of(&w, 2) && w_has_note(&w.node[2], GZ_NOTE_STARTED, 2, -1) && w.node[2].n_handoffs == 0);
+    CHECK(w.node[1].handoffs[0].min_members == 0 && w_params_ok(&w.node[1].handoffs[0], 3));
     CHECK(chosen_of(&w, 1) && chosen_of(&w, 3) && chosen_of(&w, 4));
     w_free(&w);
 }
@@ -876,8 +1394,12 @@ int main(void)
     gz_terms_outer_digest(T1, T1N, SCOPE);
     test_member_hostile();
     test_member_classes();
+    test_member_details();
     test_host_hostile();
     test_host_restart();
+    test_host_details();
+    test_host_checks();
+    test_host_creations();
     test_world_basic();
     test_world_values();
     test_world_standbys();

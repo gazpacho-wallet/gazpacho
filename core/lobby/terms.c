@@ -34,26 +34,36 @@ static int utf8_ok(const uint8_t *p, size_t n)
     return 1;
 }
 
-/* The split rule of terms.md 4.2 for a node of m members at depth d.
- * 0 if it meets an interior node with m <= its width. */
-static int split(const uint8_t *lv, int nl, uint32_t m, int d, int *deepest)
+/* The split rule of terms.md 4.2 for a node of m members at depth d: counts
+ * the leaves and records the deepest. 0 if it meets an interior node with
+ * m <= its width. */
+static int split(const uint8_t *lv, int nl, uint32_t m, int d, int *deepest, uint32_t *leaves)
 {
     uint8_t a = lv[d < nl ? d : nl - 1];
     uint32_t r = m, j;
     if (a == 3) {
         if (m == 1) {
             if (d > *deepest) *deepest = d;
+            (*leaves)++;
             return 1;
         }
-        return split(lv, nl, m / 2, d + 1, deepest) && split(lv, nl, m - m / 2, d + 1, deepest);
+        return split(lv, nl, m / 2, d + 1, deepest, leaves) && split(lv, nl, m - m / 2, d + 1, deepest, leaves);
     }
     if (m <= a) return 0;
     for (j = 0; j < a && r > 0; j++) {
         uint32_t c = (r + (a - j) - 1) / (a - j);
-        if (!split(lv, nl, c, d + 1, deepest)) return 0;
+        if (!split(lv, nl, c, d + 1, deepest, leaves)) return 0;
         r -= c;
     }
     return 1;
+}
+
+/* The tree for n members: valid, with exactly n one-member leaves. */
+static int tree(const uint8_t *lv, int nl, uint32_t n, int *deepest)
+{
+    uint32_t leaves = 0;
+    *deepest = 0;
+    return split(lv, nl, n, 0, deepest, &leaves) && leaves == n;
 }
 
 static int levels_of(const gz_terms_shape_t *s, uint8_t lv[8])
@@ -72,7 +82,7 @@ int gz_terms_shape_for(const gz_terms_outer_t *o, uint16_t n, uint8_t levels[8],
         if (o->shapes[i].max_members < n) continue;
         if (n < 1) return 0;
         nl = levels_of(&o->shapes[i], levels);
-        if (!split(levels, nl, n, 0, &d)) return 0;
+        if (!tree(levels, nl, n, &d)) return 0;
         *n_levels = (uint8_t)nl;
         *depth = (uint8_t)d;
         return 1;
@@ -113,9 +123,9 @@ static int shapes_check(const gz_terms_outer_t *o)
     uint16_t i, n, from = 3;
     for (i = 0; i < o->n_shapes; i++) {
         uint8_t lv[8];
-        int nl = levels_of(&o->shapes[i], lv), d = 0;
+        int nl = levels_of(&o->shapes[i], lv), d;
         for (n = from; n <= o->shapes[i].max_members; n++)
-            if (!split(lv, nl, n, 0, &d)) return 0;
+            if (!tree(lv, nl, n, &d)) return 0;
         from = (uint16_t)(o->shapes[i].max_members + 1);
     }
     return 1;

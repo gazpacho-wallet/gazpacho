@@ -157,9 +157,27 @@ static int run(uint64_t seed, int profile, unsigned long *tot)
             printf("\n");
             ok = 0;
         }
+        /* the host's hand-off: itself first, each member's own factory key, every
+         * binding valid, the build parameters of T1 for that many members */
+        if (!w_params_ok(hh, hh->n_participants - 1) || memcmp(hh->participants[0], w.node[0].keys.key[1].pub, 33) != 0 ||
+            memcmp(hh->factory[0], w.node[0].keys.key[3].pub, 33) != 0) {
+            printf("seed %llu: host hand-off parameters\n", (unsigned long long)seed);
+            ok = 0;
+        }
+        for (i = 1; i < hh->n_participants; i++) {
+            int k, found = 0;
+            for (k = 1; k <= n; k++)
+                if (memcmp(hh->participants[i], w.node[k].keys.key[2].pub, 33) == 0)
+                    found = memcmp(hh->factory[i], w.node[k].keys.key[3].pub, 33) == 0;
+            if (!found) { printf("seed %llu: participant %d keys\n", (unsigned long long)seed, i); ok = 0; }
+        }
         for (i = 1; i <= n; i++) {
             const w_node_t *d = &w.node[i];
             int k, got = 0, in_set = 0, other = 0;
+            for (k = 0; k < d->n_handoffs; k++)
+                if (!w_params_ok(&d->handoffs[k], d->handoffs[k].signers - 1) || d->handoffs[k].start_len == 0 ||
+                    d->handoffs[k].min_members != d->cond.min_members || d->handoffs[k].n_participants != 0)
+                    other = 1;
             for (k = 1; k < hh->n_participants; k++) in_set |= memcmp(hh->participants[k], d->keys.key[2].pub, 33) == 0;
             for (k = 0; k < d->n_handoffs; k++) {
                 int same = memcmp(d->handoffs[k].check, hh->check, 32) == 0;

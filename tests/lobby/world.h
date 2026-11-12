@@ -20,7 +20,12 @@ typedef struct { int to, from; uint64_t at; uint8_t *b; size_t n; uint32_t conn;
 typedef struct { uint64_t id, at; } w_timer_t;
 typedef struct {
     int role; uint8_t check[32], digest[32]; uint16_t signers, n_participants;
-    uint8_t participants[GZ_LOBBY_MAX_SEATS + 1][33];
+    uint8_t participants[GZ_LOBBY_MAX_SEATS + 1][33], factory[GZ_LOBBY_MAX_SEATS + 1][33];
+    int bindings_ok, records_ok, terms_ok;     /* checked by the stub itself */
+    uint8_t levels[8], n_levels, fixed_levels, k, anchors;
+    uint16_t layer_step, layer_states, min_members;
+    uint32_t version;
+    size_t start_len;
 } w_handoff_t;
 
 typedef struct world world_t;
@@ -77,9 +82,44 @@ static inline gz_status_t w_begin(void *ctx, const gz_lobby_handoff_t *h, gz_act
     memcpy(x->digest, h->current_digest, 32);
     x->signers = h->signers;
     x->n_participants = h->n_participants;
-    for (i = 0; i < h->n_participants && i <= GZ_LOBBY_MAX_SEATS; i++)
-        memcpy(x->participants[i], h->participants[i].contribution_key, 33);
+    x->bindings_ok = 1;
+    for (i = 0; i < h->n_participants && i <= GZ_LOBBY_MAX_SEATS; i++) {
+        /* the stub checks each binding itself, as the signing engine will */
+        const gz_lobby_participant_t *p = &h->participants[i];
+        uint8_t b[32];
+        gz_lobby_binding(h->scope, p->factory_key, p->contribution_key, b);
+        if (!lt_verify(NULL, p->factory_key, b, p->bind_by_factory) || !lt_verify(NULL, p->contribution_key, b, p->bind_by_contribution))
+            x->bindings_ok = 0;
+        memcpy(x->participants[i], p->contribution_key, 33);
+        memcpy(x->factory[i], p->factory_key, 33);
+    }
+    {   /* the records handed over are the frozen ones, and name each other */
+        uint8_t od[32], cd[32];
+        gz_terms_outer_t o;
+        gz_terms_current_t c;
+        gz_terms_outer_digest(h->outer, h->outer_len, od);
+        gz_terms_current_digest(h->current, h->current_len, cd);
+        x->records_ok = memcmp(od, h->scope, 32) == 0 && memcmp(cd, h->current_digest, 32) == 0 &&
+                        gz_terms_outer_decode(h->outer, h->outer_len, &o) &&
+                        gz_terms_current_decode(h->current, h->current_len, &o, od, &c) && c.version == h->version;
+        x->terms_ok = h->terms && h->terms->target == o.target && h->terms->channel_sat == o.channel_sat &&
+                      memcmp(h->terms->host_key, o.host_key, 33) == 0;
+    }
+    memcpy(x->levels, h->levels, 8);
+    x->n_levels = h->n_levels; x->fixed_levels = h->fixed_levels; x->k = h->k; x->anchors = h->tree_anchors;
+    x->layer_step = h->layer_step; x->layer_states = h->layer_states; x->min_members = h->min_members;
+    x->version = h->version; x->start_len = h->start_len;
     return GZ_OK;
+}
+
+/* The build parameters for n members of T1 (terms.md T7) and the fixed ones. */
+static inline int w_params_ok(const w_handoff_t *x, int members)
+{
+    int lv_ok = members <= 4 ? x->n_levels == 1 && x->levels[0] == 3 && x->fixed_levels == 2
+                             : x->n_levels == 2 && x->levels[0] == 4 && x->levels[1] == 3 &&
+                                   x->fixed_levels == (members <= 8 ? 2 : 3);
+    return lv_ok && x->k == 1 && x->anchors == 1 && x->layer_step == 144 && x->layer_states == 4 &&
+           x->records_ok && x->terms_ok && x->bindings_ok && x->version >= 1;
 }
 
 static inline void w_send(world_t *w, int from, int to, const uint8_t *b, size_t n)

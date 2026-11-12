@@ -22,6 +22,12 @@
  *     before the start, standby seats.
  *   - The hand-off to the signing engine (gz_lobby_signing_t).
  *
+ * ERRORS. An engine call that returns anything but GZ_OK (an action list too
+ * small, a signature the port would not make) may already have changed the
+ * engine's memory. Treat it like a refused list (runner.h): stop the node and
+ * rebuild it from storage. Give the engines lists of at least 256 slots and
+ * 512 KiB: a new current version is offered to every seat, about 5.4 KB each.
+ *
  * WHAT IT DOES NOT DO
  *   - Build the tree (fee per transaction, funding amount): that is the
  *     creation-tree work. It computes the shape, the levels and D only.
@@ -44,6 +50,7 @@
 #define GZ_LOBBY_MAX_SEATS     32       /* Slice 1 host: target + standbys */
 #define GZ_LOBBY_MAX_CONNS     48
 #define GZ_LOBBY_MAX_SAVED_MSG 256      /* a saved ready, start or ready_check */
+#define GZ_LOBBY_STATUS_MAX    64       /* a lobby_status: 40 + 3 + 3 + 6 + 4 + 4 + 4 */
 #define GZ_PART_DATA           65000u
 #define GZ_PART_MAX_BODY       1048576u
 
@@ -378,6 +385,7 @@ typedef struct {
     uint64_t hello_ms; int hello_answered; uint32_t hello_ignored;
     int warned;                      /* sent the wrong-protocol warning */
     uint64_t status_ms; int status_pending;
+    uint8_t status_msg[GZ_LOBBY_STATUS_MAX]; size_t status_len;   /* the last status sent */
 } gz_lobby_conn_t;
 
 typedef struct {
