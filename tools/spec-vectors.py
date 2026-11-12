@@ -163,7 +163,7 @@ SUB_SUPPORTED = 2                    # supported_factory_protocols
 SUB_PIGGYBACK = 4                    # factory_piggyback
 PROTOCOL_NAME = b"SuperScalar/1"
 PROTOCOL_ID = hashlib.sha256(PROTOCOL_NAME).digest()
-print("\n== messages.md: proposed factory_protocol_id = sha256('SuperScalar/1')")
+print("\n== messages.md: factory_protocol_id = sha256('SuperScalar/1'), decided (owner, 2026-11-12)")
 print(PROTOCOL_ID.hex())
 
 
@@ -800,24 +800,39 @@ UNIT_SIGNET = 10_000
 
 
 class Reader:
-    """A minimal relay that runs B1 to B10 in order. Signatures are checked for
-    real. graph: {host point: (half-capacity sat, oldest channel age in blocks)}."""
+    """A minimal relay that runs B1 to B10 in order (draft 4). Signatures are
+    checked for real. graph: {host point: (half-capacity sat, oldest channel age)}.
+    Draft 4 adds: the pending pool for beacons ahead of this node's tip,
+    re-offered on each new block (R-P1 to R-P3); the arrival-rate cap (B9 b);
+    the tombstone cap (B10); and B3's full shape checks."""
+
+    KNOWN = {2, 4, 6, 8, 10, 12, 14, 240}
 
     def __init__(self, tip, graph, unit=UNIT_SIGNET):
         self.tip, self.graph, self.unit = tip, graph, unit
         self.seen = set()
-        self.held = {}          # (host, digest) -> (seq, bid, withdrawn, open_h, deadline_h)
+        self.held = {}          # (host, digest) -> (seq, bid, withdrawn, open_h, deadline_h, rec)
         self.seqs = {}          # host -> {seq}
+        self.arrivals = {}      # host -> [tip at acceptance of each new number, relayed path]
         self.orphans = []
+        self.pending = []       # (link, rec)
         self.relayed = []
 
-    def offer(self, rec):
+    def set_tip(self, tip):
+        """A new block: re-offer pending beacons (R-P2). Returns their results."""
+        self.tip = tip
+        again, self.pending = self.pending, []
+        return [self.offer(rec, link) for link, rec in again]
+
+    def offer(self, rec, link="l0", from_pool=False):
         r = read_tlv(rec)
         host, dg = r[2], r[4]
         open_h, dl = int.from_bytes(r[6], "big"), int.from_bytes(r[8], "big")
         seq = int.from_bytes(r[10], "big")
         bid = tagged_hash("gazpacho/beacon", rec[:-66])
-        if dl < open_h or dl > open_h + 1_008:                    # B3 (Ignore, view of version)
+        if (not set(r) >= self.KNOWN or any(t % 2 == 0 and t not in self.KNOWN for t in r)
+                or r[12][0] not in (1, 2, 3) or int.from_bytes(r[14], "big") < 546
+                or dl < open_h or dl > open_h + 1_008):          # B3 (Ignore)
             return "ignore:B3"
         if bid in self.seen:                                      # B4
             return "ignore:dup"
@@ -825,8 +840,18 @@ class Reader:
             return "reject:B5"
         withdrawal = dl == open_h
         h = seq >> 4
-        if open_h > self.tip + 6 or h > self.tip + 6 or h < open_h:   # B6 (not seen)
+        if h < open_h:
             return "ignore:B6"
+        if open_h > self.tip + 6 or h > self.tip + 6:             # B6: ahead
+            if h > self.tip + 144 or open_h > self.tip + 144:
+                return "ignore:B6"                                # far ahead: not pending
+            mine_l = [x for x in self.pending if x[0] == link]
+            if len(mine_l) >= 8:
+                self.pending.remove(mine_l[0])
+            if len(self.pending) >= 64:
+                self.pending.pop(0)
+            self.pending.append((link, rec))
+            return "pending"
         if withdrawal and open_h + 1_008 <= self.tip:
             return "ignore:B6"
         if not withdrawal and dl <= self.tip:
@@ -844,9 +869,7 @@ class Reader:
             if old[2] and not withdrawal:
                 return "ignore:B8a"                               # a tombstone is final
             if seq <= old[0]:
-                if seq == old[0] and bid < old[1]:
-                    pass                                          # B8 b, same lobby
-                else:
+                if not (seq == old[0] and bid < old[1]):
                     return "ignore:B8a"
         for (hh, d2), v in list(self.held.items()):               # B8 b, other lobby
             if hh == host and d2 != dg and v[0] == seq:
@@ -855,20 +878,26 @@ class Reader:
                 else:
                     return "ignore:B8b"
         mine = self.seqs.setdefault(host, set())
-        if seq not in mine:                                       # B9: every new number
-            hs = sorted([s >> 4 for s in mine] + [h])
+        arr = self.arrivals.setdefault(host, [])
+        if seq not in mine:
+            hs = sorted([s >> 4 for s in mine] + [h])             # B9 a: by height part
             for lo in range(h - 143, h + 1):
                 if sum(1 for x in hs if lo <= x < lo + 144) > 8:
                     return "ignore:B9"
-        if not withdrawal:                                        # B10: live cap
-            live = sorted((v[0], k) for k, v in self.held.items()
-                          if k[0] == host and not v[2] and k[1] != dg)
-            if len(live) >= allow:
-                if seq < live[0][0]:
-                    return "ignore:B10"
-                del self.held[live[0][1]]
-        self.held[(host, dg)] = (seq, bid, withdrawal, open_h, dl)
-        mine.add(seq)
+            if not from_pool and sum(1 for t in arr if t > self.tip - 144) >= 8:
+                return "ignore:B9"                                # B9 b: by arrival
+        same = sorted((v[0], k) for k, v in self.held.items()
+                      if k[0] == host and v[2] == withdrawal and k[1] != dg)
+        limit = allow + 4 if withdrawal else allow                # B10: live and tombstone caps
+        if len(same) >= limit:
+            if seq < same[0][0]:
+                return "ignore:B10"
+            del self.held[same[0][1]]
+        self.held[(host, dg)] = (seq, bid, withdrawal, open_h, dl, rec)
+        if seq not in mine:
+            mine.add(seq)
+            if not from_pool:
+                arr.append(self.tip)
         self.seen.add(bid)
         self.relayed.append(bid)
         return "tombstone" if withdrawal else "held"
@@ -876,9 +905,58 @@ class Reader:
     def live(self, host):
         return sorted(v[0] for k, v in self.held.items() if k[0] == host and not v[2])
 
+    def tombs(self, host):
+        return sorted(v[0] for k, v in self.held.items() if k[0] == host and v[2])
+
     def pool(self):
         """PL1: live beacons and tombstones."""
         return [k for k in self.held]
+
+
+def relay_to(src, dst, known, link="a"):
+    """RL1 and RL2 between two readers: send every held beacon of src that dst
+    is not known to have. known: the beacon ids already sent on this link."""
+    out = []
+    for v in list(src.held.values()):
+        if v[1] in known:
+            continue
+        known.add(v[1])
+        out.append(dst.offer(v[5], link))
+    return out
+
+
+class PoolServer:
+    """discovery.md 11.4, PL1 to PL3 (draft 4), over one reader.
+    Cursor = (host_id, sequence); a new request may carry `after` (a scout)."""
+
+    def __init__(self, reader):
+        self.r, self.tokens, self.new_on = reader, {}, {}
+
+    def answer(self, conn, now, after=None, token=None, profiles=None, crange=None, max_entries=356):
+        if token is not None:
+            t = self.tokens.pop(token, None)                      # one use
+            if t is None or t[0] != conn or t[1] != after or now - t[2] > 60:
+                return "dropped"
+        else:
+            last = self.new_on.get(conn)                          # one new request an hour
+            if last is not None and now - last < 3_600:
+                return "dropped"
+            self.new_on[conn] = now
+        rows = []
+        for v in self.r.held.values():
+            rec = v[5]
+            if beacon_matches(rec, profiles, crange):             # tombstones filtered too
+                rows.append(((read_tlv(rec)[2], v[0]), rec))
+        rows.sort(key=lambda x: x[0])
+        if after is not None:
+            rows = [x for x in rows if x[0] > after]
+        page, rest = rows[:max_entries], rows[max_entries:]
+        nxt = page[-1][0] if rest else None
+        tok2 = None
+        if nxt is not None:
+            tok2 = hashlib.sha256(b"tok" + repr((conn, now, nxt)).encode()).digest()[:8]
+            self.tokens[tok2] = (conn, nxt, now)
+        return [x[1] for x in page], nxt, tok2
 
 
 GRAPH = {host_pub: (100_000, 1_008)}       # half-capacity 100,000 sat on signet: allowance 4
@@ -937,9 +1015,8 @@ print("== D21 (finding 3): D8 then D7: D7 ignored, the tombstone is held and ser
 
 # ---- D22: a node behind the tip does not mark beacons seen (finding 3) ----
 r3 = Reader(TIP - 10, GRAPH)
-assert r3.offer(b1) == "ignore:B6" and b1_id not in r3.seen
-r3.tip = TIP
-assert r3.offer(b1) == "held"
+assert r3.offer(b1) == "pending" and b1_id not in r3.seen
+assert r3.set_tip(TIP) == ["held"]
 r4 = Reader(TIP, {})
 assert r4.offer(b1) == "orphan" and b1_id not in r4.seen
 r4.graph = GRAPH
@@ -948,8 +1025,8 @@ cheap = Reader(TIP, {host_pub: (2_499, 1_008)})
 assert cheap.offer(b1) == "ignore:B7"
 young = Reader(TIP, {host_pub: (100_000, 143)})
 assert young.offer(b1) == "ignore:B7"
-print("== D22 (finding 3, 4): a node 10 blocks behind ignores D7 at B6 without marking it seen,"
-      " and accepts it when it catches up; an orphan is accepted once the host's gossip arrives;"
+print("== D22 (finding 3, 4): a node 10 blocks behind holds D7 pending without marking it seen,"
+      " and accepts it at its next block (R-P2); an orphan is accepted once the host's gossip arrives;"
       " a host with 2,499 sat of half-capacity, or a channel 143 blocks old, is below the beacon price (B7)")
 
 # ---- D23: the listing reader: tombstones and the per-host cap (finding 2) ---
@@ -1070,9 +1147,130 @@ print(f"  one entry = {per_entry} bytes; a 30,000-byte onion page holds {(30_000
       f" beacons; a 60,000-byte native page {(60_000 - 34 - 4 - 35 - 10) // per_entry};"
       f" a 1,366-byte onion holds {(1_100 - 34 - 4 - 35 - 10) // per_entry}")
 tok = hashlib.sha256(b"gazpacho test pool token").digest()[:8]
-pr_next = tlv([(2, chain), (7, host_pub), (9, tok)])
-print("== D15b: a continuation pool_request: after = test host key, token = sha256('gazpacho test pool token')[0:8]")
+pr_next = tlv([(2, chain), (7, host_pub + u32(S1)), (9, tok)])
+print("== D15b: a continuation pool_request: after = test host key and D7 sequence, token = sha256('gazpacho test pool token')[0:8]")
 show("pool_request records (continuation)", pr_next)
+pr_scout = tlv([(2, chain), (7, host_pub + u32(0)), (11, u16(64))])
+print("== D15c: a scout pool_request: a new request with after (test host key, 0) and max_entries 64, no token")
+show("pool_request records (scout)", pr_scout)
+
+# ---- D24: back-dated sequences and orphan tombstones (draft 3 review N4) ---
+GRAPH1 = {host_pub: (10_000, 1_008)}       # allowance 1 on signet
+T_LATE = TIP + 1_000
+r24 = Reader(T_LATE, GRAPH1)
+res24 = []
+for i in range(56):
+    rec, _ = beacon(seq_of(TIP + 18 * i), digest=hashlib.sha256(b"back %d" % i).digest(),
+                    open_h=TIP, deadline_h=TIP + 1_008)
+    res24.append(r24.offer(rec))
+assert len(r24.relayed) <= 8 and res24.count("ignore:B9") >= 48
+r24t = Reader(T_LATE, GRAPH1)
+for i in range(56):
+    rec, _ = beacon(seq_of(TIP + 18 * i), digest=hashlib.sha256(b"tomb %d" % i).digest(),
+                    open_h=TIP, deadline_h=TIP)
+    r24t.offer(rec, from_pool=True)            # asked-for page: no arrival cap; B9 a and B10 still apply
+assert len(r24t.tombs(host_pub)) <= 1 + 4
+r24r = Reader(T_LATE, GRAPH1)
+for i in range(56):
+    rec, _ = beacon(seq_of(TIP + 18 * i), digest=hashlib.sha256(b"tomb %d" % i).digest(),
+                    open_h=TIP, deadline_h=TIP)
+    r24r.offer(rec)
+assert len(r24r.relayed) <= 8
+print(f"\n== D24 (review 2, N4): one host with allowance 1, 56 beacons back-dated one every 18 blocks,"
+      f" offered at tip {T_LATE}: {len(r24.relayed)} relayed (draft 3: 56). 56 withdrawals for unknown"
+      f" lobbies: {len(r24r.relayed)} relayed; from asked-for pool pages, {len(r24t.tombs(host_pub))}"
+      " tombstones held (allowance + 4)")
+
+# ---- D25: a node behind the tip gets the beacon again (N7) ------------------
+ra, rb, rc = Reader(TIP, GRAPH), Reader(TIP - 10, GRAPH), Reader(TIP, GRAPH)
+assert ra.offer(b1) == "held"
+k_ab, k_bc = set(), set()
+assert relay_to(ra, rb, k_ab) == ["pending"]
+assert relay_to(ra, rb, k_ab) == []           # RL2: never sent twice on one link
+assert relay_to(rb, rc, k_bc) == []           # pending beacons are not relayed
+assert rb.set_tip(TIP) == ["held"]            # R-P2: re-offered on a new block
+assert relay_to(rb, rc, k_bc) == ["held"]
+print("== D25 (review 2, N7): D7 reaches a node 10 blocks behind: held pending, not relayed, never"
+      " resent on that link; at the next block it is accepted from the pending pool and relayed on")
+
+# ---- D26: pool paging, scouts, tokens, tombstone filter (N2, N4) -----------
+keys26 = [test_key("pool host %d" % i) for i in range(6)]
+graph26 = {compressed(k): (100_000, 1_008) for k in keys26}
+r26 = Reader(TIP + 10, graph26)
+for i, k in enumerate(keys26):
+    d_live = hashlib.sha256(b"p live %d" % i).digest()
+    d_gone = hashlib.sha256(b"p gone %d" % i).digest()
+    prof = 3 if i == 0 else 2
+    assert r26.offer(beacon(seq_of(TIP, 0), digest=d_live, key=k, profile=prof)[0], from_pool=True) == "held"
+    assert r26.offer(beacon(seq_of(TIP + 1, 0), digest=d_gone, key=k, open_h=TIP, deadline_h=TIP,
+                            profile=prof)[0], from_pool=True) == "tombstone"
+srv = PoolServer(r26)
+mid = (sorted(compressed(k) for k in keys26)[2], 0)
+scout = srv.answer("scout", 0, after=mid, max_entries=4)
+assert scout != "dropped" and len(scout[0]) == 4                    # N2: a scout's random `after`
+got, after, token, now = [], None, None, 0
+while True:
+    ans = srv.answer("c1", now, after=after, token=token, max_entries=5)
+    assert ans != "dropped"
+    page, after, token = ans
+    got += page
+    now += 10
+    if after is None:
+        break
+assert len(got) == 12 and len(set(got)) == 12                     # every entry once, hosts split across pages
+again = srv.answer("c2", 0, max_entries=5)
+assert srv.answer("c2", 5, after=again[1], token=again[2], max_entries=5) != "dropped"
+assert srv.answer("c2", 6, after=again[1], token=again[2], max_entries=5) == "dropped"   # one use
+late = srv.answer("c3", 0, max_entries=5)
+assert srv.answer("c3", 61, after=late[1], token=late[2]) == "dropped"                 # 60 s
+assert srv.answer("c1", 100) == "dropped"                                              # one new an hour
+std = PoolServer(r26).answer("c4", 0, profiles=PROFILE_BITS_STANDARD)
+assert len(std[0]) == 10                                            # tombstones are filtered too
+print("== D26 (review 2, N2, N4): 6 hosts, each 1 live beacon and 1 tombstone: a scout's new request"
+      " with a random `after` and no token is answered; paging 5 at a time returns all 12 entries once,"
+      " splitting hosts across pages; a reused token, a token older than 60 s, and a second new"
+      " request within the hour are dropped; a Standard-only filter drops the Starter host's beacon"
+      " and its tombstone")
+
+# ---- D27: Tor budgets per connection, served in turn (N1) --------------------
+def tor_budget(per_connection, seconds=30):
+    """H2 for Tor: 8 lobby_index_requests per 10 s in total. Draft 3 shared one
+    budget first come, first served; draft 4 serves connections in turn, at
+    most 1 per connection per 10 s. One attacker sends 10 a second from t = 0;
+    one honest wallet asks once at t = 0.5. Returns the time it is answered."""
+    queue = []
+    for t10 in range(seconds * 10):
+        t = t10 / 10
+        queue.append(("attacker", t))
+        if t10 == 50:
+            queue.append(("honest", t))
+    served, used, last = None, {}, {}
+    for w in range(0, seconds, 10):
+        budget = 8
+        waiting = [q for q in queue if q[1] < w + 10 and q not in used]
+        if per_connection:
+            order, seenc = [], set()
+            for q in waiting:
+                if q[0] not in seenc and last.get(q[0], -99) <= w - 10:
+                    order.append(q)
+                    seenc.add(q[0])
+        else:
+            order = waiting
+        for q in order[:budget]:
+            used[q] = True
+            last[q[0]] = w
+            if q[0] == "honest":
+                served = max(q[1], w)
+        if served is not None:
+            return served
+    return None
+
+
+assert tor_budget(False) is None
+assert tor_budget(True) is not None and tor_budget(True) <= 30
+print("== D27 (review 2, N1): one Tor attacker at 10 index requests a second and one honest Tor"
+      " wallet: draft 3's shared Tor budget never answers the wallet in 30 s; draft 4 answers it"
+      f" at t = {tor_budget(True)} s")
 
 # ---- D16: listing_not_held ---------------------------------------------------------
 nh = tlv([(2, chain), (4, outer_digest)])

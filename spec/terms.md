@@ -64,7 +64,7 @@ Required unless marked. "Slice 1" says which values a Slice 1 app accepts; other
 | 3 | `host_alias` | 1 to 32 | UTF-8 | Optional | Display only |
 | 4 | `host_key` | 33 | Valid point | Must equal the pinned BOLT 8 key | Binds the terms to the key the member connected to |
 | 5 | `description` | 1 to 280 | UTF-8 | Optional | Display only |
-| 6 | `lobby_salt` | 16 | Random | Required | Two lobbies with the same rules get different identifiers. 128 bits make a collision among one host's lobbies negligible |
+| 6 | `lobby_salt` | 16 | Random | Required | Two lobbies with the same rules get different identifiers. 128 bits make a collision among one host's lobbies negligible. A host MUST draw a fresh salt for every lobby and MUST NOT reuse one: a withdrawal is final and hides every listing with that identifier, so a reused salt would silently hide the new lobby (`discovery.md` W4) |
 | 8 | `profile` | `u8` | 1 Safety, 2 Standard, 3 Starter, 4 Circle | 2 only | `LOBBY.md`: four profiles; Slice 1 has Standard only |
 | 10 | `target` | `u16` | 3 to 1,000 | | Start at once at this many members (host not counted). 3: Slice 1 needs at least three members. 1,000: the largest tree built and signed so far (`KNOWLEDGE-BASE.md` section 4) |
 | 12 | `minimum` | `u16` | 3 to `target` | | Start at the deadline only with at least this many |

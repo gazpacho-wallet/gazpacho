@@ -99,7 +99,7 @@ Application-agnostic. Intended as a separate library: it runs a group of parties
 | Readiness and consent | A `ready` names both digests and is signed by the member; the member's own limits are compared with the whole range by default | `terms.md` 9, `messages.md` 6.4 | Specified |
 | Signing round | Propose, nonces, all nonces, partial signatures, tier result, complete, acknowledge, status request, abort. Rules S1 to S5. One round engine for every purpose | `signing-round.md`, `messages.md` 7 | Specified for creation |
 | Proof of fault | What a third party can check, what it cannot | `signing-round.md` 9 | Design specified; evidence encoding open |
-| Discovery requests | A member asks a host which lobbies it has; the host answers with signed listings | `discovery.md` 6; seed in `messages.md` 6.1 | Specified (draft 3) |
+| Discovery requests | A member asks a host which lobbies it has; the host answers with signed listings | `discovery.md` 6; seed in `messages.md` 6.1 | Specified (draft 4) |
 
 **Taken from Lightning:** TLV rules. From Bitcoin: BIP 327 (MuSig2), BIP 340 (signatures and tagged hashes).
 
@@ -165,7 +165,7 @@ A member's channel is a standard Lightning taproot channel whose funding output 
 
 ## 7. Layer 5: discovery
 
-**Specified in `discovery.md`** (draft 3, 2026-11-12, not reviewed), written from the owner's decisions (`docs/research/ideas-ledger.md` section A), `docs/research/peering-research.md`, `docs/research/discovery-research.md` and the review of draft 2 (`notes/review-discovery-d2.md`). Its section 0 maps every finding of that review to how draft 3 handles it. Summary:
+**Specified in `discovery.md`** (draft 4, 2026-11-12, not reviewed), written from the owner's decisions (`docs/research/ideas-ledger.md` section A), `docs/research/peering-research.md`, `docs/research/discovery-research.md` and two independent reviews (`notes/review-discovery-d2.md`, `notes/review-discovery-d3.md`). Its section 0 maps every finding of the second review to how draft 4 handles it. Draft 4 adds: Tor budgets per connection, served in turn; a pending pool for beacons ahead of a node's tip; an arrival-rate churn cap and a tombstone cap; a (host, sequence) pool cursor, scout requests and `max_entries`; no positive peer scoring. Summary:
 
 | Part | What | Carrier | `discovery.md` |
 |---|---|---|---|
@@ -211,7 +211,7 @@ Kind ranges are in section 10.1. "Acceptance rules" names the checks a receiver 
 | Errors and notices | 1, 2 | BOLT 1 `warning` for every refusal; reason codes inside messages (section 10.6); 3 to 15 reserved for a factory-level notice | Nothing that touches money depends on one; reasons are never shown as fact | `messages.md` 1, 6.7, 6.10, 7.9; Slice 1 | Reason codes specified; notice kinds reserved |
 | Session (lobby) | 2 | 16 to 34; 35 to 63 | `terms.md` 7 on every terms record; freeze (`terms.md` 8); C8a | `messages.md` 6, `terms.md`; Slice 1 | Specified 16 to 34. Reserved: invitations, identity proofs, chat, rule-change requests, standby seats, carry-over, deposits |
 | Signing round | 2 | 64 to 80; 82 to 127 | S1 to S5; C1 to C8a, C10, C12; host H1, H2, H8, H11 to H13 | `signing-round.md`, `messages.md` 7; Slice 1 | Specified for creation. Reserved: evidence and challenge, `all_partials` for the last tier of a layer update, per-member digests (`signing-round.md` 14.3) |
-| Discovery | 2, 5 | 129 to 147 odd, 153, 155 specified; 149, 151, 157, 159 reserved; even kinds not used; never refused (`messages.md` 4.1) | `discovery.md` 5.2 (L1 to L8), 5.3 (W1 to W7), 6.4 to 6.5 (H1 to H6, Q1 to Q5), 8.3 (B1 to B10), 8.4 (orphans), 8.7 (Reject and Ignore), 9.2 (A1 to A7), 10.1 (I1 to I6), 11 (S1 to S8, G1 to G7, PL1 to PL6); then `terms.md` 7; nothing in a listing is trusted | `discovery.md`; design C in the signet demo (its 14.1), design D before mainnet (its section 18) | Specified (draft 3), not reviewed |
+| Discovery | 2, 5 | 129 to 147 odd, 153, 155 specified; 149, 151, 157, 159 reserved; even kinds not used; never refused (`messages.md` 4.1) | `discovery.md` 5.2 (L1 to L8), 5.3 (W1 to W7), 6.4 to 6.5 (H1 to H6, Q1 to Q5), 8.3 (B1 to B10), 8.4 (orphans and pending), 8.7 (Reject and Ignore), 9.2 (A1 to A7), 10.1 (I1 to I6), 11 (S1 to S8, G1 to G7, PL1 to PL6); then `terms.md` 7; nothing in a listing is trusted | `discovery.md`; design C in the signet demo (its 14.1), design D before mainnet (its section 18) | Specified (draft 4), not reviewed |
 | Creation | 3 | Uses 16 to 80; 81 `factory_funded`; 256 to 319 for life-cycle messages after creation | C1 to C12; H1, H2, H8, H11 to H13 | `signing-round.md` 4.1, 15; `terms.md` 4; Slice 1 | Specified |
 | Payments | 4 | BOLT 2, **not ours** | C13; C9; `safety-rule.md` 7 (accepting a payment); early warning | `channel.md`; Slice 2 | Not ours; `channel.md` to write |
 | Channel opening and factory change | 4 | bLIP-56 TLV 65600 and submessages 6 to 14 through the adapter; native equivalents 1024 to 1151 | `safety-rule.md` 4.1 rules 1 to 5, 4.3; C6; C9 | `channel.md`; opening Slice 2, change M4 | Reserved |
@@ -305,7 +305,7 @@ The same procedure applies to our custom type 52791: checked against the bLIP 2 
 | TB | Byte-identical tree transactions for each shape and member count, built by the reference | 3 | `terms.md` 4.2 build-server table (partial) | Partial |
 | S | A hostile-host suite: one refused proposal per check in `safety-rule.md`, and the honest case accepted | 3 | Test lists in `safety-rule.md` 13, `messages.md` 12 | Listed as tests; **proposed** to publish as portable cases |
 | CH | Taproot channel vectors (the BOLT's own) plus opening on a leaf and the change flow | 4 | — | Open |
-| D0 to D23 | Candidate numbers, coin anchors (plain and BIP 86), listing and withdrawal, queries on both carriers, Nostr content, beacon and beacon withdrawal, filter, refusals, `overlay_init` (store and client), pool request, answer and continuation, `listing_not_held`; and, run in arrival order by a reference reader, the cap, the one-sequence tie-break, churn, tombstones, view-dependent ignores and the listing reader (D1 and D3 withdrawn) | 5 | `discovery.md` 20 | Specified (draft 3); channel anchor and host list entry open |
+| D0 to D27 | Candidate numbers, coin anchors (plain and BIP 86), listing and withdrawal, queries on both carriers, Nostr content, beacon and beacon withdrawal, filter, refusals, `overlay_init` (store and client), pool request, answer and continuation, `listing_not_held`; and, run in arrival order by a reference reader, the cap, the one-sequence tie-break, churn, tombstones, view-dependent ignores, back-dated sequences, second offers to a node behind, pool paging and scouts, Tor budgets, and the listing reader (D1 and D3 withdrawn) | 5 | `discovery.md` 20 | Specified (draft 4); channel anchor and host list entry open |
 | J1 to J4 | The journal file | — | `journal.md` 11 | Gazpacho-internal; not conformance |
 
 ### 9.2 Documents each layer needs to be portable
@@ -317,7 +317,7 @@ The same procedure applies to our custom type 52791: checked against the bLIP 2 
 | 2 | `terms.md`; `messages.md` 6, 7 | Lobby and seat states (`messages.md` 6); round states per tier (`signing-round.md` 7) | `terms.md` 7 to 9; S1 to S5; fault table (`signing-round.md` 9) | T1 to T6, M1 | Evidence encoding; R, N, E vectors; `discovery.md` request part |
 | 3 | `signing-round.md` 4.1 and 15 (creation profile); `terms.md` 4 | Creation states (`signing-round.md` 7) | `safety-rule.md` | T7, TB (partial) | `tree.md`, `sale.md`, `layer-update.md`, `move.md`, `close.md`, `exit.md`, `payout.md`, `watch.md`, `backup.md`; S suite |
 | 4 | BOLT 2, 3, 5, taproot extension; bLIP-56 | BOLT 2; change flow | `safety-rule.md` 4; C9; C13 | BOLT's; CH | `channel.md` |
-| 5 | `discovery.md`; terms record (`terms.md`) | Beacon acceptance and relay (`discovery.md` 8); overlay links (10); store nodes, fetch order and pool (11) | `discovery.md` 5.2, 5.3, 6, 8.3, 8.4, 8.7, 9, 10.1, 11; `terms.md` 7 | D0 to D23 | Channel-anchor and host-list vectors |
+| 5 | `discovery.md`; terms record (`terms.md`) | Beacon acceptance and relay (`discovery.md` 8); overlay links (10); store nodes, fetch order and pool (11) | `discovery.md` 5.2, 5.3, 6, 8.3, 8.4, 8.7, 9, 10.1, 11; `terms.md` 7 | D0 to D27 | Channel-anchor and host-list vectors |
 
 ## 10. Number ranges
 
@@ -331,7 +331,7 @@ Every number Slice 1 uses is unchanged. Each range holds odd and even kinds; eve
 | 1 to 15 | 1 | Envelope utilities and factory-level notices | 2 `part` | 2 specified; 1, 3 to 15 reserved |
 | 16 to 63 | 2 | Session (lobby) | 16 `hello`, 18 `terms_offer`, 20 `join`, 22 `ready`, 24 `unready`, 26 `leave`, 28 `lobby_status`, 30 `ready_check`, 32 `start`, 34 `cancel` | Specified; 35 to 63 reserved |
 | 64 to 127 | 2 | Signing round | 64 `round_propose`, 66 `round_nonces`, 68 `round_all_nonces`, 70 `round_partial_sigs`, 72 `round_tier_result`, 74 `round_complete`, 76 `round_ack`, 78 `round_abort`, 80 `round_status_request`; 81 `factory_funded` (a layer 3 hint, numbered here in Slice 1) | Specified; 82 to 127 reserved |
-| 128 to 159 | 2, 5 | Discovery (`discovery.md` 6.3) | 129 `lobby_index_request`, 131 `lobby_index`, 133 `listing_request`, 135 `listing`, 137 `host_list_request`, 139 `host_list`, 141 `lobby_beacon`, 143 `beacon_filter`, 145 `pool_request`, 147 `pool`, 153 `overlay_init` (lobby store flag), 155 `listing_not_held` | Specified (draft 3). Reserved without format: 149 `beacon_summary`, 151 store-to-store sync, 157 bundled host proofs, 159 a future beacon version. Even kinds not used; discovery kinds are ignored, never refused (`messages.md` 4.1) |
+| 128 to 159 | 2, 5 | Discovery (`discovery.md` 6.3) | 129 `lobby_index_request`, 131 `lobby_index`, 133 `listing_request`, 135 `listing`, 137 `host_list_request`, 139 `host_list`, 141 `lobby_beacon`, 143 `beacon_filter`, 145 `pool_request`, 147 `pool`, 153 `overlay_init` (lobby store flag), 155 `listing_not_held` | Specified (draft 4). Reserved without format: 149 `beacon_summary`, 151 store-to-store sync, 157 bundled host proofs, 159 a future beacon version. Even kinds not used; discovery kinds are ignored, never refused (`messages.md` 4.1) |
 | 160 to 255 | 2 | Further group coordination (host proofs, identity proofs, deposits) | — | Reserved |
 | 256 to 319 | 3 | Factory life cycle after creation (status on reconnect, wind-down notices) | — | Reserved |
 | 320 to 383 | 3 | Leaf change and liquidity sales | — | Reserved, 1.1.0 |
@@ -458,7 +458,7 @@ Nothing below is to be posted, opened or commented on without the owner. Drafts 
 ## 13. Open points
 
 1. **`transport.md`** does not exist yet; this map relies on `messages.md` section 2 until it does.
-2. **Discovery** is specified in `discovery.md` draft 3 (section 7); its numbers are candidates and its open points are its section 22.
+2. **Discovery** is specified in `discovery.md` draft 4 (section 7); its numbers are candidates and its open points are its section 22.
 3. **The kind ranges of section 10.1** are this map's proposal. They keep every Slice 1 number and must be confirmed by the owner and agreed with the SuperScalar session.
 4. **Records 241 and up** never used (10.2), and the 2 to 63 / 64 to 239 split for new records in layer 2 messages (4.1): proposed.
 5. **Purpose 6** for a recovery close: proposed; the recovery procedure is not specified (C12).
