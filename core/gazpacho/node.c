@@ -9,8 +9,10 @@ gz_status_t gz_node_init(gz_node_t *node, const gz_ports_t *ports)
     if (!node || !ports || !ports->random.fill || !ports->clock.now_ms) return GZ_ERR_ARGUMENT;
     node->ports = *ports;
     node->next_serial = 1;
-    node->start_done_to = node->start_resent_to = 0;
+    node->start_done_to = 0;
     node->start_recording = 0;
+    node->start_fenced = 0;
+    node->start_fence = (gz_batch_id_t){0, 0};
     node->awaiting_head = node->n_awaiting = 0;
     return GZ_OK;
 }
@@ -136,8 +138,11 @@ static int id_after(gz_batch_id_t a, gz_batch_id_t b)
 
 /* Walk storage once, calling `visit` for every record. On the way, check that
  * storage is the journal the runner's contract describes: identifiers
- * strictly increasing, none from an incarnation later than the one starting.
- * Anything else means the incarnation duty or the journal was broken. */
+ * strictly increasing, none from an incarnation later than the one starting,
+ * and, once the start has taken its fence, no batch of an earlier incarnation
+ * after the fence (storage settles what an earlier program left before the
+ * start's first step: ports.h). Anything else means the incarnation duty,
+ * the journal or the fence was broken. */
 static gz_status_t for_each_record(const gz_storage_reader_t *storage,
                                    gz_status_t (*visit)(const gz_record_t *, gz_node_t *, chunk_t *, gz_action_list_t *),
                                    gz_node_t *node, chunk_t *chunk, gz_action_list_t *out)
@@ -147,6 +152,8 @@ static gz_status_t for_each_record(const gz_storage_reader_t *storage,
     storage->rewind(storage->ctx);
     while (storage->next(storage->ctx, &batch)) {
         if (!id_after(previous, batch.id) || batch.id.sequence == 0 || batch.id.incarnation > storage->incarnation)
+            return GZ_ERR_CORRUPT;
+        if (node->start_fenced && batch.id.incarnation < storage->incarnation && id_after(node->start_fence, batch.id))
             return GZ_ERR_CORRUPT;
         previous = batch.id;
         for (size_t i = 0; i < batch.n_records; i++) {
@@ -195,14 +202,6 @@ static gz_status_t resend(const gz_record_t *record, gz_node_t *node, chunk_t *c
     return GZ_OK;
 }
 
-/* Is there a stored ping beyond `start_resent_to`? (Flagged in more_beyond.) */
-static gz_status_t beyond_resent(const gz_record_t *record, gz_node_t *node, chunk_t *chunk, gz_action_list_t *out)
-{
-    (void)out;
-    if (is_ping_record(record) && get_u64(record->bytes.data + 16) > node->start_resent_to) chunk->more_beyond = 1;
-    return GZ_OK;
-}
-
 /* Look at the next chunk of stored pings after `start_done_to`, and note
  * which of them storage records as sent. */
 static gz_status_t next_chunk(gz_node_t *node, const gz_storage_reader_t *storage, chunk_t *chunk)
@@ -214,8 +213,8 @@ static gz_status_t next_chunk(gz_node_t *node, const gz_storage_reader_t *storag
 }
 
 /* A resending step: resend the next chunk's unsent replies. When no chunk is
- * left, switch to recording, remembering how far resending went. Returns the
- * number of replies resent through `*n_done`. */
+ * left, switch to recording. Returns the number of replies resent through
+ * `*n_done`. */
 static gz_status_t resend_step(gz_node_t *node, const gz_storage_reader_t *storage,
                                gz_action_list_t *out, size_t *n_done)
 {
@@ -228,52 +227,26 @@ static gz_status_t resend_step(gz_node_t *node, const gz_storage_reader_t *stora
     if (chunk.n > 0) node->start_done_to = chunk.serial[chunk.n - 1];
     if (!chunk.more_beyond) {
         node->start_recording = 1;
-        node->start_resent_to = node->start_done_to;
         node->start_done_to = 0;
     }
     return GZ_OK;
 }
 
-/* A recording step: save one "sent" record for the next chunk's replies that
- * this start resent, that is, those up to `start_resent_to` still not
- * recorded as sent. A stored ping beyond `start_resent_to` and not recorded
- * as sent became durable after resending had passed: go back to resending
- * from there. Returns through `*n_done` the number recorded, and through
- * `*finished` whether the start is complete. */
+/* A recording step: save one "sent" record for the next chunk's replies not
+ * recorded as sent. The resending pass resent every one of them: storage
+ * gains no ping during the start (the fence, ports.h), so the pings recording
+ * walks are the ones resending walked. Returns through `*n_done` the number
+ * recorded, and through `*finished` whether the start is complete. */
 static gz_status_t record_step(gz_node_t *node, const gz_storage_reader_t *storage,
                                gz_action_list_t *out, size_t *n_done, int *finished)
 {
     chunk_t chunk;
     uint8_t serials[8 * GZ_NODE_START_CHUNK];
     size_t n = 0;
-    gz_status_t st;
-    if (node->start_done_to == 0) {
-        /* Before the pass saves anything: a ping that became durable after
-         * resending passed it, anywhere in storage, sends the start back to
-         * resending now, while no save of this start can hold its reply back.
-         * None can appear once the start's first batch is stored (ports.h). */
-        chunk = (chunk_t){{0}, {0}, 0, 0};
-        st = for_each_record(storage, beyond_resent, node, &chunk, NULL);
-        if (st != GZ_OK) return st;
-        if (chunk.more_beyond) {
-            node->start_recording = 0;
-            node->start_done_to = node->start_resent_to;
-            *n_done = 0;
-            return GZ_OK;
-        }
-    }
-    st = next_chunk(node, storage, &chunk);
+    gz_status_t st = next_chunk(node, storage, &chunk);
     if (st != GZ_OK) return st;
-    for (size_t k = 0; k < chunk.n; k++) {
-        if (chunk.sent[k]) continue;
-        if (chunk.serial[k] > node->start_resent_to) {          /* arrived late: resend it first */
-            node->start_recording = 0;
-            node->start_done_to = node->start_resent_to;
-            *n_done = 0;
-            return GZ_OK;
-        }
-        put_u64(serials + 8 * n++, chunk.serial[k]);
-    }
+    for (size_t k = 0; k < chunk.n; k++)
+        if (!chunk.sent[k]) put_u64(serials + 8 * n++, chunk.serial[k]);
     if (n > 0) {
         st = add_record(out, GZ_RECORD_TEST_PING_SENT, serials, 8 * n);
         if (st != GZ_OK) return st;
@@ -314,8 +287,17 @@ gz_status_t gz_node_start(gz_node_t *node, const gz_storage_reader_t *storage,
                           gz_action_list_t *actions_out, int *more)
 {
     if (!node || !storage || !storage->next || !storage->rewind || !actions_out || !more) return GZ_ERR_ARGUMENT;
+    if (!node->start_fenced) {
+        /* The first call: storage now holds all an earlier program will ever
+         * have (ports.h). Remember its last batch; any later one fails the start. */
+        gz_stored_batch_t batch;
+        storage->rewind(storage->ctx);
+        while (storage->next(storage->ctx, &batch))
+            if (batch.id.incarnation < storage->incarnation) node->start_fence = batch.id;
+        node->start_fenced = 1;
+    }
     size_t count_before = actions_out->count, used_before = actions_out->used, awaiting_before = node->n_awaiting;
-    uint64_t done_before = node->start_done_to, resent_before = node->start_resent_to, serial_before = node->next_serial;
+    uint64_t done_before = node->start_done_to, serial_before = node->next_serial;
     int recording_before = node->start_recording, more_out = 1;
     gz_status_t st = start_step(node, storage, actions_out, &more_out);
     if (st != GZ_OK) {
@@ -323,7 +305,6 @@ gz_status_t gz_node_start(gz_node_t *node, const gz_storage_reader_t *storage,
         actions_out->used = used_before;
         node->n_awaiting = awaiting_before;
         node->start_done_to = done_before;
-        node->start_resent_to = resent_before;
         node->start_recording = recording_before;
         node->next_serial = serial_before;
     }

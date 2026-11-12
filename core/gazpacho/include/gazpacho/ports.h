@@ -79,20 +79,18 @@ typedef struct {
  * refuses storage that holds a later one, or whose identifiers do not
  * strictly increase (GZ_ERR_CORRUPT).
  *
- * STORAGE MAY CHANGE DURING A START, between two calls of gz_node_start, but
- * only by gaining batches, never by losing or altering one:
- *   - batches the starting node's own runner hands over, as they become
- *     durable;
- *   - batches an earlier program handed over before it stopped, which a slow
- *     storage layer may complete late. They take their place in the journal
- *     before any batch of the new incarnation. Every such batch must be
- *     settled, durable or gone for good, before storage accepts the first
- *     batch of the new incarnation, and so at the latest when the start
- *     finishes. A storage layer that keeps its journal in order does this
- *     anyway: the new program's first batch goes after everything the old
- *     one left. Without it, a reply the start resends for such a batch
- *     would wait behind the start's own saves, and the start could not save
- *     its records last. */
+ * THE FENCE. Before the reader is handed to the first gz_node_start call,
+ * the storage layer settles everything an earlier program handed over and
+ * did not see confirmed: each such batch is durable or gone for good, and
+ * none can complete later. (journal.md section 5 does this: it scans, cuts
+ * the torn tail and writes the new incarnation's entry before anything is
+ * read.) From then on, during the start and after it, storage changes only
+ * by gaining the batches the starting node's own runner hands over, as they
+ * become durable; never by gaining an earlier program's batch, losing one or
+ * altering one. A node refuses storage that gains a batch of an earlier
+ * incarnation after its start's first call (GZ_ERR_CORRUPT). Without the
+ * fence, a ping that completed between two steps could be recorded as
+ * answered by a start that never resent its reply. */
 typedef struct {
     int (*next)(void *ctx, gz_stored_batch_t *batch);
     void (*rewind)(void *ctx);

@@ -4,30 +4,43 @@
 # What a pass proves, for the object code as built:
 #   1. It calls nothing outside itself except the freestanding memory routines
 #      memcpy, memcmp, memset, memmove, named exactly, or (in a --sanitized
-#      build only) the memory checkers' own helpers. Those exact four names,
-#      and their bounds-checked forms __memcpy_chk, __memset_chk, __memmove_chk,
-#      are the whole allowance: __stpcpy_chk, memfrob or any other mem* or
-#      __*_chk is an outside call. A call to fopen, time, getenv, malloc,
-#      printf or anything else is an undefined symbol.
-#   2. It has no weak references and no ifunc: a weak symbol is a way to call
-#      something outside "only if it is there", and an ifunc runs a resolver
-#      before main to choose what a symbol means.
+#      build only) the memory checkers' instrumentation entry points, listed
+#      exactly below. Those exact four names, and their bounds-checked forms
+#      __memcpy_chk, __memset_chk, __memmove_chk, are the whole allowance:
+#      __stpcpy_chk, memfrob or any other mem* or __*_chk is an outside call,
+#      and so is any other function of the checkers' runtimes (a query such as
+#      __sanitizer_get_current_allocated_bytes, a printer such as
+#      __sanitizer_print_stack_trace), in every build. A call to fopen, time,
+#      getenv, malloc, printf or anything else is an undefined symbol.
+#   2. It has no weak references, no common symbols and no ifunc: a weak symbol
+#      is a way to call something outside "only if it is there", a common
+#      symbol is a global variable the linker allocates, and an ifunc runs a
+#      resolver before main to choose what a symbol means. In a --sanitized
+#      build the checkers' own weak and common symbols on the list are allowed.
 #   3. It has no writable, mutable data: every section the loader may write to
 #      is either empty or holds only relocated-then-read-only constants
-#      (.data.rel.ro, the GOT). A non-empty .data, .bss, .tdata, .tbss, a
-#      section of one's own, or an .init_array/.fini_array (code that runs
-#      around main) fails. Nothing can carry state from one call, or one
+#      (.data.rel.ro, the GOT). A non-empty .data, .data.rel, .bss, .tdata,
+#      .tbss, a section of one's own, or an .init_array/.fini_array (code that
+#      runs around main) fails. Nothing can carry state from one call, or one
 #      simulated crash, to the next.
 #   4. On x86 it contains none of the instructions that reach the operating
-#      system, the machine's state, its clock or its random source directly,
-#      wherever on the disassembly line they appear (so a prefixed or
-#      hand-assembled form is caught too). The list is below; it also refuses
-#      any access through a segment register other than the compiler's own
-#      stack-protector read, any call or jump to a fixed absolute address, and
-#      any x87 instruction or use of an x87, MMX, SSE, AVX or mask register.
-#   5. With --sources, after the C preprocessor has run (so token pasting and
-#      header includes are resolved): none of the core's translation units
-#      contains inline assembly.
+#      system, the machine's state, its clock (including the waits that end
+#      at a time-stamp deadline) or its random source directly, wherever on
+#      the disassembly line they appear (so a prefixed or hand-assembled form
+#      is caught too). The list is below; it also refuses any access through
+#      a segment register other than the compiler's own stack-protector read,
+#      any call or jump to a fixed absolute address, and any x87 instruction
+#      or use of an x87, MMX, SSE, AVX or mask register. Every thread-local
+#      reference must name one of the checkers' thread-local variables.
+#   5. With --sources: none of the core's translation units contains inline
+#      assembly (`asm`, `__asm`, `__asm__`) or a checker's name, after the C
+#      preprocessor has run (so token pasting and header includes are
+#      resolved). Each unit is preprocessed with the flags given, and again
+#      as a release build (-O2 -DNDEBUG), as a debug build (-O0 -UNDEBUG) and
+#      as a sanitizer build (-fsanitize=address,undefined), so code behind
+#      NDEBUG, __OPTIMIZE__ or a sanitizer's macro is seen too. The unit and
+#      the project headers it includes must not test for a sanitizer at all
+#      (__SANITIZE_*, __has_feature, __has_extension).
 #
 # WHAT IT DOES NOT CATCH, and why:
 #   - An address used as data (of a local, a function, or the return address),
@@ -44,15 +57,16 @@
 #   - An integer-to-function-pointer cast reached through -pedantic, and
 #     variable-length arrays: kept out by the compiler (-std=c11 -pedantic
 #     -Wvla -Werror), which refuses them.
+#   - A pointer in .data.rel.ro written through a cast: writable at run time
+#     only where the program is linked without RELRO.
+#   - State left in dead stack memory and read back by a later call.
 #   - Non-determinism of other kinds, and anything on machines other than x86
 #     beyond points 1 to 3 and 5.
-#   - In a --sanitized build the writable-section test is skipped (the checkers
-#     add their own), and the checkers' own names (__asan_*, __ubsan_*,
-#     __sanitizer_*, __msan_*, and the __start_/__stop_asan_* section bounds)
-#     are allowed as outside, weak or data symbols. MemorySanitizer keeps its
-#     state in thread-local variables reached through %fs, so there the
-#     segment-register test is replaced by a narrower one: every thread-local
-#     reference in the object must name a checker. The other tests still run.
+#   - In a --sanitized build the writable-section and init/fini tests are
+#     skipped (the checkers add their own sections, unnamed), and %fs is
+#     allowed at offset 0 or through a register, the forms MemorySanitizer
+#     uses for its thread-local shadows, only when every thread-local
+#     reference names one of its variables. %gs is refused there as well.
 #
 # usage: check-core-isolation.sh [--sanitized] LIBRARY-OR-OBJECT
 #            [--sources COMPILER "CFLAGS" FILE...]
@@ -66,22 +80,35 @@ if [ "${1:-}" = "--sources" ]; then shift; cc="$1"; cflags="$2"; shift 2; else s
 found=0
 report() { echo "FOUND $1: $2"; found=1; }
 
+# The checkers' instrumentation entry points, by exact name or numbered family:
+# what gcc and clang emit for the core under AddressSanitizer with
+# UndefinedBehaviorSanitizer, and under MemorySanitizer. Nothing else of their
+# runtimes. Allowed only in a --sanitized build.
+checker_runtime='__asan_init|__asan_version_mismatch_check_v[0-9]+|__asan_(un)?register_(elf_)?globals'
+checker_runtime="$checker_runtime|__asan_handle_no_return|__asan_option_detect_stack_use_after_return"
+checker_runtime="$checker_runtime|__asan_report_(load|store)([0-9]+|_n)(_noabort)?|__asan_(load|store)([0-9]+|N)(_noabort)?"
+checker_runtime="$checker_runtime|__asan_stack_(malloc|free)_[0-9]+|__asan_set_shadow_[0-9a-f][0-9a-f]|__asan_mem(cpy|set|move)"
+checker_runtime="$checker_runtime|__asan_alloca_poison|__asan_allocas_unpoison|__asan_shadow_memory_dynamic_address"
+checker_runtime="$checker_runtime|__(start|stop)_asan_globals|___asan_globals_registered|__ubsan_handle_[a-z0-9_]+"
+checker_runtime="$checker_runtime|__msan_init|__msan_chain_origin|__msan_set_alloca_origin(_with_descr|4)?|__msan_(un)?poison_alloca"
+checker_runtime="$checker_runtime|__msan_warning(_noreturn|_with_origin|_with_origin_noreturn)?|__msan_maybe_warning_[0-9]+"
+checker_runtime="$checker_runtime|__msan_maybe_store_origin_[0-9]+|__msan_mem(cpy|set|move)|__msan_track_origins|__msan_keep_going"
+checker_tls='__msan_(param|retval|va_arg)(_origin)?_tls|__msan_va_arg_overflow_size_tls'
+is_checker() { [ "$sanitized" -eq 1 ] && printf '%s\n' "$1" | grep -Eqx "$checker_runtime|$checker_tls"; }
+
 # A symbol is an allowed outside reference only if it is one of these exact
-# names (plus the checkers' helpers in a sanitized build).
+# names (plus the checkers' entry points in a sanitized build).
 allowed_outside() {
     case "$1" in
         memcpy|memcmp|memset|memmove) return 0 ;;
         __memcpy_chk|__memset_chk|__memmove_chk) return 0 ;;
         __stack_chk_fail|_GLOBAL_OFFSET_TABLE_) return 0 ;;
     esac
-    if [ "$sanitized" -eq 1 ]; then
-        case "$1" in __asan_*|__ubsan_*|__sanitizer_*|__msan_*) return 0 ;; esac
-    fi
-    return 1
+    is_checker "$1"
 }
 
 symbols=$(nm "$lib" | awk 'NF >= 2 { print $(NF-1), $NF }')
-defined=$(printf '%s\n' "$symbols" | awk '$1 != "U" && $1 != "w" && $1 != "v" { print $2 }' | sort -u)
+defined=$(printf '%s\n' "$symbols" | awk '$1 != "U" && $1 != "w" && $1 != "v" && $1 != "C" { print $2 }' | sort -u)
 
 for sym in $(printf '%s\n' "$symbols" | awk '$1 == "U" { print $2 }' | sort -u); do
     allowed_outside "$sym" && continue
@@ -90,10 +117,15 @@ for sym in $(printf '%s\n' "$symbols" | awk '$1 == "U" { print $2 }' | sort -u);
 done
 
 for sym in $(printf '%s\n' "$symbols" | awk '$1 == "w" || $1 == "v" || $1 == "W" || $1 == "V" { print $2 }' | sort -u); do
-    if [ "$sanitized" -eq 1 ]; then
-        case "$sym" in __asan_*|__ubsan_*|__sanitizer_*|__msan_*|__start_asan_*|__stop_asan_*) continue ;; esac
-    fi
+    is_checker "$sym" && continue
     report "weak symbol" "$sym"
+done
+
+# A common symbol: a global variable left for the linker to allocate (nm 'C',
+# objdump *COM*). It is in no section, so the data tests below would miss it.
+for sym in $(printf '%s\n' "$symbols" | awk '$1 == "C" { print $2 }' | sort -u); do
+    is_checker "$sym" && continue                       # clang's ASan: ___asan_globals_registered
+    report "common symbol" "$sym"
 done
 
 # An ifunc: nm marks it 'i'. Its code is chosen at load time by a resolver.
@@ -102,17 +134,15 @@ for sym in $(printf '%s\n' "$symbols" | awk '$1 == "i" || $1 == "I" { print $2 }
 done
 
 # Writable, mutable data: an object symbol in a section the loader may write to
-# that is neither the relocated-then-read-only constants nor the GOT. The list
-# is computed first and reported in this shell: a `cmd | while` would set
-# `found` only in a subshell and lose it.
-for name in $(objdump -t "$lib" 2>/dev/null | awk -F'\t' -v san="$sanitized" '
+# that is neither the relocated-then-read-only constants nor the GOT. No name
+# is exempt, in any build. The list is computed first and reported in this
+# shell: a `cmd | while` would set `found` only in a subshell and lose it.
+for name in $(objdump -t "$lib" 2>/dev/null | awk -F'\t' '
         NF >= 2 && index($1, " O ") > 0 {
             nf = split($1, a, " "); sect = a[nf];
             if (sect !~ /^\.(data|bss|tdata|tbss)/) next;
             if (sect ~ /^\.(data\.rel\.ro|got)/) next;
-            split($2, b, " "); name = b[2];
-            if (san == "1" && name ~ /^(__asan_|__ubsan_|__sanitizer_|__msan_)/) next;
-            print name;
+            split($2, b, " "); print b[2];
         }' | sort -u); do
     report "writable data" "$name"
 done
@@ -135,28 +165,38 @@ case "$(uname -m)" in
         # Instructions that reach the OS, the machine's state, its clock or its
         # random source. Matched anywhere on the line (prefixes, hand-assembled
         # bytes shown as a mnemonic), so a disguised form is caught too.
-        banned='syscall|sysenter|sysexit|sysret|swapgs'                      # the operating system
-        banned="$banned|rdtscp?|rdpmc|rdpid"                                 # the clock and the counters
+        banned='syscall|sysenter|sysexit[lq]?|sysret[lq]?|swapgs'            # the operating system
+        banned="$banned|vmcall|vmmcall|vmfunc|enqcmds?"                      # the hypervisor, devices
+        banned="$banned|rdtscp?|rdpmc|rdpid|rdpru"                           # the clock and the counters
+        banned="$banned|tpause|umwait|umonitor"                              # waits until a time-stamp deadline
         banned="$banned|rdrand|rdseed"                                       # the random source
         banned="$banned|cpuid|xgetbv|xsetbv"                                 # what machine am I
         banned="$banned|rd(fs|gs)base|wr(fs|gs)base"                         # the thread pointers
         banned="$banned|xbegin|xend|xabort|xtest"                            # a hardware transaction
         banned="$banned|lsl|lar|sldt|sgdt|sidt|str|smsw|verr|verw"           # the descriptor tables
-        banned="$banned|stmxcsr|vstmxcsr|rdsspq?|incsspq?|rdpkru"            # control and shadow-stack state
+        banned="$banned|stmxcsr|vstmxcsr|rdsspq?|incsspq?|rdpkru|wrpkru"     # control and shadow-stack state
+        banned="$banned|ptwrite[lq]?|f?xsave[a-z0-9]*|f?xrstor[a-z0-9]*"     # the processor trace, machine state
         for insn in $(printf '%s\n' "$code" | grep -Eow "$banned|int +\\\$0x80" | sed 's/ .*//' | sort -u); do
             report "instruction" "$insn"
         done
-        if [ "$sanitized" -eq 0 ]; then
-            if printf '%s\n' "$code" | grep -E '%[fg]s:' | grep -qv '%fs:0x28'; then
+        # Thread-local references, in any build: only the checkers' own.
+        tls=$(objdump -r "$lib" 2>/dev/null |
+              awk '$2 ~ /^R_X86_64_(TPOFF|GOTTPOFF|TLS|DTPOFF|GOTPC32_TLSDESC)/ { print $3 }' |
+              sed 's/[-+]0x[0-9a-f]*$//' | sort -u)
+        for sym in $tls; do
+            if [ "$sanitized" -eq 1 ] && printf '%s\n' "$sym" | grep -Eqx "$checker_tls"; then continue; fi
+            report "thread-local reference" "$sym"
+        done
+        # Segment registers: only the canary read; in a sanitized build also
+        # %fs at offset 0 or through a register, and only when every
+        # thread-local reference is a checker's (tested just above). Every
+        # other line, %gs included, is refused.
+        segs=$(printf '%s\n' "$code" | grep -E '%[fg]s:' | grep -v '%fs:0x28' || true)
+        if [ -n "$segs" ]; then
+            if [ "$sanitized" -eq 0 ] || [ -z "$tls" ] ||
+               printf '%s\n' "$segs" | grep -Ev '%fs:(0x0([^0-9a-fx(]|$)|-?(0x[0-9a-f]+)?\()' | grep -q .; then
                 report "instruction" "segment register access"
             fi
-        else
-            for sym in $(objdump -r "$lib" 2>/dev/null |
-                         awk '$2 ~ /^R_X86_64_(TPOFF|GOTTPOFF|TLS|DTPOFF|GOTPC32_TLSDESC)/ { print $3 }' |
-                         sed 's/[-+]0x[0-9a-f]*$//' | sort -u); do
-                case "$sym" in __asan_*|__ubsan_*|__sanitizer_*|__msan_*) continue ;; esac
-                report "thread-local reference" "$sym"
-            done
         fi
         if printf '%s\n' "$code" | grep -Eq '\$0xffffffffff6[0-9a-f]{5}|\*0x[0-9a-f]{6,}'; then
             report "instruction" "call or jump to a fixed address"
@@ -170,20 +210,40 @@ case "$(uname -m)" in
     *) echo "note: instruction scan skipped on $(uname -m)" ;;
 esac
 
-# The source scan, over the C preprocessor's output, so token pasting and
-# header includes are resolved first. Needs the compiler and the core's flags.
+# The source scan. Each unit is preprocessed four ways (point 5), so token
+# pasting, header includes and code behind NDEBUG, __OPTIMIZE__ or a
+# sanitizer's macro are all resolved first. Needs the compiler and the core's
+# flags. The raw text of the unit and of the project headers it includes is
+# also searched for tests of a sanitizer.
 for src in "$@"; do
-    if [ -n "$cc" ]; then
-        if ! text=$("$cc" $cflags -E -P "$src" 2>/dev/null); then
-            report "source scan" "$src could not be preprocessed with $cc $cflags"
-            continue
-        fi
+    if [ -z "$cc" ]; then
+        texts=$(cat "$src")
     else
-        text=$(cat "$src")
+        texts=""
+        for extra in "" "-O2 -DNDEBUG" "-O0 -UNDEBUG" "-fno-sanitize=all -fsanitize=address,undefined"; do
+            if ! text=$("$cc" $cflags $extra -E -P "$src" 2>/dev/null); then
+                report "source scan" "$src could not be preprocessed with $cc $cflags $extra"
+                continue 2
+            fi
+            texts="$texts
+$text"
+        done
     fi
-    if printf '%s\n' "$text" | grep -Eqw '__asm__|__asm|asm'; then
+    if printf '%s\n' "$texts" | grep -Eqw '__asm__|__asm|asm'; then
         report "inline assembly" "$src"
     fi
+    if printf '%s\n' "$texts" | grep -Eq '\b__(asan|msan|ubsan|tsan|lsan|hwasan|dfsan|sanitizer)_|\b__(start|stop)_asan'; then
+        report "checker name in source" "$src"
+    fi
+    files="$src"
+    if [ -n "$cc" ]; then
+        files=$("$cc" $cflags -MM "$src" 2>/dev/null | tr -d '\\' | sed 's/^[^:]*://') || files="$src"
+    fi
+    for f in $files; do
+        if grep -Eq '__SANITIZE_|__has_feature|__has_extension' "$f"; then
+            report "sanitizer test in source" "$f"
+        fi
+    done
 done
 
 if [ "$found" -ne 0 ]; then

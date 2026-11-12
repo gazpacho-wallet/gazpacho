@@ -10,16 +10,18 @@ failed=0
 x86=0; [ "$(uname -m)" = "x86_64" ] && x86=1
 
 fail() { echo "FAIL: $1"; failed=1; }
-build_case() { "$cc" $flags -I"$dir" -DCASE="$1" -c "$dir/cases.c" -o "$work/case-$1.o" 2>"$work/case-$1.err"; }
+# `extra`: flags added to the core's for one case; `mode`: --sanitized or empty.
+extra=""; mode=""
+build_case() { "$cc" $flags $extra -I"$dir" -DCASE="$1" -c "$dir/cases.c" -o "$work/case-$1.o" 2>"$work/case-$1.err"; }
 
 # The check, run on the object of case $1 (plus cases.c as a source), must
 # print a FOUND line matching $2.
 refuses_object() {
     build_case "$1" || { fail "case $1 did not compile"; cat "$work/case-$1.err"; return; }
-    out=$(sh "$checker" "$work/case-$1.o" --sources "$cc" "$flags -I$dir -DCASE=$1" "$dir/cases.c" 2>&1) &&
-        { fail "case $1 was not refused"; return; }
-    printf '%s\n' "$out" | grep -Eq "^FOUND $2" && echo "ok: case $1 refused for: $2" ||
-        { fail "case $1 not refused for: $2"; printf '%s\n' "$out"; }
+    out=$(sh "$checker" $mode "$work/case-$1.o" --sources "$cc" "$flags $extra -I$dir -DCASE=$1" "$dir/cases.c" 2>&1) &&
+        { fail "case $1 was not refused${mode:+ under $mode}"; return; }
+    printf '%s\n' "$out" | grep -Eq "^FOUND $2" && echo "ok: case $1 refused${mode:+ under $mode} for: $2" ||
+        { fail "case $1 not refused${mode:+ under $mode} for: $2"; printf '%s\n' "$out"; }
 }
 
 echo "-- an object that does several forbidden things at once"
@@ -62,7 +64,23 @@ if [ "$x86" -eq 1 ]; then
     refuses_object 33 "instruction: rdtscp\$"
     refuses_object 34 "instruction: segment register access\$"
     refuses_object 35 "instruction: call or jump to a fixed address\$"
+    refuses_object 38 "thread-local reference: t\$"
+    n=70
+    for insn in lar sidt smsw verr verw xabort xtest rdpkru 'sysexit[lq]?' 'sysret[lq]?' swapgs \
+                tpause umwait umonitor 'ptwrite[lq]?' rdpru vmcall vmmcall xsave xrstor; do
+        refuses_object "$n" "instruction: $insn\$"; n=$((n + 1))
+    done
+    refuses_object 90 "instruction: floating-point or vector register\$"   # x87, which gcc never emits here
 fi
+refuses_object 36 "common symbol: counter\$"
+refuses_object 37 "writable data: p\$"
+refuses_object 39 "outside symbol: __sanitizer_get_current_allocated_bytes\$"
+refuses_object 41 "inline assembly: "
+extra="-fasm -Wno-language-extension-token"; refuses_object 42 "inline assembly: "; extra=""
+refuses_object 43 "inline assembly: "            # seen in the release preprocessing only
+refuses_object 44 "inline assembly: "            # seen in the optimised preprocessing only
+refuses_object 45 "checker name in source: "    # seen in the sanitizer preprocessing only
+refuses_object 45 "sanitizer test in source: "
 refuses_object 20 "writable section: mystate "
 refuses_object 21 "writable (data|section): "
 refuses_object 22 "writable section: .tbss "
@@ -85,27 +103,23 @@ build_case 50 && {
 ' "$out"; }; }
 }
 
-echo "-- a sanitized build exempts the checkers' own names, but not ordinary ones"
+echo "-- a sanitized build allows the checkers' listed entry points, nothing else"
 out=$(sh "$checker" --sanitized "$object" 2>&1) && fail "the sneaky object passed --sanitized" ||
     { printf '%s\n' "$out" | grep -q "^FOUND weak symbol: getenv$" && echo "ok: a weak getenv is still refused under --sanitized" ||
       fail "a weak getenv is not refused under --sanitized"; }
-build_case 24 && {
-    sh "$checker" --sanitized "$work/case-24.o" >/dev/null 2>&1 && echo "ok: case 24 (checker name) passes --sanitized" ||
-        fail "case 24 refused even under --sanitized"
-}
-if [ "$x86" -eq 1 ]; then   # thread-local state of its own is still caught under --sanitized
-    build_case 22 && {
-        out=$(sh "$checker" --sanitized "$work/case-22.o" 2>&1) && fail "case 22 (thread-local) passed --sanitized" ||
-            { printf '%s\n' "$out" | grep -q "^FOUND thread-local reference: " &&
-              echo "ok: case 22 (thread-local) refused under --sanitized for its thread-local reference" ||
-              { fail "case 22 refused under --sanitized, but not for its thread-local reference"; printf '%s\n' "$out"; }; }
-    }
-    build_case 18 && {
-        sh "$checker" --sanitized "$work/case-18.o" >/dev/null 2>&1 &&
-            echo "note: case 18 (%gs read) passes --sanitized, as the segment-register test is replaced there" ||
-            echo "note: case 18 refused under --sanitized"
-    }
+mode="--sanitized"
+refuses_object 24 "writable data: __asan_sneaky\$"                  # a checker's name for ordinary state
+refuses_object 25 "outside symbol: __sanitizer_now\$"
+refuses_object 39 "outside symbol: __sanitizer_get_current_allocated_bytes\$"   # a real runtime function
+if [ "$x86" -eq 1 ]; then
+    refuses_object 22 "thread-local reference: "                    # local-exec thread-local state
+    refuses_object 38 "thread-local reference: t\$"                 # initial-exec thread-local state
+    refuses_object 18 "instruction: segment register access\$"      # %gs
+    refuses_object 34 "instruction: segment register access\$"      # %fs at an offset of its own
+    refuses_object 46 "instruction: segment register access\$"      # %gs, with an allowed thread-local reference
+    refuses_object 47 "instruction: segment register access\$"      # %fs:0x10, with the same
 fi
+mode=""
 build_case 19 && {   # real writable data is still caught: symbol test runs under --sanitized
     sh "$checker" --sanitized "$work/case-19.o" >/dev/null 2>&1 &&
         echo "note: case 19 (nameless .data) passes --sanitized, as the section test is off there" ||
