@@ -732,14 +732,16 @@ static void test_connect_failures(void)
 
 /* ------------------------------------------------ admission (review F1) */
 
-static int raw_socket_from(const char *src, uint16_t port)
+/* src: a source address in host byte order (a second loopback address
+ * stands for another member's machine), or 0 for any. */
+static int raw_socket_from(uint32_t src, uint16_t port)
 {
     struct sockaddr_in a;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;
     if (src) {
-        inet_pton(AF_INET, src, &a.sin_addr);
+        a.sin_addr.s_addr = htonl(src);
         if (bind(fd, (struct sockaddr *)&a, sizeof a) != 0) { close(fd); return -1; }
     }
     a.sin_port = htons(port);
@@ -759,6 +761,8 @@ static int closed_by_host(int fd)
     return r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != ENOTCONN);
 }
 
+#define OTHER_LOOPBACK 0x7f000002u /* the loopback network's second address */
+
 static void no_address_cap(gz_peers_config_t *c) { c->max_per_address = 0; }
 static void three_slots(gz_peers_config_t *c) { c->max_per_address = 0; c->max_conns = 3; }
 
@@ -776,7 +780,7 @@ static void test_admission(void)
     S[0].p = mk(HOST_KEY, 20000, 30000, NULL, no_address_cap);
     S[1].p = mk(MEM_KEY, 20000, 30000, NULL, NULL);
     CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
-    for (i = 0; i < 40; i++) fds[i] = raw_socket_from(NULL, port);
+    for (i = 0; i < 40; i++) fds[i] = raw_socket_from(0, port);
     pump(200);
     CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, NULL, &mc) == GZ_PEERS_OK);
     end = ms() + 5000;
@@ -784,7 +788,7 @@ static void test_admission(void)
         for (i = 0; i < 40; i++)
             if (fds[i] < 0 || closed_by_host(fds[i])) {
                 if (fds[i] >= 0) close(fds[i]);
-                fds[i] = raw_socket_from(NULL, port);
+                fds[i] = raw_socket_from(0, port);
             }
         pump(5);
         for (i = 0; i < S[1].n; i++)
@@ -798,13 +802,13 @@ static void test_admission(void)
     for (i = 0; i < 40; i++) if (fds[i] >= 0) close(fds[i]);
     free_sides();
 
-    /* At most 4 connections from one address: a fifth from 127.0.0.2 is
+    /* At most 4 connections from one address: a fifth from OTHER_LOOPBACK is
      * closed at once, while 127.0.0.1 is still served. */
     S[0].p = mk(HOST_KEY, 20000, 30000, NULL, NULL);
     S[1].p = mk(MEM_KEY, 20000, 30000, NULL, NULL);
     CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
     for (i = 0; i < 5; i++) {
-        fds[i] = raw_socket_from("127.0.0.2", port);
+        fds[i] = raw_socket_from(OTHER_LOOPBACK, port);
         CHECK(fds[i] >= 0);
         pump(50);
     }
