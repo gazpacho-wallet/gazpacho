@@ -129,7 +129,7 @@ Newest first within each area. The date is when the owner decided.
 - Listings carry fixed terms, ranges, size and start time; live details come from the host. Hosts may publish a track record.
 - All four rule profiles ship: Safety, Standard, Starter, Circle. Deposits come in the release after the first.
 - No voting and no vote-to-remove. The host removes people; each member has a personal block list; history is kept locally.
-- Listings and host proofs on Nostr; everything else direct.
+- Discovery over Lightning first, Nostr as an optional annex (12 Nov; `spec/discovery.md` draft 2): one odd feature bit, no host card; a host is whoever sends lobby beacons; beacons relayed among factory-capable nodes; opt-in store nodes serve listings; a pool request for catch-up and light clients. Proofs (anchors) are needed only on Nostr. The demo ships the bit, direct queries and Nostr; beacons and store nodes next. Live state, joining and signing stay direct.
 - The lobby and signing coordination are written so they can become their own library.
 
 ### Hosts

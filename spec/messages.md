@@ -914,7 +914,7 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 
 ## 13. Open points
 
-1. **Feature bit.** None in slice 1. The adapter (section 10) uses bLIP-56's bit 271; whether the native carrier also needs a bit of its own, for discovery, is open.
+1. Closed: **feature bit.** None in slice 1; the adapter (section 10) uses bLIP-56's bit 271. Discovery needs one bit of our own, `factory_capable` (candidate 448/449, sent odd 449), set by every Gazpacho node in `init`; there is no separate hosting bit. Specified in `discovery.md` section 3 (draft 2).
 2. **Custom type collisions** with unregistered experiments: check the list BOLT 1 points to, and consider registering 52791 in bLIP 2.
 3. **Member key derivation path** per lobby (contribution key, factory key): belongs in the wallet specification. Its inputs are settled: seed, restore epoch (31 bits, a hardened BIP 32 index) and key index (section 2).
 4. Closed: Slice 1 signs the tree only (`signing-round.md` section 15).

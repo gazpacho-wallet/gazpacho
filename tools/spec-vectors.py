@@ -483,9 +483,18 @@ show("second sync mark (offset %d)" % (off_j3 + len(batch_entry)), mark2)
 assert read_journal(hdr + hdr_check + inc_entry + mark1 + batch_entry + mark2)[0] == "clean"
 
 # ===================================================== discovery.md ==========
-# Vectors D0 to D12 of spec/discovery.md. Every number marked CANDIDATE is a
-# reproducible random pick, not a final number: it must pass the checks of
+# Vectors D0 to D19 of spec/discovery.md draft 2. Every number marked CANDIDATE
+# is a reproducible random pick, not a final number: it must pass the checks of
 # discovery.md section 2 on the day it is chosen.
+#
+# Changed in draft 2: one feature bit (the factory_host pair is gone); the host
+# card is withdrawn (D1 and D3 are no longer printed; its TLV number and Nostr
+# kind are only reserved), so the index record of D5 changed; the beacon carries
+# two proposed filter fields, profile and channel_sat, so D7, D8 and D9 changed.
+# New: D13 overlay_init (lobby store flag), D14 pool_request, D15 pool, D16
+# listing_not_held, D17 equivocation tie-break, D18 orphan pool bounds, D19
+# host_list_request naming keys. D2, D4, D6 (listing content), D10, D11, D12 are
+# unchanged.
 import base64
 
 print("\n\n######## discovery.md ########")
@@ -508,8 +517,10 @@ def h16(s):
 
 
 print("== D0: candidate numbers (NOT final; see discovery.md section 2)")
-# Feature bits: two adjacent pairs from one pick, 256..511 so the feature field
-# stays at most 64 bytes. Pair 1 factory_capable, pair 2 factory_host.
+# Feature bit: one pair, 256..511 so the feature field stays at most 64 bytes.
+# The pick still walks 4-aligned blocks, as in draft 1, so the candidate is
+# unchanged (448/449); the upper pair of the block (draft 1's factory_host) is
+# free again, neither used nor reserved.
 pick = h16("gazpacho feature bits")
 bit_cands = []
 step = 0
@@ -520,22 +531,24 @@ while len(bit_cands) < 3:
         continue
     bit_cands.append(base)
 for base in bit_cands:
-    print(f"  bits: factory_capable {base}/{base + 1}, factory_host {base + 2}/{base + 3};"
-          f" features field with bit {base + 3} set = {(base + 3) // 8 + 1} bytes")
-FC_ODD, FH_ODD = bit_cands[0] + 1, bit_cands[0] + 3
+    print(f"  bit: factory_capable {base}/{base + 1} (advertise {base + 1});"
+          f" features field with bit {base + 1} set = {(base + 1) // 8 + 1} bytes")
+FC_ODD = bit_cands[0] + 1
+assert FC_ODD == 449
 
 # Onion payload types: one block of 64 above 65,600; odd types base+1, +3, ...
+# Draft 2 appends three types; the first six are unchanged.
 pick = h16("gazpacho onion payload types")
 ON_BASE = 65_600 + 64 * (pick % 1024)
 ON = {name: ON_BASE + 1 + 2 * i for i, name in enumerate(
     ["lobby_index_request", "lobby_index", "listing_request", "listing",
-     "host_list_request", "host_list"])}
+     "host_list_request", "host_list", "pool_request", "pool", "listing_not_held"])}
 assert not set(ON.values()) & set(KNOWN_ONION)
 print("  onion payload types:", ", ".join(f"{k} {v}" for k, v in ON.items()))
-# node_announcement TLV for the card: odd, above 65,536.
+# node_announcement TLV for the withdrawn host card: odd, above 65,536. Reserved only.
 CARD_TLV = 65_537 + 2 * h16("gazpacho host card tlv")
 assert CARD_TLV % 2 == 1 and CARD_TLV not in KNOWN_NA_TLV
-print("  node_announcement TLV type for the host card:", CARD_TLV)
+print("  node_announcement TLV type", CARD_TLV, "RESERVED (host card withdrawn in draft 2; never sent)")
 
 
 def nostr_kind(label):
@@ -547,11 +560,17 @@ def nostr_kind(label):
 
 NK_LISTING = nostr_kind("gazpacho nostr listing kind")
 NK_CARD = nostr_kind("gazpacho nostr card kind")
-print(f"  Nostr addressable kinds: listing {NK_LISTING}, host card {NK_CARD}")
+print(f"  Nostr addressable kind: listing {NK_LISTING}; {NK_CARD} RESERVED (was the host card)")
 
-# Native kinds: fixed by discovery.md section 6 in PROTOCOL.md's range 128..159.
+# Native kinds: fixed by discovery.md section 6.3 in PROTOCOL.md's range 128..159.
 K_INDEX_REQ, K_INDEX, K_LISTING_REQ, K_LISTING, K_HL_REQ, K_HL, K_BEACON, K_BFILTER = \
     129, 131, 133, 135, 137, 139, 141, 143
+K_POOL_REQ, K_POOL = 145, 147                 # new in draft 2
+K_SUMMARY, K_STORE_SYNC = 149, 151            # reserved: no format
+K_OVERLAY_INIT, K_NOT_HELD = 153, 155         # new in draft 2
+K_HOST_PROOFS = 157                           # reserved: no format
+assert all(k % 2 == 1 and 128 <= k <= 159 for k in
+           (K_POOL_REQ, K_POOL, K_SUMMARY, K_STORE_SYNC, K_OVERLAY_INIT, K_NOT_HELD, K_HOST_PROOFS))
 
 # ---- shared test values ----------------------------------------------------
 host_pub = compressed(host_sk)
@@ -575,20 +594,8 @@ def onion_payload(ptype, records):
     return bigsize(ptype) + bigsize(len(records)) + records
 
 
-# ---- D1: host card -----------------------------------------------------------
-card = tlv([
-    (2, PROTOCOL_ID),                 # protocol_id
-    (4, u32(TIP)),                    # card_height
-    (6, rng(100_000, 100_000)),       # channel_range
-    (8, u16(0) + u16(24)),            # schedule: 00:00 UTC, every 24 h
-    (10, u8(0b010)),                  # profiles: Standard
-    (11, b"Gazpacho test host"),      # name
-])
-assert len(card) <= 256
-na_tlv = tlv([(CARD_TLV, card)])
-print("\n== D1: host card of the test host")
-show("card", card)
-show(f"as appended to node_announcement (TLV type {CARD_TLV}, candidate)", na_tlv)
+# ---- D1: host card: WITHDRAWN in draft 2 (number reserved, no vector) --------
+print("\n== D1: withdrawn (host card removed in draft 2)")
 
 # ---- D2: coin anchor ---------------------------------------------------------
 anchor_msg = chain + host_pub + coin_outpoint + u32(VALID_UNTIL)
@@ -618,13 +625,8 @@ for v in (2_499, 2_500, 19_999, 20_000, 100_000):
     print(f"  signet anchor of {v} sat backs {allowance(v, 10_000)} open listing(s)")
 assert [allowance(v, 10_000) for v in (2_499, 2_500, 19_999, 20_000, 100_000)] == [0, 1, 1, 2, 4]
 
-# ---- D3: signed card publication (Nostr and host_list) -----------------------
-pub_body = tlv([(2, chain), (4, host_pub), (6, card), (8, anchor)])
-pub_digest = tagged_hash("gazpacho/card", pub_body)
-pub = pub_body + tlv([(240, schnorr_sign(pub_digest, host_sk, AUX))])
-print("\n== D3: signed card publication, with the coin anchor")
-print("card_digest = TH('gazpacho/card', records before 240) =", pub_digest.hex())
-show("signed card", pub)
+# ---- D3: signed card: WITHDRAWN in draft 2 (tag gazpacho/card reserved) ------
+print("\n== D3: withdrawn (signed host card removed in draft 2)")
 
 # ---- D4: the listing for lobby T1 -------------------------------------------
 def listing_record(start, expiry, with_anchor=True, key=host_sk):
@@ -653,7 +655,7 @@ print("largest possible listing:", MAX_LISTING, "bytes")
 # ---- D5: the queries ---------------------------------------------------------
 idx_req = tlv([(2, chain)])
 entry_t1 = outer_digest + u64(1794441600) + u8(2) + u64(100_000)
-idx_body = tlv([(2, chain), (4, host_pub), (6, u32(TIP)), (8, entry_t1), (10, card)])
+idx_body = tlv([(2, chain), (4, host_pub), (6, u32(TIP)), (8, entry_t1)])   # draft 2: no card
 idx_digest = tagged_hash("gazpacho/index", idx_body)
 index = idx_body + tlv([(240, schnorr_sign(idx_digest, host_sk, AUX))])
 idx_msg = tlv([(2, index)])
@@ -684,18 +686,26 @@ print("content (base64 of D4):")
 b64 = base64.b64encode(listing).decode()
 for i in range(0, len(b64), 76):
     print("    " + b64[i:i + 76])
-print(f"card event kind {NK_CARD} (candidate), d =", host_pub.hex(), "; content = base64 of D3,",
-      len(base64.b64encode(pub)), "characters")
+print(f"content: {len(b64)} characters; no card event in draft 2 (kind {NK_CARD} reserved)")
 
 # ---- D7 to D10: lobby beacon -------------------------------------------------
-def beacon(seq, digest=outer_digest, open_h=TIP, deadline_h=TIP + 144, key=host_sk):
-    body = tlv([(2, compressed(key)), (4, digest), (6, u32(open_h)), (8, u32(deadline_h)), (10, u32(seq))])
+# Draft 2 adds two PROPOSED filter fields, copied from the outer record:
+# 12 profile (u8: 1 Safety, 2 Standard, 3 Starter; never 4 Circle) and
+# 14 channel_sat (u64). T1 is Standard with channel_sat 100,000.
+BEACON_PROFILE, BEACON_CHANNEL = 2, 100_000
+
+
+def beacon(seq, digest=outer_digest, open_h=TIP, deadline_h=TIP + 144, key=host_sk,
+           profile=BEACON_PROFILE, channel_sat=BEACON_CHANNEL):
+    body = tlv([(2, compressed(key)), (4, digest), (6, u32(open_h)), (8, u32(deadline_h)),
+                (10, u32(seq)), (12, u8(profile)), (14, u64(channel_sat))])
     bid = tagged_hash("gazpacho/beacon", body)
     return body + tlv([(240, schnorr_sign(bid, key, AUX))]), bid
 
 
 b1, b1_id = beacon(1)
-print("\n== D7: lobby beacon for lobby T1, open", TIP, "deadline", TIP + 144, "sequence 1")
+print("\n== D7: lobby beacon for lobby T1, open", TIP, "deadline", TIP + 144, "sequence 1,",
+      "profile 2 (Standard), channel_sat 100000")
 print("beacon_id = TH('gazpacho/beacon', records before 240) =", b1_id.hex())
 show("beacon records", b1)
 show(f"native lobby_beacon (kind {K_BEACON})", native(K_BEACON, b1))
@@ -711,10 +721,12 @@ bf_off = tlv([(2, chain), (4, u32(0xFFFFFFFF)), (6, u32(0))])
 print("== D10: beacon_filter")
 show(f"native beacon_filter 'everything' (kind {K_BFILTER})", native(K_BFILTER, bf_all))
 show("beacon_filter records 'nothing' (off)", bf_off)
-# Seen-set and active-set bounds, discovery.md section 8.6.
+# Seen-set and held-set bounds, discovery.md section 8.6. F = nodes in the
+# receiver's graph that set the factory bit (draft 2 has no host bit).
 for hosts in (10, 1_000, 10_000):
     entries = min(65_536, max(1_024, 8 * hosts))
-    print(f"  seen-set for {hosts} factory hosts in the graph: {entries} entries, {entries * 40} bytes")
+    print(f"  seen-set for {hosts} factory-capable nodes in the graph: {entries} entries, {entries * 40} bytes")
+print(f"  held set at 1000 hosts: at most 4 x 1000 x {len(b1)} = {4 * 1000 * len(b1)} bytes")
 
 # ---- D12: eviction of a fifth beacon ----------------------------------------
 active = {}
@@ -724,3 +736,112 @@ for s in range(1, 6):
 kept = sorted(active)[-4:]
 assert kept == [2, 3, 4, 5]
 print("== D12: five beacons of one host, sequences 1 to 5, different lobbies: keep 2, 3, 4, 5")
+
+# ---- D13: overlay_init, the lobby store flag ---------------------------------
+oi_store = tlv([(2, chain), (4, u8(1))])
+oi_relay = tlv([(2, chain), (4, u8(0))])
+print(f"\n== D13: overlay_init (kind {K_OVERLAY_INIT}), sent once per connection before any beacon")
+show(f"native overlay_init, store = 1 (kind {K_OVERLAY_INIT})", native(K_OVERLAY_INIT, oi_store))
+show("overlay_init records, store = 0 (relay only)", oi_relay)
+
+# ---- D14: pool_request ---------------------------------------------------------
+PROFILE_BITS_STANDARD = 1 << (2 - 1)          # bit (profile - 1): Standard = bit 1
+pr = tlv([(2, chain), (3, u8(PROFILE_BITS_STANDARD)), (5, rng(50_000, 200_000))])
+pr_all = tlv([(2, chain)])
+print(f"\n== D14: pool_request (kind {K_POOL_REQ}): Standard only, channel_sat 50000..200000")
+show("pool_request records", pr)
+show(f"native pool_request (kind {K_POOL_REQ})", native(K_POOL_REQ, pr))
+show(f"onion payload field, pool_request (type {ON['pool_request']}, candidate)",
+     onion_payload(ON["pool_request"], pr))
+show("pool_request records, no filter (everything)", pr_all)
+assert native(K_POOL_REQ, pr).endswith(pr) and onion_payload(ON["pool_request"], pr).endswith(pr)
+
+
+def read_bigsize(b: bytes, i: int):
+    if b[i] < 0xfd:
+        return b[i], i + 1
+    n = {0xfd: 2, 0xfe: 4, 0xff: 8}[b[i]]
+    return int.from_bytes(b[i + 1:i + 1 + n], "big"), i + 1 + n
+
+
+def read_tlv(b: bytes) -> dict:
+    out, i, last = {}, 0, -1
+    while i < len(b):
+        t, i = read_bigsize(b, i)
+        ln, i = read_bigsize(b, i)
+        assert t > last and i + ln <= len(b)
+        out[t], i, last = b[i:i + ln], i + ln, t
+    return out
+
+
+def beacon_matches(rec: bytes, profiles=None, crange=None) -> bool:
+    """discovery.md section 11.4: the pool filter. rec is a beacon's records."""
+    r = read_tlv(rec)
+    assert sorted(r) == [2, 4, 6, 8, 10, 12, 14, 240]
+    prof, chan = r[12][0], int.from_bytes(r[14], "big")
+    if profiles is not None and not (profiles >> (prof - 1)) & 1:
+        return False
+    if crange is not None and not (crange[0] <= chan <= crange[1]):
+        return False
+    return True
+
+
+assert beacon_matches(b1, PROFILE_BITS_STANDARD, (50_000, 200_000))
+b_starter, _ = beacon(3, digest=hashlib.sha256(b"starter lobby").digest(), profile=3)
+assert not beacon_matches(b_starter, PROFILE_BITS_STANDARD, (50_000, 200_000))
+b_big, _ = beacon(4, digest=hashlib.sha256(b"big lobby").digest(), channel_sat=1_000_000)
+assert not beacon_matches(b_big, PROFILE_BITS_STANDARD, (50_000, 200_000))
+print("  filter check: D7 matches; a Starter beacon and a 1,000,000-sat beacon do not")
+
+# ---- D15: pool answer -----------------------------------------------------------
+pool = tlv([(2, chain), (4, u16(len(b1)) + b1)])
+print(f"\n== D15: pool (kind {K_POOL}) answering D14 with the one matching beacon, D7; no 'next' record")
+show("pool records", pool)
+print(f"native pool {len(native(K_POOL, pool))} bytes; onion payload field "
+      f"{len(onion_payload(ON['pool'], pool))} bytes")
+per_entry = 2 + len(b1)
+print(f"  one entry = {per_entry} bytes; a 30,000-byte onion page holds {(30_000 - 34 - 4 - 35) // per_entry}"
+      f" beacons; a 60,000-byte native page {(60_000 - 34 - 4 - 35) // per_entry}")
+
+# ---- D16: listing_not_held ---------------------------------------------------------
+nh = tlv([(2, chain), (4, outer_digest)])
+print(f"\n== D16: listing_not_held (kind {K_NOT_HELD}): a store peer does not hold T1's listing")
+show(f"native listing_not_held (kind {K_NOT_HELD})", native(K_NOT_HELD, nh))
+
+# ---- D17: equivocation: two valid beacons, one host, one sequence -----------
+bx, bx_id = beacon(1, digest=hashlib.sha256(b"lobby 2").digest())
+keep = min(b1_id, bx_id)
+print("\n== D17: equivocation: D7 and a beacon for lobby sha256('lobby 2'), both sequence 1")
+print("  other beacon_id =", bx_id.hex())
+print("  kept everywhere (lower beacon_id):", "D7" if keep == b1_id else "the other", keep.hex())
+
+
+# ---- D18: orphan pool bounds -------------------------------------------------
+def orphan_pool(arrivals, per_link=8, total=64):
+    """discovery.md section 8.4. arrivals: list of (time_s, link). Returns the
+    pool as {link: [times]} after eviction (oldest from the link holding most)."""
+    pool = {}
+    for t, link in arrivals:
+        pool = {l: [x for x in ts if t - x < 1_200] for l, ts in pool.items()}   # 20 minutes
+        pool.setdefault(link, []).append(t)
+        if len(pool[link]) > per_link:
+            pool[link].pop(0)
+        while sum(len(v) for v in pool.values()) > total:
+            worst = max(pool, key=lambda l: (len(pool[l]), -min(pool[l])))
+            pool[worst].pop(0)
+    return pool
+
+
+p = orphan_pool([(i, "a") for i in range(10)])
+assert len(p["a"]) == 8 and p["a"][0] == 2
+p = orphan_pool([(i, l) for i, l in enumerate([f"l{k}" for k in range(9) for _ in range(8)])])
+assert sum(len(v) for v in p.values()) == 64
+p20 = orphan_pool([(0, "a"), (1_199, "b"), (1_200, "b")])
+assert "a" not in p20 or p20["a"] == []
+print("\n== D18: orphan pool: 10 orphans on one link keep the last 8; 72 orphans over 9 links keep 64;"
+      " an orphan 20 minutes old is gone")
+
+# ---- D19: host_list_request naming keys ---------------------------------------
+hlr = tlv([(2, chain), (5, host_pub)])
+print(f"\n== D19: host_list_request (kind {K_HL_REQ}) asking only for the test host")
+show(f"native host_list_request (kind {K_HL_REQ})", native(K_HL_REQ, hlr))

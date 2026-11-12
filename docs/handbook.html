@@ -629,7 +629,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Listings carry fixed terms, ranges, size and start time; live details come from the host. Hosts may publish a track record.</li>
 <li>All four rule profiles ship: Safety, Standard, Starter, Circle. Deposits come in the release after the first.</li>
 <li>No voting and no vote-to-remove. The host removes people; each member has a personal block list; history is kept locally.</li>
-<li>Listings and host proofs on Nostr; everything else direct.</li>
+<li>Discovery over Lightning first, Nostr as an optional annex (12 Nov; <code>spec/discovery.md</code> draft 2): one odd feature bit, no host card; a host is whoever sends lobby beacons; beacons relayed among factory-capable nodes; opt-in store nodes serve listings; a pool request for catch-up and light clients. Proofs (anchors) are needed only on Nostr. The demo ships the bit, direct queries and Nostr; beacons and store nodes next. Live state, joining and signing stay direct.</li>
 <li>The lobby and signing coordination are written so they can become their own library.</li>
 </ul>
 <h4>Hosts</h4>
@@ -1156,7 +1156,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>A lobby, like a game server. <strong>Start rule:</strong> a target, a minimum and a deadline. Reaching the target starts at once; at the deadline it starts if the minimum is met, and otherwise quits or carries members over.</li>
 <li>Gathering is long; signing is short and automatic within each member's conditions.</li>
 <li>A member's conditions are locked in, and are checked against the real tree at signing.</li>
-<li>Listed on Nostr or unlisted; open or by invitation (QR codes).</li>
+<li>Listed or unlisted; open or by invitation (QR codes). A listing is one signed record, the same bytes on every path (<code>spec/discovery.md</code> draft 2): asked of the host over Lightning; announced by a small signed beacon relayed among factory-capable nodes and served by opt-in store nodes; and, optionally, on Nostr. One odd feature bit marks a factory-capable node; a host is whoever sends beacons. The signet demo ships the bit, direct queries and Nostr; beacons and store nodes come next.</li>
 <li>No voting. The host removes people; each member has a personal block list; history is kept locally.</li>
 <li>Host switches for names, chat and rule-change requests. Optional self-identification. Identity is new per lobby by default.</li>
 <li>Four rule profiles: Safety, Standard, Starter, Circle.</li>

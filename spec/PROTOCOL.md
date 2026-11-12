@@ -17,7 +17,7 @@ Documents it maps (drafts as of 2026-11-12; the five Slice 1 specifications are 
 | `safety-rule.md` | The checks a member (and a host) runs before it signs. The acceptance rules of this map point here |
 | `journal.md` | Gazpacho's storage. **Not part of the shared protocol** (section 9) |
 | `notes/channel-groundwork.md` | Groundwork for the channel specification (`channel.md`, not written) |
-| `discovery.md` | Discovery: feature bits, host card, listing, queries, lobby beacon and overlay, anchors, Nostr annex (section 7) |
+| `discovery.md` | Discovery: the feature bit, listing, queries, lobby beacon, overlay links, store nodes and the pool request, anchors, overlay peering (informative), Nostr annex (section 7) |
 | `notes/discovery-research.md` | Research behind `discovery.md` |
 
 Words: **host** is the party that funds and coordinates (the SuperScalar papers say LSP); **member** is a party with a channel in the factory (the papers say client). "Specified" means a draft exists that fixes the bytes. "Reserved" means the numbers are kept and nothing else.
@@ -78,7 +78,7 @@ The owner would like channel factories to become a core, even-typed part of Ligh
 |---|---|---|---|---|
 | A. Now (Slice 1, 1.0.0) | Native | 52791, odd custom type | None. A node that does not speak it ignores it | Specified |
 | B. Peer speaks bLIP-56 | Adapter | 32800, even, `factory_piggyback` | Feature bit 271 (or compulsory 270) and our id in `supported_factory_protocols` | Specified in `messages.md` 10; not built; bLIP-56 numbers are reserved only in its open pull request |
-| C. Our own feature bit | Native | 52791 | An odd bit of our own in `init` and `node_announcement` (section 8.3) | Reserved, number not picked |
+| C. Our own feature bit | Native | 52791 | An odd bit of our own in `init` and `node_announcement` (section 8.3) | Candidate 448/449 picked (`discovery.md` 3); not registered |
 | D. A BOLT | Core | Even type or types below 32,768, assigned by the BOLT | A BOLT feature bit below 256 | Not started. Needs public proposals; only the owner can start them (section 12) |
 
 Why the stages are in this order. An odd type can be sent to anyone, so stage A needs no agreement with anyone. An even type means "you must understand this", so it may only be sent after negotiation: that is what stages B and D add. A core protocol is even by nature, which is why it comes last, after the format has been proven and agreed.
@@ -99,7 +99,7 @@ Application-agnostic. Intended as a separate library: it runs a group of parties
 | Readiness and consent | A `ready` names both digests and is signed by the member; the member's own limits are compared with the whole range by default | `terms.md` 9, `messages.md` 6.4 | Specified |
 | Signing round | Propose, nonces, all nonces, partial signatures, tier result, complete, acknowledge, status request, abort. Rules S1 to S5. One round engine for every purpose | `signing-round.md`, `messages.md` 7 | Specified for creation |
 | Proof of fault | What a third party can check, what it cannot | `signing-round.md` 9 | Design specified; evidence encoding open |
-| Discovery requests | A member asks a host which lobbies it has; the host answers with signed listings | `discovery.md` 6; seed in `messages.md` 6.1 | Specified (draft 1) |
+| Discovery requests | A member asks a host which lobbies it has; the host answers with signed listings | `discovery.md` 6; seed in `messages.md` 6.1 | Specified (draft 2) |
 
 **Taken from Lightning:** TLV rules. From Bitcoin: BIP 327 (MuSig2), BIP 340 (signatures and tagged hashes).
 
@@ -121,7 +121,7 @@ Slice 1 was written for one application, so some layer 3 items sit in layer 2 me
 
 **Proposed rule for new numbers** (not Slice 1): in a layer 2 message, record types 2 to 63 belong to layer 2, and 64 to 239 carry application records that the library passes to layer 3 to judge. The odd/even rule applies unchanged: an application record with an even type that layer 3 does not know refuses the message.
 
-**Portable documents needed:** `terms.md` (format, freeze state machine, comparison rules, vectors T1 to T6); `messages.md` 6 to 8 (lobby and round formats, duplicate and order table); `signing-round.md` (state machines, rules S1 to S5, fault table); an evidence encoding (open); `discovery.md` for the direct request (to write). Vectors still missing: the round identifier, the nonce signature, the nonce-set and held digests, evidence.
+**Portable documents needed:** `terms.md` (format, freeze state machine, comparison rules, vectors T1 to T6); `messages.md` 6 to 8 (lobby and round formats, duplicate and order table); `signing-round.md` (state machines, rules S1 to S5, fault table); an evidence encoding (open); `discovery.md` section 6 for the direct request. Vectors still missing: the round identifier, the nonce signature, the nonce-set and held digests, evidence.
 
 ## 5. Layer 3: SuperScalar operations
 
@@ -165,19 +165,23 @@ A member's channel is a standard Lightning taproot channel whose funding output 
 
 ## 7. Layer 5: discovery
 
-**Specified in `discovery.md`** (draft 1, 2026-11-12, not reviewed), written from `notes/discovery-research.md` Part B and the owner's decisions. Summary:
+**Specified in `discovery.md`** (draft 2, 2026-11-12, not reviewed), written from the owner's decisions (`notes/ideas-ledger.md` section A), `notes/peering-research.md` and `notes/discovery-research.md`. Its section 0 maps every change from draft 1 to its source. Summary:
 
 | Part | What | Carrier | `discovery.md` |
 |---|---|---|---|
-| Feature bits | `factory_capable` (every Gazpacho node) and `factory_host` (hosts only), both advertised **odd**: BOLT 7 makes nodes shun an unknown even bit in `node_announcement` | `init`, `node_announcement` | 3 |
-| Host card | Static, advisory, at most 256 bytes, at most one change a day. Best-effort in gossip (no TLV stream in BOLT 7); the bit is what is relied on | `node_announcement` TLV; `lobby_index`; Nostr | 4 |
-| Listing | The outer terms record plus host key, start height, expiry, optional anchor, signature. Identical bytes on every carrier | Query answers; Nostr | 5 |
-| Queries | Index and listing, request and answer | Onion messages with a blinded reply path; native kinds as fallback | 6 |
+| Feature bit | **One** bit, `factory_capable`, on every Gazpacho node, advertised **odd**: BOLT 7 makes nodes shun an unknown even bit in `node_announcement`. No hosting bit: a host is whoever sends beacons | `init`, `node_announcement` | 3 |
+| Host card | **Withdrawn** in draft 2. Its numbers are reserved only | — | 4 |
+| Listing | The outer terms record plus host key, start height, expiry, optional anchor, signature. Identical bytes on every carrier | Query answers; store nodes; Nostr | 5 |
+| Queries | Index and listing, request and answer | Onion messages with a blinded reply path; native kinds | 6 |
 | Host list | A trusted full node's signed, chain-anchored entries: can be hidden, not forged | Native; onion | 7 |
-| Lobby beacon | ~150-byte signed "host H opened lobby L"; no terms. Relayed by default among factory-capable nodes with a graph, over a mixed overlay of 4 to 8 links; stored and acted on only by nodes that opt in | Native, overlay links | 8 |
-| Anchors and caps | Channel or coin; required on Nostr; at most 4 listings per host; relays and wallets may only tighten | Inside listings and cards | 9 |
-| Subscription | `beacon_filter`, modelled on `gossip_timestamp_filter`; collecting is off by default | Native | 10 |
-| Nostr annex | Two addressable kinds, NIP-32 labels, NIP-40 expiry | Nostr | 13 |
+| Lobby beacon | 166-byte signed "host H has lobby L open", with two proposed filter fields (profile, channel size); no terms. Accepted only from hosts in the graph with the bit and a channel; orphan pool; seen only after the signature checks; lower id wins on one sequence; relayed at once to every overlay link, rate-limited per link | Native, overlay links | 8 |
+| Anchors and caps | Channel or coin; required on Nostr only; at most 4 listings per host; relays and wallets may only tighten | Inside listings | 9 |
+| Overlay links | `overlay_init` carries the per-connection **lobby store flag**; `beacon_filter` turns relay on or off | Native | 10 |
+| Store nodes and pool | Store nodes fetch, keep and serve listings. Fetch order: a store peer first (answer or `listing_not_held` at once), then the host after a random delay. `pool_request` for catch-up and light clients | Native; onion | 11 |
+| Overlay peering | Self-selection from the gossip graph, address groups, 6 links, mix with a store node, anchors, rotation, scouts, local scoring. **Informative** | Local policy | 13 |
+| Bootstrapping | Degrades to direct queries (design C) | Native | 14 |
+| Reserved | Have-summaries, store-to-store sync, bundled host proofs; scoring never on the wire | — | 15 |
+| Nostr annex | One addressable kind, NIP-32 labels, NIP-40 expiry; conditions for retiring it. **Informative** | Nostr | 17 |
 
 **Every path carries the same signed terms record**: the listing's `outer` is byte for byte what `terms_offer` carries, and its digest is the `scope` of `hello` and `join`. Nothing in a listing is trusted until `terms.md` section 7 passes; the real protection stays the check at signing (C8).
 
@@ -185,15 +189,15 @@ Numbers (all **candidates**, not final; `discovery.md` section 2 gives how each 
 
 | Item | Candidate |
 |---|---|
-| Native kinds | 129 to 143 odd, in range 128 to 159 (section 10.1). The research's 35 to 53 are **not** used: they lie in the session range |
-| Feature bits | 448/449 `factory_capable`, 450/451 `factory_host` (section 8.3) |
-| Card TLV in `node_announcement` | 118685 |
-| Onion payload types | 106369 to 106379 odd |
-| Nostr kinds | 31867 listing, 37329 card |
-| Tags | `gazpacho/listing`, `gazpacho/index`, `gazpacho/card`, `gazpacho/anchor`, `gazpacho/beacon` (section 8.2) |
+| Native kinds | 129 to 147 odd, 153, 155; 149, 151, 157 reserved; in range 128 to 159 (section 10.1). The research's 35 to 53 are **not** used: they lie in the session range |
+| Feature bit | 448/449 `factory_capable` (section 8.3). Draft 1's 450/451 is free again |
+| Onion payload types | 106369 to 106385 odd |
+| Nostr kind | 31867 listing |
+| Reserved only | Card TLV 118685 in `node_announcement`; Nostr kind 37329; tag `gazpacho/card` |
+| Tags | `gazpacho/listing`, `gazpacho/index`, `gazpacho/anchor`, `gazpacho/beacon` (section 8.2) |
 | Journal area | 0x000c (section 10.4), unchanged |
 
-Release plan (`discovery.md` section 14): signet demo with links, QR, built-in list, both bits and the card on the demo host, direct queries, and Nostr with coin anchors; next, before mainnet, onion queries and the beacon with its overlay; later, the trusted node's host list.
+Release plan (`discovery.md` section 18): the signet demo wallet ships **design C**, the bit plus direct queries, with links, QR, the built-in list and Nostr with coin anchors, and no store machinery; next, before mainnet, **design D**: beacons, overlay links, store nodes, the pool request and onion queries; later, the trusted node's host list and the reserved items.
 
 ## 8. Registries
 
@@ -207,7 +211,7 @@ Kind ranges are in section 10.1. "Acceptance rules" names the checks a receiver 
 | Errors and notices | 1, 2 | BOLT 1 `warning` for every refusal; reason codes inside messages (section 10.6); 3 to 15 reserved for a factory-level notice | Nothing that touches money depends on one; reasons are never shown as fact | `messages.md` 1, 6.7, 6.10, 7.9; Slice 1 | Reason codes specified; notice kinds reserved |
 | Session (lobby) | 2 | 16 to 34; 35 to 63 | `terms.md` 7 on every terms record; freeze (`terms.md` 8); C8a | `messages.md` 6, `terms.md`; Slice 1 | Specified 16 to 34. Reserved: invitations, identity proofs, chat, rule-change requests, standby seats, carry-over, deposits |
 | Signing round | 2 | 64 to 80; 82 to 127 | S1 to S5; C1 to C8a, C10, C12; host H1, H2, H8, H11 to H13 | `signing-round.md`, `messages.md` 7; Slice 1 | Specified for creation. Reserved: evidence and challenge, `all_partials` for the last tier of a layer update, per-member digests (`signing-round.md` 14.3) |
-| Discovery | 2, 5 | 129 to 143 odd; 145 to 159 odd reserved; even kinds not used | `discovery.md` 5.2 (L1 to L8), 6.4 to 6.5 (H1 to H6, Q1 to Q5), 8.3 (B1 to B8), 9.2 (A1 to A7); then `terms.md` 7; nothing in a listing is trusted | `discovery.md`; signet demo, then before mainnet (its section 14) | Specified (draft 1), not reviewed |
+| Discovery | 2, 5 | 129 to 147 odd, 153, 155 specified; 149, 151, 157 reserved; 159 free; even kinds not used | `discovery.md` 5.2 (L1 to L8), 6.4 to 6.5 (H1 to H6, Q1 to Q5), 8.3 (B1 to B10), 8.4 (orphans), 8.7 (Reject and Ignore), 9.2 (A1 to A7), 10.1 (I1 to I6), 11 (S1 to S7, G1 to G7, PL1 to PL6); then `terms.md` 7; nothing in a listing is trusted | `discovery.md`; design C in the signet demo, design D before mainnet (its section 18) | Specified (draft 2), not reviewed |
 | Creation | 3 | Uses 16 to 80; 81 `factory_funded`; 256 to 319 for life-cycle messages after creation | C1 to C12; H1, H2, H8, H11 to H13 | `signing-round.md` 4.1, 15; `terms.md` 4; Slice 1 | Specified |
 | Payments | 4 | BOLT 2, **not ours** | C13; C9; `safety-rule.md` 7 (accepting a payment); early warning | `channel.md`; Slice 2 | Not ours; `channel.md` to write |
 | Channel opening and factory change | 4 | bLIP-56 TLV 65600 and submessages 6 to 14 through the adapter; native equivalents 1024 to 1151 | `safety-rule.md` 4.1 rules 1 to 5, 4.3; C6; C9 | `channel.md`; opening Slice 2, change M4 | Reserved |
@@ -240,7 +244,7 @@ Kind ranges are in section 10.1. "Acceptance rules" names the checks a receiver 
 | `gazpacho/evidence` | Digest of a fault evidence bundle | 2 | Not defined | Name reserved |
 | `gazpacho/listing` | Digest a listing signature covers | 5 | `discovery.md` 5.1 | Specified |
 | `gazpacho/index` | Digest a lobby index signature covers | 5 | `discovery.md` 6.1 | Specified |
-| `gazpacho/card` | Digest a signed host card covers | 5 | `discovery.md` 4.4 | Specified |
+| `gazpacho/card` | Was the digest of a signed host card | 5 | `discovery.md` 4 | **Reserved**: the card is withdrawn in draft 2; the tag is never reused |
 | `gazpacho/anchor` | A coin anchor statement | 5 | `discovery.md` 9.1 | Specified |
 | `gazpacho/beacon` | A lobby beacon; also its deduplication id | 5 | `discovery.md` 8.1 | Specified |
 
@@ -258,8 +262,8 @@ Other fixed strings, which are plain SHA-256 inputs, not tags:
 |---|---|---|---|
 | None | Slice 1 negotiates nothing; type 52791 is odd | Specified | Slice 1 |
 | 270/271 | bLIP-56 `pluggable_channel_factories` | Reserved only in bLIP-56's open pull request; may change before merging | The adapter (stage B) |
-| 448/449 (candidate), sent odd 449 | `factory_capable`: speaks the factory protocol natively; every Gazpacho node | **Candidate, not final**; checks in `discovery.md` 2 | Stage C; discovery overlay |
-| 450/451 (candidate), sent odd 451 | `factory_host`: offers listed lobbies; hosts only | **Candidate, not final** | Discovery |
+| 448/449 (candidate), sent odd 449 | `factory_capable`: speaks the factory protocol natively; every Gazpacho node. The only discovery bit: a host is whoever sends beacons | **Candidate, not final**; checks in `discovery.md` 2 | Stage C; discovery |
+| 450/451 | Draft 1's `factory_host` | **Removed** in `discovery.md` draft 2; free, not reserved | — |
 | 80/81 | `option_simple_taproot` | BOLT extension; read 2026-11-11 | Layer 4 |
 | 46/47, 50/51 | `option_scid_alias`, `option_zeroconf` | BOLT 9; read 2026-11-11 | Layer 4 |
 | 34/35 | Quiescence (`stfu`) | BOLT 2; read 2026-11-11 | Factory change |
@@ -300,7 +304,7 @@ The same procedure applies to our custom type 52791: checked against the bLIP 2 
 | TB | Byte-identical tree transactions for each shape and member count, built by the reference | 3 | `terms.md` 4.2 build-server table (partial) | Partial |
 | S | A hostile-host suite: one refused proposal per check in `safety-rule.md`, and the honest case accepted | 3 | Test lists in `safety-rule.md` 13, `messages.md` 12 | Listed as tests; **proposed** to publish as portable cases |
 | CH | Taproot channel vectors (the BOLT's own) plus opening on a leaf and the change flow | 4 | — | Open |
-| D0 to D12 | Candidate numbers, card, anchor, signed card, listing, queries on both carriers, Nostr content, beacon, filter, refusals | 5 | `discovery.md` 16 | Specified; channel anchor and host list entry open |
+| D0 to D19 | Candidate numbers, anchor, listing, queries on both carriers, Nostr content, beacon with filter fields, withdrawal, filter, refusals, `overlay_init`, pool request and answer, `listing_not_held`, the one-sequence tie-break, orphan bounds, `host_list_request` with keys (D1 and D3, the card, withdrawn) | 5 | `discovery.md` 20 | Specified (draft 2); channel anchor and host list entry open |
 | J1 to J4 | The journal file | — | `journal.md` 11 | Gazpacho-internal; not conformance |
 
 ### 9.2 Documents each layer needs to be portable
@@ -312,7 +316,7 @@ The same procedure applies to our custom type 52791: checked against the bLIP 2 
 | 2 | `terms.md`; `messages.md` 6, 7 | Lobby and seat states (`messages.md` 6); round states per tier (`signing-round.md` 7) | `terms.md` 7 to 9; S1 to S5; fault table (`signing-round.md` 9) | T1 to T6, M1 | Evidence encoding; R, N, E vectors; `discovery.md` request part |
 | 3 | `signing-round.md` 4.1 and 15 (creation profile); `terms.md` 4 | Creation states (`signing-round.md` 7) | `safety-rule.md` | T7, TB (partial) | `tree.md`, `sale.md`, `layer-update.md`, `move.md`, `close.md`, `exit.md`, `payout.md`, `watch.md`, `backup.md`; S suite |
 | 4 | BOLT 2, 3, 5, taproot extension; bLIP-56 | BOLT 2; change flow | `safety-rule.md` 4; C9; C13 | BOLT's; CH | `channel.md` |
-| 5 | `discovery.md`; terms record (`terms.md`) | Beacon relay and overlay (`discovery.md` 8) | `discovery.md` 5.2, 6, 8.3, 9; `terms.md` 7 | D0 to D12 | Channel-anchor and host-list vectors |
+| 5 | `discovery.md`; terms record (`terms.md`) | Beacon acceptance and relay (`discovery.md` 8); overlay links (10); store nodes, fetch order and pool (11) | `discovery.md` 5.2, 6, 8.3, 8.4, 8.7, 9, 10.1, 11; `terms.md` 7 | D0 to D19 | Channel-anchor and host-list vectors |
 
 ## 10. Number ranges
 
@@ -326,7 +330,7 @@ Every number Slice 1 uses is unchanged. Each range holds odd and even kinds; eve
 | 1 to 15 | 1 | Envelope utilities and factory-level notices | 2 `part` | 2 specified; 1, 3 to 15 reserved |
 | 16 to 63 | 2 | Session (lobby) | 16 `hello`, 18 `terms_offer`, 20 `join`, 22 `ready`, 24 `unready`, 26 `leave`, 28 `lobby_status`, 30 `ready_check`, 32 `start`, 34 `cancel` | Specified; 35 to 63 reserved |
 | 64 to 127 | 2 | Signing round | 64 `round_propose`, 66 `round_nonces`, 68 `round_all_nonces`, 70 `round_partial_sigs`, 72 `round_tier_result`, 74 `round_complete`, 76 `round_ack`, 78 `round_abort`, 80 `round_status_request`; 81 `factory_funded` (a layer 3 hint, numbered here in Slice 1) | Specified; 82 to 127 reserved |
-| 128 to 159 | 2, 5 | Discovery (`discovery.md` 6.3) | 129 `lobby_index_request`, 131 `lobby_index`, 133 `listing_request`, 135 `listing`, 137 `host_list_request`, 139 `host_list`, 141 `lobby_beacon`, 143 `beacon_filter` | Specified (draft 1); 145 to 159 odd reserved; even kinds not used (discovery must be ignorable) |
+| 128 to 159 | 2, 5 | Discovery (`discovery.md` 6.3) | 129 `lobby_index_request`, 131 `lobby_index`, 133 `listing_request`, 135 `listing`, 137 `host_list_request`, 139 `host_list`, 141 `lobby_beacon`, 143 `beacon_filter`, 145 `pool_request`, 147 `pool`, 153 `overlay_init` (lobby store flag), 155 `listing_not_held` | Specified (draft 2). Reserved without format: 149 `beacon_summary`, 151 store-to-store sync, 157 bundled host proofs. 159 free. Even kinds not used (discovery must be ignorable) |
 | 160 to 255 | 2 | Further group coordination (host proofs, identity proofs, deposits) | — | Reserved |
 | 256 to 319 | 3 | Factory life cycle after creation (status on reconnect, wind-down notices) | — | Reserved |
 | 320 to 383 | 3 | Leaf change and liquidity sales | — | Reserved, 1.1.0 |
@@ -434,7 +438,7 @@ These change bytes in every signed vector, so they are done once, together, with
 | Tree build rules | The import's behaviour written out (`terms.md` 4) | That the reference's builder is the source of tree vectors, and the requests already sent (placement setter, layer-counter bound, mirror hashes, split by subtree size, payout destination per member, caller-supplied channel script) |
 | End-date payouts | Not specified | Their design, which belongs to the reference |
 | `factory_instance_id` | Open | Lobby identifier, or a digest of the funding outpoint |
-| Our feature bit | Not picked | One pair for both implementations (section 8.3) |
+| Our feature bit | Candidate 448/449 (`discovery.md` 3), unregistered | One pair for both implementations (section 8.3) |
 
 ## 12. Needs a public proposal (owner only)
 
@@ -446,13 +450,13 @@ Nothing below is to be posted, opened or commented on without the owner. Drafts 
 | Our feature bit | bLIP 2 registry, by a bLIP | Its meaning (section 8.3) |
 | bLIP-56 amendments | The bLIP-56 pull request | Taproot nonces for post-change outpoints and on reconnect; the plugin's duty before "forget a channel"; that multiparty rounds are the plugin's payload by design; the even type and its negotiation; a second `supported_factory_protocols`; the early warning time against the factory's exit time (`messages.md` 10.5) |
 | The SuperScalar payload format | A bLIP of its own | Layers 1 to 3 of this map, once agreed with the reference |
-| Discovery | A bLIP for the two bits, the card TLV and the onion payload types; a NIP for the two Nostr kinds | From `discovery.md` |
+| Discovery | A bLIP for the one bit and the onion payload types; a NIP for the listing kind | From `discovery.md` |
 | Factories as a core part of Lightning | A BOLT | Stage D of section 3.1. The owner's long-term aim; not started |
 
 ## 13. Open points
 
 1. **`transport.md`** does not exist yet; this map relies on `messages.md` section 2 until it does.
-2. **Discovery** is specified in `discovery.md` draft 1 (section 7); its numbers are candidates and its open points are its section 18.
+2. **Discovery** is specified in `discovery.md` draft 2 (section 7); its numbers are candidates and its open points are its section 22.
 3. **The kind ranges of section 10.1** are this map's proposal. They keep every Slice 1 number and must be confirmed by the owner and agreed with the SuperScalar session.
 4. **Records 241 and up** never used (10.2), and the 2 to 63 / 64 to 239 split for new records in layer 2 messages (4.1): proposed.
 5. **Purpose 6** for a recovery close: proposed; the recovery procedure is not specified (C12).

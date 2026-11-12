@@ -118,7 +118,7 @@ Full detail in `docs/LOBBY.md`.
 - A lobby, like a game server. **Start rule:** a target, a minimum and a deadline. Reaching the target starts at once; at the deadline it starts if the minimum is met, and otherwise quits or carries members over.
 - Gathering is long; signing is short and automatic within each member's conditions.
 - A member's conditions are locked in, and are checked against the real tree at signing.
-- Listed on Nostr or unlisted; open or by invitation (QR codes).
+- Listed or unlisted; open or by invitation (QR codes). A listing is one signed record, the same bytes on every path (`spec/discovery.md` draft 2): asked of the host over Lightning; announced by a small signed beacon relayed among factory-capable nodes and served by opt-in store nodes; and, optionally, on Nostr. One odd feature bit marks a factory-capable node; a host is whoever sends beacons. The signet demo ships the bit, direct queries and Nostr; beacons and store nodes come next.
 - No voting. The host removes people; each member has a personal block list; history is kept locally.
 - Host switches for names, chat and rule-change requests. Optional self-identification. Identity is new per lobby by default.
 - Four rule profiles: Safety, Standard, Starter, Circle.
