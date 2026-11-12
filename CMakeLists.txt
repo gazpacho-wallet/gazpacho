@@ -164,3 +164,5 @@ foreach(target noise tlv)
   target_compile_options(fuzz_${target} PRIVATE ${GZ_NEW_CODE_WARNINGS})
   add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 200000)
 endforeach()
+
+add_subdirectory(wallet)

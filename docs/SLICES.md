@@ -25,7 +25,7 @@ Network: **signet first**, through public chain servers (`CHAIN-SERVERS.md`). Te
 | On-chain wallet able to fund one output and report its confirmation | Wallet, first cut |
 | A connection between programs | Transport, first cut |
 | A file-based journal | Storage, first cut |
-| `gazpacho` program with host and member modes, and the local web interface | Programs, first cut |
+| `gazpacho` program that can host and join (no modes: everyone can do both, owner decision 2026-11-11), and the local web interface on the chosen layout | Programs, first cut |
 | Signet coins for the host | A faucet, or the owner |
 
 **Not in slice 1:** payments, liquidity changes, rotation, exits, the host's Lightning node, Nostr listings (the member is given the host's address directly), invitations, profiles beyond Standard.

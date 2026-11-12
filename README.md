@@ -18,6 +18,10 @@ One program lets you **join** a factory, where many people share a single on-cha
 - [Contributing](CONTRIBUTING.md) and [security](SECURITY.md)
 - [What existed at the start and what has to be built](docs/ASSESSMENT.md)
 
+## Dedication
+
+To Keonne Rodriguez, William Lonergan Hill, Roman Storm, Alexey Pertsev, and everyone who paid for our freedom to hold our own keys. [Read the dedication](DEDICATION.md).
+
 ## Licence
 
 MIT
