@@ -69,6 +69,14 @@
  * 8-byte big-endian serial numbers. */
 #define GZ_RECORD_TEST_PING_SENT 0x7e570002u
 
+/* The placeholder's restore batch (ports.h, the restore marker): one record
+ * of the 8-byte big-endian incarnation the node was started under, then a
+ * 4-byte big-endian restore epoch drawn from the random port with the
+ * ordinary tag and never 0 (safety-rule.md R2, which the engines will follow
+ * with a key_epoch record; the placeholder only shows the shape). */
+#define GZ_RECORD_TEST_RESTORED 0x7e570003u
+#define GZ_RESTORED_RECORD_LEN  12
+
 /* Most save batches the node may have awaiting confirmation. */
 #define GZ_NODE_MAX_AWAITING 64
 
@@ -87,6 +95,7 @@ typedef struct {
     uint64_t start_done_to;     /* the current pass of the start has dealt with every stored ping up to this serial */
     uint64_t start_resent_to;   /* while recording: the resending pass went this far */
     int start_recording;        /* the start has resent everything and is now saving the "sent" records */
+    int start_restore_saved;    /* this start has put its restore batch in a list */
     /* The node's save batches not yet confirmed, oldest first: the serial of
      * the ping each one recorded, or 0 for a batch of "sent" records. */
     uint64_t awaiting[GZ_NODE_MAX_AWAITING];
@@ -126,7 +135,13 @@ gz_status_t gz_node_init(gz_node_t *node, const gz_ports_t *ports);
  * `storage` reads back what storage holds (ports.h). It is used only during
  * the call, and may be walked more than once.
  *
- * For now: each call resends, oldest first, up to GZ_NODE_START_CHUNK replies
+ * When `storage->restored` is 1, the first call does only one thing: it
+ * appends the node's restore batch (GZ_RECORD_TEST_RESTORED), sets `*more`
+ * to 1 and returns. That save is then the first action of the incarnation, so
+ * the runner issues it as sequence 1 and holds every resent reply behind its
+ * confirmation.
+ *
+ * Then: each call resends, oldest first, up to GZ_NODE_START_CHUNK replies
  * to stored pings that have no stored "sent" record. Once all have been
  * resent, each further call saves one "sent" record naming up to that many of
  * the replies this start resent; it waits (GZ_WAITING) while

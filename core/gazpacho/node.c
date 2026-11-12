@@ -10,7 +10,7 @@ gz_status_t gz_node_init(gz_node_t *node, const gz_ports_t *ports)
     node->ports = *ports;
     node->next_serial = 1;
     node->start_done_to = node->start_resent_to = 0;
-    node->start_recording = 0;
+    node->start_recording = node->start_restore_saved = 0;
     node->awaiting_head = node->n_awaiting = 0;
     return GZ_OK;
 }
@@ -310,10 +310,35 @@ static gz_status_t start_step(gz_node_t *node, const gz_storage_reader_t *storag
     }
 }
 
+/* The restore batch: the incarnation, and a restore epoch from the ordinary
+ * random port, never 0. */
+static gz_status_t save_restore_batch(gz_node_t *node, const gz_storage_reader_t *storage,
+                                      gz_action_list_t *out)
+{
+    uint8_t body[GZ_RESTORED_RECORD_LEN], epoch[4];
+    if (node->n_awaiting >= GZ_NODE_MAX_AWAITING) return GZ_ERR_NO_SPACE;
+    put_u64(body, storage->incarnation);
+    do {
+        node->ports.random.fill(node->ports.random.ctx, GZ_RANDOM_ORDINARY, epoch, sizeof epoch);
+        epoch[0] &= 0x7f;                                   /* 31 bits */
+    } while ((epoch[0] | epoch[1] | epoch[2] | epoch[3]) == 0);
+    memcpy(body + 8, epoch, sizeof epoch);
+    gz_status_t st = add_record(out, GZ_RECORD_TEST_RESTORED, body, sizeof body);
+    if (st != GZ_OK) return st;
+    await(node, 0);
+    node->start_restore_saved = 1;
+    return GZ_OK;
+}
+
 gz_status_t gz_node_start(gz_node_t *node, const gz_storage_reader_t *storage,
                           gz_action_list_t *actions_out, int *more)
 {
     if (!node || !storage || !storage->next || !storage->rewind || !actions_out || !more) return GZ_ERR_ARGUMENT;
+    if (storage->restored && !node->start_restore_saved) {
+        gz_status_t st = save_restore_batch(node, storage, actions_out);
+        if (st == GZ_OK) *more = 1;
+        return st;
+    }
     size_t count_before = actions_out->count, used_before = actions_out->used, awaiting_before = node->n_awaiting;
     uint64_t done_before = node->start_done_to, resent_before = node->start_resent_to, serial_before = node->next_serial;
     int recording_before = node->start_recording, more_out = 1;

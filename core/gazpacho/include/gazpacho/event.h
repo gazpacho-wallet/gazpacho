@@ -22,24 +22,28 @@ typedef enum {
     GZ_EVENT_PEER_DISCONNECTED     /* a connection to a peer is down */
 } gz_event_kind_t;
 
-/* Kinds of chain event. More will be added as the engines need them. */
+/* Kinds of chain event. Every kind but NEW_TIP answers a watch (action.h,
+ * WATCHES, which says when each is reported). */
 typedef enum {
     GZ_CHAIN_SCRIPT_SPENT = 1,  /* an output paying a watched script was spent */
-    GZ_CHAIN_TX_CONFIRMED,      /* a transaction reached a number of confirmations */
+    GZ_CHAIN_TX_CONFIRMED,      /* a watched transaction has a number of confirmations */
     GZ_CHAIN_NEW_TIP,           /* the best chain has a new tip; after a reorganisation
                                    its height may be lower than the last one reported */
-    GZ_CHAIN_TX_UNCONFIRMED     /* a transaction reported as confirmed is no longer in
-                                   the best chain */
+    GZ_CHAIN_TX_UNCONFIRMED,    /* a watched transaction reported as confirmed is no
+                                   longer in the best chain */
+    GZ_CHAIN_OUTPOINT_SPENT     /* a watched outpoint is spent, by `txid` */
 } gz_chain_kind_t;
 
 typedef struct {
     gz_chain_kind_t kind;
     gz_bytes_t script;       /* SCRIPT_SPENT: the watched script */
-    uint8_t txid[32];        /* SCRIPT_SPENT: the spending transaction;
-                                TX_CONFIRMED, TX_UNCONFIRMED: the transaction */
-    uint32_t confirmations;  /* TX_CONFIRMED: how many, counting its own block */
-    uint32_t height;         /* NEW_TIP: the tip's height; otherwise the height of
-                                the block containing the transaction */
+    gz_outpoint_t outpoint;  /* OUTPOINT_SPENT: the watched outpoint */
+    uint8_t txid[32];        /* SCRIPT_SPENT, OUTPOINT_SPENT: the spending transaction;
+                                TX_CONFIRMED, TX_UNCONFIRMED: the watched transaction */
+    uint32_t confirmations;  /* TX_CONFIRMED, OUTPOINT_SPENT: how many, counting its own
+                                block; 0 for a spender not in the best chain */
+    uint32_t height;         /* NEW_TIP: the tip's height; otherwise the height of the
+                                block containing the transaction, 0 if none */
 } gz_chain_event_t;
 
 typedef struct {

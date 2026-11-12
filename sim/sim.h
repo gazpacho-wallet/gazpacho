@@ -100,6 +100,14 @@
  * trusts the port alone for a one-time secret will then produce a secret it
  * has produced before, and an invariant over the draw log can catch it.
  *
+ * THE RESTORE MARKER (ports.h). After a restore the harness, as the program,
+ * gives every start of the node the marker (sim_storage_restored, and the
+ * default node's reader) until a batch with sequence 1 of an incarnation
+ * started with it is durable: then the restore is answered
+ * (restores_answered). A crash before that keeps the marker for the next
+ * start. A node with a start hook that is given the marker must make a save
+ * its first action (an invariant).
+ *
  * PRETEND NETWORK. A sent message may be dropped, duplicated or delayed.
  * Delivery takes the oldest due message, or with probability reorder_pm a
  * random other due message. Every pair of peers (nodes, and each node with
@@ -109,19 +117,26 @@
  * of every link that is up when it is built, and its peers are told that the
  * connection dropped and came back when it is rebuilt.
  *
- * PRETEND CHAIN. Transactions are opaque bytes; nothing is validated. A
- * broadcast goes to the mempool and into the next block, unless the schedule
- * decides it never confirms (tx_never_pm). By convention of this pretend
- * chain only, the first byte of a transaction is a length L and the next L
- * bytes are the script whose output it spends (L may be 0). Each block
- * produces: a new-tip event for every node; a script-spent event for every
- * node watching a script that a transaction in the block spends; and a
- * transaction-confirmed event to the node that broadcast a transaction, at
- * each block from its first confirmation to its confirm_depth-th. A
- * reorganisation (reorg_pm, sim_reorg) removes the newest blocks: their
- * transactions go back to the mempool, their broadcasters get a
- * transaction-unconfirmed event, and every node a new-tip event with the
- * lower height.
+ * PRETEND CHAIN. Transactions are opaque bytes; almost nothing is validated.
+ * A broadcast goes to the mempool and into the next block, unless the
+ * schedule decides it never confirms (tx_never_pm). By convention of this
+ * pretend chain only, the first byte of a transaction is a length L and the
+ * next L bytes are the script whose output it spends (L may be 0). If the
+ * byte after them is 0xF0, the next byte is a count n and n outpoints follow
+ * (32-byte txid, 4-byte vout low byte first): the outpoints it spends
+ * (sim_pretend_tx builds one). A transaction's identifier is a digest of its
+ * bytes (sim_pretend_txid). A broadcast that spends an outpoint some known
+ * transaction already spends is a conflict and is dropped, as a mempool
+ * without replacement would. Broadcasting watches nothing.
+ *
+ * Watches (action.h, WATCHES) are kept per node, forgotten when it is
+ * rebuilt, and answered as action.h says: script spends at each block;
+ * transaction confirmations up to the watch's depth, and their leaving the
+ * chain; outpoint spends, when the spender appears in the mempool or a block
+ * and at each confirmation up to the depth. Each block also gives every node
+ * a new-tip event. A reorganisation (reorg_pm, sim_reorg) removes the newest
+ * blocks: their transactions go back to the mempool, watchers are told as
+ * action.h says, and every node gets a new-tip event with the lower height.
  *
  * TIME. The clock port returns the step number plus an offset that the
  * schedule may move forwards or backwards (clock_jump_pm, sim_jump_clock). A
@@ -139,6 +154,12 @@
  *     against that record: nothing lost, added, reordered or altered.
  *   - A confirmation from before a crash is reported stale by the program's
  *     runner and releases nothing.
+ *   - Secrets never leave. No action a node's program carries out (a save's
+ *     records, a send, broadcast, notify or watch) holds the bytes of one of
+ *     that node's secret-tagged draws of 8 bytes or more, anywhere in it
+ *     (ports.h). What is derived from such bytes is not seen by this check.
+ *   - A node started with the restore marker saves before it does anything
+ *     else.
  *   - Same seed, same run (with check_same_seed).
  *   - Any added with sim_add_invariant. Those can look inside: at each node's
  *     own state through its inspection hook (sim_node_inspect), and at every
@@ -228,7 +249,6 @@ typedef struct {
 
     uint32_t ping_pm;             /* per step: one ping is sent to a node */
     uint32_t block_pm;            /* per step: a block is mined */
-    uint32_t confirm_depth;       /* confirmations reported per transaction */
     uint32_t reorg_pm;            /* per step: the newest 1..max_reorg_depth blocks are removed */
     uint32_t max_reorg_depth;
     uint32_t tx_never_pm;         /* a broadcast transaction never confirms */
@@ -275,6 +295,10 @@ typedef struct {
     uint64_t blocks;
     uint64_t reorgs;
     uint64_t txs_never;           /* broadcasts fated never to confirm */
+    uint64_t txs_conflicting;     /* broadcasts dropped: they spend an outpoint already spent */
+    uint64_t chain_reports;       /* chain events answering a watch */
+    uint64_t restores_answered;   /* restores whose restore batch became durable */
+    uint64_t secret_leaks;        /* actions caught holding a secret-tagged draw */
     uint64_t clock_jumps;
     uint64_t lists_refused;       /* action lists a node's program did not accept */
     uint64_t handle_errors;       /* events or starts a node answered with an error */
@@ -282,7 +306,7 @@ typedef struct {
 
 /* One draw a node made from its random port. */
 typedef struct {
-    uint32_t purpose;       /* the tag the node gave (ports.h) */
+    gz_random_purpose_t purpose;   /* the tag the node gave (ports.h) */
     uint64_t incarnation;   /* which build of the node drew it */
     size_t len;             /* how many bytes it asked for */
     uint8_t bytes[32];      /* the first min(len, 32) of them */
@@ -380,6 +404,19 @@ void sim_damage_storage(sim_t *sim, uint32_t index, int drop);
  * node indexes or SIM_WORLD_PEER. */
 void sim_set_link(sim_t *sim, uint64_t a, uint64_t b, int up);
 
+/* Put a transaction on the pretend chain from outside every node (the world
+ * broadcasts it). */
+void sim_broadcast(sim_t *sim, const uint8_t *tx, size_t len);
+
+/* The pretend chain's identifier of transaction `tx`. */
+void sim_pretend_txid(const uint8_t *tx, size_t len, uint8_t txid[32]);
+
+/* Build in `out[0..cap)` a pretend transaction spending the `n` outpoints
+ * given (at most 255) and no watched script, followed by `tag` (any bytes,
+ * to make it distinct). Returns its length, 0 if it does not fit. */
+size_t sim_pretend_tx(uint8_t *out, size_t cap, const gz_outpoint_t *inputs, size_t n,
+                      const uint8_t *tag, size_t tag_len);
+
 /* Remove the newest `depth` blocks from the chain. */
 void sim_reorg(sim_t *sim, uint32_t depth);
 
@@ -433,5 +470,8 @@ size_t sim_storage_unconfirmed(const sim_storage_t *storage);
 /* The incarnation of the node now reading this storage: what a storage reader
  * built over it reports (ports.h). */
 uint64_t sim_storage_incarnation(const sim_storage_t *storage);
+
+/* The restore marker a reader built over this storage gives (ports.h). */
+int sim_storage_restored(const sim_storage_t *storage);
 
 #endif

@@ -48,7 +48,7 @@ unsigned char *__wrap_HMAC(const EVP_MD *md, const void *key, int key_len, const
 static secp256k1_context *secp;
 static uint8_t K11[32], K12[32], K21[32], K22[32], RS[33];
 
-static void fill(void *ctx, uint32_t purpose, uint8_t *out, size_t len) { (void)purpose; memcpy(out, ctx, len); }
+static void fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len) { (void)purpose; memcpy(out, ctx, len); }
 
 /* The sizes recorded since the last reset equal `want`, in order. */
 static int wiped(const size_t *want, size_t n)

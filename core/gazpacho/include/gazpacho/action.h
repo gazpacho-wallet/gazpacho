@@ -34,11 +34,48 @@ typedef enum {
     GZ_ACTION_SAVE = 1,     /* store a batch of records atomically */
     GZ_ACTION_SEND,         /* send a message to a peer */
     GZ_ACTION_BROADCAST,    /* broadcast a transaction */
-    GZ_ACTION_WATCH,        /* report when an output paying this script is spent */
+    GZ_ACTION_WATCH_SCRIPT, /* report when an output paying this script is spent */
     GZ_ACTION_SET_TIMER,    /* fire a timer event after a delay */
     GZ_ACTION_CANCEL_TIMER, /* forget a timer */
-    GZ_ACTION_NOTIFY        /* tell the user something */
+    GZ_ACTION_NOTIFY,       /* tell the user something */
+    GZ_ACTION_WATCH_TX,     /* report a transaction's confirmations, and its leaving the chain */
+    GZ_ACTION_WATCH_OUTPOINT /* report when an outpoint is spent, and by which transaction */
 } gz_action_kind_t;
+
+/* WATCHES. A watch asks the chain view to report, through GZ_EVENT_CHAIN
+ * events (event.h), until the node's program stops. Watches are not kept
+ * across a restart: at start a node sets again every watch it still needs.
+ * Setting a watch that is already set (the same script, txid or outpoint)
+ * replaces its depth and reports the current state again. A watch is not
+ * outward: it changes nothing anyone else sees, so it does not wait for
+ * earlier saves. Broadcasting a transaction does not watch it.
+ *
+ *   WATCH_SCRIPT    a GZ_CHAIN_SCRIPT_SPENT event when a transaction in a new
+ *                   block spends an output paying `script`.
+ *   WATCH_TX        GZ_CHAIN_TX_CONFIRMED events for transaction `txid`: when
+ *                   the watch is set, if the transaction is already in the
+ *                   best chain, with its current count (which may exceed
+ *                   `depth`); then at each block that brings its count to a
+ *                   value from 1 to `depth`. A GZ_CHAIN_TX_UNCONFIRMED event
+ *                   when a transaction already reported confirmed leaves the
+ *                   best chain in a reorganisation, however deep it was;
+ *                   counting starts again when it is confirmed again.
+ *   WATCH_OUTPOINT  GZ_CHAIN_OUTPOINT_SPENT events for `outpoint`, each naming
+ *                   the spending transaction and its confirmations, 0 while
+ *                   it is unconfirmed: when the watch is set, if the outpoint
+ *                   is already spent; when a spender is first seen, in the
+ *                   mempool or in a block; at each block that brings the
+ *                   spender's count to a value from 1 to `depth`; and, with 0
+ *                   confirmations, when a spender already reported confirmed
+ *                   leaves the best chain. The output's script is not needed.
+ *                   If another transaction replaces the spender (a conflict
+ *                   that wins in the mempool or in a reorganisation), the
+ *                   next event names the new one: an engine compares txids.
+ *                   A spender that vanishes with no replacement is not
+ *                   reported: no event for it is defined yet.
+ *
+ * `depth` is at least 1 for both: the number of confirmations the node waits
+ * for (the burial depth, for a funding transaction). */
 
 /* One stored record: an opaque byte string with a type tag. */
 typedef struct {
@@ -59,7 +96,9 @@ typedef struct {
         struct { gz_batch_id_t batch; const gz_record_t *records; size_t n_records; } save;
         struct { uint64_t peer_id; gz_bytes_t bytes; } send;       /* SEND */
         struct { gz_bytes_t tx; } broadcast;                       /* BROADCAST */
-        struct { gz_bytes_t script; } watch;                       /* WATCH */
+        struct { gz_bytes_t script; } watch_script;                /* WATCH_SCRIPT */
+        struct { uint8_t txid[32]; uint32_t depth; } watch_tx;      /* WATCH_TX */
+        struct { gz_outpoint_t outpoint; uint32_t depth; } watch_outpoint; /* WATCH_OUTPOINT */
         /* SET_TIMER: setting an identifier that is already set replaces it. */
         struct { uint64_t timer_id; uint64_t delay_ms; } set_timer;
         struct { uint64_t timer_id; } cancel_timer;                /* CANCEL_TIMER */
@@ -89,8 +128,8 @@ void gz_action_list_reset(gz_action_list_t *list);
 /* Append a deep copy of `action`: its records and byte strings are copied into
  * the list's byte block, so `action` and everything it points to may be
  * discarded as soon as this returns.
- * Returns GZ_OK; GZ_ERR_ARGUMENT for an unknown kind or a byte string with a
- * length but no data; GZ_ERR_NO_SPACE if a slot or the bytes do not fit. On
+ * Returns GZ_OK; GZ_ERR_ARGUMENT for an unknown kind, a byte string with a
+ * length but no data, or a transaction or outpoint watch of depth 0; GZ_ERR_NO_SPACE if a slot or the bytes do not fit. On
  * any error the list is exactly as it was. */
 gz_status_t gz_action_list_add(gz_action_list_t *list, const gz_action_t *action);
 

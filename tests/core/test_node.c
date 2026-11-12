@@ -9,7 +9,17 @@
 static uint64_t g_now = 0x0102030405060708ull;
 static int g_random_calls;
 
-static void fill(void *ctx, uint32_t purpose, uint8_t *out, size_t len) { (void)ctx; (void)purpose; g_random_calls++; memset(out, 0x42, len); }
+static gz_random_purpose_t g_last_purpose = GZ_RANDOM_SECRET;
+static int g_zero_fills;            /* this many next draws give zeros */
+
+static void fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
+{
+    (void)ctx;
+    g_random_calls++;
+    g_last_purpose = purpose;
+    memset(out, g_zero_fills > 0 ? 0 : 0x42, len);
+    if (g_zero_fills > 0) g_zero_fills--;
+}
 static uint64_t now_ms(void *ctx) { (void)ctx; return g_now; }
 
 static const gz_ports_t PORTS = {{fill, NULL}, {now_ms, NULL}};
@@ -232,7 +242,7 @@ static array_reader_t g_array;
 static gz_storage_reader_t reader_over(const gz_record_t *records, size_t n)
 {
     g_array = (array_reader_t){records, n, 0, 0};
-    return (gz_storage_reader_t){array_next, array_rewind, &g_array, 2};
+    return (gz_storage_reader_t){array_next, array_rewind, &g_array, 2, 0};
 }
 
 /* Run a whole start, every step's actions appended to `out`, telling the node
@@ -609,7 +619,7 @@ static void journal_execute(void *ctx, const gz_action_t *a)
  * after every step. Returns the number of waits, or -1 if the start failed. */
 static long start_through_runner(gz_node_t *node, gz_runner_t *runner, void (*between)(size_t step))
 {
-    gz_storage_reader_t reader = {journal_next, journal_rewind, NULL, 2};
+    gz_storage_reader_t reader = {journal_next, journal_rewind, NULL, 2, 0};
     long waits = 0;
     int more = 1;
     for (size_t step = 0; more; step++) {
@@ -781,6 +791,60 @@ static void test_event_to_executor_and_again_after_a_restart(void)
     CHECK(g_seen_n == 6 && g_seen[5].type == GZ_RECORD_TEST_PING_SENT && be64(g_seen[5].record) == 2);
 }
 
+/* With the restore marker, the first start call appends the restore batch
+ * alone; everything else follows in later calls. */
+static size_t restore_saves(void)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < out.count; i++)
+        n += out.slots[i].kind == GZ_ACTION_SAVE && out.slots[i].u.save.n_records == 1 &&
+             out.slots[i].u.save.records[0].type == GZ_RECORD_TEST_RESTORED;
+    return n;
+}
+
+static void test_a_restored_start_saves_its_restore_batch_first(void)
+{
+    gz_node_t node;
+    int more = 7;
+    int calls = g_random_calls;
+    gz_record_t stored[1] = {ping_record(0, 5, 1, 0x11)};
+    gz_storage_reader_t reader = reader_over(stored, 1);
+    reader.restored = 1;
+
+    /* No room: nothing changes, and the next start still saves it. */
+    CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+    gz_action_list_init(&out, slots, 0, bytes, sizeof bytes);
+    CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_ERR_NO_SPACE);
+    CHECK(more == 7 && out.count == 0 && node.n_awaiting == 0 && node.start_restore_saved == 0);
+
+    gz_action_list_init(&out, slots, 16, bytes, sizeof bytes);
+    g_zero_fills = 1;                                   /* an epoch of 0 is drawn again */
+    calls = g_random_calls;
+    CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_OK && more == 1 && out.count == 1);
+    CHECK(g_random_calls - calls == 2 && g_last_purpose == GZ_RANDOM_ORDINARY);
+    const gz_action_t *a = &out.slots[0];
+    CHECK(a->kind == GZ_ACTION_SAVE && a->u.save.n_records == 1);
+    const gz_record_t *r = &a->u.save.records[0];
+    CHECK(r->type == GZ_RECORD_TEST_RESTORED && r->bytes.len == GZ_RESTORED_RECORD_LEN);
+    CHECK(be64(r->bytes.data) == 2);                    /* the incarnation it answers */
+    uint32_t epoch = (uint32_t)r->bytes.data[8] << 24 | (uint32_t)r->bytes.data[9] << 16 |
+                     (uint32_t)r->bytes.data[10] << 8 | r->bytes.data[11];
+    CHECK(epoch == 0x42424242u);                        /* 31 bits, not 0 */
+    CHECK(node.n_awaiting == 1);
+
+    CHECK(start_fully(&node, &reader) > 0);             /* the rest: the reply, then its record */
+    CHECK(restore_saves() == 1 && out.count >= 2 && is_pong(&out.slots[1], 5, 0x11));
+
+    /* Without the marker there is no restore batch and no draw. */
+    CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+    gz_action_list_init(&out, slots, 16, bytes, sizeof bytes);
+    reader = reader_over(stored, 1);
+    calls = g_random_calls;
+    CHECK(start_fully(&node, &reader) > 0 && restore_saves() == 0 && g_random_calls == calls);
+    CHECK(is_pong(&out.slots[0], 5, 0x11));
+    g_random_calls = 0;                                 /* main checks no other test draws */
+}
+
 int main(void)
 {
     test_arguments();
@@ -802,6 +866,7 @@ int main(void)
     test_a_ping_that_completes_during_the_start_is_resent();
     test_a_late_ping_beyond_the_first_chunk_is_resent_before_any_save();
     test_event_to_executor_and_again_after_a_restart();
-    CHECK(g_random_calls == 0);     /* nothing in the frame draws randomness yet */
+    CHECK(g_random_calls == 0);     /* nothing but a restored start draws randomness */
+    test_a_restored_start_saves_its_restore_batch_first();
     return check_done();
 }
