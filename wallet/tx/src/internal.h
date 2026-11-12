@@ -56,5 +56,8 @@ void gzt_sha256(const uint8_t *data, size_t len, uint8_t out[32]);
 void gzt_sha256d(const uint8_t *data, size_t len, uint8_t out[32]);
 /* BIP 340 tagged hash; len must be at most 512. */
 void gzt_tagged_hash(const char *tag, const uint8_t *msg, size_t len, uint8_t out[32]);
+/* Every count and length within the caps, and n_in, n_out at least 1. */
+int gzt_tx_in_caps(const gzt_tx *tx);
+int gzt_tx_has_witness(const gzt_tx *tx);
 
 #endif /* GAZPACHO_WALLET_TX_INTERNAL_H */

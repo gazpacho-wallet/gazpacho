@@ -12,7 +12,7 @@ const char *gzt_err_text(gzt_err e) {
     case GZT_ERR_MAINNET: return "mainnet is refused in this version";
     case GZT_ERR_PARSE: return "not a canonical transaction";
     case GZT_ERR_LIMIT: return "transaction beyond this library's limits";
-    case GZT_ERR_SCRIPT: return "destination is not a witness program";
+    case GZT_ERR_SCRIPT: return "destination script not accepted";
     case GZT_ERR_DUST: return "amount below the dust limit";
     case GZT_ERR_FEE_CEILING: return "fee rate above the caller's ceiling";
     case GZT_ERR_FUNDS: return "not enough funds for amount and fee";
@@ -29,11 +29,11 @@ const char *gzt_err_text(gzt_err e) {
 
 /* Names held in the table itself, so that it has no pointers to relocate and
    lives in read-only data. */
-static const struct { char name[10]; gzt_network net; gzw_network keys; } NETS[] = {
-    {"signet", GZT_NET_SIGNET, GZW_NET_SIGNET},
-    {"testnet", GZT_NET_TESTNET3, GZW_NET_TESTNET},
-    {"testnet4", GZT_NET_TESTNET4, GZW_NET_TESTNET4},
-    {"regtest", GZT_NET_REGTEST, GZW_NET_REGTEST},
+static const struct { char name[10]; uint8_t id; gzw_network keys; } NETS[] = {
+    {"signet", 1, GZW_NET_SIGNET},     /* the ids of GZT_NET_* */
+    {"testnet", 2, GZW_NET_TESTNET},
+    {"testnet4", 3, GZW_NET_TESTNET4},
+    {"regtest", 4, GZW_NET_REGTEST},
 };
 #define N_NETS (sizeof NETS / sizeof NETS[0])
 
@@ -42,7 +42,7 @@ gzt_err gzt_network_from_name(const char *name, gzt_network *out) {
     if (strcmp(name, "mainnet") == 0) return GZT_ERR_MAINNET;
     for (size_t i = 0; i < N_NETS; i++) {
         if (strcmp(name, NETS[i].name) == 0) {
-            *out = NETS[i].net;
+            out->id = NETS[i].id;
             return GZT_OK;
         }
     }
@@ -52,7 +52,7 @@ gzt_err gzt_network_from_name(const char *name, gzt_network *out) {
 gzt_err gzt_network_to_keys(gzt_network net, gzw_network *out) {
     if (!out) return GZT_ERR_ARG;
     for (size_t i = 0; i < N_NETS; i++) {
-        if (NETS[i].net == net) {
+        if (NETS[i].id == net.id) {
             *out = NETS[i].keys;
             return GZT_OK;
         }
@@ -114,7 +114,7 @@ void gzt_tagged_hash(const char *tag, const uint8_t *msg, size_t len, uint8_t ou
 
 /* ---- serialisation --------------------------------------------------------- */
 
-static int tx_in_caps(const gzt_tx *tx) {
+int gzt_tx_in_caps(const gzt_tx *tx) {
     if (tx->n_in == 0 || tx->n_in > GZT_MAX_INPUTS) return 0;
     if (tx->n_out == 0 || tx->n_out > GZT_MAX_OUTPUTS) return 0;
     for (uint32_t i = 0; i < tx->n_in; i++) {
@@ -129,7 +129,7 @@ static int tx_in_caps(const gzt_tx *tx) {
     return 1;
 }
 
-static int has_witness(const gzt_tx *tx) {
+int gzt_tx_has_witness(const gzt_tx *tx) {
     for (uint32_t i = 0; i < tx->n_in; i++)
         if (tx->in[i].witness_count) return 1;
     return 0;
@@ -174,9 +174,9 @@ gzt_err gzt_tx_serialize(const gzt_tx *tx, gzt_ser_form form, uint8_t *out, size
     if (!tx || !out || !len_out) return GZT_ERR_ARG;
     *len_out = 0;
     if (form != GZT_SER_NO_WITNESS && form != GZT_SER_WITNESS) return GZT_ERR_ARG;
-    if (!tx_in_caps(tx)) return GZT_ERR_ARG;
+    if (!gzt_tx_in_caps(tx)) return GZT_ERR_ARG;
     gzt_w w = {out, cap, 0, 0};
-    write_tx(&w, tx, form == GZT_SER_WITNESS && has_witness(tx));
+    write_tx(&w, tx, form == GZT_SER_WITNESS && gzt_tx_has_witness(tx));
     if (w.over) return GZT_ERR_BUFFER;
     *len_out = w.len;
     return GZT_OK;
@@ -189,6 +189,7 @@ static gzt_err hash_form(const gzt_tx *tx, gzt_ser_form form, uint8_t out[32]) {
     gzt_err e = gzt_tx_serialize(tx, form, buf, sizeof buf, &len);
     if (e) return e;
     gzt_sha256d(buf, len, out);
+    gzw_wipe(buf, len); /* a wtxid serialises the signatures */
     return GZT_OK;
 }
 
@@ -201,13 +202,21 @@ gzt_err gzt_tx_wtxid(const gzt_tx *tx, uint8_t out[32]) {
 }
 
 gzt_err gzt_tx_weight(const gzt_tx *tx, uint64_t *weight_out, uint64_t *vsize_out) {
-    uint8_t buf[GZT_MAX_TX_BYTES];
-    size_t base, full;
+    /* Counted, not serialised, so that no copy of a signed transaction is
+       left on the stack.  The tests compare it with real serialisations. */
     if (!weight_out || !vsize_out) return GZT_ERR_ARG;
-    gzt_err e = gzt_tx_serialize(tx, GZT_SER_NO_WITNESS, buf, sizeof buf, &base);
-    if (!e) e = gzt_tx_serialize(tx, GZT_SER_WITNESS, buf, sizeof buf, &full);
-    if (e) return e;
-    *weight_out = 3 * (uint64_t)base + full;
+    if (!tx || !gzt_tx_in_caps(tx)) return GZT_ERR_ARG;
+    uint64_t base = 4 + gzt_cs_len(tx->n_in) + gzt_cs_len(tx->n_out) + 4, wit = 0;
+    for (uint32_t i = 0; i < tx->n_in; i++) {
+        const gzt_txin *in = &tx->in[i];
+        base += 32 + 4 + gzt_cs_len(in->script_sig_len) + in->script_sig_len + 4;
+        wit += gzt_cs_len(in->witness_count);
+        for (unsigned j = 0; j < in->witness_count; j++)
+            wit += gzt_cs_len(in->witness[j].len) + in->witness[j].len;
+    }
+    for (uint32_t i = 0; i < tx->n_out; i++)
+        base += 8 + gzt_cs_len(tx->out[i].script_len) + tx->out[i].script_len;
+    *weight_out = 4 * base + (gzt_tx_has_witness(tx) ? 2 + wit : 0);
     *vsize_out = (*weight_out + 3) / 4;
     return GZT_OK;
 }
@@ -316,7 +325,7 @@ static gzt_err parse(gzt_r *r, gzt_tx *tx) {
                                    GZT_MAX_WITNESS_ITEM)))
                     return e;
         }
-        if (!has_witness(tx)) return GZT_ERR_PARSE; /* superfluous witness record */
+        if (!gzt_tx_has_witness(tx)) return GZT_ERR_PARSE; /* superfluous witness record */
     }
     if (!get_le(r, 4, &v)) return GZT_ERR_PARSE;
     tx->locktime = (uint32_t)v;

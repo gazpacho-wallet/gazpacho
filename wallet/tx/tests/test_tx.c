@@ -149,6 +149,33 @@ static void test_sizes_and_fees(void) {
         }
     }
     CHECK(formula_ok);
+    /* gzt_tx_weight (counted) and the formula against real serialisations,
+       for every witness-program length of the destination, with and without
+       change, and 1, 2, 63 and 64 inputs */
+    static const size_t dest_lens[] = {22, 34, 4, 5, 10, 20, 33, 35, 41, 42};
+    static const size_t n_ins[] = {1, 2, 63, 64};
+    int counted_ok = 1;
+    for (size_t d = 0; d < sizeof dest_lens / sizeof dest_lens[0]; d++)
+        for (size_t c = 0; c < 2; c++)
+            for (size_t k = 0; k < 4; k++) {
+                size_t lens[2] = {dest_lens[d], 34}, lw, ln;
+                uint64_t w, vs;
+                memset(&tx, 0, sizeof tx);
+                tx.n_in = (uint32_t)n_ins[k];
+                tx.n_out = (uint32_t)(1 + c);
+                for (size_t i = 0; i < tx.n_in; i++) {
+                    tx.in[i].witness_count = 1;
+                    tx.in[i].witness[0].len = 64;
+                }
+                for (size_t i = 0; i < tx.n_out; i++) tx.out[i].script_len = (uint16_t)lens[i];
+                if (gzt_tx_weight(&tx, &w, &vs) != GZT_OK ||
+                    gzt_tx_serialize(&tx, GZT_SER_WITNESS, back, sizeof back, &lw) != GZT_OK ||
+                    gzt_tx_serialize(&tx, GZT_SER_NO_WITNESS, back, sizeof back, &ln) != GZT_OK ||
+                    w != 3 * ln + lw || vs != (w + 3) / 4 ||
+                    gzt_keypath_vsize(tx.n_in, lens, tx.n_out) != vs)
+                    counted_ok = 0;
+            }
+    CHECK(counted_ok);
     size_t one = 34;
     CHECK(gzt_keypath_vsize(1, &one, 1) == 111); /* 1 in, 1 P2TR out: 444 WU / 4 */
     CHECK(gzt_keypath_vsize(0, &one, 1) == 0);
@@ -209,7 +236,7 @@ static void test_dust_and_networks(void) {
     gzw_network k;
     CHECK(gzt_network_from_name("mainnet", &net) == GZT_ERR_MAINNET);
     CHECK(gzt_network_from_name("bitcoin", &net) == GZT_ERR_ARG);
-    CHECK(gzt_network_from_name("signet", &net) == GZT_OK && net == GZT_NET_SIGNET);
+    CHECK(gzt_network_from_name("signet", &net) == GZT_OK && gzt_network_eq(net, GZT_NET_SIGNET));
     CHECK(gzt_network_to_keys(net, &k) == GZT_OK && k == GZW_NET_SIGNET);
     CHECK(gzt_network_from_name("testnet", &net) == GZT_OK && gzt_network_to_keys(net, &k) == 0 &&
           k == GZW_NET_TESTNET);
@@ -217,8 +244,8 @@ static void test_dust_and_networks(void) {
           k == GZW_NET_TESTNET4);
     CHECK(gzt_network_from_name("regtest", &net) == GZT_OK && gzt_network_to_keys(net, &k) == 0 &&
           k == GZW_NET_REGTEST);
-    CHECK(gzt_network_to_keys((gzt_network)0, &k) == GZT_ERR_ARG);
-    CHECK(gzt_network_to_keys((gzt_network)5, &k) == GZT_ERR_ARG);
+    CHECK(gzt_network_to_keys((gzt_network){0}, &k) == GZT_ERR_ARG);
+    CHECK(gzt_network_to_keys((gzt_network){5}, &k) == GZT_ERR_ARG);
     for (int e = 0; e <= 14; e++) CHECK(gzt_err_text((gzt_err)e) != NULL);
 }
 
@@ -271,7 +298,14 @@ static gzt_err model(const gzt_coin *coins, size_t n, uint64_t amount, uint64_t 
         out->total_in = total;
         return GZT_OK;
     }
-    return over ? GZT_ERR_FEE_CEILING : GZT_ERR_FUNDS;
+    if (over) return GZT_ERR_FEE_CEILING;
+    /* more coins than inputs allowed, and all of them would pay the no-change
+       fee of a 64-input transaction: the cap is what stops it */
+    uint64_t all = 0, w64 = 4 * (4 + 1 + 41 * 64 + 1 + 43 + 4) + 2 + 66 * 64;
+    for (size_t i = 0; i < n; i++) all += coins[i].amount;
+    if (n > GZT_MAX_INPUTS && all >= amount + (((w64 + 3) / 4) * rate + 999) / 1000)
+        return GZT_ERR_LIMIT;
+    return GZT_ERR_FUNDS;
 }
 
 static uint8_t P2TR_DEST[34] = {0x51, 0x20, 0xaa};
@@ -322,8 +356,9 @@ static void test_selection(void) {
     CHECK(balanced);
     /* the random sets reach success, lack of funds and the ceiling */
     CHECK(hits[GZT_OK] > 100 && hits[GZT_ERR_FUNDS] > 20 && hits[GZT_ERR_FEE_CEILING] > 5);
-    printf("selection: %d ok, %d funds, %d ceiling of 2000 random sets\n", hits[GZT_OK],
-           hits[GZT_ERR_FUNDS], hits[GZT_ERR_FEE_CEILING]);
+    CHECK(hits[GZT_ERR_LIMIT] > 0);
+    printf("selection: %d ok, %d funds, %d ceiling, %d limit of 2000 random sets\n", hits[GZT_OK],
+           hits[GZT_ERR_FUNDS], hits[GZT_ERR_FEE_CEILING], hits[GZT_ERR_LIMIT]);
 
     /* refusals */
     gzt_fee_policy fp = {{100}, {1000}};
@@ -338,6 +373,12 @@ static void test_selection(void) {
     uint8_t p2wpkh[22] = {0x00, 0x14};
     CHECK(gzt_select_coins(coins, 2, p2wpkh, 22, 293, fp, &a) == GZT_ERR_DUST);
     CHECK(gzt_select_coins(coins, 2, p2wpkh, 22, 294, fp, &a) == GZT_OK);
+    /* a 2-byte program (P2A shape) would give a 64-byte transaction: refused;
+       3 bytes is the shortest accepted */
+    uint8_t short_prog[5] = {0x51, 0x02, 0x4e, 0x73, 0x00};
+    CHECK(gzt_select_coins(coins, 2, short_prog, 4, 10000, fp, &a) == GZT_ERR_SCRIPT);
+    short_prog[0] = 0x52; short_prog[1] = 0x03;
+    CHECK(gzt_select_coins(coins, 2, short_prog, 5, 10000, fp, &a) == GZT_OK);
     uint8_t p2pkh[25] = {0x76, 0xa9, 0x14};
     CHECK(gzt_select_coins(coins, 2, p2pkh, 25, 10000, fp, &a) == GZT_ERR_SCRIPT);
     uint8_t ret[34] = {0x6a, 0x20};
@@ -398,7 +439,10 @@ static void test_selection(void) {
     int top_ok = a.n_selected == 64 && !a.has_change && a.total_in == top;
     for (uint32_t i = 0; top_ok && i < 64; i++) top_ok = coins[a.selected[i]].amount == 1099 - i;
     CHECK(top_ok);
-    CHECK(gzt_select_coins(coins, N, P2TR_DEST, 34, want + 101, wide, &a) == GZT_ERR_FUNDS);
+    /* the 100 coins would pay, the 64 largest cannot: the cap, not the funds */
+    CHECK(gzt_select_coins(coins, N, P2TR_DEST, 34, want + 101, wide, &a) == GZT_ERR_LIMIT);
+    CHECK(gzt_select_coins(coins, 64, P2TR_DEST, 34, want + 101, wide, &a) == GZT_ERR_FUNDS);
+    CHECK(gzt_select_coins(coins, N, P2TR_DEST, 34, 100000 + 4950, wide, &a) == GZT_ERR_FUNDS);
 }
 
 /* ---- the funding ------------------------------------------------------------ */
@@ -417,18 +461,37 @@ static void make_coin(const secp256k1_context *ctx, const gzw_xprv *master, gzt_
     c->amount = amount;
 }
 
+static int contains(const void *hay, size_t n, const uint8_t *needle, size_t m) {
+    const uint8_t *h = hay;
+    for (size_t i = 0; i + m <= n; i++)
+        if (memcmp(h + i, needle, m) == 0) return 1;
+    return 0;
+}
+
+/* Release must refuse and leave out zeroed (prefilled with 0xaa). */
+static int refused(const secp256k1_context *ctx, const gzw_xprv *master, const gzt_funding *f,
+                   const uint8_t *expect, const uint8_t *aux, gzt_err want) {
+    size_t len = 99;
+    memset(back, 0xaa, 500);
+    gzt_err e = gzt_funding_release(ctx, master, f, expect, aux, back, 500, &len);
+    return e == want && len == 0 && all_zero(back, 500);
+}
+
 static void test_funding(const secp256k1_context *ctx) {
-    gzw_xprv master;
+    gzw_xprv master, other;
     static gzt_coin coins[GZT_MAX_INPUTS + 2];
     static gzt_funding f, g;
     gzt_spent_output spent[GZT_MAX_INPUTS];
-    uint8_t aux[32], factory[34] = {0x51, 0x20}, wrong[32];
+    uint8_t aux[32], aux2[32], factory[34] = {0x51, 0x20}, wrong[32], seed[64];
     memset(aux, 0x5a, sizeof aux); /* no zero byte, so every byte of the rule shows */
+    memset(aux2, 0xc3, sizeof aux2);
+    memset(seed, 0x01, sizeof seed);
     size_t len;
     CHECK(public_master(ctx, &master));
+    CHECK(gzw_bip32_master(ctx, seed, 64, &other, NULL));
     memset(factory + 2, 0xfa, 32);
 
-    gzt_funding_request req = {GZT_NET_SIGNET, 0, factory, 34, 150000, 3, {{100}, {1000}}};
+    gzt_funding_request req = {GZT_NET_SIGNET, 0, factory, 34, 150000, 3, {{100}, {1000}}, NULL, 0};
     make_coin(ctx, &master, &coins[0], 0, 0, 100000);
     make_coin(ctx, &master, &coins[1], 0, 1, 80000);
     make_coin(ctx, &master, &coins[2], 1, 0, 1000);
@@ -436,20 +499,70 @@ static void test_funding(const secp256k1_context *ctx) {
     CHECK(f.info.vout == 0 && f.info.amount == 150000 && f.info.has_change);
     CHECK(f.info.selection.n_selected == 2 && f.info.change_index == 3);
 
-    /* no signed bytes before an explicit release with the right txid */
+    /* the held funding has no signature in it: the one build made for input 0
+       (aux rule, same message) is nowhere in the struct, and no input has a
+       witness */
+    CHECK(gzt_funding_release(ctx, &master, &f, f.info.txid, aux, raw, sizeof raw, &len) == GZT_OK);
+    CHECK(gzt_tx_parse(raw, len, &tx) == GZT_OK && tx.in[0].witness[0].len == 64);
+    CHECK(!contains(&f, sizeof f, tx.in[0].witness[0].data, 64));
+    CHECK(!contains(&f, sizeof f, tx.in[0].witness[0].data, 32)); /* not even R */
+    CHECK(f.priv_tx.in[0].witness_count == 0 && f.priv_tx.in[1].witness_count == 0);
+
+    /* the gate */
     memcpy(wrong, f.info.txid, 32);
     wrong[31] ^= 1;
-    CHECK(gzt_funding_release(&f, wrong, raw, sizeof raw, &len) == GZT_ERR_STATE && len == 0);
+    CHECK(refused(ctx, &master, &f, wrong, aux, GZT_ERR_STATE));
     memset(&g, 0, sizeof g);
-    CHECK(gzt_funding_release(&g, f.info.txid, raw, sizeof raw, &len) == GZT_ERR_STATE);
-    g = f;
-    g.priv_state = 3;
-    CHECK(gzt_funding_release(&g, f.info.txid, raw, sizeof raw, &len) == GZT_ERR_STATE);
-    CHECK(gzt_funding_release(&f, f.info.txid, raw, 10, &len) == GZT_ERR_BUFFER);
-    CHECK(gzt_funding_release(&f, f.info.txid, raw, sizeof raw, &len) == GZT_OK);
-    size_t len2;
-    CHECK(gzt_funding_release(&f, f.info.txid, back, sizeof back, &len2) == GZT_OK);
-    CHECK(len2 == len && memcmp(raw, back, len) == 0); /* again, the same bytes */
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    g = f; g.priv_state = 3;
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    /* a forged info.txid, asked for: the recomputed txid differs */
+    g = f; memset(g.info.txid, 0x42, 32);
+    CHECK(refused(ctx, &master, &g, g.info.txid, aux, GZT_ERR_STATE));
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    /* the stored transaction edited (value moved from output 0 to change) */
+    g = f; g.priv_tx.out[0].value -= 1000; g.priv_tx.out[1].value += 1000;
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    uint8_t edited[32];
+    CHECK(gzt_tx_txid(&g.priv_tx, edited) == GZT_OK);
+    memcpy(g.info.txid, edited, 32); /* and info.txid made to match it */
+    CHECK(refused(ctx, &master, &g, edited, aux, GZT_ERR_STATE)); /* amount disagrees */
+    g = f; g.priv_tx.out[1].value -= 1; /* fee no longer adds up */
+    CHECK(gzt_tx_txid(&g.priv_tx, g.info.txid) == GZT_OK);
+    CHECK(refused(ctx, &master, &g, g.info.txid, aux, GZT_ERR_STATE));
+    g = f; g.priv_spent[0].amount += 1;
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    g = f; g.priv_spent[0].script[33] ^= 1; /* signer refuses: key is not the script's */
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_KEY));
+    g = f; g.priv_key_index[0] ^= 1;
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_KEY));
+    /* counts beyond the caps are refused before anything is written */
+    g = f; g.priv_tx.n_in = 200;
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    g = f; g.priv_tx.n_in = 0;
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    g = f; g.priv_tx.n_out = GZT_MAX_OUTPUTS + 1;
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    g = f; g.priv_tx.in[1].witness_count = 1; /* a witness in the held form */
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    g = f; g.priv_net.id = 0;
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_ARG));
+    /* another wallet's key, and a key that is not a master key */
+    CHECK(refused(ctx, &other, &f, f.info.txid, aux, GZT_ERR_KEY));
+    gzw_xprv child;
+    CHECK(gzw_bip32_child_priv(ctx, &master, 1, &child, NULL));
+    CHECK(refused(ctx, &child, &f, f.info.txid, aux, GZT_ERR_ARG));
+    /* a buffer one byte short: refused, and nothing of the transaction left */
+    size_t full = len;
+    memset(back, 0xaa, full);
+    CHECK(gzt_funding_release(ctx, &master, &f, f.info.txid, aux, back, full - 1, &len) ==
+              GZT_ERR_BUFFER && len == 0 && all_zero(back, full - 1));
+    CHECK(gzt_funding_release(ctx, &master, &f, f.info.txid, aux, back, full, &len) == GZT_OK &&
+          len == full && memcmp(back, raw, full) == 0); /* same aux: the same bytes */
+
+    /* released with other randomness: other signatures, the same txid */
+    CHECK(gzt_funding_release(ctx, &master, &f, f.info.txid, aux2, raw, sizeof raw, &len) == GZT_OK);
+    CHECK(len == full && memcmp(back, raw, len) != 0);
 
     /* the released bytes, checked from outside */
     uint8_t txid[32], hash[32];
@@ -483,7 +596,7 @@ static void test_funding(const secp256k1_context *ctx) {
         const gzt_coin *c = &coins[f.info.selection.selected[i]];
         secp256k1_keypair kp;
         uint8_t aux_in[36], aux_i[32], sig[64];
-        memcpy(aux_in, aux, 32);
+        memcpy(aux_in, aux2, 32);
         aux_in[32] = (uint8_t)i; aux_in[33] = aux_in[34] = aux_in[35] = 0;
         SHA256(aux_in, 36, aux_i);
         CHECK(gzw_bip86_tweaked_keypair(ctx, &master, GZW_NET_SIGNET, 0, c->change, c->index, &kp,
@@ -491,15 +604,16 @@ static void test_funding(const secp256k1_context *ctx) {
         CHECK(secp256k1_schnorrsig_sign32(ctx, sig, hash, &kp, aux_i));
         CHECK(memcmp(sig, tx.in[i].witness[0].data, 64) == 0);
     }
-    /* the same request and coins in another order give the same transaction */
+    /* the same request and coins in another order give the same transaction,
+       and so does a rebuild with other randomness */
     gzt_coin rev[3] = {coins[2], coins[1], coins[0]};
-    CHECK(gzt_funding_build(ctx, &master, &req, rev, 3, aux, &g) == GZT_OK);
+    CHECK(gzt_funding_build(ctx, &master, &req, rev, 3, aux2, &g) == GZT_OK);
     CHECK(memcmp(g.info.txid, f.info.txid, 32) == 0);
 
-    /* sizes from 1 to 64 inputs: the size the fee was paid for is the real one */
+    /* every size from 1 to 64 inputs: the size the fee was paid for is the real one */
     int sizes_ok = 1;
     size_t one = 34;
-    for (uint32_t n = 1; n <= GZT_MAX_INPUTS; n += (n < 8 ? 1 : 7)) {
+    for (uint32_t n = 1; n <= GZT_MAX_INPUTS; n++) {
         for (uint32_t i = 0; i < n; i++) make_coin(ctx, &master, &coins[i], 0, i, 2000);
         uint64_t left = (n % 2) ? gzt_fee_for_vsize(req.fee.rate, gzt_keypath_vsize(n, &one, 1)) + 50
                                 : 1500; /* odd: no change, a little over the fee; even: change */
@@ -507,7 +621,7 @@ static void test_funding(const secp256k1_context *ctx) {
         req.fee.ceiling.sat_per_kvb = 100000;
         if (gzt_funding_build(ctx, &master, &req, coins, n, aux, &g) != GZT_OK ||
             g.info.selection.n_selected != n || g.info.has_change != !(n % 2) ||
-            gzt_funding_release(&g, g.info.txid, raw, sizeof raw, &len) != GZT_OK ||
+            gzt_funding_release(ctx, &master, &g, g.info.txid, aux, raw, sizeof raw, &len) != GZT_OK ||
             gzt_tx_parse(raw, len, &tx) != GZT_OK || gzt_tx_weight(&tx, &w, &vs) != GZT_OK ||
             vs != g.info.vsize || tx.out[0].value != req.amount || tx.n_in != n ||
             tx.in[n - 1].witness_count != 1 ||
@@ -533,8 +647,17 @@ static void test_funding(const secp256k1_context *ctx) {
     gzt_coin first[3] = {coins[2], coins[0], coins[1]}; /* the same, offered first */
     CHECK(gzt_funding_build(ctx, &master, &req, first, 3, aux, &g) == GZT_ERR_ARG);
     req.change_index = 3;
+    /* a change index already used by a coin that is not offered */
+    uint32_t used[3] = {7, 3, 9};
     gzt_funding_request r2 = req;
-    r2.net = (gzt_network)0;
+    r2.used_change_indexes = used; r2.n_used_change_indexes = 3;
+    CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_ARG);
+    r2.n_used_change_indexes = 1;
+    CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_OK);
+    r2.used_change_indexes = NULL;
+    CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_ARG);
+    r2 = req;
+    r2.net.id = 0;
     CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_ARG);
     r2 = req;
     r2.funding_script = ch.script_pubkey; /* paying the funding to our own change */
@@ -543,21 +666,39 @@ static void test_funding(const secp256k1_context *ctx) {
     r2.change_index = GZW_HARDENED;
     CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_ARG);
     r2 = req;
-    r2.funding_script_len = GZT_MAX_SCRIPT + 1;
-    CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_SCRIPT);
+    r2.account = GZW_HARDENED;
+    CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_ARG);
     r2 = req;
     r2.amount = 200;
     CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_DUST);
-    gzw_xprv child;
-    CHECK(gzw_bip32_child_priv(ctx, &master, 1, &child, NULL));
+    /* the funding output is P2TR and nothing else */
+    uint8_t other_script[42];
+    memset(other_script, 0xfa, sizeof other_script);
+    static const struct { uint8_t v, push; size_t len; } SHAPES[] = {
+        {0x00, 32, 34}, {0x00, 20, 22}, {0x52, 32, 34}, {0x60, 32, 34}, {0x51, 2, 4},
+        {0x51, 31, 33}, {0x51, 33, 35}, {0x51, 40, 42}, {0x51, 32, 33}, {0x6a, 32, 34}};
+    int shapes_ok = 1;
+    for (size_t k = 0; k < sizeof SHAPES / sizeof SHAPES[0]; k++) {
+        r2 = req;
+        other_script[0] = SHAPES[k].v;
+        other_script[1] = SHAPES[k].push;
+        r2.funding_script = other_script;
+        r2.funding_script_len = SHAPES[k].len;
+        if (gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) != GZT_ERR_SCRIPT) shapes_ok = 0;
+    }
+    CHECK(shapes_ok);
+    other_script[0] = 0x51; other_script[1] = 0x20;
+    r2.funding_script = other_script; r2.funding_script_len = 34;
+    CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_OK);
     CHECK(gzt_funding_build(ctx, &child, &req, coins, 3, aux, &g) == GZT_ERR_ARG);
     CHECK(gzt_funding_build(ctx, &master, &req, coins, 3, NULL, &g) == GZT_ERR_ARG);
     CHECK(all_zero(&g, sizeof g));
 
     gzt_funding_wipe(&f);
     CHECK(all_zero(&f, sizeof f));
-    CHECK(gzt_funding_release(&f, txid, raw, sizeof raw, &len) == GZT_ERR_STATE);
+    CHECK(refused(ctx, &master, &f, txid, aux, GZT_ERR_STATE));
     gzw_wipe(&master, sizeof master);
+    gzw_wipe(&other, sizeof other);
     gzw_wipe(&child, sizeof child);
 }
 
@@ -633,6 +774,46 @@ static void test_boundaries(void) {
         memcpy(raw + 4, CS[k].b, CS[k].len);
         CHECK(parse_raw(n - 1 + CS[k].len) == CS[k].want);
     }
+    /* Review M2: a zero length written in a longer form, where the input does
+       not end there (scriptSig length; witness item length), and a witness
+       count cut short by the end of the input.  Each must be PARSE. */
+    static const uint8_t ZERO_FORMS[3][9] = {
+        {0xfd, 0, 0}, {0xfe, 0, 0, 0, 0}, {0xff, 0, 0, 0, 0, 0, 0, 0, 0}};
+    static const size_t ZERO_LENS[3] = {3, 5, 9};
+    int zero_forms_ok = 1;
+    for (int k = 0; k < 3; k++) {
+        /* scriptSig length 0 at offset 4 + 1 + 36 */
+        n = make(0, 1, 0, 1, 1000, 34, 0, 0);
+        size_t ss = 4 + 1 + 36;
+        memmove(raw + ss + ZERO_LENS[k], raw + ss + 1, n - ss - 1);
+        memcpy(raw + ss, ZERO_FORMS[k], ZERO_LENS[k]);
+        if (parse_raw(n - 1 + ZERO_LENS[k]) != GZT_ERR_PARSE) zero_forms_ok = 0;
+        /* witness: each of the two inputs has one empty item;
+           the empty item's length is the byte before the lock time */
+        n = make(1, 2, 0, 1, 1000, 34, 1, 0);
+        size_t wl = n - 4 - 1;
+        CHECK(raw[wl] == 0 && raw[wl - 1] == 1);
+        memmove(raw + wl + ZERO_LENS[k], raw + wl + 1, n - wl - 1);
+        memcpy(raw + wl, ZERO_FORMS[k], ZERO_LENS[k]);
+        if (parse_raw(n - 1 + ZERO_LENS[k]) != GZT_ERR_PARSE) zero_forms_ok = 0;
+    }
+    CHECK(zero_forms_ok);
+    /* the minimal forms of the same transactions parse */
+    CHECK(parse_raw(make(0, 1, 0, 1, 1000, 34, 0, 0)) == GZT_OK);
+    CHECK(parse_raw(make(1, 2, 0, 1, 1000, 34, 1, 0)) == GZT_OK);
+    /* three inputs; the last witness count is fd, fe or ff and only the four
+       lock-time bytes follow */
+    int cut_count_ok = 1;
+    for (int k = 0; k < 3; k++) {
+        n = make(1, 3, 0, 1, 1000, 34, 1, 1);
+        size_t wc = n - 4 - 3; /* last input: 01 01 cd, then the lock time */
+        CHECK(raw[wc] == 1 && raw[wc + 1] == 1);
+        raw[wc] = (uint8_t)(0xfd + k);
+        memset(raw + wc + 1, 0, 4);
+        if (parse_raw(wc + 5) != GZT_ERR_PARSE) cut_count_ok = 0;
+    }
+    CHECK(cut_count_ok);
+
     /* a script length of 34 written as fd 22 00 */
     n = make(0, 1, 0, 1, 1000, 34, 0, 0);
     size_t at = 4 + 1 + 41 + 1 + 8;
@@ -784,7 +965,7 @@ static void test_null_arguments(const secp256k1_context *ctx) {
     uint8_t any_key[32] = {1};
     CHECK(gzw_taproot_tweak_seckey(ctx, any_key, &kp, NULL));
     gzt_fee_policy fp = {{100}, {1000}};
-    gzt_funding_request req = {GZT_NET_SIGNET, 0, s, 34, 1000, 0, fp};
+    gzt_funding_request req = {GZT_NET_SIGNET, 0, s, 34, 1000, 0, fp, NULL, 0};
 
     CHECK(gzt_network_from_name(NULL, &net) == GZT_ERR_ARG);
     CHECK(gzt_network_from_name("signet", NULL) == GZT_ERR_ARG);
@@ -823,11 +1004,21 @@ static void test_null_arguments(const secp256k1_context *ctx) {
     CHECK(gzt_funding_build(ctx, &master, &req, &coin, 1, aux, NULL) == GZT_ERR_ARG);
     req.funding_script = NULL;
     CHECK(gzt_funding_build(ctx, &master, &req, &coin, 1, aux, &f) == GZT_ERR_ARG);
-    CHECK(gzt_funding_release(NULL, h, back, sizeof back, &len) == GZT_ERR_ARG);
-    CHECK(gzt_funding_release(&f, NULL, back, sizeof back, &len) == GZT_ERR_ARG);
-    CHECK(gzt_funding_release(&f, h, NULL, sizeof back, &len) == GZT_ERR_ARG);
-    CHECK(gzt_funding_release(&f, h, back, sizeof back, NULL) == GZT_ERR_ARG);
+    /* release, on a funding that is built, so that only the NULL can refuse */
+    req.funding_script = s;
+    make_coin(ctx, &master, &coin, 0, 0, 100000);
+    CHECK(gzt_funding_build(ctx, &master, &req, &coin, 1, aux, &f) == GZT_OK);
+    memcpy(h, f.info.txid, 32);
+    CHECK(gzt_funding_release(ctx, &master, &f, h, aux, back, sizeof back, &len) == GZT_OK);
+    CHECK(gzt_funding_release(NULL, &master, &f, h, aux, back, sizeof back, &len) == GZT_ERR_ARG);
+    CHECK(gzt_funding_release(ctx, NULL, &f, h, aux, back, sizeof back, &len) == GZT_ERR_ARG);
+    CHECK(gzt_funding_release(ctx, &master, NULL, h, aux, back, sizeof back, &len) == GZT_ERR_ARG);
+    CHECK(gzt_funding_release(ctx, &master, &f, NULL, aux, back, sizeof back, &len) == GZT_ERR_ARG);
+    CHECK(gzt_funding_release(ctx, &master, &f, h, NULL, back, sizeof back, &len) == GZT_ERR_ARG);
+    CHECK(gzt_funding_release(ctx, &master, &f, h, aux, NULL, sizeof back, &len) == GZT_ERR_ARG);
+    CHECK(gzt_funding_release(ctx, &master, &f, h, aux, back, sizeof back, NULL) == GZT_ERR_ARG);
     gzt_funding_wipe(NULL);
+    gzt_funding_wipe(&f);
     gzw_wipe(&master, sizeof master);
 }
 

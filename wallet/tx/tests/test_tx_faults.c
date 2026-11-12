@@ -59,7 +59,7 @@ int main(void) {
     CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 0, 0, 0, &o, NULL));
     memcpy(coin.script, o.script_pubkey, 34);
     coin.amount = 100000;
-    gzt_funding_request req = {GZT_NET_SIGNET, 0, factory, 34, 50000, 1, {{100}, {1000}}};
+    gzt_funding_request req = {GZT_NET_SIGNET, 0, factory, 34, 50000, 1, {{100}, {1000}}, NULL, 0};
     for (fault = 0; fault <= 2; fault++) {
         int before = calls;
         gzt_err e = gzt_funding_build(ctx, &master, &req, &coin, 1, aux, &f);
@@ -72,6 +72,23 @@ int main(void) {
             CHECK(zero);
         }
     }
+    /* release signs again: a damaged or failed signature there gives nothing */
+    static uint8_t rel_out[1000];
+    fault = 0;
+    CHECK(gzt_funding_build(ctx, &master, &req, &coin, 1, aux, &f) == GZT_OK);
+    for (fault = 1; fault <= 2; fault++) {
+        int before = calls;
+        size_t len = 7;
+        memset(rel_out, 0xaa, sizeof rel_out);
+        gzt_err e = gzt_funding_release(ctx, &master, &f, f.info.txid, aux, rel_out,
+                                        sizeof rel_out, &len);
+        CHECK(calls == before + 1);
+        CHECK(e == GZT_ERR_SIGN && len == 0);
+        int zero = 1;
+        for (size_t i = 0; i < sizeof rel_out; i++) zero &= rel_out[i] == 0;
+        CHECK(zero);
+    }
+    gzt_funding_wipe(&f);
     gzw_wipe(&master, sizeof master);
     secp256k1_context_destroy(ctx);
     return test_done("test_tx_faults");
