@@ -1751,8 +1751,9 @@ print("  passphrase key PK =", pk1.hex())
 # them, so E2r runs only with --slow. E2R_EXPECTED was computed by this reference on
 # 2026-11-12 and agrees with OpenSSL 3.5.5 (openssl kdf -keylen 32 -kdfopt hexpass:...
 # -kdfopt hexsalt:... -kdfopt iter:3 -kdfopt memcost:262144 -kdfopt lanes:1 ARGON2ID) and
-# Node 24's crypto.argon2Sync (built on OpenSSL). Still to be confirmed with libsodium
-# crypto_pwhash(..., crypto_pwhash_ALG_ARGON2ID13), the implementation's library.
+# Node 24's crypto.argon2Sync (built on OpenSSL), and with libsodium 1.0.22's
+# crypto_pwhash(..., crypto_pwhash_ALG_ARGON2ID13), the implementation's library
+# (ports/storage/crypto/tests/test_vectors.c, which reproduces all of section E).
 E2R_EXPECTED = "acfe7a0e9b72c011d3382684f2b9b06a221f61aeb29fe3382299419b6433c945"
 if "--slow" in sys.argv:
     _pkr = argon2id(nfc_utf8(PW1), SALT1, T_REAL, M_REAL, 1, 32)

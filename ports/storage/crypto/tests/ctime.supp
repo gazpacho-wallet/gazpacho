@@ -1,0 +1,23 @@
+# Suppressions for sc_test_ctime (valgrind memcheck). Each names one branch
+# whose outcome is public by design; nothing here may hide a branch on a key.
+#
+# libsodium 1.0.22, crypto_aead/xchacha20poly1305/aead_xchacha20poly1305.c,
+# _decrypt_detached (inlined into the public function): after the constant-
+# time crypto_verify_16 of the tag, `if (ret != 0)` clears the output and
+# returns -1. Whether a tag verified is what every caller learns anyway.
+# Two forms: with debug information valgrind shows the inlined frame.
+{
+   xchacha20poly1305-tag-check-outcome-inlined
+   Memcheck:Cond
+   fun:_decrypt_detached
+   fun:crypto_aead_xchacha20poly1305_ietf_decrypt_detached
+   fun:crypto_aead_xchacha20poly1305_ietf_decrypt
+   fun:sc_unseal
+}
+{
+   xchacha20poly1305-tag-check-outcome
+   Memcheck:Cond
+   fun:crypto_aead_xchacha20poly1305_ietf_decrypt_detached
+   fun:crypto_aead_xchacha20poly1305_ietf_decrypt
+   fun:sc_unseal
+}

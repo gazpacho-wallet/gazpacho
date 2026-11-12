@@ -185,3 +185,6 @@ add_subdirectory(wallet)
 
 # --- chain view port (Esplora backend, comparing backend, gz-chain) ------------
 add_subdirectory(ports/chain)
+
+# --- storage encryption (ports/storage/crypto): libsodium, outside the core ---
+add_subdirectory(ports/storage/crypto)

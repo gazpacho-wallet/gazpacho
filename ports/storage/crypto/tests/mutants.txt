@@ -1,0 +1,117 @@
+# Mutants of ports/storage/crypto, run by tools/mutate-storage.py.
+# NAME	FILE	OLD	NEW	[N]   (tab-separated; \n newline, \t tab)
+# Spec 16's break-checks are among them: offset dropped from the associated
+# data (bc_offset), hedged nonce replaced by a counter-like fixed input
+# (bc_hedge_*), key commitment check dropped (bc_commitment), key file with
+# no journal started normally (bc_step0), mark append dropped (bc_no_anchor).
+#
+# --- primitives (sc_core.c)
+info_separator	sc_core.c	info[label_len] = 0x00;	info[label_len] = 0x01;
+hkdf_salt	sc_core.c	#define HKDF_SALT "gazpacho/v1/storage"	#define HKDF_SALT "gazpacho/v1/storagf"
+nonce_label	sc_core.c	memcpy(nlabel + label_len, " nonce", sizeof " nonce");	memcpy(nlabel + label_len, " nonc\0", sizeof " nonce");
+bc_hedge_r	sc_core.c	crypto_auth_hmacsha256_update(&st, r, sizeof r);	(void)r;
+bc_hedge_adlen	sc_core.c	crypto_auth_hmacsha256_update(&st, len_ad, sizeof len_ad);	(void)len_ad;
+bc_hedge_ad	sc_core.c	crypto_auth_hmacsha256_update(&st, ad, ad_len);	(void)ad;
+bc_hedge_pt	sc_core.c	crypto_auth_hmacsha256_update(&st, pt, pt_len);	(void)pt;
+nonce_key_is_k	sc_core.c	crypto_auth_hmacsha256_init(&st, kp->mem + 32, 32);	crypto_auth_hmacsha256_init(&st, kp->mem, 32);
+unseal_always_ok	sc_core.c	return rc == 0 ? 0 : -1;	return 0;
+commitment_always_ok	sc_core.c	ok = sodium_memcmp(c, stored, 32) == 0;	ok = 1;
+floor_t	sc_core.c	if (p->t < floor_t || p->t > 16)	if (p->t + 1 < floor_t || p->t > 16)
+ceiling_t	sc_core.c	if (p->t < floor_t || p->t > 16)	if (p->t < floor_t || p->t > 17)
+floor_m	sc_core.c	if (p->m_kib < floor_m || p->m_kib > 4194304u)	if (p->m_kib + 1 < floor_m || p->m_kib > 4194304u)
+ceiling_m	sc_core.c	if (p->m_kib < floor_m || p->m_kib > 4194304u)	if (p->m_kib < floor_m || p->m_kib > 4194305u)
+ceiling_phys	sc_core.c	if (phys != 0 && bytes > phys / 2)	if (phys != 0 && bytes > phys)
+ceiling_memlimit	sc_core.c	if (bytes > (uint64_t)SIZE_MAX || bytes > (uint64_t)crypto_pwhash_memlimit_max())	if (bytes > (uint64_t)SIZE_MAX)
+kdf_id	sc_core.c	if (p->kdf != 1 || p->p != 1)	if (p->kdf > 1 || p->p != 1)
+lanes	sc_core.c	if (p->kdf != 1 || p->p != 1)	if (p->kdf != 1 || p->p > 4)
+new_wrap_t	sc_core.c	if (stored->t > out->t)	if (stored->t < out->t)
+new_wrap_halving	sc_core.c	out->m_kib /= 2;	out->m_kib = out->m_kib;
+same_msk	sc_core.c	int same = sodium_memcmp(v->msk, msk, 32) == 0;	int same = sodium_memcmp(v->msk, msk, 16) == 0;
+version_pin	sc_core.c	if (strcmp(sodium_version_string(), GZ_SC_SODIUM_PINNED) != 0)\n        return GZ_SC_LIBRARY;
+#
+# --- the key file (sc_keyfile.c)
+kf_chain	sc_keyfile.c	if (memcmp(data + 9, chain, 32) != 0)\n        return GZ_SC_OTHER_NETWORK;
+kf_format	sc_keyfile.c	|| data[8] != 1)	)
+kf_params	sc_keyfile.c	gz_sc_err_t e = gz_sc_params_check(&in.kdf);\n    if (e != GZ_SC_OK)\n        return e;
+kf_ctx_vault	sc_keyfile.c	memcpy(ctx + 32, data + 41, 16); /* vault_id */	memset(ctx + 32, 0, 16);
+bc_commitment	sc_keyfile.c	if (!sc_commitment_ok(pk, "key file commitment", ctx, sizeof ctx, data, KF_HEAD, data + 83))\n        return GZ_SC_WRONG_PASSPHRASE;\n    sc_keypair_t kw;	sc_keypair_t kw;
+words_commitment	sc_keyfile.c	if (!sc_commitment_ok(pk, "key file commitment", ctx, sizeof ctx, data, KF_HEAD, data + 83))\n        return GZ_SC_WRONG_PASSPHRASE;\n    sc_keypair_t kd;	sc_keypair_t kd;
+seed_ad	sc_keyfile.c	#define KF_SEED_AD 57	#define KF_SEED_AD 83
+rewrap_seed_copy	sc_keyfile.c	memcpy(tmp + 259, old + 259, 104);	memcpy(tmp + 259, old + 259, 103);
+seed_failure_ignored	sc_keyfile.c	if (rc != 0) {\n        e = GZ_SC_DAMAGED;	if (rc < -1) {\n        e = GZ_SC_DAMAGED;
+build_params	sc_keyfile.c	gz_sc_err_t e = gz_sc_params_check(params);\n    if (e != GZ_SC_OK)\n        return e;\n    uint8_t tmp	gz_sc_err_t e = GZ_SC_OK;\n    uint8_t tmp
+#
+# --- the journal, mark file, guard file, start rule (sc_journal.c)
+bc_offset	sc_journal.c	sc_put64(ad + 16, offset);	sc_put64(ad + 16, 0);
+ad_file_id	sc_journal.c	memcpy(ad, k->file_id, 16);	memset(ad, 0, 16);
+len_min	sc_journal.c	if (ln < GZ_SC_FRAME_LEN_MIN || ln > GZ_SC_FRAME_LEN_MAX || (size_t)ln > avail - 4)	if (ln < 57 || ln > GZ_SC_FRAME_LEN_MAX || (size_t)ln > avail - 4)
+len_max	sc_journal.c	if (ln < GZ_SC_FRAME_LEN_MIN || ln > GZ_SC_FRAME_LEN_MAX || (size_t)ln > avail - 4)	if (ln < GZ_SC_FRAME_LEN_MIN || (size_t)ln > avail - 4)
+kind_range	sc_journal.c	if (kind < 1 || kind > 3 || ((kind == 1 || kind == 3) && ln != 65))	if (kind > 3 || ((kind == 1 || kind == 3) && ln != 65))
+kind_len	sc_journal.c	if (kind < 1 || kind > 3 || ((kind == 1 || kind == 3) && ln != 65))	if (kind < 1 || kind > 3)
+mark_self_offset	sc_journal.c	else if (kind == 3 && (SC_DECLASSIFY(pt, 8), sc_get64(pt) != offset))	else if (0)
+seal_mark_offset	sc_journal.c	if (kind == 3 && sc_get64(payload) != offset)\n        return GZ_SC_ARG;
+header_tag_ignored	sc_journal.c	if (sc_unseal(&kj->kp, hdr + 145, 40, hdr, 145, empty) != 0) {	if (sc_unseal(&kj->kp, hdr + 145, 40, hdr, 145, empty) < -1) {
+header_vault_check	sc_journal.c	if (memcmp(hdr + 41, v->vault_id, 16) != 0)\n        return GZ_SC_NOT_THIS_WALLET;
+recovery_ad	sc_journal.c	e = sc_seal(&kr, v->msk, 32, h, 73, h + 73);	e = sc_seal(&kr, v->msk, 32, h, 57, h + 73);
+mark_damage_rule	sc_journal.c	} else if (bad) {\n            return GZ_SC_MARK_DAMAGED; /* an invalid entry before a valid one */\n        } else {	} else {
+mark_backwards	sc_journal.c	if (have && (i < inc || (i == inc && o < off)))	if (0)
+mark_file_id	sc_journal.c	if (memcmp(data + 41, file_id, 16) != 0)\n        return GZ_SC_MARK_OTHER_JOURNAL;
+mark_entry_offset	sc_journal.c	sc_put64(ad + GZ_SC_MARK_HEADER_LEN, at);	sc_put64(ad + GZ_SC_MARK_HEADER_LEN, 0);
+start_guard_state	sc_journal.c	if (guard_state != GZ_SC_OK)\n        return GZ_SC_START_POSSIBLY_OLD;
+start_inc	sc_journal.c	if (mark_inc > j->highest_incarnation)\n        return GZ_SC_START_BEHIND;
+start_sync_mark	sc_journal.c	if (!(mark_inc == 0 && mark_off == 0) && !j->has_sync_mark(j->ctx, mark_inc, mark_off))	if (0)
+start_setup_entry	sc_journal.c	if (!(mark_inc == 0 && mark_off == 0) && !j->has_sync_mark(j->ctx, mark_inc, mark_off))	if (!(mark_inc == 0) && !j->has_sync_mark(j->ctx, mark_inc, mark_off))
+start_guard_counter	sc_journal.c	if (guard_counter > j->newest_guard_counter)	if (guard_counter > j->newest_guard_counter + 1)
+start_damaged_mark	sc_journal.c	|| mark == GZ_SC_MARK_DAMAGED)	)
+guard_len_strict	sc_journal.c	if (len != 18 + 8 * (size_t)n)	if (len < 18 + 8 * (size_t)n)
+#
+# --- exports (sc_export.c)
+chunk_index	sc_export.c	sc_put64(ad + plen, i);\n        ad[plen + 8] = 1;	sc_put64(ad + plen, 0);\n        ad[plen + 8] = 1;
+trailing	sc_export.c	e = pos + 4 + n == len ? GZ_SC_OK : GZ_SC_TRAILING_DATA;	e = GZ_SC_OK;
+empty_chunk	sc_export.c	if (n == 40) {	if (0) {
+needs_words	sc_export.c	if (info.profile == 2 && pkx)\n        return GZ_SC_NEEDS_WORDS;
+export_commitment	sc_export.c	if (!sc_commitment_ok(pkx, "backup commitment", ctx, sizeof ctx, data, 84, data + 84)) {	if (0) {
+p2_no_words	sc_export.c	if ((flags & ~1u) || (profile == 2 && (flags & 1)))	if (flags & ~1u)
+export_params	sc_export.c	if (e != GZ_SC_OK)\n            return e; /* before any derivation (F9) */
+chunk_min	sc_export.c	if (n < CHUNK_MIN || n > CHUNK_MAX || (size_t)n > len - pos - 4)	if (n > CHUNK_MAX || (size_t)n > len - pos - 4)
+body_entries_strict	sc_export.c	if (r < 0) {\n        memset(out, 0, sizeof *out);	if (r < -1) {\n        memset(out, 0, sizeof *out);
+#
+# --- attempts, token folder (sc_misc.c)
+attempts_check	sc_misc.c	ok = sodium_memcmp(h, data + 69, 16) == 0;	ok = 1;
+attempts_mode	sc_misc.c	memcmp(data + 8, chain, 32) == 0 &&\n        data[68] == 1) {	memcmp(data + 8, chain, 32) == 0) {
+attempts_free_five	sc_misc.c	if (wrong <= 5)	if (wrong <= 6)
+attempts_cap	sc_misc.c	if (k >= 10) /* 2^10 > 900 */	if (k >= 11)
+attempts_strict	sc_misc.c	a->blocked_until_s = now_s + STRICT_S;	a->blocked_until_s = now_s;
+token_mode	sc_misc.c	if (!S_ISDIR(st.st_mode) || st.st_uid != getuid() || (st.st_mode & 07777) != 0700)	if (!S_ISDIR(st.st_mode) || st.st_uid != getuid())
+token_link	sc_misc.c	if (lstat(path, &st) != 0)	if (stat(path, &st) != 0)
+token_hash_len	sc_misc.c	sodium_bin2hex(hex, sizeof hex, h, 8);	sodium_bin2hex(hex, sizeof hex, h, 7);
+#
+# --- passphrase rules (sc_pass.c)
+too_short	sc_pass.c	if (cps < GZ_SC_PASS_MIN_CP)	if (cps + 1 < GZ_SC_PASS_MIN_CP)
+too_long	sc_pass.c	if (len > GZ_SC_PASS_MAX_BYTES)\n        return GZ_SC_PASS_TOO_LONG;	if (len > GZ_SC_PASS_MAX_BYTES + 1)\n        return GZ_SC_PASS_TOO_LONG;
+words_three	sc_pass.c	return longest >= 3;	return longest >= 4;
+name_rule	sc_pass.c	if (r == GZ_SC_PASS_OK && equal_ignoring_digits(f, fl, (const uint8_t *)"gazpacho", 8))	if (0)
+nfc_compose	sc_pass.c	#define NFC_OPTS (UTF8PROC_STABLE | UTF8PROC_COMPOSE)	#define NFC_OPTS (UTF8PROC_STABLE | UTF8PROC_DECOMPOSE)
+casefold	sc_pass.c	#define FOLD_OPTS (UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD)	#define FOLD_OPTS (UTF8PROC_STABLE | UTF8PROC_COMPOSE)
+modulo_bias	sc_pass.c	} while (v >= 62208u);	} while (0);
+#
+# --- the helper (sc_kdf.c)
+helper_params	sc_kdf.c	if (gz_sc_params_check(&p) != GZ_SC_OK || pw_len > GZ_SC_PASS_IN_MAX) {	if (pw_len > GZ_SC_PASS_IN_MAX) {
+helper_exit_status	sc_kdf.c	if (ok && w == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {	if (ok) {
+helper_status_byte	sc_kdf.c	} else if (ans[0] == 1) {	} else if (ans[0] != 0) {
+helper_no_dumps	sc_kdf.c	no_dumps();\n    uint8_t head	uint8_t head
+#
+# --- files (sc_files.c)
+replace_fsync	sc_files.c	int ok = write_all(s, fd, data, len) == 0 && OS(s)->fsync(OS(s)->ctx, fd) == 0;	int ok = write_all(s, fd, data, len) == 0;
+replace_dirsync	sc_files.c	return sync_dir(s);\n}\n\ngz_sc_err_t gz_sc_fs_append	return GZ_SC_OK;\n}\n\ngz_sc_err_t gz_sc_fs_append
+append_cut	sc_files.c	int ok = OS(s)->ftruncate(OS(s)->ctx, fd, at) == 0 && write_all(s, fd, data, len) == 0 &&	int ok = write_all(s, fd, data, len) == 0 &&
+append_fsync	sc_files.c	int ok = OS(s)->ftruncate(OS(s)->ctx, fd, at) == 0 && write_all(s, fd, data, len) == 0 &&\n             OS(s)->fsync(OS(s)->ctx, fd) == 0;	int ok = OS(s)->ftruncate(OS(s)->ctx, fd, at) == 0 && write_all(s, fd, data, len) == 0;
+bc_step0	sc_files.c	u->restore = 1;	u->restore = 0;
+setup_exists	sc_files.c	if (e == GZ_SC_OK)\n        return GZ_SC_EXISTS;
+anchor_backwards	sc_files.c	if (st != GZ_SC_MARK_OK || incarnation < i || (incarnation == i && mark_offset < o))	if (st != GZ_SC_MARK_OK)
+bc_no_anchor	sc_files.c	return gz_sc_fs_append(s, GZ_SC_FILE_MARK, (uint64_t)end, entry, sizeof entry);	return GZ_SC_OK;
+check_start_guard	sc_files.c	gs = gz_sc_guard_open(u->vault, g, gl, &guard) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DAMAGED;	gs = GZ_SC_OK;
+unlock_drop_keys	sc_files.c	if (e != GZ_SC_OK)\n        gz_sc_unlocked_clear(u); /* keys dropped on every failure (8.2) */
+mark_before_journal	sc_files.c	if ((e = gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk)) != GZ_SC_OK ||\n        (e = gz_sc_fs_replace(s, GZ_SC_FILE_JOURNAL, hdr, sizeof hdr)) != GZ_SC_OK)	if ((e = gz_sc_fs_replace(s, GZ_SC_FILE_JOURNAL, hdr, sizeof hdr)) != GZ_SC_OK ||\n        (e = gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk)) != GZ_SC_OK)
+name_wallet	sc_pass.c	equal_ignoring_digits(f, fl, n, nl))	0)
+name_spaces	sc_pass.c	return (c >= '0' \&\& c <= '9') || c == ' ';	return c >= '0' \&\& c <= '9';

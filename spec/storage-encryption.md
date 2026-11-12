@@ -156,6 +156,7 @@ Checked 2026-11-12 against the documents themselves.
 | Commitment | Len, Grubbs, Ristenpart, "Partitioning Oracle Attacks", USENIX Security 2021; Albertini, Duong, Gueron, Kölbl, Luykx, Schmieg, "How to Abuse and Fix Authenticated Encryption Without Key Commitment", USENIX Security 2022 | Key commitment of the wraps (4.6) |
 | STREAM | Hoang, Reyhanitabar, Rogaway, Vizár, CRYPTO 2015 | Chunked exports (11) |
 | Padmé | Nikitin et al., PETS 2019 | Padding (open point 6) |
+| Core Lightning | `ElementsProject/lightning` at commit `71076cb` (2026-11-12), `common/hsm_secret.c` | The comparison in 4.2 |
 | OS calls | Linux `mlock(2)`, `madvise(2)`, `prctl(2)`, `setrlimit(2)`, `memfd_secret(2)`, `getrandom(2)`; `getentropy(2)` on macOS; Microsoft `VirtualLock`, `SetProcessWorkingSetSize`, `CryptProtectMemory`, `CryptProtectData`, `BCryptGenRandom`, `MoveFileExW`, `FlushFileBuffers`; Apple `F_FULLFSYNC`, `CSBackupSetItemExcluded`, the hardened runtime | Sections 7 and 8 |
 
 Gazpacho documents used: `spec/journal.md` draft 3, `spec/local-api.md` draft 4, `spec/exit.md` draft 1 and its review (`docs/reviews/review-exit-d1.md`), `spec/safety-rule.md` (sections 4.3, 7, 9, C3 to C7), `spec/signing-round.md` 8 and 12.1, `docs/THREAT-MODEL.md`, `docs/DESIGN.md` 6, 9 and 13, `docs/OPEN-QUESTIONS.md`, `docs/notes/wallet-keys.md`, and on `main`: `CMakeLists.txt`, `wallet/CMakeLists.txt`, `core/superscalar/src/crypto_aead.c`.
@@ -245,6 +246,8 @@ Hence: the floor rules stop the worst choices, the interface offers the generate
 **One rule for every Argon2id slot.** The floor and ceiling apply, before any derivation, to the key file and to every export slot (11) alike. A slot above the ceiling of this device is refused with "this file needs more memory than this device has; open it on a larger one".
 
 **The test entry point**, which accepts any parameters for vectors (E2), is compiled only into test builds; a break-check proves a release binary refuses E2's key file (test 29).
+
+**For comparison: Core Lightning** (read 2026-11-12 at `ElementsProject/lightning` commit `71076cb`, `common/hsm_secret.c`, function `get_encryption_key`). Its legacy encrypted `hsm_secret` (73 bytes) derives the key with libsodium's `crypto_pwhash(…, crypto_pwhash_argon2id_OPSLIMIT_MODERATE, crypto_pwhash_argon2id_MEMLIMIT_MODERATE, crypto_pwhash_ALG_ARGON2ID13)`, that is Argon2id with 3 passes and 256 MiB, one lane, and seals the 32-byte secret with `crypto_secretstream_xchacha20poly1305`; the salt is the **fixed** 16 bytes `"c-lightning"` padded with zeros, the same for every node, and the passphrase only has to be within libsodium's length bounds. Its newer formats keep the BIP 39 words in the clear and use the passphrase as the BIP 39 passphrase, with SHA-256 of the resulting seed stored beside them as the check (a fast verifier, and no encryption of the words at rest). This document uses the same function and the same 256 MiB and 3 passes for the key file, but a fresh random salt per wrap (so one precomputation cannot attack every wallet), a key commitment and no fast verifier (4.6), a 15-character floor (4.1), and 1 GiB and 4 passes for the file meant to leave the device (11).
 
 **Calibration at set-up.** Three timings at the default; if their **median** exceeds 3 s, 131,072 KiB; if that median still exceeds 3 s, the floor, and the interface says the device uses the minimum setting. A device that cannot allocate 64 MiB cannot create a wallet (open point 4, phones). A device calibrated low while loaded is repaired only by the upward upgrade of 4.7.
 
@@ -829,7 +832,7 @@ Every salt, identifier, key and nonce input is a **test value** (`sha256("gazpac
 
 **E2.** Argon2id, t = 3, m = 64 KiB, p = 1, 32 bytes (test parameters, below the floor). Salt `db6c732c92598e0ec4c658b7addec256`. PK `bcc9248a9db077e01fbaa2a93f27041e128273dc0336872fe21f9f69c099904c`. Agrees with OpenSSL 3.5.5 (`openssl kdf … ARGON2ID`), with Node 24's `crypto.argon2Sync`, and, by the reviewer, with the Python `cryptography` package.
 
-**E2r.** The same at t = 3, m = 262,144 KiB: `acfe7a0e9b72c011d3382684f2b9b06a221f61aeb29fe3382299419b6433c945` (the tool with `--slow`, about 30 minutes; OpenSSL; the reviewer's independent implementation). **Still to confirm with libsodium.**
+**E2r.** The same at t = 3, m = 262,144 KiB: `acfe7a0e9b72c011d3382684f2b9b06a221f61aeb29fe3382299419b6433c945` (the tool with `--slow`, about 30 minutes; OpenSSL; the reviewer's independent implementation). Confirmed with libsodium 1.0.22 on Linux (x86-64) on 2026-11-12, with every value of E0 to E14 and E15's digest (E15's canonical JSON itself is `local-api.md`'s): `ports/storage/crypto/tests/test_vectors.c` (CTest `storage_vectors`, `storage_vector_e2r`).
 
 **E3. Key file**, 363 bytes, E1's passphrase, E2's parameters and salt, `vault_id` `58e8eff8fffdf8d50e058079eb041465`, MSK `15a191ff9bc84eb40d4af9e03f98e31cdce1bd0a3cbb543b2ca1cc2664d2e8ba`. Commitment key `00dc1f010ed6a82697cda31c3b9f538df68e56967233bebef437caecf58cbb44`, KW `c5bb964b729d73609b845b8c8620cc14cf9127fd8c15415b726f88727f0acabc`, KD `24487797d030cb76de0290e7fe5590ebcfcd399f5514158e30623e979906b743`, KS `7236c6a1da88ced5cb0de1d17d579e785177081ffe04a80fb3734c5b6288bee1`:
 
@@ -1084,7 +1087,7 @@ SHA-256 `94f90d8308e1d42c8359dfbed31a81712f3406612fb268a10b41a813d0a73afe`, for 
 9. **The words calls carry the passphrase** (8.6 item 1), with `local-api.md`.
 10. **Unattended unlock** for host services (8.6 item 8).
 11. **The socket token** stays a plain owner-only file in the runtime folder (12.2).
-12. **libsodium confirmation** of every E vector on the three platforms.
+12. **libsodium confirmation** of every E vector on the three platforms. Linux done on 2026-11-12 (libsodium 1.0.22, every value byte for byte, no mismatch; `ports/storage/crypto/tests/test_vectors.c`); macOS and Windows wait for CI on those systems.
 13. Closed: folded into `journal.md` draft 3 (sections 2, 2.1, 3, 7, 8.3).
 14. **Independent review** of draft 3 on its own, against section 17. Round 2 of the first review is archived in `docs/reviews/`; draft 3 was read with `spec/exit.md` draft 2 and `spec/local-api.md` draft 4 by the cross-specification review 1 (`docs/reviews/review-cross-spec-1.md`), whose fixes are applied.
 15. **The bundle**: on by default (proposed); the refusal of "do not watch while locked" while something is to take out (`spec/exit.md` W5); KB's record in the key file (a later format); the CryptProtectMemory proposal.
