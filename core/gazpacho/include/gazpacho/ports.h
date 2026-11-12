@@ -86,9 +86,13 @@ typedef struct {
  *   - batches an earlier program handed over before it stopped, which a slow
  *     storage layer may complete late. They take their place in the journal
  *     before any batch of the new incarnation. Every such batch must be
- *     settled, durable or gone for good, by the time the start finishes:
- *     once a call of gz_node_start has set `*more` to 0, storage may not
- *     gain any more of them. */
+ *     settled, durable or gone for good, before storage accepts the first
+ *     batch of the new incarnation, and so at the latest when the start
+ *     finishes. A storage layer that keeps its journal in order does this
+ *     anyway: the new program's first batch goes after everything the old
+ *     one left. Without it, a reply the start resends for such a batch
+ *     would wait behind the start's own saves, and the start could not save
+ *     its records last. */
 typedef struct {
     int (*next)(void *ctx, gz_stored_batch_t *batch);
     void (*rewind)(void *ctx);

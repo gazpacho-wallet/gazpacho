@@ -121,7 +121,7 @@ gz_status_t gz_node_init(gz_node_t *node, const gz_ports_t *ports);
  * Storage may change between steps, but only by gaining batches: those the
  * node's own runner hands over, and those an earlier program handed over that
  * storage completes late. The second kind must be settled, durable or gone
- * for good, by the time the start finishes (ports.h).
+ * for good, before storage accepts the start's first batch (ports.h).
  *
  * `storage` reads back what storage holds (ports.h). It is used only during
  * the call, and may be walked more than once.

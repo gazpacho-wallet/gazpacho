@@ -195,6 +195,14 @@ static gz_status_t resend(const gz_record_t *record, gz_node_t *node, chunk_t *c
     return GZ_OK;
 }
 
+/* Is there a stored ping beyond `start_resent_to`? (Flagged in more_beyond.) */
+static gz_status_t beyond_resent(const gz_record_t *record, gz_node_t *node, chunk_t *chunk, gz_action_list_t *out)
+{
+    (void)out;
+    if (is_ping_record(record) && get_u64(record->bytes.data + 16) > node->start_resent_to) chunk->more_beyond = 1;
+    return GZ_OK;
+}
+
 /* Look at the next chunk of stored pings after `start_done_to`, and note
  * which of them storage records as sent. */
 static gz_status_t next_chunk(gz_node_t *node, const gz_storage_reader_t *storage, chunk_t *chunk)
@@ -238,7 +246,23 @@ static gz_status_t record_step(gz_node_t *node, const gz_storage_reader_t *stora
     chunk_t chunk;
     uint8_t serials[8 * GZ_NODE_START_CHUNK];
     size_t n = 0;
-    gz_status_t st = next_chunk(node, storage, &chunk);
+    gz_status_t st;
+    if (node->start_done_to == 0) {
+        /* Before the pass saves anything: a ping that became durable after
+         * resending passed it, anywhere in storage, sends the start back to
+         * resending now, while no save of this start can hold its reply back.
+         * None can appear once the start's first batch is stored (ports.h). */
+        chunk = (chunk_t){{0}, {0}, 0, 0};
+        st = for_each_record(storage, beyond_resent, node, &chunk, NULL);
+        if (st != GZ_OK) return st;
+        if (chunk.more_beyond) {
+            node->start_recording = 0;
+            node->start_done_to = node->start_resent_to;
+            *n_done = 0;
+            return GZ_OK;
+        }
+    }
+    st = next_chunk(node, storage, &chunk);
     if (st != GZ_OK) return st;
     for (size_t k = 0; k < chunk.n; k++) {
         if (chunk.sent[k]) continue;

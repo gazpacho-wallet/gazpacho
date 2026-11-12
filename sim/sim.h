@@ -64,9 +64,11 @@
  *
  *   Late completion (late_save_pm): a batch the dead program had handed to
  *   storage and that was still pending may complete during the next start,
- *   between two start steps. It takes its place in the journal before every
- *   batch of the new incarnation. Whatever is still pending when the start
- *   finishes is gone for good, as ports.h requires.
+ *   between two start steps, until the new program hands its storage a
+ *   batch. It takes its place in the journal before every batch of the new
+ *   incarnation. Whatever is still pending when the new program's first
+ *   batch reaches storage, or when the start finishes, is gone for good, as
+ *   ports.h requires.
  *
  *   Invariants added with sim_add_invariant are also checked just before a
  *   node is destroyed, so they can see its last state.
@@ -211,7 +213,7 @@ typedef struct {
     uint32_t save_never_pm;       /* a save never completes */
     uint32_t save_fail_pm;        /* a save fails when its turn comes */
     uint32_t save_fail_inline_pm; /* a save fails as it is handed over, and storage reports it from
-                                     inside the executor (only for programs with the default runner) */
+                                     inside the executor; a program must then carry out nothing more */
     uint32_t late_save_pm;        /* per start step: a batch the previous program left pending
                                      completes now, late (see "late completion" above) */
     uint32_t confirm_delay_pm;    /* a confirmation comes 1..max_confirm_delay_steps after durability */

@@ -58,6 +58,10 @@ if [ "$x86" -eq 1 ]; then
     refuses_object 17 "instruction: lsl\$"
     refuses_object 18 "instruction: segment register access\$"
     refuses_object 19 "writable section: .data "
+    refuses_object 32 "instruction: rdseed\$"
+    refuses_object 33 "instruction: rdtscp\$"
+    refuses_object 34 "instruction: segment register access\$"
+    refuses_object 35 "instruction: call or jump to a fixed address\$"
 fi
 refuses_object 20 "writable section: mystate "
 refuses_object 21 "writable (data|section): "

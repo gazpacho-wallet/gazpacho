@@ -542,6 +542,7 @@ typedef struct { gz_batch_id_t id; gz_record_t record; uint8_t bytes[GZ_PING_REC
 static jentry_t g_journal[JOURNAL_MAX];
 static size_t g_journal_n, g_journal_at, g_journal_confirmed;
 static uint64_t g_reply_count[JOURNAL_MAX], g_record_count[JOURNAL_MAX];
+static size_t g_executed, g_first_save_at, g_reply_at[JOURNAL_MAX];   /* order in which actions were carried out */
 
 static int journal_next(void *ctx, gz_stored_batch_t *batch)
 {
@@ -573,6 +574,9 @@ static void journal_plant_ping(uint64_t sequence, uint64_t serial)
 static void journal_execute(void *ctx, const gz_action_t *a)
 {
     (void)ctx;
+    g_executed++;
+    if (a->kind == GZ_ACTION_SAVE && !g_first_save_at) g_first_save_at = g_executed;
+    if (a->kind == GZ_ACTION_SEND && a->u.send.peer_id < JOURNAL_MAX) g_reply_at[a->u.send.peer_id] = g_executed;
     if (a->kind == GZ_ACTION_SAVE) {
         const gz_record_t *r = &a->u.save.records[0];
         journal_append(a->u.save.batch, r->type, r->bytes.data, r->bytes.len);
@@ -612,6 +616,8 @@ static void journal_reset(void)
     g_journal_n = g_journal_at = g_journal_confirmed = 0;
     memset(g_reply_count, 0, sizeof g_reply_count);
     memset(g_record_count, 0, sizeof g_record_count);
+    memset(g_reply_at, 0, sizeof g_reply_at);
+    g_executed = g_first_save_at = 0;
 }
 
 /* A thousand stored replies, none recorded as sent: the start completes,
@@ -655,6 +661,31 @@ static void test_a_ping_that_completes_during_the_start_is_resent(void)
     CHECK(start_through_runner(&node, &runner, plant_a_late_ping) == 0);
     CHECK(g_reply_count[1] == 1 && g_record_count[1] == 1);
     CHECK(g_reply_count[2] == 1 && g_record_count[2] == 1);        /* sent, then recorded: never recorded unsent */
+}
+
+/* A ping lands late, after resending has finished but before the first
+ * "sent" record, and beyond the first chunk the record pass looks at. Its
+ * reply must still leave before any save of the start (seed 411 of profile
+ * 7: otherwise it waited behind a save that was then lost). */
+static void plant_beyond_the_first_chunk(size_t step)
+{
+    if (step == 1) journal_plant_ping(13, 13);
+}
+
+static void test_a_late_ping_beyond_the_first_chunk_is_resent_before_any_save(void)
+{
+    static gz_runner_slot_t r_slots[16];
+    static uint8_t r_bytes[1024];
+    gz_node_t node;
+    gz_runner_t runner;
+    journal_reset();
+    for (uint64_t serial = 1; serial <= 12; serial++) journal_plant_ping(serial, serial);
+    CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+    CHECK(gz_runner_init(&runner, r_slots, 16, r_bytes, sizeof r_bytes, 2, journal_execute, NULL) == GZ_OK);
+    CHECK(start_through_runner(&node, &runner, plant_beyond_the_first_chunk) >= 0);
+    CHECK(g_reply_count[13] == 1 && g_record_count[13] == 1);
+    CHECK(g_first_save_at > 0 && g_reply_at[13] > 0 && g_reply_at[13] < g_first_save_at);
+    for (uint64_t serial = 1; serial <= 12; serial++) CHECK(g_reply_count[serial] == 1 && g_record_count[serial] == 1);
 }
 
 /* ---- end to end ---- */
@@ -752,6 +783,7 @@ int main(void)
     test_a_confirmation_takes_one_batch();
     test_a_start_of_a_thousand_replies_completes();
     test_a_ping_that_completes_during_the_start_is_resent();
+    test_a_late_ping_beyond_the_first_chunk_is_resent_before_any_save();
     test_event_to_executor_and_again_after_a_restart();
     CHECK(g_random_calls == 0);     /* nothing in the frame draws randomness yet */
     return check_done();

@@ -960,6 +960,20 @@ static void test_restore_from_an_older_backup(void)
     sim_destroy(sim);
 }
 
+/* A program whose release hook goes on after storage failed inside the
+ * executor is caught; the default runner stops (tested above). */
+static void test_a_program_that_goes_on_after_a_storage_failure(void)
+{
+    sim_config_t c = probe_config(1);
+    c.ops.release = eager_release;
+    c.save_fail_inline_pm = 1000;
+    sim_t *sim = sim_create(&c);
+    sim_user_command(sim, 0, (const uint8_t *)"Sx", 2);     /* a save, which fails, then a notify */
+    CHECK(sim_failed(sim) && strstr(sim_failure_reason(sim), "after its program's storage had failed") != NULL);
+    CHECK(sim_stats(sim)->inline_storage_failures == 1);
+    sim_destroy(sim);
+}
+
 /* ---- one-time secrets: judged on the secrets used, not on the draws ---- */
 
 /* Run a multi node, made to use its secrets in `mode`, through two commands,
@@ -1213,6 +1227,39 @@ static void test_a_batch_that_completes_late_is_resent(void)
     sim_t *sim = sim_create(&c);
     CHECK(sim_run(sim, 2000) == 2000 && sim_stats(sim)->late_landings > 0);
     sim_destroy(sim);
+}
+
+/* A batch the dead program left can complete late only until the new
+ * program's storage takes its first batch: after that it is gone, so no
+ * reply the start resends for it waits behind the start's own saves (found
+ * by profile 7 at 20,000 seeds, where such a reply sat behind a save fated
+ * never to complete). */
+static void test_late_batches_stop_at_the_first_new_save(void)
+{
+    size_t settled = 0, landed = 0;
+    for (uint64_t seed = 1; seed <= 60; seed++) {
+        sim_config_t c = quiet_config(seed, 1);
+        c.save_delay_pm = 1000; c.max_save_delay_steps = 6;
+        c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 1000;
+        c.late_save_pm = 300;
+        sim_t *sim = sim_create(&c);
+        for (uint8_t i = 1; i <= 6; i++) world_ping(sim, 0, i);
+        sim_run(sim, 8);                                    /* durable, not confirmed: no "sent" records */
+        for (uint8_t i = 7; i <= 12; i++) world_ping(sim, 0, i);
+        sim_run(sim, 1);                                    /* these are still pending */
+        sim_crash_node(sim, 0);
+        const char *trace = sim_trace(sim, NULL);
+        const char *first_save = strstr(trace, "save node=0 batch=2.");
+        CHECK(first_save != NULL);
+        if (first_save) CHECK(strstr(first_save, "late-landing node=0") == NULL);
+        settled += trace_has(sim, "orphans-settled node=0");
+        landed += sim_stats(sim)->late_landings > 0;
+        sim_quiesce(sim);
+        CHECK(sim_run(sim, 200) == 200 && !sim_failed(sim));
+        CHECK(saved_replies_not_sent(sim, 1) == 0);
+        sim_destroy(sim);
+    }
+    CHECK(settled > 0 && landed > 0);                       /* both happened in some runs */
 }
 
 /* ---- storage that fails inside the executor ---- */
@@ -1596,7 +1643,9 @@ int main(void)
     test_a_start_stops_when_the_node_dies();
     test_an_armed_crash_does_not_outlive_its_program();
     test_a_batch_that_completes_late_is_resent();
+    test_late_batches_stop_at_the_first_new_save();
     test_storage_failure_inside_the_executor();
+    test_a_program_that_goes_on_after_a_storage_failure();
     test_invariants_can_look_inside_a_node();
     test_links();
     test_reorganisation_and_never_confirming();

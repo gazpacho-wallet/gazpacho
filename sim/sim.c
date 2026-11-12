@@ -315,7 +315,7 @@ static void storage_accept(slot_t *s, const gz_action_t *save)
     int confirm_late = sim_rng_chance(&sim->rng, c->confirm_delay_pm);
     uint64_t confirm_extra = 1 + sim_rng_below(&sim->rng, c->max_confirm_delay_steps ? c->max_confirm_delay_steps : 1);
 
-    int fails_inline = !c->ops.release && sim_rng_chance(&sim->rng, c->save_fail_inline_pm);
+    int fails_inline = sim_rng_chance(&sim->rng, c->save_fail_inline_pm);
     if (fails_inline) {     /* storage that writes as it is called finds out at once, inside the executor */
         sim->stats.inline_storage_failures++;
         trace(sim, "storage-failed-inline node=%u", s->index);
@@ -821,18 +821,16 @@ static void land_orphan(slot_t *s)
     struct sim_storage *st = &s->storage;
     batch_t b = s->orphans[0];
     memmove(s->orphans, s->orphans + 1, --s->n_orphans * sizeof *s->orphans);
+    /* It lands only while no batch of the new program has reached storage
+     * (continue_start), so it goes last, and the journal stays in order. */
     size_t at = st->n_durable;
-    while (at > 0 && st->durable[at - 1].id.incarnation > b.id.incarnation) at--;
     b.durable_at = b.confirm_at = sim->step;
     st->durable = grow(st->durable, &st->cap_durable, st->n_durable + 1, sizeof *st->durable);
     s->shadow = grow(s->shadow, &s->cap_shadow, s->n_shadow + 1, sizeof *s->shadow);
-    memmove(st->durable + at + 1, st->durable + at, (st->n_durable - at) * sizeof *st->durable);
-    memmove(s->shadow + at + 1, s->shadow + at, (s->n_shadow - at) * sizeof *s->shadow);
-    st->durable[at] = b;
-    s->shadow[at] = (shadow_t){b.id, b.digest};
-    st->n_durable++;
-    s->n_shadow++;
-    if (at < st->next_confirm) st->next_confirm++;      /* its program is dead: no confirmation */
+    st->durable[st->n_durable++] = b;
+    s->shadow[s->n_shadow++] = (shadow_t){b.id, b.digest};
+    if (at < st->next_confirm) abort();                 /* every earlier batch was confirmed or stale: cannot be */
+    st->next_confirm = st->n_durable;                   /* its program is dead: no confirmation */
     sim->stats.saves_durable++;
     sim->stats.late_landings++;
     trace(sim, "late-landing node=%u batch=%llu.%llu at=%zu", s->index,
@@ -873,7 +871,8 @@ static void continue_start(slot_t *s)
     gz_action_list_t list;
     while (s->starting && !s->needs_rebuild && !sim->violation) {
         int more = 1;
-        if (s->n_orphans && sim_rng_chance(&sim->rng, sim->cfg.late_save_pm)) land_orphan(s);
+        if (s->n_orphans && s->n_saves_stored == 0 && sim_rng_chance(&sim->rng, sim->cfg.late_save_pm))
+            land_orphan(s);
         gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
         gz_status_t st = s->start_steps++ == MAX_START_STEPS ? GZ_ERR_NO_SPACE : sim->cfg.ops.start(s->node, &list, &more);
         if (st == GZ_WAITING) {
@@ -887,6 +886,10 @@ static void continue_start(slot_t *s)
             return;
         }
         release_list(s, &list, 1);
+        if (s->n_orphans && s->n_saves_stored > 0) {   /* storage took a new batch: the old ones are settled */
+            trace(sim, "orphans-settled node=%u gone=%zu", s->index, s->n_orphans);
+            discard_orphans(s);
+        }
         if (!more && !s->needs_rebuild) finish_start(s);
     }
 }

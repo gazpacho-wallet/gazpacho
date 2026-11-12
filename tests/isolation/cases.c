@@ -87,6 +87,14 @@ unsigned long f(void) { return header_cpu(); }
 void f(void) { PASTE(__as, m__) volatile("nop"); }
 
 /* ---- must be refused by the compiler ---- */
+#elif CASE == 32    /* the other random source, through a builtin */
+__attribute__((target("rdseed"))) int f(unsigned long long *p) { return __builtin_ia32_rdseed_di_step(p); }
+#elif CASE == 33    /* the time-stamp counter with the processor number, through a builtin */
+uint64_t f(void) { unsigned a; return __builtin_ia32_rdtscp(&a); }
+#elif CASE == 34    /* thread-local state through %fs at an offset that is not the canary */
+uint64_t f(void) { uint64_t v; __asm__ volatile("movq %%fs:0x10,%0" : "=r"(v)); return v; }
+#elif CASE == 35    /* the kernel's fixed time() entry, its address written as a constant */
+long f(void) { return ((long (*)(long *))(uintptr_t)0xffffffffff600400ull)(0); }
 #elif CASE == 40    /* floating point: refused by -mgeneral-regs-only */
 double f(double x) { return x * 1.5 + 0.1; }
 /* ---- honest, must pass ---- */
