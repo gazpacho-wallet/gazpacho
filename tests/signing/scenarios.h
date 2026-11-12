@@ -874,10 +874,266 @@ static uint64_t sc_journal(void)
     return d;
 }
 
-#define N_SCENARIOS 12
+/* Every item's signers in reverse order (the host last), each spent script made to match:
+ * a member then signs at position 0 of some items. */
+static void reverse_signers(gz_sign_def_t *d, int which)
+{
+    (void)which;
+    for (int i = 0; i < d->n_items; i++) {
+        gz_sign_item_t *it = &d->items[i];
+        secp256k1_pubkey pks[GZ_SIGN_MAX_SIGNERS], tw_pk;
+        const secp256k1_pubkey *ptr[GZ_SIGN_MAX_SIGNERS];
+        secp256k1_xonly_pubkey agg, x;
+        secp256k1_musig_keyagg_cache c;
+        uint8_t ser[32], tw[32];
+        gz_sha256_t th;
+        for (int a = 0, b = it->n_signers - 1; a < b; a++, b--) { uint8_t t = it->signers[a]; it->signers[a] = it->signers[b]; it->signers[b] = t; }
+        for (int k = 0; k < it->n_signers; k++) {
+            if (!secp256k1_ec_pubkey_parse(w_ctx(), &pks[k], d->participants[it->signers[k]].factory_key, 33)) abort();
+            ptr[k] = &pks[k];
+        }
+        if (!secp256k1_musig_pubkey_agg(w_ctx(), NULL, &agg, &c, ptr, it->n_signers) || !secp256k1_xonly_pubkey_serialize(w_ctx(), ser, &agg)) abort();
+        gz_tagged_init(&th, "TapTweak");
+        gz_sha256_write(&th, ser, 32);
+        if (it->has_merkle_root) gz_sha256_write(&th, it->merkle_root, 32);
+        gz_sha256_done(&th, tw);
+        if (!secp256k1_musig_pubkey_xonly_tweak_add(w_ctx(), &tw_pk, &c, tw) || !secp256k1_xonly_pubkey_from_pubkey(w_ctx(), &x, NULL, &tw_pk) ||
+            !secp256k1_xonly_pubkey_serialize(w_ctx(), it->spent_script + 2, &x)) abort();
+    }
+}
+
+static void ea_extra(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sign_round_t *r)
+{   /* entry 0 once more at the end, the count raised */
+    (void)r;
+    size_t a = (size_t)((m->n > 1 ? m->entry[1] : b + *len) - m->entry[0]);
+    memmove(b + *len, m->entry[0], a);
+    *len += a;
+    b[36] = (uint8_t)((m->n + 1) >> 8); b[37] = (uint8_t)(m->n + 1);
+}
+
+/* A result edited: the second entry made a copy of the first; or the last left out; or one from another tier. */
+static size_t edit_result(uint8_t *out, const uint8_t *in, size_t len, int how, const gz_sign_round_t *r)
+{
+    gz_sign_msg_t m;
+    memcpy(out, in, len);
+    if (!gz_sign_decode(out, len, &m) || m.n < 2) return 0;
+    uint8_t *e0 = (uint8_t *)(uintptr_t)m.entry[0], *e1 = (uint8_t *)(uintptr_t)m.entry[1];
+    if (how == 0) memcpy(e1, e0, 68);
+    else if (how == 1) {
+        size_t sig_at = len - 64;
+        memmove(out + sig_at - 68, out + sig_at, 64);
+        len -= 68;
+        out[36] = (uint8_t)((m.n - 1) >> 8); out[37] = (uint8_t)(m.n - 1);
+    } else {
+        for (uint32_t i = 0; i < r->def.n_items; i++)
+            if (r->def.items[i].tier != m.tier) { e0[0] = (uint8_t)(i >> 24); e0[1] = (uint8_t)(i >> 16); e0[2] = (uint8_t)(i >> 8); e0[3] = (uint8_t)i; break; }
+    }
+    w_resign(out, len - 64, 0);
+    return len;
+}
+
+static uint64_t sc_edges(void)
+{
+    uint64_t d = 0;
+    /* A. Members at position 0: a whole two-tier round with the host signing last. */
+    {
+        harness_t h;
+        h_init(&h, 4);
+        h.builder.mutate = reverse_signers;
+        CHECK(h_begin(&h, 2, 4, 0) == GZ_OK);
+        h_flush(&h, 100000);
+        const gz_sign_round_t *r = h_newest(&h, 0);
+        CHECK(r->state == GZ_ROUND_DONE && r->def.items[0].signers[0] != 0);
+        honest_counts(&h, 2);
+        /* a restart there: the member answers per item, at position 0 too */
+        check_restart_keeps(&h);
+        d ^= h_digest(&h);
+        h_free(&h);
+        h_init(&h, 4);
+        h.builder.mutate = reverse_signers;
+        CHECK(h_begin(&h, 1, 4, 0) == GZ_OK);
+        flush_until(&h, 4, GZ_MSG_NONCES, 1);
+        CHECK(h_restart(&h, 4) == GZ_OK);
+        CHECK(h_oldest(&h, 4)->state == GZ_ROUND_ABORTED);
+        h_flush(&h, 100000);
+        h_ticks(&h, 2);
+        CHECK(h_newest(&h, 0)->state == GZ_ROUND_DONE);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    /* B. After a restart in Signed, the same nonce set again: refused (no saved answer for it), nothing sent */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        while (q_find(&h, 0, 1, GZ_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+        long i = q_find(&h, 0, 1, GZ_MSG_ALL_NONCES);
+        static uint8_t set[GZ_SIGN_MAX_MSG];
+        size_t len = h.q[i].len;
+        memcpy(set, h.q[i].b, len);
+        h_deliver(&h, (size_t)i, 0);
+        CHECK(h_restart(&h, 1) == GZ_OK);
+        size_t parts = h_count_kind(&h, 1, GZ_MSG_PARTIALS);
+        h_inject(&h, 0, 1, set, len);
+        CHECK(h_count_kind(&h, 1, GZ_MSG_PARTIALS) == parts && h.p[1].e->counters[GZ_SIGN_COUNT_REJECTED] == 1);
+        /* F. the proposal again while Signed: the saved partial signatures */
+        const h_sent_t *prop = h_sent_kind(&h, 0, GZ_MSG_PROPOSE, 0);
+        h_inject(&h, 0, 1, prop->b, prop->len);
+        CHECK(h_count_kind(&h, 1, GZ_MSG_PARTIALS) == parts + 1 && h.sent[h.n_sent - 1].kind == GZ_MSG_PARTIALS);
+        /* and once the result is in, before complete: nothing at all */
+        while (q_find(&h, 0, 1, GZ_MSG_RESULT) < 0) h_deliver(&h, 0, 0);
+        h_deliver(&h, (size_t)q_find(&h, 0, 1, GZ_MSG_RESULT), 0);
+        CHECK(h_newest(&h, 1)->tier_state[0] == GZ_TIER_DONE && h_newest(&h, 1)->state == GZ_ROUND_ACTIVE);
+        size_t sent = h.n_sent;
+        h_inject(&h, 0, 1, prop->b, prop->len);
+        CHECK(h.n_sent == sent);
+        h_flush(&h, 100000);
+        CHECK(h_newest(&h, 0)->state == GZ_ROUND_DONE);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    /* C. A nonce set with one entry twice (the count raised): refused as malformed */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        while (q_find(&h, 0, 1, GZ_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+        deliver_edited(&h, q_find(&h, 0, 1, GZ_MSG_ALL_NONCES), ea_extra, -1);
+        const gz_sign_round_t *m = h_newest(&h, 1);
+        CHECK(m->state == GZ_ROUND_ABORTED && m->why == GZ_WHY_BAD_MESSAGE && h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == 0);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    /* D. Results with an entry twice, one left out, or one from another tier: Unfinished, nothing saved */
+    for (int how = 0; how < 3; how++) {
+        harness_t h;
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+        while (q_find(&h, 0, 1, GZ_MSG_RESULT) < 0) h_deliver(&h, 0, 0);
+        long i = q_find(&h, 0, 1, GZ_MSG_RESULT);
+        static uint8_t bad[GZ_SIGN_MAX_MSG];
+        size_t len = edit_result(bad, h.q[i].b, h.q[i].len, how, h_newest(&h, 0));
+        CHECK(len > 0);
+        h_drop_msg(&h, (size_t)i);
+        size_t recs = h.p[1].n_recs;
+        h_inject(&h, 0, 1, bad, len);
+        const gz_sign_round_t *m = h_newest(&h, 1);
+        if (!(m->state == GZ_ROUND_UNFINISHED && m->why == GZ_WHY_BAD_RESULT)) printf("  result edit %d: state %u why %u\n", how, m->state, m->why);
+        CHECK(m->state == GZ_ROUND_UNFINISHED && m->why == GZ_WHY_BAD_RESULT && h.p[1].n_recs == recs);
+        d ^= h_digest(&h) + (uint64_t)how;
+        h_free(&h);
+    }
+    /* E. Ticks before progress do not count after it: the deadline and the resends count from the last step. */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+        flush_until(&h, 1, GZ_MSG_NONCES, 1);
+        h_tick(&h, 1); h_tick(&h, 1);                      /* member 1: two ticks while it waits for the nonce set */
+        while (q_find(&h, 0, 1, GZ_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+        h_deliver(&h, (size_t)q_find(&h, 0, 1, GZ_MSG_ALL_NONCES), 0);
+        h.drop_to = 1u << 1;                               /* it hears nothing more */
+        size_t p0 = h_count_kind(&h, 1, GZ_MSG_PARTIALS);
+        h_tick(&h, 1);
+        CHECK(h_count_kind(&h, 1, GZ_MSG_PARTIALS) == p0);   /* one tick since it signed: no resend yet */
+        h_tick(&h, 1); h_tick(&h, 1);
+        CHECK(h_count_kind(&h, 1, GZ_MSG_PARTIALS) == p0 + 1);
+        d ^= h_digest(&h);
+        h_free(&h);
+
+        /* the next tier's nonce deadline counts from the result */
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+        const gz_sign_round_t *r = h_newest(&h, 0);
+        uint32_t j = 1;
+        while (j <= 3 && items_of(r, j, 1, NULL) == 0) j++;
+        CHECK(j <= 3);
+        while (q_find(&h, 0, j, GZ_MSG_RESULT) < 0) {
+            if (!h.nq) break;
+            h_deliver(&h, 0, 0);
+        }
+        for (int t = 0; t < 5; t++) h_tick(&h, j);         /* ticks while waiting for the result */
+        h.drop_to = 1u;
+        h_deliver(&h, (size_t)q_find(&h, 0, j, GZ_MSG_RESULT), 0);
+        CHECK(h_newest(&h, j)->tier == 1 && h_newest(&h, j)->tier_state[1] == GZ_TIER_NONCES);
+        for (int t = 0; t < 11; t++) h_tick(&h, j);
+        CHECK(h_newest(&h, j)->state == GZ_ROUND_ACTIVE);
+        h_tick(&h, j);
+        CHECK(h_newest(&h, j)->state == GZ_ROUND_UNFINISHED && h_newest(&h, j)->why == GZ_WHY_DEADLINE);
+        d ^= h_digest(&h);
+        h_free(&h);
+
+        /* a member's resends after a result count from that result: one tier, and a tier with nothing of its own */
+        for (int tiers = 1; tiers <= 2; tiers++) {
+            h_init(&h, 3);
+            CHECK(h_begin(&h, (uint8_t)tiers, 3, 0) == GZ_OK);
+            r = h_newest(&h, 0);
+            j = 1;
+            if (tiers == 2) while (j <= 3 && items_of(r, j, 1, NULL) != 0) j++;
+            CHECK(j <= 3);
+            flush_until(&h, j, GZ_MSG_PARTIALS, 1);
+            h_tick(&h, j); h_tick(&h, j);                  /* two ticks after signing */
+            while (q_find(&h, 0, j, GZ_MSG_RESULT) < 0 && h.nq) h_deliver(&h, 0, 0);
+            h.drop_to = 1u << j;
+            for (size_t k = 0; k < h.nq; k++) if (h.q[k].to == 0) { h_drop_msg(&h, k); k--; }
+            h.drop_to = 1u;
+            h_deliver(&h, (size_t)q_find(&h, 0, j, GZ_MSG_RESULT), 0);
+            CHECK(h_newest(&h, j)->tier_state[tiers - 1] >= GZ_TIER_SIGNED);
+            size_t st0 = h_count_kind(&h, j, GZ_MSG_STATUS);
+            h_tick(&h, j);
+            CHECK(h_count_kind(&h, j, GZ_MSG_STATUS) == st0);
+            h_tick(&h, j); h_tick(&h, j);
+            CHECK(h_count_kind(&h, j, GZ_MSG_STATUS) == st0 + 1);
+            d ^= h_digest(&h);
+            h_free(&h);
+        }
+
+        /* the host's deadlines count from each step: the nonce set, the next tier */
+        for (int tiers = 1; tiers <= 2; tiers++) {
+            h_init(&h, 3);
+            CHECK(h_begin(&h, (uint8_t)tiers, 3, 0) == GZ_OK);
+            if (tiers == 1) {
+                for (int t = 0; t < 5; t++) h_tick(&h, 0);         /* five host ticks while it collects nonces */
+                while (h.nq && h_count_kind(&h, 0, GZ_MSG_ALL_NONCES) == 0) h_deliver(&h, 0, 0);
+            } else {
+                while (h.nq && h_count_kind(&h, 0, GZ_MSG_ALL_NONCES) == 0) h_deliver(&h, 0, 0);
+                for (int t = 0; t < 5; t++) h_tick(&h, 0);         /* five host ticks while it collects partial signatures */
+                while (h.nq && h_newest(&h, 0)->tier == 0) h_deliver(&h, 0, 0);
+            }
+            h.drop_to = 1u;
+            for (size_t k = 0; k < h.nq; k++) if (h.q[k].to == 0) { h_drop_msg(&h, k); k--; }
+            uint8_t rid[32];
+            memcpy(rid, h_newest(&h, 0)->id, 32);
+            for (int t = 0; t < 11; t++) h_tick(&h, 0);
+            CHECK(h_find(&h, 0, rid)->state == GZ_ROUND_ACTIVE && h.p[0].e->attempts == 1);
+            h_tick(&h, 0);
+            CHECK(h_find(&h, 0, rid)->state == GZ_ROUND_FAILED && h_find(&h, 0, rid)->why == GZ_WHY_DEADLINE);
+            d ^= h_digest(&h);
+            h_free(&h);
+        }
+
+        /* the host's ack deadline counts from the complete */
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        while (h.nq && q_find(&h, 1, 0, GZ_MSG_PARTIALS) < 0) h_deliver(&h, 0, 0);
+        for (int t = 0; t < 2; t++) h_tick(&h, 0);         /* two host ticks while it collects */
+        while (h.nq && h_newest(&h, 0)->state != GZ_ROUND_COMPLETE) h_deliver(&h, 0, 0);
+        h.drop_to = 1u;
+        h_flush(&h, 100000);
+        for (int t = 0; t < 11; t++) h_tick(&h, 0);
+        CHECK(h_newest(&h, 0)->state == GZ_ROUND_COMPLETE);
+        h_tick(&h, 0);
+        CHECK(h_newest(&h, 0)->state == GZ_ROUND_FAILED && h_newest(&h, 0)->why == GZ_WHY_DEADLINE);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    return d;
+}
+
+#define N_SCENARIOS 13
 static const char *const SC_NAMES[N_SCENARIOS] = {
     "honest-1", "honest-2", "duplicates", "member-restart-nonces", "member-restart-signed", "tier-abort",
-    "host-restarts", "timers", "host-faults", "member-faults", "proposals", "journal"};
+    "host-restarts", "timers", "host-faults", "member-faults", "proposals", "journal", "edges"};
 
 static uint64_t run_scenario(int k)
 {
@@ -893,7 +1149,8 @@ static uint64_t run_scenario(int k)
     case 8: return sc_host_faults();
     case 9: return sc_member_faults();
     case 10: return sc_proposals();
-    default: return sc_journal();
+    case 11: return sc_journal();
+    default: return sc_edges();
     }
 }
 

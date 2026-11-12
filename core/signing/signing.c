@@ -558,10 +558,9 @@ static void member_all_nonces(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_ms
     for (int k = 0; k < m->n; k++) {
         const uint8_t *p = m->entry[k];
         uint32_t i = be32(p);
-        for (int s = 0; s < r->def.items[i].n_signers; s++) {
-            memcpy(r->nonce[i][s], p + 5 + 130 * s, 66);
-            memcpy(r->nonce_sig[i][s], p + 5 + 130 * s + 66, 64);
-        }
+        /* The others' nonce signatures are checked above and not kept: a member never sends them on,
+         * and evidence (spec section 9) is not encoded in Slice 1. */
+        for (int s = 0; s < r->def.items[i].n_signers; s++) memcpy(r->nonce[i][s], p + 5 + 130 * s, 66);
         r->have_nonce[i] = all_bits(&r->def.items[i]);
     }
     /* Sign, then save the exposure and the bytes in one batch, then send. */
@@ -636,9 +635,7 @@ static void member_result(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_t 
         return;
     }
     r->state = GZ_ROUND_ACTIVE;
-    r->tier_state[t] = GZ_TIER_DONE;
-    r->result_len[t] = (uint32_t)len;
-    memcpy(r->result_msg[t], bytes, len);
+    r->tier_state[t] = GZ_TIER_DONE;           /* the bytes are saved; a member never sends a result on */
     r->ticks = 0;
     save_round_record(em, GZ_REC_M_RESULT, r->id, t, bytes, len);
     if (t + 1 < r->def.n_tiers) member_begin_tier(e, r, (uint8_t)(t + 1), em);

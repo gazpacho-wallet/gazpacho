@@ -714,6 +714,7 @@ static const uint64_t SC_KNOWN[N_SCENARIOS] = {
     0x5fe72522b7781190ull, /* member-faults */
     0x177349a7136828dfull, /* proposals */
     0x718a55599b98c78eull, /* journal */
+    0x61bb3b9d04f5a19aull, /* edges */
 };
 
 static void test_golden(int print)
