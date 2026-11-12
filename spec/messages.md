@@ -60,7 +60,7 @@ Related: `terms.md` (the host terms record carried by `terms_offer`), `signing-r
 | Host key | The host's long-term key is its BOLT 8 static key. The member is given `<host point, 66 hex>@<address>:<port>` and refuses a handshake that does not match | One key to pin, check and show. The same key signs the terms (`terms.md`) and every host message, so the key the member connected to is the key that bound itself to the terms |
 | Member key | A BOLT 8 static key derived from the member's seed, its current restore epoch (31 bits; 0 for the original installation, `safety-rule.md` R2) and a key index (`journal.md` section 8; the derivation path itself belongs in the wallet specification, **(open)**). **Which index:** a connection for a lobby where the member has a seat uses that seat's key; any other new connection gets a fresh index, saved (with the guard) before the handshake, and if the member joins a lobby on it, that key becomes the lobby's key (`signing-round.md` section 2). It is also the member's **contribution key** | Identity is new per lobby by default (`LOBBY.md`). Deriving it means a restarted member reconnects with the same key and finds its seat. A restored member derives under a new epoch, so it has no old seat: it joins again |
 | First message | BOLT 1 `init`. `networks` must contain the signet chain hash and nothing else; otherwise close | Slices refuse to start on mainnet (`SLICES.md` rule 3) |
-| Feature bit | None in slice 1. A member that sends factory messages to a node that does not speak them is simply ignored, because the message type is odd. Bit 271 of bLIP-56 is set only by builds that offer the adapter of section 10 | Slice 1 needs no negotiation. The adapter, when offered, uses bLIP-56's bit (bLIP 2: bits 0 to 255 are kept for BOLTs) |
+| Feature bit | The factory messages need none: a member that sends them to a node that does not speak them is simply ignored, because the message type is odd. A build that includes discovery (`discovery.md` design C, the demo wallet) sets `factory_capable`, candidate bit 449, in `init` (`discovery.md` 3); a build without discovery sets nothing. Bit 271 of bLIP-56 is set only by builds that offer the adapter of section 10 | Slice 1 needs no negotiation. The adapter, when offered, uses bLIP-56's bit (bLIP 2: bits 0 to 255 are kept for BOLTs) |
 | Keep-alive | BOLT 1 `ping`/`pong`, a `ping` every 15 seconds of silence. A side that gets no `pong` within 30 seconds closes the connection | BOLT 1 allows closing. The shortest step timeout a host may set is 60 s (`terms.md` section 3), twice this, so a dead connection is noticed and replaced within one step (review 3, F11) |
 | Size | A Lightning message is at most 65,535 bytes, its 2-byte type included (BOLT 1 and BOLT 8) | Hence section 5 |
 
@@ -118,11 +118,11 @@ Why a `protocol` field when Lightning uses no version numbers: it is not a versi
 | 80 | `round_status_request` | member → host | 7.10 | Yes |
 | 81 | `factory_funded` | host → member | 7.11 | Optional hint |
 
-Kinds 128 to 159 are reserved for discovery and defined in `discovery.md`; they always carry an all-zero `scope`, and one with any other `scope` is refused.
+Kinds 128 to 159 are reserved for discovery and defined in `discovery.md`; they always carry an all-zero `scope`. **Discovery is never worth a disconnect:** for kinds 128 to 159 every case this document would "refuse" (a nonzero `scope`, malformed records, an unknown even record, the wrong direction) is **ignored** instead, and `discovery.md` 8.7 says what else a receiver may do. This overrides sections 1, 4.2 and 4.1's direction rule for those kinds only.
 
 Numbering: lobby kinds from 16, round kinds from 64, discovery kinds from 128, so each group has room for more than twenty additions without interleaving. 0 is never used, so an all-zero envelope is invalid.
 
-A kind sent in the wrong direction (for example `ready` from the host) is refused.
+A kind sent in the wrong direction (for example `ready` from the host) is refused, except a discovery kind, which is ignored (above).
 
 ### 4.2 Records
 
@@ -161,7 +161,7 @@ Which key signs:
 
 The factory key signs group-signature items and one binding statement, each under its own tag or digest (`signing-round.md` section 2); the tag `gazpacho/bind` keeps the statement apart from every transaction digest.
 
-**The 4-byte tag is a fixed alias of the protocol identifier.** `protocol` (`67 7a 66 01`) stands for exactly one protocol and major version, the one section 10.3 names `factory_protocol_id`; the mapping is one to one (section 10.2). It is **not a security parameter**: domain separation comes from the tags of `TH`, and a short field in a preimage gives a forger nothing. Slice 1 signs the 4-byte tag, here and in the round identifier (7.1). Signing the 32-byte `factory_protocol_id` instead is deferred: it will be done in one change together with renaming every `gazpacho/…` tag to the agreed namespace, with new vectors, once the protocol name is agreed with SuperScalar (10.3; review 3, F28). Until then nothing about the protocol name enters any signature.
+**The 4-byte tag is a fixed alias of the protocol identifier.** `protocol` (`67 7a 66 01`) stands for exactly one protocol and major version, the one section 10.3 names `factory_protocol_id`; the mapping is one to one (section 10.2). It is **not a security parameter**: domain separation comes from the tags of `TH`, and a short field in a preimage gives a forger nothing. Slice 1 signs the 4-byte tag, here and in the round identifier (7.1). Signing the 32-byte `factory_protocol_id` instead is deferred: it will be done in one change together with renaming every `gazpacho/…` tag to the agreed namespace, with new vectors, once the shared tag namespace is agreed with SuperScalar (review 3, F28). The protocol id itself is decided (owner, 2026-11-12; 10.3). Until the rename, nothing about the protocol name enters any signature.
 
 ## 5. Splitting a large message
 
@@ -755,7 +755,7 @@ A native message is `type (52791) || tag (67 7a 66 01) || kind || scope || recor
 
 Saved bytes (`journal.md`) are always the native envelope. The carrier is chosen when sending, per connection, so a message saved on one connection can be resent byte for byte on a later connection in the other carrier.
 
-### 10.3 Our `factory_protocol_id` **(open)**
+### 10.3 Our `factory_protocol_id`: decided (owner, 2026-11-12)
 
 ```
 factory_protocol_id = SHA256("SuperScalar/1")
@@ -766,7 +766,7 @@ factory_protocol_id = SHA256("SuperScalar/1")
 - The name proposed is **SuperScalar**, not Gazpacho: this document is meant to be offered to the SuperScalar repository as the shared format (`DESIGN.md` section 8), and a factory protocol named for the factory lets every program that speaks the format interoperate.
 - Major version **1**, matching the tag's last byte.
 - The `/` separator is our choice; bLIP-56 says only "concatenation", and a separator keeps "Name1" + "2" apart from "Name" + "12".
-- **Open:** to be agreed with the SuperScalar session. It interoperates only if the reference uses the same string with this payload format; today it speaks its own private format of about 100 message types.
+- **Decided (owner, 2026-11-12; `docs/ux/decisions.md` decision 8):** the shared protocol identifier is SHA-256 of the UTF-8 bytes "SuperScalar/1", the value above. superscalar-cln currently uses a different value and will be updated. It interoperates only if the reference also uses this payload format; today it speaks its own private format of about 100 message types. The tag rename and the switch of signed preimages to the 32-byte id (4.3) remain a separate change, done together, with new vectors.
 
 ### 10.4 Sizes inside the piggyback
 
@@ -849,7 +849,7 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 4. Unknown even record in each kind: refused. Unknown odd record: skipped, and covered by the signature (a changed odd record fails the signature).
 5. A record after 240: refused. Record 240 missing from a signed kind: refused.
 6. Each fixed-size field one byte short and one byte long; a list one byte off a whole entry; a list above its bound.
-7. Unknown even kind: refused. Unknown odd kind: ignored and the connection kept. Wrong `protocol`: ignored with one warning. A kind in the wrong direction: refused.
+7. Unknown even kind: refused. Unknown odd kind: ignored and the connection kept. Wrong `protocol`: ignored with one warning. A kind in the wrong direction: refused (a discovery kind 128 to 159: ignored, connection kept).
 8. A message of exactly 65,535 bytes is accepted; the sender never builds one larger.
 
 **Splitting**
@@ -931,5 +931,5 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 15. Closed: both digests are in the round identifier (`signing-round.md` section 3).
 16. **The 512-node limit** comes from a defect in the import (N13.3) and caps slice 1 at roughly 128 members until fixed upstream. Slice 1 needs only four participants.
 17. **The funding transaction travels in `round_propose`**, not in `round_complete` as review 2 N16 suggests, so the txid is checked before any contribution.
-18. **The protocol id string** "SuperScalar/1" (10.3), to be agreed with the SuperScalar session. When it is, the tags are renamed and signed preimages switch from the 4-byte tag to the 32-byte id in one change (4.3).
+18. Closed: **the protocol id** is SHA-256 of "SuperScalar/1", decided (owner, 2026-11-12) (10.3); superscalar-cln currently uses a different value and will be updated. Still open: renaming the tags and switching signed preimages from the 4-byte tag to the 32-byte id, in one change (4.3).
 19. **`factory_instance_id`** for slice 2's `channel_in_factory`.
