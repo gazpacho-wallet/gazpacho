@@ -455,25 +455,42 @@ static void test_storage_that_is_not_a_journal_is_refused(void)
     CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_ERR_CORRUPT);
 }
 
+/* The node's start state is the same in `a` and `b`. */
+static int same_start_state(const gz_node_t *a, const gz_node_t *b)
+{
+    return a->next_serial == b->next_serial && a->start_done_to == b->start_done_to &&
+           a->start_resent_to == b->start_resent_to && a->start_recording == b->start_recording &&
+           a->awaiting_head == b->awaiting_head && a->n_awaiting == b->n_awaiting;
+}
+
 /* A start step that fails leaves the node as it was. Pings 1 to 10 are
- * stored, 9 and 10 recorded as sent. The second step finds 9 and 10 sent,
- * turns to recording, and has no room for the record. Asked again with room,
- * it must record 1 to 8 once, having resent them once. */
+ * stored, 9 and 10 recorded as sent. A first step with no room fails after
+ * its walk has seen serial 10, so it must not keep a new next serial. The
+ * second step finds 9 and 10 sent, turns to recording (noting how far it
+ * resent), and has no room for the record; it must not keep that either.
+ * Asked again with room, it must record 1 to 8 once, having resent them once. */
 static void test_a_failed_start_step_changes_nothing(void)
 {
     static gz_record_t stored[12];
-    gz_node_t node;
+    gz_node_t node, before;
     size_t n = 0, sends = 0, recorded = 0;
     int more = 1;
     for (uint64_t serial = 1; serial <= 10; serial++) { stored[n] = ping_record(n, serial, serial, (uint8_t)serial); n++; }
     stored[n] = sent_record(n, 9, 10); n++;
     gz_storage_reader_t reader = reader_over(stored, n);
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+    before = node;
+    gz_action_list_init(&out, slots, 0, bytes, sizeof bytes);
+    CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_ERR_NO_SPACE && more == 1 && out.count == 0);
+    CHECK(same_start_state(&node, &before) && node.next_serial == 1);
     gz_action_list_init(&out, slots, 80, bytes, sizeof bytes);
     CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_OK && more == 1 && out.count == 8);
+    CHECK(node.next_serial == 11 && node.start_recording == 0 && node.start_resent_to == 0);
     sends += out.count;
+    before = node;
     gz_action_list_init(&out, slots, 0, bytes, sizeof bytes);
     CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_ERR_NO_SPACE && more == 1);
+    CHECK(same_start_state(&node, &before) && node.start_resent_to == 0 && node.n_awaiting == 0);
     while (more) {
         gz_action_list_init(&out, slots, 80, bytes, sizeof bytes);
         if (gz_node_start(&node, &reader, &out, &more) != GZ_OK) break;
