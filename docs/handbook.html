@@ -259,6 +259,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c20-29-working-alongside-the-superscalar-rep" title="29. Working alongside the SuperScalar repo (2026-11-11)">29. Working alongside the SuperScalar repo (2026-11-11)</a>
 <a class="sec" href="#c20-30-agreement-with-the-superscalar-sessio" title="30. Agreement with the SuperScalar session on the tree changes (2026-11-11)">30. Agreement with the SuperScalar session on the tree changes (2026-11-11)</a>
 <a class="sec" href="#c20-31-review-of-the-plan-and-workflow-2026-" title="31. Review of the plan and workflow (2026-11-11)">31. Review of the plan and workflow (2026-11-11)</a>
+<a class="sec" href="#c20-32-core-and-simulator-skeletons-merged-2" title="32. Core and simulator skeletons merged (2026-11-11)">32. Core and simulator skeletons merged (2026-11-11)</a>
 <a class="ch" href="#c21">Lobby research</a>
 <a class="sec" href="#c21-summary" title="Summary">Summary</a>
 <a class="sec" href="#c21-a1-prior-work-by-the-same-owner" title="A1. Prior work by the same owner">A1. Prior work by the same owner</a>
@@ -782,7 +783,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>M1</td>
-<td>Core skeleton and simulator; signing round engine; a fixed-tree factory created in the simulator with funding signed last</td>
+<td>Core skeleton and simulator (merged 11 Nov; a follow-up hardens restart and adds faults the engines need); signing round engine; a fixed-tree factory created in the simulator with funding signed last</td>
 <td>In progress</td>
 </tr>
 <tr>
@@ -3220,6 +3221,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Gaps recorded in <code>OPEN-QUESTIONS.md</code>:</strong> package submission through public chain servers; the terms record and message specifications; other compilers and a Windows build; a nightly run; the number of timed levels.</li>
 <li><strong>An opportunity:</strong> once the core frame merges, wire the placeholder node end to end through a real connection, a real journal and the interface, before the signing engine exists. Slice 1 then becomes replacing the placeholder, not first-time integration.</li>
 </ul></div></details>
+<details id="c20-32-core-and-simulator-skeletons-merged-2"><summary>32. Core and simulator skeletons merged (2026-11-11)</summary><div class="body"><p>Pull request 5 was merged after two independent reviews and three rounds of fixes. The last fix made the placeholder node resend every saved reply not recorded as sent, and added a simulator check that whatever is saved is eventually sent. A follow-up branch is in progress with the items the second review said are needed before the first engine: a resumable start step, reading storage through an iterator, failing on storage that answers out of order, restoring from an old backup with repeating randomness, and letting invariants see inside a node.</p></div></details>
 </section>
 <section class="chapter" id="c21"><h2>Lobby research</h2><p class="desc">Background: how comparable systems gather people and handle those who stall, with sources.</p><p class="file">Lobby: research and design note · <code>docs/LOBBY-research.md</code></p>
 <div class="intro"><p>Research note, 2026-11-11. Status: proposal for the owner's decision. Nothing here is decided.</p>
