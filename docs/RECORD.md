@@ -355,3 +355,57 @@ Recorded here because they set what Gazpacho can expect from the files it import
 ## 26. Vertical slices (2026-11-11)
 
 Owner's decision: build vertical slices on signet and testnet as the work proceeds, rather than finishing every engine before anything can be run. Slice 1 forms a factory; slice 2 makes a payment; slice 3 has a member leave alone. Each uses only tested engines and never skips the safe-to-sign check. Detail in `SLICES.md`. The chain port's HTTP backend is started alongside M1 so slice 1 is not held up.
+
+## 27. First original code: core and simulator skeletons, and the scale check (2026-11-11)
+
+- Pull request 5 adds the core skeleton (events, actions, ports, the save-before-send runner, an empty node), the simulator skeleton (pretend storage, network and chain, crash injection, two invariants) and a scale check. Under independent review before merging.
+- **Scale check result:** one member per pseudo-Spilman leaf under wide upper levels builds, signs and verifies at up to 1000 members in a one-process test. The earlier worry that the leaf design was unproven at size is answered for building and signing; whole-program behaviour at size is still to be shown.
+- **Exit delay** is 3 days per timed level. This makes the choice of how many timed levels to ship a direct trade between moving liquidity and exit time, and rules out two-way trees at size.
+- Six defects were found in the imported tree code outside the valid shapes or in reporting functions, and added to the hand-off note.
+- The agent was locked out of the build server's remote login for about 25 minutes, probably by a rate limit on rapid connections. Agents are now told to do long work in one session.
+
+## 28. Independent review of the core and simulator skeletons (2026-11-11)
+
+Verdict: merge after fixes. The reviewer could not make the runner release anything early in about 43 million checked releases, but found problems in how the frame would be used next. Decisions taken and written into `DESIGN.md` section 4:
+
+- Storage is a journal with in-order confirmation; saves are never held behind sends.
+- A save's identity is issued by the runner and never reused, so a late confirmation from before a restart cannot release a send whose save was lost.
+- A refused step and a storage failure are fatal for the node, which is rebuilt from storage.
+- A node has a start step, so it can resend and re-arm after a restart.
+- The simulator must be able to crash a node between any two released actions, express "durable but not yet confirmed", and detect storage that loses or alters a durable batch.
+- The check that the core touches nothing outside itself was much weaker than its name; it is being strengthened.
+- The scale check's signature verification is being made independent of the imported hashing code.
+- An out-of-bounds write in the imported timelock counter happens on every factory of 257 members or more and is repaired only by the next call that sets the tree's shape. The hand-off note is corrected.
+
+The builder is applying the fixes; a second review follows.
+
+## 29. Working alongside the SuperScalar repo (2026-11-11)
+
+- Owner's instruction: where the SuperScalar session is already working on something, Gazpacho may wait and check their work when it is done, and must note when it does so. `OPEN-QUESTIONS.md` now has a "Waiting on the SuperScalar repo" table for this.
+- A second hand-off note asks that the end-date payout at every level land together with the other changes to the tree's transactions (their tree-fees work), instead of months later, so the tree changes once.
+- The interface prototype was started: plain web pages driven by fake data, with a written proposal for the local interface between screens and program.
+
+## 30. Agreement with the SuperScalar session on the tree changes (2026-11-11)
+
+- **Two rounds, not one.** Round 1, within about a week: tree fees plus the four tree-builder fixes, because the fee change repairs a member's broken lone exit and should not wait. Round 2, moved up to follow their current security work: the end-date payout at every level, with a short specification of the transaction shape written first. Gazpacho accepts two rounds; re-importing and regenerating reference values is cheap.
+- **Their proposed answers for round 2:** each member is paid their full initial channel capacity; the node's signers sign in the same rounds as the tree; lock times are staggered with deeper payouts valid later; the host's spare liquidity goes to the members under that node; payouts carry an anchor; the channel outputs lose the host-only timeout branch too. Gazpacho concurs in outline and will review the specification.
+- **A point they added:** payouts must be signed in every round that creates a shared output, including liquidity changes on a leaf, not only at creation. Written into `spec/signing-round.md`.
+- **Not to plan around:** their Core Lightning hold plugin and their whole-program scale test are far off.
+- They are not building a second signing engine and will assess adopting Gazpacho's once it is reviewed.
+
+- Closing the exchange: the SuperScalar session concurs on all points. Its round 2 specification will state the host's deadline for forcing out a non-cooperating member. One rule added to our safe-to-sign specification at its request (H4): the host always holds its own signed, current channel transaction for every channel. Round 1 will be announced by them with the list of changed files.
+
+## 31. Review of the plan and workflow (2026-11-11)
+
+Asked by the owner whether the development plan is solid. Findings:
+
+- **The critical path was waiting on documents.** The channel engine is the longest piece and had no specification; the two existing specifications were unreviewed while the signing engine was about to be built from them. Both are now being worked on alongside the build work: an adversarial review of the two specifications with a threat model, and groundwork for the channel specification from Lightning's own documents.
+- **The biggest unretired technical risk** is whether Lightning's standard taproot channel format works unchanged for a channel whose funding output is off chain and moves. Being established from primary sources now.
+- **Reviews are finding what builders should have found.** Each first review returned a long list. `ENGINEERING-CHECKLIST.md` records those lessons and goes into every builder's instructions; mutation testing becomes the builder's job.
+- **Pull requests were too large.** They are to be kept to one piece of work.
+- **Gaps recorded in `OPEN-QUESTIONS.md`:** package submission through public chain servers; the terms record and message specifications; other compilers and a Windows build; a nightly run; the number of timed levels.
+- **An opportunity:** once the core frame merges, wire the placeholder node end to end through a real connection, a real journal and the interface, before the signing engine exists. Slice 1 then becomes replacing the placeholder, not first-time integration.
+
+## 32. Core and simulator skeletons merged (2026-11-11)
+
+Pull request 5 was merged after two independent reviews and three rounds of fixes. The last fix made the placeholder node resend every saved reply not recorded as sent, and added a simulator check that whatever is saved is eventually sent. A follow-up branch is in progress with the items the second review said are needed before the first engine: a resumable start step, reading storage through an iterator, failing on storage that answers out of order, restoring from an old backup with repeating randomness, and letting invariants see inside a node.

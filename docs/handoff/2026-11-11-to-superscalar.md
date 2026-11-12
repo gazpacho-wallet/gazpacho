@@ -66,6 +66,19 @@ Suggested: default to `PLACEMENT_SEQUENTIAL`, or add a final tie-break on partic
 - Tag the last commit before the removals, so the old channel format and the outside-peer code stay reachable.
 - Say when a merge touches any of the 17 imported files, and when one changes the tree's transactions (for example the tree-fees change or paying members at every output on expiry), so Gazpacho's reference values are regenerated.
 
+## 9. Findings from a scale check of the tree builder (at `e657395`)
+
+Gazpacho built and signed one-user pseudo-Spilman leaves under wide upper levels at 16 to 1000 users, in one process, in Release and under AddressSanitizer + UBSan. Every valid shape built, signed and verified, including 512 and 1000. The size limits in `factory.h` are now only defaults, so item 7 above is largely answered. Defects found, none fixed here:
+
+1. `src/factory.c:148` (`node_nsequence`): out-of-bounds read at index -1 of `dw_counter_t.layers[8]` when a leaf that is not pseudo-Spilman sits inside the fixed (static) levels (`factory.c:1652`, `:1669`). In Release it appears to work and reports a 0-block delay.
+2. `src/dw_state.c:46` (`dw_counter_init`), reached from `factory.c:826` and `:884`: out-of-bounds write on every factory of 257 users or more. `factory_init` sets the layer count to depth + 1 without the cap of 8, so from 257 users it is 9 and from 513 it is 10, and `layers[8]` of an 8-element array is initialised. That element overlays the counter's own `n_layers`, `total_states` and `current_epoch`, and what ends up in them differs by optimisation level (an independent reviewer measured `n_layers=144, total_states=4` at `-O0` to `-O2` and 9 and 262144 at `-O3`). The sanitizers do not flag the 9-layer case because the write stays inside the enclosing struct. Only the following `factory_set_arity` or `factory_set_level_arity` call repairs the counter, so any code path that uses the counter between init and that call is working on garbage.
+3. `factory_early_warning_time` (`factory.c:4900`) and `factory_compute_ewt_for_shape` (`:4945`) under-report the exit delay by 432 blocks for each timed level beyond 8: they return 3,024 where the transactions sum to 3,456 (255 users, two-way), 3,888 (512) and 4,320 (1000).
+4. `factory_append_tree_anchor` (`factory.c:501`) silently drops the anchor on a node with 16 outputs while still deducting its 240 sats.
+5. `subtree_is_leaf` (`factory.c:949-956`) silently changes the leaf type when a wide level meets a subtree with no more users than the width.
+6. Read, not run: `apply_l_stock_hashlock` (`factory.c:393`) ignores a host-supplied leaf hash for node indexes of 512 or more.
+
+Other limits that remain: `FACTORY_MAX_OUTPUTS` 16 (a level is at most 16 wide, 15 with its anchor), `FACTORY_MAX_LEVELS` 8 (longer width lists are silently truncated), `DW_MAX_LAYERS` 8, `MUSIG_NONCE_POOL_MAX` 256. Detail and the full table: `docs/notes/tree-scale-check.md` in the Gazpacho repository (pull request 5).
+
 ## For reference
 
 - 16 files build and run standalone with only secp256k1-zkp and libcrypto: factory, musig, dw_state, ladder, tx_builder, tapscript, adaptor, shachain, util, hd_key, bip39, bech32m, crypto_aead, fee, htlc_fee_bump, bolt11.

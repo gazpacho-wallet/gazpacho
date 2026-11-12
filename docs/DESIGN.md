@@ -37,6 +37,11 @@ An **event** goes in and a list of **actions** comes out. The core never waits a
 - Events: a message arrived, a timer fired, something happened on chain, the user asked for something, storage confirmed a save.
 - Actions: save records as one atomic batch, send a message, broadcast a transaction, watch a script, set a timer, tell the user.
 - **Save before send.** The program around the core carries out actions in order and sends nothing until the save before it is safely stored. Enforced in one place for every engine.
+- **Storage is a journal.** Saves go to storage at once, in the order they were made, and become durable in that order. A send, broadcast or notification waits until every save made before it is durable. Confirmations arrive in order; one out of order is an error.
+- **A save's identity is never reused.** Each is numbered by the runner with the program's start count and a sequence. A late confirmation from before a restart is ignored and can never release anything.
+- **A refused step is fatal for that node.** If the runner cannot accept a step, the node's memory is ahead of what was saved, so the program stops the node and rebuilds it from storage. A storage failure does the same.
+- **A node has a start step** that returns actions, so after a restart it can re-arm timers, watch again and resend what was saved but never sent.
+- **A timer that times out a message comes after that message** in the list of actions, so a slow save cannot make a deadline pass before the request has left.
 - Randomness and time are handed to the core, so a whole factory can be simulated repeatably.
 
 ## 5. Engines
@@ -72,6 +77,7 @@ The full definition is `spec/safety-rule.md`. In brief:
 - Pseudo-Spilman leaves, one member per leaf. Payments never change the tree; liquidity changes do.
 - One funder per factory: the host. Members start at zero and are paid in over Lightning.
 - The tree's shape for each size is fixed by the host's terms; members are placed in an agreed order, host first.
+- Shape rules, from the scale check: a level is at most 15 wide; a wide level is used only where every subtree under it has more members than the width; two-way trees are not used at size (27 days to exit at 512 members); upper levels are fixed where possible, since each timed level adds 3 days to an exit. Small factories (4, 8, 32) have their own shapes.
 - Payment deadlines are computed from the factory's exit time plus a margin; payments with less headroom are refused.
 - A member's software exits automatically before expiry if nothing else has happened.
 - At wind-down a member pays their balance into the next factory over Lightning, or co-signs a close that funds the next factory directly.
