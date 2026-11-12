@@ -114,8 +114,9 @@ def run_variant(build, rel, text, args, timeout):
         if b.returncode != 0:
             return "no-compile", ""
         try:
-            t = subprocess.run([os.path.join(build, "test_signing")] + args, capture_output=True, timeout=timeout)
-            fails = sorted(set(re.findall(r"FAIL \S+test_signing\.c:(\d+)", t.stdout.decode(errors="replace"))))
+            env = dict(os.environ, GZ_STOP_ON_FAIL="1")
+            t = subprocess.run([os.path.join(build, "test_signing")] + args, capture_output=True, timeout=timeout, env=env)
+            fails = sorted(set(re.findall(r"FAIL \S+/(\w+\.[ch]:\d+)", t.stdout.decode(errors="replace"))))
             return ("killed" if t.returncode != 0 else "survived"), ",".join(fails[:6])
         except subprocess.TimeoutExpired:
             return "killed", "timeout"
@@ -136,7 +137,7 @@ def main():
     if mode == "rules":
         variants, args, timeout = rule_variants(src), [], 1800
     else:
-        variants, args, timeout = mutant_variants(src, only), ["quick"], 900
+        variants, args, timeout = mutant_variants(src, only), [], 600   # the full suite, stopping at the first failing section
         if names is not None: variants = [v for v in variants if v[0] in names]
         if limit: variants = variants[:limit]
     q = queue.Queue()

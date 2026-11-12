@@ -201,6 +201,7 @@ typedef struct {
     uint64_t counters[8];           /* see GZ_SIGN_COUNT_* */
     uint8_t scratch[GZ_SIGN_MAX_MSG];
     gz_sign_def_t scratch_def;
+    gz_sign_round_t pending;        /* a round is checked here before it takes a slot */
 } gz_sign_t;
 
 /* What the engine counts, for tests and reports. */

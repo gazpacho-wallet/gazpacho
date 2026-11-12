@@ -10,6 +10,8 @@
  * (round, item). */
 #include "world.h"
 #include "../check.h"
+#include "scenarios.h"
+#include "model.h"
 
 static int g_quick;
 /* The digest of fixed-generator outputs (test_definitions). After an intended
@@ -477,7 +479,16 @@ static void damage(gz_sign_def_t *d, int which)
     case 17: d->participants[2].peer = d->participants[1].peer; break;
     case 18: memcpy(d->participants[2].contribution_key, d->participants[1].contribution_key, 32); break;
     case 19: it->spent_amount++; break;            /* accepted: the digest changes, the definition stays valid */
-    default: break;
+    case 20: {                                     /* accepted: another valid contribution key (S6: it is in the identifier) */
+        uint8_t sk[32];
+        secp256k1_keypair kp;
+        secp256k1_xonly_pubkey x;
+        w_secret("test/contribution", 50, sk);
+        if (!secp256k1_keypair_create(w_ctx(), &kp, sk) || !secp256k1_keypair_xonly_pub(w_ctx(), &x, NULL, &kp) ||
+            !secp256k1_xonly_pubkey_serialize(w_ctx(), d->participants[1].contribution_key, &x)) abort();
+        break;
+    }
+    case 21: d->purpose ^= 1; break;               /* accepted: another purpose */    default: break;
     }
 }
 
@@ -519,9 +530,13 @@ static void test_definitions(int print)
         CHECK(m == 0);
     }
     /* Whatever changes the definition or the parameters changes the identifier. */
-    b.which = 19;
-    size_t m = begin_proposal(&b, 0, other, sizeof other);
-    CHECK(m > 0 && memcmp(other + 3, clean + 3, 32) != 0);
+    for (int which = 19; which <= 21; which++) {
+        b.which = which;
+        size_t m = begin_proposal(&b, 0, other, sizeof other);
+        if (!(m > 0 && memcmp(other + 3, clean + 3, 32) != 0)) printf("  definition change %d: not accepted with a new identifier\n", which);
+        CHECK(m > 0 && memcmp(other + 3, clean + 3, 32) != 0);
+    }
+    size_t m;
     b.which = 0;
     m = begin_proposal(&b, 0x80, other, sizeof other);             /* an unused flag: same tree, other parameters */
     CHECK(m > 0 && memcmp(other + 3, clean + 3, 32) != 0);
@@ -554,20 +569,69 @@ static void test_definitions(int print)
     gz_sign_wipe(&mem);
 }
 
+/* ---- 7. scripted scenarios, pinned ---- */
+
+/* Transcript digests of the scenarios (scenarios.h). After an intended change:
+ * run "test_signing golden-print", check what changed, update. */
+static const uint64_t SC_KNOWN[N_SCENARIOS] = {
+    0x2edc11ee04d5b780ull, /* honest-1 */
+    0x82bf9e611c481eabull, /* honest-2 */
+    0x978d9a1535674011ull, /* duplicates */
+    0xa4e8bbfccfbaf10aull, /* member-restart-nonces */
+    0xf4e77bdf3acc21e4ull, /* member-restart-signed */
+    0x61f7ab39be89056aull, /* tier-abort */
+    0xd65ef2260e583109ull, /* host-restarts */
+    0x054e46de38d6cb39ull, /* timers */
+    0x70a1e6d72cd4d9fdull, /* host-faults */
+    0x5fe72522b7781190ull, /* member-faults */
+    0xbfe938e5e191d70aull, /* proposals */
+    0x718a55599b98c78eull, /* journal */
+};
+
+static void test_golden(int print)
+{
+    for (int k = 0; k < N_SCENARIOS; k++) {
+        int before = check_failures;
+        uint64_t d = run_scenario(k);
+        if (print) printf("    0x%016llxull, /* %s */\n", (unsigned long long)d, SC_NAMES[k]);
+        else if (d != SC_KNOWN[k]) printf("  scenario %s: transcript %016llx, pinned %016llx\n", SC_NAMES[k], (unsigned long long)d, (unsigned long long)SC_KNOWN[k]);
+        if (check_failures != before) printf("  scenario %s: %d checks failed\n", SC_NAMES[k], check_failures - before);
+        if (!print) CHECK(d == SC_KNOWN[k]);
+    }
+}
+
+/* ---- 8. the independent model on random sequences ---- */
+
+static void test_model(int runs)
+{
+    model_stats_t st;
+    memset(&st, 0, sizeof st);
+    for (int k = 0; k < runs; k++) CHECK(model_run((uint64_t)k + 1, &st));
+    printf("  model: %llu runs, %llu events, %llu restarts, %llu replays, %llu duplicates, %llu drops; %llu completed, %llu ran out of attempts; %llu checks, %llu violations\n",
+           (unsigned long long)st.runs, (unsigned long long)st.events, (unsigned long long)st.restarts, (unsigned long long)st.replays,
+           (unsigned long long)st.dups, (unsigned long long)st.drops, (unsigned long long)st.done, (unsigned long long)st.exhausted,
+           (unsigned long long)st.checks, (unsigned long long)st.violations);
+    CHECK(st.violations == 0 && st.restarts > 0 && st.replays > 0 && st.dups > 0 && st.drops > 0);
+    CHECK(st.done >= st.runs * 9 / 10);
+}
+
 int main(int argc, char **argv)
 {
     g_quick = argc > 1 && strcmp(argv[1], "quick") == 0;
     setvbuf(stdout, NULL, _IONBF, 0);
     const char *only = argc > 1 && !g_quick ? argv[1] : "";
-    if (!*only || !strcmp(only, "blocks")) { test_blocks(); test_import_agrees(); test_definitions(0); }
+    int stop = getenv("GZ_STOP_ON_FAIL") != NULL;          /* for mutation runs: stop at the first failing section */
+#define SECTION(name, call) \
+    do { if (!*only || !strcmp(only, name)) call; if ((g_quick || stop) && check_failures) return check_done(); } while (0)
     if (!strcmp(only, "known")) { test_definitions(1); return 0; }
-    if (g_quick && check_failures) return check_done();
-    if (!*only || !strcmp(only, "faults")) test_faults();
-    if (g_quick && check_failures) return check_done();
-    if (!*only || !strcmp(only, "honest")) test_honest();
-    if (g_quick && check_failures) return check_done();
-    if (!*only || !strcmp(only, "crashes")) test_crashes();
-    if (!*only || !strcmp(only, "restores")) test_restores();
+    if (!strcmp(only, "golden-print")) { test_golden(1); return check_done(); }
+    SECTION("blocks", (test_blocks(), test_import_agrees(), test_definitions(0)));
+    SECTION("golden", test_golden(0));
+    SECTION("model", test_model(g_quick ? 20 : 120));
+    SECTION("faults", test_faults());
+    SECTION("honest", test_honest());
+    SECTION("crashes", test_crashes());
+    SECTION("restores", test_restores());
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);

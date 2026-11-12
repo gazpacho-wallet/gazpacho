@@ -252,6 +252,15 @@ static gz_sign_round_t *take_slot(gz_sign_t *e, int replaying)
     return best;
 }
 
+/* Move a checked round from `pending` into a slot. NULL if no slot can be had. */
+static gz_sign_round_t *adopt(gz_sign_t *e, int replaying)
+{
+    gz_sign_round_t *r = take_slot(e, replaying);
+    if (r) *r = e->pending;
+    memset(&e->pending, 0, sizeof e->pending);
+    return r;
+}
+
 /* Fill a slot from a proposal; `scratch_def` holds the built definition. */
 static int load_round(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_t *m, const uint8_t *bytes, size_t len)
 {
@@ -495,15 +504,15 @@ static void member_propose(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, 
         send_abort_for(e, m->round_id, GZ_WHY_BUILD, peer, em);
         return;
     }
-    r = take_slot(e, 0);
-    if (!r) { send_abort_for(e, m->round_id, GZ_WHY_BUSY, peer, em); return; }
-    uint8_t why = (uint8_t)load_round(e, r, m, bytes, len);
-    if (why != GZ_WHY_NONE) {
-        memset(r, 0, sizeof *r);
+    uint8_t why = (uint8_t)load_round(e, &e->pending, m, bytes, len);
+    if (why != GZ_WHY_NONE) {                       /* refused before it can push any round out of memory */
+        memset(&e->pending, 0, sizeof e->pending);
         e->counters[GZ_SIGN_COUNT_REJECTED]++;
         send_abort_for(e, m->round_id, why, peer, em);
         return;
     }
+    r = adopt(e, 0);
+    if (!r) { send_abort_for(e, m->round_id, GZ_WHY_BUSY, peer, em); return; }
     /* A valid new proposal from the host supersedes a round still collecting. */
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++)
         if (&e->rounds[i] != r && e->rounds[i].state == GZ_ROUND_ACTIVE) member_fail(e, &e->rounds[i], GZ_WHY_SUPERSEDED, em);
@@ -733,6 +742,9 @@ static void host_fail(gz_sign_t *e, gz_sign_round_t *r, uint32_t blamed, uint8_t
 
 static void host_distribute(gz_sign_t *e, gz_sign_round_t *r, uint8_t member, emit_t *em)
 {
+    int mine = 0;
+    for (int i = 0; i < r->def.n_items; i++) mine |= r->def.items[i].tier == r->tier && pos_of(&r->def.items[i], member) >= 0;
+    if (!mine) return;                      /* nothing of its own in this tier: it signs nothing, it is sent nothing */
     size_t n = build_all_nonces(r, r->tier, member, e->scratch, sizeof e->scratch);
     emit_send(em, r->def.participants[member].peer, e->scratch, n);
 }
@@ -901,8 +913,7 @@ static gz_status_t host_begin(gz_sign_t *e, const uint8_t *params, size_t len, e
         if (e->rounds[i].state == GZ_ROUND_ACTIVE) return GZ_ERR_ARGUMENT;
     memset(&e->scratch_def, 0, sizeof e->scratch_def);
     if (!e->cfg.build(e->cfg.build_ctx, params, len, &e->scratch_def)) return GZ_ERR_ARGUMENT;
-    gz_sign_round_t *r = take_slot(e, 0);
-    if (!r) return GZ_ERR_NO_SPACE;
+    gz_sign_round_t *r = &e->pending;
     /* S4: a new attempt has a new identifier, also after a restore whose generator repeats. */
     uint8_t pre[48];
     wr_t hw = {pre, 0, sizeof pre};
@@ -921,6 +932,7 @@ static gz_status_t host_begin(gz_sign_t *e, const uint8_t *params, size_t len, e
         memset(r, 0, sizeof *r);
         return GZ_ERR_ARGUMENT;
     }
+    if (!(r = adopt(e, 0))) return GZ_ERR_NO_SPACE;
     e->attempts++;
     host_begin_tier(e, r, 0);
     emit_save(em, GZ_REC_H_PROPOSED, r->proposal, r->proposal_len);
@@ -968,9 +980,11 @@ static gz_sign_round_t *start_round(gz_sign_t *e, const uint8_t *proposal, size_
     if (find(e, id) || !gz_sign_decode(proposal, len, &m) || m.kind != GZ_MSG_PROPOSE) return NULL;
     memset(&e->scratch_def, 0, sizeof e->scratch_def);
     if (!e->cfg.build(e->cfg.build_ctx, m.params, m.params_len, &e->scratch_def)) return NULL;
-    gz_sign_round_t *r = take_slot(e, 1);
-    if (!r || load_round(e, r, &m, proposal, len) != GZ_WHY_NONE || !same(r->id, id, 32)) return NULL;
-    return r;
+    if (load_round(e, &e->pending, &m, proposal, len) != GZ_WHY_NONE || !same(e->pending.id, id, 32)) {
+        memset(&e->pending, 0, sizeof e->pending);
+        return NULL;
+    }
+    return adopt(e, 1);
 }
 
 /* One stored record. Returns 0 if it is not one this engine wrote. */
@@ -1003,19 +1017,22 @@ static int replay(gz_sign_t *e, const gz_record_t *rec)
     switch (rec->type) {
     case GZ_REC_M_SIGNED:
         if (t >= r->def.n_tiers || blen > sizeof r->partials_msg[t] || !gz_sign_decode(body, blen, &m) ||
-            m.kind != GZ_MSG_PARTIALS || m.tier != t || !same(m.round_id, r->id, 32)) return 0;
+            m.kind != GZ_MSG_PARTIALS || m.tier != t || !same(m.round_id, r->id, 32) ||
+            !msg_signed_by(e, &m, body, r->def.participants[r->me].contribution_key)) return 0;
         r->tier_state[t] = GZ_TIER_SIGNED; r->ever_partial = 1;
         memcpy(r->partials_msg[t], body, blen); r->partials_len[t] = (uint32_t)blen;
         return 1;
     case GZ_REC_M_RESULT: case GZ_REC_H_RESULT:
         if (t >= r->def.n_tiers || blen > sizeof r->result_msg[t] || !gz_sign_decode(body, blen, &m) ||
-            m.kind != GZ_MSG_RESULT || m.tier != t || !same(m.round_id, r->id, 32) || !check_result(e, r, &m, 1)) return 0;
+            m.kind != GZ_MSG_RESULT || m.tier != t || !same(m.round_id, r->id, 32) ||
+            !msg_signed_by(e, &m, body, r->def.participants[0].contribution_key) || !check_result(e, r, &m, 1)) return 0;
         r->tier_state[t] = GZ_TIER_DONE; r->tier = t;
         memcpy(r->result_msg[t], body, blen); r->result_len[t] = (uint32_t)blen;
         return 1;
     case GZ_REC_M_COMPLETE: case GZ_REC_M_ABORTED: case GZ_REC_H_COMPLETE:
-        if (blen > sizeof r->tail_msg || !gz_sign_decode(body, blen, &m) || !same(m.round_id, r->id, 32) ||
-            m.kind != (rec->type == GZ_REC_M_COMPLETE ? GZ_MSG_ACK : rec->type == GZ_REC_M_ABORTED ? GZ_MSG_ABORT : GZ_MSG_COMPLETE))
+        if (t != 0 || blen > sizeof r->tail_msg || !gz_sign_decode(body, blen, &m) || !same(m.round_id, r->id, 32) ||
+            m.kind != (rec->type == GZ_REC_M_COMPLETE ? GZ_MSG_ACK : rec->type == GZ_REC_M_ABORTED ? GZ_MSG_ABORT : GZ_MSG_COMPLETE) ||
+            !msg_signed_by(e, &m, body, r->def.participants[r->me].contribution_key))
             return 0;
         memcpy(r->tail_msg, body, blen); r->tail_len = (uint32_t)blen;
         r->state = rec->type == GZ_REC_M_ABORTED ? GZ_ROUND_ABORTED : GZ_ROUND_COMPLETE;
