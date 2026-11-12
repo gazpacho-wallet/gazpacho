@@ -77,7 +77,9 @@ testnet, testnet4 and signet use the same address prefix (`tb`), the same coin t
 - Exit status 3 means the file was written and synced but the address could not be written to standard output. The file is kept; `address` shows the address.
 - Hard links are needed. On a file system without them (FAT, some network mounts) `new` fails and creates nothing.
 - Reading a phrase file refuses symbolic links, anything that is not a regular file, files of another user, files with any group or other permission bit, files over 1024 bytes and files holding a zero byte.
-- The phrase file is plain text. `DESIGN.md` section 9 calls for storage encrypted at rest; that belongs to the storage port and is not done here.
+- The phrase file is plain text. It is a **development tool's** file only (test coins, the build server's fixtures), never the wallet's: see below.
+
+**Encryption (2026-11-12).** Owner decision 13 makes every file the wallet keeps encrypted from the start, on test networks too, and `spec/storage-encryption.md` (draft 3) specifies it. The wallet itself never reads or writes a phrase file. Its 24 words live only in the key file `keys.gzk`, their entropy sealed under a key derived from the wallet passphrase (so showing them needs the passphrase typed for it), and the BIP 39 seed sealed under the storage key (storage 4.5, 9). The key library's interface is unchanged: the storage layer opens the seed at unlock and hands it to `gzw_*` functions as before, and the library still does no I/O (section 6). What changes for this library: the storage layer's own copies of the seed and the words live in guarded memory (`sodium_malloc`) and are wiped by it, while the keys this library derives stay under section 5's rules (storage 8.3). `gz-wallet-keys`'s plain phrase file stays as it is, for development and tests only, and nothing in the wallet accepts it.
 
 ## 9. What signing and coin selection will need
 

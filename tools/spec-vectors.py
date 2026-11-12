@@ -1409,10 +1409,13 @@ show(f"native host_list_request (kind {K_HL_REQ})", native(K_HL_REQ, hlr))
 
 
 # ===================================================== storage-encryption.md =====
-# Section E, draft 2 (2026-11-12). Storage encryption: the passphrase key (Argon2id,
+# Section E, draft 3 (2026-11-12). Storage encryption: the passphrase key (Argon2id,
 # RFC 9106), subkeys (HKDF-SHA256, RFC 5869), XChaCha20-Poly1305 (RFC 8439 with
 # draft-irtf-cfrg-xchacha-03) with hedged nonces, the key file, the encrypted journal,
-# the guard file and the export. Neither Argon2id nor XChaCha20-Poly1305 is in the
+# the guard file, the mark file, the export, the watch bundle, the penalty file and the
+# attempts file; and local-api.md's request digest (E15). Draft 3 changed E9 (the guard
+# lost its high-water mark to the mark file, E9m, new), E10 (it carries that guard), E14
+# (a counter) and added E13p and E15. Neither Argon2id nor XChaCha20-Poly1305 is in the
 # Python standard library, so both are written out below from their specifications
 # and checked against the published vectors (E0) before anything is printed. Like the
 # BIP 340 code above they are slow, NOT constant time, and for vectors only. The
@@ -2011,23 +2014,67 @@ print("\n== vector E8, passphrase change to '" + PW2 + "', salt sha256('gazpacho
 show("new key file", kf2)
 
 # ---------------------------------------------------- the guard file ------------
+# Draft 3 (review round 2, R2-8): the guard keeps epochs, key indexes and rounds
+# started and is replaced only for batches with a guard record; the journal's
+# high-water mark moves to the append-only mark file mark.gzm (E9m below).
 KG = keys(SEED64, "guard", chain)
-GUARD_PLAIN = u64(3) + u16(1) + u32(0) + u32(2) + u64(1) + FILE_ID + u64(1) + u64(off_m2)
+GUARD_PLAIN = u64(3) + u16(1) + u32(0) + u32(2) + u64(1)
 _gh = b"GZGUARDE" + u8(1) + chain
 e_guard = _gh + sealed(KG, "guard", GUARD_PLAIN, _gh)
-print("\n== vector E9, encrypted guard file guard.gzg: counter 3; one epoch, 0, highest index 2; one round"
-      f" started; high-water mark: file_id of E5, incarnation 1, last sync mark at {off_m2}")
+assert len(e_guard) == 41 + 24 + 26 + 16
+print("\n== vector E9, encrypted guard file guard.gzg (draft 3, no high-water mark): counter 3; one epoch,"
+      " 0, highest index 2; one round started")
 print("  guard key KG =", KG[0].hex(), "(from the BIP 39 seed)")
 show("guard file", e_guard)
 _gp = unseal(KG, e_guard[41:], e_guard[:41])
 assert _gp == GUARD_PLAIN
 
+# ---------------------------------------------------- the mark file -------------
+# Section 10.2, draft 3: append-only, one sealed 56-byte entry per anchored batch:
+# seal(KH, u64 incarnation || u64 mark_offset, ad = the 57-byte header || u64 entry
+# offset). The first entry, (0, 0), is written at set-up and means "no mark yet".
+KH = keys(MSK, "high water", chain + FILE_ID)
+MARK_MAGIC = b"GZMARKS1"
+_mh = MARK_MAGIC + u8(1) + chain + FILE_ID
+MARK_HEADER_LEN = 57
+MARK_ENTRY_LEN = 56
 
-def behind_guard(journal_state, guard_plain):
-    """Section 6.3 step 2, the mark test: the guard's mark must be a valid sync mark of the journal."""
-    mark = int.from_bytes(guard_plain[-8:], "big")
-    marks = [o for o, g in zip(_offsets(journal_state), journal_state[3]) if g[0] == 3]
-    return guard_plain[-32:-16] != FILE_ID or mark not in marks
+
+def mark_entry(inc, mark_offset, at, label, kh=KH, header=_mh):
+    return sealed(kh, label, u64(inc) + u64(mark_offset), header + u64(at))
+
+
+def mark_file(points, kh=KH, file_id=FILE_ID):
+    head = MARK_MAGIC + u8(1) + chain + file_id
+    out = head
+    for i, (inc, mo) in enumerate(points):
+        out += mark_entry(inc, mo, len(out), f"mark entry {i}", kh, head)
+    return out
+
+
+def read_mark_file(data, file_id, kh=KH):
+    """Section 10.2: the newest valid entry, or a reason the journal is 'possibly old'.
+    A trailing short or invalid entry is a torn tail; an invalid entry before a valid one is damage."""
+    if len(data) < MARK_HEADER_LEN or data[:8] != MARK_MAGIC or data[8] != 1 or data[9:41] != chain:
+        return "possibly old: no mark file of this network"
+    if data[41:57] != file_id:
+        return "behind: the mark file names another journal"
+    head, pos, got, bad_at = data[:57], MARK_HEADER_LEN, [], None
+    while pos + MARK_ENTRY_LEN <= len(data):
+        pt = unseal(kh, data[pos:pos + MARK_ENTRY_LEN], head + u64(pos))
+        if pt is None:
+            bad_at = bad_at if bad_at is not None else pos
+        elif bad_at is not None:
+            return "possibly old: damaged mark file"
+        else:
+            point = (int.from_bytes(pt[:8], "big"), int.from_bytes(pt[8:], "big"))
+            if got and point < got[-1]:
+                return "possibly old: damaged mark file"
+            got.append(point)
+        pos += MARK_ENTRY_LEN
+    if not got:
+        return "possibly old: no valid mark entry"
+    return got[-1]
 
 
 def _offsets(state):
@@ -2038,9 +2085,38 @@ def _offsets(state):
     return out
 
 
-assert behind_guard(_e7h, _gp) and behind_guard(_e7i, _gp) and not behind_guard(st, _gp)
-print(f"  against E7g (last mark {_e7h[2]}) and E7h the guard's mark {off_m2} is not a sync mark of the journal:"
-      " the start is refused as a rolled-back journal (section 6.3); against E6 it passes")
+def behind_mark(journal_state, newest):
+    """Section 6.3 step 2, the mark test: the newest mark entry must name a valid sync
+    mark of the journal, under that incarnation; (0, 0) means 'no mark yet'."""
+    if isinstance(newest, str):
+        return True
+    inc, mo = newest
+    if (inc, mo) == (0, 0):
+        return False
+    marks = [(g[1], o) for o, g in zip(_offsets(journal_state), journal_state[3]) if g[0] == 3]
+    return (inc, mo) not in marks
+
+
+e_marks = mark_file([(0, 0), (1, off_m2)])
+assert len(e_marks) == MARK_HEADER_LEN + 2 * MARK_ENTRY_LEN
+_newest = read_mark_file(e_marks, FILE_ID)
+assert _newest == (1, off_m2)
+print(f"\n== vector E9m, mark file mark.gzm ({len(e_marks)} bytes): the set-up entry (0, 0), then incarnation 1,"
+      f" sync mark at {off_m2}. Nonce input labels 'mark entry 0', 'mark entry 1'")
+print("  mark key KH =", KH[0].hex(), " nonce key", KH[1].hex())
+show("mark file", e_marks)
+assert behind_mark(_e7h, _newest) and behind_mark(_e7i, _newest) and not behind_mark(st, _newest)
+assert read_mark_file(e_marks + e_marks[57:80], FILE_ID) == (1, off_m2)          # a torn append: ignored
+_bad = bytearray(e_marks); _bad[60] ^= 1                                          # damage before a valid entry
+assert read_mark_file(bytes(_bad), FILE_ID) == "possibly old: damaged mark file"
+assert read_mark_file(e_marks[:57], FILE_ID) == "possibly old: no valid mark entry"
+assert read_mark_file(e_marks, tv("other journal file id", 16)).startswith("behind")
+assert not behind_mark(st, read_mark_file(e_marks[:57 + 56], FILE_ID))           # cut to the set-up entry
+print(f"  against E7g (last mark {_e7h[2]}) and E7h the newest entry's mark {off_m2} is not a sync mark of the"
+      " journal: the start is refused as a rolled-back journal (section 6.3); against E6 it passes. A torn"
+      " last entry is ignored; a damaged entry before a valid one, or no valid entry: possibly old; another"
+      " journal's file_id: behind. Cut back to its set-up entry, the file reads as 'no mark yet': an older"
+      " copy, not detectable here (section 6.4)")
 
 # ---------------------------------------------------- the export ----------------
 BK = derive(SEED64, "backup", chain)
@@ -2171,7 +2247,7 @@ print(f"== vector E11 (refuse): E10a's body sealed in {len(_chunks)} chunks of a
       " chunk before the last: refused; with other words: damaged; E10b with a passphrase: needs the 24 words")
 
 # ---------------------------------------------------- the watch bundle ----------
-# storage-encryption.md section 8.7, draft 2. The envelope only: the contents' records
+# storage-encryption.md section 8.7, draft 3. The envelope only: the contents' records
 # are spec/exit.md's. KB is a random root key kept in the OS key store; the bundle and
 # the watcher's log have their own keys under it (review F5).
 KB = tv("watch bundle key")
@@ -2210,46 +2286,183 @@ show("bundle", e_bundle)
 print("== vector E13 (refuse): E12 with its counter changed: damaged; opened after counter 8 was seen:"
       " older than the last bundle seen; under the storage key, or under the watcher log's key: damaged")
 
+# ---------------------------------------------------- the penalty file ----------
+# Section 8.7.6, draft 3 (review round 2, R2-1 and R2-4). watch.gzp: a 97-byte header
+# (magic, format, chain, file_id, a header tag under KWP), then entries in the
+# framing of section 5.4 under KWP: kind 2 penalty entries, incarnation 0, sequence =
+# the entry's number from 1; kind 3 sync marks. A penalty entry's payload is
+# spec/exit.md 5.6's penalty entry, a TLV stream whose type 2 is the journal file_id
+# and type 4 the sync-mark offset (u64) of the batch that recorded the host's
+# revocation; the vector's other record is an odd placeholder (type 99) standing for
+# exit.md's types 6 to 14. The OS key store keeps the number of the last penalty
+# entry beside KB; a file whose last entry is below it is refused as short.
+P_MAGIC = b"GZPENALT"
+PFILE_ID = tv("watch penalty file id", 16)
+KWP = keys(KB, "watch penalties", chain + PFILE_ID)
+_ph = P_MAGIC + u8(1) + chain + PFILE_ID
+p_header = _ph + sealed(KWP, "penalty header", b"", _ph)
+assert len(p_header) == 97
+PEN_ENTRY = tlv([(2, FILE_ID), (4, u64(off_m2)), (99, b"test penalty: see spec/exit.md")])
+_p_off1 = len(p_header)
+p_e1 = eentry(2, 0, 1, PEN_ENTRY, _p_off1, "penalty entry 1", kj=KWP, file_id=PFILE_ID)
+_p_off2 = _p_off1 + len(p_e1)
+p_m1 = eentry(3, 0, 0, u64(_p_off2), _p_off2, "penalty mark 1", kj=KWP, file_id=PFILE_ID)
+e_penalties = p_header + p_e1 + p_m1
+
+
+def open_penalties(data, kb, count_seen):
+    """Returns (journal file_id, mark offset) of the newest penalty entry, or a refusal."""
+    if data[:8] != P_MAGIC or data[8] != 1 or data[9:41] != chain:
+        return "not a penalty file of this network"
+    fid = data[41:57]
+    kwp = keys(kb, "watch penalties", chain + fid)
+    if unseal(kwp, data[57:97], data[:57]) != b"":
+        return "damaged"
+    pos, n, newest = 97, 0, None
+    while pos + 4 <= len(data):
+        ln = int.from_bytes(data[pos:pos + 4], "big")
+        if ln < 61 or pos + 4 + ln > len(data):
+            break
+        head = data[pos:pos + 21]
+        pt = unseal(kwp, data[pos + 21:pos + 4 + ln], fid + u64(pos) + head)
+        if pt is None:
+            break
+        if head[4] == 2:
+            seq = int.from_bytes(head[13:21], "big")
+            if seq != n + 1:
+                return "damaged"
+            rec = read_tlv(pt)
+            n, newest = seq, (rec[2], int.from_bytes(rec[4], "big"))
+        pos += 4 + ln
+    if n < count_seen:
+        return "shorter than the last count seen"
+    return newest
+
+
+assert open_penalties(e_penalties, KB, 1) == (FILE_ID, off_m2)
+assert open_penalties(e_penalties, KB, 2) == "shorter than the last count seen"
+assert open_penalties(p_header, KB, 1) == "shorter than the last count seen"   # cut at an entry boundary
+assert open_penalties(e_penalties, MSK, 1) == "damaged"
+assert unseal(KWB, p_e1[21:], FILE_ID + u64(_p_off1) + p_e1[:21]) is None       # the bundle key cannot open it
+print(f"\n== vector E13p, penalty file watch.gzp ({len(e_penalties)} bytes): file_id sha256('gazpacho test"
+      f" watch penalty file id')[0:16]; one penalty entry (sequence 1) naming E5's journal and its sync mark at"
+      f" {off_m2}, then a sync mark at {_p_off2}. Nonce input labels 'penalty header', 'penalty entry 1',"
+      " 'penalty mark 1'")
+print("  penalty key KWP =", KWP[0].hex())
+show("penalty file", e_penalties)
+print("  refusals: with the key store's count at 2, or the file cut back to its header: shorter than the last"
+      " count seen; under the storage key: damaged")
+
 # ---------------------------------------------------- the attempts file ---------
-# Section 12.3, draft 2 (review F20): keyed under KB when KB is in an OS store.
-def attempts_file(wrong, last_s, until_s, kb=None):
-    body = b"GZTRIES1" + chain + u32(wrong) + u64(last_s) + u64(until_s) + u8(2 if kb else 1)
+# Section 12.3, draft 3 (review F20, round 2 R2-9): keyed under KA when KB is in an OS
+# store, and carrying a counter whose highest value is kept in the OS store beside KB,
+# so an older valid file put back by a folder-only writer is read as the strictest state.
+ATT_LEN = 85
+
+
+def attempts_file(counter, wrong, last_s, until_s, kb=None):
+    body = (b"GZTRIES1" + chain + u64(counter) + u32(wrong) + u64(last_s) + u64(until_s)
+            + u8(2 if kb else 1))
     if kb:
         return body + hmac.new(derive(kb, "attempts", chain), body, hashlib.sha256).digest()[:16]
     return body + hashlib.sha256(body).digest()[:16]
 
 
-def read_attempts(data, kb=None, now=1_794_000_000):
+def read_attempts(data, kb=None, counter_seen=0, now=1_794_000_000):
     strict = ("strictest", now + 900)
-    if len(data) != 77 or data[:8] != b"GZTRIES1" or data[8:40] != chain:
+    if len(data) != ATT_LEN or data[:8] != b"GZTRIES1" or data[8:40] != chain:
         return strict
-    body, mode = data[:61], data[60]
+    body, mode = data[:69], data[68]
     want = (hmac.new(derive(kb, "attempts", chain), body, hashlib.sha256).digest()[:16] if mode == 2 and kb
             else hashlib.sha256(body).digest()[:16] if mode == 1 else None)
-    if want is None or not hmac.compare_digest(want, data[61:]) or (kb and mode != 2):
+    if want is None or not hmac.compare_digest(want, data[69:]) or (kb and mode != 2):
         return strict
-    return int.from_bytes(data[40:44], "big"), int.from_bytes(data[52:60], "big")
+    if int.from_bytes(data[40:48], "big") < counter_seen:
+        return strict
+    return int.from_bytes(data[48:52], "big"), int.from_bytes(data[60:68], "big")
 
 
-at = attempts_file(6, 1_793_999_990, 1_794_000_030, kb=KB)
-assert read_attempts(at, kb=KB) == (6, 1_794_000_030)
-_bad = bytearray(at); _bad[43] = 0                                    # count reset by a folder writer
-assert read_attempts(bytes(_bad), kb=KB)[0] == "strictest"
-assert read_attempts(attempts_file(0, 0, 0), kb=KB)[0] == "strictest"   # a plain file where KB exists
-print("\n== vector E14, attempts file attempts.gza (77 bytes), keyed under KB: 6 wrong in a row, last at"
-      " 1793999990, blocked until 1794000030")
+at = attempts_file(9, 6, 1_793_999_990, 1_794_000_030, kb=KB)
+assert len(at) == ATT_LEN
+assert read_attempts(at, kb=KB, counter_seen=9) == (6, 1_794_000_030)
+_bad = bytearray(at); _bad[51] = 0                                    # count reset by a folder writer
+assert read_attempts(bytes(_bad), kb=KB, counter_seen=9)[0] == "strictest"
+assert read_attempts(attempts_file(0, 0, 0, 0), kb=KB)[0] == "strictest"   # a plain file where KB exists
+_older = attempts_file(8, 0, 0, 0, kb=KB)                             # an older valid file put back
+assert read_attempts(_older, kb=KB, counter_seen=8) == (0, 0)
+assert read_attempts(_older, kb=KB, counter_seen=9)[0] == "strictest"
+print(f"\n== vector E14, attempts file attempts.gza ({ATT_LEN} bytes), keyed under KB: counter 9, 6 wrong in a"
+      " row, last at 1793999990, blocked until 1794000030")
 show("attempts file", at)
-print("  with the count rewritten, or replaced by an unkeyed file while KB exists: read as the strictest state")
+print("  with the count rewritten, replaced by an unkeyed file while KB exists, or replaced by an older valid"
+      " file (counter 8) once the key store has seen counter 9: read as the strictest state")
+
+# ---------------------------------------------------- local-api.md 7.4 ----------
+# The request digest (RFC 8785, JCS), kept in section E because it is this writer's
+# section; local-api.md 7.4 cites it as vector E15. Integers only (local-api.md 7.1);
+# member names sorted by UTF-16 code units; strings escape only the control
+# characters, '"' and '\', with the short forms where they exist and lowercase \u00xx
+# otherwise. The top-level "passphrase" member is removed before digesting.
+def jcs(v):
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if v is None:
+        return "null"
+    if isinstance(v, int):
+        assert -(2 ** 53 - 1) <= v <= 2 ** 53 - 1
+        return str(v)
+    if isinstance(v, str):
+        short = {0x08: "\\b", 0x09: "\\t", 0x0a: "\\n", 0x0c: "\\f", 0x0d: "\\r", 0x22: '\\"', 0x5c: "\\\\"}
+        out = []
+        for ch in v:
+            c = ord(ch)
+            assert not 0xd800 <= c <= 0xdfff
+            out.append(short[c] if c in short else f"\\u{c:04x}" if c < 0x20 else ch)
+        return '"' + "".join(out) + '"'
+    if isinstance(v, list):
+        return "[" + ",".join(jcs(x) for x in v) + "]"
+    if isinstance(v, dict):
+        names = sorted(v, key=lambda k: k.encode("utf-16-be"))
+        return "{" + ",".join(jcs(k) + ":" + jcs(v[k]) for k in names) + "}"
+    raise ValueError(v)
+
+
+def request_digest(body):
+    body = {k: x for k, x in body.items() if k != "passphrase"}
+    return hashlib.sha256(jcs(body).encode("utf-8")).digest()
+
+
+JCS_BODY = {"request_id": "e15_test_request_0001", "passphrase": "not digested",
+            "name": "Café ½ \U0001f600 tab\there", "note": "unit\u001fsep \"q\" \\",
+            "confirm_funding_sat": 250000, "draft": {"z": [3, 2, 1], "a": {"b": True, "a": None}},
+            "été": -7, "Zed": 0}
+_jcs = jcs({k: x for k, x in JCS_BODY.items() if k != "passphrase"})
+assert request_digest(JCS_BODY) == request_digest(dict(JCS_BODY, passphrase="another"))
+assert request_digest(JCS_BODY) == request_digest(dict(reversed(list(JCS_BODY.items()))))
+assert jcs({"\U0001f600": 1, "￿": 2}) == '{"\U0001f600":1,"￿":2}'   # UTF-16 order, not code points
+print("\n== vector E15 (for local-api.md 7.4), request digest under RFC 8785: the body below, with its"
+      " top-level passphrase removed, in canonical form (UTF-8), and its SHA-256")
+print("  canonical, non-ASCII written here as Python escapes (the bytes below are UTF-8):",
+      _jcs.encode("ascii", "backslashreplace").decode("ascii"))
+show("canonical bytes", _jcs.encode("utf-8"))
+print("  digest =", request_digest(JCS_BODY).hex())
+print("  the same digest for any member order and any passphrase value; names of this API are ASCII, where"
+      " UTF-16 order equals byte order; a name outside the BMP sorts before U+FFFF (shown above)")
 print("\n== storage-encryption.md: section E done")
 
 
 # ============================================================== exit.md =====
-# Section X, draft 1 (2026-11-12). The deadline arithmetic of spec/exit.md
-# section 4, the transaction sizes it uses, and the keyless anchor-only child of
-# section 6.2. Everything here is integer arithmetic on heights, sizes and fees;
-# none of it signs anything. The timeout formula is the import's
-# (core/superscalar/src/factory.c:1475, :1635-1644, :1314); the sizes follow
-# tx_builder.c:65-100 and BIP 141.
+# Section X, draft 2 (2026-11-12, after docs/reviews/review-exit-d1.md). The
+# deadline arithmetic of spec/exit.md section 4, the transaction sizes it uses,
+# and the keyless anchor-only child of section 6.2. Everything here is integer
+# arithmetic on heights, sizes and fees; none of it signs anything. The timeout
+# formula is the import's (core/superscalar/src/factory.c:1475, :1635-1644,
+# :1314); the sizes follow tx_builder.c:65-100 and BIP 141.
+# Draft 2: X2 prints the depth of every member at 3 to 16 members (F11); X3 adds
+# the signing-time check and unlock_by recomputed from the missing steps (F6);
+# X4 adds the host's payment rule H18 (F8); X5 is the new tip estimate, which
+# advances with the clock and never freezes (F1); X8 is the pinning threshold
+# of the anchor-only child (F3); X9 is move_by and the wind-down for T3 (F9).
 
 X_STEP = 5                      # TIMEOUT_STEP_BLOCKS, factory.c:1475
 X_BURY = 3                      # B: burial depth, signet (safety-rule.md 12 value 3)
@@ -2262,6 +2475,8 @@ X_M_HOST = X_M_SAFE + X_M_LAG   # the host's margin (exit.md 9.3)
 X_PAY_STOP = X_ALLOW            # no new payment within one allowance of leave_by
 X_ANCHOR = 240                  # ANCHOR_OUTPUT_AMOUNT, channel.h:16
 X_BLOCK_FAST_S = 300            # exit.md 4.5: blocks assumed at most twice as fast as 600 s
+X_GRACE_S = 1800                # exit.md 4.5: after a start or a wake, floor-only triggers wait this long
+X_FUNDING_DEADLINE = 36         # safety-rule.md 12 value 4
 
 
 def x_cltv_feeding(E, j, kind):
@@ -2412,6 +2627,16 @@ for n, member in ((3, 0), (3, 1), (4, 0), (5, 0), (5, 4), (8, 0), (16, 0), (16, 
     fee = 17 if n <= 4 else 26
     print(f"  {n:2d} members, member {member + 1:2d}: leaf depth d = {d}, tree transactions {len(outs)} = d + 2,"
           f" vsizes {sizes}, each pays {fee} sat; with the commitment, n = {x_n_path(d)} transactions")
+# F11: the depth of every member, by member count (the split rule decides, not a range).
+x_depths = {}
+for n in range(3, 17):
+    levels = (SHAPE_T1[0][1] if n <= 4 else SHAPE_T1[1][1]) + [LEAF_PS]
+    ds = [dd for dd, _ in split_walk(levels, n)]
+    x_depths[n] = ds
+    print(f"  {n:2d} members: leaf depths {ds}")
+assert x_depths[3] == [1, 2, 2] and set(x_depths[4]) == {2} and 1 in x_depths[5] and 1 in x_depths[7]
+assert set(x_depths[8]) == {2} and set(x_depths[9]) == {2, 3} and set(x_depths[15]) == {2, 3}
+assert set(x_depths[16]) == {3}
 
 print("\n== X3: start leaving by, step deadlines, and the T1 wind-down shortfall")
 for d in (1, 2, 3):
@@ -2434,6 +2659,30 @@ for missing in (5, 3, 1):
 assert x_leave_by(X_E, 2, 1) == X_E - 20 - 2 - 6 - 14
 print(f"  smallest wind-down at which leave_by never falls inside the lifetime: "
       f"{X_E - x_leave_by(X_E, 3)} blocks for d <= 3 (T1 has 36)")
+# The signing-time check of exit.md 4.4 (safety-rule.md C8): leave_by with every
+# step missing is at least the funding deadline + B + one block of being live.
+for d in (1, 2, 3):
+    need = X_TIP + X_FUNDING_DEADLINE + X_BURY + 1
+    assert x_leave_by(X_E, d) >= need
+    print(f"  signing-time check, d = {d}: leave_by {x_leave_by(X_E, d)} >= funding deadline + B + 1 = {need}: passes")
+
+
+def x_unlock_by(E, d, n_missing, tree_late=False):
+    """exit.md 5.6 (draft 2, F6). While the watcher runs and no missing tree step
+    is past its step_due, the person's only step is the commitment: unlock by
+    last_safe_confirm - A - M. Once a tree step is late (or the watcher was not
+    running), unlocking is what helps (the node can bump with wallet coins):
+    unlock_by is leave_by recomputed at the steps still missing."""
+    if not tree_late:
+        return x_last_safe_confirm(E, d) - X_ALLOW - X_M
+    return x_leave_by(E, d, n_missing)
+
+
+for n_miss, late in ((5, False), (3, False), (3, True), (2, True), (1, False)):
+    u = x_unlock_by(X_E, 2, n_miss, late)
+    print(f"  d = 2, {n_miss} of 5 steps missing, tree steps {'late' if late else 'on time'}: "
+          f"unlock_by = {u} (E - {X_E - u})")
+assert x_unlock_by(X_E, 2, 5) == X_E - 42 and x_unlock_by(X_E, 2, 3, True) == X_E - 54
 
 print("\n== X4: payments against the exit (d = 2, every step missing)")
 d = 2
@@ -2451,13 +2700,93 @@ print(f"  a revoked host commitment confirmed at {c} with to_self_delay W = {W} 
       f" the penalty must be confirmed by {c + W - X_BURY} (c + W - B) and sent by"
       f" {c + W - X_BURY - X_ALLOW - X_M} (c + W - B - A - M)")
 
-print("\n== X5: the tip estimate while the chain view is in doubt (exit.md 4.5)")
-t_trusted, at = X_E - 80, 1_800_000_000
-for elapsed, claimed in ((3600, X_E - 75), (3600, X_E - 60), (14400, X_E - 30)):
-    bound = t_trusted + -(-elapsed // X_BLOCK_FAST_S)
-    est = max(t_trusted, min(claimed, bound))
-    print(f"  last trusted tip {t_trusted}, {elapsed} s later, highest claimed {claimed}: "
-          f"clock bound {bound}, estimate {est}")
+
+def x_min_final(d):
+    """exit.md 4.4: the member's min_final_cltv_expiry_delta, n = d + 3."""
+    return (x_n_path(d) + 1) * X_ALLOW + (X_BURY - 1) + X_M
+
+
+def x_host_delta(d):
+    """exit.md 9.5, rule H18: the host's cltv_expiry_delta toward a member at
+    depth d covers the member's whole path, the host's commitment and its
+    HTLC-timeout transaction: (n + 1) A + (B - 1) + M_host, n = d + 3."""
+    return (x_n_path(d) + 1) * X_ALLOW + (X_BURY - 1) + X_M_HOST
+
+
+for d in (1, 2, 3):
+    print(f"  H18, member at d = {d}: the host's delta toward it >= {x_host_delta(d)};"
+          f" the member's own min_final >= {x_min_final(d)}")
+assert x_host_delta(1) == 40 and x_host_delta(3) == 52 and x_min_final(2) == 52
+
+print("\n== X5: the tip estimate (exit.md 4.5, draft 2): it advances with the clock and never freezes")
+
+
+def x_view_tip(claims, checked):
+    """A claim counts only when a second right-network server reaches it, or when
+    its headers were checked. claims: tips claimed (no headers); checked: tips
+    whose headers the program checked."""
+    agreed = sorted(claims, reverse=True)[1] if len(claims) >= 2 else None
+    cands = [t for t in [agreed] + list(checked) if t is not None]
+    return max(cands) if cands else None
+
+
+def x_tip_deadline(view_tip, anchor_tip, anchor_time, now, in_grace=False):
+    """T_dl = max(T_view, T_a + floor((now - t_a) / BLOCK_FAST_S)). The anchor
+    (T_a, t_a) is the highest agreed or header-checked tip, with t_a the earlier
+    of when it was first seen and its header's timestamp. In the grace after a
+    start or a wake, triggers driven by the clock term alone wait: T_view only."""
+    floor = anchor_tip + max(0, now - anchor_time) // X_BLOCK_FAST_S
+    if view_tip is None:
+        view_tip = anchor_tip
+    return view_tip if in_grace else max(view_tip, floor)
+
+
+def x_tip_draft1(t0, t0_time, now, claims):
+    bound = t0 + -(-(now - t0_time) // X_BLOCK_FAST_S)
+    return max(t0, min(max(claims) if claims else t0, bound))
+
+
+T0, t0 = X_E - 80, 1_800_000_000
+WEEK = 7 * 86400
+rows = [
+    # (case, claims, checked, anchor tip, anchor time, now, grace, real tip at the expected 600 s)
+    ("trusted, 2 min after the tip's block", [T0, T0], [T0], T0, t0, t0 + 120, False, T0),
+    ("trusted, 10 min, no block yet", [T0, T0], [T0], T0, t0, t0 + 600, False, T0 + 1),
+    ("trusted, a natural one-hour gap", [T0, T0], [T0], T0, t0, t0 + 3600, False, T0),
+    ("every server hides blocks for 4 hours", [T0, T0], [T0], T0, t0, t0 + 14400, False, T0 + 24),
+    ("no server answers for 4 hours", [], [], T0, t0, t0 + 14400, False, T0 + 24),
+    ("offline by choice for a day", [], [], T0, t0, t0 + 86400, False, T0 + 144),
+    ("one server claims +40 without headers, 1 hour", [T0 + 40, T0], [T0], T0, t0, t0 + 3600, False, T0 + 6),
+    ("one server shows +3 with checked headers, 1 hour", [T0 + 3, T0], [T0 + 3], T0 + 3, t0 + 3000, t0 + 3600, False, T0 + 4),
+    ("a week asleep; two servers check headers to +1008, tip 3 min old; one liar claims +1900",
+     [T0 + 1900, T0 + 1008, T0 + 1008], [T0 + 1008], T0 + 1008, t0 + WEEK - 180, t0 + WEEK, False, T0 + 1008),
+    ("a week asleep, first 30 min after waking, no server has answered", [], [], T0, t0, t0 + WEEK + 600, True, T0 + 1009),
+    ("a week asleep, grace over, still no server answers", [], [], T0, t0, t0 + WEEK + X_GRACE_S, False, T0 + 1011),
+]
+for case, claims, checked, ta, tt, now, grace, real in rows:
+    view = x_view_tip(claims, checked)
+    est = x_tip_deadline(view, ta, tt, now, grace)
+    old = x_tip_draft1(T0, t0, now, claims)
+    print(f"  {case}: T_view {view if view is not None else 'none'}, estimate T0 + {est - T0}"
+          f" (draft 1: T0 + {old - T0}; the chain at 600 s per block: T0 + {real - T0})")
+    if not grace:
+        assert est >= real, case          # never behind the chain at its expected pace
+r_hide = x_tip_deadline(x_view_tip([T0, T0], [T0]), T0, t0, t0 + 14400)
+assert r_hide == T0 + 48 and x_tip_draft1(T0, t0, t0 + 14400, [T0, T0]) == T0     # draft 1 froze
+r_wake = x_tip_deadline(x_view_tip([T0 + 1900, T0 + 1008, T0 + 1008], [T0 + 1008]), T0 + 1008, t0 + WEEK - 180, t0 + WEEK)
+assert r_wake == T0 + 1008                                                          # the liar is not counted
+assert x_tip_draft1(T0, t0, t0 + WEEK, [T0 + 1900, T0 + 1008]) == T0 + 1900          # draft 1 started at once
+lb = x_leave_by(X_E, 2)
+s_needed = (lb - T0) * X_BLOCK_FAST_S
+print(f"  with every server hiding from T0 = {T0} (E - {X_E - T0}), the estimate reaches leave_by {lb} (d = 2) after"
+      f" {s_needed} s, when the chain at 600 s per block is at {T0 + s_needed // 600}: the exit starts"
+      f" {lb - (T0 + s_needed // 600)} blocks early, never late")
+ob_end = lb - X_ALLOW
+print(f"  offline by choice from T0 ends itself when the estimate reaches leave_by - A = {ob_end}:"
+      f" after {(ob_end - T0) * X_BLOCK_FAST_S} s")
+print(f"  the grace after a start or a wake can delay a clock-only trigger by at most"
+      f" {X_GRACE_S // X_BLOCK_FAST_S} blocks (<= M_safe = {X_M_SAFE})")
+assert X_GRACE_S // X_BLOCK_FAST_S <= X_M_SAFE
 
 print("\n== X6: the anchor-only child, keyless (exit.md 6.2)")
 x_parent = hashlib.sha256(b"gazpacho test exit parent").digest()
@@ -2517,4 +2846,61 @@ for v_p, f_p in ((124, 17), (167, 17), (167, 26), (253, 26)):
     print(f"  parent {v_p} vB paying {f_p} sat: rung fees "
           + ", ".join(f"{r / 1000:g} sat/vB {f}" for r, f in rungs))
 assert x_ladder(17, 167)[0] == (2_000, 623) and x_ladder(17, 124)[0] == (2_000, 565)
+
+print("\n== X8: pinning the anchor-only child (exit.md 6.5, F3): someone spends the anchor first")
+# TRUC parent (BIP 431): the attacker's child is at most 1,000 vB. The member's
+# anchor-only child (240 sat, 65 vB) replaces it only under 6.3's (a) to (c).
+X_TRUC_CHILD_MAX = 1000
+x_pin_f = next(f for f in range(0, 1000)
+               if not x_replaces(X_ANCHOR, 65, f, X_TRUC_CHILD_MAX, 17, 167))
+x_pin_rate = x_package_rate_kvb(17, 167, x_pin_f, X_TRUC_CHILD_MAX)
+print(f"  TRUC parent 167 vB paying 17 sat: a {X_TRUC_CHILD_MAX} vB child paying {x_pin_f} sat or more cannot be"
+      f" replaced by the anchor-only child; the step's package rate falls to {x_pin_rate} sat/kvB"
+      f" (from 1107); the attacker pays only if it is mined")
+assert x_pin_f == 234 and x_pin_rate == 215
+x_out_truc = next(f for f in range(0, 100_000)
+                  if x_replaces(f, X_V_CHILD_WALLET, x_pin_f, X_TRUC_CHILD_MAX, 17, 167))
+print(f"  a member with a coin replaces that pin with a wallet child of at least {x_out_truc} sat"
+      f" (more if the market rate needs it)")
+# Version-2 parent: the attacker's child can be a whole standard transaction,
+# 100,000 vB (MAX_STANDARD_TX_WEIGHT 400,000), at the 100 sat/kvB relay floor.
+X_V2_PIN_V = 100_000
+x_v2_pin_fee = X_V2_PIN_V * 100 // 1000
+x_out_v2 = next(f for f in range(x_v2_pin_fee, 200_000)
+                if x_replaces(f, X_V_CHILD_WALLET, x_v2_pin_fee, X_V2_PIN_V, 17, 167))
+print(f"  version-2 parent: a {X_V2_PIN_V} vB child at 0.1 sat/vB pays {x_v2_pin_fee} sat; replacing it needs"
+      f" at least {x_out_v2} sat; the cluster limit (101 kvB) leaves no room for another child")
+assert x_out_v2 == 10_016
+
+print("\n== X9: move_by and the wind-down a Slice 3 term needs (exit.md 12 point 1, F9; MULTI-FACTORY.md 4.1)")
+
+
+def x_move_by(E, d_src, d_dst):
+    """MULTI-FACTORY.md 4.1 for a move through the same host (path B):
+    move_by = leave_by(source) - (host's delta toward the destination, H18
+    + the destination's min_final) - A (claim on chain) - M."""
+    return x_leave_by(E, d_src) - (x_host_delta(d_dst) + x_min_final(d_dst)) - X_ALLOW - X_M
+
+
+worst = 0
+for ds in (1, 2, 3):
+    for dd in (1, 2, 3):
+        mb = x_move_by(X_E, ds, dd)
+        worst = max(worst, X_E - mb)
+        print(f"  source d = {ds}, destination d = {dd}: move_by = E - {X_E - mb}")
+X_T3_MOVE_WINDOW = 40
+x_t3_wd = worst + X_T3_MOVE_WINDOW
+print(f"  the earliest move_by is E - {worst}; with a move window of {X_T3_MOVE_WINDOW} blocks"
+      f" the wind-down must be at least {x_t3_wd} (proposed T3: lifetime 144, wind-down {x_t3_wd})")
+assert worst == 212 and x_t3_wd == 252
+# The same arithmetic at the design's example mainnet constants (exit.md 4.6), [R]:
+mA, mB, mM, mMh, md = 12, 6, 6 + 2 + 144, 6 + 2, 4
+m_lead = 10 * md + (mB - 1) + (md + 3) * mA + mM
+m_delta = (md + 4) * mA + (mB - 1) + mMh
+m_final = (md + 4) * mA + (mB - 1) + mM
+m_move = m_lead + m_delta + m_final + mA + mM
+print(f"  example mainnet constants (A = {mA}, B = {mB}, M = {mM}, d = {md}): leave_by lead {m_lead},"
+      f" host delta {m_delta}, min_final {m_final}, move_by lead {m_move} against a wind-down of 432:"
+      f" {'fits' if m_move <= 432 else 'does not fit'}")
+assert m_lead == 281 and m_move > 432
 print("\n== exit.md: section X done")

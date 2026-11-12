@@ -1,6 +1,15 @@
 # The storage journal, first cut
 
-Specification draft 2, 2026-11-12. Status: draft 1 corrected after the third, joint review of the five Slice 1 specifications (`docs/reviews/spec-review-3.md`), which found its torn-tail rule and its restore section wrong. Draft 2 has not itself been reviewed. The file-based journal that slice 1 needs (`docs/SLICES.md`: "A file-based journal"). It implements the storage side of the runner contract in `core/gazpacho/include/gazpacho/runner.h`. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: `safety-rule.md` and `signing-round.md` draft 4 settle them.
+Specification draft 3, 2026-11-12. Draft 3 folds in `spec/storage-encryption.md` draft 3: from the first build every file is encrypted (owner decision 13), so the header, the entry framing, the limits and the guard file below are storage's, and a mark file holds the journal's high-water mark. The write, sync, mark and confirm rules, the order rules, the torn-tail rule and the restore rules are unchanged. Draft 2 corrected draft 1 after the third, joint review of the five Slice 1 specifications (`docs/reviews/spec-review-3.md`), which found its torn-tail rule and its restore section wrong. Neither draft 2 nor draft 3 has itself been reviewed. The file-based journal that slice 1 needs (`docs/SLICES.md`: "A file-based journal"). It implements the storage side of the runner contract in `core/gazpacho/include/gazpacho/runner.h`. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: `safety-rule.md` and `signing-round.md` draft 4 settle them.
+
+## Changes in draft 3
+
+| Source | Change | Where |
+|---|---|---|
+| Owner decision 13; `spec/storage-encryption.md` draft 3 (its "What it changes elsewhere") | Encrypted from Slice 1 on: the 185-byte authenticated header of storage 5.3; entries sealed with XChaCha20-Poly1305 under associated data binding file id, offset, kind, incarnation and sequence (storage 5.4), the 16-byte tag replacing the 8-byte checksum; lengths 61 to 8,388,665, exactly 65 for kinds 1 and 3, so incarnation entries and sync marks are 69 bytes | Sections 2, 2.1, 3, 5, 7 |
+| Storage 6.2, 7, 10 | Every **anchored batch** (`guard`, `exposure`, `round_signed`, `funding_signed`, `start_sent`, and the channel engine's commitment, revocation and payment-secret records) appends an entry to the mark file before it is confirmed; the guard file is sealed, created at set-up and replaced only for batches with a `guard` record | Sections 4, 8.3 |
+| Storage 6.3 | The start rule: a journal behind its mark file, guard, bundle or penalty file, or possibly old, is not started; it may be started as a restore. A key file with no journal always starts as a restore | Sections 5, 8.2 |
+| Vectors | J1 to J6 describe draft 2's clear format and are kept for history only; the encrypted equivalents are storage's E5, E6, E7f (J4) and E7a (J6) | Section 11 |
 
 ## Changes after review 3
 
@@ -22,7 +31,7 @@ From `runner.h`, `action.h` and `types.h`:
 
 | Duty | Where it is met here |
 |---|---|
-| A save is one batch of typed records, stored all or nothing | Section 3: one batch is one entry with one checksum |
+| A save is one batch of typed records, stored all or nothing | Section 3: one batch is one sealed entry with one authentication tag |
 | Batches become durable in the order they were handed over | Section 4: one file, appended in order, by one writer |
 | A confirmation is given only for a batch that is safely stored, and in order | Section 4: confirm only after a successful sync covering the batch, and a second one covering the sync mark after it |
 | Batch identifiers are {incarnation, sequence}, issued by the runner, never reused | Section 3: the identifier is written in the entry and checked on reading |
@@ -36,38 +45,44 @@ The journal belongs to the outer layer (`DESIGN.md` section 3, L4 ports). It may
 
 - **One append-only file per node**, `journal.gzj` in the node's data folder. Bytes are only ever added at the end. The one exception is cutting off a torn tail at start (section 5), which removes only bytes after the last sync mark, which were never confirmed.
 - **One writer.** The program takes an exclusive lock on the file (`flock` on POSIX, `LockFileEx` on Windows) for as long as it runs, and refuses to start if the lock is held. Two processes appending to one journal would interleave batches, and two live copies of one node is a hazard of its own (`safety-rule.md` section 10, "the same key running on two devices").
-- Permissions: readable and writable by the owner only (0600 on POSIX). Not encrypted in slice 1 **(open)**.
+- Permissions: readable and writable by the owner only (0600 on POSIX).
+- **Encrypted from the first build**, on test networks too (owner decision 13; `spec/storage-encryption.md`, "storage" below). The header is authenticated and every entry is sealed under the journal key KJ, a subkey of the storage key, which is unlocked by the wallet passphrase (storage 4, 5). A locked program cannot read or write the journal.
 
 ### 2.1 Header
 
-Written once, when the file is created, then never changed.
+Written once, when the file is created, then never changed. 185 bytes, storage 5.3's format (draft 2's 48-byte clear header with an 8-byte checksum is withdrawn):
 
 | Offset | Field | Size | Value |
 |---|---|---|---|
-| 0 | `magic` | 8 | ASCII `GZJOURNL` |
-| 8 | `chain` | 32 | The chain hash of the network (signet: `f61eee3b…08000000`, internal order, as in `terms.md`) |
-| 40 | `check` | 8 | First 8 bytes of SHA-256 over bytes 0 to 39 |
+| 0 | `magic` | 8 | ASCII `GZJOURNE` |
+| 8 | `format` | 1 | 1 |
+| 9 | `chain` | 32 | The chain hash of the network (signet: `f61eee3b…08000000`, internal order, as in `terms.md`) |
+| 41 | `vault_id` | 16 | The key file's |
+| 57 | `file_id` | 16 | Random; bound into every entry's associated data |
+| 73 | recovery | 72 | The storage key, sealed under a key from the BIP 39 seed, so the 24 words alone reopen the journal (storage 5.3, 9.3) |
+| 145 | header tag | 40 | Sealed empty plaintext under KJ over bytes 0 to 144 |
 
-A program refuses a journal whose `magic` or `check` is wrong, or whose `chain` is not its own network. So a signet journal can never be opened by a mainnet build, and the other way round (`SLICES.md` rule 3).
+A program refuses a journal whose `magic` or `format` is wrong, or whose `chain` is not its own network, before asking for anything, so a signet journal can never be opened by a mainnet build, and the other way round (`SLICES.md` rule 3). After unlock it checks the header tag; a failure there is "this journal is not this wallet's", distinct from damage.
 
 Creating the file: write the header to a temporary name, sync it, rename it to `journal.gzj`, then sync the folder (POSIX). Without the folder sync the file itself may not survive a power cut.
 
 ## 3. Entries
 
-After the header the file is a sequence of entries. ("Entry" is the framed unit in the file. "Record" is the core's `gz_record_t`, a type and bytes, several of which may sit in one batch entry.)
+After the header the file is a sequence of entries. ("Entry" is the framed unit in the file. "Record" is the core's `gz_record_t`, a type and bytes, several of which may sit in one batch entry.) The framing is storage 5.4's:
 
 | Offset | Field | Size | Meaning |
 |---|---|---|---|
-| 0 | `length` | `u32` | Number of bytes from `kind` to the end of `payload`. At least 21, at most 8,388,625 (section 7); and exactly 25 for kinds 1 and 3, at least 21 for kind 2 (review 3, F21: no kind has an empty payload) |
+| 0 | `length` | `u32` | 57 + the payload's length. At least 61, at most 8,388,665 (section 7); exactly 65 for kinds 1 and 3, at least 61 for kind 2 (review 3, F21: no kind has an empty payload) |
 | 4 | `kind` | `u8` | 1 incarnation, 2 batch, 3 sync mark. Any other value: the entry is invalid |
 | 5 | `incarnation` | `u64` | |
 | 13 | `sequence` | `u64` | 0 in an incarnation entry and a sync mark; the runner's sequence, from 1, in a batch entry |
-| 21 | `payload` | `length` − 17 | Section 3.1 or 3.2 |
-| 4 + `length` | `check` | 8 | First 8 bytes of SHA-256 over every byte of the entry before it (`length` to end of `payload`) |
+| 21 | `nonce` | 24 | Storage 5.2's hedged nonce |
+| 45 | ciphertext | `length` − 57 | The payload of section 3.1, 3.2 or 3.3, encrypted |
+| 4 + `length` − 16 | `tag` | 16 | XChaCha20-Poly1305's tag |
 
-All integers big-endian.
+All integers big-endian. The **associated data** of every entry is the header's `file_id`, the entry's own offset in the file as a `u64`, and bytes 0 to 20 of the entry, so an entry is valid only where it was written, only in this journal, and with its clear kind, incarnation and sequence exactly as written (storage 5.4).
 
-**Why SHA-256 truncated to 8 bytes.** The checksum must catch a torn or half-written entry, not an attacker (an attacker with the file can rewrite the checksum too; integrity against tampering comes with encryption, **(open)**). SHA-256 is already in the imported, reviewed primitives, so it needs no new code; 8 bytes give a 1 in 2^64 chance that a torn entry passes. A CRC would be faster, but the journal writes kilobytes per user action, not gigabytes, and speed does not matter here.
+**The tag replaces draft 2's checksum.** Draft 2 used the first 8 bytes of SHA-256, which caught a torn write but not an attacker, who could rewrite the checksum too. The tag catches both: a torn or half-written entry fails it, and so does any change by someone without the storage key. What it cannot catch is a whole entry cut off at an entry boundary, or an older copy of the file; section 8.3's mark file and storage 6 cover those where it matters.
 
 ### 3.1 Incarnation entry (kind 1)
 
@@ -96,7 +111,7 @@ The records must fill the payload exactly; a gap or an overrun makes the entry i
 |---|---|---|
 | `offset` | `u64` | The offset in the file at which this mark entry itself begins |
 
-A sync mark is written only **after a sync returned success**, and says: every byte before me reached the disk. Its `offset` must equal its own position; a mark whose `offset` is anything else is invalid. That makes a mark self-locating: a reader can recognise one anywhere in the file, even past a damaged entry whose length it cannot trust (section 5). `incarnation` is the current incarnation, `sequence` 0. A mark yields no records. It is 37 bytes in the file.
+A sync mark is written only **after a sync returned success**, and says: every byte before me reached the disk. Its decrypted `offset` must equal its own position; a mark whose `offset` is anything else is invalid. That makes a mark self-locating: a reader can recognise one anywhere in the file, even past a damaged entry whose length it cannot trust (section 5). `incarnation` is the current incarnation, `sequence` 0. A mark yields no records. It is 69 bytes in the file.
 
 ### 3.4 Order rules checked on reading
 
@@ -105,20 +120,21 @@ A sync mark is written only **after a sync returned success**, and says: every b
 3. A batch entry's and a sync mark's `incarnation` equals that of the latest incarnation entry before it.
 4. Within one incarnation, batch sequences are 1, 2, 3 … with no gap and no repeat.
 
-A valid entry (checksum correct) that breaks one of these is **corruption**, not a torn tail, and the program refuses to start (section 5). The writer checks rules 3 and 4 before it writes, and treats a violation as a storage failure: it means the program around the runner handed over batches wrongly.
+A valid entry (tag correct) that breaks one of these is **corruption**, not a torn tail, and the program refuses to start (section 5). The writer checks rules 3 and 4 before it writes, and treats a violation as a storage failure: it means the program around the runner handed over batches wrongly.
 
 ## 4. Writing and confirming
 
 One writer, fed in the order the runner's executor receives save actions.
 
-1. **Append** the batch entry with ordinary writes. A short write, or any error, is a storage failure.
+1. **Append** the batch entry, sealed whole in memory first (storage 7 step 1), with ordinary writes. A short write, or any error, is a storage failure.
 2. **Sync.** POSIX: `fsync` on the file (on macOS, `fcntl(F_FULLFSYNC)`, because plain `fsync` there does not flush the drive's cache). Windows: `FlushFileBuffers`. The sync must cover every entry appended so far.
 3. **Mark**, after the sync returned success: append a sync mark (section 3.3) at the current end of the file, and **sync again**.
-4. **Confirm**, after that second sync returned success: `gz_runner_confirm` for each batch the first sync covered, oldest first. Only a confirmation the runner accepts (`GZ_OK`) becomes a `GZ_EVENT_STORAGE_CONFIRMED` event for the node. If the batch holds a `guard` record, the guard file is replaced first (section 8.3).
+4. **Anchor**, for an **anchored batch** (storage 6.2: one holding a `guard`, `exposure`, `round_signed`, `funding_signed` or `start_sent` record, or a channel record the channel engine marks as anchored), after that second sync: append and sync the mark file's entry (section 8.3); replace the guard file if the batch holds a `guard` record; and, in 1.0.0, replace the watch bundle and append the penalty entry where the batch changes them (storage 7 step 2, 8.7.4). A failure of any of these is a storage failure.
+5. **Confirm**, after all of that returned success: `gz_runner_confirm` for each batch the first sync covered, oldest first. Only a confirmation the runner accepts (`GZ_OK`) becomes a `GZ_EVENT_STORAGE_CONFIRMED` event for the node.
 
 **Why two syncs.** A batch is confirmed only when a synced mark after it proves it reached the disk. So every confirmed batch lies before a durable sync mark, and the reader can tell damage to a confirmed entry (before a mark: corruption) from a write that never finished (after the last mark: a torn tail) exactly, whatever the file's size (review 3, F2). Draft 1 inferred this from a size bound, which classified any damage in a small journal, such as every Slice 1 journal, as a torn tail and silently cut confirmed records. The cost is a second small sync per group; the journal writes kilobytes per user action, and group syncing amortises it.
 
-**Group sync.** The writer may append several batch entries and run steps 2 to 4 once for all of them, confirming them in order. The bytes appended since the last successful sync stay below **16 MiB**, unless a single entry is larger by itself, which section 7 forbids; this now only bounds memory and loss on a crash, and the reader no longer relies on it. The runner allows 32 unconfirmed batches.
+**Group sync.** The writer may append several batch entries and run steps 2 to 5 once for all of them (one mark-file entry covers them all), confirming them in order. The bytes appended since the last successful sync stay below **16 MiB**, unless a single entry is larger by itself, which section 7 forbids; this now only bounds memory and loss on a crash, and the reader no longer relies on it. The runner allows 32 unconfirmed batches.
 
 **Failures.** If a write or a sync fails, the writer calls `gz_runner_storage_failed`, confirms nothing more, writes nothing more, and the program stops the node. It never retries a failed sync and carries on: after a failed `fsync`, Linux may already have dropped the unwritten pages, so a second `fsync` can succeed without the data being there. The next start reads the file from disk and finds out what survived.
 
@@ -128,18 +144,19 @@ One writer, fed in the order the runner's executor receives save actions.
 
 In this order. Every step that writes syncs before the next step.
 
-1. Take the lock. Open the file, or create it (section 2.1) if the data folder has none.
-2. Check the header.
-3. **Scan** entries from the start. An entry is **invalid** if its `length` is below 21, above the maximum or wrong for its kind, if fewer bytes remain in the file than it claims, if its `check` fails, if its `kind` is unknown, or if it is a sync mark whose `offset` is not its own position. Stop at the first invalid entry, or at the end of the file. Check the order rules (section 3.4) on every valid entry; a violation stops the start (corruption).
+1. Take the lock. Open the file. A data folder with a key file and no journal starts **as a restore** (storage 6.3 step 0; section 8.2): the journal is created (section 2.1) and the restore's first batch follows step 5.
+2. Check the header (section 2.1), after the wallet was unlocked (storage 8.2).
+3. **Scan** entries from the start. An entry is **invalid** if its `length` is below 61, above the maximum or wrong for its kind, if fewer bytes remain in the file than it claims, if its `kind` is unknown, if its tag does not verify under KJ with its own offset in the associated data, or if it is a sync mark whose decrypted `offset` is not its own position (storage 5.5). Stop at the first invalid entry, or at the end of the file. Check the order rules (section 3.4) on every valid entry; a violation stops the start (corruption).
 4. **Torn tail or corruption.** Let V be the offset just after the last valid entry, and E the end of the file.
    - V = E: the file is clean.
-   - V < E: search the bytes from V + 1 to E for a **valid sync mark**: at any offset p, a 37-byte entry with `length` 25, `kind` 3, a correct `check`, and `offset` = p. A false match needs a 64-bit checksum and a self-offset to agree by chance.
+   - V < E: search the bytes from V + 1 to E for a **valid sync mark**: at any offset p, a 69-byte entry with `length` 65, `kind` 3, a tag that verifies at offset p, and a decrypted `offset` = p. A false match would need a forged authentication tag.
      - **None found: a torn tail.** The bytes from V on were appended after the last durable sync mark, so no batch in them was ever confirmed and nothing outside the node depended on them. Cut the file to V and sync.
      - **One found: corruption.** The damaged entry at V lies before a mark that proves it was synced, so it may hold a confirmed batch, a `round_started` or an `exposure` record that a peer has seen. **Refuse to start and tell the user**; never cut it away. The remedy is a restore (section 8), whose new epoch makes it safe (`safety-rule.md` section 9).
 
    Valid-looking entries after an invalid one, in a torn tail, are dropped with it. A group sync can reach the disk out of order, so a later entry may survive while an earlier one is torn. Keeping the later one would break the order the runner relies on, and it was never confirmed: its mark, if written at all, did not survive.
 5. **Incarnation.** New incarnation = 1 + the highest found, or 1 for an empty journal. Append its entry, sync, append a sync mark, sync. Only then may the runner be created with `gz_runner_init(…, incarnation, …)`. This meets the runner's duty: strictly greater than any before, durable before use. An incarnation is consumed even if the program then stops without saving anything; that is harmless.
-6. **Read** the records with the reader (section 6) and pass them to `gz_node_start`.
+6. **The start rule** (storage 6.3): the journal is compared with its mark file and guard (section 8.3) and, in 1.0.0, with the watch bundle and the penalty file. A journal **behind** any of them, or **possibly old** (a guard or mark file missing or damaged), is not started: the person may start it as a restore (section 8.2) or put the newer files back (`local-api.md` 4.7).
+7. **Read** the records with the reader (section 6) and pass them to `gz_node_start`.
 
 A crash anywhere in steps 4 and 5 is safe. Cutting a torn tail twice cuts nothing the second time. An incarnation entry that was torn is itself cut on the next start (no mark follows it), and the next start writes the same number again; since nothing was issued under it, nothing is reused. An incarnation entry that was synced but whose mark was lost is kept, and the next start uses the next number.
 
@@ -155,7 +172,7 @@ The **reader** walks the valid entries in file order and yields, for each batch 
 
 | Limit | Value | Why |
 |---|---|---|
-| Largest entry | 8 MiB payload (`length` ≤ 8,388,625 = 8 MiB + 17) | The host's largest slice 1 batch is the signed tree with each member's saved `round_tier_result` and `round_complete` (kept for `round_status_request`, `messages.md` 7.10): at 1,000 members about 2 KB per member, 2 MB, plus a proposal under 400 KB. 8 MiB is three times that. A node never needs a larger batch; a larger `length` on reading is invalid |
+| Largest entry | 8 MiB payload (`length` ≤ 8,388,665 = 8 MiB + 57) | The host's largest slice 1 batch is the signed tree with each member's saved `round_tier_result` and `round_complete` (kept for `round_status_request`, `messages.md` 7.10): at 1,000 members about 2 KB per member, 2 MB, plus a proposal under 400 KB. 8 MiB is three times that. A node never needs a larger batch; a larger `length` on reading is invalid |
 | Unsynced bytes | 16 MiB | Two maximum entries. Bounds memory and what a crash can lose; the reader does not rely on it (section 4) |
 | File, soft | 768 MiB | The program tells the user and stops opening or joining new lobbies, so a factory under way can finish |
 | File, hard | 1 GiB | Below 2^31, so offsets fit in a signed 32-bit `long` on every platform the program targets (Windows `ftell` returns a 32-bit `long`). An append that would pass it is not written: the writer reports a storage failure, and the node stops with "storage full" |
@@ -180,28 +197,29 @@ The backup is a copy of this journal, and the host keeps one. A copy dated befor
 
 The index within an epoch is recorded too (`key_index`), so that an ordinary restart never derives the same key twice.
 
-**How a restore is recognised and who writes the first batch.** A restore is an explicit program action (importing a backup file as `journal.gzj`). The program then starts normally (section 5), creating the runner under the new incarnation, and tells the node, **before any other event and before connecting to anyone**, that this start follows a restore (`signing-round.md` section 12.1). The node answers with one save batch, `key_epoch`, `restored` and `guard`, which the runner issues as sequence 1 of that incarnation like any other batch; nothing else is sent until it is confirmed (review 3, F22). A copy of the data folder made by other means is not recognised; that is the "copy of a running program" limit of `signing-round.md` section 8 and is not defended.
+**How a restore is recognised and who writes the first batch.** A restore is an explicit program action: importing a backup file (storage 11), the person starting files found behind as a restore (storage 6.3 step 4; `local-api.md` `start-as-restore`), or the program finding a key file with no journal (storage 6.3 step 0). The program then starts normally (section 5), creating the runner under the new incarnation, and tells the node, **before any other event and before connecting to anyone**, that this start follows a restore (`signing-round.md` section 12.1). The node answers with one save batch, `key_epoch`, `restored` and `guard`, which the runner issues as sequence 1 of that incarnation like any other batch; nothing else is sent until it is confirmed (review 3, F22). A copy of the data folder made by other means is not recognised; that is the "copy of a running program" limit of `signing-round.md` section 8 and is not defended.
 
-### 8.3 The guard file
+### 8.3 The guard file and the mark file
 
-`safety-rule.md` R6's guard, which detects a stale backup.
+`safety-rule.md` R6's guard, which detects a stale backup, and the journal's high-water mark, which detects a journal cut back or rolled back (storage 6, 10).
 
-- **Where.** `guard.gzg`, in the program's own data folder **outside** the journal's backup set: a restore replaces `journal.gzj` and never this file. The user's export carries a copy.
-- **Contents.**
+- **Where.** `guard.gzg` and `mark.gzm`, in the program's own data folder **outside** the journal's backup set: a restore replaces `journal.gzj` and never these. The user's export carries a copy of the guard.
+- **The guard file's format** is storage 10.1's: a 41-byte clear head (`GZGUARDE`, format, chain), then the contents sealed under a key from the seed (KG), so the guard stays readable across a restore that makes a new key file. Contents:
 
 | Field | Size | Meaning |
 |---|---|---|
-| `magic` | 8 | ASCII `GZGUARD1` |
-| `chain` | 32 | As in the journal header |
 | `counter` | `u64` | Incremented at every write |
 | `n_epochs` | `u16` | Epochs used, oldest first |
 | per epoch: `epoch`, `highest_index` | `u32`, `u32` | The highest key index allocated under it |
 | `rounds_started` | `u64` | Rounds this node ever started |
-| `check` | 8 | First 8 bytes of SHA-256 over everything before it |
 
-- **How the core orders it.** The core puts a `guard` record (section 9), holding these contents without `check`, in the same save batch as every `key_index` and every `round_started` record. The runner rule then holds every send behind that batch's confirmation, so no new action or port is needed.
-- **The storage duty.** For a batch that holds a `guard` record, the writer appends and syncs the batch and its sync mark as usual, then replaces the guard file (write `guard.gzg.tmp`, sync it, rename it over `guard.gzg`, sync the folder), and only then confirms the batch. A failure of any step is a storage failure (section 4).
-- **On a restore.** Before importing, the program reads `guard.gzg` (or the user's exported copy) and the newest `guard` record in the backup. If the file's `counter` is higher, the backup is stale and the user is told; the restored node keeps the file's epoch list, so keys of later factories can still be derived for the recovery procedure (R7). If there is no guard file, the backup is treated as possibly stale. Either way the restore goes ahead under a new epoch: the guard only detects.
+- **The mark file's format** is storage 10.2's: a 57-byte clear head naming this journal's `file_id`, then appended 56-byte entries, each the incarnation and the sync-mark offset of one anchored batch, sealed under a key from the storage key (KH). Its first entry, written at set-up, means "no mark yet".
+- **Created at set-up**, before the journal (storage 7.4), so a missing file always means something was removed.
+- **How the core orders the guard.** The core puts a `guard` record (section 9), holding the guard's contents, in the same save batch as every `key_index` and every `round_started` record. The runner rule then holds every send behind that batch's confirmation, so no new action or port is needed.
+- **The storage duty.** For every anchored batch (section 4, step 4), after the batch and its sync mark are synced and before the batch is confirmed, the writer appends and syncs the mark file's entry; for a batch that holds a `guard` record it also replaces the guard file (write `guard.gzg.tmp`, sync it, rename it over `guard.gzg`, sync the folder). A failure of any step is a storage failure (section 4).
+- **At start** (section 5, step 6): the journal is **behind** if the mark file names another journal, or its newest entry names a sync mark the journal does not have under that incarnation, or the guard's `counter` is above the newest `guard` record's; it is **possibly old** if either file is missing or damaged while a key file exists. A legitimate torn-tail cut never trips this, because a mark entry is written only after its sync mark was synced. Storage's E9m shows a cut journal refused.
+- **On a restore.** Before importing, the program reads `guard.gzg` (or the user's exported copy) and the newest `guard` record in the backup. If the file's `counter` is higher, the backup is stale and the user is told; the restored node keeps the file's epoch list, so keys of later factories can still be derived for the recovery procedure (R7). If there is no guard file, the backup is treated as possibly stale. Either way the restore goes ahead under a new epoch: the guard only detects. A restore starts a new mark file for the journal it produces.
+- **What neither detects**: an older copy of the whole data folder, or of the mark file alone, put back by someone who can write the folder (storage 6.4).
 
 ## 9. What slice 1 stores
 
@@ -267,7 +285,7 @@ A test checks this directly: the simulator records every secret nonce it creates
 
 ## 11. Test vectors
 
-Computed by `tools/spec-vectors.py`.
+Computed by `tools/spec-vectors.py`. **J1 to J6 are draft 2's clear format, which is not built**: the encrypted journal's vectors are storage's E5 (header), E6 (entries), E7 (tampering; E7f is J4's torn tail and E7a is J6's corruption) and E9m (the mark file). J1 to J6 are kept because the tool still prints them, and because their framing logic (marks, torn tails, order rules) is the same.
 
 **J1. Header, signet.** 48 bytes:
 
@@ -307,18 +325,18 @@ ff0269042d9a3f7d
 ## 12. Tests
 
 **Format**
-1. J1 to J6 reproduce exactly.
-2. Header with a wrong magic, a wrong check, or the mainnet chain hash: refused.
-3. Every field of an entry altered in turn: `length` 20, 16, 0, the maximum + 1; an incarnation or sync mark with `length` other than 25; unknown `kind`; a sync mark whose `offset` is not its own; a flipped bit in each region: the entry is invalid.
+1. Storage's E5 to E7 and E9m reproduce exactly (J1 to J6 for the tool's history only).
+2. Header with a wrong magic or format, the mainnet chain hash, another wallet's `vault_id` or a damaged header tag: refused, with the stated reasons.
+3. Every field of an entry altered in turn: `length` 60, 56, 0, the maximum + 1; an incarnation or sync mark with `length` other than 65; unknown `kind`; a sync mark whose decrypted `offset` is not its own; a flipped bit in each region, the clear fields and the nonce included: the entry is invalid.
 4. A batch whose records under- or overrun the payload: invalid.
-5. Order rules: a batch before any incarnation; an incarnation that does not increase; a batch under an older incarnation; a sequence gap; a repeated sequence. Each, with valid checksums: refuses to start.
+5. Order rules: a batch before any incarnation; an incarnation that does not increase; a batch under an older incarnation; a sequence gap; a repeated sequence. Each, with valid tags: refuses to start.
 6. An empty batch is written, synced, confirmed and read back as no records.
 
 **Torn tails and corruption**
-7. For every byte offset inside the last entry after the last sync mark, the file cut there: the start cuts the tail, keeps every earlier entry, and the next incarnation is one higher. J4 reproduces.
+7. For every byte offset inside the last entry after the last sync mark, the file cut there: the start cuts the tail, keeps every earlier entry, and the next incarnation is one higher. E7f reproduces.
 8. Zero bytes appended after the last sync mark (a file grown but never written): cut as a torn tail.
 9. A group of entries after the last mark in which an earlier one is torn and a later one is intact: both dropped.
-10. An invalid entry anywhere before a valid sync mark, however close to the end of the file: refused as corruption, nothing cut. J6 reproduces.
+10. An invalid entry anywhere before a valid sync mark, however close to the end of the file: refused as corruption, nothing cut. E7a reproduces.
 25. **Review 3, F2.** A Slice 1 member journal of about 40 KB with a flipped bit in a confirmed `exposure` entry: the start is refused and the user is told; the entry and everything after it are untouched. The same with the bit flipped in the last batch after the last mark: cut as a torn tail.
 26. A crash after the first sync and before the mark's sync: the batch is not confirmed, nothing it held back was sent, and on restart the batch is either kept (its mark survived, or no damage) or cut as a torn tail.
 27. Rule removed: with the mark written but batches confirmed after the first sync only, test 25 combined with a crash before the mark's sync must show a confirmed record cut. That test must fail.
@@ -339,12 +357,12 @@ ff0269042d9a3f7d
 21. A member with an `exposure` record for an outpoint receives a different round on that outpoint: refused (C7, review 2 N6).
 22. Secret nonces: the byte search of section 10 over the journal after every simulator run.
 23. Restore (review 2, N1, test 4b): a journal copy from before a creation round is restored; the host replays that round's proposal and proposes a second tree on the same outpoint. Both are refused with reason 12; no key from after the backup is derived again; the first batch of the restored node is `key_epoch` (non-zero), `restored` and `guard`, issued by the runner as sequence 1; nothing is sent before it is confirmed. The epoch is drawn with the untagged request (the simulator's port records the tag).
-28. Guard: with a guard file ahead of the backup, the restore tells the user the backup is stale and keeps the file's epochs; with none, it says "possibly stale". A batch with a `guard` record is not confirmed until the guard file is replaced and synced; a failure there is a storage failure.
+28. Guard and mark file: with a guard file ahead of the backup, the restore tells the user the backup is stale and keeps the file's epochs; with none, it says "possibly stale". A batch with a `guard` record is not confirmed until the guard file is replaced and synced, and an anchored batch not until its mark-file entry is synced; a failure there is a storage failure. The journal cut back after an anchored batch is not started (storage test 8).
 24. Rule removed: with the `exposure` record written after `round_partial_sigs` is sent instead of before, test 21 combined with a crash at that point must show a second tree signed on one outpoint. That test must fail.
 
 ## 13. Open points
 
-1. **Encryption at rest** (`DESIGN.md` section 9). Slice 1 runs unencrypted on signet. The plan is an authenticated cipher per entry, whose tag replaces the checksum and also detects tampering; key from the seed.
+1. Closed: **encryption at rest** is in from Slice 1 (owner decision 13; open point 10).
 2. **Snapshots and compaction**, to bound start-up time, memory and file size. Rule to keep: `round_started`, `exposure` (with its funding transaction and tree digest), `key_epoch`, `key_index` and the newest `guard` records are never compacted away, and neither are sync marks after the newest compaction point.
 3. **TLV field numbers inside each record type**, fixed with the engine's code tables.
 4. **Backups.** The journal is also the backup (`DESIGN.md` section 9). How it is exported and how a restore is triggered belongs to the backup specification; section 8 states only what a restore must write.
@@ -370,4 +388,4 @@ ff0269042d9a3f7d
 | Settings, review and preview ids spent, host-node setting, user-added chain servers, while-closed reports | As `spec/local-api.md` 7.5 | Before each call answers | 1.0.0 |
 
 None of these holds a key, the seed or the 24 words (section 10). The rule of open point 2 adds: request ids may be compacted only under the lifetime rule of `spec/local-api.md` 7.4, and pause, conditions copies and activity entries never while their lobby or factory is unresolved.
-10. **Encryption** (owner decision 13, 2026-11-12: every file encrypted from the start, on test networks too; replaces open point 1's plan). Specified in `spec/storage-encryption.md` (draft 2 answers the review of draft 1; not itself reviewed). Draft 2 also creates the guard file at set-up and replaces it before every **anchored batch** (its 6.2: `guard`, `exposure`, `round_signed`, own commitments, revocations released and received), and its watch bundle never holds an own commitment. Draft 1's summary: an authenticated header with the storage key wrapped under a key from the seed (its 5.3), every entry sealed with XChaCha20-Poly1305 under associated data binding file id, offset, kind, incarnation and sequence (its 5.4), the tag replacing the 8-byte checksum, entry lengths 61 to 8,388,665 and 65 for kinds 1 and 3; the guard file sealed and given a high-water mark of this journal (its 10), replaced also before every batch with an `exposure` record is confirmed, and checked at every start (its 6); and a separately sealed watch-and-exit bundle, replaced before any batch that changes exit data is confirmed, so a locked wallet keeps watching and leaves alone in time (its 8.7). Sections 4 and 5's write, sync, mark and confirm rules are unchanged (its 7). Sections 2.1, 3, 7 and 8.3 here are to be rewritten from it once it is reviewed; vectors E0 to E11 of `tools/spec-vectors.py`.
+10. **Encryption** (owner decision 13, 2026-11-12: every file encrypted from the start, on test networks too). Folded in with draft 3 from `spec/storage-encryption.md` draft 3 (sections 2, 2.1, 3, 4, 5, 7, 8.3 here): the authenticated header, the sealed entries, the lengths, the mark file and the sealed guard, and the start rule. Still open there and bearing on this document: the measured cost of anchored batches (its point 16), padding (its point 6), a rollback anchor for the journal outside the data folder (its point 7), and libsodium's confirmation of the vectors (its point 12).

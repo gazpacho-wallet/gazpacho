@@ -109,7 +109,8 @@ A replayed round message is answered from saved bytes or refused by the saved id
 
 | Case | Stopped by | Not stopped |
 |---|---|---|
-| Stolen, locked | Nothing yet: the journal is **not** encrypted in Slice 1 (`spec/journal.md`). Encryption at rest is planned (`DESIGN.md` section 9) | Everything on the disk, until encryption at rest exists; then, the strength of the device lock and the passphrase |
+| Stolen, locked (or a copy of the data folder taken) | Encryption at rest from Slice 1 on (owner decision 13; `spec/storage-encryption.md`): every file sealed under a storage key that only the wallet passphrase unwraps, through Argon2id at 256 MiB (storage 3, 4). The 24 words need the passphrase typed for them (storage 9) | File sizes, times and counts (storage 3.2); a weak passphrase, guessed offline at the cost of one Argon2id per guess (storage 3.3); in 1.0.0, a thief who also has the person's operating-system key store reads the watch bundle (factories, amounts, dates) and can grief by publishing the member's tree path early, but cannot publish a revoked state or move value from its owner (storage 8.7.5, invariant T) |
+| An older copy of the data folder put back (a sync service's history, a system restore, a snapshot) | The mark file and the guard catch a journal cut back or rolled back past an anchored batch (storage 6); the key store's counters catch an older watch bundle, penalty file or attempts file (storage 8.7.3); a journal found behind is never started as current, only as a restore under a new epoch | The whole folder rolled back together, or together with the key store: not detected locally (storage 6.4); the restore rules then decide (`safety-rule.md` 9) |
 | Stolen unlocked, or keys extracted | — | The thief can co-sign with the host and pay the balance out. The safe-to-sign rule trusts its own keys |
 | A copied disk restored elsewhere and run | "A restored backup never publishes" (`DESIGN.md` section 6); C12; R2 to R5 | Two devices running one key at the same time |
 | A copy of a running program (a machine snapshot, a fork) holding a secret nonce | — | Accepted |
@@ -124,6 +125,8 @@ A replayed round message is answered from saved bytes or refused by the saved id
 - Loss of the held set or the exposed set.
 - Two devices running one key.
 - Copies of a running program.
+- A whole data folder put back from an older copy, together with the key store (storage 6.4).
+- Offline guessing of a weak wallet passphrase from a stolen or copied file (storage 3.3).
 - Theft of unlocked keys.
 - Relay rules that obstruct pre-signed transactions.
 - Bugs in the imported tree builder.

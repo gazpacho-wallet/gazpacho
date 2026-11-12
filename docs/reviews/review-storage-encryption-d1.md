@@ -1,4 +1,133 @@
-# Review: `spec/storage-encryption.md` draft 1 and vectors section E
+# Review: `spec/storage-encryption.md`, drafts 1 and 2, and vectors section E
+
+## Round 2: confirmation of draft 2 (commit `e7bcfaa`)
+
+Read from `specs-slice1` at `e7bcfaa`: `spec/storage-encryption.md` draft 2, `spec/exit.md` draft 1 (5.6, 5.7, 7.1, W1 to W5, 10.4), `spec/local-api.md` draft 3 §4.7, and `tools/spec-vectors.py` sections E and X.
+
+### Verdict, round 2
+
+**Ready to build from**, once the Medium items R2-1 to R2-5 below are folded in. None of them needs a new mechanism. Draft 2 removes the High problems of round 1. The central design move, invariant T (no commitment of the member's own ever enters a bundle), is the right fix and holds for 1.0.0 as specified. What is left:
+- the edges of the new pieces: the penalty file has no freshness anchor, deleting the journal and the guard together goes undetected, T is phrased too narrowly for later engines, and the penalty file has no position field for the start rule;
+- `spec/local-api.md` draft 3 §4.7 and `spec/exit.md` still describe the draft-1 watcher in several places.
+
+### F1 to F25: status
+
+| # | Status | Evidence |
+|---|---|---|
+| F1 | **Fixed** (for 1.0.0) | 8.7.2 invariant T and its "never in" list; `exit.md` W2 and X-I4; `watch.key` removed (3.1, 8.7.3, test 22); test 21 hands every old version plus KB to a simulated thief. The scope limit is R2-3 |
+| F2 | **Fixed** | 8.7.1 states the watcher cannot finish an exit; `exit.md` 5.6 defines `unlock_by`. `exit.md` 7.1 confirms that early publication moves no deadline earlier, because H_leaf is absolute |
+| F3 | **Partly** | 6.2's anchored families now include `round_signed`, own commitment, released revocation and received host revocation; 6.3 step 3 adds B1 and the penalty file; a newer bundle or penalty file is kept as `.newer`. Gaps: the penalty file carries no journal position (R2-4), and the "safe to lose" argument covers member records only (R2-7) |
+| F4 | **Fixed** | Moot under T; `made_after_restore_marker`; `exit.md` 5.7 makes publishing a restored commitment the person's choice, never automatic; test 23 |
+| F5 | **Fixed** | 8.7.4 rule 6 (claims checked against the chain, never changing state by themselves); separate KWB, KWP, KWL and KA keys under KB (4.4); test 24; the E13 cross-key refusal |
+| F6 | **Partly** | Guard created at set-up (7.4); absence means "possibly old" whenever a key file exists. A new hole opened by the creation-order rule is R2-2 |
+| F7 | **Fixed, one residue** | Argon2id runs in a short-lived helper process (8.4); the libsodium source behaviour is stated correctly (8.3, sources table); test 11 looks for `B[0][0]`. Residue: the helper's unlocked blocks can still be swapped (R2-6) |
+| F8 | **Fixed** | 8.3 restricts the claim to storage-layer secrets and names the core's ordinary-memory keys |
+| F9 | **Fixed** | 4.2 has one rule for every slot: ceiling = min(4 GiB, `memlimit_max`, half of physical memory), computed in 64 bits. E4 (m above the ceiling) and E11 (m = 2^32 − 1 KiB, p = 4) are refused before deriving; reproduced |
+| F10 | **Fixed in this document**, not yet elsewhere | 8.7.6: one 65-byte header, nothing else in the clear, `counter` listed in 3.2; E12 matches. But `exit.md` 5.6 and `local-api.md` 4.7 still cite a clear `next_action_height` (R2-5) |
+| F11 | **Fixed** | 8.7.5 now names sibling griefing; the property is restated; test 19 checks every output against the tree's assignment. T's own wording still says "without loss" (R2-3) |
+| F12 | **Fixed** | A 32-byte HMAC commitment under a PK-derived key (4.5, 11), checked before the wrap; test 5 builds a partitioning ciphertext. Checked below: sound |
+| F13 | **Fixed** | 5.2: the program's own wrapper over `getrandom`, `getentropy` and `BCryptGenRandom`; `RtlGenRandom` stated correctly |
+| F14 | **Fixed** | `keys()` gives each sealing key a nonce key under `label ‖ " nonce"`. I checked that no label in 4.4 ends in " nonce", so no derived key can collide with another; KB's record has its own label (KBK) |
+| F15 | **Fixed** | Bellare and Tackmann cited; injectivity of the encoding stated |
+| F16 | **Fixed** | The check is dropped |
+| F17 | **Fixed** | 11 and E11; the reference returns "empty chunk before the end" |
+| F18 | **Fixed** | 4.7: max(stored, calibrated); the words are re-sealed at upgrade |
+| F19 | **Fixed** | Median of three |
+| F20 | **Partly** | Mode-2 HMAC under KA, and a plain file where KB exists is read as strictest (E14, reproduced). An older *valid* mode-2 file can still be replayed by a folder-only writer to reset the count (R2-9) |
+| F21 | **Partly** | The token moved to a runtime directory and is stated as full authority. On Windows the chosen location, `%LOCALAPPDATA%\Gazpacho\run`, is **inside** the data folder `%LOCALAPPDATA%\Gazpacho` (8.5), so "outside the data folder" is false there (R2-10) |
+| F22 | **Handled as far as a spec can** | Both amendments are listed in 18, point 1; they still need the owner |
+| F23 | **Fixed** | 13: 1.0.21 or later, from the minisign-checked tarball, `crypto_kdf_hkdf_sha256`, the audit described accurately |
+| F24 | **Fixed** | 4.2; break-check 25 |
+| F25 | **Fixed** | 5.6's new row; E7h reproduced independently (the batch and mark 2 both fail; the reading stops at 323) |
+
+### New findings, round 2
+
+**Medium**
+
+- **R2-1. The penalty file has no freshness anchor, and its truncation can cost money.** `watch.gzp` is append-only (8.7.6), and the watcher's "refuse to go backwards" rule (8.7.4 rule 7) covers only the bundle's `counter`. Anyone who can write the folder can cut `watch.gzp` at an entry boundary, which is a valid shorter file, or restore an older copy. **KB is not needed** to do either. A sync service's "previous versions" or a system restore does the same by accident. The locked watcher then lacks the penalties for the host's most recent revoked states. A host that publishes one of those while the member stays locked past the revocation window takes the channel balance.
+
+  8.7.6 says a truncated copy "costs protection while locked, not money to an attacker, and is caught at unlock by rule 4". It costs money to the member whenever the unlock comes after the window, and the host is the party that benefits. The 8.7.5 table ("write access ... only dates can be stale") must say this.
+  *Change:* keep the penalty file's entry count, or its last offset, in the OS store beside the bundle counter (rule 7 extended), updated with each append. The watcher refuses, and the status reports, a penalty file shorter than that. One small key-store write per host revocation is cheap next to the journal's fsyncs.
+
+- **R2-2. Deleting the journal and the guard together restarts the wallet at epoch 0.** The creation-order rule (7.4) says: "A crash after the key file and before the guard: the next unlock writes the guard, because no journal exists yet." So a key file with no guard and no journal reads as an interrupted set-up. An attacker with write access, or a careless clean-up, who deletes `journal.gzj` and `guard.gzg` gets a fresh guard and an empty journal: `key_epoch` 0, `key_index` from 0. That reuses keys already used under epoch 0, which is exactly what R2 to R5 exist to prevent. Test 8 covers "guard deleted", not "guard and journal deleted".
+  *Change:* a key file without a journal always starts as a restore (new epoch, R2). For a genuine set-up crash that costs nothing, since nothing was used under epoch 0. Alternatively, mark "set-up complete" inside the key file's authenticated header once the journal exists. Add the case to test 8.
+
+- **R2-3. Invariant T is worded for revocation, but later engines supersede.** T's escape clause is "if a later engine needs an item that can become **revoked**". The 1.1.0 plans, though, replace states without revoking them:
+  - timed layers (Decker-Wattenhofer states, `safety-rule.md` 8: an old state "can reach the chain if it wins the race");
+  - the leaf change of `safety-rule.md` 4.2;
+  - rolling into the next factory.
+
+  An old bundle holding a superseded timed-layer state lets a KB holder start exactly the race that `THREAT-MODEL.md` §3 lists as a loss for members above their coverage.
+
+  T's sentence "valid to publish at any time without loss to its rightful owners" also contradicts 8.7.5 and `exit.md` 7.1, where siblings pay exit fees. And it is violated in letter by the fee ladder whenever a set-aside fee coin is later released back to general use: an old bundle's highest rung can still burn it, up to 200 sat/vB × package size.
+  *Changes:*
+  - (a) Reword the trigger as "can become revoked **or superseded**", and say that 1.0.0's "one version per funding output" is the precondition.
+  - (b) Reword T as "... cannot move value away from its rightful owner on any output; it can cost fees and off-chain places (8.7.5)".
+  - (c) A released fee coin is first spent to a fresh wallet address while unlocked, or the loss bound is stated.
+
+- **R2-4. The start rule's penalty-file test has nothing to compare.** 6.3 step 3 and 8.7.4 rule 4 compare "the penalty file's last entry" with the journal position. But a penalty entry's payload is "one B6 record", and `exit.md`'s type-20 record has no journal `file_id` or mark offset. "Newer than the journal" cannot be decided for it.
+  *Change:* each penalty entry carries the journal `file_id` and the sync-mark offset of the batch that recorded the host's revocation. The same applies to `exit.md`'s record table, which still places B6 inside the bundle (type 20), contradicting 8.7.6.
+
+- **R2-5. `local-api.md` draft 3 §4.7 and `exit.md` still describe the draft-1 watcher.** Item by item:
+  - **Exits.** The rows "Leaves alone by its dates: Yes, broadcasting the bundle's already-signed exit path" and the lock warning ("will leave them alone by their dates if it must") promise a finished exit. Under draft 2 the watcher publishes only the tree path, and the balance is safe only if the person unlocks by `unlock_by` (`exit.md` 5.6). The warning must carry `unlock_by` and say that the last step needs the passphrase. This is user-facing, so it matters.
+  - **Penalties.** "Answers an old state ... with the fully signed responses in the bundle": they are in `watch.gzp`.
+  - **`next_action`.** It is described as "the one date stored in the clear". Draft 2 stores nothing in the clear; the watcher serves it from the opened bundle. The locked status also lacks the `unlock_by` field that `exit.md` 5.6 requires.
+  - **Names.** `watching.state = locked_watcher` here, `watcher_locked` in `exit.md` and storage 8.6. Pick one.
+  - **Rule number.** `bundle_refused` cites "storage 8.7.4 rule 5"; in draft 2 it is rule 7. There is also no status reason for "kept as `.newer`, journal behind" or for "no OS key store" (storage 8.7.3; `bundle_key_unavailable` does not say that the store is absent).
+  - **Unlock order.** Local API: storage unlock, *then* the watcher stops. Storage 8.2 and `exit.md` W1: the watcher stops *first*. Also unstated: what happens when the unlock fails (the watcher must restart), and when 6.3 finds the journal behind. 6.3 step 4 keeps the watcher running and does not start the node, but §4.7's steps 2 to 5 always go on to connect the node.
+  - **Lock hold.** §4.7 holds the lock only for outstanding partial signatures; `exit.md` 5.6 also holds it while an incoming payment's secret is released and unsettled. This is needed by 1.0.0.
+
+**Low**
+
+- **R2-6. The helper's memory is not locked.** 256 MiB to 1 GiB of Argon2 blocks can reach swap or the Windows pagefile during the helper's life, and process exit does not wipe swap. Add "the helper's blocks in swap" to 8.3's not-defended list next to its crash dump, with the full-disk-encryption advice. On Windows that means BitLocker, because the pagefile is otherwise not encrypted.
+- **R2-7. "Families safe to lose" covers member records only.** Host-side families need their own one-line argument, or anchoring: `funding_signed` ("rebroadcast from it"), `ack_received` (H1) and `start_sent`. The channel engine must list payment-preimage records. 6.2 already says it will; name it in `exit.md` 10.1 (CH list).
+- **R2-8. Write cost of anchored batches.** A payment is about three anchored batches: own commitment, released revocation, host revocation with a penalty append. With group sync that is roughly two guard replaces (each a temporary write, two fsyncs and a rename), plus one penalty append and its sync, per payment. With `F_FULLFSYNC` on macOS that is tens of milliseconds per payment. That is fine for a member; it is a bottleneck for a host with many channels. Cheaper equivalent: make the high-water mark an **append-only** record, one fsync, instead of an atomic replace. The guard's epoch and index part changes rarely and can keep the replace. Option_data_loss_protect does not make the anchor redundant: an exit at a deadline while the host is unreachable gets no data-loss check.
+- **R2-9. Attempts-file replay.** A writer with an older valid mode-2 file can restore it. The fix is cheap: add the file's `counter`, or the KB-store counter of rule 7. The impact is low, since online guessing is bounded by Argon2id anyway.
+- **R2-10. Windows token location.** Use a folder outside `%LOCALAPPDATA%\Gazpacho`, for example a per-user runtime subfolder of the temp directory with an owner-only access list, or fix the sentence.
+- **R2-11. Rekey and the high-water marks.** 4.8 replaces the journal's `file_id` but does not say that the guard's mark, the bundle's B1 and the penalty file's positions are rewritten in the same switch. As written, the first start after a rekey trips 6.3 step 2 ("`file_id` is not the journal's") and forces a restore. This belongs to open point 5's fault tests, but the rule should be written now.
+
+### The new pieces, attacked
+
+- **Invariant T, item by item (1.0.0).**
+  - Tree transactions: fixed at creation; they spend only the funding and tree outputs and pay the tree's assignment. Publishing them early is griefing. `exit.md` 7.1 and section X's arithmetic show that H_leaf is absolute, so nothing is taken earlier.
+  - Penalties: they cannot confirm unless the host's revoked commitment is on chain first, and they pay the member.
+  - Anchor-only children: keyless; anyone can already build them.
+  - Fee rungs: spend only their step's set-aside coin and pay change to the wallet (see R2-3 (c)).
+  - B9: txids only.
+
+  No item lets anyone take a penalty against the member. So **T holds for 1.0.0**, with R2-3's wording and scope fixes.
+- **The penalty file.** It uses the journal format under KWP with its own `file_id`, so the binding to offset and `file_id` is inherited, and entries cannot be moved or spliced. Old copies are harmless (T). Truncation is not harmless (R2-1). Compaction to a new `file_id` must also update the OS-store count of R2-1.
+- **KB subkeys.** KWB (`chain ‖ bundle_id`), KWP and KWL (by `file_id`), KA (by chain) and KBK (from MSK) are all distinct labels. The E13 cross-key refusal reproduces. Sound.
+- **The Argon2id helper.** Sound in design: same image, `PR_SET_DUMPABLE` 0 and no core dumps, only PK returns over a pipe, and the OS zeroes pages before reusing them for another process. On Linux, dumpability must be reset *after* `exec` and before reading the pipe, since `execve` restores it; the text implies this, and the code must do it. A helper crash or out-of-memory must be reported as a failure, not counted as a wrong passphrase. Residue: R2-6.
+- **Key commitment.** `HMAC-SHA256(derive(PK, "key file commitment", ctx), header)`. Two passphrases opening one file would need equal HMAC outputs under two different keys, which costs about 2^128 work. Since KW is derived from PK, committing to PK commits the wrap key. Testing the commitment needs PK, so it is no faster than one Argon2id. It is checked before the wrap, in constant time. The profile-1 slot does the same over bytes 0 to 83. **Sound.**
+- **Parameter ceiling.** Correct and computed before deriving. Note that "half of physical memory" means a profile-1 export at 1 GiB will not open on a device with under 2 GiB; the refusal message says so.
+- **Bundle newer than the journal.** Correctly treated as evidence and kept. No false positive on a legitimate crash: the bundle and the guard are replaced only after the batch's mark is synced (7.2), so a synced mark is never cut. The only gaps are R2-4 (penalty file) and R2-11 (rekey).
+
+### Vector results, round 2
+
+All runs were in a temporary detached worktree of `e7bcfaa`, removed afterwards.
+
+1. **`python -I tools/spec-vectors.py`**: exit 0. "storage-encryption.md: section E done" and "exit.md: section X done". E0 to E14 assert, including the new E7h and E14.
+2. **My independent rebuild**, updated for draft 2. It again uses only the Python `cryptography` package 46.0.5 (OpenSSL backend) for Argon2id, HKDF, HMAC, SHA-2, ChaCha20 and ChaCha20-Poly1305, with HChaCha20 from the raw keystream, and shares no code with the tool. It reproduces bit for bit:
+   - the XChaCha draft vectors, E1, E2 and E2r;
+   - E3 (363 bytes, including the commitment key `00dc1f01…`) and E8;
+   - E5 (including the KJ nonce key `84d9e143…`);
+   - E6a to E6d and E9;
+   - BK and EK;
+   - E10b, and E10a (428 bytes, against the tool's printout);
+   - E12 (138 bytes, KWB `c269df89…`) and E14 (77 bytes);
+   - E7h's failure pattern, checked independently.
+3. **Not run: libsodium**, not installed (open point 12).
+
+### What I could not check in round 2
+
+- libsodium on any platform.
+- `channel.md` (not written), so the channel-side anchored families and the penalty record's final form.
+- Whether `exit.md` draft 2 will take over the storage-side corrections that 8.7.6 and the "what it changes elsewhere" table ask of it.
+
+---
+
+## Round 1: draft 1 (commit `b626a9e`)
 
 Reviewer: independent, adversarial applied-cryptography review. I wrote none of the reviewed text or code.
 Date: 2026-11-12. Subject: branch `specs-slice1` at commit `b626a9e` (the tip when fetched), files `spec/storage-encryption.md` and `tools/spec-vectors.py` section E. Context read: `spec/journal.md`, `spec/local-api.md` draft 2, `spec/safety-rule.md` (sections 3, 4.3, 9), `docs/THREAT-MODEL.md` (2.7, 3), `docs/ux/decisions.md` (13, 14), `docs/notes/wallet-keys.md` on `main` (there is no `spec/wallet-keys.md` on `main`; the notes file is the only wallet-keys document), and the libsodium source on its `stable` branch.
