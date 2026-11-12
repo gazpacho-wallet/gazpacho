@@ -301,7 +301,7 @@ current_sig    = 7a692794d41ad38a845e6533b2499b197a3d63d86f196d274a14d4aa33478bf
 
 **T6. Comparison.** A member with limits joining fee ≤ 1,000, base ≤ 1,000, proportional ≤ 2,500, against T1 and T2: joining fee "fits only now" (range up to 2,000; current 500); base fits the whole range; proportional fits the whole range. So the lobby is "fits only now". After T3 (joining fee 1,500), it does not fit, and a member on the looser option sends `unready`.
 
-**T7. The tree T1 builds** (section 4.2, the generator's split and funding rules, and the build server): for 3 and 4 members, level arity [3], D = 2; for 5 to 16, [4, 3], D = 2 (D = 3 at 16); every leaf a one-member pseudo-Spilman leaf. With fee 17, the funding amount is 802,827 satoshis for 3 or 4 members. Draft 1's shape entry `0004 01 04` (level arity [4]) is refused by section 4.3 at n = 3.
+**T7. The tree T1 builds** (section 4.2, the generator's split and funding rules, and the build server): for 3 and 4 members, level arity [3], D = 2; for 5 to 8, [4, 3], D = 2; for 9 to 16, [4, 3], D = 3 (corrected after the confirmation review); every leaf a one-member pseudo-Spilman leaf. With fee 17, the funding amount is 802,827 satoshis for 3 or 4 members. Draft 1's shape entry `0004 01 04` (level arity [4]) is refused by section 4.3 at n = 3.
 
 ## 12. Tests
 
