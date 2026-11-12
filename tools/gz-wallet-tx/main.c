@@ -22,7 +22,9 @@
  *
  * "broadcast" sends exactly the bytes in FILE (hex), after checking that
  * they decode, are signed, and pay only outputs of the wallet in FILE
- * (indexes 0..N-1 of both chains) or the one DEST.  "fund --expect-txid"
+ * (indexes 0..N-1 of both chains) or the one DEST, and after looking up
+ * every coin it spends (both servers must agree): it refuses an unknown
+ * coin and a fee above --max-feerate (default 1000 sat/kvB) for its size.  "fund --expect-txid"
  * refuses to sign or send unless the built txid is the one given.  Every
  * server's answer to a broadcast is printed.
  *
@@ -80,7 +82,8 @@ static int usage(void) {
             "            --amount SAT --change-index N [--feerate R|server] [--max-feerate C]\n"
             "            [--scan N] [--expect-txid TXID] [--broadcast] [CHAIN]\n"
             "       gz-wallet-tx broadcast --network signet --hex FILE [--in FILE]\n"
-            "            [--to-address A | --to-script HEX] [--scan N] [--expect-txid TXID] [CHAIN]\n"
+            "            [--to-address A | --to-script HEX] [--scan N] [--max-feerate C]\n"
+            "            [--expect-txid TXID] [CHAIN]\n"
             "       gz-wallet-tx confirm --network signet --txid TXID [CHAIN]\n"
             "  CHAIN: (--server URL [--operator NAME]) x2..8, --pace MS, --retry-pause MS\n");
     return 2;
@@ -427,6 +430,7 @@ typedef struct {
     gz_http http;
     gz_chain servers[MAX_SERVERS], multi;
     size_t n;
+    gz_network net; /* the chain port's name for the network chosen */
 } chain_view;
 
 static int chain_open(chain_view *cv, gzt_network net, const args *a) {
@@ -442,6 +446,10 @@ static int chain_open(chain_view *cv, gzt_network net, const args *a) {
         fprintf(stderr, "gz-wallet-tx: give --server at least twice, or not at all\n");
         return 0;
     }
+    /* the server list is signet's; the network is passed on, never assumed */
+    if (!a->network || !gz_network_from_name(a->network, &cv->net) ||
+        !gz_network_valid(cv->net) || cv->net == GZ_NET_MAINNET)
+        return 0;
     if (!gz_http_curl_create(&cv->http, NULL)) return 0;
     size_t n = a->n_servers ? a->n_servers : 2;
     for (size_t i = 0; i < n; i++) {
@@ -454,7 +462,7 @@ static int chain_open(chain_view *cv, gzt_network net, const args *a) {
         }
         cv->n = i + 1;
     }
-    gz_multi_config_default(&mc, GZ_NET_SIGNET);
+    gz_multi_config_default(&mc, cv->net);
     mc.now_ms = cv->http.now_ms; /* the clock lag is timed by */
     mc.clock_ctx = cv->http.ctx;
     return gz_multi_create(&mc, cv->servers, cv->n, &cv->multi) == GZ_CHAIN_OK;
@@ -489,33 +497,113 @@ static int transient(gz_chain_result r) {
     return r == GZ_CHAIN_UNREACHABLE || r == GZ_CHAIN_NO_QUORUM || r == GZ_CHAIN_LAG;
 }
 
-/* One coin lookup, asked again after a pause (doubling, bounded) when it
- * failed in a way a pause may cure.  The answer is still the comparing
- * backend's: two operators must agree on every try. */
-static gz_chain_result lookup(const chain_view *cv, const gzt_coin *c, uint32_t coin,
-                              uint64_t first_pause, gz_chain_output *outs, size_t cap,
-                              size_t *count) {
-    const char *kind = c->change ? "change" : "receive";
+typedef gz_chain_result (*chain_call)(const chain_view *cv, void *arg);
+
+/* Ask again after a pause (doubling, bounded) when a call failed in a way a
+ * pause may cure.  The answer is still the comparing backend's: two
+ * operators must agree on every try. */
+static gz_chain_result with_retries(const chain_view *cv, chain_call call, void *arg,
+                                    uint64_t first_pause, const char *what) {
     uint64_t wait = first_pause;
     gz_chain_result r = GZ_CHAIN_UNREACHABLE;
     for (int t = 1; t <= LOOKUP_TRIES; t++) {
-        *count = 0;
-        r = gz_chain_script_outputs(&cv->multi, c->script, 34, outs, cap, count, NULL);
+        r = call(cv, arg);
         if (r == GZ_CHAIN_OK) return r;
         if (!transient(r) || t == LOOKUP_TRIES) break;
-        fprintf(stderr,
-                "gz-wallet-tx: lookup of %s index %u (m/86'/%u'/0'/%u/%u): %s; asking again "
-                "in %llu ms (try %d of %d)\n",
-                kind, c->index, coin, c->change, c->index, gz_chain_result_name(r),
-                (unsigned long long)wait, t + 1, LOOKUP_TRIES);
+        fprintf(stderr, "gz-wallet-tx: lookup of %s: %s; asking again in %llu ms (try %d of %d)\n",
+                what, gz_chain_result_name(r), (unsigned long long)wait, t + 1, LOOKUP_TRIES);
         report_servers(cv);
         pause_ms(wait);
         wait = wait * 2 > RETRY_PAUSE_MAX_MS ? RETRY_PAUSE_MAX_MS : wait * 2;
     }
-    fprintf(stderr, "gz-wallet-tx: coin lookup failed at %s index %u (m/86'/%u'/0'/%u/%u): %s\n",
-            kind, c->index, coin, c->change, c->index, gz_chain_result_name(r));
+    fprintf(stderr, "gz-wallet-tx: coin lookup failed at %s: %s\n", what, gz_chain_result_name(r));
     report_servers(cv);
     return r;
+}
+
+typedef struct {
+    const gzt_coin *c;
+    gz_chain_output *outs;
+    size_t cap, *count;
+} outputs_arg;
+
+static gz_chain_result call_outputs(const chain_view *cv, void *p) {
+    outputs_arg *o = p;
+    *o->count = 0;
+    return gz_chain_script_outputs(&cv->multi, o->c->script, 34, o->outs, o->cap, o->count, NULL);
+}
+
+/* One coin lookup of the scan, with retries. */
+static gz_chain_result lookup(const chain_view *cv, const gzt_coin *c, uint32_t coin,
+                              uint64_t first_pause, gz_chain_output *outs, size_t cap,
+                              size_t *count) {
+    char what[96];
+    outputs_arg o = {c, outs, cap, count};
+    snprintf(what, sizeof what, "%s index %u (m/86'/%u'/0'/%u/%u)",
+             c->change ? "change" : "receive", c->index, coin, c->change, c->index);
+    return with_retries(cv, call_outputs, &o, first_pause, what);
+}
+
+/* A previous transaction, any size the chain port accepts. */
+#define PREV_TX_MAX 400000
+typedef struct {
+    const uint8_t *txid;
+    uint8_t *buf;
+    size_t len;
+} raw_arg;
+
+static gz_chain_result call_raw(const chain_view *cv, void *p) {
+    raw_arg *r = p;
+    return gz_chain_raw_tx(&cv->multi, r->txid, r->buf, PREV_TX_MAX, &r->len);
+}
+
+static int read_compact(const uint8_t *b, size_t len, size_t *i, uint64_t *v) {
+    if (*i >= len) return 0;
+    uint8_t f = b[(*i)++];
+    size_t w = f == 0xfd ? 2 : f == 0xfe ? 4 : f == 0xff ? 8 : 0;
+    if (!w) {
+        *v = f;
+        return 1;
+    }
+    if (len - *i < w) return 0;
+    *v = 0;
+    for (size_t k = 0; k < w; k++) *v |= (uint64_t)b[*i + k] << (8 * k);
+    *i += w;
+    return 1;
+}
+
+/* Output `vout` of a serialised transaction (either form), without the
+ * library's caps, which are sized for this wallet's own transactions.  The
+ * chain port has already checked that the bytes hash to the txid asked. */
+static int prev_output(const uint8_t *b, size_t len, uint32_t vout, uint64_t *value,
+                       const uint8_t **script, size_t *script_len) {
+    size_t i = 4;
+    uint64_t n, l;
+    if (len < 10) return 0;
+    if (b[4] == 0 && b[5] == 1) i = 6;
+    if (!read_compact(b, len, &i, &n)) return 0;
+    for (uint64_t k = 0; k < n; k++) {
+        if (len - i < 36) return 0;
+        i += 36;
+        if (!read_compact(b, len, &i, &l) || l > len || len - i < l + 4) return 0;
+        i += l + 4;
+    }
+    if (!read_compact(b, len, &i, &n) || vout >= n) return 0;
+    for (uint64_t k = 0; k <= vout; k++) {
+        if (len - i < 8) return 0;
+        uint64_t v = 0;
+        for (int j = 0; j < 8; j++) v |= (uint64_t)b[i + j] << (8 * j);
+        i += 8;
+        if (!read_compact(b, len, &i, &l) || l > len || len - i < l) return 0;
+        if (k == vout) {
+            *value = v;
+            *script = b + i;
+            *script_len = (size_t)l;
+            return v <= GZT_MAX_MONEY;
+        }
+        i += l;
+    }
+    return 0;
 }
 
 /* Send raw to every server and print what each one answered. */
@@ -583,7 +671,7 @@ static int cmd_fund(const secp256k1_context *ctx, const args *a) {
          * rate; elsewhere the servers' combined estimate for that target or a
          * faster one, never a slower one's */
         gz_fee_choice choice;
-        gz_chain_result r = gz_chain_choose_fee_rate(&cv.multi, GZ_NET_SIGNET, 6,
+        gz_chain_result r = gz_chain_choose_fee_rate(&cv.multi, cv.net, 6,
                                                      req.fee.ceiling.sat_per_kvb, &choice);
         if (r != GZ_CHAIN_OK) {
             fprintf(stderr, "gz-wallet-tx: no fee estimate: %s\n", gz_chain_result_name(r));
@@ -646,6 +734,63 @@ out:
     return rc;
 }
 
+/* Every input's previous output, looked up through the comparing backend
+ * (same retries as the scan); the fee from the real size, refused above the
+ * ceiling rate as the funding builder does: fee at most
+ * ceil(vsize x ceiling / 1000). */
+static int check_inputs(const chain_view *cv, const gzt_tx *tx, uint8_t (*wallet)[100][34],
+                        uint64_t scan, uint32_t coin, uint64_t retry_pause, uint64_t max_rate) {
+    static uint8_t prev[PREV_TX_MAX];
+    uint64_t in_total = 0, out_total = 0, w, vs;
+    for (uint32_t i = 0; i < tx->n_in; i++) {
+        char what[128], hex[65];
+        const uint8_t *script;
+        size_t script_len;
+        uint64_t value;
+        int found = 0;
+        for (int k = 0; k < 32; k++) snprintf(hex + 2 * k, 3, "%02x", tx->in[i].prev_txid[31 - k]);
+        snprintf(what, sizeof what, "input %u (%s:%u)", i, hex, tx->in[i].prev_vout);
+        raw_arg r = {tx->in[i].prev_txid, prev, 0};
+        gz_chain_result res = with_retries(cv, call_raw, &r, retry_pause, what);
+        if (res != GZ_CHAIN_OK) {
+            fprintf(stderr, "gz-wallet-tx: the coin spent by input %u is not known to the "
+                            "servers (%s); nothing sent\n", i, gz_chain_result_name(res));
+            return 0;
+        }
+        if (!prev_output(prev, r.len, tx->in[i].prev_vout, &value, &script, &script_len)) {
+            fprintf(stderr, "gz-wallet-tx: input %u spends an output its transaction does not "
+                            "have; nothing sent\n", i);
+            return 0;
+        }
+        in_total += value;
+        printf("input %u %llu from ", i, (unsigned long long)value);
+        for (uint32_t ch = 0; wallet && ch < 2 && !found; ch++)
+            for (uint32_t k = 0; k < scan && !found; k++)
+                if (script_len == 34 && !memcmp(script, wallet[ch][k], 34)) {
+                    printf("this wallet at m/86'/%u'/0'/%u/%u\n", coin, ch, k);
+                    found = 1;
+                }
+        if (!found) printf("%s\n", wallet ? "outside this wallet" : "a coin not checked");
+    }
+    for (uint32_t o = 0; o < tx->n_out; o++) out_total += tx->out[o].value;
+    gzt_tx_weight(tx, &w, &vs);
+    if (in_total < out_total || in_total > GZT_MAX_MONEY) {
+        fprintf(stderr, "gz-wallet-tx: the outputs exceed the inputs; nothing sent\n");
+        return 0;
+    }
+    uint64_t fee = in_total - out_total, limit = (vs * max_rate + 999) / 1000;
+    printf("fee %llu\nvsize %llu\nfeerate %llu sat/kvB, ceiling %llu\n", (unsigned long long)fee,
+           (unsigned long long)vs, (unsigned long long)(vs ? fee * 1000 / vs : 0),
+           (unsigned long long)max_rate);
+    if (fee > limit) {
+        fprintf(stderr, "gz-wallet-tx: fee %llu sat is above the ceiling (%llu sat for %llu vB "
+                        "at %llu sat/kvB); nothing sent\n", (unsigned long long)fee,
+                (unsigned long long)limit, (unsigned long long)vs, (unsigned long long)max_rate);
+        return 0;
+    }
+    return 1;
+}
+
 /* Read a file of hex (white space at the end allowed) into raw. */
 static int read_hex_file(const char *path, uint8_t *raw, size_t cap, size_t *len) {
     static char text[2 * GZT_MAX_TX_BYTES + 2];
@@ -669,11 +814,12 @@ static int cmd_broadcast(const secp256k1_context *ctx, const args *a) {
     gzt_network net;
     gzw_xprv master;
     chain_view cv;
-    uint64_t scan, pace, retry_pause;
+    uint64_t scan, pace, retry_pause, max_rate;
     int have_dest = a->to_address || a->to_script, have_wallet = 0, rc = 1;
     if (!get_network(a->network, &net)) return 1;
     if (!a->hex || (!a->in && !have_dest) || !parse_u64(a->scan, 100, &scan) ||
         !pace_args(a, &pace, &retry_pause) || (have_dest && !dest_script(a, net, dest, &dest_len)) ||
+        !parse_u64(a->max_feerate, GZT_FEERATE_MAX_SAT_PER_KVB, &max_rate) || !max_rate ||
         (a->expect_txid && !txid_from_hex(a->expect_txid, expect)))
         return usage();
     if (!read_hex_file(a->hex, raw, sizeof raw, &len)) {
@@ -744,7 +890,9 @@ static int cmd_broadcast(const secp256k1_context *ctx, const args *a) {
     }
     if (!chain_open(&cv, net, a)) {
         fprintf(stderr, "gz-wallet-tx: cannot set up the chain servers\n");
-    } else if (broadcast_and_report(&cv, raw, len)) {
+    } else if (check_inputs(&cv, &tx, have_wallet ? wallet : NULL, scan, coin_type(net),
+                            retry_pause, max_rate) &&
+               broadcast_and_report(&cv, raw, len)) {
         rc = 0;
     }
     chain_close(&cv);
@@ -760,7 +908,7 @@ static int cmd_confirm(const args *a) {
     if (!get_network(a->network, &net)) return 1;
     if (!a->txid || !txid_from_hex(a->txid, txid)) return usage();
     if (chain_open(&cv, net, a)) {
-        gz_chain_result r = gz_chain_confirm_tx(&cv.multi, GZ_NET_SIGNET, txid, 6, &conf);
+        gz_chain_result r = gz_chain_confirm_tx(&cv.multi, cv.net, txid, 6, &conf);
         if (r != GZ_CHAIN_OK) {
             fprintf(stderr, "gz-wallet-tx: %s\n", gz_chain_result_name(r));
         } else {

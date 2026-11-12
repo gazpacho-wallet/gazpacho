@@ -15,7 +15,9 @@ with a persona:
                shows the transaction (so the client may count it as had)
 
 The wallet's one coin: the script in WORKDIR/coin_script (hex) holds one
-confirmed output of 100000 sat; every other script holds nothing. Every POST
+confirmed output of 100000 sat, made by a transaction every persona serves
+at /tx/TXID/hex (TXID also in WORKDIR/coin_txid); every other script holds
+nothing and every other transaction is unknown, except what "known" was sent. Every POST
 is logged to WORKDIR/posts.log as "PERSONA TXID".
 """
 import hashlib
@@ -28,7 +30,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 WORK = sys.argv[1]
 GENESIS_SIGNET = "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6"
-COIN_TXID = "11" * 32
 PERSONAS = ("good", "good2", "flaky", "down", "refuse", "known")
 lock = threading.Lock()
 lookups = {}  # persona -> coin lookups seen
@@ -62,12 +63,22 @@ def txid_of(raw):
     return hashlib.sha256(hashlib.sha256(raw).digest()).digest()[::-1].hex()
 
 
-def coin_scripthash():
+def coin():
+    """(scripthash, txid, hex) of the transaction that made the wallet's coin:
+    one input from nowhere in particular, one output of 100000 sat to the
+    script in WORKDIR/coin_script.  Its txid is written to WORKDIR/coin_txid."""
     try:
         with open(os.path.join(WORK, "coin_script")) as f:
-            return hashlib.sha256(bytes.fromhex(f.read().strip())).hexdigest()
+            script = bytes.fromhex(f.read().strip())
     except OSError:
-        return None
+        return None, None, None
+    raw = (bytes.fromhex("02000000" + "01" + "22" * 32 + "00000000" + "00" + "ffffffff" + "01") +
+           (100000).to_bytes(8, "little") + bytes([len(script)]) + script + bytes(4))
+    txid = txid_of(raw)
+    with open(os.path.join(WORK, "coin_txid.tmp"), "w") as f:
+        f.write(txid + "\n")
+    os.replace(os.path.join(WORK, "coin_txid.tmp"), os.path.join(WORK, "coin_txid"))
+    return hashlib.sha256(script).hexdigest(), txid, raw.hex()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -104,14 +115,18 @@ class Handler(BaseHTTPRequestHandler):
                 count = lookups[who]
             if who == "down" or (who == "flaky" and count <= 3):
                 return self.plain(429, "Too Many Requests")
-            if p.split("/")[2] == coin_scripthash():
+            sh, txid, _ = coin()
+            if p.split("/")[2] == sh:
                 return self.plain(200, json.dumps([{
-                    "txid": COIN_TXID, "vout": 0, "value": 100000,
+                    "txid": txid, "vout": 0, "value": 100000,
                     "status": {"confirmed": True, "block_height": 900,
                                "block_hash": "00" * 32, "block_time": 1793823982}}]))
             return self.plain(200, "[]")
         if p.startswith("/tx/"):
             parts = p.split("/")
+            _, txid, hexed = coin()
+            if parts[2:] == [txid, "hex"]:
+                return self.plain(200, hexed)
             with lock:
                 hexed = seen.get(parts[2])
             if who == "known" and hexed is not None:

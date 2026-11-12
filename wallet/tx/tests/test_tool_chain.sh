@@ -110,7 +110,33 @@ check hex-dest grep -qx 'output 0 50000 to the stated destination' "$dir/o8"
 check hex-change grep -qx "output 1 49984 to this wallet at m/86'/1'/0'/1/3" "$dir/o8"
 check hex-per-server [ "$(grep -c ': accepted$' "$dir/o8")" -eq 2 ]
 check hex-posted-same [ "$(grep -c " $TXID\$" "$dir/posts.log")" -eq 2 ]
+check hex-input-wallet grep -qx "input 0 100000 from this wallet at m/86'/1'/0'/1/0" "$dir/o8"
+check hex-fee grep -qx 'fee 16' "$dir/o8"
+check hex-feerate grep -qx 'feerate 103 sat/kvB, ceiling 1000' "$dir/o8"
 : > "$dir/posts.log"
+# a fee far above the ceiling: the same coin, signed with a burning rate
+COIN=$(cat "$dir/coin_txid")
+"$tool" plan --network signet --in "$P" --to-script $FACTORY --amount 50000 --change-index 3 \
+  --coin "$COIN:0:100000:1:0" --feerate 60000 --max-feerate 100000 --release > "$dir/burn" 2>&1
+sed -n 's/^signed //p' "$dir/burn" > "$dir/burn.hex"
+check burn-built [ -s "$dir/burn.hex" ]
+"$tool" broadcast --network signet --hex "$dir/burn.hex" --in "$P" --scan 4 --pace 0 \
+  --to-script $FACTORY $(two good good2) > "$dir/o13" 2> "$dir/e13"
+check burn-refused [ $? -eq 1 ]
+check burn-message grep -q 'is above the ceiling .*nothing sent' "$dir/e13"
+check burn-not-posted [ ! -s "$dir/posts.log" ]
+# a ceiling raised on purpose lets it through the check (posted to fakes only)
+"$tool" broadcast --network signet --hex "$dir/burn.hex" --in "$P" --scan 4 --pace 0 \
+  --to-script $FACTORY --max-feerate 100000 $(two good good2) > /dev/null 2>&1
+check burn-raised-ceiling-sent [ $? -eq 0 ]
+: > "$dir/posts.log"
+# an input whose coin the servers do not know
+sed -n 's/^signed //p' "$dir/seed" > "$dir/unknown.hex"
+"$tool" broadcast --network signet --hex "$dir/unknown.hex" --in "$P" --scan 4 --pace 0 \
+  --to-script $FACTORY $(two good good2) > /dev/null 2> "$dir/e14"
+check unknown-input-refused [ $? -eq 1 ]
+check unknown-input-message grep -q 'the coin spent by input 0 is not known to the servers' "$dir/e14"
+check unknown-not-posted [ ! -s "$dir/posts.log" ]
 bc --in "$P" $(two good good2) > "$dir/o9" 2> "$dir/e9"
 check hex-unknown-output-refused [ $? -eq 1 ]
 check hex-unknown-output-message grep -q 'output 0 pays neither this wallet' "$dir/e9"
