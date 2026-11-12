@@ -398,7 +398,7 @@ Vector E9 shows E7g's and E7h's journals refused by the guard.
 ### 6.4 What remains
 
 - **The whole data folder rolled back** (Time Machine, File History, a VM snapshot, a cloud service's "previous versions") is not detected locally. This is `journal.md` 8.2's "copy made by other means".
-- Done: the data folder sits in the per-user, non-roaming application folder (`%LOCALAPPDATA%`, `~/Library/Application Support`, `$XDG_DATA_HOME`); on macOS it is excluded from Time Machine (`CSBackupSetItemExcluded`); elsewhere the interface says not to restore the folder from a system backup.
+- Done: the data folder sits in the per-user, non-roaming application folder (the per-user local application data folder, `~/Library/Application Support`, `$XDG_DATA_HOME`); on macOS it is excluded from Time Machine (`CSBackupSetItemExcluded`); elsewhere the interface says not to restore the folder from a system backup.
 - **Proposed further anchors (open, point 7):** a monotonic counter in the OS credential store (beside KB, 8.7.3); TPM counters; and, for `safety-rule.md` 9, asking the host at each connection for the newest round, key index and channel state it has seen from this member, and treating "the host knows something newer" as a restore (a lying host can force only a harmless restore). `option_data_loss_protect` (required by `spec/exit.md` 5.7) already covers channels this way.
 
 ## 7. Crash safety
@@ -456,7 +456,7 @@ The browser sends the passphrase in a request body over loopback; the program re
 
 ### 8.5 Windows specifics
 
-- Data folder under `%LOCALAPPDATA%\Gazpacho`, never roaming or OneDrive-redirected; files created with an owner-only security descriptor and no inherited entries.
+- Data folder under Gazpacho's folder in the per-user local application data folder, never roaming or OneDrive-redirected; files created with an owner-only security descriptor and no inherited entries.
 - `LockFileEx`, `FlushFileBuffers`, `MoveFileExW` write-through (7).
 - Storage randomness from `BCryptGenRandom` (5.2); libsodium itself uses `RtlGenRandom`.
 - `VirtualLock` through `sodium_mlock`, with the working-set adjustment; locked pages still reach the hibernation file.
@@ -517,7 +517,7 @@ KB is 32 random bytes, made with the wallet, independent of the passphrase and o
 
 | Platform | Store | Unattended at boot |
 |---|---|---|
-| Windows | DPAPI (`CryptProtectData`, current user), the blob in `%LOCALAPPDATA%` | For a service running as that user |
+| Windows | DPAPI (`CryptProtectData`, current user), the blob in the per-user local application data folder | For a service running as that user |
 | macOS | Keychain, "this device only", access limited to the signed program | After login; a system keychain item for a launch daemon |
 | Linux desktop | Secret Service (libsecret) | After login |
 | Linux server | systemd credential (`LoadCredentialEncrypted`, bound to the TPM where present) | Yes |
@@ -627,7 +627,7 @@ Plaintext: `version` (`u8`, 1); `created_ms` (`u64`); `flags` (`u8`; bit 0: the 
 
 ### 12.2 The socket token
 
-The local socket's bearer token file (`local-api.md` 4.6) stays plain and owner-only, made at unlock and deleted at lock and stop, but lives in a **per-user runtime directory outside the data folder**: `$XDG_RUNTIME_DIR` (a tmpfs) on Linux, the per-user temporary directory (`confstr(_CS_DARWIN_USER_TEMP_DIR)`) on macOS, `%LOCALAPPDATA%\Gazpacho\run` (not synchronised) on Windows. While the wallet is unlocked it is a **full-authority credential**, since bearer requests are exempt from fresh sign-in; whoever can read it is the same OS user, who could read process memory anyway. Encrypting it would need the passphrase for every command-line call **(open, point 11)**.
+The local socket's bearer token file (`local-api.md` 4.6) stays plain and owner-only, made at unlock and deleted at lock and stop, but lives in a **per-user runtime directory outside the data folder**: `$XDG_RUNTIME_DIR` (a tmpfs) on Linux, the per-user temporary directory (`confstr(_CS_DARWIN_USER_TEMP_DIR)`) on macOS, Gazpacho's folder in the per-user local application data folder\run` (not synchronised) on Windows. While the wallet is unlocked it is a **full-authority credential**, since bearer requests are exempt from fresh sign-in; whoever can read it is the same OS user, who could read process memory anyway. Encrypting it would need the passphrase for every command-line call **(open, point 11)**.
 
 ### 12.3 The attempts file
 

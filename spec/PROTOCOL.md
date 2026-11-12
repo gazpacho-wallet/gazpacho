@@ -383,12 +383,13 @@ Reserved even types not valid in draft 2: 36 (share of seats for members who bri
 | 0x0004 | Node (key epochs, restore) | Specified |
 | 0x0005 | Channel | Reserved |
 | 0x0006 | Payment | Reserved |
-| 0x0007 | Exit | Reserved |
-| 0x0008 | Watch | Reserved |
+| 0x0007 | Exit | Specified (`journal.md` 9.1) |
+| 0x0008 | Watch | Specified (`journal.md` 9.1) |
 | 0x0009 | Payout | Reserved |
 | 0x000a | Sale | Reserved |
 | 0x000b | Backup | Reserved |
 | 0x000c | Discovery | Reserved |
+| 0x000d | Local API (saved interface state) | Specified (`journal.md` 9.1) |
 | 0x7e57 | Test placeholder; goes with the placeholder | Temporary |
 
 Journal entry kinds: 1 incarnation, 2 batch (`journal.md` 3).

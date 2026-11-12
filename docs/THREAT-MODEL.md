@@ -2,11 +2,13 @@
 
 Draft 1, 2026-11-11. Built from section 8 of `docs/reviews/spec-review-2.md`, edited to match `spec/safety-rule.md` and `spec/signing-round.md` draft 3. Not reviewed.
 
+**Changes after cross-spec review 1** (`docs/reviews/review-cross-spec-1.md`, its section 1.2): the rule names now run to H18; 2.2 cites H14 for the host's duty to answer old states; 2.4 cites the exit's clock floor (`spec/exit.md` 4.5); section 3 gains the exclusions `safety-rule.md` 11 added with `spec/exit.md` draft 2 (a wallet left locked past `unlock_by`, no watch bundle, pinning of keyless anchors, the second-stage breach while locked, a penalty file cut while locked). 2.7 had been updated with `spec/storage-encryption.md` draft 3.
+
 **What this is.** For each party that could harm a Gazpacho user: what it can do, which rule is meant to stop it, and what is not defended. It describes what the specifications say. It does not say the defences work. That needs the tests in `safety-rule.md` section 13 and `signing-round.md` section 16, none of which exist yet.
 
 **Scope.** A member and a host running Gazpacho as the specifications and `DESIGN.md` describe, in 1.0.0: one member per leaf, no sales of receiving room, signet. Notes marked **1.1.0** say what changes when sales and shared leaves arrive.
 
-Rule names: C1 to C13, C8a and H1 to H13 are in `safety-rule.md`; R1 to R7 are its restore rules (section 9); S1 to S5 are the contribution rules of `signing-round.md` section 3. "SR" is `safety-rule.md`, "RD" is `signing-round.md`.
+Rule names: C1 to C13, C8a and H1 to H13 are in `safety-rule.md`, and H14 to H18 in `spec/exit.md` section 9 (listed in `safety-rule.md` section 10); R1 to R7 are its restore rules (section 9); S1 to S5 are the contribution rules of `signing-round.md` section 3. "SR" is `safety-rule.md`, "RD" is `signing-round.md`.
 
 ## 1. What is being protected
 
@@ -68,8 +70,8 @@ The host coordinates, co-signs everything, funds, relays every message and keeps
 | A free seat that stays silent, then collects at the end date | H6, H9; owner open point 2 (a deposit) | No cost per seat in 1.0.0 |
 | Make the host pay unbounded fees | H6, H7 | Fee levels are set by the market |
 | Make the host's commitment unrelayable with many small payments | H10 | The channel engine is not specified yet |
-| An old channel state against the host | Channel revocation; H4 | The channel engine is not specified yet |
-| An old layer state | The newer state wins within one step if the host watches | The host's duty to respond is not written as a rule |
+| An old channel state against the host | Channel revocation; H4; **H14**: the host watches every member's channel output and answers a revoked member commitment by `penalty_send_by`, signing second-stage penalties as they appear (`spec/exit.md` 9.1) | The channel engine is not specified yet. A host down longer than the shortest revocation window of its members can lose to a breach |
+| An old layer state | The newer state wins within one step if the host watches | For channel states the duty is H14 (`spec/exit.md` 9.1); for 1.1.0's timed layers it is not written yet |
 | Leave on day one to disturb the others | — | Accepted; it costs the host fees |
 
 ### 2.3 Other members of the same factory
@@ -90,6 +92,7 @@ Public Electrum-style or explorer servers, or the user's own.
 |---|---|---|
 | A fake confirmation of the funding | Header checks; two servers compared (Slice 1's chain port) | The burial depth is not yet chosen |
 | Hiding the kickoff or an old state | Several sources; the maximum safe absence shown to the user (SR section 7) | Beyond the safe absence (accepted). **1.1.0:** under a day for a member above coverage under a timed layer |
+| Hiding new blocks, a stale tip, or going silent, so the exit starts late | The exit's tip estimate has a **clock floor**: it advances at an assumed two blocks per ten minutes whenever no new block is seen, so hidden blocks, silent servers or offline-by-choice make the exit start early, never late; a claim counts only if a second server reaches it or its headers were checked, so one lying server cannot start an exit either (`spec/exit.md` 4.5) | A full eclipse also stops the member's broadcasts; one broadcast-only route independent of the view's servers is recommended, not guaranteed (`spec/exit.md` 4.5, open point 15) |
 | Hiding or delaying the member's own broadcast | Several servers | Package submission was not available on the public Electrum servers found (`docs/research/channel-groundwork.md`, 1.9) |
 | False fee rates, so the member underpays | — | Not addressed |
 
@@ -136,6 +139,11 @@ A replayed round message is answered from saved bytes or refused by the saved id
 - Factories joined after an old backup, whose keys may be lost without the guard record (R7).
 - For 1.1.0 members above their coverage: losing a one-step race in a timed layer.
 - For every member below a timed layer: a channel engine that fails to keep an old anchor current.
+- A wallet left locked past `unlock_by` with a factory balance: the locked watcher publishes the tree path but not the member's commitment, and after H_leaf a dishonest host takes the balance (`safety-rule.md` 11; `spec/exit.md` 5.6).
+- A locked wallet with no watch-and-exit bundle ("maximum privacy", no OS key store, or Slice 1): nothing is published while locked.
+- Pinning of a keyless anchor: anyone can spend a tree step's pay-to-anchor output first with a large low-rate child (about 234 sat on a TRUC tree, about 10,000 sat on a version-2 tree), and a member without on-chain coins cannot replace it (`spec/exit.md` 6.5).
+- A breach while locked, for the payment outputs: penalties against the host's second-stage payment transactions cannot be pre-signed, so a member that stays locked past `second_stage_unlock_by` loses those outputs (`spec/exit.md` 4.4).
+- A penalty file cut or rolled back while locked: detected and reported (`penalty_file_short`), but a host that publishes one of the newest revoked states while the person stays locked past its revocation window takes that channel's balance; not detected if the OS key store is rolled back too (`storage-encryption.md` 8.7.5).
 
 ## 4. What is not yet known
 

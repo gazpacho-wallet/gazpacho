@@ -2,6 +2,16 @@
 
 Specification draft 3, 2026-11-12. Draft 3 folds in `spec/storage-encryption.md` draft 3: from the first build every file is encrypted (owner decision 13), so the header, the entry framing, the limits and the guard file below are storage's, and a mark file holds the journal's high-water mark. The write, sync, mark and confirm rules, the order rules, the torn-tail rule and the restore rules are unchanged. Draft 2 corrected draft 1 after the third, joint review of the five Slice 1 specifications (`docs/reviews/spec-review-3.md`), which found its torn-tail rule and its restore section wrong. Neither draft 2 nor draft 3 has itself been reviewed. The file-based journal that slice 1 needs (`docs/SLICES.md`: "A file-based journal"). It implements the storage side of the runner contract in `core/gazpacho/include/gazpacho/runner.h`. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: `safety-rule.md` and `signing-round.md` draft 4 settle them.
 
+## Changes after cross-spec review 1
+
+Alignment fixes from `docs/reviews/review-cross-spec-1.md`, made in one pass with `spec/exit.md`, `spec/storage-encryption.md`, `spec/local-api.md` and `spec/safety-rule.md`. No new draft number: the formats and rules of draft 3 are unchanged.
+
+| Item | Change | Where |
+|---|---|---|
+| D13 | **Record type numbers assigned** for `spec/exit.md` 3.4's records: area 0x0007 (Exit) for `exit_plan`, `exit_started`, `exit_step`, `coin_reserved`, `fee_child`, `exit_ended` and `bundle_written`; area 0x0008 (Watch) for `spend_seen` and `response_sent`. All even. Slice 3 | Section 9.1 |
+| The API's saved state | **Record type numbers assigned** for every row of `spec/local-api.md` 7.5, in a new area 0x000d (Local API), all even. Slice 1 for the S1 rows, 1.0.0 for the rest. This closes Slice 1 input W3 for the type numbers; the field numbers inside each record stay with the code tables (open point 3) | Section 9.1, open point 9 |
+| D3 | Every batch that changes the watch bundle or appends a penalty entry is an anchored batch (storage 6.2), whatever records it holds | Section 4 step 4 |
+
 ## Changes in draft 3
 
 | Source | Change | Where |
@@ -129,7 +139,7 @@ One writer, fed in the order the runner's executor receives save actions.
 1. **Append** the batch entry, sealed whole in memory first (storage 7 step 1), with ordinary writes. A short write, or any error, is a storage failure.
 2. **Sync.** POSIX: `fsync` on the file (on macOS, `fcntl(F_FULLFSYNC)`, because plain `fsync` there does not flush the drive's cache). Windows: `FlushFileBuffers`. The sync must cover every entry appended so far.
 3. **Mark**, after the sync returned success: append a sync mark (section 3.3) at the current end of the file, and **sync again**.
-4. **Anchor**, for an **anchored batch** (storage 6.2: one holding a `guard`, `exposure`, `round_signed`, `funding_signed` or `start_sent` record, or a channel record the channel engine marks as anchored), after that second sync: append and sync the mark file's entry (section 8.3); replace the guard file if the batch holds a `guard` record; and, in 1.0.0, replace the watch bundle and append the penalty entry where the batch changes them (storage 7 step 2, 8.7.4). A failure of any of these is a storage failure.
+4. **Anchor**, for an **anchored batch** (storage 6.2: one holding a `guard`, `exposure`, `round_signed`, `funding_signed` or `start_sent` record, or a channel record the channel engine marks as anchored, and, in 1.0.0, **any batch that changes the watch bundle or appends a penalty entry**, for example a `funding_status` or an `exit_plan` date change), after that second sync: append and sync the mark file's entry (section 8.3); replace the guard file if the batch holds a `guard` record; and, in 1.0.0, replace the watch bundle and append the penalty entry where the batch changes them (storage 7 step 2, 8.7.4). A failure of any of these is a storage failure.
 5. **Confirm**, after all of that returned success: `gz_runner_confirm` for each batch the first sync covered, oldest first. Only a confirmation the runner accepts (`GZ_OK`) becomes a `GZ_EVENT_STORAGE_CONFIRMED` event for the node.
 
 **Why two syncs.** A batch is confirmed only when a synced mark after it proves it reached the disk. So every confirmed batch lies before a durable sync mark, and the reader can tell damage to a confirmed entry (before a mark: corruption) from a write that never finished (after the last mark: a torn tail) exactly, whatever the file's size (review 3, F2). Draft 1 inferred this from a size bound, which classified any damage in a small journal, such as every Slice 1 journal, as a torn tail and silently cut confirmed records. The cost is a second small sync per group; the journal writes kilobytes per user action, and group syncing amortises it.
@@ -273,6 +283,53 @@ Record types are `u32`. The high 16 bits name an area, the low 16 bits a kind. E
 
 The host keeps the per-member results until the factory's funding output is spent or the creation is dead (`messages.md` 7.6, `safety-rule.md` H12).
 
+### 9.1 Records numbered now for the exit engine and the local API
+
+Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bits the area of `PROTOCOL.md` 10.4 (0x0007 Exit and 0x0008 Watch are reserved there; 0x000d Local API is new and is to be added to that table), the low 16 bits the kind, numbered 2, 4, 6 … in the order below. **Every one is even** (must be understood): misreading any of them would change what the node signs, publishes, answers or shows, so a program that does not know one stops the start (section 6). Fields are TLV streams under `messages.md` section 4.2; their numbers are fixed with the code tables (open point 3). "Release" is the slice that writes them.
+
+**Exit (0x0007)** (`spec/exit.md` 3.4, which gives each record's fields and the batch it belongs to)
+
+| Type | Record | Contents | Saved before | Release |
+|---|---|---|---|---|
+| `0x00070002` | `exit_plan` | d; the path's txids in order, which output of each the next spends, anchor output per step; H_leaf; the constants in force; the dates of `spec/exit.md` 4.4; the tip estimate's anchor | The bundle's B4 and B5 are written from it; in the batch that makes the factory live, and again on every date change | Slice 3 |
+| `0x00070004` | `exit_started` | Reason; tip estimate, its anchor and the counted view; chain state; the commitment number chosen | The exit's first broadcast; same batch as the channel engine's stop | Slice 3 |
+| `0x00070006` | `exit_step` | Step index; txid; `sent`, `confirmed` or `buried` with height, time or block hash; the server results | Each step's first broadcast (`sent`) | Slice 3 |
+| `0x00070008` | `coin_reserved` | Wallet outpoints used by a child | That child's broadcast | Slice 3 |
+| `0x0007000a` | `fee_child` | Parent txid; child bytes; package rate; fee; which child it replaces | That child's broadcast | Slice 3 |
+| `0x0007000c` | `exit_ended` | `ended_how`; amounts recovered from the confirmed transactions | Nothing | Slice 3 |
+| `0x0007000e` | `bundle_written` | The bundle counter (storage 8.7.4 rule 4) | Nothing; in the batch that rewrites the bundle | Slice 3 |
+
+**Watch (0x0008)**
+
+| Type | Record | Contents | Saved before | Release |
+|---|---|---|---|---|
+| `0x00080002` | `spend_seen` | Outpoint; spender txid; classification (`spec/exit.md` section 8) | Any response | Slice 3 (Slice 1.5 for the tree's outputs) |
+| `0x00080004` | `response_sent` | Trigger txid; response bytes; deadline | The response's broadcast | Slice 3 |
+
+`exit_plan`, `exit_started`, `exit_step`, `coin_reserved`, `fee_child`, `spend_seen` and `response_sent` are never compacted while their factory is not `ended` or `dead` (`spec/exit.md` 10.3).
+
+**Local API (0x000d)** (`spec/local-api.md` 7.5, which gives each record's contents and the batch it is saved with)
+
+| Type | Record | `local-api.md` 7.5 row | Release |
+|---|---|---|---|
+| `0x000d0002` | `setup_state` | Setup state | S1 |
+| `0x000d0004` | `words_checked` | Words checked | S1 |
+| `0x000d0006` | `words_check_attempts` | Words-check attempts | S1 |
+| `0x000d0008` | `conditions` | Conditions | S1 |
+| `0x000d000a` | `conditions_copy` | Conditions copied at joining (same batch as `joined`) | S1 |
+| `0x000d000c` | `pause` | Pause | S1 |
+| `0x000d000e` | `local_ids` | Local ids | S1 |
+| `0x000d0010` | `known_host` | Known hosts | S1 |
+| `0x000d0012` | `activity_entry` | Activity entries | S1 |
+| `0x000d0014` | `request_id` | Request ids | S1 |
+| `0x000d0016` | `set_aside` | Set-aside funds | S1 |
+| `0x000d0018` | `sign_out_setting` | Sign-out setting | 1.0.0 |
+| `0x000d001a` | `settings` | Settings | 1.0.0 |
+| `0x000d001c` | `review_id_spent` | Review and preview ids spent | 1.0.0 |
+| `0x000d001e` | `host_node` | Host-node setting | 1.0.0 |
+| `0x000d0020` | `chain_server_added` | User-added chain servers | 1.0.0 |
+| `0x000d0022` | `while_closed_report` | While-closed reports | 1.0.0 |
+
 ## 10. What is never stored
 
 - **Secret nonces**, MuSig2 secret session state, and the randomness they were made from (`signing-round.md` section 8). Not in any record, not in a payload "for debugging", not in the clear and not encrypted. A node rebuilt from its journal can therefore never recreate one, and a round found in progress is never resumed: it becomes Aborted, or Unfinished if partial signatures were sent (`signing-round.md` section 7).
@@ -370,7 +427,7 @@ ff0269042d9a3f7d
 6. Closed: an unfunded creation is **Abandoned** at the member's funding or unfinished deadline (36 blocks and one signing budget in Slice 1, **proposed, owner to confirm**, `safety-rule.md` section 12) and **Dead** when a funding input is spent elsewhere and buried. Its records stay; neither blocks the member.
 7. Closed: the sync mark is mandatory (sections 3.3 to 5).
 8. **Linux `fdatasync`** would do instead of `fsync` for appends (it flushes the size change too); `fsync` is specified for simplicity until measured.
-9. **API needs** (from `spec/local-api.md` draft 2, section 7.5, after its review found the API's state had no home here, review F11). The local API needs records that are not protocol bytes, in an area of their own. Record type numbers and their field numbers are **not** chosen here: they are fixed with the rest under open point 3 (`OPEN-QUESTIONS.md` W3). What each must hold, and the batch it belongs to:
+9. **API needs** (from `spec/local-api.md` draft 2, section 7.5, after its review found the API's state had no home here, review F11). The local API needs records that are not protocol bytes, in an area of their own. **Their record type numbers are now assigned** (section 9.1, area 0x000d; cross-spec review 1); only their field numbers wait for open point 3 (`OPEN-QUESTIONS.md` W3). What each must hold, and the batch it belongs to:
 
 | Record (working name) | Contents | Saved with, before | Release |
 |---|---|---|---|

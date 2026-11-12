@@ -42,7 +42,7 @@ Slice 1 cannot be finished without these. Each needs a short text, then the owne
 |---|---|---|---|
 | W1 | **The member's default conditions** for Slice 1: the limits a member signs within when the user has set none | `SLICES.md` "done when": a member whose conditions are not met is seen to refuse. Without defaults there is nothing to refuse against (confirmation review, S1-5) | `spec/terms.md` section 9, or a short wallet specification |
 | W2 | **The key derivation path** per lobby, for the contribution key and the factory key. Its inputs are settled: seed, restore epoch (31 bits, a hardened index) and key index | Every member derives these keys; two builds must agree | The wallet specification (`spec/messages.md` open point 3) |
-| W3 | **The field numbers inside each journal record type** | The journal cannot be written without them | `spec/journal.md` open point 3, fixed with the engine's code tables |
+| W3 | **The field numbers inside each journal record type**. The record **type** numbers of the local API's saved state (`spec/local-api.md` 7.5) and of the exit records are now assigned (`spec/journal.md` 9.1, after cross-spec review 1), so W3 is closed for those type numbers; the field numbers remain | The journal cannot be written without them | `spec/journal.md` open point 3, fixed with the engine's code tables |
 
 Also missing, but not a decision: test vectors for the round identifier and the tree digest. The first implementation will be its own reference unless they are written first (confirmation review, S1-4).
 

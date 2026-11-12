@@ -346,7 +346,7 @@ Vector E9 shows E7g's cut journal refused by the guard.
 ### 6.4 What remains
 
 - **The journal and the guard rolled back together** (the whole data folder restored from an operating-system backup, Time Machine, File History, a virtual-machine snapshot, a cloud service's "previous versions") is still not detected. This is `journal.md` 8.2's "a copy of the data folder made by other means" and `THREAT-MODEL.md` 2.7's "copied disk". Encryption does not make it worse, and it is the most likely way a person hits it by accident.
-- What is done: the data folder is created inside the per-user, non-roaming application folder (Windows `%LOCALAPPDATA%`, macOS `~/Library/Application Support`, Linux `$XDG_DATA_HOME`), and on macOS the program marks it excluded from Time Machine (`CSBackupSetItemExcluded`, a property of the folder, not a system setting). Elsewhere the interface tells the person not to restore the folder from a system backup and to use exports instead.
+- What is done: the data folder is created inside the per-user, non-roaming application folder (Windows the per-user local application data folder, macOS `~/Library/Application Support`, Linux `$XDG_DATA_HOME`), and on macOS the program marks it excluded from Time Machine (`CSBackupSetItemExcluded`, a property of the folder, not a system setting). Elsewhere the interface tells the person not to restore the folder from a system backup and to use exports instead.
 - **Proposed further anchors (open, point 7):** a monotonic counter in the operating system's credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service), which a folder restore does not roll back; a hardware monotonic counter (TPM) later; and a question for `safety-rule.md`: a member could ask its host, at every connection, for the newest round and key index the host has seen from it, and treat "the host knows something newer" as a restore. A lying host can then only force a harmless restore, a denial of service, which is already accepted.
 
 ## 7. Crash safety
@@ -404,7 +404,7 @@ The browser sends it in a request body over loopback (`local-api.md` draft 2, 4.
 
 ### 8.5 Windows specifics
 
-- **Data folder** under `%LOCALAPPDATA%\Gazpacho`, never the roaming profile or a OneDrive-redirected folder. Files are created with a security descriptor that grants access to the current user only (and no inherited entries), the equivalent of 0600; `local-api.md`'s token file already requires this.
+- **Data folder** under Gazpacho's folder in the per-user local application data folder, never the roaming profile or a OneDrive-redirected folder. Files are created with a security descriptor that grants access to the current user only (and no inherited entries), the equivalent of 0600; `local-api.md`'s token file already requires this.
 - **Locking and sync**: `LockFileEx` for the journal lock and `FlushFileBuffers` for sync (`journal.md` 2 and 4); atomic replace as in 7, step 3.
 - **Random**: libsodium uses `RtlGenRandom`/`BCryptGenRandom`.
 - **Memory**: `VirtualLock` through `sodium_mlock`, with the working-set adjustment of 8.3. Pages locked this way still go to the hibernation file.
@@ -461,7 +461,7 @@ KB is 32 random bytes, made with the wallet, independent of the passphrase and o
 
 | Platform | KB kept in | Unattended at boot |
 |---|---|---|
-| Windows | `CryptProtectData` (DPAPI), current user, the blob in `%LOCALAPPDATA%`; opened by the same user's logon | Yes, for a service running as that user |
+| Windows | `CryptProtectData` (DPAPI), current user, the blob in the per-user local application data folder; opened by the same user's logon | Yes, for a service running as that user |
 | macOS | Keychain item, "this device only", access limited to the program | After the user's login; for a launch daemon, a system keychain item |
 | Linux, desktop | Secret Service (libsecret) | After login |
 | Linux, server | systemd credential (`LoadCredentialEncrypted`, bound to the TPM where present) | Yes |

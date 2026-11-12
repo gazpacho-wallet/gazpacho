@@ -2462,7 +2462,9 @@ print("\n== storage-encryption.md: section E done")
 # the signing-time check and unlock_by recomputed from the missing steps (F6);
 # X4 adds the host's payment rule H18 (F8); X5 is the new tip estimate, which
 # advances with the clock and never freezes (F1); X8 is the pinning threshold
-# of the anchor-only child (F3); X9 is move_by and the wind-down for T3 (F9).
+# of the anchor-only child (F3); X9 is move_by and the wind-down for the proposed Slice 3
+# terms T1-long (F9; named T1-long, not T3, after cross-spec review 1, D14: T3 is a
+# terms.md vector).
 
 X_STEP = 5                      # TIMEOUT_STEP_BLOCKS, factory.c:1475
 X_BURY = 3                      # B: burial depth, signet (safety-rule.md 12 value 3)
@@ -2888,11 +2890,11 @@ for ds in (1, 2, 3):
         mb = x_move_by(X_E, ds, dd)
         worst = max(worst, X_E - mb)
         print(f"  source d = {ds}, destination d = {dd}: move_by = E - {X_E - mb}")
-X_T3_MOVE_WINDOW = 40
-x_t3_wd = worst + X_T3_MOVE_WINDOW
-print(f"  the earliest move_by is E - {worst}; with a move window of {X_T3_MOVE_WINDOW} blocks"
-      f" the wind-down must be at least {x_t3_wd} (proposed T3: lifetime 144, wind-down {x_t3_wd})")
-assert worst == 212 and x_t3_wd == 252
+X_T1LONG_MOVE_WINDOW = 40
+x_t1long_wd = worst + X_T1LONG_MOVE_WINDOW
+print(f"  the earliest move_by is E - {worst}; with a move window of {X_T1LONG_MOVE_WINDOW} blocks"
+      f" the wind-down must be at least {x_t1long_wd} (proposed T1-long: lifetime 144, wind-down {x_t1long_wd})")
+assert worst == 212 and x_t1long_wd == 252
 # The same arithmetic at the design's example mainnet constants (exit.md 4.6), [R]:
 mA, mB, mM, mMh, md = 12, 6, 6 + 2 + 144, 6 + 2, 4
 m_lead = 10 * md + (mB - 1) + (md + 3) * mA + mM
