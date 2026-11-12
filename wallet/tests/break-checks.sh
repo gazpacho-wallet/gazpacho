@@ -45,8 +45,11 @@ mut() { # mut NAME FILE SED-EXPRESSION WHAT-WAS-BROKEN
     # wallet_tx_tool_chain is left out of the runs with a fault: it waits on
     # the chain port's retry pauses (about 30 s), which over every fault would
     # pass the CI job's time limit; it ran in the baseline above, and the
-    # offline tool tests still run with every fault.
-    (cd "$build" && ctest -j4 -E '^wallet_tx_tool_chain$' >"$scratch/ctest.out" 2>&1)
+    # offline tool tests still run with every fault. The transport's tests
+    # (net_*) cannot notice a wallet fault either and take about a minute,
+    # which over every fault passes the time limit too; they ran in the
+    # baseline.
+    (cd "$build" && ctest -j4 -E '^(wallet_tx_tool_chain|net_.*)$' >"$scratch/ctest.out" 2>&1)
     failed=$(sed -n 's/^[[:space:]]*[0-9][0-9]* - \([a-z_0-9]*\) (.*$/\1/p' "$scratch/ctest.out" | tr '\n' ' ')
     if [ -n "$failed" ]; then
       echo "$name: caught by: $failed-- broke: $what"

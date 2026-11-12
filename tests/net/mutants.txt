@@ -275,3 +275,14 @@ peers-delivered-transfer-kept	ports/net/peers.c	        gz_env_reasm_reset(&c->r
 peers-plain-not-wiped	ports/net/peers.c	gz_net_wipe(p->plain, body);	
 peers-closing-reads	ports/net/peers.c	(c->phase == PH_TCP ? 0 : c->closing ? 0 : POLLIN)	(c->phase == PH_TCP ? 0 : POLLIN)
 peers-no-unit-cap	ports/net/peers.c	while (units < 64) {	while (units < 1000000) {
+# Triage of the survivors after review A of PR 23 (2026-11-12):
+# env-part-odd-type-kept: equivalent. Odd types 1 to 11 would be stored in
+#   slots that are never read.
+# env-part-capped-again: equivalent as written. It counts only the six
+#   required types, so it never reaches its cap of 8; the real fault (a cap
+#   on all records) is covered by the eight odd records of test_envelope.
+# env-lazy-release-gone (the reviewer's a34): equivalent now. peers.c
+#   releases a delivered transfer at once (tested through reassembly_bytes);
+#   the release on the next part is a backstop whose effect rule 4 (a new
+#   transfer_id resets) or the same transfer's reuse of the buffer already
+#   gives.
