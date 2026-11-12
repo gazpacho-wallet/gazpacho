@@ -49,9 +49,9 @@ Checked from the build server on 2026-11-11 (`docs/notes/chain-port.md` section 
 ## How Gazpacho uses them
 
 - The chain port has one interface and several backends. The **HTTP backend comes first**, because two independent signet operators answer on it and it needs only an HTTPS client. The **Electrum backend** follows; it can subscribe to a script and be told when it is spent, which suits watching.
-- Every answer that matters is asked of at least two servers run by different operators. A disagreement is reported to the user and treated as "not confirmed".
+- Every answer that matters is asked of at least two servers run by different operators. The default lists name each server's operator explicitly, so the count does not rest on guessing from host names. A disagreement is reported to the user and treated as "not confirmed".
 - A server cannot be made to hand over anything secret: Gazpacho sends it only scripts to watch and transactions to broadcast. It does learn which scripts a user watches, and from which network address.
-- These are other people's free services. Gazpacho keeps its request rate low, caches what it can, and backs off on errors. Their terms and limits have not been read yet.
+- These are other people's free services. Gazpacho keeps its request rate low (at least 250 ms between requests to one server) and backs off on errors. It does not cache answers yet. What the operators publish about terms and limits is summarised in `notes/chain-port.md`, section 10; neither publishes a number.
 - Anyone can replace the list with their own server or their own Bitcoin node. Hosts should.
 
 ## Limits of running without our own node
@@ -63,5 +63,5 @@ Checked from the build server on 2026-11-11 (`docs/notes/chain-port.md` section 
 ## To do
 
 1. Done: a second independent testnet4 operator and a second signet Electrum operator were found (above).
-2. Read the operators' terms and rate limits.
+2. Read the operators' terms and rate limits. Done as far as they are published: `notes/chain-port.md` section 10.
 3. Decide the default list for release, per network.

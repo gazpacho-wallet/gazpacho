@@ -22,7 +22,9 @@ else
 fi
 src="$scratch/src"; build="$scratch/build"
 # GZW_BREAK_CHECKS=OFF: the copy must not run this script again from its own tests.
-opts="-DCMAKE_BUILD_TYPE=Release -DGZW_BREAK_CHECKS=OFF"
+# GZ_CHAIN_TESTS=OFF: the chain port's tests (ports/chain) cannot notice a wallet
+# fault, and running them for every fault would only add time.
+opts="-DCMAKE_BUILD_TYPE=Release -DGZW_BREAK_CHECKS=OFF -DGZ_CHAIN_TESTS=OFF"
 [ -n "$secp" ] && opts="$opts -DFETCHCONTENT_SOURCE_DIR_SECP256K1-ZKP=$secp"
 cmake -S "$src" -B "$build" $opts >"$scratch/configure.out" 2>&1 || { echo "configure failed"; exit 2; }
 cmake --build "$build" -j4 >"$scratch/build0.out" 2>&1 || { echo "clean build failed"; exit 2; }

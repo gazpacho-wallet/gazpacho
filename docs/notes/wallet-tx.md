@@ -71,11 +71,11 @@ The funding is not replaced to raise its fee: a replacement changes the txid, an
 
 ## 6. Chain-port calls used by the tool
 
-Coded against `ports/chain/include/gazpacho/chain.h` on `chain-esplora` (not merged into this branch; the tool's chain commands are compiled only when the `gazpacho_chain_curl` target exists in the build, through a generator expression, so the order of `add_subdirectory` lines does not matter).
+Coded against `ports/chain/include/gazpacho/chain.h` on `chain-esplora`, and brought up to that branch's interface after its second review (2026-11-12) when it was rebased onto `main` (until it is merged, the tool's chain commands are compiled only when the `gazpacho_chain_curl` target exists in the build, through a generator expression, so the order of `add_subdirectory` lines does not matter).
 
-- Lookups: `gz_chain_script_outputs` (coins of each scanned script; only confirmed ones are used), `gz_chain_fee_estimates` (only with `--feerate server`, then through `gzt_feerate_from_server` and the ceiling), `gz_chain_broadcast`, `gz_chain_confirm_tx` (status, header, proof of work and Merkle proof), `gz_chain_result_name`.
-- Set-up: `gz_http_curl_create`, `gz_http_curl_destroy`, `gz_esplora_config_default`, `gz_esplora_create` (mempool.space and blockstream.info signet), `gz_multi_config_default`, `gz_multi_create` (quorum 2), `gz_chain_destroy`.
-- Types: `gz_chain_output`, `gz_fee_estimates`, `gz_broadcast_result`, `gz_confirmation`, `GZ_NET_SIGNET`.
+- Lookups: `gz_chain_script_outputs` (coins of each scanned script; only confirmed ones are used), `gz_chain_choose_fee_rate` for 6 blocks (only with `--feerate server`, then through `gzt_feerate_from_server` and the ceiling; on signet that is the fixed 0.1 sat/vB, no server asked), `gz_chain_broadcast`, `gz_chain_confirm_tx` asked for 6 confirmations (status, header, proof of work and Merkle proof; the tool prints the count checked along headers), `gz_chain_result_name`.
+- Set-up: `gz_http_curl_create`, `gz_http_curl_destroy`, `gz_esplora_config_default`, `gz_esplora_create` (mempool.space and blockstream.info signet), operator names for both servers, `gz_multi_config_default` for signet with the transport's clock, `gz_multi_create` (quorum 2), `gz_chain_destroy`.
+- Types: `gz_chain_output`, `gz_fee_choice`, `gz_broadcast_result`, `gz_confirmation`, `GZ_NET_SIGNET`.
 
 The library itself calls none of them: it takes coins and returns bytes.
 
