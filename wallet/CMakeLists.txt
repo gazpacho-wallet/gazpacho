@@ -101,3 +101,6 @@ if(GZW_BREAK_CHECKS AND NOT GZ_SANITIZE)
             ${CMAKE_CURRENT_BINARY_DIR}/break-checks ${secp256k1-zkp_SOURCE_DIR})
   set_tests_properties(wallet_break_checks PROPERTIES LABELS slow TIMEOUT 3600)
 endif()
+
+# Wallet transactions (wallet/tx).
+add_subdirectory(tx)
