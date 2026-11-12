@@ -13,7 +13,8 @@
  * Everything that happens is reported as an event from gz_peers_poll,
  * failures included: a connection refused, lost, timed out, refused by us or
  * by the peer. Each event names the connection and, once the handshake has
- * proved it, the peer's node id (its static key). See spec/transport.md,
+ * proved it, the peer's node id (its static key). Running out of memory
+ * aborts the program (a slice 1 choice: an event must never be lost). See spec/transport.md,
  * "Lobby connections". POSIX only; one thread. */
 #ifndef GAZPACHO_NET_PEERS_H
 #define GAZPACHO_NET_PEERS_H
@@ -38,6 +39,12 @@ typedef struct {
     unsigned max_conns;      /* open connections, both kinds (default 64) */
     size_t max_queue;        /* unsent bytes per connection (default 4 MiB) */
     unsigned max_pings;      /* pings accepted per pong_ms window before closing (default 10) */
+    unsigned max_handshakes; /* accepted connections still in their handshake or before init; when
+                                full, the oldest is evicted (default 16; review of PR 23, F1) */
+    unsigned max_per_address; /* accepted connections from one IP address, 0 for no cap (default 4) */
+    unsigned max_ignored;    /* ignored messages (unknown odd types and kinds, wrong tags, warnings)
+                                per pong_ms window before closing (default 100) */
+    unsigned max_warning_events; /* WARNING events per connection; later ones are counted (default 10) */
 } gz_peers_config_t;
 
 /* Fills the defaults above; the caller then sets secp, static_key, random,
@@ -68,7 +75,11 @@ typedef enum {
     GZ_PEER_WHY_CRYPTO,            /* a message failed to decrypt */
     GZ_PEER_WHY_SOCKET,            /* another system error; see sys_errno */
     GZ_PEER_WHY_ADDRESS,           /* the address is not numeric */
-    GZ_PEER_WHY_LOCAL              /* we refused it with gz_peers_refuse */
+    GZ_PEER_WHY_LOCAL,             /* we refused it with gz_peers_refuse */
+    GZ_PEER_WHY_EVICTED,           /* made way for a newcomer: the oldest handshake when the handshake
+                                      budget was full, or the oldest connection without a seat when
+                                      max_conns were established */
+    GZ_PEER_WHY_FULL               /* max_conns established, every accepted one holding a seat */
 } gz_peer_why_t;
 
 typedef struct {
@@ -114,7 +125,9 @@ void gz_peers_free(gz_peers_t *p);
 gz_peers_err_t gz_peers_listen(gz_peers_t *p, const char *host, uint16_t port, uint16_t *bound_port);
 
 /* Start a connection to a host whose key is `pin`, with our static key
- * `static_key` (NULL: the configured one). Returns at once; the outcome is a
+ * `static_key` (NULL: the configured one). The key is copied into the
+ * connection's state and wiped with it; wiping the caller's copy is the
+ * caller's job. Returns at once; the outcome is a
  * CONNECTED or CLOSED event for *conn. */
 gz_peers_err_t gz_peers_connect(gz_peers_t *p, const char *host, uint16_t port, const uint8_t pin[33],
                                 const uint8_t static_key[32], uint64_t *conn);
@@ -133,8 +146,15 @@ gz_peers_err_t gz_peers_send_raw(gz_peers_t *p, uint64_t conn, const uint8_t *ms
  * GZ_PEER_WHY_LOCAL follows. For refusals decided above the envelope. */
 gz_peers_err_t gz_peers_refuse(gz_peers_t *p, uint64_t conn, const char *reason);
 
-/* Close at once, dropping anything unsent. No event follows. */
+/* Close at once, dropping anything unsent. No event follows, and events
+ * already queued for the connection are dropped. */
 gz_peers_err_t gz_peers_close(gz_peers_t *p, uint64_t conn);
+
+/* Mark an accepted connection as holding a seat (the lobby engine does this
+ * at join and clears it at leave). When max_conns connections are
+ * established, a newcomer evicts the oldest accepted connection without a
+ * seat; seated ones are never evicted. */
+gz_peers_err_t gz_peers_set_seated(gz_peers_t *p, uint64_t conn, int seated);
 
 /* Wait up to timeout_ms (0: do not wait; negative: without limit) for the
  * next event. 1 if *ev holds one, 0 if the time passed without one. Pings,
@@ -144,9 +164,18 @@ int gz_peers_poll(gz_peers_t *p, int timeout_ms, gz_peer_event_t *ev);
 /* Counters, for tests and status lines. */
 typedef struct {
     uint64_t pings_sent, pongs_received, pings_received, pongs_sent;
+    uint64_t evicted_handshakes; /* handshakes evicted when the handshake budget was full */
+    uint64_t evicted_unseated;   /* established connections without a seat evicted for a newcomer */
+    uint64_t refused_full;       /* newcomers refused: every slot held by a seated member */
+    uint64_t refused_address;    /* accepts closed at once: max_per_address reached */
+    uint64_t warnings_dropped;   /* warnings received past max_warning_events */
     unsigned open;
+    size_t reassembly_bytes;     /* held by incomplete transfers now */
 } gz_peers_stats_t;
 void gz_peers_stats(const gz_peers_t *p, gz_peers_stats_t *s);
+/* For tests: 1 if the buffer that holds each decrypted message is all
+ * zero, as it must be between messages. */
+int gz_peers_test_plain_clear(const gz_peers_t *p);
 
 const char *gz_peer_why_name(gz_peer_why_t w);
 const char *gz_peers_err_name(gz_peers_err_t e);

@@ -7,6 +7,7 @@
 #include <secp256k1_schnorrsig.h>
 
 #include "frame.h"
+#include "wipe.h"
 
 const uint8_t GZ_ENV_PROTOCOL[4] = {0x67, 0x7a, 0x66, 0x01};
 
@@ -112,6 +113,12 @@ static const kind_t KINDS[] = {
     K(GZ_ENV_KIND_ROUND_STATUS_REQUEST, DIR_M2H, R_ROUND_ID),
     K(GZ_ENV_KIND_FACTORY_FUNDED, DIR_H2M, R_ROUND_ID),
 };
+
+/* schema_ctx_t.seen has one bit per rule. */
+#define FITS(r) _Static_assert(sizeof r / sizeof r[0] <= 32, #r " has more than 32 rules")
+FITS(R_PART); FITS(R_TERMS); FITS(R_JOIN); FITS(R_READY); FITS(R_REASON); FITS(R_STATUS); FITS(R_CHECK);
+FITS(R_START); FITS(R_CANCEL); FITS(R_PROPOSE); FITS(R_NONCES); FITS(R_ALL_NONCES); FITS(R_PARTIALS);
+FITS(R_TIER_RESULT); FITS(R_COMPLETE); FITS(R_ACK); FITS(R_ABORT); FITS(R_ROUND_ID);
 
 static const kind_t *find_kind(uint16_t kind)
 {
@@ -490,8 +497,28 @@ void gz_env_reasm_init(gz_env_reasm_t *r)
 
 void gz_env_reasm_reset(gz_env_reasm_t *r)
 {
-    free(r->buf);
+    if (r->buf) {
+        gz_net_wipe(r->buf, r->allocated);
+        free(r->buf);
+    }
     gz_env_reasm_init(r);
+}
+
+/* A part's records by type, found in one walk, however many unknown odd
+ * records come between them (review of PR 23, F2). */
+typedef struct {
+    const uint8_t *v[13];
+    size_t len[13];
+} part_recs_t;
+
+static int each_part(uint64_t type, const uint8_t *v, size_t len, void *vctx)
+{
+    part_recs_t *pr = vctx;
+    if (type <= 12 && (type & 1) == 0 && type >= 2) {
+        pr->v[type] = v;
+        pr->len[type] = len;
+    }
+    return 0;
 }
 
 static gz_env_verdict_t reasm_refuse(gz_env_reasm_t *r, const char **reason, const char *why)
@@ -504,27 +531,30 @@ static gz_env_verdict_t reasm_refuse(gz_env_reasm_t *r, const char **reason, con
 gz_env_verdict_t gz_env_reasm_add(gz_env_reasm_t *r, const gz_env_msg_t *part, gz_env_side_t at,
                                   const secp256k1_context *secp, gz_env_msg_t *out, const char **reason)
 {
-    gz_env_record_t rec[8];
-    const gz_env_record_t *tid, *data;
-    const char *dummy;
+    part_recs_t pr;
+    const uint8_t *tid, *data;
+    const char *dummy, *why;
     uint16_t inner, index, count;
     uint32_t total;
-    size_t off, want;
-    int n;
+    size_t off, want, dlen;
     uint8_t check[32];
     gz_env_verdict_t v;
     if (!reason) reason = &dummy;
     *reason = NULL;
     if (r->buf && r->held == 0) gz_env_reasm_reset(r); /* the last completed message is released */
     if (part->kind != GZ_ENV_KIND_PART) return reasm_refuse(r, reason, "not a part");
-    n = gz_env_records(part->records, part->records_len, rec, 8);
-    if (n < 6 || !(tid = gz_env_find(rec, n, 2)) || !(data = gz_env_find(rec, n, 12)) ||
-        !gz_env_find(rec, n, 4) || !gz_env_find(rec, n, 6) || !gz_env_find(rec, n, 8) || !gz_env_find(rec, n, 10))
+    memset(&pr, 0, sizeof pr);
+    if (walk(part->records, part->records_len, each_part, &pr, &why) || !pr.v[2] || pr.len[2] != 32 ||
+        !pr.v[4] || pr.len[4] != 2 || !pr.v[6] || pr.len[6] != 4 || !pr.v[8] || pr.len[8] != 2 || !pr.v[10] ||
+        pr.len[10] != 2 || !pr.v[12])
         return reasm_refuse(r, reason, "part records missing");
-    inner = get16(gz_env_find(rec, n, 4)->value);
-    total = get32(gz_env_find(rec, n, 6)->value);
-    index = get16(gz_env_find(rec, n, 8)->value);
-    count = get16(gz_env_find(rec, n, 10)->value);
+    tid = pr.v[2];
+    data = pr.v[12];
+    dlen = pr.len[12];
+    inner = get16(pr.v[4]);
+    total = get32(pr.v[6]);
+    index = get16(pr.v[8]);
+    count = get16(pr.v[10]);
     /* Rule 1, and inner_kind 2. */
     if (inner == GZ_ENV_KIND_PART) return reasm_refuse(r, reason, "part inside a part");
     if (total > GZ_ENV_MAX_WHOLE || count < 2 || count > GZ_ENV_MAX_PARTS ||
@@ -533,9 +563,9 @@ gz_env_verdict_t gz_env_reasm_add(gz_env_reasm_t *r, const gz_env_msg_t *part, g
     if (index >= count) return reasm_refuse(r, reason, "part index out of range");
     off = (size_t)index * GZ_ENV_PART_DATA;
     want = index + 1u == count ? total - off : GZ_ENV_PART_DATA;
-    if (data->len != want) return reasm_refuse(r, reason, "part data of the wrong length");
+    if (dlen != want) return reasm_refuse(r, reason, "part data of the wrong length");
     /* Rule 4: another transfer replaces the open one. */
-    if (r->buf && memcmp(r->transfer_id, tid->value, 32) != 0) gz_env_reasm_reset(r);
+    if (r->buf && memcmp(r->transfer_id, tid, 32) != 0) gz_env_reasm_reset(r);
     if (r->buf) {
         /* Same transfer: everything that defines it must agree. */
         if (r->inner_kind != inner || r->total_len != total || r->count != count ||
@@ -543,7 +573,7 @@ gz_env_verdict_t gz_env_reasm_add(gz_env_reasm_t *r, const gz_env_msg_t *part, g
             return reasm_refuse(r, reason, "part disagrees with its transfer");
         if (r->held & (1u << index)) {
             /* Rule 3. */
-            if (memcmp(r->buf + off, data->value, want) == 0) return GZ_ENV_IGNORE;
+            if (memcmp(r->buf + off, data, want) == 0) return GZ_ENV_IGNORE;
             return reasm_refuse(r, reason, "part repeated with other data");
         }
     } else {
@@ -551,23 +581,23 @@ gz_env_verdict_t gz_env_reasm_add(gz_env_reasm_t *r, const gz_env_msg_t *part, g
         r->buf = malloc(total);
         if (!r->buf) return reasm_refuse(r, reason, "out of memory");
         r->allocated = total;
-        memcpy(r->transfer_id, tid->value, 32);
+        memcpy(r->transfer_id, tid, 32);
         memcpy(r->scope, part->scope, 32);
         r->inner_kind = inner;
         r->total_len = total;
         r->count = count;
         r->held = 0;
     }
-    memcpy(r->buf + off, data->value, want);
+    memcpy(r->buf + off, data, want);
     r->held |= 1u << index;
     if (r->held != (1u << count) - 1u) return GZ_ENV_HELD;
     /* Rule 5. */
     gz_env_transfer_id(secp, inner, r->buf, total, check);
     if (memcmp(check, r->transfer_id, 32) != 0) return reasm_refuse(r, reason, "transfer_id does not match");
-    r->held = 0; /* complete: the buffer is kept for `out` until the next call */
+    r->held = 0; /* complete: the buffer is kept for `out` until gz_env_reasm_reset */
     v = gz_env_check(inner, r->scope, r->buf, total, at, reason);
     if (v != GZ_ENV_DELIVER) {
-        if (v == GZ_ENV_REFUSE) gz_env_reasm_reset(r);
+        gz_env_reasm_reset(r); /* refused or ignored: released at once */
         return v;
     }
     out->kind = inner;

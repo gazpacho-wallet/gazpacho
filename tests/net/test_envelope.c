@@ -534,6 +534,39 @@ static size_t hand_part(const uint8_t tid[32], uint16_t inner, uint32_t total, u
 
 static uint8_t whole[1 << 20];
 
+/* A part with unknown odd records before, between and after the required
+ * ones (review of PR 23, F2): 1, 3, 5 first, 7, 9, 11 between, 13, 15
+ * after. */
+static size_t odd_part(const uint8_t tid[32], uint16_t inner, uint32_t total, uint16_t index, uint16_t count,
+                       const uint8_t *data, size_t dlen, uint8_t *out)
+{
+    gz_tlv_writer_t w;
+    uint8_t k[2] = {(uint8_t)(inner >> 8), (uint8_t)inner}, t[4] = {(uint8_t)(total >> 24), (uint8_t)(total >> 16),
+                                                                    (uint8_t)(total >> 8), (uint8_t)total};
+    uint8_t ix[2] = {(uint8_t)(index >> 8), (uint8_t)index}, c[2] = {(uint8_t)(count >> 8), (uint8_t)count};
+    static const uint8_t junk[40];
+    size_t n;
+    static uint8_t rec[65535];
+    gz_tlv_writer_init(&w, rec, sizeof rec);
+    gz_tlv_put(&w, 1, junk, 40);
+    gz_tlv_put(&w, 2, tid, 32);
+    gz_tlv_put(&w, 3, junk, 40);
+    gz_tlv_put(&w, 4, k, 2);
+    gz_tlv_put(&w, 5, junk, 40);
+    gz_tlv_put(&w, 6, t, 4);
+    gz_tlv_put(&w, 7, junk, 40);
+    gz_tlv_put(&w, 8, ix, 2);
+    gz_tlv_put(&w, 9, junk, 40);
+    gz_tlv_put(&w, 10, c, 2);
+    gz_tlv_put(&w, 11, junk, 40);
+    gz_tlv_put(&w, 12, data, dlen);
+    gz_tlv_put(&w, 13, junk, 40);
+    gz_tlv_put(&w, 15, junk, 40);
+    CHECK(w.err == GZ_FRAME_OK);
+    CHECK(gz_env_write(GZ_ENV_KIND_PART, SCOPE, rec, w.len, out, 65535, &n) == 0);
+    return n;
+}
+
 static void test_split(void)
 {
     gz_env_reasm_t r;
@@ -657,6 +690,48 @@ static void test_split(void)
     /* After a drop, the whole message sent again is accepted. */
     gz_env_reasm_reset(&r);
     for (i = 0; i < 3; i++) CHECK(feed(&r, parts[i], part_len[i], &out) == (i < 2 ? GZ_ENV_HELD : GZ_ENV_DELIVER));
+    /* Unknown odd records anywhere in a part, eight of them (F2). */
+    {
+        uint8_t otid[32];
+        static uint8_t om[65535];
+        len = valid_body(140000, whole);
+        gz_env_transfer_id(secp, 68, whole, len, otid);
+        gz_env_reasm_reset(&r);
+        for (i = 0; i < 3; i++) {
+            size_t dl = i < 2 ? 65000 : len - 130000;
+            size_t on = odd_part(otid, 68, (uint32_t)len, (uint16_t)i, 3, whole + i * 65000, dl, om);
+            CHECK(on <= 65535);
+            CHECK(feed(&r, om, on, &out) == (i < 2 ? GZ_ENV_HELD : GZ_ENV_DELIVER));
+        }
+        CHECK(out.records_len == len && memcmp(out.records, whole, len) == 0);
+        /* The caller releases a delivered message; a new transfer would too. */
+        CHECK(r.buf != NULL);
+        gz_env_reasm_reset(&r);
+        CHECK(r.buf == NULL && r.allocated == 0);
+    }
+    /* A completed transfer of an unknown odd kind is released at once. */
+    {
+        uint8_t otid[32];
+        static uint8_t om[65535];
+        len = valid_body(140000, whole);
+        gz_env_transfer_id(secp, 69, whole, len, otid);
+        for (i = 0; i < 3; i++) {
+            size_t dl = i < 2 ? 65000 : len - 130000;
+            size_t on = odd_part(otid, 69, (uint32_t)len, (uint16_t)i, 3, whole + i * 65000, dl, om);
+            CHECK(feed(&r, om, on, &out) == (i < 2 ? GZ_ENV_HELD : GZ_ENV_IGNORE));
+        }
+        CHECK(r.buf == NULL && r.allocated == 0);
+    }
+    /* A completed message left unreleased is released by the next part. */
+    {
+        len = valid_body(140000, whole);
+        c = split(whole, len);
+        for (i = 0; i < c; i++) CHECK(feed(&r, parts[i], part_len[i], &out) == (i + 1 < c ? GZ_ENV_HELD : GZ_ENV_DELIVER));
+        CHECK(r.allocated == len);
+        CHECK(feed(&r, parts[0], part_len[0], &out) == GZ_ENV_HELD);
+        CHECK(r.allocated == len && r.held == 1);
+        gz_env_reasm_reset(&r);
+    }
     /* A host refuses parts (members send none in slice 1; test 13). */
     {
         gz_env_msg_t p;

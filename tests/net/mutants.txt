@@ -255,3 +255,23 @@ peers-connected-twice	ports/net/peers.c	c->init_got = 1;\n        push_event(p, 
 #   flood limit (10 per window) a peer that never reads can make us queue at
 #   most about 650 KB of pongs, under the 4 MiB cap, and the kernel's socket
 #   buffers absorb most of it. The cap is defence in depth.
+# Review of PR 23 (reviewer A): admission, odd records in parts, warnings, wiping, fairness.
+env-part-odd-type-kept	ports/net/envelope.c	if (type <= 12 && (type & 1) == 0 && type >= 2) {	if (type <= 12 && type >= 2) {
+env-part-capped-again	ports/net/envelope.c	if (type <= 12 && (type & 1) == 0 && type >= 2) {	if (type <= 12 && (type & 1) == 0 && type >= 2 && pr->len[0]++ < 8) {
+env-ignored-transfer-kept	ports/net/envelope.c	gz_env_reasm_reset(r); /* refused or ignored: released at once */	if (v == GZ_ENV_REFUSE) gz_env_reasm_reset(r);
+env-lazy-release-gone	ports/net/envelope.c	if (r->buf && r->held == 0) gz_env_reasm_reset(r); /* the last completed message is released */	
+peers-warning-before-init	ports/net/peers.c	if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(	if (c->phase == PH_OPEN && !gz_ln_alert_write(
+peers-no-admission	ports/net/peers.c	if (!c->outbound && !admit(p, c)) return;	
+peers-evict-newest-handshake	ports/net/peers.c	if (!best || c->t_start < best->t_start) best = c;	if (!best || c->t_start >= best->t_start) best = c;
+peers-address-cap-off-by-one	ports/net/peers.c	if (p->cfg.max_per_address && same >= p->cfg.max_per_address) {	if (p->cfg.max_per_address && same > p->cfg.max_per_address) {
+peers-no-handshake-eviction	ports/net/peers.c	if (pending >= p->cfg.max_handshakes) {	if (0) {
+peers-evict-seated	ports/net/peers.c	if (established_unseated ? !(c->init_got && !c->seated) : c->init_got) continue;	if (established_unseated ? !c->init_got : c->init_got) continue;
+peers-full-never	ports/net/peers.c	if (established < p->cfg.max_conns) return 1;	return 1;
+peers-close-keeps-events	ports/net/peers.c	if (n->ev.conn == conn) {	if (0) {
+peers-warning-events-unlimited	ports/net/peers.c	if (c->warnings >= p->cfg.max_warning_events) {	if (0) {
+peers-ignored-unlimited	ports/net/peers.c	if (++c->ignored > p->cfg.max_ignored) {	if (0) {
+peers-odd-not-counted	ports/net/peers.c	else count_ignored(p, c);	
+peers-delivered-transfer-kept	ports/net/peers.c	        gz_env_reasm_reset(&c->reasm);\n        break;	        break;
+peers-plain-not-wiped	ports/net/peers.c	gz_net_wipe(p->plain, body);	
+peers-closing-reads	ports/net/peers.c	(c->phase == PH_TCP ? 0 : c->closing ? 0 : POLLIN)	(c->phase == PH_TCP ? 0 : POLLIN)
+peers-no-unit-cap	ports/net/peers.c	while (units < 64) {	while (units < 1000000) {

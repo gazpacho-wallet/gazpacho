@@ -145,13 +145,16 @@ typedef struct {
 } gz_env_reasm_t;
 
 void gz_env_reasm_init(gz_env_reasm_t *r);
-/* Drops an open transfer and frees its memory (a connection drop). */
+/* Drops an open transfer, or releases a completed one, wiping and freeing
+ * its memory. A caller calls it as soon as it has used a delivered message
+ * (messages.md 5: freed when the transfer completes). */
 void gz_env_reasm_reset(gz_env_reasm_t *r);
 
 /* Adds a part that gz_env_read delivered. GZ_ENV_HELD while the transfer is
  * incomplete; GZ_ENV_IGNORE for a byte-for-byte duplicate; GZ_ENV_DELIVER
  * when it completes, with `out` pointing into the reassembly buffer (valid
- * until the next call on `r`) after the whole message passed gz_env_check;
+ * until gz_env_reasm_reset, which the caller then calls; the next call on
+ * `r` also releases it) after the whole message passed gz_env_check;
  * GZ_ENV_REFUSE otherwise (the transfer is then dropped). */
 gz_env_verdict_t gz_env_reasm_add(gz_env_reasm_t *r, const gz_env_msg_t *part, gz_env_side_t at,
                                   const secp256k1_context *secp, gz_env_msg_t *out, const char **reason);

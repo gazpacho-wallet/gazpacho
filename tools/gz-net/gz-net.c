@@ -309,9 +309,10 @@ static gz_peers_t *lobby_peers(const uint8_t key[32], const secp256k1_context *s
     cfg.is_member = gz_conn_any_member; /* slice 1's host (transport.md rule 13) */
     if (o->ping_ms > 0) cfg.ping_ms = (int)o->ping_ms;
     if (o->pong_ms > 0) cfg.pong_ms = (int)o->pong_ms;
-    /* A peer with the same settings pings about once per ping_ms; allow
-     * three times that in each pong_ms window, and never fewer than 10. */
-    cfg.max_pings = (unsigned)(10 + 3 * cfg.pong_ms / cfg.ping_ms);
+    /* Only for pings faster than messages.md's 15 s (the test settings): a
+     * peer with the same settings pings about once per ping_ms, so allow
+     * three times that in each pong_ms window on top of the usual 10. */
+    if (cfg.ping_ms < 15000) cfg.max_pings = (unsigned)(10 + 3 * cfg.pong_ms / cfg.ping_ms);
     return gz_peers_new(&cfg);
 }
 

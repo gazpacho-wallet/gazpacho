@@ -21,6 +21,7 @@
 
 #include "frame.h"
 #include "lnmsg.h"
+#include "wipe.h"
 
 #if defined(MSG_NOSIGNAL)
 #define SEND_FLAGS MSG_NOSIGNAL
@@ -45,6 +46,13 @@ typedef struct {
     uint64_t id;
     int fd, outbound, phase;
     int init_got;           /* the peer's init has been accepted (CONNECTED given) */
+    int peer_init;          /* the peer's init arrived and was valid: a warning may be sent */
+    int seated;             /* the caller says this connection holds a seat (gz_peers_set_seated) */
+    struct sockaddr_storage addr; /* accepted connections: the peer's address */
+    socklen_t addrlen;
+    unsigned warnings;      /* WARNING events given for this connection */
+    unsigned ignored;       /* messages ignored in the current window */
+    int64_t ignored_window;
     gz_noise_t noise;
     uint8_t node_id[33];
     int have_id;
@@ -81,13 +89,15 @@ struct gz_peers {
     int lfd[MAX_LISTEN];
     unsigned n_listen;
     conn_t **conns;
-    unsigned n_conns;
+    unsigned n_conns, cap;   /* cap: max_conns plus max_handshakes */
     uint64_t next_id;
     evnode_t *head, *tail, *current;
     gz_peers_stats_t stats;
     uint8_t plain[GZ_NOISE_MAX_MSG]; /* a decrypted message, handled at once */
     uint8_t out[GZ_NOISE_MAX_MSG];   /* a message being built */
 };
+
+static void free_event(evnode_t *n);
 
 static int64_t now_ms(void)
 {
@@ -110,6 +120,10 @@ void gz_peers_default_config(gz_peers_config_t *c)
     c->max_conns = 64;
     c->max_queue = 4u << 20;
     c->max_pings = 10;
+    c->max_handshakes = 16;
+    c->max_per_address = 4;
+    c->max_ignored = 100;
+    c->max_warning_events = 10;
 }
 
 /* ------------------------------------------------------------ events */
@@ -234,7 +248,9 @@ static void refuse(gz_peers_t *p, conn_t *c, gz_peer_why_t why, const char *reas
     c->closing = 1;
     c->close_why = why;
     set_text(c->close_text, reason);
-    if (c->phase == PH_OPEN && !gz_ln_alert_write(GZ_LN_WARNING, reason, p->out, sizeof p->out, &n))
+    /* BOLT 1: nothing but init before the peer's init has arrived, so no
+     * warning then (review of PR 23, F3). */
+    if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(GZ_LN_WARNING, reason, p->out, sizeof p->out, &n))
         q_msg(c, p->out, n);
     /* With nothing to send, the next round of timers closes it. */
     c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);
@@ -292,6 +308,25 @@ static void deliver(gz_peers_t *p, conn_t *c, const gz_env_msg_t *m)
     n->ev.records_len = m->records_len;
 }
 
+static int admit(gz_peers_t *p, conn_t *c);
+
+/* Counts a message that changes nothing (an unknown odd type or kind, a
+ * discovery kind, a wrong tag, a warning). More than max_ignored in one
+ * pong_ms window is refused (review of PR 23, F7). 0 if refused. */
+static int count_ignored(gz_peers_t *p, conn_t *c)
+{
+    int64_t now = now_ms();
+    if (now - c->ignored_window >= p->cfg.pong_ms) {
+        c->ignored_window = now;
+        c->ignored = 0;
+    }
+    if (++c->ignored > p->cfg.max_ignored) {
+        refuse(p, c, GZ_PEER_WHY_PROTOCOL, "too many ignored messages");
+        return 0;
+    }
+    return 1;
+}
+
 static void on_envelope(gz_peers_t *p, conn_t *c, const uint8_t *m, size_t len)
 {
     gz_env_side_t at = c->outbound ? GZ_ENV_AT_MEMBER : GZ_ENV_AT_HOST;
@@ -306,11 +341,16 @@ static void on_envelope(gz_peers_t *p, conn_t *c, const uint8_t *m, size_t len)
     switch (v) {
     case GZ_ENV_DELIVER:
         deliver(p, c, &env);
+        /* The event holds its own copy: release the transfer now. */
+        gz_env_reasm_reset(&c->reasm);
         break;
     case GZ_ENV_HELD:
+        break;
     case GZ_ENV_IGNORE:
+        count_ignored(p, c);
         break;
     case GZ_ENV_IGNORE_WARN:
+        if (!count_ignored(p, c)) break;
         if (!c->warned && !gz_ln_alert_write(GZ_LN_WARNING, reason, p->out, sizeof p->out, &n)) {
             c->warned = 1;
             if (!q_msg(c, p->out, n)) fail(p, c, GZ_PEER_WHY_SOCKET, ENOMEM, "cannot queue warning");
@@ -341,6 +381,8 @@ static void on_message(gz_peers_t *p, conn_t *c, const uint8_t *m, size_t len)
         if (le == GZ_LN_REQUIRED_FEATURE) { refuse(p, c, GZ_PEER_WHY_INIT, "init requires an unknown feature"); return; }
         if (le == GZ_LN_NETWORK) { refuse(p, c, GZ_PEER_WHY_INIT, "init networks is not exactly our chain"); return; }
         if (le) { refuse(p, c, GZ_PEER_WHY_INIT, "malformed init"); return; }
+        c->peer_init = 1;
+        if (!c->outbound && !admit(p, c)) return;
         c->init_got = 1;
         push_event(p, c, GZ_PEER_EV_CONNECTED);
         return;
@@ -374,6 +416,13 @@ static void on_message(gz_peers_t *p, conn_t *c, const uint8_t *m, size_t len)
         return;
     case GZ_LN_WARNING:
         if (gz_ln_alert_read(m, len, text, sizeof text)) { refuse(p, c, GZ_PEER_WHY_PROTOCOL, "malformed warning"); return; }
+        if (!count_ignored(p, c)) return;
+        /* The first few become events; the rest are only counted (F7). */
+        if (c->warnings >= p->cfg.max_warning_events) {
+            p->stats.warnings_dropped++;
+            return;
+        }
+        c->warnings++;
         set_text(push_event(p, c, GZ_PEER_EV_WARNING)->ev.text, text);
         return;
     case GZ_LN_ERROR:
@@ -385,6 +434,7 @@ static void on_message(gz_peers_t *p, conn_t *c, const uint8_t *m, size_t len)
         return;
     default:
         if (gz_msg_unknown_action(type) == GZ_MSG_CLOSE) refuse(p, c, GZ_PEER_WHY_PROTOCOL, "unknown even message");
+        else count_ignored(p, c);
         return;
     }
 }
@@ -452,7 +502,7 @@ static int unit_done(gz_peers_t *p, conn_t *c)
     c->rx_have = 0;
     c->t_msg = 0;
     on_message(p, c, p->plain, body);
-    OPENSSL_cleanse(p->plain, body);
+    gz_net_wipe(p->plain, body);
     return find(p, id) != NULL;
 }
 
@@ -488,7 +538,7 @@ static conn_t *new_conn(gz_peers_t *p, int fd, int outbound)
     c->id = ++p->next_id;
     c->fd = fd;
     c->outbound = outbound;
-    c->t_start = c->t_rx = c->window_start = now_ms();
+    c->t_start = c->t_rx = c->window_start = c->ignored_window = now_ms();
     gz_env_reasm_init(&c->reasm);
     p->conns[p->n_conns++] = c;
     return c;
@@ -559,24 +609,104 @@ static void tcp_done(gz_peers_t *p, conn_t *c)
     c->rx_have = 0;
 }
 
+/* The address part of a socket address (IPv4 or IPv6), for the
+ * per-address cap. */
+static int same_host(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+{
+    if (a->ss_family != b->ss_family) return 0;
+    if (a->ss_family == AF_INET)
+        return memcmp(&((const struct sockaddr_in *)a)->sin_addr, &((const struct sockaddr_in *)b)->sin_addr,
+                      sizeof(struct in_addr)) == 0;
+    if (a->ss_family == AF_INET6)
+        return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr,
+                      sizeof(struct in6_addr)) == 0;
+    return 0;
+}
+
+/* The oldest accepted connection matching `want`: 0 for one still in its
+ * handshake (no valid init yet), 1 for an established one without a seat. */
+static conn_t *oldest_inbound(gz_peers_t *p, int established_unseated)
+{
+    conn_t *best = NULL;
+    unsigned i;
+    for (i = 0; i < p->n_conns; i++) {
+        conn_t *c = p->conns[i];
+        if (c->outbound || c->closing) continue;
+        if (established_unseated ? !(c->init_got && !c->seated) : c->init_got) continue;
+        if (!best || c->t_start < best->t_start) best = c;
+    }
+    return best;
+}
+
+/* Admission of a member whose init has just been accepted (review of PR
+ * 23, F1). Established connections are capped at max_conns; when full, the
+ * oldest accepted connection without a seat is evicted, or, if every one
+ * holds a seat, the newcomer is refused. 0 if `c` was refused. */
+static int admit(gz_peers_t *p, conn_t *c)
+{
+    unsigned i, established = 0;
+    for (i = 0; i < p->n_conns; i++)
+        if (p->conns[i]->init_got && !p->conns[i]->closing) established++;
+    if (established < p->cfg.max_conns) return 1;
+    {
+        conn_t *victim = oldest_inbound(p, 1);
+        if (victim) {
+            p->stats.evicted_unseated++;
+            refuse(p, victim, GZ_PEER_WHY_EVICTED, "host full: evicted without a seat");
+            return 1;
+        }
+    }
+    p->stats.refused_full++;
+    refuse(p, c, GZ_PEER_WHY_FULL, "host full");
+    return 0;
+}
+
 static void do_accept(gz_peers_t *p, int lfd)
 {
     for (;;) {
         conn_t *c;
         gz_noise_err_t ne;
+        struct sockaddr_storage ss;
+        socklen_t sl = sizeof ss;
+        unsigned i, same = 0, pending = 0;
 #if ATOMIC_FLAGS
-        int fd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+        int fd = accept4(lfd, (struct sockaddr *)&ss, &sl, SOCK_CLOEXEC | SOCK_NONBLOCK);
 #else
-        int fd = accept(lfd, NULL, NULL);
+        int fd = accept(lfd, (struct sockaddr *)&ss, &sl);
 #endif
         if (fd < 0) {
             if (errno == EINTR || errno == ECONNABORTED) continue;
             return; /* EAGAIN, or out of descriptors: try again on the next poll */
         }
-        if (p->n_conns >= p->cfg.max_conns || !prepare_socket(fd) || !(c = new_conn(p, fd, 0))) {
-            close(fd); /* full: the peer sees the connection closed and may retry */
+        for (i = 0; i < p->n_conns; i++) {
+            const conn_t *o = p->conns[i];
+            if (o->outbound) continue;
+            if (same_host(&o->addr, &ss)) same++;
+            if (!o->init_got) pending++;
+        }
+        /* At most max_per_address accepted connections from one address. */
+        if (p->cfg.max_per_address && same >= p->cfg.max_per_address) {
+            p->stats.refused_address++;
+            close(fd);
             continue;
         }
+        /* Handshakes in progress have their own budget; when it is full the
+         * oldest gives way, so silent sockets cannot keep members out: an
+         * honest handshake takes milliseconds. */
+        if (pending >= p->cfg.max_handshakes) {
+            conn_t *victim = oldest_inbound(p, 0);
+            if (victim) {
+                p->stats.evicted_handshakes++;
+                fail(p, victim, GZ_PEER_WHY_EVICTED, 0, "handshake budget full: oldest evicted");
+            }
+        }
+        if (p->n_conns >= p->cap || !prepare_socket(fd) || !(c = new_conn(p, fd, 0))) {
+            p->stats.refused_full++;
+            close(fd);
+            continue;
+        }
+        memcpy(&c->addr, &ss, sizeof ss);
+        c->addrlen = sl;
         if ((ne = gz_noise_init_responder(&c->noise, p->cfg.secp, p->cfg.static_key, p->cfg.random))) {
             fail_noise(p, c, GZ_PEER_WHY_HANDSHAKE, ne);
             continue;
@@ -634,12 +764,14 @@ gz_peers_t *gz_peers_new(const gz_peers_config_t *config)
     gz_peers_t *p;
     unsigned i;
     if (!config || !config->secp || !config->random.fill || !config->is_member || config->max_conns == 0 ||
+        config->max_handshakes == 0 || config->max_ignored == 0 ||
         config->handshake_ms <= 0 || config->ping_ms <= 0 || config->pong_ms <= 0 || config->recv_ms <= 0 ||
         config->send_ms <= 0 || config->max_pings == 0)
         return NULL;
     p = calloc(1, sizeof *p);
     if (!p) return NULL;
-    p->conns = calloc(config->max_conns, sizeof *p->conns);
+    p->cap = config->max_conns + config->max_handshakes;
+    p->conns = calloc(p->cap, sizeof *p->conns);
     if (!p->conns) {
         free(p);
         return NULL;
@@ -656,14 +788,10 @@ void gz_peers_free(gz_peers_t *p)
     if (!p) return;
     while (p->n_conns) destroy(p, p->conns[0]);
     for (i = 0; i < p->n_listen; i++) close(p->lfd[i]);
-    if (p->current) {
-        free(p->current->body);
-        free(p->current);
-    }
+    if (p->current) free_event(p->current);
     while ((n = p->head)) {
         p->head = n->next;
-        free(n->body);
-        free(n);
+        free_event(n);
     }
     free(p->conns);
     OPENSSL_cleanse(p, sizeof *p);
@@ -691,7 +819,11 @@ gz_peers_err_t gz_peers_connect(gz_peers_t *p, const char *host, uint16_t port, 
     conn_t *c;
     gz_noise_err_t ne;
     if (!pin || !conn) return GZ_PEERS_ERR_ARGS;
-    if (p->n_conns >= p->cfg.max_conns) return GZ_PEERS_ERR_LIMIT;
+    {
+        unsigned i, out = 0;
+        for (i = 0; i < p->n_conns; i++) out += p->conns[i]->outbound || p->conns[i]->init_got;
+        if (out >= p->cfg.max_conns || p->n_conns >= p->cap) return GZ_PEERS_ERR_LIMIT;
+    }
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -757,6 +889,7 @@ gz_peers_err_t gz_peers_send(gz_peers_t *p, uint64_t conn, uint16_t kind, const 
         if (queued(c) + records_len + 2 + GZ_ENV_HDR_LEN + 34 > p->cfg.max_queue) return GZ_PEERS_ERR_FULL;
         if (gz_env_write(kind, scope, records, records_len, p->out, sizeof p->out, &n)) return GZ_PEERS_ERR_ARGS;
         if (!q_msg(c, p->out, n)) { fail(p, c, GZ_PEER_WHY_SOCKET, ENOMEM, "cannot queue"); return GZ_PEERS_ERR_MEMORY; }
+        gz_net_wipe(p->out, n);
         return GZ_PEERS_OK;
     }
     /* Members send no parts in slice 1 (messages.md section 5). */
@@ -767,6 +900,7 @@ gz_peers_err_t gz_peers_send(gz_peers_t *p, uint64_t conn, uint16_t kind, const 
         if (gz_env_write_part(tid, kind, scope, records, records_len, i, p->out, sizeof p->out, &n))
             return GZ_PEERS_ERR_ARGS; /* only before the first part: the arguments do not change */
         if (!q_msg(c, p->out, n)) { fail(p, c, GZ_PEER_WHY_SOCKET, ENOMEM, "cannot queue"); return GZ_PEERS_ERR_MEMORY; }
+        gz_net_wipe(p->out, n);
     }
     return GZ_PEERS_OK;
 }
@@ -790,12 +924,50 @@ gz_peers_err_t gz_peers_refuse(gz_peers_t *p, uint64_t conn, const char *reason)
     return GZ_PEERS_OK;
 }
 
+static void free_event(evnode_t *n)
+{
+    if (n->body) {
+        gz_net_wipe(n->body, n->ev.records_len);
+        free(n->body);
+    }
+    free(n);
+}
+
 gz_peers_err_t gz_peers_close(gz_peers_t *p, uint64_t conn)
 {
     conn_t *c = find(p, conn);
+    evnode_t **pp = &p->head, *n;
     if (!c) return GZ_PEERS_ERR_NO_CONN;
     destroy(p, c);
+    /* Nothing more from this connection, not even what was already queued
+     * (review of PR 23, F8). */
+    p->tail = NULL;
+    while ((n = *pp)) {
+        if (n->ev.conn == conn) {
+            *pp = n->next;
+            free_event(n);
+        } else {
+            p->tail = n;
+            pp = &n->next;
+        }
+    }
     return GZ_PEERS_OK;
+}
+
+gz_peers_err_t gz_peers_set_seated(gz_peers_t *p, uint64_t conn, int seated)
+{
+    conn_t *c = find(p, conn);
+    if (!c) return GZ_PEERS_ERR_NO_CONN;
+    c->seated = seated != 0;
+    return GZ_PEERS_OK;
+}
+
+int gz_peers_test_plain_clear(const gz_peers_t *p)
+{
+    size_t i;
+    uint8_t acc = 0;
+    for (i = 0; i < sizeof p->plain; i++) acc |= p->plain[i];
+    return acc == 0;
 }
 
 static int pop(gz_peers_t *p, gz_peer_event_t *ev)
@@ -814,8 +986,7 @@ int gz_peers_poll(gz_peers_t *p, int timeout_ms, gz_peer_event_t *ev)
 {
     int64_t end = timeout_ms < 0 ? INT64_MAX : now_ms() + timeout_ms;
     if (p->current) {
-        free(p->current->body);
-        free(p->current);
+        free_event(p->current);
         p->current = NULL;
     }
     for (;;) {
@@ -883,8 +1054,11 @@ int gz_peers_poll(gz_peers_t *p, int timeout_ms, gz_peer_event_t *ev)
 
 void gz_peers_stats(const gz_peers_t *p, gz_peers_stats_t *s)
 {
+    unsigned i;
     *s = p->stats;
     s->open = p->n_conns;
+    s->reassembly_bytes = 0;
+    for (i = 0; i < p->n_conns; i++) s->reassembly_bytes += p->conns[i]->reasm.allocated;
 }
 
 const char *gz_peer_why_name(gz_peer_why_t w)
@@ -907,6 +1081,8 @@ const char *gz_peer_why_name(gz_peer_why_t w)
     case GZ_PEER_WHY_SOCKET: return "socket error";
     case GZ_PEER_WHY_ADDRESS: return "address must be numeric";
     case GZ_PEER_WHY_LOCAL: return "refused by us";
+    case GZ_PEER_WHY_EVICTED: return "evicted";
+    case GZ_PEER_WHY_FULL: return "host full";
     }
     return "unknown";
 }
