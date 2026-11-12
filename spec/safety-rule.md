@@ -8,6 +8,17 @@ Companion documents: `signing-round.md` (draft 4), `messages.md`, `terms.md` and
 
 Marks used where it matters: **[C]** read in the imported code (file and line); **[S]** checked in a primary source; **[R]** reasoning, not yet checked by a source or a test.
 
+## Alignment with `exit.md` draft 2 (2026-11-12)
+
+Draft 4 is brought in line with `spec/exit.md` draft 2 and its review (`docs/reviews/review-exit-d1.md`, section 4 items 1 to 3, finding F15). The checks keep their shape, but C8's end-height test becomes stricter: it is judged against the leaf's timeout, not the end height, with `exit.md`'s margins. The timeouts, the exit time and its margins now say exactly what the import builds and what the exit engine computes; a Slice 1 build that coded draft 4's numbers must change them.
+
+| Point | Change | Where |
+|---|---|---|
+| Timeout heights | A fixed kickoff at depth j spends an output timing out at E − 5·(2j − 1); the leaf transaction and the channel output at **H_leaf = E − 10·d**, the binding one. Draft 4's "5 blocks per tree transaction" fitted kickoff-and-state pairs only | C5, section 12 value 2 |
+| Exit time and margins | 1.0.0's exit time is n·A plus burial (B − 1), with n = d + 3 and no relative delays, judged against H_leaf; the margin is `exit.md`'s M (M_safe + M_lag + M_spike, 14 on signet), not 6 | Section 7, C8, section 12 value 6 |
+| Host rules | H14 to H18 of `exit.md` section 9 listed; H6 noted as payout-only | Section 10 |
+| Exclusions | Locked past `unlock_by`; no bundle; fees above the anchors and the pinning of keyless anchors; second-stage payments after a breach while locked; an eclipse | Section 11 |
+
 ## Changes after review 3
 
 | Finding | How it was handled | Where |
@@ -119,7 +130,7 @@ A way it does not recognise fails the check. The anchor way is valued at zero: s
 
 The exit must be complete, with a margin, before the earliest **competing claim** on any output on the path or above it. A competing claim is any moment from which someone else can take or replace that output:
 
-- each host-only timeout on the path. In the import every tree transaction below the root kickoff carries one; deeper transactions expire **earlier**, by 5 blocks per tree transaction, and the root kickoff has none [C: `src/factory.c:1475`, `:1632-1644`]. So the binding one is the leaf's, which also guards the channel output [C: `src/factory.c:1312-1316`]. An end height of 0 builds no timeouts at all [C: `src/factory.c:185`, `:541`, `:1636-1644`];
+- each host-only timeout on the path. In the import every tree transaction below the root kickoff spends an output that carries one, and the root kickoff has none [C: `src/factory.c:1475`, `:1632-1644`]. A fixed kickoff (and a leaf's kickoff) at depth j ≥ 1 spends an output timing out at E − 5·(2j − 1); a leaf transaction at depth d spends one timing out at E − 10·d, and the leaf's channel output copies that script, so it carries the same height [C: `src/factory.c:1312-1316`, `:1635-1644`, `:1749-1754`]. Deeper outputs expire **earlier**, by 10 blocks per level of depth (the import's step of 5 was written for kickoff-and-state pairs; with fixed levels each level is one transaction but still steps by 10). So the binding one is the leaf's, **H_leaf = E − 10·d**, where d is the depth of the member's leaf (`spec/exit.md` 4.1, vectors X1). An end height of 0 builds no timeouts at all [C: `src/factory.c:185`, `:541`, `:1636-1644`];
 - the lock time of **every pre-signed transaction in the exposed set** that spends an output on the path or above it, whenever the member's balance exceeds what that transaction pays the member. Today that is the **distribution transaction**, which already exists in the import: a key-path spend of the funding output, locked to a chosen height, co-signed by every participant at creation [C: `factory.h:471-486`, `:1237-1256`; `src/factory.c:4430-4624`]. Once its lock time passes, anyone holding it can publish it and void the whole tree, unless the root kickoff is already buried, in which case it is dead under C4(d).
 
 Former open point 4 (which way the timeouts are staggered) is settled by the first bullet.
@@ -137,7 +148,7 @@ Former open point 4 (which way the timeouts are staggered) is settled by the fir
 
 | Setting | Member's limit, or rule |
 |---|---|
-| End height (every host-only timeout derives from it) | Not past; not 0; leaves at least the exit time plus margin before the leaf's timeout (C5) |
+| End height (every host-only timeout derives from it) | Not past; not 0; the member's `leave_by` with every step of its path missing, H_leaf − (B − 1) − n·A − M (`spec/exit.md` 4.4, with H_leaf = E − 10·d and n = d + 3), is at least the funding deadline plus B plus one block of being live (C5, section 7) |
 | Spare-liquidity delay | Inside its conditions |
 | Step and number of states of each timed layer | Inside its conditions. All levels are fixed in Slice 1 |
 | Shape | The level arity is the terms' shape entry for the member count, interior widths then the leaf kind 3 (`terms.md` section 4.1); inside its conditions |
@@ -156,7 +167,7 @@ Former open point 4 (which way the timeouts are staggered) is settled by the fir
 
 When timed layers arrive, C8 must also bound step × (states − 1) to at most 65,535 per layer, because the import's delay is a `uint16_t` [C: `src/dw_state.c:9-12`] (review 3, F23).
 
-A timeout that is already past, or closer than the exit time plus margin, is refused.
+A timeout that is already past, or closer than the exit time plus margin, is refused. Concretely for 1.0.0: the check of the end-height row above, at the member's own constants (`spec/exit.md` 4.3).
 
 **C8a. The frozen terms.** Every proposal parameter that the terms fix equals the frozen current value, and the proposal's terms digests (outer and current) equal the ones named in the member's own `ready` (owner decision 1; `terms.md` section 8). Attempts within one round's time budget reuse the same frozen values.
 
@@ -238,7 +249,7 @@ Always from the member's own records, never from the request. Stated after the c
 
 ## 7. Exit time and maximum safe absence
 
-**Exit time.** Sum, from the transactions themselves, every relative timelock on the path plus a confirmation allowance per transaction set by the member's conditions. Where a timed layer has more than one live state, use the **slowest** live state (the oldest), since the adversary chooses which state is published (section 8). The imported delay functions are not used: `factory_early_warning_time` sums step × (states − 1) per layer, then subtracts one layer whenever any leaf is pseudo-Spilman, although such leaves have no layer of their own, and it has no confirmation allowance [C: `src/factory.c:4900-4927`]. An output on the path is safe once the member's transaction spending it is buried. The exit is complete, for C5, when the member's channel transaction is buried and every payment in flight has met its own deadline. The member's own delayed output is outside C5: nobody else has a claim on it.
+**Exit time.** Sum, from the transactions themselves, every relative timelock on the path plus a confirmation allowance per transaction set by the member's conditions. **In 1.0.0** the path has no relative timelock [C: `src/factory.c:129-140`, `tx_builder.c:77`, `:103-114`], so the exit time is n·A for the n = d + 3 transactions still missing (d fixed kickoffs, the leaf's kickoff, the leaf transaction, the commitment), plus B − 1 blocks of burial, and it is judged against the leaf's timeout H_leaf = E − 10·d, with the margin M = M_safe + M_lag + M_spike of `spec/exit.md` 4.3 (14 blocks on signet). The resulting date is `spec/exit.md` 4.4's `leave_by`, the date `docs/MULTI-FACTORY.md` 4.1 calls `start_leaving_by`. Where a timed layer has more than one live state, use the **slowest** live state (the oldest), since the adversary chooses which state is published (section 8). The imported delay functions are not used: `factory_early_warning_time` sums step × (states − 1) per layer, then subtracts one layer whenever any leaf is pseudo-Spilman, although such leaves have no layer of their own, and it has no confirmation allowance [C: `src/factory.c:4900-4927`]. An output on the path is safe once the member's transaction spending it is buried. The exit is complete, for C5, when the member's channel transaction is buried and every payment in flight has met its own deadline. The member's own delayed output is outside C5: nobody else has a claim on it.
 
 **Accepting a payment.** Only if its deadline is later than now plus exit time plus the time to claim it on chain, plus margin. The schedule must also state the largest exit time at which ordinary senders can still pay the member, since senders limit total timelock.
 
@@ -311,7 +322,7 @@ The host's software runs the same module with the roles exchanged, plus:
 
 **H5. Secrets after, not before.** The host does not reveal an old state's liquidity secret, or revoke its own old channel state, until it holds the new state fully signed.
 
-**H6. A deadline for forcing out.** For every member, the host knows the date by which it must start publishing that member's path so that it resolves by real balances before any pre-signed payout becomes valid: the payout's lock time, less the full exit time, less a margin. It stops extending credit to a non-cooperating member before that date.
+**H6. A deadline for forcing out.** For every member, the host knows the date by which it must start publishing that member's path so that it resolves by real balances before any pre-signed payout becomes valid: the payout's lock time, less the full exit time, less a margin. It stops extending credit to a non-cooperating member before that date. H6 applies only once an end-date payout exists; 1.0.0 has none, and H17 below takes its place.
 
 **H7. A fee reserve.** The host holds on-chain coins sufficient to add fees to every path it may have to publish.
 
@@ -327,21 +338,33 @@ The host's software runs the same module with the roles exchanged, plus:
 
 **H13. A restored host never resumes a round.** A host loaded from a backup starts new attempts only, with new random values; it never contributes again to a round identifier found in its records.
 
+**H14 to H18** are specified in `spec/exit.md` section 9 (proposed, owner to confirm), and listed here so that this section names every host rule:
+
+- **H14.** The host watches every member's channel output and answers a member's revoked commitment with the penalty by `penalty_send_by`, at its own constants.
+- **H15.** The host's sweeps of outputs it may take alone follow a schedule; it never sweeps an unpublished tree output with an owed member below it.
+- **H16.** The host never replaces the funding transaction by fee; it bumps it only by a child on its own change output (or a P2A of the funding's own), which the funding must therefore have.
+- **H17.** With no end-date payout (1.0.0), the host's software never takes a member's balance through a timeout: it forces a silent owed member out with its own latest commitment by `host_force_by`.
+- **H18.** The host's expiry delta toward a factory member, and its go-on-chain height for each payment it offers that member, cover that member's whole path, its own commitment and its HTLC-timeout transaction: (n + 1)·A + (B − 1) + M_host with n = d + 3.
+
 ## 11. What this rule does not protect against
 
 - **Being ignored.** A host can refuse service. The remedy is to leave.
 - **A withheld or lost round result.** The member stays paused on the affected channels and must exit after its unfinished deadline, at its own cost in fees and time (section 4.1 rule 5).
 - **A withheld cooperative close.** It stays in the exposed set, so by C13 the member refuses further payments on that channel and must exit. This is a cheap lever for a host.
 - **Losing a race in a timed layer,** for a member whose balance exceeds its capacity in an older state (1.1.0), through absence, fees or a hidden transaction. And, for every member below a timed layer, a channel engine that fails to keep an old anchor current (section 8).
-- **A false view of the chain** for longer than the maximum safe absence.
-- **Fees far above what the member can fund.**
+- **A false view of the chain** for longer than the maximum safe absence. The exit's tip estimate never freezes (`spec/exit.md` 4.5: it advances with the clock), so a hidden chain makes the exit start early, not late; but a member whose every server is hostile (an eclipse) cannot broadcast through them either. A broadcast-only route independent of the view's servers is recommended, not guaranteed.
+- **Fees far above what the member can fund**, including fees above what the tree's anchors pay when the member holds no on-chain coin (`spec/exit.md` 6.5).
+- **Pinning of a keyless anchor.** Anyone, the host in particular, can spend a tree transaction's pay-to-anchor output first with a large low-rate child: for about 10,000 sat on a version-2 tree and about 234 sat on a TRUC tree. A member without on-chain coins then cannot replace it, and its step can be held back while blocks clear above about 0.2 sat/vB. A member without coins confirms in calm conditions unless someone pays to stop it (`spec/exit.md` 6.5).
+- **A wallet left locked past `unlock_by`** with a factory balance: the locked watcher publishes the tree path but cannot publish the member's own commitment (`spec/exit.md` 5.6). After H_leaf a dishonest host takes the balance.
+- **A locked wallet with no watch-and-exit bundle** ("maximum privacy", no OS key store, or Slice 1): nothing is published while locked.
+- **A breach while locked, for the payment outputs.** Penalties against the host's second-stage payment transactions cannot be pre-signed; a member that stays locked for the revocation window after such a transaction confirms loses those payment outputs, at most the sum of the payment outputs of the revoked state (`spec/exit.md` 4.4).
 - **Loss of the held set or the exposed set.** Losing the record of what was signed is as serious as losing the transactions.
 - **A host that returns an old backup.** Section 9 stops it from getting a second tree or a second nonce. It does not stop the member losing sight of factories joined after the backup, whose keys it may not be able to re-derive (R7). Nor does the backup hold the **held set** of those factories, the signed tree the member needs to leave alone: in 1.0.0 that is a loss of funds unless the host or another member hands the signed tree back, not only a denial of service (review 3, F16). Not relevant in Slice 1, where nothing is owed.
 - **The same key running on two devices.**
 - **A copy of a running program** (a snapshot or a fork) that repeats a one-time signing secret.
 - **Funding that is reorganised away** after it was buried to the member's chosen depth.
 - **A chain reorganisation that changes which leaf link confirmed** (1.1.0, if leaf chains are used).
-- **Relay rules** that keep a pre-signed transaction from spreading, or let someone obstruct it.
+- **Relay rules** that keep a pre-signed transaction from spreading, or let someone obstruct it (pinning, above, is the known case).
 - **A fixed pre-signed payout that is smaller than the member's balance,** if the member did not exit first.
 - **Bugs in the imported tree builder** that make two honest parties build different trees.
 - **Someone tying up the member's receiving capacity.**
@@ -374,11 +397,11 @@ Slice 1 (`docs/SLICES.md`): one host and at least three members, on separate pro
 **Slice 1 values** (each **proposed, owner to confirm**; the owner has not objected to any):
 
 1. **No distribution transaction in Slice 1.** The creation round signs tree transactions only. A Slice 1 member refuses a proposal that carries one (`messages.md` record 44). So nothing pre-signed can overtake the host's timeout recovery (point 2), and C2 and C5 have no payout to cover.
-2. **The host recovers its signet coins through a short factory life and the existing host timeout.** The terms give a short life (T1: 144 blocks plus 36 of wind-down, about a day and a half on signet), so the end height is near. Every tree output carries the host-only timeout leaf, at the end height less 5 blocks per tree transaction of depth [C: `src/factory.c:1632-1644`, `:199-214`]; the root kickoff, which spends the funding output on its key path, has none. After a factory, the host publishes the root kickoff from its held tree and, once the end height less 5 blocks has passed, sweeps each of the root's outputs alone through its timeout leaf: for up to 4 members that is the root plus one sweep of two outputs, a few hundred vbytes at 0.1 sat/vB. Members, owed zero, lose nothing. No cooperative close is added to Slice 1. An end height of 0 is still not an option: the import then builds no timeouts (C5).
+2. **The host recovers its signet coins through a short factory life and the existing host timeout.** The terms give a short life (T1: 144 blocks plus 36 of wind-down, about a day and a half on signet), so the end height is near. Every tree output carries the host-only timeout leaf [C: `src/factory.c:1632-1644`, `:199-214`]: an output feeding a kickoff at depth j times out at E − 5·(2j − 1), and a leaf transaction's input and channel output at E − 10·d (C5); the root kickoff, which spends the funding output on its key path, has none. The root's own outputs feed depth 1, so they time out at E − 5. After a factory, the host publishes the root kickoff from its held tree and, once the end height less 5 blocks has passed, sweeps each of the root's outputs alone through its timeout leaf: for up to 4 members that is the root plus one sweep of two outputs, a few hundred vbytes at 0.1 sat/vB. Members, owed zero, lose nothing. No cooperative close is added to Slice 1. An end height of 0 is still not an option: the import then builds no timeouts (C5).
 3. **Burial depth: 3 blocks on signet** for C11, as seen by both chain servers of the chain view (`docs/CHAIN-SERVERS.md`). Signet is mined by a fixed signer set, so a reorganisation deeper than a block or two is not expected, and 3 keeps a Slice 1 run to about half an hour after broadcast.
 4. **Funding deadline: 36 blocks** after the block that was the member's chain tip when it sent `round_ack`. The host broadcasts as soon as it holds every ack; at 0.1 sat/vB, on signet, the funding may wait several blocks, and 36 (about six hours) leaves room for that and for a host restart and rebroadcast, while staying far inside T1's life: funding buried at the deadline still leaves over 100 blocks before the leaves' timeouts, so the C11 re-check passes.
 5. **Unfinished deadline: one signing budget** (the terms' `signing_budget_ms`, 10 minutes in T1) on the member's own clock, counted from when the member sent its partial signatures. Within the budget the host may legitimately still be collecting, combining or resending results (`round_status_request`); past it the host's own terms say the round is over. A creation round still Unfinished then becomes **Abandoned** (there is nothing to exit, since nothing is owed until funding is buried); its records stay, and it becomes Dead if a funding input is spent elsewhere.
-6. Confirmation allowance per transaction for the exit-time sum (section 7, open point 7): 6 blocks, with a margin of 6 blocks, for Slice 1's C8 check only.
+6. Confirmation allowance per transaction for the exit-time sum (section 7, open point 7): A = 6 blocks, with burial B = 3 and the margin M = 14 blocks of `spec/exit.md` 4.3 (M_safe 6, M_lag 2, M_spike 6), judged against H_leaf = E − 10·d. For Slice 1's C8 check this gives `leave_by` at E − 50, E − 66 and E − 82 at depths 1, 2 and 3, which T1 passes with room to spare (vectors X3). Draft 4 said a margin of 6 against the end height; both were too loose.
 
 ## 13. How it is tested
 

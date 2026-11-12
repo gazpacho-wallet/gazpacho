@@ -1,6 +1,6 @@
 # Many factories, moving funds, and rolling forward
 
-Design and plan for Gazpacho 1.1.0. Draft 1, 2026-11-12. Not reviewed.
+Design and plan for Gazpacho 1.1.0. Draft 1, 2026-11-12. Not reviewed. Section 4.1's dates were brought in line with `spec/exit.md` draft 2 the same day (the leaf's timeout E − 10·d, the exit lead, `move_by` with the host's delta of rule H18).
 
 **Why this exists.** The Slice 1 prototype tells a member: "You are already in a factory. You can look at lobbies, but the prototype handles one factory at a time, so joining is switched off until you have left it." The owner, 2026-11-12:
 
@@ -91,7 +91,7 @@ Every forced case already has its answer in the 1.0.0 design: the member's softw
 | Host key, alias, link state, last heard | Existing factory object |
 | Balance, receivable, channel capacity; in 1.1.0 several channels and the covered amount | Channel engine; `channels`, `covered_sat` already reserved |
 | **End date** (`factory_ends`), **move window opens**, **move by**, **start leaving by**, **open app by** | Schedule engine; all five already in the factory's `dates` |
-| **Forcing deadline** of the host (H6): the payout's lock time less the full exit time less a margin | Computed from the tree, shown so the member knows when the host must act **[V: `safety-rule.md` H6]** |
+| **Forcing deadline** of the host (H6): the payout's lock time less the full exit time less a margin; in 1.0.0, with no payout, `host_force_by` (`spec/exit.md` 4.4, H17) | Computed from the tree, shown so the member knows when the host must act **[V: `safety-rule.md` H6]** |
 | **Exit cost and time now**: amount, fee estimate, blocks, transactions, what it needs | Existing `exit` object |
 | **Move cost now**: same host, other host, estimates and the fee each would take | New (section 3) |
 | **Host health** | New, local only: link uptime, rounds completed or stalled (local history, `LOBBY.md`), success of recent payments out through this host, whether a successor lobby was offered in time, fee changes |
@@ -213,10 +213,10 @@ Per factory, all already in the schedule engine's vocabulary **[V: `local-api.md
 | `factory_ends` | The tree's end height E: start + `lifetime_blocks` + `winddown_blocks` (`terms.md` 3; design: about 4,320 + 432 **[V: topic 1143 post 1, `ladder.h`]**) |
 | `move_window_opens` | The end of the lifetime, the start of wind-down: from here the host offers the next factory |
 | `move_by` | The last moment a move can still start and settle off chain (below) |
-| `start_leaving_by` | E less the member's exit time less margin (`safety-rule.md` C5, section 7) |
-| Host forcing deadline (H6) | The payout's lock time less the full exit time less a margin: after it, a host that has not forced a silent member's path loses to the payout **[V: `safety-rule.md` H6; `handoff/2026-11-11-review-of-end-date-payout-draft.md`]** |
+| `start_leaving_by` | `spec/exit.md` 4.4's `leave_by`: the leaf's timeout H_leaf = E − 10·d, less burial (B − 1), less the exit time n·A for the n = d + 3 transactions still missing, less the margins M **[V: `spec/exit.md` 4.1, 4.4; the import's timeouts, `core/superscalar/src/factory.c:1635-1644`]** |
+| Host forcing deadline | With an end-date payout (H6): the payout's lock time less the full exit time less a margin: after it, a host that has not forced a silent member's path loses to the payout **[V: `safety-rule.md` H6; `handoff/2026-11-11-review-of-end-date-payout-draft.md`]**. In 1.0.0, with no payout: `host_force_by` of `spec/exit.md` 4.4 (H17), a few blocks after the member's own `start_leaving_by` |
 
-**Advanceless trees make these close together.** With every level fixed, each level adds only a confirmation allowance, "the forcing deadline is just before the end date" **[V: `handoff/2026-11-12-advanceless-default.md`]**, and a member's exit time is the confirmation allowance per transaction on its path plus margin, with no 432-block waits per timed level **[V: same; KNOWLEDGE-BASE 4]**. At Slice 1's allowance of 6 blocks per transaction plus 6 of margin **[V: `safety-rule.md` 12]**, a path of five or six transactions gives an exit time near 40 blocks **[I]**. From 1.1.0, a factory with a timed level adds about 432 blocks per timed level on the path **[V: KNOWLEDGE-BASE 4]**.
+**Advanceless trees make these close together.** With every level fixed, each level adds only a confirmation allowance, "the forcing deadline is just before the end date" **[V: `handoff/2026-11-12-advanceless-default.md`]**, and a member's exit time is the confirmation allowance per transaction on its path plus margin, with no 432-block waits per timed level **[V: same; KNOWLEDGE-BASE 4]**. The deadline is not E but the leaf's timeout, H_leaf = E − 10·d, and the commitment must be buried (B − 1 blocks) before it. At Slice 1's signet constants (A = 6 per transaction, B = 3, margin M = 14) **[V: `spec/exit.md` 4.3; `safety-rule.md` 12 value 6]**, `start_leaving_by` falls **50, 66 and 82 blocks before E** at leaf depths 1, 2 and 3 **[V: `tools/spec-vectors.py` X3]**, longer than T1's 36-block wind-down, so under T1 a member with a balance starts leaving before the move window opens (`spec/exit.md` 4.6). From 1.1.0, a factory with a timed level adds about 432 blocks per timed level on the path **[V: KNOWLEDGE-BASE 4]**.
 
 **`move_by` for a Lightning move.** An outgoing payment from the source factory is safe only if, should it get stuck, the member can still reclaim it on chain before the source's competing claims. So:
 
@@ -224,7 +224,7 @@ Per factory, all already in the schedule engine's vocabulary **[V: `local-api.md
 move_by = start_leaving_by − (route's total CLTV delta) − (time to claim an HTLC on chain) − margin
 ```
 
-For path B, one hop with the host's delta. For path C, several hops; at common per-hop deltas of tens of blocks, a few hops cost one to two days **[I: per-hop defaults vary by node software; to measure on signet]**. So cross-host moves must start days before `start_leaving_by`, not hours.
+For path B, one hop: the route's delta is the host's delta toward the destination member plus the destination's `min_final_cltv_expiry_delta`. The host's delta is not a default: rule H18 (`spec/exit.md` 9.5) makes it cover the destination member's whole path, (d + 4)·A + (B − 1) + M_host, and the destination's `min_final` is its own (d + 4)·A + (B − 1) + M (`spec/exit.md` 4.4). The claim time is one allowance A and the margin M. At the signet constants that puts `move_by` between E − 156 (both at depth 1) and **E − 212** (both at depth 3) **[V: `tools/spec-vectors.py` X9]**, so a Slice 3 term needs a wind-down of about 252 blocks to leave a move window at all (`spec/exit.md` open point 1, proposed T3). At the example mainnet constants (A = 12, B = 6, M = 152, d = 4) `move_by` falls 807 blocks before E, **before a 432-block wind-down opens** **[V: X9; the constants are open]**: a same-host move through an HTLC does not fit, and either the margins inside `min_final` shrink, the move avoids a route timelock (3.4's cheap move, or the rotation close of 4.2), or the wind-down grows. Open. For path C, several hops; at common per-hop deltas of tens of blocks, a few hops cost one to two days **[I: per-hop defaults vary by node software; to measure on signet]**. So cross-host moves must start days before `start_leaving_by`, not hours.
 
 **The destination's own rule.** Receiving into the destination needs the payment's deadline later than now + the destination's exit time + claim time + margin **[V: `safety-rule.md` 7, "Accepting a payment"]**. A destination near its own end cannot receive; the planner never picks one whose `move_by` would come before the source's balance could be useful there.
 

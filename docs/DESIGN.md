@@ -66,7 +66,9 @@ The full definition is `spec/safety-rule.md`. In brief:
 - **Sign before fund:** the host signs funding only after the whole tree is signed and verified.
 - **Every partial signature is verified** as it arrives.
 - **Signing secrets are never stored.** An interrupted round is abandoned.
-- **A restored backup never publishes** its own channel state. It asks the host to prove the latest and waits for the host to close.
+- **A restored backup never publishes its own channel state automatically.** It asks the host to prove the latest and waits for the host to close. If the host has not closed by its forcing date, publishing is offered as the person's own choice, with the risk stated (`spec/exit.md` 5.7).
+- **The exit deadline is the leaf's timeout.** Every tree output carries a host-only timeout; the binding one is the member's leaf's, at **E − 10·d** (E the end height, d the leaf's depth), and the member's commitment must be buried before it. The member starts leaving alone by that height less burial, one confirmation allowance per missing transaction (d + 3 of them) and margins: 50 to 82 blocks before E at Slice 1's signet constants (`spec/exit.md` 4, `spec/safety-rule.md` C5).
+- **A locked wallet keeps watching** (from Slice 3): a watcher publishes the member's tree path and answers old host states from already-signed transactions, but the last step, the member's own commitment, needs the passphrase by a stated `unlock_by` (`spec/exit.md` 5.6). Its files never hold a commitment of the member's own.
 - **Exit fees** are built in from the host's side, with pay-to-anchor outputs so anyone can raise a fee. No on-chain reserve is required or recommended in 1.0.0 (owner decision 6); in 1.1.0 a member above its coverage keeps a small on-chain coin (decision 5).
 - **Away protection:** about two weeks to respond to an old state in 1.0.0, the channel's revocation window (the design's figure, not measured; `spec/safety-rule.md` sections 7 and 8). In 1.1.0 a member above its coverage may have under a day.
 - A new safety or joining rule is normally a reviewed change to the safe-to-sign module, proposed through a SIP.
@@ -90,7 +92,7 @@ The full definition is `spec/safety-rule.md`. In brief:
 - A Gazpacho connection is an ordinary Lightning peer connection that also carries factory messages.
 - Lightning's encrypted transport with the host's key pinned; over TCP, and over WebSocket where needed.
 - Lightning's message shape, session start and feature flags. No version numbers: unknown odd fields are skipped, unknown even ones refused.
-- Lightning's standard channel messages and its standard taproot channel format for the channel inside a leaf. The old SuperScalar channel format is archived and can be reinstated behind the channel engine's format interface.
+- Lightning's standard channel messages, and a taproot channel for the channel inside a leaf that departs from Lightning's standard taproot format in two places (`spec/exit.md` 10.1): its funding output is the leaf's output, tweaked with the host's timeout leaf (CH-3), not a BIP 86 key; and the member's commitment pays a fee fixed in advance and carries an anchor a member without coins can use, preferably as a TRUC transaction with a member-keyed anchor (CH-2). The old SuperScalar channel format is archived and can be reinstated behind the channel engine's format interface.
 - Factory messages travel inside one custom message type, with an envelope naming the protocol, the factory and the message kind.
 - Large signing data is split across messages with a completion marker.
 - A member's backup is held by the host using Lightning's peer-storage messages.
