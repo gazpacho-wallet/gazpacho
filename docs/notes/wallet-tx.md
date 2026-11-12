@@ -120,4 +120,19 @@ So 976 mutants, 876 caught, 97 surviving. The source changed between rounds in t
 | Order of operations: a comparison inside a branch that already excludes equality, fields zeroed before being set, bytes overwritten later, witness items beyond the count never written | 15 | same result |
 | One byte too many compared or copied inside a structure | 4 | the extra byte is the next field (the output index) in every case; `gzw_ct_equal` is in the key library, which the mutation build does not instrument |
 
-None was judged a missing test after round 3. A reviewer should re-check that judgement, especially the 13 parser ones.
+After round 3 none was judged a missing test. **The review overruled that for four of the parser ones** (tx.c:266 and tx.c:259 in the numbering of that time): a failed compact size can be a fully read non-minimal one, and a cut count can leave a stale value, so the input has not "ended anyway". Tests for both now exist (section 4, canonical lengths); see round 4.
+
+### Round 4, after the review fixes (2026-11-12)
+
+The runner now starts each command in its own process group and kills the group on a timeout (round 3 had left hung test programs on the server). The named rule removals were rewritten for the new code: 33 of them.
+
+| Run | Build | Mutants | Caught | Survived | Did not compile |
+|---|---|---|---|---|---|
+| all of `wallet/tx/src` | plain | 1,102 | 971 | 127 | 4 |
+| the 127 again, after the tests below were added | AddressSanitizer and UBSan | 127 | 27 | 100 | 0 |
+
+So 1,102 mutants, 998 caught, 100 surviving. Between the two runs the plain run pointed to six missing tests, now added: a change-chain coin (and account 1) spent and released; a build into a used value giving the same bytes; a used change index first in its list; the input-cap error at its exact edge; spent and output amounts beyond 21 million whose sums wrap round to the right totals; and a cut witness count after a zero count (the review's input B, which the first M2 test did not reach: the mutant `parse-cut-compact-size` survived it).
+
+**Named rule removals:** 33; 31 caught, among them every release-gate rule (`release-needs-txid`, `release-trusts-info-txid` = the reviewed behaviour, `release-needs-build`, `release-checks-caps` (caught only under the memory checkers: without it the txid computation refuses the counts too, and the sanitizer sees the copy), `release-no-held-witness`, `release-amounts-agree`, `release-buffer-size`, `release-wipes-out`), `funding-p2tr-only`, `short-destination`, `limit-not-funds`, `change-not-a-used-index`, `parse-length-prefix-canonical` and `parse-cut-compact-size`. The same two as before survive as second lines: `coin-script-is-its-key` and `signed-size-is-fee-size`.
+
+**The other 98 survivors**, by kind: array sizes in declarations and parameters (about 30); constants where only truth matters, or bits that are zero for fewer than 64 inputs (about 12); wipes of local copies, including the new ones in release and `gzt_tx_weight`'s replacement of serialisation (about 14); unreachable failure paths and self-checks (key derivation failing, the txid of a transaction already within its caps, the size and fee checks after build) (about 18); the parser cases the review agreed are equivalent (9 of the old 13); in the release gate, the 21-million checks on single amounts at exactly 21 million and the output and fee checks, each of which is a second line for the other (6); and order-of-operation equivalents (the rest). Each was read; none is a missing test in this judgement, which a reviewer should check again.
