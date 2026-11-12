@@ -1,14 +1,16 @@
 # Review of PR 10, round 2: transport fixes (commit 872202f on 772b795)
 
-*Archived 2026-11-12 as found: **unfinished**. The verdict, the new findings and the mutation results were never written in; the placeholders below mark where they belong. The status of findings F1 to F10 and the five checked points are complete. See `README.md` in this folder.*
+*Archived 2026-11-12. The copy first archived here was **unfinished**: its verdict, new findings and mutation counts were blank. The verdict "merge" reached the coordinator first in the reviewer's message. This is the reviewer's finished file, taken from the coordinator's notes. Server folders are named in words, under the rule against local paths.*
 
-Independent review of the fix commit "Transport: fixes after the review of PR 10", against my first review (`docs/reviews/review-pr10-transport.md`, findings F1 to F10). Date 2026-11-12.
+Independent review of the fix commit "Transport: fixes after the review of PR 10", against my first review (`review-pr10-transport.md`, findings F1 to F10). Date 2026-11-12.
 
-Where: on the build server, a copy of the builder's tree in (a local folder). That tree carries the old commit IDs (5d850c2, 36e9c0d); I checked that every file under `ports/`, `tests/net/`, `tools/`, `spec/transport.md` and `CMakeLists.txt` is identical to `origin/transport` (the listing of those paths, blob IDs included, hashes the same on both sides). Locally I read `git diff 772b795..origin/transport` only; no branch was checked out. Nothing pushed, committed or posted. My files and logs are kept on the build server, in (a local folder).
+Where: on the build server, a copy of the builder's tree in a folder on the build server. That tree carries the old commit IDs (5d850c2, 36e9c0d); I checked that every file under `ports/`, `tests/net/`, `tools/`, `spec/transport.md` and `CMakeLists.txt` is identical to `origin/transport` (the listing of those paths, blob IDs included, hashes the same on both sides). Locally I read `git diff 772b795..origin/transport` only; no branch was checked out. Nothing pushed, committed or posted. My files are in a folder on the build server, logs in a folder on the build server.
 
 ## Verdict
 
-__VERDICT__
+**Merge.** Every must-fix finding of round one (F1 to F6) is fixed with a test that fails without the fix, and F7 to F10 are fixed too. F2 is fixed in the form I asked for: the stall remains by design, and the decision is now recorded. My first-round tests and my independent Python peer pass against the new code, the builder's tests now kill every one of my round-one survivors that was a real gap, and none of my 26 new mutants of the fix code shows a protection gap that matters.
+
+What is left is small and need not hold the merge: the wipe test checks how many bytes are wiped but not which bytes (N1, three surviving mutants), a CRLF key file is never tested (N2), and a few nits. The spec can be marked as reviewed once the owner agrees (last section).
 
 ## What I ran
 
@@ -24,7 +26,7 @@ __VERDICT__
 | `conn.c` compiled as if `MSG_NOSIGNAL` were missing (Linux has no `SO_NOSIGPIPE`) | stops with the new `#error`, as the spec says |
 | The `SO_NOSIGPIPE` branch compiled on Linux with a stand-in option name, `-Wall -Wextra -Werror -pedantic` | compiles |
 | Fuzzing under ASan+UBSan, new seeds: `fuzz_tlv` 20,000,000 inputs (seed 99991), `fuzz_noise` 2,000,000 (seed 31337) | clean |
-| Mutation testing | __MUTCOUNTS__ |
+| Mutation testing (builder's runner, 217 mutants: the builder's 121, my 70 from round one, 26 new ones of the fix code) | 189 killed, 23 survive, 5 of my old ones no longer apply (the code they targeted was rewritten). Of the 23: 13 equivalent (4 of them the `EINTR` pair, which appear in both lists), 3 the wipe-target gap (N1), 7 small or unreachable. My extra tests kill none of the 23 |
 | clang | still not installed on the build server: no clang build, no libFuzzer |
 
 ## Status of each finding
@@ -79,11 +81,76 @@ I agree with the claim. Every socket in `conn.c` is non-blocking, so `recv` and 
 
 ## New findings
 
-__NEW__
+None is a defect in the transport's behaviour; all are test gaps or nits.
+
+### N1. Low-medium (tests). The wipe test does not check which buffer is wiped
+
+`test_wipes.c` records the size of each `OPENSSL_cleanse` call, not what it cleared. Three of my mutants survive every test, including mine:
+
+- `w2-hkdf-o2-wrong-buffer`: HKDF wipes `o1` twice and leaves the second output block `o2` (a copy of `temp_k` or of a new key) on the stack;
+- `w2-hkdf-prk-wipes-junk`: HKDF wipes a fresh 32-byte local and leaves the PRK on the stack;
+- `w2-mix-key-wipes-junk`: mixing a key wipes a fresh local and leaves the ECDH output `ss` on the stack.
+
+Each produces the same sizes in the same order. The code today wipes the right buffers (I read every call), so this is about the test protecting them. Fix: have `__wrap_OPENSSL_cleanse` also record a few bytes of the buffer before clearing it, and compare them with values known in advance. BOLT 8's initiator vector gives every ECDH output (`ss`) and every `temp_k`, and the PRK of each HKDF is one HMAC of known inputs, so the expected contents of each wipe in the handshake can be written into the test. That would kill all three.
+
+### N2. Low (tests). A key file ending in `\r\n` is never tested
+
+`load_key` strips an optional `\r` before the `\n` (spec decision 10 says "an optional line end"), but removing that line survives (`g2-crlf-not-stripped`). Add one key file written with `\r\n` to `test_gz_net.sh`.
+
+### N3. Nit. `gz-net` keeps a stdio buffer of random bytes
+
+`/dev/urandom` is opened with `fopen`, so the first `fread` pulls a full stdio buffer (typically 4 KiB) and keeps it in the process for its lifetime: future ephemeral keys sit in memory before they are used, and none of it is wiped at exit. Harmless for a test tool, but the pattern should not be copied into the wallet. Use `getrandom()` (Linux) or `getentropy()`, or at least `setvbuf(urandom, NULL, _IONBF, 0)`. The abort on a failed read cannot be tested without making `/dev/urandom` fail (`g2-urandom-failure-ignored` survives); `getrandom` would also make that path simpler. The wipe of the 32-byte seed is likewise not observable from outside (`g2-seed-not-wiped`).
+
+### N4. Nit. Close-on-exec is set after the socket is made
+
+`prepare_socket` sets `FD_CLOEXEC` with `fcntl` after `socket()` and `accept()`. In a single-threaded program that is fine. The open choice in the spec's "Limits" includes threads; in a threaded host another thread could `fork` and `exec` between the two calls. If that option is chosen, use `SOCK_CLOEXEC | SOCK_NONBLOCK` on `socket` and `accept4` (Linux and the BSDs have both), keeping `fcntl` as the fallback.
+
+### N5. Nit. A name is reported as a socket error
+
+With numeric addresses only, `gz-net connect --host localhost` fails with "socket error" and `listen` with "cannot listen on localhost:…". A word saying the address must be numeric would help. Similarly, `gz_conn_send` on a never-opened, zeroed `gz_conn_t` returns `GZ_CONN_ERR_CLOSED` as it should, but no test does it (`s2-send-ignores-live` survives: with that check removed the call returns `GZ_CONN_ERR_CRYPTO` and sends nothing, so the only difference is the error code).
+
+### N6. Note. The Python interoperability test is off by default
+
+`net_interop_py` runs only with `-DGZ_INTEROP_PY=ON`. F1 no longer depends on it (`test_rotation_order` covers it in the default suite), but it remains the only judge of this code that was written apart from it. Turn it on wherever Python's `cryptography` is installed (it is on the build server) and in the automated checks before merge.
 
 ## Mutation testing
 
-__MUTATION__
+Method: the builder's new runner (`tools/mutate-net.py`, which now also builds `test_wipes` with the `--wrap` link options and `net_peer` for `gz-net`'s tests), copied with two changes: the mutant file comes from an environment variable, and, on a second pass over the survivors, my tests are added (`review_extra.c` and my Python interop). Every mutant is applied to a scratch copy, everything is rebuilt and every test run; the baseline passed in each of the four runs.
+
+Mutants: the builder's 121 (`tests/net/mutants.txt`, up from 87, including my round-one survivors by name), my 70 from round one, and 26 new ones aimed at the fix (`gen_mutants2.py`: wipe targets, the member check, the accept and handshake deadlines, the socket preparation and the `SO_NOSIGPIPE` switch, the `live` marker, and the new parsing in `gz-net`). 217 in all.
+
+| List | Mutants | Killed | Survived | Not applied |
+|---|---|---|---|---|
+| Builder's | 121 | 118 | 3: `pin-compare-gone`, `r-recv-eintr-fatal`, `r-send-eintr-fatal` | 0 |
+| Mine, round one | 70 | 55 | 10 | 5 (the lines they changed were rewritten: `r-nosignal-off`, `r-listen-blocking`, `r-accept-blocking`, `r-close-fd-not-reset`, `r-connect-soerror-ignored`; the builder's list has its own versions of the first and covers the rest) |
+| Mine, new | 26 | 16 | 10 | 0 |
+| **All** | **217** | **189** | **23** | **5** |
+
+The builder's own count matches mine: the only survivors of its list are the guard that cannot fail and the two `EINTR` lines that are equivalent on Linux. `mix-key-keeps-ss`, which survived round one, is now killed by the wipe test, as are the four HKDF wipe removals and `r-body-step-fail-no-wipe`.
+
+Killed among the new mutants (and by what): the member check shown our own key, given a null context, or refusing without closing (conn); `gz_conn_any_member` refusing (conn, gz_net); `accept_ms` 0 meaning "at once" (gz_net), `accept_ms` ignored (conn, by timeout), the handshake deadline not restarted at the connection (conn); the accepted socket not prepared (conn); the `MSG_NOSIGNAL` branch switched off (the compiler: `#error`); names looked up (conn); `live` not cleared on close (conn, gz_net); the failed-decryption wipe removed (noise); `ss` not wiped (wipes); upper-case hex refused, `--count 0` accepted, `gz-net listen` with no member check (gz_net).
+
+The 23 survivors:
+
+| Mutant | Verdict |
+|---|---|
+| `pin-compare-gone`, `r-pin-after-act3-sent` | equivalent: the guard cannot fail (spec rule 8 now says so) |
+| `r-recv-eintr-fatal`, `r-send-eintr-fatal` (each in both lists) | equivalent on Linux: non-blocking `recv` and `send` never sleep, so never return `EINTR` (section above) |
+| `r-decrypt-hdr-uses-sck`, `r-encrypt-hdr-uses-rck` | equivalent: rotation always falls on the body's step |
+| `r-nonce-2-bytes` | equivalent: nonces never exceed 999 |
+| `r-finish-no-nonce-reset` | equivalent: nonces are already zero |
+| `r-pub-of-no-verify` | equivalent: `secp256k1_ec_pubkey_create` checks the key too |
+| `r-recv-out-cap-gone` | equivalent at the API: `decrypt_body` refuses the same case |
+| `s2-connect-timeout-continues` | equivalent now: a numeric address gives exactly one address to try |
+| `s2-remote-static-ignores-live` | equivalent: a closed or never-opened state is dead, so `remote_static` refuses anyway |
+| `s2-passive-off` | equivalent for every caller: `AI_PASSIVE` matters only with a null host, which nothing passes |
+| `w2-hkdf-o2-wrong-buffer`, `w2-hkdf-prk-wipes-junk`, `w2-mix-key-wipes-junk` | **real gap**, N1 |
+| `g2-crlf-not-stripped` | real gap, small, N2 |
+| `s2-send-ignores-live` | real gap, cosmetic (error code only), N5 |
+| `r-accept-econnaborted-fatal` | not reachable on demand (a connection reset between `poll` and `accept`) |
+| `g2-urandom-failure-ignored`, `g2-seed-not-wiped` | not observable without fault injection, N3 |
+
+So: 13 equivalent, 3 the wipe-target gap, 7 small or unreachable. My round-one extra tests kill none of the 23: everything they used to catch is now caught by the builder's own tests.
 
 ## Can my review count as the review of `spec/transport.md` draft 2?
 

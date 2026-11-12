@@ -13,7 +13,8 @@ if(GZ_SANITIZE)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
-# Fuzz targets (none on main yet). Every target is an executable named
+# Fuzz targets: the transport's fuzz_noise and fuzz_tlv, and the wallet's
+# fuzz_tx_parse (wallet/tx/CMakeLists.txt). Every target is an executable named
 # fuzz_<name> whose source defines LLVMFuzzerTestOneInput. With this option ON
 # (clang only), a target links with -fsanitize=fuzzer and without the plain
 # driver that runs it as a CTest test; CI's fuzz job then runs each fuzz_*
@@ -196,9 +197,8 @@ if(GZ_INTEROP_PY)
            $<TARGET_FILE:gz-net> ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/interop/bolt8_peer.py)
 endif()
 # Fuzz targets. Normally with the plain driver, as CTest tests; with
-# -DGZ_LIBFUZZER=ON (clang), linked with libFuzzer instead and run by
-# tools/run-fuzz.sh (docs/notes/ci.md).
-option(GZ_LIBFUZZER "Build the fuzz targets with libFuzzer (clang)" OFF)
+# -DGZ_LIBFUZZER=ON (clang; the option is declared at the top), linked with
+# libFuzzer instead and run by tools/run-fuzz.sh (docs/notes/ci.md).
 foreach(target noise tlv)
   if(GZ_LIBFUZZER)
     add_executable(fuzz_${target} tests/net/fuzz_${target}.c)
