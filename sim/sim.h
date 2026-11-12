@@ -12,29 +12,35 @@
  * to the failing step.
  *
  * ONE STEP (sim_step) does, in this order:
- *   1. crash: with probability crash_pm, one node is destroyed and rebuilt
- *      from its storage;
+ *   1. faults chosen by the schedule: a crash, a restore from an older
+ *      backup, a link going down or up, a clock jump;
  *   2. stimulus: with probability ping_pm, a ping is put on the network to a
  *      node, from another node's address or from the outside world;
  *   3. storage: pending save batches that are due become durable, and
  *      confirmations that are due are delivered;
  *   4. timers: every timer that is due fires;
  *   5. network: at most one in-flight message that is due is delivered;
- *   6. chain: with probability block_pm, a block is mined;
+ *   6. chain: with probability reorg_pm the chain is reorganised; with
+ *      probability block_pm a block is mined;
  *   7. the invariants are checked. If one fails the run stops.
  * Events are handled one at a time from a queue; handling one may add others.
  *
  * A NODE in the simulator is a whole program around a core: its node object,
  * its runner, its timers and its watches. Its storage stands outside it and
  * survives a crash; everything else is rebuilt, and the rebuilt node's start
- * actions go through its new runner like those of any step.
+ * steps go through its new runner like any other step.
  *
  *   Across a crash: the runner gets a new incarnation, one greater than the
- *   last. The clock carries on (it is the step number). The node's random
- *   port continues from a fresh stream derived from the seed, the node and
- *   the incarnation, so no incarnation ever repeats bytes an earlier one
- *   drew. Timers and watches are forgotten. Messages already in flight to the
- *   node are delivered to the rebuilt one.
+ *   last. Timers and watches are forgotten. The node's random port continues
+ *   from a fresh stream derived from the seed, the node and the incarnation,
+ *   so no incarnation repeats bytes an earlier one drew (but see "restore").
+ *
+ *   An event already queued for a node when it crashes reaches the rebuilt
+ *   node only if it is of a kind that outlives a program by nature: a message
+ *   from a peer, or something that happened on chain. A timer the dead
+ *   program set, a confirmation of a batch it saved, a command it was given
+ *   and news of its connections are not delivered to its successor. Messages
+ *   in flight to the node are delivered to the rebuilt one.
  *
  *   A crash can come at a step boundary, or inside a release: between any two
  *   actions that one submit or one confirmation hands to the executor
@@ -43,7 +49,8 @@
  *
  *   A refused action list (GZ_ERR_REFUSED) and a storage failure both stop
  *   the node as the runner's contract requires: it is rebuilt from storage.
- *   A refusal fails the run unless allow_refusals is set.
+ *   A refusal fails the run unless allow_refusals is set. A node whose start
+ *   returns an error, or whose start list is refused, fails the run.
  *
  * PRETEND STORAGE is a journal. A batch handed to it is "pending" until the
  * step the schedule chose: this step, a later one, or never. Batches become
@@ -58,21 +65,43 @@
  * pending behind it are discarded, the runner is told, and the node is
  * rebuilt.
  *
+ * RESTORE FROM AN OLDER BACKUP (restore_pm, sim_restore_backup). A node's
+ * storage is rolled back to an earlier durable point: the newer batches are
+ * gone, and no confirmation from before the restore arrives afterwards. The
+ * node is rebuilt under a new, greater incarnation, as the runner's duty
+ * requires. By default its random port then gives a fresh stream, like after
+ * any crash. With restore_repeats_random the port instead repeats the stream
+ * of the incarnation that wrote the newest batch the backup kept: this is the
+ * machine restored from a snapshot, generator state and all. A node that
+ * trusts the port alone for a one-time secret will then produce a secret it
+ * has produced before, and an invariant over the draw log can catch it.
+ *
  * PRETEND NETWORK. A sent message may be dropped, duplicated or delayed.
  * Delivery takes the oldest due message, or with probability reorder_pm a
- * random other due message.
+ * random other due message. Every pair of peers (nodes, and each node with
+ * the outside world) has a link, up at the start. A link can go down and up
+ * (link_flap_pm, sim_set_link): the nodes at its ends are told with peer
+ * events, and a message due while its link is down is lost. A node is told
+ * of every link that is up when it is built, and its peers are told that the
+ * connection dropped and came back when it is rebuilt.
  *
  * PRETEND CHAIN. Transactions are opaque bytes; nothing is validated. A
- * broadcast goes to the mempool and into the next block. By convention of
- * this pretend chain only, the first byte of a transaction is a length L and
- * the next L bytes are the script whose output it spends (L may be 0). Each
- * block produces: a new-tip event for every node; a script-spent event for
- * every node watching a script that a transaction in the block spends; and a
+ * broadcast goes to the mempool and into the next block, unless the schedule
+ * decides it never confirms (tx_never_pm). By convention of this pretend
+ * chain only, the first byte of a transaction is a length L and the next L
+ * bytes are the script whose output it spends (L may be 0). Each block
+ * produces: a new-tip event for every node; a script-spent event for every
+ * node watching a script that a transaction in the block spends; and a
  * transaction-confirmed event to the node that broadcast a transaction, at
- * each block from its first confirmation to its confirm_depth-th.
+ * each block from its first confirmation to its confirm_depth-th. A
+ * reorganisation (reorg_pm, sim_reorg) removes the newest blocks: their
+ * transactions go back to the mempool, their broadcasters get a
+ * transaction-unconfirmed event, and every node a new-tip event with the
+ * lower height.
  *
- * Time: the clock port returns the step number, and a timer's delay_ms is
- * counted in steps.
+ * TIME. The clock port returns the step number plus an offset that the
+ * schedule may move forwards or backwards (clock_jump_pm, sim_jump_clock). A
+ * timer's delay_ms is counted in steps and is not affected by clock jumps.
  *
  * INVARIANTS, checked after every step and every hand-driven occurrence:
  *   - Nothing is sent before it is saved. The harness keeps its own account,
@@ -84,9 +113,12 @@
  *   - Storage keeps what it stored. The harness records the identifier and a
  *     digest of every batch as it becomes durable, and compares storage
  *     against that record: nothing lost, added, reordered or altered.
- *   - A confirmation from before a crash releases nothing.
+ *   - A confirmation from before a crash is reported stale by the program's
+ *     runner and releases nothing.
  *   - Same seed, same run (with check_same_seed).
- *   - Any added with sim_add_invariant. */
+ *   - Any added with sim_add_invariant. Those can look inside: at each node's
+ *     own state through its inspection hook (sim_node_inspect), and at every
+ *     draw each node has made from its random port (sim_node_draw). */
 #ifndef GAZPACHO_SIM_H
 #define GAZPACHO_SIM_H
 
@@ -113,16 +145,26 @@ typedef struct {
                     const sim_storage_t *storage);
     /* Free a node object. Called at a crash and at sim_destroy. */
     void (*destroy)(void *ops_ctx, void *node);
-    /* The node's start actions, called once after `create`: same contract as
-     * gz_node_start. May be NULL for a node with nothing to do at start. */
-    gz_status_t (*start)(void *node, gz_action_list_t *actions_out);
+    /* One step of the node's start, called after `create` and again while it
+     * sets `*more`: same contract as gz_node_start. May be NULL for a node
+     * with nothing to do at start. An error fails the run. */
+    gz_status_t (*start)(void *node, gz_action_list_t *actions_out, int *more);
     /* One step of the node: same contract as gz_node_handle. */
     gz_status_t (*handle)(void *node, const gz_event_t *event, gz_action_list_t *actions_out);
+    /* Write a description of the node's state, for invariants, into
+     * `out[0..cap)` and return its length. What it contains is the node's
+     * own business. May be NULL: the node then shows nothing. */
+    size_t (*inspect)(const void *node, uint8_t *out, size_t cap);
     /* How the node's program carries out a list of actions. NULL: through the
      * node's gz_runner_t, the correct way. A test supplies its own to model a
      * faulty program; it carries out an action by calling sim_execute. */
     gz_status_t (*release)(void *ops_ctx, sim_t *sim, uint32_t index,
                            const gz_action_list_t *list);
+    /* With `release` set: how that program answers a storage confirmation,
+     * returning what its runner returned. NULL: it has no runner to ask, and
+     * the harness only keeps confirmations of dead incarnations away from the
+     * node. */
+    gz_status_t (*confirm)(void *ops_ctx, sim_t *sim, uint32_t index, gz_batch_id_t batch);
     /* Passed back as `ops_ctx`. With check_same_seed the second simulator is
      * given `twin_ctx` instead, so the two never share state: set it to a
      * separate object prepared the same way. */
@@ -140,6 +182,7 @@ typedef struct {
     uint32_t delay_pm;            /* a copy is held back by 1..max_delay_steps extra steps */
     uint32_t max_delay_steps;
     uint32_t reorder_pm;          /* a delivery takes a due message other than the oldest */
+    uint32_t link_flap_pm;        /* per step: one link changes between up and down */
 
     uint32_t save_delay_pm;       /* a save becomes durable 1..max_save_delay_steps steps later */
     uint32_t max_save_delay_steps;
@@ -151,9 +194,19 @@ typedef struct {
     uint32_t crash_pm;            /* per step: one node crashes */
     uint32_t crash_in_release_pm; /* per action handed to an executor: the node crashes just
                                      before it (at most once per node per step) */
+    uint32_t restore_pm;          /* per step: one node's storage is rolled back to a random
+                                     earlier durable point and the node rebuilt */
+    int restore_repeats_random;   /* 1: after a restore the node's random port repeats (see above) */
+
     uint32_t ping_pm;             /* per step: one ping is sent to a node */
     uint32_t block_pm;            /* per step: a block is mined */
     uint32_t confirm_depth;       /* confirmations reported per transaction */
+    uint32_t reorg_pm;            /* per step: the newest 1..max_reorg_depth blocks are removed */
+    uint32_t max_reorg_depth;
+    uint32_t tx_never_pm;         /* a broadcast transaction never confirms */
+
+    uint32_t clock_jump_pm;       /* per step: the clock jumps 1..max_clock_jump either way */
+    uint32_t max_clock_jump;
 
     /* 0: a list refused by a node's runner fails the run. 1: it is counted and
      * the node is rebuilt. */
@@ -168,10 +221,12 @@ typedef struct {
 
 typedef struct {
     uint64_t messages_sent;       /* handed to the network, before faults */
+    uint64_t node_sends;          /* of those, sent by a node's program (the rest are stimulus) */
     uint64_t messages_dropped;
     uint64_t messages_duplicated;
     uint64_t messages_delayed;
     uint64_t messages_delivered;  /* to nodes and to the world */
+    uint64_t messages_lost_to_links; /* due while their link was down */
     uint64_t deliveries_reordered;
     uint64_t world_replies;       /* messages delivered to SIM_WORLD_PEER */
     uint64_t saves_durable;
@@ -181,17 +236,32 @@ typedef struct {
     uint64_t storage_failures;
     uint64_t crashes;             /* every rebuild, whatever caused it */
     uint64_t crashes_in_release;
+    uint64_t restores;
+    uint64_t events_not_delivered; /* queued for an incarnation that had crashed, of a kind
+                                      that does not outlive it */
+    uint64_t link_changes;
     uint64_t blocks;
+    uint64_t reorgs;
+    uint64_t txs_never;           /* broadcasts fated never to confirm */
+    uint64_t clock_jumps;
     uint64_t lists_refused;       /* action lists a node's program did not accept */
     uint64_t handle_errors;       /* events or starts a node answered with an error */
 } sim_stats_t;
+
+/* One draw a node made from its random port. */
+typedef struct {
+    uint32_t purpose;       /* the tag the node gave (ports.h) */
+    uint64_t incarnation;   /* which build of the node drew it */
+    size_t len;             /* how many bytes it asked for */
+    uint8_t bytes[32];      /* the first min(len, 32) of them */
+} sim_draw_t;
 
 /* An extra invariant, checked after every step. Returns 1 if it holds, or 0
  * and points `*why` at a static description of the violation. */
 typedef int (*sim_invariant_fn)(const sim_t *sim, void *ctx, const char **why);
 
-/* Create a simulator, build its nodes and run their start actions. Returns
- * NULL if n_nodes is 0. The configuration is copied. Free with sim_destroy. */
+/* Create a simulator, build its nodes and run their start steps. Returns NULL
+ * if n_nodes is 0. The configuration is copied. Free with sim_destroy. */
 sim_t *sim_create(const sim_config_t *config);
 
 /* Destroy every node and free everything the simulator owns. */
@@ -237,6 +307,17 @@ uint32_t sim_chain_height(const sim_t *sim);
  * is the incarnation its runner was given. */
 uint64_t sim_node_incarnation(const sim_t *sim, uint32_t index);
 
+/* --- Looking inside, for invariants and tests. --- */
+
+/* What node `index` shows of its own state: its inspection hook's output,
+ * copied into `out[0..cap)`. Returns the length, 0 if the node has no hook. */
+size_t sim_node_inspect(const sim_t *sim, uint32_t index, uint8_t *out, size_t cap);
+
+/* Number of draws node `index` has made from its random port, over all its
+ * incarnations, and the `i`-th of them (oldest first). */
+size_t sim_node_draw_count(const sim_t *sim, uint32_t index);
+const sim_draw_t *sim_node_draw(const sim_t *sim, uint32_t index, size_t i);
+
 /* --- Driving a run by hand, for tests. Each is recorded in the trace. --- */
 
 /* Destroy node `index` and rebuild it from its storage, now. */
@@ -250,12 +331,33 @@ void sim_crash_after_releases(sim_t *sim, uint32_t index, uint32_t after);
 /* Make the storage of node `index` fail now. */
 void sim_fail_storage(sim_t *sim, uint32_t index);
 
-/* From now on: no scheduled crashes, pings or blocks, no dropped or duplicated
- * messages, and no save that fails or never completes. Messages in flight are
- * discarded, so nothing new reaches a node from before. Delays stay, and
- * what storage already holds or has pending is unchanged (a save already
- * fated never to complete still never does). Running some steps after this
- * gives a run a quiet tail, in which everything that can settle does. */
+/* Roll the storage of node `index` back to its oldest `keep` durable batches
+ * and rebuild the node: a restore from an older backup. */
+void sim_restore_backup(sim_t *sim, uint32_t index, size_t keep);
+
+/* FOR TESTS OF THE HARNESS ITSELF: damage the storage of node `index` behind
+ * the harness's back, which the "storage keeps what it stored" invariant must
+ * then catch. `drop` 0 alters one byte of the newest durable batch that has
+ * any; `drop` 1 removes the newest durable batch. */
+void sim_damage_storage(sim_t *sim, uint32_t index, int drop);
+
+/* Take the link between two peers down (`up` 0) or bring it up. Peers are
+ * node indexes or SIM_WORLD_PEER. */
+void sim_set_link(sim_t *sim, uint64_t a, uint64_t b, int up);
+
+/* Remove the newest `depth` blocks from the chain. */
+void sim_reorg(sim_t *sim, uint32_t depth);
+
+/* Move the clock by `delta` (either sign). It never goes below 0. */
+void sim_jump_clock(sim_t *sim, int64_t delta);
+
+/* From now on: no scheduled crashes, restores, link changes, clock jumps,
+ * pings, blocks or reorganisations, no dropped or duplicated messages, and no
+ * save that fails or never completes. Messages in flight are discarded, so
+ * nothing new reaches a node from before. Delays stay, and what storage
+ * already holds or has pending is unchanged (a save already fated never to
+ * complete still never does). Running some steps after this gives a run a
+ * quiet tail, in which everything that can settle does. */
 void sim_quiesce(sim_t *sim);
 
 /* Put a message on the network from peer `from` to peer `to`, subject to the
@@ -292,5 +394,9 @@ size_t sim_storage_pending(const sim_storage_t *storage);
 
 /* Number of durable batches whose confirmation has not been delivered yet. */
 size_t sim_storage_unconfirmed(const sim_storage_t *storage);
+
+/* The incarnation of the node now reading this storage: what a storage reader
+ * built over it reports (ports.h). */
+uint64_t sim_storage_incarnation(const sim_storage_t *storage);
 
 #endif

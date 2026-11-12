@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev valgrind
       - name: Configure
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=${{ matrix.sanitize }}
       - name: Build
@@ -21,7 +21,8 @@ jobs:
       - name: Test
         # Reference tree; core (action list, runner, node, isolation check and
         # its negative test); simulator (generator, harness, known trace,
-        # 1,000 seeds, nine extreme fault profiles).
+        # 1,000 seeds, nine extreme fault profiles); and, in the build without
+        # sanitizers, the same tests again under valgrind.
         run: ctest --test-dir build --output-on-failure --timeout 600
       - name: Scale check, one small case and the two defect reproductions
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects

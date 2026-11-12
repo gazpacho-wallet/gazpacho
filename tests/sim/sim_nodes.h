@@ -85,9 +85,10 @@ static inline uint64_t multi_peer(const uint8_t *p)
 
 /* At start: watch and timer again, broadcast the newest stored decision
  * again, send the newest stored message again. */
-static inline gz_status_t multi_start(void *node, gz_action_list_t *out)
+static inline gz_status_t multi_start(void *node, gz_action_list_t *out, int *more)
 {
     multi_node_t *m = node;
+    *more = 0;                          /* everything it has to do fits one list */
     gz_status_t st = multi_add(out, GZ_ACTION_WATCH, 0, (const uint8_t *)"multi", 5);
     if (st == GZ_OK) st = multi_add(out, GZ_ACTION_SET_TIMER, 5, NULL, 3);
     if (st == GZ_OK && m->decision_len) st = multi_add(out, GZ_ACTION_BROADCAST, 0, m->decision, m->decision_len);
@@ -131,7 +132,7 @@ static inline gz_status_t multi_handle(void *node, const gz_event_t *ev, gz_acti
 
 static inline sim_node_ops_t multi_ops(void)
 {
-    sim_node_ops_t ops = {multi_create, multi_destroy, multi_start, multi_handle, NULL, NULL, NULL};
+    sim_node_ops_t ops = {.create = multi_create, .destroy = multi_destroy, .start = multi_start, .handle = multi_handle};
     return ops;
 }
 

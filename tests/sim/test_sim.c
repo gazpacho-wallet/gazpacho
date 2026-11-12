@@ -5,6 +5,7 @@
  * here or in sim_nodes.h. */
 #include "sim_nodes.h"
 #include "gazpacho/node.h"
+#include "gazpacho/runner.h"
 #include "../check.h"
 
 static sim_config_t quiet_config(uint64_t seed, uint32_t n_nodes)
@@ -184,7 +185,7 @@ static void test_same_seed_invariant_catches_a_leak(void)
     for (int k = 0; k < 2; k++) {
         sim_config_t c = quiet_config(5, 2);
         c.check_same_seed = 1;
-        c.ops = (sim_node_ops_t){leaky_create, leaky_destroy, NULL, handlers[k], NULL, NULL, NULL};
+        c.ops = (sim_node_ops_t){.create = leaky_create, .destroy = leaky_destroy, .handle = handlers[k]};
         sim_t *sim = sim_create(&c);
         world_ping(sim, 0, 1);
         CHECK(sim_run(sim, 10) == 0);                       /* fails at the first step */
@@ -550,9 +551,11 @@ static void test_save_before_send_catches_a_faulty_program(void)
 /* ---- a probe node, to see the pretend chain, timers, ports and errors ---- */
 
 typedef struct {
-    uint32_t tips, last_tip, spent, confirmed, last_confirmations, timers, stored, messages, chain_left;
-    uint64_t last_sender;
+    uint32_t tips, last_tip, spent, confirmed, unconfirmed, last_confirmations, timers, stored, messages, chain_left;
+    uint32_t connected, disconnected;
+    uint64_t last_sender, last_peer, last_clock;
     uint8_t spent_txid[32], confirmed_txid[32];
+    int notify_on_timer, notify_on_tip;     /* make those events produce an action, so a crash can interrupt it */
     const gz_ports_t *ports;
 } probe_t;
 static probe_t g_probe[4];
@@ -595,8 +598,18 @@ static gz_status_t probe_command(probe_t *p, gz_bytes_t cmd, gz_action_list_t *o
         st = multi_save(out, 7, (const uint8_t *)"first", 5);
         return st == GZ_OK ? multi_save(out, 7, (const uint8_t *)"second", 6) : st;
     case 'R':
-        p->ports->random.fill(p->ports->random.ctx, drawn, sizeof drawn);
+        p->ports->random.fill(p->ports->random.ctx, GZ_RANDOM_OTHER, drawn, sizeof drawn);
         return multi_save(out, 8, drawn, sizeof drawn);
+    case 'K':   /* a "secret" taken straight from the random port, saved and used */
+        p->ports->random.fill(p->ports->random.ctx, GZ_RANDOM_SECRET, drawn, sizeof drawn);
+        st = multi_save(out, 8, drawn, sizeof drawn);
+        return st == GZ_OK ? multi_add(out, GZ_ACTION_NOTIFY, 77, drawn, sizeof drawn) : st;
+    case 'U':   /* two timers due together */
+        st = multi_add(out, GZ_ACTION_SET_TIMER, 1, NULL, 1);
+        return st == GZ_OK ? multi_add(out, GZ_ACTION_SET_TIMER, 2, NULL, 1) : st;
+    case 'L':
+        p->last_clock = p->ports->clock.now_ms(p->ports->clock.ctx);
+        return GZ_OK;
     case 'E':
         p->chain_left = 100000;
         return multi_save(out, 9, rest, rest_len);
@@ -609,14 +622,23 @@ static gz_status_t probe_handle(void *node, const gz_event_t *ev, gz_action_list
     probe_t *p = node;
     switch (ev->kind) {
     case GZ_EVENT_USER_COMMAND:      return probe_command(p, ev->u.user.bytes, out);
-    case GZ_EVENT_TIMER_FIRED:       p->timers++; break;
+    case GZ_EVENT_TIMER_FIRED:
+        p->timers++;
+        if (p->notify_on_timer) return multi_add(out, GZ_ACTION_NOTIFY, (uint32_t)ev->u.timer.timer_id, NULL, 0);
+        break;
+    case GZ_EVENT_PEER_CONNECTED:    p->connected++; p->last_peer = ev->u.peer.peer_id; break;
+    case GZ_EVENT_PEER_DISCONNECTED: p->disconnected++; p->last_peer = ev->u.peer.peer_id; break;
     case GZ_EVENT_STORAGE_CONFIRMED:
         p->stored++;
         if (p->chain_left && p->chain_left--) return multi_save(out, 9, NULL, 0);
         break;
     case GZ_EVENT_MESSAGE_RECEIVED:  p->messages++; p->last_sender = ev->u.message.peer_id; break;
     case GZ_EVENT_CHAIN:
-        if (ev->u.chain.kind == GZ_CHAIN_NEW_TIP) { p->tips++; p->last_tip = ev->u.chain.height; }
+        if (ev->u.chain.kind == GZ_CHAIN_NEW_TIP) {
+            p->tips++; p->last_tip = ev->u.chain.height;
+            if (p->notify_on_tip) return multi_add(out, GZ_ACTION_NOTIFY, 500, NULL, 0);
+        }
+        if (ev->u.chain.kind == GZ_CHAIN_TX_UNCONFIRMED) p->unconfirmed++;
         if (ev->u.chain.kind == GZ_CHAIN_SCRIPT_SPENT) { p->spent++; memcpy(p->spent_txid, ev->u.chain.txid, 32); }
         if (ev->u.chain.kind == GZ_CHAIN_TX_CONFIRMED) {
             p->confirmed++; p->last_confirmations = ev->u.chain.confirmations;
@@ -630,7 +652,7 @@ static gz_status_t probe_handle(void *node, const gz_event_t *ev, gz_action_list
 static sim_config_t probe_config(uint32_t n_nodes)
 {
     sim_config_t c = quiet_config(21, n_nodes);
-    c.ops = (sim_node_ops_t){probe_create, probe_destroy, NULL, probe_handle, NULL, NULL, NULL};
+    c.ops = (sim_node_ops_t){.create = probe_create, .destroy = probe_destroy, .handle = probe_handle};
     memset(g_probe, 0, sizeof g_probe);
     return c;
 }
@@ -816,6 +838,440 @@ static void test_long_chains_of_events(void)
     sim_destroy(sim);
 }
 
+/* ---- start in steps, and starts that fail ---- */
+
+/* Twenty saved replies are unsent when the node crashes: more than one start
+ * step resends. The start comes in steps and every reply leaves. */
+static void test_start_in_steps_through_the_runner(void)
+{
+    sim_config_t c = quiet_config(31, 1);
+    c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 1000;
+    sim_t *sim = sim_create(&c);
+    for (uint8_t i = 0; i < 20; i++) world_ping(sim, 0, i);
+    CHECK(sim_run(sim, 20) == 20);
+    const sim_storage_t *st = sim_node_storage(sim, 0);
+    size_t unsent = saved_replies_not_sent(sim, 1);
+    CHECK(sim_storage_count(st) >= 20 && unsent >= 15);     /* nearly all still wait for a far-off confirmation */
+    uint64_t sent_before = sim_stats(sim)->node_sends;
+    sim_crash_node(sim, 0);
+    CHECK(!sim_failed(sim) && sim_stats(sim)->node_sends - sent_before == unsent);
+    CHECK(saved_replies_not_sent(sim, 1) == 0);
+    CHECK(sim_storage_count(st) + sim_storage_pending(st) >= 20 + (unsent + 7) / 8);   /* one "sent" record per step */
+    sim_destroy(sim);
+}
+
+static int g_start_calls;
+static gz_status_t failing_start(void *node, gz_action_list_t *out, int *more)
+{
+    (void)node; (void)out; (void)more;
+    return ++g_start_calls >= 3 ? GZ_ERR_NO_SPACE : GZ_OK;     /* the first node starts; a later start fails */
+}
+static gz_status_t refusing_release(void *ctx, sim_t *sim, uint32_t index, const gz_action_list_t *list)
+{
+    (void)ctx; (void)sim; (void)index; (void)list;
+    return GZ_ERR_REFUSED;
+}
+static gz_status_t endless_start(void *node, gz_action_list_t *out, int *more)
+{
+    (void)node; (void)out;
+    *more = 1;
+    return GZ_OK;
+}
+/* A start that returns an error, or never finishes, fails the run: the
+ * simulator does not log it and carry on with a node that never started. */
+static void test_a_failed_start_is_fatal(void)
+{
+    sim_config_t c = quiet_config(31, 1);
+    c.ops = (sim_node_ops_t){.create = probe_create, .destroy = probe_destroy, .start = failing_start, .handle = probe_handle};
+    g_start_calls = 0;
+    sim_t *sim = sim_create(&c);
+    CHECK(!sim_failed(sim));
+    sim_crash_node(sim, 0);
+    CHECK(!sim_failed(sim));
+    sim_crash_node(sim, 0);                                 /* this start returns an error */
+    CHECK(sim_failed(sim) && strstr(sim_failure_reason(sim), "failed to start") != NULL);
+    CHECK(sim_stats(sim)->handle_errors == 1 && trace_has(sim, "start-error node=0"));
+    sim_destroy(sim);
+
+    c.ops.start = endless_start;
+    sim = sim_create(&c);
+    CHECK(sim_failed(sim) && strstr(sim_failure_reason(sim), "failed to start") != NULL);
+    sim_destroy(sim);
+
+    c = quiet_config(31, 1);                                /* a start list its program refuses */
+    c.ops = multi_ops();
+    c.ops.release = refusing_release;
+    c.allow_refusals = 1;                                   /* allowed for ordinary lists, never for a start */
+    sim = sim_create(&c);
+    CHECK(sim_failed(sim) && strstr(sim_failure_reason(sim), "start actions were refused") != NULL);
+    sim_destroy(sim);
+}
+
+/* ---- restore from an older backup, and what invariants can see ---- */
+
+static void test_restore_from_an_older_backup(void)
+{
+    sim_config_t c = quiet_config(41, 2);
+    sim_t *sim = sim_create(&c);
+    for (uint8_t i = 1; i <= 3; i++) world_ping(sim, 0, i);
+    CHECK(sim_run(sim, 10) == 10);
+    const sim_storage_t *st = sim_node_storage(sim, 0);
+    CHECK(sim_storage_count(st) == 6 && sim_stats(sim)->node_sends == 3);
+
+    sim_restore_backup(sim, 0, 3);                          /* back to: ping 1, its "sent" record, ping 2 */
+    CHECK(sim_stats(sim)->restores == 1 && sim_node_incarnation(sim, 0) == 2);
+    CHECK(sim_stats(sim)->node_sends == 4);                 /* ping 2 has no "sent" record any more: resent */
+    CHECK(sim_storage_count(st) == 4);                      /* the three kept, and the new "sent" record */
+    CHECK(same_batch(sim_storage_batch_id(st, 3), 2, 1));   /* and recorded under the new incarnation */
+    world_ping(sim, 0, 9);
+    CHECK(sim_run(sim, 10) == 10 && !sim_failed(sim));
+    CHECK(sim_stats(sim)->stale_confirmations == 0);        /* nothing from before the restore arrived */
+    uint8_t shown[16] = {0};
+    CHECK(sim_node_inspect(sim, 0, shown, sizeof shown) == 16 && shown[0] == 4);   /* serials went on from the backup: 3 was used again */
+    sim_restore_backup(sim, 0, 999);                        /* more than there is: everything is kept */
+    CHECK(sim_storage_count(st) == 6 && !sim_failed(sim));
+    sim_restore_backup(sim, 0, 0);
+    CHECK(sim_storage_count(st) == 0 && !sim_failed(sim) && sim_node_incarnation(sim, 0) == 4);
+    sim_destroy(sim);
+
+    /* After a crash the old batches' confirmations still arrive, and are stale. After a
+     * restore none may arrive at all: storage is opened afresh. */
+    for (int restored = 0; restored <= 1; restored++) {
+        c = quiet_config(41, 1);
+        c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 5;
+        sim = sim_create(&c);
+        world_ping(sim, 0, 1);
+        world_ping(sim, 0, 2);
+        CHECK(sim_run(sim, 2) == 2);
+        size_t unconfirmed = sim_storage_unconfirmed(sim_node_storage(sim, 0));
+        if (restored) sim_restore_backup(sim, 0, 99); else sim_crash_node(sim, 0);
+        sim_quiesce(sim);
+        CHECK(sim_run(sim, 30) == 30 && !sim_failed(sim) && unconfirmed >= 1);
+        CHECK(sim_stats(sim)->stale_confirmations == (restored ? 0 : unconfirmed));
+        sim_destroy(sim);
+    }
+
+    c = busy_config(41);                                    /* and from the schedule */
+    c.restore_pm = 30;
+    c.check_same_seed = 1;
+    sim = sim_create(&c);
+    CHECK(sim_run(sim, 1500) == 1500 && sim_stats(sim)->restores > 10);
+    sim_destroy(sim);
+}
+
+/* An invariant written the way the engines' will be: over the log of what
+ * each node drew from its random port. No secret may be drawn twice. */
+static int no_secret_twice(const sim_t *sim, void *ctx, const char **why)
+{
+    uint32_t n_nodes = *(const uint32_t *)ctx;
+    for (uint32_t node = 0; node < n_nodes; node++)
+        for (size_t i = 0; i < sim_node_draw_count(sim, node); i++)
+            for (size_t k = i + 1; k < sim_node_draw_count(sim, node); k++) {
+                const sim_draw_t *a = sim_node_draw(sim, node, i), *b = sim_node_draw(sim, node, k);
+                if (a->purpose != GZ_RANDOM_SECRET || b->purpose != GZ_RANDOM_SECRET) continue;
+                if (a->len == b->len && memcmp(a->bytes, b->bytes, a->len < 32 ? a->len : 32) == 0) {
+                    *why = "a one-time secret was drawn twice";
+                    return 0;
+                }
+            }
+    return 1;
+}
+
+/* FAULTY ON PURPOSE (the probe's 'K' command): a node that takes a one-time
+ * secret straight from the random port. Harmless while the port never
+ * repeats. Restored from a snapshot whose generator repeats, it produces a
+ * secret it has produced before, and the invariant over the draw log says so. */
+static void test_a_repeating_generator_exposes_a_naive_node(void)
+{
+    for (int repeats = 0; repeats <= 1; repeats++) {
+        sim_config_t c = probe_config(2);
+        uint32_t n_nodes = 2;
+        c.restore_repeats_random = repeats;
+        sim_t *sim = sim_create(&c);
+        CHECK(sim_add_invariant(sim, no_secret_twice, &n_nodes) == 1);
+        sim_user_command(sim, 0, (const uint8_t *)"K", 1);
+        sim_user_command(sim, 0, (const uint8_t *)"K", 1);
+        sim_user_command(sim, 0, (const uint8_t *)"R", 1);      /* a draw that is not a secret */
+        sim_crash_node(sim, 0);                                 /* an ordinary crash never repeats the stream */
+        sim_user_command(sim, 0, (const uint8_t *)"K", 1);
+        CHECK(!sim_failed(sim) && sim_node_draw_count(sim, 0) == 4);
+        CHECK(sim_node_draw(sim, 0, 0)->purpose == GZ_RANDOM_SECRET && sim_node_draw(sim, 0, 2)->purpose == GZ_RANDOM_OTHER);
+        CHECK(sim_node_draw(sim, 0, 0)->incarnation == 1 && sim_node_draw(sim, 0, 3)->incarnation == 2 && sim_node_draw(sim, 0, 0)->len == 8);
+        CHECK(memcmp(sim_node_draw(sim, 0, 0)->bytes, sim_storage_batch_bytes(sim_node_storage(sim, 0), 0, NULL) + 8, 8) == 0);
+
+        sim_restore_backup(sim, 0, 1);                          /* back to just after the first secret */
+        sim_user_command(sim, 0, (const uint8_t *)"K", 1);
+        if (repeats) {
+            CHECK(sim_failed(sim) && strcmp(sim_failure_reason(sim), "a one-time secret was drawn twice") == 0);
+        } else {
+            CHECK(!sim_failed(sim) && sim_node_draw_count(sim, 0) == 5);
+        }
+        sim_destroy(sim);
+    }
+}
+
+static int awaiting_is_bounded(const sim_t *sim, void *ctx, const char **why)
+{
+    uint8_t shown[16];
+    (*(int *)ctx)++;
+    if (sim_node_inspect(sim, 0, shown, sizeof shown) != 16) { *why = "the node shows nothing"; return 0; }
+    if (shown[8] > 3) { *why = "more than three batches awaiting confirmation"; return 0; }
+    return 1;
+}
+
+/* An invariant can read a node's own state through its inspection hook. */
+static void test_invariants_can_look_inside_a_node(void)
+{
+    sim_config_t c = quiet_config(43, 1);
+    c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 1000;       /* confirmations far off: batches pile up */
+    sim_t *sim = sim_create(&c);
+    int calls = 0;
+    uint8_t shown[16], small[8];
+    CHECK(sim_add_invariant(sim, awaiting_is_bounded, &calls) == 1);
+    CHECK(sim_node_inspect(sim, 0, shown, sizeof shown) == 16 && shown[0] == 1 && shown[8] == 0);
+    CHECK(sim_node_inspect(sim, 0, small, sizeof small) == 0);
+    for (uint8_t i = 0; i < 6; i++) world_ping(sim, 0, i);
+    uint64_t done = sim_run(sim, 10);
+    CHECK(sim_failed(sim) && done < 10 && calls > 0);
+    CHECK(strcmp(sim_failure_reason(sim), "more than three batches awaiting confirmation") == 0);
+    sim_destroy(sim);
+
+    sim = probe_sim(1);                                     /* a node with no hook shows nothing */
+    CHECK(sim_node_inspect(sim, 0, shown, sizeof shown) == 0);
+    sim_destroy(sim);
+}
+
+/* ---- links, reorganisations, transactions that never confirm, clock jumps ---- */
+
+static void test_links(void)
+{
+    sim_t *sim = probe_sim(3);
+    const uint8_t hello[2] = {1, 2};
+    for (int n = 0; n < 3; n++) CHECK(g_probe[n].connected == 3 && g_probe[n].disconnected == 0);   /* two nodes and the world */
+
+    sim_set_link(sim, 0, 1, 0);
+    CHECK(g_probe[0].disconnected == 1 && g_probe[0].last_peer == 1 && g_probe[1].disconnected == 1 && g_probe[1].last_peer == 0);
+    CHECK(g_probe[2].disconnected == 0 && sim_stats(sim)->link_changes == 1);
+    sim_set_link(sim, 1, 0, 0);                             /* already down: nothing happens */
+    CHECK(sim_stats(sim)->link_changes == 1 && g_probe[0].disconnected == 1);
+    sim_send_message(sim, 0, 1, hello, 2);
+    sim_send_message(sim, 0, 2, hello, 2);
+    CHECK(sim_run(sim, 5) == 5);
+    CHECK(g_probe[1].messages == 0 && g_probe[2].messages == 1 && sim_stats(sim)->messages_lost_to_links == 1);
+
+    sim_set_link(sim, 0, 1, 1);
+    CHECK(g_probe[0].connected == 4 && g_probe[1].connected == 4);
+    sim_send_message(sim, 0, 1, hello, 2);
+    CHECK(sim_run(sim, 5) == 5 && g_probe[1].messages == 1);
+
+    sim_set_link(sim, 2, SIM_WORLD_PEER, 0);                /* the world is a peer too */
+    CHECK(g_probe[2].disconnected == 1 && g_probe[2].last_peer == SIM_WORLD_PEER);
+    sim_send_message(sim, SIM_WORLD_PEER, 2, hello, 2);
+    CHECK(sim_run(sim, 5) == 5 && g_probe[2].messages == 1 && sim_stats(sim)->messages_lost_to_links == 2);
+
+    /* A rebuilt node is told which links are up; its peers see the connection drop and return. */
+    sim_crash_node(sim, 0);
+    CHECK(g_probe[0].connected == 4 + 3);
+    CHECK(g_probe[1].disconnected == 2 && g_probe[1].connected == 5 && g_probe[2].disconnected == 2 && g_probe[2].connected == 4);
+    CHECK(!sim_failed(sim));
+    sim_destroy(sim);
+
+    sim_config_t c = busy_config(47);                       /* and from the schedule */
+    c.link_flap_pm = 100;
+    c.check_same_seed = 1;
+    sim = sim_create(&c);
+    CHECK(sim_run(sim, 1000) == 1000);
+    CHECK(sim_stats(sim)->link_changes > 30 && sim_stats(sim)->messages_lost_to_links > 0);
+    sim_destroy(sim);
+}
+
+static void test_reorganisation_and_never_confirming(void)
+{
+    sim_t *sim = probe_sim(2);
+    const uint8_t tx[4] = {'B', 0, 7, 7};
+    sim_user_command(sim, 0, tx, sizeof tx);
+    sim_mine_block(sim);
+    sim_mine_block(sim);
+    CHECK(g_probe[0].confirmed == 2 && g_probe[0].last_confirmations == 2 && sim_chain_height(sim) == 2);
+
+    sim_reorg(sim, 2);                                      /* both blocks gone: the transaction is unconfirmed again */
+    CHECK(sim_chain_height(sim) == 0 && sim_stats(sim)->reorgs == 1);
+    CHECK(g_probe[0].unconfirmed == 1 && g_probe[1].unconfirmed == 0);
+    CHECK(g_probe[0].last_tip == 0 && g_probe[1].last_tip == 0 && g_probe[1].tips == 3);
+    sim_mine_block(sim);                                    /* it is still in the mempool, and confirms again */
+    CHECK(g_probe[0].confirmed == 3 && g_probe[0].last_confirmations == 1);
+    sim_reorg(sim, 0);
+    sim_reorg(sim, 99);                                     /* deeper than the chain: back to nothing */
+    CHECK(sim_chain_height(sim) == 0 && sim_stats(sim)->reorgs == 2 && g_probe[0].unconfirmed == 2 && !sim_failed(sim));
+    sim_destroy(sim);
+
+    sim_config_t c = probe_config(2);
+    c.tx_never_pm = 1000;
+    sim = sim_create(&c);
+    sim_user_command(sim, 0, tx, sizeof tx);
+    for (int i = 0; i < 5; i++) sim_mine_block(sim);
+    CHECK(g_probe[0].confirmed == 0 && g_probe[0].tips == 5 && sim_stats(sim)->txs_never == 1);
+    CHECK(trace_has(sim, "never-confirms"));
+    sim_destroy(sim);
+
+    c = busy_config(49);                                    /* and from the schedule */
+    c.ops = multi_ops();
+    c.reorg_pm = 30; c.max_reorg_depth = 3; c.tx_never_pm = 200;
+    c.check_same_seed = 1;
+    sim = sim_create(&c);
+    CHECK(sim_run(sim, 1500) == 1500 && sim_stats(sim)->reorgs > 5 && sim_stats(sim)->txs_never > 5);
+    CHECK(trace_has(sim, "chain unconfirmed node="));
+    sim_destroy(sim);
+}
+
+static void test_clock_jumps(void)
+{
+    sim_t *sim = probe_sim(1);
+    const uint8_t set[3] = {'T', 1, 5};
+    CHECK(sim_run(sim, 10) == 10);
+    sim_user_command(sim, 0, (const uint8_t *)"L", 1);
+    CHECK(g_probe[0].last_clock == 10);
+    sim_jump_clock(sim, 1000);
+    sim_user_command(sim, 0, (const uint8_t *)"L", 1);
+    CHECK(g_probe[0].last_clock == 1010 && sim_stats(sim)->clock_jumps == 1);
+    sim_user_command(sim, 0, set, 3);                       /* a timer counts steps, whatever the clock says */
+    sim_jump_clock(sim, -1005);
+    sim_user_command(sim, 0, (const uint8_t *)"L", 1);
+    CHECK(g_probe[0].last_clock == 5);                      /* backwards */
+    sim_jump_clock(sim, -500);
+    sim_user_command(sim, 0, (const uint8_t *)"L", 1);
+    CHECK(g_probe[0].last_clock == 0);                      /* never below zero */
+    CHECK(sim_run(sim, 4) == 4 && g_probe[0].timers == 0);
+    CHECK(sim_run(sim, 1) == 1 && g_probe[0].timers == 1);
+    sim_destroy(sim);
+
+    sim_config_t c = busy_config(51);                       /* and from the schedule */
+    c.clock_jump_pm = 100; c.max_clock_jump = 50;
+    c.check_same_seed = 1;
+    sim = sim_create(&c);
+    CHECK(sim_run(sim, 1000) == 1000 && sim_stats(sim)->clock_jumps > 50);
+    sim_destroy(sim);
+}
+
+/* ---- what a rebuilt node may be given from before its crash ---- */
+
+/* Two timers are due together. The node crashes carrying out its answer to
+ * the first. The second was set by the dead program and must not fire into
+ * the new one. */
+static void test_a_dead_programs_timer_does_not_fire_into_its_successor(void)
+{
+    sim_t *sim = probe_sim(1);
+    g_probe[0].notify_on_timer = 1;
+    sim_user_command(sim, 0, (const uint8_t *)"U", 1);
+    sim_crash_after_releases(sim, 0, 0);
+    CHECK(sim_run(sim, 3) == 3 && !sim_failed(sim));
+    CHECK(sim_node_incarnation(sim, 0) == 2 && g_probe[0].timers == 1);     /* only the first was handled */
+    CHECK(trace_count(sim, "notify node=0") == 0 && sim_stats(sim)->events_not_delivered >= 1);
+    CHECK(trace_has(sim, "not-delivered node=0 event=2 from-incarnation=1"));
+    sim_destroy(sim);
+}
+
+/* A block brings node 0 two events: a new tip and the spend of a script it
+ * watches. It crashes carrying out its answer to the first. The second
+ * happened on chain whatever became of the program, so the rebuilt node gets it. */
+static void test_a_chain_event_outlives_a_crash(void)
+{
+    sim_t *sim = probe_sim(2);
+    const uint8_t watch[3] = {'W', 0x11, 0x22}, spend[5] = {'B', 2, 0x11, 0x22, 9};
+    g_probe[0].notify_on_tip = 1;
+    sim_user_command(sim, 0, watch, sizeof watch);
+    sim_user_command(sim, 1, spend, sizeof spend);
+    sim_crash_after_releases(sim, 0, 0);
+    sim_mine_block(sim);
+    CHECK(!sim_failed(sim) && sim_node_incarnation(sim, 0) == 2);
+    CHECK(g_probe[0].tips == 1 && g_probe[0].spent == 1);
+    sim_destroy(sim);
+}
+
+/* ---- the harness's own checks, each shown to catch what it is for ---- */
+
+static void test_damaged_storage_is_caught(void)
+{
+    for (int drop = 0; drop <= 1; drop++) {
+        sim_config_t c = quiet_config(53, 2);
+        sim_t *sim = sim_create(&c);
+        world_ping(sim, 0, 1);
+        world_ping(sim, 1, 2);
+        CHECK(sim_run(sim, 6) == 6 && !sim_failed(sim) && sim_storage_count(sim_node_storage(sim, 1)) == 2);
+        sim_damage_storage(sim, 1, drop);
+        CHECK(sim_failed(sim));
+        CHECK(strstr(sim_failure_reason(sim), drop ? "lost or gained a durable batch" : "altered a durable batch") != NULL);
+        sim_destroy(sim);
+    }
+}
+
+/* FAULTY ON PURPOSE: a program with a runner of its own that it starts under
+ * the same incarnation every time, breaking the duty in runner.h. A
+ * confirmation from before a crash then looks current to it. */
+typedef struct { gz_runner_t runner; gz_runner_slot_t slots[8]; uint8_t bytes[256]; sim_t *sim; uint32_t index; } own_runner_t;
+static own_runner_t g_own[2];
+static int g_own_keeps_the_duty;
+
+static void own_execute(void *ctx, const gz_action_t *a)
+{
+    own_runner_t *o = ctx;
+    sim_execute(o->sim, o->index, a);
+}
+
+static void *own_create(void *ctx, uint32_t index, const gz_ports_t *ports, const sim_storage_t *storage)
+{
+    (void)ctx; (void)ports;
+    own_runner_t *o = &g_own[index];
+    uint64_t incarnation = g_own_keeps_the_duty ? sim_storage_incarnation(storage) : 7;
+    if (gz_runner_init(&o->runner, o->slots, 8, o->bytes, sizeof o->bytes, incarnation, own_execute, o) != GZ_OK) abort();
+    return o;
+}
+
+static gz_status_t own_handle(void *node, const gz_event_t *ev, gz_action_list_t *out)
+{
+    (void)node;
+    if (ev->kind != GZ_EVENT_USER_COMMAND) return GZ_OK;
+    gz_status_t st = multi_save(out, 7, ev->u.user.bytes.data, ev->u.user.bytes.len);
+    return st == GZ_OK ? multi_add(out, GZ_ACTION_NOTIFY, 9, NULL, 0) : st;
+}
+
+static gz_status_t own_release(void *ctx, sim_t *sim, uint32_t index, const gz_action_list_t *list)
+{
+    (void)ctx;
+    g_own[index].sim = sim;
+    g_own[index].index = index;
+    return gz_runner_submit(&g_own[index].runner, list);
+}
+
+static gz_status_t own_confirm(void *ctx, sim_t *sim, uint32_t index, gz_batch_id_t batch)
+{
+    (void)ctx; (void)sim;
+    return gz_runner_confirm(&g_own[index].runner, batch);
+}
+
+static void test_a_stale_confirmation_must_be_reported_stale(void)
+{
+    for (int keeps = 1; keeps >= 0; keeps--) {
+        sim_config_t c = quiet_config(55, 1);
+        c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 3;
+        c.ops = (sim_node_ops_t){.create = own_create, .destroy = probe_destroy, .handle = own_handle,
+                                 .release = own_release, .confirm = own_confirm};
+        g_own_keeps_the_duty = keeps;
+        sim_t *sim = sim_create(&c);
+        sim_user_command(sim, 0, (const uint8_t *)"a", 1);      /* durable, unconfirmed; its notify is held */
+        sim_crash_node(sim, 0);
+        sim_user_command(sim, 0, (const uint8_t *)"b", 1);      /* the new program's own batch, same sequence */
+        sim_run(sim, 10);
+        if (keeps) {
+            CHECK(!sim_failed(sim) && sim_stats(sim)->stale_confirmations == 1 && trace_count(sim, "notify node=0") == 1);
+        } else {
+            CHECK(sim_failed(sim) && strstr(sim_failure_reason(sim), "not reported as stale") != NULL);
+        }
+        sim_destroy(sim);
+    }
+}
+
+
 static int fails_at_five(const sim_t *sim, void *ctx, const char **why)
 {
     (*(int *)ctx)++;
@@ -901,6 +1357,18 @@ int main(void)
     test_random_port_across_a_crash();
     test_probe_save_notify_and_errors();
     test_long_chains_of_events();
+    test_start_in_steps_through_the_runner();
+    test_a_failed_start_is_fatal();
+    test_restore_from_an_older_backup();
+    test_a_repeating_generator_exposes_a_naive_node();
+    test_invariants_can_look_inside_a_node();
+    test_links();
+    test_reorganisation_and_never_confirming();
+    test_clock_jumps();
+    test_a_dead_programs_timer_does_not_fire_into_its_successor();
+    test_a_chain_event_outlives_a_crash();
+    test_damaged_storage_is_caught();
+    test_a_stale_confirmation_must_be_reported_stale();
     test_invariant_hook();
     test_faulty_programs_are_caught_under_load();
     return check_done();

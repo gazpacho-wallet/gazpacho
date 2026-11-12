@@ -9,7 +9,7 @@
 static uint64_t g_now = 0x0102030405060708ull;
 static int g_random_calls;
 
-static void fill(void *ctx, uint8_t *out, size_t len) { (void)ctx; g_random_calls++; memset(out, 0x42, len); }
+static void fill(void *ctx, uint32_t purpose, uint8_t *out, size_t len) { (void)ctx; (void)purpose; g_random_calls++; memset(out, 0x42, len); }
 static uint64_t now_ms(void *ctx) { (void)ctx; return g_now; }
 
 static const gz_ports_t PORTS = {{fill, NULL}, {now_ms, NULL}};
@@ -39,7 +39,6 @@ static void test_arguments(void)
 {
     gz_node_t node;
     gz_ports_t no_clock = PORTS, no_random = PORTS;
-    gz_record_t record = {0, {NULL, 0}};
     no_clock.clock.now_ms = NULL;
     no_random.random.fill = NULL;
     CHECK(gz_node_init(NULL, &PORTS) == GZ_ERR_ARGUMENT);
@@ -52,9 +51,6 @@ static void test_arguments(void)
     CHECK(gz_node_handle(NULL, &ev, &out) == GZ_ERR_ARGUMENT);
     CHECK(gz_node_handle(&node, NULL, &out) == GZ_ERR_ARGUMENT);
     CHECK(gz_node_handle(&node, &ev, NULL) == GZ_ERR_ARGUMENT);
-    CHECK(gz_node_start(NULL, &record, 1, &out) == GZ_ERR_ARGUMENT);
-    CHECK(gz_node_start(&node, &record, 1, NULL) == GZ_ERR_ARGUMENT);
-    CHECK(gz_node_start(&node, NULL, 1, &out) == GZ_ERR_ARGUMENT);
     CHECK(out.count == 0);
 }
 
@@ -173,6 +169,8 @@ static void test_everything_else_does_nothing(void)
     events[n] = (gz_event_t){.kind = GZ_EVENT_TIMER_FIRED}; events[n++].u.timer.timer_id = 4;
     events[n] = (gz_event_t){.kind = GZ_EVENT_CHAIN}; events[n++].u.chain.kind = GZ_CHAIN_NEW_TIP;
     events[n] = (gz_event_t){.kind = GZ_EVENT_USER_COMMAND}; events[n++].u.user.bytes = (gz_bytes_t){other, 5};
+    events[n] = (gz_event_t){.kind = GZ_EVENT_PEER_CONNECTED}; events[n++].u.peer.peer_id = 3;
+    events[n] = (gz_event_t){.kind = GZ_EVENT_PEER_DISCONNECTED}; events[n++].u.peer.peer_id = 3;
 
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
     gz_action_list_init(&out, slots, 8, bytes, sizeof bytes);
@@ -202,7 +200,48 @@ static void test_no_space_changes_nothing(void)
 
 /* ---- starting from stored records ---- */
 
-static uint8_t g_bodies[80][32];
+/* A storage reader over an array of records, one record to a batch. */
+typedef struct { const gz_record_t *records; size_t n, at, walks; } array_reader_t;
+
+static int array_next(void *ctx, gz_stored_batch_t *batch)
+{
+    array_reader_t *r = ctx;
+    if (r->at >= r->n) return 0;
+    batch->id = (gz_batch_id_t){1, r->at + 1};
+    batch->records = &r->records[r->at++];
+    batch->n_records = 1;
+    return 1;
+}
+
+static void array_rewind(void *ctx)
+{
+    array_reader_t *r = ctx;
+    r->at = 0;
+    r->walks++;
+}
+
+static array_reader_t g_array;
+
+static gz_storage_reader_t reader_over(const gz_record_t *records, size_t n)
+{
+    g_array = (array_reader_t){records, n, 0, 0};
+    return (gz_storage_reader_t){array_next, array_rewind, &g_array, 2};
+}
+
+/* Run a whole start, every step's actions appended to `out`. Returns the
+ * number of steps it took, or 0 if a step failed. */
+static size_t start_fully(gz_node_t *node, const gz_storage_reader_t *reader)
+{
+    int more = 1;
+    size_t steps = 0;
+    while (more) {
+        if (gz_node_start(node, reader, &out, &more) != GZ_OK) return 0;
+        steps++;
+    }
+    return steps;
+}
+
+static uint8_t g_bodies[200][32];
 
 static gz_record_t ping_record(size_t slot, uint64_t peer, uint64_t serial, uint8_t payload)
 {
@@ -229,6 +268,25 @@ static int is_pong(const gz_action_t *a, uint64_t peer, uint8_t payload)
            memcmp(a->u.send.bytes.data, pong, 5) == 0;
 }
 
+static void test_start_arguments(void)
+{
+    gz_node_t node;
+    int more = 7;
+    gz_storage_reader_t reader = reader_over(NULL, 0), no_next = reader, no_rewind = reader;
+    no_next.next = NULL;
+    no_rewind.rewind = NULL;
+    CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+    gz_action_list_init(&out, slots, 8, bytes, sizeof bytes);
+    CHECK(gz_node_start(NULL, &reader, &out, &more) == GZ_ERR_ARGUMENT);
+    CHECK(gz_node_start(&node, NULL, &out, &more) == GZ_ERR_ARGUMENT);
+    CHECK(gz_node_start(&node, &no_next, &out, &more) == GZ_ERR_ARGUMENT);
+    CHECK(gz_node_start(&node, &no_rewind, &out, &more) == GZ_ERR_ARGUMENT);
+    CHECK(gz_node_start(&node, &reader, NULL, &more) == GZ_ERR_ARGUMENT);
+    CHECK(gz_node_start(&node, &reader, &out, NULL) == GZ_ERR_ARGUMENT);
+    CHECK(out.count == 0 && more == 7);
+    CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_OK && out.count == 0 && more == 0);   /* empty storage */
+}
+
 static void test_start_resends_every_reply_not_recorded_as_sent(void)
 {
     gz_node_t node;
@@ -243,16 +301,19 @@ static void test_start_resends_every_reply_not_recorded_as_sent(void)
     stored[6] = ping_record(6, 44, 4, 0x64);
     stored[7] = ping_record(7, 55, 5, 0x65);
     stored[8] = sent_record(8, 9, 4);                               /* one record may name several */
-    CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
 
-    gz_action_list_init(&out, slots, 8, bytes, sizeof bytes);
-    CHECK(gz_node_start(&node, NULL, 0, &out) == GZ_OK && out.count == 0);      /* empty storage: nothing to do */
-    CHECK(gz_node_start(&node, stored + 4, 2, &out) == GZ_OK && out.count == 0);
-    CHECK(gz_node_start(&node, stored + 1, 2, &out) == GZ_OK && out.count == 0); /* everything stored was sent */
+    gz_storage_reader_t reader = reader_over(stored + 4, 2);
+    gz_action_list_init(&out, slots, 80, bytes, sizeof bytes);
+    CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+    CHECK(start_fully(&node, &reader) == 1 && out.count == 0);      /* nothing of ours in storage */
+    reader = reader_over(stored + 1, 2);
+    CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+    CHECK(start_fully(&node, &reader) == 1 && out.count == 0);      /* everything stored was sent */
 
     /* Pings 1, 3 and 5 have no "sent" record: resent oldest first, then one record for the three. */
+    reader = reader_over(stored, 9);
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
-    CHECK(gz_node_start(&node, stored, 9, &out) == GZ_OK && out.count == 4);
+    CHECK(start_fully(&node, &reader) == 2 && out.count == 4);     /* one step resends, one records */
     CHECK(is_pong(&out.slots[0], 11, 0x61) && is_pong(&out.slots[1], 33, 0x63) && is_pong(&out.slots[2], 55, 0x65));
     const gz_record_t *r = &out.slots[3].u.save.records[0];
     CHECK(out.slots[3].kind == GZ_ACTION_SAVE && r->type == GZ_RECORD_TEST_PING_SENT && r->bytes.len == 24);
@@ -266,22 +327,85 @@ static void test_start_resends_every_reply_not_recorded_as_sent(void)
     CHECK(gz_node_handle(&node, &ev, &out) == GZ_OK);
     CHECK(be64(out.slots[0].u.save.records[0].bytes.data + 16) == 6);
 
-    gz_action_list_init(&out, slots, 3, bytes, sizeof bytes);       /* no room for all of it: nothing is appended */
+    /* No room for a step's actions: nothing is appended, and the same step can be asked for again. */
+    int more = 0;
+    reader = reader_over(stored, 9);
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
-    CHECK(gz_node_start(&node, stored, 9, &out) == GZ_ERR_NO_SPACE && out.count == 0 && out.used == 0);
+    gz_action_list_init(&out, slots, 2, bytes, sizeof bytes);
+    CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_ERR_NO_SPACE && out.count == 0 && out.used == 0 && more == 0);
+    gz_action_list_init(&out, slots, 80, bytes, sizeof bytes);
+    CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_OK && out.count == 3 && more == 1);
+    CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_OK && out.count == 4 && more == 0);
 }
 
-static void test_start_has_a_limit(void)
+/* More to resend than one step takes: the start comes in steps, each a list
+ * of at most GZ_NODE_START_CHUNK replies or one record, replies first, and
+ * says when it is done. Fifty stored pings, every third one already recorded
+ * as sent. */
+static void test_start_comes_in_steps(void)
 {
-    static gz_record_t stored[GZ_NODE_MAX_AWAITING + 1];
+    static gz_record_t stored[70];
     gz_node_t node;
-    for (size_t i = 0; i <= GZ_NODE_MAX_AWAITING; i++) stored[i] = ping_record(i, 1, i + 1, (uint8_t)i);
-    gz_action_list_init(&out, slots, 80, bytes, sizeof bytes);
+    size_t n = 0, unsent = 0, sends = 0, saves = 0, steps = 0, recorded = 0;
+    uint64_t last_serial = 0;
+    int more = 1, in_order = 1, sizes_ok = 1;
+    for (uint64_t serial = 1; serial <= 50; serial++) {
+        stored[n] = ping_record(n, 100 + serial, serial, (uint8_t)serial); n++;
+        if (serial % 3 == 0) { stored[n] = sent_record(n, serial, 0); n++; }
+        else unsent++;
+    }
+    gz_storage_reader_t reader = reader_over(stored, n);
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
-    CHECK(gz_node_start(&node, stored, GZ_NODE_MAX_AWAITING, &out) == GZ_OK && out.count == GZ_NODE_MAX_AWAITING + 1);
-    gz_action_list_reset(&out);
+    while (more) {
+        gz_action_list_init(&out, slots, 80, bytes, sizeof bytes);
+        if (gz_node_start(&node, &reader, &out, &more) != GZ_OK) break;
+        steps++;
+        sizes_ok &= out.count >= 1 && out.count <= GZ_NODE_START_CHUNK;
+        sizes_ok &= out.slots[0].kind != GZ_ACTION_SAVE || out.count == 1;   /* a record has a step to itself */
+        for (size_t i = 0; i < out.count; i++) {
+            const gz_action_t *a = &out.slots[i];
+            if (a->kind == GZ_ACTION_SEND) {
+                uint64_t serial = a->u.send.peer_id - 100;
+                in_order &= saves == 0;                                      /* every reply before the first record */
+                in_order &= serial > last_serial && serial % 3 != 0 && is_pong(a, 100 + serial, (uint8_t)serial);
+                last_serial = serial;
+                sends++;
+            } else {
+                saves++;
+                recorded += a->u.save.records[0].bytes.len / 8;
+            }
+        }
+    }
+    CHECK(more == 0 && saves >= 5 && steps == 2 * saves);
+    CHECK(sends == unsent && recorded == unsent && in_order && sizes_ok);
+    CHECK(node.n_awaiting == saves && node.next_serial == 51);
+    CHECK(g_array.walks >= 2 * steps);                              /* it walked storage, it was not handed an array */
+}
+
+/* A node tracks at most GZ_NODE_MAX_AWAITING of its own batches. A start that
+ * would need more stops with an error, which is fatal for that start. */
+static void test_start_stops_at_the_limit_of_batches_awaiting(void)
+{
+    enum { N = GZ_NODE_MAX_AWAITING * GZ_NODE_START_CHUNK + 8 };
+    static gz_record_t stored[N];
+    static uint8_t bodies[N][GZ_PING_RECORD_HEADER];
+    gz_node_t node;
+    size_t steps = 0;
+    int more = 1;
+    gz_status_t st = GZ_OK;
+    for (size_t i = 0; i < N; i++) {                                /* more unsent pings than the node can track */
+        memset(bodies[i], 0, GZ_PING_RECORD_HEADER);
+        for (int k = 0; k < 8; k++) bodies[i][16 + k] = (uint8_t)((uint64_t)(i + 1) >> (8 * (7 - k)));
+        stored[i] = (gz_record_t){GZ_RECORD_TEST_PING, {bodies[i], GZ_PING_RECORD_HEADER}};
+    }
+    gz_storage_reader_t reader = reader_over(stored, N);
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
-    CHECK(gz_node_start(&node, stored, GZ_NODE_MAX_AWAITING + 1, &out) == GZ_ERR_NO_SPACE && out.count == 0);
+    while (more && st == GZ_OK) {
+        gz_action_list_init(&out, slots, 80, bytes, sizeof bytes);
+        st = gz_node_start(&node, &reader, &out, &more);
+        steps += st == GZ_OK;
+    }
+    CHECK(st == GZ_ERR_NO_SPACE && steps == N / GZ_NODE_START_CHUNK + GZ_NODE_MAX_AWAITING && out.count == 0);
 }
 
 /* ---- end to end ---- */
@@ -312,12 +436,13 @@ static void test_event_to_executor_and_again_after_a_restart(void)
     gz_runner_t runner;
     const uint8_t ping[5] = {'G', 'Z', 'P', 'I', 9};
     gz_event_t ev = message_event(2, ping, sizeof ping);
+    gz_storage_reader_t reader = reader_over(NULL, 0);
 
     g_seen_n = 0;
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
     CHECK(gz_runner_init(&runner, r_slots, 8, r_bytes, sizeof r_bytes, 1, see, NULL) == GZ_OK);
     gz_action_list_init(&out, slots, 8, bytes, sizeof bytes);
-    CHECK(gz_node_start(&node, NULL, 0, &out) == GZ_OK);
+    CHECK(start_fully(&node, &reader) == 1);
     CHECK(gz_runner_submit(&runner, &out) == GZ_OK && g_seen_n == 0);
     CHECK(gz_node_handle(&node, &ev, &out) == GZ_OK);
     CHECK(gz_runner_submit(&runner, &out) == GZ_OK);
@@ -327,20 +452,22 @@ static void test_event_to_executor_and_again_after_a_restart(void)
     /* The program stops here: the batch is stored, the reply never left. A new
      * program starts from what storage holds. */
     gz_record_t stored[2] = {{GZ_RECORD_TEST_PING, {g_seen[0].record, g_seen[0].record_len}}, {0, {NULL, 0}}};
+    reader = reader_over(stored, 1);
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
     CHECK(gz_runner_init(&runner, r_slots, 8, r_bytes, sizeof r_bytes, 2, see, NULL) == GZ_OK);
     gz_action_list_reset(&out);
-    CHECK(gz_node_start(&node, stored, 1, &out) == GZ_OK);
+    CHECK(start_fully(&node, &reader) == 2);
     CHECK(gz_runner_submit(&runner, &out) == GZ_OK);
     CHECK(g_seen_n == 3 && g_seen[1].kind == GZ_ACTION_SEND && g_seen[1].peer == 2);    /* sent again, to the same peer */
     CHECK(g_seen[2].kind == GZ_ACTION_SAVE && g_seen[2].type == GZ_RECORD_TEST_PING_SENT);   /* and recorded as sent */
 
     /* Stop again once that record is stored: this time nothing is resent. */
     stored[1] = (gz_record_t){GZ_RECORD_TEST_PING_SENT, {g_seen[2].record, g_seen[2].record_len}};
+    reader = reader_over(stored, 2);
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
     CHECK(gz_runner_init(&runner, r_slots, 8, r_bytes, sizeof r_bytes, 3, see, NULL) == GZ_OK);
     gz_action_list_reset(&out);
-    CHECK(gz_node_start(&node, stored, 2, &out) == GZ_OK && out.count == 0);
+    CHECK(start_fully(&node, &reader) == 1 && out.count == 0);
 
     /* And the ordinary path on the new program: saved, confirmed, answered, recorded. */
     CHECK(gz_node_handle(&node, &ev, &out) == GZ_OK);
@@ -366,8 +493,10 @@ int main(void)
     test_ping_sizes();
     test_everything_else_does_nothing();
     test_no_space_changes_nothing();
+    test_start_arguments();
     test_start_resends_every_reply_not_recorded_as_sent();
-    test_start_has_a_limit();
+    test_start_comes_in_steps();
+    test_start_stops_at_the_limit_of_batches_awaiting();
     test_event_to_executor_and_again_after_a_restart();
     CHECK(g_random_calls == 0);     /* nothing in the frame draws randomness yet */
     return check_done();

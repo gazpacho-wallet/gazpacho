@@ -68,12 +68,14 @@ target_compile_options(tree_shapes PRIVATE -Wall -Wextra -Werror)
 set(GZ_NEW_CODE_WARNINGS -Wall -Wextra -Werror)
 
 # The core is strict C11 (no GNU extensions), freestanding, with no
-# variable-length arrays. tools/check-core-isolation.sh checks the result.
-set(GZ_CORE_FLAGS -pedantic -Wvla -ffreestanding)
-add_library(gazpacho_core STATIC
-  core/gazpacho/action.c
-  core/gazpacho/runner.c
-  core/gazpacho/node.c)
+# variable-length arrays and no floating point or vector registers.
+# tools/check-core-isolation.sh checks the result.
+set(GZ_CORE_FLAGS -pedantic -Wvla -ffreestanding -mgeneral-regs-only)
+set(GZ_CORE_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/action.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/runner.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/node.c)
+add_library(gazpacho_core STATIC ${GZ_CORE_SOURCES})
 set_target_properties(gazpacho_core PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
 target_compile_options(gazpacho_core PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
@@ -109,8 +111,12 @@ endforeach()
 
 # What the compiled core can reach and remember, and proof that the check
 # refuses an object that breaks each rule.
+if(GZ_SANITIZE)
+  set(GZ_ISOLATION_MODE --sanitized)    # the checkers add writable sections of their own
+endif()
 add_test(NAME core_isolation
-  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh $<TARGET_FILE:gazpacho_core>)
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          $<TARGET_FILE:gazpacho_core> --sources ${GZ_CORE_SOURCES})
 add_library(isolation_sneaky OBJECT tests/isolation/sneaky.c)
 string(JOIN " " GZ_CORE_FLAGS_TEXT -std=c11 ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
 add_test(NAME core_isolation_refuses_sneaky_object
@@ -118,6 +124,21 @@ add_test(NAME core_isolation_refuses_sneaky_object
           ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh
           $<TARGET_OBJECTS:isolation_sneaky>
           ${CMAKE_C_COMPILER}
-          ${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation/vla.c
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation
           ${CMAKE_CURRENT_BINARY_DIR}
           ${GZ_CORE_FLAGS_TEXT})
+
+# The same tests under valgrind's memcheck with origin tracking, which sees
+# what the compiler-based checkers cannot: uninitialised bytes, padding
+# included, reaching a decision or an output. The tests compare or digest
+# everything the core hands out, so such bytes show. Registered only where
+# valgrind is installed, and not in the sanitizer build (the two do not mix).
+find_program(GZ_VALGRIND valgrind)
+if(GZ_VALGRIND AND NOT GZ_SANITIZE)
+  set(GZ_MEMCHECK ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes --leak-check=full)
+  foreach(name action runner node rng sim sim_known_trace)
+    add_test(NAME valgrind_${name} COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_${name}>)
+  endforeach()
+  add_test(NAME valgrind_sim_seeds COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 20 300 1 0)
+  add_test(NAME valgrind_sim_profile_3 COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 10 200 1 3)
+endif()
