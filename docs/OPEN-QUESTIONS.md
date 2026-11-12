@@ -33,15 +33,15 @@ Work Gazpacho deliberately does not do itself. It waits, re-imports when the cha
 
 | Waiting for | Why we wait instead of doing it | Needed by | Our check when it lands |
 |---|---|---|---|
-| Tree fees (their pull request 476) | Changes the tree's transactions in the shared files | Slice 3 (a member leaving alone) | Re-import; new reference values; scale check; confirm a lone exit completes |
-| Payout to members at every level on the end date | Shared files; changes every transaction ID | Before real funds; shape wanted early | Re-import; new reference values; review the division rule and lock times; loosen our exit rule to match |
+| **Round 1** (expected within about a week of 2026-11-11): tree fees (their pull request 476) plus the four tree-builder fixes | Changes the tree's transactions in the shared files; they will announce it | Slice 3 (a member leaving alone) | Re-import; new reference values; scale check; confirm a lone exit completes |
+| **Round 2**: payout to members at every level on the end date. They will write the transaction shape as a short specification first | Shared files; changes every transaction ID a second time | Before real funds; the specification is wanted early so the signing engine can target it | Review the specification when it arrives; then re-import, new reference values, loosen our exit rule to match |
 | A defined order for participants | Shared files | M1 works around it; wanted before release | Confirm two builds on different systems give identical trees |
 | Timelock-counter overwrite at 257 members and above | Shared files | Before any run above 256 members outside the simulator | Confirm with the reviewer's reproduction |
 | Exit-delay functions under-reporting on deep trees | Shared files | Before payment deadlines are computed from them | Compare with our own sum from the transactions |
 | Caller-supplied randomness | Shared files | Repeatable signing in the simulator; M1 wraps around it meanwhile | Remove our wrapper |
 | Verifying each partial signature inside the tree code | Shared files | Not blocking: our signing engine verifies them itself | None needed |
-| A Core Lightning plugin for holding payments | Their bridge rework | Core Lightning adapter, after LND | Review and reuse |
-| Their whole-program scale test at 64, 127 and 255 | Their programs | Confidence in the leaf design at size | Compare with our one-process results |
+| A Core Lightning plugin for holding payments | Their bridge rework. **They say this is far off; do not plan around it.** LND comes first for us anyway; if we reach the Core Lightning adapter before they do, we write the plugin | Core Lightning adapter | Review and reuse if theirs exists by then |
+| Their whole-program scale test at 64, 127 and 255 | **Far off on their side; do not plan around it.** Size is covered by our one-process scale check now and by our own simulator and slices later | Not blocking | Compare if it arrives |
 
 Nothing has landed yet, so no check has started.
 

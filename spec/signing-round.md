@@ -142,6 +142,12 @@ The imported nonce generator reads randomness from the operating system directly
 6. Removal of each rule in turn (nonce signature check, partial signature verification, the C7 record), each of which must make a specific test fail.
 7. Fuzzing of every message decoder.
 
+## 11a. Payouts are signed whenever an output is created
+
+Noted 2026-11-11, from the SuperScalar session. Once the tree pays members at every level on the factory's end date, each output that several parties share needs its own pre-signed payout. That is not only at creation: every round that creates a new shared output must sign that output's payout in the same round. With pseudo-Spilman leaves, each liquidity change adds a transaction to the leaf's chain, so each liquidity change signs a payout too; a layer update that re-signs a state transaction signs payouts for its new outputs.
+
+The rule for the engine: a round's items include, for every shared output the round creates, the payout that spends it. A member does not treat the round as finished until it holds those as well. The shape of the payout transactions is being specified by the SuperScalar repository.
+
 ## 12. Open points
 
 1. **Review of section 7** by someone expert in MuSig2.

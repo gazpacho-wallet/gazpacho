@@ -384,3 +384,11 @@ The builder is applying the fixes; a second review follows.
 - Owner's instruction: where the SuperScalar session is already working on something, Gazpacho may wait and check their work when it is done, and must note when it does so. `OPEN-QUESTIONS.md` now has a "Waiting on the SuperScalar repo" table for this.
 - A second hand-off note asks that the end-date payout at every level land together with the other changes to the tree's transactions (their tree-fees work), instead of months later, so the tree changes once.
 - The interface prototype was started: plain web pages driven by fake data, with a written proposal for the local interface between screens and program.
+
+## 30. Agreement with the SuperScalar session on the tree changes (2026-11-11)
+
+- **Two rounds, not one.** Round 1, within about a week: tree fees plus the four tree-builder fixes, because the fee change repairs a member's broken lone exit and should not wait. Round 2, moved up to follow their current security work: the end-date payout at every level, with a short specification of the transaction shape written first. Gazpacho accepts two rounds; re-importing and regenerating reference values is cheap.
+- **Their proposed answers for round 2:** each member is paid their full initial channel capacity; the node's signers sign in the same rounds as the tree; lock times are staggered with deeper payouts valid later; the host's spare liquidity goes to the members under that node; payouts carry an anchor; the channel outputs lose the host-only timeout branch too. Gazpacho concurs in outline and will review the specification.
+- **A point they added:** payouts must be signed in every round that creates a shared output, including liquidity changes on a leaf, not only at creation. Written into `spec/signing-round.md`.
+- **Not to plan around:** their Core Lightning hold plugin and their whole-program scale test are far off.
+- They are not building a second signing engine and will assess adopting Gazpacho's once it is reviewed.

@@ -111,6 +111,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c5-9-timers" title="9. Timers">9. Timers</a>
 <a class="sec" href="#c5-10-use-of-the-imported-code" title="10. Use of the imported code">10. Use of the imported code</a>
 <a class="sec" href="#c5-11-how-it-is-tested" title="11. How it is tested">11. How it is tested</a>
+<a class="sec" href="#c5-11a-payouts-are-signed-whenever-an-outpu" title="11a. Payouts are signed whenever an output is created">11a. Payouts are signed whenever an output is created</a>
 <a class="sec" href="#c5-12-open-points" title="12. Open points">12. Open points</a>
 <a class="ch" href="#c6">The lobby</a>
 <a class="sec" href="#c6-the-idea" title="The idea">The idea</a>
@@ -248,6 +249,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c19-27-first-original-code-core-and-simulato" title="27. First original code: core and simulator skeletons, and the scale check (2026-11-11)">27. First original code: core and simulator skeletons, and the scale check (2026-11-11)</a>
 <a class="sec" href="#c19-28-independent-review-of-the-core-and-si" title="28. Independent review of the core and simulator skeletons (2026-11-11)">28. Independent review of the core and simulator skeletons (2026-11-11)</a>
 <a class="sec" href="#c19-29-working-alongside-the-superscalar-rep" title="29. Working alongside the SuperScalar repo (2026-11-11)">29. Working alongside the SuperScalar repo (2026-11-11)</a>
+<a class="sec" href="#c19-30-agreement-with-the-superscalar-sessio" title="30. Agreement with the SuperScalar session on the tree changes (2026-11-11)">30. Agreement with the SuperScalar session on the tree changes (2026-11-11)</a>
 <a class="ch" href="#c20">Lobby research</a>
 <a class="sec" href="#c20-summary" title="Summary">Summary</a>
 <a class="sec" href="#c20-a1-prior-work-by-the-same-owner" title="A1. Prior work by the same owner">A1. Prior work by the same owner</a>
@@ -1275,7 +1277,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <details id="c4-10-open-points"><summary>10. Open points</summary><div class="body"><ol>
 <li><strong>Fees.</strong> How much of the exit's fee is built in at each level, and how the member's possible top-up is counted in step 3 of section 5.</li>
 <li><strong>Old states in the layered tree.</strong> C4 for the shrinking-timelock layers depends on the cancellation mechanism for the host's spare liquidity. That analysis has to be written out per layer.</li>
-<li><strong>Timeouts that favour the host.</strong> C5 is stricter than it would be if every tree output paid members at expiry. If the imported tree changes, the bound changes.</li>
+<li><strong>Timeouts that favour the host.</strong> C5 is stricter than it would be if every tree output paid members at expiry. The SuperScalar repository plans that change as its second round of tree changes, with payouts at every level, staggered lock times, and the channel outputs included. When its specification arrives: C5's bound changes; the held set gains a payout for every shared output; and the host gains a duty with a deadline, to force out any member who will not cooperate early enough that the tree resolves by real balances before the payouts become valid.</li>
 <li><strong>Rotation.</strong> "The same total across both factories at every step" needs a step-by-step statement for each rotation method.</li>
 <li><strong>Payments in flight</strong> during a liquidity change on the same leaf.</li>
 <li>Whether C7's record can ever be safely discarded.</li>
@@ -1527,6 +1529,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Removal of each rule in turn (nonce signature check, partial signature verification, the C7 record), each of which must make a specific test fail.</li>
 <li>Fuzzing of every message decoder.</li>
 </ol></div></details>
+<details id="c5-11a-payouts-are-signed-whenever-an-outpu"><summary>11a. Payouts are signed whenever an output is created</summary><div class="body"><p>Noted 2026-11-11, from the SuperScalar session. Once the tree pays members at every level on the factory's end date, each output that several parties share needs its own pre-signed payout. That is not only at creation: every round that creates a new shared output must sign that output's payout in the same round. With pseudo-Spilman leaves, each liquidity change adds a transaction to the leaf's chain, so each liquidity change signs a payout too; a layer update that re-signs a state transaction signs payouts for its new outputs.</p>
+<p>The rule for the engine: a round's items include, for every shared output the round creates, the payout that spends it. A member does not treat the round as finished until it holds those as well. The shape of the payout transactions is being specified by the SuperScalar repository.</p></div></details>
 <details id="c5-12-open-points"><summary>12. Open points</summary><div class="body"><ol>
 <li><strong>Review of section 7</strong> by someone expert in MuSig2.</li>
 <li><strong>Whether the host should send its own partial signatures first</strong>, and pass every member's partial signatures to the others, so that members can complete transactions themselves and the host is never the only one holding the result.</li>
@@ -2539,16 +2543,16 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </thead>
 <tbody>
 <tr>
-<td>Tree fees (their pull request 476)</td>
-<td>Changes the tree's transactions in the shared files</td>
+<td><strong>Round 1</strong> (expected within about a week of 2026-11-11): tree fees (their pull request 476) plus the four tree-builder fixes</td>
+<td>Changes the tree's transactions in the shared files; they will announce it</td>
 <td>Slice 3 (a member leaving alone)</td>
 <td>Re-import; new reference values; scale check; confirm a lone exit completes</td>
 </tr>
 <tr>
-<td>Payout to members at every level on the end date</td>
-<td>Shared files; changes every transaction ID</td>
-<td>Before real funds; shape wanted early</td>
-<td>Re-import; new reference values; review the division rule and lock times; loosen our exit rule to match</td>
+<td><strong>Round 2</strong>: payout to members at every level on the end date. They will write the transaction shape as a short specification first</td>
+<td>Shared files; changes every transaction ID a second time</td>
+<td>Before real funds; the specification is wanted early so the signing engine can target it</td>
+<td>Review the specification when it arrives; then re-import, new reference values, loosen our exit rule to match</td>
 </tr>
 <tr>
 <td>A defined order for participants</td>
@@ -2582,15 +2586,15 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>A Core Lightning plugin for holding payments</td>
-<td>Their bridge rework</td>
-<td>Core Lightning adapter, after LND</td>
-<td>Review and reuse</td>
+<td>Their bridge rework. <strong>They say this is far off; do not plan around it.</strong> LND comes first for us anyway; if we reach the Core Lightning adapter before they do, we write the plugin</td>
+<td>Core Lightning adapter</td>
+<td>Review and reuse if theirs exists by then</td>
 </tr>
 <tr>
 <td>Their whole-program scale test at 64, 127 and 255</td>
-<td>Their programs</td>
-<td>Confidence in the leaf design at size</td>
-<td>Compare with our one-process results</td>
+<td><strong>Far off on their side; do not plan around it.</strong> Size is covered by our one-process scale check now and by our own simulator and slices later</td>
+<td>Not blocking</td>
+<td>Compare if it arrives</td>
 </tr>
 </tbody>
 </table></div>
@@ -3118,6 +3122,13 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Owner's instruction: where the SuperScalar session is already working on something, Gazpacho may wait and check their work when it is done, and must note when it does so. <code>OPEN-QUESTIONS.md</code> now has a "Waiting on the SuperScalar repo" table for this.</li>
 <li>A second hand-off note asks that the end-date payout at every level land together with the other changes to the tree's transactions (their tree-fees work), instead of months later, so the tree changes once.</li>
 <li>The interface prototype was started: plain web pages driven by fake data, with a written proposal for the local interface between screens and program.</li>
+</ul></div></details>
+<details id="c19-30-agreement-with-the-superscalar-sessio"><summary>30. Agreement with the SuperScalar session on the tree changes (2026-11-11)</summary><div class="body"><ul>
+<li><strong>Two rounds, not one.</strong> Round 1, within about a week: tree fees plus the four tree-builder fixes, because the fee change repairs a member's broken lone exit and should not wait. Round 2, moved up to follow their current security work: the end-date payout at every level, with a short specification of the transaction shape written first. Gazpacho accepts two rounds; re-importing and regenerating reference values is cheap.</li>
+<li><strong>Their proposed answers for round 2:</strong> each member is paid their full initial channel capacity; the node's signers sign in the same rounds as the tree; lock times are staggered with deeper payouts valid later; the host's spare liquidity goes to the members under that node; payouts carry an anchor; the channel outputs lose the host-only timeout branch too. Gazpacho concurs in outline and will review the specification.</li>
+<li><strong>A point they added:</strong> payouts must be signed in every round that creates a shared output, including liquidity changes on a leaf, not only at creation. Written into <code>spec/signing-round.md</code>.</li>
+<li><strong>Not to plan around:</strong> their Core Lightning hold plugin and their whole-program scale test are far off.</li>
+<li>They are not building a second signing engine and will assess adopting Gazpacho's once it is reviewed.</li>
 </ul></div></details>
 </section>
 <section class="chapter" id="c20"><h2>Lobby research</h2><p class="desc">Background: how comparable systems gather people and handle those who stall, with sources.</p><p class="file">Lobby: research and design note · <code>docs/LOBBY-research.md</code></p>

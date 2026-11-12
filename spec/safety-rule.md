@@ -113,7 +113,7 @@ The simulator's accounting computes exit value independently of this module, fro
 
 1. **Fees.** How much of the exit's fee is built in at each level, and how the member's possible top-up is counted in step 3 of section 5.
 2. **Old states in the layered tree.** C4 for the shrinking-timelock layers depends on the cancellation mechanism for the host's spare liquidity. That analysis has to be written out per layer.
-3. **Timeouts that favour the host.** C5 is stricter than it would be if every tree output paid members at expiry. If the imported tree changes, the bound changes.
+3. **Timeouts that favour the host.** C5 is stricter than it would be if every tree output paid members at expiry. The SuperScalar repository plans that change as its second round of tree changes, with payouts at every level, staggered lock times, and the channel outputs included. When its specification arrives: C5's bound changes; the held set gains a payout for every shared output; and the host gains a duty with a deadline, to force out any member who will not cooperate early enough that the tree resolves by real balances before the payouts become valid.
 4. **Rotation.** "The same total across both factories at every step" needs a step-by-step statement for each rotation method.
 5. **Payments in flight** during a liquidity change on the same leaf.
 6. Whether C7's record can ever be safely discarded.
