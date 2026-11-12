@@ -56,6 +56,8 @@ Needs the exit, watch and schedule engines (M3).
 
 Rotation into the next factory (M4); paying and being paid across the wider Lightning network through the host's node; finding hosts through discovery (`spec/discovery.md`). Liquidity changes and timed levels are 1.1.0 (owner decision 9).
 
+**Many factories and rolling forward** (1.1.0, `MULTI-FACTORY.md`): one member in three factories with two hosts moves its balance from an ending factory into a live one over Lightning, by a standing rule and without anyone acting, and the app settles to chain by its own deadline when no lobby is available.
+
 ## Where slices run
 
 On the project's build server at first, with the screen viewed through a secure tunnel. Running natively on Windows is tracked separately and follows slice 1.

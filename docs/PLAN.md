@@ -72,8 +72,8 @@ More node adapters and a browser of hosts; swap-in and swap-out; a watching serv
 | Release | In it |
 |---|---|
 | 1.0.0 | The milestones above. One member per leaf. Fees (proposed, owner to confirm): per payment, and an optional joining fee from the first payment received. Payout to one wallet. No on-chain reserve |
-| 1.1.0 | Buying receiving room, splicing and channels opened on demand: built and documented with this goal, the interface kept hidden until then. Shared leaves (K > 1) with sales under "limited coverage", each sale a new channel, so several channels per member. Derived payout addresses per factory |
-| Later | Payout to an outside or cold wallet |
+| 1.1.0 | Buying receiving room, splicing and channels opened on demand: built and documented with this goal, the interface kept hidden until then. Shared leaves (K > 1) with sales under "limited coverage", each sale a new channel, so several channels per member. Derived payout addresses per factory. **Many factories at once** (same or different hosts) shown as a stack, moving funds between channels and factories over Lightning, successor lobbies and standing invitations from hosts, move fees in the terms, and standing rules that roll a member's funds forward before a factory closes instead of settling on chain (`MULTI-FACTORY.md`, unreviewed) |
+| Later | Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves; Tor for host connections (`MULTI-FACTORY.md` 8.3) |
 
 ## Work list
 
@@ -84,6 +84,10 @@ Items decided by the owner that are not yet tied to a milestone (`ux/decisions.m
 | A "speed up a stuck transaction" action, using the pay-to-anchor outputs. Document the alternatives (fee tiers signed in advance, paying the fee from the member's own output, a paid helper) and prepare A/B samples for testers later | Decision 6, on-chain reserve |
 | The dedication: About > Dedication, Credits, Licences; one line on the last first-run screen; one line under `gazpacho --version` | Decision 7 (proposed, owner to confirm) |
 | The interface starts from layout concept H, with the critique's fixes and the owner's answers still to apply | Interface critique, 2026-11-12 |
+| Core holds several factories per member from 1.0.0 (rotation needs two at once); lift Slice 1's one-lobby limit to the stack limits; generalise the safety rule's owed row to any move between the member's factories | `MULTI-FACTORY.md` 2, P1; owner 2026-11-12 |
+| Write `move.md` (paying across, same host and other hosts) and `planner.md` (standing rules, budgets, logging); add safety checks G1 to G3; journal stack, rule and move records; local API stack, moves and rules calls | `MULTI-FACTORY.md` 2.5, 3, 5 |
+| Terms draft 3: `internal_fee_base_msat`, `internal_fee_ppm`, `move_fee_sat` (even, ranges) and `successor_of` (even, fixed); an invitation message for standing invitations | `MULTI-FACTORY.md` 3.4, 6 |
+| Measure on signet: route timelock totals for moves across hosts, funding burial times, and the lead times for "move by" and "give up by" | `MULTI-FACTORY.md` 4.1, MF6 |
 
 ## How work proceeds
 
