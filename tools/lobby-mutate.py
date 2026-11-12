@@ -75,8 +75,15 @@ def mutants(name, text):
             yield (name, i, "delete statement", "")
 
 
+# Real stack frames, not AddressSanitizer's separate ones, so that a byte an
+# engine leaves unwritten keeps the 0xa5 the tests put there (test_lobby.c,
+# poison_stack) and fails the byte-exact checks.
+ENV = dict(os.environ, ASAN_OPTIONS="detect_stack_use_after_return=0")
+
+
 def run(cmd, cwd, timeout):
-    p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                         env=ENV)
     try:
         return p.wait(timeout=timeout)
     except subprocess.TimeoutExpired:

@@ -112,7 +112,7 @@ static gz_status_t unready(gz_lobby_member_t *m, uint16_t reason, gz_action_list
 static gz_status_t leave(gz_lobby_member_t *m, uint8_t fault, const uint8_t *a, size_t an, const uint8_t *b,
                          size_t bn, uint16_t reason, gz_action_list_t *out)
 {
-    uint8_t ev[2 * (GZ_TERMS_CURRENT_MAX + 70) + 8], end[8];
+    uint8_t ev[2 * (GZ_TERMS_CURRENT_MAX + 70) + 8], end[5] = {0, 0, 0, 0, 0};
     gz_record_t recs[2];
     size_t n = 0, k;
     if (fault) {
@@ -312,7 +312,8 @@ static gz_status_t on_cancel(gz_lobby_member_t *m, const uint8_t *raw, size_t le
     TRY(gz_la_save1(out, GZ_REC_LOBBY_ENDED, r, 3 + gz_la_put_blob(r + 3, raw, len)));
     n[0] = (uint8_t)m->lobby_state;
     gz_lw_put(n + 1, g->reason, 2);
-    return gz_la_notify(out, GZ_NOTE_ENDED, n, 3);
+    TRY(gz_la_notify(out, GZ_NOTE_ENDED, n, 3));
+    return m->signing.cancel ? m->signing.cancel(m->signing.ctx, m->scope, g->reason, out) : GZ_OK;
 }
 
 /* Send the saved join and ready again (the host lost them, or refused for a limit). */

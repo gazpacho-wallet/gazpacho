@@ -2,7 +2,7 @@
  *
  * Records (journal.md section 9), every integer big-endian:
  *   LOBBY_OPENED   u16 len, outer, outer_sig 64, u16 len, current, current_sig 64
- *   CURRENT_SIGNED u16 len, current, current_sig 64
+ *   TERMS_VERSION  u16 len, current, current_sig 64
  *   SEAT           ckey 33, fkey 33, bind_f 64, bind_c 64, state u8, min_members u16,
  *                  ready_version u32, join_seq u64, u16 len, the seat's latest ready
  *   FREEZE         check_id 32, version u32, digest 32, u16 len, the ready_check
@@ -192,7 +192,8 @@ static gz_status_t end_lobby(gz_lobby_host_t *h, uint16_t reason, gz_action_list
     for (i = 0; i < GZ_LOBBY_MAX_CONNS; i++)
         if (h->conns[i].used && seat_of(h, h->conns[i].key))
             TRY(gz_la_send(out, h->conns[i].peer_id, h->cancel_msg, h->cancel_len));
-    return broadcast(h, out);
+    TRY(broadcast(h, out));
+    return h->signing.cancel ? h->signing.cancel(h->signing.ctx, h->scope, reason, out) : GZ_OK;
 }
 
 static gz_status_t ready_check(gz_lobby_host_t *h, gz_action_list_t *out)
@@ -608,7 +609,7 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
         memcpy(h->current_sig, p + at, 64);
         h->state = GZ_LOBBY_OPEN;
         return self_bind(h) == GZ_OK ? GZ_OK : GZ_ERR_CORRUPT;
-    case GZ_REC_CURRENT_SIGNED:
+    case GZ_REC_TERMS_VERSION:
         if (!gz_la_get_blob(p, len, &at, &b, &bn) || len - at != 64 || !adopt(h, h->outer, h->outer_len, b, bn))
             return GZ_ERR_CORRUPT;
         memcpy(h->current_sig, p + at, 64);
@@ -625,12 +626,15 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
             memcpy(s->ckey, p, 33);
             h->created++;
         }
+        /* Each creation took the next join_seq, so the largest one restored is
+         * the number of seats ever created, rejoins included (messages.md 6). */
         memcpy(s->fkey, p + 33, 33); memcpy(s->bind_f, p + 66, 64); memcpy(s->bind_c, p + 130, 64);
         s->state = p[194];
         s->min_members = (uint16_t)gz_lw_get(p + 195, 2);
         s->ready_version = (uint32_t)gz_lw_get(p + 197, 4);
         s->join_seq = gz_lw_get(p + 201, 8);
         if (s->join_seq > h->next_seq) h->next_seq = s->join_seq;
+        if (s->join_seq > h->created) h->created = s->join_seq;
         memcpy(s->ready_msg, a, an);
         s->ready_len = an;
         return GZ_OK;
@@ -715,7 +719,7 @@ gz_status_t gz_lobby_host_set_values(gz_lobby_host_t *h, const uint64_t *values,
     memcpy(h->current_sig, sig, 64);
     rn = gz_la_put_blob(r, cur, cn);
     memcpy(r + rn, sig, 64);
-    TRY(gz_la_save1(out, GZ_REC_CURRENT_SIGNED, r, rn + 64));  /* never two values under one version */
+    TRY(gz_la_save1(out, GZ_REC_TERMS_VERSION, r, rn + 64));  /* never two values under one version */
     for (i = 0; i < GZ_LOBBY_MAX_CONNS; i++) {
         gz_lobby_seat_t *s;
         if (h->conns[i].used && (s = seat_of(h, h->conns[i].key)) && is_in(s))

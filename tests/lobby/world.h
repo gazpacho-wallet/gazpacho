@@ -40,6 +40,7 @@ typedef struct {
     w_timer_t timers[8]; int n_timers;
     sim_rng_t rng;
     w_handoff_t handoffs[16]; int n_handoffs;
+    int n_cancels; uint16_t cancel_reason; uint8_t cancel_scope[32];
     uint32_t notes[64]; uint8_t note_a[64], note_b[64]; int n_notes;
     int close_requested;
     int dead;                                  /* never restarts */
@@ -109,6 +110,16 @@ static inline gz_status_t w_begin(void *ctx, const gz_lobby_handoff_t *h, gz_act
     x->n_levels = h->n_levels; x->fixed_levels = h->fixed_levels; x->k = h->k; x->anchors = h->tree_anchors;
     x->layer_step = h->layer_step; x->layer_states = h->layer_states; x->min_members = h->min_members;
     x->version = h->version; x->start_len = h->start_len;
+    return GZ_OK;
+}
+
+static inline gz_status_t w_cancel(void *ctx, const uint8_t scope[32], uint16_t reason, gz_action_list_t *out)
+{
+    w_node_t *d = ctx;
+    (void)out;
+    d->n_cancels++;
+    d->cancel_reason = reason;
+    memcpy(d->cancel_scope, scope, 32);
     return GZ_OK;
 }
 
@@ -248,7 +259,7 @@ static inline void w_boot(w_node_t *d)
     gz_lobby_signing_t sg;
     gz_action_list_t l;
     size_t i;
-    sg.begin = w_begin; sg.ctx = d;
+    sg.begin = w_begin; sg.cancel = w_cancel; sg.ctx = d;
     d->incarnation++;
     gz_runner_init(&d->runner, d->slots, 512, d->rbytes, 1 << 20, d->incarnation, w_execute, d);
     d->n_unconf = 0;

@@ -187,6 +187,14 @@ static int fault_evidence(const uint8_t **a, size_t *an, const uint8_t **b, size
     return found;
 }
 
+/* Fill this much stack below the caller with 0xa5 (see the leave test). */
+static void poison_stack(void)
+{
+    volatile uint8_t b[65536];
+    size_t i;
+    for (i = 0; i < sizeof b; i++) b[i] = 0xa5;
+}
+
 /* --------------------------------------------- member, hostile host */
 
 static void test_member_hostile(void)
@@ -678,8 +686,11 @@ static void test_member_details(void)
     feed(&m2, x, xn);
     xn = host_msg(x, sizeof x, GZ_KIND_START, chk, 0, NULL, 0, 3, &HOST);   /* role 3 */
     CHECK(feed(&m2, x, xn) == GZ_OK && sends(1) == 1 && !any_save());
-    /* a leave from the user: saved, then sent; a second one refused */
+    /* a leave from the user: saved, then sent; a second one refused. The stack
+     * is filled with 0xa5 first, so a record byte the engine leaves unwritten
+     * shows as 0xa5 instead of a lucky zero. */
     acts_reset();
+    poison_stack();
     CHECK(gz_lobby_member_leave(&m2, &A.l) == GZ_OK && before(GZ_KIND_LEAVE, GZ_REC_LOBBY_ENDED) && m2.ended && m2.left);
     {   /* the leave says why (2, the user's choice), and so does the record: state 0, reason 2, no cancel */
         gz_lobby_msg_t g;
@@ -902,8 +913,8 @@ static void test_host_hostile(void)
     {
         uint64_t v[3] = {1500, 1000, 1000};
         acts_reset();
-        CHECK(gz_lobby_host_set_values(&H, v, 3, &A.l) == GZ_OK && saves(GZ_REC_CURRENT_SIGNED) == 1);
-        CHECK(sends(GZ_KIND_TERMS_OFFER) == 2 && before(GZ_KIND_TERMS_OFFER, GZ_REC_CURRENT_SIGNED));
+        CHECK(gz_lobby_host_set_values(&H, v, 3, &A.l) == GZ_OK && saves(GZ_REC_TERMS_VERSION) == 1);
+        CHECK(sends(GZ_KIND_TERMS_OFFER) == 2 && before(GZ_KIND_TERMS_OFFER, GZ_REC_TERMS_VERSION));
         {   /* the host signed exactly T3 */
             gz_lobby_msg_t g;
             last_sent(GZ_KIND_TERMS_OFFER, &g, NULL, NULL);
@@ -1362,7 +1373,6 @@ static void test_host_details(void)
         int bad_host = 0, bad_member = 0;
         memset(&cfg, 0, sizeof cfg);
         for (t = GZ_REC_LOBBY_OPENED; t <= GZ_REC_LOBBY_STATE; t += 2) {
-            if (t == 0x00010004u) continue;
             for (len = 0; len < 3 * 140; len++) {   /* three fillings, lengths 0 to 139, exactly that long */
                 gz_record_t r;
                 size_t fill = len / 140, rl = len % 140;
@@ -1609,7 +1619,7 @@ static void test_host_order(void)
     lvn = gz_lobby_enc_done(&e);
     memset(&cfg, 0, sizeof cfg);
     memcpy(cfg.factory_key, HOST.key[3].pub, 33);
-    sg.begin = order_begin; sg.ctx = NULL;
+    sg.begin = order_begin; sg.cancel = NULL; sg.ctx = NULL;
     CLOCK = W_T0 - 3600000;
     gz_lobby_host_init(&H, &p, &cr, &sg, &cfg);
     acts_reset();
@@ -2026,6 +2036,47 @@ static void test_host_commands(void)
     CHECK(gz_lobby_host_remove(&H, MEM[1].key[2].pub, &A.l) == GZ_ERR_ARGUMENT);
 }
 
+/* The 4 x target creation limit counts creations, rejoins included, and a
+ * restarted host counts them from its records. */
+static void test_host_creations_restart(void)
+{
+    uint8_t buf[600], lv[64];
+    size_t n, lvn, i;
+    int c;
+    gz_lobby_enc_t e;
+    gz_lobby_enc_start(&e, lv, sizeof lv, GZ_KIND_LEAVE, SCOPE);
+    lvn = gz_lobby_enc_done(&e);
+    for (i = 0; i < N_KEPT; i++) free(KEPT_B[i]);
+    N_KEPT = 0;
+    CLOCK = W_T0 - 3600000;
+    host_open(0); keep_all();
+    for (c = 0; c < 31; c++) {
+        int who = 1 + c % 11;
+        CLOCK += 1000;
+        hin(GZ_LIN_DISCONNECTED, who, NULL, 0);
+        hin(GZ_LIN_CONNECTED, who, NULL, 0);
+        n = join_msg(buf, sizeof buf, who, MEM[who].key[3].pub, who, who);
+        hin(GZ_LIN_MESSAGE, who, buf, n); keep_all();
+        CHECK(status_seat() == GZ_SEAT_JOINED);
+        hin(GZ_LIN_MESSAGE, who, lv, lvn); keep_all();
+    }
+    CHECK(H.created == 31 && H.n_seats == 11);
+    restore_kept(&H);
+    CHECK(H.created == 31 && H.n_seats == 11);
+    acts_reset();
+    gz_lobby_host_resume(&H, &A.l);
+    CLOCK += 1000;
+    hin(GZ_LIN_CONNECTED, 12, NULL, 0);
+    n = join_msg(buf, sizeof buf, 12, MEM[12].key[3].pub, 12, 12);
+    CHECK(hin(GZ_LIN_MESSAGE, 12, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);   /* the 32nd */
+    CLOCK += 1000;
+    hin(GZ_LIN_CONNECTED, 13, NULL, 0);
+    n = join_msg(buf, sizeof buf, 13, MEM[13].key[3].pub, 13, 13);
+    CHECK(hin(GZ_LIN_MESSAGE, 13, buf, n) == GZ_OK && status_seat() == GZ_SEAT_REFUSED && !any_save());   /* the 33rd */
+    for (i = 0; i < N_KEPT; i++) free(KEPT_B[i]);
+    N_KEPT = 0;
+}
+
 /* Arguments, inputs from nowhere, and records a host must not open with. */
 static void test_api_edges(void)
 {
@@ -2191,7 +2242,15 @@ static void test_api_edges(void)
     CHECK(gz_lobby_member_handle(&m2, &in, &A.l) == GZ_OK && A.l.count == 0);
 }
 
-static int M_STARTS;
+static int M_STARTS, M_CANCELS;
+static uint16_t M_CANCEL_REASON;
+static gz_status_t m_cancel(void *ctx, const uint8_t scope[32], uint16_t reason, gz_action_list_t *out)
+{
+    (void)ctx; (void)out;
+    if (memcmp(scope, SCOPE, 32) == 0) M_CANCELS++;
+    M_CANCEL_REASON = reason;
+    return GZ_OK;
+}
 static uint16_t M_SIGNERS;
 static uint8_t M_LEVELS;
 static gz_status_t m_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_list_t *out)
@@ -2228,7 +2287,7 @@ static void test_member_more(void)
     size_t n, on, xn, q;
     int i;
     gz_terms_current_digest(T2, T2N, cd2);
-    sg.begin = m_begin; sg.ctx = NULL;
+    sg.begin = m_begin; sg.cancel = m_cancel; sg.ctx = NULL;
     gz_lobby_member_init(&m, &p, &cr, &sg, &cond, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 1);
     memset(&in, 0, sizeof in);
     in.kind = GZ_LIN_CONNECTED; in.peer_id = W_HOST_PEER; in.peer_key = HOST.key[1].pub;
@@ -2295,7 +2354,10 @@ static void test_member_more(void)
     for (q = 0; q < A.l.count; q++) if (A.s[q].kind == GZ_ACTION_SET_TIMER) CHECK(A.s[q].u.set_timer.delay_ms == 1500);
     /* the end: a cancel for a failed signing, saved with its reason and bytes; then nothing */
     xn = host_msg(x, sizeof x, GZ_KIND_CANCEL, NULL, 3, NULL, 0, 0, &HOST);
+    M_CANCELS = 0;
     CHECK(feed(&m, x, xn) == GZ_OK && note(GZ_NOTE_ENDED, GZ_LOBBY_FAILED, -1) && m.ended && !m.ready);
+    CHECK(M_CANCELS == 1 && M_CANCEL_REASON == 3);                  /* the signing engine is told */
+    CHECK(feed(&m, x, xn) == GZ_OK && M_CANCELS == 1);              /* once */
     for (q = 0; q < A.l.count; q++)
         if (A.s[q].kind == GZ_ACTION_SAVE && A.s[q].u.save.records[0].type == GZ_REC_LOBBY_ENDED) {
             const uint8_t *r = A.s[q].u.save.records[0].bytes.data;
@@ -2417,6 +2479,8 @@ static void test_world_basic(void)
     w_start(&w);
     w_run(&w, 13000, 0);
     CHECK(w.node[0].host->state == GZ_LOBBY_CANCELLED && w.node[0].host->end_reason == 1);
+    CHECK(w.node[0].n_cancels == 1 && w.node[0].cancel_reason == 1 && memcmp(w.node[0].cancel_scope, SCOPE, 32) == 0);
+    CHECK(w.node[1].n_cancels == 1 && w.node[1].cancel_reason == 1 && w.node[2].n_cancels == 1);
     CHECK(w_has_note(&w.node[1], GZ_NOTE_ENDED, GZ_LOBBY_CANCELLED, -1) && w_has_note(&w.node[2], GZ_NOTE_ENDED, GZ_LOBBY_CANCELLED, -1));
     w_free(&w);
     /* a member's own minimum is respected */
@@ -2549,6 +2613,7 @@ int main(void)
     test_api_edges();
     test_host_restart_signing();
     test_host_commands();
+    test_host_creations_restart();
     test_world_basic();
     test_world_values();
     test_world_standbys();

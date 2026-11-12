@@ -276,8 +276,8 @@ enum { GZ_LOBBY_UNKNOWN = 0, GZ_LOBBY_OPEN, GZ_LOBBY_READY_CHECK, GZ_LOBBY_SIGNI
 enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_NOT_CHOSEN,
        GZ_SEAT_LEFT, GZ_SEAT_REMOVED, GZ_SEAT_REFUSED };
 
-/* Journal record types (journal.md section 9; 0x00010018 and 0x0001001a are
- * this engine's additions, see the report). Layouts are in host.c/member.c. */
+/* Journal record types (journal.md section 9). 0x00010018 is this engine's
+ * addition. Layouts are in host.c and member.c and in docs/notes/lobby.md. */
 #define GZ_REC_LOBBY_OPENED   0x00010002u
 #define GZ_REC_SEAT           0x00010006u
 #define GZ_REC_FREEZE         0x00010008u
@@ -288,8 +288,8 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_REC_HOST_FAULT     0x00010012u
 #define GZ_REC_START_SENT     0x00010014u
 #define GZ_REC_START_RECEIVED 0x00010016u
-#define GZ_REC_CURRENT_SIGNED 0x00010018u   /* host: a new current version, before it is sent */
-#define GZ_REC_LOBBY_STATE    0x0001001au   /* host: Funding or Active */
+#define GZ_REC_TERMS_VERSION  0x00010004u   /* host: a new current version, before it is sent */
+#define GZ_REC_LOBBY_STATE    0x00010018u   /* host: Open after a retry, Funding, Active (new; docs/notes/lobby.md) */
 
 /* Notification codes (GZ_ACTION_NOTIFY). Bytes: see each. */
 #define GZ_NOTE_CLOSE      0x4c01u   /* close the connection: u64 peer id */
@@ -355,9 +355,19 @@ typedef struct {
 
 /* The signing engine's side. `begin` appends its own actions after the
  * lobby's (round_propose comes after every start). It must not keep the
- * pointers. Returns GZ_OK or an error; an error fails the lobby's step. */
+ * pointers. Returns GZ_OK or an error; an error fails the lobby's step.
+ *
+ * `cancel` (may be NULL) is called when the lobby ends by a `cancel`
+ * (messages.md 6.10): on the host after its cancel is saved and listed for
+ * every seat, on the member after the received cancel is saved. `scope` is
+ * the lobby, `reason` the cancel's reason (1 deadline below the minimum,
+ * 2 host's choice, 3 signing failed). It is called for every cancel, also one
+ * before any start: the signing engine ignores a lobby it never began. Per
+ * messages.md 6.10 the member's engine erases secret nonces and keeps its
+ * round records; a cancel does not undo partial signatures already sent. */
 typedef struct {
     gz_status_t (*begin)(void *ctx, const gz_lobby_handoff_t *h, gz_action_list_t *out);
+    gz_status_t (*cancel)(void *ctx, const uint8_t scope[32], uint16_t reason, gz_action_list_t *out);
     void *ctx;
 } gz_lobby_signing_t;
 

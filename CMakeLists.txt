@@ -250,6 +250,8 @@ gz_lobby_test(fuzz_lobby         tests/lobby/fuzz_lobby.c)
 gz_lobby_test(lobby_model_driver tests/lobby/model_driver.c)
 add_test(NAME lobby_vectors COMMAND test_lobby_vectors)
 add_test(NAME lobby COMMAND test_lobby)
+# Real stack frames, so a record byte left unwritten keeps the poison the test puts there.
+set_tests_properties(lobby PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=0")
 # One host and 3 to 8 members: mixed faults, crashes only, network only, none.
 foreach(profile RANGE 0 3)
   add_test(NAME lobby_sim_profile_${profile} COMMAND test_lobby_sim 100 ${profile})
