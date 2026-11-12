@@ -1,6 +1,7 @@
 /* Wipes of secrets on the stack, and the paths taken when the crypto library
- * fails. Linked with -Wl,--wrap=OPENSSL_cleanse,--wrap=HMAC: every wipe in
- * the transport is recorded (size, in order), and HMAC can be made to fail
+ * fails. Linked with -Wl,--wrap=gz_net_wipe,--wrap=HMAC: every wipe in
+ * the transport is recorded (size, in order; through gz_net_wipe, so a
+ * static libcrypto's own wipes are not counted), and HMAC can be made to fail
  * at a chosen call. Suggested by the PR 10 review (section 6).
  *
  * The expected wipes are read off the rules, not the run: an HKDF wipes its
@@ -19,7 +20,7 @@
 #include "hex.h"
 #include "noise.h"
 
-void __real_OPENSSL_cleanse(void *p, size_t n);
+void __real_gz_net_wipe(void *p, size_t n);
 unsigned char *__real_HMAC(const EVP_MD *md, const void *key, int key_len, const unsigned char *d,
                            size_t n, unsigned char *out, unsigned int *out_len);
 
@@ -27,14 +28,14 @@ static size_t wipes[64], n_wipes;
 static uint8_t seen[64][33];
 static int hmac_calls, hmac_fail_at = -1;
 
-void __wrap_OPENSSL_cleanse(void *p, size_t n)
+void __wrap_gz_net_wipe(void *p, size_t n)
 {
     if (n_wipes < 64) {
         wipes[n_wipes] = n;
         memcpy(seen[n_wipes], p, n < 33 ? n : 33);
     }
     n_wipes++;
-    __real_OPENSSL_cleanse(p, n);
+    __real_gz_net_wipe(p, n);
 }
 
 unsigned char *__wrap_HMAC(const EVP_MD *md, const void *key, int key_len, const unsigned char *d,

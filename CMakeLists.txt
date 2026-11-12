@@ -125,7 +125,7 @@ add_test(NAME core_isolation_refuses_sneaky_object
 # --- Transport (ports/net): BOLT 8 and BOLT 1, outside the core ----------------
 # Strict C11 like the core, but not freestanding: conn.c uses POSIX sockets.
 # noise.c and frame.c do no input or output (spec/transport.md).
-add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c)
+add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c)
 set_target_properties(gazpacho_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_net PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/ports/net ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
@@ -142,7 +142,7 @@ gz_add_test(net_conn  tests/net/test_conn.c  gazpacho_net)
 # Every wipe of a stack secret is counted, and HMAC is made to fail on demand
 # (GNU ld's --wrap; review of PR 10, section 6).
 gz_add_test(net_wipes tests/net/test_wipes.c gazpacho_net)
-target_link_options(test_net_wipes PRIVATE "LINKER:--wrap=OPENSSL_cleanse,--wrap=HMAC")
+target_link_options(test_net_wipes PRIVATE "LINKER:--wrap=gz_net_wipe,--wrap=HMAC")
 # A peer for gz-net's tests: unknown even and odd messages, a wrong pong.
 add_executable(net_peer tests/net/net_peer.c)
 target_link_libraries(net_peer PRIVATE gazpacho_net)
@@ -158,13 +158,20 @@ if(GZ_INTEROP_PY)
   add_test(NAME net_interop_py COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/interop/run.sh
            $<TARGET_FILE:gz-net> ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/interop/bolt8_peer.py)
 endif()
-# Fuzz targets with the plain driver (no libFuzzer on the build machines).
-# Built with clang, the same target files link against -fsanitize=fuzzer.
+# Fuzz targets. Normally with the plain driver, as CTest tests; with
+# -DGZ_LIBFUZZER=ON (clang), linked with libFuzzer instead and run by
+# tools/run-fuzz.sh (docs/notes/ci.md).
+option(GZ_LIBFUZZER "Build the fuzz targets with libFuzzer (clang)" OFF)
 foreach(target noise tlv)
-  add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
+  if(GZ_LIBFUZZER)
+    add_executable(fuzz_${target} tests/net/fuzz_${target}.c)
+    target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer)
+  else()
+    add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
+    add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 200000)
+  endif()
   target_link_libraries(fuzz_${target} PRIVATE gazpacho_net)
   target_compile_options(fuzz_${target} PRIVATE ${GZ_NEW_CODE_WARNINGS})
-  add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 200000)
 endforeach()
 
 add_subdirectory(wallet)

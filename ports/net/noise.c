@@ -6,12 +6,13 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <secp256k1_ecdh.h>
+#include "wipe.h"
 
 static const char PROTOCOL_NAME[] = "Noise_XK_secp256k1_ChaChaPoly_SHA256";
 static const char PROLOGUE[] = "lightning";
 #define EPHEMERAL_TRIES 8
 
-static void wipe(void *p, size_t n) { OPENSSL_cleanse(p, n); }
+static void wipe(void *p, size_t n) { gz_net_wipe(p, n); }
 
 static gz_noise_err_t fail(gz_noise_t *st, gz_noise_err_t e)
 {

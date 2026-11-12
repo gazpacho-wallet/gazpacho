@@ -20,14 +20,14 @@ import tempfile
 TESTS = [  # name, sources, arguments, extra link flags
     ("noise", ["tests/net/test_noise.c"], [], []),
     ("frame", ["tests/net/test_frame.c"], ["3000"], []),
-    ("wipes", ["tests/net/test_wipes.c"], [], ["-Wl,--wrap=OPENSSL_cleanse,--wrap=HMAC"]),
+    ("wipes", ["tests/net/test_wipes.c"], [], ["-Wl,--wrap=gz_net_wipe,--wrap=HMAC"]),
     ("conn", ["tests/net/test_conn.c"], [], []),
     ("fuzz_noise", ["tests/net/fuzz_noise.c", "tests/net/fuzz_main.c"], ["30000"], []),
     ("fuzz_tlv", ["tests/net/fuzz_tlv.c", "tests/net/fuzz_main.c"], ["100000"], []),
     ("net_peer", ["tests/net/net_peer.c"], None, []),  # built only, for gz_net
     ("gz_net", ["tools/gz-net/gz-net.c"], None, []),   # run through tests/net/test_gz_net.sh
 ]
-LIB = ["ports/net/noise.c", "ports/net/frame.c", "ports/net/conn.c"]
+LIB = ["ports/net/noise.c", "ports/net/frame.c", "ports/net/conn.c", "ports/net/wipe.c"]
 
 
 def unescape(text):
