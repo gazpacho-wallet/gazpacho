@@ -63,12 +63,14 @@ static uint32_t pow_limit_bits(gz_network network) {
     case GZ_NET_MAINNET:
     case GZ_NET_TESTNET3:
     case GZ_NET_TESTNET4: return 0x1d00ffff;
+    case GZ_NET_INVALID: break;
   }
-  return 0x1d00ffff;
+  return 0;
 }
 
 gz_pow_result gz_header_check_pow(const uint8_t raw[GZ_HEADER_LEN], gz_network network) {
   uint8_t target[GZ_HASH_LEN], limit[GZ_HASH_LEN], hash[GZ_HASH_LEN], hash_be[GZ_HASH_LEN];
+  if (!gz_network_valid(network)) return GZ_POW_BAD_NETWORK;
   if (!gz_bits_to_target(le32(raw + 72), target)) return GZ_POW_BAD_BITS;
   if (!gz_bits_to_target(pow_limit_bits(network), limit)) return GZ_POW_BAD_BITS;
   if (memcmp(target, limit, GZ_HASH_LEN) > 0) return GZ_POW_TOO_EASY;
@@ -76,6 +78,16 @@ gz_pow_result gz_header_check_pow(const uint8_t raw[GZ_HEADER_LEN], gz_network n
   for (size_t i = 0; i < GZ_HASH_LEN; i++) hash_be[i] = hash[GZ_HASH_LEN - 1 - i];
   if (memcmp(hash_be, target, GZ_HASH_LEN) > 0) return GZ_POW_HASH_ABOVE;
   return GZ_POW_OK;
+}
+
+uint32_t gz_merkle_depth_for_count(uint32_t tx_count) {
+  uint32_t depth = 0;
+  uint64_t width = 1;
+  while (width < tx_count) {
+    width <<= 1;
+    depth++;
+  }
+  return depth;
 }
 
 bool gz_merkle_root_from_proof(const uint8_t txid[GZ_HASH_LEN], const gz_merkle_proof *proof,
@@ -89,6 +101,9 @@ bool gz_merkle_root_from_proof(const uint8_t txid[GZ_HASH_LEN], const gz_merkle_
   uint32_t pos = proof->pos;
   for (uint32_t i = 0; i < proof->depth; i++) {
     if (pos & 1) {
+      /* on the right with our own twin on the left: the copy of an odd
+       * row's last node, which is not a position a transaction occupies */
+      if (memcmp(proof->nodes[i], cur, GZ_HASH_LEN) == 0) return false;
       memcpy(pair, proof->nodes[i], GZ_HASH_LEN);
       memcpy(pair + GZ_HASH_LEN, cur, GZ_HASH_LEN);
     } else {
