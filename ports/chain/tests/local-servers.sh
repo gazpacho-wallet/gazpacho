@@ -65,7 +65,7 @@ expect "proof of an unknown transaction exits 1" 1 "unknown to the server" \
   "$tool" --server $H/honest --server http://localhost:$HTTP_PORT/honest2 proof $TXN
 expect "a server hiding a transaction: disagreement exits 1" 1 "contradict each other" \
   "$tool" --server $H/honest --server http://localhost:$HTTP_PORT/hider tx $TXA
-expect "one server only: never 'agree'" 1 "fewer than two operators" \
+expect "one server only: never 'agree'" 1 "warning: fewer than two operators" \
   "$tool" --server $H/honest tip
 if printf '%s' "$out" | grep -q "operators give this answer"; then
   echo "FAIL one server only printed an agreed answer"; fail=1

@@ -1407,6 +1407,8 @@ static void test_confirm_tx_single_server(test_state *T) {
    * mainnet's proof-of-work rule. */
   fake_set(&x.fake, false, BASE "/block-height/0", 200, GENESIS_MAINNET);
   CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_MAINNET, a, 6, &conf), GZ_CHAIN_BAD_PROOF);
+  /* ...the block's own header, with no later header asked for */
+  CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_MAINNET, a, 1, &conf), GZ_CHAIN_BAD_PROOF);
   fake_set(&x.fake, false, BASE "/block-height/0", 200, GENESIS_SIGNET);
   fx_close(&x);
 }
@@ -1508,6 +1510,12 @@ static void test_confirm_tx_tree_shape(test_state *T) {
   /* It names the transaction being proved as the first one. */
   fake_set(&x.fake, false, BASE "/block/" HASH_329438 "/txid/0", 200, TX_A);
   CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, a, 6, &conf), GZ_CHAIN_BAD_PROOF);
+  /* It proves the real coinbase at position 0 but names another transaction
+   * as the block's first: the server contradicts itself. */
+  uint8_t coinbase_id[GZ_HASH_LEN];
+  test_hash(TX_COINBASE, coinbase_id);
+  fake_set(&x.fake, false, BASE "/block/" HASH_329438 "/txid/0", 200, TX_B);
+  CHECK_RESULT(gz_chain_confirm_tx(&x.chain, GZ_NET_SIGNET, coinbase_id, 6, &conf), GZ_CHAIN_BAD_PROOF);
   fake_set_file(&x.fake, BASE "/block/" HASH_329438 "/txid/0", 200, "block_329438_txid_0.txt");
 
   /* The coinbase is real but the server will not prove it. */

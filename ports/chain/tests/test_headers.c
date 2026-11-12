@@ -433,6 +433,41 @@ static void test_tx_shapes_refused(test_state *T) {
   len = put_tx(tx, 0, 0, 6);
   CHECK(!gz_txid_from_raw(tx, len, txid));
   CHECK(!gz_tx_is_coinbase(tx, len));
+
+  /* No inputs, written so the zero cannot be mistaken for the segwit marker
+   * (00 01): two outputs after it. */
+  len = put_tx(tx, 0, 2, 6);
+  CHECK(tx[4] == 0x00 && tx[5] == 0x02);
+  CHECK(!gz_txid_from_raw(tx, len, txid));
+  /* And the segwit form with no inputs: marker, flag, then a zero count. */
+  uint8_t sw[64];
+  size_t p = 0;
+  sw[p++] = 2; sw[p++] = 0; sw[p++] = 0; sw[p++] = 0;
+  sw[p++] = 0x00; sw[p++] = 0x01; /* marker and flag */
+  sw[p++] = 0x00;                 /* no inputs */
+  sw[p++] = 0x01;                 /* one output */
+  memset(sw + p, 0, 8); p += 8;
+  sw[p++] = 0x06;
+  memset(sw + p, 0x51, 6); p += 6;
+  memset(sw + p, 0, 4); p += 4; /* no witnesses for no inputs; locktime */
+  CHECK(!gz_txid_from_raw(sw, p, txid));
+
+  /* A length of 2^64-1 must not wrap the read position back into the
+   * buffer: here it would land exactly on a 4-byte "locktime" at the end. */
+  uint8_t wrap[67];
+  memset(wrap, 0, sizeof wrap);
+  p = 0;
+  wrap[p++] = 2; p += 3;            /* version */
+  wrap[p++] = 1;                    /* one input */
+  memset(wrap + p, 0x11, 36); p += 36;
+  wrap[p++] = 0;                    /* empty script */
+  memset(wrap + p, 0xff, 4); p += 4;
+  wrap[p++] = 1;                    /* one output, at 46 */
+  p += 8;                           /* value */
+  wrap[p++] = 0xff;                 /* script length: 8 bytes follow */
+  memset(wrap + p, 0xff, 8); p += 8; /* 2^64 - 1 */
+  CHECK(p == 64);
+  CHECK(!gz_txid_from_raw(wrap, sizeof wrap, txid));
 }
 
 static void test_64_byte_transaction_refused(test_state *T) {

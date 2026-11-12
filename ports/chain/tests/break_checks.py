@@ -137,7 +137,7 @@ CHECKS = [
      "if (wait > ES_MAX_BACKOFF_MS) wait = ES_MAX_BACKOFF_MS;", ""),
     # ---------------------------------------------------------------- addresses and operators (items 1, 10)
     ("o1 plain http to any host (backend)", E,
-     "if (!https && !is_loopback_host(info->host)) return false;", ""),
+     "if (!https && !is_loopback_host(info->host)) return false;", "(void)is_loopback_host;"),
     ("o2 host names not normalised to lower case", E,
      "info->host[i - scheme] = lower(c);", "info->host[i - scheme] = c == 'Z' ? lower(c) : c;"),
     ("o3 every host name its own operator", C,
@@ -148,7 +148,7 @@ CHECKS = [
      "if (info[i].host[0] != '\\0' && strcmp(info[i].host, info[j].host) == 0)\n        return GZ_CHAIN_INVALID_ARG;",
      ""),
     ("o6 servers counted instead of operators", M,
-     "if (in[i] && !seen[m->op[i]]) {", "if (in[i]) {"),
+     "if (in[i] && !seen[m->op[i]]) {", "if (in[i] && (seen[m->op[i]] || 1)) {"),
     ("o7 more servers than the array holds (review m23)", M,
      "if (count < 1 || count > GZ_MULTI_MAX_SERVERS) return GZ_CHAIN_INVALID_ARG;",
      "if (count < 1) return GZ_CHAIN_INVALID_ARG;"),
@@ -245,8 +245,9 @@ CHECKS = [
      "return r == GZ_CHAIN_NOT_FOUND ? GZ_CHAIN_BAD_PROOF : r;", "return r;"),
     ("v2 confirm: Merkle proof not checked against the header", V,
      "if (!gz_merkle_verify(txid, &out->proof, out->header)) return GZ_CHAIN_BAD_PROOF;", ""),
-    ("v3 confirm: header not checked to be the stated block", V,
-     "if (memcmp(hash, out->status.block_hash, GZ_HASH_LEN) != 0) return GZ_CHAIN_BAD_PROOF;", ""),
+    ("v3 confirm: neither header nor summary tied to the stated block", V,
+     [("if (memcmp(hash, out->status.block_hash, GZ_HASH_LEN) != 0) return GZ_CHAIN_BAD_PROOF;", ""),
+      ("if (memcmp(out->block.hash, out->status.block_hash, GZ_HASH_LEN) != 0) return GZ_CHAIN_BAD_PROOF;", "")], None),
     ("v4 confirm: proof height not checked", V,
      "if (out->proof.block_height != height) return GZ_CHAIN_BAD_PROOF;", ""),
     ("v5 confirm: proof of work not checked", V,
@@ -285,10 +286,13 @@ CHECKS = [
      "CURLOPT_SSL_VERIFYHOST, 2L)", "CURLOPT_SSL_VERIFYHOST, 0L)", SLOW),
     ("h3 redirects followed (review t3)", T,
      "CURLOPT_FOLLOWLOCATION, 0L)", "CURLOPT_FOLLOWLOCATION, 1L)", SLOW),
-    ("h4 body size cap not enforced while reading (review t4)", T,
-     "if (n > s->cap - s->len) {", "if (0) {", SLOW),
+    ("h4 body size cap not enforced while reading, nor by libcurl (review t4)", T,
+     [("if (n > s->cap - s->len) {", "if (0) {"),
+      ("  ok = ok && curl_easy_setopt(e, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)cap) == CURLE_OK;
+", "")],
+     None, SLOW),
     ("h5 plain http to any host (review t5)", T,
-     "if (!https && !local_http) return GZ_HTTP_E_FAILED;", "", SLOW),
+     "if (!https && !local_http) return GZ_HTTP_E_FAILED;", "(void)local_http;", SLOW),
     ("h6 no time limit (review t6)", T,
      "  ok = ok && curl_easy_setopt(e, CURLOPT_TIMEOUT_MS, (long)req->timeout_ms) == CURLE_OK;\n", "", SLOW),
     ("h7 User-Agent not set", T,
@@ -338,11 +342,15 @@ def main():
             continue
         full = os.path.join(root, path)
         src = open(full).read()
-        if src.count(old) != 1:
-            print("ERROR    %s: pattern found %d times in %s" % (name, src.count(old), path), flush=True)
+        pairs = old if isinstance(old, list) else [(old, new)]
+        bad = [o for o, _ in pairs if src.count(o) != 1]
+        if bad:
+            print("ERROR    %s: pattern found %d times in %s" % (name, src.count(bad[0]), path), flush=True)
             counts["ERROR"] += 1
             continue
-        open(full, "w").write(src.replace(old, new))
+        for o, n in pairs:
+            src = src.replace(o, n)
+        open(full, "w").write(src)
         rc, out = sh("cmake --build %s -j4" % build, root)
         if rc != 0:
             errs = [l for l in out.splitlines() if "error" in l][:2]

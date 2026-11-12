@@ -818,6 +818,12 @@ static void test_backends_are_not_taken_at_their_word(test_state *T) {
   CHECK(gz_multi_last_report(&m)->answers[2].result == GZ_CHAIN_MALFORMED);
   CHECK(gz_txid_from_raw(raw, n, check) && memcmp(check, k.a, GZ_HASH_LEN) == 0);
   gz_chain_destroy(&m);
+  /* a backend that cannot say who it talks to, given twice: refused by
+   * handle, since there is no address to compare */
+  gz_chain same_twice[2] = {{&st, &ops}, {&st, &ops}};
+  gz_chain refused;
+  CHECK_RESULT(gz_multi_create(&mc, same_twice, 2, &refused), GZ_CHAIN_INVALID_ARG);
+  CHECK(refused.ctx == NULL);
   /* ...and two such backends do not make an answer */
   stub st2 = {0};
   gz_chain liars[2] = {{&st, &ops}, {&st2, &ops}};
