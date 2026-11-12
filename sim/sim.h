@@ -154,12 +154,20 @@
  *     against that record: nothing lost, added, reordered or altered.
  *   - A confirmation from before a crash is reported stale by the program's
  *     runner and releases nothing.
- *   - Secrets never leave. No action a node's program carries out (a save's
- *     records, a send, broadcast, notify or watch) holds the bytes of one of
- *     that node's secret-tagged draws of 8 bytes or more, anywhere in it
- *     (ports.h). What is derived from such bytes is not seen by this check.
+ *   - Secrets never leave. A secret-tagged draw must be 16 bytes or more.
+ *     No action a node's program carries out holds 8 contiguous bytes of
+ *     one of that node's secret-tagged draws, anywhere: copied raw, XORed
+ *     with one repeated byte, or in reverse order; in a save's records, a
+ *     send's bytes, a broadcast, a notify's bytes, a watched script, txid
+ *     or outpoint txid; inside hex text in any of these; or as an 8-byte
+ *     integer field (a timer's identifier, a send's peer, in either byte
+ *     order). Not seen: fewer than 8 contiguous bytes, the 4-byte fields
+ *     (notify code, vout, depth, delay), and any other transformation of the
+ *     bytes, such as a hash, another encoding or a mix with other data
+ *     (ports.h).
  *   - A node started with the restore marker saves before it does anything
- *     else.
+ *     else. Which save it is is not checked: each engine checks that its
+ *     restore batch comes first (node.h, rule 5).
  *   - Same seed, same run (with check_same_seed).
  *   - Any added with sim_add_invariant. Those can look inside: at each node's
  *     own state through its inspection hook (sim_node_inspect), and at every

@@ -72,10 +72,10 @@ typedef struct {
     tx_watch_t *tx_watches; size_t n_tx_watches, cap_tx_watches;
     op_watch_t *op_watches; size_t n_op_watches, cap_op_watches;
     sim_draw_t *draws; size_t n_draws, cap_draws;
-    /* The first 8 bytes of every secret-tagged draw of 8 bytes or more, with
-     * the draw's index: an open-addressing table (0 marks a free place), for
-     * the "secrets never leave" check. */
-    uint64_t *secret_keys; size_t *secret_draw; size_t n_secret_keys, cap_secret_keys;
+    /* The difference signature of every 8-byte window of every secret-tagged
+     * draw, forwards and backwards: an open-addressing table (0 marks a free
+     * place), for the "secrets never leave" check. */
+    uint64_t *secret_keys; size_t n_secret_keys, cap_secret_keys;
 
     int restore_pending;        /* restored, and no restore batch is durable yet */
     uint64_t restore_first_incarnation;   /* the first incarnation started after that restore */
@@ -984,44 +984,116 @@ static uint64_t first8(const uint8_t *b)
     return v ? v : 1;                       /* 0 marks a free place in the table */
 }
 
-static void secret_table_put(slot_t *s, uint64_t key, size_t draw)
+/* ---- "secrets never leave" (sim.h) ----
+ *
+ * Every 8-byte window of every secret-tagged draw, read forwards and
+ * backwards, is indexed by its difference signature: the seven XORs of
+ * neighbouring bytes. Two windows have the same signature exactly when one is
+ * the other XOR a single repeated byte, so one lookup finds a window copied
+ * raw, XORed with any one-byte constant, or byte-reversed, anywhere in an
+ * action's bytes. Hex text in an action is decoded and searched the same way,
+ * and so are the action's 8-byte integer fields (a timer's identifier, a
+ * send's peer). A secret draw shorter than 16 bytes is itself refused: a
+ * secret built from short draws could not be told apart from chance. */
+static uint64_t window_signature(const uint8_t *w, int reversed)
+{
+    uint64_t v = 1;                         /* a set top bit: 0 marks a free place in the table */
+    for (int i = 1; i < 8; i++) {
+        uint8_t a = reversed ? w[7 - i] : w[i], b = reversed ? w[8 - i] : w[i - 1];
+        v = v << 8 | (uint8_t)(a ^ b);
+    }
+    return v;
+}
+
+static void secret_table_put(slot_t *s, uint64_t key)
 {
     if (2 * (s->n_secret_keys + 1) > s->cap_secret_keys) {
-        size_t old_cap = s->cap_secret_keys, cap = old_cap ? 2 * old_cap : 64;
+        size_t old_cap = s->cap_secret_keys, cap = old_cap ? 2 * old_cap : 256;
         uint64_t *old_keys = s->secret_keys;
-        size_t *old_draw = s->secret_draw;
         s->secret_keys = calloc(cap, sizeof *s->secret_keys);
-        s->secret_draw = calloc(cap, sizeof *s->secret_draw);
-        if (!s->secret_keys || !s->secret_draw) abort();
+        if (!s->secret_keys) abort();
         s->cap_secret_keys = cap;
         s->n_secret_keys = 0;
         for (size_t i = 0; i < old_cap; i++)
-            if (old_keys[i]) secret_table_put(s, old_keys[i], old_draw[i]);
-        free(old_keys); free(old_draw);
+            if (old_keys[i]) secret_table_put(s, old_keys[i]);
+        free(old_keys);
     }
-    size_t at = (size_t)(key * 0x9E3779B97F4A7C15ull) & (s->cap_secret_keys - 1);
-    while (s->secret_keys[at]) at = (at + 1) & (s->cap_secret_keys - 1);
+    size_t at = (size_t)(key * 0x9E3779B97F4A7C15ull >> 20) & (s->cap_secret_keys - 1);
+    while (s->secret_keys[at]) {
+        if (s->secret_keys[at] == key) return;
+        at = (at + 1) & (s->cap_secret_keys - 1);
+    }
     s->secret_keys[at] = key;
-    s->secret_draw[at] = draw;
     s->n_secret_keys++;
 }
 
-/* 1 if `data[0..len)` holds, anywhere, the bytes of a secret-tagged draw of
- * this node (the first min(len, 32) bytes of a draw of at least 8). */
+static int secret_table_has(const slot_t *s, uint64_t key)
+{
+    for (size_t at = (size_t)(key * 0x9E3779B97F4A7C15ull >> 20) & (s->cap_secret_keys - 1); s->secret_keys[at];
+         at = (at + 1) & (s->cap_secret_keys - 1))
+        if (s->secret_keys[at] == key) return 1;
+    return 0;
+}
+
+/* A secret-tagged draw: refuse it if short, else index all its windows. */
+static void note_secret(slot_t *s, const uint8_t *out, size_t len)
+{
+    if (len < 16) {
+        violate(s->sim, "a secret-tagged random draw was shorter than 16 bytes");
+        return;
+    }
+    for (size_t i = 0; i + 8 <= len; i++) {
+        secret_table_put(s, window_signature(out + i, 0));
+        secret_table_put(s, window_signature(out + i, 1));
+    }
+}
+
+/* 1 if some 8 contiguous bytes of `data[0..len)` are 8 contiguous bytes of a
+ * secret-tagged draw of this node, raw, XORed with one repeated byte, or in
+ * reverse order. */
+static int holds_secret_raw(const slot_t *s, const uint8_t *data, size_t len)
+{
+    for (size_t i = 0; i + 8 <= len; i++)
+        if (secret_table_has(s, window_signature(data + i, 0))) return 1;
+    return 0;
+}
+
+static int hex_value(uint8_t c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* The same, also through hex text: every run of 16 or more hex digits is
+ * decoded, at both alignments, and searched. */
 static int holds_secret(const slot_t *s, const uint8_t *data, size_t len)
 {
     if (!data || !s->n_secret_keys) return 0;
-    for (size_t i = 0; i + 8 <= len; i++) {
-        uint64_t key = first8(data + i);
-        for (size_t at = (size_t)(key * 0x9E3779B97F4A7C15ull) & (s->cap_secret_keys - 1); s->secret_keys[at];
-             at = (at + 1) & (s->cap_secret_keys - 1)) {
-            if (s->secret_keys[at] != key) continue;
-            const sim_draw_t *d = &s->draws[s->secret_draw[at]];
-            size_t m = d->len < sizeof d->bytes ? d->len : sizeof d->bytes;
-            if (i + m <= len && memcmp(data + i, d->bytes, m) == 0) return 1;
+    if (holds_secret_raw(s, data, len)) return 1;
+    uint8_t decoded[512];
+    for (size_t i = 0; i < len;) {
+        size_t run = 0;
+        while (i + run < len && hex_value(data[i + run]) >= 0) run++;
+        for (size_t align = 0; run >= 16 && align < 2; align++) {
+            for (size_t from = i + align; from + 16 <= i + run; from += 2 * sizeof decoded - 16) {
+                size_t n = 0;
+                for (size_t k = from; k + 1 < i + run && n < sizeof decoded; k += 2)
+                    decoded[n++] = (uint8_t)(hex_value(data[k]) << 4 | hex_value(data[k + 1]));
+                if (holds_secret_raw(s, decoded, n)) return 1;
+            }
         }
+        i += run ? run : 1;
     }
     return 0;
+}
+
+static int holds_secret_u64(const slot_t *s, uint64_t v)
+{
+    uint8_t b[8];
+    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(v >> (8 * i));
+    return s->n_secret_keys && holds_secret_raw(s, b, 8);
 }
 
 static int action_holds_secret(const slot_t *s, const gz_action_t *a)
@@ -1031,14 +1103,15 @@ static int action_holds_secret(const slot_t *s, const gz_action_t *a)
         for (size_t i = 0; i < a->u.save.n_records; i++)
             if (holds_secret(s, a->u.save.records[i].bytes.data, a->u.save.records[i].bytes.len)) return 1;
         return 0;
-    case GZ_ACTION_SEND:           return holds_secret(s, a->u.send.bytes.data, a->u.send.bytes.len);
+    case GZ_ACTION_SEND:           return holds_secret_u64(s, a->u.send.peer_id) ||
+                                          holds_secret(s, a->u.send.bytes.data, a->u.send.bytes.len);
     case GZ_ACTION_BROADCAST:      return holds_secret(s, a->u.broadcast.tx.data, a->u.broadcast.tx.len);
     case GZ_ACTION_NOTIFY:         return holds_secret(s, a->u.notify.bytes.data, a->u.notify.bytes.len);
     case GZ_ACTION_WATCH_SCRIPT:   return holds_secret(s, a->u.watch_script.script.data, a->u.watch_script.script.len);
     case GZ_ACTION_WATCH_TX:       return holds_secret(s, a->u.watch_tx.txid, 32);
     case GZ_ACTION_WATCH_OUTPOINT: return holds_secret(s, a->u.watch_outpoint.outpoint.txid, 32);
-    case GZ_ACTION_SET_TIMER:
-    case GZ_ACTION_CANCEL_TIMER:   return 0;
+    case GZ_ACTION_SET_TIMER:      return holds_secret_u64(s, a->u.set_timer.timer_id);
+    case GZ_ACTION_CANCEL_TIMER:   return holds_secret_u64(s, a->u.cancel_timer.timer_id);
     }
     return 0;
 }
@@ -1051,7 +1124,7 @@ static void random_fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, si
     memcpy(draw.bytes, out, len < sizeof draw.bytes ? len : sizeof draw.bytes);
     s->draws = grow(s->draws, &s->cap_draws, s->n_draws + 1, sizeof *s->draws);
     s->draws[s->n_draws++] = draw;
-    if (purpose == GZ_RANDOM_SECRET && len >= 8) secret_table_put(s, first8(out), s->n_draws - 1);
+    if (purpose == GZ_RANDOM_SECRET) note_secret(s, out, len);
 }
 
 static uint64_t clock_now(void *ctx)
@@ -1553,7 +1626,7 @@ void sim_destroy(sim_t *sim)
         for (size_t i = 0; i < s->n_deferred; i++) free(s->deferred[i].blob.bytes);
         for (size_t i = 0; i < s->n_orphans; i++) free(s->orphans[i].blob.bytes);
         free(s->deferred); free(s->orphans);
-        free(s->tx_watches); free(s->op_watches); free(s->secret_keys); free(s->secret_draw);
+        free(s->tx_watches); free(s->op_watches); free(s->secret_keys);
         free(s->watches); free(s->timers); free(s->draws); free(s->emitted_saves); free(s->expected); free(s->shadow);
     }
     for (size_t i = sim->q_head; i < sim->q_len; i++) free(sim->queue[i].blob.bytes);

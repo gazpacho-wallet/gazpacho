@@ -24,6 +24,9 @@
  *   7  a different random configuration for every seed
  *   8  one node, instant storage, a crash every step
  *   9  crashes inside releases and storage that fails, both often
+ *  10  restores (60 per mille per step) with crashes and delayed confirmations,
+ *      the port repeating after each restore: what the restored start must
+ *      survive (review round 4, N1 and N3)
  *
  * A profile that is meant to produce a kind of activity must produce it: the
  * test fails if a count it expects (saves, sends by nodes, crashes, stale
@@ -87,6 +90,8 @@ static sim_config_t config_for(int profile, uint64_t seed)
         c.late_save_pm = pick(3) ? 0 : any_pm(); c.save_fail_inline_pm = pick(3) ? 0 : pick(50);
         break;
     case 8: c.n_nodes = 1; c.crash_pm = 1000; c.ping_pm = 1000; break;
+    case 10: c.n_nodes = 2; c.ping_pm = 600; c.crash_pm = 150; c.restore_pm = 60; c.restore_repeats_random = 1;
+             c.confirm_delay_pm = 800; c.max_confirm_delay_steps = 6; break;
     default: c.crash_in_release_pm = 300; c.save_fail_pm = 200; c.save_delay_pm = 500; c.max_save_delay_steps = 3;
              c.confirm_delay_pm = 500; c.max_confirm_delay_steps = 3; c.ping_pm = 1000; c.duplicate_pm = 300; break;
     }
@@ -95,7 +100,7 @@ static sim_config_t config_for(int profile, uint64_t seed)
 
 /* What each profile is meant to produce. */
 enum { SAVES = 1, SENDS = 2, CRASHES = 4, STALE = 8, FAILURES = 16, SECRETS = 32 };
-static const int EXPECTED[10] = {
+static const int EXPECTED[11] = {
     SAVES | SENDS | CRASHES | STALE | FAILURES | SECRETS,     /* 0 */
     SAVES | SENDS | SECRETS,                        /* 1 */
     SAVES | SENDS | CRASHES | STALE,                /* 2 */
@@ -106,6 +111,7 @@ static const int EXPECTED[10] = {
     SAVES | SENDS | CRASHES | STALE | FAILURES | SECRETS,     /* 7 */
     SAVES | SENDS | CRASHES,                        /* 8 */
     SAVES | SENDS | CRASHES | STALE | FAILURES,     /* 9 */
+    SAVES | SENDS | CRASHES | STALE,                /* 10 */
 };
 
 static int cmp_u64(const void *a, const void *b)
@@ -135,6 +141,10 @@ int main(int argc, char **argv)
         memset(&watch, 0, sizeof watch);
         watch.n_nodes = c.n_nodes;
         if (c.ops.create && !sim_add_invariant(sim, no_secret_used_twice, &watch)) return 2;
+        epoch_watch_t epochs;
+        memset(&epochs, 0, sizeof epochs);
+        epochs.n_nodes = c.n_nodes;
+        if (!c.ops.create && !sim_add_invariant(sim, restore_epochs_differ, &epochs)) return 2;
         sim_run(sim, steps);
         if (sim_failed(sim)) {
             if (failed++ < 5)
@@ -178,6 +188,7 @@ int main(int argc, char **argv)
         }
         sim_destroy(sim);
         secret_watch_free(&watch);
+        free(epochs.seen);
 
         c = config_for(profile, first + i);
         c.ops.release = eager_release;
@@ -224,7 +235,7 @@ int main(int argc, char **argv)
            N(secret_draw_total), N(secrets_judged), N(t.restores_repeating), N(t.late_landings),
            N(t.inline_storage_failures), N(t.commands_not_done), N(t.chain_reports), N(t.txs_conflicting),
            N(t.restores_answered));
-    int expected = profile >= 0 && profile < 10 ? EXPECTED[profile] : 0;
+    int expected = profile >= 0 && profile < 11 ? EXPECTED[profile] : 0;
     CHECK(!(expected & SAVES) || t.saves_durable > 0);
     CHECK(!(expected & SENDS) || t.node_sends > 0);
     CHECK(!(expected & CRASHES) || t.crashes > 0);
@@ -233,6 +244,7 @@ int main(int argc, char **argv)
     CHECK(!(expected & SECRETS) || (secret_draw_total > 0 && secrets_judged > 0));
     if (profile == 0) CHECK(t.restores_repeating > 0 && t.late_landings > 0 && t.inline_storage_failures > 0);
     if (profile == 0) CHECK(t.chain_reports > 0 && t.restores_answered > 0);
+    if (profile == 10) CHECK(t.restores > 0 && t.restores_answered > 0 && t.restores_repeating > 0 && tail_runs > 0);
     CHECK(t.secret_leaks == 0);
     CHECK(failed == 0);
     CHECK(never_sent == 0);

@@ -120,7 +120,7 @@ gz_add_test(sim_known_trace tests/sim/test_sim_known.c gazpacho_sim)
 # 1,000 seeds with every fault at a moderate rate, then the extreme profiles
 # (see tests/sim/test_sim_seeds.c): 100 seeds of 300 steps each.
 gz_add_test(sim_seeds tests/sim/test_sim_seeds.c  gazpacho_sim 1000 400 1 0)
-foreach(profile RANGE 1 9)
+foreach(profile RANGE 1 10)
   add_test(NAME sim_profile_${profile} COMMAND test_sim_seeds 100 300 1 ${profile})
 endforeach()
 

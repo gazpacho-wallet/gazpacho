@@ -576,11 +576,11 @@ static void probe_destroy(void *ctx, void *node) { (void)ctx; (void)node; }
  * 'T' id delay: set a
  * timer; 'C' id: cancel it; 'N' code: notify; 'O': two notifies; 'S' x: save
  * then notify x; 'D' x: two saves; 'R': save eight bytes from the random
- * port; 'K': the same, tagged secret, saved and shown (wrong); 'E': a save,
+ * port; 'K': 32 bytes the same way, tagged secret, saved and shown (wrong); 'E': a save,
  * and another at each confirmation, 100,000 times. */
 static gz_status_t probe_command(probe_t *p, gz_bytes_t cmd, gz_action_list_t *out)
 {
-    uint8_t drawn[8];
+    uint8_t drawn[32];
     const uint8_t *rest = cmd.data + 1;
     size_t rest_len = cmd.len - 1;
     gz_status_t st;
@@ -606,8 +606,8 @@ static gz_status_t probe_command(probe_t *p, gz_bytes_t cmd, gz_action_list_t *o
         st = multi_save(out, 7, (const uint8_t *)"first", 5);
         return st == GZ_OK ? multi_save(out, 7, (const uint8_t *)"second", 6) : st;
     case 'R':
-        p->ports->random.fill(p->ports->random.ctx, GZ_RANDOM_ORDINARY, drawn, sizeof drawn);
-        return multi_save(out, 8, drawn, sizeof drawn);
+        p->ports->random.fill(p->ports->random.ctx, GZ_RANDOM_ORDINARY, drawn, 8);
+        return multi_save(out, 8, drawn, 8);
     case 'K':   /* a "secret" taken straight from the random port, saved and used */
         p->ports->random.fill(p->ports->random.ctx, GZ_RANDOM_SECRET, drawn, sizeof drawn);
         st = multi_save(out, 8, drawn, sizeof drawn);
@@ -978,6 +978,101 @@ static void test_restore_from_an_older_backup(void)
 
 /* ---- secrets never leave ---- */
 
+/* FAULTY ON PURPOSE: a node that leaks a secret draw in one chosen way (the
+ * review's 13 leaks, round 4, N4, and a watched outpoint). */
+static const gz_ports_t *g_leaker_ports;
+static void *leaker_create(void *ctx, uint32_t index, const gz_ports_t *ports, const sim_storage_t *storage)
+{
+    (void)ctx; (void)index; (void)storage;
+    g_leaker_ports = ports;
+    return &g_leaker_ports;
+}
+static gz_status_t leak_bytes(gz_action_list_t *out, gz_action_kind_t kind, const uint8_t *b, size_t len)
+{
+    if (kind == GZ_ACTION_SAVE) return multi_save(out, 9, b, len);
+    if (kind == GZ_ACTION_SEND) {
+        gz_action_t a = {.kind = GZ_ACTION_SEND};
+        a.u.send.peer_id = SIM_WORLD_PEER;
+        a.u.send.bytes = (gz_bytes_t){b, len};
+        return gz_action_list_add(out, &a);
+    }
+    return multi_add(out, GZ_ACTION_NOTIFY, 1, b, len);
+}
+static gz_status_t leaker_handle(void *node, const gz_event_t *ev, gz_action_list_t *out)
+{
+    (void)node;
+    if (ev->kind != GZ_EVENT_USER_COMMAND) return GZ_OK;
+    const gz_random_port_t *r = &g_leaker_ports->random;
+    static const char HEX[] = "0123456789abcdef";
+    uint8_t s[64], x[128];
+    gz_action_t a;
+    memset(&a, 0, sizeof a);
+    switch (ev->u.user.bytes.data[0]) {
+    case 'a': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32); return leak_bytes(out, GZ_ACTION_NOTIFY, s, 32);
+    case 'b': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32); return leak_bytes(out, GZ_ACTION_NOTIFY, s, 16);
+    case 'c': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32); return leak_bytes(out, GZ_ACTION_NOTIFY, s + 1, 31);
+    case 'd': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              for (int i = 0; i < 32; i++) x[i] = s[31 - i];
+              return leak_bytes(out, GZ_ACTION_SAVE, x, 32);
+    case 'e': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              for (int i = 0; i < 32; i++) { x[2 * i] = (uint8_t)HEX[s[i] >> 4]; x[2 * i + 1] = (uint8_t)HEX[s[i] & 15]; }
+              return leak_bytes(out, GZ_ACTION_SEND, x, 64);
+    case 'f': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              for (int i = 0; i < 32; i++) x[i] = s[i] ^ 1;
+              return leak_bytes(out, GZ_ACTION_NOTIFY, x, 32);
+    case 'g': for (int i = 0; i < 8; i++) r->fill(r->ctx, GZ_RANDOM_SECRET, s + 4 * i, 4);
+              return leak_bytes(out, GZ_ACTION_SAVE, s, 32);
+    case 'h': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              a.kind = GZ_ACTION_SET_TIMER; memcpy(&a.u.set_timer.timer_id, s, 8); a.u.set_timer.delay_ms = 1000;
+              return gz_action_list_add(out, &a);
+    case 'i': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 64); return leak_bytes(out, GZ_ACTION_NOTIFY, s + 32, 32);
+    case 'j': { r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              gz_status_t st = leak_bytes(out, GZ_ACTION_NOTIFY, s, 16);
+              return st == GZ_OK ? leak_bytes(out, GZ_ACTION_SEND, s + 16, 16) : st; }
+    case 'k': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              a.kind = GZ_ACTION_SEND; memcpy(&a.u.send.peer_id, s, 8); a.u.send.bytes = (gz_bytes_t){(const uint8_t *)"x", 1};
+              return gz_action_list_add(out, &a);
+    case 'm': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              a.kind = GZ_ACTION_WATCH_TX; memcpy(a.u.watch_tx.txid, s, 32); a.u.watch_tx.depth = 1;
+              return gz_action_list_add(out, &a);
+    case 'n': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 7); return leak_bytes(out, GZ_ACTION_NOTIFY, s, 7);
+    case 'o': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              a.kind = GZ_ACTION_WATCH_OUTPOINT; memcpy(a.u.watch_outpoint.outpoint.txid, s, 32); a.u.watch_outpoint.depth = 1;
+              return gz_action_list_add(out, &a);
+    case 'p': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);     /* control: only 7 contiguous bytes, which is not seen */
+              memcpy(x, s, 7); memset(x + 7, 0, 25);
+              return leak_bytes(out, GZ_ACTION_NOTIFY, x, 32);
+    }
+    return GZ_OK;
+}
+
+static void test_the_ways_a_secret_can_leave(void)
+{
+    /* a: raw (control); b: first half; c: all but byte 0; d: reversed, saved;
+     * e: hex, sent; f: XOR 1; g: eight 4-byte draws; h: timer id; i: second
+     * half of a 64-byte draw; j: two halves in two actions; k: peer id;
+     * m: watched txid; n: a 7-byte draw; o: watched outpoint. */
+    const char *caught = "abcdefghijkmno";
+    for (const char *m = caught; *m; m++) {
+        sim_config_t c = quiet_config(5, 1);
+        c.ops = (sim_node_ops_t){.create = leaker_create, .destroy = probe_destroy, .handle = leaker_handle};
+        sim_t *sim = sim_create(&c);
+        uint8_t cmd = (uint8_t)*m;
+        sim_user_command(sim, 0, &cmd, 1);
+        sim_run(sim, 3);
+        if (!sim_failed(sim)) printf("leak %c not caught\n", *m);
+        CHECK(sim_failed(sim) && (strstr(sim_failure_reason(sim), "secret-tagged random draw") != NULL));
+        sim_destroy(sim);
+    }
+    sim_config_t c = quiet_config(5, 1);                    /* the documented limit: 7 bytes are not seen */
+    c.ops = (sim_node_ops_t){.create = leaker_create, .destroy = probe_destroy, .handle = leaker_handle};
+    sim_t *sim = sim_create(&c);
+    sim_user_command(sim, 0, (const uint8_t *)"p", 1);
+    sim_run(sim, 3);
+    CHECK(!sim_failed(sim));
+    sim_destroy(sim);
+}
+
 static void test_secret_bytes_never_leave(void)
 {
     sim_config_t c = probe_config(1);
@@ -1049,6 +1144,76 @@ static void test_the_restore_marker(void)
     sim_crash_node(sim, 0);
     CHECK(trace_count(sim, "restore-marker") == 2);
     sim_destroy(sim);
+}
+
+/* The epoch of the newest restore batch in node 0's storage, or 0. */
+static uint32_t newest_restore_epoch(const sim_t *sim)
+{
+    const sim_storage_t *st = sim_node_storage(sim, 0);
+    uint32_t e = 0;
+    for (size_t i = 0; i < sim_storage_count(st); i++) {
+        size_t len = 0;
+        const uint8_t *b = sim_storage_batch_bytes(st, i, &len);
+        if (len == 8 + GZ_RESTORED_RECORD_LEN && le32_at(b) == GZ_RECORD_TEST_RESTORED) e = be32_at(b + 16);
+    }
+    return e;
+}
+
+/* The same backup restored twice, with and without the port repeating after
+ * a restore: the two restores' epochs differ either way (review round 4,
+ * N3: drawn from the port alone, they were equal under the repeating port),
+ * and the invariant that a node's restore epochs all differ holds. */
+static void test_restore_epochs_differ_when_the_port_repeats(void)
+{
+    for (int repeat = 0; repeat <= 1; repeat++) {
+        sim_config_t c = quiet_config(9, 1);
+        c.restore_repeats_random = repeat;
+        sim_t *sim = sim_create(&c);
+        epoch_watch_t w;
+        memset(&w, 0, sizeof w);
+        w.n_nodes = 1;
+        CHECK(sim_add_invariant(sim, restore_epochs_differ, &w));
+        world_ping(sim, 0, 1);
+        sim_run(sim, 3);
+        sim_restore_backup(sim, 0, 1);
+        sim_run(sim, 3);
+        uint32_t e1 = newest_restore_epoch(sim);
+        sim_restore_backup(sim, 0, 1);
+        sim_run(sim, 3);
+        uint32_t e2 = newest_restore_epoch(sim);
+        CHECK(e1 != 0 && e2 != 0 && e1 != e2 && w.n == 2 && !sim_failed(sim));
+        CHECK(sim_stats(sim)->restores_repeating == (uint64_t)(2 * repeat));
+        sim_destroy(sim);
+        free(w.seen);
+    }
+}
+
+/* AT LEAST ONCE AFTER A RESTORE (review round 4, N1). A ping is saved and its
+ * confirmation delayed, so no reply has left; that journal is restored; the
+ * restored start resends the reply, which the runner holds behind the
+ * restore batch; the program then stops before that batch's confirmation
+ * arrives. The start must not have saved a "sent" record for the held reply:
+ * the reply must still leave, after the next start. */
+static void test_a_reply_held_behind_the_restore_batch_is_not_recorded_as_sent(void)
+{
+    int tried = 0, answered = 0;
+    for (uint64_t seed = 1; seed <= 400; seed++) {
+        sim_config_t c = quiet_config(seed, 1);
+        c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 6;
+        sim_t *sim = sim_create(&c);
+        world_ping(sim, 0, 0x33);
+        sim_run(sim, 1);                                    /* durable, its confirmation delayed: no reply yet */
+        if (sim_stats(sim)->world_replies || sim_storage_count(sim_node_storage(sim, 0)) != 1) { sim_destroy(sim); continue; }
+        sim_restore_backup(sim, 0, 1);                      /* the restored start; the reply is held */
+        sim_run(sim, 1);
+        sim_crash_node(sim, 0);                             /* before the restore batch's confirmation */
+        sim_run(sim, 60);                                   /* no faults: what left is delivered */
+        tried++;
+        answered += sim_stats(sim)->world_replies > 0 && saved_replies_not_sent(sim, 1) == 0 && !sim_failed(sim);
+        sim_destroy(sim);
+    }
+    if (answered != tried) printf("held-reply test: %d of %d tried answered\n", answered, tried);
+    CHECK(tried > 100 && answered == tried);
 }
 
 /* A start hook that does something before saving, when given the marker, is caught. */
@@ -1907,7 +2072,10 @@ int main(void)
     test_invariants_can_look_inside_a_node();
     test_links();
     test_secret_bytes_never_leave();
+    test_the_ways_a_secret_can_leave();
     test_the_restore_marker();
+    test_restore_epochs_differ_when_the_port_repeats();
+    test_a_reply_held_behind_the_restore_batch_is_not_recorded_as_sent();
     test_a_node_that_ignores_the_restore_marker();
     test_watching_a_transaction();
     test_watching_an_outpoint();

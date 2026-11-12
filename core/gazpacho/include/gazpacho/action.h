@@ -50,6 +50,15 @@ typedef enum {
  * outward: it changes nothing anyone else sees, so it does not wait for
  * earlier saves. Broadcasting a transaction does not watch it.
  *
+ * A watch cannot be dropped, and setting it again changes only its depth:
+ * there is no "unwatch". An engine must ignore reports it no longer needs,
+ * and must not treat a report as meaning the watch is still wanted.
+ *
+ * Every txid here and in event.h is in the byte order the chain hashes it,
+ * as gz_outpoint_t says (types.h): not reversed for display. Servers that
+ * speak display order (Esplora's API, for one) are converted by the
+ * program, never by the core.
+ *
  *   WATCH_SCRIPT    a GZ_CHAIN_SCRIPT_SPENT event when a transaction in a new
  *                   block spends an output paying `script`.
  *   WATCH_TX        GZ_CHAIN_TX_CONFIRMED events for transaction `txid`: when
@@ -73,6 +82,11 @@ typedef enum {
  *                   next event names the new one: an engine compares txids.
  *                   A spender that vanishes with no replacement is not
  *                   reported: no event for it is defined yet.
+ *                   So a report with 0 confirmations means either "first
+ *                   seen in the mempool" or "a confirmed spender left the
+ *                   chain", and a spend seen only in the mempool may vanish
+ *                   unreported: an engine must never treat a 0-confirmation
+ *                   spend as final (safety-rule.md C4(d) and the Dead state).
  *
  * `depth` is at least 1 for both: the number of confirmations the node waits
  * for (the burial depth, for a funding transaction). */
@@ -97,7 +111,7 @@ typedef struct {
         struct { uint64_t peer_id; gz_bytes_t bytes; } send;       /* SEND */
         struct { gz_bytes_t tx; } broadcast;                       /* BROADCAST */
         struct { gz_bytes_t script; } watch_script;                /* WATCH_SCRIPT */
-        struct { uint8_t txid[32]; uint32_t depth; } watch_tx;      /* WATCH_TX */
+        struct { uint8_t txid[32]; uint32_t depth; } watch_tx;      /* WATCH_TX; txid in hashing order */
         struct { gz_outpoint_t outpoint; uint32_t depth; } watch_outpoint; /* WATCH_OUTPOINT */
         /* SET_TIMER: setting an identifier that is already set replaces it. */
         struct { uint64_t timer_id; uint64_t delay_ms; } set_timer;

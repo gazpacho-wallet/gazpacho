@@ -10,7 +10,7 @@ gz_status_t gz_node_init(gz_node_t *node, const gz_ports_t *ports)
     node->ports = *ports;
     node->next_serial = 1;
     node->start_done_to = 0;
-    node->start_recording = node->start_restore_saved = 0;
+    node->start_recording = node->start_restore_saved = node->start_released = 0;
     node->start_fenced = 0;
     node->start_fence = (gz_batch_id_t){0, 0};
     node->awaiting_head = node->n_awaiting = 0;
@@ -274,7 +274,14 @@ static gz_status_t start_step(gz_node_t *node, const gz_storage_reader_t *storag
             st = resend_step(node, storage, out, &n_done);
         } else if (node->n_awaiting >= GZ_NODE_START_AWAITING) {
             return GZ_WAITING;
+        } else if (!node->start_released && node->n_awaiting > 0) {
+            /* A reply resent while one of the node's batches awaited
+             * confirmation (after a restore, the restore batch) is held by the
+             * runner until that batch is confirmed. No "sent" record before
+             * then: a crash would leave a record of a reply that never left. */
+            return GZ_WAITING;
         } else {
+            node->start_released = 1;
             st = record_step(node, storage, out, &n_done, &finished);
         }
         if (st != GZ_OK) return st;
@@ -285,17 +292,33 @@ static gz_status_t start_step(gz_node_t *node, const gz_storage_reader_t *storag
 
 /* The restore batch: the incarnation, and a restore epoch from the ordinary
  * random port, never 0. */
+/* The restore epoch: 31 bits of a bijective 64-bit mix (the SplitMix64
+ * finaliser) of the draw XOR the incarnation times an odd constant. Two
+ * restores have different incarnations (runner.h keeps the incarnation out
+ * of a restore's reach), so even if the port repeats the draw, the inputs to
+ * the mix differ, and so do the 64-bit outputs; the 31 bits kept then match
+ * by chance only, as safety-rule.md R2 counts. */
+static uint32_t restore_epoch(uint64_t drawn, uint64_t incarnation)
+{
+    uint64_t x = drawn ^ (incarnation * 0x9E3779B97F4A7C15ull);
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    x ^= x >> 31;
+    return (uint32_t)(x >> 33);
+}
+
 static gz_status_t save_restore_batch(gz_node_t *node, const gz_storage_reader_t *storage,
                                       gz_action_list_t *out)
 {
-    uint8_t body[GZ_RESTORED_RECORD_LEN], epoch[4];
+    uint8_t body[GZ_RESTORED_RECORD_LEN], drawn[8];
+    uint32_t epoch;
     if (node->n_awaiting >= GZ_NODE_MAX_AWAITING) return GZ_ERR_NO_SPACE;
     put_u64(body, storage->incarnation);
     do {
-        node->ports.random.fill(node->ports.random.ctx, GZ_RANDOM_ORDINARY, epoch, sizeof epoch);
-        epoch[0] &= 0x7f;                                   /* 31 bits */
-    } while ((epoch[0] | epoch[1] | epoch[2] | epoch[3]) == 0);
-    memcpy(body + 8, epoch, sizeof epoch);
+        node->ports.random.fill(node->ports.random.ctx, GZ_RANDOM_ORDINARY, drawn, sizeof drawn);
+        epoch = restore_epoch(get_u64(drawn), storage->incarnation);
+    } while (epoch == 0);
+    for (int i = 0; i < 4; i++) body[8 + i] = (uint8_t)(epoch >> (8 * (3 - i)));
     gz_status_t st = add_record(out, GZ_RECORD_TEST_RESTORED, body, sizeof body);
     if (st != GZ_OK) return st;
     await(node, 0);
@@ -323,7 +346,7 @@ gz_status_t gz_node_start(gz_node_t *node, const gz_storage_reader_t *storage,
     }
     size_t count_before = actions_out->count, used_before = actions_out->used, awaiting_before = node->n_awaiting;
     uint64_t done_before = node->start_done_to, serial_before = node->next_serial;
-    int recording_before = node->start_recording, more_out = 1;
+    int recording_before = node->start_recording, released_before = node->start_released, more_out = 1;
     gz_status_t st = start_step(node, storage, actions_out, &more_out);
     if (st != GZ_OK) {
         actions_out->count = count_before;
@@ -331,6 +354,7 @@ gz_status_t gz_node_start(gz_node_t *node, const gz_storage_reader_t *storage,
         node->n_awaiting = awaiting_before;
         node->start_done_to = done_before;
         node->start_recording = recording_before;
+        node->start_released = released_before;
         node->next_serial = serial_before;
     }
     if (st == GZ_OK) *more = more_out;

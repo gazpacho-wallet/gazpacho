@@ -22,8 +22,21 @@
  *      which that cannot be made true must not be designed.
  *   3. Store, as records, the acknowledgements that matter. Anything not in
  *      storage is not known after a restart, and will be sent again.
+ *      An acknowledgement may be saved only once the runner has released
+ *      what it acknowledges. A message the start resends while one of the
+ *      node's own batches awaits confirmation (after a restore: the restore
+ *      batch) is held by the runner until that batch is confirmed, and
+ *      saves are never held, so a record saying it left would reach storage
+ *      first; a stop between the two would lose the message for good. The
+ *      start therefore waits (GZ_WAITING) until no batch of its own awaits
+ *      confirmation before it saves any record of what it resent.
  *   4. Set its timers and register its watches again: the program around the
  *      core forgets them when it stops.
+ *   5. With the restore marker (ports.h), save the restore batch (key_epoch,
+ *      restored, guard) first, alone, before anything else. The simulator
+ *      checks only that a restored start's first action is a save, not
+ *      which save it is, so each engine checks its own: its tests must show
+ *      that the first batch of a restored start is its restore batch.
  *
  * WHAT THE PLACEHOLDER GUARANTEES
  *
@@ -71,9 +84,11 @@
 
 /* The placeholder's restore batch (ports.h, the restore marker): one record
  * of the 8-byte big-endian incarnation the node was started under, then a
- * 4-byte big-endian restore epoch drawn from the random port with the
- * ordinary tag and never 0 (safety-rule.md R2, which the engines will follow
- * with a key_epoch record; the placeholder only shows the shape). */
+ * 4-byte big-endian restore epoch, never 0: 31 bits of a bijective mix of an
+ * 8-byte draw from the random port (ordinary tag) with that incarnation, so
+ * that a port repeating its draws after a restore does not repeat the epoch
+ * (safety-rule.md R2, which the engines will follow with a key_epoch record;
+ * the placeholder only shows the shape). */
 #define GZ_RECORD_TEST_RESTORED 0x7e570003u
 #define GZ_RESTORED_RECORD_LEN  12
 
@@ -95,6 +110,7 @@ typedef struct {
     uint64_t start_done_to;     /* the current pass of the start has dealt with every stored ping up to this serial */
     int start_recording;        /* the start has resent everything and is now saving the "sent" records */
     int start_restore_saved;    /* this start has put its restore batch in a list */
+    int start_released;         /* recording began with no batch of the node's awaiting confirmation */
     int start_fenced;           /* the first start call has taken the fence below */
     gz_batch_id_t start_fence;  /* the last batch of an earlier incarnation storage held at that call */
     /* The node's save batches not yet confirmed, oldest first: the serial of
@@ -147,7 +163,9 @@ gz_status_t gz_node_init(gz_node_t *node, const gz_ports_t *ports);
  * to stored pings that have no stored "sent" record. Once all have been
  * resent, each further call saves one "sent" record naming up to that many of
  * the replies this start resent; it waits (GZ_WAITING) while
- * GZ_NODE_START_AWAITING of its batches await confirmation. The saves come last, so that no resent reply waits for one of them to be
+ * GZ_NODE_START_AWAITING of its batches await confirmation, and before its
+ * first "sent" record it waits until none does (rule 3: after a restore the
+ * replies it resent are held behind the restore batch). The saves come last, so that no resent reply waits for one of them to be
  * confirmed. See "what the placeholder guarantees".
  *
  * Returns GZ_OK; GZ_WAITING as above; GZ_ERR_ARGUMENT if an

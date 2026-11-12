@@ -147,6 +147,54 @@ static inline int no_secret_used_twice(const sim_t *sim, void *ctx, const char *
 
 static inline void secret_watch_free(secret_watch_t *w) { free(w->seen); memset(w, 0, sizeof *w); }
 
+/* "A node's restore epochs all differ" (safety-rule.md R2), for the
+ * placeholder ping node: every restore batch (record type 0x7e570003,
+ * GZ_RECORD_TEST_RESTORED in node.h: the 8-byte big-endian incarnation, then
+ * the 4-byte big-endian epoch) seen in a node's storage is remembered, since
+ * a later restore cuts storage back; two different incarnations of one node
+ * with the same epoch fail the run. Free `seen` after the run. */
+typedef struct { uint32_t node; uint64_t incarnation; uint32_t epoch; } epoch_seen_t;
+typedef struct { uint32_t n_nodes; epoch_seen_t *seen; size_t n, cap; } epoch_watch_t;
+
+static inline uint32_t sn_le32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+static inline uint64_t sn_be(const uint8_t *p, int n) { uint64_t v = 0; for (int i = 0; i < n; i++) v = v << 8 | p[i]; return v; }
+
+static inline int restore_epochs_differ(const sim_t *sim, void *ctx, const char **why)
+{
+    epoch_watch_t *w = ctx;
+    for (uint32_t node = 0; node < w->n_nodes; node++) {
+        const sim_storage_t *st = sim_node_storage(sim, node);
+        for (size_t i = 0; i < sim_storage_count(st); i++) {
+            size_t len = 0, at = 0;
+            const uint8_t *b = sim_storage_batch_bytes(st, i, &len);
+            while (at + 8 <= len) {
+                uint32_t type = sn_le32(b + at), rlen = sn_le32(b + at + 4);
+                if (at + 8 + rlen > len) break;
+                if (type == 0x7e570003u && rlen == 12) {
+                    uint64_t inc = sn_be(b + at + 8, 8);
+                    uint32_t epoch = (uint32_t)sn_be(b + at + 16, 4);
+                    int known = 0;
+                    for (size_t k = 0; k < w->n; k++) {
+                        if (w->seen[k].node != node) continue;
+                        if (w->seen[k].incarnation == inc) { known = 1; continue; }
+                        if (w->seen[k].epoch == epoch) { *why = "two restores of a node drew the same restore epoch"; return 0; }
+                    }
+                    if (!known) {
+                        if (w->n == w->cap) {
+                            w->cap = w->cap ? 2 * w->cap : 16;
+                            w->seen = realloc(w->seen, w->cap * sizeof *w->seen);
+                            if (!w->seen) abort();
+                        }
+                        w->seen[w->n++] = (epoch_seen_t){node, inc, epoch};
+                    }
+                }
+                at += 8 + rlen;
+            }
+        }
+    }
+    return 1;
+}
+
 /* Number of draws all nodes made with the secret tag. */
 static inline size_t secret_draws(const sim_t *sim, uint32_t n_nodes)
 {

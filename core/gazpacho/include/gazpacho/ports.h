@@ -30,10 +30,16 @@
  *     - the engine: the bytes go into no action. They are never saved, sent,
  *       broadcast, shown or watched, as they are or copied. What is derived
  *       from them (a public nonce) may leave; the bytes themselves may not.
- *   The simulator checks the engine's side on every action it carries out
- *   (sim.h, "secrets never leave").
+ *       A secret is drawn in one request of at least 16 bytes.
+ *   The simulator checks part of the engine's side on every action it
+ *   carries out: that no 8 contiguous bytes of a secret draw appear in it,
+ *   raw, XORed with one repeated byte, reversed, as hex text or as an 8-byte
+ *   integer field, and that no secret draw is shorter than 16 bytes (sim.h,
+ *   "secrets never leave" lists what it does not see). Other transformations
+ *   of the bytes are kept out by review.
  * GZ_RANDOM_ORDINARY: everything else, including randomness that is saved or
- *   sent on purpose: the restore epoch (safety-rule.md R2), the host's random
+ *   sent on purpose: the restore epoch (safety-rule.md R2, mixed with the
+ *   incarnation, below), the host's random
  *   values, check identifiers and lobby salts. Such bytes must never be drawn
  *   with the secret tag, whose bytes are never journaled.
  *

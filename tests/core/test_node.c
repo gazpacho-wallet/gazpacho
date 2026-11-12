@@ -10,15 +10,16 @@ static uint64_t g_now = 0x0102030405060708ull;
 static int g_random_calls;
 
 static gz_random_purpose_t g_last_purpose = GZ_RANDOM_SECRET;
-static int g_zero_fills;            /* this many next draws give zeros */
+static uint8_t g_fill_once[8];      /* with g_fill_once_armed: the next 8-byte draw gives these */
+static int g_fill_once_armed;
 
 static void fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
 {
     (void)ctx;
     g_random_calls++;
     g_last_purpose = purpose;
-    memset(out, g_zero_fills > 0 ? 0 : 0x42, len);
-    if (g_zero_fills > 0) g_zero_fills--;
+    if (g_fill_once_armed && len == sizeof g_fill_once) { memcpy(out, g_fill_once, len); g_fill_once_armed = 0; return; }
+    memset(out, 0x42, len);
 }
 static uint64_t now_ms(void *ctx) { (void)ctx; return g_now; }
 
@@ -570,6 +571,8 @@ static jentry_t g_journal[JOURNAL_MAX];
 static size_t g_journal_n, g_journal_at, g_journal_confirmed;
 static uint64_t g_reply_count[JOURNAL_MAX], g_record_count[JOURNAL_MAX];
 static size_t g_executed, g_first_save_at, g_reply_at[JOURNAL_MAX];   /* order in which actions were carried out */
+static size_t g_recorded_unsent;     /* "sent" records naming a reply not yet carried out */
+static int g_journal_restored;       /* the reader carries the restore marker */
 
 static int journal_next(void *ctx, gz_stored_batch_t *batch)
 {
@@ -608,7 +611,11 @@ static void journal_execute(void *ctx, const gz_action_t *a)
         const gz_record_t *r = &a->u.save.records[0];
         journal_append(a->u.save.batch, r->type, r->bytes.data, r->bytes.len);
         if (r->type == GZ_RECORD_TEST_PING_SENT)
-            for (size_t at = 0; at + 8 <= r->bytes.len; at += 8) g_record_count[be64(r->bytes.data + at)]++;
+            for (size_t at = 0; at + 8 <= r->bytes.len; at += 8) {
+                uint64_t serial = be64(r->bytes.data + at);
+                g_record_count[serial]++;
+                if (serial < JOURNAL_MAX && g_reply_count[serial] == 0) g_recorded_unsent++;
+            }
     } else if (a->kind == GZ_ACTION_SEND && a->u.send.peer_id < JOURNAL_MAX) {
         g_reply_count[a->u.send.peer_id]++;
     }
@@ -619,7 +626,7 @@ static void journal_execute(void *ctx, const gz_action_t *a)
  * after every step. Returns the number of waits, or -1 if the start failed. */
 static long start_through_runner(gz_node_t *node, gz_runner_t *runner, void (*between)(size_t step))
 {
-    gz_storage_reader_t reader = {journal_next, journal_rewind, NULL, 2, 0};
+    gz_storage_reader_t reader = {journal_next, journal_rewind, NULL, 2, g_journal_restored};
     long waits = 0;
     int more = 1;
     for (size_t step = 0; more; step++) {
@@ -644,7 +651,8 @@ static void journal_reset(void)
     memset(g_reply_count, 0, sizeof g_reply_count);
     memset(g_record_count, 0, sizeof g_record_count);
     memset(g_reply_at, 0, sizeof g_reply_at);
-    g_executed = g_first_save_at = 0;
+    g_executed = g_first_save_at = g_recorded_unsent = 0;
+    g_journal_restored = 0;
 }
 
 /* A thousand stored replies, none recorded as sent: the start completes,
@@ -745,6 +753,29 @@ static void test_the_fence_is_taken_at_the_first_call(void)
     CHECK(g_record_count[3] == 0);
 }
 
+/* AFTER A RESTORE (review round 4, N1, its case C): the restore batch is the
+ * start's first save, and every reply the start resends is held by the
+ * runner until that batch is confirmed. No "sent" record may be saved before
+ * the replies it names have left: the start waits for the restore batch. */
+static void test_a_restored_start_records_only_released_replies(void)
+{
+    static gz_runner_slot_t r_slots[32];
+    static uint8_t r_bytes[4096];
+    for (uint64_t pings = 3; pings <= 9; pings += 6) {
+        gz_node_t node;
+        gz_runner_t runner;
+        journal_reset();
+        g_journal_restored = 1;
+        for (uint64_t serial = 1; serial <= pings; serial++) journal_plant_ping(serial, serial);
+        CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+        CHECK(gz_runner_init(&runner, r_slots, 32, r_bytes, sizeof r_bytes, 2, journal_execute, NULL) == GZ_OK);
+        CHECK(start_through_runner(&node, &runner, NULL) >= 1);     /* it waited for the restore batch */
+        CHECK(g_recorded_unsent == 0);
+        for (uint64_t serial = 1; serial <= pings; serial++) CHECK(g_reply_count[serial] == 1 && g_record_count[serial] == 1);
+    }
+    g_random_calls = 0;
+}
+
 /* ---- end to end ---- */
 
 typedef struct { gz_action_kind_t kind; uint64_t peer; gz_batch_id_t batch; uint32_t type; uint8_t record[96]; size_t record_len; } seen_t;
@@ -821,6 +852,43 @@ static void test_event_to_executor_and_again_after_a_restart(void)
     CHECK(g_seen_n == 6 && g_seen[5].type == GZ_RECORD_TEST_PING_SENT && be64(g_seen[5].record) == 2);
 }
 
+/* The restore epoch, modelled independently (node.c): 31 bits of the
+ * SplitMix64 finaliser of the 8-byte big-endian draw XOR the incarnation
+ * times the golden-ratio constant. And its inverse, to find a draw whose
+ * epoch is 0 (the node must draw again). */
+static const uint64_t GOLD = 0x9E3779B97F4A7C15ull, M1 = 0xBF58476D1CE4E5B9ull, M2 = 0x94D049BB133111EBull;
+static uint64_t model_mix(uint64_t x)
+{
+    x = (x ^ (x >> 30)) * M1;
+    x = (x ^ (x >> 27)) * M2;
+    return x ^ (x >> 31);
+}
+static uint32_t model_epoch(uint64_t drawn, uint64_t incarnation)
+{
+    return (uint32_t)(model_mix(drawn ^ (incarnation * GOLD)) >> 33);
+}
+static uint64_t unshift(uint64_t y, int k)   /* inverse of x ^ (x >> k) */
+{
+    uint64_t x = y;
+    for (int i = 0; i < 64 / k + 1; i++) x = y ^ (x >> k);
+    return x;
+}
+static uint64_t odd_inverse(uint64_t m)
+{
+    uint64_t inv = m;
+    for (int i = 0; i < 6; i++) inv *= 2 - m * inv;
+    return inv;
+}
+static uint64_t epoch_preimage(uint64_t mixed, uint64_t incarnation)
+{
+    uint64_t x = unshift(mixed, 31);
+    x = unshift(x * odd_inverse(M2), 27);
+    x = unshift(x * odd_inverse(M1), 30);
+    uint64_t drawn = x ^ (incarnation * GOLD);
+    if (model_mix(drawn ^ (incarnation * GOLD)) != mixed) return 0;   /* the model's own check */
+    return drawn;
+}
+
 /* With the restore marker, the first start call appends the restore batch
  * alone; everything else follows in later calls. */
 static size_t restore_saves(void)
@@ -848,7 +916,9 @@ static void test_a_restored_start_saves_its_restore_batch_first(void)
     CHECK(more == 7 && out.count == 0 && node.n_awaiting == 0 && node.start_restore_saved == 0);
 
     gz_action_list_init(&out, slots, 16, bytes, sizeof bytes);
-    g_zero_fills = 1;                                   /* an epoch of 0 is drawn again */
+    uint64_t zero_draw = epoch_preimage(5, 2);          /* a draw whose epoch, at incarnation 2, is 0 */
+    for (int i = 0; i < 8; i++) g_fill_once[i] = (uint8_t)(zero_draw >> (8 * (7 - i)));
+    g_fill_once_armed = 1;                              /* an epoch of 0 is drawn again */
     calls = g_random_calls;
     CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_OK && more == 1 && out.count == 1);
     CHECK(g_random_calls - calls == 2 && g_last_purpose == GZ_RANDOM_ORDINARY);
@@ -859,7 +929,10 @@ static void test_a_restored_start_saves_its_restore_batch_first(void)
     CHECK(be64(r->bytes.data) == 2);                    /* the incarnation it answers */
     uint32_t epoch = (uint32_t)r->bytes.data[8] << 24 | (uint32_t)r->bytes.data[9] << 16 |
                      (uint32_t)r->bytes.data[10] << 8 | r->bytes.data[11];
-    CHECK(epoch == 0x42424242u);                        /* 31 bits, not 0 */
+    CHECK(epoch == model_epoch(0x4242424242424242ull, 2) && epoch != 0 && epoch < 0x80000000u);
+    /* The same draw under another incarnation gives another epoch: a port
+     * that repeats after a restore does not repeat the epoch (N3). */
+    CHECK(model_epoch(0x4242424242424242ull, 3) != epoch);
     CHECK(node.n_awaiting == 1);
 
     CHECK(start_fully(&node, &reader) > 0);             /* the rest: the reply, then its record */
@@ -896,6 +969,7 @@ int main(void)
     test_a_ping_that_completes_during_the_start_is_refused();
     test_a_ping_that_completes_while_recording_is_refused();
     test_the_fence_is_taken_at_the_first_call();
+    test_a_restored_start_records_only_released_replies();
     test_event_to_executor_and_again_after_a_restart();
     CHECK(g_random_calls == 0);     /* nothing but a restored start draws randomness */
     test_a_restored_start_saves_its_restore_batch_first();

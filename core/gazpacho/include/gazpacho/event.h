@@ -39,7 +39,9 @@ typedef struct {
     gz_bytes_t script;       /* SCRIPT_SPENT: the watched script */
     gz_outpoint_t outpoint;  /* OUTPOINT_SPENT: the watched outpoint */
     uint8_t txid[32];        /* SCRIPT_SPENT, OUTPOINT_SPENT: the spending transaction;
-                                TX_CONFIRMED, TX_UNCONFIRMED: the watched transaction */
+                                TX_CONFIRMED, TX_UNCONFIRMED: the watched transaction.
+                                In the byte order the chain hashes it, not reversed
+                                for display (types.h, action.h) */
     uint32_t confirmations;  /* TX_CONFIRMED, OUTPOINT_SPENT: how many, counting its own
                                 block; 0 for a spender not in the best chain */
     uint32_t height;         /* NEW_TIP: the tip's height; otherwise the height of the
