@@ -96,13 +96,13 @@ Locally (Linux, clang 18):
 
 ### valgrind
 
-Guards: memory errors and definite leaks in the compiled tests, on a build with no sanitizer (so it sees the code as shipped, at `-O2`). `tools/valgrind-tests.py` asks CTest for the registered tests and runs each one whose command is a program built in the build directory under `valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite --track-origins=yes`, with the same arguments. Tests run through `sh` or Python are listed and skipped: valgrind would check the shell, not our code. Tests run one per processor in parallel; the 1,000-seed simulator run is the longest, about five minutes under valgrind. Before this job, valgrind ran only in `m1a-followup`'s copy of the workflow.
+Guards: memory errors and definite leaks in the compiled tests, on a build with no sanitizer (so it sees the code as shipped, at `-O2`). `tools/valgrind-tests.py` asks CTest for the registered tests and runs each one whose command is a program built in the build directory under `valgrind --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite --track-origins=yes`, with the same arguments. Tests run through `sh` or Python are listed and skipped: valgrind would check the shell, not our code. Tests run one per processor in parallel. The 1,000-seed simulator run took eight minutes under valgrind, so this job runs it with 200 seeds of the same length (`--args "sim_seeds=200 400 1 0"`); every other build runs all 1,000. Before this job, valgrind ran only in `m1a-followup`'s copy of the workflow.
 
 Locally (Linux, valgrind installed):
 
     cmake -B build-vg -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF
     cmake --build build-vg -j
-    python -I tools/valgrind-tests.py build-vg [-j N] [-v] [--include REGEX] [--exclude REGEX]
+    python -I tools/valgrind-tests.py build-vg --args "sim_seeds=200 400 1 0" [-j N] [-v] [--include REGEX] [--exclude REGEX]
 
 ### libFuzzer, 60 s per target
 

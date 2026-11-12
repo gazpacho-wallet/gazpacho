@@ -2,6 +2,7 @@
 """Run the compiled CTest tests of a build under valgrind's memcheck.
 
     python -I tools/valgrind-tests.py BUILD_DIR [-j N] [--exclude REGEX] [--include REGEX]
+                                      [--args "NAME=ARG ..."]
 
 Asks CTest for the registered tests (ctest --show-only=json-v1) and runs each
 one whose command is a program built in BUILD_DIR, with the same arguments and
@@ -13,7 +14,9 @@ working directory, under
 Tests run through sh or python (the isolation checks, the tool scripts) are
 left out: valgrind would check the shell, not our code. A test fails if it
 fails on its own or if valgrind reports a memory error or a definite leak.
-Tests run N at a time (default: the number of processors); each test's own
+--args replaces one test's arguments, to run a long test on a smaller case
+(valgrind is twenty to fifty times slower than the program alone). Tests run
+N at a time (default: the number of processors); each test's own
 output is printed in one piece when it finishes. Exits 1 if any test failed.
 Standard library only.
 """
@@ -37,8 +40,14 @@ def main():
     ap.add_argument("--include", default=None, help="run only tests whose name matches")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1)
     ap.add_argument("-v", "--verbose", action="store_true", help="print every test's output")
+    ap.add_argument("--args", action="append", default=[], metavar="NAME=ARGS",
+                    help="run test NAME with these arguments instead (space-separated)")
     args = ap.parse_args()
     build = os.path.abspath(args.build)
+    override = {}
+    for a in args.args:
+        name, _, rest = a.partition("=")
+        override[name] = rest.split()
 
     info = json.loads(subprocess.run(
         ["ctest", "--test-dir", build, "--show-only=json-v1"],
@@ -58,7 +67,14 @@ def main():
         for p in t.get("properties", []):
             if p.get("name") == "WORKING_DIRECTORY":
                 cwd = p["value"]
+        if name in override:
+            cmd = cmd[:1] + override.pop(name)
+            print("%s: run as %s" % (name, " ".join(os.path.basename(c) if i == 0 else c
+                                                     for i, c in enumerate(cmd))))
         jobs.append((name, cmd, cwd))
+    if override:
+        print("FAIL: --args names no test: %s" % ", ".join(sorted(override)))
+        return 1
 
     def run(job):
         name, cmd, cwd = job
