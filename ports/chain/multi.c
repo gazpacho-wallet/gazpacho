@@ -1,27 +1,37 @@
 /*
- * The comparing backend. The agreement rules are stated in chain_multi.h and
- * argued in docs/notes/chain-port.md; this file implements exactly those.
+ * The comparing backend. The rules are stated in chain_multi.h and argued in
+ * docs/notes/chain-port.md; this file implements exactly those.
  */
 #include "gazpacho/chain_multi.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+enum { NET_UNCHECKED = 0, NET_RIGHT = 1, NET_WRONG = 2 };
 
 typedef struct multi {
   gz_multi_config cfg;
   size_t n;
   gz_chain servers[GZ_MULTI_MAX_SERVERS];
+  size_t op[GZ_MULTI_MAX_SERVERS]; /* operator number of each server */
+  size_t n_ops;
+  char op_name[GZ_MULTI_MAX_SERVERS][GZ_OPERATOR_MAX];
+  int net[GZ_MULTI_MAX_SERVERS];
   gz_chain_output *scratch; /* n * cfg.max_outputs entries */
   gz_multi_report report;
 } multi;
 
 static bool usable(gz_chain_result r) { return r == GZ_CHAIN_OK || r == GZ_CHAIN_NOT_FOUND; }
+static bool hash_eq(const uint8_t *a, const uint8_t *b) { return memcmp(a, b, GZ_HASH_LEN) == 0; }
 
 static void begin(multi *m, gz_chain_call call) {
   memset(&m->report, 0, sizeof m->report);
   m->report.call = call;
   m->report.server_count = m->n;
+  m->report.operator_count = m->n_ops;
   m->report.verdict = GZ_CHAIN_NO_QUORUM;
+  memcpy(m->report.operators, m->op_name, sizeof m->report.operators);
 }
 
 static gz_chain_result finish(multi *m, gz_chain_result verdict) {
@@ -30,7 +40,45 @@ static gz_chain_result finish(multi *m, gz_chain_result verdict) {
 }
 
 /*
- * What to return when too few servers gave a usable reply. If every server
+ * A server takes part only once its block 0 is the configured network's
+ * genesis block. The check is made on first use and remembered when it gives
+ * a definite result. Returns true if server i may be asked; otherwise stores
+ * why not in its answer.
+ */
+static bool ready(multi *m, size_t i) {
+  if (m->net[i] == NET_RIGHT) return true;
+  if (m->net[i] == NET_UNCHECKED) {
+    gz_chain_result r = gz_chain_check_network(&m->servers[i], m->cfg.network);
+    if (r == GZ_CHAIN_OK) {
+      m->net[i] = NET_RIGHT;
+      return true;
+    }
+    if (r == GZ_CHAIN_WRONG_NETWORK) {
+      m->net[i] = NET_WRONG;
+    } else {
+      m->report.answers[i].result = r; /* could not be asked: try again next call */
+      return false;
+    }
+  }
+  m->report.answers[i].result = GZ_CHAIN_WRONG_NETWORK;
+  return false;
+}
+
+/* Number of distinct operators among the servers marked in `in`. */
+static size_t operators_among(const multi *m, const bool *in) {
+  bool seen[GZ_MULTI_MAX_SERVERS] = {false};
+  size_t count = 0;
+  for (size_t i = 0; i < m->n; i++) {
+    if (in[i] && !seen[m->op[i]]) {
+      seen[m->op[i]] = true;
+      count++;
+    }
+  }
+  return count;
+}
+
+/*
+ * What to return when too few operators gave a usable reply. If every server
  * failed the same way, say how (all unreachable, all too large); otherwise
  * there is simply no quorum. Neither is an answer.
  */
@@ -43,52 +91,89 @@ static gz_chain_result no_quorum(const multi *m) {
   return first;
 }
 
+/*
+ * True if the servers marked in `in` have tips that differ, by no more than
+ * the allowed slack, and lie on one chain: what a block still on its way to
+ * one of them looks like. Costs a few requests; called only after a mismatch.
+ */
+static bool lagging(multi *m, const bool *in) {
+  gz_chain_tip tips[GZ_MULTI_MAX_SERVERS];
+  size_t low = m->n;
+  uint32_t high = 0;
+  for (size_t i = 0; i < m->n; i++) {
+    if (!in[i]) continue;
+    if (gz_chain_tip_get(&m->servers[i], &tips[i]) != GZ_CHAIN_OK) return false;
+    if (low == m->n || tips[i].height < tips[low].height) low = i;
+    if (tips[i].height > high) high = tips[i].height;
+  }
+  if (low == m->n || high == tips[low].height) return false; /* nobody is behind */
+  if (high - tips[low].height > m->cfg.tip_slack) return false;
+  for (size_t i = 0; i < m->n; i++) {
+    uint8_t at_low[GZ_HASH_LEN];
+    if (!in[i] || i == low) continue;
+    if (tips[i].height == tips[low].height) {
+      if (!hash_eq(tips[i].hash, tips[low].hash)) return false;
+    } else if (gz_chain_block_hash(&m->servers[i], tips[low].height, at_low) != GZ_CHAIN_OK ||
+               !hash_eq(at_low, tips[low].hash)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 typedef bool (*same_fn)(const gz_multi_answer *a, const gz_multi_answer *b);
 
 /*
- * The general rule: every usable reply must equal every other; at least a
- * quorum of them must exist. On success *which is the index of one server
- * holding the common answer and the result is OK or NOT_FOUND.
+ * The general rule for calls whose answer is one confirmed fact: every
+ * usable reply must equal every other, and they must come from a quorum of
+ * operators. On success *which is the index of one server holding the common
+ * answer and the result is OK or NOT_FOUND.
  */
-static gz_chain_result compare_all(const multi *m, same_fn same, size_t *which) {
-  size_t count = 0, first = 0;
+static gz_chain_result compare_all(multi *m, same_fn same, size_t *which) {
+  bool in[GZ_MULTI_MAX_SERVERS] = {false};
+  size_t first_ok = m->n, first_missing = m->n;
   for (size_t i = 0; i < m->n; i++) {
     const gz_multi_answer *a = &m->report.answers[i];
     if (!usable(a->result)) continue;
-    if (count == 0) {
-      first = i;
-    } else {
-      const gz_multi_answer *f = &m->report.answers[first];
-      if (a->result != f->result) return GZ_CHAIN_DISAGREE;
-      if (a->result == GZ_CHAIN_OK && !same(f, a)) return GZ_CHAIN_DISAGREE;
+    in[i] = true;
+    if (a->result == GZ_CHAIN_NOT_FOUND) {
+      if (first_missing == m->n) first_missing = i;
+    } else if (first_ok == m->n) {
+      first_ok = i;
+    } else if (!same(&m->report.answers[first_ok], a)) {
+      return GZ_CHAIN_DISAGREE; /* two different positive answers */
     }
-    count++;
   }
-  if (count < m->cfg.quorum) return no_quorum(m);
-  *which = first;
-  return m->report.answers[first].result;
+  if (first_ok != m->n && first_missing != m->n) {
+    /* one has it, another does not: a block or transaction still on its way
+     * to one of them, or a server hiding it */
+    return lagging(m, in) ? GZ_CHAIN_LAG : GZ_CHAIN_DISAGREE;
+  }
+  if (operators_among(m, in) < m->cfg.quorum) return no_quorum(m);
+  *which = first_ok != m->n ? first_ok : first_missing;
+  return m->report.answers[*which].result;
 }
-
-static bool hash_eq(const uint8_t *a, const uint8_t *b) { return memcmp(a, b, GZ_HASH_LEN) == 0; }
 
 /* ---- tip ---------------------------------------------------------------- */
 
 static gz_chain_result multi_tip(void *ctx, gz_chain_tip *out) {
   multi *m = ctx;
   gz_multi_answer *a = m->report.answers;
-  size_t count = 0, lowest = 0;
+  bool in[GZ_MULTI_MAX_SERVERS] = {false};
+  size_t lowest = m->n;
   begin(m, GZ_CALL_TIP);
   for (size_t i = 0; i < m->n; i++) {
+    if (!ready(m, i)) continue;
     a[i].result = gz_chain_tip_get(&m->servers[i], &a[i].u.tip);
     if (a[i].result != GZ_CHAIN_OK) continue;
-    if (count == 0 || a[i].u.tip.height < a[lowest].u.tip.height) lowest = i;
-    count++;
+    in[i] = true;
+    if (lowest == m->n || a[i].u.tip.height < a[lowest].u.tip.height) lowest = i;
   }
-  if (count < m->cfg.quorum) return finish(m, no_quorum(m));
+  if (operators_among(m, in) < m->cfg.quorum) return finish(m, no_quorum(m));
 
   const gz_chain_tip *low = &a[lowest].u.tip;
   for (size_t i = 0; i < m->n; i++) {
-    if (a[i].result != GZ_CHAIN_OK || i == lowest) continue;
+    if (!in[i] || i == lowest) continue;
     const gz_chain_tip *t = &a[i].u.tip;
     if (t->height == low->height) {
       if (!hash_eq(t->hash, low->hash)) return finish(m, GZ_CHAIN_DISAGREE);
@@ -104,15 +189,15 @@ static gz_chain_result multi_tip(void *ctx, gz_chain_tip *out) {
     } else if (r == GZ_CHAIN_NOT_FOUND) {
       return finish(m, GZ_CHAIN_DISAGREE); /* ahead, yet no block at the lower height */
     } else {
-      count--; /* could not be compared: counts as no reply */
+      in[i] = false; /* could not be compared: counts as no reply */
     }
   }
-  if (count < m->cfg.quorum) return finish(m, GZ_CHAIN_NO_QUORUM);
+  if (operators_among(m, in) < m->cfg.quorum) return finish(m, GZ_CHAIN_NO_QUORUM);
   *out = *low;
   return finish(m, GZ_CHAIN_OK);
 }
 
-/* ---- block hash and header ---------------------------------------------- */
+/* ---- block hash, header, summary ----------------------------------------- */
 
 static bool same_block_hash(const gz_multi_answer *a, const gz_multi_answer *b) {
   return hash_eq(a->u.block_hash, b->u.block_hash);
@@ -123,6 +208,7 @@ static gz_chain_result multi_block_hash(void *ctx, uint32_t height, uint8_t out[
   size_t which = 0;
   begin(m, GZ_CALL_BLOCK_HASH);
   for (size_t i = 0; i < m->n; i++) {
+    if (!ready(m, i)) continue;
     m->report.answers[i].result =
         gz_chain_block_hash(&m->servers[i], height, m->report.answers[i].u.block_hash);
   }
@@ -140,6 +226,7 @@ static gz_chain_result multi_block_header(void *ctx, uint32_t height, uint8_t ou
   size_t which = 0;
   begin(m, GZ_CALL_BLOCK_HEADER);
   for (size_t i = 0; i < m->n; i++) {
+    if (!ready(m, i)) continue;
     m->report.answers[i].result =
         gz_chain_block_header(&m->servers[i], height, m->report.answers[i].u.header);
   }
@@ -148,37 +235,87 @@ static gz_chain_result multi_block_header(void *ctx, uint32_t height, uint8_t ou
   return finish(m, v);
 }
 
+static bool same_summary(const gz_multi_answer *a, const gz_multi_answer *b) {
+  const gz_block_summary *x = &a->u.summary, *y = &b->u.summary;
+  return hash_eq(x->hash, y->hash) && x->tx_count == y->tx_count &&
+         hash_eq(x->coinbase_txid, y->coinbase_txid);
+}
+
+static gz_chain_result multi_block_summary(void *ctx, uint32_t height, gz_block_summary *out) {
+  multi *m = ctx;
+  size_t which = 0;
+  begin(m, GZ_CALL_BLOCK_SUMMARY);
+  for (size_t i = 0; i < m->n; i++) {
+    if (!ready(m, i)) continue;
+    m->report.answers[i].result =
+        gz_chain_block_summary(&m->servers[i], height, &m->report.answers[i].u.summary);
+  }
+  gz_chain_result v = compare_all(m, same_summary, &which);
+  if (v == GZ_CHAIN_OK) *out = m->report.answers[which].u.summary;
+  return finish(m, v);
+}
+
 /* ---- transaction status -------------------------------------------------- */
 
-static bool same_tx_status(const gz_multi_answer *a, const gz_multi_answer *b) {
-  const gz_tx_status *x = &a->u.tx_status, *y = &b->u.tx_status;
-  if (x->state != y->state) return false;
-  if (x->state != GZ_TX_CONFIRMED) return true;
+static bool same_confirmation(const gz_tx_status *x, const gz_tx_status *y) {
   return x->height == y->height && hash_eq(x->block_hash, y->block_hash);
 }
 
 static gz_chain_result multi_tx_status(void *ctx, const uint8_t txid[GZ_HASH_LEN],
                                        gz_tx_status *out) {
   multi *m = ctx;
-  size_t which = 0;
+  gz_multi_answer *a = m->report.answers;
+  bool in[GZ_MULTI_MAX_SERVERS] = {false};
+  size_t n_ok = 0, n_confirmed = 0, n_mempool = 0, first_confirmed = m->n;
+  bool conflict = false;
   begin(m, GZ_CALL_TX_STATUS);
   for (size_t i = 0; i < m->n; i++) {
-    m->report.answers[i].result =
-        gz_chain_tx_status(&m->servers[i], txid, &m->report.answers[i].u.tx_status);
-  }
-  gz_chain_result v = compare_all(m, same_tx_status, &which);
-  if (v == GZ_CHAIN_OK) {
-    *out = m->report.answers[which].u.tx_status;
-    /* count confirmations from the lowest tip any server reported */
-    for (size_t i = 0; i < m->n; i++) {
-      const gz_multi_answer *a = &m->report.answers[i];
-      if (a->result == GZ_CHAIN_OK && a->u.tx_status.confirmations < out->confirmations) {
-        out->confirmations = a->u.tx_status.confirmations;
-        out->tip_height = a->u.tx_status.tip_height;
+    if (!ready(m, i)) continue;
+    a[i].result = gz_chain_tx_status(&m->servers[i], txid, &a[i].u.tx_status);
+    if (a[i].result != GZ_CHAIN_OK) continue;
+    in[i] = true;
+    n_ok++;
+    if (a[i].u.tx_status.state == GZ_TX_CONFIRMED) {
+      n_confirmed++;
+      if (first_confirmed == m->n) {
+        first_confirmed = i;
+      } else if (!same_confirmation(&a[first_confirmed].u.tx_status, &a[i].u.tx_status)) {
+        conflict = true; /* confirmed in two different places */
       }
+    } else if (a[i].u.tx_status.state == GZ_TX_MEMPOOL) {
+      n_mempool++;
     }
   }
-  return finish(m, v);
+  if (conflict) return finish(m, GZ_CHAIN_DISAGREE);
+  if (operators_among(m, in) < m->cfg.quorum) return finish(m, no_quorum(m));
+
+  if (n_confirmed == 0) {
+    /* nothing confirmed anywhere: that much is agreed */
+    memset(out, 0, sizeof *out);
+    if (n_mempool == n_ok) {
+      out->state = GZ_TX_MEMPOOL;
+    } else {
+      out->state = GZ_TX_UNKNOWN;
+      if (n_mempool != 0) {
+        out->unconfirmed_differs = true;
+        m->report.unconfirmed_differs = true;
+      }
+    }
+    return finish(m, GZ_CHAIN_OK);
+  }
+  if (n_confirmed != n_ok) {
+    /* confirmed on some, not on others */
+    return finish(m, lagging(m, in) ? GZ_CHAIN_LAG : GZ_CHAIN_DISAGREE);
+  }
+  *out = a[first_confirmed].u.tx_status;
+  /* the claimed count from the lowest tip any server reported */
+  for (size_t i = 0; i < m->n; i++) {
+    if (in[i] && a[i].u.tx_status.claimed_confirmations < out->claimed_confirmations) {
+      out->claimed_confirmations = a[i].u.tx_status.claimed_confirmations;
+      out->tip_height = a[i].u.tx_status.tip_height;
+    }
+  }
+  return finish(m, GZ_CHAIN_OK);
 }
 
 /* ---- outputs paying a script --------------------------------------------- */
@@ -197,63 +334,152 @@ static int output_cmp(const void *a, const void *b) {
   return 0;
 }
 
-static bool same_outputs(const gz_multi_answer *a, const gz_multi_answer *b) {
-  if (a->u.outputs.count != b->u.outputs.count) return false;
-  for (size_t i = 0; i < a->u.outputs.count; i++) {
-    if (!output_eq(&a->u.outputs.items[i], &b->u.outputs.items[i])) return false;
+/* True if the confirmed entries of two sorted lists are the same, in full. */
+static bool same_confirmed_outputs(const gz_chain_output *x, size_t nx, const gz_chain_output *y,
+                                   size_t ny) {
+  size_t i = 0, j = 0;
+  for (;;) {
+    while (i < nx && !x[i].confirmed) i++;
+    while (j < ny && !y[j].confirmed) j++;
+    if (i == nx || j == ny) return i == nx && j == ny;
+    if (!output_eq(&x[i], &y[j])) return false;
+    i++;
+    j++;
   }
-  return true;
+}
+
+static bool list_has(const gz_chain_output *list, size_t n, const gz_chain_output *want) {
+  for (size_t i = 0; i < n; i++) {
+    if (output_eq(&list[i], want)) return true;
+  }
+  return false;
 }
 
 static gz_chain_result multi_script_outputs(void *ctx, const uint8_t *script, size_t script_len,
-                                            gz_chain_output *out, size_t cap, size_t *count) {
+                                            gz_chain_output *out, size_t cap, size_t *count,
+                                            bool *unconfirmed_differs) {
   multi *m = ctx;
-  size_t which = 0;
+  gz_multi_answer *a = m->report.answers;
+  bool in[GZ_MULTI_MAX_SERVERS] = {false};
+  size_t first = m->n;
   begin(m, GZ_CALL_SCRIPT_OUTPUTS);
   if (cap > m->cfg.max_outputs) cap = m->cfg.max_outputs;
   for (size_t i = 0; i < m->n; i++) {
     gz_chain_output *mine = m->scratch + i * m->cfg.max_outputs;
     size_t got = 0;
-    gz_multi_answer *a = &m->report.answers[i];
-    a->result = gz_chain_script_outputs(&m->servers[i], script, script_len, mine, cap, &got);
-    if (a->result == GZ_CHAIN_OK && got > cap) a->result = GZ_CHAIN_MALFORMED;
-    if (a->result != GZ_CHAIN_OK) got = 0;
+    a[i].u.outputs.items = mine;
+    if (!ready(m, i)) continue;
+    a[i].result = gz_chain_script_outputs(&m->servers[i], script, script_len, mine, cap, &got, NULL);
+    if (a[i].result == GZ_CHAIN_OK && got > cap) a[i].result = GZ_CHAIN_MALFORMED;
+    if (a[i].result != GZ_CHAIN_OK) continue;
     qsort(mine, got, sizeof *mine, output_cmp); /* do not rely on the backend's order */
-    a->u.outputs.items = mine;
-    a->u.outputs.count = got;
+    a[i].u.outputs.count = got;
+    in[i] = true;
+    if (first == m->n) first = i;
   }
-  gz_chain_result v = compare_all(m, same_outputs, &which);
-  if (v == GZ_CHAIN_OK) {
-    const gz_multi_answer *a = &m->report.answers[which];
-    if (a->u.outputs.count > 0) memcpy(out, a->u.outputs.items, a->u.outputs.count * sizeof *out);
-    *count = a->u.outputs.count;
+  if (operators_among(m, in) < m->cfg.quorum) return finish(m, no_quorum(m));
+
+  /* the confirmed outputs must be the same everywhere */
+  for (size_t i = 0; i < m->n; i++) {
+    if (!in[i] || i == first) continue;
+    if (!same_confirmed_outputs(a[first].u.outputs.items, a[first].u.outputs.count,
+                                a[i].u.outputs.items, a[i].u.outputs.count))
+      return finish(m, lagging(m, in) ? GZ_CHAIN_LAG : GZ_CHAIN_DISAGREE);
   }
-  return finish(m, v);
+  /* answer: the confirmed outputs, plus the unconfirmed ones all servers list */
+  size_t kept = 0;
+  bool differs = false;
+  for (size_t k = 0; k < a[first].u.outputs.count; k++) {
+    const gz_chain_output *o = &a[first].u.outputs.items[k];
+    bool everywhere = true;
+    if (!o->confirmed) {
+      for (size_t i = 0; i < m->n && everywhere; i++) {
+        if (in[i] && i != first && !list_has(a[i].u.outputs.items, a[i].u.outputs.count, o))
+          everywhere = false;
+      }
+    }
+    if (everywhere) {
+      out[kept++] = *o;
+    } else {
+      differs = true;
+    }
+  }
+  /* another server listing an unconfirmed output the first does not */
+  for (size_t i = 0; i < m->n; i++) {
+    if (in[i] && a[i].u.outputs.count != a[first].u.outputs.count) differs = true;
+    if (!in[i] || i == first) continue;
+    for (size_t k = 0; k < a[i].u.outputs.count && !differs; k++) {
+      if (!list_has(out, kept, &a[i].u.outputs.items[k])) differs = true;
+    }
+  }
+  *count = kept;
+  *unconfirmed_differs = differs;
+  m->report.unconfirmed_differs = differs;
+  return finish(m, GZ_CHAIN_OK);
 }
 
 /* ---- outspend ------------------------------------------------------------ */
 
-static bool same_outspend(const gz_multi_answer *a, const gz_multi_answer *b) {
-  const gz_outspend *x = &a->u.outspend, *y = &b->u.outspend;
-  if (x->spent != y->spent) return false;
-  if (!x->spent) return true;
-  return hash_eq(x->spender_txid, y->spender_txid) && x->spender_vin == y->spender_vin &&
-         x->confirmed == y->confirmed && x->height == y->height &&
-         hash_eq(x->block_hash, y->block_hash);
+static bool same_spender(const gz_outspend *x, const gz_outspend *y) {
+  return hash_eq(x->spender_txid, y->spender_txid) && x->spender_vin == y->spender_vin;
+}
+
+static bool same_confirmed_spend(const gz_outspend *x, const gz_outspend *y) {
+  return same_spender(x, y) && x->height == y->height && hash_eq(x->block_hash, y->block_hash);
 }
 
 static gz_chain_result multi_outspend(void *ctx, const uint8_t txid[GZ_HASH_LEN], uint32_t vout,
                                       gz_outspend *out) {
   multi *m = ctx;
-  size_t which = 0;
+  gz_multi_answer *a = m->report.answers;
+  bool in[GZ_MULTI_MAX_SERVERS] = {false};
+  size_t n_ok = 0, n_confirmed = 0, n_pending = 0;
+  size_t first_confirmed = m->n, first_pending = m->n;
+  bool pending_same = true, conflict = false;
   begin(m, GZ_CALL_OUTSPEND);
   for (size_t i = 0; i < m->n; i++) {
-    m->report.answers[i].result =
-        gz_chain_outspend(&m->servers[i], txid, vout, &m->report.answers[i].u.outspend);
+    if (!ready(m, i)) continue;
+    a[i].result = gz_chain_outspend(&m->servers[i], txid, vout, &a[i].u.outspend);
+    if (a[i].result != GZ_CHAIN_OK) continue;
+    const gz_outspend *o = &a[i].u.outspend;
+    in[i] = true;
+    n_ok++;
+    if (o->spent && o->confirmed) {
+      n_confirmed++;
+      if (first_confirmed == m->n) {
+        first_confirmed = i;
+      } else if (!same_confirmed_spend(&a[first_confirmed].u.outspend, o)) {
+        conflict = true; /* two different confirmed spends */
+      }
+    } else if (o->spent) {
+      n_pending++;
+      if (first_pending == m->n) {
+        first_pending = i;
+      } else if (!same_spender(&a[first_pending].u.outspend, o)) {
+        pending_same = false;
+      }
+    }
   }
-  gz_chain_result v = compare_all(m, same_outspend, &which);
-  if (v == GZ_CHAIN_OK) *out = m->report.answers[which].u.outspend;
-  return finish(m, v);
+  if (conflict) return finish(m, GZ_CHAIN_DISAGREE);
+  if (operators_among(m, in) < m->cfg.quorum) return finish(m, no_quorum(m));
+
+  if (n_confirmed == 0) {
+    /* no confirmed spend anywhere: that much is agreed */
+    memset(out, 0, sizeof *out);
+    if (n_pending == n_ok && pending_same) {
+      *out = a[first_pending].u.outspend; /* all see the same unconfirmed spend */
+    } else if (n_pending != 0) {
+      out->unconfirmed_differs = true;
+      m->report.unconfirmed_differs = true;
+    }
+    return finish(m, GZ_CHAIN_OK);
+  }
+  if (n_confirmed != n_ok) {
+    /* a confirmed spend on some servers only */
+    return finish(m, lagging(m, in) ? GZ_CHAIN_LAG : GZ_CHAIN_DISAGREE);
+  }
+  *out = a[first_confirmed].u.outspend;
+  return finish(m, GZ_CHAIN_OK);
 }
 
 /* ---- raw transaction ----------------------------------------------------- */
@@ -269,13 +495,15 @@ static gz_chain_result multi_raw_tx(void *ctx, const uint8_t txid[GZ_HASH_LEN], 
   begin(m, GZ_CALL_RAW_TX);
   /* Each server writes into the caller's buffer in turn; a digest of every
    * byte (witness included, which the txid does not cover) is kept for the
-   * comparison. If all agree, whatever is left in the buffer is the answer. */
+   * comparison. */
   for (size_t i = 0; i < m->n; i++) {
     gz_multi_answer *a = &m->report.answers[i];
     uint8_t check[GZ_HASH_LEN];
     size_t got = 0;
+    if (!ready(m, i)) continue;
     a->result = gz_chain_raw_tx(&m->servers[i], txid, buf, cap, &got);
     if (a->result != GZ_CHAIN_OK) continue;
+    /* do not take the backend's word that the bytes are this transaction */
     if (got > cap || !gz_txid_from_raw(buf, got, check) || !hash_eq(check, txid)) {
       a->result = GZ_CHAIN_MALFORMED;
       continue;
@@ -312,8 +540,9 @@ static gz_chain_result multi_raw_tx(void *ctx, const uint8_t txid[GZ_HASH_LEN], 
 
 static bool same_proof(const gz_multi_answer *a, const gz_multi_answer *b) {
   const gz_merkle_proof *x = &a->u.proof, *y = &b->u.proof;
-  if (x->block_height != y->block_height || x->pos != y->pos || x->depth != y->depth) return false;
-  if (x->depth > GZ_MERKLE_MAX_DEPTH) return false;
+  if (x->block_height != y->block_height) return false;
+  if (x->pos != y->pos) return false;
+  if (x->depth != y->depth || x->depth > GZ_MERKLE_MAX_DEPTH) return false;
   return memcmp(x->nodes, y->nodes, (size_t)x->depth * GZ_HASH_LEN) == 0;
 }
 
@@ -323,6 +552,7 @@ static gz_chain_result multi_merkle_proof(void *ctx, const uint8_t txid[GZ_HASH_
   size_t which = 0;
   begin(m, GZ_CALL_MERKLE_PROOF);
   for (size_t i = 0; i < m->n; i++) {
+    if (!ready(m, i)) continue;
     m->report.answers[i].result =
         gz_chain_merkle_proof(&m->servers[i], txid, &m->report.answers[i].u.proof);
   }
@@ -343,6 +573,11 @@ static gz_chain_result multi_broadcast(void *ctx, const uint8_t *raw, size_t len
   if (!gz_txid_from_raw(raw, len, txid)) return finish(m, GZ_CHAIN_INVALID_ARG);
   for (size_t i = 0; i < m->n; i++) {
     gz_multi_answer *a = &m->report.answers[i];
+    /* a server on another chain is never sent the transaction */
+    if (!ready(m, i)) {
+      a->u.broadcast.result = a->result;
+      continue;
+    }
     a->result = gz_chain_broadcast(&m->servers[i], raw, len, &a->u.broadcast);
     if (a->result == GZ_CHAIN_OK && !hash_eq(a->u.broadcast.txid, txid)) {
       a->result = GZ_CHAIN_MALFORMED; /* accepted something else */
@@ -377,43 +612,53 @@ static const gz_fee_estimate *fee_find(const gz_fee_estimates *f, uint16_t targe
 static gz_chain_result multi_fee_estimates(void *ctx, gz_fee_estimates *out) {
   multi *m = ctx;
   gz_multi_answer *a = m->report.answers;
-  size_t count = 0, first = 0;
+  bool in[GZ_MULTI_MAX_SERVERS] = {false};
+  size_t first = m->n;
   begin(m, GZ_CALL_FEE_ESTIMATES);
   for (size_t i = 0; i < m->n; i++) {
+    if (!ready(m, i)) continue;
     a[i].result = gz_chain_fee_estimates(&m->servers[i], &a[i].u.fees);
     if (a[i].result != GZ_CHAIN_OK) continue;
     if (a[i].u.fees.count > GZ_FEE_MAX_TARGETS) a[i].result = GZ_CHAIN_MALFORMED;
     for (size_t k = 0; a[i].result == GZ_CHAIN_OK && k < a[i].u.fees.count; k++) {
-      if (a[i].u.fees.entries[k].sat_per_kvb > m->cfg.fee_ceiling_sat_per_kvb)
-        a[i].result = GZ_CHAIN_MALFORMED; /* absurd rate: discard the whole answer */
+      if (a[i].u.fees.entries[k].sat_per_kvb > GZ_FEE_MAX_SAT_PER_KVB)
+        a[i].result = GZ_CHAIN_MALFORMED; /* beyond what any backend may report */
     }
     if (a[i].result != GZ_CHAIN_OK) continue;
-    if (count == 0) first = i;
-    count++;
+    in[i] = true;
+    if (first == m->n) first = i;
   }
-  if (count < m->cfg.quorum) return finish(m, no_quorum(m));
+  if (operators_among(m, in) < m->cfg.quorum) return finish(m, no_quorum(m));
 
-  /* For every target all answering servers list, the highest rate. */
-  memset(out, 0, sizeof *out);
+  /* For every target all answering servers list: the lowest rate, cut at the
+   * ceiling. Servers too far apart on any such target: no combined answer. */
+  gz_fee_estimates combined;
+  memset(&combined, 0, sizeof combined);
   const gz_fee_estimates *f = &a[first].u.fees;
   for (size_t k = 0; k < f->count; k++) {
     uint16_t target = f->entries[k].target;
-    uint64_t rate = f->entries[k].sat_per_kvb;
+    uint64_t lowest = f->entries[k].sat_per_kvb, highest = lowest;
     bool everywhere = true;
     for (size_t i = 0; i < m->n && everywhere; i++) {
-      if (a[i].result != GZ_CHAIN_OK || i == first) continue;
+      if (!in[i] || i == first) continue;
       const gz_fee_estimate *e = fee_find(&a[i].u.fees, target);
       if (e == NULL) {
         everywhere = false;
-      } else if (e->sat_per_kvb > rate) {
-        rate = e->sat_per_kvb;
+      } else {
+        if (e->sat_per_kvb < lowest) lowest = e->sat_per_kvb;
+        if (e->sat_per_kvb > highest) highest = e->sat_per_kvb;
       }
     }
     if (!everywhere) continue;
-    out->entries[out->count].target = target;
-    out->entries[out->count].sat_per_kvb = rate;
-    out->count++;
+    /* rates are at most 5,000,000 and the factor at most 100: no overflow */
+    if (highest > lowest * m->cfg.fee_disagree_factor + m->cfg.fee_disagree_slack_sat_per_kvb)
+      return finish(m, GZ_CHAIN_DISAGREE);
+    if (lowest > m->cfg.fee_ceiling_sat_per_kvb) lowest = m->cfg.fee_ceiling_sat_per_kvb;
+    combined.entries[combined.count].target = target;
+    combined.entries[combined.count].sat_per_kvb = lowest;
+    combined.count++;
   }
+  *out = combined;
   return finish(m, GZ_CHAIN_OK);
 }
 
@@ -427,33 +672,63 @@ static void multi_destroy(void *ctx) {
 }
 
 static const gz_chain_ops multi_ops = {
-    multi_tip,      multi_block_hash, multi_block_header, multi_tx_status, multi_script_outputs,
-    multi_outspend, multi_raw_tx,     multi_merkle_proof, multi_broadcast, multi_fee_estimates,
-    multi_destroy,
+    .tip = multi_tip,
+    .block_hash = multi_block_hash,
+    .block_header = multi_block_header,
+    .block_summary = multi_block_summary,
+    .tx_status = multi_tx_status,
+    .script_outputs = multi_script_outputs,
+    .outspend = multi_outspend,
+    .raw_tx = multi_raw_tx,
+    .merkle_proof = multi_merkle_proof,
+    .broadcast = multi_broadcast,
+    .fee_estimates = multi_fee_estimates,
+    .describe = NULL,
+    .destroy = multi_destroy,
 };
 
-void gz_multi_config_default(gz_multi_config *cfg) {
+void gz_multi_config_default(gz_multi_config *cfg, gz_network network) {
   if (cfg == NULL) return;
   memset(cfg, 0, sizeof *cfg);
+  cfg->network = network;
   cfg->quorum = 2;
   cfg->tip_slack = 1;
   cfg->max_outputs = 256;
-  cfg->fee_ceiling_sat_per_kvb = 2000000; /* 2000 sat/vB */
+  cfg->fee_ceiling_sat_per_kvb = 200000; /* 200 sat/vB */
+  cfg->fee_disagree_factor = 3;
+  cfg->fee_disagree_slack_sat_per_kvb = 1000; /* 1 sat/vB */
 }
 
 gz_chain_result gz_multi_create(const gz_multi_config *cfg, const gz_chain *servers, size_t count,
                                 gz_chain *out) {
+  gz_chain_info info[GZ_MULTI_MAX_SERVERS];
+  bool described[GZ_MULTI_MAX_SERVERS];
   if (out != NULL) {
     out->ctx = NULL;
     out->ops = NULL;
   }
   if (cfg == NULL || servers == NULL || out == NULL) return GZ_CHAIN_INVALID_ARG;
   if (count < 1 || count > GZ_MULTI_MAX_SERVERS) return GZ_CHAIN_INVALID_ARG;
+  if (!gz_network_valid(cfg->network)) return GZ_CHAIN_INVALID_ARG;
   if (cfg->quorum < 2 || cfg->quorum > GZ_MULTI_MAX_SERVERS || cfg->max_outputs == 0 ||
       cfg->max_outputs > 4096 || cfg->tip_slack > 6)
     return GZ_CHAIN_INVALID_ARG;
+  if (cfg->fee_ceiling_sat_per_kvb == 0 || cfg->fee_ceiling_sat_per_kvb > GZ_FEE_MAX_SAT_PER_KVB ||
+      cfg->fee_disagree_factor < 1 || cfg->fee_disagree_factor > 100 ||
+      cfg->fee_disagree_slack_sat_per_kvb > GZ_FEE_MAX_SAT_PER_KVB)
+    return GZ_CHAIN_INVALID_ARG;
   for (size_t i = 0; i < count; i++) {
     if (servers[i].ctx == NULL || servers[i].ops == NULL) return GZ_CHAIN_INVALID_ARG;
+    described[i] = gz_chain_describe(&servers[i], &info[i]);
+    /* the same server must never be compared with itself */
+    for (size_t j = 0; j < i; j++) {
+      if (servers[j].ctx == servers[i].ctx) return GZ_CHAIN_INVALID_ARG;
+      if (!described[i] || !described[j]) continue;
+      if (info[i].endpoint[0] != '\0' && strcmp(info[i].endpoint, info[j].endpoint) == 0)
+        return GZ_CHAIN_INVALID_ARG;
+      if (info[i].host[0] != '\0' && strcmp(info[i].host, info[j].host) == 0)
+        return GZ_CHAIN_INVALID_ARG;
+    }
   }
   multi *m = calloc(1, sizeof *m);
   if (m == NULL) return GZ_CHAIN_NO_MEMORY;
@@ -465,6 +740,20 @@ gz_chain_result gz_multi_create(const gz_multi_config *cfg, const gz_chain *serv
   m->cfg = *cfg;
   m->n = count;
   memcpy(m->servers, servers, count * sizeof *servers);
+  /* number the operators: servers naming the same operator share a number */
+  for (size_t i = 0; i < count; i++) {
+    bool named = described[i] && info[i].operator_id[0] != '\0';
+    if (named) {
+      snprintf(m->op_name[i], GZ_OPERATOR_MAX, "%s", info[i].operator_id);
+    } else {
+      snprintf(m->op_name[i], GZ_OPERATOR_MAX, "unnamed-%u", (unsigned)i);
+    }
+    m->op[i] = m->n_ops;
+    for (size_t j = 0; j < i; j++) {
+      if (named && strcmp(m->op_name[j], m->op_name[i]) == 0) m->op[i] = m->op[j];
+    }
+    if (m->op[i] == m->n_ops) m->n_ops++;
+  }
   out->ctx = m;
   out->ops = &multi_ops;
   return GZ_CHAIN_OK;
@@ -473,4 +762,9 @@ gz_chain_result gz_multi_create(const gz_multi_config *cfg, const gz_chain *serv
 const gz_multi_report *gz_multi_last_report(const gz_chain *c) {
   if (c == NULL || c->ops != &multi_ops || c->ctx == NULL) return NULL;
   return &((const multi *)c->ctx)->report;
+}
+
+size_t gz_multi_operator_count(const gz_chain *c) {
+  if (c == NULL || c->ops != &multi_ops || c->ctx == NULL) return 0;
+  return ((const multi *)c->ctx)->n_ops;
 }
