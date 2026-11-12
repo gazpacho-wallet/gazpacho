@@ -2,7 +2,7 @@
 
 Decided 2026-11-11. A slice is one complete path through every layer that a person can run and watch, on a public test network. Slices are built as soon as the engines they need have passed their simulator tests, instead of waiting until every engine exists.
 
-Network: **signet first**, through public chain servers (`CHAIN-SERVERS.md`). Testnet4 is added when a second independent server is found for it.
+Network: **signet first**, through public chain servers (`CHAIN-SERVERS.md`). A second independent testnet4 server has been found (`CHAIN-SERVERS.md`), so testnet4 can be added; no slice is scheduled on it yet.
 
 ## Rules for every slice
 
@@ -14,11 +14,13 @@ Network: **signet first**, through public chain servers (`CHAIN-SERVERS.md`). Te
 
 ## Slice 1: form a factory
 
+Who is building each piece, on which branch, and the merge order: `SLICE1-WORK.md`.
+
 **What you see:** a host opens a lobby; members join; when the start rule is met their software signs; the host funds last; the funding transaction confirms on signet; the screen shows the lobby, the tree and the confirmation.
 
 | Needs | From |
 |---|---|
-| Core skeleton and simulator | M1, first piece (in progress) |
+| Core skeleton and simulator | M1, first piece (merged; follow-up in pull request 9) |
 | Signing round engine and the creation checks of the safe-to-sign rule | M1, second piece |
 | Lobby with target, minimum and deadline | Lifecycle engine, first cut |
 | Chain view over the HTTP explorer interface, comparing two servers | Chain port (started alongside M1) |
@@ -50,7 +52,7 @@ Needs the exit, watch and schedule engines (M3).
 
 ## Later slices
 
-Liquidity changes and rotation (the layered tree, M4); paying and being paid across the wider Lightning network through the host's node; finding hosts through Nostr.
+Rotation into the next factory (M4); paying and being paid across the wider Lightning network through the host's node; finding hosts through discovery (`spec/discovery.md`). Liquidity changes and timed levels are 1.1.0 (owner decision 9).
 
 ## Where slices run
 

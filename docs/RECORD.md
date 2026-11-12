@@ -100,6 +100,8 @@ Do not invent a format. Speak Lightning's own wire language, so a Gazpacho conne
 
 ## 10. Milestones
 
+*Superseded (2026-11-12): the sizes below were never measured and are withdrawn. `PLAN.md` holds the milestones in force, with no deadline.*
+
 | | Outcome | Rough size |
 |---|---|---|
 | M0 | Trial run of SuperScalar on regtest; primitives imported; differential test | 1 week |
@@ -144,7 +146,7 @@ Corrected in this document's intent (text above to be revised once the decisions
 - A restored backup never publishes its own channel state. It asks the host to prove the latest state and waits for the host to close.
 - The member's safety rule needs a precise definition (timelocks, in-flight payments, fees) and its own tests before any engine relies on it.
 - The browser can only reach hosts that offer a secure (certificate-backed) WebSocket.
-- Estimate revised: 13–15 weeks to a first release if the channel uses Lightning's standard taproot format.
+- Estimate revised: 13–15 weeks to a first release if the channel uses Lightning's standard taproot format. (*Withdrawn 2026-11-12: never measured.*)
 
 Open, awaiting the owner:
 
@@ -160,11 +162,11 @@ Open, awaiting the owner:
 
 ## 14. Decisions from review 1 (owner's answers, 2026-11-11)
 
-1. **Tree:** the first release ships the full layered tree. Build order is fixed tree first, then the layers; the core is designed for the full tree from the start.
+1. **Tree** (*superseded 2026-11-12 by owner decision 9: 1.0.0 trees are advanceless; timed levels arrive with 1.1.0*): the first release ships the full layered tree. Build order is fixed tree first, then the layers; the core is designed for the full tree from the start.
 2. **Exit fees:** a member with no balance has nothing to exit. For members with a balance, the base fee is built into the tree and commitment transactions and comes from the host's side (the host is the funder). The app recommends a small on-chain reserve for busy periods. At wind-down a member either pays their balance into the next factory over Lightning or co-signs a close that funds the next factory directly; either avoids an on-chain exit.
 3. **Away protection:** a long response window (about two weeks) in the first release. The watch engine is built so it can also run as a separate process: a service we offer, or one a user runs at home.
 4. **Channel format:** Lightning's standard taproot channel format, exactly. The old format is documented and retired.
-5. **Factory formation:** a lobby, like a game server. The host opens a lobby with rules; members join and mark themselves ready; the host starts when the start rule is met. Lobby listings and host proofs live on Nostr. Design note to be written (see below).
+5. **Factory formation:** a lobby, like a game server. The host opens a lobby with rules; members join and mark themselves ready; the host starts when the start rule is met. Lobby listings and host proofs live on Nostr (*superseded 2026-11-12: discovery runs over Lightning first, with Nostr as an optional annex, `spec/discovery.md`*). Design note to be written (see below).
 6. **Host's Lightning node:** one small adapter interface; both LND and Core Lightning supported. LND is implemented first as the reference.
 7. **Swap-in:** not in the first release. Tracked as an issue together with swap-out.
 8. **Web screens:** a local interface. The `gazpacho` program serves its screens on the local machine only, and the browser is just the display. Keys and channel state stay in the C program. A wallet that runs wholly inside a browser page is not planned for now.
@@ -264,7 +266,7 @@ From a trial run of SuperScalar (main plus its start-up crash fix) on regtest wi
 - **Identity and joining requirements** (control of coins, signing history, a chosen identity) will develop over time and must remain options a host sets. New joining rules usually need balances, coins or other state to decide what is safe to sign, so adding one is normally a reviewed change to the safe-to-sign module itself, which is kept small, with defined inputs and its own tests (owner's correction).
 - **Coordination as its own library.** The lobby, the signing round engine and the proof-of-fault scheme are written without dependence on the factory code so they can be split out.
 - **Host nodes** are listed with difficulty in `HOST-NODES.md`. LND first.
-- **A member adding coins to their own leaf** (later feature): other members never sign anything involving it, and nothing above that leaf changes, so their exits and balances are unaffected. The added coins sit in a separate on-chain output under joint control of that member and the host, so a cooperative close or rotation must spend that output in the same transaction that pays the member. It is an extension beyond the published SuperScalar design, and needs review. See `OPEN-QUESTIONS.md` item 18.
+- **A member adding coins to their own leaf** (later feature): other members never sign anything involving it, and nothing above that leaf changes, so their exits and balances are unaffected. The added coins sit in a separate on-chain output under joint control of that member and the host, so a cooperative close or rotation must spend that output in the same transaction that pays the member. It is an extension beyond the published SuperScalar design, and needs review. Listed in `OPEN-QUESTIONS.md` under research questions.
 - Documents reorganised: `PLAN.md` rewritten; `LOBBY.md`, `HOST-NODES.md`, `OPEN-QUESTIONS.md` and `handoff/` added.
 
 ## 18. M0b: foundations imported (2026-11-11)
@@ -409,3 +411,15 @@ Asked by the owner whether the development plan is solid. Findings:
 ## 32. Core and simulator skeletons merged (2026-11-11)
 
 Pull request 5 was merged after two independent reviews and three rounds of fixes. The last fix made the placeholder node resend every saved reply not recorded as sent, and added a simulator check that whatever is saved is eventually sent. A follow-up branch is in progress with the items the second review said are needed before the first engine: a resumable start step, reading storage through an iterator, failing on storage that answers out of order, restoring from an old backup with repeating randomness, and letting invariants see inside a node.
+
+## 33. Documentation brought in line with the owner's decisions (2026-11-12)
+
+An independent gap review found the documents people read first still stating decisions the owner had replaced. Corrected:
+
+- `DESIGN.md`, `PLAN.md`, `SLICES.md`, `KNOWLEDGE-BASE.md`: 1.0.0 trees are advanceless (decision 9); finding hosts is discovery over Lightning first, Nostr optional; seats and the protocol id (decisions 10 and 8); testnet4 has a second operator; the signing engine is not yet in any pull request.
+- Effort estimates in this record and in `ASSESSMENT.md` are withdrawn.
+- `OPEN-QUESTIONS.md` rewritten: answered items removed, one numbering, and a section "Awaiting the owner's yes" listing every value marked "proposed, owner to confirm".
+- `TESTING.md` split into what runs today and what is planned, with milestones.
+- New ledgers: `reviews/README.md` (every review round) and `handoff/README.md` (every request to the SuperScalar repository).
+- Citations of local, unpublished notes rewritten to the files archived under `docs/research/` and `docs/reviews/`.
+- A pull request template carries the engineering checklist.

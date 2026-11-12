@@ -2,6 +2,8 @@
 
 Assessment of 2026-11-11. Sizes are lines of C in the SuperScalar repo's `src/` on `main` (116 files, about 76,700 lines). Effort figures are rough guesses made before any Gazpacho code exists; a one-day trial run is planned to firm them up.
 
+**Superseded in part (2026-11-12).** The effort figures below were never measured and are withdrawn: they are not a schedule (`PLAN.md`: quality first, no deadline). Dates will follow from measured work. Two other points have changed since: the program has no member and host modes, since everyone can do both (owner decision 4, `ux/decisions.md`); and the screens are a local web interface served by the C program, not a WebAssembly build (`RECORD.md` section 14). The table is kept as written for the record.
+
 ## Starting point
 
 The SuperScalar repo sorts into three piles for Gazpacho's purposes.

@@ -1,6 +1,6 @@
 # Review 3, confirmation of fixes
 
-2026-11-12. Confirms whether `notes/spec-review-3.md` (F1 to F28, G1 to G20, section 3 table) is answered by the revised specs on branch `specs-slice1` (commit `4ad3b68`): `spec/safety-rule.md` and `spec/signing-round.md` draft 4 ("SR", "RD"), `spec/messages.md`, `spec/terms.md`, `spec/journal.md` draft 2 ("MS", "TR", "JN"), `tools/spec-vectors.py`, `docs/THREAT-MODEL.md`. Read with `git show`; the branch was not checked out in the main folder. This is not a fresh review: it checks each finding and looks for inconsistencies the fixes introduced.
+2026-11-12. Confirms whether `docs/reviews/spec-review-3.md` (F1 to F28, G1 to G20, section 3 table) is answered by the revised specs on branch `specs-slice1` (commit `4ad3b68`): `spec/safety-rule.md` and `spec/signing-round.md` draft 4 ("SR", "RD"), `spec/messages.md`, `spec/terms.md`, `spec/journal.md` draft 2 ("MS", "TR", "JN"), `tools/spec-vectors.py`, `docs/THREAT-MODEL.md`. Read with `git show`; the branch was not checked out in the main folder. This is not a fresh review: it checks each finding and looks for inconsistencies the fixes introduced.
 
 ## 1. Summary
 

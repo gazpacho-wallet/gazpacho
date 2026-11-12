@@ -2,7 +2,7 @@
 
 Every idea or decision from the owner conversation of 2026-11-11 and 12 that must reach the documents. Each row: the idea, its source, the document it belongs in, and its state. "Owner" means the owner said or chose it; "proposed" means it waits for the owner; "found" means a review or research found it.
 
-## A. Discovery (spec/discovery.md, spec/PROTOCOL.md). HOLD until the peering research lands (notes/peering-research.md)
+## A. Discovery (spec/discovery.md, spec/PROTOCOL.md). HOLD until the peering research lands (docs/research/peering-research.md)
 
 | # | Idea | Source | State |
 |---|---|---|---|

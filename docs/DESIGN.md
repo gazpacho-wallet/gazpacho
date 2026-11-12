@@ -1,6 +1,6 @@
 # Gazpacho design
 
-The current design, consolidated. 2026-11-11; owner decisions of 11 and 12 Nov added 2026-11-12.
+The current design, consolidated. 2026-11-11; owner decisions of 11 and 12 Nov added 2026-11-12; contradictions found by the gap review corrected 2026-11-12.
 
 How it got here, with dates, findings and superseded ideas, is in `RECORD.md`. Where the two differ, this file is the one in force. The illustrated version is `design.html`.
 
@@ -73,11 +73,11 @@ The full definition is `spec/safety-rule.md`. In brief:
 
 ## 7. The factory
 
-- The full layered SuperScalar tree in the first release; the fixed tree is built first.
-- Pseudo-Spilman leaves, one member per leaf. Payments never change the tree; liquidity changes do.
+- **1.0.0 trees are advanceless** (owner decision 9, 2026-11-12): every interior level is fixed, with no timed (Decker-Wattenhofer) levels. Timed levels and layer updates arrive with 1.1.0, together with liquidity sales. Extending a factory's life always means rotation to a new funding output; refresh in place is never used. This replaces the earlier "full layered tree in the first release".
+- Pseudo-Spilman leaves, one member per leaf. Payments never change the tree. In 1.0.0 nothing changes the tree after creation; liquidity changes arrive with 1.1.0.
 - One funder per factory: the host. Members start at zero and are paid in over Lightning.
 - The tree's shape for each size is fixed by the host's terms; members are placed in an agreed order, host first.
-- Shape rules, from the scale check: a level is at most 15 wide; a wide level is used only where every subtree under it has more members than the width; two-way trees are not used at size (27 days to exit at 512 members); upper levels are fixed where possible, since each timed level adds 3 days to an exit. Small factories (4, 8, 32) have their own shapes.
+- Shape rules, from the scale check: a level is at most 15 wide; a wide level is used only where every subtree under it has more members than the width; two-way trees are not used at size (27 days to exit at 512 members); each timed level adds 3 days to an exit, so in 1.0.0 every level is fixed. Small factories (4, 8, 32) have their own shapes.
 - Payment deadlines are computed from the factory's exit time plus a margin; payments with less headroom are refused.
 - A member's software exits automatically before expiry if nothing else has happened.
 - At wind-down a member pays their balance into the next factory over Lightning, or co-signs a close that funds the next factory directly.
@@ -94,7 +94,7 @@ The full definition is `spec/safety-rule.md`. In brief:
 - Factory messages travel inside one custom message type, with an envelope naming the protocol, the factory and the message kind.
 - Large signing data is split across messages with a completion marker.
 - A member's backup is held by the host using Lightning's peer-storage messages.
-- Encoders and decoders are generated from tables in `spec/`, with test vectors and fuzzing.
+- Encoders and decoders are to be generated from tables in `spec/`, with test vectors and fuzzing. No generator exists yet: `tools/spec-vectors.py` only prints vectors, and the transport's code is written by hand.
 - The message specification is `spec/messages.md`. **Our own odd envelope (type 52791) is the specification**; bLIP-56 is carried by an adapter, and signatures are always over our native bytes (owner's choice, 2026-11-12). It is offered to the SuperScalar repo as the shared format.
 - **A layered standard** (`spec/PROTOCOL.md`): transport, envelope, group coordination (a separate library), SuperScalar operations, channels and discovery are separate layers, each with its formats, state machines, acceptance rules and test vectors (owner, 2026-11-12).
 
@@ -118,7 +118,7 @@ Full detail in `docs/LOBBY.md`.
 - A lobby, like a game server. **Start rule:** a target, a minimum and a deadline. Reaching the target starts at once; at the deadline it starts if the minimum is met, and otherwise quits or carries members over.
 - Gathering is long; signing is short and automatic within each member's conditions.
 - A member's conditions are locked in, and are checked against the real tree at signing.
-- Listed or unlisted; open or by invitation (QR codes). A listing is one signed record, the same bytes on every path (`spec/discovery.md` draft 2): asked of the host over Lightning; announced by a small signed beacon relayed among factory-capable nodes and served by opt-in store nodes; and, optionally, on Nostr. One odd feature bit marks a factory-capable node; a host is whoever sends beacons. The signet demo ships the bit, direct queries and Nostr; beacons and store nodes come next.
+- Listed or unlisted; open or by invitation (QR codes). A listing is one signed record, the same bytes on every path (`spec/discovery.md` draft 2): asked of the host over Lightning; announced by a small signed beacon relayed among factory-capable nodes and served by opt-in store nodes; and, optionally, on Nostr. One odd feature bit marks a factory-capable node; a host is whoever sends beacons. The signet demo wallet ships the bit, direct queries and Nostr; beacons and store nodes come next. Slice 1 uses none of these: the member is given the host's address directly (`SLICES.md`). Which release the demo wallet is remains open (`OPEN-QUESTIONS.md`).
 - No voting. The host removes people; each member has a personal block list; history is kept locally.
 - Host switches for names, chat and rule-change requests. Optional self-identification. Identity is new per lobby by default.
 - Four rule profiles: Safety, Standard, Starter, Circle.
@@ -146,7 +146,7 @@ SuperScalar Improvement Proposals, `docs/sips/`. Request in a set format, open d
 
 ## 15. Testing
 
-`docs/TESTING.md`: seven levels, a simulator that injects network faults, crashes and cheating, nine invariants checked after every step, and two tests for every safety rule.
+`docs/TESTING.md`, in two parts. What runs today: reference values, wallet key vectors, the core and simulator tests with four invariants, sanitizer builds on GitHub. Planned: seven levels, a simulator that injects network faults, crashes and cheating, nine invariants checked after every step, and two tests for every safety rule.
 
 ## 16. Milestones
 
@@ -154,7 +154,7 @@ SuperScalar Improvement Proposals, `docs/sips/`. Request in a set format, open d
 |---|---|---|
 | M0 | Reference code run end to end | Done |
 | M0b | Foundations imported with a test and automated checks | Done |
-| M1 | Core skeleton, simulator and signing round engine; a fixed-tree factory in the simulator | In progress |
+| M1 | Core skeleton, simulator and signing round engine; a fixed-tree factory in the simulator | In progress: core skeleton merged; follow-up in pull request 9; the signing round engine is built on the build server but not yet in a pull request (`SLICE1-WORK.md`) |
 | Slice 1 | Form a factory on signet, shown in the local web interface | After M1 |
 | M2 | Channel and payment engines | |
 | Slice 2 | A payment on signet | After M2 |

@@ -10,15 +10,15 @@ Documents it maps (drafts as of 2026-11-12; the five Slice 1 specifications are 
 
 | Document | What it is |
 |---|---|
-| `transport.md` | The transport profile of BOLT 8 and BOLT 1. **In preparation; not in the tree when this map was written.** Until it exists, `messages.md` section 2 is the profile |
+| `transport.md` | The transport profile of BOLT 8 and BOLT 1. **On branch `transport` (pull request 10), not yet merged here.** It does not yet do `init`, ping or pong, which `messages.md` section 2 requires; until the two agree, `messages.md` section 2 is the profile |
 | `messages.md` | The envelope, splitting, the bLIP-56 adapter, the lobby and signing-round messages |
 | `terms.md` | The signed host terms record: outer rules, ranges, current values, freeze |
 | `signing-round.md` | The multi-party MuSig2 signing round and proof of fault |
 | `safety-rule.md` | The checks a member (and a host) runs before it signs. The acceptance rules of this map point here |
 | `journal.md` | Gazpacho's storage. **Not part of the shared protocol** (section 9) |
-| `notes/channel-groundwork.md` | Groundwork for the channel specification (`channel.md`, not written) |
+| `../docs/research/channel-groundwork.md` | Groundwork for the channel specification (`channel.md`, not written) |
 | `discovery.md` | Discovery: the feature bit, listing, queries, lobby beacon, overlay links, store nodes and the pool request, anchors, overlay peering (informative), Nostr annex (section 7) |
-| `notes/discovery-research.md` | Research behind `discovery.md` |
+| `../docs/research/discovery-research.md` | Research behind `discovery.md` |
 
 Words: **host** is the party that funds and coordinates (the SuperScalar papers say LSP); **member** is a party with a channel in the factory (the papers say client). "Specified" means a draft exists that fixes the bytes. "Reserved" means the numbers are kept and nothing else.
 
@@ -153,19 +153,19 @@ A member's channel is a standard Lightning taproot channel whose funding output 
 | Part | Rule | Source | State |
 |---|---|---|---|
 | Channel messages | BOLT 2 unchanged: opening, normal operation, `channel_reestablish`, closing. **Payments are BOLT 2 and are not ours** | BOLT 2 | Not ours |
-| Channel format | Simple taproot channels (bits 80/81) with `option_scid_alias` and `option_zeroconf`; never announced | BOLT taproot extension; `notes/channel-groundwork.md` 1.1 | To specify in `channel.md` |
+| Channel format | Simple taproot channels (bits 80/81) with `option_scid_alias` and `option_zeroconf`; never announced | BOLT taproot extension; `docs/research/channel-groundwork.md` 1.1 | To specify in `channel.md` |
 | Marking a channel as in a factory | bLIP-56's `open_channel` TLV `channel_in_factory` (65600): protocol id, instance id, early warning time | bLIP-56 | Planned from Slice 2; `factory_instance_id` open |
-| Factory-change flow | bLIP-56's idea: quiesce, agree the new funding outpoint, sign the first commitment on it with the same number, sign the factory state, batch both outpoints, lock. **Plus taproot nonces for the new outpoint**, which bLIP-56 does not cover | bLIP-56; BOLT 2 splicing; `notes/channel-groundwork.md` 2.3 | To specify; needed by layer updates and moves (sales in 1.1.0 open a new channel instead of moving one) |
+| Factory-change flow | bLIP-56's idea: quiesce, agree the new funding outpoint, sign the first commitment on it with the same number, sign the factory state, batch both outpoints, lock. **Plus taproot nonces for the new outpoint**, which bLIP-56 does not cover | bLIP-56; BOLT 2 splicing; `docs/research/channel-groundwork.md` 2.3 | To specify; needed by layer updates and moves (sales in 1.1.0 open a new channel instead of moving one) |
 | Early warning time | Every HTLC's expiry at least height + early warning + 1; computed from the real exit time, not from the import's under-reporting function | bLIP-56; `safety-rule.md` 7 | To specify; Slice 2 |
 | Commitment nonces | Under the channel format's own rules, outside the round's rules | `signing-round.md` 14.2, `safety-rule.md` 4.3 | Requirement stated |
 
 **Who else could reuse it:** any base node that implements bLIP-56, if the taproot-nonce gap is closed in bLIP-56 itself (section 12).
 
-**Portable documents needed:** `channel.md` (outline in `notes/channel-groundwork.md` part 3), with the BOLT vectors and our own vectors for opening on a leaf and for the change flow.
+**Portable documents needed:** `channel.md` (outline in `docs/research/channel-groundwork.md` part 3), with the BOLT vectors and our own vectors for opening on a leaf and for the change flow.
 
 ## 7. Layer 5: discovery
 
-**Specified in `discovery.md`** (draft 4, 2026-11-12, not reviewed), written from the owner's decisions (`docs/research/ideas-ledger.md` section A), `docs/research/peering-research.md`, `docs/research/discovery-research.md` and two independent reviews (`notes/review-discovery-d2.md`, `notes/review-discovery-d3.md`). Its section 0 maps every finding of the second review to how draft 4 handles it. Draft 4 adds: Tor budgets per connection, served in turn; a pending pool for beacons ahead of a node's tip; an arrival-rate churn cap and a tombstone cap; a (host, sequence) pool cursor, scout requests and `max_entries`; no positive peer scoring. Summary:
+**Specified in `discovery.md`** (draft 4.1, 2026-11-12; draft 4 confirmed by `docs/reviews/review-discovery-d4-confirm.md`, draft 4.1's changes not reviewed), written from the owner's decisions (`docs/research/ideas-ledger.md` section A), `docs/research/peering-research.md`, `docs/research/discovery-research.md` and two independent reviews and a confirmation (`docs/reviews/review-discovery-d2.md`, `docs/reviews/review-discovery-d3.md`, `docs/reviews/review-discovery-d4-confirm.md`). Its section 0 maps every finding of the second review to how draft 4 handles it. Draft 4 adds: Tor budgets per connection, served in turn; a pending pool for beacons ahead of a node's tip; an arrival-rate churn cap and a tombstone cap; a (host, sequence) pool cursor, scout requests and `max_entries`; no positive peer scoring. Summary:
 
 | Part | What | Carrier | `discovery.md` |
 |---|---|---|---|
@@ -457,7 +457,7 @@ Nothing below is to be posted, opened or commented on without the owner. Drafts 
 
 ## 13. Open points
 
-1. **`transport.md`** does not exist yet; this map relies on `messages.md` section 2 until it does.
+1. **`transport.md`** exists on branch `transport` (pull request 10) and is not merged here. It does not yet do `init`, ping or pong, which `messages.md` section 2 requires; this map relies on `messages.md` section 2 until the two agree.
 2. **Discovery** is specified in `discovery.md` draft 4 (section 7); its numbers are candidates and its open points are its section 22.
 3. **The kind ranges of section 10.1** are this map's proposal. They keep every Slice 1 number and must be confirmed by the owner and agreed with the SuperScalar session.
 4. **Records 241 and up** never used (10.2), and the 2 to 63 / 64 to 239 split for new records in layer 2 messages (4.1): proposed.

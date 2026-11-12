@@ -4,10 +4,10 @@ You are building ONE layout concept for the Gazpacho wallet as a single self-con
 
 ## Read first (all local, all required)
 
-1. `C:\pirq\gazpacho\docs\ux\options-map.html`: every option, in scopes. The "Version 2" section wins where it disagrees with the tables below it. It ends with the sixteen moments.
-2. `C:\pirq\gazpacho\notes\ux\research-wallets.md`, `research-node-market.md`, `research-lobbies-consent.md`: what real products do. Use the parts relevant to your concept; the last one ends with a checklist of testable interface rules that apply to every concept.
-3. `C:\pirq\gazpacho\notes\ux\gap-check.md`, sections B and C.
-4. `C:\pirq\gazpacho-ui\web\css\gazpacho.css` for the colour tokens (cream background, tomato red accent, light and dark). Reuse the palette so the seven look like one product in different arrangements. You may restyle layout freely.
+1. `docs/ux/options-map.html` (branch `ux-concepts`): every option, in scopes. The "Version 2" section wins where it disagrees with the tables below it. It ends with the sixteen moments.
+2. `docs/research/ux/research-wallets.md`, `research-node-market.md`, `research-lobbies-consent.md`: what real products do. Use the parts relevant to your concept; the last one ends with a checklist of testable interface rules that apply to every concept.
+3. `docs/research/ux/gap-check.md`, sections B and C.
+4. `web/css/gazpacho.css` (branch `ui-prototype`) for the colour tokens (cream background, tomato red accent, light and dark). Reuse the palette so the seven look like one product in different arrangements. You may restyle layout freely.
 
 ## What Gazpacho is
 
@@ -40,7 +40,7 @@ A non-custodial Lightning wallet. One **host** and many **members** share one on
 
 ## What to build
 
-One file, your assigned path under `C:\pirq\gazpacho\docs\ux\`. Requirements:
+One file, your assigned path under `docs/ux/`. Requirements:
 
 - Self-contained: inline CSS and JS only, no external requests of any kind, no frameworks, no images other than inline SVG. Works from a `file://` address.
 - Clickable: real navigation between screens inside the file (show/hide sections; keep the address hash in step so screens can be linked). Light and dark by `prefers-color-scheme` plus a toggle. Usable at 360 px and at 1280 px wide; no sideways scrolling.
@@ -63,7 +63,7 @@ Create only your one HTML file in the repository. Do not commit, push or post. F
 1. **No host mode and no role question.** Everyone can always do both. Never ask "member or host?" at first run or anywhere else, and do not hide hosting behind a switch. Hosting is an ordinary first-level area that is always visible ("Host a factory" or "Hosting"). Before the person has hosted anything it shows a short, calm starting page: what hosting needs (funds and a linked Lightning node) and a "Write terms" button. It must not clutter the member's home: host items appear on the home only once the person has a lobby or factory of their own. Replace the top bar's member/host mode switch with a Moments-menu state "I also host", which fills the hosting area with the sample lobby. One home, not two: a hosting section appears on it when there is something to show.
 2. **Buying receiving room (buying liquidity, splicing, channels opened on demand) is version 1.1.0, not 1.0.0.** Keep those screens but hide them by default: reachable only through a clearly marked "Preview 1.1.0" toggle in the Moments menu, and every such screen carries a "1.1.0" tag. In the normal view, "can receive" shows the room left, with one line: "More receiving room can be bought from version 1.1.0." The conditions and the lobby term that relate to it (receiving-room fee limit, automatic buying, receiving-room fee) likewise appear only in the 1.1.0 preview.
 3. **Terms: outer rules are fixed; values move only inside signed ranges, then freeze.** A lobby's outer rules (its profile, every fixed term, and the allowed range of each adjustable term) never change; a change means a new lobby. Inside a range the host may move the current value until the ready check, when everything freezes. The sealed terms card shows, for an adjustable term, the current value and its range, for example "Joining fee: 1,000 sats now; may move between 500 and 1,500 until the ready check". The fit check compares my limit with the WHOLE range by default, so I can never be switched at the last moment; a row can read "fits at any value the host may choose". Offer the looser choice as one condition: "Ready me while the current value fits; un-ready me if it moves outside my limit." Show a short rules fingerprint on the card ("Rules fingerprint 7f3a…c21e, signed by the host") with one line saying the app signs only for these exact rules. Remove any "open" tag about "new version or new lobby".
-5. **Safety wording rules, from the independent critique (`notes/ux/critique.md`).** All seven first concepts broke these. Every sentence about safety, absence or what the app does alone must follow them:
+5. **Safety wording rules, from the independent critique (`docs/reviews/ux-critique.md`).** All seven first concepts broke these. Every sentence about safety, absence or what the app does alone must follow them:
    - **Leaving alone is conditional.** Never "the app always leaves alone in time" or "makes sure of that". Say: "While it is running and has funds for fees, the app starts leaving alone in time. If it is closed, nothing acts for you unless something watches." Never "this cannot be switched off" without the condition.
    - **Being away too long is not harmless.** After the safe absence has passed, never "nothing was lost", "your money has not moved", "your coins are not lost". Say what is true: "Nothing appears to have gone wrong while you were away. Check below." and show what the app checked.
    - **An unfinished signing round is its own state.** Once my partial signatures have gone out and no result came back, never "nothing moved", "nothing was signed", "you are back in line", "you need do nothing". Say: "Signing did not finish. The app treats both the old and the new state as possible and keeps watching both until it is settled." Only before my partial signatures go out may a failed start say "nothing was signed; you are back in line".

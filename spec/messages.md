@@ -1,6 +1,6 @@
 # Factory messages
 
-Specification draft 2, 2026-11-12. Status: draft 1 brought fully in line with `signing-round.md` and `safety-rule.md` draft 4 after the third, joint review (`notes/spec-review-3.md`). Draft 2 has not itself been reviewed. Written for slice 1 (form a factory on signet). It gives the exact encoding of every message of `signing-round.md` section 4 for the creation round, and the lobby's messages. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: every one is now settled by `signing-round.md` draft 4. Values marked **proposed, owner to confirm** are Slice 1 choices the owner has not objected to and has not yet confirmed.
+Specification draft 2, 2026-11-12. Status: draft 1 brought fully in line with `signing-round.md` and `safety-rule.md` draft 4 after the third, joint review (`docs/reviews/spec-review-3.md`). Draft 2 has not itself been reviewed. Written for slice 1 (form a factory on signet). It gives the exact encoding of every message of `signing-round.md` section 4 for the creation round, and the lobby's messages. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: every one is now settled by `signing-round.md` draft 4. Values marked **proposed, owner to confirm** are Slice 1 choices the owner has not objected to and has not yet confirmed.
 
 ## Changes after review 3
 
@@ -929,7 +929,8 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 13. Closed: the parameter table (7.2) follows `signing-round.md` draft 4 section 4.1. Lobby-constant values stay proposal fields; the fee rule is `terms.md` section 4.2's.
 14. **The distribution transaction** is not signed in Slice 1 and the host recovers its coins by its timeouts (`safety-rule.md` section 12) — **proposed, owner to confirm**. Record 44 is reserved and even.
 15. Closed: both digests are in the round identifier (`signing-round.md` section 3).
-16. **The 512-node limit** comes from a defect in the import (N13.3) and caps slice 1 at roughly 128 members until fixed upstream. Slice 1 needs only four participants.
+16. **The 512-node limit** comes from a defect in the import (N13.3). It matters only when the optional hashlock penalty is on (`use_hashlock_poison`; SuperScalar's reply of 2026-11-12, `docs/handoff/README.md` requests 3 to 6): then it caps a factory at roughly 128 members until fixed upstream (their pull request 486). Without the penalty this cap does not apply; the other limits of `signing-round.md` section 12 still do. Slice 1 sets no hashes and needs only four participants.
 17. **The funding transaction travels in `round_propose`**, not in `round_complete` as review 2 N16 suggests, so the txid is checked before any contribution.
 18. Closed: **the protocol id** is SHA-256 of "SuperScalar/1", decided (owner, 2026-11-12) (10.3); superscalar-cln currently uses a different value and will be updated. Still open: renaming the tags and switching signed preimages from the 4-byte tag to the 32-byte id, in one change (4.3).
 19. **`factory_instance_id`** for slice 2's `channel_in_factory`.
+20. **Pending: a per-member capacity in the proposal** (SuperScalar's reply to request 7, 2026-11-12). Section 7.2 will carry each member's capacity and each member will check its own (`terms.md` open point 6). Not written yet.

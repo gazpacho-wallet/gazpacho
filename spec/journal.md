@@ -1,6 +1,6 @@
 # The storage journal, first cut
 
-Specification draft 2, 2026-11-12. Status: draft 1 corrected after the third, joint review of the five Slice 1 specifications (`notes/spec-review-3.md`), which found its torn-tail rule and its restore section wrong. Draft 2 has not itself been reviewed. The file-based journal that slice 1 needs (`docs/SLICES.md`: "A file-based journal"). It implements the storage side of the runner contract in `core/gazpacho/include/gazpacho/runner.h`. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: `safety-rule.md` and `signing-round.md` draft 4 settle them.
+Specification draft 2, 2026-11-12. Status: draft 1 corrected after the third, joint review of the five Slice 1 specifications (`docs/reviews/spec-review-3.md`), which found its torn-tail rule and its restore section wrong. Draft 2 has not itself been reviewed. The file-based journal that slice 1 needs (`docs/SLICES.md`: "A file-based journal"). It implements the storage side of the runner contract in `core/gazpacho/include/gazpacho/runner.h`. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: `safety-rule.md` and `signing-round.md` draft 4 settle them.
 
 ## Changes after review 3
 

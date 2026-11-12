@@ -20,7 +20,7 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 |---|---|
 | Source | SuperScalar's low-level files imported unchanged as a pinned copy; everything above them written new |
 | Structure | A core library with no outside access (events in, actions out), ports for storage, chain and network, thin programs on top |
-| Tree | The full layered SuperScalar tree in the first release; fixed tree built first. Pseudo-Spilman leaves. JIT channels off |
+| Tree | 1.0.0 trees are advanceless: every interior level fixed, no timed levels (owner decision 9, 2026-11-12). Timed levels and layer updates arrive with 1.1.0 and liquidity sales. Extending a factory always means rotation. Pseudo-Spilman leaves, one member per leaf. JIT channels off |
 | Funding | One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero |
 | Messages | Lightning's own wire language; factory messages inside one custom odd message type (52791), which is the specification; bLIP-56 through an adapter |
 | Channel | Lightning's standard taproot channel format; the old format archived and recoverable |
@@ -30,7 +30,9 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 | Host's link to Lightning | An adapter to a regular node: LND first, then Core Lightning, then others. Later the built-in node does it alone |
 | Away protection | About two weeks to open the app; the watch engine can also run as a separate process |
 | Reminders | The core knows every date by which the user must act |
-| Finding hosts | Listings and host proofs on Nostr; everything else direct |
+| Finding hosts | Discovery over Lightning first: one feature bit, direct queries, signed beacons and opt-in store nodes; Nostr as an optional annex, where listings need a coin or channel anchor (`spec/discovery.md`). Live state, joining and signing stay direct. Slice 1 uses none of it: the member is given the host's address |
+| Seats | Free in 1.0.0, protected by invitation-only lobbies, host removal before the start, standby seats and the signing time budget. Next a proof of control of a coin or channel for public lobbies, with a share of newcomer seats that need none. Later the host chooses per lobby in its terms (owner decision 10) |
+| Protocol id | `factory_protocol_id` = SHA-256 of `SuperScalar/1`, shared with the SuperScalar projects (owner decision 8) |
 | Not in the first release | Swap-in and swap-out, a watching service, members adding their own coins, several hosts per factory |
 | Old projects | Soup wallet is mothballed and kept for reference. The SuperScalar repo is maintained by another session |
 
@@ -40,13 +42,13 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 |---|---|---|
 | M0 | Reference code run end to end; foundations shown to separate; reference values recorded | Done |
 | M0b | Foundations imported into this repo with a build and a reference test | Done |
-| M1 | Core skeleton and simulator (merged 11 Nov; a follow-up hardens restart and adds faults the engines need); signing round engine; a fixed-tree factory created in the simulator with funding signed last | In progress |
+| M1 | Core skeleton and simulator (merged 11 Nov; a follow-up, pull request 9, hardens restart and adds faults the engines need); signing round engine; a fixed-tree factory created in the simulator with funding signed last | In progress. The signing round engine is built on the build server but not yet in a pull request (`SLICE1-WORK.md`) |
 | **Slice 1** | **Form a factory on signet:** lobby, signing, funding last, shown in the local web interface | After M1 |
 | M2 | Channel engine on the standard taproot format; payment engine; invariants on | |
 | **Slice 2** | **A payment** between two members through the host, on signet | After M2 |
 | M3 | Exit, watch and schedule engines; crash and cheating runs pass | |
 | **Slice 3** | **Leaving alone:** a member exits on signet with the host stopped | After M3 |
-| M4 | Rotation into the next factory (1.0.0 trees are advanceless: fixed levels only); the full layered tree with timed levels and layer updates moves to 1.1.0 with liquidity sales | |
+| M4 | Rotation into the next factory (1.0.0 trees are advanceless: fixed levels only). Timed levels and layer updates are 1.1.0 work, with liquidity sales | |
 | M5 | Hardening of storage, transport and chain view; Electrum backend; a node of our own for controlled-chain tests | |
 | M6 | First release candidate on signet: lobby listings, host service, LND adapter, full local web interface, our public host | |
 
@@ -113,11 +115,14 @@ Work that does not depend on the server (specifications, research, reviews of te
 | `LOBBY.md`, `LOBBY-research.md` | The lobby design and the research behind it |
 | `HOST-NODES.md` | Lightning nodes a host can link to, and how hard each is |
 | `CHAIN-SERVERS.md` | Public chain servers found to answer, and how they are used |
-| `TESTING.md` | The testing plan |
-| `../spec/` | Specifications: the safe-to-sign rule, the signing round |
+| `TESTING.md` | What runs today, and the testing plan with the milestone of each item |
+| `../spec/` | Specifications: the protocol map (`PROTOCOL.md`), the safe-to-sign rule, the signing round, messages, host terms, the journal, discovery; the transport is on branch `transport` |
 | `SLICES.md` | The vertical slices: what each shows, needs, and when it is done |
+| `SLICE1-WORK.md` | Slice 1's work table (piece, spec, branch, state) and merge order |
 | `OPEN-QUESTIONS.md` | What is still undecided |
 | `sips/` | How rules and features are proposed and decided |
 | `AWAY.md` | Meeting a member's duties while they are away |
 | `ASSESSMENT.md` | What existed at the start and what has to be built |
-| `handoff/` | Notes sent to the SuperScalar repo session |
+| `handoff/` | Notes sent to the SuperScalar repo session; `handoff/README.md` is the ledger of every request and its state |
+| `reviews/` | Independent reviews; `reviews/README.md` is the ledger of every review round |
+| `THREAT-MODEL.md` | Who can attack what, and which rule answers each attack |

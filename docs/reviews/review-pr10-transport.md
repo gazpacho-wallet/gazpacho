@@ -154,7 +154,7 @@ What the pin does not cover: the host side has no pin at all. `gz_conn_accept` c
 
 ## 3. Hostile input and denial of service
 
-Results of my connection tests (`review_extra.c`, forked processes on 127.0.0.1, both builds):
+Results of my connection tests (`review_extra.c`, forked processes on the local machine, both builds):
 
 | Case | Result |
 |---|---|

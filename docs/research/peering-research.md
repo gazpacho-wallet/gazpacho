@@ -7,7 +7,7 @@ The owner's questions:
 1. What is the best technique for the preferential peering and the overlay in Gazpacho's discovery design (layer 3, the lobby beacon)?
 2. Could this design one day let Gazpacho drop Nostr?
 
-Background that this note does not repeat is in `notes/discovery-research.md`, cited below as **DR** with its section (for example DR A8). The explainer for the owner is `notes/discovery-comparison.html`.
+Background that this note does not repeat is in `docs/research/discovery-research.md`, cited below as **DR** with its section (for example DR A8). The explainer for the owner is `docs/research/discovery-comparison.html`.
 
 ## How to read this file
 
@@ -31,7 +31,7 @@ From the brief, and from `tools/spec-vectors.py` in the specs worktree (vectors 
 
 Beacons are accepted only from nodes in the gossip graph with the bit, capped per host, expire at the deadline, are relayed by default among F nodes, and are stored only by nodes that opt in.
 
-**Update from the ideas ledger (`notes/ideas-ledger.md` A1, A3, A6), applied throughout this note:**
+**Update from the ideas ledger (`docs/research/ideas-ledger.md` A1, A3, A6), applied throughout this note:**
 
 - **One** public factory bit F, not two. A *host* is whoever sends beacons. In this note "host" means an F node with a live beacon in the receiver's store.
 - A per-connection **lobby store** flag in the factory handshake, like the relay flag in Bitcoin's `version` message (BIP 37 `fRelay`, used by blocks-only nodes).

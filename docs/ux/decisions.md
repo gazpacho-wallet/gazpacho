@@ -11,7 +11,7 @@ Decisions by the owner that shape the interface and the terms record. Newest las
 - A member's limits are compared with the **whole range**, not only the current value, by default. A member whose limits cover the whole range can never be switched at the last moment. A looser choice ("ready while the current value fits; un-ready me if it moves outside") may be offered as an option.
 - **Digests.** The outer rules have one digest, a tagged hash of their canonical encoding, signed by the host's long-term key. It is the lobby's identity. The current values have a version number and their own signed digest that includes the outer digest. A member's ready message names both. The signing round's identifier already includes the terms digest (`spec/signing-round.md`, section 3), so a signature can only be for the terms the member readied for, and the tree is still checked against the member's conditions at signing.
 - This settles the question raised by the research ("a new version or a new lobby"): outer rules never change; inner values move within signed bounds and then freeze.
-- To specify: the canonical encoding and the list of which terms may be ranges. This belongs in the host terms record specification, which does not exist yet.
+- To specify: the canonical encoding and the list of which terms may be ranges. This belongs in the host terms record specification. (Done: `spec/terms.md` draft 2 specifies both, 2026-11-12.)
 
 ### 2. Fees a host can charge
 

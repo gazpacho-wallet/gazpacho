@@ -1,6 +1,6 @@
 # Threat model
 
-Draft 1, 2026-11-11. Built from section 8 of `notes/spec-review-2.md`, edited to match `spec/safety-rule.md` and `spec/signing-round.md` draft 3. Not reviewed.
+Draft 1, 2026-11-11. Built from section 8 of `docs/reviews/spec-review-2.md`, edited to match `spec/safety-rule.md` and `spec/signing-round.md` draft 3. Not reviewed.
 
 **What this is.** For each party that could harm a Gazpacho user: what it can do, which rule is meant to stop it, and what is not defended. It describes what the specifications say. It does not say the defences work. That needs the tests in `safety-rule.md` section 13 and `signing-round.md` section 16, none of which exist yet.
 
@@ -90,7 +90,7 @@ Public Electrum-style or explorer servers, or the user's own.
 |---|---|---|
 | A fake confirmation of the funding | Header checks; two servers compared (Slice 1's chain port) | The burial depth is not yet chosen |
 | Hiding the kickoff or an old state | Several sources; the maximum safe absence shown to the user (SR section 7) | Beyond the safe absence (accepted). **1.1.0:** under a day for a member above coverage under a timed layer |
-| Hiding or delaying the member's own broadcast | Several servers | Package submission was not available on the public Electrum servers found (`notes/channel-groundwork.md`, 1.9) |
+| Hiding or delaying the member's own broadcast | Several servers | Package submission was not available on the public Electrum servers found (`docs/research/channel-groundwork.md`, 1.9) |
 | False fee rates, so the member underpays | — | Not addressed |
 
 ### 2.5 Nostr relays

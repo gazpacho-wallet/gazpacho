@@ -1,6 +1,6 @@
 # The safe-to-sign rule
 
-Specification draft 4, 2026-11-12. Status: draft 3 brought in line with the four companion specifications after a third, joint review (`notes/spec-review-3.md`, findings F1 to F28), which judged draft 3 "ready after listed changes" and found that no finding needs a different cryptographic design. Draft 4 has not itself been reviewed. Nothing here has been reviewed outside this project. Values marked **proposed, owner to confirm** are Slice 1 choices the owner has not objected to and has not yet confirmed.
+Specification draft 4, 2026-11-12. Status: draft 3 brought in line with the four companion specifications after a third, joint review (`docs/reviews/spec-review-3.md`, findings F1 to F28), which judged draft 3 "ready after listed changes" and found that no finding needs a different cryptographic design. Draft 4 has not itself been reviewed. Nothing here has been reviewed outside this project. Values marked **proposed, owner to confirm** are Slice 1 choices the owner has not objected to and has not yet confirmed.
 
 This document defines the check a member's software runs before it contributes to any signature, the matching rules for the host, and what the rule cannot protect against. The code that implements it is one module, the only place where "is this safe to sign?" is decided.
 
@@ -198,7 +198,7 @@ What is known, for whoever specifies it:
 
 ### 4.3 Not specified yet: channel commitments inside rounds (to be specified with the channel engine, before Slice 2)
 
-Draft 2 put channel states inside round tiers. That conflicts with the standard taproot channel format, where a party never holds a final signature on its own commitment: it holds the peer's partial signature and signing nonce, and completes its own partial signature at broadcast with a verification nonce that must be reproducible weeks later (`notes/channel-groundwork.md`, Part 1.1, "Nonces"). The round engine's nonce rules forbid exactly that (`signing-round.md` section 8).
+Draft 2 put channel states inside round tiers. That conflicts with the standard taproot channel format, where a party never holds a final signature on its own commitment: it holds the peer's partial signature and signing nonce, and completes its own partial signature at broadcast with a verification nonce that must be reproducible weeks later (`docs/research/channel-groundwork.md`, Part 1.1, "Nonces"). The round engine's nonce rules forbid exactly that (`signing-round.md` section 8).
 
 The requirement, for the channel engine's specification:
 
@@ -245,10 +245,12 @@ Always from the member's own records, never from the request. Stated after the c
 **Maximum safe absence.** The smallest of all W and R values named under C4 on the member's path, less a margin, and never later than the moment the member must start leaving to meet C5. The schedule engine shows it to the user.
 
 - With fixed levels and one-member pseudo-Spilman leaves it is the channel's revocation window, which the terms set (the design's figure is about two weeks; not measured).
-- With a timed layer above the member, it is the same in 1.0.0, provided section 4.1 rule 3 holds, because every old state is then C4(a) (section 8) [R].
+- With a timed layer above the member (none in 1.0.0, owner decision 9; from 1.1.0), it is the same as long as no balance exceeds its capacity, provided section 4.1 rule 3 holds, because every old state is then C4(a) (section 8) [R].
 - A member whose balance exceeds its capacity under some live old state (possible only with sales, 1.1.0) has R = one step of that layer, about a day at a 144-block step.
 
 ## 8. Timed layers
+
+**Owner decision 9 (2026-11-12): 1.0.0 trees have no timed layers.** This section applies from 1.1.0; its "In 1.0.0" paragraph is kept as the reasoning behind that decision.
 
 **This section is reasoning from the imported code. It has not been checked against the design posts (ZmnSCPxj, Delving topics 1143 and 1242) or by a simulator test.** It replaces draft 2's statement that losing the race is "loss, not delay" for every member, which review 2 (N3) showed to be overstated once rule 3 is applied.
 
@@ -414,13 +416,13 @@ The simulator's accounting computes exit value independently of this module, fro
 
 **For the owner**
 
-1. **Timed layers and absence** (restated after review 2, N3). If section 8's reasoning holds, in 1.0.0 an old layer state never costs a member its balance, provided the channel engine keeps every old anchor current. Then the trade-off is not draft 2's "watched within a day, or a much longer step, or no timed layers". It is:
+1. Closed by owner decision 9 (2026-11-12, `docs/ux/decisions.md`): no timed layers in 1.0.0; they arrive with 1.1.0 and liquidity sales. Still to do: a simulator test that no 1.0.0 operation advances a layer. The reasoning that led there, kept for 1.1.0: **Timed layers and absence** (restated after review 2, N3). If section 8's reasoning holds, in 1.0.0 an old layer state never costs a member its balance, provided the channel engine keeps every old anchor current. Then the trade-off is not draft 2's "watched within a day, or a much longer step, or no timed layers". It is:
    - timed layers cost a longer worst-case exit (up to step × (states − 1) per timed layer), one more commitment signature per live anchor on every channel update, and a watch engine that watches every old anchor;
    - fixed levels only cost nothing of that, and keep one anchor per channel, which makes the channel engine simpler;
    - no 1.0.0 operation that updates a timed layer is specified yet; without one, a timed layer only lengthens the exit.
 
    Before deciding: check the reasoning against ZmnSCPxj's text and the named simulator test. For 1.1.0 members above their coverage, draft 2's options return.
-2. **Free seats and the end-date payout.** Once members are paid their channel's capacity at the end date, a seat that costs nothing and stays silent takes the host's capital unless the host forces it out on chain, at the host's expense. A deposit or another cost per seat becomes a precondition for that payout, not an extra.
+2. **Free seats and the end-date payout.** Owner decision 10 (2026-11-12): seats are free in 1.0.0, then a proof of a coin or channel, then a per-lobby choice. The concern below stands for the proof step, which should land with the end-date payout. Once members are paid their channel's capacity at the end date, a seat that costs nothing and stays silent takes the host's capital unless the host forces it out on chain, at the host's expense. A deposit or another cost per seat becomes a precondition for that payout, not an extra.
 3. **The Slice 1 decisions** in section 12.
 
 **To settle by reading or measuring**

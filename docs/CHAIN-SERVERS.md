@@ -22,6 +22,7 @@ For now the project runs no Bitcoin node of its own (owner's decision, 2026-11-1
 | Signet | `https://mempool.space/signet/api` | 330437 |
 | Signet | `https://blockstream.info/signet/api` | 330437 |
 | Testnet4 | `https://mempool.space/testnet4/api` | 160702 |
+| Testnet4 | `https://blockstream.info/testnet4/api` | 160708 (found later, see below) |
 | Testnet3 | `https://blockstream.info/testnet/api` | 5345034 |
 | Mutinynet (a separate signet) | `https://mutinynet.com/api` | 3582251 |
 | Mainnet | `https://mempool.space/api` | 975473 |
@@ -29,12 +30,20 @@ For now the project runs no Bitcoin node of its own (owner's decision, 2026-11-1
 
 ### Tried and did not answer
 
-`mempool.space:50002`, `blockstream.info:993`, `signet-electrumx.wakiyamap.dev:50002`, `electrum.emzy.de:50002`. These were guesses at addresses and may simply be wrong; they are listed so they are not tried again without checking.
+`mempool.space:50002`, `blockstream.info:993`, `signet-electrumx.wakiyamap.dev:50002`. These were guesses at addresses and may simply be wrong; they are listed so they are not tried again without checking. `electrum.emzy.de:50002` is that host's mainnet port; on signet it answers on 53002 (below).
+
+### Found later by the chain port's work
+
+Checked from the build server on 2026-11-11 (`docs/notes/chain-port.md` section 11, on branch `chain-esplora`):
+
+- **Testnet4, HTTP:** `https://blockstream.info/testnet4/api` answered with the same tip as mempool.space. That is a second independent operator.
+- **Signet, Electrum protocol:** `electrum.emzy.de:53002` (ElectrumX) answered with the same tip as `mempool.space:60602`. That is a second independent operator.
+- **Testnet4, Electrum protocol:** several community Fulcrum and ElectrumX servers answered, among them `blackie.c3-soft.com:57010`, `fulcrum.theuplink.net:60002`, `bitcoin.stagemole.eu:5010`, `testnet4.qtornado.com:51012` and `testnet.aranguren.org:52002`. Certificates were not checked.
 
 ## What this gives us
 
-- **Signet has two independent operators** on the HTTP interface (mempool.space and Blockstream) and one on the Electrum protocol. Both HTTP servers reported the same tip. That is enough to compare answers, which the design requires on signet.
-- **Testnet4** has one operator found so far. A second is needed before answers can be compared there.
+- **Signet has two independent operators** on the HTTP interface (mempool.space and Blockstream) and two on the Electrum protocol (mempool.space and emzy.de). Both HTTP servers reported the same tip. That is enough to compare answers, which the design requires on signet.
+- **Testnet4** has two independent operators on HTTP (mempool.space and Blockstream) and several on the Electrum protocol, so answers can be compared there too.
 - **Mainnet** has two operators on HTTP and one found on Electrum. Mainnet stays switched off in releases regardless.
 
 ## How Gazpacho uses them
@@ -53,6 +62,6 @@ For now the project runs no Bitcoin node of its own (owner's decision, 2026-11-1
 
 ## To do
 
-1. Find a second independent testnet4 operator, and a second signet operator on the Electrum protocol.
+1. Done: a second independent testnet4 operator and a second signet Electrum operator were found (above).
 2. Read the operators' terms and rate limits.
 3. Decide the default list for release, per network.

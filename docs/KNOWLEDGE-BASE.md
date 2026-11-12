@@ -10,18 +10,21 @@ The single place to start. It gathers what has been learned and decided, says ho
 | The design currently in force | `DESIGN.md` |
 | The dated record of findings, reviews and decisions | `RECORD.md` |
 | What every piece of work must satisfy before review | `ENGINEERING-CHECKLIST.md` |
-| The testing plan | `TESTING.md` |
-| The vertical slices | `SLICES.md` |
-| Specifications (safe-to-sign rule, signing round) | `../spec/` |
+| What runs today, and the testing plan | `TESTING.md` |
+| The vertical slices | `SLICES.md`; Slice 1's work table and merge order in `SLICE1-WORK.md` |
+| Specifications: protocol map, safe-to-sign rule, signing round, messages, host terms, journal, discovery (transport on branch `transport`) | `../spec/`, starting at `PROTOCOL.md` |
+| Threat model | `THREAT-MODEL.md` |
+| Reviews, and the ledger of every review round | `reviews/README.md` |
 | What is still undecided | `OPEN-QUESTIONS.md` |
 | How a factory forms | `LOBBY.md`, with research in `LOBBY-research.md` |
 | Lightning nodes a host can link to | `HOST-NODES.md` |
 | Public chain servers found to answer, and how they are used | `CHAIN-SERVERS.md` |
 | What existed at the start | `ASSESSMENT.md` |
-| Notes for the SuperScalar repo session | `handoff/` |
+| Notes for the SuperScalar repo session, and the ledger of every request | `handoff/`, `handoff/README.md` |
 | Illustrated pages (versioned) | `design.html`, `gazpacho-overview.html`, older versions in `history/` |
 | Everything in one file | `handbook.html`: a list of contents when closed, the full text of every document when opened. Rebuild with `tools/build-handbook.py` after editing any document |
-| Questionnaires put to the owner | `design-review-1.html`, `questions-2.html` |
+| Questionnaires put to the owner | `design-review-1.html`, `questions-2.html`, `questions-4-release.html` (answered: decisions 9 and 10), `questions-5-decisions.html` (decisions made for the owner, awaiting answers). Questions 3 is on branch `ux-concepts` |
+| Owner decisions 1 to 10 | `ux/decisions.md` |
 | Imported code and its manifest | `../core/superscalar/IMPORT.md` |
 | How rules and features are proposed and decided (SIPs) | `sips/`, with a rule-request template and a worked example |
 | Meeting a member's duties while they are away | `AWAY.md` |
@@ -172,7 +175,7 @@ Newest first within each area. The date is when the owner decided.
 
 ### Not yet known
 - Whether Eclair, LDK-based nodes and Nostr Wallet Connect can hold payments open in a way we can use.
-- The timelock and deadline numbers for the full layered tree.
+- The timelock and deadline numbers for 1.0.0's advanceless trees, and later for 1.1.0's timed levels.
 - How members who are offline at rotation are reached.
 
 ## 7. Risks we are carrying

@@ -1,6 +1,6 @@
 # Review 2 of the safe-to-sign rule and the signing round
 
-2026-11-11. Adversarial review of `spec/safety-rule.md` (draft 2) and `spec/signing-round.md` (draft 2). Read against `notes/spec-review-1.md` (F1 to F15), `docs/KNOWLEDGE-BASE.md`, `docs/DESIGN.md`, `docs/ux/decisions.md`, `docs/SLICES.md`, `notes/channel-groundwork.md`, the SuperScalar end-date payout review (`C:\pirq\SuperScalar-SPEC-end-date-payout-REVIEW.md`), the imported code under `core/superscalar/` (`src/factory.c`, `src/musig.c`, `src/dw_state.c`, their headers, and one routine in `src/tapscript.c`), and BIP 327 as fetched today. I did not write either specification. Nothing was built or run.
+2026-11-11. Adversarial review of `spec/safety-rule.md` (draft 2) and `spec/signing-round.md` (draft 2). Read against `docs/reviews/spec-review-1.md` (F1 to F15), `docs/KNOWLEDGE-BASE.md`, `docs/DESIGN.md`, `docs/ux/decisions.md`, `docs/SLICES.md`, `docs/research/channel-groundwork.md`, the SuperScalar end-date payout review (a local folder; Gazpacho's summary is `docs/handoff/2026-11-11-review-of-end-date-payout-draft.md`), the imported code under `core/superscalar/` (`src/factory.c`, `src/musig.c`, `src/dw_state.c`, their headers, and one routine in `src/tapscript.c`), and BIP 327 as fetched today. I did not write either specification. Nothing was built or run.
 
 Marks, as in review 1:
 
@@ -154,11 +154,11 @@ Concerns: RD section 8 (lines 122–123, 127), section 13 (line 196); `DESIGN.md
 
 #### N9. Channel states inside round tiers conflict with the standard taproot channel format
 
-Concerns: RD section 5 (creation, leaf change, layer update), section 8; SR C6 (line 53), C7; `notes/channel-groundwork.md` 1.1, Part 3 §4 and §7, Part 4 decisions 5 and 9.
+Concerns: RD section 5 (creation, leaf change, layer update), section 8; SR C6 (line 53), C7; `docs/research/channel-groundwork.md` 1.1, Part 3 §4 and §7, Part 4 decisions 5 and 9.
 
 The tiers put "the first channel states" (creation) and "channel states on the new output for both sides" (leaf change, layer update) inside the round. C6 requires that the member "holds and has verified the final signatures of the tier below".
 
-In the standard taproot channel format, which is the decided format (`KNOWLEDGE-BASE.md` section 5), a party never holds a final signature on its own commitment before it broadcasts it. It holds the peer's partial signature and signing nonce, and produces its own partial signature at broadcast with its *verification* nonce. That nonce must be reproducible weeks later, so the groundwork recommends deriving it from the channel seed, commitment number and funding txid [C: `notes/channel-groundwork.md` lines 75–77 and 693]. RD section 8 forbids exactly that for anything the round engine signs ("never produced by a generator whose state is saved or can be restored"; "rebuilding ... never recreates a secret nonce"). The groundwork also recommends opening with the standard opening messages rather than inside the creation round (its decision 9), and H9 (SR line 162) speaks of a separate "first channel exchange".
+In the standard taproot channel format, which is the decided format (`KNOWLEDGE-BASE.md` section 5), a party never holds a final signature on its own commitment before it broadcasts it. It holds the peer's partial signature and signing nonce, and produces its own partial signature at broadcast with its *verification* nonce. That nonce must be reproducible weeks later, so the groundwork recommends deriving it from the channel seed, commitment number and funding txid [C: `docs/research/channel-groundwork.md` lines 75–77 and 693]. RD section 8 forbids exactly that for anything the round engine signs ("never produced by a generator whose state is saved or can be restored"; "rebuilding ... never recreates a secret nonce"). The groundwork also recommends opening with the standard opening messages rather than inside the creation round (its decision 9), and H9 (SR line 162) speaks of a separate "first channel exchange".
 
 **Change.** Say that channel commitments are signed by the channel engine under the channel format's own nonce rules, outside the round's nonce rules. Say that the round engine waits for the channel engine's "commitment stored for the new outpoint" before releasing the tier that creates that outpoint. Define "holds" for a commitment as "holds the peer's verified partial signature and can complete its own". Choose one place for the first channel exchange: the creation round, or the standard opening messages after `round_complete` and before funding.
 
@@ -478,7 +478,7 @@ Can: hide a transaction; delay a broadcast; refuse package submission; report fa
 |---|---|---|
 | Fake confirmation of the funding | Header checks; two servers compared (`DESIGN.md` 10; Slice 1 chain port) | — |
 | Hide a kickoff or an old state | Several sources; maximum safe absence shown to the user (SR section 7) | Beyond the safe absence: accepted (SR section 10) |
-| Hide or delay the member's own broadcast | Several servers | Package submission not available on the public Electrum servers found (`notes/channel-groundwork.md` 1.9) |
+| Hide or delay the member's own broadcast | Several servers | Package submission not available on the public Electrum servers found (`docs/research/channel-groundwork.md` 1.9) |
 | False fee rates, so the member underpays | — | Not addressed |
 
 #### Nostr relays (listings and host proofs only; not in Slice 1)
@@ -511,5 +511,5 @@ Refusal of service; a host that holds a seat of its own escaping blame; silence 
 2. The Lightning message size limit of 65,535 bytes. Taken from review 1; not fetched today.
 3. Whether keeping old-anchor commitments current really removes the loss for an old layer state (N3) against ZmnSCPxj's own text. It is my reasoning from the import, where a layer advance leaves channel amounts unchanged.
 4. The SuperScalar programs that drive the imported functions (not imported), so how the reference actually orders the distribution and penalty sessions in a ceremony.
-5. `docs/LOBBY.md` and `docs/TESTING.md` beyond the lines cited; the hand-off notes; the standard taproot channel document itself (I relied on `notes/channel-groundwork.md` for it).
+5. `docs/LOBBY.md` and `docs/TESTING.md` beyond the lines cited; the hand-off notes; the standard taproot channel document itself (I relied on `docs/research/channel-groundwork.md` for it).
 6. Nothing was built or run. In particular I did not build a four-participant tree to see which settings change its bytes; the table in N5 comes from reading the code.

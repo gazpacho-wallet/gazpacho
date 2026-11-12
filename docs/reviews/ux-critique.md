@@ -12,7 +12,7 @@ Each concept was checked against:
 **How it was checked**
 
 - **Markup and script.** I read the HTML and script of each file. One separate review pass per concept walked all sixteen moments in the markup and script. I re-checked the load-bearing findings myself by searching the files. These checks are listed in "What I could not check" at the end.
-- **In a browser.** I served the folder read-only on 127.0.0.1 and drove Chromium with Playwright:
+- **In a browser.** I served the folder read-only on the local machine and drove Chromium with Playwright:
   - every in-file link in every concept, at 360 px and 1280 px, checked for sideways scrolling;
   - whether Pause and the Signet marker stay on screen after scrolling;
   - screenshots of home, a lobby that does not fit, and signing, light at 360 px and dark at 1280 px.
@@ -362,7 +362,7 @@ Honest version: "While the app was closed, no old state was published. The app i
 - **Specifications.** Both are unreviewed drafts. My safety verdicts are only as good as those drafts.
 
 **Files I did not remove:**
-- My browser session wrote a console log and a page snapshot into `C:\pirq\gazpacho\.playwright-mcp\`. That folder already existed and was untracked.
+- My browser session wrote a console log and a page snapshot into (a local folder). That folder already existed and was untracked.
 - `tools/build-ux-viewer.py` appeared as untracked during the review. It is not mine.
 
 ---
@@ -372,7 +372,7 @@ Honest version: "While the app was closed, no old state was published. The app i
 `docs/ux/concept-h-recommended.html`: G as the base, with the borrowings from A to F named in section 6, and fixes for the findings against G. I reviewed it the same way as the other seven.
 
 - **Markup and script.** One review pass walked all sixteen moments in the markup and script. I re-checked its main findings myself.
-- **In a browser.** I served the folder read-only on 127.0.0.1, then stopped the server. I followed all 61 in-file links at 360 px and 1280 px, and took screenshots in light and dark.
+- **In a browser.** I served the folder read-only on the local machine, then stopped the server. I followed all 61 in-file links at 360 px and 1280 px, and took screenshots in light and dark.
 
 Browser results:
 - No sideways scrolling.
@@ -566,4 +566,4 @@ H is the best of the eight, mostly because its safety wording is now close to th
 - No real phone, touch, screen reader or keyboard check.
 - I did not verify the builder's own "33 of 33" check script; it was not in the repository.
 - The safety verdicts rest on the unreviewed spec drafts.
-- My browser session added one more console log to `C:\pirq\gazpacho\.playwright-mcp\`. I left it there.
+- My browser session added one more console log to (a local folder). I left it there.

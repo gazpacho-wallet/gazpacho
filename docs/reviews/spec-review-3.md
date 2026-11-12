@@ -1,6 +1,6 @@
 # Review 3 of the five Slice 1 specifications
 
-2026-11-12. Adversarial review of `spec/safety-rule.md` (draft 3, "SR"), `spec/signing-round.md` (draft 3, "RD"), `spec/messages.md` (draft 1, "MS"), `spec/terms.md` (draft 1, "TR") and `spec/journal.md` (draft 1, "JN"), read as one system for Slice 1. I wrote none of them. Read against `notes/spec-review-2.md` (N1 to N20, L1 to L8), `docs/SLICES.md`, `docs/THREAT-MODEL.md`, `docs/ux/decisions.md`, `docs/KNOWLEDGE-BASE.md`, `core/gazpacho/include/gazpacho/{runner,ports,action,event,types,node}.h`, the imported code `core/superscalar/` at pin `e65739500bbb…`, the secp256k1-zkp header at pin `6152622`, BOLT 1, BIP 327 and BIP 340.
+2026-11-12. Adversarial review of `spec/safety-rule.md` (draft 3, "SR"), `spec/signing-round.md` (draft 3, "RD"), `spec/messages.md` (draft 1, "MS"), `spec/terms.md` (draft 1, "TR") and `spec/journal.md` (draft 1, "JN"), read as one system for Slice 1. I wrote none of them. Read against `docs/reviews/spec-review-2.md` (N1 to N20, L1 to L8), `docs/SLICES.md`, `docs/THREAT-MODEL.md`, `docs/ux/decisions.md`, `docs/KNOWLEDGE-BASE.md`, `core/gazpacho/include/gazpacho/{runner,ports,action,event,types,node}.h`, the imported code `core/superscalar/` at pin `e65739500bbb…`, the secp256k1-zkp header at pin `6152622`, BOLT 1, BIP 327 and BIP 340.
 
 Marks: **[C]** read today in code or a document (file:line); **[S]** checked today in a primary source I fetched; **[V]** recomputed today; **[R]** my reasoning, not confirmed by a test. Line numbers refer to the files as they stand today.
 
