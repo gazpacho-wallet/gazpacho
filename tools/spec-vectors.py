@@ -481,3 +481,246 @@ print(f"== vector J6 (corruption): header, J2, J5, J3 with bit 0 of byte 25 flip
       f" so the start is refused")
 show("second sync mark (offset %d)" % (off_j3 + len(batch_entry)), mark2)
 assert read_journal(hdr + hdr_check + inc_entry + mark1 + batch_entry + mark2)[0] == "clean"
+
+# ===================================================== discovery.md ==========
+# Vectors D0 to D12 of spec/discovery.md. Every number marked CANDIDATE is a
+# reproducible random pick, not a final number: it must pass the checks of
+# discovery.md section 2 on the day it is chosen.
+import base64
+
+print("\n\n######## discovery.md ########")
+
+# ---- D0: candidate numbers -------------------------------------------------
+# Known uses read or recalled in notes/discovery-research.md. Not exhaustive.
+KNOWN_BITS = {0: "BOLT", 256: "hosted_channels", 257: "hosted_channels", 258: "dns_resolver",
+              259: "dns_resolver", 270: "bLIP-56", 271: "bLIP-56", 728: "LSPS", 729: "LSPS"}
+KNOWN_ONION = {64: "BOLT 12 invoice_request", 66: "BOLT 12 invoice", 68: "BOLT 12 invoice_error",
+               65536: "bLIP-32", 65538: "bLIP-32", 65550: "bLIP-32"}
+KNOWN_NA_TLV = {1: "CLN will_fund (bolts#878)", 5: "bolts#1153 will_fund_rates", 1339: "Eclair prototype"}
+KNOWN_NOSTR = set(range(30000, 30031)) | {30078, 30311, 30315, 30402, 30403, 30617, 30618,
+                                          31922, 31923, 31924, 31925, 31989, 31990, 34235, 34236,
+                                          34550, 37375, 38099, 38101, 39735} | set(range(38383, 38390)) \
+              | set(range(39000, 39010))
+
+
+def h16(s):
+    return int.from_bytes(hashlib.sha256(s.encode()).digest()[:2], "big")
+
+
+print("== D0: candidate numbers (NOT final; see discovery.md section 2)")
+# Feature bits: two adjacent pairs from one pick, 256..511 so the feature field
+# stays at most 64 bytes. Pair 1 factory_capable, pair 2 factory_host.
+pick = h16("gazpacho feature bits")
+bit_cands = []
+step = 0
+while len(bit_cands) < 3:
+    base = 256 + 4 * ((pick + step) % 64)
+    step += 1
+    if any(b in KNOWN_BITS for b in range(base, base + 4)):
+        continue
+    bit_cands.append(base)
+for base in bit_cands:
+    print(f"  bits: factory_capable {base}/{base + 1}, factory_host {base + 2}/{base + 3};"
+          f" features field with bit {base + 3} set = {(base + 3) // 8 + 1} bytes")
+FC_ODD, FH_ODD = bit_cands[0] + 1, bit_cands[0] + 3
+
+# Onion payload types: one block of 64 above 65,600; odd types base+1, +3, ...
+pick = h16("gazpacho onion payload types")
+ON_BASE = 65_600 + 64 * (pick % 1024)
+ON = {name: ON_BASE + 1 + 2 * i for i, name in enumerate(
+    ["lobby_index_request", "lobby_index", "listing_request", "listing",
+     "host_list_request", "host_list"])}
+assert not set(ON.values()) & set(KNOWN_ONION)
+print("  onion payload types:", ", ".join(f"{k} {v}" for k, v in ON.items()))
+# node_announcement TLV for the card: odd, above 65,536.
+CARD_TLV = 65_537 + 2 * h16("gazpacho host card tlv")
+assert CARD_TLV % 2 == 1 and CARD_TLV not in KNOWN_NA_TLV
+print("  node_announcement TLV type for the host card:", CARD_TLV)
+
+
+def nostr_kind(label):
+    k = 30000 + h16(label) % 10000
+    while k in KNOWN_NOSTR:
+        k += 1
+    return k
+
+
+NK_LISTING = nostr_kind("gazpacho nostr listing kind")
+NK_CARD = nostr_kind("gazpacho nostr card kind")
+print(f"  Nostr addressable kinds: listing {NK_LISTING}, host card {NK_CARD}")
+
+# Native kinds: fixed by discovery.md section 6 in PROTOCOL.md's range 128..159.
+K_INDEX_REQ, K_INDEX, K_LISTING_REQ, K_LISTING, K_HL_REQ, K_HL, K_BEACON, K_BFILTER = \
+    129, 131, 133, 135, 137, 139, 141, 143
+
+# ---- shared test values ----------------------------------------------------
+host_pub = compressed(host_sk)
+coin_sk = test_key("host coin")
+coin_q = xonly(coin_sk)                       # treated as the P2TR output key Q
+coin_txid = hashlib.sha256(b"gazpacho test coin txid").digest()
+coin_outpoint = coin_txid + u32(0)            # big-endian index, messages.md section 1
+TIP = 290_000                                 # a signet height used by every vector
+START = TIP
+EXPIRY = TIP + 144
+VALID_UNTIL = TIP + 1_008
+
+
+def native(kind, records):
+    """A whole Lightning message on the native carrier, scope all zero."""
+    return u16(custom_type) + MAGIC + u16(kind) + bytes(32) + records
+
+
+def onion_payload(ptype, records):
+    """The one payload field inside the final hop's onionmsg_tlv."""
+    return bigsize(ptype) + bigsize(len(records)) + records
+
+
+# ---- D1: host card -----------------------------------------------------------
+card = tlv([
+    (2, PROTOCOL_ID),                 # protocol_id
+    (4, u32(TIP)),                    # card_height
+    (6, rng(100_000, 100_000)),       # channel_range
+    (8, u16(0) + u16(24)),            # schedule: 00:00 UTC, every 24 h
+    (10, u8(0b010)),                  # profiles: Standard
+    (11, b"Gazpacho test host"),      # name
+])
+assert len(card) <= 256
+na_tlv = tlv([(CARD_TLV, card)])
+print("\n== D1: host card of the test host")
+show("card", card)
+show(f"as appended to node_announcement (TLV type {CARD_TLV}, candidate)", na_tlv)
+
+# ---- D2: coin anchor ---------------------------------------------------------
+anchor_msg = chain + host_pub + coin_outpoint + u32(VALID_UNTIL)
+anchor_digest = tagged_hash("gazpacho/anchor", anchor_msg)
+anchor_sig = schnorr_sign(anchor_digest, coin_sk, AUX)
+anchor = tlv([(4, coin_outpoint), (6, u32(VALID_UNTIL)), (8, anchor_sig)])
+print("\n== D2: coin anchor (test coin; never for coins)")
+print("coin secret = sha256('gazpacho test key: host coin') mod n; output key Q =", coin_q.hex())
+print("outpoint txid = sha256('gazpacho test coin txid'), index 0; valid_until_height", VALID_UNTIL)
+print("anchor_digest = TH('gazpacho/anchor', chain||host_key||outpoint||valid_until) =", anchor_digest.hex())
+show("anchor record value", anchor)
+# A borrowed coin: the same signature presented for another host key fails.
+other_pub = compressed(test_key("other host"))
+borrowed = tagged_hash("gazpacho/anchor", chain + other_pub + coin_outpoint + u32(VALID_UNTIL))
+assert not schnorr_verify(borrowed, coin_q, anchor_sig)
+print("the same anchor under another host key: signature fails (D11)")
+
+
+def allowance(value, unit):
+    """discovery.md section 9, rule A3."""
+    if value < unit // 4:
+        return 0
+    return min(4, max(1, value // unit))
+
+
+for v in (2_499, 2_500, 19_999, 20_000, 100_000):
+    print(f"  signet anchor of {v} sat backs {allowance(v, 10_000)} open listing(s)")
+assert [allowance(v, 10_000) for v in (2_499, 2_500, 19_999, 20_000, 100_000)] == [0, 1, 1, 2, 4]
+
+# ---- D3: signed card publication (Nostr and host_list) -----------------------
+pub_body = tlv([(2, chain), (4, host_pub), (6, card), (8, anchor)])
+pub_digest = tagged_hash("gazpacho/card", pub_body)
+pub = pub_body + tlv([(240, schnorr_sign(pub_digest, host_sk, AUX))])
+print("\n== D3: signed card publication, with the coin anchor")
+print("card_digest = TH('gazpacho/card', records before 240) =", pub_digest.hex())
+show("signed card", pub)
+
+# ---- D4: the listing for lobby T1 -------------------------------------------
+def listing_record(start, expiry, with_anchor=True, key=host_sk):
+    recs = [(2, compressed(key)), (4, outer), (6, u32(start)), (8, u32(expiry))]
+    if with_anchor:
+        recs.append((10, anchor))
+    body = tlv(recs)
+    dg = tagged_hash("gazpacho/listing", body)
+    return body + tlv([(240, schnorr_sign(dg, key, AUX))]), dg
+
+
+listing, listing_digest = listing_record(START, EXPIRY)
+print("\n== D4: listing of lobby T1, start", START, "expiry", EXPIRY, "with the coin anchor")
+print("listing_id = outer_digest =", outer_digest.hex())
+print("listing_digest = TH('gazpacho/listing', records before 240) =", listing_digest.hex())
+show("listing", listing)
+print("listing_sig =", listing[-64:].hex())
+withdrawal, wd_digest = listing_record(START, START)
+print("D4w withdrawal (expiry = start):", "listing_digest", wd_digest.hex(), "; listing_sig", withdrawal[-64:].hex())
+too_long, _ = listing_record(START, START + 1_009)
+print("D4x refuse: expiry = start + 1009, listing_sig", too_long[-64:].hex())
+# Size bound of discovery.md section 5: the sum of each record's maximum.
+MAX_LISTING = (1 + 1 + 33) + (1 + 3 + 4096) + 6 + 6 + (1 + 3 + 600) + (2 + 64)
+print("largest possible listing:", MAX_LISTING, "bytes")
+
+# ---- D5: the queries ---------------------------------------------------------
+idx_req = tlv([(2, chain)])
+entry_t1 = outer_digest + u64(1794441600) + u8(2) + u64(100_000)
+idx_body = tlv([(2, chain), (4, host_pub), (6, u32(TIP)), (8, entry_t1), (10, card)])
+idx_digest = tagged_hash("gazpacho/index", idx_body)
+index = idx_body + tlv([(240, schnorr_sign(idx_digest, host_sk, AUX))])
+idx_msg = tlv([(2, index)])
+lst_req = tlv([(2, chain), (4, outer_digest)])
+lst_msg = tlv([(2, listing)])
+unk_msg = tlv([(4, hashlib.sha256(b"no such lobby").digest())])
+print("\n== D5: queries for the test host (records; same bytes on both carriers)")
+show("lobby_index_request records", idx_req)
+print("index_digest = TH('gazpacho/index', records before 240) =", idx_digest.hex())
+show("index record", index)
+show("lobby_index records", idx_msg)
+show("listing_request records", lst_req)
+print(f"listing answer records: {len(lst_msg)} bytes = record 2 holding the D4 listing")
+show("listing answer 'unknown' (record 4 = sha256('no such lobby'))", unk_msg)
+show(f"native lobby_index_request (kind {K_INDEX_REQ})", native(K_INDEX_REQ, idx_req))
+show(f"native listing_request (kind {K_LISTING_REQ})", native(K_LISTING_REQ, lst_req))
+show(f"onion payload field, lobby_index_request (type {ON['lobby_index_request']}, candidate)",
+     onion_payload(ON["lobby_index_request"], idx_req))
+print("sizes: native lobby_index", len(native(K_INDEX, idx_msg)), "bytes; native listing",
+      len(native(K_LISTING, lst_msg)), "bytes; onion listing payload field",
+      len(onion_payload(ON["listing"], lst_msg)), "bytes")
+assert native(K_LISTING, lst_msg).endswith(lst_msg) and onion_payload(ON["listing"], lst_msg).endswith(lst_msg)
+
+# ---- D6: Nostr content -------------------------------------------------------
+print("\n== D6: Nostr annex (content only; event ids depend on author and time)")
+print(f"listing event kind {NK_LISTING} (candidate), d =", outer_digest.hex())
+print("content (base64 of D4):")
+b64 = base64.b64encode(listing).decode()
+for i in range(0, len(b64), 76):
+    print("    " + b64[i:i + 76])
+print(f"card event kind {NK_CARD} (candidate), d =", host_pub.hex(), "; content = base64 of D3,",
+      len(base64.b64encode(pub)), "characters")
+
+# ---- D7 to D10: lobby beacon -------------------------------------------------
+def beacon(seq, digest=outer_digest, open_h=TIP, deadline_h=TIP + 144, key=host_sk):
+    body = tlv([(2, compressed(key)), (4, digest), (6, u32(open_h)), (8, u32(deadline_h)), (10, u32(seq))])
+    bid = tagged_hash("gazpacho/beacon", body)
+    return body + tlv([(240, schnorr_sign(bid, key, AUX))]), bid
+
+
+b1, b1_id = beacon(1)
+print("\n== D7: lobby beacon for lobby T1, open", TIP, "deadline", TIP + 144, "sequence 1")
+print("beacon_id = TH('gazpacho/beacon', records before 240) =", b1_id.hex())
+show("beacon records", b1)
+show(f"native lobby_beacon (kind {K_BEACON})", native(K_BEACON, b1))
+b2, b2_id = beacon(2, deadline_h=TIP)
+print("== D8: the same lobby withdrawn: sequence 2, deadline_height = open_height")
+print("beacon_id =", b2_id.hex(), "; sig", b2[-64:].hex())
+forged, _ = beacon(1, key=test_key("other host"))
+forged = b1[:35] + forged[35:]                # host id of the test host, signed by another key
+assert not schnorr_verify(tagged_hash("gazpacho/beacon", forged[:-66]), host_pub[1:], forged[-64:])
+print("== D9 (refuse): D7's records with the signature of key 'other host': signature fails")
+bf_all = tlv([(2, chain), (4, u32(0)), (6, u32(0xFFFFFFFF))])
+bf_off = tlv([(2, chain), (4, u32(0xFFFFFFFF)), (6, u32(0))])
+print("== D10: beacon_filter")
+show(f"native beacon_filter 'everything' (kind {K_BFILTER})", native(K_BFILTER, bf_all))
+show("beacon_filter records 'nothing' (off)", bf_off)
+# Seen-set and active-set bounds, discovery.md section 8.6.
+for hosts in (10, 1_000, 10_000):
+    entries = min(65_536, max(1_024, 8 * hosts))
+    print(f"  seen-set for {hosts} factory hosts in the graph: {entries} entries, {entries * 40} bytes")
+
+# ---- D12: eviction of a fifth beacon ----------------------------------------
+active = {}
+for s in range(1, 6):
+    _, bid = beacon(s, digest=hashlib.sha256(b"lobby %d" % s).digest())
+    active[s] = bid
+kept = sorted(active)[-4:]
+assert kept == [2, 3, 4, 5]
+print("== D12: five beacons of one host, sequences 1 to 5, different lobbies: keep 2, 3, 4, 5")
