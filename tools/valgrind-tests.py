@@ -63,35 +63,40 @@ def main():
         if not cmd or not os.path.abspath(cmd[0]).startswith(build + os.sep):
             skipped.append(name)
             continue
-        cwd = build
+        cwd, will_fail = build, False
         for p in t.get("properties", []):
             if p.get("name") == "WORKING_DIRECTORY":
                 cwd = p["value"]
+            if p.get("name") == "WILL_FAIL":
+                will_fail = str(p.get("value")).upper() in ("1", "ON", "TRUE", "YES", "Y")
         if name in override:
             cmd = cmd[:1] + override.pop(name)
             print("%s: run as %s" % (name, " ".join(os.path.basename(c) if i == 0 else c
                                                      for i, c in enumerate(cmd))))
-        jobs.append((name, cmd, cwd))
+        jobs.append((name, cmd, cwd, will_fail))
     if override:
         print("FAIL: --args names no test: %s" % ", ".join(sorted(override)))
         return 1
 
     def run(job):
-        name, cmd, cwd = job
+        name, cmd, cwd, will_fail = job
         start = time.time()
         r = subprocess.run(VALGRIND + cmd, cwd=cwd, stdout=subprocess.PIPE,
                            stderr=subprocess.STDOUT, text=True, errors="replace")
-        return name, r.returncode, r.stdout, time.time() - start
+        # A WILL_FAIL test passes when the program refuses (non-zero exit), as in CTest,
+        # but never when valgrind itself reports an error (its own exit code, 99).
+        ok = (r.returncode not in (0, 99)) if will_fail else (r.returncode == 0)
+        return name, r.returncode, ok, r.stdout, time.time() - start
 
     failed, ran = [], 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        for name, code, output, secs in pool.map(run, jobs):
+        for name, code, ok, output, secs in pool.map(run, jobs):
             ran += 1
-            status = "ok" if code == 0 else "FAILED (exit %d)" % code
-            if code != 0 or args.verbose:
+            status = ("ok" if code == 0 else "ok (refused as expected, exit %d)" % code) if ok                 else "FAILED (exit %d)" % code
+            if not ok or args.verbose:
                 sys.stdout.write(output)
             print("%-40s %s  %.1fs" % (name, status, secs), flush=True)
-            if code != 0:
+            if not ok:
                 failed.append(name)
 
     print("not run under valgrind (script tests): %s" % (", ".join(skipped) or "none"))
