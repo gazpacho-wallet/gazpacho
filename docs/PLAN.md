@@ -40,7 +40,7 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 |---|---|---|
 | M0 | Reference code run end to end; foundations shown to separate; reference values recorded | Done |
 | M0b | Foundations imported into this repo with a build and a reference test | Done |
-| M1 | Core skeleton and simulator; signing round engine; a fixed-tree factory created in the simulator with funding signed last | In progress |
+| M1 | Core skeleton and simulator (merged 11 Nov; a follow-up hardens restart and adds faults the engines need); signing round engine; a fixed-tree factory created in the simulator with funding signed last | In progress |
 | **Slice 1** | **Form a factory on signet:** lobby, signing, funding last, shown in the local web interface | After M1 |
 | M2 | Channel engine on the standard taproot format; payment engine; invariants on | |
 | **Slice 2** | **A payment** between two members through the host, on signet | After M2 |

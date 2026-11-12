@@ -405,3 +405,7 @@ Asked by the owner whether the development plan is solid. Findings:
 - **Pull requests were too large.** They are to be kept to one piece of work.
 - **Gaps recorded in `OPEN-QUESTIONS.md`:** package submission through public chain servers; the terms record and message specifications; other compilers and a Windows build; a nightly run; the number of timed levels.
 - **An opportunity:** once the core frame merges, wire the placeholder node end to end through a real connection, a real journal and the interface, before the signing engine exists. Slice 1 then becomes replacing the placeholder, not first-time integration.
+
+## 32. Core and simulator skeletons merged (2026-11-11)
+
+Pull request 5 was merged after two independent reviews and three rounds of fixes. The last fix made the placeholder node resend every saved reply not recorded as sent, and added a simulator check that whatever is saved is eventually sent. A follow-up branch is in progress with the items the second review said are needed before the first engine: a resumable start step, reading storage through an iterator, failing on storage that answers out of order, restoring from an old backup with repeating randomness, and letting invariants see inside a node.
