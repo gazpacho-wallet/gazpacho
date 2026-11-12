@@ -446,6 +446,18 @@ static void test_member_classes(void)
         c5n = gz_terms_current_encode(&v, &T1O, c5, sizeof c5);
         on = offer(ob, sizeof ob, SCOPE, T1, T1N, c5, c5n, &HOST);
         CHECK(feed(&m, ob, on) == GZ_OK && sends(GZ_KIND_UNREADY) == 1 && note(GZ_NOTE_UNREADY, GZ_FIT_NO, 64));
+        v.version = 6; v.adj_value[0] = 1800;                          /* failing again, the same way: quiet */
+        c5n = gz_terms_current_encode(&v, &T1O, c5, sizeof c5);
+        on = offer(ob, sizeof ob, SCOPE, T1, T1N, c5, c5n, &HOST);
+        CHECK(feed(&m, ob, on) == GZ_OK && A.l.count == 0);
+        {   /* and a check at these values, which fail its conditions, is not answered */
+            uint8_t xc[300], ck[32], d6[32];
+            size_t xcn;
+            memset(ck, 0x66, 32);
+            gz_terms_current_digest(c5, c5n, d6);
+            xcn = host_msg(xc, sizeof xc, GZ_KIND_READY_CHECK, ck, 6, d6, 30000, 0, &HOST);
+            CHECK(feed(&m, xc, xcn) == GZ_OK && sends(GZ_KIND_READY) == 0 && !any_save());
+        }
     }
     {   /* unready by its conditions, then ready again at the same version when they loosen */
         gz_lobby_conditions_t c3 = cond;
@@ -465,6 +477,26 @@ static void test_member_classes(void)
     cond = lt_cond_fits(); cond.life_min = 145;
     member_up(&m, &cond);
     CHECK(feed(&m, buf, n) == GZ_OK && note(GZ_NOTE_REFUSED, GZ_FIT_NO, 26));
+    {   /* a member that has not joined (no automatic join) answers no check, though the terms fit */
+        static gz_lobby_member_t mj;
+        gz_ports_t pj = ports();
+        gz_lobby_crypto_t cj = lt_crypto(&M1);
+        gz_lobby_conditions_t cf = lt_cond_fits();
+        gz_lobby_input_t ij;
+        uint8_t xc[300], ck[32], d2[32];
+        size_t xcn;
+        gz_lobby_member_init(&mj, &pj, &cj, NULL, &cf, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 0);
+        memset(&ij, 0, sizeof ij);
+        ij.kind = GZ_LIN_CONNECTED; ij.peer_id = W_HOST_PEER; ij.peer_key = HOST.key[1].pub;
+        acts_reset();
+        gz_lobby_member_handle(&mj, &ij, &A.l);
+        n = offer(buf, sizeof buf, SCOPE, T1, T1N, T2, T2N, &HOST);
+        CHECK(feed(&mj, buf, n) == GZ_OK && sends(GZ_KIND_JOIN) == 0 && !mj.joined && mj.have_terms);
+        memset(ck, 0x67, 32);
+        gz_terms_current_digest(T2, T2N, d2);
+        xcn = host_msg(xc, sizeof xc, GZ_KIND_READY_CHECK, ck, 1, d2, 30000, 0, &HOST);
+        CHECK(feed(&mj, xc, xcn) == GZ_OK && A.l.count == 0);
+    }
     /* a user unready is kept across a restart */
     cond = lt_cond_fits();
     member_up(&m, &cond);
@@ -811,6 +843,10 @@ static void test_host_hostile(void)
     CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_JOINED);   /* duplicate */
     n = join_msg(buf, sizeof buf, 1, MEM[2].key[3].pub, 2, 1);
     CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED); /* other fkey */
+    {
+        gz_lobby_msg_t g5;
+        CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
+    }
     CLOCK += 1000;
     n = join_msg(buf, sizeof buf, 2, MEM[1].key[3].pub, 1, 2);                  /* another seat's factory key */
     CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
@@ -1866,7 +1902,8 @@ static void test_host_restart_signing(void)
 }
 
 /* The host's commands at the edges of when they apply. */
-static void drive_to_signing(int members)
+/* `first_min`: the min_members of the first seat to join, in both readies. */
+static void drive_to_signing(int members, uint16_t first_min)
 {
     uint8_t buf[600], cd2[32], chk[32];
     size_t n;
@@ -1875,29 +1912,31 @@ static void drive_to_signing(int members)
     gz_lobby_input_t in;
     gz_terms_current_digest(T2, T2N, cd2);
     CLOCK = W_T0 - 3600000;
-    host_open(0);
+    for (k = 0; k < (int)N_KEPT; k++) free(KEPT_B[k]);
+    N_KEPT = 0;
+    host_open(0); keep_all();
     for (k = 1; k <= members; k++) {
         hin(GZ_LIN_CONNECTED, k, NULL, 0);
         CLOCK += 1000;
         n = join_msg(buf, sizeof buf, k, MEM[k].key[3].pub, k, k);
-        hin(GZ_LIN_MESSAGE, k, buf, n);
-        n = ready_msg(buf, sizeof buf, k, 1, cd2, NULL, 0);
-        hin(GZ_LIN_MESSAGE, k, buf, n);
+        hin(GZ_LIN_MESSAGE, k, buf, n); keep_all();
+        n = ready_msg(buf, sizeof buf, k, 1, cd2, NULL, k == 1 ? first_min : 0);
+        hin(GZ_LIN_MESSAGE, k, buf, n); keep_all();
     }
     CLOCK = 1794441600000ull;
     memset(&in, 0, sizeof in);
     in.kind = GZ_LIN_TIMER; in.timer_id = GZ_LOBBY_TIMER_DEADLINE;
     acts_reset();
-    gz_lobby_host_handle(&H, &in, &A.l);
+    gz_lobby_host_handle(&H, &in, &A.l); keep_all();
     last_sent(GZ_KIND_READY_CHECK, &g, NULL, NULL);
     memcpy(chk, g.check_id, 32);
     for (k = 1; k <= members; k++) {
-        n = ready_msg(buf, sizeof buf, k, 1, cd2, chk, 0);
-        hin(GZ_LIN_MESSAGE, k, buf, n);
+        n = ready_msg(buf, sizeof buf, k, 1, cd2, chk, k == 1 ? first_min : 0);
+        hin(GZ_LIN_MESSAGE, k, buf, n); keep_all();
     }
     in.timer_id = GZ_LOBBY_TIMER_WINDOW;
     acts_reset();
-    gz_lobby_host_handle(&H, &in, &A.l);
+    gz_lobby_host_handle(&H, &in, &A.l); keep_all();
 }
 
 static void test_host_commands(void)
@@ -1915,7 +1954,7 @@ static void test_host_commands(void)
     acts_reset();
     CHECK(gz_lobby_host_cancel(&H, 1, &A.l) == GZ_OK && H.end_reason == 1);
     /* signing: no removal, no cancel reason out of range; a retry naming two seats and one unknown */
-    drive_to_signing(5);
+    drive_to_signing(5, 0);
     CHECK(H.state == GZ_LOBBY_SIGNING && sends(GZ_KIND_START) == 5);
     acts_reset();
     CHECK(gz_lobby_host_remove(&H, MEM[1].key[2].pub, &A.l) == GZ_ERR_ARGUMENT && A.l.count == 0);
@@ -1928,16 +1967,50 @@ static void test_host_commands(void)
     CHECK(saves(GZ_REC_SEAT) == 2 && saves(GZ_REC_LOBBY_STATE) == 1);
     CHECK(H.seats[1].state == GZ_SEAT_JOINED && H.seats[3].state == GZ_SEAT_JOINED && H.seats[0].state == GZ_SEAT_READY);
     CHECK(sends(GZ_KIND_READY_CHECK) == 5);                          /* past the deadline: a new check at once */
+    keep_all();
+    {   /* the second attempt: 1, 3 and 5 answer and are started; a restart takes the second start, not the first */
+        uint8_t buf[600], cd2[32], chk[32];
+        size_t n;
+        int k;
+        gz_lobby_input_t in;
+        static gz_lobby_host_t R;
+        gz_terms_current_digest(T2, T2N, cd2);
+        last_sent(GZ_KIND_READY_CHECK, &g, NULL, NULL);
+        memcpy(chk, g.check_id, 32);
+        for (k = 1; k <= 5; k += 2) {
+            n = ready_msg(buf, sizeof buf, k, 1, cd2, chk, 0);
+            hin(GZ_LIN_MESSAGE, k, buf, n); keep_all();
+        }
+        memset(&in, 0, sizeof in);
+        in.kind = GZ_LIN_TIMER; in.timer_id = GZ_LOBBY_TIMER_WINDOW;
+        acts_reset();
+        CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && sends(GZ_KIND_START) == 3);
+        keep_all();
+        restore_kept(&R);
+        CHECK(R.state == GZ_LOBBY_SIGNING && memcmp(R.check_id, chk, 32) == 0);
+        for (k = 1; k <= 5; k++) {
+            CHECK(R.seats[k - 1].chosen == (k % 2 == 1));
+            CHECK((R.seats[k - 1].start_len > 0) == (k % 2 == 1));
+            CHECK(R.seats[k - 1].state == (k % 2 == 1 ? GZ_SEAT_READY : GZ_SEAT_JOINED));
+        }
+    }
     /* a retry is only for signing; a failed round ends the lobby, reason 3 */
-    drive_to_signing(3);
+    drive_to_signing(3, 0);
     acts_reset();
     CHECK(gz_lobby_host_round_result(&H, GZ_ROUND_FUNDING, NULL, 0, &A.l) == GZ_OK);
     CHECK(gz_lobby_host_round_result(&H, GZ_ROUND_RETRY, failed, 1, &A.l) == GZ_ERR_ARGUMENT);
     CHECK(gz_lobby_host_round_result(&H, 99, NULL, 0, &A.l) == GZ_ERR_ARGUMENT);
-    drive_to_signing(3);
+    drive_to_signing(3, 0);
     acts_reset();
     CHECK(gz_lobby_host_round_result(&H, GZ_ROUND_FAILED, NULL, 0, &A.l) == GZ_OK && H.state == GZ_LOBBY_FAILED);
     CHECK(H.end_reason == 3 && last_sent(GZ_KIND_CANCEL, &g, NULL, NULL) && g.reason == 3);
+    /* the first seat to join asks for more members than there are: it is the one left out */
+    drive_to_signing(4, 5);
+    CHECK(H.state == GZ_LOBBY_SIGNING && sends(GZ_KIND_START) == 4 && !H.seats[0].chosen && H.seats[1].chosen);
+    {
+        gz_lobby_msg_t st;
+        CHECK(last_sent(GZ_KIND_START, &st, NULL, NULL) && st.signers == 4);
+    }
     /* a seat that has left cannot be removed */
     CLOCK = W_T0 - 3600000;
     host_open(0);
@@ -2046,6 +2119,8 @@ static void test_api_edges(void)
     in.timer_id = GZ_LOBBY_TIMER_DEADLINE;
     CHECK(gz_lobby_host_handle(&h2, &in, &A.l) == GZ_OK && A.l.count == 0);
     h2.state = GZ_LOBBY_OPEN;
+    in.kind = GZ_LIN_MESSAGE; in.peer_id = 9; in.bytes = NULL; in.len = 5;   /* no bytes: nothing */
+    CHECK(gz_lobby_host_handle(&h2, &in, &A.l) == GZ_OK && A.l.count == 0);
     in.kind = GZ_LIN_DISCONNECTED; in.peer_id = 4242;                /* not connected: nothing */
     CHECK(gz_lobby_host_handle(&h2, &in, &A.l) == GZ_OK && A.l.count == 0);
     /* a connected peer: the wrong protocol warned about once; another lobby refused */
@@ -2161,17 +2236,28 @@ static void test_member_more(void)
     gz_lobby_member_handle(&m, &in, &A.l);
     on = offer(ob, sizeof ob, SCOPE, T1, T1N, T2, T2N, &HOST);
     feed(&m, ob, on);
+    /* a new version: the member readies for it and saves it once; a check at it saves no second copy */
+    {
+        uint8_t ob3[8000], cd3[32];
+        size_t on3 = offer(ob3, sizeof ob3, SCOPE, T1, T1N, T3, T3N, &HOST);
+        gz_terms_current_digest(T3, T3N, cd3);
+        CHECK(feed(&m, ob3, on3) == GZ_OK && sends(GZ_KIND_READY) == 1 && saves(GZ_REC_TERMS_RECEIVED) == 1);
+        memset(chk1, 0x60, 32);
+        xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk1, 2, cd3, 30000, 0, &HOST);
+        CHECK(feed(&m, x, xn) == GZ_OK && sends(GZ_KIND_READY) == 1 && saves(GZ_REC_TERMS_RECEIVED) == 0);
+        memcpy(cd2, cd3, 32);                                       /* the frozen values from here on */
+    }
     /* two checks, two starts: each is taken, and each hands over */
     memset(chk1, 0x61, 32); memset(chk2, 0x62, 32);
     M_STARTS = 0;
-    xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk1, 1, cd2, 30000, 0, &HOST);
+    xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk1, 2, cd2, 30000, 0, &HOST);
     feed(&m, x, xn);
     n = start_with(buf, sizeof buf, chk1, 1, 4);
     CHECK(feed(&m, buf, n) == GZ_OK && M_STARTS == 1 && M_SIGNERS == 4 && M_LEVELS == 1 && saves(GZ_REC_START_RECEIVED) == 1);
     for (q = 0; q < A.l.count; q++)
         if (A.s[q].kind == GZ_ACTION_NOTIFY && A.s[q].u.notify.code == GZ_NOTE_STARTED)
             CHECK(A.s[q].u.notify.bytes.len == 3 && A.s[q].u.notify.bytes.data[0] == 1 && A.s[q].u.notify.bytes.data[2] == 4);
-    xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk2, 1, cd2, 30000, 0, &HOST);
+    xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk2, 2, cd2, 30000, 0, &HOST);
     CHECK(feed(&m, x, xn) == GZ_OK && sends(GZ_KIND_READY) == 1);
     n = start_with(buf, sizeof buf, chk2, 1, 20);                  /* 19 members: T1 has no shape for them */
     CHECK(feed(&m, buf, n) == GZ_OK && M_STARTS == 2 && M_SIGNERS == 20 && M_LEVELS == 0 && saves(GZ_REC_START_RECEIVED) == 1);
@@ -2183,7 +2269,7 @@ static void test_member_more(void)
     acts_reset();
     CHECK(gz_lobby_member_handle(&m, &in, &A.l) == GZ_OK && A.l.count == 0);
     /* resends and retries are counted per connection */
-    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_JOINED, 1, -1);
+    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_JOINED, 2, -1);
     for (i = 0; i < 3; i++) feed(&m, buf, n);
     CHECK(feed(&m, buf, n) == GZ_OK && sends(GZ_KIND_READY) == 0);
     n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_REFUSED, 1, -1);
@@ -2202,7 +2288,7 @@ static void test_member_more(void)
     in.kind = GZ_LIN_CONNECTED; in.peer_key = HOST.key[1].pub;
     acts_reset();
     CHECK(gz_lobby_member_handle(&m, &in, &A.l) == GZ_OK && sends(GZ_KIND_HELLO) == 1 && m.connected);
-    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_JOINED, 1, -1);
+    n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_JOINED, 2, -1);
     CHECK(feed(&m, buf, n) == GZ_OK && sends(GZ_KIND_READY) == 1);   /* counted again */
     n = status_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_REFUSED, 1, -1);
     CHECK(feed(&m, buf, n) == GZ_OK && timers(GZ_LOBBY_TIMER_RETRY) == 1);

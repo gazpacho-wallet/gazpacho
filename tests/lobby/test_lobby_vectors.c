@@ -161,7 +161,7 @@ static void test_terms_bounds(void)
             case 16: x.on_shortfall = (uint8_t)v; break;
             case 18: x.ready_window_ms = (uint32_t)v; break;
             case 20: x.signing_budget_ms = (uint32_t)v; break;
-            case 22: x.step_timeout_ms = (uint32_t)v; break;
+            case 22: x.step_timeout_ms = (uint32_t)v; x.signing_budget_ms = 700000; break;
             case 26: x.lifetime_blocks = (uint32_t)v; break;
             case 28: x.winddown_blocks = (uint32_t)v; break;
             case 30: x.channel_sat = v; break;
@@ -668,6 +668,12 @@ static void test_record_sizes(void)
     sv[1000] = 0; sv[1001] = 0xfe; sv[1002] = 0; sv[1003] = 3;
     n = with_shape_bytes(sv, 1004, r);
     CHECK(!outer_ok(r, n));
+    /* 1,001 bytes of entries that are each valid: 249 of [3] and one of [4, 3] */
+    sv[996] = 0x03; sv[997] = 0xe8; sv[998] = 1; sv[999] = 4; sv[1000] = 3;
+    n = with_shape_bytes(sv, 1001, r);
+    CHECK(!outer_ok(r, n));
+    n = with_shape_bytes(sv + 4, 997, r);                   /* without the first entry: 997 bytes, valid */
+    CHECK(outer_ok(r, n));
 }
 
 /* Each bound of a shape entry, on the last entry, after entries that would
