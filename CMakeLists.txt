@@ -119,9 +119,10 @@ endforeach()
 if(GZ_SANITIZE)
   set(GZ_ISOLATION_MODE --sanitized)    # the checkers add writable sections of their own
 endif()
+string(JOIN " " GZ_CORE_SCAN_FLAGS -std=c11 ${GZ_CORE_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
 add_test(NAME core_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
-          $<TARGET_FILE:gazpacho_core> --sources ${GZ_CORE_SOURCES})
+          $<TARGET_FILE:gazpacho_core> --sources ${CMAKE_C_COMPILER} ${GZ_CORE_SCAN_FLAGS} ${GZ_CORE_SOURCES})
 add_library(isolation_sneaky OBJECT tests/isolation/sneaky.c)
 string(JOIN " " GZ_CORE_FLAGS_TEXT -std=c11 ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
 add_test(NAME core_isolation_refuses_sneaky_object

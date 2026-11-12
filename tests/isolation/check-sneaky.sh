@@ -71,6 +71,16 @@ refuses_object 28 "ifunc: f\$"
 refuses_object 30 "inline assembly: "
 refuses_object 31 "inline assembly: "
 
+echo "-- a source the scan cannot preprocess is refused, not passed unread"
+build_case 50 && {
+    out=$(sh "$checker" "$work/case-50.o" --sources "$work/no-such-compiler" "$flags" "$dir/cases.c" 2>&1) &&
+        fail "a source that could not be preprocessed was passed" ||
+        { printf '%s
+' "$out" | grep -q "^FOUND source scan" && echo "ok: an unreadable source is refused" ||
+          { fail "refused, but not for the source scan"; printf '%s
+' "$out"; }; }
+}
+
 echo "-- a sanitized build exempts the checkers' own names, but not ordinary ones"
 build_case 24 && {
     sh "$checker" --sanitized "$work/case-24.o" >/dev/null 2>&1 && echo "ok: case 24 (checker name) passes --sanitized" ||

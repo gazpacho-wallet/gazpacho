@@ -11,8 +11,8 @@
 #include "sim_nodes.h"
 #include "../check.h"
 
-#define KNOWN_PING_NODE  0x7e5c15484bbd6506ull
-#define KNOWN_MULTI_NODE 0xb8e9764e6e4c6afdull
+#define KNOWN_PING_NODE  0x679b6999143ba5ccull
+#define KNOWN_MULTI_NODE 0x830fff1c7f84544dull
 
 static uint64_t run(int multi)
 {

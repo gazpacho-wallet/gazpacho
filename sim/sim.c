@@ -934,7 +934,7 @@ static void rebuild(slot_t *s)
     check_extra_invariants(sim);
     sim->cfg.ops.destroy(sim->ops_ctx, s->node);
     discard_orphans(s);
-    if (sim->cfg.late_save_pm) {
+    if (sim->cfg.late_save_pm && s->storage.n_pending > 0) {
         s->orphans = grow(s->orphans, &s->cap_orphans, s->storage.n_pending, sizeof *s->orphans);
         memcpy(s->orphans, s->storage.pending, s->storage.n_pending * sizeof *s->orphans);
         s->n_orphans = s->storage.n_pending;

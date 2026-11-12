@@ -149,7 +149,10 @@ esac
 # header includes are resolved first. Needs the compiler and the core's flags.
 for src in "$@"; do
     if [ -n "$cc" ]; then
-        text=$("$cc" $cflags -E -P "$src" 2>/dev/null || echo "preprocess failed")
+        if ! text=$("$cc" $cflags -E -P "$src" 2>/dev/null); then
+            report "source scan" "$src could not be preprocessed with $cc $cflags"
+            continue
+        fi
     else
         text=$(cat "$src")
     fi
