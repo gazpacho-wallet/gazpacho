@@ -57,14 +57,36 @@ typedef struct gz_http {
   void (*sleep_ms)(void *ctx, uint32_t ms);
 } gz_http;
 
+/* What the libcurl transport sends as its User-Agent header on every
+ * request. It names the software and nothing about the user or machine. */
+#define GZ_HTTP_USER_AGENT "gazpacho-chain/0.0.1"
+
+typedef struct gz_http_curl_config {
+  /* Optional. A file of certificate authorities to trust INSTEAD of the
+   * system's, for a server the user runs with a private certificate.
+   * NULL: the system's authorities. Copied. */
+  const char *ca_file;
+} gz_http_curl_config;
+
 /*
  * The libcurl transport (http_curl.c; built only when libcurl is found).
- * HTTPS only unless allow_plain_http is true (meant for a server on the
- * user's own machine). Certificates are verified. Redirects are not followed.
- * On success *out is ready to use; release it with gz_http_curl_destroy.
- * Returns false if libcurl could not be initialised.
+ *
+ * - HTTPS only. Plain http is accepted for exactly three hosts, this machine
+ *   under its usual names: localhost, 127.0.0.1 and [::1]. Any other http
+ *   address is refused before anything is sent (GZ_HTTP_E_FAILED).
+ * - The server's certificate and host name are always verified.
+ * - Redirects are not followed; a 3xx status is returned as it is.
+ * - The body is counted as it arrives and the transfer is stopped as soon as
+ *   it passes the caller's cap.
+ * - Compressed responses are not requested.
+ * - POSIX only: it uses clock_gettime and nanosleep. A Windows build needs
+ *   another transport behind the same gz_http interface.
+ *
+ * `cfg` may be NULL for the defaults. On success *out is ready to use;
+ * release it with gz_http_curl_destroy. Returns false if libcurl could not
+ * be initialised.
  */
-bool gz_http_curl_create(gz_http *out, bool allow_plain_http);
+bool gz_http_curl_create(gz_http *out, const gz_http_curl_config *cfg);
 void gz_http_curl_destroy(gz_http *http);
 
 #ifdef __cplusplus
