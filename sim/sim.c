@@ -1,0 +1,1110 @@
+#include "sim.h"
+#include "rng.h"
+#include "gazpacho/node.h"
+#include "gazpacho/runner.h"
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define STEP_SLOTS     16      /* actions one node step may return */
+#define STEP_BYTES     4096
+#define START_SLOTS    80      /* actions a node's start may return */
+#define START_BYTES    8192
+#define RUNNER_SLOTS   64      /* actions one node's runner may hold */
+#define RUNNER_BYTES   16384
+#define MAX_INVARIANTS 8
+#define NEVER          UINT64_MAX
+#define NOT_ARMED      UINT64_MAX
+#define FNV_OFFSET     0xcbf29ce484222325ull
+#define FNV_PRIME      0x100000001b3ull
+
+typedef struct { uint8_t *bytes; size_t len; } blob_t;
+typedef struct { uint64_t from, to; blob_t blob; uint64_t due, seq; } message_t;
+typedef struct { uint64_t id, due; } node_timer_t;
+typedef struct { blob_t blob; uint32_t origin; uint32_t height; } chain_tx_t;   /* height 0: in the mempool */
+
+/* One batch in a node's storage. */
+typedef struct {
+    gz_batch_id_t id;
+    blob_t blob;                /* the records as stored */
+    uint64_t digest;            /* of the records as the node handed them over */
+    uint64_t node_incarnation;  /* which build of the node saved it */
+    uint64_t durable_at;        /* step at which it becomes durable, or NEVER */
+    uint64_t confirm_at;        /* step at which its confirmation is delivered */
+    int fails;                  /* storage fails when this batch's turn comes */
+} batch_t;
+
+struct sim_storage {
+    batch_t *durable; size_t n_durable, cap_durable;
+    size_t next_confirm;        /* durable[0..next_confirm) have had their confirmation delivered */
+    batch_t *pending; size_t n_pending, cap_pending;
+};
+
+/* The harness's own record of a batch that became durable. */
+typedef struct { gz_batch_id_t id; uint64_t digest; } shadow_t;
+
+/* An outward action the harness saw a node emit and has not yet seen leave. */
+typedef struct { uint64_t digest; size_t saves_before; } expected_t;
+
+/* An event waiting to be handled. */
+typedef struct { uint32_t node; uint64_t node_incarnation; gz_event_t ev; blob_t blob; } queued_t;
+
+/* One simulated node and everything around it. */
+typedef struct {
+    sim_t *sim;
+    uint32_t index;
+    void *node;
+    gz_ports_t ports;
+    sim_rng_t rng;
+    uint64_t incarnation;       /* how many times the node has been built */
+    gz_runner_t runner;
+    gz_runner_slot_t runner_slots[RUNNER_SLOTS];
+    uint8_t runner_bytes[RUNNER_BYTES];
+    struct sim_storage storage;
+    node_timer_t *timers; size_t n_timers, cap_timers;
+    blob_t *watches; size_t n_watches, cap_watches;
+
+    int needs_rebuild;          /* crashed, refused or storage failed: rebuild before going on */
+    int dying;                  /* crashed inside a release: nothing more is carried out */
+    int died_this_step;
+    uint64_t crash_countdown;   /* executor calls left before an armed crash, or NOT_ARMED */
+
+    /* What the harness observed this node emit since it was last built, for
+     * the save-before-send check. Kept apart from the runner on purpose, and
+     * counted by position: the k-th save emitted is the k-th to reach storage
+     * and the k-th to become durable. */
+    uint64_t *emitted_saves; size_t n_emitted_saves, cap_emitted_saves;   /* digests, in order */
+    size_t n_saves_stored;      /* how many of them reached storage */
+    size_t n_saves_durable;     /* how many of them storage has made durable */
+    expected_t *expected; size_t n_expected, head_expected, cap_expected;
+
+    shadow_t *shadow; size_t n_shadow, cap_shadow;
+} slot_t;
+
+struct sim {
+    sim_config_t cfg;
+    void *ops_ctx;
+    sim_rng_t rng;
+    uint64_t step;
+    slot_t *slots;
+    queued_t *queue; size_t q_head, q_len, cap_queue;
+    message_t *net; size_t n_net, cap_net;
+    uint64_t next_seq;
+    chain_tx_t *txs; size_t n_txs, cap_txs;
+    uint32_t height;
+    char *trace; size_t trace_len, trace_cap;
+    uint64_t trace_hash;
+    sim_stats_t stats;
+    struct { sim_invariant_fn check; void *ctx; } invariants[MAX_INVARIANTS];
+    size_t n_invariants;
+    const char *violation;          /* set when a built-in invariant is seen broken */
+    int failed;
+    uint64_t failure_step;
+    const char *failure_reason;
+    sim_t *twin;                    /* same configuration, run in lockstep */
+};
+
+/* ---- small helpers ---- */
+
+static void *grow(void *p, size_t *cap, size_t need, size_t elem)
+{
+    if (need <= *cap) return p;
+    size_t n = *cap ? *cap * 2 : 8;
+    while (n < need) n *= 2;
+    p = realloc(p, n * elem);
+    if (!p) abort();
+    *cap = n;
+    return p;
+}
+
+static blob_t blob_copy(const uint8_t *bytes, size_t len)
+{
+    blob_t b = {malloc(len ? len : 1), len};
+    if (!b.bytes) abort();
+    if (len) memcpy(b.bytes, bytes, len);
+    return b;
+}
+
+static int same_bytes(const uint8_t *a, size_t a_len, const uint8_t *b, size_t b_len)
+{
+    return a_len == b_len && (a_len == 0 || memcmp(a, b, a_len) == 0);
+}
+
+/* FNV-1a, fed byte by byte in a fixed order: the same on every machine. */
+static uint64_t fnv(uint64_t h, const uint8_t *data, size_t len)
+{
+    for (size_t i = 0; i < len; i++) h = (h ^ data[i]) * FNV_PRIME;
+    return h;
+}
+
+static uint64_t fnv_number(uint64_t h, uint64_t v, int n_bytes)
+{
+    for (int i = 0; i < n_bytes; i++) h = (h ^ (uint8_t)(v >> (8 * i))) * FNV_PRIME;
+    return h;
+}
+
+static uint64_t digest_bytes(const uint8_t *bytes, size_t len) { return fnv(FNV_OFFSET, bytes, len); }
+
+static void violate(sim_t *sim, const char *what)
+{
+    if (!sim->violation) sim->violation = what;
+}
+
+__attribute__((format(printf, 2, 3)))
+static void trace(sim_t *sim, const char *fmt, ...)
+{
+    char line[256];
+    va_list ap;
+    int n = snprintf(line, sizeof line, "%llu ", (unsigned long long)sim->step);
+    va_start(ap, fmt);
+    n += vsnprintf(line + n, sizeof line - (size_t)n - 1, fmt, ap);
+    va_end(ap);
+    if (n > (int)sizeof line - 2) n = (int)sizeof line - 2;
+    line[n++] = '\n';
+    sim->trace = grow(sim->trace, &sim->trace_cap, sim->trace_len + (size_t)n + 1, 1);
+    memcpy(sim->trace + sim->trace_len, line, (size_t)n);
+    sim->trace_len += (size_t)n;
+    sim->trace[sim->trace_len] = 0;
+    sim->trace_hash = fnv(sim->trace_hash, (const uint8_t *)line, (size_t)n);
+}
+
+/* ---- the save-before-send observer ---- */
+
+/* Digest of a save's records, computed from the action itself. It equals the
+ * digest of the bytes storage should hold for it (see encode_records). */
+static uint64_t records_digest(const gz_action_t *save)
+{
+    uint64_t h = FNV_OFFSET;
+    for (size_t i = 0; i < save->u.save.n_records; i++) {
+        const gz_record_t *r = &save->u.save.records[i];
+        h = fnv_number(h, r->type, 4);
+        h = fnv_number(h, r->bytes.len, 4);
+        h = fnv(h, r->bytes.data, r->bytes.len);
+    }
+    return h;
+}
+
+static uint64_t outward_digest(const gz_action_t *a)
+{
+    uint64_t h = fnv_number(FNV_OFFSET, (uint64_t)a->kind, 4);
+    if (a->kind == GZ_ACTION_SEND) {
+        h = fnv_number(h, a->u.send.peer_id, 8);
+        h = fnv(h, a->u.send.bytes.data, a->u.send.bytes.len);
+    } else if (a->kind == GZ_ACTION_BROADCAST) {
+        h = fnv(h, a->u.broadcast.tx.data, a->u.broadcast.tx.len);
+    } else {
+        h = fnv_number(h, a->u.notify.code, 4);
+        h = fnv(h, a->u.notify.bytes.data, a->u.notify.bytes.len);
+    }
+    return h;
+}
+
+/* Record, in order, the saves and outward actions a node step returned. */
+static void note_emitted(slot_t *s, const gz_action_list_t *list)
+{
+    for (size_t i = 0; i < list->count; i++) {
+        const gz_action_t *a = &list->slots[i];
+        if (a->kind == GZ_ACTION_SAVE) {
+            s->emitted_saves = grow(s->emitted_saves, &s->cap_emitted_saves, s->n_emitted_saves + 1,
+                                    sizeof *s->emitted_saves);
+            s->emitted_saves[s->n_emitted_saves++] = records_digest(a);
+        } else if (gz_action_is_outward(a)) {
+            s->expected = grow(s->expected, &s->cap_expected, s->n_expected + 1, sizeof *s->expected);
+            s->expected[s->n_expected++] = (expected_t){outward_digest(a), s->n_emitted_saves};
+        }
+    }
+}
+
+/* A save is reaching storage. It must be the next one the node emitted. */
+static void note_stored(slot_t *s, const gz_action_t *save)
+{
+    size_t k = s->n_saves_stored++;
+    if (k >= s->n_emitted_saves || s->emitted_saves[k] != records_digest(save))
+        violate(s->sim, "a save reached storage that was not the next one the node emitted");
+}
+
+/* An outward action is leaving a node. It must be the next one the node
+ * emitted, and every save the node emitted before it must be durable. */
+static void note_left(slot_t *s, const gz_action_t *a)
+{
+    if (s->head_expected == s->n_expected ||
+        s->expected[s->head_expected].digest != outward_digest(a)) {
+        violate(s->sim, "an action left a node out of the order it was emitted");
+        return;
+    }
+    if (s->expected[s->head_expected++].saves_before > s->n_saves_durable)
+        violate(s->sim, "nothing is sent before it is saved: an action left a node "
+                        "before a save ahead of it was stored");
+    if (s->head_expected == s->n_expected && s->n_saves_durable == s->n_emitted_saves)
+        s->n_emitted_saves = s->n_saves_stored = s->n_saves_durable = s->n_expected = s->head_expected = 0;
+}
+
+/* ---- the event queue ---- */
+
+/* The byte string an event carries, if any. */
+static gz_bytes_t *event_bytes(gz_event_t *ev)
+{
+    switch (ev->kind) {
+    case GZ_EVENT_MESSAGE_RECEIVED: return &ev->u.message.bytes;
+    case GZ_EVENT_USER_COMMAND:     return &ev->u.user.bytes;
+    case GZ_EVENT_CHAIN:            return &ev->u.chain.script;
+    default:                        return NULL;
+    }
+}
+
+/* Queue a copy of an event for a node. */
+static void post(slot_t *s, const gz_event_t *ev, uint64_t node_incarnation)
+{
+    sim_t *sim = s->sim;
+    queued_t q = {s->index, node_incarnation, *ev, {NULL, 0}};
+    gz_bytes_t *bytes = event_bytes(&q.ev);
+    if (bytes) {
+        q.blob = blob_copy(bytes->data, bytes->len);
+        bytes->data = q.blob.bytes;
+    }
+    sim->queue = grow(sim->queue, &sim->cap_queue, sim->q_len + 1, sizeof *sim->queue);
+    sim->queue[sim->q_len++] = q;
+}
+
+/* ---- pretend storage ---- */
+
+static blob_t encode_records(const gz_action_t *save)
+{
+    size_t len = 0;
+    for (size_t i = 0; i < save->u.save.n_records; i++)
+        len += 8 + save->u.save.records[i].bytes.len;
+    blob_t b = {malloc(len ? len : 1), len};
+    if (!b.bytes) abort();
+    uint8_t *p = b.bytes;
+    for (size_t i = 0; i < save->u.save.n_records; i++) {
+        const gz_record_t *r = &save->u.save.records[i];
+        uint32_t head[2] = {r->type, (uint32_t)r->bytes.len};
+        for (int k = 0; k < 8; k++) *p++ = (uint8_t)(head[k / 4] >> (8 * (k % 4)));
+        if (r->bytes.len) memcpy(p, r->bytes.data, r->bytes.len);
+        p += r->bytes.len;
+    }
+    return b;
+}
+
+/* Take a save batch and decide, from the schedule, what becomes of it. */
+static void storage_accept(slot_t *s, const gz_action_t *save)
+{
+    sim_t *sim = s->sim;
+    struct sim_storage *st = &s->storage;
+    const sim_config_t *c = &sim->cfg;
+    int never = sim_rng_chance(&sim->rng, c->save_never_pm);
+    int late = sim_rng_chance(&sim->rng, c->save_delay_pm);
+    uint64_t extra = 1 + sim_rng_below(&sim->rng, c->max_save_delay_steps ? c->max_save_delay_steps : 1);
+    int fails = sim_rng_chance(&sim->rng, c->save_fail_pm);
+    int confirm_late = sim_rng_chance(&sim->rng, c->confirm_delay_pm);
+    uint64_t confirm_extra = 1 + sim_rng_below(&sim->rng, c->max_confirm_delay_steps ? c->max_confirm_delay_steps : 1);
+
+    batch_t b = {save->u.save.batch, encode_records(save), records_digest(save), s->incarnation, 0, NEVER, fails};
+    b.durable_at = never ? NEVER : sim->step + (late ? extra : 0);
+    if (st->n_pending && st->pending[st->n_pending - 1].durable_at > b.durable_at)
+        b.durable_at = st->pending[st->n_pending - 1].durable_at;     /* a journal: in order */
+    if (b.durable_at != NEVER) b.confirm_at = b.durable_at + (confirm_late ? confirm_extra : 0);
+    st->pending = grow(st->pending, &st->cap_pending, st->n_pending + 1, sizeof *st->pending);
+    st->pending[st->n_pending++] = b;
+    trace(sim, "save node=%u batch=%llu.%llu records=%zu digest=%016llx durable-at=%lld", s->index,
+          (unsigned long long)b.id.incarnation, (unsigned long long)b.id.sequence, save->u.save.n_records,
+          (unsigned long long)b.digest, (long long)b.durable_at);
+}
+
+/* Storage fails: everything pending is discarded, the program is told, and
+ * the node has to be restarted. */
+static void fail_storage(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    sim->stats.storage_failures++;
+    sim->stats.saves_lost += s->storage.n_pending;
+    trace(sim, "storage-failed node=%u lost-saves=%zu", s->index, s->storage.n_pending);
+    for (size_t i = 0; i < s->storage.n_pending; i++) free(s->storage.pending[i].blob.bytes);
+    s->storage.n_pending = 0;
+    if (!sim->cfg.ops.release) (void)gz_runner_storage_failed(&s->runner);
+    s->needs_rebuild = 1;
+}
+
+/* Make every due pending batch durable, oldest first, and queue every due
+ * confirmation. */
+static void settle_storage(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    struct sim_storage *st = &s->storage;
+    while (st->n_pending && st->pending[0].durable_at <= sim->step) {
+        if (st->pending[0].fails) { fail_storage(s); break; }
+        batch_t b = st->pending[0];
+        memmove(st->pending, st->pending + 1, --st->n_pending * sizeof *st->pending);
+        st->durable = grow(st->durable, &st->cap_durable, st->n_durable + 1, sizeof *st->durable);
+        st->durable[st->n_durable++] = b;
+        s->shadow = grow(s->shadow, &s->cap_shadow, s->n_shadow + 1, sizeof *s->shadow);
+        s->shadow[s->n_shadow++] = (shadow_t){b.id, b.digest};
+        s->n_saves_durable++;
+        sim->stats.saves_durable++;
+        trace(sim, "stored node=%u batch=%llu.%llu", s->index,
+              (unsigned long long)b.id.incarnation, (unsigned long long)b.id.sequence);
+    }
+    while (st->next_confirm < st->n_durable && st->durable[st->next_confirm].confirm_at <= sim->step) {
+        const batch_t *b = &st->durable[st->next_confirm++];
+        gz_event_t ev = {.kind = GZ_EVENT_STORAGE_CONFIRMED};
+        ev.u.storage.batch = b->id;
+        post(s, &ev, b->node_incarnation);
+    }
+}
+
+/* What the harness recorded as durable must be exactly what storage holds. */
+static void check_storage(slot_t *s)
+{
+    const struct sim_storage *st = &s->storage;
+    if (st->n_durable != s->n_shadow) {
+        violate(s->sim, "storage lost or gained a durable batch");
+        return;
+    }
+    for (size_t i = 0; i < st->n_durable; i++) {
+        const batch_t *b = &st->durable[i];
+        if (b->id.incarnation != s->shadow[i].id.incarnation || b->id.sequence != s->shadow[i].id.sequence ||
+            digest_bytes(b->blob.bytes, b->blob.len) != s->shadow[i].digest) {
+            violate(s->sim, "storage altered a durable batch");
+            return;
+        }
+    }
+}
+
+/* ---- pretend network ---- */
+
+static void network_send(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len)
+{
+    int drop = sim_rng_chance(&sim->rng, sim->cfg.drop_pm);
+    int twice = sim_rng_chance(&sim->rng, sim->cfg.duplicate_pm);
+    uint64_t digest = digest_bytes(bytes, len);
+    sim->stats.messages_sent++;
+    if (drop) {
+        sim->stats.messages_dropped++;
+        trace(sim, "drop %lld->%lld len=%zu digest=%016llx", (long long)from, (long long)to, len,
+              (unsigned long long)digest);
+        return;
+    }
+    if (twice) sim->stats.messages_duplicated++;
+    for (int copy = 0; copy <= twice; copy++) {
+        int late = sim_rng_chance(&sim->rng, sim->cfg.delay_pm);
+        uint64_t extra = 1 + sim_rng_below(&sim->rng, sim->cfg.max_delay_steps ? sim->cfg.max_delay_steps : 1);
+        message_t m = {from, to, blob_copy(bytes, len), sim->step + 1 + (late ? extra : 0), sim->next_seq++};
+        if (late) sim->stats.messages_delayed++;
+        sim->net = grow(sim->net, &sim->cap_net, sim->n_net + 1, sizeof *sim->net);
+        sim->net[sim->n_net++] = m;
+        trace(sim, "queue seq=%llu %lld->%lld len=%zu digest=%016llx due=%llu", (unsigned long long)m.seq,
+              (long long)from, (long long)to, len, (unsigned long long)digest, (unsigned long long)m.due);
+    }
+}
+
+/* Index in sim->net of the message to deliver now, or -1 if none is due. */
+static long pick_message(sim_t *sim)
+{
+    long oldest = -1;
+    size_t n_due = 0;
+    for (size_t i = 0; i < sim->n_net; i++) {
+        if (sim->net[i].due > sim->step) continue;
+        n_due++;
+        if (oldest < 0) oldest = (long)i;      /* the queue is kept in send order */
+    }
+    if (n_due == 0) return -1;
+    int reorder = sim_rng_chance(&sim->rng, sim->cfg.reorder_pm);
+    if (!reorder || n_due < 2) return oldest;
+    uint64_t skip = 1 + sim_rng_below(&sim->rng, n_due - 1);   /* a due message other than the oldest */
+    for (size_t i = (size_t)oldest + 1; i < sim->n_net; i++)
+        if (sim->net[i].due <= sim->step && --skip == 0) {
+            sim->stats.deliveries_reordered++;
+            return (long)i;
+        }
+    return oldest;
+}
+
+static void deliver_one_message(sim_t *sim)
+{
+    long i = pick_message(sim);
+    if (i < 0) return;
+    message_t m = sim->net[i];
+    memmove(sim->net + i, sim->net + i + 1, (--sim->n_net - (size_t)i) * sizeof *sim->net);
+    trace(sim, "deliver seq=%llu %lld->%lld len=%zu", (unsigned long long)m.seq,
+          (long long)m.from, (long long)m.to, m.blob.len);
+    if (m.to == SIM_WORLD_PEER) {
+        sim->stats.messages_delivered++;
+        sim->stats.world_replies++;
+    } else if (m.to < sim->cfg.n_nodes) {
+        sim->stats.messages_delivered++;
+        gz_event_t ev = {.kind = GZ_EVENT_MESSAGE_RECEIVED};
+        ev.u.message.peer_id = m.from;
+        ev.u.message.bytes = (gz_bytes_t){m.blob.bytes, m.blob.len};
+        post(&sim->slots[m.to], &ev, sim->slots[m.to].incarnation);
+    }
+    free(m.blob.bytes);
+}
+
+/* ---- pretend chain ---- */
+
+/* 32 bytes from four digests of the transaction, each written low byte first. */
+static void pretend_txid(const blob_t *tx, uint8_t txid[32])
+{
+    for (uint64_t part = 0; part < 4; part++) {
+        uint64_t h = fnv(fnv_number(FNV_OFFSET, part, 8), tx->bytes, tx->len);
+        for (int k = 0; k < 8; k++) txid[8 * part + (uint64_t)k] = (uint8_t)(h >> (8 * k));
+    }
+}
+
+/* The script a pretend transaction spends: see the convention in sim.h. */
+static gz_bytes_t spent_script(const blob_t *tx)
+{
+    gz_bytes_t none = {NULL, 0};
+    if (tx->len == 0 || tx->bytes[0] == 0 || (size_t)tx->bytes[0] + 1 > tx->len) return none;
+    return (gz_bytes_t){tx->bytes + 1, tx->bytes[0]};
+}
+
+static void chain_broadcast(sim_t *sim, uint32_t origin, gz_bytes_t tx)
+{
+    uint64_t digest = digest_bytes(tx.data, tx.len);
+    for (size_t i = 0; i < sim->n_txs; i++)
+        if (same_bytes(sim->txs[i].blob.bytes, sim->txs[i].blob.len, tx.data, tx.len)) {
+            trace(sim, "broadcast node=%u digest=%016llx already-known", origin, (unsigned long long)digest);
+            return;
+        }
+    sim->txs = grow(sim->txs, &sim->cap_txs, sim->n_txs + 1, sizeof *sim->txs);
+    sim->txs[sim->n_txs++] = (chain_tx_t){blob_copy(tx.data, tx.len), origin, 0};
+    trace(sim, "broadcast node=%u len=%zu digest=%016llx", origin, tx.len, (unsigned long long)digest);
+}
+
+static int watches(const slot_t *s, gz_bytes_t script)
+{
+    for (size_t i = 0; i < s->n_watches; i++)
+        if (same_bytes(s->watches[i].bytes, s->watches[i].len, script.data, script.len)) return 1;
+    return 0;
+}
+
+/* Tell watchers about the script spent by the transaction at index `t`. */
+static void report_spend(sim_t *sim, size_t t)
+{
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
+        gz_bytes_t script = spent_script(&sim->txs[t].blob);
+        if (script.len == 0 || !watches(&sim->slots[n], script)) continue;
+        gz_event_t ev = {.kind = GZ_EVENT_CHAIN};
+        ev.u.chain.kind = GZ_CHAIN_SCRIPT_SPENT;
+        ev.u.chain.script = script;
+        ev.u.chain.height = sim->txs[t].height;
+        pretend_txid(&sim->txs[t].blob, ev.u.chain.txid);
+        trace(sim, "chain spent node=%u height=%u", n, sim->height);
+        post(&sim->slots[n], &ev, sim->slots[n].incarnation);
+    }
+}
+
+/* Tell the broadcaster of the transaction at index `t` how deep it now is. */
+static void report_confirmations(sim_t *sim, size_t t)
+{
+    uint32_t confirmations = sim->height - sim->txs[t].height + 1;
+    uint32_t origin = sim->txs[t].origin;
+    if (confirmations > sim->cfg.confirm_depth || origin >= sim->cfg.n_nodes) return;
+    gz_event_t ev = {.kind = GZ_EVENT_CHAIN};
+    ev.u.chain.kind = GZ_CHAIN_TX_CONFIRMED;
+    ev.u.chain.confirmations = confirmations;
+    ev.u.chain.height = sim->txs[t].height;
+    pretend_txid(&sim->txs[t].blob, ev.u.chain.txid);
+    trace(sim, "chain confirmed node=%u confirmations=%u", origin, confirmations);
+    post(&sim->slots[origin], &ev, sim->slots[origin].incarnation);
+}
+
+static void mine_block(sim_t *sim)
+{
+    sim->height++;
+    sim->stats.blocks++;
+    for (size_t t = 0; t < sim->n_txs; t++)
+        if (sim->txs[t].height == 0) sim->txs[t].height = sim->height;
+    trace(sim, "block height=%u", sim->height);
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
+        gz_event_t ev = {.kind = GZ_EVENT_CHAIN};
+        ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
+        ev.u.chain.height = sim->height;
+        post(&sim->slots[n], &ev, sim->slots[n].incarnation);
+    }
+    for (size_t t = 0; t < sim->n_txs; t++)
+        if (sim->txs[t].height == sim->height) report_spend(sim, t);
+    for (size_t t = 0; t < sim->n_txs; t++)
+        report_confirmations(sim, t);
+}
+
+/* ---- timers and watches ---- */
+
+static void cancel_timer(slot_t *s, uint64_t id)
+{
+    for (size_t i = 0; i < s->n_timers; i++)
+        if (s->timers[i].id == id) {
+            memmove(s->timers + i, s->timers + i + 1, (--s->n_timers - i) * sizeof *s->timers);
+            return;
+        }
+}
+
+static void set_timer(slot_t *s, uint64_t id, uint64_t delay)
+{
+    cancel_timer(s, id);
+    s->timers = grow(s->timers, &s->cap_timers, s->n_timers + 1, sizeof *s->timers);
+    s->timers[s->n_timers++] = (node_timer_t){id, s->sim->step + (delay ? delay : 1)};
+}
+
+/* Queue a timer event for every timer of the node that is due, in the order set. */
+static void fire_timers(slot_t *s)
+{
+    size_t kept = 0;
+    for (size_t i = 0; i < s->n_timers; i++) {
+        if (s->timers[i].due > s->sim->step) { s->timers[kept++] = s->timers[i]; continue; }
+        gz_event_t ev = {.kind = GZ_EVENT_TIMER_FIRED};
+        ev.u.timer.timer_id = s->timers[i].id;
+        trace(s->sim, "timer node=%u id=%llu", s->index, (unsigned long long)ev.u.timer.timer_id);
+        post(s, &ev, s->incarnation);
+    }
+    s->n_timers = kept;
+}
+
+static void add_watch(slot_t *s, gz_bytes_t script)
+{
+    if (watches(s, script)) return;
+    s->watches = grow(s->watches, &s->cap_watches, s->n_watches + 1, sizeof *s->watches);
+    s->watches[s->n_watches++] = blob_copy(script.data, script.len);
+}
+
+/* ---- carrying out actions ---- */
+
+void sim_execute(sim_t *sim, uint32_t index, const gz_action_t *a)
+{
+    slot_t *s = &sim->slots[index];
+    switch (a->kind) {
+    case GZ_ACTION_SAVE:
+        note_stored(s, a);
+        storage_accept(s, a);
+        break;
+    case GZ_ACTION_SEND:
+        note_left(s, a);
+        network_send(sim, index, a->u.send.peer_id, a->u.send.bytes.data, a->u.send.bytes.len);
+        break;
+    case GZ_ACTION_BROADCAST:
+        note_left(s, a);
+        chain_broadcast(sim, index, a->u.broadcast.tx);
+        break;
+    case GZ_ACTION_NOTIFY:
+        note_left(s, a);
+        trace(sim, "notify node=%u code=%u len=%zu digest=%016llx", index, a->u.notify.code, a->u.notify.bytes.len,
+              (unsigned long long)digest_bytes(a->u.notify.bytes.data, a->u.notify.bytes.len));
+        break;
+    case GZ_ACTION_WATCH:
+        add_watch(s, a->u.watch.script);
+        trace(sim, "watch node=%u len=%zu digest=%016llx", index, a->u.watch.script.len,
+              (unsigned long long)digest_bytes(a->u.watch.script.data, a->u.watch.script.len));
+        break;
+    case GZ_ACTION_SET_TIMER:
+        set_timer(s, a->u.set_timer.timer_id, a->u.set_timer.delay_ms);
+        trace(sim, "set-timer node=%u id=%llu delay=%llu", index,
+              (unsigned long long)a->u.set_timer.timer_id, (unsigned long long)a->u.set_timer.delay_ms);
+        break;
+    case GZ_ACTION_CANCEL_TIMER:
+        cancel_timer(s, a->u.cancel_timer.timer_id);
+        trace(sim, "cancel-timer node=%u id=%llu", index, (unsigned long long)a->u.cancel_timer.timer_id);
+        break;
+    }
+}
+
+/* 1 if the node crashes now, just before the action its runner is handing over. */
+static int crash_point(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    if (s->crash_countdown != NOT_ARMED) {
+        if (s->crash_countdown-- > 0) return 0;
+        s->crash_countdown = NOT_ARMED;
+        return 1;
+    }
+    if (sim->cfg.crash_in_release_pm == 0 || s->died_this_step) return 0;
+    if (!sim_rng_chance(&sim->rng, sim->cfg.crash_in_release_pm)) return 0;
+    s->died_this_step = 1;
+    return 1;
+}
+
+/* The executor given to each node's runner. */
+static void runner_execute(void *ctx, const gz_action_t *action)
+{
+    slot_t *s = ctx;
+    if (s->dying) return;       /* the program is already dead: nothing more is carried out */
+    if (crash_point(s)) {
+        s->dying = 1;
+        s->sim->stats.crashes_in_release++;
+        trace(s->sim, "crash-in-release node=%u", s->index);
+        return;
+    }
+    sim_execute(s->sim, s->index, action);
+}
+
+/* Give a list of actions to the node's program. */
+static void release_list(slot_t *s, const gz_action_list_t *list, int is_start)
+{
+    sim_t *sim = s->sim;
+    if (list->count == 0) return;
+    note_emitted(s, list);
+    gz_status_t st = sim->cfg.ops.release
+        ? sim->cfg.ops.release(sim->ops_ctx, sim, s->index, list)
+        : gz_runner_submit(&s->runner, list);
+    if (st != GZ_OK) {
+        sim->stats.lists_refused++;
+        trace(sim, "refused node=%u actions=%zu status=%d", s->index, list->count, (int)st);
+        if (is_start) violate(sim, "a node's start actions were refused");
+        else if (!sim->cfg.allow_refusals) violate(sim, "a node's program refused an action list");
+        else s->needs_rebuild = 1;
+    }
+    if (s->dying) s->needs_rebuild = 1;
+}
+
+/* ---- nodes ---- */
+
+static void random_fill(void *ctx, uint8_t *out, size_t len) { sim_rng_fill(&((slot_t *)ctx)->rng, out, len); }
+static uint64_t clock_now(void *ctx) { return ((slot_t *)ctx)->sim->step; }
+
+/* Build the node from its storage under a new incarnation and run its start
+ * actions. */
+static void build_node(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    gz_action_t slots[START_SLOTS];
+    uint8_t bytes[START_BYTES];
+    gz_action_list_t list;
+
+    s->incarnation++;
+    /* A stream no earlier incarnation of any node has used. */
+    sim_rng_init(&s->rng, sim->cfg.seed, s->incarnation << 32 | ((uint64_t)s->index + 1));
+    (void)gz_runner_init(&s->runner, s->runner_slots, RUNNER_SLOTS, s->runner_bytes, RUNNER_BYTES,
+                         s->incarnation, runner_execute, s);
+    s->node = sim->cfg.ops.create(sim->ops_ctx, s->index, &s->ports, &s->storage);
+    if (!s->node) abort();
+    if (!sim->cfg.ops.start) return;
+    gz_action_list_init(&list, slots, START_SLOTS, bytes, START_BYTES);
+    if (sim->cfg.ops.start(s->node, &list) != GZ_OK) {
+        sim->stats.handle_errors++;
+        trace(sim, "start-error node=%u", s->index);
+        violate(sim, "a node failed to start");
+        return;
+    }
+    release_list(s, &list, 1);
+}
+
+static void free_blobs(blob_t *blobs, size_t n)
+{
+    for (size_t i = 0; i < n; i++) free(blobs[i].bytes);
+}
+
+/* A crash: destroy everything of the node except its durable storage, then
+ * build it again. */
+static void rebuild(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    sim->stats.crashes++;
+    sim->stats.saves_lost += s->storage.n_pending;
+    trace(sim, "crash node=%u lost-saves=%zu held-actions=%zu", s->index, s->storage.n_pending,
+          sim->cfg.ops.release ? (size_t)0 : gz_runner_held(&s->runner));
+    sim->cfg.ops.destroy(sim->ops_ctx, s->node);
+    for (size_t i = 0; i < s->storage.n_pending; i++) free(s->storage.pending[i].blob.bytes);
+    free_blobs(s->watches, s->n_watches);
+    s->storage.n_pending = s->n_timers = s->n_watches = 0;
+    s->n_emitted_saves = s->n_saves_stored = s->n_saves_durable = s->n_expected = s->head_expected = 0;
+    s->needs_rebuild = s->dying = 0;
+    s->crash_countdown = NOT_ARMED;
+    build_node(s);
+}
+
+/* Bring a node up to date: rebuild it if it has stopped, and let its storage
+ * make progress. */
+static void service(slot_t *s)
+{
+    while (s->needs_rebuild && !s->sim->violation) rebuild(s);
+    settle_storage(s);
+    while (s->needs_rebuild && !s->sim->violation) rebuild(s);
+}
+
+/* A confirmation has arrived for the node. Returns 1 if the node is to be
+ * told about it. */
+static int accept_confirmation(slot_t *s, const queued_t *q)
+{
+    sim_t *sim = s->sim;
+    gz_batch_id_t id = q->ev.u.storage.batch;
+    int stale = q->node_incarnation != s->incarnation;
+    gz_status_t st = GZ_OK;
+    if (!sim->cfg.ops.release) {
+        st = gz_runner_confirm(&s->runner, id);
+        if (s->dying) s->needs_rebuild = 1;
+        if (stale && st != GZ_ERR_STALE_BATCH)
+            violate(sim, "a confirmation from before a crash was not reported as stale");
+        if (!stale && st != GZ_OK)
+            violate(sim, "the runner rejected a confirmation that storage delivered in order");
+    }
+    if (stale || st != GZ_OK) {
+        sim->stats.stale_confirmations += (uint64_t)stale;
+        trace(sim, "confirmation-ignored node=%u batch=%llu.%llu status=%d", s->index,
+              (unsigned long long)id.incarnation, (unsigned long long)id.sequence, (int)st);
+        return 0;
+    }
+    sim->stats.confirmations++;
+    trace(sim, "confirmed node=%u batch=%llu.%llu", s->index,
+          (unsigned long long)id.incarnation, (unsigned long long)id.sequence);
+    return 1;
+}
+
+/* Handle one queued event: give it to its node and carry out what comes back. */
+static void process(sim_t *sim, const queued_t *q)
+{
+    slot_t *s = &sim->slots[q->node];
+    gz_action_t slots[STEP_SLOTS];
+    uint8_t bytes[STEP_BYTES];
+    gz_action_list_t list;
+
+    if (q->ev.kind == GZ_EVENT_STORAGE_CONFIRMED && !accept_confirmation(s, q)) return;
+    gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
+    if (sim->cfg.ops.handle(s->node, &q->ev, &list) != GZ_OK) {
+        sim->stats.handle_errors++;
+        trace(sim, "handle-error node=%u event=%d", s->index, (int)q->ev.kind);
+        return;
+    }
+    release_list(s, &list, 0);
+}
+
+/* Handle queued events until none are left. Handling one may queue more. */
+static void drain(sim_t *sim)
+{
+    while (sim->q_head < sim->q_len) {
+        queued_t q = sim->queue[sim->q_head++];
+        process(sim, &q);
+        free(q.blob.bytes);
+        service(&sim->slots[q.node]);
+    }
+    sim->q_head = sim->q_len = 0;
+}
+
+/* The default node: a gz_node_t started from the records in storage. */
+typedef struct { gz_node_t node; gz_record_t *records; size_t n_records; } default_node_t;
+
+static uint32_t read_u32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+/* Decode every stored record, oldest first. The records point into storage. */
+static void load_records(default_node_t *d, const sim_storage_t *storage)
+{
+    size_t cap = 0;
+    for (size_t i = 0; i < sim_storage_count(storage); i++) {
+        size_t len = 0;
+        const uint8_t *p = sim_storage_batch_bytes(storage, i, &len), *end = p + len;
+        while (p < end) {
+            gz_record_t r = {read_u32(p), {p + 8, read_u32(p + 4)}};
+            d->records = grow(d->records, &cap, d->n_records + 1, sizeof *d->records);
+            d->records[d->n_records++] = r;
+            p += 8 + r.bytes.len;
+        }
+    }
+}
+
+static void *default_create(void *ops_ctx, uint32_t index, const gz_ports_t *ports,
+                            const sim_storage_t *storage)
+{
+    (void)ops_ctx; (void)index;
+    default_node_t *d = calloc(1, sizeof *d);
+    if (!d || gz_node_init(&d->node, ports) != GZ_OK) abort();
+    load_records(d, storage);
+    return d;
+}
+
+static void default_destroy(void *ops_ctx, void *node)
+{
+    (void)ops_ctx;
+    free(((default_node_t *)node)->records);
+    free(node);
+}
+
+static gz_status_t default_start(void *node, gz_action_list_t *out)
+{
+    default_node_t *d = node;
+    return gz_node_start(&d->node, d->records, d->n_records, out);
+}
+
+static gz_status_t default_handle(void *node, const gz_event_t *event, gz_action_list_t *out)
+{
+    return gz_node_handle(&((default_node_t *)node)->node, event, out);
+}
+
+/* ---- invariants ---- */
+
+static void fail(sim_t *sim, const char *reason)
+{
+    if (sim->failed) return;
+    sim->failed = 1;
+    sim->failure_step = sim->step;
+    sim->failure_reason = reason;
+    trace(sim, "FAILED %s", reason);
+}
+
+static void check_invariants(sim_t *sim)
+{
+    const char *why = "an invariant failed";
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) check_storage(&sim->slots[n]);
+    if (sim->violation) fail(sim, sim->violation);
+    /* The twin is judged only by its trace: whatever it does differently from
+     * this simulator shows there, and what it does the same is judged here. */
+    if (sim->twin && sim->twin->trace_hash != sim->trace_hash)
+        fail(sim, "same seed, same run: two runs of this configuration differ");
+    for (size_t i = 0; i < sim->n_invariants && !sim->failed; i++)
+        if (!sim->invariants[i].check(sim, sim->invariants[i].ctx, &why)) fail(sim, why);
+}
+
+/* ---- the scheduler ---- */
+
+static void service_all(sim_t *sim)
+{
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) service(&sim->slots[n]);
+    drain(sim);
+}
+
+static void maybe_crash(sim_t *sim)
+{
+    int crash_now = sim_rng_chance(&sim->rng, sim->cfg.crash_pm);
+    uint32_t who = (uint32_t)sim_rng_below(&sim->rng, sim->cfg.n_nodes);
+    if (crash_now) sim->slots[who].needs_rebuild = 1;
+}
+
+static void maybe_ping(sim_t *sim)
+{
+    uint8_t ping[GZ_PING_PREFIX_LEN + 8] = {'G', 'Z', 'P', 'I'};
+    int ping_now = sim_rng_chance(&sim->rng, sim->cfg.ping_pm);
+    uint64_t to = sim_rng_below(&sim->rng, sim->cfg.n_nodes);
+    uint64_t from = sim_rng_below(&sim->rng, (uint64_t)sim->cfg.n_nodes + 1);
+    sim_rng_fill(&sim->rng, ping + GZ_PING_PREFIX_LEN, 8);
+    if (!ping_now) return;
+    if (from == sim->cfg.n_nodes || from == to) from = SIM_WORLD_PEER;
+    network_send(sim, from, to, ping, sizeof ping);
+}
+
+static void advance(sim_t *sim)
+{
+    sim->step++;
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) sim->slots[n].died_this_step = 0;
+    maybe_crash(sim);
+    maybe_ping(sim);
+    service_all(sim);
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) fire_timers(&sim->slots[n]);
+    drain(sim);
+    deliver_one_message(sim);
+    drain(sim);
+    if (sim_rng_chance(&sim->rng, sim->cfg.block_pm)) mine_block(sim);
+    drain(sim);
+}
+
+/* ---- public ---- */
+
+static sim_t *create(const sim_config_t *config, int is_twin)
+{
+    sim_t *sim = calloc(1, sizeof *sim);
+    if (!sim) abort();
+    sim->cfg = *config;
+    sim->ops_ctx = is_twin ? config->ops.twin_ctx : config->ops.ctx;
+    if (!sim->cfg.ops.create) {
+        sim->cfg.ops.create = default_create;
+        sim->cfg.ops.destroy = default_destroy;
+        sim->cfg.ops.start = default_start;
+        sim->cfg.ops.handle = default_handle;
+    }
+    sim->trace_hash = FNV_OFFSET;
+    sim_rng_init(&sim->rng, config->seed, 0);
+    sim->slots = calloc(config->n_nodes, sizeof *sim->slots);
+    if (!sim->slots) abort();
+    for (uint32_t n = 0; n < config->n_nodes; n++) {
+        slot_t *s = &sim->slots[n];
+        s->sim = sim;
+        s->index = n;
+        s->crash_countdown = NOT_ARMED;
+        s->ports.random = (gz_random_port_t){random_fill, s};
+        s->ports.clock = (gz_clock_port_t){clock_now, s};
+        build_node(s);
+    }
+    service_all(sim);
+    return sim;
+}
+
+sim_t *sim_create(const sim_config_t *config)
+{
+    if (!config || config->n_nodes == 0) return NULL;
+    sim_t *sim = create(config, 0);
+    if (config->check_same_seed) sim->twin = create(config, 1);
+    check_invariants(sim);
+    return sim;
+}
+
+void sim_destroy(sim_t *sim)
+{
+    if (!sim) return;
+    if (sim->twin) sim_destroy(sim->twin);
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
+        slot_t *s = &sim->slots[n];
+        sim->cfg.ops.destroy(sim->ops_ctx, s->node);
+        for (size_t i = 0; i < s->storage.n_pending; i++) free(s->storage.pending[i].blob.bytes);
+        for (size_t i = 0; i < s->storage.n_durable; i++) free(s->storage.durable[i].blob.bytes);
+        free_blobs(s->watches, s->n_watches);
+        free(s->storage.pending); free(s->storage.durable);
+        free(s->watches); free(s->timers); free(s->emitted_saves); free(s->expected); free(s->shadow);
+    }
+    for (size_t i = sim->q_head; i < sim->q_len; i++) free(sim->queue[i].blob.bytes);
+    for (size_t i = 0; i < sim->n_net; i++) free(sim->net[i].blob.bytes);
+    for (size_t i = 0; i < sim->n_txs; i++) free(sim->txs[i].blob.bytes);
+    free(sim->queue); free(sim->net); free(sim->txs); free(sim->slots); free(sim->trace);
+    free(sim);
+}
+
+int sim_add_invariant(sim_t *sim, sim_invariant_fn check, void *ctx)
+{
+    if (!check || sim->n_invariants == MAX_INVARIANTS) return 0;
+    sim->invariants[sim->n_invariants].check = check;
+    sim->invariants[sim->n_invariants++].ctx = ctx;
+    return 1;
+}
+
+int sim_step(sim_t *sim)
+{
+    if (sim->failed) return 0;
+    advance(sim);
+    if (sim->twin) advance(sim->twin);
+    check_invariants(sim);
+    return !sim->failed;
+}
+
+uint64_t sim_run(sim_t *sim, uint64_t steps)
+{
+    uint64_t done = 0;
+    while (done < steps && sim_step(sim)) done++;
+    return done;
+}
+
+uint64_t sim_step_count(const sim_t *sim) { return sim->step; }
+int sim_failed(const sim_t *sim) { return sim->failed; }
+uint64_t sim_failure_step(const sim_t *sim) { return sim->failure_step; }
+const char *sim_failure_reason(const sim_t *sim) { return sim->failed ? sim->failure_reason : ""; }
+uint64_t sim_trace_hash(const sim_t *sim) { return sim->trace_hash; }
+const sim_stats_t *sim_stats(const sim_t *sim) { return &sim->stats; }
+uint32_t sim_chain_height(const sim_t *sim) { return sim->height; }
+uint64_t sim_node_incarnation(const sim_t *sim, uint32_t index) { return sim->slots[index].incarnation; }
+
+const char *sim_trace(const sim_t *sim, size_t *len)
+{
+    if (len) *len = sim->trace_len;
+    return sim->trace ? sim->trace : "";
+}
+
+/* The hand-driven calls: each does the same thing to the simulator and to its
+ * lockstep twin, then checks the invariants. */
+
+static void crash_now(sim_t *sim, uint32_t index)
+{
+    sim->slots[index].needs_rebuild = 1;
+    service_all(sim);
+}
+
+void sim_crash_node(sim_t *sim, uint32_t index)
+{
+    if (sim->failed || index >= sim->cfg.n_nodes) return;
+    crash_now(sim, index);
+    if (sim->twin) crash_now(sim->twin, index);
+    check_invariants(sim);
+}
+
+static void arm_crash(sim_t *sim, uint32_t index, uint32_t after)
+{
+    sim->slots[index].crash_countdown = after;
+    trace(sim, "arm-crash node=%u after=%u", index, after);
+}
+
+void sim_crash_after_releases(sim_t *sim, uint32_t index, uint32_t after)
+{
+    if (sim->failed || index >= sim->cfg.n_nodes) return;
+    arm_crash(sim, index, after);
+    if (sim->twin) arm_crash(sim->twin, index, after);
+}
+
+static void fail_storage_now(sim_t *sim, uint32_t index)
+{
+    fail_storage(&sim->slots[index]);
+    service_all(sim);
+}
+
+void sim_fail_storage(sim_t *sim, uint32_t index)
+{
+    if (sim->failed || index >= sim->cfg.n_nodes) return;
+    fail_storage_now(sim, index);
+    if (sim->twin) fail_storage_now(sim->twin, index);
+    check_invariants(sim);
+}
+
+static void quiesce(sim_t *sim)
+{
+    sim_config_t *c = &sim->cfg;
+    c->drop_pm = c->duplicate_pm = c->save_never_pm = c->save_fail_pm = 0;
+    c->crash_pm = c->crash_in_release_pm = c->ping_pm = c->block_pm = 0;
+    trace(sim, "quiet from here: %zu messages in flight discarded", sim->n_net);
+    for (size_t i = 0; i < sim->n_net; i++) free(sim->net[i].blob.bytes);
+    sim->n_net = 0;
+}
+
+void sim_quiesce(sim_t *sim)
+{
+    if (sim->failed) return;
+    quiesce(sim);
+    if (sim->twin) quiesce(sim->twin);
+}
+
+void sim_send_message(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len)
+{
+    if (sim->failed) return;
+    network_send(sim, from, to, bytes, len);
+    if (sim->twin) network_send(sim->twin, from, to, bytes, len);
+    check_invariants(sim);
+}
+
+static void user_command(sim_t *sim, uint32_t index, const uint8_t *bytes, size_t len)
+{
+    gz_event_t ev = {.kind = GZ_EVENT_USER_COMMAND};
+    ev.u.user.bytes = (gz_bytes_t){bytes, len};
+    trace(sim, "user node=%u len=%zu digest=%016llx", index, len, (unsigned long long)digest_bytes(bytes, len));
+    post(&sim->slots[index], &ev, sim->slots[index].incarnation);
+    drain(sim);
+}
+
+void sim_user_command(sim_t *sim, uint32_t index, const uint8_t *bytes, size_t len)
+{
+    if (sim->failed || index >= sim->cfg.n_nodes) return;
+    user_command(sim, index, bytes, len);
+    if (sim->twin) user_command(sim->twin, index, bytes, len);
+    check_invariants(sim);
+}
+
+static void mine_now(sim_t *sim)
+{
+    mine_block(sim);
+    drain(sim);
+}
+
+void sim_mine_block(sim_t *sim)
+{
+    if (sim->failed) return;
+    mine_now(sim);
+    if (sim->twin) mine_now(sim->twin);
+    check_invariants(sim);
+}
+
+const sim_storage_t *sim_node_storage(const sim_t *sim, uint32_t index) { return &sim->slots[index].storage; }
+size_t sim_storage_count(const sim_storage_t *storage) { return storage->n_durable; }
+gz_batch_id_t sim_storage_batch_id(const sim_storage_t *storage, size_t i) { return storage->durable[i].id; }
+size_t sim_storage_pending(const sim_storage_t *storage) { return storage->n_pending; }
+size_t sim_storage_unconfirmed(const sim_storage_t *storage) { return storage->n_durable - storage->next_confirm; }
+
+const uint8_t *sim_storage_batch_bytes(const sim_storage_t *storage, size_t i, size_t *len)
+{
+    if (len) *len = storage->durable[i].blob.len;
+    return storage->durable[i].blob.bytes;
+}
