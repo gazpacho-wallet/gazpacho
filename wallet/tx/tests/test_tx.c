@@ -443,6 +443,11 @@ static void test_selection(void) {
     CHECK(gzt_select_coins(coins, N, P2TR_DEST, 34, want + 101, wide, &a) == GZT_ERR_LIMIT);
     CHECK(gzt_select_coins(coins, 64, P2TR_DEST, 34, want + 101, wide, &a) == GZT_ERR_FUNDS);
     CHECK(gzt_select_coins(coins, N, P2TR_DEST, 34, 100000 + 4950, wide, &a) == GZT_ERR_FUNDS);
+    /* the cap rule at its edge: all 100 coins exactly cover amount + the
+       64-input fee */
+    uint64_t fee64 = gzt_fee_for_vsize(wide.rate, gzt_keypath_vsize(64, &one, 1));
+    CHECK(gzt_select_coins(coins, N, P2TR_DEST, 34, 104950 - fee64, wide, &a) == GZT_ERR_LIMIT);
+    CHECK(gzt_select_coins(coins, N, P2TR_DEST, 34, 104950 - fee64 + 1, wide, &a) == GZT_ERR_FUNDS);
 }
 
 /* ---- the funding ------------------------------------------------------------ */
@@ -532,6 +537,12 @@ static void test_funding(const secp256k1_context *ctx) {
     CHECK(refused(ctx, &master, &g, g.info.txid, aux, GZT_ERR_STATE));
     g = f; g.priv_spent[0].amount += 1;
     CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    /* amounts beyond 21 million whose sums wrap round to the right totals */
+    g = f; g.priv_spent[0].amount += UINT64_C(1) << 63; g.priv_spent[1].amount += UINT64_C(1) << 63;
+    CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_STATE));
+    g = f; g.priv_tx.out[1].value += UINT64_C(1) << 63; g.info.fee += UINT64_C(1) << 63;
+    CHECK(gzt_tx_txid(&g.priv_tx, g.info.txid) == GZT_OK);
+    CHECK(refused(ctx, &master, &g, g.info.txid, aux, GZT_ERR_STATE));
     g = f; g.priv_spent[0].script[33] ^= 1; /* signer refuses: key is not the script's */
     CHECK(refused(ctx, &master, &g, f.info.txid, aux, GZT_ERR_KEY));
     g = f; g.priv_key_index[0] ^= 1;
@@ -610,6 +621,52 @@ static void test_funding(const secp256k1_context *ctx) {
     CHECK(gzt_funding_build(ctx, &master, &req, rev, 3, aux2, &g) == GZT_OK);
     CHECK(memcmp(g.info.txid, f.info.txid, 32) == 0);
 
+    /* a build into a value that held something else gives the same bytes */
+    static gzt_funding dirty;
+    memset(&dirty, 0x77, sizeof dirty);
+    CHECK(gzt_funding_build(ctx, &master, &req, coins, 3, aux, &dirty) == GZT_OK);
+    CHECK(gzt_funding_build(ctx, &master, &req, coins, 3, aux, &g) == GZT_OK);
+    CHECK(memcmp(&dirty, &g, sizeof g) == 0);
+
+    /* a change-chain coin, in account 1, is spent and released correctly */
+    {
+        gzw_bip86_output o1, o2;
+        gzt_coin ac[2];
+        memset(ac, 0, sizeof ac);
+        CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 1, 1, 5, &o1, NULL));
+        CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 1, 0, 2, &o2, NULL));
+        memcpy(ac[0].script, o1.script_pubkey, 34);
+        ac[0].change = 1; ac[0].index = 5; ac[0].amount = 60000; ac[0].txid[0] = 0x91;
+        memcpy(ac[1].script, o2.script_pubkey, 34);
+        ac[1].change = 0; ac[1].index = 2; ac[1].amount = 50000; ac[1].txid[0] = 0x92;
+        gzt_funding_request ra = req;
+        ra.account = 1; ra.amount = 100000; ra.change_index = 6;
+        CHECK(gzt_funding_build(ctx, &master, &ra, ac, 2, aux, &g) == GZT_OK);
+        CHECK(g.info.selection.n_selected == 2 && g.info.selection.selected[0] == 0);
+        CHECK(gzt_funding_release(ctx, &master, &g, g.info.txid, aux, raw, sizeof raw, &len) ==
+              GZT_OK);
+        CHECK(gzt_tx_parse(raw, len, &tx) == GZT_OK);
+        gzt_spent_output sp[2];
+        memset(sp, 0, sizeof sp);
+        int sig_ok = 1;
+        for (int i = 0; i < 2; i++) {
+            sp[i].amount = ac[i].amount; sp[i].script_len = 34;
+            memcpy(sp[i].script, ac[i].script, 34);
+        }
+        for (uint32_t i = 0; i < 2; i++) {
+            secp256k1_xonly_pubkey pk;
+            uint8_t hh[32];
+            if (gzt_sighash_keypath(&tx, sp, i, 0, hh) != GZT_OK ||
+                !secp256k1_xonly_pubkey_parse(ctx, &pk, sp[i].script + 2) ||
+                !secp256k1_schnorrsig_verify(ctx, tx.in[i].witness[0].data, hh, 32, &pk))
+                sig_ok = 0;
+        }
+        CHECK(sig_ok);
+        gzw_bip86_output c6;
+        CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 1, 1, 6, &c6, NULL));
+        CHECK(tx.n_out == 2 && memcmp(tx.out[1].script, c6.script_pubkey, 34) == 0);
+    }
+
     /* every size from 1 to 64 inputs: the size the fee was paid for is the real one */
     int sizes_ok = 1;
     size_t one = 34;
@@ -654,6 +711,8 @@ static void test_funding(const secp256k1_context *ctx) {
     CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_ARG);
     r2.n_used_change_indexes = 1;
     CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_OK);
+    r2.used_change_indexes = used + 1; /* 3 first in the list */
+    CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_ARG);
     r2.used_change_indexes = NULL;
     CHECK(gzt_funding_build(ctx, &master, &r2, coins, 3, aux, &g) == GZT_ERR_ARG);
     r2 = req;
