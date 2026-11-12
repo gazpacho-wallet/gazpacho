@@ -54,10 +54,17 @@ const char *gzt_err_text(gzt_err e);
    any such mix-up is a compile error, whatever the warning flags. */
 typedef struct { uint8_t id; } gzt_network;
 
-#define GZT_NET_SIGNET ((gzt_network){1})
-#define GZT_NET_TESTNET3 ((gzt_network){2})
-#define GZT_NET_TESTNET4 ((gzt_network){3})
-#define GZT_NET_REGTEST ((gzt_network){4})
+/* Compound literals in C; aggregate initialisation in C++ (C++11), where a
+   compound literal is not standard.  Tested from C++ by wallet_tx_header_cxx. */
+#ifdef __cplusplus
+#define GZT_NET_(id) (gzt_network{id})
+#else
+#define GZT_NET_(id) ((gzt_network){id})
+#endif
+#define GZT_NET_SIGNET GZT_NET_(1)
+#define GZT_NET_TESTNET3 GZT_NET_(2)
+#define GZT_NET_TESTNET4 GZT_NET_(3)
+#define GZT_NET_REGTEST GZT_NET_(4)
 
 static inline int gzt_network_eq(gzt_network a, gzt_network b) { return a.id == b.id; }
 

@@ -10,7 +10,7 @@ target_include_directories(gazpacho_wallet_tx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(gazpacho_wallet_tx PUBLIC gazpacho_wallet_keys secp256k1 OpenSSL::Crypto)
 target_compile_options(gazpacho_wallet_tx PRIVATE ${GZW_WARNINGS})
 
-foreach(t test_tx_vectors test_tx fuzz_tx_parse)
+foreach(t test_tx_vectors test_tx)
   add_executable(${t} tests/${t}.c)
   target_include_directories(${t} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vectors)
   target_link_libraries(${t} PRIVATE gazpacho_wallet_tx)
@@ -18,7 +18,35 @@ foreach(t test_tx_vectors test_tx fuzz_tx_parse)
 endforeach()
 add_test(NAME wallet_tx_vectors COMMAND test_tx_vectors)
 add_test(NAME wallet_tx COMMAND test_tx)
-add_test(NAME wallet_tx_fuzz COMMAND fuzz_tx_parse 200000)
+
+# The parser's fuzz target (docs/notes/ci.md): with GZ_LIBFUZZER the target
+# alone, linked with libFuzzer and run by tools/run-fuzz.sh; otherwise with
+# the plain driver as a CTest test.  A non-numeric argument is refused.
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_tx_parse tests/fuzz_tx_parse.c)
+  target_link_options(fuzz_tx_parse PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_tx_parse tests/fuzz_tx_parse.c tests/fuzz_tx_main.c)
+  target_include_directories(fuzz_tx_parse PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vectors)
+  add_test(NAME wallet_tx_fuzz COMMAND fuzz_tx_parse 200000)
+  add_test(NAME wallet_tx_fuzz_refuses_flags COMMAND fuzz_tx_parse -max_total_time=60)
+  set_tests_properties(wallet_tx_fuzz_refuses_flags PROPERTIES WILL_FAIL TRUE)
+endif()
+target_link_libraries(fuzz_tx_parse PRIVATE gazpacho_wallet_tx)
+target_compile_options(fuzz_tx_parse PRIVATE ${GZW_WARNINGS})
+
+# The header from C++ (callers such as mobile wrappers), if a C++ compiler
+# is installed: strict C++11, syntax only.
+find_program(GZT_CXX NAMES c++ g++ clang++)
+if(GZT_CXX)
+  add_test(NAME wallet_tx_header_cxx
+    COMMAND ${GZT_CXX} -std=c++11 -pedantic-errors -Wall -Wextra -Werror -fsyntax-only
+            "-I$<JOIN:$<TARGET_PROPERTY:gazpacho_wallet_tx,INCLUDE_DIRECTORIES>,;-I>"
+            "-I$<JOIN:$<TARGET_PROPERTY:gazpacho_wallet_keys,INTERFACE_INCLUDE_DIRECTORIES>,;-I>"
+            "-I$<JOIN:$<TARGET_PROPERTY:secp256k1,INTERFACE_INCLUDE_DIRECTORIES>,;-I>"
+            ${GZT_TESTS}/header_cxx.cpp
+    COMMAND_EXPAND_LISTS)
+endif()
 
 # Verify-after-sign, with the signer replaced at link time.
 add_executable(test_tx_faults tests/test_tx_faults.c)

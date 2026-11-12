@@ -327,6 +327,11 @@ static void test_selection(void) {
             uint64_t base = scale == 0 ? 400 : scale == 1 ? 2000 : scale == 2 ? 100000 : 5;
             coins[i].amount = 330 + rnd() % base;
             if (rnd() % 4 == 0 && i) coins[i].amount = coins[i - 1].amount;
+            if (rnd() % 8 == 0 && i) { /* same amount and txid, another vout */
+                memcpy(coins[i].txid, coins[i - 1].txid, 32);
+                coins[i].amount = coins[i - 1].amount;
+                coins[i].vout = coins[i - 1].vout + 1 + (uint32_t)(rnd() % 2) * 100;
+            }
         }
         uint64_t amount = 330 + rnd() % (scale == 3 ? 2000 : 50000);
         gzt_fee_policy fp = {{100 + rnd() % 3000}, {0}};
@@ -368,6 +373,19 @@ static void test_selection(void) {
     CHECK(gzt_select_coins(coins, 2, P2TR_DEST, 34, 10000, fp, &a) == GZT_OK);
     CHECK(a.n_selected == 1 && a.selected[0] == 0 && a.has_change && a.vsize == 154);
     CHECK(a.fee == 16 && a.change == 100000 - 10000 - 16);
+    {
+        /* review c06: equal amount and txid, vouts 7, 3, 5; two are needed:
+           the vout tie-break chooses 3 then 5 */
+        gzt_coin tie[3];
+        memset(tie, 0, sizeof tie);
+        for (int i = 0; i < 3; i++) {
+            tie[i].txid[0] = 0x33;
+            tie[i].amount = 6000;
+        }
+        tie[0].vout = 7; tie[1].vout = 3; tie[2].vout = 5;
+        CHECK(gzt_select_coins(tie, 3, P2TR_DEST, 34, 10000, fp, &a) == GZT_OK);
+        CHECK(a.n_selected == 2 && a.selected[0] == 1 && a.selected[1] == 2);
+    }
     CHECK(gzt_select_coins(coins, 2, P2TR_DEST, 34, 329, fp, &a) == GZT_ERR_DUST);
     CHECK(gzt_select_coins(coins, 2, P2TR_DEST, 34, 330, fp, &a) == GZT_OK);
     uint8_t p2wpkh[22] = {0x00, 0x14};
@@ -788,6 +806,12 @@ static void test_sign_and_sighash_refusals(const secp256k1_context *ctx) {
     spent[0].script_len = 33;
     CHECK(gzt_sign_keypath(ctx, &tx, spent, 0, &kp, aux) == GZT_ERR_KEY);
     spent[0].script_len = 34;
+    /* review h02: push byte 0x21, the key in bytes 2..33: 34 bytes but not
+       a witness program, so not ours to sign for */
+    spent[0].script[1] = 0x21;
+    CHECK(gzt_sign_keypath(ctx, &tx, spent, 0, &kp, aux) == GZT_ERR_KEY);
+    spent[0].script[1] = 0x20;
+    CHECK(gzt_sign_keypath(ctx, &tx, spent, 0, &kp, aux) == GZT_OK);
     spent[0].script[33] ^= 1;
     CHECK(gzt_sign_keypath(ctx, &tx, spent, 0, &kp, aux) == GZT_ERR_KEY);
     spent[0].script[33] ^= 1;
