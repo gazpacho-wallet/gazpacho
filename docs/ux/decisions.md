@@ -122,3 +122,19 @@ The session token stays out of cookies (review of the local API, F1). Why a brow
 Applied in `spec/local-api.md` drafts 2 and 3. Draft 3, after the second review: the browser is opened through an owner-only redirect file, so the start token is on no command line; the passphrase is typed into the request itself for the words and for spending, and the 5-minute fresh sign-in stays only for reversible changes; "does nothing until unlocked" is refined as under decision 13.
 
 Also decided the same day: interface ports 39735 (signet) and 39736 (testnet4), plus one optional extra port for a tunnel, off by default; and in Slice 1 one joined lobby and one hosted lobby at a time, with limits that stay editable (tightening leaves a lobby that no longer fits; loosening affects only future joins).
+
+### 15. Questions 6 answered (owner, 2026-11-12)
+
+The owner answered the nine questions that blocked the first factory (`questions-6-blocking.html`). Full answers, the owner's notes and what each leaves to do are in `OPEN-QUESTIONS.md` section 0. In short:
+
+- **Q1, A:** no end-date payout and no friendly close in Slice 1. Both come later, built carefully from SuperScalar's work; a **Slice 1.5** tests every deferred feature end to end, and every path a factory can take is to be researched first, with what SuperScalar's tooling tracks.
+- **Q2, A:** the proposed timing set for the Slice 1 test factory (T1's 144 blocks plus 36 of wind-down, burial 3 blocks, funding deadline 36 blocks, one signing budget for an unfinished round, 6 blocks per transaction plus 6 spare, timed-level fields fixed at 144 and 4).
+- **Q3, A:** a member's starting limits are the small-lobby values (fewest members 3; smallest channel 50,000 sat; joining fee at most 2,000 sat; payment fee at most 1,000 msat plus 2,500 per million; factory life at most 8,640 blocks; leaving alone at most 1,008 blocks), as the Everyday preset, every number visible and editable.
+- **Q4, A:** fees in 1.0.0 are a per-payment fee plus an optional flat joining fee. The owner wants every fee model researched, up to the host taking all the channel fees it sets or sharing them with the member whose coins were used, and what the rules can enforce (decision 2 stays the table of what is possible).
+- **Q5:** not answered. The owner leans to a branch of its own in the standard key tree; it is not decided.
+- **Q6, B:** encrypt from the start (decision 13).
+- **Q7, A plus a tunnel port:** ports 39735 and 39736, one optional extra port; sign-in with the wallet passphrase, as in Sparrow (decision 14).
+- **Q8, A:** one joined and one hosted lobby at a time in Slice 1; limits stay editable. Any skipped feature must be tested later.
+- **Q9, A:** the transport's code review counts as its specification review; the specification is to be re-reviewed fully once the program is built.
+
+This also confirms decision 11's answer to `OPEN-QUESTIONS.md` Q1: the screens are in Slice 1.
