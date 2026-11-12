@@ -110,7 +110,16 @@ r-send-eintr-fatal	ports/net/conn.c	        if (r < 0 && errno == EINTR) continu
 r-noise-err-not-reset	ports/net/conn.c	    c->noise_err = GZ_NOISE_OK;\n	
 member-check-ignored	ports/net/conn.c	|| !is_member(rs, member_ctx))	|| 0)
 member-check-null-allowed	ports/net/conn.c	    if (!is_member) return GZ_CONN_ERR_ARGS;\n	
-cloexec-off	ports/net/conn.c	fcntl(fd, F_SETFD, fdfl | FD_CLOEXEC) == 0	1
+cloexec-off	ports/net/conn.c	ai->ai_socktype | SOCK_CLOEXEC | SOCK_NONBLOCK	ai->ai_socktype | SOCK_NONBLOCK
+w2-hkdf-o2-wrong-buffer	ports/net/noise.c	    wipe(o2, sizeof o2);\n	    wipe(o1, sizeof o1);\n
+w2-hkdf-prk-wipes-junk	ports/net/noise.c	    wipe(prk, sizeof prk);\n	    { uint8_t junk[32] = {0}; wipe(junk, sizeof junk); }\n
+w2-mix-key-wipes-junk	ports/net/noise.c	    wipe(ss, 32);\n    return ok;	    { uint8_t junk[32] = {0}; wipe(junk, 32); }\n    return ok;
+g2-crlf-not-stripped	tools/gz-net/gz-net.c	    if (n > 64 && buf[n - 1] == '\\r') n--;\n	
+s2-send-ignores-live	ports/net/conn.c	    if (c->live != LIVE) return GZ_CONN_ERR_CLOSED;\n    if (len > c->limits.max_msg)	    if (len > c->limits.max_msg)
+accept-cloexec-off	ports/net/conn.c	SOCK_CLOEXEC | SOCK_NONBLOCK);	SOCK_NONBLOCK);
+socket-blocking	ports/net/conn.c	ai->ai_socktype | SOCK_CLOEXEC | SOCK_NONBLOCK	ai->ai_socktype | SOCK_CLOEXEC
+accept-blocking	ports/net/conn.c	SOCK_CLOEXEC | SOCK_NONBLOCK);	SOCK_CLOEXEC);
+address-error-generic	ports/net/conn.c	return r == EAI_NONAME ? GZ_CONN_ERR_ADDRESS : GZ_CONN_ERR_SOCKET;	return GZ_CONN_ERR_SOCKET;
 reuse-not-refused	ports/net/conn.c	    if (c->live == LIVE) return 0;\n	
 close-ignores-live	ports/net/conn.c	if (c->live == LIVE && c->fd >= 0) close(c->fd);	if (c->fd >= 0) close(c->fd);
 numeric-host-off	ports/net/conn.c	AI_NUMERICHOST | AI_NUMERICSERV	AI_NUMERICSERV

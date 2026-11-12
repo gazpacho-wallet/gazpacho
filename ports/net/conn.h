@@ -16,7 +16,7 @@
 
 typedef enum {
     GZ_CONN_OK = 0,
-    GZ_CONN_ERR_SOCKET,     /* the system refused (bind, connect, read, write), or a non-numeric address */
+    GZ_CONN_ERR_SOCKET,     /* the system refused (bind, connect, read, write) */
     GZ_CONN_ERR_TIMEOUT,    /* a deadline passed */
     GZ_CONN_ERR_CLOSED,     /* the peer closed the connection, or it is not open */
     GZ_CONN_ERR_HANDSHAKE,  /* the state machine refused an act; see noise_err */
@@ -25,7 +25,8 @@ typedef enum {
     GZ_CONN_ERR_CRYPTO,     /* the state machine refused a message; see noise_err */
     GZ_CONN_ERR_NOT_MEMBER, /* the host's member check refused the member's key */
     GZ_CONN_ERR_BUSY,       /* accept or connect on a gz_conn_t that is still open */
-    GZ_CONN_ERR_ARGS        /* no member check given to accept */
+    GZ_CONN_ERR_ARGS,       /* no member check given to accept */
+    GZ_CONN_ERR_ADDRESS     /* the address is not numeric (names are not looked up) */
 } gz_conn_err_t;
 
 typedef struct {

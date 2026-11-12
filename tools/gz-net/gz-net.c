@@ -1,6 +1,8 @@
 /* gz-net: complete a BOLT 8 handshake between two local processes and
  * exchange a ping and pong of custom messages (type 32769).
  *
+ * Addresses (--host) must be numeric.
+ *
  *   gz-net listen  [--host H] [--port P] [--key-file F] [--accept N]
  *   gz-net connect --port P --pin HEX [--host H] [--key-file F] [--count N]
  *
@@ -11,7 +13,14 @@
  *
  * The custom message's payload is a TLV stream: type 1 is the kind (1 byte:
  * 1 ping, 2 pong), type 3 the sequence number (tu64). */
+#if defined(__linux__)
+#define _GNU_SOURCE
+#include <sys/random.h> /* getrandom */
+#else
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
+#include <unistd.h> /* getentropy */
+#endif
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -27,15 +36,27 @@
 #define KIND_PING 1
 #define KIND_PONG 2
 
-/* Randomness from /dev/urandom, opened once. The port cannot report a
- * failure, so a failure ends the program rather than hand out weak keys. */
-static FILE *urandom;
-
-static void urandom_fill(void *ctx, uint8_t *out, size_t len)
+/* Randomness straight from the kernel, with no buffer of future key bytes
+ * left in the process. The port cannot report a failure, so a failure ends
+ * the program rather than hand out weak keys. */
+static void os_fill(void *ctx, uint8_t *out, size_t len)
 {
+    size_t done = 0;
     (void)ctx;
-    if (!urandom || fread(out, 1, len, urandom) != len) {
-        fprintf(stderr, "gz-net: cannot read /dev/urandom\n");
+    while (done < len) {
+#if defined(__linux__)
+        ssize_t r = getrandom(out + done, len - done, 0);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        done += (size_t)r;
+#else
+        size_t n = len - done > 256 ? 256 : len - done;
+        if (getentropy(out + done, n) != 0) break;
+        done += n;
+#endif
+    }
+    if (done != len) {
+        fprintf(stderr, "gz-net: cannot read randomness from the system\n");
         abort();
     }
 }
@@ -88,7 +109,7 @@ static int load_key(const char *path, uint8_t key[32])
     int ok;
     FILE *f;
     if (!path) {
-        urandom_fill(NULL, key, 32);
+        os_fill(NULL, key, 32);
         return 1;
     }
     f = fopen(path, "rb");
@@ -162,13 +183,14 @@ static int cmd_listen(const char *host, uint16_t port, const uint8_t key[32],
     size_t n = 33, len, olen;
     uint16_t bound;
     int lfd, i, failures = 0;
+    gz_conn_err_t le;
     if (!secp256k1_ec_pubkey_create(secp, &pk, key) ||
         !secp256k1_ec_pubkey_serialize(secp, pub, &n, &pk, SECP256K1_EC_COMPRESSED)) {
         fprintf(stderr, "gz-net: invalid key\n");
         return 1;
     }
-    if (gz_conn_listen(host, port, &lfd, &bound)) {
-        fprintf(stderr, "gz-net: cannot listen on %s:%u\n", host, (unsigned)port);
+    if ((le = gz_conn_listen(host, port, &lfd, &bound))) {
+        fprintf(stderr, "gz-net: cannot listen on %s:%u: %s\n", host, (unsigned)port, gz_conn_err_name(le));
         return 1;
     }
     printf("listening %u ", (unsigned)bound);
@@ -257,7 +279,7 @@ int main(int argc, char **argv)
     const char *host = "127.0.0.1", *key_file = NULL, *pin_hex = NULL;
     long port = -1, number = 1;
     uint8_t key[32], pin[33], seed[32];
-    gz_random_port_t rnd = {urandom_fill, NULL};
+    gz_random_port_t rnd = {os_fill, NULL};
     secp256k1_context *secp;
     int i, rc;
     if (argc < 2) return usage();
@@ -273,13 +295,12 @@ int main(int argc, char **argv)
     }
     if (i != argc) return usage();
     /* SIGPIPE is left at its default: the connection layer never raises it. */
-    urandom = fopen("/dev/urandom", "rb");
     if (!load_key(key_file, key)) {
         fprintf(stderr, "gz-net: cannot read key file\n");
         return 1;
     }
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
-    urandom_fill(NULL, seed, sizeof seed);
+    os_fill(NULL, seed, sizeof seed);
     rc = secp && secp256k1_context_randomize(secp, seed);
     OPENSSL_cleanse(seed, sizeof seed);
     if (!rc) return 1;
@@ -295,6 +316,5 @@ int main(int argc, char **argv)
     }
     OPENSSL_cleanse(key, sizeof key);
     secp256k1_context_destroy(secp);
-    fclose(urandom);
     return rc;
 }

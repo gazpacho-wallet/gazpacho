@@ -1,5 +1,9 @@
 /* POSIX TCP connection layer. See conn.h. */
+#if defined(__linux__)
+#define _GNU_SOURCE /* accept4 */
+#else
 #define _POSIX_C_SOURCE 200809L
+#endif
 #include "conn.h"
 
 #include <errno.h>
@@ -28,6 +32,15 @@
 
 #define LIVE 0x6c697665u /* gz_conn_t.live while a socket is open */
 
+/* Linux and the BSDs make a socket close-on-exec and non-blocking in the same
+ * call that creates it, so a thread that starts another program between the
+ * two cannot leak it. Elsewhere fcntl sets both just after. */
+#if defined(SOCK_CLOEXEC) && defined(SOCK_NONBLOCK)
+#define ATOMIC_FLAGS 1
+#else
+#define ATOMIC_FLAGS 0
+#endif
+
 void gz_conn_default_limits(gz_conn_limits_t *l)
 {
     l->accept_ms = 0;
@@ -55,13 +68,38 @@ static gz_conn_err_t die(gz_conn_t *c, gz_conn_err_t e)
  * (where the per-write flag is missing) never raising SIGPIPE. */
 static int prepare_socket(int fd)
 {
-    int fl = fcntl(fd, F_GETFL, 0), fdfl = fcntl(fd, F_GETFD, 0);
 #if !defined(MSG_NOSIGNAL)
     int one = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one) != 0) return 0;
 #endif
-    return fl >= 0 && fdfl >= 0 && fcntl(fd, F_SETFL, fl | O_NONBLOCK) == 0 &&
-           fcntl(fd, F_SETFD, fdfl | FD_CLOEXEC) == 0;
+#if !ATOMIC_FLAGS
+    {
+        int fl = fcntl(fd, F_GETFL, 0), fdfl = fcntl(fd, F_GETFD, 0);
+        if (fl < 0 || fdfl < 0 || fcntl(fd, F_SETFL, fl | O_NONBLOCK) != 0 ||
+            fcntl(fd, F_SETFD, fdfl | FD_CLOEXEC) != 0)
+            return 0;
+    }
+#endif
+    (void)fd;
+    return 1;
+}
+
+static int new_socket(const struct addrinfo *ai)
+{
+#if ATOMIC_FLAGS
+    return socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC | SOCK_NONBLOCK, ai->ai_protocol);
+#else
+    return socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+#endif
+}
+
+static int accept_socket(int listen_fd)
+{
+#if ATOMIC_FLAGS
+    return accept4(listen_fd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
+#else
+    return accept(listen_fd, NULL, NULL);
+#endif
 }
 
 static gz_conn_err_t wait_fd(int fd, short events, int64_t deadline)
@@ -147,17 +185,20 @@ static gz_conn_err_t msg_refused(gz_conn_t *c, gz_noise_err_t ne)
     return die(c, ne == GZ_NOISE_ERR_TOO_BIG ? GZ_CONN_ERR_TOO_BIG : GZ_CONN_ERR_CRYPTO);
 }
 
-static int resolve(const char *host, uint16_t port, int passive, struct addrinfo **res)
+static gz_conn_err_t resolve(const char *host, uint16_t port, int passive, struct addrinfo **res)
 {
     struct addrinfo hints;
     char ps[8];
+    int r;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     /* Numeric addresses only: no name lookup, which no deadline could bound. */
     hints.ai_flags = AI_NUMERICHOST | AI_NUMERICSERV | (passive ? AI_PASSIVE : 0);
     snprintf(ps, sizeof ps, "%u", (unsigned)port);
-    return getaddrinfo(host, ps, &hints, res) == 0;
+    r = getaddrinfo(host, ps, &hints, res);
+    if (r == 0) return GZ_CONN_OK;
+    return r == EAI_NONAME ? GZ_CONN_ERR_ADDRESS : GZ_CONN_ERR_SOCKET;
 }
 
 gz_conn_err_t gz_conn_listen(const char *host, uint16_t port, int *listen_fd, uint16_t *bound_port)
@@ -166,9 +207,10 @@ gz_conn_err_t gz_conn_listen(const char *host, uint16_t port, int *listen_fd, ui
     struct sockaddr_storage ss;
     socklen_t sl = sizeof ss;
     int fd = -1, one = 1;
-    if (!resolve(host, port, 1, &res)) return GZ_CONN_ERR_SOCKET;
+    gz_conn_err_t e = resolve(host, port, 1, &res);
+    if (e) return e;
     for (ai = res; ai; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        fd = new_socket(ai);
         if (fd < 0) continue;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
         /* Non-blocking even though accept follows a poll: a connection reset
@@ -206,7 +248,7 @@ gz_conn_err_t gz_conn_accept(gz_conn_t *c, int listen_fd, const secp256k1_contex
         int fd;
         e = wait_fd(listen_fd, POLLIN, deadline);
         if (e) return die(c, e);
-        fd = accept(listen_fd, NULL, NULL);
+        fd = accept_socket(listen_fd);
         if (fd >= 0) {
             set_fd(c, fd);
             break;
@@ -230,12 +272,13 @@ gz_conn_err_t gz_conn_accept(gz_conn_t *c, int listen_fd, const secp256k1_contex
 static gz_conn_err_t tcp_connect(gz_conn_t *c, const char *host, uint16_t port, int64_t deadline)
 {
     struct addrinfo *res = NULL, *ai;
-    gz_conn_err_t e = GZ_CONN_ERR_SOCKET;
-    if (!resolve(host, port, 0, &res)) return GZ_CONN_ERR_SOCKET;
+    gz_conn_err_t e = resolve(host, port, 0, &res);
+    if (e) return e;
+    e = GZ_CONN_ERR_SOCKET;
     for (ai = res; ai; ai = ai->ai_next) {
         int err = 0, fd;
         socklen_t el = sizeof err;
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        fd = new_socket(ai);
         if (fd < 0) continue;
         if (prepare_socket(fd)) {
             if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
@@ -352,6 +395,7 @@ const char *gz_conn_err_name(gz_conn_err_t e)
     case GZ_CONN_ERR_NOT_MEMBER: return "not a member";
     case GZ_CONN_ERR_BUSY: return "connection already open";
     case GZ_CONN_ERR_ARGS: return "invalid arguments";
+    case GZ_CONN_ERR_ADDRESS: return "address must be numeric";
     }
     return "unknown";
 }

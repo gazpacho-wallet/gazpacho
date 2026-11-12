@@ -97,5 +97,21 @@ refused 1 "key file with trailing text" "$B" listen --port 0 --key-file "$T/junk
 printf '212121212121212121212121212121212121212121212121212121212121212\n' > "$T/short.key"
 refused 1 "key file one digit short" "$B" listen --port 0 --key-file "$T/short.key" --accept 1
 
+# A key file written on Windows (CRLF line end) is the same key.
+printf '2121212121212121212121212121212121212121212121212121212121212121\r\n' > "$T/crlf.key"
+"$B" listen --port 0 --key-file "$T/crlf.key" --accept 1 > "$T/crlf.out" 2>&1 &
+LP=$!
+wait_line "$T/crlf.out" || no "CRLF listener did not start"
+CPORT=$(sed -n 's/^listening \([0-9]*\) .*/\1/p' "$T/crlf.out")
+grep -qx "listening $CPORT $HOST_NODE" "$T/crlf.out" && ok "key file with CRLF read as the same key" || no "CRLF key: $(cat "$T/crlf.out")"
+out=$("$B" connect --port "$CPORT" --pin "$HOST_NODE" 2>&1); [ "$out" = "ok 1" ] || no "CRLF host: $out"
+wait "$LP"; LP=
+
+# Names are refused with a message that says why.
+out=$("$B" connect --host localhost --port 1 --pin "$HOST_NODE" 2>&1); rc=$?
+[ $rc -eq 1 ] && [ "$out" = "gz-net: connect: address must be numeric" ] && ok "connect to a name: address must be numeric" || no "name: rc=$rc out=$out"
+out=$("$B" listen --host localhost --port 0 2>&1); rc=$?
+[ $rc -eq 1 ] && [ "$out" = "gz-net: cannot listen on localhost:0: address must be numeric" ] && ok "listen on a name: address must be numeric" || no "listen name: rc=$rc out=$out"
+
 [ $fails -eq 0 ] && echo "RESULT: PASS" || echo "RESULT: FAIL ($fails)"
 [ $fails -eq 0 ]

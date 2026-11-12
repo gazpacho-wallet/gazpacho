@@ -82,6 +82,7 @@ static void honest(uint16_t port)
 {
     size_t len;
     if (gz_conn_connect(&member, "127.0.0.1", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL)) _exit(10);
+    if (!(fcntl(member.fd, F_GETFD) & FD_CLOEXEC) || !(fcntl(member.fd, F_GETFL) & O_NONBLOCK)) _exit(14);
     if (gz_conn_send(&member, (const uint8_t *)"\x80\x01hello", 7)) _exit(11);
     if (gz_conn_recv(&member, msg, sizeof msg, &len) || len != 7 || memcmp(msg, "\x80\x01HELLO", 7)) _exit(12);
     /* 600 more round trips: past the rotation point in both directions */
@@ -313,6 +314,7 @@ static void test_honest(void)
     CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
     CHECK(gz_conn_remote_static(&host, rs) == GZ_CONN_OK && memcmp(rs, MEMBER_PUB, 33) == 0);
     CHECK((fcntl(host.fd, F_GETFD) & FD_CLOEXEC) && (fcntl(lfd, F_GETFD) & FD_CLOEXEC));
+    CHECK((fcntl(host.fd, F_GETFL) & O_NONBLOCK) && (fcntl(lfd, F_GETFL) & O_NONBLOCK));
     /* An open connection is not reused: refused, and left working. */
     CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_ERR_BUSY);
     CHECK(gz_conn_connect(&host, "127.0.0.1", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL) == GZ_CONN_ERR_BUSY);
@@ -486,9 +488,9 @@ static void test_local_limits(void)
         CHECK(gz_conn_listen("127.0.0.1", 0, &fd, &free_port) == GZ_CONN_OK);
         close(fd);
         CHECK(gz_conn_connect(&member, "127.0.0.1", free_port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL) == GZ_CONN_ERR_SOCKET);
-        /* Names are not looked up (no deadline could bound that). */
-        CHECK(gz_conn_connect(&member, "localhost", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL) == GZ_CONN_ERR_SOCKET);
-        CHECK(gz_conn_listen("localhost", 0, &fd, &free_port) == GZ_CONN_ERR_SOCKET);
+        /* Names are not looked up (no deadline could bound that), and say so. */
+        CHECK(gz_conn_connect(&member, "localhost", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL) == GZ_CONN_ERR_ADDRESS);
+        CHECK(gz_conn_listen("localhost", 0, &fd, &free_port) == GZ_CONN_ERR_ADDRESS);
     }
     /* Closing a zeroed gz_conn_t closes nothing, even when its fd field names a real descriptor. */
     {
@@ -498,6 +500,15 @@ static void test_local_limits(void)
         gz_conn_close(&z);
         CHECK(fd >= 0 && fcntl(fd, F_GETFD) != -1);
         close(fd);
+    }
+    /* A never-opened connection: send, receive and remote_static say it is closed. */
+    {
+        static gz_conn_t z;
+        uint8_t rs[33];
+        size_t len;
+        CHECK(gz_conn_send(&z, (const uint8_t *)"\x80\x01", 2) == GZ_CONN_ERR_CLOSED);
+        CHECK(gz_conn_recv(&z, msg, sizeof msg, &len) == GZ_CONN_ERR_CLOSED);
+        CHECK(gz_conn_remote_static(&z, rs) == GZ_CONN_ERR_CLOSED);
     }
 }
 

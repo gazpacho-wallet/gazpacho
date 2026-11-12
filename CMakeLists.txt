@@ -151,6 +151,8 @@ add_test(NAME net_gz_net COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_g
          $<TARGET_FILE:gz-net> $<TARGET_FILE:net_peer>)
 # gz-net against an independent Python BOLT 8 peer (the PR 10 reviewer's),
 # in both roles past key rotation. Opt-in: needs python3 and `cryptography`.
+# It should run in the automated checks wherever `cryptography` is installed
+# (review of PR 10, round 2, N6; for the CI hardening work).
 option(GZ_INTEROP_PY "Run gz-net against the independent Python BOLT 8 peer" OFF)
 if(GZ_INTEROP_PY)
   add_test(NAME net_interop_py COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/interop/run.sh
