@@ -94,6 +94,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c3-16-milestones" title="16. Milestones">16. Milestones</a>
 <a class="sec" href="#c3-17-not-designed-yet" title="17. Not designed yet">17. Not designed yet</a>
 <a class="ch" href="#c4">Safe-to-sign rule</a>
+<a class="sec" href="#c4-changes-after-cross-spec-review-1" title="Changes after cross-spec review 1">Changes after cross-spec review 1</a>
+<a class="sec" href="#c4-alignment-with-exit-md-draft-2-2026-11-1" title="Alignment with `exit.md` draft 2 (2026-11-12)">Alignment with `exit.md` draft 2 (2026-11-12)</a>
 <a class="sec" href="#c4-changes-after-review-3" title="Changes after review 3">Changes after review 3</a>
 <a class="sec" href="#c4-changes-from-draft-2" title="Changes from draft 2">Changes from draft 2</a>
 <a class="sec" href="#c4-1-the-rule-in-one-sentence" title="1. The rule in one sentence">1. The rule in one sentence</a>
@@ -921,11 +923,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>1.1.0</td>
-<td>Buying receiving room, splicing and channels opened on demand: built and documented with this goal, the interface kept hidden until then. Shared leaves (K &gt; 1) with sales under "limited coverage", each sale a new channel, so several channels per member. Derived payout addresses per factory</td>
+<td>Buying receiving room, splicing and channels opened on demand: built and documented with this goal, the interface kept hidden until then. Shared leaves (K &gt; 1) with sales under "limited coverage", each sale a new channel, so several channels per member. Derived payout addresses per factory. <strong>Many factories at once</strong> (same or different hosts) shown as a stack, moving funds between channels and factories over Lightning, successor lobbies and standing invitations from hosts, move fees in the terms, and standing rules that roll a member's funds forward before a factory closes instead of settling on chain (<code>MULTI-FACTORY.md</code>, unreviewed)</td>
 </tr>
 <tr>
 <td>Later</td>
-<td>Payout to an outside or cold wallet</td>
+<td>Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves; Tor for host connections (<code>MULTI-FACTORY.md</code> 8.3)</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -949,6 +951,22 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tr>
 <td>The interface starts from layout concept H, with the critique's fixes and the owner's answers still to apply</td>
 <td>Interface critique, 2026-11-12</td>
+</tr>
+<tr>
+<td>Core holds several factories per member from 1.0.0 (rotation needs two at once); lift Slice 1's one-lobby limit to the stack limits; generalise the safety rule's owed row to any move between the member's factories</td>
+<td><code>MULTI-FACTORY.md</code> 2, P1; owner 2026-11-12</td>
+</tr>
+<tr>
+<td>Write <code>move.md</code> (paying across, same host and other hosts) and <code>planner.md</code> (standing rules, budgets, logging); add safety checks G1 to G3; journal stack, rule and move records; local API stack, moves and rules calls</td>
+<td><code>MULTI-FACTORY.md</code> 2.5, 3, 5</td>
+</tr>
+<tr>
+<td>Terms draft 3: <code>internal_fee_base_msat</code>, <code>internal_fee_ppm</code>, <code>move_fee_sat</code> (even, ranges) and <code>successor_of</code> (even, fixed); an invitation message for standing invitations</td>
+<td><code>MULTI-FACTORY.md</code> 3.4, 6</td>
+</tr>
+<tr>
+<td>Measure on signet: route timelock totals for moves across hosts, funding burial times, and the lead times for "move by" and "give up by"</td>
+<td><code>MULTI-FACTORY.md</code> 4.1, MF6</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -1170,7 +1188,9 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Sign before fund:</strong> the host signs funding only after the whole tree is signed and verified.</li>
 <li><strong>Every partial signature is verified</strong> as it arrives.</li>
 <li><strong>Signing secrets are never stored.</strong> An interrupted round is abandoned.</li>
-<li><strong>A restored backup never publishes</strong> its own channel state. It asks the host to prove the latest and waits for the host to close.</li>
+<li><strong>A restored backup never publishes its own channel state automatically.</strong> It asks the host to prove the latest and waits for the host to close. If the host has not closed by its forcing date, publishing is offered as the person's own choice, with the risk stated (<code>spec/exit.md</code> 5.7).</li>
+<li><strong>The exit deadline is the leaf's timeout.</strong> Every tree output carries a host-only timeout; the binding one is the member's leaf's, at <strong>E − 10·d</strong> (E the end height, d the leaf's depth), and the member's commitment must be buried before it. The member starts leaving alone by that height less burial, one confirmation allowance per missing transaction (d + 3 of them) and margins: 50 to 82 blocks before E at Slice 1's signet constants (<code>spec/exit.md</code> 4, <code>spec/safety-rule.md</code> C5).</li>
+<li><strong>A locked wallet keeps watching</strong> (from Slice 3): a watcher publishes the member's tree path and answers old host states from already-signed transactions, but the last step, the member's own commitment, needs the passphrase by a stated <code>unlock_by</code> (<code>spec/exit.md</code> 5.6). Its files never hold a commitment of the member's own.</li>
 <li><strong>Exit fees</strong> are built in from the host's side, with pay-to-anchor outputs so anyone can raise a fee. No on-chain reserve is required or recommended in 1.0.0 (owner decision 6); in 1.1.0 a member above its coverage keeps a small on-chain coin (decision 5).</li>
 <li><strong>Away protection:</strong> about two weeks to respond to an old state in 1.0.0, the channel's revocation window (the design's figure, not measured; <code>spec/safety-rule.md</code> sections 7 and 8). In 1.1.0 a member above its coverage may have under a day.</li>
 <li>A new safety or joining rule is normally a reviewed change to the safe-to-sign module, proposed through a SIP.</li>
@@ -1192,7 +1212,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>A Gazpacho connection is an ordinary Lightning peer connection that also carries factory messages.</li>
 <li>Lightning's encrypted transport with the host's key pinned; over TCP, and over WebSocket where needed.</li>
 <li>Lightning's message shape, session start and feature flags. No version numbers: unknown odd fields are skipped, unknown even ones refused.</li>
-<li>Lightning's standard channel messages and its standard taproot channel format for the channel inside a leaf. The old SuperScalar channel format is archived and can be reinstated behind the channel engine's format interface.</li>
+<li>Lightning's standard channel messages, and a taproot channel for the channel inside a leaf that departs from Lightning's standard taproot format in two places (<code>spec/exit.md</code> 10.1): its funding output is the leaf's output, tweaked with the host's timeout leaf (CH-3), not a BIP 86 key; and the member's commitment pays a fee fixed in advance and carries an anchor a member without coins can use, preferably as a TRUC transaction with a member-keyed anchor (CH-2). The old SuperScalar channel format is archived and can be reinstated behind the channel engine's format interface.</li>
 <li>Factory messages travel inside one custom message type, with an envelope naming the protocol, the factory and the message kind.</li>
 <li>Large signing data is split across messages with a completion marker.</li>
 <li>A member's backup is held by the host using Lightning's peer-storage messages.</li>
@@ -1233,7 +1253,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <details id="c3-13-the-user-s-side"><summary>13. The user&#x27;s side</summary><div class="body"><ul>
 <li><strong>No role question</strong> (owner decision 4): everyone can be member and host. The app never asks "member or host?"; hosting is always visible, with a calm starting page until the person hosts something.</li>
 <li><strong>Where coins go</strong> (owner decision 6): 1.0.0 pays out to one wallet; 1.1.0 adds derived addresses of the same wallet per factory; an outside or cold wallet comes later. A destination is fixed before the factory forms, because pre-signed transactions fix it, and an outside address is proven before use. The tree builder must accept a destination per member (a request to SuperScalar, <code>handoff/2026-11-12-to-superscalar.md</code>, E2).</li>
-<li><strong>Screens:</strong> a local web interface served by the C program on the local machine only, with a start-up token and refusal of requests from other sites. Keys and channel state never enter the browser.</li>
+<li><strong>Screens:</strong> a local web interface served by the C program on the local machine only, with sign-in by the wallet passphrase, which also decrypts the files (owner decisions 13 and 14; first run protected by a one-use start token the program opens itself), a session token kept out of cookies, and refusal of requests from other sites (<code>spec/local-api.md</code>). Slice 1 ships with it, and every Slice 1 action is done through it (owner decision 11). Keys and channel state never enter the browser, with one exception: the 24 words may be shown in it, and typed into it for the backup check and a restore, under fixed key-handling rules (owner decision 12, 2026-11-12, which replaces the earlier "never"): loopback only; shown at creation and on reveal after a fresh sign-in; never in URLs, logs, events, caches or page storage; no clipboard copy by default; cleared from the page after display; the check never says which position is wrong; attempt limits; the program wipes its copies after use (<code>spec/local-api.md</code> section 12.7).</li>
 <li><strong>Reminders:</strong> countdowns in the app first. Other channels and ways to act while away are in <code>docs/AWAY.md</code>.</li>
 </ul></div></details>
 <details id="c3-14-changing-the-rules"><summary>14. Changing the rules</summary><div class="body"><p>SuperScalar Improvement Proposals, <code>docs/sips/</code>. Request in a set format, open discussion, ACK or NACK on record, then separate decisions on approval and on shipping.</p></div></details>
@@ -1310,8 +1330,67 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <section class="chapter" id="c4"><h2>Safe-to-sign rule</h2><p class="desc">Specification: the checks run before every signature.</p><p class="file">The safe-to-sign rule · <code>spec/safety-rule.md</code></p>
 <div class="intro"><p>Specification draft 4, 2026-11-12. Status: draft 3 brought in line with the four companion specifications after a third, joint review (<code>docs/reviews/spec-review-3.md</code>, findings F1 to F28), which judged draft 3 "ready after listed changes" and found that no finding needs a different cryptographic design. Draft 4 has not itself been reviewed. Nothing here has been reviewed outside this project. Values marked <strong>proposed, owner to confirm</strong> are Slice 1 choices the owner has not objected to and has not yet confirmed.</p>
 <p>This document defines the check a member's software runs before it contributes to any signature, the matching rules for the host, and what the rule cannot protect against. The code that implements it is one module, the only place where "is this safe to sign?" is decided.</p>
-<p>Companion documents: <code>signing-round.md</code> (draft 4), <code>messages.md</code>, <code>terms.md</code> and <code>journal.md</code> (draft 2, all brought in line with this draft), <code>THREAT-MODEL.md</code> (<code>docs/</code>).</p>
-<p>Marks used where it matters: <strong>[C]</strong> read in the imported code (file and line); <strong>[S]</strong> checked in a primary source; <strong>[R]</strong> reasoning, not yet checked by a source or a test.</p></div>
+<p>Companion documents: <code>signing-round.md</code> (draft 4), <code>messages.md</code> (draft 2), <code>terms.md</code> (draft 2) and <code>journal.md</code> (draft 3), all brought in line with this draft; <code>exit.md</code> (draft 2), <code>storage-encryption.md</code> (draft 3) and <code>local-api.md</code> (draft 4), which the alignment section below uses; <code>THREAT-MODEL.md</code> (<code>docs/</code>).</p></div>
+<details id="c4-changes-after-cross-spec-review-1"><summary>Changes after cross-spec review 1</summary><div class="body"><p>Alignment fixes from <code>docs/reviews/review-cross-spec-1.md</code>, made in one pass with <code>exit.md</code>, <code>storage-encryption.md</code>, <code>local-api.md</code> and <code>journal.md</code>. No new draft number: no check changes.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Change</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1, review 1.1</td>
+<td>New exclusion: <strong>a penalty file cut while locked</strong>, past the revocation window (<code>storage-encryption.md</code> 8.7.5)</td>
+<td>Section 11</td>
+</tr>
+<tr>
+<td>Locked-member gap</td>
+<td>Section 11's "left locked past <code>unlock_by</code>" says what an honest host's H17 close leaves: the balance waits, with no deadline</td>
+<td>Section 11</td>
+</tr>
+<tr>
+<td>Stale references</td>
+<td>The companion line names the current drafts and the exit, storage and local API specifications; C12 and R4 say that <code>exit.md</code> 5.7 now specifies the 1.0.0 part of the recovery procedure</td>
+<td>Header, C12, R4</td>
+</tr>
+</tbody>
+</table></div>
+<p>Marks used where it matters: <strong>[C]</strong> read in the imported code (file and line); <strong>[S]</strong> checked in a primary source; <strong>[R]</strong> reasoning, not yet checked by a source or a test.</p></div></details>
+<details id="c4-alignment-with-exit-md-draft-2-2026-11-1"><summary>Alignment with `exit.md` draft 2 (2026-11-12)</summary><div class="body"><p>Draft 4 is brought in line with <code>spec/exit.md</code> draft 2 and its review (<code>docs/reviews/review-exit-d1.md</code>, section 4 items 1 to 3, finding F15). The checks keep their shape, but C8's end-height test becomes stricter: it is judged against the leaf's timeout, not the end height, with <code>exit.md</code>'s margins. The timeouts, the exit time and its margins now say exactly what the import builds and what the exit engine computes; a Slice 1 build that coded draft 4's numbers must change them.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Point</th>
+<th>Change</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Timeout heights</td>
+<td>A fixed kickoff at depth j spends an output timing out at E − 5·(2j − 1); the leaf transaction and the channel output at <strong>H_leaf = E − 10·d</strong>, the binding one. Draft 4's "5 blocks per tree transaction" fitted kickoff-and-state pairs only</td>
+<td>C5, section 12 value 2</td>
+</tr>
+<tr>
+<td>Exit time and margins</td>
+<td>1.0.0's exit time is n·A plus burial (B − 1), with n = d + 3 and no relative delays, judged against H_leaf; the margin is <code>exit.md</code>'s M (M_safe + M_lag + M_spike, 14 on signet), not 6</td>
+<td>Section 7, C8, section 12 value 6</td>
+</tr>
+<tr>
+<td>Host rules</td>
+<td>H14 to H18 of <code>exit.md</code> section 9 listed; H6 noted as payout-only</td>
+<td>Section 10</td>
+</tr>
+<tr>
+<td>Exclusions</td>
+<td>Locked past <code>unlock_by</code>; no bundle; fees above the anchors and the pinning of keyless anchors; second-stage payments after a breach while locked; an eclipse</td>
+<td>Section 11</td>
+</tr>
+</tbody>
+</table></div></div></details>
 <details id="c4-changes-after-review-3"><summary>Changes after review 3</summary><div class="body"><div class="tw"><table>
 <thead>
 <tr>
@@ -1671,7 +1750,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p>A way it does not recognise fails the check. The anchor way is valued at zero: spending it takes no value from the member.</p>
 <p>The exit must be complete, with a margin, before the earliest <strong>competing claim</strong> on any output on the path or above it. A competing claim is any moment from which someone else can take or replace that output:</p>
 <ul>
-<li>each host-only timeout on the path. In the import every tree transaction below the root kickoff carries one; deeper transactions expire <strong>earlier</strong>, by 5 blocks per tree transaction, and the root kickoff has none [C: <code>src/factory.c:1475</code>, <code>:1632-1644</code>]. So the binding one is the leaf's, which also guards the channel output [C: <code>src/factory.c:1312-1316</code>]. An end height of 0 builds no timeouts at all [C: <code>src/factory.c:185</code>, <code>:541</code>, <code>:1636-1644</code>];</li>
+<li>each host-only timeout on the path. In the import every tree transaction below the root kickoff spends an output that carries one, and the root kickoff has none [C: <code>src/factory.c:1475</code>, <code>:1632-1644</code>]. A fixed kickoff (and a leaf's kickoff) at depth j ≥ 1 spends an output timing out at E − 5·(2j − 1); a leaf transaction at depth d spends one timing out at E − 10·d, and the leaf's channel output copies that script, so it carries the same height [C: <code>src/factory.c:1312-1316</code>, <code>:1635-1644</code>, <code>:1749-1754</code>]. Deeper outputs expire <strong>earlier</strong>, by 10 blocks per level of depth (the import's step of 5 was written for kickoff-and-state pairs; with fixed levels each level is one transaction but still steps by 10). So the binding one is the leaf's, <strong>H_leaf = E − 10·d</strong>, where d is the depth of the member's leaf (<code>spec/exit.md</code> 4.1, vectors X1). An end height of 0 builds no timeouts at all [C: <code>src/factory.c:185</code>, <code>:541</code>, <code>:1636-1644</code>];</li>
 <li>the lock time of <strong>every pre-signed transaction in the exposed set</strong> that spends an output on the path or above it, whenever the member's balance exceeds what that transaction pays the member. Today that is the <strong>distribution transaction</strong>, which already exists in the import: a key-path spend of the funding output, locked to a chosen height, co-signed by every participant at creation [C: <code>factory.h:471-486</code>, <code>:1237-1256</code>; <code>src/factory.c:4430-4624</code>]. Once its lock time passes, anyone holding it can publish it and void the whole tree, unless the root kickoff is already buried, in which case it is dead under C4(d).</li>
 </ul>
 <p>Former open point 4 (which way the timeouts are staggered) is settled by the first bullet.</p>
@@ -1693,7 +1772,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tbody>
 <tr>
 <td>End height (every host-only timeout derives from it)</td>
-<td>Not past; not 0; leaves at least the exit time plus margin before the leaf's timeout (C5)</td>
+<td>Not past; not 0; the member's <code>leave_by</code> with every step of its path missing, H_leaf − (B − 1) − n·A − M (<code>spec/exit.md</code> 4.4, with H_leaf = E − 10·d and n = d + 3), is at least the funding deadline plus B plus one block of being live (C5, section 7)</td>
 </tr>
 <tr>
 <td>Spare-liquidity delay</td>
@@ -1758,12 +1837,12 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tbody>
 </table></div>
 <p>When timed layers arrive, C8 must also bound step × (states − 1) to at most 65,535 per layer, because the import's delay is a <code>uint16_t</code> [C: <code>src/dw_state.c:9-12</code>] (review 3, F23).</p>
-<p>A timeout that is already past, or closer than the exit time plus margin, is refused.</p>
+<p>A timeout that is already past, or closer than the exit time plus margin, is refused. Concretely for 1.0.0: the check of the end-height row above, at the member's own constants (<code>spec/exit.md</code> 4.3).</p>
 <p><strong>C8a. The frozen terms.</strong> Every proposal parameter that the terms fix equals the frozen current value, and the proposal's terms digests (outer and current) equal the ones named in the member's own <code>ready</code> (owner decision 1; <code>terms.md</code> section 8). Attempts within one round's time budget reuse the same frozen values.</p>
 <p><strong>C9. Nothing in flight is stranded, and the channel is quiet.</strong> A request that touches a channel's anchor is refused unless the channel has been paused by agreement of both sides, and stays paused until the request is resolved. A request that closes or replaces a channel is refused while a payment is in flight on it, unless the resulting sets still let the member claim or reclaim that payment.</p>
 <p><strong>C10. One open round per output.</strong> The member takes part in at most one unresolved round touching any given output it has an interest in. A second proposal touching such an output is refused (reason 6). What a round touches: a <strong>creation round touches only its own funding outpoint and the outputs of its own tree</strong>, not the inputs of its funding transaction. An attempt of the same lobby that is Unfinished, Complete or Awaiting funding does not block that lobby's next attempt, which H11 puts on a new outpoint spending an input of the old funding transaction; at most one of the two can ever be funded, and C7 keeps both records. An Abandoned or Dead creation no longer counts as unresolved. (Review 3, F6: without this rule every retry after a partial-signature failure would be refused.)</p>
 <p><strong>C11. A factory is live only when its funding is buried.</strong> The member treats a factory as live, and accepts any payment in it, only when the exact funding output of its held tree, with the exact amount and script, is buried. The funding is the host's own coins and can be spent elsewhere until then. If the funding is not buried by the member's funding deadline, the creation is abandoned. Funding buried later makes an abandoned creation live only if the member still holds the whole signed tree <strong>and</strong> C5's and C8's time checks pass again at that moment, since the margin was judged at signing; otherwise it stays abandoned. Watching for this needs a "watch this txid to a depth" action (<code>signing-round.md</code> section 12.1).</p>
-<p><strong>C12. After a restore, sign nothing with old keys.</strong> A restored node signs only with keys of its current restore epoch, and contributes to a request only through C7's fresh-key rule: its own entry must be its current key for that lobby. It never derives a key of an earlier epoch in order to sign, so it cannot sign with one, whatever the request names, and whether or not the backup knew of the factory or round. This is how C12 is implemented; no step tries to recognise an old key in a request (review 3, F3: a restored node does not know the epochs and indexes used after the backup, so it could not). The recovery procedure (a recovery close or exit after the host proves the latest state, <code>DESIGN.md</code> sections 6 and 9) is <strong>not specified in draft 4</strong>; it belongs with the exit engine (Slice 3), and it alone may ever derive old keys. Section 9 gives the rules.</p>
+<p><strong>C12. After a restore, sign nothing with old keys.</strong> A restored node signs only with keys of its current restore epoch, and contributes to a request only through C7's fresh-key rule: its own entry must be its current key for that lobby. It never derives a key of an earlier epoch in order to sign, so it cannot sign with one, whatever the request names, and whether or not the backup knew of the factory or round. This is how C12 is implemented; no step tries to recognise an old key in a request (review 3, F3: a restored node does not know the epochs and indexes used after the backup, so it could not). The recovery procedure (a recovery close or exit after the host proves the latest state, <code>DESIGN.md</code> sections 6 and 9) belongs with the exit engine (Slice 3), and it alone may ever derive old keys. Its 1.0.0 part is now <code>exit.md</code> 5.7: the restored member asks the host to close with its own commitment, never publishes its own automatically, and at <code>host_force_by</code> is offered the choice; recovering the keys of factories joined after the backup (R7) is not yet specified. Section 9 gives the rules.</p>
 <p><strong>C13. A payment is a signature.</strong> Accepting or making a payment signs new channel states, so it runs this module like any other request. A member with an unbroadcast cooperative close in its exposed set therefore refuses further payments on that channel.</p>
 <p>If any check fails, the member's software sends nothing for that request, tells the host it refused, and keeps its sets unchanged.</p></div></details>
 <details id="c4-4-tree-changes-and-the-channel"><summary>4. Tree changes and the channel</summary><div class="body"><p>A channel is funded by an output of a leaf transaction. When the tree under a channel changes, that output changes. In 1.0.0 trees are advanceless (owner decision 9, 2026-11-12: fixed levels only), so it happens only through rotation, which creates a new factory and a new funding output. From 1.1.0, <strong>a state update in a timed layer</strong> also changes it: it rebuilds every transaction below it, so every channel below gains a new anchor. Leaf changes are 1.1.0 work (section 4.2).</p>
@@ -1861,7 +1940,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>A penalty the member could collect from the host's liquidity is a deterrent. It is not counted in exit value.</li>
 <li><strong>Pre-signed payouts</strong> are members of both sets. The distribution transaction exists in the import today (C5); later end-date payouts will add more. From its lock time any party holding one can publish it, and it pays the member a fixed share. If that share is below the member's balance, the member must have exited first; C5 enforces this. In 1.0.0 a member's balance never exceeds its channel capacity (decision 5), so C8's bound, share at least capacity, makes the distribution transaction harmless for the member.</li>
 </ol></div></details>
-<details id="c4-7-exit-time-and-maximum-safe-absence"><summary>7. Exit time and maximum safe absence</summary><div class="body"><p><strong>Exit time.</strong> Sum, from the transactions themselves, every relative timelock on the path plus a confirmation allowance per transaction set by the member's conditions. Where a timed layer has more than one live state, use the <strong>slowest</strong> live state (the oldest), since the adversary chooses which state is published (section 8). The imported delay functions are not used: <code>factory_early_warning_time</code> sums step × (states − 1) per layer, then subtracts one layer whenever any leaf is pseudo-Spilman, although such leaves have no layer of their own, and it has no confirmation allowance [C: <code>src/factory.c:4900-4927</code>]. An output on the path is safe once the member's transaction spending it is buried. The exit is complete, for C5, when the member's channel transaction is buried and every payment in flight has met its own deadline. The member's own delayed output is outside C5: nobody else has a claim on it.</p>
+<details id="c4-7-exit-time-and-maximum-safe-absence"><summary>7. Exit time and maximum safe absence</summary><div class="body"><p><strong>Exit time.</strong> Sum, from the transactions themselves, every relative timelock on the path plus a confirmation allowance per transaction set by the member's conditions. <strong>In 1.0.0</strong> the path has no relative timelock [C: <code>src/factory.c:129-140</code>, <code>tx_builder.c:77</code>, <code>:103-114</code>], so the exit time is n·A for the n = d + 3 transactions still missing (d fixed kickoffs, the leaf's kickoff, the leaf transaction, the commitment), plus B − 1 blocks of burial, and it is judged against the leaf's timeout H_leaf = E − 10·d, with the margin M = M_safe + M_lag + M_spike of <code>spec/exit.md</code> 4.3 (14 blocks on signet). The resulting date is <code>spec/exit.md</code> 4.4's <code>leave_by</code>, the date <code>docs/MULTI-FACTORY.md</code> 4.1 calls <code>start_leaving_by</code>. Where a timed layer has more than one live state, use the <strong>slowest</strong> live state (the oldest), since the adversary chooses which state is published (section 8). The imported delay functions are not used: <code>factory_early_warning_time</code> sums step × (states − 1) per layer, then subtracts one layer whenever any leaf is pseudo-Spilman, although such leaves have no layer of their own, and it has no confirmation allowance [C: <code>src/factory.c:4900-4927</code>]. An output on the path is safe once the member's transaction spending it is buried. The exit is complete, for C5, when the member's channel transaction is buried and every payment in flight has met its own deadline. The member's own delayed output is outside C5: nobody else has a claim on it.</p>
 <p><strong>Accepting a payment.</strong> Only if its deadline is later than now plus exit time plus the time to claim it on chain, plus margin. The schedule must also state the largest exit time at which ordinary senders can still pay the member, since senders limit total timelock.</p>
 <p><strong>Maximum safe absence.</strong> The smallest of all W and R values named under C4 on the member's path, less a margin, and never later than the moment the member must start leaving to meet C5. The schedule engine shows it to the user.</p>
 <ul>
@@ -1896,7 +1975,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>R1. Every load from a backup is a restore.</strong> The node knows it is restoring; nothing it reads tells it how old the backup is.</p>
 <p><strong>R2. A new restore epoch at every restore.</strong> The original installation uses epoch 0, written in a <code>key_epoch</code> record at the journal's first start. At the first start after a restore, before any key is derived and before any message is sent, the node draws a random 31-bit epoch from the randomness port with the <strong>ordinary, untagged</strong> request, retrying while it is 0, and saves it at once in a <code>key_epoch</code> record, so later backups carry it (<code>journal.md</code> section 8). The epoch is not a secret: it is stored and backed up, so it must not be drawn with the secret tag, whose bytes are never journaled (<code>signing-round.md</code> section 8; review 3, F3). Every per-lobby key, factory key and contribution key alike, is derived under (epoch, index); 31 bits fit a hardened BIP 32 index. Two restores drawing the same epoch is the only way a key could repeat; for n restores the chance is about n² in 2^32, under one in forty million for ten restores [R].</p>
 <p><strong>R3. Old keys are recovery-only.</strong> Every key derived under an earlier epoch is recovery-only. The key index is never restored backwards into use: a restored node never derives a key it may have used before. A member restored while in an open lobby loses its seat there and must join again with a new key. There is no separate "fresh start" confirmation: the new epoch is enough, and the app simply tells the user that it was restored and which seats were lost.</p>
-<p><strong>R4. Nothing is signed with a recovery-only key</strong> except the recovery procedure (C12), which is not specified in draft 4. R4 is a consequence of C7's fresh-key rule and needs no step of its own: a replayed proposal names the member's old key, the member's current key for that lobby is absent from it (or the member has no current key for that lobby at all), and the member refuses with <code>round_abort</code> reason 12 (<code>messages.md</code> section 7.9). It signs no nonce for it. This closes the restart frame of review 2, N1, step 4a.</p>
+<p><strong>R4. Nothing is signed with a recovery-only key</strong> except the recovery procedure (C12; its 1.0.0 part is <code>exit.md</code> 5.7). R4 is a consequence of C7's fresh-key rule and needs no step of its own: a replayed proposal names the member's old key, the member's current key for that lobby is absent from it (or the member has no current key for that lobby at all), and the member refuses with <code>round_abort</code> reason 12 (<code>messages.md</code> section 7.9). It signs no nonce for it. This closes the restart frame of review 2, N1, step 4a.</p>
 <p><strong>R5. A creation round needs a fresh funding output</strong> (C7, "Fresh funding output"). This closes the second tree on an old outpoint, review 2, N1, step 4b: every tree signed before the restore commits to an old key, so it cannot spend an output whose script commits to the new one [R].</p>
 <p><strong>R6. A restore guard record detects stale backups.</strong> A small record holding a write counter, the epochs used, the highest key index allocated under each, and the count of rounds ever started (format in <code>journal.md</code> section 8.3). The core puts a <code>guard</code> record, with the complete new contents, <strong>in the same save batch</strong> as each <code>key_index</code> record (before a key is used) and each <code>round_started</code> record (before a round's first contribution). The storage program stores the batch in the journal <strong>and</strong> replaces the guard file, which lives on the device outside the journal in a place a restore never overwrites, and confirms the batch only when both are synced (<code>journal.md</code> section 8.3). So the existing runner rule (nothing outward before the save is confirmed) orders the guard before the key's first use and before the first nonce; no new action or port is needed. The guard is also in every export the user holds; it is never only in the host's copy. On a restore, if a guard is found whose counter is ahead of the backup's newest <code>guard</code> record, the backup is known to be stale and the app tells the user. If no guard is found, the backup is treated as possibly stale. <strong>The guard only detects; R2 to R5 are what protect.</strong></p>
 <p><strong>R7. Recovering keys.</strong> The keys of factories joined after the backup can be found again only if the guard, or a later export, holds their epoch. Without one, those keys cannot be re-derived from the seed, and funds in those factories depend on the recovery procedure the host must support. That is listed in section 11.</p></div></details>
@@ -1906,28 +1985,41 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>H3. No credit before it is covered.</strong> The host does not act on an operation for a member until the transactions protecting the host in the new state are fully signed. It gives no channel credit before funding is buried.</p>
 <p><strong>H4. The host always holds its own signed channel state</strong> for every channel on every live anchor, kept current through every update.</p>
 <p><strong>H5. Secrets after, not before.</strong> The host does not reveal an old state's liquidity secret, or revoke its own old channel state, until it holds the new state fully signed.</p>
-<p><strong>H6. A deadline for forcing out.</strong> For every member, the host knows the date by which it must start publishing that member's path so that it resolves by real balances before any pre-signed payout becomes valid: the payout's lock time, less the full exit time, less a margin. It stops extending credit to a non-cooperating member before that date.</p>
+<p><strong>H6. A deadline for forcing out.</strong> For every member, the host knows the date by which it must start publishing that member's path so that it resolves by real balances before any pre-signed payout becomes valid: the payout's lock time, less the full exit time, less a margin. It stops extending credit to a non-cooperating member before that date. H6 applies only once an end-date payout exists; 1.0.0 has none, and H17 below takes its place.</p>
 <p><strong>H7. A fee reserve.</strong> The host holds on-chain coins sufficient to add fees to every path it may have to publish.</p>
 <p><strong>H8. Rounds one at a time per subtree.</strong></p>
 <p><strong>H9. A member who never completes the first channel exchange</strong> is treated as absent from the start: its seat gets no credit and is forced out under H6.</p>
 <p><strong>H10. A cap on HTLCs.</strong> The host refuses an HTLC that would take its commitment beyond the relay size limit for its transaction version. Otherwise a member can fill the commitment with small HTLCs, go silent, and leave the host with a commitment it cannot relay (review 2, N19, from the SuperScalar payout review).</p>
 <p><strong>H11. A new funding outpoint after any release.</strong> An attempt that follows one in which any partial signature was released uses a new funding transaction. The new one spends at least one input of the previous one, so that once it is buried the previous outpoint can never exist and every member's records for it end under C4(d).</p>
 <p><strong>H12. Results are kept and answered.</strong> The host keeps, for each member and round, the bytes of every <code>round_tier_result</code> and <code>round_complete</code> it sent, until the factory's funding output is spent or the creation is dead under C4(d). It answers <code>round_status_request</code> with them.</p>
-<p><strong>H13. A restored host never resumes a round.</strong> A host loaded from a backup starts new attempts only, with new random values; it never contributes again to a round identifier found in its records.</p></div></details>
+<p><strong>H13. A restored host never resumes a round.</strong> A host loaded from a backup starts new attempts only, with new random values; it never contributes again to a round identifier found in its records.</p>
+<p><strong>H14 to H18</strong> are specified in <code>spec/exit.md</code> section 9 (proposed, owner to confirm), and listed here so that this section names every host rule:</p>
+<ul>
+<li><strong>H14.</strong> The host watches every member's channel output and answers a member's revoked commitment with the penalty by <code>penalty_send_by</code>, at its own constants.</li>
+<li><strong>H15.</strong> The host's sweeps of outputs it may take alone follow a schedule; it never sweeps an unpublished tree output with an owed member below it.</li>
+<li><strong>H16.</strong> The host never replaces the funding transaction by fee; it bumps it only by a child on its own change output (or a P2A of the funding's own), which the funding must therefore have.</li>
+<li><strong>H17.</strong> With no end-date payout (1.0.0), the host's software never takes a member's balance through a timeout: it forces a silent owed member out with its own latest commitment by <code>host_force_by</code>.</li>
+<li><strong>H18.</strong> The host's expiry delta toward a factory member, and its go-on-chain height for each payment it offers that member, cover that member's whole path, its own commitment and its HTLC-timeout transaction: (n + 1)·A + (B − 1) + M_host with n = d + 3.</li>
+</ul></div></details>
 <details id="c4-11-what-this-rule-does-not-protect-again"><summary>11. What this rule does not protect against</summary><div class="body"><ul>
 <li><strong>Being ignored.</strong> A host can refuse service. The remedy is to leave.</li>
 <li><strong>A withheld or lost round result.</strong> The member stays paused on the affected channels and must exit after its unfinished deadline, at its own cost in fees and time (section 4.1 rule 5).</li>
 <li><strong>A withheld cooperative close.</strong> It stays in the exposed set, so by C13 the member refuses further payments on that channel and must exit. This is a cheap lever for a host.</li>
 <li><strong>Losing a race in a timed layer,</strong> for a member whose balance exceeds its capacity in an older state (1.1.0), through absence, fees or a hidden transaction. And, for every member below a timed layer, a channel engine that fails to keep an old anchor current (section 8).</li>
-<li><strong>A false view of the chain</strong> for longer than the maximum safe absence.</li>
-<li><strong>Fees far above what the member can fund.</strong></li>
+<li><strong>A false view of the chain</strong> for longer than the maximum safe absence. The exit's tip estimate never freezes (<code>spec/exit.md</code> 4.5: it advances with the clock), so a hidden chain makes the exit start early, not late; but a member whose every server is hostile (an eclipse) cannot broadcast through them either. A broadcast-only route independent of the view's servers is recommended, not guaranteed.</li>
+<li><strong>Fees far above what the member can fund</strong>, including fees above what the tree's anchors pay when the member holds no on-chain coin (<code>spec/exit.md</code> 6.5).</li>
+<li><strong>Pinning of a keyless anchor.</strong> Anyone, the host in particular, can spend a tree transaction's pay-to-anchor output first with a large low-rate child: for about 10,000 sat on a version-2 tree and about 234 sat on a TRUC tree. A member without on-chain coins then cannot replace it, and its step can be held back while blocks clear above about 0.2 sat/vB. A member without coins confirms in calm conditions unless someone pays to stop it (<code>spec/exit.md</code> 6.5).</li>
+<li><strong>A wallet left locked past <code>unlock_by</code></strong> with a factory balance: the locked watcher publishes the tree path but cannot publish the member's own commitment (<code>spec/exit.md</code> 5.6). After H_leaf a dishonest host takes the balance. An honest host closes with its own commitment by <code>host_force_by</code> (H17), and the balance then waits in the member's output, with no deadline, until the unlock.</li>
+<li><strong>A penalty file cut while locked</strong> (or replaced by an older copy) by anyone who can write the data folder, which needs no key: the locked watcher detects it, reports it (<code>penalty_file_short</code>, <code>at_risk</code>) and keeps answering with the penalties it still holds, but a host that publishes one of the newest revoked states while the person stays locked past that state's revocation window takes that channel's balance (<code>storage-encryption.md</code> 8.7.4 rule 7, 8.7.5). Not detected at all if the OS key store is rolled back with it.</li>
+<li><strong>A locked wallet with no watch-and-exit bundle</strong> ("maximum privacy", no OS key store, or Slice 1): nothing is published while locked.</li>
+<li><strong>A breach while locked, for the payment outputs.</strong> Penalties against the host's second-stage payment transactions cannot be pre-signed; a member that stays locked for the revocation window after such a transaction confirms loses those payment outputs, at most the sum of the payment outputs of the revoked state (<code>spec/exit.md</code> 4.4).</li>
 <li><strong>Loss of the held set or the exposed set.</strong> Losing the record of what was signed is as serious as losing the transactions.</li>
 <li><strong>A host that returns an old backup.</strong> Section 9 stops it from getting a second tree or a second nonce. It does not stop the member losing sight of factories joined after the backup, whose keys it may not be able to re-derive (R7). Nor does the backup hold the <strong>held set</strong> of those factories, the signed tree the member needs to leave alone: in 1.0.0 that is a loss of funds unless the host or another member hands the signed tree back, not only a denial of service (review 3, F16). Not relevant in Slice 1, where nothing is owed.</li>
 <li><strong>The same key running on two devices.</strong></li>
 <li><strong>A copy of a running program</strong> (a snapshot or a fork) that repeats a one-time signing secret.</li>
 <li><strong>Funding that is reorganised away</strong> after it was buried to the member's chosen depth.</li>
 <li><strong>A chain reorganisation that changes which leaf link confirmed</strong> (1.1.0, if leaf chains are used).</li>
-<li><strong>Relay rules</strong> that keep a pre-signed transaction from spreading, or let someone obstruct it.</li>
+<li><strong>Relay rules</strong> that keep a pre-signed transaction from spreading, or let someone obstruct it (pinning, above, is the known case).</li>
 <li><strong>A fixed pre-signed payout that is smaller than the member's balance,</strong> if the member did not exit first.</li>
 <li><strong>Bugs in the imported tree builder</strong> that make two honest parties build different trees.</li>
 <li><strong>Someone tying up the member's receiving capacity.</strong></li>
@@ -2033,11 +2125,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>Slice 1 values</strong> (each <strong>proposed, owner to confirm</strong>; the owner has not objected to any):</p>
 <ol>
 <li><strong>No distribution transaction in Slice 1.</strong> The creation round signs tree transactions only. A Slice 1 member refuses a proposal that carries one (<code>messages.md</code> record 44). So nothing pre-signed can overtake the host's timeout recovery (point 2), and C2 and C5 have no payout to cover.</li>
-<li><strong>The host recovers its signet coins through a short factory life and the existing host timeout.</strong> The terms give a short life (T1: 144 blocks plus 36 of wind-down, about a day and a half on signet), so the end height is near. Every tree output carries the host-only timeout leaf, at the end height less 5 blocks per tree transaction of depth [C: <code>src/factory.c:1632-1644</code>, <code>:199-214</code>]; the root kickoff, which spends the funding output on its key path, has none. After a factory, the host publishes the root kickoff from its held tree and, once the end height less 5 blocks has passed, sweeps each of the root's outputs alone through its timeout leaf: for up to 4 members that is the root plus one sweep of two outputs, a few hundred vbytes at 0.1 sat/vB. Members, owed zero, lose nothing. No cooperative close is added to Slice 1. An end height of 0 is still not an option: the import then builds no timeouts (C5).</li>
+<li><strong>The host recovers its signet coins through a short factory life and the existing host timeout.</strong> The terms give a short life (T1: 144 blocks plus 36 of wind-down, about a day and a half on signet), so the end height is near. Every tree output carries the host-only timeout leaf [C: <code>src/factory.c:1632-1644</code>, <code>:199-214</code>]: an output feeding a kickoff at depth j times out at E − 5·(2j − 1), and a leaf transaction's input and channel output at E − 10·d (C5); the root kickoff, which spends the funding output on its key path, has none. The root's own outputs feed depth 1, so they time out at E − 5. After a factory, the host publishes the root kickoff from its held tree and, once the end height less 5 blocks has passed, sweeps each of the root's outputs alone through its timeout leaf: for up to 4 members that is the root plus one sweep of two outputs, a few hundred vbytes at 0.1 sat/vB. Members, owed zero, lose nothing. No cooperative close is added to Slice 1. An end height of 0 is still not an option: the import then builds no timeouts (C5).</li>
 <li><strong>Burial depth: 3 blocks on signet</strong> for C11, as seen by both chain servers of the chain view (<code>docs/CHAIN-SERVERS.md</code>). Signet is mined by a fixed signer set, so a reorganisation deeper than a block or two is not expected, and 3 keeps a Slice 1 run to about half an hour after broadcast.</li>
 <li><strong>Funding deadline: 36 blocks</strong> after the block that was the member's chain tip when it sent <code>round_ack</code>. The host broadcasts as soon as it holds every ack; at 0.1 sat/vB, on signet, the funding may wait several blocks, and 36 (about six hours) leaves room for that and for a host restart and rebroadcast, while staying far inside T1's life: funding buried at the deadline still leaves over 100 blocks before the leaves' timeouts, so the C11 re-check passes.</li>
 <li><strong>Unfinished deadline: one signing budget</strong> (the terms' <code>signing_budget_ms</code>, 10 minutes in T1) on the member's own clock, counted from when the member sent its partial signatures. Within the budget the host may legitimately still be collecting, combining or resending results (<code>round_status_request</code>); past it the host's own terms say the round is over. A creation round still Unfinished then becomes <strong>Abandoned</strong> (there is nothing to exit, since nothing is owed until funding is buried); its records stay, and it becomes Dead if a funding input is spent elsewhere.</li>
-<li>Confirmation allowance per transaction for the exit-time sum (section 7, open point 7): 6 blocks, with a margin of 6 blocks, for Slice 1's C8 check only.</li>
+<li>Confirmation allowance per transaction for the exit-time sum (section 7, open point 7): A = 6 blocks, with burial B = 3 and the margin M = 14 blocks of <code>spec/exit.md</code> 4.3 (M_safe 6, M_lag 2, M_spike 6), judged against H_leaf = E − 10·d. For Slice 1's C8 check this gives <code>leave_by</code> at E − 50, E − 66 and E − 82 at depths 1, 2 and 3, which T1 passes with room to spare (vectors X3). Draft 4 said a margin of 6 against the end height; both were too loose.</li>
 </ol></div></details>
 <details id="c4-13-how-it-is-tested"><summary>13. How it is tested</summary><div class="body"><p>For every check C1 to C13, C8a and H1 to H13:</p>
 <ol>
@@ -3609,14 +3701,16 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tbody>
 </table></div>
 <p><strong>Not in slice 1:</strong> payments, liquidity changes, rotation, exits, the host's Lightning node, Nostr listings (the member is given the host's address directly), invitations, profiles beyond Standard.</p>
-<p><strong>Done when:</strong> one host and at least three members on separate processes form a factory on signet from a clean start, twice in a row, by following the walkthrough; the automated run does the same; and a member whose conditions are not met is seen to refuse.</p></div></details>
+<p><strong>Through the interface</strong> (owner decision 11, 2026-11-12, <code>ux/decisions.md</code>): Slice 1 ships with the local web interface in place, and every Slice 1 action is done through it: creating or restoring a wallet, the backup check of the 24 words, conditions, finding and joining a lobby, hosting a lobby, the signing moment and refusals, and the live factory. The command line is for start-up and diagnostics. The calls are in <code>spec/local-api.md</code>, section 2.1.</p>
+<p><strong>Done when:</strong> one host and at least three members on separate processes form a factory on signet from a clean start, twice in a row, by following the walkthrough <strong>in the interface</strong>; the automated run does the same through the same local API; and a member whose conditions are not met is seen to refuse, on the screen.</p></div></details>
 <details id="c10-slice-2-a-payment"><summary>Slice 2: a payment</summary><div class="body"><p><strong>What you see:</strong> one member pays another through the host, and both balances change on the screen.</p>
 <p>Needs the channel engine on Lightning's standard taproot format and the payment engine (M2).</p>
 <p><strong>Done when:</strong> payments in both directions succeed, a payment with too little time before its deadline is refused, and killing either program in the middle of a payment loses nothing after restart.</p></div></details>
 <details id="c10-slice-3-leaving-alone"><summary>Slice 3: leaving alone</summary><div class="body"><p><strong>What you see:</strong> the host is stopped; a member's program publishes its own path and ends with coins only it controls, on signet.</p>
 <p>Needs the exit, watch and schedule engines (M3).</p>
 <p><strong>Done when:</strong> the exit completes with the host gone, the amount equals what the member was owed, and the screen showed the dates correctly beforehand.</p></div></details>
-<details id="c10-later-slices"><summary>Later slices</summary><div class="body"><p>Rotation into the next factory (M4); paying and being paid across the wider Lightning network through the host's node; finding hosts through discovery (<code>spec/discovery.md</code>). Liquidity changes and timed levels are 1.1.0 (owner decision 9).</p></div></details>
+<details id="c10-later-slices"><summary>Later slices</summary><div class="body"><p>Rotation into the next factory (M4); paying and being paid across the wider Lightning network through the host's node; finding hosts through discovery (<code>spec/discovery.md</code>). Liquidity changes and timed levels are 1.1.0 (owner decision 9).</p>
+<p><strong>Many factories and rolling forward</strong> (1.1.0, <code>MULTI-FACTORY.md</code>): one member in three factories with two hosts moves its balance from an ending factory into a live one over Lightning, by a standing rule and without anyone acting, and the app settles to chain by its own deadline when no lobby is available.</p></div></details>
 <details id="c10-where-slices-run"><summary>Where slices run</summary><div class="body"><p>On the project's build server at first, with the screen viewed through a secure tunnel. Running natively on Windows is tracked separately and follows slice 1.</p></div></details>
 <details id="c10-what-slices-do-not-replace"><summary>What slices do not replace</summary><div class="body"><p>The simulator remains the main safety net. A slice on signet shows the path works once, slowly, with honest parties. Dropped messages, crashes at every save point and cheating are tested in the simulator, and the controlled-chain scenarios wait for a node of our own.</p></div></details>
 </section>
@@ -3708,10 +3802,10 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Local API (program to interface)</td>
-<td>not written</td>
-<td>—</td>
-<td><strong>Spec starting now</strong></td>
-<td>Write; review</td>
+<td><code>spec/local-api.md</code> (draft 2)</td>
+<td><code>specs-slice1</code></td>
+<td>Draft 1 reviewed (<code>reviews/review-local-api-d1.md</code>); draft 2 answers it, not yet reviewed</td>
+<td>Second review of draft 2</td>
 <td>The program, the interface</td>
 </tr>
 <tr>
@@ -3726,9 +3820,9 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>Interface (concept H wired to the API)</td>
 <td><code>docs/ux/</code>, the API spec</td>
 <td>PR 14 (draft)</td>
-<td>Concept chosen; fixes owed</td>
+<td>Concept chosen; fixes owed. <strong>Required for Slice 1</strong> (owner decision 11): every Slice 1 action goes through it</td>
 <td>Fix H; wire after the program</td>
-<td>Slice 1 walkthrough</td>
+<td>Slice 1 walkthrough, which runs through the interface</td>
 </tr>
 <tr>
 <td>A real signet funding broadcast</td>
@@ -3758,9 +3852,10 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </section>
 <section class="chapter" id="c12"><h2>Threat model</h2><p class="desc">Who can attack what, and which rule answers each attack.</p><p class="file">Threat model · <code>docs/THREAT-MODEL.md</code></p>
 <div class="intro"><p>Draft 1, 2026-11-11. Built from section 8 of <code>docs/reviews/spec-review-2.md</code>, edited to match <code>spec/safety-rule.md</code> and <code>spec/signing-round.md</code> draft 3. Not reviewed.</p>
+<p><strong>Changes after cross-spec review 1</strong> (<code>docs/reviews/review-cross-spec-1.md</code>, its section 1.2): the rule names now run to H18; 2.2 cites H14 for the host's duty to answer old states; 2.4 cites the exit's clock floor (<code>spec/exit.md</code> 4.5); section 3 gains the exclusions <code>safety-rule.md</code> 11 added with <code>spec/exit.md</code> draft 2 (a wallet left locked past <code>unlock_by</code>, no watch bundle, pinning of keyless anchors, the second-stage breach while locked, a penalty file cut while locked). 2.7 had been updated with <code>spec/storage-encryption.md</code> draft 3.</p>
 <p><strong>What this is.</strong> For each party that could harm a Gazpacho user: what it can do, which rule is meant to stop it, and what is not defended. It describes what the specifications say. It does not say the defences work. That needs the tests in <code>safety-rule.md</code> section 13 and <code>signing-round.md</code> section 16, none of which exist yet.</p>
 <p><strong>Scope.</strong> A member and a host running Gazpacho as the specifications and <code>DESIGN.md</code> describe, in 1.0.0: one member per leaf, no sales of receiving room, signet. Notes marked <strong>1.1.0</strong> say what changes when sales and shared leaves arrive.</p>
-<p>Rule names: C1 to C13, C8a and H1 to H13 are in <code>safety-rule.md</code>; R1 to R7 are its restore rules (section 9); S1 to S5 are the contribution rules of <code>signing-round.md</code> section 3. "SR" is <code>safety-rule.md</code>, "RD" is <code>signing-round.md</code>.</p></div>
+<p>Rule names: C1 to C13, C8a and H1 to H13 are in <code>safety-rule.md</code>, and H14 to H18 in <code>spec/exit.md</code> section 9 (listed in <code>safety-rule.md</code> section 10); R1 to R7 are its restore rules (section 9); S1 to S5 are the contribution rules of <code>signing-round.md</code> section 3. "SR" is <code>safety-rule.md</code>, "RD" is <code>signing-round.md</code>.</p></div>
 <details id="c12-1-what-is-being-protected"><summary>1. What is being protected</summary><div class="body"><div class="tw"><table>
 <thead>
 <tr>
@@ -3989,13 +4084,13 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>An old channel state against the host</td>
-<td>Channel revocation; H4</td>
-<td>The channel engine is not specified yet</td>
+<td>Channel revocation; H4; <strong>H14</strong>: the host watches every member's channel output and answers a revoked member commitment by <code>penalty_send_by</code>, signing second-stage penalties as they appear (<code>spec/exit.md</code> 9.1)</td>
+<td>The channel engine is not specified yet. A host down longer than the shortest revocation window of its members can lose to a breach</td>
 </tr>
 <tr>
 <td>An old layer state</td>
 <td>The newer state wins within one step if the host watches</td>
-<td>The host's duty to respond is not written as a rule</td>
+<td>For channel states the duty is H14 (<code>spec/exit.md</code> 9.1); for 1.1.0's timed layers it is not written yet</td>
 </tr>
 <tr>
 <td>Leave on day one to disturb the others</td>
@@ -4031,6 +4126,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>Beyond the safe absence (accepted). <strong>1.1.0:</strong> under a day for a member above coverage under a timed layer</td>
 </tr>
 <tr>
+<td>Hiding new blocks, a stale tip, or going silent, so the exit starts late</td>
+<td>The exit's tip estimate has a <strong>clock floor</strong>: it advances at an assumed two blocks per ten minutes whenever no new block is seen, so hidden blocks, silent servers or offline-by-choice make the exit start early, never late; a claim counts only if a second server reaches it or its headers were checked, so one lying server cannot start an exit either (<code>spec/exit.md</code> 4.5)</td>
+<td>A full eclipse also stops the member's broadcasts; one broadcast-only route independent of the view's servers is recommended, not guaranteed (<code>spec/exit.md</code> 4.5, open point 15)</td>
+</tr>
+<tr>
 <td>Hiding or delaying the member's own broadcast</td>
 <td>Several servers</td>
 <td>Package submission was not available on the public Electrum servers found (<code>docs/research/channel-groundwork.md</code>, 1.9)</td>
@@ -4059,9 +4159,14 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </thead>
 <tbody>
 <tr>
-<td>Stolen, locked</td>
-<td>Nothing yet: the journal is <strong>not</strong> encrypted in Slice 1 (<code>spec/journal.md</code>). Encryption at rest is planned (<code>DESIGN.md</code> section 9)</td>
-<td>Everything on the disk, until encryption at rest exists; then, the strength of the device lock and the passphrase</td>
+<td>Stolen, locked (or a copy of the data folder taken)</td>
+<td>Encryption at rest from Slice 1 on (owner decision 13; <code>spec/storage-encryption.md</code>): every file sealed under a storage key that only the wallet passphrase unwraps, through Argon2id at 256 MiB (storage 3, 4). The 24 words need the passphrase typed for them (storage 9)</td>
+<td>File sizes, times and counts (storage 3.2); a weak passphrase, guessed offline at the cost of one Argon2id per guess (storage 3.3); in 1.0.0, a thief who also has the person's operating-system key store reads the watch bundle (factories, amounts, dates) and can grief by publishing the member's tree path early, but cannot publish a revoked state or move value from its owner (storage 8.7.5, invariant T)</td>
+</tr>
+<tr>
+<td>An older copy of the data folder put back (a sync service's history, a system restore, a snapshot)</td>
+<td>The mark file and the guard catch a journal cut back or rolled back past an anchored batch (storage 6); the key store's counters catch an older watch bundle, penalty file or attempts file (storage 8.7.3); a journal found behind is never started as current, only as a restore under a new epoch</td>
+<td>The whole folder rolled back together, or together with the key store: not detected locally (storage 6.4); the restore rules then decide (<code>safety-rule.md</code> 9)</td>
 </tr>
 <tr>
 <td>Stolen unlocked, or keys extracted</td>
@@ -4093,6 +4198,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Loss of the held set or the exposed set.</li>
 <li>Two devices running one key.</li>
 <li>Copies of a running program.</li>
+<li>A whole data folder put back from an older copy, together with the key store (storage 6.4).</li>
+<li>Offline guessing of a weak wallet passphrase from a stolen or copied file (storage 3.3).</li>
 <li>Theft of unlocked keys.</li>
 <li>Relay rules that obstruct pre-signed transactions.</li>
 <li>Bugs in the imported tree builder.</li>
@@ -4102,6 +4209,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Factories joined after an old backup, whose keys may be lost without the guard record (R7).</li>
 <li>For 1.1.0 members above their coverage: losing a one-step race in a timed layer.</li>
 <li>For every member below a timed layer: a channel engine that fails to keep an old anchor current.</li>
+<li>A wallet left locked past <code>unlock_by</code> with a factory balance: the locked watcher publishes the tree path but not the member's commitment, and after H_leaf a dishonest host takes the balance (<code>safety-rule.md</code> 11; <code>spec/exit.md</code> 5.6).</li>
+<li>A locked wallet with no watch-and-exit bundle ("maximum privacy", no OS key store, or Slice 1): nothing is published while locked.</li>
+<li>Pinning of a keyless anchor: anyone can spend a tree step's pay-to-anchor output first with a large low-rate child (about 234 sat on a TRUC tree, about 10,000 sat on a version-2 tree), and a member without on-chain coins cannot replace it (<code>spec/exit.md</code> 6.5).</li>
+<li>A breach while locked, for the payment outputs: penalties against the host's second-stage payment transactions cannot be pre-signed, so a member that stays locked past <code>second_stage_unlock_by</code> loses those outputs (<code>spec/exit.md</code> 4.4).</li>
+<li>A penalty file cut or rolled back while locked: detected and reported (<code>penalty_file_short</code>), but a host that publishes one of the newest revoked states while the person stays locked past its revocation window takes that channel's balance; not detected if the OS key store is rolled back too (<code>storage-encryption.md</code> 8.7.5).</li>
 </ul></div></details>
 <details id="c12-4-what-is-not-yet-known"><summary>4. What is not yet known</summary><div class="body"><ul>
 <li>Whether SR section 8's reasoning, that keeping old anchors current removes the loss from an old layer state in 1.0.0, matches the design posts. A named simulator test checks it (SR section 13).</li>
@@ -4810,6 +4922,42 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>N1 partly fixed (a residual Tor-sharing limit, stated in open point 17); the others fixed, some with small residuals; new items E1 to E7 applied in draft 4.1. <strong>Draft 4.1 not reviewed</strong></td>
 </tr>
 <tr>
+<td><code>local-api.md</code></td>
+<td>1</td>
+<td><code>review-local-api-d1.md</code></td>
+<td>1 (<code>8447ea3</code>)</td>
+<td>2026-11-12</td>
+<td>Ready after listed changes</td>
+<td>F1 to F3 high (session cookie readable by every loopback port; the phrase check as an oracle; "cancelled" reported as "nothing was signed" after partial signatures), F4 high for 1.0.0 (host-node file read), F5 to F16 medium, F17 to F24 low; 14 Slice 1 gaps. Answered in draft 2 ("Changes from draft 1"; draft 1 kept at <code>../specs-history/local-api-d1.md</code>). Copied unchanged except one loopback address range, written out in words under the no-IP rule</td>
+</tr>
+<tr>
+<td></td>
+<td>2</td>
+<td><code>review-local-api-d2.md</code></td>
+<td>2 (<code>7aedcf4</code>)</td>
+<td>2026-11-12</td>
+<td>Ready after listed changes</td>
+<td>Round-1 findings: all fixed, F11 and F12 partly. New: N1 high (the sign-in layer rested on a storage specification that did not exist), N2 high for 1.0.0 (a locked wallet stopped watching, and every restart locks it), N3 medium-high (the first-run token on the browser launcher's command line), N4 to N9 medium, N10 to N16 low; nine Slice 1 gaps; views on defaults D2 to D16. Answered in draft 3 ("Changes from draft 2"; draft 2 kept at <code>../specs-history/local-api-d2.md</code>), together with <code>storage-encryption.md</code> draft 1's requirements. Copied unchanged: it contains no address written with a prefix length. <strong>Draft 3 not reviewed</strong>; its locked-wallet section follows storage 8.7, which that specification's own review says needs rework</td>
+</tr>
+<tr>
+<td><code>storage-encryption.md</code></td>
+<td>1</td>
+<td><code>review-storage-encryption-d1.md</code></td>
+<td>1 (<code>b626a9e</code>)</td>
+<td>2026-11-12</td>
+<td>Ready after listed changes; section 8.7 (the watch bundle) needs rework</td>
+<td>F1 to F4 high (old bundle copies hold commitments that later become revoked; no completed own commitment exists in the taproot channel format; rollback anchors miss commitment, revocation and <code>round_signed</code> batches; a restored backup could rebuild a bundle that publishes stale state), F5 to F12 medium, F13 to F25 low; all answered in draft 2 (its "Changes from draft 1"). Draft 1 kept at <code>docs/specs-history/storage-encryption-d1.md</code>. <strong>Draft 2 not reviewed</strong></td>
+</tr>
+<tr>
+<td>Cross-specification: <code>exit.md</code>, <code>storage-encryption.md</code>, <code>local-api.md</code>, <code>safety-rule.md</code> (with <code>journal.md</code>, <code>THREAT-MODEL.md</code>, <code>MULTI-FACTORY.md</code>)</td>
+<td>1</td>
+<td><code>review-cross-spec-1.md</code></td>
+<td>exit 2, storage 3, local API 4, safety rule 4, journal 3 (<code>47e831e</code>)</td>
+<td>2026-11-12</td>
+<td>Consistent after the listed fixes</td>
+<td>D1 to D4 medium (the short penalty file, the unlock order, when the bundle is rewritten, Slice 1's lock echo), D5 to D16 low, stale references, threat-model gaps, and a missing headline for a member the host closed out while locked. All applied as alignment fixes, without new draft numbers ("Changes after cross-spec review 1" in each changed document). <strong>The fixes have not had a second review</strong></td>
+</tr>
+<tr>
 <td><code>PROTOCOL.md</code></td>
 <td>—</td>
 <td>None</td>
@@ -5317,7 +5465,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>W3</td>
-<td><strong>The field numbers inside each journal record type</strong></td>
+<td><strong>The field numbers inside each journal record type</strong>. The record <strong>type</strong> numbers of the local API's saved state (<code>spec/local-api.md</code> 7.5) and of the exit records are now assigned (<code>spec/journal.md</code> 9.1, after cross-spec review 1), so W3 is closed for those type numbers; the field numbers remain</td>
 <td>The journal cannot be written without them</td>
 <td><code>spec/journal.md</code> open point 3, fixed with the engine's code tables</td>
 </tr>
