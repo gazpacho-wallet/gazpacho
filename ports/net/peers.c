@@ -400,7 +400,13 @@ static void on_message(gz_peers_t *p, conn_t *c, const uint8_t *m, size_t len)
         }
         if (++c->pings_in_window > p->cfg.max_pings) { refuse(p, c, GZ_PEER_WHY_PROTOCOL, "too many pings"); return; }
         if (v >= GZ_LN_PONG_IGNORE_FROM) return; /* BOLT 1: ignore */
-        if (queued(c) + v + 4 > p->cfg.max_queue) return; /* the peer is not reading; its pong waits */
+        if (queued(c) + v + 4 > p->cfg.max_queue) {
+            /* BOLT 1 says MUST answer; a pong that cannot be queued means
+             * the peer is not reading, so close rather than stay silent
+             * (review of PR 23, B4). */
+            fail(p, c, GZ_PEER_WHY_TIMEOUT_SEND, 0, "cannot answer ping: peer not reading");
+            return;
+        }
         if (gz_ln_pong_write(v, p->out, sizeof p->out, &n) || !q_msg(c, p->out, n)) {
             fail(p, c, GZ_PEER_WHY_SOCKET, ENOMEM, "cannot queue pong");
             return;
@@ -609,22 +615,49 @@ static void tcp_done(gz_peers_t *p, conn_t *c)
     c->rx_have = 0;
 }
 
-/* The address part of a socket address (IPv4 or IPv6), for the
- * per-address cap. */
-static int same_host(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+size_t gz_peers_address_group(const struct sockaddr_storage *a, uint8_t out[16])
 {
-    if (a->ss_family != b->ss_family) return 0;
-    if (a->ss_family == AF_INET)
-        return memcmp(&((const struct sockaddr_in *)a)->sin_addr, &((const struct sockaddr_in *)b)->sin_addr,
-                      sizeof(struct in_addr)) == 0;
-    if (a->ss_family == AF_INET6)
-        return memcmp(&((const struct sockaddr_in6 *)a)->sin6_addr, &((const struct sockaddr_in6 *)b)->sin6_addr,
-                      sizeof(struct in6_addr)) == 0;
+    static const uint8_t mapped[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff};
+    if (a->ss_family == AF_INET) {
+        memcpy(out, &((const struct sockaddr_in *)a)->sin_addr, 4);
+        return 4;
+    }
+    if (a->ss_family == AF_INET6) {
+        const uint8_t *b = ((const struct sockaddr_in6 *)a)->sin6_addr.s6_addr;
+        if (memcmp(b, mapped, 12) == 0) { /* an IPv4 address seen through IPv6 */
+            memcpy(out, b + 12, 4);
+            return 4;
+        }
+        memcpy(out, b, 8); /* the /64: one ordinary IPv6 assignment (review of PR 23, B1) */
+        return 8;
+    }
     return 0;
 }
 
-/* The oldest accepted connection matching `want`: 0 for one still in its
- * handshake (no valid init yet), 1 for an established one without a seat. */
+/* Same group for the per-address cap: the same IPv4 address, or the same
+ * IPv6 /64. Unknown families never match. */
+static int same_host(const struct sockaddr_storage *a, const struct sockaddr_storage *b)
+{
+    uint8_t ga[16], gb[16];
+    size_t na = gz_peers_address_group(a, ga), nb = gz_peers_address_group(b, gb);
+    return na && na == nb && memcmp(ga, gb, na) == 0;
+}
+
+/* How far a handshake in progress has got: 0 nothing received, 1 part of
+ * act one, 2 act one done (waiting for act three), 3 handshake done (waiting
+ * for init). */
+static int progress(const conn_t *c)
+{
+    if (c->phase == PH_R_WAIT1) return c->rx_have ? 1 : 0;
+    if (c->phase == PH_R_WAIT3) return 2;
+    return 3;
+}
+
+/* The accepted connection to evict. established_unseated 0: among those
+ * still in their handshake (no valid init yet), the one that has got least
+ * far, the oldest among equals, so a slow honest handshake outlives fresh
+ * silent sockets (review of PR 23, B2). 1: the oldest established one
+ * without a seat. */
 static conn_t *oldest_inbound(gz_peers_t *p, int established_unseated)
 {
     conn_t *best = NULL;
@@ -633,7 +666,15 @@ static conn_t *oldest_inbound(gz_peers_t *p, int established_unseated)
         conn_t *c = p->conns[i];
         if (c->outbound || c->closing) continue;
         if (established_unseated ? !(c->init_got && !c->seated) : c->init_got) continue;
-        if (!best || c->t_start < best->t_start) best = c;
+        if (!best) {
+            best = c;
+            continue;
+        }
+        if (!established_unseated && progress(c) != progress(best)) {
+            if (progress(c) < progress(best)) best = c;
+            continue;
+        }
+        if (c->t_start < best->t_start) best = c;
     }
     return best;
 }

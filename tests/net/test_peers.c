@@ -4,6 +4,7 @@
  * passes under valgrind. */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
+#include <poll.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -1002,6 +1003,260 @@ static void test_refusing(void)
     free_sides();
 }
 
+/* ------------------------------------------------ review of PR 23, reviewer B */
+
+/* A member driven by hand over a raw socket, step by step, so a test can
+ * stop it anywhere in its handshake: what a slow link looks like, without
+ * relying on timing. */
+typedef struct {
+    int fd;
+    gz_noise_t st;
+} rawm_t;
+
+static int rawm_wait_writable(int fd)
+{
+    int64_t end = ms() + 5000;
+    while (ms() < end) {
+        struct pollfd pf;
+        pf.fd = fd;
+        pf.events = POLLOUT;
+        pf.revents = 0;
+        if (poll(&pf, 1, 0) == 1 && (pf.revents & POLLOUT)) return 1;
+        pump(2);
+    }
+    return 0;
+}
+
+static int rawm_read(rawm_t *r, uint8_t *buf, size_t n)
+{
+    size_t got = 0;
+    int64_t end = ms() + 5000;
+    while (got < n && ms() < end) {
+        ssize_t k = recv(r->fd, buf + got, n - got, MSG_DONTWAIT);
+        if (k > 0) { got += (size_t)k; continue; }
+        if (k == 0) return 0;
+        pump(2);
+    }
+    return got == n;
+}
+
+static int rawm_send(rawm_t *r, const uint8_t *b, size_t n)
+{
+    return send(r->fd, b, n, MSG_NOSIGNAL) == (ssize_t)n;
+}
+
+/* Connects and sends act one; the host has not answered yet. */
+static int rawm_start(rawm_t *r, uint32_t src, uint16_t port, const uint8_t key[32])
+{
+    uint8_t act[GZ_NOISE_ACT1_LEN];
+    r->fd = raw_socket_from(src, port);
+    if (r->fd < 0 || !rawm_wait_writable(r->fd)) return 0;
+    if (gz_noise_init_initiator(&r->st, secp, key, HOST_PUB, RNG) || gz_noise_act1_write(&r->st, act)) return 0;
+    return rawm_send(r, act, sizeof act);
+}
+
+/* Reads act two, sends act three and init. */
+static int rawm_finish(rawm_t *r)
+{
+    uint8_t act[GZ_NOISE_ACT3_LEN], m[100], ct[200];
+    size_t n, cn;
+    if (!rawm_read(r, act, GZ_NOISE_ACT2_LEN) || gz_noise_act2_read(&r->st, act, GZ_NOISE_ACT2_LEN) ||
+        gz_noise_act3_write(&r->st, act) || !rawm_send(r, act, GZ_NOISE_ACT3_LEN))
+        return 0;
+    gz_ln_init_write(GZ_LN_CHAIN_SIGNET, m, sizeof m, &n);
+    if (gz_noise_encrypt(&r->st, m, n, ct, sizeof ct, &cn)) return 0;
+    return rawm_send(r, ct, cn);
+}
+
+static void rawm_close(rawm_t *r)
+{
+    if (r->fd >= 0) close(r->fd);
+    r->fd = -1;
+    gz_noise_wipe(&r->st);
+}
+
+static void pub_of(const uint8_t k[32], uint8_t out[33]) { pub(k, out); }
+
+/* B1: the per-address cap groups addresses: IPv4 by address, IPv6 by /64,
+ * an IPv4-mapped IPv6 address as its IPv4 address. */
+static void test_address_groups(void)
+{
+    struct sockaddr_storage a, b;
+    struct sockaddr_in *v4 = (struct sockaddr_in *)&a;
+    struct sockaddr_in6 *v6;
+    uint8_t ga[16], gb[16];
+    size_t na, nb;
+    /* 2001:db8:1:2::/64 (the documentation prefix), two hosts in it */
+    static const uint8_t doc[16] = {0x20, 0x01, 0x0d, 0xb8, 0, 1, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0x11};
+    memset(&a, 0, sizeof a);
+    memset(&b, 0, sizeof b);
+    a.ss_family = AF_INET6;
+    b.ss_family = AF_INET6;
+    memcpy(((struct sockaddr_in6 *)&a)->sin6_addr.s6_addr, doc, 16);
+    memcpy(((struct sockaddr_in6 *)&b)->sin6_addr.s6_addr, doc, 16);
+    ((struct sockaddr_in6 *)&b)->sin6_addr.s6_addr[15] = 0x99;
+    ((struct sockaddr_in6 *)&b)->sin6_addr.s6_addr[9] = 0x42;
+    na = gz_peers_address_group(&a, ga);
+    nb = gz_peers_address_group(&b, gb);
+    CHECK(na == 8 && nb == 8 && memcmp(ga, gb, 8) == 0); /* same /64 */
+    ((struct sockaddr_in6 *)&b)->sin6_addr.s6_addr[7] = 3;  /* the next /64 */
+    nb = gz_peers_address_group(&b, gb);
+    CHECK(nb == 8 && memcmp(ga, gb, 8) != 0);
+    /* ::1 and ::2 share the loopback /64 */
+    memset(&a, 0, sizeof a);
+    memset(&b, 0, sizeof b);
+    a.ss_family = b.ss_family = AF_INET6;
+    ((struct sockaddr_in6 *)&a)->sin6_addr.s6_addr[15] = 1;
+    ((struct sockaddr_in6 *)&b)->sin6_addr.s6_addr[15] = 2;
+    na = gz_peers_address_group(&a, ga);
+    nb = gz_peers_address_group(&b, gb);
+    CHECK(na == 8 && nb == 8 && memcmp(ga, gb, 8) == 0);
+    /* IPv4, and the same address mapped into IPv6 */
+    memset(&a, 0, sizeof a);
+    v4 = (struct sockaddr_in *)&a;
+    v4->sin_family = AF_INET;
+    v4->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    na = gz_peers_address_group(&a, ga);
+    memset(&b, 0, sizeof b);
+    v6 = (struct sockaddr_in6 *)&b;
+    v6->sin6_family = AF_INET6;
+    v6->sin6_addr.s6_addr[10] = 0xff;
+    v6->sin6_addr.s6_addr[11] = 0xff;
+    memcpy(v6->sin6_addr.s6_addr + 12, &v4->sin_addr, 4);
+    nb = gz_peers_address_group(&b, gb);
+    CHECK(na == 4 && nb == 4 && memcmp(ga, gb, 4) == 0);
+    v6->sin6_addr.s6_addr[11] = 0xfe; /* not mapped: a /64 like any other */
+    CHECK(gz_peers_address_group(&b, gb) == 8);
+    v4->sin_addr.s_addr = htonl(OTHER_LOOPBACK);
+    na = gz_peers_address_group(&a, ga);
+    nb = gz_peers_address_group(&((struct sockaddr_storage){.ss_family = AF_INET}), gb);
+    CHECK(na == 4 && nb == 4 && memcmp(ga, gb, 4) != 0);
+    a.ss_family = AF_UNIX;
+    CHECK(gz_peers_address_group(&a, ga) == 0);
+}
+
+static void big_queue_small(gz_peers_config_t *c) { c->max_per_address = 0; c->max_queue = 1100000; }
+static void two_slots(gz_peers_config_t *c) { c->max_per_address = 0; c->max_conns = 2; }
+
+static void test_review_b(void)
+{
+    uint16_t port;
+    rawm_t h, rm[5];
+    int fds[40], i;
+    gz_peer_event_t *e;
+    gz_peers_stats_t st;
+    static uint8_t keys[6][32];
+    uint8_t kp[33];
+    for (i = 0; i < 6; i++) memset(keys[i], 0x61 + i, 32);
+
+    /* B2: an honest handshake that has sent act one and then waits (a slow
+     * link, simulated by not going on) outlives a flood of silent sockets:
+     * eviction takes the ones that sent nothing first. */
+    S[0].p = mk(HOST_KEY, 20000, 30000, NULL, no_address_cap);
+    CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+    CHECK(rawm_start(&h, 0, port, keys[0]));
+    pump(100);
+    for (i = 0; i < 40; i++) {
+        fds[i] = raw_socket_from(0, port);
+        pump(5);
+    }
+    pump(100);
+    gz_peers_stats(S[0].p, &st);
+    CHECK(st.evicted_handshakes >= 20);
+    CHECK(rawm_finish(&h));
+    e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
+    pub_of(keys[0], kp);
+    CHECK(e && memcmp(e->node_id, kp, 33) == 0);
+    rawm_close(&h);
+    for (i = 0; i < 40; i++) if (fds[i] >= 0) close(fds[i]);
+    free_sides();
+
+    /* B10 (mbB-peraddr-same-init): the cap of 4 counts established
+     * connections too. Four members from one address complete init; a
+     * fifth socket from it is closed at accept. */
+    S[0].p = mk(HOST_KEY, 20000, 30000, NULL, NULL);
+    CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+    for (i = 0; i < 4; i++) {
+        CHECK(rawm_start(&rm[i], OTHER_LOOPBACK, port, keys[i]) && rawm_finish(&rm[i]));
+        CHECK(expect(0, GZ_PEER_EV_CONNECTED, 5000) != NULL);
+    }
+    fds[0] = raw_socket_from(OTHER_LOOPBACK, port);
+    pump(300);
+    CHECK(closed_by_host(fds[0]));
+    gz_peers_stats(S[0].p, &st);
+    CHECK(st.refused_address == 1 && st.open == 4);
+    close(fds[0]);
+    for (i = 0; i < 4; i++) rawm_close(&rm[i]);
+    free_sides();
+
+    /* B10 (mbB-admit-count-closing): an evicted member still flushing its
+     * warning is not counted as established. Two slots: V1 (never reads,
+     * its queue stuck) and V2; N1 evicts V1; V2 leaves; N2 then fits
+     * without evicting N1. */
+    S[0].p = mk(HOST_KEY, 20000, 30000, NULL, two_slots);
+    S[1].p = mk(MEM_KEY, 20000, 30000, NULL, NULL);
+    CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+    {
+        uint64_t hv1 = 0, hv2 = 0, v2, n1, n2, hn1 = 0;
+        CHECK(rawm_start(&rm[0], 0, port, keys[1]) && rawm_finish(&rm[0]));
+        e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
+        if (e) hv1 = e->conn;
+        for (i = 0; i < 3; i++)
+            if (gz_peers_send(S[0].p, hv1, 68, SCOPE, big, GZ_ENV_MAX_WHOLE) != GZ_PEERS_OK) break;
+        pump(300); /* V1's socket buffers fill; the rest stays queued */
+        CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, keys[2], &v2) == GZ_PEERS_OK);
+        e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
+        if (e) hv2 = e->conn;
+        CHECK(expect(1, GZ_PEER_EV_CONNECTED, 5000) != NULL);
+        pump(20);
+        CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, keys[3], &n1) == GZ_PEERS_OK);
+        e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
+        if (e) hn1 = e->conn;
+        gz_peers_stats(S[0].p, &st);
+        CHECK(st.evicted_unseated == 1);
+        CHECK(quiet(0, GZ_PEER_EV_CLOSED, 200)); /* V1 is still flushing */
+        CHECK(gz_peers_close(S[1].p, v2) == GZ_PEERS_OK);
+        e = expect(0, GZ_PEER_EV_CLOSED, 5000);
+        CHECK(e && e->conn == hv2 && e->why == GZ_PEER_WHY_LOST);
+        CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, keys[4], &n2) == GZ_PEERS_OK);
+        CHECK(expect(0, GZ_PEER_EV_CONNECTED, 5000) != NULL);
+        pump(300);
+        gz_peers_stats(S[0].p, &st);
+        CHECK(st.evicted_unseated == 1); /* N1 was not evicted for N2 */
+        for (i = 0; i < S[0].n; i++)
+            if (S[0].e[i].ev.type == GZ_PEER_EV_CLOSED) CHECK(S[0].e[i].ev.conn != hn1);
+        (void)n2;
+        rawm_close(&rm[0]);
+    }
+    free_sides();
+
+    /* B4: a ping that cannot be answered because the peer is not reading
+     * closes the connection (BOLT 1: MUST answer), rather than going unanswered. */
+    S[0].p = mk(HOST_KEY, 20000, 30000, NULL, big_queue_small);
+    CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+    CHECK(rawm_start(&rm[0], 0, port, keys[5]) && rawm_finish(&rm[0]));
+    e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
+    CHECK(e != NULL);
+    if (e) {
+        uint8_t m[16], ct[64];
+        size_t n, cn;
+        uint64_t hc = e->conn;
+        /* Queued without polling, so nothing is written yet. */
+        CHECK(gz_peers_send(S[0].p, hc, 68, SCOPE, big, GZ_ENV_MAX_WHOLE) == GZ_PEERS_OK);
+        gz_ln_ping_write(65531, 0, m, sizeof m, &n);
+        CHECK(gz_noise_encrypt(&rm[0].st, m, n, ct, sizeof ct, &cn) == GZ_NOISE_OK && rawm_send(&rm[0], ct, cn));
+        {
+            struct timespec t = {0, 100000000};
+            nanosleep(&t, NULL);
+        }
+        e = expect(0, GZ_PEER_EV_CLOSED, 5000);
+        CHECK(e && e->conn == hc && e->why == GZ_PEER_WHY_TIMEOUT_SEND &&
+              strcmp(e->text, "cannot answer ping: peer not reading") == 0);
+    }
+    rawm_close(&rm[0]);
+    free_sides();
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -1030,6 +1285,12 @@ int main(void)
     puts("== refusing");
     fflush(stdout);
     test_refusing();
+    puts("== address groups");
+    fflush(stdout);
+    test_address_groups();
+    puts("== review b");
+    fflush(stdout);
+    test_review_b();
     puts("== fairness");
     fflush(stdout);
     test_fairness();

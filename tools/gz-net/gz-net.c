@@ -19,7 +19,8 @@
  * The custom message's payload is a TLV stream: type 1 is the kind (1 byte:
  * 1 ping, 2 pong), type 3 the sequence number (tu64).
  *
- * serve is a stand-in lobby host (transport only): it prints "listening PORT
+ * serve is a stand-in lobby host (transport only; it never marks seats, so
+ * anyone with 64 keys can fill it: not for public use): it prints "listening PORT
  * NODE_ID", answers each hello with a lobby_status for an unknown lobby, and
  * after N connections have closed prints "done" with its ping counters; it
  * fails if a connection ends other than by the member closing it, or after

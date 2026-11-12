@@ -21,6 +21,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/socket.h>
 #include "conn.h"
 #include "envelope.h"
 
@@ -41,7 +42,8 @@ typedef struct {
     unsigned max_pings;      /* pings accepted per pong_ms window before closing (default 10) */
     unsigned max_handshakes; /* accepted connections still in their handshake or before init; when
                                 full, the oldest is evicted (default 16; review of PR 23, F1) */
-    unsigned max_per_address; /* accepted connections from one IP address, 0 for no cap (default 4) */
+    unsigned max_per_address; /* accepted connections from one IPv4 address or IPv6 /64, 0 for no cap
+                                 (default 4) */
     unsigned max_ignored;    /* ignored messages (unknown odd types and kinds, wrong tags, warnings)
                                 per pong_ms window before closing (default 100) */
     unsigned max_warning_events; /* WARNING events per connection; later ones are counted (default 10) */
@@ -173,6 +175,11 @@ typedef struct {
     size_t reassembly_bytes;     /* held by incomplete transfers now */
 } gz_peers_stats_t;
 void gz_peers_stats(const gz_peers_t *p, gz_peers_stats_t *s);
+/* The group an address counts in for max_per_address: the IPv4 address
+ * (also when seen as an IPv4-mapped IPv6 address), or the IPv6 /64. Writes
+ * it to out and returns its length (4 or 8), or 0 for another family. */
+size_t gz_peers_address_group(const struct sockaddr_storage *a, uint8_t out[16]);
+
 /* For tests: 1 if the buffer that holds each decrypted message is all
  * zero, as it must be between messages. */
 int gz_peers_test_plain_clear(const gz_peers_t *p);

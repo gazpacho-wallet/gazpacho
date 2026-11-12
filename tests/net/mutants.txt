@@ -236,7 +236,7 @@ peers-send-before-init	ports/net/peers.c	if (!c->init_got) return GZ_PEERS_ERR_N
 peers-queue-cap-off	ports/net/peers.c	if (queued(c) + records_len + count * (2 + GZ_ENV_HDR_LEN + 100 + 34) > p->cfg.max_queue) return GZ_PEERS_ERR_FULL;	
 peers-refuse-no-warning	ports/net/peers.c	if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(GZ_LN_WARNING, reason, p->out, sizeof p->out, &n))	if (0)
 peers-refuse-no-flush	ports/net/peers.c	c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);	c->close_by = now_ms();
-peers-pong-queue-cap-off	ports/net/peers.c	if (queued(c) + v + 4 > p->cfg.max_queue) return; /* the peer is not reading; its pong waits */	
+peers-pong-queue-cap-off	ports/net/peers.c	if (queued(c) + v + 4 > p->cfg.max_queue) {	if (0) {
 peers-node-id-missing	ports/net/peers.c	c->have_id = 1;\n        if (!p->cfg.is_member	c->have_id = 0;\n        if (!p->cfg.is_member
 peers-refused-as-socket	ports/net/peers.c	fail(p, c, err == ECONNREFUSED ? GZ_PEER_WHY_REFUSED :	fail(p, c, err == ECONNREFUSED ? GZ_PEER_WHY_SOCKET :
 peers-lost-as-socket	ports/net/peers.c	if (r == 0) { fail(p, c, GZ_PEER_WHY_LOST, 0, "closed by the peer"); return; }	if (r == 0) { fail(p, c, GZ_PEER_WHY_SOCKET, 0, "closed by the peer"); return; }
@@ -290,3 +290,11 @@ peers-no-unit-cap	ports/net/peers.c	while (units < 64) {	while (units < 1000000)
 #   eviction keeps pending connections under max_handshakes and admission keeps
 #   established ones under max_conns; the array bound is reached only while
 #   refused connections are still flushing their warning. Kept as a memory guard.
+# Review B of PR 23: address groups, eviction by progress, unanswerable pings, admission counts.
+peers-evict-ignore-progress	ports/net/peers.c	if (!established_unseated && progress(c) != progress(best)) {	if (0) {
+peers-v6-low-half	ports/net/peers.c	memcpy(out, b, 8); /* the /64	memcpy(out, b + 8, 8); /* the /64
+peers-v6-whole	ports/net/peers.c	memcpy(out, b, 8); /* the /64	memcpy(out, b, 8); out[0] ^= b[15]; /* the /64
+peers-mapped-ignored	ports/net/peers.c	if (memcmp(b, mapped, 12) == 0) {	if (0) {
+peers-ping-full-silent	ports/net/peers.c	fail(p, c, GZ_PEER_WHY_TIMEOUT_SEND, 0, "cannot answer ping: peer not reading");\n            return;	return;
+peers-peraddr-pending-only	ports/net/peers.c	if (same_host(&o->addr, &ss)) same++;	if (same_host(&o->addr, &ss) && !o->init_got) same++;
+peers-admit-counts-closing	ports/net/peers.c	if (p->conns[i]->init_got && !p->conns[i]->closing) established++;	if (p->conns[i]->init_got) established++;
