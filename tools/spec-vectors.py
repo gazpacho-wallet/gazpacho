@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Compute the test vectors printed in spec/terms.md, spec/messages.md and
-spec/journal.md. Factory messages use the native type 52791; vector M3 shows the
-same bytes through the bLIP-56 adapter (open PR lightning/blips#56).
+"""Compute the test vectors printed in spec/terms.md, spec/messages.md,
+spec/journal.md, spec/discovery.md and (section E) spec/storage-encryption.md.
+Factory messages use the native type 52791; vector M3 shows the same bytes
+through the bLIP-56 adapter (open PR lightning/blips#56).
 
-    python tools/spec-vectors.py
+    python -I tools/spec-vectors.py           # everything except E2r
+    python -I tools/spec-vectors.py --slow    # also recomputes E2r: Argon2id at 256 MiB, about 30 minutes
 
 Standard library only. Run it again whenever one of those encodings changes,
 and paste the new output into the specification.
@@ -1403,3 +1405,729 @@ print("\n== D18: orphan pool: 10 orphans on one link keep the last 8; 72 orphans
 hlr = tlv([(2, chain), (5, host_pub)])
 print(f"\n== D19: host_list_request (kind {K_HL_REQ}) asking only for the test host")
 show(f"native host_list_request (kind {K_HL_REQ})", native(K_HL_REQ, hlr))
+
+
+# ===================================================== storage-encryption.md =====
+# Section E, draft 1 (2026-11-12). Storage encryption: the passphrase key (Argon2id,
+# RFC 9106), subkeys (HKDF-SHA256, RFC 5869), XChaCha20-Poly1305 (RFC 8439 with
+# draft-irtf-cfrg-xchacha-03) with hedged nonces, the key file, the encrypted journal,
+# the guard file and the export. Neither Argon2id nor XChaCha20-Poly1305 is in the
+# Python standard library, so both are written out below from their specifications
+# and checked against the published vectors (E0) before anything is printed. Like the
+# BIP 340 code above they are slow, NOT constant time, and for vectors only. The
+# implementation uses libsodium; its results must equal these (storage-encryption.md
+# section 15). E2r, at the real parameters, runs only with --slow (about 30 minutes).
+import hmac
+import struct
+import sys
+import unicodedata
+
+M64 = (1 << 64) - 1
+M32 = (1 << 32) - 1
+
+
+# ------------------------------------------------ ChaCha20, RFC 8439 ---------
+def _rotl32(v, c):
+    return ((v << c) & M32) | (v >> (32 - c))
+
+
+def _qr(s, a, b, c, d):
+    s[a] = (s[a] + s[b]) & M32; s[d] = _rotl32(s[d] ^ s[a], 16)
+    s[c] = (s[c] + s[d]) & M32; s[b] = _rotl32(s[b] ^ s[c], 12)
+    s[a] = (s[a] + s[b]) & M32; s[d] = _rotl32(s[d] ^ s[a], 8)
+    s[c] = (s[c] + s[d]) & M32; s[b] = _rotl32(s[b] ^ s[c], 7)
+
+
+def _rounds(s):
+    for _ in range(10):
+        _qr(s, 0, 4, 8, 12); _qr(s, 1, 5, 9, 13); _qr(s, 2, 6, 10, 14); _qr(s, 3, 7, 11, 15)
+        _qr(s, 0, 5, 10, 15); _qr(s, 1, 6, 11, 12); _qr(s, 2, 7, 8, 13); _qr(s, 3, 4, 9, 14)
+
+
+_SIGMA = struct.unpack("<4I", b"expand 32-byte k")
+
+
+def chacha20_block(key, counter, nonce12):
+    init = list(_SIGMA) + list(struct.unpack("<8I", key)) + [counter] + list(struct.unpack("<3I", nonce12))
+    s = init[:]
+    _rounds(s)
+    return struct.pack("<16I", *[(s[i] + init[i]) & M32 for i in range(16)])
+
+
+def chacha20_xor(key, counter, nonce12, data):
+    out = bytearray()
+    for i in range(0, len(data), 64):
+        ks = chacha20_block(key, counter + i // 64, nonce12)
+        out += bytes(a ^ b for a, b in zip(data[i:i + 64], ks))
+    return bytes(out)
+
+
+def hchacha20(key, nonce16):
+    s = list(_SIGMA) + list(struct.unpack("<8I", key)) + list(struct.unpack("<4I", nonce16))
+    _rounds(s)
+    return struct.pack("<8I", *(s[0:4] + s[12:16]))
+
+
+def poly1305(key32, msg):
+    r = int.from_bytes(key32[:16], "little") & 0x0ffffffc0ffffffc0ffffffc0fffffff
+    s = int.from_bytes(key32[16:], "little")
+    p = (1 << 130) - 5
+    acc = 0
+    for i in range(0, len(msg), 16):
+        n = int.from_bytes(msg[i:i + 16] + b"\x01", "little")
+        acc = ((acc + n) * r) % p
+    return ((acc + s) & ((1 << 128) - 1)).to_bytes(16, "little")
+
+
+def _pad16(b):
+    return b"\x00" * (-len(b) % 16)
+
+
+def aead_chacha20_poly1305_encrypt(key, nonce12, pt, ad):
+    otk = chacha20_block(key, 0, nonce12)[:32]
+    ct = chacha20_xor(key, 1, nonce12, pt)
+    mac = ad + _pad16(ad) + ct + _pad16(ct) + struct.pack("<QQ", len(ad), len(ct))
+    return ct + poly1305(otk, mac)
+
+
+def aead_chacha20_poly1305_decrypt(key, nonce12, ct_tag, ad):
+    if len(ct_tag) < 16:
+        return None
+    ct, tag = ct_tag[:-16], ct_tag[-16:]
+    otk = chacha20_block(key, 0, nonce12)[:32]
+    mac = ad + _pad16(ad) + ct + _pad16(ct) + struct.pack("<QQ", len(ad), len(ct))
+    if not hmac.compare_digest(poly1305(otk, mac), tag):
+        return None
+    return chacha20_xor(key, 1, nonce12, ct)
+
+
+def xchacha_encrypt(key, nonce24, pt, ad):
+    """AEAD_XChaCha20_Poly1305, draft-irtf-cfrg-xchacha-03 section 2.3; libsodium
+    crypto_aead_xchacha20poly1305_ietf_encrypt. Returns ciphertext || tag."""
+    return aead_chacha20_poly1305_encrypt(hchacha20(key, nonce24[:16]), b"\x00" * 4 + nonce24[16:], pt, ad)
+
+
+def xchacha_decrypt(key, nonce24, ct_tag, ad):
+    return aead_chacha20_poly1305_decrypt(hchacha20(key, nonce24[:16]), b"\x00" * 4 + nonce24[16:], ct_tag, ad)
+
+
+# ------------------------------------------------ Argon2id, RFC 9106 ---------
+def _blake2b(data, n):
+    return hashlib.blake2b(data, digest_size=n).digest()
+
+
+def _hprime(data, t):
+    """RFC 9106 section 3.3, H'^T."""
+    x = struct.pack("<I", t) + data
+    if t <= 64:
+        return _blake2b(x, t)
+    r = (t + 31) // 32 - 2
+    v = _blake2b(x, 64)
+    out = v[:32]
+    for _ in range(r - 1):
+        v = _blake2b(v, 64)
+        out += v[:32]
+    return out + _blake2b(v, t - 32 * r)
+
+
+def _gb(v, a, b, c, d):
+    va, vb, vc, vd = v[a], v[b], v[c], v[d]
+    va = (va + vb + 2 * (va & M32) * (vb & M32)) & M64
+    vd ^= va; vd = ((vd >> 32) | (vd << 32)) & M64
+    vc = (vc + vd + 2 * (vc & M32) * (vd & M32)) & M64
+    vb ^= vc; vb = ((vb >> 24) | (vb << 40)) & M64
+    va = (va + vb + 2 * (va & M32) * (vb & M32)) & M64
+    vd ^= va; vd = ((vd >> 16) | (vd << 48)) & M64
+    vc = (vc + vd + 2 * (vc & M32) * (vd & M32)) & M64
+    vb ^= vc; vb = ((vb >> 63) | (vb << 1)) & M64
+    v[a], v[b], v[c], v[d] = va, vb, vc, vd
+
+
+def _perm(v, idx):
+    w = [v[i] for i in idx]
+    _gb(w, 0, 4, 8, 12); _gb(w, 1, 5, 9, 13); _gb(w, 2, 6, 10, 14); _gb(w, 3, 7, 11, 15)
+    _gb(w, 0, 5, 10, 15); _gb(w, 1, 6, 11, 12); _gb(w, 2, 7, 8, 13); _gb(w, 3, 4, 9, 14)
+    for k, i in enumerate(idx):
+        v[i] = w[k]
+
+
+_ROWS = [list(range(16 * i, 16 * i + 16)) for i in range(8)]
+_COLS = [[2 * i + 16 * j + k for j in range(8) for k in (0, 1)] for i in range(8)]
+
+
+def _g(x, y):
+    """RFC 9106 section 3.5, compression function G on 128-word blocks."""
+    r = [a ^ b for a, b in zip(x, y)]
+    q = r[:]
+    for idx in _ROWS:
+        _perm(q, idx)
+    for idx in _COLS:
+        _perm(q, idx)
+    return [a ^ b for a, b in zip(q, r)]
+
+
+_U = struct.Struct("<128Q")
+_u = _U.unpack
+def _pk(w):
+    return _U.pack(*w)
+
+
+def _words(b):
+    return list(struct.unpack("<128Q", b))
+
+
+def argon2id(password, salt, t, m_kib, p, taglen, secret=b"", ad=b""):
+    """Argon2id version 0x13 (RFC 9106). For vectors only: slow, not constant time."""
+    y, ver = 2, 0x13
+    h0 = _blake2b(struct.pack("<6I", p, taglen, m_kib, t, ver, y)
+                  + struct.pack("<I", len(password)) + password
+                  + struct.pack("<I", len(salt)) + salt
+                  + struct.pack("<I", len(secret)) + secret
+                  + struct.pack("<I", len(ad)) + ad, 64)
+    mp = 4 * p * (m_kib // (4 * p))
+    q = mp // p
+    sl = q // 4
+    B = [[None] * q for _ in range(p)]
+    for l in range(p):
+        B[l][0] = _hprime(h0 + struct.pack("<II", 0, l), 1024)
+        B[l][1] = _hprime(h0 + struct.pack("<II", 1, l), 1024)
+    zero = [0] * 128
+    for r in range(t):
+        for s in range(4):
+            for l in range(p):
+                indep = (r == 0 and s < 2)
+                addr, counter = None, 0
+                start = 2 if (r == 0 and s == 0) else 0
+                for i in range(start, sl):
+                    if indep and (addr is None or i % 128 == 0):
+                        counter += 1
+                        z = [r, l, s, mp, t, y, counter] + [0] * 121
+                        addr = _g(zero, _g(zero, z))
+                    col = s * sl + i
+                    prev = col - 1 if col > 0 else q - 1
+                    rnd = addr[i % 128] if indep else struct.unpack_from("<Q", B[l][prev])[0]
+                    j1, j2 = rnd & M32, rnd >> 32
+                    lr = l if (r == 0 and s == 0) else j2 % p
+                    if lr == l:
+                        w = (s * sl + i - 1) if r == 0 else (q - sl + i - 1)
+                    else:
+                        w = (s * sl if r == 0 else q - sl) - (1 if i == 0 else 0)
+                    x = (j1 * j1) >> 32
+                    yy = (w * x) >> 32
+                    zz = w - 1 - yy
+                    startpos = 0 if (r == 0 or s == 3) else (s + 1) * sl
+                    ref = (startpos + zz) % q
+                    nb = _g(_u(B[l][prev]), _u(B[lr][ref]))
+                    if r > 0:
+                        nb = [a ^ b for a, b in zip(nb, _u(B[l][col]))]
+                    B[l][col] = _pk(nb)
+    c = _u(B[0][q - 1])
+    for l in range(1, p):
+        c = [a ^ b for a, b in zip(c, _u(B[l][q - 1]))]
+    return _hprime(struct.pack("<128Q", *c), taglen)
+
+
+# ------------------------------------------------ HKDF, RFC 5869 -------------
+def hkdf_sha256(ikm, salt, info, n):
+    prk = hmac.new(salt if salt else b"\x00" * 32, ikm, hashlib.sha256).digest()
+    out, t, i = b"", b"", 1
+    while len(out) < n:
+        t = hmac.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+        out += t
+        i += 1
+    return out[:n]
+
+
+
+# ---------------------------------------------------- E0: the primitives check ---
+# Each primitive is checked against its published vector before anything is printed.
+_k8439 = bytes(range(0x80, 0xa0))
+_pt8439 = (b"Ladies and Gentlemen of the class of '99: If I could offer you only one tip "
+           b"for the future, sunscreen would be it.")
+_ad8439 = bytes.fromhex("50515253c0c1c2c3c4c5c6c7")
+_o = aead_chacha20_poly1305_encrypt(_k8439, bytes.fromhex("070000004041424344454647"), _pt8439, _ad8439)
+assert _o[:16].hex() == "d31a8d34648e60db7b86afbc53ef7ec2"            # RFC 8439 2.8.2
+assert _o[-16:].hex() == "1ae10b594f09e26a7e902ecbd0600691"
+assert hchacha20(bytes(range(32)), bytes.fromhex("000000090000004a0000000031415927")).hex() == (
+    "82413b4227b27bfed30e42508a877d73a0f9e4d58a74a853c12ec41326d3ecdc")  # xchacha-03 2.2.1
+_o = xchacha_encrypt(_k8439, bytes.fromhex("404142434445464748494a4b4c4d4e4f5051525354555657"),
+                     _pt8439, _ad8439)
+assert _o[-16:].hex() == "c0875924c1c7987947deafd8780acf49"            # xchacha-03 A.3.1
+assert _o[:16].hex() == "bd6d179d3e83d43b9576579493c0e939"
+assert xchacha_decrypt(_k8439, bytes.fromhex("404142434445464748494a4b4c4d4e4f5051525354555657"),
+                       _o, _ad8439) == _pt8439
+assert hkdf_sha256(b"\x0b" * 22, bytes(range(13)), bytes(range(0xf0, 0xfa)), 42).hex() == (
+    "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865")  # RFC 5869 A.1
+assert argon2id(b"\x01" * 32, b"\x02" * 16, 3, 32, 4, 32, b"\x03" * 8, b"\x04" * 12).hex() == (
+    "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659")  # RFC 9106 5.3
+print("\n== storage-encryption.md: vector E0, primitives checked against RFC 8439 2.8.2, "
+      "draft-irtf-cfrg-xchacha-03 2.2.1 and A.3.1, RFC 5869 A.1, RFC 9106 5.3: all pass")
+
+
+# ---------------------------------------------------- storage test values -------
+# THESE ARE TEST VALUES, derived from public strings. Real files draw every salt,
+# identifier, key and nonce input r from the operating system's random source.
+def tv(label, n=32):
+    return hashlib.sha256(b"gazpacho test " + label.encode()).digest()[:n]
+
+
+HKDF_SALT = b"gazpacho/v1/storage"
+
+
+def derive(ikm, label, ctx):
+    """storage-encryption.md section 4.4: one 32-byte subkey per (label, context)."""
+    return hkdf_sha256(ikm, HKDF_SALT, label.encode() + b"\x00" + ctx, 32)
+
+
+def seal(key, r, pt, ad):
+    """Section 5.2: XChaCha20-Poly1305 with a hedged nonce. r is 32 fresh random bytes;
+    the nonce also depends on the associated data and the plaintext, so a repeated r
+    with different contents still gives a different nonce. Returns (nonce, ct || tag)."""
+    nk = hmac.new(key, b"gazpacho/v1/nonce key", hashlib.sha256).digest()
+    n = hmac.new(nk, r + u32(len(ad)) + ad + pt, hashlib.sha256).digest()[:24]
+    return n, xchacha_encrypt(key, n, pt, ad)
+
+
+def sealed(key, label, pt, ad):
+    """seal() with the test input r = sha256('gazpacho test r: <label>'); nonce || ct || tag."""
+    n, c = seal(key, tv("r: " + label), pt, ad)
+    return n + c
+
+
+def nfc_utf8(s):
+    return unicodedata.normalize("NFC", s).encode("utf-8")
+
+
+PW1 = "gazpacho test passphrase, never for coins: caf\u00e9"
+PW1_DECOMPOSED = "gazpacho test passphrase, never for coins: cafe\u0301"
+PW2 = "gazpacho second test passphrase, never for coins"
+assert PW1 != PW1_DECOMPOSED and nfc_utf8(PW1) == nfc_utf8(PW1_DECOMPOSED)
+print("\n== vector E1, passphrase normalisation: NFC, then UTF-8. 'caf' + U+00E9 and 'cafe' + U+0301"
+      " give the same bytes")
+show("  passphrase bytes", nfc_utf8(PW1))
+
+T_TEST, M_TEST = 3, 64                       # test parameters: 64 KiB, 3 passes, 1 lane
+T_REAL, M_REAL = 3, 262_144                  # the default: 256 MiB, 3 passes, 1 lane
+SALT1 = tv("kdf salt", 16)
+SALT2 = tv("kdf salt 2", 16)
+VAULT_ID = tv("vault id", 16)
+FILE_ID = tv("journal file id", 16)
+MSK = tv("storage key")
+ENTROPY = tv("words entropy")                 # 32 bytes: 24 words
+SEED64 = hashlib.sha512(b"gazpacho test bip39 seed").digest()   # stands for the BIP 39 seed
+
+pk1 = argon2id(nfc_utf8(PW1), SALT1, T_TEST, M_TEST, 1, 32)
+print(f"\n== vector E2, Argon2id v1.3, t = {T_TEST}, m = {M_TEST} KiB, p = 1, 32 bytes, no secret, no"
+      " associated data. TEST PARAMETERS, below the floor: only the test entry point accepts them")
+print("  salt = sha256('gazpacho test kdf salt')[0:16] =", SALT1.hex())
+print("  passphrase key PK =", pk1.hex())
+# E2r: the default parameters. The pure-Python Argon2id above needs about 30 minutes for
+# them, so E2r runs only with --slow. E2R_EXPECTED was computed by this reference on
+# 2026-11-12 and agrees with OpenSSL 3.5.5 (openssl kdf -keylen 32 -kdfopt hexpass:...
+# -kdfopt hexsalt:... -kdfopt iter:3 -kdfopt memcost:262144 -kdfopt lanes:1 ARGON2ID) and
+# Node 24's crypto.argon2Sync (built on OpenSSL). Still to be confirmed with libsodium
+# crypto_pwhash(..., crypto_pwhash_ALG_ARGON2ID13), the implementation's library.
+E2R_EXPECTED = "acfe7a0e9b72c011d3382684f2b9b06a221f61aeb29fe3382299419b6433c945"
+if "--slow" in sys.argv:
+    _pkr = argon2id(nfc_utf8(PW1), SALT1, T_REAL, M_REAL, 1, 32)
+    print(f"== vector E2r, the same passphrase and salt at t = {T_REAL}, m = {M_REAL} KiB, p = 1:", _pkr.hex())
+    if E2R_EXPECTED is not None:
+        assert _pkr.hex() == E2R_EXPECTED
+else:
+    print(f"== vector E2r (t = {T_REAL}, m = {M_REAL} KiB, p = 1, same passphrase and salt):",
+          E2R_EXPECTED, "(recomputed only with --slow)")
+
+# ---------------------------------------------------- the key file --------------
+KF_MAGIC = b"GZKEYFIL"
+KF_LEN = 331
+
+
+def key_file(pw, salt, t, m, msk, entropy, seed64, tag):
+    head = KF_MAGIC + u8(1) + chain + VAULT_ID + u8(1) + u32(t) + u32(m) + u8(1) + salt
+    assert len(head) == 83
+    pk = argon2id(nfc_utf8(pw), salt, t, m, 1, 32)
+    kw = derive(pk, "key file wrap", chain + VAULT_ID)
+    kwd = derive(pk, "words", chain + VAULT_ID)
+    ks = derive(msk, "node seed", chain + VAULT_ID)
+    out = (head + sealed(kw, "key file wrap " + tag, msk, head)
+           + sealed(kwd, "key file words " + tag, entropy, head)
+           + sealed(ks, "key file seed", seed64, head[:57]))
+    assert len(out) == KF_LEN
+    return out
+
+
+def kf_params(data):
+    return data[57], int.from_bytes(data[58:62], "big"), int.from_bytes(data[62:66], "big"), data[66]
+
+
+def open_key_file(data, pw, floor=(1, 8)):
+    """Section 4.5. Returns (msk, seed64) or the refusal. The words are opened separately (section 9)."""
+    if len(data) != KF_LEN or data[:8] != KF_MAGIC or data[8] != 1:
+        return "not a key file"
+    if data[9:41] != chain:
+        return "other network"
+    alg, t, m, p = kf_params(data)
+    if alg != 1 or p != 1 or not (floor[0] <= t <= 16) or not (floor[1] <= m <= 4_194_304):
+        return "parameters refused"
+    head, vid = data[:83], data[41:57]
+    pk = argon2id(nfc_utf8(pw), data[67:83], t, m, 1, 32)
+    msk = xchacha_decrypt(derive(pk, "key file wrap", chain + vid), data[83:107], data[107:155], head)
+    if msk is None:
+        return "wrong passphrase or damaged key file"
+    seed = xchacha_decrypt(derive(msk, "node seed", chain + vid), data[227:251], data[251:331], data[:57])
+    if seed is None:
+        return "damaged key file"
+    return msk, seed
+
+
+def open_words(data, pw):
+    _, t, m, _ = kf_params(data)
+    pk = argon2id(nfc_utf8(pw), data[67:83], t, m, 1, 32)
+    return xchacha_decrypt(derive(pk, "words", chain + data[41:57]), data[155:179], data[179:227], data[:83])
+
+
+kf1 = key_file(PW1, SALT1, T_TEST, M_TEST, MSK, ENTROPY, SEED64, "1")
+print(f"\n== vector E3, key file keys.gzk ({KF_LEN} bytes), passphrase of E1, parameters and salt of E2")
+print("  vault_id = sha256('gazpacho test vault id')[0:16] =", VAULT_ID.hex())
+print("  storage key MSK = sha256('gazpacho test storage key') =", MSK.hex())
+print("  words entropy = sha256('gazpacho test words entropy'); BIP 39 seed stand-in = sha512('gazpacho test bip39 seed')")
+print("  nonce inputs r = sha256('gazpacho test r: <label>'), labels 'key file wrap 1', 'key file words 1', 'key file seed'")
+print("  wrap key KW  =", derive(pk1, "key file wrap", chain + VAULT_ID).hex())
+print("  words key KD =", derive(pk1, "words", chain + VAULT_ID).hex())
+print("  seed key KS  =", derive(MSK, "node seed", chain + VAULT_ID).hex())
+show("key file", kf1)
+assert open_key_file(kf1, PW1) == (MSK, SEED64)
+assert open_key_file(kf1, PW1_DECOMPOSED) == (MSK, SEED64)
+assert open_words(kf1, PW1) == ENTROPY
+
+# E4: refusals.
+assert open_key_file(kf1, PW1 + " ") == "wrong passphrase or damaged key file"
+_bad = bytearray(kf1); _bad[65] ^= 0x01                     # m: 64 -> 65 KiB
+assert open_key_file(bytes(_bad), PW1) == "wrong passphrase or damaged key file"
+_bad = bytearray(kf1); _bad[61] = 1                          # t: 3 -> 1
+assert open_key_file(bytes(_bad), PW1) == "wrong passphrase or damaged key file"
+_bad = bytearray(kf1); _bad[300] ^= 0x80                     # seed ciphertext
+assert open_key_file(bytes(_bad), PW1) == "damaged key file"
+_bad = bytearray(kf1); _bad[9] ^= 0x01                       # chain
+assert open_key_file(bytes(_bad), PW1) == "other network"
+assert open_key_file(kf1, PW1, floor=(3, 65_536)) == "parameters refused"   # the release floor
+print("== vector E4 (refuse): E3 opened with the passphrase plus a space; with m changed to 65 KiB;"
+      " with t changed to 1; with one bit of the seed ciphertext flipped; with the chain changed;"
+      " under the release floor (t >= 3, m >= 65536 KiB). Each is refused")
+
+# ---------------------------------------------------- the journal ---------------
+JE_MAGIC = b"GZJOURNE"
+JE_HEADER_LEN = 185
+KJ = derive(MSK, "journal", chain + FILE_ID)
+KR = derive(SEED64, "journal recovery", chain + FILE_ID)
+
+
+def ejournal_header(msk, seed64, file_id):
+    jh = JE_MAGIC + u8(1) + chain + VAULT_ID + file_id
+    kj = derive(msk, "journal", chain + file_id)
+    kr = derive(seed64, "journal recovery", chain + file_id)
+    pre = jh + sealed(kr, "journal recovery", msk, jh)
+    out = pre + sealed(kj, "journal header", b"", pre)
+    assert len(out) == JE_HEADER_LEN
+    return out
+
+
+ehdr = ejournal_header(MSK, SEED64, FILE_ID)
+print(f"\n== vector E5, encrypted journal header ({JE_HEADER_LEN} bytes), file_id = sha256('gazpacho test journal file id')[0:16]")
+print("  journal key KJ  =", KJ.hex())
+print("  recovery key KR =", KR.hex(), "(from the BIP 39 seed)")
+show("header", ehdr)
+
+
+def check_header(data, msk=None, seed64=None):
+    """Section 5.3. With msk: the key file's storage key. With seed64 only: recovery by the words."""
+    if data[:8] != JE_MAGIC or data[8] != 1:
+        return "not a journal"
+    if data[9:41] != chain:
+        return "other network"
+    jh, fid = data[:73], data[57:73]
+    if msk is None:
+        msk = xchacha_decrypt(derive(seed64, "journal recovery", chain + fid), data[73:97], data[97:145], jh)
+        if msk is None:
+            return "not this wallet's journal"
+    if xchacha_decrypt(derive(msk, "journal", chain + fid), data[145:169], data[169:185], data[:145]) != b"":
+        return "not this wallet's journal"
+    return msk
+
+
+assert check_header(ehdr, msk=MSK) == MSK
+assert check_header(ehdr, seed64=SEED64) == MSK
+assert check_header(ehdr, msk=tv("other storage key")) == "not this wallet's journal"
+_bad = bytearray(ehdr); _bad[50] ^= 1                                  # vault_id
+assert check_header(bytes(_bad), msk=MSK) == "not this wallet's journal"
+_bad = bytearray(ehdr); _bad[9] ^= 1                                   # chain
+assert check_header(bytes(_bad), msk=MSK) == "other network"
+
+
+def eentry(kind, inc, seq, payload, offset, label, kj=KJ, file_id=FILE_ID):
+    head = u32(57 + len(payload)) + u8(kind) + u64(inc) + u64(seq)
+    return head + sealed(kj, label, payload, file_id + u64(offset) + head)
+
+
+off_inc = JE_HEADER_LEN
+e_inc = eentry(1, 1, 0, u64(1_794_000_000_000), off_inc, "entry incarnation 1")
+off_m1 = off_inc + len(e_inc)
+e_m1 = eentry(3, 1, 0, u64(off_m1), off_m1, "entry mark 1")
+off_b = off_m1 + len(e_m1)
+PING = u32(1) + u32(0x7e570001) + u32(4) + b"ping"
+e_b = eentry(2, 1, 1, PING, off_b, "entry batch 1 1")
+off_m2 = off_b + len(e_b)
+e_m2 = eentry(3, 1, 0, u64(off_m2), off_m2, "entry mark 2")
+assert (len(e_inc), len(e_m1), len(e_b), len(e_m2)) == (69, 69, 77, 69)
+print(f"== vector E6, encrypted entries after E5: incarnation 1 (clock 1794000000000 ms) at {off_inc}; sync"
+      f" mark at {off_m1}; batch (1,1) with one record of type 0x7e570001 and bytes 'ping' at {off_b}; sync"
+      f" mark at {off_m2}. Nonce input labels 'entry incarnation 1', 'entry mark 1', 'entry batch 1 1',"
+      " 'entry mark 2'")
+show("E6a incarnation entry", e_inc)
+show("E6b sync mark", e_m1)
+show("E6c batch entry", e_b)
+show("E6d sync mark", e_m2)
+EJ_GOOD = ehdr + e_inc + e_m1 + e_b + e_m2
+
+
+def read_ejournal(data, kj=KJ, file_id=FILE_ID):
+    """journal.md section 5 steps 3 and 4 over encrypted entries (section 5.5 here).
+    Returns (state, V, offset of the last valid sync mark, [(kind, inc, seq, payload)])."""
+    def valid_at(p):
+        if p + 4 > len(data):
+            return None
+        ln = int.from_bytes(data[p:p + 4], "big")
+        if ln < 61 or ln > 8_388_665 or p + 4 + ln > len(data):
+            return None
+        kind = data[p + 4]
+        if kind not in (1, 2, 3) or (kind in (1, 3) and ln != 65):
+            return None
+        head = data[p:p + 21]
+        pt = xchacha_decrypt(kj, data[p + 21:p + 45], data[p + 45:p + 4 + ln], file_id + u64(p) + head)
+        if pt is None or (kind == 3 and int.from_bytes(pt, "big") != p):
+            return None
+        return p + 4 + ln, kind, int.from_bytes(head[5:13], "big"), int.from_bytes(head[13:21], "big"), pt
+    pos, last_mark, got = JE_HEADER_LEN, None, []
+    while pos < len(data):
+        r = valid_at(pos)
+        if r is None:
+            break
+        if r[1] == 3:
+            last_mark = pos
+        got.append(r[1:])
+        pos = r[0]
+    if pos == len(data):
+        return "clean", pos, last_mark, got
+    for p in range(pos + 1, len(data) - 68):
+        if data[p:p + 5] == u32(65) + u8(3) and valid_at(p):
+            return "corrupt", pos, last_mark, got
+    return "torn", pos, last_mark, got
+
+
+st = read_ejournal(EJ_GOOD)
+assert st[0] == "clean" and st[2] == off_m2 and [g[0] for g in st[3]] == [1, 3, 2, 3]
+assert st[3][2][3] == PING
+
+# E7: tampering.
+_t = bytearray(EJ_GOOD); _t[off_b + 50] ^= 0x01                         # a bit of the batch ciphertext
+assert read_ejournal(bytes(_t))[:2] == ("corrupt", off_b)
+_t = bytearray(EJ_GOOD); _t[off_b + 10] ^= 0x01                         # the batch's clear incarnation
+assert read_ejournal(bytes(_t))[:2] == ("corrupt", off_b)
+_e7c = read_ejournal(EJ_GOOD + e_b)                                      # the batch appended again
+assert _e7c[:2] == ("torn", len(EJ_GOOD)) and len(_e7c[3]) == 4
+_ofid = tv("other journal file id", 16)
+_spliced = eentry(2, 1, 1, PING, off_b, "other", kj=derive(MSK, "journal", chain + _ofid), file_id=_ofid)
+assert read_ejournal(ehdr + e_inc + e_m1 + _spliced + e_m2)[:2] == ("corrupt", off_b)
+_swap = read_ejournal(ehdr + e_inc + e_m1 + e_m2 + e_b)                 # two entries swapped
+assert _swap[1] == off_b and len(_swap[3]) == 2
+_e7g = read_ejournal(EJ_GOOD[:-3])
+assert _e7g[:2] == ("torn", off_m2)
+_e7h = read_ejournal(EJ_GOOD[:off_b])                                    # cut at an entry boundary
+assert _e7h[0] == "clean" and _e7h[2] == off_m1
+print(f"== vector E7 (tampering), each applied to the {len(EJ_GOOD)} bytes of E5 + E6:")
+print(f"  E7a one bit of the batch ciphertext flipped: invalid at {off_b}, a sync mark follows: corruption, refused")
+print(f"  E7b one bit of the batch's clear incarnation field flipped: the same")
+print(f"  E7c the batch entry appended again at {len(EJ_GOOD)}: invalid there (its offset is in the associated"
+      " data); no mark follows: cut as a torn tail; never read as a batch")
+print(f"  E7d the batch replaced by one from another journal file under the same storage key: corruption at {off_b}")
+print(f"  E7e the batch and the second mark swapped: invalid at {off_b}; nothing after it is read")
+print(f"  E7f the last 3 bytes missing: torn tail, cut to {off_m2}")
+print(f"  E7g the file cut at {off_b}, an entry boundary: reads as a clean, shorter journal whose last mark is"
+      f" at {off_m1}. Only the guard's high-water mark (E9) shows it")
+
+# ---------------------------------------------------- passphrase change ---------
+kf2 = key_file(PW2, SALT2, T_TEST, M_TEST, MSK, ENTROPY, SEED64, "2")
+assert kf2[227:] == kf1[227:]                 # the seed part is copied unchanged
+assert kf2[:67] == kf1[:67]                   # same vault, same parameters
+assert open_key_file(kf2, PW2) == (MSK, SEED64) and open_words(kf2, PW2) == ENTROPY
+assert open_key_file(kf2, PW1) == "wrong passphrase or damaged key file"
+assert open_key_file(kf1, PW1) == (MSK, SEED64)   # an old copy still opens with the old passphrase
+assert check_header(ehdr, msk=open_key_file(kf2, PW2)[0]) == MSK
+print("\n== vector E8, passphrase change to '" + PW2 + "', salt sha256('gazpacho test kdf salt 2')[0:16],"
+      " labels 'key file wrap 2' and 'key file words 2': the same storage key rewrapped; bytes 227 to 330"
+      " (the seed) unchanged; the journal untouched; the old key file still opens with the old passphrase")
+show("new key file", kf2)
+
+# ---------------------------------------------------- the guard file ------------
+KG = derive(SEED64, "guard", chain)
+GUARD_PLAIN = u64(3) + u16(1) + u32(0) + u32(2) + u64(1) + FILE_ID + u64(1) + u64(off_m2)
+_gh = b"GZGUARDE" + u8(1) + chain
+e_guard = _gh + sealed(KG, "guard", GUARD_PLAIN, _gh)
+print("\n== vector E9, encrypted guard file guard.gzg: counter 3; one epoch, 0, highest index 2; one round"
+      f" started; high-water mark: file_id of E5, incarnation 1, last sync mark at {off_m2}")
+print("  guard key KG =", KG.hex(), "(from the BIP 39 seed)")
+show("guard file", e_guard)
+_gp = xchacha_decrypt(KG, e_guard[41:65], e_guard[65:], e_guard[:41])
+assert _gp == GUARD_PLAIN
+_hwm_file, _hwm_inc, _hwm_mark = _gp[-32:-16], int.from_bytes(_gp[-16:-8], "big"), int.from_bytes(_gp[-8:], "big")
+assert _hwm_file == FILE_ID and _e7g[2] < _hwm_mark and _e7h[2] < _hwm_mark and st[2] >= _hwm_mark
+print(f"  against E7g's journal (last mark {_e7h[2]}) the guard's mark {_hwm_mark} is ahead: the start is refused"
+      f" as a rolled-back journal (section 6.3); against E6 (last mark {st[2]}) it passes")
+
+# ---------------------------------------------------- the export ----------------
+BK = derive(SEED64, "backup", chain)
+EXPORT_ID = tv("export id", 16)
+EK = derive(BK, "export", chain + EXPORT_ID)
+SALT_X = tv("export kdf salt", 16)
+EX_SLOT_END = 58 + 26 + 24 + 48               # 156
+
+
+def export_file(profile, body, chunk, pw=None):
+    head = b"GZBACKUP" + u8(1) + u8(profile) + chain + EXPORT_ID
+    if profile == 1:
+        slot = u8(1) + u32(T_TEST) + u32(M_TEST) + u8(1) + SALT_X
+        pkx = argon2id(nfc_utf8(pw), SALT_X, T_TEST, M_TEST, 1, 32)
+        kwx = derive(pkx, "backup wrap", chain + EXPORT_ID)
+        prefix = head + slot + sealed(kwx, "export slot", BK, head + slot)
+        assert len(prefix) == EX_SLOT_END
+    else:
+        prefix = head
+    out = prefix
+    parts = [body[i:i + chunk] for i in range(0, len(body), chunk)] or [b""]
+    for i, part in enumerate(parts):
+        fin = 1 if i == len(parts) - 1 else 0
+        sc = sealed(EK, f"export chunk {i}", part, prefix + u64(i) + u8(fin))
+        out += u32(len(sc)) + sc
+    return out
+
+
+def open_export(data, pw=None, seed64=None):
+    """Section 11. Returns the body or the refusal."""
+    if data[:8] != b"GZBACKUP" or data[8] != 1 or data[10:42] != chain:
+        return "not a backup of this network"
+    profile, eid = data[9], data[42:58]
+    if profile == 1:
+        prefix_len = EX_SLOT_END
+        if pw is not None:
+            t, m = int.from_bytes(data[59:63], "big"), int.from_bytes(data[63:67], "big")
+            pkx = argon2id(nfc_utf8(pw), data[68:84], t, m, 1, 32)
+            bk = xchacha_decrypt(derive(pkx, "backup wrap", chain + eid), data[84:108], data[108:156], data[:84])
+            if bk is None:
+                return "wrong passphrase"
+        else:
+            bk = derive(seed64, "backup", chain)
+    elif profile == 2:
+        prefix_len = 58
+        if seed64 is None:
+            return "needs the 24 words"
+        bk = derive(seed64, "backup", chain)
+    else:
+        return "unknown profile"
+    ek, prefix = derive(bk, "export", chain + eid), data[:prefix_len]
+    pos, i, body = prefix_len, 0, b""
+    while True:
+        if pos + 4 > len(data):
+            return "truncated"
+        n = int.from_bytes(data[pos:pos + 4], "big")
+        if n < 40 or n > 65_576 or pos + 4 + n > len(data):
+            return "truncated"
+        nonce, ct = data[pos + 4:pos + 28], data[pos + 28:pos + 4 + n]
+        pt = xchacha_decrypt(ek, nonce, ct, prefix + u64(i) + u8(1))
+        if pt is not None:
+            if pos + 4 + n != len(data):
+                return "data after the final chunk"
+            body += pt
+            break
+        pt = xchacha_decrypt(ek, nonce, ct, prefix + u64(i) + u8(0))
+        if pt is None:
+            return "damaged"
+        body += pt
+        pos, i = pos + 4 + n, i + 1
+    if seed64 is not None and derive(seed64, "backup", chain) != bk:
+        return "words do not match"
+    return body
+
+
+def plain_entries(entries):
+    return b"".join(u8(k) + u64(inc) + u64(seq) + u32(len(pt)) + pt for k, inc, seq, pt in entries)
+
+
+EXP_BODY_1 = (u8(1) + u64(1_794_000_100_000) + u8(1) + ENTROPY + u32(len(GUARD_PLAIN)) + GUARD_PLAIN
+              + plain_entries(st[3]))
+EXP_BODY_2 = (u8(1) + u64(1_794_000_100_000) + u8(0) + u32(len(GUARD_PLAIN)) + GUARD_PLAIN
+              + plain_entries(st[3]))
+ex1 = export_file(1, EXP_BODY_1, 65_536, PW1)
+ex2 = export_file(2, EXP_BODY_2, 65_536)
+ex1s = export_file(1, EXP_BODY_1, 64, PW1)
+print("\n== vector E10, export (.gzb), export_id = sha256('gazpacho test export id')[0:16], slot salt"
+      " sha256('gazpacho test export kdf salt')[0:16], test parameters of E2, created 1794000100000 ms,"
+      " body = the entries of E6 and the guard of E9")
+print("  backup key BK =", BK.hex(), "(from the BIP 39 seed)")
+print("  export key EK =", EK.hex())
+show("E10a profile 1, the person's export: passphrase slot, words included, one chunk", ex1)
+show("E10b profile 2, the host's copy: no slot, no words, one chunk", ex2)
+assert open_export(ex1, pw=PW1) == EXP_BODY_1
+assert open_export(ex1, pw=PW1_DECOMPOSED) == EXP_BODY_1
+assert open_export(ex1, seed64=SEED64) == EXP_BODY_1
+assert open_export(ex2, seed64=SEED64) == EXP_BODY_2
+assert open_export(ex2, pw=PW1) == "needs the 24 words"
+assert open_export(ex1, pw=PW2) == "wrong passphrase"
+assert open_export(ex1, seed64=hashlib.sha512(b"other").digest()) == "damaged"
+assert open_export(ex1s, pw=PW1) == EXP_BODY_1
+_chunks, _p = [], EX_SLOT_END
+while _p < len(ex1s):
+    _chunks.append(_p); _p += 4 + int.from_bytes(ex1s[_p:_p + 4], "big")
+assert open_export(ex1s[:_chunks[-1]], pw=PW1) == "truncated"
+_sw = ex1s[:_chunks[0]] + ex1s[_chunks[1]:_chunks[2]] + ex1s[_chunks[0]:_chunks[1]] + ex1s[_chunks[2]:]
+assert open_export(_sw, pw=PW1) == "damaged"
+assert open_export(ex1s + ex1s[_chunks[-1]:], pw=PW1) == "data after the final chunk"
+_bad = bytearray(ex1); _bad[64] ^= 0x01                                  # the slot's m
+assert open_export(bytes(_bad), pw=PW1) == "wrong passphrase"
+print(f"== vector E11 (refuse): E10a's body sealed in {len(_chunks)} chunks of at most 64 bytes opens; with the"
+      " last chunk dropped: truncated; with chunks 0 and 1 swapped: damaged; with the last chunk repeated:"
+      " data after the final chunk; with the slot's memory changed or the second passphrase: wrong passphrase;"
+      " with other words: damaged; E10b with a passphrase: needs the 24 words")
+# ---------------------------------------------------- the watch-and-exit bundle -
+# storage-encryption.md section 8.7. The envelope only: the contents' records are
+# spec/exit.md's. KB is random and kept where the locked program can reach it.
+KB = tv("watch bundle key")
+BUNDLE_ID = tv("watch bundle id", 16)
+_bh = b"GZWATCH1" + u8(1) + chain + BUNDLE_ID + u64(7)
+BUNDLE_PLAIN = tlv([(2, b"test contents: see spec/exit.md")])
+e_bundle = _bh + sealed(KB, "watch bundle 7", BUNDLE_PLAIN, _bh)
+
+
+def open_bundle(data, kb, last_counter=0):
+    if data[:8] != b"GZWATCH1" or data[8] != 1 or data[9:41] != chain:
+        return "not a bundle of this network"
+    head = data[:65]
+    pt = xchacha_decrypt(kb, data[65:89], data[89:], head)
+    if pt is None:
+        return "damaged"
+    if int.from_bytes(head[57:65], "big") < last_counter:
+        return "older than the last bundle seen"
+    return pt
+
+
+assert open_bundle(e_bundle, KB) == BUNDLE_PLAIN
+_bad = bytearray(e_bundle); _bad[64] ^= 0x01                         # counter 7 -> 6
+assert open_bundle(bytes(_bad), KB) == "damaged"
+assert open_bundle(e_bundle, KB, last_counter=8) == "older than the last bundle seen"
+assert open_bundle(e_bundle, MSK) == "damaged"
+print("\n== vector E12, watch-and-exit bundle watch.gzw: bundle_id sha256('gazpacho test watch bundle id')[0:16],"
+      " counter 7, contents one placeholder TLV record (spec/exit.md defines them)")
+print("  bundle key KB = sha256('gazpacho test watch bundle key') =", KB.hex())
+show("bundle", e_bundle)
+print("== vector E13 (refuse): E12 with its counter changed: damaged; opened when counter 8 was already seen:"
+      " older than the last bundle seen; under the storage key instead of KB: damaged")
+print("\n== storage-encryption.md: section E done")
