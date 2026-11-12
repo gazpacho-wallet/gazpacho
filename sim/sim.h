@@ -250,6 +250,14 @@ void sim_crash_after_releases(sim_t *sim, uint32_t index, uint32_t after);
 /* Make the storage of node `index` fail now. */
 void sim_fail_storage(sim_t *sim, uint32_t index);
 
+/* From now on: no scheduled crashes, pings or blocks, no dropped or duplicated
+ * messages, and no save that fails or never completes. Messages in flight are
+ * discarded, so nothing new reaches a node from before. Delays stay, and
+ * what storage already holds or has pending is unchanged (a save already
+ * fated never to complete still never does). Running some steps after this
+ * gives a run a quiet tail, in which everything that can settle does. */
+void sim_quiesce(sim_t *sim);
+
 /* Put a message on the network from peer `from` to peer `to`, subject to the
  * configured faults. */
 void sim_send_message(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len);

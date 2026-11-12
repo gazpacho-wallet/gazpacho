@@ -13,6 +13,7 @@
 #define GAZPACHO_TEST_SIM_NODES_H
 
 #include "sim.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -132,6 +133,46 @@ static inline sim_node_ops_t multi_ops(void)
 {
     sim_node_ops_t ops = {multi_create, multi_destroy, multi_start, multi_handle, NULL, NULL, NULL};
     return ops;
+}
+
+/* "Saved, so eventually sent", for the placeholder ping node. To be called at
+ * the end of a run with a quiet tail (sim_quiesce, then enough steps for
+ * every delay to pass). Returns the number of durable ping records, over all
+ * nodes, whose reply has not left its node at least once for each time it was
+ * saved. Whether a reply left is read from the trace, which records the
+ * sender, the peer, the length and a digest of every message handed to the
+ * network, delivered or dropped. */
+static inline size_t saved_replies_not_sent(const sim_t *sim, uint32_t n_nodes)
+{
+    const char *trace = sim_trace(sim, NULL);
+    size_t missing = 0;
+    for (uint32_t node = 0; node < n_nodes; node++) {
+        const sim_storage_t *st = sim_node_storage(sim, node);
+        static char seen[1024][64];
+        size_t n_seen = 0;
+        for (size_t i = 0; i < sim_storage_count(st); i++) {
+            size_t len = 0;
+            const uint8_t *p = sim_storage_batch_bytes(st, i, &len), *end = p + len;
+            for (; p < end; p += 8 + multi_u32(p + 4)) {
+                uint32_t n = multi_u32(p + 4);
+                if (multi_u32(p) != 0x7e570001u || n < 24) continue;    /* a ping record: stamp, peer, serial, payload */
+                uint8_t reply[4 + 64] = {'G', 'Z', 'P', 'O'};
+                uint64_t peer = 0, digest = 0xcbf29ce484222325ull;
+                char needle[64];
+                size_t reply_len = 4 + (n - 24), earlier = 0, left = 0;
+                for (int k = 0; k < 8; k++) peer = peer << 8 | p[8 + 8 + k];
+                memcpy(reply + 4, p + 8 + 24, n - 24);
+                for (size_t k = 0; k < reply_len; k++) digest = (digest ^ reply[k]) * 0x100000001b3ull;
+                snprintf(needle, sizeof needle, " %u->%lld len=%zu digest=%016llx", node, (long long)peer, reply_len,
+                         (unsigned long long)digest);
+                for (size_t k = 0; k < n_seen; k++) earlier += strcmp(seen[k], needle) == 0;
+                if (n_seen < 1024) strcpy(seen[n_seen++], needle);
+                for (const char *at = strstr(trace, needle); at; at = strstr(at + 1, needle)) left++;
+                missing += left <= earlier;
+            }
+        }
+    }
+    return missing;
 }
 
 /* FAULTY ON PURPOSE: a program that carries out every action at once instead
