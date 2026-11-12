@@ -2906,3 +2906,198 @@ print(f"  example mainnet constants (A = {mA}, B = {mB}, M = {mM}, d = {md}): le
       f" {'fits' if m_move <= 432 else 'does not fit'}")
 assert m_lead == 281 and m_move > 432
 print("\n== exit.md: section X done")
+
+# ================================================== terms.md T8: the tree ====
+# The tree T1 builds, written out a second time from terms.md 4.2,
+# signing-round.md 4.1 and 13 and safety-rule.md C5 (core/tree builds it from
+# the same rules in C and through the imported SuperScalar code, and pins the
+# txids in tests/reference/tree-from-terms-txids.txt). Advanceless: every
+# interior node a fixed kickoff, each member a pseudo-Spilman leaf (a kickoff
+# and a leaf transaction), anchors on, no hashes. MuSig2 KeyAgg is BIP 327's,
+# keys in the given order. Also the BIP 341 digest of each node, and the tree
+# digest and round identifier of messages.md 7.12 and 7.1 for a 4-member T1
+# proposal (those sections have no vectors yet). Slow pure-Python curve
+# arithmetic: a few seconds.
+
+def t8_point(b33):
+    pt = lift_x(int.from_bytes(b33[1:], "big"))
+    return pt if pt[1] % 2 == b33[0] % 2 else (pt[0], P - pt[1])
+
+
+_t8_agg = {}
+
+
+def t8_keyagg(keys):
+    """BIP 327 KeyAgg; returns the aggregate point Q."""
+    k = tuple(keys)
+    if k not in _t8_agg:
+        L = tagged_hash("KeyAgg list", b"".join(keys))
+        second = next((x for x in keys[1:] if x != keys[0]), None)
+        Q = None
+        for x in keys:
+            a = 1 if x == second else int.from_bytes(tagged_hash("KeyAgg coefficient", L + x), "big") % N
+            Q = point_add(Q, point_mul(t8_point(x), a))
+        _t8_agg[k] = Q
+    return _t8_agg[k]
+
+
+def t8_taproot(keys, merkle):
+    """(output x-only key, internal x-only key, tweak) for the aggregate tweaked
+    with merkle (or BIP 86 when None)."""
+    xq = t8_keyagg(keys)[0].to_bytes(32, "big")
+    t = tagged_hash("TapTweak", xq + (merkle or b""))
+    out = point_add(lift_x(int.from_bytes(xq, "big")), point_mul(G, int.from_bytes(t, "big")))
+    return out[0].to_bytes(32, "big"), xq, t
+
+
+def t8_scriptnum(v):
+    if v == 0:
+        return b"\x00"
+    if v <= 16:
+        return bytes([0x50 + v])
+    b = v.to_bytes((v.bit_length() + 7) // 8, "little")
+    if b[-1] & 0x80:
+        b += b"\x00"
+    return bytes([len(b)]) + b
+
+
+def t8_leaf(v, op, host):
+    """<v> OP_CLTV (0xb1) or OP_CSV (0xb2) OP_DROP <host x> OP_CHECKSIG, as a TapLeaf hash."""
+    s = t8_scriptnum(v) + bytes([op, 0x75, 0x20]) + host[1:] + b"\xac"
+    return tagged_hash("TapLeaf", bytes([0xc0, len(s)]) + s)
+
+
+def t8_children(levels, m, d):
+    a = levels[d] if d < len(levels) else levels[-1]
+    if a == LEAF_PS:
+        return [] if m == 1 else [m // 2, m - m // 2]
+    out, rem = [], m
+    for j in range(a):
+        if rem == 0:
+            break
+        c = -(-rem // (a - j))
+        out.append(c)
+        rem -= c
+    return out
+
+
+def t8_build(levels, host, members, E, fee, amount, ftxid, fvout, csv=144):
+    """Nodes in the import's order: dicts with kind, keys (signers), cltv,
+    sequence, spent (txid, vout, amount, script), outputs, tx, txid, sighash."""
+    P2A = bytes.fromhex("51024e73")
+    nodes = []
+
+    def spk(keys, cltv):
+        merkle = t8_leaf(cltv, 0xb1, host) if cltv > 0 else None
+        out, internal, tweak = t8_taproot(keys, merkle)
+        return b"\x51\x20" + out, internal, tweak
+
+    def add(kind, keys, cltv, parent, vout, amt):
+        script, internal, tweak = spk(keys, cltv)
+        nodes.append(dict(kind=kind, keys=keys, cltv=cltv, parent=parent, vout=vout, amount=amt, script=script,
+                          internal=internal, tweak=tweak, outs=[],
+                          seq=0xFFFFFFFF if kind == "leaf_kickoff" else 0xFFFFFFFE))
+        return len(nodes) - 1
+
+    def sub(first, count, d, parent, vout, amt):
+        keys = [host] + members[first:first + count]
+        ko = 0 if d == 0 else max(0, E - (2 * d - 1) * 5)
+        st = E if d == 0 else max(0, E - 2 * d * 5)
+        kids = t8_children(levels, count, d)
+        if not kids:                                   # a one-member pseudo-Spilman leaf
+            k = add("leaf_kickoff", keys, ko, parent, vout, amt)
+            s = add("leaf", keys, st, k, 0, amt - fee - 240)
+            nodes[k]["outs"] = [(amt - fee - 240, nodes[s]["script"]), (240, P2A)]
+            total = amt - fee - 240 - fee - 240
+            half = total // 2
+            assert half >= 546
+            lout = t8_taproot(keys, t8_leaf(csv, 0xb2, host))[0]
+            nodes[s]["outs"] = [(half, nodes[s]["script"]), (total - half, b"\x51\x20" + lout), (240, P2A)]
+            return
+        k = add("fixed", keys, ko, parent, vout, amt)
+        budget = amt - fee - 240
+        per = budget // len(kids)
+        firsts, off = [], first
+        for j, c in enumerate(kids):
+            firsts.append(len(nodes))
+            sub(off, c, d + 1, k, j, per + (budget - per * len(kids) if j == len(kids) - 1 else 0))
+            off += c
+        nodes[k]["outs"] = [(nodes[f]["amount"], nodes[f]["script"]) for f in firsts] + [(240, P2A)]
+
+    sub(0, len(members), 0, -1, 0, amount)
+    for nd in nodes:
+        if nd["parent"] < 0:
+            prev, vout = ftxid, fvout
+        else:
+            prev, vout = nodes[nd["parent"]]["txid"], nd["vout"]
+        outs = b"".join(a.to_bytes(8, "little") + bytes([len(s)]) + s for a, s in nd["outs"])
+        nd["tx"] = (u32(2)[::-1] + b"\x01" + prev + vout.to_bytes(4, "little") + b"\x00"
+                    + nd["seq"].to_bytes(4, "little") + bytes([len(nd["outs"])]) + outs + bytes(4))
+        nd["txid"] = hashlib.sha256(hashlib.sha256(nd["tx"]).digest()).digest()
+        sha = lambda b: hashlib.sha256(b).digest()
+        msg = (b"\x00" + b"\x00" + u32(2)[::-1] + bytes(4) + sha(prev + vout.to_bytes(4, "little"))
+               + sha(nd["amount"].to_bytes(8, "little")) + sha(bytes([34]) + nd["script"])
+               + sha(nd["seq"].to_bytes(4, "little")) + sha(outs) + b"\x00" + bytes(4))
+        nd["sighash"] = tagged_hash("TapSighash", msg)
+    return nodes
+
+
+def t8_items(nodes, members):
+    out = u32(len(nodes))
+    for i, nd in enumerate(nodes):
+        prev, vout = (nd["tx"][5:37], int.from_bytes(nd["tx"][37:41], "little"))
+        first = members.index(nd["keys"][1]) if len(nd["keys"]) > 1 else 0
+        out += (u32(i) + prev + u32(vout) + nd["sighash"] + b"\x00" + nd["tweak"] + u16(len(nd["keys"])) + u16(0)
+                + b"".join(u16(1 + first + k) for k in range(len(nd["keys"]) - 1)))
+    return out
+
+
+print("\n== terms.md: T8, the tree T1 builds (advanceless; tests/reference/tree-from-terms-txids.txt)")
+T8_HOST = compressed(test_key("host"))
+T8_MEMBERS = [compressed(test_key(f"member {i} factory")) for i in range(1, 17)]
+T8_FUND = hashlib.sha256(b"gazpacho test funding").digest()
+T8_E = 290_000 + 144 + 36
+t8_first = {}
+for n in (3, 4, 8, 16):
+    levels = (SHAPE_T1[0][1] if n <= 4 else SHAPE_T1[1][1]) + [LEAF_PS]
+    fee = 17 if n <= 4 else 26
+    amount = funding_requirement(levels, n, 100_000, fee, 240)
+    fs = b"\x51\x20" + t8_taproot([T8_HOST] + T8_MEMBERS[:n], None)[0]
+    nodes = t8_build(levels, T8_HOST, T8_MEMBERS[:n], T8_E, fee, amount, T8_FUND, 0)
+    assert nodes[0]["script"] == fs                       # the root spends the BIP 86 aggregate
+    assert all(n_["amount"] - sum(a for a, _ in n_["outs"]) == fee for n_ in nodes)
+    t8_first[n] = nodes[0]["txid"][::-1].hex()
+    print(f"  {n:2d} members: funding {amount}, {len(nodes)} transactions, root txid {t8_first[n]}")
+    for i, nd in enumerate(nodes):
+        print(f"    node {i:2d} {nd['kind']:12s} signers {len(nd['keys']):2d} txid {nd['txid'][::-1].hex()}")
+# The root txids pinned by core/tree (every node is pinned there; all 85 agree).
+assert t8_first == {
+    3: "0f63466fed881f5711b10239812928dcd0a49cf56309ea8e1606d473e407c9e4",
+    4: "999ac375c25398ec6418b687429ca1b59def2a97a33b26ed03418a983f269e7d",
+    8: "9bef61746393ea193f0958cb40d2f906e166d49205da91572422dd16224ac877",
+    16: "45cd706ad210b488ddd779196d2bf20c6790ddd2755c0fe58951645152ef7253"}
+
+print("\n== messages.md 7.12 and 7.1 (no vectors there yet): T1, 4 members, as tests/tree/test_tree_checks.c")
+T8_PHOST = compressed(test_key("host factory"))
+T8_PMEM = [compressed(test_key(f"member {i} factory")) for i in range(1, 5)]
+T8_PCON = [compressed(host_sk)] + [compressed(test_key(f"member {i} contribution")) for i in range(1, 5)]
+amount = funding_requirement([LEAF_PS], 4, 100_000, 17, 240)
+fs = b"\x51\x20" + t8_taproot([T8_PHOST] + T8_PMEM, None)[0]
+change = compressed(test_key("change 0"))
+change_script = b"\x51\x20" + change[2:33] + b"\x00"
+ftx = (u32(2)[::-1] + b"\x01" + hashlib.sha256(b"gazpacho test funding input").digest() + bytes(4) + b"\x00"
+       + (0xFFFFFFFD).to_bytes(4, "little") + b"\x02" + amount.to_bytes(8, "little") + b"\x22" + fs
+       + (5000).to_bytes(8, "little") + b"\x22" + change_script + bytes(4))
+ftxid = hashlib.sha256(hashlib.sha256(ftx).digest()).digest()
+nodes = t8_build([LEAF_PS], T8_PHOST, T8_PMEM, T8_E, 17, amount, ftxid, 0)
+items = t8_items(nodes, T8_PMEM)
+tree_digest = tagged_hash("gazpacho/tree", chain + ftxid + u32(0) + u64(amount) + u16(5) + T8_PHOST + b"".join(T8_PMEM) + items)
+round_id = tagged_hash("gazpacho/round_id", MAGIC + chain + compressed(host_sk) + outer_digest + cur1_digest + ftxid + u32(0)
+                       + u64(amount) + u16(5) + T8_PHOST + b"".join(T8_PMEM) + b"".join(T8_PCON) + u8(1) + u8(1)
+                       + u32(len(nodes)) + items + bytes([7]) + bytes(31))
+print("  funding txid (internal order) =", ftxid.hex())
+print("  tree_digest =", tree_digest.hex())
+print("  round_id (host_random 07 00..00) =", round_id.hex())
+assert tree_digest.hex() == "04ea434128f5bd849b918d5e8953e347bd5f17fcafe43ff56b90dbdca5afba83"
+assert round_id.hex() == "75c3144848bfba3cd74ab25041ddd730e79e0e45bdf7ffcfa6eff082c5d32516"
+print("\n== terms.md: T8 done")
