@@ -178,6 +178,8 @@ def run(m):
         links = []
         for t in ("test_tx_vectors", "test_tx", "fuzz_tx_parse", "test_tx_faults"):
             extra = "-Wl,--wrap=secp256k1_schnorrsig_sign32" if t == "test_tx_faults" else ""
+            if t == "fuzz_tx_parse":
+                extra = "%s/objs/fuzz_tx_main.o" % SCRATCH
             links.append("gcc %s %s/objs/%s.o libtx.a %s %s -o %s" % (CFLAGS, SCRATCH, t, LIBS, extra, t))
         links.append("gcc %s %s/objs/main.o libtx.a %s -o gz-wallet-tx" % (CFLAGS, SCRATCH, LIBS))
         if sh(" && ".join(links), work) != 0:
@@ -228,7 +230,7 @@ def main():
         libs.append(found)
     LIBS = " ".join(libs) + " -lcrypto"
     os.makedirs(SCRATCH + "/objs")
-    for t in ("test_tx_vectors", "test_tx", "fuzz_tx_parse", "test_tx_faults"):
+    for t in ("test_tx_vectors", "test_tx", "fuzz_tx_parse", "fuzz_tx_main", "test_tx_faults"):
         if sh("gcc %s -c %s/wallet/tx/tests/%s.c -o objs/%s.o" % (CFLAGS, REPO, t, t), SCRATCH):
             sys.exit("cannot compile " + t)
     if sh("gcc %s -c %s/tools/gz-wallet-tx/main.c -o objs/main.o" % (CFLAGS, REPO), SCRATCH):
