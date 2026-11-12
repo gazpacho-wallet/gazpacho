@@ -109,7 +109,7 @@ The full definition is `spec/safety-rule.md`. In brief:
 ## 10. Chain view
 
 - Three choices: public Electrum-style servers (default), the user's own server, the user's own Bitcoin node.
-- Gazpacho checks block headers and checks confirmations against them, so a server cannot invent a confirmation. On signet, where blocks are signed, it compares several servers.
+- Gazpacho checks every confirmation against block headers and a Merkle proof, and counts confirmations along linked headers. On testnet and mainnet that makes an invented confirmation cost proof of work at the difficulty it claims (whether that difficulty is the one the network required is not checked). On signet, where blocks are signed and the signature is not checked, servers that collude can still invent one; what protects the user there is comparing servers of different operators. Detail in `notes/chain-port.md` section 6.
 - A server can hide a transaction, so Gazpacho asks more than one. Hosts should use their own node.
 - Default list: well-known public servers; one of ours is added around launch.
 
