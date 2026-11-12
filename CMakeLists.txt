@@ -13,6 +13,13 @@ if(GZ_SANITIZE)
   add_link_options(-fsanitize=address,undefined)
 endif()
 
+# Fuzz targets (none on main yet). Every target is an executable named
+# fuzz_<name> whose source defines LLVMFuzzerTestOneInput. With this option ON
+# (clang only), a target links with -fsanitize=fuzzer and without the plain
+# driver that runs it as a CTest test; CI's fuzz job then runs each fuzz_*
+# for 60 seconds. See docs/notes/ci.md.
+option(GZ_LIBFUZZER "Link fuzz_* targets against clang's libFuzzer instead of the plain driver" OFF)
+
 # --- secp256k1-zkp at the exact commit SuperScalar pins, same modules ---------
 # Mirrors SuperScalar CMakeLists.txt lines 80-95. tools/update-import.sh checks this tag
 # against the pinned SuperScalar commit's CMakeLists.txt.

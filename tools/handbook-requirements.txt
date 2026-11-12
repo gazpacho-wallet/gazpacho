@@ -1,0 +1,6 @@
+# What tools/build-handbook.py needs, pinned by version and hash so CI
+# rebuilds docs/handbook.html with exactly the same Markdown renderer.
+#   python3 -m pip install --require-hashes -r tools/handbook-requirements.txt
+markdown==3.10.3 \
+    --hash=sha256:fa6c92a00a4a3c98b22728c64a935ae1928250ae65058a6ded814d2cc29a4cea \
+    --hash=sha256:3589362618f743188b4d955b874402bc814f4f83f544dc207719f4baa7d9c45f
