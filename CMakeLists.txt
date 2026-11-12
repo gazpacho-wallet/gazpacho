@@ -121,3 +121,30 @@ add_test(NAME core_isolation_refuses_sneaky_object
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation/vla.c
           ${CMAKE_CURRENT_BINARY_DIR}
           ${GZ_CORE_FLAGS_TEXT})
+
+# --- Transport (ports/net): BOLT 8 and BOLT 1, outside the core ----------------
+# Strict C11 like the core, but not freestanding: conn.c uses POSIX sockets.
+# noise.c and frame.c do no input or output (spec/transport.md).
+add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c)
+set_target_properties(gazpacho_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_net PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/ports/net ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
+target_link_libraries(gazpacho_net PUBLIC secp256k1 OpenSSL::Crypto)
+target_compile_options(gazpacho_net PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
+
+add_executable(gz-net tools/gz-net/gz-net.c)
+target_link_libraries(gz-net PRIVATE gazpacho_net)
+target_compile_options(gz-net PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+gz_add_test(net_noise tests/net/test_noise.c gazpacho_net)
+gz_add_test(net_frame tests/net/test_frame.c gazpacho_net 20000)
+gz_add_test(net_conn  tests/net/test_conn.c  gazpacho_net)
+add_test(NAME net_gz_net COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_gz_net.sh $<TARGET_FILE:gz-net>)
+# Fuzz targets with the plain driver (no libFuzzer on the build machines).
+# Built with clang, the same target files link against -fsanitize=fuzzer.
+foreach(target noise tlv)
+  add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
+  target_link_libraries(fuzz_${target} PRIVATE gazpacho_net)
+  target_compile_options(fuzz_${target} PRIVATE ${GZ_NEW_CODE_WARNINGS})
+  add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 200000)
+endforeach()

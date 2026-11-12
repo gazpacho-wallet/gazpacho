@@ -1,0 +1,89 @@
+# Mutants for tools/mutate-net.py: NAME, FILE, OLD, NEW, [OCCURRENCE], tab-separated.
+# \n in OLD and NEW stands for a newline.
+act-version-ignored	ports/net/noise.c	if (in[0] != 0) return fail(st, GZ_NOISE_ERR_VERSION);	if (0) return fail(st, GZ_NOISE_ERR_VERSION);	1
+act3-version-ignored	ports/net/noise.c	if (in[0] != 0) return fail(st, GZ_NOISE_ERR_VERSION);	if (0) return fail(st, GZ_NOISE_ERR_VERSION);	2
+act12-length-short-only	ports/net/noise.c	if (len != 50) return fail	if (len < 50) return fail
+act3-length-short-only	ports/net/noise.c	if (len != 66) return fail	if (len < 66) return fail
+init-rs-parse-gone	ports/net/noise.c	if (!parse_pub(st, &pk, rs)) return fail(st, GZ_NOISE_ERR_PUBKEY);	
+ecdh-bad-key-as-crypto	ports/net/noise.c	if (!parse_pub(st, &pk, pub)) return GZ_NOISE_ERR_PUBKEY;	if (!parse_pub(st, &pk, pub)) return GZ_NOISE_ERR_CRYPTO;
+header-length-long-ok	ports/net/noise.c	if (len != GZ_NOISE_HDR_LEN) return fail	if (len < GZ_NOISE_HDR_LEN) return fail
+act12-mac-ignored	ports/net/noise.c	if (!aead(0, st->temp_k, 0, st->h, 32, in + 34, 0, NULL)) return	if (!aead(0, st->temp_k, 0, st->h, 32, in + 34, 0, NULL) && 0) return
+act3-rs-mac-ignored	ports/net/noise.c	if (!aead(0, st->temp_k, 1, st->h, 32, in + 1, 33, st->rs)) return	if (!aead(0, st->temp_k, 1, st->h, 32, in + 1, 33, st->rs) && 0) return
+act3-final-mac-ignored	ports/net/noise.c	if (!aead(0, st->temp_k, 0, st->h, 32, in + 50, 0, NULL)) return	if (!aead(0, st->temp_k, 0, st->h, 32, in + 50, 0, NULL) && 0) return
+act-write-no-mix-tag	ports/net/noise.c	if (!mix_hash(st, out + 34, 16))	if (0)
+act-read-no-mix-re	ports/net/noise.c	if (!mix_hash(st, st->re, 33))	if (0)
+act3-wrong-nonce	ports/net/noise.c	aead(1, st->temp_k, 1, st->h, 32, st->ls_pub	aead(1, st->temp_k, 0, st->h, 32, st->ls_pub
+prologue-changed	ports/net/noise.c	PROLOGUE[] = "lightning"	PROLOGUE[] = "lightninG"
+init-key-check-gone	ports/net/noise.c	if (!pub_of(st, st->ls_pub, st->ls_priv)) return fail(st, GZ_NOISE_ERR_KEY);	pub_of(st, st->ls_pub, st->ls_priv);
+ephemeral-one-try	ports/net/noise.c	#define EPHEMERAL_TRIES 8	#define EPHEMERAL_TRIES 1
+ephemeral-unchecked	ports/net/noise.c	if (pub_of(st, st->e_pub, st->e_priv)) return GZ_NOISE_OK;	pub_of(st, st->e_pub, st->e_priv); return GZ_NOISE_OK;
+initiator-keys-swapped	ports/net/noise.c	gz_noise_hkdf(st->ck, 32, NULL, 0, st->sk, st->rk)	gz_noise_hkdf(st->ck, 32, NULL, 0, st->rk, st->sk)
+responder-keys-swapped	ports/net/noise.c	gz_noise_hkdf(st->ck, 32, NULL, 0, st->rk, st->sk)	gz_noise_hkdf(st->ck, 32, NULL, 0, st->sk, st->rk)
+act3-write-any-phase	ports/net/noise.c	if (st->phase != GZ_NOISE_I_GOT2)	if (st->phase == GZ_NOISE_DEAD)
+act1-read-any-phase	ports/net/noise.c	if (st->phase != GZ_NOISE_R_START)	if (st->phase == GZ_NOISE_DEAD)
+hkdf-counter-1	ports/net/noise.c	t[0] = 1;	t[0] = 0;
+hkdf-counter-2	ports/net/noise.c	t[32] = 2;	t[32] = 3;
+nonce-big-endian	ports/net/noise.c	nonce[4 + i] = (uint8_t)(n >> (8 * i));	nonce[11 - i] = (uint8_t)(n >> (8 * i));
+nonce-no-zero-prefix	ports/net/noise.c	nonce[4 + i] = (uint8_t)(n >> (8 * i));	nonce[i] = (uint8_t)(n >> (8 * i));
+rotate-at-1001	ports/net/noise.c	if (++*n < GZ_NOISE_ROTATE_AT) return 1;	if (++*n <= GZ_NOISE_ROTATE_AT) return 1;
+rotate-never	ports/net/noise.c	return gz_noise_hkdf(ck, 32, k, 32, ck, k);	return 1;
+rotate-keeps-ck	ports/net/noise.c	return gz_noise_hkdf(ck, 32, k, 32, ck, k);	{ uint8_t junk[32]; return gz_noise_hkdf(ck, 32, k, 32, junk, k); }
+rotate-nonce-not-reset	ports/net/noise.c	    *n = 0;\n	    *n = 1;\n
+encrypt-allows-65536	ports/net/noise.c	if (len > GZ_NOISE_MAX_MSG ||	if (len > GZ_NOISE_MAX_MSG + 1 ||
+encrypt-cap-no-mac	ports/net/noise.c	out_cap < GZ_NOISE_HDR_LEN + len + GZ_NOISE_MAC_LEN	out_cap < GZ_NOISE_HDR_LEN + len
+length-little-endian	ports/net/noise.c	l[0] = (uint8_t)(len >> 8);\n    l[1] = (uint8_t)len;	l[1] = (uint8_t)(len >> 8);\n    l[0] = (uint8_t)len;
+header-length-short-ok	ports/net/noise.c	if (len != GZ_NOISE_HDR_LEN) return fail	if (len > GZ_NOISE_HDR_LEN) return fail
+header-mac-ignored	ports/net/noise.c	if (!aead(0, st->rk, st->rn, NULL, 0, in, 2, l)) return	if (!aead(0, st->rk, st->rn, NULL, 0, in, 2, l) && 0) return
+header-any-phase	ports/net/noise.c	if (st->phase != GZ_NOISE_READY) return fail(st, GZ_NOISE_ERR_STATE);	if (!ready(st)) return fail(st, GZ_NOISE_ERR_STATE);
+header-length-byteswap	ports/net/noise.c	st->body_len = (uint16_t)((l[0] << 8) | l[1]);	st->body_len = (uint16_t)((l[1] << 8) | l[0]);
+body-length-loose	ports/net/noise.c	if (len != (size_t)st->body_len + GZ_NOISE_MAC_LEN)	if (len < (size_t)st->body_len + GZ_NOISE_MAC_LEN)
+body-length-short-ok	ports/net/noise.c	if (len != (size_t)st->body_len + GZ_NOISE_MAC_LEN)	if (len > (size_t)st->body_len + GZ_NOISE_MAC_LEN)
+body-cap-check-gone	ports/net/noise.c	if (out_cap < st->body_len) return fail(st, GZ_NOISE_ERR_TOO_BIG);	
+body-mac-ignored	ports/net/noise.c	if (!aead(0, st->rk, st->rn, NULL, 0, in, st->body_len, out)) return	if (!aead(0, st->rk, st->rn, NULL, 0, in, st->body_len, out) && 0) return
+body-any-phase	ports/net/noise.c	if (st->phase != GZ_NOISE_READY_BODY) return fail	if (st->phase == GZ_NOISE_DEAD) return fail
+body-stays-in-body-phase	ports/net/noise.c	    st->phase = GZ_NOISE_READY;\n    return GZ_NOISE_OK;\n}\n\nvoid gz_noise_wipe	    return GZ_NOISE_OK;\n}\n\nvoid gz_noise_wipe
+remote-static-any-phase	ports/net/noise.c	if (st->phase != GZ_NOISE_READY && st->phase != GZ_NOISE_READY_BODY) return GZ_NOISE_ERR_STATE;	
+failed-decrypt-not-wiped	ports/net/noise.c	if (!ok && !enc && len) wipe(out, len);	
+fail-does-not-wipe	ports/net/noise.c	    gz_noise_wipe(st);\n    return e;	    st->phase = GZ_NOISE_DEAD;\n    return e;
+wipe-is-noop	ports/net/noise.c	    wipe(st, sizeof *st);	
+finish-keeps-e-priv	ports/net/noise.c	wipe(st->e_priv, 32);	
+finish-keeps-ls-priv	ports/net/noise.c	wipe(st->ls_priv, 32);	
+finish-keeps-temp-k	ports/net/noise.c	wipe(st->temp_k, 32);	
+finish-keeps-ck	ports/net/noise.c	    wipe(st->ck, 32);\n	
+mix-key-keeps-ss	ports/net/noise.c	    wipe(ss, 32);\n    return ok;	    return ok;
+bigsize-noncanonical-ok	ports/net/frame.c	if (v < min) return GZ_FRAME_NONCANONICAL;	
+bigsize-min-fe	ports/net/frame.c	n = 2; min = 0xfd;	n = 2; min = 0xfe;
+bigsize-truncation-off-by-one	ports/net/frame.c	if (len < 1 + n) return GZ_FRAME_TRUNCATED;	if (len < n) return GZ_FRAME_TRUNCATED;
+bigsize-write-threshold	ports/net/frame.c	if (v < 0xfd) {	if (v <= 0xfd) {
+bigsize-write-4byte-threshold	ports/net/frame.c	else if (v < 0x100000000ULL) { out[0] = 0xfe;	else if (v <= 0x100000000ULL) { out[0] = 0xfe;
+tu-leading-zero-ok	ports/net/frame.c	if (len > 0 && p[0] == 0) return GZ_FRAME_NONCANONICAL;	
+tu-max-ignored	ports/net/frame.c	if (len > max_bytes || len > 8)	if (len > 8)
+msg-one-byte-ok	ports/net/frame.c	if (len < 2) return GZ_FRAME_TRUNCATED;	if (len < 1) return GZ_FRAME_TRUNCATED;
+msg-max-gone	ports/net/frame.c	if (len > GZ_MSG_MAX) return GZ_FRAME_TOO_BIG;	
+msg-write-cap-gone	ports/net/frame.c	if (rest_len > GZ_MSG_MAX - 2 || out_cap < rest_len + 2)	if (rest_len > GZ_MSG_MAX - 2)
+msg-unknown-swapped	ports/net/frame.c	return (type & 1) ? GZ_MSG_IGNORE : GZ_MSG_CLOSE;	return (type & 1) ? GZ_MSG_CLOSE : GZ_MSG_IGNORE;
+tlv-duplicates-ok	ports/net/frame.c	if (started && type <= last) return GZ_FRAME_ORDER;	if (started && type < last) return GZ_FRAME_ORDER;
+tlv-order-gone	ports/net/frame.c	if (started && type <= last) return GZ_FRAME_ORDER;	
+tlv-length-overrun	ports/net/frame.c	if (rlen > len - pos) return GZ_FRAME_TRUNCATED;	if (rlen > len - pos + 1) return GZ_FRAME_TRUNCATED;
+tlv-unknown-even-ok	ports/net/frame.c	} else if ((type & 1) == 0) {	} else if (0) {
+tlv-checker-ignored	ports/net/frame.c	if (k->check && !k->check(&rec, ctx)) return GZ_FRAME_INVALID;	
+tlv-too-many-unchecked	ports/net/frame.c	if (count == out_cap) return GZ_FRAME_TOO_MANY;	
+tlv-length-eof-not-mapped	ports/net/frame.c	if (e) return e == GZ_FRAME_EOF ? GZ_FRAME_TRUNCATED : e;	if (e) return e;
+tlv-count-not-returned	ports/net/frame.c	    *n_out = count;\n	
+writer-duplicates-ok	ports/net/frame.c	if (w->started && type <= w->last_type)	if (w->started && type < w->last_type)
+writer-value-cap-gone	ports/net/frame.c	 || w->cap - w->len - tn - ln < len	
+writer-error-not-sticky	ports/net/frame.c	    if (w->err) return w->err;\n	
+pin-compare-gone	ports/net/conn.c	if (gz_noise_remote_static(&c->noise, rs) || CRYPTO_memcmp(rs, pinned_host, 33) != 0)	if (0)
+recv-cap-ignored	ports/net/conn.c	if (body > c->limits.max_msg || body > out_cap)	if (body > out_cap)
+recv-cap-off-by-one	ports/net/conn.c	body > c->limits.max_msg ||	body > c->limits.max_msg + 1 ||
+send-cap-ignored	ports/net/conn.c	if (len > c->limits.max_msg) return die(c, GZ_CONN_ERR_TOO_BIG);	
+deadline-never-passes	ports/net/conn.c	if (left <= 0) return GZ_CONN_ERR_TIMEOUT;	if (left <= 0) left = 1;
+recv-deadline-100x	ports/net/conn.c	int64_t deadline = now_ms() + c->limits.recv_ms;	int64_t deadline = now_ms() + 100 * c->limits.recv_ms;
+accept-deadline-10x	ports/net/conn.c	deadline = now_ms() + c->limits.handshake_ms;	deadline = now_ms() + 10 * c->limits.handshake_ms;	1
+eof-not-closed	ports/net/conn.c	if (r == 0) return GZ_CONN_ERR_CLOSED;	if (r == 0) return GZ_CONN_ERR_SOCKET;
+die-keeps-socket	ports/net/conn.c	    gz_conn_close(c);\n    return e;	    return e;
+close-keeps-keys	ports/net/conn.c	    gz_noise_wipe(&c->noise);\n	
+close-keeps-buffer	ports/net/conn.c	    OPENSSL_cleanse(c->buf, sizeof c->buf);\n	
+accept-act1-error-ignored	ports/net/conn.c	if ((ne = gz_noise_act1_read(&c->noise, act, GZ_NOISE_ACT1_LEN))) return hs_refused(c, ne);	gz_noise_act1_read(&c->noise, act, GZ_NOISE_ACT1_LEN);
+hs-refusal-reason-lost	ports/net/conn.c	    c->noise_err = ne;\n    return die(c, GZ_CONN_ERR_HANDSHAKE);	    return die(c, GZ_CONN_ERR_HANDSHAKE);
+msg-refusal-kind-lost	ports/net/conn.c	ne == GZ_NOISE_ERR_TOO_BIG ? GZ_CONN_ERR_TOO_BIG : GZ_CONN_ERR_CRYPTO	GZ_CONN_ERR_CRYPTO
