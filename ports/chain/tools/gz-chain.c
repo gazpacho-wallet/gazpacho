@@ -2,10 +2,12 @@
  * gz-chain: ask chain servers by hand and see each server's answer next to
  * the combined verdict. For manual use and for the walkthroughs.
  *
- *   gz-chain [--network NET] [--server URL]... COMMAND [ARGS]
+ *   gz-chain [--network NET] [--server URL]... [--confirmations N] COMMAND [ARGS]
  *
- * Exit status: 0 the servers agreed on an answer; 1 no agreed answer
- * (disagreement, too few servers, failed proof, refusal); 2 bad usage.
+ * Exit status: 0 the command produced an answer that servers of at least two
+ * operators gave alike (for `proof`: and the transaction is confirmed and
+ * every check passed; for `broadcast`: a server took the transaction);
+ * 1 no such answer; 2 bad usage or a refused request.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +18,6 @@
 #include "gazpacho/chain_http.h"
 #include "gazpacho/chain_multi.h"
 
-#define MAX_TX_BYTES 400000
 #define MAX_OUTPUTS 256
 
 /* The servers listed in docs/CHAIN-SERVERS.md, per network. */
@@ -33,30 +34,41 @@ static const char *const *default_servers(gz_network n) {
     case GZ_NET_TESTNET4: return DEFAULT_TESTNET4;
     case GZ_NET_TESTNET3: return DEFAULT_TESTNET3;
     case GZ_NET_MAINNET: return DEFAULT_MAINNET;
+    case GZ_NET_INVALID: break;
   }
   return DEFAULT_SIGNET;
 }
 
 static void usage(FILE *to) {
   fprintf(to,
-          "usage: gz-chain [--network signet|testnet4|testnet|mainnet] [--server URL]... COMMAND\n"
+          "usage: gz-chain [--network signet|testnet4|testnet|mainnet] [--server URL]...\n"
+          "                [--confirmations N] COMMAND\n"
           "\n"
           "commands:\n"
           "  tip                    best block height and hash\n"
-          "  tx TXID                is the transaction known, in the mempool or confirmed\n"
+          "  tx TXID                what the servers claim about a transaction (unchecked)\n"
           "  script HEX             unspent outputs paying this scriptPubKey\n"
           "  outspend TXID VOUT     is this output spent, and by what\n"
-          "  proof TXID             fetch the Merkle proof and check it against the block header\n"
-          "  fee                    fee estimates by confirmation target\n"
+          "  proof TXID             check a confirmation: transaction, header, Merkle proof,\n"
+          "                         coinbase, and N linked headers (default 6)\n"
+          "  fee                    the servers' fee estimates and the rate that would be used\n"
           "  broadcast HEX          send a transaction (refused on mainnet)\n"
           "\n"
           "The network defaults to signet. Without --server, the servers listed in\n"
-          "docs/CHAIN-SERVERS.md for the network are used. An answer counts only when at\n"
-          "least two servers give it and none contradicts it.\n");
+          "docs/CHAIN-SERVERS.md for the network are used. Addresses must be https, except\n"
+          "http for a server on this machine (localhost, 127.0.0.1, [::1]).\n"
+          "\n"
+          "What the verdict means: every server is first checked to be on the network\n"
+          "named. For tip, tx, script, outspend and proof, an answer is given only when\n"
+          "servers of at least two different operators give it and none contradicts it\n"
+          "about confirmed data. That shows the servers say the same thing; it does not\n"
+          "show they are right. Fee estimates are opinions and are never an agreed fact.\n"
+          "A broadcast succeeds when any one server takes the transaction.\n");
 }
 
 typedef struct app {
   gz_network network;
+  uint32_t want_confirmations;
   size_t n;
   const char *urls[GZ_MULTI_MAX_SERVERS];
   gz_chain servers[GZ_MULTI_MAX_SERVERS];
@@ -70,14 +82,23 @@ static void print_hash(const uint8_t h[GZ_HASH_LEN]) {
   fputs(hex, stdout);
 }
 
-static int verdict_line(gz_chain_result r) {
+/* Prints the verdict line and returns the exit status for it. */
+static int verdict_line(const app *a, gz_chain_result r) {
+  const gz_multi_report *rep = gz_multi_last_report(&a->multi);
   printf("verdict: %s", gz_chain_result_name(r));
   switch (r) {
-    case GZ_CHAIN_OK: printf(" (servers agree)\n"); return 0;
-    case GZ_CHAIN_NOT_FOUND: printf(" (servers agree it does not exist)\n"); return 1;
-    case GZ_CHAIN_DISAGREE: printf(" (treat as NOT confirmed)\n"); return 1;
+    case GZ_CHAIN_OK:
+      printf(" (servers of %zu operators give this answer)\n", rep ? rep->operator_count : 0);
+      if (rep != NULL && rep->unconfirmed_differs)
+        printf("note: the servers differ about unconfirmed data; only what all report is shown\n");
+      return 0;
+    case GZ_CHAIN_NOT_FOUND: printf(" (the servers all say it does not exist)\n"); return 1;
+    case GZ_CHAIN_DISAGREE: printf(" (the servers contradict each other: NOT confirmed)\n"); return 1;
+    case GZ_CHAIN_LAG:
+      printf(" (one server is a block behind: no answer yet, ask again)\n");
+      return 1;
     case GZ_CHAIN_NO_QUORUM:
-      printf(" (fewer than two servers answered: cannot confirm)\n");
+      printf(" (fewer than two operators answered: cannot confirm)\n");
       return 1;
     default: printf("\n"); return 1;
   }
@@ -85,13 +106,16 @@ static int verdict_line(gz_chain_result r) {
 
 static void print_tx_status(const gz_tx_status *s) {
   switch (s->state) {
-    case GZ_TX_UNKNOWN: printf("unknown to the server"); break;
+    case GZ_TX_UNKNOWN:
+      printf(s->unconfirmed_differs ? "not confirmed (in some mempools, not all)"
+                                    : "unknown to the server");
+      break;
     case GZ_TX_MEMPOOL: printf("in the mempool, unconfirmed"); break;
     case GZ_TX_CONFIRMED:
       printf("confirmed at height %lu in block ", (unsigned long)s->height);
       print_hash(s->block_hash);
-      printf(", %lu confirmations (tip %lu)", (unsigned long)s->confirmations,
-             (unsigned long)s->tip_height);
+      printf("; claims %lu confirmations (tip %lu), unchecked",
+             (unsigned long)s->claimed_confirmations, (unsigned long)s->tip_height);
       break;
   }
 }
@@ -108,7 +132,8 @@ static void print_output(const gz_chain_output *o) {
 
 static void print_outspend(const gz_outspend *o) {
   if (!o->spent) {
-    printf("not spent");
+    printf(o->unconfirmed_differs ? "no confirmed spend (the servers differ about an unconfirmed one)"
+                                  : "not spent");
     return;
   }
   printf("spent by ");
@@ -136,11 +161,11 @@ static void print_report(const app *a) {
   if (rep == NULL) return;
   for (size_t i = 0; i < rep->server_count; i++) {
     const gz_multi_answer *ans = &rep->answers[i];
-    printf("  %s\n    ", a->urls[i]);
+    printf("  %s  [operator: %s]\n    ", a->urls[i], rep->operators[i]);
     if (rep->call == GZ_CALL_BROADCAST) {
       const gz_broadcast_result *b = &ans->u.broadcast;
       if (ans->result == GZ_CHAIN_OK) {
-        printf("accepted ");
+        printf(b->already_known ? "already has it: " : "accepted ");
         print_hash(b->txid);
       } else {
         printf("%s (HTTP %ld)%s%s", gz_chain_result_name(ans->result), b->server_status,
@@ -186,7 +211,7 @@ static int cmd_tip(app *a) {
   gz_chain_tip tip;
   gz_chain_result r = gz_chain_tip_get(&a->multi, &tip);
   print_report(a);
-  int rc = verdict_line(r);
+  int rc = verdict_line(a, r);
   if (r == GZ_CHAIN_OK) {
     printf("tip: height %lu  ", (unsigned long)tip.height);
     print_hash(tip.hash);
@@ -201,13 +226,13 @@ static int cmd_tx(app *a, const char *arg) {
   if (!parse_txid(arg, txid)) return 2;
   gz_chain_result r = gz_chain_tx_status(&a->multi, txid, &st);
   print_report(a);
-  int rc = verdict_line(r);
+  int rc = verdict_line(a, r);
   if (r == GZ_CHAIN_OK) {
     printf("transaction: ");
     print_tx_status(&st);
     printf("\n");
     if (st.state == GZ_TX_CONFIRMED)
-      printf("note: this is the servers' claim; `gz-chain proof` checks it against the header\n");
+      printf("note: this is what the servers claim; `gz-chain proof` checks it\n");
   }
   return rc;
 }
@@ -216,13 +241,15 @@ static int cmd_script(app *a, const char *arg) {
   static uint8_t script[GZ_SCRIPT_MAX_LEN];
   static gz_chain_output outs[MAX_OUTPUTS];
   size_t script_len = 0, count = 0;
+  bool differs = false;
   if (!gz_hex_decode(arg, strlen(arg), script, sizeof script, &script_len) || script_len == 0) {
     fprintf(stderr, "gz-chain: the script must be lowercase hex\n");
     return 2;
   }
-  gz_chain_result r = gz_chain_script_outputs(&a->multi, script, script_len, outs, MAX_OUTPUTS, &count);
+  gz_chain_result r =
+      gz_chain_script_outputs(&a->multi, script, script_len, outs, MAX_OUTPUTS, &count, &differs);
   print_report(a);
-  int rc = verdict_line(r);
+  int rc = verdict_line(a, r);
   if (r == GZ_CHAIN_OK) {
     unsigned long long total = 0;
     for (size_t i = 0; i < count; i++) {
@@ -231,7 +258,8 @@ static int cmd_script(app *a, const char *arg) {
       printf("\n");
       total += outs[i].value;
     }
-    printf("outputs: %zu unspent, %llu sat in total\n", count, total);
+    printf("outputs: %zu unspent, %llu sat in total%s\n", count, total,
+           differs ? " (unconfirmed outputs not reported by every server are left out)" : "");
   }
   return rc;
 }
@@ -248,7 +276,7 @@ static int cmd_outspend(app *a, const char *arg_txid, const char *arg_vout) {
   }
   gz_chain_result r = gz_chain_outspend(&a->multi, txid, (uint32_t)vout, &o);
   print_report(a);
-  int rc = verdict_line(r);
+  int rc = verdict_line(a, r);
   if (r == GZ_CHAIN_OK) {
     printf("output: ");
     print_outspend(&o);
@@ -258,15 +286,21 @@ static int cmd_outspend(app *a, const char *arg_txid, const char *arg_vout) {
 }
 
 static void print_confirmation(gz_chain_result r, const gz_confirmation *c) {
-  if (r == GZ_CHAIN_OK) {
-    print_tx_status(&c->status);
-    if (c->status.state == GZ_TX_CONFIRMED)
-      printf("; proof of %lu step(s) at position %lu checks against the header",
-             (unsigned long)c->proof.depth, (unsigned long)c->proof.pos);
-  } else {
-    printf("%s", gz_chain_result_name(r));
+  if (r != GZ_CHAIN_OK) {
+    printf("%s\n", gz_chain_result_name(r));
+    return;
   }
-  printf("\n");
+  if (c->status.state != GZ_TX_CONFIRMED) {
+    print_tx_status(&c->status);
+    printf("\n");
+    return;
+  }
+  printf("confirmed at height %lu in block ", (unsigned long)c->status.height);
+  print_hash(c->status.block_hash);
+  printf("\n    position %lu of %lu transactions, proof of %lu step(s) checks against the header,\n"
+         "    coinbase proof has the same depth, %lu confirmation(s) checked by linked headers\n",
+         (unsigned long)c->proof.pos, (unsigned long)c->block.tx_count,
+         (unsigned long)c->proof.depth, (unsigned long)c->checked_confirmations);
 }
 
 static int cmd_proof(app *a, const char *arg) {
@@ -275,55 +309,94 @@ static int cmd_proof(app *a, const char *arg) {
   if (!parse_txid(arg, txid)) return 2;
   /* each server on its own first, so a server whose proof fails is named */
   for (size_t i = 0; i < a->n; i++) {
-    gz_chain_result r = gz_chain_confirm_tx(&a->servers[i], a->network, txid, &conf);
+    gz_chain_result r =
+        gz_chain_confirm_tx(&a->servers[i], a->network, txid, a->want_confirmations, &conf);
     printf("  %s\n    ", a->urls[i]);
     print_confirmation(r, &conf);
   }
-  gz_chain_result r = gz_chain_confirm_tx(&a->multi, a->network, txid, &conf);
-  int rc = verdict_line(r);
-  if (r == GZ_CHAIN_OK) {
-    printf("transaction: ");
-    print_confirmation(r, &conf);
-    if (conf.status.state != GZ_TX_CONFIRMED) return 1;
-    if (a->network == GZ_NET_SIGNET) {
-      printf("note: on signet a block is authorised by a signature this tool does not check;\n"
-             "      agreement between independent servers is what backs this answer\n");
-    } else {
-      printf("note: the header's proof of work was checked against its own target only\n");
-    }
+  gz_chain_result r = gz_chain_confirm_tx(&a->multi, a->network, txid, a->want_confirmations, &conf);
+  int rc = verdict_line(a, r);
+  if (r != GZ_CHAIN_OK) return rc;
+  printf("transaction: ");
+  print_confirmation(r, &conf);
+  if (conf.status.state != GZ_TX_CONFIRMED) return 1; /* nothing was proved */
+  if (conf.checked_confirmations < a->want_confirmations)
+    printf("note: %lu confirmations were asked for; the chain is only %lu deep above it\n",
+           (unsigned long)a->want_confirmations, (unsigned long)conf.checked_confirmations);
+  if (a->network == GZ_NET_SIGNET) {
+    printf("note: on signet a block is authorised by a signature this tool does not check;\n"
+           "      the headers prove no work. Servers of different operators giving the same\n"
+           "      answers is all that backs this result.\n");
+  } else {
+    printf("note: each header's proof of work was checked against its own stated target;\n"
+           "      whether that target is the one the network required was not checked\n");
   }
-  return rc;
+  return 0;
 }
 
 static int cmd_fee(app *a) {
   gz_fee_estimates f;
+  gz_fee_choice choice;
   gz_chain_result r = gz_chain_fee_estimates(&a->multi, &f);
   print_report(a);
-  int rc = verdict_line(r);
+  printf("verdict: %s", gz_chain_result_name(r));
   if (r == GZ_CHAIN_OK) {
-    printf("fee estimates, target:sat/vB, highest of the servers: ");
+    printf(" (estimates are opinions, not agreed facts)\n");
+    printf("lowest estimate per target, sat/vB, cut at the ceiling: ");
     print_fees(&f);
     printf("\n");
+  } else if (r == GZ_CHAIN_DISAGREE) {
+    printf(" (the servers' estimates are too far apart to combine)\n");
+  } else {
+    printf("\n");
   }
-  return rc;
+  /* the rate the software would actually use for a 6-block target */
+  gz_chain_result rr = gz_chain_choose_fee_rate(&a->multi, a->network, 6, 200000, &choice);
+  if (rr == GZ_CHAIN_OK) {
+    printf("rate that would be used (target 6 blocks, ceiling 200 sat/vB): %llu.%03llu sat/vB, %s\n",
+           (unsigned long long)(choice.sat_per_kvb / 1000),
+           (unsigned long long)(choice.sat_per_kvb % 1000),
+           choice.source == GZ_FEE_FROM_TEST_DEFAULT
+               ? "the fixed test-network rate; the estimates above are not used"
+               : "from the estimates above");
+  } else {
+    printf("rate that would be used: none (%s)\n", gz_chain_result_name(rr));
+  }
+  return r == GZ_CHAIN_OK ? 0 : 1;
 }
 
 static int cmd_broadcast(app *a, const char *arg) {
-  static uint8_t raw[MAX_TX_BYTES];
   uint8_t txid[GZ_HASH_LEN];
   size_t len = 0;
   gz_broadcast_result br;
-  if (!gz_hex_decode(arg, strlen(arg), raw, sizeof raw, &len) || !gz_txid_from_raw(raw, len, txid)) {
+  uint8_t *raw = malloc(GZ_TX_MAX_BYTES);
+  if (raw == NULL) return 1;
+  if (!gz_hex_decode(arg, strlen(arg), raw, GZ_TX_MAX_BYTES, &len) ||
+      !gz_txid_from_raw(raw, len, txid)) {
     fprintf(stderr, "gz-chain: that is not a serialized transaction in lowercase hex\n");
+    free(raw);
     return 2;
   }
+  /* The refusal does not rest on the --network flag alone: no server that
+   * turns out to be on mainnet is sent anything, whatever the flag says. */
+  for (size_t i = 0; i < a->n; i++) {
+    gz_network found = GZ_NET_INVALID;
+    if (gz_chain_identify_network(&a->servers[i], &found) == GZ_CHAIN_OK &&
+        found == GZ_NET_MAINNET) {
+      fprintf(stderr, "gz-chain: refusing to broadcast: %s is a mainnet server\n", a->urls[i]);
+      free(raw);
+      return 2;
+    }
+  }
   gz_chain_result r = gz_chain_broadcast(&a->multi, raw, len, &br);
+  free(raw);
   print_report(a);
   printf("verdict: %s\n", gz_chain_result_name(r));
   if (r == GZ_CHAIN_OK) {
-    printf("broadcast: accepted by at least one server, txid ");
+    printf("broadcast: %s, txid ", br.already_known ? "a server already had it"
+                                                   : "taken by at least one server");
     print_hash(br.txid);
-    printf("\n");
+    printf("\nnote: taken is not relayed; check with `gz-chain tx` that it appears\n");
     return 0;
   }
   if (r == GZ_CHAIN_REJECTED) printf("broadcast: refused: %s\n", br.reason);
@@ -336,6 +409,7 @@ int main(int argc, char **argv) {
   int n_args = 0;
   memset(&a, 0, sizeof a);
   a.network = GZ_NET_SIGNET;
+  a.want_confirmations = 6;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -346,6 +420,15 @@ int main(int argc, char **argv) {
         fprintf(stderr, "gz-chain: --network takes signet, testnet4, testnet or mainnet\n");
         return 2;
       }
+    } else if (strcmp(argv[i], "--confirmations") == 0) {
+      char *end = NULL;
+      unsigned long v = ++i < argc ? strtoul(argv[i], &end, 10) : 0;
+      if (i >= argc || end == NULL || *end != '\0' || v < 1 || v > GZ_CONFIRM_MAX_DEPTH) {
+        fprintf(stderr, "gz-chain: --confirmations takes a number from 1 to %d\n",
+                GZ_CONFIRM_MAX_DEPTH);
+        return 2;
+      }
+      a.want_confirmations = (uint32_t)v;
     } else if (strcmp(argv[i], "--server") == 0) {
       if (++i >= argc) {
         fprintf(stderr, "gz-chain: --server takes an address\n");
@@ -381,7 +464,8 @@ int main(int argc, char **argv) {
     usage(stderr);
     return 2;
   }
-  /* Decided before anything touches the network. */
+  /* Decided before anything touches the network. The servers themselves are
+   * checked as well, in cmd_broadcast. */
   if (strcmp(cmd, "broadcast") == 0 && a.network == GZ_NET_MAINNET) {
     fprintf(stderr, "gz-chain: refusing to broadcast on mainnet\n");
     return 2;
@@ -394,7 +478,7 @@ int main(int argc, char **argv) {
       a.n++;
     }
   }
-  if (!gz_http_curl_create(&a.http, false)) {
+  if (!gz_http_curl_create(&a.http, NULL)) {
     fprintf(stderr, "gz-chain: cannot start the HTTPS client\n");
     return 1;
   }
@@ -404,23 +488,30 @@ int main(int argc, char **argv) {
     gz_esplora_config cfg;
     gz_esplora_config_default(&cfg);
     cfg.base_url = a.urls[made];
-    if (strncmp(a.urls[made], "https://", 8) != 0 ||
-        gz_esplora_create(&cfg, &a.http, &a.servers[made]) != GZ_CHAIN_OK) {
-      fprintf(stderr, "gz-chain: not a usable https server address: %s\n", a.urls[made]);
+    if (gz_esplora_create(&cfg, &a.http, &a.servers[made]) != GZ_CHAIN_OK) {
+      fprintf(stderr,
+              "gz-chain: not a usable server address: %s\n"
+              "          (https only; http only for localhost, 127.0.0.1 or [::1])\n",
+              a.urls[made]);
       rc = 2;
       goto out;
     }
   }
   gz_multi_config mc;
-  gz_multi_config_default(&mc);
+  gz_multi_config_default(&mc, a.network);
   mc.max_outputs = MAX_OUTPUTS;
   if (gz_multi_create(&mc, a.servers, a.n, &a.multi) != GZ_CHAIN_OK) {
-    fprintf(stderr, "gz-chain: cannot set up the comparison\n");
+    fprintf(stderr, "gz-chain: the same server or the same host was given more than once;\n"
+                    "          a server cannot be compared with itself\n");
+    rc = 2;
     goto out;
   }
-  printf("network: %s, %zu server(s)\n", gz_network_name(a.network), a.n);
-  if (a.n < 2)
-    printf("warning: one server cannot be compared with anything; no answer will be confirmed\n");
+  size_t operators = gz_multi_operator_count(&a.multi);
+  printf("network: %s, %zu server(s) of %zu operator(s)\n", gz_network_name(a.network), a.n,
+         operators);
+  if (operators < 2)
+    printf("warning: fewer than two operators; nothing can be compared and no answer will be "
+           "confirmed\n");
 
   if (strcmp(cmd, "tip") == 0) rc = cmd_tip(&a);
   else if (strcmp(cmd, "tx") == 0) rc = cmd_tx(&a, args[1]);
