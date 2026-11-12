@@ -68,7 +68,7 @@ allowed_outside() {
         __stack_chk_fail|_GLOBAL_OFFSET_TABLE_) return 0 ;;
     esac
     if [ "$sanitized" -eq 1 ]; then
-        case "$1" in __asan_*|__ubsan_*|__sanitizer_*) return 0 ;; esac
+        case "$1" in __asan_*|__ubsan_*|__sanitizer_*|__msan_*) return 0 ;; esac
     fi
     return 1
 }

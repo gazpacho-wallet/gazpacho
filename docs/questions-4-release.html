@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gazpacho questions 4: shaping 1.0.0</title>
+<style>
+:root{--bg:#faf6ef;--card:#fff;--ink:#22190f;--soft:#6b5d4d;--line:#e4d9c8;--red:#b3261e;--code:#f1e9da;--pick:#fbe9e7;--rec:#1d5e33;--rec-bg:#dff0e3;--warn:#7a5200;--warn-bg:#fbeecb}
+@media (prefers-color-scheme:dark){:root{--bg:#191512;--card:#231d18;--ink:#f1e8da;--soft:#b3a591;--line:#3b3129;--red:#f08a80;--code:#30271f;--pick:#3a211d;--rec:#9fdcb1;--rec-bg:#1c3a26;--warn:#f3d27e;--warn-bg:#443409}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:900px;margin:0 auto;padding:28px 16px 120px}
+h1{font-size:28px;margin:0 0 6px}h1 span{color:var(--red)}
+h3{font-size:17px;margin:18px 0 6px}
+p{margin:8px 0}.soft{color:var(--soft);font-size:14px}
+.q{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:20px 0}
+.q h2{font-size:20px;margin:0 0 4px}
+.q .num{color:var(--red);font-weight:800;margin-right:6px}
+.why{border-left:4px solid var(--line);padding:2px 0 2px 12px;margin:10px 0;color:var(--soft);font-size:14.5px}
+.warn{background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:8px 12px;font-size:14.5px;margin:10px 0}
+.opt{display:block;border:1px solid var(--line);border-radius:10px;padding:10px 12px 10px 40px;margin:8px 0;position:relative;cursor:pointer}
+.opt input{position:absolute;left:13px;top:14px;width:17px;height:17px;accent-color:var(--red)}
+.opt:has(input:checked){background:var(--pick);border-color:var(--red)}
+.opt b{display:block}
+.opt span{font-size:14px;color:var(--soft)}
+.tag{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;background:var(--rec-bg);color:var(--rec);vertical-align:1px}
+.rec{background:var(--rec-bg);border-radius:10px;padding:10px 12px;margin:12px 0 4px;font-size:14.5px}
+.rec b{color:var(--rec)}
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin:10px 0}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:14px}
+th,td{text-align:left;vertical-align:top;padding:7px 9px;border-bottom:1px solid var(--line)}
+th{font-size:12.5px;color:var(--soft);font-weight:600;background:var(--bg)}
+tr:last-child td{border-bottom:0}
+textarea{width:100%;min-height:58px;margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;font-size:14.5px}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13.5px}
+#out{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap}
+#out button{padding:10px 18px;border-radius:10px;border:0;background:var(--red);color:#fff;font:700 15px system-ui;cursor:pointer}
+#out span{font-size:14px;color:var(--soft)}
+#result{display:none;max-width:900px;margin:0 auto 20px}
+#result textarea{min-height:200px;font:13px/1.45 ui-monospace,Consolas,monospace}
+</style>
+</head>
+<body>
+<main>
+<h1>Gazpacho questions 4: <span>shaping 1.0.0</span></h1>
+<p class="soft">2026-11-12. Two decisions that don't affect the first signet slice but shape the first release. Each has the background, options, and my recommendation. Pick one per question, add notes, then press "Copy my answers" and paste them back. Nothing is sent anywhere.</p>
+
+<section class="q" data-q="1">
+<h2><span class="num">1</span>Timed levels in the first release</h2>
+
+<h3>Background</h3>
+<p>A SuperScalar tree has two kinds of levels:</p>
+<div class="wrap"><table>
+<tr><th></th><th>Fixed level</th><th>Timed level (Decker-Wattenhofer)</th></tr>
+<tr><td>What it allows</td><td>Nothing changes under it without a new factory</td><td>The members under it can re-sign their part of the tree (a "layer update") without everyone in the factory</td></tr>
+<tr><td>Cost to leave alone</td><td>About nothing extra</td><td>About 3 days extra per timed level (432 blocks at the planned settings)</td></tr>
+<tr><td>Risk while away</td><td>None from the tree</td><td>Once a layer has been updated, an old version could be published, and must be answered within about one day, or the member loses the difference</td></tr>
+</table></div>
+<p><b>The finding that changes things:</b> in 1.0.0, nothing ever updates a timed layer. With one member per leaf, no liquidity sales (those are 1.1.0), and payments that never advance the tree, members move to the next factory instead of re-signing layers. So in 1.0.0 timed levels bring <b>only</b> the longer exit, and the one-day risk never actually arises. This rests on reading the code; it is recorded as open point O1 and will be confirmed with a simulator test and against the design posts.</p>
+<div class="warn">This revisits an earlier decision recorded in the knowledge base: "Full layered tree in the first release; build the fixed tree first." Option A below changes it.</div>
+<p><b>What sets how long a member can safely be away, then?</b> Without timed levels, the remaining risk is the ordinary Lightning one: the host publishing an old channel state, which the member must answer within the channel's revocation delay. That delay is a channel setting the terms can choose, as in ordinary Lightning (often one to two weeks). The exact value belongs to the channel specification, still to be written; treat "about two weeks" as the target, not yet a promise.</p>
+
+<label class="opt"><input type="radio" name="q1" value="A: no timed levels in 1.0.0; timed levels arrive with 1.1.0 and liquidity sales"><b>A. No timed levels in 1.0.0; they arrive with 1.1.0 <span class="tag">Recommended</span></b><span>Fixed levels only. Leaving alone is fastest, nothing old in the tree can ever be published, and safe absence is set by the channel's own revocation delay. Liquidity changes in 1.0.0 happen by moving to the next factory. Timed levels and layer updates come with 1.1.0's sales, which is when they are first useful.</span></label>
+<label class="opt"><input type="radio" name="q1" value="B: build the full layered tree in 1.0.0 but never update it"><b>B. Build the layered shape in 1.0.0, but never update it</b><span>Keeps the original "full layered tree" decision on paper. Members pay the longer exit (about 3 days per level) for no benefit until 1.1.0. Since every factory is built fresh, nothing is gained by having the shape early.</span></label>
+<label class="opt"><input type="radio" name="q1" value="C: timed levels with layer updates in 1.0.0"><b>C. Timed levels with layer updates in 1.0.0</b><span>The full design from day one. Needs the layer-update specification (not written), makes the safe absence under a day unless something watches for the member, and delays 1.0.0 noticeably.</span></label>
+<div class="rec"><b>Recommendation: A.</b> It gives 1.0.0 members the shortest exits and the simplest safety story, with nothing lost: what timed levels are for arrives in 1.1.0 together with them. It also resolves open point O2 (the on-chain reserve): without timed-layer races, members need no fee coins to defend the tree.</div>
+<textarea placeholder="Note (optional)"></textarea>
+</section>
+
+<section class="q" data-q="2">
+<h2><span class="num">2</span>Do seats in a lobby cost anything?</h2>
+
+<h3>Background</h3>
+<p>Today a member joins a lobby for free and puts in nothing. That is the point of Gazpacho: people with no bitcoin can get a Lightning channel. But free seats cause three problems:</p>
+<ol>
+<li><b>Jamming a lobby.</b> One person with many fresh keys can take seats and never sign, or use up a lobby's seat limit in about half a minute, so nobody else can join. Money is never at risk, but lobbies fail.</li>
+<li><b>Stalling the host.</b> Once the end-date payout exists (before mainnet), a member with a zero balance is still paid its full channel size if the host fails to close properly. Free seats make it cheap to join in numbers and go silent, hoping the host misses a deadline.</li>
+<li><b>Absent members cost the host.</b> Each member who never shows up at wind-down costs the host an exit on chain. With many free, absent members, hosting gets expensive.</li>
+</ol>
+<p>The difficulty: a member starts with nothing, so it cannot pay a deposit out of its own channel. Any money-based seat cost needs coins from outside, which shuts out the people Gazpacho most wants to reach.</p>
+
+<label class="opt"><input type="radio" name="q2" value="A: free seats; protection by invitation-only lobbies, host removal and standbys"><b>A. Free seats, protected by lobby settings</b><span>Keep seats free. Hosts protect themselves with invitation-only lobbies, removing members before the start, standby seats, and the signing time budget. Simplest; public lobbies stay jammable.</span></label>
+<label class="opt"><input type="radio" name="q2" value="B: a proof instead of a payment (control of a coin or channel), with a share of free seats"><b>B. A proof, not a payment, for public lobbies, with a share of free seats <span class="tag">Recommended</span></b><span>For public lobbies, a seat needs a light proof of a scarce resource: control of an unspent coin or a Lightning channel, checked by the host and never spent (the same proofs discovery uses). Each proof buys one seat, so fake members cost real bitcoin. The host's terms set a share of "newcomer" seats that need no proof, so people with nothing can still join (the Starter profile). Invitation-only lobbies need no proof at all.</span></label>
+<label class="opt"><input type="radio" name="q2" value="C: a small refundable deposit paid over Lightning from another wallet"><b>C. A small refundable deposit, paid from another wallet</b><span>The member pays a deposit over Lightning, held by the host and returned at signing or kept if the member stalls. Strong deterrent, but it needs outside funds, and a held payment means trusting the host to return it (or more design work to make it trustless).</span></label>
+<label class="opt"><input type="radio" name="q2" value="D: the host chooses per lobby from A, B and C"><b>D. The host chooses per lobby</b><span>Put the seat rule in the lobby's terms: free, proof, or deposit. Most flexible; members see the rule before joining and their conditions can refuse it. More to build and explain.</span></label>
+<div class="rec"><b>Recommendation: B for 1.0.0, growing into D later.</b> A proof costs the honest member nothing (the coin is never spent, never even moved), makes fake seats cost real bitcoin, and keeps newcomer seats open for people with nothing. It reuses the proof checks discovery already needs. Deposits (C) can be added later as one more choice in the terms, once a trustless way to hold them is designed.</div>
+<textarea placeholder="Note (optional)"></textarea>
+</section>
+
+<section class="q" data-q="3">
+<h2><span class="num">3</span>Anything else?</h2>
+<p class="soft">Optional: anything about these, or the discovery spec's open points (a third filter field in beacons; how strict to be with a bad beacon; whether every factory node answers "list your lobbies").</p>
+<textarea placeholder="Anything else (optional)"></textarea>
+</section>
+
+<div id="result"><p class="soft">Copied. If copying was blocked, select the text below and copy it yourself.</p><textarea readonly></textarea></div>
+</main>
+
+<div id="out"><button type="button" id="copy">Copy my answers</button><span id="count">0 of 2 answered</span></div>
+
+<script>
+const qs = [...document.querySelectorAll('.q')];
+document.addEventListener('change', () => {
+  document.getElementById('count').textContent = qs.filter(q => q.querySelector('input:checked')).length + ' of 2 answered';
+});
+document.getElementById('copy').addEventListener('click', async () => {
+  const lines = ['Gazpacho questions 4 (shaping 1.0.0): answers', ''];
+  for (const q of qs) {
+    const title = q.querySelector('h2').textContent.trim();
+    const pick = q.querySelector('input:checked');
+    const note = q.querySelector('textarea').value.trim();
+    if (!pick && !note) continue;
+    lines.push(title);
+    if (pick) lines.push('  Choice: ' + pick.value);
+    if (note) lines.push('  Note: ' + note.replace(/\n/g, '\n        '));
+    lines.push('');
+  }
+  const text = lines.join('\n');
+  const box = document.querySelector('#result textarea');
+  box.value = text;
+  document.getElementById('result').style.display = 'block';
+  try { await navigator.clipboard.writeText(text); } catch (e) { box.select(); }
+  document.getElementById('result').scrollIntoView({behavior: 'smooth'});
+});
+</script>
+</body>
+</html>

@@ -22,6 +22,9 @@ What every piece of work must satisfy before it is handed to review. It is made 
 10. **Tests do not match loosely.** A test that searched output for the letters "prv" failed once in a few hundred runs when those letters appeared in a random address. Match the exact thing.
 11. **Fault settings are shown to do something.** Two simulator profiles exercised nothing because every node died first. A test of a fault must fail if the fault never happened.
 12. **Results are reported with counts, and with what was not tested.**
+28. **Invariants check the property itself, not a proxy.** An invariant that checks something which usually goes with the property (a count, a flag, a state name) passes when the property fails.
+29. **Mutation runners kill their children on timeout.** A mutant that hangs must be stopped with everything it started; hung mutants once loaded the build server for hours. (Added 2026-11-12)
+30. **A new protection gets a cross-check against an independent implementation** wherever one can be written. The Python BOLT 8 peer, the independent signature-hash code and the independent parser each paid off. Numbers 27 onwards are added where they belong, not renumbered, so references to earlier items stay valid. (Added 2026-11-12)
 
 ## State and storage
 
@@ -30,6 +33,7 @@ What every piece of work must satisfy before it is handed to review. It is made 
 15. **Anything that makes memory run ahead of storage is fatal for that node**: a refused step, a storage failure, storage answering out of order. The node stops and is rebuilt from what was saved.
 16. **After a restart, everything saved and not known to be acknowledged is sent again.** So every message must be safe to receive twice, and out of order with newer messages.
 17. **One-time signing secrets are never stored**, and a restored backup must not be able to make one repeat.
+27. **A save made early in a start holds back every later send; start records last.** In a node's start step, a save comes before every send that follows it, so a save placed early delays all the resends behind it. Records written at start go last.
 
 ## Code
 
@@ -46,27 +50,16 @@ What every piece of work must satisfy before it is handed to review. It is made 
 25. **The report says what was decided where the specification was silent**, so those decisions can be confirmed or overruled.
 26. **Nothing is published by the builder.** The branch is fetched, opened as a pull request, reviewed by an agent that did not write it, and merged only when the review and the automated checks pass.
 
+## Added after the third M1a review
 
-## Added after the M1a follow-up reviews
-
-27. **A multi-step start that reads storage must work from a fixed view, or
+31. **A multi-step start that reads storage must work from a fixed view, or
     record only what it has actually done.** A start that re-reads storage
     between steps can record an action (a message as "sent") against a record
     that appeared after the step began but was never acted on. Storage may
     grow during a start (late writes from a dead program, the node's own
     saves); a start must still never claim to have done what it has not.
-28. **A save made early in a start holds back every later send**, because the
-    runner releases nothing outward until earlier saves are confirmed. A start
-    that must both resend and record should resend everything first and save
-    its records last, so the resends do not wait behind a record's
-    confirmation. More generally: order a step's actions so that what must
-    leave does not sit behind a save.
-29. **An invariant checks the property itself, not a proxy for it.** "No
-    one-time secret is reused" is checked on the secret values the engines
-    actually use (exposed for the test), not on what they drew from the random
-    port: a naive engine can mislabel its draw, and a careful one mixes the
-    draw with other material, so the draws are the wrong thing to compare.
-30. **A fault the code describes must be one the test harness can produce.**
+
+32. **A fault the code describes must be one the test harness can produce.**
     The runner's contract allowed storage to fail from inside the executor,
     but the simulator had no way to make it happen, so a mutation that ignored
     that path looked equivalent to correct. Every path a contract names needs

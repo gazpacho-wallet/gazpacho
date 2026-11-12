@@ -23,7 +23,7 @@ The share figures come from a single vendor's comparison and should be checked a
 ## Order
 
 1. **LND** first: by far the most used, and it needs no code inside the node.
-2. **Core Lightning** second: already running on our server.
+2. **Core Lightning** second. (It ran on the server used earlier, which is now the SuperScalar session's; Gazpacho's build server has none.)
 3. **Nostr Wallet Connect** third, if its hold methods prove to be standard, because one adapter could cover many wallets and hosted nodes.
 4. **Eclair** and specific **LDK** nodes as demand shows.
 5. The **built-in node** removes the need for any of them.

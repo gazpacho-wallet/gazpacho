@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Message envelope comparison</title>
+<style>
+:root{--bg:#faf6ef;--card:#fff;--ink:#22190f;--soft:#6b5d4d;--line:#e4d9c8;--red:#b3261e;--code:#f1e9da;
+--a:#234a86;--a-bg:#e2ebf8;--b:#7a5200;--b-bg:#fbeecb;--ok:#1d5e33;--ok-bg:#dff0e3;--bad:#8f1d17;--bad-bg:#fbdfdc}
+@media (prefers-color-scheme:dark){:root{--bg:#191512;--card:#231d18;--ink:#f1e8da;--soft:#b3a591;--line:#3b3129;--red:#f08a80;--code:#30271f;
+--a:#a9c6f5;--a-bg:#1d2e4a;--b:#f3d27e;--b-bg:#443409;--ok:#9fdcb1;--ok-bg:#1c3a26;--bad:#f5aaa3;--bad-bg:#4a1c19}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:1080px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:29px;margin:0 0 6px}h1 span{color:var(--red)}
+h2{font-size:21px;margin:38px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+h3{font-size:17px;margin:20px 0 6px}
+p{margin:8px 0;max-width:80ch}.soft{color:var(--soft);font-size:14px}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+nav a{padding:5px 11px;border:1px solid var(--line);border-radius:999px;color:var(--ink);text-decoration:none;font-size:14px;background:var(--card)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:12px 0}
+.answer{border-left:6px solid var(--red)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:760px){.two{grid-template-columns:1fr}}
+.side{border-radius:12px;padding:14px 16px;border:1px solid var(--line);background:var(--card)}
+.side.a{border-top:6px solid var(--a)}.side.b{border-top:6px solid var(--b)}
+.side h3{margin-top:0}
+.bytes{display:flex;flex-wrap:wrap;gap:3px;margin:10px 0;font:12.5px/1.3 ui-monospace,Consolas,monospace}
+.bytes span{padding:6px 7px;border-radius:6px;border:1px solid var(--line);background:var(--code)}
+.bytes span b{display:block;font-size:11px;color:var(--soft);font-weight:400}
+.bytes .lt{background:var(--a-bg)}.bytes .bl{background:var(--b-bg)}.bytes .ours{background:var(--ok-bg)}
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card);margin:10px 0}
+table{border-collapse:collapse;width:100%;min-width:760px;font-size:14.5px}
+th,td{text-align:left;vertical-align:top;padding:9px 11px;border-bottom:1px solid var(--line)}
+th{font-size:13px;color:var(--soft);font-weight:600;background:var(--bg)}
+tr:last-child td{border-bottom:0}
+td:first-child{font-weight:600;min-width:160px}
+.w{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
+.wa{background:var(--a-bg);color:var(--a)}.wb{background:var(--b-bg);color:var(--b)}.tie{background:var(--code);color:var(--soft)}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13.5px}
+ul{margin:6px 0 6px 20px;padding:0}li{margin:4px 0;max-width:78ch}
+.opt{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:10px 0}
+.opt.rec{border:2px solid var(--red)}
+.opt h3{margin:0 0 4px}
+.tag{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;background:var(--ok-bg);color:var(--ok)}
+</style>
+</head>
+<body>
+<main>
+<h1>Gazpacho's own envelope vs <span>bLIP-56</span></h1>
+<p class="soft">2026-11-12. How Gazpacho's factory messages could travel inside a Lightning connection. "Ours" is the envelope in the first version of <code>spec/messages.md</code>. "bLIP-56" is the open draft at github.com/lightning/blips pull request 56, read in full on 2026-11-11. Neither has been reviewed by anyone outside this project.</p>
+
+<nav><a href="#answer">Short answer</a><a href="#what">What an envelope is</a><a href="#layout">Byte layout</a><a href="#compare">Side by side</a><a href="#beyond">Beyond the envelope</a><a href="#blip-weak">bLIP-56's weak points</a><a href="#options">Options</a></nav>
+
+<div class="card answer" id="answer">
+<h3 style="margin-top:0">Short answer</h3>
+<ul>
+<li><b>As an envelope, ours is slightly better.</b> It uses an odd message type, which any Lightning node safely ignores. It also has less overhead and binds every message to its lobby.</li>
+<li><b>bLIP-56's only real advantage is compatibility:</b> other software, possibly the SuperScalar reference, and your public comment on the pull request.</li>
+<li><b>The two are not exclusive.</b> Our messages can stay exactly as specified and be wrapped in bLIP-56's envelope when, and only when, the other side asks for it.</li>
+</ul>
+</div>
+
+<h2 id="what">What an "envelope" is here</h2>
+<p>Every Lightning message starts with a 2-byte type. Types 32,768 to 65,535 are free for custom use. An envelope is how Gazpacho uses one custom type to carry all its own messages: lobby, terms, and the signing round. The messages inside (what a <code>ready</code> or a <code>round_nonces</code> contains, and how it is signed) are the same in both options. Only the outer wrapping differs.</p>
+<p>One Lightning rule matters most: <b>"it's ok to be odd".</b> A node that receives a message type it does not know ignores it if the number is odd, but closes the connection if it is even. So an even type must be agreed first, through a feature bit.</p>
+
+<h2 id="layout">Byte layout</h2>
+<div class="two">
+<div class="side a">
+<h3>Ours</h3>
+<div class="bytes">
+<span class="lt"><b>type</b>52791</span>
+<span class="ours"><b>protocol</b>4 bytes "gzf"+1</span>
+<span class="ours"><b>kind</b>2</span>
+<span class="ours"><b>lobby id</b>32</span>
+<span><b>records (TLV)</b>up to 65,495</span>
+</div>
+<p>Header after the type: <b>38 bytes</b>. The lobby id is the rules fingerprint, so every message is bound to one lobby.</p>
+</div>
+<div class="side b">
+<h3>bLIP-56, with our messages inside</h3>
+<div class="bytes">
+<span class="lt"><b>type</b>32800</span>
+<span class="bl"><b>submessage</b>2 = 4 piggyback</span>
+<span class="bl"><b>TLV 0: protocol id</b>2 + 32</span>
+<span class="bl"><b>TLV 1024 header</b>about 6</span>
+<span class="ours"><b>kind</b>2</span>
+<span class="ours"><b>lobby id</b>32</span>
+<span><b>records (TLV)</b>up to about 65,450</span>
+</div>
+<p>Header after the type: <b>about 76 bytes</b>. Our own kind and lobby id stay inside. Only the 4-byte tag is replaced by bLIP-56's 32-byte protocol id.</p>
+</div>
+</div>
+
+<h2 id="compare">Side by side</h2>
+<div class="wrap"><table>
+<tr><th>Property</th><th>Ours</th><th>bLIP-56</th><th>Better</th></tr>
+<tr><td>Safe with nodes that don't know it</td><td>Odd type: ignored by any node</td><td>Even type 32800: a node that doesn't know it closes the connection. Safe only because it is sent after both sides advertise feature bit 271; a bug in that check drops the peer</td><td><span class="w wa">Ours</span></td></tr>
+<tr><td>Agreeing to use it</td><td>None needed in Slice 1. A feature bit above 255 is open for later</td><td>Feature bit 271, plus a "supported factory protocols" message after every connection</td><td><span class="w wb">bLIP-56</span> more explicit, at the cost of one extra message</td></tr>
+<tr><td>Telling protocols apart</td><td>4-byte tag: a 1 in 4 billion chance of mixing up with another app</td><td>32-byte protocol id (a hash of name and version): no realistic collision</td><td><span class="w wb">bLIP-56</span>, marginally</td></tr>
+<tr><td>Overhead per message</td><td>38 bytes</td><td>About 76 bytes</td><td><span class="w wa">Ours</span>; matters little (a 512-member round sends megabytes)</td></tr>
+<tr><td>Bound to a lobby</td><td>Yes: the lobby id is in every header and in every signature</td><td>No: bLIP-56 has no notion of lobby; we would carry our own id inside, as shown above</td><td><span class="w tie">Same</span> once ours sits inside</td></tr>
+<tr><td>Extending later</td><td>Odd/even rule on kinds and on every record</td><td>Odd/even rule on submessages and records; our inner rules unchanged</td><td><span class="w tie">Same</span></td></tr>
+<tr><td>Large messages</td><td>Our own split into parts, up to 1 MiB</td><td>Nothing; we keep our own split inside the payload</td><td><span class="w tie">Same</span></td></tr>
+<tr><td>Registered numbers</td><td>Type 52791 picked by hash, checked free in the bLIP 2 registry, not registered</td><td>Type 32800, bit 271 and TLV 65600 are reserved only in the open pull request, not in the merged registry</td><td><span class="w tie">Neither</span> registered</td></tr>
+<tr><td>Maturity</td><td>Written 2026-11-11 for Gazpacho; not yet reviewed</td><td>One commit, December 2024; open; a maintainer asked to wait for an implementation before merging</td><td><span class="w tie">Neither</span> proven</td></tr>
+<tr><td>Talks to other software</td><td>Only Gazpacho</td><td>Anything that implements bLIP-56: possibly the SuperScalar reference, and plugins for CLN, LND, Eclair or LDK in future</td><td><span class="w wb">bLIP-56</span>, which is its whole point</td></tr>
+<tr><td>Public commitment</td><td>None</td><td>Your account commented on the pull request in April 2026 that a team is building a SuperScalar wallet on it</td><td><span class="w wb">bLIP-56</span></td></tr>
+</table></div>
+
+<h2 id="beyond">Beyond the envelope: what else bLIP-56 defines</h2>
+<p>bLIP-56 is mostly about channels inside a factory, not about the envelope. None of this is needed for Slice 1 (forming a factory). Whether to use it is a separate decision for the channel engine (Slice 2).</p>
+<div class="wrap"><table>
+<tr><th>Part</th><th>What it does</th><th>Fit for Gazpacho</th></tr>
+<tr><td><code>channel_in_factory</code> on <code>open_channel</code></td><td>Marks a channel as living inside a factory, with the factory's protocol and id</td><td>Useful: it tells ordinary Lightning code not to treat the channel as on chain. Requires zero-confirmation channels and the older open flow</td></tr>
+<tr><td>Factory change flow (init, ack, funding, continue, locked)</td><td>Moves a channel to a new funding output when the factory's state changes, modelled on splicing</td><td>Needed in some form: a layer update changes every transaction ID below it, so channels do move then. But the flow predates taproot channels and has no room for their nonces</td></tr>
+<tr><td>Early warning time</td><td>Fails payments early enough for the factory to be unwound in time; invoices ask for extra blocks</td><td>Matches our own research: deep trees need a longer final deadline</td></tr>
+<tr><td>Forgetting a channel</td><td>The plugin may tell the node to treat a channel as closed and delete its data</td><td>A trust hole if the plugin is wrong; Gazpacho would never let one part of itself erase another's evidence on its word</td></tr>
+</table></div>
+
+<h2 id="blip-weak">bLIP-56's weak points</h2>
+<ul>
+<li>One commit, two years old, no implementation, no detailed review.</li>
+<li>Written before taproot channels: its channel change flow cannot carry the nonces they need.</li>
+<li>Built for a plugin attached to existing node software. Gazpacho runs its own channel engine, so the split between "node" and "plugin" is not our architecture.</li>
+<li>Uses an even message type, which is less forgiving than an odd one.</li>
+<li>Says nothing about creating a factory or multi-party signing, by design. Everything Gazpacho actually needs for Slice 1 lives in the opaque payload.</li>
+<li>Lets the plugin tell the node to forget a channel.</li>
+</ul>
+
+<h2 id="options">The options</h2>
+<div class="opt">
+<h3>1. Ours only</h3>
+<p>Keep our envelope and never wrap. Simplest, and the safest on the wire. Gazpacho cannot talk to bLIP-56 software, and it walks back your public comment.</p>
+</div>
+<div class="opt">
+<h3>2. bLIP-56 only</h3>
+<p>Always wrap our messages in bLIP-56. Compatible from day one, at about 40 bytes per message and an even message type that depends on feature negotiation working. Ties our wire format to an unmerged draft that may change.</p>
+</div>
+<div class="opt rec">
+<h3>3. Ours, with bLIP-56 as an adapter <span class="tag">Recommended</span></h3>
+<p>Our message format stays the specification. On the wire:</p>
+<ul>
+<li>When both sides advertise bit 271 and our protocol id, the messages travel inside bLIP-56's piggyback.</li>
+<li>Otherwise they use our odd type.</li>
+<li>The inner bytes, and every signature, are identical either way. So the adapter is a thin layer, about a hundred lines, that can be added, changed or dropped without touching anything else.</li>
+</ul>
+<p>Slice 1 talks only Gazpacho to Gazpacho, so the adapter is not needed until we meet other software. It can be built when the SuperScalar reference or a plugin is ready to test against.</p>
+</div>
+<div class="opt">
+<h3>4. Propose amendments to bLIP-56</h3>
+<p>Independent of 1 to 3, and later: suggest an odd message type, taproot nonces in the change flow, and no "forget" instruction without evidence. This needs your permission, since it means posting publicly.</p>
+</div>
+
+<p class="soft">One thing to settle with the SuperScalar session in any case: the protocol id string (for example a hash of "SuperScalar/1"). The two programs can only talk if they use the same one.</p>
+</main>
+</body>
+</html>

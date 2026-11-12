@@ -38,7 +38,7 @@ cmake --build build-san --target tree_shapes
 ./build-san/tree_shapes                  # same cases under AddressSanitizer + UBSan
 ```
 
-Machine: the project VPS (the build server), Ubuntu 26.04, 4 cores, 15 GB, gcc 15.2.0, Release build at `-O3`. Each case runs in its own child process; time and peak memory are per case.
+Machine: the project build server, Ubuntu 26.04, 4 cores, 15 GB, gcc 15.2.0, Release build at `-O3`. Each case runs in its own child process; time and peak memory are per case.
 
 ## Reading of the results
 
