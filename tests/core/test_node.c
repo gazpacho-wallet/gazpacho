@@ -469,7 +469,7 @@ static void test_storage_that_is_not_a_journal_is_refused(void)
 static int same_start_state(const gz_node_t *a, const gz_node_t *b)
 {
     return a->next_serial == b->next_serial && a->start_done_to == b->start_done_to &&
-           a->start_resent_to == b->start_resent_to && a->start_recording == b->start_recording &&
+           a->start_recording == b->start_recording &&
            a->awaiting_head == b->awaiting_head && a->n_awaiting == b->n_awaiting;
 }
 
@@ -495,12 +495,12 @@ static void test_a_failed_start_step_changes_nothing(void)
     CHECK(same_start_state(&node, &before) && node.next_serial == 1);
     gz_action_list_init(&out, slots, 80, bytes, sizeof bytes);
     CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_OK && more == 1 && out.count == 8);
-    CHECK(node.next_serial == 11 && node.start_recording == 0 && node.start_resent_to == 0);
+    CHECK(node.next_serial == 11 && node.start_recording == 0);
     sends += out.count;
     before = node;
     gz_action_list_init(&out, slots, 0, bytes, sizeof bytes);
     CHECK(gz_node_start(&node, &reader, &out, &more) == GZ_ERR_NO_SPACE && more == 1);
-    CHECK(same_start_state(&node, &before) && node.start_resent_to == 0 && node.n_awaiting == 0);
+    CHECK(same_start_state(&node, &before) && node.n_awaiting == 0);
     while (more) {
         gz_action_list_init(&out, slots, 80, bytes, sizeof bytes);
         if (gz_node_start(&node, &reader, &out, &more) != GZ_OK) break;
@@ -668,14 +668,16 @@ static void test_a_start_of_a_thousand_replies_completes(void)
     CHECK(node.next_serial == 1001);
 }
 
-/* A ping record the dead program handed over completes after the start has
- * begun. Its reply is resent before it is recorded as sent. */
+/* THE FENCE (ports.h). Storage that gains a batch of the dead program after
+ * the start's first call is refused: the start fails rather than record a
+ * reply it never resent. First while resending: ping 2 completes after the
+ * step that resent ping 1. */
 static void plant_a_late_ping(size_t step)
 {
     if (step == 0) journal_plant_ping(2, 2);
 }
 
-static void test_a_ping_that_completes_during_the_start_is_resent(void)
+static void test_a_ping_that_completes_during_the_start_is_refused(void)
 {
     static gz_runner_slot_t r_slots[8];
     static uint8_t r_bytes[512];
@@ -685,21 +687,19 @@ static void test_a_ping_that_completes_during_the_start_is_resent(void)
     journal_plant_ping(1, 1);
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
     CHECK(gz_runner_init(&runner, r_slots, 8, r_bytes, sizeof r_bytes, 2, journal_execute, NULL) == GZ_OK);
-    CHECK(start_through_runner(&node, &runner, plant_a_late_ping) == 0);
-    CHECK(g_reply_count[1] == 1 && g_record_count[1] == 1);
-    CHECK(g_reply_count[2] == 1 && g_record_count[2] == 1);        /* sent, then recorded: never recorded unsent */
+    CHECK(start_through_runner(&node, &runner, plant_a_late_ping) == -1);
+    CHECK(g_reply_count[1] == 1 && g_record_count[1] == 0 && g_record_count[2] == 0);
 }
 
-/* A ping lands late, after resending has finished but before the first
- * "sent" record, and beyond the first chunk the record pass looks at. Its
- * reply must still leave before any save of the start (seed 411 of profile
- * 7: otherwise it waited behind a save that was then lost). */
+/* Then while recording, beyond the first chunk the record pass looks at
+ * (the review's case D2: without the fence the start recorded ping 13 as
+ * answered without ever resending its reply). */
 static void plant_beyond_the_first_chunk(size_t step)
 {
     if (step == 1) journal_plant_ping(13, 13);
 }
 
-static void test_a_late_ping_beyond_the_first_chunk_is_resent_before_any_save(void)
+static void test_a_ping_that_completes_while_recording_is_refused(void)
 {
     static gz_runner_slot_t r_slots[16];
     static uint8_t r_bytes[1024];
@@ -709,10 +709,40 @@ static void test_a_late_ping_beyond_the_first_chunk_is_resent_before_any_save(vo
     for (uint64_t serial = 1; serial <= 12; serial++) journal_plant_ping(serial, serial);
     CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
     CHECK(gz_runner_init(&runner, r_slots, 16, r_bytes, sizeof r_bytes, 2, journal_execute, NULL) == GZ_OK);
-    CHECK(start_through_runner(&node, &runner, plant_beyond_the_first_chunk) >= 0);
-    CHECK(g_reply_count[13] == 1 && g_record_count[13] == 1);
-    CHECK(g_first_save_at > 0 && g_reply_at[13] > 0 && g_reply_at[13] < g_first_save_at);
-    for (uint64_t serial = 1; serial <= 12; serial++) CHECK(g_reply_count[serial] == 1 && g_record_count[serial] == 1);
+    CHECK(start_through_runner(&node, &runner, plant_beyond_the_first_chunk) == -1);
+    CHECK(g_reply_count[13] == 0 && g_record_count[13] == 0);      /* never recorded as answered */
+    for (uint64_t serial = 1; serial <= 12; serial++) CHECK(g_reply_count[serial] == 1 && g_record_count[serial] == 0);
+}
+
+/* The fence is the last earlier batch storage held at the first call. With
+ * nothing gained, the start completes past it while its own runner's batches
+ * appear between steps; one more earlier batch after it fails the start. */
+static void plant_own_then_earlier(size_t step)
+{
+    if (step == 0) journal_plant_ping(3, 3);
+}
+
+static void test_the_fence_is_taken_at_the_first_call(void)
+{
+    static gz_runner_slot_t r_slots[8];
+    static uint8_t r_bytes[512];
+    gz_node_t node;
+    gz_runner_t runner;
+    journal_reset();
+    journal_plant_ping(1, 1);
+    journal_plant_ping(2, 2);
+    CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+    CHECK(gz_runner_init(&runner, r_slots, 8, r_bytes, sizeof r_bytes, 2, journal_execute, NULL) == GZ_OK);
+    CHECK(start_through_runner(&node, &runner, NULL) == 0);            /* no fence broken: completes */
+    CHECK(node.start_fenced && node.start_fence.incarnation == 1 && node.start_fence.sequence == 2);
+    CHECK(g_record_count[1] == 1 && g_record_count[2] == 1);
+    journal_reset();
+    journal_plant_ping(1, 1);
+    journal_plant_ping(2, 2);
+    CHECK(gz_node_init(&node, &PORTS) == GZ_OK);
+    CHECK(gz_runner_init(&runner, r_slots, 8, r_bytes, sizeof r_bytes, 2, journal_execute, NULL) == GZ_OK);
+    CHECK(start_through_runner(&node, &runner, plant_own_then_earlier) == -1);
+    CHECK(g_record_count[3] == 0);
 }
 
 /* ---- end to end ---- */
@@ -863,8 +893,9 @@ int main(void)
     test_awaited_batches_wrap_around();
     test_a_confirmation_takes_one_batch();
     test_a_start_of_a_thousand_replies_completes();
-    test_a_ping_that_completes_during_the_start_is_resent();
-    test_a_late_ping_beyond_the_first_chunk_is_resent_before_any_save();
+    test_a_ping_that_completes_during_the_start_is_refused();
+    test_a_ping_that_completes_while_recording_is_refused();
+    test_the_fence_is_taken_at_the_first_call();
     test_event_to_executor_and_again_after_a_restart();
     CHECK(g_random_calls == 0);     /* nothing but a restored start draws randomness */
     test_a_restored_start_saves_its_restore_batch_first();

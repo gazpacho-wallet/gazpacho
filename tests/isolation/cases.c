@@ -66,7 +66,7 @@ int f(void) { return n++; }
 #elif CASE == 23    /* a constructor, which runs before main */
 __attribute__((constructor)) static void boot(void) { static volatile int x; x++; }
 int f(void) { return 0; }
-#elif CASE == 24    /* a checker-exempt name used for ordinary state (caught unless --sanitized) */
+#elif CASE == 24    /* a checker's name used for ordinary state (caught, --sanitized too) */
 static int __asan_sneaky;
 int f(void) { return __asan_sneaky++; }
 #elif CASE == 25    /* a checker-exempt name used for an outside call */
@@ -103,6 +103,100 @@ uint64_t f(void) { unsigned a; return __builtin_ia32_rdtscp(&a); }
 uint64_t f(void) { uint64_t v; __asm__ volatile("movq %%fs:0x10,%0" : "=r"(v)); return v; }
 #elif CASE == 35    /* the kernel's fixed time() entry, its address written as a constant */
 long f(void) { return ((long (*)(long *))(uintptr_t)0xffffffffff600400ull)(0); }
+#elif CASE == 36    /* a global variable left to the linker (a common symbol), despite -fno-common */
+int counter __attribute__((common));
+int f(void) { return counter++; }
+#elif CASE == 37    /* a writable pointer to data, which lands in .data.rel.local, not .data.rel.ro */
+static int x;
+static int *p = &x;
+int **f(void) { return &p; }
+#elif CASE == 38    /* thread-local state of its own, initial-exec model (GOTTPOFF) */
+extern _Thread_local int t __attribute__((tls_model("initial-exec")));
+int f(void) { return t++; }
+#elif CASE == 39    /* a call to a real function of a checker's runtime (the heap size) */
+extern unsigned long __sanitizer_get_current_allocated_bytes(void);
+unsigned long f(void) { return __sanitizer_get_current_allocated_bytes(); }
+#elif CASE == 41    /* inline assembly, spelt __asm */
+void f(void) { __asm volatile("nop"); }
+#elif CASE == 42    /* inline assembly, spelt asm (built with -fasm -Wno-language-extension-token: a keyword again) */
+void f(void) { asm volatile("nop"); }
+#elif CASE == 43    /* inline assembly only in a release build */
+void f(void) {
+#ifdef NDEBUG
+    __asm__ volatile("rdpru" ::: "eax", "edx");
+#endif
+}
+#elif CASE == 44    /* inline assembly only in an optimised build */
+void f(void) {
+#ifdef __OPTIMIZE__
+    __asm__ volatile("vmcall" ::: "memory");
+#endif
+}
+#elif CASE == 45    /* state under a checker's name, only in a sanitizer build (gcc's macro, clang's test) */
+#if defined(__SANITIZE_ADDRESS__)
+#define UNDER_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define UNDER_ASAN 1
+#endif
+#endif
+#ifdef UNDER_ASAN
+static int __asan_state;
+int f(void) { return __asan_state++; }
+#else
+int f(void) { return 0; }
+#endif
+#elif CASE == 46    /* %gs, beside a thread-local reference the sanitized check allows */
+extern _Thread_local long __msan_param_tls[8] __attribute__((tls_model("initial-exec")));
+long f(void) { long v; __asm__ volatile("movq %%gs:0,%0" : "=r"(v)); return v + __msan_param_tls[1]; }
+#elif CASE == 47    /* %fs at an offset of its own, beside the same */
+extern _Thread_local long __msan_param_tls[8] __attribute__((tls_model("initial-exec")));
+long f(void) { long v; __asm__ volatile("movq %%fs:0x10,%0" : "=r"(v)); return v + __msan_param_tls[1]; }
+#elif CASE >= 70 && CASE <= 90   /* one listed instruction each, by its mnemonic */
+#define ONE(text) void f(void) { __asm__ volatile(text ::: "eax", "ecx", "edx", "memory"); }
+#if CASE == 70
+ONE("lar %%eax,%%eax")
+#elif CASE == 71
+ONE("sidt (%%rsp)")
+#elif CASE == 72
+ONE("smsw %%eax")
+#elif CASE == 73
+ONE("verr %%ax")
+#elif CASE == 74
+ONE("verw %%ax")
+#elif CASE == 75
+ONE("xabort $1")
+#elif CASE == 76
+ONE("xtest")
+#elif CASE == 77
+ONE("rdpkru")
+#elif CASE == 78
+ONE("sysexitl")
+#elif CASE == 79
+ONE("sysretl")
+#elif CASE == 80
+ONE("swapgs")
+#elif CASE == 81
+ONE("tpause %%eax")
+#elif CASE == 82
+ONE("umwait %%eax")
+#elif CASE == 83
+ONE("umonitor %%rax")
+#elif CASE == 84
+ONE("ptwrite %%eax")
+#elif CASE == 85
+ONE("rdpru")
+#elif CASE == 86
+ONE("vmcall")
+#elif CASE == 87
+ONE("vmmcall")
+#elif CASE == 88
+ONE("xsave (%%rsp)")
+#elif CASE == 89
+ONE("xrstor (%%rsp)")
+#elif CASE == 90
+ONE("fninit")
+#endif
 #elif CASE == 40    /* floating point: refused by -mgeneral-regs-only, or by the check where a compiler accepts it */
 double f(double x) { return x * 1.5 + 0.1; }
 /* ---- honest, must pass ---- */

@@ -1462,92 +1462,60 @@ static void test_a_batch_that_completes_late_is_resent(void)
     sim_destroy(sim);
 }
 
-/* FAULTY ON PURPOSE: a program whose start hands its first batch to storage
- * on its own, after the start step that returned it (the test plays that
- * program and carries the save out itself). A batch the dead program left
- * pending may land only until the new program has handed storage a batch;
- * one landing after that would sit behind the new program's batch in the
- * journal. Here the start waits with the new batch already stored, so the
- * confirmation that wakes it finds the old batches still pending. */
-static int g_owing_starting, g_owing_steps;
-static gz_status_t owing_start(void *node, gz_action_list_t *out, int *more)
+/* THE FENCE (ports.h): everything the dead program left pending is settled
+ * before the new program reads storage. A start of three steps, each saving,
+ * notes the late landings at every call: they must all have happened by the
+ * first, the landed and the lost must account for every pending batch, and
+ * every batch of the dead program must come before the new program's in the
+ * journal. */
+static sim_t *g_fence_sim;
+static int g_fence_starting, g_fence_steps;
+static uint64_t g_fence_landed_at_first, g_fence_landed_later;
+static gz_status_t fence_start(void *node, gz_action_list_t *out, int *more)
 {
     (void)node;
     *more = 0;
-    if (!g_owing_starting) return GZ_OK;
-    switch (g_owing_steps++) {
-    case 0:  *more = 1; return multi_save(out, 7, (const uint8_t *)"new", 3);
-    case 1:  *more = 1; return GZ_WAITING;
-    default: g_owing_starting = 0; return GZ_OK;
-    }
-}
-static gz_status_t owing_release(void *ctx, sim_t *sim, uint32_t index, const gz_action_list_t *list)
-{
-    if (g_owing_starting) return GZ_OK;                 /* kept back: handed over by the test below */
-    return eager_release(ctx, sim, index, list);
+    if (!g_fence_starting) return GZ_OK;
+    uint64_t landed = sim_stats(g_fence_sim)->late_landings;
+    if (g_fence_steps == 0) g_fence_landed_at_first = landed;
+    else if (landed != g_fence_landed_at_first) g_fence_landed_later = 1;
+    *more = ++g_fence_steps < 3;
+    if (!*more) g_fence_starting = 0;
+    return multi_save(out, 7, (const uint8_t *)"new", 3);
 }
 
-static void test_no_late_landing_after_a_batch_stored_outside_a_start_step(void)
+static void test_late_batches_land_before_the_new_program_reads_storage(void)
 {
-    sim_config_t c = probe_config(1);
-    c.ops.start = owing_start;
-    c.ops.release = owing_release;
-    c.save_delay_pm = 1000; c.max_save_delay_steps = 20;
-    c.late_save_pm = 1000;                              /* a pending batch lands whenever it may */
-    g_owing_starting = 0; g_owing_steps = 0;
-    sim_t *sim = sim_create(&c);
-    const sim_storage_t *st = sim_node_storage(sim, 0);
-    sim_user_command(sim, 0, (const uint8_t *)"D", 1);
-    sim_user_command(sim, 0, (const uint8_t *)"D", 1);
-    CHECK(sim_storage_pending(st) == 4 && sim_storage_count(st) == 0);
-    g_owing_starting = 1;
-    sim_crash_node(sim, 0);                             /* one lands before each of the two start steps */
-    CHECK(!sim_failed(sim) && sim_stats(sim)->late_landings == 2 && trace_has(sim, "start-waiting node=0"));
-    gz_action_t slots[1];
-    uint8_t bytes[64];
-    gz_action_list_t list;
-    gz_action_list_init(&list, slots, 1, bytes, sizeof bytes);
-    CHECK(multi_save(&list, 7, (const uint8_t *)"new", 3) == GZ_OK);
-    sim_execute(sim, 0, &list.slots[0]);                /* the new program's first batch reaches storage */
-    CHECK(sim_run(sim, 100) == 100 && !sim_failed(sim) && trace_count(sim, "started node=0") == 2);
-    CHECK(sim_stats(sim)->late_landings == 2 && sim_stats(sim)->saves_lost == 2);
-    size_t n = sim_storage_count(st), len = 0;
-    const uint8_t *last = n == 3 ? sim_storage_batch_bytes(st, 2, &len) : NULL;
-    CHECK(last != NULL && len == 11 && memcmp(last + 8, "new", 3) == 0);   /* the new batch is last */
-    sim_destroy(sim);
-}
-
-/* A batch the dead program left can complete late only until the new
- * program's storage takes its first batch: after that it is gone, so no
- * reply the start resends for it waits behind the start's own saves (found
- * by profile 7 at 20,000 seeds, where such a reply sat behind a save fated
- * never to complete). */
-static void test_late_batches_stop_at_the_first_new_save(void)
-{
-    size_t settled = 0, landed = 0;
+    size_t some_landed = 0, some_lost = 0;
     for (uint64_t seed = 1; seed <= 60; seed++) {
-        sim_config_t c = quiet_config(seed, 1);
-        c.save_delay_pm = 1000; c.max_save_delay_steps = 6;
-        c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 1000;
-        c.late_save_pm = 300;
-        sim_t *sim = sim_create(&c);
-        for (uint8_t i = 1; i <= 6; i++) world_ping(sim, 0, i);
-        sim_run(sim, 8);                                    /* durable, not confirmed: no "sent" records */
-        for (uint8_t i = 7; i <= 12; i++) world_ping(sim, 0, i);
-        sim_run(sim, 1);                                    /* these are still pending */
+        sim_config_t c = probe_config(1);
+        c.seed = seed;
+        c.ops.start = fence_start;
+        c.ops.release = eager_release;
+        c.save_delay_pm = 1000; c.max_save_delay_steps = 20;
+        c.late_save_pm = seed % 3 == 0 ? 1000 : 500;
+        g_fence_starting = 0; g_fence_steps = 0; g_fence_landed_later = 0;
+        sim_t *sim = g_fence_sim = sim_create(&c);
+        const sim_storage_t *st = sim_node_storage(sim, 0);
+        for (int i = 0; i < 3; i++) sim_user_command(sim, 0, (const uint8_t *)"D", 1);
+        CHECK(sim_storage_pending(st) == 6 && sim_storage_count(st) == 0);
+        g_fence_starting = 1;
         sim_crash_node(sim, 0);
-        const char *trace = sim_trace(sim, NULL);
-        const char *first_save = strstr(trace, "save node=0 batch=2.");
-        CHECK(first_save != NULL);
-        if (first_save) CHECK(strstr(first_save, "late-landing node=0") == NULL);
-        settled += trace_has(sim, "orphans-settled node=0");
-        landed += sim_stats(sim)->late_landings > 0;
-        sim_quiesce(sim);
-        CHECK(sim_run(sim, 200) == 200 && !sim_failed(sim));
-        CHECK(saved_replies_not_sent(sim, 1) == 0);
+        CHECK(sim_run(sim, 100) == 100 && !sim_failed(sim) && g_fence_steps == 3);
+        uint64_t landed = sim_stats(sim)->late_landings;
+        CHECK(!g_fence_landed_later && landed == g_fence_landed_at_first);
+        CHECK(landed + sim_stats(sim)->saves_lost == 6);
+        CHECK(sim_storage_count(st) == landed + 3);
+        for (size_t i = 0; i < sim_storage_count(st); i++) {   /* the dead program's first, then "new" */
+            size_t len = 0;
+            const uint8_t *b = sim_storage_batch_bytes(st, i, &len);
+            CHECK((len == 11 && memcmp(b + 8, "new", 3) == 0) == (i >= landed));
+        }
+        some_landed += landed > 0;
+        some_lost += landed < 6;
         sim_destroy(sim);
     }
-    CHECK(settled > 0 && landed > 0);                       /* both happened in some runs */
+    CHECK(some_landed > 0 && some_lost > 0);                /* both happened in some runs */
 }
 
 /* ---- storage that fails inside the executor ---- */
@@ -1933,8 +1901,7 @@ int main(void)
     test_a_start_stops_when_the_node_dies();
     test_an_armed_crash_does_not_outlive_its_program();
     test_a_batch_that_completes_late_is_resent();
-    test_late_batches_stop_at_the_first_new_save();
-    test_no_late_landing_after_a_batch_stored_outside_a_start_step();
+    test_late_batches_land_before_the_new_program_reads_storage();
     test_storage_failure_inside_the_executor();
     test_a_program_that_goes_on_after_a_storage_failure();
     test_invariants_can_look_inside_a_node();

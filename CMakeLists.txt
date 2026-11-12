@@ -78,7 +78,9 @@ set(GZ_NEW_CODE_WARNINGS -Wall -Wextra -Werror)
 # The core is strict C11 (no GNU extensions), freestanding, with no
 # variable-length arrays and no floating point or vector registers.
 # tools/check-core-isolation.sh checks the result.
-set(GZ_CORE_FLAGS -pedantic -Wvla -ffreestanding)
+# -fno-common: a global left to the linker is refused by the isolation check
+# as well (tests/isolation/cases.c, case 36).
+set(GZ_CORE_FLAGS -pedantic -Wvla -ffreestanding -fno-common)
 # -mgeneral-regs-only (no floating-point or vector registers, so the isolation
 # check need not reason about them) exists only on x86 and AArch64.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|i[0-9]86|AMD64|aarch64|arm64")
@@ -127,7 +129,11 @@ endforeach()
 if(GZ_SANITIZE OR CMAKE_C_FLAGS MATCHES "-fsanitize=")
   set(GZ_ISOLATION_MODE --sanitized)    # the checkers add writable sections of their own
 endif()
-string(JOIN " " GZ_CORE_SCAN_FLAGS -std=c11 ${GZ_CORE_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
+# The source scan preprocesses with the build's own flags (and, in the script,
+# again as release, debug and sanitizer builds).
+string(TOUPPER "${CMAKE_BUILD_TYPE}" GZ_BUILD_TYPE_UPPER)
+string(JOIN " " GZ_CORE_SCAN_FLAGS ${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${GZ_BUILD_TYPE_UPPER}} -std=c11 ${GZ_CORE_FLAGS}
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
 add_test(NAME core_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
           $<TARGET_FILE:gazpacho_core> --sources ${CMAKE_C_COMPILER} ${GZ_CORE_SCAN_FLAGS} ${GZ_CORE_SOURCES})

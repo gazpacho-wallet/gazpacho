@@ -447,7 +447,6 @@ static void restore(slot_t *s, size_t keep)
     sim->stats.saves_lost += st->n_pending;
     for (size_t i = 0; i < st->n_pending; i++) free(st->pending[i].blob.bytes);
     st->n_pending = 0;
-    discard_orphans(s);
     s->restore_pending = 1;                 /* the program knows it restored; the node must be told */
     s->restore_first_incarnation = s->incarnation + 1;
     s->needs_rebuild = 1;
@@ -1074,8 +1073,8 @@ static void land_orphan(slot_t *s)
     struct sim_storage *st = &s->storage;
     batch_t b = s->orphans[0];
     memmove(s->orphans, s->orphans + 1, --s->n_orphans * sizeof *s->orphans);
-    /* It lands only while no batch of the new program has reached storage
-     * (continue_start), so it goes last, and the journal stays in order. */
+    /* It lands only before the new program's first start step (the fence,
+     * settle_orphans), so it goes last, and the journal stays in order. */
     size_t at = st->n_durable;
     b.durable_at = b.confirm_at = sim->step;
     st->durable = grow(st->durable, &st->cap_durable, st->n_durable + 1, sizeof *st->durable);
@@ -1099,13 +1098,22 @@ static void discard_orphans(slot_t *s)
     s->n_orphans = 0;
 }
 
-/* The start has finished: storage settles what is left of the earlier
- * program, and the events held back are handed on. */
+/* The fence (ports.h): before the new program's first start step, storage
+ * settles what the earlier one left pending. Batches complete in the order
+ * handed over, each with chance late_save_pm; the first that does not is
+ * gone, and so is everything after it. */
+static void settle_orphans(slot_t *s)
+{
+    while (s->n_orphans && sim_rng_chance(&s->sim->rng, s->sim->cfg.late_save_pm)) land_orphan(s);
+    if (s->n_orphans) trace(s->sim, "orphans-lost node=%u gone=%zu", s->index, s->n_orphans);
+    discard_orphans(s);
+}
+
+/* The start has finished: the events held back are handed on. */
 static void finish_start(slot_t *s)
 {
     sim_t *sim = s->sim;
     s->starting = 0;
-    discard_orphans(s);
     trace(sim, "started node=%u steps=%zu held-back=%zu", s->index, s->start_steps, s->n_deferred);
     for (size_t i = 0; i < s->n_deferred; i++) {
         sim->queue = grow(sim->queue, &sim->cap_queue, sim->q_len + 1, sizeof *sim->queue);
@@ -1125,8 +1133,6 @@ static void continue_start(slot_t *s)
     gz_action_list_t list;
     while (s->starting && !s->needs_rebuild && !sim->violation) {
         int more = 1;
-        if (s->n_orphans && s->n_saves_stored == 0 && sim_rng_chance(&sim->rng, sim->cfg.late_save_pm))
-            land_orphan(s);
         gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
         gz_status_t st = s->start_steps++ == MAX_START_STEPS ? GZ_ERR_NO_SPACE : sim->cfg.ops.start(s->node, &list, &more);
         if (st == GZ_WAITING) {
@@ -1140,10 +1146,6 @@ static void continue_start(slot_t *s)
             return;
         }
         release_list(s, &list, 1);
-        if (s->n_orphans && s->n_saves_stored > 0) {   /* storage took a new batch: the old ones are settled */
-            trace(sim, "orphans-settled node=%u gone=%zu", s->index, s->n_orphans);
-            discard_orphans(s);
-        }
         if (!more && !s->needs_rebuild) finish_start(s);
     }
 }
@@ -1162,6 +1164,7 @@ static void build_node(slot_t *s)
     (void)gz_runner_init(&s->runner, s->runner_slots, RUNNER_SLOTS, s->runner_bytes, RUNNER_BYTES,
                          s->incarnation, runner_execute, s);
     s->storage.reader_incarnation = s->incarnation;
+    settle_orphans(s);                                  /* the fence: before anything reads storage */
     s->storage.reader_restored = s->restore_pending;
     s->started_restored = s->restore_pending && sim->cfg.ops.start != NULL;
     s->emitted_any = 0;
@@ -1174,7 +1177,6 @@ static void build_node(slot_t *s)
     s->start_steps = 0;
     s->starting = sim->cfg.ops.start != NULL;
     if (s->starting) continue_start(s);
-    else discard_orphans(s);
 }
 
 static void free_blobs(blob_t *blobs, size_t n)
@@ -1185,7 +1187,7 @@ static void free_blobs(blob_t *blobs, size_t n)
 /* A crash: destroy everything of the node except its durable storage, then
  * build it again. Its peers see the connection drop and come back. What the
  * dead program had handed to storage and was still pending is lost, or, with
- * late_save_pm, may still complete while the new program starts. */
+ * late_save_pm, may still complete before the new program reads storage. */
 static void rebuild(slot_t *s)
 {
     sim_t *sim = s->sim;
@@ -1194,7 +1196,6 @@ static void rebuild(slot_t *s)
           sim->cfg.ops.release ? (size_t)0 : gz_runner_held(&s->runner));
     check_extra_invariants(sim);
     sim->cfg.ops.destroy(sim->ops_ctx, s->node);
-    discard_orphans(s);
     if (sim->cfg.late_save_pm && s->storage.n_pending > 0) {
         s->orphans = grow(s->orphans, &s->cap_orphans, s->storage.n_pending, sizeof *s->orphans);
         memcpy(s->orphans, s->storage.pending, s->storage.n_pending * sizeof *s->orphans);
