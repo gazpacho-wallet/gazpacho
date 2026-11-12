@@ -64,6 +64,15 @@ Interface consequences for 1.1.0: a "covered" figure under "my money"; a warning
 
 **On-chain reserve** (answer A): no reserve required or recommended in 1.0.0. Members who receive nothing, or who move to the next factory, never need one; only a member who chooses to leave alone pays fees. Use pay-to-anchor outputs so the host or anyone can raise a fee, and build a "speed up a stuck transaction" action. Document and plan the alternatives (fee tiers signed in advance, paying the fee from the member's own output, a paid fee-bump helper) and show A/B samples later.
 
+### 7. The dedication in the wallet (proposed 2026-11-11)
+
+`DEDICATION.md` is part of the product, not only the repository:
+- **About** (in Settings, Application or Help): three entries, "Dedication", "Credits" and "Licences". The dedication page shows the full text.
+- **Credits:** the SuperScalar design (ZmnSCPxj) and code, the libraries Gazpacho is built on (libsecp256k1, libsecp256k1-zkp, OpenSSL's libcrypto, libcurl), the Lightning and Bitcoin specifications, and contributors. **Licences:** every bundled library's licence text, which the licences require anyway.
+- **First run:** one quiet line on the last screen, "Gazpacho is dedicated to the developers who paid for our freedom to hold our own keys", linking to the dedication. Shown once, never in the way.
+- **The program:** `gazpacho --version` prints a one-line dedication under the version.
+- Never a pop-up, never on the home screen.
+
 ### 3. Buying receiving room is for 1.1.0
 
 Buying liquidity, splicing and channels opened on demand are not in 1.0.0. They are designed for, documented, and built behind a switch that is off: the interface keeps a hidden place for them, the local API reserves the calls, and the terms record reserves the fee field. Everything about them is marked "1.1.0".
