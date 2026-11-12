@@ -1,0 +1,84 @@
+# Mutants for tools/mutate-api.py: NAME, FILE, OLD, NEW, [OCCURRENCE], tab-separated.
+# In OLD and NEW, \n stands for a newline, \t for a tab and \\ for a backslash.
+host-check-skipped	ports/api/route.c	if (r->host_count != 1 || !host_allowed(srv, c, r->host)) {	if (0) {
+host-duplicate-allowed	ports/api/route.c	if (r->host_count != 1 || !host_allowed	if (r->host_count < 1 || !host_allowed
+origin-not-required	ports/api/route.c	if ((unsafe || r->origin_count) && !origin_matches(r)) {	if (r->origin_count && !origin_matches(r)) {
+origin-prefix-only	ports/api/route.c	return strncmp(r->origin, "http://", 7) == 0 && strcmp(r->origin + 7, r->host) == 0;	return strncmp(r->origin, "http://", 7) == 0 && strncmp(r->origin + 7, r->host, 9) == 0;
+origin-scheme-ignored	ports/api/route.c	return strncmp(r->origin, "http://", 7) == 0 && strcmp	return strlen(r->origin) > 7 && strcmp
+same-site-accepted	ports/api/route.c	int ok = strcmp(r->sec_site, "same-origin") == 0;	int ok = strcmp(r->sec_site, "same-origin") == 0 || strcmp(r->sec_site, "same-site") == 0;
+none-accepted-on-api	ports/api/route.c	if (!is_api && strcmp(r->sec_site, "none") == 0) ok = 1;	if (strcmp(r->sec_site, "none") == 0) ok = 1;
+first-run-exception-always	ports/api/route.c	                wallet_state(srv) == GZ_API_WALLET_NONE)\n                ok = 1;	                1)\n                ok = 1;
+sec-dest-ignored	ports/api/route.c	if (is_api && r->sec_dest[0] && strcmp(r->sec_dest, "empty") != 0)	if (0)
+content-type-unchecked	ports/api/route.c	if (r->ctype_count != 1 || !json_ctype(r->ctype)) return answer(srv, c, 415	if (0) return answer(srv, c, 415
+charset-any	ports/api/route.c	return strcasecmp(p, "charset=utf-8") == 0;	return 1;
+chunked-allowed	ports/api/route.c	if (r->has_te) return answer(srv, c, 411, "length_required", NULL);	
+upgrade-allowed	ports/api/route.c	if (r->upgrade[0] || has_token(r->connection, "upgrade")) return answer(srv, c, 400, "no_upgrade", NULL);	
+options-to-handlers	ports/api/route.c	if (r->method == M_OPTIONS) return answer(srv, c, 405, "no_cors", NULL);	
+body-limit-fourfold	ports/api/route.c	if (r->has_cl && r->content_length > srv->lim.max_body_bytes)	if (r->has_cl && r->content_length > srv->lim.max_body_bytes * 4)
+header-lines-plus-one	ports/api/http.c	if (c->req.nh >= c->srv_max_lines) {	if (c->req.nh >= c->srv_max_lines + 1) {
+head-size-unbounded	ports/api/http.c	            if (n > room) n = room;\n            if (n == 0) { fail(srv, c, 431); return; }	
+deadlines-off	ports/api/server.c	if (c->state != CS_DEAD && c->state != CS_BUSY && c->state != CS_STREAM && now >= c->deadline) {	if (0) {
+connection-cap-plus-one	ports/api/server.c	if (srv->nconns >= srv->lim.max_connections) {	if (srv->nconns > srv->lim.max_connections) {
+peer-check-skipped	ports/api/server.c	if (!gz_peer_same_user(srv, fd)) {	if (0) {
+peer-uid-not-compared	ports/api/peer.c	    return (int64_t)uid == srv->expect_uid;	    return 1;
+# Equivalent, so not run: peer-not-found-served. A lookup that ends NOT_FOUND leaves uid at UINT32_MAX,
+# (uid_t)-1, which is never the program's own account (geteuid), so the uid comparison refuses it the same.
+# peer-not-found-served	ports/api/peer.c	if (r != FOUND) return 0;	if (r == UNAVAILABLE) return 0;
+peercred-not-compared	ports/api/peer.c	return (int64_t)cr.uid == srv->expect_uid;	return 1;
+proc-ports-swapped	ports/api/peer.c	if (lp == pport && rp == lport &&	if (lp == lport && rp == pport &&
+session-host-unbound	ports/api/session.c	if (strcmp(match->host, host) != 0) return NULL;	
+idle-sign-out-off	ports/api/session.c	if (now - s->last_input >= srv->lim.idle_sign_out_ms) return 1;	
+events-keep-session-awake	ports/api/route.c	if (strcmp(r->user, "1") == 0) s->last_input = now;	s->last_input = now;
+ninth-ends-newest	ports/api/session.c	if (!oldest || srv->sess[i].last_used < oldest->last_used)	if (!oldest || srv->sess[i].last_used > oldest->last_used)
+fresh-window-ignored	ports/api/route.c	if ((r->route->flags & F_FRESH) && !r->fresh && !r->bearer) {	if (0) {
+fresh-forever	ports/api/session.c	return s && gz_now_ms(srv) < s->fresh_until;	return s != NULL;
+resume-without-fresh	ports/api/route.c	if (!r->fresh && !r->bearer) { gz_respond_error(srv, c, 403, "fresh_sign_in_needed", NULL, NULL); break; }	
+attempts-gate-off	ports/api/route.c	        gz_attempts_gate(srv, now_s, &retry)) {	        0) {
+wrong-not-counted	ports/api/route.c	        gz_attempts_wrong(srv, now_s);	
+delay-never-doubles	ports/api/session.c	delay = k >= 10 ? 900 : ((int64_t)1 << k);	delay = 1;
+missing-file-not-strict	ports/api/session.c	srv->att_blocked_until = now + 900;	srv->att_blocked_until = 0;
+attempts-checksum-unchecked	ports/api/session.c	if (!gz_ct_eq(h, in + 69, 16)) return -1;	
+right-does-not-reset	ports/api/session.c	    srv->att_wrong = 0;\n    srv->att_blocked_until = 0;\n    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file	    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file
+slot-unbounded	ports/api/derive.c	} else if (!srv->queued) {	} else if (1) {
+rid-digest-ignored	ports/api/route.c	strcmp(e->path, r->path) == 0 && gz_ct_eq(e->digest, d, 32)	strcmp(e->path, r->path) == 0
+rid-path-ignored	ports/api/route.c	if (e->method == r->method && strcmp(e->path, r->path) == 0 &&	if (e->method == r->method &&
+rid-never-saved	ports/api/route.c	                rid_save(srv, id, r->method, r->path, d, status,	                if (0) rid_save(srv, id, r->method, r->path, d, status,
+jcs-passphrase-kept	ports/api/json.c	if (strip && c->key_len == 10 && memcmp(c->key, "passphrase", 10) == 0) continue;	
+jcs-unsorted	ports/api/json.c	if (n > 1) qsort(m, n, sizeof *m, utf16_cmp);	
+jcs-byte-order	ports/api/json.c	if (n > 1) qsort(m, n, sizeof *m, utf16_cmp);	if (n > 1) qsort(m, n, sizeof *m, key_cmp);
+json-duplicates-allowed	ports/api/json.c	        if (dup) return 0;	
+json-depth-plus-one	ports/api/json.c	if (depth > GZ_JSON_MAX_DEPTH) return 0;	if (depth > GZ_JSON_MAX_DEPTH + 1) return 0;
+json-int-range-plus-one	ports/api/json.c	if (val > GZ_JSON_MAX_INT) return 0;	if (val > GZ_JSON_MAX_INT + 1) return 0;
+json-lone-high-surrogate	ports/api/json.c	if (lo < 0xdc00 || lo > 0xdfff) return 0;   /* lone high surrogate */	
+json-encoded-surrogate	ports/api/json.c	if (c == 0xed && p[1] >= 0xa0) return 0;         /* surrogate */	
+text-format-chars-kept	ports/api/json.c	|| gz_json_is_format_char(cp)) {	) {
+secret-in-url-allowed	ports/api/route.c	if (name_is_secret(part)) {	if (0) {
+reserved-served	ports/api/route.c	if (r->route->release != R_S1) {	if (0) {
+setup-scope-open	ports/api/route.c	if (s->kind == SK_SETUP && !(rt->flags & F_SETUP)) return answer(srv, c, 403, "not_setup_call", NULL);	
+files-behind-scope-open	ports/api/route.c	if (s->kind == SK_FILES_BEHIND && !(rt->flags & F_FB))	if (0)
+bearer-on-tcp	ports/api/route.c	if (!c->is_unix) return answer(srv, c, 400, "bearer_not_on_tcp", NULL);	
+two-credentials	ports/api/route.c	if (r->session[0]) return answer(srv, c, 400, "two_credentials", NULL);	
+socket-only-on-tcp	ports/api/route.c	if (rt->flags & F_SOCKET) return answer(srv, c, 404, "not_found", NULL);	
+start-token-not-spent	ports/api/session.c	        spend_start_token(srv, now);\n        res = expired	        res = expired
+five-codes-become-six	ports/api/session.c	if (++srv->code_wrong >= 5) {	if (++srv->code_wrong >= 6) {
+code-rate-off	ports/api/session.c	if (srv->code_last_try && now - srv->code_last_try < 1000) return "rate_limited";	
+failed-check-keeps-session	ports/api/route.c	if (!ok && s) gz_session_end(srv, s);	
+revoke-keeps-sessions	ports/api/route.c	        gz_sessions_end_all(srv);\n        gz_wipe(srv->codes	        gz_wipe(srv->codes
+lock-effect-ignored	ports/api/route.c	if (effect == GZ_API_EFFECT_LOCKED) gz_api_locked(srv);	
+stream-cap-three	ports/api/route.c	if (mine >= GZ_STREAMS_PER_SESSION || total >= GZ_STREAMS_MAX) {	if (mine > GZ_STREAMS_PER_SESSION || total >= GZ_STREAMS_MAX) {
+no-session-event	ports/api/events.c	        stream_chunk(srv, c, text, (size_t)n);\n        if (gz_out_add(&c->out,	        if (gz_out_add(&c->out,
+replay-off-by-one	ports/api/events.c	for (s = last + 1; s <= srv->seq; s++) {	for (s = last + 2; s <= srv->seq; s++) {
+headline-files-behind-gone	ports/api/status.c	if (f->wallet == GZ_API_STW_FILES_BEHIND) return "files_behind";	
+lagging-in-doubt	ports/api/status.c	return s == GZ_API_CHAIN_AGREE || s == GZ_API_CHAIN_LAGGING ? "trusted" : "in_doubt";	return s == GZ_API_CHAIN_AGREE ? "trusted" : "in_doubt";
+doing-lowest-wins	ports/api/status.c	if (r < best_rank) { best_rank = r; best = d; }	if (r > best_rank || !best) { best_rank = r; best = d; }
+offline-not-first	ports/api/status.c	if (f->chain_state == GZ_API_CHAIN_OFFLINE_BY_CHOICE) return "nobody_offline";	
+dates-never-hidden	ports/api/status.c	int hide = !dates_ok;	int hide = 0;
+act-now-without-date	ports/api/status.c	if (strcmp(tier, "act_now") == 0 && !f->attention[i].due_json) return -1;   /* act_now has a date */	
+corp-missing	ports/api/http.c	static const char COMMON_HEADERS[] =\n    "Cross-Origin-Resource-Policy: same-origin	static const char COMMON_HEADERS[] =\n    "X-Gazpacho-Mutant: 1
+csp-missing	ports/api/http.c	kind == BK_PAGE ? gz_page_headers() : CSP_NONE,	kind == BK_PAGE ? gz_page_headers() : "",
+no-store-missing	ports/api/http.c	%s%s%sCache-Control: no-store	%s%s%sX-Mutant: 1
+421-with-body	ports/api/route.c	gz_respond(srv, c, 421, BK_EMPTY, NULL, NULL, 0);	gz_respond_error(srv, c, 421, "bad_host", NULL, NULL);
+unknown-field-accepted	ports/api/route.c	        if (!known) {	        if (0) {
+unknown-query-accepted	ports/api/route.c	if (!ok) { gz_respond_error(srv, c, 400, "unknown_field", fieldname, NULL); return 1; }	
+kind-a-skips-check	ports/api/route.c	        call_backend(srv, c, 1, &answered);\n        if (answered) break;	        answered = 0;
+two-session-headers	ports/api/route.c	    if (r->session_count > 1) return answer(srv, c, 401, "not_signed_in", NULL);	

@@ -185,3 +185,6 @@ add_subdirectory(wallet)
 
 # --- chain view port (Esplora backend, comparing backend, gz-chain) ------------
 add_subdirectory(ports/chain)
+
+# --- the local API server (spec/local-api.md), its fake backend and tests ------
+add_subdirectory(ports/api)
