@@ -209,3 +209,6 @@ foreach(target noise tlv)
 endforeach()
 
 add_subdirectory(wallet)
+
+# --- chain view port (Esplora backend, comparing backend, gz-chain) ------------
+add_subdirectory(ports/chain)

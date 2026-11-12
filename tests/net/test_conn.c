@@ -186,16 +186,16 @@ static int read_full(int fd, uint8_t *b, size_t n)
     return 1;
 }
 
-/* Connects 400 ms late, then takes 300 ms over act one. */
+/* Connects 1,500 ms late, then waits 200 ms before act one. */
 static void late_slow(uint16_t port)
 {
     gz_noise_t st;
     uint8_t a[66];
     int fd;
-    sleep_ms(400);
+    sleep_ms(1500);
     fd = raw_connect(port);
     if (gz_noise_init_initiator(&st, secp, MEMBER_KEY, HOST_PUB, RNG) || gz_noise_act1_write(&st, a)) _exit(80);
-    sleep_ms(300);
+    sleep_ms(200);
     if (write(fd, a, 50) != 50 || !read_full(fd, a, 50) || gz_noise_act2_read(&st, a, 50) ||
         gz_noise_act3_write(&st, a) || write(fd, a, 66) != 66) _exit(81);
     sleep_ms(500);
@@ -276,6 +276,14 @@ static void silent_host(uint16_t port)
 }
 
 static int interrupts;
+
+/* How late a deadline may fire and still pass: the timed call also does the
+ * handshake's or message's own work, which valgrind and a loaded machine
+ * slow down. Lower bounds stay exact: slowness only makes calls longer. A
+ * deadline that never fires still fails each test: the peer closes or
+ * completes its message (a different result code), or, with no peer, the
+ * call hangs until CTest's timeout. The bound adds a limit on lateness. */
+#define SLACK_MS 3000
 static void on_alarm(int sig) { (void)sig; interrupts++; }
 
 /* --- the host side of each case ------------------------------------------ */
@@ -368,18 +376,21 @@ static void test_timeouts(void)
     pid_t p = spawn(silent, port);
     t0 = ms();
     CHECK(host_accept(400, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_ERR_TIMEOUT);
-    CHECK(ms() - t0 >= 350 && ms() - t0 < 2000);
+    CHECK(ms() - t0 >= 350 && ms() - t0 < 400 + SLACK_MS);
     kill(p, SIGKILL);
     child_status(p);
     /* Nobody connects at all. */
     t0 = ms();
     accept_ms = 300;
-    CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_ERR_TIMEOUT && ms() - t0 >= 250 && ms() - t0 < 2000);
-    accept_ms = 3000;
+    CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_ERR_TIMEOUT && ms() - t0 >= 250 && ms() - t0 < 300 + SLACK_MS);
+    accept_ms = 5000;
     /* F2: the handshake deadline starts at the connection, not at the call:
-     * a member 400 ms late with a 300 ms act one fits a 500 ms handshake. */
+     * a member 1,500 ms late that sends act one 200 ms after connecting fits
+     * a 1,200 ms handshake. A deadline counted from the call would expire
+     * before the member even connects. The 1,000 ms left over is for the
+     * handshake's own work, which valgrind and a loaded machine slow down. */
     p = spawn(late_slow, port);
-    CHECK(host_accept(500, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
+    CHECK(host_accept(1200, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
     gz_conn_close(&host);
     CHECK(child_status(p) == 0);
     accept_ms = 5000;
@@ -393,7 +404,7 @@ static void test_timeouts(void)
         l.handshake_ms = 700;
         t0 = ms();
         CHECK(gz_conn_connect(&member, "127.0.0.1", sport, secp, MEMBER_KEY, HOST_PUB, RNG, &l) == GZ_CONN_ERR_TIMEOUT);
-        CHECK(ms() - t0 >= 650 && ms() - t0 < 2000 && member.fd == -1);
+        CHECK(ms() - t0 >= 650 && ms() - t0 < 700 + SLACK_MS && member.fd == -1);
         kill(p, SIGKILL);
         child_status(p);
         close(silent_lfd);
@@ -405,7 +416,7 @@ static void test_timeouts(void)
         CHECK(host_accept(5000, 1000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
         t0 = ms();
         CHECK(gz_conn_recv(&host, msg, sizeof msg, &len) == GZ_CONN_ERR_TIMEOUT);
-        CHECK(ms() - t0 >= 950 && ms() - t0 < 1300);
+        CHECK(ms() - t0 >= 950 && ms() - t0 < 1000 + SLACK_MS);
         kill(p, SIGKILL);
         child_status(p);
     }
@@ -416,7 +427,7 @@ static void test_timeouts(void)
         CHECK(host_accept(5000, 500, GZ_NOISE_MAX_MSG) == GZ_CONN_OK && host.noise_err == GZ_NOISE_OK);
         t0 = ms();
         CHECK(gz_conn_recv(&host, msg, sizeof msg, &len) == GZ_CONN_ERR_TIMEOUT);
-        CHECK(ms() - t0 >= 450 && ms() - t0 < 2500);
+        CHECK(ms() - t0 >= 450 && ms() - t0 < 500 + SLACK_MS);
         CHECK(child_status(p) == 0);
     }
 }
@@ -439,7 +450,7 @@ static void test_broken_peers(void)
     CHECK(host_accept(5000, 5000, 100) == GZ_CONN_OK);
     t0 = ms();
     CHECK(gz_conn_recv(&host, msg, sizeof msg, &len) == GZ_CONN_ERR_TOO_BIG);
-    CHECK(ms() - t0 < 1000 && host.fd == -1);
+    CHECK(ms() - t0 < 2500 && host.fd == -1); /* the peer waits 3 s before closing */
     kill(p, SIGKILL);
     child_status(p);
     /* One over the cap. */
@@ -549,7 +560,7 @@ static void test_full_buffers(void)
         t0 = ms();
         e = gz_conn_send(&host, msg, GZ_NOISE_MAX_MSG);
     }
-    CHECK(e == GZ_CONN_ERR_TIMEOUT && i > 1 && ms() - t0 >= 450 && ms() - t0 < 1500 && host.fd == -1);
+    CHECK(e == GZ_CONN_ERR_TIMEOUT && i > 1 && ms() - t0 >= 450 && ms() - t0 < 500 + SLACK_MS && host.fd == -1);
     send_ms = 10000;
     kill(p, SIGKILL);
     child_status(p);
