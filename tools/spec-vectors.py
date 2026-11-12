@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compute the test vectors printed in spec/terms.md, spec/messages.md,
-spec/journal.md, spec/discovery.md and (section E) spec/storage-encryption.md.
+spec/journal.md, spec/discovery.md, (section E) spec/storage-encryption.md and
+(section X, deadline arithmetic) spec/exit.md.
 Factory messages use the native type 52791; vector M3 shows the same bytes
 through the bLIP-56 adapter (open PR lightning/blips#56).
 
@@ -1408,7 +1409,7 @@ show(f"native host_list_request (kind {K_HL_REQ})", native(K_HL_REQ, hlr))
 
 
 # ===================================================== storage-encryption.md =====
-# Section E, draft 1 (2026-11-12). Storage encryption: the passphrase key (Argon2id,
+# Section E, draft 2 (2026-11-12). Storage encryption: the passphrase key (Argon2id,
 # RFC 9106), subkeys (HKDF-SHA256, RFC 5869), XChaCha20-Poly1305 (RFC 8439 with
 # draft-irtf-cfrg-xchacha-03) with hedged nonces, the key file, the encrypted journal,
 # the guard file and the export. Neither Argon2id nor XChaCha20-Poly1305 is in the
@@ -1667,6 +1668,9 @@ print("\n== storage-encryption.md: vector E0, primitives checked against RFC 843
 # ---------------------------------------------------- storage test values -------
 # THESE ARE TEST VALUES, derived from public strings. Real files draw every salt,
 # identifier, key and nonce input r from the operating system's random source.
+# Draft 2: every sealing key has its own nonce key from the same input keying
+# material under its own label (review F14); passphrase-derived wraps carry a key
+# commitment (F12); the key file is 363 bytes and the export slot ends at 188.
 def tv(label, n=32):
     return hashlib.sha256(b"gazpacho test " + label.encode()).digest()[:n]
 
@@ -1679,19 +1683,38 @@ def derive(ikm, label, ctx):
     return hkdf_sha256(ikm, HKDF_SALT, label.encode() + b"\x00" + ctx, 32)
 
 
-def seal(key, r, pt, ad):
-    """Section 5.2: XChaCha20-Poly1305 with a hedged nonce. r is 32 fresh random bytes;
-    the nonce also depends on the associated data and the plaintext, so a repeated r
-    with different contents still gives a different nonce. Returns (nonce, ct || tag)."""
-    nk = hmac.new(key, b"gazpacho/v1/nonce key", hashlib.sha256).digest()
+def keys(ikm, label, ctx):
+    """A sealing key and its nonce key (section 5.2): labels '<label>' and '<label> nonce'."""
+    return derive(ikm, label, ctx), derive(ikm, label + " nonce", ctx)
+
+
+def seal(kp, r, pt, ad):
+    """Section 5.2: XChaCha20-Poly1305 with a hedged nonce (Bellare-Tackmann).
+    r is 32 fresh random bytes. Returns nonce || ct || tag."""
+    k, nk = kp
     n = hmac.new(nk, r + u32(len(ad)) + ad + pt, hashlib.sha256).digest()[:24]
-    return n, xchacha_encrypt(key, n, pt, ad)
+    return n + xchacha_encrypt(k, n, pt, ad)
 
 
-def sealed(key, label, pt, ad):
-    """seal() with the test input r = sha256('gazpacho test r: <label>'); nonce || ct || tag."""
-    n, c = seal(key, tv("r: " + label), pt, ad)
-    return n + c
+def sealed(kp, label, pt, ad):
+    """seal() with the test input r = sha256('gazpacho test r: <label>')."""
+    return seal(kp, tv("r: " + label), pt, ad)
+
+
+def unseal(kp, data, ad):
+    return xchacha_decrypt(kp[0], data[:24], data[24:], ad)
+
+
+def commitment(pk, label, ctx, ad):
+    """Section 4.6: key commitment of a passphrase-derived wrap (review F12)."""
+    return hmac.new(derive(pk, label, ctx), ad, hashlib.sha256).digest()
+
+
+KDF_CEIL_M = 4_194_304                       # KiB; the implementation also caps it (4.2)
+
+
+def params_ok(alg, t, m, p, floor):
+    return alg == 1 and p == 1 and floor[0] <= t <= 16 and floor[1] <= m <= KDF_CEIL_M
 
 
 def nfc_utf8(s):
@@ -1737,21 +1760,22 @@ else:
     print(f"== vector E2r (t = {T_REAL}, m = {M_REAL} KiB, p = 1, same passphrase and salt):",
           E2R_EXPECTED, "(recomputed only with --slow)")
 
+
 # ---------------------------------------------------- the key file --------------
 KF_MAGIC = b"GZKEYFIL"
-KF_LEN = 331
+KF_LEN = 363
+FLOOR_TEST, FLOOR_RELEASE = (1, 8), (3, 65_536)
 
 
 def key_file(pw, salt, t, m, msk, entropy, seed64, tag):
     head = KF_MAGIC + u8(1) + chain + VAULT_ID + u8(1) + u32(t) + u32(m) + u8(1) + salt
     assert len(head) == 83
     pk = argon2id(nfc_utf8(pw), salt, t, m, 1, 32)
-    kw = derive(pk, "key file wrap", chain + VAULT_ID)
-    kwd = derive(pk, "words", chain + VAULT_ID)
-    ks = derive(msk, "node seed", chain + VAULT_ID)
-    out = (head + sealed(kw, "key file wrap " + tag, msk, head)
-           + sealed(kwd, "key file words " + tag, entropy, head)
-           + sealed(ks, "key file seed", seed64, head[:57]))
+    ctx = chain + VAULT_ID
+    out = (head + commitment(pk, "key file commitment", ctx, head)
+           + sealed(keys(pk, "key file wrap", ctx), "key file wrap " + tag, msk, head)
+           + sealed(keys(pk, "words", ctx), "key file words " + tag, entropy, head)
+           + sealed(keys(msk, "node seed", ctx), "key file seed", seed64, head[:57]))
     assert len(out) == KF_LEN
     return out
 
@@ -1760,21 +1784,23 @@ def kf_params(data):
     return data[57], int.from_bytes(data[58:62], "big"), int.from_bytes(data[62:66], "big"), data[66]
 
 
-def open_key_file(data, pw, floor=(1, 8)):
-    """Section 4.5. Returns (msk, seed64) or the refusal. The words are opened separately (section 9)."""
+def open_key_file(data, pw, floor=FLOOR_TEST):
+    """Section 4.5. Returns (msk, seed64) or the refusal. The words are opened separately (9)."""
     if len(data) != KF_LEN or data[:8] != KF_MAGIC or data[8] != 1:
         return "not a key file"
     if data[9:41] != chain:
         return "other network"
     alg, t, m, p = kf_params(data)
-    if alg != 1 or p != 1 or not (floor[0] <= t <= 16) or not (floor[1] <= m <= 4_194_304):
+    if not params_ok(alg, t, m, p, floor):
         return "parameters refused"
-    head, vid = data[:83], data[41:57]
+    head, ctx = data[:83], chain + data[41:57]
     pk = argon2id(nfc_utf8(pw), data[67:83], t, m, 1, 32)
-    msk = xchacha_decrypt(derive(pk, "key file wrap", chain + vid), data[83:107], data[107:155], head)
+    if not hmac.compare_digest(commitment(pk, "key file commitment", ctx, head), data[83:115]):
+        return "wrong passphrase or damaged key file"
+    msk = unseal(keys(pk, "key file wrap", ctx), data[115:187], head)
     if msk is None:
         return "wrong passphrase or damaged key file"
-    seed = xchacha_decrypt(derive(msk, "node seed", chain + vid), data[227:251], data[251:331], data[:57])
+    seed = unseal(keys(msk, "node seed", ctx), data[259:363], data[:57])
     if seed is None:
         return "damaged key file"
     return msk, seed
@@ -1783,18 +1809,23 @@ def open_key_file(data, pw, floor=(1, 8)):
 def open_words(data, pw):
     _, t, m, _ = kf_params(data)
     pk = argon2id(nfc_utf8(pw), data[67:83], t, m, 1, 32)
-    return xchacha_decrypt(derive(pk, "words", chain + data[41:57]), data[155:179], data[179:227], data[:83])
+    ctx = chain + data[41:57]
+    if not hmac.compare_digest(commitment(pk, "key file commitment", ctx, data[:83]), data[83:115]):
+        return None
+    return unseal(keys(pk, "words", ctx), data[187:259], data[:83])
 
 
 kf1 = key_file(PW1, SALT1, T_TEST, M_TEST, MSK, ENTROPY, SEED64, "1")
+_ctx_v = chain + VAULT_ID
 print(f"\n== vector E3, key file keys.gzk ({KF_LEN} bytes), passphrase of E1, parameters and salt of E2")
 print("  vault_id = sha256('gazpacho test vault id')[0:16] =", VAULT_ID.hex())
 print("  storage key MSK = sha256('gazpacho test storage key') =", MSK.hex())
 print("  words entropy = sha256('gazpacho test words entropy'); BIP 39 seed stand-in = sha512('gazpacho test bip39 seed')")
 print("  nonce inputs r = sha256('gazpacho test r: <label>'), labels 'key file wrap 1', 'key file words 1', 'key file seed'")
-print("  wrap key KW  =", derive(pk1, "key file wrap", chain + VAULT_ID).hex())
-print("  words key KD =", derive(pk1, "words", chain + VAULT_ID).hex())
-print("  seed key KS  =", derive(MSK, "node seed", chain + VAULT_ID).hex())
+print("  commitment key =", derive(pk1, "key file commitment", _ctx_v).hex())
+print("  wrap key KW    =", derive(pk1, "key file wrap", _ctx_v).hex())
+print("  words key KD   =", derive(pk1, "words", _ctx_v).hex())
+print("  seed key KS    =", derive(MSK, "node seed", _ctx_v).hex())
 show("key file", kf1)
 assert open_key_file(kf1, PW1) == (MSK, SEED64)
 assert open_key_file(kf1, PW1_DECOMPOSED) == (MSK, SEED64)
@@ -1806,36 +1837,41 @@ _bad = bytearray(kf1); _bad[65] ^= 0x01                     # m: 64 -> 65 KiB
 assert open_key_file(bytes(_bad), PW1) == "wrong passphrase or damaged key file"
 _bad = bytearray(kf1); _bad[61] = 1                          # t: 3 -> 1
 assert open_key_file(bytes(_bad), PW1) == "wrong passphrase or damaged key file"
-_bad = bytearray(kf1); _bad[300] ^= 0x80                     # seed ciphertext
+_bad = bytearray(kf1); _bad[90] ^= 0x01                      # the key commitment
+assert open_key_file(bytes(_bad), PW1) == "wrong passphrase or damaged key file"
+_bad = bytearray(kf1); _bad[150] ^= 0x01                     # the wrapped MSK
+assert open_key_file(bytes(_bad), PW1) == "wrong passphrase or damaged key file"
+_bad = bytearray(kf1); _bad[330] ^= 0x80                     # seed ciphertext
 assert open_key_file(bytes(_bad), PW1) == "damaged key file"
 _bad = bytearray(kf1); _bad[9] ^= 0x01                       # chain
 assert open_key_file(bytes(_bad), PW1) == "other network"
-assert open_key_file(kf1, PW1, floor=(3, 65_536)) == "parameters refused"   # the release floor
-print("== vector E4 (refuse): E3 opened with the passphrase plus a space; with m changed to 65 KiB;"
-      " with t changed to 1; with one bit of the seed ciphertext flipped; with the chain changed;"
-      " under the release floor (t >= 3, m >= 65536 KiB). Each is refused")
+assert open_key_file(kf1, PW1, floor=FLOOR_RELEASE) == "parameters refused"
+_bad = bytearray(kf1); _bad[62:66] = u32(KDF_CEIL_M + 1)     # above the ceiling: refused before deriving
+assert open_key_file(bytes(_bad), PW1) == "parameters refused"
+print("== vector E4 (refuse): E3 opened with the passphrase plus a space; with m changed to 65 KiB; with t"
+      " changed to 1; with a bit of the key commitment or of the wrapped MSK flipped; with a bit of the seed"
+      " ciphertext flipped (damaged key file); with the chain changed; under the release floor (t >= 3,"
+      " m >= 65536 KiB); with m above the ceiling (refused before any derivation)")
 
 # ---------------------------------------------------- the journal ---------------
 JE_MAGIC = b"GZJOURNE"
 JE_HEADER_LEN = 185
-KJ = derive(MSK, "journal", chain + FILE_ID)
-KR = derive(SEED64, "journal recovery", chain + FILE_ID)
+KJ = keys(MSK, "journal", chain + FILE_ID)
+KR = keys(SEED64, "journal recovery", chain + FILE_ID)
 
 
 def ejournal_header(msk, seed64, file_id):
     jh = JE_MAGIC + u8(1) + chain + VAULT_ID + file_id
-    kj = derive(msk, "journal", chain + file_id)
-    kr = derive(seed64, "journal recovery", chain + file_id)
-    pre = jh + sealed(kr, "journal recovery", msk, jh)
-    out = pre + sealed(kj, "journal header", b"", pre)
+    pre = jh + sealed(keys(seed64, "journal recovery", chain + file_id), "journal recovery", msk, jh)
+    out = pre + sealed(keys(msk, "journal", chain + file_id), "journal header", b"", pre)
     assert len(out) == JE_HEADER_LEN
     return out
 
 
 ehdr = ejournal_header(MSK, SEED64, FILE_ID)
 print(f"\n== vector E5, encrypted journal header ({JE_HEADER_LEN} bytes), file_id = sha256('gazpacho test journal file id')[0:16]")
-print("  journal key KJ  =", KJ.hex())
-print("  recovery key KR =", KR.hex(), "(from the BIP 39 seed)")
+print("  journal key KJ  =", KJ[0].hex(), " nonce key", KJ[1].hex())
+print("  recovery key KR =", KR[0].hex(), "(from the BIP 39 seed)")
 show("header", ehdr)
 
 
@@ -1847,10 +1883,10 @@ def check_header(data, msk=None, seed64=None):
         return "other network"
     jh, fid = data[:73], data[57:73]
     if msk is None:
-        msk = xchacha_decrypt(derive(seed64, "journal recovery", chain + fid), data[73:97], data[97:145], jh)
+        msk = unseal(keys(seed64, "journal recovery", chain + fid), data[73:145], jh)
         if msk is None:
             return "not this wallet's journal"
-    if xchacha_decrypt(derive(msk, "journal", chain + fid), data[145:169], data[169:185], data[:145]) != b"":
+    if unseal(keys(msk, "journal", chain + fid), data[145:185], data[:145]) != b"":
         return "not this wallet's journal"
     return msk
 
@@ -1903,7 +1939,7 @@ def read_ejournal(data, kj=KJ, file_id=FILE_ID):
         if kind not in (1, 2, 3) or (kind in (1, 3) and ln != 65):
             return None
         head = data[p:p + 21]
-        pt = xchacha_decrypt(kj, data[p + 21:p + 45], data[p + 45:p + 4 + ln], file_id + u64(p) + head)
+        pt = unseal(kj, data[p + 21:p + 4 + ln], file_id + u64(p) + head)
         if pt is None or (kind == 3 and int.from_bytes(pt, "big") != p):
             return None
         return p + 4 + ln, kind, int.from_bytes(head[5:13], "big"), int.from_bytes(head[13:21], "big"), pt
@@ -1927,6 +1963,7 @@ def read_ejournal(data, kj=KJ, file_id=FILE_ID):
 st = read_ejournal(EJ_GOOD)
 assert st[0] == "clean" and st[2] == off_m2 and [g[0] for g in st[3]] == [1, 3, 2, 3]
 assert st[3][2][3] == PING
+MARKS_GOOD = [off_m1, off_m2]
 
 # E7: tampering.
 _t = bytearray(EJ_GOOD); _t[off_b + 50] ^= 0x01                         # a bit of the batch ciphertext
@@ -1936,7 +1973,7 @@ assert read_ejournal(bytes(_t))[:2] == ("corrupt", off_b)
 _e7c = read_ejournal(EJ_GOOD + e_b)                                      # the batch appended again
 assert _e7c[:2] == ("torn", len(EJ_GOOD)) and len(_e7c[3]) == 4
 _ofid = tv("other journal file id", 16)
-_spliced = eentry(2, 1, 1, PING, off_b, "other", kj=derive(MSK, "journal", chain + _ofid), file_id=_ofid)
+_spliced = eentry(2, 1, 1, PING, off_b, "other", kj=keys(MSK, "journal", chain + _ofid), file_id=_ofid)
 assert read_ejournal(ehdr + e_inc + e_m1 + _spliced + e_m2)[:2] == ("corrupt", off_b)
 _swap = read_ejournal(ehdr + e_inc + e_m1 + e_m2 + e_b)                 # two entries swapped
 assert _swap[1] == off_b and len(_swap[3]) == 2
@@ -1944,6 +1981,9 @@ _e7g = read_ejournal(EJ_GOOD[:-3])
 assert _e7g[:2] == ("torn", off_m2)
 _e7h = read_ejournal(EJ_GOOD[:off_b])                                    # cut at an entry boundary
 assert _e7h[0] == "clean" and _e7h[2] == off_m1
+_t = bytearray(EJ_GOOD); _t[off_b + 50] ^= 0x01; _t[off_m2 + 50] ^= 0x01   # F25: corruption made to look torn
+_e7i = read_ejournal(bytes(_t))
+assert _e7i[:2] == ("torn", off_b)
 print(f"== vector E7 (tampering), each applied to the {len(EJ_GOOD)} bytes of E5 + E6:")
 print(f"  E7a one bit of the batch ciphertext flipped: invalid at {off_b}, a sync mark follows: corruption, refused")
 print(f"  E7b one bit of the batch's clear incarnation field flipped: the same")
@@ -1954,42 +1994,60 @@ print(f"  E7e the batch and the second mark swapped: invalid at {off_b}; nothing
 print(f"  E7f the last 3 bytes missing: torn tail, cut to {off_m2}")
 print(f"  E7g the file cut at {off_b}, an entry boundary: reads as a clean, shorter journal whose last mark is"
       f" at {off_m1}. Only the guard's high-water mark (E9) shows it")
+print(f"  E7h the batch and every later sync mark damaged: reads as a torn tail at {off_b}, like E7g;"
+      " caught only by the high-water mark (review F25)")
 
 # ---------------------------------------------------- passphrase change ---------
 kf2 = key_file(PW2, SALT2, T_TEST, M_TEST, MSK, ENTROPY, SEED64, "2")
-assert kf2[227:] == kf1[227:]                 # the seed part is copied unchanged
+assert kf2[259:] == kf1[259:]                 # the seed part is copied unchanged
 assert kf2[:67] == kf1[:67]                   # same vault, same parameters
 assert open_key_file(kf2, PW2) == (MSK, SEED64) and open_words(kf2, PW2) == ENTROPY
 assert open_key_file(kf2, PW1) == "wrong passphrase or damaged key file"
 assert open_key_file(kf1, PW1) == (MSK, SEED64)   # an old copy still opens with the old passphrase
 assert check_header(ehdr, msk=open_key_file(kf2, PW2)[0]) == MSK
 print("\n== vector E8, passphrase change to '" + PW2 + "', salt sha256('gazpacho test kdf salt 2')[0:16],"
-      " labels 'key file wrap 2' and 'key file words 2': the same storage key rewrapped; bytes 227 to 330"
+      " labels 'key file wrap 2' and 'key file words 2': the same storage key rewrapped; bytes 259 to 362"
       " (the seed) unchanged; the journal untouched; the old key file still opens with the old passphrase")
 show("new key file", kf2)
 
 # ---------------------------------------------------- the guard file ------------
-KG = derive(SEED64, "guard", chain)
+KG = keys(SEED64, "guard", chain)
 GUARD_PLAIN = u64(3) + u16(1) + u32(0) + u32(2) + u64(1) + FILE_ID + u64(1) + u64(off_m2)
 _gh = b"GZGUARDE" + u8(1) + chain
 e_guard = _gh + sealed(KG, "guard", GUARD_PLAIN, _gh)
 print("\n== vector E9, encrypted guard file guard.gzg: counter 3; one epoch, 0, highest index 2; one round"
       f" started; high-water mark: file_id of E5, incarnation 1, last sync mark at {off_m2}")
-print("  guard key KG =", KG.hex(), "(from the BIP 39 seed)")
+print("  guard key KG =", KG[0].hex(), "(from the BIP 39 seed)")
 show("guard file", e_guard)
-_gp = xchacha_decrypt(KG, e_guard[41:65], e_guard[65:], e_guard[:41])
+_gp = unseal(KG, e_guard[41:], e_guard[:41])
 assert _gp == GUARD_PLAIN
-_hwm_file, _hwm_inc, _hwm_mark = _gp[-32:-16], int.from_bytes(_gp[-16:-8], "big"), int.from_bytes(_gp[-8:], "big")
-assert _hwm_file == FILE_ID and _e7g[2] < _hwm_mark and _e7h[2] < _hwm_mark and st[2] >= _hwm_mark
-print(f"  against E7g's journal (last mark {_e7h[2]}) the guard's mark {_hwm_mark} is ahead: the start is refused"
-      f" as a rolled-back journal (section 6.3); against E6 (last mark {st[2]}) it passes")
+
+
+def behind_guard(journal_state, guard_plain):
+    """Section 6.3 step 2, the mark test: the guard's mark must be a valid sync mark of the journal."""
+    mark = int.from_bytes(guard_plain[-8:], "big")
+    marks = [o for o, g in zip(_offsets(journal_state), journal_state[3]) if g[0] == 3]
+    return guard_plain[-32:-16] != FILE_ID or mark not in marks
+
+
+def _offsets(state):
+    out, p = [], JE_HEADER_LEN
+    for k, inc, seq, pt in state[3]:
+        out.append(p)
+        p += 4 + 57 + len(pt)
+    return out
+
+
+assert behind_guard(_e7h, _gp) and behind_guard(_e7i, _gp) and not behind_guard(st, _gp)
+print(f"  against E7g (last mark {_e7h[2]}) and E7h the guard's mark {off_m2} is not a sync mark of the journal:"
+      " the start is refused as a rolled-back journal (section 6.3); against E6 it passes")
 
 # ---------------------------------------------------- the export ----------------
 BK = derive(SEED64, "backup", chain)
 EXPORT_ID = tv("export id", 16)
-EK = derive(BK, "export", chain + EXPORT_ID)
+EK = keys(BK, "export", chain + EXPORT_ID)
 SALT_X = tv("export kdf salt", 16)
-EX_SLOT_END = 58 + 26 + 24 + 48               # 156
+EX_SLOT_END = 58 + 26 + 32 + 72               # 188
 
 
 def export_file(profile, body, chunk, pw=None):
@@ -1997,8 +2055,9 @@ def export_file(profile, body, chunk, pw=None):
     if profile == 1:
         slot = u8(1) + u32(T_TEST) + u32(M_TEST) + u8(1) + SALT_X
         pkx = argon2id(nfc_utf8(pw), SALT_X, T_TEST, M_TEST, 1, 32)
-        kwx = derive(pkx, "backup wrap", chain + EXPORT_ID)
-        prefix = head + slot + sealed(kwx, "export slot", BK, head + slot)
+        ctx = chain + EXPORT_ID
+        prefix = (head + slot + commitment(pkx, "backup commitment", ctx, head + slot)
+                  + sealed(keys(pkx, "backup wrap", ctx), "export slot", BK, head + slot))
         assert len(prefix) == EX_SLOT_END
     else:
         prefix = head
@@ -2011,17 +2070,22 @@ def export_file(profile, body, chunk, pw=None):
     return out
 
 
-def open_export(data, pw=None, seed64=None):
+def open_export(data, pw=None, seed64=None, floor=FLOOR_TEST):
     """Section 11. Returns the body or the refusal."""
     if data[:8] != b"GZBACKUP" or data[8] != 1 or data[10:42] != chain:
         return "not a backup of this network"
     profile, eid = data[9], data[42:58]
+    ctx = chain + eid
     if profile == 1:
         prefix_len = EX_SLOT_END
         if pw is not None:
-            t, m = int.from_bytes(data[59:63], "big"), int.from_bytes(data[63:67], "big")
+            alg, t, m, p = data[58], int.from_bytes(data[59:63], "big"), int.from_bytes(data[63:67], "big"), data[67]
+            if not params_ok(alg, t, m, p, floor):
+                return "parameters refused"
             pkx = argon2id(nfc_utf8(pw), data[68:84], t, m, 1, 32)
-            bk = xchacha_decrypt(derive(pkx, "backup wrap", chain + eid), data[84:108], data[108:156], data[:84])
+            if not hmac.compare_digest(commitment(pkx, "backup commitment", ctx, data[:84]), data[84:116]):
+                return "wrong passphrase"
+            bk = unseal(keys(pkx, "backup wrap", ctx), data[116:188], data[:84])
             if bk is None:
                 return "wrong passphrase"
         else:
@@ -2033,7 +2097,7 @@ def open_export(data, pw=None, seed64=None):
         bk = derive(seed64, "backup", chain)
     else:
         return "unknown profile"
-    ek, prefix = derive(bk, "export", chain + eid), data[:prefix_len]
+    ek, prefix = keys(bk, "export", ctx), data[:prefix_len]
     pos, i, body = prefix_len, 0, b""
     while True:
         if pos + 4 > len(data):
@@ -2041,20 +2105,20 @@ def open_export(data, pw=None, seed64=None):
         n = int.from_bytes(data[pos:pos + 4], "big")
         if n < 40 or n > 65_576 or pos + 4 + n > len(data):
             return "truncated"
-        nonce, ct = data[pos + 4:pos + 28], data[pos + 28:pos + 4 + n]
-        pt = xchacha_decrypt(ek, nonce, ct, prefix + u64(i) + u8(1))
+        sc = data[pos + 4:pos + 4 + n]
+        pt = unseal(ek, sc, prefix + u64(i) + u8(1))
         if pt is not None:
             if pos + 4 + n != len(data):
                 return "data after the final chunk"
             body += pt
             break
-        pt = xchacha_decrypt(ek, nonce, ct, prefix + u64(i) + u8(0))
+        pt = unseal(ek, sc, prefix + u64(i) + u8(0))
         if pt is None:
             return "damaged"
+        if pt == b"":
+            return "empty chunk before the end"
         body += pt
         pos, i = pos + 4 + n, i + 1
-    if seed64 is not None and derive(seed64, "backup", chain) != bk:
-        return "words do not match"
     return body
 
 
@@ -2062,28 +2126,26 @@ def plain_entries(entries):
     return b"".join(u8(k) + u64(inc) + u64(seq) + u32(len(pt)) + pt for k, inc, seq, pt in entries)
 
 
-EXP_BODY_1 = (u8(1) + u64(1_794_000_100_000) + u8(1) + ENTROPY + u32(len(GUARD_PLAIN)) + GUARD_PLAIN
-              + plain_entries(st[3]))
-EXP_BODY_2 = (u8(1) + u64(1_794_000_100_000) + u8(0) + u32(len(GUARD_PLAIN)) + GUARD_PLAIN
-              + plain_entries(st[3]))
-ex1 = export_file(1, EXP_BODY_1, 65_536, PW1)
-ex2 = export_file(2, EXP_BODY_2, 65_536)
-ex1s = export_file(1, EXP_BODY_1, 64, PW1)
+EXP_BODY = (u8(1) + u64(1_794_000_100_000) + u8(0) + u32(len(GUARD_PLAIN)) + GUARD_PLAIN
+            + plain_entries(st[3]))
+ex1 = export_file(1, EXP_BODY, 65_536, PW1)
+ex2 = export_file(2, EXP_BODY, 65_536)
+ex1s = export_file(1, EXP_BODY, 64, PW1)
 print("\n== vector E10, export (.gzb), export_id = sha256('gazpacho test export id')[0:16], slot salt"
       " sha256('gazpacho test export kdf salt')[0:16], test parameters of E2, created 1794000100000 ms,"
-      " body = the entries of E6 and the guard of E9")
+      " flags 0 (no words), body = the entries of E6 and the guard of E9")
 print("  backup key BK =", BK.hex(), "(from the BIP 39 seed)")
-print("  export key EK =", EK.hex())
-show("E10a profile 1, the person's export: passphrase slot, words included, one chunk", ex1)
-show("E10b profile 2, the host's copy: no slot, no words, one chunk", ex2)
-assert open_export(ex1, pw=PW1) == EXP_BODY_1
-assert open_export(ex1, pw=PW1_DECOMPOSED) == EXP_BODY_1
-assert open_export(ex1, seed64=SEED64) == EXP_BODY_1
-assert open_export(ex2, seed64=SEED64) == EXP_BODY_2
+print("  export key EK =", EK[0].hex())
+show("E10a profile 1, the person's export: passphrase slot with key commitment, one chunk", ex1)
+show("E10b profile 2, the host's copy: no slot, one chunk", ex2)
+assert open_export(ex1, pw=PW1) == EXP_BODY
+assert open_export(ex1, pw=PW1_DECOMPOSED) == EXP_BODY
+assert open_export(ex1, seed64=SEED64) == EXP_BODY
+assert open_export(ex2, seed64=SEED64) == EXP_BODY
 assert open_export(ex2, pw=PW1) == "needs the 24 words"
 assert open_export(ex1, pw=PW2) == "wrong passphrase"
 assert open_export(ex1, seed64=hashlib.sha512(b"other").digest()) == "damaged"
-assert open_export(ex1s, pw=PW1) == EXP_BODY_1
+assert open_export(ex1s, pw=PW1) == EXP_BODY
 _chunks, _p = [], EX_SLOT_END
 while _p < len(ex1s):
     _chunks.append(_p); _p += 4 + int.from_bytes(ex1s[_p:_p + 4], "big")
@@ -2093,25 +2155,38 @@ assert open_export(_sw, pw=PW1) == "damaged"
 assert open_export(ex1s + ex1s[_chunks[-1]:], pw=PW1) == "data after the final chunk"
 _bad = bytearray(ex1); _bad[64] ^= 0x01                                  # the slot's m
 assert open_export(bytes(_bad), pw=PW1) == "wrong passphrase"
+_bad = bytearray(ex1); _bad[63:67] = u32(0xFFFFFFFF)                     # F9: m = 2^32 - 1 KiB
+assert open_export(bytes(_bad), pw=PW1) == "parameters refused"
+_bad = bytearray(ex1); _bad[67] = 4                                      # F9: four lanes
+assert open_export(bytes(_bad), pw=PW1) == "parameters refused"
+# F17: an empty chunk that is not the last.
+_prefix = ex1[:EX_SLOT_END]
+_empty = sealed(EK, "export empty chunk", b"", _prefix + u64(0) + u8(0))
+_rest = sealed(EK, "export chunk after empty", EXP_BODY, _prefix + u64(1) + u8(1))
+assert open_export(_prefix + u32(len(_empty)) + _empty + u32(len(_rest)) + _rest, pw=PW1) == "empty chunk before the end"
 print(f"== vector E11 (refuse): E10a's body sealed in {len(_chunks)} chunks of at most 64 bytes opens; with the"
       " last chunk dropped: truncated; with chunks 0 and 1 swapped: damaged; with the last chunk repeated:"
       " data after the final chunk; with the slot's memory changed or the second passphrase: wrong passphrase;"
-      " with other words: damaged; E10b with a passphrase: needs the 24 words")
-# ---------------------------------------------------- the watch-and-exit bundle -
-# storage-encryption.md section 8.7. The envelope only: the contents' records are
-# spec/exit.md's. KB is random and kept where the locked program can reach it.
+      " with the slot's memory 2^32 - 1 KiB or four lanes: parameters refused before deriving; an empty"
+      " chunk before the last: refused; with other words: damaged; E10b with a passphrase: needs the 24 words")
+
+# ---------------------------------------------------- the watch bundle ----------
+# storage-encryption.md section 8.7, draft 2. The envelope only: the contents' records
+# are spec/exit.md's. KB is a random root key kept in the OS key store; the bundle and
+# the watcher's log have their own keys under it (review F5).
 KB = tv("watch bundle key")
 BUNDLE_ID = tv("watch bundle id", 16)
+KWB = keys(KB, "watch bundle", chain + BUNDLE_ID)
 _bh = b"GZWATCH1" + u8(1) + chain + BUNDLE_ID + u64(7)
 BUNDLE_PLAIN = tlv([(2, b"test contents: see spec/exit.md")])
-e_bundle = _bh + sealed(KB, "watch bundle 7", BUNDLE_PLAIN, _bh)
+e_bundle = _bh + sealed(KWB, "watch bundle 7", BUNDLE_PLAIN, _bh)
 
 
 def open_bundle(data, kb, last_counter=0):
     if data[:8] != b"GZWATCH1" or data[8] != 1 or data[9:41] != chain:
         return "not a bundle of this network"
     head = data[:65]
-    pt = xchacha_decrypt(kb, data[65:89], data[89:], head)
+    pt = unseal(keys(kb, "watch bundle", chain + data[41:57]), data[65:], head)
     if pt is None:
         return "damaged"
     if int.from_bytes(head[57:65], "big") < last_counter:
@@ -2124,10 +2199,322 @@ _bad = bytearray(e_bundle); _bad[64] ^= 0x01                         # counter 7
 assert open_bundle(bytes(_bad), KB) == "damaged"
 assert open_bundle(e_bundle, KB, last_counter=8) == "older than the last bundle seen"
 assert open_bundle(e_bundle, MSK) == "damaged"
-print("\n== vector E12, watch-and-exit bundle watch.gzw: bundle_id sha256('gazpacho test watch bundle id')[0:16],"
-      " counter 7, contents one placeholder TLV record (spec/exit.md defines them)")
-print("  bundle key KB = sha256('gazpacho test watch bundle key') =", KB.hex())
+_kwl = keys(KB, "watch log", chain + tv("watch log file id", 16))
+assert unseal(_kwl, e_bundle[65:], _bh) is None                      # the log key cannot open the bundle
+print("\n== vector E12, watch-and-exit bundle watch.gzw (65-byte clear header): bundle_id"
+      " sha256('gazpacho test watch bundle id')[0:16], counter 7, contents one placeholder TLV record"
+      " (spec/exit.md defines them)")
+print("  root key KB = sha256('gazpacho test watch bundle key') =", KB.hex())
+print("  bundle key  =", KWB[0].hex())
 show("bundle", e_bundle)
-print("== vector E13 (refuse): E12 with its counter changed: damaged; opened when counter 8 was already seen:"
-      " older than the last bundle seen; under the storage key instead of KB: damaged")
+print("== vector E13 (refuse): E12 with its counter changed: damaged; opened after counter 8 was seen:"
+      " older than the last bundle seen; under the storage key, or under the watcher log's key: damaged")
+
+# ---------------------------------------------------- the attempts file ---------
+# Section 12.3, draft 2 (review F20): keyed under KB when KB is in an OS store.
+def attempts_file(wrong, last_s, until_s, kb=None):
+    body = b"GZTRIES1" + chain + u32(wrong) + u64(last_s) + u64(until_s) + u8(2 if kb else 1)
+    if kb:
+        return body + hmac.new(derive(kb, "attempts", chain), body, hashlib.sha256).digest()[:16]
+    return body + hashlib.sha256(body).digest()[:16]
+
+
+def read_attempts(data, kb=None, now=1_794_000_000):
+    strict = ("strictest", now + 900)
+    if len(data) != 77 or data[:8] != b"GZTRIES1" or data[8:40] != chain:
+        return strict
+    body, mode = data[:61], data[60]
+    want = (hmac.new(derive(kb, "attempts", chain), body, hashlib.sha256).digest()[:16] if mode == 2 and kb
+            else hashlib.sha256(body).digest()[:16] if mode == 1 else None)
+    if want is None or not hmac.compare_digest(want, data[61:]) or (kb and mode != 2):
+        return strict
+    return int.from_bytes(data[40:44], "big"), int.from_bytes(data[52:60], "big")
+
+
+at = attempts_file(6, 1_793_999_990, 1_794_000_030, kb=KB)
+assert read_attempts(at, kb=KB) == (6, 1_794_000_030)
+_bad = bytearray(at); _bad[43] = 0                                    # count reset by a folder writer
+assert read_attempts(bytes(_bad), kb=KB)[0] == "strictest"
+assert read_attempts(attempts_file(0, 0, 0), kb=KB)[0] == "strictest"   # a plain file where KB exists
+print("\n== vector E14, attempts file attempts.gza (77 bytes), keyed under KB: 6 wrong in a row, last at"
+      " 1793999990, blocked until 1794000030")
+show("attempts file", at)
+print("  with the count rewritten, or replaced by an unkeyed file while KB exists: read as the strictest state")
 print("\n== storage-encryption.md: section E done")
+
+
+# ============================================================== exit.md =====
+# Section X, draft 1 (2026-11-12). The deadline arithmetic of spec/exit.md
+# section 4, the transaction sizes it uses, and the keyless anchor-only child of
+# section 6.2. Everything here is integer arithmetic on heights, sizes and fees;
+# none of it signs anything. The timeout formula is the import's
+# (core/superscalar/src/factory.c:1475, :1635-1644, :1314); the sizes follow
+# tx_builder.c:65-100 and BIP 141.
+
+X_STEP = 5                      # TIMEOUT_STEP_BLOCKS, factory.c:1475
+X_BURY = 3                      # B: burial depth, signet (safety-rule.md 12 value 3)
+X_ALLOW = 6                     # A: confirmation allowance per transaction, signet (12 value 6)
+X_M_SAFE = 6                    # M_safe (safety-rule.md 12 value 6)
+X_M_LAG = 2                     # M_lag: chain-view lag
+X_M_SPIKE = 6                   # M_spike: fee spike, signet placeholder
+X_M = X_M_SAFE + X_M_LAG + X_M_SPIKE
+X_M_HOST = X_M_SAFE + X_M_LAG   # the host's margin (exit.md 9.3)
+X_PAY_STOP = X_ALLOW            # no new payment within one allowance of leave_by
+X_ANCHOR = 240                  # ANCHOR_OUTPUT_AMOUNT, channel.h:16
+X_BLOCK_FAST_S = 300            # exit.md 4.5: blocks assumed at most twice as fast as 600 s
+
+
+def x_cltv_feeding(E, j, kind):
+    """Height in the host-only timeout leaf of the output that feeds the node at
+    depth j (factory.c:1635-1644). kind 'fixed' or 'leaf_kickoff' uses ko_cltv,
+    'leaf' (the leaf transaction, a state node) uses st_cltv. The channel output
+    of a pseudo-Spilman leaf copies the leaf node's spending script
+    (factory.c:1314), so it carries the 'leaf' height too."""
+    if j == 0:
+        return None             # the root kickoff spends the funding output: no timeout
+    if kind == "leaf":
+        return E - 2 * j * X_STEP
+    return E - (2 * j - 1) * X_STEP
+
+
+def x_path_timeouts(E, d):
+    """[(transaction, height of the timeout on the output it spends)] for a
+    member whose leaf is at depth d, then the channel output."""
+    rows = [(f"fixed kickoff, depth {j}", x_cltv_feeding(E, j, "fixed")) for j in range(d)]
+    rows.append((f"leaf kickoff, depth {d}", x_cltv_feeding(E, d, "leaf_kickoff")))
+    rows.append((f"leaf transaction, depth {d}", x_cltv_feeding(E, d, "leaf")))
+    rows.append(("commitment (spends the channel output)", x_cltv_feeding(E, d, "leaf")))
+    return rows
+
+
+def x_h_leaf(E, d):
+    return E - 2 * d * X_STEP
+
+
+def x_n_path(d):
+    return d + 3                # d fixed kickoffs, leaf kickoff, leaf transaction, commitment
+
+
+def x_last_safe_confirm(E, d, bury=X_BURY):
+    # The host's timeout spend has nLockTime = H_leaf (factory.c:4856-4861), so it can
+    # first be mined in block H_leaf + 1. Ours must have `bury` confirmations at tip H_leaf.
+    return x_h_leaf(E, d) - (bury - 1)
+
+
+def x_leave_by(E, d, n_missing=None, allow=X_ALLOW, m=X_M):
+    n = x_n_path(d) if n_missing is None else n_missing
+    return x_last_safe_confirm(E, d) - n * allow - m
+
+
+def x_step_due(E, d, i, n_missing=None, allow=X_ALLOW, m=X_M):
+    """Latest height at which missing step i (1 = first) must be confirmed."""
+    n = x_n_path(d) if n_missing is None else n_missing
+    return x_last_safe_confirm(E, d) - (n - i) * allow - m
+
+
+def x_vsize_tree(k_outputs):
+    """A tree transaction: 1 key-path input, k P2TR outputs and the 240-sat P2A.
+    Unsigned bytes 64 + 43 k; signed vsize ceil((4 (64 + 43 k) + 2 + 66) / 4)."""
+    unsigned = 4 + 1 + 41 + 1 + 43 * k_outputs + 13 + 4
+    assert unsigned == 64 + 43 * k_outputs
+    return -(-(4 * unsigned + 2 + 66) // 4)
+
+
+assert x_vsize_tree(2) == 167 and x_vsize_tree(4) == 253   # terms.md 4.2: V = 167, 253
+
+
+def x_path_shape(levels, n, member):
+    """Leaf depth of member `member` (0-based, in placement order), and the number
+    of outputs (without the anchor) of each tree transaction on its path."""
+    def walk(m, d, offset):
+        a = levels[d] if d < len(levels) else levels[-1]
+        if a == LEAF_PS:
+            if m == 1:
+                return [1, 2] if offset == member else None    # leaf kickoff: 1 output; leaf: 2
+            left = m // 2
+            parts = [left, m - left]
+        else:
+            parts, rem = [], m
+            for j in range(a):
+                if rem == 0:
+                    break
+                c = min(rem, -(-rem // (a - j)))
+                parts.append(c)
+                rem -= c
+        off = offset
+        for c in parts:
+            if off <= member < off + c:
+                below = walk(c, d + 1, off)
+                return [len(parts)] + below
+            off += c
+        return None
+    outs = walk(n, 0, 0)
+    return len(outs) - 2, outs
+
+
+# The keyless anchor-only child (exit.md 6.2): one input spending the parent's
+# pay-to-anchor output with an empty scriptSig and no witness, one zero-value
+# OP_RETURN output of 3 zero bytes, so the transaction is exactly 65 bytes, the
+# smallest standard non-witness size. Its whole input, 240 sat, is its fee.
+def x_anchor_child(parent_txid_display: bytes, anchor_vout: int, version: int) -> bytes:
+    prev = parent_txid_display[::-1]
+    tx = (version.to_bytes(4, "little") + b"\x01" + prev + anchor_vout.to_bytes(4, "little")
+          + b"\x00" + (0xFFFFFFFD).to_bytes(4, "little") + b"\x01" + (0).to_bytes(8, "little")
+          + b"\x05" + b"\x6a\x03\x00\x00\x00" + (0).to_bytes(4, "little"))
+    assert len(tx) == 65
+    return tx
+
+
+def x_txid(tx: bytes) -> str:
+    return hashlib.sha256(hashlib.sha256(tx).digest()).digest()[::-1].hex()
+
+
+def x_package_rate_kvb(fee_parent, v_parent, fee_child, v_child):
+    """Package fee rate in sat per 1000 vB, rounded down."""
+    return (1000 * (fee_parent + fee_child)) // (v_parent + v_child)
+
+
+# A wallet-funded child: inputs the P2A (no witness) and one P2TR key-path coin
+# (64-byte signature), one P2TR change output. Non-witness 4+1+2*41+1+43+4 = 135;
+# witness: marker and flag 2, P2A item count 1, P2TR count 1 + length 1 + 64.
+X_V_CHILD_WALLET = -(-(4 * 135 + 2 + 1 + 66) // 4)
+assert X_V_CHILD_WALLET == 153
+
+
+def x_child_fee(rate_kvb, fee_parent, v_parent, v_child=X_V_CHILD_WALLET):
+    """Child fee so that the package pays at least rate_kvb."""
+    return max(0, -(-(rate_kvb * (v_parent + v_child)) // 1000) - fee_parent)
+
+
+print("\n== exit.md: section X, deadline arithmetic (signet constants B=%d, A=%d, M=%d+%d+%d=%d)"
+      % (X_BURY, X_ALLOW, X_M_SAFE, X_M_LAG, X_M_SPIKE, X_M))
+X_TIP = 290_000
+X_E = X_TIP + 144 + 36            # T1: lifetime 144, wind-down 36 (terms.md T1)
+print(f"  T1 factory proposed at tip {X_TIP}: end height E = {X_E}; lifetime ends at {X_TIP + 144}")
+
+print("\n== X1: host-only timeouts on a member's path, leaf depth d (the root kickoff has none)")
+for d in (1, 2, 3):
+    print(f"  d = {d}:")
+    for name, h in x_path_timeouts(X_E, d):
+        print(f"    {name:40s} spends an output timing out at {'none' if h is None else h}"
+              + ("" if h is None else f" (E - {X_E - h})"))
+    hs = [h for _, h in x_path_timeouts(X_E, d) if h is not None]
+    assert min(hs) == x_h_leaf(X_E, d) == X_E - 10 * d
+print("  so H_leaf = E - 10 d, not E - 5 d: two tree transactions (kickoff and leaf) per leaf depth,"
+      " and fixed levels step by 10 too")
+
+print("\n== X2: path shapes and sizes for T1 (fee_per_tx 17 at up to 4 members, 26 above)")
+for n, member in ((3, 0), (3, 1), (4, 0), (5, 0), (5, 4), (8, 0), (16, 0), (16, 15)):
+    levels = (SHAPE_T1[0][1] if n <= 4 else SHAPE_T1[1][1]) + [LEAF_PS]
+    d, outs = x_path_shape(levels, n, member)
+    assert d == [dd for dd, _ in split_walk(levels, n)][member]
+    sizes = [x_vsize_tree(k) for k in outs]
+    fee = 17 if n <= 4 else 26
+    print(f"  {n:2d} members, member {member + 1:2d}: leaf depth d = {d}, tree transactions {len(outs)} = d + 2,"
+          f" vsizes {sizes}, each pays {fee} sat; with the commitment, n = {x_n_path(d)} transactions")
+
+print("\n== X3: start leaving by, step deadlines, and the T1 wind-down shortfall")
+for d in (1, 2, 3):
+    lb = x_leave_by(X_E, d)
+    lsc = x_last_safe_confirm(X_E, d)
+    dues = [x_step_due(X_E, d, i) for i in range(1, x_n_path(d) + 1)]
+    assert dues[-1] == lsc - X_M and dues[0] == lb + X_ALLOW
+    lead = X_E - lb
+    print(f"  d = {d}: H_leaf = {x_h_leaf(X_E, d)}, last safe confirmation = {lsc}, "
+          f"leave_by = {lb} (E - {lead}), step deadlines {dues}")
+    print(f"         lead time E - leave_by = {lead} blocks against wind-down 36: "
+          + ("inside the wind-down" if lead <= 36 else f"starts {lead - 36} blocks before the lifetime ends"))
+    hf = x_last_safe_confirm(X_E, d) - x_n_path(d) * X_ALLOW - X_M_HOST
+    assert hf == lb + X_M_SPIKE
+    print(f"         host_force_by = {hf} (leave_by + {hf - lb})")
+assert x_leave_by(X_E, 1) == X_E - 50 and x_leave_by(X_E, 2) == X_E - 66 and x_leave_by(X_E, 3) == X_E - 82
+# Part of the path already on chain (U-a'): only the missing steps count.
+for missing in (5, 3, 1):
+    print(f"  d = 2 with {missing} of 5 steps missing: leave_by = {x_leave_by(X_E, 2, missing)}")
+assert x_leave_by(X_E, 2, 1) == X_E - 20 - 2 - 6 - 14
+print(f"  smallest wind-down at which leave_by never falls inside the lifetime: "
+      f"{X_E - x_leave_by(X_E, 3)} blocks for d <= 3 (T1 has 36)")
+
+print("\n== X4: payments against the exit (d = 2, every step missing)")
+d = 2
+n = x_n_path(d)
+min_delta = (n + 1) * X_ALLOW + (X_BURY - 1) + X_M
+print(f"  an incoming payment is accepted at tip t only if its expiry h >= t + {min_delta}"
+      f" ((n + 1) A + (B - 1) + M, n = {n}); invoices ask min_final_cltv_expiry_delta >= {min_delta}")
+h = X_TIP + 100
+print(f"  an incoming payment expiring at {h} whose secret is released and not yet removed goes on chain by "
+      f"{h - (X_BURY - 1) - (n + 1) * X_ALLOW - X_M}")
+print(f"  no new payment once the tip reaches leave_by - {X_PAY_STOP} = {x_leave_by(X_E, d) - X_PAY_STOP}")
+W = 2016
+c = X_TIP + 120
+print(f"  a revoked host commitment confirmed at {c} with to_self_delay W = {W} (example; channel.md sets W):"
+      f" the penalty must be confirmed by {c + W - X_BURY} (c + W - B) and sent by"
+      f" {c + W - X_BURY - X_ALLOW - X_M} (c + W - B - A - M)")
+
+print("\n== X5: the tip estimate while the chain view is in doubt (exit.md 4.5)")
+t_trusted, at = X_E - 80, 1_800_000_000
+for elapsed, claimed in ((3600, X_E - 75), (3600, X_E - 60), (14400, X_E - 30)):
+    bound = t_trusted + -(-elapsed // X_BLOCK_FAST_S)
+    est = max(t_trusted, min(claimed, bound))
+    print(f"  last trusted tip {t_trusted}, {elapsed} s later, highest claimed {claimed}: "
+          f"clock bound {bound}, estimate {est}")
+
+print("\n== X6: the anchor-only child, keyless (exit.md 6.2)")
+x_parent = hashlib.sha256(b"gazpacho test exit parent").digest()
+child = x_anchor_child(x_parent, 2, 2)
+print("  parent txid (test value, display order) =", x_parent.hex(), " anchor vout 2, version 2")
+show("anchor-only child (65 bytes, no witness)", child)
+print("  txid =", x_txid(child))
+child3 = x_anchor_child(x_parent, 2, 3)
+print("  the same for a TRUC parent (version 3): txid =", x_txid(child3))
+for k, fee in ((1, 17), (2, 17), (2, 26), (4, 26)):
+    v = x_vsize_tree(k)
+    r = x_package_rate_kvb(fee, v, X_ANCHOR, 65)
+    print(f"  parent {v} vB paying {fee} sat ({1000 * fee // v} sat/kvB) + anchor-only child: package {r} sat/kvB")
+assert x_package_rate_kvb(17, 167, 240, 65) == 1107
+
+print("\n== X7: wallet-funded child (P2A + one P2TR coin, change to P2TR): %d vB; fee for a package rate" % X_V_CHILD_WALLET)
+X_LADDER = [2_000, 5_000, 10_000, 20_000, 50_000, 100_000, 200_000]   # sat/kvB, exit.md 6.6
+X_INCREMENTAL_KVB = 100         # Bitcoin Core 29.1 and later: -incrementalrelayfee 100 sat/kvB
+
+
+def x_replaces(fee_new, v_new, fee_old, v_old, fee_parent, v_parent):
+    """exit.md 6.3: a child replacing another on the same anchor must (a) pay at
+    least the old fee plus the incremental fee on its own size (BIP 125 rule 4),
+    (b) have a higher fee rate of its own than the child it replaces (the
+    pre-cluster rule 6), and (c) give the parent a higher package rate (the
+    cluster mempool's diagram check, 31.0 and later)."""
+    a = fee_new >= fee_old + -(-(X_INCREMENTAL_KVB * v_new) // 1000)
+    b = fee_new * v_old > fee_old * v_new
+    c = (fee_parent + fee_new) * (v_parent + v_old) > (fee_parent + fee_old) * (v_parent + v_new)
+    return a and b and c
+
+
+# A wallet child at a package rate of 1 sat/vB does NOT replace the anchor-only child:
+assert not x_replaces(x_child_fee(1_000, 17, 167), X_V_CHILD_WALLET, X_ANCHOR, 65, 17, 167)
+x_min_first = next(f for f in range(X_ANCHOR, 10_000)
+                   if x_replaces(f, X_V_CHILD_WALLET, X_ANCHOR, 65, 17, 167))
+print(f"  the smallest wallet child that replaces the anchor-only child of the 167 vB leaf transaction:"
+      f" fee {x_min_first} sat, package {x_package_rate_kvb(17, 167, x_min_first, X_V_CHILD_WALLET)} sat/kvB"
+      f" (a 1 sat/vB rung, fee {x_child_fee(1_000, 17, 167)}, would be refused)")
+
+
+def x_ladder(fee_parent, v_parent):
+    """exit.md 6.6: each rung pays the larger of its rate's fee and the smallest
+    fee that replaces the rung below (rung 0 is the anchor-only child)."""
+    out, prev_f, prev_v = [], X_ANCHOR, 65
+    for r in X_LADDER:
+        f = x_child_fee(r, fee_parent, v_parent)
+        while not x_replaces(f, X_V_CHILD_WALLET, prev_f, prev_v, fee_parent, v_parent):
+            f += 1
+        out.append((r, f))
+        prev_f, prev_v = f, X_V_CHILD_WALLET
+    return out
+
+
+for v_p, f_p in ((124, 17), (167, 17), (167, 26), (253, 26)):
+    rungs = x_ladder(f_p, v_p)
+    print(f"  parent {v_p} vB paying {f_p} sat: rung fees "
+          + ", ".join(f"{r / 1000:g} sat/vB {f}" for r, f in rungs))
+assert x_ladder(17, 167)[0] == (2_000, 623) and x_ladder(17, 124)[0] == (2_000, 565)
+print("\n== exit.md: section X done")

@@ -16,6 +16,7 @@ Documents it maps (drafts as of 2026-11-12; the five Slice 1 specifications are 
 | `signing-round.md` | The multi-party MuSig2 signing round and proof of fault |
 | `safety-rule.md` | The checks a member (and a host) runs before it signs. The acceptance rules of this map point here |
 | `journal.md` | Gazpacho's storage. **Not part of the shared protocol** (section 9) |
+| `exit.md` | Leaving alone and watching, draft 1 (not reviewed): the exit, watch, schedule and lifecycle engines for 1.0.0's advanceless trees; the exact deadlines (leaf timeout E − 10·d, start leaving by), fees at exit through the pay-to-anchor outputs, every reachable path, the host's duties, and the records of the watch-and-exit bundle. The deadline arithmetic and the host's duties are protocol; the engines, the bundle and the strip are Gazpacho's |
 | `../docs/research/channel-groundwork.md` | Groundwork for the channel specification (`channel.md`, not written) |
 | `discovery.md` | Discovery: the feature bit, listing, queries, lobby beacon, overlay links, store nodes and the pool request, anchors, overlay peering (informative), Nostr annex (section 7) |
 | `../docs/research/discovery-research.md` | Research behind `discovery.md` |
