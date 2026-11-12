@@ -135,7 +135,8 @@ env-type-any	ports/net/envelope.c	if (len < 2 || get16(msg) != GZ_ENV_TYPE)	if (
 env-tag-ignored	ports/net/envelope.c	if (memcmp(p, GZ_ENV_PROTOCOL, 4) != 0) {	if (0) {
 env-short-header	ports/net/envelope.c	if (n < GZ_ENV_HDR_LEN) { *reason	if (n < 6) { *reason
 env-discovery-refused	ports/net/envelope.c	if (is_discovery(kind)) return GZ_ENV_IGNORE;	
-env-discovery-range	ports/net/envelope.c	return kind >= 128 && kind <= 159;	return kind >= 128 && kind <= 158;
+env-discovery-range	ports/net/envelope.c	return kind >= 128 && kind <= 159;	return kind >= 128 && kind <= 157;
+env-discovery-low	ports/net/envelope.c	return kind >= 128 && kind <= 159;	return kind >= 129 && kind <= 159;
 env-unknown-even-ignored	ports/net/envelope.c	if (kind & 1) return GZ_ENV_IGNORE;	return GZ_ENV_IGNORE;
 env-direction-ignored	ports/net/envelope.c	if (!(k->dir & (at == GZ_ENV_AT_HOST ? DIR_M2H : DIR_H2M))) {	if (0) {
 env-direction-swapped	ports/net/envelope.c	at == GZ_ENV_AT_HOST ? DIR_M2H : DIR_H2M	at == GZ_ENV_AT_HOST ? DIR_H2M : DIR_M2H

@@ -379,6 +379,15 @@ static void test_read(void)
     CHECK(gz_env_read(msg, mk(128, SCOPE, "", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_IGNORE);
     CHECK(gz_env_read(msg, mk(160, SCOPE, "", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE);
     CHECK(gz_env_read(msg, mk(126, SCOPE, "", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE);
+    /* A scope that is zero but for its last byte is a scope. */
+    {
+        uint8_t last[32] = {0};
+        last[31] = 1;
+        CHECK(gz_env_read(msg, mk(28, last, "020100040100060400000000080200000a020000", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_DELIVER);
+        last[31] = 0;
+        last[0] = 1;
+        CHECK(gz_env_read(msg, mk(28, last, "020100040100060400000000080200000a020000", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_DELIVER);
+    }
     /* hello, with and without a scope; never from the host. */
     CHECK(gz_env_read(msg, mk(16, ZERO, "", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_DELIVER);
     CHECK(gz_env_read(msg, mk(16, SCOPE, "", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_DELIVER);
