@@ -146,3 +146,17 @@ Your study also found that a host "funding reorged" message resets sale state wi
 ## How Gazpacho checks each change when it lands
 
 Re-import; regenerate the reference values; run the scale check; run the case each request names. Progress is kept in Gazpacho's `docs/OPEN-QUESTIONS.md` under "Waiting on the SuperScalar repo".
+
+## Their reply and our corrections (2026-11-12)
+
+The SuperScalar session checked all ten requests against the design and the code. Gazpacho concurs.
+
+| # | Their answer | Gazpacho's correction or follow-up |
+|---|---|---|
+| 1 | Accepted only together with two-sided commitments or channel-output payouts: removing the host-only timeout branch while the host holds no commitment of its own strands host funds | We missed this. Revised request: make the standard channel script an **opt-in** builder option. Gazpacho's engine holds the host's own signed channel state (rule H4), so it may opt in; SuperScalar's programs keep the timeout branch until they have two-sided commitments (their P627) |
+| 2 | Accepted for 1.1.0, bound in FACTORY_PROPOSE, per-type dust limits, and the anchor stays (a cold-wallet destination cannot raise the payout's fee) | Agreed |
+| 3–6 | Fixed or being fixed in their #486. The ~128-member cap in request 4 applies only when the optional hashlock penalty is on. Placement keeps timezone grouping as the default | Our documents will say the cap applies only with the hashlock penalty. Open: what placement value 0 selects, and whether timezone grouping needs members' timezones (a privacy cost for Gazpacho) |
+| 7 | Bug confirmed; they will carry a **per-member capacity in the proposal**, not force equal channels, because the design gives each member its own account limit | Better than our request. Gazpacho's terms and proposal will carry per-member capacity, each member checking its own |
+| 8 | Base any protocol id on bLIP-56; new hash tags only for new hashes (renaming existing tags would change derived values); adopting Gazpacho's message format is later, the owner's call; the discovery spec is wallet-layer | `SHA256("SuperScalar/1")` already follows bLIP-56's protocol-id rule; the exact string to be agreed. Agreed on tags and on timing. They note the owner's Core Lightning fork already implements bLIP-56, so Gazpacho's bLIP-56 adapter matters sooner |
+| 9 | Agreed for 1.1.0 | — |
+| 10 | Our description was inverted: the builder uses the given funding script verbatim as the root's input script and never checks it against the factory key, so a host could make members sign a tree over an output only the host controls. A library refusal is being added in #486 | Correct; our request text was wrong. Gazpacho's member-side check (safety rule C1: the funding output must pay the tree's key) already refuses such a tree; their refusal adds a second layer |
