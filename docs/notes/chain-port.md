@@ -293,7 +293,23 @@ How to run: `ctest` runs everything except the live test; `ctest -LE slow` skips
 | `chain_tool_*` | The tool's mainnet refusal and usage text |
 | `chain_live` (opt-in) | The two public signet servers: tip, a known transaction, a checked confirmation 6 deep, a spend, a script, raw bytes, fees, network |
 
-Counts at the time of writing: see the final section.
+Counts on 2026-11-12, identical in the Release and the AddressSanitizer + UBSan builds (gcc 15.2, `-Wall -Wextra -Werror`):
+
+| Test | Test functions | Checks |
+|---|---|---|
+| `chain_json` | 8 | 105 |
+| `chain_headers` | 20 | 186 |
+| `chain_esplora` | 35 | 674 |
+| `chain_multi` | 21 | 383 |
+| `chain_model` | 1 (20,000 random situations, 4 calls each) | 6 |
+| `chain_fuzz` | 2 (40,000 mutations of each of 13 answers, plus 20,000 random inputs and every prefix) | 10 |
+| `chain_local_servers` | transport 42 checks, tool 12 cases | 54 |
+| `chain_tool_refuses_mainnet_broadcast`, `chain_tool_usage` | 2 | 2 |
+| `chain_live` (opt-in) | 2 | 35 |
+
+`ctest` runs 10 tests, all passing; `ctest -LE slow` runs the 9 that need no local servers (the existing `reference_tree` test is one of the 10). The live test passed on 2026-11-12 against both signet servers (tip 330469, both agreeing).
+
+Break-checks (`break_checks.py`, 125 behaviours, each removed in turn): on the sanitizer build, one full run, 125 caught, 0 survived. On the Release build, a full run first caught 114, with 8 survivors and 3 checks that did not compile; the survivors were 2 missing tests, 3 cases where a second check also guarded the behaviour (the break-check now removes both), 2 missing tests of the weaker path, and 1 test pattern that was too loose. After the fixes, those 11 were re-run and all were caught. The checks marked as defence in depth under "Not tested" are not in the list.
 
 ### Not tested
 
