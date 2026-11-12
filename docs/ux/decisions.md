@@ -76,3 +76,7 @@ Interface consequences for 1.1.0: a "covered" figure under "my money"; a warning
 ### 3. Buying receiving room is for 1.1.0
 
 Buying liquidity, splicing and channels opened on demand are not in 1.0.0. They are designed for, documented, and built behind a switch that is off: the interface keeps a hidden place for them, the local API reserves the calls, and the terms record reserves the fee field. Everything about them is marked "1.1.0".
+
+### 8. The shared protocol identifier (owner, 2026-11-12)
+
+`factory_protocol_id` = SHA-256 of the UTF-8 bytes `SuperScalar/1` (hex `53757065725363616c61722f31`) = `c3a082d0fcb768d76999f4f8ad672f7110fbef6a13a1697686c7073961c842f1`. This follows bLIP-56's recommended form. It replaces the two other values found in use: the zero-padded ASCII "SuperScalar/v1" in the superscalar-cln plugin, and SHA256("SuperScalar" ‖ "0") in an April research note. To be recorded in superscalar-docs and adopted by superscalar-cln, the SuperScalar reference and Gazpacho. Gazpacho keeps sequential member placement (no timezone buckets), for privacy.
