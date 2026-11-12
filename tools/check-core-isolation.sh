@@ -23,7 +23,8 @@
 #      wherever on the disassembly line they appear (so a prefixed or
 #      hand-assembled form is caught too). The list is below; it also refuses
 #      any access through a segment register other than the compiler's own
-#      stack-protector read, and any call or jump to a fixed absolute address.
+#      stack-protector read, any call or jump to a fixed absolute address, and
+#      any x87 instruction or use of an x87, MMX, SSE, AVX or mask register.
 #   5. With --sources, after the C preprocessor has run (so token pasting and
 #      header includes are resolved): none of the core's translation units
 #      contains inline assembly.
@@ -37,15 +38,18 @@
 #     object this is indistinguishable from the legitimate indirect calls the
 #     core makes through its ports and executor. The core contains no such
 #     cast; that is kept out by review, not by this script.
-#   - Floating point: kept out instead by -mgeneral-regs-only, which makes the
-#     compiler refuse it.
+#   - Floating point on machines other than x86: kept out there only by
+#     -mgeneral-regs-only. On x86 gcc refuses it under that flag; clang may
+#     accept it, so point 4 refuses the registers it would use.
 #   - An integer-to-function-pointer cast reached through -pedantic, and
 #     variable-length arrays: kept out by the compiler (-std=c11 -pedantic
 #     -Wvla -Werror), which refuses them.
 #   - Non-determinism of other kinds, and anything on machines other than x86
 #     beyond points 1 to 3 and 5.
 #   - In a --sanitized build the writable-section test is skipped (the checkers
-#     add their own); the symbol and instruction tests still run.
+#     add their own), and the checkers' own names (__asan_*, __ubsan_*,
+#     __sanitizer_*, __msan_*, and the __start_/__stop_asan_* section bounds)
+#     are allowed as outside, weak or data symbols; the other tests still run.
 #
 # usage: check-core-isolation.sh [--sanitized] LIBRARY-OR-OBJECT
 #            [--sources COMPILER "CFLAGS" FILE...]
@@ -83,6 +87,9 @@ for sym in $(printf '%s\n' "$symbols" | awk '$1 == "U" { print $2 }' | sort -u);
 done
 
 for sym in $(printf '%s\n' "$symbols" | awk '$1 == "w" || $1 == "v" || $1 == "W" || $1 == "V" { print $2 }' | sort -u); do
+    if [ "$sanitized" -eq 1 ]; then
+        case "$sym" in __asan_*|__ubsan_*|__sanitizer_*|__msan_*|__start_asan_*|__stop_asan_*) continue ;; esac
+    fi
     report "weak symbol" "$sym"
 done
 
@@ -101,7 +108,7 @@ for name in $(objdump -t "$lib" 2>/dev/null | awk -F'\t' -v san="$sanitized" '
             if (sect !~ /^\.(data|bss|tdata|tbss)/) next;
             if (sect ~ /^\.(data\.rel\.ro|got)/) next;
             split($2, b, " "); name = b[2];
-            if (san == "1" && name ~ /^(__asan_|__ubsan_|__sanitizer_)/) next;
+            if (san == "1" && name ~ /^(__asan_|__ubsan_|__sanitizer_|__msan_)/) next;
             print name;
         }' | sort -u); do
     report "writable data" "$name"
@@ -141,6 +148,12 @@ case "$(uname -m)" in
         fi
         if printf '%s\n' "$code" | grep -Eq '\$0xffffffffff6[0-9a-f]{5}|\*0x[0-9a-f]{6,}'; then
             report "instruction" "call or jump to a fixed address"
+        fi
+        # Floating-point and vector registers, and x87 instructions (every x86
+        # mnemonic that starts with f). The core's flags forbid them, but not
+        # every compiler refuses floating point under -mgeneral-regs-only.
+        if printf '%s\n' "$code" | grep -Eq '%(st|mm[0-7]|[xyz]mm[0-9]|k[0-7])|^[[:space:]]*((lock|rep[a-z]*|data16|addr32|bnd|notrack|cs|ds|es|ss) +)*f[a-z0-9]*([[:space:]]|$)'; then
+            report "instruction" "floating-point or vector register"
         fi ;;
     *) echo "note: instruction scan skipped on $(uname -m)" ;;
 esac

@@ -123,7 +123,7 @@ endforeach()
 
 # What the compiled core can reach and remember, and proof that the check
 # refuses an object that breaks each rule.
-if(GZ_SANITIZE)
+if(GZ_SANITIZE OR CMAKE_C_FLAGS MATCHES "-fsanitize=")
   set(GZ_ISOLATION_MODE --sanitized)    # the checkers add writable sections of their own
 endif()
 string(JOIN " " GZ_CORE_SCAN_FLAGS -std=c11 ${GZ_CORE_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
