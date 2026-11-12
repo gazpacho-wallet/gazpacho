@@ -15,9 +15,9 @@ Created 2026-11-12 after the gap review found that the Slice 1 pieces existed on
 | Transport | `transport.md` (draft 2) | `transport`, PR 10 | Second review running | Merge | The program |
 | Chain view | `chain-port.md` note | `chain-esplora`, PR 7 | Second review running | Merge | The program |
 | Wallet transactions | `wallet-tx.md` note | `wallet-tx-lib`, `wallet-tx`, PRs 11, 12 | Review fixes in progress | Second review; merge | Funding |
-| Local API (program to interface) | not written | — | **Spec starting now** | Write; review | The program, the interface |
+| Local API (program to interface) | `spec/local-api.md` (draft 2) | `specs-slice1` | Draft 1 reviewed (`reviews/review-local-api-d1.md`); draft 2 answers it, not yet reviewed | Second review of draft 2 | The program, the interface |
 | `gazpacho` program (executor wiring core to ports, host and member in one) | needs the local API spec | — | Not started | After the API spec, journal and lobby | Slice 1 |
-| Interface (concept H wired to the API) | `docs/ux/`, the API spec | PR 14 (draft) | Concept chosen; fixes owed | Fix H; wire after the program | Slice 1 walkthrough |
+| Interface (concept H wired to the API) | `docs/ux/`, the API spec | PR 14 (draft) | Concept chosen; fixes owed. **Required for Slice 1** (owner decision 11): every Slice 1 action goes through it | Fix H; wire after the program | Slice 1 walkthrough, which runs through the interface |
 | A real signet funding broadcast | — | wallet tool | Approved by the owner | After the wallet-tx second review | Confidence in the broadcast path |
 
 ## Merge order

@@ -32,7 +32,9 @@ Who is building each piece, on which branch, and the merge order: `SLICE1-WORK.m
 
 **Not in slice 1:** payments, liquidity changes, rotation, exits, the host's Lightning node, Nostr listings (the member is given the host's address directly), invitations, profiles beyond Standard.
 
-**Done when:** one host and at least three members on separate processes form a factory on signet from a clean start, twice in a row, by following the walkthrough; the automated run does the same; and a member whose conditions are not met is seen to refuse.
+**Through the interface** (owner decision 11, 2026-11-12, `ux/decisions.md`): Slice 1 ships with the local web interface in place, and every Slice 1 action is done through it: creating or restoring a wallet, the backup check of the 24 words, conditions, finding and joining a lobby, hosting a lobby, the signing moment and refusals, and the live factory. The command line is for start-up and diagnostics. The calls are in `spec/local-api.md`, section 2.1.
+
+**Done when:** one host and at least three members on separate processes form a factory on signet from a clean start, twice in a row, by following the walkthrough **in the interface**; the automated run does the same through the same local API; and a member whose conditions are not met is seen to refuse, on the screen.
 
 ## Slice 2: a payment
 

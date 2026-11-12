@@ -352,3 +352,21 @@ ff0269042d9a3f7d
 6. Closed: an unfunded creation is **Abandoned** at the member's funding or unfinished deadline (36 blocks and one signing budget in Slice 1, **proposed, owner to confirm**, `safety-rule.md` section 12) and **Dead** when a funding input is spent elsewhere and buried. Its records stay; neither blocks the member.
 7. Closed: the sync mark is mandatory (sections 3.3 to 5).
 8. **Linux `fdatasync`** would do instead of `fsync` for appends (it flushes the size change too); `fsync` is specified for simplicity until measured.
+9. **API needs** (from `spec/local-api.md` draft 2, section 7.5, after its review found the API's state had no home here, review F11). The local API needs records that are not protocol bytes, in an area of their own. Record type numbers and their field numbers are **not** chosen here: they are fixed with the rest under open point 3 (`OPEN-QUESTIONS.md` W3). What each must hold, and the batch it belongs to:
+
+| Record (working name) | Contents | Saved with, before | Release |
+|---|---|---|---|
+| Setup state | `created_not_finished` or `ready`; the preset and finding choice | Before `create` and `finish-setup` answer | S1 |
+| Words checked | `checked_at` | Before a successful words check answers | S1 |
+| Words-check attempts | Time of each check started in the last 24 hours | Before `check-start` answers, so a restart does not reset the limit | S1 |
+| Conditions | The member's conditions, preset, version | Before `PUT /conditions` answers; same batch as any `leave` it causes | S1 |
+| Conditions copy | Per joined lobby: the conditions, their version and `compare_with` at joining | **Same batch as `joined`**: the ready check and the signing check compare against this copy after a restart | S1 |
+| Pause | On or off, since when, the lobby a pause is held for | Before the pause call answers and before any `leave` or `round_abort` it sends; applied on start before any connection | S1 |
+| Local ids | Local lobby and factory ids with their fingerprints | With the lobby's first record (`terms_received` or `lobby_opened`), and with the factory's first round record | S1 |
+| Known hosts | Key, address, source, time added | Before a discovery query that adds a host answers | S1 |
+| Activity entry | Id, time, kind, who decided, rule, params, and an immutable saved copy of terms, fit and conditions | Same batch as the record of the event it describes, where there is one | S1 |
+| Request id | Id, method, path, body digest, answer status, the object acted on, time | Same batch as the action's first save | S1 |
+| Set-aside funds | Per hosted lobby: amount set aside and the echoed confirmation | Before opening the lobby answers; superseded by `funding_plan` | S1 |
+| Settings, review and preview ids spent, host-node setting, user-added chain servers, while-closed reports | As `spec/local-api.md` 7.5 | Before each call answers | 1.0.0 |
+
+None of these holds a key, the seed or the 24 words (section 10). The rule of open point 2 adds: request ids may be compacted only under the lifetime rule of `spec/local-api.md` 7.4, and pause, conditions copies and activity entries never while their lobby or factory is unresolved.

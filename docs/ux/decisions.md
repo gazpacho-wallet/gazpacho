@@ -88,3 +88,31 @@ No timed (Decker-Wattenhofer) levels in 1.0.0: every interior level is fixed. No
 ### 10. Seats (owner, 2026-11-12, questions 4)
 
 1.0.0: seats are free, protected by invitation-only lobbies, host removal before the start, standby seats and the signing time budget. Next: a proof of control of a coin or channel for public lobbies, with a share of newcomer seats that need none. Later: the host chooses per lobby among several options in its terms (free, proof, deposit, and others).
+
+### 11. Slice 1 ships with the interface (owner, 2026-11-12)
+
+Owner: "try to ship this with some kind of ui in place and we want to do everything thru the ui". Slice 1 is not done from the command line. Every Slice 1 action is reachable through the local API and the interface: creating or restoring a wallet, the backup check of the words, conditions, finding and joining a lobby, hosting a lobby, the signing moment and refusals, and the live factory. The command line stays for start-up and diagnostics. This answers `OPEN-QUESTIONS.md` Q1 (the screens are in Slice 1, not a slice 1b). Applied in `spec/local-api.md` draft 2 (sections 2 and 2.1), `SLICES.md` and `SLICE1-WORK.md`.
+
+### 12. The 24 words may appear in the browser, under fixed rules (owner, 2026-11-12)
+
+Owner: the words may appear in the browser; "follow typical rules for key handling for wallets and elite crypto repos". This replaces the earlier rule in `DESIGN.md` section 13 that keys never enter the browser, for the words only; private keys, nonces, channel state and journal records still never do. The rules (`spec/local-api.md` section 12.7):
+- shown only over loopback; at creation, and on reveal only after a fresh sign-in;
+- never in URLs, logs, events or caches (`Cache-Control: no-store`), and never kept in page storage;
+- no clipboard copy by default; cleared from the page after display;
+- the backup check never reveals which positions are wrong, and has attempt limits;
+- the program wipes its copies from memory after use.
+
+### 13. Files are encrypted from the start (owner, 2026-11-12, questions 6, Q6 answer B)
+
+Every file the program writes is encrypted from the first write, on test networks too, not only before mainnet. The design is `spec/storage-encryption.md` (being written). The local API handles a locked wallet: the program starts locked, does nothing until it is unlocked, and says so (`spec/local-api.md` sections 4.7 and 11.2). A backup export is the file as encrypted on disk.
+
+### 14. Sign-in with the wallet passphrase, as in desktop wallets (owner, 2026-11-12)
+
+The owner cited Sparrow. The person unlocks with the wallet passphrase, which is also what decrypts the files (decision 13):
+- normal sign-in: the passphrase typed in the page; the program checks it by unlocking the storage key; attempts are rate-limited;
+- first run, before any passphrase exists: the program opens the browser itself with a one-use start token in the address's fragment (never in the path or query, never logged), so a page opened elsewhere cannot create or restore a wallet; a code printed in the terminal is the fallback for headless use;
+- fresh sign-in for sensitive actions: the passphrase again;
+- lock: the key is dropped from memory, and the program then does nothing until unlocked.
+The session token stays out of cookies (review of the local API, F1). Why a browser interface needs more than Sparrow does: other web pages in the same browser can send requests to loopback (`spec/local-api.md` section 4.1).
+
+Also decided the same day: interface ports 39735 (signet) and 39736 (testnet4), plus one optional extra port for a tunnel, off by default; and in Slice 1 one joined lobby and one hosted lobby at a time, with limits that stay editable (tightening leaves a lobby that no longer fits; loosening affects only future joins).
