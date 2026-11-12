@@ -39,6 +39,9 @@ import sys
 ALLOW = {
     # C library: memory and string functions that touch nothing but their arguments
     "memcmp", "memcpy", "memmove", "memset", "strlen", "strnlen", "strcmp", "strncmp", "strchr",
+    # the same kind, emitted by clang in place of code we wrote: bcmp for a memcmp
+    # whose result is only compared with zero, memchr for a byte-search loop
+    "bcmp", "memchr",
     # compiler support
     "__stack_chk_fail", "__stack_chk_guard", "_GLOBAL_OFFSET_TABLE_",
     # libcrypto: hashing, HMAC, constant-time compare, wipe (no I/O, no randomness)
@@ -89,8 +92,17 @@ IMPORTED_STATE_EXCEPTIONS = {
 # non-const pointers.  Nothing writes to it.
 STATE_EXCEPTIONS = {"bip39_wordlist_en"}
 
-SANITIZER = re.compile(r"^(__asan_|__ubsan_|__sanitizer_|__odr_asan|__tsan_|__msan_)")
-SAN_LOCAL = re.compile(r"^(\.|\*\.|__odr_asan|__asan|__ubsan|__sanitizer)")
+# Sanitizer runtime symbols. clang's AddressSanitizer also adds weak references
+# to the bounds of its globals section (__start_asan_globals, __stop_asan_globals)
+# and a flag of its own (___asan_globals_registered).
+SANITIZER = re.compile(r"^(__asan_|__ubsan_|__sanitizer_|__odr_asan|__tsan_|__msan_|"
+                       r"__start_asan_|__stop_asan_)")
+# Writable symbols that are not state of ours: sanitizer data, and clang's
+# lookup tables for a switch (switch.table.<function>). Those are constant, but
+# in some builds (clang with AddressSanitizer, seen in CI) a table of pointers
+# is placed in relocated read-only data, which nm shows as data. C code cannot
+# declare a name with a dot in it, so only the compiler can make one.
+SAN_LOCAL = re.compile(r"^(\.|\*\.|__odr_asan|__asan|___asan|__ubsan|__sanitizer|switch\.table\.)")
 
 
 def read_archive(path):
