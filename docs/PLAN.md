@@ -40,7 +40,7 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 |---|---|---|
 | M0 | Reference code run end to end; foundations shown to separate; reference values recorded | Done |
 | M0b | Foundations imported into this repo with a build and a reference test | Done |
-| M1 | Core skeleton and simulator; signing round engine; a fixed-tree factory created in the simulator with funding signed last | In progress |
+| M1 | Core skeleton and simulator (merged 11 Nov; a follow-up hardens restart and adds faults the engines need); signing round engine; a fixed-tree factory created in the simulator with funding signed last | In progress |
 | **Slice 1** | **Form a factory on signet:** lobby, signing, funding last, shown in the local web interface | After M1 |
 | M2 | Channel engine on the standard taproot format; payment engine; invariants on | |
 | **Slice 2** | **A payment** between two members through the host, on signet | After M2 |
@@ -53,6 +53,18 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 Slices are defined in `SLICES.md`. Each pulls a thin, real version of the outer pieces forward so there is something to run early; the simulator stays the main safety net.
 
 After that: more node adapters and a browser of hosts; swap-in and swap-out; a watching service; the self-contained host; then the work for real funds (remaining design fixes, an outside audit, a capped beta).
+
+## How work proceeds
+
+1. **Specification**, written before code.
+2. **Review of the specification** by an agent that did not write it.
+3. **Build**, against `ENGINEERING-CHECKLIST.md`, including the builder's own mutation testing.
+4. **Pull request**, kept small; automated checks must pass.
+5. **Review of the code** by an agent that did not write it, which tries to break it.
+6. **Fixes**, then a second review of what changed.
+7. **Merge**, then the knowledge base and handbook are updated.
+
+Work that does not depend on the server (specifications, research, reviews of text) runs alongside work that does (building and testing), so the critical path is never waiting for a document.
 
 ## How work is checked
 
