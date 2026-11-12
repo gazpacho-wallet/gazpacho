@@ -85,7 +85,7 @@ Required unless marked. "Slice 1" says which values a Slice 1 app accepts; other
 
 Reserved even types, not valid in draft 2: 70 a joining fee as a share of the chain cost with a ceiling (decision 2, proposed for 1.0.0, **(open)**); 72 the fee for extra receiving room (1.1.0, decision 3); 36 the share of seats for members who bring nothing; 38 invitation-only. An app that sees one refuses the lobby, which is the right default for a term it cannot judge.
 
-Not in the record: anything about channels (revocation window, reserve, dust limit), timed layers, end-date payouts and deposits. They arrive with the slices that use them, as new even types. The tree settings that are the same for every attempt (spare-liquidity delay, layer step and states) stay proposal fields, as `signing-round.md` draft 3 section 4.1 decides; a member judges them at signing (C8).
+Not in the record: anything about channels (revocation window, reserve, dust limit), timed layers, end-date payouts and deposits. They arrive with the slices that use them, as new even types. The tree settings that are the same for every attempt (spare-liquidity delay, layer step and states) stay proposal fields, as `signing-round.md` draft 4 section 4.1 decides; a member judges them at signing (C8).
 
 ## 4. The shape table
 
@@ -346,4 +346,4 @@ current_sig    = 7a692794d41ad38a845e6533b2499b197a3d63d86f196d274a14d4aa33478bf
 7. **The listing on Nostr** will carry the outer record. Whether it is the same bytes or a summary is for the Nostr slice.
 8. **Slice 1 lifetime**: 144 blocks plus 36 of wind-down in T1, so the host recovers its signet coins within about a day and a half (`safety-rule.md` section 12) — **proposed, owner to confirm**.
 
-Closed in draft 2: draft 1's open point 6 (shape validity is now a static check, section 4.3) and open point 8 (lobby-constant tree parameters stay in the proposal, as `signing-round.md` draft 3 section 4.1 decides).
+Closed in draft 2: draft 1's open point 6 (shape validity is now a static check, section 4.3) and open point 8 (lobby-constant tree parameters stay in the proposal, as `signing-round.md` draft 4 section 4.1 decides).

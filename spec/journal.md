@@ -307,7 +307,7 @@ ff0269042d9a3f7d
 ## 12. Tests
 
 **Format**
-1. J1 to J4 reproduce exactly.
+1. J1 to J6 reproduce exactly.
 2. Header with a wrong magic, a wrong check, or the mainnet chain hash: refused.
 3. Every field of an entry altered in turn: `length` 20, 16, 0, the maximum + 1; an incarnation or sync mark with `length` other than 25; unknown `kind`; a sync mark whose `offset` is not its own; a flipped bit in each region: the entry is invalid.
 4. A batch whose records under- or overrun the payload: invalid.

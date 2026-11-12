@@ -430,7 +430,7 @@ The simulator's accounting computes exit value independently of this module, fro
 6. Whether senders' limit on total timelock leaves room for a payment to a member whose exit takes six to nine days.
 7. The confirmation allowance per transaction, which is the largest unknown in exit time.
 8. Whether the restore guard can live somewhere a lost phone does not take with it, beyond the user's own export.
-9. `THREAT-MODEL.md` (outside these five specifications) still says the journal is encrypted at rest and lists no gap for two trees on one output; both overstate (review 3, F16). For whoever owns it.
+9. Closed: `THREAT-MODEL.md` now says the journal is not encrypted in Slice 1 and lists the missing tests for two trees on one output (review 3, F16).
 
 Closed since draft 3: former open point 9 (`KNOWLEDGE-BASE.md` section 5 and `DESIGN.md` section 6 corrected after review 3, L6) and former open point 10 (`messages.md`, `terms.md` and `journal.md` draft 2 follow this draft). The Slice 1 decisions of section 12 are now proposed values.
 
