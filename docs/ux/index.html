@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gazpacho layout concepts</title>
+<style>
+:root{--bg:#faf6ef;--card:#fff;--ink:#22190f;--soft:#6b5d4d;--line:#e4d9c8;--red:#b3261e;--code:#f1e9da;
+--ok-bg:#dff0e3;--ok:#1d5e33;--bad-bg:#fbdfdc;--bad:#8f1d17;--hi:#fbeecb}
+@media (prefers-color-scheme:dark){:root{--bg:#191512;--card:#231d18;--ink:#f1e8da;--soft:#b3a591;--line:#3b3129;--red:#f08a80;--code:#30271f;
+--ok-bg:#1c3a26;--ok:#9fdcb1;--bad-bg:#4a1c19;--bad:#f5aaa3;--hi:#443409}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:1120px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:30px;margin:0 0 6px}h1 span{color:var(--red)}
+h2{font-size:21px;margin:38px 0 10px;padding-top:10px;border-top:2px solid var(--line)}
+p{margin:8px 0;max-width:80ch}.soft{color:var(--soft);font-size:14px}
+a{color:var(--red)}
+.big{display:inline-block;margin:10px 0;padding:12px 18px;border-radius:12px;background:var(--red);color:#fff;text-decoration:none;font-weight:700}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:12px 0}
+.c{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+.c h3{margin:0 0 4px;font-size:17px}.c .l{font-size:28px;font-weight:800;color:var(--red);float:right;line-height:1}
+.c p{font-size:14px}.c a{font-weight:600}
+.c.rec{border:2px solid var(--red)}
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card);margin:10px 0}
+table{border-collapse:collapse;width:100%;min-width:760px;font-size:14px}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{font-size:12.5px;color:var(--soft);font-weight:600;background:var(--bg)}
+td.n{text-align:center}
+tr:last-child td{border-bottom:0}
+tr.top td{background:var(--hi)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:12px 0}
+.warn{border-left:6px solid var(--red)}
+ul{margin:6px 0 6px 20px;padding:0}li{margin:4px 0;max-width:78ch}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13.5px}
+</style>
+</head>
+<body>
+<main>
+<h1>Gaz<span>pacho</span>: layout concepts</h1>
+<p class="soft">2026-11-11. Seven layouts of the same wallet, built on identical content and sixteen moments, then scored by an independent critic who built none of them. Every file opens from disk and makes no outside requests.</p>
+<a class="big" href="viewer.html">Flip through all of them in one page</a>
+
+<h2>The concepts</h2>
+<div class="cards">
+<div class="c"><span class="l">A</span><h3>Wallet first</h3><p>Phoenix, Zeus, Muun. Balance, send, receive; factories as plumbing.</p><a href="concept-a-wallet.html">Open A</a> · <a href="viewer.html#A">in viewer</a></div>
+<div class="c"><span class="l">B</span><h3>Console</h3><p>ThunderHub, Ride The Lightning, Umbrel. Side menu, one area per subject.</p><a href="concept-b-console.html">Open B</a> · <a href="viewer.html#B">in viewer</a></div>
+<div class="c"><span class="l">C</span><h3>Desktop power wallet</h3><p>Sparrow, Electrum. Everything inspectable; tree and signatures in detail.</p><a href="concept-c-power.html">Open C</a> · <a href="viewer.html#C">in viewer</a></div>
+<div class="c"><span class="l">D</span><h3>Lobby browser</h3><p>Steam server browser, Wasabi, Jam. The lobby list is the centre.</p><a href="concept-d-lobby.html">Open D</a> · <a href="viewer.html#D">in viewer</a></div>
+<div class="c"><span class="l">E</span><h3>Offers and a standing instruction</h3><p>Bisq, Lightning Pool, RoboSats, without the trading look.</p><a href="concept-e-offers.html">Open E</a> · <a href="viewer.html#E">in viewer</a></div>
+<div class="c"><span class="l">F</span><h3>Suite with two levels</h3><p>Trezor Suite, Ledger Live. Calm, guided, "show advanced" per page.</p><a href="concept-f-suite.html">Open F</a> · <a href="viewer.html#F">in viewer</a></div>
+<div class="c"><span class="l">G</span><h3>Built from the research</h3><p>What all three research reports agreed on. Highest score.</p><a href="concept-g-blend.html">Open G</a> · <a href="viewer.html#G">in viewer</a></div>
+<div class="c rec"><span class="l">H</span><h3>Recommended blend</h3><p>G as the base, with the best part of each other concept and every safety sentence corrected. Passes 33 checks, including every safety-wording rule.</p><a href="concept-h-recommended.html">Open H</a> · <a href="viewer.html#H">in viewer</a></div>
+</div>
+
+<h2>Scores from the independent critique</h2>
+<p>Each criterion scored 1 to 5. The full reasoning is in <code>notes/ux/critique.md</code>.</p>
+<div class="wrap"><table>
+<tr><th></th><th>Scopes kept apart</th><th>Safe join with defaults</th><th>Automatic behaviour clear and stoppable</th><th>Most urgent always visible</th><th>Member and host in one app</th><th>Phone</th><th>Honest about limits</th><th>Room to grow</th><th>Everyday use</th><th>Quality</th><th>Total of 50</th></tr>
+<tr><td>A</td><td class="n">4</td><td class="n">4</td><td class="n">3</td><td class="n">3</td><td class="n">4</td><td class="n">4</td><td class="n">2</td><td class="n">3</td><td class="n">4</td><td class="n">4</td><td class="n"><b>35</b></td></tr>
+<tr><td>B</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n">3</td><td class="n">4</td><td class="n">3</td><td class="n">2</td><td class="n">4</td><td class="n">4</td><td class="n">3</td><td class="n"><b>35</b></td></tr>
+<tr><td>C</td><td class="n">3</td><td class="n">3</td><td class="n">3</td><td class="n">3</td><td class="n">4</td><td class="n">2</td><td class="n">2</td><td class="n">4</td><td class="n">3</td><td class="n">3</td><td class="n"><b>30</b></td></tr>
+<tr><td>D</td><td class="n">4</td><td class="n">4</td><td class="n">3</td><td class="n">4</td><td class="n">4</td><td class="n">3</td><td class="n">2</td><td class="n">3</td><td class="n">3</td><td class="n">4</td><td class="n"><b>34</b></td></tr>
+<tr><td>E</td><td class="n">4</td><td class="n">3</td><td class="n">4</td><td class="n">3</td><td class="n">4</td><td class="n">3</td><td class="n">2</td><td class="n">3</td><td class="n">3</td><td class="n">4</td><td class="n"><b>33</b></td></tr>
+<tr><td>F</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n">3</td><td class="n">4</td><td class="n">3</td><td class="n">2</td><td class="n">3</td><td class="n">4</td><td class="n">4</td><td class="n"><b>35</b></td></tr>
+<tr><td>G</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n">3</td><td class="n">2</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n"><b>37</b></td></tr>
+<tr class="top"><td>H</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n">3</td><td class="n">4</td><td class="n">4</td><td class="n">4</td><td class="n">3</td><td class="n"><b>38</b></td></tr>
+</table></div>
+<p><b>H, scored afterwards by the same critic:</b> 38. Honesty rose from 2 to 4; quality fell from 4 to 3 because H is heavier than G (the home repeats items, Settings has two overlapping tables). Not ready as it stands: nine sentences are still stronger than the specifications, six findings against G are not fixed, and it predates the owner's answers to questions 3.</p>
+<p>The spread is small: 30 to 37. A, B and F tie at 35 and differ mostly in their outer shell, so choosing between them is taste. G leads because it is the only concept where pause and the test-network marker never scroll away, and because of its live "why nothing fits" line and a "what happens at zero" sentence on every date.</p>
+
+<div class="card warn">
+<h3 style="margin-top:0">The finding that matters most: every concept over-promised on safety</h3>
+<p>All seven scored 2 of 5 on honesty, for the same reasons. These are fixed in H and written into the brief as rules for any future screen:</p>
+<ul>
+<li>"The app always leaves alone in time." True only while the app is running and has funds for fees.</li>
+<li>"Nothing was lost" after being away too long. The app cannot know that; it can only say what it checked.</li>
+<li>"Nothing moved, you are back in line" after a signing round that did not finish. Once a member's signatures have gone out, both the old and the new state must be treated as possible. No concept had a state for this.</li>
+<li>"The steps wait for you." Timed steps have deadlines that pass whether the app is open or not.</li>
+<li>"Your money is safe." Replaced by what the protection is and what it needs.</li>
+</ul>
+<p class="soft">My own earlier word search missed these; the critic found them by reading for meaning.</p>
+</div>
+
+<h2>The recommended blend (H)</h2>
+<p>G as the base, with:</p>
+<div class="wrap"><table>
+<tr><th>From</th><th>What H takes</th></tr>
+<tr><td>A, wallet first</td><td>The phone shell (bottom tabs), and the "Not in Settings, on purpose" block that says where conditions and hosting live</td></tr>
+<tr><td>B, console</td><td>The table of automatic-joining states</td></tr>
+<tr><td>C, power wallet</td><td>Activity columns "Who decided" and "Rule that allowed it", and where each date comes from</td></tr>
+<tr><td>D, lobby browser</td><td>Lobbies that do not fit stay listed, greyed, each with its reason; the "Fits only now" label</td></tr>
+<tr><td>E, offers</td><td>The signing checklist, and the history of the standing instruction (open, filled, refused)</td></tr>
+<tr><td>F, suite</td><td>The Checks card, and the "What the app will do by itself" card</td></tr>
+</table></div>
+
+<h2>Questions for you that the concepts expose</h2>
+<ul>
+<li><b>"Fits only now":</b> a lobby whose current value fits but whose signed range does not. Grouped with the lobbies that do not fit. Is that the right wording?</li>
+<li><b>"Profile" meant two things.</b> H calls a member's starting sets "presets" and keeps "profile" for the host's lobby type.</li>
+<li><b>Hosting funds:</b> one wallet with a "set aside for hosting" amount, or a separate wallet? Leaning: one wallet.</li>
+<li><b>Hosting on phones</b> takes a tab slot from members who never host. Accept it, or put hosting in the header on phones only?</li>
+<li><b>Do members need some on-chain coins</b> to leave alone in a fee spike? The app can recommend a reserve; it cannot require one without breaking "members start at zero".</li>
+<li><b>Which limit a refusal names:</b> recommendation: whichever rule failed, the member's own limit or the host's signed promise, said plainly.</li>
+</ul>
+<p class="soft">The full list of fifteen is in <code>notes/ux/critique.md</code>.</p>
+
+<h2>Sources</h2>
+<ul>
+<li><a href="options-map.html">Options map</a>: every option in its scope, and the sixteen moments.</li>
+<li><code>docs/ux/decisions.md</code>: your decisions so far.</li>
+<li><code>notes/ux/research-wallets.md</code>, <code>research-node-market.md</code>, <code>research-lobbies-consent.md</code>: what existing products do.</li>
+<li><code>notes/ux/gap-check.md</code>: the check against Soup wallet, superscalar.win, the SuperScalar guides and the design posts.</li>
+<li><code>notes/ux/brief.md</code>, <code>notes/ux/critique.md</code>.</li>
+</ul>
+</main>
+</body>
+</html>

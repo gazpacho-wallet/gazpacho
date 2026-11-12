@@ -1,0 +1,1924 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gazpacho, concept E: Offers and a standing instruction</title>
+<style>
+:root{
+  --bg:#fbf6ee;--card:#ffffff;--ink:#231a15;--mute:#645850;--line:#e6dac9;--edge:#8a7a6c;
+  --tomato:#c8321f;--tomato-soft:#fbe3dc;--tomato-ink:#a32616;--on-tomato:#ffffff;
+  --green:#2f7d4f;--green-soft:#dff1e4;--green-ink:#1f6238;
+  --gold:#b7791f;--gold-soft:#fbefd2;--gold-ink:#7a4d0b;
+  --blue:#2b5f9e;--blue-soft:#dde9f8;--blue-ink:#234f86;
+  --grey-soft:#efe9df;--bar:#2a211c;--bar-ink:#f3ebe2;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#17120f;--card:#211a16;--ink:#f3ebe2;--mute:#b9ab9d;--line:#3a2f28;--edge:#8f8072;
+    --tomato:#ff7a63;--tomato-soft:#44201a;--tomato-ink:#ff9a87;--on-tomato:#17120f;
+    --green:#6fcf97;--green-soft:#1c3a29;--green-ink:#8ddcae;
+    --gold:#f0c060;--gold-soft:#3d3015;--gold-ink:#f3cc7c;
+    --blue:#8db8f0;--blue-soft:#1b2c44;--blue-ink:#a6c8f4;
+    --grey-soft:#2b231e;--bar:#0e0b09;--bar-ink:#f3ebe2;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#17120f;--card:#211a16;--ink:#f3ebe2;--mute:#b9ab9d;--line:#3a2f28;--edge:#8f8072;
+  --tomato:#ff7a63;--tomato-soft:#44201a;--tomato-ink:#ff9a87;--on-tomato:#17120f;
+  --green:#6fcf97;--green-soft:#1c3a29;--green-ink:#8ddcae;
+  --gold:#f0c060;--gold-soft:#3d3015;--gold-ink:#f3cc7c;
+  --blue:#8db8f0;--blue-soft:#1b2c44;--blue-ink:#a6c8f4;
+  --grey-soft:#2b231e;--bar:#0e0b09;--bar-ink:#f3ebe2;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--grey-soft);color:var(--ink);font:16px/1.5 system-ui,"Segoe UI",Roboto,sans-serif;overflow-wrap:anywhere}
+h1{font-size:25px;line-height:1.2;margin:2px 0 8px;letter-spacing:-.3px}
+h2{font-size:19px;line-height:1.3;margin:24px 0 8px}
+h3{font-size:16px;margin:14px 0 4px}
+h4{font-size:13px;margin:12px 0 4px;text-transform:uppercase;letter-spacing:.06em;color:var(--mute)}
+p{margin:8px 0}ul,ol{margin:6px 0;padding-left:22px}li{margin:3px 0}
+a{color:var(--tomato-ink)}
+[hidden]{display:none!important}
+:focus-visible{outline:3px solid var(--blue);outline-offset:2px;border-radius:6px}
+.lead{color:var(--mute);max-width:70ch}
+.hint{color:var(--mute);font-size:14px}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.kv dd.num,.cost td.num,.num small{white-space:normal}
+
+/* concept bar, outside the mock-up */
+.cbar{background:var(--bar);color:var(--bar-ink);display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:7px 12px;font-size:13.5px;position:relative;z-index:40}
+.cbar a{color:var(--bar-ink)}
+.cbar-id{flex:1 1 260px;min-width:0}
+.cbar-id b{background:var(--tomato);color:var(--on-tomato);padding:1px 8px;border-radius:99px;margin-right:6px}
+.cbar-id span{opacity:.75;display:block;font-size:12.5px}
+.cbar button,.cbar select,.cbar summary{font:inherit;color:var(--bar-ink);background:transparent;border:1px solid #7a6c60;border-radius:8px;padding:3px 9px;cursor:pointer;min-height:30px}
+.cbar select option{color:#231a15;background:#fff}
+.cbar summary{list-style:none;display:inline-block}
+.cbar summary::-webkit-details-marker{display:none}
+.moments{position:relative}
+.moments ol{margin:6px 0 0;padding-left:22px}
+.mstate{border-bottom:1px solid var(--line);padding-bottom:6px;margin:0}
+.moments .mpanel{position:absolute;right:0;top:36px;width:min(92vw,420px);max-height:76vh;overflow:auto;margin:0;padding:10px 14px;background:var(--card);color:var(--ink);border:1px solid var(--edge);border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.3);font-size:14.5px}
+@media (max-width:700px){.moments{position:static}.moments .mpanel{left:8px;right:8px;top:auto;width:auto}}
+.moments ol a{color:var(--ink)}
+.moments li{margin:5px 0}
+
+/* the mock-up frame */
+.app{max-width:1220px;margin:14px auto 28px;background:var(--bg);border:1px solid var(--line);border-radius:14px;box-shadow:0 4px 22px rgba(35,26,21,.12)}
+@media (max-width:1240px){.app{margin:0;border-radius:0;border-left:0;border-right:0}}
+.signet{margin:0;padding:4px 12px;text-align:center;background:var(--gold-soft);color:var(--gold-ink);border-bottom:1px solid var(--gold);font-size:13.5px;font-weight:600;border-radius:13px 13px 0 0}
+.apphead{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;padding:10px 16px;background:var(--card);border-bottom:1px solid var(--line)}
+.brand{font-size:22px;font-weight:800;letter-spacing:-.4px;color:var(--ink);text-decoration:none}
+.brand span{color:var(--tomato-ink)}
+.mini{display:flex;flex-wrap:wrap;gap:4px 16px;margin:0;flex:1 1 240px;font-size:13.5px}
+.mini div{display:flex;gap:6px;align-items:baseline}
+.mini dt{color:var(--mute)}.mini dd{margin:0;font-weight:700}
+.urgent{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:center;padding:7px 16px;border-bottom:1px solid var(--line);font-size:14.5px;background:var(--bg)}
+.urgent .dot{width:10px;height:10px;border-radius:50%;background:var(--green);flex:none}
+.app[data-tone="warn"] .urgent{background:var(--gold-soft)}.app[data-tone="warn"] .urgent .dot{background:var(--gold)}
+.app[data-tone="act"] .urgent{background:var(--tomato-soft)}.app[data-tone="act"] .urgent .dot{background:var(--tomato)}
+.app[data-tone="busy"] .urgent{background:var(--blue-soft)}.app[data-tone="busy"] .urgent .dot{background:var(--blue)}
+.urgent p{margin:0;flex:1 1 220px}
+.shell{display:block}
+nav.side{padding:8px 12px;border-bottom:1px solid var(--line)}
+nav.side ul{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:4px}
+nav.side li{margin:0}
+nav.side a{display:block;padding:7px 11px;border-radius:9px;color:var(--ink);text-decoration:none;font-size:15px}
+nav.side a:hover{background:var(--grey-soft)}
+nav.side a[aria-current="page"]{background:var(--tomato-soft);font-weight:700}
+main{padding:16px;min-width:0}
+@media (min-width:900px){
+  .shell{display:grid;grid-template-columns:196px minmax(0,1fr)}
+  nav.side{border-bottom:0;border-right:1px solid var(--line);padding:16px 10px}
+  nav.side ul{display:block}nav.side li{margin:2px 0}
+  main{padding:20px 26px 28px}
+}
+.statusline{position:sticky;bottom:0;z-index:20;display:flex;flex-wrap:wrap;gap:2px 16px;padding:6px 16px;background:var(--card);border-top:1px solid var(--edge);font-size:12.5px;color:var(--mute);border-radius:0 0 13px 13px}
+.statusline span b{color:var(--ink);font-weight:600}
+.statusline i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:5px}
+.statusline i.w{background:var(--gold)}.statusline i.b{background:var(--tomato)}.statusline i.o{background:var(--edge)}
+
+/* parts */
+.btn{display:inline-flex;align-items:center;justify-content:center;min-height:38px;padding:6px 14px;border:1px solid var(--edge);border-radius:10px;background:var(--card);color:var(--ink);font:inherit;font-weight:600;text-decoration:none;text-align:center;cursor:pointer}
+.btn:hover{background:var(--grey-soft)}
+.btn.primary{background:var(--tomato);border-color:var(--tomato);color:var(--on-tomato)}
+.btn.danger{background:var(--tomato-soft);border-color:var(--tomato);color:var(--tomato-ink)}
+.btn.small{min-height:30px;padding:2px 10px;font-size:14px}
+.btn:disabled,.btn[aria-disabled="true"]{opacity:.5;cursor:not-allowed}
+.btn[aria-pressed="true"]{background:var(--tomato-soft);border-color:var(--tomato)}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 4px;align-items:center}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin:12px 0}
+.card>h2:first-child,.card>h3:first-child{margin-top:2px}
+.note{border-left:4px solid var(--edge);background:var(--grey-soft);padding:8px 12px;border-radius:0 8px 8px 0;margin:10px 0;font-size:14.5px}
+.note.warn{border-color:var(--gold);background:var(--gold-soft)}
+.note.bad{border-color:var(--tomato);background:var(--tomato-soft)}
+.note.good{border-color:var(--green);background:var(--green-soft)}
+.tag{display:inline-block;padding:0 7px;border-radius:99px;font-size:11.5px;font-weight:700;border:1px solid var(--edge);color:var(--mute);white-space:nowrap;vertical-align:1px;text-transform:lowercase;letter-spacing:.02em}
+.tag.open{border-color:var(--gold);color:var(--gold-ink);background:var(--gold-soft)}
+.tag.signed{border-color:var(--gold);color:var(--gold-ink)}
+.tag.est{border-style:dashed}
+.tag.app{border-color:var(--blue);color:var(--blue-ink);background:var(--blue-soft)}
+.crumb{font-size:14px;margin:0 0 6px}
+.kv{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:5px 14px;margin:6px 0}
+.kv dt{color:var(--mute)}.kv dd{margin:0;font-weight:600}
+.kv dd small{display:block;font-weight:400;color:var(--mute);font-size:13.5px}
+@media (max-width:520px){.kv{grid-template-columns:1fr;gap:0}.kv dd{margin-bottom:7px}}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.big{font-size:26px;font-weight:800;letter-spacing:-.4px;line-height:1.15}
+.unit{font-size:14px;font-weight:400;color:var(--mute)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}
+.chips button{font:inherit;font-size:14px;padding:3px 11px;border-radius:99px;border:1px solid var(--edge);background:var(--card);color:var(--ink);cursor:pointer}
+.chips button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+
+/* my conditions: editable, my voice */
+.mine{background:var(--blue-soft);border:1px solid var(--blue);border-left-width:6px;border-radius:12px;padding:10px 16px;margin:12px 0}
+.mine .cap{font-size:12.5px;font-weight:700;color:var(--blue-ink);text-transform:uppercase;letter-spacing:.06em;margin:0}
+.f{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,220px);gap:4px 14px;align-items:center;margin:9px 0}
+.f label,.f .lab{font-weight:600}
+.f small{display:block;font-weight:400;color:var(--mute);font-size:13.5px}
+.f .in{display:flex;align-items:center;gap:6px}
+@media (max-width:600px){.f{grid-template-columns:1fr}}
+input[type="text"],input[type="number"],select,textarea{width:100%;min-width:0;min-height:38px;padding:6px 9px;border:1px solid var(--edge);border-radius:8px;background:var(--card);color:var(--ink);font:inherit}
+textarea{min-height:64px}
+input[type="checkbox"],input[type="radio"]{width:18px;height:18px;accent-color:var(--tomato);flex:none;margin:3px 0 0}
+fieldset{border:1px solid var(--line);border-radius:12px;margin:14px 0;padding:4px 14px 10px;min-width:0}
+.mine fieldset{border-color:var(--blue)}
+legend{font-weight:700;padding:0 6px}
+.opt{display:flex;gap:9px;align-items:flex-start;margin:7px 0}
+.opt span small{display:block;color:var(--mute);font-size:13.5px}
+.sentence{background:var(--card);border:2px solid var(--blue);border-radius:12px;padding:12px 16px;margin:12px 0}
+.sentence .cap{font-size:12.5px;font-weight:700;color:var(--blue-ink);text-transform:uppercase;letter-spacing:.06em;margin:0}
+.sentence p.say{font-size:17px;line-height:1.5;margin:6px 0}
+
+/* lobby terms: sealed, no inputs */
+.sealed{background:var(--card);border:2px solid var(--gold);border-radius:4px;margin:12px 0;box-shadow:4px 4px 0 var(--gold-soft)}
+.sealed>header{display:flex;gap:10px;align-items:center;padding:8px 14px;background:var(--gold-soft);border-bottom:1px solid var(--gold);color:var(--gold-ink);font-size:13.5px;font-weight:600}
+.sealed>header svg{flex:none}
+.sealed .in{padding:6px 16px 12px}
+.sealed .grp{border-top:1px dashed var(--gold);margin-top:10px;padding-top:2px}
+.sealed .grp:first-child{border-top:0;margin-top:0}
+.hosttext{margin:10px 0;padding:8px 12px;border:1px dashed var(--edge);border-radius:8px}
+.hosttext figcaption{font-size:12.5px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.hosttext blockquote{margin:4px 0 0;font-style:italic}
+
+/* fit check */
+.fit{width:100%;border-collapse:collapse;table-layout:fixed;font-size:14.5px;background:var(--card);border:1px solid var(--line)}
+.fit th,.fit td{text-align:left;vertical-align:top;padding:6px 8px;border-bottom:1px solid var(--line)}
+.fit th{font-size:12.5px;color:var(--mute);background:var(--grey-soft)}
+.fit th:last-child,.fit td:last-child{width:62px}
+.fit td:nth-child(2){color:var(--gold-ink)}.fit td:nth-child(3){color:var(--blue-ink)}
+.fit tr.no td{background:var(--tomato-soft)}
+.fit tr.okwhy td{padding-top:0;color:var(--green-ink);font-size:13.5px}
+.fit tr.why td{background:var(--tomato-soft);font-weight:600;color:var(--ink);padding-top:0}
+.yes{color:var(--green-ink);font-weight:700}.nope{color:var(--tomato-ink);font-weight:700}
+@media (max-width:480px){.fit{font-size:13px}.fit th,.fit td{padding:5px 5px}.fit th:last-child,.fit td:last-child{width:44px}}
+
+/* the offer book */
+.instrbar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 14px;align-items:center;background:var(--blue-soft);border:1px solid var(--blue);border-left-width:6px;border-radius:12px;padding:8px 14px;margin:10px 0}
+.instrbar p{margin:0}.instrbar .cap{font-size:12.5px;font-weight:700;color:var(--blue-ink);text-transform:uppercase;letter-spacing:.06em}
+@media (max-width:600px){.instrbar{grid-template-columns:1fr}}
+.bookhead{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;margin:12px 0 4px}
+.bookhead p{margin:0}
+.offer{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1.4fr) minmax(0,1.7fr);gap:6px 16px;align-items:start;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:8px 0}
+.offer.nofit{background:transparent;border-style:dashed}
+.offer.nofit .o-name a{color:var(--ink)}
+.offer h3{margin:0;font-size:16px}
+.offer p{margin:2px 0;font-size:14px}
+.offer .sub{color:var(--mute);font-size:13.5px}
+.offer ul{margin:0;padding-left:16px;font-size:14px}
+.meter{height:8px;border-radius:4px;background:var(--grey-soft);position:relative;overflow:hidden;margin:4px 0;border:1px solid var(--line)}
+.meter b{position:absolute;left:0;top:0;bottom:0;background:var(--edge)}
+.meter u{position:absolute;top:0;bottom:0;width:2px;background:var(--ink)}
+@media (max-width:860px){.offer{grid-template-columns:1fr 1fr}.offer .o-name,.offer .o-fit{grid-column:1/-1}}
+@media (max-width:460px){.offer{grid-template-columns:1fr}}
+.hostnav a[aria-current]{background:var(--green-soft);border-color:var(--green)}
+.doors{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:12px 0}
+.doors .card{margin:0}
+
+/* money, dates, steps */
+.sr-bar{display:flex;height:16px;border-radius:8px;overflow:hidden;border:1px solid var(--edge);margin:8px 0}
+.sr-bar b{background:var(--tomato)}.sr-bar i{background:var(--green-soft);flex:1}
+.places{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--card)}
+.places div{padding:9px 13px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);margin:0 -1px -1px 0}
+.places .cap{font-size:12.5px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+.places b{font-size:19px;display:block}
+.dates{list-style:none;padding:0;margin:10px 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0}
+.dates li{margin:0;padding:10px 12px 6px 0;border-top:3px solid var(--line);position:relative;font-size:14.5px}
+.dates li::before{content:"";position:absolute;top:-8px;left:0;width:13px;height:13px;border-radius:50%;background:var(--card);border:3px solid var(--edge)}
+.dates li.now{border-top-color:var(--tomato)}.dates li.now::before{border-color:var(--tomato);background:var(--tomato)}
+.dates b{display:block;font-size:15.5px}
+.dates .zero{color:var(--mute);font-size:13.5px;display:block;margin-top:2px}
+.steps{list-style:none;padding:0;margin:10px 0;counter-reset:s}
+.steps li{counter-increment:s;position:relative;padding:4px 0 10px 40px;margin:0}
+.steps li::before{content:counter(s);position:absolute;left:0;top:2px;width:26px;height:26px;border-radius:50%;border:2px solid var(--edge);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13.5px;background:var(--card)}
+.steps li.done::before{content:"✓";background:var(--green-soft);border-color:var(--green);color:var(--green-ink)}
+.steps li.cur::before{background:var(--tomato);border-color:var(--tomato);color:var(--on-tomato)}
+.steps li.cur{font-weight:600}
+.steps small{display:block;color:var(--mute);font-weight:400;font-size:13.5px}
+.rows{list-style:none;padding:0;margin:8px 0;border:1px solid var(--line);border-radius:10px;background:var(--card);overflow:hidden}
+.rows li{margin:0;padding:9px 14px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:minmax(0,130px) minmax(0,1fr);gap:2px 14px}
+.rows li:last-child{border-bottom:0}
+.rows .when{color:var(--mute);font-size:13.5px}
+.rows p{margin:0}.rows small{color:var(--mute);font-size:13.5px;display:block}
+@media (max-width:560px){.rows li{grid-template-columns:1fr}}
+.cost{width:100%;border-collapse:collapse;table-layout:fixed;font-size:15px}
+.cost td{padding:6px 4px;border-bottom:1px solid var(--line);vertical-align:top}
+.cost td:last-child{text-align:right;width:42%;font-weight:600}
+.cost tr.sum td{border-top:2px solid var(--ink);border-bottom:0;font-weight:800}
+.cost small{display:block;color:var(--mute);font-weight:400;font-size:13.5px}
+.hostform{background:var(--green-soft);border:1px solid var(--green);border-left-width:6px;border-radius:12px;padding:10px 16px;margin:12px 0}
+.hostform .cap{font-size:12.5px;font-weight:700;color:var(--green-ink);text-transform:uppercase;letter-spacing:.06em;margin:0}
+.hostform fieldset{border-color:var(--green)}
+.ladder{margin:10px 0;border:1px solid var(--line);border-radius:10px;background:var(--card);padding:8px 12px}
+.ladder .r{display:grid;grid-template-columns:minmax(0,150px) minmax(0,1fr);gap:8px;align-items:center;margin:6px 0;font-size:14px}
+.ladder .t{position:relative;height:16px;background:var(--grey-soft);border-radius:4px}
+.ladder .t b{position:absolute;top:0;bottom:0;background:var(--edge);border-radius:4px}
+.ladder .t b.wd{background:var(--gold)}
+.ladder .t u{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--tomato)}
+@media (max-width:520px){.ladder .r{grid-template-columns:1fr;gap:2px}}
+.words{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;list-style:none;padding:0;counter-reset:w}
+.words li{counter-increment:w;background:var(--grey-soft);border-radius:6px;padding:4px 8px;font-family:ui-monospace,Consolas,monospace;font-size:14px;margin:0}
+.words li::before{content:counter(w) ". ";color:var(--mute)}
+
+/* about */
+.about{max-width:1220px;margin:0 auto 60px;padding:8px 16px}
+.about pre{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow-x:auto;font-size:13.5px;line-height:1.45;white-space:pre-wrap}
+.about table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);font-size:14.5px;table-layout:fixed}
+.about th,.about td{text-align:left;vertical-align:top;padding:7px 9px;border-bottom:1px solid var(--line)}
+.about th{background:var(--grey-soft);font-size:13px}
+</style>
+</head>
+<body>
+
+<header class="cbar" id="top">
+  <div class="cbar-id"><b>Concept E</b>Offers and a standing instruction
+    <span>Modelled, with restraint, on the Bisq offer book, Lightning Pool's order form and RoboSats</span></div>
+  <details class="moments" id="moments">
+    <summary>Moments</summary>
+    <div class="mpanel">
+    <div class="mstate">
+      <label class="opt"><input type="checkbox" id="m-host"><span><b>I also host</b><small>Fills Hosting with the sample lobby "My first lobby". Hosting is in the menu either way.</small></span></label>
+      <label class="opt"><input type="checkbox" id="m-v11"><span><b>Preview 1.1.0</b><small>Shows buying receiving room. Not part of 1.0.0.</small></span></label>
+    </div>
+    <ol>
+      <li><a href="#first-run">First run: nothing works until you are in a live factory</a></li>
+      <li><a href="#channel">Home on an ordinary day, with my money</a></li>
+      <li><a href="#lobbies">Finding a lobby and joining, with the fit check</a> (<a href="#lobby:tomato">terms</a>, <a href="#join:tomato">review</a>, <a href="#lobby:pepper">one that does not fit</a>)</li>
+      <li><a href="#instruction">Automatic joining: set up, running, why nothing fits</a> (<a href="#instruction-review">review</a>)</li>
+      <li><a href="#waiting">Waiting to start</a>, <a href="#signing">the signing moment</a>, <a href="#refused">a refusal</a></li>
+      <li><a href="#factory">A live factory, its dates, taking out alone</a></li>
+      <li><a href="#pay">Paying</a> and <a href="#receive">receiving</a>, with <a href="#pending">a pending payment</a></li>
+      <li>Buying receiving room <span class="tag">1.1.0</span>: <span data-v11="off">tick Preview 1.1.0 above first.</span><a href="#room" data-v11="on">open it</a></li>
+      <li><a href="#attention">Something needs attention, in tiers</a></li>
+      <li><a href="#move">The move to the next factory</a>, <a href="#left-behind">left behind</a></li>
+      <li><a href="#leave-review">Leaving alone: review</a>, <a href="#leaving">step by step</a>, <a href="#ended">after the end</a></li>
+      <li><a href="#activity">Activity: what the app did alone, and while it was closed</a></li>
+      <li><a href="#host-terms">Hosting: writing terms with a preview</a>, <a href="#host-lobby">running a lobby, join requests</a></li>
+      <li><a href="#host-ladder">Hosting: the ladder</a>, <a href="#host-factory">a factory's detail</a>, <a href="#host-earnings">fees and costs</a></li>
+      <li><a href="#backup">Backup</a> and <a href="#restore">restore</a></li>
+      <li><a href="#scopes">Each option scope</a> and <a href="#always">the always-present controls</a></li>
+    </ol>
+    </div>
+  </details>
+  <label>State <select id="state-select" aria-label="Switch the mock-up into a state">
+    <option value="fresh">First run, no factory</option>
+    <option value="waiting">Joined, waiting to start</option>
+    <option value="signing">Signing now</option>
+    <option value="refused">Refused to sign</option>
+    <option value="live" selected>Live factory, ordinary day</option>
+    <option value="attention">Something needs attention</option>
+    <option value="moving">Move window open</option>
+    <option value="leftbehind">Left behind</option>
+    <option value="leaving">Leaving alone</option>
+    <option value="ended">After the end</option>
+  </select></label>
+  <button type="button" id="theme-toggle">Theme: system</button>
+  <a href="index.html">All concepts</a>
+</header>
+
+<div id="home" hidden></div><div id="mychannel" hidden></div>
+
+<div class="app" id="app" data-state="live" data-tone="ok">
+  <p class="signet" id="always">Signet: test coins, no value</p>
+  <div class="apphead">
+    <a class="brand" href="#home">Gaz<span>pacho</span></a>
+    <dl class="mini" aria-label="My money, short">
+      <div><dt>Can send</dt><dd class="num" id="mini-send">182,400</dd></div>
+      <div><dt>Can receive</dt><dd class="num" id="mini-recv">317,600</dd></div>
+      <div><dt>On chain</dt><dd class="num" id="mini-chain">48,000</dd></div>
+    </dl>
+    <button type="button" class="btn small" id="pause" aria-pressed="false">Pause</button>
+  </div>
+  <div class="urgent" role="status">
+    <span class="dot" aria-hidden="true"></span>
+    <p id="urgent-text">Nothing needs you.</p>
+    <a id="urgent-link" href="#home">Open</a>
+  </div>
+  <div class="shell">
+    <nav class="side" aria-label="Main">
+      <ul>
+        <li><a href="#lobbies" data-nav="lobbies">Lobbies</a></li>
+        <li><a href="#instruction" data-nav="instruction">My instruction</a></li>
+        <li><a href="#mychannel" data-nav="channel">My channel</a></li>
+        <li><a href="#activity" data-nav="activity">Activity</a></li>
+        <li><a href="#host" data-nav="host">Hosting</a></li>
+        <li><a href="#wallet" data-nav="wallet">Wallet</a></li>
+        <li><a href="#settings" data-nav="settings">Settings</a></li>
+      </ul>
+    </nav>
+    <main id="main">
+
+<!-- ============ FIRST RUN ============ -->
+<section class="screen" id="first-run" data-state="fresh" data-nav="lobbies">
+  <h1>Welcome to Gazpacho</h1>
+  <p class="lead">A Lightning wallet where you hold your own keys. You share one on-chain output, called a <b>factory</b>, with a <b>host</b> and other <b>members</b>. The host pays for it. You start with a balance of zero and a channel you can receive into.</p>
+  <ol class="steps">
+    <li class="done">Keys made on this machine<small>Nobody else has them.</small></li>
+    <li class="done">Connected<small>Two chain servers agree at block 330,437. Listings from 4 of 5 relays.</small></li>
+    <li class="cur">Write down your 24 words<small>You can do this now or after you join. <a href="#backup">Back up</a></small></li>
+    <li>Join a lobby<small>This is the step that makes the wallet work.</small></li>
+  </ol>
+  <div class="note warn"><b>Nothing works until you are in a live factory.</b> You cannot pay or receive yet. A host opens a <b>lobby</b> (a waiting room with fixed terms). When enough members are ready, the factory starts and your channel is live. You need no coins to join. A small amount on chain helps if you ever leave alone.</div>
+  <h2>Two ways to get in</h2>
+  <div class="doors">
+    <div class="card"><h3>Let the app join for me</h3><p>Write one instruction with your limits. The app joins a lobby that fits, or only tells you about it. Safe start: keep the two ticked profiles and change nothing else.</p><p class="actions"><a class="btn primary" href="#instruction">Write my instruction</a></p></div>
+    <div class="card"><h3>Look at the lobbies myself</h3><p>Fourteen lobbies are listed. Three fit the standard conditions. Compare them and join one by hand.</p><p class="actions"><a class="btn" href="#lobbies">Browse lobbies</a></p></div>
+  </div>
+  <p class="hint">Already have a wallet? <a href="#restore">Restore from your 24 words and a backup</a>.</p>
+</section>
+
+<!-- ============ LOBBIES (the offer book) ============ -->
+<section class="screen" id="lobbies" data-nav="lobbies">
+  <div class="note warn" data-when="fresh"><b>You cannot pay or receive yet.</b> Nothing works until you are in a live factory. Pick a lobby below, or <a href="#instruction">let the app pick one inside your limits</a>. New here? <a href="#first-run">Read the short start page</a>.</div>
+  <h1>Lobbies</h1>
+  <p class="lead">Each lobby is a host's offer: fixed, signed terms and a start rule. You can compare offers. You cannot change them.</p>
+  <div class="instrbar">
+    <div><p class="cap">My instruction</p><p id="bar-sentence"></p><p class="hint" id="bar-state"></p></div>
+    <a class="btn small" href="#instruction">Edit my instruction</a>
+  </div>
+  <div class="bookhead">
+    <label class="opt"><input type="checkbox" id="only-fit" checked><span><b>Show only lobbies that fit my conditions</b></span></label>
+    <p id="fit-count" role="status"></p>
+  </div>
+  <details>
+    <summary>More filters (filters only hide rows)</summary>
+    <div class="card">
+      <div class="f"><label for="f-profile">Show profile</label><select id="f-profile"><option value="">All profiles</option><option>Safety</option><option>Standard</option><option>Starter</option><option>Circle</option></select></div>
+      <div class="f"><label for="f-sort">Show first</label><select id="f-sort"><option value="start">Soonest start</option><option value="fee">Lowest joining fee</option><option value="channel">Largest channel</option><option value="record">Host with most factories funded</option></select></div>
+      <p class="hint">Filters change what you see. They never change what the app will sign. What the app refuses is decided by your conditions, which live in <a href="#instruction">My instruction</a>.</p>
+    </div>
+  </details>
+  <p class="hint">Listings read 20 seconds ago from 4 of 5 relays. This list is a snapshot. <button type="button" class="btn small" id="refresh">Refresh</button> <span id="refreshed" role="status"></span></p>
+  <div id="book"></div>
+  <p class="hint" id="book-empty" hidden></p>
+  <details class="card" id="add-host">
+    <summary><b>Add a host by address or invitation</b></summary>
+    <p>If a host gave you an address, an invitation link or a QR code, paste it here. Its lobbies then appear in the list, also when they are unlisted.</p>
+    <div class="f"><label for="host-addr">Host address or invitation</label><input type="text" id="host-addr" placeholder="gazpacho:host..."></div>
+    <p class="hint">Asking a host about a lobby shows that host your network address.</p>
+    <p class="actions"><button type="button" class="btn">Look up this host</button></p>
+  </details>
+</section>
+
+<!-- ============ ONE LOBBY (terms, record, fit check) ============ -->
+<section class="screen" id="lobby" data-nav="lobbies">
+  <p class="crumb"><a href="#lobbies">Lobbies</a> / <span id="lob-crumb"></span></p>
+  <div id="lob-body"></div>
+</section>
+
+<!-- ============ JOIN: REVIEW THEN CONFIRM ============ -->
+<section class="screen" id="join" data-nav="lobbies">
+  <p class="crumb"><a href="#lobbies">Lobbies</a> / <a id="join-back" href="#lobby:tomato">terms</a> / review</p>
+  <div id="join-body"></div>
+</section>
+
+<!-- ============ MY INSTRUCTION ============ -->
+<section class="screen" id="instruction" data-nav="instruction">
+  <h1>My instruction</h1>
+  <p class="lead">Your conditions, written as one standing instruction to this app. Hosts never see them. The app joins and signs only inside them, whether you join by hand or let the app do it.</p>
+
+  <div class="card" id="instr-status" role="status">
+    <h3 id="is-head">Automatic joining is off</h3>
+    <p id="is-text"></p>
+    <p id="is-fit"></p>
+    <p class="hint" id="is-most"></p>
+  </div>
+
+  <form class="mine" id="conditions" onsubmit="return false">
+    <p class="cap">My conditions · only I can change these · kept on this machine</p>
+    <fieldset>
+      <legend>Lobbies I accept</legend>
+      <label class="opt"><input type="checkbox" id="c-prof-safety" checked><span><b>Safety</b><small>Built so that leaving alone is quick.</small></span></label>
+      <label class="opt"><input type="checkbox" id="c-prof-standard" checked><span><b>Standard</b><small>The usual shape and size.</small></span></label>
+      <label class="opt"><input type="checkbox" id="c-prof-starter"><span><b>Starter</b><small>Small channels, for trying it out.</small></span></label>
+      <label class="opt"><input type="checkbox" id="c-prof-circle"><span><b>Circle</b><small>People who know each other. By invitation.</small></span></label>
+      <p class="hint">A profile is the kind of lobby a host says it runs. The numbers below are what the app enforces. <span class="tag open">open</span> the exact numbers behind each profile name are not fixed yet. Safe start: keep these two and change nothing else.</p>
+    </fieldset>
+    <fieldset>
+      <legend>I accept at least</legend>
+      <div class="f"><label for="c-members">Fewest members<small>I am not counted in a start below this number.</small></label><span class="in"><input type="number" id="c-members" value="20" min="2" max="512"> <span class="unit">members</span></span></div>
+      <div class="f"><label for="c-channel">Smallest channel</label><span class="in"><input type="number" id="c-channel" value="200000" step="10000" min="0"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="c-lifemin">Shortest factory life</label><span class="in"><input type="number" id="c-lifemin" value="7" min="1"> <span class="unit">days</span></span></div>
+    </fieldset>
+    <fieldset>
+      <legend>I accept at most</legend>
+      <div class="f"><label for="c-joinfee">Highest joining fee</label><span class="in"><input type="number" id="c-joinfee" value="2000" step="100" min="0"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="c-paybase">Highest fee per payment: base amount</label><span class="in"><input type="number" id="c-paybase" value="2" min="0"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="c-payfee">Highest fee per payment: proportion</label><span class="in"><input type="number" id="c-payfee" value="0.1" step="0.01" min="0"> <span class="unit">%</span></span></div>
+      <div class="f" data-v11="on"><label for="c-roomfee">Highest fee for extra receiving room <span class="tag">1.1.0</span><small>Receiving room is how much more you can receive.</small></label><span class="in"><input type="number" id="c-roomfee" value="0.5" step="0.1" min="0"> <span class="unit">%</span></span></div>
+      <div class="f"><label for="c-lifemax">Longest factory life</label><span class="in"><input type="number" id="c-lifemax" value="45" min="1"> <span class="unit">days</span></span></div>
+      <div class="f"><label for="c-leave">Longest time to leave alone<small><span class="tag open">open</span> linked to how long you can safely be away.</small></label><span class="in"><input type="number" id="c-leave" value="7" min="1"> <span class="unit">days</span></span></div>
+    </fieldset>
+    <fieldset>
+      <legend>Values the host may still move</legend>
+      <p class="hint">Some terms have a signed range. The host may move the value inside it until the ready check, when everything freezes.</p>
+      <label class="opt"><input type="radio" name="range" value="whole" checked><span><b>Check my limits against the whole range</b><small>The safe default. I can never be switched at the last moment.</small></span></label>
+      <label class="opt"><input type="radio" name="range" value="current"><span><b>Ready me while the current value fits; un-ready me if it moves outside my limit</b><small>More lobbies fit. I may be un-readied shortly before a start.</small></span></label>
+    </fieldset>
+    <details id="more-limits">
+      <summary><b>More limits</b> (host's record, people, payments, how I appear)</summary>
+      <fieldset>
+        <legend>About the host</legend>
+        <div class="f"><label for="c-hostrec">Fewest factories the host has funded before</label><span class="in"><input type="number" id="c-hostrec" value="0" min="0"> <span class="unit">factories</span></span></div>
+        <div class="f"><label for="c-proof">Proof of funds from the host<small><span class="tag open">open</span> proof sized to the lobby is not designed yet.</small></label><select id="c-proof"><option>Not required</option><option>Required</option></select></div>
+        <div class="f"><label for="c-fav">Hosts I trust (favourites)</label><input type="text" id="c-fav" value="Tomato Garden"></div>
+        <div class="f"><label for="c-avoid">Hosts I avoid<small>The app never joins their lobbies.</small></label><input type="text" id="c-avoid" value="" placeholder="none"></div>
+      </fieldset>
+      <fieldset>
+        <legend>About other members</legend>
+        <div class="f"><label for="c-block">People I will not sign with<small>Works only when the host shows names.</small></label><input type="text" id="c-block" value="" placeholder="none"></div>
+      </fieldset>
+      <fieldset>
+        <legend>Costs and safety</legend>
+        <div class="f"><label for="c-seat">Seat cost or deposit I accept<small><span class="tag open">open</span> whether seats cost anything.</small></label><select id="c-seat"><option>None</option><option>Up to an amount</option></select></div>
+        <div class="f"><label for="c-recur">Highest recurring fee at each move<small><span class="tag open">open</span> if hosts charge at each move to a new factory.</small></label><span class="in"><input type="number" id="c-recur" value="0" min="0"> <span class="unit">sats</span></span></div>
+        <div class="f"><label for="c-confs">Confirmations I require before a factory counts as live<small>The app's own floor is 3. You can only ask for more.</small></label><span class="in"><input type="number" id="c-confs" value="3" min="3"> <span class="unit">blocks</span></span></div>
+      </fieldset>
+      <fieldset>
+        <legend>Payments I need to be able to make</legend>
+        <div class="f"><label for="c-paymin">Smallest payment I need</label><span class="in"><input type="number" id="c-paymin" value="1" min="1"> <span class="unit">sats</span></span></div>
+        <div class="f"><label for="c-paymax">Largest payment I need</label><span class="in"><input type="number" id="c-paymax" value="200000" step="10000" min="1"> <span class="unit">sats</span></span></div>
+      </fieldset>
+      <fieldset>
+        <legend>How I appear in a lobby</legend>
+        <label class="opt"><input type="radio" name="appear" checked><span><b>A temporary name</b><small>Now: Lemon-39. A new one for every lobby. Nothing links your factories together.</small></span></label>
+        <label class="opt"><input type="radio" name="appear"><span><b>A Nostr key I prove</b><small>Links your factories together. By choice only.</small></span></label>
+        <label class="opt"><input type="radio" name="appear"><span><b>Free text</b><small>Shown to others as unverified.</small></span></label>
+      </fieldset>
+    </details>
+    <fieldset>
+      <legend>Joining</legend>
+      <label class="opt"><input type="radio" name="autojoin" value="off" checked><span><b>Off</b><small>I join by hand. The app still refuses anything outside the limits above.</small></span></label>
+      <label class="opt"><input type="radio" name="autojoin" value="tell"><span><b>Tell me when a lobby fits</b><small>The app looks and tells me. It joins nothing.</small></span></label>
+      <label class="opt"><input type="radio" name="autojoin" value="auto"><span><b>Join by itself</b><small>The app marks me ready in a lobby that fits, and signs when it starts.</small></span></label>
+      <label class="opt"><input type="checkbox" id="c-favonly"><span><b>Favourite hosts only</b><small>A narrower choice for the two automatic settings.</small></span></label>
+      <div class="f"><label for="c-atonce">Budget: factories at a time</label><span class="in"><input type="number" id="c-atonce" value="1" min="1" max="4"> <span class="unit">at a time</span></span></div>
+      <div class="f"><label for="c-total">Budget: most joins in total<small>After this many, the instruction stops and asks me.</small></label><span class="in"><input type="number" id="c-total" value="6" min="1"> <span class="unit">joins</span></span></div>
+    </fieldset>
+  </form>
+
+  <div class="sentence">
+    <p class="cap">My instruction, in one sentence</p>
+    <p class="say" id="sentence"></p>
+    <p id="worst"></p>
+    <p class="hint">It can never: spend your on-chain coins, sign terms outside these limits, or skip a safety check.</p>
+    <p class="actions" id="instr-actions"></p>
+  </div>
+  <p class="hint">Try it: set the highest joining fee to 400 and watch the count above; the app says which limit shuts out the most lobbies. Or choose "Ready me while the current value fits": Sherry Cask then fits too, because only its range goes above your limit.</p>
+
+  <div class="note"><b>When these limits take effect.</b> When you join, the app keeps a copy of your conditions with that lobby. If you tighten them later, the app leaves any lobby that has not started and no longer fits. If you loosen them, the change applies to future joins only. <span class="tag open">open</span></div>
+
+  <h2 id="instr-move">Moving to the host's next factory</h2>
+  <form class="mine" onsubmit="return false">
+    <p class="cap">My conditions · moving</p>
+    <label class="opt"><input type="radio" name="automove" checked><span><b>On, if the new terms fit</b><small>When the move window opens, the app moves me to the same host's next factory. It checks the new terms against the limits above first.</small></span></label>
+    <label class="opt"><input type="radio" name="automove"><span><b>Ask me</b><small>The app tells me the window is open and waits.</small></span></label>
+    <label class="opt"><input type="radio" name="automove"><span><b>Off: leave instead</b><small>The app leaves alone before the factory ends.</small></span></label>
+    <p class="hint">Signing a move needs your key and a running app.</p>
+  </form>
+
+  <h2 id="instr-room" data-v11="on">Buying receiving room by itself <span class="tag">1.1.0</span></h2>
+  <form class="mine" data-v11="on" onsubmit="return false">
+    <p class="cap">My conditions · receiving room · 1.1.0</p>
+    <label class="opt"><input type="radio" name="autoroom" checked><span><b>Off</b><small>I buy receiving room by hand when I need it.</small></span></label>
+    <label class="opt"><input type="radio" name="autoroom"><span><b>Buy when I am close to full</b><small>Inside the two caps below. Each purchase has no refund.</small></span></label>
+    <div class="f"><label for="c-roomcap">Most per purchase</label><span class="in"><input type="number" id="c-roomcap" value="500" min="0"> <span class="unit">sats</span></span></div>
+    <div class="f"><label for="c-roommonth">Most per month</label><span class="in"><input type="number" id="c-roommonth" value="1500" min="0"> <span class="unit">sats</span></span></div>
+  </form>
+
+  <h2 id="instr-list">What this instruction has done</h2>
+  <div class="chips" id="instr-chips" role="group" aria-label="Show">
+    <button type="button" data-show="all" aria-pressed="true">All</button>
+    <button type="button" data-show="open" aria-pressed="false">Open</button>
+    <button type="button" data-show="filled" aria-pressed="false">Filled</button>
+    <button type="button" data-show="refused" aria-pressed="false">Refused</button>
+  </div>
+  <ul class="rows" id="instr-list-rows">
+    <li data-kind="open"><span class="when">Now<br><b id="il-open-tag">Open</b></span><div><p id="il-open"></p><small id="il-open-sub"></small></div></li>
+    <li data-kind="refused"><span class="when">11 Nov, 14:12<br><b class="nope">Refused</b></span><div><p>You asked to join <a href="#lobby:pepper">Big Pepper</a>. The app refused.</p><small>Joining fee is 5,000 sats. Your limit is 2,000 sats. Lifetime is 90 days. Your limit is 45 days. Nothing was signed and nothing moved.</small></div></li>
+    <li data-kind="filled"><span class="when">5 Nov, 16:00<br><b class="yes">Filled</b></span><div><p>Joined <a href="#lobby:garden12">Tomato Garden, daily factory</a>, by hand. It became factory 12.</p><small>All rows fitted. Signed 17 signatures in 4 seconds. Joining fee froze at 1,000 sats and was taken from your first payment received. The rules and your conditions as they were that day are kept with it.</small></div></li>
+    <li data-kind="filled"><span class="when">3 Oct, 16:00<br><b class="yes">Filled</b></span><div><p>Joined Tomato Garden, daily factory, by hand. It became factory 4.</p><small>Ended 6 Nov: you moved to factory 12 in time.</small></div></li>
+  </ul>
+</section>
+
+<!-- ============ INSTRUCTION: REVIEW THEN CONFIRM ============ -->
+<section class="screen" id="instruction-review" data-nav="instruction">
+  <p class="crumb"><a href="#instruction">My instruction</a> / review</p>
+  <h1>Review: let the app join by itself</h1>
+  <p class="lead">This is a standing permission. After you confirm, the app may act when you are not looking. Read what it allows.</p>
+  <div class="sentence"><p class="cap">The instruction</p><p class="say" id="rev-sentence"></p></div>
+  <div class="card">
+    <h3>What it can cost you, item by item</h3>
+    <table class="cost">
+      <tr><td>Joining fee, each time it joins <span class="tag open">open</span><small>Your limit, checked against each lobby's whole range. Taken from the first payment you receive in that factory.</small></td><td class="num" id="rev-join">up to 2,000 sats</td></tr>
+      <tr><td>On-chain cost of opening the factory<small>The host pays it.</small></td><td class="num">0 sats</td></tr>
+      <tr><td>Seat cost or deposit <span class="tag open">open</span><small>Your limit is "none".</small></td><td class="num">0 sats</td></tr>
+      <tr><td>Factories at a time</td><td class="num" id="rev-atonce">1</td></tr>
+      <tr><td>Joins in total before it stops and asks</td><td class="num" id="rev-total">6</td></tr>
+      <tr class="sum"><td>Most it can commit without asking again</td><td class="num" id="rev-sum">12,000 sats</td></tr>
+    </table>
+    <p class="hint">Later costs are not part of joining and are also capped by your conditions: payment fee up to <span id="rev-pay">2 sats + 0.1</span>% per payment<span data-v11="on">, receiving-room fee up to <span id="rev-room">0.5</span>% when you buy room (1.1.0)</span>.</p>
+  </div>
+  <div class="card">
+    <h3>What the app will do without asking</h3>
+    <ul>
+      <li>Mark you ready in a listed lobby that fits every limit.</li>
+      <li>Sign when that lobby starts. Signing takes seconds and there is no prompt in the middle.</li>
+      <li>Refuse, and write down why, if the tree it is shown differs from the signed terms or breaks a limit.</li>
+    </ul>
+    <h3>What you must do</h3>
+    <ul>
+      <li>Keep the app running. It cannot join or sign while it is closed.</li>
+      <li>Keep the dates of the factory it joins. They are shown before and after.</li>
+    </ul>
+    <p class="hint">Right now <span id="rev-fit"></span>. You can stop the instruction at any time with one press. Pause also stops it.</p>
+  </div>
+  <p class="actions"><button type="button" class="btn primary" id="instr-start">Start this instruction</button> <a class="btn" href="#instruction">Not now</a></p>
+</section>
+
+<!-- ============ MY CHANNEL (the home once joined) ============ -->
+<section class="screen" id="no-channel" data-state="fresh" data-nav="channel">
+  <h1>My channel</h1>
+  <div class="note warn"><b>No channel yet.</b> You cannot pay or receive until you are in a live factory. After you join one, this screen becomes your home.</div>
+  <p class="actions"><a class="btn primary" href="#lobbies">Browse lobbies</a> <a class="btn" href="#instruction">Write my instruction</a></p>
+</section>
+
+<section class="screen" id="channel" data-state="live attention" data-nav="channel">
+  <h1>My channel</h1>
+  <p class="lead" id="next-action">Nothing to do until 28 Nov (in 16 days), when the move window opens.</p>
+
+  <div class="card" id="money">
+    <h2>My money</h2>
+    <div class="grid2">
+      <div><span class="hint">Can send</span><div class="big num">182,400 <span class="unit">sats</span></div></div>
+      <div><span class="hint">Can receive</span><div class="big num">317,600 <span class="unit">sats</span></div></div>
+    </div>
+    <div class="sr-bar" role="img" aria-label="Channel of 500,000 sats: 182,400 to send, 317,600 room to receive"><b style="width:36.5%"></b><i></i></div>
+    <p class="hint">Channel of 500,000 sats. "Can receive" is the room left. <span data-v11="off">More receiving room can be bought from version 1.1.0.</span><span data-v11="on">When it runs low you can <a href="#room">buy receiving room</a> <span class="tag">1.1.0</span>.</span></p>
+    <p class="actions"><a class="btn primary" href="#pay">Pay</a> <a class="btn primary" href="#receive">Receive</a> <a class="btn" href="#room" data-v11="on">Buy receiving room <span class="tag">1.1.0</span></a></p>
+    <h3>What I could take out alone, today</h3>
+    <dl class="kv">
+      <dt>Amount</dt><dd class="num">about 181,200 sats <span class="tag est">estimate</span></dd>
+      <dt>Cost</dt><dd class="num">about 1,200 sats in on-chain fees</dd>
+      <dt>Time</dt><dd>about 6 days<small>Without the host. It uses the chain. <a href="#leave-review">See the steps</a></small></dd>
+    </dl>
+    <h3>Where my money is</h3>
+    <div class="places">
+      <div><span class="cap">Free on chain</span><b class="num" data-host="off">48,000</b><b class="num" data-host="on">4,500,000</b><span class="hint">Yours to send now. <a href="#wallet">Wallet</a></span></div>
+      <div><span class="cap">Set aside</span><b class="num" data-host="off">0</b><b class="num" data-host="on">37,500,000</b><span class="hint" data-host="off">Only hosts set funds aside, for a lobby that is open.</span><span class="hint" data-host="on">For "My first lobby", until it starts or is cancelled.</span></div>
+      <div><span class="cap">In a factory</span><b class="num">182,400</b><span class="hint">Tomato Garden, factory 12, until 8 Dec.</span></div>
+    </div>
+  </div>
+
+  <div class="card" id="pending">
+    <h3>Pending payment</h3>
+    <p><b class="num">12,000 sats</b> to "Bike repair", sent today 13:40. Not counted in "can send".</p>
+    <p class="hint">It settles or fails by itself. At the latest 13 Nov, 09:40 (in 19 hours). At that time, if it has not settled, the 12,000 sats come back to "can send". Nothing to do.</p>
+  </div>
+
+  <div class="card" id="factory">
+    <h2>Tomato Garden, factory 12 <span class="tag">live</span></h2>
+    <dl class="kv">
+      <dt>Host</dt><dd>Tomato Garden<small>12 factories funded. 11 ended as agreed. This one is live.</small></dd>
+      <dt>Members</dt><dd>50<small>You appear as Lemon-39, in this factory only.</small></dd>
+      <dt>Host's spare liquidity on my leaf</dt><dd class="num">250,000 sats<small>From version 1.1.0, what you could buy as receiving room.</small></dd>
+      <dt>Rules I joined under</dt><dd><a href="#lobby:garden12">Sealed rules, fingerprint 7f3a…c21e, and my conditions that day</a></dd>
+    </dl>
+    <h3>Dates to keep</h3>
+    <ol class="dates">
+      <li class="now"><b>Today, 12 Nov</b>Block 330,437. Factory live since 5 Nov.<span class="zero">Away from the app? How long you can safely be away depends on the factory. This one: about 1 day unless something watches for you. <span class="tag open">open</span> <a href="#set-watching">Watching</a></span></li>
+      <li><b>28 Nov (in 16 days)</b>Move window opens.<span class="zero">At zero: the app moves you to Tomato Garden's next factory by itself, if its terms fit your conditions. The app must be running.</span></li>
+      <li><b>1 Dec (in 19 days)</b>Last of 4 tries to move.<span class="zero">At zero: the group has moved on without you. The app starts leaving alone the next day.</span></li>
+      <li><b>8 Dec (in 26 days)</b>Factory ends.<span class="zero">At zero: this factory is over. If you did not move, the app has already left alone so that your coins are on chain by now. <span class="tag open">open</span> the payout at the end date is not final.</span></li>
+    </ol>
+    <p class="actions"><a class="btn" href="#move">About the move</a> <a class="btn danger" href="#leave-review">Leave now, alone</a></p>
+  </div>
+
+  <div class="card" data-host="on">
+    <h2>Hosting</h2>
+    <p><b>My first lobby: 22 ready, 30 needed.</b> Deadline 13 Nov, 18:00 (tomorrow, in 28 hours). At zero with fewer than 30: cancelled, and the 37,500,000 sats set aside are free again.</p>
+    <p class="actions"><a class="btn" href="#host-lobby">Run this lobby</a> <a class="btn" href="#host-requests">2 join requests</a></p>
+  </div>
+
+  <div class="card" id="factories">
+    <h3>All my factories</h3>
+    <ul class="rows">
+      <li><span class="when">Member<br><b class="yes">Live</b></span><div><p>Tomato Garden, factory 12</p><small>Next date: move window opens 28 Nov (in 16 days). Ends 8 Dec.</small></div></li>
+      <li data-host="on"><span class="when">Host<br><b>Lobby open</b></span><div><p><a href="#host-lobby">My first lobby</a></p><small>22 ready, 30 needed. Not a factory yet.</small></div></li>
+      <li><span class="when">Member<br>Ended 6 Nov</span><div><p>Tomato Garden, factory 4</p><small>How it ended: you moved to factory 12 in time. Nothing went on chain for you.</small></div></li>
+    </ul>
+  </div>
+  <p class="hint">Recent: received 21,000 sats today, 09:02. While the app was closed (9 hours): nothing needed you. <a href="#activity">All activity</a></p>
+</section>
+
+<!-- ============ PAY ============ -->
+<section class="screen" id="pay" data-state="live attention moving" data-nav="channel">
+  <p class="crumb"><a href="#mychannel">My channel</a> / pay</p>
+  <h1>Pay</h1>
+  <div class="f"><label for="pay-inv">Invoice</label><textarea id="pay-inv">lntbs36u1p...  (Café Sol, 3,600 sats, "two coffees")</textarea></div>
+  <div class="card">
+    <h3>Review this payment</h3>
+    <table class="cost">
+      <tr><td>To "Café Sol"<small>Note from the invoice: "two coffees"</small></td><td class="num">3,600 sats</td></tr>
+      <tr><td>Host's payment fee <span class="tag signed">signed term</span><small>0 sats base plus 0.05% of the amount.</small></td><td class="num">2 sats</td></tr>
+      <tr><td>Fees to others on the way <span class="tag est">estimate</span><small>Your own limit is 0.5%, at most 18 sats here. <a href="#set-payments">Change</a></small></td><td class="num">0 sats</td></tr>
+      <tr class="sum"><td>Leaves "can send"</td><td class="num">3,602 sats</td></tr>
+    </table>
+    <p class="hint">If the payment gets stuck, the sats are held until it settles or fails. At the latest about 13 Nov, 02:00 (in 12 hours). Then they come back by themselves.</p>
+    <p class="actions"><button type="button" class="btn primary">Pay 3,602 sats</button> <a class="btn" href="#mychannel">Not now</a></p>
+  </div>
+  <div class="note bad"><b>Example of a payment the app refuses.</b> Not sent. The invoice asks for 240,000 sats. You can send 182,400 sats. Nothing moved. Ask for a smaller invoice, or receive first.</div>
+  <p class="hint">Other reasons the app gives, each with its two numbers: above the lobby's largest payment; below its smallest; the fee is above your limit; too little time left before a factory date; payments are paused while the factory changes.</p>
+  <p class="hint">A payment still on its way is shown on <a href="#pending">My channel, under Pending payment</a>.</p>
+</section>
+
+<!-- ============ RECEIVE ============ -->
+<section class="screen" id="receive" data-state="live attention moving" data-nav="channel">
+  <p class="crumb"><a href="#mychannel">My channel</a> / receive</p>
+  <h1>Receive</h1>
+  <div class="note warn"><b>Keep the app open to receive.</b> If Gazpacho is closed when the payment arrives, it fails and the sender keeps the money.</div>
+  <div class="f"><label for="rc-amt">Amount<small>You can receive up to 317,600 sats now.</small></label><span class="in"><input type="number" id="rc-amt" value="21000"> <span class="unit">sats</span></span></div>
+  <div class="f"><label for="rc-note">Note for the payer</label><input type="text" id="rc-note" value="lunch split"></div>
+  <div class="f"><label for="rc-exp">The invoice stops working after</label><select id="rc-exp"><option>1 hour (13:00 today)</option><option>1 day (13 Nov)</option><option>1 week (19 Nov)</option></select></div>
+  <p class="actions"><button type="button" class="btn primary">Make invoice for 21,000 sats</button></p>
+  <p class="hint">Payments into a factory need a longer deadline than usual. A few senders' wallets may fail because of that. If one does, ask them to try again or use another wallet.</p>
+  <p class="hint" data-v11="off">More receiving room can be bought from version 1.1.0.</p><p class="hint" data-v11="on">Need to receive more than 317,600 sats? <a href="#room">Buy receiving room</a> <span class="tag">1.1.0</span>.</p>
+</section>
+
+<!-- ============ BUY RECEIVING ROOM ============ -->
+<section class="screen" id="room" data-v11only data-state="live attention moving" data-nav="channel">
+  <p class="crumb"><a href="#mychannel">My channel</a> / buy receiving room</p>
+  <h1>Buy receiving room <span class="tag">1.1.0</span></h1>
+  <p class="lead">Receiving room is how much more you can receive. The host sells it from the spare liquidity on your leaf. This is version 1.1.0, shown as a preview. It is not part of 1.0.0.</p>
+  <dl class="kv">
+    <dt>You can receive now</dt><dd class="num">317,600 sats</dd>
+    <dt>Host's spare liquidity on your leaf</dt><dd class="num">250,000 sats</dd>
+  </dl>
+  <ol class="steps">
+    <li class="done">Ask<small>You asked for 100,000 sats more.</small></li>
+    <li class="cur">Price<small>The host's fee is 0.3% (signed term). Your limit is 0.5%. It fits.</small></li>
+    <li>Wait<small>You and the host sign. Keep the app open. Up to 10 minutes.</small></li>
+    <li>Done, or failed<small>Either way the app says what happened and what moved.</small></li>
+  </ol>
+  <div class="f"><label for="room-amt">Receiving room to buy</label><span class="in"><input type="number" id="room-amt" value="100000" step="10000"> <span class="unit">sats</span></span></div>
+  <div class="card">
+    <h3>Review this purchase</h3>
+    <table class="cost">
+      <tr><td>Receiving room<small>"Can receive" goes from 317,600 to 417,600.</small></td><td class="num">+100,000 sats</td></tr>
+      <tr><td>Fee to the host, 0.3% <span class="tag signed">signed term</span></td><td class="num">300 sats</td></tr>
+      <tr><td>On-chain cost</td><td class="num">0 sats</td></tr>
+      <tr class="sum"><td>Leaves "can send"</td><td class="num">300 sats</td></tr>
+    </table>
+    <ul>
+      <li><b>No refund.</b> Room you bought is not taken back and not paid back.</li>
+      <li><b>Leaving alone costs more afterwards.</b> The app shows the new estimate on My channel after the purchase. <span class="tag est">estimate</span></li>
+    </ul>
+    <p class="actions"><button type="button" class="btn primary">Buy 100,000 sats of room for 300 sats</button> <a class="btn" href="#mychannel">Not now</a></p>
+  </div>
+  <div class="note bad"><b>Example of a failure.</b> Not bought. The host did not answer within 10 minutes. You asked for 100,000 sats; 0 sats were added. Nothing moved and no fee was paid. Try again, or ask for less.</div>
+  <p class="hint">To let the app buy by itself inside a cap, see <a href="#instr-room">My instruction, receiving room</a>.</p>
+</section>
+
+<!-- ============ WAITING TO START ============ -->
+<section class="screen" id="waiting" data-state="waiting" data-nav="channel">
+  <h1>My channel</h1>
+  <div class="note warn"><b>Waiting to start.</b> You cannot pay or receive until the factory is live.</div>
+  <div class="card">
+    <h2>Tomato Garden, daily factory <span class="tag">you are ready</span></h2>
+    <p><b>38 of 50 ready.</b> It starts as soon as 50 are ready, or at 16:00 today (in 2 hours) if 30 or more are ready.</p>
+    <div class="meter" role="img" aria-label="38 ready of a target of 50, 30 needed"><b style="width:76%"></b><u style="left:60%"></u></div>
+    <p class="hint">At zero with fewer than 30: the lobby is cancelled. Nothing is signed and nothing moves. You need to do nothing.</p>
+    <h3>What happens next, and who acts</h3>
+    <ol class="steps">
+      <li class="done">You joined and are ready<small>You, today 13:20. This was your consent to sign.</small></li>
+      <li class="cur">Filling<small>Other members. By 16:00 today at the latest.</small></li>
+      <li>Ready check<small>The host's values freeze. Joining fee is 1,000 sats now and cannot go above 1,500.</small></li>
+      <li>Signing<small>Every member's app, by itself. Seconds for you; the whole round may take up to 10 minutes. <b>Keep the app open around 16:00.</b></small></li>
+      <li>Funding<small>The host pays the on-chain transaction.</small></li>
+      <li>Confirming<small>The chain. 3 confirmations, about half an hour.</small></li>
+      <li>Live<small>From then on you can pay and receive.</small></li>
+    </ol>
+    <p class="hint">You joined under your conditions as they were at 13:20. <a href="#lobby:tomato">Sealed terms and fit check</a>.</p>
+    <p class="actions"><button type="button" class="btn">Leave this lobby</button></p>
+    <p class="hint">Leaving before the start costs nothing. Pause also takes you out of every lobby that has not started.</p>
+  </div>
+</section>
+
+<!-- ============ SIGNING ============ -->
+<section class="screen" id="signing" data-state="signing" data-nav="channel">
+  <h1>My channel</h1>
+  <div class="note" style="border-color:var(--blue);background:var(--blue-soft)"><b>Signing. Keep the app open.</b> About 10 seconds. The app will not close during these seconds, and Pause is off until they are over.</div>
+  <div class="card">
+    <h2>Tomato Garden, daily factory</h2>
+    <p>50 members are ready. The lobby started at 15:41.</p>
+    <ol class="steps">
+      <li class="done">The rules offered are the rules you joined<small>Fingerprint 7f3a…c21e, signed by Tomato Garden. Nothing differs.</small></li>
+      <li class="done">Frozen values are inside your limits<small>At the ready check the joining fee froze at 1,000 sats. Your limit is 2,000 sats.</small></li>
+      <li class="done">The tree offered is inside your conditions<small>50 members; your limit is at least 20. Channel 500,000 sats; your limit is at least 200,000.</small></li>
+      <li class="done">Safety checks passed<small>These are fixed. Nobody can switch them off.</small></li>
+      <li class="cur">Signing: 12 of 17 signatures<small>Each one is saved before it is sent.</small></li>
+      <li>Host funds the factory</li>
+    </ol>
+    <p class="hint">You are not asked anything now. Being ready was your consent. If any check fails, the app refuses and tells you why.</p>
+  </div>
+</section>
+
+<!-- ============ REFUSED ============ -->
+<section class="screen" id="refused" data-state="refused" data-nav="channel">
+  <h1>My channel</h1>
+  <div class="card" style="border-color:var(--tomato)">
+    <h2>The app did not sign Quiet Harbour</h2>
+    <dl class="kv">
+      <dt>What happened</dt><dd>Quiet Harbour started at its deadline, today 09:00, and counted you in.<small>You had asked not to be counted in a start below your number.</small></dd>
+      <dt>The two numbers</dt><dd>The tree offered has 18 members. Your limit is at least 20 members.</dd>
+      <dt>Your money</dt><dd>Nothing was signed. Nothing moved.<small>Can send 0, can receive 0, on chain 48,000 sats, as before.</small></dd>
+      <dt>What to do next</dt><dd>Nothing is needed.<small>The host can start again without you. Tomato Garden, daily factory fits your conditions and starts by 16:00 today.</small></dd>
+    </dl>
+    <p class="actions"><a class="btn primary" href="#lobby:tomato">See Tomato Garden, daily factory</a> <a class="btn" href="#instruction">Look at my conditions</a></p>
+    <p class="hint">This refusal is kept in <a href="#activity">Activity</a> with the terms and your conditions as they were.</p>
+  </div>
+  <p class="hint">You still cannot pay or receive: you are not in a live factory.</p>
+</section>
+
+<!-- ============ NEEDS ATTENTION ============ -->
+<section class="screen" id="attention" data-state="attention" data-nav="channel">
+  <p class="crumb"><a href="#mychannel">My channel</a> / needs attention</p>
+  <h1>Needs attention</h1>
+  <p class="lead">Three levels. The top one is shown on every screen until it is solved. Things the app can do by itself are done and written to Activity, with no alert.</p>
+  <h2>Needs you now <span class="tag">1</span></h2>
+  <ul class="rows">
+    <li><span class="when"><b class="nope">Now</b><br>since 11:52</span><div><p><b>The two chain servers disagree.</b></p><small>One says block 330,437, the other 330,431. The app signs nothing and makes no payments until they agree. Your money has not moved. What to do: wait a few minutes, or <a href="#set-connections">add another server</a>.</small></div></li>
+  </ul>
+  <h2>Soon <span class="tag">0</span></h2>
+  <p class="hint">Nothing. The next date is 28 Nov (in 16 days) and the app will handle it by itself if it is running.</p>
+  <h2>When you have time <span class="tag">1</span></h2>
+  <ul class="rows">
+    <li><span class="when">Since 3 Nov</span><div><p><b>Your factory backup is 9 days old.</b></p><small>The host's copy is from today. <a href="#backup">Export a fresh backup file</a>. This clears itself when you do.</small></div></li>
+  </ul>
+  <h2>Everything that can appear here</h2>
+  <p class="hint">Example wording for each. None of these is active except the three above.</p>
+  <ul class="rows">
+    <li><span class="when">Now</span><div><p>Host silent</p><small>"Tomato Garden has not answered for 3 hours. You can still leave alone: about 6 days, about 1,200 sats."</small></div></li>
+    <li><span class="when">Now</span><div><p>The host was caught cheating</p><small>"The host published an old state of factory 12. The app answered it at block 330,440. Your 182,400 sats are safe. This host is now on your avoid list."</small></div></li>
+    <li><span class="when">Now</span><div><p>The funding was un-confirmed</p><small>"The chain reorganised and factory 12's funding is back to 1 confirmation of 3. Signing waits until it has 3 again."</small></div></li>
+    <li><span class="when">Now</span><div><p>Payments paused</p><small>"The factory is changing. Paying and receiving are paused, usually for under a minute."</small></div></li>
+    <li><span class="when">Now</span><div><p>Balance below the cost of leaving alone</p><small>"You can send 900 sats. Leaving alone costs about 1,200 sats. Alone, you would get nothing out."</small></div></li>
+    <li><span class="when">Soon</span><div><p>A date is near</p><small>"Move window opens in 3 days (28 Nov). The app will move you by itself if it is running."</small></div></li>
+    <li><span class="when">Soon</span><div><p>Reserve low</p><small>"Your fee reserve is 8,000 sats. Suggested: 20,000 sats. Without it, leaving alone depends on fees set in advance."</small></div></li>
+    <li><span class="when">Soon</span><div><p>Watcher behind</p><small>"Nothing has watched factory 12 for 20 hours. Open the app or leave it running."</small></div></li>
+    <li><span class="when">Soon</span><div><p>A neighbour left alone</p><small>"A member near you on the tree left alone. Part of your branch is now on chain. Your balance is unchanged; leaving alone is now quicker for you."</small></div></li>
+    <li><span class="when">Soon</span><div><p>A value moved outside your limit</p><small>Only if you chose "ready me while the current value fits". "Sherry Cask moved its joining fee to 2,300 sats, inside its signed range. Your limit is 2,000 sats. The app un-readied you. Nothing moved."</small></div></li>
+    <li><span class="when">Record</span><div><p>Refused to sign</p><small>Shown once, then kept in Activity. See <a href="#refused">the refusal</a>.</small></div></li>
+    <li><span class="when">Record</span><div><p>An old state was published and answered</p><small>Kept in Activity with what the app did.</small></div></li>
+  </ul>
+</section>
+
+<!-- ============ THE MOVE ============ -->
+<section class="screen" id="move" data-state="moving" data-nav="channel">
+  <p class="crumb"><a href="#mychannel">My channel</a> / the move</p>
+  <h1>Moving to the next factory</h1>
+  <p class="lead">This state shows 29 Nov. A factory has an end. Before it ends, members move to the host's next one, or leave.</p>
+  <ol class="steps">
+    <li class="done">Window open<small>Since 28 Nov, 12:00.</small></li>
+    <li class="cur">Tried, waiting<small>Try 1 of 4 did not finish: 3 members were not online. Nobody is blamed and nothing moved. Next try: today 12:00 (in 3 hours). Keep the app running.</small></li>
+    <li>Moved<small>Your balance is in the new factory. The old one needs nothing more from you.</small></li>
+  </ol>
+  <div class="grid2">
+    <div class="card"><h3>From: Tomato Garden, factory 12</h3><dl class="kv"><dt>Ends</dt><dd>8 Dec (in 9 days)</dd><dt>Can send</dt><dd class="num">182,400 sats</dd><dt>Can receive</dt><dd class="num">317,600 sats</dd></dl><p class="hint">Paying and receiving keep working here until you have moved.</p></div>
+    <div class="card"><h3>To: Tomato Garden, factory 36</h3><dl class="kv"><dt>Ends</dt><dd>31 Dec (in 32 days)</dd><dt>Channel</dt><dd class="num">500,000 sats</dd><dt>Fit check</dt><dd><span class="yes">All rows fit</span><small>Same rules fingerprint as factory 12: 7f3a…c21e.</small></dd></dl><p class="hint">Your setting: move by itself if the new terms fit. <a href="#instr-move">Change</a></p></div>
+  </div>
+  <h3>The tries, and what happens at zero</h3>
+  <ul class="rows">
+    <li><span class="when">28 Nov, 12:00</span><div><p>Try 1: not finished</p><small>3 members were not online.</small></div></li>
+    <li><span class="when">29 Nov, 12:00<br>in 3 hours</span><div><p>Try 2</p></div></li>
+    <li><span class="when">30 Nov, 12:00</span><div><p>Try 3</p></div></li>
+    <li><span class="when">1 Dec, 12:00<br>in 2 days</span><div><p>Try 4, the last</p><small>At zero: the group moves on without anyone who was not there. For them the app starts leaving alone on 2 Dec, so that their coins are on chain around 8 Dec.</small></div></li>
+  </ul>
+  <p class="hint">The window, the number of tries and what happens to those who miss them are sealed terms of the lobby. <span class="tag open">open</span> whether a host may charge a fee at each move.</p>
+</section>
+
+<section class="screen" id="left-behind" data-state="leftbehind" data-nav="channel">
+  <h1>My channel</h1>
+  <div class="card" style="border-color:var(--tomato)">
+    <h2>The group moved on without you</h2>
+    <p class="hint">This state shows 2 Dec.</p>
+    <dl class="kv">
+      <dt>What happened</dt><dd>This app was not running at any of the 4 tries to move.</dd>
+      <dt>The numbers</dt><dd>4 tries, 28 Nov to 1 Dec. 0 answered by this app.</dd>
+      <dt>Your money</dt><dd>Nothing is lost. 182,400 sats are still yours in factory 12.</dd>
+      <dt>What happens next</dt><dd>The app is leaving alone. It started today.<small>About 181,200 sats will be on chain around 8 Dec, after about 1,200 sats in fees. You cannot pay or receive during this time.</small></dd>
+    </dl>
+    <p class="actions"><a class="btn primary" href="#leaving">Follow the steps</a> <a class="btn" href="#lobbies">Find a lobby for afterwards</a></p>
+  </div>
+</section>
+
+<!-- ============ LEAVING ALONE ============ -->
+<section class="screen" id="leave-review" data-state="live attention" data-nav="channel">
+  <p class="crumb"><a href="#mychannel">My channel</a> / leave alone</p>
+  <h1>Review: leave factory 12 alone</h1>
+  <p class="lead">You can always leave without the host. It takes days and uses the chain. The app does this by itself before a factory ends if you have not moved. Here you choose to do it now.</p>
+  <div class="card">
+    <table class="cost">
+      <tr><td>Your balance in factory 12</td><td class="num">182,400 sats</td></tr>
+      <tr><td>On-chain fees for your path <span class="tag est">estimate</span><small>Fees move. <span class="tag open">open</span> who pays when a member leaves alone.</small></td><td class="num">about −1,200 sats</td></tr>
+      <tr class="sum"><td>Arrives in your on-chain wallet</td><td class="num">about 181,200 sats</td></tr>
+    </table>
+    <dl class="kv">
+      <dt>Time</dt><dd>about 6 days (around 18 Nov)<small>Several transactions, each with a wait.</small></dd>
+      <dt>Where the coins go</dt><dd>Your own on-chain wallet in this app.</dd>
+      <dt>The pending payment</dt><dd>12,000 sats to "Bike repair" must settle or fail first, at the latest 13 Nov, 09:40.</dd>
+    </dl>
+    <ul>
+      <li><b>Paying and receiving stop</b> as soon as this starts.</li>
+      <li><b>It cannot be undone.</b> To use Lightning again you join a new lobby.</li>
+      <li>Keep the app running, or open it about once a day, so it can take each step.</li>
+      <li>Leaving with the host's help would be quicker and cheaper. <span class="tag">later</span></li>
+    </ul>
+    <p class="actions"><button type="button" class="btn danger" id="leave-start">Start leaving alone</button> <a class="btn primary" href="#mychannel">Stay in factory 12</a></p>
+  </div>
+</section>
+
+<section class="screen" id="leaving" data-state="leaving" data-nav="channel">
+  <h1>My channel</h1>
+  <p class="lead">This state shows 4 Dec. Leaving factory 12 alone: step 3 of 6. Nothing is needed from you now.</p>
+  <ol class="steps">
+    <li class="done">Start: publish the first transaction of your path<small>2 Dec, block 333,310. Confirmed.</small></li>
+    <li class="done">Wait<small>About 2 days. Done 4 Dec.</small></li>
+    <li class="cur">Publish the next transaction<small>Sent 4 Dec, 10:12. Waiting for 6 confirmations: 2 of 6.</small></li>
+    <li>Wait<small>About 2 days, until around 6 Dec. At zero the app publishes the last step by itself. If the app is closed then, it does so when you next open it.</small></li>
+    <li>Close your channel on chain<small>Around 6 Dec.</small></li>
+    <li>Coins arrive in your on-chain wallet<small>Around 8 Dec. About 181,200 sats.</small></li>
+  </ol>
+  <dl class="kv">
+    <dt>Fees paid so far</dt><dd class="num">410 sats of about 1,200</dd>
+    <dt>Can send, can receive</dt><dd>0 and 0 while leaving</dd>
+    <dt>What you must do</dt><dd>Keep the app running, or open it about once a day.</dd>
+  </dl>
+  <p class="hint">All times are estimates. They depend on blocks, not on the clock.</p>
+</section>
+
+<section class="screen" id="ended" data-state="ended" data-nav="channel">
+  <h1>My channel</h1>
+  <div class="note good"><b>Factory 12 has ended for you.</b> 181,200 sats arrived on chain on 8 Dec.</div>
+  <dl class="kv">
+    <dt>Where the coins came from</dt><dd>Tomato Garden, factory 12. You left alone, 2 Dec to 8 Dec.</dd>
+    <dt>Fees paid</dt><dd class="num">1,190 sats</dd>
+    <dt>On chain now</dt><dd class="num">229,200 sats<small>48,000 from before, 181,200 from factory 12.</small></dd>
+  </dl>
+  <div class="note warn"><b>You cannot pay or receive</b> until you are in a live factory again.</div>
+  <p class="actions"><a class="btn primary" href="#lobbies">Find a lobby</a> <a class="btn" href="#wallet">Send the coins somewhere</a></p>
+  <h3>Past factories, and how each ended</h3>
+  <ul class="rows">
+    <li><span class="when">5 Nov to 8 Dec</span><div><p>Tomato Garden, factory 12</p><small>You left alone. The group had moved on without you.</small></div></li>
+    <li><span class="when">3 Oct to 6 Nov</span><div><p>Tomato Garden, factory 4</p><small>You moved to factory 12 in time.</small></div></li>
+  </ul>
+</section>
+
+<!-- ============ ACTIVITY ============ -->
+<section class="screen" id="activity" data-nav="activity">
+  <h1>Activity</h1>
+  <p class="lead">Everything that happened, newest first. Things the app did by itself are marked, with the reason.</p>
+  <div class="note good"><b>While the app was closed (9 hours, 11 Nov 23:10 to 12 Nov 08:10): nothing needed you.</b> No date passed. No payment could arrive during that time, because the app must be open to receive.</div>
+  <div class="chips" id="act-chips" role="group" aria-label="Show">
+    <button type="button" data-show="all" aria-pressed="true">All</button>
+    <button type="button" data-show="pay" aria-pressed="false">Payments</button>
+    <button type="button" data-show="app" aria-pressed="false">What the app did alone</button>
+  </div>
+  <ul class="rows" id="act-rows">
+    <li data-kind="pay"><span class="when">12 Nov, 13:40</span><div><p>Paying 12,000 sats to "Bike repair": pending</p><small>Held until 13 Nov, 09:40 at the latest.</small></div></li>
+    <li data-kind="pay"><span class="when">12 Nov, 09:02</span><div><p>Received 21,000 sats</p><small>"lunch split"</small></div></li>
+    <li data-kind="app"><span class="when">12 Nov, 08:10</span><div><p>Checked factory 12 after 9 hours closed <span class="tag app">app</span></p><small>Answered nothing: no old state was published. 54 blocks checked.</small></div></li>
+    <li data-kind="pay"><span class="when">11 Nov, 18:40</span><div><p>Paid 3,600 sats (fee 2)</p><small>To "Café Sol".</small></div></li>
+    <li data-kind="app"><span class="when">11 Nov, 14:12</span><div><p>Refused Big Pepper <span class="tag app">app</span></p><small>Joining fee is 5,000 sats. Your limit is 2,000 sats. Lifetime is 90 days. Your limit is 45 days. Nothing moved. <a href="#lobby:pepper">Terms and fit check</a></small></div></li>
+    <li data-kind="app"><span class="when">5 Nov, 16:00</span><div><p>Signed: 17 signatures in 4 seconds <span class="tag app">app</span></p><small>Tomato Garden, factory 12. 50 members; your limit was at least 20. <a href="#lobby:garden12">Terms and conditions as they were</a></small></div></li>
+    <li data-kind="pay"><span class="when">5 Nov, 18:30</span><div><p>Joining fee of 1,000 sats taken from your first payment received</p><small>As the rules of Tomato Garden, daily factory said. <span class="tag open">open</span> how the joining fee is collected.</small></div></li>
+    <li data-kind="you"><span class="when">5 Nov, 13:20</span><div><p>Joined lobby "Tomato Garden, daily factory"</p><small>By hand. All rows fitted.</small></div></li>
+    <li data-kind="app"><span class="when">5 Nov, 12:05</span><div><p>Moved from factory 4 <span class="tag app">app</span></p><small>Your setting was: move by itself if the new terms fit.</small></div></li>
+  </ul>
+</section>
+
+<!-- ============ HOSTING (always in the menu) ============ -->
+<section class="screen" id="host" data-nav="host">
+  <h1>Hosting</h1>
+  <div class="hostnav"></div>
+  <div data-host="off">
+    <p class="lead">Anyone can host, and you can host and be a member at the same time. A host pays for a factory and others join it as members.</p>
+    <div class="card">
+      <h2>What hosting needs</h2>
+      <ul>
+        <li><b>Funds on chain for the whole factory.</b> Each member's channel plus your spare liquidity. Example: 30 members with 500,000-sat channels and 250,000 spare each need 22,500,000 sats.</li>
+        <li><b>A linked Lightning node</b> (LND or Core Lightning). <a href="#host-setup">Link a node</a></li>
+        <li><b>Being online at the dates</b> your factories set, for every factory you run.</li>
+      </ul>
+      <p class="actions"><a class="btn primary" href="#host-terms">Write terms</a></p>
+      <p class="hint">Nothing here changes your own channel. Hosting appears on My channel only once you have a lobby or factory of your own.</p>
+    </div>
+  </div>
+  <div data-host="on">
+  <p class="lead">As a host you pay for a factory and others join it. You write the terms once, sign them, and cannot change them after members are ready.</p>
+  <div class="card">
+    <h2>My first lobby <span class="tag">open</span></h2>
+    <p><b>22 ready. 30 needed, 50 is the target.</b> Deadline 13 Nov, 18:00 (tomorrow, in 28 hours).</p>
+    <div class="meter" role="img" aria-label="22 ready of a target of 50, 30 needed"><b style="width:44%"></b><u style="left:60%"></u></div>
+    <dl class="kv">
+      <dt>Funding needed at the minimum (30)</dt><dd class="num">22,500,000 sats</dd>
+      <dt>Funding needed at the target (50)</dt><dd class="num">37,500,000 sats</dd>
+      <dt>Wallet has</dt><dd class="num">42,000,000 sats<small>Enough for the target. 37,500,000 are set aside until the lobby starts or is cancelled.</small></dd>
+    </dl>
+    <p class="actions"><a class="btn primary" href="#host-lobby">Run this lobby</a> <a class="btn" href="#host-terms">Write terms for another</a></p>
+  </div>
+  <div class="grid2">
+    <div class="card"><h3>Needs the host</h3><ul>
+      <li><a href="#host-requests">2 join requests</a> wait for an answer.</li>
+      <li>Listing renews by itself. Next renewal by 10 Dec (in 28 days). <a href="#host-setup">Running duties</a></li>
+      <li>Host backup: saved today, 08:15.</li>
+    </ul></div>
+    <div class="card"><h3>My record, as members see it</h3>
+      <dl class="kv"><dt>Factories funded</dt><dd>0</dd><dt>How they ended</dt><dd>None yet</dd><dt>Proof of funds</dt><dd>Published for this lobby</dd></dl>
+      <p class="hint">A host's record lasts. Members' names do not: you see a temporary name per lobby, and you cannot rate members.</p>
+    </div>
+  </div>
+  </div>
+</section>
+
+<section class="screen" id="host-terms" data-nav="host">
+  <h1>Write terms</h1>
+  <div class="hostnav"></div>
+  <p class="lead">These become the sealed card members read. Laid out in the same four groups, so you see what they will see.</p>
+  <form class="hostform" onsubmit="return false">
+    <p class="cap">Terms I offer · this lobby · editable until I open it</p>
+    <fieldset>
+      <legend>Template</legend>
+      <div class="f"><label for="t-tpl">Start from</label><select id="t-tpl"><option>Standard profile</option><option>Safety profile</option><option>Starter profile</option><option>Circle profile</option><option>My saved template: "Daily 500k"</option></select></div>
+      <div class="f"><label for="t-name">Lobby name</label><input type="text" id="t-name" value="My first lobby"></div>
+      <div class="f"><label for="t-prof">Profile</label><select id="t-prof"><option>Standard</option><option>Safety</option><option>Starter</option><option>Circle</option></select></div>
+      <p class="actions"><button type="button" class="btn small">Save these as a template</button></p>
+    </fieldset>
+    <fieldset>
+      <legend>Size</legend>
+      <div class="f"><label for="t-ch">Channel size per member<small>A member starts at zero and can receive up to this.</small></label><span class="in"><input type="number" id="t-ch" value="500000"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="t-spare">My spare liquidity per member<small>From version 1.1.0, members can buy it as receiving room.</small></label><span class="in"><input type="number" id="t-spare" value="250000"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="t-sizemode">Who picks the channel size <span class="tag open">open</span></label><select id="t-sizemode"><option>One size for all</option><option>The member, inside a range</option></select></div>
+      <div class="f"><label for="t-pmin">Smallest payment</label><span class="in"><input type="number" id="t-pmin" value="1"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="t-pmax">Largest payment</label><span class="in"><input type="number" id="t-pmax" value="400000"> <span class="unit">sats</span></span></div>
+    </fieldset>
+    <fieldset>
+      <legend>Fees</legend>
+      <p class="hint">A rule is fixed once you open the lobby. A value marked "may move" can be changed by you inside its signed range until the ready check, then it freezes.</p>
+      <div class="f"><label for="t-joinkind">Joining fee<small>Optional. Taken from the member's first payment received. <span class="tag open">open</span> how it is collected.</small></label><select id="t-joinkind"><option>A flat amount</option><option>A share of the chain cost, with a ceiling</option><option>None</option></select></div>
+      <div class="f"><label for="t-join">Joining fee now</label><span class="in"><input type="number" id="t-join" value="1000"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="t-joinlo">May move between<small>The signed range. Members check their limit against all of it.</small></label><span class="in"><input type="number" id="t-joinlo" value="500" aria-label="Lowest joining fee"> <span class="unit">and</span> <input type="number" id="t-joinhi" value="1500" aria-label="Highest joining fee"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="t-paybase">Fee per payment: base amount</label><span class="in"><input type="number" id="t-paybase" value="0"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="t-pay">Fee per payment: proportion</label><span class="in"><input type="number" id="t-pay" value="0.05" step="0.01"> <span class="unit">%</span></span></div>
+      <div class="f" data-v11="on"><label for="t-room">Fee for extra receiving room <span class="tag">1.1.0</span></label><span class="in"><input type="number" id="t-room" value="0.3" step="0.1"> <span class="unit">%</span></span></div>
+      <div class="f"><label for="t-recur">Recurring fee at each move <span class="tag open">open</span></label><span class="in"><input type="number" id="t-recur" value="0"> <span class="unit">sats</span></span></div>
+      <div class="f"><label for="t-exitpay">Who pays when a member leaves alone <span class="tag open">open</span></label><select id="t-exitpay"><option>Built in from the host's side</option><option>The member who leaves</option></select></div>
+      <div class="f"><label for="t-seat">Seat cost or deposit <span class="tag open">open</span></label><select id="t-seat"><option>None</option><option>An amount</option></select></div>
+    </fieldset>
+    <fieldset>
+      <legend>Promises</legend>
+      <div class="f"><label for="t-target">Start rule: target</label><span class="in"><input type="number" id="t-target" value="50"> <span class="unit">members</span></span></div>
+      <div class="f"><label for="t-min">Start rule: minimum</label><span class="in"><input type="number" id="t-min" value="30"> <span class="unit">members</span></span></div>
+      <div class="f"><label for="t-dl">Start rule: deadline</label><input type="text" id="t-dl" value="13 Nov 2026, 18:00"></div>
+      <div class="f"><label for="t-few">If too few are ready at the deadline<small>The carry-over view is not designed yet.</small></label><select id="t-few"><option>Cancel</option><option>Carry over to my next lobby</option></select></div>
+      <div class="f"><label for="t-life">Lifetime</label><span class="in"><input type="number" id="t-life" value="33"> <span class="unit">days</span></span></div>
+      <div class="f"><label for="t-levels">Tree shape: levels</label><span class="in"><input type="number" id="t-levels" value="6"> <span class="unit">levels</span></span></div>
+      <div class="f"><label for="t-timed">Tree shape: how many are timed <span class="tag open">open</span><small>Members see this as "leaving alone takes about 6 days".</small></label><span class="in"><input type="number" id="t-timed" value="3"> <span class="unit">levels</span></span></div>
+      <div class="f"><label for="t-sign">Signing time budget<small>Members see "signing takes up to 10 minutes; keep the app open".</small></label><span class="in"><input type="number" id="t-sign" value="10"> <span class="unit">minutes</span></span></div>
+      <div class="f"><label for="t-confs">Confirmations before live</label><span class="in"><input type="number" id="t-confs" value="3"> <span class="unit">blocks</span></span></div>
+      <div class="f"><label for="t-pdl">Longest payment deadline<small>A long one makes some incoming payments fail.</small></label><span class="in"><input type="number" id="t-pdl" value="288"> <span class="unit">blocks</span></span></div>
+      <div class="f"><label for="t-mwin">Move window opens</label><span class="in"><input type="number" id="t-mwin" value="10"> <span class="unit">days before the end</span></span></div>
+      <div class="f"><label for="t-mtries">Tries to move<small>Members who miss every try are left behind; their app leaves alone.</small></label><span class="in"><input type="number" id="t-mtries" value="4"> <span class="unit">tries</span></span></div>
+    </fieldset>
+    <fieldset>
+      <legend>Who may join</legend>
+      <div class="f"><label for="t-find">Who can find it</label><select id="t-find"><option>Listed</option><option>Unlisted</option></select></div>
+      <div class="f"><label for="t-who">Who can join</label><select id="t-who"><option>Anyone</option><option>By invitation (link or QR)</option></select></div>
+      <div class="f"><label for="t-admit">Admission</label><select id="t-admit"><option>Automatic</option><option>I approve each request</option></select></div>
+      <div class="f"><label for="t-new">Seats for newcomers<small>Share of seats for members who bring nothing.</small></label><span class="in"><input type="number" id="t-new" value="100"> <span class="unit">%</span></span></div>
+      <label class="opt"><input type="checkbox" checked><span><b>Show members' names to each other</b></span></label>
+      <label class="opt"><input type="checkbox" disabled><span><b>Chat</b> <span class="tag">later</span></span></label>
+      <label class="opt"><input type="checkbox"><span><b>Members may ask for a rule change</b></span></label>
+      <div class="f"><label for="t-note">Note to members<small>Shown as your words, in quotes.</small></label><textarea id="t-note">A first try. Small and friendly.</textarea></div>
+    </fieldset>
+    <p class="hint">Once you open the lobby, the rules and ranges are fixed. To change a rule or a range, open a new lobby. Inside a range you can still move a value until the ready check.</p>
+  </form>
+
+  <h2>Preview</h2>
+  <div class="grid2">
+    <div>
+      <div class="sealed">
+        <header><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6.5 11.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2"/></svg><span>What members will see · sealed once you open the lobby</span></header>
+        <div class="in">
+          <p class="hint">The rules fingerprint is made when you sign. Members' apps sign only for these exact rules.</p>
+          <h3>My first lobby <span class="tag">Standard</span></h3>
+          <div class="grp"><h4>Size</h4><dl class="kv"><dt>Channel</dt><dd class="num">500,000 sats</dd><dt>Host's spare liquidity</dt><dd class="num">250,000 sats per member</dd></dl></div>
+          <div class="grp"><h4>Fees</h4><dl class="kv"><dt>Joining</dt><dd>1,000 sats now; may move between 500 and 1,500 until the ready check<small>Taken from the first payment received.</small></dd><dt>Per payment</dt><dd>0 sats + 0.05%</dd><dt data-v11="on">Extra receiving room <span class="tag">1.1.0</span></dt><dd data-v11="on">0.3%</dd></dl></div>
+          <div class="grp"><h4>Promises</h4><dl class="kv"><dt>Start</dt><dd>At 50, or on 13 Nov 18:00 with 30 or more</dd><dt>Lifetime</dt><dd>33 days</dd><dt>Leaving alone</dt><dd>about 6 days</dd></dl></div>
+          <div class="grp"><h4>Who may join</h4><dl class="kv"><dt>Listed</dt><dd>Yes, anyone, admitted automatically</dd></dl></div>
+          <figure class="hosttext"><figcaption>Written by the host</figcaption><blockquote>"A first try. Small and friendly."</blockquote></figure>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h3>What it needs from you</h3>
+        <table class="cost">
+          <tr><td>Funding at the minimum, 30 members</td><td class="num">22,500,000 sats</td></tr>
+          <tr><td>Funding at the target, 50 members</td><td class="num">37,500,000 sats</td></tr>
+          <tr><td>On-chain fee to open <span class="tag est">estimate</span></td><td class="num">about 2,000 sats</td></tr>
+          <tr class="sum"><td>Set aside when you open the lobby</td><td class="num">37,500,000 sats</td></tr>
+        </table>
+        <p class="hint">Wallet has 42,000,000 sats. Your limit per factory is 40,000,000. Both are enough.</p>
+        <h3>Dates these terms produce</h3>
+        <dl class="kv"><dt>Starts by</dt><dd>13 Nov, 18:00 (in 28 hours)</dd><dt>Move window opens</dt><dd>6 Dec (in 24 days)</dd><dt>Factory ends</dt><dd>16 Dec (in 34 days)</dd></dl>
+        <h3>Problems</h3>
+        <p class="yes">None found.</p>
+        <p class="hint">Example of a problem the preview reports: "With 4 timed levels, leaving alone takes about 9 days. The default limit of a member is 7 days, so most members' apps will refuse."</p>
+        <h3>Next to other listed lobbies</h3>
+        <p class="hint">9 of the 14 listed lobbies ask a higher joining fee. 6 offer a larger channel. You cannot see members' conditions; they are private.</p>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Review: open this lobby</h3>
+    <p>Opening signs these rules and ranges with your host key, makes the rules fingerprint and lists the lobby. 37,500,000 sats are set aside until it starts or is cancelled. If it is cancelled, they are free again and nothing was spent.</p>
+    <p class="actions"><button type="button" class="btn primary">Sign the terms and open the lobby</button> <a class="btn" href="#host">Not now</a></p>
+  </div>
+</section>
+
+<section class="screen" id="host-lobby" data-needhost data-nav="host">
+  <h1>My first lobby</h1>
+  <div class="hostnav"></div>
+  <p><b>22 ready. 30 needed, 50 is the target.</b> Deadline 13 Nov, 18:00 (tomorrow, in 28 hours).</p>
+  <div class="meter" role="img" aria-label="22 ready of a target of 50, 30 needed"><b style="width:44%"></b><u style="left:60%"></u></div>
+  <p class="hint">At zero with 30 or more ready: signing starts by itself and you fund the factory. With fewer than 30: the lobby is cancelled and the 37,500,000 sats set aside are free again.</p>
+  <p class="actions"><button type="button" class="btn primary" disabled>Start now</button> <button type="button" class="btn danger">Cancel this lobby</button></p>
+  <p class="hint">Start now is off: it needs 30 ready and there are 22.</p>
+  <div class="hostform">
+    <p class="cap">Values you may still move · until the ready check</p>
+    <div class="f"><label for="h-movejoin">Joining fee<small>Signed range: 500 to 1,500 sats. Members who check against the whole range are not affected. Members who chose "the current value" are un-readied if it goes above their limit.</small></label><span class="in"><input type="number" id="h-movejoin" value="1000" min="500" max="1500"> <span class="unit">sats</span></span></div>
+    <p class="actions"><button type="button" class="btn">Publish the new value</button></p>
+  </div>
+
+  <h2 id="host-requests">Join requests <span class="tag">2</span></h2>
+  <p class="hint">Shown because admission for this lobby is set to "I approve each request".</p>
+  <ul class="rows">
+    <li><span class="when">Today, 12:48</span><div><p>Plum-12 asks to join</p><small>Temporary name. No key attached, so no history.</small><p class="actions"><button type="button" class="btn small primary">Allow</button> <button type="button" class="btn small">Refuse, with a reason</button></p></div></li>
+    <li><span class="when">Today, 11:05</span><div><p>Key npub1qx…7fa asks to join</p><small>This member chose to prove a key. Your note, kept on this machine only: "was in the test group".</small><p class="actions"><button type="button" class="btn small primary">Allow</button> <button type="button" class="btn small">Refuse, with a reason</button></p></div></li>
+  </ul>
+  <div class="hostform">
+    <p class="cap">Admission lists for this lobby</p>
+    <div class="f"><label for="h-allow">Always allow</label><input type="text" id="h-allow" placeholder="keys, one per line"></div>
+    <div class="f"><label for="h-refuse">Always refuse</label><input type="text" id="h-refuse" placeholder="keys, one per line"></div>
+    <p class="hint">Lists work only for members who attach a key. Notes on members stay on this machine.</p>
+  </div>
+
+  <h2>Members ready <span class="tag">22</span></h2>
+  <ul class="rows">
+    <li><span class="when">Ready</span><div><p>Fig-07</p><p class="actions"><button type="button" class="btn small">Remove from this lobby</button></p></div></li>
+    <li><span class="when">Ready</span><div><p>Lime-81</p><p class="actions"><button type="button" class="btn small">Remove from this lobby</button></p></div></li>
+    <li><span class="when">Ready</span><div><p>20 more</p><small>Names are temporary and belong to this lobby only.</small></div></li>
+  </ul>
+
+  <h2>Invitations</h2>
+  <div class="hostform">
+    <p class="cap">A new invitation</p>
+    <div class="f"><label for="h-inv-exp">Stops working after</label><select id="h-inv-exp"><option>1 day</option><option>1 week</option><option>30 days</option><option>90 days</option><option>Never</option></select></div>
+    <div class="f"><label for="h-inv-addr">Address shown in it</label><select id="h-inv-addr"><option>My onion address</option><option>My public address</option></select></div>
+    <p class="hint">An invitation shows your network address to whoever holds it.</p>
+    <p class="actions"><button type="button" class="btn">Make a link and a QR code</button></p>
+  </div>
+</section>
+
+<section class="screen" id="host-ladder" data-needhost data-nav="host">
+  <h1>The ladder</h1>
+  <div class="hostnav"></div>
+  <p class="lead">Your factories on one time line: opening, live, winding down, ended. Members move from one rung to the next. Yours has one rung so far; two more are planned by the schedule below.</p>
+  <div class="ladder" role="img" aria-label="Time line of three factories from 12 Nov to 20 Jan">
+    <div class="r"><span>My first lobby<br><small class="hint">opening; live 13 Nov to 16 Dec</small></span><span class="t"><b style="left:1%;width:33%"></b><b class="wd" style="left:34%;width:14%"></b><u style="left:0"></u></span></div>
+    <div class="r"><span>Second lobby<br><small class="hint">planned; opens 5 Dec</small></span><span class="t"><b style="left:34%;width:33%"></b><b class="wd" style="left:67%;width:14%"></b></span></div>
+    <div class="r"><span>Third lobby<br><small class="hint">planned; opens 28 Dec</small></span><span class="t"><b style="left:67%;width:33%"></b></span></div>
+    <p class="hint">Grey: live. Gold: winding down, when members move. Red line: today, 12 Nov.</p>
+  </div>
+  <div class="hostform">
+    <p class="cap">Schedule</p>
+    <div class="f"><label for="h-sched">Open a lobby at a fixed time</label><select id="h-sched"><option>Off</option><option>Every day</option><option>Every week</option></select></div>
+    <div class="f"><label for="h-sched-t">At</label><input type="text" id="h-sched-t" value="18:00"></div>
+    <label class="opt"><input type="checkbox" checked><span><b>Open the next factory before this one winds down</b><small>So members always have somewhere to move.</small></span></label>
+  </div>
+  <div class="hostform">
+    <p class="cap">Capital limits</p>
+    <div class="f"><label for="h-capf">Most funds per factory</label><span class="in"><input type="number" id="h-capf" value="40000000"> <span class="unit">sats</span></span></div>
+    <div class="f"><label for="h-capt">Most funds in total</label><span class="in"><input type="number" id="h-capt" value="42000000"> <span class="unit">sats</span></span></div>
+  </div>
+  <div class="places">
+    <div><span class="cap">Free on chain</span><b class="num">4,500,000</b></div>
+    <div><span class="cap">Set aside</span><b class="num">37,500,000</b><span class="hint">My first lobby</span></div>
+    <div><span class="cap">In factories I host</span><b class="num">0</b></div>
+  </div>
+</section>
+
+<section class="screen" id="host-factory" data-needhost data-nav="host">
+  <h1>A factory in detail</h1>
+  <div class="hostnav"></div>
+  <p class="lead">Example numbers, as if "My first lobby" had started with 34 members and it were 7 Dec.</p>
+  <h2>Deadlines the host must meet</h2>
+  <ol class="dates">
+    <li><b>6 Dec (yesterday)</b>Move window opened.<span class="zero">Done: your next factory was live in time.</span></li>
+    <li class="now"><b>9 Dec (in 2 days)</b>Last try to move members.<span class="zero">At zero: members who did not move are left behind and their apps leave alone.</span></li>
+    <li><b>16 Dec (in 9 days)</b>Factory ends.<span class="zero">At zero: members' apps have left alone if they did not move. <span class="tag open">open</span> what a late host loses, and the payout at the end date, are not final.</span></li>
+  </ol>
+  <h2>Silent members <span class="tag">2 of 34</span></h2>
+  <ul class="rows">
+    <li><span class="when">Not seen for 3 days</span><div><p>Kiwi-44, balance 0 sats</p><small>If they never come back, their path goes on chain at your cost. About 900 sats. <span class="tag est">estimate</span></small><p class="actions"><button type="button" class="btn small">Put this member's path on chain now</button></p></div></li>
+    <li><span class="when">Not seen for 2 days</span><div><p>Pear-03, balance 61,000 sats</p><small>Has 2 tries left to move.</small></div></li>
+  </ul>
+  <h2>Running this factory</h2>
+  <ul class="rows">
+    <li data-v11="on"><span class="when">Request <span class="tag">1.1.0</span></span><div><p>Fig-07 asks to buy 100,000 sats of receiving room</p><small>Your fee: 0.3%, 300 sats. Spare liquidity on that leaf: 250,000 sats.</small><p class="actions"><button type="button" class="btn small primary">Sell receiving room</button></p></div></li>
+    <li><span class="when">Fee funds</span><div><p>120,000 sats held ready for on-chain fees</p><small>Suggested for 34 members: 100,000 sats or more.</small></div></li>
+    <li><span class="when">Action</span><div><p>Wind down</p><small>Opens the move window now.</small><p class="actions"><button type="button" class="btn small danger">Wind down this factory</button></p></div></li>
+  </ul>
+</section>
+
+<section class="screen" id="host-earnings" data-needhost data-nav="host">
+  <h1>Fees and costs</h1>
+  <div class="hostnav"></div>
+  <p class="lead">A report only. Example numbers for one factory of 34 members. Hosting is providing liquidity for fees; this page shows the fees received and what they cost you.</p>
+  <div class="f"><label for="h-period">Period</label><select id="h-period"><option>This factory so far</option><option>Last 30 days</option><option>All time</option></select></div>
+  <div class="card">
+    <table class="cost">
+      <tr><td>Joining fees received<small>34 members at 1,000 sats.</small></td><td class="num">34,000 sats</td></tr>
+      <tr><td>Payment fees received</td><td class="num">4,210 sats</td></tr>
+      <tr data-v11="on"><td>Receiving-room fees received <span class="tag">1.1.0</span></td><td class="num">6,300 sats</td></tr>
+      <tr><td>On-chain costs paid</td><td class="num">−18,400 sats</td></tr>
+      <tr class="sum" data-v11="off"><td>Fees received less costs</td><td class="num">19,810 sats</td></tr>
+      <tr class="sum" data-v11="on"><td>Fees received less costs</td><td class="num">26,110 sats</td></tr>
+    </table>
+  </div>
+  <dl class="kv">
+    <dt>Funds in this factory</dt><dd class="num">25,500,000 sats</dd>
+    <dt>Idle funds, in no factory</dt><dd class="num">16,500,000 sats</dd>
+  </dl>
+</section>
+
+<section class="screen" id="host-setup" data-nav="host">
+  <h1>Host set-up</h1>
+  <div class="hostnav"></div>
+  <div class="hostform">
+    <p class="cap">Host identity and record</p>
+    <dl class="kv"><dt>Host key</dt><dd>npub1gzp…k3e<small>Lasting. It cannot be changed while a factory is open.</small></dd></dl>
+    <label class="opt"><input type="checkbox" checked><span><b>Publish the factories I have funded</b><small>Unlike members, a host's record is the point.</small></span></label>
+  </div>
+  <div class="hostform">
+    <p class="cap">My Lightning node link</p>
+    <div class="f"><label for="h-kind">Kind</label><select id="h-kind"><option>LND</option><option>Core Lightning</option></select></div>
+    <div class="f"><label for="h-naddr">Address</label><input type="text" id="h-naddr" value="127.0.0.1:10009"></div>
+    <div class="f"><label for="h-nfile">Access file</label><input type="text" id="h-nfile" value="admin.macaroon"></div>
+    <ol class="steps">
+      <li class="done">Node reached</li>
+      <li class="done">Access file accepted</li>
+      <li class="done">Node is in step with the chain</li>
+      <li class="done">Test payment went through</li>
+    </ol>
+    <p class="actions"><button type="button" class="btn small">Run the four-step test again</button></p>
+  </div>
+  <div class="hostform">
+    <p class="cap">Running duties</p>
+    <div class="f"><label for="h-pub">Public address members connect to</label><input type="text" id="h-pub" value="gzp4…onion:9735"></div>
+    <div class="f"><label for="h-contact">Contact address for members</label><input type="text" id="h-contact" value="host@example.invalid"></div>
+    <dl class="kv">
+      <dt>Listing renewal</dt><dd>Renews by itself. Next by 10 Dec (in 28 days).<small>At zero without renewal: the lobby drops off members' lists.</small></dd>
+      <dt>Host backup</dt><dd>Saved today, 08:15. A copy is made before each move.</dd>
+      <dt>One copy only</dt><dd>Never run two copies of this host while a factory is open.</dd>
+    </dl>
+    <fieldset><legend>Alert me about</legend>
+      <label class="opt"><input type="checkbox" checked><span>A slow signer</span></label>
+      <label class="opt"><input type="checkbox" checked><span>Signing stuck for over 10 minutes</span></label>
+      <label class="opt"><input type="checkbox" checked><span>Node link down</span></label>
+      <label class="opt"><input type="checkbox" checked><span>Low funds for fees</span></label>
+    </fieldset>
+  </div>
+  <p class="hint">There is no host mode to switch. See <a href="#set-hosting">Settings, Hosting</a>.</p>
+</section>
+
+<!-- ============ WALLET ============ -->
+<section class="screen" id="wallet" data-nav="wallet">
+  <h1>Wallet</h1>
+  <p class="lead">Your keys, your backups and your on-chain coins. Members need no coins to join. A small amount helps when leaving alone.</p>
+  <div class="card">
+    <h2>On-chain funds</h2>
+    <div class="big num"><span data-host="off">48,000</span><span data-host="on">42,000,000</span> <span class="unit">sats</span></div>
+    <div class="f"><label for="w-addr">Receive address</label><input type="text" id="w-addr" readonly value="tb1q9x0example7k3n…4mza"></div>
+    <details><summary><b>Send</b></summary>
+      <div class="f"><label for="w-to">To address</label><input type="text" id="w-to"></div>
+      <div class="f"><label for="w-amt">Amount</label><span class="in"><input type="number" id="w-amt"> <span class="unit">sats</span></span></div>
+      <p class="actions"><button type="button" class="btn">Review sending</button></p>
+    </details>
+    <ul class="rows">
+      <li><span class="when">28 Oct</span><div><p>Received 48,000 sats</p><small>From a Signet tap. 2,140 confirmations.</small></div></li>
+    </ul>
+    <div class="f"><label for="w-fee">Fee rate for my transactions<small>Test networks use 0.1 sat/vB.</small></label><select id="w-fee"><option>Automatic</option><option>Fixed</option></select></div>
+  </div>
+  <div class="card">
+    <h2>Backups</h2>
+    <dl class="kv">
+      <dt>Recovery phrase, 24 words</dt><dd>Written down and checked on 28 Oct</dd>
+      <dt>Factory backup file</dt><dd>9 days old</dd>
+      <dt>Copy kept by the host</dt><dd>On. Last updated today, 09:02</dd>
+    </dl>
+    <p class="actions"><a class="btn" href="#backup">Back up</a> <a class="btn" href="#restore">Restore</a></p>
+  </div>
+  <div class="card">
+    <h2>Network</h2>
+    <div class="f"><label for="w-net">Network<small>Cannot change while you are in a lobby or a factory.</small></label><select id="w-net" disabled><option>Signet</option><option>Testnet4</option><option disabled>Mainnet (not in this release)</option></select></div>
+  </div>
+</section>
+
+<section class="screen" id="backup" data-nav="wallet">
+  <p class="crumb"><a href="#wallet">Wallet</a> / back up</p>
+  <h1>Back up</h1>
+  <p class="lead">Two things, and you need both. The 24 words bring back your keys. They do not bring back what was signed in a factory. The factory backup does that, and it matters as much as the words.</p>
+  <div class="card">
+    <h2>1. Recovery phrase</h2>
+    <p class="actions"><button type="button" class="btn" id="show-words" aria-expanded="false">Show the 24 words</button></p>
+    <ol class="words" id="words" hidden>
+      <li>example</li><li>words</li><li>only</li><li>tomato</li><li>garlic</li><li>pepper</li><li>olive</li><li>bread</li><li>cucumber</li><li>vinegar</li><li>salt</li><li>bowl</li><li>spoon</li><li>summer</li><li>garden</li><li>basil</li><li>onion</li><li>ladle</li><li>chill</li><li>table</li><li>lemon</li><li>water</li><li>knife</li><li>serve</li>
+    </ol>
+    <h3>Check that you wrote them down</h3>
+    <div class="f"><label for="bk-w7">Word 7</label><input type="text" id="bk-w7"></div>
+    <div class="f"><label for="bk-w19">Word 19</label><input type="text" id="bk-w19"></div>
+    <p class="actions"><button type="button" class="btn">Check</button></p>
+  </div>
+  <div class="card">
+    <h2>2. Factory backup</h2>
+    <dl class="kv">
+      <dt>Backup file</dt><dd>Last exported 3 Nov (9 days ago)</dd>
+      <dt>Copy kept by the host</dt><dd>Last updated today, 09:02<small>Encrypted with your key. The host cannot read it.</small></dd>
+    </dl>
+    <label class="opt"><input type="checkbox" checked><span><b>Let the host keep a copy</b><small>Updated after every change.</small></span></label>
+    <p class="actions"><button type="button" class="btn primary">Export a backup file now</button></p>
+  </div>
+</section>
+
+<section class="screen" id="restore" data-nav="wallet">
+  <p class="crumb"><a href="#wallet">Wallet</a> / restore</p>
+  <h1>Restore</h1>
+  <ol class="steps">
+    <li class="done">Enter the 24 words<small>Your keys and your on-chain coins are back: 48,000 sats.</small></li>
+    <li class="done">Add the factory backup<small>From a backup file, or ask the host for its copy. Found: the host's copy from 12 Nov, 09:02.</small></li>
+    <li class="cur">Wait for the host to prove the latest state <span class="tag open">open</span><small>Asked Tomato Garden at 14:02. No answer yet.</small></li>
+    <li>Ready<small>Paying and receiving work again.</small></li>
+  </ol>
+  <div class="note warn"><b>While waiting, the wallet only shows.</b> Balance as of the backup: can send 182,400 sats. Paying, receiving and signing are off. A restored backup never publishes anything by itself, because an old copy could be out of date. <span class="tag open">open</span> this view is not designed yet.</div>
+  <div class="f"><label for="rs-file">Backup file</label><input type="text" id="rs-file" placeholder="gazpacho-backup-2026-11-03.gzb"></div>
+  <p class="actions"><button type="button" class="btn">Ask the host for its copy again</button></p>
+</section>
+
+<!-- ============ SETTINGS ============ -->
+<section class="screen" id="settings" data-nav="settings">
+  <h1>Settings</h1>
+  <div class="card" id="scopes">
+    <h2>Where every option lives</h2>
+    <ul class="rows">
+      <li><span class="when">1 My conditions</span><div><p><a href="#instruction">My instruction</a></p><small>Limits, joining, moving, buying room by itself. Never in Settings.</small></div></li>
+      <li><span class="when">2 Lobby terms</span><div><p><a href="#lobby:tomato">Inside each lobby</a>, as a sealed card</p><small>Hosts write them under Hosting, Write terms.</small></div></li>
+      <li><span class="when">3 Wallet</span><div><p><a href="#wallet">Wallet</a>; <a href="#set-display">display</a> and <a href="#set-access">access</a> below</p></div></li>
+      <li><span class="when">4 Watching</span><div><p><a href="#set-watching">Watching</a>, below</p></div></li>
+      <li><span class="when">5 Connections</span><div><p><a href="#set-connections">Connections</a>, below</p></div></li>
+      <li><span class="when">6 Hosting</span><div><p><a href="#host">Hosting</a>, in the menu, always</p><small>A calm start page until you write terms. <a href="#set-hosting">Note below</a>.</small></div></li>
+      <li><span class="when">7 Payments</span><div><p><a href="#mychannel">My channel</a>: pay, receive, buy receiving room</p><small>One limit <a href="#set-payments">below</a>.</small></div></li>
+      <li><span class="when">Always present</span><div><p>The test-network marker, the line under it, Pause, and the status line at the bottom</p><small>They are on every screen and are not options.</small></div></li>
+    </ul>
+  </div>
+
+  <h2 id="set-watching">Watching</h2>
+  <p class="hint">What protects you while you are away.</p>
+  <div class="card">
+    <dl class="kv">
+      <dt>Longest safe absence <span class="tag open">open</span></dt><dd>About 1 day for factory 12<small>How long you can safely be away depends on the factory. This one: about 1 day unless something watches for you.</small></dd>
+      <dt>Watcher health</dt><dd><span class="yes">Up to date</span><small>This app last checked factory 12 at block 330,437. Other values: behind, unreachable.</small></dd>
+    </dl>
+    <fieldset><legend>Who watches while I am away</legend>
+      <label class="opt"><input type="radio" name="watch"><span><b>Nobody</b></span></label>
+      <label class="opt"><input type="radio" name="watch" checked><span><b>This app, left running</b></span></label>
+      <label class="opt"><input type="radio" name="watch" disabled><span><b>My own second machine</b> <span class="tag">later</span></span></label>
+      <label class="opt"><input type="radio" name="watch" disabled><span><b>A watcher holding ready-made responses</b> <span class="tag">later</span><small>A watcher that holds keys is not offered.</small></span></label>
+    </fieldset>
+    <div class="f"><label for="s-margin">Leave before the end: extra margin<small>The app always leaves alone in time. You can only add margin above the floor of 144 blocks.</small></label><span class="in"><input type="number" id="s-margin" value="0" min="0"> <span class="unit">extra blocks</span></span></div>
+    <div class="f"><label for="s-reserve">Fee reserve: warn me below<small>On-chain coins kept for leaving alone. Suggested: 20,000 sats. You have 48,000.</small></label><span class="in"><input type="number" id="s-reserve" value="20000"> <span class="unit">sats</span></span></div>
+    <div class="f"><label for="s-early">Warn me this early before a date</label><span class="in"><input type="number" id="s-early" value="3" min="1"> <span class="unit">days</span></span></div>
+    <fieldset><legend>Reminders</legend>
+      <label class="opt"><input type="checkbox" checked><span><b>In the app</b></span></label>
+      <label class="opt"><input type="checkbox" disabled><span><b>Nostr message</b> <span class="tag">later</span></span></label>
+      <label class="opt"><input type="checkbox" disabled><span><b>Email</b> <span class="tag">later</span></span></label>
+      <label class="opt"><input type="checkbox" disabled><span><b>Phone</b> <span class="tag">later</span></span></label>
+    </fieldset>
+  </div>
+
+  <h2 id="set-connections">Connections</h2>
+  <div class="card">
+    <fieldset><legend>How I see the chain</legend>
+      <label class="opt"><input type="radio" name="chain" checked><span><b>Public servers</b><small>They can see which addresses you ask about.</small></span></label>
+      <label class="opt"><input type="radio" name="chain"><span><b>My own server</b></span></label>
+      <label class="opt"><input type="radio" name="chain"><span><b>My own node</b></span></label>
+    </fieldset>
+    <h3>Server list</h3>
+    <ul class="rows">
+      <li><span class="when"><b class="yes">In step</b></span><div><p>signet.example-one.invalid</p><small>Operator A. Block 330,437.</small><p class="actions"><button type="button" class="btn small">Remove</button></p></div></li>
+      <li><span class="when"><b class="yes">In step</b></span><div><p>electrum.example-two.invalid</p><small>Operator B. Block 330,437.</small><p class="actions"><button type="button" class="btn small">Remove</button></p></div></li>
+    </ul>
+    <p class="actions"><button type="button" class="btn small">Add a server</button></p>
+    <p class="hint">The app needs two servers from different operators and says when they disagree.</p>
+    <div class="f"><label for="s-relays">Listings: Nostr relays<small>Where lobby listings and host records are read from. 4 of 5 answering.</small></label><textarea id="s-relays">relay-one.example.invalid
+relay-two.example.invalid
+relay-three.example.invalid
+relay-four.example.invalid
+relay-five.example.invalid</textarea></div>
+    <fieldset><legend>Privacy of connections</legend>
+      <label class="opt"><input type="radio" name="tor" checked><span><b>Direct</b><small>Asking a host about a lobby shows it your network address.</small></span></label>
+      <label class="opt"><input type="radio" name="tor" disabled><span><b>Tor</b> <span class="tag">later</span></span></label>
+    </fieldset>
+    <div class="f"><label for="s-port">Local interface: port<small>This machine only.</small></label><input type="number" id="s-port" value="7397"></div>
+  </div>
+
+  <h2 id="set-payments">Payments</h2>
+  <div class="card">
+    <div class="f"><label for="s-payfee">Highest fee I pay per payment<small>Your own limit on fees along the way. Separate from the host's payment fee, which is a sealed term.</small></label><span class="in"><input type="number" id="s-payfee" value="0.5" step="0.1"> <span class="unit">%</span></span></div>
+  </div>
+
+  <h2 id="set-display">Units and display</h2>
+  <div class="card">
+    <div class="f"><label for="s-unit">Unit</label><select id="s-unit"><option>sats</option><option>BTC</option></select></div>
+    <div class="f"><label for="s-fiat">Also show a national currency</label><select id="s-fiat"><option>Off</option><option>EUR</option><option>USD</option></select></div>
+    <div class="f"><label for="s-theme">Theme</label><select id="s-theme"><option value="system">Same as the system</option><option value="light">Light</option><option value="dark">Dark</option></select></div>
+    <div class="f"><label for="s-lang">Language</label><select id="s-lang"><option>English</option></select></div>
+  </div>
+
+  <h2 id="set-access">Access to the app</h2>
+  <div class="card">
+    <dl class="kv"><dt>Start-up token</dt><dd>Set<small>How the browser gets the token is not designed yet. <span class="tag open">open</span></small></dd></dl>
+    <div class="f"><label for="s-lock">Lock after idle</label><select id="s-lock"><option>15 minutes</option><option>1 hour</option><option>Never</option></select></div>
+  </div>
+
+  <h2 id="set-hosting">Hosting</h2>
+  <div class="card">
+    <p>Hosting is always in the menu. There is no switch: anyone can host and be a member at the same time. Nothing about hosting appears on My channel until you have a lobby or factory of your own.</p>
+    <p class="actions"><a class="btn" href="#host">Go to Hosting</a></p>
+  </div>
+
+  <h2 id="never">What the app always does (no switch anywhere)</h2>
+  <div class="card">
+    <ul>
+      <li>Runs every safe-to-sign check. Your conditions can only be stricter.</li>
+      <li>Saves before sending, and uses each one-time signing secret once.</li>
+      <li>Compares at least two chain servers and stops when they disagree.</li>
+      <li>Answers an old state, and leaves before the factory ends.</li>
+      <li>Refuses mainnet in this release.</li>
+      <li>Signs once you are ready and the lobby starts. Being ready is the consent; there is no prompt in the middle.</li>
+    </ul>
+  </div>
+
+  <h2 id="help">Help</h2>
+  <div class="card">
+    <h3>Words</h3>
+    <dl class="kv">
+      <dt>Host</dt><dd>Who pays for a factory and offers it to others.</dd>
+      <dt>Member</dt><dd>Who joins. Starts at zero and can receive.</dd>
+      <dt>Lobby</dt><dd>A host's open offer, waiting for members.</dd>
+      <dt>Factory</dt><dd>One on-chain output shared by a host and its members.</dd>
+      <dt>Terms</dt><dd>The host's. Signed and sealed.</dd>
+      <dt>Conditions</dt><dd>Yours. Private. The app's limits.</dd>
+      <dt>Receiving room</dt><dd>How much more you can receive.</dd>
+      <dt>Leaving alone</dt><dd>Taking your money out without the host. Days, and on-chain fees.</dd>
+    </dl>
+    <dl class="kv"><dt>Version</dt><dd>0.1 mock-up, Signet. Test coins, no value.</dd><dt>Logs</dt><dd><button type="button" class="btn small">Open the log folder</button></dd></dl>
+  </div>
+</section>
+    </main>
+  </div>
+  <footer class="statusline" aria-label="Status">
+    <span><i id="st-chain-dot"></i>Chain: <b id="st-chain">2 servers agree, block 330,437</b></span>
+    <span><i></i>Listings: <b>4 of 5 relays</b></span>
+    <span><i id="st-watch-dot"></i>Watching: <b id="st-watch">this app, while it runs</b></span>
+    <span>Next date: <b id="st-next">28 Nov (in 16 days), move window</b></span>
+    <span><i id="st-instr-dot" class="o"></i>Instruction: <b id="st-instr">off</b></span>
+  </footer>
+</div>
+
+<section class="about" id="about">
+  <h1>About this concept</h1>
+  <p class="lead">Concept E treats a host's lobby as an offer you can compare, and your conditions as a standing instruction the app keeps for you. It borrows the arrangement of peer-to-peer markets and leaves out their trading furniture: there are no price charts, no depth views, no rates and no scores.</p>
+
+  <h2>Navigation skeleton</h2>
+<pre>Always on screen   test-network marker · money line · Pause · most urgent item · status line (footer)
+
+Lobbies            the offer book; the landing screen until you have a channel
+  one lobby        sealed terms (Size, Fees, Promises, Who may join) · host's record · fit check
+    review         every cost itemised, then confirm
+My instruction     conditions form · the instruction in one sentence · open / filled / refused list
+  review           what the standing permission allows, then start
+My channel         the landing screen once joined: my money · pending · factory and dates · all factories
+  pay · receive · buy receiving room
+  states           waiting · signing · refused · needs attention · the move · left behind
+  leave alone      review, then the steps over days, then after the end
+Activity           payments · what the app did alone · while the app was closed
+Hosting (always)   start page until there is something to run · write terms with preview · run a lobby and requests · ladder · factory · fees and costs · set-up
+Wallet             on-chain funds · back up · restore · network · fee rate
+Settings           where every option lives · watching · connections · payments · display · access · hosting switch · fixed behaviour · help</pre>
+
+  <h2>Owner decisions applied</h2>
+  <ul>
+    <li><b>No role question.</b> The top bar has no member/host switch. Hosting is a normal menu entry with a start page. The Moments menu has a state "I also host" that fills it with the sample lobby; host moments switch it on by themselves.</li>
+    <li><b>Receiving room is 1.1.0.</b> The buying screen, the automatic-buying condition, the receiving-room fee limit, the lobby's receiving-room fee and the host's sale of room appear only with "Preview 1.1.0" ticked in the Moments menu, each tagged 1.1.0. Normally "can receive" shows the room left and the line "More receiving room can be bought from version 1.1.0."</li>
+    <li><b>Fixed rules, signed ranges.</b> The sealed card shows a rules fingerprint and says the app signs only for these exact rules. An adjustable value shows "now" and its range, for example the joining fee of Tomato Garden. The fit check compares my limit with the whole range ("fits at any value the host may choose"); one condition offers the looser rule. Sherry Cask shows the difference: its current fee fits, its range does not. The old "new version or new lobby" question is gone: a change of rules means a new lobby.</li>
+    <li><b>Fees in 1.0.0.</b> Each payment: a base amount plus a proportion. Joining: optional, flat or a share of the chain cost with a ceiling (Olive Press), taken from the first payment received; how it is collected is tagged open. A recurring fee at each move is tagged open.</li>
+  </ul>
+
+  <h2>Where the seven scopes live</h2>
+  <table>
+    <tr><th>Scope</th><th>Place</th><th>Why there</th></tr>
+    <tr><td>1 My conditions</td><td>My instruction: limits, joining, moving, buying room by itself. A one-line copy heads the Lobbies screen, as text with one Edit link.</td><td>In this concept the conditions are the product's main control, so they get a top-level entry and never sit in Settings.</td></tr>
+    <tr><td>2 Lobby terms</td><td>Inside each lobby, as a sealed card in four groups. A frozen copy stays with the factory and with each Activity entry. Hosts write them under Hosting, Write terms.</td><td>The host's object. It is never drawn with inputs on the member's side.</td></tr>
+    <tr><td>3 Wallet</td><td>Wallet (funds, backups, restore, network, fee rate). Units, theme, language and app access in Settings.</td><td>Standard wallet placement.</td></tr>
+    <tr><td>4 Watching</td><td>Settings, Watching. Its status shows in the footer line and in the dates on My channel.</td><td>Mostly status; few choices.</td></tr>
+    <tr><td>5 Connections</td><td>Settings, Connections. Live state in the footer line, as Bisq does.</td><td>Rarely opened; must be visible when broken.</td></tr>
+    <tr><td>6 Hosting</td><td>Hosting, always in the menu. Before you host it is one calm start page (what hosting needs, and "Write terms"). A hosting card appears on My channel only once you have a lobby or factory.</td><td>Everyone can do both. No role question, no switch, and no host clutter on the home of someone who does not host.</td></tr>
+    <tr><td>7 Payments</td><td>My channel: Pay, Receive, pending payment. Buying receiving room only in the Preview 1.1.0 view. History in Activity. The paying side's own fee limit in Settings.</td><td>A payment is something you do with the channel you hold.</td></tr>
+    <tr><td>Always present</td><td>Test-network marker, money line, Pause, the most urgent item, and the footer status line.</td><td>Not options. On every screen.</td></tr>
+  </table>
+
+  <h2>Borrowed patterns</h2>
+  <p class="hint">"Verified" and "recalled" are the marks given in the research notes, not my own checks. I looked at no screenshots and ran no product.</p>
+  <table>
+    <tr><th>Pattern</th><th>From</th><th>Mark in the notes</th><th>Used for</th></tr>
+    <tr><td>A switch on the book, "offers matching my accounts", on by default; an offer that does not match says why</td><td>Bisq 1</td><td>Verified</td><td>"Show only lobbies that fit my conditions", with the failing sentences on each other row</td></tr>
+    <tr><td>Balance always split into available, reserved in offers, locked in trades</td><td>Bisq 1</td><td>Verified</td><td>"Where my money is": free on chain, set aside, in a factory</td></tr>
+    <tr><td>A footer line with chain and network state in words</td><td>Bisq 1</td><td>Verified</td><td>The status line</td></tr>
+    <tr><td>Review, then confirm, with the make-up of the total shown</td><td>Bisq 1</td><td>Verified</td><td>Joining, starting the instruction, buying room, leaving alone, opening a lobby</td></tr>
+    <tr><td>Two doors on first visit: guided, or the full book</td><td>Bisq Easy</td><td>Verified</td><td>First run</td></tr>
+    <tr><td>A standing order is a set of limits, not a choice of counterparty; extra limits behind one link; worst-case cost shown in the form</td><td>Lightning Pool</td><td>Verified</td><td>My instruction, "More limits", and the line "the most this can cost you"</td></tr>
+    <tr><td>Orders listed as Open, Filled, All, with a way to withdraw</td><td>Lightning Pool</td><td>Verified</td><td>"What this instruction has done", with Refused added</td></tr>
+    <tr><td>An order that waits instead of failing</td><td>Lightning Pool</td><td>Verified</td><td>"Alive: waiting" is a normal state of the instruction</td></tr>
+    <tr><td>A plain sentence under the form that restates the order</td><td>RoboSats</td><td>Verified</td><td>The instruction in one sentence, rewritten as you type</td></tr>
+    <tr><td>One-time identity for the short-lived side; the record sits with the long-lived party</td><td>RoboSats</td><td>Verified</td><td>Lemon-39 per lobby; only hosts have a record</td></tr>
+    <tr><td>An offer split into Size, Fees, Promises, Conditions; promises copied and locked into the deal</td><td>Amboss Magma</td><td>Verified</td><td>The sealed terms card and its frozen copy</td></tr>
+    <tr><td>One deadline per waiting state, with the party who must act named</td><td>Amboss Magma</td><td>Verified</td><td>"What happens next, and who acts" while waiting to start</td></tr>
+    <tr><td>Tasks in three levels that clear themselves</td><td>StartOS</td><td>Verified</td><td>Needs attention</td></tr>
+    <tr><td>"Alert me" and "join as soon as" offered side by side</td><td>Steam server browser</td><td>Verified</td><td>"Tell me when a lobby fits" and "Join by itself"</td></tr>
+    <tr><td>The seconds when quitting would hurt others are marked and closing is blocked; a named reason when nothing is happening</td><td>Wasabi</td><td>Verified</td><td>The signing state; "the limit that shuts out the most lobbies"</td></tr>
+    <tr><td>A limit checked live against today's offers; a refusal that shows both numbers</td><td>Phoenix</td><td>As given in the wallet notes' synthesis; I did not read its mark</td><td>The live count beside the conditions; every failing row</td></tr>
+    <tr><td>Sorting by clicking a column header</td><td>Bisq 1</td><td>Recalled</td><td>Not copied; a "Show first" choice sits with the filters instead</td></tr>
+  </table>
+  <p>Left out on purpose: Lightning Pool's rate labels and its second object with its own clock; RoboSats' depth view and rank; Bisq Easy's offers inside a chat stream; any score for members.</p>
+
+  <h2>Strengths</h2>
+  <ul>
+    <li>Signed ranges fit the offer metaphor well: an offer row shows "now" and "may move", and the safe default compares the whole range, so a late change cannot pull me into something I did not accept.</li>
+    <li>The split between the host's terms and my conditions is the centre of the app. They look different, live in different places, and meet only in the fit check, which is computed from the real form.</li>
+    <li>Automatic joining is one readable sentence with a visible budget, a worst case, a review step and a history. "Nothing fits" comes with the limit that causes it.</li>
+    <li>A lobby that does not fit is never hidden without a reason, and joining by hand is refused by the same limits, so the limits are believable.</li>
+    <li>The host's lasting record is shown where the choice is made, as counts and how each factory ended. Members stay temporary.</li>
+  </ul>
+  <h2>Weaknesses</h2>
+  <ul>
+    <li>The book serves a decision made about once a month. On most days Lobbies and My instruction are quiet, yet they hold the first two places in the menu. Only the landing rule (My channel once joined) hides this.</li>
+    <li>There is no dashboard. Dates and health rely on one urgent line, the footer and My channel. At 360 px the footer line wraps to three lines.</li>
+    <li>My instruction is a long page: limits, three standing permissions and a history. On a phone the sentence is far below the fields that change it.</li>
+    <li>Paying and receiving sit one level under My channel. For a wallet that is one tap too many.</li>
+    <li>The "fits my conditions" switch is a filter driven by the conditions. That is the one spot where the two ideas touch, and a hurried reader may think unticking it loosens something.</li>
+    <li>Hosting is seven sub-pages reached by a row of links. It works, but it is the least considered part.</li>
+    <li>Ranges add a second number to every adjustable row. In the offer book this makes the joining-fee cell long on a phone.</li>
+  </ul>
+  <h2>What I would change after seeing it</h2>
+  <ul>
+    <li>Put Pay and Receive in the top money line, so they are on every screen.</li>
+    <li>Order the menu by state: My channel first once a factory is live, Lobbies first before that.</li>
+    <li>Keep the instruction sentence pinned at the bottom of the form while editing, and on wide screens show the form beside the list of lobbies so the count moves in view.</li>
+    <li>Fold the footer into one tappable summary on phones.</li>
+    <li>Test the word "instruction" with real users against "standing order" and "my rules".</li>
+  </ul>
+</section>
+
+<script>
+(function(){
+'use strict';
+const $=(s,r)=>(r||document).querySelector(s), $$=(s,r)=>Array.from((r||document).querySelectorAll(s));
+function h(tag,attrs,...kids){
+  const e=document.createElement(tag);
+  if(attrs) for(const k in attrs){const v=attrs[k]; if(v==null||v===false) continue; if(k==='class') e.className=v; else e.setAttribute(k,v===true?'':v);}
+  for(const c of kids.flat(Infinity)){ if(c==null||c===false) continue; e.appendChild(typeof c==='object'?c:document.createTextNode(String(c))); }
+  return e;
+}
+const n=x=>Number(x).toLocaleString('en-US');
+const BASE=Date.UTC(2026,10,12);
+const day=d=>new Date(BASE+d*864e5).toLocaleDateString('en-GB',{day:'numeric',month:'short',timeZone:'UTC'});
+const tag=(t,cls)=>h('span',{class:'tag '+(cls||(t==='open'?'open':''))},t);
+const plural=(k,one,many)=>k+' '+(k===1?one:many);
+
+/* ---------- the listed lobbies (fake data) ---------- */
+/* rng: a signed range inside which the host may move the current value until the ready check. */
+const DEF={pay:0.05,paybase:1,room:0.3,leave:6,confs:3,sign:10,few:'cancel',find:'Listed',who:'Anyone',admit:'Automatic',listed:true,joinkind:'flat',rng:{}};
+const L=[
+ {id:'tomato',fp:'7f3a…c21e',name:'Tomato Garden, daily factory',host:'Tomato Garden',funded:12,rec:'11 ended as agreed. 1 is live.',profile:'Standard',target:50,min:30,ready:38,dl:'in 2 hours',dd:0,dt:'16:00',hrs:2,channel:500000,spare:250000,join:1000,rng:{join:[500,1500]},paybase:0,life:33,note:'A new factory every day at 16:00. Come back once a month to move.'},
+ {id:'harbour',name:'Quiet Harbour',host:'Quiet Harbour',funded:4,rec:'3 ended as agreed. 1 is live.',profile:'Safety',target:20,min:12,ready:9,dl:'tomorrow, in 19 hours',dd:1,dt:'09:00',hrs:19,channel:300000,spare:100000,join:500,rng:{join:[300,800]},pay:0.08,room:0.4,life:30,leave:3,note:'Small and careful. A short way out.'},
+ {id:'olive',name:'Olive Press, weekly',host:'Olive Press',funded:7,rec:'6 ended as agreed. 1 is live.',profile:'Standard',target:40,min:25,ready:21,dl:'in 3 days',dd:3,dt:'12:00',hrs:70,channel:400000,spare:200000,joinkind:'share',join:1500,pay:0.1,room:0.5,life:40,leave:7},
+ {id:'pepper',name:'Big Pepper',host:'Big Pepper',funded:31,rec:'29 ended as agreed. 1 ended with the host silent; its members left alone. 1 is live.',profile:'Standard',target:200,min:120,ready:131,dl:'in 6 hours',dd:0,dt:'20:00',hrs:6,channel:2000000,spare:1000000,join:5000,room:0.2,life:90,leave:7,note:'Big channels for shops.'},
+ {id:'circle',name:'Circle of Friends',host:'Marta',funded:1,rec:'1 is live.',profile:'Circle',target:8,min:4,ready:5,dl:'in 2 days',dd:2,dt:'20:00',hrs:54,channel:250000,spare:50000,join:0,life:30,leave:3,who:'By invitation (link or QR)',admit:'Approved by the host, one by one',find:'Unlisted to others; you were sent its address',invite:true},
+ {id:'saffron',name:'Saffron Starter',host:'Saffron',funded:3,rec:'2 ended as agreed. 1 is live.',profile:'Starter',target:30,min:10,ready:12,dl:'in 5 hours',dd:0,dt:'19:00',hrs:5,channel:100000,spare:50000,join:0,life:21,leave:6},
+ {id:'paprika',name:'Paprika Express',host:'Paprika',funded:9,rec:'8 ended as agreed. 1 is live.',profile:'Standard',target:60,min:40,ready:44,dl:'in 9 hours',dd:0,dt:'23:00',hrs:9,channel:500000,spare:250000,join:2500,life:30},
+ {id:'garlic',name:'Garlic and Sons',host:'Garlic and Sons',funded:5,rec:'4 ended as agreed. 1 is live.',profile:'Standard',target:30,min:20,ready:11,dl:'tomorrow, in 26 hours',dd:1,dt:'16:00',hrs:26,channel:250000,spare:100000,join:800,pay:0.2,life:28},
+ {id:'vine',name:'Long Vine',host:'Long Vine',funded:6,rec:'5 ended as agreed. 1 is live.',profile:'Safety',target:24,min:16,ready:17,dl:'in 2 days',dd:2,dt:'10:00',hrs:44,channel:300000,spare:150000,join:900,life:60,leave:3},
+ {id:'cucumber',name:'Cucumber Cool',host:'Cucumber Cool',funded:2,rec:'1 ended as agreed. 1 is live.',profile:'Standard',target:50,min:30,ready:8,dl:'in 4 days',dd:4,dt:'18:00',hrs:100,channel:500000,spare:200000,join:3000,room:0.8,life:35},
+ {id:'onion',name:'Red Onion',host:'Red Onion',funded:8,rec:'8 ended as agreed.',profile:'Standard',target:40,min:24,ready:30,dl:'tomorrow, in 22 hours',dd:1,dt:'12:00',hrs:22,channel:400000,spare:200000,join:1200,life:42,leave:10},
+ {id:'basil',name:'Basil Row',host:'Basil Row',funded:0,rec:'None yet. This is its first lobby.',profile:'Starter',target:16,min:8,ready:3,dl:'in 6 days',dd:6,dt:'12:00',hrs:142,channel:150000,spare:50000,join:200,life:21},
+ {id:'sherry',name:'Sherry Cask',host:'Sherry Cask',funded:14,rec:'13 ended as agreed. 1 is live.',profile:'Standard',target:80,min:50,ready:52,dl:'in 3 days',dd:3,dt:'18:00',hrs:76,channel:1000000,spare:500000,join:1800,rng:{join:[1500,2500]},life:45},
+ {id:'bread',name:'Bread Bowl',host:'Bread Bowl',funded:2,rec:'2 ended as agreed.',profile:'Standard',target:10,min:6,ready:6,dl:'in 8 hours',dd:0,dt:'22:00',hrs:8,channel:250000,spare:100000,join:4000,life:30},
+ {id:'garden12',fp:'7f3a…c21e',listed:false,joined:true,frozen:true,name:'Tomato Garden, daily factory (now factory 12)',host:'Tomato Garden',funded:12,rec:'11 ended as agreed. 1 is live.',profile:'Standard',target:50,min:30,ready:50,dl:'started 5 Nov',dd:-7,dt:'16:00',hrs:0,channel:500000,spare:250000,join:1000,rng:{join:[500,1500]},paybase:0,life:33,note:'A new factory every day at 16:00. Come back once a month to move.'}
+].map(l=>Object.assign({},DEF,l));
+const byId=id=>L.find(l=>l.id===id);
+const paymax=l=>l.paymax||Math.round(l.channel*0.8);
+function fp(l){
+  if(l.fp) return l.fp;
+  let x=2166136261; for(const ch of l.id){x^=ch.charCodeAt(0); x=Math.imul(x,16777619)>>>0;}
+  const y=Math.imul(x^0x9e3779b9,2654435761)>>>0;
+  return x.toString(16).padStart(8,'0').slice(0,4)+'…'+y.toString(16).padStart(8,'0').slice(4,8);
+}
+
+/* ---------- flags of the mock-up ---------- */
+let state='live', hosting=false, v11=false, instr='off', paused=false, first=true, lastParam='';
+
+/* ---------- my conditions, read from the real form ---------- */
+function readCond(){
+  const v=id=>{const x=parseFloat($('#'+id).value); return isNaN(x)?0:x;};
+  return {profiles:['Safety','Standard','Starter','Circle'].filter(p=>$('#c-prof-'+p.toLowerCase()).checked),
+    members:v('c-members'),channel:v('c-channel'),join:v('c-joinfee'),pay:v('c-payfee'),paybase:v('c-paybase'),room:v('c-roomfee'),
+    lifemin:v('c-lifemin'),lifemax:v('c-lifemax'),leave:v('c-leave'),hostrec:v('c-hostrec'),confs:v('c-confs'),paymax:v('c-paymax'),
+    loose:(($('input[name="range"]:checked')||{}).value==='current'),
+    avoid:$('#c-avoid').value.toLowerCase().split(',').map(s=>s.trim()).filter(Boolean),
+    atonce:Math.max(1,v('c-atonce')),total:Math.max(1,v('c-total'))};
+}
+const SNAP=readCond();
+const LABEL={profile:'the profiles you accept',members:'fewest members',channel:'smallest channel',join:'highest joining fee',pay:'highest fee per payment',room:'highest fee for receiving room',life:'factory life',leave:'longest time to leave alone',paymax:'largest payment you need',record:"host's record",confs:'confirmations',invite:'invitation',avoid:'hosts you avoid'};
+
+function joinText(l,short){
+  if(l.join===0) return 'None';
+  if(l.joinkind==='share') return 'A share of the chain cost, at most '+n(l.join)+' sats';
+  const g=l.rng.join;
+  if(g&&l.frozen) return n(l.join)+' sats, frozen at the ready check';
+  if(g) return short?`${n(l.join)} sats now (may move ${n(g[0])} to ${n(g[1])})`:`${n(l.join)} sats now; may move between ${n(g[0])} and ${n(g[1])} until the ready check`;
+  return n(l.join)+' sats';
+}
+const joinMost=l=>(!l.frozen&&l.rng.join)?l.rng.join[1]:l.join;
+const payText=l=>`${n(l.paybase)} ${l.paybase===1?'sat':'sats'} + ${l.pay}% of each payment`;
+
+function fit(l,c){
+  const r=[], add=(key,term,lob,lim,ok,why,note)=>r.push({key,term,lob,lim,ok,why,note});
+  const pl=c.profiles.length?c.profiles.join(c.profiles.length===2?' and ':', '):'no profile';
+  add('profile','Profile',l.profile,c.profiles.length?'one of: '+c.profiles.join(', '):'none ticked',c.profiles.includes(l.profile),`Profile is ${l.profile}. You accept ${pl}.`);
+  add('members','Members',`${l.target} at the target, ${l.min} at the least`,`at least ${c.members}`,l.target>=c.members,`Target is ${l.target} members. Your limit is at least ${c.members}.`);
+  add('channel','Channel size',n(l.channel)+' sats','at least '+n(c.channel)+' sats',l.channel>=c.channel,`Channel is ${n(l.channel)} sats. Your limit is at least ${n(c.channel)} sats.`);
+  /* joining fee: compared with the whole signed range unless I chose the looser rule */
+  const g=(!l.frozen&&l.rng.join)||null, jw=(g&&!c.loose)?g[1]:l.join, jok=jw<=c.join;
+  let jwhy=`Joining fee is ${n(l.join)} sats. Your limit is ${n(c.join)} sats.`;
+  if(l.joinkind==='share') jwhy=`Joining fee can be up to ${n(l.join)} sats. Your limit is ${n(c.join)} sats.`;
+  else if(g&&!c.loose&&l.join<=c.join) jwhy=`Joining fee may move up to ${n(g[1])} sats before the ready check. Your limit is ${n(c.join)} sats. It is ${n(l.join)} sats now.`;
+  let jnote=null;
+  if(g&&jok) jnote=c.loose?'Fits the current value. If the host moves it above your limit before the ready check, the app un-readies you.':'Fits at any value the host may choose.';
+  add('join','Joining fee',joinText(l),'at most '+n(c.join)+' sats',jok,jwhy,jnote);
+  const pok=l.pay<=c.pay&&l.paybase<=c.paybase;
+  add('pay','Fee per payment',`${n(l.paybase)} sats + ${l.pay}%`,`at most ${n(c.paybase)} sats + ${c.pay}%`,pok,l.pay>c.pay?`Payment fee is ${l.pay}%. Your limit is ${c.pay}%.`:`Base fee per payment is ${n(l.paybase)} sats. Your limit is ${n(c.paybase)} sats.`);
+  if(v11) add('room','Fee for receiving room (1.1.0)',l.room+'%','at most '+c.room+'%',l.room<=c.room,`Receiving-room fee is ${l.room}%. Your limit is ${c.room}%.`);
+  add('life','Lifetime',l.life+' days',`${c.lifemin} to ${c.lifemax} days`,l.life>=c.lifemin&&l.life<=c.lifemax,l.life>c.lifemax?`Lifetime is ${l.life} days. Your limit is ${c.lifemax} days.`:`Lifetime is ${l.life} days. Your limit is at least ${c.lifemin} days.`);
+  add('leave','Leaving alone','about '+l.leave+' days','at most '+c.leave+' days',l.leave<=c.leave,`Leaving alone takes ${l.leave} days. Your limit is ${c.leave} days.`);
+  add('paymax','Largest payment',n(paymax(l))+' sats','I need '+n(c.paymax)+' sats',paymax(l)>=c.paymax,`Largest payment is ${n(paymax(l))} sats. You need ${n(c.paymax)} sats.`);
+  add('record',"Host's record",plural(l.funded,'factory','factories')+' funded','at least '+c.hostrec,l.funded>=c.hostrec,`The host has funded ${plural(l.funded,'factory','factories')}. Your limit is at least ${c.hostrec}.`);
+  add('confs','Confirmations before live',l.confs+' blocks','at least '+c.confs,l.confs>=c.confs,`The lobby waits for ${l.confs} confirmations. Your limit is at least ${c.confs}.`);
+  if(l.invite) add('invite','Who may join','By invitation','I have no invitation',false,'This lobby is by invitation. You have no invitation for it.');
+  if(c.avoid.includes(l.host.toLowerCase())) add('avoid','Host',l.host,'not a host I avoid',false,`${l.host} is on your avoid list.`);
+  return r;
+}
+function survey(c){
+  const rows=L.filter(l=>l.listed).map(l=>{const f=fit(l,c); return {l,f,ok:f.every(x=>x.ok)};});
+  const fits=rows.filter(r=>r.ok), miss=rows.filter(r=>!r.ok), count={};
+  miss.forEach(r=>r.f.filter(x=>!x.ok).forEach(x=>{count[x.key]=(count[x.key]||0)+1;}));
+  let top=null; for(const k in count) if(!top||count[k]>count[top]) top=k;
+  const nearest=fits.slice().sort((a,b)=>a.l.hrs-b.l.hrs)[0];
+  return {rows,fits:fits.length,total:rows.length,miss:miss.length,top,topN:top?count[top]:0,nearest:nearest&&nearest.l};
+}
+const mostLine=s=>s.top?`The limit that shuts out the most lobbies: ${LABEL[s.top]} (${s.topN} of the ${s.miss} that do not fit).`:'';
+
+/* ---------- small builders ---------- */
+function meter(l){
+  const p=Math.min(100,Math.round(l.ready/l.target*100)), m=Math.round(l.min/l.target*100);
+  return h('div',{class:'meter',role:'img','aria-label':`${l.ready} ready of a target of ${l.target}, ${l.min} needed`},h('b',{style:`width:${p}%`}),h('u',{style:`left:${m}%`}));
+}
+function kv(pairs){
+  return h('dl',{class:'kv'},pairs.filter(Boolean).map(p=>[h('dt',null,p[0],p[3]?[' ',tag(p[3])]:null),h('dd',null,p[1],p[2]?h('small',null,p[2]):null)]));
+}
+const startRule=l=>`It starts as soon as ${l.target} are ready, or on ${day(l.dd)} at ${l.dt} (${l.dl}) if ${l.min} or more are ready.`;
+const atZero=l=>`At zero with fewer than ${l.min} ready: `+(l.few==='cancel'?'the lobby is cancelled. Nothing is signed and nothing moves.':"you are carried over to the host's next lobby.");
+
+/* ---------- the offer book ---------- */
+function offer(r){
+  const l=r.l, bad=r.f.filter(x=>!x.ok);
+  return h('article',{class:'offer'+(r.ok?'':' nofit')},
+    h('div',{class:'o-name'},h('h3',null,h('a',{href:'#lobby:'+l.id},l.name),' ',h('span',{class:'tag'},l.profile)),h('p',{class:'sub'},`Host: ${l.host}. ${plural(l.funded,'factory','factories')} funded.`)),
+    h('div',null,h('p',null,'Channel ',h('b',{class:'num'},n(l.channel)),' sats'),h('p',null,'Joining fee ',h('b',null,joinText(l,true))),h('p',{class:'sub'},'Per payment '+n(l.paybase)+' + '+l.pay+'%')),
+    h('div',null,h('p',null,'Life ',h('b',null,l.life+' days')),h('p',null,'Leaving alone ',h('b',null,'about '+l.leave+' days'))),
+    h('div',null,h('p',null,h('b',null,`${l.ready} of ${l.target} ready`),`, ${l.min} needed`),meter(l),h('p',{class:'sub'},`Starts by ${day(l.dd)}, ${l.dt} (${l.dl})`)),
+    h('div',{class:'o-fit'},r.ok?[h('p',{class:'yes'},'Fits my conditions'),r.f.filter(x=>x.note).map(x=>h('p',{class:'sub'},x.term+': '+x.note.toLowerCase()))]:[h('p',{class:'nope'},'Does not fit'),h('ul',null,bad.map(x=>h('li',null,x.why)))],
+      h('p',null,h('a',{class:'btn small',href:'#lobby:'+l.id},'See terms'))));
+}
+function renderBook(){
+  const c=readCond(), s=survey(c), only=$('#only-fit').checked, fpf=$('#f-profile').value, sort=$('#f-sort').value;
+  const key={start:r=>r.l.hrs,fee:r=>joinMost(r.l),channel:r=>-r.l.channel,record:r=>-r.l.funded}[sort];
+  const shown=s.rows.filter(r=>(!only||r.ok)&&(!fpf||r.l.profile===fpf)).sort((a,b)=>(b.ok-a.ok)||(key(a)-key(b)));
+  $('#fit-count').textContent=`${s.fits} of ${s.total} listed lobbies fit my conditions. Showing ${shown.length}.`;
+  $('#book').replaceChildren(...shown.map(offer));
+  const e=$('#book-empty'); e.hidden=shown.length>0;
+  if(!shown.length) e.textContent=(only&&!s.fits)?`No listed lobby fits your conditions. ${mostLine(s)} Untick the switch above to see all ${s.total}, each with its reason.`:'No lobby matches these filters. Filters only hide rows.';
+}
+
+/* ---------- one lobby: sealed rules, record, fit check ---------- */
+function sealed(l){
+  const hd=h('header'); hd.innerHTML='<svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="11" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6.5 11.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
+  hd.appendChild(h('span',null,`Sealed rules · signed by ${l.host} · signature checked by this app`));
+  const grp=(t,pairs)=>h('div',{class:'grp'},h('h4',null,t),kv(pairs));
+  return h('div',{class:'sealed',id:'terms'},hd,h('div',{class:'in'},
+    h('p',null,'Rules fingerprint ',h('code',null,fp(l)),', signed by the host. ',h('b',null,'This app signs only for these exact rules.')),
+    h('p',{class:'hint'},l.frozen?'The values below froze at the ready check on 5 Nov.':'Everything here is fixed, except a value marked "may move": the host may change it inside its signed range until the ready check, then it freezes. A change of rules means a new lobby with a new fingerprint.'),
+    grp('Size',[
+      ['Channel size',n(l.channel)+' sats','You start at zero and can receive up to this.'],
+      ['Who picks the size','One size for all members',null,'open'],
+      ["Host's spare liquidity",n(l.spare)+' sats per member',v11?'What you can buy later as receiving room.':'From version 1.1.0, what you could buy as receiving room.'],
+      ['Payments','from 1 sat to '+n(paymax(l))+' sats each']]),
+    grp('Fees',[
+      ['Joining fee',joinText(l),l.join===0?null:'Taken from the first payment you receive. How it is collected is not final.',l.join===0?null:'open'],
+      ['Fee per payment',payText(l),'A base amount plus a proportion.'],
+      v11?['Fee for extra receiving room',l.room+'%',null,'1.1.0']:null,
+      ['Recurring fee at each move','None',null,'open'],
+      ['Who pays when a member leaves alone',"Built in from the host's side",null,'open'],
+      ['Seat cost or deposit','None',null,'open']]),
+    grp('Promises',[
+      ['Start rule',`Starts at ${l.target} members, or on ${day(l.dd)} at ${l.dt} with ${l.min} or more`],
+      ['Ready check','When the start rule is met','All values freeze. Signing follows at once.'],
+      ['If too few are ready',l.few==='cancel'?'Cancelled. Nothing moves.':"Carried over to the host's next lobby"],
+      ['Lifetime',l.life+' days',`If it starts on ${day(l.dd)}: move window opens ${day(l.dd+l.life-10)}, factory ends ${day(l.dd+l.life)}.`],
+      ['Leaving alone','about '+l.leave+' days','From the shape of the tree.','open'],
+      ['Signing',`Takes up to ${l.sign} minutes`,'Keep the app open.'],
+      ['Confirmations before live',l.confs+' blocks'],
+      ['Longest payment deadline','about 2 days',"A few senders' wallets may fail because of it."],
+      ['Moving to the next factory','Window opens 10 days before the end. 4 tries, one a day.','A member who misses all 4 is left behind; their app then leaves alone.'],
+      ['Changing these rules','Not possible','A change of rules means a new lobby.']]),
+    grp('Who may join',[
+      ['Who can find it',l.find],
+      ['Who can join',l.who],
+      ['Admission',l.admit],
+      ['Seats for newcomers','All seats are open to members who bring no coins'],
+      ['Names',"Members see each other's temporary names"],
+      ['Chat','Off',null,'later'],
+      ['Requests to change a rule','Off']]),
+    h('p',{class:'hint'},'Nobody can edit this card here: not you, and not the host. Amounts and percentages are signed terms. Dates are worked out from them.')));
+}
+function fitTable(f,title){
+  const body=[]; f.forEach(x=>{
+    body.push(h('tr',{class:x.ok?'':'no'},h('td',null,x.term),h('td',null,x.lob),h('td',null,x.lim),h('td',null,h('span',{class:x.ok?'yes':'nope'},x.ok?'Yes':'No'))));
+    if(!x.ok) body.push(h('tr',{class:'why'},h('td',{colspan:'4'},x.why)));
+    else if(x.note) body.push(h('tr',{class:'okwhy'},h('td',{colspan:'4'},x.note)));
+  });
+  return [h('h2',{id:'fitcheck'},title),
+    h('table',{class:'fit'},h('thead',null,h('tr',null,h('th',null,'Term'),h('th',null,'This lobby'),h('th',null,'My limit'),h('th',null,'Fits'))),h('tbody',null,body)),
+    h('p',{class:'hint'},'The middle column is the host’s and is sealed. The third column is yours. Where the host may still move a value, your limit is checked against the whole range',SNAP&&readCond().loose?' (you chose the looser rule: the current value)':'',' . You change your limits in one place only: ',h('a',{href:'#instruction'},'Edit my conditions'),'.')];
+}
+function jump(){const b=h('button',{type:'button',class:'btn small'},'See the fit check'); b.addEventListener('click',()=>{const t=document.getElementById('fitcheck'); if(t) t.scrollIntoView({block:'start'});}); return b;}
+function renderLobby(id){
+  const l=byId(id)||L[0], c=l.joined?SNAP:readCond(), f=fit(l,c), ok=f.every(x=>x.ok), bad=f.filter(x=>!x.ok);
+  $('#lob-crumb').textContent=l.name;
+  const top=l.joined
+    ? h('div',{class:'note'},h('b',null,'You joined this lobby on 5 Nov. It became factory 12.'),' This is the copy kept with it: the sealed rules with the values as they froze, and the fit check against your conditions as they were that day.')
+    : h('div',{class:'card'},h('p',null,h('b',null,`${l.ready} of ${l.target} ready.`),' ',startRule(l)),meter(l),h('p',{class:'hint'},atZero(l)));
+  const verdict=ok
+    ? h('div',{class:'note good'},h('b',null,`Fits your conditions: all ${f.length} rows.`),' ',jump())
+    : h('div',{class:'note bad'},h('b',null,'Does not fit your conditions.'),' ',bad.map(x=>x.why).join(' '),' ',jump());
+  const act=l.joined?null:(ok
+    ? h('p',{class:'actions'},h('a',{class:'btn primary',href:'#join:'+l.id},'Review joining'),h('span',{class:'hint'},'Two steps: review, then confirm.'))
+    : h('p',{class:'actions'},h('button',{type:'button',class:'btn',disabled:true},'Review joining'),h('span',{class:'hint'},'Off: the app will not join or sign a lobby that is outside your conditions, also when you ask by hand.')));
+  const host=h('div',{class:'card'},h('h3',null,'The host'),kv([
+      ['Name',l.host,'A lasting identity. Its key signed these rules.'],
+      ['Record',plural(l.funded,'factory','factories')+' funded',l.rec+' Published by the host; this app checked the fundings on chain.'],
+      ['Proof of funds','Published for this lobby','Checked by this app.'],
+      ['You','would appear as Lemon-39','In this lobby only. Members have no record and cannot be rated.']]),
+    l.note?h('figure',{class:'hosttext'},h('figcaption',null,'Written by the host, not by this app'),h('blockquote',null,'“'+l.note+'”')):null);
+  $('#lob-body').replaceChildren(...[h('h1',null,l.name,' ',h('span',{class:'tag'},l.profile)),top,verdict,act,sealed(l),host,
+    fitTable(f,l.joined?'Fit check, as recorded on 5 Nov':'Fit check')].flat().filter(Boolean));
+}
+
+/* ---------- join: review then confirm ---------- */
+function costTable(rows){
+  return h('table',{class:'cost'},rows.map(r=>h('tr',{class:r[3]?'sum':''},
+    h('td',null,r[0],(r[4]?[].concat(r[4]):[]).map(t=>[' ',tag(t,t==='signed term'?'signed':(t==='estimate'?'est':''))]),r[2]?h('small',null,r[2]):null),h('td',{class:'num'},r[1]))));
+}
+function renderJoin(id){
+  const l=byId(id)||L[0], f=fit(l,readCond()), ok=f.every(x=>x.ok), bad=f.filter(x=>!x.ok);
+  $('#join-back').href='#lobby:'+l.id; $('#join-back').textContent=l.name;
+  const B=$('#join-body');
+  if(l.joined){ B.replaceChildren(h('h1',null,'Review: join '+l.name),h('div',{class:'note'},h('b',null,'You already joined this one.'),' It became factory 12.')); return; }
+  if(!ok){ B.replaceChildren(h('h1',null,'Review: join '+l.name),
+    h('div',{class:'note bad'},h('b',null,'The app will not join this lobby.'),' ',bad.map(x=>x.why).join(' '),' Nothing was signed and nothing moved. To join, your conditions would have to change, in ',h('a',{href:'#instruction'},'My instruction'),'.')); return; }
+  const g=l.rng.join, most=joinMost(l);
+  const confirm=h('button',{type:'button',class:'btn primary'},'Join this lobby and mark me ready');
+  confirm.addEventListener('click',()=>{location.hash='#waiting';});
+  B.replaceChildren(
+    h('h1',null,'Review: join '+l.name),
+    h('p',{class:'lead'},'Make sure this is what you want. Being ready is your consent to sign. There is no second question when the lobby starts.'),
+    h('p',{class:'hint'},'Rules fingerprint ',h('code',null,fp(l)),'. The app signs only for these exact rules.'),
+    h('div',{class:'card'},h('h3',null,'What it costs you, item by item'),costTable([
+      ['Joining fee',l.join===0?'0 sats':(g?`${n(l.join)} sats now, at most ${n(g[1])}`:(l.joinkind==='share'?'at most '+n(l.join)+' sats':n(l.join)+' sats')),
+        l.join===0?'This lobby has none.':((g?`The host may move it between ${n(g[0])} and ${n(g[1])} sats until the ready check, then it freezes. `:'')+(l.joinkind==='share'?'A share of the chain cost, never more than the ceiling. ':'')+'Taken from the first payment you receive, not now.'),
+        '',l.join===0?null:['signed term','open']],
+      ['On-chain cost of opening the factory','0 sats','The host pays it.'],
+      ['Seat cost or deposit','0 sats','None in these terms.','','open'],
+      ['Coins you must bring','0 sats','You start with a balance of zero and can receive up to '+n(l.channel)+' sats.'],
+      ['Joining can cost you at most',n(most)+' sats',null,true]]),
+      h('p',{class:'hint'},`Later, only if you use them: ${payText(l)} you make`+(v11?`; ${l.room}% of any receiving room you buy (1.1.0)`:'')+'; on-chain fees if you ever leave alone (an estimate is always on My channel).')),
+    h('div',{class:'card'},h('h3',null,'The dates you take on'),
+      h('ol',{class:'dates'},
+        h('li',{class:'now'},h('b',null,`${day(l.dd)}, ${l.dt} (${l.dl})`),'Deadline to start.',h('span',{class:'zero'},`At zero: the ready check, if ${l.min} or more are ready. Values freeze and signing follows. Otherwise `+(l.few==='cancel'?'cancelled; nothing moves.':'carried over.'))),
+        h('li',null,h('b',null,`${day(l.dd+l.life-10)} (in ${l.dd+l.life-10} days)`),'Move window opens.',h('span',{class:'zero'},"At zero: the app moves you to the host's next factory if its terms fit, or you leave.")),
+        h('li',null,h('b',null,`${day(l.dd+l.life)} (in ${l.dd+l.life} days)`),'Factory ends.',h('span',{class:'zero'},'At zero: if you did not move, the app has already left alone for you. That takes about '+l.leave+' days.'))),
+      h('p',{class:'hint'},'Dates assume it starts at the deadline. If it fills sooner, they are sooner by the same amount. How long you can safely be away depends on the factory; the app shows it once the factory is live. ',tag('open'))),
+    h('div',{class:'card'},h('h3',null,'What the app does when it starts'),
+      h('ul',null,
+        h('li',null,h('b',null,'It signs for you without asking.'),' It refuses if anything differs from these rules, if a frozen value is outside your limits, or if a safety check fails.'),
+        h('li',null,h('b',null,'Keep the app open around the start.'),` Signing can take up to ${l.sign} minutes. A closed app cannot sign, and the lobby then starts without you.`),
+        h('li',null,'You appear to others as Lemon-39, in this lobby only.')),
+      h('p',{class:'hint'},'Not promised: that the lobby fills, or that the host funds it in time. In both cases nothing moves and you owe nothing.'),
+      h('p',{class:'hint'},`Fit check: all ${f.length} rows fit your conditions. The app keeps a copy of your conditions with this lobby.`)),
+    h('p',{class:'actions'},confirm,h('a',{class:'btn',href:'#lobby:'+l.id},'Not now')),
+    l.id==='tomato'?null:h('p',{class:'hint'},'In this mock-up the next screen continues with Tomato Garden, daily factory.'));
+}
+
+/* ---------- state of the mock-up ---------- */
+const CH={fresh:'no-channel',waiting:'waiting',signing:'signing',refused:'refused',live:'channel',attention:'channel',moving:'move',leftbehind:'left-behind',leaving:'leaving',ended:'ended'};
+const S={
+ fresh:{tone:'warn',send:'0',recv:'0',chain:'48,000',u:'You cannot pay or receive yet. Nothing works until you are in a live factory.',ul:['Find a lobby','#lobbies'],next:'none yet',watch:['nothing to watch yet','o']},
+ waiting:{tone:'warn',send:'0',recv:'0',chain:'48,000',u:'Waiting to start: Tomato Garden, daily factory. Starts by 16:00 today (in 2 hours). You cannot pay or receive until it is live.',ul:['See the lobby','#waiting'],next:'today 16:00 (in 2 hours), lobby deadline',watch:['nothing to watch yet','o']},
+ signing:{tone:'busy',send:'0',recv:'0',chain:'48,000',u:'Signing now. Keep the app open. About 10 seconds.',ul:['Watch','#signing'],next:'now, signing',watch:['nothing to watch yet','o']},
+ refused:{tone:'act',send:'0',recv:'0',chain:'48,000',u:'The app did not sign Quiet Harbour: the tree offered has 18 members, your limit is at least 20. Nothing moved.',ul:['Read why','#refused'],next:'none yet',watch:['nothing to watch yet','o']},
+ live:{tone:'ok',send:'182,400',recv:'317,600',chain:'48,000',u:'Nothing needs you. Next date: 28 Nov (in 16 days), when the move window opens.',ul:['My channel','#channel'],next:'28 Nov (in 16 days), move window opens',watch:['this app, while it runs','']},
+ attention:{tone:'act',send:'182,400',recv:'317,600',chain:'48,000',u:'Needs you now: the two chain servers disagree. The app signs nothing until they agree.',ul:['See what to do','#attention'],next:'28 Nov (in 16 days), move window opens',watch:['this app, while it runs',''],chainTxt:['servers disagree: 330,437 and 330,431','b']},
+ moving:{tone:'warn',send:'182,400',recv:'317,600',chain:'48,000',u:'Move window is open. Try 2 of 4 is today at 12:00 (in 3 hours). Keep the app running.',ul:['The move','#move'],next:'today 12:00 (in 3 hours), try 2 of 4 to move',watch:['this app, while it runs',''],chainTxt:['2 servers agree','']},
+ leftbehind:{tone:'act',send:'0',recv:'0',chain:'48,000',u:'The group moved on without you. The app is leaving alone. Nothing is lost.',ul:['Read what happened','#left-behind'],next:'about 8 Dec (in 6 days), coins on chain',watch:['this app, while it runs',''],chainTxt:['2 servers agree','']},
+ leaving:{tone:'warn',send:'0',recv:'0',chain:'48,000',u:'Leaving alone: step 3 of 6. Nothing is needed now. Coins on chain around 8 Dec (in 4 days).',ul:['Follow the steps','#leaving'],next:'about 6 Dec (in 2 days), last step of leaving',watch:['this app, while it runs',''],chainTxt:['2 servers agree','']},
+ ended:{tone:'warn',send:'0',recv:'0',chain:'229,200',u:'Factory 12 has ended for you. 181,200 sats are on chain. You cannot pay or receive until you are in a live factory.',ul:['Find a lobby','#lobbies'],next:'none',watch:['nothing to watch','o'],chainTxt:['2 servers agree','']}
+};
+const app=$('#app');
+const inFactory=()=>['waiting','signing','live','attention','moving'].includes(state);
+
+function applyFlags(){
+  $$('[data-host]').forEach(e=>{e.hidden=(e.dataset.host==='on')!==hosting;});
+  $$('[data-v11]').forEach(e=>{e.hidden=(e.dataset.v11==='on')!==v11;});
+  $('#m-host').checked=hosting; $('#m-v11').checked=v11;
+}
+function applyState(){
+  const s=S[state]; app.dataset.state=state;
+  app.dataset.tone=paused&&s.tone==='ok'?'warn':s.tone;
+  $('#mini-send').textContent=s.send; $('#mini-recv').textContent=s.recv;
+  $('#mini-chain').textContent=hosting?'42,000,000':s.chain;
+  $('#urgent-text').textContent=(paused?'Paused: the app joins and signs nothing new until you resume. ':'')+s.u;
+  const a=$('#urgent-link'); a.textContent=s.ul[0]; a.href=s.ul[1];
+  const ct=s.chainTxt||['2 servers agree, block 330,437',''];
+  $('#st-chain').textContent=ct[0]; $('#st-chain-dot').className=ct[1];
+  $('#st-watch').textContent=s.watch[0]; $('#st-watch-dot').className=s.watch[1];
+  $('#st-next').textContent=s.next;
+  $('#state-select').value=state;
+  const p=$('#pause'); p.disabled=state==='signing';
+  p.textContent=state==='signing'?'Pause (off while signing)':(paused?'Resume':'Pause'); p.setAttribute('aria-pressed',paused?'true':'false');
+  $$('[data-when]').forEach(e=>{e.hidden=!e.dataset.when.split(' ').includes(state);});
+  updateInstr();
+}
+function applyAll(){ applyFlags(); applyState(); }
+
+/* ---------- the instruction ---------- */
+function sentence(c,m){
+  const p=c.profiles.length?c.profiles.join(' or '):'of no profile (none is ticked)';
+  const body=`a lobby that is ${p}, with at least ${c.members} members, a channel of at least ${n(c.channel)} sats, a joining fee of at most ${n(c.join)} sats, a payment fee of at most ${n(c.paybase)} sats + ${c.pay}%`+(v11?`, a receiving-room fee of at most ${c.room}%`:'')+`, a life of ${c.lifemin} to ${c.lifemax} days, and at most ${c.leave} days to leave alone`;
+  const how=c.loose?' Where the host may still move a value, use the current value, and un-ready me if it moves outside my limits.':' Where the host may still move a value, check my limit against the whole range.';
+  if(m==='auto') return `Join ${body}. At most ${plural(c.atonce,'factory','factories')} at a time, and ${plural(c.total,'join','joins')} in total before asking me again.`+how;
+  if(m==='tell') return `Tell me when there is ${body}. Join nothing by yourself.`+how;
+  return `Join nothing by yourself. When I join by hand, accept only ${body}.`+how;
+}
+function updateInstr(){
+  const c=readCond(), s=survey(c), pend=($('input[name="autojoin"]:checked')||{}).value||'off';
+  const near=s.nearest?`${s.nearest.name}, which starts by ${day(s.nearest.dd)}, ${s.nearest.dt} (${s.nearest.dl})`:'';
+  let head, text, foot, dot='';
+  if(instr==='off'){ head='Automatic joining is off'; text='The app joins nothing by itself. Your limits still apply when you join by hand.'; foot='off'; dot='o'; }
+  else if(paused){ head='Paused'; text='The instruction is kept but does nothing until you press Resume.'; foot='paused'; dot='w'; }
+  else if(instr==='tell'){ head='Alive: telling you when a lobby fits'; text=s.fits?`It would tell you now about ${plural(s.fits,'lobby','lobbies')}. The nearest start is ${near}.`:'It has nothing to tell you now.'; foot=`telling me; ${s.fits} of ${s.total} fit`; }
+  else if(inFactory()&&c.atonce<=1){ head='Alive: waiting'; text='Waiting for: a free place in your budget. You are in 1 factory and the budget is 1 at a time. It looks again when you have moved or left.'; foot='waiting; 1 of 1 factory in use'; }
+  else if(s.fits){ head='Alive: looking'; text=`Waiting for: a start. It will mark you ready in ${near}. Keep the app running.`; foot=`looking; ${s.fits} of ${s.total} fit`; }
+  else { head='Alive: looking, and nothing fits'; text='Waiting for: a lobby inside your limits. It checks every new listing.'; foot='looking; nothing fits'; dot='w'; }
+  $('#is-head').textContent=head; $('#is-text').textContent=text;
+  $('#is-fit').textContent=`${s.fits} of ${s.total} listed lobbies fit your conditions.`;
+  $('#is-most').textContent=mostLine(s);
+  $('#st-instr').textContent=foot; $('#st-instr-dot').className=dot;
+  $('#sentence').textContent=sentence(c,pend);
+  $('#worst').textContent=pend==='auto'?`The most this can cost you without asking again: ${n(c.join*c.total)} sats in joining fees (${plural(c.total,'join','joins')} at up to ${n(c.join)} sats each).`:`The most joining can cost you each time: ${n(c.join)} sats, your joining-fee limit.`;
+  $('#bar-sentence').textContent=sentence(c,instr);
+  $('#bar-state').textContent=head+'. '+`${s.fits} of ${s.total} fit.`;
+  $('#il-open-tag').textContent=instr==='off'?'Off':'Open';
+  $('#il-open').textContent=instr==='off'?'No open instruction. The app joins nothing by itself.':head+'.';
+  $('#il-open-sub').textContent=instr==='off'?'':text;
+  const A=$('#instr-actions'), stop=()=>{const b=h('button',{type:'button',class:'btn danger'},'Stop this instruction'); b.addEventListener('click',()=>{instr='off'; $('input[name="autojoin"][value="off"]').checked=true; updateInstr(); renderBook();}); return b;};
+  if(pend===instr) A.replaceChildren(instr==='off'?h('span',{class:'hint'},'To start it, choose "Tell me when a lobby fits" or "Join by itself" under Joining.'):stop());
+  else if(pend==='auto') A.replaceChildren(h('a',{class:'btn primary',href:'#instruction-review'},'Review: let the app join by itself'));
+  else if(pend==='tell'){const b=h('button',{type:'button',class:'btn primary'},'Start telling me'); b.addEventListener('click',()=>{instr='tell'; updateInstr();}); A.replaceChildren(b);}
+  else A.replaceChildren(stop());
+  $('#rev-sentence').textContent=sentence(c,'auto');
+  $('#rev-join').textContent='up to '+n(c.join)+' sats'; $('#rev-atonce').textContent=c.atonce; $('#rev-total').textContent=c.total;
+  $('#rev-sum').textContent=n(c.join*c.total)+' sats'; $('#rev-pay').textContent=n(c.paybase)+' sats + '+c.pay; $('#rev-room').textContent=c.room;
+  $('#rev-fit').textContent=`${s.fits} of ${s.total} listed lobbies fit`+(s.fits?'':'. '+mostLine(s));
+}
+
+/* ---------- routing: the address hash follows the screen ---------- */
+function route(){
+  let hash=decodeURIComponent(location.hash.slice(1))||'home', id=hash.split(':')[0], param=hash.split(':')[1];
+  if(id==='home'||id==='mychannel'){ id=(id==='home'&&state==='fresh')?'lobbies':CH[state]; history.replaceState(null,'','#'+id); }
+  let el=document.getElementById(id), screen=el&&el.closest('.screen');
+  if(!screen){ if(el&&el.closest('.about,.cbar,.app')){ el.scrollIntoView(); return; } id=CH[state]; el=screen=document.getElementById(id); }
+  if(screen.hasAttribute('data-v11only')&&!v11){ id=CH[state]; history.replaceState(null,'','#'+id); el=screen=document.getElementById(id); }
+  if(screen.hasAttribute('data-needhost')&&!hosting){ hosting=true; applyAll(); }
+  if(screen.dataset.state){ const ok=screen.dataset.state.split(' '); if(!ok.includes(state)){ state=ok[0]; applyState(); } }
+  lastParam=param;
+  if(screen.id==='lobby') renderLobby(param);
+  if(screen.id==='join') renderJoin(param);
+  $$('.screen').forEach(s=>{s.hidden=s!==screen;});
+  $$('nav.side a').forEach(a=>{ if(a.dataset.nav===screen.dataset.nav) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
+  $('#moments').open=false;
+  if(el!==screen) el.scrollIntoView({block:'start'});
+  else if(!first) $('#main').scrollIntoView({block:'start'});
+  first=false;
+}
+window.addEventListener('hashchange',route);
+document.addEventListener('click',e=>{
+  const a=e.target.closest('a[href^="#"]');
+  if(a&&a.getAttribute('href')===location.hash) route();
+  if(!e.target.closest('#moments')) $('#moments').open=false;
+});
+const current=()=>$('.screen:not([hidden])');
+function rerender(){ const cur=current(); if(!cur) return; if(cur.id==='lobby') renderLobby(lastParam); if(cur.id==='join') renderJoin(lastParam); }
+
+/* ---------- controls ---------- */
+$('#state-select').addEventListener('change',e=>{ state=e.target.value; applyState(); if(location.hash==='#home') route(); else location.hash='#home'; });
+$('#m-host').addEventListener('change',e=>{ hosting=e.target.checked; applyAll(); const cur=current(); if(!hosting&&cur&&cur.hasAttribute('data-needhost')) location.hash='#host'; });
+$('#m-v11').addEventListener('change',e=>{ v11=e.target.checked; applyAll(); renderBook(); const cur=current(); if(!v11&&cur&&cur.hasAttribute('data-v11only')) location.hash='#mychannel'; else rerender(); });
+$('#pause').addEventListener('click',()=>{ paused=!paused; applyState(); });
+const themes=['system','light','dark'];
+function setTheme(t){ if(t==='system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme',t); $('#theme-toggle').textContent='Theme: '+t; $('#s-theme').value=t; }
+$('#theme-toggle').addEventListener('click',()=>setTheme(themes[(themes.indexOf($('#s-theme').value)+1)%3]));
+$('#s-theme').addEventListener('change',e=>setTheme(e.target.value));
+$('#conditions').addEventListener('input',()=>{updateInstr(); renderBook();});
+$('#conditions').addEventListener('change',()=>{updateInstr(); renderBook();});
+['only-fit','f-profile','f-sort'].forEach(id=>$('#'+id).addEventListener('change',renderBook));
+$('#refresh').addEventListener('click',()=>{ $('#refreshed').textContent='Read just now.'; });
+$('#instr-start').addEventListener('click',()=>{ instr='auto'; $('input[name="autojoin"][value="auto"]').checked=true; updateInstr(); location.hash='#instruction'; });
+$('#leave-start').addEventListener('click',()=>{ location.hash='#leaving'; });
+$('#show-words').addEventListener('click',e=>{ const w=$('#words'); w.hidden=!w.hidden; e.target.setAttribute('aria-expanded',String(!w.hidden)); e.target.textContent=w.hidden?'Show the 24 words':'Hide the 24 words'; });
+function chips(box,list){ $(box).addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; $$('button',$(box)).forEach(x=>x.setAttribute('aria-pressed',String(x===b))); $$('li',$(list)).forEach(li=>{li.hidden=b.dataset.show!=='all'&&li.dataset.kind!==b.dataset.show;}); }); }
+chips('#instr-chips','#instr-list-rows'); chips('#act-chips','#act-rows');
+const HN=[['Overview','#host',0],['Write terms','#host-terms',0],['My lobby','#host-lobby',1],['Ladder','#host-ladder',1],['A factory','#host-factory',1],['Fees and costs','#host-earnings',1],['Set-up','#host-setup',0]];
+$$('.hostnav').forEach(d=>{ const here='#'+d.closest('.screen').id; d.className='hostnav chips'; d.replaceChildren(...HN.map(x=>h('a',{class:'btn small',href:x[1],'aria-current':x[1]===here?'page':null,'data-host':x[2]?'on':null},x[0]))); });
+
+applyAll(); renderBook(); route();
+})();
+</script>
+</body>
+</html>

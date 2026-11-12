@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gazpacho: map of every option</title>
+<style>
+:root{--bg:#faf6ef;--card:#fff;--ink:#22190f;--soft:#6b5d4d;--line:#e4d9c8;--red:#b3261e;--code:#f1e9da;
+--s1:#b3261e;--s2:#234a86;--s3:#1d5e33;--s4:#7a5200;--s5:#5b3a8a;--s6:#0f6b6b}
+@media (prefers-color-scheme:dark){:root{--bg:#191512;--card:#231d18;--ink:#f1e8da;--soft:#b3a591;--line:#3b3129;--red:#f08a80;--code:#30271f;
+--s1:#f08a80;--s2:#a9c6f5;--s3:#9fdcb1;--s4:#f3d27e;--s5:#cdb3f2;--s6:#8fdede}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 system-ui,Segoe UI,Roboto,sans-serif}
+main{max-width:1120px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:30px;margin:0 0 6px}h1 span{color:var(--red)}
+h2{font-size:21px;margin:40px 0 8px;padding:10px 0 0 12px;border-top:2px solid var(--line);border-left:6px solid var(--c,var(--line))}
+p{margin:8px 0;max-width:80ch}h3{font-size:17px;margin:22px 0 6px}ol{margin:6px 0 6px 22px;padding:0}.soft{color:var(--soft);font-size:14px}
+nav{display:flex;flex-wrap:wrap;gap:8px;margin:16px 0}
+nav a{padding:5px 11px;border:1px solid var(--line);border-radius:999px;color:var(--ink);text-decoration:none;font-size:14px;background:var(--card);border-left:5px solid var(--c,var(--line))}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin:14px 0}
+.grid div{background:var(--card);border:1px solid var(--line);border-top:5px solid var(--c);border-radius:10px;padding:10px 12px;font-size:14.5px}
+.grid b{display:block;font-size:16px}
+.wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--card);margin:10px 0}
+table{border-collapse:collapse;width:100%;min-width:860px;font-size:14px}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{font-size:12.5px;color:var(--soft);font-weight:600;background:var(--bg)}
+tr:last-child td{border-bottom:0}
+td:first-child{font-weight:600;min-width:170px}
+.tag{display:inline-block;padding:1px 8px;border-radius:999px;font-size:12px;font-weight:700;border:1px solid var(--line);white-space:nowrap}
+.m{color:var(--s1)}.l{color:var(--soft)}.o{color:var(--s4)}
+code{background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:12px 0}
+ul{margin:6px 0 6px 20px;padding:0}li{margin:3px 0;max-width:78ch}
+</style>
+</head>
+<body>
+<main>
+<h1>Gaz<span>pacho</span>: map of every option</h1>
+<p class="soft">Working document, 2026-11-11. The backbone for the layout concepts: every setting, who owns it, and when it is locked. Sources: <code>docs/DESIGN.md</code>, <code>docs/LOBBY.md</code>, <code>docs/AWAY.md</code>, <code>docs/HOST-NODES.md</code>, <code>docs/CHAIN-SERVERS.md</code>, the two specifications, the channel research note, and the first prototype's API proposal. Items marked <span class="tag o">open</span> wait on an owner decision. Items marked <span class="tag l">later</span> are not in the first release.</p>
+
+<nav>
+<a href="#v2" style="--c:var(--red)">Version 2 additions</a><a href="#s1" style="--c:var(--s1)">1 My conditions</a><a href="#s2" style="--c:var(--s2)">2 Lobby terms</a>
+<a href="#s3" style="--c:var(--s3)">3 Wallet</a><a href="#s4" style="--c:var(--s4)">4 Watching</a>
+<a href="#s5" style="--c:var(--s5)">5 Connections</a><a href="#s6" style="--c:var(--s6)">6 Hosting</a>
+<a href="#never">Never a setting</a><a href="#status">Status, not options</a><a href="#rules">Rules for any layout</a>
+</nav>
+
+<h2 style="--c:var(--line)">The six scopes</h2>
+<div class="grid">
+<div style="--c:var(--s1)"><b>1. My conditions</b>What I will accept. Mine alone. The app joins and signs only inside them.</div>
+<div style="--c:var(--s2)"><b>2. Lobby terms</b>What a host offers. Set by the host, signed, numbered. A member can read them, never edit them.</div>
+<div style="--c:var(--s3)"><b>3. Wallet</b>My keys, my backup, my on-chain coins, the network.</div>
+<div style="--c:var(--s4)"><b>4. Watching</b>What protects me while I am away, and how I am told about dates.</div>
+<div style="--c:var(--s5)"><b>5. Connections</b>Which outside services the app talks to, and whether they agree.</div>
+<div style="--c:var(--s6)"><b>6. Hosting</b>Everything about being a host. Hidden until host mode is on.</div>
+</div>
+<div class="card">
+<p><b>The one relationship that matters most:</b> scope 1 and scope 2 are two sides of one comparison. A lobby fits when every term (2) is inside every condition (1). The app shows the two side by side, row for row, and says which row fails. They must never be editable in the same place.</p>
+</div>
+
+
+<h2 id="v2" style="--c:var(--red)">Version 2: additions after the gap check</h2>
+<p>The map was checked against the Soup wallet, superscalar.win, the SuperScalar guides, both design posts and the draft Lightning proposal (<code>notes/ux/gap-check.md</code>), and against three research reports on existing products (<code>notes/ux/research-*.md</code>). This section is the correction. Where it disagrees with a table below, this section wins.</p>
+
+<div class="grid">
+<div style="--c:var(--red)"><b>7. Payments (new scope)</b>Paying, receiving, pending payments, history, and buying receiving room. The map had no home for the thing a wallet is for.</div>
+<div style="--c:var(--red)"><b>My money (new status block)</b>Balance, the most I can receive, room left, and what I could take out alone. The design posts make this the centre of the product.</div>
+<div style="--c:var(--red)"><b>Always-present controls</b>Pause, the status strip and the test-network marker are not options in any scope. They sit on every screen.</div>
+</div>
+
+<h3>Moved</h3>
+<div class="wrap"><table>
+<tr><th>Item</th><th>Was in</th><th>Now in</th><th>Why</th></tr>
+<tr><td>Pause</td><td>1 My conditions</td><td>Always-present control</td><td>A stop button, not a preference</td></tr>
+<tr><td>Activity record</td><td>4 Watching</td><td>Its own view, "Activity"</td><td>It is the general history: payments, joins, signatures, refusals, exits</td></tr>
+<tr><td>Fee reserve</td><td>3 Wallet</td><td>4 Watching</td><td>Its purpose is being able to leave alone</td></tr>
+<tr><td>Host's Lightning node link</td><td>5 Connections</td><td>6 Hosting</td><td>Only hosts have one</td></tr>
+<tr><td>Conditions "locked while in a lobby"</td><td>1</td><td>1, reworded</td><td>Proposed rule: conditions are copied at the moment I join. Tightening them later makes the app leave a lobby that no longer fits. Loosening applies to future joins only. Needed once several lobbies and factories exist at once</td></tr>
+</table></div>
+
+<h3>Added to 1. My conditions</h3>
+<div class="wrap"><table>
+<tr><th>Option</th><th>Values</th><th>Notes</th></tr>
+<tr><td>Budget for automatic joining</td><td>How many factories at once; most in total</td><td>Automatic joining is a standing permission with its own limit</td></tr>
+<tr><td>Why nothing fits</td><td>Status beside the conditions: "3 of 14 listed lobbies fit"</td><td>Checked live, with the row that excludes most</td></tr>
+<tr><td>Confirmations I require</td><td>A number, above the app's floor</td><td>Before I treat a factory as live</td></tr>
+<tr><td>Smallest and largest payment I need</td><td>sats</td><td>Compared with the lobby's payment limits</td></tr>
+<tr><td>Highest recurring fee at each move</td><td>sats or percent</td><td>If hosts charge at each move to a new factory <span class="tag o">open</span></td></tr>
+<tr><td>Automatic buying of receiving room</td><td>Off · Up to a cost per purchase and per month</td><td>Belongs with payments in layouts that group by task</td></tr>
+<tr><td>Whose listings I see</td><td>Relays; hosts added by address or invitation</td><td>Joining by typing a host's address must be possible</td></tr>
+</table></div>
+
+<h3>Added to 2. Lobby terms</h3>
+<div class="wrap"><table>
+<tr><th>Term</th><th>Notes</th></tr>
+<tr><td>The full list of fee kinds</td><td>Joining, per payment, extra receiving room, recurring at each move, who pays when a member leaves alone. <span class="tag o">open</span>: decide the list before the first release</td></tr>
+<tr><td>Payment limits and the longest payment deadline</td><td>Smallest and largest payment; a long deadline makes some incoming payments fail</td></tr>
+<tr><td>Admission</td><td>Automatic or approved by the host one by one</td></tr>
+<tr><td>How members move to the next factory</td><td>When the window opens, how many tries, what happens to those who miss it</td></tr>
+<tr><td>Channel size chosen by the member, or one size for all</td><td><span class="tag o">open</span></td></tr>
+<tr><td>Changing terms</td><td><span class="tag o">open</span>: a new version of the same lobby (current design) or always a new lobby (what the research recommends)</td></tr>
+</table></div>
+
+<h3>7. Payments (new)</h3>
+<div class="wrap"><table>
+<tr><th>Item</th><th>Kind</th><th>Notes</th></tr>
+<tr><td>Pay an invoice</td><td>Action</td><td>Review screen: amount, fee, deadline; refusals with reasons</td></tr>
+<tr><td>Receive</td><td>Action</td><td>Amount, note, expiry. The app must be open to receive; say so</td></tr>
+<tr><td>Pending payments</td><td>Status</td><td>A stuck payment can hold funds for days; show until when</td></tr>
+<tr><td>Payment history</td><td>Status</td><td>Part of Activity, filtered</td></tr>
+<tr><td>Buy receiving room</td><td>Action</td><td>Ask, see the price, wait, done or failed. No refund; leaving alone costs more afterwards. Not working in the reference code yet; first release or later is to be decided</td></tr>
+<tr><td>Highest fee I pay per payment</td><td>Option</td><td>The paying side's own limit, separate from the host's fee</td></tr>
+</table></div>
+
+<h3>My money (status on the home screen of every layout)</h3>
+<div class="wrap"><table>
+<tr><th>Number</th><th>Meaning</th></tr>
+<tr><td>Can send</td><td>My balance in the channel</td></tr>
+<tr><td>Can receive</td><td>Room left before I must buy more</td></tr>
+<tr><td>Three places money can be</td><td>On chain and free · Set aside (a host's funds for an open lobby) · Inside a factory</td></tr>
+<tr><td>What I could take out alone</td><td>Amount, cost, and how long. Includes the warning "your balance is below the cost of leaving alone"</td></tr>
+</table></div>
+
+<h3>Added status values</h3>
+<div class="wrap"><table>
+<tr><th>Thing</th><th>Added values</th></tr>
+<tr><td>Before the start</td><td>Waiting to start: "you cannot pay or receive until the factory is live"</td></tr>
+<tr><td>Several factories</td><td>A list: the one I am in, the one I am moving to, ones I host, past ones and how each ended</td></tr>
+<tr><td>The move</td><td>Window open · Tried, waiting · Moved · The group moved on without me (then: leaving alone)</td></tr>
+<tr><td>Trouble</td><td>An old state was published and answered · The host was caught cheating (what the app did) · A neighbour left, so part of my branch is on chain · The funding was un-confirmed by a reorganisation</td></tr>
+<tr><td>While I was away</td><td>"What happened while the app was closed", shown once on opening</td></tr>
+<tr><td>After the end</td><td>Coins on chain in my wallet, and where they came from</td></tr>
+</table></div>
+
+<h3>Added to 6. Hosting</h3>
+<div class="wrap"><table>
+<tr><th>Item</th><th>Notes</th></tr>
+<tr><td>Join requests</td><td>Inbox when admission is by approval; allow and refuse lists; notes on members (kept locally)</td></tr>
+<tr><td>The ladder</td><td>A timeline of my factories: opening, live, winding down, ended</td></tr>
+<tr><td>Factory detail for a host</td><td>Silent members, deadlines the host must meet, forcing a member's path</td></tr>
+<tr><td>Running duties</td><td>Public address, listing renewal, host backup, never run two copies, alerts, a contact address</td></tr>
+<tr><td>Earnings</td><td>Fees received, chain costs, idle funds</td></tr>
+</table></div>
+
+<h3>Help and plumbing</h3>
+<p>A glossary, the version, logs, and a permanent "test coins, no value" marker. An optional display of amounts in a national currency. The Soup wallet's label "Your stake" is not carried over.</p>
+
+<h3>The moments every concept must show (was ten, now sixteen)</h3>
+<ol>
+<li>First run, including "nothing works until you are in a live factory".</li>
+<li>Home on an ordinary day, with "my money".</li>
+<li>Finding a lobby and joining, with the fit check.</li>
+<li>Automatic joining set up, running, and saying why nothing fits.</li>
+<li>Waiting to start, the signing moment, and a refusal with its reasons.</li>
+<li>A live factory with its dates and what I could take out alone.</li>
+<li>Paying and receiving, with a pending payment.</li>
+<li>Buying receiving room.</li>
+<li>Something needs attention, in tiers.</li>
+<li>The move to the next factory, including being left behind.</li>
+<li>Leaving alone, step by step over days, and after the end.</li>
+<li>Activity: what the app did alone, and what happened while it was closed.</li>
+<li>Hosting: writing terms with a preview, running a lobby, join requests.</li>
+<li>Hosting: the ladder, a factory's detail, earnings.</li>
+<li>Backup and restore.</li>
+<li>Each option scope, and the always-present controls.</li>
+</ol>
+
+<h2 id="s1" style="--c:var(--s1)">1. My conditions</h2>
+<p>Set once, used every time. Locked while I am in a lobby (leave the lobby to change them). Checked three times: when I ready up, at the moment of signing against the real tree, and at each rotation.</p>
+<div class="wrap"><table>
+<tr><th>Option</th><th>Values</th><th>Default</th><th>Compared with (lobby term)</th><th>Notes</th></tr>
+<tr><td>Profiles I accept</td><td>Safety, Standard, Starter, Circle (any set)</td><td>Safety, Standard</td><td>Profile</td><td>The quick way in: pick profiles and leave the rest at defaults</td></tr>
+<tr><td>Fewest members</td><td>2 to 512</td><td>20</td><td>Start rule minimum, and the actual count at signing</td><td>I am not counted in a start below my number</td></tr>
+<tr><td>Smallest channel</td><td>sats</td><td>200,000</td><td>Channel size</td><td></td></tr>
+<tr><td>Highest joining fee</td><td>sats</td><td>2,000</td><td>Joining fee</td><td></td></tr>
+<tr><td>Highest fee per payment</td><td>percent</td><td>0.1%</td><td>Payment fee</td><td></td></tr>
+<tr><td>Highest fee for extra receiving room</td><td>percent</td><td>0.5%</td><td>Liquidity fee</td><td></td></tr>
+<tr><td>Longest time to leave alone</td><td>blocks, shown as days</td><td>about 7 days</td><td>Exit time of the tree shape</td><td>Linked to how long I can safely be away <span class="tag o">open</span></td></tr>
+<tr><td>Shortest and longest factory life</td><td>days</td><td>7 to 45</td><td>Lifetime</td><td></td></tr>
+<tr><td>Host's record</td><td>Fewest factories funded before; proof required or not</td><td>None required</td><td>Host's published record and proof</td><td>Proof sized to the lobby is not designed yet</td></tr>
+<tr><td>Hosts I trust or avoid</td><td>Favourites list, avoid list</td><td>Empty</td><td>Host identity</td><td>Hosts have lasting identities; members do not</td></tr>
+<tr><td>People I will not sign with</td><td>Block list</td><td>Empty</td><td>Member list of the lobby</td><td>Only works when the host shows names</td></tr>
+<tr><td>Seat cost I accept</td><td>None, or up to an amount</td><td>—</td><td>Seat cost or deposit</td><td><span class="tag o">open</span> whether seats cost anything</td></tr>
+<tr><td>Automatic joining</td><td>Off · Tell me when one fits · Join by itself</td><td>Off</td><td>Any listed lobby that fits</td><td>With "favourite hosts only" as a narrower choice</td></tr>
+<tr><td>Automatic move to the host's next factory</td><td>On · Ask me · Off (leave instead)</td><td>On, if the new terms fit</td><td>The next factory's terms</td><td>Signing a move needs my key and a running app</td></tr>
+<tr><td>How I appear</td><td>Temporary name · A Nostr key I prove · Free text (shown unverified)</td><td>Temporary name</td><td>Host's "names" switch</td><td>Attaching a key links my factories together; by choice only</td></tr>
+<tr><td>Pause</td><td>One control: sign nothing new until I resume</td><td>Off</td><td>—</td><td>Not a preference so much as a stop button; must be reachable from everywhere</td></tr>
+</table></div>
+
+<h2 id="s2" style="--c:var(--s2)">2. Lobby terms</h2>
+<p>Written by the host before opening (scope 6). Shown read-only to members, with a version number. A change makes a new version; every member's app checks again and un-readies if a condition fails.</p>
+<div class="wrap"><table>
+<tr><th>Term</th><th>Values</th><th>Member sees</th><th>Notes</th></tr>
+<tr><td>Name and profile</td><td>Text; one of four profiles</td><td>Yes</td><td></td></tr>
+<tr><td>Start rule</td><td>Target, minimum, deadline</td><td>Yes, as one sentence with a countdown</td><td>"Starts at 50, or at the deadline with 30 or more"</td></tr>
+<tr><td>If too few</td><td>Cancel · Carry over to the next lobby</td><td>Yes</td><td>Carry-over view not designed</td></tr>
+<tr><td>Channel size</td><td>sats per member</td><td>Yes</td><td>Member starts at zero and can receive up to this</td></tr>
+<tr><td>Host's spare liquidity</td><td>sats per member</td><td>Yes</td><td>What can be bought later as receiving room</td></tr>
+<tr><td>Fees</td><td>Joining (sats); per payment (%); extra receiving room (%)</td><td>Yes</td><td>Fee types were invented by the prototype; to be specified</td></tr>
+<tr><td>Lifetime</td><td>Days</td><td>Yes, with the dates it produces</td><td></td></tr>
+<tr><td>Tree shape</td><td>Levels and how many are timed</td><td>As "leaving alone takes N days"</td><td><span class="tag o">open</span> how many timed levels the first release allows</td></tr>
+<tr><td>Who can find it</td><td>Listed · Unlisted</td><td>Yes</td><td></td></tr>
+<tr><td>Who can join</td><td>Anyone · Invitation (link or QR)</td><td>Yes</td><td></td></tr>
+<tr><td>Seats for newcomers</td><td>Share of seats for members who bring nothing</td><td>Yes</td><td></td></tr>
+<tr><td>Seat cost or deposit</td><td>None or an amount</td><td>Yes</td><td><span class="tag o">open</span></td></tr>
+<tr><td>Social switches</td><td>Names on/off · Chat on/off · Rule-change requests on/off</td><td>Yes</td><td>Chat itself is <span class="tag l">later</span></td></tr>
+<tr><td>Signing time budget</td><td>Minutes for the whole signing, with repeats inside it</td><td>As "signing takes up to N minutes; keep the app open"</td><td></td></tr>
+<tr><td>Confirmations before live</td><td>Number</td><td>Yes</td><td>The member's app has its own floor</td></tr>
+<tr><td>Host's record and proof</td><td>Factories funded; proof of funds</td><td>Yes</td><td>Published by the host; checkable</td></tr>
+</table></div>
+
+<h2 id="s3" style="--c:var(--s3)">3. Wallet</h2>
+<div class="wrap"><table>
+<tr><th>Option</th><th>Values</th><th>Default</th><th>Notes</th></tr>
+<tr><td>Recovery phrase</td><td>Show, verify</td><td>—</td><td>24 words. Restores keys, not factory state</td></tr>
+<tr><td>Factory backup</td><td>Export a file; copy kept by the host (status and date)</td><td>Host copy on</td><td>Signed transactions cannot be rebuilt from the phrase. This backup matters as much as the phrase</td></tr>
+<tr><td>On-chain funds</td><td>Receive address, send, list</td><td>—</td><td>Members need none to join; a small amount helps when leaving alone</td></tr>
+<tr><td>Fee reserve</td><td>Recommended amount; warn below it</td><td>20,000 sats (invented)</td><td>Without it, leaving alone depends on pre-set fees</td></tr>
+<tr><td>Fee rate for my transactions</td><td>Automatic · Fixed</td><td>Automatic</td><td>Test networks use 0.1 sat/vB</td></tr>
+<tr><td>Network</td><td>Signet · Testnet4 · Mainnet (unavailable in this release)</td><td>Signet</td><td>Cannot change while in a lobby or factory</td></tr>
+<tr><td>Units and display</td><td>sats or BTC; theme; language</td><td>sats; system theme</td><td></td></tr>
+<tr><td>Access to the app</td><td>Start-up token; lock after idle</td><td>—</td><td>How the browser gets the token is not designed</td></tr>
+<tr><td>Restore</td><td>From phrase, plus backup file or the host's copy</td><td>—</td><td>What a restored wallet shows while waiting for the host is not designed</td></tr>
+</table></div>
+
+<h2 id="s4" style="--c:var(--s4)">4. Watching</h2>
+<p>A member has dates to keep. This scope answers "what happens if I am not here". Most of it is status computed by the app; only a few things are choices.</p>
+<div class="wrap"><table>
+<tr><th>Item</th><th>Kind</th><th>Values</th><th>Notes</th></tr>
+<tr><td>Longest safe absence</td><td>Status</td><td>A duration computed from my factory's shape</td><td><span class="tag o">open</span> under a day with timed levels unless something watches for me</td></tr>
+<tr><td>Who watches while I am away</td><td>Choice</td><td>Nobody · This app left running · My own second machine <span class="tag l">later</span> · A watcher holding ready-made responses <span class="tag l">later</span></td><td>A watcher that holds keys is not offered</td></tr>
+<tr><td>Watcher health</td><td>Status</td><td>Up to date · Behind · Unreachable</td><td>A watcher that has fallen behind is an alert</td></tr>
+<tr><td>Leave before the end</td><td>Fixed behaviour with one choice</td><td>The app leaves alone in time. Choice: extra margin in blocks, above a floor</td><td>Never switchable off</td></tr>
+<tr><td>Reminders</td><td>Choice</td><td>In the app · Nostr message <span class="tag l">later</span> · Email <span class="tag l">later</span> · Phone <span class="tag l">later</span></td><td></td></tr>
+<tr><td>Warn me this early</td><td>Choice</td><td>Days before a date</td><td>Default 3</td></tr>
+<tr><td>Activity record</td><td>Status</td><td>What the app did alone: joined, signed, refused (with the reason), answered, left</td><td>The proof that unattended behaviour stayed inside my conditions</td></tr>
+</table></div>
+
+<h2 id="s5" style="--c:var(--s5)">5. Connections</h2>
+<div class="wrap"><table>
+<tr><th>Option</th><th>Values</th><th>Default</th><th>Notes</th></tr>
+<tr><td>How I see the chain</td><td>Public servers · My own server · My own node</td><td>Public servers</td><td></td></tr>
+<tr><td>Server list</td><td>Add, remove; status per server</td><td>Two operators</td><td>The app needs two independent operators and says when they disagree</td></tr>
+<tr><td>Listings</td><td>Nostr relays</td><td>A built-in list</td><td></td></tr>
+<tr><td>Privacy of connections</td><td>Direct · Tor <span class="tag l">later</span></td><td>Direct</td><td>Asking a host about a lobby shows it my network address</td></tr>
+<tr><td>Local interface</td><td>Port; this machine only</td><td>This machine only</td><td></td></tr>
+<tr><td>Host's Lightning node link</td><td>Kind (LND, Core Lightning), address, access file, a four-step test</td><td>—</td><td>Shown only in host mode; belongs with scope 6 in layouts that separate roles</td></tr>
+</table></div>
+
+<h2 id="s6" style="--c:var(--s6)">6. Hosting</h2>
+<p>Hidden until host mode is switched on. A host writes scope 2 for others.</p>
+<div class="wrap"><table>
+<tr><th>Option</th><th>Values</th><th>Notes</th></tr>
+<tr><td>Host mode</td><td>Off · On</td><td>Needs a linked Lightning node and funds</td></tr>
+<tr><td>Host identity and record</td><td>A lasting key; publish the factories funded</td><td>Unlike members, a host's reputation is the point</td></tr>
+<tr><td>Terms templates</td><td>Saved sets of scope 2, starting from a profile</td><td>With a live preview: funding needed at target and at minimum, dates, problems</td></tr>
+<tr><td>Capital limits</td><td>Most funds per factory; most in total</td><td></td></tr>
+<tr><td>Schedule</td><td>Open a lobby at a fixed time each day or week; open the next factory before this one winds down</td><td>The ladder of factories</td></tr>
+<tr><td>Running a lobby</td><td>Start now (once the minimum is ready) · Cancel · Remove a member · Invitations</td><td>Actions, not settings</td></tr>
+<tr><td>Running a factory</td><td>Sell receiving room · Wind down · Deadlines the host must meet · Fee funds held ready</td><td>The host's deadlines grow once the end-date payout exists</td></tr>
+<tr><td>Earnings</td><td>Fees received, on-chain costs, idle capital</td><td>Report only</td></tr>
+</table></div>
+
+<h2 id="never" style="--c:var(--line)">Never a setting</h2>
+<p>The specifications say the software decides these alone. No layout may offer a switch for them, and no "advanced" area either.</p>
+<ul>
+<li>Every safe-to-sign check. A member cannot loosen them; conditions can only be stricter.</li>
+<li>Saving before sending, and never reusing a one-time signing secret.</li>
+<li>Comparing at least two chain servers and stopping when they disagree.</li>
+<li>Answering an old state, and leaving before the factory ends.</li>
+<li>Refusing mainnet in this release.</li>
+<li>Signing once I am marked ready and the lobby starts. Readying is the consent; there is no prompt in the middle of a round.</li>
+</ul>
+
+<h2 id="status" style="--c:var(--line)">Status, not options</h2>
+<div class="wrap"><table>
+<tr><th>Thing</th><th>Values</th></tr>
+<tr><td>Lobby</td><td>Open · Ready check · Signing · Funding · Live · Cancelled · Failed. For me: not joined · refused (with reasons) · ready · ready but not counted · not ready</td></tr>
+<tr><td>Factory</td><td>Live · Winding down · Host not answering · Moving to the next · Leaving alone (step by step) · Ended</td></tr>
+<tr><td>Dates</td><td>Open the app by · Move to the next factory by · Factory ends on. Each says what happens at zero</td></tr>
+<tr><td>Needs attention</td><td>Servers disagree · Host silent · Date near · Backup old · Reserve low · Watcher behind · Terms changed · Refused to sign · Payments paused</td></tr>
+</table></div>
+
+<h2 id="rules" style="--c:var(--line)">Rules any layout must keep</h2>
+<ul>
+<li>Each option lives in exactly one scope. Scope 1 and scope 2 are shown together only as a comparison.</li>
+<li>A new member can join safely by choosing profiles and nothing else.</li>
+<li>The most urgent item is visible from every screen.</li>
+<li>Every countdown says what happens at zero.</li>
+<li>The pause control is reachable from every screen.</li>
+<li>Whatever the app did alone is listed afterwards, with reasons for refusals.</li>
+<li>Member and host live in one app without the member seeing host controls.</li>
+<li>Nothing promises more than the specifications support. Open decisions are marked, not guessed.</li>
+<li>Words: host, member, hosting, providing liquidity, fees. Never "staking".</li>
+</ul>
+</main>
+</body>
+</html>
