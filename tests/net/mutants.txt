@@ -286,3 +286,7 @@ peers-no-unit-cap	ports/net/peers.c	while (units < 64) {	while (units < 1000000)
 #   the release on the next part is a backstop whose effect rule 4 (a new
 #   transfer_id resets) or the same transfer's reuse of the buffer already
 #   gives.
+# peers-max-conns-off (the reviewer's c11): not reachable by a deterministic test. Handshake
+#   eviction keeps pending connections under max_handshakes and admission keeps
+#   established ones under max_conns; the array bound is reached only while
+#   refused connections are still flushing their warning. Kept as a memory guard.
