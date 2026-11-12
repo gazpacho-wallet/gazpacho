@@ -36,6 +36,8 @@ Each request says what blocks on it:
 
 **Blocks.** 1.0.0. Not Slice 1, which forms the factory and makes no payment; it is needed when Gazpacho's channel engine runs (Slice 2).
 
+**A care point for request 1.** With one member per pseudo-Spilman leaf, the leaf's pre-signed chain extension spends the same output as the channel's commitments. Whatever channel script the caller supplies, the chain extension must be built and signed for that same script and key path.
+
 ## 2. Request: a payout destination per member
 
 **What.** Let each member's payouts (the end-date payout, and the distribution and penalty outputs that today pay the factory key, `factory.h:1258-1261`, `:536-541`) go to a script the member chose.
@@ -43,6 +45,12 @@ Each request says what blocks on it:
 **Why Gazpacho needs it.** The owner decided where coins go (2026-11-11): one wallet in 1.0.0, derived per-factory addresses of the same wallet in 1.1.0, and later an outside or cold wallet that Gazpacho does not control. Transactions signed in advance fix their destination when they are signed, so the destination must be known to the tree builder before the factory forms, and stays for its life. Gazpacho proves an outside address before use.
 
 **What would satisfy it.** A destination script per participant, set before the tree is built, defaulting to today's key-based output. Ideally it lands with the end-date payout (your round 2), since both change the same transactions and every transaction ID.
+
+**A rule this needs, so it cannot be used to grief others.** Every member under a node shares that node's payout transaction. If one member could choose a non-standard script (very large, bare multisig, an unspendable or unusual form), Bitcoin nodes would not relay the payout and nobody under that node would be paid. So destinations must be limited to standard output types (P2TR, P2WPKH, P2WSH) within the standard size, and every signer must refuse to sign a payout carrying anything else. The payout's size and fee must be computed from the actual scripts.
+
+**Privacy cost, to state to users.** Everyone who shares a payout transaction sees each member's destination. Reusing one address across factories links them, so a fresh derived address per factory is the better default.
+
+**Why this does not change the design.** The end-date payout pays each member "solely to the respective client"; any standard script the member controls satisfies that. Only the member's factory key signs inside the factory; the destination wallet signs nothing until it later spends what it received.
 
 **Blocks.** 1.1.0 for derived addresses; later for outside wallets. 1.0.0 can pay to the factory key's wallet.
 
