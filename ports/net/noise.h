@@ -6,7 +6,13 @@
  * caller's randomness port. See spec/transport.md for the rules.
  *
  * After any error the state is dead: every later call returns
- * GZ_NOISE_ERR_STATE, and its keys have been wiped. */
+ * GZ_NOISE_ERR_STATE, and its keys have been wiped. The one exception is
+ * gz_noise_remote_static, a query that changes nothing.
+ *
+ * NEVER COPY A READY STATE AND USE BOTH COPIES: each would encrypt with the
+ * same key and nonces, which breaks ChaCha20-Poly1305. (The struct is visible
+ * only so the tests can read intermediate values; the one copy in the suite,
+ * in the fuzz target, uses throwaway keys.) */
 #ifndef GAZPACHO_NET_NOISE_H
 #define GAZPACHO_NET_NOISE_H
 
@@ -77,7 +83,8 @@ gz_noise_err_t gz_noise_act1_read(gz_noise_t *st, const uint8_t *in, size_t len)
 gz_noise_err_t gz_noise_act2_write(gz_noise_t *st, uint8_t out[GZ_NOISE_ACT2_LEN]);
 gz_noise_err_t gz_noise_act3_read(gz_noise_t *st, const uint8_t *in, size_t len);
 
-/* After the handshake: the other side's static key. */
+/* After the handshake: the other side's static key. A query: before then it
+ * returns GZ_NOISE_ERR_STATE without changing the state. */
 gz_noise_err_t gz_noise_remote_static(const gz_noise_t *st, uint8_t out[33]);
 
 /* Encrypt one message of up to 65,535 bytes. Writes 18 + len + 16 bytes. */

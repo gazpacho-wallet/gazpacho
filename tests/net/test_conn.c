@@ -1,9 +1,13 @@
 /* The connection layer between two local processes (the test forks). The
  * parent is the host; the child is a member, honest or not. */
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -59,6 +63,7 @@ static pid_t spawn(child_fn f, uint16_t port)
 {
     pid_t p = fork();
     if (p == 0) {
+        signal(SIGPIPE, SIG_IGN); /* children write raw; the parent keeps the default */
         f(port);
         _exit(0);
     }
@@ -161,18 +166,142 @@ static void bad_mac(uint16_t port)
     close(member.fd);
 }
 
+static void sleep_ms(int n)
+{
+    struct timespec t;
+    t.tv_sec = n / 1000;
+    t.tv_nsec = (long)(n % 1000) * 1000000;
+    while (nanosleep(&t, &t) != 0 && errno == EINTR) {}
+}
+
+static int read_full(int fd, uint8_t *b, size_t n)
+{
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = read(fd, b + got, n - got);
+        if (r <= 0) return 0;
+        got += (size_t)r;
+    }
+    return 1;
+}
+
+/* Connects 400 ms late, then takes 300 ms over act one. */
+static void late_slow(uint16_t port)
+{
+    gz_noise_t st;
+    uint8_t a[66];
+    int fd;
+    sleep_ms(400);
+    fd = raw_connect(port);
+    if (gz_noise_init_initiator(&st, secp, MEMBER_KEY, HOST_PUB, RNG) || gz_noise_act1_write(&st, a)) _exit(80);
+    sleep_ms(300);
+    if (write(fd, a, 50) != 50 || !read_full(fd, a, 50) || gz_noise_act2_read(&st, a, 50) ||
+        gz_noise_act3_write(&st, a) || write(fd, a, 66) != 66) _exit(81);
+    sleep_ms(500);
+    close(fd);
+}
+
+/* Completes the handshake and closes at once. */
+static void connect_and_close(uint16_t port)
+{
+    if (gz_conn_connect(&member, "127.0.0.1", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL)) _exit(82);
+    gz_conn_close(&member);
+}
+
+/* Completes the handshake and never reads. */
+static void never_reads(uint16_t port)
+{
+    if (gz_conn_connect(&member, "127.0.0.1", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL)) _exit(83);
+    sleep(6);
+}
+
+/* Reads twenty full-size messages slowly and checks every byte. */
+static void slow_reader(uint16_t port)
+{
+    size_t len, k;
+    int i;
+    if (gz_conn_connect(&member, "127.0.0.1", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL)) _exit(84);
+    for (i = 0; i < 20; i++) {
+        sleep_ms(20);
+        if (gz_conn_recv(&member, msg, sizeof msg, &len) || len != GZ_NOISE_MAX_MSG) _exit(85);
+        for (k = 0; k < len; k++)
+            if (msg[k] != (uint8_t)(k % 251 + (size_t)i)) _exit(86);
+    }
+    gz_conn_close(&member);
+}
+
+/* A valid message, a byte every 20 ms: slow but within the deadline. */
+static void trickle_ok(uint16_t port)
+{
+    uint8_t out[64];
+    size_t n, i;
+    if (gz_conn_connect(&member, "127.0.0.1", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL)) _exit(87);
+    if (gz_noise_encrypt(&member.noise, (const uint8_t *)"\x80\x01" "abc", 5, out, sizeof out, &n)) _exit(88);
+    for (i = 0; i < n; i++) {
+        if (write(member.fd, out + i, 1) != 1) _exit(89);
+        sleep_ms(20);
+    }
+    sleep_ms(500);
+}
+
+/* The header slowly (810 ms), then the body faster (540 ms): the whole
+ * message takes longer than the 1,000 ms deadline, the body alone does not. */
+static void body_trickle(uint16_t port)
+{
+    uint8_t out[64];
+    size_t n, i;
+    memset(msg, 0x80, 20);
+    if (gz_conn_connect(&member, "127.0.0.1", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL)) _exit(90);
+    if (gz_noise_encrypt(&member.noise, msg, 20, out, sizeof out, &n) || n != 54) _exit(91);
+    for (i = 0; i < n; i++) {
+        if (write(member.fd, out + i, 1) != 1) _exit(0);
+        sleep_ms(i < 18 ? 45 : 15);
+    }
+    sleep_ms(500);
+}
+
+/* A host that accepts TCP and never answers act one. */
+static int silent_lfd;
+static void silent_host(uint16_t port)
+{
+    struct pollfd p;
+    int fd;
+    (void)port;
+    p.fd = silent_lfd;
+    p.events = POLLIN;
+    if (poll(&p, 1, 5000) != 1 || (fd = accept(silent_lfd, NULL, NULL)) < 0) _exit(92);
+    sleep(4);
+    close(fd);
+}
+
+static int interrupts;
+static void on_alarm(int sig) { (void)sig; interrupts++; }
+
 /* --- the host side of each case ------------------------------------------ */
 static int lfd;
 static uint16_t port;
+
+static int accept_ms = 5000, send_ms = 10000;
 
 static gz_conn_err_t host_accept(int handshake_ms, int recv_ms, size_t max_msg)
 {
     gz_conn_limits_t l;
     gz_conn_default_limits(&l);
+    l.accept_ms = accept_ms;
     l.handshake_ms = handshake_ms;
     l.recv_ms = recv_ms;
+    l.send_ms = send_ms;
     l.max_msg = max_msg;
-    return gz_conn_accept(&host, lfd, secp, HOST_KEY, RNG, &l);
+    return gz_conn_accept(&host, lfd, secp, HOST_KEY, RNG, &l, gz_conn_any_member, NULL);
+}
+
+/* A member check that records the key it was shown and says no. */
+static uint8_t shown[33];
+static int refuse_member(const uint8_t key[33], void *ctx)
+{
+    memcpy(shown, key, 33);
+    *(int *)ctx += 1;
+    return 0;
 }
 
 static void test_honest(void)
@@ -183,6 +312,10 @@ static void test_honest(void)
     pid_t p = spawn(honest, port);
     CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
     CHECK(gz_conn_remote_static(&host, rs) == GZ_CONN_OK && memcmp(rs, MEMBER_PUB, 33) == 0);
+    CHECK((fcntl(host.fd, F_GETFD) & FD_CLOEXEC) && (fcntl(lfd, F_GETFD) & FD_CLOEXEC));
+    /* An open connection is not reused: refused, and left working. */
+    CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_ERR_BUSY);
+    CHECK(gz_conn_connect(&host, "127.0.0.1", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL) == GZ_CONN_ERR_BUSY);
     CHECK(gz_conn_recv(&host, msg, sizeof msg, &len) == GZ_CONN_OK && len == 7 && !memcmp(msg, "\x80\x01hello", 7));
     CHECK(gz_conn_send(&host, (const uint8_t *)"\x80\x01HELLO", 7) == GZ_CONN_OK);
     for (i = 0; i < 600; i++)
@@ -200,6 +333,31 @@ static void test_wrong_pin(void)
     pid_t p = spawn(wrong_pin, port);
     CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_ERR_HANDSHAKE && host.noise_err == GZ_NOISE_ERR_MAC);
     CHECK(child_status(p) == 0); /* the member saw the host close, having received nothing */
+    /* The next connection on the same gz_conn_t starts with no stale reason. */
+    p = spawn(honest, port);
+    CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK && host.noise_err == GZ_NOISE_OK);
+    gz_conn_close(&host);
+    kill(p, SIGKILL);
+    child_status(p);
+}
+
+/* F3: the host's member check runs after the handshake, sees the member's
+ * key, and its refusal closes the connection before any message is read. */
+static void test_member_check(void)
+{
+    gz_conn_limits_t l;
+    int calls = 0;
+    pid_t p;
+    gz_conn_default_limits(&l);
+    l.accept_ms = 5000;
+    CHECK(gz_conn_accept(&host, lfd, secp, HOST_KEY, RNG, &l, NULL, NULL) == GZ_CONN_ERR_ARGS);
+    p = spawn(honest, port);
+    CHECK(gz_conn_accept(&host, lfd, secp, HOST_KEY, RNG, &l, refuse_member, &calls) == GZ_CONN_ERR_NOT_MEMBER);
+    CHECK(calls == 1 && memcmp(shown, MEMBER_PUB, 33) == 0 && host.fd == -1 && all_zero(&host.noise, sizeof host.noise));
+    {
+        int st = child_status(p); /* the member saw the close: its send (11) or its read (12) failed */
+        CHECK(st == 11 || st == 12);
+    }
 }
 
 static void test_timeouts(void)
@@ -213,12 +371,47 @@ static void test_timeouts(void)
     child_status(p);
     /* Nobody connects at all. */
     t0 = ms();
-    CHECK(host_accept(300, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_ERR_TIMEOUT && ms() - t0 < 2000);
+    accept_ms = 300;
+    CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_ERR_TIMEOUT && ms() - t0 >= 250 && ms() - t0 < 2000);
+    accept_ms = 3000;
+    /* F2: the handshake deadline starts at the connection, not at the call:
+     * a member 400 ms late with a 300 ms act one fits a 500 ms handshake. */
+    p = spawn(late_slow, port);
+    CHECK(host_accept(500, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
+    gz_conn_close(&host);
+    CHECK(child_status(p) == 0);
+    accept_ms = 5000;
+    /* The member's side: a host that accepts TCP and never answers. */
+    {
+        gz_conn_limits_t l;
+        uint16_t sport;
+        CHECK(gz_conn_listen("127.0.0.1", 0, &silent_lfd, &sport) == GZ_CONN_OK);
+        p = spawn(silent_host, sport);
+        gz_conn_default_limits(&l);
+        l.handshake_ms = 700;
+        t0 = ms();
+        CHECK(gz_conn_connect(&member, "127.0.0.1", sport, secp, MEMBER_KEY, HOST_PUB, RNG, &l) == GZ_CONN_ERR_TIMEOUT);
+        CHECK(ms() - t0 >= 650 && ms() - t0 < 2000 && member.fd == -1);
+        kill(p, SIGKILL);
+        child_status(p);
+        close(silent_lfd);
+    }
+    /* The body shares the message's deadline: header slow, body faster, too late in all. */
+    {
+        size_t len;
+        p = spawn(body_trickle, port);
+        CHECK(host_accept(5000, 1000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
+        t0 = ms();
+        CHECK(gz_conn_recv(&host, msg, sizeof msg, &len) == GZ_CONN_ERR_TIMEOUT);
+        CHECK(ms() - t0 >= 950 && ms() - t0 < 1300);
+        kill(p, SIGKILL);
+        child_status(p);
+    }
     /* A peer that sends a message a byte at a time is cut off. */
     {
         size_t len;
         p = spawn(trickle, port);
-        CHECK(host_accept(5000, 500, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
+        CHECK(host_accept(5000, 500, GZ_NOISE_MAX_MSG) == GZ_CONN_OK && host.noise_err == GZ_NOISE_OK);
         t0 = ms();
         CHECK(gz_conn_recv(&host, msg, sizeof msg, &len) == GZ_CONN_ERR_TIMEOUT);
         CHECK(ms() - t0 >= 450 && ms() - t0 < 2500);
@@ -293,13 +486,93 @@ static void test_local_limits(void)
         CHECK(gz_conn_listen("127.0.0.1", 0, &fd, &free_port) == GZ_CONN_OK);
         close(fd);
         CHECK(gz_conn_connect(&member, "127.0.0.1", free_port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL) == GZ_CONN_ERR_SOCKET);
+        /* Names are not looked up (no deadline could bound that). */
+        CHECK(gz_conn_connect(&member, "localhost", port, secp, MEMBER_KEY, HOST_PUB, RNG, NULL) == GZ_CONN_ERR_SOCKET);
+        CHECK(gz_conn_listen("localhost", 0, &fd, &free_port) == GZ_CONN_ERR_SOCKET);
     }
+    /* Closing a zeroed gz_conn_t closes nothing, even when its fd field names a real descriptor. */
+    {
+        static gz_conn_t z;
+        int fd = open("/dev/null", O_RDONLY);
+        z.fd = fd;
+        gz_conn_close(&z);
+        CHECK(fd >= 0 && fcntl(fd, F_GETFD) != -1);
+        close(fd);
+    }
+}
+
+/* SIGPIPE is at its default in this process: a send to a closed peer must
+ * fail, not kill the program. */
+static void test_no_sigpipe(void)
+{
+    int i;
+    gz_conn_err_t e = GZ_CONN_OK;
+    pid_t p = spawn(connect_and_close, port);
+    CHECK(signal(SIGPIPE, SIG_DFL) == SIG_DFL);
+    CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
+    CHECK(child_status(p) == 0);
+    for (i = 0; i < 200 && e == GZ_CONN_OK; i++) e = gz_conn_send(&host, msg, 1000);
+    CHECK(e == GZ_CONN_ERR_SOCKET && i > 1); /* the first sends are buffered, then EPIPE */
+}
+
+/* Full socket buffers: a slow reader gets every byte (writes wait on
+ * EAGAIN); a reader that never reads is cut off by the send deadline. */
+static void test_full_buffers(void)
+{
+    int i, ok = 0;
+    gz_conn_err_t e = GZ_CONN_OK;
+    int64_t t0 = 0;
+    size_t k;
+    pid_t p = spawn(slow_reader, port);
+    CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
+    for (i = 0; i < 20; i++) {
+        for (k = 0; k < GZ_NOISE_MAX_MSG; k++) msg[k] = (uint8_t)(k % 251 + (size_t)i);
+        ok += gz_conn_send(&host, msg, GZ_NOISE_MAX_MSG) == GZ_CONN_OK;
+    }
+    CHECK(ok == 20 && child_status(p) == 0);
+    gz_conn_close(&host);
+    p = spawn(never_reads, port);
+    send_ms = 500;
+    CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
+    for (i = 0; i < 1000 && e == GZ_CONN_OK; i++) {
+        t0 = ms();
+        e = gz_conn_send(&host, msg, GZ_NOISE_MAX_MSG);
+    }
+    CHECK(e == GZ_CONN_ERR_TIMEOUT && i > 1 && ms() - t0 >= 450 && ms() - t0 < 1500 && host.fd == -1);
+    send_ms = 10000;
+    kill(p, SIGKILL);
+    child_status(p);
+}
+
+/* A signal every 5 ms, its handler installed without SA_RESTART, while a
+ * slow peer sends a message: every interrupted wait resumes. */
+static void test_interrupted_waits(void)
+{
+    struct sigaction sa;
+    struct itimerval it;
+    size_t len;
+    pid_t p = spawn(trickle_ok, port);
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_alarm;
+    sigemptyset(&sa.sa_mask);
+    CHECK(sigaction(SIGALRM, &sa, NULL) == 0);
+    memset(&it, 0, sizeof it);
+    it.it_interval.tv_usec = 5000;
+    it.it_value.tv_usec = 5000;
+    CHECK(setitimer(ITIMER_REAL, &it, NULL) == 0);
+    CHECK(host_accept(5000, 5000, GZ_NOISE_MAX_MSG) == GZ_CONN_OK);
+    CHECK(gz_conn_recv(&host, msg, sizeof msg, &len) == GZ_CONN_OK && len == 5 && !memcmp(msg, "\x80\x01" "abc", 5));
+    memset(&it, 0, sizeof it);
+    setitimer(ITIMER_REAL, &it, NULL);
+    CHECK(interrupts > 50); /* the signals really came */
+    gz_conn_close(&host);
+    kill(p, SIGKILL);
+    child_status(p);
 }
 
 int main(void)
 {
     uint8_t other[32];
-    signal(SIGPIPE, SIG_IGN);
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     memset(HOST_KEY, 0x21, 32);
     memset(MEMBER_KEY, 0x11, 32);
@@ -310,9 +583,13 @@ int main(void)
     CHECK(gz_conn_listen("127.0.0.1", 0, &lfd, &port) == GZ_CONN_OK && port != 0);
     test_honest();
     test_wrong_pin();
+    test_member_check();
     test_timeouts();
     test_broken_peers();
     test_local_limits();
+    test_no_sigpipe();
+    test_full_buffers();
+    test_interrupted_waits();
     close(lfd);
     secp256k1_context_destroy(secp);
     return check_done();

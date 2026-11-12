@@ -1,5 +1,5 @@
 # Mutants for tools/mutate-net.py: NAME, FILE, OLD, NEW, [OCCURRENCE], tab-separated.
-# \n in OLD and NEW stands for a newline.
+# In OLD and NEW, \n stands for a newline and \\ for a backslash.
 act-version-ignored	ports/net/noise.c	if (in[0] != 0) return fail(st, GZ_NOISE_ERR_VERSION);	if (0) return fail(st, GZ_NOISE_ERR_VERSION);	1
 act3-version-ignored	ports/net/noise.c	if (in[0] != 0) return fail(st, GZ_NOISE_ERR_VERSION);	if (0) return fail(st, GZ_NOISE_ERR_VERSION);	2
 act12-length-short-only	ports/net/noise.c	if (len != 50) return fail	if (len < 50) return fail
@@ -87,3 +87,37 @@ close-keeps-buffer	ports/net/conn.c	    OPENSSL_cleanse(c->buf, sizeof c->buf);\
 accept-act1-error-ignored	ports/net/conn.c	if ((ne = gz_noise_act1_read(&c->noise, act, GZ_NOISE_ACT1_LEN))) return hs_refused(c, ne);	gz_noise_act1_read(&c->noise, act, GZ_NOISE_ACT1_LEN);
 hs-refusal-reason-lost	ports/net/conn.c	    c->noise_err = ne;\n    return die(c, GZ_CONN_ERR_HANDSHAKE);	    return die(c, GZ_CONN_ERR_HANDSHAKE);
 msg-refusal-kind-lost	ports/net/conn.c	ne == GZ_NOISE_ERR_TOO_BIG ? GZ_CONN_ERR_TOO_BIG : GZ_CONN_ERR_CRYPTO	GZ_CONN_ERR_CRYPTO
+r-decrypt-body-uses-sck	ports/net/noise.c	if (!step(&st->rn, st->rck, st->rk)) {	if (!step(&st->rn, st->sck, st->rk)) {
+r-ready-in-r-sent2	ports/net/noise.c	return st->phase == GZ_NOISE_READY || st->phase == GZ_NOISE_READY_BODY;	return st->phase == GZ_NOISE_READY || st->phase == GZ_NOISE_READY_BODY || st->phase == GZ_NOISE_R_SENT2;
+r-act1-write-any-phase	ports/net/noise.c	if (st->phase != GZ_NOISE_I_START)	if (st->phase == GZ_NOISE_DEAD)
+r-act2-read-any-phase	ports/net/noise.c	if (st->phase != GZ_NOISE_I_SENT1)	if (st->phase == GZ_NOISE_DEAD)
+r-act2-write-any-phase	ports/net/noise.c	if (st->phase != GZ_NOISE_R_GOT1)	if (st->phase == GZ_NOISE_DEAD)
+r-act3-read-any-phase	ports/net/noise.c	if (st->phase != GZ_NOISE_R_SENT2)	if (st->phase == GZ_NOISE_DEAD)
+r-hkdf-prk-not-wiped	ports/net/noise.c	    wipe(prk, sizeof prk);\n	
+r-hkdf-t-not-wiped	ports/net/noise.c	    wipe(t, sizeof t);\n	
+r-hkdf-o1-not-wiped	ports/net/noise.c	    wipe(o1, sizeof o1);\n	
+r-hkdf-o2-not-wiped	ports/net/noise.c	    wipe(o2, sizeof o2);\n	
+r-body-step-fail-no-wipe	ports/net/noise.c	        wipe(out, st->body_len);\n	
+r-nosignal-off	ports/net/conn.c	#define SEND_FLAGS MSG_NOSIGNAL	#define SEND_FLAGS 0
+r-write-eagain-fatal	ports/net/conn.c	if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {	if (0) {
+r-send-deadline-1000x	ports/net/conn.c	now_ms() + c->limits.send_ms	now_ms() + 1000 * c->limits.send_ms
+r-member-act2-no-deadline	ports/net/conn.c	deadline = now_ms() + c->limits.handshake_ms;	deadline = INT64_MAX;	2
+accept-deadline-includes-wait	ports/net/conn.c	    deadline = now_ms() + c->limits.handshake_ms;\n    if (!prepare_socket(c->fd))	    deadline = deadline - c->limits.accept_ms + c->limits.handshake_ms;\n    if (!prepare_socket(c->fd))
+r-recv-body-fresh-deadline	ports/net/conn.c	body + GZ_NOISE_MAC_LEN, deadline)))	body + GZ_NOISE_MAC_LEN, now_ms() + c->limits.recv_ms)))
+r-poll-eintr-fatal	ports/net/conn.c	if (r < 0 && errno != EINTR) return GZ_CONN_ERR_SOCKET;	if (r < 0) return GZ_CONN_ERR_SOCKET;
+r-recv-eintr-fatal	ports/net/conn.c	        if (errno == EINTR) continue;\n	
+r-send-eintr-fatal	ports/net/conn.c	        if (r < 0 && errno == EINTR) continue;\n	
+r-noise-err-not-reset	ports/net/conn.c	    c->noise_err = GZ_NOISE_OK;\n	
+member-check-ignored	ports/net/conn.c	|| !is_member(rs, member_ctx))	|| 0)
+member-check-null-allowed	ports/net/conn.c	    if (!is_member) return GZ_CONN_ERR_ARGS;\n	
+cloexec-off	ports/net/conn.c	fcntl(fd, F_SETFD, fdfl | FD_CLOEXEC) == 0	1
+reuse-not-refused	ports/net/conn.c	    if (c->live == LIVE) return 0;\n	
+close-ignores-live	ports/net/conn.c	if (c->live == LIVE && c->fd >= 0) close(c->fd);	if (c->fd >= 0) close(c->fd);
+numeric-host-off	ports/net/conn.c	AI_NUMERICHOST | AI_NUMERICSERV	AI_NUMERICSERV
+g-unknown-even-ignored	tools/gz-net/gz-net.c	return gz_msg_unknown_action(type) == GZ_MSG_IGNORE ? 0 : -1;	return 0;
+g-unknown-odd-closes	tools/gz-net/gz-net.c	return gz_msg_unknown_action(type) == GZ_MSG_IGNORE ? 0 : -1;	return -1;
+g-pong-seq-unchecked	tools/gz-net/gz-net.c	 || seq != (uint64_t)i + 1000	
+g-number-sign-ok	tools/gz-net/gz-net.c	    if (*s < '0' || *s > '9') return 0;\n	
+g-number-end-unchecked	tools/gz-net/gz-net.c	if (errno || *end || v < min || v > max)	if (errno || v < min || v > max)
+g-key-file-trailing-ok	tools/gz-net/gz-net.c	if (n > 64 && buf[n - 1] == '\\n') n--;	if (n > 64) n = 64;
+g-hex-any-char	tools/gz-net/gz-net.c	if (hi < 0 || lo < 0) return 0;	if (0) return 0;

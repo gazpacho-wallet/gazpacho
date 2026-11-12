@@ -1,6 +1,6 @@
-# Transport, first cut (draft 1, not yet reviewed)
+# Transport, first cut (draft 2)
 
-The connection between Gazpacho programs for slice 1: Lightning's encrypted, authenticated connection (BOLT 8) carrying Lightning's message format (BOLT 1). Written 2026-11-11 before the code. Not yet reviewed by someone who did not write it (checklist item 1): that review is still owed.
+The connection between Gazpacho programs for slice 1: Lightning's encrypted, authenticated connection (BOLT 8) carrying Lightning's message format (BOLT 1). Draft 1 was written 2026-11-11 before the code. Draft 2 (2026-11-12) answers the independent review of pull request 10 (`notes/review-pr10-transport.md`, findings F1 to F10), which also reviewed this specification; whether that counts as the specification review of checklist item 1 is for the owner to confirm.
 
 ## Scope
 
@@ -14,7 +14,7 @@ The connection between Gazpacho programs for slice 1: Lightning's encrypted, aut
 | `ports/net/noise.c` | BOLT 8 state machine: the three acts, then encrypt and decrypt with key rotation | None. Bytes in, bytes out. Randomness comes from a callback (`gz_random_port_t`, the core's own port type) |
 | `ports/net/frame.c` | BOLT 1 message framing, BigSize, a strict TLV reader and writer, truncated integers | None |
 | `ports/net/conn.c` | POSIX TCP: listen, accept, connect, with timeouts and a size cap, driving the state machine | Sockets and the monotonic clock |
-| `tools/gz-net/gz-net.c` | `listen` and `connect`: handshake, then a ping and pong of custom message type 32769 | The above, `/dev/urandom` |
+| `tools/gz-net/gz-net.c` | `listen` and `connect`: handshake, then a ping and pong of custom message type 32769 | The above, `/dev/urandom` (a read failure ends the program) |
 
 Cryptography: ECDH from libsecp256k1's ECDH module, whose default hash is SHA-256 of the compressed shared point, exactly BOLT 8's `ECDH`. ChaCha20-Poly1305, SHA-256 and HMAC-SHA256 from OpenSSL's libcrypto, as the imported code already uses. HKDF is the two HMAC steps of RFC 5869 written out (extract, then two blocks of expand with empty `info`), because BOLT 8 gives the intermediate values to check them against.
 
@@ -33,30 +33,42 @@ The static key a program uses is supplied by its caller. `gz-net` reads it from 
 5. After any refusal the state is dead: every later call fails, and all keys in it are wiped.
 6. Each direction rotates its key when its nonce reaches 1000 (after 500 messages): `ck', k' = HKDF(ck, k)`, nonce back to 0.
 7. A message is at most 65,535 bytes. The sender refuses to encrypt more. The receiver reads the length only after its MAC checks, and the connection layer refuses a length above its configured cap (at most 65,535) before reading the body.
-8. The member side is always the initiator and is given the host's key. The handshake itself fails if the host does not hold that key (act two's MAC depends on it); the connection layer also compares the finished handshake's remote key with the pin.
+8. The member side is always the initiator and is given the host's key. The handshake itself fails if the host does not hold that key: act two's MAC depends on it. That is the pin. The connection layer then compares the handshake's remote key with the pin, but this is a guard that cannot fail while the member is the initiator (the remote key is the pin itself); it has no negative test, and none is possible without a test-only hook.
 9. Ephemeral keys come from the randomness callback. A value that is not a valid secret key is drawn again, at most 8 times, then the act fails.
 10. Secrets (static and ephemeral secret keys, temporary keys, ECDH outputs, session keys, chaining keys, decrypted bytes of a refused message) are wiped on every exit path. Comparisons of MACs are OpenSSL's constant-time ones; the pinned-key comparison uses `CRYPTO_memcmp` too, though a public key is not secret.
 11. Messages: at least 2 bytes (the type). Unknown odd type: ignore. Unknown even type: close.
 12. TLV streams: types and lengths minimally encoded BigSize; types strictly increasing; a length past the end fails; a known type is checked by the caller's checker; an unknown even type fails; an unknown odd type is skipped. A writer refuses types out of order and anything past its buffer.
+13. The host's side of pinning. A member is identified by its static key, the one its handshake proves it holds; nothing else (an address, a name) identifies it. `gz_conn_accept` requires a member check, called with that key once the handshake is complete and before any message is read; a refusal closes the connection. In slice 1 the host accepts every key (`gz_conn_any_member`), because members are not known in advance: the key a member connects with is the key it joins the lobby with, and from then on the lobby and the factory know the member by that key. A program that knows its members (a host after the lobby closes, or a later slice with invitations) passes a check that compares the key with its list.
+14. A state is never copied while in use: two copies would encrypt under the same key and nonces.
 
 ## Timeouts and the connection layer
 
-Sockets are non-blocking and every wait is a `poll` against a deadline from the monotonic clock. The whole handshake must finish within the handshake timeout (default 10 s). A message, once its first byte is awaited, must arrive whole within the receive timeout (default 30 s), so a peer that trickles bytes is cut off. A write that cannot finish within the send timeout fails. Writes use `MSG_NOSIGNAL`.
+Sockets are non-blocking and close-on-exec. Every wait on the network is a `poll` against a deadline from the monotonic clock, and a `poll`, `recv` or `send` interrupted by a signal is resumed. Addresses must be numeric (`AI_NUMERICHOST`): no name is looked up, because name resolution could not be bounded by a deadline. Waiting for a connection has its own limit (`accept_ms`; none by default). The handshake must finish within the handshake timeout (default 10 s), counted from the connection. A message, header and body together, must arrive whole within the receive timeout (default 30 s) from when its first byte is awaited, so a peer that trickles bytes is cut off. A write that cannot finish within the send timeout fails.
+
+A peer's close never raises SIGPIPE: writes use `MSG_NOSIGNAL` where the system has it, otherwise each socket gets `SO_NOSIGPIPE`; a system with neither does not build `conn.c` (it stops with an error rather than fall back silently). The tests run with SIGPIPE at its default action.
+
+## Limits of this cut
+
+- Accept and handshake are one blocking call. While a peer is in its handshake the host serves nobody else, so one silent or slow peer holds the host for up to the handshake timeout, and a peer that does so again and again keeps members out. Acceptable for slice 1, where a host waits for a few members it is told about; not for a host serving members. Before that: a step-wise handshake driven by one `poll` over many connections (the state machine already allows it), or a capped number of connection threads or processes. Decided 2026-11-12 after review finding F2; the choice between the two is open.
+- The idle timeout and the per-message deadline are the same timeout. A member idle for 30 s is cut off. Before members stay connected, split the two and add BOLT 1's ping and pong.
+- POSIX only. Windows needs its own `conn` behind the same header (and `fd` as an opaque handle).
 
 ## Decisions where BOLT 8, BOLT 1 and our documents are silent
 
 To be confirmed or overruled in review.
 
-1. Every refusal is final for the state, including the caller's own mistakes (a message over 65,535 bytes, a too-small output buffer, a call out of order). Simpler to reason about than a mix of fatal and recoverable errors.
+1. Every refusal is final for the state, including the caller's own mistakes (a message over 65,535 bytes, a too-small output buffer, a call out of order). Simpler to reason about than a mix of fatal and recoverable errors. `gz_noise_remote_static` is a query, not a refusal: before the handshake ends it answers "not yet" and changes nothing.
 2. Order of checks in an act: length, then version, then key, then MAC, matching the order of the BOLT 8 failure vectors.
 3. Ephemeral keys: up to 8 draws from the randomness port before giving up.
 4. HKDF and HMAC are written out over OpenSSL's one-shot HMAC; ChaCha20-Poly1305 and SHA-256 are OpenSSL's EVP, as in the imported `crypto_aead.c`. The imported code itself is not called, so the transport does not link the SuperScalar library.
 5. ECDH uses libsecp256k1's ECDH module (already enabled in the pinned build) rather than a hand-written multiply and hash.
 6. Keys after the handshake: the chaining key, temporary key, ephemeral secret and our static secret are wiped as soon as act three is done; the session keys and the two public keys stay.
 7. The connection layer's receive timeout covers one whole message from when its first byte is awaited, so an idle connection also times out (30 s by default). Keep-alive belongs to the caller (BOLT 1's ping and pong are not in this cut).
-8. The member is always the initiator and the host always the responder, so the pin is the handshake's own `rs`. The explicit comparison after act two cannot fail while that holds; it is kept as a guard against a later change.
+8. The member is always the initiator and the host always the responder, so the pin is the handshake's own `rs`. The explicit comparison after act two cannot fail while that holds; it is kept as a guard against a later change, and labelled as such in the code (rule 8).
 9. `gz-net`'s custom message 32769 carries a TLV stream (type 1: kind, 1 ping or 2 pong; type 3: sequence number, tu64). Odd, so other software ignores it.
-10. A static key is read from a file of 64 hex digits, never from the command line, so it does not appear in process listings.
+10. A static key is read from a file of exactly 64 hex digits and an optional line end, never from the command line, so it does not appear in process listings. Pins, ports and counts are parsed strictly too: anything else in them is refused.
+11. A `gz_conn_t` starts zeroed and is reusable after it is closed. Accept or connect on one that is still open is refused and leaves it working (it would otherwise leak its socket). Closing a zeroed one closes no descriptor.
+12. The randomness port cannot report a failure, so `gz-net` ends the program if `/dev/urandom` cannot be read rather than continue with weak values. Letting the core's port report failures is left to the core.
 
 ## Tests, listed before the code
 
@@ -67,6 +79,8 @@ BOLT 1 vectors: BigSize decoding (18) and encoding (8); TLV decoding failures, s
 Hostile and boundary cases: acts one byte short and one byte long; calls out of order; every call after a failure; bad MAC on a length header and on a body; body given with the wrong length; a 65,536-byte message refused by the sender; a length above the cap refused by the connection before the body is read; rotation exactly at message 500 and not 499, in both directions; a randomness callback that gives only invalid keys; keys wiped after success and after failure.
 
 Connection, between local processes: handshake and ping-pong; a wrong pin refused with nothing sent after act one; a silent peer timed out; a truncated act; a peer that closes mid-message; an oversize length from an authenticated peer.
+
+Added in draft 2 (review of PR 10): both sides sending 600 messages before either reads, so the two directions rotate in a different order (F1); every call in every handshake phase refused; the member check seeing the key and its refusal closing the connection; the handshake deadline starting at the connection; a member facing a silent host; the body sharing the message's deadline; SIGPIPE at its default with a closed peer; a slow reader getting twenty full-size messages and a reader that never reads cut off by the send deadline; a signal every 5 ms during a slow message; reuse of an open connection; close-on-exec; names refused; `gz-net` closing on an unknown even message, ignoring an unknown odd one, refusing a wrong pong, and refusing loose keys, pins and numbers; every wipe of a stack secret counted (by wrapping `OPENSSL_cleanse`), and HMAC made to fail at each of its calls in a handshake and in a rotation. Opt-in (`-DGZ_INTEROP_PY=ON`, needs Python's `cryptography`): `gz-net` against the reviewer's independent Python BOLT 8 peer, as host and as member, 1,200 pings each way (past rotation), so two copies of this code are not each other's only judge.
 
 A randomised TLV test against an independent model: a generator that builds streams record by record and knows whether it broke one, compared with the parser's verdict and the records it returns, in order.
 

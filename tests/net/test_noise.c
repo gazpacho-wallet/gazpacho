@@ -371,6 +371,95 @@ static void test_hostile(void)
     CHECK(gz_noise_decrypt_header(&res, buf, 18, &blen) == GZ_NOISE_ERR_MAC);
 }
 
+/* F1 of the PR 10 review: both sides send 600 messages before either reads,
+ * so each side's sending key has rotated before its receiving key does. A
+ * receiver that rotated with its sending chain would fail at message 500.
+ * Expected keys: the responder's receive chain is the initiator's send chain
+ * (BOLT 8's rotation vectors); the initiator's receive chain is one HKDF of
+ * the final ck and RK (gz_noise_hkdf is checked against BOLT 8 above). */
+static uint8_t a_to_b[600 * 39], b_to_a[600 * 39];
+
+static void test_rotation_order(void)
+{
+    gz_noise_t ini, res;
+    uint8_t out[8], ck[32], rk[32], ck2[32], rk2[32];
+    size_t n, blen;
+    int i, ok_a = 0, ok_b = 0;
+    pair(&ini, &res);
+    for (i = 0; i < 600; i++) {
+        CHECK(gz_noise_encrypt(&ini, (const uint8_t *)"ab", 2, a_to_b + 36 * i, 36, &n) == GZ_NOISE_OK);
+        CHECK(gz_noise_encrypt(&res, (const uint8_t *)"ba", 2, b_to_a + 36 * i, 36, &n) == GZ_NOISE_OK);
+    }
+    CHECK(res.sn == 200 && ini.sn == 200 && res.rn == 0 && ini.rn == 0); /* both sending keys rotated */
+    for (i = 0; i < 600; i++) {
+        ok_a += gz_noise_decrypt_header(&res, a_to_b + 36 * i, 18, &blen) == GZ_NOISE_OK && blen == 2 &&
+                gz_noise_decrypt_body(&res, a_to_b + 36 * i + 18, 18, out, sizeof out) == GZ_NOISE_OK && !memcmp(out, "ab", 2);
+        ok_b += gz_noise_decrypt_header(&ini, b_to_a + 36 * i, 18, &blen) == GZ_NOISE_OK && blen == 2 &&
+                gz_noise_decrypt_body(&ini, b_to_a + 36 * i + 18, 18, out, sizeof out) == GZ_NOISE_OK && !memcmp(out, "ba", 2);
+    }
+    CHECK(ok_a == 600 && ok_b == 600);
+    CHECK(eqhex(res.rck, 32, "cc2c6e467efc8067720c2d09c139d1f77731893aad1defa14f9bf3c48d3f1d31"));
+    CHECK(eqhex(res.rk, 32, "3fbdc101abd1132ca3a0ae34a669d8d9ba69a587e0bb4ddd59524541cf4813d8"));
+    unhex(CK_FINAL, ck, 32);
+    unhex(RK, rk, 32);
+    CHECK(gz_noise_hkdf(ck, 32, rk, 32, ck2, rk2));
+    CHECK(memcmp(ini.rck, ck2, 32) == 0 && memcmp(ini.rk, rk2, 32) == 0);
+    CHECK(memcmp(res.sck, ck2, 32) == 0 && memcmp(res.sk, rk2, 32) == 0);
+    CHECK(res.rn == 200 && ini.rn == 200);
+}
+
+/* Every call in every handshake phase other than the one that phase expects
+ * is refused, and kills the state (in R_SENT2 the session keys are still
+ * zero: encrypting there would use a zero key). */
+enum { OP_A1W, OP_A1R, OP_A2W, OP_A2R, OP_A3W, OP_A3R, OP_ENC, OP_HDR, OP_BODY, OP_COUNT };
+
+static void make_phase(gz_noise_t *st, int phase)
+{
+    uint8_t out[66], buf[128];
+    if (phase < 3) {
+        new_initiator(st);
+        if (phase >= 1) CHECK(gz_noise_act1_write(st, out) == GZ_NOISE_OK);
+        if (phase >= 2) CHECK(gz_noise_act2_read(st, buf, in(ACT2, buf)) == GZ_NOISE_OK);
+    } else {
+        new_responder(st);
+        if (phase >= 4) CHECK(gz_noise_act1_read(st, buf, in(ACT1, buf)) == GZ_NOISE_OK);
+        if (phase >= 5) CHECK(gz_noise_act2_write(st, out) == GZ_NOISE_OK);
+    }
+}
+
+static gz_noise_err_t do_op(gz_noise_t *st, int op)
+{
+    uint8_t buf[128], out[128];
+    size_t n;
+    memset(buf, 0, sizeof buf);
+    switch (op) {
+    case OP_A1W: return gz_noise_act1_write(st, out);
+    case OP_A1R: return gz_noise_act1_read(st, buf, in(ACT1, buf));
+    case OP_A2W: return gz_noise_act2_write(st, out);
+    case OP_A2R: return gz_noise_act2_read(st, buf, in(ACT2, buf));
+    case OP_A3W: return gz_noise_act3_write(st, out);
+    case OP_A3R: return gz_noise_act3_read(st, buf, in(ACT3, buf));
+    case OP_ENC: return gz_noise_encrypt(st, (const uint8_t *)"x", 1, out, sizeof out, &n);
+    case OP_HDR: return gz_noise_decrypt_header(st, buf, 18, &n);
+    default: return gz_noise_decrypt_body(st, buf, 16, out, sizeof out);
+    }
+}
+
+static void test_phases(void)
+{
+    static const int expected[6] = {OP_A1W, OP_A2R, OP_A3W, OP_A1R, OP_A2W, OP_A3R};
+    int phase, op, refused = 0;
+    for (phase = 0; phase < 6; phase++)
+        for (op = 0; op < OP_COUNT; op++) {
+            gz_noise_t st;
+            if (op == expected[phase]) continue;
+            make_phase(&st, phase);
+            if (do_op(&st, op) == GZ_NOISE_ERR_STATE && all_zero(&st, sizeof st)) refused++;
+            else printf("phase %d accepted op %d\n", phase, op);
+        }
+    CHECK(refused == 6 * (OP_COUNT - 1));
+}
+
 static void test_keys_and_randomness(void)
 {
     gz_noise_t st;
@@ -443,6 +532,8 @@ int main(void)
     test_hostile();
     test_keys_and_randomness();
     test_wrong_pin();
+    test_rotation_order();
+    test_phases();
     gz_noise_wipe(&ini);
     CHECK(all_zero(&ini, sizeof ini));
     secp256k1_context_destroy(secp);

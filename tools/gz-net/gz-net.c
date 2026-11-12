@@ -12,6 +12,7 @@
  * The custom message's payload is a TLV stream: type 1 is the kind (1 byte:
  * 1 ping, 2 pong), type 3 the sequence number (tu64). */
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,23 +27,51 @@
 #define KIND_PING 1
 #define KIND_PONG 2
 
+/* Randomness from /dev/urandom, opened once. The port cannot report a
+ * failure, so a failure ends the program rather than hand out weak keys. */
+static FILE *urandom;
+
 static void urandom_fill(void *ctx, uint8_t *out, size_t len)
 {
-    FILE *f = fopen("/dev/urandom", "rb");
     (void)ctx;
-    if (!f || fread(out, 1, len, f) != len) memset(out, 0, len); /* zero is not a valid key */
-    if (f) fclose(f);
+    if (!urandom || fread(out, 1, len, urandom) != len) {
+        fprintf(stderr, "gz-net: cannot read /dev/urandom\n");
+        abort();
+    }
 }
 
-static int hex_decode(const char *s, uint8_t *out, size_t n)
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Exactly 2n hex digits, nothing else. */
+static int hex_decode(const char *s, size_t slen, uint8_t *out, size_t n)
 {
     size_t i;
+    if (slen != 2 * n) return 0;
     for (i = 0; i < n; i++) {
-        unsigned v;
-        if (sscanf(s + 2 * i, "%2x", &v) != 1) return 0;
-        out[i] = (uint8_t)v;
+        int hi = hex_digit(s[2 * i]), lo = hex_digit(s[2 * i + 1]);
+        if (hi < 0 || lo < 0) return 0;
+        out[i] = (uint8_t)(hi << 4 | lo);
     }
-    return s[2 * n] == 0 || s[2 * n] == '\n' || s[2 * n] == '\r';
+    return 1;
+}
+
+/* A whole decimal number in [min, max], nothing else. */
+static int parse_num(const char *s, long min, long max, long *out)
+{
+    char *end;
+    long v;
+    if (*s < '0' || *s > '9') return 0;
+    errno = 0;
+    v = strtol(s, &end, 10);
+    if (errno || *end || v < min || v > max) return 0;
+    *out = v;
+    return 1;
 }
 
 static void hex_print(const uint8_t *p, size_t n)
@@ -51,20 +80,25 @@ static void hex_print(const uint8_t *p, size_t n)
     for (i = 0; i < n; i++) printf("%02x", p[i]);
 }
 
+/* A key file is 64 hex digits and an optional line end, nothing else. */
 static int load_key(const char *path, uint8_t key[32])
 {
-    char line[80] = {0};
+    char buf[80];
+    size_t n;
     int ok;
     FILE *f;
     if (!path) {
         urandom_fill(NULL, key, 32);
         return 1;
     }
-    f = fopen(path, "r");
+    f = fopen(path, "rb");
     if (!f) return 0;
-    ok = fgets(line, sizeof line, f) && hex_decode(line, key, 32);
+    n = fread(buf, 1, sizeof buf, f);
     fclose(f);
-    OPENSSL_cleanse(line, sizeof line);
+    if (n > 64 && buf[n - 1] == '\n') n--;
+    if (n > 64 && buf[n - 1] == '\r') n--;
+    ok = hex_decode(buf, n, key, 32);
+    OPENSSL_cleanse(buf, sizeof buf);
     return ok;
 }
 
@@ -147,8 +181,9 @@ static int cmd_listen(const char *host, uint16_t port, const uint8_t key[32],
         int pings = 0, r, kind;
         uint64_t seq;
         gz_conn_default_limits(&lim);
-        lim.handshake_ms = 30000;
-        e = gz_conn_accept(&conn, lfd, secp, key, rnd, &lim);
+        /* Waits for a connection without limit; the handshake has 10 s.
+         * Any member key is accepted, as in slice 1's host (spec, rule 13). */
+        e = gz_conn_accept(&conn, lfd, secp, key, rnd, &lim, gz_conn_any_member, NULL);
         if (e) {
             report("accept", e);
             failures++;
@@ -227,27 +262,31 @@ int main(int argc, char **argv)
     int i, rc;
     if (argc < 2) return usage();
     for (i = 2; i + 1 < argc; i += 2) {
+        int ok = 1;
         if (!strcmp(argv[i], "--host")) host = argv[i + 1];
-        else if (!strcmp(argv[i], "--port")) port = strtol(argv[i + 1], NULL, 10);
+        else if (!strcmp(argv[i], "--port")) ok = parse_num(argv[i + 1], 0, 65535, &port);
         else if (!strcmp(argv[i], "--key-file")) key_file = argv[i + 1];
         else if (!strcmp(argv[i], "--pin")) pin_hex = argv[i + 1];
-        else if (!strcmp(argv[i], "--accept") || !strcmp(argv[i], "--count")) number = strtol(argv[i + 1], NULL, 10);
-        else return usage();
+        else if (!strcmp(argv[i], "--accept") || !strcmp(argv[i], "--count")) ok = parse_num(argv[i + 1], 1, 100000, &number);
+        else ok = 0;
+        if (!ok) return usage();
     }
-    if (i != argc || number < 1 || number > 100000) return usage();
-    signal(SIGPIPE, SIG_IGN);
+    if (i != argc) return usage();
+    /* SIGPIPE is left at its default: the connection layer never raises it. */
+    urandom = fopen("/dev/urandom", "rb");
     if (!load_key(key_file, key)) {
         fprintf(stderr, "gz-net: cannot read key file\n");
         return 1;
     }
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     urandom_fill(NULL, seed, sizeof seed);
-    if (!secp || !secp256k1_context_randomize(secp, seed)) return 1;
+    rc = secp && secp256k1_context_randomize(secp, seed);
+    OPENSSL_cleanse(seed, sizeof seed);
+    if (!rc) return 1;
     if (!strcmp(argv[1], "listen")) {
-        if (port < 0) port = 0;
-        rc = port > 65535 ? usage() : cmd_listen(host, (uint16_t)port, key, secp, rnd, (int)number);
+        rc = cmd_listen(host, (uint16_t)(port < 0 ? 0 : port), key, secp, rnd, (int)number);
     } else if (!strcmp(argv[1], "connect")) {
-        if (port < 1 || port > 65535 || !pin_hex || strlen(pin_hex) != 66 || !hex_decode(pin_hex, pin, 33))
+        if (port < 1 || !pin_hex || !hex_decode(pin_hex, strlen(pin_hex), pin, 33))
             rc = usage();
         else
             rc = cmd_connect(host, (uint16_t)port, key, pin, secp, rnd, (int)number);
@@ -256,5 +295,6 @@ int main(int argc, char **argv)
     }
     OPENSSL_cleanse(key, sizeof key);
     secp256k1_context_destroy(secp);
+    fclose(urandom);
     return rc;
 }

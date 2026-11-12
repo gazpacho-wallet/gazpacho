@@ -139,7 +139,23 @@ target_compile_options(gz-net PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(net_noise tests/net/test_noise.c gazpacho_net)
 gz_add_test(net_frame tests/net/test_frame.c gazpacho_net 20000)
 gz_add_test(net_conn  tests/net/test_conn.c  gazpacho_net)
-add_test(NAME net_gz_net COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_gz_net.sh $<TARGET_FILE:gz-net>)
+# Every wipe of a stack secret is counted, and HMAC is made to fail on demand
+# (GNU ld's --wrap; review of PR 10, section 6).
+gz_add_test(net_wipes tests/net/test_wipes.c gazpacho_net)
+target_link_options(test_net_wipes PRIVATE "LINKER:--wrap=OPENSSL_cleanse,--wrap=HMAC")
+# A peer for gz-net's tests: unknown even and odd messages, a wrong pong.
+add_executable(net_peer tests/net/net_peer.c)
+target_link_libraries(net_peer PRIVATE gazpacho_net)
+target_compile_options(net_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME net_gz_net COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_gz_net.sh
+         $<TARGET_FILE:gz-net> $<TARGET_FILE:net_peer>)
+# gz-net against an independent Python BOLT 8 peer (the PR 10 reviewer's),
+# in both roles past key rotation. Opt-in: needs python3 and `cryptography`.
+option(GZ_INTEROP_PY "Run gz-net against the independent Python BOLT 8 peer" OFF)
+if(GZ_INTEROP_PY)
+  add_test(NAME net_interop_py COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/interop/run.sh
+           $<TARGET_FILE:gz-net> ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/interop/bolt8_peer.py)
+endif()
 # Fuzz targets with the plain driver (no libFuzzer on the build machines).
 # Built with clang, the same target files link against -fsanitize=fuzzer.
 foreach(target noise tlv)

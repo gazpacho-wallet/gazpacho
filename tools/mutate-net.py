@@ -17,15 +17,30 @@ import subprocess
 import sys
 import tempfile
 
-TESTS = [  # name, sources, arguments
-    ("noise", ["tests/net/test_noise.c"], []),
-    ("frame", ["tests/net/test_frame.c"], ["3000"]),
-    ("conn", ["tests/net/test_conn.c"], []),
-    ("fuzz_noise", ["tests/net/fuzz_noise.c", "tests/net/fuzz_main.c"], ["30000"]),
-    ("fuzz_tlv", ["tests/net/fuzz_tlv.c", "tests/net/fuzz_main.c"], ["100000"]),
-    ("gz_net", ["tools/gz-net/gz-net.c"], None),  # run through tests/net/test_gz_net.sh
+TESTS = [  # name, sources, arguments, extra link flags
+    ("noise", ["tests/net/test_noise.c"], [], []),
+    ("frame", ["tests/net/test_frame.c"], ["3000"], []),
+    ("wipes", ["tests/net/test_wipes.c"], [], ["-Wl,--wrap=OPENSSL_cleanse,--wrap=HMAC"]),
+    ("conn", ["tests/net/test_conn.c"], [], []),
+    ("fuzz_noise", ["tests/net/fuzz_noise.c", "tests/net/fuzz_main.c"], ["30000"], []),
+    ("fuzz_tlv", ["tests/net/fuzz_tlv.c", "tests/net/fuzz_main.c"], ["100000"], []),
+    ("net_peer", ["tests/net/net_peer.c"], None, []),  # built only, for gz_net
+    ("gz_net", ["tools/gz-net/gz-net.c"], None, []),   # run through tests/net/test_gz_net.sh
 ]
 LIB = ["ports/net/noise.c", "ports/net/frame.c", "ports/net/conn.c"]
+
+
+def unescape(text):
+    """In mutants.txt, \\n is a newline and \\\\ a backslash."""
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            out.append("\n" if text[i + 1] == "n" else text[i + 1])
+            i += 2
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
 
 
 def secp_paths(build):
@@ -68,13 +83,18 @@ def run_all(work, inc, lib):
             return None
         objs.append(obj)
     caught = []
-    for name, srcs, args in TESTS:
+    for name, srcs, args, ldflags in TESTS:
         exe = os.path.join(work, name + ".bin")
-        if subprocess.call(cc + [os.path.join(work, s) for s in srcs] + objs + [lib, "-lcrypto", "-o", exe],
+        if subprocess.call(cc + [os.path.join(work, s) for s in srcs] + objs + [lib, "-lcrypto"] + ldflags + ["-o", exe],
                            stderr=subprocess.DEVNULL) != 0:
             caught.append(name + "(build)")
             continue
-        cmd = ["sh", os.path.join(work, "tests/net/test_gz_net.sh"), exe] if args is None else [exe] + args
+        if name == "net_peer":
+            continue
+        if args is None:
+            cmd = ["sh", os.path.join(work, "tests/net/test_gz_net.sh"), exe, os.path.join(work, "net_peer.bin")]
+        else:
+            cmd = [exe] + args
         try:
             rc = subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90, cwd=work)
         except subprocess.TimeoutExpired:
@@ -99,7 +119,7 @@ def main():
                 continue
             parts = line.split("\t")
             nth = int(parts[4]) if len(parts) > 4 else None
-            mutants.append((parts[0], parts[1], parts[2].replace("\\n", "\n"), parts[3].replace("\\n", "\n"), nth))
+            mutants.append((parts[0], parts[1], unescape(parts[2]), unescape(parts[3]), nth))
     survivors, killed, broken = [], 0, []
     for i, (name, path, old, new, nth) in enumerate([("baseline", None, None, None, None)] + mutants):
         if only and name not in only and name != "baseline":
