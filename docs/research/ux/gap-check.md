@@ -13,7 +13,7 @@ Checked document: `docs/ux/options-map.html` (read in full), with `docs/DESIGN.m
 Scopes: S1 My conditions, S2 Lobby terms, S3 Wallet, S4 Watching, S5 Connections, S6 Hosting. "Status" and "Never" are the map's two other lists.
 
 Source locations (scratch area, outside the project):
-`C:\Users\user\AppData\Local\Temp\claude\(a local scratch folder)\(a local scratch folder)\scratchpad\gap\` holds clones of `superscalar-wallet` (the Soup wallet), `soup-rendezvous`, `SuperScalar`, `superscalar-docs` (the website's source) and `superscalar-cln`. The posts are `...\scratchpad\t1143.md` and `t1242.md`.
+A local scratch folder held clones of `superscalar-wallet` (the Soup wallet), `soup-rendezvous`, `SuperScalar`, `superscalar-docs` (the website's source) and `superscalar-cln`, and local copies of the posts `t1143.md` and `t1242.md`.
 
 Short path names used below: **FE** = `superscalar-wallet/apps/frontend/src`; **SR** = `soup-rendezvous`; **SS** = `SuperScalar`; **site** = `superscalar-docs` (same text as https://superscalar.win); **cln** = `superscalar-cln`; **PR56** = `lightning/blips` pull request 56, file `blip-0056.md`.
 
