@@ -221,3 +221,62 @@ add_subdirectory(wallet)
 
 # --- chain view port (Esplora backend, comparing backend, gz-chain) ------------
 add_subdirectory(ports/chain)
+# --- Lobby engine (core/lobby): sans-I/O like the core, the same flags and ---
+# --- the same isolation check. Signing and verifying go through a port.    ---
+set(GZ_LOBBY_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/act.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/host.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/member.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/sha256.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/terms.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/wire.c)
+add_library(gazpacho_lobby STATIC ${GZ_LOBBY_SOURCES})
+set_target_properties(gazpacho_lobby PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_lobby PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include)
+target_link_libraries(gazpacho_lobby PUBLIC gazpacho_core)
+target_compile_options(gazpacho_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+
+# Tests use libsecp256k1 for the crypto port (BIP 340 with the test keys).
+function(gz_lobby_test name source)
+  add_executable(${name} ${source})
+  target_link_libraries(${name} PRIVATE gazpacho_lobby gazpacho_sim secp256k1)
+  target_include_directories(${name} PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include)
+  target_compile_options(${name} PRIVATE ${GZ_NEW_CODE_WARNINGS})
+endfunction()
+gz_lobby_test(test_lobby_vectors tests/lobby/test_lobby_vectors.c)
+gz_lobby_test(test_lobby         tests/lobby/test_lobby.c)
+gz_lobby_test(test_lobby_sim     tests/lobby/test_lobby_sim.c)
+gz_lobby_test(fuzz_lobby         tests/lobby/fuzz_lobby.c)
+gz_lobby_test(lobby_model_driver tests/lobby/model_driver.c)
+add_test(NAME lobby_vectors COMMAND test_lobby_vectors)
+add_test(NAME lobby COMMAND test_lobby)
+# One host and 3 to 8 members: mixed faults, crashes only, network only, none.
+foreach(profile RANGE 0 3)
+  add_test(NAME lobby_sim_profile_${profile} COMMAND test_lobby_sim 100 ${profile})
+endforeach()
+add_test(NAME lobby_fuzz COMMAND fuzz_lobby 200000 1)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+  # The independent model of the start rule, the choice of signers and the
+  # conditions check, compared with the engine on random cases.
+  add_test(NAME lobby_model COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/lobby/lobby_model.py
+           check $<TARGET_FILE:lobby_model_driver> 30000 1)
+  add_test(NAME lobby_model_selftest COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/lobby/lobby_model.py selftest)
+endif()
+# The lobby calls the core (gz_action_list_add), so the check runs on the two
+# built together: the pair may call nothing outside itself.
+add_library(gazpacho_lobby_with_core STATIC ${GZ_CORE_SOURCES} ${GZ_LOBBY_SOURCES})
+set_target_properties(gazpacho_lobby_with_core PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_lobby_with_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include
+                           ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include)
+target_compile_options(gazpacho_lobby_with_core PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+string(JOIN " " GZ_LOBBY_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include)
+add_test(NAME lobby_isolation
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          $<TARGET_FILE:gazpacho_lobby_with_core> --sources ${CMAKE_C_COMPILER} ${GZ_LOBBY_SCAN_FLAGS} ${GZ_LOBBY_SOURCES})
+if(GZ_VALGRIND AND NOT GZ_SANITIZE)
+  add_test(NAME valgrind_lobby_vectors COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby_vectors>)
+  add_test(NAME valgrind_lobby COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby>)
+  add_test(NAME valgrind_lobby_sim COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby_sim> 4 0)
+  add_test(NAME valgrind_lobby_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_lobby> 5000 2)
+endif()
