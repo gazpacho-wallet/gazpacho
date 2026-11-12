@@ -636,15 +636,15 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
         return GZ_OK;
     }
     case GZ_REC_FREEZE:
-        if (len < 70 || gz_lw_get(p + 32, 4) != h->values.version || memcmp(p + 36, h->current_digest, 32) != 0)
+        if (!gz_la_freeze_ok(p, len) || gz_lw_get(p + 32, 4) != h->values.version ||
+            memcmp(p + 36, h->current_digest, 32) != 0)
             return GZ_ERR_CORRUPT;
         h->frozen = 1;
         return GZ_OK;
     case GZ_REC_START_SENT: {
         uint16_t n, i;
-        if (len < 34) return GZ_ERR_CORRUPT;
+        if (len < 34 || (n = (uint16_t)gz_lw_get(p + 32, 2)) == 0) return GZ_ERR_CORRUPT;
         memcpy(h->check_id, p, 32);
-        n = (uint16_t)gz_lw_get(p + 32, 2);
         at = 34;
         for (i = 0; i < h->n_seats; i++) { h->seats[i].chosen = 0; h->seats[i].start_len = 0; }
         for (i = 0; i < n; i++) {
@@ -653,11 +653,13 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
             if (len - at < 33 || !(s = seat_of(h, p + at))) return GZ_ERR_CORRUPT;
             at += 33;
             if (!gz_la_get_blob(p, len, &at, &a, &an) || an > GZ_LOBBY_MAX_SAVED_MSG ||
-                gz_lobby_decode(a, an, &m) != GZ_DEC_OK || m.kind != GZ_KIND_START) return GZ_ERR_CORRUPT;
+                    gz_lobby_decode(a, an, &m) != GZ_DEC_OK || m.kind != GZ_KIND_START ||
+                memcmp(m.check_id, p, 32) != 0) return GZ_ERR_CORRUPT;
             memcpy(s->start_msg, a, an);
             s->start_len = an;
             s->chosen = m.role == 1;
         }
+        if (at != len) return GZ_ERR_CORRUPT;
         h->state = GZ_LOBBY_SIGNING;
         return GZ_OK;
     }

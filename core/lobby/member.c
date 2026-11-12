@@ -446,7 +446,7 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
         if (g.has_check_id) { memcpy(m->answered_check, g.check_id, 32); m->has_answered = 1; }
         return GZ_OK;
     case GZ_REC_FREEZE:
-        if (len < 70) return GZ_ERR_CORRUPT;
+        if (!gz_la_freeze_ok(p, len)) return GZ_ERR_CORRUPT;
         m->frozen = 1;
         m->frozen_version = (uint32_t)gz_lw_get(p + 32, 4);
         memcpy(m->frozen_digest, p + 36, 32);

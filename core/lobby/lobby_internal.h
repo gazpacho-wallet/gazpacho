@@ -30,6 +30,7 @@ int gz_la_verified(const gz_lobby_crypto_t *c, const uint8_t *msg, const gz_lobb
                    const uint8_t key[33]);
 size_t gz_la_put_blob(uint8_t *p, const uint8_t *b, size_t n);
 int gz_la_get_blob(const uint8_t *p, size_t len, size_t *at, const uint8_t **b, size_t *n);
+int gz_la_freeze_ok(const uint8_t *p, size_t len);
 
 /* Stop on the first failed append. */
 #define TRY(x) do { gz_status_t st_ = (x); if (st_ != GZ_OK) return st_; } while (0)

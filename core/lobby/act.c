@@ -88,6 +88,20 @@ int gz_la_get_blob(const uint8_t *p, size_t len, size_t *at, const uint8_t **b, 
     return 1;
 }
 
+/* A FREEZE record: check_id, version, digest, then the signed ready_check
+ * that names exactly those, and nothing after it. */
+int gz_la_freeze_ok(const uint8_t *p, size_t len)
+{
+    const uint8_t *b;
+    size_t at = 68, n;
+    gz_lobby_msg_t m;
+    if (len < 70 || !gz_la_get_blob(p, len, &at, &b, &n) || at != len ||
+        gz_lobby_decode(b, n, &m) != GZ_DEC_OK || m.kind != GZ_KIND_READY_CHECK)
+        return 0;
+    return memcmp(m.check_id, p, 32) == 0 && m.version == gz_lw_get(p + 32, 4) &&
+           memcmp(m.current_digest, p + 36, 32) == 0;
+}
+
 int gz_lobby_start_rule(uint16_t target, uint16_t minimum, uint64_t deadline_s, uint64_t now_s,
                         uint32_t ready)
 {

@@ -1050,20 +1050,23 @@ static void test_host_details(void)
         memset(&cfg, 0, sizeof cfg);
         for (t = GZ_REC_LOBBY_OPENED; t <= GZ_REC_LOBBY_STATE; t += 2) {
             if (t == 0x00010004u) continue;
-            for (len = 0; len < 6; len++) {
+            for (len = 0; len < 3 * 140; len++) {   /* three fillings, lengths 0 to 139, exactly that long */
                 gz_record_t r;
-                uint8_t *b = malloc(len + 1);
-                memset(b, 0xff, len + 1);
-                r.type = t; r.bytes.data = b; r.bytes.len = len;
+                size_t fill = len / 140, rl = len % 140;
+                uint8_t *b = malloc(rl ? rl : 1);
+                memset(b, fill == 0 ? 0xff : 0, rl ? rl : 1);
+                if (fill == 2 && rl > 1) b[1] = 3;           /* a short blob length where one is read */
+                r.type = t; r.bytes.data = b; r.bytes.len = rl;
                 gz_lobby_host_init(&H2, &p, &cr, NULL, &cfg);
                 if (gz_lobby_host_restore(&H2, &r) != GZ_ERR_CORRUPT && t != GZ_REC_TERMS_RECEIVED &&
                     t != GZ_REC_JOINED && t != GZ_REC_READY_SENT && t != GZ_REC_HOST_FAULT && t != GZ_REC_START_RECEIVED)
-                    bad_host++;
+                    { bad_host++; printf("  host accepted damaged record %x of %zu bytes\n", (unsigned)t, rl); }
                 gz_lobby_member_init(&M2, &p, &cr, NULL, &cond, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 1);
                 if (gz_lobby_member_restore(&M2, &r) != GZ_ERR_CORRUPT &&
-                    (t == GZ_REC_TERMS_RECEIVED || t == GZ_REC_FREEZE || t == GZ_REC_LOBBY_ENDED ||
-                     (t == GZ_REC_READY_SENT && len > 1) || (t == GZ_REC_START_RECEIVED && len > 0)))
-                    bad_member++;
+                    (t == GZ_REC_TERMS_RECEIVED || t == GZ_REC_FREEZE ||
+                     (t == GZ_REC_LOBBY_ENDED && !(fill > 0 && rl == 5)) ||   /* zeros, 5 bytes: a member's own leave */
+                     (t == GZ_REC_READY_SENT && rl > 1) || (t == GZ_REC_START_RECEIVED && rl > 0)))
+                    { bad_member++; printf("  member accepted damaged record %x of %zu bytes\n", (unsigned)t, rl); }
                 free(b);
             }
         }
@@ -1178,6 +1181,15 @@ static void test_host_checks(void)
     /* the window timer again: nothing (the check is closed) */
     acts_reset();
     CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && A.l.count == 0);
+    /* with a standby seat, a late arrival joins during signing and is shown as it is */
+    H.cfg.standbys = 1;
+    hin(GZ_LIN_CONNECTED, 10, NULL, 0);
+    CLOCK += 1000;
+    n = join_msg(buf, sizeof buf, 10, MEM[10].key[3].pub, 10, 10);
+    CHECK(hin(GZ_LIN_MESSAGE, 10, buf, n) == GZ_OK && saves(GZ_REC_SEAT) == 1 && status_to(10, &g));
+    CHECK(g.lobby_state == GZ_LOBBY_SIGNING && g.seat_state == GZ_SEAT_JOINED);
+    n = ready_msg(buf, sizeof buf, 10, 1, cd2, NULL, 0);
+    CHECK(hin(GZ_LIN_MESSAGE, 10, buf, n) == GZ_OK && status_seat() == GZ_SEAT_READY && saves(GZ_REC_SEAT) == 1);
 }
 
 /* At most 4 x target seats are ever created (messages.md 6, review 3 F13), and
