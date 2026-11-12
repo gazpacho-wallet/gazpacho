@@ -1,4 +1,5 @@
-/* Argument-checking front of the gz_chain interface, names, hex and hashing. */
+/* Argument-checking front of the gz_chain interface, names, hex, hashing,
+ * transaction ids, network identity and the fee rate policy. */
 #include "gazpacho/chain.h"
 
 #include <string.h>
@@ -15,13 +16,17 @@ const char *gz_chain_result_name(gz_chain_result r) {
     case GZ_CHAIN_MALFORMED: return "malformed";
     case GZ_CHAIN_TOO_LARGE: return "too-large";
     case GZ_CHAIN_BAD_PROOF: return "bad-proof";
+    case GZ_CHAIN_WRONG_NETWORK: return "wrong-network";
     case GZ_CHAIN_DISAGREE: return "servers-disagree";
     case GZ_CHAIN_NO_QUORUM: return "no-quorum";
+    case GZ_CHAIN_LAG: return "server-lagging";
     case GZ_CHAIN_INVALID_ARG: return "invalid-argument";
     case GZ_CHAIN_NO_MEMORY: return "no-memory";
   }
   return "unknown";
 }
+
+/* ---- networks ----------------------------------------------------------- */
 
 const char *gz_network_name(gz_network n) {
   switch (n) {
@@ -29,19 +34,50 @@ const char *gz_network_name(gz_network n) {
     case GZ_NET_TESTNET3: return "testnet";
     case GZ_NET_TESTNET4: return "testnet4";
     case GZ_NET_SIGNET: return "signet";
+    case GZ_NET_INVALID: break;
   }
-  return "unknown";
+  return "invalid";
+}
+
+bool gz_network_valid(gz_network n) {
+  return n == GZ_NET_MAINNET || n == GZ_NET_TESTNET3 || n == GZ_NET_TESTNET4 || n == GZ_NET_SIGNET;
+}
+
+bool gz_network_is_test(gz_network n) {
+  return n == GZ_NET_TESTNET3 || n == GZ_NET_TESTNET4 || n == GZ_NET_SIGNET;
 }
 
 bool gz_network_from_name(const char *name, gz_network *out) {
+  static const gz_network all[] = {GZ_NET_MAINNET, GZ_NET_TESTNET3, GZ_NET_TESTNET4, GZ_NET_SIGNET};
   if (name == NULL || out == NULL) return false;
-  for (int n = GZ_NET_MAINNET; n <= GZ_NET_SIGNET; n++) {
-    if (strcmp(name, gz_network_name((gz_network)n)) == 0) {
-      *out = (gz_network)n;
+  for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+    if (strcmp(name, gz_network_name(all[i])) == 0) {
+      *out = all[i];
       return true;
     }
   }
   return false;
+}
+
+bool gz_network_genesis(gz_network n, uint8_t out[GZ_HASH_LEN]) {
+  const char *hex = NULL;
+  switch (n) {
+    case GZ_NET_MAINNET:
+      hex = "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f";
+      break;
+    case GZ_NET_TESTNET3:
+      hex = "000000000933ea01ad0ee984209779baaec3ced90fa3f408719526f8d77f4943";
+      break;
+    case GZ_NET_TESTNET4:
+      hex = "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043";
+      break;
+    case GZ_NET_SIGNET:
+      hex = "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6";
+      break;
+    case GZ_NET_INVALID: break;
+  }
+  if (hex == NULL || out == NULL) return false;
+  return gz_hash_from_hex(hex, 2 * GZ_HASH_LEN, out);
 }
 
 /* ---- hex and hashing --------------------------------------------------- */
@@ -89,6 +125,44 @@ void gz_sha256d(const uint8_t *data, size_t len, uint8_t out[GZ_HASH_LEN]) {
 
 void gz_script_hash(const uint8_t *script, size_t len, uint8_t out[GZ_HASH_LEN]) {
   SHA256(script, len, out);
+}
+
+/* ---- operators ---------------------------------------------------------- */
+
+bool gz_operator_from_host(const char *host, char out[GZ_OPERATOR_MAX]) {
+  if (host == NULL || out == NULL) return false;
+  size_t n = strlen(host);
+  if (n == 0 || n >= GZ_HOST_MAX) return false;
+  /* an IP address (bracketed or with colons: version 6; digits and dots
+   * only: version 4) is its own operator */
+  bool numeric = host[0] == '[' || strchr(host, ':') != NULL;
+  size_t dots = 0;
+  if (!numeric) {
+    numeric = true;
+    for (size_t i = 0; i < n; i++) {
+      if (host[i] == '.') dots++;
+      if (!((host[i] >= '0' && host[i] <= '9') || host[i] == '.')) numeric = false;
+    }
+  }
+  const char *start = host;
+  if (!numeric && dots >= 2) {
+    /* keep the last two labels */
+    size_t seen = 0;
+    for (size_t i = n; i > 0; i--) {
+      if (host[i - 1] == '.' && ++seen == 2) {
+        start = host + i;
+        break;
+      }
+    }
+  }
+  size_t m = strlen(start);
+  if (m == 0 || m >= GZ_OPERATOR_MAX) return false;
+  for (size_t i = 0; i < m; i++) {
+    char c = start[i];
+    out[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+  }
+  out[m] = '\0';
+  return true;
 }
 
 /* ---- transactions ------------------------------------------------------ */
@@ -168,6 +242,8 @@ bool gz_txid_from_raw(const uint8_t *raw, size_t len, uint8_t txid[GZ_HASH_LEN])
   }
   size_t locktime_at = r.pos;
   if (!rd_skip(&r, 4) || r.pos != len) return false;
+  /* 64 bytes without witness: cannot be told from a Merkle inner node */
+  if (4 + (body_end - body_start) + 4 == 64) return false;
 
   /* txid = SHA256d(version | inputs and outputs | locktime), witness left out */
   uint8_t first[EVP_MAX_MD_SIZE];
@@ -185,6 +261,18 @@ bool gz_txid_from_raw(const uint8_t *raw, size_t len, uint8_t txid[GZ_HASH_LEN])
   return true;
 }
 
+bool gz_tx_is_coinbase(const uint8_t *raw, size_t len) {
+  static const uint8_t null_outpoint[36] = {
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff};
+  if (raw == NULL || len < 4 + 1 + 36) return false;
+  size_t pos = 4;
+  if (len - pos >= 2 && raw[pos] == 0x00 && raw[pos + 1] == 0x01) pos += 2;
+  if (len - pos < 1 + 36) return false;
+  if (raw[pos] != 0x01) return false; /* exactly one input */
+  return memcmp(raw + pos + 1, null_outpoint, sizeof null_outpoint) == 0;
+}
+
 /* ---- interface front --------------------------------------------------- */
 
 static bool usable(const gz_chain *c) { return c != NULL && c->ops != NULL && c->ctx != NULL; }
@@ -192,12 +280,14 @@ static bool usable(const gz_chain *c) { return c != NULL && c->ops != NULL && c-
 gz_chain_result gz_chain_tip_get(const gz_chain *c, gz_chain_tip *out) {
   if (!usable(c) || out == NULL) return GZ_CHAIN_INVALID_ARG;
   memset(out, 0, sizeof *out);
+  if (c->ops->tip == NULL) return GZ_CHAIN_INVALID_ARG;
   return c->ops->tip(c->ctx, out);
 }
 
 gz_chain_result gz_chain_block_hash(const gz_chain *c, uint32_t height, uint8_t out[GZ_HASH_LEN]) {
   if (!usable(c) || out == NULL || height > GZ_MAX_HEIGHT) return GZ_CHAIN_INVALID_ARG;
   memset(out, 0, GZ_HASH_LEN);
+  if (c->ops->block_hash == NULL) return GZ_CHAIN_INVALID_ARG;
   return c->ops->block_hash(c->ctx, height, out);
 }
 
@@ -205,30 +295,45 @@ gz_chain_result gz_chain_block_header(const gz_chain *c, uint32_t height,
                                       uint8_t out[GZ_HEADER_LEN]) {
   if (!usable(c) || out == NULL || height > GZ_MAX_HEIGHT) return GZ_CHAIN_INVALID_ARG;
   memset(out, 0, GZ_HEADER_LEN);
+  if (c->ops->block_header == NULL) return GZ_CHAIN_INVALID_ARG;
   return c->ops->block_header(c->ctx, height, out);
+}
+
+gz_chain_result gz_chain_block_summary(const gz_chain *c, uint32_t height, gz_block_summary *out) {
+  if (!usable(c) || out == NULL || height > GZ_MAX_HEIGHT) return GZ_CHAIN_INVALID_ARG;
+  memset(out, 0, sizeof *out);
+  if (c->ops->block_summary == NULL) return GZ_CHAIN_INVALID_ARG;
+  return c->ops->block_summary(c->ctx, height, out);
 }
 
 gz_chain_result gz_chain_tx_status(const gz_chain *c, const uint8_t txid[GZ_HASH_LEN],
                                    gz_tx_status *out) {
   if (!usable(c) || txid == NULL || out == NULL) return GZ_CHAIN_INVALID_ARG;
   memset(out, 0, sizeof *out);
+  if (c->ops->tx_status == NULL) return GZ_CHAIN_INVALID_ARG;
   return c->ops->tx_status(c->ctx, txid, out);
 }
 
 gz_chain_result gz_chain_script_outputs(const gz_chain *c, const uint8_t *script,
                                         size_t script_len, gz_chain_output *out, size_t cap,
-                                        size_t *count) {
+                                        size_t *count, bool *unconfirmed_differs) {
+  bool differs = false;
+  if (unconfirmed_differs != NULL) *unconfirmed_differs = false;
   if (!usable(c) || script == NULL || script_len == 0 || script_len > GZ_SCRIPT_MAX_LEN ||
       out == NULL || cap == 0 || count == NULL)
     return GZ_CHAIN_INVALID_ARG;
   *count = 0;
-  return c->ops->script_outputs(c->ctx, script, script_len, out, cap, count);
+  if (c->ops->script_outputs == NULL) return GZ_CHAIN_INVALID_ARG;
+  gz_chain_result r = c->ops->script_outputs(c->ctx, script, script_len, out, cap, count, &differs);
+  if (r == GZ_CHAIN_OK && unconfirmed_differs != NULL) *unconfirmed_differs = differs;
+  return r;
 }
 
 gz_chain_result gz_chain_outspend(const gz_chain *c, const uint8_t txid[GZ_HASH_LEN],
                                   uint32_t vout, gz_outspend *out) {
   if (!usable(c) || txid == NULL || out == NULL) return GZ_CHAIN_INVALID_ARG;
   memset(out, 0, sizeof *out);
+  if (c->ops->outspend == NULL) return GZ_CHAIN_INVALID_ARG;
   return c->ops->outspend(c->ctx, txid, vout, out);
 }
 
@@ -237,6 +342,7 @@ gz_chain_result gz_chain_raw_tx(const gz_chain *c, const uint8_t txid[GZ_HASH_LE
   if (!usable(c) || txid == NULL || buf == NULL || cap == 0 || len == NULL)
     return GZ_CHAIN_INVALID_ARG;
   *len = 0;
+  if (c->ops->raw_tx == NULL) return GZ_CHAIN_INVALID_ARG;
   return c->ops->raw_tx(c->ctx, txid, buf, cap, len);
 }
 
@@ -244,6 +350,7 @@ gz_chain_result gz_chain_merkle_proof(const gz_chain *c, const uint8_t txid[GZ_H
                                       gz_merkle_proof *out) {
   if (!usable(c) || txid == NULL || out == NULL) return GZ_CHAIN_INVALID_ARG;
   memset(out, 0, sizeof *out);
+  if (c->ops->merkle_proof == NULL) return GZ_CHAIN_INVALID_ARG;
   return c->ops->merkle_proof(c->ctx, txid, out);
 }
 
@@ -255,7 +362,10 @@ gz_chain_result gz_chain_broadcast(const gz_chain *c, const uint8_t *raw, size_t
     out->result = GZ_CHAIN_INVALID_ARG;
   }
   if (!usable(c) || raw == NULL || out == NULL) return GZ_CHAIN_INVALID_ARG;
+  /* nothing that is not a transaction of sane size reaches a backend */
+  if (len > GZ_TX_MAX_BYTES) return GZ_CHAIN_INVALID_ARG;
   if (!gz_txid_from_raw(raw, len, txid)) return GZ_CHAIN_INVALID_ARG;
+  if (c->ops->broadcast == NULL) return GZ_CHAIN_INVALID_ARG;
   gz_chain_result r = c->ops->broadcast(c->ctx, raw, len, out);
   out->result = r;
   return r;
@@ -264,7 +374,22 @@ gz_chain_result gz_chain_broadcast(const gz_chain *c, const uint8_t *raw, size_t
 gz_chain_result gz_chain_fee_estimates(const gz_chain *c, gz_fee_estimates *out) {
   if (!usable(c) || out == NULL) return GZ_CHAIN_INVALID_ARG;
   memset(out, 0, sizeof *out);
+  if (c->ops->fee_estimates == NULL) return GZ_CHAIN_INVALID_ARG;
   return c->ops->fee_estimates(c->ctx, out);
+}
+
+bool gz_chain_describe(const gz_chain *c, gz_chain_info *out) {
+  if (out == NULL) return false;
+  memset(out, 0, sizeof *out);
+  if (!usable(c) || c->ops->describe == NULL) return false;
+  if (!c->ops->describe(c->ctx, out)) {
+    memset(out, 0, sizeof *out);
+    return false;
+  }
+  out->endpoint[GZ_ENDPOINT_MAX - 1] = '\0';
+  out->host[GZ_HOST_MAX - 1] = '\0';
+  out->operator_id[GZ_OPERATOR_MAX - 1] = '\0';
+  return true;
 }
 
 void gz_chain_destroy(gz_chain *c) {
@@ -272,4 +397,70 @@ void gz_chain_destroy(gz_chain *c) {
   if (c->ops != NULL && c->ctx != NULL && c->ops->destroy != NULL) c->ops->destroy(c->ctx);
   c->ctx = NULL;
   c->ops = NULL;
+}
+
+/* ---- network identity ---------------------------------------------------- */
+
+gz_chain_result gz_chain_identify_network(const gz_chain *c, gz_network *out) {
+  static const gz_network all[] = {GZ_NET_MAINNET, GZ_NET_TESTNET3, GZ_NET_TESTNET4, GZ_NET_SIGNET};
+  uint8_t block0[GZ_HASH_LEN], genesis[GZ_HASH_LEN];
+  if (out == NULL) return GZ_CHAIN_INVALID_ARG;
+  *out = GZ_NET_INVALID;
+  gz_chain_result r = gz_chain_block_hash(c, 0, block0);
+  if (r == GZ_CHAIN_NOT_FOUND) return GZ_CHAIN_WRONG_NETWORK; /* a chain with no block 0 */
+  if (r != GZ_CHAIN_OK) return r;
+  for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+    if (gz_network_genesis(all[i], genesis) && memcmp(block0, genesis, GZ_HASH_LEN) == 0) {
+      *out = all[i];
+      return GZ_CHAIN_OK;
+    }
+  }
+  return GZ_CHAIN_WRONG_NETWORK;
+}
+
+gz_chain_result gz_chain_check_network(const gz_chain *c, gz_network network) {
+  gz_network found = GZ_NET_INVALID;
+  if (!gz_network_valid(network)) return GZ_CHAIN_INVALID_ARG;
+  gz_chain_result r = gz_chain_identify_network(c, &found);
+  if (r != GZ_CHAIN_OK) return r;
+  return found == network ? GZ_CHAIN_OK : GZ_CHAIN_WRONG_NETWORK;
+}
+
+/* ---- fee rate policy ----------------------------------------------------- */
+
+gz_chain_result gz_chain_choose_fee_rate(const gz_chain *c, gz_network network, uint16_t target,
+                                         uint64_t ceiling_sat_per_kvb, gz_fee_choice *out) {
+  gz_fee_estimates est;
+  if (out != NULL) memset(out, 0, sizeof *out);
+  if (out == NULL || !gz_network_valid(network) || target == 0 || ceiling_sat_per_kvb == 0)
+    return GZ_CHAIN_INVALID_ARG;
+  if (gz_network_is_test(network)) {
+    /* Estimates on test networks are noise and are not consulted. */
+    out->sat_per_kvb = GZ_FEE_TEST_DEFAULT_SAT_PER_KVB;
+    out->source = GZ_FEE_FROM_TEST_DEFAULT;
+    if (out->sat_per_kvb > ceiling_sat_per_kvb) {
+      out->sat_per_kvb = ceiling_sat_per_kvb;
+      out->capped = true;
+    }
+    return GZ_CHAIN_OK;
+  }
+  gz_chain_result r = gz_chain_fee_estimates(c, &est);
+  if (r != GZ_CHAIN_OK) return r;
+  if (est.count == 0 || est.count > GZ_FEE_MAX_TARGETS) return GZ_CHAIN_NOT_FOUND;
+  /* entries are sorted by target: take the last one not above `target`,
+   * or the first if every listed target is above it */
+  size_t pick = 0;
+  for (size_t i = 0; i < est.count; i++) {
+    if (est.entries[i].target <= target) pick = i;
+  }
+  uint64_t rate = est.entries[pick].sat_per_kvb;
+  if (rate > GZ_FEE_MAX_SAT_PER_KVB) return GZ_CHAIN_MALFORMED;
+  out->source = GZ_FEE_FROM_SERVERS;
+  if (rate < GZ_FEE_MIN_SAT_PER_KVB) rate = GZ_FEE_MIN_SAT_PER_KVB;
+  if (rate > ceiling_sat_per_kvb) {
+    rate = ceiling_sat_per_kvb;
+    out->capped = true;
+  }
+  out->sat_per_kvb = rate;
+  return GZ_CHAIN_OK;
 }
