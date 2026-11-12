@@ -136,5 +136,6 @@ gzt_err gzt_sign_keypath(const secp256k1_context *ctx, gzt_tx *tx,
     in->witness_count = 1;
     in->witness[0].len = 64;
     memcpy(in->witness[0].data, sig, 64);
+    gzw_wipe(sig, sizeof sig);
     return GZT_OK;
 }

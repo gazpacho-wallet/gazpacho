@@ -22,6 +22,7 @@ import concurrent.futures as cf
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,13 @@ RULES = [
      "if (total >= amount + fee_c) {"),
     ("witness-destination", "funding.c",
      "if (!gzt_is_witness_program(dest, dest_len)) return GZT_ERR_SCRIPT;", ""),
+    ("short-destination", "funding.c",
+     "if (dest_len < 5) return GZT_ERR_SCRIPT;", ""),
+    ("funding-p2tr-only", "funding.c",
+     "if (req->funding_script_len != P2TR_LEN || fs[0] != 0x51 || fs[1] != 0x20)\n        return GZT_ERR_SCRIPT;",
+     ""),
+    ("limit-not-funds", "funding.c", "        return GZT_ERR_LIMIT;\n    return GZT_ERR_FUNDS;",
+     "        return GZT_ERR_FUNDS;\n    return GZT_ERR_FUNDS;"),
     ("duplicate-coins", "funding.c",
      "if (coins[j].vout == coins[i].vout && memcmp(coins[j].txid, coins[i].txid, 32) == 0)",
      "if (0)"),
@@ -51,23 +59,38 @@ RULES = [
     ("verify-after-sign", "sighash.c",
      "if (!secp256k1_schnorrsig_verify(ctx, sig, hash, 32, &want)) {", "if (0) {"),
     ("coin-script-is-its-key", "funding.c",
-     "if (memcmp(out.script_pubkey, c->script, P2TR_LEN) != 0) {", "if (0) {"),
-    ("change-not-a-spent-index", "funding.c",
+     "            memcmp(out.script_pubkey, c->script, P2TR_LEN) != 0)", "            0)"),
+    ("change-not-an-offered-index", "funding.c",
      "if (coins[i].change == 1 && coins[i].index == req->change_index) return GZT_ERR_ARG;", ""),
+    ("change-not-a-used-index", "funding.c",
+     "if (req->used_change_indexes[i] == req->change_index) return GZT_ERR_ARG;", ""),
     ("release-needs-txid", "funding.c",
-     "if (!gzw_ct_equal(expect_txid, f->info.txid, 32)) return GZT_ERR_STATE;", ""),
-    ("release-needs-build", "funding.c",
-     "if (f->priv_state != 1) return GZT_ERR_STATE;", ""),
+     "int same = gzw_ct_equal(txid, expect_txid, 32) & gzw_ct_equal(txid, f->info.txid, 32);",
+     "int same = 1;"),
+    ("release-trusts-info-txid", "funding.c",
+     "int same = gzw_ct_equal(txid, expect_txid, 32) & gzw_ct_equal(txid, f->info.txid, 32);",
+     "int same = gzw_ct_equal(f->info.txid, expect_txid, 32);"),
+    ("release-needs-build", "funding.c", "if (f->priv_state != 1 || ", "if ("),
+    ("release-checks-caps", "funding.c", "!gzt_tx_in_caps(tx) || gzt_tx_has_witness(tx)",
+     "gzt_tx_has_witness(tx)"),
+    ("release-no-held-witness", "funding.c", " || gzt_tx_has_witness(tx)) return GZT_ERR_STATE;",
+     ") return GZT_ERR_STATE;"),
+    ("release-amounts-agree", "funding.c",
+     "if (f->info.fee > GZT_MAX_MONEY || in != outs + f->info.fee) return GZT_ERR_STATE;", ""),
+    ("release-buffer-size", "funding.c", "if (!e && len > cap) e = GZT_ERR_BUFFER;", ""),
+    ("release-wipes-out", "funding.c", "        gzw_wipe(out, cap);\n", "\n"),
     ("wipe-on-failure", "funding.c", "    if (e) gzt_funding_wipe(out);\n", "\n"),
     ("parse-trailing-bytes", "tx.c", "if (r->pos != r->len) return GZT_ERR_PARSE;", ""),
     ("parse-minimal-size", "tx.c", "return *v >= min;", "return 1;"),
+    ("parse-length-prefix-canonical", "tx.c", "    if (!get_cs(r, &n)) return GZT_ERR_PARSE;\n    if (n > r->len",
+     "    if (!get_cs(r, &n)) return GZT_OK;\n    if (n > r->len"),
+    ("parse-cut-compact-size", "tx.c", "    if (!get_le(r, n, v)) return 0;\n    return *v >= min;",
+     "    if (!get_le(r, n, v)) return 1;\n    return *v >= min;"),
     ("parse-superfluous-witness", "tx.c",
-     "if (!has_witness(tx)) return GZT_ERR_PARSE; /* superfluous witness record */", ""),
+     "if (!gzt_tx_has_witness(tx)) return GZT_ERR_PARSE; /* superfluous witness record */", ""),
     ("parse-max-money", "tx.c", "if (sum > GZT_MAX_MONEY) return GZT_ERR_PARSE;", ""),
     ("parse-length-in-bounds", "tx.c", "if (n > r->len - r->pos) return GZT_ERR_PARSE;", ""),
-    ("signed-size-is-fee-size", "funding.c",
-     "if (e || vsize != sel->vsize || memcmp(txid2, f->info.txid, 32) != 0) return GZT_ERR_INTERNAL;",
-     "if (e) return GZT_ERR_INTERNAL;"),
+    ("signed-size-is-fee-size", "funding.c", "    if (vsize != sel->vsize) return GZT_ERR_INTERNAL;\n", "\n"),
 ]
 
 OPS = [(r"==", "!="), (r"!=", "=="), (r"(?<![<>=!-])<(?![<=])", "<="), (r"<=", "<"),
@@ -111,11 +134,20 @@ def mutants():
 
 
 def sh(cmd, cwd, timeout=300):
+    """Run cmd in its own process group; on a timeout kill the whole group,
+    so that no test program a mutant made hang is left behind."""
+    p = subprocess.Popen(cmd, cwd=cwd, shell=True, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
     try:
-        return subprocess.run(cmd, cwd=cwd, shell=True, capture_output=True, text=True,
-                              timeout=timeout).returncode
+        return p.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         return "timeout"
+    finally:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)  # the group: the shell and anything it started
+        except ProcessLookupError:
+            pass
+        p.wait()
 
 
 def run(m):

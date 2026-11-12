@@ -20,8 +20,12 @@
  * is used only if it is at or below --max-feerate.
  *
  * Outside the core: reads the phrase file and the OS random source.  Never
- * prints the phrase or a key.  Refuses mainnet.  The change index is the
- * caller's to track: give each one once.
+ * prints the phrase or a key.  Refuses mainnet.  The funding destination
+ * must be a taproot output (the library refuses anything else).  The change
+ * index is the caller's to track: give each one once.  "fund" also refuses a
+ * change index that holds an unconfirmed coin; an index whose coins were
+ * all spent cannot be seen this way (the servers list unspent outputs).
+ * The transaction is signed when it is released (--release, --broadcast).
  * Exit status: 0 success, 1 failure, 2 wrong usage.
  */
 #include <errno.h>
@@ -255,6 +259,17 @@ static int build_and_print(const secp256k1_context *ctx, const gzw_xprv *master,
     return 1;
 }
 
+/* Sign and serialise the held funding (gzt_funding_release signs it now). */
+static int release_signed(const secp256k1_context *ctx, const gzw_xprv *master,
+                          const gzt_funding *f, uint8_t *raw, size_t cap, size_t *len) {
+    uint8_t aux[32];
+    if (getrandom(aux, sizeof aux, 0) != (ssize_t)sizeof aux) return 0;
+    gzt_err e = gzt_funding_release(ctx, master, f, f->info.txid, aux, raw, cap, len);
+    gzw_wipe(aux, sizeof aux);
+    if (e) fprintf(stderr, "gz-wallet-tx: cannot release the funding: %s\n", gzt_err_text(e));
+    return e == GZT_OK;
+}
+
 static int cmd_decode(void) {
     static char text[2 * GZT_MAX_TX_BYTES + 2];
     static uint8_t raw[GZT_MAX_TX_BYTES];
@@ -329,7 +344,7 @@ static int cmd_plan(const secp256k1_context *ctx, const args *a) {
     if (!build_and_print(ctx, &master, &req, coins, a->n_coins, &f)) goto out;
     if (a->release) {
         size_t len;
-        if (gzt_funding_release(&f, f.info.txid, raw, sizeof raw, &len)) goto out;
+        if (!release_signed(ctx, &master, &f, raw, sizeof raw, &len)) goto out;
         printf("signed ");
         hex_out(raw, len, 0);
         printf("\n");
@@ -354,7 +369,7 @@ static int chain_open(chain_view *cv, gzt_network net) {
     gz_esplora_config cfg;
     gz_multi_config mc;
     memset(cv, 0, sizeof *cv);
-    if (net != GZT_NET_SIGNET) {
+    if (!gzt_network_eq(net, GZT_NET_SIGNET)) {
         fprintf(stderr, "gz-wallet-tx: the chain commands support signet only\n");
         return 0;
     }
@@ -379,6 +394,8 @@ static int cmd_fund(const secp256k1_context *ctx, const args *a) {
     static gzt_funding f;
     static uint8_t raw[GZT_MAX_TX_BYTES];
     static gz_chain_output outs[64];
+    static uint32_t used[MAX_COINS];
+    size_t n_used = 0;
     uint8_t script[GZT_MAX_SCRIPT];
     gzt_funding_request req;
     gzt_network net;
@@ -428,7 +445,11 @@ static int cmd_fund(const secp256k1_context *ctx, const args *a) {
                 goto out;
             }
             for (size_t k = 0; k < count && n < MAX_COINS; k++) {
-                if (!outs[k].confirmed) continue;
+                if (!outs[k].confirmed) {
+                    /* not spendable yet, but its change index is taken */
+                    if (change == 1 && n_used < MAX_COINS) used[n_used++] = i;
+                    continue;
+                }
                 coins[n] = c;
                 memcpy(coins[n].txid, outs[k].txid, 32);
                 coins[n].vout = outs[k].vout;
@@ -438,11 +459,13 @@ static int cmd_fund(const secp256k1_context *ctx, const args *a) {
         }
     }
     printf("confirmed coins found %zu\n", n);
+    req.used_change_indexes = used;
+    req.n_used_change_indexes = n_used;
     if (!n || !build_and_print(ctx, &master, &req, coins, n, &f)) goto out;
     if (a->broadcast) {
         size_t len;
         gz_broadcast_result br;
-        if (gzt_funding_release(&f, f.info.txid, raw, sizeof raw, &len)) goto out;
+        if (!release_signed(ctx, &master, &f, raw, sizeof raw, &len)) goto out;
         printf("signed ");
         hex_out(raw, len, 0);
         printf("\n");

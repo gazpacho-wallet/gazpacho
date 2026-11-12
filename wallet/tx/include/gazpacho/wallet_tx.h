@@ -33,7 +33,7 @@ typedef enum {
     GZT_ERR_MAINNET = 2,     /* mainnet was asked for; this version refuses it */
     GZT_ERR_PARSE = 3,       /* the bytes are not a canonical transaction */
     GZT_ERR_LIMIT = 4,       /* well formed so far, but beyond this library's caps */
-    GZT_ERR_SCRIPT = 5,      /* destination is not a witness program */
+    GZT_ERR_SCRIPT = 5,      /* destination not accepted (funding: P2TR only) */
     GZT_ERR_DUST = 6,        /* amount below the dust limit of its script */
     GZT_ERR_FEE_CEILING = 7, /* the rate or the real fee rate is above the caller's ceiling */
     GZT_ERR_FUNDS = 8,       /* the coins cannot pay the amount and the fee */
@@ -49,17 +49,22 @@ const char *gzt_err_text(gzt_err e);
 
 /* ---- networks: no mainnet value, and 0 is not a network ------------------- */
 
-typedef enum {
-    GZT_NET_SIGNET = 1,
-    GZT_NET_TESTNET3 = 2,
-    GZT_NET_TESTNET4 = 3,
-    GZT_NET_REGTEST = 4
-} gzt_network;
+/* A struct, not an enum, so that it cannot be mixed up with gzw_network or
+   gz_network (both enums, both with mainnet as 0) or with a plain number:
+   any such mix-up is a compile error, whatever the warning flags. */
+typedef struct { uint8_t id; } gzt_network;
+
+#define GZT_NET_SIGNET ((gzt_network){1})
+#define GZT_NET_TESTNET3 ((gzt_network){2})
+#define GZT_NET_TESTNET4 ((gzt_network){3})
+#define GZT_NET_REGTEST ((gzt_network){4})
+
+static inline int gzt_network_eq(gzt_network a, gzt_network b) { return a.id == b.id; }
 
 /* "signet", "testnet", "testnet4", "regtest".  "mainnet" is GZT_ERR_MAINNET,
    anything else GZT_ERR_ARG. */
 gzt_err gzt_network_from_name(const char *name, gzt_network *out);
-/* The key library's value for a network; GZT_ERR_ARG outside the enum. */
+/* The key library's value for a network; GZT_ERR_ARG for any other id. */
 gzt_err gzt_network_to_keys(gzt_network net, gzw_network *out);
 
 /* ---- amounts and fee rates ------------------------------------------------ */
@@ -240,7 +245,12 @@ typedef struct {
 /* Choose coins to pay exactly amount to dest, with a P2TR change output if
    the change would be at least its dust limit.  The rules, in order, are in
    docs/notes/wallet-tx.md section 1.7.  The result does not depend on the
-   order of coins. */
+   order of coins.  dest must be a witness program of at least 5 bytes (a
+   2-byte program would make a one-input transaction below the 65-byte
+   relay minimum).  The real fee rate is at most the ceiling, except that
+   the fee is rounded up to a whole satoshi (less than 1 sat over).
+   GZT_ERR_LIMIT when the coins would pay but only with more than
+   GZT_MAX_INPUTS of them. */
 gzt_err gzt_select_coins(const gzt_coin *coins, size_t n_coins, const uint8_t *dest,
                          size_t dest_len, uint64_t amount, gzt_fee_policy fee,
                          gzt_selection *out);
@@ -249,12 +259,17 @@ gzt_err gzt_select_coins(const gzt_coin *coins, size_t n_coins, const uint8_t *d
 
 typedef struct {
     gzt_network net;
-    uint32_t account;
-    const uint8_t *funding_script;   /* the factory's output script */
-    size_t funding_script_len;
+    uint32_t account;                /* below 2^31 */
+    const uint8_t *funding_script;   /* the factory's output: OP_1 <32 bytes>, nothing else */
+    size_t funding_script_len;       /* 34 */
     uint64_t amount;
     uint32_t change_index;           /* change goes to m/86'/coin'/account'/1/change_index */
     gzt_fee_policy fee;
+    /* Change indexes already used (for example by coins not offered, such as
+       unconfirmed ones).  change_index must not be among them, nor equal the
+       change index of any offered coin.  May be NULL when n_used is 0. */
+    const uint32_t *used_change_indexes;
+    size_t n_used_change_indexes;
 } gzt_funding_request;
 
 typedef struct {
@@ -269,29 +284,41 @@ typedef struct {
     gzt_selection selection;
 } gzt_funding_info;
 
-/* Holds a signed funding until it is released.  Read `info`; the other
-   members are private.  C cannot stop a caller reading them; the rule is that
-   no function except gzt_funding_release produces the signed bytes. */
+/* Holds an unsigned funding until it is released.  It contains no signature:
+   copying or reading it gives nothing that can be broadcast.  Read `info`;
+   the other members are private. */
 typedef struct {
     gzt_funding_info info;
-    int priv_state;                         /* 0 empty, 1 built */
-    gzt_tx priv_tx;                         /* unsigned */
-    uint8_t priv_sigs[GZT_MAX_INPUTS][64];
+    int priv_state;                                /* 0 empty, 1 built */
+    gzt_network priv_net;
+    uint32_t priv_account;
+    gzt_tx priv_tx;                                /* unsigned */
+    gzt_spent_output priv_spent[GZT_MAX_INPUTS];
+    uint32_t priv_key_change[GZT_MAX_INPUTS];
+    uint32_t priv_key_index[GZT_MAX_INPUTS];
 } gzt_funding;
 
-/* Select, build, sign every input and verify, and hold the result.
-   master must be a master key (depth 0).  aux32 is fresh randomness.
-   On failure *out is wiped. */
+/* Select and build; sign every input, verify, check the signed size, then
+   throw the signatures away, so that the funding is known to be signable
+   and its size and fee are exact.  master must be a master key (depth 0).
+   aux32 is fresh randomness.  On failure *out is wiped. */
 gzt_err gzt_funding_build(const secp256k1_context *ctx, const gzw_xprv *master,
                           const gzt_funding_request *req, const gzt_coin *coins,
                           size_t n_coins, const uint8_t aux32[32], gzt_funding *out);
 
-/* The signed transaction, only if expect_txid is the funding's txid.  Call it
-   after the whole tree is signed.  May be called again (to broadcast again). */
-gzt_err gzt_funding_release(gzt_funding *f, const uint8_t expect_txid[32], uint8_t *out,
-                            size_t cap, size_t *len_out);
+/* Sign and serialise the funding.  Call it after the whole tree is signed.
+   Refused (GZT_ERR_STATE) unless f was built, its transaction is within the
+   caps, and the txid recomputed from it equals both expect_txid and
+   f->info.txid, and its amounts agree with info.  The signatures are made
+   here, with aux32 (fresh randomness), and verified; the txid does not
+   depend on them.  May be called again (to broadcast again).  On any
+   failure out[0..cap) is zeroed. */
+gzt_err gzt_funding_release(const secp256k1_context *ctx, const gzw_xprv *master,
+                            const gzt_funding *f, const uint8_t expect_txid[32],
+                            const uint8_t aux32[32], uint8_t *out, size_t cap,
+                            size_t *len_out);
 
-/* Wipe everything, including the signatures. */
+/* Wipe everything. */
 void gzt_funding_wipe(gzt_funding *f);
 
 #ifdef __cplusplus

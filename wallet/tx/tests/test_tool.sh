@@ -40,6 +40,18 @@ check decode-same-txid [ "$(sed -n 's/^txid //p' "$dir/dec")" = "$(sed -n 's/^tx
 check decode-output0 grep -qx "output 0 150000 $FACTORY" "$dir/dec"
 check decode-vsize grep -qx 'vsize 212' "$dir/dec"
 printf '0200' | "$tool" decode >/dev/null 2>&1; check decode-refuses-garbage [ $? -eq 1 ]
+# released again: signed afresh (other signatures), the same txid
+plan --release >"$dir/rel2" 2>/dev/null; check release-again-ok [ $? -eq 0 ]
+check release-again-same-txid [ "$(sed -n 's/^txid //p' "$dir/rel2")" = "$(sed -n 's/^txid //p' "$dir/rel")" ]
+check release-again-new-signatures sh -c "! cmp -s '$dir/rel' '$dir/rel2'"
+# the funding output must be taproot
+"$tool" plan --network signet --in "$P" --to-script 0014fafafafafafafafafafafafafafafafafafafa \
+  --amount 150000 --change-index 3 --coin $C1 --coin $C2 >/dev/null 2>"$dir/err"
+check funding-not-p2tr [ $? -eq 1 ]
+check funding-not-p2tr-message grep -qx 'gz-wallet-tx: cannot build the funding: destination script not accepted' "$dir/err"
+"$tool" plan --network signet --in "$P" --to-script 5220fafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafa \
+  --amount 150000 --change-index 3 --coin $C1 --coin $C2 >/dev/null 2>&1
+check funding-v2-refused [ $? -eq 1 ]
 
 plan --feerate 2000 >/dev/null 2>"$dir/err"; check rate-above-ceiling [ $? -eq 1 ]
 check rate-above-ceiling-message grep -q 'fee rate above' "$dir/err"

@@ -2,7 +2,7 @@
  *   - no crash, no out-of-bounds access (run under the memory-error checkers);
  *   - whatever parses serialises back to the identical bytes;
  *   - the legacy form of what parsed parses again, with the same txid;
- *   - weight is at most 4 bytes per byte of input.
+ *   - weight is 3 x (size without witness) + (size of the input), counted;
  * Built with -DGZT_LIBFUZZER for libFuzzer (clang -fsanitize=fuzzer).
  * Otherwise a built-in driver mutates the official transactions for the
  * number of rounds given (default 200000) with a fixed seed. */
@@ -26,8 +26,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (gzt_tx_serialize(&tx, GZT_SER_WITNESS, back, sizeof back, &n) != GZT_OK || n != size ||
         memcmp(back, data, size) != 0)
         abort();
-    if (gzt_tx_weight(&tx, &w, &vs) != GZT_OK || w > 4 * (uint64_t)size) abort();
     if (gzt_tx_serialize(&tx, GZT_SER_NO_WITNESS, back, sizeof back, &n) != GZT_OK) abort();
+    /* the counted weight equals the weight of the real serialisations */
+    if (gzt_tx_weight(&tx, &w, &vs) != GZT_OK || w != 3 * (uint64_t)n + size || vs != (w + 3) / 4)
+        abort();
     if (gzt_tx_parse(back, n, &tx2) != GZT_OK) abort();
     if (gzt_tx_txid(&tx, id1) != GZT_OK || gzt_tx_txid(&tx2, id2) != GZT_OK ||
         memcmp(id1, id2, 32) != 0)
