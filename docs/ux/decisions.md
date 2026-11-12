@@ -102,9 +102,13 @@ Owner: the words may appear in the browser; "follow typical rules for key handli
 - the backup check never reveals which positions are wrong, and has attempt limits;
 - the program wipes its copies from memory after use.
 
+Applied in `spec/local-api.md` draft 3 (section 12.7), after its second review: reveal now carries the passphrase in its own request rather than relying on a fresh sign-in, which is stricter; the words stay shown until the person presses Done, are hidden while the tab is hidden, and are cleared at a 10-minute ceiling.
+
 ### 13. Files are encrypted from the start (owner, 2026-11-12, questions 6, Q6 answer B)
 
 Every file the program writes is encrypted from the first write, on test networks too, not only before mainnet. The design is `spec/storage-encryption.md` (being written). The local API handles a locked wallet: the program starts locked, does nothing until it is unlocked, and says so (`spec/local-api.md` sections 4.7 and 11.2). A backup export is the file as encrypted on disk.
+
+Applied in `spec/storage-encryption.md` draft 1 and `spec/local-api.md` draft 3 (sections 4 and 4.7). One refinement for the owner to confirm: a locked program is not wholly idle. It keeps watching and leaves a factory in time from already-signed transactions (storage 8.7, its open point 15), so that a restart does not stop the protection; it signs, joins and pays nothing until unlocked.
 
 ### 14. Sign-in with the wallet passphrase, as in desktop wallets (owner, 2026-11-12)
 
@@ -114,5 +118,7 @@ The owner cited Sparrow. The person unlocks with the wallet passphrase, which is
 - fresh sign-in for sensitive actions: the passphrase again;
 - lock: the key is dropped from memory, and the program then does nothing until unlocked.
 The session token stays out of cookies (review of the local API, F1). Why a browser interface needs more than Sparrow does: other web pages in the same browser can send requests to loopback (`spec/local-api.md` section 4.1).
+
+Applied in `spec/local-api.md` drafts 2 and 3. Draft 3, after the second review: the browser is opened through an owner-only redirect file, so the start token is on no command line; the passphrase is typed into the request itself for the words and for spending, and the 5-minute fresh sign-in stays only for reversible changes; "does nothing until unlocked" is refined as under decision 13.
 
 Also decided the same day: interface ports 39735 (signet) and 39736 (testnet4), plus one optional extra port for a tunnel, off by default; and in Slice 1 one joined lobby and one hosted lobby at a time, with limits that stay editable (tightening leaves a lobby that no longer fits; loosening affects only future joins).
