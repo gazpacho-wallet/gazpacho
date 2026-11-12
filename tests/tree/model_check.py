@@ -196,7 +196,7 @@ def main():
             recs, shapes, ranges, unknown = rand_terms()
             outer = R["tlv"](recs)
             digest = R["tagged_hash"]("gazpacho/terms/outer", outer).hex()
-            ask(f"outer {outer.hex()}", f"ok {digest} " + ("-" if False else (outer.hex() if not unknown else "*")), "outer")
+            ask(f"outer {outer.hex()}", f"ok {digest} " + (outer.hex() if not unknown else "*"), "outer")
             # The tree terms.md 4.2 derives, for a member count the table covers.
             top = min(shapes[-1][0], 256)
             n = rnd.randint(3, top)
@@ -255,9 +255,6 @@ def main():
         ok = g == want
         if label == "outer" and want.endswith(" *"):
             ok = g.rsplit(" ", 1)[0] == want.rsplit(" ", 1)[0]   # unknown odd types are not re-encoded
-        if label == "outer" and not ok and g.split(" ")[0] != "ok":
-            # A random record the Slice 1 column does not limit, but section 3 does?
-            pass
         if not ok:
             bad += 1
             if bad <= 10:
