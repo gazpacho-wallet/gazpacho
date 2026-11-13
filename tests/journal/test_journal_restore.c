@@ -399,8 +399,197 @@ static void test_fence(void)
     memfs_free(&fs);
 }
 
+/* Added after mutation testing of the marker and pull-mode code: the
+ * marker's exact bytes, markers that are valid in every way but one, reads
+ * that return little, descriptors, failures while removing the marker, the
+ * number of operations a flush makes, and complete() given no output. */
+static void put_marker(memfs_t *fs, const uint8_t *chain, uint64_t base, uint64_t floor, size_t extra,
+                       int bad_magic)
+{
+    uint8_t m[300] = {0};
+    memcpy(m, bad_magic ? "GZRESTO2" : "GZRESTO1", 8);
+    memcpy(m + 8, chain, 32);
+    for (int i = 0; i < 8; i++) {
+        m[40 + i] = (uint8_t)(base >> (56 - 8 * i));
+        m[48 + i] = (uint8_t)(floor >> (56 - 8 * i));
+    }
+    uint8_t h[32];
+    sha256(m, 56, h);
+    memcpy(m + 56, h, 8);
+    memfs_put(fs, H_MARKER, m, 64 + extra);
+}
+
+static void test_marker_edges(void)
+{
+    memfs_t fs;
+    gz_journal_status_t st;
+    gz_journal_open_info_t info;
+    gz_journal_t *j;
+    size_t len;
+
+    /* The marker's bytes: magic, chain, base, floor, check. */
+    memfs_init(&fs);
+    history(&fs);
+    CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0x0102030405060708ull) == GZ_JOURNAL_OK);
+    const uint8_t *got = memfs_get(&fs, H_MARKER, &len);
+    uint8_t want[64];
+    memcpy(want, "GZRESTO1", 8);
+    memcpy(want + 8, gz_journal_chain_signet, 32);
+    memset(want + 40, 0, 8);
+    want[47] = 2; /* base: the history's highest incarnation */
+    for (int i = 0; i < 8; i++) want[48 + i] = (uint8_t)(i + 1);
+    uint8_t h[32];
+    sha256(want, 56, h);
+    memcpy(want + 56, h, 8);
+    CHECK(got && len == 64 && memcmp(got, want, 64) == 0);
+    CHECK(memfs_open_fds(&fs) == 0 && fs.bad_closes == 0);
+    memfs_free(&fs);
+
+    /* Markers that are right in every way but one, each with a correct check:
+     * another magic, another network, a byte too many, far too long. */
+    for (int how = 0; how < 4; how++) {
+        memfs_init(&fs);
+        history(&fs);
+        put_marker(&fs, how == 1 ? gz_journal_chain_mainnet : gz_journal_chain_signet, 2, 0,
+                   how == 2 ? 1 : how == 3 ? 200 : 0, how == 0);
+        size_t before, after;
+        memfs_get(&fs, H_JOURNAL, &before);
+        j = jopen(&fs, 0, &st, NULL);
+        memfs_get(&fs, H_JOURNAL, &after);
+        CHECK(st == GZ_JOURNAL_ERR_MARKER && j == NULL && before == after);
+        CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0) == GZ_JOURNAL_ERR_MARKER);
+        CHECK(memfs_open_fds(&fs) == 0);
+        memfs_free(&fs);
+    }
+    /* The same marker, correct, is accepted (the cases above differ in one thing). */
+    memfs_init(&fs);
+    history(&fs);
+    put_marker(&fs, gz_journal_chain_signet, 2, 7, 0, 0);
+    j = jopen(&fs, 0, &st, &info);
+    CHECK(st == GZ_JOURNAL_OK && info.restored && info.incarnation == 8);
+    gz_journal_close(j);
+    memfs_free(&fs);
+
+    /* Reads that return 1 or 7 bytes at a time, for the marker and for marking. */
+    for (size_t mr = 1; mr <= 7; mr += 6) {
+        memfs_init(&fs);
+        history(&fs);
+        fs.max_read = mr;
+        CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 9) == GZ_JOURNAL_OK);
+        CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 3) == GZ_JOURNAL_OK);
+        j = jopen(&fs, 0, &st, &info);
+        CHECK(st == GZ_JOURNAL_OK && info.restored && info.incarnation == 10);
+        CHECK(memfs_open_fds(&fs) == 1);
+        gz_journal_close(j);
+        CHECK(memfs_open_fds(&fs) == 0 && fs.bad_closes == 0);
+        memfs_free(&fs);
+    }
+
+    /* Removing the marker fails (unlink, then the folder sync): the flush is a
+     * storage failure, nothing is reported, and the next open judges again. */
+    for (uint64_t fp = 4; fp <= 5; fp++) {
+        memfs_init(&fs);
+        history(&fs);
+        gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0);
+        j = jopen(&fs, 1, &st, &info);
+        CHECK(info.restored && save1(j, info.incarnation, 1, GZ_RECORD_TEST_RESTORED) == GZ_JOURNAL_OK);
+        fs.points = 0;
+        fs.fail_at = fp; /* sync, mark, sync, unlink (4), folder sync (5) */
+        fs.fail_mode = MEMFS_FAIL_ERROR;
+        gz_batch_id_t id;
+        CHECK(gz_journal_flush(j) == GZ_JOURNAL_ERR_IO && gz_journal_failed(j) && gz_journal_restored(j));
+        CHECK(gz_journal_complete(j, &id) == 0);
+        CHECK(fs.points == fp && fs.after_fail == 0);
+        gz_journal_close(j);
+        fs.fail_at = 0;
+        /* The answer is durable, so the next open has the restore answered. */
+        j = jopen(&fs, 0, &st, &info);
+        CHECK(st == GZ_JOURNAL_OK && !info.restored && !has_marker(&fs));
+        gz_journal_close(j);
+        memfs_free(&fs);
+    }
+    /* The same failures while an open removes an answered marker. */
+    for (uint64_t fp = 1; fp <= 2; fp++) {
+        memfs_init(&fs);
+        history(&fs);
+        put_marker(&fs, gz_journal_chain_signet, 1, 0, 0, 0); /* incarnation 2 started after it */
+        fs.points = 0;
+        fs.fail_at = fp; /* unlink (1), folder sync (2) */
+        fs.fail_mode = MEMFS_FAIL_ERROR;
+        j = jopen(&fs, 0, &st, &info);
+        CHECK(st == GZ_JOURNAL_ERR_IO && j == NULL && memfs_open_fds(&fs) == 0 && fs.after_fail == 0);
+        fs.fail_at = 0;
+        j = jopen(&fs, 0, &st, &info);
+        CHECK(st == GZ_JOURNAL_OK && !info.restored && !has_marker(&fs));
+        gz_journal_close(j);
+        memfs_free(&fs);
+    }
+    /* A marker removed by someone else before the answer: tolerated. */
+    memfs_init(&fs);
+    history(&fs);
+    gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0);
+    j = jopen(&fs, 0, &st, &info);
+    CHECK(info.restored);
+    fs.os.unlink(fs.os.ctx, H_MARKER);
+    CHECK(save1(j, info.incarnation, 1, GZ_RECORD_TEST_RESTORED) == GZ_JOURNAL_OK);
+    CHECK(gz_journal_flush(j) == GZ_JOURNAL_OK && !gz_journal_restored(j));
+    gz_journal_close(j);
+    memfs_free(&fs);
+
+    /* Operations per save and flush: 4 for a plain batch (write, sync, mark,
+     * sync); 10 with a guard record (the guard file replaced once, not
+     * again); 6 when the flush removes the marker. */
+    memfs_init(&fs);
+    j = jopen(&fs, 0, &st, &info);
+    uint8_t g[66];
+    h_guard_bytes(g, 1);
+    gz_record_t gr = {GZ_RECORD_GUARD, {g, 66}};
+    gz_action_t a = {.kind = GZ_ACTION_SAVE};
+    a.u.save.batch = (gz_batch_id_t){info.incarnation, 1};
+    a.u.save.records = &gr;
+    a.u.save.n_records = 1;
+    uint64_t counts[4];
+    fs.points = 0;
+    CHECK(save1(j, info.incarnation, 1, 0x7e570001) == GZ_JOURNAL_OK);
+    gz_journal_flush(j);
+    counts[0] = fs.points;
+    a.u.save.batch.sequence = 2;
+    fs.points = 0;
+    CHECK(gz_journal_save(j, &a) == GZ_JOURNAL_OK);
+    gz_journal_flush(j);
+    counts[1] = fs.points;
+    fs.points = 0;
+    CHECK(save1(j, info.incarnation, 3, 0x7e570001) == GZ_JOURNAL_OK);
+    gz_journal_flush(j);
+    counts[2] = fs.points;
+    gz_journal_close(j);
+    gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0);
+    j = jopen(&fs, 0, &st, &info);
+    fs.points = 0;
+    CHECK(save1(j, info.incarnation, 1, GZ_RECORD_TEST_RESTORED) == GZ_JOURNAL_OK);
+    gz_journal_flush(j);
+    counts[3] = fs.points;
+    gz_journal_close(j);
+    CHECK(counts[0] == 4 && counts[1] == 10 && counts[2] == 4 && counts[3] == 6);
+    if (counts[0] != 4 || counts[1] != 10 || counts[2] != 4 || counts[3] != 6)
+        printf("  flush operations: %llu %llu %llu %llu\n", (unsigned long long)counts[0],
+               (unsigned long long)counts[1], (unsigned long long)counts[2], (unsigned long long)counts[3]);
+    memfs_free(&fs);
+
+    /* complete() with nowhere to put the identifier reports nothing and loses nothing. */
+    memfs_init(&fs);
+    j = jopen(&fs, 1, &st, &info);
+    CHECK(save1(j, info.incarnation, 1, 0x7e570001) == GZ_JOURNAL_OK);
+    gz_batch_id_t id;
+    CHECK(gz_journal_complete(j, NULL) == 0 && gz_journal_pending(j) == 1);
+    CHECK(gz_journal_complete(j, &id) == 1 && id.sequence == 1 && gz_journal_complete(j, &id) == 0);
+    gz_journal_close(j);
+    memfs_free(&fs);
+}
+
 int main(void)
 {
+    test_marker_edges();
     test_marker();
     test_marker_crashes();
     test_node();

@@ -508,14 +508,20 @@ static int replace_file(const gz_journal_os_t *os, const char *dir, const char *
     return ok;
 }
 
-/* Read a whole file of at most `cap` bytes. 1 read, 0 absent, -1 error or
- * larger than `cap`. */
+/* Read a whole file into buf[0..cap). 1 with *len its size, 0 absent, -1 an
+ * error. A file larger than `cap` is not read: 1, with *len its size (so a
+ * length check refuses it). */
 static int read_small(const gz_journal_os_t *os, const char *path, uint8_t *buf, size_t cap, size_t *len)
 {
     int fd = os->open(os->ctx, path, GZ_JOURNAL_OPEN_READ);
     if (fd < 0) return errno == ENOENT ? 0 : -1;
     uint64_t size;
-    int ok = os->size(os->ctx, fd, &size) == 0 && size <= cap;
+    int ok = os->size(os->ctx, fd, &size) == 0;
+    if (ok && size > cap) {
+        os->close(os->ctx, fd);
+        *len = size > SIZE_MAX ? SIZE_MAX : (size_t)size;
+        return 1;
+    }
     for (uint64_t got = 0; ok && got < size;) {
         long r = os->pread(os->ctx, fd, buf + got, (size_t)(size - got), got);
         if (r <= 0) ok = 0;
@@ -699,7 +705,7 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
     if (!read_all(j, data, size, 0)) { st = GZ_JOURNAL_ERR_IO; goto out; }
     collect_t c = {j, 0, 0, 0, 0};
     uint64_t floor = 0;
-    uint8_t mk[MARKER_LEN];
+    uint8_t mk[MARKER_LEN + 16]; /* room to see a marker that is too long */
     size_t mk_len = 0;
     int mr = read_small(&j->os, j->marker_path, mk, sizeof mk, &mk_len);
     if (mr < 0) { st = GZ_JOURNAL_ERR_IO; goto out; }
@@ -986,7 +992,7 @@ gz_journal_status_t gz_journal_mark_restored(const char *dir, const uint8_t chai
     if (st != GZ_JOURNAL_OK) goto out;
     /* A marker already there (a second import before the first was
      * answered) keeps the higher floor. */
-    uint8_t mk[MARKER_LEN];
+    uint8_t mk[MARKER_LEN + 16]; /* room to see a marker that is too long */
     size_t mk_len = 0;
     uint64_t old_base, old_floor;
     int mr = read_small(os, mpath, mk, sizeof mk, &mk_len);

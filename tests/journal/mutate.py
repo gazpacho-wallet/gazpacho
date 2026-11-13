@@ -32,10 +32,11 @@ CFLAGS = ["-std=gnu11", "-O1", "-w",
           "-I" + os.path.join(SRC, "ports/storage"),
           "-I" + os.path.join(SRC, "core/superscalar/include")]
 SAN = ["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-g"]
-SAN_TESTS = [("test_journal", [], 300), ("test_journal_edges", [], 300),
+SAN_TESTS = [("test_journal", [], 300), ("test_journal_edges", [], 300), ("test_journal_restore", [], 300),
              ("test_journal_fuzz", ["3000", "5"], 300), ("test_journal_crash", [], 600)]
 TESTS = [("test_journal", [], 120),
          ("test_journal_edges", [], 120),
+         ("test_journal_restore", [], 120),
          ("crosscheck", None, 120),
          ("test_journal_fuzz", ["20000", "5"], 120),
          ("test_journal_crash", [], 240)]
@@ -133,8 +134,7 @@ def check(job):
                    os.path.join(d, "gz-journal"), "2000", "3"]
         else:
             cmd = [os.path.join(d, name), *args]
-        # The crash sweeps abandon memory on purpose, as a crash does.
-        r = run(cmd, timeout, d, 0 if name == "test_journal_crash" else 1)
+        r = run(cmd, timeout, d, 1)
         if r != 0:
             subprocess.run(["rm", "-rf", d])
             return n, lineno, new_line, "killed by %s%s%s" % ("sanitizers in " if san else "", name,
@@ -151,7 +151,8 @@ def common_objects(name, flags):
     memfs = os.path.join(common, "memfs.o")
     subprocess.run(["gcc", *flags, "-c", os.path.join(t, "memfs.c"), "-o", memfs], check=True)
     for name, srcf in [("test_journal", "test_journal.c"), ("test_journal_crash", "test_journal_crash.c"),
-                       ("test_journal_fuzz", "test_journal_fuzz.c"), ("test_journal_edges", "test_journal_edges.c")]:
+                       ("test_journal_fuzz", "test_journal_fuzz.c"), ("test_journal_edges", "test_journal_edges.c"),
+                       ("test_journal_restore", "test_journal_restore.c")]:
         o = os.path.join(common, name + ".o")
         subprocess.run(["gcc", *flags, "-c", os.path.join(t, srcf), "-o", o], check=True)
         objs[name] = [o, memfs]
