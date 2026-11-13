@@ -6,6 +6,8 @@ automation is implemented by this planning PR.
 
 Start with the [release specification](../../spec/release.md), the
 [dependency inventory](dependencies.md), and the [reference comparison](benchmark.md).
+The author's [second review](self-review.md) records corrections; it is not
+the independent specification approval required before implementation.
 The wallet's acceptance criteria remain in [SLICES.md](../SLICES.md) and
 [PLAN.md](../PLAN.md). Release engineering is not another prerequisite for
 calling an internal Slice 1 experiment complete; distributing an official
@@ -40,8 +42,8 @@ as required by engineering-checklist item 1.
 | RE1 | Specify releases, inventory dependencies and benchmark reference projects (this PR) | None | Independent review of requirements, inventory and source links; existing CI green. No runtime or workflow change |
 | RE2 | Package licence notices and add scoped SPDX metadata | RE1 review | Every redistributed dependency mapped to its actual licence files; existing attribution preserved; import check passes; missing notice rejected |
 | RE3 | Lock one Linux release recipe and its input closure | RE1 review | Exact source/toolchain/package identities and digests; verified downloads and cache entries; clean offline build after acquisition; altered or unlisted input rejected |
-| RE4 | Verify reproducibility and packaged-binary properties | RE3 | Two isolated clean builds with changed source paths, timezone and wall-clock start produce identical unsigned outputs; a deliberate difference is detected; hardening and ABI evidence recorded |
-| RE5 | Package and test experimental Linux distributions | RE2, RE3, RE4 | Clean-room source build, extracted-binary smoke test, exact contents and dependency checks; bad archive, missing file, test binary and wrong digest rejected |
+| RE4 | Verify executable reproducibility and binary properties | RE3 | Two isolated clean builds with changed source paths, timezone and wall-clock start produce identical executables; a deliberate difference is detected; hardening and ABI evidence recorded |
+| RE5 | Package and test experimental Linux distributions | RE2, RE3, RE4 | Extend reproduction to source/binary archives; clean-room source build, extracted-binary smoke test, exact contents and dependency checks; bad archive, missing file, test binary and wrong digest rejected |
 | RE6 | Rehearse signed draft releases and candidate verification | RE5 | Temporary-key signing rehearsal, trusted-identity verification and tamper tests; restart-safe draft upload; release-manager checklist; no production key or public release needed for the PR |
 | RE7 | Add bounded dependency-update automation | RE1 review | Supported manifests identified; low-volume grouped Actions updates; exact pins retained; custom CMake pins covered by a separate review procedure. Optional follow-up |
 
