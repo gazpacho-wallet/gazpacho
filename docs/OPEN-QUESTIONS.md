@@ -36,7 +36,7 @@ Recorded in full as decision 16 in `ux/decisions.md`. In short:
 - Host funding is automatic and on by default once H1 passes. Before real money it becomes a setting that still defaults to automatic.
 - Several lobbies at once per wallet from Slice 1. This replaces Q8's answer above. Every lobby record carries a lobby field; the composite node design is PR 37.
 - Host accountability in 1.0.0: signed seat receipts, the signer-choice rule in the outer terms, signed removals with a reason, signed lobby-wide counts without identities. Proofs on Nostr later, from fresh keys, after the lobby ends.
-- Member signing modes A to D. Understudies in 1.1.0. A UI/UX review pass after 1.0.0. A privacy roadmap from Slice 1 to later releases.
+- Member signing modes A to D. Understudies in 1.0.0. A UI/UX review pass after 1.0.0. A privacy roadmap from Slice 1 to later releases.
 
 Still for the owner to confirm:
 

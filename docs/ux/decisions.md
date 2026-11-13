@@ -169,7 +169,7 @@ Proofs may be published to Nostr later: only from fresh keys, only after the lob
 
 In modes B and C, "not unlocked" counts as not answering the ready check. Slice 1 closes the ready check as soon as every seat has answered. Proposed defaults (owner to confirm): a 60 s ready window, 60 s per step, and a 10-minute signing budget. Measured signing on signet took 193 ms for 3 members.
 
-**e. Understudies in 1.1.0.** Standby seats that answered the ready check are swapped in automatically: at the ready check for a no-show, and mid-signing for a member who drops. A mid-signing swap is a new attempt with fresh nonces from everyone. Every member's limits are re-checked against the new set. Standby order is covered by the signed receipts.
+**e. Understudies in 1.0.0** (moved from 1.1.0 by the owner the same day). Standby seats that answered the ready check are swapped in automatically: at the ready check for a no-show, and mid-signing for a member who drops. A mid-signing swap is a new attempt with fresh nonces from everyone. Every member's limits are re-checked against the new set. Standby order is covered by the signed receipts.
 
 **f. A UI/UX review pass after 1.0.0,** to add all these modes and settings gracefully.
 
