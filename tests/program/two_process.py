@@ -213,29 +213,38 @@ def main():
         m5 = Proc("m5-1", [exe, "--data-dir", os.path.join(work, "m5"), "--role", "member", "--name", "m5",
                            "--test-burst", "20x60000"] + connect + common, logs)
         m6 = Proc("m6-1", [exe, "--data-dir", os.path.join(work, "m6"), "--role", "member", "--name", "m6",
-                           "--test-burst", "20000x4"] + connect + common, logs)
+                           "--test-burst", "4100x200"] + connect + common, logs)
         procs += [m4, m5, m6]
         k4 = m4.wait_for(r"member key=([0-9a-f]{66})")
         k5 = m5.wait_for(r"member key=([0-9a-f]{66})")
+        k6 = m6.wait_for(r"member key=([0-9a-f]{66})")
         check(m4.wait_for(r"connected peer=%s" % hp, timeout=3 * SCALE) is not None and
               m4.wait_for(r"pong peer=|burst|test-ping", timeout=0.5) is None,
               "member 4 connects during the start (its pings go unanswered meanwhile)")
         m4.p.kill()
         m4.exit_code()
         check(m5.wait_for(r"burst-sent", timeout=3 * SCALE) is not None, "member 5 sends 1.2 MB during the start")
-        check(host4.wait_for(r"start-queue closed conn=\d+ why=over-1MiB", timeout=6 * SCALE) is not None,
+        p5 = peer_id(k5.group(1)) if k5 else "?"
+        p6 = peer_id(k6.group(1)) if k6 else "?"
+        check(host4.wait_for(r"start-queue closed conn=\d+ why=over-1MiB peer=%s" % p5, timeout=6 * SCALE) is not None,
               "the host closes member 5's connection past the 1 MiB start-queue cap")
-        # 20,000 nearly empty messages: under 1 MiB of payload, over it with
-        # the 64 bytes counted per message.
+        # On the boundary (review B of PR 27, B2): 4,100 messages of 200 bytes
+        # are 820,000 bytes of payload, under 1 MiB (1,048,576), and 1,082,400
+        # with the 64 bytes counted per message, over it. Without the
+        # overhead this connection would stay open.
         check(m6.wait_for(r"burst-sent", timeout=6 * SCALE) is not None and
-              host4.count(r"start-queue closed conn=\d+ why=over-1MiB") >= 1 and
-              host4.wait_for(r"start-queue closed conn=\d+ why=over-1MiB", timeout=6 * SCALE,
-                             start=host4.index_of(r"start-queue closed", timeout=1) + 1) is not None,
-              "member 6's 20,000 nearly empty messages count against the cap too (64 bytes each)")
+              host4.wait_for(r"start-queue closed conn=\d+ why=over-1MiB peer=%s" % p6, timeout=6 * SCALE) is not None,
+              "member 6's 4,100 x 200 bytes (payload under 1 MiB) pass the cap only with 64 bytes counted "
+              "per message: closed")
         i_r4 = host4.index_of(r"ready incarnation=4", timeout=10 * SCALE)
         check(host4.wait_for(r"start-queue dropped conn=\d+ why=closed-during-start", timeout=1) is not None and
               host4.find(r"connected peer=%s" % peer_id(k4.group(1) if k4 else "00"))[0] is None,
               "member 4, gone before the start ended, is never reported to the node")
+        # B5: what it queued is freed when it closes, not when the start ends.
+        i_d4 = host4.find(r"start-queue dropped conn=\d+ why=closed-during-start peer=%s messages=[1-9]\d*"
+                          % peer_id(k4.group(1) if k4 else "00"))[0]
+        check(i_d4 is not None and i_r4 is not None and i_d4 < i_r4,
+              "member 4's queued pings are dropped when it closes, during the start")
         i_c5 = host4.index_of(r"connected peer=%s" % peer_id(k5.group(1) if k5 else "00"), timeout=10)
         check(i_r4 is not None and i_c5 is not None and i_c5 > i_r4, "member 5 comes back after the start")
         i_t = host4.index_of(r"test-timer fired", timeout=5)

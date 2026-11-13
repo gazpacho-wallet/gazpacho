@@ -241,6 +241,12 @@ int main(int argc, char **argv)
          * through their reconnect step); the next start opens them again. */
         /* The last RESTART_LIMIT + 1 restarts, in a ring: stop when the oldest
          * of them is within the window. */
+#ifdef GZP_TEST_BUILD
+        /* --test-stop-at-restart: a stop that arrives while the incarnation
+         * ends, before the next start (M6; the window is too short to hit
+         * from outside reliably). */
+        if (opt.test_stop_at_restart) raise(SIGTERM);
+#endif
         now = gzp_mono_ms();
         restart_at[restarts % (RESTART_LIMIT + 1)] = now;
         restarts++;

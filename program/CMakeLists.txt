@@ -52,6 +52,7 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 # --- tests ---------------------------------------------------------------------
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
+gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
@@ -82,6 +83,31 @@ if(Python3_Interpreter_FOUND)
   # A flooding peer, an idle loop's timers, listening after the start, SIGPIPE (M1, M4, M5).
   add_test(NAME program_loop_liveness
     COMMAND ${GZP_PY} ${GZP_T}/liveness.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/liveness)
+  # Review B of PR 27: its own tests, copied as written. The start queue under
+  # load (4,100 x 200 bytes, the 64-byte overhead), a timer due during a held
+  # start, and a restart's timers; an in-process restart with members connected
+  # (stale connection slots); the tip told at every start, against a loopback
+  # Esplora stub (plain HTTP on 127.0.0.1, which ports/chain allows: needs curl).
+  add_test(NAME program_start_queue
+    COMMAND ${GZP_PY} ${GZP_T}/start_queue.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/start_queue)
+  add_test(NAME program_restart_slots
+    COMMAND ${GZP_PY} ${GZP_T}/restart_slots.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/restart_slots)
+  set_tests_properties(program_start_queue program_restart_slots PROPERTIES TIMEOUT 300)
+  if(TARGET gazpacho_chain_curl)
+    add_test(NAME program_chain_stub
+      COMMAND ${GZP_PY} ${GZP_T}/chain_stub.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/chain_stub)
+    set_tests_properties(program_chain_stub PROPERTIES TIMEOUT 300)
+  endif()
+  # The restart window and a stop during a restart (M6); the start queue's
+  # messages under the right connection, after its connected, and the queue's
+  # total cap (B41, B42, B5); smaller refusals and the reconnect delay (B7).
+  add_test(NAME program_restart_policy
+    COMMAND ${GZP_PY} ${GZP_T}/restart_policy.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/restart_policy)
+  add_test(NAME program_queue_peers
+    COMMAND ${GZP_PY} ${GZP_T}/queue_peers.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/queue_peers)
+  add_test(NAME program_refusals
+    COMMAND ${GZP_PY} ${GZP_T}/refusals.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/refusals)
+  set_tests_properties(program_restart_policy program_queue_peers program_refusals PROPERTIES TIMEOUT 300)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})

@@ -281,7 +281,8 @@ static void deliver(gzp_exec_t *ex, const gz_event_t *ev)
     st = gz_node_handle(&ex->node, ev, &ex->list);
     ex->delivered++;
 #ifdef GZP_TEST_BUILD
-    if (ex->number == 1 && ex->opt->test_node_error_at && ex->delivered == (uint64_t)ex->opt->test_node_error_at) {
+    if ((ex->number == 1 || ex->opt->test_node_error_always) && ex->opt->test_node_error_at &&
+        ex->delivered == (uint64_t)ex->opt->test_node_error_at) {
         gz_action_list_reset(&ex->list);
         st = GZ_ERR_NO_SPACE; /* as if the node had refused the event */
     }
@@ -328,6 +329,29 @@ static void drain(gzp_exec_t *ex)
 
 /* ---- network events (never during a start: the adapter queues them) ---- */
 
+#ifdef GZP_TEST_BUILD
+/* Tests: the node's view of who is connected, as the events gave it, so that
+ * a message delivered before its connection's connected (or after its
+ * disconnected) shows in the output (review B of PR 27, B42). */
+static struct {
+    uint64_t peer;
+    int n;
+} seen[2 * GZP_MAX_CONNS];
+
+static int *seen_count(uint64_t peer, int make)
+{
+    size_t i, free_i = sizeof seen / sizeof seen[0];
+    for (i = 0; i < sizeof seen / sizeof seen[0]; i++) {
+        if (seen[i].n > 0 && seen[i].peer == peer) return &seen[i].n;
+        if (seen[i].n <= 0 && free_i == sizeof seen / sizeof seen[0]) free_i = i;
+    }
+    if (!make || free_i == sizeof seen / sizeof seen[0]) return NULL;
+    seen[free_i].peer = peer;
+    seen[free_i].n = 0;
+    return &seen[free_i].n;
+}
+#endif
+
 static void on_connected(void *ctx, uint64_t peer_id, const uint8_t key[33], int outbound, uint64_t conn)
 {
     gzp_exec_t *ex = ctx;
@@ -336,6 +360,12 @@ static void on_connected(void *ctx, uint64_t peer_id, const uint8_t key[33], int
     gzp_hex(key, 33, hex);
     gzp_log("connected peer=%016llx key=%s outbound=%d conn=%llu", (unsigned long long)peer_id, hex, outbound,
             (unsigned long long)conn);
+#ifdef GZP_TEST_BUILD
+    {
+        int *n = seen_count(peer_id, 1);
+        if (n) (*n)++;
+    }
+#endif
     memset(&ev, 0, sizeof ev);
     ev.kind = GZ_EVENT_PEER_CONNECTED;
     ev.u.peer.peer_id = peer_id;
@@ -352,6 +382,12 @@ static void on_disconnected(void *ctx, uint64_t peer_id, const char *why)
     gzp_exec_t *ex = ctx;
     gz_event_t ev;
     gzp_log("disconnected peer=%016llx why=%s", (unsigned long long)peer_id, why ? why : "-");
+#ifdef GZP_TEST_BUILD
+    {
+        int *n = seen_count(peer_id, 0);
+        if (n) (*n)--;
+    }
+#endif
     memset(&ev, 0, sizeof ev);
     ev.kind = GZ_EVENT_PEER_DISCONNECTED;
     ev.u.peer.peer_id = peer_id;
@@ -364,6 +400,8 @@ static void on_message(void *ctx, uint64_t peer_id, const uint8_t *bytes, size_t
     gzp_exec_t *ex = ctx;
     gz_event_t ev;
 #ifdef GZP_TEST_BUILD
+    if (!seen_count(peer_id, 0))
+        gzp_log("test-order message-from-unreported-peer peer=%016llx", (unsigned long long)peer_id);
     gzp_testping_message(ex->tp, peer_id, bytes, len);
 #endif
     memset(&ev, 0, sizeof ev);
@@ -556,6 +594,9 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     ex->resent = 0;
     memset(ex->timers, 0, sizeof ex->timers); /* the old incarnation's timers never fire */
     gzp_chain_forget_watches(ex->chain);      /* the start sets watches again */
+#ifdef GZP_TEST_BUILD
+    memset(seen, 0, sizeof seen); /* the new node has seen no connection */
+#endif
 
     nev.connected = on_connected;
     nev.disconnected = on_disconnected;
