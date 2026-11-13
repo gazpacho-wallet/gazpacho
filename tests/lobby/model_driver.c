@@ -35,19 +35,21 @@ int main(void)
             memset(&o, 0, sizeof o);
             memset(&c, 0, sizeof c);
             memset(&cond, 0, sizeof cond);
-            o.profile = (uint8_t)v[0]; o.lifetime_blocks = (uint32_t)v[1]; o.winddown_blocks = (uint32_t)v[2];
+            o.profile = (uint8_t)v[0]; o.lifetime_blocks = (uint32_t)v[1]; o.minimum = (uint16_t)v[2];
             o.channel_sat = v[3]; o.tree_feerate = (uint32_t)v[4];
-            o.n_adj = c.n_adj = 3;
+            o.n_adj = c.n_values = 3;
+            cond.limits.n_max = 3;
             for (k = 0; k < 3; k++) {
-                o.adj[k].type = c.adj_type[k] = (uint8_t)(64 + 2 * k);
-                o.adj[k].min = v[5 + 3 * k]; o.adj[k].max = v[6 + 3 * k]; c.adj_value[k] = v[7 + 3 * k];
+                o.adj[k].type = c.val[k].type = cond.limits.max[k].type = (uint8_t)(64 + 2 * k);
+                o.adj[k].min = v[5 + 3 * k]; o.adj[k].max = v[6 + 3 * k]; c.val[k].value = v[7 + 3 * k];
+                cond.limits.max[k].max = v[20 + k];
             }
-            cond.profiles = (uint8_t)v[14]; cond.life_min = (uint32_t)v[15]; cond.life_max = (uint32_t)v[16];
-            cond.wind_max = (uint32_t)v[17]; cond.chan_min = v[18]; cond.rate_max = (uint32_t)v[19];
-            cond.adj_max[0] = v[20]; cond.adj_max[1] = v[21]; cond.adj_max[2] = v[22];
+            cond.limits.profiles = (uint8_t)v[14]; cond.limits.min_lifetime = (uint32_t)v[15];
+            cond.limits.max_lifetime = (uint32_t)v[16]; cond.limits.min_members = (uint16_t)v[17];
+            cond.limits.min_channel_sat = v[18]; cond.limits.max_tree_feerate = (uint32_t)v[19];
             cond.current_only = (uint8_t)v[23];
-            cls = gz_terms_classify(&o, &c, &cond, &term);
-            printf("C %s %d %d\n", name[cls], term, gz_terms_ready_ok(cls, &cond));
+            cls = gz_lobby_classify(&o, &c, &cond, &term);
+            printf("C %s %d %d\n", name[cls], term, gz_lobby_ready_ok(cls, &cond));
         }
     }
     return 0;

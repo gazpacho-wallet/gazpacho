@@ -10,7 +10,7 @@ Alignment fixes from `docs/reviews/review-cross-spec-1.md`, made in one pass wit
 |---|---|---|
 | D13 | **Record type numbers assigned** for `spec/exit.md` 3.4's records: area 0x0007 (Exit) for `exit_plan`, `exit_started`, `exit_step`, `coin_reserved`, `fee_child`, `exit_ended` and `bundle_written`; area 0x0008 (Watch) for `spend_seen` and `response_sent`. All even. Slice 3 | Section 9.1 |
 | The API's saved state | **Record type numbers assigned** for every row of `spec/local-api.md` 7.5, in a new area 0x000d (Local API), all even. Slice 1 for the S1 rows, 1.0.0 for the rest. This closes Slice 1 input W3 for the type numbers; the field numbers inside each record stay with the code tables (open point 3) | Section 9.1, open point 9 |
-| The lobby engine's records | **Record type number assigned** for the host's `lobby_state` (0x00010018), the one record the lobby engine adds to section 9. Its layouts are in `docs/notes/lobby.md` | Section 9.1 |
+| The lobby engine's records | **Record type number assigned** for the host's `lobby_state` (0x00010018), the one record the lobby engine adds to section 9. Its layouts are in `docs/notes/lobby.md`. After review A of PR 30, `start_sent` also holds the time the signing budget began | Section 9.1 |
 | D3 | Every batch that changes the watch bundle or appends a penalty entry is an anchored batch (storage 6.2), whatever records it holds | Section 4 step 4 |
 
 ## Changes in draft 3
@@ -259,7 +259,7 @@ Record types are `u32`. The high 16 bits name an area, the low 16 bits a kind. E
 | `0x0001000e` | `joined` | Member | Lobby id, key epoch and index of its keys, the `join` bytes | `join` |
 | `0x00010010` | `ready_sent` | Member | The signed `ready` bytes | `ready` (resent byte for byte) |
 | `0x00010012` | `host_fault` | Member | Evidence: two current records under one version, a version after the freeze, or two proposals under one round identifier | `leave`, or nothing (for a proposal) |
-| `0x00010014` | `start_sent` | Host | `check_id`, the chosen seats, the signed `start` bytes for each seat | The first `start` of the check; resent from it after `hello` (`messages.md` 6.9) |
+| `0x00010014` | `start_sent` | Host | `check_id`, the time the lobby's signing budget began (its first `start`), the chosen seats, the signed `start` bytes for each seat | The first `start` of the check; resent from it after `hello` (`messages.md` 6.9); the signing budget's timer is set again from it after a restart (`terms.md` 3) |
 | `0x00010016` | `start_received` | Member | The signed `start` bytes | Nothing; consulted when `round_propose` arrives |
 
 **Round (0x0002)**

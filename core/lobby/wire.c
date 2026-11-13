@@ -203,7 +203,7 @@ int gz_lobby_decode(const uint8_t *msg, size_t len, gz_lobby_msg_t *m)
 
 void gz_lobby_msg_hash(const uint8_t *msg, const gz_lobby_msg_t *m, uint8_t out[32])
 {
-    gz_lobby_tagged("gazpacho/msg", msg + 2, m->signed_len, out);
+    gz_la_tagged("gazpacho/msg", msg + 2, m->signed_len, out);
 }
 
 /* ------------------------------------------------------------- encoding */
@@ -254,7 +254,7 @@ size_t gz_lobby_enc_sign(gz_lobby_enc_t *e, const gz_lobby_crypto_t *c, uint32_t
 {
     uint8_t h[32], sig[64];
     if (e->bad) return 0;
-    gz_lobby_tagged("gazpacho/msg", e->buf + 2, e->len - 2, h);
+    gz_la_tagged("gazpacho/msg", e->buf + 2, e->len - 2, h);
     if (c->sign(c->ctx, which, h, sig) != 1) return 0;
     gz_lobby_enc_record(e, 240, sig, 64);
     return gz_lobby_enc_done(e);
@@ -265,12 +265,12 @@ size_t gz_lobby_enc_done(gz_lobby_enc_t *e) { return e->bad ? 0 : e->len; }
 void gz_lobby_binding(const uint8_t scope[32], const uint8_t fkey[33], const uint8_t ckey[33],
                       uint8_t out[32])
 {
-    gz_lobby_sha256_t s;
-    gz_lobby_tagged_init(&s, "gazpacho/bind");
-    gz_lobby_sha256_write(&s, scope, 32);
-    gz_lobby_sha256_write(&s, fkey, 33);
-    gz_lobby_sha256_write(&s, ckey, 33);
-    gz_lobby_sha256_done(&s, out);
+    tr_sha256_t s;
+    tr_tagged_init(&s, "gazpacho/bind");
+    tr_sha256_write(&s, scope, 32);
+    tr_sha256_write(&s, fkey, 33);
+    tr_sha256_write(&s, ckey, 33);
+    tr_sha256_done(&s, out);
 }
 
 size_t gz_lobby_warning(const char *text, uint8_t *out, size_t cap)
@@ -297,16 +297,16 @@ size_t gz_part_build(uint16_t kind, const uint8_t scope[32], const uint8_t *body
                      uint16_t index, uint8_t *out, size_t cap)
 {
     gz_lobby_enc_t e;
-    gz_lobby_sha256_t s;
+    tr_sha256_t s;
     uint8_t id[32], k[2];
     uint16_t count = gz_part_count(body_len);
     size_t from, n;
     if (count == 0 || index >= count || kind == GZ_KIND_PART) return 0;
     gz_lw_put(k, kind, 2);
-    gz_lobby_tagged_init(&s, "gazpacho/part");
-    gz_lobby_sha256_write(&s, k, 2);
-    gz_lobby_sha256_write(&s, body, body_len);
-    gz_lobby_sha256_done(&s, id);
+    tr_tagged_init(&s, "gazpacho/part");
+    tr_sha256_write(&s, k, 2);
+    tr_sha256_write(&s, body, body_len);
+    tr_sha256_done(&s, id);
     from = (size_t)index * GZ_PART_DATA;
     n = body_len - from < GZ_PART_DATA ? body_len - from : GZ_PART_DATA;
     gz_lobby_enc_start(&e, out, cap, GZ_KIND_PART, scope);
@@ -332,7 +332,7 @@ int gz_part_feed(gz_part_reasm_t *r, const gz_lobby_msg_t *m, uint16_t *kind, ui
     size_t at = (size_t)m->index * GZ_PART_DATA;
     uint16_t i;
     uint8_t id[32], k[2];
-    gz_lobby_sha256_t s;
+    tr_sha256_t s;
     if (m->kind != GZ_KIND_PART || m->total_len > r->cap) return -1;
     if (r->open && (memcmp(r->transfer_id, m->transfer_id, 32) != 0 ||
                     memcmp(r->scope, m->scope, 32) != 0 || r->inner_kind != m->inner_kind ||
@@ -358,10 +358,10 @@ int gz_part_feed(gz_part_reasm_t *r, const gz_lobby_msg_t *m, uint16_t *kind, ui
         if (!r->have[i]) return 0;
     r->open = 0;                                      /* rule 5 */
     gz_lw_put(k, r->inner_kind, 2);
-    gz_lobby_tagged_init(&s, "gazpacho/part");
-    gz_lobby_sha256_write(&s, k, 2);
-    gz_lobby_sha256_write(&s, r->buf, r->total_len);
-    gz_lobby_sha256_done(&s, id);
+    tr_tagged_init(&s, "gazpacho/part");
+    tr_sha256_write(&s, k, 2);
+    tr_sha256_write(&s, r->buf, r->total_len);
+    tr_sha256_done(&s, id);
     if (memcmp(id, r->transfer_id, 32) != 0) return -1;
     *kind = r->inner_kind;
     memcpy(scope, r->scope, 32);

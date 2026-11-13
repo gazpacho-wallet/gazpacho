@@ -43,7 +43,7 @@ static void setup(void)
     lt_key(&MEM.key[2], "member 1 contribution"); lt_key(&MEM.key[3], "member 1 factory");
     T1N = lt_unhex(LT_T1, T1, sizeof T1);
     T2N = lt_unhex(LT_T2, T2, sizeof T2);
-    gz_terms_outer_decode(T1, T1N, &T1O);
+    lt_outer(T1, T1N, &T1O);
     gz_terms_outer_digest(T1, T1N, SCOPE);
     ready_ = 1;
 }
@@ -108,16 +108,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         }
     }
     /* 2. both terms records */
-    if (gz_terms_outer_decode(x, size, &o)) {
+    if (lt_outer(x, size, &o)) {                      /* core/tree's decoder, the lobby's policy */
         static uint8_t again[GZ_TERMS_OUTER_MAX];
-        size_t an = gz_terms_outer_encode(&o, again, sizeof again);
+        size_t an = gz_terms_encode_outer(&o, again, sizeof again);
         lobby_fuzz_stats[1]++;
         MUST(!all_known(x, size) || (an == size && memcmp(again, x, size) == 0));
-        MUST(gz_terms_outer_decode(x, size, &o2) && memcmp(&o, &o2, sizeof o) == 0);
+        MUST(lt_outer(x, size, &o2) && gz_terms_outer_equal(&o, &o2));
     }
-    if (gz_terms_current_decode(x, size, &T1O, SCOPE, &c)) {
+    if (lt_current(x, size, &T1O, SCOPE, &c)) {
         uint8_t again[GZ_TERMS_CURRENT_MAX];
-        size_t an = gz_terms_current_encode(&c, &T1O, again, sizeof again);
+        size_t an = gz_terms_encode_current(&c, again, sizeof again);
         lobby_fuzz_stats[2]++;
         MUST(an == size && memcmp(again, x, size) == 0);
     }
@@ -144,6 +144,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     MUST(st == GZ_OK || st == GZ_ERR_CORRUPT);
     st = gz_lobby_member_restore(&mem, &rec);
     MUST(st == GZ_OK || st == GZ_ERR_CORRUPT);
+    gz_action_list_init(&l, slots, 256, abytes, sizeof abytes);
+    MUST(gz_lobby_host_resume(&host, &l) == GZ_OK);
+    gz_action_list_init(&l, slots, 256, abytes, sizeof abytes);
+    MUST(gz_lobby_member_resume(&mem, &l) == GZ_OK);
     /* 4. and as a message */
     memset(&in, 0, sizeof in);
     in.kind = GZ_LIN_MESSAGE; in.bytes = x; in.len = size;

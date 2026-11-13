@@ -20,6 +20,11 @@ Ambiguities and how this model reads them:
     Since cur <= hi, a failing current value always also fails its range;
     such a term counts for "no" only. Failing current values and failing
     fixed terms are pooled for the smallest type number.
+ 7. classify (since review A of PR 30, F4: the lobby uses core/tree's limits):
+    a fixed limit of 0 means "no limit" (profiles 0: any profile); a listed
+    adjustable limit of 0 is a real bound. The member's smallest number of
+    members is a fixed term: the terms' `minimum` (type 12) must be at least
+    it. The wind-down limit is gone (core/tree's limits have none).
 """
 import random
 import subprocess
@@ -45,22 +50,22 @@ def start_rule(target, minimum, deadline_s, now_s, ready):
     return "wait"
 
 
-KEYS = ("profile life wind chan rate lo64 hi64 cur64 lo66 hi66 cur66 lo68 hi68 "
-        "cur68 profiles life_min life_max wind_max chan_min rate_max L64 L66 L68 "
+KEYS = ("profile life minimum chan rate lo64 hi64 cur64 lo66 hi66 cur66 lo68 hi68 "
+        "cur68 profiles life_min life_max min_members chan_min rate_max L64 L66 L68 "
         "loose").split()
 
 
 def classify(c):
     fixed_fail = []
-    if not (c["profiles"] >> c["profile"]) & 1:
+    if c["profiles"] and not (c["profiles"] >> c["profile"]) & 1:
         fixed_fail.append(8)
-    if not (c["life_min"] <= c["life"] <= c["life_max"]):
+    if c["min_members"] and c["minimum"] < c["min_members"]:
+        fixed_fail.append(12)
+    if (c["life_min"] and c["life"] < c["life_min"]) or (c["life_max"] and c["life"] > c["life_max"]):
         fixed_fail.append(26)
-    if not c["wind"] <= c["wind_max"]:
-        fixed_fail.append(28)
-    if not c["chan"] >= c["chan_min"]:
+    if c["chan_min"] and c["chan"] < c["chan_min"]:
         fixed_fail.append(30)
-    if not c["rate"] <= c["rate_max"]:
+    if c["rate_max"] and c["rate"] > c["rate_max"]:
         fixed_fail.append(32)
     range_fail = []
     for t in (64, 66, 68):
@@ -139,14 +144,17 @@ def gen_classify(rng):
             return v if r < p * 0.6 else near(rng, v, lo, hi)
         return rng.randint(v, hi) if up and r < 0.95 else rng.randint(lo, hi)
     c = {"profile": rng.randint(1, 4), "life": rng.randint(1, 52560),
-         "wind": rng.randint(1, 52560), "chan": rng.randint(546, 10**7),
+         "minimum": rng.randint(3, 1000), "chan": rng.randint(546, 10**7),
          "rate": rng.randint(1, 10**6), "loose": rng.randint(0, 1)}
     c["profiles"] = (rng.randint(0, 31) | (1 << c["profile"]) & 31) if rng.random() < p else rng.randint(0, 31)
     c["life_min"] = near(rng, c["life"], 1, 52560) if rng.random() < 0.3 else c["life"] if rng.random() < p else lim(c["life"], 1, 52560)
     c["life_max"] = lim(c["life"], 1, 52560) if rng.random() < p else lim(c["life"], 1, 52560)
-    c["wind_max"] = lim(c["wind"], 1, 52560)
+    c["min_members"] = min(c["minimum"], lim(c["minimum"], 1, 1000, False)) if rng.random() < 0.8 else near(rng, c["minimum"], 1, 1000)
     c["chan_min"] = min(c["chan"], lim(c["chan"], 546, 10**7, False)) if rng.random() < 0.8 else near(rng, c["chan"], 546, 10**7)
     c["rate_max"] = lim(c["rate"], 1, 10**6)
+    for k in ("profiles", "life_min", "life_max", "min_members", "chan_min", "rate_max"):
+        if rng.random() < 0.1:
+            c[k] = 0                                  # no limit
     for t in (64, 66, 68):
         a, b, d = sorted(rng.randint(0, 10**6) for _ in range(3))
         if rng.random() < 0.2:
@@ -182,8 +190,8 @@ def check(driver, n, seed):
     return 1 if mism or len(out) != n else 0
 
 
-T6 = ("C 2 1000 100 100000 1000 0 2000 500 0 1000 1000 100 2500 1000 "
-      "4 1 52560 100 546 1000 1000 1000 2500 %d")
+T6 = ("C 2 1000 3 100000 1000 0 2000 500 0 1000 1000 100 2500 1000 "
+      "4 1 52560 0 546 1000 1000 1000 2500 %d")
 
 
 def selftest():
@@ -202,6 +210,10 @@ def selftest():
         (T6 % 0, "C fits_now 64 0"),                  # terms.md T6, strict mode
         (T6 % 1, "C fits_now 64 1"),                  # T6, loose mode
         (T6.replace(" 500 ", " 1500 ", 1) % 1, "C no 64 0"),
+        (T6.replace(" 52560 0 ", " 52560 4 ") % 1, "C no 12 0"),      # minimum 3 below 4
+        (T6.replace("C 2 1000", "C 2 60000").replace(" 1 52560 ", " 0 0 ") % 0, "C fits_now 64 0"),
+        ("C 2 1000 3 100000 1000 0 2000 500 0 1000 1000 100 2500 1000 0 0 0 0 0 0 2000 0 2500 0",
+         "C no 66 0"),                               # a listed 0 is a real bound
     ]
     bad = 0
     for line, exp in cases:

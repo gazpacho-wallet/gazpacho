@@ -19,12 +19,14 @@ from concurrent.futures import ThreadPoolExecutor
 REPO, SECP_SRC, SECP_LIB, OUT = sys.argv[1:5]
 WORKERS = int(sys.argv[5]) if len(sys.argv) > 5 else 4
 ONLY = sys.argv[6].split(",") if len(sys.argv) > 6 else None
-FILES = ["act.c", "host.c", "member.c", "sha256.c", "terms.c", "wire.c"]
+FILES = ["act.c", "fit.c", "host.c", "member.c", "wire.c"]
+TREE = ["sha256", "terms", "shape", "model", "checks", "exit"]   # core/tree, never mutated here
 TESTS = [  # fastest first; a mutant is killed by the first that fails
     ["{q}/test_lobby_vectors"],
     ["{q}/test_lobby"],
     ["python3", "-I", "{repo}/tests/lobby/lobby_model.py", "check", "{q}/lobby_model_driver", "20000", "3"],
     ["{q}/fuzz_lobby", "20000", "5"],
+    ["{q}/fuzz_lobby_seq", "1500", "5"],
     ["{q}/test_lobby_sim_fast", "20", "0"],
     ["{q}/test_lobby_sim_fast", "20", "1"],
     ["{q}/test_lobby_sim_fast", "20", "2"],
@@ -92,10 +94,12 @@ def run(cmd, cwd, timeout):
         return "timeout"
 
 
-INC = ["-I", f"{REPO}/core/gazpacho/include", "-I", f"{REPO}/core/lobby/include", "-I", f"{REPO}/sim",
+INC = ["-I", f"{REPO}/core/gazpacho/include", "-I", f"{REPO}/core/lobby/include", "-I", f"{REPO}/core/tree/include",
+       "-I", f"{REPO}/sim",
        "-I", f"{SECP_SRC}/include"]
 CC = ["gcc", "-std=gnu11", "-O1", "-w", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]
-MAINS = ["test_lobby_vectors", "test_lobby", "test_lobby_sim", "fuzz_lobby", "fuzz_lobby_main", "model_driver"]
+MAINS = ["test_lobby_vectors", "test_lobby", "test_lobby_sim", "fuzz_lobby", "fuzz_lobby_main", "fuzz_lobby_seq",
+         "fuzz_lobby_seq_main", "model_driver"]
 OBJ = f"{OUT}/obj"
 FAST = ["gcc", "-std=gnu11", "-O2", "-w"]           # the simulator runs long: built without the checkers
 
@@ -106,6 +110,7 @@ def prebuild():
     srcs = {f"lobby_{f[:-2]}": f"{REPO}/core/lobby/{f}" for f in FILES}
     srcs.update({"action": f"{REPO}/core/gazpacho/action.c", "runner": f"{REPO}/core/gazpacho/runner.c",
                  "rng": f"{REPO}/sim/rng.c"})
+    srcs.update({f"tree_{t}": f"{REPO}/core/tree/{t}.c" for t in TREE})
     srcs.update({m: f"{REPO}/tests/lobby/{m}.c" for m in MAINS})
     for name, path in srcs.items():
         if run(CC + INC + ["-c", path, "-o", f"{OBJ}/{name}.o"], REPO, 300) != 0:
@@ -134,9 +139,9 @@ def link(work, name, binary):
     fast = binary.endswith("_fast")
     sfx = ".fast.o" if fast else ".o"
     objs = [f"{work}/mut{sfx}" if f == name else f"{OBJ}/lobby_{f[:-2]}{sfx}" for f in FILES]
-    objs += [f"{OBJ}/action{sfx}", f"{OBJ}/runner{sfx}", f"{OBJ}/rng{sfx}"]
+    objs += [f"{OBJ}/action{sfx}", f"{OBJ}/runner{sfx}", f"{OBJ}/rng{sfx}"] + [f"{OBJ}/tree_{t}{sfx}" for t in TREE]
     main_obj = {"lobby_model_driver": "model_driver", "test_lobby_sim_fast": "test_lobby_sim"}.get(binary, binary)
-    mains = [main_obj] + (["fuzz_lobby_main"] if binary == "fuzz_lobby" else [])
+    mains = [main_obj] + ({"fuzz_lobby": ["fuzz_lobby_main"], "fuzz_lobby_seq": ["fuzz_lobby_seq_main"]}.get(binary, []))
     return run((FAST if fast else CC) + [f"{OBJ}/{m}{sfx}" for m in mains] + objs + [SECP_LIB, "-o", out], work, 120) == 0
 
 

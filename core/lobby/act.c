@@ -59,6 +59,22 @@ gz_status_t gz_la_refuse(gz_action_list_t *o, uint64_t peer, const char *why)
     return st != GZ_OK ? st : gz_la_notify(o, GZ_NOTE_CLOSE, p, 8);
 }
 
+gz_status_t gz_la_cmd_refused(gz_action_list_t *o, uint8_t cmd, int lobby_state)
+{
+    uint8_t n[2];
+    n[0] = cmd;
+    n[1] = (uint8_t)lobby_state;
+    return gz_la_notify(o, GZ_NOTE_COMMAND_REFUSED, n, 2);
+}
+
+void gz_la_tagged(const char *tag, const uint8_t *d, size_t len, uint8_t out[32])
+{
+    tr_sha256_t s;
+    tr_tagged_init(&s, tag);
+    tr_sha256_write(&s, d, len);
+    tr_sha256_done(&s, out);
+}
+
 /* A verified message: decoded, and signed by `key` when it carries record 240. */
 int gz_la_verified(const gz_lobby_crypto_t *c, const uint8_t *msg, const gz_lobby_msg_t *m,
                    const uint8_t key[33])

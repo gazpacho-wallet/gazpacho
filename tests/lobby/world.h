@@ -22,6 +22,7 @@ typedef struct {
     int role; uint8_t check[32], digest[32]; uint16_t signers, n_participants;
     uint8_t participants[GZ_LOBBY_MAX_SEATS + 1][33], factory[GZ_LOBBY_MAX_SEATS + 1][33];
     int bindings_ok, records_ok, terms_ok;     /* checked by the stub itself */
+    int sigs_ok, limits_ok;                    /* the host's signatures under the pinned key; member limits */
     uint8_t levels[8], n_levels, fixed_levels, k, anchors;
     uint16_t layer_step, layer_states, min_members;
     uint32_t version;
@@ -40,6 +41,8 @@ typedef struct {
     w_timer_t timers[8]; int n_timers;
     sim_rng_t rng;
     w_handoff_t handoffs[16]; int n_handoffs;
+    int n_resumes, n_repeats;                  /* begin again for a check it holds: resumed, or not */
+    int n_left;                                /* member_left calls (host) */
     int n_cancels; uint16_t cancel_reason; uint8_t cancel_scope[32];
     uint32_t notes[64]; uint8_t note_a[64], note_b[64]; int n_notes;
     int close_requested;
@@ -74,7 +77,15 @@ static inline gz_status_t w_begin(void *ctx, const gz_lobby_handoff_t *h, gz_act
     w_node_t *d = ctx;
     w_handoff_t *x;
     uint16_t i;
+    int k;
     (void)out;
+    /* The signing engine's begin is idempotent per check_id (lobby_handoff.h). */
+    for (k = 0; k < d->n_handoffs; k++)
+        if (memcmp(d->handoffs[k].check, h->check_id, 32) == 0) {
+            if (h->resume) d->n_resumes++; else d->n_repeats++;
+            return GZ_OK;
+        }
+    if (h->resume) d->n_resumes++;
     if (d->n_handoffs >= 16) return GZ_OK;
     x = &d->handoffs[d->n_handoffs++];
     memset(x, 0, sizeof *x);
@@ -101,15 +112,26 @@ static inline gz_status_t w_begin(void *ctx, const gz_lobby_handoff_t *h, gz_act
         gz_terms_outer_digest(h->outer, h->outer_len, od);
         gz_terms_current_digest(h->current, h->current_len, cd);
         x->records_ok = memcmp(od, h->scope, 32) == 0 && memcmp(cd, h->current_digest, 32) == 0 &&
-                        gz_terms_outer_decode(h->outer, h->outer_len, &o) &&
-                        gz_terms_current_decode(h->current, h->current_len, &o, od, &c) && c.version == h->version;
-        x->terms_ok = h->terms && h->terms->target == o.target && h->terms->channel_sat == o.channel_sat &&
-                      memcmp(h->terms->host_key, o.host_key, 33) == 0;
+                        lt_outer(h->outer, h->outer_len, &o) &&
+                        lt_current(h->current, h->current_len, &o, od, &c) && c.version == h->version &&
+                        h->values && gz_terms_current_equal(h->values, &c);
+        x->terms_ok = h->terms && gz_terms_outer_equal(h->terms, &o) && h->pinned_key &&
+                      memcmp(h->terms->host_key, h->pinned_key, 33) == 0;
+        x->sigs_ok = h->outer_sig && h->current_sig && h->pinned_key &&
+                     lt_verify(NULL, h->pinned_key, od, h->outer_sig) && lt_verify(NULL, h->pinned_key, cd, h->current_sig);
+        x->limits_ok = h->participants ? h->limits == NULL : h->limits != NULL && h->limits->n_max == 3;
     }
     memcpy(x->levels, h->levels, 8);
     x->n_levels = h->n_levels; x->fixed_levels = h->fixed_levels; x->k = h->k; x->anchors = h->tree_anchors;
     x->layer_step = h->layer_step; x->layer_states = h->layer_states; x->min_members = h->min_members;
     x->version = h->version; x->start_len = h->start_len;
+    return GZ_OK;
+}
+
+static inline gz_status_t w_left(void *ctx, const uint8_t scope[32], const uint8_t ckey[33], gz_action_list_t *out)
+{
+    (void)scope; (void)ckey; (void)out;
+    ((w_node_t *)ctx)->n_left++;
     return GZ_OK;
 }
 
@@ -130,7 +152,7 @@ static inline int w_params_ok(const w_handoff_t *x, int members)
                              : x->n_levels == 2 && x->levels[0] == 4 && x->levels[1] == 3 &&
                                    x->fixed_levels == (members <= 8 ? 2 : 3);
     return lv_ok && x->k == 1 && x->anchors == 1 && x->layer_step == 144 && x->layer_states == 4 &&
-           x->records_ok && x->terms_ok && x->bindings_ok && x->version >= 1;
+           x->records_ok && x->terms_ok && x->bindings_ok && x->sigs_ok && x->limits_ok && x->version >= 1;
 }
 
 static inline void w_send(world_t *w, int from, int to, const uint8_t *b, size_t n)
@@ -259,7 +281,7 @@ static inline void w_boot(w_node_t *d)
     gz_lobby_signing_t sg;
     gz_action_list_t l;
     size_t i;
-    sg.begin = w_begin; sg.cancel = w_cancel; sg.ctx = d;
+    sg.begin = w_begin; sg.cancel = w_cancel; sg.member_left = w_left; sg.ctx = d;
     d->incarnation++;
     gz_runner_init(&d->runner, d->slots, 512, d->rbytes, 1 << 20, d->incarnation, w_execute, d);
     d->n_unconf = 0;
@@ -282,7 +304,7 @@ static inline void w_boot(w_node_t *d)
                 r.type = d->recs[i].type; r.bytes.data = d->recs[i].b; r.bytes.len = d->recs[i].n;
                 if (gz_lobby_host_restore(d->host, &r) != GZ_OK) { w->failures++; printf("host restore failed\n"); }
             }
-            gz_lobby_host_resume(d->host, &l);
+            if (gz_lobby_host_resume(d->host, &l) != GZ_OK) { w->failures++; printf("host resume failed\n"); }
         }
     } else {
         uint8_t scope[32];
@@ -294,6 +316,7 @@ static inline void w_boot(w_node_t *d)
             r.type = d->recs[i].type; r.bytes.data = d->recs[i].b; r.bytes.len = d->recs[i].n;
             if (gz_lobby_member_restore(d->mem, &r) != GZ_OK) { w->failures++; printf("member restore failed\n"); }
         }
+        if (gz_lobby_member_resume(d->mem, &l) != GZ_OK) { w->failures++; printf("member resume failed\n"); }
     }
     w_submit(d, &l);
 }

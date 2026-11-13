@@ -8,7 +8,7 @@
 #include "world.h"
 #include "../../core/lobby/lobby_internal.h"
 
-static unsigned long inv_fail, n_checks, n_starts, n_readies;
+static unsigned long inv_fail, n_checks, n_starts, n_readies, n_budget, n_resumed;
 
 static void inv(int ok, const char *what, world_t *w)
 {
@@ -52,8 +52,8 @@ static void on_wire(world_t *w, int from, int to, const uint8_t *b, size_t n)
         gz_terms_current_t c;
         uint8_t cd[32];
         int k;
-        gz_terms_outer_decode(m.outer, m.outer_len, &o);
-        gz_terms_current_decode(m.current, m.current_len, &o, outer_digest, &c);
+        lt_outer(m.outer, m.outer_len, &o);
+        lt_current(m.current, m.current_len, &o, outer_digest, &c);
         gz_terms_current_digest(m.current, m.current_len, cd);
         for (k = 0; k < n_seen; k++)
             if (seen_version[k] == (int)c.version) inv(memcmp(seen_digest[k], cd, 32) == 0, "two values under one version", w);
@@ -97,10 +97,10 @@ static void on_wire(world_t *w, int from, int to, const uint8_t *b, size_t n)
             gz_la_get_blob(t->b, t->n, &at, &ob, &on);
             at += 64;
             gz_la_get_blob(t->b, t->n, &at, &cb, &cn);
-            if (!gz_terms_outer_decode(ob, on, &o) || !gz_terms_current_decode(cb, cn, &o, outer_digest, &c)) continue;
+            if (!lt_outer(ob, on, &o) || !lt_current(cb, cn, &o, outer_digest, &c)) continue;
             if (c.version != m.version) continue;
-            cls = gz_terms_classify(&o, &c, &d->cond, &term);
-            ok = m.has_check_id ? cls != GZ_FIT_NO : gz_terms_ready_ok(cls, &d->cond);
+            cls = gz_lobby_classify(&o, &c, &d->cond, &term);
+            ok = m.has_check_id || d->mem->frozen ? cls != GZ_FIT_NO : gz_lobby_ready_ok(cls, &d->cond);
         }
         inv(ok, "ready for values the member's conditions refuse, or not saved", w);
         break;
@@ -119,7 +119,7 @@ static void on_wire(world_t *w, int from, int to, const uint8_t *b, size_t n)
 static int run(uint64_t seed, int profile, unsigned long *tot)
 {
     static world_t w;
-    int n = 3 + (int)(seed % 6), i, ok = 1;
+    int n = 3 + (int)(seed % 6), i, ok = 1, budget_spent;
     uint8_t cd2[32];
     w_init(&w, n, seed, NULL);
     w.on_wire = on_wire;
@@ -132,6 +132,7 @@ static int run(uint64_t seed, int profile, unsigned long *tot)
     w_run(&w, 9000, 1);                               /* faults for 450 s */
     for (i = 1; i <= n; i++) w_link(&w, i, 0);         /* then every connection is made again */
     w_run(&w, 4500, 0);                               /* past the deadline and the window */
+    for (i = 0; i <= n; i++) n_resumed += (unsigned long)w.node[i].n_resumes;
     tot[0] += w.drops; tot[1] += w.dups; tot[2] += w.reorders; tot[3] += w.crashes; tot[4] += w.cuts;
     if (w.failures) { printf("seed %llu: %lu engine failures\n", (unsigned long long)seed, w.failures); ok = 0; }
     /* Liveness. Below the target (n < 8) the start comes at the deadline, after
@@ -139,7 +140,13 @@ static int run(uint64_t seed, int profile, unsigned long *tot)
      * faults and start with those who answered (messages.md 6.9): at least
      * the minimum. Either way every member in the host's set, and only those,
      * is handed over for that check, with the frozen digest. */
-    if (w.node[0].host->state != GZ_LOBBY_SIGNING || w.node[0].n_handoffs != 1) {
+    /* A start made early (at the target, during the faults) may have spent
+     * T1's 10-minute signing budget by the end: the lobby then ends Failed,
+     * cancel reason 3 (terms.md 3), which is right with no signing engine. */
+    budget_spent = w.node[0].host->state == GZ_LOBBY_FAILED && w.node[0].host->end_reason == 3 &&
+                   w.node[0].host->budget_ms && w.now >= w.node[0].host->budget_ms + 600000;
+    if (budget_spent) n_budget++;
+    if ((w.node[0].host->state != GZ_LOBBY_SIGNING && !budget_spent) || w.node[0].n_handoffs != 1) {
         printf("seed %llu (n %d, profile %d): host state %d, handoffs %d\n", (unsigned long long)seed, n, profile,
                w.node[0].host->state, w.node[0].n_handoffs);
         ok = 0;
@@ -205,8 +212,10 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     for (s = 1; s <= seeds; s++) if (!run(s * 7919u + (unsigned long)profile, profile, tot)) failed++;
     printf("sim: profile %d, %lu seeds, %lu failed; %lu messages checked, %lu starts, %lu readies; "
-           "faults: %lu drops, %lu duplicates, %lu reorders, %lu crashes, %lu cuts; %lu invariant failures\n",
-           profile, seeds, failed, n_checks, n_starts, n_readies, tot[0], tot[1], tot[2], tot[3], tot[4], inv_fail);
+           "faults: %lu drops, %lu duplicates, %lu reorders, %lu crashes, %lu cuts; %lu invariant failures; "
+           "%lu ended by the signing budget, %lu hand-offs resumed\n",
+           profile, seeds, failed, n_checks, n_starts, n_readies, tot[0], tot[1], tot[2], tot[3], tot[4], inv_fail,
+           n_budget, n_resumed);
     CHECK(failed == 0);
     CHECK(inv_fail == 0);
     CHECK(n_starts > 0 && n_readies > 0);

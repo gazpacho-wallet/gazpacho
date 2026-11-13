@@ -4,6 +4,7 @@
 #define GAZPACHO_LOBBY_TEST_H
 
 #include "gazpacho/lobby.h"
+#include "../../core/tree/internal.h"   /* core/tree's SHA-256 */
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_schnorrsig.h>
@@ -22,15 +23,15 @@ typedef struct { secp256k1_keypair kp; uint8_t pub[33]; } lt_key_t;
 
 static inline void lt_key(lt_key_t *k, const char *label)
 {
-    gz_lobby_sha256_t s;
+    tr_sha256_t s;
     uint8_t sec[32];
     secp256k1_pubkey pk;
     size_t n = 33;
     const char *pre = "gazpacho test key: ";
-    gz_lobby_sha256_init(&s);
-    gz_lobby_sha256_write(&s, (const uint8_t *)pre, strlen(pre));
-    gz_lobby_sha256_write(&s, (const uint8_t *)label, strlen(label));
-    gz_lobby_sha256_done(&s, sec);
+    tr_sha256_init(&s);
+    tr_sha256_write(&s, (const uint8_t *)pre, strlen(pre));
+    tr_sha256_write(&s, (const uint8_t *)label, strlen(label));
+    tr_sha256_done(&s, sec);
     if (!secp256k1_keypair_create(lt_ctx(), &k->kp, sec)) { printf("bad test key\n"); return; }
     if (!secp256k1_keypair_pub(lt_ctx(), &pk, &k->kp)) return;
     secp256k1_ec_pubkey_serialize(lt_ctx(), k->pub, &n, &pk, SECP256K1_EC_COMPRESSED);
@@ -106,16 +107,32 @@ static const char LT_T3[] =
     "24f2040400000002400800000000000005dc420800000000000003e844080000"
     "0000000003e8";
 
-/* A member's conditions that T1 fits as a whole. */
+/* A member's conditions that T1 fits as a whole: core/tree's limits, the
+ * three adjustable types listed in order (LT_ADJ(c, k) is type 64 + 2k). */
 static inline gz_lobby_conditions_t lt_cond_fits(void)
 {
     gz_lobby_conditions_t c;
     memset(&c, 0, sizeof c);
-    c.profiles = 1u << 2;
-    c.life_min = 1; c.life_max = 52560; c.wind_max = 52560; c.rate_max = 1000000;
-    c.chan_min = 100000;
-    c.adj_max[0] = 2000; c.adj_max[1] = 1000; c.adj_max[2] = 2500;
+    c.limits.profiles = 1u << 2;
+    c.limits.min_lifetime = 1; c.limits.max_lifetime = 52560; c.limits.max_tree_feerate = 1000000;
+    c.limits.min_channel_sat = 100000;
+    c.limits.n_max = 3;
+    c.limits.max[0].type = 64; c.limits.max[0].max = 2000;
+    c.limits.max[1].type = 66; c.limits.max[1].max = 1000;
+    c.limits.max[2].type = 68; c.limits.max[2].max = 2500;
     return c;
+}
+#define LT_ADJ(c, k) ((c).limits.max[k].max)
+
+/* Decode a record the tests built themselves, under the lobby's policy. */
+static inline int lt_outer(const uint8_t *b, size_t n, gz_terms_outer_t *o)
+{
+    return gz_terms_decode_outer(b, n, gz_lobby_policy(), o) == GZ_TERMS_OK;
+}
+static inline int lt_current(const uint8_t *b, size_t n, const gz_terms_outer_t *o, const uint8_t od[32],
+                             gz_terms_current_t *c)
+{
+    return gz_terms_decode_current(b, n, o, c) == GZ_TERMS_OK && memcmp(c->outer_digest, od, 32) == 0;
 }
 
 #endif
