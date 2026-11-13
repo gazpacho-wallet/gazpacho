@@ -839,7 +839,10 @@ static int start_job(gz_api_server *srv, gz_conn *c, int purpose, int op, const 
             return 1;
         }
         j->pp.nwords = n;
-        if (op == GZ_API_PP_WORDS_CHECK) memcpy(j->pp.positions, srv->check_positions, sizeof j->pp.positions);
+        if (op == GZ_API_PP_WORDS_CHECK) {
+            memcpy(j->pp.positions, srv->check_positions, sizeof j->pp.positions);
+            memcpy(j->check_id, srv->check_id, sizeof j->check_id);
+        }
     }
     c->job = j;
     c->state = CS_BUSY;
@@ -950,10 +953,21 @@ int gz_job_gated(const gz_job *j)
     return j->pp.op != GZ_API_PP_CREATE && j->pp.op != GZ_API_PP_RESTORE;   /* these cannot be wrong */
 }
 
+/* A words check is over: its check_id is free again, and spent if the check
+ * was answered (one answer per check_id, 12.3). A newer check-start's id is
+ * left alone. */
+static void check_release(gz_api_server *srv, gz_job *j, int answered)
+{
+    if (j->purpose != JP_WORDS_CHECK || !j->check_id[0] || strcmp(srv->check_id, j->check_id) != 0) return;
+    srv->check_busy = 0;
+    if (answered) gz_wipe(srv->check_id, sizeof srv->check_id);
+}
+
 /* A job answered without its result (never derived, or discarded): frees it. */
 void gz_job_refuse(gz_api_server *srv, gz_job *j, int status, const char *code, const char *params)
 {
     gz_conn *c = j->conn;
+    check_release(srv, j, 0);
     if (c) {
         c->job = NULL;
         if (c->state != CS_DEAD) gz_respond_error(srv, c, status, code, NULL, params);
@@ -1163,7 +1177,7 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
     case JP_WORDS_CHECK:
         if (pp->result == GZ_API_PPR_OK || pp->result == GZ_API_PPR_WORDS_DIFFER) {
             int ok = pp->result == GZ_API_PPR_OK;
-            gz_wipe(srv->check_id, sizeof srv->check_id);      /* one answer per check_id */
+            check_release(srv, j, 1);                   /* one answer per check_id */
             gz_events_notify(srv, "status", NULL);
             if (c) {
                 gz_jw w;
@@ -1212,6 +1226,7 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
     }
 out:
     (void)verified;
+    check_release(srv, j, 0);                            /* wrong or not checked: the id stays usable */
     gz_job_free(j);
 }
 
@@ -1634,6 +1649,7 @@ static void handle(gz_api_server *srv, gz_conn *c)
         left = srv->be->words_checks_left ? srv->be->words_checks_left(srv->bectx, now / 1000, &retry) : 3;
         if (gz_random(rb, sizeof rb) != 0) { gz_respond_error(srv, c, 500, "internal", NULL, NULL); break; }
         gz_b64url(rb, 16, srv->check_id);                  /* a new check-start replaces any unused one */
+        srv->check_busy = 0;
         for (i = 0; i < 3; i++) {                          /* three distinct positions, 1 to 24 */
             int p;
             uint32_t x = rb[16 + 2 * i] | ((uint32_t)rb[17 + 2 * i] << 8);
@@ -1676,7 +1692,7 @@ static void handle(gz_api_server *srv, gz_conn *c)
                    gz_b64url_decode(id, 22, got, sizeof got) == 0 && gz_ct_eq(want, got, 16);   /* F5.3 */
         gz_wipe(want, sizeof want);
         gz_wipe(got, sizeof got);
-        if (!same || srv->check_session_no != (r->bearer ? 0 : r->sess_no)) {
+        if (!same || srv->check_busy || srv->check_session_no != (r->bearer ? 0 : r->sess_no)) {
             gz_respond_error(srv, c, 400, "bad_value", "/check_id", NULL);
             break;
         }
@@ -1693,7 +1709,8 @@ static void handle(gz_api_server *srv, gz_conn *c)
             gz_respond_error(srv, c, 429, "rate_limited", NULL, params);   /* before any derivation (12.3) */
             break;
         }
-        if (start_job(srv, c, JP_WORDS_CHECK, GZ_API_PP_WORDS_CHECK, body)) break;
+        srv->check_busy = 1;                             /* until its answer: a second request is refused (review B3) */
+        if (start_job(srv, c, JP_WORDS_CHECK, GZ_API_PP_WORDS_CHECK, body)) srv->check_busy = 0;
         break;
     }
     case H_HOST_OPEN:

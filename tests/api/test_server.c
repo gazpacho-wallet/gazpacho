@@ -2461,6 +2461,40 @@ static void test_b2_ended_session(void)
     fx_stop(&x);
 }
 
+/* B3: one check_id, one answer: the second request with it, sent while the
+ * first derives, is refused at once and starts no derivation. */
+static void test_b3_check_id(void)
+{
+    fixture x;
+    resp r;
+    char id[64], body[400];
+    int fd1, fd2;
+    int64_t der;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.fake.pp_delay_ms = 400;
+    if (fx_go(&x)) { CHECK(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    api(&x, &r, "POST", "/api/v1/wallet/phrase/check-start", "{}", NULL);
+    snprintf(id, sizeof id, "%s", jfield(&r, "check_id") ? jfield(&r, "check_id") : "");
+    resp_free(&r);
+    snprintf(body, sizeof body, "{\"check_id\":\"%s\",\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\",\"words\":[\"abandon\",\"abandon\",\"abandon\"]}", id);
+    der = FAKE_READ(&x, x.fake.derivations);
+    fd1 = api_open_as(&x, "POST", "/api/v1/wallet/phrase/check", body, g_session);
+    sleep_ms(100);
+    fd2 = api_open_as(&x, "POST", "/api/v1/wallet/phrase/check", body, g_session);
+    read_answer(fd2, &r, 3000);
+    CHECK(is_code(&r, 400, "bad_value") && jfield(&r, "field") && strcmp(jfield(&r, "field"), "/check_id") == 0);
+    resp_free(&r);
+    close(fd2);
+    read_answer(fd1, &r, 3000);
+    CHECK(r.status == 200 && r.body && strstr(r.body, "\"ok\":"));
+    resp_free(&r);
+    close(fd1);
+    CHECK(FAKE_READ(&x, x.fake.derivations) == der + 1);
+    fx_stop(&x);
+}
+
 /* B4: the one-second delay is kept in milliseconds: a wrong passphrase at x.990 s
  * and another at x+1.005 s are one derivation, not two. Also a session past its
  * idle sign-out is refused at once, before the expiry tick (b-lazy-expiry-off). */
@@ -2532,6 +2566,7 @@ int main(void)
     test_p5_idle();
     test_b1_lock();
     test_b2_ended_session();
+    test_b3_check_id();
     test_b4_ms_delay();
     return check_done();
 }

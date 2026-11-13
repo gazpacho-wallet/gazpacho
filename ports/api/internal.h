@@ -159,6 +159,7 @@ struct gz_job {
     int was_locked;
     int bearer;                      /* sent with the socket token ... */
     uint64_t token_gen;              /* ... of this generation (review B2) */
+    char check_id[24];               /* a words check: the check_id it was sent with */
     uint8_t *pass;                   /* copy, wiped */
     size_t pass_len;
     gz_job *next;
@@ -221,6 +222,7 @@ struct gz_api_server {
     int first_run_closed;            /* a wallet was made: no token or code ever again */
     /* words check (12.3) */
     char check_id[24];
+    int check_busy;                  /* its check is deriving: one answer per check_id (review B3) */
     int check_positions[3];
     int64_t check_expires;
     uint64_t check_session_no;
