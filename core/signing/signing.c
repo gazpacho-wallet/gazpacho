@@ -243,6 +243,9 @@ static uint8_t check_def(gz_sign_t *e, gz_sign_def_t *d, gz_sign_round_t *r)
         spent_of(&tx, spent);
         if (same(spent, d->funding_txid, 32) && be32(spent + 32) == d->funding_vout) {
             if (it->spent_amount != d->funding_amount || !same(it->spent_script, d->funding_script, 34)) return GZ_SIGN_WHY_INVALID_ROUND;   /* RULE:FUNDING_MATCH */
+            /* C1: the funding output needs every participant (the signers are strictly
+             * increasing positions among them, so this many is all of them). */
+            if (it->n_signers != d->n_participants) return GZ_SIGN_WHY_INVALID_ROUND;   /* RULE:C1_ROOT_ALL */
             roots++;
         } else {
             int found = 0;
@@ -1172,6 +1175,33 @@ static void host_partials(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, const gz_
     if (!members_missing(r, 1)) host_combine(e, r, em);
 }
 
+/* Whom a member's signed abort blames (review A, F4; spec section 10: a fault
+ * costs a seat, not the lobby). Reason 3 (it restarted) is honest once in a
+ * lobby: the second is blamed. Reason 6 (another round on its outputs) is
+ * honest only while this host holds another round on the same funding
+ * outpoint that is not over; otherwise the member is blamed. Any other
+ * reason is the member's own refusal: blamed, as before. */
+static uint32_t abort_blame(gz_sign_t *e, const gz_sign_round_t *r, uint8_t j, uint16_t reason)
+{
+    const uint8_t *key = r->def.participants[j].contribution_key;
+    if (reason == 3) {
+        for (size_t k = 0; k < e->n_restarted; k++)
+            if (same(e->restarted[k], key, 33)) return bit(j);                 /* RULE:BLAME_SECOND_RESTART */
+        if (e->n_restarted == GZ_SIGN_MAX_PARTICIPANTS) return bit(j);
+        memcpy(e->restarted[e->n_restarted++], key, 33);
+        return 0;
+    }
+    if (reason == 6) {
+        for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
+            const gz_sign_round_t *o = &e->rounds[i];
+            if (o != r && (o->state == GZ_SIGN_ROUND_ACTIVE || o->state == GZ_SIGN_ROUND_COMPLETE || o->state == GZ_SIGN_ROUND_DONE) &&
+                same(o->def.funding_txid, r->def.funding_txid, 32) && o->def.funding_vout == r->def.funding_vout) return 0;
+        }
+        return bit(j);                                                             /* RULE:BLAME_FALSE_SUPERSEDED */
+    }
+    return bit(j);
+}
+
 static void host_message(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, emit_t *em)
 {
     uint8_t j = 0, held[32], rec[33];
@@ -1208,8 +1238,7 @@ static void host_message(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, em
     if (m->kind == GZ_SIGN_MSG_NONCES) host_nonces(e, r, j, m, em);
     else if (m->kind == GZ_SIGN_MSG_PARTIALS) host_partials(e, r, j, m, em);
     else if (m->kind == GZ_SIGN_MSG_ABORT && signed_by(e, m, r->def.participants[j].contribution_key))
-        /* A member that restarted (3) or saw another round on its outputs (6) is not at fault. */
-        host_fail(e, r, m->reason == 3 || m->reason == 6 ? 0 : bit(j), GZ_SIGN_WHY_MEMBER_ABORT, em);
+        host_fail(e, r, abort_blame(e, r, j, m->reason), GZ_SIGN_WHY_MEMBER_ABORT, em);
 }
 
 /* The host's proposal: encoded once with a zero identifier and read back as
@@ -1560,6 +1589,7 @@ gz_status_t gz_sign_begin(gz_sign_t *e, const gz_sign_begin_t *b, gz_action_list
     count = out->count; used = out->used;
     em.out = out; em.st = GZ_OK;
     if (e->failed) return GZ_ERR_FAILED;
+    e->n_restarted = 0;                             /* the program's begin: a new lobby (F4) */
     st = host_begin(e, b, &em);
     /* A refusal before anything changed is GZ_ERR_ARGUMENT; an emit failure fails the engine. */
     if (st == GZ_OK && em.st != GZ_OK) { out->count = count; out->used = used; return fail_engine(e, em.st); }

@@ -279,6 +279,11 @@ typedef struct {
     uint8_t factory_key[33], contribution_key[33];   /* this party's current keys, compressed */
     uint32_t attempts, next_seq;
     gz_sign_round_t rounds[GZ_SIGN_MAX_ROUNDS];
+    /* Host: the contribution keys of members that answered "restarted"
+     * (reason 3) in this lobby, since the program's last gz_sign_begin; a
+     * second such answer is blamed (review A, F4). */
+    uint8_t restarted[GZ_SIGN_MAX_PARTICIPANTS][33];
+    size_t n_restarted;
     uint8_t known[GZ_SIGN_MAX_KNOWN][32];   /* the newest, at n % GZ_SIGN_MAX_KNOWN */
     size_t n_known;                         /* refused identifiers in all */
     uint8_t known_filter[1u << (GZ_SIGN_KNOWN_FILTER_BITS - 3)];

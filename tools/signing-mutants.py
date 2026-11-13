@@ -55,6 +55,10 @@ RULES = {
     "KNOWN_FILTER": ("for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++)", "for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++) if (k >= 0) return 0; else"),
     "EVICT_SETTLED_FIRST": ("settled(r) > settled(best) ||", "0 ||"),
     "FAIL_ON_ERROR": ("e->failed = 1;", "(void)0;"),
+    # review A: F7 (C1: the root needs everyone), F4 (who a member's abort blames)
+    "C1_ROOT_ALL": ("if (it->n_signers != d->n_participants) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
+    "BLAME_SECOND_RESTART": ("if (same(e->restarted[k], key, 33)) return bit(j);", "if (same(e->restarted[k], key, 33)) return 0;"),
+    "BLAME_FALSE_SUPERSEDED": ("return bit(j);", "return 0;"),
 }
 
 
