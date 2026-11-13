@@ -1064,6 +1064,7 @@ static void test_many_rounds(int rounds)
     }
     CHECK(stopped < 0 && h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
     for (uint32_t g = 0; g <= 3; g++) CHECK(h_restart(&h, g) == GZ_OK && h.p[g].e->n_known == (size_t)rounds - GZ_SIGN_MAX_ROUNDS);
+    for (uint32_t g = 1; g <= 3; g++) CHECK(h.p[g].e->n_exposures == (size_t)rounds && !h.p[g].e->exposures_lost);   /* C7: each kept */
     const h_sent_t *p0 = h_sent_kind(&h, 0, GZ_SIGN_MSG_PROPOSE, 0);
     size_t nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
     h_inject(&h, 0, 1, p0->b, p0->len);

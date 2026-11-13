@@ -65,6 +65,13 @@ RULES = {
     "C1_ROOT_ALL": ("if (it->n_signers != d->n_participants) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
     "BLAME_SECOND_RESTART": ("if (same(e->restarted[k], key, 33)) return bit(j);", "if (same(e->restarted[k], key, 33)) return 0;"),
     "BLAME_FALSE_SUPERSEDED": ("return bit(j);", "return 0;"),
+    # review A: F1 (the C7 set follows the save), F2 (room, never dropped), F3 (rounds that left memory)
+    "C7_AFTER_SAVE": ("if (em->st == GZ_OK && !add_exposure(", "if (!add_exposure("),
+    "EXPOSURE_ROOM": ("if (!exposure_room(e, r)) return GZ_SIGN_WHY_CAPACITY;", ""),
+    "EXPOSURE_NOT_DROPPED": ("{ e->exposures_lost = 1; return 0; }", "return 0;"),
+    "KEEP_EVICTED": ("{ e->exposed[i].state = r->state; e->exposed[i].why = r->why; }", "{ }"),
+    "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
+    "RESOLVE_EVICTED": ("if (!(r = find(e, round_id)) && !(x = evicted(e, round_id))) return GZ_ERR_ARGUMENT;", "if (!(r = find(e, round_id))) return GZ_ERR_ARGUMENT;"),
 }
 
 

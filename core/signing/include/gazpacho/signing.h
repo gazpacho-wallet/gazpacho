@@ -77,7 +77,12 @@
  * cap: the set never makes a start fail (review A, F2). */
 #define GZ_SIGN_KNOWN_FILTER_BITS 20
 #define GZ_SIGN_KNOWN_FILTER_K    10
-#define GZ_SIGN_MAX_EXPOSURES    256     /* C7 records (funding outpoint, tree digest) held */
+/* C7 records (funding outpoint, tree digest) held in memory: one per funding
+ * outpoint this party ever released a partial signature for. At the limit a
+ * new outpoint is refused (abort reason 9), never dropped; a journal holding
+ * more (never written by this build) still starts, with every new round
+ * refused (review A, F2). */
+#define GZ_SIGN_MAX_EXPOSURES    4096
 
 /* Message sizes (envelope included). A record's type and length take at
  * most 8 bytes here; 240, the signature, is 67. */
@@ -233,6 +238,11 @@ typedef struct {
 
 typedef struct gz_sign_round gz_sign_round_t;
 
+/* The newest round that made an exposure record, and its state when it left
+ * memory (GZ_SIGN_ROUND_FREE while it is held): C10 and gz_sign_resolve reach
+ * a round through it after the round has left the slots (review A, F3). */
+typedef struct { uint8_t round_id[32]; uint8_t state, why; } gz_sign_exposed_t;
+
 /* Host only: the next attempt after a failed one. `blamed` (bit i =
  * participant i of the failed round) are to be left out; `released` is 1 if
  * any partial signature may have left a member, in which case the next
@@ -361,8 +371,10 @@ typedef struct {
     gz_rmsg_propose_t prop;         /* the proposal being read */
     /* C7: every exposure record this party holds, of any epoch, never removed. */
     gz_tree_exposure_t exposures[GZ_SIGN_MAX_EXPOSURES];
+    gz_sign_exposed_t exposed[GZ_SIGN_MAX_EXPOSURES];
     size_t n_exposures;
-    gz_tree_outpoint_t unresolved[GZ_SIGN_MAX_ROUNDS];
+    int exposures_lost;             /* a start found more than fit: every new round is refused */
+    gz_tree_outpoint_t unresolved[GZ_SIGN_MAX_EXPOSURES + GZ_SIGN_MAX_ROUNDS];
     /* Work areas for large temporaries of functions the compiler inlines:
      * on the stack, gcc's AddressSanitizer would guard them with calls the
      * isolation check refuses. */
