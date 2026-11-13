@@ -57,6 +57,14 @@ RULES = {
     "HOST_SIG": ("if (!verify33(e, pr->p.participants[0].contribution_key, d32, pr->sig)) return GZ_SIGN_WHY_BAD_HOST_SIG;", ""),
     "FUNDING_TX": ("if (!same(d32, pr->p.funding_txid, 32) ||", "if (0 ||"),
     "NO_UNSET_SLOT": ("if (r->have_nonce[i] != all_bits(it)) return 0;", ""),
+    # review A: F2 (refused identifiers beyond the exact list), F3 (eviction order), F1 (failed until a start)
+    "KNOWN_FILTER": ("for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++)", "for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++) if (k >= 0) return 0; else"),
+    "EVICT_SETTLED_FIRST": ("settled(r) > settled(best) ||", "0 ||"),
+    "FAIL_ON_ERROR": ("e->failed = 1;", "(void)0;"),
+    # review A: F7 (C1: the root needs everyone), F4 (who a member's abort blames)
+    "C1_ROOT_ALL": ("if (it->n_signers != d->n_participants) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
+    "BLAME_SECOND_RESTART": ("if (same(e->restarted[k], key, 33)) return bit(j);", "if (same(e->restarted[k], key, 33)) return 0;"),
+    "BLAME_FALSE_SUPERSEDED": ("return bit(j);", "return 0;"),
 }
 
 
