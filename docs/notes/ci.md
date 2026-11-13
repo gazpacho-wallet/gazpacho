@@ -16,7 +16,9 @@ CI runs on every pull request and on every push to `main`. All jobs run in paral
 
 ### build (OFF) and build (ON): gcc, the original job
 
-Guards: the whole tree builds with gcc 13 and every CTest test passes, once without sanitizers and once with AddressSanitizer and UndefinedBehaviorSanitizer (`-DGZ_SANITIZE=ON`), except the wallet break-checks (label `slow`, `-LE slow`). The build without sanitizers runs the core and simulator tests a second time under valgrind. Then the scale check: one small tree and the two upstream defect reproductions.
+Guards: the whole tree builds with gcc 13 and every CTest test passes, once without sanitizers and once with AddressSanitizer and UndefinedBehaviorSanitizer (`-DGZ_SANITIZE=ON`), except the wallet break-checks (label `slow`, `-LE slow`). The build without sanitizers runs the core and simulator tests a second time under valgrind. Both builds also run the transport's interop test (`-DGZ_INTEROP_PY=ON`, with Ubuntu's `python3-cryptography`): `gz-net` against the independent Python peer in `tests/net/interop/`, over BOLT 8 and over BOLT 1's `init`, ping and pong with factory messages, in both roles. Then the scale check: one small tree and the two upstream defect reproductions.
+
+The lobby connections' keep-alive runs here as `net_keepalive`: two processes hold one connection for 4 seconds with a ping every 100 ms. The same test at the real values (a ping every 15 s, a 30 s pong timeout, six minutes) is registered only with `-DGZ_LONG_TESTS=ON` and is not run in CI.
 
 ### wallet break-checks (`.github/workflows/wallet-break-checks.yml`)
 
@@ -26,7 +28,7 @@ When: on every push to `main`, nightly at 03:17 UTC, by hand (`workflow_dispatch
 
 Locally:
 
-    cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=OFF   # or ON
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=OFF -DGZ_INTEROP_PY=ON   # or ON
     cmake --build build -j
     ctest --test-dir build --output-on-failure --timeout 600
     ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
@@ -84,7 +86,7 @@ Guards: reads of uninitialised memory, which neither ASan nor valgrind reports p
 
 - secp256k1-zkp is built from source by our CMake anyway; the job passes the MSan flags through `CMAKE_C_FLAGS`, which reach it, and turns off its x86-64 assembly (`-DSECP256K1_ASM=OFF`), whose writes MSan cannot see.
 - OpenSSL is built from the 3.0.22 release source (libcrypto only, static, `enable-msan no-asm`), checked against its SHA-256, and cached between runs (`actions/cache`), so only the first run after a change of version pays the few minutes it takes.
-- The C library is handled by MSan's own interceptors.
+- The C library is handled by MSan's own interceptors. Not all of it: the fortified `__*_chk` forms are not intercepted, so libsodium is built without `_FORTIFY_SOURCE` here (see "libsodium and utf8proc in every job" below).
 
 All tests run except the slow wallet break-checks, including the symbol checks (core isolation, wallet no-I/O), which already know the sanitizers' own symbols.
 
@@ -114,11 +116,17 @@ Locally (Linux, valgrind installed):
     cmake --build build-vg -j
     python -I tools/valgrind-tests.py build-vg --args "sim_seeds=200 400 1 0" [-j N] [-v] [--include REGEX] [--exclude REGEX]
 
+The storage layer's E2r test (Argon2id at 256 MiB, `storage_vector_e2r`) is excluded here: it is E2's code at more memory and takes minutes under memcheck. A second step runs `storage_ctime`, the constant-time check: `sc_test_ctime` marks the passphrase key, MSK, the seed and the words' entropy undefined and runs every storage operation that holds them under memcheck, so a branch or index on a secret is an error (libsecp256k1's method). Its CTest command is `ports/storage/crypto/tests/ctime-check.py`, so `valgrind-tests.py` lists it as skipped; the step runs it, and fails if it was not registered (valgrind, its headers or Python missing). The checker runs memcheck with no suppression file and its errors written as XML, and allows exactly one source line: libsodium 1.0.22's `if (ret != 0)` after the constant-time tag comparison (`aead_xchacha20poly1305.c` line 111, reached from `sc_unseal`), whose outcome is public. Any other error, or that branch at another line, fails. A suppression file could name only the function, which after a libsodium upgrade would hide any new secret-dependent branch in it (review A, L5); a libsodium upgrade has to re-check the line. libsodium is built with `-g` in every job for this.
+
+### libsodium and utf8proc in every job
+
+The storage layer (`ports/storage/crypto`, from PR S6) links libsodium 1.0.22 and utf8proc 2.12.0. CMake downloads both while building and checks each against the SHA-256 pinned in `ports/storage/crypto/CMakeLists.txt`; nothing is taken from the distribution, so every job builds the same code with no extra install step. libsodium is configured with the job's compiler and `CMAKE_C_FLAGS` (so the MSan and fuzz jobs instrument it) and `--disable-asm`. `GZ_SANITIZE` adds its flags with `add_compile_options`, which does not reach libsodium's own build, so with `GZ_SANITIZE=ON` the same `-fsanitize=address,undefined -fno-sanitize-recover=undefined` go to libsodium's `CFLAGS` and `LDFLAGS` as well: the gcc and clang ASan+UBSan jobs instrument libsodium too (review A, L4; before, they checked our code only, against an uninstrumented `libsodium.a`). utf8proc is built by our CMake (`FetchContent`), so every option reaches it; it is fetched as its release asset `utf8proc-2.12.0.tar.gz`, not GitHub's generated tag archive, whose bytes GitHub has changed before. Under MSan two more things change, through `CPPFLAGS`. Fortification is off (`-D_FORTIFY_SOURCE=0`): on glibc libsodium's configure otherwise adds `-D_FORTIFY_SOURCE=3`, clang then compiles each `memcpy` whose destination size is known only at run time as a call to glibc's `__memcpy_chk`, and MSan does not intercept that function, so the bytes it writes stay "uninitialised" in MSan's view; that is why Argon2's output (written by `store64_le` in `argon2_finalize`) and every key and tag derived from it were reported. And the SIMD paths are left out (their `HAVE_*INTRIN_H` definitions undefined), so the code checked is the reference code whatever the runner's CPU. Every other job builds libsodium as its configure sets it, SIMD paths and fortification included. `-DGZ_DEPS_DIR=<folder>` uses local copies of the same tarballs instead of downloading. `tools/verify-libsodium.sh` repeats the minisign check of the tarball against libsodium's published key before a version change; `docs/notes/storage-crypto.md` records it.
+
 ### libFuzzer, 60 s per target
 
 Guards: every parser of outside input keeps being fuzzed (checklist item 20), with coverage guidance, ASan and UBSan. The job looks for `LLVMFuzzerTestOneInput` in the C sources. If there is none (a branch from before PR 10), it prints a notice and passes. Otherwise it builds the tree with clang, `-fsanitize=fuzzer-no-link,address,undefined` and `-DGZ_LIBFUZZER=ON`, and `tools/run-fuzz.sh` runs every executable named `fuzz_*` for 60 seconds. It fails on any crash, leak, sanitizer report or 10-second input, and libFuzzer prints the failing input in the log. If the sources define fuzz targets but no `fuzz_*` executable was built, it fails, so a target cannot drop out of the job by being renamed.
 
-The targets on `main` today: `fuzz_noise` and `fuzz_tlv` (the transport's BOLT 8 and TLV decoders, since PR 10) and `fuzz_tx_parse` (the wallet's transaction parser, since PR 11). The chain view's fuzz test (`chain_fuzz`, `ports/chain/tests/test_fuzz.c`) has only a plain driver: it runs as a CTest test in every build, but not in this job.
+The targets on `main` today: `fuzz_noise` and `fuzz_tlv` (the transport's BOLT 8 and TLV decoders, since PR 10) and `fuzz_tx_parse` (the wallet's transaction parser, since PR 11). The storage layer adds `fuzz_sc_keyfile`, `fuzz_sc_frame` (journal entries and header), `fuzz_sc_mark` (mark and guard files) and `fuzz_sc_export` (exports, their bodies and the attempts file). The chain view's fuzz test (`chain_fuzz`, `ports/chain/tests/test_fuzz.c`) has only a plain driver: it runs as a CTest test in every build, but not in this job.
 
 How a branch adds a fuzz target. The targets on `main` are built both ways: with a plain driver as a CTest test normally, and in the libFuzzer form when `GZ_LIBFUZZER` is ON (declared once, at the top of `CMakeLists.txt`). A new target does the same:
 
@@ -161,4 +169,4 @@ The negative tests of both checks (the sneaky object, the five bad libraries) st
 - **It does not require a review.** Since 2026-11-12, branch protection on `main` requires all 11 jobs above to pass on a branch that is up to date with `main`, applies to administrators too, and refuses force pushes and deletions. It does not require an approving GitHub review: reviews are kept as files in `docs/reviews/`, and their rule is checked by people, not by GitHub.
 - **A pull request with merge conflicts gets no run.** GitHub runs `pull_request` workflows on the merge of the branch into its base; while the pull request conflicts there is no merge to test, and no run starts, however many commits are pushed. Rebase on `main` to get a result.
 - **Pushes to other branches do not run CI** on their own (the `push` trigger is `main` only); a branch is tested through its pull request.
-- **No Windows or macOS build**, no 32-bit build, no regtest node, no reproducible-build check, no mutation testing.
+- **No Windows or macOS build**, no 32-bit build, no regtest node, no reproducible-build check, no mutation testing (the storage layer's runner, `tools/mutate-storage.py`, runs on the build server; its results are in `docs/notes/storage-crypto.md`).
