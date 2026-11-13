@@ -167,10 +167,15 @@ target_compile_options(test_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
 foreach(section blocks decoders golden model faults honest t1 crashes restores)
   add_test(NAME signing_${section} COMMAND test_signing ${section})
 endforeach()
-add_executable(fuzz_signing tests/signing/fuzz_signing.c)
-target_link_libraries(fuzz_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar)
-target_compile_options(fuzz_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
-add_test(NAME signing_fuzz COMMAND fuzz_signing 20000 20)
+# fuzz_signing drives whole engines from generated journals and messages with
+# its own main; it is not a libFuzzer target (tools/run-fuzz.sh runs every
+# fuzz_* there is), so it is built only with the plain drivers.
+if(NOT GZ_LIBFUZZER)
+  add_executable(fuzz_signing tests/signing/fuzz_signing.c)
+  target_link_libraries(fuzz_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar)
+  target_compile_options(fuzz_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
+  add_test(NAME signing_fuzz COMMAND fuzz_signing 20000 20)
+endif()
 add_test(NAME signing_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
           --allow ${CMAKE_CURRENT_SOURCE_DIR}/tools/signing-allowed-calls.txt
