@@ -8,8 +8,13 @@ Each mutant is applied to a scratch copy (never to the source tree), the
 transport and its tests are built there, and every test is run. A mutant no
 test notices is a survivor.
 
-usage: tools/mutate-net.py SOURCE-DIR BUILD-DIR [NAME...]
+usage: tools/mutate-net.py [--first] SOURCE-DIR BUILD-DIR [NAME...]
 BUILD-DIR is a configured CMake build, used only to find libsecp256k1.
+--first stops at the first test that notices a mutant (much faster; the
+report then names only that test).
+The library is built twice, the second time with -DGZ_TEST_KINDS for the
+tests in WITH_TEST_KINDS, so code under #ifdef GZ_TEST_KINDS is mutated
+and tested too (review of PR 23, round 2, R8).
 """
 import os
 import shutil
@@ -17,17 +22,25 @@ import subprocess
 import sys
 import tempfile
 
-TESTS = [  # name, sources, arguments, extra link flags
+TESTS = [  # name, sources, arguments, extra link flags; fast ones first
     ("noise", ["tests/net/test_noise.c"], [], []),
     ("frame", ["tests/net/test_frame.c"], ["3000"], []),
+    ("envelope", ["tests/net/test_envelope.c"], [], []),
+    ("lnmsg", ["tests/net/test_lnmsg.c"], [], []),
     ("wipes", ["tests/net/test_wipes.c"], [], ["-Wl,--wrap=gz_net_wipe,--wrap=HMAC"]),
     ("conn", ["tests/net/test_conn.c"], [], []),
+    ("test_kind", ["tests/net/test_testkind.c"], [], []),  # with GZ_TEST_KINDS
+    ("peers", ["tests/net/test_peers.c"], [], []),
+    ("fuzz_envelope", ["tests/net/fuzz_envelope.c", "tests/net/fuzz_main.c"], ["5000"], []),
     ("fuzz_noise", ["tests/net/fuzz_noise.c", "tests/net/fuzz_main.c"], ["30000"], []),
     ("fuzz_tlv", ["tests/net/fuzz_tlv.c", "tests/net/fuzz_main.c"], ["100000"], []),
     ("net_peer", ["tests/net/net_peer.c"], None, []),  # built only, for gz_net
-    ("gz_net", ["tools/gz-net/gz-net.c"], None, []),   # run through tests/net/test_gz_net.sh
+    ("gz_net", ["tools/gz-net/gz-net.c"], None, []),   # run through tests/net/test_gz_net.sh and test_keepalive.sh
 ]
-LIB = ["ports/net/noise.c", "ports/net/frame.c", "ports/net/conn.c", "ports/net/wipe.c"]
+LIB = ["ports/net/noise.c", "ports/net/frame.c", "ports/net/conn.c", "ports/net/wipe.c",
+       "ports/net/envelope.c", "ports/net/lnmsg.c", "ports/net/peers.c"]
+WITH_TEST_KINDS = {"test_kind"}  # built against the GZ_TEST_KINDS copy of the library
+KEEPALIVE_ARGS = ["3", "100", "1000"]  # seconds, ping_ms, pong_ms: short, as in CI
 
 
 def unescape(text):
@@ -74,33 +87,43 @@ def apply(path, old, new, nth):
     return None
 
 
-def run_all(work, inc, lib):
-    cc = ["gcc", "-std=c11", "-O1", "-w", "-I", work + "/ports/net", "-I", work + "/core/gazpacho/include", "-I", inc]
-    objs = []
-    for src in LIB:
-        obj = os.path.join(work, os.path.basename(src) + ".o")
-        if subprocess.call(cc + ["-c", os.path.join(work, src), "-o", obj], stderr=subprocess.DEVNULL) != 0:
-            return None
-        objs.append(obj)
+def run_all(work, inc, lib, first=False):
+    cc = ["gcc", "-std=c11", "-O1", "-w", "-I", work + "/ports/net", "-I", inc]  # no core header (contract v2, 12)
+    objsets = {}
+    for tag, defs in (("", []), ("-tk", ["-DGZ_TEST_KINDS"])):  # release, and the test-kind copy
+        objs = []
+        for src in LIB:
+            obj = os.path.join(work, os.path.basename(src) + tag + ".o")
+            if subprocess.call(cc + defs + ["-c", os.path.join(work, src), "-o", obj], stderr=subprocess.DEVNULL) != 0:
+                return None
+            objs.append(obj)
+        objsets[tag] = (defs, objs)
     caught = []
     for name, srcs, args, ldflags in TESTS:
         exe = os.path.join(work, name + ".bin")
-        if subprocess.call(cc + [os.path.join(work, s) for s in srcs] + objs + [lib, "-lcrypto"] + ldflags + ["-o", exe],
+        defs, objs = objsets["-tk" if name in WITH_TEST_KINDS else ""]
+        if subprocess.call(cc + defs + [os.path.join(work, s) for s in srcs] + objs + [lib, "-lcrypto"] + ldflags + ["-o", exe],
                            stderr=subprocess.DEVNULL) != 0:
             caught.append(name + "(build)")
+            if first:
+                return caught
             continue
         if name == "net_peer":
             continue
         if args is None:
-            cmd = ["sh", os.path.join(work, "tests/net/test_gz_net.sh"), exe, os.path.join(work, "net_peer.bin")]
+            cmds = [("gz_net", ["sh", os.path.join(work, "tests/net/test_gz_net.sh"), exe, os.path.join(work, "net_peer.bin")]),
+                    ("keepalive", ["sh", os.path.join(work, "tests/net/test_keepalive.sh"), exe] + KEEPALIVE_ARGS)]
         else:
-            cmd = [exe] + args
-        try:
-            rc = subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=90, cwd=work)
-        except subprocess.TimeoutExpired:
-            rc = "timeout"
-        if rc != 0:
-            caught.append(name if rc != "timeout" else name + "(timeout)")
+            cmds = [(name, [exe] + args)]
+        for label, cmd in cmds:
+            try:
+                rc = subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120, cwd=work)
+            except subprocess.TimeoutExpired:
+                rc = "timeout"
+            if rc != 0:
+                caught.append(label if rc != "timeout" else label + "(timeout)")
+                if first:
+                    return caught
     return caught
 
 
@@ -108,8 +131,14 @@ def main():
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
-    src, build = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
-    only = set(sys.argv[3:])
+    argv = sys.argv[1:]
+    first = "--first" in argv
+    argv = [a for a in argv if a != "--first"]
+    if len(argv) < 2:
+        print(__doc__)
+        return 2
+    src, build = os.path.abspath(argv[0]), os.path.abspath(argv[1])
+    only = set(argv[2:])
     inc, lib = secp_paths(build)
     mutants = []
     with open(os.path.join(src, "tests/net/mutants.txt")) as f:
@@ -134,7 +163,7 @@ def main():
                     print("NOT APPLIED %-28s %s" % (name, err), flush=True)
                     broken.append(name)
                     continue
-            caught = run_all(work, inc, lib)
+            caught = run_all(work, inc, lib, first and name != "baseline")
         finally:
             shutil.rmtree(work, ignore_errors=True)
         if name == "baseline":
