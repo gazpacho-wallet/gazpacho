@@ -160,8 +160,12 @@ Proofs may be published to Nostr later: only from fresh keys, only after the lob
 
 - **A:** sign automatically.
 - **B:** ask for the passphrase when the lobby fills.
-- **C:** unlock that lobby's keys once at join. They sign only that factory, within the approved terms, and are wiped afterwards. C is the recommended default; the owner is still to confirm.
-- **D:** watchtower services. Under research.
+- **C:** unlock that lobby's keys once at join. They sign only that factory, within the approved terms, and are wiped afterwards. **C is the default** (owner confirmed, 2026-11-13). Members and hosts can still choose A or B.
+- **D:** watchtower services, the fourth way to take part in a lobby and join a factory. Scheduled after 1.2.0; research is pending. Four variants:
+  - **D1:** passive, run by a third party, no keys.
+  - **D2:** passive, run yourself.
+  - **D3:** keyed, run yourself: a "home node" that can monitor, sign and join new factories for you.
+  - **D4:** keyed, run by a third party. This is custody: never a default, at most an explicit, warned expert option.
 
 In modes B and C, "not unlocked" counts as not answering the ready check. Slice 1 closes the ready check as soon as every seat has answered. Proposed defaults (owner to confirm): a 60 s ready window, 60 s per step, and a 10-minute signing budget. Measured signing on signet took 193 ms for 3 members.
 

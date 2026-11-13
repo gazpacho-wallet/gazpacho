@@ -797,7 +797,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Member signing</td>
-<td>Modes selectable by members and hosts: A automatic; B passphrase when the lobby fills; C keys unlocked once at join for that factory only, then wiped (recommended default, owner to confirm); D watchtower services (research). "Not unlocked" counts as not answering the ready check (owner decision 16d)</td>
+<td>Modes selectable by members and hosts: A automatic; B passphrase when the lobby fills; C keys unlocked once at join for that factory only, then wiped (the default, owner confirmed); D watchtower services, after 1.2.0, variants D1 to D4, where third-party keyed D4 is custody and never a default. "Not unlocked" counts as not answering the ready check (owner decision 16d)</td>
 </tr>
 <tr>
 <td>Host accountability</td>
@@ -954,7 +954,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Later</td>
-<td>Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves. Built-in Tor (for example Arti), a BIP 157/158 compact block filter light client, automatic onion creation and DNS-name hosts (owner decision 16g). Accountability proofs published to Nostr from fresh keys after a lobby ends. Signing mode D, watchtower services, if research supports it</td>
+<td>Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves. Built-in Tor (for example Arti), a BIP 157/158 compact block filter light client, automatic onion creation and DNS-name hosts (owner decision 16g). Accountability proofs published to Nostr from fresh keys after a lobby ends. After 1.2.0: mode D, watchtower services, as the fourth way to take part (research pending)</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -1278,7 +1278,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Listings carry fixed terms, ranges, size and start time. Live details come from the host.</li>
 <li><strong>Terms</strong> (owner decision 1, <code>spec/terms.md</code>): a lobby's outer rules are fixed when it opens; adjustable terms move only inside signed ranges; values freeze at the ready check; the outer rules' digest is the rules fingerprint and the lobby's identity. Changing an outer rule makes a new lobby.</li>
 <li><strong>Several lobbies at once</strong> per wallet from Slice 1 (owner decision 16b).</li>
-<li><strong>Member signing modes</strong> (owner decision 16d): A signs automatically; B asks for the passphrase when the lobby fills; C unlocks that lobby's keys once at join, signs only that factory within the approved terms, then wipes them (recommended default, owner to confirm); D, watchtower services, is under research. In B and C, "not unlocked" counts as not answering the ready check. The ready check closes as soon as every seat has answered.</li>
+<li><strong>Member signing modes</strong> (owner decision 16d): A signs automatically; B asks for the passphrase when the lobby fills; C unlocks that lobby's keys once at join, signs only that factory within the approved terms, then wipes them (the default, owner confirmed; members and hosts can still choose A or B); D, watchtower services, is the fourth way to take part, after 1.2.0: D1 passive third party with no keys, D2 passive run yourself, D3 a keyed home node run yourself, D4 keyed third party, which is custody and at most an explicit, warned expert option. In B and C, "not unlocked" counts as not answering the ready check. The ready check closes as soon as every seat has answered.</li>
 <li><strong>Understudies</strong> in 1.1.0 (owner decision 16e): standby seats that answered the ready check replace a no-show, or a member who drops mid-signing. A mid-signing swap is a new attempt with fresh nonces from everyone, and every member's limits are re-checked against the new set.</li>
 </ul></div></details>
 <details id="c3-12-the-host"><summary>12. The host</summary><div class="body"><ul>
@@ -5877,10 +5877,9 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </ul>
 <p>Still for the owner to confirm:</p>
 <ul>
-<li><strong>Mode C as the default</strong> signing mode.</li>
 <li><strong>The proposed timing defaults:</strong> a 60 s ready window, 60 s per step, a 10-minute signing budget.</li>
 </ul>
-<p>Still to research: mode D (watchtower services).</p></div></details>
+<p>Confirmed the same day: mode C is the default signing mode; members and hosts can still choose A or B. Mode D, watchtower services, is the fourth way to take part (variants D1 to D4, <code>ux/decisions.md</code> 16d), scheduled after 1.2.0; research is pending.</p></div></details>
 <details id="c20-1-awaiting-the-owner-s-yes"><summary>1. Awaiting the owner&#x27;s yes</summary><div class="body"><p>Values that a specification or design document marks <strong>proposed, owner to confirm</strong>. Builders may use them; none is settled until the owner says yes. The questionnaire <code>questions-5-decisions.html</code> covers most of them: open it, pick Keep, Change or Discuss for each item, and paste the answers back.</p>
 <div class="tw"><table>
 <thead>
