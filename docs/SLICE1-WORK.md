@@ -66,6 +66,8 @@ Not on GitHub in any form. Each needs to be replayed onto GitHub's history (the 
 
 Also owed for Slice 1, outside the table: the owner's answer on the key path (W2, `OPEN-QUESTIONS.md`), the member's starting limits written into `terms.md` (W1, decided), and the Slice 1.5 list of deferred features with the test each one owes (owner, questions 6).
 
+**Owner decisions of 2026-11-13 that touch Slice 1** (`ux/decisions.md` 16): the host broadcasts funding automatically once H1 passes; several lobbies at once per wallet, with a lobby field in every lobby record (composite node design, PR 37); the ready check closes as soon as every seat has answered, and in modes B and C "not unlocked" counts as not answering; proposed defaults of a 60 s ready window, 60 s per step and a 10-minute signing budget (owner to confirm); privacy work in progress: a generic user agent, an explicit chain proxy and no addresses in logs.
+
 ## Order of work
 
 From the plan (waves; at most four builders and two light agents at a time, one heavy job on the build server at a time):
