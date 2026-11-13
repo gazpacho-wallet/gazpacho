@@ -891,8 +891,68 @@ static void test_model(int runs)
     CHECK(st.done >= st.runs * 9 / 10);
 }
 
+/* ---- seeds for fuzz_signing_replay: real journals, in its input form ---- */
+
+static int write_journal(const char *dir, const char *name, const harness_t *h, uint32_t g, uint8_t hooks)
+{
+    char path[512];
+    FILE *f;
+    uint64_t batch = 0;
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    if (!(f = fopen(path, "wb"))) return 0;
+    fputc(g == 0 ? 1 : (int)((g - 1) << 1), f);
+    fputc(hooks, f);
+    for (size_t i = 0; i < h->p[g].n_recs; i++) {
+        const h_rec_t *r = &h->p[g].recs[i];
+        uint8_t b[7];
+        if (r->len > 0xffff) continue;
+        if (i && r->batch != batch) fputc(0, f);
+        batch = r->batch;
+        b[0] = 1;
+        for (int k = 0; k < 4; k++) b[1 + k] = (uint8_t)(r->type >> (8 * k));
+        b[5] = (uint8_t)r->len; b[6] = (uint8_t)(r->len >> 8);
+        fwrite(b, 1, 7, f);
+        fwrite(r->b, 1, r->len, f);
+    }
+    /* a tick and one message after the start: the proposal the host sent first, again */
+    fputc(3, f);
+    if (h->n_sent && h->sent[0].len <= 0xffff) {
+        uint8_t m[4] = {2, 0, (uint8_t)h->sent[0].len, (uint8_t)(h->sent[0].len >> 8)};
+        fwrite(m, 1, 4, f);
+        fwrite(h->sent[0].b, 1, h->sent[0].len, f);
+    }
+    fclose(f);
+    return 1;
+}
+
+static int replay_seeds(const char *dir)
+{
+    harness_t h;
+    int ok = 1;
+    /* a whole two-tier round: every party's journal */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+    h_flush(&h, 100000);
+    ok &= write_journal(dir, "host-done", &h, 0, 1) && write_journal(dir, "member-done", &h, 1, 1);
+    h_free(&h);
+    /* a member after its partial signatures, a host collecting them */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    while (h.nq && h_count_kind(&h, 2, GZ_SIGN_MSG_PARTIALS) == 0) h_deliver(&h, 0, 0);
+    ok &= write_journal(dir, "member-signed", &h, 2, 0) && write_journal(dir, "host-collecting", &h, 0, 0);
+    h_free(&h);
+    /* a member in the nonce phase */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    while (h.nq && h_count_kind(&h, 3, GZ_SIGN_MSG_NONCES) == 0) h_deliver(&h, 0, 0);
+    ok &= write_journal(dir, "member-nonces", &h, 3, 1);
+    h_free(&h);
+    return ok && check_done() == 0 ? 0 : 1;
+}
+
 int main(int argc, char **argv)
 {
+    if (argc == 3 && !strcmp(argv[1], "replay-seeds")) return replay_seeds(argv[2]);
     const char *only = "";
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "quick")) g_quick = g_quick > 1 ? g_quick : 1;

@@ -208,6 +208,7 @@ jobs:
           --args "signing_faults=faults tiny" --args "signing_honest=honest tiny"
           --args "signing_t1=t1 tiny" --args "signing_crashes=crashes tiny"
           --args "signing_restores=restores tiny" --args "signing_fuzz=1000 2"
+          --args "signing_node=tiny" --args "signing_fuzz_replay=1000"
 
   fuzz:
     name: libFuzzer, 60 s per target
