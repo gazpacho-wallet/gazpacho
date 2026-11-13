@@ -754,16 +754,20 @@ static void host_distribute(gz_sign_t *e, gz_sign_round_t *r, uint8_t member, em
  * combine, check each result from its bytes, save, send. */
 static void host_combine(gz_sign_t *e, gz_sign_round_t *r, emit_t *em)
 {
-    uint8_t t = r->tier, tx[GZ_SIGN_MAX_TX + 80];
+    /* The partial signatures and the signed transaction live in the engine's
+     * work area, not on the stack: this function is inlined into
+     * host_partials, and gcc's AddressSanitizer would guard such large
+     * inlined locals with calls the isolation check refuses. */
+    uint8_t t = r->tier, *tx = e->work_tx;
     wr_t w = {r->result_msg[t], 0, sizeof r->result_msg[t]};
     uint16_t n = 0;
+    secp256k1_musig_partial_sig *ps = e->work_psig;
+    const secp256k1_musig_partial_sig *ptrs[GZ_SIGN_MAX_SIGNERS];
+    uint8_t mine[32];
     for (int i = 0; i < r->def.n_items; i++) n += r->def.items[i].tier == t;
     header(&w, GZ_SIGN_MSG_RESULT, r->id); put8(&w, t); put16(&w, n);
     for (int i = 0; i < r->def.n_items; i++) {
         const gz_sign_item_t *it = &r->def.items[i];
-        secp256k1_musig_partial_sig ps[GZ_SIGN_MAX_SIGNERS];
-        const secp256k1_musig_partial_sig *ptrs[GZ_SIGN_MAX_SIGNERS];
-        uint8_t mine[32];
         if (it->tier != t) continue;
         if (!sign_item(e, r, i, mine) || r->have_psig[i] != all_bits(it)) { host_fail(e, r, 0, GZ_SIGN_WHY_BAD_PARTIAL, em); return; }
         for (int s = 0; s < it->n_signers; s++) {
@@ -773,7 +777,7 @@ static void host_combine(gz_sign_t *e, gz_sign_round_t *r, emit_t *em)
         if (!secp256k1_musig_partial_sig_agg(e->cfg.ctx, r->final_sig[i], &r->session[i], ptrs, it->n_signers)) {
             host_fail(e, r, 0, GZ_SIGN_WHY_BAD_PARTIAL, em); return;
         }
-        size_t len = gz_sign_tx_attach(it->tx, it->tx_len, r->final_sig[i], tx, sizeof tx);
+        size_t len = gz_sign_tx_attach(it->tx, it->tx_len, r->final_sig[i], tx, sizeof e->work_tx);
         if (!len || !gz_sign_tx_verify(e->cfg.ctx, tx, len, it->spent_amount, it->spent_script)) {   /* RULE:HOST_VERIFY_FINAL */
             host_fail(e, r, 0, GZ_SIGN_WHY_BAD_RESULT, em); return;
         }
@@ -843,13 +847,13 @@ static void host_partials(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, const gz_
     if (!msg_signed_by(e, m, bytes, r->def.participants[j].contribution_key)) { host_fail(e, r, bit(j), GZ_SIGN_WHY_BAD_MESSAGE, em); return; }
     if (m->tier != r->tier || r->tier_state[r->tier] != GZ_SIGN_TIER_SIGNED) { e->counters[GZ_SIGN_COUNT_DUPLICATES]++; return; }
     secp256k1_pubkey pk;
+    uint8_t sd[32];
+    secp256k1_musig_partial_sig ps;
+    secp256k1_musig_pubnonce pn;
     if (!secp256k1_ec_pubkey_parse(e->cfg.ctx, &pk, r->def.participants[j].factory_key, 33)) return;
     for (int k = 0; k < m->n; k++) {
         const uint8_t *p = m->entry[k];
         uint32_t i = be32(p);
-        uint8_t sd[32];
-        secp256k1_musig_partial_sig ps;
-        secp256k1_musig_pubnonce pn;
         if (i >= r->def.n_items || r->def.items[i].tier != m->tier || pos_of(&r->def.items[i], j) < 0) {
             host_fail(e, r, bit(j), GZ_SIGN_WHY_BAD_MESSAGE, em); return;
         }
@@ -909,6 +913,7 @@ static void host_message(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, co
 static gz_status_t host_begin(gz_sign_t *e, const uint8_t *params, size_t len, emit_t *em)
 {
     uint8_t host_random[32];
+    gz_sign_msg_t m;                    /* function scope: no ASan use-after-scope calls (isolation) */
     if (len > GZ_SIGN_MAX_PARAMS || e->attempts >= e->cfg.max_attempts) return GZ_ERR_ARGUMENT;
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++)
         if (e->rounds[i].state == GZ_SIGN_ROUND_ACTIVE) return GZ_ERR_ARGUMENT;
@@ -928,7 +933,6 @@ static gz_status_t host_begin(gz_sign_t *e, const uint8_t *params, size_t len, e
     wr_t w = {e->scratch, 0, sizeof r->proposal};       /* load_round copies it into the slot */
     header(&w, GZ_SIGN_MSG_PROPOSE, r->id); put(&w, host_random, 32); put16(&w, (uint32_t)len); put(&w, params, len);
     finish_msg(e, &w);
-    gz_sign_msg_t m;
     if (!w.cap || !gz_sign_decode(e->scratch, w.n, &m) || load_round(e, r, &m, e->scratch, w.n) != GZ_SIGN_WHY_NONE) {
         memset(r, 0, sizeof *r);
         return GZ_ERR_ARGUMENT;
