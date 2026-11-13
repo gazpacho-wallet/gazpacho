@@ -43,7 +43,8 @@ static void test_terms(lt_signer_t *host)
 
     /* T1 */
     CHECK(gz_terms_outer_decode(t1, t1n, &o));
-    CHECK(gz_terms_slice1_ok(&o));
+    CHECK(gz_terms_slice1_ok(&o, GZ_LOBBY_NET_SIGNET) && !gz_terms_slice1_ok(&o, GZ_LOBBY_NET_TESTNET4));
+    CHECK(!gz_terms_slice1_ok(&o, 2) && !gz_terms_genesis(2) && gz_terms_genesis(GZ_LOBBY_NET_TESTNET4)[0] == 0x43);
     CHECK(o.target == 8 && o.minimum == 3 && o.deadline == 1794441600ull && o.n_shapes == 2);
     CHECK(o.ready_window_ms == 30000 && o.signing_budget_ms == 600000 && o.step_timeout_ms == 60000);
     CHECK(o.channel_sat == 100000 && o.tree_feerate == 100 && o.lifetime_blocks == 144 && o.winddown_blocks == 36);

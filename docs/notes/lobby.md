@@ -9,8 +9,9 @@ specification.
 ## 1. Records
 
 All records belong to the Lobby area 0x0001 of `spec/journal.md` section 9
-and use the numbers listed there, with one addition. Checked against
-`spec/journal.md` on `main` (sections 9 and 9.1): no clash.
+and use the numbers listed there, with one addition, `lobby_state`, now
+registered in `spec/journal.md` section 9.1 (this pull request). Checked
+against sections 9 and 9.1: no clash.
 
 | Type | Name | Kept by | In journal.md |
 |---|---|---|---|
@@ -25,7 +26,7 @@ and use the numbers listed there, with one addition. Checked against
 | `0x00010012` | `host_fault` | Member | Listed |
 | `0x00010014` | `start_sent` | Host | Listed |
 | `0x00010016` | `start_received` | Member | Listed |
-| `0x00010018` | `lobby_state` | Host | **New, to be registered.** The lobby moved to Open after a failed signing attempt (a retry), to Funding, or to Active. Saved before the `lobby_status` that shows it |
+| `0x00010018` | `lobby_state` | Host | **New**, registered in `journal.md` 9.1. The lobby moved to Open after a failed signing attempt (a retry), to Funding, or to Active. Saved before the `lobby_status` that shows it |
 
 **Layouts.** `spec/journal.md` section 9 says each record is a TLV stream
 whose field numbers are fixed with the code tables (its open point 3). The
@@ -55,7 +56,8 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
    also accepts joins during a ready check and during signing, up to
    `target + standbys` seats, so that late arrivals can fill a gap left by a
    no-show (owner decision 10, `LOBBY.md` "standbys"). Without standbys 6.3
-   holds as written. Joins are never accepted from Funding on.
+   holds as written. Joins are never accepted from Funding on. **6.3 is
+   amended accordingly in this pull request.**
 2. **Crypto is a port.** The engine signs and verifies through a port
    (sign, verify, point check), so it holds no key and the core isolation
    check passes on it. It has its own SHA-256.
@@ -69,6 +71,8 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
    by a `cancel`, on both sides. The outcome comes back through
    `gz_lobby_host_round_result` (Funding, Active, retry without named seats,
    failed: cancel reason 3).
+   The signing engine (PR 15) is not merged; the interface is stubbed in the
+   tests, which check every binding and build parameter it receives.
 5. **Refusals of a join.** A join refused as invalid (a binding that does not
    verify, a key another seat or the host uses, another factory key for an
    existing seat) gets seat state 7 with reason 5. A join refused because the
@@ -106,3 +110,46 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
     across new versions and a restart, until its conditions are set again.
 16. **A member that left is told nothing more** and joins nothing again in
     that lobby; a later `join` with a new key is the program's choice.
+17. **Contract v2, node rule 6 (the reconnect step).** At `PEER_CONNECTED` the
+    member sends `hello` and nothing else; it resends its saved `join` or
+    `ready` only when the host's `lobby_status` shows a seat state other than
+    its own (at most three times a connection). The host pushes nothing on a
+    connect: it answers `hello` with `terms_offer`, `lobby_status` and, while
+    Signing and the seat was chosen, its saved `start`. Rule 3: the engine
+    never saves "sent"; the only acknowledgements it keeps are the peer's own
+    saved messages (`seat`, `start_received`).
+18. **`hello` limits per member key** (messages.md 6.1 as updated): one answer
+    a second and more than 20 ignored `hello`s in 10 minutes, counted across
+    the key's connections. The host keeps them for the 64 most recent keys;
+    a key pushed out of that table starts afresh. They are in memory only: a
+    host restart resets them (contract v2 section 3 accepts this).
+19. **A connection that sends neither `hello` nor `join` within 60 s is
+    closed** (a warning, then `GZ_NOTE_CLOSE`). One timer serves every
+    connection; it is set when one comes up and none is armed.
+20. **Seats for the transport.** The host gives `GZ_NOTE_SEATED` (the
+    member's contribution key and 1 or 0) after the save that makes a key
+    hold a seat or stop holding one (join, leave, removal), and again for
+    every seat in `gz_lobby_host_resume`, before any member reconnects. The
+    program applies it with `gz_peers_set_seated_key` (transport PR 23, not
+    merged when this was written) until contract v2's `SET_SEATED` action (P4)
+    replaces the notice. The engine calls no function outside the core, so
+    this is a notice and not a call.
+21. **The party's own network.** A host is configured for signet or testnet4
+    (`network`, 0 signet) and opens only terms for that chain; a member is
+    signet unless set (`gz_lobby_member_set_network`) and refuses terms for
+    another chain (messages.md 2 and 6.2 as updated). The engine does not see
+    `init`; the transport checks it.
+22. **After a restore** the member is given its current keys. Records whose
+    saved `join` names another factory key belong to a seat of an older
+    epoch: the engine does not resume that seat (nor its `ready`, `start` or
+    own leave) and joins again with the current keys (`safety-rule.md` C12,
+    messages.md 2: "a restored member ... has no old seat: it joins again").
+    The restore marker and the start fence of `ports.h` are the node's; the
+    lobby engine reads only the records the node hands it.
+23. **Not yet against contract v2's P4.** Peers are still `uint64_t` ids and
+    messages whole Lightning messages, as on `main` today; links, `SEND` with
+    kind and scope, and `CONNECT`, `DISCONNECT` and `SET_SEATED` arrive with
+    P4. The engine has no view objects yet (contract v2 section 11, kinds 2
+    and 3): its notices are listed in `lobby.h`, each after the save of what
+    it reports (node rule 8), and their mapping to the view is left to the
+    program's pull request.

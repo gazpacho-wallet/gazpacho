@@ -95,7 +95,7 @@ def run(cmd, cwd, timeout):
 INC = ["-I", f"{REPO}/core/gazpacho/include", "-I", f"{REPO}/core/lobby/include", "-I", f"{REPO}/sim",
        "-I", f"{SECP_SRC}/include"]
 CC = ["gcc", "-std=gnu11", "-O1", "-w", "-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]
-MAINS = ["test_lobby_vectors", "test_lobby", "test_lobby_sim", "fuzz_lobby", "model_driver"]
+MAINS = ["test_lobby_vectors", "test_lobby", "test_lobby_sim", "fuzz_lobby", "fuzz_lobby_main", "model_driver"]
 OBJ = f"{OUT}/obj"
 FAST = ["gcc", "-std=gnu11", "-O2", "-w"]           # the simulator runs long: built without the checkers
 
@@ -136,7 +136,8 @@ def link(work, name, binary):
     objs = [f"{work}/mut{sfx}" if f == name else f"{OBJ}/lobby_{f[:-2]}{sfx}" for f in FILES]
     objs += [f"{OBJ}/action{sfx}", f"{OBJ}/runner{sfx}", f"{OBJ}/rng{sfx}"]
     main_obj = {"lobby_model_driver": "model_driver", "test_lobby_sim_fast": "test_lobby_sim"}.get(binary, binary)
-    return run((FAST if fast else CC) + [f"{OBJ}/{main_obj}{sfx}"] + objs + [SECP_LIB, "-o", out], work, 120) == 0
+    mains = [main_obj] + (["fuzz_lobby_main"] if binary == "fuzz_lobby" else [])
+    return run((FAST if fast else CC) + [f"{OBJ}/{m}{sfx}" for m in mains] + objs + [SECP_LIB, "-o", out], work, 120) == 0
 
 
 def one(job):

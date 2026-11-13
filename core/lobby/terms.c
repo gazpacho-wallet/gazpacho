@@ -8,6 +8,14 @@
 static const uint8_t SIGNET[32] = {
     0xf6, 0x1e, 0xee, 0x3b, 0x63, 0xa3, 0x80, 0xa4, 0x77, 0xa0, 0x63, 0xaf, 0x32, 0xb2, 0xbb, 0xc9,
     0x7c, 0x9f, 0xf9, 0xf0, 0x1f, 0x2c, 0x42, 0x25, 0xe9, 0x73, 0x98, 0x81, 0x08, 0x00, 0x00, 0x00};
+static const uint8_t TESTNET4[32] = {
+    0x43, 0xf0, 0x8b, 0xda, 0xb0, 0x50, 0xe3, 0x5b, 0x56, 0x7c, 0x86, 0x4b, 0x91, 0xf4, 0x7f, 0x50,
+    0xae, 0x72, 0x5a, 0xe2, 0xde, 0x53, 0xbc, 0xfb, 0xba, 0xf2, 0x84, 0xda, 0x00, 0x00, 0x00, 0x00};
+
+const uint8_t *gz_terms_genesis(int network)
+{
+    return network == GZ_LOBBY_NET_SIGNET ? SIGNET : network == GZ_LOBBY_NET_TESTNET4 ? TESTNET4 : NULL;
+}
 
 /* Well-formed UTF-8: no overlong forms, no surrogates, nothing above U+10FFFF. */
 static int utf8_ok(const uint8_t *p, size_t n)
@@ -228,10 +236,10 @@ int gz_terms_current_decode(const uint8_t *rec, size_t len, const gz_terms_outer
     return r == 0 && have_digest && have_version && c->n_adj == outer->n_adj;
 }
 
-int gz_terms_slice1_ok(const gz_terms_outer_t *o)
+int gz_terms_slice1_ok(const gz_terms_outer_t *o, int network)
 {
-    return memcmp(o->chain, SIGNET, 32) == 0 && o->profile == 2 && o->on_shortfall == 0 &&
-           o->switches == 0;
+    const uint8_t *g = gz_terms_genesis(network);
+    return g && memcmp(o->chain, g, 32) == 0 && o->profile == 2 && o->on_shortfall == 0 && o->switches == 0;
 }
 
 void gz_terms_outer_digest(const uint8_t *rec, size_t len, uint8_t out[32])

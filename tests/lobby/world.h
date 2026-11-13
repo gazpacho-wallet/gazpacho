@@ -63,7 +63,7 @@ struct world {
 };
 
 static uint64_t w_clock(void *ctx) { return ((world_t *)ctx)->now; }
-static inline void w_random(void *ctx, uint32_t purpose, uint8_t *out, size_t len)
+static inline void w_random(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
 {
     (void)purpose;
     sim_rng_fill(&((w_node_t *)ctx)->rng, out, len);

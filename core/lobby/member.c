@@ -190,7 +190,7 @@ static gz_status_t on_terms(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_ac
     gz_terms_outer_digest(g->outer, g->outer_len, od);
     if (memcmp(od, m->scope, 32) != 0 || !gz_terms_outer_decode(g->outer, g->outer_len, &t) ||
         memcmp(t.host_key, m->host_key, 33) != 0 ||
-        m->crypto.verify(m->crypto.ctx, m->host_key, od, g->outer_sig) != 1 || !gz_terms_slice1_ok(&t) ||
+        m->crypto.verify(m->crypto.ctx, m->host_key, od, g->outer_sig) != 1 || !gz_terms_slice1_ok(&t, m->network) ||
         !gz_terms_current_decode(g->current, g->current_len, &t, od, &v))
         return gz_la_refuse(out, m->host_peer, "bad terms");
     gz_terms_current_digest(g->current, g->current_len, cd);
@@ -199,7 +199,8 @@ static gz_status_t on_terms(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_ac
     if (m->have_terms) {
         if (v.version < m->values.version) return GZ_OK;            /* older: ignore */
         if (v.version == m->values.version) {
-            if (g->current_len == m->current_len && memcmp(g->current, m->current, m->current_len) == 0) return GZ_OK;
+            if (g->current_len == m->current_len && memcmp(g->current, m->current, m->current_len) == 0)
+                return m->joined ? GZ_OK : evaluate(m, out);   /* restored terms without a seat: join now */
             memcpy(a, m->current, m->current_len); memcpy(a + m->current_len, m->current_sig, 64);
             memcpy(b, g->current, g->current_len); memcpy(b + g->current_len, g->current_sig, 64);
             return leave(m, GZ_FAULT_TWO_VALUES, a, m->current_len + 64, b, g->current_len + 64, 3, out);
@@ -434,12 +435,16 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
         m->saved_version = m->values.version;
         return GZ_OK;
     case GZ_REC_JOINED:
-        if (len > sizeof m->join_msg) return GZ_ERR_CORRUPT;
+        if (len > sizeof m->join_msg || gz_lobby_decode(p, len, &g) != GZ_DEC_OK || g.kind != GZ_KIND_JOIN)
+            return GZ_ERR_CORRUPT;
+        m->stale_seat = memcmp(g.factory_key, m->factory_key, 33) != 0;
+        if (m->stale_seat) return GZ_OK;              /* an older epoch's seat: join again */
         memcpy(m->join_msg, p, len); m->join_len = len;
         m->joined = 1;
         m->left = m->ended = 0;
         return GZ_OK;
     case GZ_REC_READY_SENT:
+        if (m->stale_seat) return GZ_OK;
         if (len == 1) { m->ready = 0; m->ready_len = 0; m->user_unready = p[0] == 2; return GZ_OK; }
         if (len > sizeof m->ready_msg || gz_lobby_decode(p, len, &g) != GZ_DEC_OK || g.kind != GZ_KIND_READY)
             return GZ_ERR_CORRUPT;
@@ -456,11 +461,13 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
         memcpy(m->frozen_digest, p + 36, 32);
         return GZ_OK;
     case GZ_REC_START_RECEIVED:
+        if (m->stale_seat) return GZ_OK;
         if (len > sizeof m->start_msg || gz_lobby_decode(p, len, &g) != GZ_DEC_OK || g.kind != GZ_KIND_START)
             return GZ_ERR_CORRUPT;
         memcpy(m->start_msg, p, len); m->start_len = len; m->role = g.role;
         return GZ_OK;
     case GZ_REC_LOBBY_ENDED:
+        if (m->stale_seat && len >= 1 && p[0] == 0) return GZ_OK;   /* the old seat's own leave */
         at = 3;
         if (len < 5 || !gz_la_get_blob(p, len, &at, &a, &an) || at != len) return GZ_ERR_CORRUPT;
         m->ended = 1;
@@ -470,6 +477,13 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
     default:
         return GZ_OK;
     }
+}
+
+gz_status_t gz_lobby_member_set_network(gz_lobby_member_t *m, int network)
+{
+    if (!m || !gz_terms_genesis(network)) return GZ_ERR_ARGUMENT;
+    m->network = network;
+    return GZ_OK;
 }
 
 gz_status_t gz_lobby_member_unready(gz_lobby_member_t *m, gz_action_list_t *out)

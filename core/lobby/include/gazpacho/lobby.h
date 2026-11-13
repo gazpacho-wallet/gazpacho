@@ -127,8 +127,15 @@ int gz_terms_outer_decode(const uint8_t *rec, size_t len, gz_terms_outer_t *out)
  * exact set of adjustable types, each value inside its range. */
 int gz_terms_current_decode(const uint8_t *rec, size_t len, const gz_terms_outer_t *outer,
                             const uint8_t outer_digest[32], gz_terms_current_t *out);
-/* The values a Slice 1 app accepts: signet, Standard, cancel, switches 0. */
-int gz_terms_slice1_ok(const gz_terms_outer_t *outer);
+/* Networks (messages.md section 2, contract v2 item 15): a party runs one,
+ * signet or testnet4, and refuses terms for any other. */
+#define GZ_LOBBY_NET_SIGNET   0
+#define GZ_LOBBY_NET_TESTNET4 1
+/* The network's block 0 hash in internal order, or NULL for another number. */
+const uint8_t *gz_terms_genesis(int network);
+/* The values a Slice 1 app accepts: the party's own network (signet or
+ * testnet4), Standard, cancel, switches 0. */
+int gz_terms_slice1_ok(const gz_terms_outer_t *outer, int network);
 
 /* Canonical encoders: one byte string per set of terms. Return the length,
  * or 0 if `cap` is short. They do not judge the values: decode the result. */
@@ -299,6 +306,12 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_NOTE_ENDED      0x4c05u   /* the lobby ended: u8 lobby state, u16 reason */
 #define GZ_NOTE_SEAT       0x4c06u   /* member's seat state: u8 lobby state, u8 seat state */
 #define GZ_NOTE_STARTED    0x4c07u   /* a start: u8 role, u16 signers */
+/* Host: a member's key holds a seat (1) or no longer does (0): contribution
+ * key (33), u8. Given after the seat's save, and again for every seat by
+ * gz_lobby_host_resume. The program applies it with gz_peers_set_seated_key
+ * (transport PR 23) until contract v2's SET_SEATED action (P4) replaces this
+ * notice; the engine itself calls nothing outside the core. */
+#define GZ_NOTE_SEATED     0x4c08u
 
 /* Host faults a member records (journal.md host_fault). */
 #define GZ_FAULT_TWO_VALUES   1      /* two current records under one version */
@@ -309,6 +322,9 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_LOBBY_TIMER_WINDOW   0x4c000002u
 #define GZ_LOBBY_TIMER_STATUS   0x4c000003u
 #define GZ_LOBBY_TIMER_RETRY    0x4c000004u   /* member: join again after a refusal for a limit */
+#define GZ_LOBBY_TIMER_IDLE     0x4c000005u   /* host: close connections silent for 60 s */
+#define GZ_LOBBY_IDLE_MS        60000u        /* neither hello nor join within this: closed */
+#define GZ_LOBBY_MAX_LINKS      64            /* member keys whose hello limits are kept */
 
 /* An input to an engine. The time is read from the clock port, whose epoch
  * must be the Unix epoch (deadlines are Unix seconds). */
@@ -392,16 +408,26 @@ typedef struct {
     uint64_t peer_id;
     uint8_t key[33];
     int joins;                       /* seats created on this connection */
-    uint64_t hello_ms; int hello_answered; uint32_t hello_ignored;
+    uint64_t connected_ms; int spoke; /* when it came up; it has sent hello or join */
     int warned;                      /* sent the wrong-protocol warning */
     uint64_t status_ms; int status_pending;
     uint8_t status_msg[GZ_LOBBY_STATUS_MAX]; size_t status_len;   /* the last status sent */
 } gz_lobby_conn_t;
 
+/* The hello limits of one member key, kept across its connections
+ * (messages.md 6.1: per link, not per connection). */
+typedef struct {
+    int used, answered;
+    uint8_t key[33];
+    uint64_t hello_ms, window_ms;    /* last answer; start of the ignored count's window */
+    uint32_t ignored;
+} gz_lobby_link_t;
+
 typedef struct {
     uint8_t factory_key[33];         /* the host's own factory key */
     uint16_t standbys;               /* seats beyond the target */
     int listed;                      /* named in answers to scope-zero hello */
+    int network;                     /* GZ_LOBBY_NET_*; 0 is signet */
 } gz_lobby_host_config_t;
 
 typedef struct {
@@ -424,6 +450,8 @@ typedef struct {
     uint16_t n_seats; uint64_t next_seq, created, last_create_ms;
     gz_lobby_seat_t seats[GZ_LOBBY_MAX_SEATS];
     gz_lobby_conn_t conns[GZ_LOBBY_MAX_CONNS];
+    gz_lobby_link_t links[GZ_LOBBY_MAX_LINKS];
+    int idle_armed;                  /* the idle timer is set */
     uint64_t zero_hello_window; uint32_t zero_hello_count;
     uint16_t end_reason;
     uint8_t cancel_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t cancel_len;
@@ -494,6 +522,8 @@ typedef struct {
     uint8_t start_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t start_len; int role;
     int last_class; uint8_t last_term;
     int user_unready;                /* the user unreadied: do not ready by itself */
+    int network;                     /* GZ_LOBBY_NET_*; signet unless set */
+    int stale_seat;                  /* restoring: the saved seat is of other keys (an older epoch) */
     int resends;                     /* join/ready resent on lobby_status, this connection */
     int retries;                     /* joins again after a refusal for a limit, this connection */
     int sent_here;                   /* join or ready already sent on this connection */
@@ -507,6 +537,12 @@ gz_status_t gz_lobby_member_init(gz_lobby_member_t *m, const gz_ports_t *ports,
                                  const gz_lobby_conditions_t *cond, const uint8_t scope[32],
                                  const uint8_t host_key[33], const uint8_t ckey[33],
                                  const uint8_t factory_key[33], int auto_join);
+/* The member's network, GZ_LOBBY_NET_SIGNET (the default) or _TESTNET4: terms
+ * for another chain are refused. GZ_ERR_ARGUMENT for another value. */
+gz_status_t gz_lobby_member_set_network(gz_lobby_member_t *m, int network);
+/* Records whose saved join names a factory key other than the member's own
+ * belong to a seat of an older restore epoch (safety-rule.md C12): that seat
+ * is not resumed, and the member joins again with its current keys. */
 gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec);
 gz_status_t gz_lobby_member_handle(gz_lobby_member_t *m, const gz_lobby_input_t *in,
                                    gz_action_list_t *out);

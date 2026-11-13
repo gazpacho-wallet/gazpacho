@@ -144,10 +144,20 @@ static gz_status_t save_seat(gz_lobby_host_t *h, const gz_lobby_seat_t *s, gz_ac
 /* A saved change of seat state, within the limit of 10 in 10 minutes
  * (messages.md 6). 1 if made, 0 if the limit ignores it. `force` is for the
  * host's own decisions (removal, a failed attempt). */
+/* GZ_NOTE_SEATED for a seat's key. */
+static gz_status_t seated_note(const gz_lobby_seat_t *s, int seated, gz_action_list_t *out)
+{
+    uint8_t b[34];
+    memcpy(b, s->ckey, 33);
+    b[33] = (uint8_t)(seated ? 1 : 0);
+    return gz_la_notify(out, GZ_NOTE_SEATED, b, 34);
+}
+
 static int seat_change(gz_lobby_host_t *h, gz_lobby_seat_t *s, uint8_t state, int force, gz_status_t *st,
                        gz_action_list_t *out)
 {
     uint64_t now = now_ms(h);
+    int was_in = is_in(s);
     if (!force && s->n_changes == 10 && now - s->changes[s->changes_at] < 600000 && now >= s->changes[s->changes_at])
         return 0;
     s->changes[s->changes_at] = now;
@@ -157,6 +167,7 @@ static int seat_change(gz_lobby_host_t *h, gz_lobby_seat_t *s, uint8_t state, in
     if (state != GZ_SEAT_READY || h->state != GZ_LOBBY_READY_CHECK) s->answered = 0;
     h->rule_dirty = 1;
     *st = save_seat(h, s, out);
+    if (*st == GZ_OK && was_in != is_in(s)) *st = seated_note(s, is_in(s), out);   /* after its save */
     return 1;
 }
 
@@ -201,7 +212,7 @@ static gz_status_t ready_check(gz_lobby_host_t *h, gz_action_list_t *out)
     gz_lobby_enc_t e;
     uint8_t r[72 + GZ_LOBBY_MAX_SAVED_MSG];
     uint16_t i;
-    h->ports.random.fill(h->ports.random.ctx, GZ_RANDOM_OTHER, h->check_id, 32);
+    h->ports.random.fill(h->ports.random.ctx, GZ_RANDOM_ORDINARY, h->check_id, 32);
     gz_lobby_enc_start(&e, h->check_msg, sizeof h->check_msg, GZ_KIND_READY_CHECK, h->scope);
     gz_lobby_enc_record(&e, 2, h->check_id, 32);
     gz_lobby_enc_u32(&e, 4, h->values.version);
@@ -328,18 +339,66 @@ static gz_status_t window_closed(gz_lobby_host_t *h, gz_action_list_t *out)
 
 /* ------------------------------------------------------------ messages */
 
+/* The hello limits of a member key (messages.md 6.1: per link, counted
+ * across its connections, so reconnecting does not reset them). The table
+ * keeps the 64 most recent keys; a key pushed out starts afresh. */
+static gz_lobby_link_t *link_of(gz_lobby_host_t *h, const uint8_t key[33])
+{
+    int i, best = 0;
+    for (i = 0; i < GZ_LOBBY_MAX_LINKS; i++)
+        if (h->links[i].used && memcmp(h->links[i].key, key, 33) == 0) return &h->links[i];
+    for (i = 0; i < GZ_LOBBY_MAX_LINKS; i++) {
+        if (!h->links[i].used) { best = i; break; }
+        if (h->links[i].hello_ms < h->links[best].hello_ms) best = i;
+    }
+    memset(&h->links[best], 0, sizeof h->links[best]);
+    h->links[best].used = 1;
+    memcpy(h->links[best].key, key, 33);
+    return &h->links[best];
+}
+
+/* Close every connection that has sent neither hello nor join within
+ * GZ_LOBBY_IDLE_MS of coming up, and set the timer for the next one. */
+static gz_status_t idle_sweep(gz_lobby_host_t *h, gz_action_list_t *out)
+{
+    uint64_t now = now_ms(h), next = 0;
+    int i;
+    h->idle_armed = 0;
+    for (i = 0; i < GZ_LOBBY_MAX_CONNS; i++) {
+        gz_lobby_conn_t *c = &h->conns[i];
+        uint64_t left;
+        if (!c->used || c->spoke) continue;
+        if (now < c->connected_ms) c->connected_ms = now;         /* the clock went back */
+        if (now - c->connected_ms >= GZ_LOBBY_IDLE_MS) {
+            c->spoke = 1;                                        /* closed once */
+            TRY(gz_la_refuse(out, c->peer_id, "no hello"));
+            continue;
+        }
+        left = GZ_LOBBY_IDLE_MS - (now - c->connected_ms);
+        if (!next || left < next) next = left;
+    }
+    if (!next) return GZ_OK;
+    h->idle_armed = 1;
+    return gz_la_timer(out, GZ_LOBBY_TIMER_IDLE, next);
+}
+
 static gz_status_t on_hello(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lobby_msg_t *m,
                             gz_action_list_t *out)
 {
     static const uint8_t zero[32];
     uint64_t now = now_ms(h);
     gz_lobby_seat_t *s;
-    if (c->hello_answered && now - c->hello_ms < 1000 && now >= c->hello_ms) {
-        if (++c->hello_ignored > 20) return gz_la_refuse(out, c->peer_id, "too many hello");
+    gz_lobby_link_t *l = link_of(h, c->key);
+    if (l->answered && now - l->hello_ms < 1000 && now >= l->hello_ms) {
+        if (l->ignored == 0 || now - l->window_ms >= 600000 || now < l->window_ms) {
+            l->window_ms = now;                       /* a new 10-minute window */
+            l->ignored = 0;
+        }
+        if (++l->ignored > 20) return gz_la_refuse(out, c->peer_id, "too many hello");
         return GZ_OK;
     }
-    c->hello_answered = 1;
-    c->hello_ms = now;
+    l->answered = 1;
+    l->hello_ms = now;
     if (memcmp(m->scope, zero, 32) == 0) {
         if (now / 1000 != h->zero_hello_window) { h->zero_hello_window = now / 1000; h->zero_hello_count = 0; }
         if (h->zero_hello_count >= 4) return GZ_OK;
@@ -473,13 +532,19 @@ gz_status_t gz_lobby_host_handle(gz_lobby_host_t *h, const gz_lobby_input_t *in,
         h->conns[i].used = 1;
         h->conns[i].peer_id = in->peer_id;
         memcpy(h->conns[i].key, in->peer_key, 33);
+        h->conns[i].connected_ms = now_ms(h);
         h->rule_dirty = 1;
+        if (!h->idle_armed) {
+            h->idle_armed = 1;
+            TRY(gz_la_timer(out, GZ_LOBBY_TIMER_IDLE, GZ_LOBBY_IDLE_MS));
+        }
         return apply_rule(h, 0, out);
     case GZ_LIN_DISCONNECTED:
         if ((c = conn_of(h, in->peer_id)) != NULL) c->used = 0;
         return GZ_OK;
     case GZ_LIN_TIMER:
         if (in->timer_id == GZ_LOBBY_TIMER_WINDOW) return window_closed(h, out);
+        if (in->timer_id == GZ_LOBBY_TIMER_IDLE) return idle_sweep(h, out);
         if (in->timer_id == GZ_LOBBY_TIMER_STATUS) {
             return broadcast(h, out);
         }
@@ -503,6 +568,7 @@ gz_status_t gz_lobby_host_handle(gz_lobby_host_t *h, const gz_lobby_input_t *in,
         return gz_la_send(out, c->peer_id, w, gz_lobby_warning("unknown protocol", w, sizeof w));
     }
     if (code != GZ_DEC_OK) return GZ_OK;
+    if (m.kind == GZ_KIND_HELLO || m.kind == GZ_KIND_JOIN) c->spoke = 1;
     switch (m.kind) {
     case GZ_KIND_HELLO: return on_hello(h, c, &m, out);
     case GZ_KIND_JOIN: case GZ_KIND_READY: case GZ_KIND_UNREADY: case GZ_KIND_LEAVE: break;
@@ -521,7 +587,7 @@ gz_status_t gz_lobby_host_init(gz_lobby_host_t *h, const gz_ports_t *ports, cons
                                const gz_lobby_signing_t *signing, const gz_lobby_host_config_t *cfg)
 {
     if (!h || !ports || !crypto || !cfg || !crypto->verify || !crypto->sign || !crypto->point_ok ||
-        !ports->random.fill || !ports->clock.now_ms)
+        !ports->random.fill || !ports->clock.now_ms || !gz_terms_genesis(cfg->network))
         return GZ_ERR_ARGUMENT;
     memset(h, 0, sizeof *h);
     h->ports = *ports;
@@ -537,7 +603,7 @@ static int adopt(gz_lobby_host_t *h, const uint8_t *outer, size_t olen, const ui
     gz_terms_outer_t t;
     gz_terms_current_t v;
     uint8_t od[32];
-    if (!outer || olen > GZ_TERMS_OUTER_MAX || !gz_terms_outer_decode(outer, olen, &t) || !gz_terms_slice1_ok(&t) ||
+    if (!outer || olen > GZ_TERMS_OUTER_MAX || !gz_terms_outer_decode(outer, olen, &t) || !gz_terms_slice1_ok(&t, h->cfg.network) ||
         t.target + h->cfg.standbys > GZ_LOBBY_MAX_SEATS)
         return 0;
     gz_terms_outer_digest(outer, olen, od);
@@ -690,9 +756,13 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
 
 gz_status_t gz_lobby_host_resume(gz_lobby_host_t *h, gz_action_list_t *out)
 {
+    uint16_t i;
     if (!h || !out) return GZ_ERR_ARGUMENT;
     if (h->state == GZ_LOBBY_READY_CHECK) h->state = GZ_LOBBY_OPEN;  /* never saved: a check is not resumed */
     h->rule_dirty = 1;
+    h->idle_armed = 0;                                /* timers do not survive a restart */
+    for (i = 0; i < h->n_seats; i++)                  /* seats again, before any member reconnects */
+        if (is_in(&h->seats[i])) TRY(seated_note(&h->seats[i], 1, out));
     return h->state == GZ_LOBBY_OPEN ? deadline_timer(h, out) : GZ_OK;
 }
 
