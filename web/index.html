@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Gazpacho</title>
+<link rel="stylesheet" href="css/gazpacho.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the content</a>
+
+<aside class="proto-line" id="proto-line" aria-label="Prototype notice">
+  Prototype with fake data. No real coins, no real network, no real safety checks.
+</aside>
+
+<header class="top">
+  <a class="brand" href="#/home" aria-label="Gazpacho, home">Gaz<span>pacho</span></a>
+  <div class="top-status" id="top-status" role="status"></div>
+  <button type="button" class="btn small" id="theme-toggle">Theme</button>
+  <button type="button" class="btn small" id="menu-toggle" aria-expanded="false" aria-controls="nav">Menu</button>
+</header>
+
+<div class="shell">
+  <nav id="nav" class="nav" aria-label="Screens"></nav>
+  <main id="main" tabindex="-1">
+    <noscript><p class="notice danger">Gazpacho's screens need JavaScript, which is switched off in this browser.</p></noscript>
+    <div id="view"></div>
+  </main>
+</div>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+<div id="demo-root"></div>
+
+<!-- Order matters: helpers, then the data source, then the screens, then start-up. -->
+<script src="js/util.js"></script>
+<script src="js/api-mock.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/tree.js"></script>
+<script src="js/screens/home.js"></script>
+<script src="js/screens/lobbies.js"></script>
+<script src="js/screens/conditions.js"></script>
+<script src="js/screens/factory.js"></script>
+<script src="js/screens/pay.js"></script>
+<script src="js/screens/host.js"></script>
+<script src="js/screens/wallet.js"></script>
+<script src="js/screens/settings.js"></script>
+<script src="js/screens/first-run.js"></script>
+<script src="js/demo.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
