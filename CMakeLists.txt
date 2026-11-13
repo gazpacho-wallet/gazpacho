@@ -300,6 +300,22 @@ gz_add_test(journal_review  tests/journal/test_journal_review.c  gazpacho_journa
 # two processes), the import's floor, the name's durability, an unreadable
 # marker, the O_DIRECT fallback, the reader after a failure, the guard.
 gz_add_test(journal_review_b tests/journal/test_journal_review_b.c gazpacho_journal_testfs)
+# Review B's stateful model of the whole API and its scan-and-open target
+# against an independent reader: libFuzzer targets with GZ_LIBFUZZER, plain
+# drivers (and tests) otherwise.
+foreach(target journal_model journal_open)
+  add_executable(fuzz_${target} tests/journal/fuzz_${target}.c)
+  target_link_libraries(fuzz_${target} PRIVATE gazpacho_journal_testfs)
+  target_compile_options(fuzz_${target} PRIVATE ${GZ_NEW_CODE_WARNINGS})
+  if(GZ_LIBFUZZER)
+    target_compile_definitions(fuzz_${target} PRIVATE LIBFUZZER)
+    target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer)
+  endif()
+endforeach()
+if(NOT GZ_LIBFUZZER)
+  add_test(NAME journal_fuzz_model COMMAND fuzz_journal_model 2000 1)
+  add_test(NAME journal_fuzz_open  COMMAND fuzz_journal_open 20000 1)
+endif()
 # Under valgrind: every journal test runs in the valgrind job
 # (tools/valgrind-tests.py, which takes journal_fuzz on a smaller case).
 

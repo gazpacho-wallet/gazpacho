@@ -90,7 +90,7 @@ static void apply(uint8_t **buf, size_t *len, const memfs_op_t *op, size_t take)
         if (op->off > *len) memset(*buf + *len, 0, op->off - *len);
         *len = op->off + take;
     }
-    memcpy(*buf + op->off, op->data, take);
+    if (take) memcpy(*buf + op->off, op->data, take); /* a write of 0 bytes has no data */
 }
 
 static void push_op(memfs_inode_t *n, uint64_t off, const void *data, size_t len, int trunc)
