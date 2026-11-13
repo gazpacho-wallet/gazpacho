@@ -11,7 +11,7 @@
 
 #define H_MAX 9
 
-typedef struct { uint32_t type; size_t len; uint8_t *b; } h_rec_t;
+typedef struct { uint32_t type; size_t len; uint8_t *b; uint64_t batch; } h_rec_t;
 typedef struct { uint32_t from, to; size_t len; uint8_t *b; } h_msg_t;
 
 /* What one party did, as an action: for tests that look at one kind. */
@@ -24,7 +24,8 @@ typedef struct {
     gz_sign_t *e;
     uint64_t incarnation, fill;
     h_rec_t *recs; size_t n_recs, cap_recs, reader_at;
-    gz_record_t rd;
+    gz_record_t rd[8];
+    uint64_t batches;
 } h_party_t;
 
 typedef struct harness {
@@ -36,7 +37,7 @@ typedef struct harness {
     gz_sign_sha256_t tr;             /* the transcript */
     uint64_t events, errors;
     uint32_t drop_to;           /* bit g: messages to party g are lost */
-    uint32_t resend_ticks, deadline_ticks, max_attempts, status_ticks;
+    uint32_t resend_ticks, deadline_ticks, max_attempts, status_ticks, begun, unfinished_ticks;
     /* for the model check (test_signing.c): called with every action a party carries out */
     void (*watch)(struct harness *h, uint32_t party, const gz_action_t *a);
     void *watch_ctx;
@@ -56,11 +57,15 @@ static uint64_t h_now(void *ctx) { (void)ctx; return 0; }
 static int h_next(void *ctx, gz_stored_batch_t *b)
 {
     h_party_t *p = ctx;
+    size_t k = 0;
     if (p->reader_at >= p->n_recs) return 0;
-    h_rec_t *r = &p->recs[p->reader_at];
-    p->rd.type = r->type; p->rd.bytes.data = r->b; p->rd.bytes.len = r->len;
-    b->id.incarnation = 1; b->id.sequence = ++p->reader_at;
-    b->records = &p->rd; b->n_records = 1;
+    uint64_t batch = p->recs[p->reader_at].batch;
+    b->id.incarnation = 1; b->id.sequence = batch;
+    while (p->reader_at < p->n_recs && p->recs[p->reader_at].batch == batch && k < 8) {   /* one saved batch */
+        h_rec_t *r = &p->recs[p->reader_at++];
+        p->rd[k].type = r->type; p->rd[k].bytes.data = r->b; p->rd[k].bytes.len = r->len; k++;
+    }
+    b->records = p->rd; b->n_records = k;
     return 1;
 }
 static void h_rewind(void *ctx) { ((h_party_t *)ctx)->reader_at = 0; }
@@ -103,6 +108,7 @@ static void h_apply(harness_t *h, uint32_t g, const gz_action_list_t *list)
         if (h->watch) h->watch(h, g, a);
         h_fold64(h, (uint64_t)g << 8 | a->kind);
         if (a->kind == GZ_ACTION_SAVE) {
+            h->p[g].batches++;
             for (size_t r = 0; r < a->u.save.n_records; r++) {
                 h_party_t *p = &h->p[g];
                 if (p->n_recs == p->cap_recs) {
@@ -111,7 +117,7 @@ static void h_apply(harness_t *h, uint32_t g, const gz_action_list_t *list)
                     if (!p->recs) abort();
                 }
                 h_rec_t *rec = &p->recs[p->n_recs++];
-                rec->type = a->u.save.records[r].type; rec->len = a->u.save.records[r].bytes.len;
+                rec->type = a->u.save.records[r].type; rec->len = a->u.save.records[r].bytes.len; rec->batch = h->p[g].batches;
                 rec->b = malloc(rec->len ? rec->len : 1);
                 if (!rec->b) abort();
                 memcpy(rec->b, a->u.save.records[r].bytes.data, rec->len);
@@ -173,8 +179,9 @@ static void h_build(harness_t *h, uint32_t g)
     w_secret("test/factory", g, c.factory_secret);
     w_secret("test/contribution", g, c.contribution_secret);
     c.build = w_build; c.retry = w_retry; c.build_ctx = &h->builder;
+    w_hooks(&h->builder, &c);
     c.tick_ms = 1; c.resend_ticks = h->resend_ticks; c.deadline_ticks = h->deadline_ticks; c.max_attempts = h->max_attempts;
-    c.status_ticks = h->status_ticks;
+    c.status_ticks = h->status_ticks; c.unfinished_ticks = h->unfinished_ticks;
     p->incarnation++;
     p->fill = 0x9e3779b97f4a7c15ull * (g + 1) ^ p->incarnation << 40;
     if (!p->e) p->e = malloc(sizeof *p->e);
@@ -255,6 +262,15 @@ static gz_status_t h_inject(harness_t *h, uint32_t from, uint32_t to, const uint
     return h_event(h, to, &ev);
 }
 
+/* A connection to `peer` is up at party g (contract v2 section 3: the reconnect step). */
+static gz_status_t h_connect(harness_t *h, uint32_t g, uint32_t peer)
+{
+    gz_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_PEER_CONNECTED; ev.u.peer.peer_id = peer;
+    return h_event(h, g, &ev);
+}
+
 static void h_tick(harness_t *h, uint32_t g)
 {
     gz_event_t ev;
@@ -282,7 +298,8 @@ static gz_status_t h_begin(harness_t *h, uint8_t tiers, uint32_t members, uint8_
 {
     uint8_t p[W_PARAMS];
     gz_action_list_t list;
-    w_params(p, tiers, 1, w_mask(members), flags);
+    /* every round the test begins is another attempt, on its own funding outpoint (H11) */
+    w_params(p, tiers, ++h->begun, w_mask(members), flags);
     gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
     gz_status_t st = w_begin_params(h->p[0].e, &h->builder, p, W_PARAMS, &list);
     h_fold64(h, 0xb9u); h_fold64(h, (uint64_t)st);

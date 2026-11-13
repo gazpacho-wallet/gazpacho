@@ -45,14 +45,17 @@ static int decoded_sane(const uint8_t *b, size_t len, const gz_sign_msg_t *m)
     return m->kind >= GZ_SIGN_MSG_PROPOSE && m->kind <= GZ_SIGN_MSG_FUNDED && m->records == b + GZ_RMSG_HEADER;
 }
 
-/* A reader over a list of (type, bytes) records, one per batch. */
-typedef struct { gz_record_t recs[256]; size_t n, at; } fz_store_t;
+/* A reader over a list of (type, bytes) records, in the batches they were saved in. */
+typedef struct { gz_record_t recs[256]; uint32_t batch[256]; size_t n, at; } fz_store_t;
 static int fz_next(void *ctx, gz_stored_batch_t *b)
 {
     fz_store_t *s = ctx;
+    size_t k = s->at;
     if (s->at >= s->n) return 0;
-    b->id.incarnation = 1; b->id.sequence = s->at + 1;
-    b->records = &s->recs[s->at++]; b->n_records = 1;
+    while (k < s->n && s->batch[k] == s->batch[s->at]) k++;
+    b->id.incarnation = 1; b->id.sequence = s->batch[s->at] + 1;
+    b->records = &s->recs[s->at]; b->n_records = k - s->at;
+    s->at = k;
     return 1;
 }
 static void fz_rewind(void *ctx) { ((fz_store_t *)ctx)->at = 0; }
@@ -112,14 +115,19 @@ int main(int argc, char **argv)
             store.n = 0;
             for (size_t i = 0; i < sim_storage_count(st) && store.n < 256; i++) {
                 size_t len;
-                const uint8_t *b = sim_storage_batch_bytes(st, i, &len);
-                uint32_t l = (uint32_t)b[4] | (uint32_t)b[5] << 8 | (uint32_t)b[6] << 16 | (uint32_t)b[7] << 24;
-                if (l > sizeof copies[0] - 64) continue;
-                memcpy(copies[store.n], b + 8, l);
-                store.recs[store.n].type = (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
-                store.recs[store.n].bytes.data = copies[store.n];
-                store.recs[store.n].bytes.len = l;
-                store.n++;
+                const uint8_t *b = sim_storage_batch_bytes(st, i, &len), *end = b + len;
+                while (b + 8 <= end && store.n < 256) {
+                    uint32_t l = (uint32_t)b[4] | (uint32_t)b[5] << 8 | (uint32_t)b[6] << 16 | (uint32_t)b[7] << 24;
+                    if (l <= sizeof copies[0] - 64) {
+                        memcpy(copies[store.n], b + 8, l);
+                        store.recs[store.n].type = (uint32_t)b[0] | (uint32_t)b[1] << 8 | (uint32_t)b[2] << 16 | (uint32_t)b[3] << 24;
+                        store.recs[store.n].bytes.data = copies[store.n];
+                        store.recs[store.n].bytes.len = l;
+                        store.batch[store.n] = (uint32_t)i;
+                        store.n++;
+                    }
+                    b += 8 + l;
+                }
             }
             if (!store.n) break;
             size_t victim = rnd() % store.n;

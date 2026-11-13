@@ -82,6 +82,17 @@ uint8_t *gz_rmsg_reserve(gz_rmsg_wr_t *w, uint64_t type, size_t len);
 /* 1 if every record fitted and every type increased. */
 int gz_rmsg_wr_ok(const gz_rmsg_wr_t *w);
 
+/* ---- the record reader, for other TLV streams under the same rules ----
+ * (the journal's records, journal.md 9: "a TLV stream under the rules of
+ * messages.md section 4.2"). One field per known type: GZ_RMSG_FIX exactly
+ * `a` bytes; GZ_RMSG_LIST entries of `a` bytes, `lo` to `hi` of them;
+ * GZ_RMSG_VAR `lo` to `hi` bytes. got[i] is field i, when present. */
+enum { GZ_RMSG_FIX = 1, GZ_RMSG_LIST, GZ_RMSG_VAR };
+typedef struct { uint16_t type; uint8_t required, form; uint32_t a, lo, hi; } gz_rmsg_field_t;
+typedef struct { const uint8_t *v; size_t len; int present; } gz_rmsg_got_t;
+gz_rmsg_err_t gz_rmsg_fields(const uint8_t *records, size_t len, const gz_rmsg_field_t *fields, size_t n_fields,
+                             gz_rmsg_got_t *got, size_t *signed_len);
+
 /* ---- per-kind views ---- */
 
 /* round_propose (7.2). `p` borrows from the bytes, except its participants,

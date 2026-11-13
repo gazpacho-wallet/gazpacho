@@ -6,6 +6,7 @@
 #define GZ_TEST_SIGNING_WORLD_H
 
 #include "gazpacho/signing.h"
+#include "gazpacho/tree.h"
 #include "sim.h"
 #include "superscalar/factory.h"
 #include "superscalar/musig.h"
@@ -56,21 +57,32 @@ static void w_pub33(const char *what, uint32_t g, uint8_t out[33])
         !secp256k1_ec_pubkey_serialize(w_ctx(), out, &l, &pk, SECP256K1_EC_COMPRESSED)) abort();
 }
 
-/* Party g's keys, cached: 0..W_MAX_NODES-1 and the extra parties 100..131. */
+/* Party g's keys in a key epoch (journal.md 8.2: every per-lobby key is
+ * derived from the seed, the epoch and an index; here from g and the epoch),
+ * cached: parties 0..W_MAX_NODES-1 in epochs 0..W_EPOCHS-1, and the extra
+ * parties 100..131 in epoch 0. The host's long-term key has no epoch. */
+#define W_EPOCHS 8
 typedef struct { uint8_t f[33], c[33]; int ready; } w_key_t;
-static w_key_t g_keys[132];
-static const w_key_t *w_keys(uint32_t g)
+static w_key_t g_keys[132], g_epoch_keys[W_MAX_NODES][W_EPOCHS];
+static uint32_t w_secret_index(uint32_t g, uint32_t epoch) { return epoch ? g + 1000u * epoch : g; }
+static const w_key_t *w_keys_e(uint32_t g, uint32_t epoch)
 {
-    w_key_t *k = &g_keys[g < 132 ? g : 131];
-    if (!k->ready) { w_pub33("test/factory", g, k->f); w_pub33("test/contribution", g, k->c); k->ready = 1; }
+    w_key_t *k = g < W_MAX_NODES && epoch && epoch < W_EPOCHS ? &g_epoch_keys[g][epoch] : &g_keys[g < 132 ? g : 131];
+    if (!k->ready) {
+        w_pub33("test/factory", w_secret_index(g, epoch), k->f);
+        w_pub33("test/contribution", w_secret_index(g, epoch), k->c);
+        k->ready = 1;
+    }
     return k;
 }
-/* The party whose contribution key this is, or -1. */
+static const w_key_t *w_keys(uint32_t g) { return w_keys_e(g, 0); }
+/* The party whose contribution key this is, in any epoch, or -1. */
 static int w_party_of(const uint8_t ckey[33])
 {
     for (uint32_t g = 0; g < 132; g++) {
         if (g >= W_MAX_NODES && g < 100) continue;
-        if (memcmp(w_keys(g)->c, ckey, 33) == 0) return (int)g;
+        for (uint32_t ep = 0; ep < (g < W_MAX_NODES ? W_EPOCHS : 1u); ep++)
+            if (memcmp(w_keys_e(g, ep)->c, ckey, 33) == 0) return (int)g;
     }
     return -1;
 }
@@ -260,7 +272,60 @@ typedef struct {
     void (*mutate_proposal)(gz_tree_proposal_t *p, int which);   /* tests only: damage what the host proposes */
     w_begin_t next;                             /* storage for a retry */
     uint16_t refuse;                            /* tests only: members refuse every proposal with this reason */
+    /* The lobby's view of each party's current key epoch: the keys the host
+     * proposes (a restored member joins again with its new keys). */
+    uint32_t epoch[W_MAX_NODES];
+    /* The hooks' side (gz_sign_config_t may_ack, guard, outcome). */
+    uint32_t tip;                               /* every member's tip, for may_ack */
+    uint64_t may_ack_calls, may_ack_refused, guards;
+    uint8_t guard_bytes[8];
+    int outcomes[64]; size_t n_outcomes, outcome_blamed[64];
 } w_builder_t;
+
+/* may_ack: the signing-time check again at the member's tip (gz_tree_may_ack),
+ * with Slice 1's conditions: signet's exit constants, a 36-block funding
+ * deadline. The member's depth here is its items less one (the test world's
+ * stand-in for the verdict's own_depth). */
+static int w_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip)
+{
+    w_builder_t *b = ctx;
+    gz_tree_conditions_t cond;
+    int items = 0, ok;
+    memset(&cond, 0, sizeof cond);
+    cond.exit = gz_exit_signet();
+    cond.funding_deadline_blocks = 36;
+    for (int i = 0; i < r->def.n_items; i++)
+        for (int s = 0; s < r->def.items[i].n_signers; s++) items += r->def.items[i].signers[s] == r->me;
+    b->may_ack_calls++;
+    *ack_tip = b->tip;
+    ok = gz_tree_may_ack(r->def.end_height, (uint8_t)(items > 0 ? items - 1 : 0), b->tip, &cond);
+    b->may_ack_refused += !ok;
+    return ok;
+}
+
+/* guard: a stand-in for the node's guard record (journal.md 8.3): its counter. */
+static int w_guard(void *ctx, gz_record_t *rec)
+{
+    w_builder_t *b = ctx;
+    uint64_t c = ++b->guards;
+    for (int i = 0; i < 8; i++) b->guard_bytes[i] = (uint8_t)(c >> (56 - 8 * i));
+    rec->type = GZ_SIGN_REC_GUARD; rec->bytes.data = b->guard_bytes; rec->bytes.len = 8;
+    return 1;
+}
+
+/* outcome: kept for the tests (the lobby adapter is tested apart). */
+static gz_status_t w_outcome(void *ctx, const gz_sign_outcome_t *o, gz_action_list_t *out)
+{
+    w_builder_t *b = ctx;
+    (void)out;
+    if (b->n_outcomes < 64) { b->outcome_blamed[b->n_outcomes] = o->n_blamed; b->outcomes[b->n_outcomes++] = (int)o->kind; }
+    return GZ_OK;
+}
+
+static void w_hooks(w_builder_t *b, gz_sign_config_t *c)
+{
+    c->may_ack = w_may_ack; c->guard = w_guard; c->outcome = w_outcome; c->hook_ctx = b;
+}
 
 /* Test parameters into a proposal. 0 if they are not valid parameters. */
 static int w_make_begin(w_builder_t *b, const uint8_t *p, size_t len, w_begin_t *out)
@@ -275,9 +340,10 @@ static int w_make_begin(w_builder_t *b, const uint8_t *p, size_t len, w_begin_t 
     if (mask & ~0x1fffeu) return 0;
     memset(out, 0, sizeof *out);
     for (uint32_t g = 0; g < W_MAX_NODES; g++) {
+        uint32_t ep = b && g ? b->epoch[g] : 0;
         if (g && !(mask >> g & 1u)) continue;
-        memcpy(out->parts[n].factory_key, w_keys((flags & WF_DUP_KEY) && g == 2 ? 1 : g)->f, 33);
-        memcpy(out->parts[n].contribution_key, w_keys(g)->c, 33);
+        memcpy(out->parts[n].factory_key, w_keys_e((flags & WF_DUP_KEY) && g == 2 ? 1 : g, (flags & WF_DUP_KEY) && g == 2 ? 0 : ep)->f, 33);
+        memcpy(out->parts[n].contribution_key, w_keys_e(g, ep)->c, 33);
         memcpy(keys[n], out->parts[n].factory_key, 33);
         n++;
     }
@@ -613,12 +679,33 @@ static int w_next(void *ctx, gz_stored_batch_t *batch)
 }
 static void w_rewind(void *ctx) { ((w_node_t *)ctx)->batch_at = 0; }
 
+#define W_REC_KEY_EPOCH 0x00040002u   /* journal.md 9, node area: `key_epoch` */
+
+/* The key epoch a node's storage holds (its newest key_epoch record), 0 if none. */
+static uint32_t w_stored_epoch(const sim_storage_t *storage)
+{
+    uint32_t ep = 0;
+    for (size_t i = 0; i < sim_storage_count(storage); i++) {
+        size_t len;
+        const uint8_t *p = sim_storage_batch_bytes(storage, i, &len), *end = p + len;
+        while (p + 8 <= end) {
+            uint32_t type = (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+            uint32_t l = (uint32_t)p[4] | (uint32_t)p[5] << 8 | (uint32_t)p[6] << 16 | (uint32_t)p[7] << 24;
+            if (type == W_REC_KEY_EPOCH && l == 4) ep = w_be32(p + 8);
+            p += 8 + l;
+        }
+    }
+    return ep;
+}
+
 static void w_engine_config(world_t *w, uint32_t index, gz_sign_config_t *c)
 {
+    uint32_t ep = index ? w->builder.epoch[index] : 0;
     memset(c, 0, sizeof *c);
     c->host = index == 0; c->ctx = w_ctx();
-    w_secret("test/factory", index, c->factory_secret);
-    w_secret("test/contribution", index, c->contribution_secret);
+    w_secret("test/factory", w_secret_index(index, ep), c->factory_secret);
+    w_secret("test/contribution", w_secret_index(index, ep), c->contribution_secret);
+    w_hooks(&w->builder, c);
     c->build = w_build; c->retry = w_retry; c->build_ctx = &w->builder;
     c->tick_ms = 1; c->resend_ticks = 40; c->deadline_ticks = 400; c->status_ticks = 10;
     c->max_attempts = w->max_attempts ? w->max_attempts : 16;
@@ -630,6 +717,14 @@ static void *w_create(void *ops_ctx, uint32_t index, const gz_ports_t *ports, co
     w_node_t *n = calloc(1, sizeof *n);
     gz_sign_config_t c;
     if (!n) abort();
+    /* journal.md 8.2: a start after a restore takes a new epoch (saved in the
+     * restore batch); any other start the stored one. The lobby learns it. */
+    if (index) {
+        uint32_t ep = w_stored_epoch(storage);
+        if (sim_storage_restored(storage)) ep = (w->builder.epoch[index] > ep ? w->builder.epoch[index] : ep) + 1;
+        if (ep >= W_EPOCHS) ep = W_EPOCHS - 1;
+        w->builder.epoch[index] = ep;
+    }
     w_engine_config(w, index, &c);
     if (gz_sign_init(&n->eng, &c, ports, sim_storage_incarnation(storage)) != GZ_OK) abort();
     n->w = w; n->index = index; n->storage = storage;
@@ -655,12 +750,13 @@ static gz_status_t w_start(void *node, gz_action_list_t *out, int *more)
         /* The node around the engine answers the restore marker first with its
          * restore batch (journal.md 8.2; here a stand-in `restored` record of
          * the node area). The engine reads only its own area and skips it. */
-        uint8_t inc[8];
+        uint8_t inc[8], ep[4];
         uint64_t v = sim_storage_incarnation(n->storage);
         for (int b = 0; b < 8; b++) inc[b] = (uint8_t)(v >> (56 - 8 * b));
-        gz_record_t rec = {W_REC_RESTORED, {inc, 8}};
+        w_wr32(ep, n->index ? n->w->builder.epoch[n->index] : 0);
+        gz_record_t recs[2] = {{W_REC_KEY_EPOCH, {ep, 4}}, {W_REC_RESTORED, {inc, 8}}};
         gz_action_t a = {.kind = GZ_ACTION_SAVE};
-        a.u.save.records = &rec; a.u.save.n_records = 1;
+        a.u.save.records = recs; a.u.save.n_records = 2;
         gz_status_t s0 = gz_action_list_add(out, &a);
         if (s0 != GZ_OK) return s0;
     }

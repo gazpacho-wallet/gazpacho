@@ -19,7 +19,7 @@ ENGINE = ["core/signing/signing.c", "core/signing/sign_tx.c", "core/signing/roun
 # rule -> (file, text on the marked line, replacement). The line is found by
 # its RULE marker; the text must occur in it.
 RULES = {
-    "S1_SAVE_FIRST": ("emit_save(em, GZ_SIGN_REC_M_STARTED, e->work_records, rw.n);", ""),
+    "S1_SAVE_FIRST": ("emit_batch(em, recs, n);", "{}"),
     "S2_KNOWN_ROUND": ("if (r) {", "if (0) {"),
     "S2_ONE_NONCE": ("if (s < 0 || r->secnonce_serial[i] || (r->have_nonce[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
     "S2_ONE_PARTIAL": ("if (s < 0 || !r->secnonce_serial[i] || (r->have_psig[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
@@ -37,6 +37,12 @@ RULES = {
     "PARSE_PSIG_FIRST": ("!secp256k1_musig_partial_sig_parse(e->cfg.ctx, &ps, p + 4) ||", ""),
     "VERIFY_PARTIAL": ("!secp256k1_musig_partial_sig_verify(e->cfg.ctx, &ps, &pn, &pk, &r->cache[i], &r->session[i])) {", "0) {"),
     "VERIFY_FINAL": ("if (!n || !gz_sign_tx_verify(e->cfg.ctx, e->work_tx, n, it->spent_amount, it->spent_script)) return 0;", "if (!n) return 0;"),
+    "C10_UNRESOLVED": ("return GZ_SIGN_WHY_BUSY;", "{}"),
+    "C7_OTHER_TREE": ("!same(e->exposures[i].tree_digest, r->def.tree_digest, 32)) return GZ_SIGN_WHY_OTHER_TREE;", "0) return GZ_SIGN_WHY_OTHER_TREE;"),
+    "EXPOSURE_FIRST": ("save_exposure(e, r, t, em);", "if (0) save_exposure(e, r, t, em);"),
+    "MAY_ACK": ("if (e->cfg.may_ack && !e->cfg.may_ack(e->cfg.hook_ctx, r, &tip)) {", "if (0) {"),
+    "OLD_EPOCH_REFUSED": ("return refuse_id(e, id);", "return 1;"),
+    "UNFINISHED_ABANDONED": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "r->state = GZ_SIGN_ROUND_UNFINISHED;"),
     "PER_ITEM_ANSWER": ("wr32(q, (uint32_t)i); q += 4;", "wr32(q, 0u); q += 4;"),
     "HOST_VERIFY_FINAL": ("if (!len || !gz_sign_tx_verify(e->cfg.ctx, tx, len, it->spent_amount, it->spent_script)) {", "if (!len) {"),
     "DUPLICATE_KEYS": ("for (int j = 0; j < i; j++)", "for (int j = 0; j < 0; j++)"),
@@ -115,14 +121,18 @@ def run_variant(build, rel, text, args, timeout):
     orig = open(path).read()
     try:
         open(path, "w").write(text)
-        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing"], capture_output=True, timeout=600)
+        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg"], capture_output=True, timeout=600)
         if b.returncode != 0:
             return "no-compile", ""
         try:
             env = dict(os.environ, GZ_STOP_ON_FAIL="1")
-            t = subprocess.run([os.path.join(build, "test_signing")] + args, capture_output=True, timeout=timeout, env=env)
-            fails = sorted(set(re.findall(r"FAIL \S+/(\w+\.[ch]:\d+)", t.stdout.decode(errors="replace"))))
-            return ("killed" if t.returncode != 0 else "survived"), ",".join(fails[:6])
+            # the white-box guards first (seconds), then the whole suite
+            for exe, a in (("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args)):
+                t = subprocess.run([os.path.join(build, exe)] + a, capture_output=True, timeout=timeout, env=env)
+                if t.returncode != 0:
+                    fails = sorted(set(re.findall(r"FAIL \S+/(\w+\.[ch]:\d+)", t.stdout.decode(errors="replace"))))
+                    return "killed", ",".join(fails[:6]) or exe
+            return "survived", ""
         except subprocess.TimeoutExpired:
             return "killed", "timeout"
     finally:

@@ -131,6 +131,8 @@ static void world_reset(world_t *w)
     int attempts = w->max_attempts;
     memset(w, 0, sizeof *w);
     w->builder = keep;
+    memset(w->builder.epoch, 0, sizeof w->builder.epoch);      /* a new world: every party in its first epoch */
+    w->builder.n_outcomes = 0;
     w->max_attempts = attempts;
 }
 
@@ -351,7 +353,7 @@ static void test_restores(void)
 {
     world_t w;
     memset(&w, 0, sizeof w);
-    uint64_t repeated_draws = 0, runs = 0, second = 0, restores = 0;
+    uint64_t repeated_draws = 0, runs = 0, second = 0, restores = 0, epochs = 0;
     for (uint32_t node = 0; node <= 3; node++)
         for (uint32_t when = 6; when < (g_quick > 1 ? 12u : g_quick ? 20u : 40u); when += 3)
             for (size_t keep = 0; keep < 4; keep++) {
@@ -378,15 +380,18 @@ static void test_restores(void)
                             memcmp(a->bytes, b->bytes, 32) == 0) repeated_draws++;
                     }
                 second += w.second_contributions;
+                for (uint32_t g = 1; g <= 3; g++) epochs += w.builder.epoch[g];
                 runs++;
                 if (!o.done) { printf("  restore node %u at %u keep %zu: attempts %u\n", node, when, keep, o.attempts); dump(&w); }
                 CHECK(!sim_failed(sim));
                 CHECK(o.done);
                 sim_destroy(sim);
             }
-    printf("  restores: %llu runs, %llu repeated secret draws, %llu second contributions after a restore (S5, not built)\n",
-           (unsigned long long)runs, (unsigned long long)repeated_draws, (unsigned long long)second);
+    printf("  restores: %llu runs, %llu repeated secret draws, %llu second contributions after a restore, %llu new key epochs\n",
+           (unsigned long long)runs, (unsigned long long)repeated_draws, (unsigned long long)second, (unsigned long long)epochs);
     CHECK(repeated_draws > 0);
+    CHECK(second == 0);                 /* S5: a restored member contributes only under its new keys */
+    CHECK(epochs > 0);
     CHECK(restores == runs);
     world_reset(&w);
 }
@@ -841,19 +846,22 @@ static void test_definitions(int print)
 /* Transcript digests of the scenarios (scenarios.h). After an intended change:
  * run "test_signing golden-print", check what changed, update. */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
-    0x5a93658ed96d444bull, /* honest-1 */
-    0xb0c2295d26895278ull, /* honest-2 */
-    0xd9f41f37f985e69cull, /* duplicates */
-    0x4f0229c7cd36bf1full, /* member-restart-nonces */
-    0x99d14a22114ae741ull, /* member-restart-signed */
-    0xd014fc3857dff1ddull, /* tier-abort */
-    0x7442763cd500d86aull, /* host-restarts */
-    0xc2931041b87a72b5ull, /* timers */
-    0x2669cd1e0c008ac1ull, /* host-faults */
-    0xd14200db650773fdull, /* member-faults */
-    0x0a5c05ee7c0ee9e2ull, /* proposals */
-    0xa4e56bacf6229921ull, /* journal */
-    0xdd6ca7028bf802ebull, /* edges */
+    0x3019f11ce6c6371eull, /* honest-1 */
+    0x7a78b533f85ecff7ull, /* honest-2 */
+    0xc21484d1023cd007ull, /* duplicates */
+    0xe83624ff1416866bull, /* member-restart-nonces */
+    0x21a11886f51c4816ull, /* member-restart-signed */
+    0x1635a14fd7cdd09eull, /* tier-abort */
+    0x2be676722e9b47f1ull, /* host-restarts */
+    0x827ec25cef459ac8ull, /* timers */
+    0xed2046bfca206e0bull, /* host-faults */
+    0x418e111b10c8cd05ull, /* member-faults */
+    0xbb6a7c6472cbaf7aull, /* proposals */
+    0xae05e02a4cf14ec0ull, /* journal */
+    0x7fb24c9747b965cbull, /* edges */
+    0x9463dda8569004e0ull, /* reconnect */
+    0x586454ffe0af7a41ull, /* records */
+    0x4e3c836601ddc368ull, /* exposure */
 };
 
 static void test_golden(int print)

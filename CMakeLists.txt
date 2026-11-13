@@ -162,7 +162,7 @@ target_link_libraries(gazpacho_signing PUBLIC gazpacho_core secp256k1)
 target_compile_options(gazpacho_signing PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
 
 add_executable(test_signing tests/signing/test_signing.c)
-target_link_libraries(test_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar)
+target_link_libraries(test_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
 target_compile_options(test_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
 # One CTest test per section, so they run in parallel and each stays inside
 # CI's per-test limit.
@@ -175,7 +175,7 @@ gz_add_test(round_msg tests/signing/test_round_msg.c gazpacho_signing)
 # fuzz_* there is), so it is built only with the plain drivers.
 if(NOT GZ_LIBFUZZER)
   add_executable(fuzz_signing tests/signing/fuzz_signing.c)
-  target_link_libraries(fuzz_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar)
+  target_link_libraries(fuzz_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
   target_compile_options(fuzz_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
   add_test(NAME signing_fuzz COMMAND fuzz_signing 20000 20)
 endif()
@@ -275,3 +275,25 @@ add_subdirectory(ports/chain)
 
 # --- trees from terms and the creation checks (core/tree) ---
 add_subdirectory(core/tree)
+
+# --- Signing engine: white-box tests of the guards no public input reaches ---
+# (tests/signing/test_signing_wb.c compiles core/signing/signing.c into itself),
+# and the engine's outcome into the lobby host, built only with the lobby engine.
+add_executable(test_signing_wb tests/signing/test_signing_wb.c core/signing/sign_tx.c core/signing/round_msg.c)
+set_target_properties(test_signing_wb PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(test_signing_wb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+                           ${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include ${secp256k1-zkp_SOURCE_DIR}/include)
+target_link_libraries(test_signing_wb PRIVATE gazpacho_core secp256k1 gazpacho_sim gazpacho_superscalar gazpacho_tree)
+target_compile_options(test_signing_wb PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
+add_test(NAME signing_wb COMMAND test_signing_wb)
+if(TARGET gazpacho_lobby)
+  add_library(gazpacho_signing_lobby STATIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/lobby_outcome.c)
+  set_target_properties(gazpacho_signing_lobby PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+  target_include_directories(gazpacho_signing_lobby PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include)
+  target_link_libraries(gazpacho_signing_lobby PUBLIC gazpacho_lobby gazpacho_core)
+  target_compile_options(gazpacho_signing_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+  add_executable(test_signing_lobby tests/signing/test_signing_lobby.c)
+  target_link_libraries(test_signing_lobby PRIVATE gazpacho_signing_lobby)
+  target_compile_options(test_signing_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS})
+  add_test(NAME signing_lobby COMMAND test_signing_lobby)
+endif()

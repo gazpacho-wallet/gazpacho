@@ -52,6 +52,7 @@
 #include "gazpacho/event.h"
 #include "gazpacho/ports.h"
 #include "gazpacho/round_msg.h"
+#include "gazpacho/signing_outcome.h"
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_musig.h>
@@ -67,6 +68,7 @@
 #define GZ_SIGN_MAX_FUNDING_TX   8192    /* the funding transaction this engine holds (messages.md allows 100,000) */
 #define GZ_SIGN_MAX_ROUNDS       4       /* rounds a party keeps in full */
 #define GZ_SIGN_MAX_KNOWN        256     /* round identifiers remembered as refused */
+#define GZ_SIGN_MAX_EXPOSURES    256     /* C7 records (funding outpoint, tree digest) held */
 
 /* Message sizes (envelope included). A record's type and length take at
  * most 8 bytes here; 240, the signature, is 67. */
@@ -83,20 +85,37 @@
  * Anything else is refused. */
 #define GZ_SIGN_MODE_KEYPATH 0u
 
-/* Records the engine saves (record types of the journal). The high 16 bits
- * are the engine's area; start reads records of that area only. Every saved
- * message is the whole envelope, as sent or received. */
-#define GZ_SIGN_REC_AREA 0x5347u
-#define GZ_SIGN_REC_M_STARTED  0x53470001u  /* round_id, tier, n, indices, the round_propose: before nonces (S1) */
-#define GZ_SIGN_REC_M_SIGNED   0x53470002u  /* round_id, tier, the round_partial_sigs */
-#define GZ_SIGN_REC_M_RESULT   0x53470003u  /* round_id, tier, the verified round_tier_result */
-#define GZ_SIGN_REC_M_COMPLETE 0x53470004u  /* round_id, 0, the round_ack */
-#define GZ_SIGN_REC_M_ABORTED  0x53470005u  /* round_id, 0, the round_abort */
-#define GZ_SIGN_REC_H_PROPOSED 0x53470011u  /* the round_propose */
-#define GZ_SIGN_REC_H_RESULT   0x53470012u  /* round_id, tier, the tier's final signatures (u32 index, 64) */
-#define GZ_SIGN_REC_H_COMPLETE 0x53470013u  /* round_id, 0, the round_complete */
-#define GZ_SIGN_REC_H_ACK      0x53470014u  /* round_id, participant */
-#define GZ_SIGN_REC_H_FAILED   0x53470015u  /* round_id, blamed mask (u32), why */
+/* Records the engine saves: spec/journal.md section 9, area Round (0x0002),
+ * each a TLV stream under the rules of messages.md 4.2 (gz_rmsg_fields), the
+ * field numbers below being this engine's code table. Every saved message is
+ * the whole envelope, as sent or received. Start reads the Round area only. */
+#define GZ_SIGN_REC_AREA            0x0002u
+#define GZ_SIGN_REC_ROUND_STARTED   0x00020002u  /* before a party's nonces of a tier leave (S1), with the guard */
+#define GZ_SIGN_REC_ROUND_PROPOSAL  0x00020004u  /* in the batch of the first round_started */
+#define GZ_SIGN_REC_EXPOSURE        0x00020006u  /* member: the C7 record and the partial signatures it releases */
+#define GZ_SIGN_REC_ROUND_SIGNED    0x00020008u  /* a tier's final signatures */
+#define GZ_SIGN_REC_ROUND_COMPLETED 0x0002000au  /* member: complete, ack and its tip; host: complete */
+#define GZ_SIGN_REC_ACK_RECEIVED    0x0002000cu  /* host: a member's ack */
+#define GZ_SIGN_REC_ROUND_ENDED     0x0002000eu  /* the outcome */
+#define GZ_SIGN_REC_FUNDING_STATUS  0x00030006u  /* member: the height at which it acked (with round_completed) */
+#define GZ_SIGN_REC_GUARD           0x0004000au  /* the node's guard record (the guard hook) */
+
+/* Field numbers inside the records (all even: a reader that does not know one refuses).
+ *   round_started:   2 round_id 32, 4 funding 36 (txid, u32 vout big-endian), 6 purpose u8,
+ *                    8 attempt u16, 10 tier u8, 12 items u32 each (1 to 256), 14 own contribution key 33
+ *   round_proposal:  2 round_id, 4 the round_propose
+ *   exposure:        2 round_id, 4 tier u8, 6 funding 36, 8 funding transaction, 10 tree digest 32,
+ *                    12 items of 72 (u32 index, spent 36, sighash 32), 14 the round_partial_sigs
+ *   round_signed:    2 round_id, 4 tier u8, 6 finals of 68 (u32 index, 64), 8 member: the round_tier_result
+ *   round_completed: 2 round_id, 4 the round_complete, 6 member: the round_ack, 8 member: ack tip u32
+ *   ack_received:    2 round_id, 4 the member's contribution key 33, 6 the round_ack
+ *   round_ended:     2 round_id, 4 outcome u8 (GZ_SIGN_END_*), 6 reason u16 (messages.md 7.9),
+ *                    8 blamed u32 (host: participant bits), 10 why u8, 12 member: the round_abort it sent
+ *   funding_status:  2 txid 32, 4 state u8 (0: acked, nothing seen yet), 6 ack height u32
+ * The host keeps no per-member round_tier_result bytes: it signs them
+ * deterministically (BIP 340 with zero aux_rand) from the finals it saves, so
+ * a resend is the same bytes. */
+enum { GZ_SIGN_END_ABORTED = 1, GZ_SIGN_END_FAILED, GZ_SIGN_END_ABANDONED, GZ_SIGN_END_DEAD, GZ_SIGN_END_LIVE };
 
 /* Message kinds: messages.md 4.1. */
 enum {
@@ -114,11 +133,29 @@ enum {
     GZ_SIGN_WHY_KNOWN_ROUND, GZ_SIGN_WHY_BUSY, GZ_SIGN_WHY_BAD_NONCE, GZ_SIGN_WHY_OWN_NONCE_CHANGED, GZ_SIGN_WHY_RESTARTED,
     GZ_SIGN_WHY_DEADLINE, GZ_SIGN_WHY_HOST_ABORT, GZ_SIGN_WHY_BAD_PARTIAL, GZ_SIGN_WHY_EQUIVOCATION, GZ_SIGN_WHY_BAD_RESULT,
     GZ_SIGN_WHY_HOST_RESTART, GZ_SIGN_WHY_MEMBER_ABORT, GZ_SIGN_WHY_BAD_MESSAGE, GZ_SIGN_WHY_SUPERSEDED,
-    GZ_SIGN_WHY_NOT_MY_KEY, GZ_SIGN_WHY_CAPACITY
+    GZ_SIGN_WHY_NOT_MY_KEY, GZ_SIGN_WHY_CAPACITY, GZ_SIGN_WHY_OTHER_TREE, GZ_SIGN_WHY_ACK_REFUSED
 };
 /* The messages.md 7.9 reason a party sends for `why` (`built` is the
  * builder's own reason, used for GZ_SIGN_WHY_BUILD). */
 uint16_t gz_sign_reason(uint8_t why, uint16_t built);
+
+/* A decoded round message other than round_propose: one view of the per-kind
+ * decoders of round_msg.h, with pointers into the bytes. Entry layouts:
+ * NONCES (u32 index, 66 nonce, 64 sig); ALL_NONCES (u32 index, u16 k,
+ * k x (66, 64)); PARTIALS (u32 index, 32 psig, 32 set digest); RESULT
+ * (u32 index, 64 sig); ABORT (u32 index, when it names items). For
+ * round_propose only `kind`, `scope`, `records` and `round_id` are set. */
+typedef struct {
+    uint16_t kind;
+    const uint8_t *scope, *records;
+    size_t records_len;
+    const uint8_t *round_id, *held, *sig;
+    uint8_t tier, has_tier;
+    uint16_t reason;
+    size_t signed_len;              /* record bytes the signature covers (messages.md 4.3) */
+    uint16_t n;
+    const uint8_t *entry[GZ_RMSG_MAX_ENTRIES];
+} gz_sign_msg_t;
 
 /* One item: one transaction input to sign. */
 typedef struct {
@@ -166,6 +203,11 @@ typedef struct {
     const uint8_t *scope;           /* its envelope's scope (32) */
     uint64_t peer;                  /* member: the peer it came from; host: 0 */
     int replay;                     /* 1: a saved round rebuilt at start: rebuild only, no checks of time or tip */
+    /* What a member's checks need from the engine's records (C7, C10:
+     * gz_tree_member_check): every exposure record held, and the funding
+     * outpoints of its unresolved rounds. */
+    const gz_tree_exposure_t *exposures; size_t n_exposures;
+    const gz_tree_outpoint_t *unresolved; size_t n_unresolved;
 } gz_sign_build_in_t;
 /* Build the round from a proposal. Returns 0 and fills `out`, or the
  * messages.md 7.9 reason to refuse with (1, 5, 6, 9, 11 or 12). Must be a
@@ -204,13 +246,28 @@ typedef struct {
     uint32_t deadline_ticks;        /* a step not finished after this many ticks fails */
     uint32_t status_ticks;          /* host: at most one status answer per round and member in this many ticks */
     uint32_t max_attempts;          /* host: attempts in all, over restarts */
+    uint32_t unfinished_ticks;      /* member: an Unfinished creation round is Abandoned after this many more ticks (0: never) */
+    /* Member, before every round_ack it would make (gz_tree_may_ack): 1 to
+     * ack, with its tip in *ack_tip (saved with the ack, funding_status);
+     * 0 not to ack (the round is then Abandoned at its unfinished deadline).
+     * NULL: always ack, tip 0. */
+    int (*may_ack)(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip);
+    /* The node's guard record (journal.md 8.3) for the batch of every
+     * round_started: 1 and *rec filled (type GZ_SIGN_REC_GUARD, bytes valid
+     * until the call returns), or 0 for none. NULL: none (tests). */
+    int (*guard)(void *ctx, gz_record_t *rec);
+    /* Host: the outcome of a round or an attempt, with the action list it may
+     * append to (the lobby's answer). NULL: none. */
+    gz_status_t (*outcome)(void *ctx, const gz_sign_outcome_t *o, gz_action_list_t *out);
+    void *hook_ctx;                 /* given to may_ack, guard and outcome */
 } gz_sign_config_t;
 
 /* Tier and round states (spec section 7). */
 enum { GZ_SIGN_TIER_NONE = 0, GZ_SIGN_TIER_NONCES, GZ_SIGN_TIER_SIGNED, GZ_SIGN_TIER_DONE };
 enum {
     GZ_SIGN_ROUND_FREE = 0, GZ_SIGN_ROUND_ACTIVE, GZ_SIGN_ROUND_ABORTED, GZ_SIGN_ROUND_UNFINISHED,
-    GZ_SIGN_ROUND_COMPLETE, GZ_SIGN_ROUND_FAILED /* host: attempt given up */, GZ_SIGN_ROUND_DONE /* host: every ack */
+    GZ_SIGN_ROUND_COMPLETE, GZ_SIGN_ROUND_FAILED /* host: attempt given up */, GZ_SIGN_ROUND_DONE /* host: every ack */,
+    GZ_SIGN_ROUND_ABANDONED, GZ_SIGN_ROUND_DEAD, GZ_SIGN_ROUND_LIVE   /* member: resolved (spec section 7) */
 };
 
 struct gz_sign_round {
@@ -253,6 +310,11 @@ struct gz_sign_round {
     uint32_t tail_len;              /* member: its ack or abort */
     uint8_t tail_msg[GZ_SIGN_MAX_SMALL_MSG];
     uint8_t evidence;               /* a second, different, validly signed proposal under this identifier was seen */
+    uint8_t ack_refused;            /* member: may_ack said no */
+    uint8_t proposal_saved;         /* round_proposal is in the journal */
+    uint16_t attempt;               /* record 7, for round_started */
+    uint8_t old_epoch;              /* member: started with a key of an earlier epoch (S5): kept refused, never resumed */
+    uint32_t ack_tip;               /* member: its tip when it acked (funding_status) */
 };
 
 /* Caller-allocated (it is large: allocate it, do not put it on the stack);
@@ -277,12 +339,19 @@ typedef struct {
     gz_sign_def_t scratch_def;
     gz_sign_round_t pending;        /* a round is checked here before it takes a slot */
     gz_rmsg_propose_t prop;         /* the proposal being read */
+    /* C7: every exposure record this party holds, of any epoch, never removed. */
+    gz_tree_exposure_t exposures[GZ_SIGN_MAX_EXPOSURES];
+    size_t n_exposures;
+    gz_tree_outpoint_t unresolved[GZ_SIGN_MAX_ROUNDS];
     /* Work areas for large temporaries of functions the compiler inlines:
      * on the stack, gcc's AddressSanitizer would guard them with calls the
      * isolation check refuses. */
     secp256k1_musig_partial_sig work_psig[GZ_SIGN_MAX_SIGNERS];
     uint8_t work_tx[GZ_SIGN_MAX_TX + 80];
     uint8_t work_records[GZ_SIGN_MAX_PROPOSAL];
+    uint8_t work_rec2[2048];
+    gz_sign_msg_t work_msg;
+    uint8_t work_keys[GZ_SIGN_MAX_PARTICIPANTS][33];
 } gz_sign_t;
 
 /* What the engine counts, for tests and reports. */
@@ -312,6 +381,15 @@ gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *event, gz_action_list
 /* Host: begin a round. GZ_ERR_ARGUMENT if not a host, a round is still
  * running, the attempts are spent, or the proposal or the builder refuses. */
 gz_status_t gz_sign_begin(gz_sign_t *e, const gz_sign_begin_t *b, gz_action_list_t *out);
+
+/* Member: the round's end as the embedding judged it from the chain
+ * (safety-rule.md C11, C4(d)): GZ_SIGN_END_LIVE, _DEAD or _ABANDONED, saved as
+ * round_ended. Rounds that are Complete, Unfinished or Abandoned only.
+ * GZ_ERR_ARGUMENT otherwise. */
+gz_status_t gz_sign_resolve(gz_sign_t *e, const uint8_t round_id[32], uint8_t outcome, gz_action_list_t *out);
+
+/* The exposure records held (C7), for the embedding's checks. */
+size_t gz_sign_exposures(const gz_sign_t *e, const gz_tree_exposure_t **out);
 
 /* Write every live secret nonce as (8-byte little-endian serial, the 132
  * secret-nonce bytes) to `out`; returns the length, or 0 if `cap` is short.
@@ -360,23 +438,6 @@ int gz_sign_tx_find_output(const uint8_t *tx, size_t len, uint32_t vout, uint64_
 /* The txid (internal order) of a transaction without witness. */
 void gz_sign_txid(const uint8_t *tx, size_t len, uint8_t out[32]);
 
-/* A decoded round message other than round_propose: one view of the per-kind
- * decoders of round_msg.h, with pointers into the bytes. Entry layouts:
- * NONCES (u32 index, 66 nonce, 64 sig); ALL_NONCES (u32 index, u16 k,
- * k x (66, 64)); PARTIALS (u32 index, 32 psig, 32 set digest); RESULT
- * (u32 index, 64 sig); ABORT (u32 index, when it names items). For
- * round_propose only `kind`, `scope`, `records` and `round_id` are set. */
-typedef struct {
-    uint16_t kind;
-    const uint8_t *scope, *records;
-    size_t records_len;
-    const uint8_t *round_id, *held, *sig;
-    uint8_t tier, has_tier;
-    uint16_t reason;
-    size_t signed_len;              /* record bytes the signature covers (messages.md 4.3) */
-    uint16_t n;
-    const uint8_t *entry[GZ_RMSG_MAX_ENTRIES];
-} gz_sign_msg_t;
 /* 1 if `bytes` is one envelope holding a well-formed round message
  * (messages.md 4 and 7), 0 otherwise. */
 int gz_sign_decode(const uint8_t *bytes, size_t len, gz_sign_msg_t *m);

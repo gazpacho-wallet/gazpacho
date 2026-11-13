@@ -78,15 +78,23 @@ static void model_watch(harness_t *h, uint32_t g, const gz_action_t *a)
             const gz_record_t *r = &a->u.save.records[k];
             const uint8_t *b = r->bytes.data;
             size_t len = r->bytes.len;
-            if (r->type == GZ_SIGN_REC_M_STARTED && len >= 35) {
-                size_t n = (size_t)b[33] << 8 | b[34];
-                for (size_t i = 0; i < n && 35 + 4 * i + 4 <= len; i++)
-                    if (!m_find(m, MF_STARTED, g, b, b[32] << 16 | be32p(b + 35 + 4 * i)))
-                        m_add(m, MF_STARTED, g, b, (uint32_t)b[32] << 16 | be32p(b + 35 + 4 * i), NULL, 0, inc);
-            } else if (r->type == GZ_SIGN_REC_M_SIGNED && len > 33) {
-                if (!m_find(m, MF_SAVED_PARTIALS, g, b, b[32])) m_add(m, MF_SAVED_PARTIALS, g, b, b[32], b + 33, len - 33, inc);
-            } else if (r->type == GZ_SIGN_REC_H_ACK && len == 33) {
-                if (!m_find(m, MF_ACK_SAVED, g, b, b[32])) m_add(m, MF_ACK_SAVED, g, b, b[32], NULL, 0, inc);
+            h_rec_t hr = {r->type, len, (uint8_t *)(uintptr_t)b, 0};
+            size_t il, pl;
+            const uint8_t *id = rec_field(&hr, 2, NULL);
+            if (!id) continue;
+            if (r->type == GZ_SIGN_REC_ROUND_STARTED) {
+                const uint8_t *tier = rec_field(&hr, 10, NULL), *items = rec_field(&hr, 12, &il);
+                for (size_t i = 0; tier && items && i < il / 4; i++)
+                    if (!m_find(m, MF_STARTED, g, id, (uint32_t)tier[0] << 16 | be32p(items + 4 * i)))
+                        m_add(m, MF_STARTED, g, id, (uint32_t)tier[0] << 16 | be32p(items + 4 * i), NULL, 0, inc);
+            } else if (r->type == GZ_SIGN_REC_EXPOSURE) {
+                const uint8_t *tier = rec_field(&hr, 4, NULL), *pm = rec_field(&hr, 14, &pl);
+                if (tier && pm && !m_find(m, MF_SAVED_PARTIALS, g, id, tier[0])) m_add(m, MF_SAVED_PARTIALS, g, id, tier[0], pm, pl, inc);
+            } else if (r->type == GZ_SIGN_REC_ACK_RECEIVED) {
+                const uint8_t *key = rec_field(&hr, 4, NULL);
+                uint32_t j = 0;
+                for (uint32_t q = 1; key && q < h->n; q++) if (memcmp(w_keys(q)->c, key, 33) == 0) j = q;
+                if (j && !m_find(m, MF_ACK_SAVED, g, id, j)) m_add(m, MF_ACK_SAVED, g, id, j, NULL, 0, inc);
             }
         }
         return;
