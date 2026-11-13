@@ -9,7 +9,9 @@
  * SO_PEERCRED (unix(7)). */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -34,9 +36,14 @@
  * and in the st column of /proc/net/tcp. */
 #define TCP_STATE_SYN_RECV 3
 #define TCP_STATE_TIME_WAIT 6
-/* /proc rows read per lookup at most (review F5.4): the loop never reads an
- * unbounded table; a peer not found within them is refused. */
-#define PROC_MAX_ROWS 8192
+/* The /proc fallback (review F5.4): the peer's row is found with one memmem
+ * over the table, read in chunks, not by parsing every row, so the bound can
+ * be one no real table reaches: the kernel keeps at most
+ * net.ipv4.tcp_max_tw_buckets TIME-WAIT rows (65,536 by default, about 10 MB
+ * of text). A row-count bound refused the program's own user on a busy
+ * machine; past PROC_MAX_BYTES the peer is not found and is refused. */
+#define PROC_CHUNK 65536
+#define PROC_MAX_BYTES ((size_t)32 << 20)
 
 #if defined(__linux__)
 static int netlink_uid(const struct sockaddr_storage *peer, const struct sockaddr_storage *local,
@@ -116,42 +123,26 @@ static int netlink_uid(const struct sockaddr_storage *peer, const struct sockadd
 }
 #endif
 
-static int hexval(char c)
+/* /proc/net/tcp prints each 32-bit word of an address as the %08X of the
+ * host-order integer whose memory is the network-order bytes. */
+static void hex_addr(const uint8_t *a, size_t alen, char *out)
 {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return -1;
-}
-
-/* /proc/net/tcp prints each 32-bit word of the address as the host-order
- * integer whose memory is the network-order bytes (%08X). */
-static int parse_addr(const char *hex, size_t n, uint8_t *out)
-{
-    size_t w, k;
-    if (n != 8 && n != 32) return -1;
-    for (w = 0; w < n / 8; w++) {
-        uint32_t v = 0;
-        for (k = 0; k < 8; k++) {
-            int d = hexval(hex[w * 8 + k]);
-            if (d < 0) return -1;
-            v = (v << 4) | (uint32_t)d;
-        }
-        memcpy(out + 4 * w, &v, 4);
+    size_t w;
+    for (w = 0; w < alen / 4; w++) {
+        uint32_t v;
+        memcpy(&v, a + 4 * w, 4);
+        snprintf(out + 8 * w, 9, "%08X", (unsigned)v);
     }
-    return (int)(n / 2);
 }
 
 static int proc_uid(const struct sockaddr_storage *peer, const struct sockaddr_storage *local, uint32_t *uid)
 {
     const char *file = peer->ss_family == AF_INET ? "/proc/net/tcp" : "/proc/net/tcp6";
-    FILE *f = fopen(file, "re");
-    char line[512];
+    char ph[33], lh[33], needle[96], *buf;
     uint8_t pa[16], la[16];
     unsigned pport, lport;
-    size_t alen;
-    int result = NOT_FOUND, rows = 0;
-    if (!f) return UNAVAILABLE;
+    size_t alen, nlen, len = 0, total = 0;
+    int fd, result = NOT_FOUND;
     if (peer->ss_family == AF_INET) {
         const struct sockaddr_in *p = (const struct sockaddr_in *)peer, *l = (const struct sockaddr_in *)local;
         memcpy(pa, &p->sin_addr, 4);
@@ -167,27 +158,52 @@ static int proc_uid(const struct sockaddr_storage *peer, const struct sockaddr_s
         lport = ntohs(l->sin6_port);
         alen = 16;
     }
-    if (!fgets(line, sizeof line, f)) { fclose(f); return UNAVAILABLE; }   /* the title row */
-    while (rows++ < PROC_MAX_ROWS && fgets(line, sizeof line, f)) {
-        char lhex[40], rhex[40];
-        unsigned lp, rp, st, u;
-        unsigned long inode;
-        uint8_t a1[16], a2[16];
-        if (sscanf(line, " %*u: %39[0-9A-Fa-f]:%x %39[0-9A-Fa-f]:%x %x %*x:%*x %*x:%*x %*x %u %*d %lu", lhex, &lp,
-                   rhex, &rp, &st, &u, &inode) != 7)
+    hex_addr(pa, alen, ph);
+    hex_addr(la, alen, lh);
+    /* the peer's row: its local end is the peer, its remote end the program */
+    nlen = (size_t)snprintf(needle, sizeof needle, " %s:%04X %s:%04X ", ph, pport, lh, lport);
+    fd = open(file, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return UNAVAILABLE;
+    buf = malloc(PROC_CHUNK + 2048);
+    if (!buf) { close(fd); return UNAVAILABLE; }
+    while (total < PROC_MAX_BYTES) {
+        ssize_t n = read(fd, buf + len, PROC_CHUNK);
+        char *hit;
+        if (n <= 0) break;
+        total += (size_t)n;
+        len += (size_t)n;
+        buf[len] = 0;
+        hit = memmem(buf, len, needle, nlen);
+        if (!hit) {                                     /* keep the tail a match may start in */
+            size_t keep = len < nlen - 1 ? len : nlen - 1;
+            memmove(buf, buf + len - keep, keep);
+            len = keep;
             continue;
-        if (parse_addr(lhex, strlen(lhex), a1) != (int)alen || parse_addr(rhex, strlen(rhex), a2) != (int)alen)
-            continue;
-        /* the peer's row: its local end is the peer, its remote end the program */
-        if (lp == pport && rp == lport && memcmp(a1, pa, alen) == 0 && memcmp(a2, la, alen) == 0) {
+        }
+        if (!memchr(hit, '\n', (size_t)(buf + len - hit))) {   /* the row's end is still to read */
+            len = (size_t)(buf + len - hit);
+            memmove(buf, hit, len);
+            hit = buf;
+            n = len < 1024 ? read(fd, buf + len, 1024) : 0;
+            if (n > 0) len += (size_t)n;
+            buf[len] = 0;
+        }
+        do {
+            char lhex[40], rhex[40];
+            unsigned lp, rp, st, u;
+            unsigned long inode;
+            if (sscanf(hit, " %39[0-9A-Fa-f]:%x %39[0-9A-Fa-f]:%x %x %*x:%*x %*x:%*x %*x %u %*d %lu", lhex, &lp, rhex,
+                       &rp, &st, &u, &inode) != 7)
+                break;
             /* a TIME-WAIT or SYN-RECV row, or no inode: no owner (review F1) */
             if (st == TCP_STATE_TIME_WAIT || st == TCP_STATE_SYN_RECV || inode == 0) break;
             *uid = u;
             result = FOUND;
-            break;
-        }
+        } while (0);
+        break;
     }
-    fclose(f);
+    free(buf);
+    close(fd);
     return result;
 }
 
