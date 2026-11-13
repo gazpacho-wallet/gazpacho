@@ -58,6 +58,9 @@ The host coordinates, co-signs everything, funds, relays every message and keeps
 | Choose who is in a factory by delaying messages | — | Denial of service (accepted) |
 | Refuse service | Leaving | Accepted |
 | See payments, membership and network addresses | — | Accepted. The member's IP address also undoes the fresh per-lobby keys towards this host: the host (and any host it shares logs with) links a person's lobbies, and who only browsed or refused terms, by address. Section 1 lists those links as an asset; without Tor they are not protected from the host. 1.0.0 plan in 2.8 |
+| Deny a member a seat it was given, or reorder standby seats | Signed seat receipts, covering standby order (1.0.0; owner decision 16c) | Not built yet |
+| Choose signers outside its stated rule | The signer-choice rule written into the outer terms, checked by the member's app (1.0.0) | Not built yet |
+| Remove members silently, or misstate how many it removed | Removals always signed with a reason; signed lobby-wide counts including host removals, with no identities (1.0.0) | Not built yet. Publishing proofs to Nostr comes later, from fresh keys, after the lobby ends, never with member keys or addresses |
 
 ### 2.2 A member, seen from the host's side
 
@@ -108,6 +111,8 @@ They can withhold listings, serve an older signed version of a host's terms, and
 They can see that a device talks to a host and when rounds happen, and drop, delay, replay and reorder packets. They cannot read or forge anything inside the encrypted connection (`DESIGN.md` section 8).
 
 A replayed round message is answered from saved bytes or refused by the saved identifier (RD sections 3 and 4). Delaying chosen members pushes them out of an attempt (accepted). Membership and timing are visible (not defended).
+
+Privacy roadmap (owner decision 16g): Slice 1 sends a generic user agent, uses an explicit chain proxy and keeps addresses out of logs. 1.0.0 adds one Tor setting for hosts, chain and discovery (`socks5h` only, on by default when Tor is present, no silent clearnet fallback), onion-service hosts, the chain server over Tor or the person's own node, and block-based chain lookups instead of per-txid and per-script queries. Later: built-in Tor and a compact block filter light client.
 
 ### 2.7 A stolen or copied device
 

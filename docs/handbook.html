@@ -246,6 +246,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c19-record" title="Record">Record</a>
 <a class="ch" href="#c20">Open questions</a>
 <a class="sec" href="#c20-0-questions-6-the-owner-s-answers-2026-1" title="0. Questions 6: the owner&#x27;s answers (2026-11-12)">0. Questions 6: the owner&#x27;s answers (2026-11-12)</a>
+<a class="sec" href="#c20-0a-the-owner-s-decisions-of-13-november-" title="0a. The owner&#x27;s decisions of 13 November (2026-11-13)">0a. The owner&#x27;s decisions of 13 November (2026-11-13)</a>
 <a class="sec" href="#c20-1-awaiting-the-owner-s-yes" title="1. Awaiting the owner&#x27;s yes">1. Awaiting the owner&#x27;s yes</a>
 <a class="sec" href="#c20-2-slice-1-inputs-not-yet-written" title="2. Slice 1 inputs not yet written">2. Slice 1 inputs not yet written</a>
 <a class="sec" href="#c20-3-other-questions-for-the-owner" title="3. Other questions for the owner">3. Other questions for the owner</a>
@@ -788,7 +789,23 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Funding</td>
-<td>One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero</td>
+<td>One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero. Funding is automatic and on by default: once H1 passes, the host broadcasts without asking; consent is at opening the lobby and at the start. Before real money it becomes a setting that still defaults to automatic (owner decision 16a, 2026-11-13)</td>
+</tr>
+<tr>
+<td>Lobbies per wallet</td>
+<td>Several at once from Slice 1; every lobby record carries a lobby field (owner decision 16b)</td>
+</tr>
+<tr>
+<td>Member signing</td>
+<td>Modes selectable by members and hosts: A automatic; B passphrase when the lobby fills; C keys unlocked once at join for that factory only, then wiped (the default, owner confirmed); D watchtower services, after 1.2.0, variants D1 to D4, where third-party keyed D4 is custody and never a default. "Not unlocked" counts as not answering the ready check (owner decision 16d)</td>
+</tr>
+<tr>
+<td>Host accountability</td>
+<td>1.0.0: signed seat receipts, the signer-choice rule in the outer terms, signed removals with a reason, signed lobby-wide counts without identities (owner decision 16c)</td>
+</tr>
+<tr>
+<td>Privacy</td>
+<td>Slice 1: a generic user agent, an explicit chain proxy, no addresses in logs. 1.0.0: one Tor setting (<code>socks5h</code> only, no silent clearnet fallback), onion-service hosts, the chain server over Tor or your own node, block-based chain lookups. Later: built-in Tor and a compact block filter client (owner decision 16g)</td>
 </tr>
 <tr>
 <td>Messages</td>
@@ -929,7 +946,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tbody>
 <tr>
 <td>1.0.0</td>
-<td>The milestones above. One member per leaf. Fees (proposed, owner to confirm): per payment, and an optional joining fee from the first payment received. Payout to one wallet. No on-chain reserve</td>
+<td>The milestones above. One member per leaf. Fees (proposed, owner to confirm): per payment, and an optional joining fee from the first payment received. Payout to one wallet. No on-chain reserve. Host accountability: signed seat receipts, the signer-choice rule in the terms, signed removals, signed counts. Member signing modes A to C. Understudies: standby seats that answered the ready check are swapped in automatically, at the ready check for a no-show or mid-signing for a member who drops, as a new attempt with fresh nonces and every member's limits re-checked (owner decision 16e). One Tor setting, onion-service hosts, the chain server over Tor or your own node, block-based chain lookups (owner decision 16)</td>
 </tr>
 <tr>
 <td>1.1.0</td>
@@ -937,7 +954,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Later</td>
-<td>Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves; Tor for host connections (<code>MULTI-FACTORY.md</code> 8.3)</td>
+<td>Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves. Built-in Tor (for example Arti), a BIP 157/158 compact block filter light client, automatic onion creation and DNS-name hosts (owner decision 16g). Accountability proofs published to Nostr from fresh keys after a lobby ends. After 1.2.0: mode D, watchtower services, as the fourth way to take part: D2 first, then D1 (opt-in, at least two services, built-in watcher stays on); D3 off by default; D4 never offered (decision 16h)</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -973,6 +990,18 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tr>
 <td>Terms draft 3: <code>internal_fee_base_msat</code>, <code>internal_fee_ppm</code>, <code>move_fee_sat</code> (even, ranges) and <code>successor_of</code> (even, fixed); an invitation message for standing invitations</td>
 <td><code>MULTI-FACTORY.md</code> 3.4, 6</td>
+</tr>
+<tr>
+<td>1.0.0 requirements so watchtowers are not blocked later: hardened per-lobby factory and channel keys on their own branch, no stored parent key; payout destination not the factory key, fixed before formation (E2); HTLC second-stage txids fixed in <code>channel.md</code>; no revocable or superseded data in watch data; status fields for more than one watcher; P2A anchors on everything a tower might publish</td>
+<td>Decision 16h</td>
+</tr>
+<tr>
+<td>A UI/UX review pass after 1.0.0, to add the signing modes and the other settings gracefully</td>
+<td>Decision 16f</td>
+</tr>
+<tr>
+<td>Lift the one-lobby limit in <code>spec/local-api.md</code> (open point 9, <code>already_in_lobby</code>, <code>already_hosting</code>) and <code>MULTI-FACTORY.md</code>: several lobbies at once from Slice 1</td>
+<td>Decision 16b</td>
 </tr>
 <tr>
 <td>Measure on signet: route timelock totals for moves across hosts, funding burial times, and the lead times for "move by" and "give up by"</td>
@@ -1252,6 +1281,9 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Four rule profiles: Safety, Standard, Starter, Circle.</li>
 <li>Listings carry fixed terms, ranges, size and start time. Live details come from the host.</li>
 <li><strong>Terms</strong> (owner decision 1, <code>spec/terms.md</code>): a lobby's outer rules are fixed when it opens; adjustable terms move only inside signed ranges; values freeze at the ready check; the outer rules' digest is the rules fingerprint and the lobby's identity. Changing an outer rule makes a new lobby.</li>
+<li><strong>Several lobbies at once</strong> per wallet from Slice 1 (owner decision 16b).</li>
+<li><strong>Member signing modes</strong> (owner decision 16d): A signs automatically; B asks for the passphrase when the lobby fills; C unlocks that lobby's keys once at join, signs only that factory within the approved terms, then wipes them (the default, owner confirmed; members and hosts can still choose A or B); D, watchtower services, is the fourth way to take part, after 1.2.0: D1 passive third party with no keys, D2 passive run yourself, D3 a keyed home node run yourself, D4 keyed third party, which is custody and is never offered, since today's Bitcoin cannot restrict a key to one destination. The built-in locked watcher stays in 1.0.0. 1.0.0 meets six requirements so D is not blocked later (<code>ux/decisions.md</code> 16h). In B and C, "not unlocked" counts as not answering the ready check. The ready check closes as soon as every seat has answered.</li>
+<li><strong>Understudies</strong> in 1.0.0 (owner decision 16e): standby seats that answered the ready check replace a no-show, or a member who drops mid-signing. A mid-signing swap is a new attempt with fresh nonces from everyone, and every member's limits are re-checked against the new set.</li>
 </ul></div></details>
 <details id="c3-12-the-host"><summary>12. The host</summary><div class="body"><ul>
 <li>Runs Gazpacho continuously, with its own Bitcoin node recommended.</li>
@@ -1259,6 +1291,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Later the built-in node holds ordinary channels itself and no separate node is needed.</li>
 <li>Publishes signed, versioned terms. May publish its funded factories as a track record.</li>
 <li><strong>Fees in 1.0.0</strong> (proposed after the owner's direction, decision 2; owner to confirm): a per-payment fee (a base amount plus a proportion), and an optional joining fee taken from the first payment received. The fee for extra receiving room comes in 1.1.0. A host cannot take any charge the member has not signed.</li>
+<li><strong>Funding is automatic</strong> (owner decision 16a): once H1 passes, the host broadcasts the funding transaction without asking. Consent is given at opening the lobby and at the start.</li>
+<li><strong>Accountability in 1.0.0</strong> (owner decision 16c): signed seat receipts; the signer-choice rule in the outer terms; removals always signed, with a reason; signed lobby-wide counts, including seats it removed, with no identities.</li>
 </ul></div></details>
 <details id="c3-13-the-user-s-side"><summary>13. The user&#x27;s side</summary><div class="body"><ul>
 <li><strong>No role question</strong> (owner decision 4): everyone can be member and host. The app never asks "member or host?"; hosting is always visible, with a calm starting page until the person hosts something.</li>
@@ -4057,7 +4091,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 </tbody>
 </table></div>
-<p>Also owed for Slice 1, outside the table: the owner's answer on the key path (W2, <code>OPEN-QUESTIONS.md</code>), the member's starting limits written into <code>terms.md</code> (W1, decided), and the Slice 1.5 list of deferred features with the test each one owes (owner, questions 6).</p></div></details>
+<p>Also owed for Slice 1, outside the table: the owner's answer on the key path (W2, <code>OPEN-QUESTIONS.md</code>), the member's starting limits written into <code>terms.md</code> (W1, decided), and the Slice 1.5 list of deferred features with the test each one owes (owner, questions 6).</p>
+<p><strong>Owner decisions of 2026-11-13 that touch Slice 1</strong> (<code>ux/decisions.md</code> 16): the host broadcasts funding automatically once H1 passes; several lobbies at once per wallet, with a lobby field in every lobby record (composite node design, PR 37); the ready check closes as soon as every seat has answered, and in modes B and C "not unlocked" counts as not answering; proposed defaults of a 60 s ready window, 60 s per step and a 10-minute signing budget (owner to confirm); privacy work in progress: a generic user agent, an explicit chain proxy and no addresses in logs.</p></div></details>
 <details id="c11-order-of-work"><summary>Order of work</summary><div class="body"><p>From the plan (waves; at most four builders and two light agents at a time, one heavy job on the build server at a time):</p>
 <ol>
 <li><strong>Wave A, now:</strong> S1 to completion; S3, S7 and S9 in parallel (none depends on S1); S13 and this truth pass as light agents.</li>
@@ -4265,6 +4300,21 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>—</td>
 <td>Accepted. The member's IP address also undoes the fresh per-lobby keys towards this host: the host (and any host it shares logs with) links a person's lobbies, and who only browsed or refused terms, by address. Section 1 lists those links as an asset; without Tor they are not protected from the host. 1.0.0 plan in 2.8</td>
 </tr>
+<tr>
+<td>Deny a member a seat it was given, or reorder standby seats</td>
+<td>Signed seat receipts, covering standby order (1.0.0; owner decision 16c)</td>
+<td>Not built yet</td>
+</tr>
+<tr>
+<td>Choose signers outside its stated rule</td>
+<td>The signer-choice rule written into the outer terms, checked by the member's app (1.0.0)</td>
+<td>Not built yet</td>
+</tr>
+<tr>
+<td>Remove members silently, or misstate how many it removed</td>
+<td>Removals always signed with a reason; signed lobby-wide counts including host removals, with no identities (1.0.0)</td>
+<td>Not built yet. Publishing proofs to Nostr comes later, from fresh keys, after the lobby ends, never with member keys or addresses</td>
+</tr>
 </tbody>
 </table></div>
 <h4>2.2 A member, seen from the host's side</h4>
@@ -4374,6 +4424,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <h4>2.6 Network observers between member and host</h4>
 <p>They can see that a device talks to a host and when rounds happen, and drop, delay, replay and reorder packets. They cannot read or forge anything inside the encrypted connection (<code>DESIGN.md</code> section 8).</p>
 <p>A replayed round message is answered from saved bytes or refused by the saved identifier (RD sections 3 and 4). Delaying chosen members pushes them out of an attempt (accepted). Membership and timing are visible (not defended).</p>
+<p>Privacy roadmap (owner decision 16g): Slice 1 sends a generic user agent, uses an explicit chain proxy and keeps addresses out of logs. 1.0.0 adds one Tor setting for hosts, chain and discovery (<code>socks5h</code> only, on by default when Tor is present, no silent clearnet fallback), onion-service hosts, the chain server over Tor or the person's own node, and block-based chain lookups instead of per-txid and per-script queries. Later: built-in Tor and a compact block filter light client.</p>
 <h4>2.7 A stolen or copied device</h4>
 <div class="tw"><table>
 <thead>
@@ -5824,7 +5875,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>8</td>
 <td>One lobby at a time; changing limits while waiting</td>
 <td><strong>A</strong>: one at a time in Slice 1, limits stay editable</td>
-<td><strong>Yes</strong></td>
+<td><strong>Yes</strong>; the lobby limit was replaced on 2026-11-13 by several lobbies at once (section 0a)</td>
 <td>The owner's note: any skipped feature must be tested later, so do not skip too much. A ledger of deferred features, each with its later test, is owed (with Slice 1.5)</td>
 </tr>
 <tr>
@@ -5836,6 +5887,18 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 </tbody>
 </table></div></div></details>
+<details id="c20-0a-the-owner-s-decisions-of-13-november-"><summary>0a. The owner&#x27;s decisions of 13 November (2026-11-13)</summary><div class="body"><p>Recorded in full as decision 16 in <code>ux/decisions.md</code>. In short:</p>
+<ul>
+<li>Host funding is automatic and on by default once H1 passes. Before real money it becomes a setting that still defaults to automatic.</li>
+<li>Several lobbies at once per wallet from Slice 1. This replaces Q8's answer above. Every lobby record carries a lobby field; the composite node design is PR 37.</li>
+<li>Host accountability in 1.0.0: signed seat receipts, the signer-choice rule in the outer terms, signed removals with a reason, signed lobby-wide counts without identities. Proofs on Nostr later, from fresh keys, after the lobby ends.</li>
+<li>Member signing modes A to D. Understudies in 1.0.0. A UI/UX review pass after 1.0.0. A privacy roadmap from Slice 1 to later releases.</li>
+</ul>
+<p>Still for the owner to confirm:</p>
+<ul>
+<li><strong>The proposed timing defaults:</strong> a 60 s ready window, 60 s per step, a 10-minute signing budget.</li>
+</ul>
+<p>Confirmed the same day: mode C is the default signing mode; members and hosts can still choose A or B. Mode D, watchtower services, is the fourth way to take part (variants D1 to D4, <code>ux/decisions.md</code> 16d), scheduled after 1.2.0. The watchtower research then set the order (D2, then D1; D3 off by default; D4 never offered) and six 1.0.0 requirements so D is not blocked later (<code>ux/decisions.md</code> 16h).</p></div></details>
 <details id="c20-1-awaiting-the-owner-s-yes"><summary>1. Awaiting the owner&#x27;s yes</summary><div class="body"><p>Values that a specification or design document marks <strong>proposed, owner to confirm</strong>. Builders may use them; none is settled until the owner says yes. The questionnaire <code>questions-5-decisions.html</code> covers most of them: open it, pick Keep, Change or Discuss for each item, and paste the answers back.</p>
 <div class="tw"><table>
 <thead>
