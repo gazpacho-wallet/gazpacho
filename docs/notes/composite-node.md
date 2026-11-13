@@ -1,6 +1,6 @@
 # The composite node (contract v2, step P4)
 
-Draft 2, 2026-11-13. This note fixes how the engines sit behind the one node interface, `gz_node_start` and `gz_node_handle`. Today that node is the placeholder ping. Slice 1 needs a lobby, a signing engine and a funding engine behind it, and later channels and exits. The Slice 1 attempt (`docs/notes/slice1-attempt.md`, item 1) glued them together outside the node. This note replaces that glue with a design a builder can code without further decisions.
+Draft 2, 2026-11-13, amended the same day with two owner decisions (host funding AUTO by default; 8 open and 64 ended lobbies) and the proposed member signing default, "unlock once at join". This note fixes how the engines sit behind the one node interface, `gz_node_start` and `gz_node_handle`. Today that node is the placeholder ping. Slice 1 needs a lobby, a signing engine and a funding engine behind it, and later channels and exits. The Slice 1 attempt (`docs/notes/slice1-attempt.md`, item 1) glued them together outside the node. This note replaces that glue with a design a builder can code without further decisions.
 
 Draft 2 answers review A of PR 37 (findings A1 to A19) and three owner decisions: several lobbies at once in Slice 1; host accountability approved for 1.0.0 (not designed here, but not blocked); host funding and member signing configurable. Section 17 lists every change.
 
@@ -24,7 +24,7 @@ Read against: `docs/notes/contract-v2.md` (P4 and sections 1 to 3, 7, 9 to 11); 
 | 12 | Start | Load every engine (no actions), then resume **one engine per call**: restore batch, pause, node, signing, lobby, funding, test, view | 10 |
 | 13 | A round outlives its lobby | The slot stays **closing** while the signing engine holds an unresolved round under its scope. The member keeps its connection; the host keeps a **tombstone** that answers `hello` with the final state and resends the saved `cancel` | 2.4, 4, 11 |
 | 14 | Keys | The signing engine gets keys **per round** through a key hook, by scope. A proposal before `start` finds them too | 2.5 |
-| 15 | Configurable funding and signing | `host_funding` AUTO or CONFIRM; `member_signing` AUTO or WHEN_UNLOCKED. Not unlocked means not answering the ready check | 12 |
+| 15 | Configurable funding and signing | `host_funding` AUTO (the default, owner) or CONFIRM. `member_signing` AUTO, WHEN_UNLOCKED (a node-wide gate) or AT_JOIN (a **per-lobby gate** opened when the person marks ready; the proposed default, to be confirmed). A closed gate means not answering the ready check | 12 |
 | 16 | Bad host | Gates by link, scope and slot state from P4.1 and P4.2; the signing engine checks a proposal only against the lobby's **accepted record** | 13 |
 | 17 | H1 | **The wallet exposes the spent scripts.** H1 stays a pure `core/tree` function. H1 runs **before** the lobby saves Funding | 14 |
 | 18 | Code steps | P4.1 to P4.6, each with a multi-process test in `tests/program/` | 15 |
@@ -68,14 +68,15 @@ size_t gz_node_size(void);
 #define GZ_NODE_LIST_BYTES    /* computed in core/node, static assertion */
 
 typedef enum { GZ_HOST_FUNDING_AUTO = 0, GZ_HOST_FUNDING_CONFIRM } gz_host_funding_t;
-typedef enum { GZ_MEMBER_SIGNING_AUTO = 0, GZ_MEMBER_SIGNING_WHEN_UNLOCKED } gz_member_signing_t;
+typedef enum { GZ_MEMBER_SIGNING_AUTO = 0, GZ_MEMBER_SIGNING_WHEN_UNLOCKED,
+               GZ_MEMBER_SIGNING_AT_JOIN } gz_member_signing_t;   /* AT_JOIN: proposed default (12.2) */
 
 typedef struct {
     int host;                                /* 1: host, 0: member; fixed per data folder */
     const secp256k1_context *secp;           /* with a non-aborting illegal callback */
     gz_key_port_t keys;                      /* per-lobby keys and the host key (2.5) */
     gz_wallet_port_t wallet;                 /* host funding (14); all NULL on a member */
-    gz_host_funding_t host_funding;          /* section 12 */
+    gz_host_funding_t host_funding;          /* section 12; AUTO by default (owner) */
     gz_member_signing_t member_signing;      /* section 12 */
     uint32_t test_engines;                   /* test builds only: 0, 1 or 2 test engines */
 } gz_node_config_t;
@@ -116,7 +117,7 @@ typedef struct {
 
 ### 2.4 Slots
 
-A **slot** is one lobby this wallet takes part in: its scope, its lobby engine instance, its keys, and its generation. Up to `GZ_NODE_MAX_SLOTS` (8) slots are in use at once. Opening a ninth is a refused command, not an error.
+A **slot** is one lobby this wallet takes part in: its scope, its lobby engine instance, its keys, and its generation. Up to `GZ_NODE_MAX_SLOTS` (8, owner decision) slots are Open at once. Opening a ninth is a refused command, not an error. Both caps here are constants that can be raised later without a format change.
 
 **States.**
 
@@ -131,7 +132,7 @@ A **slot** is one lobby this wallet takes part in: its scope, its lobby engine i
 - In Closing, the lobby engine instance is freed. What the slot keeps is small:
   - Member: the link (from its keys), and the CONNECT stands (11.2).
   - Host: a **tombstone**: scope, final lobby state, reason, the saved signed `cancel` envelope (from `lobby_ended`, which the node part reads), and room for each seat's last signed receipt once accountability lands (16).
-- Closing slots are capped at `GZ_NODE_MAX_TOMBSTONES` (64). A host at the cap refuses to open a lobby (a refused command), and the person is told why.
+- Closing slots are capped at `GZ_NODE_MAX_TOMBSTONES` (64, owner decision). A host at the cap refuses to open a lobby (a refused command), and the person is told why.
 
 **C7 and C10 stay node-wide.** The signing engine checks every proposal against the exposure records and unresolved outpoints of every lobby, open or closed.
 
@@ -506,17 +507,40 @@ Both are settings, not protocol. Neither changes a message.
 
 ### 12.1 Host funding: AUTO or CONFIRM
 
+- **AUTO is the default and is on unless the host changes the setting** (owner decision). CONFIRM stays a setting.
 - The setting in force is copied into each `funding_plan` when the attempt begins. A change later does not affect an attempt under way.
 - **AUTO:** at the Funding outcome the funding engine runs H1, signs, saves `funding_signed` in the outcome bracket, and broadcasts.
 - **CONFIRM:** at the Funding outcome the funding engine runs the parts of H1 that need no signature (every tree signature verifies, every ack, the plan equals the proposal's funding, every input segwit), saves `lobby_state` Funding with a plan state "awaiting confirmation", and emits an attention notice. The person confirms with a command (0x03xx, a fresh sign-in at the API, `local-api.md` 4.8). Then: sign, the full H1, `funding_signed`, broadcast. The host's funding deadline (14.3) keeps running; if it passes first, the abandoned path runs.
 - After a restart the notice is emitted again (10, step 7).
 
-### 12.2 Member signing: AUTO or WHEN_UNLOCKED
+### 12.2 Member signing: AUTO, WHEN_UNLOCKED or AT_JOIN
 
-- The node part keeps a **signing gate**, open or closed, in memory only. With AUTO it is always open. With WHEN_UNLOCKED it opens on an "unlock signing" command and closes on "lock signing", on the API's sign-out, and at every start (a restart starts closed).
-- **A closed gate is not answering the ready check.** The member's lobby gets a hook `may_answer(ctx)`. When it returns 0, the lobby does not answer a `ready_check`: the seat stays Ready and may be chosen in a later check. A notice says "unlock to take part". When the gate opens while a check is still in its window, the composite calls `gz_lobby_member_gate_opened()`, and the lobby answers then.
-- **A check already answered runs to its end.** Closing the gate after the answer does not withdraw it. The key hook still returns the round's keys until that round ends, as `local-api.md` 4.7 and 11.3 already hold the lock and the pause for a round with partial signatures out ("held for signing"). This applies to the whole round, from the answer, so that a lock does not cost the other members an attempt.
-- A proposal for a check answered while the gate was open is signed even if the gate is closed now. A proposal for a check not answered is ignored (13).
+There are two kinds of **signing gate**, both in memory only, both closed at every start:
+
+- **The node-wide gate.** Opened by an "unlock signing" command; closed by "lock signing", by the API's sign-out, and at every start.
+- **A per-lobby gate**, one per slot. Opened by the person's own "ready" for that lobby, given with the passphrase. It carries what it was opened for: the scope and the current values digest the person readied for. It closes when that lobby's round ends (any `round_ended`, or the slot freed), at every start, and on "lock signing".
+
+The three settings:
+
+| `member_signing` | Gate the slot uses | The person does |
+|---|---|---|
+| AUTO | none: always open | nothing after joining |
+| WHEN_UNLOCKED | the node-wide gate | unlocks signing for a session |
+| **AT_JOIN (proposed default, to be confirmed by the owner)** | that slot's per-lobby gate | enters the passphrase once, when marking ready in that lobby |
+
+**AT_JOIN, "unlock once at join".**
+
+- When the person marks ready with the passphrase, the program derives that lobby's two signing keys (contribution and factory, from the slot's epoch and index) and hands only those to the key port as a **scoped secret**: valid for that scope and that current values digest. The main wallet stays locked: no other key is derived or held.
+- The key hook (2.5) returns the keys only if the round's scope matches and the round's frozen terms digest equals the one the gate was opened for. A proposal under other terms gets no keys (and is refused anyway by C8a).
+- When the round ends, the composite closes the gate and calls the key port's `forget(scope)`, which wipes the scoped secret. A Retry ends the round: a new attempt in the same lobby needs the person to ready again, unless the attempt follows within the same check window (owner to confirm; the proposal is "ready again").
+- After a restart the per-lobby gate is closed and the scoped secret gone. The seat stays Ready, and the lobby does not answer checks until the person readies again. A round with partial signatures out is held for signing (`local-api.md` 4.7); its `round_abort` and saved resends need no new secret.
+- Key port addition: `scoped_secret(scope, terms_digest, factory_sec, contribution_sec)` and `forget(scope)`. The key hook reads the scoped secret first.
+
+**Common rules for every gate.**
+
+- **A closed gate is not answering the ready check.** The member's lobby gets a hook `may_answer(ctx, scope)`. When it returns 0, the lobby does not answer a `ready_check`: the seat stays Ready and may be chosen in a later check. A notice says "unlock to take part". When a gate opens while a check is still in its window, the composite calls `gz_lobby_member_gate_opened()`, and the lobby answers then.
+- **A check already answered runs to its end.** Closing the node-wide gate after the answer does not withdraw it. The key hook still returns the round's keys until that round ends, as `local-api.md` 4.7 and 11.3 already hold the lock and the pause for a round with partial signatures out ("held for signing"). This applies to the whole round, from the answer, so that a lock does not cost the other members an attempt.
+- A proposal for a check answered while a gate was open is signed even if the node-wide gate is closed now. A proposal for a check not answered is ignored (13).
 
 ## 13. The member against a bad host
 
@@ -612,7 +636,7 @@ One host process with two lobbies at once, three members, one of them in both lo
 4. A chosen member leaves in Signing and joins again with the same contribution key: refused (B1).
 5. Budget: Retry, then the budget ends while Open: cancel reason 3 by the lobby.
 6. The person cancels during a round: one batch with `lobby_ended`, the stand-in's `round_ended`, `slot_closed`.
-7. A member with `member_signing` WHEN_UNLOCKED and the gate closed does not answer the check and is not chosen; unlocked during the window, it answers.
+7. A member with `member_signing` WHEN_UNLOCKED and the gate closed does not answer the check and is not chosen; unlocked during the window, it answers. A member with AT_JOIN in two lobbies readies in one with the passphrase: only that lobby answers its check; after its round ends the scoped secret is gone (the test key port reports `forget`), and after a restart the lobby waits for the person again.
 8. A hostile raw client sends an invalid `join` three times: closed with a warning (DISCONNECT `refused`). Seventeen silent connections: the oldest silent one is pushed out, a seated member is never refused.
 9. A member that missed the `cancel` (dropped by `--test-drop-kind 34`) reconnects to the host's tombstone and ends Cancelled with the reason.
 10. A storage failure and a reconnect: the member's `hello` gets the full state; nothing is saved twice.
@@ -680,17 +704,15 @@ Signed seat receipts, the signer-choice rule in the terms, signed removal notice
 
 ## 17. For the owner
 
-One new question. The other two of draft 1 are answered (several lobbies) or made configurable (funding, signing).
+Decided since draft 2 (owner):
 
-**Q1. How many lobbies at once per wallet?**
+- **Host funding defaults to AUTO**, on by default; CONFIRM stays a setting (12.1).
+- **8 Open lobbies and 64 ended lobbies whose rounds are still held**, per wallet, as constants `GZ_NODE_MAX_SLOTS` and `GZ_NODE_MAX_TOMBSTONES` that can be raised later (2.4).
 
-The composite needs a fixed number. Each slot costs memory (a host lobby about 30 KB, the signing engine's rounds about 0.5 MB each) and a share of the 64 timers.
+Still open, with the owner:
 
-- (a) **8 lobbies at once**, 64 lobbies ended but with rounds still held.
-- (b) 4 and 32, for small phones.
-- (c) 16 and 128, with a larger timer table.
-
-**Recommendation: (a).** It covers a host with several lobbies and a member in a few, and stays inside today's timer table. It is a constant, so it can change before 1.0.0 without a format change.
+- **The member signing default.** The proposed default is AT_JOIN, "unlock once at join" (12.2). The composite supports all three settings.
+- **Within AT_JOIN, whether a Retry needs the person again.** Proposed: yes, the person readies again, because the gate was opened for one round.
 
 ## 18. What changes on open branches
 
@@ -730,3 +752,4 @@ The composite needs a fixed number. Each slot costs memory (a host lobby about 3
 | Owner: several lobbies | Slots with generations, Open and Closing; a scope in every Lobby record; connection binding on the host; one Active round per scope; C7 and C10 node-wide | 2.4, 3, 7.3 |
 | Owner: accountability for 1.0.0 | What the composite keeps open | 16 |
 | Owner: funding and signing configurable | `host_funding` and `member_signing`, the signing gate | 12 |
+| Amendment: owner decisions | Host funding AUTO by default; 8 and 64 as raisable constants; the per-lobby gate and AT_JOIN as the proposed member default | 2.2, 2.4, 12, 17 |
