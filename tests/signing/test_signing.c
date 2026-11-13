@@ -153,15 +153,15 @@ static void test_blocks(void)
     w_params(p, 1, 1, w_mask(3), 0);
     CHECK(w_build_tree(p, 9, &d, &f) && f);
     const gz_sign_item_t *it = &d.items[0];
-    CHECK(gz_tx_parse(it->tx, it->tx_len, &tx) && !tx.witness_item);
-    CHECK(!gz_tx_parse(it->tx, it->tx_len - 1, &tx));
+    CHECK(gz_stx_parse(it->tx, it->tx_len, &tx) && !tx.witness_item);
+    CHECK(!gz_stx_parse(it->tx, it->tx_len - 1, &tx));
     uint8_t bad[GZ_SIGN_MAX_TX + 8];
     memcpy(bad, it->tx, it->tx_len); bad[it->tx_len] = 0;
-    CHECK(!gz_tx_parse(bad, it->tx_len + 1u, &tx));                 /* trailing byte */
+    CHECK(!gz_stx_parse(bad, it->tx_len + 1u, &tx));                 /* trailing byte */
     memcpy(bad, it->tx, it->tx_len); bad[4] = 2;
-    CHECK(!gz_tx_parse(bad, it->tx_len, &tx));                      /* two inputs */
+    CHECK(!gz_stx_parse(bad, it->tx_len, &tx));                      /* two inputs */
     memcpy(bad, it->tx, it->tx_len); bad[41] = 0xfd;
-    CHECK(!gz_tx_parse(bad, it->tx_len, &tx));                      /* a non-minimal or overlong script length */
+    CHECK(!gz_stx_parse(bad, it->tx_len, &tx));                      /* a non-minimal or overlong script length */
     factory_free(f); free(f);
 }
 
@@ -505,7 +505,7 @@ static void pad_tx(gz_sign_item_t *it, size_t len)
 {
     uint8_t t[GZ_SIGN_MAX_TX + 64];
     gz_tx_t tx;
-    if (!gz_tx_parse(it->tx, it->tx_len, &tx) || tx.outputs_at < 1) abort();
+    if (!gz_stx_parse(it->tx, it->tx_len, &tx) || tx.outputs_at < 1) abort();
     size_t at = tx.outputs_end, add = len - it->tx_len;
     memcpy(t, it->tx, at);
     while (add) {                                  /* outputs of at most 252 script bytes (a one-byte length) */

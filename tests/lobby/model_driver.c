@@ -26,8 +26,8 @@ int main(void)
             static const char *name[3] = {"wait", "check", "cancel"};
             printf("R %s\n", name[gz_lobby_start_rule((uint16_t)v[0], (uint16_t)v[1], v[2], v[3], (uint32_t)v[4])]);
         } else if (line[0] == 'C') {
-            static gz_terms_outer_t o;
-            gz_terms_current_t c;
+            static gz_lterms_outer_t o;
+            gz_lterms_current_t c;
             gz_lobby_conditions_t cond;
             uint8_t term;
             int cls, k;
@@ -46,8 +46,8 @@ int main(void)
             cond.wind_max = (uint32_t)v[17]; cond.chan_min = v[18]; cond.rate_max = (uint32_t)v[19];
             cond.adj_max[0] = v[20]; cond.adj_max[1] = v[21]; cond.adj_max[2] = v[22];
             cond.current_only = (uint8_t)v[23];
-            cls = gz_terms_classify(&o, &c, &cond, &term);
-            printf("C %s %d %d\n", name[cls], term, gz_terms_ready_ok(cls, &cond));
+            cls = gz_lterms_classify(&o, &c, &cond, &term);
+            printf("C %s %d %d\n", name[cls], term, gz_lterms_ready_ok(cls, &cond));
         }
     }
     return 0;

@@ -12,7 +12,7 @@ static const uint8_t TESTNET4[32] = {
     0x43, 0xf0, 0x8b, 0xda, 0xb0, 0x50, 0xe3, 0x5b, 0x56, 0x7c, 0x86, 0x4b, 0x91, 0xf4, 0x7f, 0x50,
     0xae, 0x72, 0x5a, 0xe2, 0xde, 0x53, 0xbc, 0xfb, 0xba, 0xf2, 0x84, 0xda, 0x00, 0x00, 0x00, 0x00};
 
-const uint8_t *gz_terms_genesis(int network)
+const uint8_t *gz_lterms_genesis(int network)
 {
     return network == GZ_LOBBY_NET_SIGNET ? SIGNET : network == GZ_LOBBY_NET_TESTNET4 ? TESTNET4 : NULL;
 }
@@ -74,14 +74,14 @@ static int tree(const uint8_t *lv, int nl, uint32_t n, int *deepest)
     return split(lv, nl, n, 0, deepest, &leaves) && leaves == n;
 }
 
-static int levels_of(const gz_terms_shape_t *s, uint8_t lv[8])
+static int levels_of(const gz_lterms_shape_t *s, uint8_t lv[8])
 {
     memcpy(lv, s->interior, s->n_interior);
     lv[s->n_interior] = s->leaf_kind;
     return s->n_interior + 1;
 }
 
-int gz_terms_shape_for(const gz_terms_outer_t *o, uint16_t n, uint8_t levels[8], uint8_t *n_levels,
+int gz_lterms_shape_for(const gz_lterms_outer_t *o, uint16_t n, uint8_t levels[8], uint8_t *n_levels,
                        uint8_t *depth)
 {
     uint16_t i;
@@ -98,13 +98,13 @@ int gz_terms_shape_for(const gz_terms_outer_t *o, uint16_t n, uint8_t levels[8],
     return 0;
 }
 
-static int shapes_decode(const uint8_t *p, size_t n, gz_terms_outer_t *o)
+static int shapes_decode(const uint8_t *p, size_t n, gz_lterms_outer_t *o)
 {
     size_t at = 0;
     uint16_t prev = 2;
     o->n_shapes = 0;
     while (at < n) {
-        gz_terms_shape_t *s;
+        gz_lterms_shape_t *s;
         uint8_t k;
         if (o->n_shapes >= GZ_TERMS_MAX_SHAPES || n - at < 4) return 0;
         s = &o->shapes[o->n_shapes];
@@ -126,7 +126,7 @@ static int shapes_decode(const uint8_t *p, size_t n, gz_terms_outer_t *o)
 }
 
 /* terms.md 4.3: every n each entry covers splits into one-member leaves. */
-static int shapes_check(const gz_terms_outer_t *o)
+static int shapes_check(const gz_lterms_outer_t *o)
 {
     uint16_t i, n, from = 3;
     for (i = 0; i < o->n_shapes; i++) {
@@ -139,7 +139,7 @@ static int shapes_check(const gz_terms_outer_t *o)
     return 1;
 }
 
-int gz_terms_outer_decode(const uint8_t *rec, size_t len, gz_terms_outer_t *o)
+int gz_lterms_outer_decode(const uint8_t *rec, size_t len, gz_lterms_outer_t *o)
 {
     gz_lw_tlv_t t;
     uint64_t have = 0;     /* bit (type / 2) for the required even types 2 to 34 */
@@ -155,7 +155,7 @@ int gz_terms_outer_decode(const uint8_t *rec, size_t len, gz_terms_outer_t *o)
         uint64_t x = n >= 1 && n <= 8 ? gz_lw_get(v, n) : 0;
         if (t.type >= 128) return 0;
         if (t.type >= 64) {
-            gz_terms_range_t *g;
+            gz_lterms_range_t *g;
             uint64_t cap = t.type == 64 ? SUPPLY : 0xffffffffull;
             if (t.type % 2 == 0 && t.type != 64 && t.type != 66 && t.type != 68) return 0;
             if (n != 16 || o->n_adj >= GZ_TERMS_MAX_ADJ) return 0;
@@ -199,8 +199,8 @@ int gz_terms_outer_decode(const uint8_t *rec, size_t len, gz_terms_outer_t *o)
     return shapes_check(o);
 }
 
-int gz_terms_current_decode(const uint8_t *rec, size_t len, const gz_terms_outer_t *outer,
-                            const uint8_t outer_digest[32], gz_terms_current_t *c)
+int gz_lterms_current_decode(const uint8_t *rec, size_t len, const gz_lterms_outer_t *outer,
+                            const uint8_t outer_digest[32], gz_lterms_current_t *c)
 {
     gz_lw_tlv_t t;
     int r, have_digest = 0, have_version = 0;
@@ -210,7 +210,7 @@ int gz_terms_current_decode(const uint8_t *rec, size_t len, const gz_terms_outer
     t.p = rec;
     t.len = len;
     while ((r = gz_lw_tlv_next(&t)) == 1) {
-        const gz_terms_range_t *g;
+        const gz_lterms_range_t *g;
         uint64_t x;
         if (t.type == 2 && t.vlen == 32) {
             if (memcmp(t.v, outer_digest, 32) != 0) return 0;
@@ -236,18 +236,18 @@ int gz_terms_current_decode(const uint8_t *rec, size_t len, const gz_terms_outer
     return r == 0 && have_digest && have_version && c->n_adj == outer->n_adj;
 }
 
-int gz_terms_slice1_ok(const gz_terms_outer_t *o, int network)
+int gz_lterms_slice1_ok(const gz_lterms_outer_t *o, int network)
 {
-    const uint8_t *g = gz_terms_genesis(network);
+    const uint8_t *g = gz_lterms_genesis(network);
     return g && memcmp(o->chain, g, 32) == 0 && o->profile == 2 && o->on_shortfall == 0 && o->switches == 0;
 }
 
-void gz_terms_outer_digest(const uint8_t *rec, size_t len, uint8_t out[32])
+void gz_lterms_outer_digest(const uint8_t *rec, size_t len, uint8_t out[32])
 {
     gz_lobby_tagged("gazpacho/terms/outer", rec, len, out);
 }
 
-void gz_terms_current_digest(const uint8_t *rec, size_t len, uint8_t out[32])
+void gz_lterms_current_digest(const uint8_t *rec, size_t len, uint8_t out[32])
 {
     gz_lobby_tagged("gazpacho/terms/current", rec, len, out);
 }
@@ -274,7 +274,7 @@ static void rec_int(wr_t *w, uint64_t type, uint64_t v, size_t n)
     rec(w, type, b, n);
 }
 
-size_t gz_terms_outer_encode(const gz_terms_outer_t *o, uint8_t *out, size_t cap)
+size_t gz_lterms_outer_encode(const gz_lterms_outer_t *o, uint8_t *out, size_t cap)
 {
     wr_t w;
     uint8_t shapes[1000];
@@ -283,7 +283,7 @@ size_t gz_terms_outer_encode(const gz_terms_outer_t *o, uint8_t *out, size_t cap
     uint8_t k;
     w.p = out; w.cap = cap; w.len = 0; w.bad = 0;
     for (i = 0; i < o->n_shapes && i < GZ_TERMS_MAX_SHAPES; i++) {
-        const gz_terms_shape_t *s = &o->shapes[i];
+        const gz_lterms_shape_t *s = &o->shapes[i];
         if (s->n_interior > 6 || sn + 4u + s->n_interior > sizeof shapes) return 0;
         gz_lw_put(shapes + sn, s->max_members, 2);
         shapes[sn + 2] = s->n_interior;
@@ -319,7 +319,7 @@ size_t gz_terms_outer_encode(const gz_terms_outer_t *o, uint8_t *out, size_t cap
     return w.bad ? 0 : w.len;
 }
 
-size_t gz_terms_current_encode(const gz_terms_current_t *c, const gz_terms_outer_t *outer,
+size_t gz_lterms_current_encode(const gz_lterms_current_t *c, const gz_lterms_outer_t *outer,
                                uint8_t *out, size_t cap)
 {
     wr_t w;
@@ -334,7 +334,7 @@ size_t gz_terms_current_encode(const gz_terms_current_t *c, const gz_terms_outer
 
 /* ------------------------------------------------------------ comparison */
 
-static int find_adj(const gz_terms_outer_t *o, const gz_terms_current_t *c, uint8_t type,
+static int find_adj(const gz_lterms_outer_t *o, const gz_lterms_current_t *c, uint8_t type,
                     uint64_t *hi, uint64_t *cur)
 {
     uint8_t k;
@@ -347,7 +347,7 @@ static int find_adj(const gz_terms_outer_t *o, const gz_terms_current_t *c, uint
     return 0;
 }
 
-int gz_terms_classify(const gz_terms_outer_t *o, const gz_terms_current_t *c,
+int gz_lterms_classify(const gz_lterms_outer_t *o, const gz_lterms_current_t *c,
                       const gz_lobby_conditions_t *cond, uint8_t *term)
 {
     static const uint8_t adj[3] = {64, 66, 68};
@@ -370,7 +370,7 @@ int gz_terms_classify(const gz_terms_outer_t *o, const gz_terms_current_t *c,
     return GZ_FIT_YES;
 }
 
-int gz_terms_ready_ok(int cls, const gz_lobby_conditions_t *cond)
+int gz_lterms_ready_ok(int cls, const gz_lobby_conditions_t *cond)
 {
     return cls == GZ_FIT_YES || (cls == GZ_FIT_NOW && cond->current_only);
 }

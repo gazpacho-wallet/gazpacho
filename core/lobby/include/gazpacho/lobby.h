@@ -90,9 +90,9 @@ typedef struct {
     uint8_t n_interior;
     uint8_t interior[6];
     uint8_t leaf_kind;
-} gz_terms_shape_t;
+} gz_lterms_shape_t;
 
-typedef struct { uint8_t type; uint64_t min, max; } gz_terms_range_t;
+typedef struct { uint8_t type; uint64_t min, max; } gz_lterms_range_t;
 
 /* The outer rules, decoded (terms.md section 3). */
 typedef struct {
@@ -106,10 +106,10 @@ typedef struct {
     uint32_t lifetime_blocks, winddown_blocks, tree_feerate;
     uint64_t channel_sat;
     uint16_t n_shapes;
-    gz_terms_shape_t shapes[GZ_TERMS_MAX_SHAPES];
+    gz_lterms_shape_t shapes[GZ_TERMS_MAX_SHAPES];
     uint8_t n_adj;                                   /* ranges, increasing type */
-    gz_terms_range_t adj[GZ_TERMS_MAX_ADJ];
-} gz_terms_outer_t;
+    gz_lterms_range_t adj[GZ_TERMS_MAX_ADJ];
+} gz_lterms_outer_t;
 
 /* The current values, decoded (terms.md section 5). */
 typedef struct {
@@ -118,38 +118,38 @@ typedef struct {
     uint8_t n_adj;
     uint8_t adj_type[GZ_TERMS_MAX_ADJ];
     uint64_t adj_value[GZ_TERMS_MAX_ADJ];
-} gz_terms_current_t;
+} gz_lterms_current_t;
 
 /* Decode and check every bound of terms.md sections 2 to 4, the shape check
  * of 4.3 included. 1 if valid, 0 if refused. `out` points into `rec`. */
-int gz_terms_outer_decode(const uint8_t *rec, size_t len, gz_terms_outer_t *out);
+int gz_lterms_outer_decode(const uint8_t *rec, size_t len, gz_lterms_outer_t *out);
 /* Decode against the outer rules (terms.md 7 step 6): the outer digest, the
  * exact set of adjustable types, each value inside its range. */
-int gz_terms_current_decode(const uint8_t *rec, size_t len, const gz_terms_outer_t *outer,
-                            const uint8_t outer_digest[32], gz_terms_current_t *out);
+int gz_lterms_current_decode(const uint8_t *rec, size_t len, const gz_lterms_outer_t *outer,
+                            const uint8_t outer_digest[32], gz_lterms_current_t *out);
 /* Networks (messages.md section 2, contract v2 item 15): a party runs one,
  * signet or testnet4, and refuses terms for any other. */
 #define GZ_LOBBY_NET_SIGNET   0
 #define GZ_LOBBY_NET_TESTNET4 1
 /* The network's block 0 hash in internal order, or NULL for another number. */
-const uint8_t *gz_terms_genesis(int network);
+const uint8_t *gz_lterms_genesis(int network);
 /* The values a Slice 1 app accepts: the party's own network (signet or
  * testnet4), Standard, cancel, switches 0. */
-int gz_terms_slice1_ok(const gz_terms_outer_t *outer, int network);
+int gz_lterms_slice1_ok(const gz_lterms_outer_t *outer, int network);
 
 /* Canonical encoders: one byte string per set of terms. Return the length,
  * or 0 if `cap` is short. They do not judge the values: decode the result. */
-size_t gz_terms_outer_encode(const gz_terms_outer_t *o, uint8_t *out, size_t cap);
-size_t gz_terms_current_encode(const gz_terms_current_t *c, const gz_terms_outer_t *outer,
+size_t gz_lterms_outer_encode(const gz_lterms_outer_t *o, uint8_t *out, size_t cap);
+size_t gz_lterms_current_encode(const gz_lterms_current_t *c, const gz_lterms_outer_t *outer,
                                uint8_t *out, size_t cap);
 
-void gz_terms_outer_digest(const uint8_t *rec, size_t len, uint8_t out[32]);
-void gz_terms_current_digest(const uint8_t *rec, size_t len, uint8_t out[32]);
+void gz_lterms_outer_digest(const uint8_t *rec, size_t len, uint8_t out[32]);
+void gz_lterms_current_digest(const uint8_t *rec, size_t len, uint8_t out[32]);
 
 /* The tree for n members (terms.md 4.2): the applicable entry's level list
  * (interior || leaf kind) and D, the depth of the deepest leaf. 0 if no entry
  * covers n or the split meets an interior node with m <= its width. */
-int gz_terms_shape_for(const gz_terms_outer_t *o, uint16_t n, uint8_t levels[8],
+int gz_lterms_shape_for(const gz_lterms_outer_t *o, uint16_t n, uint8_t levels[8],
                        uint8_t *n_levels, uint8_t *depth);
 
 /* A member's conditions (terms.md section 9). Kept on the device, never sent
@@ -170,10 +170,10 @@ typedef struct {
 /* The class, and in `*term` the type of the deciding term (0 for GZ_FIT_YES):
  * for GZ_FIT_NO the smallest failing fixed or current type, for GZ_FIT_NOW the
  * smallest adjustable type whose whole range does not fit. */
-int gz_terms_classify(const gz_terms_outer_t *o, const gz_terms_current_t *c,
+int gz_lterms_classify(const gz_lterms_outer_t *o, const gz_lterms_current_t *c,
                       const gz_lobby_conditions_t *cond, uint8_t *term);
 /* 1 if a member with these conditions may be ready at these values. */
-int gz_terms_ready_ok(int cls, const gz_lobby_conditions_t *cond);
+int gz_lterms_ready_ok(int cls, const gz_lobby_conditions_t *cond);
 
 /* ------------------------------------------------------------- messages */
 
@@ -355,7 +355,7 @@ typedef struct {
     const uint8_t *current_digest;             /* frozen, 32 */
     uint32_t version;                          /* frozen */
     const uint8_t *check_id;                   /* the check this start follows, 32 */
-    const gz_terms_outer_t *terms;             /* decoded outer rules */
+    const gz_lterms_outer_t *terms;             /* decoded outer rules */
     uint16_t signers;                          /* participants, host included */
     /* Host: every participant, host first, then chosen seats in order of
      * joining. Member: NULL (they arrive in round_propose). */
@@ -439,8 +439,8 @@ typedef struct {
     int state;
     uint8_t outer[GZ_TERMS_OUTER_MAX]; size_t outer_len; uint8_t outer_sig[64];
     uint8_t current[GZ_TERMS_CURRENT_MAX]; size_t current_len; uint8_t current_sig[64];
-    gz_terms_outer_t terms;
-    gz_terms_current_t values;
+    gz_lterms_outer_t terms;
+    gz_lterms_current_t values;
     uint8_t scope[32], current_digest[32];
     int frozen;
     uint8_t check_id[32]; int check_open;
@@ -508,10 +508,10 @@ typedef struct {
     int lobby_state, seat_state;
     uint64_t host_peer; int connected;
     uint8_t outer[GZ_TERMS_OUTER_MAX]; size_t outer_len; uint8_t outer_sig[64];
-    gz_terms_outer_t terms;
+    gz_lterms_outer_t terms;
     /* the latest valid current record seen (memory only until readied) */
     uint8_t current[GZ_TERMS_CURRENT_MAX]; size_t current_len; uint8_t current_sig[64];
-    gz_terms_current_t values; uint8_t current_digest[32];
+    gz_lterms_current_t values; uint8_t current_digest[32];
     uint32_t saved_version;          /* newest version saved in terms_received */
     uint32_t frozen_version; uint8_t frozen_digest[32];
     uint8_t join_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t join_len;

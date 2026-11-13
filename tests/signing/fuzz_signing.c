@@ -92,7 +92,7 @@ int main(int argc, char **argv)
         gz_tx_t tx;
         memcpy(buf, item->tx, item->tx_len);
         size_t len = mutate(buf, item->tx_len, GZ_SIGN_MAX_TX + 64);
-        if (gz_tx_parse(buf, len, &tx)) {
+        if (gz_stx_parse(buf, len, &tx)) {
             CHECK(tx.outputs_at <= tx.outputs_end && tx.outputs_end <= len && tx.outpoint + 36 <= buf + len);
             uint8_t h[32];
             gz_tx_sighash(&tx, item->spent_amount, item->spent_script, h);

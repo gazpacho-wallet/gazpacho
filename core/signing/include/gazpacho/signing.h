@@ -49,8 +49,8 @@
 #define GZ_SIGN_MAX_SIGNERS      16
 #define GZ_SIGN_MAX_ITEMS        64
 #define GZ_SIGN_MAX_TIERS        4
-#define GZ_SIGN_MAX_TX           512     /* bytes of one unsigned transaction */
-#define GZ_SIGN_MAX_PARAMS       64      /* bytes of a proposal's parameters */
+#define GZ_SIGN_MAX_TX           720     /* bytes of one unsigned transaction */
+#define GZ_SIGN_MAX_PARAMS       4096    /* bytes of a proposal's parameters */
 #define GZ_SIGN_MAX_ROUNDS       4       /* rounds a member keeps in full */
 #define GZ_SIGN_MAX_KNOWN        256     /* round identifiers remembered as refused */
 #define GZ_SIGN_MAX_MSG          (40 + GZ_SIGN_MAX_ITEMS * (5 + GZ_SIGN_MAX_SIGNERS * 130) + 64)
@@ -133,6 +133,7 @@ typedef struct {
     gz_sign_build_fn build;
     gz_sign_retry_fn retry;
     void *build_ctx;
+    int (*may_ack)(void *ctx);    /* slice1-attempt: member, before each ack (gz_tree_may_ack); NULL = always */
     uint64_t tick_ms;               /* period of the engine's one timer */
     uint32_t resend_ticks;          /* resend what is unanswered every this many ticks */
     uint32_t deadline_ticks;        /* a step not finished after this many ticks fails */
@@ -260,7 +261,7 @@ typedef struct {
     const uint8_t *witness_item; size_t witness_len;   /* NULL if legacy */
 } gz_tx_t;
 /* 1 if `bytes` is exactly one such transaction (canonical sizes, nothing left over). */
-int gz_tx_parse(const uint8_t *bytes, size_t len, gz_tx_t *tx);
+int gz_stx_parse(const uint8_t *bytes, size_t len, gz_tx_t *tx);
 /* BIP 341 key-path signature hash, default type, no annex, input 0. */
 void gz_tx_sighash(const gz_tx_t *tx, uint64_t amount, const uint8_t script[34], uint8_t out[32]);
 /* The unsigned transaction with a one-item witness `sig64` added. Returns

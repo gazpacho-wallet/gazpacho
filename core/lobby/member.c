@@ -39,8 +39,8 @@ static gz_status_t note2(gz_action_list_t *out, uint32_t code, uint8_t a, uint8_
  * values cannot move, so "fits only now" with fitting values is a fit. */
 static int class_ok(gz_lobby_member_t *m, int *cls, uint8_t *term)
 {
-    *cls = gz_terms_classify(&m->terms, &m->values, &m->cond, term);
-    return m->frozen ? *cls != GZ_FIT_NO : gz_terms_ready_ok(*cls, &m->cond);
+    *cls = gz_lterms_classify(&m->terms, &m->values, &m->cond, term);
+    return m->frozen ? *cls != GZ_FIT_NO : gz_lterms_ready_ok(*cls, &m->cond);
 }
 
 static size_t terms_record(const gz_lobby_member_t *m, uint8_t *r)
@@ -184,16 +184,16 @@ static gz_status_t on_check(gz_lobby_member_t *m, const uint8_t *raw, size_t len
 
 static gz_status_t on_terms(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_action_list_t *out)
 {
-    gz_terms_outer_t t;
-    gz_terms_current_t v;
+    gz_lterms_outer_t t;
+    gz_lterms_current_t v;
     uint8_t od[32], cd[32], a[GZ_TERMS_CURRENT_MAX + 66], b[GZ_TERMS_CURRENT_MAX + 66];
-    gz_terms_outer_digest(g->outer, g->outer_len, od);
-    if (memcmp(od, m->scope, 32) != 0 || !gz_terms_outer_decode(g->outer, g->outer_len, &t) ||
+    gz_lterms_outer_digest(g->outer, g->outer_len, od);
+    if (memcmp(od, m->scope, 32) != 0 || !gz_lterms_outer_decode(g->outer, g->outer_len, &t) ||
         memcmp(t.host_key, m->host_key, 33) != 0 ||
-        m->crypto.verify(m->crypto.ctx, m->host_key, od, g->outer_sig) != 1 || !gz_terms_slice1_ok(&t, m->network) ||
-        !gz_terms_current_decode(g->current, g->current_len, &t, od, &v))
+        m->crypto.verify(m->crypto.ctx, m->host_key, od, g->outer_sig) != 1 || !gz_lterms_slice1_ok(&t, m->network) ||
+        !gz_lterms_current_decode(g->current, g->current_len, &t, od, &v))
         return gz_la_refuse(out, m->host_peer, "bad terms");
-    gz_terms_current_digest(g->current, g->current_len, cd);
+    gz_lterms_current_digest(g->current, g->current_len, cd);
     if (m->crypto.verify(m->crypto.ctx, m->host_key, cd, g->current_sig) != 1)
         return gz_la_refuse(out, m->host_peer, "bad terms");
     if (m->have_terms) {
@@ -214,7 +214,7 @@ static gz_status_t on_terms(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_ac
         memcpy(m->outer, g->outer, g->outer_len);
         m->outer_len = g->outer_len;
         memcpy(m->outer_sig, g->outer_sig, 64);
-        gz_terms_outer_decode(m->outer, m->outer_len, &m->terms);
+        gz_lterms_outer_decode(m->outer, m->outer_len, &m->terms);
         m->have_terms = 1;
     }
     memcpy(m->current, g->current, g->current_len);
@@ -294,7 +294,7 @@ static gz_status_t on_start(gz_lobby_member_t *m, const uint8_t *raw, size_t len
     ho.k = 1; ho.tree_anchors = 1; ho.layer_step = 144; ho.layer_states = 4;
     ho.min_members = m->cond.min_members;
     ho.start_bytes = m->start_msg; ho.start_len = m->start_len;
-    if (!gz_terms_shape_for(&m->terms, (uint16_t)(g->signers - 1), ho.levels, &ho.n_levels, &ho.fixed_levels))
+    if (!gz_lterms_shape_for(&m->terms, (uint16_t)(g->signers - 1), ho.levels, &ho.n_levels, &ho.fixed_levels))
         ho.n_levels = 0;                              /* no shape: the signing engine refuses */
     return m->signing.begin(m->signing.ctx, &ho, out);
 }
@@ -427,10 +427,10 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
         if (!gz_la_get_blob(p, len, &at, &b, &bn) || bn > GZ_TERMS_CURRENT_MAX || len - at != 64) return GZ_ERR_CORRUPT;
         memcpy(m->outer, a, an); m->outer_len = an; memcpy(m->outer_sig, a + an, 64);
         memcpy(m->current, b, bn); m->current_len = bn; memcpy(m->current_sig, p + at, 64);
-        if (!gz_terms_outer_decode(m->outer, an, &m->terms) ||
-            !gz_terms_current_decode(m->current, bn, &m->terms, m->scope, &m->values))
+        if (!gz_lterms_outer_decode(m->outer, an, &m->terms) ||
+            !gz_lterms_current_decode(m->current, bn, &m->terms, m->scope, &m->values))
             return GZ_ERR_CORRUPT;
-        gz_terms_current_digest(m->current, bn, m->current_digest);
+        gz_lterms_current_digest(m->current, bn, m->current_digest);
         m->have_terms = 1;
         m->saved_version = m->values.version;
         return GZ_OK;
@@ -481,7 +481,7 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
 
 gz_status_t gz_lobby_member_set_network(gz_lobby_member_t *m, int network)
 {
-    if (!m || !gz_terms_genesis(network)) return GZ_ERR_ARGUMENT;
+    if (!m || !gz_lterms_genesis(network)) return GZ_ERR_ARGUMENT;
     m->network = network;
     return GZ_OK;
 }

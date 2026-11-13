@@ -48,13 +48,13 @@ static void on_wire(world_t *w, int from, int to, const uint8_t *b, size_t n)
     n_checks++;
     switch (m.kind) {
     case GZ_KIND_TERMS_OFFER: {
-        gz_terms_outer_t o;
-        gz_terms_current_t c;
+        gz_lterms_outer_t o;
+        gz_lterms_current_t c;
         uint8_t cd[32];
         int k;
-        gz_terms_outer_decode(m.outer, m.outer_len, &o);
-        gz_terms_current_decode(m.current, m.current_len, &o, outer_digest, &c);
-        gz_terms_current_digest(m.current, m.current_len, cd);
+        gz_lterms_outer_decode(m.outer, m.outer_len, &o);
+        gz_lterms_current_decode(m.current, m.current_len, &o, outer_digest, &c);
+        gz_lterms_current_digest(m.current, m.current_len, cd);
         for (k = 0; k < n_seen; k++)
             if (seen_version[k] == (int)c.version) inv(memcmp(seen_digest[k], cd, 32) == 0, "two values under one version", w);
         if (k == n_seen && n_seen < 16) { seen_version[n_seen] = (int)c.version; memcpy(seen_digest[n_seen++], cd, 32); }
@@ -87,8 +87,8 @@ static void on_wire(world_t *w, int from, int to, const uint8_t *b, size_t n)
         inv(!d->mem->ended, "ready after the end", w);
         for (k = 0; k < d->n_recs; k++) {
             const w_rec_t *t = &d->recs[k];
-            gz_terms_outer_t o;
-            gz_terms_current_t c;
+            gz_lterms_outer_t o;
+            gz_lterms_current_t c;
             const uint8_t *ob, *cb;
             size_t at = 0, on, cn;
             uint8_t term;
@@ -97,10 +97,10 @@ static void on_wire(world_t *w, int from, int to, const uint8_t *b, size_t n)
             gz_la_get_blob(t->b, t->n, &at, &ob, &on);
             at += 64;
             gz_la_get_blob(t->b, t->n, &at, &cb, &cn);
-            if (!gz_terms_outer_decode(ob, on, &o) || !gz_terms_current_decode(cb, cn, &o, outer_digest, &c)) continue;
+            if (!gz_lterms_outer_decode(ob, on, &o) || !gz_lterms_current_decode(cb, cn, &o, outer_digest, &c)) continue;
             if (c.version != m.version) continue;
-            cls = gz_terms_classify(&o, &c, &d->cond, &term);
-            ok = m.has_check_id ? cls != GZ_FIT_NO : gz_terms_ready_ok(cls, &d->cond);
+            cls = gz_lterms_classify(&o, &c, &d->cond, &term);
+            ok = m.has_check_id ? cls != GZ_FIT_NO : gz_lterms_ready_ok(cls, &d->cond);
         }
         inv(ok, "ready for values the member's conditions refuse, or not saved", w);
         break;
@@ -123,8 +123,8 @@ static int run(uint64_t seed, int profile, unsigned long *tot)
     uint8_t cd2[32];
     w_init(&w, n, seed, NULL);
     w.on_wire = on_wire;
-    gz_terms_outer_digest(w.outer, w.outer_len, outer_digest);
-    gz_terms_current_digest(w.current, w.current_len, cd2);
+    gz_lterms_outer_digest(w.outer, w.outer_len, outer_digest);
+    gz_lterms_current_digest(w.current, w.current_len, cd2);
     n_seen = 0; frozen = 0;
     if (profile == 0 || profile == 2) { w.drop_pm = 3; w.dup_pm = 20; w.reorder_pm = 20; w.cut_pm = 2; }
     if (profile == 0 || profile == 1) w.crash_pm = profile == 1 ? 6 : 2;

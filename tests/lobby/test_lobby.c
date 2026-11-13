@@ -95,7 +95,7 @@ static int before(int kind, uint32_t type)
 static lt_signer_t HOST, OTHER, M1;
 static uint8_t T1[512], T2[128], T3[128], SCOPE[32];
 static size_t T1N, T2N, T3N;
-static gz_terms_outer_t T1O;
+static gz_lterms_outer_t T1O;
 static uint64_t CLOCK = W_T0;
 static uint64_t c_now(void *ctx) { (void)ctx; return CLOCK; }
 static uint8_t RAND_NEXT = 0x5a;
@@ -114,8 +114,8 @@ static size_t offer(uint8_t *buf, size_t cap, const uint8_t *scope, const uint8_
 {
     uint8_t od[32], cd[32], os[64], cs[64];
     gz_lobby_enc_t e;
-    gz_terms_outer_digest(o, on, od);
-    gz_terms_current_digest(c, cn, cd);
+    gz_lterms_outer_digest(o, on, od);
+    gz_lterms_current_digest(c, cn, cd);
     lt_sign(signer, 1, od, os);
     lt_sign(signer, 1, cd, cs);
     gz_lobby_enc_start(&e, buf, cap, GZ_KIND_TERMS_OFFER, scope);
@@ -203,13 +203,13 @@ static void test_member_hostile(void)
     static gz_lobby_member_t m;
     static uint8_t buf[8000], b2[8000];
     gz_lobby_conditions_t cond = lt_cond_fits();
-    gz_terms_outer_t o = T1O;
+    gz_lterms_outer_t o = T1O;
     uint8_t x[600], cd2[32], cd3[32], check[32];
     size_t n, xn;
     gz_lobby_msg_t g;
 
-    gz_terms_current_digest(T2, T2N, cd2);
-    gz_terms_current_digest(T3, T3N, cd3);
+    gz_lterms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T3, T3N, cd3);
     /* hello first */
     member_up(&m, &cond);
     CHECK(sends(GZ_KIND_HELLO) == 1);
@@ -223,15 +223,15 @@ static void test_member_hostile(void)
         CHECK(feed(&m, buf, n) == GZ_OK && sends(1) == 0 && !any_save());   /* another lobby: ignored */
     }
     memcpy(o.chain, T1O.chain, 32); o.chain[0] ^= 0xff;                     /* not signet */
-    xn = gz_terms_outer_encode(&o, x, sizeof x);
+    xn = gz_lterms_outer_encode(&o, x, sizeof x);
     {
         uint8_t sc[32], cur[128];
-        gz_terms_current_t v;
+        gz_lterms_current_t v;
         size_t cn;
-        gz_terms_outer_digest(x, xn, sc);
-        gz_terms_current_decode(T2, T2N, &T1O, SCOPE, &v);
+        gz_lterms_outer_digest(x, xn, sc);
+        gz_lterms_current_decode(T2, T2N, &T1O, SCOPE, &v);
         memcpy(v.outer_digest, sc, 32);
-        cn = gz_terms_current_encode(&v, &o, cur, sizeof cur);
+        cn = gz_lterms_current_encode(&v, &o, cur, sizeof cur);
         member_up(&m, &cond);
         memcpy(m.scope, sc, 32);
         n = offer(buf, sizeof buf, sc, x, xn, cur, cn, &HOST);
@@ -257,14 +257,14 @@ static void test_member_hostile(void)
     {
         uint8_t c2[128];
         size_t c2n;
-        gz_terms_current_t v;
+        gz_lterms_current_t v;
         n = offer(buf, sizeof buf, SCOPE, T1, T1N, T3, T3N, &HOST);
         CHECK(feed(&m, buf, n) == GZ_OK && sends(GZ_KIND_READY) == 1 && saves(GZ_REC_TERMS_RECEIVED) == 1);
         n = offer(buf, sizeof buf, SCOPE, T1, T1N, T2, T2N, &HOST);           /* version 1 again */
         CHECK(feed(&m, buf, n) == GZ_OK && A.l.count == 0);
-        gz_terms_current_decode(T3, T3N, &T1O, SCOPE, &v);
+        gz_lterms_current_decode(T3, T3N, &T1O, SCOPE, &v);
         v.adj_value[1] = 999;
-        c2n = gz_terms_current_encode(&v, &T1O, c2, sizeof c2);
+        c2n = gz_lterms_current_encode(&v, &T1O, c2, sizeof c2);
         n = offer(buf, sizeof buf, SCOPE, T1, T1N, c2, c2n, &HOST);
         CHECK(feed(&m, buf, n) == GZ_OK && saves(GZ_REC_HOST_FAULT) == 1 && sends(GZ_KIND_LEAVE) == 1);
         {
@@ -284,8 +284,8 @@ static void test_member_hostile(void)
                             uint8_t d1[32], d2[32];
                             CHECK(gz_la_get_blob(e, A.s[i].u.save.records[j].bytes.len, &at, &ra, &an));
                             CHECK(gz_la_get_blob(e, A.s[i].u.save.records[j].bytes.len, &at, &rb, &bn));
-                            gz_terms_current_digest(ra, an - 64, d1);
-                            gz_terms_current_digest(rb, bn - 64, d2);
+                            gz_lterms_current_digest(ra, an - 64, d1);
+                            gz_lterms_current_digest(rb, bn - 64, d2);
                             CHECK(lt_verify(NULL, HOST.key[1].pub, d1, ra + an - 64));
                             CHECK(lt_verify(NULL, HOST.key[1].pub, d2, rb + bn - 64));
                             CHECK(memcmp(d1, d2, 32) != 0);
@@ -331,10 +331,10 @@ static void test_member_hostile(void)
     {
         uint8_t c4[128];
         size_t c4n;
-        gz_terms_current_t v;
-        gz_terms_current_decode(T3, T3N, &T1O, SCOPE, &v);
+        gz_lterms_current_t v;
+        gz_lterms_current_decode(T3, T3N, &T1O, SCOPE, &v);
         v.version = 3;
-        c4n = gz_terms_current_encode(&v, &T1O, c4, sizeof c4);
+        c4n = gz_lterms_current_encode(&v, &T1O, c4, sizeof c4);
         n = offer(buf, sizeof buf, SCOPE, T1, T1N, c4, c4n, &HOST);
         CHECK(feed(&m, buf, n) == GZ_OK && saves(GZ_REC_HOST_FAULT) == 1 && sends(GZ_KIND_LEAVE) == 1);
         CHECK(note(GZ_NOTE_HOST_FAULT, GZ_FAULT_AFTER_FREEZE, -1));
@@ -345,8 +345,8 @@ static void test_member_hostile(void)
             uint8_t d1[32], d2[32];
             CHECK(fault_evidence(&ea, &ean, &eb, &ebn, &why) && why == 3);
             CHECK(ean == T3N + 64 && memcmp(ea, T3, T3N) == 0 && ebn == c4n + 64 && memcmp(eb, c4, c4n) == 0);
-            gz_terms_current_digest(ea, ean - 64, d1);
-            gz_terms_current_digest(eb, ebn - 64, d2);
+            gz_lterms_current_digest(ea, ean - 64, d1);
+            gz_lterms_current_digest(eb, ebn - 64, d2);
             CHECK(lt_verify(NULL, HOST.key[1].pub, d1, ea + ean - 64) && lt_verify(NULL, HOST.key[1].pub, d2, eb + ebn - 64));
         }
     }
@@ -441,29 +441,29 @@ static void test_member_classes(void)
     {   /* the same refusal is told once; told again after the values fitted in between */
         uint8_t c5[128], ob[8000];
         size_t c5n, on;
-        gz_terms_current_t v;
-        gz_terms_current_decode(T3, T3N, &T1O, SCOPE, &v);
+        gz_lterms_current_t v;
+        gz_lterms_current_decode(T3, T3N, &T1O, SCOPE, &v);
         v.version = 3; v.adj_value[0] = 1600;
-        c5n = gz_terms_current_encode(&v, &T1O, c5, sizeof c5);
+        c5n = gz_lterms_current_encode(&v, &T1O, c5, sizeof c5);
         on = offer(ob, sizeof ob, SCOPE, T1, T1N, c5, c5n, &HOST);
         CHECK(feed(&m, ob, on) == GZ_OK && !note(GZ_NOTE_REFUSED, -1, -1) && !note(GZ_NOTE_UNREADY, -1, -1) && !any_save());
         v.version = 4; v.adj_value[0] = 900;
-        c5n = gz_terms_current_encode(&v, &T1O, c5, sizeof c5);
+        c5n = gz_lterms_current_encode(&v, &T1O, c5, sizeof c5);
         on = offer(ob, sizeof ob, SCOPE, T1, T1N, c5, c5n, &HOST);
         CHECK(feed(&m, ob, on) == GZ_OK && sends(GZ_KIND_READY) == 1);   /* fits now: ready again */
         v.version = 5; v.adj_value[0] = 1700;
-        c5n = gz_terms_current_encode(&v, &T1O, c5, sizeof c5);
+        c5n = gz_lterms_current_encode(&v, &T1O, c5, sizeof c5);
         on = offer(ob, sizeof ob, SCOPE, T1, T1N, c5, c5n, &HOST);
         CHECK(feed(&m, ob, on) == GZ_OK && sends(GZ_KIND_UNREADY) == 1 && note(GZ_NOTE_UNREADY, GZ_FIT_NO, 64));
         v.version = 6; v.adj_value[0] = 1800;                          /* failing again, the same way: quiet */
-        c5n = gz_terms_current_encode(&v, &T1O, c5, sizeof c5);
+        c5n = gz_lterms_current_encode(&v, &T1O, c5, sizeof c5);
         on = offer(ob, sizeof ob, SCOPE, T1, T1N, c5, c5n, &HOST);
         CHECK(feed(&m, ob, on) == GZ_OK && A.l.count == 0);
         {   /* and a check at these values, which fail its conditions, is not answered */
             uint8_t xc[300], ck[32], d6[32];
             size_t xcn;
             memset(ck, 0x66, 32);
-            gz_terms_current_digest(c5, c5n, d6);
+            gz_lterms_current_digest(c5, c5n, d6);
             xcn = host_msg(xc, sizeof xc, GZ_KIND_READY_CHECK, ck, 6, d6, 30000, 0, &HOST);
             CHECK(feed(&m, xc, xcn) == GZ_OK && sends(GZ_KIND_READY) == 0 && !any_save());
         }
@@ -502,7 +502,7 @@ static void test_member_classes(void)
         n = offer(buf, sizeof buf, SCOPE, T1, T1N, T2, T2N, &HOST);
         CHECK(feed(&mj, buf, n) == GZ_OK && sends(GZ_KIND_JOIN) == 0 && !mj.joined && mj.have_terms);
         memset(ck, 0x67, 32);
-        gz_terms_current_digest(T2, T2N, d2);
+        gz_lterms_current_digest(T2, T2N, d2);
         xcn = host_msg(xc, sizeof xc, GZ_KIND_READY_CHECK, ck, 1, d2, 30000, 0, &HOST);
         CHECK(feed(&mj, xc, xcn) == GZ_OK && A.l.count == 0);
     }
@@ -536,7 +536,7 @@ static void test_member_classes(void)
             uint8_t x[300], chk[32], cd2[32];
             size_t xn;
             memset(chk, 3, 32);
-            gz_terms_current_digest(T2, T2N, cd2);
+            gz_lterms_current_digest(T2, T2N, cd2);
             xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk, 1, cd2, 30000, 0, &HOST);
             CHECK(feed(&m2, x, xn) == GZ_OK && sends(GZ_KIND_READY) == 0 && !any_save());
         }
@@ -568,7 +568,7 @@ static void test_member_details(void)
     uint8_t *store[32];
     size_t nrec = 0;
     gz_lobby_input_t in;
-    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T2, T2N, cd2);
     cond.min_members = 3;
     member_up(&m, &cond);
     n2 = offer(offer2, sizeof offer2, SCOPE, T1, T1N, T2, T2N, &HOST);
@@ -820,8 +820,8 @@ static void test_host_hostile(void)
     gz_lobby_enc_t e0;
     gz_lobby_enc_start(&e0, un0, sizeof un0, GZ_KIND_UNREADY, SCOPE);
     un0n = gz_lobby_enc_done(&e0);
-    gz_terms_current_digest(T2, T2N, cd2);
-    gz_terms_current_digest(T3, T3N, cd3);
+    gz_lterms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T3, T3N, cd3);
     CLOCK = W_T0 - 3600000;                     /* an hour before the deadline */
     host_open(0);
     for (i = 1; i <= 10; i++) hin(GZ_LIN_CONNECTED, i, NULL, 0);
@@ -1093,7 +1093,7 @@ static void test_host_restart(void)
     gz_lobby_crypto_t cr = lt_crypto(&HOST);
     gz_lobby_host_config_t cfg;
     gz_lobby_input_t in;
-    gz_terms_current_digest(T3, T3N, cd3);
+    gz_lterms_current_digest(T3, T3N, cd3);
     CLOCK = W_T0;
     host_open(0);
 #define KEEP() for (kk = 0; kk < A.l.count; kk++) if (A.s[kk].kind == GZ_ACTION_SAVE) \
@@ -1233,7 +1233,7 @@ static void test_host_details(void)
     int i;
     gz_lobby_msg_t g;
     gz_lobby_input_t in;
-    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T2, T2N, cd2);
     CLOCK = W_T0 - 3600000;
     host_open(0);
     for (i = 1; i <= 6; i++) hin(GZ_LIN_CONNECTED, i, NULL, 0);
@@ -1409,7 +1409,7 @@ static void test_host_checks(void)
     gz_lobby_msg_t g;
     gz_lobby_input_t in;
     gz_lobby_enc_t e;
-    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T2, T2N, cd2);
     gz_lobby_enc_start(&e, un, sizeof un, GZ_KIND_UNREADY, SCOPE);
     unn = gz_lobby_enc_done(&e);
     CLOCK = W_T0 - 3600000;
@@ -1615,7 +1615,7 @@ static void test_host_order(void)
     gz_lobby_signing_t sg;
     gz_lobby_host_config_t cfg;
     static const int joined[4] = {2, 3, 4, 1};
-    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T2, T2N, cd2);
     gz_lobby_enc_start(&e, lv, sizeof lv, GZ_KIND_LEAVE, SCOPE);
     lvn = gz_lobby_enc_done(&e);
     memset(&cfg, 0, sizeof cfg);
@@ -1739,8 +1739,8 @@ static void test_host_join_keys(void)
     CHECK(hin(GZ_LIN_MESSAGE, 7, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
     /* the seat table holds 32: with target 20, a 33rd new key finds it full */
     {
-        gz_terms_outer_t o = T1O;
-        gz_terms_current_t c;
+        gz_lterms_outer_t o = T1O;
+        gz_lterms_current_t c;
         static uint8_t ob[512], cb[128];
         size_t on, cn;
         uint8_t od[32];
@@ -1749,11 +1749,11 @@ static void test_host_join_keys(void)
         gz_lobby_host_config_t cfg;
         o.target = 20;
         o.shapes[1].max_members = 40;
-        on = gz_terms_outer_encode(&o, ob, sizeof ob);
-        gz_terms_outer_digest(ob, on, od);
-        gz_terms_current_decode(T2, T2N, &T1O, SCOPE, &c);
+        on = gz_lterms_outer_encode(&o, ob, sizeof ob);
+        gz_lterms_outer_digest(ob, on, od);
+        gz_lterms_current_decode(T2, T2N, &T1O, SCOPE, &c);
         memcpy(c.outer_digest, od, 32);
-        cn = gz_terms_current_encode(&c, &o, cb, sizeof cb);
+        cn = gz_lterms_current_encode(&c, &o, cb, sizeof cb);
         memset(&cfg, 0, sizeof cfg);
         memcpy(cfg.factory_key, HOST.key[3].pub, 33);
         gz_lobby_host_init(&H, &p, &cr, NULL, &cfg);
@@ -1822,7 +1822,7 @@ static void test_host_restart_signing(void)
     int k;
     gz_lobby_msg_t g;
     gz_lobby_input_t in;
-    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T2, T2N, cd2);
     N_KEPT = 0;
     CLOCK = W_T0 - 3600000;
     host_open(0); keep_all();
@@ -1922,7 +1922,7 @@ static void drive_to_signing(int members, uint16_t first_min)
     int k;
     gz_lobby_msg_t g;
     gz_lobby_input_t in;
-    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T2, T2N, cd2);
     CLOCK = W_T0 - 3600000;
     for (k = 0; k < (int)N_KEPT; k++) free(KEPT_B[k]);
     N_KEPT = 0;
@@ -1986,7 +1986,7 @@ static void test_host_commands(void)
         int k;
         gz_lobby_input_t in;
         static gz_lobby_host_t R;
-        gz_terms_current_digest(T2, T2N, cd2);
+        gz_lterms_current_digest(T2, T2N, cd2);
         last_sent(GZ_KIND_READY_CHECK, &g, NULL, NULL);
         memcpy(chk, g.check_id, 32);
         for (k = 1; k <= 5; k += 2) {
@@ -2109,19 +2109,19 @@ static void test_api_edges(void)
     acts_reset();
     /* records a host refuses to open with */
     {
-        gz_terms_outer_t o = T1O;
+        gz_lterms_outer_t o = T1O;
         uint8_t ob[512], od[32], cb[128];
         size_t on, cn;
-        gz_terms_current_t c;
+        gz_lterms_current_t c;
         o.chain[0] ^= 1;                                         /* not signet */
-        on = gz_terms_outer_encode(&o, ob, sizeof ob);
+        on = gz_lterms_outer_encode(&o, ob, sizeof ob);
         CHECK(gz_lobby_host_open(&h2, ob, on, T2, T2N, &A.l) == GZ_ERR_ARGUMENT);
         o = T1O; o.target = 31; o.shapes[1].max_members = 40;   /* 31 seats: fits; with 2 standbys: no */
-        on = gz_terms_outer_encode(&o, ob, sizeof ob);
-        gz_terms_outer_digest(ob, on, od);
-        gz_terms_current_decode(T2, T2N, &T1O, SCOPE, &c);
+        on = gz_lterms_outer_encode(&o, ob, sizeof ob);
+        gz_lterms_outer_digest(ob, on, od);
+        gz_lterms_current_decode(T2, T2N, &T1O, SCOPE, &c);
         memcpy(c.outer_digest, od, 32);
-        cn = gz_terms_current_encode(&c, &o, cb, sizeof cb);
+        cn = gz_lterms_current_encode(&c, &o, cb, sizeof cb);
         cfg.standbys = 2;
         gz_lobby_host_init(&h2, &p, &cr, NULL, &cfg);
         CHECK(gz_lobby_host_open(&h2, ob, on, cb, cn, &A.l) == GZ_ERR_ARGUMENT);
@@ -2288,7 +2288,7 @@ static void test_member_more(void)
     uint8_t buf[600], x[600], cd2[32], chk1[32], chk2[32];
     size_t n, on, xn, q;
     int i;
-    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T2, T2N, cd2);
     sg.begin = m_begin; sg.cancel = m_cancel; sg.ctx = NULL;
     gz_lobby_member_init(&m, &p, &cr, &sg, &cond, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 1);
     memset(&in, 0, sizeof in);
@@ -2301,7 +2301,7 @@ static void test_member_more(void)
     {
         uint8_t ob3[8000], cd3[32];
         size_t on3 = offer(ob3, sizeof ob3, SCOPE, T1, T1N, T3, T3N, &HOST);
-        gz_terms_current_digest(T3, T3N, cd3);
+        gz_lterms_current_digest(T3, T3N, cd3);
         CHECK(feed(&m, ob3, on3) == GZ_OK && sends(GZ_KIND_READY) == 1 && saves(GZ_REC_TERMS_RECEIVED) == 1);
         memset(chk1, 0x60, 32);
         xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk1, 2, cd3, 30000, 0, &HOST);
@@ -2425,7 +2425,7 @@ static gz_lobby_conditions_t cond_fits_g;
 static const uint8_t *cd2_of(void)
 {
     static uint8_t d[32];
-    gz_terms_current_digest(T2, T2N, d);
+    gz_lterms_current_digest(T2, T2N, d);
     return d;
 }
 
@@ -2569,24 +2569,24 @@ static void test_contract_v2(void)
 
     /* 4. the party's own network: signet or testnet4, never the other's terms */
     {
-        static gz_terms_outer_t o;
+        static gz_lterms_outer_t o;
         static gz_lobby_host_t h4;
         static gz_lobby_member_t m4;
         static uint8_t ob[8000];
         uint8_t t4[512], c4[128], d4[32];
         size_t t4n, c4n, on;
-        gz_terms_current_t c;
+        gz_lterms_current_t c;
         gz_ports_t p = ports();
         gz_lobby_crypto_t cr = lt_crypto(&HOST), cm = lt_crypto(&M1);
         gz_lobby_host_config_t cfg;
         gz_lobby_input_t in;
         o = T1O;
-        memcpy(o.chain, gz_terms_genesis(GZ_LOBBY_NET_TESTNET4), 32);
-        t4n = gz_terms_outer_encode(&o, t4, sizeof t4);
-        gz_terms_outer_digest(t4, t4n, d4);
-        gz_terms_current_decode(T2, T2N, &T1O, SCOPE, &c);
+        memcpy(o.chain, gz_lterms_genesis(GZ_LOBBY_NET_TESTNET4), 32);
+        t4n = gz_lterms_outer_encode(&o, t4, sizeof t4);
+        gz_lterms_outer_digest(t4, t4n, d4);
+        gz_lterms_current_decode(T2, T2N, &T1O, SCOPE, &c);
         memcpy(c.outer_digest, d4, 32);
-        c4n = gz_terms_current_encode(&c, &o, c4, sizeof c4);
+        c4n = gz_lterms_current_encode(&c, &o, c4, sizeof c4);
         memset(&cfg, 0, sizeof cfg);
         memcpy(cfg.factory_key, HOST.key[3].pub, 33);
         gz_lobby_host_init(&h4, &p, &cr, NULL, &cfg);
@@ -2679,7 +2679,7 @@ static void test_world_basic(void)
     gz_lobby_conditions_t cond = lt_cond_fits();
     uint8_t cd2[32];
     int i, k;
-    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lterms_current_digest(T2, T2N, cd2);
     /* test 15: three members, start at the deadline; twice from a clean start */
     for (k = 0; k < 2; k++) {
         w_init(&w, 3, 11 + (uint64_t)k, NULL);
@@ -2772,17 +2772,17 @@ static void test_world_values(void)
 static void test_world_standbys(void)
 {
     static world_t w;
-    gz_terms_outer_t o = T1O;
-    gz_terms_current_t c;
+    gz_lterms_outer_t o = T1O;
+    gz_lterms_current_t c;
     gz_action_list_t l;
     uint8_t first[33];
     int i, n_chosen = 0, n_standby = 0;
     w_init(&w, 5, 71, NULL);
     o.target = 3;
-    w.outer_len = gz_terms_outer_encode(&o, w.outer, sizeof w.outer);
-    gz_terms_current_decode(T2, T2N, &T1O, SCOPE, &c);
-    gz_terms_outer_digest(w.outer, w.outer_len, c.outer_digest);
-    w.current_len = gz_terms_current_encode(&c, &o, w.current, sizeof w.current);
+    w.outer_len = gz_lterms_outer_encode(&o, w.outer, sizeof w.outer);
+    gz_lterms_current_decode(T2, T2N, &T1O, SCOPE, &c);
+    gz_lterms_outer_digest(w.outer, w.outer_len, c.outer_digest);
+    w.current_len = gz_lterms_current_encode(&c, &o, w.current, sizeof w.current);
     w.standbys = 2;
     w_start(&w);
     w_run(&w, 1500, 0);
@@ -2847,8 +2847,8 @@ int main(void)
     T1N = lt_unhex(LT_T1, T1, sizeof T1);
     T2N = lt_unhex(LT_T2, T2, sizeof T2);
     T3N = lt_unhex(LT_T3, T3, sizeof T3);
-    gz_terms_outer_decode(T1, T1N, &T1O);
-    gz_terms_outer_digest(T1, T1N, SCOPE);
+    gz_lterms_outer_decode(T1, T1N, &T1O);
+    gz_lterms_outer_digest(T1, T1N, SCOPE);
     test_member_hostile();
     test_member_classes();
     test_member_details();

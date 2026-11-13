@@ -7,8 +7,8 @@
 
 static uint8_t t1[512], t2[128], t3[128];
 static size_t t1n, t2n, t3n;
-static gz_terms_outer_t o;
-static gz_terms_current_t c;
+static gz_lterms_outer_t o;
+static gz_lterms_current_t c;
 static uint8_t od[32];
 
 static int hexeq(const uint8_t *b, size_t n, const char *hex)
@@ -20,8 +20,8 @@ static int hexeq(const uint8_t *b, size_t n, const char *hex)
 
 static int outer_ok(const uint8_t *b, size_t n)
 {
-    static gz_terms_outer_t x;
-    return gz_terms_outer_decode(b, n, &x);
+    static gz_lterms_outer_t x;
+    return gz_lterms_outer_decode(b, n, &x);
 }
 
 static void test_terms(lt_signer_t *host)
@@ -29,11 +29,11 @@ static void test_terms(lt_signer_t *host)
     gz_lobby_crypto_t cr = lt_crypto(host);
     uint8_t buf[4200], cd[32], sig[64], tmp[600];
     size_t n;
-    gz_terms_current_t c3;
+    gz_lterms_current_t c3;
     gz_lobby_conditions_t cond;
     uint8_t term, lv[8], nl, d;
     int i;
-    static gz_terms_outer_t o2;
+    static gz_lterms_outer_t o2;
 
     t1n = lt_unhex(LT_T1, t1, sizeof t1);
     t2n = lt_unhex(LT_T2, t2, sizeof t2);
@@ -42,33 +42,33 @@ static void test_terms(lt_signer_t *host)
     CHECK(memcmp(host->key[1].pub, (const uint8_t[]){0x02, 0xb8, 0xdd, 0x73}, 4) == 0);
 
     /* T1 */
-    CHECK(gz_terms_outer_decode(t1, t1n, &o));
-    CHECK(gz_terms_slice1_ok(&o, GZ_LOBBY_NET_SIGNET) && !gz_terms_slice1_ok(&o, GZ_LOBBY_NET_TESTNET4));
-    CHECK(!gz_terms_slice1_ok(&o, 2) && !gz_terms_genesis(2) && gz_terms_genesis(GZ_LOBBY_NET_TESTNET4)[0] == 0x43);
+    CHECK(gz_lterms_outer_decode(t1, t1n, &o));
+    CHECK(gz_lterms_slice1_ok(&o, GZ_LOBBY_NET_SIGNET) && !gz_lterms_slice1_ok(&o, GZ_LOBBY_NET_TESTNET4));
+    CHECK(!gz_lterms_slice1_ok(&o, 2) && !gz_lterms_genesis(2) && gz_lterms_genesis(GZ_LOBBY_NET_TESTNET4)[0] == 0x43);
     CHECK(o.target == 8 && o.minimum == 3 && o.deadline == 1794441600ull && o.n_shapes == 2);
     CHECK(o.ready_window_ms == 30000 && o.signing_budget_ms == 600000 && o.step_timeout_ms == 60000);
     CHECK(o.channel_sat == 100000 && o.tree_feerate == 100 && o.lifetime_blocks == 144 && o.winddown_blocks == 36);
     CHECK(o.n_adj == 3 && o.adj[0].type == 64 && o.adj[0].max == 2000 && o.adj[2].min == 100);
-    n = gz_terms_outer_encode(&o, buf, sizeof buf);
+    n = gz_lterms_outer_encode(&o, buf, sizeof buf);
     CHECK(n == t1n && memcmp(buf, t1, n) == 0);
-    gz_terms_outer_digest(t1, t1n, od);
+    gz_lterms_outer_digest(t1, t1n, od);
     CHECK(hexeq(od, 32, "75e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"));
     CHECK(cr.sign(cr.ctx, GZ_LOBBY_KEY_HOST, od, sig) == 1);
     CHECK(hexeq(sig, 64, "0bb885ba5dbf0f21fda26a90c68d6736f71619b72583d8691581319efafdfeb5"
                          "db7c87c85def6708994c5b78dc93be56fd9dd9f670147f353d74787d922bf54d"));
 
     /* T2, T3 */
-    CHECK(gz_terms_current_decode(t2, t2n, &o, od, &c));
+    CHECK(gz_lterms_current_decode(t2, t2n, &o, od, &c));
     CHECK(c.version == 1 && c.n_adj == 3 && c.adj_value[0] == 500 && c.adj_value[1] == 1000);
-    n = gz_terms_current_encode(&c, &o, buf, sizeof buf);
+    n = gz_lterms_current_encode(&c, &o, buf, sizeof buf);
     CHECK(n == t2n && memcmp(buf, t2, n) == 0);
-    gz_terms_current_digest(t2, t2n, cd);
+    gz_lterms_current_digest(t2, t2n, cd);
     CHECK(hexeq(cd, 32, "d1db6ddfd5a2c12ae197036f285457ae6ceaf468c2a47fb71691dde4b1153942"));
     CHECK(cr.sign(cr.ctx, GZ_LOBBY_KEY_HOST, cd, sig) == 1);
     CHECK(hexeq(sig, 64, "a739c225be7e2842c2e7925c12b8e824751ba1d019e31c9f16342cf78f02633f"
                          "f00d0ef1ff618b18456f472818758017a0e682b211d553d00edf3e2d1b1c140d"));
-    CHECK(gz_terms_current_decode(t3, t3n, &o, od, &c3) && c3.version == 2 && c3.adj_value[0] == 1500);
-    gz_terms_current_digest(t3, t3n, cd);
+    CHECK(gz_lterms_current_decode(t3, t3n, &o, od, &c3) && c3.version == 2 && c3.adj_value[0] == 1500);
+    gz_lterms_current_digest(t3, t3n, cd);
     CHECK(hexeq(cd, 32, "ba3bccb892b8b65321956753d973bfba1bbdcbf2e5c68e28052683a713b2b7be"));
     CHECK(cr.sign(cr.ctx, GZ_LOBBY_KEY_HOST, cd, sig) == 1);
     CHECK(hexeq(sig, 64, "7a692794d41ad38a845e6533b2499b197a3d63d86f196d274a14d4aa33478bf3"
@@ -82,42 +82,42 @@ static void test_terms(lt_signer_t *host)
         tmp[n++] = t1[i];
     }
     CHECK(n == t1n + 2 && memcmp(tmp, t1, 92) != 0 && memcmp(tmp, t1, 91) == 0);
-    CHECK(!gz_terms_outer_decode(tmp, n, &o2));
-    gz_terms_outer_digest(tmp, n, cd);
+    CHECK(!gz_lterms_outer_decode(tmp, n, &o2));
+    gz_lterms_outer_digest(tmp, n, cd);
     CHECK(cd[0] == 0xad && cd[1] == 0xb3 && cd[2] == 0xa7 && cd[3] == 0x33 && cd[31] == 0x4d);
 
     /* T5 */
     n = lt_unhex("022075e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a4"
                  "24f2040400000003400800000000000007d1420800000000000003e844080000"
                  "0000000003e8", tmp, sizeof tmp);
-    CHECK(n == 70 && !gz_terms_current_decode(tmp, n, &o, od, &c3));
+    CHECK(n == 70 && !gz_lterms_current_decode(tmp, n, &o, od, &c3));
     tmp[31 + 18] = 0xd0;                                  /* 2,000: inside, accepted */
-    CHECK(gz_terms_current_decode(tmp, n, &o, od, &c3));
+    CHECK(gz_lterms_current_decode(tmp, n, &o, od, &c3));
 
     /* T6 */
     cond = lt_cond_fits();
     cond.adj_max[0] = 1000;
-    CHECK(gz_terms_classify(&o, &c, &cond, &term) == GZ_FIT_NOW && term == 64);
-    CHECK(!gz_terms_ready_ok(GZ_FIT_NOW, &cond));
+    CHECK(gz_lterms_classify(&o, &c, &cond, &term) == GZ_FIT_NOW && term == 64);
+    CHECK(!gz_lterms_ready_ok(GZ_FIT_NOW, &cond));
     cond.current_only = 1;
-    CHECK(gz_terms_ready_ok(GZ_FIT_NOW, &cond));
-    gz_terms_current_decode(t3, t3n, &o, od, &c3);
-    CHECK(gz_terms_classify(&o, &c3, &cond, &term) == GZ_FIT_NO && term == 64);
+    CHECK(gz_lterms_ready_ok(GZ_FIT_NOW, &cond));
+    gz_lterms_current_decode(t3, t3n, &o, od, &c3);
+    CHECK(gz_lterms_classify(&o, &c3, &cond, &term) == GZ_FIT_NO && term == 64);
     cond = lt_cond_fits();
-    CHECK(gz_terms_classify(&o, &c3, &cond, &term) == GZ_FIT_YES && term == 0);
+    CHECK(gz_lterms_classify(&o, &c3, &cond, &term) == GZ_FIT_YES && term == 0);
 
     /* T7 */
     for (i = 3; i <= 16; i++) {
-        CHECK(gz_terms_shape_for(&o, (uint16_t)i, lv, &nl, &d));
+        CHECK(gz_lterms_shape_for(&o, (uint16_t)i, lv, &nl, &d));
         if (i <= 4) CHECK(nl == 1 && lv[0] == 3 && d == 2);
         else CHECK(nl == 2 && lv[0] == 4 && lv[1] == 3 && d == (i <= 8 ? 2 : 3));
     }
-    CHECK(!gz_terms_shape_for(&o, 17, lv, &nl, &d));
+    CHECK(!gz_lterms_shape_for(&o, 17, lv, &nl, &d));
     /* Draft 1's entry 0004 01 04 (level arity [4]) is refused at n = 3. */
     o2 = o;
     o2.n_shapes = 1;
     o2.shapes[0].max_members = 16; o2.shapes[0].n_interior = 0; o2.shapes[0].leaf_kind = 3;
-    n = gz_terms_outer_encode(&o2, buf, sizeof buf);
+    n = gz_lterms_outer_encode(&o2, buf, sizeof buf);
     CHECK(n > 0 && outer_ok(buf, n));
     {   /* hand-write the draft-1 entry, which the encoder's struct cannot hold */
         size_t k;
@@ -138,7 +138,7 @@ static void test_terms(lt_signer_t *host)
 /* terms.md test 2, 3 and 5: each bound at its edge and one past it. */
 static void test_terms_bounds(void)
 {
-    static gz_terms_outer_t x;
+    static gz_lterms_outer_t x;
     uint8_t buf[4200], big[1100];
     size_t n;
     struct { int field; uint64_t ok, bad; } e[] = {
@@ -172,29 +172,29 @@ static void test_terms_bounds(void)
             case 66: x.adj[1].max = v; break;
             }
             if (e[i].field == 10 && v > 16) { x.shapes[1].max_members = (uint16_t)(v > 1000 ? 1000 : v); }
-            n = gz_terms_outer_encode(&x, buf, sizeof buf);
+            n = gz_lterms_outer_encode(&x, buf, sizeof buf);
             CHECK(n > 0);
-            if (n > 0 && gz_terms_outer_decode(buf, n, &x) != !pass)
+            if (n > 0 && gz_lterms_outer_decode(buf, n, &x) != !pass)
                 printf("  bound: field %d value %llu\n", e[i].field, (unsigned long long)v);
             CHECK(n > 0 && outer_ok(buf, n) == !pass);
         }
     }
     /* min > max; shapes not increasing; last below target; 7 interior; width 3 and 16; leaf 2. */
-    x = o; x.adj[1].min = 1001; n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
-    x = o; x.shapes[1].max_members = 4; n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
-    x = o; x.shapes[1].max_members = 7; n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
-    x = o; x.shapes[1].max_members = 8; n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(outer_ok(buf, n));
-    x = o; x.shapes[1].interior[0] = 3; n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
-    x = o; x.shapes[1].interior[0] = 15; n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
+    x = o; x.adj[1].min = 1001; n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
+    x = o; x.shapes[1].max_members = 4; n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
+    x = o; x.shapes[1].max_members = 7; n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
+    x = o; x.shapes[1].max_members = 8; n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(outer_ok(buf, n));
+    x = o; x.shapes[1].interior[0] = 3; n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
+    x = o; x.shapes[1].interior[0] = 15; n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
     x = o; x.n_shapes = 3; x.shapes[2] = x.shapes[1]; x.shapes[2].max_members = 40; x.shapes[2].interior[0] = 15;
-    n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(outer_ok(buf, n));   /* 15 wide, n 17..40 */
-    x = o; x.shapes[1].interior[0] = 16; n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
-    x = o; x.shapes[1].leaf_kind = 2; n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
+    n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(outer_ok(buf, n));   /* 15 wide, n 17..40 */
+    x = o; x.shapes[1].interior[0] = 16; n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
+    x = o; x.shapes[1].leaf_kind = 2; n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
     x = o; x.n_shapes = 3; x.shapes[1].max_members = 19; x.shapes[2] = x.shapes[1];
     x.shapes[2].max_members = 1000; x.shapes[2].n_interior = 2; x.shapes[2].interior[1] = 4;
-    n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(outer_ok(buf, n));   /* [4,4,3] from 20 */
-    x.shapes[1].max_members = 18; n = gz_terms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
-    x.shapes[1].n_interior = 7; CHECK(gz_terms_outer_encode(&x, buf, sizeof buf) == 0);
+    n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(outer_ok(buf, n));   /* [4,4,3] from 20 */
+    x.shapes[1].max_members = 18; n = gz_lterms_outer_encode(&x, buf, sizeof buf); CHECK(!outer_ok(buf, n));
+    x.shapes[1].n_interior = 7; CHECK(gz_lterms_outer_encode(&x, buf, sizeof buf) == 0);
     /* Unknown even types refused, odd skipped (and in the digest). */
     {
         uint8_t r[300];
@@ -204,7 +204,7 @@ static void test_terms_bounds(void)
         r[k++] = 3; r[k++] = 2; r[k++] = 'h'; r[k++] = 'i';
         memcpy(r + k, t1 + 34, t1n - 34); k += t1n - 34;
         CHECK(outer_ok(r, k));
-        gz_terms_outer_digest(r, k, d1); gz_terms_outer_digest(t1, t1n, d2);
+        gz_lterms_outer_digest(r, k, d1); gz_lterms_outer_digest(t1, t1n, d2);
         CHECK(memcmp(d1, d2, 32) != 0);
         r[36] = 0xff; CHECK(!outer_ok(r, k));          /* alias, invalid UTF-8 */
         r[36] = 0xc3; r[37] = 0xa9; CHECK(outer_ok(r, k));
@@ -232,54 +232,54 @@ static void test_terms_bounds(void)
     }
     /* Size limits. */
     memset(big, 0, sizeof big);
-    CHECK(!gz_terms_current_decode(big, 1025, &o, od, &c));
+    CHECK(!gz_lterms_current_decode(big, 1025, &o, od, &c));
     {
         static uint8_t huge[4200];
         size_t k = 0;
-        gz_terms_current_t cc;
+        gz_lterms_current_t cc;
         memcpy(huge, t1, t1n); k = t1n;
         CHECK(!outer_ok(huge, 4097));
         (void)k;
         /* current: missing one type, extra type, version 0, wrong outer digest */
         memcpy(big, t2, t2n);
-        CHECK(!gz_terms_current_decode(big, t2n - 10, &o, od, &cc));
+        CHECK(!gz_lterms_current_decode(big, t2n - 10, &o, od, &cc));
         big[t2n] = 70; big[t2n + 1] = 8; memset(big + t2n + 2, 0, 8);
-        CHECK(!gz_terms_current_decode(big, t2n + 10, &o, od, &cc));
+        CHECK(!gz_lterms_current_decode(big, t2n + 10, &o, od, &cc));
         memcpy(big, t2, t2n); big[39] = 0;
-        CHECK(!gz_terms_current_decode(big, t2n, &o, od, &cc));
+        CHECK(!gz_lterms_current_decode(big, t2n, &o, od, &cc));
         memcpy(big, t2, t2n); big[5] ^= 1;
-        CHECK(!gz_terms_current_decode(big, t2n, &o, od, &cc));
+        CHECK(!gz_lterms_current_decode(big, t2n, &o, od, &cc));
         memcpy(big, t2, t2n);
-        CHECK(gz_terms_current_decode(big, t2n, &o, od, &cc));
-        CHECK(!gz_terms_current_decode(t2 + 34, t2n - 34, &o, od, &cc));        /* no outer digest */
+        CHECK(gz_lterms_current_decode(big, t2n, &o, od, &cc));
+        CHECK(!gz_lterms_current_decode(t2 + 34, t2n - 34, &o, od, &cc));        /* no outer digest */
         {   /* values at the bottom of their ranges; an odd adjustable term 127 */
-            static gz_terms_outer_t o3;
+            static gz_lterms_outer_t o3;
             uint8_t r3[400], c3[128], d3[32];
             size_t r3n, c3n;
-            gz_terms_current_t v;
-            gz_terms_current_decode(t2, t2n, &o, od, &v);
+            gz_lterms_current_t v;
+            gz_lterms_current_decode(t2, t2n, &o, od, &v);
             v.adj_value[0] = 0; v.adj_value[2] = 100;
-            c3n = gz_terms_current_encode(&v, &o, c3, sizeof c3);
-            CHECK(c3n == t2n && gz_terms_current_decode(c3, c3n, &o, od, &cc));
-            CHECK(gz_terms_current_encode(&v, &o, c3, t2n) == t2n && gz_terms_current_encode(&v, &o, c3, t2n - 1) == 0);
+            c3n = gz_lterms_current_encode(&v, &o, c3, sizeof c3);
+            CHECK(c3n == t2n && gz_lterms_current_decode(c3, c3n, &o, od, &cc));
+            CHECK(gz_lterms_current_encode(&v, &o, c3, t2n) == t2n && gz_lterms_current_encode(&v, &o, c3, t2n - 1) == 0);
             v.adj_value[2] = 99;
-            c3n = gz_terms_current_encode(&v, &o, c3, sizeof c3);
-            CHECK(!gz_terms_current_decode(c3, c3n, &o, od, &cc));
+            c3n = gz_lterms_current_encode(&v, &o, c3, sizeof c3);
+            CHECK(!gz_lterms_current_decode(c3, c3n, &o, od, &cc));
             o3 = o;
             o3.adj[3].type = 127; o3.adj[3].min = 5; o3.adj[3].max = 9; o3.n_adj = 4;
-            r3n = gz_terms_outer_encode(&o3, r3, sizeof r3);
-            CHECK(gz_terms_outer_decode(r3, r3n, &o3) && o3.n_adj == 4);
-            gz_terms_outer_digest(r3, r3n, d3);
+            r3n = gz_lterms_outer_encode(&o3, r3, sizeof r3);
+            CHECK(gz_lterms_outer_decode(r3, r3n, &o3) && o3.n_adj == 4);
+            gz_lterms_outer_digest(r3, r3n, d3);
             v.adj_value[2] = 100; memcpy(v.outer_digest, d3, 32);
             v.n_adj = 4; v.adj_type[3] = 127; v.adj_value[3] = 9;
-            c3n = gz_terms_current_encode(&v, &o3, c3, sizeof c3);
-            CHECK(gz_terms_current_decode(c3, c3n, &o3, d3, &cc) && cc.n_adj == 4 && cc.adj_value[3] == 9);
+            c3n = gz_lterms_current_encode(&v, &o3, c3, sizeof c3);
+            CHECK(gz_lterms_current_decode(c3, c3n, &o3, d3, &cc) && cc.n_adj == 4 && cc.adj_value[3] == 9);
             v.n_adj = 3;                                 /* without it: refused */
-            c3n = gz_terms_current_encode(&v, &o3, c3, sizeof c3);
-            CHECK(!gz_terms_current_decode(c3, c3n, &o3, d3, &cc));
+            c3n = gz_lterms_current_encode(&v, &o3, c3, sizeof c3);
+            CHECK(!gz_lterms_current_decode(c3, c3n, &o3, d3, &cc));
         }
         memcpy(big, t2, 34); memcpy(big + 34, t2 + 40, t2n - 40);
-        CHECK(!gz_terms_current_decode(big, t2n - 6, &o, od, &cc));            /* no version */
+        CHECK(!gz_lterms_current_decode(big, t2n - 6, &o, od, &cc));            /* no version */
     }
 }
 
@@ -290,7 +290,7 @@ static void test_m1(lt_signer_t *member)
     gz_lobby_msg_t m;
     uint8_t buf[400], b[32], sig[64], cd[32], h[32];
     size_t n;
-    gz_terms_current_digest(t2, t2n, cd);
+    gz_lterms_current_digest(t2, t2n, cd);
     gz_lobby_binding(od, member->key[3].pub, member->key[2].pub, b);
     CHECK(hexeq(b, 32, "47cc4207f628d147d528abc4dfab2c393e208dfcfa550789540bddd09259007e"));
     cr.sign(cr.ctx, GZ_LOBBY_KEY_FACTORY, b, sig);
@@ -406,7 +406,7 @@ static void test_envelope(lt_signer_t *member)
     uint8_t x[400];
     size_t n;
     uint8_t cd[32];
-    gz_terms_current_digest(t2, t2n, cd);
+    gz_lterms_current_digest(t2, t2n, cd);
 #define BUILD(extra) do { gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_READY, od); \
     gz_lobby_enc_record(&e, 2, od, 32); gz_lobby_enc_u32(&e, 4, 1); \
     gz_lobby_enc_record(&e, 6, cd, 32); extra; n = gz_lobby_enc_sign(&e, &cr, 2); } while (0)
@@ -525,7 +525,7 @@ static void test_utf8(void)
  * the shape for an unchecked table is refused where it breaks. */
 static void test_shapes(void)
 {
-    static gz_terms_outer_t x, y;
+    static gz_lterms_outer_t x, y;
     uint8_t buf[600], lv[8], nl, d;
     size_t n;
     uint16_t k;
@@ -534,21 +534,21 @@ static void test_shapes(void)
     x.shapes[2] = x.shapes[1];
     x.shapes[1] = x.shapes[0];
     x.shapes[0].max_members = 3;
-    n = gz_terms_outer_encode(&x, buf, sizeof buf);
-    CHECK(gz_terms_outer_decode(buf, n, &y) && y.n_shapes == 3 && y.shapes[0].max_members == 3);
+    n = gz_lterms_outer_encode(&x, buf, sizeof buf);
+    CHECK(gz_lterms_outer_decode(buf, n, &y) && y.n_shapes == 3 && y.shapes[0].max_members == 3);
     x.shapes[0].max_members = 2;                       /* below 3 */
-    n = gz_terms_outer_encode(&x, buf, sizeof buf);
-    CHECK(!gz_terms_outer_decode(buf, n, &y));
+    n = gz_lterms_outer_encode(&x, buf, sizeof buf);
+    CHECK(!gz_lterms_outer_decode(buf, n, &y));
     /* T7 with the leaves counted: every n from 3 to 16 gives n leaves (the decoder checks it) */
-    for (k = 3; k <= 16; k++) CHECK(gz_terms_shape_for(&o, k, lv, &nl, &d));
-    CHECK(!gz_terms_shape_for(&o, 0, lv, &nl, &d) && !gz_terms_shape_for(&o, 1000, lv, &nl, &d));
+    for (k = 3; k <= 16; k++) CHECK(gz_lterms_shape_for(&o, k, lv, &nl, &d));
+    CHECK(!gz_lterms_shape_for(&o, 0, lv, &nl, &d) && !gz_lterms_shape_for(&o, 1000, lv, &nl, &d));
     /* an unchecked table: draft 1's [4] at 3 members, and [4,4,3] at 17 */
     x = o;
     x.n_shapes = 1; x.shapes[0].max_members = 20; x.shapes[0].n_interior = 1; x.shapes[0].interior[0] = 4;
-    CHECK(!gz_terms_shape_for(&x, 3, lv, &nl, &d) && gz_terms_shape_for(&x, 5, lv, &nl, &d) && d == 2);
+    CHECK(!gz_lterms_shape_for(&x, 3, lv, &nl, &d) && gz_lterms_shape_for(&x, 5, lv, &nl, &d) && d == 2);
     x.shapes[0].n_interior = 2; x.shapes[0].interior[1] = 4;
-    CHECK(!gz_terms_shape_for(&x, 17, lv, &nl, &d) && !gz_terms_shape_for(&x, 19, lv, &nl, &d));
-    CHECK(gz_terms_shape_for(&x, 20, lv, &nl, &d) && nl == 3 && lv[0] == 4 && lv[1] == 4 && lv[2] == 3 && d == 3);
+    CHECK(!gz_lterms_shape_for(&x, 17, lv, &nl, &d) && !gz_lterms_shape_for(&x, 19, lv, &nl, &d));
+    CHECK(gz_lterms_shape_for(&x, 20, lv, &nl, &d) && nl == 3 && lv[0] == 4 && lv[1] == 4 && lv[2] == 3 && d == 3);
 }
 
 /* T1 with a display record (3 alias or 5 description) of `len` bytes 'a'
@@ -564,10 +564,10 @@ static int with_display(int type, size_t len)
     memset(r + k, 'a', len); k += len;
     memcpy(r + k, t1 + at, t1n - at); k += t1n - at;
     if (outer_ok(r, k)) {                               /* accepted: and it is canonical */
-        static gz_terms_outer_t d;
+        static gz_lterms_outer_t d;
         uint8_t again[700];
-        gz_terms_outer_decode(r, k, &d);
-        if (gz_terms_outer_encode(&d, again, sizeof again) != k || memcmp(again, r, k) != 0) return -1;
+        gz_lterms_outer_decode(r, k, &d);
+        if (gz_lterms_outer_encode(&d, again, sizeof again) != k || memcmp(again, r, k) != 0) return -1;
         return 1;
     }
     return 0;
@@ -656,15 +656,15 @@ static void test_record_sizes(void)
     n = with_shape_bytes(sv, 1000, r);
     CHECK(outer_ok(r, n));
     {   /* and the longest table encodes back to the same bytes, into a buffer of exactly its size */
-        static gz_terms_outer_t d;
+        static gz_lterms_outer_t d;
         static uint8_t again[1400];
-        CHECK(gz_terms_outer_decode(r, n, &d) && d.n_shapes == 250);
-        CHECK(gz_terms_outer_encode(&d, again, n) == n && memcmp(again, r, n) == 0);
-        CHECK(gz_terms_outer_encode(&d, again, n - 1) == 0);
+        CHECK(gz_lterms_outer_decode(r, n, &d) && d.n_shapes == 250);
+        CHECK(gz_lterms_outer_encode(&d, again, n) == n && memcmp(again, r, n) == 0);
+        CHECK(gz_lterms_outer_encode(&d, again, n - 1) == 0);
         d.shapes[0].n_interior = 6;                     /* six interior levels: encodable (the split refuses it) */
-        CHECK(gz_terms_outer_encode(&d, again, sizeof again) == 0);   /* 1,006 bytes: more than a table holds */
+        CHECK(gz_lterms_outer_encode(&d, again, sizeof again) == 0);   /* 1,006 bytes: more than a table holds */
         d.n_shapes = 2;
-        CHECK(gz_terms_outer_encode(&d, again, sizeof again) > 0);
+        CHECK(gz_lterms_outer_encode(&d, again, sizeof again) > 0);
     }
     sv[1000] = 0; sv[1001] = 0xfe; sv[1002] = 0; sv[1003] = 3;
     n = with_shape_bytes(sv, 1004, r);

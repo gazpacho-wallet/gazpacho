@@ -215,6 +215,18 @@ static void up(gzp_net_t *n, gzp_peer_t *p)
     if (n->ev.connected) n->ev.connected(n->ev.ctx, p->peer_id, p->key);
 }
 
+/* slice1-attempt: the transport now takes its own random type (noise.h). */
+static void net_rand_fill(void *ctx, uint8_t *out, size_t len)
+{
+    const gz_random_port_t *r = ctx;
+    r->fill(r->ctx, GZ_RANDOM_SECRET, out, len);
+}
+static gz_net_random_t netrnd(gzp_net_t *n)
+{
+    gz_net_random_t r = {net_rand_fill, &n->random};
+    return r;
+}
+
 static void do_accept(gzp_net_t *n)
 {
     gzp_peer_t *p = new_slot(n);
@@ -230,7 +242,7 @@ static void do_accept(gzp_net_t *n)
     /* Slice 1's host accepts any member key (transport.md rule 13). The
      * handshake blocks the loop for up to handshake_ms (transport.md,
      * "Limits"; peers.h in PR 23 steps it without blocking). */
-    e = gz_conn_accept(p->conn, n->listen_fd, n->secp, n->priv, n->random, &lim, gz_conn_any_member, NULL);
+    e = gz_conn_accept(p->conn, n->listen_fd, n->secp, n->priv, netrnd(n), &lim, gz_conn_any_member, NULL);
     if (e) {
         gzp_log("accept-failed why=%s", gz_conn_err_name(e));
         free_slot(p);
@@ -249,7 +261,7 @@ static void do_connect(gzp_net_t *n, uint64_t now)
     if (!p) return;
     /* Blocks for up to handshake_ms. */
     e = gz_conn_connect(p->conn, n->target_host, n->target_port, n->secp, n->priv, n->target_key,
-                        n->random, &n->limits);
+                        netrnd(n), &n->limits);
     if (e) {
         gzp_log("connect-failed why=%s", gz_conn_err_name(e));
         free_slot(p);

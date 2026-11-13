@@ -90,7 +90,7 @@ static void emit_timer(gz_sign_t *e, emit_t *em)
 static void sign_digest(gz_sign_t *e, const uint8_t digest[32], uint8_t sig[64])
 {
     uint8_t aux[32];
-    e->ports.random.fill(e->ports.random.ctx, GZ_RANDOM_OTHER, aux, 32);
+    e->ports.random.fill(e->ports.random.ctx, GZ_RANDOM_ORDINARY, aux, 32);
     if (!secp256k1_schnorrsig_sign32(e->cfg.ctx, sig, digest, &e->contribution_kp, aux)) memset(sig, 0, 64);
 }
 
@@ -168,7 +168,7 @@ static int check_def(const gz_sign_t *e, const gz_sign_def_t *d, gz_sign_round_t
                 if (it->signers[t] == it->signers[s]) return 0;                        /* RULE:DUPLICATE_SIGNERS */
             ptrs[s] = &pks[it->signers[s]];
         }
-        if (it->tx_len > GZ_SIGN_MAX_TX || !gz_tx_parse(it->tx, it->tx_len, &tx) || tx.witness_item) return 0;
+        if (it->tx_len > GZ_SIGN_MAX_TX || !gz_stx_parse(it->tx, it->tx_len, &tx) || tx.witness_item) return 0;
         if (!secp256k1_musig_pubkey_agg(ctx, NULL, &agg, &r->cache[i], ptrs, it->n_signers)) return 0;
         if (!secp256k1_xonly_pubkey_serialize(ctx, ser, &agg)) return 0;
         tagged("TapTweak", ser, 32, it->merkle_root, it->has_merkle_root ? 32 : 0, tweak);
@@ -204,7 +204,7 @@ static void round_id(const gz_sign_def_t *d, const uint8_t *params, size_t plen,
         put(&w, it->merkle_root, 32); put64(&w, it->spent_amount); put(&w, it->spent_script, 34);
         put8(&w, it->n_signers);
         gz_sha256_write(&s, buf, w.n);
-        if (gz_tx_parse(it->tx, it->tx_len, &tx)) gz_sha256_write(&s, tx.outpoint, 36);
+        if (gz_stx_parse(it->tx, it->tx_len, &tx)) gz_sha256_write(&s, tx.outpoint, 36);
         tagged("gazpacho/tx", it->tx, it->tx_len, NULL, 0, dg);   /* the digest commits to all of it */
         gz_sha256_write(&s, dg, 32);
         for (int k = 0; k < it->n_signers; k++) gz_sha256_write(&s, d->participants[it->signers[k]].factory_key, 33);
@@ -647,6 +647,7 @@ static void member_complete(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_
     for (int t = 0; t < r->def.n_tiers; t++)
         if (r->tier_state[t] != GZ_TIER_DONE) return;
     if (r->state != GZ_ROUND_ACTIVE || !msg_signed_by(e, m, bytes, r->def.participants[0].contribution_key)) return;
+    if (e->cfg.may_ack && !e->cfg.may_ack(e->cfg.build_ctx)) return;   /* slice1-attempt */
     uint8_t held[32];
     wr_t w = {r->tail_msg, 0, sizeof r->tail_msg};
     held_digest(r, held);
@@ -913,7 +914,7 @@ static gz_status_t host_begin(gz_sign_t *e, const uint8_t *params, size_t len, e
     /* S4: a new attempt has a new identifier, also after a restore whose generator repeats. */
     uint8_t pre[48];
     wr_t hw = {pre, 0, sizeof pre};
-    e->ports.random.fill(e->ports.random.ctx, GZ_RANDOM_OTHER, pre, 32);
+    e->ports.random.fill(e->ports.random.ctx, GZ_RANDOM_ORDINARY, pre, 32);
     hw.n = 32; put64(&hw, e->incarnation); put64(&hw, ++e->next_serial);   /* RULE:HOST_RANDOM_MIX */
     tagged("gazpacho/host-random", pre, hw.n, NULL, 0, host_random);
     memset(r, 0, sizeof *r);

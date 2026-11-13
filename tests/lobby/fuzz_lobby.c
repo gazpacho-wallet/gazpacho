@@ -22,7 +22,7 @@ static int ready_;
 static lt_signer_t HOST, MEM;
 static uint8_t SCOPE[32], T1[512], T2[128];
 static size_t T1N, T2N;
-static gz_terms_outer_t T1O;
+static gz_lterms_outer_t T1O;
 static uint64_t rnd;
 
 static uint64_t c_now(void *ctx) { (void)ctx; return 1794441000000ull; }
@@ -43,8 +43,8 @@ static void setup(void)
     lt_key(&MEM.key[2], "member 1 contribution"); lt_key(&MEM.key[3], "member 1 factory");
     T1N = lt_unhex(LT_T1, T1, sizeof T1);
     T2N = lt_unhex(LT_T2, T2, sizeof T2);
-    gz_terms_outer_decode(T1, T1N, &T1O);
-    gz_terms_outer_digest(T1, T1N, SCOPE);
+    gz_lterms_outer_decode(T1, T1N, &T1O);
+    gz_lterms_outer_digest(T1, T1N, SCOPE);
     ready_ = 1;
 }
 
@@ -68,7 +68,7 @@ static int all_known(const uint8_t *b, size_t n)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-    static gz_terms_outer_t o, o2;
+    static gz_lterms_outer_t o, o2;
     static gz_lobby_host_t host;
     static gz_lobby_member_t mem;
     static gz_part_reasm_t ra;
@@ -76,7 +76,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     static gz_action_t slots[256];
     static uint8_t abytes[1 << 19];
     gz_action_list_t l;
-    gz_terms_current_t c;
+    gz_lterms_current_t c;
     gz_lobby_msg_t m;
     gz_lobby_crypto_t hc, mc;
     gz_ports_t ports;
@@ -108,16 +108,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         }
     }
     /* 2. both terms records */
-    if (gz_terms_outer_decode(x, size, &o)) {
+    if (gz_lterms_outer_decode(x, size, &o)) {
         static uint8_t again[GZ_TERMS_OUTER_MAX];
-        size_t an = gz_terms_outer_encode(&o, again, sizeof again);
+        size_t an = gz_lterms_outer_encode(&o, again, sizeof again);
         lobby_fuzz_stats[1]++;
         MUST(!all_known(x, size) || (an == size && memcmp(again, x, size) == 0));
-        MUST(gz_terms_outer_decode(x, size, &o2) && memcmp(&o, &o2, sizeof o) == 0);
+        MUST(gz_lterms_outer_decode(x, size, &o2) && memcmp(&o, &o2, sizeof o) == 0);
     }
-    if (gz_terms_current_decode(x, size, &T1O, SCOPE, &c)) {
+    if (gz_lterms_current_decode(x, size, &T1O, SCOPE, &c)) {
         uint8_t again[GZ_TERMS_CURRENT_MAX];
-        size_t an = gz_terms_current_encode(&c, &T1O, again, sizeof again);
+        size_t an = gz_lterms_current_encode(&c, &T1O, again, sizeof again);
         lobby_fuzz_stats[2]++;
         MUST(an == size && memcmp(again, x, size) == 0);
     }
@@ -168,7 +168,7 @@ void lobby_fuzz_corpus(void (*add)(const uint8_t *b, size_t n))
     size_t k;
     setup();
     hc = lt_crypto(&HOST); mc = lt_crypto(&MEM);
-    gz_terms_current_digest(T2, T2N, cd);
+    gz_lterms_current_digest(T2, T2N, cd);
     add(T1, T1N); add(T2, T2N);
     gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, SCOPE); add(buf, gz_lobby_enc_done(&e));
     lt_sign(&HOST, 1, SCOPE, s1); lt_sign(&HOST, 1, cd, s2);

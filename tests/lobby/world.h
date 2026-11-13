@@ -96,13 +96,13 @@ static inline gz_status_t w_begin(void *ctx, const gz_lobby_handoff_t *h, gz_act
     }
     {   /* the records handed over are the frozen ones, and name each other */
         uint8_t od[32], cd[32];
-        gz_terms_outer_t o;
-        gz_terms_current_t c;
-        gz_terms_outer_digest(h->outer, h->outer_len, od);
-        gz_terms_current_digest(h->current, h->current_len, cd);
+        gz_lterms_outer_t o;
+        gz_lterms_current_t c;
+        gz_lterms_outer_digest(h->outer, h->outer_len, od);
+        gz_lterms_current_digest(h->current, h->current_len, cd);
         x->records_ok = memcmp(od, h->scope, 32) == 0 && memcmp(cd, h->current_digest, 32) == 0 &&
-                        gz_terms_outer_decode(h->outer, h->outer_len, &o) &&
-                        gz_terms_current_decode(h->current, h->current_len, &o, od, &c) && c.version == h->version;
+                        gz_lterms_outer_decode(h->outer, h->outer_len, &o) &&
+                        gz_lterms_current_decode(h->current, h->current_len, &o, od, &c) && c.version == h->version;
         x->terms_ok = h->terms && h->terms->target == o.target && h->terms->channel_sat == o.channel_sat &&
                       memcmp(h->terms->host_key, o.host_key, 33) == 0;
     }
@@ -286,7 +286,7 @@ static inline void w_boot(w_node_t *d)
         }
     } else {
         uint8_t scope[32];
-        gz_terms_outer_digest(w->outer, w->outer_len, scope);
+        gz_lterms_outer_digest(w->outer, w->outer_len, scope);
         gz_lobby_member_init(d->mem, &p, &cr, &sg, &d->cond, scope, w->node[0].keys.key[1].pub,
                              d->keys.key[2].pub, d->keys.key[3].pub, 1);
         for (i = 0; i < d->n_recs; i++) {

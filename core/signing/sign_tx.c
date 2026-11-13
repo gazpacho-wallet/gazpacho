@@ -93,7 +93,7 @@ static int varint(const uint8_t *p, size_t len, size_t *at, uint64_t *v)
     return *v >= (n == 2 ? 0xfdu : n == 4 ? 0x10000u : 0x100000000u);
 }
 
-int gz_tx_parse(const uint8_t *p, size_t len, gz_tx_t *tx)
+int gz_stx_parse(const uint8_t *p, size_t len, gz_tx_t *tx)
 {
     size_t at = 4;
     uint64_t v;
@@ -160,7 +160,7 @@ void gz_tx_sighash(const gz_tx_t *tx, uint64_t amount, const uint8_t script[34],
 size_t gz_tx_attach(const uint8_t *p, size_t len, const uint8_t sig64[64], uint8_t *out, size_t cap)
 {
     gz_tx_t tx;
-    if (!gz_tx_parse(p, len, &tx) || tx.witness_item || cap < len + 2 + 2 + 64) return 0;
+    if (!gz_stx_parse(p, len, &tx) || tx.witness_item || cap < len + 2 + 2 + 64) return 0;
     memcpy(out, p, 4);
     out[4] = 0; out[5] = 1;
     memcpy(out + 6, p + 4, tx.outputs_end - 4);
@@ -176,7 +176,7 @@ int gz_tx_verify(const secp256k1_context *ctx, const uint8_t *signed_tx, size_t 
     gz_tx_t tx;
     uint8_t digest[32];
     secp256k1_xonly_pubkey key;
-    if (!gz_tx_parse(signed_tx, len, &tx) || !tx.witness_item || tx.witness_len != 64) return 0;
+    if (!gz_stx_parse(signed_tx, len, &tx) || !tx.witness_item || tx.witness_len != 64) return 0;
     if (script[0] != 0x51 || script[1] != 0x20 || !secp256k1_xonly_pubkey_parse(ctx, &key, script + 2)) return 0;
     gz_tx_sighash(&tx, amount, script, digest);
     return secp256k1_schnorrsig_verify(ctx, tx.witness_item, digest, 32, &key);

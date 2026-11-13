@@ -343,3 +343,6 @@ set_target_properties(gazpacho_signing PROPERTIES C_STANDARD 11 C_STANDARD_REQUI
 target_include_directories(gazpacho_signing PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include)
 target_link_libraries(gazpacho_signing PUBLIC gazpacho_core secp256k1)
 target_compile_options(gazpacho_signing PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+
+# slice1-attempt glue
+add_subdirectory(program/s1)

@@ -281,7 +281,7 @@ static gz_status_t handoff(gz_lobby_host_t *h, const int *chosen_idx, int k, con
     ho.signers = (uint16_t)(k + 1);
     ho.participants = ps;
     ho.n_participants = (uint16_t)(k + 1);
-    if (!gz_terms_shape_for(&h->terms, (uint16_t)k, ho.levels, &ho.n_levels, &ho.fixed_levels))
+    if (!gz_lterms_shape_for(&h->terms, (uint16_t)k, ho.levels, &ho.n_levels, &ho.fixed_levels))
         return GZ_ERR_ARGUMENT;
     ho.k = 1; ho.tree_anchors = 1; ho.layer_step = 144; ho.layer_states = 4;
     return h->signing.begin ? h->signing.begin(h->signing.ctx, &ho, out) : GZ_OK;
@@ -587,7 +587,7 @@ gz_status_t gz_lobby_host_init(gz_lobby_host_t *h, const gz_ports_t *ports, cons
                                const gz_lobby_signing_t *signing, const gz_lobby_host_config_t *cfg)
 {
     if (!h || !ports || !crypto || !cfg || !crypto->verify || !crypto->sign || !crypto->point_ok ||
-        !ports->random.fill || !ports->clock.now_ms || !gz_terms_genesis(cfg->network))
+        !ports->random.fill || !ports->clock.now_ms || !gz_lterms_genesis(cfg->network))
         return GZ_ERR_ARGUMENT;
     memset(h, 0, sizeof *h);
     h->ports = *ports;
@@ -600,22 +600,22 @@ gz_status_t gz_lobby_host_init(gz_lobby_host_t *h, const gz_ports_t *ports, cons
 /* Take the records as the host's own: decode, check, compute digests. */
 static int adopt(gz_lobby_host_t *h, const uint8_t *outer, size_t olen, const uint8_t *cur, size_t clen)
 {
-    gz_terms_outer_t t;
-    gz_terms_current_t v;
+    gz_lterms_outer_t t;
+    gz_lterms_current_t v;
     uint8_t od[32];
-    if (!outer || olen > GZ_TERMS_OUTER_MAX || !gz_terms_outer_decode(outer, olen, &t) || !gz_terms_slice1_ok(&t, h->cfg.network) ||
+    if (!outer || olen > GZ_TERMS_OUTER_MAX || !gz_lterms_outer_decode(outer, olen, &t) || !gz_lterms_slice1_ok(&t, h->cfg.network) ||
         t.target + h->cfg.standbys > GZ_LOBBY_MAX_SEATS)
         return 0;
-    gz_terms_outer_digest(outer, olen, od);
-    if (!cur || clen > GZ_TERMS_CURRENT_MAX || !gz_terms_current_decode(cur, clen, &t, od, &v)) return 0;
+    gz_lterms_outer_digest(outer, olen, od);
+    if (!cur || clen > GZ_TERMS_CURRENT_MAX || !gz_lterms_current_decode(cur, clen, &t, od, &v)) return 0;
     if (outer != h->outer) memcpy(h->outer, outer, olen);
     h->outer_len = olen;
     memcpy(h->current, cur, clen);
     h->current_len = clen;
-    gz_terms_outer_decode(h->outer, olen, &h->terms);   /* pointers into h->outer */
+    gz_lterms_outer_decode(h->outer, olen, &h->terms);   /* pointers into h->outer */
     h->values = v;
     memcpy(h->scope, od, 32);
-    gz_terms_current_digest(cur, clen, h->current_digest);
+    gz_lterms_current_digest(cur, clen, h->current_digest);
     return 1;
 }
 
@@ -644,7 +644,7 @@ gz_status_t gz_lobby_host_open(gz_lobby_host_t *h, const uint8_t *outer, size_t 
     size_t n;
     if (!h || !out || h->state != GZ_LOBBY_UNKNOWN || !adopt(h, outer, outer_len, current, current_len))
         return GZ_ERR_ARGUMENT;
-    gz_terms_current_digest(current, current_len, cd);
+    gz_lterms_current_digest(current, current_len, cd);
     if (h->crypto.sign(h->crypto.ctx, GZ_LOBBY_KEY_HOST, h->scope, h->outer_sig) != 1 ||
         h->crypto.sign(h->crypto.ctx, GZ_LOBBY_KEY_HOST, cd, h->current_sig) != 1 ||
         h->crypto.verify(h->crypto.ctx, h->terms.host_key, h->scope, h->outer_sig) != 1)
@@ -771,7 +771,7 @@ gz_status_t gz_lobby_host_resume(gz_lobby_host_t *h, gz_action_list_t *out)
 gz_status_t gz_lobby_host_set_values(gz_lobby_host_t *h, const uint64_t *values, uint8_t n,
                                      gz_action_list_t *out)
 {
-    gz_terms_current_t v;
+    gz_lterms_current_t v;
     uint8_t cur[GZ_TERMS_CURRENT_MAX], r[GZ_TERMS_CURRENT_MAX + 70], sig[64], cd[32];
     size_t cn, rn;
     uint8_t k;
@@ -782,9 +782,9 @@ gz_status_t gz_lobby_host_set_values(gz_lobby_host_t *h, const uint64_t *values,
     v = h->values;
     v.version++;
     for (k = 0; k < n; k++) v.adj_value[k] = values[k];
-    cn = gz_terms_current_encode(&v, &h->terms, cur, sizeof cur);
+    cn = gz_lterms_current_encode(&v, &h->terms, cur, sizeof cur);
     if (!cn || !adopt(h, h->outer, h->outer_len, cur, cn)) return GZ_ERR_ARGUMENT;
-    gz_terms_current_digest(cur, cn, cd);
+    gz_lterms_current_digest(cur, cn, cd);
     if (h->crypto.sign(h->crypto.ctx, GZ_LOBBY_KEY_HOST, cd, sig) != 1) return GZ_ERR_ARGUMENT;
     memcpy(h->current_sig, sig, 64);
     rn = gz_la_put_blob(r, cur, cn);
