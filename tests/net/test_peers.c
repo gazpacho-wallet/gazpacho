@@ -32,7 +32,7 @@ static void counter_fill(void *ctx, uint8_t *out, size_t len)
     memset(out, 0x40, len);
     out[len - 1] = n++;
 }
-static const gz_random_port_t RNG = {counter_fill, NULL};
+static const gz_net_random_t RNG = {counter_fill, NULL};
 
 static void pub(const uint8_t k[32], uint8_t out[33])
 {
@@ -232,30 +232,8 @@ static void test_basic(void)
     CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_ROUND_ALL_NONCES, SCOPE, big, n) == GZ_PEERS_OK);
     e = expect(1, GZ_PEER_EV_MESSAGE, 60000);
     CHECK(e && e->records_len == n && memcmp(e->records, big, n) == 0);
-    CHECK(gz_peers_send(S[0].p, hc, 68, SCOPE, big, GZ_ENV_MAX_WHOLE + 1) == GZ_PEERS_ERR_TOO_BIG);
-    /* The send queue holds at most 4 MiB: without polling nothing is
-     * written, so the fourth 1 MiB message does not fit. The three that did
-     * arrive whole. */
-    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_ROUND_ALL_NONCES, SCOPE, big, n) == GZ_PEERS_OK);
-    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_ROUND_ALL_NONCES, SCOPE, big, n) == GZ_PEERS_OK);
-    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_ROUND_ALL_NONCES, SCOPE, big, n) == GZ_PEERS_OK);
-    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_ROUND_ALL_NONCES, SCOPE, big, n) == GZ_PEERS_ERR_FULL);
-    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_LOBBY_STATUS, SCOPE, STATUS, sizeof STATUS) == GZ_PEERS_OK);
-    {
-        int k;
-        for (k = 0; k < 3; k++) {
-            e = expect(1, GZ_PEER_EV_MESSAGE, 60000);
-            CHECK(e && e->kind == 68 && e->records_len == n);
-        }
-        e = expect(1, GZ_PEER_EV_MESSAGE, 10000);
-        CHECK(e && e->kind == 28);
-    }
-    /* A member sends no parts. */
-    CHECK(gz_peers_send(S[1].p, mc, GZ_ENV_KIND_ROUND_NONCES, SCOPE, big, GZ_ENV_MAX_RECORDS + 1) == GZ_PEERS_ERR_TOO_BIG);
-    /* Bad calls. */
+    /* Bad calls that refuse nothing on a live connection. */
     CHECK(gz_peers_send(S[1].p, mc + 100, 16, zero, NULL, 0) == GZ_PEERS_ERR_NO_CONN);
-    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_PART, SCOPE, big, 10) == GZ_PEERS_ERR_ARGS);
-    CHECK(gz_peers_send_raw(S[1].p, mc, big, 1) == GZ_PEERS_ERR_TOO_BIG);
     CHECK(gz_peers_close(S[1].p, mc + 100) == GZ_PEERS_ERR_NO_CONN);
     CHECK(gz_peers_refuse(S[1].p, mc + 100, "x") == GZ_PEERS_ERR_NO_CONN);
     CHECK(gz_peers_connect(S[1].p, "localhost", port, HOST_PUB, NULL, &mc2) == GZ_PEERS_ERR_ADDRESS);
@@ -431,6 +409,7 @@ static void hostile(int how, gz_peer_why_t want, const char *text, int ping, int
             /* Under valgrind the send deadline may pass before the queue is
              * full; the queue limit itself is tested in test_basic. */
             CHECK(pe == GZ_PEERS_ERR_FULL || pe == GZ_PEERS_ERR_NO_CONN);
+            if (pe == GZ_PEERS_ERR_FULL) want = GZ_PEER_WHY_SEND_REFUSED; /* the refusal closes it */
         }
     }
     e = expect(0, GZ_PEER_EV_CLOSED, 8000);
@@ -698,7 +677,8 @@ static void test_connect_failures(void)
     CHECK(expect(1, GZ_PEER_EV_CONNECTED, 5000) != NULL);
     CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, MEM_KEY2, &mc2) == GZ_PEERS_OK);
     CHECK(expect(1, GZ_PEER_EV_CONNECTED, 5000) != NULL);
-    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, NULL, &mc3) == GZ_PEERS_OK);
+    /* A third key (the first one again would replace its own connection). */
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, CHILD_KEY, &mc3) == GZ_PEERS_OK);
     /* With every slot taken by members without seats, the newcomer evicts
      * the oldest (transport.md L9). */
     e = expect(1, GZ_PEER_EV_CONNECTED, 5000);
@@ -841,18 +821,21 @@ static void test_admission(void)
     {
         static uint8_t keys[5][32];
         uint64_t hconn[5], m4, m5;
+        uint8_t hkey[5][33];
         for (i = 0; i < 5; i++) memset(keys[i], 0x51 + i, 32);
         for (i = 0; i < 3; i++) {
             CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, keys[i], &a[i]) == GZ_PEERS_OK);
             CHECK(expect(1, GZ_PEER_EV_CONNECTED, 5000) != NULL);
             e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
             hconn[i] = e ? e->conn : 0;
+            if (e) memcpy(hkey[i], e->node_id, 33);
             pump(20); /* distinct start times */
         }
         CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, keys[3], &m4) == GZ_PEERS_OK);
         e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
         CHECK(e != NULL);
         hconn[3] = e ? e->conn : 0;
+        if (e) memcpy(hkey[3], e->node_id, 33);
         e = expect(0, GZ_PEER_EV_CLOSED, 5000);
         CHECK(e && e->conn == hconn[0] && e->why == GZ_PEER_WHY_EVICTED && e->was_connected);
         e = expect(1, GZ_PEER_EV_WARNING, 5000);
@@ -862,10 +845,9 @@ static void test_admission(void)
         gz_peers_stats(S[0].p, &st);
         CHECK(st.evicted_unseated == 1);
         /* The lobby seats all three now connected. */
-        CHECK(gz_peers_set_seated(S[0].p, hconn[1], 1) == GZ_PEERS_OK);
-        CHECK(gz_peers_set_seated(S[0].p, hconn[2], 1) == GZ_PEERS_OK);
-        CHECK(gz_peers_set_seated(S[0].p, hconn[3], 1) == GZ_PEERS_OK);
-        CHECK(gz_peers_set_seated(S[0].p, hconn[0], 1) == GZ_PEERS_ERR_NO_CONN);
+        CHECK(gz_peers_set_seated_key(S[0].p, hkey[1], 1) == GZ_PEERS_OK);
+        CHECK(gz_peers_set_seated_key(S[0].p, hkey[2], 1) == GZ_PEERS_OK);
+        CHECK(gz_peers_set_seated_key(S[0].p, hkey[3], 1) == GZ_PEERS_OK);
         CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, keys[4], &m5) == GZ_PEERS_OK);
         e = expect(0, GZ_PEER_EV_CLOSED, 5000);
         CHECK(e && e->why == GZ_PEER_WHY_FULL && !e->was_connected);
@@ -988,8 +970,8 @@ static void test_refusing(void)
         uint64_t hc = e->conn;
         int64_t t0, end;
         clock_t c0;
-        for (i = 0; i < 4; i++)
-            if (gz_peers_send(S[0].p, hc, 68, SCOPE, big, GZ_ENV_MAX_WHOLE) != GZ_PEERS_OK) break;
+        for (i = 0; i < 3; i++) /* a fourth would not fit, and a refusal closes */
+            CHECK(gz_peers_send(S[0].p, hc, 68, SCOPE, big, GZ_ENV_MAX_WHOLE) == GZ_PEERS_OK);
         pump(300);
         CHECK(gz_peers_refuse(S[0].p, hc, "enough") == GZ_PEERS_OK);
         CHECK(write(ctl[1], "j", 1) == 1);
@@ -1264,6 +1246,221 @@ static void test_review_b(void)
     free_sides();
 }
 
+/* ------------------------------------------------ contract v2 (step P2) */
+
+/* Every refusal on a live connection closes it, with a CLOSED event
+ * (contract v2, section 1): too big, a part from the caller, a full queue. */
+static void refused_closes(int side_refusing, gz_peers_err_t want_err, const char *text)
+{
+    uint64_t hc, mc, c;
+    gz_peer_event_t *e;
+    gz_peers_err_t got;
+    size_t n = nonces_body((GZ_ENV_MAX_WHOLE - 200) / 130, big, sizeof big);
+    int k;
+    hc = pair(20000, 30000, NULL, &mc, NULL);
+    c = side_refusing == 0 ? hc : mc;
+    if (want_err == GZ_PEERS_ERR_FULL) {
+        /* Without polling nothing is written: the fourth 1 MiB message does
+         * not fit in 4 MiB. */
+        for (k = 0; k < 3; k++) CHECK(gz_peers_send(S[0].p, hc, 68, SCOPE, big, n) == GZ_PEERS_OK);
+        got = gz_peers_send(S[0].p, hc, 68, SCOPE, big, n);
+    } else if (want_err == GZ_PEERS_ERR_ARGS) {
+        got = gz_peers_send(S[side_refusing].p, c, GZ_ENV_KIND_PART, SCOPE, big, 10);
+    } else if (side_refusing == 0) {
+        got = gz_peers_send(S[0].p, hc, 68, SCOPE, big, GZ_ENV_MAX_WHOLE + 1);
+    } else {
+        got = gz_peers_send(S[1].p, mc, GZ_ENV_KIND_ROUND_NONCES, SCOPE, big, GZ_ENV_MAX_RECORDS + 1);
+    }
+    CHECK(got == want_err);
+    e = expect(side_refusing, GZ_PEER_EV_CLOSED, 5000);
+    CHECK(e && e->conn == c && e->why == GZ_PEER_WHY_SEND_REFUSED && strcmp(e->text, text) == 0);
+    e = expect(1 - side_refusing, GZ_PEER_EV_CLOSED, 5000);
+    CHECK(e && e->why == GZ_PEER_WHY_LOST);
+    CHECK(gz_peers_send(S[side_refusing].p, c, 16, SCOPE, NULL, 0) == GZ_PEERS_ERR_NO_CONN);
+    free_sides();
+}
+
+static void test_send_refusals(void)
+{
+    uint64_t hc, mc;
+    gz_peer_event_t *e;
+    gz_peers_config_t def;
+    size_t total, i;
+    int rep;
+    /* One reconnect answer of a Slice 1 host at 1,000 members (messages.md
+     * 6 and 7.10): terms_offer, lobby_status, start, round_propose (under
+     * 400 KB), round_all_nonces (about 260 KB), round_tier_result,
+     * round_complete. */
+    static const struct { uint16_t kind; size_t len; } answer[] = {
+        {18, 5300}, {28, 20}, {32, 110}, {64, 400000}, {68, 260000}, {72, 20000}, {74, 100}};
+    refused_closes(0, GZ_PEERS_ERR_TOO_BIG, "message too big");
+    refused_closes(1, GZ_PEERS_ERR_TOO_BIG, "message too big");
+    refused_closes(0, GZ_PEERS_ERR_ARGS, "invalid arguments");
+    refused_closes(0, GZ_PEERS_ERR_FULL, "send queue full");
+    /* The default queue holds twice that answer, unsent, so close-on-full
+     * cannot loop on a reconnect (contract v2, section 1). */
+    gz_peers_default_config(&def);
+    for (i = 0, total = 0; i < sizeof answer / sizeof answer[0]; i++) total += answer[i].len + 200;
+    CHECK(def.max_queue >= 2 * total);
+    hc = pair(20000, 30000, NULL, &mc, NULL);
+    memset(big, 0, sizeof big);
+    for (rep = 0; rep < 2; rep++)
+        for (i = 0; i < sizeof answer / sizeof answer[0]; i++)
+            CHECK(gz_peers_send(S[0].p, hc, answer[i].kind, SCOPE, big, answer[i].len) == GZ_PEERS_OK);
+    CHECK(gz_peers_close(S[0].p, hc) == GZ_PEERS_OK);
+    free_sides();
+
+    /* close_after_send: what is queued arrives, then the close, then the
+     * event (the program's DISCONNECT, contract v2 section 3). */
+    hc = pair(20000, 30000, NULL, &mc, NULL);
+    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_LOBBY_STATUS, SCOPE, STATUS, sizeof STATUS) == GZ_PEERS_OK);
+    CHECK(gz_peers_close_after_send(S[0].p, hc) == GZ_PEERS_OK);
+    CHECK(gz_peers_close_after_send(S[0].p, hc) == GZ_PEERS_ERR_NO_CONN);
+    CHECK(gz_peers_send(S[0].p, hc, GZ_ENV_KIND_LOBBY_STATUS, SCOPE, STATUS, sizeof STATUS) == GZ_PEERS_ERR_NO_CONN);
+    e = expect(1, GZ_PEER_EV_MESSAGE, 5000);
+    CHECK(e && e->kind == 28);
+    e = expect(1, GZ_PEER_EV_CLOSED, 5000);
+    CHECK(e && e->why == GZ_PEER_WHY_LOST);
+    e = expect(0, GZ_PEER_EV_CLOSED, 5000);
+    CHECK(e && e->conn == hc && e->why == GZ_PEER_WHY_CLOSED_LOCAL);
+    CHECK(quiet(1, GZ_PEER_EV_WARNING, 0)); /* no warning: a close, not a refusal */
+    free_sides();
+}
+
+static void seat_all(gz_peers_config_t *c) { c->max_per_address = 0; c->max_conns = 2; }
+
+/* One connection per link: a member's second connection with the same key
+ * replaces the first, before admission, so a seated member whose old
+ * connection is half-open gets back in even when every slot is seated
+ * (contract v2, sections 2 and 3). */
+static void test_replacement(void)
+{
+    uint16_t port;
+    uint64_t m1, m2, m3, h1 = 0;
+    gz_peer_event_t *e;
+    gz_peers_stats_t st;
+    S[0].p = mk(HOST_KEY, 20000, 30000, NULL, seat_all);
+    S[1].p = mk(MEM_KEY, 20000, 30000, NULL, NULL);
+    CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+    /* Seats are keys, set before anyone connects (as at a start). */
+    CHECK(gz_peers_set_seated_key(S[0].p, MEM_PUB, 1) == GZ_PEERS_OK);
+    CHECK(gz_peers_set_seated_key(S[0].p, MEM_PUB2, 1) == GZ_PEERS_OK);
+    CHECK(gz_peers_set_seated_key(S[0].p, MEM_PUB2, 1) == GZ_PEERS_OK); /* twice: once */
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, MEM_KEY, &m1) == GZ_PEERS_OK);
+    e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
+    if (e) h1 = e->conn;
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, MEM_KEY2, &m2) == GZ_PEERS_OK);
+    CHECK(expect(0, GZ_PEER_EV_CONNECTED, 5000) != NULL);
+    /* Both slots seated. The first member comes back with the same key
+     * while its first connection is still open: replaced, not refused. */
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, MEM_KEY, &m3) == GZ_PEERS_OK);
+    e = expect(0, GZ_PEER_EV_CLOSED, 5000);
+    CHECK(e && e->conn == h1 && e->why == GZ_PEER_WHY_REPLACED && memcmp(e->node_id, MEM_PUB, 33) == 0);
+    e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
+    CHECK(e && memcmp(e->node_id, MEM_PUB, 33) == 0 && e->conn != h1);
+    gz_peers_stats(S[0].p, &st);
+    CHECK(st.replaced == 1 && st.refused_full == 0 && st.evicted_unseated == 0 && st.open == 2);
+    /* Unseating a key makes its connection evictable again. */
+    CHECK(gz_peers_set_seated_key(S[0].p, MEM_PUB2, 0) == GZ_PEERS_OK);
+    CHECK(gz_peers_set_seated_key(S[0].p, MEM_PUB2, 0) == GZ_PEERS_OK);
+    {
+        uint64_t m4;
+        uint8_t k3[32];
+        memset(k3, 0x14, 32);
+        CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, k3, &m4) == GZ_PEERS_OK);
+        e = expect(0, GZ_PEER_EV_CLOSED, 5000);
+        CHECK(e && e->why == GZ_PEER_WHY_EVICTED && memcmp(e->node_id, MEM_PUB2, 33) == 0);
+    }
+    free_sides();
+}
+
+/* The program's own poll loop drives the transport (contract v2, section 4). */
+static void test_pollfds(void)
+{
+    uint16_t port;
+    uint64_t mc;
+    gz_peers_t *h;
+    struct pollfd *fds;
+    gz_peer_event_t ev;
+    size_t n;
+    int timeout, got_conn = 0, got_hello = 0;
+    int64_t end;
+    static const uint8_t zero[32];
+    h = mk(HOST_KEY, 20000, 30000, NULL, NULL);
+    S[1].p = mk(MEM_KEY, 20000, 30000, NULL, NULL);
+    CHECK(h && gz_peers_listen(h, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+    fds = calloc(gz_peers_max_fds(h), sizeof *fds);
+    n = gz_peers_pollfds(h, fds, gz_peers_max_fds(h), &timeout);
+    CHECK(n == 1 && fds[0].events == POLLIN && timeout == -1); /* the listener, no deadline */
+    CHECK(gz_peers_pollfds(h, fds, 0, &timeout) == 0);
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, NULL, &mc) == GZ_PEERS_OK);
+    end = ms() + 5000;
+    while (ms() < end && !got_hello) {
+        gz_peer_event_t *me;
+        n = gz_peers_pollfds(h, fds, gz_peers_max_fds(h), &timeout);
+        CHECK(timeout <= 60000);
+        if (poll(fds, (nfds_t)n, 5) < 0) break;
+        gz_peers_dispatch(h, fds, n);
+        while (gz_peers_poll(h, 0, &ev)) {
+            if (ev.type == GZ_PEER_EV_CONNECTED) {
+                got_conn = 1;
+                /* An established connection has a ping deadline. */
+                n = gz_peers_pollfds(h, fds, gz_peers_max_fds(h), &timeout);
+                CHECK(n == 2 && timeout >= 0 && timeout <= 20000);
+            }
+            if (ev.type == GZ_PEER_EV_MESSAGE && ev.kind == 16) got_hello = 1;
+        }
+        pump(2);
+        me = expect(1, GZ_PEER_EV_CONNECTED, 0);
+        if (me) CHECK(gz_peers_send(S[1].p, mc, GZ_ENV_KIND_HELLO, zero, NULL, 0) == GZ_PEERS_OK);
+    }
+    CHECK(got_conn && got_hello);
+    /* gz_peers_poll(p, 0) never blocks. */
+    {
+        int64_t t0 = ms();
+        CHECK(!gz_peers_poll(h, 0, &ev));
+        CHECK(ms() - t0 < 50);
+    }
+    free(fds);
+    gz_peers_free(h);
+    free_sides();
+}
+
+/* init names exactly one chain, signet or testnet4; the main network is
+ * refused outright (contract v2, section 15). */
+static void testnet4(gz_peers_config_t *c) { memcpy(c->chain, GZ_LN_CHAIN_TESTNET4, 32); }
+
+static void test_networks(void)
+{
+    uint16_t port;
+    uint64_t mc;
+    gz_peer_event_t *e;
+    gz_peers_config_t c;
+    gz_peers_default_config(&c);
+    c.secp = secp;
+    c.random = RNG;
+    c.is_member = gz_conn_any_member;
+    memcpy(c.chain, GZ_LN_CHAIN_MAINNET, 32);
+    CHECK(gz_peers_new(&c) == NULL);
+    /* testnet4 to testnet4 */
+    S[0].p = mk(HOST_KEY, 20000, 30000, NULL, testnet4);
+    S[1].p = mk(MEM_KEY, 20000, 30000, NULL, testnet4);
+    CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, NULL, &mc) == GZ_PEERS_OK);
+    CHECK(expect(0, GZ_PEER_EV_CONNECTED, 5000) != NULL && expect(1, GZ_PEER_EV_CONNECTED, 5000) != NULL);
+    free_sides();
+    /* signet member to a testnet4 host: both close at init */
+    S[0].p = mk(HOST_KEY, 20000, 30000, NULL, testnet4);
+    S[1].p = mk(MEM_KEY, 20000, 30000, NULL, NULL);
+    CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", port, HOST_PUB, NULL, &mc) == GZ_PEERS_OK);
+    e = expect(0, GZ_PEER_EV_CLOSED, 5000);
+    CHECK(e && e->why == GZ_PEER_WHY_INIT && !e->was_connected);
+    e = expect(1, GZ_PEER_EV_CLOSED, 5000);
+    CHECK(e && (e->why == GZ_PEER_WHY_INIT || e->why == GZ_PEER_WHY_LOST) && !e->was_connected);
+    free_sides();
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -1298,6 +1495,18 @@ int main(void)
     puts("== review b");
     fflush(stdout);
     test_review_b();
+    puts("== send refusals");
+    fflush(stdout);
+    test_send_refusals();
+    puts("== replacement");
+    fflush(stdout);
+    test_replacement();
+    puts("== pollfds");
+    fflush(stdout);
+    test_pollfds();
+    puts("== networks");
+    fflush(stdout);
+    test_networks();
     puts("== fairness");
     fflush(stdout);
     test_fairness();

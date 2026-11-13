@@ -20,6 +20,10 @@
 
 /* Signet's chain hash: its genesis block hash in internal byte order. */
 extern const uint8_t GZ_LN_CHAIN_SIGNET[32];
+extern const uint8_t GZ_LN_CHAIN_TESTNET4[32];
+/* The main network's chain hash: never used, refused by gz_peers_new
+ * (SLICES.md rule 3). */
+extern const uint8_t GZ_LN_CHAIN_MAINNET[32];
 
 typedef enum {
     GZ_LN_OK = 0,

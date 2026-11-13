@@ -371,6 +371,8 @@ static void test_read(void)
     CHECK(gz_env_read(msg, mk(0, SCOPE, "", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_REFUSE);
     CHECK(gz_env_read(msg, mk(37, SCOPE, "0201", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_IGNORE);
     CHECK(gz_env_read(msg, mk(65535, SCOPE, "", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_IGNORE);
+    /* Kind 32767 (test traffic) is unknown to a release build: ignored. */
+    CHECK(gz_env_read(msg, mk(32767, ZERO, "0104475a5049", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_IGNORE);
     /* Discovery kinds: never refused, whatever they hold (4.1). */
     CHECK(gz_env_read(msg, mk(128, SCOPE, "fd", msg), GZ_ENV_AT_HOST, &m, &why) == GZ_ENV_IGNORE);
     CHECK(gz_env_read(msg, mk(130, ZERO, "0201ff", msg), GZ_ENV_AT_MEMBER, &m, &why) == GZ_ENV_IGNORE);

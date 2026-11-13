@@ -232,7 +232,7 @@ gz_conn_err_t gz_conn_listen(const char *host, uint16_t port, int *listen_fd, ui
 }
 
 gz_conn_err_t gz_conn_accept(gz_conn_t *c, int listen_fd, const secp256k1_context *secp,
-                             const uint8_t ls_priv[32], gz_random_port_t random,
+                             const uint8_t ls_priv[32], gz_net_random_t random,
                              const gz_conn_limits_t *limits, gz_conn_member_fn is_member, void *member_ctx)
 {
     uint8_t act[GZ_NOISE_ACT3_LEN], rs[33];
@@ -304,7 +304,7 @@ static gz_conn_err_t tcp_connect(gz_conn_t *c, const char *host, uint16_t port, 
 
 gz_conn_err_t gz_conn_connect(gz_conn_t *c, const char *host, uint16_t port,
                               const secp256k1_context *secp, const uint8_t ls_priv[32],
-                              const uint8_t pinned_host[33], gz_random_port_t random,
+                              const uint8_t pinned_host[33], gz_net_random_t random,
                               const gz_conn_limits_t *limits)
 {
     uint8_t act[GZ_NOISE_ACT3_LEN], rs[33];

@@ -173,7 +173,7 @@ add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/co
             ports/net/envelope.c ports/net/lnmsg.c ports/net/peers.c)
 set_target_properties(gazpacho_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_net PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/ports/net ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/ports/net)
 target_link_libraries(gazpacho_net PUBLIC secp256k1 OpenSSL::Crypto)
 target_compile_options(gazpacho_net PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
 
@@ -187,6 +187,20 @@ gz_add_test(net_conn  tests/net/test_conn.c  gazpacho_net)
 gz_add_test(net_envelope tests/net/test_envelope.c gazpacho_net)
 gz_add_test(net_lnmsg tests/net/test_lnmsg.c gazpacho_net)
 gz_add_test(net_peers tests/net/test_peers.c gazpacho_net)
+# Kind 32767 (test traffic, contract v2 section 7) exists only in a build
+# with GZ_TEST_KINDS: a second copy of the library for its test, so the
+# library everything else links never knows it.
+add_library(gazpacho_net_testkinds STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c
+            ports/net/envelope.c ports/net/lnmsg.c ports/net/peers.c)
+set_target_properties(gazpacho_net_testkinds PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_net_testkinds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ports/net)
+target_compile_definitions(gazpacho_net_testkinds PUBLIC GZ_TEST_KINDS)
+target_link_libraries(gazpacho_net_testkinds PUBLIC secp256k1 OpenSSL::Crypto)
+target_compile_options(gazpacho_net_testkinds PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
+gz_add_test(net_test_kind tests/net/test_testkind.c gazpacho_net_testkinds)
+# ports/net and gz-net include no core header (contract v2, section 12).
+add_test(NAME net_no_core_headers COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-net-no-core.sh
+         ${CMAKE_C_COMPILER} ${secp256k1-zkp_SOURCE_DIR}/include)
 # Every wipe of a stack secret is counted, and HMAC is made to fail on demand
 # (GNU ld's --wrap; review of PR 10, section 6).
 gz_add_test(net_wipes tests/net/test_wipes.c gazpacho_net)

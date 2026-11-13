@@ -83,7 +83,7 @@ def apply(path, old, new, nth):
 
 
 def run_all(work, inc, lib, first=False):
-    cc = ["gcc", "-std=c11", "-O1", "-w", "-I", work + "/ports/net", "-I", work + "/core/gazpacho/include", "-I", inc]
+    cc = ["gcc", "-std=c11", "-O1", "-w", "-I", work + "/ports/net", "-I", inc]  # no core header (contract v2, 12)
     objs = []
     for src in LIB:
         obj = os.path.join(work, os.path.basename(src) + ".o")

@@ -56,11 +56,10 @@
 /* Randomness straight from the kernel, with no buffer of future key bytes
  * left in the process. The port cannot report a failure, so a failure ends
  * the program rather than hand out weak keys. */
-static void os_fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
+static void os_fill(void *ctx, uint8_t *out, size_t len)
 {
     size_t done = 0;
     (void)ctx;
-    (void)purpose;
     while (done < len) {
 #if defined(__linux__)
         ssize_t r = getrandom(out + done, len - done, 0);
@@ -127,7 +126,7 @@ static int load_key(const char *path, uint8_t key[32])
     int ok;
     FILE *f;
     if (!path) {
-        os_fill(NULL, GZ_RANDOM_ORDINARY, key, 32);
+        os_fill(NULL, key, 32);
         return 1;
     }
     f = fopen(path, "rb");
@@ -194,7 +193,7 @@ static void report(const char *what, gz_conn_err_t e)
 }
 
 static int cmd_listen(const char *host, uint16_t port, const uint8_t key[32],
-                      const secp256k1_context *secp, gz_random_port_t rnd, int accepts)
+                      const secp256k1_context *secp, gz_net_random_t rnd, int accepts)
 {
     uint8_t pub[33], msg[GZ_MSG_MAX], out[64];
     secp256k1_pubkey pk;
@@ -254,7 +253,7 @@ static int cmd_listen(const char *host, uint16_t port, const uint8_t key[32],
 }
 
 static int cmd_connect(const char *host, uint16_t port, const uint8_t key[32], const uint8_t pin[33],
-                       const secp256k1_context *secp, gz_random_port_t rnd, int count)
+                       const secp256k1_context *secp, gz_net_random_t rnd, int count)
 {
     uint8_t msg[GZ_MSG_MAX], out[64];
     size_t len, olen;
@@ -300,7 +299,7 @@ typedef struct {
     long ping_ms, pong_ms, seconds;
 } lobby_opts_t;
 
-static gz_peers_t *lobby_peers(const uint8_t key[32], const secp256k1_context *secp, gz_random_port_t rnd,
+static gz_peers_t *lobby_peers(const uint8_t key[32], const secp256k1_context *secp, gz_net_random_t rnd,
                                const lobby_opts_t *o)
 {
     gz_peers_config_t cfg;
@@ -328,7 +327,7 @@ static void print_close(const gz_peer_event_t *ev)
 }
 
 static int cmd_serve(const char *host, uint16_t port, const uint8_t key[32], const secp256k1_context *secp,
-                     gz_random_port_t rnd, int accepts, const lobby_opts_t *o)
+                     gz_net_random_t rnd, int accepts, const lobby_opts_t *o)
 {
     uint8_t pub[33];
     secp256k1_pubkey pk;
@@ -406,7 +405,7 @@ static int cmd_serve(const char *host, uint16_t port, const uint8_t key[32], con
 }
 
 static int cmd_join(const char *host, uint16_t port, const uint8_t key[32], const uint8_t pin[33],
-                    const secp256k1_context *secp, gz_random_port_t rnd, const lobby_opts_t *o)
+                    const secp256k1_context *secp, gz_net_random_t rnd, const lobby_opts_t *o)
 {
     uint64_t id;
     int connected = 0, status = 0, rc = 1;
@@ -480,7 +479,7 @@ int main(int argc, char **argv)
     long port = -1, number = 1;
     lobby_opts_t lo = {15000, 30000, -1};
     uint8_t key[32], pin[33], seed[32];
-    gz_random_port_t rnd = {os_fill, NULL};
+    gz_net_random_t rnd = {os_fill, NULL};
     secp256k1_context *secp;
     int i, rc;
     if (argc < 2) return usage();
@@ -504,7 +503,7 @@ int main(int argc, char **argv)
         return 1;
     }
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
-    os_fill(NULL, GZ_RANDOM_ORDINARY, seed, sizeof seed);
+    os_fill(NULL, seed, sizeof seed);
     rc = secp && secp256k1_context_randomize(secp, seed);
     OPENSSL_cleanse(seed, sizeof seed);
     if (!rc) return 1;

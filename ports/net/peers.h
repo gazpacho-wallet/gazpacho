@@ -21,6 +21,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include "conn.h"
 #include "envelope.h"
@@ -28,8 +29,9 @@
 typedef struct {
     const secp256k1_context *secp;
     uint8_t static_key[32];  /* the listener's key, and the default for connections we make */
-    gz_random_port_t random;
-    uint8_t chain[32];       /* init's networks: exactly this chain (signet in slice 1) */
+    gz_net_random_t random;   /* the transport's own type (noise.h): no core header */
+    uint8_t chain[32];       /* init's networks: exactly this chain (signet or testnet4); the main
+                                network's hash is refused by gz_peers_new */
     gz_conn_member_fn is_member; /* required for accepted connections (transport.md rule 13) */
     void *member_ctx;
     int handshake_ms;        /* TCP connect, handshake and init, from the start (default 10,000) */
@@ -81,7 +83,11 @@ typedef enum {
     GZ_PEER_WHY_EVICTED,           /* made way for a newcomer: the oldest handshake when the handshake
                                       budget was full, or the oldest connection without a seat when
                                       max_conns were established */
-    GZ_PEER_WHY_FULL               /* max_conns established, every accepted one holding a seat */
+    GZ_PEER_WHY_FULL,              /* max_conns established, every accepted one holding a seat */
+    GZ_PEER_WHY_REPLACED,          /* a newer connection proved the same key (one connection per link) */
+    GZ_PEER_WHY_SEND_REFUSED,      /* gz_peers_send or send_raw refused a message: the connection is
+                                      closed so that no loss outlives it (contract v2, section 1) */
+    GZ_PEER_WHY_CLOSED_LOCAL       /* closed by gz_peers_close_after_send, after sending what was queued */
 } gz_peer_why_t;
 
 typedef struct {
@@ -136,11 +142,16 @@ gz_peers_err_t gz_peers_connect(gz_peers_t *p, const char *host, uint16_t port, 
 
 /* Send a factory message. Records over 65,495 bytes are split into parts
  * (section 5), all queued at once, so one transfer completes before the next
- * begins; only the host splits. */
+ * begins; only the host splits. Any refusal on a live connection (FULL,
+ * TOO_BIG, ARGS) also closes it, with a CLOSED event (SEND_REFUSED): every
+ * lost message then coincides with a reconnect (contract v2, section 1).
+ * max_queue must hold at least twice the largest set of messages a host
+ * answers one reconnect with; the default 4 MiB does for Slice 1. */
 gz_peers_err_t gz_peers_send(gz_peers_t *p, uint64_t conn, uint16_t kind, const uint8_t scope[32],
                              const uint8_t *records, size_t records_len);
 
-/* Send any Lightning message (type included), for tools and tests. */
+/* Send any Lightning message (type included), for tools and tests. A
+ * refusal closes the connection, as for gz_peers_send. */
 gz_peers_err_t gz_peers_send_raw(gz_peers_t *p, uint64_t conn, const uint8_t *msg, size_t len);
 
 /* Refuse: send a warning with `reason` (short ASCII), stop reading, and
@@ -152,11 +163,32 @@ gz_peers_err_t gz_peers_refuse(gz_peers_t *p, uint64_t conn, const char *reason)
  * already queued for the connection are dropped. */
 gz_peers_err_t gz_peers_close(gz_peers_t *p, uint64_t conn);
 
-/* Mark an accepted connection as holding a seat (the lobby engine does this
- * at join and clears it at leave). When max_conns connections are
- * established, a newcomer evicts the oldest accepted connection without a
- * seat; seated ones are never evicted. */
-gz_peers_err_t gz_peers_set_seated(gz_peers_t *p, uint64_t conn, int seated);
+/* Send what is already queued, then close (within send_ms), then give a
+ * CLOSED event (CLOSED_LOCAL). The program's DISCONNECT (contract v2,
+ * section 3). Nothing is read meanwhile. */
+gz_peers_err_t gz_peers_close_after_send(gz_peers_t *p, uint64_t conn);
+
+/* Seats belong to keys, not connections (contract v2, section 3): mark a
+ * member's key as holding a seat, or no longer. Applied at admission and
+ * kept across the key's connections, so a replacement never leaves the seat
+ * evictable. When max_conns connections are established, a newcomer evicts
+ * the oldest accepted connection whose key holds no seat; one whose key holds
+ * a seat is never evicted. The lobby engine calls this at join and leave and
+ * again at every start; gz-net serve never does. */
+gz_peers_err_t gz_peers_set_seated_key(gz_peers_t *p, const uint8_t node_id[33], int seated);
+
+/* One poll loop for everything (contract v2, section 4). gz_peers_pollfds
+ * writes the descriptors this object waits on, with their events, to
+ * fds[0..cap) and returns how many (at most gz_peers_max_fds); *timeout_ms
+ * gets the time until its next deadline, 0 if events are waiting, or -1 for
+ * none. The descriptors are valid until the next call of any gz_peers_
+ * function. After the caller's poll(), gz_peers_dispatch acts on fds[0..n)
+ * as written by the last gz_peers_pollfds, with revents filled, and on every
+ * deadline that has passed; it never blocks. Events are then taken with
+ * gz_peers_poll(p, 0, ev) until it returns 0, which never blocks. */
+size_t gz_peers_max_fds(const gz_peers_t *p);
+size_t gz_peers_pollfds(gz_peers_t *p, struct pollfd *fds, size_t cap, int *timeout_ms);
+void gz_peers_dispatch(gz_peers_t *p, const struct pollfd *fds, size_t n);
 
 /* Wait up to timeout_ms (0: do not wait; negative: without limit) for the
  * next event. 1 if *ev holds one, 0 if the time passed without one. Pings,
@@ -171,6 +203,8 @@ typedef struct {
     uint64_t refused_full;       /* newcomers refused: every slot held by a seated member */
     uint64_t refused_address;    /* accepts closed at once: max_per_address reached */
     uint64_t warnings_dropped;   /* warnings received past max_warning_events */
+    uint64_t replaced;           /* older connections closed because a newer one proved the same key;
+                                    many for one key means two copies of a wallet are running */
     unsigned open;
     size_t reassembly_bytes;     /* held by incomplete transfers now */
 } gz_peers_stats_t;

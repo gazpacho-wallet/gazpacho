@@ -45,6 +45,14 @@
 #define GZ_ENV_KIND_ROUND_STATUS_REQUEST 80
 #define GZ_ENV_KIND_FACTORY_FUNDED 81
 
+/* Kind 32767 is reserved for test traffic (contract v2, section 7): scope
+ * all zero, any valid records, either direction, never split. Only a build
+ * with GZ_TEST_KINDS knows it; a release build ignores it like any unknown
+ * odd kind. */
+#ifdef GZ_TEST_KINDS
+#define GZ_ENV_KIND_TEST 32767
+#endif
+
 extern const uint8_t GZ_ENV_PROTOCOL[4]; /* 67 7a 66 01 */
 
 /* Which side of a connection receives: the host (it accepted the

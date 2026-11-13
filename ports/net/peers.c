@@ -47,7 +47,6 @@ typedef struct {
     int fd, outbound, phase;
     int init_got;           /* the peer's init has been accepted (CONNECTED given) */
     int peer_init;          /* the peer's init arrived and was valid: a warning may be sent */
-    int seated;             /* the caller says this connection holds a seat (gz_peers_set_seated) */
     struct sockaddr_storage addr; /* accepted connections: the peer's address */
     socklen_t addrlen;
     unsigned warnings;      /* WARNING events given for this connection */
@@ -90,6 +89,11 @@ struct gz_peers {
     unsigned n_listen;
     conn_t **conns;
     unsigned n_conns, cap;   /* cap: max_conns plus max_handshakes */
+    uint8_t (*seats)[33];    /* keys that hold a seat (gz_peers_set_seated_key) */
+    size_t n_seats, cap_seats;
+    struct pollfd *own_pf;   /* gz_peers_poll's own array (gz_peers_max_fds entries) */
+    uint64_t *pf_ids;        /* for each descriptor of the last gz_peers_pollfds: 0 a listener, else a connection */
+    size_t pf_n;
     uint64_t next_id;
     evnode_t *head, *tail, *current;
     gz_peers_stats_t stats;
@@ -310,6 +314,25 @@ static void deliver(gz_peers_t *p, conn_t *c, const gz_env_msg_t *m)
 
 static int admit(gz_peers_t *p, conn_t *c);
 
+/* One live connection per link (contract v2, section 2). On the host side a
+ * link is the remote key, so when a newcomer's init is accepted, an older
+ * accepted connection that proved the same key is closed first, before the
+ * admission checks: a seated member whose old connection is half-open is
+ * never refused while it waits for the pong timeout. Only the key's holder
+ * can do this (BOLT 8 proves the key in act three). */
+static void replace_older(gz_peers_t *p, conn_t *c)
+{
+    unsigned i;
+    for (i = 0; i < p->n_conns; i++) {
+        conn_t *o = p->conns[i];
+        if (o == c || o->outbound || !o->init_got || !o->have_id || memcmp(o->node_id, c->node_id, 33) != 0)
+            continue;
+        p->stats.replaced++;
+        fail(p, o, GZ_PEER_WHY_REPLACED, 0, "a newer connection proved the same key");
+        i = (unsigned)-1; /* the array changed: look again from the start */
+    }
+}
+
 /* Counts a message that changes nothing (an unknown odd type or kind, a
  * discovery kind, a wrong tag, a warning). More than max_ignored in one
  * pong_ms window is refused (review of PR 23, F7). 0 if refused. */
@@ -382,7 +405,10 @@ static void on_message(gz_peers_t *p, conn_t *c, const uint8_t *m, size_t len)
         if (le == GZ_LN_NETWORK) { refuse(p, c, GZ_PEER_WHY_INIT, "init networks is not exactly our chain"); return; }
         if (le) { refuse(p, c, GZ_PEER_WHY_INIT, "malformed init"); return; }
         c->peer_init = 1;
-        if (!c->outbound && !admit(p, c)) return;
+        if (!c->outbound) {
+            replace_older(p, c);
+            if (!admit(p, c)) return;
+        }
         c->init_got = 1;
         push_event(p, c, GZ_PEER_EV_CONNECTED);
         return;
@@ -653,6 +679,15 @@ static int progress(const conn_t *c)
     return 3;
 }
 
+static int is_seated(const gz_peers_t *p, const conn_t *c)
+{
+    size_t i;
+    if (!c->have_id) return 0;
+    for (i = 0; i < p->n_seats; i++)
+        if (memcmp(p->seats[i], c->node_id, 33) == 0) return 1;
+    return 0;
+}
+
 /* The accepted connection to evict. established_unseated 0: among those
  * still in their handshake (no valid init yet), the one that has got least
  * far, the oldest among equals, so a slow honest handshake outlives fresh
@@ -665,7 +700,7 @@ static conn_t *oldest_inbound(gz_peers_t *p, int established_unseated)
     for (i = 0; i < p->n_conns; i++) {
         conn_t *c = p->conns[i];
         if (c->outbound || c->closing) continue;
-        if (established_unseated ? !(c->init_got && !c->seated) : c->init_got) continue;
+        if (established_unseated ? !(c->init_got && !is_seated(p, c)) : c->init_got) continue;
         if (!best) {
             best = c;
             continue;
@@ -811,8 +846,20 @@ gz_peers_t *gz_peers_new(const gz_peers_config_t *config)
         return NULL;
     p = calloc(1, sizeof *p);
     if (!p) return NULL;
+    if (memcmp(config->chain, GZ_LN_CHAIN_MAINNET, 32) == 0) { /* SLICES.md rule 3 */
+        free(p);
+        return NULL;
+    }
     p->cap = config->max_conns + config->max_handshakes;
     p->conns = calloc(p->cap, sizeof *p->conns);
+    p->own_pf = calloc(MAX_LISTEN + p->cap, sizeof *p->own_pf);
+    p->pf_ids = calloc(MAX_LISTEN + p->cap, sizeof *p->pf_ids);
+    if (!p->own_pf || !p->pf_ids) {
+        free(p->own_pf);
+        free(p->pf_ids);
+        free(p->conns);
+        p->conns = NULL;
+    }
     if (!p->conns) {
         free(p);
         return NULL;
@@ -835,6 +882,9 @@ void gz_peers_free(gz_peers_t *p)
         free_event(n);
     }
     free(p->conns);
+    free(p->own_pf);
+    free(p->pf_ids);
+    free(p->seats);
     OPENSSL_cleanse(p, sizeof *p);
     free(p);
 }
@@ -907,6 +957,13 @@ gz_peers_err_t gz_peers_connect(gz_peers_t *p, const char *host, uint16_t port, 
     return GZ_PEERS_OK;
 }
 
+/* A refused send on a live connection closes it (contract v2, section 1). */
+static gz_peers_err_t send_refused(gz_peers_t *p, conn_t *c, gz_peers_err_t e)
+{
+    fail(p, c, GZ_PEER_WHY_SEND_REFUSED, 0, gz_peers_err_name(e));
+    return e;
+}
+
 static gz_peers_err_t ready_conn(gz_peers_t *p, uint64_t id, conn_t **out)
 {
     conn_t *c = find(p, id);
@@ -925,21 +982,25 @@ gz_peers_err_t gz_peers_send(gz_peers_t *p, uint64_t conn, uint16_t kind, const 
     uint8_t tid[32];
     gz_peers_err_t e = ready_conn(p, conn, &c);
     if (e) return e;
-    if (kind == GZ_ENV_KIND_PART) return GZ_PEERS_ERR_ARGS; /* parts are made here, never by callers */
+    if (kind == GZ_ENV_KIND_PART) return send_refused(p, c, GZ_PEERS_ERR_ARGS); /* parts are made here */
     if (records_len <= GZ_ENV_MAX_RECORDS) {
-        if (queued(c) + records_len + 2 + GZ_ENV_HDR_LEN + 34 > p->cfg.max_queue) return GZ_PEERS_ERR_FULL;
-        if (gz_env_write(kind, scope, records, records_len, p->out, sizeof p->out, &n)) return GZ_PEERS_ERR_ARGS;
+        if (queued(c) + records_len + 2 + GZ_ENV_HDR_LEN + 34 > p->cfg.max_queue) return send_refused(p, c, GZ_PEERS_ERR_FULL);
+        if (gz_env_write(kind, scope, records, records_len, p->out, sizeof p->out, &n)) return send_refused(p, c, GZ_PEERS_ERR_ARGS);
         if (!q_msg(c, p->out, n)) { fail(p, c, GZ_PEER_WHY_SOCKET, ENOMEM, "cannot queue"); return GZ_PEERS_ERR_MEMORY; }
         gz_net_wipe(p->out, n);
         return GZ_PEERS_OK;
     }
     /* Members send no parts in slice 1 (messages.md section 5). */
-    if (c->outbound || !(count = gz_env_part_count(records_len))) return GZ_PEERS_ERR_TOO_BIG;
-    if (queued(c) + records_len + count * (2 + GZ_ENV_HDR_LEN + 100 + 34) > p->cfg.max_queue) return GZ_PEERS_ERR_FULL;
+#ifdef GZ_TEST_KINDS
+    if (kind == GZ_ENV_KIND_TEST) return send_refused(p, c, GZ_PEERS_ERR_TOO_BIG); /* never split */
+#endif
+    if (c->outbound || !(count = gz_env_part_count(records_len))) return send_refused(p, c, GZ_PEERS_ERR_TOO_BIG);
+    if (queued(c) + records_len + count * (2 + GZ_ENV_HDR_LEN + 100 + 34) > p->cfg.max_queue)
+        return send_refused(p, c, GZ_PEERS_ERR_FULL);
     gz_env_transfer_id(p->cfg.secp, kind, records, records_len, tid);
     for (i = 0; i < count; i++) {
         if (gz_env_write_part(tid, kind, scope, records, records_len, i, p->out, sizeof p->out, &n))
-            return GZ_PEERS_ERR_ARGS; /* only before the first part: the arguments do not change */
+            return send_refused(p, c, GZ_PEERS_ERR_ARGS); /* only before the first part */
         if (!q_msg(c, p->out, n)) { fail(p, c, GZ_PEER_WHY_SOCKET, ENOMEM, "cannot queue"); return GZ_PEERS_ERR_MEMORY; }
         gz_net_wipe(p->out, n);
     }
@@ -951,8 +1012,8 @@ gz_peers_err_t gz_peers_send_raw(gz_peers_t *p, uint64_t conn, const uint8_t *ms
     conn_t *c;
     gz_peers_err_t e = ready_conn(p, conn, &c);
     if (e) return e;
-    if (len < 2 || len > GZ_NOISE_MAX_MSG) return GZ_PEERS_ERR_TOO_BIG;
-    if (queued(c) + len + 34 > p->cfg.max_queue) return GZ_PEERS_ERR_FULL;
+    if (len < 2 || len > GZ_NOISE_MAX_MSG) return send_refused(p, c, GZ_PEERS_ERR_TOO_BIG);
+    if (queued(c) + len + 34 > p->cfg.max_queue) return send_refused(p, c, GZ_PEERS_ERR_FULL);
     if (!q_msg(c, msg, len)) { fail(p, c, GZ_PEER_WHY_SOCKET, ENOMEM, "cannot queue"); return GZ_PEERS_ERR_MEMORY; }
     return GZ_PEERS_OK;
 }
@@ -995,11 +1056,36 @@ gz_peers_err_t gz_peers_close(gz_peers_t *p, uint64_t conn)
     return GZ_PEERS_OK;
 }
 
-gz_peers_err_t gz_peers_set_seated(gz_peers_t *p, uint64_t conn, int seated)
+gz_peers_err_t gz_peers_set_seated_key(gz_peers_t *p, const uint8_t node_id[33], int seated)
+{
+    size_t i;
+    for (i = 0; i < p->n_seats; i++) {
+        if (memcmp(p->seats[i], node_id, 33) != 0) continue;
+        if (!seated) {
+            memcpy(p->seats[i], p->seats[--p->n_seats], 33);
+        }
+        return GZ_PEERS_OK;
+    }
+    if (!seated) return GZ_PEERS_OK;
+    if (p->n_seats == p->cap_seats) {
+        size_t nc = p->cap_seats ? 2 * p->cap_seats : 16;
+        uint8_t (*ns)[33] = realloc(p->seats, nc * sizeof *ns);
+        if (!ns) return GZ_PEERS_ERR_MEMORY;
+        p->seats = ns;
+        p->cap_seats = nc;
+    }
+    memcpy(p->seats[p->n_seats++], node_id, 33);
+    return GZ_PEERS_OK;
+}
+
+gz_peers_err_t gz_peers_close_after_send(gz_peers_t *p, uint64_t conn)
 {
     conn_t *c = find(p, conn);
-    if (!c) return GZ_PEERS_ERR_NO_CONN;
-    c->seated = seated != 0;
+    if (!c || c->closing) return GZ_PEERS_ERR_NO_CONN;
+    c->closing = 1;
+    c->close_why = GZ_PEER_WHY_CLOSED_LOCAL;
+    set_text(c->close_text, "closed after sending");
+    c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);
     return GZ_PEERS_OK;
 }
 
@@ -1023,6 +1109,75 @@ static int pop(gz_peers_t *p, gz_peer_event_t *ev)
     return 1;
 }
 
+size_t gz_peers_max_fds(const gz_peers_t *p)
+{
+    return MAX_LISTEN + p->cap;
+}
+
+size_t gz_peers_pollfds(gz_peers_t *p, struct pollfd *fds, size_t cap, int *timeout_ms)
+{
+    size_t n = 0;
+    unsigned i;
+    int64_t wake = INT64_MAX, now;
+    for (i = 0; i < p->n_listen && n < cap; i++) {
+        fds[n].fd = p->lfd[i];
+        fds[n].events = POLLIN;
+        fds[n].revents = 0;
+        p->pf_ids[n++] = 0;
+    }
+    for (i = 0; i < p->n_conns; i++) {
+        conn_t *c = p->conns[i];
+        int64_t d = next_deadline(p, c);
+        if (d < wake) wake = d;
+        if (n == cap) continue; /* the deadline still counts */
+        fds[n].fd = c->fd;
+        fds[n].events = (short)((c->phase == PH_TCP ? 0 : c->closing ? 0 : POLLIN) |
+                                (c->phase == PH_TCP || queued(c) ? POLLOUT : 0));
+        fds[n].revents = 0;
+        p->pf_ids[n++] = c->id;
+    }
+    p->pf_n = n;
+    now = now_ms();
+    if (p->head) *timeout_ms = 0;
+    else if (wake == INT64_MAX) *timeout_ms = -1;
+    else *timeout_ms = wake <= now ? 0 : wake - now > 60000 ? 60000 : (int)(wake - now);
+    return n;
+}
+
+void gz_peers_dispatch(gz_peers_t *p, const struct pollfd *fds, size_t n)
+{
+    size_t i;
+    if (n > p->pf_n) n = p->pf_n;
+    for (i = 0; i < n; i++) {
+        conn_t *c;
+        uint64_t id = p->pf_ids[i];
+        if (!fds[i].revents) continue;
+        if (id == 0) {
+            do_accept(p, fds[i].fd);
+            continue;
+        }
+        if (!(c = find(p, id))) continue;
+        if (c->phase == PH_TCP) {
+            tcp_done(p, c);
+            continue;
+        }
+        if (fds[i].revents & (POLLIN | POLLHUP | POLLERR)) {
+            if (c->closing) {
+                /* Not reading any more; a hang-up ends the flush. */
+                if (fds[i].revents & (POLLHUP | POLLERR)) finish_close(p, c);
+                continue;
+            }
+            do_read(p, c);
+            if (!(c = find(p, id))) continue;
+        }
+        if (queued(c)) do_write(p, c);
+    }
+    p->pf_n = 0;
+    run_timers(p);
+}
+
+/* The blocking form, for gz-net and the tests: the same two steps around
+ * its own poll(). With timeout 0 it never blocks. */
 int gz_peers_poll(gz_peers_t *p, int timeout_ms, gz_peer_event_t *ev)
 {
     int64_t end = timeout_ms < 0 ? INT64_MAX : now_ms() + timeout_ms;
@@ -1031,63 +1186,22 @@ int gz_peers_poll(gz_peers_t *p, int timeout_ms, gz_peer_event_t *ev)
         p->current = NULL;
     }
     for (;;) {
-        struct pollfd *pf;
-        uint64_t *ids;
-        unsigned i, n = 0, total = p->n_listen + p->n_conns;
-        int64_t now, wake = end;
-        int r, wait;
+        int wait, r;
+        int64_t now;
+        size_t n;
         if (pop(p, ev)) return 1;
-        pf = calloc(total ? total : 1, sizeof *pf);
-        ids = calloc(total ? total : 1, sizeof *ids);
-        if (!pf || !ids) abort();
-        for (i = 0; i < p->n_listen; i++) {
-            pf[n].fd = p->lfd[i];
-            pf[n].events = POLLIN;
-            ids[n++] = 0;
-        }
-        for (i = 0; i < p->n_conns; i++) {
-            conn_t *c = p->conns[i];
-            int64_t d = next_deadline(p, c);
-            if (d < wake) wake = d;
-            pf[n].fd = c->fd;
-            pf[n].events = (short)((c->phase == PH_TCP ? 0 : c->closing ? 0 : POLLIN) |
-                                   (c->phase == PH_TCP || queued(c) ? POLLOUT : 0));
-            ids[n++] = c->id;
-        }
+        n = gz_peers_pollfds(p, p->own_pf, gz_peers_max_fds(p), &wait);
         now = now_ms();
-        wait = wake <= now ? 0 : wake - now > 60000 ? 60000 : (int)(wake - now);
-        r = poll(pf, n, wait);
-        if (r < 0 && errno != EINTR) {
-            free(pf);
-            free(ids);
-            return 0;
+        if (end != INT64_MAX) {
+            int64_t left = end - now < 0 ? 0 : end - now;
+            if (wait < 0 || left < wait) wait = (int)(left > 60000 ? 60000 : left);
+        } else if (wait < 0) {
+            wait = 60000;
         }
-        for (i = 0; r > 0 && i < n; i++) {
-            conn_t *c;
-            if (!pf[i].revents) continue;
-            if (ids[i] == 0) {
-                do_accept(p, pf[i].fd);
-                continue;
-            }
-            if (!(c = find(p, ids[i]))) continue;
-            if (c->phase == PH_TCP) {
-                tcp_done(p, c);
-                continue;
-            }
-            if (pf[i].revents & (POLLIN | POLLHUP | POLLERR)) {
-                if (c->closing) {
-                    /* Not reading any more; a hang-up ends the flush. */
-                    if (pf[i].revents & (POLLHUP | POLLERR)) finish_close(p, c);
-                    continue;
-                }
-                do_read(p, c);
-                if (!(c = find(p, ids[i]))) continue;
-            }
-            if (queued(c)) do_write(p, c);
-        }
-        free(pf);
-        free(ids);
-        run_timers(p);
+        r = poll(p->own_pf, (nfds_t)n, wait);
+        if (r < 0 && errno != EINTR) return 0;
+        if (r < 0) n = 0;
+        gz_peers_dispatch(p, p->own_pf, n);
         if (pop(p, ev)) return 1;
         if (now_ms() >= end) return 0;
     }
@@ -1124,6 +1238,9 @@ const char *gz_peer_why_name(gz_peer_why_t w)
     case GZ_PEER_WHY_LOCAL: return "refused by us";
     case GZ_PEER_WHY_EVICTED: return "evicted";
     case GZ_PEER_WHY_FULL: return "host full";
+    case GZ_PEER_WHY_REPLACED: return "replaced by a newer connection";
+    case GZ_PEER_WHY_SEND_REFUSED: return "send refused";
+    case GZ_PEER_WHY_CLOSED_LOCAL: return "closed by us";
     }
     return "unknown";
 }

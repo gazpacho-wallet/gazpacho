@@ -112,6 +112,9 @@ static const kind_t KINDS[] = {
     K(GZ_ENV_KIND_ROUND_ABORT, DIR_EITHER, R_ABORT),
     K(GZ_ENV_KIND_ROUND_STATUS_REQUEST, DIR_M2H, R_ROUND_ID),
     K(GZ_ENV_KIND_FACTORY_FUNDED, DIR_H2M, R_ROUND_ID),
+#ifdef GZ_TEST_KINDS
+    {GZ_ENV_KIND_TEST, DIR_EITHER, NULL, 0},
+#endif
 };
 
 /* schema_ctx_t.seen has one bit per rule. */
@@ -283,7 +286,15 @@ gz_env_verdict_t gz_env_check(uint16_t kind, const uint8_t scope[32], const uint
         *reason = "kind in the wrong direction";
         return GZ_ENV_REFUSE;
     }
+#ifdef GZ_TEST_KINDS
+    if (kind == GZ_ENV_KIND_TEST && !all_zero(scope, 32)) {
+        *reason = "test kind with a scope";
+        return GZ_ENV_REFUSE;
+    }
+    if (kind != GZ_ENV_KIND_HELLO && kind != GZ_ENV_KIND_TEST && all_zero(scope, 32)) {
+#else
     if (kind != GZ_ENV_KIND_HELLO && all_zero(scope, 32)) {
+#endif
         *reason = "zero scope";
         return GZ_ENV_REFUSE;
     }

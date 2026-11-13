@@ -302,3 +302,16 @@ peers-admit-counts-closing	ports/net/peers.c	if (p->conns[i]->init_got && !p->co
 #   on timers and windows (no practical effect), the ping-length cycle and
 #   the full held mask (equivalent), the 64-unit cap (its value), and the
 #   bLIP-56 65,535-byte edge (unused in slice 1).
+# Contract v2, step P2: refused sends close, replacement, seats by key, close_after_send, networks, one loop.
+p2-refusal-keeps-connection	ports/net/peers.c	fail(p, c, GZ_PEER_WHY_SEND_REFUSED, 0, gz_peers_err_name(e));	
+p2-no-replacement	ports/net/peers.c	replace_older(p, c);\n            if (!admit	if (!admit
+p2-replace-other-keys	ports/net/peers.c	memcmp(o->node_id, c->node_id, 33) != 0)	0)
+p2-seat-not-found	ports/net/peers.c	if (memcmp(p->seats[i], c->node_id, 33) == 0) return 1;	
+p2-unseat-ignored	ports/net/peers.c	memcpy(p->seats[i], p->seats[--p->n_seats], 33);	
+p2-close-after-send-no-flush	ports/net/peers.c	c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);\n    return GZ_PEERS_OK;	c->close_by = now_ms();\n    return GZ_PEERS_OK;
+p2-close-after-send-wrong-why	ports/net/peers.c	c->close_why = GZ_PEER_WHY_CLOSED_LOCAL;	c->close_why = GZ_PEER_WHY_LOCAL;
+p2-mainnet-allowed	ports/net/peers.c	if (memcmp(config->chain, GZ_LN_CHAIN_MAINNET, 32) == 0) {	if (0) {
+p2-dispatch-no-timers	ports/net/peers.c	    p->pf_n = 0;\n    run_timers(p);	    p->pf_n = 0;
+p2-pollfds-events-not-urgent	ports/net/peers.c	if (p->head) *timeout_ms = 0;\n    else 	
+p2-pollfds-no-deadline	ports/net/peers.c	else if (wake == INT64_MAX) *timeout_ms = -1;	else if (1) *timeout_ms = -1;
+p2-testnet4-byte	ports/net/lnmsg.c	0x43, 0xf0, 0x8b, 0xda	0x43, 0xf0, 0x8c, 0xda
