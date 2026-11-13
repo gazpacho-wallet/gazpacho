@@ -36,7 +36,7 @@ resume-without-fresh	ports/api/route.c	if (!r->fresh && !r->bearer) { gz_respond
 attempts-gate-off	ports/api/route.c	        gz_attempts_gate(srv, now_s, &retry)) {	        0) {
 wrong-not-counted	ports/api/route.c	        gz_attempts_wrong(srv, now_s);	
 delay-never-doubles	ports/api/session.c	delay = k >= 10 ? 900 : ((int64_t)1 << k);	delay = 1;
-missing-file-not-strict	ports/api/session.c	srv->att_blocked_until = now + 900;	srv->att_blocked_until = 0;
+missing-file-not-strict	ports/api/session.c	srv->att_blocked_until = now + 900;	srv->att_blocked_until = 0;	2
 attempts-checksum-unchecked	ports/api/session.c	if (!gz_ct_eq(h, in + 69, 16)) return -1;	
 right-does-not-reset	ports/api/session.c	    srv->att_wrong = 0;\n    srv->att_blocked_until = 0;\n    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file	    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file
 slot-unbounded	ports/api/derive.c	} else if (!srv->slot_queued) {	} else if (1) {
@@ -121,7 +121,7 @@ queued-ungated	ports/api/derive.c	if (gz_job_gated(q) && srv->att_loaded && gz_a
 old-generation-installed	ports/api/route.c	if (pp->generation != gz_generation(srv)) {	if (0) {
 old-generation-uncounted	ports/api/route.c	if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, now_s);	
 held-no-deadline	ports/api/server.c	if (c->state == CS_BUSY && c->held && now >= c->deadline) {	if (0) {
-node-stopped-ignored	ports/api/route.c	if (c->held && c->state == CS_BUSY) gz_held_answer(srv, c, 503, NULL, "node_stopped", NULL, params);	
+node-stopped-ignored	ports/api/route.c	if (c->held && c->state == CS_BUSY) gz_held_answer(srv, c, 503, NULL, "node_stopped", NULL, params);	if (0) gz_held_answer(srv, c, 503, NULL, "node_stopped", NULL, params);
 unsaved-not-refused	ports/api/session.c	if (srv->att_unsaved) { *retry_after = -1; return 1; }	if (0) { *retry_after = -1; return 1; }
 loaded-delay-uncapped	ports/api/session.c	if (srv->att_blocked_until > now + 900) srv->att_blocked_until = now + 900;	
 token-folder-refusal-unreported	ports/api/session.c	        srv->token_dir_refused = 1;\n	\n
