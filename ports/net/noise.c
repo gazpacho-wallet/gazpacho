@@ -138,7 +138,7 @@ static gz_noise_err_t make_ephemeral(gz_noise_t *st)
 {
     int i;
     for (i = 0; i < EPHEMERAL_TRIES; i++) {
-        st->random.fill(st->random.ctx, st->e_priv, 32);
+        st->random.fill(st->random.ctx, GZ_RANDOM_SECRET, st->e_priv, 32);   /* never saved */
         if (pub_of(st, st->e_pub, st->e_priv)) return GZ_NOISE_OK;
     }
     return GZ_NOISE_ERR_RANDOM;

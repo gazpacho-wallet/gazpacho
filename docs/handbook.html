@@ -184,6 +184,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c13-state-and-storage" title="State and storage">State and storage</a>
 <a class="sec" href="#c13-code" title="Code">Code</a>
 <a class="sec" href="#c13-hand-over" title="Hand-over">Hand-over</a>
+<a class="sec" href="#c13-added-after-the-third-m1a-review" title="Added after the third M1a review">Added after the third M1a review</a>
 <a class="ch" href="#c14">Testing</a>
 <a class="sec" href="#c14-principles" title="Principles">Principles</a>
 <a class="sec" href="#c14-on-github-on-every-pull-request-and-ever" title="On GitHub, on every pull request and every push to `main`">On GitHub, on every pull request and every push to `main`</a>
@@ -1982,7 +1983,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>What stays true in every case.</strong> The host's spare liquidity in an old state is a deterrent only: the member can take it if the host publishes that state, and it is not counted in exit value. An older state that wins delays the exit.</p></div></details>
 <details id="c4-9-restore"><summary>9. Restore</summary><div class="body"><p>The host keeps a copy of each member's backup and chooses which version to return; the user may also keep an export of their own (<code>DESIGN.md</code> sections 8 and 9). A backup may be older than rounds the member took part in. Draft 2's C12 protected only factories that existed at the backup's date. These rules replace it.</p>
 <p><strong>R1. Every load from a backup is a restore.</strong> The node knows it is restoring; nothing it reads tells it how old the backup is.</p>
-<p><strong>R2. A new restore epoch at every restore.</strong> The original installation uses epoch 0, written in a <code>key_epoch</code> record at the journal's first start. At the first start after a restore, before any key is derived and before any message is sent, the node draws a random 31-bit epoch from the randomness port with the <strong>ordinary, untagged</strong> request, retrying while it is 0, and saves it at once in a <code>key_epoch</code> record, so later backups carry it (<code>journal.md</code> section 8). The epoch is not a secret: it is stored and backed up, so it must not be drawn with the secret tag, whose bytes are never journaled (<code>signing-round.md</code> section 8; review 3, F3). Every per-lobby key, factory key and contribution key alike, is derived under (epoch, index); 31 bits fit a hardened BIP 32 index. Two restores drawing the same epoch is the only way a key could repeat; for n restores the chance is about n² in 2^32, under one in forty million for ten restores [R].</p>
+<p><strong>R2. A new restore epoch at every restore.</strong> The original installation uses epoch 0, written in a <code>key_epoch</code> record at the journal's first start. At the first start after a restore, before any key is derived and before any message is sent, the node draws 8 bytes from the randomness port with the <strong>ordinary, untagged</strong> request and takes as the epoch 31 bits of a bijective mix of those bytes with its incarnation (the SplitMix64 finaliser of the bytes XOR the incarnation times an odd constant; the placeholder in <code>core/gazpacho/node.c</code> shows it), retrying while it is 0, and saves it at once in a <code>key_epoch</code> record, so later backups carry it (<code>journal.md</code> section 8). The epoch is not a secret: it is stored and backed up, so it must not be drawn with the secret tag, whose bytes are never journaled (<code>signing-round.md</code> section 8; review 3, F3). Every per-lobby key, factory key and contribution key alike, is derived under (epoch, index); 31 bits fit a hardened BIP 32 index. The incarnation never repeats and a restore cannot rewind it (<code>runner.h</code>), so a port that repeats its draws after a restore (a machine restored from a snapshot) does not repeat the epoch (PR 9 review round 4, N3). Two restores drawing the same epoch is the only way a key could repeat; for n restores the chance is about n² in 2^32, under one in forty million for ten restores [R].</p>
 <p><strong>R3. Old keys are recovery-only.</strong> Every key derived under an earlier epoch is recovery-only. The key index is never restored backwards into use: a restored node never derives a key it may have used before. A member restored while in an open lobby loses its seat there and must join again with a new key. There is no separate "fresh start" confirmation: the new epoch is enough, and the app simply tells the user that it was restored and which seats were lost.</p>
 <p><strong>R4. Nothing is signed with a recovery-only key</strong> except the recovery procedure (C12; its 1.0.0 part is <code>exit.md</code> 5.7). R4 is a consequence of C7's fresh-key rule and needs no step of its own: a replayed proposal names the member's old key, the member's current key for that lobby is absent from it (or the member has no current key for that lobby at all), and the member refuses with <code>round_abort</code> reason 12 (<code>messages.md</code> section 7.9). It signs no nonce for it. This closes the restart frame of review 2, N1, step 4a.</p>
 <p><strong>R5. A creation round needs a fresh funding output</strong> (C7, "Fresh funding output"). This closes the second tree on an old outpoint, review 2, N1, step 4b: every tree signed before the restore commits to an old key, so it cannot spend an output whose script commits to the new one [R].</p>
@@ -2967,35 +2968,35 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tbody>
 </table></div>
 <h4>12.1 Requirements on the core contract</h4>
-<p>Not code changes made by this specification: requirements that <code>core/gazpacho/include/gazpacho/ports.h</code>, <code>action.h</code> and <code>event.h</code> must meet before the signing engine and the creation checks are written. Today they do not.</p>
+<p>Not code changes made by this specification: requirements that <code>core/gazpacho/include/gazpacho/ports.h</code>, <code>action.h</code> and <code>event.h</code> must meet before the signing engine and the creation checks are written. The first four are met by the core contract for Slice 1 (pull request 21, <code>core-contract-slice1</code>); the fifth is a duty of the program, not of the core.</p>
 <div class="tw"><table>
 <thead>
 <tr>
 <th>Requirement</th>
 <th>Why</th>
-<th>Today</th>
+<th>Where it is met</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td><strong>A secret tag on the randomness port</strong>: a request marked secret, whose bytes are never journaled, logged or put in an event, and come from a seeded source only in simulator builds (section 8)</td>
 <td><code>session_id32</code>, and nothing else in Slice 1</td>
-<td><code>gz_random_port_t</code> is <code>fill(ctx, out, len)</code>, with no tag [C: <code>ports.h:19-25</code>] (review 3, F15)</td>
+<td><code>GZ_RANDOM_SECRET</code> and <code>GZ_RANDOM_ORDINARY</code> (<code>ports.h</code>); the simulator refuses secret draws shorter than 16 bytes and checks that no 8 contiguous secret bytes leave in an action (<code>sim.h</code>, "secrets never leave") (review 3, F15)</td>
 </tr>
 <tr>
 <td><strong>Watch a txid</strong>: report the confirmations of a given transaction, up to a requested depth, and its disappearance in a reorganisation</td>
 <td>C11: the member watches the funding txid to the burial depth</td>
-<td><code>GZ_ACTION_WATCH</code> watches outputs by script only [C: <code>action.h:37</code>, <code>:62</code>]; <code>GZ_CHAIN_TX_CONFIRMED</code> exists as an event but no action asks for it [C: <code>event.h:24-28</code>] (review 3, F8)</td>
+<td><code>GZ_ACTION_WATCH_TX</code> (<code>action.h</code>), answered by <code>GZ_CHAIN_TX_CONFIRMED</code> and <code>GZ_CHAIN_TX_UNCONFIRMED</code> (<code>event.h</code>); txids in the byte order the chain hashes them (review 3, F8)</td>
 </tr>
 <tr>
 <td><strong>Watch an outpoint</strong>: report when a given outpoint is spent, with the spending txid and its confirmations</td>
 <td>C4(d) and Dead: the member watches each input of the funding transaction, whose scripts it does not know (the funding transaction is sent without its previous outputs)</td>
-<td>Not expressible (F8). The Esplora-style chain view can answer both (<code>docs/CHAIN-SERVERS.md</code>)</td>
+<td><code>GZ_ACTION_WATCH_OUTPOINT</code>, answered by <code>GZ_CHAIN_OUTPOINT_SPENT</code>, 0 confirmations meaning not final (<code>action.h</code>). The Esplora-style chain view can answer both (<code>docs/CHAIN-SERVERS.md</code>)</td>
 </tr>
 <tr>
 <td><strong>A restore marker at start</strong>: the program tells the node, before any other event, that this start follows a restore; the node answers with its first save batch (<code>key_epoch</code>, <code>restored</code>, <code>guard</code>) through the runner, as sequence 1 of the new incarnation</td>
 <td><code>safety-rule.md</code> R2; <code>journal.md</code> section 8 (review 3, F22: no batch is ever written outside the runner)</td>
-<td>A user command or a flag to <code>gz_node_start</code>; not yet defined</td>
+<td><code>restored</code> in <code>gz_storage_reader_t</code> (<code>ports.h</code>, the restore marker); the restore epoch is mixed with the incarnation (R2)</td>
 </tr>
 <tr>
 <td><strong>The guard's storage duty</strong>: a batch holding a <code>guard</code> record is confirmed only after the guard file is replaced and synced as well (<code>journal.md</code> section 8.3)</td>
@@ -4465,6 +4466,23 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Small pull requests.</strong> One piece of work, reviewable in one sitting. The first core pull request was over four thousand lines and needed three rounds.</li>
 <li><strong>The report says what was decided where the specification was silent</strong>, so those decisions can be confirmed or overruled.</li>
 <li><strong>Nothing is published by the builder.</strong> The branch is fetched, opened as a pull request, reviewed by an agent that did not write it, and merged only when the review and the automated checks pass.</li>
+</ol></div></details>
+<details id="c13-added-after-the-third-m1a-review"><summary>Added after the third M1a review</summary><div class="body"><ol>
+<li>
+<p><strong>A multi-step start that reads storage must work from a fixed view, or
+    record only what it has actually done.</strong> A start that re-reads storage
+    between steps can record an action (a message as "sent") against a record
+    that appeared after the step began but was never acted on. Storage may
+    grow during a start (late writes from a dead program, the node's own
+    saves); a start must still never claim to have done what it has not.</p>
+</li>
+<li>
+<p><strong>A fault the code describes must be one the test harness can produce.</strong>
+    The runner's contract allowed storage to fail from inside the executor,
+    but the simulator had no way to make it happen, so a mutation that ignored
+    that path looked equivalent to correct. Every path a contract names needs
+    a fault that exercises it.</p>
+</li>
 </ol></div></details>
 </section>
 <section class="chapter" id="c14"><h2>Testing</h2><p class="desc">What runs today and where; then the plan, each item with its milestone.</p><p class="file">Testing · <code>docs/TESTING.md</code></p>
