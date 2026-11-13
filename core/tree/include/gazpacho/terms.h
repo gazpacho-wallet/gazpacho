@@ -75,7 +75,8 @@ typedef enum {
     GZ_TERMS_E_SHAPE_SPLIT,       /* section 4.3: some n makes a leaf with m <= a members */
     GZ_TERMS_E_UNFUNDABLE,        /* for some member count from minimum to target (at most 256),
                                      R(root) is above the money supply or 64 bits, or below the
-                                     import's minimum funding 2 (2n - 1) fee + 1,092 n (review A, S3) */
+                                     import's minimum funding 2 (2n - 1) fee + 1,092 n (review A, S3);
+                                     or minimum above 256: no tree can ever be built (review B, B4) */
     /* Slice 1 profile (sections 3 and 7 step 4) */
     GZ_TERMS_E_CHAIN,             /* not signet */
     GZ_TERMS_E_SLICE1,            /* a value Slice 1 refuses: profile, shortfall, switches */
@@ -157,8 +158,18 @@ gz_terms_err_t gz_terms_parse_outer(const uint8_t *b, size_t n, gz_terms_outer_t
 /* Steps 4 and 5 on a parsed record: the chain (signet, under the Slice 1
  * policy), then every bound of sections 3 and 4 including section 4.3. The
  * host key's prefix is checked here; that it is on the curve needs the
- * crypto provider (gz_terms_receive). */
+ * crypto provider (gz_terms_receive). Takes any struct, also one never
+ * decoded: counts past the arrays are refused, never read. */
 gz_terms_err_t gz_terms_check_outer(const gz_terms_outer_t *t, const gz_terms_policy_t *pol);
+/* Section 5 on decoded structs (the part of step 6 that needs no bytes):
+ * version at least 1, exactly the outer record's adjustable types in type
+ * order, each value in its range. gz_terms_decode_current ends with it;
+ * gz_tree_member_check runs it again on the frozen values (review B, B1). */
+gz_terms_err_t gz_terms_check_current(const gz_terms_outer_t *outer, const gz_terms_current_t *c);
+/* 1 if the two structs hold the same terms, field by field (counts and the
+ * used part of each array only; padding and unused entries do not count). */
+int gz_terms_outer_equal(const gz_terms_outer_t *a, const gz_terms_outer_t *b);
+int gz_terms_current_equal(const gz_terms_current_t *a, const gz_terms_current_t *b);
 /* parse, then check. */
 gz_terms_err_t gz_terms_decode_outer(const uint8_t *b, size_t n, const gz_terms_policy_t *pol,
                                      gz_terms_outer_t *out);

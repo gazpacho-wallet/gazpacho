@@ -317,6 +317,12 @@ typedef enum {
     GZ_CHK_OK = 0,
     /* C8a, frozen terms (reason 9) */
     GZ_CHK_C8A_PURPOSE, GZ_CHK_C8A_VERSION, GZ_CHK_C8A_DIGEST, GZ_CHK_C8A_READY_OUTER,
+    /* The stored terms, re-checked at signing (review B, B1); `at` is the
+     * gz_terms_err_t that refused. */
+    GZ_CHK_C8A_TERMS_BOUNDS,      /* terms.md 7 steps 4 and 5 on the outer struct (reason 9) */
+    GZ_CHK_C8A_FROZEN_VALUES,     /* terms.md 5 on the frozen values (reason 9) */
+    GZ_CHK_C8A_TERMS_RECORD,      /* the stored records fail steps 1 to 6, or name other digests (reason 1) */
+    GZ_CHK_C8A_TERMS_DIFFER,      /* the structs are not what the stored records decode to (reason 1) */
     /* C1, rebuilt not received (reason 1) */
     GZ_CHK_C1_PARTICIPANTS,       /* count outside 2..GZ_TREE_MAX_MEMBERS + 1 */
     GZ_CHK_C1_DUPLICATE_KEY,      /* a key twice (factory or contribution, across both) */
@@ -409,6 +415,22 @@ typedef struct {
     const uint8_t *outer_digest;          /* 32 */
     const gz_terms_current_t *frozen;     /* the frozen current values */
     const uint8_t *frozen_digest;         /* 32 */
+    /* The same lobby as stored bytes: the outer record and the frozen current
+     * record exactly as received in terms_offer, the host's two signatures,
+     * and the BOLT 8 key the member connected to the host with. The check
+     * runs gz_terms_receive on them again (scope = outer_digest) and refuses
+     * unless they give exactly `outer`, `frozen` and the two digests above:
+     * the bindings and C8a are checked against the digests, the tree is built
+     * from the structs, and this ties the two together (review B, B1). */
+    const uint8_t *outer_rec; size_t outer_rec_len;
+    const uint8_t *outer_sig;             /* 64 */
+    const uint8_t *frozen_rec; size_t frozen_rec_len;
+    const uint8_t *frozen_sig;            /* 64 */
+    const uint8_t *host_pinned_key;       /* 33 */
+    /* What the member accepts (terms.md 7 step 4): {1} in Slice 1. The outer
+     * struct is re-checked against it and section 3's bounds whatever the
+     * caller did before, so a struct that was only parsed is never signed. */
+    const gz_terms_policy_t *policy;
     /* The member's own `ready` (C8a). */
     const uint8_t *ready_outer_digest;    /* 32 */
     uint32_t ready_version;
@@ -446,7 +468,10 @@ typedef struct {
 } gz_tree_verdict_t;
 
 /* The member's checks on a creation proposal, in this order:
- *   C8a (purpose, frozen version and digest, own ready); C1 participants
+ *   C8a (purpose, frozen version and digest, own ready); the stored terms
+ *   again (terms.md 7 steps 4 and 5 on `outer` under `policy`, section 5 on
+ *   `frozen`, then steps 1 to 6 on the stored bytes and signatures, which
+ *   must decode to exactly `outer`, `frozen` and the two digests); C1 participants
  *   (count, valid keys, every key distinct, the host's contribution key);
  *   bindings; C7 fresh key (reason 12); C10 (reason 6); C8 fixed fields and
  *   the member's ranges; C8 shape, fixed levels, fee and funding rules; C8
@@ -474,7 +499,11 @@ int gz_tree_c10_busy(const gz_tree_outpoint_t *funding, const gz_tree_outpoint_t
 /* C11: is the factory live? */
 typedef struct {
     uint32_t tip;
-    uint32_t ack_tip;                  /* the member's tip when it sent round_ack */
+    /* The member's tip when it sent round_ack: the height journal.md records
+     * in funding_status with the ack (round_completed holds the ack back
+     * until it is saved). The same value gz_tree_may_ack was given; after a
+     * restart the journaled value, never the new tip. */
+    uint32_t ack_tip;
     const gz_tree_conditions_t *cond;  /* B, funding deadline, exit constants */
     /* What the chain view shows at the funding outpoint (seen = 0: nothing). */
     int seen;
@@ -486,7 +515,8 @@ typedef struct {
     uint64_t funding_amount;
     const uint8_t *funding_script;     /* 34 */
     int holds_whole_tree;
-    uint32_t end_height; uint8_t own_depth;
+    uint32_t end_height;               /* the proposal's end height */
+    uint8_t own_depth;                 /* verdict.own_depth */
 } gz_tree_c11_in_t;
 typedef enum {
     GZ_C11_WAIT = 0,       /* not buried yet, deadline not passed */
@@ -496,7 +526,16 @@ typedef enum {
 } gz_c11_t;
 /* Buried by the deadline: live only if exit.md 4.4's signing-time check
  * holds with the real deadline (ack tip + funding deadline). Buried later:
- * live only with the whole tree held and leave_by >= tip + 1. */
+ * live only with the whole tree held and leave_by >= buried_at + 1, the
+ * time check passing again at the moment of the burial (safety-rule.md C11).
+ * Both branches are judged at the burial, so once the output is buried the
+ * verdict depends on the chain facts and ack_tip only, never on `tip`.
+ *
+ * LIVE IS FINAL. signing-round.md 7's state table has no edge from Live to
+ * Abandoned: the caller records LIVE in the journal, hands the factory to
+ * the exit engine (exit.md), which says when to leave (also when the tip
+ * is already past leave_by), and does not call C11 for it again. `tip` only
+ * decides WAIT against ABANDONED while the output is not buried. */
 gz_c11_t gz_tree_c11(const gz_tree_c11_in_t *in);
 
 /* Run just before sending round_ack (review A, R1): the signing-time check
@@ -504,7 +543,11 @@ gz_c11_t gz_tree_c11(const gz_tree_c11_in_t *in);
  * (`ack_tip`, the member's tip as it acks). 1: ack; 0: do not ack (the
  * creation then becomes Abandoned at its unfinished deadline; the host cannot
  * fund without every ack, H1). The check at proposal time used the
- * proposal's tip, which a host that delays round_complete can make stale. */
+ * proposal's tip, which a host that delays round_complete can make stale.
+ * `ack_tip` is the height journaled with the ack in funding_status, and
+ * gz_tree_c11 must be given the same value: an ack saved and resent after a
+ * restart is not judged again at the new tip. `own_depth` is
+ * verdict.own_depth, `end_height` the proposal's. */
 int gz_tree_may_ack(uint32_t end_height, uint8_t own_depth, uint32_t ack_tip, const gz_tree_conditions_t *cond);
 
 /* ----------------------------------------------------- the host: H1 */

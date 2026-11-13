@@ -8,6 +8,7 @@
 
 #define TIP 290000u
 static const gz_exit_consts_t SIG = GZ_EXIT_SIGNET_INIT;
+static const gz_terms_policy_t SLICE1 = {1};
 #define MAXP 300
 #define PIN_TREE_DIGEST "04ea434128f5bd849b918d5e8953e347bd5f17fcafe43ff56b90dbdca5afba83"
 #define PIN_ROUND_ID "75c3144848bfba3cd74ab25041ddd730e79e0e45bdf7ffcfa6eff082c5d32516"
@@ -17,6 +18,10 @@ typedef struct {
     uint8_t od[32];
     gz_terms_current_t cur;
     uint8_t cd[32];
+    /* the same terms as stored bytes, signed by the host's key */
+    uint8_t ob[GZ_TERMS_OUTER_MAX], cb[GZ_TERMS_CURRENT_MAX], osig[64], csig[64], pinned[33];
+    size_t on, cn;
+    int fund_second;            /* the funding output is the transaction's output 1 */
     gz_tree_participant_t parts[MAXP];
     uint8_t ftx[200];
     size_t ftx_len;
@@ -75,10 +80,10 @@ static void set_funding(scen_t *s, uint64_t amount_in_tx, const uint8_t script_i
     p[i++] = 0;
     tr_le32(p + i, 0xfffffffdu); i += 4;
     p[i++] = 2;
+    if (s->fund_second) { tr_le64(p + i, s->change); i += 8; p[i++] = 34; memcpy(p + i, s->change_script, 34); i += 34; }
     tr_le64(p + i, amount_in_tx); i += 8;
     p[i++] = 34; memcpy(p + i, script_in_tx, 34); i += 34;
-    tr_le64(p + i, s->change); i += 8;
-    p[i++] = 34; memcpy(p + i, s->change_script, 34); i += 34;
+    if (!s->fund_second) { tr_le64(p + i, s->change); i += 8; p[i++] = 34; memcpy(p + i, s->change_script, 34); i += 34; }
     tr_le32(p + i, 0); i += 4;
     s->ftx_len = i;
     tr_sha256d(s->ftx, i, s->p.funding_txid);
@@ -95,21 +100,43 @@ static void aggregate_script(scen_t *s, uint8_t script[34])
     script[0] = 0x51; script[1] = 0x20; memcpy(script + 2, q, 32);
 }
 
+/* The stored records from the structs: encoded, digested, signed by the host. */
+static void seal_terms(scen_t *s)
+{
+    s->on = gz_terms_encode_outer(&s->outer, s->ob, sizeof s->ob);
+    if (!s->on) abort();
+    gz_terms_outer_digest(s->ob, s->on, s->od);
+    memcpy(s->cur.outer_digest, s->od, 32);
+    s->cn = gz_terms_encode_current(&s->cur, s->cb, sizeof s->cb);
+    if (!s->cn) abort();
+    gz_terms_current_digest(s->cb, s->cn, s->cd);
+    test_sign("host", s->od, s->osig);
+    test_sign("host", s->cd, s->csig);
+}
+
+/* After a test changed S.outer or S.cur: new records, digests and signatures,
+ * the proposal's terms digest and every binding (they name the outer digest). */
+static void reseal(void)
+{
+    uint32_t i;
+    seal_terms(&S);
+    S.in.outer_rec_len = S.on; S.in.frozen_rec_len = S.cn;   /* a new table can change the length */
+    memcpy(S.p.terms_digest, S.cd, 32);
+    bind(&S, 0, "host factory", "host");
+    for (i = 1; i <= S.n; i++) bind(&S, i, "member %u factory", "member %u contribution");
+}
+
 /* A proposal for n members in which this member is member `me` (1-based). */
 static void scenario(uint32_t n, uint32_t me)
 {
     scen_t *s = &S;
-    uint8_t ob[GZ_TERMS_OUTER_MAX], cb[GZ_TERMS_CURRENT_MAX];
-    size_t on, cn;
     uint32_t i;
     memset(s, 0, sizeof *s);
     s->n = n; s->me = me;
     t1_terms(&s->outer);
-    on = gz_terms_encode_outer(&s->outer, ob, sizeof ob);
-    gz_terms_outer_digest(ob, on, s->od);
     t1_current(s->od, 1, 500, 1000, 1000, &s->cur);
-    cn = gz_terms_encode_current(&s->cur, cb, sizeof cb);
-    gz_terms_current_digest(cb, cn, s->cd);
+    seal_terms(s);
+    test_pub("host", s->pinned);
     key("host factory", 0, s->parts[0].factory_key);
     test_pub("host", s->parts[0].contribution_key);
     bind(s, 0, "host factory", "host");
@@ -158,6 +185,10 @@ static void scenario(uint32_t n, uint32_t me)
     s->in.outer_digest = s->od;
     s->in.frozen = &s->cur;
     s->in.frozen_digest = s->cd;
+    s->in.outer_rec = s->ob; s->in.outer_rec_len = s->on; s->in.outer_sig = s->osig;
+    s->in.frozen_rec = s->cb; s->in.frozen_rec_len = s->cn; s->in.frozen_sig = s->csig;
+    s->in.host_pinned_key = s->pinned;
+    s->in.policy = &SLICE1;
     s->in.ready_outer_digest = s->od;
     s->in.ready_version = 1;
     s->in.ready_current_digest = s->cd;
@@ -372,13 +403,19 @@ static void c8_shape_fee_funding(void)
     S.p.funding_amount = S.prm.funding_amount - 1; refund(); EXPECT(GZ_CHK_C8_FUNDING_RULE, 9);
     S.p.funding_amount = S.prm.funding_amount + 1; refund(); EXPECT(GZ_CHK_C8_FUNDING_RULE, 9);
     S.p.funding_amount = S.prm.funding_amount; refund(); OK();
-    /* No shape for n, and a shape whose split makes a multi-member leaf
-     * (outer rules that would not have decoded: the check stands alone). */
+    /* No shape for n, and a shape whose split makes a multi-member leaf:
+     * outer rules that would not have decoded are refused by the member's
+     * re-check of the terms before anything is built from them (review B,
+     * B1), with or without stored bytes that match them. */
     scenario(5, 2);
-    S.outer.n_shapes = 1; EXPECT(GZ_CHK_C8_NO_SHAPE, 9);
+    S.outer.n_shapes = 1;
+    v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_BOUNDS && v.reason == 9 && v.at == GZ_TERMS_E_SHAPE_TARGET);
+    reseal();
+    v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_BOUNDS && v.at == GZ_TERMS_E_SHAPE_TARGET);
     scenario(3, 2);
     S.outer.n_shapes = 1; S.outer.shapes[0].max_members = 16; S.outer.shapes[0].n_interior = 1;
-    S.outer.shapes[0].interior[0] = 4; EXPECT(GZ_CHK_C8_SHAPE, 9);
+    S.outer.shapes[0].interior[0] = 4;
+    v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_BOUNDS && v.at == GZ_TERMS_E_SHAPE_SPLIT);
     /* The member's own channel: at its minimum, and one above. */
     scenario(3, 1);
     v = run();
@@ -387,17 +424,23 @@ static void c8_shape_fee_funding(void)
     CHECK(S.cond.min_own_channel_sat == 200385);
     OK();
     S.cond.min_own_channel_sat++; EXPECT(GZ_CHK_C8_CHANNEL_OWN, 9);
-    /* The import's minimum funding, from the terms: fee 880 builds, 881 does not. */
+    /* The import's minimum funding, from the terms (a lobby of exactly 4):
+     * fee 880 builds, 881 does not. Terms that cannot be funded are refused
+     * on receipt (review A, S3), and so by the member's re-check of the
+     * terms before the build's own mirror of the import's minimum. */
     scenario(4, 2);
+    S.outer.minimum = 4; S.outer.target = 4;
     S.outer.channel_sat = 546; S.cond.min_own_channel_sat = 546; S.cond.max_fee_per_tx_sat = 100000;
     S.outer.tree_feerate = 5269;
+    reseal();
     CHECK(gz_tree_params(&S.outer, 4, &S.prm) == GZ_TREE_P_OK && S.prm.fee_per_tx == 880);
     S.p.fee_per_tx = 880; S.p.funding_amount = S.prm.funding_amount; refund();
     OK();
     S.outer.tree_feerate = 5270;
+    reseal();
     CHECK(gz_tree_params(&S.outer, 4, &S.prm) == GZ_TREE_P_OK && S.prm.fee_per_tx == 881);
     S.p.fee_per_tx = 881; S.p.funding_amount = S.prm.funding_amount; refund();
-    EXPECT(GZ_CHK_C8_IMPORT_MINIMUM, 9);
+    v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_BOUNDS && v.reason == 9 && v.at == GZ_TERMS_E_UNFUNDABLE);
 }
 
 static void c8_heights(void)
@@ -427,6 +470,7 @@ static void c8_heights(void)
     /* The same with a shorter life: E moves with the tip. */
     scenario(3, 2);
     S.outer.lifetime_blocks = 144 - 74; S.outer.winddown_blocks = 36;
+    reseal();
     S.p.end_height = TIP + 106;      /* leave_by = TIP + 40 */
     S.cond.funding_deadline_blocks = 36; OK();
     S.p.end_height = TIP + 105;
@@ -475,6 +519,39 @@ static void c1_funding(void)
         aggregate_script(&S, other);
         S.parts[2] = S.parts[1]; S.parts[1] = t;
         memcpy(S.p.funding_script, other, 34); refund(); EXPECT(GZ_CHK_C1_NOT_AGGREGATE, 1);
+    }
+    /* The funding output at index 1, through the real import (review B, B7):
+     * the glue must hand the index on, or the import's root spends output 0
+     * and the comparison refuses every such round. */
+    scenario(4, 2);
+    S.fund_second = 1; refund();
+    S.p.funding_vout = 1; OK();
+    S.p.funding_vout = 0; EXPECT(GZ_CHK_C1_FUNDING_AMOUNT, 1);   /* the change output */
+    S.p.funding_vout = 2; EXPECT(GZ_CHK_C1_FUNDING_VOUT, 1);
+    S.fund_second = 0;
+    /* A scriptSig length past the end of the funding transaction (review B,
+     * B7): 2^64 - 4, which read without its bound wraps the offset back over
+     * the length's own last 4 bytes (read as the sequence) and parses the
+     * rest as one output, the funding output. */
+    {
+        static uint8_t w[200];
+        gz_tx_info_t info;
+        size_t i;
+        scenario(4, 2);
+        tr_le32(w, 2); i = 4; w[i++] = 1;
+        memcpy(w + i, S.ftx + 5, 36); i += 36;
+        w[i++] = 0xff; tr_le64(w + i, 0xfffffffffffffffcull); i += 8;
+        w[i++] = 1; tr_le64(w + i, S.p.funding_amount); i += 8;
+        w[i++] = 34; memcpy(w + i, S.p.funding_script, 34); i += 34;
+        tr_le32(w + i, 0); i += 4;
+        CHECK(i == 98 && !gz_tx_parse(w, i, &info));
+        tr_sha256d(w, i, S.p.funding_txid);
+        S.p.funding_tx = w; S.p.funding_tx_len = i;
+        EXPECT(GZ_CHK_C1_FUNDING_TX, 1);
+        /* a length one byte past the end, in the shortest form */
+        w[41] = 98 - 46 - 4 + 1; memmove(w + 42, w + 50, 48); i = 90;
+        CHECK(!gz_tx_parse(w, i, &info));
+        w[41] = 98 - 46 - 4 - 8; CHECK(!gz_tx_parse(w, i, &info));   /* and short of it: what follows is not an output list */
     }
 }
 
@@ -532,12 +609,14 @@ static void c1_import_leaves_tiers(void)
     v = run_tampered(7); CHECK(v.check == GZ_CHK_C8_LEAF_KIND && v.at == 0);
     /* The import never runs on a proposal the rules refuse: here a shape
      * whose split puts 3 members under a width of 4, which the pinned import
-     * would build reading layers[-1] (signing-round.md 12; upstream #486). */
+     * would build reading layers[-1] (signing-round.md 12; upstream #486).
+     * The re-check of the terms refuses it first (review B, B1). */
     scenario(3, 2);
     S.outer.n_shapes = 1; S.outer.shapes[0].max_members = 16; S.outer.shapes[0].n_interior = 1;
     S.outer.shapes[0].interior[0] = 4;
+    reseal();
     import_calls = 0;
-    v = run_tampered(0); CHECK(v.check == GZ_CHK_C8_SHAPE && import_calls == 0);
+    v = run_tampered(0); CHECK(v.check == GZ_CHK_C8A_TERMS_BOUNDS && v.at == GZ_TERMS_E_SHAPE_SPLIT && import_calls == 0);
     scenario(4, 2);
     S.p.fixed_levels = 1;
     import_calls = 0;
@@ -582,7 +661,9 @@ static void crypto_and_arguments(void)
     fail_agg_after = 1; EXPECT(GZ_CHK_CRYPTO, 1);      /* inside the rebuild */
     fail_agg_after = 5; EXPECT(GZ_CHK_CRYPTO, 1);
     fail_agg_after = -1; OK();
-    fail_valid = 1; EXPECT(GZ_CHK_C1_BAD_KEY, 1); fail_valid = 0;
+    /* A provider that refuses every point refuses the host key of the stored
+     * terms first (terms.md 7 step 3, run again by the member check). */
+    fail_valid = 1; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_RECORD && v.at == GZ_TERMS_E_HOST_KEY); fail_valid = 0;
     S.in.crypto = NULL; EXPECT(GZ_CHK_ARGUMENT, 1); S.in.crypto = &CR;
     gz_tree_member_check(NULL, &S.p, &TREE, &v); CHECK(v.check == GZ_CHK_ARGUMENT);
     gz_tree_member_check(&S.in, NULL, &TREE, &v); CHECK(v.check == GZ_CHK_ARGUMENT);
@@ -669,6 +750,21 @@ static void c4d_c10_c11_h1(void)
         op[35] ^= 1;
         CHECK(gz_tree_c4d_dead(S.ftx, S.ftx_len, op, spender) == 0);   /* not one of its inputs */
     }
+    {   /* C4(d) with the spent input not the first (review B, B7). */
+        static uint8_t t2[200];
+        uint8_t spender[32] = {9}, op2[36];
+        size_t i;
+        memset(op2, 0x42, 32); tr_le32(op2 + 32, 7);
+        tr_le32(t2, 2); i = 4; t2[i++] = 2;
+        memcpy(t2 + i, S.ftx + 5, 36); i += 36; t2[i++] = 0; tr_le32(t2 + i, 0xfffffffdu); i += 4;
+        memcpy(t2 + i, op2, 36); i += 36; t2[i++] = 0; tr_le32(t2 + i, 0xfffffffdu); i += 4;
+        t2[i++] = 1; tr_le64(t2 + i, 1000); i += 8; t2[i++] = 34; memcpy(t2 + i, S.p.funding_script, 34); i += 34;
+        tr_le32(t2 + i, 0); i += 4;
+        CHECK(gz_tree_c4d_dead(t2, i, op2, spender) == 1);
+        CHECK(gz_tree_c4d_dead(t2, i, S.ftx + 5, spender) == 1);
+        op2[0] ^= 1;
+        CHECK(gz_tree_c4d_dead(t2, i, op2, spender) == 0);
+    }
     /* C11. */
     memset(&cond, 0, sizeof cond);
     cond.exit = gz_exit_signet();
@@ -690,11 +786,22 @@ static void c4d_c10_c11_h1(void)
     c.seen_amount = 802827; c.seen_script = other; CHECK(gz_tree_c11(&c) == GZ_C11_MISMATCH);
     c.seen_script = script; c.seen_script_len = 33; CHECK(gz_tree_c11(&c) == GZ_C11_MISMATCH);
     c.seen_script_len = 34;
-    /* Buried late: live only with the whole tree and leave_by >= tip + 1.
-     * leave_by(d = 2) = TIP + 114. */
+    /* On time and live: still live with the tip long past leave_by (TIP + 114);
+     * leaving is the exit engine's call from then on (review B, B3). */
+    c.buried_at = TIP + 30; c.tip = TIP + 500; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
+    /* Buried late: live only with the whole tree and leave_by >= buried_at + 1,
+     * judged at the burial, not at the tip (review B, B2). leave_by(d = 2) =
+     * TIP + 114. Review B's T1 case: buried at TIP + 37, live at TIP + 113
+     * and still live at TIP + 114 and later, for the same chain facts. */
     c.buried_at = TIP + 37; c.tip = TIP + 113; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
-    c.tip = TIP + 114; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
-    c.tip = TIP + 113; c.holds_whole_tree = 0; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
+    c.tip = TIP + 114; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
+    c.tip = TIP + 1000; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
+    /* The late branch's edge is at the burial: one block of being live left. */
+    c.buried_at = TIP + 113; c.tip = TIP + 113; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
+    c.tip = TIP + 400; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
+    c.buried_at = TIP + 114; c.tip = TIP + 114; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
+    c.tip = TIP + 400; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
+    c.buried_at = TIP + 37; c.tip = TIP + 113; c.holds_whole_tree = 0; CHECK(gz_tree_c11(&c) == GZ_C11_ABANDONED);
     /* The on-time branch alone (M31): buried at the deadline without the late
      * branch's help is live; one block later it is not. */
     c.holds_whole_tree = 0; c.buried_at = TIP + 36; c.tip = TIP + 36; CHECK(gz_tree_c11(&c) == GZ_C11_LIVE);
@@ -761,6 +868,20 @@ static void c4d_c10_c11_h1(void)
         nop[0] = 0x60; CHECK(gz_tree_h1(&h, &at) == GZ_H1_OK);   /* OP_16: version 16 */
         nop[0] = 0x50; CHECK(gz_tree_h1(&h, &at) == GZ_H1_NOT_SEGWIT);
     }
+    {   /* The witness program's one push (review B, B7): a push byte other than
+         * the program's length, both ways; programs of 2 to 40 bytes only. */
+        uint8_t w[44];
+        memset(w, 7, sizeof w);
+        prev[0] = w;
+        w[0] = 0x00; w[1] = 0x21; prev_len[0] = 22; CHECK(gz_tree_h1(&h, &at) == GZ_H1_NOT_SEGWIT);
+        w[1] = 0x14; CHECK(gz_tree_h1(&h, &at) == GZ_H1_OK);
+        w[0] = 0x51; w[1] = 0xff; prev_len[0] = 34; CHECK(gz_tree_h1(&h, &at) == GZ_H1_NOT_SEGWIT);
+        w[1] = 0x1f; CHECK(gz_tree_h1(&h, &at) == GZ_H1_NOT_SEGWIT);
+        w[1] = 0x20; CHECK(gz_tree_h1(&h, &at) == GZ_H1_OK);
+        w[1] = 40; prev_len[0] = 42; CHECK(gz_tree_h1(&h, &at) == GZ_H1_OK);
+        w[1] = 41; prev_len[0] = 43; CHECK(gz_tree_h1(&h, &at) == GZ_H1_NOT_SEGWIT);
+        w[1] = 1; prev_len[0] = 3; CHECK(gz_tree_h1(&h, &at) == GZ_H1_NOT_SEGWIT);
+    }
     prev[0] = p2tr; prev_len[0] = 34; CHECK(gz_tree_h1(&h, &at) == GZ_H1_OK);
     prev[0] = p2a; prev_len[0] = 4; CHECK(gz_tree_h1(&h, &at) == GZ_H1_OK);
     h.proposed_tx = h.to_sign_tx = (const uint8_t *)"x"; h.proposed_len = h.to_sign_len = 1;
@@ -776,6 +897,133 @@ static void c4d_c10_c11_h1(void)
     }
 }
 
+/* Review B, B1: the member check alone refuses terms that were only parsed,
+ * never received. Each record is out of bounds in one way, encoded, signed by
+ * the host and stored exactly as a member would store it, so only the
+ * re-check of the bounds can refuse it; it is refused before any key is
+ * parsed or any tree built. Then the stored bytes must give exactly the
+ * structs and digests the rest of the check uses. */
+static void terms_rechecked(void)
+{
+    static const struct { int which; gz_terms_err_t want; const char *what; } CASES[] = {
+        {0, GZ_TERMS_E_CHAIN, "mainnet chain"},
+        {1, GZ_TERMS_E_FEERATE, "tree_feerate 0"},
+        {2, GZ_TERMS_E_LIFETIME, "lifetime 0"},
+        {3, GZ_TERMS_E_WINDDOWN, "wind-down 60,000"},
+        {4, GZ_TERMS_E_STEP_TIMEOUT, "step timeout 2^32 - 1 ms"},
+        {5, GZ_TERMS_E_PROFILE, "profile 9, switches 0xff"},
+        {6, GZ_TERMS_E_CHANNEL, "channel 10^16 sat"},
+        {7, GZ_TERMS_E_RANGE, "a range of [9,000, 10]"},
+    };
+    gz_tree_verdict_t v;
+    size_t k;
+    for (k = 0; k < sizeof CASES / sizeof CASES[0]; k++) {
+        gz_terms_outer_t parsed;
+        scenario(4, 2);
+        switch (CASES[k].which) {
+        case 0: unhex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000", S.outer.chain, 32); break;
+        case 1: S.outer.tree_feerate = 0; break;
+        case 2: S.outer.lifetime_blocks = 0; S.outer.winddown_blocks = 180; break;
+        case 3: S.outer.winddown_blocks = 60000; break;
+        case 4: S.outer.step_timeout_ms = 0xffffffffu; S.outer.signing_budget_ms = 0xffffffffu; break;
+        case 5: S.outer.profile = 9; S.outer.switches = 0xff; break;
+        case 6: S.outer.channel_sat = 10000000000000000ull; break;
+        case 7: S.outer.adj[2].min = 9000; S.outer.adj[2].max = 10; break;
+        }
+        reseal();
+        /* what the member stored is exactly what parsing its bytes gives */
+        CHECK(gz_terms_parse_outer(S.ob, S.on, &parsed) == GZ_TERMS_OK && gz_terms_outer_equal(&parsed, &S.outer));
+        CHECK(gz_terms_check_outer(&parsed, &SLICE1) == CASES[k].want);
+        v = run();
+        CHECK(v.check == GZ_CHK_C8A_TERMS_BOUNDS && v.reason == 9 && v.at == (int32_t)CASES[k].want);
+        if (v.check != GZ_CHK_C8A_TERMS_BOUNDS || v.at != (int32_t)CASES[k].want)
+            printf("  %s: %s at %d\n", CASES[k].what, gz_chk_name(v.check), (int)v.at);
+    }
+    /* The frozen values (section 5): one out of its range, at its edge; a
+     * missing value; a type the outer lacks; types out of order; version 0. */
+    scenario(4, 2);
+    S.cur.val[2].value = 99; reseal(); v = run();
+    CHECK(v.check == GZ_CHK_C8A_FROZEN_VALUES && v.reason == 9 && v.at == GZ_TERMS_E_ADJ_VALUE);
+    S.cur.val[2].value = 100; reseal(); OK();
+    S.cur.val[2].value = 2500; reseal(); OK();
+    S.cur.val[2].value = 2501; reseal(); v = run(); CHECK(v.check == GZ_CHK_C8A_FROZEN_VALUES && v.at == GZ_TERMS_E_ADJ_VALUE);
+    scenario(4, 2);
+    S.cur.n_values = 2; reseal(); v = run(); CHECK(v.check == GZ_CHK_C8A_FROZEN_VALUES && v.at == GZ_TERMS_E_ADJ_SET);
+    scenario(4, 2);
+    S.cur.val[1].type = 65; reseal(); v = run(); CHECK(v.check == GZ_CHK_C8A_FROZEN_VALUES && v.at == GZ_TERMS_E_ADJ_SET);
+    scenario(4, 2);
+    S.cur.val[0] = S.cur.val[1]; S.cur.val[1].type = 64; S.cur.val[1].value = 500;   /* 66 then 64 */
+    v = run(); CHECK(v.check == GZ_CHK_C8A_FROZEN_VALUES && v.at == GZ_TERMS_E_ADJ_SET);
+    scenario(4, 2);
+    S.cur.version = 0; S.p.terms_version = 0; S.in.ready_version = 0; reseal(); v = run();
+    CHECK(v.check == GZ_CHK_C8A_FROZEN_VALUES && v.at == GZ_TERMS_E_VERSION);
+    scenario(4, 2);
+    S.cur.version = 2; S.p.terms_version = 2; S.in.ready_version = 2; reseal(); OK();
+    /* other valid terms with a record of another length (an alias): signed */
+    scenario(4, 2);
+    S.outer.alias_len = 4; memcpy(S.outer.alias, "T1 a", 4); reseal(); OK();
+    /* A struct that is not what its stored bytes (and so its digest) decode
+     * to: valid terms either way, but not the ones the bindings and the
+     * member's ready named. */
+    scenario(4, 2);
+    S.outer.channel_sat = 100001; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_DIFFER && v.reason == 1);
+    scenario(4, 2);
+    S.outer.lobby_salt[0] ^= 1; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_DIFFER);
+    scenario(4, 2);
+    S.outer.n_unknown_odd = 1; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_DIFFER);
+    scenario(4, 2);
+    S.cur.val[0].value = 501; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_DIFFER);
+    scenario(4, 2);
+    {   /* stored bytes of another record (another salt), validly signed: not
+         * the outer digest the bindings and the member's ready name. */
+        static gz_terms_outer_t o2;
+        static uint8_t b2[GZ_TERMS_OUTER_MAX];
+        uint8_t d2[32], s2[64];
+        size_t n2;
+        o2 = S.outer; o2.lobby_salt[0] ^= 1;
+        n2 = gz_terms_encode_outer(&o2, b2, sizeof b2);
+        gz_terms_outer_digest(b2, n2, d2); test_sign("host", d2, s2);
+        S.in.outer_rec = b2; S.in.outer_rec_len = n2; S.in.outer_sig = s2;
+        v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_RECORD && v.reason == 1 && v.at == GZ_TERMS_E_SCOPE);
+        S.in.outer_rec = S.ob; S.in.outer_rec_len = S.on; S.in.outer_sig = S.osig;
+        OK();
+    }
+    /* The stored records themselves: steps 1 to 6 again. */
+    scenario(4, 2);
+    S.osig[5] ^= 1; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_RECORD && v.at == GZ_TERMS_E_OUTER_SIG); S.osig[5] ^= 1;
+    S.csig[5] ^= 1; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_RECORD && v.at == GZ_TERMS_E_CURRENT_SIG); S.csig[5] ^= 1;
+    key("someone %u", 1, S.pinned); v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_RECORD && v.at == GZ_TERMS_E_PINNED_KEY);
+    test_pub("host", S.pinned); OK();
+    S.in.outer_rec_len--; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_RECORD && v.at == GZ_TERMS_E_TRUNCATED); S.in.outer_rec_len++;
+    S.ob[S.on - 1] ^= 1; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_RECORD && v.at == GZ_TERMS_E_SCOPE); S.ob[S.on - 1] ^= 1;
+    S.cb[S.cn - 1] ^= 1; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_RECORD && v.at == GZ_TERMS_E_CURRENT_SIG); S.cb[S.cn - 1] ^= 1;
+    {   /* another frozen record, validly signed, than the digest C8a checked */
+        gz_terms_current_t c2 = S.cur;
+        uint8_t b2[GZ_TERMS_CURRENT_MAX], d2[32], s2[64];
+        size_t n2;
+        c2.val[0].value = 501;
+        n2 = gz_terms_encode_current(&c2, b2, sizeof b2);
+        gz_terms_current_digest(b2, n2, d2); test_sign("host", d2, s2);
+        S.in.frozen_rec = b2; S.in.frozen_rec_len = n2; S.in.frozen_sig = s2;
+        v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_RECORD && v.at == -1);
+        S.in.frozen_rec = S.cb; S.in.frozen_rec_len = S.cn; S.in.frozen_sig = S.csig;
+    }
+    OK();
+    /* Missing records, signatures, key or policy: an argument error. */
+    S.in.outer_rec = NULL; EXPECT(GZ_CHK_ARGUMENT, 1); S.in.outer_rec = S.ob;
+    S.in.frozen_sig = NULL; EXPECT(GZ_CHK_ARGUMENT, 1); S.in.frozen_sig = S.csig;
+    S.in.host_pinned_key = NULL; EXPECT(GZ_CHK_ARGUMENT, 1); S.in.host_pinned_key = S.pinned;
+    S.in.policy = NULL; EXPECT(GZ_CHK_ARGUMENT, 1); S.in.policy = &SLICE1;
+    OK();
+    /* A struct counting past its arrays is refused, not read. */
+    scenario(4, 2);
+    S.outer.n_adj = 200; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_BOUNDS && v.at == GZ_TERMS_E_RANGE);
+    scenario(4, 2);
+    S.outer.n_shapes = 251; v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_BOUNDS && v.at == GZ_TERMS_E_SHAPE_ENCODING);
+    scenario(4, 2);
+    S.cur.n_values = 200; v = run(); CHECK(v.check == GZ_CHK_C8A_FROZEN_VALUES && v.at == GZ_TERMS_E_ADJ_SET);
+}
+
 /* Every check's name, against its enum value (the names are a list in enum order). */
 static void names(void)
 {
@@ -785,6 +1033,10 @@ static void names(void)
         {GZ_CHK_C8A_VERSION, "c8a_version"},
         {GZ_CHK_C8A_DIGEST, "c8a_digest"},
         {GZ_CHK_C8A_READY_OUTER, "c8a_ready_outer"},
+        {GZ_CHK_C8A_TERMS_BOUNDS, "c8a_terms_bounds"},
+        {GZ_CHK_C8A_FROZEN_VALUES, "c8a_frozen_values"},
+        {GZ_CHK_C8A_TERMS_RECORD, "c8a_terms_record"},
+        {GZ_CHK_C8A_TERMS_DIFFER, "c8a_terms_differ"},
         {GZ_CHK_C1_PARTICIPANTS, "c1_participants"},
         {GZ_CHK_C1_DUPLICATE_KEY, "c1_duplicate_key"},
         {GZ_CHK_C1_BAD_KEY, "c1_bad_key"},
@@ -844,6 +1096,7 @@ int main(void)
     gz_tree_secp_crypto(test_ctx(), &CR);
     honest();
     c8a();
+    terms_rechecked();
     c1_participants();
     c7_c10();
     c8_fixed();

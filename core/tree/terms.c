@@ -230,10 +230,14 @@ gz_terms_err_t gz_terms_check_shapes(const gz_shape_entry_t *es, size_t n_entrie
  * 256 a factory may have) gives a tree that can be funded: R(root) fits the
  * money supply, and is at least the import's minimum (factory_build_tree),
  * which terms.md 4.2 does not state. Otherwise every member would refuse at
- * signing; refusing on receipt saves the lobby (review A, S3). */
+ * signing; refusing on receipt saves the lobby (review A, S3). A minimum
+ * above 256 leaves no count to build at all (review B, B4); a target above
+ * 256 is accepted, and a round of more than 256 members is refused at
+ * signing (C8). */
 static gz_terms_err_t check_fundable(const gz_terms_outer_t *t)
 {
     uint32_t n, top = t->target < GZ_TREE_MAX_MEMBERS ? t->target : GZ_TREE_MAX_MEMBERS;
+    if (t->minimum > GZ_TREE_MAX_MEMBERS) return GZ_TERMS_E_UNFUNDABLE;
     for (n = t->minimum; n <= top; n++) {
         gz_tree_params_t p;
         if (gz_tree_params(t, n, &p) != GZ_TREE_P_OK) return GZ_TERMS_E_UNFUNDABLE;
@@ -259,6 +263,9 @@ gz_terms_err_t gz_terms_check_outer(const gz_terms_outer_t *t, const gz_terms_po
     if (t->ready_window_ms < 1000 || t->ready_window_ms > 600000) return GZ_TERMS_E_READY_WINDOW;
     if (t->step_timeout_ms < 60000 || t->step_timeout_ms > 600000) return GZ_TERMS_E_STEP_TIMEOUT;
     if (t->signing_budget_ms < t->step_timeout_ms || t->signing_budget_ms > 86400000u) return GZ_TERMS_E_SIGNING_BUDGET;
+    /* A struct the decoder never filled may count past its arrays. */
+    if (t->n_shapes > GZ_TERMS_MAX_SHAPES) return GZ_TERMS_E_SHAPE_ENCODING;
+    if (t->n_adj > GZ_TERMS_MAX_ADJ) return GZ_TERMS_E_RANGE;
     if ((e = gz_terms_check_shapes(t->shapes, t->n_shapes, t->target)) != GZ_TERMS_OK) return e;
     if (t->lifetime_blocks < 1 || t->lifetime_blocks > 52560) return GZ_TERMS_E_LIFETIME;
     if (t->winddown_blocks < 1 || t->winddown_blocks > 52560) return GZ_TERMS_E_WINDDOWN;
@@ -294,7 +301,6 @@ gz_terms_err_t gz_terms_decode_current(const uint8_t *b, size_t n, const gz_term
     rd_t r;
     uint64_t type = 0;
     int have = 0, got_digest = 0, got_version = 0;
-    size_t i;
     gz_terms_err_t e;
     if (!b || !c) return GZ_TERMS_E_ARGUMENT;
     memset(c, 0, sizeof *c);
@@ -329,14 +335,65 @@ gz_terms_err_t gz_terms_decode_current(const uint8_t *b, size_t n, const gz_term
         }
     }
     if (!got_digest || !got_version) return GZ_TERMS_E_MISSING;
+    if (!outer) return c->version == 0 ? GZ_TERMS_E_VERSION : GZ_TERMS_OK;   /* section 2 only (gz_terms_receive's step 1) */
+    return gz_terms_check_current(outer, c);
+}
+
+gz_terms_err_t gz_terms_check_current(const gz_terms_outer_t *outer, const gz_terms_current_t *c)
+{
+    size_t i;
+    if (!outer || !c) return GZ_TERMS_E_ARGUMENT;
     if (c->version == 0) return GZ_TERMS_E_VERSION;
-    if (!outer) return GZ_TERMS_OK;      /* section 2 only (gz_terms_receive's step 1) */
+    if (outer->n_adj > GZ_TERMS_MAX_ADJ) return GZ_TERMS_E_ADJ_SET;
     if (c->n_values != outer->n_adj) return GZ_TERMS_E_ADJ_SET;
+    /* In type order, each named by the outer record: with the counts equal,
+     * exactly the outer record's set. */
+    for (i = 0; i < c->n_values; i++)
+        if ((i && c->val[i].type <= c->val[i - 1].type) || !outer_range(outer, c->val[i].type)) return GZ_TERMS_E_ADJ_SET;
     for (i = 0; i < c->n_values; i++) {
         const gz_terms_range_t *rg = outer_range(outer, c->val[i].type);
         if (c->val[i].value < rg->min || c->val[i].value > rg->max) return GZ_TERMS_E_ADJ_VALUE;
     }
     return GZ_TERMS_OK;
+}
+
+int gz_terms_outer_equal(const gz_terms_outer_t *a, const gz_terms_outer_t *b)
+{
+    size_t i;
+    if (!a || !b) return 0;
+    if (a->n_shapes != b->n_shapes || a->n_shapes > GZ_TERMS_MAX_SHAPES || a->n_adj != b->n_adj
+        || a->n_adj > GZ_TERMS_MAX_ADJ || a->alias_len != b->alias_len || a->alias_len > sizeof a->alias
+        || a->description_len != b->description_len || a->description_len > sizeof a->description)
+        return 0;
+    if (!tr_eq(a->chain, b->chain, 32) || !tr_eq(a->host_key, b->host_key, 33) || !tr_eq(a->alias, b->alias, a->alias_len)
+        || !tr_eq(a->description, b->description, a->description_len) || !tr_eq(a->lobby_salt, b->lobby_salt, 16)
+        || a->profile != b->profile || a->target != b->target || a->minimum != b->minimum || a->deadline != b->deadline
+        || a->on_shortfall != b->on_shortfall || a->ready_window_ms != b->ready_window_ms
+        || a->signing_budget_ms != b->signing_budget_ms || a->step_timeout_ms != b->step_timeout_ms
+        || a->lifetime_blocks != b->lifetime_blocks || a->winddown_blocks != b->winddown_blocks
+        || a->channel_sat != b->channel_sat || a->tree_feerate != b->tree_feerate || a->switches != b->switches
+        || a->n_unknown_odd != b->n_unknown_odd)
+        return 0;
+    for (i = 0; i < a->n_shapes; i++) {
+        const gz_shape_entry_t *x = &a->shapes[i], *y = &b->shapes[i];
+        if (x->max_members != y->max_members || x->n_interior != y->n_interior || x->n_interior > GZ_TERMS_MAX_INTERIOR
+            || !tr_eq(x->interior, y->interior, x->n_interior) || x->leaf_kind != y->leaf_kind)
+            return 0;
+    }
+    for (i = 0; i < a->n_adj; i++)
+        if (a->adj[i].type != b->adj[i].type || a->adj[i].min != b->adj[i].min || a->adj[i].max != b->adj[i].max) return 0;
+    return 1;
+}
+
+int gz_terms_current_equal(const gz_terms_current_t *a, const gz_terms_current_t *b)
+{
+    size_t i;
+    if (!a || !b || a->n_values != b->n_values || a->n_values > GZ_TERMS_MAX_ADJ || a->version != b->version
+        || !tr_eq(a->outer_digest, b->outer_digest, 32))
+        return 0;
+    for (i = 0; i < a->n_values; i++)
+        if (a->val[i].type != b->val[i].type || a->val[i].value != b->val[i].value) return 0;
+    return 1;
 }
 
 /* -------------------------------------------------------------- encoding */

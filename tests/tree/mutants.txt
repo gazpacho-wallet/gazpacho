@@ -205,8 +205,8 @@ c4d-any-input	core/tree/checks.c	&& tr_eq(op, spent, 36)) return 1;	&& tr_eq(op,
 c11-deadline	core/tree/checks.c	return (int64_t)in->tip > deadline ? GZ_C11_ABANDONED : GZ_C11_WAIT;	return (int64_t)in->tip >= deadline ? GZ_C11_ABANDONED : GZ_C11_WAIT;
 c11-burial	core/tree/checks.c	if (!in->seen || in->confirmations < in->cond->exit.B)	if (!in->seen || in->confirmations + 1 < in->cond->exit.B)
 c11-on-time	core/tree/checks.c	    if ((int64_t)in->buried_at <= deadline)\n        return gz_exit	    if ((int64_t)in->buried_at <= deadline + 1)\n        return gz_exit
-c11-late-margin	core/tree/checks.c	if (in->holds_whole_tree && leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;	if (in->holds_whole_tree && leave_by >= (int64_t)in->tip) return GZ_C11_LIVE;
-c11-late-tree	core/tree/checks.c	if (in->holds_whole_tree && leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;	if (1 && leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;
+c11-late-margin	core/tree/checks.c	if (in->holds_whole_tree && leave_by >= (int64_t)in->buried_at + 1) return GZ_C11_LIVE;	if (in->holds_whole_tree && leave_by >= (int64_t)in->buried_at) return GZ_C11_LIVE;
+c11-late-tree	core/tree/checks.c	if (in->holds_whole_tree && leave_by >= (int64_t)in->buried_at + 1) return GZ_C11_LIVE;	if (1 && leave_by >= (int64_t)in->buried_at + 1) return GZ_C11_LIVE;
 c11-amount	core/tree/checks.c	if (in->seen && (in->seen_amount != in->funding_amount ||	if (in->seen && (
 h1-ack	core/tree/checks.c	if (!in->acked[i]) { *at = i; return GZ_H1_ACK_MISSING; }	
 h1-ack-first	core/tree/checks.c	    for (i = 0; i < in->n_members; i++)\n        if (!in->acked[i])	    for (i = 1; i < in->n_members; i++)\n        if (!in->acked[i])
@@ -284,3 +284,38 @@ fundable-minimum	core/tree/terms.c	            || p.funding_amount < 2 * (2 * (u
 fundable-last-n	core/tree/terms.c	for (n = t->minimum; n <= top; n++) {	for (n = t->minimum; n < top; n++) {
 fundable-from-3	core/tree/terms.c	for (n = t->minimum; n <= top; n++) {	for (n = 3; n <= top; n++) {
 funding-prefix	core/tree/checks.c	if (p->funding_script[0] != 0x51 || p->funding_script[1] != 0x20 ||	if (
+# --- after review B of PR 24
+c11-late-at-tip	core/tree/checks.c	leave_by >= (int64_t)in->buried_at + 1) return GZ_C11_LIVE;	leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;
+recheck-bounds-gone	core/tree/checks.c	    if ((e = gz_terms_check_outer(in->outer, in->policy)) != GZ_TERMS_OK)\n        return fail(v, GZ_CHK_C8A_TERMS_BOUNDS, (int32_t)e);\n	
+recheck-any-chain	core/tree/checks.c	gz_terms_check_outer(in->outer, in->policy)	gz_terms_check_outer(in->outer, &(const gz_terms_policy_t){0})
+recheck-frozen-gone	core/tree/checks.c	    if ((e = gz_terms_check_current(in->outer, in->frozen)) != GZ_TERMS_OK)\n        return fail(v, GZ_CHK_C8A_FROZEN_VALUES, (int32_t)e);\n	
+recheck-receive-ignored	core/tree/checks.c	    if (e != GZ_TERMS_OK) return fail(v, GZ_CHK_C8A_TERMS_RECORD, (int32_t)e);\n	
+recheck-frozen-digest	core/tree/checks.c	    if (!tr_eq(rcd, in->frozen_digest, 32)) return fail(v, GZ_CHK_C8A_TERMS_RECORD, -1);\n	
+recheck-outer-equal	core/tree/checks.c	if (!gz_terms_outer_equal(&ro, in->outer) || !gz_terms_current_equal(&rc, in->frozen))	if (!gz_terms_current_equal(&rc, in->frozen))
+recheck-current-equal	core/tree/checks.c	if (!gz_terms_outer_equal(&ro, in->outer) || !gz_terms_current_equal(&rc, in->frozen))	if (!gz_terms_outer_equal(&ro, in->outer))
+recheck-gone	core/tree/checks.c	    if (!check_terms(in, v)) return;\n	    if (!check_terms(in, v) && 0) return;\n
+
+equal-channel	core/tree/terms.c	|| a->channel_sat != b->channel_sat	
+equal-salt	core/tree/terms.c	 || !tr_eq(a->lobby_salt, b->lobby_salt, 16)	
+equal-unknown-odd	core/tree/terms.c	        || a->n_unknown_odd != b->n_unknown_odd)	        )
+equal-shape-width	core/tree/terms.c	            || !tr_eq(x->interior, y->interior, x->n_interior)	
+equal-adj-max	core/tree/terms.c	 || a->adj[i].max != b->adj[i].max) return 0;	) return 0;
+equal-value	core/tree/terms.c	 || a->val[i].value != b->val[i].value) return 0;	) return 0;
+equal-version	core/tree/terms.c	 || a->version != b->version	
+current-order	core/tree/terms.c	if ((i && c->val[i].type <= c->val[i - 1].type) || !outer_range	if (!outer_range
+fundable-minimum-256	core/tree/terms.c	    if (t->minimum > GZ_TREE_MAX_MEMBERS) return GZ_TERMS_E_UNFUNDABLE;\n	
+fundable-minimum-257	core/tree/terms.c	if (t->minimum > GZ_TREE_MAX_MEMBERS) return	if (t->minimum > GZ_TREE_MAX_MEMBERS + 1) return
+# Review B's test gaps (its b-glue-funding-vout, b-witness-push-len, b-witness-n-max, b-c4d-first-input,
+# b-utf8-*, b-current-version-len, b-fundable-top-64, b-bigsize-truncated, b-tx-scriptsig-bound), now killed
+glue-funding-vout	core/tree/import/tree_import.c	factory_set_funding(f, in->funding_txid, in->funding_vout,	factory_set_funding(f, in->funding_txid, 0,
+witness-push-len	core/tree/checks.c	    if (s[1] != n - 2) return 0;\n	
+witness-n-max	core/tree/checks.c	if (!s || n < 4 || n > 42) return 0;	if (!s || n < 4) return 0;
+c4d-first-input	core/tree/checks.c	for (i = 0; i < info.n_in; i++) {	for (i = 0; i < 1 && i < info.n_in; i++) {	1
+utf8-4byte-min	core/tree/terms.c	min = 0x10000;	min = 0x800;
+utf8-above-max	core/tree/terms.c	cp > 0x10ffff ||	
+utf8-continuation	core/tree/terms.c	            if ((s[i + k] & 0xc0) != 0x80) return 0;\n	
+utf8-truncated	core/tree/terms.c	if (n - i - 1 < extra) return 0;	if (n - i < extra) return 0;
+current-version-len	core/tree/terms.c	            if (len != 4) return GZ_TERMS_E_LENGTH;\n            c->version	            if (len < 4) return GZ_TERMS_E_LENGTH;\n            c->version
+fundable-top-64	core/tree/terms.c	top = t->target < GZ_TREE_MAX_MEMBERS ? t->target : GZ_TREE_MAX_MEMBERS;	top = t->target < 64 ? t->target : 64;
+bigsize-truncated	core/tree/terms.c	if (r->n - r->i < need) return GZ_TERMS_E_TRUNCATED;	if (r->n - r->i + 1 < need) return GZ_TERMS_E_TRUNCATED;
+tx-scriptsig-bound	core/tree/model.c	|| l > len - i) return 0;\n        i += (size_t)l;\n        if (len - i < 4) return 0;	) return 0;\n        i += (size_t)l;\n        if (len - i < 4) return 0;

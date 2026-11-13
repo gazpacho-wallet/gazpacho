@@ -15,6 +15,7 @@ uint16_t gz_tree_reason(gz_chk_t c)
     case GZ_CHK_C10_BUSY: return GZ_REASON_BUSY;
     case GZ_CHK_C7_OTHER_TREE: return GZ_REASON_OTHER_TREE;
     case GZ_CHK_C8A_PURPOSE: case GZ_CHK_C8A_VERSION: case GZ_CHK_C8A_DIGEST: case GZ_CHK_C8A_READY_OUTER:
+    case GZ_CHK_C8A_TERMS_BOUNDS: case GZ_CHK_C8A_FROZEN_VALUES:
     case GZ_CHK_C8_PLACEMENT: case GZ_CHK_C8_ANCHORS: case GZ_CHK_C8_K: case GZ_CHK_C8_LAYER_STEP:
     case GZ_CHK_C8_LAYER_STATES: case GZ_CHK_C8_HASHES: case GZ_CHK_C8_DISTRIBUTION: case GZ_CHK_C8_DEADLINES:
     case GZ_CHK_C8_MEMBERS_TERMS: case GZ_CHK_C8_MEMBERS_OWN: case GZ_CHK_C8_NO_SHAPE: case GZ_CHK_C8_SHAPE:
@@ -24,6 +25,7 @@ uint16_t gz_tree_reason(gz_chk_t c)
     case GZ_CHK_C8_IMPORT_MINIMUM: case GZ_CHK_C8_LEAF_KIND: case GZ_CHK_C8_OWN_LEAF:
     case GZ_CHK_C8_CHANNEL_TERMS: case GZ_CHK_C8_CHANNEL_OWN: case GZ_CHK_C6_TIERS:
         return GZ_REASON_CONDITIONS;
+    case GZ_CHK_C8A_TERMS_RECORD: case GZ_CHK_C8A_TERMS_DIFFER:
     case GZ_CHK_C1_PARTICIPANTS: case GZ_CHK_C1_DUPLICATE_KEY: case GZ_CHK_C1_BAD_KEY: case GZ_CHK_C1_HOST_KEY:
     case GZ_CHK_C1_FUNDING_TX: case GZ_CHK_C1_FUNDING_TXID: case GZ_CHK_C1_FUNDING_VOUT:
     case GZ_CHK_C1_FUNDING_AMOUNT: case GZ_CHK_C1_FUNDING_SCRIPT_LEN: case GZ_CHK_C1_FUNDING_SCRIPT:
@@ -43,6 +45,10 @@ static const char CHK_NAMES[] =
     "c8a_version\0"
     "c8a_digest\0"
     "c8a_ready_outer\0"
+    "c8a_terms_bounds\0"
+    "c8a_frozen_values\0"
+    "c8a_terms_record\0"
+    "c8a_terms_differ\0"
     "c1_participants\0"
     "c1_duplicate_key\0"
     "c1_bad_key\0"
@@ -266,6 +272,34 @@ static int check_path(const gz_tree_t *t, uint32_t member, uint32_t E, gz_tree_v
     return 1;
 }
 
+/* The stored terms again (review B, B1). The tree's amounts, fee, depth, end
+ * height and timeouts are derived from the outer rules, so their bounds are
+ * re-checked here rather than trusted to whoever filled the struct: terms.md
+ * 7 steps 4 and 5 on `outer`, section 5 on `frozen`; then steps 1 to 6 on the
+ * stored bytes and signatures, which must give exactly the digests the
+ * bindings and C8a were checked against and exactly the structs the tree is
+ * built from. */
+static int check_terms(const gz_tree_member_in_t *in, gz_tree_verdict_t *v)
+{
+    gz_terms_outer_t ro;
+    gz_terms_current_t rc;
+    uint8_t rod[32], rcd[32];
+    gz_terms_err_t e;
+    if ((e = gz_terms_check_outer(in->outer, in->policy)) != GZ_TERMS_OK)
+        return fail(v, GZ_CHK_C8A_TERMS_BOUNDS, (int32_t)e);
+    if ((e = gz_terms_check_current(in->outer, in->frozen)) != GZ_TERMS_OK)
+        return fail(v, GZ_CHK_C8A_FROZEN_VALUES, (int32_t)e);
+    e = gz_terms_receive(in->outer_rec, in->outer_rec_len, in->outer_sig, in->frozen_rec, in->frozen_rec_len,
+                         in->frozen_sig, in->outer_digest, in->host_pinned_key, in->policy, in->crypto, &ro, rod,
+                         &rc, rcd);
+    if (e != GZ_TERMS_OK) return fail(v, GZ_CHK_C8A_TERMS_RECORD, (int32_t)e);
+    /* rod is outer_digest (step 2 compared it with the scope). */
+    if (!tr_eq(rcd, in->frozen_digest, 32)) return fail(v, GZ_CHK_C8A_TERMS_RECORD, -1);
+    if (!gz_terms_outer_equal(&ro, in->outer) || !gz_terms_current_equal(&rc, in->frozen))
+        return fail(v, GZ_CHK_C8A_TERMS_DIFFER, -1);
+    return 1;
+}
+
 void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_t *p, gz_tree_t *t,
                           gz_tree_verdict_t *v)
 {
@@ -283,6 +317,7 @@ void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_
     v->at = -1;
     if (!in || !p || !t || !in->outer || !in->outer_digest || !in->frozen || !in->frozen_digest
         || !in->ready_outer_digest || !in->ready_current_digest || !in->cond || !in->crypto
+        || !in->outer_rec || !in->outer_sig || !in->frozen_rec || !in->frozen_sig || !in->host_pinned_key || !in->policy
         || !in->crypto->point_valid || !in->crypto->verify || !in->crypto->agg_tweak
         || !in->import_build || !in->import_out
         || (in->n_exposures && !in->exposures) || (in->n_unresolved && !in->unresolved)) {
@@ -306,6 +341,7 @@ void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_
         fail(v, GZ_CHK_C8A_READY_OUTER, -1);
         return;
     }
+    if (!check_terms(in, v)) return;
 
     /* C1: participants; then the bindings. */
     if (!check_participants(in, p, v) || !check_bindings(in, p, v)) return;
@@ -463,16 +499,23 @@ gz_c11_t gz_tree_c11(const gz_tree_c11_in_t *in)
     if (!in->seen || in->confirmations < in->cond->exit.B)
         return (int64_t)in->tip > deadline ? GZ_C11_ABANDONED : GZ_C11_WAIT;
     leave_by = gz_exit_leave_by(in->end_height, in->own_depth, (uint32_t)in->own_depth + 3, &in->cond->exit);
-    /* On time: the signing-time check, with the deadline that really applies
+    /* Both branches are judged at the burial, never at `tip`: LIVE is final
+     * (tree.h), so the verdict must not change as the tip moves on.
+     *
+     * On time: the signing-time check, with the deadline that really applies
      * (the ack's tip + the funding deadline; review A, R1). A member that ran
-     * gz_tree_may_ack never gets here with it failing; a caller that did not
-     * still never sees a factory live after its leave_by. */
+     * gz_tree_may_ack with the same ack_tip never gets here with it failing;
+     * for a caller that did not, a factory whose leave_by was already too
+     * close at the deadline never becomes live. A live factory stays live
+     * after its leave_by passes: from then on the exit engine, not C11, says
+     * it must leave (review B, B3). */
     if ((int64_t)in->buried_at <= deadline)
         return gz_exit_signing_check(in->end_height, in->own_depth, deadline, &in->cond->exit) ? GZ_C11_LIVE
                                                                                                  : GZ_C11_ABANDONED;
     /* Buried late: live only with the whole signed tree held and the time
-     * check passing again now (one block of being live left before leave_by). */
-    if (in->holds_whole_tree && leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;
+     * check passing again at that moment, the burial (safety-rule.md C11):
+     * at least one block of being live before leave_by (review B, B2). */
+    if (in->holds_whole_tree && leave_by >= (int64_t)in->buried_at + 1) return GZ_C11_LIVE;
     return GZ_C11_ABANDONED;
 }
 

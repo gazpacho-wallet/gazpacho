@@ -386,6 +386,50 @@ static void test_encoding_rules(void)
         t1_with(&r, 0, NULL, 0, 3, v, 33);        CHECK(dec(&r, &SLICE1) == GZ_TERMS_E_LENGTH);
         t1_with(&r, 0, NULL, 0, 3, v, 0);         CHECK(dec(&r, &SLICE1) == GZ_TERMS_E_LENGTH);
     }
+    /* The other UTF-8 rules (review B, B7): an overlong 4-byte form, a code
+     * point above U+10FFFF, a bad continuation byte, a sequence cut short at
+     * the end of the value; and the edges that are accepted. */
+    {
+        static const uint8_t over4[4] = {0xf0, 0x8f, 0xbf, 0xbf}, min4[4] = {0xf0, 0x90, 0x80, 0x80},
+                             above[4] = {0xf4, 0x90, 0x80, 0x80}, top[4] = {0xf4, 0x8f, 0xbf, 0xbf},
+                             cont[2] = {0xc3, 0x28}, cont3[3] = {0xe2, 0x82, 0x28}, cut[2] = {0xe2, 0x82},
+                             euro[3] = {0xe2, 0x82, 0xac}, f5[4] = {0xf5, 0x80, 0x80, 0x80};
+        t1_with(&r, 0, NULL, 0, 3, over4, 4); CHECK(dec(&r, &SLICE1) == GZ_TERMS_E_UTF8);
+        t1_with(&r, 0, NULL, 0, 3, min4, 4);  CHECK(dec(&r, &SLICE1) == GZ_TERMS_OK);
+        t1_with(&r, 0, NULL, 0, 3, above, 4); CHECK(dec(&r, &SLICE1) == GZ_TERMS_E_UTF8);
+        t1_with(&r, 0, NULL, 0, 3, top, 4);   CHECK(dec(&r, &SLICE1) == GZ_TERMS_OK);
+        t1_with(&r, 0, NULL, 0, 3, f5, 4);    CHECK(dec(&r, &SLICE1) == GZ_TERMS_E_UTF8);
+        t1_with(&r, 0, NULL, 0, 5, cont, 2);  CHECK(dec(&r, &SLICE1) == GZ_TERMS_E_UTF8);
+        t1_with(&r, 0, NULL, 0, 5, cont3, 3); CHECK(dec(&r, &SLICE1) == GZ_TERMS_E_UTF8);
+        t1_with(&r, 0, NULL, 0, 5, euro, 3);  CHECK(dec(&r, &SLICE1) == GZ_TERMS_OK);
+        t1_with(&r, 0, NULL, 0, 5, cut, 2);   CHECK(dec(&r, &SLICE1) == GZ_TERMS_E_UTF8);
+        /* Cut short with a continuation byte right after the value: the next
+         * record's type 129 (one byte, 0x81). Read one byte too far, the
+         * sequence would look complete and the refusal would be the type's. */
+        {
+            rec_t q;
+            q.n = 0;
+            add(&q, 2, outer + 2, 32);
+            add(&q, 3, cut, 2);
+            add(&q, 129, cut, 0);
+            CHECK(q.b[q.n - 2] == 0x81);
+            CHECK(dec(&q, &ANY) == GZ_TERMS_E_UTF8);
+        }
+    }
+    /* A BigSize cut short at the very end of an exactly-sized buffer
+     * (review B, B7): as a length after a skipped odd type, and as a type. */
+    {
+        uint8_t *b = malloc(n + 3);
+        if (!b) abort();
+        memcpy(b, outer, n);
+        b[n] = 0x3f; b[n + 1] = 0xfd; b[n + 2] = 0x01;    /* type 63, length fd 01 .. */
+        CHECK(gz_terms_decode_outer(b, n + 3, &ANY, &o) == GZ_TERMS_E_TRUNCATED);
+        b[n] = 0xfd; b[n + 1] = 0x01;                      /* a type fd 01 .. */
+        CHECK(gz_terms_decode_outer(b, n + 2, &ANY, &o) == GZ_TERMS_E_TRUNCATED);
+        b[n] = 0xfe; b[n + 1] = 0x01; b[n + 2] = 0x00;     /* fe and 2 of its 4 bytes */
+        CHECK(gz_terms_decode_outer(b, n + 3, &ANY, &o) == GZ_TERMS_E_TRUNCATED);
+        free(b);
+    }
     /* Each required type missing in turn. */
     {
         static const uint8_t REQ[] = {2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 64, 66, 68};
@@ -471,6 +515,12 @@ static void test_encoding_rules(void)
             CHECK(gz_terms_decode_current(cr.b, cr.n, NULL, &c) == GZ_TERMS_E_LENGTH);
             cr.n = 0; add(&cr, 2, d33, 32); add(&cr, 4, v, 3);
             CHECK(gz_terms_decode_current(cr.b, cr.n, NULL, &c) == GZ_TERMS_E_LENGTH);
+            /* the version in 5 bytes (review B, B7): read as 4, one record would have two encodings */
+            u32be(v, 1); v[4] = 0;
+            cr.n = 0; add(&cr, 2, d33, 32); add(&cr, 4, v, 5);
+            CHECK(gz_terms_decode_current(cr.b, cr.n, NULL, &c) == GZ_TERMS_E_LENGTH);
+            cr.n = 0; add(&cr, 2, d33, 32); add(&cr, 4, v, 4);
+            CHECK(gz_terms_decode_current(cr.b, cr.n, NULL, &c) == GZ_TERMS_OK && c.version == 1);
             cr.n = 0; add(&cr, 2, d33, 32); add(&cr, 4, v, 4); add(&cr, 64, d8, 7);
             CHECK(gz_terms_decode_current(cr.b, cr.n, NULL, &c) == GZ_TERMS_E_LENGTH);
         }
@@ -810,11 +860,98 @@ static void test_fundable(void)
     t.minimum = 4;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+    /* Above 64 members (review B, B7). A leaf-only table splits in two at
+     * every depth, so R(65) is about twice R(64): with the largest channel
+     * that keeps R(64) within the money supply, a target of 64 is fundable
+     * and 65 is not. */
+    {
+        gz_tree_params_t p;
+        uint64_t lo = 546, hi = 2100000000000000ull;
+        t1_terms(&t);
+        t.n_shapes = 1; t.shapes[0].max_members = 1000; t.shapes[0].n_interior = 0; t.shapes[0].leaf_kind = 3;
+        t.minimum = 3; t.target = 64;
+        while (lo < hi) {
+            uint64_t mid = lo + (hi - lo + 1) / 2;
+            t.channel_sat = mid;
+            if (gz_tree_params(&t, 64, &p) == GZ_TREE_P_OK && p.funding_amount <= 2100000000000000ull) lo = mid;
+            else hi = mid - 1;
+        }
+        t.channel_sat = lo;
+        CHECK(gz_tree_params(&t, 64, &p) == GZ_TREE_P_OK && p.funding_amount <= 2100000000000000ull);
+        CHECK(gz_tree_params(&t, 65, &p) != GZ_TREE_P_OK || p.funding_amount > 2100000000000000ull);
+        n = gz_terms_encode_outer(&t, b, sizeof b);
+        CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
+        t.target = 65;
+        n = gz_terms_encode_outer(&t, b, sizeof b);
+        CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+        t.minimum = 64;
+        n = gz_terms_encode_outer(&t, b, sizeof b);
+        CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+        t.minimum = 3; t.target = 300;
+        n = gz_terms_encode_outer(&t, b, sizeof b);
+        CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+    }
+    /* A minimum above 256 leaves no member count a factory can have (review
+     * B, B4); a target above 256 is fine (a round above 256 is refused at signing). */
+    t1_terms(&t);
+    t.n_shapes = 1; t.shapes[0].max_members = 1000; t.shapes[0].n_interior = 0; t.shapes[0].leaf_kind = 3;
+    t.target = 1000; t.minimum = 256;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
+    t.minimum = 257;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+    t.minimum = 1000;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+    t.minimum = 3;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
+}
+
+/* The struct-level checks the member check runs again (review B, B1). */
+static void test_struct_checks(void)
+{
+    gz_terms_outer_t t, u;
+    gz_terms_current_t c, e;
+    uint8_t dig[32];
+    unhex(T1_DIGEST, dig, 32);
+    t1_terms(&t);
+    t1_current(dig, 1, 500, 1000, 1000, &c);
+    CHECK(gz_terms_check_current(&t, &c) == GZ_TERMS_OK);
+    CHECK(gz_terms_check_current(NULL, &c) == GZ_TERMS_E_ARGUMENT && gz_terms_check_current(&t, NULL) == GZ_TERMS_E_ARGUMENT);
+    e = c; e.version = 0; CHECK(gz_terms_check_current(&t, &e) == GZ_TERMS_E_VERSION);
+    e = c; e.n_values = 2; CHECK(gz_terms_check_current(&t, &e) == GZ_TERMS_E_ADJ_SET);
+    e = c; e.val[1].type = 65; CHECK(gz_terms_check_current(&t, &e) == GZ_TERMS_E_ADJ_SET);
+    e = c; e.val[1].type = 64; CHECK(gz_terms_check_current(&t, &e) == GZ_TERMS_E_ADJ_SET);   /* 64 twice */
+    e = c; e.val[0].value = 2001; CHECK(gz_terms_check_current(&t, &e) == GZ_TERMS_E_ADJ_VALUE);
+    e = c; e.val[2].value = 99; CHECK(gz_terms_check_current(&t, &e) == GZ_TERMS_E_ADJ_VALUE);
+    e = c; e.val[2].value = 100; CHECK(gz_terms_check_current(&t, &e) == GZ_TERMS_OK);
+    u = t; u.n_adj = 37; CHECK(gz_terms_check_current(&u, &c) == GZ_TERMS_E_ADJ_SET);
+    CHECK(gz_terms_check_outer(&u, &SLICE1) == GZ_TERMS_E_RANGE);
+    u = t; u.n_shapes = GZ_TERMS_MAX_SHAPES + 1; CHECK(gz_terms_check_outer(&u, &SLICE1) == GZ_TERMS_E_SHAPE_ENCODING);
+    /* Equality: field by field, unused bytes ignored. */
+    u = t; CHECK(gz_terms_outer_equal(&t, &u));
+    u.alias[5] = 'x'; u.shapes[0].interior[3] = 9; u.adj[10].min = 7; CHECK(gz_terms_outer_equal(&t, &u));
+    u = t; u.deadline++; CHECK(!gz_terms_outer_equal(&t, &u));
+    u = t; u.shapes[1].interior[0] = 5; CHECK(!gz_terms_outer_equal(&t, &u));
+    u = t; u.adj[2].max--; CHECK(!gz_terms_outer_equal(&t, &u));
+    u = t; u.host_key[32] ^= 1; CHECK(!gz_terms_outer_equal(&t, &u));
+    u = t; u.n_unknown_odd = 2; CHECK(!gz_terms_outer_equal(&t, &u));
+    u = t; u.alias_len = 1; CHECK(!gz_terms_outer_equal(&t, &u));
+    CHECK(!gz_terms_outer_equal(&t, NULL));
+    e = c; CHECK(gz_terms_current_equal(&c, &e));
+    e.val[5].value = 3; CHECK(gz_terms_current_equal(&c, &e));
+    e = c; e.outer_digest[0] ^= 1; CHECK(!gz_terms_current_equal(&c, &e));
+    e = c; e.version = 2; CHECK(!gz_terms_current_equal(&c, &e));
+    e = c; e.val[1].value++; CHECK(!gz_terms_current_equal(&c, &e));
+    e = c; e.n_values = 2; CHECK(!gz_terms_current_equal(&c, &e));
 }
 
 int main(void)
 {
     test_fundable();
+    test_struct_checks();
     test_sha256();
     test_target_edge();
     test_vectors();
