@@ -257,3 +257,6 @@ add_subdirectory(ports/chain)
 
 # --- trees from terms and the creation checks (core/tree) ---
 add_subdirectory(core/tree)
+
+# --- storage encryption (ports/storage/crypto): libsodium, outside the core ---
+add_subdirectory(ports/storage/crypto)
