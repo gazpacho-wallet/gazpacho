@@ -33,12 +33,13 @@ CFLAGS = ["-std=gnu11", "-O1", "-w",
           "-I" + os.path.join(SRC, "core/superscalar/include")]
 SAN = ["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-g"]
 SAN_TESTS = [("test_journal", [], 300), ("test_journal_edges", [], 300), ("test_journal_restore", [], 300),
-             ("test_journal_review", [], 300), ("test_journal_fuzz", ["3000", "5"], 300),
+             ("test_journal_review", [], 300), ("test_journal_review_b", [], 300), ("test_journal_fuzz", ["3000", "5"], 300),
              ("test_journal_crash", [], 600)]
 TESTS = [("test_journal", [], 120),
          ("test_journal_edges", [], 120),
          ("test_journal_restore", [], 120),
          ("test_journal_review", [], 120),
+         ("test_journal_review_b", [], 120),
          ("crosscheck", None, 120),
          ("test_journal_fuzz", ["20000", "5"], 120),
          ("test_journal_crash", [], 240)]
@@ -155,7 +156,8 @@ def common_objects(name, flags):
     for name, srcf in [("test_journal", "test_journal.c"), ("test_journal_crash", "test_journal_crash.c"),
                        ("test_journal_fuzz", "test_journal_fuzz.c"), ("test_journal_edges", "test_journal_edges.c"),
                        ("test_journal_restore", "test_journal_restore.c"),
-                       ("test_journal_review", "test_journal_review.c")]:
+                       ("test_journal_review", "test_journal_review.c"),
+                       ("test_journal_review_b", "test_journal_review_b.c")]:
         o = os.path.join(common, name + ".o")
         subprocess.run(["gcc", *flags, "-c", os.path.join(t, srcf), "-o", o], check=True)
         objs[name] = [o, memfs]

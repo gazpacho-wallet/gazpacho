@@ -296,6 +296,10 @@ gz_add_test(journal_restore tests/journal/test_journal_restore.c gazpacho_journa
 # order, the folder lock, the start counter, the hard limit with two marks,
 # a kept guard batch, 2^63, flushes with no runner or from on_confirmed.
 gz_add_test(journal_review  tests/journal/test_journal_review.c  gazpacho_journal_testfs)
+# Review B: journal.lock removed or replaced during an import (200 rounds of
+# two processes), the import's floor, the name's durability, an unreadable
+# marker, the O_DIRECT fallback, the reader after a failure, the guard.
+gz_add_test(journal_review_b tests/journal/test_journal_review_b.c gazpacho_journal_testfs)
 # Under valgrind: every journal test runs in the valgrind job
 # (tools/valgrind-tests.py, which takes journal_fuzz on a smaller case).
 

@@ -172,12 +172,25 @@ typedef struct {
      * Linux keeps the failed bytes readable in the cache, marked clean, and
      * never writes them (spec section 4). POSIX: drop the file's clean cached
      * pages (posix_fadvise DONTNEED), then read with O_DIRECT where the file
-     * system takes it, else an ordinary read; macOS: F_NOCACHE. */
+     * system takes it, else an ordinary read; macOS: F_NOCACHE.
+     * Limits (review B, B5): where O_DIRECT falls back silently (ext4
+     * data=journal, inline-data files, fscrypt without inline encryption,
+     * compressed btrfs, ZFS before 2.3) or is refused (tmpfs before Linux
+     * 6.6, some FUSE mounts), the fadvise is the only defence, and it keeps
+     * pages another process has mapped: nothing may mmap journal.gzj while
+     * the wallet runs (gz-journal reads it with stdio). The macOS path is
+     * unverified: Apple's fcntl(2) does not say F_NOCACHE bypasses a page
+     * already cached. */
     long (*pread_device)(void *ctx, int fd, void *buf, size_t len, uint64_t off);
     void *ctx;
 } gz_journal_os_t;
 
 const gz_journal_os_t *gz_journal_os_posix(void);
+
+/* Tests only: with `on` 1, the POSIX table's direct read reports EINVAL as a
+ * file system that refuses O_DIRECT does (tmpfs before Linux 6.6, some FUSE
+ * mounts), so the fallback runs; 0 restores. Not thread-safe. */
+void gz_journal_posix_test_direct_einval(int on);
 
 /* --- Scanning (read only, also used by tools/gz-journal) --------------------- */
 
@@ -271,7 +284,19 @@ typedef struct {
 /* Open (or create) the journal and start a new incarnation (spec section 5).
  * On anything but GZ_JOURNAL_OK nothing is held open and `*out` is NULL. A
  * refusal by the scan (header, network, corrupt, order, unknown record)
- * leaves the file untouched. `info` may be NULL. */
+ * leaves the file untouched. `info` may be NULL.
+ *
+ * GZ_JOURNAL_ERR_IO AT THE FIRST START AFTER A WRITEBACK ERROR. If the
+ * kernel's writeback of the journal failed and no program saw the error (the
+ * program was killed before its flush), Linux reports it to the next
+ * descriptor's first fsync: this open's own sync, which then refuses (spec
+ * section 5 step 2). Nothing is lost by it, and the next open reads what
+ * survived. The program should say "storage error, trying again" and open
+ * once more, not that the wallet is damaged; only a second refusal is a
+ * failure to report as such (review B, B4).
+ *
+ * Every open syncs the folder before anything rests on the journal's name
+ * (the open that created it may have failed before its own folder sync). */
 gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_t *config,
                                     gz_journal_open_info_t *info);
 
@@ -315,13 +340,21 @@ int gz_journal_complete(gz_journal_t *journal, gz_batch_id_t *id);
  * restored node's answer is durable. */
 int gz_journal_restored(const gz_journal_t *journal);
 
-/* Import a backup as a restore (ports.h; spec 8.2). `staged` is the backup,
+/* Import a backup as a restore (ports.h; spec 8.2). Like the open, it locks
+ * journal.lock and then journal.gzj itself, so a running program is never
+ * replaced even if journal.lock was removed or replaced by hand. A journal
+ * to replace that cannot be read (I/O error, no memory, over the hard limit)
+ * refuses the import (GZ_JOURNAL_ERR_IO etc., nothing written); one the scan
+ * refuses gives the highest incarnation the scan saw (before the damage,
+ * the newest valid sync mark after it, or a valid entry breaking the order)
+ * to the floor. `staged` is the backup,
  * already copied to a file IN `dir` (the same file system, so the rename is
  * atomic), for example `dir`/journal.gzj.import. Under the lock: syncs and
  * reads the staged file (refusing one the scan refuses), takes the floor as
  * the larger of `floor` and the highest incarnation of the journal it
- * replaces (when that one scans; otherwise the caller's floor and the start
- * counter must cover it), writes the restore marker, durably, and only then
+ * replaces (see above; a journal with an unreadable header gives none, and
+ * the caller's floor and the start counter must cover it), writes the
+ * restore marker, durably, and only then
  * renames the staged file over journal.gzj and syncs the folder. A crash
  * before the rename leaves the old journal with a marker whose `base` it is
  * already above, so the next open clears the marker as answered: the import
@@ -335,7 +368,8 @@ gz_journal_status_t gz_journal_import(const char *dir, const uint8_t chain[32],
 
 /* Start the files in place as a restore (storage 6.3: files found behind,
  * started as a restore; or step 0, a key file with no journal): set the
- * restore marker, durably, under the lock. `floor` is the highest
+ * restore marker, durably, under the lock (journal.lock and journal.gzj, as
+ * the import). `floor` is the highest
  * incarnation known to have been used (0 if none or unknown); no start
  * under the marker uses a number at or below it. Reads the journal
  * (refusing one the scan refuses); with no journal yet, the marker's base is

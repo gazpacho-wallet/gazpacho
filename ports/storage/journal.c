@@ -280,6 +280,14 @@ static gz_journal_status_t refuse(gz_journal_scan_t *o, gz_journal_status_t s, u
     return s;
 }
 
+/* An order refusal still records the highest incarnation any valid entry
+ * named (an import takes its floor from it: review B, B2). */
+static gz_journal_status_t refuse_order(gz_journal_scan_t *o, uint64_t at, uint64_t inc, uint64_t named)
+{
+    o->highest_incarnation = inc > named ? inc : named;
+    return refuse(o, GZ_JOURNAL_ERR_ORDER, at);
+}
+
 gz_journal_status_t gz_journal_scan(const uint8_t *d, size_t len, const uint8_t chain[32],
                                     gz_journal_scan_t *o, gz_journal_batch_fn on_batch, void *ctx)
 {
@@ -294,17 +302,17 @@ gz_journal_status_t gz_journal_scan(const uint8_t *d, size_t len, const uint8_t 
     while (p < len && entry_at(d + p, len - p, p, &e)) {
         /* Order rules, spec section 3.4. */
         if (e.kind == GZ_JOURNAL_KIND_INCARNATION) {
-            if (e.incarnation <= inc || e.sequence != 0) return refuse(o, GZ_JOURNAL_ERR_ORDER, p);
+            if (e.incarnation <= inc || e.sequence != 0) return refuse_order(o, p, inc, e.incarnation);
             inc = e.incarnation;
             seq = 0;
             o->n_incarnations++;
         } else {
-            if (inc == 0 || e.incarnation != inc) return refuse(o, GZ_JOURNAL_ERR_ORDER, p);
+            if (inc == 0 || e.incarnation != inc) return refuse_order(o, p, inc, e.incarnation);
             if (e.kind == GZ_JOURNAL_KIND_MARK) {
-                if (e.sequence != 0) return refuse(o, GZ_JOURNAL_ERR_ORDER, p);
+                if (e.sequence != 0) return refuse_order(o, p, inc, e.incarnation);
                 o->n_marks++;
             } else {
-                if (e.sequence != seq + 1) return refuse(o, GZ_JOURNAL_ERR_ORDER, p);
+                if (e.sequence != seq + 1) return refuse_order(o, p, inc, e.incarnation);
                 seq = e.sequence;
                 o->n_batches++;
                 uint32_t n = get32(e.payload);
@@ -330,12 +338,18 @@ gz_journal_status_t gz_journal_scan(const uint8_t *d, size_t len, const uint8_t 
     o->valid_end = p;
     o->highest_incarnation = inc;
     if (p < len) {
+        /* Corruption if a valid mark follows; `mark_at` is the first. The
+         * search goes on to the end so that `highest_incarnation` covers the
+         * newest mark too: each proves its incarnation was used, and an
+         * import takes its floor from it (review B, B2). */
         for (uint64_t m = p + 1; m + GZ_JOURNAL_MARK_LEN <= len; m++) {
             if (mark_at(d, len, m)) {
-                o->mark_at = m;
-                return refuse(o, GZ_JOURNAL_ERR_CORRUPT, p);
+                if (!o->mark_at) o->mark_at = m;
+                uint64_t mi = get64(d + m + 5);
+                if (mi > o->highest_incarnation) o->highest_incarnation = mi;
             }
         }
+        if (o->mark_at) return refuse(o, GZ_JOURNAL_ERR_CORRUPT, p);
         o->verdict = GZ_JOURNAL_TORN;
     }
     if (bad_type) {
@@ -459,6 +473,11 @@ static long direct_read(int fd, uint8_t *buf, size_t len, uint64_t off)
     return out;
 }
 #endif
+/* Tests only (journal.h): the direct read reports EINVAL, as on a file
+ * system that refuses O_DIRECT, so the fallback runs. */
+static int test_direct_einval;
+void gz_journal_posix_test_direct_einval(int on) { test_direct_einval = on; }
+
 static long px_pread_device(void *ctx, int fd, void *buf, size_t len, uint64_t off)
 {
     (void)ctx;
@@ -467,6 +486,10 @@ static long px_pread_device(void *ctx, int fd, void *buf, size_t len, uint64_t o
     int fl = fcntl(fd, F_GETFL);
     if (fl >= 0 && fcntl(fd, F_SETFL, fl | O_DIRECT) == 0) {
         long r = direct_read(fd, buf, len, off);
+        if (test_direct_einval) {
+            r = -1;
+            errno = EINVAL;
+        }
         int saved = errno;
         (void)fcntl(fd, F_SETFL, fl);
         if (r >= 0) return r;
@@ -884,6 +907,10 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
         st = (errno == EWOULDBLOCK || errno == EAGAIN) ? GZ_JOURNAL_ERR_LOCKED : GZ_JOURNAL_ERR_IO;
         goto out;
     }
+    /* The name journal.gzj durable before anything rests on it: the open
+     * that created it may have failed or been killed before its folder sync
+     * (spec 2.1; review B, B3). Creation has just synced the folder. */
+    if (!info->created && j->os.sync_dir(j->os.ctx, j->dir) != 0) { st = GZ_JOURNAL_ERR_IO; goto out; }
 
     /* 2 to 4. Sync, read what the device holds (an earlier program's failed
      * writeback may have left bytes in the page cache that are not on the
@@ -1201,9 +1228,11 @@ int gz_journal_complete(gz_journal_t *j, gz_batch_id_t *id)
 /* Read (after a sync, from the device) and scan the journal file at `path`.
  * *missing 1 and GZ_JOURNAL_OK if there is no such file. */
 static gz_journal_status_t load_scan(const gz_journal_os_t *os, const char *path, const uint8_t chain[32],
-                                     gz_journal_scan_t *sc, int *missing)
+                                     gz_journal_scan_t *sc, int *missing, int *scanned)
 {
     *missing = 0;
+    *scanned = 0;
+    memset(sc, 0, sizeof *sc);
     int fd = os->open(os->ctx, path, GZ_JOURNAL_OPEN_READ);
     if (fd < 0) {
         if (errno != ENOENT) return GZ_JOURNAL_ERR_IO;
@@ -1214,18 +1243,22 @@ static gz_journal_status_t load_scan(const gz_journal_os_t *os, const char *path
     uint64_t size = 0;
     gz_journal_status_t st = read_device(os, fd, GZ_JOURNAL_HARD_LIMIT, &data, &size);
     os->close(os->ctx, fd);
-    if (st == GZ_JOURNAL_OK) st = gz_journal_scan(data, (size_t)size, chain, sc, NULL, NULL);
+    if (st == GZ_JOURNAL_OK) {
+        *scanned = 1;
+        st = gz_journal_scan(data, (size_t)size, chain, sc, NULL, NULL);
+    }
     free(data);
     return st;
 }
 
 typedef struct {
     char *jpath, *mpath, *mtmp, *lock;
-    int lock_fd;
+    int lock_fd, journal_fd;
 } folder_t;
 
 static void folder_close(const gz_journal_os_t *os, folder_t *f)
 {
+    if (f->journal_fd >= 0) os->close(os->ctx, f->journal_fd);
     if (f->lock_fd >= 0) os->close(os->ctx, f->lock_fd);
     free(f->jpath); free(f->mpath); free(f->mtmp); free(f->lock);
 }
@@ -1237,9 +1270,19 @@ static gz_journal_status_t folder_open(const gz_journal_os_t *os, const char *di
     f->mpath = join(dir, GZ_JOURNAL_MARKER_FILE);
     f->mtmp = join(dir, GZ_JOURNAL_MARKER_FILE ".tmp");
     f->lock = join(dir, GZ_JOURNAL_LOCK_FILE);
-    f->lock_fd = -1;
+    f->lock_fd = f->journal_fd = -1;
     if (!f->jpath || !f->mpath || !f->mtmp || !f->lock) return GZ_JOURNAL_ERR_NO_MEMORY;
-    return take_lock(os, f->lock, &f->lock_fd);
+    gz_journal_status_t st = take_lock(os, f->lock, &f->lock_fd);
+    if (st != GZ_JOURNAL_OK) return st;
+    /* The journal itself too, as the open does: journal.lock may have been
+     * removed or replaced by hand while a program runs, and then only the
+     * journal's own lock keeps an import from replacing it under that
+     * program (review B, B1). Held until the import's rename is done. */
+    f->journal_fd = os->open(os->ctx, f->jpath, GZ_JOURNAL_OPEN_RW);
+    if (f->journal_fd < 0) return errno == ENOENT ? GZ_JOURNAL_OK : GZ_JOURNAL_ERR_IO;
+    if (os->lock(os->ctx, f->journal_fd) != 0)
+        return (errno == EWOULDBLOCK || errno == EAGAIN) ? GZ_JOURNAL_ERR_LOCKED : GZ_JOURNAL_ERR_IO;
+    return GZ_JOURNAL_OK;
 }
 
 /* Write the marker (base, floor), durably; a marker already there (a second
@@ -1271,8 +1314,8 @@ gz_journal_status_t gz_journal_mark_restored(const char *dir, const uint8_t chai
         /* The journal's highest incarnation (the open that follows judges the
          * file as usual); with no journal yet, 0. */
         gz_journal_scan_t sc;
-        int missing;
-        st = load_scan(os, f.jpath, chain, &sc, &missing);
+        int missing, scanned;
+        st = load_scan(os, f.jpath, chain, &sc, &missing, &scanned);
         if (st == GZ_JOURNAL_OK) st = write_marker(os, dir, &f, chain, missing ? 0 : sc.highest_incarnation, floor);
     }
     folder_close(os, &f);
@@ -1287,18 +1330,21 @@ gz_journal_status_t gz_journal_import(const char *dir, const uint8_t chain[32], 
     folder_t f;
     gz_journal_status_t st = folder_open(os, dir, &f);
     gz_journal_scan_t sb, sj;
-    int missing;
+    int missing, scanned;
     /* The backup, synced and read: refused as the scan refuses it. */
     if (st == GZ_JOURNAL_OK) {
-        st = load_scan(os, staged, chain, &sb, &missing);
+        st = load_scan(os, staged, chain, &sb, &missing, &scanned);
         if (st == GZ_JOURNAL_OK && missing) st = GZ_JOURNAL_ERR_IO;
     }
-    /* The journal it replaces: its highest incarnation raises the floor. One
-     * the scan refuses, or none, leaves the caller's floor (and the start
-     * counter) to cover it. */
-    if (st == GZ_JOURNAL_OK && load_scan(os, f.jpath, chain, &sj, &missing) == GZ_JOURNAL_OK && !missing &&
-        sj.highest_incarnation > floor)
-        floor = sj.highest_incarnation;
+    /* The journal it replaces: its highest incarnation raises the floor, also
+     * when the scan refuses it (the highest it saw). One that cannot be read
+     * at all (an I/O error, no memory, over the hard limit) refuses the
+     * import: its floor is unknown, and a retry may read it (review B, B2). */
+    if (st == GZ_JOURNAL_OK) {
+        gz_journal_status_t js = load_scan(os, f.jpath, chain, &sj, &missing, &scanned);
+        if (js != GZ_JOURNAL_OK && !scanned) st = js;
+        else if (!missing && sj.highest_incarnation > floor) floor = sj.highest_incarnation;
+    }
     /* The marker first, then the file (review A, R2). */
     if (st == GZ_JOURNAL_OK) st = write_marker(os, dir, &f, chain, sb.highest_incarnation, floor);
     if (st == GZ_JOURNAL_OK &&

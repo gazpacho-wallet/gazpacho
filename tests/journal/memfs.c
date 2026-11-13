@@ -160,6 +160,10 @@ static int m_open(void *ctx, const char *path, int how)
     int ino = -1, k = find(m->vol, path);
     if (how == GZ_JOURNAL_OPEN_READ || how == GZ_JOURNAL_OPEN_RW) {
         if (k < 0) { errno = ENOENT; return -1; }
+        if (m->fail_path && m->fail_path_how == 1 && strcmp(path, m->fail_path) == 0) {
+            errno = m->fail_path_errno ? m->fail_path_errno : EIO;
+            return -1;
+        }
         ino = m->vol[k].inode;
     } else if (how == GZ_JOURNAL_OPEN_CREATE && k >= 0) {
         ino = m->vol[k].inode; /* opened as it is: not a point */
@@ -194,10 +198,21 @@ static int m_close(void *ctx, int fd)
     return 0;
 }
 
+/* fail_path with how 2: every read through a descriptor on it fails. */
+static int read_fails(memfs_t *m, int fd)
+{
+    if (!m->fail_path || m->fail_path_how != 2) return 0;
+    int k = find(m->vol, m->fail_path);
+    if (k < 0 || m->vol[k].inode != m->fd_inode[fd]) return 0;
+    errno = m->fail_path_errno ? m->fail_path_errno : EIO;
+    return 1;
+}
+
 static long m_pread(void *ctx, int fd, void *buf, size_t len, uint64_t off)
 {
     memfs_t *m = ctx;
     if (!fd_ok(m, fd)) { errno = EBADF; return -1; }
+    if (read_fails(m, fd)) return -1;
     memfs_inode_t *n = &m->inode[m->fd_inode[fd]];
     if (off >= n->vol_len) return 0;
     if (len > n->vol_len - off) len = n->vol_len - (size_t)off;
@@ -264,6 +279,7 @@ static long m_pread_device(void *ctx, int fd, void *buf, size_t len, uint64_t of
 {
     memfs_t *m = ctx;
     if (!fd_ok(m, fd)) { errno = EBADF; return -1; }
+    if (read_fails(m, fd)) return -1;
     memfs_inode_t *n = &m->inode[m->fd_inode[fd]];
     if (n->n_ops == 0) {
         n->vol = xrealloc(n->vol, n->dur_len);
@@ -397,14 +413,16 @@ void memfs_settle(memfs_t *m, int mode, uint64_t seed)
         n->vol_len = n->dur_len;
         n->lock_fd = -1;
     }
-    if (mode == MEMFS_KEEP || (mode == MEMFS_REORDER && (mix(&s) & 1)))
+    /* A kill (KEEP) leaves the folder's names as they are: current, and
+     * durable only as far as a folder sync made them (review B, B5). */
+    if (mode == MEMFS_REORDER && (mix(&s) & 1))
         memcpy(m->dur, m->vol, sizeof m->dur);
-    else
+    else if (mode != MEMFS_KEEP)
         memcpy(m->vol, m->dur, sizeof m->vol);
     /* Free inodes no name refers to. */
     for (int i = 0; i < MEMFS_FILES; i++) {
         int named = 0;
-        for (int k = 0; k < MEMFS_FILES; k++) named |= m->vol[k].inode == i;
+        for (int k = 0; k < MEMFS_FILES; k++) named |= m->vol[k].inode == i || m->dur[k].inode == i;
         if (m->inode[i].used && !named) {
             free(m->inode[i].ops); free(m->inode[i].dur); free(m->inode[i].vol);
             memset(&m->inode[i], 0, sizeof m->inode[i]);

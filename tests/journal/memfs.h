@@ -14,7 +14,8 @@
  *
  *   MEMFS_LOSE     nothing unsynced survives;
  *   MEMFS_KEEP     everything written survives (a process kill: the page
- *                  cache is kept);
+ *                  cache is kept); folder names stay as they are, durable
+ *                  only as far as a folder sync made them;
  *   MEMFS_REORDER  a random subset of the unsynced writes survives, in any
  *                  combination, one of them possibly torn, and either the old
  *                  or the new folder names.
@@ -81,6 +82,10 @@ typedef struct {
     int crashed;                       /* set at the crash point; cleared by settle */
     int sync_fail_drops;               /* 1: a failed sync drops the failed writes from view too */
     int no_links;                      /* nonzero: link fails with this errno (EPERM: FAT, exFAT) */
+    /* Reading this path fails (not a point): how 1 its open for reading or
+     * writing, 2 every pread through a descriptor on it; errno, 0: EIO. */
+    const char *fail_path;
+    int fail_path_how, fail_path_errno;
     /* Called after every successful file sync with the inode's durable length. */
     void (*on_sync)(void *ctx, int inode, size_t durable_len);
     void *on_sync_ctx;

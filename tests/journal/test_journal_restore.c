@@ -517,12 +517,12 @@ static void test_marker_edges(void)
         memfs_free(&fs);
     }
     /* The same failures while an open removes an answered marker. */
-    for (uint64_t fp = 2; fp <= 3; fp++) {
+    for (uint64_t fp = 3; fp <= 4; fp++) {
         memfs_init(&fs);
         history(&fs);
         put_marker(&fs, gz_journal_chain_signet, 1, 0, 0, 0); /* incarnation 2 started after it */
         fs.points = 0;
-        fs.fail_at = fp; /* the open's sync (1), unlink (2), folder sync (3) */
+        fs.fail_at = fp; /* the open's folder sync (1), file sync (2), unlink (3), folder sync (4) */
         fs.fail_mode = MEMFS_FAIL_ERROR;
         j = jopen(&fs, 0, &st, &info);
         CHECK(st == GZ_JOURNAL_ERR_IO && j == NULL && memfs_open_fds(&fs) == 0 && fs.after_fail == 0);
