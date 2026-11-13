@@ -333,3 +333,13 @@ if(GZ_VALGRIND AND NOT GZ_SANITIZE)
     add_test(NAME valgrind_lobby_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_lobby> 3000 2)
   endif()
 endif()
+
+# --- slice1-attempt: the signing engine library only (its tests target the old core) ---
+set(GZ_SIGNING_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/sign_tx.c)
+add_library(gazpacho_signing STATIC ${GZ_SIGNING_SOURCES})
+set_target_properties(gazpacho_signing PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_signing PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include)
+target_link_libraries(gazpacho_signing PUBLIC gazpacho_core secp256k1)
+target_compile_options(gazpacho_signing PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
