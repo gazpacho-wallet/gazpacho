@@ -127,7 +127,10 @@ gz_sc_err_t gz_sc_fs_replace(const gz_sc_store_t *s, const char *name, const uin
         ok = 0;
     if (!ok || OS(s)->rename(OS(s)->ctx, tmp, dst) != 0)
         return GZ_SC_STORAGE_FAILED;
-    return sync_dir(s);
+    /* The rename is the commit point: from here the new file is the one in
+     * the folder, so a failed folder sync is not "nothing happened" (review B,
+     * L1). Only its durability across a power cut is unconfirmed. */
+    return sync_dir(s) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DONE_WITH_FAULT;
 }
 
 gz_sc_err_t gz_sc_fs_append(const gz_sc_store_t *s, const char *name, uint64_t at, const uint8_t *data, size_t len)
@@ -171,21 +174,25 @@ static gz_sc_err_t derive_pk(const gz_sc_store_t *s, const uint8_t *pw, size_t p
     return e;
 }
 
-/* A new journal (header only) and its mark file with the set-up entry: the
- * mark file first (7.4), each by an atomic replace. */
-static gz_sc_err_t new_journal(const gz_sc_store_t *s, gz_sc_unlocked_t *u)
+/* A new journal (header only) and its mark file: the mark file first (7.4),
+ * each by an atomic replace. For a restore (6.3 step 0) the mark file holds
+ * the restore marker instead of the set-up entry, and it is written before
+ * the journal exists: a crash before the journal's rename leaves no journal
+ * (step 0 again), and one after it leaves the marker, so the next start is
+ * the same restore (review B, M2). */
+static gz_sc_err_t new_journal(const gz_sc_store_t *s, gz_sc_unlocked_t *u, int restore)
 {
     gz_sc_err_t e = gz_sc_random(u->file_id, 16);
     if (e != GZ_SC_OK)
         return e;
     uint8_t mk[GZ_SC_MARK_HEADER_LEN + GZ_SC_MARK_ENTRY_LEN], hdr[GZ_SC_JHEADER_LEN];
     if ((e = gz_sc_mark_key(u->vault, u->file_id, &u->kh)) != GZ_SC_OK ||
-        (e = gz_sc_mark_new(u->kh, s->chain, mk)) != GZ_SC_OK ||
+        (e = (restore ? gz_sc_mark_new_restore : gz_sc_mark_new)(u->kh, s->chain, mk)) != GZ_SC_OK ||
         (e = gz_sc_header_seal(u->vault, u->file_id, hdr)) != GZ_SC_OK)
         return e;
     if ((e = gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk)) != GZ_SC_OK ||
         (e = gz_sc_fs_replace(s, GZ_SC_FILE_JOURNAL, hdr, sizeof hdr)) != GZ_SC_OK)
-        return e;
+        return e == GZ_SC_DONE_WITH_FAULT ? GZ_SC_STORAGE_FAILED : e; /* an unsynced folder is a failure here */
     return gz_sc_header_open(hdr, u->vault, &u->kj);
 }
 
@@ -203,26 +210,57 @@ static gz_sc_err_t old_pass_ok(const uint8_t *pw, size_t len)
     return sc_pass_is_nfc(pw, len) ? GZ_SC_OK : GZ_SC_PASS_REFUSED;
 }
 
-gz_sc_err_t gz_sc_setup(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
-                        const gz_sc_kdf_params_t *params, const uint8_t entropy[32], const uint8_t seed[64],
-                        gz_sc_unlocked_t *u)
+/* GZ_SC_OK if dir/name exists, GZ_SC_MISSING if not, else the read error. */
+static gz_sc_err_t present(const gz_sc_store_t *s, const char *name)
+{
+    uint8_t *b = NULL;
+    size_t l = 0;
+    gz_sc_err_t e = gz_sc_fs_read(s, name, 1, &b, &l);
+    free(b);
+    return e;
+}
+
+/* What set-up may write over (review B, M1): nothing of a wallet. A key file
+ * is EXISTS; a journal is JOURNAL_HERE (its recovery wrap opens with the old
+ * words, 9.3, which set-up would destroy); a guard or mark file without them
+ * is EXISTS too: the guard is the only record of an old wallet's epochs.
+ * restore: the restore path, where a guard is kept rather than refused and a
+ * stale mark file (no journal) is replaced, as at step 0. */
+static gz_sc_err_t folder_free(const gz_sc_store_t *s, int restore)
+{
+    gz_sc_err_t e = present(s, GZ_SC_FILE_KEYS);
+    if (e != GZ_SC_MISSING)
+        return e == GZ_SC_OK ? GZ_SC_EXISTS : e;
+    if ((e = present(s, GZ_SC_FILE_JOURNAL)) != GZ_SC_MISSING)
+        return e == GZ_SC_OK ? GZ_SC_JOURNAL_HERE : e;
+    if (restore)
+        return GZ_SC_OK;
+    const char *const rest[] = {GZ_SC_FILE_GUARD, GZ_SC_FILE_MARK};
+    for (size_t i = 0; i < 2; i++)
+        if ((e = present(s, rest[i])) != GZ_SC_MISSING)
+            return e == GZ_SC_OK ? GZ_SC_EXISTS : e;
+    return GZ_SC_OK;
+}
+
+/* Set-up and the restore from the words (9.3, first bullet): 7.4's creation
+ * order. Once the key file's rename has happened the wallet exists: a later
+ * failure is DONE_WITH_FAULT, never a failure (review B, L1), with every key
+ * dropped; the next unlock makes what is missing as a restore (6.3 step 0). */
+static gz_sc_err_t make_wallet(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
+                               const gz_sc_kdf_params_t *params, const uint8_t entropy[32], const uint8_t seed[64],
+                               int restore, gz_sc_unlocked_t *u)
 {
     memset(u, 0, sizeof *u);
-    gz_sc_err_t pe = new_pass_ok(pw_nfc, pw_len);
-    if (pe != GZ_SC_OK)
-        return pe;
-    uint8_t *existing = NULL;
-    size_t elen = 0;
-    gz_sc_err_t e = gz_sc_fs_read(s, GZ_SC_FILE_KEYS, 1, &existing, &elen);
-    free(existing);
-    if (e == GZ_SC_OK)
-        return GZ_SC_EXISTS;
-    if (e != GZ_SC_MISSING)
+    gz_sc_err_t e = new_pass_ok(pw_nfc, pw_len);
+    if (e != GZ_SC_OK)
+        return e;
+    if ((e = folder_free(s, restore)) != GZ_SC_OK)
         return e;
     if ((e = gz_sc_params_check(params)) != GZ_SC_OK)
         return e;
     uint8_t *msk = sodium_malloc(32), *pk = NULL;
     uint8_t vault_id[16], salt[16], kf[GZ_SC_KEYFILE_LEN];
+    int committed = 0, fault = 0;
     if (!msk)
         return GZ_SC_NOMEM;
     if ((e = gz_sc_random(msk, 32)) != GZ_SC_OK || (e = gz_sc_random(vault_id, 16)) != GZ_SC_OK ||
@@ -234,16 +272,27 @@ gz_sc_err_t gz_sc_setup(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw
         goto done;
     if ((e = gz_sc_vault_new(s->chain, vault_id, msk, seed, &u->vault)) != GZ_SC_OK)
         goto done;
-    if ((e = gz_sc_fs_replace(s, GZ_SC_FILE_KEYS, kf, sizeof kf)) != GZ_SC_OK)
+    sc_vault_set_kdf(u->vault, params);
+    e = gz_sc_fs_replace(s, GZ_SC_FILE_KEYS, kf, sizeof kf);
+    if (e != GZ_SC_OK && e != GZ_SC_DONE_WITH_FAULT)
         goto done;
-    gz_sc_guard_t g;
-    memset(&g, 0, sizeof g);
-    uint8_t gbuf[GZ_SC_GUARD_HEAD + 40 + 18];
-    size_t gl;
-    if ((e = gz_sc_guard_seal(u->vault, &g, gbuf, sizeof gbuf, &gl)) != GZ_SC_OK ||
-        (e = gz_sc_fs_replace(s, GZ_SC_FILE_GUARD, gbuf, gl)) != GZ_SC_OK)
-        goto done;
-    e = new_journal(s, u);
+    committed = 1;
+    fault = e != GZ_SC_OK;
+    if (!restore) {
+        /* A new wallet's guard: counter 0, no epochs. A restore keeps the
+         * folder's guard: if it opens under the seed, the restore's first
+         * batch carries its counter and epochs on; if it is missing or does
+         * not open, that batch replaces it (journal.md 8.3). */
+        gz_sc_guard_t g;
+        memset(&g, 0, sizeof g);
+        uint8_t gbuf[GZ_SC_GUARD_HEAD + 40 + 18];
+        size_t gl;
+        if ((e = gz_sc_guard_seal(u->vault, &g, gbuf, sizeof gbuf, &gl)) != GZ_SC_OK ||
+            (e = gz_sc_fs_replace(s, GZ_SC_FILE_GUARD, gbuf, gl)) != GZ_SC_OK)
+            goto done;
+    }
+    e = new_journal(s, u, restore);
+    u->restore = restore;
     /* The same info gz_sc_unlock gives (review A, L8). */
     memcpy(u->info.chain, s->chain, 32);
     memcpy(u->info.vault_id, vault_id, 16);
@@ -253,9 +302,28 @@ done:
     gz_sc_sfree(msk);
     gz_sc_sfree(pk);
     sodium_memzero(kf, sizeof kf);
-    if (e != GZ_SC_OK)
+    if (e == GZ_SC_OK && fault)
+        e = GZ_SC_DONE_WITH_FAULT;
+    if (e != GZ_SC_OK) {
         gz_sc_unlocked_clear(u);
+        if (committed)
+            e = GZ_SC_DONE_WITH_FAULT;
+    }
     return e;
+}
+
+gz_sc_err_t gz_sc_setup(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
+                        const gz_sc_kdf_params_t *params, const uint8_t entropy[32], const uint8_t seed[64],
+                        gz_sc_unlocked_t *u)
+{
+    return make_wallet(s, pw_nfc, pw_len, params, entropy, seed, 0, u);
+}
+
+gz_sc_err_t gz_sc_setup_restore(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
+                                const gz_sc_kdf_params_t *params, const uint8_t entropy[32],
+                                const uint8_t seed[64], gz_sc_unlocked_t *u)
+{
+    return make_wallet(s, pw_nfc, pw_len, params, entropy, seed, 1, u);
 }
 
 /* A temporary file left by a crashed replace is sealed but useless: removed
@@ -297,10 +365,11 @@ gz_sc_err_t gz_sc_unlock(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t p
     e = gz_sc_fs_read(s, GZ_SC_FILE_JOURNAL, GZ_SC_JHEADER_LEN, &hdr, &hl);
     if (e == GZ_SC_MISSING) {
         /* 6.3 step 0 (review R2-2): a key file with no journal starts as a
-         * restore, with a new journal and mark file; a stale mark file is
+         * restore, with a new journal and a mark file holding the restore
+         * marker (written first, review B, M2); a stale mark file is
          * replaced; the guard file is kept. */
         u->restore = 1;
-        e = new_journal(s, u);
+        e = new_journal(s, u, 1);
         goto done;
     }
     if (e != GZ_SC_OK)
@@ -397,16 +466,21 @@ gz_sc_err_t gz_sc_guard_write(const gz_sc_store_t *s, const gz_sc_vault_t *v, co
     if (e == GZ_SC_OK)
         e = gz_sc_fs_replace(s, GZ_SC_FILE_GUARD, b, n);
     free(b);
-    return e;
+    /* A batch is confirmed only after a durable guard (7 step 2). */
+    return e == GZ_SC_DONE_WITH_FAULT ? GZ_SC_STORAGE_FAILED : e;
 }
 
 gz_sc_err_t gz_sc_mark_restart(const gz_sc_store_t *s, const gz_sc_unlocked_t *u)
 {
+    /* The restore marker (review B, M2): until the restore's first batch is
+     * anchored, every start is that restore, so a crash or a closed window
+     * in between does not send the person back to "files behind". */
     uint8_t mk[GZ_SC_MARK_HEADER_LEN + GZ_SC_MARK_ENTRY_LEN];
-    gz_sc_err_t e = gz_sc_mark_new(u->kh, s->chain, mk);
+    gz_sc_err_t e = gz_sc_mark_new_restore(u->kh, s->chain, mk);
     if (e != GZ_SC_OK)
         return e;
-    return gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk);
+    e = gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk);
+    return e == GZ_SC_DONE_WITH_FAULT ? GZ_SC_STORAGE_FAILED : e;
 }
 
 /* ---- passphrase change, words, recovery ------------------------------------------ */
@@ -529,5 +603,6 @@ gz_sc_err_t gz_sc_attempts_store(const gz_sc_store_t *s, const gz_sc_attempts_t 
 {
     uint8_t b[GZ_SC_ATTEMPTS_LEN];
     gz_sc_attempts_encode(s->chain, a, b);
-    return gz_sc_fs_replace(s, GZ_SC_FILE_ATTEMPTS, b, sizeof b);
+    gz_sc_err_t e = gz_sc_fs_replace(s, GZ_SC_FILE_ATTEMPTS, b, sizeof b);
+    return e == GZ_SC_DONE_WITH_FAULT ? GZ_SC_STORAGE_FAILED : e;
 }

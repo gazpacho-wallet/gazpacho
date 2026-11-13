@@ -185,6 +185,12 @@ static void keyfile_fields(void)
     CHECK(out[0] == 0xaa && out[362] == 0xaa);
     gz_sc_kdf_params_t below = {1, 3, 4, 1};
     CHECK_ERR(gz_sc_keyfile_rewrap(kf, pk, &below, SALT, pkb, out), GZ_SC_PARAMS_REFUSED);
+    /* Above the stored parameters but outside 4.2's rule: refused by the rule
+     * itself, not only by "never lower" (review B's fix must not mask it). */
+    const gz_sc_kdf_params_t above[] = {{1, 17, 64, 1}, {1, 3, 4194305u, 1}, {2, 3, 64, 1}, {1, 3, 64, 2}};
+    for (size_t i = 0; i < sizeof above / sizeof above[0]; i++)
+        CHECK_ERR(gz_sc_keyfile_rewrap(kf, pk, &above[i], SALT, pkb, out), GZ_SC_PARAMS_REFUSED);
+    CHECK(out[0] == 0xaa && out[362] == 0xaa);
     CHECK_ERR(gz_sc_keyfile_build(SIGNET, VID, &below, SALT, pk, MSK, ENT, SEED64, out), GZ_SC_PARAMS_REFUSED);
 }
 
@@ -482,10 +488,22 @@ static void start_rule(void)
     CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 3, 700, GZ_SC_OK, 0, &j) == GZ_SC_START_BEHIND);
     CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 2, 701, GZ_SC_OK, 0, &j) == GZ_SC_START_BEHIND);
     CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 1, 700, GZ_SC_OK, 0, &j) == GZ_SC_START_BEHIND);
-    CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 0, 1, GZ_SC_OK, 0, &j) == GZ_SC_START_BEHIND);
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 0, 2, GZ_SC_OK, 0, &j) == GZ_SC_START_BEHIND);
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 1, 1, GZ_SC_OK, 0, &j) == GZ_SC_START_BEHIND);
     CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 2, 700, GZ_SC_OK, 5, &j) == GZ_SC_START_BEHIND);
     j.newest_guard_counter = 0;
     CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 0, 0, GZ_SC_OK, 1, &j) == GZ_SC_START_BEHIND);
+    /* The restore marker (review B, M2): a restore start whatever the guard
+     * and the journal say; only from a sound mark file. */
+    gz_sc_journal_view_t empty = {0, marks_ok, NULL, 0};
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 0, 1, GZ_SC_OK, 0, &empty) == GZ_SC_START_RESTORE);
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 0, 1, GZ_SC_OK, 5, &empty) == GZ_SC_START_RESTORE);
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 0, 1, GZ_SC_MISSING, 0, &empty) == GZ_SC_START_RESTORE);
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 0, 1, GZ_SC_DAMAGED, 0, &empty) == GZ_SC_START_RESTORE);
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_OK, 0, 1, GZ_SC_OK, 9, &j) == GZ_SC_START_RESTORE);
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_OTHER_JOURNAL, 0, 1, GZ_SC_OK, 0, &empty) == GZ_SC_START_BEHIND);
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_DAMAGED, 0, 1, GZ_SC_OK, 0, &empty) == GZ_SC_START_POSSIBLY_OLD);
+    CHECK(gz_sc_start_rule(GZ_SC_MARK_NO_ENTRY, 0, 1, GZ_SC_OK, 0, &empty) == GZ_SC_START_POSSIBLY_OLD);
 }
 
 static void exports(void)
@@ -570,6 +588,28 @@ static void exports(void)
     sc_put32(bad + 10, 400);
     CHECK_ERR(gz_sc_export_body_parse(bad, bl, 1, &pb), GZ_SC_DAMAGED);
     CHECK_ERR(gz_sc_export_body_parse(body, 13, 1, &pb), GZ_SC_DAMAGED);
+    {   /* The entry walk never hands out a payload that runs past the
+         * entries, by one byte or more (review B's B_body_next_fit: its
+         * caller would read beyond the body). */
+        uint8_t ents[21 + 9];
+        memset(ents, 0x61, sizeof ents);
+        ents[0] = 2;
+        gz_sc_export_body_t eb = {0, 0, NULL, NULL, 0, ents, 0};
+        uint8_t k;
+        uint64_t ei, es;
+        const uint8_t *ep;
+        size_t en, pos;
+        for (uint32_t claim = 0; claim <= 12; claim++)
+            for (size_t have = 0; have <= 9; have++) {
+                sc_put32(ents + 17, claim);
+                eb.entries_len = 21 + have;
+                pos = 0;
+                int r = gz_sc_export_body_next(&eb, &pos, &k, &ei, &es, &ep, &en);
+                CHECK(r == (claim <= have ? 1 : -1));
+                if (r == 1)
+                    CHECK(en == claim && ep == ents + 21 && pos == 21 + claim && 21 + en <= eb.entries_len);
+            }
+    }
     /* Zero-length body content: one empty final chunk. */
     CHECK_ERR(gz_sc_export_body_begin(5, 0, NULL, 0, body, sizeof body, &bl), GZ_SC_OK);
     CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, NULL, 65536, ex, sizeof ex, &xl), GZ_SC_OK);
@@ -619,15 +659,20 @@ static void attempts(void)
     crypto_hash_sha256(h, bad, 69);
     memcpy(bad + 69, h, 16);
     CHECK(gz_sc_attempts_decode(SIGNET, bad, sizeof bad, now, &b) == 0 && b.blocked_until_s == now + 900);
-    /* A damaged file of the right length: the counter carries on (L7 g). */
+    /* A damaged file of the right length: nothing of it is read, not even
+     * its counter (review B, L2; probe S4: 85 bytes of 0xff must not pin the
+     * counter at its cap). Mode 1 has no store record: the counter is 0. */
     gz_sc_attempts_t c41 = {41, 2, now - 5, now + 1};
     gz_sc_attempts_encode(SIGNET, &c41, f);
     memcpy(bad, f, sizeof f);
     bad[80] ^= 1;
-    CHECK(gz_sc_attempts_decode(SIGNET, bad, sizeof bad, now, &b) == 0 && b.counter == 41 &&
-          b.blocked_until_s == now + 900);
+    CHECK(gz_sc_attempts_decode(SIGNET, bad, sizeof bad, now, &b) == 0 && b.counter == 0 &&
+          b.wrong_in_a_row == 0 && b.blocked_until_s == now + 900);
     gz_sc_attempts_wrong(&b, now);
-    CHECK(b.counter == 42);
+    CHECK(b.counter == 1);
+    memset(bad, 0xff, sizeof bad);
+    CHECK(gz_sc_attempts_decode(SIGNET, bad, sizeof bad, now, &b) == 0 && b.counter == 0 &&
+          b.blocked_until_s == now + 900);
     /* Probe P1: a forged valid file cannot block longer than the strictest
      * state, nor date a wrong attempt in the future (review A, L1). */
     gz_sc_attempts_t forged = {7, 20, UINT64_MAX - 1, UINT64_MAX - 1};
@@ -637,12 +682,10 @@ static void attempts(void)
     forged.blocked_until_s = now + 899;
     gz_sc_attempts_encode(SIGNET, &forged, f);
     CHECK(gz_sc_attempts_decode(SIGNET, f, sizeof f, now, &b) == 1 && b.blocked_until_s == now + 899);
-    /* Probe P1b: at 2^64 - 1 the counter stays, it never wraps to 0. */
+    /* Probe P1b: at 2^64 - 1 (a valid file) the counter stays, it never wraps to 0. */
     gz_sc_attempts_t top = {UINT64_MAX, 0, 0, 0};
     gz_sc_attempts_encode(SIGNET, &top, f);
-    memcpy(bad, f, sizeof f);
-    bad[70] ^= 1;
-    CHECK(gz_sc_attempts_decode(SIGNET, bad, sizeof bad, now, &b) == 0 && b.counter == UINT64_MAX);
+    CHECK(gz_sc_attempts_decode(SIGNET, f, sizeof f, now, &b) == 1 && b.counter == UINT64_MAX);
     gz_sc_attempts_wrong(&b, now);
     CHECK(b.counter == UINT64_MAX);
     gz_sc_attempts_right(&b, now);

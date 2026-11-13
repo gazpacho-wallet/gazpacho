@@ -45,7 +45,11 @@ const char *gz_sc_err_text(gz_sc_err_t e)
     case GZ_SC_ARG: return "bad argument";
     case GZ_SC_NOMEM: return "out of memory";
     case GZ_SC_LIBRARY: return "libsodium is not the pinned version";
-    case GZ_SC_PASS_REFUSED: return "passphrase refused: not normalised, too short or too long";
+    case GZ_SC_PASS_REFUSED:
+        return "passphrase refused: not normalised, too short, too long, or with a character a passphrase "
+               "cannot hold";
+    case GZ_SC_JOURNAL_HERE: return "a journal is in this folder: reopen it with the 24 words";
+    case GZ_SC_DONE_WITH_FAULT: return "done, but the disk did not confirm every step";
     }
     return "unknown";
 }
@@ -327,6 +331,12 @@ gz_sc_err_t gz_sc_vault_new(const uint8_t chain[32], const uint8_t vault_id[16],
     sodium_mprotect_noaccess(v->seed);
     *out = v;
     return GZ_SC_OK;
+}
+
+void sc_vault_set_kdf(gz_sc_vault_t *v, const gz_sc_kdf_params_t *p)
+{
+    v->kdf = *p;
+    v->has_kdf = 1;
 }
 
 void gz_sc_vault_free(gz_sc_vault_t *v)

@@ -175,6 +175,22 @@ static gz_sc_err_t backup_key(const uint8_t *seed, const uint8_t chain[32], uint
     return sc_derive(seed, 64, "backup", chain, 32, bk);
 }
 
+/* The key an export's chunks hang from (review B, L4): BK itself for
+ * profile 2; for profile 1 that export's own XR = derive(BK, "export key",
+ * chain || export_id), which is what the passphrase slot wraps. Cracking one
+ * profile 1 passphrase then opens that export and nothing else: not BK, so
+ * not the host's copies (11, E-D10) nor the person's other exports. In place
+ * (key: 32 guarded bytes holding BK on entry). */
+static gz_sc_err_t chunk_root(uint8_t profile, const uint8_t *prefix, uint8_t *key)
+{
+    if (profile != 1)
+        return GZ_SC_OK;
+    uint8_t ctx[48];
+    memcpy(ctx, prefix + 10, 32);      /* chain */
+    memcpy(ctx + 32, prefix + 42, 16); /* export_id */
+    return sc_derive(key, 32, "export key", ctx, sizeof ctx, key);
+}
+
 /* body_len: the caller's body; with entropy, the sealed body is 32 longer
  * and each chunk carrying words is put together in guarded memory (M2). */
 static gz_sc_err_t seal_chunks(const uint8_t *bk, const uint8_t *prefix, size_t plen, const uint8_t *body,
@@ -249,7 +265,13 @@ gz_sc_err_t gz_sc_export_build(const gz_sc_vault_t *v, uint8_t profile, const ui
     e = backup_key(v->seed, v->chain, bk);
     sodium_mprotect_noaccess(v->seed);
     if (e == GZ_SC_OK && profile == 1) {
-        if ((e = gz_sc_params_check(kdf)) == GZ_SC_OK) {
+        e = gz_sc_params_check(kdf);
+        /* 4.2: an export slot is never below the key file's parameters (review B, L4). */
+        if (e == GZ_SC_OK && v->has_kdf && (kdf->t < v->kdf.t || kdf->m_kib < v->kdf.m_kib))
+            e = GZ_SC_PARAMS_REFUSED;
+        if (e == GZ_SC_OK)
+            e = chunk_root(profile, out, bk); /* the slot wraps XR, never BK */
+        if (e == GZ_SC_OK) {
             uint8_t *s = out + GZ_SC_EXPORT_HEAD;
             s[0] = kdf->kdf;
             sc_put32(s + 1, kdf->t);
@@ -402,8 +424,8 @@ gz_sc_err_t gz_sc_export_open(const uint8_t *data, size_t len, const uint8_t cha
                 sc_keys_free(&kx);
             }
         }
-    } else {
-        e = backup_key(seed, chain, bk);
+    } else if ((e = backup_key(seed, chain, bk)) == GZ_SC_OK) {
+        e = chunk_root(info.profile, data, bk); /* the words give BK, then XR (profile 1) */
     }
     if (e == GZ_SC_OK)
         e = open_chunks(bk, data, len, prefix_len(info.profile), body, body_len);

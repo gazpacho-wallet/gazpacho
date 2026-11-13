@@ -140,7 +140,10 @@ gz_sc_err_t gz_sc_keyfile_unlock(const uint8_t data[GZ_SC_KEYFILE_LEN], const ui
         e = GZ_SC_DAMAGED;
         goto done;
     }
-    e = gz_sc_vault_new(data + 9, data + 41, msk, seed, out);
+    if ((e = gz_sc_vault_new(data + 9, data + 41, msk, seed, out)) == GZ_SC_OK) {
+        gz_sc_kdf_params_t p = {data[57], sc_get32(data + 58), sc_get32(data + 62), data[66]};
+        sc_vault_set_kdf(*out, &p);
+    }
 done:
     gz_sc_sfree(msk);
     gz_sc_sfree(seed);
@@ -187,6 +190,10 @@ gz_sc_err_t gz_sc_keyfile_rewrap(const uint8_t old[GZ_SC_KEYFILE_LEN], const uin
     gz_sc_err_t e = gz_sc_params_check(new_params);
     if (e != GZ_SC_OK)
         return e;
+    /* 4.7: a new wrap is never below the stored parameters (review B's
+     * B_rewrap_takes_default: a change must not lower them to the default). */
+    if (new_params->t < sc_get32(old + 58) || new_params->m_kib < sc_get32(old + 62))
+        return GZ_SC_PARAMS_REFUSED;
     uint8_t *msk = sodium_malloc(32), *entropy = sodium_malloc(32);
     uint8_t tmp[GZ_SC_KEYFILE_LEN];
     e = GZ_SC_NOMEM;

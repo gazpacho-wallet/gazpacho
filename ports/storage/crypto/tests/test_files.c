@@ -328,6 +328,19 @@ static void passphrase_rules(void)
     CHECK_ERR(gz_sc_setup(&s, (const uint8_t *)big, 1025, &TP, ENT, SEED64, &u), GZ_SC_PASS_REFUSED);
     CHECK_ERR(gz_sc_setup(&s, (const uint8_t *)"\xff\xfe valid otherwise", 18, &TP, ENT, SEED64, &u),
               GZ_SC_PASS_REFUSED);
+    /* Review B, L3: an unassigned code point (U+0378, U+E0000) or U+0000 in
+     * a new passphrase: its NFC is not promised to stay the same. */
+    const char *u378 = "unassigned \xcd\xb8 code point here", *ue0000 = "plane fourteen \xf3\xa0\x80\x80 is not assigned";
+    const uint8_t with_nul[] = "a passphrase with\0 a NUL inside";
+    CHECK(gz_sc_pass_check_form(PWB(u378)) == GZ_SC_PASS_UNASSIGNED);
+    CHECK(gz_sc_pass_check_form(PWB(ue0000)) == GZ_SC_PASS_UNASSIGNED);
+    CHECK(gz_sc_pass_check_form(with_nul, sizeof with_nul - 1) == GZ_SC_PASS_NUL);
+    CHECK(gz_sc_pass_check(PWB(u378), NULL, NULL, 0) == GZ_SC_PASS_UNASSIGNED);
+    CHECK(gz_sc_pass_check_form(PWB("assigned \xcd\xb7 and \xe2\x82\xbf all fine")) == GZ_SC_PASS_OK);
+    CHECK_ERR(gz_sc_setup(&s, PWB(u378), &TP, ENT, SEED64, &u), GZ_SC_PASS_REFUSED);
+    CHECK_ERR(gz_sc_setup(&s, PWB(ue0000), &TP, ENT, SEED64, &u), GZ_SC_PASS_REFUSED);
+    CHECK_ERR(gz_sc_setup(&s, with_nul, sizeof with_nul - 1, &TP, ENT, SEED64, &u), GZ_SC_PASS_REFUSED);
+    CHECK_ERR(gz_sc_setup_restore(&s, PWB(u378), &TP, ENT, SEED64, &u), GZ_SC_PASS_REFUSED);
     CHECK(!exists(d, GZ_SC_FILE_KEYS));
     CHECK_ERR(gz_sc_setup(&s, PWB(pre), &TP, ENT, SEED64, &u), GZ_SC_OK);
     /* Set-up's info is the unlock's. */
@@ -348,6 +361,10 @@ static void passphrase_rules(void)
     CHECK_ERR(gz_sc_rewrap(&s, PWB(pre), PWB(shrt), &TP), GZ_SC_PASS_REFUSED);
     CHECK_ERR(gz_sc_rewrap(&s, PWB(pre), PWB(dec), &TP), GZ_SC_PASS_REFUSED);
     CHECK_ERR(gz_sc_rewrap(&s, PWB(dec), PWB(PW2), &TP), GZ_SC_PASS_REFUSED);
+    CHECK_ERR(gz_sc_rewrap(&s, PWB(pre), PWB(u378), &TP), GZ_SC_PASS_REFUSED);
+    CHECK_ERR(gz_sc_rewrap(&s, PWB(pre), with_nul, sizeof with_nul - 1, &TP), GZ_SC_PASS_REFUSED);
+    /* Opening stays permissive: such a passphrase is a wrong one, not refused. */
+    CHECK_ERR(gz_sc_unlock(&s, PWB(u378), &TP, &u2), GZ_SC_WRONG_PASSPHRASE);
     gz_sc_fs_read(&s, GZ_SC_FILE_KEYS, 1000, &k1, &k1l);
     CHECK(k0 && k1 && k0l == k1l && memcmp(k0, k1, k0l) == 0);
     free(k0);
@@ -370,6 +387,7 @@ static void passphrase_rules(void)
     rm_file(d, GZ_SC_FILE_KEYS);
     CHECK_ERR(gz_sc_recover_keyfile(&s, ENT, SEED64, PWB(shrt), &TP), GZ_SC_PASS_REFUSED);
     CHECK_ERR(gz_sc_recover_keyfile(&s, ENT, SEED64, PWB(dec), &TP), GZ_SC_PASS_REFUSED);
+    CHECK_ERR(gz_sc_recover_keyfile(&s, ENT, SEED64, PWB(ue0000), &TP), GZ_SC_PASS_REFUSED);
     CHECK(!exists(d, GZ_SC_FILE_KEYS));
     CHECK_ERR(gz_sc_recover_keyfile(&s, ENT, SEED64, PWB(pre), &TP), GZ_SC_OK);
     /* A stale temporary file of a crashed replace is gone after an unlock. */
@@ -416,20 +434,35 @@ static void flow(void)
     CHECK(start_of(&s, &u, &J1) == GZ_SC_START_OK);
     CHECK(start_of(&s, &u, &EMPTY_J) == GZ_SC_START_BEHIND);
     CHECK_ERR(gz_sc_anchor(&s, &u, 1, 200), GZ_SC_STORAGE_FAILED); /* never backwards */
-    {   /* A torn tail (half an entry) is cut before the next append. */
-        char mp[512];
-        snprintf(mp, sizeof mp, "%s/%s", d, GZ_SC_FILE_MARK);
-        FILE *mf = fopen(mp, "ab");
-        CHECK(mf && fwrite("torn tail bytes", 1, 15, mf) == 15);
-        if (mf)
-            fclose(mf);
+    {   /* A torn tail (half an entry, then a whole torn entry) is cut before
+         * the next append, and the entry appended after it is the newest
+         * point read back (review B's B_anchor_at_file_end: an entry sealed
+         * for the file's length but written at the cut would never verify,
+         * and the anchor would be lost without a word). */
+        uint8_t *keep = NULL;
+        size_t keepl = 0;
+        CHECK_ERR(gz_sc_fs_read(&s, GZ_SC_FILE_MARK, 4096, &keep, &keepl), GZ_SC_OK);
+        const size_t tails[] = {15, 56};
+        for (int t = 0; keep && t < 2; t++) {
+            uint8_t torn[512];
+            memcpy(torn, keep, keepl);
+            memset(torn + keepl, 0x5a, tails[t]);
+            CHECK_ERR(gz_sc_fs_replace(&s, GZ_SC_FILE_MARK, torn, keepl + tails[t]), GZ_SC_OK);
+            CHECK(start_of(&s, &u, &J1) == GZ_SC_START_OK);
+            CHECK_ERR(gz_sc_anchor(&s, &u, 1, 300), GZ_SC_OK);
+            uint8_t *mm = NULL;
+            size_t mml = 0, end = 0;
+            uint64_t mi = 0, mo = 0;
+            CHECK_ERR(gz_sc_fs_read(&s, GZ_SC_FILE_MARK, 4096, &mm, &mml), GZ_SC_OK);
+            CHECK(mml == keepl + 56);
+            CHECK(mm && gz_sc_mark_read(u.kh, mm, mml, SIGNET, u.file_id, &mi, &mo, &end) == GZ_SC_MARK_OK &&
+                  mi == 1 && mo == 300 && end == mml);
+            free(mm);
+        }
+        if (keep)
+            CHECK_ERR(gz_sc_fs_replace(&s, GZ_SC_FILE_MARK, keep, keepl), GZ_SC_OK);
+        free(keep);
         CHECK(start_of(&s, &u, &J1) == GZ_SC_START_OK);
-        CHECK_ERR(gz_sc_anchor(&s, &u, 1, 254), GZ_SC_OK);
-        uint8_t *mm = NULL;
-        size_t mml = 0;
-        CHECK_ERR(gz_sc_fs_read(&s, GZ_SC_FILE_MARK, 4096, &mm, &mml), GZ_SC_OK);
-        CHECK(mml == 57 + 3 * 56);
-        free(mm);
     }
     /* A guard newer than the journal's newest guard record: behind. */
     gz_sc_epoch_t ep = {0, 3};
@@ -474,6 +507,11 @@ static void flow(void)
     CHECK(start_of(&s, &u, &j2) == GZ_SC_START_POSSIBLY_OLD);
     CHECK_ERR(gz_sc_anchor(&s, &u, 1, 254), GZ_SC_STORAGE_FAILED);
     CHECK_ERR(gz_sc_mark_restart(&s, &u), GZ_SC_OK); /* start as restore */
+    /* The restore marker: a restore start, whatever the guard says, until
+     * the restore's first batch is anchored (review B, M2). */
+    CHECK(start_of(&s, &u, &j2) == GZ_SC_START_RESTORE);
+    CHECK(start_of(&s, &u, &EMPTY_J) == GZ_SC_START_RESTORE);
+    CHECK_ERR(gz_sc_anchor(&s, &u, 1, 254), GZ_SC_OK); /* the restore batch's entry */
     CHECK(start_of(&s, &u, &j2) == GZ_SC_START_OK);
 
     /* Passphrase change: the new one opens, the old one does not; an old
@@ -504,6 +542,23 @@ static void flow(void)
     CHECK_ERR(gz_sc_unlock(&s, PWB(PW), &TP_UP, &u2), GZ_SC_OK);
     CHECK(!u2.upgrade_due && u2.info.kdf.t == 4 && u2.info.kdf.m_kib == 128);
     gz_sc_unlocked_clear(&u2);
+    /* A passphrase change on a device whose default is lower keeps the
+     * stored parameters (4.7 "never lower"; review B's B_rewrap_takes_default). */
+    CHECK_ERR(gz_sc_rewrap(&s, PWB(PW), PWB(PW2), &TP), GZ_SC_OK);
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW2), &TP, &u2), GZ_SC_OK);
+    CHECK(u2.info.kdf.t == 4 && u2.info.kdf.m_kib == 128 && !u2.upgrade_due);
+    gz_sc_unlocked_clear(&u2);
+    {   /* and the key file layer refuses a lower wrap outright */
+        uint8_t *kf = NULL, lower[GZ_SC_KEYFILE_LEN], pk_old[32], salt2[16] = {7};
+        size_t kfl = 0;
+        gz_sc_keyfile_info_t ki;
+        CHECK_ERR(gz_sc_fs_read(&s, GZ_SC_FILE_KEYS, 1000, &kf, &kfl), GZ_SC_OK);
+        CHECK(kf && gz_sc_keyfile_parse(kf, kfl, SIGNET, &ki) == GZ_SC_OK);
+        CHECK_ERR(gz_sc_test_kdf_inprocess(NULL, PWB(PW2), ki.salt, &ki.kdf, pk_old, NULL), GZ_SC_OK);
+        CHECK(kf && gz_sc_keyfile_rewrap(kf, pk_old, &TP, salt2, pk_old, lower) == GZ_SC_PARAMS_REFUSED);
+        free(kf);
+    }
+    CHECK_ERR(gz_sc_rewrap(&s, PWB(PW2), PWB(PW), &TP), GZ_SC_OK);
 
     /* 9.3: key file lost; the words reopen the journal and a new key file
      * keeps the vault_id and MSK. */
@@ -532,12 +587,23 @@ static void flow(void)
     size_t ml;
     CHECK_ERR(gz_sc_fs_read(&s, GZ_SC_FILE_MARK, 4096, &m, &ml), GZ_SC_OK);
     uint64_t mi = 9, mo = 9;
-    CHECK(m && gz_sc_mark_read(u2.kh, m, ml, SIGNET, u2.file_id, &mi, &mo, NULL) == GZ_SC_MARK_OK && mi == 0 &&
-          mo == 0);
+    CHECK(m && gz_sc_mark_read(u2.kh, m, ml, SIGNET, u2.file_id, &mi, &mo, NULL) == GZ_SC_MARK_OK &&
+          mi == GZ_SC_MARK_RESTORE_INC && mo == GZ_SC_MARK_RESTORE_OFF);
     free(m);
+    CHECK(start_of(&s, &u2, &EMPTY_J) == GZ_SC_START_RESTORE);
     gz_sc_unlocked_clear(&u2);
+    /* Stopped before the restore batch: the next start is the same restore,
+     * not "possibly old" (review B, M2, seed 5 of the model). */
     CHECK_ERR(gz_sc_unlock(&s, PWB(PW2), &TP, &u2), GZ_SC_OK);
-    CHECK(!u2.restore);
+    CHECK(!u2.restore && start_of(&s, &u2, &EMPTY_J) == GZ_SC_START_RESTORE);
+    {   /* The restore batch: journal, then its mark entry, then the guard. */
+        gz_sc_epoch_t rep = {0x1234, 0};
+        gz_sc_guard_t rg = {1, 1, &rep, 0};
+        CHECK_ERR(gz_sc_anchor(&s, &u2, 1, 254), GZ_SC_OK);
+        CHECK_ERR(gz_sc_guard_write(&s, u2.vault, &rg), GZ_SC_OK);
+        gz_sc_journal_view_t jr = {1, mark_1_254, NULL, 1};
+        CHECK(start_of(&s, &u2, &jr) == GZ_SC_START_OK);
+    }
     gz_sc_unlocked_clear(&u2);
 
     /* Another network's files are refused before anything is derived. */
@@ -568,6 +634,235 @@ static void flow(void)
     CHECK_ERR(gz_sc_attempts_store(&s, &a), GZ_SC_OK);
     gz_sc_attempts_t b;
     CHECK(gz_sc_attempts_load(&s, 100, &b) == 1 && b.wrong_in_a_row == 3 && b.counter == a.counter);
+    gz_sc_unlocked_clear(&u);
+    rm_dir(d);
+}
+
+static uint8_t *slurp(const gz_sc_store_t *s, const char *name, size_t *n)
+{
+    uint8_t *b = NULL;
+    *n = 0;
+    if (gz_sc_fs_read(s, name, 1 << 20, &b, n) != GZ_SC_OK)
+        return NULL;
+    return b;
+}
+
+static int same_file(const gz_sc_store_t *s, const char *name, const uint8_t *was, size_t wl)
+{
+    size_t n = 0;
+    uint8_t *b = slurp(s, name, &n);
+    int same = b && was && n == wl && memcmp(b, was, n) == 0;
+    free(b);
+    return same;
+}
+
+/* The guard's counter and epochs as the file holds them, or -1. */
+static long guard_counter(const gz_sc_store_t *s, const gz_sc_vault_t *v, uint32_t *epoch0)
+{
+    size_t n = 0;
+    uint8_t *b = slurp(s, GZ_SC_FILE_GUARD, &n);
+    gz_sc_guard_t g;
+    long c = -1;
+    if (b && gz_sc_guard_open(v, b, n, &g) == GZ_SC_OK) {
+        c = (long)g.counter;
+        if (epoch0)
+            *epoch0 = g.n_epochs ? g.epochs[0].epoch : 0;
+        gz_sc_guard_clear(&g);
+    }
+    free(b);
+    return c;
+}
+
+/* Review B, M1 (scenario S1): set-up never writes over a wallet's journal,
+ * mark file or guard; the restore from the words has its own path, which
+ * keeps the guard's epochs and reports a restore. */
+static void setup_over_a_wallet(void)
+{
+    char *d = mkdir_tmp();
+    gz_sc_store_t s = store_for(d, 0);
+    gz_sc_unlocked_t u;
+    CHECK_ERR(gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_OK);
+    gz_sc_epoch_t ep = {77, 9};
+    gz_sc_guard_t g = {5, 1, &ep, 0};
+    CHECK_ERR(gz_sc_guard_write(&s, u.vault, &g), GZ_SC_OK);
+    CHECK_ERR(gz_sc_anchor(&s, &u, 1, 254), GZ_SC_OK);
+    gz_sc_unlocked_clear(&u);
+    size_t jl, gl, ml;
+    uint8_t *j0 = slurp(&s, GZ_SC_FILE_JOURNAL, &jl), *g0 = slurp(&s, GZ_SC_FILE_GUARD, &gl),
+            *m0 = slurp(&s, GZ_SC_FILE_MARK, &ml);
+    /* The reviewer's case: the key file deleted, the others present. */
+    rm_file(d, GZ_SC_FILE_KEYS);
+    CHECK_ERR(gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_JOURNAL_HERE);
+    CHECK_ERR(gz_sc_setup(&s, PWB(PW2), &TP, ENT, SEED64, &u), GZ_SC_JOURNAL_HERE);
+    CHECK_ERR(gz_sc_setup_restore(&s, PWB(PW2), &TP, ENT, SEED64, &u), GZ_SC_JOURNAL_HERE);
+    CHECK(u.vault == NULL && !exists(d, GZ_SC_FILE_KEYS));
+    CHECK(same_file(&s, GZ_SC_FILE_JOURNAL, j0, jl) && same_file(&s, GZ_SC_FILE_GUARD, g0, gl) &&
+          same_file(&s, GZ_SC_FILE_MARK, m0, ml));
+    /* What the words do there instead (9.3, same device): the journal is reopened. */
+    CHECK_ERR(gz_sc_recover_keyfile(&s, ENT, SEED64, PWB(PW2), &TP), GZ_SC_OK);
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW2), &TP, &u), GZ_SC_OK);
+    gz_sc_journal_view_t jv = {1, mark_1_254, NULL, 5};
+    CHECK(!u.restore && start_of(&s, &u, &jv) == GZ_SC_START_OK);
+    gz_sc_unlocked_clear(&u);
+    /* A guard or mark file alone is a wallet's too. */
+    rm_file(d, GZ_SC_FILE_KEYS);
+    rm_file(d, GZ_SC_FILE_JOURNAL);
+    CHECK_ERR(gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_EXISTS);
+    rm_file(d, GZ_SC_FILE_MARK);
+    CHECK_ERR(gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_EXISTS);
+    CHECK(same_file(&s, GZ_SC_FILE_GUARD, g0, gl) && !exists(d, GZ_SC_FILE_KEYS));
+    if (m0)
+        CHECK_ERR(gz_sc_fs_replace(&s, GZ_SC_FILE_MARK, m0, ml), GZ_SC_OK); /* a stale mark file */
+    rm_file(d, GZ_SC_FILE_GUARD);
+    CHECK_ERR(gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_EXISTS);
+    CHECK(same_file(&s, GZ_SC_FILE_MARK, m0, ml));
+    if (g0)
+        CHECK_ERR(gz_sc_fs_replace(&s, GZ_SC_FILE_GUARD, g0, gl), GZ_SC_OK);
+    /* The restore from the words where only the guard (and a stale mark
+     * file) is left: a new key file and journal, the guard kept as it was,
+     * a restore start. */
+    CHECK_ERR(gz_sc_setup_restore(&s, PWB(PW2), &TP, ENT, SEED64, &u), GZ_SC_OK);
+    CHECK(u.vault && u.kj && u.kh && u.restore);
+    CHECK(same_file(&s, GZ_SC_FILE_GUARD, g0, gl));
+    uint32_t e0 = 0;
+    CHECK(guard_counter(&s, u.vault, &e0) == 5 && e0 == 77);
+    CHECK(start_of(&s, &u, &EMPTY_J) == GZ_SC_START_RESTORE); /* not "behind" with counter 5 */
+    gz_sc_unlocked_clear(&u);
+    CHECK_ERR(gz_sc_setup_restore(&s, PWB(PW2), &TP, ENT, SEED64, &u), GZ_SC_EXISTS);
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW2), &TP, &u), GZ_SC_OK);
+    CHECK(!u.restore && start_of(&s, &u, &EMPTY_J) == GZ_SC_START_RESTORE);
+    {   /* The restore batch carries the guard on: counter 6, epochs kept. */
+        gz_sc_epoch_t eps[2] = {{77, 9}, {0x5150, 0}};
+        gz_sc_guard_t ng = {6, 2, eps, 0};
+        CHECK_ERR(gz_sc_anchor(&s, &u, 1, 254), GZ_SC_OK);
+        CHECK_ERR(gz_sc_guard_write(&s, u.vault, &ng), GZ_SC_OK);
+        gz_sc_journal_view_t jr = {1, mark_1_254, NULL, 6};
+        CHECK(start_of(&s, &u, &jr) == GZ_SC_START_OK);
+    }
+    gz_sc_unlocked_clear(&u);
+    /* The restore path with no guard at all, in an empty folder. */
+    char *d2 = mkdir_tmp();
+    gz_sc_store_t s2 = store_for(d2, 0);
+    CHECK_ERR(gz_sc_setup_restore(&s2, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_OK);
+    CHECK(u.restore && !exists(d2, GZ_SC_FILE_GUARD) && start_of(&s2, &u, &EMPTY_J) == GZ_SC_START_RESTORE);
+    gz_sc_unlocked_clear(&u);
+    rm_dir(d2);
+    free(j0);
+    free(g0);
+    free(m0);
+    rm_dir(d);
+}
+
+/* Review B, L1: once the key file has been renamed into place, set-up,
+ * passphrase change and recovery report it done (with a fault), never a
+ * failure. The folder sync is made to fail; then a later file of set-up. */
+static void done_with_fault(void)
+{
+    char *d = mkdir_tmp();
+    const char *base = strrchr(d, '/') + 1;
+    gz_sc_store_t s = store_for(d, 0);
+    gz_sc_unlocked_t u;
+    failing_t f = {base, EIO, 0, -1}; /* opening the folder (for its sync) fails */
+    gz_sc_os_t os = {&f, x_open, x_write, x_read, x_fsync, x_ftruncate, x_close, x_rename, x_unlink};
+    gz_sc_store_t fs = s;
+    fs.os = &os;
+    CHECK_ERR(gz_sc_setup(&fs, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_DONE_WITH_FAULT);
+    CHECK(u.vault == NULL && exists(d, GZ_SC_FILE_KEYS));
+    CHECK_ERR(gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_EXISTS);
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW), &TP, &u), GZ_SC_OK); /* step 0 completes it */
+    CHECK(u.restore && start_of(&s, &u, &EMPTY_J) == GZ_SC_START_RESTORE);
+    gz_sc_unlocked_clear(&u);
+    /* Passphrase change: reported done, and the new passphrase is the one. */
+    CHECK_ERR(gz_sc_rewrap(&fs, PWB(PW), PWB(PW2), &TP), GZ_SC_DONE_WITH_FAULT);
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW2), &TP, &u), GZ_SC_OK);
+    gz_sc_unlocked_clear(&u);
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW), &TP, &u), GZ_SC_WRONG_PASSPHRASE);
+    /* The guard, mark and attempts files are not key files: a batch is never
+     * confirmed on an unsynced folder, so there it stays a storage failure. */
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW2), &TP, &u), GZ_SC_OK);
+    {
+        gz_sc_guard_t gg = {1, 0, NULL, 0};
+        gz_sc_attempts_t aa = {1, 0, 0, 0};
+        CHECK_ERR(gz_sc_guard_write(&fs, u.vault, &gg), GZ_SC_STORAGE_FAILED);
+        CHECK_ERR(gz_sc_mark_restart(&fs, &u), GZ_SC_STORAGE_FAILED);
+        CHECK_ERR(gz_sc_attempts_store(&fs, &aa), GZ_SC_STORAGE_FAILED);
+    }
+    gz_sc_unlocked_clear(&u);
+    /* A failure before the rename is still a failure, and nothing changed. */
+    failing_t f2 = {GZ_SC_FILE_KEYS ".tmp", EIO, 0, -1};
+    os.ctx = &f2;
+    CHECK_ERR(gz_sc_rewrap(&fs, PWB(PW2), PWB(PW), &TP), GZ_SC_STORAGE_FAILED);
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW2), &TP, &u), GZ_SC_OK);
+    gz_sc_unlocked_clear(&u);
+    /* Recovery from the words. */
+    os.ctx = &f;
+    rm_file(d, GZ_SC_FILE_KEYS);
+    CHECK_ERR(gz_sc_recover_keyfile(&fs, ENT, SEED64, PWB(PW), &TP), GZ_SC_DONE_WITH_FAULT);
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW), &TP, &u), GZ_SC_OK);
+    gz_sc_unlocked_clear(&u);
+    rm_dir(d);
+    /* Set-up whose guard cannot be written after the key file is in place. */
+    d = mkdir_tmp();
+    s = store_for(d, 0);
+    fs = s;
+    fs.os = &os;
+    failing_t f3 = {GZ_SC_FILE_GUARD ".tmp", EIO, 0, -1};
+    os.ctx = &f3;
+    CHECK_ERR(gz_sc_setup(&fs, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_DONE_WITH_FAULT);
+    CHECK(u.vault == NULL && exists(d, GZ_SC_FILE_KEYS) && !exists(d, GZ_SC_FILE_GUARD));
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW), &TP, &u), GZ_SC_OK);
+    CHECK(u.restore && start_of(&s, &u, &EMPTY_J) == GZ_SC_START_RESTORE);
+    gz_sc_unlocked_clear(&u);
+    /* Before the key file: an ordinary failure, no wallet. */
+    rm_dir(d);
+    d = mkdir_tmp();
+    s = store_for(d, 0);
+    fs = s;
+    fs.os = &os;
+    failing_t f4 = {GZ_SC_FILE_KEYS ".tmp", EIO, 0, -1};
+    os.ctx = &f4;
+    CHECK_ERR(gz_sc_setup(&fs, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_STORAGE_FAILED);
+    CHECK(!exists(d, GZ_SC_FILE_KEYS));
+    rm_dir(d);
+}
+
+/* Review B, L4: an export's slot is never below the key file's parameters. */
+static void export_floor(void)
+{
+    char *d = mkdir_tmp();
+    gz_sc_store_t s = store_for(d, 0);
+    gz_sc_unlocked_t u;
+    CHECK_ERR(gz_sc_setup(&s, PWB(PW), &TP_UP, ENT, SEED64, &u), GZ_SC_OK);
+    uint8_t body[64], eid[16] = {1}, salt[16] = {2}, *pkx = gz_sc_salloc(32), *x = malloc(4096);
+    size_t bl = 0, xl = 0;
+    CHECK_ERR(gz_sc_export_body_begin(1, 0, NULL, 0, body, sizeof body, &bl), GZ_SC_OK);
+    const gz_sc_kdf_params_t low_t = {1, 3, 128, 1}, low_m = {1, 4, 64, 1};
+    gz_sc_kdf_params_t ok;
+    gz_sc_params_for_new_wrap(&u.info.kdf, &TP, &ok);
+    CHECK(ok.t == 4 && ok.m_kib == 128);
+    CHECK(pkx && x && gz_sc_test_kdf_inprocess(NULL, PWB(PW), salt, &ok, pkx, NULL) == GZ_SC_OK);
+    for (int vi = 0; vi < 2; vi++) {
+        gz_sc_unlocked_t uu;
+        gz_sc_unlocked_t *up = &u;
+        if (vi == 1) { /* the same through an unlock */
+            CHECK_ERR(gz_sc_unlock(&s, PWB(PW), &TP, &uu), GZ_SC_OK);
+            up = &uu;
+        }
+        CHECK_ERR(gz_sc_export_build(up->vault, 1, eid, &low_t, salt, pkx, body, bl, NULL, 100, x, 4096, &xl),
+                  GZ_SC_PARAMS_REFUSED);
+        CHECK_ERR(gz_sc_export_build(up->vault, 1, eid, &low_m, salt, pkx, body, bl, NULL, 100, x, 4096, &xl),
+                  GZ_SC_PARAMS_REFUSED);
+        CHECK_ERR(gz_sc_export_build(up->vault, 1, eid, &ok, salt, pkx, body, bl, NULL, 100, x, 4096, &xl),
+                  GZ_SC_OK);
+        uint8_t *ob = NULL;
+        size_t obl = 0;
+        CHECK_ERR(gz_sc_export_open(x, xl, SIGNET, pkx, NULL, &ob, &obl), GZ_SC_OK);
+        gz_sc_sfree(ob);
+        if (vi == 1)
+            gz_sc_unlocked_clear(&uu);
+    }
+    gz_sc_sfree(pkx);
+    free(x);
     gz_sc_unlocked_clear(&u);
     rm_dir(d);
 }
@@ -812,7 +1107,12 @@ static void crashes(void)
     gz_sc_unlocked_clear(&u);
     total = f.calls;
     rm_dir(d);
-    int restores = 0, absent = 0;
+    /* Every crash that leaves a key file starts, at the first and at every
+     * later start until the restore batch is anchored, as a restore or
+     * normally: never "possibly old" or "behind" (review B, M2, S3: before
+     * the fix, a crash between the key file and the guard's rename gave a
+     * restore whose next start was "possibly old"). */
+    int restores = 0, absent = 0, refused = 0, faults = 0;
     for (n = 1; n <= total; n++) {
         d = mkdir_tmp();
         s = store_for(d, 0);
@@ -820,30 +1120,50 @@ static void crashes(void)
         s.os = &os;
         /* A crash at the very last call (closing the synced folder) is after
          * everything durable: set-up may report success. */
-        if (gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u) == GZ_SC_OK)
+        gz_sc_err_t se = gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u);
+        if (se == GZ_SC_OK)
             CHECK(n == total);
+        faults += se == GZ_SC_DONE_WITH_FAULT;
         gz_sc_unlocked_clear(&u);
         s.os = &gz_sc_os_posix;
         gz_sc_err_t e = gz_sc_unlock(&s, PWB(PW), &TP, &u);
+        int was_restore = 0;
         if (e == GZ_SC_MISSING) {
             absent++;
             CHECK_ERR(gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_OK);
         } else {
             CHECK_ERR(e, GZ_SC_OK);
-            if (e == GZ_SC_OK && u.restore)
+            int st = e == GZ_SC_OK ? start_of(&s, &u, &EMPTY_J) : -1;
+            if (e == GZ_SC_OK && u.restore) {
                 restores++;
-            else if (e == GZ_SC_OK)
-                CHECK(start_of(&s, &u, &EMPTY_J) == GZ_SC_START_OK);
+                was_restore = 1;
+                CHECK(st == GZ_SC_START_RESTORE);
+            } else if (e == GZ_SC_OK) {
+                CHECK(st == GZ_SC_START_OK);
+            }
+            refused += st == GZ_SC_START_POSSIBLY_OLD || st == GZ_SC_START_BEHIND;
         }
         gz_sc_unlocked_clear(&u);
+        /* The restore batch was never written (the program stopped): the
+         * same restore again. Then write it and start normally. */
         CHECK_ERR(gz_sc_unlock(&s, PWB(PW), &TP, &u), GZ_SC_OK);
-        CHECK(start_of(&s, &u, &EMPTY_J) == GZ_SC_START_OK || !exists(d, GZ_SC_FILE_GUARD));
+        int st2 = start_of(&s, &u, &EMPTY_J);
+        CHECK(st2 == (was_restore ? GZ_SC_START_RESTORE : GZ_SC_START_OK));
+        refused += st2 == GZ_SC_START_POSSIBLY_OLD || st2 == GZ_SC_START_BEHIND;
+        if (st2 == GZ_SC_START_RESTORE && u.vault) {
+            gz_sc_epoch_t rep = {77, 0};
+            gz_sc_guard_t rg = {1, 1, &rep, 0};
+            CHECK_ERR(gz_sc_anchor(&s, &u, 1, 254), GZ_SC_OK);
+            CHECK_ERR(gz_sc_guard_write(&s, u.vault, &rg), GZ_SC_OK);
+            gz_sc_journal_view_t jr = {1, mark_1_254, NULL, 1};
+            CHECK(start_of(&s, &u, &jr) == GZ_SC_START_OK);
+        }
         gz_sc_unlocked_clear(&u);
         rm_dir(d);
     }
-    printf("set-up: %d calls, each crashed: %d left no wallet, %d started as a restore\n", total, absent,
-           restores);
-    CHECK(absent > 0 && restores > 0);
+    printf("set-up: %d calls, each crashed: %d left no wallet, %d started as a restore, %d reported done with a"
+           " fault, %d starts refused\n", total, absent, restores, faults, refused);
+    CHECK(absent > 0 && restores > 0 && refused == 0);
 
     /* Passphrase change: exactly one of the two passphrases opens. */
     d = mkdir_tmp();
@@ -943,6 +1263,65 @@ static void crashes(void)
     rm_dir(d);
 }
 
+/* Review B, M2 (scenario S2 and an interrupted step 0): a journal deleted
+ * with the guard kept (counter 5) starts as a restore, not "behind"; a crash
+ * at any call of step 0 leaves a folder whose next start is that restore. */
+static void restore_starts(void)
+{
+    char *d = mkdir_tmp();
+    gz_sc_store_t s = store_for(d, 0);
+    gz_sc_unlocked_t u;
+    CHECK_ERR(gz_sc_setup(&s, PWB(PW), &TP, ENT, SEED64, &u), GZ_SC_OK);
+    gz_sc_epoch_t ep = {77, 9};
+    gz_sc_guard_t g = {5, 1, &ep, 0};
+    CHECK_ERR(gz_sc_guard_write(&s, u.vault, &g), GZ_SC_OK);
+    CHECK_ERR(gz_sc_anchor(&s, &u, 1, 254), GZ_SC_OK);
+    gz_sc_unlocked_clear(&u);
+    rm_file(d, GZ_SC_FILE_JOURNAL);
+    size_t kl, gl;
+    uint8_t *k0 = slurp(&s, GZ_SC_FILE_KEYS, &kl), *g0 = slurp(&s, GZ_SC_FILE_GUARD, &gl);
+    CHECK_ERR(gz_sc_unlock(&s, PWB(PW), &TP, &u), GZ_SC_OK);
+    CHECK(u.restore && start_of(&s, &u, &EMPTY_J) == GZ_SC_START_RESTORE);
+    CHECK(guard_counter(&s, u.vault, NULL) == 5);
+    gz_sc_unlocked_clear(&u);
+    /* Step 0 crashed at each of its calls. */
+    fault_t f;
+    memset(&f, 0, sizeof f);
+    gz_sc_os_t os;
+    fault_reset(&f, &os, d, 0);
+    gz_sc_store_t fs = s;
+    fs.os = &os;
+    rm_file(d, GZ_SC_FILE_JOURNAL);
+    CHECK_ERR(gz_sc_unlock(&fs, PWB(PW), &TP, &u), GZ_SC_OK);
+    gz_sc_unlocked_clear(&u);
+    int total = f.calls, again = 0, pending = 0, bad = 0;
+    for (int n = 1; n <= total; n++) {
+        rm_file(d, GZ_SC_FILE_JOURNAL);
+        rm_file(d, GZ_SC_FILE_MARK);
+        CHECK_ERR(gz_sc_fs_replace(&s, GZ_SC_FILE_KEYS, k0, kl), GZ_SC_OK);
+        CHECK_ERR(gz_sc_fs_replace(&s, GZ_SC_FILE_GUARD, g0, gl), GZ_SC_OK);
+        fault_reset(&f, &os, d, n);
+        if (gz_sc_unlock(&fs, PWB(PW), &TP, &u) == GZ_SC_OK)
+            gz_sc_unlocked_clear(&u);
+        CHECK_ERR(gz_sc_unlock(&s, PWB(PW), &TP, &u), GZ_SC_OK);
+        int st = u.vault ? start_of(&s, &u, &EMPTY_J) : -1;
+        if (u.restore)
+            again++;
+        else
+            pending++;
+        if (st != GZ_SC_START_RESTORE)
+            bad++;
+        gz_sc_unlocked_clear(&u);
+    }
+    fault_reset(&f, &os, d, 0);
+    printf("step 0: %d calls, each crashed: step 0 again %d times, the pending restore %d times, other %d\n", total,
+           again, pending, bad);
+    CHECK(bad == 0 && again > 0 && pending > 0);
+    free(k0);
+    free(g0);
+    rm_dir(d);
+}
+
 int main(void)
 {
     sc_test_init();
@@ -954,6 +1333,10 @@ int main(void)
     helper_deadline();
     passphrase_rules();
     secrets_scan();
+    setup_over_a_wallet();
+    done_with_fault();
+    export_floor();
     crashes();
+    restore_starts();
     return sc_test_done("storage files");
 }

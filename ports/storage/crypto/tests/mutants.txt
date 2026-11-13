@@ -103,11 +103,11 @@ helper_no_dumps	sc_kdf.c	no_dumps();\n    uint8_t head	uint8_t head
 #
 # --- files (sc_files.c)
 replace_fsync	sc_files.c	int ok = write_all(s, fd, data, len) == 0 && OS(s)->fsync(OS(s)->ctx, fd) == 0;	int ok = write_all(s, fd, data, len) == 0;
-replace_dirsync	sc_files.c	return sync_dir(s);\n}\n\ngz_sc_err_t gz_sc_fs_append	return GZ_SC_OK;\n}\n\ngz_sc_err_t gz_sc_fs_append
+replace_dirsync	sc_files.c	return sync_dir(s) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DONE_WITH_FAULT;	return GZ_SC_OK;
 append_cut	sc_files.c	int ok = OS(s)->ftruncate(OS(s)->ctx, fd, at) == 0 && write_all(s, fd, data, len) == 0 &&	int ok = write_all(s, fd, data, len) == 0 &&
 append_fsync	sc_files.c	int ok = OS(s)->ftruncate(OS(s)->ctx, fd, at) == 0 && write_all(s, fd, data, len) == 0 &&\n             OS(s)->fsync(OS(s)->ctx, fd) == 0;	int ok = OS(s)->ftruncate(OS(s)->ctx, fd, at) == 0 && write_all(s, fd, data, len) == 0;
 bc_step0	sc_files.c	u->restore = 1;	u->restore = 0;
-setup_exists	sc_files.c	if (e == GZ_SC_OK)\n        return GZ_SC_EXISTS;
+setup_exists	sc_files.c	    gz_sc_err_t e = present(s, GZ_SC_FILE_KEYS);\n    if (e != GZ_SC_MISSING)\n        return e == GZ_SC_OK ? GZ_SC_EXISTS : e;\n	    gz_sc_err_t e;\n
 anchor_backwards	sc_files.c	if (st != GZ_SC_MARK_OK || incarnation < i || (incarnation == i && mark_offset < o))	if (st != GZ_SC_MARK_OK)
 bc_no_anchor	sc_files.c	return gz_sc_fs_append(s, GZ_SC_FILE_MARK, (uint64_t)end, entry, sizeof entry);	return GZ_SC_OK;
 check_start_guard	sc_files.c	gs = GZ_SC_DAMAGED; /* another format, network or a failed tag */	gs = GZ_SC_OK;
@@ -123,7 +123,7 @@ m1_guard_nomem	sc_files.c	        if (gs == GZ_SC_NOMEM)\n            return gs;
 m2_body_heap	sc_export.c	uint8_t *out = sodium_malloc(len - plen + 1), *ad = malloc(plen + 9);	uint8_t *out = malloc(len - plen + 1), *ad = malloc(plen + 9);
 m2_words_from_body	sc_export.c	            src = entropy + (off - WORDS_AT);	            src = body + off;
 m2_words_flag_alone	sc_export.c	    if ((check.flags & 1) != (entropy != NULL))\n        return GZ_SC_ARG; /* flag bit 0 and the entropy come together */\n
-m3_setup_form	sc_files.c	    gz_sc_err_t pe = new_pass_ok(pw_nfc, pw_len);\n    if (pe != GZ_SC_OK)\n        return pe;\n    uint8_t *existing	    uint8_t *existing
+m3_setup_form	sc_files.c	    gz_sc_err_t e = new_pass_ok(pw_nfc, pw_len);\n    if (e != GZ_SC_OK)\n        return e;\n    if ((e = folder_free	    gz_sc_err_t e;\n    if ((e = folder_free
 m3_recover_form	sc_files.c	    gz_sc_err_t pe = new_pass_ok(pw_nfc, pw_len);\n    if (pe != GZ_SC_OK)\n        return pe;\n    uint8_t *hdr	    uint8_t *hdr
 m3_rewrap_new_form	sc_files.c	    if (e == GZ_SC_OK && new_pw)\n        e = new_pass_ok(new_pw, new_len);\n
 m3_open_any_form	sc_files.c	    return sc_pass_is_nfc(pw, len) ? GZ_SC_OK : GZ_SC_PASS_REFUSED;	    return GZ_SC_OK;
@@ -156,7 +156,7 @@ A_commit_31	sc_core.c	ok = sodium_memcmp(c, stored, 32) == 0;	ok = sodium_memcmp
 A_kf_seed_wrongpass	sc_keyfile.c	e = GZ_SC_DAMAGED;\n        goto done;	e = GZ_SC_WRONG_PASSPHRASE;\n        goto done;
 A_kf_wrap_ok	sc_keyfile.c	return rc == 0 ? GZ_SC_OK : GZ_SC_WRONG_PASSPHRASE;	return GZ_SC_OK;
 A_kf_words_damaged_ok	sc_keyfile.c	return rc == 0 ? GZ_SC_OK : GZ_SC_DAMAGED;	return GZ_SC_OK;
-A_kf_vault_ids	sc_keyfile.c	e = gz_sc_vault_new(data + 9, data + 41, msk, seed, out);	e = gz_sc_vault_new(data + 9, data + 9, msk, seed, out);
+A_kf_vault_ids	sc_keyfile.c	gz_sc_vault_new(data + 9, data + 41, msk, seed, out)	gz_sc_vault_new(data + 9, data + 9, msk, seed, out)
 A_kf_p_ignored	sc_keyfile.c	in.kdf.p = data[66];	in.kdf.p = 1;
 A_kf_kdf_ignored	sc_keyfile.c	in.kdf.kdf = data[57];	in.kdf.kdf = 1;
 A_kf_t_lowbyte	sc_keyfile.c	in.kdf.t = sc_get32(data + 58);	in.kdf.t = sc_get32(data + 58) & 0xffu;
@@ -203,4 +203,33 @@ A_helper_status_any	sc_kdf.c	if (ans[0] == 0) {	if (ans[0] != 1) {
 A_ct_commit_memcmp	sc_core.c	ok = sodium_memcmp(c, stored, 32) == 0;	ok = memcmp(c, stored, 32) == 0;
 A_ct_msk_memcmp	sc_core.c	int same = sodium_memcmp(v->msk, msk, 32) == 0;	int same = memcmp(v->msk, msk, 32) == 0;
 A_pass_bytes_not_cps	sc_pass.c	cps < GZ_SC_PASS_MIN_CP ?	len < GZ_SC_PASS_MIN_CP ?
-A_attempts_counter_reset	sc_misc.c	uint64_t c = (data && len == GZ_SC_ATTEMPTS_LEN) ? sc_get64(data + 40) : 0;	uint64_t c = 0;
+A_attempts_counter_reset	sc_misc.c	        a->counter = 0;	        a->counter = 1;
+#
+# --- review B's findings (PR 25, third commit): the fixes' own mutants, and
+# review B's three survivors that needed a test (B_anchor_at_file_end,
+# B_body_next_fit) or broke 4.7 (B_rewrap_takes_default). Review B's other
+# 43 mutants run with its own runner (docs/notes/storage-crypto.md).
+B_anchor_at_file_end	sc_files.c	e = gz_sc_mark_entry(u->kh, m, (uint64_t)end, incarnation, mark_offset, entry);	e = gz_sc_mark_entry(u->kh, m, (uint64_t)ml, incarnation, mark_offset, entry);
+B_body_next_fit	sc_export.c	if ((size_t)n > b->entries_len - *pos - 21)	if ((size_t)n > b->entries_len - *pos - 20)
+B_rewrap_takes_default	sc_files.c	gz_sc_params_for_new_wrap(&info.kdf, def, &np);	np = *def;
+B_attempts_damaged_counter	sc_misc.c	        a->counter = 0;	        a->counter = (data && len == GZ_SC_ATTEMPTS_LEN) ? sc_get64(data + 40) : 0;
+bm1_journal_here	sc_files.c	    if ((e = present(s, GZ_SC_FILE_JOURNAL)) != GZ_SC_MISSING)\n        return e == GZ_SC_OK ? GZ_SC_JOURNAL_HERE : e;\n
+bm1_guard_mark	sc_files.c	    if (restore)\n        return GZ_SC_OK;\n    const char	    if (1)\n        return GZ_SC_OK;\n    const char
+bm1_restore_writes_guard	sc_files.c	    if (!restore) {	    if (1) {
+bm1_restore_flag	sc_files.c	    u->restore = restore;	    u->restore = 0;
+bm2_marker_ignored	sc_journal.c	    if (mark == GZ_SC_MARK_OK && mark_inc == GZ_SC_MARK_RESTORE_INC && mark_off == GZ_SC_MARK_RESTORE_OFF)\n        return GZ_SC_START_RESTORE;\n
+bm2_marker_any_state	sc_journal.c	if (mark == GZ_SC_MARK_OK && mark_inc == GZ_SC_MARK_RESTORE_INC	if (mark_inc == GZ_SC_MARK_RESTORE_INC
+bm2_step0_no_marker	sc_files.c	(restore ? gz_sc_mark_new_restore : gz_sc_mark_new)	gz_sc_mark_new
+bm2_restart_no_marker	sc_files.c	gz_sc_err_t e = gz_sc_mark_new_restore(u->kh, s->chain, mk);	gz_sc_err_t e = gz_sc_mark_new(u->kh, s->chain, mk);
+bm2_marker_offset	sc_journal.c	return mark_first(kh, chain, GZ_SC_MARK_RESTORE_OFF, out);	return mark_first(kh, chain, 0, out);
+bl1_replace_fails_after_rename	sc_files.c	return sync_dir(s) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DONE_WITH_FAULT;	return sync_dir(s);
+bl1_setup_fails_after_commit	sc_files.c	        if (committed)\n            e = GZ_SC_DONE_WITH_FAULT;	        if (0)\n            e = GZ_SC_DONE_WITH_FAULT;
+bl1_guard_fault_confirmed	sc_files.c	    return e == GZ_SC_DONE_WITH_FAULT ? GZ_SC_STORAGE_FAILED : e;\n}\n\ngz_sc_err_t gz_sc_mark_restart	    return e;\n}\n\ngz_sc_err_t gz_sc_mark_restart
+bl3_unassigned	sc_pass.c	        if (utf8proc_category(cp) == UTF8PROC_CATEGORY_CN)\n            return GZ_SC_PASS_UNASSIGNED;\n
+bl3_nul	sc_pass.c	        if (cp == 0)\n            return GZ_SC_PASS_NUL;\n
+bl4_export_floor	sc_export.c	if (e == GZ_SC_OK && v->has_kdf && (kdf->t < v->kdf.t || kdf->m_kib < v->kdf.m_kib))	if (0)
+bl4_export_floor_m	sc_export.c	kdf->t < v->kdf.t || kdf->m_kib < v->kdf.m_kib	kdf->t < v->kdf.t
+bl4_unlock_no_floor	sc_keyfile.c	        sc_vault_set_kdf(*out, &p);	        (void)p;
+bl4_slot_wraps_bk	sc_export.c	e = chunk_root(profile, out, bk); /* the slot wraps XR, never BK */	e = GZ_SC_OK;
+bl4_words_open_bk	sc_export.c	e = chunk_root(info.profile, data, bk); /* the words give BK, then XR (profile 1) */	e = GZ_SC_OK;
+bl4_rewrap_lower	sc_keyfile.c	    if (new_params->t < sc_get32(old + 58) || new_params->m_kib < sc_get32(old + 62))\n        return GZ_SC_PARAMS_REFUSED;\n

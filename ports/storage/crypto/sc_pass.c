@@ -85,6 +85,21 @@ gz_sc_pass_rule_t gz_sc_pass_check_form(const uint8_t *pw, size_t len)
     gz_sc_pass_rule_t r = nfc_form(pw, len, &cps);
     if (r != GZ_SC_PASS_OK)
         return r;
+    /* Review B, L3: Unicode's normalization stability covers assigned code
+     * points only; a later version may give an unassigned one a combining
+     * class or a decomposition, and with it other NFC bytes and another key.
+     * U+0000 ends a C string somewhere along the way. pw is valid UTF-8 here. */
+    for (utf8proc_ssize_t at = 0; (size_t)at < len;) {
+        utf8proc_int32_t cp;
+        utf8proc_ssize_t n = utf8proc_iterate(pw + at, (utf8proc_ssize_t)len - at, &cp);
+        if (n <= 0)
+            return GZ_SC_PASS_NOT_UTF8;
+        if (cp == 0)
+            return GZ_SC_PASS_NUL;
+        if (utf8proc_category(cp) == UTF8PROC_CATEGORY_CN)
+            return GZ_SC_PASS_UNASSIGNED;
+        at += n;
+    }
     return cps < GZ_SC_PASS_MIN_CP ? GZ_SC_PASS_TOO_SHORT : GZ_SC_PASS_OK;
 }
 

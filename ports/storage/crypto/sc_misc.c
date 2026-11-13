@@ -52,10 +52,12 @@ int gz_sc_attempts_decode(const uint8_t chain[32], const uint8_t *data, size_t l
     }
     /* A mode 2 file cannot be checked without KB: read as damaged. */
     if (!ok) {
-        /* The strictest state: refused for 15 minutes from now. The counter
-         * continues from the file's where it can be read, so it never falls. */
-        uint64_t c = (data && len == GZ_SC_ATTEMPTS_LEN) ? sc_get64(data + 40) : 0;
-        a->counter = c;
+        /* The strictest state: refused for 15 minutes from now. Nothing of a
+         * file that failed its check is used, not even its counter (review B,
+         * L2): unauthenticated bytes could pin it at its cap, and in mode 2 a
+         * file below the store record would then never be caught as older.
+         * Mode 1 has no store record, so the counter starts again from 0. */
+        a->counter = 0;
         a->wrong_in_a_row = 0;
         a->last_wrong_s = 0;
         a->blocked_until_s = sat_add(now_s, STRICT_S);

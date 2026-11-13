@@ -2123,6 +2123,10 @@ print(f"  against E7g (last mark {_e7h[2]}) and E7h the newest entry's mark {off
 BK = derive(SEED64, "backup", chain)
 EXPORT_ID = tv("export id", 16)
 EK = keys(BK, "export", chain + EXPORT_ID)
+# Profile 1's own key (storage review B, L4): the passphrase slot wraps XR, never BK, and
+# the chunks of a profile 1 export are sealed under keys(XR, ...); profile 2 stays under BK.
+XR = derive(BK, "export key", chain + EXPORT_ID)
+EK1 = keys(XR, "export", chain + EXPORT_ID)
 SALT_X = tv("export kdf salt", 16)
 EX_SLOT_END = 58 + 26 + 32 + 72               # 188
 
@@ -2134,15 +2138,16 @@ def export_file(profile, body, chunk, pw=None):
         pkx = argon2id(nfc_utf8(pw), SALT_X, T_TEST, M_TEST, 1, 32)
         ctx = chain + EXPORT_ID
         prefix = (head + slot + commitment(pkx, "backup commitment", ctx, head + slot)
-                  + sealed(keys(pkx, "backup wrap", ctx), "export slot", BK, head + slot))
+                  + sealed(keys(pkx, "backup wrap", ctx), "export slot", XR, head + slot))
         assert len(prefix) == EX_SLOT_END
     else:
         prefix = head
     out = prefix
+    ek = EK1 if profile == 1 else EK
     parts = [body[i:i + chunk] for i in range(0, len(body), chunk)] or [b""]
     for i, part in enumerate(parts):
         fin = 1 if i == len(parts) - 1 else 0
-        sc = sealed(EK, f"export chunk {i}", part, prefix + u64(i) + u8(fin))
+        sc = sealed(ek, f"export chunk {i}", part, prefix + u64(i) + u8(fin))
         out += u32(len(sc)) + sc
     return out
 
@@ -2162,11 +2167,11 @@ def open_export(data, pw=None, seed64=None, floor=FLOOR_TEST):
             pkx = argon2id(nfc_utf8(pw), data[68:84], t, m, 1, 32)
             if not hmac.compare_digest(commitment(pkx, "backup commitment", ctx, data[:84]), data[84:116]):
                 return "wrong passphrase"
-            bk = unseal(keys(pkx, "backup wrap", ctx), data[116:188], data[:84])
+            bk = unseal(keys(pkx, "backup wrap", ctx), data[116:188], data[:84])   # XR
             if bk is None:
                 return "wrong passphrase"
         else:
-            bk = derive(seed64, "backup", chain)
+            bk = derive(derive(seed64, "backup", chain), "export key", ctx)        # XR
     elif profile == 2:
         prefix_len = 58
         if seed64 is None:
@@ -2212,7 +2217,10 @@ print("\n== vector E10, export (.gzb), export_id = sha256('gazpacho test export 
       " sha256('gazpacho test export kdf salt')[0:16], test parameters of E2, created 1794000100000 ms,"
       " flags 0 (no words), body = the entries of E6 and the guard of E9")
 print("  backup key BK =", BK.hex(), "(from the BIP 39 seed)")
-print("  export key EK =", EK[0].hex())
+print("  export key EK =", EK[0].hex(), "(profile 2)")
+print("  profile 1's own key XR =", XR.hex(), "(wrapped by the slot), its EK =", EK1[0].hex())
+assert unseal(keys(argon2id(nfc_utf8(PW1), SALT_X, T_TEST, M_TEST, 1, 32), "backup wrap", chain + EXPORT_ID),
+              ex1[116:188], ex1[:84]) == XR != BK
 show("E10a profile 1, the person's export: passphrase slot with key commitment, one chunk", ex1)
 show("E10b profile 2, the host's copy: no slot, one chunk", ex2)
 assert open_export(ex1, pw=PW1) == EXP_BODY
@@ -2238,8 +2246,8 @@ _bad = bytearray(ex1); _bad[67] = 4                                      # F9: f
 assert open_export(bytes(_bad), pw=PW1) == "parameters refused"
 # F17: an empty chunk that is not the last.
 _prefix = ex1[:EX_SLOT_END]
-_empty = sealed(EK, "export empty chunk", b"", _prefix + u64(0) + u8(0))
-_rest = sealed(EK, "export chunk after empty", EXP_BODY, _prefix + u64(1) + u8(1))
+_empty = sealed(EK1, "export empty chunk", b"", _prefix + u64(0) + u8(0))
+_rest = sealed(EK1, "export chunk after empty", EXP_BODY, _prefix + u64(1) + u8(1))
 assert open_export(_prefix + u32(len(_empty)) + _empty + u32(len(_rest)) + _rest, pw=PW1) == "empty chunk before the end"
 print(f"== vector E11 (refuse): E10a's body sealed in {len(_chunks)} chunks of at most 64 bytes opens; with the"
       " last chunk dropped: truncated; with chunks 0 and 1 swapped: damaged; with the last chunk repeated:"

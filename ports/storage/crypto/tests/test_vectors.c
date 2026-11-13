@@ -535,6 +535,13 @@ static void e10_e11(void)
     sc_derive(SEED64, 64, "backup", SIGNET, 32, bk);
     ctx2(SIGNET, eid, 16, ctx);
     derive_hex("E10 EK", bk, 32, "export", ctx, 48, "e172f2dabc7650d0a79495a05dc2736ae37151ef116fcc2f10dd9d590244ac1f");
+    /* Profile 1's own key (review B, L4): the slot wraps XR, never BK. */
+    derive_hex("E10 XR", bk, 32, "export key", ctx, 48,
+               "5ce2ebd98c1cff355685984c9d5b8e2769eeead5132d21569cddbc78d83c894b");
+    uint8_t xr[32];
+    sc_derive(bk, 32, "export key", ctx, 48, xr);
+    derive_hex("E10 EK1", xr, 32, "export", ctx, 48,
+               "d7f9ef583afd0bef0bc891b87dc820597def130f0964f0238c26191a16e9fcb3");
     uint8_t guard[26] = {0, 0, 0, 0, 0, 0, 0, 3, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1};
     uint8_t body[400];
     size_t bl = 0;
@@ -549,16 +556,16 @@ static void e10_e11(void)
            "475a4241434b55500101f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c"
            "4225e973988108000000eba594bd30df323ee7faf88bd4e4bf81010000000300"
            "00004001bf6e15c75efe8b4c377417b5042a5fe7617bdcfa344c6dbff78df37c"
-           "b8729286e4c6b13bca6c3d9e5e18b89868a0725bdc0832ad9b329149adc77115"
-           "3e9c19c2998cabcd4b32d1ff5624c047686dd7a97907e0538a5f527c86a8d692"
-           "5c02639793500e9e1dcf73893289d355e92f7b15d646770e919acd61000000cc"
-           "0a4d70e2d9e029a1d101479598ad1546e05d7afc35ce13c8ee80dd538642affc"
-           "d3b9976fc7e2150b499b33cc57ad0e372283c1e3eaca91a9a3d8bf41c8f7342a"
-           "bc0be94d358ead9babcc38a2606d7e050b0bc649acd851912ca96a60a8413f39"
-           "6f05b8e56d439d2051db5fb8b355e4a0b0ce224ea21d3c177aa548d898255632"
-           "0a4fc645e5fe1dba24a255211c33065d427fdb08d40361316bc1368dad7a26d6"
-           "052e917f75692eb026d3404761119282b1921240b1077afb6622b147b27ac18b"
-           "b55a7e5e69ea6ef12429621d");
+           "b8729286e4c6b13bca6c3d9e5e18b89868a0725b6c51b6af88d3caf23990e782"
+           "9b6cfd7312d46e680ca13b686a49180d171a0d917982dba08b3df72054f135cc"
+           "adc2a80ac1afca18ab14aebf25442b7eb420488c14c59c8b46789cee000000cc"
+           "75d5d033600fdd128cbd160dff0fa1df203e0e102c2436db5b4242a1eb62f45d"
+           "690e7affca62fb2be9a565e9dcec5ce7428f22059c2defdc9cc22b5d25cfe147"
+           "8fddbb95878ca27c23c3ae088541973d6de543e145464db0571f6d72f3dca81b"
+           "1ac480d8e1fc902ac679a2a01b02fc0818c56e461093ea2544487d693d65eab5"
+           "d8c41b8bb9ae94e1ee4826164c756b46730d68fcdd10bc5a153b650d67305973"
+           "e43494d4e75a237b7523dab604f937e984233d4bc30139ce3984347945474d10"
+           "aa1673bceb5c11ec4bac4e41");
     r_queue("export chunk 0", NULL);
     CHECK_ERR(gz_sc_export_build(v, 2, eid, NULL, NULL, NULL, body, bl, NULL, 65536, ex2, sizeof ex2, &l2), GZ_SC_OK);
     eq_hex("E10b profile 2", ex2, l2,
@@ -587,6 +594,28 @@ static void e10_e11(void)
     uint8_t oseed[64];
     crypto_hash_sha512(oseed, (const uint8_t *)"other", 5);
     OPENS(ex1, l1, NULL, oseed, GZ_SC_DAMAGED);
+    {   /* What a cracked profile 1 passphrase yields: XR, not BK. */
+        sc_keypair_t kx;
+        uint8_t ctxs[48], got[32];
+        ctx2(SIGNET, eid, 16, ctxs);
+        CHECK_ERR(sc_keys(pkx, 32, "backup wrap", ctxs, 48, &kx), GZ_SC_OK);
+        CHECK(sc_unseal(&kx, ex1 + 116, 72, ex1, 84, got) == 0);
+        sc_keys_free(&kx);
+        CHECK(memcmp(got, xr, 32) == 0 && memcmp(got, bk, 32) != 0);
+        /* and XR does not open the host's copy (profile 2, under BK). */
+        sc_keypair_t ek2;
+        uint8_t ad2[58 + 9], pt[600];
+        memcpy(ad2, ex2, 58);
+        sc_put64(ad2 + 58, 0);
+        ad2[66] = 1;
+        uint32_t n2 = sc_get32(ex2 + 58);
+        CHECK_ERR(sc_keys(xr, 32, "export", ctxs, 48, &ek2), GZ_SC_OK);
+        CHECK(n2 <= sizeof pt + 40 && sc_unseal(&ek2, ex2 + 62, n2, ad2, sizeof ad2, pt) != 0);
+        sc_keys_free(&ek2);
+        CHECK_ERR(sc_keys(bk, 32, "export", ctxs, 48, &ek2), GZ_SC_OK);
+        CHECK(sc_unseal(&ek2, ex2 + 62, n2, ad2, sizeof ad2, pt) == 0);
+        sc_keys_free(&ek2);
+    }
     /* E11. */
     CHECK_ERR(gz_sc_export_build(v, 1, eid, &TEST_P, saltx, pkx, body, bl, NULL, 64, ex1s, sizeof ex1s, &l1s), GZ_SC_OK);
     OPENS(ex1s, l1s, pkx, NULL, GZ_SC_OK);
@@ -612,7 +641,7 @@ static void e10_e11(void)
     OPENS(sw, l1, pkx, NULL, GZ_SC_PARAMS_REFUSED);
     /* F17: an empty chunk before the last. */
     sc_keypair_t ek;
-    sc_keys(bk, 32, "export", ctx, 48, &ek);
+    sc_keys(xr, 32, "export", ctx, 48, &ek); /* profile 1: under XR */
     uint8_t ad[188 + 9];
     memcpy(sw, ex1, 188);
     memcpy(ad, ex1, 188);

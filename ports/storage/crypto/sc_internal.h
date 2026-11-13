@@ -48,7 +48,15 @@ struct gz_sc_vault {
     uint8_t vault_id[16];
     uint8_t *msk;  /* 32 guarded bytes */
     uint8_t *seed; /* 64 guarded bytes */
+    /* The parameters of the key file this vault came from (opened or set up),
+     * the floor of a profile 1 export's slot (4.2; review B, L4). has_kdf 0:
+     * a vault made from parts (gz_sc_vault_new), which has no key file. */
+    gz_sc_kdf_params_t kdf;
+    int has_kdf;
 };
+
+/* Records the key file's parameters in v (set-up, unlock). */
+void sc_vault_set_kdf(gz_sc_vault_t *v, const gz_sc_kdf_params_t *p);
 
 /* derive(IKM, label, context) = HKDF-SHA256(salt "gazpacho/v1/storage",
  * IKM, info = label || 0x00 || context, 32). out: 32 bytes. */

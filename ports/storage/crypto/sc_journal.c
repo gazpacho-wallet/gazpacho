@@ -217,14 +217,26 @@ gz_sc_err_t gz_sc_mark_entry(const gz_sc_framekey_t *kh, const uint8_t header[GZ
     return sc_seal(&kh->kp, pt, sizeof pt, ad, sizeof ad, out);
 }
 
-gz_sc_err_t gz_sc_mark_new(const gz_sc_framekey_t *kh, const uint8_t chain[32],
-                           uint8_t out[GZ_SC_MARK_HEADER_LEN + GZ_SC_MARK_ENTRY_LEN])
+static gz_sc_err_t mark_first(const gz_sc_framekey_t *kh, const uint8_t chain[32], uint64_t off,
+                              uint8_t out[GZ_SC_MARK_HEADER_LEN + GZ_SC_MARK_ENTRY_LEN])
 {
     memcpy(out, MK_MAGIC, 8);
     out[8] = 1;
     memcpy(out + 9, chain, 32);
     memcpy(out + 41, kh->file_id, 16);
-    return gz_sc_mark_entry(kh, out, GZ_SC_MARK_HEADER_LEN, 0, 0, out + GZ_SC_MARK_HEADER_LEN);
+    return gz_sc_mark_entry(kh, out, GZ_SC_MARK_HEADER_LEN, 0, off, out + GZ_SC_MARK_HEADER_LEN);
+}
+
+gz_sc_err_t gz_sc_mark_new(const gz_sc_framekey_t *kh, const uint8_t chain[32],
+                           uint8_t out[GZ_SC_MARK_HEADER_LEN + GZ_SC_MARK_ENTRY_LEN])
+{
+    return mark_first(kh, chain, 0, out);
+}
+
+gz_sc_err_t gz_sc_mark_new_restore(const gz_sc_framekey_t *kh, const uint8_t chain[32],
+                                   uint8_t out[GZ_SC_MARK_HEADER_LEN + GZ_SC_MARK_ENTRY_LEN])
+{
+    return mark_first(kh, chain, GZ_SC_MARK_RESTORE_OFF, out);
 }
 
 gz_sc_mark_state_t gz_sc_mark_read(const gz_sc_framekey_t *kh, const uint8_t *data, size_t len,
@@ -395,6 +407,12 @@ gz_sc_start_t gz_sc_start_rule(gz_sc_mark_state_t mark, uint64_t mark_inc, uint6
                                gz_sc_err_t guard_state, uint64_t guard_counter,
                                const gz_sc_journal_view_t *j)
 {
+    /* Steps 0 and 4, interrupted or not (review B, M2): the restore marker is
+     * the newest entry, so the restore's first batch is not anchored yet. The
+     * start is that restore again; the guard is carried into its batch, not
+     * compared with a journal that cannot hold its record yet. */
+    if (mark == GZ_SC_MARK_OK && mark_inc == GZ_SC_MARK_RESTORE_INC && mark_off == GZ_SC_MARK_RESTORE_OFF)
+        return GZ_SC_START_RESTORE;
     /* Step 1: a guard or mark file absent, or a mark file with no valid entry
      * or a damaged one, while a key file exists: possibly old (review F6). */
     if (guard_state != GZ_SC_OK)

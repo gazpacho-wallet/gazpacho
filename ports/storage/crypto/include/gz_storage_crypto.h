@@ -44,9 +44,16 @@ typedef enum {
     GZ_SC_ARG,               /* a bad argument from the caller */
     GZ_SC_NOMEM,             /* sodium_malloc or malloc failed */
     GZ_SC_LIBRARY,           /* libsodium is not the pinned version or did not start */
-    GZ_SC_PASS_REFUSED       /* the passphrase is not valid NFC UTF-8, or (set-up, change,
+    GZ_SC_PASS_REFUSED,      /* the passphrase is not valid NFC UTF-8, or (set-up, change,
                               * recovery) breaks 4.1's length rules: gz_sc_pass_check_form
                               * says which */
+    GZ_SC_JOURNAL_HERE,      /* set-up refused: a journal is in the folder; the words reopen
+                              * it (gz_sc_recover_keyfile, 9.3) */
+    GZ_SC_DONE_WITH_FAULT    /* not a failure (review B, L1): the new key file is in place, but
+                              * a step after its rename failed: the folder sync, so a power
+                              * cut may bring the previous key file back; for set-up also a
+                              * file after the key file, which the next unlock makes (6.3
+                              * step 0, a restore). Never tell the person it failed */
 } gz_sc_err_t;
 
 const char *gz_sc_err_text(gz_sc_err_t e);
@@ -118,7 +125,9 @@ typedef enum {
     GZ_SC_PASS_NAME,      /* "gazpacho" or the wallet's name, with or without digits */
     GZ_SC_PASS_WORDS,     /* three or more of the wallet's own 24 words in order */
     GZ_SC_PASS_NOT_UTF8,
-    GZ_SC_PASS_NOT_NFC    /* not byte for byte its own NFC form: normalise first */
+    GZ_SC_PASS_NOT_NFC,    /* not byte for byte its own NFC form: normalise first */
+    GZ_SC_PASS_UNASSIGNED, /* a code point this Unicode version does not assign (review B, L3) */
+    GZ_SC_PASS_NUL         /* U+0000 */
 } gz_sc_pass_rule_t;
 
 /* 4.1's rules on an NFC passphrase (from gz_sc_pass_nfc). wallet_name may be
@@ -129,7 +138,12 @@ gz_sc_pass_rule_t gz_sc_pass_check(const uint8_t *nfc, size_t len, const char *w
 
 /* The part of 4.1 the storage layer enforces itself whatever its caller did
  * (review A, M3): valid UTF-8, already NFC, at most 1,024 bytes, at least 15
- * code points. gz_sc_setup, gz_sc_rewrap (the new passphrase) and
+ * code points, no unassigned code point and no U+0000 (review B, L3:
+ * Unicode's normalization stability covers assigned characters only, so a
+ * passphrase holding an unassigned one could give other bytes, and another
+ * key, after a utf8proc upgrade or in a client of another Unicode version).
+ * Only new passphrases are held to this; opening stays permissive (NFC only),
+ * so a key file made before the rule still opens. gz_sc_setup, gz_sc_rewrap (the new passphrase) and
  * gz_sc_recover_keyfile refuse anything else with GZ_SC_PASS_REFUSED; this
  * gives the reason. The name, words and blocklist rules need the wallet's
  * name and words, so they stay with the caller (gz_sc_pass_check). */
@@ -267,6 +281,15 @@ gz_sc_err_t gz_sc_mark_key(const gz_sc_vault_t *v, const uint8_t file_id[16], gz
 /* Header and the set-up entry (0, 0): 113 bytes. */
 gz_sc_err_t gz_sc_mark_new(const gz_sc_framekey_t *kh, const uint8_t chain[32],
                            uint8_t out[GZ_SC_MARK_HEADER_LEN + GZ_SC_MARK_ENTRY_LEN]);
+/* Header and the restore marker (6.3 steps 0 and 4; review B, M2): entry 0
+ * is (0, 1), a point no anchored batch can name (incarnations start at 1,
+ * sync marks at offset 185 or later). While it is the newest entry, the
+ * restore's first batch has not been anchored: every start is a restore
+ * (GZ_SC_START_RESTORE) until that batch's entry is appended. 113 bytes. */
+#define GZ_SC_MARK_RESTORE_INC 0u
+#define GZ_SC_MARK_RESTORE_OFF 1u
+gz_sc_err_t gz_sc_mark_new_restore(const gz_sc_framekey_t *kh, const uint8_t chain[32],
+                                   uint8_t out[GZ_SC_MARK_HEADER_LEN + GZ_SC_MARK_ENTRY_LEN]);
 /* One entry to append at file offset `at`. header is the file's first 57 bytes. */
 gz_sc_err_t gz_sc_mark_entry(const gz_sc_framekey_t *kh, const uint8_t header[GZ_SC_MARK_HEADER_LEN],
                              uint64_t at, uint64_t incarnation, uint64_t mark_offset,
@@ -323,10 +346,21 @@ typedef struct {
 typedef enum {
     GZ_SC_START_OK = 0,
     GZ_SC_START_POSSIBLY_OLD, /* step 1: a guard or mark file missing or damaged */
-    GZ_SC_START_BEHIND        /* step 2: the journal is behind its mark file or guard */
+    GZ_SC_START_BEHIND,       /* step 2: the journal is behind its mark file or guard */
+    GZ_SC_START_RESTORE       /* steps 0 and 4 (review B, M2): the mark file's newest entry is
+                               * the restore marker, so this start is a restore whose first
+                               * batch (key_epoch, restored, guard; journal.md 8.2) is still
+                               * to be written and anchored. Not a refusal: the node starts as
+                               * a restore; the guard's counter and epochs, if it opens, are
+                               * carried into that batch rather than compared; a guard that is
+                               * missing or does not open is replaced by the batch's ("possibly
+                               * stale", journal.md 8.3). Given at every start until the batch's
+                               * mark entry is appended, so an interrupted restore is repeated. */
 } gz_sc_start_t;
 
-/* guard_state: GZ_SC_OK with guard_counter, or GZ_SC_MISSING / GZ_SC_DAMAGED. */
+/* guard_state: GZ_SC_OK with guard_counter, or GZ_SC_MISSING / GZ_SC_DAMAGED.
+ * A sound mark file (GZ_SC_MARK_OK) whose newest entry is the restore marker
+ * gives GZ_SC_START_RESTORE whatever the guard and the journal say. */
 gz_sc_start_t gz_sc_start_rule(gz_sc_mark_state_t mark, uint64_t mark_inc, uint64_t mark_off,
                                gz_sc_err_t guard_state, uint64_t guard_counter,
                                const gz_sc_journal_view_t *j);
@@ -378,8 +412,16 @@ int gz_sc_export_body_next(const gz_sc_export_body_t *b, size_t *pos, uint8_t *k
 /* The file's size for a sealed body of sealed_len bytes (the caller's body
  * length, plus GZ_SC_EXPORT_WORDS_LEN when the words are carried). */
 size_t gz_sc_export_size(uint8_t profile, size_t sealed_len, size_t part);
-/* Profile 1: kdf, salt and pkx (PKx from the KDF over that slot) are used;
- * profile 2: they must be NULL. body: the caller's body (without the words);
+/* Profile 1: kdf, salt and pkx (PKx from the KDF over that slot) are used.
+ * kdf is never below the parameters of the key file the vault was opened
+ * from or set up with (4.2; review B, L4): PARAMS_REFUSED otherwise;
+ * gz_sc_params_for_new_wrap(&u->info.kdf, &GZ_SC_KDF_EXPORT_DEFAULT, &p)
+ * gives a valid choice. The slot wraps that export's own key XR =
+ * derive(BK, "export key", chain || export_id), and its chunks are sealed
+ * under keys(XR, "export", chain || export_id): never BK, so a passphrase
+ * guessed from one profile 1 export opens that export only, not the host's
+ * copies or the person's other exports (11). Profile 2: kdf, salt and pkx
+ * must be NULL; its chunks are under keys(BK, "export", ...), unchanged. body: the caller's body (without the words);
  * entropy: the words' 32 bytes (guarded memory) exactly when the body's flag
  * bit 0 is set, else NULL. part: chunk size, 1 to 65,536. */
 gz_sc_err_t gz_sc_export_build(const gz_sc_vault_t *v, uint8_t profile, const uint8_t export_id[16],
@@ -408,10 +450,13 @@ typedef struct {
 
 void gz_sc_attempts_encode(const uint8_t chain[32], const gz_sc_attempts_t *a, uint8_t out[GZ_SC_ATTEMPTS_LEN]);
 /* 1 if a valid mode 1 file of this chain; otherwise *a is the strictest state
- * (blocked until now + 900 s, the counter kept from a damaged file of the
- * right length) and 0 is returned. data NULL: a missing file. A valid file
- * cannot block for longer than the strictest state, nor date a wrong attempt
- * after now (review A, L1). The counter saturates at 2^64 - 1. */
+ * (blocked until now + 900 s) and 0 is returned. data NULL: a missing file.
+ * Nothing is read from a file that fails its check, the counter included
+ * (review B, L2): a missing or damaged file's counter is 0 in mode 1, which
+ * has no store record (mode 2 will continue from the store record's
+ * attempts_counter, 12.3), so a folder writer cannot push it to its cap. A
+ * valid file cannot block for longer than the strictest state, nor date a
+ * wrong attempt after now (review A, L1). The counter saturates at 2^64 - 1. */
 int gz_sc_attempts_decode(const uint8_t chain[32], const uint8_t *data, size_t len, uint64_t now_s,
                           gz_sc_attempts_t *a);
 /* local-api.md 4.3 (D15): one attempt a second; after 5 wrong in a row the
