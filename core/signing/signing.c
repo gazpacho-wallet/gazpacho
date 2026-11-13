@@ -1434,8 +1434,10 @@ static void host_partials(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, const gz_
  * costs a seat, not the lobby). Reason 3 (it restarted) is honest once in a
  * lobby: the second is blamed. Reason 6 (another round on its outputs) is
  * honest only while this host holds another round on the same funding
- * outpoint that is not over; otherwise the member is blamed. Any other
- * reason is the member's own refusal: blamed, as before. */
+ * outpoint, in any state: a failed attempt there may have left the member's
+ * partial signatures without the host seeing them, so the member's round is
+ * unresolved (C10). Otherwise the member is blamed. Any other reason is the
+ * member's own refusal: blamed, as before. */
 static uint32_t abort_blame(gz_sign_t *e, const gz_sign_round_t *r, uint8_t j, uint16_t reason)
 {
     const uint8_t *key = r->def.participants[j].contribution_key;
@@ -1449,7 +1451,7 @@ static uint32_t abort_blame(gz_sign_t *e, const gz_sign_round_t *r, uint8_t j, u
     if (reason == 6) {
         for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
             const gz_sign_round_t *o = &e->rounds[i];
-            if (o != r && (o->state == GZ_SIGN_ROUND_ACTIVE || o->state == GZ_SIGN_ROUND_COMPLETE || o->state == GZ_SIGN_ROUND_DONE) &&
+            if (o != r && o->state != GZ_SIGN_ROUND_FREE &&
                 same(o->def.funding_txid, r->def.funding_txid, 32) && o->def.funding_vout == r->def.funding_vout) return 0;
         }
         return bit(j);                                                             /* RULE:BLAME_FALSE_SUPERSEDED */
