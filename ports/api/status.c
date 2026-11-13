@@ -245,8 +245,9 @@ static int write_locked(gz_api_server *srv, const gz_api_status_facts *f, gz_jw 
 static int write_unlocked(gz_api_server *srv, gz_api_status_facts *f, gz_jw *w)
 {
     const gz_api_doing *best = NULL;
-    gz_api_doing extra[4];
-    int nextra = 0, best_rank = 1000, i, t;
+    gz_api_doing extra[5];
+    char stopped_params[96];
+    int nextra = 0, best_rank = 1000, i, t, have_stopped = 0;
     const char *ws = gz_watching_state(f, 0);
     if (!wallet_name(f->wallet) || !gz_chain_state_name(f->chain_state)) return -1;
     /* values the server adds from the facts themselves */
@@ -255,6 +256,15 @@ static int write_unlocked(gz_api_server *srv, gz_api_status_facts *f, gz_jw *w)
     if (f->wallet == GZ_API_STW_RESTORING) extra[nextra++].code = "restoring";
     if (chain_doubt(f->chain_state) && f->wallet != GZ_API_STW_NONE) extra[nextra++].code = "chain_in_doubt";
     if (f->pause_state && strcmp(f->pause_state, "on") == 0) extra[nextra++].code = "paused";
+    /* the program rebuilding its view (contract-v2 11, P5 item 9): node_stopped, reason rebuilding */
+    for (i = 0; i < f->ndoing; i++)
+        if (f->doing[i].code && strcmp(f->doing[i].code, "node_stopped") == 0) have_stopped = 1;
+    if (f->wallet == GZ_API_STW_NODE_STOPPED && !have_stopped) {
+        snprintf(stopped_params, sizeof stopped_params, "{\"reason\":\"%s\"}",
+                 f->wallet_reason && gz_valid_id(f->wallet_reason, 1, 40) ? f->wallet_reason : "storage_failed");
+        extra[nextra].code = "node_stopped";
+        extra[nextra++].params_json = stopped_params;
+    }
     for (i = 0; i < f->ndoing + nextra; i++) {
         const gz_api_doing *d = i < f->ndoing ? &f->doing[i] : &extra[i - f->ndoing];
         int r = gz_doing_rank(d->code);
@@ -296,6 +306,7 @@ static int write_unlocked(gz_api_server *srv, gz_api_status_facts *f, gz_jw *w)
     gz_jw_obj(w);
     gz_jw_kstr(w, "peer_check", srv->peer_check_ok ? "same_user_only" : "unavailable");
     gz_jw_kbool(w, "memory_locked", f->memory_locked);
+    gz_jw_kstr(w, "socket_token", srv->token_dir_refused ? "folder_refused" : srv->have_socket_token ? "ready" : "none");
     gz_jw_end_obj(w);
     gz_jw_key(w, "doing");
     gz_jw_obj(w);

@@ -26,7 +26,7 @@ static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *e, int *
     return 500;
 }
 
-static const gz_api_backend BE = {"t", "signet", ws, pp, NULL, st, call, NULL, NULL};
+static const gz_api_backend BE = {"t", "signet", ws, pp, NULL, st, call, NULL, NULL, NULL};
 
 static const char *const DOING[] = {
     "node_stopped", "files_behind", "wallet_locked", "no_wallet", "restoring", "answering_old_state",
@@ -346,8 +346,38 @@ static void test_locked_shape(void)
     free(s);
 }
 
+/* contract-v2 11, P5 item 9: while the program rebuilds its view the
+ * backend answers wallet = node_stopped; the unlocked shape takes it (no
+ * 500 internal), with doing.code node_stopped and reason rebuilding, whether
+ * or not the backend lists that doing itself. */
+static void test_rebuilding(void)
+{
+    gz_api_server *s = mk();
+    gz_json_doc d;
+    const gz_json *params;
+    int k;
+    for (k = 0; k < 2; k++) {
+        base();
+        g_facts.wallet = GZ_API_STW_NODE_STOPPED;
+        g_facts.wallet_reason = "rebuilding";
+        if (k) {
+            g_facts.doing[0].code = "node_stopped";
+            g_facts.doing[0].params_json = "{\"reason\":\"rebuilding\"}";
+            g_facts.ndoing = 1;
+        }
+        CHECK(write_status(s, 0, 1, &d) == 0);
+        CHECK(strcmp(path_str(d.root, "wallet", NULL), "node_stopped") == 0);
+        CHECK(path_str(d.root, "doing", "code") && strcmp(path_str(d.root, "doing", "code"), "node_stopped") == 0);
+        params = gz_json_get(gz_json_get(d.root, "doing"), "params");
+        CHECK(params && gz_json_get(params, "reason") && strcmp(gz_json_get(params, "reason")->s, "rebuilding") == 0);
+        gz_json_free(&d);
+    }
+    free(s);
+}
+
 int main(void)
 {
+    test_rebuilding();
     test_doing_pairs();
     test_chain_table();
     test_attention();

@@ -55,8 +55,11 @@ void gz_fake_init(gz_fake *f, int scenario)
     }
 }
 
+static void engine_free(gz_fake *f);
+
 void gz_fake_free(gz_fake *f)
 {
+    engine_free(f);
     pthread_mutex_destroy(&f->mu);
     OPENSSL_cleanse(f, sizeof *f);
 }
@@ -86,6 +89,10 @@ static const char *weak(const gz_api_pp_job *j, int64_t *len)
     return NULL;
 }
 
+/* Derivation thread: only derives (contract-v2 section 4). It reads what it
+ * compares against and writes nothing but the job: every change of state is
+ * made by pp_done on the loop thread, which the server skips for a job of an
+ * older generation. */
 static void pp_op(void *be, gz_api_pp_job *j)
 {
     gz_fake *f = be;
@@ -102,7 +109,7 @@ static void pp_op(void *be, gz_api_pp_job *j)
     pthread_mutex_lock(&f->mu);
     j->result = GZ_API_PPR_OK;
     if (f->derivation_fails_next) {
-        f->derivation_fails_next = 0;
+        f->derivation_fails_next = 0;                    /* a test switch, not wallet state */
         j->result = GZ_API_PPR_NOT_CHECKED;
         goto out;
     }
@@ -111,19 +118,10 @@ static void pp_op(void *be, gz_api_pp_job *j)
     case GZ_API_PP_CHECK:
         if (f->wallet == GZ_API_WALLET_NONE) { j->result = GZ_API_PPR_NO_WALLET; break; }
         if (!pass_ok(f, j)) { j->result = GZ_API_PPR_WRONG; break; }
-        if (j->op == GZ_API_PP_UNLOCK && f->files_behind_next) {
-            f->files_behind_next = 0;
-            f->wallet = GZ_API_WALLET_FILES_BEHIND;
+        if (j->op == GZ_API_PP_UNLOCK && (f->files_behind_next || f->wallet == GZ_API_WALLET_FILES_BEHIND)) {
             j->result = GZ_API_PPR_FILES_BEHIND;
             j->reason = "behind";
-            break;
         }
-        if (j->op == GZ_API_PP_UNLOCK && f->wallet == GZ_API_WALLET_FILES_BEHIND) {
-            j->result = GZ_API_PPR_FILES_BEHIND;
-            j->reason = "behind";
-            break;
-        }
-        if (j->op == GZ_API_PP_UNLOCK) f->wallet = GZ_API_WALLET_UNLOCKED;
         break;
     case GZ_API_PP_CREATE:
     case GZ_API_PP_RESTORE: {
@@ -150,15 +148,10 @@ static void pp_op(void *be, gz_api_pp_job *j)
             for (i = 0; i < 24; i++)
                 if (strcmp(j->words[i], TEST_WORDS[i]) != 0) { j->result = GZ_API_PPR_BAD_WORDS; j->reason = "checksum"; }
             if (j->result != GZ_API_PPR_OK) break;
-            f->restoring = 1;
         }
-        memcpy(f->pass, j->passphrase, j->passphrase_len);
-        f->pass_len = j->passphrase_len;
-        for (i = 0; i < 24; i++) snprintf(f->words[i], sizeof f->words[i], "%s", TEST_WORDS[i]);
-        if (j->op == GZ_API_PP_CREATE)
-            for (i = 0; i < 24; i++) snprintf(j->words[i], sizeof j->words[i], "%s", f->words[i]);
+        if (j->op == GZ_API_PP_CREATE)                   /* the new words, out (the "derived" product) */
+            for (i = 0; i < 24; i++) snprintf(j->words[i], sizeof j->words[i], "%s", TEST_WORDS[i]);
         j->nwords = j->op == GZ_API_PP_CREATE ? 24 : 0;
-        f->wallet = GZ_API_WALLET_UNLOCKED;
         break;
     }
     case GZ_API_PP_REVEAL:
@@ -166,32 +159,90 @@ static void pp_op(void *be, gz_api_pp_job *j)
         for (i = 0; i < 24; i++) snprintf(j->words[i], sizeof j->words[i], "%s", f->words[i]);
         j->nwords = 24;
         break;
-    case GZ_API_PP_WORDS_CHECK: {
-        int64_t t = now_s(f), oldest = 0;
+    case GZ_API_PP_WORDS_CHECK:
         if (!pass_ok(f, j)) { j->result = GZ_API_PPR_WRONG; break; }
-        /* the attempt is saved before the words are compared (12.3, 7.5) */
-        for (i = 1; i < 3; i++)
-            if (f->check_times[i] < f->check_times[oldest]) oldest = i;
-        f->check_times[oldest] = t;
         for (i = 0; i < 3; i++) {
             int p = j->positions[i];
             if (p < 1 || p > 24 || strcmp(j->words[i], f->words[p - 1]) != 0) j->result = GZ_API_PPR_WORDS_DIFFER;
         }
-        if (j->result == GZ_API_PPR_OK) f->words_checked_at = t;
         break;
-    }
     case GZ_API_PP_START_AS_RESTORE:
         if (f->wallet != GZ_API_WALLET_FILES_BEHIND) { j->result = GZ_API_PPR_NOT_FILES_BEHIND; break; }
         if (!pass_ok(f, j)) { j->result = GZ_API_PPR_WRONG; break; }
-        f->wallet = GZ_API_WALLET_UNLOCKED;
-        f->restoring = 1;
         break;
     default:
         j->result = GZ_API_PPR_NOT_CHECKED;
     }
+    if (j->result == GZ_API_PPR_OK && f->fault_next &&
+        (j->op == GZ_API_PP_CREATE || j->op == GZ_API_PP_RESTORE || j->op == GZ_API_PP_START_AS_RESTORE)) {
+        j->result = GZ_API_PPR_DONE_WITH_FAULT;          /* storage GZ_SC_DONE_WITH_FAULT: in force */
+        j->reason = "mark_file";
+    }
 out:
     f->inside--;
     pthread_mutex_unlock(&f->mu);
+}
+
+/* Loop thread: install what pp_op produced (the program writes its files and
+ * starts the node here). */
+static void pp_install(gz_fake *f, gz_api_pp_job *j);
+static void pp_done(void *be, gz_api_pp_job *j)
+{
+    gz_fake *f = be;
+    pthread_mutex_lock(&f->mu);
+    f->installs++;
+    if (j->result == GZ_API_PPR_DONE_WITH_FAULT) f->fault_next = 0;
+    {
+        int ok_like = j->result == GZ_API_PPR_DONE_WITH_FAULT;
+        if (ok_like) j->result = GZ_API_PPR_OK;          /* installed as done ... */
+        pp_install(f, j);
+        if (ok_like) j->result = GZ_API_PPR_DONE_WITH_FAULT;   /* ... and reported with its warning */
+    }
+    pthread_mutex_unlock(&f->mu);
+}
+
+static void pp_install(gz_fake *f, gz_api_pp_job *j)
+{
+    int i;
+    switch (j->op) {
+    case GZ_API_PP_UNLOCK:
+        if (j->result == GZ_API_PPR_FILES_BEHIND) {
+            f->files_behind_next = 0;
+            f->wallet = GZ_API_WALLET_FILES_BEHIND;
+        } else if (j->result == GZ_API_PPR_OK) {
+            f->wallet = GZ_API_WALLET_UNLOCKED;
+        }
+        break;
+    case GZ_API_PP_CREATE:
+    case GZ_API_PP_RESTORE:
+        if (j->result != GZ_API_PPR_OK) break;
+        if (j->passphrase_len > sizeof f->pass) break;
+        memcpy(f->pass, j->passphrase, j->passphrase_len);
+        f->pass_len = j->passphrase_len;
+        for (i = 0; i < 24; i++) snprintf(f->words[i], sizeof f->words[i], "%s", TEST_WORDS[i]);
+        if (j->op == GZ_API_PP_RESTORE) f->restoring = 1;
+        f->wallet = GZ_API_WALLET_UNLOCKED;
+        break;
+    case GZ_API_PP_WORDS_CHECK:
+        if (j->result == GZ_API_PPR_OK || j->result == GZ_API_PPR_WORDS_DIFFER) {
+            int64_t t = now_s(f);
+            int oldest = 0;
+            /* the attempt is saved with the answer (12.3, 7.5) */
+            for (i = 1; i < 3; i++)
+                if (f->check_times[i] < f->check_times[oldest]) oldest = i;
+            f->check_times[oldest] = t;
+            if (j->result == GZ_API_PPR_OK) f->words_checked_at = t;
+        }
+        break;
+    case GZ_API_PP_START_AS_RESTORE:
+        if (j->result == GZ_API_PPR_OK) {
+            f->wallet = GZ_API_WALLET_UNLOCKED;
+            f->restoring = 1;
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 static int wallet_state(void *be)
@@ -762,7 +813,7 @@ static void do_preview(gz_fake *f, const gz_json *d, int64_t now, preview *p)
 /* ---- the calls ------------------------------------------------------------------------------- */
 static int not_found(gz_api_error *err) { gz_api_err_set(err, "not_found", NULL, NULL); return 404; }
 
-static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int *effect)
+static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int *effect)
 {
     gz_fake *f = be;
     const gz_json *b = c->body;
@@ -1074,7 +1125,7 @@ static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int
                 status = 409;
                 break;
             }
-            if (c->phase == GZ_API_PHASE_CHECK) { status = 200; break; }
+            if (c->phase == GZ_API_PHASE_CHECK) { status = 0; break; }   /* go on to the passphrase */
             f->host_open = 1;
             f->host_cancelled = 0;
             f->host_seat_removed = 0;
@@ -1354,6 +1405,179 @@ static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int
     return status;
 }
 
+/* ---- the engine's part of acting calls (contract-v2 11) -------------------------------- */
+/* TEST ONLY, the shape S11's engine takes: request ids are the engine's (the
+ * 409 and the replay, from memory here, from the journal in the program); an
+ * acting call is answered once its save is confirmed, so the fake can hold it
+ * (f->hold) until gz_fake_release, as a slow storage would. */
+struct gz_fake_rid {
+    char id[65], method[8], path[1024], pattern[96];
+    uint8_t digest[32];
+    int status;
+    char *answer;                     /* the first answer (a JSON object) */
+    int pending;                      /* held: its save not yet confirmed */
+    uint64_t handle;                  /* the first call's handle while pending */
+    uint64_t waiters[8];              /* retries held for the same outcome */
+    int nwait;
+};
+
+struct gz_fake_held {
+    uint64_t handle;
+    int status;
+    char *answer;
+    struct gz_fake_rid *rid;
+};
+
+static struct gz_fake_rid *rid_find(gz_fake *f, const char *id)
+{
+    int i;
+    for (i = 0; i < f->nrids; i++)
+        if (strcmp(f->rids[i]->id, id) == 0) return f->rids[i];
+    return NULL;
+}
+
+/* answer + "replayed": true (7.4) */
+static void replayed(gz_jw *w, const char *answer)
+{
+    size_t n = strlen(answer);
+    if (n >= 2 && answer[n - 1] == '}') {
+        gz_jw_bytes(w, answer, n - 1);
+        if (n > 2) gz_jw_bytes(w, ",", 1);
+        gz_jw_bytes(w, "\"replayed\":true}", 16);
+    } else {
+        gz_jw_bytes(w, "{\"replayed\":true}", 17);
+    }
+}
+
+static char *replayed_copy(const char *answer)
+{
+    gz_jw w;
+    char *s;
+    gz_jw_init(&w);
+    replayed(&w, answer);
+    s = w.err ? NULL : strdup(w.buf);
+    gz_jw_free(&w);
+    return s;
+}
+
+static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int *effect)
+{
+    gz_fake *f = be;
+    int status;
+    if (c->request_id && c->digest) {
+        struct gz_fake_rid *e;
+        pthread_mutex_lock(&f->mu);
+        e = rid_find(f, c->request_id);
+        if (e) {
+            int same = strcmp(e->method, c->method) == 0 && strcmp(e->path, c->path) == 0 &&
+                       CRYPTO_memcmp(e->digest, c->digest, 32) == 0;
+            if (!same) {
+                gz_api_err_set(err, "request_id_reused", NULL, "{\"first\":{\"method\":\"%s\",\"path\":\"%s\"}}",
+                               e->method, e->pattern);
+                pthread_mutex_unlock(&f->mu);
+                return 409;
+            }
+            if (e->pending) {
+                /* the first is alive and unconfirmed: this retry waits for the same outcome */
+                if (c->phase == GZ_API_PHASE_CHECK) { pthread_mutex_unlock(&f->mu); return 0; }
+                if (c->handle && e->nwait < 8) {
+                    e->waiters[e->nwait++] = c->handle;
+                    pthread_mutex_unlock(&f->mu);
+                    return GZ_API_HELD;
+                }
+                pthread_mutex_unlock(&f->mu);
+                gz_api_err_set(err, "rate_limited", NULL, "{\"retry_after_s\":1}");
+                return 429;
+            }
+            replayed(w, e->answer);                     /* acts nothing a second time */
+            status = e->status;
+            pthread_mutex_unlock(&f->mu);
+            return status;
+        }
+        pthread_mutex_unlock(&f->mu);
+    }
+    status = call_inner(be, c, w, err, effect);
+    if (c->phase == GZ_API_PHASE_CHECK || !c->handle || status < 200 || status > 299 || w->err) return status;
+    pthread_mutex_lock(&f->mu);
+    f->acted++;
+    {
+        const char *ans = w->len ? w->buf : "{}";
+        struct gz_fake_rid *e = NULL;
+        int hold = f->hold && *effect == GZ_API_EFFECT_NONE;   /* a lock's effect is the loop's: never held here */
+        if (c->request_id && c->digest) {               /* saved in the action's first batch (7.4) */
+            struct gz_fake_rid **grown = realloc(f->rids, (size_t)(f->nrids + 1) * sizeof *grown);
+            e = calloc(1, sizeof *e);
+            if (grown) f->rids = grown;
+            if (grown && e && (e->answer = strdup(ans))) {
+                snprintf(e->id, sizeof e->id, "%s", c->request_id);
+                snprintf(e->method, sizeof e->method, "%s", c->method);
+                snprintf(e->path, sizeof e->path, "%s", c->path);
+                snprintf(e->pattern, sizeof e->pattern, "%s", c->pattern);
+                memcpy(e->digest, c->digest, 32);
+                e->status = status;
+                f->rids[f->nrids++] = e;
+            } else {
+                free(e);
+                e = NULL;
+            }
+        }
+        if (hold) {
+            struct gz_fake_held **grown = realloc(f->held, (size_t)(f->nheld + 1) * sizeof *grown);
+            struct gz_fake_held *h = calloc(1, sizeof *h);
+            if (grown) f->held = grown;
+            if (grown && h && (h->answer = strdup(ans))) {
+                h->handle = c->handle;
+                h->status = status;
+                h->rid = e;
+                if (e) { e->pending = 1; e->handle = c->handle; }
+                f->held[f->nheld++] = h;
+                pthread_mutex_unlock(&f->mu);
+                return GZ_API_HELD;
+            }
+            free(h);
+        }
+    }
+    pthread_mutex_unlock(&f->mu);
+    return status;
+}
+
+/* The held saves are confirmed: every held call is answered (and every retry
+ * waiting for the same outcome, with "replayed": true). Any thread. */
+void gz_fake_release(gz_fake *f)
+{
+    int i, k, left = 0;
+    pthread_mutex_lock(&f->mu);
+    for (i = 0; i < f->nheld; i++) {
+        struct gz_fake_held *h = f->held[i];
+        if (f->hold_forever) { f->held[left++] = h; continue; }
+        if (f->srv) gz_api_call_done(f->srv, h->handle, h->status, h->answer, NULL);
+        if (h->rid) {
+            char *rep = replayed_copy(h->answer);
+            h->rid->pending = 0;
+            for (k = 0; k < h->rid->nwait; k++)
+                if (f->srv) gz_api_call_done(f->srv, h->rid->waiters[k], h->status, rep ? rep : h->answer, NULL);
+            h->rid->nwait = 0;
+            free(rep);
+        }
+        free(h->answer);
+        free(h);
+    }
+    f->nheld = left;
+    pthread_mutex_unlock(&f->mu);
+}
+
+static void engine_free(gz_fake *f)
+{
+    int i;
+    for (i = 0; i < f->nrids; i++) { free(f->rids[i]->answer); free(f->rids[i]); }
+    free(f->rids);
+    for (i = 0; i < f->nheld; i++) { free(f->held[i]->answer); free(f->held[i]); }
+    free(f->held);
+    f->rids = NULL;
+    f->held = NULL;
+    f->nrids = f->nheld = 0;
+}
+
 static int status(void *be, gz_api_status_facts *s)
 {
     gz_fake *f = be;
@@ -1418,5 +1642,5 @@ static int status(void *be, gz_api_status_facts *s)
 }
 
 const gz_api_backend gz_fake_backend = {
-    "0.1.0-fake", "signet", wallet_state, pp_op, NULL, status, call, NULL, words_checks_left,
+    "0.1.0-fake", "signet", wallet_state, pp_op, pp_done, status, call, NULL, words_checks_left, NULL,
 };

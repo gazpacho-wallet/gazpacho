@@ -13,10 +13,12 @@ import { join } from 'node:path';
 const FAKE = process.env.GZ_API_FAKE;
 const PASS = 'fake test passphrase, not a wallet'; // the fake's fixture (fake_backend.h)
 
-function startFake(locked) {
+function startFake(locked, freshAttempts) {
   const dir = mkdtempSync(join(tmpdir(), 'gzpw-'));
   const args = ['--data-dir', join(dir, 'd'), '--port', '0', '--no-ipv6', '--quiet'];
   if (locked) args.push('--locked');
+  // TEST ONLY: a clean attempts file, so the sign-in path really runs (review F4)
+  if (freshAttempts) args.push('--fresh-attempts');
   const proc = spawn(FAKE, args, { env: { ...process.env, XDG_RUNTIME_DIR: dir } });
   return new Promise((resolve, reject) => {
     let out = '';
@@ -50,7 +52,7 @@ test.describe('the walls of section 5 in a real browser', () => {
   let other;
   test.beforeAll(async () => {
     test.skip(!FAKE, 'GZ_API_FAKE is not set');
-    fake = await startFake(true);
+    fake = await startFake(true, true);
     other = await startOther();
   });
   test.afterAll(async () => {
@@ -177,13 +179,36 @@ test.describe('the walls of section 5 in a real browser', () => {
       out.storageAfter = sessionStorage.getItem('gz');
       return out;
     }, PASS);
-    // The fake starts with no attempts file, the strictest state: 429 for 15 minutes (storage 12.3).
-    expect([200, 429]).toContain(r.signIn);
-    if (r.signIn === 200) {
-      expect(r.lobbies).toBe(200);
-      expect(r.signOut).toBe(204);
-    }
+    // --fresh-attempts: a clean attempts file, so the browser really signs in (review F4).
+    expect(r.signIn).toBe(200);
+    expect(r.lobbies).toBe(200);
+    expect(r.signOut).toBe(204);
     info.annotations.push({ type: 'T4: Clear-Site-Data emptied sessionStorage', description: String(r.storageAfter === null) });
+  });
+});
+
+test.describe('a missing attempts file (storage 12.3)', () => {
+  let fake;
+  test.beforeAll(async () => {
+    test.skip(!FAKE, 'GZ_API_FAKE is not set');
+    fake = await startFake(true, false);
+  });
+  test.afterAll(async () => {
+    if (fake) stopFake(fake);
+  });
+
+  test('the strictest state: sign-in refused for 15 minutes, before any derivation', async ({ page }) => {
+    await page.goto(`http://127.0.0.1:${fake.port}/`);
+    const r = await page.evaluate(async (pass) => {
+      const s = await fetch('/api/v1/session', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ passphrase: pass }),
+      });
+      const j = await s.json();
+      return { status: s.status, code: j.code, retry: j.params.retry_after_s };
+    }, PASS);
+    expect(r.status).toBe(429);
+    expect(r.code).toBe('rate_limited');
+    expect(r.retry).toBeGreaterThan(800);
   });
 });
 

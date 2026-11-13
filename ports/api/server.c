@@ -121,15 +121,15 @@ static int listen_unix(gz_api_server *srv, const char **err)
     return 0;
 }
 
+/* The folder is the program's (contract-v2 11): made 0700, checked and locked
+ * before the server exists. The server creates and checks nothing; a missing
+ * folder refuses to start (T11.6). */
 static int prepare_dir(gz_api_server *srv, const char *dir, const char **err)
 {
     struct stat st;
     char real[PATH_MAX];
-    if (mkdir(dir, 0700) != 0 && errno != EEXIST) { *err = "cannot make the data folder"; return -1; }
-    if (lstat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) { *err = "the data folder is not a folder"; return -1; }
-    if (st.st_uid != geteuid()) { *err = "the data folder belongs to another account"; return -1; }
-    if (st.st_mode & 077) { *err = "the data folder must be readable by its owner only (mode 0700)"; return -1; }
-    if (!realpath(dir, real)) { *err = "cannot resolve the data folder"; return -1; }
+    if (!realpath(dir, real)) { *err = "the data folder does not exist"; return -1; }
+    if (stat(real, &st) != 0 || !S_ISDIR(st.st_mode)) { *err = "the data folder is not a folder"; return -1; }
     if (strlen(real) >= sizeof srv->data_dir) { *err = "the data folder's path is too long"; return -1; }
     memcpy(srv->data_dir, real, strlen(real) + 1);
     return 0;
@@ -163,6 +163,7 @@ gz_api_server *gz_api_server_new(const gz_api_config *cfg, const char **err)
     for (i = 0; i < 3; i++) srv->lfd[i] = -1;
     srv->expect_uid = cfg->override_uid ? cfg->expect_uid : (int64_t)geteuid();
     pthread_mutex_init(&srv->notify_mu, NULL);
+    srv->cmds_tail = &srv->cmds;
     gz_http_settings(&srv->settings);
     if (prepare_dir(srv, cfg->data_dir, &e) != 0) goto fail;
     snprintf(srv->sock_path, sizeof srv->sock_path, "%s/interface.sock", srv->data_dir);
@@ -183,6 +184,9 @@ gz_api_server *gz_api_server_new(const gz_api_config *cfg, const char **err)
     if (!srv->peer_check_ok)
         gz_log(srv, "Other accounts on this computer can reach Gazpacho's page; the passphrase is what keeps them out "
                     "(the same-user check is unavailable here)");
+    srv->pc = calloc(gz_api_server_max_fds(srv), sizeof *srv->pc);
+    srv->pfbuf = calloc(gz_api_server_max_fds(srv), sizeof *srv->pfbuf);
+    if (!srv->pc || !srv->pfbuf) goto fail;
     if (pipe2(srv->wake, O_CLOEXEC | O_NONBLOCK) != 0 || pipe2(srv->done_pipe, O_CLOEXEC | O_NONBLOCK) != 0) {
         e = "cannot make a pipe";
         goto fail;
@@ -219,18 +223,20 @@ void gz_api_server_free(gz_api_server *srv)
 {
     int i;
     if (!srv) return;
+    /* the order of contract-v2 4: listeners first, then the derivation thread
+     * (its job discarded), then the connections */
+    gz_api_server_stop_listening(srv);
     gz_derive_stop(srv);
     while (srv->conns) gz_conn_free(srv, srv->conns);
-    for (i = 0; i < srv->nl; i++)
-        if (srv->lfd[i] >= 0) close(srv->lfd[i]);
-    if (srv->sock_path[0] && !srv->cfg.no_socket && !srv->cfg.no_listen) unlink(srv->sock_path);
     if (srv->redirect_path[0]) unlink(srv->redirect_path);   /* deleted at stop (4.3) */
     if (srv->token_path[0]) gz_socket_token_drop(srv);        /* deleted at stop (storage 12.2) */
     for (i = 0; i < 2; i++) {
         if (srv->wake[i] >= 0) close(srv->wake[i]);
         if (srv->done_pipe[i] >= 0) close(srv->done_pipe[i]);
     }
-    gz_rid_free_all(srv);
+    gz_cmds_free(srv);
+    free(srv->pc);
+    free(srv->pfbuf);
     pthread_mutex_destroy(&srv->notify_mu);
     gz_wipe(srv, sizeof *srv);
     free(srv);
@@ -290,7 +296,8 @@ static void refuse_other_user(int fd)
 
 static void accept_all(gz_api_server *srv, int lfd, int is_unix)
 {
-    for (;;) {
+    int k;
+    for (k = 0; k < 16; k++) {                          /* bounded per turn: dispatch never runs long */
         int fd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
         if (fd < 0) return;
         /* 3.4: who is at the other end, before a byte is read */
@@ -336,7 +343,8 @@ static void flush(gz_api_server *srv, gz_conn *c)
 static void read_conn(gz_api_server *srv, gz_conn *c)
 {
     uint8_t buf[8192];
-    for (;;) {
+    int k;
+    for (k = 0; k < 8; k++) {                           /* at most 64 KiB a turn per connection */
         size_t room = c->in_cap - c->in_len;
         ssize_t n;
         if (c->stream) room = sizeof buf;               /* read and drop: only to see the close */
@@ -354,68 +362,119 @@ static void read_conn(gz_api_server *srv, gz_conn *c)
     }
 }
 
-int gz_api_server_poll(gz_api_server *srv, int timeout_ms)
+size_t gz_api_server_max_fds(const gz_api_server *srv)
 {
-    struct pollfd *pf;
-    gz_conn **pc, *c, *next;
-    int n = 0, i, r, cap;
-    int64_t now = gz_now_ms(srv), deadline = now + timeout_ms;
+    return 2 + 3 + (size_t)srv->lim.max_connections;
+}
+
+/* The earliest deadline of the server, from now (ms), or -1. */
+static int next_timeout(gz_api_server *srv)
+{
+    gz_conn *c;
+    int64_t now = gz_now_ms(srv), deadline = INT64_MAX;
     gz_sessions_tick(srv, now, &deadline);
     gz_first_run_tick(srv, now, &deadline);
     gz_events_tick(srv, now, &deadline);
-    for (c = srv->conns; c; c = c->next)
-        if (c->state != CS_BUSY && c->state != CS_STREAM && c->deadline < deadline) deadline = c->deadline;
-    cap = 2 + srv->nl + srv->nconns;
-    pf = calloc((size_t)cap, sizeof *pf);
-    pc = calloc((size_t)cap, sizeof *pc);
-    if (!pf || !pc) { free(pf); free(pc); return -1; }
-    pf[n].fd = srv->wake[0]; pf[n++].events = POLLIN;
-    pf[n].fd = srv->done_pipe[0]; pf[n++].events = POLLIN;
-    for (i = 0; i < srv->nl; i++) { pf[n].fd = srv->lfd[i]; pf[n++].events = POLLIN; }
     for (c = srv->conns; c; c = c->next) {
+        if (c->state == CS_DEAD) return 0;              /* to be freed at once */
+        if (c->state == CS_STREAM || (c->state == CS_BUSY && !c->held)) continue;
+        if (c->deadline < deadline) deadline = c->deadline;
+    }
+    if (deadline == INT64_MAX) return -1;
+    if (deadline <= now) return 0;
+    return deadline - now > INT32_MAX ? INT32_MAX : (int)(deadline - now);
+}
+
+size_t gz_api_server_pollfds(gz_api_server *srv, struct pollfd *fds, size_t cap, int *timeout_ms)
+{
+    gz_conn *c;
+    size_t n = 0;
+    int i;
+    *timeout_ms = next_timeout(srv);
+    srv->npc = 0;
+    if (cap < 2 + (size_t)srv->nl) { *timeout_ms = 0; return 0; }
+    fds[n].fd = srv->wake[0]; fds[n].events = POLLIN; fds[n].revents = 0; srv->pc[n++] = NULL;
+    fds[n].fd = srv->done_pipe[0]; fds[n].events = POLLIN; fds[n].revents = 0; srv->pc[n++] = NULL;
+    for (i = 0; i < srv->nl; i++) {
+        fds[n].fd = srv->lfd[i]; fds[n].events = POLLIN; fds[n].revents = 0; srv->pc[n++] = NULL;
+    }
+    for (c = srv->conns; c && n < cap; c = c->next) {
         short ev = 0;
         if (c->fd < 0 || c->state == CS_DEAD) continue;
         if (c->stream || c->in_len < c->in_cap) ev |= POLLIN;
         if (c->out.off < c->out.len) ev |= POLLOUT;
-        pc[n] = c;
-        pf[n].fd = c->fd;
-        pf[n++].events = ev;
+        fds[n].fd = c->fd;
+        fds[n].events = ev;
+        fds[n].revents = 0;
+        srv->pc[n++] = c;
     }
-    r = poll(pf, (nfds_t)n, deadline > now ? (int)(deadline - now) : 0);
-    if (r > 0) {
-        if (pf[0].revents & POLLIN) {
+    srv->npc = n;
+    return n;
+}
+
+int gz_api_server_dispatch(gz_api_server *srv, const struct pollfd *fds, size_t n)
+{
+    gz_conn *c, *next;
+    size_t i;
+    int64_t now;
+    if (n > srv->npc) n = srv->npc;
+    for (i = 0; i < n; i++) {
+        short re = fds[i].revents;
+        if (!re) continue;
+        if (fds[i].fd == srv->wake[0]) {
             char b[64];
             while (read(srv->wake[0], b, sizeof b) > 0) {
             }
             gz_events_drain_notify(srv);
-        }
-        if (pf[1].revents & POLLIN) gz_derive_collect(srv);
-        for (i = 0; i < srv->nl; i++)
-            if (pf[2 + i].revents & POLLIN) {
-                struct sockaddr_storage ss;
-                socklen_t sl = sizeof ss;
-                int is_unix = getsockname(srv->lfd[i], (struct sockaddr *)&ss, &sl) == 0 && ss.ss_family == AF_UNIX;
-                accept_all(srv, srv->lfd[i], is_unix);
-            }
-        for (i = 2 + srv->nl; i < n; i++) {
-            c = pc[i];
-            if (!c || c->state == CS_DEAD) continue;
-            if (pf[i].revents & (POLLIN | POLLHUP | POLLERR)) read_conn(srv, c);
-            if (c->state != CS_DEAD && (pf[i].revents & (POLLERR | POLLNVAL))) c->state = CS_DEAD;
+            gz_cmds_run(srv);
+        } else if (fds[i].fd == srv->done_pipe[0]) {
+            gz_derive_collect(srv);
+        } else if (!srv->pc[i]) {
+            int k;
+            for (k = 0; k < srv->nl; k++)
+                if (srv->lfd[k] == fds[i].fd && (re & POLLIN)) {
+                    struct sockaddr_storage ss;
+                    socklen_t sl = sizeof ss;
+                    int is_unix = getsockname(srv->lfd[k], (struct sockaddr *)&ss, &sl) == 0 && ss.ss_family == AF_UNIX;
+                    accept_all(srv, srv->lfd[k], is_unix);
+                }
+        } else {
+            c = srv->pc[i];
+            if (c->state == CS_DEAD) continue;
+            if (re & (POLLIN | POLLHUP | POLLERR)) read_conn(srv, c);
+            if (c->state != CS_DEAD && (re & (POLLERR | POLLNVAL))) c->state = CS_DEAD;
         }
     }
-    free(pf);
-    free(pc);
+    srv->npc = 0;
+    gz_cmds_run(srv);                                   /* commands queued from this thread too */
     now = gz_now_ms(srv);
     for (c = srv->conns; c; c = next) {
         next = c->next;
         if (c->state != CS_DEAD && c->out.off < c->out.len) flush(srv, c);
-        if (c->state != CS_DEAD && c->state != CS_BUSY && c->state != CS_STREAM && now >= c->deadline) {
+        if (c->state == CS_BUSY && c->held && now >= c->deadline) {
+            /* no outcome within held_ms: the command may still be alive; retry with the same id */
+            gz_held_answer(srv, c, 503, NULL, "node_busy", NULL, NULL);
+            if (c->out.off < c->out.len) flush(srv, c);
+        } else if (c->state != CS_DEAD && c->state != CS_BUSY && c->state != CS_STREAM && now >= c->deadline) {
             c->state = CS_DEAD;                         /* 3.1: slow head, slow body, idle keep-alive */
         }
         if (c->state == CS_DEAD) gz_conn_free(srv, c);
     }
     return 0;
+}
+
+int gz_api_server_poll(gz_api_server *srv, int timeout_ms)
+{
+    int t, r;
+    size_t n = gz_api_server_pollfds(srv, srv->pfbuf, gz_api_server_max_fds(srv), &t);
+    if (t < 0 || t > timeout_ms) t = timeout_ms;
+    r = poll(srv->pfbuf, (nfds_t)n, t);
+    if (r < 0 && errno != EINTR) return -1;
+    if (r <= 0) {
+        size_t i;
+        for (i = 0; i < n; i++) srv->pfbuf[i].revents = 0;
+    }
+    return gz_api_server_dispatch(srv, srv->pfbuf, n);
 }
 
 int gz_api_server_run(gz_api_server *srv)
@@ -424,4 +483,14 @@ int gz_api_server_run(gz_api_server *srv)
     while (!srv->stop)
         if (gz_api_server_poll(srv, 1000) != 0) return -1;
     return 0;
+}
+
+void gz_api_server_stop_listening(gz_api_server *srv)
+{
+    int i;
+    for (i = 0; i < srv->nl; i++)
+        if (srv->lfd[i] >= 0) { close(srv->lfd[i]); srv->lfd[i] = -1; }
+    srv->nl = 0;
+    if (srv->sock_path[0] && !srv->cfg.no_socket && !srv->cfg.no_listen) unlink(srv->sock_path);
+    srv->listening_stopped = 1;
 }

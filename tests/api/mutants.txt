@@ -39,10 +39,10 @@ delay-never-doubles	ports/api/session.c	delay = k >= 10 ? 900 : ((int64_t)1 << k
 missing-file-not-strict	ports/api/session.c	srv->att_blocked_until = now + 900;	srv->att_blocked_until = 0;
 attempts-checksum-unchecked	ports/api/session.c	if (!gz_ct_eq(h, in + 69, 16)) return -1;	
 right-does-not-reset	ports/api/session.c	    srv->att_wrong = 0;\n    srv->att_blocked_until = 0;\n    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file	    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file
-slot-unbounded	ports/api/derive.c	} else if (!srv->queued) {	} else if (1) {
-rid-digest-ignored	ports/api/route.c	strcmp(e->path, r->path) == 0 && gz_ct_eq(e->digest, d, 32)	strcmp(e->path, r->path) == 0
-rid-path-ignored	ports/api/route.c	if (e->method == r->method && strcmp(e->path, r->path) == 0 &&	if (e->method == r->method &&
-rid-never-saved	ports/api/route.c	                rid_save(srv, id, r->method, r->path, d, status,	                if (0) rid_save(srv, id, r->method, r->path, d, status,
+slot-unbounded	ports/api/derive.c	} else if (!srv->slot_queued) {	} else if (1) {
+# Request ids are the engine's now (contract-v2 11): the server hands over the id, method, path and digest.
+digest-not-handed-over	ports/api/route.c	        call.digest = r->digest;	        call.digest = NULL;
+path-not-handed-over	ports/api/route.c	    call.path = r->path;	    call.path = r->route->pattern;
 jcs-passphrase-kept	ports/api/json.c	if (strip && c->key_len == 10 && memcmp(c->key, "passphrase", 10) == 0) continue;	
 jcs-unsorted	ports/api/json.c	if (n > 1) qsort(m, n, sizeof *m, utf16_cmp);	
 jcs-byte-order	ports/api/json.c	if (n > 1) qsort(m, n, sizeof *m, utf16_cmp);	if (n > 1) qsort(m, n, sizeof *m, key_cmp);
@@ -82,3 +82,48 @@ unknown-field-accepted	ports/api/route.c	        if (!known) {	        if (0) {
 unknown-query-accepted	ports/api/route.c	if (!ok) { gz_respond_error(srv, c, 400, "unknown_field", fieldname, NULL); return 1; }	
 kind-a-skips-check	ports/api/route.c	        call_backend(srv, c, 1, &answered);\n        if (answered) break;	        answered = 0;
 two-session-headers	ports/api/route.c	    if (r->session_count > 1) return answer(srv, c, 401, "not_signed_in", NULL);	
+# Review A of PR 26: the mutants of its section 4 that no test killed, now each with a test.
+two-authorization	ports/api/route.c	if (r->auth_count > 1) return answer(srv, c, 400, "two_credentials", NULL);
+get-with-body	ports/api/route.c	if (r->method == M_GET || r->method == M_HEAD) return answer(srv, c, 400, "bad_request", NULL);
+static-query-ok	ports/api/route.c	if (r->nq) return answer(srv, c, 404, "not_found", NULL);
+normal-session-while-locked	ports/api/route.c	if (s->kind == SK_NORMAL && ws != GZ_API_WALLET_UNLOCKED) return answer(srv, c, 423, "wallet_locked", NULL);
+bearer-unchecked	ports/api/route.c	if (!gz_socket_token_check(srv, r->auth)) return answer(srv, c, 401, "not_signed_in", NULL);	if (0) return 1;
+bearer-may-create	ports/api/route.c	if (r->bearer) { gz_respond_error(srv, c, 403, "not_setup_session", NULL, NULL); break; }
+confirm-pass-length-only	ports/api/route.c	if (p1->len != p2->len || !gz_ct_eq(p1->s, p2->s, p1->len)) {	if (p1->len != p2->len) {
+check-id-any-session	ports/api/route.c	if (!same || srv->check_session_no != (r->bearer ? 0 : r->sess_no)) {	if (!same) {
+checks-left-zero-ok	ports/api/route.c	words_checks_left(srv->bectx, now_s, &retry) <= 0) {	words_checks_left(srv->bectx, now_s, &retry) < 0) {
+empty-passphrase-derived	ports/api/route.c	if (plen == 0 || plen > 4096)	if (plen > 4096)
+revoke-keeps-socket-token	ports/api/route.c	if (srv->have_socket_token) gz_socket_token_make(srv);   /* rotated (4.9) */
+create-keeps-first-run	ports/api/route.c	{\n    gz_first_run_close(srv);	{\n
+421-keeps-alive	ports/api/route.c	        c->close_after = 1;\n        gz_respond(srv, c, 421	        gz_respond(srv, c, 421
+token-dir-mode-any	ports/api/session.c	(st.st_mode & 0777) == 0700	1
+attempts-other-network	ports/api/session.c	memcmp(in + 8, chain, 32) != 0)	0)
+delay-cap-1800	ports/api/session.c	delay = k >= 10 ? 900	delay = k >= 10 ? 1800
+stream-unsent-unbounded	ports/api/events.c	if (c->out.len - c->out.off > srv->lim.stream_unsent_max) {	if (0) {
+merge-off	ports/api/events.c	if (srv->merge[slot].last_emit && now - srv->merge[slot].last_emit < srv->lim.merge_ms) {	if (0) {
+head-deadline-off	ports/api/http.c	if (c->head_fed == 0 && c->hlen == 0) c->deadline = gz_now_ms(srv) + srv->lim.head_ms;
+body-deadline-idle	ports/api/http.c	c->deadline = gz_now_ms(srv) + srv->lim.body_ms;	c->deadline = gz_now_ms(srv) + srv->lim.idle_ms;
+socket-mode-open	ports/api/server.c	chmod(srv->sock_path, 0600);	chmod(srv->sock_path, 0666);
+# Equivalent, so not run (review A section 4), each with its reason:
+# - rid-method-ignored, data-dir-group-ok: the code is gone (request ids are the engine's; the folder is given, contract-v2 11).
+# - diag-answer-unchecked: an exact sock_diag lookup returns that socket or ENOENT; the identity check is defence only.
+# - fragment-in-query: llhttp refuses a '#' in the request target before the router sees it.
+# - start-token-never-expires, code-never-expires: gz_first_run_tick expires both (and deletes them) before any use.
+# - b64-noncanonical: four spellings of one 256-bit token; the token compared is the decoded bytes.
+# - event-id-unchecked: only backends call gz_api_notify, and the fake sends valid ids.
+# - revoke-keeps-start-token: a start token exists only while no wallet does, and revoke-all needs a normal session or the
+#   socket token, which exist only once a wallet does: the line is unreachable (kept as defence).
+# - words-check-ungated: start_job checks the same attempts gate for the words check, before any derivation.
+# Review A F1, F2, F5 and contract-v2 P5: the new code.
+peer-time-wait-served	ports/api/peer.c	if (m->idiag_state == TCP_STATE_TIME_WAIT || m->idiag_state == TCP_STATE_SYN_RECV || m->idiag_inode == 0)	if (0)
+proc-time-wait-served	ports/api/peer.c	if (st == TCP_STATE_TIME_WAIT || st == TCP_STATE_SYN_RECV || inode == 0) break;
+queued-ungated	ports/api/derive.c	if (gz_job_gated(q) && srv->att_loaded && gz_attempts_gate(srv, gz_now_ms(srv) / 1000, &retry)) {	if (0) {
+old-generation-installed	ports/api/route.c	if (pp->generation != gz_generation(srv)) {	if (0) {
+old-generation-uncounted	ports/api/route.c	if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, now_s);
+held-no-deadline	ports/api/server.c	if (c->state == CS_BUSY && c->held && now >= c->deadline) {	if (0) {
+node-stopped-ignored	ports/api/route.c	if (c->held && c->state == CS_BUSY) gz_held_answer(srv, c, 503, NULL, "node_stopped", NULL, params);
+unsaved-not-refused	ports/api/session.c	if (srv->att_unsaved) { *retry_after = -1; return 1; }	if (0) { *retry_after = -1; return 1; }
+loaded-delay-uncapped	ports/api/session.c	if (srv->att_blocked_until > now + 900) srv->att_blocked_until = now + 900;
+token-folder-refusal-unreported	ports/api/session.c	        srv->token_dir_refused = 1;\n	\n
+fault-as-failure	ports/api/route.c	if (pp->result == GZ_API_PPR_DONE_WITH_FAULT) {	if (0) {
+rebuilding-not-shown	ports/api/status.c	if (f->wallet == GZ_API_STW_NODE_STOPPED && !have_stopped) {	if (0) {

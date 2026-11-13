@@ -8,8 +8,23 @@
  * (stream S11, over storage from S6), and fake/fake_backend.c is the test one.
  *
  * Threads. passphrase_op runs on the server's derivation thread, at most one
- * at a time; every other entry runs on the server's loop thread. A backend
- * whose passphrase_op touches state the other entries read must lock it.
+ * at a time, and only derives: it turns the passphrase (and words) into keys
+ * or a result, writes no file and touches nothing the loop thread uses (the
+ * node, the runner, storage, the view). passphrase_done, on the loop thread,
+ * installs what it produced: it writes the key file, guard, start counter and
+ * first journal for create, restore and start-as-restore, opens storage and
+ * starts the node. A job queued before gz_api_server_new_generation is
+ * discarded when it finishes, its secrets wiped (passphrase_discard).
+ * Every other entry runs on the loop thread.
+ *
+ * Acting calls (contract-v2 section 11, local-api.md 7.4). A call that acts
+ * carries a handle; the backend submits the command, with its request_id and
+ * digest, and returns GZ_API_HELD; it answers with gz_api_call_done once the
+ * save is confirmed. The engine, not the server, owns request ids: it answers
+ * 409 request_id_reused, changed_elsewhere and review_expired, and replays a
+ * known id (with "replayed": true; a pending one is held for the same
+ * outcome). The server answers 503 node_busy after 30 s and 503 node_stopped
+ * on a restart; the client retries with the same request_id.
  *
  * Secrets. A job's passphrase and words are owned by the server, which wipes
  * them after passphrase_done. A backend copies neither anywhere but its own
@@ -52,7 +67,12 @@ enum gz_api_pp_result {
     GZ_API_PPR_NO_WALLET,
     GZ_API_PPR_BAD_WORDS,         /* restore: reason "position" (a = 1-based) or "checksum" */
     GZ_API_PPR_NOT_FILES_BEHIND,
-    GZ_API_PPR_WORDS_DIFFER       /* words check: ok = false (the passphrase was right) */
+    GZ_API_PPR_WORDS_DIFFER,      /* words check: ok = false (the passphrase was right) */
+    /* set-up (create, restore), start-as-restore and, later, passphrase change
+     * and recovery: the change is in force, but a step after it failed
+     * (storage GZ_SC_DONE_WITH_FAULT); reason = what (printable, [a-z_]).
+     * Answered as done, with a warning; never as a failure. */
+    GZ_API_PPR_DONE_WITH_FAULT
 };
 
 #define GZ_API_WORDS 24
@@ -68,6 +88,11 @@ typedef struct gz_api_pp_job {
     int result;                               /* enum gz_api_pp_result */
     const char *reason;                       /* static text */
     int64_t a, b;
+    /* set by the server */
+    uint64_t generation;                      /* gz_api_server_new_generation count at submit */
+    /* the backend's own product (derived keys), installed by passphrase_done,
+     * wiped by passphrase_discard */
+    void *out;
 } gz_api_pp_job;
 
 /* ---- status facts (section 11), resolved by the server's tables ------------- */
@@ -197,7 +222,17 @@ typedef struct gz_api_call {
     int fresh;                     /* a fresh sign-in holds (4.8), or a bearer on the socket */
     int bearer;                    /* local socket with the socket token */
     int64_t now;                   /* Unix seconds */
+    /* acting calls (contract-v2 11): 0 for a call that only reads */
+    uint64_t handle;               /* for gz_api_call_done when the backend returns GZ_API_HELD */
+    const char *request_id;        /* the client's (7.4), or NULL */
+    const uint8_t *digest;         /* 32 bytes: RFC 8785 of the body without its passphrase */
+    const char *method;            /* "POST", "PUT", "DELETE" */
+    const char *path;              /* the path with its ids filled in */
+    const char *pattern;           /* the route, e.g. "/api/v1/lobbies/{lob}/join" */
 } gz_api_call;
+
+/* call's return for an acting call whose outcome comes later (gz_api_call_done). */
+#define GZ_API_HELD 1
 
 typedef struct gz_api_error {
     const char *code;              /* an error code of 8.1 or the call's own */
@@ -222,7 +257,10 @@ typedef struct gz_api_backend {
     /* Fill f; the server resolves the tables and writes the answer. 0 on success. */
     int (*status)(void *be, gz_api_status_facts *f);
     /* A data call: write the answer object to out and return its HTTP status
-     * (200, 201, 202, 204), or fill err and return the error status.
+     * (200, 201, 202, 204), or fill err and return the error status; an acting
+     * call (handle != 0) may return GZ_API_HELD instead. In GZ_API_PHASE_CHECK
+     * (kind A, before the derivation) return 0 to go on to the passphrase,
+     * or any status to answer now (an error, or the replay of a known id).
      * *effect is GZ_API_EFFECT_NONE unless the call says otherwise. */
     int (*call)(void *be, const gz_api_call *c, gz_jw *out, gz_api_error *err, int *effect);
     /* The server's sessions all ended (lock, revoke-all) or a session ended;
@@ -231,6 +269,9 @@ typedef struct gz_api_backend {
     /* Words checks left in the last 24 hours (12.3, journal record words_check_attempts);
      * when none, *retry_after_s says when the next is allowed. */
     int (*words_checks_left)(void *be, int64_t now, int64_t *retry_after_s);
+    /* Loop thread, instead of passphrase_done for a job of an older generation:
+     * wipe job->out; install nothing. May be NULL. */
+    void (*passphrase_discard)(void *be, gz_api_pp_job *job);
 } gz_api_backend;
 
 /* Fill err's params with a printf-style JSON object body ("{...}"). */

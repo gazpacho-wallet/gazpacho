@@ -3,6 +3,7 @@
 #ifndef GAZPACHO_API_INTERNAL_H
 #define GAZPACHO_API_INTERNAL_H
 
+#include <poll.h>
 #include <pthread.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -17,7 +18,6 @@
 #define GZ_EVENTS_KEPT 256
 #define GZ_STREAMS_PER_SESSION 2
 #define GZ_STREAMS_MAX 8
-#define GZ_RID_MAX 4096
 #define GZ_MERGE_SLOTS 64
 
 /* ---- utilities (util.c) ------------------------------------------------------- */
@@ -86,6 +86,8 @@ typedef struct {
     uint64_t sess_no;
     int bearer;
     int fresh;
+    uint8_t digest[32];              /* request_id calls (7.4) */
+    int have_digest;
 } gz_req;
 
 enum gz_conn_state { CS_HEAD = 0, CS_BODY, CS_BUSY, CS_WRITE, CS_STREAM, CS_DEAD };
@@ -120,6 +122,8 @@ typedef struct gz_conn {
     int64_t next_keepalive;
     /* a passphrase operation waiting for its answer */
     gz_job *job;
+    /* an acting call held for its outcome (gz_api_call_done), 0 none */
+    uint64_t held;
     struct gz_conn *next;
 } gz_conn;
 
@@ -169,18 +173,6 @@ typedef struct {
     int64_t last_emit;
     int pending;
 } gz_merge;
-
-/* ---- request ids (route.c) ---------------------------------------------------------- */
-typedef struct {
-    char id[65];
-    int method;
-    char path[1024];
-    uint8_t digest[32];
-    int status;
-    char *answer;
-    size_t answer_len;
-    int64_t at;
-} gz_rid;
 
 /* ---- the server ---------------------------------------------------------------- */
 struct gz_api_server {
@@ -233,14 +225,20 @@ struct gz_api_server {
     uint32_t att_wrong;
     int64_t att_last_wrong, att_blocked_until;
     int att_loaded;
+    int att_unsaved;                 /* the file could not be written: passphrases refused (F5.1) */
+    int token_dir_refused;           /* the socket token folder is not ours (F5.5) */
     /* derivation slot */
     pthread_t worker;
     int worker_started;
     pthread_mutex_t mu;
     pthread_cond_t cv;
-    gz_job *running, *queued, *done;
+    /* loop thread only: the job deriving (or finished, not yet collected) and the one waiting */
+    gz_job *slot_running, *slot_queued;
+    /* under mu: handed to the worker; finished */
+    gz_job *to_run, *done;
     int done_pipe[2];
     int worker_quit;
+    uint64_t generation;             /* under notify_mu (gz_api_server_new_generation) */
     /* events */
     gz_event ev[GZ_EVENTS_KEPT];
     uint64_t seq;
@@ -248,9 +246,14 @@ struct gz_api_server {
     pthread_mutex_t notify_mu;
     struct { char topic[16]; char id[72]; } notify_q[64];
     int notify_n;
-    /* request ids */
-    gz_rid *rid;
-    int nrid;
+    /* commands from other threads (call_done, node_stopped), under notify_mu */
+    struct gz_cmd *cmds, **cmds_tail;
+    uint64_t next_handle;
+    /* the loop (pollfds / dispatch) */
+    gz_conn **pc;                    /* the connection behind each descriptor written */
+    size_t npc;
+    struct pollfd *pfbuf;            /* for gz_api_server_poll */
+    int listening_stopped;
     /* static pages */
     char refused_page[512];
     llhttp_settings_t settings;
@@ -276,7 +279,12 @@ void gz_respond_json(gz_api_server *srv, gz_conn *c, int status, gz_jw *w, const
 int gz_route_head(gz_api_server *srv, gz_conn *c);        /* 0: continue; 1: answered */
 void gz_route_dispatch(gz_api_server *srv, gz_conn *c);
 void gz_job_finished(gz_api_server *srv, gz_job *j);
-void gz_rid_free_all(gz_api_server *srv);
+void gz_job_refuse(gz_api_server *srv, gz_job *j, int status, const char *code, const char *params);
+int gz_job_gated(const gz_job *j);
+void gz_held_answer(gz_api_server *srv, gz_conn *c, int status, const char *body, const char *code,
+                    const char *field, const char *params);
+void gz_cmds_run(gz_api_server *srv);
+void gz_cmds_free(gz_api_server *srv);
 const char *gz_route_pattern(const gz_req *r);
 
 /* session.c */
@@ -312,6 +320,7 @@ int gz_derive_start(gz_api_server *srv);
 void gz_derive_stop(gz_api_server *srv);
 int gz_derive_submit(gz_api_server *srv, gz_job *j);     /* 0 queued/running; -1 slot full */
 void gz_derive_collect(gz_api_server *srv);
+uint64_t gz_generation(gz_api_server *srv);
 void gz_job_free(gz_job *j);
 
 /* events.c */

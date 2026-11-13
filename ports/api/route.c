@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 #include "internal.h"
 
@@ -26,6 +27,7 @@ enum {
 #define F_RID    0x10   /* request_id required (7.4) */
 #define F_FRESH  0x20   /* kind B: a fresh sign-in, always (4.8) */
 #define F_KINDA  0x40   /* kind A: the passphrase in the request (4.8) */
+#define F_ACT    0x80   /* acts: held until the save is confirmed (contract-v2 11) */
 
 enum { T_STR = 1, T_INT, T_BOOL, T_OBJ, T_ARR };
 typedef struct { const char *name; int type; int req; } field;
@@ -90,7 +92,7 @@ static const gz_route ROUTES[] = {
     S1(M_POST, "/api/v1/session/start", H_SESSION_START, 0, F_NOSESS, S_START, NULL),
     S1(M_POST, "/api/v1/session/fresh", H_SESSION_FRESH, 0, 0, S_PASS, NULL),
     S1(M_POST, "/api/v1/session/revoke-all", H_REVOKE_ALL, 0, F_FRESH, S_CONFIRM, NULL),
-    S1(M_POST, "/api/v1/wallet/lock", H_LOCK, GZ_API_C_LOCK, 0, S_LOCK, NULL),
+    S1(M_POST, "/api/v1/wallet/lock", H_LOCK, GZ_API_C_LOCK, F_ACT, S_LOCK, NULL),
     S1(M_POST, "/api/v1/wallet/start-as-restore", H_START_AS_RESTORE, 0, F_FB | F_KINDA, S_CONFIRM_PASS, NULL),
     S1(M_POST, "/api/v1/wallet/unlock", H_UNLOCK, 0, F_SOCKET, S_PASS, NULL),
     S1(M_POST, "/api/v1/first-run-codes", H_FIRST_RUN_CODES, 0, F_SOCKET, S_NONE, NULL),
@@ -98,7 +100,7 @@ static const gz_route ROUTES[] = {
     S1(M_GET, "/api/v1/version", H_VERSION, 0, F_NOSESS, NULL, NULL),
     S1(M_GET, "/api/v1/events", H_EVENTS, 0, F_SETUP | F_FB, NULL, NULL),
     S1(M_GET, "/api/v1/status", H_STATUS, 0, F_SETUP | F_FB, NULL, NULL),
-    S1(M_PUT, "/api/v1/pause", H_PAUSE, GZ_API_C_PAUSE, 0, S_PAUSE, NULL),
+    S1(M_PUT, "/api/v1/pause", H_PAUSE, GZ_API_C_PAUSE, F_ACT, S_PAUSE, NULL),
     /* keys (12) */
     S1(M_GET, "/api/v1/wallet/setup", H_CALL, GZ_API_C_SETUP_GET, F_SETUP, NULL, NULL),
     S1(M_POST, "/api/v1/wallet/create", H_CREATE, 0, F_SETUP, S_CREATE, NULL),
@@ -112,7 +114,7 @@ static const gz_route ROUTES[] = {
     /* conditions (13) */
     S1(M_GET, "/api/v1/conditions", H_CALL, GZ_API_C_CONDITIONS_GET, 0, NULL, NULL),
     S1(M_POST, "/api/v1/conditions/preview", H_CALL, GZ_API_C_CONDITIONS_PREVIEW, 0, S_COND_PREVIEW, NULL),
-    S1(M_PUT, "/api/v1/conditions", H_CALL, GZ_API_C_CONDITIONS_PUT, 0, S_COND_PUT, NULL),
+    S1(M_PUT, "/api/v1/conditions", H_CALL, GZ_API_C_CONDITIONS_PUT, F_ACT, S_COND_PUT, NULL),
     /* finding the host (21, 20.3) */
     S1(M_POST, "/api/v1/discovery/query", H_CALL, GZ_API_C_DISCOVERY_QUERY, 0, S_QUERY, NULL),
     S1(M_GET, "/api/v1/discovery/queries/{q}", H_CALL, GZ_API_C_DISCOVERY_QUERY_GET, 0, NULL, NULL),
@@ -120,17 +122,17 @@ static const gz_route ROUTES[] = {
     /* lobbies (14) */
     S1(M_GET, "/api/v1/lobbies", H_CALL, GZ_API_C_LOBBIES, 0, NULL, "show,sort,cursor,limit"),
     S1(M_GET, "/api/v1/lobbies/{lob}", H_CALL, GZ_API_C_LOBBY, 0, NULL, NULL),
-    S1(M_POST, "/api/v1/lobbies/{lob}/join", H_CALL, GZ_API_C_JOIN, F_RID, S_JOIN, NULL),
-    S1(M_PUT, "/api/v1/lobbies/{lob}/ready", H_CALL, GZ_API_C_READY, F_RID, S_READY, NULL),
-    S1(M_POST, "/api/v1/lobbies/{lob}/leave", H_CALL, GZ_API_C_LEAVE, F_RID, S_RID, NULL),
+    S1(M_POST, "/api/v1/lobbies/{lob}/join", H_CALL, GZ_API_C_JOIN, F_RID | F_ACT, S_JOIN, NULL),
+    S1(M_PUT, "/api/v1/lobbies/{lob}/ready", H_CALL, GZ_API_C_READY, F_RID | F_ACT, S_READY, NULL),
+    S1(M_POST, "/api/v1/lobbies/{lob}/leave", H_CALL, GZ_API_C_LEAVE, F_RID | F_ACT, S_RID, NULL),
     /* hosting (15) */
     S1(M_POST, "/api/v1/host/preview", H_CALL, GZ_API_C_HOST_PREVIEW, 0, S_DRAFT, NULL),
-    S1(M_POST, "/api/v1/host/lobbies", H_HOST_OPEN, GZ_API_C_HOST_OPEN, F_RID | F_KINDA, S_HOST_OPEN, NULL),
+    S1(M_POST, "/api/v1/host/lobbies", H_HOST_OPEN, GZ_API_C_HOST_OPEN, F_RID | F_KINDA | F_ACT, S_HOST_OPEN, NULL),
     S1(M_GET, "/api/v1/host/lobbies", H_CALL, GZ_API_C_HOST_LOBBIES, 0, NULL, "state,cursor,limit"),
     S1(M_GET, "/api/v1/host/lobbies/{lob}", H_CALL, GZ_API_C_HOST_LOBBY, 0, NULL, NULL),
-    S1(M_POST, "/api/v1/host/lobbies/{lob}/start", H_CALL, GZ_API_C_HOST_START, F_RID | F_FRESH, S_HOST_START, NULL),
-    S1(M_POST, "/api/v1/host/lobbies/{lob}/cancel", H_CALL, GZ_API_C_HOST_CANCEL, F_RID, S_RID, NULL),
-    S1(M_DELETE, "/api/v1/host/lobbies/{lob}/seats/{seat}", H_CALL, GZ_API_C_HOST_SEAT_REMOVE, F_RID | F_FRESH,
+    S1(M_POST, "/api/v1/host/lobbies/{lob}/start", H_CALL, GZ_API_C_HOST_START, F_RID | F_FRESH | F_ACT, S_HOST_START, NULL),
+    S1(M_POST, "/api/v1/host/lobbies/{lob}/cancel", H_CALL, GZ_API_C_HOST_CANCEL, F_RID | F_ACT, S_RID, NULL),
+    S1(M_DELETE, "/api/v1/host/lobbies/{lob}/seats/{seat}", H_CALL, GZ_API_C_HOST_SEAT_REMOVE, F_RID | F_FRESH | F_ACT,
        S_SEAT, NULL),
     /* factories (16) */
     S1(M_GET, "/api/v1/factories", H_CALL, GZ_API_C_FACTORIES, 0, NULL, "cursor,limit"),
@@ -589,6 +591,12 @@ int gz_route_head(gz_api_server *srv, gz_conn *c)
         gz_respond(srv, c, 421, BK_EMPTY, NULL, NULL, 0);
         return 1;
     }
+    /* shutting down (contract-v2 4): no new request is served */
+    if (srv->listening_stopped) {
+        c->close_after = 1;
+        gz_respond_error(srv, c, 503, "node_stopped", NULL, "{\"reason\":\"stopping\"}");
+        return 1;
+    }
     if (llhttp_get_http_major(&c->parser) != 1 || llhttp_get_http_minor(&c->parser) != 1)
         return answer(srv, c, 400, "bad_request", NULL);
     /* 3.1: no upgrade, no chunked request body */
@@ -699,58 +707,6 @@ int gz_route_head(gz_api_server *srv, gz_conn *c)
     return 0;
 }
 
-/* ---- request ids (7.4) ---------------------------------------------------------------------- */
-void gz_rid_free_all(gz_api_server *srv)
-{
-    int i;
-    for (i = 0; i < srv->nrid; i++) {
-        gz_wipe(srv->rid[i].answer, srv->rid[i].answer_len);
-        free(srv->rid[i].answer);
-    }
-    free(srv->rid);
-    srv->rid = NULL;
-    srv->nrid = 0;
-}
-
-static gz_rid *rid_find(gz_api_server *srv, const char *id)
-{
-    int i;
-    for (i = 0; i < srv->nrid; i++)
-        if (strcmp(srv->rid[i].id, id) == 0) return &srv->rid[i];
-    return NULL;
-}
-
-static void rid_save(gz_api_server *srv, const char *id, int method, const char *path, const uint8_t digest[32],
-                     int status, const char *answer, size_t len)
-{
-    gz_rid *e;
-    if (!srv->rid) {
-        srv->rid = calloc(GZ_RID_MAX, sizeof *srv->rid);
-        if (!srv->rid) return;
-    }
-    if (srv->nrid == GZ_RID_MAX) {                      /* the oldest goes (run-only store) */
-        int i, o = 0;
-        for (i = 1; i < srv->nrid; i++)
-            if (srv->rid[i].at < srv->rid[o].at) o = i;
-        free(srv->rid[o].answer);
-        srv->rid[o] = srv->rid[--srv->nrid];
-    }
-    e = &srv->rid[srv->nrid];
-    memset(e, 0, sizeof *e);
-    e->answer = malloc(len + 1);
-    if (!e->answer) return;
-    memcpy(e->answer, answer, len);
-    e->answer[len] = 0;
-    e->answer_len = len;
-    snprintf(e->id, sizeof e->id, "%s", id);
-    e->method = method;
-    snprintf(e->path, sizeof e->path, "%s", path);
-    memcpy(e->digest, digest, 32);
-    e->status = status;
-    e->at = gz_now_ms(srv);
-    srv->nrid++;
-}
-
 static const char *method_name(int m)
 {
     switch (m) {
@@ -846,6 +802,7 @@ static int start_job(gz_api_server *srv, gz_conn *c, int purpose, int op, const 
     if (srv->att_loaded && op != GZ_API_PP_CREATE && op != GZ_API_PP_RESTORE &&
         gz_attempts_gate(srv, now_s, &retry)) {
         char params[48];
+        if (retry < 0) { gz_respond_error(srv, c, 503, "passphrase_not_checked", NULL, NULL); return 1; }
         snprintf(params, sizeof params, "{\"retry_after_s\":%lld}", (long long)retry);
         gz_respond_error(srv, c, 429, "rate_limited", NULL, params);
         return 1;
@@ -975,19 +932,35 @@ static void wallet_made(gz_api_server *srv)
     gz_events_notify(srv, "status", NULL);
 }
 
+static void warning(gz_jw *w, const char *fault)
+{
+    gz_jw_key(w, "warning");
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "code", "done_with_fault");
+    gz_jw_kstr(w, "fault", fault);
+    gz_jw_end_obj(w);
+}
+
 static void call_backend(gz_api_server *srv, gz_conn *c, int phase_check, int *answered);
 
-void gz_job_finished(gz_api_server *srv, gz_job *j)
+int gz_job_gated(const gz_job *j)
+{
+    return j->pp.op != GZ_API_PP_CREATE && j->pp.op != GZ_API_PP_RESTORE;   /* these cannot be wrong */
+}
+
+/* A job answered without its result (never derived, or discarded): frees it. */
+void gz_job_refuse(gz_api_server *srv, gz_job *j, int status, const char *code, const char *params)
 {
     gz_conn *c = j->conn;
-    gz_api_pp_job *pp = &j->pp;
-    gz_session *s = req_session(srv, j->sess_slot, j->sess_no);
-    int64_t now = gz_now_ms(srv), now_s = now / 1000;
-    int verified = 0;
-    if (srv->be->passphrase_done) srv->be->passphrase_done(srv->bectx, pp);
-    if (c) c->job = NULL;
-    if (c && c->state == CS_DEAD) c = NULL;
-    /* the counter, whatever happens to the connection */
+    if (c) {
+        c->job = NULL;
+        if (c->state != CS_DEAD) gz_respond_error(srv, c, status, code, NULL, params);
+    }
+    gz_job_free(j);
+}
+
+static void count_result(gz_api_server *srv, const gz_api_pp_job *pp, int64_t now_s)
+{
     if (pp->result == GZ_API_PPR_WRONG) {
         if (srv->att_last_wrong && now_s - srv->att_last_wrong < 2)
             gz_log(srv, "wrong passphrases are arriving faster than a person types: another program may be trying");
@@ -995,9 +968,40 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
         gz_log(srv, "wrong passphrase (%u in a row)", (unsigned)srv->att_wrong);
     } else if (pp->result == GZ_API_PPR_OK || pp->result == GZ_API_PPR_WORDS_DIFFER ||
                pp->result == GZ_API_PPR_FILES_BEHIND) {
-        verified = 1;
         if (pp->op != GZ_API_PP_CREATE && pp->op != GZ_API_PP_RESTORE && srv->att_loaded) gz_attempts_right(srv);
     }
+}
+
+void gz_job_finished(gz_api_server *srv, gz_job *j)
+{
+    gz_conn *c = j->conn;
+    gz_api_pp_job *pp = &j->pp;
+    const char *fault = NULL;
+    gz_session *s = req_session(srv, j->sess_slot, j->sess_no);
+    int64_t now = gz_now_ms(srv), now_s = now / 1000;
+    int verified = 0;
+    if (pp->generation != gz_generation(srv)) {
+        /* a lock, stop or restart since it was queued: nothing is installed, but a
+         * wrong passphrase still counts (contract-v2 4, T4.4) */
+        if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, now_s);
+        if (srv->be->passphrase_discard) srv->be->passphrase_discard(srv->bectx, pp);
+        gz_job_refuse(srv, j, 503, "passphrase_not_checked", NULL);
+        return;
+    }
+    if (srv->be->passphrase_done) srv->be->passphrase_done(srv->bectx, pp);   /* installs, on this thread */
+    if (c) c->job = NULL;
+    if (c && c->state == CS_DEAD) c = NULL;
+    /* done with a fault (storage): in force, so done, with a warning (never a failure) */
+    if (pp->result == GZ_API_PPR_DONE_WITH_FAULT) {
+        fault = pp->reason && gz_valid_id(pp->reason, 1, 40) ? pp->reason : "fault";
+        pp->result = GZ_API_PPR_OK;
+        gz_log(srv, "the change is in force, but a step after it failed (%s)", fault);
+        gz_events_notify(srv, "status", NULL);
+    }
+    /* the counter, whatever happens to the connection */
+    count_result(srv, pp, now_s);
+    if (pp->result == GZ_API_PPR_OK || pp->result == GZ_API_PPR_WORDS_DIFFER || pp->result == GZ_API_PPR_FILES_BEHIND)
+        verified = 1;
     if (pp->result == GZ_API_PPR_WRONG) {
         if (c) gz_respond_error(srv, c, 401, "wrong_passphrase", NULL, NULL);
         goto out;
@@ -1090,6 +1094,7 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
                 } else {
                     gz_jw_kstr(&w, "state", "restoring");
                 }
+                if (fault) warning(&w, fault);
                 gz_jw_end_obj(&w);
                 gz_respond_json(srv, c, j->purpose == JP_CREATE ? 200 : 202, &w, NULL);
                 gz_jw_free(&w);
@@ -1163,6 +1168,7 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
                 gz_jw_init(&w);
                 gz_jw_obj(&w);
                 gz_jw_kstr(&w, "wallet", "restoring");
+                if (fault) warning(&w, fault);
                 gz_jw_end_obj(&w);
                 gz_respond_json(srv, c, 202, &w, NULL);
                 gz_jw_free(&w);
@@ -1194,7 +1200,7 @@ static void call_backend(gz_api_server *srv, gz_conn *c, int phase_check, int *a
     gz_api_call call;
     gz_api_error err;
     gz_jw w;
-    int status, effect = GZ_API_EFFECT_NONE, i;
+    int status, effect = GZ_API_EFFECT_NONE, i, acts = (r->route->flags & F_ACT) && !phase_check;
     memset(&call, 0, sizeof call);
     memset(&err, 0, sizeof err);
     call.id = r->route->call;
@@ -1210,32 +1216,147 @@ static void call_backend(gz_api_server *srv, gz_conn *c, int phase_check, int *a
     call.fresh = r->fresh || r->bearer;
     call.bearer = r->bearer;
     call.now = gz_now_ms(srv) / 1000;
+    call.method = method_name(r->method);
+    call.path = r->path;
+    call.pattern = r->route->pattern;
+    if (r->have_digest) {
+        call.request_id = jstr(r->doc.root, "request_id");
+        call.digest = r->digest;
+    }
+    if (acts) call.handle = ++srv->next_handle;
     gz_jw_init(&w);
     srv->ctr.handler_calls++;
     status = srv->be->call(srv->bectx, &call, &w, &err, &effect);
-    *answered = 0;
-    if (status >= 400) {
+    *answered = 1;
+    if (status == GZ_API_HELD && acts) {
+        /* held until the backend's outcome (gz_api_call_done), at most held_ms (contract-v2 11) */
+        c->held = call.handle;
+        c->state = CS_BUSY;
+        c->deadline = gz_now_ms(srv) + srv->lim.held_ms;
+    } else if (status >= 400) {
         gz_respond_error(srv, c, status, err.code ? err.code : "internal", err.field, err.params);
-        *answered = 1;
-    } else if (!phase_check) {
-        const char *extra = NULL;
+    } else if (phase_check && status == 0) {
+        *answered = 0;                                   /* kind A: on to the passphrase */
+    } else if (status >= 200 && status <= 204 && !w.err) {
         if (status == 204) {
             gz_respond(srv, c, 204, BK_JSON, NULL, NULL, 0);
         } else {
             if (!w.len) gz_jw_bytes(&w, "{}", 2);
-            gz_respond_json(srv, c, status, &w, extra);
+            gz_respond_json(srv, c, status, &w, NULL);
         }
-        *answered = 1;
-        /* save the answer under its request id (7.4), only for an action taken */
-        if ((r->route->flags & F_RID) && r->have_doc && !w.err) {
-            uint8_t d[32];
-            const char *id = jstr(r->doc.root, "request_id");
-            if (id && gz_json_jcs_digest(r->doc.root, d) == 0)
-                rid_save(srv, id, r->method, r->path, d, status, w.buf ? w.buf : "{}", w.buf ? w.len : 2);
-        }
+    } else {
+        gz_respond_error(srv, c, 500, "internal", NULL, "{\"ref\":\"backend_status\"}");
     }
     gz_jw_free(&w);
     if (effect == GZ_API_EFFECT_LOCKED) gz_api_locked(srv);
+}
+
+/* An acting call's outcome reaches its connection (loop thread). */
+void gz_held_answer(gz_api_server *srv, gz_conn *c, int status, const char *body, const char *code,
+                    const char *field, const char *params)
+{
+    c->held = 0;
+    if (status >= 400) {
+        gz_respond_error(srv, c, status, code && code[0] ? code : "internal", field, params && params[0] ? params : NULL);
+    } else if (status == 204) {
+        gz_respond(srv, c, 204, BK_JSON, NULL, NULL, 0);
+    } else if (status >= 200 && status <= 203) {
+        const char *b = body && body[0] ? body : "{}";
+        gz_respond(srv, c, status, BK_JSON, NULL, b, strlen(b));
+    } else {
+        gz_respond_error(srv, c, 500, "internal", NULL, "{\"ref\":\"backend_status\"}");
+    }
+}
+
+/* ---- commands from other threads ----------------------------------------------------------------- */
+enum { CMD_CALL_DONE = 1, CMD_NODE_STOPPED };
+struct gz_cmd {
+    int kind;
+    uint64_t handle;
+    int status;
+    char *body;
+    char code[48], field[80], params[768], reason[40];
+    struct gz_cmd *next;
+};
+
+static void cmd_push(gz_api_server *srv, struct gz_cmd *m)
+{
+    char b = 0;
+    ssize_t wr;
+    pthread_mutex_lock(&srv->notify_mu);
+    m->next = NULL;
+    if (!srv->cmds_tail) srv->cmds_tail = &srv->cmds;
+    *srv->cmds_tail = m;
+    srv->cmds_tail = &m->next;
+    pthread_mutex_unlock(&srv->notify_mu);
+    wr = write(srv->wake[1], &b, 1);
+    (void)wr;
+}
+
+void gz_api_call_done(gz_api_server *srv, uint64_t handle, int status, const char *body, const gz_api_error *err)
+{
+    struct gz_cmd *m = calloc(1, sizeof *m);
+    if (!m) return;                                      /* the connection then answers node_busy */
+    m->kind = CMD_CALL_DONE;
+    m->handle = handle;
+    m->status = status;
+    if (body) m->body = strdup(body);
+    if (err) {
+        snprintf(m->code, sizeof m->code, "%s", err->code ? err->code : "internal");
+        if (err->field) snprintf(m->field, sizeof m->field, "%s", err->field);
+        snprintf(m->params, sizeof m->params, "%s", err->params);
+    }
+    cmd_push(srv, m);
+}
+
+void gz_api_server_node_stopped(gz_api_server *srv, const char *reason)
+{
+    struct gz_cmd *m = calloc(1, sizeof *m);
+    if (!m) return;
+    m->kind = CMD_NODE_STOPPED;
+    snprintf(m->reason, sizeof m->reason, "%s", reason && gz_valid_id(reason, 1, 32) ? reason : "rebuilding");
+    cmd_push(srv, m);
+}
+
+static void cmd_free(struct gz_cmd *m)
+{
+    if (m->body) { gz_wipe(m->body, strlen(m->body)); free(m->body); }
+    gz_wipe(m, sizeof *m);
+    free(m);
+}
+
+void gz_cmds_run(gz_api_server *srv)
+{
+    struct gz_cmd *list, *m;
+    gz_conn *c;
+    pthread_mutex_lock(&srv->notify_mu);
+    list = srv->cmds;
+    srv->cmds = NULL;
+    srv->cmds_tail = &srv->cmds;
+    pthread_mutex_unlock(&srv->notify_mu);
+    while ((m = list)) {
+        list = m->next;
+        if (m->kind == CMD_CALL_DONE) {
+            for (c = srv->conns; c; c = c->next)
+                if (c->held == m->handle && c->state == CS_BUSY) {
+                    gz_held_answer(srv, c, m->status, m->body, m->code, m->field[0] ? m->field : NULL, m->params);
+                    break;
+                }
+        } else if (m->kind == CMD_NODE_STOPPED) {
+            char params[80];
+            snprintf(params, sizeof params, "{\"reason\":\"%s\"}", m->reason);
+            for (c = srv->conns; c; c = c->next)
+                if (c->held && c->state == CS_BUSY) gz_held_answer(srv, c, 503, NULL, "node_stopped", NULL, params);
+        }
+        cmd_free(m);
+    }
+}
+
+void gz_cmds_free(gz_api_server *srv)
+{
+    struct gz_cmd *m;
+    while ((m = srv->cmds)) { srv->cmds = m->next; cmd_free(m); }
+    srv->cmds_tail = &srv->cmds;
 }
 
 void gz_api_locked(gz_api_server *srv)
@@ -1291,44 +1412,20 @@ void gz_route_dispatch(gz_api_server *srv, gz_conn *c)
         if (strcmp(r->user, "1") == 0) s->last_input = now;
         if (s->tunnel && gz_tunnel_host(srv, r->host)) s->tunnel_last = now;
     }
-    /* 7.4: request ids */
+    /* 7.4: request ids. The server checks the form and computes the digest
+     * (RFC 8785 without the passphrase); the engine owns the id: the 409s and
+     * the replays are the backend's (contract-v2 11). */
     if (r->route->flags & F_RID) {
         const char *id = jstr(r->doc.root, "request_id");
-        uint8_t d[32];
-        gz_rid *e;
         if (!id || !gz_valid_id(id, 16, 64)) {
             gz_respond_error(srv, c, 400, "bad_value", "/request_id", NULL);
             goto done;
         }
-        if (gz_json_jcs_digest(r->doc.root, d) != 0) {
+        if (gz_json_jcs_digest(r->doc.root, r->digest) != 0) {
             gz_respond_error(srv, c, 500, "internal", NULL, "{\"ref\":\"digest\"}");
             goto done;
         }
-        e = rid_find(srv, id);
-        if (e) {
-            if (e->method == r->method && strcmp(e->path, r->path) == 0 && gz_ct_eq(e->digest, d, 32)) {
-                gz_out o;
-                memset(&o, 0, sizeof o);
-                /* the first answer, with "replayed": true; no derivation runs (4.8) */
-                if (e->answer_len >= 2 && e->answer[e->answer_len - 1] == '}') {
-                    gz_out_add(&o, e->answer, e->answer_len - 1);
-                    if (e->answer_len > 2) gz_out_add(&o, ",", 1);
-                    gz_out_add(&o, "\"replayed\":true}", 16);
-                }
-                gz_respond(srv, c, e->status, BK_JSON, NULL, o.buf, o.len);
-                gz_out_free(&o);
-            } else {
-                char params[256];
-                const gz_route *fr = NULL;
-                size_t k;
-                for (k = 0; k < NROUTES; k++)
-                    if (ROUTES[k].method == e->method && match(ROUTES[k].pattern, e->path, NULL)) { fr = &ROUTES[k]; break; }
-                snprintf(params, sizeof params, "{\"first\":{\"method\":\"%s\",\"path\":\"%s\"}}",
-                         method_name(e->method), fr ? fr->pattern : "");
-                gz_respond_error(srv, c, 409, "request_id_reused", NULL, params);
-            }
-            goto done;
-        }
+        r->have_digest = 1;
     }
     /* 4.8 kind B: a fresh sign-in, always for these */
     if ((r->route->flags & F_FRESH) && !r->fresh && !r->bearer) {
@@ -1548,13 +1645,19 @@ static void handle(gz_api_server *srv, gz_conn *c)
     case H_CHECK: {
         const char *id = jstr(body, "check_id");
         int64_t retry = 0, now_s = gz_now_ms(srv) / 1000, gate;
-        if (!srv->check_id[0] || strcmp(id, srv->check_id) != 0 ||
-            srv->check_session_no != (r->bearer ? 0 : r->sess_no)) {
+        uint8_t want[16], got[16];
+        int same = srv->check_id[0] && strlen(id) == 22 &&
+                   gz_b64url_decode(srv->check_id, 22, want, sizeof want) == 0 &&
+                   gz_b64url_decode(id, 22, got, sizeof got) == 0 && gz_ct_eq(want, got, 16);   /* F5.3 */
+        gz_wipe(want, sizeof want);
+        gz_wipe(got, sizeof got);
+        if (!same || srv->check_session_no != (r->bearer ? 0 : r->sess_no)) {
             gz_respond_error(srv, c, 400, "bad_value", "/check_id", NULL);
             break;
         }
         if (srv->att_loaded && gz_attempts_gate(srv, now_s, &gate)) {
             char params[48];
+            if (gate < 0) { gz_respond_error(srv, c, 503, "passphrase_not_checked", NULL, NULL); break; }
             snprintf(params, sizeof params, "{\"retry_after_s\":%lld}", (long long)gate);
             gz_respond_error(srv, c, 429, "rate_limited", NULL, params);
             break;

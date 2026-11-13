@@ -44,6 +44,15 @@ typedef struct gz_fake {
     int files_behind_next;            /* the next unlock finds the files behind */
     int derivation_fails_next;        /* the next derivation fails (passphrase_not_checked) */
     int pp_delay_ms;                  /* each derivation takes this long */
+    int fault_next;                   /* the next create, restore or start-as-restore is done with a fault */
+    int hold;                         /* acting calls are held until gz_fake_release (contract-v2 11) */
+    int hold_forever;                 /* ... and gz_fake_release releases nothing (node_busy tests) */
+    int64_t acted;                    /* acting calls carried out (not replays) */
+    /* the engine's request ids and held outcomes (fake_backend.c) */
+    struct gz_fake_rid **rids;
+    int nrids;
+    struct gz_fake_held **held;
+    int nheld;
     int partials_out;                 /* a round with partial signatures out: a lock is held */
     int chain_state;                  /* enum gz_api_chain_state */
     int has_factory;                  /* an awaiting-funding factory (something to watch) */
@@ -69,12 +78,15 @@ typedef struct gz_fake {
     int64_t query_no;
     int64_t query_last_at;
     int64_t derivations;              /* how many passphrase operations ran */
+    int64_t installs;                 /* how many results were installed (pp_done) */
     int max_inside;                   /* the most that ran at once (23.2 item 46) */
     int inside;
 } gz_fake;
 
 void gz_fake_init(gz_fake *f, int scenario);
 void gz_fake_free(gz_fake *f);
+/* Confirm every held save: held calls (f->hold) are answered. Any thread. */
+void gz_fake_release(gz_fake *f);
 extern const gz_api_backend gz_fake_backend;
 
 #endif

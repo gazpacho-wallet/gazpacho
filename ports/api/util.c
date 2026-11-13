@@ -221,6 +221,7 @@ const char *gz_error_message(const char *code)
         {"rate_limited", "Too many attempts. Wait and try again."},
         {"not_in_this_release", "This call is not in this release."},
         {"node_stopped", "The wallet's core has stopped."},
+        {"node_busy", "The wallet is busy and has not confirmed this yet. Try again with the same request."},
         {"internal", "Internal error."},
         {"changed_elsewhere", "This changed elsewhere; read it again."},
         {"paused", "Gazpacho is paused."},

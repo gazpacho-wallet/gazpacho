@@ -164,10 +164,13 @@ int gz_socket_token_make(gz_api_server *srv)
     srv->have_socket_token = 0;
     if (gz_random(srv->socket_token, sizeof srv->socket_token) != 0) return -1;
     if (!token_dir_ok(srv->token_dir)) {
+        /* another account may have made it first (/tmp fallback, review F5.5): refused, and status says so */
+        srv->token_dir_refused = 1;
         gz_log(srv, "warning: the socket token folder is not owner-only; the command line cannot sign in");
         gz_wipe(srv->socket_token, sizeof srv->socket_token);
         return -1;
     }
+    srv->token_dir_refused = 0;
     gz_b64url(srv->socket_token, sizeof srv->socket_token, b64);
     r = write_private(srv->token_path, b64, GZ_TOKEN_B64);
     gz_wipe(b64, sizeof b64);
@@ -421,8 +424,12 @@ static void attempts_save(gz_api_server *srv)
     srv->att_counter++;
     if (gz_attempts_encode(srv->be->network, srv->att_counter, srv->att_wrong, (uint64_t)srv->att_last_wrong,
                            (uint64_t)srv->att_blocked_until, b) != 0 ||
-        write_private(srv->attempts_path, b, sizeof b) != 0)
-        gz_log(srv, "warning: the attempts file could not be written");
+        write_private(srv->attempts_path, b, sizeof b) != 0) {
+        if (!srv->att_unsaved) gz_log(srv, "warning: the attempts file could not be written: passphrases are refused until it can be");
+        srv->att_unsaved = 1;                           /* fail closed (review F5.1): gz_attempts_gate refuses */
+        return;
+    }
+    srv->att_unsaved = 0;
 }
 
 void gz_attempts_load(gz_api_server *srv)
@@ -444,6 +451,8 @@ void gz_attempts_load(gz_api_server *srv)
         srv->att_wrong = wrong;
         srv->att_last_wrong = (int64_t)last;
         srv->att_blocked_until = (int64_t)until;
+        /* a clock set back must not block for longer than the ceiling (review F5.2) */
+        if (srv->att_blocked_until > now + 900) srv->att_blocked_until = now + 900;
         return;
     }
     /* missing, damaged or of another network: the strictest state, from now (storage 12.3) */
@@ -456,6 +465,10 @@ void gz_attempts_load(gz_api_server *srv)
 
 int gz_attempts_gate(gz_api_server *srv, int64_t now_s, int64_t *retry_after)
 {
+    if (srv->att_unsaved) {                             /* the count could not be kept: nothing is checked */
+        attempts_save(srv);                             /* try again; the retry is on the loop thread */
+        if (srv->att_unsaved) { *retry_after = -1; return 1; }
+    }
     if (now_s < srv->att_blocked_until) {
         *retry_after = srv->att_blocked_until - now_s;
         return 1;

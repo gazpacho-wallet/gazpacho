@@ -30,6 +30,14 @@
 #define NOT_FOUND 0
 #define UNAVAILABLE -1
 
+/* TCP states as Linux numbers them (include/net/tcp_states.h), in sock_diag
+ * and in the st column of /proc/net/tcp. */
+#define TCP_STATE_SYN_RECV 3
+#define TCP_STATE_TIME_WAIT 6
+/* /proc rows read per lookup at most (review F5.4): the loop never reads an
+ * unbounded table; a peer not found within them is refused. */
+#define PROC_MAX_ROWS 8192
+
 #if defined(__linux__)
 static int netlink_uid(const struct sockaddr_storage *peer, const struct sockaddr_storage *local,
                        uint32_t *uid)
@@ -43,7 +51,7 @@ static int netlink_uid(const struct sockaddr_storage *peer, const struct sockadd
         struct nlmsghdr h;
         char b[8192];
     } ans;
-    struct timeval tv = {1, 0};
+    struct timeval tv = {0, 10000};                      /* 10 ms: a local diag answer is immediate (P5: the loop never waits long) */
     ssize_t n;
     int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
     if (fd < 0) return UNAVAILABLE;
@@ -96,6 +104,11 @@ static int netlink_uid(const struct sockaddr_storage *peer, const struct sockadd
             memcmp(m->id.idiag_src, req.r.id.idiag_src, sizeof m->id.idiag_src) != 0 ||
             memcmp(m->id.idiag_dst, req.r.id.idiag_dst, sizeof m->id.idiag_dst) != 0)
             return NOT_FOUND;
+        /* An orphan (closed before accept) becomes a TIME-WAIT socket, which
+         * sock_diag reports as uid 0 with no inode: its owner is unknown, so
+         * it is not found (review F1). A SYN-RECV entry has no owner either. */
+        if (m->idiag_state == TCP_STATE_TIME_WAIT || m->idiag_state == TCP_STATE_SYN_RECV || m->idiag_inode == 0)
+            return NOT_FOUND;
         *uid = m->idiag_uid;
         return FOUND;
     }
@@ -137,7 +150,7 @@ static int proc_uid(const struct sockaddr_storage *peer, const struct sockaddr_s
     uint8_t pa[16], la[16];
     unsigned pport, lport;
     size_t alen;
-    int result = NOT_FOUND;
+    int result = NOT_FOUND, rows = 0;
     if (!f) return UNAVAILABLE;
     if (peer->ss_family == AF_INET) {
         const struct sockaddr_in *p = (const struct sockaddr_in *)peer, *l = (const struct sockaddr_in *)local;
@@ -155,17 +168,20 @@ static int proc_uid(const struct sockaddr_storage *peer, const struct sockaddr_s
         alen = 16;
     }
     if (!fgets(line, sizeof line, f)) { fclose(f); return UNAVAILABLE; }   /* the title row */
-    while (fgets(line, sizeof line, f)) {
+    while (rows++ < PROC_MAX_ROWS && fgets(line, sizeof line, f)) {
         char lhex[40], rhex[40];
         unsigned lp, rp, st, u;
+        unsigned long inode;
         uint8_t a1[16], a2[16];
-        if (sscanf(line, " %*u: %39[0-9A-Fa-f]:%x %39[0-9A-Fa-f]:%x %x %*x:%*x %*x:%*x %*x %u", lhex, &lp,
-                   rhex, &rp, &st, &u) != 6)
+        if (sscanf(line, " %*u: %39[0-9A-Fa-f]:%x %39[0-9A-Fa-f]:%x %x %*x:%*x %*x:%*x %*x %u %*d %lu", lhex, &lp,
+                   rhex, &rp, &st, &u, &inode) != 7)
             continue;
         if (parse_addr(lhex, strlen(lhex), a1) != (int)alen || parse_addr(rhex, strlen(rhex), a2) != (int)alen)
             continue;
         /* the peer's row: its local end is the peer, its remote end the program */
         if (lp == pport && rp == lport && memcmp(a1, pa, alen) == 0 && memcmp(a2, la, alen) == 0) {
+            /* a TIME-WAIT or SYN-RECV row, or no inode: no owner (review F1) */
+            if (st == TCP_STATE_TIME_WAIT || st == TCP_STATE_SYN_RECV || inode == 0) break;
             *uid = u;
             result = FOUND;
             break;

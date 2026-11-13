@@ -9,6 +9,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -25,11 +26,14 @@
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <openssl/sha.h>
 
 #include "check.h"
 #include "fake_backend.h"
 
 int gz_api_route_count(void);
+int gz_attempts_encode(const char *network, uint64_t counter, uint32_t wrong, uint64_t last, uint64_t until,
+                       uint8_t out[85]);
 int gz_attempts_decode(const char *network, const uint8_t in[85], uint64_t *counter, uint32_t *wrong,
                        uint64_t *last, uint64_t *until);
 int gz_api_route_info(int i, int *method, const char **pattern, const char **release);
@@ -1052,12 +1056,13 @@ static void test_flood(void)
         else if (a[i].status == 429) limited++;
     }
     gz_api_server_counters(x.srv, &c);
-    if (!(wrong >= 1 && wrong <= 2 && wrong + limited == 20)) {
+    /* the gate is checked again when the waiting job starts (review F2): exactly one per window */
+    if (!(wrong == 1 && wrong + limited == 20)) {
         printf("  flood:");
         for (i = 0; i < 20; i++) printf(" %d", a[i].status);
         printf(" (max concurrent %d, inside %d)\n", c.derivations_max_concurrent, x.fake.max_inside);
     }
-    CHECK(wrong >= 1 && wrong <= 2 && wrong + limited == 20);
+    CHECK(wrong == 1 && wrong + limited == 20);
     CHECK(c.derivations_max_concurrent == 1 && x.fake.max_inside == 1);
     fx_stop(&x);
 }
@@ -1579,14 +1584,22 @@ static void test_binding(void)
     CHECK(s == NULL && err && strstr(err, "in use"));  /* it never picks another port */
     if (s) gz_api_server_free(s);
     close(fd);
-    /* a data folder open to others is refused */
-    chmod(x.dir, 0755);
-    x.cfg.port = 0;
-    err = NULL;
-    s = gz_api_server_new(&x.cfg, &err);
-    CHECK(s == NULL && err && strstr(err, "0700"));
-    if (s) gz_api_server_free(s);
-    chmod(x.dir, 0700);
+    /* the folder is the program's (contract-v2 11, T11.6): a missing one refuses to
+     * start and nothing is created; the server checks no mode (decision 16 reversed) */
+    {
+        char missing[300];
+        struct stat st;
+        const char *given = x.cfg.data_dir;
+        snprintf(missing, sizeof missing, "%s/not-made", x.dir);
+        x.cfg.data_dir = missing;
+        x.cfg.port = 0;
+        err = NULL;
+        s = gz_api_server_new(&x.cfg, &err);
+        CHECK(s == NULL && err && strstr(err, "does not exist"));
+        CHECK(stat(missing, &st) != 0 && errno == ENOENT);
+        if (s) gz_api_server_free(s);
+        x.cfg.data_dir = given;
+    }
     fx_stop(&x);
 }
 
@@ -1629,6 +1642,596 @@ static void test_tunnel(void)
     fx_stop(&x);
 }
 
+/* ---- review A of PR 26 (F3: behaviour no test checked) and contract-v2 P5 ---------------------- */
+static void sock_req(fixture *x, const char *req, resp *r)
+{
+    int fd = unix_connect(gz_api_server_socket_path(x->srv));
+    memset(r, 0, sizeof *r);
+    if (fd < 0) { r->closed_without_answer = 1; return; }
+    send(fd, req, strlen(req), MSG_NOSIGNAL);
+    read_answer(fd, r, 3000);
+    close(fd);
+}
+
+static void token_dir_of(fixture *x, char out[300])
+{
+    char real[PATH_MAX], hex[17];
+    unsigned char h[32];
+    int i;
+    out[0] = 0;
+    if (!realpath(x->dir, real)) return;
+    SHA256((const unsigned char *)real, strlen(real), h);
+    for (i = 0; i < 8; i++) snprintf(hex + 2 * i, 3, "%02x", h[i]);
+    snprintf(out, 300, "%s/gazpacho-%s", x->rt, hex);
+}
+
+static void socket_token(fixture *x, char tok[64])
+{
+    char d[300], p[340], *t;
+    token_dir_of(x, d);
+    snprintf(p, sizeof p, "%s/socket.token", d);
+    t = read_file(p);
+    snprintf(tok, 64, "%s", t ? t : "");
+    free(t);
+}
+
+static void write_attempts(fixture *x, const char *network, uint32_t wrong, uint64_t last, uint64_t until)
+{
+    char p[200];
+    uint8_t b[85];
+    FILE *f;
+    snprintf(p, sizeof p, "%s/attempts.gza", x->dir);
+    CHECK(gz_attempts_encode(network, 5, wrong, last, until, b) == 0);
+    f = fopen(p, "wb");
+    if (f) { fwrite(b, 1, sizeof b, f); fclose(f); }
+    chmod(p, 0600);
+}
+
+static int read_attempts(fixture *x, uint32_t *wrong, uint64_t *last, uint64_t *until)
+{
+    char p[200];
+    uint8_t b[85];
+    uint64_t counter;
+    FILE *f;
+    snprintf(p, sizeof p, "%s/attempts.gza", x->dir);
+    f = fopen(p, "rb");
+    if (!f) return -1;
+    if (fread(b, 1, 85, f) != 85) { fclose(f); return -1; }
+    fclose(f);
+    return gz_attempts_decode("signet", b, &counter, wrong, last, until);
+}
+
+static void test_review_walls(void)
+{
+    fixture x;
+    resp r;
+    char req[1200], tok[64], old[64];
+    struct stat st;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    if (fx_go(&x)) { CHECK(0); return; }
+    atomic_fetch_add(&clock_off, 901 * 1000);
+    /* socket-mode-open: the local socket is 0600 from its first moment */
+    CHECK(stat(gz_api_server_socket_path(x.srv), &st) == 0 && (st.st_mode & 0777) == 0600);
+    /* get-with-body: a GET with a body is refused, not parsed */
+    snprintf(req, sizeof req, "GET /api/v1/version HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nContent-Type: application/json\r\n"
+                              "Content-Length: 2\r\nConnection: close\r\n\r\n{}", x.port);
+    raw(x.port, req, strlen(req), &r);
+    CHECK(is_code(&r, 400, "bad_request"));
+    resp_free(&r);
+    /* static-query-ok: a static page takes no query */
+    snprintf(req, sizeof req, "GET /?x=1 HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n", x.port);
+    raw(x.port, req, strlen(req), &r);
+    CHECK(r.status == 404);
+    resp_free(&r);
+    /* 421-keeps-alive: a wrong Host closes the connection; a request after it is never served */
+    snprintf(req, sizeof req, "GET /api/v1/version HTTP/1.1\r\nHost: evil.example\r\n\r\n"
+                              "GET /api/v1/version HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n\r\n", x.port);
+    raw(x.port, req, strlen(req), &r);
+    CHECK(r.status == 421 && hdr(&r, "Connection") && strcasecmp(hdr(&r, "Connection"), "close") == 0);
+    CHECK(r.body && strstr(r.body, "HTTP/1.1 200") == NULL);
+    resp_free(&r);
+    /* empty-passphrase-derived: an empty passphrase is refused before any derivation */
+    {
+        int64_t before = x.fake.derivations;
+        CHECK(expect(&x, "POST", "/api/v1/session", "{\"passphrase\":\"\"}", 400, "bad_value"));
+        CHECK(x.fake.derivations == before);
+    }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    CHECK(strlen(g_session) == 43);
+    socket_token(&x, tok);
+    CHECK(strlen(tok) == 43);
+    /* bearer-unchecked: a token of the right form that is not ours */
+    snprintf(req, sizeof req, "GET /api/v1/lobbies HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %.43s\r\nConnection: close\r\n\r\n",
+             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    sock_req(&x, req, &r);
+    CHECK(is_code(&r, 401, "not_signed_in"));
+    resp_free(&r);
+    /* two-authorization: two Authorization headers, even both right */
+    snprintf(req, sizeof req, "GET /api/v1/lobbies HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\n"
+                              "Authorization: Bearer %s\r\nConnection: close\r\n\r\n", tok, tok);
+    sock_req(&x, req, &r);
+    CHECK(is_code(&r, 400, "two_credentials"));
+    resp_free(&r);
+    /* bearer-may-create: the socket token is not a setup session */
+    snprintf(req, sizeof req, "POST /api/v1/wallet/create HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\n"
+                              "Content-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s", tok,
+             strlen("{\"confirm\":\"create_wallet\",\"passphrase\":\"" PASS "\",\"confirm_passphrase\":\"" PASS "\"}"),
+             "{\"confirm\":\"create_wallet\",\"passphrase\":\"" PASS "\",\"confirm_passphrase\":\"" PASS "\"}");
+    sock_req(&x, req, &r);
+    CHECK(is_code(&r, 403, "not_setup_session"));
+    resp_free(&r);
+    /* revoke-keeps-socket-token: revoke-all rotates the socket token; the old one is refused */
+    snprintf(old, sizeof old, "%s", tok);
+    CHECK(expect(&x, "POST", "/api/v1/session/revoke-all", "{\"confirm\":\"revoke_all\"}", 204, NULL));
+    socket_token(&x, tok);
+    CHECK(strlen(tok) == 43 && strcmp(tok, old) != 0);
+    snprintf(req, sizeof req, "GET /api/v1/lobbies HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", old);
+    sock_req(&x, req, &r);
+    CHECK(is_code(&r, 401, "not_signed_in"));
+    resp_free(&r);
+    /* normal-session-while-locked: a normal session while the files are behind answers 423 */
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    pthread_mutex_lock(&x.fake.mu);
+    x.fake.wallet = GZ_API_WALLET_FILES_BEHIND;
+    pthread_mutex_unlock(&x.fake.mu);
+    CHECK(expect(&x, "GET", "/api/v1/lobbies", NULL, 423, "wallet_locked"));
+    pthread_mutex_lock(&x.fake.mu);
+    x.fake.wallet = GZ_API_WALLET_UNLOCKED;
+    pthread_mutex_unlock(&x.fake.mu);
+    fx_stop(&x);
+}
+
+static void test_review_setup(void)
+{
+    fixture x;
+    resp r;
+    char tok[64], code[16], body[400], path[200];
+    fx_prepare(&x, GZ_FAKE_FIRST_RUN);
+    if (fx_go(&x)) { CHECK(0); return; }
+    start_token_from_file(&x, tok);
+    CHECK(strlen(tok) == 43);
+    /* a setup session from a code, while the start token is still unspent */
+    CHECK(gz_api_first_run_code(x.srv, code) == 0);
+    g_session[0] = 0;
+    snprintf(body, sizeof body, "{\"code\":\"%s\"}", code);
+    api(&x, &r, "POST", "/api/v1/session/start", body, NULL);
+    CHECK(r.status == 200);
+    snprintf(g_session, sizeof g_session, "%s", jfield(&r, "session") ? jfield(&r, "session") : "");
+    resp_free(&r);
+    /* confirm-pass-length-only: two passphrases of one length that differ */
+    CHECK(expect(&x, "POST", "/api/v1/wallet/create",
+                 "{\"confirm\":\"create_wallet\",\"passphrase\":\"" PASS "\",\"confirm_passphrase\":\"" PASS "X\"}", 400,
+                 "passphrases_differ"));
+    CHECK(expect(&x, "POST", "/api/v1/wallet/create",
+                 "{\"confirm\":\"create_wallet\",\"passphrase\":\"correct horse battery staple, tesA\","
+                 "\"confirm_passphrase\":\"correct horse battery staple, tesB\"}", 400, "passphrases_differ"));
+    /* done with a fault (storage GZ_SC_DONE_WITH_FAULT): in force, so done, with a warning */
+    pthread_mutex_lock(&x.fake.mu);
+    x.fake.fault_next = 1;
+    pthread_mutex_unlock(&x.fake.mu);
+    api(&x, &r, "POST", "/api/v1/wallet/create",
+        "{\"confirm\":\"create_wallet\",\"passphrase\":\"" PASS "\",\"confirm_passphrase\":\"" PASS "\"}", NULL);
+    CHECK(r.status == 200 && r.body && strstr(r.body, "\"words\"") &&
+          strstr(r.body, "\"warning\":{\"code\":\"done_with_fault\",\"fault\":\"mark_file\"}"));
+    resp_free(&r);
+    CHECK(x.fake.wallet == GZ_API_WALLET_UNLOCKED);
+    /* create-keeps-first-run: the start token's file and every code go at create (4.9) */
+    snprintf(path, sizeof path, "%s/first-run.html", x.dir);
+    CHECK(access(path, F_OK) != 0);
+    CHECK(gz_api_first_run_code(x.srv, code) != 0);
+    fx_stop(&x);
+}
+
+static void test_review_attempts(void)
+{
+    fixture x;
+    resp r;
+    uint32_t wrong;
+    uint64_t last, until;
+    int i;
+    int64_t now_s;
+    /* attempts-other-network: a file of another network is the strictest state */
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    now_s = test_now(NULL) / 1000;
+    write_attempts(&x, "testnet4", 0, 0, 0);
+    if (fx_go(&x)) { CHECK(0); return; }
+    g_session[0] = 0;
+    CHECK(expect(&x, "POST", "/api/v1/session", "{\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}", 429, "rate_limited"));
+    fx_stop(&x);
+    /* a clock set back: a loaded delay is capped at 900 s (F5.2) */
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    now_s = test_now(NULL) / 1000;
+    write_attempts(&x, "signet", 20, (uint64_t)now_s, (uint64_t)now_s + 50000);
+    if (fx_go(&x)) { CHECK(0); return; }
+    api(&x, &r, "POST", "/api/v1/session", "{\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}", NULL);
+    CHECK(is_code(&r, 429, "rate_limited"));
+    {
+        const char *p = r.body ? strstr(r.body, "\"retry_after_s\":") : NULL;
+        CHECK(p && atol(p + 16) <= 900);
+    }
+    resp_free(&r);
+    fx_stop(&x);
+    /* delay-cap-1800: the delay doubles to 900 s and stays there */
+    clock_freeze(1);
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    if (fx_go(&x)) { CHECK(0); clock_freeze(0); return; }
+    for (i = 0; i < 17; i++) {
+        atomic_fetch_add(&clock_off, 2000 * 1000);
+        CHECK(expect(&x, "POST", "/api/v1/session", "{\"passphrase\":\"wrong, over and over\"}", 401, "wrong_passphrase"));
+    }
+    CHECK(read_attempts(&x, &wrong, &last, &until) == 0 && wrong == 17 && until - last == 900);
+    /* the file cannot be written: passphrases are refused, not counted (F5.1) */
+    {
+        char p[200], q[240];
+        snprintf(p, sizeof p, "%s/attempts.gza", x.dir);
+        unlink(p);
+        mkdir(p, 0700);                                   /* the rename over it fails, even for root */
+        snprintf(q, sizeof q, "%s/keep", p);
+        close(open(q, O_WRONLY | O_CREAT, 0600));
+        atomic_fetch_add(&clock_off, 2000 * 1000);
+        CHECK(expect(&x, "POST", "/api/v1/session", "{\"passphrase\":\"wrong, over and over\"}", 401, "wrong_passphrase"));
+        CHECK(expect(&x, "POST", "/api/v1/session", "{\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}", 503, "passphrase_not_checked"));
+        unlink(q);
+        rmdir(p);
+        CHECK(expect(&x, "POST", "/api/v1/session", "{\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}", 429, "rate_limited"));
+    }
+    clock_freeze(0);
+    fx_stop(&x);
+}
+
+static void test_review_words(void)
+{
+    fixture x;
+    resp r;
+    char id[64], body[400], other[64];
+    int i;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    if (fx_go(&x)) { CHECK(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(other, sizeof other, "%s", g_session);
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    /* check-id-any-session: a check_id belongs to the session that started it */
+    api(&x, &r, "POST", "/api/v1/wallet/phrase/check-start", "{}", NULL);
+    CHECK(r.status == 200);
+    snprintf(id, sizeof id, "%s", jfield(&r, "check_id") ? jfield(&r, "check_id") : "");
+    resp_free(&r);
+    {
+        char mine[64];
+        snprintf(mine, sizeof mine, "%s", g_session);
+        snprintf(g_session, sizeof g_session, "%s", other);
+        snprintf(body, sizeof body, "{\"check_id\":\"%s\",\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\",\"words\":[\"a\",\"b\",\"c\"]}", id);
+        CHECK(expect(&x, "POST", "/api/v1/wallet/phrase/check", body, 400, "bad_value"));
+        snprintf(g_session, sizeof g_session, "%s", mine);
+    }
+    /* checks-left-zero-ok: three checks a day; a fourth is refused before any derivation */
+    for (i = 0; i < 3; i++) {
+        api(&x, &r, "POST", "/api/v1/wallet/phrase/check-start", "{}", NULL);
+        snprintf(id, sizeof id, "%s", jfield(&r, "check_id") ? jfield(&r, "check_id") : "");
+        resp_free(&r);
+        snprintf(body, sizeof body, "{\"check_id\":\"%s\",\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\",\"words\":[\"abandon\",\"abandon\",\"abandon\"]}", id);
+        api(&x, &r, "POST", "/api/v1/wallet/phrase/check", body, NULL);
+        CHECK(r.status == 200);
+        resp_free(&r);
+        sign_in(&x, GZ_FAKE_PASSPHRASE);               /* a failed check ends the session (4.9) */
+    }
+    api(&x, &r, "POST", "/api/v1/wallet/phrase/check-start", "{}", NULL);
+    snprintf(id, sizeof id, "%s", jfield(&r, "check_id") ? jfield(&r, "check_id") : "");
+    resp_free(&r);
+    {
+        int64_t before = x.fake.derivations;
+        snprintf(body, sizeof body, "{\"check_id\":\"%s\",\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\",\"words\":[\"abandon\",\"abandon\",\"abandon\"]}", id);
+        CHECK(expect(&x, "POST", "/api/v1/wallet/phrase/check", body, 429, "rate_limited"));
+        CHECK(x.fake.derivations == before);
+    }
+    fx_stop(&x);
+}
+
+/* token-dir-mode-any: a token folder that is not owner-only is refused, and status says so (F5.5) */
+static void test_review_token_dir(void)
+{
+    fixture x;
+    resp r;
+    char d[300];
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    token_dir_of(&x, d);
+    CHECK(mkdir(d, 0755) == 0);
+    chmod(d, 0755);
+    if (fx_go(&x)) { CHECK(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    {
+        char p[340];
+        snprintf(p, sizeof p, "%s/socket.token", d);
+        CHECK(access(p, F_OK) != 0);
+    }
+    api(&x, &r, "GET", "/api/v1/status", NULL, NULL);
+    CHECK(r.status == 200 && r.body && strstr(r.body, "\"socket_token\":\"folder_refused\""));
+    resp_free(&r);
+    fx_stop(&x);
+    rmdir(d);
+}
+
+/* head-deadline-off, body-deadline-idle: the head and body limits, not the idle one */
+static int closed_within(int fd, int ms)
+{
+    char b[512];
+    int64_t t0 = real_now();
+    for (;;) {
+        struct pollfd p = {fd, POLLIN, 0};
+        int left = ms - (int)(real_now() - t0);
+        ssize_t n;
+        if (left <= 0) return 0;
+        if (poll(&p, 1, left) <= 0) return 0;
+        n = recv(fd, b, sizeof b, 0);
+        if (n <= 0) return 1;
+    }
+}
+
+static void test_review_deadlines(void)
+{
+    fixture x;
+    char req[300];
+    int fd, i;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    x.cfg.limits.head_ms = 800;
+    x.cfg.limits.body_ms = 800;
+    x.cfg.limits.idle_ms = 20000;
+    if (fx_go(&x)) { CHECK(0); return; }
+    /* a head sent a byte at a time is closed at head_ms from its first byte */
+    fd = tcp_connect(x.port);
+    snprintf(req, sizeof req, "GET /api/v1/version HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n", x.port);
+    for (i = 0; i < 6; i++) { send(fd, req + i, 1, MSG_NOSIGNAL); sleep_ms(150); }
+    CHECK(closed_within(fd, 2500));
+    close(fd);
+    /* a body that stops is closed at body_ms */
+    fd = tcp_connect(x.port);
+    snprintf(req, sizeof req, "POST /api/v1/session HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nOrigin: http://127.0.0.1:%d\r\n"
+                              "Content-Type: application/json\r\nContent-Length: 40\r\n\r\n{\"pa", x.port, x.port);
+    send(fd, req, strlen(req), MSG_NOSIGNAL);
+    CHECK(closed_within(fd, 2500));
+    close(fd);
+    fx_stop(&x);
+}
+
+/* merge-off, stream-unsent-unbounded: events of one topic merge; a stream nobody reads is closed */
+static void test_review_streams(void)
+{
+    fixture x;
+    char req[600], buf[16384];
+    int fd, n, k, seen = 0;
+    gz_api_counters ctr;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.cfg.limits.merge_ms = 400;
+    x.cfg.limits.stream_unsent_max = 4096;
+    if (fx_go(&x)) { CHECK(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    n = snprintf(req, sizeof req, "GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nX-Gazpacho-Session: %s\r\n"
+                                  "Sec-Fetch-Site: same-origin\r\nSec-Fetch-Dest: empty\r\n\r\n", x.port, g_session);
+    fd = tcp_connect(x.port);
+    send(fd, req, (size_t)n, MSG_NOSIGNAL);
+    sleep_ms(300);
+    while (recv(fd, buf, sizeof buf, MSG_DONTWAIT) > 0) {
+    }
+    gz_api_notify(x.srv, "factory", "fac_merge");
+    gz_api_notify(x.srv, "factory", "fac_merge");
+    gz_api_notify(x.srv, "factory", "fac_merge");
+    sleep_ms(150);                                      /* inside the merge window */
+    k = (int)recv(fd, buf, sizeof buf - 1, MSG_DONTWAIT);
+    buf[k > 0 ? k : 0] = 0;
+    {
+        const char *p = buf;
+        while ((p = strstr(p, "fac_merge"))) { seen++; p++; }
+    }
+    CHECK(seen == 1);
+    close(fd);
+    /* nobody reads: past stream_unsent_max the stream is closed */
+    fd = tcp_connect(x.port);
+    {
+        int small = 1024;
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &small, sizeof small);
+    }
+    send(fd, req, (size_t)n, MSG_NOSIGNAL);
+    sleep_ms(300);
+    for (k = 0; k < 4000; k++) {
+        char id[40];
+        snprintf(id, sizeof id, "fac_%d", k);
+        gz_api_notify(x.srv, "factory", id);
+        if (k % 200 == 0) sleep_ms(20);
+    }
+    sleep_ms(500);
+    gz_api_server_counters(x.srv, &ctr);
+    CHECK(ctr.streams_open == 0);
+    close(fd);
+    fx_stop(&x);
+}
+
+/* ---- P5: generations, held answers, node_stopped, one loop ---------------------------------- */
+typedef struct { fixture *x; const char *body; int status; char code[48]; } bg_arg;
+
+static void *bg_sign_in(void *a)
+{
+    bg_arg *b = a;
+    resp r;
+    api(b->x, &r, "POST", "/api/v1/session", b->body, NULL);
+    b->status = r.status;
+    snprintf(b->code, sizeof b->code, "%s", jfield(&r, "code") ? jfield(&r, "code") : "");
+    resp_free(&r);
+    return NULL;
+}
+
+static void test_p5_generation(void)
+{
+    fixture x;
+    pthread_t th;
+    bg_arg b;
+    uint32_t wrong;
+    uint64_t last, until;
+    int64_t installs;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.fake.pp_delay_ms = 400;
+    if (fx_go(&x)) { CHECK(0); return; }
+    g_session[0] = 0;
+    /* a lock during a right sign-in: discarded, nothing installed (T4.4) */
+    installs = x.fake.installs;
+    memset(&b, 0, sizeof b);
+    b.x = &x;
+    b.body = "{\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}";
+    pthread_create(&th, NULL, bg_sign_in, &b);
+    sleep_ms(150);
+    gz_api_server_new_generation(x.srv);
+    pthread_join(th, NULL);
+    CHECK(b.status == 503 && strcmp(b.code, "passphrase_not_checked") == 0);
+    CHECK(x.fake.installs == installs && x.fake.wallet == GZ_API_WALLET_LOCKED);
+    /* ... and a wrong one is still counted */
+    sleep_ms(1100);
+    memset(&b, 0, sizeof b);
+    b.x = &x;
+    b.body = "{\"passphrase\":\"wrong during a lock\"}";
+    pthread_create(&th, NULL, bg_sign_in, &b);
+    sleep_ms(150);
+    gz_api_server_new_generation(x.srv);
+    pthread_join(th, NULL);
+    CHECK(b.status == 503);
+    CHECK(read_attempts(&x, &wrong, &last, &until) == 0 && wrong == 1);
+    fx_stop(&x);
+}
+
+static int no_answer_yet(int fd, int ms)
+{
+    struct pollfd p = {fd, POLLIN, 0};
+    return poll(&p, 1, ms) == 0;
+}
+
+static int api_open(fixture *x, const char *method, const char *path, const char *body)
+{
+    char req[4000];
+    int fd = tcp_connect(x->port);
+    int n = snprintf(req, sizeof req,
+                     "%s %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nOrigin: http://127.0.0.1:%d\r\nSec-Fetch-Site: same-origin\r\n"
+                     "Sec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\nX-Gazpacho-Session: %s\r\nConnection: close\r\n"
+                     "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+                     method, path, x->port, x->port, g_session, strlen(body), body);
+    send(fd, req, (size_t)n, MSG_NOSIGNAL);
+    return fd;
+}
+
+static void test_p5_held(void)
+{
+    fixture x;
+    resp r;
+    int fd, fd2;
+    char path[80], digest[80], join1[300], join2[300];
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.cfg.limits.held_ms = 600;
+    if (fx_go(&x)) { CHECK(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    /* an acting call answers only once its save is confirmed */
+    pthread_mutex_lock(&x.fake.mu);
+    x.fake.hold = 1;
+    pthread_mutex_unlock(&x.fake.mu);
+    fd = api_open(&x, "PUT", "/api/v1/pause", "{\"on\":true}");
+    CHECK(no_answer_yet(fd, 200));
+    gz_fake_release(&x.fake);
+    read_answer(fd, &r, 2000);
+    CHECK(r.status == 200);
+    resp_free(&r);
+    close(fd);
+    /* resume (kind B: the sign-in's fresh window), held the same way */
+    fd = api_open(&x, "PUT", "/api/v1/pause", "{\"on\":false,\"confirm\":\"resume\"}");
+    CHECK(no_answer_yet(fd, 200));
+    gz_fake_release(&x.fake);
+    read_answer(fd, &r, 2000);
+    CHECK(r.status == 200 && r.body && strstr(r.body, "\"state\":\"off\""));
+    resp_free(&r);
+    close(fd);
+    /* no outcome within held_ms: 503 node_busy; the retry is held, not acted again */
+    pthread_mutex_lock(&x.fake.mu);
+    x.fake.hold_forever = 1;
+    pthread_mutex_unlock(&x.fake.mu);
+    snprintf(path, sizeof path, "/api/v1/lobbies/%s/join", "lob_7k2q");
+    api(&x, &r, "GET", "/api/v1/lobbies/lob_7k2q", NULL, NULL);
+    {
+        char *p = r.body ? strstr(r.body, "\"digest\":\"") : NULL;
+        snprintf(digest, sizeof digest, "%.64s", p ? p + 10 : "");
+    }
+    resp_free(&r);
+    snprintf(join1, sizeof join1, "{\"request_id\":\"rid-held-0000000001\",\"seen_current_digest\":\"%s\"}", digest);
+    snprintf(join2, sizeof join2, "{\"request_id\":\"rid-held-0000000002\"}");   /* a leave */
+    {
+        int64_t acted = x.fake.acted;
+        fd = api_open(&x, "POST", path, join1);
+        read_answer(fd, &r, 3000);
+        CHECK(is_code(&r, 503, "node_busy"));
+        resp_free(&r);
+        close(fd);
+        fd2 = api_open(&x, "POST", path, join1);
+        CHECK(no_answer_yet(fd2, 200));
+        CHECK(x.fake.acted == acted + 1);
+        pthread_mutex_lock(&x.fake.mu);
+        x.fake.hold_forever = 0;
+        pthread_mutex_unlock(&x.fake.mu);
+        gz_fake_release(&x.fake);
+        read_answer(fd2, &r, 2000);
+        CHECK(r.status == 202 && r.body && strstr(r.body, "\"replayed\":true"));
+        resp_free(&r);
+        close(fd2);
+        CHECK(x.fake.acted == acted + 1);
+        /* the same id with another body: the engine's 409 */
+        api(&x, &r, "POST", path, "{\"request_id\":\"rid-held-0000000001\",\"seen_current_digest\":\""
+                                  "1111111111111111111111111111111111111111111111111111111111111111\"}", NULL);
+        CHECK(is_code(&r, 409, "request_id_reused"));
+        resp_free(&r);
+    }
+    /* a restart of the node: held calls answer 503 node_stopped, reason rebuilding */
+    pthread_mutex_lock(&x.fake.mu);
+    x.fake.hold_forever = 1;
+    pthread_mutex_unlock(&x.fake.mu);
+    fd = api_open(&x, "POST", "/api/v1/lobbies/lob_7k2q/leave", join2);
+    sleep_ms(150);
+    gz_api_server_node_stopped(x.srv, "rebuilding");
+    read_answer(fd, &r, 2000);
+    CHECK(is_code(&r, 503, "node_stopped") && strstr(r.body, "\"reason\":\"rebuilding\""));
+    resp_free(&r);
+    close(fd);
+    pthread_mutex_lock(&x.fake.mu);
+    x.fake.hold_forever = 0;
+    x.fake.hold = 0;
+    pthread_mutex_unlock(&x.fake.mu);
+    gz_fake_release(&x.fake);
+    fx_stop(&x);
+}
+
+/* dispatch never spins: an idle server uses next to no CPU (T4.3 style) */
+static void test_p5_idle(void)
+{
+    fixture x;
+    struct timespec a, b;
+    int64_t used;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    if (fx_go(&x)) { CHECK(0); return; }
+    sleep_ms(200);
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &a);
+    sleep_ms(2000);
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &b);
+    used = (int64_t)(b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000;
+    if (used >= 100) printf("  idle CPU %lld ms in 2 s\n", (long long)used);
+    CHECK(used < 100);
+    /* shutdown, first step: listeners close (the loop has stopped) */
+    gz_api_server_stop(x.srv);
+    pthread_join(x.th, NULL);
+    gz_api_server_stop_listening(x.srv);
+    CHECK(tcp_connect(x.port) < 0);
+    CHECK(access(gz_api_server_socket_path(x.srv), F_OK) != 0);
+    gz_api_server_free(x.srv);
+    x.srv = NULL;
+    fx_stop(&x);
+}
+
 int main(void)
 {
     test_binding();
@@ -1645,5 +2248,15 @@ int main(void)
     test_bodies();
     test_events();
     test_files_behind_and_socket();
+    test_review_walls();
+    test_review_setup();
+    test_review_attempts();
+    test_review_words();
+    test_review_token_dir();
+    test_review_deadlines();
+    test_review_streams();
+    test_p5_generation();
+    test_p5_held();
+    test_p5_idle();
     return check_done();
 }
