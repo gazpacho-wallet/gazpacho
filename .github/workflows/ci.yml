@@ -199,7 +199,11 @@ jobs:
       - name: Every compiled test under memcheck
         # The 1,000-seed simulator run takes over eight minutes under valgrind;
         # 200 seeds of the same length here, all 1,000 in every other build.
-        run: python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0"
+        run: >
+          python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0"
+          --args "lobby_sim_profile_0=3 0" --args "lobby_sim_profile_1=3 1"
+          --args "lobby_sim_profile_2=3 2" --args "lobby_sim_profile_3=3 3"
+          --args "lobby_fuzz=3000 2"
 
   fuzz:
     name: libFuzzer, 60 s per target
