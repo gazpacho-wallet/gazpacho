@@ -33,6 +33,7 @@ Specification draft 2, 2026-11-12. Status: draft 1 brought fully in line with `s
 | 15 networks | `init` names one chain, signet or testnet4; terms checked against the member's own network | 2, 6.2, test 18 |
 | 13 member keys | Derivation path proposed (owner to confirm), with a network level and index pairs; a fresh index pair per `CONNECT`, not per TCP connection | 2, open point 3 |
 | 7 test traffic | Kind 32767 reserved for test builds | 4.1 |
+| 3 reconnect limits | `hello` duplicates, the 20-`hello` limit and status answers counted per link (per member key), not per connection | 6.1, 7.10 |
 
 Related: `terms.md` (the host terms record carried by `terms_offer`), `signing-round.md` (what the round messages mean), `safety-rule.md` (what a member checks before it contributes), `journal.md` (what is saved before each message is sent).
 
@@ -265,7 +266,7 @@ Sent first after `init`, and after every reconnect.
 
 - `scope` all zero: the host answers with one `terms_offer` for each **listed** lobby it has open, at most 4 (the same cap as a host's live listings in `discovery.md`). An unlisted lobby is never named in this answer; a member reaches it only with its identifier, from an invitation. A slice 1 host has one. Finding lobbies without connecting first is specified in `discovery.md` (beacons, store nodes, the pool request, the Nostr annex); this answer serves a member already connected to the host.
 - `scope` a lobby identifier: the host answers with that lobby's `terms_offer`, then `lobby_status` for this key's seat. For an unknown lobby, `lobby_status` with lobby state 0 alone.
-- Duplicates: answered again, at most once per second per connection; more are ignored. A connection that sends more than 20 ignored `hello`s is closed. One `hello` per connection is normal; the limits stop a peer from making the host send terms in a loop. Answers to scope-zero `hello`s are also limited across all connections to 4 per second (review 3, F13: up to 16 offers of about 5 KB each per small request).
+- Duplicates: answered again, at most once per second **per link (per member key)**, counted across that key's connections, so reconnecting does not reset the limit; more are ignored. A member key that sends more than 20 ignored `hello`s within 10 minutes, across its connections, has its connection closed. One `hello` per connection is normal; the limits stop a peer from making the host send terms in a loop. Answers to scope-zero `hello`s are also limited across all connections to 4 per second (review 3, F13: up to 16 offers of about 5 KB each per small request).
 
 ### 6.2 `terms_offer` (18), host → member
 
@@ -675,7 +676,7 @@ The host, on a member's `round_abort`: removes the member from the attempt and r
 |---|---|---|---|
 | 2 | `round_id` | 32 | Yes |
 
-Sent by a member whose round is Unfinished or Complete-but-unfunded, after every reconnect, after `hello` and after resending any saved `round_partial_sigs` (section 6, "Seats and reconnects"). The host answers with the saved bytes it holds for that member and round: every `round_tier_result`, then `round_complete`. If the round failed, it answers `round_abort` with the reason. If it knows no such round, it ignores the request. Unsigned: it asks for nothing new. At most one answer per round per 10 seconds per connection; a member needs one.
+Sent by a member whose round is Unfinished or Complete-but-unfunded, after every reconnect, after `hello` and after resending any saved `round_partial_sigs` (section 6, "Seats and reconnects"). The host answers with the saved bytes it holds for that member and round: every `round_tier_result`, then `round_complete`. If the round failed, it answers `round_abort` with the reason. If it knows no such round, it ignores the request. Unsigned: it asks for nothing new. At most one answer per round per 10 seconds **per link (per member key)**, counted across that key's connections; a member needs one.
 
 ### 7.11 `factory_funded` (81), host → member
 
