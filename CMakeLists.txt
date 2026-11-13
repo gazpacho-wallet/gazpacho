@@ -295,3 +295,6 @@ if(GZ_VALGRIND AND NOT GZ_SANITIZE)
     add_test(NAME valgrind_lobby_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_lobby> 3000 2)
   endif()
 endif()
+
+# --- trees from terms and the creation checks (core/tree) ---
+add_subdirectory(core/tree)

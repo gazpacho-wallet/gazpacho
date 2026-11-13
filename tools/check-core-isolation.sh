@@ -67,6 +67,10 @@
 #     allowed at offset 0 or through a register, the forms MemorySanitizer
 #     uses for its thread-local shadows, only when every thread-local
 #     reference names one of its variables. %gs is refused there as well.
+#     The 8 bytes clang's -fsanitize=function writes immediately before a
+#     function (fe ca 05 c1 and a type hash) are not read as instructions
+#     there, and only those: the window just before each function start of
+#     the symbol table, when it begins with that magic.
 #
 # usage: check-core-isolation.sh [--sanitized] LIBRARY-OR-OBJECT
 #            [--sources COMPILER "CFLAGS" FILE...]
@@ -163,7 +167,55 @@ fi
 
 case "$(uname -m)" in
     x86_64|i?86)
-        code=$(objdump -d "$lib" | awk -F'\t' 'NF >= 3 { print $3 }')
+        if [ "$sanitized" -eq 0 ]; then
+            code=$(objdump -d "$lib" | awk -F'\t' 'NF >= 3 { print $3 }')
+        else
+            # clang's -fsanitize=function puts 8 bytes of data immediately
+            # before each function it instruments: the magic 0xc105cafe
+            # (fe ca 05 c1) and a hash of the function's type. objdump decodes
+            # them as instructions, and a hash byte can read as a prefix such
+            # as `fs`. In a sanitized build only, exactly those 8 bytes are
+            # left out: the window [start - 8, start) of a function symbol of
+            # the symbol table (type F), in the same member and section, when
+            # the decoded lines cover it exactly and begin with the magic.
+            # Bytes anywhere else, the same magic included, are checked.
+            starts=$(objdump -t "$lib" | awk '
+                /:     file format / { m = $0; sub(/:     file format .*/, "", m); next }
+                length($0) > 25 && substr($0, 24, 1) == "F" && substr($0, 17, 1) == " " {
+                    s = substr($0, 26); sub(/\t.*/, "", s); print m "\t" s "\t" substr($0, 1, 16) }')
+            code=$(objdump -d "$lib" | GZ_STARTS="$starts" awk -F'\t' '
+                function hex(h,   i, v, c) { v = 0; h = tolower(h)
+                    for (i = 1; i <= length(h); i++) { c = index("0123456789abcdef", substr(h, i, 1)); if (!c) return -1; v = v * 16 + c - 1 }
+                    return v }
+                function flush(   i, k, s, lo, at, bytes, ok) {
+                    for (k = 1; k <= nf; k++) {
+                        s = fstart[k]; lo = s - 8; if (lo < 0) continue
+                        at = lo; bytes = ""; ok = 1
+                        for (i = 1; i <= n; i++) {
+                            if (addr[i] + len[i] <= lo || addr[i] >= s) continue
+                            if (addr[i] != at || addr[i] + len[i] > s) { ok = 0; break }
+                            bytes = bytes raw[i]; at += len[i]
+                        }
+                        if (ok && at == s && substr(bytes, 1, 8) == "feca05c1")
+                            for (i = 1; i <= n; i++) if (addr[i] >= lo && addr[i] < s) skip[i] = 1
+                    }
+                    for (i = 1; i <= n; i++) if (!skip[i] && ins[i] != "") print ins[i]
+                    n = 0; split("", skip)
+                }
+                function section_begins(   j) {
+                    nf = 0
+                    for (j = 1; j <= ns; j++) if (sm[j] == mem && ss[j] == sec) fstart[++nf] = sa[j]
+                }
+                BEGIN { ns = split(ENVIRON["GZ_STARTS"], lines, "\n")
+                        for (j = 1; j <= ns; j++) { split(lines[j], p, "\t"); sm[j] = p[1]; ss[j] = p[2]; sa[j] = hex(p[3]) } }
+                /:     file format / { flush(); mem = $0; sub(/:     file format .*/, "", mem); next }
+                /^Disassembly of section / { flush(); sec = $0; sub(/^Disassembly of section /, "", sec); sub(/:$/, "", sec); section_begins(); next }
+                NF >= 2 && $1 ~ /^ *[0-9a-f]+:$/ {
+                    a = $1; gsub(/[ :]/, "", a); b = $2; gsub(/ /, "", b)
+                    n++; addr[n] = hex(a); raw[n] = tolower(b); len[n] = length(b) / 2; ins[n] = NF >= 3 ? $3 : ""
+                    next }
+                END { flush() }')
+        fi
         # Instructions that reach the OS, the machine's state, its clock or its
         # random source. Matched anywhere on the line (prefixes, hand-assembled
         # bytes shown as a mnemonic), so a disguised form is caught too.
