@@ -40,6 +40,12 @@ PING_MS = 40
 CRASH_AT = 15        # the host stops after its 15th durable ping record
 FAIL_AT = 6          # member 1's 6th journal append fails
 SLOW = ["--test-ping-ms", "150"]  # member 2 pings slowly, so it is mid-run when killed
+# GZP_TIME_SCALE stretches the held starts and short waits (for runs under valgrind).
+SCALE = float(os.environ.get("GZP_TIME_SCALE", "1"))
+
+
+def ms(v):
+    return str(int(v * SCALE))
 
 check = Checks()
 
@@ -81,6 +87,10 @@ def main():
 
         code, out = run(exe, "--data-dir", hdir, "--role", "host", "--listen", "127.0.0.1:0", "--no-chain")
         check(code == 3 and "in use" in out, "a second program on the host's folder is refused (exit %s)" % code)
+        os.unlink(os.path.join(hdir, "lock"))  # the pid file, deleted from under the running host
+        code, out = run(exe, "--data-dir", hdir, "--role", "host", "--listen", "127.0.0.1:0", "--no-chain")
+        check(code == 3 and "in use" in out,
+              "with its lock file deleted the folder is still refused to a second program (exit %s)" % code)
 
         connect = ["--connect", "%s@127.0.0.1:%s" % (hkey, port)]
         m1 = Proc("m1-1", [exe, "--data-dir", m1dir, "--role", "member", "--name", "m1",
@@ -103,11 +113,15 @@ def main():
         crash_peer, crash_payload = (c.group(1), bytes.fromhex(c.group(2)).decode()) if c else ("", "")
         print("     the reply cut off was to %s for ping %s" % (crash_peer, crash_payload), flush=True)
 
+        # Restarted with its start held open and listening, so the member's
+        # connection is up (queued) while the start resends: the resend must
+        # still be dropped (nothing of a queued connection is reported yet).
         host2 = None
         for _ in range(40):
-            host2 = Proc("host-2", [exe, "--data-dir", hdir, "--role", "host",
-                                    "--listen", "127.0.0.1:" + port, "--name", "host"] + common, logs)
-            if host2.wait_for(r"listening address", timeout=5) is not None:
+            host2 = Proc("host-2", [exe, "--data-dir", hdir, "--role", "host", "--listen", "127.0.0.1:" + port,
+                                    "--name", "host", "--test-start-delay-ms", ms(1500),
+                                    "--test-listen-during-start"] + common, logs)
+            if host2.wait_for(r"start-delay|listening address", timeout=5) is not None:
                 break
             host2.exit_code(5)
             time.sleep(0.25)
@@ -123,6 +137,10 @@ def main():
               "its start resends the reply that never left, and it is dropped: nobody is connected (no outbox)")
         who = "m1" if crash_peer == peer_id(keys["m1"]) else "m2"
         mp = m1 if who == "m1" else m2
+        i_r = host2.index_of(r"ready incarnation=2")
+        up = [mp.times[i] for i, l in enumerate(mp.lines) if " connected peer=" in l]
+        check(i_r is not None and any(t < host2.times[i_r] for t in up if t > host2.started),
+              "%s's connection was up, in the host's start queue, while the start resent" % who)
         kk = crash_payload.split("/")[-1]
         hp = peer_id(hkey)
         check(crash_payload.startswith(who + "/") and mp.wait_for(r"pong peer=%s k=%s " % (hp, kk)) is not None,
@@ -160,10 +178,10 @@ def main():
         # --- the start queue ------------------------------------------------------
         host2.stop()
         host3 = Proc("host-3", [exe, "--data-dir", hdir, "--role", "host", "--listen", "127.0.0.1:" + port,
-                                "--name", "host", "--test-start-delay-ms", "2500",
+                                "--name", "host", "--test-start-delay-ms", ms(2500), "--test-timer-ms", "300",
                                 "--test-listen-during-start"] + common, logs)
         procs.append(host3)
-        check(host3.wait_for(r"start-delay ms=2500") is not None, "a host holds its start open, listening")
+        check(host3.wait_for(r"start-delay ms=") is not None, "a host holds its start open, listening")
         m3 = Proc("m3-1", [exe, "--data-dir", m3dir, "--role", "member", "--name", "m3"] + connect + common, logs)
         procs.append(m3)
         mm = m3.wait_for(r"member key=([0-9a-f]{66})")
@@ -181,15 +199,53 @@ def main():
         check(m3.wait_for(r"pings-done peer=%s n=%d" % (hp, PINGS)) is not None,
               "member 3's pings sent during the start are answered after it")
 
-        # --- clean stop, in the shutdown order ----------------------------------
-        for p in (host3, m1, m2b, m3):
+        # A member that connects and pings during a held start and is killed
+        # before it ends is never reported; one that sends over 1 MiB during
+        # it is closed, and reported only once it comes back after the start.
+        host3.stop()
+        host4 = Proc("host-4", [exe, "--data-dir", hdir, "--role", "host", "--listen", "127.0.0.1:" + port,
+                                "--name", "host", "--test-start-delay-ms", ms(4000), "--test-timer-ms", "300",
+                                "--test-listen-during-start"] + common, logs)
+        procs.append(host4)
+        check(host4.wait_for(r"start-delay ms=") is not None, "a host holds its start open again")
+        m4 = Proc("m4-1", [exe, "--data-dir", os.path.join(work, "m4"), "--role", "member", "--name", "m4"]
+                  + connect + common, logs)
+        m5 = Proc("m5-1", [exe, "--data-dir", os.path.join(work, "m5"), "--role", "member", "--name", "m5",
+                           "--test-burst", "20x60000"] + connect + common, logs)
+        procs += [m4, m5]
+        k4 = m4.wait_for(r"member key=([0-9a-f]{66})")
+        k5 = m5.wait_for(r"member key=([0-9a-f]{66})")
+        check(m4.wait_for(r"connected peer=%s" % hp, timeout=3 * SCALE) is not None and
+              m4.wait_for(r"pong peer=|burst|test-ping", timeout=0.5) is None,
+              "member 4 connects during the start (its pings go unanswered meanwhile)")
+        m4.p.kill()
+        m4.exit_code()
+        check(m5.wait_for(r"burst-sent", timeout=3 * SCALE) is not None, "member 5 sends 1.2 MB during the start")
+        check(host4.wait_for(r"start-queue closed conn=\d+ why=over-1MiB", timeout=6 * SCALE) is not None,
+              "the host closes member 5's connection past the 1 MiB start-queue cap")
+        i_r4 = host4.index_of(r"ready incarnation=4", timeout=10 * SCALE)
+        check(host4.wait_for(r"start-queue dropped conn=\d+ why=closed-during-start", timeout=1) is not None and
+              host4.find(r"connected peer=%s" % peer_id(k4.group(1) if k4 else "00"))[0] is None,
+              "member 4, gone before the start ended, is never reported to the node")
+        i_c5 = host4.index_of(r"connected peer=%s" % peer_id(k5.group(1) if k5 else "00"), timeout=10)
+        check(i_r4 is not None and i_c5 is not None and i_c5 > i_r4, "member 5 comes back after the start")
+        i_t = host4.index_of(r"test-timer fired", timeout=5)
+        check(i_r4 is not None and i_t is not None and i_t > i_r4 and
+              host4.find(r"test-timer fired")[0] == i_t,
+              "a test timer due during the start fires only after it")
+
+        # --- clean stop, in the shutdown order, read from the state -------------
+        for p in (host4, m1, m2b, m3, m5):
             p.p.send_signal(signal.SIGTERM)
-        for p in (host3, m1, m2b, m3):
+        want = [("node-stopped", "transport=1 storage=1 lock=1"),
+                ("connections-closed", "transport=0 storage=1 lock=1"),
+                ("storage-closed", "transport=0 storage=0 lock=1"),
+                ("lock-released", "transport=0 storage=0 lock=0")]
+        for p in (host4, m1, m2b, m3, m5):
             ok = p.exit_code() == 0
-            idx = [p.index_of(r"shutdown " + s, timeout=2) for s in
-                   ("node-stopped", "connections-closed", "storage-closed", "lock-released")]
+            idx = [p.index_of(r"shutdown %s %s" % w, timeout=2) for w in want]
             check(ok and None not in idx and idx == sorted(idx) and p.wait_for(r"stopped status=0", timeout=2),
-                  "%s stops cleanly on SIGTERM, in the shutdown order" % p.name)
+                  "%s stops cleanly on SIGTERM: transport, then storage, then the lock" % p.name)
 
         code, out = run(exe, "--data-dir", hdir, "--role", "member", "--no-chain",
                         "--connect", "%s@127.0.0.1:%s" % (hkey, port))

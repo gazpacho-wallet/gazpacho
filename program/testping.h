@@ -30,12 +30,16 @@ typedef struct {
 
 typedef struct {
     int n, every_ms;
+    int burst_n, burst_bytes;      /* --test-burst: sent at each connection */
     const char *name;
     uint64_t next_ms;
     gzp_tp_peer_t peers[GZP_MAX_CONNS];
 } gzp_testping_t;
 
 void gzp_testping_init(gzp_testping_t *t, int n, int every_ms, const char *name);
+/* At each connection, send n messages of ytes bytes (\"GZPX\" and filler, which
+ * the node ignores): a burst for the start-queue cap test. */
+void gzp_testping_burst(gzp_testping_t *t, int n, int bytes);
 /* A peer connected: send again every ping it has not answered. */
 void gzp_testping_connected(gzp_testping_t *t, gzp_net_t *net, uint64_t peer_id);
 /* A message from a peer: notes a pong to one of our pings. */

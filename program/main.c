@@ -30,7 +30,12 @@
 #include "pchain.h"
 #include "testping.h"
 
+/* More than RESTART_LIMIT restarts from storage within RESTART_WINDOW_MS
+ * stops the program (review of PR 27, M6): a fault that keeps coming back is
+ * not retried for ever, and unrelated faults a month apart never add up. */
 #define RESTART_LIMIT 5
+#define RESTART_WINDOW_MS (10u * 60u * 1000u)
+static uint64_t restart_at[RESTART_LIMIT + 1];
 
 static volatile sig_atomic_t stop_flag;
 static int stop_pipe[2] = {-1, -1};
@@ -133,6 +138,9 @@ int main(int argc, char **argv)
     sigemptyset(&sa.sa_mask);
     sigaction(SIGTERM, &sa, NULL);
     sigaction(SIGINT, &sa, NULL);
+    /* Output lines go to whatever reads standard output; if it goes away the
+     * program carries on (review of PR 27, M4). Sockets use MSG_NOSIGNAL. */
+    signal(SIGPIPE, SIG_IGN);
 
     rc = gzp_datadir_open(&dir, opt.data_dir, opt.role == GZP_ROLE_HOST ? "host" : "member", opt.network);
     if (rc) return rc;
@@ -199,6 +207,7 @@ int main(int argc, char **argv)
 
 #ifdef GZP_TEST_BUILD
     gzp_testping_init(&tp, opt.test_pings, opt.test_ping_ms, opt.name);
+    gzp_testping_burst(&tp, opt.test_burst_n, opt.test_burst_bytes);
 #endif
     gzp_notify_lines(&ex.notify);
     ex.opt = &opt;
@@ -211,6 +220,7 @@ int main(int argc, char **argv)
 
     for (i = 1;; i++) {
         int r = gzp_exec_incarnation(&ex, i);
+        uint64_t now;
         if (r == GZP_RUN_STOP) {
             rc = 0;
             stopped = 1;
@@ -220,17 +230,35 @@ int main(int argc, char **argv)
             rc = GZP_EXIT_DATA;
             break;
         }
+        if (r == GZP_RUN_POISONED) {
+            /* Never start again in this process: it would read back what the
+             * failed sync left in the page cache (store.h). */
+            rc = GZP_EXIT_STORAGE;
+            break;
+        }
         /* Fatal: start again from storage, under a new incarnation. Every
          * connection and the listener close (peers see the loss and repair it
          * through their reconnect step); the next start opens them again. */
-        if (++restarts > RESTART_LIMIT) {
-            gzp_log("stopping after %d restarts", RESTART_LIMIT);
+        /* The last RESTART_LIMIT + 1 restarts, in a ring: stop when the oldest
+         * of them is within the window. */
+        now = gzp_mono_ms();
+        restart_at[restarts % (RESTART_LIMIT + 1)] = now;
+        restarts++;
+        if (restarts > RESTART_LIMIT && now - restart_at[restarts % (RESTART_LIMIT + 1)] <= RESTART_WINDOW_MS) {
+            gzp_log("stopping after %d restarts within %u minutes", RESTART_LIMIT + 1, RESTART_WINDOW_MS / 60000u);
             rc = GZP_EXIT_FAILED;
             break;
         }
         gzp_log("restart-from-storage after=%s", ex.fatal_why ? ex.fatal_why : "-");
         if (gzp_net_reset(&net) != 0) {
             rc = GZP_EXIT_FAILED;
+            break;
+        }
+        /* A stop asked for meanwhile is honoured before a new start (M6). */
+        if (stop_flag) {
+            gzp_log("stop during restart: no new start");
+            rc = 0;
+            stopped = 1;
             break;
         }
     }
@@ -240,15 +268,24 @@ out:
      * runner and every held action are gone with the incarnation); the API
      * server and the chain worker come here with P5 to P7; then every
      * connection closes without events; then storage; then the lock. */
-    if (stopped) gzp_log("shutdown node-stopped");
+    /* Each line reports the state of the other resources at that moment, read
+     * from them, so a reordering shows (review of PR 27, M5). */
+    if (stopped) gzp_log("shutdown node-stopped transport=%d storage=%d lock=%d", net.peers != NULL, ex.store_open,
+                         dir.lock_fd >= 0);
     if (have_net) gzp_net_free(&net);
-    if (stopped) gzp_log("shutdown connections-closed");
+    if (stopped) gzp_log("shutdown connections-closed transport=%d storage=%d lock=%d", net.peers != NULL,
+                         ex.store_open, dir.lock_fd >= 0);
     gzp_chain_close(&chain);
     gzp_exec_close_storage(&ex);
-    if (stopped) gzp_log("shutdown storage-closed");
+    if (stopped) gzp_log("shutdown storage-closed transport=%d storage=%d lock=%d", net.peers != NULL,
+                         ex.store_open, dir.lock_fd >= 0);
     if (secp) secp256k1_context_destroy(secp);
     if (have_dir) gzp_datadir_close(&dir);
-    if (stopped) gzp_log("shutdown lock-released");
+    if (stopped) gzp_log("shutdown lock-released transport=%d storage=%d lock=%d", net.peers != NULL,
+                         ex.store_open, dir.lock_fd >= 0);
+    if (rc == GZP_EXIT_STORAGE)
+        fprintf(stderr, "gazpacho: a write to the journal failed and could not be undone; not restarted. "
+                        "Check the disk, then remove %s/storage.failed\n", opt.data_dir);
     gzp_log("stopped status=%d", rc);
     return rc;
 }

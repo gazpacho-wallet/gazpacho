@@ -42,10 +42,26 @@ static void send_ping(gzp_testping_t *t, gzp_net_t *net, uint64_t id, int k)
     gzp_net_send(net, id, msg, 4 + (size_t)pl);
 }
 
+void gzp_testping_burst(gzp_testping_t *t, int n, int bytes)
+{
+    t->burst_n = n;
+    t->burst_bytes = bytes;
+}
+
 void gzp_testping_connected(gzp_testping_t *t, gzp_net_t *net, uint64_t id)
 {
     gzp_tp_peer_t *p;
     int k;
+    if (t->burst_n > 0 && t->burst_bytes >= 4) {
+        uint8_t *m = malloc((size_t)t->burst_bytes);
+        if (m) {
+            memset(m, 'x', (size_t)t->burst_bytes);
+            memcpy(m, "GZPX", 4);
+            for (k = 0; k < t->burst_n; k++) gzp_net_send(net, id, m, (size_t)t->burst_bytes);
+            gzp_log("burst-sent peer=%016llx n=%d bytes=%d", (unsigned long long)id, t->burst_n, t->burst_bytes);
+            free(m);
+        }
+    }
     if (t->n <= 0 || !(p = peer(t, id, 1))) return;
     for (k = 0; k < p->sent; k++)
         if (!p->answered[k]) send_ping(t, net, id, k);

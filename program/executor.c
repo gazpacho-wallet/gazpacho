@@ -72,9 +72,18 @@ static void fail(gzp_exec_t *ex, const char *why)
     if (!ex->fatal) {
         ex->fatal = 1;
         ex->fatal_why = why;
-        gzp_log("fatal why=%s incarnation=%llu", why, (unsigned long long)ex->incarnation);
+        /* issued: the last batch this incarnation handed to storage; nothing
+         * of it may be saved after this line (tests check the journal). */
+        gzp_log("fatal why=%s incarnation=%llu issued=%llu", why, (unsigned long long)ex->incarnation,
+                (unsigned long long)ex->runner.issued);
     }
 }
+
+/* A timer of the test build's own (--test-timer-ms), kept in the same table
+ * as the node's and fired by the same code, but logged instead of given to
+ * the node: it shows that a timer due during a start fires after it, and that
+ * a restart's old timers never fire. */
+#define GZP_TEST_TIMER_ID UINT64_C(0xfffffffffffff001)
 
 #ifdef GZP_TEST_BUILD
 static uint64_t be64(const uint8_t *p)
@@ -144,6 +153,15 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
     if (ex->storage_broken) return; /* nothing more may be appended */
     if (ex->store.ops->append(ex->store.ctx, a->u.save.batch, a->u.save.records, a->u.save.n_records) != 0) {
         ex->storage_broken = 1;
+        for (i = 0; i < a->u.save.n_records; i++) {
+            const gz_record_t *r = &a->u.save.records[i];
+            char hex[2 * 64 + 1];
+            size_t pl;
+            if (r->type != GZ_RECORD_TEST_PING || r->bytes.len < GZ_PING_RECORD_HEADER) continue;
+            pl = r->bytes.len - GZ_PING_RECORD_HEADER;
+            gzp_hex(r->bytes.data + GZ_PING_RECORD_HEADER, pl > 64 ? 64 : pl, hex);
+            gzp_log("save-failed seq=%llu ping-payload=%s", (unsigned long long)a->u.save.batch.sequence, hex);
+        }
         /* Allowed from inside the executor: nothing more of this list is
          * handed over (runner.h). */
         gz_runner_storage_failed(&ex->runner);
@@ -180,17 +198,29 @@ static void execute(void *ctx, const gz_action_t *a)
         do_save(ex, a);
         break;
     case GZ_ACTION_SEND: {
+        const uint8_t *data = a->u.send.bytes.data;
+        size_t len = a->u.send.bytes.len;
+        uint8_t *padded = NULL;
         int r;
-        if (ex->starting && a->u.send.bytes.len >= GZ_PING_PREFIX_LEN) {
+        if (ex->starting && len >= GZ_PING_PREFIX_LEN) {
             ex->resent++;
-            log_hex_payload("start-resend", a->u.send.peer_id, a->u.send.bytes.data + GZ_PING_PREFIX_LEN,
-                            a->u.send.bytes.len - GZ_PING_PREFIX_LEN);
+            log_hex_payload("start-resend", a->u.send.peer_id, data + GZ_PING_PREFIX_LEN, len - GZ_PING_PREFIX_LEN);
         }
-        r = gzp_net_send(ex->net, a->u.send.peer_id, a->u.send.bytes.data, a->u.send.bytes.len);
+#ifdef GZP_TEST_BUILD
+        if (ex->opt->test_oversize_send && (size_t)ex->opt->test_oversize_send > len) {
+            /* --test-oversize-send: the same send, padded past the transport's limit. */
+            padded = calloc(1, (size_t)ex->opt->test_oversize_send);
+            if (!padded) abort();
+            if (len) memcpy(padded, data, len);
+            data = padded;
+            len = (size_t)ex->opt->test_oversize_send;
+        }
+#endif
+        r = gzp_net_send(ex->net, a->u.send.peer_id, data, len);
+        free(padded);
         if (r < 0) fail(ex, "message-too-big"); /* an engine bug (contract-v2.md section 1) */
         break;
-    }
-    case GZ_ACTION_BROADCAST:
+    }    case GZ_ACTION_BROADCAST:
         gzp_chain_broadcast(ex->chain, a->u.broadcast.tx.data, a->u.broadcast.tx.len);
         break;
     case GZ_ACTION_WATCH_SCRIPT:
@@ -230,9 +260,16 @@ static void submit(gzp_exec_t *ex)
 static void deliver(gzp_exec_t *ex, const gz_event_t *ev)
 {
     gz_status_t st;
-    if (ex->fatal) return;
+    if (ex->fatal) return; /* nothing reaches a node after its incarnation's fatal error */
     gz_action_list_reset(&ex->list);
     st = gz_node_handle(&ex->node, ev, &ex->list);
+    ex->delivered++;
+#ifdef GZP_TEST_BUILD
+    if (ex->number == 1 && ex->opt->test_node_error_at && ex->delivered == (uint64_t)ex->opt->test_node_error_at) {
+        gz_action_list_reset(&ex->list);
+        st = GZ_ERR_NO_SPACE; /* as if the node had refused the event */
+    }
+#endif
     if (st != GZ_OK) {
         /* The node is unchanged, but an event it could not take (a
          * confirmation above all) leaves it out of step with storage. */
@@ -275,13 +312,14 @@ static void drain(gzp_exec_t *ex)
 
 /* ---- network events (never during a start: the adapter queues them) ---- */
 
-static void on_connected(void *ctx, uint64_t peer_id, const uint8_t key[33], int outbound)
+static void on_connected(void *ctx, uint64_t peer_id, const uint8_t key[33], int outbound, uint64_t conn)
 {
     gzp_exec_t *ex = ctx;
     gz_event_t ev;
     char hex[67];
     gzp_hex(key, 33, hex);
-    gzp_log("connected peer=%016llx key=%s outbound=%d", (unsigned long long)peer_id, hex, outbound);
+    gzp_log("connected peer=%016llx key=%s outbound=%d conn=%llu", (unsigned long long)peer_id, hex, outbound,
+            (unsigned long long)conn);
     memset(&ev, 0, sizeof ev);
     ev.kind = GZ_EVENT_PEER_CONNECTED;
     ev.u.peer.peer_id = peer_id;
@@ -397,12 +435,14 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     uint32_t height;
     if (*ex->stop) return GZP_RUN_STOP;
     if (ex->fatal) return GZP_RUN_RESTART;
-    /* Back-pressure: with many batches awaiting storage, take no new outside
-     * event (a refusal would be fatal). A synchronous store never gets here. */
+    /* Back-pressure. With the synchronous store every batch is confirmed by
+     * the drain, so a batch still unconfirmed here is a contract breach (and
+     * an asynchronous journal must instead give the loop a descriptor to wait
+     * on: store.h, M2 of the review of PR 27). */
     drain(ex);
-    if (gz_runner_unconfirmed(&ex->runner) > GZ_RUNNER_MAX_UNCONFIRMED / 2) {
-        poll(NULL, 0, 1);
-        return -1;
+    if (gz_runner_unconfirmed(&ex->runner) > 0) {
+        fail(ex, "unconfirmed-batch-after-drain");
+        return GZP_RUN_RESTART;
     }
     fds[0].fd = ex->stop_fd;
     fds[0].events = POLLIN;
@@ -435,6 +475,12 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
                 (best < 0 || ex->timers[i].due_ms < ex->timers[best].due_ms))
                 best = i;
         if (best < 0 || ex->fatal) break;
+        if (ex->timers[best].id == GZP_TEST_TIMER_ID) {
+            ex->timers[best].used = 0;
+            gzp_log("test-timer fired incarnation=%llu", (unsigned long long)ex->incarnation);
+            timer_set(ex, GZP_TEST_TIMER_ID, (uint64_t)ex->opt->test_timer_ms);
+            continue;
+        }
         memset(&ev, 0, sizeof ev);
         ev.kind = GZ_EVENT_TIMER_FIRED;
         ev.u.timer.timer_id = ex->timers[best].id;
@@ -480,9 +526,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     uint64_t counter = 0;
     int rc = -1, cstate, restored;
 
-#ifndef GZP_TEST_BUILD
-    (void)number; /* used only by the test hooks */
-#endif
+    ex->number = number;
     ex->incarnation = 0;
     ex->fatal = 0;
     ex->fatal_why = NULL;
@@ -514,6 +558,11 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
 #ifdef GZP_TEST_BUILD
     if (number == 1 && ex->opt->test_storage_fail_at)
         gzp_standin_fail_at(&ex->store, (unsigned)ex->opt->test_storage_fail_at);
+#endif
+#ifdef GZP_TEST_BUILD
+    gzp_standin_test_hooks(&ex->store, number == 1 ? (unsigned)ex->opt->test_sync_fail_at : 0u,
+                           ex->opt->test_cut_fail, number == 1 && ex->opt->test_crash_after_counter,
+                           ex->opt->name);
 #endif
     if (gzp_standin_cut_bytes(&ex->store))
         gzp_log("journal-cut torn_bytes=%llu", (unsigned long long)gzp_standin_cut_bytes(&ex->store));
@@ -553,7 +602,10 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     if (!fds) abort();
 
     ex->starting = 1;
+    ex->delivered = 0;
 #ifdef GZP_TEST_BUILD
+    /* Set before the start, so that with a held start it comes due during it. */
+    if (ex->opt->test_timer_ms) timer_set(ex, GZP_TEST_TIMER_ID, (uint64_t)ex->opt->test_timer_ms);
     if (ex->opt->test_listen_during_start && gzp_net_open(ex->net) != 0) fail(ex, "listen");
 #endif
     start_node(ex);
@@ -567,6 +619,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     }
 #endif
     ex->starting = 0;
+    if (ex->fatal && gzp_standin_poisoned(&ex->store)) rc = GZP_RUN_RESTART; /* turned into POISONED below */
     if (rc < 0 && !ex->fatal) {
         gzp_log("ready incarnation=%llu resent=%u", (unsigned long long)ex->incarnation, ex->resent);
         /* Only now does the host listen and the member connect. */
@@ -576,10 +629,25 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
             return GZP_RUN_FAILED;
         }
         if (ex->net->listening) gzp_log("listening address=%s:%u", ex->net->listen_host, (unsigned)ex->net->bound_port);
+        /* The node learns the tip at every start (review of PR 27, L4). */
+        if (ex->chain->active && ex->chain->have_tip) {
+            gz_event_t ev;
+            memset(&ev, 0, sizeof ev);
+            ev.kind = GZ_EVENT_CHAIN;
+            ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
+            ev.u.chain.height = ex->chain->tip.height;
+            gzp_log("chain-tip told height=%u", ex->chain->tip.height);
+            deliver(ex, &ev);
+            drain(ex);
+        }
         gzp_net_queue_end(ex->net);
     }
     while (rc < 0) rc = turn(ex, fds, cap, 0);
     free(fds);
+    if (rc != GZP_RUN_STOP && gzp_standin_poisoned(&ex->store)) {
+        gzp_log("storage poisoned: a failed write could not be undone; not restarting (storage.failed)");
+        rc = GZP_RUN_POISONED;
+    }
     if (rc != GZP_RUN_STOP) gzp_exec_close_storage(ex);
     return rc;
 }

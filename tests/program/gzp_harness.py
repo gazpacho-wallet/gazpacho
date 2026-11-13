@@ -6,6 +6,8 @@ Standard library only. Each test script puts this folder on sys.path itself
 import hashlib
 import os
 import re
+import socket
+import struct
 import subprocess
 import threading
 import time
@@ -128,3 +130,61 @@ def kill_all(procs):
     for p in procs:
         if p and p.p.poll() is None:
             p.p.kill()
+
+
+RECORD_TEST_PING = 0x7e570001
+
+
+def parse_journal(path):
+    """The journal stand-in's entries: a list of ("INCN", inc) and
+    ("BTCH", inc, seq, [(type, bytes), ...]), stopping at a torn tail."""
+    out = []
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:8] != b"GZJSTAND":
+        return out
+    off = 16
+    while off + 8 <= len(data):
+        tag, ln = struct.unpack(">II", data[off:off + 8])
+        if off + 8 + ln + 32 > len(data):
+            break
+        body = data[off + 8:off + 8 + ln]
+        if hashlib.sha256(data[off:off + 8 + ln]).digest() != data[off + 8 + ln:off + 8 + ln + 32]:
+            break
+        if tag == 0x494e434e:
+            out.append(("INCN", struct.unpack(">Q", body)[0]))
+        elif tag == 0x42544348:
+            inc, seq, n = struct.unpack(">QQI", body[:20])
+            recs, p = [], 20
+            for _ in range(n):
+                t, l = struct.unpack(">II", body[p:p + 8])
+                recs.append((t, body[p + 8:p + 8 + l]))
+                p += 8 + l
+            out.append(("BTCH", inc, seq, recs))
+        off += 8 + ln + 32
+    return out
+
+
+def ping_payloads(entries):
+    """The payloads of every ping record in parsed journal entries."""
+    return [r[1][24:] for e in entries if e[0] == "BTCH" for r in e[3] if r[0] == RECORD_TEST_PING]
+
+
+def free_port():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+
+def can_connect(port):
+    s = socket.socket()
+    s.settimeout(0.5)
+    try:
+        s.connect(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()

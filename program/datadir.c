@@ -74,8 +74,16 @@ int gzp_datadir_open(gzp_datadir_t *d, const char *dir, const char *role, const 
         fprintf(stderr, "gazpacho: cannot create the data folder %s: %s\n", dir, strerror(errno));
         return GZP_EXIT_DATA;
     }
-    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+    /* The lock is on the folder itself (review of PR 27, M3): a file in it
+     * can be deleted from under a running program, and a second program
+     * would then lock a new file and share the folder. A directory cannot be
+     * removed while it holds files, and its lock goes with its descriptor,
+     * so a crash leaves no stale lock. */
+    d->lock_fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (d->lock_fd < 0 || fstat(d->lock_fd, &st) != 0 || !S_ISDIR(st.st_mode)) {
         fprintf(stderr, "gazpacho: %s is not a folder\n", dir);
+        if (d->lock_fd >= 0) close(d->lock_fd);
+        d->lock_fd = -1;
         return GZP_EXIT_DATA;
     }
     if (st.st_uid != geteuid() || (st.st_mode & 077)) {
@@ -83,13 +91,10 @@ int gzp_datadir_open(gzp_datadir_t *d, const char *dir, const char *role, const 
         return GZP_EXIT_DATA;
     }
     gzp_datadir_path(d, "lock", path);
-    d->lock_fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-    if (d->lock_fd < 0) {
-        fprintf(stderr, "gazpacho: cannot open %s: %s\n", path, strerror(errno));
-        return GZP_EXIT_DATA;
-    }
     if (flock(d->lock_fd, LOCK_EX | LOCK_NB) != 0) {
-        ssize_t got = pread(d->lock_fd, pid, sizeof pid - 1, 0);
+        int pf = open(path, O_RDONLY | O_CLOEXEC);
+        ssize_t got = pf >= 0 ? pread(pf, pid, sizeof pid - 1, 0) : 0;
+        if (pf >= 0) close(pf);
         pid[got > 0 ? got : 0] = 0;
         pid[strcspn(pid, "\n")] = 0;
         fprintf(stderr, "gazpacho: the data folder %s is in use by another gazpacho%s%s%s\n", dir,
@@ -98,11 +103,17 @@ int gzp_datadir_open(gzp_datadir_t *d, const char *dir, const char *role, const 
         d->lock_fd = -1;
         return GZP_EXIT_LOCKED;
     }
-    snprintf(pid, sizeof pid, "%ld\n", (long)getpid());
-    if (ftruncate(d->lock_fd, 0) != 0 || pwrite(d->lock_fd, pid, strlen(pid), 0) < 0) {
-        /* The pid is only for the message above; the lock is what counts. */
-    }
-    /* Identity: one role and one network per folder. */
+    /* `lock` holds the pid, only for the message above; the lock is the folder's. */
+    {
+        int pf = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        snprintf(pid, sizeof pid, "%ld\n", (long)getpid());
+        if (pf >= 0) {
+            if (write(pf, pid, strlen(pid)) < 0) {
+                /* the message only */
+            }
+            close(pf);
+        }
+    }    /* Identity: one role and one network per folder. */
     snprintf(want, sizeof want, "%s %s\n", role, network);
     gzp_datadir_path(d, "identity", path);
     r = read_small(path, have, sizeof have - 1, &n);

@@ -2,8 +2,10 @@
 /* The data folder: one program per folder, and the files the program keeps
  * outside the journal.
  *
- *   lock                   held with flock(LOCK_EX) while the program runs
- *                          (journal.md section 3, "One writer"); holds the pid
+ *   (the folder itself)    held with flock(LOCK_EX) on its own descriptor while the
+ *                          program runs (journal.md section 3, "One writer"), so
+ *                          deleting a file cannot let a second program in
+ *   lock                   the holder's pid, for the refusal message only
  *   identity               "role network", written at first start; a later
  *                          start with another role or network is refused
  *   journal.standin        the journal stand-in (journal_standin.c)

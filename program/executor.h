@@ -30,6 +30,7 @@
 #define GZP_RUN_STOP    0
 #define GZP_RUN_RESTART 1
 #define GZP_RUN_FAILED  2   /* storage cannot even be opened or begun: no restart */
+#define GZP_RUN_POISONED 3  /* a failed append could not be undone (store.h): exit, never restart */
 
 #define GZP_RUNNER_SLOTS 256
 #define GZP_RUNNER_BYTES (256u * 1024u)
@@ -70,6 +71,8 @@ typedef struct {
     const char *fatal_why;
     int storage_broken;      /* an append failed inside the executor callback */
     uint64_t pings_saved;    /* ping records made durable (tests) */
+    uint64_t delivered;      /* events given to the node (tests: --test-node-error-at) */
+    int number;              /* 1 for the first incarnation of this process */
 } gzp_exec_t;
 
 int gzp_exec_incarnation(gzp_exec_t *ex, int number);

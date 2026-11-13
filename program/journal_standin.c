@@ -16,8 +16,9 @@
  * Open (the fence): read every entry. An entry that runs past the end of the
  * file, or whose hash fails while it is the last thing in the file, is a torn
  * tail: the file is cut before it and synced. A bad entry with data after it,
- * an unknown tag, identifiers that do not strictly increase, or a batch of an
- * incarnation never begun, is corruption: open fails and the program does not
+ * an unknown tag, identifiers that do not strictly increase, an incarnation
+ * entry that does not increase, or a batch of an incarnation with no INCN
+ * entry (never begun), is corruption: open fails and the program does not
  * start. After the cut nothing an earlier program wrote can still complete:
  * that program is gone (the data folder lock says so) and its unsynced bytes
  * are either in the file now or never will be.
@@ -81,6 +82,13 @@ typedef struct {
     int restore_answered; /* batch 1 of a restored incarnation is durable */
     int counter_state;    /* GZP_COUNTER_* */
     uint64_t counter_value;
+    uint64_t *incs;       /* every incarnation begun, in order (INCN entries) */
+    size_t nincs, capincs;
+    int poisoned;         /* a failed append could not be cut back: stop the process */
+    char failed_path[4200];
+    unsigned sync_fail_at, cut_fail; /* tests */
+    int crash_after_counter;         /* tests */
+    const char *log_name;            /* tests */
 } standin_t;
 
 static void be32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
@@ -88,9 +96,28 @@ static void be64(uint8_t *p, uint64_t v) { be32(p, (uint32_t)(v >> 32)); be32(p 
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static uint64_t rd64(const uint8_t *p) { return (uint64_t)rd32(p) << 32 | rd32(p + 4); }
 
+static int push_inc(standin_t *s, uint64_t inc);
+static int inc_begun(const standin_t *s, uint64_t inc);
+
 static int id_after(gz_batch_id_t a, gz_batch_id_t b) /* a > b */
 {
     return a.incarnation > b.incarnation || (a.incarnation == b.incarnation && a.sequence > b.sequence);
+}
+
+static int sync_dir(const char *dir)
+{
+    int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC), rc;
+    if (fd < 0) return -1;
+    rc = fsync(fd);
+    close(fd);
+    return rc;
+}
+
+static void sync_dir_quiet(const char *dir)
+{
+    if (sync_dir(dir) != 0) {
+        /* best effort */
+    }
 }
 
 static int set_err(char *err, size_t n, const char *what)
@@ -260,11 +287,12 @@ static int scan(standin_t *s, char *err, size_t errlen)
                 return set_err(err, errlen, "journal corrupt: incarnations do not increase");
             }
             s->max_inc = inc;
+            if (push_inc(s, inc) != 0) { free(buf); return set_err(err, errlen, "out of memory"); }
         } else if (tag == TAG_BTCH) {
             gz_batch_id_t id, prev = s->last;
             int had = s->have_last;
             if (parse_batch(s, buf, len, &id) != 0) { free(buf); return set_err(err, errlen, "journal corrupt: bad batch entry"); }
-            if (id.incarnation == 0 || id.sequence == 0 || id.incarnation > s->max_inc || (had && !id_after(id, prev))) {
+            if (id.incarnation == 0 || id.sequence == 0 || !inc_begun(s, id.incarnation) || (had && !id_after(id, prev))) {
                 free(buf);
                 return set_err(err, errlen, "journal corrupt: batch identifiers do not strictly increase");
             }
@@ -287,26 +315,86 @@ static int scan(standin_t *s, char *err, size_t errlen)
     return 0;
 }
 
-static int append_entry(standin_t *s, uint32_t tag, const uint8_t *body, size_t len)
+static int push_inc(standin_t *s, uint64_t inc)
 {
-    uint8_t head[8], digest[32];
-    be32(head, tag);
-    be32(head + 4, (uint32_t)len);
-    if (entry_hash(head, body, len, digest) != 0) return -1;
-    if (lseek(s->fd, (off_t)s->file_len, SEEK_SET) < 0) return -1;
-    if (write_all(s->fd, head, 8) || write_all(s->fd, body, len) || write_all(s->fd, digest, 32)) return -1;
-    if (fdatasync(s->fd) != 0) return -1;
-    s->file_len += 8 + len + 32;
+    if (s->nincs == s->capincs) {
+        size_t c = s->capincs ? s->capincs * 2 : 16;
+        uint64_t *n = realloc(s->incs, c * sizeof *n);
+        if (!n) return -1;
+        s->incs = n;
+        s->capincs = c;
+    }
+    s->incs[s->nincs++] = inc;
     return 0;
 }
 
-static int sync_dir(const char *dir)
+/* 1 if `inc` was begun (has an INCN entry). The list increases. */
+static int inc_begun(const standin_t *s, uint64_t inc)
 {
-    int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC), rc;
-    if (fd < 0) return -1;
-    rc = fsync(fd);
-    close(fd);
-    return rc;
+    size_t i = s->nincs;
+    while (i--) {
+        if (s->incs[i] == inc) return 1;
+        if (s->incs[i] < inc) return 0;
+    }
+    return 0;
+}
+
+/* After a failed write or sync (H1 of the review of PR 27). On Linux a failed
+ * fsync/fdatasync does not keep the dirty pages for a retry: the bytes may be
+ * in the page cache now, readable by this process, and gone after a power
+ * loss. So the entry is cut off: the file is truncated to its length before
+ * the append and synced, and the batch is gone for good, which is correct,
+ * since nothing behind it was released. If that fails too the store is
+ * poisoned: the process must stop rather than start again in process (it
+ * would read the same page cache back), and storage.failed refuses the next
+ * start until a person has looked. */
+static void cut_back(standin_t *s)
+{
+    int ok = ftruncate(s->fd, (off_t)s->file_len) == 0 && fsync(s->fd) == 0;
+#ifdef GZP_TEST_BUILD
+    if (s->cut_fail) ok = 0;
+#endif
+    s->failed = 1;
+    if (!ok) {
+        int fd = open(s->failed_path, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+        s->poisoned = 1;
+        if (fd >= 0) {
+            if (fsync(fd) != 0) {
+                /* best effort: the process stops anyway */
+            }
+            close(fd);
+        }
+        sync_dir_quiet(s->dir);
+    }
+}
+
+static int append_entry(standin_t *s, uint32_t tag, const uint8_t *body, size_t len)
+{
+    uint8_t head[8], digest[32];
+    int synced;
+    be32(head, tag);
+    be32(head + 4, (uint32_t)len);
+    if (entry_hash(head, body, len, digest) != 0) return -1;
+    if (lseek(s->fd, (off_t)s->file_len, SEEK_SET) < 0) {
+        cut_back(s);
+        return -1;
+    }
+    if (write_all(s->fd, head, 8) || write_all(s->fd, body, len) || write_all(s->fd, digest, 32)) {
+        cut_back(s);
+        return -1;
+    }
+    synced = fdatasync(s->fd) == 0;
+#ifdef GZP_TEST_BUILD
+    /* --test-sync-fail-at: the entry is written, then its sync reports
+     * failure, as a disk returning EIO would. */
+    if (tag == TAG_BTCH && s->sync_fail_at && --s->sync_fail_at == 0) synced = 0;
+#endif
+    if (!synced) {
+        cut_back(s);
+        return -1;
+    }
+    s->file_len += 8 + len + 32;
+    return 0;
 }
 
 /* 1 and *v if the counter file holds a well-formed value, else 0. */
@@ -357,15 +445,26 @@ static int st_begin(void *ctx, uint64_t *incarnation, char *err, size_t errlen)
     found = counter_read(s, &counter);
     if (inc >= (UINT64_C(1) << 63) || (found && counter >= (UINT64_C(1) << 63)))
         return set_err(err, errlen, "start counter or journal incarnation at or above 2^63: refusing to start");
-    s->counter_state = found ? GZP_COUNTER_FOUND : s->journal_was_new ? GZP_COUNTER_CREATED : GZP_COUNTER_MISSING;
+    s->counter_state = found && counter > 0 ? GZP_COUNTER_FOUND
+                     : s->journal_was_new ? GZP_COUNTER_CREATED
+                     : found ? GZP_COUNTER_FOUND : GZP_COUNTER_MISSING;
     if (found && counter > inc) inc = counter;
     inc++;
     /* The counter first: a crash between the two only skips a number. */
     if (counter_write(s, inc) != 0) return set_err(err, errlen, "cannot write the start counter");
     s->counter_value = inc;
     s->restored_at_begin = s->restored;
+#ifdef GZP_TEST_BUILD
+    if (s->crash_after_counter) { /* --test-crash-after-counter */
+        printf("%s test-crash after-counter incarnation=%llu\n", s->log_name ? s->log_name : "gazpacho",
+               (unsigned long long)inc);
+        fflush(stdout);
+        _exit(70);
+    }
+#endif
     be64(body, inc);
     if (append_entry(s, TAG_INCN, body, 8) != 0) return set_err(err, errlen, "cannot store the new incarnation");
+    if (push_inc(s, inc) != 0) return set_err(err, errlen, "out of memory");
     s->max_inc = s->cur_inc = inc;
     s->first_new = s->reported = s->nb;
     *incarnation = inc;
@@ -377,7 +476,7 @@ static int st_next(void *ctx, gzp_batch_t *out)
     standin_t *s = ctx;
     if (s->cursor >= s->nb) return 0;
     out->id = s->b[s->cursor].id;
-    out->records = s->r + s->b[s->cursor].first;
+    out->records = s->b[s->cursor].n ? s->r + s->b[s->cursor].first : NULL;
     out->n_records = s->b[s->cursor].n;
     s->cursor++;
     return 1;
@@ -396,7 +495,9 @@ static int st_append(void *ctx, gz_batch_id_t id, const gz_record_t *records, si
     int rc;
     if (s->failed || !s->cur_inc || id.incarnation != s->cur_inc || (s->have_last && !id_after(id, s->last)))
         return s->failed = 1, -1;
+#ifdef GZP_TEST_BUILD
     if (s->fail_at && --s->fail_at == 0) return s->failed = 1, -1;
+#endif
     for (i = 0; i < n; i++) {
         if (records[i].bytes.len > MAX_BODY) return s->failed = 1, -1;
         len += 8 + records[i].bytes.len;
@@ -448,6 +549,7 @@ static void st_close(void *ctx)
     for (i = 0; i < s->nr; i++) free((void *)s->r[i].bytes.data);
     free(s->r);
     free(s->b);
+    free(s->incs);
     if (s->fd >= 0) close(s->fd);
     free(s);
 }
@@ -469,8 +571,20 @@ int gzp_standin_open(gzp_store_t *out, const char *dir, char *err, size_t errlen
     snprintf(s->journal_path, sizeof s->journal_path, "%s/journal.standin", dir);
     snprintf(s->counter_path, sizeof s->counter_path, "%s/starts.standin", dir);
     snprintf(s->marker_path, sizeof s->marker_path, "%s/restore.pending", dir);
+    snprintf(s->failed_path, sizeof s->failed_path, "%s/storage.failed", dir);
+    if (stat(s->failed_path, &st) == 0) {
+        free(s);
+        return set_err(err, errlen, "an earlier write to the journal failed and could not be undone "
+                                    "(storage.failed): check the disk, then remove that file");
+    }
     s->journal_was_new = stat(s->journal_path, &st) != 0;
     s->restored = stat(s->marker_path, &st) == 0;
+    /* Set-up: the start counter exists before the journal (contract v2
+     * section 8), so a missing counter always means something was removed. */
+    if (s->journal_was_new && stat(s->counter_path, &st) != 0 && counter_write(s, 0) != 0) {
+        free(s);
+        return set_err(err, errlen, "cannot write the start counter");
+    }
     s->fd = open(s->journal_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (s->fd < 0) {
         free(s);
@@ -485,10 +599,27 @@ int gzp_standin_open(gzp_store_t *out, const char *dir, char *err, size_t errlen
     return 0;
 }
 
+int gzp_standin_poisoned(const gzp_store_t *st)
+{
+    return ((const standin_t *)st->ctx)->poisoned;
+}
+
+#ifdef GZP_TEST_BUILD
 void gzp_standin_fail_at(gzp_store_t *st, unsigned k)
 {
     ((standin_t *)st->ctx)->fail_at = k;
 }
+
+void gzp_standin_test_hooks(gzp_store_t *st, unsigned sync_fail_at, int cut_fail, int crash_after_counter,
+                            const char *log_name)
+{
+    standin_t *s = st->ctx;
+    s->sync_fail_at = sync_fail_at;
+    s->cut_fail = (unsigned)cut_fail;
+    s->crash_after_counter = crash_after_counter;
+    s->log_name = log_name;
+}
+#endif
 
 uint64_t gzp_standin_cut_bytes(const gzp_store_t *st)
 {
@@ -510,6 +641,7 @@ int gzp_standin_take_restore_answered(gzp_store_t *st)
     return r;
 }
 
+#ifdef GZP_TEST_BUILD
 int gzp_standin_put_restore(const char *dir, const char *backup, char *err, size_t errlen)
 {
     char jp[4200], tmp[4300], mp[4200];
@@ -533,17 +665,20 @@ int gzp_standin_put_restore(const char *dir, const char *backup, char *err, size
     ok = ok && fsync(outfd) == 0;
     close(in);
     close(outfd);
-    /* The marker first: a crash after it and before the rename only restores
-     * again from the same backup. */
+    /* The file first, then the marker (review of PR 27, L5): the other order
+     * could leave a marker beside the unrestored journal, which a later
+     * ordinary start would answer for a restore that never happened. */
+    ok = ok && rename(tmp, jp) == 0 && sync_dir(dir) == 0;
     if (ok) {
         int fd = open(mp, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
         ok = fd >= 0 && fsync(fd) == 0;
         if (fd >= 0) close(fd);
+        ok = ok && sync_dir(dir) == 0;
     }
-    ok = ok && sync_dir(dir) == 0 && rename(tmp, jp) == 0 && sync_dir(dir) == 0;
     if (!ok) {
         unlink(tmp);
         return set_err(err, errlen, "cannot put the backup in place");
     }
     return 0;
 }
+#endif

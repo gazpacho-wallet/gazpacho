@@ -19,10 +19,13 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gzp_harness import Checks, Proc, kill_all, peer_id, run  # noqa: E402
+from gzp_harness import Checks, Proc, kill_all, parse_journal, peer_id, ping_payloads, run  # noqa: E402
 
 check = Checks()
-FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|test_kind|GZ_ENV_KIND_TEST", re.IGNORECASE)
+FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp_standin_put_restore|gzp_standin_test_hooks")
+# Each name the release check looks for, and that the test build does have, so
+# that each half of the check can fail (review of PR 27, M5).
+IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
 
 
 def symbols(path):
@@ -42,7 +45,8 @@ def main():
         rs, ts = symbols(rel), symbols(tst)
         bad = sorted(s for s in rs if FORBIDDEN.search(s))
         check(len(rs) > 100 and not bad, "the release binary names no seeded source and no test code %s" % bad[:5])
-        check(any("gzp_testping" in s for s in ts), "the check would see them: the test build has gzp_testping_*")
+        missing = [n for n in IN_TEST if not any(n in s for s in ts)]
+        check(not missing, "the check would see them: the test build has each of %s (missing %s)" % (IN_TEST, missing))
         code, out = run(rel, "--data-dir", os.path.join(work, "x"), "--role", "host", "--no-chain",
                         "--test-pings", "1")
         check(code == 2 and "only in the test build" in out and not os.path.exists(os.path.join(work, "x")),
@@ -64,10 +68,15 @@ def main():
         check(mem.wait_for(r"connected peer=%s" % peer_id(k.group(1))) is not None,
               "a test-build member connects to the release host")
         time.sleep(2)
-        check(mem.count(r"pong peer=") == 0 and host.count(r"pings-done|pong ") == 0,
-              "its kind-32767 pings are never delivered to the release node")
         check(mem.count(r"disconnected") == 0 and host.count(r"disconnected") == 0,
-              "and the connection stays up (an unknown odd kind is ignored)")
+              "the connection stays up (an unknown odd kind is ignored)")
+        host.stop()
+        pings = ping_payloads(parse_journal(os.path.join(work, "host", "journal.standin")))
+        # Delivery would leave a ping record: the release adapter extracts
+        # record 1 of kind 32767 like the test build's, and its node saves it.
+        check(mem.count(r"pong peer=") == 0 and not pings,
+              "its kind-32767 pings never reach the release node (no ping record in its journal)")
+
     finally:
         kill_all(procs)
     return check.result("release build", logs)

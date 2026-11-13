@@ -253,7 +253,7 @@ static void handle(gzp_net_t *n, const gz_peer_event_t *ev, uint64_t now)
         c->peer_id = gzp_peer_id(ev->node_id);
         if (ev->outbound && ev->conn == n->target_conn) n->backoff_ms = n->first_backoff_ms;
         if (n->queueing) enqueue(n, GZ_PEER_EV_CONNECTED, ev->conn, NULL, 0, NULL);
-        else if (n->ev.connected) n->ev.connected(n->ev.ctx, c->peer_id, c->key, c->outbound);
+        else if (n->ev.connected) n->ev.connected(n->ev.ctx, c->peer_id, c->key, c->outbound, c->conn);
         break;
     }
     case GZ_PEER_EV_MESSAGE: {
@@ -266,9 +266,13 @@ static void handle(gzp_net_t *n, const gz_peer_event_t *ev, uint64_t now)
             break;
         }
         if (n->queueing) {
-            c->queued_bytes += bl;
+            c->queued_bytes += bl + GZP_QUEUE_OVERHEAD;
             if (c->queued_bytes > GZP_QUEUE_PER_CONN) {
-                /* Past the start queue's limit: close it; it was never reported. */
+                /* Past the start queue's limit: close it; it was never
+                 * reported. gz_peers_close gives no CLOSED event, so a
+                 * member's own connection is rescheduled here. */
+                gzp_log("start-queue closed conn=%llu why=over-1MiB", (unsigned long long)c->conn);
+                if (c->conn == n->target_conn && n->target_live) schedule_reconnect(n, now);
                 gz_peers_close(n->peers, c->conn);
                 unqueue_conn(n, c->conn);
                 n->closed_while_starting++;
@@ -329,11 +333,12 @@ void gzp_net_queue_end(gzp_net_t *n)
             continue;
         }
         c->queued_bytes = 0;
-        if (n->ev.connected) n->ev.connected(n->ev.ctx, c->peer_id, c->key, c->outbound);
+        if (n->ev.connected) n->ev.connected(n->ev.ctx, c->peer_id, c->key, c->outbound, c->conn);
+        /* Every queued message of the connection, in order. A delivery that
+         * closes it (a refused send) is reported by the transport later, so
+         * these still come before that connection's disconnected. */
         for (j = i + 1; j < nq; j++) {
             if (q[j].conn != q[i].conn || q[j].type != GZ_PEER_EV_MESSAGE) continue;
-            /* A delivery may close the connection (a refused send): stop then. */
-            if (!by_conn(n, q[i].conn)) break;
             if (n->ev.message) n->ev.message(n->ev.ctx, c->peer_id, q[j].bytes, q[j].len);
         }
     }
@@ -361,8 +366,13 @@ size_t gzp_net_pollfds(gzp_net_t *n, struct pollfd *fds, size_t cap, int *timeou
 void gzp_net_dispatch(gzp_net_t *n, const struct pollfd *fds, size_t count, uint64_t now)
 {
     gz_peer_event_t ev;
+    int k;
     gz_peers_dispatch(n->peers, fds, count);
-    while (gz_peers_poll(n->peers, 0, &ev)) handle(n, &ev, now);
+    /* Bounded (M1): gz_peers_poll(p, 0) does I/O of its own when its queue is
+     * empty, so an unbounded drain could last as long as a peer keeps
+     * sending. What is left is taken next turn: gz_peers_pollfds then gives
+     * a zero timeout. */
+    for (k = 0; k < GZP_DRAIN_MAX && gz_peers_poll(n->peers, 0, &ev); k++) handle(n, &ev, now);
     if (n->has_target && n->target_live && !n->target_conn && now >= n->next_connect_ms) {
         uint64_t conn = 0;
         gz_peers_err_t e = gz_peers_connect(n->peers, n->target_host, n->target_port, n->target_key, NULL, &conn);

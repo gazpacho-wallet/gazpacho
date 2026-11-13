@@ -122,7 +122,13 @@ void gzp_usage(void)
         "  --test-storage-fail-at K      make the K-th journal append fail (first incarnation)\n"
         "  --test-start-delay-ms MS      keep the start open (inputs queued) this long\n"
         "  --test-listen-during-start    host: listen before the start completes\n"
-        "  --test-restore-from FILE      put FILE in place as the journal, as a restore\n");
+        "  --test-restore-from FILE      put FILE in place as the journal, as a restore\n"
+        "  --test-sync-fail-at K [--test-cut-fail]   the K-th batch's sync fails (and its undo)\n"
+        "  --test-crash-after-counter    exit between the start counter and the incarnation entry\n"
+        "  --test-timer-ms MS            a test timer in the executor's table\n"
+        "  --test-burst NxBYTES          send N messages of BYTES at each connection\n"
+        "  --test-oversize-send BYTES    pad every node send (too big is fatal)\n"
+        "  --test-node-error-at K        treat the K-th delivered event as a node error\n");
 }
 
 static int num(const char *s, long min, long max, long *out)
@@ -188,6 +194,8 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--no-chain")) { o->no_chain = 1; takes = 0; }
         else if (!strcmp(a, "--check-chain")) { o->check_chain = 1; takes = 0; }
         else if (!strcmp(a, "--test-listen-during-start")) { o->test_listen_during_start = 1; takes = 0; }
+        else if (!strcmp(a, "--test-cut-fail")) { o->test_cut_fail = 1; takes = 0; }
+        else if (!strcmp(a, "--test-crash-after-counter")) { o->test_crash_after_counter = 1; takes = 0; }
         else if (!val) ok = 0;
         else if (!strcmp(a, "--data-dir")) o->data_dir = val;
         else if (!strcmp(a, "--role")) {
@@ -223,6 +231,23 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-storage-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_storage_fail_at = (int)v; }
         else if (!strcmp(a, "--test-start-delay-ms")) { ok = num(val, 0, 600000, &v); o->test_start_delay_ms = (int)v; }
         else if (!strcmp(a, "--test-restore-from")) o->test_restore_from = val;
+        else if (!strcmp(a, "--test-sync-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_sync_fail_at = (int)v; }
+        else if (!strcmp(a, "--test-timer-ms")) { ok = num(val, 1, 600000, &v); o->test_timer_ms = (int)v; }
+        else if (!strcmp(a, "--test-burst")) {
+            const char *x = strchr(val, 'x');
+            long nb = 0;
+            ok = x && num(x + 1, 1, 65000, &v);
+            if (ok) {
+                char nbuf[16];
+                size_t l = (size_t)(x - val);
+                ok = l > 0 && l < sizeof nbuf;
+                if (ok) { memcpy(nbuf, val, l); nbuf[l] = 0; ok = num(nbuf, 1, 1000, &nb); }
+            }
+            o->test_burst_n = (int)nb;
+            o->test_burst_bytes = (int)v;
+        }
+        else if (!strcmp(a, "--test-oversize-send")) { ok = num(val, 1, 2000000, &v); o->test_oversize_send = (int)v; }
+        else if (!strcmp(a, "--test-node-error-at")) { ok = num(val, 1, 1000000, &v); o->test_node_error_at = (int)v; }
         else ok = 0;
 #ifndef GZP_TEST_BUILD
         /* The release build has no test hooks (contract-v2.md, T12). */

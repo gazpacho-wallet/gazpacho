@@ -18,7 +18,7 @@ import shutil
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gzp_harness import Checks, Proc, kill_all, peer_id  # noqa: E402
+from gzp_harness import Checks, Proc, kill_all, parse_journal, peer_id  # noqa: E402
 
 PINGS = 5
 check = Checks()
@@ -100,6 +100,22 @@ def main():
             p2, inc2, ok2 = run_once(folder)
             check(inc2 == want + 1 and p2.find(r"restored=0")[0] is not None and ok2,
                   "%s: the next start is an ordinary one, incarnation %d" % (variant, want + 1))
+
+        # The counter is written before the incarnation entry: stopped between
+        # the two, the counter holds the new number and the journal does not,
+        # and the next start skips that number rather than reuse it.
+        folder = os.path.join(work, "member-crash")
+        _, inc, _ = run_once(folder)
+        p = member(folder, "--test-crash-after-counter")
+        code = p.exit_code(30)
+        with open(os.path.join(folder, "starts.standin")) as f:
+            counter = f.read().strip()
+        incs = [e[1] for e in parse_journal(os.path.join(folder, "journal.standin")) if e[0] == "INCN"]
+        check(inc == 1 and code == 70 and p.find(r"test-crash after-counter incarnation=2")[0] is not None and
+              counter == "GZSTART0 2" and max(incs) == 1,
+              "stopped between the two writes: the counter says 2, the journal's highest is 1")
+        _, inc, ok = run_once(folder)
+        check(inc == 3 and ok, "the next start skips 2 and starts at 3 (got %s)" % inc)
 
         # A counter at 2^63 refuses the start.
         folder = os.path.join(work, "member-counter")

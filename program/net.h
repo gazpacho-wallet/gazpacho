@@ -25,8 +25,8 @@
  * adapter queues what the transport reports, per connection, and hands it
  * over when the start is complete: a connection's messages only between its
  * own connected and disconnected, a connection that came and went during the
- * start not at all, at most 1 MiB of messages per connection (past that the
- * connection is closed). */
+ * start not at all, at most 1 MiB per connection, counting 64 bytes of
+ * overhead per message (past that the connection is closed). */
 #ifndef GZP_NET_H
 #define GZP_NET_H
 
@@ -41,10 +41,15 @@
 #define GZP_KIND_TEST 32767u
 #define GZP_MAX_CONNS 64
 #define GZP_QUEUE_PER_CONN (1u << 20)
+#define GZP_QUEUE_OVERHEAD 64u     /* counted per queued message, so empty ones count too */
+/* Most transport events handled per loop turn (review of PR 27, M1): a peer
+ * that keeps sending cannot hold the loop, so the stop pipe, the timers and
+ * the chain are seen at least once per GZP_DRAIN_MAX events. */
+#define GZP_DRAIN_MAX 4
 #define GZP_BACKOFF_MAX_MS 60000
 
 typedef struct {
-    void (*connected)(void *ctx, uint64_t peer_id, const uint8_t key[33], int outbound);
+    void (*connected)(void *ctx, uint64_t peer_id, const uint8_t key[33], int outbound, uint64_t conn);
     void (*disconnected)(void *ctx, uint64_t peer_id, const char *why);
     void (*message)(void *ctx, uint64_t peer_id, const uint8_t *bytes, size_t len);
     void *ctx;

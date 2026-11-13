@@ -19,6 +19,7 @@
 #define GZP_EXIT_LOCKED    3  /* another gazpacho holds this data folder */
 #define GZP_EXIT_DATA      4  /* the data folder or a file in it is unusable */
 #define GZP_EXIT_CHAIN     5  /* a chain server is on another network, or unreachable at start */
+#define GZP_EXIT_STORAGE   6  /* a failed journal write could not be undone: not restarted (store.h) */
 #define GZP_EXIT_TEST      70 /* a --test-crash-* hook fired (tests only) */
 
 #define GZP_ROLE_HOST   1
@@ -60,6 +61,13 @@ typedef struct {
     int test_start_delay_ms;       /* keep the start open this long, the loop running (inputs queued) */
     int test_listen_during_start;  /* host: listen before the start, so its queue is exercised */
     const char *test_restore_from; /* put this journal in place as a restore (sets the marker) */
+    int test_sync_fail_at;         /* the K-th batch is written, then its sync reports failure */
+    int test_cut_fail;             /* ... and cutting it back fails too (the store is poisoned) */
+    int test_crash_after_counter;  /* exit between the start counter and the incarnation entry */
+    int test_timer_ms;             /* a test timer every MS, in the executor's table, logged when it fires */
+    int test_burst_n, test_burst_bytes; /* at each connection, send N messages of BYTES (test kind) */
+    int test_oversize_send;        /* pad every node SEND to this many bytes (too big: fatal) */
+    int test_node_error_at;        /* the K-th event delivered is treated as a node error */
 } gzp_options_t;
 
 /* Parses argv into `o` (defaults first). Returns 0, or GZP_EXIT_USAGE after

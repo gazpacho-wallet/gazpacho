@@ -76,11 +76,17 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_release_build
     COMMAND ${GZP_PY} ${GZP_T}/release_build.py $<TARGET_FILE:gazpacho> $<TARGET_FILE:gazpacho-test>
             ${CMAKE_CURRENT_BINARY_DIR}/release_build)
+  # Storage and node failures, the in-process restart (review of PR 27: H1, M5).
+  add_test(NAME program_storage_failure
+    COMMAND ${GZP_PY} ${GZP_T}/storage_failure.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/storage_failure)
+  # A flooding peer, an idle loop's timers, listening after the start, SIGPIPE (M1, M4, M5).
+  add_test(NAME program_loop_liveness
+    COMMAND ${GZP_PY} ${GZP_T}/liveness.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/liveness)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})
   set_tests_properties(program_two_process program_slow_peers program_restore_counter program_networks
-                       program_release_build PROPERTIES TIMEOUT 300)
+                       program_release_build program_storage_failure program_loop_liveness PROPERTIES TIMEOUT 300)
   if(GZ_LIVE_TESTS AND TARGET gazpacho_chain_curl)
     # Read-only: the public signet servers' block 0 and tip, the wallet's
     # first address, and a refusal of a mainnet server. Needs the network.

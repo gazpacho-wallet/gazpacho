@@ -15,6 +15,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <openssl/evp.h>
+
 #include "store.h"
 
 static int failures;
@@ -45,6 +47,60 @@ static size_t count_batches(gzp_store_t *s)
     s->ops->rewind(s->ctx);
     while (s->ops->next(s->ctx, &b)) n++;
     return n;
+}
+
+/* Raw entries, written the way the stand-in writes them (for scan tests). */
+static void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+static void put64(uint8_t *p, uint64_t v) { put32(p, (uint32_t)(v >> 32)); put32(p + 4, (uint32_t)v); }
+
+static void raw_entry(int fd, uint32_t tag, const uint8_t *body, uint32_t len)
+{
+    uint8_t head[8], digest[32];
+    unsigned int n = 0;
+    EVP_MD_CTX *h = EVP_MD_CTX_new();
+    put32(head, tag);
+    put32(head + 4, len);
+    EVP_DigestInit_ex(h, EVP_sha256(), NULL);
+    EVP_DigestUpdate(h, head, 8);
+    if (len) EVP_DigestUpdate(h, body, len);
+    EVP_DigestFinal_ex(h, digest, &n);
+    EVP_MD_CTX_free(h);
+    if (write(fd, head, 8) != 8 || (len && write(fd, body, len) != (ssize_t)len) || write(fd, digest, 32) != 32)
+        abort();
+}
+
+static void raw_incn(int fd, uint64_t inc)
+{
+    uint8_t b[8];
+    put64(b, inc);
+    raw_entry(fd, 0x494e434eu, b, 8);
+}
+
+static void raw_batch(int fd, uint64_t inc, uint64_t seq)
+{
+    uint8_t b[20];
+    put64(b, inc);
+    put64(b + 8, seq);
+    put32(b + 16, 0);
+    raw_entry(fd, 0x42544348u, b, 20);
+}
+
+/* A fresh journal file holding only the stand-in's header. */
+static int raw_journal(void)
+{
+    uint8_t hdr[16] = {'G', 'Z', 'J', 'S', 'T', 'A', 'N', 'D', 0, 0, 0, 1, 0, 0, 0, 0};
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0 || write(fd, hdr, 16) != 16) abort();
+    return fd;
+}
+
+static int opens(void)
+{
+    gzp_store_t s;
+    char err[200];
+    if (gzp_standin_open(&s, dir, err, sizeof err) != 0) return 0;
+    s.ops->close(s.ctx);
+    return 1;
 }
 
 static off_t file_size(void)
@@ -229,8 +285,70 @@ int main(void)
         }
     }
 
+    /* The scan (review of PR 27, M28, M43b, M44 and L5): a repeated batch
+     * id, a repeated INCN, and a batch of an incarnation never begun are
+     * corruption; a whole-length last entry with a flipped body byte is a
+     * torn tail. */
+    fd = raw_journal(); raw_incn(fd, 1); raw_batch(fd, 1, 1); raw_batch(fd, 1, 1); close(fd);
+    CHECK(!opens());
+    fd = raw_journal(); raw_incn(fd, 1); raw_incn(fd, 1); close(fd);
+    CHECK(!opens());
+    fd = raw_journal(); raw_incn(fd, 1); raw_incn(fd, 3); raw_batch(fd, 2, 1); close(fd);
+    CHECK(!opens());
+    fd = raw_journal(); raw_incn(fd, 1); raw_incn(fd, 3); raw_batch(fd, 3, 1); close(fd);
+    CHECK(opens()); /* 2 was skipped (a crash between counter and entry): fine */
+    fd = raw_journal(); raw_incn(fd, 1); raw_batch(fd, 1, 1); raw_batch(fd, 1, 2); close(fd);
+    size_ok = file_size();
+    fd = open(path, O_RDWR);
+    {
+        uint8_t byte;
+        off_t at = size_ok - 32 - 1; /* the last body byte of the last entry */
+        CHECK(pread(fd, &byte, 1, at) == 1);
+        byte ^= 0x40;
+        CHECK(pwrite(fd, &byte, 1, at) == 1);
+    }
+    close(fd);
+    CHECK(open_store(&s) == 0);
+    CHECK(gzp_standin_cut_bytes(&s) == 8 + 20 + 32 && count_batches(&s) == 1);
+    s.ops->close(s.ctx);
+
+    /* H1: a batch whose sync fails is cut back and gone for good, also for a
+     * begin in the same process; if the cut fails too, the store is poisoned
+     * and storage.failed refuses the next open. */
+    {
+        char fpath[700];
+        snprintf(fpath, sizeof fpath, "%s/storage.failed", dir);
+        unlink(path);
+        CHECK(open_store(&s) == 0);
+        CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) == 0);
+        gzp_standin_test_hooks(&s, 2, 0, 0, "test");
+        CHECK(s.ops->append(s.ctx, id(inc, 1), recs, 1) == 0);
+        size_ok = file_size();
+        CHECK(s.ops->append(s.ctx, id(inc, 2), recs, 1) != 0);  /* written, then its sync fails */
+        CHECK(file_size() == size_ok && !gzp_standin_poisoned(&s));
+        CHECK(s.ops->complete(s.ctx, &got) == 1 && got.sequence == 1);
+        CHECK(s.ops->complete(s.ctx, &got) == 0);
+        s.ops->close(s.ctx);
+        CHECK(open_store(&s) == 0); /* the restart in the same process */
+        CHECK(count_batches(&s) == 1 && gzp_standin_cut_bytes(&s) == 0);
+        CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) == 0);
+        gzp_standin_test_hooks(&s, 1, 1, 0, "test");
+        CHECK(s.ops->append(s.ctx, id(inc, 1), recs, 1) != 0);  /* sync fails, and the cut too */
+        CHECK(gzp_standin_poisoned(&s) && access(fpath, F_OK) == 0);
+        s.ops->close(s.ctx);
+        err[0] = 0;
+        CHECK(gzp_standin_open(&s, dir, err, sizeof err) != 0 && strstr(err, "storage.failed"));
+        unlink(fpath);
+        CHECK(opens());
+    }
+
     (void)c;
     unlink(path);
+    {
+        char cp[700];
+        snprintf(cp, sizeof cp, "%s/starts.standin", dir);
+        unlink(cp);
+    }
     rmdir(dir);
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
