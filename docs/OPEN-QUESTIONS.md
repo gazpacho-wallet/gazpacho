@@ -26,8 +26,23 @@ Numbering is new. A document citing an old number ("item 18", "O1") means the li
 | 5 | The key path for each factory (W2) | No answer; the owner leans to **A** (a branch of its own in the standard key tree) and asked why it is an issue | **No** | Explained in chat; work proceeds with A unless the owner objects. Still needs the owner's yes after the review of the written recipe |
 | 6 | Files unencrypted on test networks | **B**: encrypt from the start | **Yes** | Owner decision 13; `spec/storage-encryption.md`. The cryptography choices themselves still await the owner (`DECISIONS-WITHOUT-OWNER.md`) |
 | 7 | How the wallet's screens are opened | **A**, plus one optional extra port for a tunnel | **Yes** | The owner's note: sign-in should be like any professional wallet, such as Sparrow; so sign-in became the wallet passphrase (owner decision 14). Ports 39735 and 39736 |
-| 8 | One lobby at a time; changing limits while waiting | **A**: one at a time in Slice 1, limits stay editable | **Yes** | The owner's note: any skipped feature must be tested later, so do not skip too much. A ledger of deferred features, each with its later test, is owed (with Slice 1.5) |
+| 8 | One lobby at a time; changing limits while waiting | **A**: one at a time in Slice 1, limits stay editable | **Yes**; the lobby limit was replaced on 2026-11-13 by several lobbies at once (section 0a) | The owner's note: any skipped feature must be tested later, so do not skip too much. A ledger of deferred features, each with its later test, is owed (with Slice 1.5) |
 | 9 | Count the transport's code review as its specification review (A12) | **A** | **Yes** | The owner's note: re-review the transport specification fully once the program is built, possibly as a separate review then |
+
+## 0a. The owner's decisions of 13 November (2026-11-13)
+
+Recorded in full as decision 16 in `ux/decisions.md`. In short:
+
+- Host funding is automatic and on by default once H1 passes. Before real money it becomes a setting that still defaults to automatic.
+- Several lobbies at once per wallet from Slice 1. This replaces Q8's answer above. Every lobby record carries a lobby field; the composite node design is PR 37.
+- Host accountability in 1.0.0: signed seat receipts, the signer-choice rule in the outer terms, signed removals with a reason, signed lobby-wide counts without identities. Proofs on Nostr later, from fresh keys, after the lobby ends.
+- Member signing modes A to D. Understudies in 1.0.0. A UI/UX review pass after 1.0.0. A privacy roadmap from Slice 1 to later releases.
+
+Still for the owner to confirm:
+
+- **The proposed timing defaults:** a 60 s ready window, 60 s per step, a 10-minute signing budget.
+
+Confirmed the same day: mode C is the default signing mode; members and hosts can still choose A or B. Mode D, watchtower services, is the fourth way to take part (variants D1 to D4, `ux/decisions.md` 16d), scheduled after 1.2.0. The watchtower research then set the order (D2, then D1; D3 off by default; D4 never offered) and six 1.0.0 requirements so D is not blocked later (`ux/decisions.md` 16h).
 
 ## 1. Awaiting the owner's yes
 
