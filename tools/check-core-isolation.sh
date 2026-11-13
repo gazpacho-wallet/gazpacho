@@ -93,6 +93,8 @@ checker_runtime="$checker_runtime|__asan_handle_no_return|__asan_option_detect_s
 checker_runtime="$checker_runtime|__asan_report_(load|store)([0-9]+|_n)(_noabort)?|__asan_(load|store)([0-9]+|N)(_noabort)?"
 checker_runtime="$checker_runtime|__asan_stack_(malloc|free)_[0-9]+|__asan_set_shadow_[0-9a-f][0-9a-f]|__asan_mem(cpy|set|move)"
 checker_runtime="$checker_runtime|__asan_alloca_poison|__asan_allocas_unpoison|__asan_shadow_memory_dynamic_address"
+# Stack use-after-scope: locals whose address is taken in a nested block (the lobby engine).
+checker_runtime="$checker_runtime|__asan_(un)?poison_stack_memory"
 checker_runtime="$checker_runtime|__(start|stop)_asan_globals|___asan_globals_registered|__ubsan_handle_[a-z0-9_]+"
 checker_runtime="$checker_runtime|__msan_init|__msan_chain_origin|__msan_set_alloca_origin(_with_descr|4)?|__msan_(un)?poison_alloca"
 checker_runtime="$checker_runtime|__msan_warning(_noreturn|_with_origin|_with_origin_noreturn)?|__msan_maybe_warning_[0-9]+"

@@ -29,9 +29,11 @@ jobs:
         with:
           persist-credentials: false
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind python3-cryptography
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=${{ matrix.sanitize }} -DGZ_WERROR=ON
+        # GZ_INTEROP_PY: gz-net against the independent Python peer (BOLT 8,
+        # and BOLT 1 init, ping and pong with factory messages).
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=${{ matrix.sanitize }} -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON
       - name: Build
         run: cmake --build build -j
       - name: Test
@@ -197,7 +199,11 @@ jobs:
       - name: Every compiled test under memcheck
         # The 1,000-seed simulator run takes over eight minutes under valgrind;
         # 200 seeds of the same length here, all 1,000 in every other build.
-        run: python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0"
+        run: >
+          python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0"
+          --args "lobby_sim_profile_0=3 0" --args "lobby_sim_profile_1=3 1"
+          --args "lobby_sim_profile_2=3 2" --args "lobby_sim_profile_3=3 3"
+          --args "lobby_fuzz=3000 2"
 
   fuzz:
     name: libFuzzer, 60 s per target

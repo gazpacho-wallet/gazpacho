@@ -19,7 +19,17 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <secp256k1.h>
-#include "gazpacho/ports.h"
+
+/* Randomness for ephemeral keys: `fill` writes `len` unpredictable bytes read
+ * from the operating system at the call. Every draw is a one-time secret; the
+ * transport never stores, logs or sends it. Cannot fail: a port that cannot
+ * read the system's randomness ends the program (transport.md decision 12).
+ * The transport's own type, so it includes no core header (contract v2,
+ * section 12). */
+typedef struct {
+    void (*fill)(void *ctx, uint8_t *out, size_t len);
+    void *ctx;
+} gz_net_random_t;
 
 #define GZ_NOISE_ACT1_LEN 50
 #define GZ_NOISE_ACT2_LEN 50
@@ -54,7 +64,7 @@ typedef enum {
  * use only the functions. */
 typedef struct {
     const secp256k1_context *secp;
-    gz_random_port_t random;
+    gz_net_random_t random;
     gz_noise_phase_t phase;
     uint8_t ck[32], h[32], temp_k[32];
     uint8_t ls_priv[32], ls_pub[33];
@@ -69,9 +79,9 @@ typedef struct {
  * static key, which it must know in advance (the member's pin). */
 gz_noise_err_t gz_noise_init_initiator(gz_noise_t *st, const secp256k1_context *secp,
                                        const uint8_t ls_priv[32], const uint8_t rs[33],
-                                       gz_random_port_t random);
+                                       gz_net_random_t random);
 gz_noise_err_t gz_noise_init_responder(gz_noise_t *st, const secp256k1_context *secp,
-                                       const uint8_t ls_priv[32], gz_random_port_t random);
+                                       const uint8_t ls_priv[32], gz_net_random_t random);
 
 /* Initiator: write act one, read act two, write act three. */
 gz_noise_err_t gz_noise_act1_write(gz_noise_t *st, uint8_t out[GZ_NOISE_ACT1_LEN]);

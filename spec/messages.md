@@ -34,6 +34,7 @@ Specification draft 2, 2026-11-12. Status: draft 1 brought fully in line with `s
 | 13 member keys | Derivation path proposed (owner to confirm), with a network level and index pairs; a fresh index pair per `CONNECT`, not per TCP connection | 2, open point 3 |
 | 7 test traffic | Kind 32767 reserved for test builds | 4.1 |
 | 3 reconnect limits | `hello` duplicates, the 20-`hello` limit and status answers counted per link (per member key), not per connection | 6.1, 7.10 |
+| Standby seats (lobby engine) | `join` accepted during a ready check or Signing when the host keeps standby seats, up to the target plus those seats | 6.3 |
 
 Related: `terms.md` (the host terms record carried by `terms_offer`), `signing-round.md` (what the round messages mean), `safety-rule.md` (what a member checks before it contributes), `journal.md` (what is saved before each message is sent).
 
@@ -306,7 +307,7 @@ Receiver:
 
 The binding is two-way: the factory key vouches for the contribution key and the contribution key for the factory key, so no seat can claim another party's key of either kind. Both signatures travel to every signer in `round_propose`, so anyone can check them. The contribution key is the per-lobby BOLT 8 key, never the member's long-lived identity, so publishing the binding in evidence links nothing beyond this lobby (review 2, N17).
 
-Valid when: the lobby is Open; both binding signatures verify; no other seat uses this factory key or this contribution key (`signing-round.md` section 2: a list with a key twice is refused); neither is the host's; seats taken are fewer than the target.
+Valid when: the lobby is Open, or, for a host that keeps **standby seats**, in a ready check or Signing; both binding signatures verify; no other seat uses this factory key or this contribution key (`signing-round.md` section 2: a list with a key twice is refused); neither is the host's; seats taken are fewer than the target plus the host's standby seats. A standby seat joined during a check or an attempt can fill a gap in the next attempt (owner decision 10, `LOBBY.md` "standbys"); without standby seats a join is accepted only while Open. From Funding on, no join is accepted.
 
 Host: creates the seat (saved before it answers, within the limits of "Seats and reconnects") and sends `lobby_status`. If invalid, it sends `lobby_status` with seat state 7 and a reason, and keeps the connection.
 

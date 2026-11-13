@@ -16,7 +16,9 @@ CI runs on every pull request and on every push to `main`. All jobs run in paral
 
 ### build (OFF) and build (ON): gcc, the original job
 
-Guards: the whole tree builds with gcc 13 and every CTest test passes, once without sanitizers and once with AddressSanitizer and UndefinedBehaviorSanitizer (`-DGZ_SANITIZE=ON`), except the wallet break-checks (label `slow`, `-LE slow`). The build without sanitizers runs the core and simulator tests a second time under valgrind. Then the scale check: one small tree and the two upstream defect reproductions.
+Guards: the whole tree builds with gcc 13 and every CTest test passes, once without sanitizers and once with AddressSanitizer and UndefinedBehaviorSanitizer (`-DGZ_SANITIZE=ON`), except the wallet break-checks (label `slow`, `-LE slow`). The build without sanitizers runs the core and simulator tests a second time under valgrind. Both builds also run the transport's interop test (`-DGZ_INTEROP_PY=ON`, with Ubuntu's `python3-cryptography`): `gz-net` against the independent Python peer in `tests/net/interop/`, over BOLT 8 and over BOLT 1's `init`, ping and pong with factory messages, in both roles. Then the scale check: one small tree and the two upstream defect reproductions.
+
+The lobby connections' keep-alive runs here as `net_keepalive`: two processes hold one connection for 4 seconds with a ping every 100 ms. The same test at the real values (a ping every 15 s, a 30 s pong timeout, six minutes) is registered only with `-DGZ_LONG_TESTS=ON` and is not run in CI.
 
 ### wallet break-checks (`.github/workflows/wallet-break-checks.yml`)
 
@@ -26,7 +28,7 @@ When: on every push to `main`, nightly at 03:17 UTC, by hand (`workflow_dispatch
 
 Locally:
 
-    cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=OFF   # or ON
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=OFF -DGZ_INTEROP_PY=ON   # or ON
     cmake --build build -j
     ctest --test-dir build --output-on-failure --timeout 600
     ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects

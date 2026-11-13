@@ -169,10 +169,11 @@ endif()
 # --- Transport (ports/net): BOLT 8 and BOLT 1, outside the core ----------------
 # Strict C11 like the core, but not freestanding: conn.c uses POSIX sockets.
 # noise.c and frame.c do no input or output (spec/transport.md).
-add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c)
+add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c
+            ports/net/envelope.c ports/net/lnmsg.c ports/net/peers.c)
 set_target_properties(gazpacho_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_net PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/ports/net ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/ports/net)
 target_link_libraries(gazpacho_net PUBLIC secp256k1 OpenSSL::Crypto)
 target_compile_options(gazpacho_net PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
 
@@ -183,6 +184,23 @@ target_compile_options(gz-net PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(net_noise tests/net/test_noise.c gazpacho_net)
 gz_add_test(net_frame tests/net/test_frame.c gazpacho_net 20000)
 gz_add_test(net_conn  tests/net/test_conn.c  gazpacho_net)
+gz_add_test(net_envelope tests/net/test_envelope.c gazpacho_net)
+gz_add_test(net_lnmsg tests/net/test_lnmsg.c gazpacho_net)
+gz_add_test(net_peers tests/net/test_peers.c gazpacho_net)
+# Kind 32767 (test traffic, contract v2 section 7) exists only in a build
+# with GZ_TEST_KINDS: a second copy of the library for its test, so the
+# library everything else links never knows it.
+add_library(gazpacho_net_testkinds STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c
+            ports/net/envelope.c ports/net/lnmsg.c ports/net/peers.c)
+set_target_properties(gazpacho_net_testkinds PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_net_testkinds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ports/net)
+target_compile_definitions(gazpacho_net_testkinds PUBLIC GZ_TEST_KINDS)
+target_link_libraries(gazpacho_net_testkinds PUBLIC secp256k1 OpenSSL::Crypto)
+target_compile_options(gazpacho_net_testkinds PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
+gz_add_test(net_test_kind tests/net/test_testkind.c gazpacho_net_testkinds)
+# ports/net and gz-net include no core header (contract v2, section 12).
+add_test(NAME net_no_core_headers COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-net-no-core.sh
+         ${CMAKE_C_COMPILER} ${secp256k1-zkp_SOURCE_DIR}/include)
 # Every wipe of a stack secret is counted, and HMAC is made to fail on demand
 # (GNU ld's --wrap; review of PR 10, section 6).
 gz_add_test(net_wipes tests/net/test_wipes.c gazpacho_net)
@@ -193,6 +211,17 @@ target_link_libraries(net_peer PRIVATE gazpacho_net)
 target_compile_options(net_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 add_test(NAME net_gz_net COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_gz_net.sh
          $<TARGET_FILE:gz-net> $<TARGET_FILE:net_peer>)
+# Two processes hold a lobby connection with pings: 4 s at a 100 ms ping in
+# CI; with -DGZ_LONG_TESTS=ON also six minutes at messages.md's 15 s ping and
+# 30 s pong timeout (not run in CI).
+add_test(NAME net_keepalive COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_keepalive.sh
+         $<TARGET_FILE:gz-net> 4 100 1000)
+option(GZ_LONG_TESTS "Register the long keep-alive test (six minutes)" OFF)
+if(GZ_LONG_TESTS)
+  add_test(NAME net_keepalive_long COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_keepalive.sh
+           $<TARGET_FILE:gz-net> 360 15000 30000)
+  set_tests_properties(net_keepalive_long PROPERTIES TIMEOUT 600 LABELS slow)
+endif()
 # gz-net against an independent Python BOLT 8 peer (the PR 10 reviewer's),
 # in both roles past key rotation. Opt-in: needs python3 and `cryptography`.
 # It should run in the automated checks wherever `cryptography` is installed
@@ -205,10 +234,14 @@ endif()
 # Fuzz targets. Normally with the plain driver, as CTest tests; with
 # -DGZ_LIBFUZZER=ON (clang; the option is declared at the top), linked with
 # libFuzzer instead and run by tools/run-fuzz.sh (docs/notes/ci.md).
-foreach(target noise tlv)
+# fuzz_envelope runs fewer plain-driver inputs: some build 65,000-byte parts.
+foreach(target noise tlv envelope)
   if(GZ_LIBFUZZER)
     add_executable(fuzz_${target} tests/net/fuzz_${target}.c)
     target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer)
+  elseif(target STREQUAL "envelope")
+    add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
+    add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 5000)
   else()
     add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
     add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 200000)
@@ -224,3 +257,92 @@ add_subdirectory(ports/chain)
 
 # --- trees from terms and the creation checks (core/tree) ---
 add_subdirectory(core/tree)
+# --- the gazpacho program (stream S11): executor, port adapters, executable ----
+add_subdirectory(program)
+# --- Lobby engine (core/lobby): sans-I/O like the core, the same flags and ---
+# --- the same isolation check. Signing and verifying go through a port.    ---
+set(GZ_LOBBY_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/act.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/host.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/member.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/sha256.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/terms.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/wire.c)
+add_library(gazpacho_lobby STATIC ${GZ_LOBBY_SOURCES})
+set_target_properties(gazpacho_lobby PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_lobby PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include)
+target_link_libraries(gazpacho_lobby PUBLIC gazpacho_core)
+target_compile_options(gazpacho_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+
+# Tests use libsecp256k1 for the crypto port (BIP 340 with the test keys).
+function(gz_lobby_test name source)
+  add_executable(${name} ${source})
+  target_link_libraries(${name} PRIVATE gazpacho_lobby gazpacho_sim secp256k1)
+  target_include_directories(${name} PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include)
+  target_compile_options(${name} PRIVATE ${GZ_NEW_CODE_WARNINGS})
+endfunction()
+gz_lobby_test(test_lobby_vectors tests/lobby/test_lobby_vectors.c)
+gz_lobby_test(test_lobby         tests/lobby/test_lobby.c)
+gz_lobby_test(test_lobby_sim     tests/lobby/test_lobby_sim.c)
+gz_lobby_test(lobby_model_driver tests/lobby/model_driver.c)
+add_test(NAME lobby_vectors COMMAND test_lobby_vectors)
+add_test(NAME lobby COMMAND test_lobby)
+# Real stack frames, so a record byte left unwritten keeps the poison the test puts there.
+set_tests_properties(lobby PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=0")
+# One host and 3 to 8 members: mixed faults, crashes only, network only, none.
+# 25 seeds per profile here (about two minutes under the sanitizers); the
+# reports quote runs of 100 seeds per profile, made by hand.
+foreach(profile RANGE 0 3)
+  add_test(NAME lobby_sim_profile_${profile} COMMAND test_lobby_sim 25 ${profile})
+endforeach()
+# The fuzz target, as the transport's (docs/notes/ci.md): a plain driver and a
+# CTest test normally; with GZ_LIBFUZZER, linked with libFuzzer for CI's job.
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_lobby tests/lobby/fuzz_lobby.c)
+  target_link_options(fuzz_lobby PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_lobby tests/lobby/fuzz_lobby.c tests/lobby/fuzz_lobby_main.c)
+  add_test(NAME lobby_fuzz COMMAND fuzz_lobby 200000 1)
+endif()
+target_link_libraries(fuzz_lobby PRIVATE gazpacho_lobby gazpacho_sim secp256k1)
+target_include_directories(fuzz_lobby PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include)
+target_compile_options(fuzz_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS})
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND)
+  # The independent model of the start rule, the choice of signers and the
+  # conditions check, compared with the engine on random cases.
+  add_test(NAME lobby_model COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/lobby/lobby_model.py
+           check $<TARGET_FILE:lobby_model_driver> 30000 1)
+  add_test(NAME lobby_model_selftest COMMAND ${Python3_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/lobby/lobby_model.py selftest)
+endif()
+# The lobby calls the core (gz_action_list_add), so the check runs on the two
+# built together: the pair may call nothing outside itself.
+add_library(gazpacho_lobby_with_core STATIC ${GZ_CORE_SOURCES} ${GZ_LOBBY_SOURCES})
+set_target_properties(gazpacho_lobby_with_core PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_lobby_with_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include
+                           ${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include)
+target_compile_options(gazpacho_lobby_with_core PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+string(JOIN " " GZ_LOBBY_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include)
+add_test(NAME lobby_isolation
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          $<TARGET_FILE:gazpacho_lobby_with_core> --sources ${CMAKE_C_COMPILER} ${GZ_LOBBY_SCAN_FLAGS} ${GZ_LOBBY_SOURCES})
+if(GZ_VALGRIND AND NOT GZ_SANITIZE)
+  add_test(NAME valgrind_lobby_vectors COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby_vectors>)
+  add_test(NAME valgrind_lobby COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby>)
+  if(NOT GZ_LIBFUZZER)
+    add_test(NAME valgrind_lobby_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_lobby> 3000 2)
+  endif()
+endif()
+
+# --- slice1-attempt: the signing engine library only (its tests target the old core) ---
+set(GZ_SIGNING_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/sign_tx.c)
+add_library(gazpacho_signing STATIC ${GZ_SIGNING_SOURCES})
+set_target_properties(gazpacho_signing PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_signing PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include)
+target_link_libraries(gazpacho_signing PUBLIC gazpacho_core secp256k1)
+target_compile_options(gazpacho_signing PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+
+# slice1-attempt glue
+add_subdirectory(program/s1)
