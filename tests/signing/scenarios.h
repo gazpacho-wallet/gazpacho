@@ -843,20 +843,24 @@ static uint64_t sc_proposals(void)
     /* checked before the identifier is looked up (messages.md 7.2's order): nothing answered */
     CHECK(h.n_sent == sent && h.p[1].e->counters[GZ_SIGN_COUNT_DUPLICATES] == 0 && h.p[1].e->counters[GZ_SIGN_COUNT_REJECTED] == rejected + 1);
     CHECK(h.p[1].e->n_known == 2);
-    /* the refused list full: a new round cannot be held. Refused as busy, nothing signed */
+    /* many refused identifiers (review A, F2): the exact list keeps only the newest, the filter
+     * keeps all, so an identifier pushed out of the list is still refused, and a new round is
+     * still held. Here the list is overwritten as if hundreds more had come after. */
     gz_sign_t *e1 = h.p[1].e;
-    while (e1->n_known < GZ_SIGN_MAX_KNOWN) {
-        memset(e1->known[e1->n_known], 0xee, 32);
-        e1->known[e1->n_known][0] = (uint8_t)e1->n_known; e1->known[e1->n_known][1] = (uint8_t)(e1->n_known >> 8);
-        e1->n_known++;
+    for (size_t k = 0; k < GZ_SIGN_MAX_KNOWN; k++) {
+        memset(e1->known[k], 0xee, 32);
+        e1->known[k][0] = (uint8_t)k;
     }
+    e1->n_known = 3 * GZ_SIGN_MAX_KNOWN + 7;
     n_nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
+    h_inject(&h, 0, 1, p0->b, p0->len);
+    CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_KNOWN_ROUND), WHOLE, 0, NULL) && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == n_nonces);
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     long pi = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
     CHECK(pi >= 0);
     h_deliver(&h, (size_t)pi, 0);
-    CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_BUSY), WHOLE, 0, NULL) && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == n_nonces);
-    CHECK(e1->n_known == GZ_SIGN_MAX_KNOWN && h_find(&h, 1, h_newest(&h, 0)->id) == NULL);
+    CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == n_nonces + 1 && h_find(&h, 1, h_newest(&h, 0)->id) != NULL);
+    CHECK(e1->n_known == 3 * GZ_SIGN_MAX_KNOWN + 8 && memcmp(e1->known[7], ids[2], 32) == 0);
     uint64_t d = h_digest(&h);
     h_free(&h);
 

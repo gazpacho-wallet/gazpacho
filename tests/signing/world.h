@@ -689,9 +689,23 @@ static gz_status_t w_handle(void *node, const gz_event_t *ev, gz_action_list_t *
     return st;
 }
 
+/* Every live secret nonce of a node as (8-byte little-endian serial, the 132
+ * secret-nonce bytes), for the simulator's "secrets never leave" check. Read
+ * from the engine's structure here, in the test world: the release library
+ * has no call that hands out a secret nonce (review A, F5). */
 static size_t w_inspect(const void *node, uint8_t *out, size_t cap)
 {
-    return gz_sign_inspect_secrets(&((const w_node_t *)node)->eng, out, cap);
+    const gz_sign_t *e = &((const w_node_t *)node)->eng;
+    size_t n = 0;
+    for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++)
+        for (int i = 0; i < GZ_SIGN_MAX_ITEMS; i++) {
+            if (!e->rounds[k].secnonce_serial[i]) continue;
+            if (cap - n < 140) return 0;
+            for (int b = 0; b < 8; b++) out[n + (size_t)b] = (uint8_t)(e->rounds[k].secnonce_serial[i] >> (8 * b));
+            memcpy(out + n + 8, e->rounds[k].secnonce[i].data, 132);
+            n += 140;
+        }
+    return n;
 }
 
 /* Every contribution that leaves a node: never two different ones under one

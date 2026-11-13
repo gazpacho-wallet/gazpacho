@@ -81,7 +81,7 @@ static void h_snapshot(harness_t *h)
         if (!e) continue;
         h_fold64(h, e->attempts); h_fold64(h, e->n_known);
         for (int c = 0; c < 9; c++) h_fold64(h, e->counters[c]);
-        for (size_t k = 0; k < e->n_known; k++) h_fold(h, e->known[k], 4);
+        for (size_t k = 0; k < e->n_known && k < GZ_SIGN_MAX_KNOWN; k++) h_fold(h, e->known[k], 4);
         for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++) {
             const gz_sign_round_t *r = &e->rounds[k];
             if (r->state == GZ_SIGN_ROUND_FREE) { h_fold64(h, 0); continue; }

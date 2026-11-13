@@ -851,7 +851,7 @@ static const uint64_t SC_KNOWN[N_SCENARIOS] = {
     0xc2931041b87a72b5ull, /* timers */
     0x2669cd1e0c008ac1ull, /* host-faults */
     0xd14200db650773fdull, /* member-faults */
-    0x0a5c05ee7c0ee9e2ull, /* proposals */
+    0x10874665f7589edfull, /* proposals */
     0xa4e56bacf6229921ull, /* journal */
     0xdd6ca7028bf802ebull, /* edges */
 };
@@ -883,6 +883,104 @@ static void test_model(int runs)
     CHECK(st.done >= st.runs * 9 / 10);
 }
 
+/* Review A, F1: an error leaves the engine refusing every call until a start
+ * rebuilds it from storage, and the start recovers it. */
+static void test_errors(void)
+{
+    static gz_action_t slots[1];
+    static uint8_t bytes[64];
+    gz_action_list_t small;
+    harness_t h;
+    h_init(&h, 3);
+    /* the host: a begin whose actions do not fit */
+    uint8_t p[W_PARAMS];
+    w_params(p, 1, 1, w_mask(3), 0);
+    gz_action_list_init(&small, slots, 1, bytes, sizeof bytes);
+    CHECK(w_begin_params(h.p[0].e, &h.builder, p, W_PARAMS, &small) == GZ_ERR_NO_SPACE && small.count == 0 && small.used == 0);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_ERR_FAILED);
+    gz_event_t tick;
+    memset(&tick, 0, sizeof tick);
+    tick.kind = GZ_EVENT_TIMER_FIRED; tick.u.timer.timer_id = 0x5347u;
+    gz_action_list_init(&small, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_handle(h.p[0].e, &tick, &small) == GZ_ERR_FAILED && small.count == 0);
+    CHECK(h_restart(&h, 0) == GZ_OK && h_newest(&h, 0) == NULL && h.p[0].e->attempts == 0);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    /* a member: a proposal whose answer does not fit */
+    long k = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
+    CHECK(k >= 0);
+    gz_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = 0;
+    ev.u.message.bytes.data = h.q[k].b; ev.u.message.bytes.len = h.q[k].len;
+    gz_action_list_init(&small, slots, 1, bytes, sizeof bytes);
+    CHECK(gz_sign_handle(h.p[1].e, &ev, &small) == GZ_ERR_NO_SPACE && small.count == 0);
+    size_t nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
+    CHECK(h_deliver(&h, (size_t)k, 1) == GZ_ERR_FAILED && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == nonces);
+    CHECK(h_restart(&h, 1) == GZ_OK && h_newest(&h, 1) == NULL);
+    h_flush(&h, 100000);
+    CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
+    for (uint32_t j = 1; j <= 3; j++) CHECK(h_newest(&h, j) && h_newest(&h, j)->state == GZ_SIGN_ROUND_COMPLETE);
+    /* the same with a start that cannot emit: still failed, and a later start recovers */
+    gz_storage_reader_t rd = {h_next, h_rewind, &h.p[2], h.p[2].incarnation, 0};
+    int more = 1;
+    gz_action_list_init(&small, slots, 0, bytes, 0);
+    CHECK(gz_sign_start(h.p[2].e, &rd, &small, &more) != GZ_OK && small.count == 0);
+    gz_action_list_init(&small, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_handle(h.p[2].e, &tick, &small) == GZ_ERR_FAILED && small.count == 0);
+    gz_action_list_init(&small, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_start(h.p[2].e, &rd, &small, &more) == GZ_OK && more == 0);
+    CHECK(h_newest(&h, 2) && h_newest(&h, 2)->state == GZ_SIGN_ROUND_COMPLETE);
+    h_free(&h);
+}
+
+/* Review A, F3: a new round pushes out a round that is over (here a newer
+ * Aborted one) before a Complete one, however old. */
+static void test_eviction_order(void)
+{
+    harness_t h;
+    uint8_t ids[GZ_SIGN_MAX_ROUNDS][32];
+    h_init(&h, 3);
+    for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++) {
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        memcpy(ids[k], h_newest(&h, 0)->id, 32);
+        h_flush(&h, 100000);
+    }
+    gz_sign_round_t *last = (gz_sign_round_t *)(uintptr_t)h_find(&h, 1, ids[GZ_SIGN_MAX_ROUNDS - 1]);
+    CHECK(last && last->state == GZ_SIGN_ROUND_COMPLETE);
+    if (last) last->state = GZ_SIGN_ROUND_ABORTED;      /* as if the newest had ended before its partial signatures */
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    h_flush(&h, 100000);
+    CHECK(h_newest(&h, 1)->state == GZ_SIGN_ROUND_COMPLETE);
+    CHECK(h_find(&h, 1, ids[0]) != NULL && h_find(&h, 1, ids[GZ_SIGN_MAX_ROUNDS - 1]) == NULL);
+    h_free(&h);
+}
+
+/* Review A, F2: ordinary use never fills a fixed list. Many rounds; every
+ * party starts again from its journal, every member still takes part, and
+ * the first identifier is still refused. */
+static void test_many_rounds(int rounds)
+{
+    harness_t h;
+    h_init(&h, 3);
+    h.max_attempts = 100000;
+    CHECK(h_restart(&h, 0) == GZ_OK);
+    int stopped = -1;
+    for (int k = 0; k < rounds; k++) {
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        h_flush(&h, 100000);
+        for (uint32_t j = 1; j <= 3; j++)
+            if (stopped < 0 && h_newest(&h, j)->state != GZ_SIGN_ROUND_COMPLETE) stopped = k;
+    }
+    CHECK(stopped < 0 && h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
+    for (uint32_t g = 0; g <= 3; g++) CHECK(h_restart(&h, g) == GZ_OK && h.p[g].e->n_known == (size_t)rounds - GZ_SIGN_MAX_ROUNDS);
+    const h_sent_t *p0 = h_sent_kind(&h, 0, GZ_SIGN_MSG_PROPOSE, 0);
+    size_t nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
+    h_inject(&h, 0, 1, p0->b, p0->len);
+    CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_KNOWN_ROUND), WHOLE, 0, NULL) && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == nonces);
+    printf("  many rounds: %d, each party starts again; refused identifiers held %zu\n", rounds, h.p[1].e->n_known);
+    h_free(&h);
+}
+
 int main(int argc, char **argv)
 {
     const char *only = "";
@@ -906,6 +1004,7 @@ int main(int argc, char **argv)
     SECTION("t1", test_t1());
     SECTION("crashes", test_crashes());
     SECTION("restores", test_restores());
+    SECTION("errors", (test_errors(), test_eviction_order(), test_many_rounds(g_quick ? 60 : 1000)));
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);
