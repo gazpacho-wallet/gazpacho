@@ -12,6 +12,9 @@ usage: tools/mutate-net.py [--first] SOURCE-DIR BUILD-DIR [NAME...]
 BUILD-DIR is a configured CMake build, used only to find libsecp256k1.
 --first stops at the first test that notices a mutant (much faster; the
 report then names only that test).
+The library is built twice, the second time with -DGZ_TEST_KINDS for the
+tests in WITH_TEST_KINDS, so code under #ifdef GZ_TEST_KINDS is mutated
+and tested too (review of PR 23, round 2, R8).
 """
 import os
 import shutil
@@ -26,6 +29,7 @@ TESTS = [  # name, sources, arguments, extra link flags; fast ones first
     ("lnmsg", ["tests/net/test_lnmsg.c"], [], []),
     ("wipes", ["tests/net/test_wipes.c"], [], ["-Wl,--wrap=gz_net_wipe,--wrap=HMAC"]),
     ("conn", ["tests/net/test_conn.c"], [], []),
+    ("test_kind", ["tests/net/test_testkind.c"], [], []),  # with GZ_TEST_KINDS
     ("peers", ["tests/net/test_peers.c"], [], []),
     ("fuzz_envelope", ["tests/net/fuzz_envelope.c", "tests/net/fuzz_main.c"], ["5000"], []),
     ("fuzz_noise", ["tests/net/fuzz_noise.c", "tests/net/fuzz_main.c"], ["30000"], []),
@@ -35,6 +39,7 @@ TESTS = [  # name, sources, arguments, extra link flags; fast ones first
 ]
 LIB = ["ports/net/noise.c", "ports/net/frame.c", "ports/net/conn.c", "ports/net/wipe.c",
        "ports/net/envelope.c", "ports/net/lnmsg.c", "ports/net/peers.c"]
+WITH_TEST_KINDS = {"test_kind"}  # built against the GZ_TEST_KINDS copy of the library
 KEEPALIVE_ARGS = ["3", "100", "1000"]  # seconds, ping_ms, pong_ms: short, as in CI
 
 
@@ -84,16 +89,20 @@ def apply(path, old, new, nth):
 
 def run_all(work, inc, lib, first=False):
     cc = ["gcc", "-std=c11", "-O1", "-w", "-I", work + "/ports/net", "-I", inc]  # no core header (contract v2, 12)
-    objs = []
-    for src in LIB:
-        obj = os.path.join(work, os.path.basename(src) + ".o")
-        if subprocess.call(cc + ["-c", os.path.join(work, src), "-o", obj], stderr=subprocess.DEVNULL) != 0:
-            return None
-        objs.append(obj)
+    objsets = {}
+    for tag, defs in (("", []), ("-tk", ["-DGZ_TEST_KINDS"])):  # release, and the test-kind copy
+        objs = []
+        for src in LIB:
+            obj = os.path.join(work, os.path.basename(src) + tag + ".o")
+            if subprocess.call(cc + defs + ["-c", os.path.join(work, src), "-o", obj], stderr=subprocess.DEVNULL) != 0:
+                return None
+            objs.append(obj)
+        objsets[tag] = (defs, objs)
     caught = []
     for name, srcs, args, ldflags in TESTS:
         exe = os.path.join(work, name + ".bin")
-        if subprocess.call(cc + [os.path.join(work, s) for s in srcs] + objs + [lib, "-lcrypto"] + ldflags + ["-o", exe],
+        defs, objs = objsets["-tk" if name in WITH_TEST_KINDS else ""]
+        if subprocess.call(cc + defs + [os.path.join(work, s) for s in srcs] + objs + [lib, "-lcrypto"] + ldflags + ["-o", exe],
                            stderr=subprocess.DEVNULL) != 0:
             caught.append(name + "(build)")
             if first:

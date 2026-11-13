@@ -30,8 +30,9 @@ typedef struct {
     const secp256k1_context *secp;
     uint8_t static_key[32];  /* the listener's key, and the default for connections we make */
     gz_net_random_t random;   /* the transport's own type (noise.h): no core header */
-    uint8_t chain[32];       /* init's networks: exactly this chain (signet or testnet4); the main
-                                network's hash is refused by gz_peers_new */
+    uint8_t chain[32];       /* init's networks: exactly this chain; gz_peers_new accepts only
+                                signet's and testnet4's hashes (the main network and every other
+                                chain are refused) */
     gz_conn_member_fn is_member; /* required for accepted connections (transport.md rule 13) */
     void *member_ctx;
     int handshake_ms;        /* TCP connect, handshake and init, from the start (default 10,000) */
@@ -43,7 +44,8 @@ typedef struct {
     size_t max_queue;        /* unsent bytes per connection (default 4 MiB) */
     unsigned max_pings;      /* pings accepted per pong_ms window before closing (default 10) */
     unsigned max_handshakes; /* accepted connections still in their handshake or before init; when
-                                full, the oldest is evicted (default 16; review of PR 23, F1) */
+                                full, the one with least progress is evicted, the oldest among
+                                equals (default 16; review of PR 23, F1 and B2) */
     unsigned max_per_address; /* accepted connections from one IPv4 address or IPv6 /64, 0 for no cap
                                  (default 4) */
     unsigned max_ignored;    /* ignored messages (unknown odd types and kinds, wrong tags, warnings)

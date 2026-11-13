@@ -570,7 +570,7 @@ static void test_messages(void)
 
 /* ------------------------------------------------ failures to connect */
 
-static void other_chain(gz_peers_config_t *c) { memset(c->chain, 0x6f, 32); }
+static void other_chain(gz_peers_config_t *c) { memcpy(c->chain, GZ_LN_CHAIN_TESTNET4, 32); }
 static void short_handshake(gz_peers_config_t *c) { c->handshake_ms = 1500; }
 static void two_conns(gz_peers_config_t *c) { c->max_conns = 2; }
 
@@ -1159,6 +1159,35 @@ static void test_review_b(void)
     for (i = 0; i < 40; i++) if (fds[i] >= 0) close(fds[i]);
     free_sides();
 
+    /* Round 2, R1: least progress does NOT defeat a flood whose sockets each
+     * send a valid act one (one ECDH each, needing only the host's public
+     * key; the host pays two). They reach the same progress as the honest
+     * handshake waiting for act three, the tie goes to the oldest, and the
+     * honest one is evicted. This records the current behaviour
+     * (transport.md L9 and the R2-7 limit): no address cap here, which
+     * stands for an attacker with 5 or more IPv4 addresses or IPv6 /64s.
+     * The planned per-address cap on handshakes in progress must change
+     * this result deliberately, and then this case with it. */
+    {
+        static rawm_t fl[40];
+        S[0].p = mk(HOST_KEY, 20000, 30000, NULL, no_address_cap);
+        CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &port) == GZ_PEERS_OK);
+        CHECK(rawm_start(&h, 0, port, keys[0]));
+        pump(100);
+        for (i = 0; i < 40; i++) {
+            CHECK(rawm_start(&fl[i], 0, port, keys[1]));
+            pump(5);
+        }
+        pump(100);
+        gz_peers_stats(S[0].p, &st);
+        CHECK(st.evicted_handshakes >= 20);
+        (void)rawm_finish(&h); /* act two may be waiting in its socket */
+        CHECK(quiet(0, GZ_PEER_EV_CONNECTED, 1000)); /* the honest handshake was evicted */
+        rawm_close(&h);
+        for (i = 0; i < 40; i++) rawm_close(&fl[i]);
+        free_sides();
+    }
+
     /* B10 (mbB-peraddr-same-init): the cap of 4 counts established
      * connections too. Four members from one address complete init; a
      * fifth socket from it is closed at accept. */
@@ -1279,6 +1308,43 @@ static void refused_closes(int side_refusing, gz_peers_err_t want_err, const cha
     free_sides();
 }
 
+static void small_queue(gz_peers_config_t *c) { c->max_queue = 100000; }
+
+/* Round 2, R3: the refusals outside the paths above close too. which 0:
+ * a full queue on the single-message path; 1: gz_peers_send_raw too big;
+ * 2: gz_peers_send_raw with a full queue. */
+static void refused_closes_more(int which)
+{
+    static uint8_t raw[70000];
+    uint64_t hc, mc;
+    gz_peer_event_t *e;
+    gz_peers_err_t got;
+    const char *text = which == 1 ? "message too big" : "send queue full";
+    hc = pair(20000, 30000, small_queue, &mc, NULL);
+    memset(raw, 0, sizeof raw);
+    raw[0] = 0x7f; /* type 32767: unknown and odd, ignored if it ever arrives */
+    raw[1] = 0xff;
+    if (which == 0) {
+        /* Nothing is written without polling: the second 50,000-byte
+         * message does not fit in 100,000. */
+        CHECK(50000 <= GZ_ENV_MAX_RECORDS);
+        CHECK(gz_peers_send(S[0].p, hc, 18, SCOPE, raw + 2, 50000) == GZ_PEERS_OK);
+        got = gz_peers_send(S[0].p, hc, 18, SCOPE, raw + 2, 50000);
+    } else if (which == 1) {
+        got = gz_peers_send_raw(S[0].p, hc, raw, GZ_NOISE_MAX_MSG + 1);
+    } else {
+        CHECK(gz_peers_send_raw(S[0].p, hc, raw, 60000) == GZ_PEERS_OK);
+        got = gz_peers_send_raw(S[0].p, hc, raw, 60000);
+    }
+    CHECK(got == (which == 1 ? GZ_PEERS_ERR_TOO_BIG : GZ_PEERS_ERR_FULL));
+    e = expect(0, GZ_PEER_EV_CLOSED, 5000);
+    CHECK(e && e->conn == hc && e->why == GZ_PEER_WHY_SEND_REFUSED && strcmp(e->text, text) == 0);
+    e = expect(1, GZ_PEER_EV_CLOSED, 5000);
+    CHECK(e && e->conn == mc && e->why == GZ_PEER_WHY_LOST);
+    CHECK(gz_peers_send_raw(S[0].p, hc, raw, 10) == GZ_PEERS_ERR_NO_CONN);
+    free_sides();
+}
+
 static void test_send_refusals(void)
 {
     uint64_t hc, mc;
@@ -1296,6 +1362,9 @@ static void test_send_refusals(void)
     refused_closes(1, GZ_PEERS_ERR_TOO_BIG, "message too big");
     refused_closes(0, GZ_PEERS_ERR_ARGS, "invalid arguments");
     refused_closes(0, GZ_PEERS_ERR_FULL, "send queue full");
+    refused_closes_more(0);
+    refused_closes_more(1);
+    refused_closes_more(2);
     /* The default queue holds twice that answer, unsent, so close-on-full
      * cannot loop on a reconnect (contract v2, section 1). */
     gz_peers_default_config(&def);
@@ -1323,6 +1392,31 @@ static void test_send_refusals(void)
     e = expect(0, GZ_PEER_EV_CLOSED, 5000);
     CHECK(e && e->conn == hc && e->why == GZ_PEER_WHY_CLOSED_LOCAL);
     CHECK(quiet(1, GZ_PEER_EV_WARNING, 0)); /* no warning: a close, not a refusal */
+    free_sides();
+
+    /* Round 2, R3: close_after_send with a queue far larger than the socket
+     * buffers (three 1 MiB messages, queued without polling): every byte
+     * still arrives before the close, so a DISCONNECT after a final SEND
+     * never loses it (contract v2, section 3). Closing at once would cut
+     * the stream mid-message. */
+    hc = pair(20000, 30000, NULL, &mc, NULL);
+    {
+        size_t n = nonces_body((GZ_ENV_MAX_WHOLE - 200) / 130, big, sizeof big);
+        int got = 0, closed_at = -1, k;
+        for (rep = 0; rep < 3; rep++) CHECK(gz_peers_send(S[0].p, hc, 68, SCOPE, big, n) == GZ_PEERS_OK);
+        CHECK(gz_peers_close_after_send(S[0].p, hc) == GZ_PEERS_OK);
+        e = expect(1, GZ_PEER_EV_CLOSED, 10000);
+        CHECK(e && e->conn == mc && e->why == GZ_PEER_WHY_LOST);
+        for (k = 0; k < S[1].n; k++) {
+            if (S[1].e[k].ev.type == GZ_PEER_EV_CLOSED && closed_at < 0) closed_at = k;
+            if (S[1].e[k].ev.type == GZ_PEER_EV_MESSAGE && S[1].e[k].ev.kind == 68 && closed_at < 0 &&
+                S[1].e[k].ev.records_len == n && memcmp(S[1].e[k].body, big, n) == 0)
+                got++;
+        }
+        CHECK(got == 3);
+        e = expect(0, GZ_PEER_EV_CLOSED, 5000);
+        CHECK(e && e->conn == hc && e->why == GZ_PEER_WHY_CLOSED_LOCAL);
+    }
     free_sides();
 }
 
@@ -1370,6 +1464,37 @@ static void test_replacement(void)
         e = expect(0, GZ_PEER_EV_CLOSED, 5000);
         CHECK(e && e->why == GZ_PEER_WHY_EVICTED && memcmp(e->node_id, MEM_PUB2, 33) == 0);
     }
+    free_sides();
+}
+
+/* Round 2, R4: a link is (local key, remote key). A node that is a member of
+ * X (its outbound connection) and also accepts X as a member (an inbound
+ * connection proving the same remote key) has two links; the inbound one's
+ * admission replaces nothing. */
+static void test_replacement_outbound(void)
+{
+    uint16_t pa, pb;
+    uint64_t ab, ba;
+    gz_peer_event_t *e;
+    gz_peers_stats_t st;
+    S[0].p = mk(HOST_KEY, 20000, 30000, NULL, NULL);
+    S[1].p = mk(MEM_KEY, 20000, 30000, NULL, NULL);
+    CHECK(gz_peers_listen(S[0].p, "127.0.0.1", 0, &pa) == GZ_PEERS_OK);
+    CHECK(gz_peers_listen(S[1].p, "127.0.0.1", 0, &pb) == GZ_PEERS_OK);
+    CHECK(gz_peers_connect(S[0].p, "127.0.0.1", pb, MEM_PUB, NULL, &ab) == GZ_PEERS_OK);
+    e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
+    CHECK(e && e->conn == ab && e->outbound == 1 && memcmp(e->node_id, MEM_PUB, 33) == 0);
+    CHECK(expect(1, GZ_PEER_EV_CONNECTED, 5000) != NULL);
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", pa, HOST_PUB, NULL, &ba) == GZ_PEERS_OK);
+    e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
+    CHECK(e && e->conn != ab && e->outbound == 0 && memcmp(e->node_id, MEM_PUB, 33) == 0);
+    e = expect(1, GZ_PEER_EV_CONNECTED, 5000);
+    CHECK(e && e->conn == ba && e->outbound == 1);
+    CHECK(quiet(0, GZ_PEER_EV_CLOSED, 300) && quiet(1, GZ_PEER_EV_CLOSED, 0));
+    gz_peers_stats(S[0].p, &st);
+    CHECK(st.replaced == 0 && st.open == 2);
+    gz_peers_stats(S[1].p, &st);
+    CHECK(st.replaced == 0 && st.open == 2);
     free_sides();
 }
 
@@ -1443,8 +1568,18 @@ static void test_pollfds(void)
     free_sides();
 }
 
-/* init names exactly one chain, signet or testnet4; the main network is
- * refused outright (contract v2, section 15). */
+/* init names exactly one chain, signet or testnet4; gz_peers_new accepts
+ * only those two (contract v2, section 15; review of PR 23, round 2, R2). */
+static void chain_of(const char *hex, uint8_t out[32])
+{
+    unsigned i, v;
+    for (i = 0; i < 32; i++) {
+        v = 0;
+        CHECK(sscanf(hex + 2 * i, "%2x", &v) == 1);
+        out[i] = (uint8_t)v;
+    }
+}
+
 static void testnet4(gz_peers_config_t *c) { memcpy(c->chain, GZ_LN_CHAIN_TESTNET4, 32); }
 
 static void test_networks(void)
@@ -1459,6 +1594,31 @@ static void test_networks(void)
     c.is_member = gz_conn_any_member;
     memcpy(c.chain, GZ_LN_CHAIN_MAINNET, 32);
     CHECK(gz_peers_new(&c) == NULL);
+    {
+        /* Genesis block hashes in internal byte order: an allow-list, so
+         * regtest, testnet3 and an all-zero hash are refused too. */
+        static const char *refused[] = {
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f", /* regtest */
+            "43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000", /* testnet3 */
+            "6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000", /* mainnet */
+        };
+        size_t k;
+        gz_peers_t *ok;
+        for (k = 0; k < sizeof refused / sizeof refused[0]; k++) {
+            chain_of(refused[k], c.chain);
+            CHECK(gz_peers_new(&c) == NULL);
+        }
+        CHECK(memcmp(c.chain, GZ_LN_CHAIN_MAINNET, 32) == 0);
+        memcpy(c.chain, GZ_LN_CHAIN_SIGNET, 32);
+        ok = gz_peers_new(&c);
+        CHECK(ok != NULL);
+        gz_peers_free(ok);
+        memcpy(c.chain, GZ_LN_CHAIN_TESTNET4, 32);
+        ok = gz_peers_new(&c);
+        CHECK(ok != NULL);
+        gz_peers_free(ok);
+    }
     /* testnet4 to testnet4 */
     S[0].p = mk(HOST_KEY, 20000, 30000, NULL, testnet4);
     S[1].p = mk(MEM_KEY, 20000, 30000, NULL, testnet4);
@@ -1518,6 +1678,7 @@ int main(void)
     puts("== replacement");
     fflush(stdout);
     test_replacement();
+    test_replacement_outbound();
     puts("== pollfds");
     fflush(stdout);
     test_pollfds();
