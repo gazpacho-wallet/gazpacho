@@ -263,3 +263,6 @@ add_subdirectory(ports/storage/crypto)
 
 # --- the local API server (spec/local-api.md), its fake backend and tests ------
 add_subdirectory(ports/api)
+
+# --- the gazpacho program (stream S11): executor, port adapters, executables ----
+add_subdirectory(program)
