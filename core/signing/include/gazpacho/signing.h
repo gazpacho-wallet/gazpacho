@@ -206,6 +206,9 @@ typedef struct {
     uint8_t scratch[GZ_SIGN_MAX_MSG];
     gz_sign_def_t scratch_def;
     gz_sign_round_t pending;        /* a round is checked here before it takes a slot */
+    /* Work areas for large temporaries of functions the compiler inlines. */
+    secp256k1_musig_partial_sig work_psig[GZ_SIGN_MAX_SIGNERS];
+    uint8_t work_tx[GZ_SIGN_MAX_TX + 80];
 } gz_sign_t;
 
 /* What the engine counts, for tests and reports. */
