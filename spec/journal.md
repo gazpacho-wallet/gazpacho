@@ -10,7 +10,7 @@ Alignment fixes from `docs/reviews/review-cross-spec-1.md`, made in one pass wit
 |---|---|---|
 | D13 | **Record type numbers assigned** for `spec/exit.md` 3.4's records: area 0x0007 (Exit) for `exit_plan`, `exit_started`, `exit_step`, `coin_reserved`, `fee_child`, `exit_ended` and `bundle_written`; area 0x0008 (Watch) for `spend_seen` and `response_sent`. All even. Slice 3 | Section 9.1 |
 | The API's saved state | **Record type numbers assigned** for every row of `spec/local-api.md` 7.5, in a new area 0x000d (Local API), all even. Slice 1 for the S1 rows, 1.0.0 for the rest. This closes Slice 1 input W3 for the type numbers; the field numbers inside each record stay with the code tables (open point 3) | Section 9.1, open point 9 |
-| The lobby engine's records | **Record type number assigned** for the host's `lobby_state` (0x00010018), the one record the lobby engine adds to section 9. Its layouts are in `docs/notes/lobby.md`. After review A of PR 30, `start_sent` also holds the time the signing budget began | Section 9.1 |
+| The lobby engine's records | **Record type number assigned** for `lobby_state` (0x00010018), the one record the lobby engine adds to section 9. Its layouts are in `docs/notes/lobby.md`. After review A of PR 30, `start_sent` also holds the time the signing budget began; after review B, the member keeps `lobby_state` too (its round's outcome) | Section 9.1 |
 | D3 | Every batch that changes the watch bundle or appends a penalty entry is an anchored batch (storage 6.2), whatever records it holds | Section 4 step 4 |
 
 ## Changes in draft 3
@@ -335,7 +335,7 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 
 | Type | Record | Contents | Saved before | Release |
 |---|---|---|---|---|
-| `0x00010018` | `lobby_state` | Host: the lobby's state after a signing attempt, `u8`: 1 Open (a retry without the named seats), 4 Funding, 5 Active | The `lobby_status` that shows it | S1 |
+| `0x00010018` | `lobby_state` | Host: the lobby's state after a signing attempt, `u8`: 1 Open (a retry without the named seats), 4 Funding, 5 Active; Funding or Active may follow `lobby_ended` (a creation the signing engine completed stands). Member: its round's outcome, `u8`: 1 a retry (the saved start is spent), 4 Funding, 5 Active | Host: the `lobby_status` that shows it. Member: anything that shows it; a restart then never hands the finished check to the signing engine again | S1 |
 
 ## 10. What is never stored
 

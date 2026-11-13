@@ -7,7 +7,10 @@
  *   FREEZE         check_id 32, version u32, digest 32, u16 len, the ready_check
  *   HOST_FAULT     fault u8, u16 len, evidence a, u16 len, evidence b
  *   START_RECEIVED the signed start bytes
- *   LOBBY_ENDED    state u8 (0: the member left), reason u16, u16 len, the cancel */
+ *   LOBBY_ENDED    state u8 (0: the member left), reason u16, u16 len, the cancel
+ *   LOBBY_STATE    state u8: the signing engine's outcome (1 Open: a retry, the
+ *                  start is spent; 4 Funding; 5 Active), so that a restart never
+ *                  hands a finished check to the signing engine again */
 #include "lobby_internal.h"
 #include <string.h>
 
@@ -543,6 +546,13 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
         if (p[0] == 0) { m->left = 1; m->leave_reason = (uint16_t)gz_lw_get(p + 1, 2); }
         else m->lobby_state = p[0];
         return GZ_OK;
+    case GZ_REC_LOBBY_STATE:                          /* the signing outcome (B2) */
+        if (len != 1 || (p[0] != GZ_LOBBY_OPEN && p[0] != GZ_LOBBY_FUNDING && p[0] != GZ_LOBBY_ACTIVE))
+            return GZ_ERR_CORRUPT;
+        if (m->stale_seat) return GZ_OK;              /* an older epoch's round */
+        if (p[0] == GZ_LOBBY_OPEN) { m->start_len = 0; m->role = 0; m->has_answered = 0; }
+        else m->round_state = m->lobby_state = p[0];
+        return GZ_OK;
     default:
         return GZ_OK;
     }
@@ -552,23 +562,35 @@ gz_status_t gz_lobby_member_resume(gz_lobby_member_t *m, gz_action_list_t *out)
 {
     gz_lobby_msg_t g;
     if (!m || !out) return GZ_ERR_ARGUMENT;
-    if (m->ended || !m->start_len || m->role != 1 || gz_lobby_decode(m->start_msg, m->start_len, &g) != GZ_DEC_OK ||
-        !gz_lobby_member_may_sign(m, g.check_id))
+    if (m->ended || !m->start_len || m->role != 1 || m->round_state >= GZ_LOBBY_FUNDING ||
+        gz_lobby_decode(m->start_msg, m->start_len, &g) != GZ_DEC_OK || !gz_lobby_member_may_sign(m, g.check_id))
         return GZ_OK;
     return begin_signing(m, 1, out);
 }
 
 gz_status_t gz_lobby_member_round_result(gz_lobby_member_t *m, int outcome, gz_action_list_t *out)
 {
+    uint8_t st8;
     if (!m || !out || outcome < GZ_LOBBY_ROUND_FUNDING || outcome > GZ_LOBBY_ROUND_FAILED) return GZ_ERR_ARGUMENT;
-    if (m->ended) return gz_la_cmd_refused(out, GZ_CMD_ROUND_RESULT, m->lobby_state);
     if (outcome == GZ_LOBBY_ROUND_FUNDING || outcome == GZ_LOBBY_ROUND_ACTIVE) {
-        m->lobby_state = outcome == GZ_LOBBY_ROUND_FUNDING ? GZ_LOBBY_FUNDING : GZ_LOBBY_ACTIVE;
+        /* Saved, so that a restart never hands this check over again (review
+         * B, B2); taken also after a cancel, since a completed creation stands
+         * (B3). */
+        if (m->round_state == GZ_LOBBY_ACTIVE ||
+            (outcome == GZ_LOBBY_ROUND_FUNDING && m->round_state == GZ_LOBBY_FUNDING))
+            return gz_la_cmd_refused(out, GZ_CMD_ROUND_RESULT, m->lobby_state);
+        st8 = outcome == GZ_LOBBY_ROUND_FUNDING ? GZ_LOBBY_FUNDING : GZ_LOBBY_ACTIVE;
+        TRY(gz_la_save1(out, GZ_REC_LOBBY_STATE, &st8, 1));
+        m->round_state = m->lobby_state = st8;
         return note2(out, GZ_NOTE_SEAT, (uint8_t)m->lobby_state, (uint8_t)m->seat_state);
     }
-    if (outcome == GZ_LOBBY_ROUND_RETRY) {            /* the next check's start is a new one */
+    if (m->ended || m->round_state >= GZ_LOBBY_FUNDING) return gz_la_cmd_refused(out, GZ_CMD_ROUND_RESULT, m->lobby_state);
+    if (outcome == GZ_LOBBY_ROUND_RETRY && m->start_len) {   /* the start is spent; the next check's is new */
+        st8 = GZ_LOBBY_OPEN;
+        TRY(gz_la_save1(out, GZ_REC_LOBBY_STATE, &st8, 1));
         m->start_len = 0;
         m->role = 0;
+        m->has_answered = 0;                          /* its check is over: a resent start for it is ignored */
     }
     return GZ_OK;                                     /* Failed: the host's cancel follows */
 }

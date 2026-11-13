@@ -32,7 +32,13 @@ typedef struct {
     /* 1: the same start again after a restart (gz_lobby_host_resume,
      * gz_lobby_member_resume). The signing engine treats `begin` as
      * idempotent per check_id: a check it already began, and saved, is
-     * resumed from its own records, never begun twice. */
+     * resumed from its own records, never begun twice; and a check it has
+     * already finished (any outcome) is ignored: `begin` for it does
+     * nothing. The lobby saves each outcome it is given (lobby_state, on
+     * both sides) and so does not hand a finished check over again after a
+     * restart, but a crash can lose that save, so the rule stands.
+     * Under one check_id the lobby never names other participants: a chosen
+     * seat keeps its keys until the round is resolved. */
     int resume;
     const uint8_t *scope;                      /* = outer digest, 32 */
     const uint8_t *pinned_key;                 /* the host's key the member pinned (33); the host's own */
@@ -92,11 +98,21 @@ typedef struct {
     void *ctx;
 } gz_lobby_signing_t;
 
-/* The signing engine's outcome, routed back to the lobby by the program. */
+/* The signing engine's outcome, routed back to the lobby by the program.
+ *
+ * THE SIGNING BUDGET (terms.md 3: one budget for all attempts, from the
+ * lobby's first `start`). Once the lobby hands a round to the signing engine,
+ * the signing engine alone owns the budget: it reports GZ_LOBBY_ROUND_FAILED
+ * when the budget is spent, and the lobby never cancels a round in Signing
+ * for it. The lobby's own budget timer covers only the phases before a
+ * hand-off (Open and a ready check after a retry), where it ends the lobby
+ * with cancel reason 3. A Funding or Active outcome is always accepted, also
+ * after the lobby ended by a cancel: a creation the signing engine completed
+ * is never refused. */
 #define GZ_LOBBY_ROUND_FUNDING 1     /* the creation is signed: funding */
 #define GZ_LOBBY_ROUND_ACTIVE  2     /* the factory is funded */
 #define GZ_LOBBY_ROUND_RETRY   3     /* host: members named failed; the rest go back to Ready.
                                         member: this attempt ended; a later check may choose it */
-#define GZ_LOBBY_ROUND_FAILED  4     /* the signing budget is spent: cancel reason 3 */
+#define GZ_LOBBY_ROUND_FAILED  4     /* the signing budget is spent (the signing engine's): cancel reason 3 */
 
 #endif

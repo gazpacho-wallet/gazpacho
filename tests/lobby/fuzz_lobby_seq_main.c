@@ -22,23 +22,36 @@ int main(int argc, char **argv)
     sim_rng_init(&R, seed, 11);
     for (i = 0; i < iters; i++) {
         size_t n = 1 + 3 * (size_t)(4 + sim_rng_below(&R, 150)), k = 1, w;
-        int style = (int)sim_rng_below(&R, 3);
+        int style = (int)sim_rng_below(&R, 4);
         for (w = 0; w < n; w++) buf[w] = (uint8_t)sim_rng_below(&R, 256);
         if (style == 0) {
             /* a host whose members mostly join, ready and answer: checks and starts come */
-            static const uint8_t ops[] = {5, 5, 5, 8, 8, 9, 6, 7, 1, 0, 3};
+            static const uint8_t ops[] = {5, 5, 5, 5, 5, 5, 8, 9, 6, 7, 1, 0, 3, 4, 10, 11};   /* answers before the window */
             buf[0] = (uint8_t)(2 * sim_rng_below(&R, 4));
-            for (w = 0; w < 6 && k + 9 <= n; w++, k += 9) {
+            for (w = 0; w < 10 && k + 9 <= n; w++, k += 9) {   /* enough seats for the target */
                 buf[k] = 0; buf[k + 1] = (uint8_t)w;
                 buf[k + 3] = 3; buf[k + 4] = (uint8_t)w;
                 buf[k + 6] = 5; buf[k + 7] = (uint8_t)w; buf[k + 8] = 3;
             }
             for (; k + 3 <= n; k += 3) {
                 buf[k] = ops[sim_rng_below(&R, sizeof ops)];
-                buf[k + 1] = (uint8_t)sim_rng_below(&R, 6);
-                if (buf[k] == 5) buf[k + 2] = sim_rng_below(&R, 2) ? 11 : 3;     /* the latest values, with the check */
-                if (buf[k] == 8) buf[k + 2] = sim_rng_below(&R, 2) ? 0 : 3;      /* the window or the deadline */
-                if (buf[k] == 9) buf[k + 2] = (uint8_t)(128 + sim_rng_below(&R, 3));
+                buf[k + 1] = (uint8_t)sim_rng_below(&R, 10);
+                if (buf[k] == 5) buf[k + 2] = sim_rng_below(&R, 4) ? 11 : 3;     /* the latest values, with the check */
+                if (buf[k] == 8) buf[k + 2] = sim_rng_below(&R, 4) ? 0 : 3;      /* mostly the window, or the deadline */
+                if (buf[k] == 9)                                                  /* seconds, sometimes minutes */
+                    buf[k + 2] = sim_rng_below(&R, 4) ? (uint8_t)sim_rng_below(&R, 100) : (uint8_t)(128 + sim_rng_below(&R, 3));
+                if (buf[k] == 10) buf[k + 2] = (uint8_t)(5 * sim_rng_below(&R, 51) + 3 + sim_rng_below(&R, 2));   /* an outcome */
+            }
+        } else if (style == 3) {
+            /* a crowd of keys: the connection, seat and creation caps are reached */
+            static const uint8_t ops[] = {0, 0, 0, 2, 3, 3, 5, 7, 8, 9, 10, 11};
+            buf[0] = (uint8_t)(2 * sim_rng_below(&R, 4));
+            for (; k + 3 <= n; k += 3) {
+                buf[k] = ops[sim_rng_below(&R, sizeof ops)];
+                buf[k + 1] = (uint8_t)sim_rng_below(&R, 64);
+                if (buf[k] == 2) buf[k + 2] = 1;                                   /* a hello for the lobby */
+                if (buf[k] == 5) buf[k + 2] = sim_rng_below(&R, 2) ? 11 : 3;
+                if (buf[k] == 9) buf[k + 2] = (uint8_t)sim_rng_below(&R, 30);      /* up to 3 s */
             }
         } else if (style == 1) {
             /* a member taken through terms, a check and a start, with noise */

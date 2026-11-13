@@ -43,6 +43,11 @@ typedef struct {
     w_handoff_t handoffs[16]; int n_handoffs;
     int n_resumes, n_repeats;                  /* begin again for a check it holds: resumed, or not */
     int n_left;                                /* member_left calls (host) */
+    /* The signing engine's side as a model (review B of PR 30): the checks it
+     * has finished, which it ignores when they are handed over again; begins
+     * for them, and begins naming other participants under a known check. */
+    uint8_t ended[16][32]; int n_ended;
+    int n_begin_ended, n_v2;
     int n_cancels; uint16_t cancel_reason; uint8_t cancel_scope[32];
     uint32_t notes[64]; uint8_t note_a[64], note_b[64]; int n_notes;
     int close_requested;
@@ -79,9 +84,25 @@ static inline gz_status_t w_begin(void *ctx, const gz_lobby_handoff_t *h, gz_act
     uint16_t i;
     int k;
     (void)out;
-    /* The signing engine's begin is idempotent per check_id (lobby_handoff.h). */
+    /* A check the signing engine has finished is ignored (lobby_handoff.h). */
+    for (k = 0; k < d->n_ended; k++)
+        if (memcmp(d->ended[k], h->check_id, 32) == 0) { d->n_begin_ended++; return GZ_OK; }
+    /* The signing engine's begin is idempotent per check_id (lobby_handoff.h),
+     * and one check never names other participants (review B, B1). */
     for (k = 0; k < d->n_handoffs; k++)
         if (memcmp(d->handoffs[k].check, h->check_id, 32) == 0) {
+            x = &d->handoffs[k];
+            if (h->participants) {
+                int same = h->n_participants == x->n_participants;
+                for (i = 0; same && i < h->n_participants && i <= GZ_LOBBY_MAX_SEATS; i++)
+                    same = memcmp(x->participants[i], h->participants[i].contribution_key, 33) == 0 &&
+                           memcmp(x->factory[i], h->participants[i].factory_key, 33) == 0;
+                if (!same) {
+                    d->n_v2++;
+                    d->w->failures++;
+                    printf("node %d: begin for a known check with other participants\n", d->idx);
+                }
+            }
             if (h->resume) d->n_resumes++; else d->n_repeats++;
             return GZ_OK;
         }
@@ -126,6 +147,12 @@ static inline gz_status_t w_begin(void *ctx, const gz_lobby_handoff_t *h, gz_act
     x->layer_step = h->layer_step; x->layer_states = h->layer_states; x->min_members = h->min_members;
     x->version = h->version; x->start_len = h->start_len;
     return GZ_OK;
+}
+
+/* The signing engine finished a check (it routes the outcome to the lobby). */
+static inline void w_ended(w_node_t *d, const uint8_t check[32])
+{
+    if (d->n_ended < 16) memcpy(d->ended[d->n_ended++], check, 32);
 }
 
 static inline gz_status_t w_left(void *ctx, const uint8_t scope[32], const uint8_t ckey[33], gz_action_list_t *out)

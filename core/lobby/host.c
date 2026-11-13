@@ -8,7 +8,9 @@
  *   FREEZE         check_id 32, version u32, digest 32, u16 len, the ready_check
  *   START_SENT     check_id 32, budget u64 (Unix ms the signing budget began),
  *                  u16 n, n x (ckey 33, u16 len, start)
- *   LOBBY_STATE    state u8 (Open after a retry, Funding, Active)
+ *   LOBBY_STATE    state u8 (Open after a retry, Funding, Active; Funding or
+ *                  Active may follow LOBBY_ENDED: a creation the signing engine
+ *                  completed stands)
  *   LOBBY_ENDED    state u8, reason u16, u16 len, cancel */
 #include "lobby_internal.h"
 #include <string.h>
@@ -227,15 +229,18 @@ static gz_status_t idle_arm(gz_lobby_host_t *h, gz_action_list_t *out)
     return gz_la_timer(out, GZ_LOBBY_TIMER_IDLE, next);
 }
 
-/* Drop the oldest connection whose key holds no seat, to make room. 1 if one
- * was dropped. */
+/* Drop a connection whose key holds no seat, to make room: one that has said
+ * nothing yet first, then the oldest, as the transport does (review B, B7).
+ * Never a seated one. 1 if one was dropped. */
 static int evict_unseated(gz_lobby_host_t *h, gz_status_t *st, gz_action_list_t *out)
 {
     int i, best = -1;
     for (i = 0; i < GZ_LOBBY_MAX_CONNS; i++) {
         gz_lobby_conn_t *c = &h->conns[i];
         if (!c->used || conn_seated(h, c)) continue;
-        if (best < 0 || c->seq < h->conns[best].seq) best = i;
+        if (best < 0 || (!c->spoke && h->conns[best].spoke) ||
+            (c->spoke == h->conns[best].spoke && c->seq < h->conns[best].seq))
+            best = i;
     }
     if (best < 0) return 0;
     h->conns[best].used = 0;                          /* its later events are ignored */
@@ -452,6 +457,9 @@ static gz_status_t window_closed(gz_lobby_host_t *h, gz_action_list_t *out)
     h->check_open = 0;
     for (i = 0; i < h->n_seats; i++)                 /* answered and still ready, in order of joining */
         if (h->seats[i].answered && is_ready(h, &h->seats[i])) {
+            /* A min_members above the target can never be met: such a seat is
+             * left out before the cut, so it takes no one's place (review B, B5). */
+            if (h->seats[i].min_members > h->terms.target) continue;
             for (j = n; j > 0 && order[j - 1]->join_seq > h->seats[i].join_seq; j--) order[j] = order[j - 1];
             order[j] = &h->seats[i];
             n++;
@@ -462,7 +470,12 @@ static gz_status_t window_closed(gz_lobby_host_t *h, gz_action_list_t *out)
         h->state = GZ_LOBBY_OPEN;
         h->check_failed = 1;
         if (now_ms(h) / 1000 >= h->terms.deadline) return end_lobby(h, 1, out);
-        return broadcast(h, out);
+        /* The rule again at once: a seat event during the check allows a new
+         * one; without one the failed-check guard in apply_rule waits for it
+         * (decision 8; review A, F6). */
+        h->rule_dirty = 1;
+        TRY(broadcast(h, out));
+        return apply_rule(h, 0, out);
     }
     first = h->budget_ms == 0;
     if (first) h->budget_ms = now_ms(h);              /* terms.md 3: one budget for all attempts */
@@ -564,7 +577,7 @@ static int creation_due(gz_lobby_host_t *h, uint64_t now)
 
 static gz_status_t join_refused(gz_lobby_host_t *h, gz_lobby_conn_t *c, int invalid, gz_action_list_t *out)
 {
-    if (invalid ? ++c->bad_joins >= GZ_LOBBY_BAD_JOINS : ++c->refused_joins > GZ_LOBBY_REFUSED_JOINS) {
+    if (invalid ? ++c->bad_joins >= GZ_LOBBY_BAD_JOINS : ++c->refused_joins >= GZ_LOBBY_REFUSED_JOINS) {
         c->closed = 1;
         return gz_la_refuse(out, c->peer_id, "too many joins");
     }
@@ -586,6 +599,11 @@ static gz_status_t on_join(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lobb
         return join_refused(h, c, 1, out);
     }
     if (s && s->state == GZ_SEAT_REMOVED) return status(h, c, out);
+    /* A seat chosen in the running attempt keeps the keys it was chosen with
+     * until the round is resolved, also after its leave: it cannot join again
+     * with new keys, so the signing engine is never given other participants
+     * under one check (review B, B1). It may join again after the outcome. */
+    if (s && h->state == GZ_LOBBY_SIGNING && s->chosen) return join_refused(h, c, 0, out);
     /* The cheap conditions first, before any signature (review A, F8). Open;
      * or, with standby seats, while a check or an attempt runs, so that late
      * arrivals can fill a gap (owner decision 10; LOBBY.md "standbys"). */
@@ -673,7 +691,10 @@ static gz_status_t on_unready_leave(gz_lobby_host_t *h, gz_lobby_conn_t *c, cons
     int in_round = h->state == GZ_LOBBY_SIGNING && s && s->chosen;
     if (s && is_in(s) && s->state != want &&
         !(m->kind == GZ_KIND_UNREADY && h->state >= GZ_LOBBY_SIGNING && s->chosen)) {
-        if (!seat_change(h, s, want, 0, &st, out)) return status(h, c, out);
+        /* Never limited: a move that takes the seat out is always applied, and
+         * a chosen seat's leave always reaches the signing engine (review B,
+         * B6). Only a move into Ready counts against the limit. */
+        seat_change(h, s, want, 1, &st, out);
         TRY(st);
         if (in_round && want == GZ_SEAT_LEFT && h->signing.member_left)
             TRY(h->signing.member_left(h->signing.ctx, h->scope, s->ckey, out));
@@ -702,6 +723,11 @@ gz_status_t gz_lobby_host_handle(gz_lobby_host_t *h, const gz_lobby_input_t *in,
         if (in->timer_id == GZ_LOBBY_TIMER_STATUS) return broadcast(h, out);
         if (in->timer_id == GZ_LOBBY_TIMER_BUDGET && h->budget_ms && h->state >= GZ_LOBBY_OPEN &&
             h->state <= GZ_LOBBY_SIGNING) {
+            /* Once a round is handed over, the signing engine alone owns the
+             * budget (GZ_LOBBY_ROUND_FAILED): this timer covers the phases
+             * before a hand-off and never cancels a round in Signing (review
+             * B, B3). A retry sets it again. */
+            if (h->state == GZ_LOBBY_SIGNING) return GZ_OK;
             if (now_ms(h) < h->budget_ms + h->terms.signing_budget_ms) return budget_timer(h, out);
             return end_lobby(h, 3, out);              /* terms.md 3: the budget is spent */
         }
@@ -854,6 +880,8 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
         }
         /* Each creation took the next join_seq, so the largest one restored is
          * the number of seats ever created, rejoins included (messages.md 6). */
+        /* The keys of a seat chosen in the running attempt never change (B1). */
+        if (h->state == GZ_LOBBY_SIGNING && s->chosen && memcmp(s->fkey, p + 33, 33) != 0) return GZ_ERR_CORRUPT;
         memcpy(s->fkey, p + 33, 33); memcpy(s->bind_f, p + 66, 64); memcpy(s->bind_c, p + 130, 64);
         s->state = p[194];
         s->min_members = (uint16_t)gz_lw_get(p + 195, 2);
@@ -892,6 +920,7 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
     case GZ_REC_LOBBY_STATE:
         if (len != 1 || (p[0] != GZ_LOBBY_OPEN && p[0] != GZ_LOBBY_FUNDING && p[0] != GZ_LOBBY_ACTIVE))
             return GZ_ERR_CORRUPT;
+        if (p[0] != GZ_LOBBY_OPEN) { h->end_reason = 0; h->cancel_len = 0; }   /* a creation stands (B3) */
         if (p[0] == GZ_LOBBY_OPEN)
             for (i = 0; i < h->n_seats; i++) { h->seats[i].chosen = 0; h->seats[i].start_len = 0; }
         h->state = p[0];
@@ -922,8 +951,11 @@ gz_status_t gz_lobby_host_resume(gz_lobby_host_t *h, gz_action_list_t *out)
     for (i = 0; i < h->n_seats; i++)                  /* seats again, before any member reconnects */
         if (seated(h, &h->seats[i])) TRY(seated_note(&h->seats[i], 1, out));
     if (h->budget_ms && h->state >= GZ_LOBBY_OPEN && h->state <= GZ_LOBBY_SIGNING) TRY(budget_timer(h, out));
+    /* The deadline in Signing too: after a retry the lobby is Open again and
+     * still ends at its deadline (review B, B4). */
+    if (h->state == GZ_LOBBY_OPEN || h->state == GZ_LOBBY_SIGNING) TRY(deadline_timer(h, out));
     if (h->state == GZ_LOBBY_SIGNING) return handoff(h, 1, out);   /* the saved start, again (F3) */
-    return h->state == GZ_LOBBY_OPEN ? deadline_timer(h, out) : GZ_OK;
+    return GZ_OK;
 }
 
 /* ------------------------------------------------------------ commands */
@@ -985,17 +1017,23 @@ gz_status_t gz_lobby_host_round_result(gz_lobby_host_t *h, int outcome, const ui
     gz_status_t st = GZ_OK;
     if (!h || !out || outcome < GZ_LOBBY_ROUND_FUNDING || outcome > GZ_LOBBY_ROUND_FAILED || (n_failed && !failed))
         return GZ_ERR_ARGUMENT;
-    if (h->state < GZ_LOBBY_SIGNING || h->state > GZ_LOBBY_FUNDING ||
-        (outcome == GZ_LOBBY_ROUND_RETRY && h->state != GZ_LOBBY_SIGNING))
-        return gz_la_cmd_refused(out, GZ_CMD_ROUND_RESULT, h->state);
-    if (outcome == GZ_LOBBY_ROUND_FAILED) return end_lobby(h, 3, out);
     if (outcome == GZ_LOBBY_ROUND_FUNDING || outcome == GZ_LOBBY_ROUND_ACTIVE) {
+        /* A creation the signing engine completed is always taken, also after
+         * the lobby ended by a cancel (review B, B3); it never goes back. */
+        if (!h->budget_ms || h->state < GZ_LOBBY_SIGNING || h->state == GZ_LOBBY_ACTIVE ||
+            (outcome == GZ_LOBBY_ROUND_FUNDING && h->state == GZ_LOBBY_FUNDING))
+            return gz_la_cmd_refused(out, GZ_CMD_ROUND_RESULT, h->state);
         st8 = outcome == GZ_LOBBY_ROUND_FUNDING ? GZ_LOBBY_FUNDING : GZ_LOBBY_ACTIVE;
         TRY(gz_la_save1(out, GZ_REC_LOBBY_STATE, &st8, 1));
         TRY(release_held(h, out));
         h->state = st8;
+        h->end_reason = 0;                            /* the creation stands: no cancel is shown or resent */
+        h->cancel_len = 0;
         return broadcast(h, out);
     }
+    if (h->state != GZ_LOBBY_SIGNING && !(outcome == GZ_LOBBY_ROUND_FAILED && h->state == GZ_LOBBY_FUNDING))
+        return gz_la_cmd_refused(out, GZ_CMD_ROUND_RESULT, h->state);
+    if (outcome == GZ_LOBBY_ROUND_FAILED) return end_lobby(h, 3, out);
     for (i = 0; i < n_failed; i++) {                  /* no-shows must ready again */
         gz_lobby_seat_t *s = seat_of(h, failed + 33 * i);
         if (s && is_in(s)) {
@@ -1009,6 +1047,10 @@ gz_status_t gz_lobby_host_round_result(gz_lobby_host_t *h, int outcome, const ui
     for (i = 0; i < h->n_seats; i++) { h->seats[i].chosen = 0; h->seats[i].start_len = 0; }
     h->state = GZ_LOBBY_OPEN;
     h->rule_dirty = 1;
+    /* Before the next hand-off the budget is the lobby's again (B3), and the
+     * deadline still ends the lobby (B4). */
+    TRY(budget_timer(h, out));
+    if (now_ms(h) / 1000 < h->terms.deadline) TRY(deadline_timer(h, out));
     TRY(broadcast(h, out));
     return apply_rule(h, now_ms(h) / 1000 >= h->terms.deadline, out);
 }

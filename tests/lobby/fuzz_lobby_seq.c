@@ -1,12 +1,31 @@
-/* Sequence fuzz target (review A of PR 30, S9): each input is a script. Its
- * first byte picks a host fed signed messages, connections, timers, clock
- * steps, commands and restarts from up to six member keys and two strangers,
- * or a member fed the same from its host. The engines live across the whole
- * script, so the stateful rules are reached: a refused ready (F5), strangers
- * and failed checks (F6), joins that are refused (F8), restarts in Signing
- * (F3), commands at the wrong moment (F10).
+/* Sequence fuzz target (review A of PR 30, S9; strengthened after review B):
+ * each input is a script. Its first byte picks a host fed signed messages,
+ * connections, timers, clock steps, commands and restarts from up to 64
+ * member keys (enough to reach every cap: 16 unseated connections, 48
+ * connections, 32 seats, 4 x target creations), or a member fed the same
+ * from its host. The engines live across the whole script, so the stateful
+ * rules are reached: a refused ready (F5), strangers and failed checks (F6),
+ * joins that are refused (F8), restarts in Signing (F3), commands at the
+ * wrong moment (F10), a chosen seat that leaves and comes back (B1).
  *
- * Beyond "no crash", after every step:
+ * Both engines are given a model of the signing engine (review B's), which
+ * remembers the checks it began, with their participants, and the checks it
+ * finished, and checks the hand-off:
+ *   V1  a check whose outcome the lobby saved is never handed over again;
+ *   V2  one check never names other participants (host).
+ *
+ * A restart is a crash: the saves of the last action list survive only up to
+ * a point the script picks, as storage may lose a batch that was never
+ * confirmed. What the runner had sent by then (a send is held until every
+ * save listed before it is confirmed) must be justified by what survived:
+ *   host    a `start` by its check's `start_sent`, a `ready_check` by the
+ *           `freeze`, a `cancel` by `lobby_ended`, a seat notice by the
+ *           seat's record, a status showing Funding or Active by `lobby_state`;
+ *   member  a `join` by `joined` and a `ready` by `ready_sent` (the same
+ *           bytes), a `leave` by its `lobby_ended`.
+ * So moving a save after the send it justifies fails here.
+ *
+ * Also, after every step:
  *   - every engine call returns GZ_OK (a duplicate CONNECTED is not made);
  *   - host: each seat in memory equals its last saved `seat` record (state,
  *     min_members, version), so nothing is changed without its save;
@@ -24,7 +43,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 unsigned long lobby_seq_stats[8];   /* steps, seats, checks, starts, begins, restarts, refused, cancels */
 
 #define MUST(c) do { if (!(c)) { fprintf(stderr, "fuzz_lobby_seq: %s (step %lu)\n", #c, lobby_seq_stats[0]); abort(); } } while (0)
-#define NK 8                         /* keys 0..5 members, 6..7 strangers */
+#define NK 64                        /* member keys; any may stay a stranger */
+#define NONE ((size_t)-1)
 
 static int ready_;
 static lt_signer_t HOST, K[NK];
@@ -34,9 +54,10 @@ static uint64_t NOW, rnd;
 static gz_action_t slots[256];
 static uint8_t abytes[1 << 19];
 static gz_action_list_t L;
+static unsigned long STEP;
 
 typedef struct { uint32_t type; size_t n; uint8_t *b; } rec_t;
-static rec_t RECS[512];
+static rec_t RECS[1024];
 static size_t NREC;
 
 static uint64_t c_now(void *ctx) { (void)ctx; return NOW; }
@@ -76,30 +97,6 @@ static gz_ports_t ports(void)
 
 static void lreset(void) { gz_action_list_init(&L, slots, 256, abytes, sizeof abytes); }
 
-/* Keep the list's saves (the runner would; storage is fast here). */
-static void keep(void)
-{
-    size_t i, j;
-    for (i = 0; i < L.count; i++)
-        if (L.slots[i].kind == GZ_ACTION_SAVE)
-            for (j = 0; j < L.slots[i].u.save.n_records && NREC < 512; j++) {
-                const gz_record_t *r = &L.slots[i].u.save.records[j];
-                RECS[NREC].type = r->type;
-                RECS[NREC].n = r->bytes.len;
-                RECS[NREC].b = malloc(r->bytes.len + 1);
-                MUST(RECS[NREC].b != NULL);
-                memcpy(RECS[NREC].b, r->bytes.data, r->bytes.len);
-                NREC++;
-            }
-}
-
-static void drop_recs(void)
-{
-    size_t i;
-    for (i = 0; i < NREC; i++) free(RECS[i].b);
-    NREC = 0;
-}
-
 static int sends_kind(uint16_t kind)
 {
     size_t i;
@@ -112,10 +109,210 @@ static int sends_kind(uint16_t kind)
     return c;
 }
 
+static int refused_now(void)
+{
+    size_t i;
+    for (i = 0; i < L.count; i++)
+        if (L.slots[i].kind == GZ_ACTION_NOTIFY && L.slots[i].u.notify.code == GZ_NOTE_COMMAND_REFUSED) return 1;
+    return 0;
+}
+
+/* ------------------------------------------------- storage and crashes */
+
+/* The last list, action by action, for a crash: which records each save
+ * holds, and a copy of what each send or notice carried. */
+typedef struct {
+    int kind;                        /* GZ_ACTION_* */
+    size_t r0, r1;                   /* SAVE: RECS[r0..r1) */
+    uint8_t b[320]; size_t n;        /* SEND (whole message, if it fits) or NOTIFY bytes */
+    uint32_t code;
+} la_t;
+static la_t LA[256];
+static size_t NLA;
+
+/* Keep the list's saves (pending until the next step: a crash then may lose
+ * a suffix of them), and remember the list. */
+static void keep(void)
+{
+    size_t i, j;
+    NLA = 0;
+    for (i = 0; i < L.count; i++) {
+        const gz_action_t *a = &L.slots[i];
+        la_t *x = &LA[NLA++];
+        memset(x, 0, sizeof *x);
+        x->kind = a->kind;
+        if (a->kind == GZ_ACTION_SAVE) {
+            x->r0 = NREC;
+            for (j = 0; j < a->u.save.n_records && NREC < 1024; j++) {
+                const gz_record_t *r = &a->u.save.records[j];
+                RECS[NREC].type = r->type;
+                RECS[NREC].n = r->bytes.len;
+                RECS[NREC].b = malloc(r->bytes.len + 1);
+                MUST(RECS[NREC].b != NULL);
+                memcpy(RECS[NREC].b, r->bytes.data, r->bytes.len);
+                NREC++;
+            }
+            x->r1 = NREC;
+        } else if (a->kind == GZ_ACTION_SEND && a->u.send.bytes.len <= sizeof x->b) {
+            x->n = a->u.send.bytes.len;
+            memcpy(x->b, a->u.send.bytes.data, x->n);
+        } else if (a->kind == GZ_ACTION_NOTIFY) {
+            x->code = a->u.notify.code;
+            x->n = a->u.notify.bytes.len < sizeof x->b ? a->u.notify.bytes.len : sizeof x->b;
+            memcpy(x->b, a->u.notify.bytes.data, x->n);
+        }
+    }
+}
+
+static void drop_recs(void)
+{
+    size_t i;
+    for (i = 0; i < NREC; i++) free(RECS[i].b);
+    NREC = 0;
+    NLA = 0;
+}
+
+/* The signing engine's side, a model (review B): begun and finished checks. */
+typedef struct {
+    uint8_t check[32]; int n;
+    uint8_t ck[GZ_LOBBY_MAX_SEATS + 1][33], fk[GZ_LOBBY_MAX_SEATS + 1][33];
+    unsigned long step; size_t pos;   /* when, and where in that step's list, it was begun */
+} beg_t;
+typedef struct { uint8_t check[32]; size_t rec; } end_t;   /* rec: the lobby's saved outcome, or NONE */
+static beg_t BEG[64];
+static end_t ENDS[64];
+static int NBEG, NEND;
+
+static end_t *ended(const uint8_t *check)
+{
+    int k;
+    for (k = 0; k < NEND; k++) if (memcmp(ENDS[k].check, check, 32) == 0) return &ENDS[k];
+    return NULL;
+}
+
+/* The signing engine finished `check`; the lobby saved the outcome in the
+ * last list (its record of `type`), or nothing was saved. */
+static void finish(const uint8_t *check, size_t from, uint32_t type1, uint32_t type2)
+{
+    end_t *e = ended(check);
+    size_t i, rec = NONE;
+    for (i = from; i < NREC; i++) if (RECS[i].type == type1 || RECS[i].type == type2) rec = i;
+    if (!e && NEND < 64) { e = &ENDS[NEND++]; memcpy(e->check, check, 32); e->rec = NONE; }
+    if (e && rec != NONE) e->rec = rec;
+}
+
+static void model_reset(void) { NBEG = NEND = 0; }
+
+/* A durable record of `type` whose bytes start with `pre` (n bytes). */
+static int durable(uint32_t type, const uint8_t *pre, size_t n)
+{
+    size_t i;
+    for (i = 0; i < NREC; i++)
+        if (RECS[i].type == type && RECS[i].n >= n && (n == 0 || memcmp(RECS[i].b, pre, n) == 0)) return 1;
+    return 0;
+}
+
+static int durable_exact(uint32_t type, const uint8_t *b, size_t n)
+{
+    size_t i;
+    for (i = 0; i < NREC; i++)
+        if (RECS[i].type == type && RECS[i].n == n && memcmp(RECS[i].b, b, n) == 0) return 1;
+    return 0;
+}
+
+/* A crash: the last list's saves survive up to the `keep`th save action.
+ * Then what the runner had sent by then must be justified by what survived. */
+static void crash(uint8_t arg, int host)
+{
+    size_t i, ns = 0, kept, p = NLA, cut = NREC;
+    int k;
+    for (i = 0; i < NLA; i++) ns += LA[i].kind == GZ_ACTION_SAVE;
+    kept = arg % (ns + 1);
+    for (i = 0, k = 0; i < NLA; i++)
+        if (LA[i].kind == GZ_ACTION_SAVE && (size_t)k++ == kept) { p = i; cut = LA[i].r0; break; }
+    for (i = cut; i < NREC; i++) free(RECS[i].b);
+    NREC = cut;
+    for (k = 0; k < NEND; k++) if (ENDS[k].rec != NONE && ENDS[k].rec >= NREC) ENDS[k].rec = NONE;
+    for (k = 0; k < NBEG; k++)                        /* a begin after a lost save never happened */
+        if (BEG[k].step == STEP && BEG[k].pos > p) { BEG[k] = BEG[--NBEG]; k--; }
+    for (i = 0; i < p; i++) {                         /* sent before the crash */
+        gz_lobby_msg_t m;
+        const la_t *x = &LA[i];
+        if (x->kind == GZ_ACTION_NOTIFY && x->code == GZ_NOTE_SEATED && x->n == 34) MUST(durable(GZ_REC_SEAT, x->b, 33));
+        if (x->kind != GZ_ACTION_SEND || !x->n || gz_lobby_decode(x->b, x->n, &m) != GZ_DEC_OK) continue;
+        if (host) {
+            if (m.kind == GZ_KIND_START) MUST(durable(GZ_REC_START_SENT, m.check_id, 32));
+            if (m.kind == GZ_KIND_READY_CHECK) MUST(durable(GZ_REC_FREEZE, NULL, 0));
+            if (m.kind == GZ_KIND_CANCEL) MUST(durable(GZ_REC_LOBBY_ENDED, NULL, 0));
+            if (m.kind == GZ_KIND_LOBBY_STATUS && (m.lobby_state == GZ_LOBBY_FUNDING || m.lobby_state == GZ_LOBBY_ACTIVE))
+                MUST(durable(GZ_REC_LOBBY_STATE, &m.lobby_state, 1));
+        } else {
+            static const uint8_t left0 = 0;
+            if (m.kind == GZ_KIND_JOIN) MUST(durable_exact(GZ_REC_JOINED, x->b, x->n));
+            if (m.kind == GZ_KIND_READY) MUST(durable_exact(GZ_REC_READY_SENT, x->b, x->n));
+            if (m.kind == GZ_KIND_LEAVE) MUST(durable(GZ_REC_LOBBY_ENDED, &left0, 1));
+        }
+    }
+    NLA = 0;
+}
+
 /* ------------------------------------------------------------- the host */
 
 static gz_lobby_host_t H;
 static int CONN[NK];
+
+static gz_status_t h_begin(void *ctx, const gz_lobby_handoff_t *ho, gz_action_list_t *out)
+{
+    end_t *e;
+    int i, k;
+    (void)ctx;
+    MUST(ho->participants && ho->n_participants == ho->signers && ho->n_participants >= 2 && ho->role == 1);
+    if ((e = ended(ho->check_id)) != NULL) {          /* V1; otherwise ignored, as the header says */
+        MUST(e->rec == NONE);
+        return GZ_OK;
+    }
+    for (k = 0; k < NBEG; k++)
+        if (memcmp(BEG[k].check, ho->check_id, 32) == 0) {   /* V2 */
+            MUST(ho->resume && BEG[k].n == ho->n_participants);
+            for (i = 0; i < ho->n_participants; i++)
+                MUST(memcmp(BEG[k].ck[i], ho->participants[i].contribution_key, 33) == 0 &&
+                     memcmp(BEG[k].fk[i], ho->participants[i].factory_key, 33) == 0);
+            return GZ_OK;
+        }
+    lobby_seq_stats[4]++;
+    if (NBEG == 64) return GZ_OK;
+    BEG[NBEG].n = ho->n_participants;
+    memcpy(BEG[NBEG].check, ho->check_id, 32);
+    for (i = 0; i < ho->n_participants && i <= GZ_LOBBY_MAX_SEATS; i++) {
+        memcpy(BEG[NBEG].ck[i], ho->participants[i].contribution_key, 33);
+        memcpy(BEG[NBEG].fk[i], ho->participants[i].factory_key, 33);
+    }
+    BEG[NBEG].step = STEP;
+    BEG[NBEG].pos = out->count;
+    NBEG++;
+    return GZ_OK;
+}
+
+static gz_status_t h_cancel(void *ctx, const uint8_t scope[32], uint16_t reason, gz_action_list_t *out)
+{
+    (void)ctx; (void)out;
+    MUST(memcmp(scope, SCOPE, 32) == 0 && reason >= 1 && reason <= 3);
+    return GZ_OK;
+}
+
+static gz_status_t h_left(void *ctx, const uint8_t scope[32], const uint8_t ckey[33], gz_action_list_t *out)
+{
+    (void)ctx; (void)scope; (void)out;
+    MUST(H.state == GZ_LOBBY_SIGNING);                /* only a chosen seat, while its round runs */
+    {
+        uint16_t k;
+        int found = 0;
+        for (k = 0; k < H.n_seats; k++)
+            if (memcmp(H.seats[k].ckey, ckey, 33) == 0) found = H.seats[k].chosen && H.seats[k].state == GZ_SEAT_LEFT;
+        MUST(found);
+    }
+    return GZ_OK;
+}
 
 static gz_status_t h_in(int kind, int who, const uint8_t *b, size_t n, uint64_t timer)
 {
@@ -132,11 +329,14 @@ static void host_boot(int restore, uint16_t standbys)
     gz_ports_t p = ports();
     gz_lobby_crypto_t cr = lt_crypto(&HOST);
     gz_lobby_host_config_t cfg;
+    gz_lobby_signing_t sg;
     size_t i;
     memset(&cfg, 0, sizeof cfg);
     memcpy(cfg.factory_key, HOST.key[3].pub, 33);
     cfg.standbys = standbys;
-    MUST(gz_lobby_host_init(&H, &p, &cr, NULL, &cfg) == GZ_OK);
+    memset(&sg, 0, sizeof sg);
+    sg.begin = h_begin; sg.cancel = h_cancel; sg.member_left = h_left;
+    MUST(gz_lobby_host_init(&H, &p, &cr, &sg, &cfg) == GZ_OK);
     lreset();
     if (!restore) {
         MUST(gz_lobby_host_open(&H, T1, T1N, T2, T2N, &L) == GZ_OK);
@@ -165,7 +365,7 @@ static void seats_saved(void)
             if (RECS[i].type == GZ_REC_SEAT && RECS[i].n >= 209 && memcmp(RECS[i].b, t->ckey, 33) == 0) last = &RECS[i];
         MUST(last != NULL);
         MUST(last->b[194] == t->state && gz_lw_get(last->b + 195, 2) == t->min_members &&
-             gz_lw_get(last->b + 197, 4) == t->ready_version);
+             gz_lw_get(last->b + 197, 4) == t->ready_version && memcmp(last->b + 33, t->fkey, 33) == 0);
     }
 }
 
@@ -192,6 +392,7 @@ static void host_script(const uint8_t *d, size_t n)
     gz_lobby_crypto_t cr;
     gz_status_t st;
     drop_recs();
+    model_reset();
     host_boot(0, (uint16_t)(d[0] % 3));
     memset(CONN, 0, sizeof CONN);
     for (at = 1; at + 3 <= n; at += 3) {
@@ -199,6 +400,7 @@ static void host_script(const uint8_t *d, size_t n)
         uint8_t arg = d[at + 2];
         unsigned long v0 = HOST.verifies;
         int seated_key;
+        STEP++;
         lobby_seq_stats[0]++;
         if (op != 0 && op != 11 && op != 12 && !CONN[who]) op = 0;   /* messages need a connection */
         {
@@ -223,8 +425,8 @@ static void host_script(const uint8_t *d, size_t n)
             bn = gz_lobby_enc_done(&e);
             st = h_in(GZ_LIN_MESSAGE, who, buf, bn, 0);
             break;
-        case 3: case 4:                                               /* join, valid or not */
-            bn = join_msg(buf, sizeof buf, who, op == 3 ? who : arg % NK, op == 4 ? 1 + arg : 0);
+        case 3: case 4:                                               /* join; 4: another factory key, maybe invalid */
+            bn = join_msg(buf, sizeof buf, who, op == 3 ? who : (arg >> 1) % NK, op == 4 && (arg & 1) ? 1 + (arg >> 1) : 0);
             st = h_in(GZ_LIN_MESSAGE, who, buf, bn, 0);
             break;
         case 5: {                                                     /* ready */
@@ -249,8 +451,10 @@ static void host_script(const uint8_t *d, size_t n)
         case 8: {                                                     /* a timer */
             static const uint64_t T[5] = {GZ_LOBBY_TIMER_WINDOW, GZ_LOBBY_TIMER_IDLE, GZ_LOBBY_TIMER_STATUS,
                                           GZ_LOBBY_TIMER_DEADLINE, GZ_LOBBY_TIMER_BUDGET};
+            int signing = H.state == GZ_LOBBY_SIGNING;
             st = h_in(GZ_LIN_TIMER, who, NULL, 0, T[arg % 5]);
             if (arg % 5 == 0 && sends_kind(GZ_KIND_START)) lobby_seq_stats[3]++;
+            if (arg % 5 == 4 && signing) MUST(L.count == 0 && H.state == GZ_LOBBY_SIGNING);   /* B3 */
             break;
         }
         case 9:                                                       /* the clock */
@@ -258,24 +462,39 @@ static void host_script(const uint8_t *d, size_t n)
             st = GZ_OK;
             lreset();
             break;
-        case 10: {                                                    /* commands */
+        case 10: {                                                    /* commands, and the signing engine's outcome */
+            uint8_t chk[32];
+            int was = H.state, outcome = 0;
+            size_t from = NREC;
+            memcpy(chk, H.check_id, 32);
             lreset();
             switch (arg % 5) {
             case 0: { uint64_t v[3] = {500 + (uint64_t)arg, 1000, 1000}; st = gz_lobby_host_set_values(&H, v, 3, &L); break; }
             case 1: st = gz_lobby_host_remove(&H, K[who].key[2].pub, &L); break;
             case 2: st = gz_lobby_host_cancel(&H, (uint16_t)(1 + arg % 3), &L); break;
-            case 3: st = gz_lobby_host_round_result(&H, GZ_LOBBY_ROUND_RETRY, K[who].key[2].pub, 1, &L); break;
-            default: st = gz_lobby_host_round_result(&H, 1 + (arg >> 3) % 4, NULL, 0, &L); break;
+            case 3: outcome = GZ_LOBBY_ROUND_RETRY;
+                    st = gz_lobby_host_round_result(&H, outcome, K[who].key[2].pub, 1, &L); break;
+            default: outcome = 1 + (arg >> 3) % 4;
+                     st = gz_lobby_host_round_result(&H, outcome, NULL, 0, &L); break;
             }
             if (st == GZ_ERR_ARGUMENT && arg % 5 == 0) st = GZ_OK;   /* values outside the ranges */
+            if (st == GZ_OK && outcome && !refused_now()) {
+                MUST(was >= GZ_LOBBY_SIGNING);
+                if (outcome == GZ_LOBBY_ROUND_FUNDING || outcome == GZ_LOBBY_ROUND_ACTIVE) MUST(H.state != was);   /* B3: taken */
+                keep();
+                finish(chk, from, GZ_REC_LOBBY_STATE, GZ_REC_LOBBY_ENDED);
+                MUST(HOST.verifies - v0 <= 2);
+                seats_saved();
+                continue;
+            }
             break;
         }
-        case 11:                                                      /* a restart */
+        case 11:                                                      /* a crash and a restart */
+            crash(arg, 1);
             host_boot(1, (uint16_t)(d[0] % 3));
             lobby_seq_stats[5]++;
-            st = GZ_OK;
-            lreset();
-            break;
+            seats_saved();
+            continue;
         default:                                                      /* a garbled message */
             bn = join_msg(buf, sizeof buf, who, who, 0);
             buf[arg % bn] ^= (uint8_t)(1 + (arg >> 4));
@@ -300,9 +519,11 @@ static int MCONN;
 
 static gz_status_t m_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_list_t *out)
 {
+    end_t *e;
     (void)ctx; (void)out;
     MUST(gz_lobby_member_may_sign(&M, h->check_id));
     MUST(h->limits && h->outer_sig && h->current_sig && h->pinned_key && h->values);
+    if ((e = ended(h->check_id)) != NULL) MUST(e->rec == NONE);   /* V1 */
     lobby_seq_stats[4]++;
     return GZ_OK;
 }
@@ -339,22 +560,39 @@ static gz_status_t m_in(int kind, const uint8_t *b, size_t n, uint64_t timer)
     return gz_lobby_member_handle(&M, &in, &L);
 }
 
+/* A check the member answers anew is a new round in this script (the
+ * script reuses three check ids; a real host's are random). */
+static void answered_anew(size_t from)
+{
+    size_t i;
+    int k;
+    gz_lobby_msg_t g;
+    for (i = from; i < NREC; i++)
+        if (RECS[i].type == GZ_REC_READY_SENT && RECS[i].n > 1 && gz_lobby_decode(RECS[i].b, RECS[i].n, &g) == GZ_DEC_OK &&
+            g.has_check_id)
+            for (k = 0; k < NEND; k++)
+                if (memcmp(ENDS[k].check, g.check_id, 32) == 0) { ENDS[k] = ENDS[--NEND]; k--; }
+}
+
 static void member_script(const uint8_t *d, size_t n)
 {
     static uint8_t buf[70000], big[66000];
     gz_lobby_enc_t e;
     gz_lobby_crypto_t hc = lt_crypto(&HOST);
     uint8_t chk[32], os[64], cs[64];
-    size_t at, bn;
+    size_t at, bn, from;
     gz_status_t st;
     drop_recs();
+    model_reset();
     member_boot(0);
     memset(big, 0x61, sizeof big);
     for (at = 1; at + 3 <= n; at += 3) {
         int op = d[at] % 11;
         uint8_t a1 = d[at + 1], arg = d[at + 2];
+        STEP++;
         lobby_seq_stats[0]++;
         memset(chk, 0x40 + (a1 % 3), 32);
+        from = NREC;
         if (op >= 2 && op <= 6 && !MCONN) op = 0;
         switch (op) {
         case 0:
@@ -425,19 +663,31 @@ static void member_script(const uint8_t *d, size_t n)
         case 7:
             st = m_in(GZ_LIN_TIMER, NULL, 0, GZ_LOBBY_TIMER_RETRY);
             break;
-        case 8:                                                       /* a restart */
+        case 8:                                                       /* a crash and a restart */
+            crash(arg, 0);
             member_boot(1);
             lobby_seq_stats[5]++;
-            st = GZ_OK;
+            continue;
+        default: {                                                    /* the signing engine's outcome */
+            gz_lobby_msg_t g;
+            uint8_t sc[32];
+            int outcome = 1 + arg % 4, began = M.start_len && M.role == 1 &&
+                          gz_lobby_decode(M.start_msg, M.start_len, &g) == GZ_DEC_OK;
+            memset(sc, 0, sizeof sc);
+            if (began) memcpy(sc, g.check_id, 32);
             lreset();
+            st = gz_lobby_member_round_result(&M, outcome, &L);
+            if (st == GZ_OK && began && outcome != GZ_LOBBY_ROUND_FAILED && !refused_now()) {
+                keep();
+                finish(sc, from, GZ_REC_LOBBY_STATE, GZ_REC_LOBBY_STATE);
+                continue;
+            }
             break;
-        default:                                                      /* the signing engine's outcome */
-            lreset();
-            st = gz_lobby_member_round_result(&M, 1 + arg % 4, &L);
-            break;
+        }
         }
         MUST(st == GZ_OK);
         keep();
+        answered_anew(from);
     }
     lobby_seq_stats[6] += (unsigned long)M.ended;
 }

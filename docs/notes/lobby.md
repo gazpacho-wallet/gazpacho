@@ -26,7 +26,7 @@ against sections 9 and 9.1: no clash.
 | `0x00010012` | `host_fault` | Member | Listed |
 | `0x00010014` | `start_sent` | Host | Listed |
 | `0x00010016` | `start_received` | Member | Listed |
-| `0x00010018` | `lobby_state` | Host | **New**, registered in `journal.md` 9.1. The lobby moved to Open after a failed signing attempt (a retry), to Funding, or to Active. Saved before the `lobby_status` that shows it |
+| `0x00010018` | `lobby_state` | Both | **New**, registered in `journal.md` 9.1. The signing engine's outcome. Host: the lobby moved to Open after a failed signing attempt (a retry), to Funding, or to Active; saved before the `lobby_status` that shows it. Member: its round's outcome, so that a restart never hands the finished check to the signing engine again (decision 29) |
 
 **Layouts.** `spec/journal.md` section 9 says each record is a TLV stream
 whose field numbers are fixed with the code tables (its open point 3). The
@@ -47,7 +47,7 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
 | `host_fault` | fault (`u8`: 1 two values under one version, 2 a new version or a check at other values after the freeze), blob evidence a, blob evidence b (current records with their signatures, or digest and version) |
 | `start_sent` | `check_id` (32), the time the signing budget began (`u64`, Unix ms: the first start of the lobby, the same in every later attempt), `u16` n ≥ 1, then n × (contribution key (33), blob of that seat's signed `start`); each start names the record's check |
 | `start_received` | the signed `start` bytes |
-| `lobby_state` | state (`u8`: 1 Open, 4 Funding, 5 Active) |
+| `lobby_state` | state (`u8`: 1 Open, 4 Funding, 5 Active). Host: Funding or Active may follow `lobby_ended` (a creation the signing engine completed stands, decision 26). Member: 1 is a retry (its saved start is spent), 4 and 5 the creation's state |
 
 ## 2. Decisions to confirm or overrule
 
@@ -56,8 +56,13 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
    also accepts joins during a ready check and during signing, up to
    `target + standbys` seats, so that late arrivals can fill a gap left by a
    no-show (owner decision 10, `LOBBY.md` "standbys"). Without standbys 6.3
-   holds as written. Joins are never accepted from Funding on. **6.3 is
-   amended accordingly in this pull request.**
+   holds as written. Joins are never accepted from Funding on. A seat chosen
+   in the running attempt cannot join again until the round is resolved,
+   also after its `leave` (it is held, decision 20): so it never comes back
+   with other keys under the same check, and a restart never hands the
+   signing engine other participants under one `check_id` (review B, B1). A
+   restored host refuses a `seat` record that changes such a seat's keys.
+   **6.3 is amended accordingly in this pull request.**
 2. **Crypto is a port.** The engine signs and verifies through a port
    (sign, verify, point check), so it holds no key and the core isolation
    check passes on it. Its SHA-256 and its terms library are core/tree's
@@ -94,9 +99,9 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
    connection. Reason 5 reuses `round_abort`'s "an invalid message" code;
    messages.md 6.7 names no code for this. The host checks the cheap
    conditions (state, seats taken, one join per connection, the creation
-   limits) before any signature, and closes a connection after 3 joins
-   refused as invalid or 32 refused for a limit (review A, F8; messages.md 6
-   as amended).
+   limits) before any signature, and closes a connection at its 3rd join
+   refused as invalid or its 32nd refused for a limit (review A, F8;
+   messages.md 6 as amended; review B, the 32nd).
 6. **Invitation-only** (owner decision 10) is a host that is not listed: its
    lobby is never named in answers to scope-zero `hello`, so a member needs
    the identifier from an invitation.
@@ -114,7 +119,10 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
    without a Ready seat never applies the start rule, and a seat whose
    `min_members` exceeds the target is not counted by it, so neither a
    stranger nor an unsatisfiable `min_members` can make the members sign
-   check after check (review A, F6).
+   check after check (review A, F6). When a check starts nobody, the rule is
+   applied again as its window closes: a seat event during the check allows
+   a new check at once, and without one the failed-check guard waits (review
+   B, b20).
 9. **The start rule counts** seats that are Ready for the latest (or frozen)
    values and connected now (LOBBY.md: "only members whose software is
    connected and ready count").
@@ -129,8 +137,9 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
 12. **Slice 1 sizes:** at most 32 seats (target plus standbys) and 48
     connections per host, of which at most 16 for keys that hold no seat: a
     17th such connection, or any connection when the table is full, pushes
-    out the oldest connection without a seat, never a seated one (review A,
-    F7). A saved `ready`, `start`, `ready_check` or `cancel` is at most 256
+    out a connection without a seat, never a seated one: one that has said
+    nothing yet first, then the oldest, as the transport does (review A, F7;
+    review B, B7). A saved `ready`, `start`, `ready_check` or `cancel` is at most 256
     bytes (a ready larger than that is not taken; a larger signed `cancel` is
     not taken either, review A, m17).
 13. **Any error from an engine call is fatal for the node**, like a refused
@@ -250,18 +259,45 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
     engine again from `gz_lobby_member_resume` (`resume` = 1), if it is still
     ready for that check; a host restarted in Signing does the same for its
     saved start from `gz_lobby_host_resume`. The signing engine treats `begin`
-    as idempotent per `check_id`. **The lobby enforces the signing budget**
-    (terms.md 3): it saves the time of the lobby's first `start` in
-    `start_sent`, sets `GZ_LOBBY_TIMER_BUDGET` for `signing_budget_ms` (again
-    at every resume), and if the lobby is still Open, in a check or Signing
-    when it fires, it ends the lobby with `cancel` reason 3.
+    as idempotent per `check_id`, and ignores `begin` for a check it has
+    already finished (any outcome), as `lobby_handoff.h` states (review B,
+    B2). A host restarted in Signing sets its deadline timer again, and so
+    does a retry while the deadline is ahead, so that a lobby back in Open
+    still ends at its deadline (review B, B4). **The signing budget**
+    (terms.md 3, one for all attempts) has one owner at a time (review B,
+    B3, the owner's coordinator's decision). The lobby saves the time of its
+    first `start` in `start_sent`. Once it hands a round to the signing
+    engine, the signing engine alone owns the budget and reports
+    `GZ_LOBBY_ROUND_FAILED` when it is spent; the lobby never cancels a round
+    in Signing for it. The lobby's `GZ_LOBBY_TIMER_BUDGET` covers only the
+    phases before a hand-off: after a retry, if the lobby is Open or in a
+    check when the budget is spent, it ends the lobby with `cancel` reason 3.
+    A Funding or Active outcome is always accepted, also after the lobby
+    ended by a `cancel` (the host's own, while Signing): a creation the
+    signing engine completed is never refused, and the lobby then shows
+    Funding or Active and resends no `cancel`.
 27. **A ready the change limit refuses changes nothing in memory** (review A,
     F5): the seat is restored as saved, and the host answers `lobby_status`
-    either way (messages.md 6.4), also to an `unready` or `leave` the limit
-    ignores.
+    either way (messages.md 6.4). Moves that take a seat out (`unready`,
+    `leave`) are never limited (review B, B6): only a move into Ready counts
+    against the limit, so a withdrawn seat is never chosen and a chosen
+    seat's `leave` always reaches the signing engine.
 28. **The choice of signers with standbys** (review A, S8). The code follows
     messages.md 6.9 exactly: cut to the target in order of joining, then drop
     every seat whose `min_members` exceeds the count. With standbys, answered
     seats beyond the target are therefore never used to refill places the
-    drop leaves. **Proposed for the specification:** drop first, then cut,
-    which uses the standbys decision 1 exists for. Not changed here.
+    drop leaves. A seat whose `min_members` exceeds the target can never be
+    met: it is left out before the cut (as the start rule already leaves it
+    out), so k such seats that joined early cost no one a place (review B,
+    B5; messages.md 6.9 amended). **Proposed for the specification:** drop
+    first, then cut, which uses the standbys decision 1 exists for; review B
+    showed the loss (scenario S12). Not changed here beyond the above.
+29. **The signing outcome is saved on both sides** (review B, B2, the owner's
+    coordinator's decision). The member saves its round's outcome in its own
+    `lobby_state` record: a retry spends its saved start (and the check it
+    answered, so a start for it resent by a host that is behind is ignored),
+    and Funding or Active are its creation's state. So
+    `gz_lobby_member_resume` never hands a finished check to the signing
+    engine again, and the shown state survives a restart. A crash can still
+    lose that save, so the hand-off stays idempotent: `begin` for a finished
+    check is ignored by the signing engine (`lobby_handoff.h`).

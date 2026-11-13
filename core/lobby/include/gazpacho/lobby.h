@@ -236,7 +236,7 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_REC_START_SENT     0x00010014u
 #define GZ_REC_START_RECEIVED 0x00010016u
 #define GZ_REC_TERMS_VERSION  0x00010004u   /* host: a new current version, before it is sent */
-#define GZ_REC_LOBBY_STATE    0x00010018u   /* host: Open after a retry, Funding, Active (new; docs/notes/lobby.md) */
+#define GZ_REC_LOBBY_STATE    0x00010018u   /* the signing outcome: host and member (new; docs/notes/lobby.md) */
 
 /* Notification codes (GZ_ACTION_NOTIFY). Bytes: see each. */
 #define GZ_NOTE_CLOSE      0x4c01u   /* close the connection: u64 peer id */
@@ -274,7 +274,7 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_LOBBY_TIMER_STATUS   0x4c000003u
 #define GZ_LOBBY_TIMER_RETRY    0x4c000004u   /* member: join again after a refusal for a limit */
 #define GZ_LOBBY_TIMER_IDLE     0x4c000005u   /* host: close idle and unseated connections */
-#define GZ_LOBBY_TIMER_BUDGET   0x4c000006u   /* host: the signing budget (terms.md 3) is spent */
+#define GZ_LOBBY_TIMER_BUDGET   0x4c000006u   /* host: the signing budget (terms.md 3) is spent, before a hand-off */
 #define GZ_LOBBY_IDLE_MS        60000u        /* neither hello nor join within this: closed */
 #define GZ_LOBBY_UNSEATED_MS    600000u       /* no seat within this of connecting: closed */
 #define GZ_LOBBY_MAX_LINKS      64            /* member keys whose hello limits are kept */
@@ -391,9 +391,12 @@ gz_status_t gz_lobby_host_set_values(gz_lobby_host_t *h, const uint64_t *values,
                                      gz_action_list_t *out);
 gz_status_t gz_lobby_host_remove(gz_lobby_host_t *h, const uint8_t ckey[33], gz_action_list_t *out);
 gz_status_t gz_lobby_host_cancel(gz_lobby_host_t *h, uint16_t reason, gz_action_list_t *out);
-/* The signing engine's outcome (GZ_LOBBY_ROUND_*, lobby_handoff.h). For
- * GZ_LOBBY_ROUND_RETRY, `failed_ckeys` lists the failed seats' contribution
- * keys, 33 bytes each. */
+/* The signing engine's outcome (GZ_LOBBY_ROUND_*, lobby_handoff.h), saved
+ * (lobby_state) before anything shows it. For GZ_LOBBY_ROUND_RETRY,
+ * `failed_ckeys` lists the failed seats' contribution keys, 33 bytes each;
+ * Retry and Failed are taken only while Signing (Failed also in Funding).
+ * Funding and Active are always taken once a round was handed over, also
+ * after the lobby ended by a cancel (lobby_handoff.h, the signing budget). */
 gz_status_t gz_lobby_host_round_result(gz_lobby_host_t *h, int outcome, const uint8_t *failed_ckeys,
                                        size_t n_failed, gz_action_list_t *out);
 
@@ -437,6 +440,7 @@ typedef struct {
     int user_unready;                /* the user unreadied: do not ready by itself */
     uint16_t unready_reason, leave_reason;   /* of the saved unready and leave, for resends */
     int stale_seat;                  /* restoring: the saved seat is of other keys (an older epoch) */
+    int round_state;                 /* the saved signing outcome: 0, or GZ_LOBBY_FUNDING or _ACTIVE */
     int resends;                     /* state messages resent on lobby_status, this connection */
     int retries;                     /* joins again after a refusal for a limit, this connection */
     int sent_here;                   /* join or ready already sent on this connection */
@@ -471,9 +475,11 @@ gz_status_t gz_lobby_member_set_conditions(gz_lobby_member_t *m, const gz_lobby_
  * it takes a round_propose, also one that comes without a `start`
  * (messages.md 7.2), and answers with round_abort when it may not. */
 int gz_lobby_member_may_sign(const gz_lobby_member_t *m, const uint8_t check_id[32]);
-/* The signing engine's outcome for this member (GZ_LOBBY_ROUND_*): Funding
- * and Active are shown (GZ_NOTE_SEAT); Retry clears the start so that the
- * next check's start is taken; Failed waits for the host's cancel. */
+/* The signing engine's outcome for this member (GZ_LOBBY_ROUND_*), saved
+ * (lobby_state) so that gz_lobby_member_resume never hands a finished check
+ * over again: Funding and Active are shown (GZ_NOTE_SEAT), also after a
+ * cancel; Retry spends the start so that the next check's start is taken;
+ * Failed waits for the host's cancel. */
 gz_status_t gz_lobby_member_round_result(gz_lobby_member_t *m, int outcome, gz_action_list_t *out);
 
 #endif
