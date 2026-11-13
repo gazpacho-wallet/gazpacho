@@ -279,10 +279,9 @@ static int check_path(const gz_tree_t *t, uint32_t member, uint32_t E, gz_tree_v
  * stored bytes and signatures, which must give exactly the digests the
  * bindings and C8a were checked against and exactly the structs the tree is
  * built from. */
-static int check_terms(const gz_tree_member_in_t *in, gz_tree_verdict_t *v)
+static int check_terms(const gz_tree_member_in_t *in, gz_tree_verdict_t *v, gz_terms_outer_t *ro,
+                       gz_terms_current_t *rc)
 {
-    gz_terms_outer_t ro;
-    gz_terms_current_t rc;
     uint8_t rod[32], rcd[32];
     gz_terms_err_t e;
     if ((e = gz_terms_check_outer(in->outer, in->policy)) != GZ_TERMS_OK)
@@ -290,12 +289,12 @@ static int check_terms(const gz_tree_member_in_t *in, gz_tree_verdict_t *v)
     if ((e = gz_terms_check_current(in->outer, in->frozen)) != GZ_TERMS_OK)
         return fail(v, GZ_CHK_C8A_FROZEN_VALUES, (int32_t)e);
     e = gz_terms_receive(in->outer_rec, in->outer_rec_len, in->outer_sig, in->frozen_rec, in->frozen_rec_len,
-                         in->frozen_sig, in->outer_digest, in->host_pinned_key, in->policy, in->crypto, &ro, rod,
-                         &rc, rcd);
+                         in->frozen_sig, in->outer_digest, in->host_pinned_key, in->policy, in->crypto, ro, rod,
+                         rc, rcd);
     if (e != GZ_TERMS_OK) return fail(v, GZ_CHK_C8A_TERMS_RECORD, (int32_t)e);
     /* rod is outer_digest (step 2 compared it with the scope). */
     if (!tr_eq(rcd, in->frozen_digest, 32)) return fail(v, GZ_CHK_C8A_TERMS_RECORD, -1);
-    if (!gz_terms_outer_equal(&ro, in->outer) || !gz_terms_current_equal(&rc, in->frozen))
+    if (!gz_terms_outer_equal(ro, in->outer) || !gz_terms_current_equal(rc, in->frozen))
         return fail(v, GZ_CHK_C8A_TERMS_DIFFER, -1);
     return 1;
 }
@@ -310,6 +309,8 @@ void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_
     gz_tree_b_err_t be;
     gz_tree_outpoint_t fo;
     uint8_t keys[GZ_TREE_MAX_MEMBERS][33];
+    gz_terms_outer_t ro;          /* check_terms's work space, at function scope */
+    gz_terms_current_t rc;
     uint32_t n, own = 0, i, found = 0, leaves_of_mine = 0;
     int64_t expect, E;
     if (!v) return;
@@ -341,7 +342,7 @@ void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_
         fail(v, GZ_CHK_C8A_READY_OUTER, -1);
         return;
     }
-    if (!check_terms(in, v)) return;
+    if (!check_terms(in, v, &ro, &rc)) return;
 
     /* C1: participants; then the bindings. */
     if (!check_participants(in, p, v) || !check_bindings(in, p, v)) return;

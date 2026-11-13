@@ -291,9 +291,9 @@ recheck-any-chain	core/tree/checks.c	gz_terms_check_outer(in->outer, in->policy)
 recheck-frozen-gone	core/tree/checks.c	    if ((e = gz_terms_check_current(in->outer, in->frozen)) != GZ_TERMS_OK)\n        return fail(v, GZ_CHK_C8A_FROZEN_VALUES, (int32_t)e);\n	
 recheck-receive-ignored	core/tree/checks.c	    if (e != GZ_TERMS_OK) return fail(v, GZ_CHK_C8A_TERMS_RECORD, (int32_t)e);\n	
 recheck-frozen-digest	core/tree/checks.c	    if (!tr_eq(rcd, in->frozen_digest, 32)) return fail(v, GZ_CHK_C8A_TERMS_RECORD, -1);\n	
-recheck-outer-equal	core/tree/checks.c	if (!gz_terms_outer_equal(&ro, in->outer) || !gz_terms_current_equal(&rc, in->frozen))	if (!gz_terms_current_equal(&rc, in->frozen))
-recheck-current-equal	core/tree/checks.c	if (!gz_terms_outer_equal(&ro, in->outer) || !gz_terms_current_equal(&rc, in->frozen))	if (!gz_terms_outer_equal(&ro, in->outer))
-recheck-gone	core/tree/checks.c	    if (!check_terms(in, v)) return;\n	    if (!check_terms(in, v) && 0) return;\n
+recheck-outer-equal	core/tree/checks.c	if (!gz_terms_outer_equal(ro, in->outer) || !gz_terms_current_equal(rc, in->frozen))	if (!gz_terms_current_equal(rc, in->frozen))
+recheck-current-equal	core/tree/checks.c	if (!gz_terms_outer_equal(ro, in->outer) || !gz_terms_current_equal(rc, in->frozen))	if (!gz_terms_outer_equal(ro, in->outer))
+recheck-gone	core/tree/checks.c	    if (!check_terms(in, v, &ro, &rc)) return;\n	    if (!check_terms(in, v, &ro, &rc) && 0) return;\n
 
 equal-channel	core/tree/terms.c	|| a->channel_sat != b->channel_sat	
 equal-salt	core/tree/terms.c	 || !tr_eq(a->lobby_salt, b->lobby_salt, 16)	

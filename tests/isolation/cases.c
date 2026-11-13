@@ -209,6 +209,31 @@ static int two(void) { return 2; }
 static int (*const table[])(void) = {one, two};
 int f(unsigned i) { return table[i % 2](); }
 
+/* ---- clang's -fsanitize=function prologue: the magic 0xc105cafe and a type
+ * hash, 8 bytes immediately before a function. The hash here ends in 0x64,
+ * which objdump decodes as a lone `fs` prefix. Each in a section of its own,
+ * at offset 0, so the compiler's own code does not move it. ---- */
+#elif CASE == 52    /* the prologue before a function: passes --sanitized, refused in plain mode */
+__asm__(".pushsection .text.gzp,\"ax\",@progbits\n.long 0xc105cafe\n.long 0x64db9c5a\n"
+        ".type f52,@function\nf52:\n ret\n.size f52, .-f52\n.popsection");
+int f(void) { return 0; }
+#elif CASE == 53    /* the prologue, then x87 and SSE inside the function body */
+__asm__(".pushsection .text.gzp,\"ax\",@progbits\n.long 0xc105cafe\n.long 0x64db9c5a\n"
+        ".type f53,@function\nf53:\n fninit\n xorps %xmm0,%xmm0\n ret\n.size f53, .-f53\n.popsection");
+int f(void) { return 0; }
+#elif CASE == 54    /* the same bytes one byte before a function start */
+__asm__(".pushsection .text.gzp,\"ax\",@progbits\n.long 0xc105cafe\n.long 0x64db9c5a\n nop\n"
+        ".type f54,@function\nf54:\n ret\n.size f54, .-f54\n.popsection");
+int f(void) { return 0; }
+#elif CASE == 55    /* the same bytes before a label that is not a function */
+__asm__(".pushsection .text.gzp,\"ax\",@progbits\n.long 0xc105cafe\n.long 0x64db9c5a\n"
+        "g55:\n ret\n.popsection");
+int f(void) { return 0; }
+#elif CASE == 56    /* the same bytes inside a function body, followed by more of it */
+__asm__(".pushsection .text.gzp,\"ax\",@progbits\n.type f56,@function\nf56:\n nop\n.long 0xc105cafe\n.long 0x64db9c5a\n"
+        " ret\n.size f56, .-f56\n.popsection");
+int f(void) { return 0; }
+
 /* ---- known not to be caught (listed in the check's own header) ---- */
 #elif CASE == 60    /* an address used as data */
 uint64_t f(void) { int x; return (uint64_t)(uintptr_t)&x; }

@@ -11,7 +11,12 @@
 set(GZ_TREE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(GZ_TREE_TESTS ${PROJECT_SOURCE_DIR}/tests/tree)
 
-add_library(gazpacho_tree STATIC sha256.c terms.c shape.c model.c checks.c exit.c)
+set(GZ_TREE_SOURCES ${GZ_TREE_DIR}/sha256.c ${GZ_TREE_DIR}/terms.c ${GZ_TREE_DIR}/shape.c ${GZ_TREE_DIR}/model.c
+    ${GZ_TREE_DIR}/checks.c ${GZ_TREE_DIR}/exit.c)
+# The core's own flags (GZ_CORE_FLAGS, top-level CMakeLists.txt): strict C11,
+# freestanding, no VLAs, -fno-common, and no floating-point or vector
+# registers where the compiler can promise it.
+add_library(gazpacho_tree STATIC ${GZ_TREE_SOURCES})
 set_target_properties(gazpacho_tree PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_tree PUBLIC ${GZ_TREE_DIR}/include)
 target_compile_options(gazpacho_tree PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
@@ -20,8 +25,13 @@ add_library(gazpacho_tree_import STATIC import/tree_import.c)
 target_link_libraries(gazpacho_tree_import PUBLIC gazpacho_tree gazpacho_superscalar secp256k1)
 target_compile_options(gazpacho_tree_import PRIVATE ${GZ_NEW_CODE_WARNINGS})
 
+# The same isolation rules as the rest of the core (core_isolation): the
+# library, in this build's mode, and its sources scanned with this build's flags.
+string(JOIN " " GZ_TREE_SCAN_FLAGS ${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${GZ_BUILD_TYPE_UPPER}} -std=c11 ${GZ_CORE_FLAGS}
+       -I${GZ_TREE_DIR}/include)
 add_test(NAME tree_isolation
-  COMMAND sh ${PROJECT_SOURCE_DIR}/tools/check-core-isolation.sh $<TARGET_FILE:gazpacho_tree>)
+  COMMAND sh ${PROJECT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          $<TARGET_FILE:gazpacho_tree> --sources ${CMAKE_C_COMPILER} ${GZ_TREE_SCAN_FLAGS} ${GZ_TREE_SOURCES})
 
 function(gz_tree_test name)
   add_executable(test_tree_${name} ${GZ_TREE_TESTS}/test_tree_${name}.c)

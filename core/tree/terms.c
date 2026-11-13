@@ -237,9 +237,9 @@ gz_terms_err_t gz_terms_check_shapes(const gz_shape_entry_t *es, size_t n_entrie
 static gz_terms_err_t check_fundable(const gz_terms_outer_t *t)
 {
     uint32_t n, top = t->target < GZ_TREE_MAX_MEMBERS ? t->target : GZ_TREE_MAX_MEMBERS;
+    gz_tree_params_t p;     /* function scope: no scope-poisoning calls in a checker build */
     if (t->minimum > GZ_TREE_MAX_MEMBERS) return GZ_TERMS_E_UNFUNDABLE;
     for (n = t->minimum; n <= top; n++) {
-        gz_tree_params_t p;
         if (gz_tree_params(t, n, &p) != GZ_TREE_P_OK) return GZ_TERMS_E_UNFUNDABLE;
         if (p.funding_amount > SUPPLY_SAT
             || p.funding_amount < 2 * (2 * (uint64_t)n - 1) * p.fee_per_tx + 1092 * (uint64_t)n)
