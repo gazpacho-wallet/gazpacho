@@ -88,6 +88,8 @@ int gzp_datadir_open(gzp_datadir_t *d, const char *dir, const char *role, const 
     }
     if (st.st_uid != geteuid() || (st.st_mode & 077)) {
         fprintf(stderr, "gazpacho: the data folder %s must belong to this user and be closed to others (chmod 700)\n", dir);
+        close(d->lock_fd); /* review B of PR 27, N4 */
+        d->lock_fd = -1;
         return GZP_EXIT_DATA;
     }
     gzp_datadir_path(d, "lock", path);

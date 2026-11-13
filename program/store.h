@@ -14,6 +14,9 @@
  *     The number is 1 + max(the journal's highest, the start counter), and
  *     the counter is written first (contract-v2.md section 8), so a journal
  *     restored alone never reuses a number this device used since its backup.
+ *     Either value read at or above 2^63 refuses the start, so 2^63 itself
+ *     is used at most once and the start after it refuses (contract-v2.md
+ *     section 8, to the letter; review B of PR 27, N3).
  *   - next()/rewind() walk the durable batches oldest first, including those
  *     appended since begin(); what next() returns stays valid until the next
  *     call of next() or rewind().
