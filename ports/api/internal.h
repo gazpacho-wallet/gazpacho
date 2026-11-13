@@ -157,6 +157,8 @@ struct gz_job {
     uint64_t sess_no;
     char host[300];
     int was_locked;
+    int bearer;                      /* sent with the socket token ... */
+    uint64_t token_gen;              /* ... of this generation (review B2) */
     uint8_t *pass;                   /* copy, wiped */
     size_t pass_len;
     gz_job *next;
@@ -230,6 +232,7 @@ struct gz_api_server {
     int att_loaded;
     int att_unsaved;                 /* the file could not be written: passphrases refused (F5.1) */
     int token_dir_refused;           /* the socket token folder is not ours (F5.5) */
+    uint64_t token_gen;              /* +1 each time the socket token is made or dropped */
     /* derivation slot */
     pthread_t worker;
     int worker_started;

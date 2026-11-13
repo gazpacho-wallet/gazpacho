@@ -2280,6 +2280,13 @@ static int api_open_as(fixture *x, const char *method, const char *path, const c
     return fd;
 }
 
+static int sock_open(fixture *x, const char *req)
+{
+    int fd = unix_connect(gz_api_server_socket_path(x->srv));
+    if (fd >= 0) send(fd, req, strlen(req), MSG_NOSIGNAL);
+    return fd;
+}
+
 static void host_open_body(fixture *x, char *body, size_t cap, const char *rid)
 {
     char draft[600], dd[80];
@@ -2387,6 +2394,73 @@ static void test_b1_lock(void)
     fx_stop(&x);
 }
 
+/* B2: a job whose session (or socket token) ended while it derived answers
+ * 401 not_signed_in: no words, no action. */
+static void test_b2_ended_session(void)
+{
+    fixture x;
+    resp r;
+    char a[64], b[64], tok[64], body[2400], req[1200];
+    int fd;
+    int64_t acted;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.fake.pp_delay_ms = 400;
+    if (fx_go(&x)) { CHECK(0); return; }
+    /* revoke-all from another session while the words are derived */
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(a, sizeof a, "%s", g_session);
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(b, sizeof b, "%s", g_session);
+    fd = api_open_as(&x, "POST", "/api/v1/wallet/phrase/reveal", REVEAL_BODY, a);
+    sleep_ms(150);
+    CHECK(expect(&x, "POST", "/api/v1/session/revoke-all", "{\"confirm\":\"revoke_all\"}", 204, NULL));
+    read_answer(fd, &r, 3000);
+    CHECK(is_code(&r, 401, "not_signed_in") && !strstr(r.body, "\"words\""));
+    resp_free(&r);
+    close(fd);
+    /* the same session signs out */
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(a, sizeof a, "%s", g_session);
+    fd = api_open_as(&x, "POST", "/api/v1/wallet/phrase/reveal", REVEAL_BODY, a);
+    sleep_ms(150);
+    CHECK(expect(&x, "DELETE", "/api/v1/session", NULL, 204, NULL));
+    read_answer(fd, &r, 3000);
+    CHECK(is_code(&r, 401, "not_signed_in") && !strstr(r.body, "\"words\""));
+    resp_free(&r);
+    close(fd);
+    /* a kind A action of a revoked session acts nothing */
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(a, sizeof a, "%s", g_session);
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(b, sizeof b, "%s", g_session);
+    host_open_body(&x, body, sizeof body, "req_open_b2_000001");
+    acted = FAKE_READ(&x, x.fake.acted);
+    fd = api_open_as(&x, "POST", "/api/v1/host/lobbies", body, a);
+    sleep_ms(150);
+    CHECK(expect(&x, "POST", "/api/v1/session/revoke-all", "{\"confirm\":\"revoke_all\"}", 204, NULL));
+    read_answer(fd, &r, 3000);
+    CHECK(is_code(&r, 401, "not_signed_in"));
+    resp_free(&r);
+    close(fd);
+    CHECK(FAKE_READ(&x, x.fake.acted) == acted && FAKE_READ(&x, x.fake.host_open) == 0);
+    /* the socket token rotated (revoke-all) while a bearer reveal derived */
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    socket_token(&x, tok);
+    CHECK(strlen(tok) == 43);
+    snprintf(req, sizeof req, "POST /api/v1/wallet/phrase/reveal HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\n"
+                              "Content-Type: application/json\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n%s",
+             tok, strlen(REVEAL_BODY), REVEAL_BODY);
+    fd = sock_open(&x, req);
+    sleep_ms(150);
+    CHECK(expect(&x, "POST", "/api/v1/session/revoke-all", "{\"confirm\":\"revoke_all\"}", 204, NULL));
+    read_answer(fd, &r, 3000);
+    CHECK(is_code(&r, 401, "not_signed_in") && !strstr(r.body, "\"words\""));
+    resp_free(&r);
+    close(fd);
+    fx_stop(&x);
+}
+
 /* B4: the one-second delay is kept in milliseconds: a wrong passphrase at x.990 s
  * and another at x+1.005 s are one derivation, not two. Also a session past its
  * idle sign-out is refused at once, before the expiry tick (b-lazy-expiry-off). */
@@ -2457,6 +2531,7 @@ int main(void)
     test_p5_held();
     test_p5_idle();
     test_b1_lock();
+    test_b2_ended_session();
     test_b4_ms_delay();
     return check_done();
 }

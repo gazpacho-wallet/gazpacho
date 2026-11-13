@@ -819,6 +819,8 @@ static int start_job(gz_api_server *srv, gz_conn *c, int purpose, int op, const 
     j->sess_slot = r->sess_slot;
     j->sess_no = r->sess_no;
     j->was_locked = wallet_state(srv) != GZ_API_WALLET_UNLOCKED;
+    j->bearer = r->bearer;
+    j->token_gen = srv->token_gen;
     snprintf(j->host, sizeof j->host, "%s", r->host);
     if (op == GZ_API_PP_RESTORE || op == GZ_API_PP_WORDS_CHECK) {
         const gz_json *wa = gz_json_get(body, "words"), *wv;
@@ -996,6 +998,16 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
         if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, mono);
         if (srv->be->passphrase_discard) srv->be->passphrase_discard(srv->bectx, pp);
         gz_job_refuse(srv, j, 503, "passphrase_not_checked", NULL);
+        return;
+    }
+    /* The session or socket token it was sent with was signed out, revoked or
+     * dropped while it derived (review B2): nothing is installed, done or
+     * answered for it (the 24 words are wiped with the job); a wrong passphrase
+     * still counts. */
+    if ((j->purpose != JP_SIGN_IN && j->sess_slot >= 0 && !s) || (j->bearer && j->token_gen != srv->token_gen)) {
+        if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, mono);
+        if (srv->be->passphrase_discard) srv->be->passphrase_discard(srv->bectx, pp);
+        gz_job_refuse(srv, j, 401, "not_signed_in", NULL);
         return;
     }
     if (srv->be->passphrase_done) srv->be->passphrase_done(srv->bectx, pp);   /* installs, on this thread */

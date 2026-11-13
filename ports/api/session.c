@@ -162,6 +162,7 @@ int gz_socket_token_make(gz_api_server *srv)
     char b64[GZ_TOKEN_B64 + 1];
     int r;
     srv->have_socket_token = 0;
+    srv->token_gen++;                                   /* a bearer job of the old token ends (review B2) */
     if (gz_random(srv->socket_token, sizeof srv->socket_token) != 0) return -1;
     if (!token_dir_ok(srv->token_dir)) {
         /* another account may have made it first (/tmp fallback, review F5.5): refused, and status says so */
@@ -186,6 +187,7 @@ void gz_socket_token_drop(gz_api_server *srv)
 {
     unlink(srv->token_path);
     rmdir(srv->token_dir);
+    srv->token_gen++;
     gz_wipe(srv->socket_token, sizeof srv->socket_token);
     srv->have_socket_token = 0;
 }
