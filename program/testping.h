@@ -17,7 +17,7 @@
 
 #include "net.h"
 
-#define GZP_TESTPING_MAX 1000
+#define GZP_TESTPING_MAX 20000
 
 typedef struct {
     int used;

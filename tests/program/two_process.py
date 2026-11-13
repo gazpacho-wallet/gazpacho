@@ -212,7 +212,9 @@ def main():
                   + connect + common, logs)
         m5 = Proc("m5-1", [exe, "--data-dir", os.path.join(work, "m5"), "--role", "member", "--name", "m5",
                            "--test-burst", "20x60000"] + connect + common, logs)
-        procs += [m4, m5]
+        m6 = Proc("m6-1", [exe, "--data-dir", os.path.join(work, "m6"), "--role", "member", "--name", "m6",
+                           "--test-burst", "20000x4"] + connect + common, logs)
+        procs += [m4, m5, m6]
         k4 = m4.wait_for(r"member key=([0-9a-f]{66})")
         k5 = m5.wait_for(r"member key=([0-9a-f]{66})")
         check(m4.wait_for(r"connected peer=%s" % hp, timeout=3 * SCALE) is not None and
@@ -223,6 +225,13 @@ def main():
         check(m5.wait_for(r"burst-sent", timeout=3 * SCALE) is not None, "member 5 sends 1.2 MB during the start")
         check(host4.wait_for(r"start-queue closed conn=\d+ why=over-1MiB", timeout=6 * SCALE) is not None,
               "the host closes member 5's connection past the 1 MiB start-queue cap")
+        # 20,000 nearly empty messages: under 1 MiB of payload, over it with
+        # the 64 bytes counted per message.
+        check(m6.wait_for(r"burst-sent", timeout=6 * SCALE) is not None and
+              host4.count(r"start-queue closed conn=\d+ why=over-1MiB") >= 1 and
+              host4.wait_for(r"start-queue closed conn=\d+ why=over-1MiB", timeout=6 * SCALE,
+                             start=host4.index_of(r"start-queue closed", timeout=1) + 1) is not None,
+              "member 6's 20,000 nearly empty messages count against the cap too (64 bytes each)")
         i_r4 = host4.index_of(r"ready incarnation=4", timeout=10 * SCALE)
         check(host4.wait_for(r"start-queue dropped conn=\d+ why=closed-during-start", timeout=1) is not None and
               host4.find(r"connected peer=%s" % peer_id(k4.group(1) if k4 else "00"))[0] is None,
@@ -235,13 +244,13 @@ def main():
               "a test timer due during the start fires only after it")
 
         # --- clean stop, in the shutdown order, read from the state -------------
-        for p in (host4, m1, m2b, m3, m5):
+        for p in (host4, m1, m2b, m3, m5, m6):
             p.p.send_signal(signal.SIGTERM)
         want = [("node-stopped", "transport=1 storage=1 lock=1"),
                 ("connections-closed", "transport=0 storage=1 lock=1"),
                 ("storage-closed", "transport=0 storage=0 lock=1"),
                 ("lock-released", "transport=0 storage=0 lock=0")]
-        for p in (host4, m1, m2b, m3, m5):
+        for p in (host4, m1, m2b, m3, m5, m6):
             ok = p.exit_code() == 0
             idx = [p.index_of(r"shutdown %s %s" % w, timeout=2) for w in want]
             check(ok and None not in idx and idx == sorted(idx) and p.wait_for(r"stopped status=0", timeout=2),

@@ -225,7 +225,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--pong-ms")) { ok = num(val, 10, 600000, &v); o->pong_ms = (int)v; }
         else if (!strcmp(a, "--max-per-address")) { ok = num(val, 0, 1000, &v); o->max_per_address = (int)v; }
         else if (!strcmp(a, "--name")) o->name = val;
-        else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 1000, &v); o->test_pings = (int)v; }
+        else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
         else if (!strcmp(a, "--test-crash-at-ping")) { ok = num(val, 1, 1000000, &v); o->test_crash_at_ping = (int)v; }
         else if (!strcmp(a, "--test-storage-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_storage_fail_at = (int)v; }
@@ -241,7 +241,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
                 char nbuf[16];
                 size_t l = (size_t)(x - val);
                 ok = l > 0 && l < sizeof nbuf;
-                if (ok) { memcpy(nbuf, val, l); nbuf[l] = 0; ok = num(nbuf, 1, 1000, &nb); }
+                if (ok) { memcpy(nbuf, val, l); nbuf[l] = 0; ok = num(nbuf, 1, 20000, &nb); }
             }
             o->test_burst_n = (int)nb;
             o->test_burst_bytes = (int)v;

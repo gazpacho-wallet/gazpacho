@@ -70,6 +70,8 @@ def main():
         check(m1.find(r"start-resend peer=%s payload=%s" % (hp, lost.hex()))[0] is None,
               "the reply to the ping whose sync failed is never resent")
         check(m1.wait_for(r"pings-done peer=%s n=10" % hp) is not None, "member 1's pings are all answered")
+        check(host.wait_for(r"pings-done peer=%s n=10" % mp) is not None,
+              "the host's pings to member 1 are all answered after its restart (no stale connection is used)")
         m1.stop()
         j = parse_journal(os.path.join(d1, "journal.standin"))
         inc1 = [r[1][24:] for e in j if e[0] == "BTCH" and e[1] == 1 for r in e[3] if r[0] == 0x7e570001]

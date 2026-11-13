@@ -4,7 +4,7 @@ M1, M4, M5, L6).
 
     python3 -I liveness.py PATH_TO_GAZPACHO_TEST WORK_DIR
 
-  1. Flood: a member pings the host every millisecond (1,000 pings) while the
+  1. Flood: a member pings the host every millisecond (20,000 pings, so at least 20 s) while the
      host has a 100 ms test timer and its own pings every 50 ms. The host's
      timer keeps firing (no gap over 1 s), its own pings are answered during
      the flood, and a SIGTERM 3 s in stops it within 1 s.
@@ -49,7 +49,7 @@ def main():
             return 1
         hkey, port = k.group(1), m.group(1)
         mem = Proc("flood-member", [exe, "--data-dir", os.path.join(work, "fm"), "--role", "member", "--name", "m",
-                                    "--connect", "%s@127.0.0.1:%s" % (hkey, port), "--test-pings", "1000",
+                                    "--connect", "%s@127.0.0.1:%s" % (hkey, port), "--test-pings", "20000",
                                     "--test-ping-ms", "1"] + base, logs)
         procs.append(mem)
         mk = mem.wait_for(r"member key=([0-9a-f]{66})")
@@ -57,7 +57,7 @@ def main():
         t_flood = time.time()
         time.sleep(3.0)
         mark_host = host.mark()
-        flood_on = mem.count(r"pong peer=") < 1000
+        flood_on = mem.count(r"pong peer=") < 20000
         host.p.send_signal(signal.SIGTERM)
         t_term = time.time()
         code = host.exit_code(30)
