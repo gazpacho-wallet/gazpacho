@@ -11,6 +11,7 @@
  * The tests use only the runner's documented functions. */
 #include "gazpacho/runner.h"
 #include "../check.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define INCARNATION 7
@@ -571,27 +572,45 @@ static void test_the_rule_spans_lists(void)
     CHECK(!log_breaks_rule());
 }
 
-static void test_confirmations_must_come_in_order(void)
+/* Storage is a journal: confirmations come in order, once each. Anything else
+ * means storage can no longer be trusted, and the runner fails for good. */
+static void test_confirmation_out_of_order_is_fatal(void)
 {
+    static const struct { uint64_t incarnation, sequence; gz_status_t want; } wrong[] = {
+        {INCARNATION, 2, GZ_ERR_OUT_OF_ORDER},      /* the second before the first */
+        {INCARNATION, 3, GZ_ERR_OUT_OF_ORDER},
+        {INCARNATION, 4, GZ_ERR_UNKNOWN_BATCH},     /* never issued */
+        {INCARNATION, 0, GZ_ERR_UNKNOWN_BATCH},
+        {INCARNATION + 1, 1, GZ_ERR_UNKNOWN_BATCH}, /* an incarnation that does not exist yet */
+    };
     driver_t *d = &g_driver;
-    driver_init(d, 0);
-    CHECK(d->confirm(d, 1) == GZ_ERR_UNKNOWN_BATCH);        /* nothing issued yet */
+    for (size_t k = 0; k < sizeof wrong / sizeof wrong[0]; k++) {
+        driver_init(d, 0);
+        list_begin(); add_save(100); add_save(101); add_save(102); add_send(1); add_watch(2);
+        CHECK(d->submit(d, &l) == GZ_OK && !gz_runner_failed(&d->runner));
+        CHECK(gz_runner_confirm(&d->runner, batch(wrong[k].incarnation, wrong[k].sequence)) == wrong[k].want);
+        CHECK(gz_runner_failed(&d->runner));
+        CHECK(d->confirm(d, 1) == GZ_ERR_FAILED);               /* even the right one is refused now */
+        list_begin(); add_timer(9);
+        CHECK(d->submit(d, &l) == GZ_ERR_FAILED);
+        CHECK(RELEASED(100, 101, 102) && gz_runner_held(&d->runner) == 2);   /* the send and what is behind it never leave */
+    }
+
+    driver_init(d, 0);                                          /* a duplicate */
+    list_begin(); add_save(100); add_save(101); add_send(1);
+    CHECK(d->submit(d, &l) == GZ_OK);
+    CHECK(d->confirm(d, 1) == GZ_OK);
+    CHECK(d->confirm(d, 1) == GZ_ERR_UNKNOWN_BATCH && gz_runner_failed(&d->runner));
+    CHECK(d->confirm(d, 2) == GZ_ERR_FAILED && RELEASED(100, 101));
+
+    driver_init(d, 0);                                          /* before anything was issued */
+    CHECK(d->confirm(d, 1) == GZ_ERR_UNKNOWN_BATCH && gz_runner_failed(&d->runner));
+
+    driver_init(d, 0);                                          /* in order: nothing fails */
     list_begin(); add_save(100); add_save(101); add_save(102); add_send(1);
     CHECK(d->submit(d, &l) == GZ_OK);
-    CHECK(d->confirm(d, 2) == GZ_ERR_OUT_OF_ORDER);
-    CHECK(d->confirm(d, 3) == GZ_ERR_OUT_OF_ORDER);
-    CHECK(d->confirm(d, 4) == GZ_ERR_UNKNOWN_BATCH);        /* never issued */
-    CHECK(d->confirm(d, 0) == GZ_ERR_UNKNOWN_BATCH);
-    CHECK(gz_runner_confirm(&d->runner, batch(INCARNATION + 1, 1)) == GZ_ERR_UNKNOWN_BATCH);
-    CHECK(gz_runner_unconfirmed(&d->runner) == 3 && RELEASED(100, 101, 102));
-    CHECK(d->confirm(d, 1) == GZ_OK);
-    CHECK(d->confirm(d, 1) == GZ_ERR_UNKNOWN_BATCH);        /* already confirmed */
-    CHECK(d->confirm(d, 3) == GZ_ERR_OUT_OF_ORDER);
-    CHECK(d->confirm(d, 2) == GZ_OK);
-    CHECK(RELEASED(100, 101, 102));
-    CHECK(d->confirm(d, 3) == GZ_OK);
-    CHECK(RELEASED(100, 101, 102, 1));
-    CHECK(!gz_runner_failed(&d->runner));                   /* none of those errors is fatal */
+    CHECK(d->confirm(d, 1) == GZ_OK && d->confirm(d, 2) == GZ_OK && RELEASED(100, 101, 102));
+    CHECK(d->confirm(d, 3) == GZ_OK && RELEASED(100, 101, 102, 1) && !gz_runner_failed(&d->runner));
 }
 
 /* A crash: the program stops between the save and its confirmation. The
@@ -612,14 +631,34 @@ static void test_crash_and_stale_confirmation(void)
     CHECK(gz_runner_held(&d->runner) == 0 && gz_runner_unconfirmed(&d->runner) == 0);
 
     /* The new runner saves and holds a send of its own, under sequence 1 again. */
-    g_incarnations_ok = 1;
     list_begin(); add_save(200); add_send(9);
     CHECK(d->submit(d, &l) == GZ_OK);
     CHECK(gz_runner_confirm(&d->runner, batch(INCARNATION, 1)) == GZ_ERR_STALE_BATCH);
     CHECK(gz_runner_confirm(&d->runner, batch(0, 1)) == GZ_ERR_STALE_BATCH);
-    CHECK(released_count() == 2 && gz_runner_held(&d->runner) == 1);    /* the stale one unlocked nothing */
+    CHECK(gz_runner_confirm(&d->runner, batch(INCARNATION, 99)) == GZ_ERR_STALE_BATCH);
+    CHECK(!gz_runner_failed(&d->runner));           /* stale is ignored, not fatal */
+    CHECK(released_count() == 2 && gz_runner_held(&d->runner) == 1);    /* and unlocked nothing */
     CHECK(gz_runner_confirm(&d->runner, batch(INCARNATION + 1, 1)) == GZ_OK);
     CHECK(released_count() == 3 && g_log[g_log_n - 1].id == 9 && !g_log[g_log_n - 1].is_offer);   /* 1, 2 and 3 never left */
+}
+
+/* What the incarnation duty is for, shown by breaking it. A program starts
+ * twice under the same number. The confirmation of a batch the first start
+ * saved arrives during the second, which holds a send behind a batch of its
+ * own that is NOT stored. The runner cannot tell the two batches apart, and
+ * the send leaves. The runner cannot detect this; only the program around it
+ * can prevent it (runner.h). */
+static void test_repeated_incarnation_is_not_detected(void)
+{
+    driver_t *d = &g_driver;
+    driver_init(d, 0);
+    list_begin(); add_save(100); add_send(1);
+    CHECK(d->submit(d, &l) == GZ_OK);
+    CHECK(gz_runner_init(&d->runner, d->slots, 64, d->bytes, sizeof d->bytes, INCARNATION, record_execute, d) == GZ_OK);
+    list_begin(); add_save(200); add_send(9);
+    CHECK(d->submit(d, &l) == GZ_OK && gz_runner_held(&d->runner) == 1);
+    CHECK(gz_runner_confirm(&d->runner, batch(INCARNATION, 1)) == GZ_OK);       /* the first start's batch */
+    CHECK(gz_runner_held(&d->runner) == 0 && g_log[g_log_n - 1].id == 9);       /* released the second start's send */
 }
 
 static void test_refusal_is_whole_and_fatal(void)
@@ -695,10 +734,10 @@ static void test_storage_failure_stops_everything(void)
     CHECK(RELEASED(100) && gz_runner_held(&d->runner) == 2);
 }
 
-/* The executor must not call the runner back. If it does, it gets an error
- * and nothing changes. */
+/* The executor must not submit or confirm. If it does, it gets an error and
+ * nothing changes. */
 static gz_runner_t *g_reentry_runner;
-static gz_status_t g_reentry_status[3];
+static gz_status_t g_reentry_status[2];
 static size_t g_held_inside[8], g_held_inside_n;
 
 static void try_reentry(void)
@@ -710,7 +749,6 @@ static void try_reentry(void)
     gz_action_list_add(&inner, &timer);
     g_reentry_status[0] = gz_runner_submit(g_reentry_runner, &inner);
     g_reentry_status[1] = gz_runner_confirm(g_reentry_runner, batch(INCARNATION, 1));
-    g_reentry_status[2] = gz_runner_storage_failed(g_reentry_runner);
     if (g_held_inside_n < 8) g_held_inside[g_held_inside_n++] = gz_runner_held(g_reentry_runner);
 }
 
@@ -724,13 +762,13 @@ static void test_reentry_is_refused(void)
 
     list_begin(); add_save(100); add_send(1); add_send(2);
     CHECK(d->submit(d, &l) == GZ_OK);               /* the executor ran once, for the save */
-    for (int i = 0; i < 3; i++) CHECK(g_reentry_status[i] == GZ_ERR_REENTRANT);
+    CHECK(g_reentry_status[0] == GZ_ERR_REENTRANT && g_reentry_status[1] == GZ_ERR_REENTRANT);
     CHECK(g_held_inside_n == 1 && g_held_inside[0] == 0);
     CHECK(!gz_runner_failed(&d->runner) && gz_runner_unconfirmed(&d->runner) == 1);
 
     memset(g_reentry_status, 0, sizeof g_reentry_status);
     CHECK(d->confirm(d, 1) == GZ_OK);               /* the executor runs for each send */
-    for (int i = 0; i < 3; i++) CHECK(g_reentry_status[i] == GZ_ERR_REENTRANT);
+    CHECK(g_reentry_status[0] == GZ_ERR_REENTRANT && g_reentry_status[1] == GZ_ERR_REENTRANT);
     /* Seen from inside the executor, the action being carried out has already
      * left the queue: one held during the first send, none during the second. */
     CHECK(g_held_inside_n == 3 && g_held_inside[1] == 1 && g_held_inside[2] == 0);
@@ -738,6 +776,148 @@ static void test_reentry_is_refused(void)
     g_inside_executor = NULL;
     list_begin(); add_timer(3);
     CHECK(d->submit(d, &l) == GZ_OK);               /* and the runner still works afterwards */
+}
+
+/* A storage layer that writes synchronously learns of a failure inside the
+ * executor, and reports it from there. Nothing more of the list, or of the
+ * confirmation's releases, is handed over. */
+static uint64_t g_fail_at_id;
+static void fail_storage_at(void)
+{
+    if (g_log[g_log_n - 1].id == g_fail_at_id) (void)gz_runner_storage_failed(g_reentry_runner);
+}
+
+static void test_storage_failure_from_inside_the_executor(void)
+{
+    driver_t *d = &g_driver;
+
+    driver_init(d, 0);                              /* while a list is being carried out */
+    g_reentry_runner = &d->runner;
+    g_inside_executor = fail_storage_at;
+    g_fail_at_id = 101;
+    list_begin(); add_watch(5); add_save(100); add_save(101); add_timer(6); add_save(102);
+    CHECK(gz_runner_submit(&d->runner, &l) == GZ_ERR_FAILED);
+    CHECK(RELEASED(5, 100, 101) && gz_runner_failed(&d->runner));   /* the timer and the third save never reach it */
+
+    driver_init(d, 0);                              /* while a confirmation is releasing */
+    g_reentry_runner = &d->runner;
+    list_begin(); add_save(100); add_send(1); add_send(2); add_watch(3);
+    CHECK(d->submit(d, &l) == GZ_OK);
+    g_inside_executor = fail_storage_at;
+    g_fail_at_id = 1;
+    CHECK(gz_runner_confirm(&d->runner, batch(INCARNATION, 1)) == GZ_ERR_FAILED);
+    CHECK(RELEASED(100, 1) && gz_runner_held(&d->runner) == 2);     /* the second send and the watch never leave */
+    g_inside_executor = NULL;
+    CHECK(gz_runner_confirm(&d->runner, batch(INCARNATION, 1)) == GZ_ERR_FAILED);
+}
+
+/* An executor that only counts, for lists whose payloads are not the usual
+ * eight bytes. */
+static size_t g_counted, g_counted_bytes;
+static const uint8_t *g_last_data;
+static void count_execute(void *ctx, const gz_action_t *a)
+{
+    (void)ctx;
+    g_counted++;
+    if (a->kind == GZ_ACTION_SEND) { g_counted_bytes += a->u.send.bytes.len; g_last_data = a->u.send.bytes.data; }
+}
+
+static gz_action_t plain_send(const uint8_t *data, size_t len)
+{
+    gz_action_t a = {.kind = GZ_ACTION_SEND};
+    a.u.send.bytes = (gz_bytes_t){data, len};
+    return a;
+}
+
+/* What can go straight to the executor needs no room in the queue. */
+static void test_only_what_must_be_held_needs_room(void)
+{
+    static gz_runner_slot_t slots[64];
+    static uint8_t bytes[100];
+    static uint8_t payload[60];
+    gz_runner_t r;
+
+    g_counted = 0;                                  /* 65 timers through 64 slots, nothing held */
+    CHECK(gz_runner_init(&r, slots, 64, bytes, sizeof bytes, INCARNATION, count_execute, NULL) == GZ_OK);
+    list_begin();
+    for (uint64_t i = 0; i < 65; i++) add_timer(i);
+    CHECK(gz_runner_submit(&r, &l) == GZ_OK && g_counted == 65 && gz_runner_held(&r) == 0);
+
+    g_counted = g_counted_bytes = 0;                /* two 60-byte sends through 100 bytes, nothing unconfirmed */
+    CHECK(gz_runner_init(&r, slots, 64, bytes, sizeof bytes, INCARNATION, count_execute, NULL) == GZ_OK);
+    gz_action_t big = plain_send(payload, sizeof payload);
+    list_begin();
+    CHECK(gz_action_list_add(&l, &big) == GZ_OK && gz_action_list_add(&l, &big) == GZ_OK);
+    CHECK(gz_runner_submit(&r, &l) == GZ_OK && g_counted == 2 && g_counted_bytes == 120);
+
+    g_counted = 0;                                  /* even a runner with no queue at all passes them through */
+    CHECK(gz_runner_init(&r, NULL, 0, NULL, 0, INCARNATION, count_execute, NULL) == GZ_OK);
+    CHECK(gz_runner_submit(&r, &l) == GZ_OK && g_counted == 2);
+    list_begin(); add_save(1); add_send(2);         /* but this send would have to be held */
+    CHECK(gz_runner_submit(&r, &l) == GZ_ERR_REFUSED && g_counted == 2);
+
+    g_counted = 0;                                  /* behind a held send, every one of 64 timers needs a slot */
+    CHECK(gz_runner_init(&r, slots, 64, bytes, sizeof bytes, INCARNATION, count_execute, NULL) == GZ_OK);
+    list_begin(); add_save(1); add_send(2);
+    for (uint64_t i = 0; i < 63; i++) add_timer(i);
+    CHECK(gz_runner_submit(&r, &l) == GZ_OK && g_counted == 1 && gz_runner_held(&r) == 64);
+    CHECK(gz_runner_init(&r, slots, 64, bytes, sizeof bytes, INCARNATION, count_execute, NULL) == GZ_OK);
+    add_timer(99);
+    CHECK(gz_runner_submit(&r, &l) == GZ_ERR_REFUSED && gz_runner_failed(&r));
+}
+
+/* The byte bound, to the byte: 16 of 24 held, so 8 more fit and 9 do not. */
+static void test_byte_bound_is_exact(void)
+{
+    static gz_runner_slot_t slots[8];
+    static uint8_t bytes[24];
+    static const uint8_t nine[9] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+    for (size_t extra = 8; extra <= 9; extra++) {
+        gz_runner_t r;
+        gz_action_t more = plain_send(nine, extra);
+        g_counted = g_counted_bytes = 0;
+        CHECK(gz_runner_init(&r, slots, 8, bytes, sizeof bytes, INCARNATION, count_execute, NULL) == GZ_OK);
+        list_begin(); add_save(1); add_send(2); add_send(3);
+        CHECK(gz_runner_submit(&r, &l) == GZ_OK && gz_runner_held(&r) == 2);
+        list_begin();
+        CHECK(gz_action_list_add(&l, &more) == GZ_OK);
+        CHECK(gz_runner_submit(&r, &l) == (extra == 8 ? GZ_OK : GZ_ERR_REFUSED));
+        if (extra == 8) {
+            CHECK(gz_runner_confirm(&r, batch(INCARNATION, 1)) == GZ_OK);
+            CHECK(g_counted == 4 && g_counted_bytes == 24);     /* all three sends arrived whole */
+        }
+    }
+}
+
+/* A held action with an empty payload does not keep the pointer it came with. */
+static void test_empty_payload_is_not_a_pointer_into_the_list(void)
+{
+    static gz_runner_slot_t slots[4];
+    static uint8_t bytes[16];
+    static const uint8_t stray[4] = {9, 9, 9, 9};
+    gz_action_t raw[2] = {{.kind = GZ_ACTION_SAVE}, plain_send(stray, 0)};      /* not built by gz_action_list_add */
+    gz_action_list_t list = {raw, 2, 2, NULL, 0, 0};
+    gz_runner_t r;
+    g_counted = 0;
+    g_last_data = stray;
+    CHECK(gz_runner_init(&r, slots, 4, bytes, sizeof bytes, INCARNATION, count_execute, NULL) == GZ_OK);
+    CHECK(gz_runner_submit(&r, &list) == GZ_OK && gz_runner_held(&r) == 1);
+    CHECK(gz_runner_confirm(&r, batch(INCARNATION, 1)) == GZ_OK && g_counted == 2);
+    CHECK(g_last_data == NULL);
+}
+
+static void test_unknown_kinds_are_refused(void)
+{
+    driver_t *d = &g_driver;
+    gz_action_t raw[3] = {{.kind = GZ_ACTION_SAVE}, {.kind = (gz_action_kind_t)99}, {.kind = GZ_ACTION_SET_TIMER}};
+    gz_action_list_t list = {raw, 3, 3, NULL, 0, 0};
+    driver_init(d, 0);
+    CHECK(gz_runner_submit(&d->runner, &list) == GZ_ERR_ARGUMENT);
+    CHECK(g_log_n == 0 && !gz_runner_failed(&d->runner) && gz_runner_unconfirmed(&d->runner) == 0);
+    raw[1].kind = (gz_action_kind_t)0;
+    CHECK(gz_runner_submit(&d->runner, &list) == GZ_ERR_ARGUMENT && g_log_n == 0);
+    raw[1].kind = GZ_ACTION_CANCEL_TIMER;
+    CHECK(gz_runner_submit(&d->runner, &list) == GZ_OK && g_log_n == 3);
 }
 
 /* A queue that never drains must still reuse the room released actions leave. */
@@ -749,10 +929,12 @@ static void test_queue_room_is_reused_without_draining(void)
     int ok = 1;
     log_reset();
     CHECK(gz_runner_init(&r, slots, 4, bytes, sizeof bytes, INCARNATION, record_execute, NULL) == GZ_OK);
-    list_begin(); add_save(1000); add_send(1);
+    /* Identifiers whose every byte varies, so a payload moved one byte short would show. */
+#define ROOM_ID(i) ((((uint64_t)(i) * 37 % 251 + 1) << 56) | (((uint64_t)(i) * 101 % 239 + 1) << 48) | (uint64_t)(i))
+    list_begin(); add_save(1000); add_send(ROOM_ID(0));
     CHECK(submit_logged(&r, &l) == GZ_OK);
     for (uint64_t i = 1; i <= 5000; i++) {          /* always one send held when the next list arrives */
-        list_begin(); add_save(1000 + i); add_send(1 + i); add_watch(50000 + i);
+        list_begin(); add_save(1000 + i); add_send(ROOM_ID(i)); add_watch(ROOM_ID(i) ^ 0x5a5a5a5a00000000ull);
         ok &= submit_logged(&r, &l) == GZ_OK;
         ok &= gz_runner_held(&r) == (i == 1 ? 3 : 4);    /* every slot in use from the second round on */
         ok &= confirm_logged(&r, i) == GZ_OK;
@@ -867,6 +1049,71 @@ static void test_wrong_runners_are_caught(void)
     CHECK(sloppy_caught == 50 && sloppy_off_model == 50);
 }
 
+/* Compaction exactly at the edge of the byte block. In a 23-byte block, an
+ * 8-byte and a 2-byte payload are held; the first is released, freeing 8
+ * bytes at the front and leaving 13 free at the back; a 14-byte payload
+ * arrives. Unless the held payload is moved down first, the new one runs one
+ * byte past the block. The block is an allocation of its own, so the memory
+ * checkers see an overrun, and in the second round it is followed by a guard
+ * byte that a build without them checks. */
+static uint8_t g_edge_seen[3][16];
+static size_t g_edge_len[3], g_edge_n;
+static void edge_execute(void *ctx, const gz_action_t *a)
+{
+    (void)ctx;
+    const gz_bytes_t *b = a->kind == GZ_ACTION_SEND ? &a->u.send.bytes : a->kind == GZ_ACTION_WATCH ? &a->u.watch.script : NULL;
+    if (!b || g_edge_n >= 3) return;
+    memcpy(g_edge_seen[g_edge_n], b->data, b->len);
+    g_edge_len[g_edge_n++] = b->len;
+}
+
+static void test_compaction_at_the_edge_of_the_block(void)
+{
+    enum { BLOCK = 23 };
+    static gz_runner_slot_t slots[4];
+    static const uint8_t eight[8] = {8, 8, 8, 8, 8, 8, 8, 8}, two[2] = {2, 2};
+    static const uint8_t fourteen[14] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
+    for (int guarded = 0; guarded <= 1; guarded++) {
+        uint8_t *block = malloc(BLOCK + (size_t)guarded);
+        gz_runner_t r;
+        if (!block) { CHECK(0); return; }
+        if (guarded) block[BLOCK] = 0xa5;
+        g_edge_n = 0;
+        CHECK(gz_runner_init(&r, slots, 4, block, BLOCK, INCARNATION, edge_execute, NULL) == GZ_OK);
+        gz_action_t first = plain_send(eight, 8), second = plain_send(two, 2), watch = {.kind = GZ_ACTION_WATCH};
+        watch.u.watch.script = (gz_bytes_t){fourteen, sizeof fourteen};
+        list_begin(); add_save(100);
+        CHECK(gz_action_list_add(&l, &first) == GZ_OK);
+        add_save(101);
+        CHECK(gz_action_list_add(&l, &second) == GZ_OK);
+        CHECK(gz_runner_submit(&r, &l) == GZ_OK && gz_runner_held(&r) == 2);
+        CHECK(gz_runner_confirm(&r, batch(INCARNATION, 1)) == GZ_OK && gz_runner_held(&r) == 1);
+        list_begin();
+        CHECK(gz_action_list_add(&l, &watch) == GZ_OK);
+        CHECK(gz_runner_submit(&r, &l) == GZ_OK && gz_runner_held(&r) == 2);
+        if (guarded) CHECK(block[BLOCK] == 0xa5);
+        CHECK(gz_runner_confirm(&r, batch(INCARNATION, 2)) == GZ_OK && gz_runner_held(&r) == 0);
+        CHECK(g_edge_n == 3 && g_edge_len[0] == 8 && g_edge_len[1] == 2 && g_edge_len[2] == 14);
+        CHECK(memcmp(g_edge_seen[1], two, 2) == 0 && memcmp(g_edge_seen[2], fourteen, 14) == 0);
+        free(block);
+    }
+}
+
+/* A failed runner answers every submit with GZ_ERR_FAILED, even a list it
+ * could not have taken anyway. */
+static void test_a_failed_runner_refuses_everything_the_same_way(void)
+{
+    static gz_runner_slot_t slots[1];
+    gz_runner_t r;
+    log_reset();
+    CHECK(gz_runner_init(&r, slots, 1, NULL, 0, INCARNATION, record_execute, NULL) == GZ_OK);
+    CHECK(gz_runner_storage_failed(&r) == GZ_OK);
+    list_begin(); add_save(1); add_send(2); add_send(3);            /* would not fit */
+    CHECK(gz_runner_submit(&r, &l) == GZ_ERR_FAILED && g_log_n == 0);
+    list_begin();
+    CHECK(gz_runner_submit(&r, &l) == GZ_ERR_FAILED);
+}
+
 int main(void)
 {
     test_arguments();
@@ -880,11 +1127,19 @@ int main(void)
     test_order_is_kept_behind_a_waiting_action();
     test_timer_placed_after_its_send_waits_with_it();
     test_the_rule_spans_lists();
-    test_confirmations_must_come_in_order();
+    test_confirmation_out_of_order_is_fatal();
     test_crash_and_stale_confirmation();
+    test_repeated_incarnation_is_not_detected();
     test_refusal_is_whole_and_fatal();
     test_storage_failure_stops_everything();
     test_reentry_is_refused();
+    test_storage_failure_from_inside_the_executor();
+    test_only_what_must_be_held_needs_room();
+    test_byte_bound_is_exact();
+    test_empty_payload_is_not_a_pointer_into_the_list();
+    test_unknown_kinds_are_refused();
+    test_compaction_at_the_edge_of_the_block();
+    test_a_failed_runner_refuses_everything_the_same_way();
     test_queue_room_is_reused_without_draining();
     test_steady_load_is_never_refused();
     test_submitted_list_may_be_reused_at_once();

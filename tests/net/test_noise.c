@@ -9,8 +9,8 @@ static secp256k1_context *secp;
 
 /* Randomness that hands out a fixed sequence of 32-byte values. */
 typedef struct { const uint8_t *keys; size_t n, next; } fixed_rng_t;
-static void fixed_fill(void *ctx, uint8_t *out, size_t len)
-{
+static void fixed_fill(void *ctx, uint32_t purpose, uint8_t *out, size_t len)
+{ (void)purpose;
     fixed_rng_t *r = (fixed_rng_t *)ctx;
     size_t i = r->next < r->n ? r->next : r->n - 1;
     memcpy(out, r->keys + 32 * i, len);

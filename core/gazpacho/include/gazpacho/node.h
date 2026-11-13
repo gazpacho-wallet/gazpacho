@@ -7,6 +7,24 @@
  * The ping is not part of any Gazpacho protocol and will be removed when the
  * first engine arrives.
  *
+ * WHAT EVERY ENGINE'S START STEP MUST DO
+ *
+ *   A node can stop at any moment: after a record is durable and before the
+ *   message it justified has left, or after the message left and before
+ *   anything says so. When it starts again it knows only what storage holds.
+ *   So, at start, an engine must:
+ *
+ *   1. Send again, from the stored bytes, everything it has no stored proof
+ *      was acknowledged. Not "rebuild and send": the bytes that were saved.
+ *   2. Therefore accept that every message it sends may arrive twice, and may
+ *      arrive after newer traffic. Every engine message must be safe to
+ *      receive twice and out of order with what came later. A message for
+ *      which that cannot be made true must not be designed.
+ *   3. Store, as records, the acknowledgements that matter. Anything not in
+ *      storage is not known after a restart, and will be sent again.
+ *   4. Set its timers and register its watches again: the program around the
+ *      core forgets them when it stops.
+ *
  * WHAT THE PLACEHOLDER GUARANTEES
  *
  *   At least once. If the record of a ping is durable, the reply to it leaves
@@ -20,8 +38,13 @@
  *   How: each ping is saved with a serial number. When that batch is
  *   confirmed the runner has released the reply, and the node saves a "sent"
  *   record naming the serial. At start the node resends, oldest first, the
- *   reply to every stored ping with no stored "sent" record, then saves one
- *   "sent" record for all of them. */
+ *   reply to every stored ping with no stored "sent" record, and then saves
+ *   "sent" records naming exactly the replies this start resent.
+ *
+ *   A start completes whatever the number of stored replies, provided the
+ *   program delivers storage confirmations to the node between start steps
+ *   (see gz_node_start). No bound on the number of stored replies remains;
+ *   the cost is time: each start step walks storage a few times. */
 #ifndef GAZPACHO_NODE_H
 #define GAZPACHO_NODE_H
 
@@ -37,8 +60,8 @@
 
 /* Record saved for each ping: an 8-byte big-endian clock stamp, the 8-byte
  * big-endian identifier of the peer that sent it, an 8-byte big-endian serial
- * number (counting from 1, never reused by this node's storage), then the
- * ping's payload. */
+ * number (counting from 1, increasing through storage), then the ping's
+ * payload. */
 #define GZ_RECORD_TEST_PING   0x7e570001u
 #define GZ_PING_RECORD_HEADER 24
 
@@ -46,15 +69,25 @@
  * 8-byte big-endian serial numbers. */
 #define GZ_RECORD_TEST_PING_SENT 0x7e570002u
 
-/* Most save batches the node may have awaiting confirmation, and most replies
- * one start can resend. */
+/* Most save batches the node may have awaiting confirmation. */
 #define GZ_NODE_MAX_AWAITING 64
+
+/* Most replies one call of gz_node_start resends, or records as sent. */
+#define GZ_NODE_START_CHUNK 8
+
+/* Most of its own batches the node lets await confirmation while it starts.
+ * Beyond this a start step returns GZ_WAITING. */
+#define GZ_NODE_START_AWAITING 4
 
 /* Caller-allocated; treat the fields as private. Holds no pointers of its own
  * besides the ports' context pointers, so it needs no destroy call. */
 typedef struct {
     gz_ports_t ports;
     uint64_t next_serial;
+    uint64_t start_done_to;     /* the current pass of the start has dealt with every stored ping up to this serial */
+    int start_recording;        /* the start has resent everything and is now saving the "sent" records */
+    int start_fenced;           /* the first start call has taken the fence below */
+    gz_batch_id_t start_fence;  /* the last batch of an earlier incarnation storage held at that call */
     /* The node's save batches not yet confirmed, oldest first: the serial of
      * the ping each one recorded, or 0 for a batch of "sent" records. */
     uint64_t awaiting[GZ_NODE_MAX_AWAITING];
@@ -65,23 +98,52 @@ typedef struct {
  * Returns GZ_ERR_ARGUMENT if an argument or a port function is NULL. */
 gz_status_t gz_node_init(gz_node_t *node, const gz_ports_t *ports);
 
-/* Start, or start again after a stop or a crash. Called once after
- * gz_node_init and before any event. `stored[0..n_stored)` are the records
- * found in storage, oldest first; they are only read during the call. The
- * actions appended to `actions_out` go through the runner like those of any
- * other step. This is where a node re-arms its timers, registers its watches
- * again and sends again what it had saved but may not have sent.
+/* Start, or start again after a stop or a crash. What a start has to do can
+ * exceed one action list, so it is done in steps:
  *
- * For now: the reply to every stored ping that has no stored "sent" record is
- * sent again, oldest first, followed by a save of one "sent" record covering
- * them. See "what the placeholder guarantees" above.
+ *     do {
+ *         empty the list;
+ *         st = gz_node_start(node, storage, list, &more);
+ *         if (st == GZ_WAITING) {                       // nothing appended
+ *             wait for storage to confirm a batch, and give the node that
+ *             confirmation (GZ_EVENT_STORAGE_CONFIRMED, through gz_node_handle);
+ *             continue;
+ *         }
+ *         if (st != GZ_OK) stop: the start failed;
+ *         give the list to the runner;                  // must be accepted
+ *     } while (more);
  *
- * Returns GZ_OK; GZ_ERR_ARGUMENT if `node` or `actions_out` is NULL, or
- * `stored` is NULL with a count; GZ_ERR_NO_SPACE if the actions do not fit or
- * more than GZ_NODE_MAX_AWAITING replies would have to be resent. On any
- * error `actions_out` is exactly as it was and the node must not be used. */
-gz_status_t gz_node_start(gz_node_t *node, const gz_record_t *stored, size_t n_stored,
-                          gz_action_list_t *actions_out);
+ * While a node starts, the only events it may be given are the storage
+ * confirmations its runner accepts, between steps. Every other event waits
+ * until a call has set `*more` to 0. A start that returns an error other than
+ * GZ_WAITING, or whose list the runner refuses, is fatal: the node must not
+ * be used, and the program must not carry on as if it had started.
+ *
+ * Storage may change between steps only by gaining the batches the node's own
+ * runner hands over. Whatever an earlier program left pending is settled,
+ * durable or gone for good, before the first call (the fence, ports.h). The
+ * first call remembers the last batch of an earlier incarnation; a call that
+ * finds a later one returns GZ_ERR_CORRUPT.
+ *
+ * `storage` reads back what storage holds (ports.h). It is used only during
+ * the call, and may be walked more than once.
+ *
+ * For now: each call resends, oldest first, up to GZ_NODE_START_CHUNK replies
+ * to stored pings that have no stored "sent" record. Once all have been
+ * resent, each further call saves one "sent" record naming up to that many of
+ * the replies this start resent; it waits (GZ_WAITING) while
+ * GZ_NODE_START_AWAITING of its batches await confirmation. The saves come last, so that no resent reply waits for one of them to be
+ * confirmed. See "what the placeholder guarantees".
+ *
+ * Returns GZ_OK; GZ_WAITING as above; GZ_ERR_ARGUMENT if an
+ * argument or a reader function is NULL; GZ_ERR_CORRUPT if storage is not a
+ * journal (identifiers not strictly increasing, or one from an incarnation
+ * later than `storage->incarnation`) or broke the fence; GZ_ERR_NO_SPACE if
+ * the actions do not fit. On anything but GZ_OK, `*more`, `actions_out` and
+ * the node are exactly as they were, apart from the fence the first call
+ * took. */
+gz_status_t gz_node_start(gz_node_t *node, const gz_storage_reader_t *storage,
+                          gz_action_list_t *actions_out, int *more);
 
 /* Handle one event. Appends the resulting actions, in the order they must be
  * carried out, to `actions_out`, which the caller has initialised and normally

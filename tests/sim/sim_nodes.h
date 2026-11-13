@@ -7,6 +7,12 @@
  * runner with several batches unconfirmed at once and with every kind of
  * action.
  *
+ * Each message or command also makes the multi node use a one-time secret,
+ * which it shows through its inspection hook, so that the invariant
+ * "no one-time secret is used twice" (below) has something to judge. How the
+ * secret is made is set by g_secret_mode: the correct way, and three wrong
+ * ways the invariant must catch.
+ *
  * Also here: programs that are FAULTY ON PURPOSE, which the harness must
  * catch. They live in the tests, never in the library. */
 #ifndef GAZPACHO_TEST_SIM_NODES_H
@@ -20,11 +26,134 @@
 #define MULTI_RECORD_DECISION 0xd1u     /* a transaction the node decided to broadcast */
 #define MULTI_RECORD_MESSAGE  0xa1u     /* 8-byte little-endian peer, then a message to send */
 #define MULTI_RECORD_NOTE     0xc1u
+#define MULTI_RECORD_COUNTER  0xe1u     /* 8-byte little-endian count of secrets used (journal-counter mode) */
 #define MULTI_MAX             64        /* largest input the multi node acts on */
+
+static inline uint32_t multi_u32(const uint8_t *p);
+static inline uint64_t multi_peer(const uint8_t *p);
+
+/* ---- one-time secrets ---- */
+
+#define SECRET_LEN  16
+#define SECRETS_MAX 512                 /* per incarnation */
+
+typedef enum {
+    SECRET_CORRECT,          /* random bytes mixed with the incarnation, which never repeats */
+    SECRET_NAIVE,            /* random bytes alone, drawn tagged as a secret */
+    SECRET_NAIVE_UNTAGGED,   /* random bytes alone, drawn with the "other" tag */
+    SECRET_JOURNAL_COUNTER   /* derived from a counter kept in the journal, no randomness */
+} secret_mode_t;
+
+static secret_mode_t g_secret_mode = SECRET_CORRECT;
+
+/* What a node using secrets keeps: the secrets this incarnation used, shown
+ * through the inspection hook as a 4-byte little-endian count followed by the
+ * secrets. */
+typedef struct {
+    const gz_ports_t *ports;
+    uint64_t incarnation, counter;
+    uint8_t used[SECRETS_MAX][SECRET_LEN];
+    size_t n_used;
+} secrets_t;
+
+static inline void secrets_init(secrets_t *k, const gz_ports_t *ports, const sim_storage_t *storage, uint64_t journal_counter)
+{
+    k->ports = ports;
+    k->incarnation = sim_storage_incarnation(storage);
+    k->counter = journal_counter;
+    k->n_used = 0;
+}
+
+/* Make the next one-time secret in the way g_secret_mode says, and keep it. */
+static inline void secret_use(secrets_t *k, uint8_t out[SECRET_LEN])
+{
+    uint8_t drawn[SECRET_LEN] = {0};
+    uint64_t n = ++k->counter;
+    if (g_secret_mode == SECRET_JOURNAL_COUNTER) {
+        uint64_t h = 0xcbf29ce484222325ull;
+        for (int i = 0; i < 8; i++) h = (h ^ (uint8_t)(n >> (8 * i))) * 0x100000001b3ull;
+        for (int i = 0; i < SECRET_LEN; i++) drawn[i] = (uint8_t)(h >> (8 * (i % 8))) ^ (uint8_t)i;
+    } else {
+        k->ports->random.fill(k->ports->random.ctx, g_secret_mode == SECRET_NAIVE_UNTAGGED ? GZ_RANDOM_OTHER : GZ_RANDOM_SECRET,
+                              drawn, sizeof drawn);
+    }
+    if (g_secret_mode == SECRET_CORRECT)
+        for (int i = 0; i < 8; i++) {
+            drawn[i] ^= (uint8_t)(k->incarnation >> (8 * i));
+            drawn[8 + i] ^= (uint8_t)(n >> (8 * i));
+        }
+    memcpy(out, drawn, SECRET_LEN);
+    if (k->n_used < SECRETS_MAX) memcpy(k->used[k->n_used++], drawn, SECRET_LEN);
+}
+
+static inline size_t secrets_inspect(const secrets_t *k, uint8_t *out, size_t cap)
+{
+    size_t len = 4 + SECRET_LEN * k->n_used;
+    if (cap < len) return 0;
+    for (int i = 0; i < 4; i++) out[i] = (uint8_t)(k->n_used >> (8 * i));
+    memcpy(out + 4, k->used, SECRET_LEN * k->n_used);
+    return len;
+}
+
+/* The invariant "no one-time secret is used twice", over the whole run,
+ * across crashes and restores: it judges the secrets the nodes actually used,
+ * as their inspection hooks show them, not what they drew from the port. */
+typedef struct {
+    uint32_t n_nodes;
+    uint64_t last_incarnation[64];
+    size_t absorbed[64];
+    uint8_t (*seen)[SECRET_LEN];
+    size_t n_seen, cap_seen;
+    size_t checked;             /* secrets judged, for tests that must see some */
+} secret_watch_t;
+
+static inline int no_secret_used_twice(const sim_t *sim, void *ctx, const char **why)
+{
+    secret_watch_t *w = ctx;
+    static uint8_t shown[4 + SECRET_LEN * SECRETS_MAX];
+    for (uint32_t node = 0; node < w->n_nodes && node < 64; node++) {
+        size_t len = sim_node_inspect(sim, node, shown, sizeof shown);
+        size_t n = len >= 4 ? multi_u32(shown) : 0;
+        if (sim_node_incarnation(sim, node) != w->last_incarnation[node]) {
+            w->last_incarnation[node] = sim_node_incarnation(sim, node);
+            w->absorbed[node] = 0;
+        }
+        for (size_t i = w->absorbed[node]; i < n; i++) {
+            const uint8_t *secret = shown + 4 + SECRET_LEN * i;
+            for (size_t k = 0; k < w->n_seen; k++)
+                if (memcmp(w->seen[k], secret, SECRET_LEN) == 0) {
+                    *why = "a one-time secret was used twice";
+                    return 0;
+                }
+            if (w->n_seen == w->cap_seen) {
+                w->cap_seen = w->cap_seen ? 2 * w->cap_seen : 64;
+                w->seen = realloc(w->seen, w->cap_seen * SECRET_LEN);
+                if (!w->seen) abort();
+            }
+            memcpy(w->seen[w->n_seen++], secret, SECRET_LEN);
+            w->checked++;
+        }
+        if (n > w->absorbed[node]) w->absorbed[node] = n;
+    }
+    return 1;
+}
+
+static inline void secret_watch_free(secret_watch_t *w) { free(w->seen); memset(w, 0, sizeof *w); }
+
+/* Number of draws all nodes made with the secret tag. */
+static inline size_t secret_draws(const sim_t *sim, uint32_t n_nodes)
+{
+    size_t n = 0;
+    for (uint32_t node = 0; node < n_nodes; node++)
+        for (size_t i = 0; i < sim_node_draw_count(sim, node); i++)
+            n += sim_node_draw(sim, node, i)->purpose == GZ_RANDOM_SECRET;
+    return n;
+}
 
 typedef struct {
     uint8_t decision[MULTI_MAX + 2]; size_t decision_len;   /* newest stored decision, if any */
     uint8_t message[MULTI_MAX + 9]; size_t message_len;     /* newest stored message record, if any */
+    secrets_t secrets;
 } multi_node_t;
 
 static inline uint32_t multi_u32(const uint8_t *p)
@@ -32,11 +161,13 @@ static inline uint32_t multi_u32(const uint8_t *p)
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-/* Remember the newest decision and the newest message found in storage. */
+/* Remember the newest decision and the newest message found in storage, and
+ * the newest secret counter. */
 static inline void *multi_create(void *ctx, uint32_t index, const gz_ports_t *ports, const sim_storage_t *storage)
 {
-    (void)index; (void)ports;
+    (void)index;
     multi_node_t *m = calloc(1, sizeof *m);
+    uint64_t counter = 0;
     if (!m) abort();
     if (ctx) (*(int *)ctx)++;           /* tests may count how often each simulator builds a node */
     for (size_t i = 0; i < sim_storage_count(storage); i++) {
@@ -46,9 +177,16 @@ static inline void *multi_create(void *ctx, uint32_t index, const gz_ports_t *po
             uint32_t type = multi_u32(p), n = multi_u32(p + 4);
             if (type == MULTI_RECORD_DECISION && n <= sizeof m->decision) { memcpy(m->decision, p + 8, n); m->decision_len = n; }
             if (type == MULTI_RECORD_MESSAGE && n <= sizeof m->message) { memcpy(m->message, p + 8, n); m->message_len = n; }
+            if (type == MULTI_RECORD_COUNTER && n == 8) counter = multi_peer(p + 8);
         }
     }
+    secrets_init(&m->secrets, ports, storage, counter);
     return m;
+}
+
+static inline size_t multi_inspect(const void *node, uint8_t *out, size_t cap)
+{
+    return secrets_inspect(&((const multi_node_t *)node)->secrets, out, cap);
 }
 
 static inline void multi_destroy(void *ctx, void *node) { (void)ctx; free(node); }
@@ -85,9 +223,10 @@ static inline uint64_t multi_peer(const uint8_t *p)
 
 /* At start: watch and timer again, broadcast the newest stored decision
  * again, send the newest stored message again. */
-static inline gz_status_t multi_start(void *node, gz_action_list_t *out)
+static inline gz_status_t multi_start(void *node, gz_action_list_t *out, int *more)
 {
     multi_node_t *m = node;
+    *more = 0;                          /* everything it has to do fits one list */
     gz_status_t st = multi_add(out, GZ_ACTION_WATCH, 0, (const uint8_t *)"multi", 5);
     if (st == GZ_OK) st = multi_add(out, GZ_ACTION_SET_TIMER, 5, NULL, 3);
     if (st == GZ_OK && m->decision_len) st = multi_add(out, GZ_ACTION_BROADCAST, 0, m->decision, m->decision_len);
@@ -98,10 +237,13 @@ static inline gz_status_t multi_start(void *node, gz_action_list_t *out)
 
 /* For a message or a user command carrying bytes b:
  *   save{decision: tx}  save{message}  notify  watch  broadcast tx  timer
- *   send "M"+b  save{note}  send "C"+b */
+ *   send "M"+b  save{note}  send "C"+b
+ * and a one-time secret is used (with, in journal-counter mode, a save of the
+ * counter first). */
 static inline gz_status_t multi_handle(void *node, const gz_event_t *ev, gz_action_list_t *out)
 {
-    (void)node;
+    multi_node_t *m = node;
+    uint8_t secret[SECRET_LEN], counter[8];
     gz_bytes_t b;
     uint64_t peer;
     if (ev->kind == GZ_EVENT_MESSAGE_RECEIVED) { b = ev->u.message.bytes; peer = ev->u.message.peer_id; }
@@ -116,7 +258,12 @@ static inline gz_status_t multi_handle(void *node, const gz_event_t *ev, gz_acti
     memcpy(record + 9, b.data, b.len);
     memcpy(text + 1, b.data, b.len);
 
-    gz_status_t st = multi_save(out, MULTI_RECORD_DECISION, tx, b.len + 2);
+    gz_status_t st = GZ_OK;
+    if (g_secret_mode == SECRET_JOURNAL_COUNTER) {
+        for (int i = 0; i < 8; i++) counter[i] = (uint8_t)((m->secrets.counter + 1) >> (8 * i));
+        st = multi_save(out, MULTI_RECORD_COUNTER, counter, 8);
+    }
+    if (st == GZ_OK) st = multi_save(out, MULTI_RECORD_DECISION, tx, b.len + 2);
     if (st == GZ_OK) st = multi_save(out, MULTI_RECORD_MESSAGE, record, b.len + 9);
     if (st == GZ_OK) st = multi_add(out, GZ_ACTION_NOTIFY, 1, b.data, b.len);
     if (st == GZ_OK) st = multi_add(out, GZ_ACTION_WATCH, 0, b.data, b.len);
@@ -126,12 +273,14 @@ static inline gz_status_t multi_handle(void *node, const gz_event_t *ev, gz_acti
     if (st == GZ_OK) st = multi_save(out, MULTI_RECORD_NOTE, b.data, b.len);
     text[0] = 'C';
     if (st == GZ_OK) st = multi_add(out, GZ_ACTION_SEND, peer, text, b.len + 1);
+    if (st == GZ_OK) secret_use(&m->secrets, secret);
     return st;
 }
 
 static inline sim_node_ops_t multi_ops(void)
 {
-    sim_node_ops_t ops = {multi_create, multi_destroy, multi_start, multi_handle, NULL, NULL, NULL};
+    sim_node_ops_t ops = {.create = multi_create, .destroy = multi_destroy, .start = multi_start, .handle = multi_handle,
+                          .inspect = multi_inspect};
     return ops;
 }
 
