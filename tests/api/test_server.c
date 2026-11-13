@@ -2287,6 +2287,49 @@ static int sock_open(fixture *x, const char *req)
     return fd;
 }
 
+static int stream_open_tcp(fixture *x, const char *session, const char *lei)
+{
+    char req[600], lh[120];
+    int fd = tcp_connect(x->port), n;
+    lh[0] = 0;
+    if (lei) snprintf(lh, sizeof lh, "Last-Event-ID: %s\r\n", lei);
+    n = snprintf(req, sizeof req, "GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nX-Gazpacho-Session: %s\r\n"
+                                  "Sec-Fetch-Site: same-origin\r\nSec-Fetch-Dest: empty\r\n%s\r\n", x->port, session, lh);
+    if (fd >= 0) send(fd, req, (size_t)n, MSG_NOSIGNAL);
+    return fd;
+}
+
+/* Appends what arrives within ms to buf (NUL-terminated); 1 if the other end closed. */
+static int drain(int fd, char *buf, size_t cap, int ms)
+{
+    size_t len = strlen(buf);
+    int64_t t0 = real_now();
+    for (;;) {
+        struct pollfd p = {fd, POLLIN, 0};
+        int left = ms - (int)(real_now() - t0);
+        ssize_t n;
+        if (left <= 0) return 0;
+        if (poll(&p, 1, left) <= 0) return 0;
+        if (len + 1 >= cap) {
+            char junk[4096];
+            if (recv(fd, junk, sizeof junk, 0) <= 0) return 1;
+            continue;
+        }
+        n = recv(fd, buf + len, cap - 1 - len, 0);
+        if (n <= 0) return 1;
+        len += (size_t)n;
+        buf[len] = 0;
+    }
+}
+
+static int count_of(const char *hay, const char *needle)
+{
+    int k = 0;
+    const char *p = hay;
+    while ((p = strstr(p, needle))) { k++; p++; }
+    return k;
+}
+
 static void host_open_body(fixture *x, char *body, size_t cap, const char *rid)
 {
     char draft[600], dd[80];
@@ -2538,6 +2581,353 @@ static void test_b4_ms_delay(void)
     fx_stop(&x);
 }
 
+/* B6: unlocked status needs a session; a connection closed while its job
+ * derives; node_stopped leaves a derivation alone; pipelining; HEAD; the
+ * check's positions and expiry. */
+static void test_b6_basics(void)
+{
+    fixture x;
+    resp r;
+    char req[800], buf[16384], id[64], body[400], keep[64];
+    gz_api_counters c0, c1;
+    int fd, fd2, i, n;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.fake.pp_delay_ms = 400;
+    if (fx_go(&x)) { CHECK(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    /* b-status-unlocked-anyone: unlocked, the full status needs a session */
+    snprintf(keep, sizeof keep, "%s", g_session);
+    g_session[0] = 0;
+    CHECK(expect(&x, "GET", "/api/v1/status", NULL, 401, "not_signed_in"));
+    snprintf(g_session, sizeof g_session, "%s", keep);
+    /* b-conn-free-job-kept: a connection that closes while its job derives is never answered or used */
+    fx_counters(&x, &c0);
+    fd = api_open_as(&x, "POST", "/api/v1/session", RIGHT_BODY, NULL);
+    sleep_ms(100);
+    close(fd);
+    sleep_ms(50);
+    fd2 = tcp_connect(x.port);                          /* likely the closed one's memory */
+    sleep_ms(600);
+    CHECK(no_answer_yet(fd2, 50));
+    n = snprintf(req, sizeof req, "GET /api/v1/version HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n", x.port);
+    send(fd2, req, (size_t)n, MSG_NOSIGNAL);
+    read_answer(fd2, &r, 2000);
+    CHECK(r.status == 200 && r.body && strstr(r.body, "\"run_id\""));
+    resp_free(&r);
+    close(fd2);
+    fx_counters(&x, &c1);
+    CHECK(c1.sessions_open == c0.sessions_open);
+    /* b-node-stopped-hits-derivation: a node stop answers held calls, not a derivation */
+    fd = api_open_as(&x, "POST", "/api/v1/session", RIGHT_BODY, NULL);
+    sleep_ms(100);
+    gz_api_server_node_stopped(x.srv, "rebuilding");
+    read_answer(fd, &r, 3000);
+    CHECK(r.status == 200);
+    resp_free(&r);
+    close(fd);
+    /* b-pipelined-dropped: a second request in the same packet is served */
+    n = snprintf(req, sizeof req, "GET /api/v1/version HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n\r\n"
+                                  "GET /api/v1/version HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n", x.port, x.port);
+    fd = tcp_connect(x.port);
+    send(fd, req, (size_t)n, MSG_NOSIGNAL);
+    buf[0] = 0;
+    drain(fd, buf, sizeof buf, 2000);
+    CHECK(count_of(buf, "HTTP/1.1 200") == 2);
+    close(fd);
+    /* b-head-sends-body: HEAD has the headers of GET and no body */
+    n = snprintf(req, sizeof req, "HEAD / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nConnection: close\r\n\r\n", x.port);
+    fd = tcp_connect(x.port);
+    send(fd, req, (size_t)n, MSG_NOSIGNAL);
+    buf[0] = 0;
+    drain(fd, buf, sizeof buf, 2000);
+    {
+        const char *e = strstr(buf, "\r\n\r\n"), *cl = strcasestr(buf, "\r\ncontent-length: ");
+        CHECK(strncmp(buf, "HTTP/1.1 200", 12) == 0 && e && e[4] == 0 && cl && atol(cl + 18) > 0);
+    }
+    close(fd);
+    /* b-check-positions-repeat: three distinct positions, rising, 1 to 24 */
+    for (i = 0; i < 60; i++) {
+        int p[3] = {0, 0, 0};
+        const char *q;
+        api(&x, &r, "POST", "/api/v1/wallet/phrase/check-start", "{}", NULL);
+        q = r.body ? strstr(r.body, "\"positions\":[") : NULL;
+        CHECK(q && sscanf(q + 13, "%d,%d,%d", &p[0], &p[1], &p[2]) == 3 && 1 <= p[0] && p[0] < p[1] && p[1] < p[2] &&
+              p[2] <= 24);
+        resp_free(&r);
+    }
+    /* b-check-id-never-expires: a check_id lives 10 minutes */
+    api(&x, &r, "POST", "/api/v1/wallet/phrase/check-start", "{}", NULL);
+    snprintf(id, sizeof id, "%s", jfield(&r, "check_id") ? jfield(&r, "check_id") : "");
+    resp_free(&r);
+    atomic_fetch_add(&clock_off, 601 * 1000);
+    sleep_ms(1300);                                     /* the expiry tick runs */
+    snprintf(body, sizeof body, "{\"check_id\":\"%s\",\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\",\"words\":[\"a\",\"b\",\"c\"]}", id);
+    CHECK(expect(&x, "POST", "/api/v1/wallet/phrase/check", body, 400, "bad_value"));
+    fx_stop(&x);
+}
+
+/* A's words-check-ungated: while the attempts delay runs, a words check is
+ * refused with that delay, before anything else of it (the daily budget
+ * included), as every passphrase call is (4.3). */
+static void test_b6_words_gate(void)
+{
+    fixture x;
+    resp r;
+    char id[64], body[400];
+    int i;
+    int64_t der;
+    clock_freeze(1);
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    if (fx_go(&x)) { CHECK(0); clock_freeze(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    for (i = 0; i < 3; i++) {                           /* the day's three checks */
+        api(&x, &r, "POST", "/api/v1/wallet/phrase/check-start", "{}", NULL);
+        snprintf(id, sizeof id, "%s", jfield(&r, "check_id") ? jfield(&r, "check_id") : "");
+        resp_free(&r);
+        snprintf(body, sizeof body, "{\"check_id\":\"%s\",\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\",\"words\":[\"abandon\",\"abandon\",\"abandon\"]}", id);
+        CHECK(expect(&x, "POST", "/api/v1/wallet/phrase/check", body, 200, NULL));
+        sign_in(&x, GZ_FAKE_PASSPHRASE);                /* a failed check ends the session (4.9) */
+    }
+    CHECK(expect(&x, "POST", "/api/v1/session/fresh", "{\"passphrase\":\"not it, not it at all\"}", 401, "wrong_passphrase"));
+    api(&x, &r, "POST", "/api/v1/wallet/phrase/check-start", "{}", NULL);
+    snprintf(id, sizeof id, "%s", jfield(&r, "check_id") ? jfield(&r, "check_id") : "");
+    resp_free(&r);
+    der = FAKE_READ(&x, x.fake.derivations);
+    snprintf(body, sizeof body, "{\"check_id\":\"%s\",\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\",\"words\":[\"abandon\",\"abandon\",\"abandon\"]}", id);
+    api(&x, &r, "POST", "/api/v1/wallet/phrase/check", body, NULL);
+    CHECK(is_code(&r, 429, "rate_limited") && strstr(r.body, "\"retry_after_s\":1}"));
+    resp_free(&r);
+    CHECK(FAKE_READ(&x, x.fake.derivations) == der);
+    clock_freeze(0);
+    fx_stop(&x);
+}
+
+/* First-run codes and the start token: a dash only after the fifth symbol;
+ * past their lifetime they are refused at once, before the expiry tick; and
+ * A's revoke-keeps-start-token: revoke-all closes the first run (4.9). */
+static void test_b6_codes(void)
+{
+    fixture x;
+    resp r;
+    int fd;
+    char code[16], bad[16], body[200], tok[64], path[200];
+    clock_freeze(1);
+    fx_prepare(&x, GZ_FAKE_FIRST_RUN);
+    x.cfg.limits.code_ms = 4000;
+    x.cfg.limits.start_token_ms = 8000;
+    if (fx_go(&x)) { CHECK(0); clock_freeze(0); return; }
+    start_token_from_file(&x, tok);
+    CHECK(strlen(tok) == 43);
+    CHECK(fx_first_run_code(&x, code) == 0 && strlen(code) == 11 && code[5] == '-');
+    g_session[0] = 0;
+    snprintf(bad, sizeof bad, "%.4s-%c%.5s", code, code[4], code + 6);
+    snprintf(body, sizeof body, "{\"code\":\"%s\"}", bad);
+    CHECK(expect(&x, "POST", "/api/v1/session/start", body, 401, "bad_code"));
+    fd = open_idle(&x);
+    atomic_fetch_add(&clock_off, 5000);
+    snprintf(body, sizeof body, "{\"code\":\"%s\"}", code);
+    api_on(&x, fd, &r, "POST", "/api/v1/session/start", body);
+    CHECK(is_code(&r, 401, "code_expired"));
+    resp_free(&r);
+    fd = open_idle(&x);
+    atomic_fetch_add(&clock_off, 4000);
+    snprintf(body, sizeof body, "{\"start_token\":\"%s\"}", tok);
+    api_on(&x, fd, &r, "POST", "/api/v1/session/start", body);
+    CHECK(is_code(&r, 401, "code_expired"));
+    resp_free(&r);
+    clock_freeze(0);
+    fx_stop(&x);
+    /* a wallet that appears by another way than create, as a backend may report
+     * one: the person signs in and revokes everything; the first run closes */
+    fx_prepare(&x, GZ_FAKE_FIRST_RUN);
+    if (fx_go(&x)) { CHECK(0); return; }
+    snprintf(path, sizeof path, "%s/first-run.html", x.dir);
+    CHECK(access(path, F_OK) == 0);
+    pthread_mutex_lock(&x.fake.mu);
+    x.fake.wallet = GZ_API_WALLET_LOCKED;
+    memcpy(x.fake.pass, GZ_FAKE_PASSPHRASE, strlen(GZ_FAKE_PASSPHRASE));
+    x.fake.pass_len = strlen(GZ_FAKE_PASSPHRASE);
+    pthread_mutex_unlock(&x.fake.mu);
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    CHECK(strlen(g_session) == 43);
+    CHECK(expect(&x, "POST", "/api/v1/session/revoke-all", "{\"confirm\":\"revoke_all\"}", 204, NULL));
+    CHECK(access(path, F_OK) != 0);
+    fx_stop(&x);
+}
+
+/* Stream lifetimes: the keep-alive comment; a sign-out ends that session's
+ * streams only; its `session` event is a gap no reconnect replays; a lock ends
+ * the socket token's streams too. */
+static void test_b6_streams(void)
+{
+    fixture x;
+    resp r;
+    char a[64], b[64], tok[64], req[600], lei[80];
+    char *ba = calloc(1, 65536), *bb = calloc(1, 65536), *bc = calloc(1, 65536), *bs = calloc(1, 65536);
+    int fa, fb, fc, fs;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.cfg.limits.keepalive_ms = 300;
+    if (fx_go(&x)) { CHECK(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(a, sizeof a, "%s", g_session);
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(b, sizeof b, "%s", g_session);
+    fa = stream_open_tcp(&x, a, NULL);
+    fb = stream_open_tcp(&x, b, NULL);
+    drain(fa, ba, 65536, 800);
+    drain(fb, bb, 65536, 100);
+    CHECK(strstr(ba, ": keep-alive") != NULL);          /* b-keepalive-never */
+    gz_api_notify(x.srv, "factory", "fac_one");
+    drain(fb, bb, 65536, 400);
+    {
+        const char *p = NULL, *q = bb;
+        while ((q = strstr(q, "id: "))) { p = q; q++; }
+        lei[0] = 0;
+        if (p) sscanf(p + 4, "%79[^\n]", lei);
+    }
+    CHECK(lei[0] && strstr(bb, "fac_one"));
+    /* b-signout-ends-all-streams: a's sign-out ends a's stream, not b's */
+    snprintf(g_session, sizeof g_session, "%s", a);
+    CHECK(expect(&x, "DELETE", "/api/v1/session", NULL, 204, NULL));
+    CHECK(drain(fa, ba, 65536, 1500) == 1 && strstr(ba, "\"topic\":\"session\""));
+    gz_api_notify(x.srv, "factory", "fac_two");
+    bb[0] = 0;
+    CHECK(drain(fb, bb, 65536, 700) == 0 && strstr(bb, "fac_two"));
+    /* b-replay-gaps: b's reconnect replays fac_two, never a's own event */
+    fc = stream_open_tcp(&x, b, lei);
+    CHECK(drain(fc, bc, 65536, 500) == 0 && strstr(bc, "fac_two") && !strstr(bc, "\"topic\":\"\""));
+    close(fc);
+    /* b-bearer-streams-survive: a lock ends the socket token's streams */
+    socket_token(&x, tok);
+    snprintf(req, sizeof req, "GET /api/v1/events HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer %s\r\n\r\n", tok);
+    fs = sock_open(&x, req);
+    drain(fs, bs, 65536, 300);
+    CHECK(strncmp(bs, "HTTP/1.1 200", 12) == 0);
+    snprintf(g_session, sizeof g_session, "%s", b);
+    api(&x, &r, "POST", "/api/v1/wallet/lock", LOCK_BODY, NULL);
+    CHECK(r.status == 202);
+    resp_free(&r);
+    CHECK(drain(fs, bs, 65536, 1500) == 1 && strstr(bs, "\"topic\":\"session\""));
+    close(fa);
+    close(fb);
+    close(fs);
+    free(ba);
+    free(bb);
+    free(bc);
+    free(bs);
+    fx_stop(&x);
+}
+
+/* b-merge-evict-drops-pending: a merge slot evicted while its event waits
+ * sends that event first. */
+static void test_b6_merge_evict(void)
+{
+    fixture x;
+    char *buf = calloc(1, 1 << 17);
+    int fs, i;
+    clock_freeze(1);
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.cfg.limits.merge_ms = 60000;
+    if (fx_go(&x)) { CHECK(0); clock_freeze(0); return; }
+    gz_api_notify(x.srv, "factory", "fac_pend");        /* the run's first event: the oldest merge slot */
+    sleep_ms(100);
+    atomic_fetch_add(&clock_off, 10);
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    fs = stream_open_tcp(&x, g_session, NULL);
+    drain(fs, buf, 1 << 17, 300);
+    buf[0] = 0;
+    gz_api_notify(x.srv, "factory", "fac_pend");        /* inside its window: waits */
+    sleep_ms(50);
+    for (i = 0; i < 80; i++) {                          /* fills every slot, then evicts the oldest */
+        char id[16];
+        snprintf(id, sizeof id, "fac_n%d", i);
+        gz_api_notify(x.srv, "factory", id);
+        if (i % 20 == 19) sleep_ms(50);
+    }
+    drain(fs, buf, 1 << 17, 500);
+    CHECK(count_of(buf, "\"id\":\"fac_pend\"") == 1 && strstr(buf, "fac_n79"));
+    close(fs);
+    free(buf);
+    clock_freeze(0);
+    fx_stop(&x);
+}
+
+/* b-emit-to-closing-stream: once a stream has its `session` event and is
+ * closing, no later event is added to it. The client reads nothing for a
+ * while so the stream's data waits in the server. */
+static void test_b6_closing_stream(void)
+{
+    fixture x;
+    struct sockaddr_in sa;
+    char req[600];
+    char *buf = calloc(1, 4 << 20);
+    int fd, n, i, small = 1024;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.cfg.limits.stream_unsent_max = 4 << 20;
+    if (fx_go(&x)) { CHECK(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    fd = socket(AF_INET, SOCK_STREAM, 0);
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &small, sizeof small);
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((uint16_t)x.port);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    CHECK(connect(fd, (struct sockaddr *)&sa, sizeof sa) == 0);
+    n = snprintf(req, sizeof req, "GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nX-Gazpacho-Session: %s\r\n"
+                                  "Sec-Fetch-Site: same-origin\r\nSec-Fetch-Dest: empty\r\n\r\n", x.port, g_session);
+    send(fd, req, (size_t)n, MSG_NOSIGNAL);
+    sleep_ms(200);
+    for (i = 0; i < 3000; i++) {                        /* far more than the kernel's buffers hold */
+        char id[16];
+        snprintf(id, sizeof id, "fac_f%d", i);
+        gz_api_notify(x.srv, "factory", id);
+        if (i % 40 == 39) sleep_ms(5);              /* fast: the stream must back up in the server; an
+                                                       overfull notify queue only turns an event into reset */
+    }
+    sleep_ms(200);
+    CHECK(expect(&x, "DELETE", "/api/v1/session", NULL, 204, NULL));
+    gz_api_notify(x.srv, "factory", "fac_late");
+    sleep_ms(200);
+    CHECK(drain(fd, buf, 4 << 20, 30000) == 1);
+    CHECK(strstr(buf, "fac_f1") && strstr(buf, "\"topic\":\"session\"") && !strstr(buf, "fac_late"));
+    close(fd);
+    free(buf);
+    fx_stop(&x);
+}
+
+/* b-stop-queued-leaked: at shutdown the running and the waiting job are both
+ * answered 503 passphrase_not_checked, and freed. */
+static void test_b6_shutdown(void)
+{
+    fixture x;
+    resp r;
+    int fd1, fd2;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.fake.pp_delay_ms = 600;
+    if (fx_go(&x)) { CHECK(0); return; }
+    g_session[0] = 0;
+    fd1 = api_open_as(&x, "POST", "/api/v1/session", RIGHT_BODY, NULL);
+    sleep_ms(100);
+    fd2 = api_open_as(&x, "POST", "/api/v1/session", RIGHT_BODY, NULL);
+    sleep_ms(100);
+    fx_halt(&x);
+    read_answer(fd2, &r, 2000);
+    CHECK(is_code(&r, 503, "passphrase_not_checked"));
+    resp_free(&r);
+    read_answer(fd1, &r, 2000);
+    CHECK(is_code(&r, 503, "passphrase_not_checked"));
+    resp_free(&r);
+    close(fd1);
+    close(fd2);
+    fx_stop(&x);
+}
+
 int main(void)
 {
     test_binding();
@@ -2568,5 +2958,12 @@ int main(void)
     test_b2_ended_session();
     test_b3_check_id();
     test_b4_ms_delay();
+    test_b6_basics();
+    test_b6_words_gate();
+    test_b6_codes();
+    test_b6_streams();
+    test_b6_merge_evict();
+    test_b6_closing_stream();
+    test_b6_shutdown();
     return check_done();
 }

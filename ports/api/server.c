@@ -219,6 +219,16 @@ fail:
     return NULL;
 }
 
+/* Shutdown: what is already written for a connection (the answers of the jobs
+ * gz_derive_stop refused) is sent once, without waiting, before it closes. */
+static void send_left(gz_conn *c)
+{
+    if (c->fd >= 0 && c->state != CS_DEAD && c->out.off < c->out.len) {
+        ssize_t n = send(c->fd, c->out.buf + c->out.off, c->out.len - c->out.off, MSG_NOSIGNAL | MSG_DONTWAIT);
+        (void)n;
+    }
+}
+
 void gz_api_server_free(gz_api_server *srv)
 {
     int i;
@@ -227,7 +237,10 @@ void gz_api_server_free(gz_api_server *srv)
      * (its job discarded), then the connections */
     gz_api_server_stop_listening(srv);
     gz_derive_stop(srv);
-    while (srv->conns) gz_conn_free(srv, srv->conns);
+    while (srv->conns) {
+        send_left(srv->conns);
+        gz_conn_free(srv, srv->conns);
+    }
     if (srv->redirect_path[0]) unlink(srv->redirect_path);   /* deleted at stop (4.3) */
     if (srv->token_path[0]) gz_socket_token_drop(srv);        /* deleted at stop (storage 12.2) */
     for (i = 0; i < 2; i++) {
