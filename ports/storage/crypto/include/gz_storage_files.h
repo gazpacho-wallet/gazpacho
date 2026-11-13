@@ -65,22 +65,47 @@ typedef struct {
 
 void gz_sc_unlocked_clear(gz_sc_unlocked_t *u); /* wipes and frees every key */
 
+/* Passphrases (review A, M3). Every function here that takes one refuses it
+ * with GZ_SC_PASS_REFUSED, before reading or deriving anything, unless it is
+ * valid UTF-8 and byte for byte its own NFC form (gz_sc_pass_nfc gives that
+ * form): a decomposed spelling never makes or opens a key. The functions that
+ * make a key file from one (gz_sc_setup, gz_sc_rewrap's new passphrase,
+ * gz_sc_recover_keyfile) also refuse it outside 4.1's lengths (15 code points
+ * to 1,024 bytes); gz_sc_pass_check_form says which rule. The name, words and
+ * blocklist rules need the wallet's name and words: the caller must have run
+ * gz_sc_pass_check on a new passphrase before calling these. */
+
 /* 7.4's creation order: MSK, vault_id, salt, PK (KDF); keys.gzk; guard.gzg
  * (counter 0, no epochs); file_id; mark.gzm with (0, 0); journal.gzj (header
  * only). EXISTS if a key file is there. entropy and seed come from the
- * wallet library (BIP 39). params: the calibrated default (4.2). */
+ * wallet library (BIP 39). params: the calibrated default (4.2). u->info is
+ * filled as gz_sc_unlock fills it. */
 gz_sc_err_t gz_sc_setup(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
                         const gz_sc_kdf_params_t *params, const uint8_t entropy[32], const uint8_t seed[64],
                         gz_sc_unlocked_t *u);
 
 /* 8.2 step 1 and 3's header: the key file (4.5), then the journal header.
  * A key file with no journal (6.3 step 0): a new journal and a new mark file
- * are written and u->restore is set. MISSING: no key file. */
+ * are written and u->restore is set. MISSING: no key file. A storage failure
+ * reading the journal header is returned as such. Once the key file has
+ * opened, stale name.tmp files of a crashed replace are removed. */
 gz_sc_err_t gz_sc_unlock(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
                          const gz_sc_kdf_params_t *def, gz_sc_unlocked_t *u);
 
-/* 6.3 steps 1 and 2 after the journal's scan: reads mark.gzm and guard.gzg. */
-gz_sc_start_t gz_sc_check_start(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, const gz_sc_journal_view_t *j);
+/* 4.6 "check" (8.2) while unlocked: derives in the helper from the key file
+ * on disk and compares the MSK it opens with v's in constant time
+ * (gz_sc_keyfile_check). GZ_SC_OK, WRONG_PASSPHRASE, NOT_THIS_WALLET, or the
+ * helper's and the storage's failures. */
+gz_sc_err_t gz_sc_check(const gz_sc_store_t *s, const gz_sc_vault_t *v, const uint8_t *pw_nfc, size_t pw_len);
+
+/* 6.3 steps 1 and 2 after the journal's scan: reads mark.gzm and guard.gzg
+ * and gives the rule's outcome in *start. Only a file that does not exist is
+ * "missing"; any other failure to read either file (EIO, EMFILE, ...) is
+ * GZ_SC_STORAGE_FAILED and out of memory GZ_SC_NOMEM, never "possibly old":
+ * 8.2 step 3 answers a storage failure with a retry, not with an offer to
+ * start as a restore (review A, M1). *start is set only on GZ_SC_OK. */
+gz_sc_err_t gz_sc_check_start(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, const gz_sc_journal_view_t *j,
+                              gz_sc_start_t *start);
 
 /* 7 step 2 / journal.md 4 step 4: append and sync the mark file's entry for
  * an anchored batch (its incarnation and covering sync mark's offset). */
@@ -92,7 +117,9 @@ gz_sc_err_t gz_sc_guard_write(const gz_sc_store_t *s, const gz_sc_vault_t *v, co
 gz_sc_err_t gz_sc_mark_restart(const gz_sc_store_t *s, const gz_sc_unlocked_t *u);
 
 /* 4.7: a new key file under new_pw (NULL: the same passphrase, for the
- * parameter upgrade), parameters max(stored, def), a new salt. */
+ * parameter upgrade), parameters max(stored, def), a new salt. The upgrade
+ * derives the old PK again (with the unlock's, a third Argon2id where 4.7
+ * counts two); it runs once per upgrade, so the cost is accepted. */
 gz_sc_err_t gz_sc_rewrap(const gz_sc_store_t *s, const uint8_t *old_pw, size_t old_len, const uint8_t *new_pw,
                          size_t new_len, const gz_sc_kdf_params_t *def);
 /* 9.2: the words' entropy (guarded memory, 32 bytes). */

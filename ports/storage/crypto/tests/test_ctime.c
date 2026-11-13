@@ -29,6 +29,15 @@ static int fails;
         }                                                             \
     } while (0)
 
+/* The storage random source with every byte it gives marked secret. */
+static int secret_random(void *ctx, uint8_t *out, size_t n)
+{
+    (void)ctx;
+    randombytes_buf(out, n);
+    SECRET(out, n);
+    return 0;
+}
+
 int main(void)
 {
     if (gz_sc_init() != GZ_SC_OK)
@@ -54,6 +63,7 @@ int main(void)
     uint8_t *e2 = gz_sc_salloc(32);
     OK(gz_sc_keyfile_words(kf, pk, e2) == GZ_SC_OK);
     OK(v && gz_sc_vault_same_msk(v, msk));
+    OK(v && gz_sc_keyfile_check(kf, pk, v) == GZ_SC_OK); /* 4.6 "check" (review A, L6) */
     uint8_t *pk2 = gz_sc_salloc(32);
     randombytes_buf(pk2, 32);
     SECRET(pk2, 32);
@@ -71,7 +81,7 @@ int main(void)
     OK(gz_sc_header_open(hdr, v, &kj) == GZ_SC_OK);
     uint8_t *m2 = gz_sc_salloc(32);
     OK(gz_sc_header_recover(hdr, chain, seed, m2) == GZ_SC_OK);
-    size_t n;
+    size_t n = 0;
     memcpy(pl, "secret payload bytes", 20);
     SECRET(pl, sizeof pl);
     OK(kj && gz_sc_frame_seal(kj, 185, 2, 1, 1, pl, sizeof pl, ent_buf, sizeof ent_buf, &n) == GZ_SC_OK);
@@ -97,16 +107,25 @@ int main(void)
     OK(gz_sc_guard_open(v, gb, gl, &g2) == GZ_SC_OK);
     gz_sc_guard_clear(&g2);
 
-    /* An export, opened by the seed and by the passphrase key. */
+    /* An export with the words, opened by the seed and by the passphrase key. */
     uint8_t body[100], x[600], *ob = NULL;
     size_t bl = 0, xl, ol;
     uint8_t gc[18] = {0};
-    OK(gz_sc_export_body_begin(1, ent, gc, 18, body, sizeof body, &bl) == GZ_SC_OK);
-    OK(gz_sc_export_build(v, 1, fid, &kp, salt, pk, body, bl, 64, x, sizeof x, &xl) == GZ_SC_OK);
+    OK(gz_sc_export_body_begin(1, 1, gc, 18, body, sizeof body, &bl) == GZ_SC_OK);
+    OK(gz_sc_export_build(v, 1, fid, &kp, salt, pk, body, bl, ent, 20, x, sizeof x, &xl) == GZ_SC_OK);
     OK(gz_sc_export_open(x, xl, chain, NULL, seed, &ob, &ol) == GZ_SC_OK);
-    free(ob);
+    gz_sc_sfree(ob);
     OK(gz_sc_export_open(x, xl, chain, pk, NULL, &ob, &ol) == GZ_SC_OK);
-    free(ob);
+    gz_sc_sfree(ob);
+
+    /* The generated passphrase from a secret random source (review A, L5):
+     * the word is selected and the words joined without a secret index. */
+    gz_sc_test_set_random(secret_random, NULL);
+    char *gen = NULL;
+    size_t genl = 0;
+    OK(gz_sc_pass_generate(&gen, &genl) == GZ_SC_OK);
+    gz_sc_test_set_random(NULL, NULL);
+    gz_sc_sfree(gen);
 
     gz_sc_framekey_free(kj);
     gz_sc_framekey_free(kh);

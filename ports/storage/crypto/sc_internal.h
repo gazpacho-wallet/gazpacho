@@ -72,6 +72,9 @@ gz_sc_err_t sc_commitment(const uint8_t pk[32], const char *label, const uint8_t
 int sc_commitment_ok(const uint8_t pk[32], const char *label, const uint8_t *ctx, size_t ctx_len,
                      const uint8_t *ad, size_t ad_len, const uint8_t stored[32]);
 
+/* 1 if pw is valid UTF-8, at most GZ_SC_PASS_IN_MAX bytes and its own NFC form. */
+int sc_pass_is_nfc(const uint8_t *pw, size_t len);
+
 /* For the constant-time test: tells valgrind a value is public. No-op
  * outside that test build. */
 #ifdef GZ_SC_CTIME

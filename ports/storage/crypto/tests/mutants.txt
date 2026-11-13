@@ -73,7 +73,7 @@ needs_words	sc_export.c	if (info.profile == 2 && pkx)\n        return GZ_SC_NEED
 export_commitment	sc_export.c	if (!sc_commitment_ok(pkx, "backup commitment", ctx, sizeof ctx, data, 84, data + 84)) {	if (0) {
 p2_no_words	sc_export.c	if ((flags & ~1u) || (profile == 2 && (flags & 1)))	if (flags & ~1u)
 export_params	sc_export.c	if (e != GZ_SC_OK)\n            return e; /* before any derivation (F9) */
-chunk_min	sc_export.c	if (n < CHUNK_MIN || n > CHUNK_MAX || (size_t)n > len - pos - 4)	if (n > CHUNK_MAX || (size_t)n > len - pos - 4)
+chunk_min	sc_export.c	if (n < CHUNK_MIN || n > CHUNK_MAX) {	if (n > CHUNK_MAX) {
 body_entries_strict	sc_export.c	if (r < 0) {\n        memset(out, 0, sizeof *out);	if (r < -1) {\n        memset(out, 0, sizeof *out);
 #
 # --- attempts, token folder (sc_misc.c)
@@ -81,23 +81,23 @@ attempts_check	sc_misc.c	ok = sodium_memcmp(h, data + 69, 16) == 0;	ok = 1;
 attempts_mode	sc_misc.c	memcmp(data + 8, chain, 32) == 0 &&\n        data[68] == 1) {	memcmp(data + 8, chain, 32) == 0) {
 attempts_free_five	sc_misc.c	if (wrong <= 5)	if (wrong <= 6)
 attempts_cap	sc_misc.c	if (k >= 10) /* 2^10 > 900 */	if (k >= 11)
-attempts_strict	sc_misc.c	a->blocked_until_s = now_s + STRICT_S;	a->blocked_until_s = now_s;
+attempts_strict	sc_misc.c	a->blocked_until_s = sat_add(now_s, STRICT_S);	a->blocked_until_s = now_s;	1
 token_mode	sc_misc.c	if (!S_ISDIR(st.st_mode) || st.st_uid != getuid() || (st.st_mode & 07777) != 0700)	if (!S_ISDIR(st.st_mode) || st.st_uid != getuid())
 token_link	sc_misc.c	if (lstat(path, &st) != 0)	if (stat(path, &st) != 0)
 token_hash_len	sc_misc.c	sodium_bin2hex(hex, sizeof hex, h, 8);	sodium_bin2hex(hex, sizeof hex, h, 7);
 #
 # --- passphrase rules (sc_pass.c)
-too_short	sc_pass.c	if (cps < GZ_SC_PASS_MIN_CP)	if (cps + 1 < GZ_SC_PASS_MIN_CP)
+too_short	sc_pass.c	cps < GZ_SC_PASS_MIN_CP ?	cps + 1 < GZ_SC_PASS_MIN_CP ?
 too_long	sc_pass.c	if (len > GZ_SC_PASS_MAX_BYTES)\n        return GZ_SC_PASS_TOO_LONG;	if (len > GZ_SC_PASS_MAX_BYTES + 1)\n        return GZ_SC_PASS_TOO_LONG;
 words_three	sc_pass.c	return longest >= 3;	return longest >= 4;
 name_rule	sc_pass.c	if (r == GZ_SC_PASS_OK && equal_ignoring_digits(f, fl, (const uint8_t *)"gazpacho", 8))	if (0)
 nfc_compose	sc_pass.c	#define NFC_OPTS (UTF8PROC_STABLE | UTF8PROC_COMPOSE)	#define NFC_OPTS (UTF8PROC_STABLE | UTF8PROC_DECOMPOSE)
 casefold	sc_pass.c	#define FOLD_OPTS (UTF8PROC_STABLE | UTF8PROC_COMPOSE | UTF8PROC_CASEFOLD)	#define FOLD_OPTS (UTF8PROC_STABLE | UTF8PROC_COMPOSE)
-modulo_bias	sc_pass.c	} while (v >= 62208u);	} while (0);
+modulo_bias	sc_pass.c	reject = v >= 62208u; /* 8 x 7776: no modulo bias */	reject = 0;
 #
 # --- the helper (sc_kdf.c)
 helper_params	sc_kdf.c	if (gz_sc_params_check(&p) != GZ_SC_OK || pw_len > GZ_SC_PASS_IN_MAX) {	if (pw_len > GZ_SC_PASS_IN_MAX) {
-helper_exit_status	sc_kdf.c	if (ok && w == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {	if (ok) {
+helper_exit_status	sc_kdf.c	if (ok && exited_ok) {	if (ok) {
 helper_status_byte	sc_kdf.c	} else if (ans[0] == 1) {	} else if (ans[0] != 0) {
 helper_no_dumps	sc_kdf.c	no_dumps();\n    uint8_t head	uint8_t head
 #
@@ -110,8 +110,97 @@ bc_step0	sc_files.c	u->restore = 1;	u->restore = 0;
 setup_exists	sc_files.c	if (e == GZ_SC_OK)\n        return GZ_SC_EXISTS;
 anchor_backwards	sc_files.c	if (st != GZ_SC_MARK_OK || incarnation < i || (incarnation == i && mark_offset < o))	if (st != GZ_SC_MARK_OK)
 bc_no_anchor	sc_files.c	return gz_sc_fs_append(s, GZ_SC_FILE_MARK, (uint64_t)end, entry, sizeof entry);	return GZ_SC_OK;
-check_start_guard	sc_files.c	gs = gz_sc_guard_open(u->vault, g, gl, &guard) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DAMAGED;	gs = GZ_SC_OK;
+check_start_guard	sc_files.c	gs = GZ_SC_DAMAGED; /* another format, network or a failed tag */	gs = GZ_SC_OK;
 unlock_drop_keys	sc_files.c	if (e != GZ_SC_OK)\n        gz_sc_unlocked_clear(u); /* keys dropped on every failure (8.2) */
 mark_before_journal	sc_files.c	if ((e = gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk)) != GZ_SC_OK ||\n        (e = gz_sc_fs_replace(s, GZ_SC_FILE_JOURNAL, hdr, sizeof hdr)) != GZ_SC_OK)	if ((e = gz_sc_fs_replace(s, GZ_SC_FILE_JOURNAL, hdr, sizeof hdr)) != GZ_SC_OK ||\n        (e = gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk)) != GZ_SC_OK)
 name_wallet	sc_pass.c	equal_ignoring_digits(f, fl, n, nl))	0)
 name_spaces	sc_pass.c	return (c >= '0' \&\& c <= '9') || c == ' ';	return c >= '0' \&\& c <= '9';
+#
+# --- review A's findings (PR 25, second commit): the fixes' own mutants
+m1_mark_readfail_old	sc_files.c	        return e; /* a read error is a storage failure, never "possibly old" (M1) */	        ms = GZ_SC_MARK_NOT_A_MARK_FILE;
+m1_guard_readfail	sc_files.c	    if (gs != GZ_SC_OK && gs != GZ_SC_MISSING)\n        return gs;\n
+m1_guard_nomem	sc_files.c	        if (gs == GZ_SC_NOMEM)\n            return gs;\n
+m2_body_heap	sc_export.c	uint8_t *out = sodium_malloc(len - plen + 1), *ad = malloc(plen + 9);	uint8_t *out = malloc(len - plen + 1), *ad = malloc(plen + 9);
+m2_words_from_body	sc_export.c	            src = entropy + (off - WORDS_AT);	            src = body + off;
+m2_words_flag_alone	sc_export.c	    if ((check.flags & 1) != (entropy != NULL))\n        return GZ_SC_ARG; /* flag bit 0 and the entropy come together */\n
+m3_setup_form	sc_files.c	    gz_sc_err_t pe = new_pass_ok(pw_nfc, pw_len);\n    if (pe != GZ_SC_OK)\n        return pe;\n    uint8_t *existing	    uint8_t *existing
+m3_recover_form	sc_files.c	    gz_sc_err_t pe = new_pass_ok(pw_nfc, pw_len);\n    if (pe != GZ_SC_OK)\n        return pe;\n    uint8_t *hdr	    uint8_t *hdr
+m3_rewrap_new_form	sc_files.c	    if (e == GZ_SC_OK && new_pw)\n        e = new_pass_ok(new_pw, new_len);\n
+m3_open_any_form	sc_files.c	    return sc_pass_is_nfc(pw, len) ? GZ_SC_OK : GZ_SC_PASS_REFUSED;	    return GZ_SC_OK;
+m3_nfc_check	sc_pass.c	    return same ? GZ_SC_PASS_OK : GZ_SC_PASS_NOT_NFC;	    return GZ_SC_PASS_OK;
+m3_blocklist_off	sc_pass.c	if (blocklist ? in_list(f, fl, blocklist, n_block) : in_bundled(f, fl))	if (blocklist ? in_list(f, fl, blocklist, n_block) : 0)
+m3_blocklist_prefix	sc_pass.c	            c = wl < fl ? -1 : (wl > fl ? 1 : 0);	            c = 0;
+l1_cap_blocked	sc_misc.c	    if (a->blocked_until_s > sat_add(now_s, STRICT_S))	    if (0)
+l1_cap_last_wrong	sc_misc.c	    if (a->last_wrong_s > now_s)	    if (0)
+l1_counter_wraps	sc_misc.c	    if (a->counter < UINT64_MAX)\n        a->counter++;	    a->counter++;
+l1_time_wraps	sc_misc.c	    return a > UINT64_MAX - b ? UINT64_MAX : a + b;	    return a + b;
+l2_two_torn	sc_journal.c	            if (have && bad)\n                return GZ_SC_MARK_DAMAGED;\n
+l3_no_answer_deadline	sc_kdf.c	        if (left <= 0)\n            return -1;\n        struct pollfd	        if (left <= 0)\n            left = 60000;\n        struct pollfd
+l3_no_exit_deadline	sc_kdf.c	        if (w == 0 && now_ms() >= deadline) {	        if (0) {
+l5_generate_spaces	sc_pass.c	                byte |= ' ' & ct_eq(qb, start[w] - 1);	                (void)0;
+l6_check_msk	sc_keyfile.c	        if (!gz_sc_vault_same_msk(v, msk) || !ids)	        if (!ids)
+l8_chunk_len_damaged	sc_export.c	            e = GZ_SC_DAMAGED; /* no writer makes such a length (review A, L8) */	            e = GZ_SC_TRUNCATED;
+l8_setup_info	sc_files.c	    memcpy(u->info.salt, salt, 16);\n
+l8_stale_tmp	sc_files.c	    drop_stale_tmp(s);\n
+#
+# --- review A's own 57 mutants (/root/gz/review-pr25a, PR 25 head 7d90df1),
+# kept here so every later run repeats them. Four are rewritten for the new
+# code with the same intent, marked "adapted"; A_unlock_short_journal_restore
+# was invalid there (its text occurs twice) and now names its occurrence.
+A_kf_format0	sc_keyfile.c	|| data[8] != 1)	|| data[8] > 1)
+A_kf_len_ge	sc_keyfile.c	if (len != GZ_SC_KEYFILE_LEN ||	if (len < GZ_SC_KEYFILE_LEN ||
+A_kf_magic	sc_keyfile.c	memcmp(data, KF_MAGIC, 8) != 0 || 
+A_kf_rewrap_nowords	sc_keyfile.c	    if ((e = gz_sc_keyfile_words(old, old_pk, entropy)) != GZ_SC_OK)\n        goto done;\n
+A_kf_rewrap_noparams	sc_keyfile.c	gz_sc_err_t e = gz_sc_params_check(new_params);\n    if (e != GZ_SC_OK)\n        return e;	gz_sc_err_t e = GZ_SC_OK;
+A_commit_31	sc_core.c	ok = sodium_memcmp(c, stored, 32) == 0;	ok = sodium_memcmp(c, stored, 31) == 0;
+A_kf_seed_wrongpass	sc_keyfile.c	e = GZ_SC_DAMAGED;\n        goto done;	e = GZ_SC_WRONG_PASSPHRASE;\n        goto done;
+A_kf_wrap_ok	sc_keyfile.c	return rc == 0 ? GZ_SC_OK : GZ_SC_WRONG_PASSPHRASE;	return GZ_SC_OK;
+A_kf_words_damaged_ok	sc_keyfile.c	return rc == 0 ? GZ_SC_OK : GZ_SC_DAMAGED;	return GZ_SC_OK;
+A_kf_vault_ids	sc_keyfile.c	e = gz_sc_vault_new(data + 9, data + 41, msk, seed, out);	e = gz_sc_vault_new(data + 9, data + 9, msk, seed, out);
+A_kf_p_ignored	sc_keyfile.c	in.kdf.p = data[66];	in.kdf.p = 1;
+A_kf_kdf_ignored	sc_keyfile.c	in.kdf.kdf = data[57];	in.kdf.kdf = 1;
+A_kf_t_lowbyte	sc_keyfile.c	in.kdf.t = sc_get32(data + 58);	in.kdf.t = sc_get32(data + 58) & 0xffu;
+A_en_avail	sc_journal.c	(size_t)ln > avail - 4)	(size_t)ln > avail)
+A_en_seal_kind2min	sc_journal.c	    if (kind == 2 && payload_len < 4)\n        return GZ_SC_ARG;\n
+A_en_seal_maxlen	sc_journal.c	    if (payload_len > GZ_SC_FRAME_LEN_MAX - 57)\n        return GZ_SC_ARG;\n
+A_en_ad_seq_lastbyte	sc_journal.c	memcpy(ad + 24, head, 21);	memcpy(ad + 24, head, 20); ad[44] = 0;
+A_en_offset32	sc_journal.c	sc_put64(ad + 16, offset);	sc_put64(ad + 16, (uint32_t)offset);
+A_en_mark_le	sc_journal.c	sc_get64(pt) != offset))	sc_get64(pt) > offset))
+A_en_kind1_len	sc_journal.c	((kind == 1 || kind == 3) && ln != 65))	(kind == 3 && ln != 65))
+A_en_lenmax_plus1	sc_journal.c	ln > GZ_SC_FRAME_LEN_MAX ||	ln > GZ_SC_FRAME_LEN_MAX + 1 ||
+A_hdr_recover_notag	sc_journal.c	e = tag_ok(hdr, msk, NULL);	e = GZ_SC_OK;
+A_nonce_16	sc_core.c	memcpy(out, mac, crypto_aead_xchacha20poly1305_ietf_NPUBBYTES);	memcpy(out, mac, 16); memset(out + 16, 0, 8);
+A_seal_ignore_random_fail	sc_core.c	gz_sc_err_t e = gz_sc_random(r, sizeof r);\n    if (e != GZ_SC_OK)\n        return e;	(void)gz_sc_random(r, sizeof r);
+A_mark_last_entry_dropped	sc_journal.c	while (len - pos >= GZ_SC_MARK_ENTRY_LEN) {	while (len - pos > GZ_SC_MARK_ENTRY_LEN) {
+A_mark_same_inc_decrease	sc_journal.c	(i == inc && o < off)))	(0)))
+A_mark_end_no_cut	sc_journal.c	end = pos + GZ_SC_MARK_ENTRY_LEN;	end = len;
+A_mark_magic	sc_journal.c	if (len < GZ_SC_MARK_HEADER_LEN || memcmp(data, MK_MAGIC, 8) != 0 || data[8] != 1 ||	if (len < GZ_SC_MARK_HEADER_LEN || data[8] != 1 ||
+A_mark_chain	sc_journal.c	data[8] != 1 ||\n        memcmp(data + 9, chain, 32) != 0)\n        return GZ_SC_MARK_NOT_A_MARK_FILE;	data[8] != 1)\n        return GZ_SC_MARK_NOT_A_MARK_FILE;
+A_guard_chain	sc_journal.c	if (memcmp(data + 9, v->chain, 32) != 0)\n        return GZ_SC_OTHER_NETWORK;\n    size_t n	size_t n
+A_hdr_format	sc_journal.c	memcmp(hdr, JH_MAGIC, 8) != 0 || hdr[8] != 1)	memcmp(hdr, JH_MAGIC, 8) != 0)
+A_st_inc_plus1	sc_journal.c	if (mark_inc > j->highest_incarnation)	if (mark_inc > j->highest_incarnation + 1)
+A_st_sync_highest_inc	sc_journal.c	!j->has_sync_mark(j->ctx, mark_inc, mark_off))	!j->has_sync_mark(j->ctx, j->highest_incarnation, mark_off))
+A_st_guard_no_record	sc_journal.c	if (guard_counter > j->newest_guard_counter)	if (guard_counter > j->newest_guard_counter && j->newest_guard_counter)
+A_st_mark_missing_ok	sc_journal.c	if (mark == GZ_SC_MARK_NOT_A_MARK_FILE || mark == GZ_SC_MARK_NO_ENTRY ||	if (mark == GZ_SC_MARK_NO_ENTRY ||
+A_st_noentry_ok	sc_journal.c	mark == GZ_SC_MARK_NO_ENTRY || 
+A_st_guard_missing_ok	sc_journal.c	if (guard_state != GZ_SC_OK)	if (guard_state != GZ_SC_OK && guard_state != GZ_SC_MISSING)
+A_st_readfail_ok	sc_files.c	        return e; /* a read error is a storage failure, never "possibly old" (M1) */	        ms = GZ_SC_MARK_OK;
+A_st_missing_mark_ok	sc_files.c	*st = GZ_SC_MARK_NOT_A_MARK_FILE;\n        return GZ_SC_OK;	*st = GZ_SC_MARK_OK;\n        return GZ_SC_OK;
+A_anchor_any_state	sc_files.c	if (st != GZ_SC_MARK_OK || incarnation < i	if (incarnation < i
+A_unlock_hdr_ignored	sc_files.c	if ((e = gz_sc_header_open(hdr, u->vault, &u->kj)) != GZ_SC_OK)\n        goto done;	(void)gz_sc_header_open(hdr, u->vault, &u->kj);
+A_unlock_short_journal_restore	sc_files.c	if (e == GZ_SC_MISSING) {	if (e == GZ_SC_MISSING || (e == GZ_SC_OK && hl < GZ_SC_JHEADER_LEN)) {	1
+A_p_t_nomax	sc_core.c	if (p->t < floor_t || p->t > 16)	if (p->t < floor_t)
+A_p_m_nomax	sc_core.c	if (p->m_kib < floor_m || p->m_kib > 4194304u)	if (p->m_kib < floor_m)
+A_p_nophys	sc_core.c	if (phys != 0 && bytes > phys / 2)	if (0)
+A_p_overflow32	sc_core.c	uint64_t bytes = (uint64_t)p->m_kib * 1024u;	uint64_t bytes = (uint32_t)(p->m_kib * 1024u);
+A_p_kdf_any	sc_core.c	if (p->kdf != 1 || p->p != 1)	if (p->p != 1)
+A_p_parent_nocheck	sc_kdf.c	gz_sc_err_t e = gz_sc_params_check(params);\n    if (e != GZ_SC_OK)\n        return e;\n    int sv[2];	gz_sc_err_t e;\n    int sv[2];
+A_p_setup_nocheck	sc_files.c	if ((e = gz_sc_params_check(params)) != GZ_SC_OK)\n        return e;\n    uint8_t *msk	uint8_t *msk
+A_p_newwrap_below_stored	sc_core.c	(!stored || out->m_kib / 2 >= stored->m_kib))	(1))
+A_p_newwrap_ignore_stored_m	sc_core.c	if (stored->m_kib > out->m_kib)	if (0)
+A_helper_crash_is_wrong	sc_kdf.c	e = GZ_SC_HELPER_FAILED;\n    if (ok	e = GZ_SC_WRONG_PASSPHRASE;\n    if (ok
+A_helper_status_any	sc_kdf.c	if (ans[0] == 0) {	if (ans[0] != 1) {
+A_ct_commit_memcmp	sc_core.c	ok = sodium_memcmp(c, stored, 32) == 0;	ok = memcmp(c, stored, 32) == 0;
+A_ct_msk_memcmp	sc_core.c	int same = sodium_memcmp(v->msk, msk, 32) == 0;	int same = memcmp(v->msk, msk, 32) == 0;
+A_pass_bytes_not_cps	sc_pass.c	cps < GZ_SC_PASS_MIN_CP ?	len < GZ_SC_PASS_MIN_CP ?
+A_attempts_counter_reset	sc_misc.c	uint64_t c = (data && len == GZ_SC_ATTEMPTS_LEN) ? sc_get64(data + 40) : 0;	uint64_t c = 0;

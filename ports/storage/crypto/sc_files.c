@@ -189,11 +189,28 @@ static gz_sc_err_t new_journal(const gz_sc_store_t *s, gz_sc_unlocked_t *u)
     return gz_sc_header_open(hdr, u->vault, &u->kj);
 }
 
+/* 4.1's form and length rules for a passphrase that will make a key file
+ * (review A, M3): the layer enforces them whatever its caller did. */
+static gz_sc_err_t new_pass_ok(const uint8_t *pw, size_t len)
+{
+    return gz_sc_pass_check_form(pw, len) == GZ_SC_PASS_OK ? GZ_SC_OK : GZ_SC_PASS_REFUSED;
+}
+
+/* A passphrase that opens an existing key file: never derived from unless it
+ * is NFC, so a decomposed spelling cannot make or meet a key (M3). */
+static gz_sc_err_t old_pass_ok(const uint8_t *pw, size_t len)
+{
+    return sc_pass_is_nfc(pw, len) ? GZ_SC_OK : GZ_SC_PASS_REFUSED;
+}
+
 gz_sc_err_t gz_sc_setup(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
                         const gz_sc_kdf_params_t *params, const uint8_t entropy[32], const uint8_t seed[64],
                         gz_sc_unlocked_t *u)
 {
     memset(u, 0, sizeof *u);
+    gz_sc_err_t pe = new_pass_ok(pw_nfc, pw_len);
+    if (pe != GZ_SC_OK)
+        return pe;
     uint8_t *existing = NULL;
     size_t elen = 0;
     gz_sc_err_t e = gz_sc_fs_read(s, GZ_SC_FILE_KEYS, 1, &existing, &elen);
@@ -227,7 +244,11 @@ gz_sc_err_t gz_sc_setup(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw
         (e = gz_sc_fs_replace(s, GZ_SC_FILE_GUARD, gbuf, gl)) != GZ_SC_OK)
         goto done;
     e = new_journal(s, u);
+    /* The same info gz_sc_unlock gives (review A, L8). */
+    memcpy(u->info.chain, s->chain, 32);
+    memcpy(u->info.vault_id, vault_id, 16);
     u->info.kdf = *params;
+    memcpy(u->info.salt, salt, 16);
 done:
     gz_sc_sfree(msk);
     gz_sc_sfree(pk);
@@ -237,14 +258,29 @@ done:
     return e;
 }
 
+/* A temporary file left by a crashed replace is sealed but useless: removed
+ * once the key file has opened (review A, L8). Failures are ignored: the next
+ * replace of that file removes it too. */
+static void drop_stale_tmp(const gz_sc_store_t *s)
+{
+    static const char *const names[] = {GZ_SC_FILE_KEYS, GZ_SC_FILE_JOURNAL, GZ_SC_FILE_GUARD, GZ_SC_FILE_MARK,
+                                        GZ_SC_FILE_ATTEMPTS};
+    char p[PATH_CAP];
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (path_of(s, names[i], ".tmp", p) == GZ_SC_OK)
+            (void)OS(s)->unlink(OS(s)->ctx, p);
+}
+
 gz_sc_err_t gz_sc_unlock(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
                          const gz_sc_kdf_params_t *def, gz_sc_unlocked_t *u)
 {
     memset(u, 0, sizeof *u);
     uint8_t *kf = NULL, *hdr = NULL, *pk = NULL;
     size_t kl = 0, hl = 0;
-    gz_sc_err_t e = gz_sc_fs_read(s, GZ_SC_FILE_KEYS, GZ_SC_KEYFILE_LEN + 1, &kf, &kl);
+    gz_sc_err_t e = old_pass_ok(pw_nfc, pw_len);
     if (e != GZ_SC_OK)
+        return e;
+    if ((e = gz_sc_fs_read(s, GZ_SC_FILE_KEYS, GZ_SC_KEYFILE_LEN + 1, &kf, &kl)) != GZ_SC_OK)
         return e;
     if ((e = gz_sc_keyfile_parse(kf, kl, s->chain, &u->info)) != GZ_SC_OK)
         goto done;
@@ -252,6 +288,7 @@ gz_sc_err_t gz_sc_unlock(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t p
         goto done;
     if ((e = gz_sc_keyfile_unlock(kf, pk, &u->vault)) != GZ_SC_OK)
         goto done;
+    drop_stale_tmp(s);
     if (def) {
         gz_sc_kdf_params_t want;
         gz_sc_params_for_new_wrap(&u->info.kdf, def, &want);
@@ -300,24 +337,33 @@ static gz_sc_err_t read_mark(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, 
     return GZ_SC_OK;
 }
 
-gz_sc_start_t gz_sc_check_start(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, const gz_sc_journal_view_t *j)
+gz_sc_err_t gz_sc_check_start(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, const gz_sc_journal_view_t *j,
+                              gz_sc_start_t *start)
 {
     gz_sc_mark_state_t ms = GZ_SC_MARK_NOT_A_MARK_FILE;
     uint64_t inc = 0, off = 0;
     size_t end = 0;
-    if (read_mark(s, u, &ms, &inc, &off, &end) != GZ_SC_OK)
-        ms = GZ_SC_MARK_NOT_A_MARK_FILE;
+    gz_sc_err_t e = read_mark(s, u, &ms, &inc, &off, &end);
+    if (e != GZ_SC_OK)
+        return e; /* a read error is a storage failure, never "possibly old" (M1) */
     uint8_t *g = NULL;
     size_t gl = 0;
     gz_sc_guard_t guard;
     memset(&guard, 0, sizeof guard);
     gz_sc_err_t gs = gz_sc_fs_read(s, GZ_SC_FILE_GUARD, (size_t)1 << 20, &g, &gl);
-    if (gs == GZ_SC_OK)
-        gs = gz_sc_guard_open(u->vault, g, gl, &guard) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DAMAGED;
-    free(g);
-    gz_sc_start_t r = gz_sc_start_rule(ms, inc, off, gs, guard.counter, j);
+    if (gs != GZ_SC_OK && gs != GZ_SC_MISSING)
+        return gs;
+    if (gs == GZ_SC_OK) {
+        gs = gz_sc_guard_open(u->vault, g, gl, &guard);
+        free(g);
+        if (gs == GZ_SC_NOMEM)
+            return gs;
+        if (gs != GZ_SC_OK)
+            gs = GZ_SC_DAMAGED; /* another format, network or a failed tag */
+    }
+    *start = gz_sc_start_rule(ms, inc, off, gs, guard.counter, j);
     gz_sc_guard_clear(&guard);
-    return r;
+    return GZ_SC_OK;
 }
 
 gz_sc_err_t gz_sc_anchor(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, uint64_t incarnation,
@@ -370,8 +416,12 @@ gz_sc_err_t gz_sc_rewrap(const gz_sc_store_t *s, const uint8_t *old_pw, size_t o
     uint8_t *kf = NULL, *old_pk = NULL, *new_pk = NULL;
     size_t kl = 0;
     gz_sc_keyfile_info_t info;
-    gz_sc_err_t e = gz_sc_fs_read(s, GZ_SC_FILE_KEYS, GZ_SC_KEYFILE_LEN + 1, &kf, &kl);
+    gz_sc_err_t e = old_pass_ok(old_pw, old_len);
+    if (e == GZ_SC_OK && new_pw)
+        e = new_pass_ok(new_pw, new_len);
     if (e != GZ_SC_OK)
+        return e;
+    if ((e = gz_sc_fs_read(s, GZ_SC_FILE_KEYS, GZ_SC_KEYFILE_LEN + 1, &kf, &kl)) != GZ_SC_OK)
         return e;
     uint8_t salt[16], out[GZ_SC_KEYFILE_LEN];
     gz_sc_kdf_params_t np;
@@ -403,8 +453,10 @@ gz_sc_err_t gz_sc_words(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw
     uint8_t *kf = NULL, *pk = NULL;
     size_t kl = 0;
     gz_sc_keyfile_info_t info;
-    gz_sc_err_t e = gz_sc_fs_read(s, GZ_SC_FILE_KEYS, GZ_SC_KEYFILE_LEN + 1, &kf, &kl);
+    gz_sc_err_t e = old_pass_ok(pw_nfc, pw_len);
     if (e != GZ_SC_OK)
+        return e;
+    if ((e = gz_sc_fs_read(s, GZ_SC_FILE_KEYS, GZ_SC_KEYFILE_LEN + 1, &kf, &kl)) != GZ_SC_OK)
         return e;
     if ((e = gz_sc_keyfile_parse(kf, kl, s->chain, &info)) == GZ_SC_OK &&
         (e = derive_pk(s, pw_nfc, pw_len, info.salt, &info.kdf, &pk, NULL)) == GZ_SC_OK)
@@ -414,9 +466,30 @@ gz_sc_err_t gz_sc_words(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw
     return e;
 }
 
+gz_sc_err_t gz_sc_check(const gz_sc_store_t *s, const gz_sc_vault_t *v, const uint8_t *pw_nfc, size_t pw_len)
+{
+    uint8_t *kf = NULL, *pk = NULL;
+    size_t kl = 0;
+    gz_sc_keyfile_info_t info;
+    gz_sc_err_t e = old_pass_ok(pw_nfc, pw_len);
+    if (e != GZ_SC_OK)
+        return e;
+    if ((e = gz_sc_fs_read(s, GZ_SC_FILE_KEYS, GZ_SC_KEYFILE_LEN + 1, &kf, &kl)) != GZ_SC_OK)
+        return e;
+    if ((e = gz_sc_keyfile_parse(kf, kl, s->chain, &info)) == GZ_SC_OK &&
+        (e = derive_pk(s, pw_nfc, pw_len, info.salt, &info.kdf, &pk, NULL)) == GZ_SC_OK)
+        e = gz_sc_keyfile_check(kf, pk, v);
+    free(kf);
+    gz_sc_sfree(pk);
+    return e;
+}
+
 gz_sc_err_t gz_sc_recover_keyfile(const gz_sc_store_t *s, const uint8_t entropy[32], const uint8_t seed[64],
                                   const uint8_t *pw_nfc, size_t pw_len, const gz_sc_kdf_params_t *params)
 {
+    gz_sc_err_t pe = new_pass_ok(pw_nfc, pw_len);
+    if (pe != GZ_SC_OK)
+        return pe;
     uint8_t *hdr = NULL, *msk = sodium_malloc(32), *pk = NULL;
     size_t hl = 0;
     if (!msk)

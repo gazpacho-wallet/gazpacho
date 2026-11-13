@@ -22,6 +22,9 @@ void gz_sc_test_set_random(int (*fn)(void *ctx, uint8_t *out, size_t n), void *c
 void gz_sc_test_set_floor(uint32_t t_min, uint32_t m_kib_min);
 /* Pretend the machine has this much physical memory (0: the real amount). */
 void gz_sc_test_set_phys(uint64_t bytes);
+/* The KDF helper's deadline in milliseconds instead of the one computed from
+ * the parameters (0: that one again). */
+void gz_sc_test_set_helper_timeout(int64_t ms);
 /* Argon2id in this process: tests only (8.3 forbids it in the program). */
 gz_sc_err_t gz_sc_test_kdf_inprocess(void *ctx, const uint8_t *pw, size_t pw_len, const uint8_t salt[16],
                                      const gz_sc_kdf_params_t *params, uint8_t pk[32], int *mem_locked);

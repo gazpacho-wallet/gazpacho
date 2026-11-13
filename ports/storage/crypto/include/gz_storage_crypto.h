@@ -43,7 +43,10 @@ typedef enum {
     GZ_SC_BUFFER,            /* output buffer too small */
     GZ_SC_ARG,               /* a bad argument from the caller */
     GZ_SC_NOMEM,             /* sodium_malloc or malloc failed */
-    GZ_SC_LIBRARY            /* libsodium is not the pinned version or did not start */
+    GZ_SC_LIBRARY,           /* libsodium is not the pinned version or did not start */
+    GZ_SC_PASS_REFUSED       /* the passphrase is not valid NFC UTF-8, or (set-up, change,
+                              * recovery) breaks 4.1's length rules: gz_sc_pass_check_form
+                              * says which */
 } gz_sc_err_t;
 
 const char *gz_sc_err_text(gz_sc_err_t e);
@@ -114,13 +117,23 @@ typedef enum {
     GZ_SC_PASS_COMMON,    /* on the bundled blocklist (case-insensitive, whole) */
     GZ_SC_PASS_NAME,      /* "gazpacho" or the wallet's name, with or without digits */
     GZ_SC_PASS_WORDS,     /* three or more of the wallet's own 24 words in order */
-    GZ_SC_PASS_NOT_UTF8
+    GZ_SC_PASS_NOT_UTF8,
+    GZ_SC_PASS_NOT_NFC    /* not byte for byte its own NFC form: normalise first */
 } gz_sc_pass_rule_t;
 
 /* 4.1's rules on an NFC passphrase (from gz_sc_pass_nfc). wallet_name may be
- * NULL; words may be NULL (no words yet) or 24 lowercase ASCII words. */
+ * NULL; words may be NULL (no words yet) or 24 lowercase ASCII words. The
+ * blocklist is the bundled one (sc_blocklist.c, spec open point 3). */
 gz_sc_pass_rule_t gz_sc_pass_check(const uint8_t *nfc, size_t len, const char *wallet_name,
                                    const char *const *words, size_t n_words);
+
+/* The part of 4.1 the storage layer enforces itself whatever its caller did
+ * (review A, M3): valid UTF-8, already NFC, at most 1,024 bytes, at least 15
+ * code points. gz_sc_setup, gz_sc_rewrap (the new passphrase) and
+ * gz_sc_recover_keyfile refuse anything else with GZ_SC_PASS_REFUSED; this
+ * gives the reason. The name, words and blocklist rules need the wallet's
+ * name and words, so they stay with the caller (gz_sc_pass_check). */
+gz_sc_pass_rule_t gz_sc_pass_check_form(const uint8_t *pw, size_t len);
 
 /* Six words from the EFF large word list (7,776 words, 77.5 bits), drawn from
  * the storage random source, joined by single spaces. *out is gz_sc_salloc'd
@@ -137,7 +150,11 @@ typedef gz_sc_err_t (*gz_sc_kdf_fn)(void *ctx, const uint8_t *pw, size_t pw_len,
 /* Starts ctx (a const char * path to the program) as `path --gz-kdf-helper`
  * with a socket on its standard input, sends the request, reads PK and waits
  * for it. A crash, an out-of-memory or a short answer is GZ_SC_HELPER_FAILED.
- * Parameters are checked (again) before the helper is started. */
+ * So is a helper that has not answered and exited by a deadline (30 s plus
+ * 1 ms per 64 KiB pass, review A, L3): it is killed and reaped. Parameters
+ * are checked (again) before the helper is started. A program that sets
+ * SIGCHLD to SIG_IGN cannot reap it: every derivation then fails safe, as
+ * "could not be checked". */
 gz_sc_err_t gz_sc_kdf_helper(void *ctx, const uint8_t *pw, size_t pw_len, const uint8_t salt[16],
                              const gz_sc_kdf_params_t *params, uint8_t pk[32], int *mem_locked);
 
@@ -157,7 +174,8 @@ gz_sc_err_t gz_sc_vault_new(const uint8_t chain[32], const uint8_t vault_id[16],
                             const uint8_t seed[64], gz_sc_vault_t **out);
 void gz_sc_vault_free(gz_sc_vault_t *v);
 void gz_sc_vault_ids(const gz_sc_vault_t *v, uint8_t chain[32], uint8_t vault_id[16]);
-/* 4.6 "check": 1 if msk equals the vault's MSK (constant time). */
+/* 1 if msk equals the vault's MSK (constant time). 4.6's "check" on the
+ * public API is gz_sc_check (gz_storage_files.h) or gz_sc_keyfile_check. */
 int gz_sc_vault_same_msk(const gz_sc_vault_t *v, const uint8_t msk[32]);
 /* Copies the seed out (into guarded memory the caller owns), for the node. */
 gz_sc_err_t gz_sc_vault_seed(const gz_sc_vault_t *v, uint8_t seed[64]);
@@ -178,6 +196,12 @@ gz_sc_err_t gz_sc_keyfile_parse(const uint8_t *data, size_t len, const uint8_t c
  * the wrap, the seed. WRONG_PASSPHRASE at 4 or 5, DAMAGED at 6. */
 gz_sc_err_t gz_sc_keyfile_unlock(const uint8_t data[GZ_SC_KEYFILE_LEN], const uint8_t pk[32],
                                  gz_sc_vault_t **out);
+/* 4.6 "check" (8.2) with PK from the KDF: the commitment and the wrap open
+ * MSK into guarded memory, which is compared with the vault's in constant
+ * time and wiped. GZ_SC_OK: the same wallet's passphrase; WRONG_PASSPHRASE;
+ * NOT_THIS_WALLET: the wrap opens but names another MSK or vault. */
+gz_sc_err_t gz_sc_keyfile_check(const uint8_t data[GZ_SC_KEYFILE_LEN], const uint8_t pk[32],
+                                const gz_sc_vault_t *v);
 /* 9.2: the words' entropy under KD, into entropy (guarded memory). */
 gz_sc_err_t gz_sc_keyfile_words(const uint8_t data[GZ_SC_KEYFILE_LEN], const uint8_t pk[32],
                                 uint8_t entropy[32]);
@@ -252,12 +276,14 @@ typedef enum {
     GZ_SC_MARK_OK = 0,
     GZ_SC_MARK_NOT_A_MARK_FILE, /* short, other magic, format or chain: possibly old */
     GZ_SC_MARK_NO_ENTRY,        /* no valid entry: possibly old */
-    GZ_SC_MARK_DAMAGED,         /* invalid entry before a valid one, or going backwards */
+    GZ_SC_MARK_DAMAGED,         /* an invalid entry before a valid one, a second invalid
+                                 * full entry after the newest valid one, or going backwards */
     GZ_SC_MARK_OTHER_JOURNAL    /* names another journal file_id: behind */
 } gz_sc_mark_state_t;
 
-/* The newest valid entry. *valid_end: where the next entry is appended (a
- * torn tail after it is cut first). */
+/* The newest valid entry. *valid_end: where the next entry is appended. The
+ * torn tail cut there first is one invalid full entry or a piece shorter than
+ * 56 bytes after the newest valid entry (10.2): one append tears one entry. */
 gz_sc_mark_state_t gz_sc_mark_read(const gz_sc_framekey_t *kh, const uint8_t *data, size_t len,
                                    const uint8_t chain[32], const uint8_t file_id[16], uint64_t *incarnation,
                                    uint64_t *mark_offset, size_t *valid_end);
@@ -315,11 +341,19 @@ typedef struct {
 } gz_sc_export_info_t;
 
 /* The plaintext body (11): version 1, created_ms, flags (bit 0: the words'
- * entropy follows; profile 1 only), the guard contents, then entries. */
-size_t gz_sc_export_body_len(size_t guard_len, int with_words, size_t entries_len);
-gz_sc_err_t gz_sc_export_body_begin(uint64_t created_ms, const uint8_t *entropy /* NULL: no words */,
-                                    const uint8_t *guard, size_t guard_len, uint8_t *out, size_t cap,
-                                    size_t *used);
+ * entropy follows; profile 1 only), the guard contents, then entries.
+ *
+ * The words never pass through the caller's buffer (8.3; review A, M2): the
+ * caller builds the body without the 32 bytes of entropy (flag bit 0 set by
+ * with_words) and hands the entropy, in guarded memory, to
+ * gz_sc_export_build, which puts each chunk that carries it together in
+ * guarded memory. The sealed body is then GZ_SC_EXPORT_WORDS_LEN longer than
+ * the caller's. */
+#define GZ_SC_EXPORT_WORDS_LEN 32
+/* The caller's body, without the words. */
+size_t gz_sc_export_body_len(size_t guard_len, size_t entries_len);
+gz_sc_err_t gz_sc_export_body_begin(uint64_t created_ms, int with_words, const uint8_t *guard, size_t guard_len,
+                                    uint8_t *out, size_t cap, size_t *used);
 /* Appends one entry as kind, incarnation, sequence, u32 len, payload. */
 gz_sc_err_t gz_sc_export_body_entry(uint8_t kind, uint64_t inc, uint64_t seq, const uint8_t *payload,
                                     size_t len, uint8_t *out, size_t cap, size_t *used);
@@ -334,25 +368,33 @@ typedef struct {
     size_t entries_len;
 } gz_sc_export_body_t;
 
-/* Strict parse of a body: every entry must fit exactly. */
+/* Strict parse of an opened body (the words, if any, in place): every entry
+ * must fit exactly. */
 gz_sc_err_t gz_sc_export_body_parse(const uint8_t *b, size_t len, uint8_t profile, gz_sc_export_body_t *out);
 /* Walks the entries: returns 1 and advances *pos, 0 at the end, -1 if malformed. */
 int gz_sc_export_body_next(const gz_sc_export_body_t *b, size_t *pos, uint8_t *kind, uint64_t *inc,
                            uint64_t *seq, const uint8_t **payload, size_t *len);
 
-size_t gz_sc_export_size(uint8_t profile, size_t body_len, size_t part);
+/* The file's size for a sealed body of sealed_len bytes (the caller's body
+ * length, plus GZ_SC_EXPORT_WORDS_LEN when the words are carried). */
+size_t gz_sc_export_size(uint8_t profile, size_t sealed_len, size_t part);
 /* Profile 1: kdf, salt and pkx (PKx from the KDF over that slot) are used;
- * profile 2: they must be NULL. part: chunk size, 1 to 65,536. */
+ * profile 2: they must be NULL. body: the caller's body (without the words);
+ * entropy: the words' 32 bytes (guarded memory) exactly when the body's flag
+ * bit 0 is set, else NULL. part: chunk size, 1 to 65,536. */
 gz_sc_err_t gz_sc_export_build(const gz_sc_vault_t *v, uint8_t profile, const uint8_t export_id[16],
                                const gz_sc_kdf_params_t *kdf, const uint8_t *salt, const uint8_t *pkx,
-                               const uint8_t *body, size_t body_len, size_t part, uint8_t *out, size_t cap,
-                               size_t *out_len);
+                               const uint8_t *body, size_t body_len, const uint8_t *entropy, size_t part,
+                               uint8_t *out, size_t cap, size_t *out_len);
 /* Magic, format, chain, profile, and for profile 1 the slot's parameters
  * against the rule, before any derivation. */
 gz_sc_err_t gz_sc_export_parse(const uint8_t *data, size_t len, const uint8_t chain[32],
                                gz_sc_export_info_t *info);
 /* Opens with the passphrase key pkx (profile 1 only: NEEDS_WORDS for 2) or
- * with the seed (either profile). *body is malloc'd (the caller frees it). */
+ * with the seed (either profile). *body is in guarded memory (it may hold
+ * the words' entropy): the caller frees it with gz_sc_sfree, which wipes it.
+ * A chunk length below 40 or above 65,576 is DAMAGED; a chunk running past
+ * the end of the file TRUNCATED. */
 gz_sc_err_t gz_sc_export_open(const uint8_t *data, size_t len, const uint8_t chain[32], const uint8_t *pkx,
                               const uint8_t *seed, uint8_t **body, size_t *body_len);
 
@@ -366,7 +408,10 @@ typedef struct {
 
 void gz_sc_attempts_encode(const uint8_t chain[32], const gz_sc_attempts_t *a, uint8_t out[GZ_SC_ATTEMPTS_LEN]);
 /* 1 if a valid mode 1 file of this chain; otherwise *a is the strictest state
- * (blocked until now + 900 s) and 0 is returned. data NULL: a missing file. */
+ * (blocked until now + 900 s, the counter kept from a damaged file of the
+ * right length) and 0 is returned. data NULL: a missing file. A valid file
+ * cannot block for longer than the strictest state, nor date a wrong attempt
+ * after now (review A, L1). The counter saturates at 2^64 - 1. */
 int gz_sc_attempts_decode(const uint8_t chain[32], const uint8_t *data, size_t len, uint64_t now_s,
                           gz_sc_attempts_t *a);
 /* local-api.md 4.3 (D15): one attempt a second; after 5 wrong in a row the

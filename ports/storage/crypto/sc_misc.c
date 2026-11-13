@@ -14,6 +14,18 @@
 #define STRICT_S 900u
 
 /* ---- attempts.gza ---------------------------------------------------------- */
+static uint64_t sat_add(uint64_t a, uint64_t b)
+{
+    return a > UINT64_MAX - b ? UINT64_MAX : a + b;
+}
+
+/* The counter never falls, so it saturates instead of wrapping (L1). */
+static void count_up(gz_sc_attempts_t *a)
+{
+    if (a->counter < UINT64_MAX)
+        a->counter++;
+}
+
 void gz_sc_attempts_encode(const uint8_t chain[32], const gz_sc_attempts_t *a, uint8_t out[GZ_SC_ATTEMPTS_LEN])
 {
     memcpy(out, AT_MAGIC, 8);
@@ -46,13 +58,22 @@ int gz_sc_attempts_decode(const uint8_t chain[32], const uint8_t *data, size_t l
         a->counter = c;
         a->wrong_in_a_row = 0;
         a->last_wrong_s = 0;
-        a->blocked_until_s = now_s + STRICT_S;
+        a->blocked_until_s = sat_add(now_s, STRICT_S);
         return 0;
     }
     a->counter = sc_get64(data + 40);
     a->wrong_in_a_row = sc_get32(data + 48);
     a->last_wrong_s = sc_get64(data + 52);
     a->blocked_until_s = sc_get64(data + 60);
+    /* Mode 1's check is unkeyed, so anyone who can write the folder can write
+     * a valid file. That writer is out of 12.3's reach, but capping costs
+     * nothing (review A, L1): the strictest state a file can impose is the
+     * strictest state itself, 15 minutes from now; no wrong attempt is in the
+     * future. */
+    if (a->blocked_until_s > sat_add(now_s, STRICT_S))
+        a->blocked_until_s = sat_add(now_s, STRICT_S);
+    if (a->last_wrong_s > now_s)
+        a->last_wrong_s = now_s;
     return 1;
 }
 
@@ -76,15 +97,15 @@ void gz_sc_attempts_wrong(gz_sc_attempts_t *a, uint64_t now_s)
     if (a->wrong_in_a_row < UINT32_MAX)
         a->wrong_in_a_row++;
     a->last_wrong_s = now_s;
-    a->blocked_until_s = now_s + delay_after(a->wrong_in_a_row);
-    a->counter++;
+    a->blocked_until_s = sat_add(now_s, delay_after(a->wrong_in_a_row));
+    count_up(a);
 }
 
 void gz_sc_attempts_right(gz_sc_attempts_t *a, uint64_t now_s)
 {
     a->wrong_in_a_row = 0;
-    a->blocked_until_s = now_s + 1; /* one attempt a second, right or wrong */
-    a->counter++;
+    a->blocked_until_s = sat_add(now_s, 1); /* one attempt a second, right or wrong */
+    count_up(a);
 }
 
 /* ---- the socket token folder ------------------------------------------------- */

@@ -17,7 +17,9 @@ set(GZ_DEPS_DIR "" CACHE PATH "Optional folder holding the pinned dependency tar
 set(GZ_SODIUM_VERSION 1.0.22)
 set(GZ_SODIUM_SHA256 adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349)
 set(GZ_UTF8PROC_VERSION 2.12.0)
-set(GZ_UTF8PROC_SHA256 f564011d38b2888d583d510b08e69ffa15aa117155db1b9b49ef1dfe1fa25111)
+# The release asset utf8proc-2.12.0.tar.gz, not GitHub's generated tag archive,
+# whose bytes GitHub has changed before (review A, L8); the same files inside.
+set(GZ_UTF8PROC_SHA256 a393fbef160835fb315bc3e91ba8d86f7a73a7cec9e6198b6c60b848b498bfeb)
 
 set(_sodium_tar libsodium-${GZ_SODIUM_VERSION}.tar.gz)
 if(GZ_DEPS_DIR AND EXISTS ${GZ_DEPS_DIR}/${_sodium_tar})
@@ -29,10 +31,20 @@ else()
 endif()
 
 # libsodium is built with the same compiler and C flags as everything else,
-# so MemorySanitizer and the fuzz build instrument it too. Assembly is off:
-# MSan cannot see what assembly writes; none of it is used here.
+# so MemorySanitizer and the fuzz build instrument it too. GZ_SANITIZE adds
+# its flags with add_compile_options, which does not reach an
+# ExternalProject, so they are added here as well: the ASan+UBSan jobs
+# instrument libsodium too (review A, L4). -g always: debug information does
+# not change the code, and the constant-time check (tests/ctime-check.py)
+# needs libsodium's line numbers. Assembly is off: MSan cannot see what
+# assembly writes; none of it is used here.
 string(TOUPPER "${CMAKE_BUILD_TYPE}" _bt)
-set(_sodium_cflags "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_bt}}")
+set(_sodium_cflags "${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${_bt}} -g")
+set(_sodium_ldflags "${CMAKE_EXE_LINKER_FLAGS}")
+if(GZ_SANITIZE)
+  string(APPEND _sodium_cflags " -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer")
+  string(APPEND _sodium_ldflags " -fsanitize=address,undefined")
+endif()
 # Under MemorySanitizer two things are switched off in libsodium, both through
 # CPPFLAGS; every other job builds libsodium as its configure sets it.
 #
@@ -71,7 +83,7 @@ ExternalProject_Add(libsodium_ext
     --disable-shared --enable-static --with-pic --disable-asm --disable-dependency-tracking
     --disable-silent-rules
     CC=${CMAKE_C_COMPILER} "CFLAGS=${_sodium_cflags}" "CPPFLAGS=${_sodium_cppflags}"
-    "LDFLAGS=${CMAKE_EXE_LINKER_FLAGS}"
+    "LDFLAGS=${_sodium_ldflags}"
   BUILD_COMMAND $(MAKE)
   INSTALL_COMMAND $(MAKE) install
   BUILD_BYPRODUCTS ${_sodium_lib}
@@ -88,7 +100,7 @@ set(_u8_tar utf8proc-${GZ_UTF8PROC_VERSION}.tar.gz)
 if(GZ_DEPS_DIR AND EXISTS ${GZ_DEPS_DIR}/${_u8_tar})
   set(_u8_url ${GZ_DEPS_DIR}/${_u8_tar})
 else()
-  set(_u8_url https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v${GZ_UTF8PROC_VERSION}.tar.gz)
+  set(_u8_url https://github.com/JuliaStrings/utf8proc/releases/download/v${GZ_UTF8PROC_VERSION}/${_u8_tar})
 endif()
 set(UTF8PROC_INSTALL OFF CACHE BOOL "" FORCE)
 set(UTF8PROC_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
@@ -96,7 +108,7 @@ FetchContent_Declare(utf8proc URL ${_u8_url} URL_HASH SHA256=${GZ_UTF8PROC_SHA25
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(utf8proc)
 
-set(GZ_SC_SOURCES sc_core.c sc_keyfile.c sc_journal.c sc_export.c sc_misc.c sc_pass.c sc_wordlist.c
+set(GZ_SC_SOURCES sc_core.c sc_keyfile.c sc_journal.c sc_export.c sc_misc.c sc_pass.c sc_wordlist.c sc_blocklist.c
                   sc_kdf.c sc_files.c)
 set(GZ_SC_WARNINGS -Wall -Wextra -Werror -Wvla -Wshadow -Wconversion -Wno-sign-conversion)
 
@@ -171,10 +183,13 @@ if(GZ_SC_TESTS)
   # ctime tests): a library copy with SC_DECLASSIFY, run under memcheck with
   # every secret marked undefined. Registered only where valgrind is found;
   # CI's valgrind job runs it (it is not in tools/valgrind-tests.py's list,
-  # since its command is valgrind itself).
+  # since its command is not a program of the build). ctime-check.py runs
+  # memcheck with no suppression and allows exactly one source line, the tag
+  # check's outcome in libsodium (review A, L5).
   include(CheckIncludeFile)
   check_include_file(valgrind/memcheck.h GZ_HAVE_MEMCHECK_H)
   find_program(GZ_VALGRIND valgrind)
+  find_package(Python3 COMPONENTS Interpreter)
   if(GZ_HAVE_MEMCHECK_H)
     gz_sc_library(gazpacho_storage_crypto_ctime)
     target_compile_definitions(gazpacho_storage_crypto_ctime PUBLIC GZ_SC_TEST_ENTRY GZ_SC_CTIME)
@@ -183,10 +198,9 @@ if(GZ_SC_TESTS)
     target_include_directories(sc_test_ctime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_compile_options(sc_test_ctime PRIVATE ${GZ_SC_WARNINGS})
     # Not with a sanitizer: valgrind cannot run a sanitized program.
-    if(GZ_VALGRIND AND NOT GZ_SANITIZE AND NOT CMAKE_C_FLAGS MATCHES "-fsanitize")
+    if(GZ_VALGRIND AND Python3_Interpreter_FOUND AND NOT GZ_SANITIZE AND NOT CMAKE_C_FLAGS MATCHES "-fsanitize")
       add_test(NAME storage_ctime
-        COMMAND ${GZ_VALGRIND} --error-exitcode=42 --track-origins=yes
-                --suppressions=${T}/ctime.supp $<TARGET_FILE:sc_test_ctime>)
+        COMMAND ${Python3_EXECUTABLE} -I ${T}/ctime-check.py ${GZ_VALGRIND} $<TARGET_FILE:sc_test_ctime>)
     endif()
   endif()
 endif()

@@ -147,6 +147,23 @@ done:
     return e;
 }
 
+gz_sc_err_t gz_sc_keyfile_check(const uint8_t data[GZ_SC_KEYFILE_LEN], const uint8_t pk[32],
+                                const gz_sc_vault_t *v)
+{
+    uint8_t *msk = sodium_malloc(32);
+    if (!msk)
+        return GZ_SC_NOMEM;
+    gz_sc_err_t e = open_wrap(data, pk, msk);
+    if (e == GZ_SC_OK) {
+        /* The ids are public; the MSK comparison is constant time. */
+        int ids = memcmp(data + 9, v->chain, 32) == 0 && memcmp(data + 41, v->vault_id, 16) == 0;
+        if (!gz_sc_vault_same_msk(v, msk) || !ids)
+            e = GZ_SC_NOT_THIS_WALLET;
+    }
+    sodium_free(msk);
+    return e;
+}
+
 gz_sc_err_t gz_sc_keyfile_words(const uint8_t data[GZ_SC_KEYFILE_LEN], const uint8_t pk[32],
                                 uint8_t entropy[32])
 {

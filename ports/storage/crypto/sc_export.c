@@ -11,16 +11,19 @@
 #define CHUNK_MIN 40u
 #define CHUNK_MAX (GZ_SC_EXPORT_PART_MAX + 40u)
 
+/* The words' entropy sits at body offset 10 when flag bit 0 is set (11). */
+#define WORDS_AT 10
+
 /* ---- the body ---------------------------------------------------------------- */
-size_t gz_sc_export_body_len(size_t guard_len, int with_words, size_t entries_len)
+size_t gz_sc_export_body_len(size_t guard_len, size_t entries_len)
 {
-    return 1 + 8 + 1 + (with_words ? 32 : 0) + 4 + guard_len + entries_len;
+    return 1 + 8 + 1 + 4 + guard_len + entries_len;
 }
 
-gz_sc_err_t gz_sc_export_body_begin(uint64_t created_ms, const uint8_t *entropy, const uint8_t *guard,
-                                    size_t guard_len, uint8_t *out, size_t cap, size_t *used)
+gz_sc_err_t gz_sc_export_body_begin(uint64_t created_ms, int with_words, const uint8_t *guard, size_t guard_len,
+                                    uint8_t *out, size_t cap, size_t *used)
 {
-    size_t n = gz_sc_export_body_len(guard_len, entropy != NULL, 0);
+    size_t n = gz_sc_export_body_len(guard_len, 0);
     if (guard_len > UINT32_MAX)
         return GZ_SC_ARG;
     if (cap < n)
@@ -29,11 +32,7 @@ gz_sc_err_t gz_sc_export_body_begin(uint64_t created_ms, const uint8_t *entropy,
     out[p++] = 1;
     sc_put64(out + p, created_ms);
     p += 8;
-    out[p++] = entropy ? 1 : 0;
-    if (entropy) {
-        memcpy(out + p, entropy, 32);
-        p += 32;
-    }
+    out[p++] = with_words ? 1 : 0; /* the entropy itself is given to gz_sc_export_build */
     sc_put32(out + p, (uint32_t)guard_len);
     p += 4;
     if (guard_len)
@@ -80,7 +79,9 @@ int gz_sc_export_body_next(const gz_sc_export_body_t *b, size_t *pos, uint8_t *k
     return 1;
 }
 
-gz_sc_err_t gz_sc_export_body_parse(const uint8_t *b, size_t len, uint8_t profile, gz_sc_export_body_t *out)
+/* words_inline 0: the builder's form, flag bit 0 set but the 32 bytes not in b. */
+static gz_sc_err_t body_parse(const uint8_t *b, size_t len, uint8_t profile, int words_inline,
+                              gz_sc_export_body_t *out)
 {
     memset(out, 0, sizeof *out);
     if (len < 14 || b[0] != 1)
@@ -89,8 +90,8 @@ gz_sc_err_t gz_sc_export_body_parse(const uint8_t *b, size_t len, uint8_t profil
     /* Bit 0 only; never in profile 2 (11). Unknown bits are refused. */
     if ((flags & ~1u) || (profile == 2 && (flags & 1)))
         return GZ_SC_DAMAGED;
-    size_t p = 10;
-    if (flags & 1) {
+    size_t p = WORDS_AT;
+    if ((flags & 1) && words_inline) {
         if (len - p < 32)
             return GZ_SC_DAMAGED;
         out->entropy = b + p;
@@ -125,6 +126,36 @@ gz_sc_err_t gz_sc_export_body_parse(const uint8_t *b, size_t len, uint8_t profil
     return GZ_SC_OK;
 }
 
+gz_sc_err_t gz_sc_export_body_parse(const uint8_t *b, size_t len, uint8_t profile, gz_sc_export_body_t *out)
+{
+    return body_parse(b, len, profile, 1, out);
+}
+
+/* The body as sealed: body[0..10) || entropy || body[10..), or body itself. */
+static void sealed_bytes(const uint8_t *body, const uint8_t *entropy, size_t off, size_t n, uint8_t *dst)
+{
+    while (n) {
+        const uint8_t *src;
+        size_t take;
+        if (off < WORDS_AT) {
+            src = body + off;
+            take = WORDS_AT - off;
+        } else if (off < WORDS_AT + GZ_SC_EXPORT_WORDS_LEN) {
+            src = entropy + (off - WORDS_AT);
+            take = WORDS_AT + GZ_SC_EXPORT_WORDS_LEN - off;
+        } else {
+            src = body + off - GZ_SC_EXPORT_WORDS_LEN;
+            take = n;
+        }
+        if (take > n)
+            take = n;
+        memcpy(dst, src, take);
+        dst += take;
+        off += take;
+        n -= take;
+    }
+}
+
 /* ---- the file ---------------------------------------------------------------- */
 static size_t prefix_len(uint8_t profile)
 {
@@ -144,8 +175,10 @@ static gz_sc_err_t backup_key(const uint8_t *seed, const uint8_t chain[32], uint
     return sc_derive(seed, 64, "backup", chain, 32, bk);
 }
 
+/* body_len: the caller's body; with entropy, the sealed body is 32 longer
+ * and each chunk carrying words is put together in guarded memory (M2). */
 static gz_sc_err_t seal_chunks(const uint8_t *bk, const uint8_t *prefix, size_t plen, const uint8_t *body,
-                               size_t body_len, size_t part, uint8_t *out, size_t *used)
+                               size_t body_len, const uint8_t *entropy, size_t part, uint8_t *out, size_t *used)
 {
     uint8_t ctx[48];
     memcpy(ctx, prefix + 10, 32);      /* chain */
@@ -154,32 +187,48 @@ static gz_sc_err_t seal_chunks(const uint8_t *bk, const uint8_t *prefix, size_t 
     gz_sc_err_t e = sc_keys(bk, 32, "export", ctx, sizeof ctx, &ek);
     if (e != GZ_SC_OK)
         return e;
-    uint8_t *ad = malloc(plen + 9);
-    if (!ad) {
+    uint8_t *ad = malloc(plen + 9), *chunk = entropy ? sodium_malloc(part) : NULL;
+    if (!ad || (entropy && !chunk)) {
+        free(ad);
+        gz_sc_sfree(chunk);
         sc_keys_free(&ek);
         return GZ_SC_NOMEM;
     }
     memcpy(ad, prefix, plen);
-    size_t chunks = body_len == 0 ? 1 : (body_len + part - 1) / part;
+    size_t total = body_len + (entropy ? GZ_SC_EXPORT_WORDS_LEN : 0);
+    size_t chunks = total == 0 ? 1 : (total + part - 1) / part;
     for (size_t i = 0; i < chunks && e == GZ_SC_OK; i++) {
-        size_t off = i * part, n = body_len - off < part ? body_len - off : part;
+        size_t off = i * part, n = total - off < part ? total - off : part;
         sc_put64(ad + plen, (uint64_t)i);
         ad[plen + 8] = i + 1 == chunks ? 1 : 0;
         sc_put32(out + *used, (uint32_t)(n + 40));
-        e = sc_seal(&ek, body ? body + off : NULL, n, ad, plen + 9, out + *used + 4);
+        const uint8_t *pt = body ? body + off : NULL;
+        if (entropy) {
+            sealed_bytes(body, entropy, off, n, chunk);
+            pt = chunk;
+        }
+        e = sc_seal(&ek, pt, n, ad, plen + 9, out + *used + 4);
         *used += 4 + 40 + n;
     }
     free(ad);
+    gz_sc_sfree(chunk);
     sc_keys_free(&ek);
     return e;
 }
 
 gz_sc_err_t gz_sc_export_build(const gz_sc_vault_t *v, uint8_t profile, const uint8_t export_id[16],
                                const gz_sc_kdf_params_t *kdf, const uint8_t *salt, const uint8_t *pkx,
-                               const uint8_t *body, size_t body_len, size_t part, uint8_t *out, size_t cap,
-                               size_t *out_len)
+                               const uint8_t *body, size_t body_len, const uint8_t *entropy, size_t part,
+                               uint8_t *out, size_t cap, size_t *out_len)
 {
-    size_t need = gz_sc_export_size(profile, body_len, part);
+    gz_sc_export_body_t check;
+    gz_sc_err_t e = body_parse(body, body_len, profile, 0, &check);
+    if (e != GZ_SC_OK)
+        return GZ_SC_ARG; /* never seal a body the reader would refuse (profile 2: no words) */
+    if ((check.flags & 1) != (entropy != NULL))
+        return GZ_SC_ARG; /* flag bit 0 and the entropy come together */
+    size_t sealed_len = body_len + (entropy ? GZ_SC_EXPORT_WORDS_LEN : 0);
+    size_t need = gz_sc_export_size(profile, sealed_len, part);
     if (need == 0)
         return GZ_SC_ARG;
     if (profile == 1 && (!kdf || !salt || !pkx))
@@ -188,10 +237,6 @@ gz_sc_err_t gz_sc_export_build(const gz_sc_vault_t *v, uint8_t profile, const ui
         return GZ_SC_ARG;
     if (cap < need)
         return GZ_SC_BUFFER;
-    gz_sc_export_body_t check;
-    gz_sc_err_t e = gz_sc_export_body_parse(body, body_len, profile, &check);
-    if (e != GZ_SC_OK)
-        return GZ_SC_ARG; /* never seal a body the reader would refuse (profile 2: no words) */
     memcpy(out, EX_MAGIC, 8);
     out[8] = 1;
     out[9] = profile;
@@ -224,7 +269,7 @@ gz_sc_err_t gz_sc_export_build(const gz_sc_vault_t *v, uint8_t profile, const ui
     }
     size_t used = prefix_len(profile);
     if (e == GZ_SC_OK)
-        e = seal_chunks(bk, out, used, body, body_len, part, out, &used);
+        e = seal_chunks(bk, out, used, body, body_len, entropy, part, out, &used);
     sodium_free(bk);
     if (e == GZ_SC_OK)
         *out_len = used;
@@ -272,10 +317,11 @@ static gz_sc_err_t open_chunks(const uint8_t *bk, const uint8_t *data, size_t le
     gz_sc_err_t e = sc_keys(bk, 32, "export", ctx, sizeof ctx, &ek);
     if (e != GZ_SC_OK)
         return e;
-    /* The body is never larger than the file. */
-    uint8_t *out = malloc(len - plen + 1), *ad = malloc(plen + 9);
+    /* The body is never larger than the file. It may hold the words'
+     * entropy, a storage-layer secret: guarded memory (8.3; review A, M2). */
+    uint8_t *out = sodium_malloc(len - plen + 1), *ad = malloc(plen + 9);
     if (!out || !ad) {
-        free(out);
+        gz_sc_sfree(out);
         free(ad);
         sc_keys_free(&ek);
         return GZ_SC_NOMEM;
@@ -288,7 +334,11 @@ static gz_sc_err_t open_chunks(const uint8_t *bk, const uint8_t *data, size_t le
         if (len - pos < 4)
             break; /* truncated */
         uint32_t n = sc_get32(data + pos);
-        if (n < CHUNK_MIN || n > CHUNK_MAX || (size_t)n > len - pos - 4)
+        if (n < CHUNK_MIN || n > CHUNK_MAX) {
+            e = GZ_SC_DAMAGED; /* no writer makes such a length (review A, L8) */
+            break;
+        }
+        if ((size_t)n > len - pos - 4)
             break; /* truncated */
         const uint8_t *sc = data + pos + 4;
         sc_put64(ad + plen, i);
@@ -314,8 +364,7 @@ static gz_sc_err_t open_chunks(const uint8_t *bk, const uint8_t *data, size_t le
     free(ad);
     sc_keys_free(&ek);
     if (e != GZ_SC_OK) {
-        sodium_memzero(out, len - plen + 1);
-        free(out);
+        sodium_free(out); /* wipes */
         return e;
     }
     *body = out;
@@ -363,8 +412,7 @@ gz_sc_err_t gz_sc_export_open(const uint8_t *data, size_t len, const uint8_t cha
         gz_sc_export_body_t b;
         SC_DECLASSIFY(*body, *body_len); /* the body's layout is parsed once opened */
         if (gz_sc_export_body_parse(*body, *body_len, info.profile, &b) != GZ_SC_OK) {
-            sodium_memzero(*body, *body_len);
-            free(*body);
+            sodium_free(*body);
             *body = NULL;
             *body_len = 0;
             e = GZ_SC_DAMAGED;

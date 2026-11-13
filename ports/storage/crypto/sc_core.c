@@ -45,6 +45,7 @@ const char *gz_sc_err_text(gz_sc_err_t e)
     case GZ_SC_ARG: return "bad argument";
     case GZ_SC_NOMEM: return "out of memory";
     case GZ_SC_LIBRARY: return "libsodium is not the pinned version";
+    case GZ_SC_PASS_REFUSED: return "passphrase refused: not normalised, too short or too long";
     }
     return "unknown";
 }

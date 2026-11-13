@@ -72,6 +72,16 @@ static void params(void)
     gz_sc_kdf_params_t big = {1, 3, 2097152, 1};
     gz_sc_params_for_new_wrap(&big, &GZ_SC_KDF_KEYFILE_DEFAULT, &out);
     CHECK(out.t == 3 && out.m_kib == 2097152);
+    /* Never below the stored parameters, even where this device cannot hold
+     * them (4.7; review A, L7 e): a 1 GiB key file on a 1 GiB device stays at
+     * 1 GiB, and the rewrap is then refused there rather than downgraded. */
+    gz_sc_test_set_phys(1ull << 30);
+    gz_sc_kdf_params_t gib = {1, 3, 1048576, 1};
+    gz_sc_params_for_new_wrap(&gib, &GZ_SC_KDF_KEYFILE_DEFAULT, &out);
+    CHECK(out.t == 3 && out.m_kib == 1048576);
+    CHECK_ERR(gz_sc_params_check(&out), GZ_SC_NEEDS_MORE_MEMORY);
+    gz_sc_params_for_new_wrap(&gib, &GZ_SC_KDF_EXPORT_DEFAULT, &out);
+    CHECK(out.t == 4 && out.m_kib == 1048576);
     gz_sc_test_set_phys(0);
     gz_sc_test_set_floor(1, 8);
 }
@@ -105,9 +115,41 @@ static void keyfile_fields(void)
     memcpy(bad, kf, sizeof bad);
     bad[8] = 2; /* another format is refused as such, before the commitment */
     CHECK_ERR(gz_sc_keyfile_parse(bad, GZ_SC_KEYFILE_LEN, SIGNET, NULL), GZ_SC_NOT_THIS_FORMAT);
+    bad[8] = 0;
+    CHECK_ERR(gz_sc_keyfile_parse(bad, GZ_SC_KEYFILE_LEN, SIGNET, NULL), GZ_SC_NOT_THIS_FORMAT);
     bad[8] = 1;
     bad[0] ^= 1;
     CHECK_ERR(gz_sc_keyfile_parse(bad, GZ_SC_KEYFILE_LEN, SIGNET, NULL), GZ_SC_NOT_THIS_FORMAT);
+    /* 4.5 steps 1 and 2 with their stated reason, before any derivation
+     * (test 2; review A, L7 f): every byte of kdf, t and p is read. */
+    struct { size_t at; uint8_t v; } pb[] = {{57, 2}, {57, 0}, {66, 2}, {66, 0}, {58, 1}, {59, 1}, {60, 1}};
+    for (size_t i = 0; i < sizeof pb / sizeof pb[0]; i++) {
+        memcpy(bad, kf, sizeof bad);
+        bad[pb[i].at] = pb[i].v;
+        CHECK_ERR(gz_sc_keyfile_parse(bad, GZ_SC_KEYFILE_LEN, SIGNET, NULL), GZ_SC_PARAMS_REFUSED);
+    }
+    memcpy(bad, kf, sizeof bad);
+    sc_put32(bad + 58, 0x01000003u); /* t's high byte: 16,777,219 passes */
+    CHECK_ERR(gz_sc_keyfile_parse(bad, GZ_SC_KEYFILE_LEN, SIGNET, NULL), GZ_SC_PARAMS_REFUSED);
+    /* 4.6 "check" (review A, L6): the same wallet's MSK, or another's. */
+    {
+        gz_sc_vault_t *cv = NULL, *ov = NULL;
+        CHECK_ERR(gz_sc_keyfile_unlock(kf, pk, &cv), GZ_SC_OK);
+        uint8_t om[32];
+        memcpy(om, MSK, 32);
+        om[5] ^= 1;
+        CHECK_ERR(gz_sc_vault_new(SIGNET, VID, om, SEED64, &ov), GZ_SC_OK);
+        if (cv && ov) {
+            CHECK_ERR(gz_sc_keyfile_check(kf, pk, cv), GZ_SC_OK);
+            CHECK_ERR(gz_sc_keyfile_check(kf, pk, ov), GZ_SC_NOT_THIS_WALLET);
+            uint8_t wrong[32];
+            memcpy(wrong, pk, 32);
+            wrong[0] ^= 1;
+            CHECK_ERR(gz_sc_keyfile_check(kf, wrong, cv), GZ_SC_WRONG_PASSPHRASE);
+        }
+        gz_sc_vault_free(cv);
+        gz_sc_vault_free(ov);
+    }
     /* "check" (4.6) compares all 32 bytes of MSK. */
     gz_sc_vault_t *vv = NULL;
     CHECK_ERR(gz_sc_keyfile_unlock(kf, pk, &vv), GZ_SC_OK);
@@ -260,6 +302,43 @@ static void journal_fields(void)
     CHECK_ERR(gz_sc_frame_seal(kj, 5, 3, 1, 0, eight, 8, e, sizeof e, &n), GZ_SC_OK);
     CHECK_ERR(gz_sc_frame_open(kj, e, n, 5, &f, NULL, 0), GZ_SC_OK);
     CHECK(f.kind == 3 && f.entry_len == 69);
+    {   /* Offsets at and above 2^32 are bound in all 64 bits (review A, L7 c):
+         * a journal can pass 4 GiB. */
+        const uint64_t hi = (1ull << 32) + 185;
+        CHECK_ERR(gz_sc_frame_seal(kj, hi, 2, 1, 1, pl, 40, e, sizeof e, &n), GZ_SC_OK);
+        CHECK_ERR(gz_sc_frame_open(kj, e, n, hi, &f, back, sizeof back), GZ_SC_OK);
+        CHECK_ERR(gz_sc_frame_open(kj, e, n, 185, NULL, NULL, 0), GZ_SC_INVALID);
+        CHECK_ERR(gz_sc_frame_open(kj, e, n, hi + (1ull << 32), NULL, NULL, 0), GZ_SC_INVALID);
+        uint8_t hm[8];
+        sc_put64(hm, (1ull << 40) + 7);
+        CHECK_ERR(gz_sc_frame_seal(kj, (1ull << 40) + 7, 3, 1, 0, hm, 8, e, sizeof e, &n), GZ_SC_OK);
+        CHECK_ERR(gz_sc_frame_open(kj, e, n, (1ull << 40) + 7, &f, NULL, 0), GZ_SC_OK);
+        CHECK_ERR(gz_sc_frame_open(kj, e, n, 7, NULL, NULL, 0), GZ_SC_INVALID);
+    }
+    {   /* The writer refuses a payload above 8 MiB, which its reader would
+         * call invalid; 8 MiB exactly is sealed and opened (L7 d). */
+        size_t max = GZ_SC_FRAME_LEN_MAX - 57;
+        uint8_t *big = calloc(1, max + 1), *bo = malloc(max + 61);
+        CHECK(big && bo);
+        if (big && bo) {
+            CHECK_ERR(gz_sc_frame_seal(kj, 185, 2, 1, 1, big, max + 1, bo, max + 61, &n), GZ_SC_ARG);
+            CHECK_ERR(gz_sc_frame_seal(kj, 185, 2, 1, 1, big, max, bo, max + 61, &n), GZ_SC_OK);
+            CHECK(n == max + 61);
+            CHECK_ERR(gz_sc_frame_open(kj, bo, n, 185, &f, NULL, 0), GZ_SC_OK);
+            CHECK(f.payload_len == max);
+        }
+        free(big);
+        free(bo);
+    }
+    {   /* Stated reasons of the clear header checks (test 2; review A's
+         * no-effect survivors): the journal header's format. */
+        memcpy(bad, h, sizeof bad);
+        bad[8] = 2;
+        CHECK_ERR(gz_sc_header_clear(bad, sizeof bad, SIGNET, NULL, NULL), GZ_SC_NOT_THIS_FORMAT);
+        bad[8] = 1;
+        bad[9] ^= 1;
+        CHECK_ERR(gz_sc_header_clear(bad, sizeof bad, SIGNET, NULL, NULL), GZ_SC_OTHER_NETWORK);
+    }
 
     /* Test 7, hedging: with r forced to repeat, different entries at one
      * offset get different nonces, identical entries identical bytes. */
@@ -325,6 +404,50 @@ static void journal_fields(void)
     CHECK_ERR(gz_sc_guard_parse(c, 17, &g2), GZ_SC_DAMAGED);
     c[9] = 3;
     CHECK_ERR(gz_sc_guard_parse(c, cl, &g2), GZ_SC_DAMAGED);
+    memcpy(gbad, gb, gn);
+    gbad[9] ^= 1; /* another network's guard is said to be one */
+    CHECK_ERR(gz_sc_guard_open(v, gbad, gn, &g2), GZ_SC_OTHER_NETWORK);
+    gbad[9] ^= 1;
+    gbad[0] ^= 1;
+    CHECK_ERR(gz_sc_guard_open(v, gbad, gn, &g2), GZ_SC_NOT_THIS_FORMAT);
+
+    /* The mark file (10.2): the clear header's stated reasons, and the torn
+     * tail is one entry at most (review A, L2). */
+    gz_sc_framekey_t *kh = NULL;
+    CHECK_ERR(gz_sc_mark_key(v, FID, &kh), GZ_SC_OK);
+    uint8_t mk[57 + 5 * 56], mbad[57 + 5 * 56];
+    CHECK_ERR(gz_sc_mark_new(kh, SIGNET, mk), GZ_SC_OK);
+    CHECK_ERR(gz_sc_mark_entry(kh, mk, 113, 1, 300, mk + 113), GZ_SC_OK);
+    size_t ml = 169, end = 0;
+    uint64_t mi = 0, mo = 0;
+    CHECK(gz_sc_mark_read(kh, mk, ml, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_OK && mi == 1 && mo == 300 &&
+          end == 169);
+    memcpy(mbad, mk, ml);
+    mbad[3] ^= 1;
+    CHECK(gz_sc_mark_read(kh, mbad, ml, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_NOT_A_MARK_FILE);
+    memcpy(mbad, mk, ml);
+    mbad[20] ^= 1;
+    CHECK(gz_sc_mark_read(kh, mbad, ml, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_NOT_A_MARK_FILE);
+    memcpy(mbad, mk, ml);
+    mbad[8] = 2;
+    CHECK(gz_sc_mark_read(kh, mbad, ml, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_NOT_A_MARK_FILE);
+    memcpy(mbad, mk, ml);
+    mbad[45] ^= 1;
+    CHECK(gz_sc_mark_read(kh, mbad, ml, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_OTHER_JOURNAL);
+    /* One invalid full entry after the newest valid one: a torn tail, cut at 169. */
+    memcpy(mbad, mk, ml);
+    memset(mbad + 169, 0x5a, 56);
+    CHECK(gz_sc_mark_read(kh, mbad, 225, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_OK && end == 169 && mi == 1);
+    CHECK(gz_sc_mark_read(kh, mbad, 225 + 30, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_OK && end == 169);
+    /* Two (probe P2) or three: damaged, never cut silently. */
+    memset(mbad + 225, 0x5b, 56);
+    CHECK(gz_sc_mark_read(kh, mbad, 281, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_DAMAGED);
+    memset(mbad + 281, 0x5c, 56);
+    CHECK(gz_sc_mark_read(kh, mbad, 337, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_DAMAGED);
+    /* No valid entry at all, however many: possibly old, not damaged. */
+    memset(mbad + 57, 0x5d, 112);
+    CHECK(gz_sc_mark_read(kh, mbad, 337, SIGNET, FID, &mi, &mo, &end) == GZ_SC_MARK_NO_ENTRY);
+    gz_sc_framekey_free(kh);
     gz_sc_vault_free(v);
 }
 
@@ -372,56 +495,66 @@ static void exports(void)
     uint8_t body[300], ex[700], bad[700], pkx[32] = {9}, *out;
     size_t bl = 0, xl, ol;
     uint8_t g[18] = {0};
-    CHECK_ERR(gz_sc_export_body_begin(5, NULL, g, 18, body, sizeof body, &bl), GZ_SC_OK);
+    CHECK_ERR(gz_sc_export_body_begin(5, 0, g, 18, body, sizeof body, &bl), GZ_SC_OK);
     CHECK_ERR(gz_sc_export_body_entry(2, 1, 1, (const uint8_t *)"abcd", 4, body, sizeof body, &bl), GZ_SC_OK);
-    CHECK_ERR(gz_sc_export_build(v, 1, FID, &TP, SALT, pkx, body, bl, 16, ex, sizeof ex, &xl), GZ_SC_OK);
+    CHECK_ERR(gz_sc_export_build(v, 1, FID, &TP, SALT, pkx, body, bl, NULL, 16, ex, sizeof ex, &xl), GZ_SC_OK);
     CHECK(xl == gz_sc_export_size(1, bl, 16));
     int fails = 0;
     for (size_t i = 0; i < xl; i++) {
         memcpy(bad, ex, xl);
         bad[i] ^= 0x01;
         if (gz_sc_export_open(bad, xl, SIGNET, pkx, NULL, &out, &ol) == GZ_SC_OK) {
-            free(out);
+            gz_sc_sfree(out);
             fails++;
         }
         /* The words do not read the slot, but every chunk's associated data
          * holds the whole prefix, slot included. */
         if (gz_sc_export_open(bad, xl, SIGNET, NULL, SEED64, &out, &ol) == GZ_SC_OK) {
-            free(out);
+            gz_sc_sfree(out);
             fails++;
         }
     }
     CHECK(fails == 0);
     for (size_t cut = 0; cut < xl; cut++)
         if (gz_sc_export_open(ex, cut, SIGNET, NULL, SEED64, &out, &ol) == GZ_SC_OK) {
-            free(out);
+            gz_sc_sfree(out);
             fails++;
         }
     CHECK(fails == 0);
     {   /* Key commitment of the slot: a wrap for B under a commitment for A. */
         uint8_t pkb[32] = {10}, exb[700];
         size_t xbl;
-        CHECK_ERR(gz_sc_export_build(v, 1, FID, &TP, SALT, pkb, body, bl, 16, exb, sizeof exb, &xbl), GZ_SC_OK);
+        CHECK_ERR(gz_sc_export_build(v, 1, FID, &TP, SALT, pkb, body, bl, NULL, 16, exb, sizeof exb, &xbl), GZ_SC_OK);
         memcpy(exb + 84, ex + 84, 32);
         CHECK_ERR(gz_sc_export_open(exb, xbl, SIGNET, pkb, NULL, &out, &ol), GZ_SC_WRONG_PASSPHRASE);
         CHECK_ERR(gz_sc_export_open(exb, xbl, SIGNET, pkx, NULL, &out, &ol), GZ_SC_WRONG_PASSPHRASE);
     }
-    {   /* A chunk length below 40 is "truncated", whatever follows. */
+    {   /* A chunk length below 40 or above 65,576 is damage, whatever
+         * follows (no writer makes one; review A, L8); a chunk running past
+         * the end is truncation. */
         uint8_t ex2[700];
         size_t x2l;
-        CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, 65536, ex2, sizeof ex2, &x2l), GZ_SC_OK);
-        ex2[58] = ex2[59] = ex2[60] = 0;
-        ex2[61] = 39;
-        CHECK_ERR(gz_sc_export_open(ex2, 58 + 4 + 39, SIGNET, NULL, SEED64, &out, &ol), GZ_SC_TRUNCATED);
+        CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, NULL, 65536, ex2, sizeof ex2, &x2l),
+                  GZ_SC_OK);
+        uint8_t keep[4];
+        memcpy(keep, ex2 + 58, 4);
+        sc_put32(ex2 + 58, 39);
+        CHECK_ERR(gz_sc_export_open(ex2, 58 + 4 + 39, SIGNET, NULL, SEED64, &out, &ol), GZ_SC_DAMAGED);
+        sc_put32(ex2 + 58, 65577);
+        CHECK_ERR(gz_sc_export_open(ex2, x2l, SIGNET, NULL, SEED64, &out, &ol), GZ_SC_DAMAGED);
+        memcpy(ex2 + 58, keep, 4);
+        CHECK_ERR(gz_sc_export_open(ex2, x2l - 1, SIGNET, NULL, SEED64, &out, &ol), GZ_SC_TRUNCATED);
+        CHECK_ERR(gz_sc_export_open(ex2, x2l, SIGNET, NULL, SEED64, &out, &ol), GZ_SC_OK);
+        gz_sc_sfree(out);
     }
     CHECK_ERR(gz_sc_export_open(ex, xl, SIGNET, pkx, SEED64, &out, &ol), GZ_SC_ARG);
     CHECK_ERR(gz_sc_export_open(ex, xl, SIGNET, NULL, NULL, &out, &ol), GZ_SC_ARG);
-    CHECK_ERR(gz_sc_export_build(v, 1, FID, NULL, SALT, pkx, body, bl, 16, ex, sizeof ex, &xl), GZ_SC_ARG);
-    CHECK_ERR(gz_sc_export_build(v, 2, FID, &TP, NULL, NULL, body, bl, 16, ex, sizeof ex, &xl), GZ_SC_ARG);
-    CHECK_ERR(gz_sc_export_build(v, 3, FID, NULL, NULL, NULL, body, bl, 16, ex, sizeof ex, &xl), GZ_SC_ARG);
-    CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, 0, ex, sizeof ex, &xl), GZ_SC_ARG);
-    CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, 65537, ex, sizeof ex, &xl), GZ_SC_ARG);
-    CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, 16, ex, 50, &xl), GZ_SC_BUFFER);
+    CHECK_ERR(gz_sc_export_build(v, 1, FID, NULL, SALT, pkx, body, bl, NULL, 16, ex, sizeof ex, &xl), GZ_SC_ARG);
+    CHECK_ERR(gz_sc_export_build(v, 2, FID, &TP, NULL, NULL, body, bl, NULL, 16, ex, sizeof ex, &xl), GZ_SC_ARG);
+    CHECK_ERR(gz_sc_export_build(v, 3, FID, NULL, NULL, NULL, body, bl, NULL, 16, ex, sizeof ex, &xl), GZ_SC_ARG);
+    CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, NULL, 0, ex, sizeof ex, &xl), GZ_SC_ARG);
+    CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, NULL, 65537, ex, sizeof ex, &xl), GZ_SC_ARG);
+    CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, NULL, 16, ex, 50, &xl), GZ_SC_BUFFER);
     /* Body parsing: unknown flag bits, a short guard, an entry overrunning. */
     gz_sc_export_body_t pb;
     CHECK_ERR(gz_sc_export_body_parse(body, bl, 1, &pb), GZ_SC_OK);
@@ -438,11 +571,11 @@ static void exports(void)
     CHECK_ERR(gz_sc_export_body_parse(bad, bl, 1, &pb), GZ_SC_DAMAGED);
     CHECK_ERR(gz_sc_export_body_parse(body, 13, 1, &pb), GZ_SC_DAMAGED);
     /* Zero-length body content: one empty final chunk. */
-    CHECK_ERR(gz_sc_export_body_begin(5, NULL, NULL, 0, body, sizeof body, &bl), GZ_SC_OK);
-    CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, 65536, ex, sizeof ex, &xl), GZ_SC_OK);
+    CHECK_ERR(gz_sc_export_body_begin(5, 0, NULL, 0, body, sizeof body, &bl), GZ_SC_OK);
+    CHECK_ERR(gz_sc_export_build(v, 2, FID, NULL, NULL, NULL, body, bl, NULL, 65536, ex, sizeof ex, &xl), GZ_SC_OK);
     CHECK_ERR(gz_sc_export_open(ex, xl, SIGNET, NULL, SEED64, &out, &ol), GZ_SC_OK);
     CHECK(ol == bl);
-    free(out);
+    gz_sc_sfree(out);
     gz_sc_vault_free(v);
 }
 
@@ -486,6 +619,39 @@ static void attempts(void)
     crypto_hash_sha256(h, bad, 69);
     memcpy(bad + 69, h, 16);
     CHECK(gz_sc_attempts_decode(SIGNET, bad, sizeof bad, now, &b) == 0 && b.blocked_until_s == now + 900);
+    /* A damaged file of the right length: the counter carries on (L7 g). */
+    gz_sc_attempts_t c41 = {41, 2, now - 5, now + 1};
+    gz_sc_attempts_encode(SIGNET, &c41, f);
+    memcpy(bad, f, sizeof f);
+    bad[80] ^= 1;
+    CHECK(gz_sc_attempts_decode(SIGNET, bad, sizeof bad, now, &b) == 0 && b.counter == 41 &&
+          b.blocked_until_s == now + 900);
+    gz_sc_attempts_wrong(&b, now);
+    CHECK(b.counter == 42);
+    /* Probe P1: a forged valid file cannot block longer than the strictest
+     * state, nor date a wrong attempt in the future (review A, L1). */
+    gz_sc_attempts_t forged = {7, 20, UINT64_MAX - 1, UINT64_MAX - 1};
+    gz_sc_attempts_encode(SIGNET, &forged, f);
+    CHECK(gz_sc_attempts_decode(SIGNET, f, sizeof f, now, &b) == 1 && b.blocked_until_s == now + 900 &&
+          b.last_wrong_s == now && gz_sc_attempts_wait(&b, now) == 900);
+    forged.blocked_until_s = now + 899;
+    gz_sc_attempts_encode(SIGNET, &forged, f);
+    CHECK(gz_sc_attempts_decode(SIGNET, f, sizeof f, now, &b) == 1 && b.blocked_until_s == now + 899);
+    /* Probe P1b: at 2^64 - 1 the counter stays, it never wraps to 0. */
+    gz_sc_attempts_t top = {UINT64_MAX, 0, 0, 0};
+    gz_sc_attempts_encode(SIGNET, &top, f);
+    memcpy(bad, f, sizeof f);
+    bad[70] ^= 1;
+    CHECK(gz_sc_attempts_decode(SIGNET, bad, sizeof bad, now, &b) == 0 && b.counter == UINT64_MAX);
+    gz_sc_attempts_wrong(&b, now);
+    CHECK(b.counter == UINT64_MAX);
+    gz_sc_attempts_right(&b, now);
+    CHECK(b.counter == UINT64_MAX);
+    /* The clock near its end: no wrap of blocked_until either. */
+    gz_sc_attempts_t late = {1, 0, 0, 0};
+    gz_sc_attempts_wrong(&late, UINT64_MAX - 1);
+    CHECK(late.blocked_until_s == UINT64_MAX);
+    CHECK(gz_sc_attempts_decode(SIGNET, NULL, 0, UINT64_MAX - 10, &b) == 0 && b.blocked_until_s == UINT64_MAX);
 }
 
 /* Two-byte draws: 0xf300 (62,208, to be thrown away), then 0x0001. */
@@ -526,6 +692,65 @@ static void passphrases(void)
     CHECK(sc_pass_check_list((const uint8_t *)cand, strlen(cand), NULL, NULL, 0, list, 1) == GZ_SC_PASS_COMMON);
     CHECK(sc_pass_check_list((const uint8_t *)"correct horse battery staples", 29, NULL, NULL, 0, list, 1) ==
           GZ_SC_PASS_OK);
+    /* The bundled list (open point 3): the pinned entries, sorted, each of
+     * 15 lowercase ASCII characters or more; matched whole after folding. */
+    {
+        crypto_hash_sha256_state bst;
+        uint8_t bd[32];
+        crypto_hash_sha256_init(&bst);
+        int sorted = 1, shape = 1;
+        for (size_t i = 0; i < GZ_SC_BLOCK_N; i++) {
+            const char *w = gz_sc_blocklist[i];
+            if (i)
+                crypto_hash_sha256_update(&bst, (const uint8_t *)"\n", 1);
+            crypto_hash_sha256_update(&bst, (const uint8_t *)w, strlen(w));
+            if (i && strcmp(gz_sc_blocklist[i - 1], w) >= 0)
+                sorted = 0;
+            if (strlen(w) < GZ_SC_PASS_MIN_CP)
+                shape = 0;
+            for (const char *q = w; *q; q++)
+                if ((unsigned char)*q < 0x20 || (unsigned char)*q >= 0x7f || (*q >= 'A' && *q <= 'Z'))
+                    shape = 0;
+        }
+        crypto_hash_sha256_final(&bst, bd);
+        eq_hex("blocklist digest", bd, 32, GZ_SC_BLOCK_DIGEST_HEX);
+        CHECK(sorted && shape);
+        const char *common[] = {"passwordpassword", "PasswordPassword", "QWERTYUIOPASDFG", "1234567890123456"};
+        for (size_t i = 0; i < 4; i++)
+            CHECK(gz_sc_pass_check((const uint8_t *)common[i], strlen(common[i]), NULL, NULL, 0) ==
+                  GZ_SC_PASS_COMMON);
+        /* Entries spread over the list are refused, the first and the last
+         * included (every entry would take minutes under valgrind). */
+        size_t missed = 0;
+        for (size_t i = 0;; i += 97) {
+            if (i >= GZ_SC_BLOCK_N)
+                i = GZ_SC_BLOCK_N - 1;
+            if (gz_sc_pass_check((const uint8_t *)gz_sc_blocklist[i], strlen(gz_sc_blocklist[i]), NULL, NULL, 0) !=
+                GZ_SC_PASS_COMMON)
+                missed++;
+            if (i == GZ_SC_BLOCK_N - 1)
+                break;
+        }
+        CHECK(missed == 0);
+        const char *fine[] = {"the quick zebra paints violins", "a passphrase nobody has typed yet",
+                              "seventeen orange kites over Ghent"};
+        for (size_t i = 0; i < 3; i++)
+            CHECK(gz_sc_pass_check((const uint8_t *)fine[i], strlen(fine[i]), NULL, NULL, 0) == GZ_SC_PASS_OK);
+    }
+    /* NFC is the caller's to apply; a decomposed passphrase is refused as
+     * such, never derived from (review A, M3). */
+    {
+        const char *dec = "caf" "e\xcc\x81" " au lait, deux sucres"; /* e + U+0301 */
+        const char *pre = "caf" "\xc3\xa9" " au lait, deux sucres";
+        CHECK(gz_sc_pass_check_form((const uint8_t *)dec, strlen(dec)) == GZ_SC_PASS_NOT_NFC);
+        CHECK(gz_sc_pass_check((const uint8_t *)dec, strlen(dec), NULL, NULL, 0) == GZ_SC_PASS_NOT_NFC);
+        CHECK(gz_sc_pass_check_form((const uint8_t *)pre, strlen(pre)) == GZ_SC_PASS_OK);
+        CHECK(gz_sc_pass_check_form((const uint8_t *)p14, strlen(p14)) == GZ_SC_PASS_TOO_SHORT);
+        CHECK(gz_sc_pass_check_form((const uint8_t *)big, 1025) == GZ_SC_PASS_TOO_LONG);
+        CHECK(gz_sc_pass_check_form((const uint8_t *)big, 1024) == GZ_SC_PASS_OK);
+        CHECK(gz_sc_pass_check_form((const uint8_t *)"\xc3\x28 abcdefghijklmnopq", 20) == GZ_SC_PASS_NOT_UTF8);
+        CHECK(strcmp(gz_sc_err_text(GZ_SC_PASS_REFUSED), "unknown") != 0);
+    }
     /* gazpacho or the wallet's name, with or without digits. */
     CHECK(gz_sc_pass_check((const uint8_t *)"GazPacho1234567", 15, NULL, NULL, 0) == GZ_SC_PASS_NAME);
     CHECK(gz_sc_pass_check((const uint8_t *)"1234567gazpacho", 15, NULL, NULL, 0) == GZ_SC_PASS_NAME);

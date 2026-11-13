@@ -538,13 +538,13 @@ static void e10_e11(void)
     uint8_t guard[26] = {0, 0, 0, 0, 0, 0, 0, 3, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 1};
     uint8_t body[400];
     size_t bl = 0;
-    CHECK_ERR(gz_sc_export_body_begin(1794000100000ull, NULL, guard, 26, body, sizeof body, &bl), GZ_SC_OK);
+    CHECK_ERR(gz_sc_export_body_begin(1794000100000ull, 0, guard, 26, body, sizeof body, &bl), GZ_SC_OK);
     bl += plain_entries(body + bl);
     CHECK(bl == 164);
     uint8_t ex1[600], ex2[600], ex1s[800], *out = NULL;
     size_t l1, l2, l1s, ol;
     r_queue("export slot", "export chunk 0", NULL);
-    CHECK_ERR(gz_sc_export_build(v, 1, eid, &TEST_P, saltx, pkx, body, bl, 65536, ex1, sizeof ex1, &l1), GZ_SC_OK);
+    CHECK_ERR(gz_sc_export_build(v, 1, eid, &TEST_P, saltx, pkx, body, bl, NULL, 65536, ex1, sizeof ex1, &l1), GZ_SC_OK);
     eq_hex("E10a profile 1", ex1, l1,
            "475a4241434b55500101f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c"
            "4225e973988108000000eba594bd30df323ee7faf88bd4e4bf81010000000300"
@@ -560,7 +560,7 @@ static void e10_e11(void)
            "052e917f75692eb026d3404761119282b1921240b1077afb6622b147b27ac18b"
            "b55a7e5e69ea6ef12429621d");
     r_queue("export chunk 0", NULL);
-    CHECK_ERR(gz_sc_export_build(v, 2, eid, NULL, NULL, NULL, body, bl, 65536, ex2, sizeof ex2, &l2), GZ_SC_OK);
+    CHECK_ERR(gz_sc_export_build(v, 2, eid, NULL, NULL, NULL, body, bl, NULL, 65536, ex2, sizeof ex2, &l2), GZ_SC_OK);
     eq_hex("E10b profile 2", ex2, l2,
            "475a4241434b55500102f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c"
            "4225e973988108000000eba594bd30df323ee7faf88bd4e4bf81000000cc217f"
@@ -577,7 +577,7 @@ static void e10_e11(void)
         CHECK_ERR(gz_sc_export_open(data, len, SIGNET, pk, seed, &out, &ol), want);                      \
         if ((want) == GZ_SC_OK)                                                                          \
             CHECK(ol == bl && memcmp(out, body, bl) == 0);                                               \
-        free(out);                                                                                       \
+        gz_sc_sfree(out); /* guarded memory (M2): sodium_free aborts on anything else */        \
     } while (0)
     OPENS(ex1, l1, pkx, NULL, GZ_SC_OK);
     OPENS(ex1, l1, NULL, SEED64, GZ_SC_OK);
@@ -588,7 +588,7 @@ static void e10_e11(void)
     crypto_hash_sha512(oseed, (const uint8_t *)"other", 5);
     OPENS(ex1, l1, NULL, oseed, GZ_SC_DAMAGED);
     /* E11. */
-    CHECK_ERR(gz_sc_export_build(v, 1, eid, &TEST_P, saltx, pkx, body, bl, 64, ex1s, sizeof ex1s, &l1s), GZ_SC_OK);
+    CHECK_ERR(gz_sc_export_build(v, 1, eid, &TEST_P, saltx, pkx, body, bl, NULL, 64, ex1s, sizeof ex1s, &l1s), GZ_SC_OK);
     OPENS(ex1s, l1s, pkx, NULL, GZ_SC_OK);
     size_t c[3] = {188, 188 + 4 + 64 + 40, 188 + 2 * (4 + 64 + 40)};
     OPENS(ex1s, c[2], pkx, NULL, GZ_SC_TRUNCATED);
@@ -629,14 +629,30 @@ static void e10_e11(void)
     /* Profile 2 never carries the words; profile 1 only when chosen. */
     uint8_t wbody[400];
     size_t wl = 0;
-    CHECK_ERR(gz_sc_export_body_begin(1, ENTROPY, guard, 26, wbody, sizeof wbody, &wl), GZ_SC_OK);
-    CHECK_ERR(gz_sc_export_build(v, 2, eid, NULL, NULL, NULL, wbody, wl, 65536, sw, sizeof sw, &l2), GZ_SC_ARG);
-    CHECK_ERR(gz_sc_export_build(v, 1, eid, &TEST_P, saltx, pkx, wbody, wl, 65536, sw, sizeof sw, &l2), GZ_SC_OK);
-    CHECK_ERR(gz_sc_export_open(sw, l2, SIGNET, pkx, NULL, &out, &ol), GZ_SC_OK);
-    gz_sc_export_body_t pb;
-    CHECK(out && gz_sc_export_body_parse(out, ol, 1, &pb) == GZ_SC_OK && pb.entropy &&
-          memcmp(pb.entropy, ENTROPY, 32) == 0);
-    free(out);
+    CHECK_ERR(gz_sc_export_body_begin(1, 1, guard, 26, wbody, sizeof wbody, &wl), GZ_SC_OK);
+    CHECK(wl == gz_sc_export_body_len(26, 0) && wbody[9] == 1); /* the caller's buffer holds no words */
+    CHECK_ERR(gz_sc_export_build(v, 2, eid, NULL, NULL, NULL, wbody, wl, ENTROPY, 65536, sw, sizeof sw, &l2),
+              GZ_SC_ARG);
+    CHECK_ERR(gz_sc_export_build(v, 1, eid, &TEST_P, saltx, pkx, wbody, wl, NULL, 65536, sw, sizeof sw, &l2),
+              GZ_SC_ARG); /* flag bit 0 without the entropy */
+    CHECK_ERR(gz_sc_export_build(v, 1, eid, &TEST_P, saltx, pkx, body, bl, ENTROPY, 65536, sw, sizeof sw, &l2),
+              GZ_SC_ARG); /* the entropy without flag bit 0 */
+    /* Every chunk size up to the whole body, so the words straddle chunk
+     * boundaries in every way; the opened body has them in place. */
+    uint8_t *wx = malloc(4096);
+    for (size_t part = 1; wx && part <= wl + GZ_SC_EXPORT_WORDS_LEN + 1; part++) {
+        CHECK_ERR(gz_sc_export_build(v, 1, eid, &TEST_P, saltx, pkx, wbody, wl, ENTROPY, part, wx, 4096, &l2),
+                  GZ_SC_OK);
+        CHECK(l2 == gz_sc_export_size(1, wl + GZ_SC_EXPORT_WORDS_LEN, part));
+        CHECK_ERR(gz_sc_export_open(wx, l2, SIGNET, pkx, NULL, &out, &ol), GZ_SC_OK);
+        gz_sc_export_body_t pb;
+        CHECK(out && gz_sc_export_body_parse(out, ol, 1, &pb) == GZ_SC_OK && pb.entropy &&
+              memcmp(pb.entropy, ENTROPY, 32) == 0 && ol == wl + 32 && memcmp(out, wbody, 10) == 0 &&
+              memcmp(out + 42, wbody + 10, wl - 10) == 0);
+        gz_sc_sfree(out);
+        out = NULL;
+    }
+    free(wx);
     gz_sc_vault_free(v);
 }
 

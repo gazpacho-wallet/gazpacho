@@ -23,7 +23,7 @@ import sys
 import tempfile
 
 LIB = ["sc_core.c", "sc_keyfile.c", "sc_journal.c", "sc_export.c", "sc_misc.c", "sc_pass.c",
-       "sc_wordlist.c", "sc_kdf.c", "sc_files.c"]
+       "sc_wordlist.c", "sc_blocklist.c", "sc_kdf.c", "sc_files.c"]
 TESTS = [  # name, sources, arguments, test library (True) or release (False)
     ("vectors", ["tests/test_vectors.c", "tests/sc_test.c"], [], True),
     ("formats", ["tests/test_formats.c", "tests/sc_test.c"], [], True),
@@ -109,10 +109,10 @@ def build_and_test(work, deps):
                      objs["ctime"] + libs, work)
         if not ok:
             return "compile", err
-        r = subprocess.run(["valgrind", "--error-exitcode=42", "--suppressions=tests/ctime.supp", "--quiet",
-                            "./t_ctime"], cwd=work, capture_output=True, text=True, timeout=600)
+        r = subprocess.run([sys.executable, "-I", "tests/ctime-check.py", "valgrind", "./t_ctime"], cwd=work,
+                           capture_output=True, text=True, timeout=600)
         if r.returncode != 0:
-            return "killed", "ctime: %s" % r.stderr[-300:]
+            return "killed", "ctime: %s" % (r.stdout + r.stderr)[-300:]
     return "survived", ""
 
 

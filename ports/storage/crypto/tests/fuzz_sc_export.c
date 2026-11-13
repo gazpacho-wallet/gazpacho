@@ -62,21 +62,32 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
             if (gz_sc_export_body_parse(bd, bdl, prof, &b) != GZ_SC_OK)
                 continue;
             size_t cap = gz_sc_export_size(prof, bdl, part), xl;
-            uint8_t *x = malloc(cap);
+            uint8_t *x = malloc(cap), *cb = malloc(bdl);
             gz_sc_kdf_params_t kp = {1, 1, 8, 1};
             uint8_t salt[16] = {2};
-            if (!x || gz_sc_export_build(vault, prof, salt, prof == 1 ? &kp : NULL, prof == 1 ? salt : NULL,
-                                         prof == 1 ? PKX : NULL, bd, bdl, part, x, cap, &xl) != GZ_SC_OK ||
+            /* The builder takes the body without the words and the words apart. */
+            size_t cbl = bdl;
+            if (cb && b.entropy) {
+                memcpy(cb, bd, 10);
+                memcpy(cb + 10, bd + 42, bdl - 42);
+                cbl = bdl - 32;
+            } else if (cb) {
+                memcpy(cb, bd, bdl);
+            }
+            if (!x || !cb ||
+                gz_sc_export_build(vault, prof, salt, prof == 1 ? &kp : NULL, prof == 1 ? salt : NULL,
+                                   prof == 1 ? PKX : NULL, cb, cbl, b.entropy, part, x, cap, &xl) != GZ_SC_OK ||
                 xl != cap)
                 abort();
+            free(cb);
             if (gz_sc_export_open(x, xl, CHAIN, NULL, SEED, &body, &bl) != GZ_SC_OK || bl != bdl ||
                 memcmp(body, bd, bdl) != 0)
                 abort();
-            free(body);
+            gz_sc_sfree(body);
             gz_sc_err_t e = gz_sc_export_open(x, xl, CHAIN, PKX, NULL, &body, &bl);
             if (prof == 1 ? e != GZ_SC_OK : e != GZ_SC_NEEDS_WORDS)
                 abort();
-            free(body);
+            gz_sc_sfree(body);
             x[(size_t)data[1] * 13 % xl] ^= 0x10;
             if (gz_sc_export_open(x, xl, CHAIN, NULL, SEED, &body, &bl) == GZ_SC_OK)
                 abort();

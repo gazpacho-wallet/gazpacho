@@ -244,6 +244,11 @@ gz_sc_mark_state_t gz_sc_mark_read(const gz_sc_framekey_t *kh, const uint8_t *da
     while (len - pos >= GZ_SC_MARK_ENTRY_LEN) {
         sc_put64(ad + GZ_SC_MARK_HEADER_LEN, (uint64_t)pos);
         if (sc_unseal(&kh->kp, data + pos, GZ_SC_MARK_ENTRY_LEN, ad, sizeof ad, pt) != 0) {
+            /* One append of 56 bytes can tear one entry, never two (review A,
+             * L2): a second invalid full entry after the newest valid one is
+             * damage, which is never repaired (7 rule 6). */
+            if (have && bad)
+                return GZ_SC_MARK_DAMAGED;
             bad = 1;
         } else if (bad) {
             return GZ_SC_MARK_DAMAGED; /* an invalid entry before a valid one */

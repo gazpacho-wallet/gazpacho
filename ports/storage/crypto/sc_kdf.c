@@ -13,6 +13,7 @@
 #include "sc_internal.h"
 
 #include <errno.h>
+#include <poll.h>
 #include <signal.h>
 #include <sodium.h>
 #include <string.h>
@@ -20,6 +21,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
 #include <sys/mman.h>
@@ -61,6 +63,82 @@ static int recv_all(int fd, void *p, size_t n)
         n -= (size_t)r;
     }
     return 0;
+}
+
+/* ---- the parent's deadline (review A, L3) ------------------------------------ */
+static int64_t now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+#ifdef GZ_SC_TEST_ENTRY
+static int64_t test_timeout_ms;
+void gz_sc_test_set_helper_timeout(int64_t ms)
+{
+    test_timeout_ms = ms;
+}
+#endif
+
+/* How long a derivation may take before the helper is killed: 30 s, plus one
+ * millisecond for every 64 KiB pass (64 MiB/s, slower than any device the
+ * floor is meant for): 42 s at the key file's 256 MiB x 3, about 18 minutes
+ * at the 4 GiB x 16 ceiling. A stopped, frozen or swapping helper must not
+ * hold the passphrase and the one derivation slot (8.2) for ever. */
+static int64_t helper_timeout_ms(const gz_sc_kdf_params_t *p)
+{
+#ifdef GZ_SC_TEST_ENTRY
+    if (test_timeout_ms > 0)
+        return test_timeout_ms;
+#endif
+    return 30000 + (int64_t)((uint64_t)p->t * p->m_kib / 64u);
+}
+
+/* recv_all against a deadline: -1 on an error, end of file or the deadline. */
+static int recv_until(int fd, void *p, size_t n, int64_t deadline)
+{
+    uint8_t *b = p;
+    while (n) {
+        int64_t left = deadline - now_ms();
+        if (left <= 0)
+            return -1;
+        struct pollfd pfd = {fd, POLLIN, 0};
+        int pr = poll(&pfd, 1, left > 60000 ? 60000 : (int)left);
+        if (pr < 0 && errno == EINTR)
+            continue;
+        if (pr <= 0)
+            continue; /* the deadline is checked above */
+        ssize_t r = read(fd, b, n);
+        if (r < 0 && errno == EINTR)
+            continue;
+        if (r <= 0)
+            return -1;
+        b += r;
+        n -= (size_t)r;
+    }
+    return 0;
+}
+
+/* Reap the helper by the deadline, or kill it. 1 if it exited with status 0. */
+static int reap(pid_t pid, int64_t deadline)
+{
+    int status = 0;
+    for (;;) {
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid)
+            return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (w < 0 && errno != EINTR)
+            return 0; /* ECHILD: SIGCHLD ignored by the program; never trusted */
+        if (w == 0 && now_ms() >= deadline) {
+            kill(pid, SIGKILL);
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+                ;
+            return 0;
+        }
+        struct timespec nap = {0, 2000000}; /* 2 ms */
+        nanosleep(&nap, NULL);
+    }
 }
 
 static void no_dumps(void)
@@ -149,12 +227,15 @@ gz_sc_err_t gz_sc_kdf_helper(void *ctx, const uint8_t *pw, size_t pw_len, const 
         if (dup2(sv[1], 0) != 0)
             _exit(127);
 #if defined(__linux__)
-        (void)close_range(3, ~0u, 0);
-#else
-        long maxfd = sysconf(_SC_OPEN_MAX);
-        for (long fd = 3; fd < (maxfd > 0 && maxfd < 65536 ? maxfd : 65536); fd++)
-            close((int)fd);
+        /* close_range is Linux 5.9 and later: on ENOSYS fall back to the loop,
+         * or every descriptor of the program would leak into the helper. */
+        if (close_range(3, ~0u, 0) != 0)
 #endif
+        {
+            long maxfd = sysconf(_SC_OPEN_MAX);
+            for (long fd = 3; fd < (maxfd > 0 && maxfd < 65536 ? maxfd : 65536); fd++)
+                close((int)fd);
+        }
         struct rlimit rl = {0, 0};
         (void)setrlimit(RLIMIT_CORE, &rl);
         execl(path, path, "--gz-kdf-helper", (char *)NULL);
@@ -167,16 +248,18 @@ gz_sc_err_t gz_sc_kdf_helper(void *ctx, const uint8_t *pw, size_t pw_len, const 
     sc_put32(head + 12, params->m_kib);
     memcpy(head + 16, salt, 16);
     sc_put32(head + 32, (uint32_t)pw_len);
+    int64_t deadline = now_ms() + helper_timeout_ms(params);
+    /* The request (at most 4 KiB beyond its head) fits the socket's buffer. */
     int ok = send_all(sv[0], head, sizeof head) == 0 && send_all(sv[0], pw, pw_len) == 0 &&
-             recv_all(sv[0], ans, sizeof ans) == 0;
+             recv_until(sv[0], ans, sizeof ans, deadline) == 0;
     close(sv[0]);
-    int status = 0;
-    pid_t w;
-    do {
-        w = waitpid(pid, &status, 0);
-    } while (w < 0 && errno == EINTR);
+    if (!ok) {
+        kill(pid, SIGKILL); /* silent, stopped or past its deadline */
+        deadline = 0;
+    }
+    int exited_ok = reap(pid, deadline);
     e = GZ_SC_HELPER_FAILED;
-    if (ok && w == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+    if (ok && exited_ok) {
         if (ans[0] == 0) {
             memcpy(pk, ans + 2, 32);
             if (mem_locked)
