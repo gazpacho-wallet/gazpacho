@@ -219,10 +219,12 @@ Assume one of the configured servers is dishonest and at least one other, of ano
 
 Every configured server is asked every question. So each one learns:
 
-- the user's **network address** (and so rough location), unless the user goes through Tor or a proxy, which is not built;
+- the user's **network address** (and so rough location), unless the user goes through Tor: `gz_http_curl_config.proxy` (`gz-chain --proxy`) takes a `socks5h://HOST:PORT` proxy, and only that scheme, so names are resolved by the proxy too; requests to this machine bypass it. Without it no proxy is used: the transport sets `CURLOPT_PROXY` to `""` so `http_proxy`, `https_proxy`, `ALL_PROXY` and the like are never followed silently;
 - **every script the user watches**, as its SHA-256 (which identifies the script as well as the script itself does: anyone can hash the scripts they see on chain and match);
 - **every transaction the user looks up or broadcasts**, and when;
-- the **User-Agent** `gazpacho-chain/0.0.1` on every request, which says the software is Gazpacho (and so, for a script it watches, that it is probably a factory output) and nothing about the user or machine. No other identifying header is sent.
+- the **User-Agent**, a common browser string (`GZ_HTTP_USER_AGENT`, Tor Browser's), which names neither Gazpacho nor the user or machine. No other identifying header is sent. (Until Privacy Slice 1 it was `gazpacho-chain/0.0.1`, which marked every request as Gazpacho.)
+
+**Requirement for P7 (the chain worker and the watch loop): do not query the funding txid before it can have been broadcast.** A factory's funding txid is known to its members before the host broadcasts it. A server asked about a txid nobody else knows learns that the asker is a participant, and with several members asking, which addresses belong to one factory. So a member asks for the funding transaction's status only after the host's broadcast could have made it public (at the earliest when the host reports the broadcast, plus a delay), or watches by the funding output's script or by new blocks' transaction ids instead. No code yet; P7 must meet this and test it with a fake transport that records the first request naming the txid.
 
 **Comparing multiplies who knows.** With two servers, two operators learn the user's watched scripts and address, not one; with three, three. Asking different servers about different scripts would defeat the comparison. This is the price of not trusting one server; the alternatives are the user's own server or node, or Tor.
 

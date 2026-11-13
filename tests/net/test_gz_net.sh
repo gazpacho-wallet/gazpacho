@@ -64,6 +64,15 @@ echo "$l6" | grep -Eqx 'peer 0[23][0-9a-f]{64}' && [ "$l6" = "$l8" ] && [ "$(sed
 grep -qx 'gz-net: accept: handshake refused (authentication failed)' "$T/err" && ok "host saw act one fail" || no "listener stderr: $(cat "$T/err")"
 grep -qx 'gz-net: connection ended: message refused' "$T/err" && [ "$(wc -l < "$T/err")" -eq 2 ] && ok "host reports the unknown even message" || no "listener stderr: $(cat "$T/err")"
 
+# No peer address in the transport's output: the listener's lines name
+# connections by key only, and its errors say what failed, not who from.
+# Every peer above connected from 127.0.0.1.
+if grep -Eq '127\.0\.0\.1|::1|localhost' "$T/out" "$T/err"; then
+  no "a peer address appears in the listener's output: $(grep -E '127\.0\.0\.1|::1|localhost' "$T/out" "$T/err")"
+else
+  ok "no peer address in the listener's output"
+fi
+
 # A host that answers with the wrong sequence number.
 "$P" badpong > "$T/bp" &
 PP=$!

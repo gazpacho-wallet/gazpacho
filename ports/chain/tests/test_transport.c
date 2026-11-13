@@ -5,6 +5,9 @@
  *
  *   chain_test_transport HTTP_PORT GOOD_PORT WRONGNAME_PORT SELFSIGNED_PORT CA_FILE
  */
+#define _POSIX_C_SOURCE 200809L /* setenv */
+
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,7 +68,7 @@ int main(int argc, char **argv) {
   char base[64], url[256];
   snprintf(base, sizeof base, "http://127.0.0.1:%s", argv[1]);
   gz_http h, trusting;
-  gz_http_curl_config with_ca = {argv[5]};
+  gz_http_curl_config with_ca = {argv[5], NULL};
   if (!gz_http_curl_create(&h, NULL) || !gz_http_curl_create(&trusting, &with_ca)) return 2;
   result r;
 
@@ -82,6 +85,80 @@ int main(int argc, char **argv) {
   r = get(&h, url, 200, 3000);
   CHECK(r.r == GZ_HTTP_OK && r.len == strlen(GZ_HTTP_USER_AGENT) &&
         memcmp(r.body, GZ_HTTP_USER_AGENT, r.len) == 0);
+  /* and that string does not name Gazpacho */
+  {
+    char lower[sizeof GZ_HTTP_USER_AGENT];
+    for (size_t i = 0; i < sizeof lower; i++)
+      lower[i] = (char)tolower((unsigned char)GZ_HTTP_USER_AGENT[i]);
+    CHECK(strstr(lower, "gazpacho") == NULL && strstr(lower, "gz-") == NULL);
+  }
+
+  /* Proxy environment variables are ignored. Each names a proxy on port 9,
+   * where nothing listens, so a request that followed one would fail. */
+  {
+    static const char *vars[] = {"http_proxy", "HTTP_PROXY", "https_proxy",
+                                 "HTTPS_PROXY", "ALL_PROXY", "all_proxy"};
+    for (size_t i = 0; i < sizeof vars / sizeof vars[0]; i++)
+      setenv(vars[i], "http://127.0.0.1:9", 1);
+    unsetenv("NO_PROXY");
+    unsetenv("no_proxy");
+    gz_http env_h, env_trusting;
+    CHECK(gz_http_curl_create(&env_h, NULL));
+    CHECK(gz_http_curl_create(&env_trusting, &with_ca));
+    snprintf(url, sizeof url, "%s/ok", base);
+    r = get(&env_h, url, 100, 3000);
+    CHECK(r.r == GZ_HTTP_OK && r.status == 200 && r.len == 6);
+    snprintf(url, sizeof url, "https://localhost:%s/ok", argv[2]);
+    r = get(&env_trusting, url, 100, 5000);
+    CHECK(r.r == GZ_HTTP_OK && r.status == 200 && r.len == 6);
+    /* a configured socks5h proxy is used for hosts off this machine:
+     * nothing listens on port 9, so the request fails instead of going out
+     * directly */
+    gz_http_curl_config via = {NULL, "socks5h://127.0.0.1:9"};
+    gz_http prox;
+    CHECK(gz_http_curl_create(&prox, &via));
+    r = get(&prox, "https://review-check.invalid/ok", 100, 3000);
+    CHECK(r.r == GZ_HTTP_E_CONNECT);
+    /* and this machine is still reached directly */
+    snprintf(url, sizeof url, "%s/ok", base);
+    r = get(&prox, url, 100, 3000);
+    CHECK(r.r == GZ_HTTP_OK && r.status == 200);
+    gz_http_curl_destroy(&prox);
+    gz_http_curl_destroy(&env_h);
+    gz_http_curl_destroy(&env_trusting);
+    for (size_t i = 0; i < sizeof vars / sizeof vars[0]; i++) unsetenv(vars[i]);
+  }
+
+  /* only socks5h proxies are accepted; anything else is refused when the
+   * transport is created */
+  {
+    static const char *good[] = {"socks5h://127.0.0.1:9050", "socks5h://localhost:9050/",
+                                 "socks5h://[::1]:9050", "socks5h://tor.example:1"};
+    static const char *bad[] = {
+        "socks5://127.0.0.1:9050",  "socks4://127.0.0.1:9050",      "socks4a://127.0.0.1:9050",
+        "http://127.0.0.1:8080",    "https://127.0.0.1:8080",       "SOCKS5H://127.0.0.1:9050",
+        "socks5h://127.0.0.1",      "socks5h://127.0.0.1:",         "socks5h://u:p@127.0.0.1:9050",
+        "socks5h://:9050",          "127.0.0.1:9050",               "socks5h://127.0.0.1:9050/x",
+        "socks5h://127.0.0.1:1234567"};
+    for (size_t i = 0; i < sizeof good / sizeof good[0]; i++) {
+      gz_http_curl_config pc = {NULL, good[i]};
+      gz_http ph;
+      bool made = gz_http_curl_create(&ph, &pc);
+      T_CHECK_URL(made && gz_http_proxy_valid(good[i]), good[i]);
+      if (made) gz_http_curl_destroy(&ph);
+    }
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+      gz_http_curl_config pc = {NULL, bad[i]};
+      gz_http ph;
+      bool made = gz_http_curl_create(&ph, &pc);
+      T_CHECK_URL(!made && !gz_http_proxy_valid(bad[i]), bad[i]);
+      if (made) gz_http_curl_destroy(&ph);
+    }
+    gz_http_curl_config none = {NULL, ""};
+    gz_http ph;
+    CHECK(gz_http_curl_create(&ph, &none));
+    gz_http_curl_destroy(&ph);
+  }
 
   /* size cap: a stated length above the cap, an unstated one, and a body
    * that never ends. The last must be cut off at the cap, long before the

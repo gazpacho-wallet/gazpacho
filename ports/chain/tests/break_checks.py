@@ -385,6 +385,9 @@ CHECKS = [
     ("h9 transport: loopback recognised by prefix (review E)", T,
      "  bool local_http = !https && is_loopback_host(host);",
      "  (void)is_loopback_host;\n  bool local_http = !https && strncmp(req->url, \"http://localhost\", 16) == 0;", SLOW),
+    ("h10 proxy from the environment followed", T,
+     '  ok = ok && curl_easy_setopt(e, CURLOPT_PROXY, c->proxy != NULL ? c->proxy : "") == CURLE_OK;\n',
+     "", SLOW),
     ("h7 User-Agent not set", T,
      "  ok = ok && curl_easy_setopt(e, CURLOPT_USERAGENT, GZ_HTTP_USER_AGENT) == CURLE_OK;\n", "", SLOW),
     # ---------------------------------------------------------------- the tool (review g1-g4)

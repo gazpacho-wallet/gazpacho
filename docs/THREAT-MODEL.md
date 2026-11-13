@@ -57,7 +57,7 @@ The host coordinates, co-signs everything, funds, relays every message and keeps
 | Claim that a member was silent | Recorded as the host's claim only | Unprovable either way (accepted) |
 | Choose who is in a factory by delaying messages | — | Denial of service (accepted) |
 | Refuse service | Leaving | Accepted |
-| See payments, membership and network addresses | — | Accepted |
+| See payments, membership and network addresses | — | Accepted. The member's IP address also undoes the fresh per-lobby keys towards this host: the host (and any host it shares logs with) links a person's lobbies, and who only browsed or refused terms, by address. Section 1 lists those links as an asset; without Tor they are not protected from the host. 1.0.0 plan in 2.8 |
 
 ### 2.2 A member, seen from the host's side
 
@@ -95,6 +95,7 @@ Public Electrum-style or explorer servers, or the user's own.
 | Hiding new blocks, a stale tip, or going silent, so the exit starts late | The exit's tip estimate has a **clock floor**: it advances at an assumed two blocks per ten minutes whenever no new block is seen, so hidden blocks, silent servers or offline-by-choice make the exit start early, never late; a claim counts only if a second server reaches it or its headers were checked, so one lying server cannot start an exit either (`spec/exit.md` 4.5) | A full eclipse also stops the member's broadcasts; one broadcast-only route independent of the view's servers is recommended, not guaranteed (`spec/exit.md` 4.5, open point 15) |
 | Hiding or delaying the member's own broadcast | Several servers | Package submission was not available on the public Electrum servers found (`docs/research/channel-groundwork.md`, 1.9) |
 | False fee rates, so the member underpays | — | Not addressed |
+| **Observe**: link every member's IP address, and the host's, to one factory | Slice 1: the User-Agent is a common browser string, not a Gazpacho name; no proxy is taken from the environment, and an optional `socks5h://` proxy (Tor) can be set (`ports/chain`, `gz-chain --proxy`); a member must not ask about the funding txid before it can have been broadcast (`docs/notes/chain-port.md` section 9) | Each member polls the same funding txid and tree outputs from its own address, and every query goes to every configured operator, so each operator can group a factory's members and host by address, add each member's wallet scripts, and see the host as the first broadcaster. Not defended without Tor or the user's own server. 1.0.0 plan in 2.8 |
 
 ### 2.5 Nostr relays
 
@@ -119,6 +120,17 @@ A replayed round message is answered from saved bytes or refused by the saved id
 | A copy of a running program (a machine snapshot, a fork) holding a secret nonce | — | Accepted |
 | An old backup returned by the host | C12; R2 to R6 | The member loses sight of factories joined after the backup, and may not be able to re-derive their keys without the guard record or a later export (R7) |
 
+### 2.8 Network addresses: the Tor trap and the 1.0.0 plan
+
+**The Tor trap.** The transport caps connections at 4 per address (IPv4, or IPv6 by /64; `transport.md` L9). Over Tor, all members of a clearnet host arrive from a few exit addresses, and at an onion-service host every connection arrives from `127.0.0.1`. So the cap that guards against floods refuses the fifth Tor member. Before Tor ships, an onion listener must be counted per connection, not per address (as `discovery.md` H2 already does for queries).
+
+**The 1.0.0 plan.**
+
+- **Tor for members.** A SOCKS5h dialer for member-to-host connections, a fresh Tor stream per `CONNECT` (matching the fresh BOLT 8 key), on by default when a Tor proxy is found, with no silent fall-back to the open network.
+- **Onion hosts.** Invites and the transport accept `<key>@<name>.onion:<port>`; the host keeps listening on `127.0.0.1` behind a `HiddenServicePort`, with the per-connection count above.
+- **The chain over Tor.** One proxy setting for host, chain and discovery traffic, isolated per chain operator; the user's own server as a first-class choice.
+- **Whole blocks for lookups.** Watch factory outputs by fetching each new block's transaction ids (and the raw block when one may match) and matching locally, so an operator learns only that a wallet follows blocks, not which txids it cares about.
+
 ## 3. Not defended, in one list
 
 - Refusal of service.
@@ -134,7 +146,8 @@ A replayed round message is answered from saved bytes or refused by the saved id
 - Relay rules that obstruct pre-signed transactions.
 - Bugs in the imported tree builder.
 - A reorganisation of the funding after it was buried, or (1.1.0) of a leaf link.
-- The host's view of all payments and of members' network addresses.
+- The host's view of all payments and of members' network addresses, which also links a person's lobbies with that host despite fresh per-lobby keys (until Tor, 2.8).
+- Chain-server operators linking all members of one factory, and the host, by network address (until Tor, the user's own server, or block-based watching, 2.8).
 - Withheld results and withheld closes, which force the member to exit at its own cost.
 - Factories joined after an old backup, whose keys may be lost without the guard record (R7).
 - For 1.1.0 members above their coverage: losing a one-step race in a timed layer.

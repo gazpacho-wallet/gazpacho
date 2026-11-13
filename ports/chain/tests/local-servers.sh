@@ -119,6 +119,16 @@ expect "broadcast is refused when a server is on mainnet, whatever the flag" 2 "
   "$tool" --network signet $A --server $L/mainnet --operator second-operator \
   broadcast "$(cat "$tests/data/tx_a_hex.txt")"
 if [ -s posts.log ]; then echo "FAIL a transaction was posted to a server"; cat posts.log; fail=1; fi
+# privacy: a proxy comes only from --proxy, which takes socks5h alone
+expect "proxy environment variables are ignored" 0 "verdict: ok" \
+  env http_proxy=http://127.0.0.1:9 HTTP_PROXY=http://127.0.0.1:9 ALL_PROXY=socks5h://127.0.0.1:9 \
+  NO_PROXY= no_proxy= "$tool" $A --server $L/honest2 --operator second-operator tip
+expect "--proxy socks5:// is refused" 2 "takes socks5h://HOST:PORT" \
+  "$tool" --proxy socks5://127.0.0.1:9050 $A --server $L/honest2 --operator second-operator tip
+expect "--proxy http:// is refused" 2 "takes socks5h://HOST:PORT" \
+  "$tool" --proxy http://127.0.0.1:8080 $A --server $L/honest2 --operator second-operator tip
+expect "--proxy socks5h:// is accepted; this machine bypasses it" 0 "verdict: ok" \
+  "$tool" --proxy socks5h://127.0.0.1:9 $A --server $L/honest2 --operator second-operator tip
 expect "broadcast --network mainnet is refused before any request" 2 "refusing to broadcast on mainnet" \
   "$tool" --network mainnet --server $H/honest broadcast "$(cat "$tests/data/tx_a_hex.txt")"
 if [ -s posts.log ]; then echo "FAIL a transaction was posted to a server"; fail=1; fi
