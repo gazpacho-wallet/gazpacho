@@ -8,8 +8,15 @@ the PR's code). Pure-Python secp256k1; ChaCha20-Poly1305 from `cryptography`.
   bolt8_peer.py selftest                    BOLT 8 vectors, initiator side
   bolt8_peer.py member PORT HOSTPUB N       connect to gz-net listen, N pings
   bolt8_peer.py host N                      listen; prints port and pubkey, answers N pings
+  bolt8_peer.py lobby-member PORT HOSTPUB SECONDS PING_MS
+  bolt8_peer.py lobby-host SECONDS PING_MS  listen; prints port and pubkey
+
+The lobby modes were added for lobby connections (stream S7) from BOLT 1
+and spec/messages.md section 2, not from ports/net: init with networks =
+[signet], BOLT 1 ping and pong both ways, and one factory message each way
+(hello, lobby_status) in the 52791 envelope.
 """
-import hashlib, hmac, os, socket, sys
+import hashlib, hmac, os, select, socket, sys, time
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 P = 2**256 - 2**32 - 977
@@ -227,7 +234,116 @@ def host(n):
         c.sendall(s.encrypt(ping(2, 1000 + k)))
     print("host ok %d pings from %s" % (n, rs.hex()), flush=True)
 
+# ---- lobby connections (BOLT 1 init, ping, pong; messages.md envelope) ----
+SIGNET = bytes.fromhex("00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6")[::-1]
+TAG = bytes.fromhex("677a6601")
+SCOPE = hashlib.sha256(b"interop lobby").digest()
+
+def u16(v): return v.to_bytes(2, "big")
+
+def init_msg():
+    # type 16, no global features, no features, TLV 1 (networks) = [signet]
+    return u16(16) + u16(0) + u16(0) + bytes([1, 32]) + SIGNET
+
+def check_init(m):
+    if m[:2] != u16(16): raise SystemExit("first message is not init: %s" % m[:2].hex())
+    gl = int.from_bytes(m[2:4], "big"); g = m[4:4 + gl]
+    fl = int.from_bytes(m[4 + gl:6 + gl], "big"); f = m[6 + gl:6 + gl + fl]
+    if any(b & 0x55 for b in g + f): raise SystemExit("init sets an even feature bit")
+    tlv = m[6 + gl + fl:]
+    if tlv[:2] != bytes([1, 32]) or tlv[2:34] != SIGNET or len(tlv) != 34:
+        raise SystemExit("init networks is not exactly [signet]: %s" % tlv.hex())
+
+def envelope(kind, scope, records): return u16(52791) + TAG + u16(kind) + scope + records
+
+def lobby_loop(sock, s, seconds, ping_ms, role):
+    rd = reader(sock)
+    sock.sendall(s.encrypt(init_msg()))
+    check_init(s.recv(rd))
+    if role == "member":
+        sock.sendall(s.encrypt(envelope(16, SCOPE, b"")))
+    # This peer pings on a fixed schedule, not after silence, so that the
+    # other side, which pings after silence, sends pings too.
+    start = last_ping = time.monotonic()
+    ping_out = None
+    st = {"pings_sent": 0, "pongs": 0, "pings_answered": 0, "hello": 0, "status": 0}
+    while True:
+        now = time.monotonic()
+        if role == "member" and now - start >= seconds: break
+        if role == "host" and now - start >= seconds + 30: raise SystemExit("host: member never left")
+        if ping_out is not None and now - ping_out[1] > 3 * ping_ms / 1000:
+            raise SystemExit("%s: no pong" % role)
+        if ping_out is None and now - last_ping >= ping_ms / 1000:
+            last_ping = now
+            want = 1 + st["pings_sent"] % 7
+            sock.sendall(s.encrypt(u16(18) + u16(want) + u16(0)))
+            ping_out = (want, now)
+            st["pings_sent"] += 1
+        r, _, _ = select.select([sock], [], [], 0.02)
+        if not r: continue
+        try:
+            m = s.recv(rd)
+        except EOFError:
+            if role == "host": break
+            raise SystemExit("member: host closed")
+        t = int.from_bytes(m[:2], "big")
+        if t == 18:
+            n = int.from_bytes(m[2:4], "big")
+            if n < 65532:
+                sock.sendall(s.encrypt(u16(19) + u16(n) + bytes(n)))
+                st["pings_answered"] += 1
+        elif t == 19:
+            n = int.from_bytes(m[2:4], "big")
+            if ping_out is None or n != ping_out[0] or len(m) != 4 + n: raise SystemExit("bad pong")
+            ping_out = None
+            st["pongs"] += 1
+        elif t == 52791:
+            if m[2:6] != TAG: raise SystemExit("bad tag")
+            kind = int.from_bytes(m[6:8], "big")
+            if role == "host" and kind == 16:
+                st["hello"] += 1
+                status = bytes.fromhex("020100" "040100" "060400000000" "08020000" "0a020000")
+                sock.sendall(s.encrypt(envelope(28, m[8:40], status)))
+            elif role == "member" and kind == 28 and m[8:40] == SCOPE:
+                st["status"] += 1
+            else:
+                raise SystemExit("unexpected kind %d" % kind)
+        elif t % 2 == 0:
+            raise SystemExit("unknown even message %d" % t)
+    return st
+
+def lobby_member(port, hostpub, seconds, ping_ms):
+    sock = socket.create_connection(("127.0.0.1", port), timeout=20)
+    rd = reader(sock)
+    i = Initiator(os.urandom(32), os.urandom(32), bytes.fromhex(hostpub))
+    sock.sendall(i.act1())
+    a3, s = i.act2_act3(rd(50))
+    sock.sendall(a3)
+    st = lobby_loop(sock, s, seconds, ping_ms, "member")
+    sock.close()
+    print("lobby-member", " ".join("%s=%d" % kv for kv in sorted(st.items())), flush=True)
+    if st["status"] != 1 or st["pongs"] < 2 or st["pings_answered"] < 2: raise SystemExit(1)
+
+def lobby_host(seconds, ping_ms):
+    ls = os.urandom(32)
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    print("host %d %s" % (srv.getsockname()[1], pub(ls).hex()), flush=True)
+    srv.settimeout(30)
+    c, _ = srv.accept()
+    c.settimeout(20)
+    rd = reader(c)
+    r = Responder(ls, os.urandom(32))
+    c.sendall(r.act1_act2(rd(50)))
+    rs, s = r.act3(rd(66))
+    st = lobby_loop(c, s, seconds, ping_ms, "host")
+    print("lobby-host", " ".join("%s=%d" % kv for kv in sorted(st.items())), "from", rs.hex(), flush=True)
+    if st["hello"] != 1 or st["pongs"] < 2 or st["pings_answered"] < 2: raise SystemExit(1)
+
 if __name__ == "__main__":
     if sys.argv[1] == "selftest": selftest()
     elif sys.argv[1] == "member": member(int(sys.argv[2]), sys.argv[3], int(sys.argv[4]))
     elif sys.argv[1] == "host": host(int(sys.argv[2]))
+    elif sys.argv[1] == "lobby-member": lobby_member(int(sys.argv[2]), sys.argv[3], float(sys.argv[4]), int(sys.argv[5]))
+    elif sys.argv[1] == "lobby-host": lobby_host(float(sys.argv[2]), int(sys.argv[3]))
