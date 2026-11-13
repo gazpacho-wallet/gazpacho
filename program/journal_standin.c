@@ -15,7 +15,13 @@
  *
  * Open (the fence): read every entry. An entry that runs past the end of the
  * file, or whose hash fails while it is the last thing in the file, is a torn
- * tail: the file is cut before it and synced. A bad entry with data after it,
+ * tail, but only if no valid entry (a known tag, a length that fits, a hash
+ * that matches) starts anywhere after its first byte: a damaged length field
+ * makes an entry in the middle look like one that runs past the end, and
+ * cutting there would throw away every durable batch after it (review B of
+ * PR 27, B1), so that is corruption. A torn tail is first copied to
+ * `journal.standin.cut-N` (the first unused N, synced), then the file is cut
+ * before it and synced: nothing is cut without being kept. A bad entry with data after it,
  * an unknown tag, identifiers that do not strictly increase, an incarnation
  * entry that does not increase, or a batch of an incarnation with no INCN
  * entry (never begun), is corruption: open fails and the program does not
@@ -75,6 +81,7 @@ typedef struct {
     int failed;
     unsigned fail_at;     /* tests */
     uint64_t cut;
+    unsigned cut_kept;    /* N of journal.standin.cut-N holding the cut bytes */
     char dir[4096], journal_path[4200], counter_path[4200], marker_path[4200];
     int journal_was_new;
     int restored;         /* the marker file exists */
@@ -98,6 +105,8 @@ static uint64_t rd64(const uint8_t *p) { return (uint64_t)rd32(p) << 32 | rd32(p
 
 static int push_inc(standin_t *s, uint64_t inc);
 static int inc_begun(const standin_t *s, uint64_t inc);
+static int later_valid_entry(standin_t *s, uint64_t off);
+static int keep_tail(standin_t *s, uint64_t off);
 
 static int id_after(gz_batch_id_t a, gz_batch_id_t b) /* a > b */
 {
@@ -305,6 +314,12 @@ static int scan(standin_t *s, char *err, size_t errlen)
         continue;
     cut:
         if (torn) {
+            int later = later_valid_entry(s, off);
+            if (later < 0) return set_err(err, errlen, "cannot read the journal");
+            if (later)
+                return set_err(err, errlen, "journal corrupt: a damaged entry with valid entries after it "
+                                            "(not a torn tail; nothing was cut)");
+            if (keep_tail(s, off) != 0) return set_err(err, errlen, "cannot keep the journal's torn tail");
             s->cut = s->file_len - off;
             if (ftruncate(s->fd, (off_t)off) != 0 || fsync(s->fd) != 0)
                 return set_err(err, errlen, "cannot cut the journal's torn tail");
@@ -313,6 +328,64 @@ static int scan(standin_t *s, char *err, size_t errlen)
         break;
     }
     return 0;
+}
+
+/* 1 if a valid entry starts anywhere in the file after `off` (not at `off`
+ * itself), 0 if none, -1 if the file cannot be read. A torn tail is what an
+ * interrupted append left; a whole entry after it means the damage is in the
+ * middle (B1). */
+static int later_valid_entry(standin_t *s, uint64_t off)
+{
+    uint64_t n = s->file_len - off, p;
+    uint8_t *t, digest[32];
+    int found = 0;
+    if (n < 8 + 32 + 1) return 0;
+    if (n > MAX_TOTAL + (uint64_t)MAX_BODY) return 1; /* far more than one torn entry: refuse */
+    t = malloc((size_t)n);
+    if (!t) return -1;
+    if (read_at(s->fd, off, t, (size_t)n) != 0) {
+        free(t);
+        return -1;
+    }
+    for (p = 1; !found && p + 8 + 32 <= n; p++) {
+        uint32_t tag = rd32(t + p), len = rd32(t + p + 4);
+        if (tag != TAG_INCN && tag != TAG_BTCH) continue;
+        if (len > MAX_BODY || p + 8 + (uint64_t)len + 32 > n) continue;
+        if (entry_hash(t + p, t + p + 8, len, digest) != 0) {
+            free(t);
+            return -1;
+        }
+        if (!memcmp(digest, t + p + 8 + len, 32)) found = 1;
+    }
+    free(t);
+    return found;
+}
+
+/* Copy the bytes from `off` to the end into journal.standin.cut-N (the first
+ * N not yet used) and make the copy durable, before the cut. 0 or -1. */
+static int keep_tail(standin_t *s, uint64_t off)
+{
+    char path[4300];
+    uint8_t buf[65536];
+    uint64_t at = off;
+    unsigned k;
+    int fd = -1, ok;
+    for (k = 1; k < 100000 && fd < 0; k++) {
+        snprintf(path, sizeof path, "%s.cut-%u", s->journal_path, k);
+        fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        if (fd < 0 && errno != EEXIST) return -1;
+    }
+    if (fd < 0) return -1;
+    ok = 1;
+    while (ok && at < s->file_len) {
+        size_t c = s->file_len - at > sizeof buf ? sizeof buf : (size_t)(s->file_len - at);
+        ok = read_at(s->fd, at, buf, c) == 0 && write_all(fd, buf, c) == 0;
+        at += c;
+    }
+    ok = ok && fsync(fd) == 0;
+    close(fd);
+    if (ok) s->cut_kept = k - 1;
+    return ok && sync_dir(s->dir) == 0 ? 0 : -1;
 }
 
 static int push_inc(standin_t *s, uint64_t inc)
@@ -624,6 +697,11 @@ void gzp_standin_test_hooks(gzp_store_t *st, unsigned sync_fail_at, int cut_fail
 uint64_t gzp_standin_cut_bytes(const gzp_store_t *st)
 {
     return ((const standin_t *)st->ctx)->cut;
+}
+
+unsigned gzp_standin_cut_kept(const gzp_store_t *st)
+{
+    return ((const standin_t *)st->ctx)->cut_kept;
 }
 
 int gzp_standin_counter_state(const gzp_store_t *st, uint64_t *value)

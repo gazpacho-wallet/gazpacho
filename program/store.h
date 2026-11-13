@@ -108,8 +108,12 @@ int gzp_standin_counter_state(const gzp_store_t *s, uint64_t *value);
  * durable (the marker is then gone). */
 int gzp_standin_take_restore_answered(gzp_store_t *s);
 
-/* Output: bytes cut from a torn tail at the last open. */
+/* Output: bytes cut from a torn tail at the last open, and N of the file
+ * `dir`/journal.standin.cut-N that keeps them (0: nothing cut). A damaged
+ * entry with any valid entry after it is never cut: open refuses instead
+ * (review B of PR 27, B1). S5's journal must keep the same rule. */
 uint64_t gzp_standin_cut_bytes(const gzp_store_t *s);
+unsigned gzp_standin_cut_kept(const gzp_store_t *s);
 
 #ifdef GZP_TEST_BUILD
 /* Tests only (gazpacho-test; absent from the release binary). */

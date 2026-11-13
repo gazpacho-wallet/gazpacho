@@ -569,7 +569,8 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
                            ex->opt->name);
 #endif
     if (gzp_standin_cut_bytes(&ex->store))
-        gzp_log("journal-cut torn_bytes=%llu", (unsigned long long)gzp_standin_cut_bytes(&ex->store));
+        gzp_log("journal-cut torn_bytes=%llu kept=journal.standin.cut-%u",
+                (unsigned long long)gzp_standin_cut_bytes(&ex->store), gzp_standin_cut_kept(&ex->store));
     restored = ex->store.ops->restored(ex->store.ctx);
     /* The incarnation is durable before the runner exists (runner.h), and
      * above every number this folder has used (the start counter). */

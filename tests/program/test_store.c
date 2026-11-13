@@ -172,7 +172,7 @@ int main(void)
     CHECK(write(fd, "BTCH\0\0\0\x40partial", 15) == 15);
     close(fd);
     CHECK(open_store(&s) == 0);
-    CHECK(gzp_standin_cut_bytes(&s) == 15);
+    CHECK(gzp_standin_cut_bytes(&s) == 15 && gzp_standin_cut_kept(&s) == 1);
     CHECK(file_size() == size_ok);
     CHECK(count_batches(&s) == 3);
     CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) == 0 && inc == 4);
@@ -311,6 +311,77 @@ int main(void)
     CHECK(open_store(&s) == 0);
     CHECK(gzp_standin_cut_bytes(&s) == 8 + 20 + 32 && count_batches(&s) == 1);
     s.ops->close(s.ctx);
+
+    /* B1 of review B: one flipped bit in the length field of an entry in the
+     * middle makes it run past the end of the file. That is not a torn tail:
+     * valid entries follow it, so open refuses and cuts nothing. Both a length
+     * that only overruns the file and one above the largest entry. */
+    {
+        static const struct { int byte; uint8_t bit; } flips[] = {{1, 0x01}, {0, 0x80}, {2, 0x10}};
+        size_t f;
+        for (f = 0; f < sizeof flips / sizeof flips[0]; f++) {
+            uint8_t byte = 0;
+            off_t at = 16 + (8 + 8 + 32) + 4 + flips[f].byte; /* header, INCN entry, then batch (1,1)'s length */
+            fd = raw_journal(); raw_incn(fd, 1); raw_batch(fd, 1, 1); raw_batch(fd, 1, 2); raw_batch(fd, 1, 3); close(fd);
+            size_ok = file_size();
+            fd = open(path, O_RDWR);
+            CHECK(fd >= 0 && pread(fd, &byte, 1, at) == 1);
+            byte ^= flips[f].bit;
+            CHECK(pwrite(fd, &byte, 1, at) == 1);
+            close(fd);
+            err[0] = 0;
+            CHECK(gzp_standin_open(&s, dir, err, sizeof err) != 0 && strstr(err, "corrupt"));
+            CHECK(file_size() == size_ok); /* nothing cut */
+        }
+    }
+
+    /* The cut keeps what it cuts: journal.standin.cut-N, the first unused N. */
+    {
+        char kp[700];
+        struct stat st;
+        unsigned n;
+        for (n = 1; n < 20; n++) {
+            snprintf(kp, sizeof kp, "%s.cut-%u", path, n);
+            unlink(kp);
+        }
+        fd = raw_journal(); raw_incn(fd, 1); raw_batch(fd, 1, 1); close(fd);
+        size_ok = file_size();
+        /* B77: a tail shorter than an entry's head is torn */
+        fd = open(path, O_WRONLY | O_APPEND);
+        CHECK(fd >= 0 && write(fd, "BTCH\0", 5) == 5);
+        close(fd);
+        CHECK(open_store(&s) == 0);
+        CHECK(gzp_standin_cut_bytes(&s) == 5 && gzp_standin_cut_kept(&s) == 1 && count_batches(&s) == 1);
+        s.ops->close(s.ctx);
+        snprintf(kp, sizeof kp, "%s.cut-1", path);
+        CHECK(file_size() == size_ok && stat(kp, &st) == 0 && st.st_size == 5);
+        /* B80: a last entry whose length is above the largest entry and runs
+         * past the end is torn too (a crash while writing its head) */
+        fd = open(path, O_WRONLY | O_APPEND);
+        CHECK(fd >= 0 && write(fd, "BTCH\x40\0\0\0" "0123456789", 18) == 18);
+        close(fd);
+        CHECK(open_store(&s) == 0);
+        CHECK(gzp_standin_cut_bytes(&s) == 18 && gzp_standin_cut_kept(&s) == 2 && count_batches(&s) == 1);
+        s.ops->close(s.ctx);
+        snprintf(kp, sizeof kp, "%s.cut-2", path);
+        CHECK(file_size() == size_ok && stat(kp, &st) == 0 && st.st_size == 18);
+        for (n = 1; n < 20; n++) {
+            snprintf(kp, sizeof kp, "%s.cut-%u", path, n);
+            unlink(kp);
+        }
+    }
+
+    /* B25 and B17: a batch with sequence 0, and an incarnation entry of
+     * another length, are corruption. */
+    fd = raw_journal(); raw_incn(fd, 1); raw_batch(fd, 1, 0); close(fd);
+    CHECK(!opens());
+    {
+        uint8_t nine[9] = {0, 0, 0, 0, 0, 0, 0, 1, 0};
+        fd = raw_journal(); raw_entry(fd, 0x494e434eu, nine, 9); close(fd);
+        CHECK(!opens());
+        fd = raw_journal(); raw_entry(fd, 0x494e434eu, nine, 8); close(fd);
+        CHECK(opens()); /* the same with 8 bytes is fine */
+    }
 
     /* H1: a batch whose sync fails is cut back and gone for good, also for a
      * begin in the same process; if the cut fails too, the store is poisoned
