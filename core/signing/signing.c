@@ -148,11 +148,21 @@ static int rec_of(emit_t *em, gz_record_t *rec, uint32_t type, const gz_rmsg_wr_
  * bytes, the standard's own variant without randomness, for host messages
  * the engine rebuilds instead of keeping (a member's tier result, an abort):
  * rebuilt, they are the same bytes. Everything else draws aux_rand. */
+/* What a secret decides that is public by the time it is decided (a library
+ * call's success, which depends only on whether a key is valid): a no-op
+ * here; tests/signing/test_signing_ctime.c defines it as valgrind's "this is
+ * now defined", as libsecp256k1's own constant-time test does. */
+#ifndef GZ_SIGN_DECLASSIFY
+#define GZ_SIGN_DECLASSIFY(p, n) ((void)(p), (void)(n))
+#endif
+
 static void sign_digest(gz_sign_t *e, const uint8_t digest[32], uint8_t sig[64], int deterministic)
 {
     uint8_t aux[32] = {0};
     if (!deterministic) e->ports.random.fill(e->ports.random.ctx, GZ_RANDOM_ORDINARY, aux, 32);
-    if (!secp256k1_schnorrsig_sign32(e->cfg.ctx, sig, digest, &e->contribution_kp, aux)) memset(sig, 0, 64);
+    int ok = secp256k1_schnorrsig_sign32(e->cfg.ctx, sig, digest, &e->contribution_kp, aux);
+    GZ_SIGN_DECLASSIFY(&ok, sizeof ok);
+    if (!ok) memset(sig, 0, 64);
 }
 
 /* A BIP 340 signature under a 33-byte compressed key's x coordinate. */
@@ -253,7 +263,7 @@ static uint8_t check_def(gz_sign_t *e, gz_sign_def_t *d, gz_sign_round_t *r)
         if (it->tx_len > GZ_SIGN_MAX_TX || !gz_sign_tx_parse(it->tx, it->tx_len, &tx) || tx.witness_item) return GZ_SIGN_WHY_INVALID_ROUND;
         if (!secp256k1_musig_pubkey_agg(ctx, NULL, &agg, &r->cache[i], ptrs, it->n_signers)) return GZ_SIGN_WHY_INVALID_ROUND;
         if (!secp256k1_xonly_pubkey_serialize(ctx, ser, &agg)) return GZ_SIGN_WHY_INVALID_ROUND;
-        tagged("TapTweak", ser, 32, it->merkle_root, it->has_merkle_root ? 32 : 0, r->tweak[i]);
+        gz_sign_taptweak(ser, it->has_merkle_root ? it->merkle_root : NULL, r->tweak[i]);
         if (!secp256k1_musig_pubkey_xonly_tweak_add(ctx, &out_pk, &r->cache[i], r->tweak[i])) return GZ_SIGN_WHY_INVALID_ROUND;
         if (!secp256k1_xonly_pubkey_from_pubkey(ctx, &out_x, NULL, &out_pk)) return GZ_SIGN_WHY_INVALID_ROUND;
         if (!secp256k1_xonly_pubkey_serialize(ctx, ser, &out_x)) return GZ_SIGN_WHY_INVALID_ROUND;
@@ -603,13 +613,13 @@ static int make_nonce(gz_sign_t *e, gz_sign_round_t *r, int i)
 {
     const gz_sign_item_t *it = &r->def.items[i];
     int s = pos_of(it, r->me);
-    uint8_t rnd[32], sid[32], extra[32], pre[48], d[32];
+    uint8_t *rnd = e->work_rnd, *sid = e->work_sid, *pre = e->work_pre, extra[32], d[32];
     secp256k1_musig_pubnonce pub;
-    wr_t w = {pre, 0, sizeof pre};
+    wr_t w = {pre, 0, sizeof e->work_pre};
     uint64_t counter;
     int ok;
     if (s < 0 || r->secnonce_serial[i] || (r->have_nonce[i] >> s & 1u)) return 0;   /* RULE:S2_ONE_NONCE */
-    e->ports.random.fill(e->ports.random.ctx, GZ_RANDOM_SECRET, rnd, 32);
+    e->ports.random.fill(e->ports.random.ctx, GZ_RANDOM_SECRET, rnd, sizeof e->work_rnd);
     counter = e->session_counter++;
     put(&w, rnd, 32); put64(&w, e->incarnation); put64(&w, counter);   /* RULE:INCARNATION_MIX */
     tagged("gazpacho/session-id", pre, w.n, NULL, 0, sid);
@@ -617,9 +627,10 @@ static int make_nonce(gz_sign_t *e, gz_sign_round_t *r, int i)
     put(&w, r->id, 32); put8(&w, it->tier); put32(&w, (uint32_t)i);
     tagged("gazpacho/nonce-extra", pre, w.n, NULL, 0, extra);
     ok = secp256k1_musig_nonce_gen(e->cfg.ctx, &r->secnonce[i], &pub, sid, e->cfg.factory_secret,
-                                   &e->factory_pk, r->digest[i], &r->cache[i], extra) &&
-         secp256k1_musig_pubnonce_serialize(e->cfg.ctx, r->nonce[i][s], &pub);
-    wipe(rnd, sizeof rnd); wipe(sid, sizeof sid); wipe(pre, sizeof pre);
+                                   &e->factory_pk, r->digest[i], &r->cache[i], extra);
+    GZ_SIGN_DECLASSIFY(&ok, sizeof ok);                    /* success depends only on the key's validity */
+    ok = ok && secp256k1_musig_pubnonce_serialize(e->cfg.ctx, r->nonce[i][s], &pub);
+    wipe(rnd, sizeof e->work_rnd); wipe(sid, sizeof e->work_sid); wipe(pre, sizeof e->work_pre);   /* RULE:WIPE_NONCE_INPUTS */
     if (!ok) { wipe(&r->secnonce[i], sizeof r->secnonce[i]); return 0; }
     gz_rmsg_nonce_hash(r->id, it->tier, (uint32_t)i, r->nonce[i][s], d);   /* RULE:NONCE_SIG_COVERS_ITEM */
     sign_digest(e, d, r->nonce_sig[i][s], 0);

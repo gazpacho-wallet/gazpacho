@@ -212,9 +212,9 @@ jobs:
           --args "signing_restores=restores tiny" --args "signing_errors=errors tiny"
           --args "signing_fuzz=1000 2"
           --args "signing_node=tiny" --args "signing_fuzz_replay=1000"
-      - name: Storage constant-time check (secrets marked undefined, under memcheck)
+      - name: Storage and signing constant-time checks (secrets marked undefined, under memcheck)
         # Registered only where valgrind and its headers are installed: here.
-        run: ctest --test-dir build -R '^storage_ctime$' --output-on-failure --no-tests=error
+        run: ctest --test-dir build -R '^(storage|signing)_ctime$' --output-on-failure --no-tests=error
 
   fuzz:
     name: libFuzzer, 60 s per target

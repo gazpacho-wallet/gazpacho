@@ -71,6 +71,8 @@ RULES = {
     "EXPOSURE_NOT_DROPPED": ("{ e->exposures_lost = 1; return 0; }", "return 0;"),
     "KEEP_EVICTED": ("{ e->exposed[i].state = r->state; e->exposed[i].why = r->why; }", "{ }"),
     "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
+    "DECODE_FIRST": ("if (!b || !gz_sign_decode(b, len, &m))", "if (!b || (gz_sign_decode(b, len, &m), 0))"),
+    "WIPE_NONCE_INPUTS": ("wipe(rnd, sizeof e->work_rnd); ", ""),
     "RESOLVE_EVICTED": ("if (!(r = find(e, round_id)) && !(x = evicted(e, round_id))) return GZ_ERR_ARGUMENT;", "if (!(r = find(e, round_id))) return GZ_ERR_ARGUMENT;"),
 }
 

@@ -342,6 +342,30 @@ target_link_libraries(test_bip327 PRIVATE secp256k1)
 target_compile_options(test_bip327 PRIVATE ${GZ_NEW_CODE_WARNINGS})
 add_test(NAME signing_bip327 COMMAND test_bip327)
 
+# BIP 341's wallet vectors through the engine's own Taproot code (the tweak
+# check_def makes every output key with, and the signature hash's last step).
+add_executable(test_bip341 tests/signing/test_bip341.c)
+target_link_libraries(test_bip341 PRIVATE gazpacho_signing)
+target_compile_options(test_bip341 PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME signing_bip341 COMMAND test_bip341)
+
+# Constant time of the engine's own code around secrets, under memcheck
+# (tests/signing/test_signing_ctime.c): built where valgrind's headers are,
+# run where valgrind is and nothing is sanitized (as storage_ctime).
+include(CheckIncludeFile)
+check_include_file(valgrind/memcheck.h GZ_SIGN_HAVE_MEMCHECK_H)
+if(GZ_SIGN_HAVE_MEMCHECK_H)
+  add_executable(test_signing_ctime tests/signing/test_signing_ctime.c core/signing/sign_tx.c core/signing/round_msg.c)
+  set_target_properties(test_signing_ctime PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+  target_include_directories(test_signing_ctime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+                             ${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include ${secp256k1-zkp_SOURCE_DIR}/include)
+  target_link_libraries(test_signing_ctime PRIVATE gazpacho_core secp256k1 gazpacho_sim gazpacho_superscalar gazpacho_tree)
+  target_compile_options(test_signing_ctime PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
+  if(GZ_VALGRIND AND NOT GZ_SANITIZE AND NOT CMAKE_C_FLAGS MATCHES "-fsanitize")
+    add_test(NAME signing_ctime COMMAND ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes $<TARGET_FILE:test_signing_ctime>)
+  endif()
+endif()
+
 # The engine's start over any journal, then messages (tests/signing/fuzz_signing_replay.c):
 # libFuzzer in CI's fuzz job, the plain driver and the seeds here.
 if(GZ_LIBFUZZER)
