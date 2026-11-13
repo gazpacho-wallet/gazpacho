@@ -138,3 +138,43 @@ The owner answered the nine questions that blocked the first factory (`questions
 - **Q9, A:** the transport's code review counts as its specification review; the specification is to be re-reviewed fully once the program is built.
 
 This also confirms decision 11's answer to `OPEN-QUESTIONS.md` Q1: the screens are in Slice 1.
+
+## 2026-11-13
+
+### 16. Owner decisions of 13 November (owner, 2026-11-13)
+
+**a. Host funding is automatic and on by default.** Once the host's H1 check passes, the host broadcasts the funding transaction without asking. Consent belongs at opening the lobby and at the start, not at funding. This holds on test networks now. Before real money it becomes a setting, and the setting still defaults to automatic.
+
+**b. Several lobbies at once per wallet, from Slice 1.** This replaces the Slice 1 limit of one joined and one hosted lobby (Q8 of questions 6). Every lobby record carries a lobby field. The composite node design is PR 37.
+
+**c. Host accountability in 1.0.0.**
+
+- Signed seat receipts.
+- The signer-choice rule written into the outer terms, so the member's app can check it.
+- Removals always signed, with a reason.
+- Signed lobby-wide counts, including seats removed by the host, with no identities.
+
+Proofs may be published to Nostr later: only from fresh keys, only after the lobby ends, and never with member keys or addresses. The research behind this (lobby accountability and liveness) found that the host's choices are the main unchecked power in a lobby. Signed receipts and counts let a member prove what the host did without revealing who else was there.
+
+**d. Member signing modes, selectable by members and hosts.**
+
+- **A:** sign automatically.
+- **B:** ask for the passphrase when the lobby fills.
+- **C:** unlock that lobby's keys once at join. They sign only that factory, within the approved terms, and are wiped afterwards. C is the recommended default; the owner is still to confirm.
+- **D:** watchtower services. Under research.
+
+In modes B and C, "not unlocked" counts as not answering the ready check. Slice 1 closes the ready check as soon as every seat has answered. Proposed defaults (owner to confirm): a 60 s ready window, 60 s per step, and a 10-minute signing budget. Measured signing on signet took 193 ms for 3 members.
+
+**e. Understudies in 1.1.0.** Standby seats that answered the ready check are swapped in automatically: at the ready check for a no-show, and mid-signing for a member who drops. A mid-signing swap is a new attempt with fresh nonces from everyone. Every member's limits are re-checked against the new set. Standby order is covered by the signed receipts.
+
+**f. A UI/UX review pass after 1.0.0,** to add all these modes and settings gracefully.
+
+**g. Privacy roadmap.**
+
+- Slice 1 (PR in progress): a generic user agent, an explicit chain proxy, and no addresses in logs.
+- 1.0.0:
+  - one Tor setting for hosts, chain and discovery; `socks5h` only; on by default when Tor is present; no silent clearnet fallback;
+  - onion-service hosts, after the per-address connection limit is fixed for Tor;
+  - the chain server over Tor, plus a "your own node" mode;
+  - block-based chain lookups instead of per-txid and per-script queries.
+- Later: built-in Tor (for example Arti) and a BIP 157/158 compact block filter light client, plus automatic onion creation and DNS-name hosts.

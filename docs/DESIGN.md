@@ -126,6 +126,9 @@ Full detail in `docs/LOBBY.md`.
 - Four rule profiles: Safety, Standard, Starter, Circle.
 - Listings carry fixed terms, ranges, size and start time. Live details come from the host.
 - **Terms** (owner decision 1, `spec/terms.md`): a lobby's outer rules are fixed when it opens; adjustable terms move only inside signed ranges; values freeze at the ready check; the outer rules' digest is the rules fingerprint and the lobby's identity. Changing an outer rule makes a new lobby.
+- **Several lobbies at once** per wallet from Slice 1 (owner decision 16b).
+- **Member signing modes** (owner decision 16d): A signs automatically; B asks for the passphrase when the lobby fills; C unlocks that lobby's keys once at join, signs only that factory within the approved terms, then wipes them (recommended default, owner to confirm); D, watchtower services, is under research. In B and C, "not unlocked" counts as not answering the ready check. The ready check closes as soon as every seat has answered.
+- **Understudies** in 1.1.0 (owner decision 16e): standby seats that answered the ready check replace a no-show, or a member who drops mid-signing. A mid-signing swap is a new attempt with fresh nonces from everyone, and every member's limits are re-checked against the new set.
 
 ## 12. The host
 
@@ -134,6 +137,8 @@ Full detail in `docs/LOBBY.md`.
 - Later the built-in node holds ordinary channels itself and no separate node is needed.
 - Publishes signed, versioned terms. May publish its funded factories as a track record.
 - **Fees in 1.0.0** (proposed after the owner's direction, decision 2; owner to confirm): a per-payment fee (a base amount plus a proportion), and an optional joining fee taken from the first payment received. The fee for extra receiving room comes in 1.1.0. A host cannot take any charge the member has not signed.
+- **Funding is automatic** (owner decision 16a): once H1 passes, the host broadcasts the funding transaction without asking. Consent is given at opening the lobby and at the start.
+- **Accountability in 1.0.0** (owner decision 16c): signed seat receipts; the signer-choice rule in the outer terms; removals always signed, with a reason; signed lobby-wide counts, including seats it removed, with no identities.
 
 ## 13. The user's side
 

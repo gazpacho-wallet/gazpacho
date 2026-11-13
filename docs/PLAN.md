@@ -21,7 +21,11 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 | Source | SuperScalar's low-level files imported unchanged as a pinned copy; everything above them written new |
 | Structure | A core library with no outside access (events in, actions out), ports for storage, chain and network, thin programs on top |
 | Tree | 1.0.0 trees are advanceless: every interior level fixed, no timed levels (owner decision 9, 2026-11-12). Timed levels and layer updates arrive with 1.1.0 and liquidity sales. Extending a factory always means rotation. Pseudo-Spilman leaves, one member per leaf. JIT channels off |
-| Funding | One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero |
+| Funding | One funder per factory, the host, who signs funding only after the whole tree is signed. Members start at zero. Funding is automatic and on by default: once H1 passes, the host broadcasts without asking; consent is at opening the lobby and at the start. Before real money it becomes a setting that still defaults to automatic (owner decision 16a, 2026-11-13) |
+| Lobbies per wallet | Several at once from Slice 1; every lobby record carries a lobby field (owner decision 16b) |
+| Member signing | Modes selectable by members and hosts: A automatic; B passphrase when the lobby fills; C keys unlocked once at join for that factory only, then wiped (recommended default, owner to confirm); D watchtower services (research). "Not unlocked" counts as not answering the ready check (owner decision 16d) |
+| Host accountability | 1.0.0: signed seat receipts, the signer-choice rule in the outer terms, signed removals with a reason, signed lobby-wide counts without identities (owner decision 16c) |
+| Privacy | Slice 1: a generic user agent, an explicit chain proxy, no addresses in logs. 1.0.0: one Tor setting (`socks5h` only, no silent clearnet fallback), onion-service hosts, the chain server over Tor or your own node, block-based chain lookups. Later: built-in Tor and a compact block filter client (owner decision 16g) |
 | Messages | Lightning's own wire language; factory messages inside one custom odd message type (52791), which is the specification; bLIP-56 through an adapter |
 | Channel | Lightning's standard taproot channel format; the old format archived and recoverable |
 | Safety | One member-side rule before every signature; save before send; signing secrets never stored; a restored backup never publishes |
@@ -71,9 +75,9 @@ More node adapters and a browser of hosts; swap-in and swap-out; a watching serv
 
 | Release | In it |
 |---|---|
-| 1.0.0 | The milestones above. One member per leaf. Fees (proposed, owner to confirm): per payment, and an optional joining fee from the first payment received. Payout to one wallet. No on-chain reserve |
-| 1.1.0 | Buying receiving room, splicing and channels opened on demand: built and documented with this goal, the interface kept hidden until then. Shared leaves (K > 1) with sales under "limited coverage", each sale a new channel, so several channels per member. Derived payout addresses per factory. **Many factories at once** (same or different hosts) shown as a stack, moving funds between channels and factories over Lightning, successor lobbies and standing invitations from hosts, move fees in the terms, and standing rules that roll a member's funds forward before a factory closes instead of settling on chain (`MULTI-FACTORY.md`, unreviewed) |
-| Later | Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves; Tor for host connections (`MULTI-FACTORY.md` 8.3) |
+| 1.0.0 | The milestones above. One member per leaf. Fees (proposed, owner to confirm): per payment, and an optional joining fee from the first payment received. Payout to one wallet. No on-chain reserve. Host accountability: signed seat receipts, the signer-choice rule in the terms, signed removals, signed counts. Member signing modes A to C. One Tor setting, onion-service hosts, the chain server over Tor or your own node, block-based chain lookups (owner decision 16) |
+| 1.1.0 | Buying receiving room, splicing and channels opened on demand: built and documented with this goal, the interface kept hidden until then. Shared leaves (K > 1) with sales under "limited coverage", each sale a new channel, so several channels per member. Derived payout addresses per factory. **Many factories at once** (same or different hosts) shown as a stack, moving funds between channels and factories over Lightning, successor lobbies and standing invitations from hosts, move fees in the terms, and standing rules that roll a member's funds forward before a factory closes instead of settling on chain (`MULTI-FACTORY.md`, unreviewed). Understudies: standby seats that answered the ready check are swapped in automatically, at the ready check or mid-signing with fresh nonces (owner decision 16e) |
+| Later | Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves. Built-in Tor (for example Arti), a BIP 157/158 compact block filter light client, automatic onion creation and DNS-name hosts (owner decision 16g). Accountability proofs published to Nostr from fresh keys after a lobby ends. Signing mode D, watchtower services, if research supports it |
 
 ## Work list
 
@@ -87,6 +91,8 @@ Items decided by the owner that are not yet tied to a milestone (`ux/decisions.m
 | Core holds several factories per member from 1.0.0 (rotation needs two at once); lift Slice 1's one-lobby limit to the stack limits; generalise the safety rule's owed row to any move between the member's factories | `MULTI-FACTORY.md` 2, P1; owner 2026-11-12 |
 | Write `move.md` (paying across, same host and other hosts) and `planner.md` (standing rules, budgets, logging); add safety checks G1 to G3; journal stack, rule and move records; local API stack, moves and rules calls | `MULTI-FACTORY.md` 2.5, 3, 5 |
 | Terms draft 3: `internal_fee_base_msat`, `internal_fee_ppm`, `move_fee_sat` (even, ranges) and `successor_of` (even, fixed); an invitation message for standing invitations | `MULTI-FACTORY.md` 3.4, 6 |
+| A UI/UX review pass after 1.0.0, to add the signing modes and the other settings gracefully | Decision 16f |
+| Lift the one-lobby limit in `spec/local-api.md` (open point 9, `already_in_lobby`, `already_hosting`) and `MULTI-FACTORY.md`: several lobbies at once from Slice 1 | Decision 16b |
 | Measure on signet: route timelock totals for moves across hosts, funding burial times, and the lead times for "move by" and "give up by" | `MULTI-FACTORY.md` 4.1, MF6 |
 
 ## How work proceeds
