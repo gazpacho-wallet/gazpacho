@@ -1,6 +1,6 @@
 # The composite node (contract v2, step P4)
 
-Draft 2, 2026-11-13, amended the same day with two owner decisions (host funding AUTO by default; 8 open and 64 ended lobbies) and the proposed member signing default, "unlock once at join". This note fixes how the engines sit behind the one node interface, `gz_node_start` and `gz_node_handle`. Today that node is the placeholder ping. Slice 1 needs a lobby, a signing engine and a funding engine behind it, and later channels and exits. The Slice 1 attempt (`docs/notes/slice1-attempt.md`, item 1) glued them together outside the node. This note replaces that glue with a design a builder can code without further decisions.
+Draft 2, 2026-11-13, amended the same day with two owner decisions (host funding AUTO by default; 8 open and 64 ended lobbies) and the member signing default, "unlock once at join", which the owner then confirmed. A follow-up adds understudies (owner, 1.0.0) and answers the confirmation round of review A (R1 to R12); section 19 lists both. This note fixes how the engines sit behind the one node interface, `gz_node_start` and `gz_node_handle`. Today that node is the placeholder ping. Slice 1 needs a lobby, a signing engine and a funding engine behind it, and later channels and exits. The Slice 1 attempt (`docs/notes/slice1-attempt.md`, item 1) glued them together outside the node. This note replaces that glue with a design a builder can code without further decisions.
 
 Draft 2 answers review A of PR 37 (findings A1 to A19) and three owner decisions: several lobbies at once in Slice 1; host accountability approved for 1.0.0 (not designed here, but not blocked); host funding and member signing configurable. Section 17 lists every change.
 
@@ -22,12 +22,13 @@ Read against: `docs/notes/contract-v2.md` (P4 and sections 1 to 3, 7, 9 to 11); 
 | 10 | Atomic hand-offs | **The composite brackets every cross-engine hand-off** and merges all saves made inside the bracket into one batch, itself. Engines need not keep any order for it | 7.4 |
 | 11 | Outcomes | Every `round_ended` outcome, per role, maps to one lobby result. A disagreement found at start is **repaired**, never refused | 9.3, 10 |
 | 12 | Start | Load every engine (no actions), then resume **one engine per call**: restore batch, pause, node, signing, lobby, funding, test, view | 10 |
-| 13 | A round outlives its lobby | The slot stays **closing** while the signing engine holds an unresolved round under its scope. The member keeps its connection; the host keeps a **tombstone** that answers `hello` with the final state and resends the saved `cancel` | 2.4, 4, 11 |
+| 13 | A round outlives its lobby | A slot stays **Closing** only while news may still be in flight: until Live, Dead, or the members' deadlines plus a grace after a failed lobby. Round messages route by scope without any slot; late `hello`s are answered from an index of ended lobbies. **Live factories never hold slots** | 2.4, 4, 11 |
 | 14 | Keys | The signing engine gets keys **per round** through a key hook, by scope. A proposal before `start` finds them too | 2.5 |
-| 15 | Configurable funding and signing | `host_funding` AUTO (the default, owner) or CONFIRM. `member_signing` AUTO, WHEN_UNLOCKED (a node-wide gate) or AT_JOIN (a **per-lobby gate** opened when the person marks ready; the proposed default, to be confirmed). A closed gate means not answering the ready check | 12 |
+| 15 | Configurable funding and signing | `host_funding` AUTO (the default, owner) or CONFIRM. `member_signing` AUTO, WHEN_UNLOCKED (a node-wide gate) or AT_JOIN (a **per-lobby gate** opened when the person marks ready; **the default**, owner). A closed gate means not answering the ready check | 12 |
 | 16 | Bad host | Gates by link, scope and slot state from P4.1 and P4.2; the signing engine checks a proposal only against the lobby's **accepted record** | 13 |
 | 17 | H1 | **The wallet exposes the spent scripts.** H1 stays a pure `core/tree` function. H1 runs **before** the lobby saves Funding | 14 |
-| 18 | Code steps | P4.1 to P4.6, each with a multi-process test in `tests/program/` | 15 |
+| 18 | Understudies | A new attempt under the same check with a changed participant set; keys fixed per seat; standby order saved | 9.6 |
+| 19 | Code steps | P4.1 to P4.7, each with a multi-process test in `tests/program/` | 15 |
 
 ## 1. What is given
 
@@ -42,7 +43,9 @@ The owner decided since draft 1:
 
 - **Several lobbies at once** in Slice 1, per wallet. There are no legacy journals, so every Lobby record gains a scope field now.
 - **Host accountability** (signed seat receipts, the signer-choice rule in the terms, signed removal notices, signed lobby-wide counts) is approved for 1.0.0. It is not designed here. Section 16 lists what the composite keeps open for it.
-- **Host funding and the member signing model** are still under discussion. Both are configurable (section 12).
+- **Host funding defaults to AUTO**, on by default; CONFIRM is a setting (12.1).
+- **Member signing defaults to AT_JOIN**, "unlock once at join"; AUTO and WHEN_UNLOCKED are settings (12.2).
+- **Understudies are in 1.0.0**: standby seats that answered the check replace a no-show at the check, and a member who drops mid-signing, in a new attempt under the same check (9.6).
 
 Contract v2 already decided the types used here: `gz_link_t`, SEND and MESSAGE_RECEIVED with kind, scope and records, CONNECT, DISCONNECT, SET_SEATED, `GZ_CHAIN_BROADCAST_RESULT`, node rules 3, 6, 7 and 8. This note changes them only by one appended field on DISCONNECT (section 6) and the `node.h` error text (section 8).
 
@@ -68,8 +71,8 @@ size_t gz_node_size(void);
 #define GZ_NODE_LIST_BYTES    /* computed in core/node, static assertion */
 
 typedef enum { GZ_HOST_FUNDING_AUTO = 0, GZ_HOST_FUNDING_CONFIRM } gz_host_funding_t;
-typedef enum { GZ_MEMBER_SIGNING_AUTO = 0, GZ_MEMBER_SIGNING_WHEN_UNLOCKED,
-               GZ_MEMBER_SIGNING_AT_JOIN } gz_member_signing_t;   /* AT_JOIN: proposed default (12.2) */
+typedef enum { GZ_MEMBER_SIGNING_AT_JOIN = 0,       /* the default (owner): unlock once at join, 12.2 */
+               GZ_MEMBER_SIGNING_AUTO, GZ_MEMBER_SIGNING_WHEN_UNLOCKED } gz_member_signing_t;
 
 typedef struct {
     int host;                                /* 1: host, 0: member; fixed per data folder */
@@ -124,15 +127,18 @@ A **slot** is one lobby this wallet takes part in: its scope, its lobby engine i
 | State | Meaning | Ends when |
 |---|---|---|
 | Open | The lobby runs | The lobby ends (Cancelled, Failed, left, removed), the factory goes live, or the member never got in (6.2 refused terms, the host unreachable past the invitation's limit, the person gave up) |
-| Closing | The lobby is over (`slot_closed` saved), but the signing engine still holds a round under this scope that is unresolved, or, on the host, within H12's retention | The signing engine holds nothing unresolved under the scope (member), or nothing within H12's retention (host) |
-| Free | Forgotten in memory | |
+| Closing | The lobby is over (`slot_closed` saved), but a member may still lack the lobby's final news | The first of: the factory is Live (Active is final news); it is Dead; or, after a Failed, Cancelled or left lobby, the later of the members' unfinished deadline (one signing budget) and funding deadline (36 blocks after the ack in Slice 1, plus the burial depth), plus `GZ_NODE_CLOSING_GRACE_BLOCKS` (6) |
+| Free | Forgotten in memory, but still answered from the index of ended lobbies (below) | |
 
 - A slot's **serial** counts every `slot_opened` this wallet ever saved, from 1. Its **generation** is the serial's low 16 bits. The composite never opens a slot whose generation equals that of a slot in use; it takes the next serial instead.
-- **Closing is derived, not saved.** At load, a slot with `slot_closed` is Closing if the signing engine (or, later, the funding engine) still holds a round or factory under its scope, else Free.
+- **Closing is derived, not saved.** At load, a slot with `slot_closed` is Closing if its end condition above has not passed (the funding engine says Live or Dead; the tip and the clock say the deadlines), else Free.
 - In Closing, the lobby engine instance is freed. What the slot keeps is small:
   - Member: the link (from its keys), and the CONNECT stands (11.2).
   - Host: a **tombstone**: scope, final lobby state, reason, the saved signed `cancel` envelope (from `lobby_ended`, which the node part reads), and room for each seat's last signed receipt once accountability lands (16).
-- Closing slots are capped at `GZ_NODE_MAX_TOMBSTONES` (64, owner decision). A host at the cap refuses to open a lobby (a refused command), and the person is told why.
+- Closing slots are capped at `GZ_NODE_MAX_TOMBSTONES` (64, owner decision). At the cap, the oldest Closing slot becomes Free early; its late `hello`s are then answered from the index. Nothing is refused.
+- **Live factories never hold slots** (R1). After Live, the factory belongs to the funding engine, and in Slice 2 to the channel engine, which keeps its own links per factory and does not inherit the lobby slot.
+- **The index of ended lobbies.** The node part loads, from every `slot_closed` and `lobby_ended`, a compact entry per ended lobby: scope, final state, reason (35 bytes), and, for the newest 256, the saved signed `cancel`. A late `hello` for a Free scope is answered from it: `lobby_status` with the final state and reason, then the `cancel` if kept. The node never reads storage after its start, so this index is the journal's end records, loaded at start and kept current.
+- **H12 needs no slot.** Round messages route to the signing engine by scope whenever it holds any round under that scope (section 4), resolved rounds included. The signing engine keeps resolved rounds' result bytes on disk and loads them when a status request names the round (signing F3's fix).
 
 **C7 and C10 stay node-wide.** The signing engine checks every proposal against the exposure records and unresolved outpoints of every lobby, open or closed.
 
@@ -148,14 +154,15 @@ The node part owns key allocation, because the guard must ride in the same batch
 
 ```c
 /* In gz_sign_config_t. Fills the factory and contribution keypairs this party
- * uses for the round under `scope`. 1 on success; 0 if none (no slot for the
- * scope, a key of another epoch, or the signing gate closed: section 12).
+ * uses for the round under `scope`. 1 on success; 0 if no key is available (no
+ * slot for the scope, a key of another epoch, or, with AT_JOIN, no scoped
+ * secret for that scope and terms: 12.2). The hook never looks at a gate.
  * The engine wipes the keypairs as soon as the operation is done. */
 int (*keys)(void *ctx, const uint8_t scope[32], secp256k1_keypair *factory,
             secp256k1_keypair *contribution);
 ```
 
-  The hook works with or without a `start`, for a closing slot's old round (to sign its `round_abort`), and for several lobbies at once. A return of 0 is not an error: the engine answers as the round's state requires (it ignores a new proposal, or answers `round_abort` with its saved bytes where it has them). Rule 4 holds by construction: a slot's keys never change.
+  The gates act only through the lobby's `may_answer` (12.2); `gz_lobby_member_accepted` already refuses an unanswered check, so the hook need not (R9). The hook works with or without a `start`, for a closing slot's old round (to sign its `round_abort`), and for several lobbies at once. A return of 0 is not an error: the engine answers as the round's state requires (it ignores a new proposal, or answers `round_abort` with its saved bytes where it has them). Rule 4 holds by construction: a slot's keys never change.
 
 ## 3. Links
 
@@ -201,7 +208,7 @@ A MESSAGE_RECEIVED carries (link, kind, scope, records). The transport has alrea
 | Case | Host | Member |
 |---|---|---|
 | Lobby kind, scope of an Open slot | that slot's lobby (after binding, section 3) | that slot's lobby |
-| Lobby kind, scope of a Closing slot | the tombstone: `hello` gets `lobby_status` with the final state and reason, then the saved `cancel`; anything else is dropped | dropped and counted |
+| Lobby kind, scope of a Closing slot, or of an ended lobby in the index | the tombstone or the index: `hello` gets `lobby_status` with the final state and reason, then the saved `cancel`; anything else is dropped | dropped and counted |
 | Lobby kind, scope zero | `hello` only: the listing (section 3) | dropped and counted |
 | Lobby kind, unknown scope | `hello`: `lobby_status` with state 0 (`gz_lobby_host_unknown`), under the node part's per-link limits (A16); else dropped | dropped and counted |
 | Round kind, scope under which the signing engine holds any round | the signing engine | the signing engine |
@@ -211,7 +218,7 @@ A MESSAGE_RECEIVED carries (link, kind, scope, records). The transport has alrea
 **3. The link is checked.**
 
 - Member, lobby kind: the link must be the slot's link. Member, round kind: the link must be the slot's link, or a held round's link under that scope. Otherwise the message is dropped and the connection refused (DISCONNECT `refused`).
-- Host: a lobby message's link must be bound to the slot (section 3). A round message's remote key must be a participant of a round under that scope; the signing engine checks this.
+- Host: a lobby message's link must be bound to the slot (section 3). A round message's remote key must be a participant of a round under that scope; the signing engine checks this. A connection whose key is a participant of a held round counts as seated for the node part's unbound caps (never pushed out first), with no SET_SEATED.
 
 `gz_sign_node_wants` (PR 36) is replaced by these tables.
 
@@ -263,7 +270,7 @@ What goes:
 - On TIMER_FIRED it decodes the id and passes the low 32 bits to that engine and slot. An id whose slot generation is not in use is dropped.
 - When a slot is closed (its lobby instance freed) the composite appends a CANCEL_TIMER for every timer id it rewrote for that slot and has not seen fire or cancelled. So a later lobby never gets an earlier lobby's timer, even within one incarnation.
 - An engine id at or above 2^32 is a bug (fatal).
-- The program's table holds 64 timers. Budget: lobby 6 per slot (48 for 8 slots), signing 1, funding 1, API 2, test 4 each. A static assertion keeps the sum at or below 64. Raising the slot count means raising the table.
+- The program's table holds 64 timers. Budget: lobby 6 per slot (48 for 8 slots), node part 2 (the unbound-connection idle timer, and the continuation timer of 8.3), signing 1, funding 1, API 2, test 4 each (8 with two test engines): 62. A static assertion keeps the sum at or below 64. Each slot added costs 6 more timers, so raising `GZ_NODE_MAX_SLOTS` means raising the table (R8).
 
 ### 7.2 Watches
 
@@ -321,6 +328,8 @@ The brackets, and the one batch each makes:
 | Attempt, host | `funding_plan`, `round_started`, `round_proposal`, `guard` | The plan before `round_started`; the guard with every `round_started` |
 | Outcome Funding, host | `ack_received` (last), `lobby_state` Funding (and, with `host_funding` AUTO, `funding_signed`) | Rule 2. H1 has passed before the bracket (14) |
 | Outcome Retry or Failed, host | `round_ended`, `lobby_state` Open, or `lobby_ended` Failed and `slot_closed` | Rule 2 |
+| Outcome Retry with understudies, host (9.6) | `round_ended`, `start_sent` for attempt n + 1, `funding_plan`, `round_started`, `round_proposal`, `guard` | The new attempt starts in the step that ends the old one |
+| Funding awaiting the person, host (CONFIRM) | `ack_received` (last), `lobby_state` Funding, `funding_status` "awaiting confirmation" | R10 |
 | Outcome, member | `round_completed` with the ack, `lobby_state` Funding; or `round_ended`, `lobby_state` Open | Rule 2, on the member too (B2) |
 | Cancel in flight, host | `lobby_ended`, `round_ended` failed, `slot_closed` | A9: a cancel never leaves a round running |
 | Cancel received, member | `lobby_ended`, `slot_closed` (the signing engine erases its secret nonces in memory and keeps its records) | 6.10 |
@@ -334,7 +343,7 @@ The host's `start` hand-off is two batches, and need not be one. The lobby saves
 
 - The composite keeps a queue, in submission order, of a bit mask per SAVE it returned: the engines whose records are in it. Confirmations arrive in order (`runner.h`), so the head of the queue says who gets each STORAGE_CONFIRMED.
 - **Confirmations are per merged batch.** No engine may assume one confirmation per SAVE it emitted. The test engine counts batches, not saves.
-- During the start, only engines that have resumed can own a batch, so a confirmation never reaches an engine that is loaded but not resumed (A13).
+- During the start, a batch made in signing's resume or a repair can hold a lobby's records while that lobby is loaded but not yet resumed. Its confirmation for that lobby is held by the composite and given after the lobby's resume, in order. The lobby uses no confirmations today, so this only keeps the rule simple for later engines (R4).
 
 ## 8. Errors
 
@@ -356,6 +365,7 @@ Known violations, each a task of the named step:
 | The key hook returns 0 | none yet | as 2.5 | P4.3 |
 | Wallet port `plan`, `sign`, `hold` fail (no coins, coins spent, wallet unreachable) | (new) | outcome Failed (cancel reason 3) with an attention notice; `release(plan)` | P4.5 |
 | A list too small | `GZ_ERR_NO_SPACE` | impossible by sizing (8.3) | P4.1 |
+| `host_fail` saves `round_ended`, sends the aborts, then reports | trips the test-build bracket check (7.4) | **reordered**: save, report (the outcome bracket), then the aborts. A named task, not only a rebase | P4.3 |
 
 ### 8.2 When an error happens
 
@@ -368,9 +378,14 @@ Known violations, each a task of the named step:
 ### 8.3 Sizing the list
 
 - Each engine declares its worst step as two constants: actions and bytes. The composite's `GZ_NODE_LIST_ACTIONS` and `GZ_NODE_LIST_BYTES` are the sum over the engines one event can reach, with a static assertion.
-- An event reaches at most one slot's lobby (section 3 and 5). So the lobby counts once, not once per slot.
+- **One state change per event (R3).** Each engine changes the state of at most one slot or one round per event. Everything else that is due waits for the next tick, round-robin:
+  - the signing tick runs at most one round's deadline action (a failed step, an expired budget, Unfinished, Abandoned) and one round's resends;
+  - the funding tick runs at most one factory's change (a deadline, a burial, a Dead); a NEW_TIP only records the tip and arms the tick;
+  - a command that touches several slots (the pause of `local-api.md` 11.3) acts on one slot per call: the node part sets its continuation timer at 0 ms and goes on at the next turn of the loop;
+  - an event reaches at most one slot's lobby (sections 3 and 5).
+  So every engine counts once in the sum, whatever the number of slots and rounds. The delay this adds is at most one tick per waiting round or factory.
 - **The lobby:** 256 actions, 512 KiB (a new current version to every seat).
-- **The signing engine:** bounded per step, which P4.3 makes true. Its timer tick resends for **one round per tick**, round-robin, instead of every round. Its worst step is then one round's largest message to every member plus its saves: (`GZ_SIGN_MAX_PARTICIPANTS` − 1) × `GZ_SIGN_MAX_MSG` plus the records.
+- **The signing engine:** bounded per step, which P4.3 makes true (above). With round-robin, each round is visited once every `GZ_NODE_MAX_SLOTS` ticks, so `tick_ms` is set such that `GZ_NODE_MAX_SLOTS` × `resend_ticks` × `tick_ms` is below the shortest step timeout (60 s), with a static assertion (R12). Its memory is bounded: at most `GZ_NODE_MAX_SLOTS` Active rounds in full (about 0.5 MB each, with MuSig2 sessions); every other unresolved round is kept compact, its saved bytes and C10 outpoints only, at most 64 (R12). Its worst step is then one round's largest message to every member plus its saves: (`GZ_SIGN_MAX_PARTICIPANTS` − 1) × `GZ_SIGN_MAX_MSG` plus the records.
 - **The funding engine:** one broadcast, a few watches, its records.
 - **The node part and the brackets:** a few saves, CONNECTs for every slot at start (start steps are separate calls, 10).
 - The program gives lists of this size and sizes its runner's held bytes to hold at least one full list, so a list is never refused for size.
@@ -397,20 +412,20 @@ Hand-offs live in `core/node/handoff.c`. Engines never call each other: each hoo
 2. the adapter builds the `gz_tree_proposal_t` from the hand-off and the plan (slice1-attempt items 6 and 16);
 3. `gz_sign_begin` with `budget_end_ms` (9.4). It appends `round_started`, `round_proposal`, `guard`, then `round_propose` to each member.
 
-The signing engine's `retry` hook is always "no further attempt": every new attempt goes through the lobby (Retry, Open, a new ready check, a new start).
+The signing engine's `retry` hook is always "no further attempt": every new attempt is the lobby's decision. After a Retry the lobby either starts attempt n + 1 under the same check with understudies (9.6), or goes back to Open for a new ready check.
 
 **Member, lobby to signing.** `round_propose` may come before, after or without `start` (6.9, 7.2). The member's hand-off is a query:
 
-- `gz_lobby_member_accepted(m, check_id, gz_lobby_handoff_t *out)` replaces `gz_lobby_member_may_sign`. It returns 1, and fills the whole hand-off (frozen records and signatures, pinned key, frozen digest and version, limits), **only** for the newest check the member answered, if it is not withdrawn (unready since), has no saved `start` with role 2, and is not spent (no saved Retry or other outcome for it) (A8).
+- `gz_lobby_member_accepted(m, check_id, gz_lobby_handoff_t *out)` replaces `gz_lobby_member_may_sign`. It returns 1, and fills the whole hand-off (frozen records and signatures, pinned key, frozen digest and version, limits), **only** for the newest check the member answered, if it is not withdrawn (unready since), its newest saved `start` for that check (by attempt) does not have role 2, and that attempt is not spent (no saved outcome for it) (A8). A later `start` with role 1 for the same check, in a higher attempt, makes a standby that was not chosen eligible (9.6).
 - The signing engine's builder calls it for the proposal's `check_id`, and checks the proposal only against what it returns (section 13).
-- `begin` on the member saves nothing and sets nothing (keys come from the hook, 2.5). A `begin` for a check the engine finished is ignored (rule 3).
+- `begin` on the member saves nothing and sets nothing (keys come from the hook, 2.5). A `begin` for a (check, attempt) the engine finished is ignored (rule 3).
 
 **Lobby to signing, `cancel` (A9).**
 
-- Host: the person cancels (reason 2), or the deadline cancels (reason 1), while a round is in flight. The bracket: `lobby_ended`, the signing engine's `round_ended` failed for that scope's Active round, `slot_closed`; then `cancel` to every seat and `round_abort` to the round's members.
+- Host: the person cancels (reason 2) while a round is in flight. The start deadline does not act once a start was sent; the budget governs then (9.4, R6). The bracket: `lobby_ended`, the signing engine's `round_ended` failed for that scope's Active round, `slot_closed`; then `cancel` to every seat and `round_abort` to the round's members.
 - Member: a received `cancel`. The bracket: `lobby_ended`, `slot_closed`. The signing engine erases its secret nonces for that scope and keeps its records; a round with partial signatures out stays unresolved, so the slot is Closing (2.4).
 
-**Lobby to signing, `member_left`.** Host only: a chosen seat's `leave` while Signing. The signing engine treats that member as silent at once: the attempt fails without waiting for a step timeout (the member is blamed), and Retry follows in one bracket.
+**Lobby to signing, `member_left`.** Host only: a chosen seat's `leave` while Signing. While the leaving member still owes nonces or partial signatures, the signing engine treats it as silent at once: the attempt fails without waiting for a step timeout (the member is blamed), and Retry follows in one bracket. Once it has sent all its partial signatures, the round goes on; a missing ack still fails it at the step timeout, as today (R7).
 
 **Signing to lobby and funding (`outcome`, both roles).** The hook fires on both roles. The adapter calls the slot's `gz_lobby_*_round_result`, then the funding engine, in one bracket. The full map is 9.3.
 
@@ -435,6 +450,8 @@ The signing engine's `retry` hook is always "no further attempt": every new atte
 | Dead (a funding input spent elsewhere and buried) | Failed (reason 4); slot closed | Failed (reason 4); slot closed |
 | Host: its funding deadline passed (14.3) | Failed (reason 4); slot closed | |
 | Live (funding buried) | Active; slot closed | Active; slot closed |
+| Host abandoned (14.3), then the funding was buried before the spend-back | the factory is live: the funding engine takes it as Live (and hands it on in Slice 2); the lobby's history stays Failed, with a "funded late" notice | C11's late-funding rule: live if the member holds the whole tree and C5 and C8 pass again, else it stays abandoned; the same notice |
+| Host abandoned, the spend-back buried | nothing more (already Failed); the plan's coins are back | Dead (C4(d)), if not already |
 
 `messages.md` 6.10 gains cancel reason 4, "the funding did not confirm" (P4.5). The host sends it to every seat when its funding deadline passes or the funding is dead. A member that never gets it reaches the same result at its own deadline.
 
@@ -457,9 +474,33 @@ The signing engine's `retry` hook is always "no further attempt": every new atte
 |---|---|
 | Rule 1, the budget | 9.4. Funding and Failed both come from the signing engine, in order, never both (B3). The remaining race, a person's cancel during a round, is the cancel bracket of 9.2 |
 | Rule 2, the lobby saves the outcome | 9.2, 9.3, 7.4. The member gains `lobby_state` (`0x00010018`, now "Both"). Its `resume` skips a spent start (B2, fix (a)) |
-| Rule 3, a finished check is ignored | The signing engine maps `check_id` to rounds through the saved `round_proposal`. A `begin` for a check whose newest round has ended, or is Done or Complete, appends nothing. The test world's stub asserts it (B2, fix (b)) |
-| Rule 4, keys fixed | The host refuses a `join` from a key whose seat is chosen in the current attempt (B1), with seat state 7; it may join again after the outcome. Keys are found per round by scope (2.5), and a slot's keys never change |
+| Rule 3, a finished check is ignored | The signing engine maps `check_id` to rounds through the saved `round_proposal`. A `begin` for a (check, attempt) whose round has ended, or is Done or Complete, appends nothing; a higher attempt under the same check is a new hand-off (9.6). The test world's stub asserts it (B2, fix (b)) |
+| Rule 4, keys fixed | The host refuses a `join` from a key whose seat is chosen in the current attempt (B1), with seat state 7; it may join again after the outcome. Keys are found per round by scope (2.5), and a slot's keys never change. With understudies the rule holds **per seat**: each seat signs every attempt it is in with its own fixed keys; a dropped seat's round ends, and only then may it rejoin (9.6) |
 | B4 | 9.4, first row |
+
+### 9.6 Understudies (1.0.0)
+
+Standby seats (lobby decision 1) that answered the ready check replace other seats automatically.
+
+**At the ready check, a no-show.** Already the lobby's choice at the window's end: the answered seats, cut to the target in the order of the terms' signer-choice rule, include answered standbys after the seats ahead of them. The composite needs nothing new.
+
+**Mid-signing, a member who drops.** The signing engine reports Retry with the blamed seats (9.3). In the same outcome bracket the host's lobby:
+
+1. takes the chosen seats that were not blamed, and adds answered, unchosen seats in **standby order** (join order) until the target is met again;
+2. checks every member's limits against the new set: each seat's `min_members` hint against the new count; a seat whose hint fails is dropped from the set, not forced, and the next standby is tried;
+3. if at least `minimum` remain and the budget is not spent: saves `start_sent` for **attempt n + 1 under the same check**, with the new set, and hands off at once (the "Outcome Retry with understudies" bracket of 7.4). Every chosen seat gets a new signed `start` naming the attempt; the new funding plan follows H11; every participant makes fresh nonces (S2, a new round identifier);
+4. otherwise it falls back to today's path: Open and a new ready check, or Failed if the budget is spent.
+
+Each member re-checks the new set in its own builder: the member count against its conditions, the amounts and the fees of the rebuilt tree (C8). A member whose limits fail answers `round_abort` with the reason; the host blames it in that attempt and drops it, as above.
+
+**What the composite and the hand-off need.**
+
+- **A participant set that changes between attempts under one check.** The hand-off carries (check, attempt, participants). Rule 3 is keyed on (check, attempt). The signing engine already makes a new round per attempt.
+- **The member's accepted record** follows the newest `start` for the check by attempt (9.2). A standby that got role 2 in attempt 1 and role 1 in attempt 2 is accepted for attempt 2. A member that got a start for attempt 1 and was dropped gets role 2 for attempt 2 and is not accepted.
+- **AT_JOIN.** A per-lobby gate is opened for a check (scope and frozen digest), and the scoped secret lives until the check's last attempt ends, so an understudy attempt seconds later needs nobody to type anything (12.2).
+- **Keys fixed per seat** (rule 4, B1). A standby signs with its own seat's keys, fixed since its join. A seat chosen in any attempt of the running check cannot rejoin until its round ends.
+- **Standby order is saved** for the 1.0.0 receipts: `start_sent` gains the attempt number and, for each attempt, the chosen set and the standby queue (contribution keys, in order) at that moment. Every seat's join sequence is already in its `seat` record. A receipt can then sign "standby position k at attempt n".
+- **Spec changes** (P4.7): `messages.md` 6.9, `start` gains `attempt` and the rule "a later attempt under the same check replaces the earlier `start`"; 6.8, standbys answer checks; 7.2's accepted-check rule follows the newest start. `journal.md` 9: `start_sent`'s new fields.
 
 ## 10. The stepped start
 
@@ -493,24 +534,25 @@ The signing engine's `gz_sign_start` is split into `gz_sign_load` (per record) a
 - A Closing slot's tombstone answers `hello` for its scope: `lobby_status` with the final state and reason (6.7), then the saved signed `cancel` if there is one. A member that lost the `cancel` with a connection learns it on reconnect. A member one block behind the host's burial gets Active, never "no such lobby".
 - Round kinds under that scope still go to the signing engine (section 4), so `round_status_request` is answered with the saved results, or `round_abort` with the reason for a failed round (7.10, H12).
 - SET_SEATED for the round's members stays until the slot is Free, so their reconnects are admitted.
+- When the slot is Free (Live, Dead, or the deadlines plus the grace passed), late `hello`s are answered from the index of ended lobbies (2.4), and status requests still reach the signing engine by scope (H12).
 
 ### 11.2 The member
 
-- Its CONNECT stands while the slot is Closing: while the signing engine holds an unresolved round under that scope.
+- Its CONNECT stands while the slot is Closing (2.4): a bounded time, ending at Live, Dead, or its own deadlines plus the grace. After Live, a member's link to that host is the channel engine's business (Slice 2).
 - At each reconnect the signing engine resends its saved `round_partial_sigs` (if any) and sends `round_status_request` (7.10).
 - Lobby kinds under a Closing scope are dropped: the lobby is over.
-- When nothing under the scope is unresolved, the slot is Free and the composite appends DISCONNECT `done`.
+- When the slot becomes Free, the composite appends DISCONNECT `done`. By then the member's own rounds under the scope are resolved by its deadlines.
 
 ## 12. Configurable funding and signing
 
-Both are settings, not protocol. Neither changes a message.
+Both are settings, not protocol. The only message change is the `unready` reason "locked" (12.2).
 
 ### 12.1 Host funding: AUTO or CONFIRM
 
 - **AUTO is the default and is on unless the host changes the setting** (owner decision). CONFIRM stays a setting.
 - The setting in force is copied into each `funding_plan` when the attempt begins. A change later does not affect an attempt under way.
 - **AUTO:** at the Funding outcome the funding engine runs H1, signs, saves `funding_signed` in the outcome bracket, and broadcasts.
-- **CONFIRM:** at the Funding outcome the funding engine runs the parts of H1 that need no signature (every tree signature verifies, every ack, the plan equals the proposal's funding, every input segwit), saves `lobby_state` Funding with a plan state "awaiting confirmation", and emits an attention notice. The person confirms with a command (0x03xx, a fresh sign-in at the API, `local-api.md` 4.8). Then: sign, the full H1, `funding_signed`, broadcast. The host's funding deadline (14.3) keeps running; if it passes first, the abandoned path runs.
+- **CONFIRM:** at the Funding outcome the funding engine runs the parts of H1 that need no signature (every tree signature verifies, every ack, the plan equals the proposal's funding, every input segwit), saves `lobby_state` Funding and a `funding_status` with the new state "awaiting confirmation" (the funding engine's own record, R10), and emits an attention notice. The person confirms with a command (0x03xx, a fresh sign-in at the API, `local-api.md` 4.8). Then: sign, the full H1, `funding_signed`, broadcast. The host's funding deadline (14.3) keeps running; if it passes first, the abandoned path runs.
 - After a restart the notice is emitted again (10, step 7).
 
 ### 12.2 Member signing: AUTO, WHEN_UNLOCKED or AT_JOIN
@@ -518,7 +560,7 @@ Both are settings, not protocol. Neither changes a message.
 There are two kinds of **signing gate**, both in memory only, both closed at every start:
 
 - **The node-wide gate.** Opened by an "unlock signing" command; closed by "lock signing", by the API's sign-out, and at every start.
-- **A per-lobby gate**, one per slot. Opened by the person's own "ready" for that lobby, given with the passphrase. It carries what it was opened for: the scope and the current values digest the person readied for. It closes when that lobby's round ends (any `round_ended`, or the slot freed), at every start, and on "lock signing".
+- **A per-lobby gate**, one per slot. Opened by the person's own "ready" for that lobby, given with the passphrase. It carries what it was opened for: the scope and the current values digest the person readied for. It closes when that check's last attempt ends (the lobby leaves Signing for Funding, Open or its end; understudy attempts under the same check keep it open, 9.6), when the slot is freed, at every start, and on "lock signing".
 
 The three settings:
 
@@ -526,19 +568,20 @@ The three settings:
 |---|---|---|
 | AUTO | none: always open | nothing after joining |
 | WHEN_UNLOCKED | the node-wide gate | unlocks signing for a session |
-| **AT_JOIN (proposed default, to be confirmed by the owner)** | that slot's per-lobby gate | enters the passphrase once, when marking ready in that lobby |
+| **AT_JOIN (the default, confirmed by the owner)** | that slot's per-lobby gate | enters the passphrase once, when marking ready in that lobby |
 
 **AT_JOIN, "unlock once at join".**
 
 - When the person marks ready with the passphrase, the program derives that lobby's two signing keys (contribution and factory, from the slot's epoch and index) and hands only those to the key port as a **scoped secret**: valid for that scope and that current values digest. The main wallet stays locked: no other key is derived or held.
 - The key hook (2.5) returns the keys only if the round's scope matches and the round's frozen terms digest equals the one the gate was opened for. A proposal under other terms gets no keys (and is refused anyway by C8a).
-- When the round ends, the composite closes the gate and calls the key port's `forget(scope)`, which wipes the scoped secret. A Retry ends the round: a new attempt in the same lobby needs the person to ready again, unless the attempt follows within the same check window (owner to confirm; the proposal is "ready again").
-- After a restart the per-lobby gate is closed and the scoped secret gone. The seat stays Ready, and the lobby does not answer checks until the person readies again. A round with partial signatures out is held for signing (`local-api.md` 4.7); its `round_abort` and saved resends need no new secret.
+- When the gate closes, the composite calls the key port's `forget(scope)`, which wipes the scoped secret. An understudy attempt under the same check keeps it (9.6). A new ready check after a Retry to Open needs the person to ready again (proposed; owner to confirm).
+- The gate is a policy flag; the scoped secret is real key protection: with AT_JOIN the key port does not hold that lobby's keys before the person readies. Protecting keys at rest for WHEN_UNLOCKED is the key port's matter (P8).
+- After a restart the per-lobby gate is closed and the scoped secret gone. The lobby treats the seat as locked (below) until the person readies again. A round with partial signatures out is held for signing (`local-api.md` 4.7); its `round_abort` and saved resends need no new secret.
 - Key port addition: `scoped_secret(scope, terms_digest, factory_sec, contribution_sec)` and `forget(scope)`. The key hook reads the scoped secret first.
 
 **Common rules for every gate.**
 
-- **A closed gate is not answering the ready check.** The member's lobby gets a hook `may_answer(ctx, scope)`. When it returns 0, the lobby does not answer a `ready_check`: the seat stays Ready and may be chosen in a later check. A notice says "unlock to take part". When a gate opens while a check is still in its window, the composite calls `gz_lobby_member_gate_opened()`, and the lobby answers then.
+- **A closed gate takes the seat out of the count (R5).** The member's lobby gets a hook `may_answer(ctx, scope)`. When it returns 0 and the seat is Ready, the lobby sends `unready` with a new reason 3, "locked" (`messages.md` 6.5), at once and again when a `ready_check` arrives. It is not the person's own unready (lobby decision 15 does not apply), and the change limit never swallows it (B6). A notice says "unlock to take part". When the gate opens, the composite calls `gz_lobby_member_gate_opened()`, and the lobby sends `ready` again (before the freeze for the latest values; after it, the plain ready for the frozen version that 6.4 allows). So a host never runs a check that locked seats would make fail.
 - **A check already answered runs to its end.** Closing the node-wide gate after the answer does not withdraw it. The key hook still returns the round's keys until that round ends, as `local-api.md` 4.7 and 11.3 already hold the lock and the pause for a round with partial signatures out ("held for signing"). This applies to the whole round, from the answer, so that a lock does not cost the other members an attempt.
 - A proposal for a check answered while a gate was open is signed even if the node-wide gate is closed now. A proposal for a check not answered is ignored (13).
 
@@ -598,21 +641,26 @@ The fee rate of the funding transaction is the host's setting, default 0.1 sat/v
 
 - The host abandons a funding that is not buried by its own deadline: the latest member funding deadline the terms allow (36 blocks after the ack in Slice 1) plus the burial depth.
 - At that point the lobby ends Failed (reason 4), `cancel` reason 4 goes to every seat, and the slot closes.
-- To keep its coins safe, the host then spends one of the funding's inputs back to its own wallet, at the host's fee rate. Once that is buried, every member's records for the factory end under C4(d), and the round can never come back to life.
+- To keep its coins safe, the host then spends one of the funding's inputs back to its own wallet. Once that is buried, every member's records for the factory end under C4(d).
+- **Its fee is the minimum that can replace the funding** (R2): the funding's absolute fee plus the incremental relay fee times the spend-back's own size. With the funding at 0.1 sat/vB this is about 0.1 sat/vB above it, which keeps the owner's rule of always paying the lowest fee that works. If the funding has already left every mempool, the spend-back pays the host's ordinary rate (0.1 sat/vB).
+- **An explicit exception to H16.** H16 forbids replacing the funding by fee to speed it up. Abandoning is the one case where the host replaces it on purpose, with a transaction that pays nothing to the factory. `safety-rule.md` H16 gains that sentence (P4.5).
+- The funding engine watches the funding outpoint and the spend-back until one of the two is buried. Both results have rows in 9.3.
+- With CONFIRM and a funding never signed, the spend-back (at the ordinary rate, nothing to replace) is still made at the deadline: it is the only way to end the members' records early under C4(d).
 - A broadcast at 0.1 sat/vB that is slow to confirm is exactly the case this covers.
 
 ## 15. The code steps
 
-Contract v2 named P4 as one pull request. It is split here into six, each landing on `main` alone, green, with the handbook rebuilt where a chapter changed. Each test is a multi-process test in `tests/program/` on loopback with short timers, through the real runner and the storage in use (`program.md` section 8). Each shows by outcome: the happy path, a crash of each role at its worst point, a storage failure recovered in process, and a reconnect. **Every test also asserts that no `node-error` and no `repair` line appears**, unless the case is about them.
+Contract v2 named P4 as one pull request. It is split here into seven, each landing on `main` alone, green, with the handbook rebuilt where a chapter changed. Each test is a multi-process test in `tests/program/` on loopback with short timers, through the real runner and the storage in use (`program.md` section 8). Each shows by outcome: the happy path, a crash of each role at its worst point, a storage failure recovered in process, and a reconnect. **Every test also asserts that no `node-error` and no `repair` line appears**, unless the case is about them.
 
 | Step | Contents | Depends on |
 |---|---|---|
 | **P4.1** | Contract v2's core changes (links, SEND and MESSAGE with kind, scope and records, CONNECT, DISCONNECT with `why`, SET_SEATED, BROADCAST_RESULT, WATCH_SCRIPT retired, rules 3, 6, 7, 8); the `node.h` error text; `envelope.h`; `core/node`: routing (section 4, layer 1 of 13), connection binding, timer packing with generations, the watch registry, brackets and merges, the confirmation queue, the two-phase start, rollback and poison, list sizing; the test engine; the simulator on the composite | P3 (PR 27) |
 | **P4.2** | The lobby on the composite: the scope field in every Lobby record, links, kind and scope, DISCONNECT and SET_SEATED actions, `part` code removed, connection caps for unbound links moved to the node part, `slot_opened` and `slot_closed`, tombstones, `gz_lobby_host_unknown`, `gz_lobby_member_accepted`, `may_answer` and the signing gate, member `lobby_state`; B1 to B4; the budget as in 9.4; a test-only signing stand-in | P4.1, PR 30 |
-| **P4.3** | The signing engine on the composite (PRs 32 to 36 rebased). **Prerequisites: signing F2 and F3 fixed.** Links from keys, `peer[]` gone, kind and scope, `gz_sign_load` and `gz_sign_resume`, the key hook, the outcome on both roles, `budget_end_ms`, one Active round per scope, `max_attempts` removed, begin refusals as outcomes, `resolve` no-op, finished checks ignored, the builder over `gz_lobby_member_accepted`, one round per tick, `funding_status` no longer written, `cancel` and `member_left`; the host attempt bracket with a test funding plan | P4.2, PRs 32 to 36, F2, F3 |
+| **P4.3** | The signing engine on the composite (PRs 32 to 36 rebased). **Prerequisites: signing F2 and F3 fixed.** Links from keys, `peer[]` gone, kind and scope, `gz_sign_load` and `gz_sign_resume`, the key hook, the outcome on both roles, `budget_end_ms`, one Active round per scope, `max_attempts` removed, begin refusals as outcomes, `resolve` no-op, finished checks ignored, the builder over `gz_lobby_member_accepted`, one state change and one round's resends per tick with the `tick_ms` assertion, compact unresolved rounds, **the reorder of `host_fail`** (8.1), `funding_status` no longer written, `cancel` and `member_left`; the host attempt bracket with a test funding plan | P4.2, PRs 32 to 36, F2, F3 |
 | **P4.4** | The hostile-host test step: `--test-evil-host MODE` in the test build, and the long randomized run | P4.3 |
-| **P4.5** | The funding engine (`core/funding`), the wallet port and accessors, H1 before the lobby's save, AUTO and CONFIRM, burial, C11, C4(d), both funding deadlines, cancel reason 4, the spend-back on abandon | P4.3, P7, wallet accessors |
+| **P4.5** | The funding engine (`core/funding`), the wallet port and accessors, H1 before the lobby's save, AUTO and CONFIRM, burial, C11, C4(d), both funding deadlines, cancel reason 4, the spend-back at the minimum replacement fee and H16's exception, late burial, the slot end conditions Live and Dead and the index of ended lobbies | P4.3, P7, wallet accessors |
 | **P4.6** | Slice 1 end to end: on the local test chain, and on signet opt in | P4.5, P8 |
+| **P4.7** | Understudies (1.0.0, a follow-up step): the lobby's attempt n + 1 under one check, eligibility re-check, `start` with `attempt`, `start_sent`'s new fields, the member's accepted record by newest start; the spec changes of 9.6 | P4.3, P4.5 |
 
 ### P4.1, `program_composite`
 
@@ -636,7 +684,7 @@ One host process with two lobbies at once, three members, one of them in both lo
 4. A chosen member leaves in Signing and joins again with the same contribution key: refused (B1).
 5. Budget: Retry, then the budget ends while Open: cancel reason 3 by the lobby.
 6. The person cancels during a round: one batch with `lobby_ended`, the stand-in's `round_ended`, `slot_closed`.
-7. A member with `member_signing` WHEN_UNLOCKED and the gate closed does not answer the check and is not chosen; unlocked during the window, it answers. A member with AT_JOIN in two lobbies readies in one with the passphrase: only that lobby answers its check; after its round ends the scoped secret is gone (the test key port reports `forget`), and after a restart the lobby waits for the person again.
+7. A member with `member_signing` WHEN_UNLOCKED and the gate closed sends `unready` reason 3 and is not counted; unlocked, it readies again. A host whose minimum is met only with locked members never starts a check (R5). A member with AT_JOIN in two lobbies readies in one with the passphrase: only that lobby answers its check; after its round ends the scoped secret is gone (the test key port reports `forget`), and after a restart the lobby waits for the person again.
 8. A hostile raw client sends an invalid `join` three times: closed with a warning (DISCONNECT `refused`). Seventeen silent connections: the oldest silent one is pushed out, a seated member is never refused.
 9. A member that missed the `cancel` (dropped by `--test-drop-kind 34`) reconnects to the host's tombstone and ends Cancelled with the reason.
 10. A storage failure and a reconnect: the member's `hello` gets the full state; nothing is saved twice.
@@ -656,6 +704,8 @@ A host and three members, two lobbies at once on the host; funding from a test w
 9. `round_status_request` after the lobby Failed: answered with `round_abort` and the reason (7.10, H12).
 10. A finished check handed again (a host restart right after Funding): nothing new in the journal.
 11. A storage failure on the host mid-round; a member reconnect in the partial-signature phase.
+12. Eight lobbies on one host with their step deadlines due in one tick (`--test-same-deadline`): every round fails in turn over the next ticks, each in its own bracket, with no `node-error`; each round's resend interval stays below the step timeout (R3, R12).
+13. A chosen member leaves after sending all its partial signatures: the round goes on; it fails only at the step timeout if the ack never comes (R7).
 
 ### P4.4, `program_bad_host`
 
@@ -686,10 +736,24 @@ A host and three members against the local test chain server (`ports/chain/tests
 6. The host never broadcasts: each member's deadline passes: Abandoned, slot closed. The host's own deadline: reason 4 to every seat; the spend-back buried; members go Dead.
 7. A member one block behind the host's burial reconnects: Active from the tombstone, then live by its own chain view.
 8. A member killed while the funding confirms; a reorganisation that removes the funding before burial; a storage failure on a member at burial.
+9. With `--test-max-tombstones 2`: five factories made live one after another, then a new lobby opens; late `hello`s for the oldest scopes are answered from the index (R1).
+10. Abandon with the funding still in the mempool at 0.1 sat/vB: the spend-back replaces it (the local test server applies the replacement rule) and is buried; members go Dead. A variant where the funding is buried first: the host takes the factory as live with the "funded late" notice; members apply C11's late rule (R2).
+11. A failed lobby: the host's slot leaves Closing at the members' deadlines plus the grace; a member that reconnects later still gets the final state and the `cancel` from the index.
 
 ### P4.6, `program_slice1` and `program_slice1_signet`
 
 On the local test chain always, and on signet opt in (`GZ_LIVE_TESTS`), with the test coins and 0.1 sat/vB. A host with two lobbies, four members (one in both lobbies, one refusing), from `--role` to Active, then every process restarted once with nothing lost.
+
+### P4.7, `program_understudies`
+
+A host with target 3 and two standby seats, five members (three seats, two standbys), on the local test chain.
+
+1. **A no-show at the ready check.** One of the three seats does not answer (`--test-no-answer`). The first answered standby is chosen in its place; the round completes; the factory goes live with that standby.
+2. **A drop mid-signing.** A chosen member is killed after the nonces. The attempt fails with it blamed; in the same step the host starts attempt 2 under the same check with the first answered standby; every participant makes fresh nonces; the new funding plan follows H11 if partial signatures were out; the factory goes live. The journal's `start_sent` shows attempts 1 and 2 with the standby queue each time.
+3. **A limit fails on the new set.** One remaining member's `min_members` hint is above the new count: it is dropped, not forced, and the next standby is tried; with none left and below `minimum`, the lobby goes back to Open.
+4. **AT_JOIN members** across the swap: nobody is asked for the passphrase again within the check; a restart of the host during attempt 2 fails it (H13) and the lobby goes back to Open.
+5. **The dropped member** restarts with its keys and tries to rejoin during the check: refused (B1); after the outcome it may join again.
+6. A storage failure on the host between the two attempts' saves; the restarted host holds either both or neither (one bracket).
 
 ## 16. What the composite keeps open for host accountability
 
@@ -701,18 +765,21 @@ Signed seat receipts, the signer-choice rule in the terms, signed removal notice
 - **`start` carrying counts and the rule** is the lobby's encoding. The member's check of the rule runs in the lobby on a role-2 `start`; its result is a lobby notice, and a breach is a `host_fault`.
 - **Tombstones** keep room for each seat's last receipt and the removal notices, so a host can resend them after the lobby ended.
 - **The signing engine** depends on the lobby only through `gz_lobby_member_accepted`; a role-2 check is already excluded there.
+- **Standby order and attempts** are saved in `start_sent` (9.6), so receipts can sign standby positions and the signer-choice rule check can replay each attempt's choice.
 
 ## 17. For the owner
 
 Decided since draft 2 (owner):
 
 - **Host funding defaults to AUTO**, on by default; CONFIRM stays a setting (12.1).
+- **Member signing defaults to AT_JOIN**, "unlock once at join": a per-lobby gate opened at ready, keys scoped to that lobby and its terms and wiped when the check's last attempt ends. AUTO and WHEN_UNLOCKED remain options (12.2).
+- **Understudies in 1.0.0** (9.6, P4.7).
 - **8 Open lobbies and 64 ended lobbies whose rounds are still held**, per wallet, as constants `GZ_NODE_MAX_SLOTS` and `GZ_NODE_MAX_TOMBSTONES` that can be raised later (2.4).
 
 Still open, with the owner:
 
-- **The member signing default.** The proposed default is AT_JOIN, "unlock once at join" (12.2). The composite supports all three settings.
-- **Within AT_JOIN, whether a Retry needs the person again.** Proposed: yes, the person readies again, because the gate was opened for one round.
+- **Within AT_JOIN, whether a new ready check after a Retry needs the person again.** Proposed: yes. Understudy attempts under the same check do not (9.6).
+- **The grace after a failed lobby** before a slot is freed: proposed 6 blocks (2.4).
 
 ## 18. What changes on open branches
 
@@ -723,7 +790,8 @@ Still open, with the owner:
 | `signing` to `signing-vectors` (PRs 32 to 36) | F2 and F3 first; `signing_node.h` replaced by the composite's engine ops; `gz_sign_load`, `gz_sign_resume`; the key hook in place of the engine-wide keypair; `peer[]` gone; the outcome on both roles; `budget_end_ms`; one Active round per scope; `max_attempts` gone; refusals as outcomes; `resolve` no-op; finished checks ignored; one round per tick; `funding_status` no longer written; `cancel` and `member_left`; `lobby_outcome.c` moves into `core/node/handoff.c` |
 | `journal` (PR 29) | Nothing in the format. The program's storage feeds the composite's one walk |
 | `spec/journal.md` | `slot_opened`, `slot_closed`; the scope field in every Lobby record; `lobby_state` kept by both; `funding_status` written by the funding engine only, and the anchored-batch note moved to its first write. P4.2 and P4.5 |
-| `spec/messages.md` | Cancel reason 4 (6.10); the lobby kind range 16 to 63 (4.1). P4.5 and P4.2 |
+| `spec/messages.md` | Cancel reason 4 (6.10); unready reason 3 "locked" (6.5); the lobby kind range 16 to 63 (4.1); `start` with `attempt`, standbys answering checks, the accepted check by newest start (6.8, 6.9, 7.2). P4.5, P4.2, P4.7 |
+| `spec/safety-rule.md` | H16's exception for abandoning. P4.5 |
 | `docs/notes/contract-v2.md` | Section 17's P4 row points here; DISCONNECT's `why` in section 3. P4.1 |
 
 ## 19. Changes in draft 2
@@ -752,4 +820,19 @@ Still open, with the owner:
 | Owner: several lobbies | Slots with generations, Open and Closing; a scope in every Lobby record; connection binding on the host; one Active round per scope; C7 and C10 node-wide | 2.4, 3, 7.3 |
 | Owner: accountability for 1.0.0 | What the composite keeps open | 16 |
 | Owner: funding and signing configurable | `host_funding` and `member_signing`, the signing gate | 12 |
-| Amendment: owner decisions | Host funding AUTO by default; 8 and 64 as raisable constants; the per-lobby gate and AT_JOIN as the proposed member default | 2.2, 2.4, 12, 17 |
+| Amendment: owner decisions | Host funding AUTO by default; 8 and 64 as raisable constants; the per-lobby gate, and AT_JOIN as the member default (confirmed by the owner) | 2.2, 2.4, 12, 17 |
+| Follow-up: understudies (owner, 1.0.0) | Attempt n + 1 under one check with a changed set; limits re-checked, failing members dropped; keys fixed per seat; standby order in `start_sent`; P4.7 and its test | 9.6, 15 |
+| Follow-up: AT_JOIN confirmed | The default; the scoped secret lives for the check's attempts | 1, 12.2, 17 |
+| R1 Closing too long | Closing ends at Live, Dead, or the members' deadlines plus a grace; the cap frees early instead of refusing; an index of ended lobbies answers late `hello`s; H12 by scope without slots; live factories hold no slots; P4.5 tests 9 and 11 | 2.4, 11, 15 |
+| R2 the spend-back | The minimum replacement fee; H16's exception; watched until one is buried; late-burial rows; kept for CONFIRM; P4.5 test 10 | 14.3, 9.3 |
+| R3 events touching many slots | One state change per event per engine, the rest round-robin; the pause one slot per call; P4.3 test 12 | 8.3 |
+| R4 confirmations during the start | Held for a lobby until its resume | 7.5 |
+| R5 locked members | `unready` reason 3 "locked", `ready` again when unlocked; P4.2 test 7 | 12.2 |
+| R6 deadline in flight | Removed from the cancel bracket | 9.2 |
+| R7 `member_left` | Blamed only while it owes nonces or partial signatures; P4.3 test 13 | 9.2 |
+| R8 timers | The node part's 2 counted; 6 per slot added | 7.1 |
+| R9 hook and gate | The hook never looks at a gate | 2.5 |
+| R10 CONFIRM's record | `funding_status` "awaiting confirmation" in the bracket | 12.1, 7.4 |
+| R11 the AUTO default | Stated in 1, 12.1, 17 | 1, 12.1, 17 |
+| R12 signing memory and resends | Active rounds in full, the rest compact (64); the `tick_ms` assertion | 8.3 |
+| `host_fail` reorder | A named P4.3 task | 8.1, 15 |
