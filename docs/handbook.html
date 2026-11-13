@@ -349,7 +349,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c27-rough-totals" title="Rough totals">Rough totals</a>
 <a class="sec" href="#c27-biggest-unknowns" title="Biggest unknowns">Biggest unknowns</a></nav>
 <main>
-<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-12 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
+<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-13 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
 <section class="chapter" id="c1"><h2>Start here</h2><p class="desc">Terms, facts, decisions in force, and how sure we are of each claim.</p><p class="file">Gazpacho knowledge base · <code>docs/KNOWLEDGE-BASE.md</code></p>
 <div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.</p></div>
 <details id="c1-1-where-everything-is"><summary>1. Where everything is</summary><div class="body"><div class="tw"><table>
@@ -2968,7 +2968,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tbody>
 </table></div>
 <h4>12.1 Requirements on the core contract</h4>
-<p>Not code changes made by this specification: requirements that <code>core/gazpacho/include/gazpacho/ports.h</code>, <code>action.h</code> and <code>event.h</code> must meet before the signing engine and the creation checks are written. The first four are met by the core contract for Slice 1 (pull request 21, <code>core-contract-slice1</code>); the fifth is a duty of the program, not of the core.</p>
+<p>Not code changes made by this specification: requirements that <code>core/gazpacho/include/gazpacho/ports.h</code>, <code>action.h</code> and <code>event.h</code> must meet before the signing engine and the creation checks are written. The first four are met by the core contract for Slice 1 (pull request 21, <code>core-contract-slice1</code>); the fifth is a duty of the program, not of the core. The last four come from the program skeleton's findings and are met by contract v2 (<code>docs/notes/contract-v2.md</code>), in the pull requests named.</p>
 <div class="tw"><table>
 <thead>
 <tr>
@@ -3002,6 +3002,26 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td><strong>The guard's storage duty</strong>: a batch holding a <code>guard</code> record is confirmed only after the guard file is replaced and synced as well (<code>journal.md</code> section 8.3)</td>
 <td><code>safety-rule.md</code> R6</td>
 <td>A duty of the program around the runner, like the journal's; nothing in the runner changes</td>
+</tr>
+<tr>
+<td><strong>The key before the handshake</strong>: a connection with a fresh key index is made only after the batch holding that <code>key_index</code> (and its <code>guard</code>) is confirmed (section 2)</td>
+<td>Section 2, review 3 F12: no key is shown to anyone before its index is saved</td>
+<td><code>GZ_ACTION_CONNECT</code>, outward, so the runner holds it behind the save (<code>docs/notes/contract-v2.md</code> section 3; pull request P4)</td>
+</tr>
+<tr>
+<td><strong>Messages carry kind and scope</strong>: a round message is sent and received as (<code>kind</code>, <code>scope</code>, <code>records</code>), so the engine never builds or parses the envelope header</td>
+<td><code>messages.md</code> sections 4 and 5: the signature covers kind and scope; the transport splits and reassembles</td>
+<td><code>SEND</code> and <code>GZ_EVENT_MESSAGE_RECEIVED</code> (contract v2 section 7; P4)</td>
+</tr>
+<tr>
+<td><strong>A peer named by its keys</strong>: resends after a restart are addressed to the link (our key, its key), which a restart does not change</td>
+<td>Rule S3 and <code>messages.md</code> 6: the member resends <code>round_partial_sigs</code> after reconnecting</td>
+<td><code>gz_link_t</code> (contract v2 section 2; P4); resends at <code>GZ_EVENT_PEER_CONNECTED</code> (node rule 6)</td>
+</tr>
+<tr>
+<td><strong>An incarnation that a restore of the journal alone cannot rewind</strong>: the restore epoch and nonce inputs mix in the incarnation. A snapshot of the whole data folder or machine rolls it back too and is not defended (storage 6.4); there only the epoch's random draw protects</td>
+<td>Section 8; <code>safety-rule.md</code> R2</td>
+<td>The start counter <code>starts.gzs</code> (contract v2 section 8): a stand-in in P3, sealed in P9; a duty of storage</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -8591,7 +8611,7 @@ docs/      plan, assessment, user guides
 {
  "about": "Not displayed. Sources and conventions for readers working from this file alone. The full text of every document is in the page itself, inside the collapsed sections.",
  "repository": "https://github.com/gazpacho-wallet/gazpacho",
- "built": "2026-11-12",
+ "built": "2026-11-13",
  "wording": "Say host (the papers say LSP) and member (client). Never say staking; say hosting, providing liquidity, fees.",
  "authoritative": "The Markdown files in the repository. This page is generated from them by tools/build-handbook.py.",
  "chapters": [

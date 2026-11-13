@@ -1,8 +1,8 @@
 # Contract v2: the fifteen mismatches resolved
 
-Draft 1, 2026-11-12. Not yet reviewed. Answers section 7 of `docs/notes/program.md` (PR 27, the program skeleton), which found fifteen places where the merged and open pieces do not fit. Each section below gives the decision, why, the exact interface change (header and specification text), the piece that owns it, and the multi-process test in `tests/program/` that proves it. Section 17 orders the work into small pull requests that each land without breaking `main`.
+Draft 2, 2026-11-12. Draft 1 answered section 7 of `docs/notes/program.md` (PR 27, the program skeleton; that note reaches `main` with P3), which found fifteen places where the merged and open pieces do not fit. Draft 2 answers the review of PR 28 (`notes/review-pr28.md`, findings 1.1 to 5); section 19 lists what changed. Each section below gives the decision, why, the exact interface change (header and specification text), the piece that owns it, and the multi-process test in `tests/program/` that proves it. Section 17 orders the work into small pull requests that each land without breaking `main`.
 
-Read against: `core/gazpacho/include/gazpacho/*.h` on `main` (PR 9 and PR 21 merged), `ports/net/` on `main` and on `transport-lobby` (PR 23), `ports/api/` on `api-server` (PR 26), `ports/chain/` on `main`, and `spec/messages.md`, `transport.md`, `local-api.md`, `journal.md`, `storage-encryption.md`, `signing-round.md` 12.1.
+Read against: `core/gazpacho/include/gazpacho/*.h` on `main` (PR 9 and PR 21 merged), `ports/net/` on `main` and on `transport-lobby` (PR 23), `ports/api/` on `api-server` (PR 26), `ports/chain/` on `main`, `core/signing/` on `signing-core` (PR 15), and `spec/messages.md`, `transport.md`, `local-api.md`, `journal.md`, `storage-encryption.md`, `safety-rule.md`, `exit.md`, `signing-round.md` 12.1.
 
 Owners, as in the stream list: **core** (`core/gazpacho`), **S2** signing, **S4** lobby engine, **S5** journal, **S6** storage encryption, **S7** transport (PR 23), **S8** chain watch loop, **S9** local API (PR 26), **S11** program (PR 27), **wallet** (`wallet/`).
 
@@ -12,67 +12,75 @@ Spec text applied in this pull request: `messages.md` sections 2, 4.1, 6.2, test
 
 | # | Mismatch | Decision | Owner | PR (section 17) |
 |---|---|---|---|---|
-| 1 | "Released" treated as "sent" | Release is hand-over, not delivery. Only the peer's own message is an acknowledgement. Engines resend unacknowledged state at start **and at every `PEER_CONNECTED`**. The program keeps no outbox: a send to a peer that is not connected is dropped. The placeholder gets a peer acknowledgement (`GZPA`) and loses its "sent" record | core, S11 | P4 |
-| 2 | Three shapes of peer identity | A peer is named by the **link**: the pair (our 33-byte static key, its 33-byte static key), `gz_link_t`. Stable across restarts because every key is derived (13). One live connection per link; the newer replaces the older. Connection numbers stay inside the transport | core, S7, S11 | P4 |
-| 3 | No action to connect, disconnect, choose a key, mark a seat | Three new actions: `CONNECT` (host key, address, our key's epoch and index; **outward**, so it waits for the save of `key_index`), `DISCONNECT`, `SET_SEATED`. Connections are kept until `DISCONNECT` or a stop, and are not kept across a restart: the start asks again, like timers and watches | core, S4, S11 | P4 |
-| 4 | One poll loop, ports that block in their own | Every port that waits exposes its descriptors and next deadline and is stepped after the caller's `poll()`: `gz_peers_pollfds`/`gz_peers_dispatch`, `gz_api_server_pollfds`/`gz_api_server_dispatch`, `gz_chainw_fd`. The API's passphrase thread stays; its rule is tightened | S7, S9, S8, S11 | P2, P3, P5, P6, P7 |
-| 5 | Chain calls block the loop up to 45 s | The chain view runs on **one worker thread** (`gz_chainw`) with request and result queues and a wake descriptor. The loop never calls `ports/chain` itself. Results carry a generation, so nothing from before a restart is delivered | S8, S11 | P7 |
-| 6 | The merged transport blocks | The program uses only `ports/net/peers.h` (PR 23). `conn.h` stays for `gz-net` and tests | S7, S11 | P2, P3 |
-| 7 | `SEND` has no kind or scope | `SEND` and `MESSAGE_RECEIVED` carry the envelope's fields: `kind` (`u16`), `scope` (32 bytes), `records` (the TLV stream). The program passes them to `gz_peers_send`, which splits. The placeholder uses kind **32767**, reserved for test builds | core, S7, S11 | P2, P4 |
-| 8 | A restore rewinds the incarnation counter | An **incarnation floor** file, `floor.gzf`, outside the journal's backup set and sealed under a key from the seed. Every start writes the new incarnation there before the runner exists; every start takes 1 + max(journal's highest, floor) | S5, S6, S11 | P9 |
-| 9 | No broadcast-outcome event | A chain event `GZ_CHAIN_BROADCAST_RESULT` (accepted, refused, unreachable), **advisory only**: never stored as proof, never final. Watches stay the only truth | core, S8 | P4, P7 |
-| 10 | `WATCH_SCRIPT` fits the chain view poorly | **Retired.** `gz_action_list_add` refuses it; the number stays reserved. Slice 1 needs only `WATCH_TX` and `WATCH_OUTPOINT`, which the chain view answers directly | core, S8 | P4 |
-| 11 | The API reads state the core does not offer; the server makes the data folder | No queries on the node. The program keeps a **view**, fed only by `NOTIFY` actions with a defined framing (released after saves, so the view shows only durable state), re-emitted by every start; the backend reads the view on the loop thread. Changing calls become `USER_COMMAND`s answered `202` with a request id; their outcome is a `NOTIFY`. The server is handed a folder the program has checked and locked, and creates nothing | core, S9, S11 | P5, P6 |
-| 12 | Transport depends on the core's random port type | `ports/net` gets its own type, `gz_net_random_t` (`fill(ctx, out, len)`, every draw a one-time secret), and includes no core header. A check enforces it | S7 | P2 |
-| 13 | No member key derivation | `m / 254315617' / coin' / 0' / epoch' / index'` for per-lobby keys (contribution key at `index`, factory key at `index` + 1), `m / 254315617' / coin' / 1' / 0'` for the host's long-term key; `gzw_lobby_key` and `gzw_host_key` in `wallet/`. **Proposed, owner to confirm** | wallet, S11 | P8 |
-| 14 | Two random port signatures | Settled on `main`: PR 21's enum won (`gz_random_purpose_t`, `GZ_RANDOM_ORDINARY` = 0, `GZ_RANDOM_SECRET` = 1, `fill(ctx, purpose, out, len)`). The program drops its probes and builds against `main` only | S11 | P3 |
-| 15 | `init` names signet only, tools accept testnet4 | `init`'s `networks` holds exactly one chain hash, the network the party was set up for: **signet or testnet4**. Applied in `messages.md` section 2 | spec (here), S7 | P1, P2 |
+| 1 | "Released" treated as "sent" | Release is hand-over, not delivery; only the peer's own saved message is an acknowledgement. No outbox. **A send the transport refuses on a live connection closes the connection**, so every loss coincides with a reconnect; too-big is fatal for the incarnation. Peer events are queued during a start; the host listens only after it; a restart from storage closes every connection | core, S7, S11 | P2, P3, P4 |
+| 2 | Three shapes of peer identity | A peer is named by the **link**: (our 33-byte static key, its 33-byte static key), `gz_link_t`. One live connection per link; **the transport** replaces an older connection from the same proven key before admission, and the program reports the older one's loss | core, S7, S11 | P2, P4 |
+| 3 | No action to connect, disconnect, choose a key, mark a seat | `CONNECT` (outward: waits for the save of the key's index pair), `DISCONNECT` (**flushes, then closes, with an event**), `SET_SEATED` (a property of the remote key, applied at admission). Re-issued at every start. At `PEER_CONNECTED` an engine **carries out the protocol's reconnect step** (`messages.md` 6: the member asks, the host answers), with limits kept per link | core, S4, S7, S11 | P2, P4 |
+| 4 | One poll loop, ports that block in their own | Every port that waits exposes descriptors and a deadline and is stepped after the one `poll()`. The passphrase thread only derives; every file write is on the loop thread; jobs carry a generation | S7, S9, S8, S11 | P2, P3, P5, P6, P7 |
+| 5 | Chain calls block the loop up to 45 s | One chain worker thread (`gz_chainw`) with queues and a wake descriptor; it **never drops a watch report** (blocks when the result queue is full, coalesces tips); interruptible shutdown; libcurl set up and torn down on the loop thread | S8, S11 | P7 |
+| 6 | The merged transport blocks | The program uses only `ports/net/peers.h`. `conn.h` stays for `gz-net` and tests | S7, S11 | P2, P3 |
+| 7 | `SEND` has no kind or scope | `SEND` and `MESSAGE_RECEIVED` carry `kind`, `scope`, `records`; the transport splits. Kind **32767** reserved for test builds | core, S7, S11 | P2, P4 |
+| 8 | A restore rewinds the incarnation | A **start counter** file, `starts.gzs`, outside the journal's backup set, sealed under a key from the seed, created at set-up. Every start takes 1 + max(journal, counter) and writes it first. It covers **a restore of the journal alone**, not a snapshot of the whole folder or machine | S5, S6, S11 | stand-in P3, sealed P9 |
+| 9 | No broadcast-outcome event | `GZ_CHAIN_BROADCAST_RESULT`, aggregate and **advisory only**; per-server results (`exit.md` 3.2, 10.5) deferred | core, S8 | P4, P7 |
+| 10 | `WATCH_SCRIPT` fits the chain view poorly | **Retired**; the number stays reserved | core, S8 | P4 |
+| 11 | The API reads state the core does not offer; the server makes the data folder | No reads on the node; a program-held **view** fed by `NOTIFY`s that follow their saves, re-emitted at start. Acting calls follow `local-api.md` 7.4/7.5: **client-chosen `request_id`** saved in the action's first batch, the HTTP answer **held until the command-result `NOTIFY`**. The server is given a checked, locked folder | core, S9, S11 | P5, P6 |
+| 12 | Transport depends on the core's random port type | `gz_net_random_t` in `ports/net`; no core header there | S7 | P2 |
+| 13 | No member key derivation | `m / 254315617' / net' / 0' / epoch' / index'`, allocated **in pairs** (contribution key at `index`, factory key at `index + 1`); host key at `m / 254315617' / net' / 1' / k'`; a network level so one seed is unlinkable across signet and testnet4; every invalid-child case defined. **Proposed, owner to confirm** | wallet, S11 | P8 |
+| 14 | Two random port signatures | Settled on `main` (PR 21's enum). The program drops its probes | S11 | P3 |
+| 15 | `init` names signet only | One chain hash, **signet or testnet4**. Applied in `messages.md` 2 | spec (here), S7 | P1, P2 |
 
 ## 1. "Released" is not "sent"
 
-**Decision.** A runner release means the program has the action, nothing more. A released send can be lost: the peer is not connected, the connection drops with bytes queued, the program stops. So:
+**Decision.** A runner release means the program has the action, nothing more. A released send can be lost: the peer is not connected, the connection drops with bytes queued, the program stops. Four rules make every loss repairable:
 
 - **Node rule 3 (amended).** The acknowledgement that stops a resend is always a message from the peer, received and saved. Never the runner's release, never a storage confirmation of one's own batch.
-- **Node rule 6 (new).** At `GZ_EVENT_PEER_CONNECTED` for a link, an engine resends, from stored bytes, everything addressed to that link with no stored acknowledgement. Together with rule 1 (resend at start) this is the whole delivery guarantee.
-- **The program keeps no outbox.** A `SEND` for a link with no live connection is dropped and counted (`dropped_unconnected`), and so is one the transport refuses (queue full). Keeping it in memory gave a delivery that a stop silently undid; dropping it makes the engine's resend the only path, so it is the path every test exercises.
+- **No outbox.** A `SEND` for a link with no live connection is dropped and counted (`dropped_unconnected`). Keeping it in memory gave a delivery that a stop silently undid.
+- **A loss on a live connection closes it** (transport requirement for P2, carried out by the adapter in P3). `messages.md` section 2 rests every duplicate and loss argument on "BOLT 8 delivers messages in order and without loss while a connection lasts". So the program never lets a connection last past a loss: any refusal by `gz_peers_send` on a live connection closes that connection and the adapter delivers `PEER_DISCONNECTED`. A lost message then always coincides with a reconnect, and the reconnect step (section 3) repairs it. Per refusal:
+  - `GZ_PEERS_ERR_FULL` (queue over `max_queue`): close. `max_queue` must hold at least twice the largest set a host answers one reconnect with (`messages.md` 6 and 7.10: `terms_offer`, `lobby_status`, `start`, `round_propose` under 400 KB, `round_all_nonces` about 260 KB, `round_tier_result`, `round_complete`): the default 4 MiB covers Slice 1 at 1,000 members, and P2's tests show it. Otherwise close-on-full would loop.
+  - `GZ_PEERS_ERR_TOO_BIG`: an engine bug (a member message over 65,495 bytes, or anything over 1 MiB). **Fatal for the incarnation**, like a refused list, not "dropped and counted". The core cannot check it, because it does not know which side it is.
+  - `GZ_PEERS_ERR_NOT_READY` cannot happen for a link the core knows (the adapter delivers `PEER_CONNECTED` only after the transport's `CONNECTED`); if it does, it is treated as not connected.
+  - `GZ_PEERS_ERR_NO_CONN` (closed meanwhile): not connected; the `PEER_DISCONNECTED` is on its way.
+- **Starts and restarts** (program requirement, P3):
+  - **Peer events are queued during a start.** `node.h` lets a starting node receive only its storage confirmations. The program holds every peer event that arrives meanwhile, in order (connections and disconnections coalesced per link to the last state; messages kept, at most 1 MiB per link, past which that connection is closed), and delivers them once a start call has set `*more` to 0.
+  - **The host listens only after its start is complete**, and a member's connections exist only after its start has issued `CONNECT`, so in the normal case nothing is queued at all.
+  - **A restart from storage inside one process closes every connection** (`gzp_net_drop_all`), clears the timer table (the old incarnation's timers never fire into the new node) and resets the chain worker's generation (section 5). The new node's start issues `CONNECT` again; the members of a host reconnect by themselves. Resends then happen on the following `PEER_CONNECTED`, through the reconnect step.
 
-This is how the specifications already work: `messages.md` section 6 resends state after every `hello`, and 6/7.10 has the member resend `round_partial_sigs` after reconnecting. BOLT 2's `channel_reestablish` is the same pattern: delivery is re-established per connection, not assumed from the sender's side.
+Timer-driven resends stay allowed and are a good second line: PR 15's signing engine resends on ticks (`resend_ticks`). Rule 6 (section 3) is the floor, not the only path.
 
 **Interface change.** `node.h`, "What every engine's start step must do", rule 3 becomes:
 
-> 3. Store, as records, the acknowledgements that matter. Anything not in storage is not known after a restart, and will be sent again. **An acknowledgement is a message from the peer, saved when it arrives.** That the runner released a send, or that storage confirmed the batch it followed, says only that the program has the message; the program may drop it (the peer is not connected) and a stop loses whatever it had not written to a socket. No engine may save "sent" for anything it must deliver.
-
-and a new rule 6 (the old 4 and 5 keep their numbers):
-
-> 6. At `GZ_EVENT_PEER_CONNECTED` for a link, resend, from the stored bytes, every message for that link with no stored acknowledgement, in the order first sent. The program keeps nothing for a peer that is not connected (`docs/notes/contract-v2.md` section 1).
+> 3. Store, as records, the acknowledgements that matter. Anything not in storage is not known after a restart, and will be sent again. **An acknowledgement is a message from the peer, saved when it arrives.** That the runner released a send, or that storage confirmed the batch it followed, says only that the program has the message: the program drops a send to a peer that is not connected, and a stop loses whatever it had not written to a socket. The program never lets a connection outlive a lost message (contract-v2.md section 1), so every loss is followed by a PEER_DISCONNECTED and, when the peer is back, a PEER_CONNECTED. No engine may save "sent" for anything it must deliver.
 
 "What the placeholder guarantees" becomes:
 
-> At least once, to a peer that comes back. If the record of a ping is durable, the reply reaches that link at least once, provided the node goes on running or is started again and the peer connects again with the same keys. The member answers each reply with an acknowledgement (`GZPA` and the serial); the host saves a `GZ_RECORD_TEST_PING_ACKED` record when one arrives. At start, and at every `GZ_EVENT_PEER_CONNECTED`, the host resends, oldest first, every reply on that link with no stored acknowledgement.
+> At least once, to a peer that comes back. If the record of a ping is durable, the reply reaches that link at least once, provided the node goes on running or is started again and the peer connects again with the same keys. The placeholder follows the pull model of rule 6: at PEER_CONNECTED the member sends a hello (`GZPH`); the host answers a hello, at most once a second per link, with every reply on that link that has no stored acknowledgement, oldest first; the member answers each reply with an acknowledgement (`GZPA` and the serial), which the host saves as a GZ_RECORD_TEST_PING_ACKED record.
 
 `GZ_RECORD_TEST_PING_SENT` (0x7e570002) is withdrawn and `GZ_RECORD_TEST_PING_ACKED` (0x7e570004: one or more 8-byte big-endian serials) replaces it. The start no longer saves anything but the restore batch, so its `GZ_WAITING` path for "sent" records goes; `GZ_WAITING` itself stays in the contract for engines.
 
-`program/net.h`: `GZP_OUTBOX_MAX_BYTES`, `gzp_out_t` and the outbox fields go; `gzp_net_send` returns 0 (handed to the transport) or 1 (dropped: not connected, or refused); `gzp_net_drop_all` no longer "keeps the outbox".
+`program/net.h`: the outbox goes; `gzp_net_send` returns 0 (handed to the transport), 1 (dropped: not connected) or -1 (too big: fatal); a full queue closes the connection.
 
-**Owner.** core (node.h text, node.c placeholder, simulator), S11 (net adapter).
+**Owner.** core (node.h text, node.c placeholder, simulator), S7 (`max_queue` sizing and its test), S11 (adapter, start queue, restart).
 
 **Test T1, `program_resend_on_connect`.** A host and one member.
 1. The member sends ping 1 and exits at once (`--test-exit-after-send`); the host saves the ping, its reply is released and dropped (output line `send dropped: not connected`).
-2. The host is killed (SIGKILL) and restarted on its folder. The member is started again. On `PEER_CONNECTED` the host resends reply 1; the member receives it and answers `GZPA 1`; the host saves the acknowledgement.
-3. The host is restarted once more: it sends nothing on the member's link (no `send` line), because the acknowledgement is stored.
-4. Repeat with the host not restarted, only the member: the resend comes from `PEER_CONNECTED` alone.
-Outcome checked: the member's received serials include 1, the host's journal holds `PING_ACKED 1`, and the last start sent no reply.
+2. The host is killed (SIGKILL) and restarted. The member is started again; at `PEER_CONNECTED` it sends `GZPH`; the host answers with reply 1; the member acknowledges; the host saves `PING_ACKED 1`.
+3. The host is restarted once more: after the member's hello it sends no reply (the acknowledgement is stored).
+4. The same with only the member restarted.
+5. **During a start**: the host is started with a start slowed to 2 s (`--test-start-delay-ms 2000`) while the member reconnects in a loop: the host's first `PEER_CONNECTED` reaches the node after the start (output order), and reply 1 still arrives.
+6. **Restart in one process**: the host's storage fails once (`--test-fail-storage-at`); the host closes every connection, starts incarnation n + 1, the member reconnects and the unacknowledged reply arrives.
+7. **Full queue**: a host with `max_queue` set to 64 KiB and a test reply of 200 KB: the connection closes, the member reconnects, and after `max_queue` is restored the reply arrives.
 
 ## 2. Peer identity
 
 **Decision.** The core names a peer by the **link**, the pair of static keys of a connection:
 
 - the remote key proves who the peer is (BOLT 8; `transport.md` rule 13);
-- the local key is needed as well, because a member may hold two connections to one host with different keys of its own: one for a lobby where it has a seat, one fresh to read the host's listings (`messages.md` section 2). Naming the host alone would not say which connection a `join` or a `ready` belongs to.
+- the local key is needed as well, because a member may hold two connections to one host with different keys of its own: one for a lobby where it has a seat, one fresh to read the host's listings (`messages.md` section 2).
 
-Both keys are derived from the seed (section 13), so a link is the same after a restart of either side, and an engine's stored resends find it again. A 64-bit hash (the skeleton's choice) is not used: a 33-byte key is what the specifications, the transport and the signatures all use, it cannot collide, and no table from hash to key is needed. PR 23's connection number stays inside the program's net adapter.
+Both keys are derived from the seed (section 13), so a link is the same after a restart of either side, and an engine's stored resends find it again. No 64-bit hash: a 33-byte key is what the specifications, the transport and the signatures use, it cannot collide, and no table is needed. PR 23's connection number stays inside the program's net adapter.
 
-**One live connection per link.** A second connection with the same pair replaces the first: the program closes the older, delivers `PEER_DISCONNECTED` for it, then `PEER_CONNECTED` for the newer. (Lightning implementations do the same on a reconnect from a known node id.)
+**One live connection per link, decided in the transport.** On the host side every accepted connection has the same local key, so a link is the remote key. PR 23 decides eviction and `GZ_PEER_WHY_FULL` before the program sees a newcomer, so the replacement must be decided there too: once a handshake proves a node id that an established accepted connection already has, `peers.c` closes the older connection (a `CLOSED` event, new `GZ_PEER_WHY_REPLACED`) **before** the admission checks, so a seated member whose old connection is half-open is never refused `FULL` while it waits for the pong timeout. The program turns that `CLOSED` into `PEER_DISCONNECTED` for the old connection, then gives `PEER_CONNECTED` for the new. On the member side the program makes every outbound connection itself and keeps at most one per `CONNECT`.
+
+Only the key's holder can replace its own connection: Noise XK proves the initiator's static key in act three, bound to the responder's ephemeral key, so no replay; the member pins the host. Two copies of one wallet will replace each other in a loop: the transport counts replacements per key (`gz_peers_stats_t.replaced`) and the program shows a key replaced more than 10 times in 10 minutes as an attention item ("two copies of this wallet may be running", `safety-rule.md` section 10).
 
 **Interface change.** `types.h`:
 
@@ -90,33 +98,44 @@ typedef struct { uint8_t key[GZ_NODE_ID_LEN]; } gz_node_id_t;
 typedef struct { gz_node_id_t local; gz_node_id_t remote; } gz_link_t;
 ```
 
-Every `uint64_t peer_id` in `action.h` and `event.h` becomes `gz_link_t link` (section 3 and 7 give the structs). The placeholder's ping record carries the link instead of the 8-byte id: clock (8), link (66), serial (8), payload; `GZ_PING_RECORD_HEADER` becomes 82.
+Every `uint64_t peer_id` in `action.h` and `event.h` becomes `gz_link_t link` (sections 3 and 7 give the structs). The placeholder's ping record carries the link: clock (8), link (66), serial (8), payload; `GZ_PING_RECORD_HEADER` becomes 82.
 
-**Rule for engines** (added to `node.h`, after rule 6): *An engine addresses what it resends after a restart to a link it has stored: a member to (its seat's key, the host's key), a host to (its key, the seat's contribution key). Never to a connection, and never to a key it has not stored.*
+PR 23, `peers.h`: `GZ_PEER_WHY_REPLACED` ("a newer connection proved the same key"), the replacement rule above in the header comment, and `replaced` in `gz_peers_stats_t`.
 
-**Owner.** core (types, events, actions, placeholder), S11 (adapter maps connection numbers to links), S7 (nothing new: events already carry `node_id`; the program reads the local key from what it passed to `gz_peers_connect`, or the listener's key).
+**Rule for engines** (added to `node.h`): *An engine addresses what it resends after a restart to a link it has stored: a member to (its seat's key, the host's key), a host to (its key, the seat's contribution key). Never to a connection, and never to a key it has not stored.*
 
-**Test T2, `program_links`.** A host and two members, A and B.
-1. A pings; the host is killed after the ping is durable and before the reply leaves (`--test-crash-after-save`); restarted, it resends to A's link when A reconnects; B never receives A's reply.
-2. A connects a second time with the same keys while the first connection is open: the host's output shows `disconnected` for the old connection then `connected` for the new, and exactly one reply per ping reaches A.
-3. A opens a second connection with a fresh key to the same host (section 3's `CONNECT` with another index): the host sees two links; a reply addressed to one never arrives on the other.
+**Owner.** core (types, events, actions, placeholder), S7 (replacement before admission), S11 (adapter).
 
-## 3. Connect, disconnect, choose a key, mark a seat
+**Test T2, `program_links`** (P4; step 3 in P8). A host and two members, A and B.
+1. A pings; the host is killed after the ping is durable and before the reply leaves (`--test-crash-after-save`); restarted, it answers A's hello on A's link; B never receives A's reply.
+2. A connects a second time with the same keys while the first connection is open, with the host's every slot seated: the host's output shows `disconnected` (replaced) for the old connection then `connected` for the new, no `FULL` refusal, and exactly one reply per ping reaches A.
+3. (P8, once keys are derived) A opens a second connection with a fresh index pair to the same host: the host sees two links; a reply addressed to one never arrives on the other.
+
+## 3. Connect, disconnect, seats, and the reconnect step
 
 **Decision.** These are engine decisions, so they are actions:
 
-- **`CONNECT`**: keep a connection to `host` at `address`, using our key (`key_epoch`, `key_index`). It is **outward**: it reveals our key to someone else, so it waits for every save before it, which is how `messages.md` section 2's "saved (with the guard) before the handshake" is enforced: the engine puts the `key_index` and `guard` save first, then `CONNECT`, and the runner holds the handshake until the save is confirmed. The program derives the secret key from the seed (section 13), makes the connection, and reconnects with backoff (1 s doubling to 60 s) while the action stands. Each connection up or down is a `PEER_CONNECTED` / `PEER_DISCONNECTED` event. A second `CONNECT` with the same host and key replaces the address.
-- **`DISCONNECT`**: close every connection on `link` and stop keeping it. Not outward (closing reveals nothing), but ordered: rule 3 of `runner.h` keeps it behind a send listed before it.
-- **`SET_SEATED`**: the host marks a link as holding a seat, or no longer (PR 23's `gz_peers_set_seated`: a seated connection is never evicted for a newcomer). Not outward.
+- **`CONNECT`**: keep a connection to `host` at `address`, using our key (`key_epoch`, `key_index`). It is **outward**: it reveals our key, so it waits for every save before it. That enforces `messages.md` section 2's "saved (with the guard) before the handshake": the engine puts the `key_index` and `guard` save first, then `CONNECT`, and the runner holds the handshake until the save is confirmed. The program derives the secret key (section 13), connects, and reconnects with backoff (1 s doubling to 60 s) while the action stands, **always with the same key**: a fresh index is allocated per `CONNECT`, not per TCP connection. A second `CONNECT` with the same host and key replaces the address.
+- **`DISCONNECT`**: stop keeping `link`, **send what is already queued on it, then close** (within the send limit, 10 s), and deliver `PEER_DISCONNECTED`. A `DISCONNECT` listed after a final `SEND` (a `leave`, a `round_abort`) therefore never loses it. PR 23 adds `gz_peers_close_after_send` for this (like `gz_peers_refuse` without the warning); `gz_peers_close` (drop everything, no event) is used only for a restart from storage and at shutdown, where the adapter reports nothing to a node that no longer exists. Not outward, but ordered: `runner.h` rule 3 keeps it behind a send listed before it.
+- **`SET_SEATED`**: the host marks the member's key as holding a seat, or no longer. A seat belongs to a **key**, not to a connection: `SET_SEATED` is re-issued at start, before any member has reconnected, and must survive a replacement (section 2) with no moment in which the seat is evictable. PR 23 keeps a set of seated keys and applies it at admission: `gz_peers_set_seated_key(p, node_id, seated)` replaces `gz_peers_set_seated(p, conn, seated)`.
 
-Like timers and watches, connections are not kept across a restart: at start an engine issues `CONNECT` again for every link it still needs, and `SET_SEATED` again for every seat. The host's **listening** stays program configuration (`--listen`), because it needs no engine decision and no key choice; which members to accept stays `transport.md` rule 13 (any key in Slice 1).
+Like timers and watches, connections and seats are not kept across a restart: at start an engine issues `CONNECT` again for every link it needs and `SET_SEATED` again for every seat. **A saved pause is applied before any `CONNECT`** (`local-api.md` 4.7 step 7: "before the node connects to any host"): with connecting an engine action, this is the engine's duty at start. The host's **listening** stays program configuration (`--listen`), opened after the start (section 1); which members to accept stays `transport.md` rule 13.
+
+**Node rule 6: the reconnect step.** At `GZ_EVENT_PEER_CONNECTED` for a link an engine carries out **the protocol's reconnect step** for that link. It does not push everything unacknowledged: most host messages have no acknowledgement (`terms_offer`, `lobby_status`, `start`, `round_tier_result`, `round_complete`) and `messages.md` 6 makes them **pull**. BOLT 2's `channel_reestablish` is likewise a negotiated resend. For the Slice 1 engines:
+
+| Side | At `PEER_CONNECTED` | Resends, and why |
+|---|---|---|
+| Member | Sends `hello` with the lobby's scope (scope zero on a browsing connection); if it has sent partial signatures and lacks the result, its saved `round_partial_sigs` bytes; then `round_status_request` for an unresolved round (`messages.md` 6, 7.10) | Its own saved state messages (`join`, `ready`, `unready`, `leave`) only when the host's `lobby_status` shows a seat state other than the saved one: lobby messages state a state, so one resend makes them agree and the next status shows no difference |
+| Host | Nothing until the member speaks | Answers `hello` with `terms_offer`, `lobby_status` and, while Signing and the seat was chosen, its saved signed `start`; answers `round_status_request` with its saved `round_tier_result` / `round_complete`. It never pushes a resend on connect |
+
+**Why nothing loops.** The host only answers; the member asks once per connection; the member's reconnects back off (1 s doubling to 60 s); a state resend happens only on a mismatch, and the host's answer to it removes the mismatch. **The limits of `messages.md` 6.1 and 7.10 are kept per link, not per connection** (one `hello` answer a second, one status answer per round per 10 s, 20 ignored `hello`s): a member that reconnects in a loop cannot reset them. They live in the engine's memory (a restart of the host resets them, and a restart costs far more than a reconnect).
 
 **Interface change.** `action.h`, enum (appended, so existing numbers do not move):
 
 ```c
     GZ_ACTION_CONNECT,       /* keep a connection to a host, with one of our keys */
-    GZ_ACTION_DISCONNECT,    /* close a link and stop keeping it */
-    GZ_ACTION_SET_SEATED     /* host: a link holds a seat, or no longer does */
+    GZ_ACTION_DISCONNECT,    /* flush, close a link and stop keeping it */
+    GZ_ACTION_SET_SEATED     /* host: a member's key holds a seat, or no longer does */
 ```
 
 union members:
@@ -124,17 +143,22 @@ union members:
 ```c
         /* CONNECT: outward. `address` is "host:port", numeric (transport.md:
          * no name lookup), at most 64 bytes. Our key is the per-lobby key
-         * (key_epoch, key_index) of contract-v2.md section 13. */
+         * (key_epoch, key_index) of contract-v2.md section 13; the program
+         * reconnects with that same key while the action stands. */
         struct { gz_node_id_t host; gz_bytes_t address; uint32_t key_epoch; uint32_t key_index; } connect;
-        struct { gz_link_t link; } disconnect;                       /* DISCONNECT */
-        struct { gz_link_t link; int seated; } set_seated;           /* SET_SEATED */
+        /* DISCONNECT: what is queued on the link is sent, then it is closed;
+         * a PEER_DISCONNECTED follows. */
+        struct { gz_link_t link; } disconnect;
+        /* SET_SEATED: a property of the member's key, kept by the transport
+         * across its connections; set again at every start. */
+        struct { gz_node_id_t member; int seated; } set_seated;
 ```
 
 `gz_action_is_outward`: send, broadcast, notify **and connect**. `gz_action_list_add` refuses an empty or over-long address, or `seated` other than 0 or 1.
 
 A paragraph after WATCHES:
 
-> CONNECTIONS. A CONNECT stands until a DISCONNECT for its link or the end of the node's program; the program reconnects while it stands. Connections are not kept across a restart: at start a node issues CONNECT again for every link it needs, and SET_SEATED again for every seat. CONNECT is outward because the handshake shows our key: the save of the key's index (messages.md section 2) must come before it in the list, and the runner holds the handshake until that save is confirmed.
+> CONNECTIONS. A CONNECT stands until a DISCONNECT for its link or the end of the node's program; the program reconnects with the same key while it stands. Connections and seats are not kept across a restart: at start a node applies a saved pause, then issues CONNECT for every link it needs and SET_SEATED for every seat. CONNECT is outward because the handshake shows our key: the save of the key's index pair (messages.md section 2) must come before it in the list, and the runner holds the handshake until that save is confirmed.
 
 `event.h`, peer events:
 
@@ -145,24 +169,29 @@ A paragraph after WATCHES:
         struct { gz_link_t link; int outbound; uint32_t key_epoch; uint32_t key_index; } peer;
 ```
 
-**Placeholder.** The member's target, now given by the test as a `USER_COMMAND` ("connect KEY@ADDR:PORT", saved with a key index) instead of the program's `--connect`, is re-issued as `CONNECT` at every start; the host issues `SET_SEATED` for a link at its first ping. `--connect` stays as a test convenience that submits that command at the first start.
+`node.h` rule 6:
 
-**Owner.** core (actions), S4 (the lobby engine is the first real user), S11 (the program carries them out over `gz_peers_connect`, `gz_peers_close`, `gz_peers_set_seated`).
+> 6. At GZ_EVENT_PEER_CONNECTED for a link, carry out the protocol's reconnect step for that link (messages.md section 6: the member asks with `hello`, resends its saved partial signatures and asks for the round's status; the host answers and pushes nothing). Keep the protocol's rate limits per link, not per connection. Resend a stored state message only when the peer's answer shows it lacks that state.
 
-**Test T3, `program_connect_actions`.**
-1. A member is killed after its `key_index` batch is handed to storage and before it is confirmed (`--test-crash-before-confirm`), several times. The host's log of keys seen is a subset of the keys whose index is durable in the member's journal (read with `gazpacho --test-dump-journal`): no handshake ever used an unsaved key.
+**Placeholder.** The member's target is given by a test `USER_COMMAND` ("connect KEY@ADDR:PORT", saved with a key index pair) and re-issued as `CONNECT` at every start; `--connect` submits that command at the first start. The host issues `SET_SEATED` for a member's key at its first ping.
+
+**Owner.** core (actions, rule 6), S4 (the lobby engine is the first real user), S7 (`gz_peers_close_after_send`, seated keys), S11.
+
+**Test T3, `program_connect_actions`** (P8: it needs keys derived from (epoch, index); P4 has only the stand-in key file).
+1. A member is killed after its `key_index` batch is handed to storage and before it is confirmed (`--test-crash-before-confirm`), several times. The host's log of keys seen is a subset of the key pairs whose index is durable in the member's journal (`gazpacho --test-dump-journal`): no handshake ever used an unsaved key.
 2. The member restarted reconnects with the same key; the host sees the same link.
-3. A `DISCONNECT` user command: the connection closes and is not made again until a new `CONNECT`.
-4. The host run with `max_conns` 2: one seated member and two unseated newcomers; the seated one is never evicted, an unseated one is.
+3. A test command sends a final message then `DISCONNECT`: the host receives the message, then sees the connection close; it is not made again until a new `CONNECT`.
+4. The host run with `max_conns` 2: one seated member and two unseated newcomers; the seated one is never evicted, an unseated one is; the seated member reconnecting while its old connection is half-open is admitted at once (replacement, section 2).
+5. A member reconnecting in a loop every 100 ms for 10 s gets at most one `hello` answer a second in total, counted across its connections.
 
 ## 4. One poll loop
 
-**Decision.** One thread runs the loop; every port that waits gives the loop its descriptors and its next deadline, and is stepped after the loop's `poll()`. No port blocks inside a call the loop makes. The program's timeout is the earliest of: the ports' deadlines, the node's timers, and a 200 ms ceiling (to see a stop request). Two threads remain, both outside the node:
+**Decision.** One thread runs the loop; every port that waits gives the loop its descriptors and its next deadline, and is stepped after the loop's `poll()`. No port blocks inside a call the loop makes. The loop's timeout is the earliest of the ports' deadlines and the node's timers; a stop request (SIGTERM, SIGINT) is seen through a **self-pipe** written by the signal handler, so no fixed ceiling is needed. Two threads remain, both outside the node, and neither touches the node, the runner, storage, the view or any file:
 
-- the API server's **passphrase thread** (Argon2id takes about a second by design, `storage-encryption.md` 4.2): it already wakes the loop through its `done_pipe`, which becomes one of the server's descriptors;
+- the API server's **passphrase thread** (Argon2id takes about a second by design, `storage-encryption.md` 4.2), which wakes the loop through its `done_pipe`, one of the server's descriptors;
 - the **chain worker** (section 5).
 
-Neither touches the node, the runner or storage. Each hands results to the loop, which turns them into events.
+**The passphrase thread only derives.** `passphrase_op` turns a passphrase (and words) into keys or a result. Everything that writes, including the key file, the guard, the start counter, the mark file and the first journal of `CREATE`, `RESTORE` and `START_AS_RESTORE`, moves to `passphrase_done` on the loop thread. Every job carries the **generation** the server had when it was queued; a lock, a stop or a restart of the node increments it, and a job that finishes under an older generation is wiped and discarded with "not checked" (503) rather than installed.
 
 **Interface change.** PR 23, `peers.h`:
 
@@ -181,41 +210,52 @@ size_t gz_peers_pollfds(gz_peers_t *p, struct pollfd *fds, size_t cap, int *time
 void gz_peers_dispatch(gz_peers_t *p, const struct pollfd *fds, size_t n);
 ```
 
-`gz_peers_poll(p, 0, ev)` is guaranteed not to block. Its blocking form stays for `gz-net` and the tests.
+`gz_peers_poll(p, 0, ev)` is guaranteed not to block; its blocking form stays for `gz-net` and the tests.
 
 PR 26, `api.h`:
 
 ```c
 /* As gz_peers_pollfds: the listeners, the connections, the wake pipe and the
  * derivation thread's done pipe; *timeout_ms the next head, body, idle,
- * keep-alive or merge deadline. */
+ * keep-alive, merge or held-answer deadline. */
 size_t gz_api_server_max_fds(const gz_api_server *srv);
 size_t gz_api_server_pollfds(gz_api_server *srv, struct pollfd *fds, size_t cap, int *timeout_ms);
-/* After poll(): serve what is ready, answer finished passphrase jobs, send
- * merged events. Never blocks. Loop thread only. */
+/* After poll(): serve what is ready, finish passphrase jobs of the current
+ * generation, send merged events. Never blocks. Loop thread only. */
 int gz_api_server_dispatch(gz_api_server *srv, const struct pollfd *fds, size_t n);
+/* A lock, a stop or a restart of the node: jobs queued or running before this
+ * are discarded when they finish. Loop thread only. */
+void gz_api_server_new_generation(gz_api_server *srv);
 ```
 
-`gz_api_server_run` and `gz_api_server_poll` stay for the server's own tests. `api_backend.h`, the "Threads" paragraph becomes:
+`api_backend.h`, the "Threads" paragraph becomes:
 
-> Threads. passphrase_op runs on the server's derivation thread, at most one at a time, and only derives: it turns the passphrase (and words) into a key or a result and touches nothing the loop thread uses: not the node, the runner, storage or the view. passphrase_done, on the loop thread, installs what it produced (opens storage, starts the node). Every other entry runs on the loop thread.
+> Threads. passphrase_op runs on the server's derivation thread, at most one at a time, and only derives: it turns the passphrase (and words) into keys or a result, writes no file and touches nothing the loop thread uses (the node, the runner, storage, the view). passphrase_done, on the loop thread, installs what it produced: it writes the key file, guard, start counter and first journal for create, restore and start-as-restore, opens storage and starts the node. A job queued before gz_api_server_new_generation is discarded when it finishes, its secrets wiped. Every other entry runs on the loop thread.
 
 S8, `gz_chainw_fd` (section 5).
 
-The program's loop (`program/executor.c`), per turn: collect descriptors from `gzp_net` (over `gz_peers`), the API server and the chain worker; `poll()` until the earliest deadline; dispatch each; drain `gz_peers_poll(p, 0, …)`, finished chain results and due timers, each becoming one event (`gz_node_handle`, `gz_runner_submit`, confirmations as in program.md section 2).
+**The loop** (`program/executor.c`), per turn: collect descriptors from `gzp_net` (over `gz_peers`), the API server, the chain worker and the stop pipe; `poll()` until the earliest deadline; dispatch each; drain `gz_peers_poll(p, 0, …)`, chain results and due timers, each becoming one event (or queued during a start, section 1).
+
+**Shutdown order** (P3, extended in P5 to P7): stop the API listeners and refuse new requests; stop the node (held actions die with the runner, which is safe: none was given to the executor); join the derivation thread (its job discarded); stop and join the chain worker; close every connection without events; close storage; release the folder lock.
 
 **Owner.** S7 (PR 23), S9 (PR 26), S8, S11.
 
-**Test T4, `program_one_loop`.** A host with the interface on and two members pinging every 100 ms (`--test-ping-ms 100`), shortened keep-alive (ping 1 s, pong 2 s).
+**Test T4, `program_one_loop`** (P6). A host with the interface on and two members pinging every 100 ms, shortened keep-alive (ping 1 s, pong 2 s).
 1. While a client signs in five times in a row (a real Argon2id derivation on the thread, with the test passphrase from the test fixture), every pong arrives within 300 ms of its ping and no connection closes.
 2. An event-stream client stays open throughout and receives each `status` change.
-3. Idle for 5 s with nothing to do, the host's CPU time (from `/proc/<pid>/stat`) stays under 100 ms: no busy loop.
+3. Idle for 5 s, the host's CPU time (from `/proc/<pid>/stat`) stays under 100 ms: no busy loop.
+4. A lock during a sign-in: the job's result is discarded (503), nothing is installed.
+5. SIGTERM: the program exits 0 within 2 s, in the order above (output lines).
 
 ## 5. The chain view off the loop
 
-**Decision.** `ports/chain` stays blocking: its timeouts, retries and server comparison are right where they are. S8's watch loop runs it on **one worker thread**, behind queues. The loop submits requests (watches, broadcasts, the tip poll) without blocking and takes results when the worker's descriptor is readable. A watch loop on its own thread also keeps a slow server from delaying the next tip check of a fast one inside the comparing backend's own sequence.
+**Decision.** `ports/chain` stays blocking: its timeouts, retries and server comparison are right where they are. S8's watch loop runs it on **one worker thread**, behind queues. The loop submits requests without blocking and takes results when the worker's descriptor is readable.
 
-Every request carries the generation the loop gave at `gz_chainw_reset`; the worker drops results of an older generation. A restart from storage calls `gz_chainw_reset`, so no report from before the restart reaches the new node, which sets its watches again (`action.h`, WATCHES).
+- **Generation.** Every result carries the generation of the last `gz_chainw_reset`. `gz_chainw_take` drops results of an older generation, under the same mutex as `reset`; `reset` also purges every queued request and result and drains the wake descriptor, so the loop does not spin on a stale wake-up (T4). A restart from storage calls `gz_chainw_reset`; the new node sets its watches again.
+- **Never drop a watch report.** Watches report only on a change (`action.h`: a count from 1 to `depth`, a spend first seen), so a lost `TX_CONFIRMED` or `OUTPOINT_SPENT` is never repeated and an engine would miss a burial or a spend. When the result queue is full the worker **waits** for room (on a condition variable the loop signals from `gz_chainw_take`); it checks nothing meanwhile, which only delays reports. Tip results are **coalesced**: a tip waiting in the queue is replaced by a newer one, and `GZ_CHAINW_SOURCES` likewise. A full request queue is fatal for the incarnation, as a full timer table is.
+- **Shutdown.** `gz_chainw_free` sets an abort flag and wakes the worker; the HTTP layer checks the flag in libcurl's progress callback (`CURLOPT_XFERINFOFUNCTION`, aborting the transfer), and the retry backoff in `http_curl.c` sleeps on a condition variable with a deadline instead of `nanosleep`, so the worker stops within about 100 ms instead of a request's timeouts plus backoff.
+- **libcurl's global state.** `gz_http_curl_create` calls `curl_global_init` and destroy calls `curl_global_cleanup`, which are not thread-safe in older libcurl. The loop thread creates the `gz_chain` before any thread starts and destroys it after joining the worker; the worker only uses it. (`CURLOPT_NOSIGNAL` is already set.)
+- **Broadcast results are aggregate in Slice 1.** `exit.md` 3.2 asks for per-server results (accepted, already known, refused with reason) and 10.5 for per-server tips and broadcasts. The worker gives one result per broadcast (section 9) and keeps the comparing backend's per-server report (`gz_multi_last_report`) in the result for the program's log; the per-server form for engines is deferred to the exit engine.
 
 **Interface change.** New header `ports/chain/include/gazpacho/chain_watch.h` (S8). It includes no core header (the program converts):
 
@@ -223,21 +263,23 @@ Every request carries the generation the loop gave at `gz_chainw_reset`; the wor
 typedef struct gz_chainw gz_chainw;
 
 typedef struct gz_chainw_config {
-  gz_chain *chain;              /* owned by the worker from here on */
+  gz_chain *chain;              /* created by the loop thread before this call, used only by
+                                   the worker, destroyed by the loop thread after gz_chainw_free */
   uint32_t tip_poll_ms;         /* 60,000 */
   size_t max_requests;          /* queued, not yet taken by the worker (1,024) */
-  size_t max_results;           /* waiting for the loop (4,096) */
+  size_t max_results;           /* waiting for the loop (4,096); when full the worker waits */
 } gz_chainw_config;
 
 /* Starts the worker. NULL on failure. */
 gz_chainw *gz_chainw_new(const gz_chainw_config *cfg);
 /* Readable while results wait. */
 int gz_chainw_fd(const gz_chainw *w);
-/* Forget every watch and pending request; results of earlier generations are
- * dropped. Returns the new generation. */
+/* Forget every watch, queued request and queued result, drain the wake
+ * descriptor; results of earlier generations are dropped. Returns the new
+ * generation. */
 uint64_t gz_chainw_reset(gz_chainw *w);
 /* Never block. 0 queued; -1 the request queue is full (fatal for the
- * incarnation, as a full timer table is). txids in hashing order. */
+ * incarnation). txids in hashing order. */
 int gz_chainw_watch_tx(gz_chainw *w, const uint8_t txid[32], uint32_t depth);
 int gz_chainw_watch_outpoint(gz_chainw *w, const uint8_t txid[32], uint32_t vout, uint32_t depth);
 int gz_chainw_broadcast(gz_chainw *w, const uint8_t *raw, size_t len);
@@ -254,39 +296,39 @@ typedef struct gz_chainw_result {
   uint8_t outpoint_txid[32];
   uint32_t outpoint_vout;
   uint32_t confirmations, height;
-  gz_broadcast_result broadcast;/* GZ_CHAINW_BROADCAST */
+  gz_broadcast_result broadcast;/* GZ_CHAINW_BROADCAST: the aggregate */
   gz_chain_result sources;      /* GZ_CHAINW_SOURCES: agree, lag, disagree, unreachable */
 } gz_chainw_result;
 
-/* 1 and *out, or 0 when nothing waits. Never blocks. */
+/* 1 and *out (a result of the current generation), or 0 when nothing waits.
+ * Never blocks; makes room for a waiting worker. */
 int gz_chainw_take(gz_chainw *w, gz_chainw_result *out);
-/* Stops the worker (waits at most one request's timeouts) and frees. */
+/* Aborts the transfer in progress, stops and joins the worker, frees. Does
+ * not destroy the chain. */
 void gz_chainw_free(gz_chainw *w);
 ```
 
-The worker answers `WATCH_TX` and `WATCH_OUTPOINT` exactly as `action.h` WATCHES says (`gz_chain_tx_status`, `gz_chain_outspend`, and the tip to count confirmations and see reorganisations). `GZ_CHAINW_SOURCES` feeds the API's chain state (`local-api.md` 11.2) and never reaches the node.
+The worker answers `WATCH_TX` and `WATCH_OUTPOINT` exactly as `action.h` WATCHES says (`gz_chain_tx_status`, `gz_chain_outspend`, and the tip to count confirmations and see reorganisations). `GZ_CHAINW_SOURCES` feeds the API's chain state (`local-api.md` 11.2) and never reaches the node. `ports/chain/http_curl.c` gains the abort flag and the interruptible backoff. `program/pchain.c` becomes the converter.
 
-`program/pchain.c` becomes the converter: results to `gz_chain_event_t`, `BROADCAST` and `WATCH_*` actions to requests.
+**Owner.** S8 (worker, header, HTTP changes), S11 (adapter).
 
-**Owner.** S8 (worker and header), S11 (adapter).
-
-**Test T5, `program_chain_stall`.** The local test server (`ports/chain/tests/local_server.py`) made to answer every request after 20 s. A host and a member with the shortened keep-alive of T4 and a 500 ms test timer. Over 40 s: no connection closes, every ping is answered within 300 ms, the timer fires every 500 ms within 50 ms. Then the server answers again: the tip arrives as `GZ_CHAIN_NEW_TIP`. A restart from storage in the middle (`--test-fail-storage-at`) delivers no chain result of the old generation (counted by output line).
+**Test T5, `program_chain_stall`** (P7). The local test server (`ports/chain/tests/local_server.py`) made to answer every request after 20 s. A host and a member with the shortened keep-alive of T4 and a 500 ms test timer. Over 40 s: no connection closes, every ping is answered within 300 ms, the timer fires every 500 ms within 50 ms. Then the server answers again: the tip arrives as `GZ_CHAIN_NEW_TIP`. A restart from storage in the middle delivers no chain result of the old generation. SIGTERM while a request is outstanding: the program exits within 2 s. With `max_results` 2 and ten watches confirmed in one block, all ten reports arrive.
 
 ## 6. The merged transport blocks
 
 **Decision.** The program carries out network actions only through `ports/net/peers.h` (PR 23), whose handshakes and messages are stepped without blocking, and through section 4's descriptors. `ports/net/conn.h` keeps its blocking calls for `gz-net` and the transport's tests; nothing in `program/` includes it. `transport.md`'s "Limits of this cut" (the open choice between a stepped handshake and connection threads) is closed by PR 23: stepped, one `poll`.
 
-**Interface change.** None beyond section 4. `program/net.c` is rewritten over `gz_peers_*`; `gz_conn_*` leaves the program. PR 23 updates `transport.md` "Limits of this cut" to say the first limit is gone for `peers.h`.
+**Interface change.** None beyond section 4. `program/net.c` is rewritten over `gz_peers_*`. PR 23 updates `transport.md` "Limits of this cut" to say the first limit is gone for `peers.h`.
 
 **Owner.** S7, S11.
 
-**Test T6, `program_slow_peers`.** Against a host: one TCP client that connects and sends nothing, one that sends act one a byte per second, one that completes the handshake and never sends `init`. A real member connecting meanwhile is connected within 1 s and gets every pong; each slow client is closed at its deadline (`GZ_PEER_WHY_TIMEOUT_HANDSHAKE`), seen in the host's output.
+**Test T6, `program_slow_peers`** (P3). Against a host: one TCP client that connects and sends nothing, one that sends act one a byte per second, one that completes the handshake and never sends `init`. A real member connecting meanwhile is connected within 1 s and gets every pong; each slow client is closed at its deadline (`GZ_PEER_WHY_TIMEOUT_HANDSHAKE`), seen in the host's output.
 
 ## 7. Kind and scope on messages
 
-**Decision.** The core speaks the envelope. A node message is (`kind`, `scope`, `records`), exactly the triple `messages.md` section 5 defines; the program adds the protocol tag and type 52791, and `gz_peers_send` splits large ones (host to member only). Receiving, the transport has already checked the envelope, the kind's direction, the record table and reassembled parts (`envelope.h`), and the event gives the same triple. Putting the header in the engine's bytes instead would make the program parse a header the transport has just built, and would let an engine send a kind the transport's checks have not seen.
+**Decision.** The core speaks the envelope. A node message is (`kind`, `scope`, `records`), exactly the triple `messages.md` section 5 defines; the program adds the protocol tag and type 52791, and `gz_peers_send` splits large ones (host to member only). Receiving, the transport has already checked the envelope, the kind's direction, the record table and reassembled parts (`envelope.h`), and the event gives the same triple. An engine that signs a message computes `msg_hash` over `protocol || kind || scope || records` (`messages.md` 4.3), so it uses the protocol bytes `67 7a 66 01` itself even though the program writes them on the wire.
 
-The placeholder needs a kind that is not a protocol message. **Kind 32767** (`0x7fff`, odd) is reserved for test traffic: scope all zero, records any valid TLV stream, either direction, never split; release builds never send it, and, being odd, a receiver that does not know it ignores it. `envelope.c` knows it only when built with `GZ_TEST_KINDS` (the program's test build and the tests); a release build ignores it like any unknown odd kind. The placeholder's bytes become one odd record, type 1, holding `GZPI` / `GZPO` / `GZPA` and the payload.
+The placeholder needs a kind that is not a protocol message. **Kind 32767** (`0x7fff`, odd) is reserved for test traffic: scope all zero, records any valid TLV stream, either direction, never split; release builds never send it, and, being odd, a receiver that does not know it ignores it. `envelope.c` knows it only when built with `GZ_TEST_KINDS`; a release build ignores it like any unknown odd kind. The placeholder's bytes become one odd record, type 1, holding `GZPI` / `GZPO` / `GZPA` / `GZPH` and the payload.
 
 **Interface change.** `action.h`:
 
@@ -294,7 +336,8 @@ The placeholder needs a kind that is not a protocol message. **Kind 32767** (`0x
         /* SEND: one factory message (messages.md sections 3 to 5). `records`
          * is the TLV stream; the program adds the protocol tag, and the
          * transport splits it when it is over 65,495 bytes (host to member
-         * only). */
+         * only; a member message over 65,495 bytes is fatal for the
+         * incarnation, contract-v2.md section 1). */
         struct { gz_link_t link; uint16_t kind; uint8_t scope[32]; gz_bytes_t records; } send;
 ```
 
@@ -313,50 +356,55 @@ The placeholder needs a kind that is not a protocol message. **Kind 32767** (`0x
 
 **Owner.** core, S7, S11.
 
-**Test T7, `program_envelope`.** Pings travel as kind 32767 through `gz_peers_send` and arrive with kind and scope intact. A raw client (`gz-net`) sends an unknown even kind: the host closes it. An unknown odd kind: ignored, connection kept. A host test reply of 200,000 bytes (`--test-big-reply`) reaches the member whole, as parts, and the member's acknowledgement comes back.
+**Test T7, `program_envelope`** (P4). Pings travel as kind 32767 through `gz_peers_send` and arrive with kind and scope intact. A raw client (`gz-net`) sends an unknown even kind: the host closes it. An unknown odd kind: ignored, connection kept. A host test reply of 200,000 bytes (`--test-big-reply`) reaches the member whole, as parts, and the member's acknowledgement comes back. A member test message of 70,000 bytes: the member's incarnation ends (fatal), as section 1 says.
 
 ## 8. A restore rewinds the incarnation
 
-**Decision.** The incarnation must never repeat for a data folder, even across a restore: the runner's duty (`runner.h`) and the restore epoch and every nonce input that mixes it in (`ports.h`, `safety-rule.md` R2) rest on it. A restore replaces `journal.gzj` with a copy that carries the old counter. The mark file does not help (a restore starts a new one, and it is sealed under the storage key, which a restore from the words does not have). So the counter's high-water mark gets its own small file, beside the guard and like it:
+**Decision.** The incarnation must never repeat for a data folder: the runner's duty (`runner.h`) and the restore epoch and every nonce input that mixes it in (`ports.h`, `safety-rule.md` R2) rest on it. A restore replaces `journal.gzj` with a copy that carries the old counter. The mark file does not help (a restore starts a new one, and it is sealed under the storage key, which a restore from the words does not have). So the counter's high-water mark gets its own small file, beside the guard and like it:
 
-- **`floor.gzf`**, in the data folder, outside the journal's backup set; a restore never replaces it.
-- Sealed under a key from the **seed**, as the guard is (KG's derivation with its own label), so a restore from the words, which makes a new key file, can still read it.
-- **Every start** (`journal.md` section 5 step 5): new incarnation N = 1 + max(highest in the journal, the floor, 0 if the file is missing); write `floor.gzf` with N (write `floor.gzf.tmp`, sync, rename, sync the folder); then append and sync the incarnation entry and its mark as today. A crash between the two steps skips a number, which is harmless.
-- **A restore** starts the same way, so its first incarnation is above every one used on this device since the backup, whatever the backup holds.
-- **Missing file**: on an ordinary start it is written again from the journal (nothing lost: the journal itself holds the highest). On a restore it means another device or a removed file; the journal's own counter is used, and the start says so in the `restored` record (`floor_found` 0). A copy of the whole folder put back by someone who can write it is not defended, as for the guard (storage 6.4).
+- **`starts.gzs`, the start counter** (not "floor": storage 4.1 already uses that word for the passphrase and Argon2id floors), in the data folder, outside the journal's backup set; a restore never replaces it.
+- **Created at set-up**, before the journal, like the guard and the mark file (storage 7.4), so a missing file always means something was removed.
+- Sealed under a key from the **seed**, as the guard is, so a restore from the words, which makes a new key file, can still read it. In storage 4.4's table: **KC**, IKM seed, label `start counter`, context chain.
+- **Every start** (`journal.md` section 5 step 5): new incarnation N = 1 + max(highest in the journal, the counter); a counter or journal value at or above 2^63 refuses the start (no overflow, and a stand-in's unsealed value cannot wrap it). Write `starts.gzs` with N (write `starts.gzs.tmp`, sync, rename, sync the folder); then append and sync the incarnation entry and its mark as today. A crash between the two skips a number, which is harmless.
+- **A restore** starts the same way, so its first incarnation is above every one used on this device since the backup.
+- **Missing or damaged file.** On an ordinary start the journal alone gives the number, the file is written again, and the person is told once that it was missing. On a restore it means another device or a removed file: the journal's counter is used, the `restored` record says `counter_found` 0, and **the person is told** (the restore screen and an attention item), because the restore is then protected only by the epoch's random draw.
+
+**What it covers, exactly.** A restore **of the journal alone**: importing a backup file (storage 11), starting files found behind as a restore, or a key file with no journal. It does **not** cover a snapshot of the whole data folder or of the machine (a virtual machine restored, a disk image put back): that rolls back `starts.gzs` with the journal, guard and mark file, and storage 6.4 already says such a rollback is not detected. There the only protection of the restore epoch is its 31-bit random draw, and a port that repeats after a snapshot (`ports.h`) defeats the incarnation's part of it. `safety-rule.md` R2's sentence "a restore cannot rewind it" is narrowed accordingly (text below).
 
 **Interface change.** `journal.md` (S5):
 
-- section 5, step 5 replaced by: "**Incarnation.** Read the floor file (storage 10.3). New incarnation = 1 + the larger of the highest found in the journal and the floor (0 if the file is missing or damaged). Write the floor file with it, then append the incarnation entry, sync, append a sync mark, sync. Only then may the runner be created. Writing the floor first keeps a restored journal, whose counter is older, from ever reusing a number used on this device since its backup (`runner.h`, restoring a backup)."
-- section 8.2, "How a restore is recognised": add "The new incarnation is taken from the floor as at every start (section 5 step 5), so it is above every incarnation this device used since the backup."
-- section 9: the `restored` record (`0x00040006`) gains `floor_found` (`u8`).
+- section 5, step 5 replaced by: "**Incarnation.** Read the start counter (storage 10.3). New incarnation = 1 + the larger of the highest found in the journal and the counter (the journal alone if the file is missing or damaged; refuse to start if either is at or above 2^63). Write the counter with it, then append the incarnation entry, sync, append a sync mark, sync. Only then may the runner be created. Writing the counter first keeps a restored journal, whose counter is older, from reusing a number used on this device since its backup. It does not defend a snapshot of the whole folder (storage 6.4)."
+- section 8.2, "How a restore is recognised": add "The new incarnation is taken from the start counter as at every start (section 5 step 5), so it is above every incarnation this device used since the backup. A restore that finds no counter tells the person."
+- section 9: the `restored` record (`0x00040006`) gains `counter_found` (`u8`).
 
-`storage-encryption.md` (S6), new 10.3:
+`storage-encryption.md` (S6), new 10.3, a row KC in 4.4's table, the file in 3.1's table and in set-up (7.4), and a vector E9c:
 
-> ### 10.3 The floor file
+> ### 10.3 The start counter
 >
-> `floor.gzf`, beside the guard, outside the journal's backup set: the highest incarnation this device has used for this wallet.
+> `starts.gzs`, beside the guard, outside the journal's backup set, created at set-up: the highest incarnation this device has used for this wallet.
 >
 > | Offset | Field | Size |
 > |---|---|---|
-> | 0 | `magic`, ASCII `GZFLOOR1` | 8 |
+> | 0 | `magic`, ASCII `GZSTART1` | 8 |
 > | 8 | `format`, 1 | 1 |
 > | 9 | `chain` | 32 |
-> | 41 | `seal(KF, u64 floor, ad = bytes 0..40)` | 24 + 8 + 16 |
+> | 41 | `seal(KC, u64 counter, ad = bytes 0..40)` | 24 + 8 + 16 |
 >
-> KF is derived from the seed like KG, with the label `gazpacho/floor`, so a restore from the words can read it. Replaced (write `floor.gzf.tmp`, sync, rename, sync the folder) at every start, before the incarnation entry. A file that fails its tag is treated as missing.
+> KC = keys(seed, `start counter`, chain) (4.4), so a restore from the words can read it. Replaced (write `starts.gzs.tmp`, sync, rename, sync the folder) at every start, before the incarnation entry. A file that fails its tag is treated as missing.
 
-and a row in 3.1's file table, 6.3 step 0 unchanged, and a vector E9f.
+`safety-rule.md` R2, the sentence "The incarnation never repeats and a restore cannot rewind it (`runner.h`)" becomes: "The incarnation never repeats on one device, and a restore of the journal alone cannot rewind it (the start counter, `journal.md` section 5); a snapshot of the whole folder or machine can, and then only the random draw protects the epoch."
 
-`program/store.h` (S11): `begin` documents the floor; the stand-in implements it with a plain `floor.standin` (no seal) so the test runs before S5.
+`program/store.h` (S11): `begin` documents the counter; the stand-in implements it with a plain `starts.standin` (no seal).
 
-**Owner.** S5 (journal text and code), S6 (format, KF, vector), S11 (stand-in, test).
+**Order.** The stand-in counter and its test land **in P3**, with the program, so `main` never has a program whose restore path rewinds the incarnation; the sealed form lands in P9 with or after PR 25. **No signing engine (PR 15) merges before P3.**
 
-**Test T8, `program_restore_floor`.** A member runs to incarnation 2 and its journal is copied aside (the backup). It is restarted three more times (incarnation 5). The copy is put back as a restore (`--test-restore-from FILE`, which sets the restore marker). The restored start's incarnation is 6, not 3; its first batch is the restore batch; its restore epoch differs from the original's; pings before and after are answered. Variant: `floor.standin` removed before the restore: incarnation 3, and the `restored` record says `floor_found` 0.
+**Owner.** S5 (journal text and code), S6 (format, KC, vector), S11 (stand-in, test), S2 (merge order).
+
+**Test T8, `program_restore_counter`** (P3). A member runs to incarnation 2 and its journal is copied aside (the backup). It is restarted three more times (incarnation 5). The copy is put back as a restore (`--test-restore-from FILE`, which sets the restore marker). The restored start's incarnation is 6, not 3; its first batch is the restore batch; its restore epoch differs from the original's; pings before and after are answered. Variants: `starts.standin` removed before the restore: incarnation 3, `counter_found` 0, and the output says the person is told; a counter of 2^63 written into the stand-in: the start refuses.
 
 ## 9. The outcome of a broadcast
 
-**Decision.** A chain event reports each broadcast's outcome, as **advice**: it lets an engine tell the user at once that a server refused a transaction (and why), or retry later when none could be reached. It is never proof and never final: one server's refusal is not another's, an accepted transaction can still be replaced or dropped, and the event is lost with a restart (the worker's generation). What a transaction actually did is learnt only from `WATCH_TX` and `WATCH_OUTPOINT`, which an engine sets for anything whose fate matters. The chain view already computes it (`gz_broadcast_result`), so the cost is one more event kind.
+**Decision.** A chain event reports each broadcast's outcome, as **advice**: it lets an engine tell the user at once that the servers refused a transaction (and why), or retry later when none could be reached. It is never proof and never final: one server's refusal is not another's, an accepted transaction can still be replaced or dropped, and the event is lost with a restart (the worker's generation). What a transaction actually did is learnt only from `WATCH_TX` and `WATCH_OUTPOINT`. It is one aggregate per broadcast; per-server results are deferred (section 5).
 
 **Interface change.** `event.h`:
 
@@ -372,77 +420,86 @@ typedef enum {
 } gz_broadcast_outcome_t;
 ```
 
-`gz_chain_event_t` gains `gz_broadcast_outcome_t outcome;` and `gz_bytes_t reason;` (printable ASCII, at most 127 bytes, the server's words); `txid` holds the broadcast transaction's txid, computed by the program from the bytes sent. `action.h`, BROADCAST: "Its outcome comes back as a GZ_CHAIN_BROADCAST_RESULT event, which is advice (event.h). Broadcasting a transaction does not watch it."
+`gz_chain_event_t` gains `gz_broadcast_outcome_t outcome;` and `gz_bytes_t reason;` (printable ASCII, at most 127 bytes, the first refusing server's words); `txid` holds the broadcast transaction's txid, computed by the program from the bytes sent. `action.h`, BROADCAST: "Its outcome comes back as a GZ_CHAIN_BROADCAST_RESULT event, which is advice (event.h). Broadcasting a transaction does not watch it."
 
 **Owner.** core, S8 (worker result), S11 (conversion).
 
-**Test T9, `program_broadcast_result`.** The local test server set to accept, then to answer "already known", then to refuse with a reason, then to be down. A test user command broadcasts a transaction each time; the node's notices show accepted, accepted, refused with the server's reason, unreachable. A restart from storage while a broadcast is outstanding: no result reaches the new incarnation.
+**Test T9, `program_broadcast_result`** (P7). The local test server set to accept, then to answer "already known", then to refuse with a reason, then to be down. A test user command broadcasts a transaction each time; the node's notices show accepted, accepted, refused with the server's reason, unreachable. A restart from storage while a broadcast is outstanding: no result reaches the new incarnation.
 
 ## 10. `WATCH_SCRIPT`
 
-**Decision.** Retire it. The chain view lists a script's *unspent* outputs, so a spend shows only as an output vanishing, and naming the spender needs every outpoint ever seen; that is the watch loop keeping history per script for an action nobody uses. Slice 1's watches are the funding txid (`WATCH_TX`, C11) and the funding inputs (`WATCH_OUTPOINT`, C4(d) and Dead); every later need found so far is an outpoint the engine already knows (it had to see the output to care about its spend). Receiving to an address of the wallet is the wallet's own scan, not a core watch. A watch on a script can return later as a new action with a meaning the chain view can answer.
+**Decision.** Retire it. The chain view lists a script's *unspent* outputs, so a spend shows only as an output vanishing, and naming the spender needs every outpoint ever seen. Slice 1's watches are the funding txid (`WATCH_TX`, C11) and the funding inputs (`WATCH_OUTPOINT`, C4(d) and Dead); `exit.md` 3.2 and 8 already watch "by outpoint and by txid, never by script". Receiving to an address of the wallet is the wallet's own scan, not a core watch.
 
 **Interface change.** `action.h`: `GZ_ACTION_WATCH_SCRIPT` keeps its value (4) with the comment `/* retired in contract v2: refused */`; the union member `watch_script` goes; `gz_action_list_add` returns `GZ_ERR_ARGUMENT` for it; WATCHES drops its paragraph. `event.h`: `GZ_CHAIN_SCRIPT_SPENT` keeps its value (1) as `/* retired */`, and `script` leaves `gz_chain_event_t`. The runner's unknown-kind check refuses it too.
 
 **Owner.** core, S8 (implements none of it).
 
-**Test T10, `program_watches`** (and the core unit tests for the refusal). The local test server plays: a funding-like transaction unconfirmed, then confirmed, then buried to depth 3; a reorganisation that removes it; an input of it spent in the mempool, then confirmed. A test user command sets `WATCH_TX` (depth 3) and `WATCH_OUTPOINT` (depth 1). The node's notices show confirmations 1, 2, 3, then unconfirmed, then confirmed again; the spend with 0 then 1 confirmation. A restart from storage re-sets both watches at start and reports the current state again.
+**Test T10, `program_watches`** (P7; the refusal in the core unit tests, P4). The local test server plays: a funding-like transaction unconfirmed, then confirmed, then buried to depth 3; a reorganisation that removes it; an input of it spent in the mempool, then confirmed. A test user command sets `WATCH_TX` (depth 3) and `WATCH_OUTPOINT` (depth 1). The node's notices show confirmations 1, 2, 3, then unconfirmed, then confirmed again; the spend with 0 then 1 confirmation. A restart from storage re-sets both watches at start and reports the current state again.
 
 ## 11. What the interface reads
 
-**Decision.** The node offers no reads. A read would be a call into the core outside an event, from code that runs while a list is being carried out, and it would show state that may not be durable. Instead:
+**Decision.** The node offers no reads: a read would be a call into the core outside an event, and could show state that is not durable. Instead:
 
-- **The view.** The program keeps a table, the view: for each (object kind, id), the latest bytes a `NOTIFY` gave. `NOTIFY` is outward, so the runner releases it only after the saves before it are confirmed: **the view shows only durable state.** The backend reads the view on the loop thread, synchronously, as `api_backend.h` wants.
-- **Rebuilt at every start.** New node rule 7: a start emits a `NOTIFY` for every view object the engine has (like timers and watches, rule 4). When the start is complete the program sends the API topic `reset` (`local-api.md` 10.2: "after the core was rebuilt from storage").
+- **The view.** The program keeps a table: for each (object kind, id), the latest bytes a `NOTIFY` gave. The backend reads it on the loop thread, synchronously, as `api_backend.h` wants.
+- **Durable, by a node rule.** `NOTIFY` is outward, so the runner releases it only after the saves listed before it. New node rule 8 makes that cover what it shows: *a view `NOTIFY` comes after, in its list, the save of the state it shows.* The simulator checks it: after a crash at any point, the view rebuilt by the next start is never older than any view object the previous run released. Two kinds are **live facts**, not durable, and are labelled so: `connection` (kind 9) and the chain heights in `status`, which the program fills itself from the transport and the chain worker, not from the node.
+- **Rebuilt at every start.** Node rule 7: a start emits a `NOTIFY` for every view object it has. After a restart from storage inside one process the program **clears the view**, and the backend answers as `local-api.md` already says for a core being rebuilt (`wallet = node_stopped`, `doing.code = node_stopped`, calls `503 node_stopped` with reason `rebuilding`) until the start's notices are in; then the program sends the API topic `reset` (`local-api.md` 10.2).
+- **History is not re-emitted.** `activity` (kind 6) grows without bound, so the view keeps only the newest 50 entries, emitted at start. Older pages are read by the program from its own journal: `activity_entry` records (`0x000d0012`, `local-api.md` 7.5) are durable by definition, the program indexes them as it appends them, and the backend pages through that index. This is the program reading storage it owns, not the node; it is the one exception, and it is limited to record types `local-api.md` 7.5 defines for the API. (To confirm in P6.)
 - **Framing of `NOTIFY`.** `code` says what the bytes are; bytes are a TLV stream (BOLT 1 rules, `messages.md` 4.2):
 
 | `code` | Meaning | Records |
 |---|---|---|
 | `0x00010000` + k | A view object of kind k (registry below) | 0 `id`, 1 to 64 bytes of printable ASCII (the local id of `local-api.md` 7.3), required; 2 `gone`, empty, when the object is removed; then the object's fields from type 4, defined with the object |
-| `0x00020000` | The outcome of a user command | 0 `request_id` (`u64`), required; 2 `error` (an error code of `local-api.md` 8.1, ASCII), absent on success; 4 `params` (a JSON object, ASCII) |
+| `0x00020000` | The outcome of a user command | 0 `request_id` (the client's, ASCII), required; 2 `status` (`u16`: 200, 202, or the error status); 4 `error` (an error code of `local-api.md` 8.1, ASCII), absent on success; 6 `object` (the acted-on object's kind and local id); 8 `params` (a JSON object, ASCII) |
 | `0x00030000` | A line for the log (`storage-encryption.md` 12.1) | 0 `text`, printable ASCII, never a secret |
 
-View object kinds (k), with the API topic each feeds: 1 `status` (no id), 2 `lobby`, 3 `host_lobby`, 4 `factory`, 5 `wallet`, 6 `activity`, 7 `attention`, 8 `doing`, 9 `connection` (`GET /connections`). The fields of each are defined in the pull request of the engine that first emits it, with the mapping to the `local-api.md` answer it fills; the program's backend turns them into JSON and calls `gz_api_notify(topic, id)`.
+View object kinds (k), with the API topic each feeds: 1 `status` (no id), 2 `lobby`, 3 `host_lobby`, 4 `factory`, 5 `wallet`, 6 `activity`, 7 `attention`, 8 `doing`, 9 `connection` (live). The fields of each are defined in the pull request of the engine that first emits it, with the mapping to the `local-api.md` answer it fills.
 
-- **Calls.** A call that only reads is answered from the view. A call that changes anything (`join`, `ready`, `leave`, `host/open`, `host/start`, `host/cancel`, seat removal, conditions, pause, lock) is checked against the view, then submitted as a `GZ_EVENT_USER_COMMAND` and answered **202** with `{"request_id": …}`; its outcome arrives as a command-result `NOTIFY` and the topic it changed. `USER_COMMAND` bytes are a TLV stream: 0 `request_id` (`u64`, required), 2 `command` (`u16`, required, the registry `GZ_CMD_*` in a new `core/gazpacho/include/gazpacho/command.h`, one per call of `api_backend.h`'s `gz_api_call_id` that changes state), then the call's arguments from type 4.
-- **The data folder.** The program owns it: it creates it (0700), refuses it if others can read it, and holds `DIR/lock` (program.md section 5). The API server is given that folder and creates or checks nothing; it only places its own files (the redirect file) in it.
+- **Acting calls follow `local-api.md` 7.4 and 7.5**, which already define them:
+  - The **client** chooses the `request_id` (16 to 64 characters). The server computes the body digest (RFC 8785, passphrase removed) and the program submits a `GZ_EVENT_USER_COMMAND` carrying the `request_id`, method, path (local ids filled in), digest, command and arguments.
+  - **The engine**, not the view, does every check that answers 409 (`request_id_reused`, `changed_elsewhere` against `based_on_version`, `review_expired`), and replays a known id from its saved status. A check against the view is only a fast path for obviously bad calls.
+  - The engine saves the `request_id` record (`0x000d0014`) **in the same batch as the action's first save**, and then emits the command-result `NOTIFY`, which the runner releases only after that batch is confirmed.
+  - **The server holds the HTTP answer until that `NOTIFY` arrives**, then answers its status (200 when the outcome is known, 202 when it depends on other parties, the error otherwise), as 7.4 says: "an action answers when the core has taken it and every save it asked for is confirmed". PR 26 already holds answers for passphrase jobs. A `PUT /pause` that answered is therefore paused.
+  - If the node restarts meanwhile, the server answers `503 node_stopped` (reason `rebuilding`, `local-api.md` 8.1); if no outcome comes within 30 s, `503 node_busy` (a code P5 adds to 8.1). Either way the client retries **with the same `request_id`**: 7.4 makes that safe (a replay if the first was saved, a first call if not). The server never answers success before the save.
+- **The data folder.** The program owns it: it creates it (0700), refuses it if others can read it, and holds `DIR/lock`. The API server is given that folder and creates or checks nothing; it writes only its own files there (the redirect file, `interface.sock`, `attempts.gza`).
 
 **Interface change.** `action.h`, NOTIFY:
 
 ```c
         /* NOTIFY: outward. `bytes` is a TLV stream framed by `code`
          * (contract-v2.md section 11): a view object, a command's outcome, or
-         * a log line. The program keeps the latest view object per (code, id)
-         * and shows nothing else to the interface. */
+         * a log line. A view object follows, in its list, the save of the
+         * state it shows (node.h rule 8). */
         struct { uint32_t code; gz_bytes_t bytes; } notify;
 ```
 
-(the struct is unchanged; the comment is the contract). `event.h`, `user`: comment becomes `/* USER_COMMAND: a TLV stream, command.h */`. New `command.h` with `GZ_NOTIFY_VIEW(k)`, `GZ_NOTIFY_COMMAND_RESULT`, `GZ_NOTIFY_LOG`, the view kinds and `GZ_CMD_*`. `node.h` rule 7:
+`event.h`, `user`: `/* USER_COMMAND: a TLV stream, command.h: request_id, method, path, digest, command, arguments */`. New `core/gazpacho/include/gazpacho/command.h` with `GZ_NOTIFY_VIEW(k)`, `GZ_NOTIFY_COMMAND_RESULT`, `GZ_NOTIFY_LOG`, the view kinds, and the `USER_COMMAND` records: 0 `request_id` (ASCII, required), 2 `method` (ASCII), 4 `path` (ASCII), 6 `digest` (32), 8 `command` (`u16`, `GZ_CMD_*`, one per acting call of `api_backend.h`'s `gz_api_call_id`), then arguments from type 10. `node.h` rules 7 and 8:
 
 > 7. Emit, at start, a NOTIFY for every view object it has (contract-v2.md section 11): the program forgets the view when it stops.
+> 8. Put a view NOTIFY after the save of the state it shows, in the same list, and a command's outcome after the save of its `request_id` record.
 
 `api.h` (PR 26):
 
 ```c
     const char *data_dir;      /* required: a folder the program has made, checked
                                   (0700, owned by this user) and locked; the server
-                                  creates and checks nothing, and only writes its own
-                                  files in it */
+                                  creates and checks nothing, and writes only its own
+                                  files in it (redirect file, interface.sock, attempts.gza) */
 ```
 
-and `server.c` loses its `mkdir`. `api_backend.h`: the `call` paragraph adds "A call that changes state answers 202 with a request id once it is submitted; its outcome is published later (topic and the command's own)". The "Threads" paragraph is section 4's.
+and `server.c` loses its `mkdir`. `api_backend.h`: a call that acts is handed to the backend with its digest and answered when the backend completes it (a new `call_done(srv, handle, status, body)` from the loop thread), not from `call`'s return value; the 30 s limit and the 503 as above. The "Threads" paragraph is section 4's.
 
-**Owner.** core (`command.h`, rule 7), S9 (folder, 202, thread rule), S11 (view, backend, command mapping); each engine (S4 first) defines its view objects' fields.
+**Owner.** core (`command.h`, rules 7 and 8, the simulator invariant), S9 (folder, held answers, digest, thread rule), S11 (view, backend, history index); each engine (S4 first) defines its view objects' fields.
 
-**Test T11, `program_view`.** A host with the interface; a client signed in with the test passphrase.
-1. A member pings: the event stream shows the `status` topic and `GET /status` shows the new ping count (the placeholder's view object, kind 1).
-2. The host is killed after the ping is durable and before the notice is released (`--test-crash-after-save`). Restarted: the stream shows `reset`, and `/status` shows the count including that ping, from the start's notices.
-3. A changing call (`POST /pause`, the placeholder's test command) answers 202 with a request id; the command-result notice arrives and the topic changes.
-4. The program started on a folder with mode 0755 refuses before the server exists; the server never creates the folder (started on a missing folder by the test harness directly, it refuses).
+**Test T11, `program_view`** (P6). A host with the interface; a client signed in with the test passphrase.
+1. A member pings: the event stream shows `status`, and `GET /status` shows the new ping count (the placeholder's view object).
+2. The host is killed after the ping is durable and before the notice is released (`--test-crash-after-save`). Restarted: the stream shows `reset`, and `/status` shows the count including that ping.
+3. `PUT /pause` (the placeholder's test command) with a `request_id`: the answer comes only after the `request_id` batch is durable (the host killed before the confirmation: the client gets no 200, and its retry with the same id after the restart acts once). The same id with another body: 409 `request_id_reused`.
+4. A restart from storage in one process: between the failure and `reset`, `/status` says `node_stopped` and calls answer `503 node_stopped` (`rebuilding`).
+5. The program started on a folder with mode 0755 refuses before the server exists; the server started on a missing folder by the test harness refuses and creates nothing.
 
 ## 12. The transport's random type
 
-**Decision.** `ports/net` needs randomness for one thing, BOLT 8 ephemeral keys, which are one-time secrets and never leave the transport. It gets its own one-line type and includes no core header, so the core's contract can change without touching the transport, and the transport (with `gz-net`) builds without the core. The program passes a function that reads the operating system at each call (`transport.md` rule 9 and decision 12).
+**Decision.** `ports/net` needs randomness for one thing, BOLT 8 ephemeral keys, which are one-time secrets and never leave the transport. It gets its own one-line type and includes no core header, so the core's contract can change without touching the transport. The program passes a function that reads the operating system at each call (`transport.md` rule 9 and decision 12).
 
 **Interface change.** PR 23, `noise.h`:
 
@@ -457,109 +514,146 @@ typedef struct {
 } gz_net_random_t;
 ```
 
-`gz_random_port_t` becomes `gz_net_random_t` in `noise.h`, `conn.h`, `peers.h`, `noise.c`, `conn.c`, `peers.c`, `tools/gz-net`; `#include "gazpacho/ports.h"` leaves `noise.h`. `transport.md`'s "Pieces" row for `noise.c` says "a callback (`gz_net_random_t`)". `tools/check-core-isolation.sh` gains the reverse check: nothing under `ports/net/` includes `gazpacho/` core headers.
+`gz_random_port_t` becomes `gz_net_random_t` in `noise.h`, `conn.h`, `peers.h`, `noise.c`, `conn.c`, `peers.c`, `tools/gz-net`; `#include "gazpacho/ports.h"` leaves `noise.h`. `transport.md`'s "Pieces" row for `noise.c` says "a callback (`gz_net_random_t`)". `tools/check-core-isolation.sh` gains the reverse check: nothing under `ports/net/` includes core headers.
 
-PR 23 is based on `main` before PR 9 and calls `fill(ctx, out, len)` (three arguments); `main`'s `noise.c` calls `fill(ctx, GZ_RANDOM_SECRET, out, len)`. Rebasing PR 23 onto `main` with this change resolves both at once.
+PR 23 is based on `main` before PR 9 and calls `fill(ctx, out, len)`; `main`'s `noise.c` calls `fill(ctx, GZ_RANDOM_SECRET, out, len)`. Rebasing PR 23 onto `main` with this change resolves both.
 
 **Owner.** S7.
 
-**Test T12.** A CTest build check, `net_no_core_headers`: `ports/net` and `gz-net` compile with an include path that has no `core/gazpacho/include`. In `program_two_process`, the transport's randomness is the program's OS function (no seeded path exists in a release build; checked by the symbol list as the core's isolation check does).
+**Test T12.** P2: a CTest build check, `net_no_core_headers`: `ports/net` and `gz-net` compile with an include path that has no `core/gazpacho/include`. P3 (it needs the program): the release `gazpacho` binary's symbol list has no seeded random source and no `GZ_ENV_KIND_TEST` table entry, so kind 32767 is never delivered outside test builds.
 
 ## 13. Member keys
 
-**Decision.** Keys under BIP 32, hardened all the way, below a purpose of Gazpacho's own:
+**Decision.** Keys under BIP 32, hardened all the way, below a purpose of Gazpacho's own, with a network level:
 
 | Key | Path |
 |---|---|
-| Per-lobby key: BOLT 8 static key and contribution key (`messages.md` 2, `signing-round.md` 2) | `m / 254315617' / coin' / 0' / epoch' / index'` |
-| Its factory key | the same with `index + 1` (`signing-round.md` section 2: "derived at the next index") |
-| The host's long-term key (BOLT 8, terms, host messages) | `m / 254315617' / coin' / 1' / 0'` |
+| Per-lobby key: BOLT 8 static key and contribution key (`messages.md` 2, `signing-round.md` 2) | `m / 254315617' / net' / 0' / epoch' / index'` |
+| Its factory key | the same with `index + 1` |
+| The host's long-term key (BOLT 8, terms, host messages) | `m / 254315617' / net' / 1' / k'`, k the first valid of 0, 1, 2, … |
 
-- **254315617** is the first four bytes of `SHA256("gazpacho keys")` (`8f 28 8c 61`) with the top bit cleared: a reproducible random pick, like type 52791, so it collides with no BIP 43 purpose in use. `coin` is BIP 44's: 1 on every test network (`gzw_network_coin_type`), so test keys are never main-network keys.
+- **254315617** is the first four bytes of `SHA256("gazpacho keys")` (`8f 28 8c 61`) with the top bit cleared: a reproducible random pick, like type 52791. It is not one of BIP 43's own purposes (44, 45, 48, 49, 84, 86, 87), nor LND's 1017 or Eclair's 46 and 47. It has **not** been checked against SLIP-0043's registry (which could not be read when this was written); checking it and registering the purpose there is a follow-up for P8.
+- **`net`** separates the networks: 0 main (reserved; never derived while mainnet is refused), 1 testnet4, 2 signet, 3 testnet3 (unused). BIP 44's coin type is 1 on every test network, so a coin-type level would give one seed the same host key and the same member keys on signet and testnet4, linkable across networks and one key in two factories. A level of our own keeps them apart.
 - `epoch` is the 31-bit restore epoch (`safety-rule.md` R2: "31 bits fit a hardened BIP 32 index"); `index` the 31-bit `key_index`.
-- **Hardened everywhere** because these are secret keys used one by one, never an account whose public children anyone needs: a leaked child secret then reveals nothing about its siblings.
-- An invalid child (BIP 32's rare case, `GZW_REASON_INVALID_CHILD`) is skipped: the engine takes the next index and saves it, as `wallet-keys.md` says for addresses. For a per-lobby key the next free pair is (`index` + 2, `index` + 3).
+- **Allocated in pairs.** Every fresh allocation reserves two indexes, (i, i + 1): the contribution key at i, the factory key at i + 1. A fresh index that later becomes a lobby key (`signing-round.md` 2) thus never takes the previous lobby's factory key, which would put one key in two roles and link two lobbies. `key_index` records the highest index allocated, i + 1; the next pair starts at i + 2; i + 1 is below 2^31. The guard's `highest_index` is the same value.
+- **Hardened everywhere**, because these are secret keys used one by one, never an account whose public children anyone needs: a leaked child secret reveals nothing about its siblings, and nothing under `m/86'` reaches them. Storage keys are HKDF over the seed (storage 4.4), not BIP 32, so they are separate too.
+- **Invalid children** (BIP 32's rare case, about 1 in 2^127 per step, `GZW_REASON_INVALID_CHILD`), so the rule is total:
+  - at `index` or at `index + 1`: the whole pair is skipped and the next pair allocated and saved (the skipped pair is never used);
+  - at `epoch'`: every index under it fails; the node draws a new epoch as at a restore (R2) and saves it in `key_epoch`, also for epoch 0 of a new installation;
+  - at `net'`, `0'` or `1'` above it: the seed cannot be used for Gazpacho; set-up refuses it and asks for new words (the chance is negligible);
+  - the host key: k is the first of 0, 1, 2, … that is valid, found the same way at every start, so the host stores nothing.
 - The host key does not change with the restore epoch: members pin it, and a restored host is the same host.
 
-**Interface change.** `wallet/include/wallet_keys.h`:
+**Interface change.** `wallet/include/gazpacho/wallet_keys.h`:
 
 ```c
 /* Gazpacho's key purpose: SHA256("gazpacho keys")[0..4] & 0x7fffffff. */
 #define GZW_GAZPACHO_PURPOSE 254315617u
 
-/* The per-lobby key at m/254315617'/coin'/0'/epoch'/index' (contract-v2.md
- * section 13): its secret key and 33-byte public key. epoch and index below
- * 2^31. 0 on success; on failure *reason says why, GZW_REASON_INVALID_CHILD
- * meaning "take the next index". The caller wipes seckey32. */
+/* The network level below the purpose (contract-v2.md section 13). Returns 0
+ * and *out, or -1 for mainnet and an invalid network. */
+int gzw_gazpacho_net_level(gzw_network net, uint32_t *out);
+
+/* The per-lobby key at m/254315617'/net'/0'/epoch'/index' (contract-v2.md
+ * section 13): its secret key and 33-byte public key. epoch below 2^31, index
+ * below 2^31 - 1 (its pair's factory key is at index + 1). 0 on success; on
+ * failure *reason says why: GZW_REASON_INVALID_CHILD at the last level means
+ * "skip this pair", and *level says which level failed. The caller wipes
+ * seckey32. */
 int gzw_lobby_key(const secp256k1_context *ctx, const gzw_xprv *master, gzw_network net,
                   uint32_t epoch, uint32_t index, unsigned char seckey32[32],
-                  unsigned char pub33[33], gzw_reason *reason);
+                  unsigned char pub33[33], unsigned *level, gzw_reason *reason);
 
-/* The host's long-term key at m/254315617'/coin'/1'/0'. As above. */
+/* The host's long-term key at m/254315617'/net'/1'/k' for the first valid k;
+ * *k_out says which. As above. */
 int gzw_host_key(const secp256k1_context *ctx, const gzw_xprv *master, gzw_network net,
-                 unsigned char seckey32[32], unsigned char pub33[33], gzw_reason *reason);
+                 unsigned char seckey32[32], unsigned char pub33[33], uint32_t *k_out,
+                 gzw_reason *reason);
 ```
 
-Test vectors from the BIP 32 test seed, generated by `tools/spec-vectors.py` and cross-checked against an independent BIP 32 implementation, in `wallet/vectors/`. `messages.md` section 2, "Member key", names the path (applied here, marked **proposed, owner to confirm**).
+Test vectors from the BIP 32 test seed, generated by `tools/spec-vectors.py` and cross-checked against an independent BIP 32 implementation, in `wallet/vectors/`; the invalid-child cases forced as in `test_wallet_rare.c`. `messages.md` section 2, "Member key", names the path and the pairs (applied here, marked **proposed, owner to confirm**).
 
 The program derives the key when it carries out a `CONNECT` (section 3) and wipes it once handed to `gz_peers_connect`; `transport.key` and `wallet-seed.standin` give way to the seed (and to `keys.gzk` once S6 lands).
 
 **Owner.** wallet; S11 (use).
 
-**Test T13, `program_derived_keys`.** A member and a host from known test words. The host's key printed at start equals `gzw_host_key`'s vector, before and after a restart. The member's first link uses (epoch 0, index 0)'s key; restarted, the same; after a restore (T8's harness) the epoch changes and the host sees a new key, which finds no seat (a new link).
+**Test T13, `program_derived_keys`** (P8). A host and members from known test words. The host's key printed at start equals `gzw_host_key`'s vector, before and after a restart, and differs between a signet and a testnet4 folder made from the same words. The member's first link uses (epoch 0, index 0)'s key and its `key_index` record says 1; a second `CONNECT` uses index 2; restarted, the same keys; after a restore (T8's harness) the epoch changes and the host sees a new key, which finds no seat. T2 step 3 and T3 run here too.
 
 ## 14. The random port's signature
 
-**Decision.** Settled on `main` (PR 21 merged after PR 9): `fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)` with `GZ_RANDOM_ORDINARY` = 0 and `GZ_RANDOM_SECRET` = 1. `GZ_RANDOM_OTHER` and the `uint32_t` form are gone. Nothing changes in the core. The program drops every core probe (`GZP_CORE_STEPPED_START`, `GZP_CORE_RANDOM_PURPOSE`, `GZP_CORE_RANDOM_ENUM`, `GZP_CORE_PEER_EVENTS`, `GZP_CORE_READER_RESTORED`, `GZP_CORE_WATCH_TX`) and builds against `main` only; `program.md` section 6 becomes one paragraph saying so. With section 12 the transport no longer sees this type at all.
+**Decision.** Settled on `main` (PR 21 merged after PR 9): `fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)` with `GZ_RANDOM_ORDINARY` = 0 and `GZ_RANDOM_SECRET` = 1. Nothing changes in the core. The program drops every core probe (`GZP_CORE_STEPPED_START`, `GZP_CORE_RANDOM_PURPOSE`, `GZP_CORE_RANDOM_ENUM`, `GZP_CORE_PEER_EVENTS`, `GZP_CORE_READER_RESTORED`, `GZP_CORE_WATCH_TX`) and builds against `main` only; `program.md` section 6 becomes one paragraph saying so (it still says PR 21 is not merged).
 
 **Interface change.** None in the core. `program/CMakeLists.txt` and the `#if` blocks go.
 
 **Owner.** S11.
 
-**Test T14.** `program_two_process` unchanged and passing on `main` with the probes removed; the build fails if anything still names `GZ_RANDOM_OTHER` (a grep in the CTest build check).
+**Test T14** (P3). `program_two_process` passing on `main` with the probes removed; the build check fails if anything still names `GZ_RANDOM_OTHER`.
 
 ## 15. Networks
 
-**Decision.** Slice 1 runs on signet or testnet4, one per data folder, never mainnet. `init` names exactly that one network. BOLT 1 lets a node list several chains and close on no common one; a Gazpacho program runs one, so it lists one and closes on anything else, including a list with more than one chain. Mainnet stays refused before anything starts (`SLICES.md` rule 3; program exit 2).
+**Decision.** Slice 1 runs on signet or testnet4, one per data folder, never mainnet. `init` names exactly that one network. BOLT 1 lets a node list several chains and only allows closing when there is no common one; a Gazpacho program runs one network, so it lists one and closes on anything else, including a list of several. This is stricter than BOLT 1 and holds for native Gazpacho connections only: through the bLIP-56 adapter (`messages.md` section 10, not in Slice 1) the connection's `init` belongs to a Lightning node, which may list several chains; there the rule is section 10's, and the factory messages carry their chain in the terms (`terms.md` `chain`). Mainnet stays refused before anything starts (`SLICES.md` rule 3; program exit 2). The interface's default ports per network are already in `local-api.md` 3.1 (39735 signet, 39736 testnet4).
 
 **Interface change.** `messages.md` section 2, "First message" (applied here):
 
 > BOLT 1 `init`. `networks` must contain exactly one chain hash, that of the network this party was set up for: signet or testnet4. A party whose peer names another chain, several, or none closes the connection. The chain hash is BOLT 0's: the hash of the network's block 0.
 
-PR 23, `peers.h`: the `chain` comment becomes `/* init's networks: exactly this chain (signet or testnet4) */`; `gz_peers_new` refuses the main network's hash. PR 26: the default interface port per network (39735 is signet's) needs a testnet4 value in `local-api.md` 3.1 (see section 18).
+PR 23, `peers.h`: the `chain` comment becomes `/* init's networks: exactly this chain (signet or testnet4) */`; `gz_peers_new` refuses the main network's hash.
 
 **Owner.** spec (here); S7.
 
-**Test T15, `program_networks`.** A testnet4 host and a testnet4 member connect and ping. A signet member to the testnet4 host: both sides close with `GZ_PEER_WHY_INIT`. `--network mainnet` exits 2 before any file is made (already in `program_options`).
+**Test T15, `program_networks`** (P3). A testnet4 host and a testnet4 member connect and ping. A signet member to the testnet4 host: both sides close with `GZ_PEER_WHY_INIT`. `--network mainnet` exits 2 before any file is made.
 
-## 16. What every engine now does at start
+## 16. What every engine now does at start, and after
 
-`node.h`'s list after this contract, for reference: 1 resend unacknowledged, 2 safe twice and out of order, 3 the acknowledgement is the peer's saved message, 4 timers and watches again, 5 the restore batch first, **6 resend on `PEER_CONNECTED`**, **7 the view again**, and the addressing rule of section 2; plus **`CONNECT` and `SET_SEATED` again** for every link and seat it still needs (section 3).
+`node.h`'s list after this contract: 1 resend unacknowledged (from stored bytes), 2 safe twice and out of order, 3 the acknowledgement is the peer's saved message, 4 timers and watches again, 5 the restore batch first, **6 the reconnect step at `PEER_CONNECTED`, limits per link**, **7 the view again**, **8 view and command notices after their saves**, and the addressing rule of section 2; plus, at start, **apply a saved pause, then `CONNECT` and `SET_SEATED` again** for every link and seat it still needs (section 3).
 
 ## 17. The pull requests, in order
 
-Each lands on `main` alone and leaves it building and green. Reviews per the ledger.
+Each lands on `main` alone and leaves it building and green, **including the `handbook up to date` check**: every PR that changes a document rebuilds `docs/handbook.html` (`python3 tools/build-handbook.py`). Reviews per the ledger.
 
 | PR | Contents | Mismatches | Owner | Depends on |
 |---|---|---|---|---|
-| **P1** | This note; `messages.md` 2 (networks, member key path), 4.1 (kind 32767), 6.2 and open point 3; `terms.md` chain; `signing-round.md` 12.1 rows | decisions for all; text for 13, 15, 7 | program S11 (author), owner review | — |
-| **P2** | PR 23 rebased onto `main`: `gz_net_random_t`, no core header (12); `gz_peers_pollfds`/`dispatch` (4); test kind under `GZ_TEST_KINDS` (7); one network, mainnet refused (15); `transport.md` limits updated (6); test T12 | 4, 6, 7, 12, 15 | S7 | P1 |
-| **P3** | PR 27 rebased onto `main` with P2: probes removed (14); `program/net.c` over `peers.h` (6); one loop over the net descriptors (4); placeholder bytes carried in kind 32767 by the adapter until P4; PR 26 not yet wired. Tests T6, T12, T14, T15 and the existing `program_two_process` | 4, 6, 14, 15 | S11 | P2 |
-| **P4** | Core contract v2 with the program and the simulator in the same change: `gz_link_t`, `SEND`/`MESSAGE` with kind, scope, records, `CONNECT`/`DISCONNECT`/`SET_SEATED`, `GZ_CHAIN_BROADCAST_RESULT`, `WATCH_SCRIPT` retired, node rules 3, 6, 7, the placeholder's acknowledgement; outbox removed. Tests T1, T2, T3, T7 | 1, 2, 3, 7, 9 (event), 10 | core (S11 for `program/`) | P3 |
-| **P5** | PR 26 rebased: `gz_api_server_pollfds`/`dispatch`, data folder given not made, thread rule, 202 for changing calls | 4, 11 (server side) | S9 | P1 |
-| **P6** | Program wires the API: the view, `command.h`, the backend over the view, `reset` after start. Test T4, T11 | 4, 11 | S11 (core for `command.h`) | P4, P5 |
-| **P7** | Chain worker `chain_watch.h` (S8) and `program/pchain.c` over it. Tests T5, T9, T10 | 5, 9, 10 | S8 (S11 for `program/`) | P4 |
-| **P8** | `gzw_lobby_key`, `gzw_host_key`, vectors; the program derives keys for `CONNECT` and the host key; stand-in key files removed. Test T13 | 13 | wallet (S11 for `program/`) | P4; owner's confirmation of the path |
-| **P9** | Floor file: `journal.md` 5, 8.2, 9 and `storage-encryption.md` 10.3 text (with PR 25 or after it), the stand-in's `floor.standin`. Test T8 | 8 | S5, S6 (S11 for the stand-in) | P4 (T8 uses the placeholder's restore path), PR 25 for the sealed form |
+| **P1** | This note; `messages.md` 2 (networks, member key path and pairs, fresh index per `CONNECT`), 4.1 (kind 32767), 6.2 and open point 3; `terms.md` chain; `signing-round.md` 12.1 rows; the handbook | decisions for all; text for 7, 13, 15 | S11 (author), owner review | — |
+| **P2** | PR 23 rebased onto `main`: `gz_net_random_t`, no core header (12); `gz_peers_pollfds`/`dispatch` (4); test kind under `GZ_TEST_KINDS` (7); one network, mainnet refused (15); `transport.md` limits updated (6); replacement before admission, `GZ_PEER_WHY_REPLACED`, seated keys, `gz_peers_close_after_send` (2, 3); `max_queue` sized for a reconnect answer, with a test (1); test T12 (build half) | 1, 2, 3, 4, 6, 7, 12, 15 | S7 | P1 |
+| **P3** | PR 27 rebased onto P2: probes removed (14); `program/net.c` over `peers.h` (6); one loop with the stop pipe (4); refusal closes the connection, no outbox, start queue, listen after start, restart closes everything and clears timers (1); placeholder bytes carried in kind 32767 by the adapter until P4; **the stand-in start counter** (8); shutdown order. Tests T6, T8, T12 (symbol half), T14, T15 and `program_two_process` | 1, 4, 6, 8, 14, 15 | S11 | P2 |
+| **P4** | Core contract v2 with the program and the simulator in the same change: `gz_link_t`; `SEND`/`MESSAGE` with kind, scope, records; `CONNECT`/`DISCONNECT`/`SET_SEATED`; `GZ_CHAIN_BROADCAST_RESULT`; `WATCH_SCRIPT` retired; node rules 3, 6, 7, 8 and the simulator's view invariant; the placeholder's hello and acknowledgement. Tests T1, T2 steps 1 and 2, T7 | 1, 2, 3, 7, 9 (event), 10 | core (S11 for `program/`) | P3 |
+| **P5** | PR 26 rebased: `gz_api_server_pollfds`/`dispatch`, generations for passphrase jobs, file writes on the loop thread, folder given not made, held answers with the digest and `call_done` | 4, 11 (server side) | S9 | P1 |
+| **P6** | Program wires the API: the view, `command.h`, the backend over the view, the activity index, `reset` after start, `request_id` handling in the placeholder. Tests T4, T11 | 4, 11 | S11 (core for `command.h`) | P4, P5 |
+| **P7** | Chain worker `chain_watch.h` with the HTTP abort and backoff changes (S8), and `program/pchain.c` over it. Tests T5, T9, T10 | 5, 9, 10 | S8 (S11 for `program/`) | P4 |
+| **P8** | `gzw_lobby_key`, `gzw_host_key`, `gzw_gazpacho_net_level`, vectors; the SLIP-0043 check and registration request; the program derives keys for `CONNECT` and the host key, allocates pairs; stand-in key files removed. Tests T13, T2 step 3, T3 | 2, 3, 13 | wallet (S11 for `program/`) | P4; owner's confirmation of the path |
+| **P9** | The sealed start counter: `journal.md` 5, 8.2, 9, `storage-encryption.md` 3.1, 4.4, 7.4, 10.3 and E9c, `safety-rule.md` R2 sentence (with PR 25 or after it); the program's storage uses it | 8 | S5, S6 (S11 for `program/`) | P3, PR 25 |
 
-P2 and P5 can go in parallel after P1; P7 and P8 in parallel after P4. P4 is the only change to the core and the only one that touches open engine branches (PR 15 signing, PR 24 tree): they rebase onto it, and the signing engine's first use of `SEND` uses kinds 64 to 81 directly.
+P2 and P5 can go in parallel after P1; P7 and P8 in parallel after P4. P4 is the only change to the core, and it touches the open engine branches:
+
+- **PR 15 (signing)** puts its own header (`'G' 'S'`, kind, id) inside the send bytes and names participants by `uint64_t peer`. Its rebase onto P4 is a **rewrite of its message layer**: kinds 64 to 81 of `messages.md` 4.1 through `SEND`'s kind, the lobby's scope, links for participants, the reconnect step of rule 6 (its `resend_ticks` timer resends stay). Plan it as its own review round. It merges after P3 (section 8) and after P4.
+- **PR 24 (tree)** uses no messages and rebases with little change.
 
 ## 18. For the owner
 
-1. **The key path** of section 13 (purpose 254315617, hardened, host key on its own branch). Marked proposed in `messages.md`.
-2. **No outbox** (section 1): a message for a peer that is not connected is dropped, and delivery rests on resends at start and at reconnect. This is stricter than the skeleton and matches the specifications; it means an engine bug that forgets a resend shows in tests instead of being hidden by the outbox.
+1. **The key path** of section 13 (purpose 254315617, a network level, pairs, hardened, the host key on its own branch). Marked proposed in `messages.md`. Registering the purpose in SLIP-0043 is a public step: the owner decides when.
+2. **No outbox, and a refused send closes the connection** (section 1): delivery rests on the reconnect step and the start's resends. This is stricter than the skeleton and matches the specifications.
 3. **`WATCH_SCRIPT` retired** (section 10), with no Slice 1 user.
-4. **A new file in the data folder**, `floor.gzf` (section 8), beside the guard and the mark file, outside the backup set. S6's PR 25 is open on the same specification.
+4. **A new file in the data folder**, `starts.gzs` (section 8), beside the guard and the mark file, outside the backup set; and the narrowed R2 sentence: a whole-folder or machine snapshot is not defended. S6's PR 25 is open on the same specification.
 5. **Kind 32767** reserved in the protocol for test traffic (section 7), in the namespace that will be shared with SuperScalar (`PROTOCOL.md`).
-6. **The interface port for testnet4**: `local-api.md` 3.1 gives 39735 for signet only.
-7. `program.md` section 6 says PR 21 is not merged; it is. P3 updates the note.
+6. **Activity history read from the journal by the program** (section 11), the one exception to "no reads".
+
+## 19. Changes in draft 2 (review of PR 28)
+
+| Finding | Change | Where |
+|---|---|---|
+| 1.1 drops on a live connection | Any refusal closes the connection; too-big fatal; `max_queue` sized for a reconnect answer; timer resends allowed | 1; P2, P3 |
+| 1.2 events during a start; in-process restart | Peer events queued during a start; host listens after it; restart closes connections and clears timers; T1 steps 5 and 6 | 1; P3 |
+| 1.3 rule 6 an amplifier | Rule 6 is the protocol's reconnect step (pull); which side resends what; limits per link; why nothing loops; placeholder `GZPH` | 3, 1; T3 step 5 |
+| 1.4 202 against `local-api.md` 7.4 | Client `request_id`, digest, saved in the first batch, answer held until the command-result notice; 503 and a same-id retry past 30 s; 409 checks in the engine; the program `u64` id removed | 11 |
+| 1.5 `DISCONNECT` drops the last message | Flush then close, with an event; `gz_peers_close_after_send`; the adapter reports replaced connections | 3, 2 |
+| 1.6 the counter and snapshots | Covers a restore of the journal alone, not a whole-folder or machine snapshot; R2 sentence narrowed; `signing-round.md` 12.1 row fixed | 8; `signing-round.md` |
+| 2 keys | Pairs reserved; invalid child at every level; a network level (signet and testnet4 apart); header path; SLIP-0043 follow-up; fresh index per `CONNECT` | 13; `messages.md` 2 |
+| 2 counter | Renamed (start counter, `starts.gzs`), created at set-up, overflow refused, missing counter shown to the person, stand-in moved to P3, PR 15 after P3; KC in 4.4's label style | 8, 17 |
+| 2 transport | Replacement and seats in `peers.c` before admission; replacement counted; T12 proves the test kind off; the adapter case of "several chains" | 2, 3, 12, 15 |
+| 2 chain worker | Never drops a report (waits, coalesces tips); generation checked in `take`, `reset` purges and drains; interruptible shutdown; libcurl on the loop thread; per-server results deferred | 5, 9 |
+| 2 passphrase thread | File writes on the loop thread; jobs carry a generation | 4 |
+| 2 view | Rule 8 and a simulator invariant; live facts labelled; activity paged from the journal; view cleared on restart; the server's own files | 11 |
+| 3 consistency | 39736 exists (request dropped); T2 step 3 and T3 to P8; T12 split P2/P3; PR 15's rewrite planned; `program.md` reaches `main` with P3; the protocol bytes in `msg_hash` | 2, 3, 7, 12, 15, 17 |
+| 4 missing | Timers cleared on restart; pause before connecting; shutdown order | 1, 3, 4 |
+| 5 minor | Self-pipe for stops; too-big fatal in the program | 4, 1 |
+| CI | Handbook rebuilt; every later P does the same | 17 |
