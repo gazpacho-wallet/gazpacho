@@ -18,9 +18,9 @@
  *      no reply leaves before its ping is durable, and after a clean start
  *      every durable ping has had its reply sent.
  *
- * The longjmp that models a crash abandons whatever the journal had
- * allocated inside an open; that memory is lost as in a real crash, so this
- * program is run without leak checking. */
+ * A crash is modelled by memfs: from the crash point on, every write and
+ * sync fails and changes nothing, so the program unwinds and frees normally
+ * and this test runs under the leak checkers like the others. */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <stdio.h>
@@ -33,9 +33,6 @@
 #include "../check.h"
 #include "gazpacho/node.h"
 #include "harness.h"
-
-const char *__asan_default_options(void);
-const char *__asan_default_options(void) { return "detect_leaks=0"; }
 
 #define STEPS 15
 
@@ -57,26 +54,19 @@ static void seed_disk(h_t *h)
  * Returns the number of points the run passed. */
 static uint64_t crash_run(h_t *h, uint64_t crash_at)
 {
-    jmp_buf jb;
     h->j = NULL; /* a copy of the seeding run's, already closed */
     h->fs.points = 0;
     h->fs.crash_at = crash_at;
-    h->fs.crash_jump = &jb;
-    if (setjmp(jb) == 0) {
-        if (h_open(h, NULL) == GZ_JOURNAL_OK) {
-            for (int s = 0; s < STEPS; s++) {
-                h_step(h);
-                if (s % 3 != 0) gz_journal_flush(h->j);
-            }
-            gz_journal_flush(h->j);
-            gz_journal_close(h->j);
-            h->j = NULL;
+    if (h_open(h, NULL) == GZ_JOURNAL_OK) {
+        for (int s = 0; s < STEPS; s++) {
+            h_step(h);
+            if (s % 3 != 0) gz_journal_flush(h->j);
         }
-        h->fs.crash_at = 0;
-        return h->fs.points;
+        gz_journal_flush(h->j);
+        gz_journal_close(h->j);
+        h->j = NULL;
     }
-    if (h->j) gz_journal_close(h->j); /* frees; its descriptors are gone with the crash */
-    h->j = NULL;
+    h->fs.crash_at = 0;
     return h->fs.points;
 }
 
@@ -248,7 +238,7 @@ typedef struct {
     int failed;
 } node_h_t;
 
-static void n_fill(void *ctx, uint32_t purpose, uint8_t *out, size_t len)
+static void n_fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
 {
     node_h_t *n = ctx;
     (void)purpose;
@@ -290,7 +280,7 @@ static void n_confirmed(void *ctx, gz_batch_id_t id)
  * if the open was refused. */
 static int node_run(node_h_t *n, int pings)
 {
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 7, &n->fs.os, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 7, &n->fs.os, 0, 0, 0, 0};
     if (gz_journal_open(&n->j, &cfg, NULL) != GZ_JOURNAL_OK) return 1;
     gz_runner_init(&n->runner, n->slots, 64, n->rbytes, sizeof n->rbytes, gz_journal_incarnation(n->j),
                    n_execute, n);
@@ -343,16 +333,11 @@ static void durable_pings(node_h_t *n, uint8_t *out)
 /* One run crashed before point `p`; 1 if it crashed. */
 static int node_crash_run(node_h_t *n, uint64_t p)
 {
-    jmp_buf jb;
     n->j = NULL;
     n->fs.points = 0;
     n->fs.crash_at = p;
-    n->fs.crash_jump = &jb;
-    if (setjmp(jb) == 0) {
-        node_run(n, 10);
-        return n->fs.crashed;
-    }
-    return 1;
+    node_run(n, 10);
+    return n->fs.crashed;
 }
 
 static int node_sweep(int *runs)

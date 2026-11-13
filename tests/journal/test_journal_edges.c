@@ -25,7 +25,7 @@ static gz_journal_t *open_on(memfs_t *fs, uint64_t soft, uint64_t hard, uint64_t
                              gz_journal_status_t *st, gz_journal_open_info_t *info)
 {
     gz_journal_t *j = NULL;
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 3, &fs->os, soft, hard, unsynced};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 3, &fs->os, soft, hard, unsynced, 0};
     *st = gz_journal_open(&j, &cfg, info);
     return j;
 }
@@ -58,10 +58,10 @@ static void test_constants(void)
     CHECK(memcmp(gz_journal_chain_mainnet, mainnet, 32) == 0); /* the genesis block hash */
     static const char *const names[] = {"ok", "argument", "io", "locked", "header", "network",
                                         "corrupt", "order", "unknown_record", "full", "too_large",
-                                        "sequence", "guard", "no_memory", "failed"};
-    for (int s = 0; s <= GZ_JOURNAL_ERR_FAILED; s++)
+                                        "sequence", "guard", "no_memory", "failed", "marker"};
+    for (int s = 0; s <= GZ_JOURNAL_ERR_MARKER; s++)
         CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)s), names[s]) == 0);
-    CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)(GZ_JOURNAL_ERR_FAILED + 1)), "?") == 0);
+    CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)(GZ_JOURNAL_ERR_MARKER + 1)), "?") == 0);
     /* Every type of spec section 9, and none of its odd neighbours. */
     static const uint32_t known[] = {
         0x00040002, 0x00040004, 0x00040006, 0x0004000a, 0x00010002, 0x00010004, 0x00010006,
@@ -251,7 +251,7 @@ static void test_save_arguments(void)
     }
     /* Arguments of open. */
     gz_journal_t *jj;
-    gz_journal_config_t cfg = {H_DIR, NULL, 3, &fs.os, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, NULL, 3, &fs.os, 0, 0, 0, 0};
     CHECK(gz_journal_open(&jj, &cfg, NULL) == GZ_JOURNAL_ERR_ARGUMENT && jj == NULL);
     cfg.chain = gz_journal_chain_signet;
     cfg.dir = NULL;

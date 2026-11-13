@@ -158,7 +158,7 @@ static inline void h_on_confirmed(void *ctx, gz_batch_id_t id)
 static inline gz_journal_status_t h_open(h_t *h, gz_journal_open_info_t *info)
 {
     gz_journal_config_t cfg = {h->dir ? h->dir : H_DIR, gz_journal_chain_signet, 1794000000000ull,
-                               h->os ? h->os : &h->fs.os, 0, 0, 0};
+                               h->os ? h->os : &h->fs.os, 0, 0, 0, 0};
     h->fs.on_sync = h_on_sync;
     h->fs.on_sync_ctx = h;
     gz_journal_status_t st = gz_journal_open(&h->j, &cfg, info);
@@ -275,7 +275,7 @@ static inline int h_verify(h_t *h, int oracle, int quiet)
 static inline gz_journal_t *h_open_on(memfs_t *fs, gz_journal_status_t *st, gz_journal_open_info_t *info)
 {
     gz_journal_t *j = NULL;
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 3, &fs->os, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 3, &fs->os, 0, 0, 0, 0};
     *st = gz_journal_open(&j, &cfg, info);
     return j;
 }
@@ -284,17 +284,9 @@ static inline gz_journal_t *h_open_on(memfs_t *fs, gz_journal_status_t *st, gz_j
  * the open returned one. */
 static inline gz_journal_t *h_open_attempt(memfs_t *fs, int crash, uint64_t p, gz_journal_status_t *st)
 {
-    jmp_buf jb;
-    gz_journal_t *volatile j = NULL;
-    fs->crash_jump = &jb;
     if (crash) fs->crash_at = p;
     else { fs->fail_at = p; fs->fail_mode = MEMFS_FAIL_ERROR; }
-    *st = GZ_JOURNAL_OK;
-    if (setjmp(jb) == 0) {
-        gz_journal_t *jo = h_open_on(fs, st, NULL);
-        j = jo;
-    }
-    return j;
+    return h_open_on(fs, st, NULL);
 }
 
 /* Every point of an open that creates the file, or that cuts a torn tail,

@@ -127,7 +127,7 @@ int main(int argc, char **argv)
         memfs_init(&fs);
         memfs_put(&fs, H_JOURNAL, d, len);
         gz_journal_t *j = NULL;
-        gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 9, &fs.os, 0, 0, 0};
+        gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 9, &fs.os, 0, 0, 0, 0};
         gz_journal_status_t ost = gz_journal_open(&j, &cfg, NULL);
         size_t now;
         const uint8_t *after = memfs_get(&fs, H_JOURNAL, &now);

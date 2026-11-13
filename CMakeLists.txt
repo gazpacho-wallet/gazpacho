@@ -257,13 +257,7 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/journal/test_tool.py
             $<TARGET_FILE:gz-journal>)
 endif()
-if(GZ_VALGRIND AND NOT GZ_SANITIZE)
-  add_test(NAME valgrind_journal COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_journal>)
-  add_test(NAME valgrind_journal_edges COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_journal_edges>)
-  add_test(NAME valgrind_journal_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_journal_fuzz> 3000 7)
-  # A simulated crash abandons what an open had allocated, as a real crash
-  # does, so this one runs without the leak check.
-  add_test(NAME valgrind_journal_crash
-    COMMAND ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes --leak-check=no
-            $<TARGET_FILE:test_journal_crash>)
-endif()
+# The restore marker, pull mode (program/store.h's complete()) and the fence.
+gz_add_test(journal_restore tests/journal/test_journal_restore.c gazpacho_journal_testfs)
+# Under valgrind: every journal test runs in the valgrind job
+# (tools/valgrind-tests.py, which takes journal_fuzz on a smaller case).

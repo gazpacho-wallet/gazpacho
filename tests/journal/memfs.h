@@ -4,8 +4,13 @@
  * folder has the names a folder sync made durable and the names now. Every
  * write, sync, truncate, create, link, rename and unlink is a numbered
  * "point". A test can make point N fail (an error, a short write, a full
- * disk) or crash the program just before it (longjmp to the test). A crash is
- * then turned into what the disk holds after a power cut:
+ * disk) or crash the program just before it. From a crash on, every point
+ * fails and changes nothing, so the disk stays as it was at that moment while
+ * the program unwinds normally and frees what it holds (no memory is
+ * abandoned, so the crash tests run under the leak checkers too). Nothing
+ * the program does after the crash can reach the disk or be confirmed: a
+ * confirmation needs a successful sync. The test then turns the crash into
+ * what the disk holds after a power cut:
  *
  *   MEMFS_LOSE     nothing unsynced survives;
  *   MEMFS_KEEP     everything written survives (a process kill: the page
@@ -18,13 +23,12 @@
 #ifndef GZ_TEST_MEMFS_H
 #define GZ_TEST_MEMFS_H
 
-#include <setjmp.h>
 #include <stddef.h>
 #include <stdint.h>
 
 #include "journal.h"
 
-#define MEMFS_FILES 8
+#define MEMFS_FILES 16
 #define MEMFS_FDS   16
 
 enum { MEMFS_LOSE = 0, MEMFS_KEEP, MEMFS_REORDER };
@@ -64,8 +68,7 @@ typedef struct {
     size_t max_read;                   /* a read returns at most this; 0: unlimited */
     int bad_closes;                    /* closes of a descriptor that was not open */
     uint64_t after_fail;               /* points passed after the failed one */
-    int crashed;
-    jmp_buf *crash_jump;
+    int crashed;                       /* set at the crash point; cleared by settle */
     /* Called after every successful file sync with the inode's durable length. */
     void (*on_sync)(void *ctx, int inode, size_t durable_len);
     void *on_sync_ctx;

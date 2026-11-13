@@ -20,15 +20,19 @@ static uint64_t mix(uint64_t *s)
     return z ^ (z >> 31);
 }
 
-/* A numbered point: crash before it, or report that it must fail. */
+/* A numbered point. Returns 2 if the program has crashed (at this point or
+ * before): the call must fail and change nothing, so the disk stays exactly
+ * as it was at the crash while the program unwinds and frees what it holds.
+ * Returns 1 if this point is the one to fail, else 0. */
 static int point(memfs_t *m, int is_sync)
 {
+    if (m->crashed) return 2;
     if (m->fail_only_sync && !is_sync) return 0;
     m->points++;
     if (m->fail_at && m->points > m->fail_at && is_sync != 2) m->after_fail++; /* 2: an unlink, cleanup */
     if (m->crash_at && m->points == m->crash_at) {
         m->crashed = 1;
-        longjmp(*m->crash_jump, 1);
+        return 2;
     }
     return m->fail_at && m->points == m->fail_at;
 }
@@ -113,6 +117,23 @@ static void clear_ops(memfs_inode_t *n)
     n->n_ops = 0;
 }
 
+/* Free every file no name (current or durable) and no descriptor refers to:
+ * a replaced guard or marker file, once the folder's names no longer hold it. */
+static void gc(memfs_t *m)
+{
+    for (int i = 0; i < MEMFS_FILES; i++) {
+        if (!m->inode[i].used) continue;
+        int ref = 0;
+        for (int k = 0; k < MEMFS_FILES; k++) ref |= m->vol[k].inode == i || m->dur[k].inode == i;
+        for (int k = 0; k < MEMFS_FDS; k++) ref |= m->fd_inode[k] == i;
+        if (ref) continue;
+        memfs_inode_t *n = &m->inode[i];
+        for (size_t o = 0; o < n->n_ops; o++) free(n->ops[o].data);
+        free(n->ops); free(n->dur); free(n->vol);
+        memset(n, 0, sizeof *n);
+    }
+}
+
 static int fd_ok(memfs_t *m, int fd)
 {
     return fd >= 0 && fd < MEMFS_FDS && m->fd_inode[fd] >= 0;
@@ -154,6 +175,7 @@ static int m_close(void *ctx, int fd)
     memfs_inode_t *n = &m->inode[m->fd_inode[fd]];
     if (n->lock_fd == fd) n->lock_fd = -1;
     m->fd_inode[fd] = -1;
+    gc(m);
     return 0;
 }
 
@@ -174,7 +196,9 @@ static long m_pwrite(void *ctx, int fd, const void *buf, size_t len, uint64_t of
     memfs_t *m = ctx;
     if (!fd_ok(m, fd)) { errno = EBADF; return -1; }
     memfs_inode_t *n = &m->inode[m->fd_inode[fd]];
-    if (point(m, 0)) {
+    int pt = point(m, 0);
+    if (pt == 2) { errno = EIO; return -1; }
+    if (pt) {
         if (m->fail_mode == MEMFS_FAIL_SHORT && len > 1) len /= 2;
         else { errno = m->fail_mode == MEMFS_FAIL_NOSPACE ? ENOSPC : EIO; return -1; }
     }
@@ -196,7 +220,9 @@ static int m_sync(void *ctx, int fd)
     if (!fd_ok(m, fd)) { errno = EBADF; return -1; }
     int ino = m->fd_inode[fd];
     memfs_inode_t *n = &m->inode[ino];
-    if (point(m, 1)) {
+    int pt = point(m, 1);
+    if (pt == 2) { errno = EIO; return -1; }
+    if (pt) {
         /* A failed fsync on Linux may drop the dirty pages: model the worst. */
         clear_ops(n);
         n->vol = xrealloc(n->vol, n->dur_len);
@@ -219,6 +245,7 @@ static int m_sync_dir(void *ctx, const char *dir)
     (void)dir;
     if (point(m, 1)) { errno = EIO; return -1; }
     memcpy(m->dur, m->vol, sizeof m->dur);
+    gc(m);
     return 0;
 }
 
@@ -268,6 +295,7 @@ static int m_rename(void *ctx, const char *from, const char *to)
     int b = find(m->vol, to);
     if (b >= 0) m->vol[b].inode = -1;
     strncpy(m->vol[a].name, to, sizeof m->vol[a].name - 1);
+    gc(m);
     return 0;
 }
 
@@ -278,6 +306,7 @@ static int m_unlink(void *ctx, const char *path)
     int a = find(m->vol, path);
     if (a < 0) { errno = ENOENT; return -1; }
     m->vol[a].inode = -1;
+    gc(m);
     return 0;
 }
 
