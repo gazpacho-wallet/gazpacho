@@ -4,20 +4,29 @@
 
 include(CheckCSourceCompiles)
 
-# Which version of the core contract this tree carries. The program is built
-# against main and is ready for the contract additions of the core follow-up
-# (PR 9 / PR 21); each check below turns on the code for one addition, so the
-# same sources build against either core (docs/notes/program.md, "Contract
-# changes still to come").
+# Which version of the core contract this tree carries. main has the core
+# follow-up (PR 9: stepped start, purpose tag, peer events); PR 21 adds the
+# restore marker, the enum purpose tag and the new watches. Each check below
+# turns on the code for one addition, so the same sources build against
+# either (docs/notes/program.md, section 6).
 set(CMAKE_REQUIRED_INCLUDES ${CMAKE_SOURCE_DIR}/core/gazpacho/include)
 check_c_source_compiles("
 #include \"gazpacho/node.h\"
 int main(void) { gz_storage_reader_t r; int w = GZ_WAITING; (void)r; return w; }"
   GZP_CORE_STEPPED_START)
 check_c_source_compiles("
+#include \"gazpacho/node.h\"
+int main(void) { gz_storage_reader_t r; r.restored = 0; return r.restored; }"
+  GZP_CORE_READER_RESTORED)
+# The purpose tag: a uint32_t on main since PR 9, an enum in PR 21.
+check_c_source_compiles("
+#include \"gazpacho/ports.h\"
+int main(void) { return (int)GZ_RANDOM_SECRET; }"
+  GZP_CORE_RANDOM_PURPOSE)
+check_c_source_compiles("
 #include \"gazpacho/ports.h\"
 int main(void) { gz_random_purpose_t p = GZ_RANDOM_SECRET; return (int)p; }"
-  GZP_CORE_RANDOM_PURPOSE)
+  GZP_CORE_RANDOM_ENUM)
 check_c_source_compiles("
 #include \"gazpacho/action.h\"
 int main(void) { return (int)GZ_ACTION_WATCH_TX + (int)GZ_ACTION_WATCH_OUTPOINT; }"
@@ -29,7 +38,8 @@ int main(void) { return (int)GZ_EVENT_PEER_CONNECTED; }"
 unset(CMAKE_REQUIRED_INCLUDES)
 
 set(GZP_DEFS "")
-foreach(flag GZP_CORE_STEPPED_START GZP_CORE_RANDOM_PURPOSE GZP_CORE_WATCH_TX GZP_CORE_PEER_EVENTS)
+foreach(flag GZP_CORE_STEPPED_START GZP_CORE_READER_RESTORED GZP_CORE_RANDOM_PURPOSE GZP_CORE_RANDOM_ENUM
+             GZP_CORE_WATCH_TX GZP_CORE_PEER_EVENTS)
   if(${flag})
     list(APPEND GZP_DEFS ${flag}=1)
   endif()

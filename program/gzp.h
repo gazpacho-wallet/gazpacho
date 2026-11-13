@@ -10,6 +10,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "gazpacho/ports.h"
+
+/* The random port's purpose tag: uint32_t on main (PR 9), an enum in PR 21. */
+#if defined(GZP_CORE_RANDOM_ENUM)
+typedef gz_random_purpose_t gzp_purpose_t;
+#elif defined(GZP_CORE_RANDOM_PURPOSE)
+typedef uint32_t gzp_purpose_t;
+#endif
+
 /* Exit statuses. */
 #define GZP_EXIT_OK        0
 #define GZP_EXIT_FAILED    1  /* a failure at run time: fatal errors past the restart limit */

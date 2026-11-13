@@ -46,7 +46,7 @@ static int key_ok(const uint8_t key[32], void *ctx)
 }
 
 #ifdef GZP_CORE_RANDOM_PURPOSE
-static void net_random(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
+static void net_random(void *ctx, gzp_purpose_t purpose, uint8_t *out, size_t len)
 {
     (void)ctx;
     (void)purpose;

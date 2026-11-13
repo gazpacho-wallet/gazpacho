@@ -30,7 +30,7 @@
 #ifdef GZP_CORE_RANDOM_PURPOSE
 /* Both purposes read the operating system at the call and keep nothing
  * (ports.h, GZ_RANDOM_SECRET): there is no seeded source in this program. */
-static void port_random(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
+static void port_random(void *ctx, gzp_purpose_t purpose, uint8_t *out, size_t len)
 {
     (void)ctx;
     (void)purpose;
@@ -370,7 +370,14 @@ static void start_node(gzp_exec_t *ex)
     rd.rewind = rd_rewind;
     rd.ctx = ex;
     rd.incarnation = ex->incarnation;
+#ifdef GZP_CORE_READER_RESTORED
     rd.restored = ex->store.ops->restored(ex->store.ctx);
+#else
+    if (ex->store.ops->restored(ex->store.ctx)) {
+        fail(ex, "restored-storage-but-no-restore-marker-in-this-core");
+        return;
+    }
+#endif
     ex->store.ops->rewind(ex->store.ctx);
     while (more && !ex->fatal) {
         gz_status_t st;
