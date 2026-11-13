@@ -254,3 +254,6 @@ add_subdirectory(wallet)
 
 # --- chain view port (Esplora backend, comparing backend, gz-chain) ------------
 add_subdirectory(ports/chain)
+
+# --- trees from terms and the creation checks (core/tree) ---
+add_subdirectory(core/tree)
