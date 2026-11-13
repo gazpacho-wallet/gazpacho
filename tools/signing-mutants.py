@@ -14,37 +14,42 @@ reported apart. Wrong versions live only here, never in the library.
 """
 import os, re, subprocess, sys, threading, queue, time
 
-ENGINE = ["core/signing/signing.c", "core/signing/sign_tx.c"]
+ENGINE = ["core/signing/signing.c", "core/signing/sign_tx.c", "core/signing/round_msg.c"]
 
 # rule -> (file, text on the marked line, replacement). The line is found by
 # its RULE marker; the text must occur in it.
 RULES = {
-    "S1_SAVE_FIRST": ("emit_save(em, GZ_SIGN_REC_M_STARTED, rec, rw.n);", ""),
+    "S1_SAVE_FIRST": ("emit_save(em, GZ_SIGN_REC_M_STARTED, e->work_records, rw.n);", ""),
     "S2_KNOWN_ROUND": ("if (r) {", "if (0) {"),
     "S2_ONE_NONCE": ("if (s < 0 || r->secnonce_serial[i] || (r->have_nonce[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
     "S2_ONE_PARTIAL": ("if (s < 0 || !r->secnonce_serial[i] || (r->have_psig[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
     "S3_RESEND_SAVED": ("emit_send(em, host, r->nonces_msg, r->nonces_len);", "{}"),
     "S4_FRESH_ID": ("gz_sign_sha256_write(&s, host_random, 32);", "(void)host_random;"),
-    "HOST_RANDOM_MIX": ("hw.n = 32; put64(&hw, e->incarnation); put64(&hw, ++e->next_serial);", "hw.n = 32;"),
+    "HOST_RANDOM_MIX": ("hw.n = 32; put64(&hw, e->incarnation); put64(&hw, e->attempt_counter++);", "hw.n = 32;"),
     "RESTART_ANSWERS_ABORT": ("member_fail(e, r, GZ_SIGN_WHY_RESTARTED, &em);", "member_begin_tier(e, r, r->tier, &em);"),
     "ABORT_ONLY_BEFORE_PARTIAL": ("if (!r->ever_partial) {", "if (1) {"),
     "SIGNED_NEVER_ABORTED": ("r->state = GZ_SIGN_ROUND_UNFINISHED;", "r->state = GZ_SIGN_ROUND_ABORTED;"),
-    "NONCE_SIG_COVERS_ITEM": ("put(&w, id, 32); put8(&w, tier); put32(&w, index);", "(void)tier; (void)index; (void)id;"),
-    "CHECK_NONCE_SIGS": ("if (!verify_digest(e, r->def.participants[it->signers[s]].contribution_key, nd, sig)) {", "if ((void)nd, (void)sig, 0) {"),
+    "NONCE_SIG_COVERS_ITEM": ("gz_rmsg_nonce_hash(r->id, it->tier, (uint32_t)i, r->nonce[i][s], d);", "gz_rmsg_nonce_hash(r->id, 0, 0, r->nonce[i][s], d);"),
+    "CHECK_NONCE_SIGS": ("if (!verify33(e, r->def.participants[it->signers[s]].contribution_key, nd, sig)) {", "if ((void)nd, (void)sig, 0) {"),
     "SLOT_NONCE": ("if (r->have_nonce[i] >> s & 1u) {", "if (0) {"),
     "SLOT_PSIG": ("if (r->have_psig[i] >> s & 1u) {", "if (0) {"),
     "PARSE_NONCE_FIRST": ("!secp256k1_musig_pubnonce_parse(e->cfg.ctx, &pn, nonce)) {", "((void)pn, 0)) {"),
     "PARSE_PSIG_FIRST": ("!secp256k1_musig_partial_sig_parse(e->cfg.ctx, &ps, p + 4) ||", ""),
     "VERIFY_PARTIAL": ("!secp256k1_musig_partial_sig_verify(e->cfg.ctx, &ps, &pn, &pk, &r->cache[i], &r->session[i])) {", "0) {"),
-    "VERIFY_FINAL": ("if (!n || !gz_sign_tx_verify(e->cfg.ctx, tx, n, it->spent_amount, it->spent_script)) return 0;", "if (!n) return 0;"),
+    "VERIFY_FINAL": ("if (!n || !gz_sign_tx_verify(e->cfg.ctx, e->work_tx, n, it->spent_amount, it->spent_script)) return 0;", "if (!n) return 0;"),
+    "PER_ITEM_ANSWER": ("wr32(q, (uint32_t)i); q += 4;", "wr32(q, 0u); q += 4;"),
     "HOST_VERIFY_FINAL": ("if (!len || !gz_sign_tx_verify(e->cfg.ctx, tx, len, it->spent_amount, it->spent_script)) {", "if (!len) {"),
     "DUPLICATE_KEYS": ("for (int j = 0; j < i; j++)", "for (int j = 0; j < 0; j++)"),
-    "DUPLICATE_SIGNERS": ("if (it->signers[t] == it->signers[s]) return 0;", "if (0) return 0;"),
-    "FIXED_MODE": ("if (it->mode != GZ_SIGN_MODE_KEYPATH || it->has_merkle_root > 1) return 0;", "if (it->has_merkle_root > 1) return 0;"),
-    "SCRIPT_MATCH": ("if (it->spent_script[0] != 0x51 || it->spent_script[1] != 0x20 || !same(it->spent_script + 2, ser, 32)) return 0;", ""),
+    "DUPLICATE_SIGNERS": ("if (s > 0 && it->signers[s] <= it->signers[s - 1]) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
+    "FIXED_MODE": ("if (it->mode != GZ_SIGN_MODE_KEYPATH || it->has_merkle_root > 1) return GZ_SIGN_WHY_INVALID_ROUND;", "if (it->has_merkle_root > 1) return GZ_SIGN_WHY_INVALID_ROUND;"),
+    "SCRIPT_MATCH": ("if (it->spent_script[0] != 0x51 || it->spent_script[1] != 0x20 || !same(it->spent_script + 2, ser, 32)) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
     "WIPE_ON_ABORT": ("wipe(r->secnonce, sizeof r->secnonce);", ""),
     "WIPE_AFTER_SIGN": ("wipe(&r->secnonce[i], sizeof r->secnonce[i]);", ""),
-    "INCARNATION_MIX": ("put(&w, rnd, 32); put64(&w, e->incarnation); put64(&w, serial);", "put(&w, rnd, 32); (void)serial;"),
+    "INCARNATION_MIX": ("put(&w, rnd, 32); put64(&w, e->incarnation); put64(&w, counter);", "put(&w, rnd, 32); (void)counter;"),
+    "S5_CURRENT_KEY": ("if (me < 0 || (me == 0) != (e->cfg.host != 0)) return GZ_SIGN_WHY_NOT_MY_KEY;", "if (me < 0) me = e->cfg.host ? 0 : 1;"),
+    "FUNDING_MATCH": ("if (it->spent_amount != d->funding_amount || !same(it->spent_script, d->funding_script, 34)) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
+    "HOST_SIG": ("if (!verify33(e, pr->p.participants[0].contribution_key, d32, pr->sig)) return GZ_SIGN_WHY_BAD_HOST_SIG;", ""),
+    "FUNDING_TX": ("if (!same(d32, pr->p.funding_txid, 32) ||", "if (0 ||"),
     "NO_UNSET_SLOT": ("if (r->have_nonce[i] != all_bits(it)) return 0;", ""),
 }
 

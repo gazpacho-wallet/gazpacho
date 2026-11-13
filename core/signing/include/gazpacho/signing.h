@@ -1,4 +1,5 @@
-/* The signing round engine: the core of spec/signing-round.md draft 3.
+/* The signing round engine: spec/signing-round.md draft 4, with the messages
+ * of spec/messages.md sections 4 and 7 (gazpacho/round_msg.h).
  *
  * One host (participant 0, the coordinator) and its members sign a set of
  * items (one transaction input each) with MuSig2 (BIP 327), tier by tier.
@@ -7,29 +8,38 @@
  * (runner.h) gives "save before send".
  *
  * WHAT THIS ENGINE DOES (spec section in brackets)
+ *   - The messages of messages.md 7, inside the envelope of section 4. Until
+ *     contract v2's P4 gives SEND and MESSAGE_RECEIVED a kind and a scope,
+ *     the bytes of a SEND are the whole envelope (protocol, kind, scope,
+ *     records) and a received message is read the same way.
+ *   - The round identifier of messages.md 7.1 and the tree digest of 7.12,
+ *     computed by the engine from the items it holds, which each party built
+ *     itself.
  *   - Its own nonce function [8]: secp256k1_musig_nonce_gen with
- *       session_id32 = TH("gazpacho/nonce-session", 32 bytes from the random
+ *       session_id32 = TH("gazpacho/session-id", 32 bytes from the random
  *                        port tagged secret || incarnation || counter),
  *       msg32 = the item's signature digest, keyagg_cache = the item's
  *       TWEAKED cache, extra_input32 = TH("gazpacho/nonce-extra",
  *       round_id || tier || index). Secret nonces live in this structure
  *       only, are never saved, and are wiped when they have signed, when the
  *       round fails, and by gz_sign_wipe.
- *   - Rules S1 to S4 [3], the member states [7] and the guards [12]: slot
+ *   - Rules S1 to S6 [3], the member states [7] and the guards [12]: slot
  *     tracking for nonces and partial signatures, strict parsing of every
  *     value from the network before any library call, duplicate keys
  *     refused, one fixed signing mode.
  *   - Verifying each partial signature as it arrives [6.6], combining, and
  *     verifying each final signature from the signed transaction's bytes
  *     with this engine's own BIP 341 signature hash [6.7, 6.8].
+ *   - Members address only the host (participant 0); the host addresses each
+ *     member by the peer its builder names (contract v2 section 2: a link,
+ *     once P4 lands; a peer id until then).
  *
- * WHAT IT DOES NOT DO (left to later work, see the report)
- *   - Build the items from terms and a proposal: the embedding supplies a
- *     builder (gz_sign_build_fn) that turns the proposal's opaque parameters
- *     into a round definition. The safety checks of safety-rule.md, the C7
- *     exposure record's contents, restore epochs (S5), lobby bindings and the
- *     messages.md encoding are not here. The wire format below is this
- *     engine's own and provisional.
+ * WHAT THE EMBEDDING SUPPLIES
+ *   - A builder (gz_sign_build_fn) that turns a decoded round_propose into
+ *     the items to sign. A member's builder runs the safe-to-sign checks
+ *     (gz_tree_member_check) and refuses with their reason; the engine
+ *     checks what the builder returns again (keys, signers, scripts, the
+ *     funding output, its own current keys).
  *
  * THE CALLER MUST install on `ctx` an illegal-argument callback that does not
  * abort (secp256k1_context_set_illegal_callback). The engine validates every
@@ -41,6 +51,7 @@
 #include "gazpacho/action.h"
 #include "gazpacho/event.h"
 #include "gazpacho/ports.h"
+#include "gazpacho/round_msg.h"
 #include <secp256k1.h>
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_musig.h>
@@ -53,82 +64,132 @@
 #define GZ_SIGN_MAX_ITEMS        64
 #define GZ_SIGN_MAX_TIERS        4
 #define GZ_SIGN_MAX_TX           720     /* bytes of one unsigned transaction: core/tree's GZ_TREE_MAX_TX */
-#define GZ_SIGN_MAX_PARAMS       8192    /* bytes of a proposal's parameters (about 290 + 194 per participant) */
-#define GZ_SIGN_MAX_ROUNDS       4       /* rounds a member keeps in full */
+#define GZ_SIGN_MAX_FUNDING_TX   8192    /* the funding transaction this engine holds (messages.md allows 100,000) */
+#define GZ_SIGN_MAX_ROUNDS       4       /* rounds a party keeps in full */
 #define GZ_SIGN_MAX_KNOWN        256     /* round identifiers remembered as refused */
-#define GZ_SIGN_MAX_MSG          (40 + GZ_SIGN_MAX_ITEMS * (5 + GZ_SIGN_MAX_SIGNERS * 130) + 64)
 
-/* The one signing mode: key path, BIP 341 tweak of the ordered aggregate key
- * with the stated merkle root (or none: BIP 86), default hash type, no annex,
- * transactions with exactly one input. Anything else is refused. */
-#define GZ_SIGN_MODE_KEYPATH 1u
+/* Message sizes (envelope included). A record's type and length take at
+ * most 8 bytes here; 240, the signature, is 67. */
+#define GZ_SIGN_REC_OVERHEAD     8
+#define GZ_SIGN_MAX_PROPOSAL     (GZ_RMSG_HEADER + 1024 + GZ_SIGN_MAX_FUNDING_TX + 194 * GZ_SIGN_MAX_PARTICIPANTS)
+#define GZ_SIGN_MAX_NONCES_MSG   (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * 134)
+#define GZ_SIGN_MAX_LIST68_MSG   (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * 68 + 67)
+#define GZ_SIGN_MAX_SMALL_MSG    (GZ_RMSG_HEADER + 128 + 67)
+#define GZ_SIGN_MAX_MSG          (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * (6 + GZ_SIGN_MAX_SIGNERS * 130))
+
+/* The one signing mode: key path (messages.md 7.1 mode 0), BIP 341 tweak of
+ * the ordered aggregate key with the stated merkle root (or none: BIP 86),
+ * default hash type, no annex, transactions with exactly one input.
+ * Anything else is refused. */
+#define GZ_SIGN_MODE_KEYPATH 0u
 
 /* Records the engine saves (record types of the journal). The high 16 bits
- * are the engine's area; start reads records of that area only. */
+ * are the engine's area; start reads records of that area only. Every saved
+ * message is the whole envelope, as sent or received. */
 #define GZ_SIGN_REC_AREA 0x5347u
-#define GZ_SIGN_REC_M_STARTED  0x53470001u  /* round_id, tier, n, indices, proposal: before nonces (S1) */
-#define GZ_SIGN_REC_M_SIGNED   0x53470002u  /* round_id, tier, partial-signature message (with S1: the exposure) */
-#define GZ_SIGN_REC_M_RESULT   0x53470003u  /* round_id, tier, verified tier result message */
-#define GZ_SIGN_REC_M_COMPLETE 0x53470004u  /* round_id, ack message */
-#define GZ_SIGN_REC_M_ABORTED  0x53470005u  /* round_id, abort message */
-#define GZ_SIGN_REC_H_PROPOSED 0x53470011u  /* proposal message */
-#define GZ_SIGN_REC_H_RESULT   0x53470012u  /* round_id, tier, result message */
-#define GZ_SIGN_REC_H_COMPLETE 0x53470013u  /* round_id, complete message */
+#define GZ_SIGN_REC_M_STARTED  0x53470001u  /* round_id, tier, n, indices, the round_propose: before nonces (S1) */
+#define GZ_SIGN_REC_M_SIGNED   0x53470002u  /* round_id, tier, the round_partial_sigs */
+#define GZ_SIGN_REC_M_RESULT   0x53470003u  /* round_id, tier, the verified round_tier_result */
+#define GZ_SIGN_REC_M_COMPLETE 0x53470004u  /* round_id, 0, the round_ack */
+#define GZ_SIGN_REC_M_ABORTED  0x53470005u  /* round_id, 0, the round_abort */
+#define GZ_SIGN_REC_H_PROPOSED 0x53470011u  /* the round_propose */
+#define GZ_SIGN_REC_H_RESULT   0x53470012u  /* round_id, tier, the tier's final signatures (u32 index, 64) */
+#define GZ_SIGN_REC_H_COMPLETE 0x53470013u  /* round_id, 0, the round_complete */
 #define GZ_SIGN_REC_H_ACK      0x53470014u  /* round_id, participant */
-#define GZ_SIGN_REC_H_FAILED   0x53470015u  /* round_id, blamed mask (u32), reason */
+#define GZ_SIGN_REC_H_FAILED   0x53470015u  /* round_id, blamed mask (u32), why */
 
-/* Message kinds (byte 2 of every message, after the magic "GS"). */
+/* Message kinds: messages.md 4.1. */
 enum {
-    GZ_SIGN_MSG_PROPOSE = 1, GZ_SIGN_MSG_NONCES, GZ_SIGN_MSG_ALL_NONCES, GZ_SIGN_MSG_PARTIALS, GZ_SIGN_MSG_RESULT,
-    GZ_SIGN_MSG_COMPLETE, GZ_SIGN_MSG_ACK, GZ_SIGN_MSG_STATUS, GZ_SIGN_MSG_ABORT
+    GZ_SIGN_MSG_PROPOSE = GZ_KIND_ROUND_PROPOSE, GZ_SIGN_MSG_NONCES = GZ_KIND_ROUND_NONCES,
+    GZ_SIGN_MSG_ALL_NONCES = GZ_KIND_ROUND_ALL_NONCES, GZ_SIGN_MSG_PARTIALS = GZ_KIND_ROUND_PARTIAL_SIGS,
+    GZ_SIGN_MSG_RESULT = GZ_KIND_ROUND_TIER_RESULT, GZ_SIGN_MSG_COMPLETE = GZ_KIND_ROUND_COMPLETE,
+    GZ_SIGN_MSG_ACK = GZ_KIND_ROUND_ACK, GZ_SIGN_MSG_ABORT = GZ_KIND_ROUND_ABORT,
+    GZ_SIGN_MSG_STATUS = GZ_KIND_ROUND_STATUS_REQUEST, GZ_SIGN_MSG_FUNDED = GZ_KIND_FACTORY_FUNDED
 };
 
-/* Reasons in an abort, and why a host blamed someone. */
+/* Why a party refused or failed a round (internal; gz_sign_reason maps each
+ * to its messages.md 7.9 code). */
 enum {
     GZ_SIGN_WHY_NONE = 0, GZ_SIGN_WHY_BUILD, GZ_SIGN_WHY_INVALID_ROUND, GZ_SIGN_WHY_ID_MISMATCH, GZ_SIGN_WHY_BAD_HOST_SIG,
     GZ_SIGN_WHY_KNOWN_ROUND, GZ_SIGN_WHY_BUSY, GZ_SIGN_WHY_BAD_NONCE, GZ_SIGN_WHY_OWN_NONCE_CHANGED, GZ_SIGN_WHY_RESTARTED,
     GZ_SIGN_WHY_DEADLINE, GZ_SIGN_WHY_HOST_ABORT, GZ_SIGN_WHY_BAD_PARTIAL, GZ_SIGN_WHY_EQUIVOCATION, GZ_SIGN_WHY_BAD_RESULT,
-    GZ_SIGN_WHY_HOST_RESTART, GZ_SIGN_WHY_MEMBER_ABORT, GZ_SIGN_WHY_BAD_MESSAGE, GZ_SIGN_WHY_SUPERSEDED
+    GZ_SIGN_WHY_HOST_RESTART, GZ_SIGN_WHY_MEMBER_ABORT, GZ_SIGN_WHY_BAD_MESSAGE, GZ_SIGN_WHY_SUPERSEDED,
+    GZ_SIGN_WHY_NOT_MY_KEY, GZ_SIGN_WHY_CAPACITY
 };
+/* The messages.md 7.9 reason a party sends for `why` (`built` is the
+ * builder's own reason, used for GZ_SIGN_WHY_BUILD). */
+uint16_t gz_sign_reason(uint8_t why, uint16_t built);
 
-typedef struct {
-    uint8_t factory_key[33];        /* compressed; signs the items */
-    uint8_t contribution_key[32];   /* x-only; signs this participant's round messages */
-    uint64_t peer;                  /* where its messages go and come from */
-} gz_sign_participant_t;
-
+/* One item: one transaction input to sign. */
 typedef struct {
     uint8_t tier;
     uint8_t mode;                   /* GZ_SIGN_MODE_KEYPATH */
     uint8_t has_merkle_root;
     uint8_t merkle_root[32];
-    uint8_t n_signers;              /* 2.. ; signing order; participant 0 must be one */
-    uint8_t signers[GZ_SIGN_MAX_SIGNERS];
+    uint8_t n_signers;              /* 2.. */
+    uint8_t signers[GZ_SIGN_MAX_SIGNERS];   /* positions among the participants, strictly increasing; the host (0) first */
     uint64_t spent_amount;
     uint8_t spent_script[34];       /* must be the P2TR output of the tweaked aggregate */
     uint16_t tx_len;
     uint8_t tx[GZ_SIGN_MAX_TX];     /* unsigned, legacy serialisation, one input */
 } gz_sign_item_t;
 
-/* A round as one party builds it. Items are in index order, tiers ascending
+/* A round as one party built it. Items are in index order, tiers ascending
  * (index unique in the round across tiers, spec section 1). */
 typedef struct {
+    /* Filled by the engine from the proposal before the builder is called;
+     * the builder must leave them as they are. */
     uint8_t purpose;
-    uint8_t n_tiers;
     uint8_t n_participants;
-    gz_sign_participant_t participants[GZ_SIGN_MAX_PARTICIPANTS];
+    gz_tree_participant_t participants[GZ_SIGN_MAX_PARTICIPANTS];   /* host first */
+    uint8_t terms_digest[32];       /* record 10: the frozen current-values digest */
+    uint8_t funding_txid[32];       /* record 12, internal order */
+    uint32_t funding_vout;
+    uint64_t funding_amount;        /* record 14 */
+    uint8_t funding_script[34];     /* record 16 */
+    uint32_t end_height;            /* record 24 */
+    /* Filled by the builder. */
+    uint8_t chain[32];              /* the outer terms' chain hash (7.1) */
+    uint8_t host_key[33];           /* the outer terms' host key: must be participant 0's contribution key */
+    uint8_t outer_digest[32];       /* the lobby identifier: the scope of every round message */
+    uint64_t peer[GZ_SIGN_MAX_PARTICIPANTS];  /* host: where participant j is reached; member: peer[0] the host, the rest 0 */
+    uint8_t n_tiers;
     uint16_t n_items;
     gz_sign_item_t items[GZ_SIGN_MAX_ITEMS];
+    /* Computed by the engine: messages.md 7.12. */
+    uint8_t tree_digest[32];
 } gz_sign_def_t;
 
-/* Build the round from a proposal's parameters (hostile bytes). Returns 1 and
- * fills `out`, or 0 to refuse. Must be a deterministic function of `params`. */
-typedef int (*gz_sign_build_fn)(void *ctx, const uint8_t *params, size_t len, gz_sign_def_t *out);
-/* Host only: the parameters of the next attempt after a failed one, without
- * the participants in `blamed` (bit i = participant i of the failed round).
- * Returns the length written to `out` (at most GZ_SIGN_MAX_PARAMS), or 0 for
- * "no further attempt". */
-typedef size_t (*gz_sign_retry_fn)(void *ctx, const uint8_t *params, size_t len, uint32_t blamed, uint8_t *out);
+/* What a builder is given. */
+typedef struct {
+    const gz_rmsg_propose_t *msg;   /* the decoded round_propose; msg->p is the gz_tree_proposal_t */
+    const uint8_t *scope;           /* its envelope's scope (32) */
+    uint64_t peer;                  /* member: the peer it came from; host: 0 */
+    int replay;                     /* 1: a saved round rebuilt at start: rebuild only, no checks of time or tip */
+} gz_sign_build_in_t;
+/* Build the round from a proposal. Returns 0 and fills `out`, or the
+ * messages.md 7.9 reason to refuse with (1, 5, 6, 9, 11 or 12). Must be a
+ * deterministic function of the proposal and the lobby when `replay` is 1. */
+typedef uint16_t (*gz_sign_build_fn)(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t *out);
+
+/* What the host proposes. round_id and host_random are the engine's. */
+typedef struct {
+    const gz_tree_proposal_t *p;    /* every field of messages.md 7.2; participants host first */
+    const uint8_t *check_id;        /* 32: the check this attempt follows */
+    int has_attempt;
+    uint16_t attempt;
+} gz_sign_begin_t;
+
+typedef struct gz_sign_round gz_sign_round_t;
+
+/* Host only: the next attempt after a failed one. `blamed` (bit i =
+ * participant i of the failed round) are to be left out; `released` is 1 if
+ * any partial signature may have left a member, in which case the next
+ * attempt must use a new funding outpoint (H11). Returns 1 and fills `next`
+ * (its pointers into the callback's own storage, valid until the next call),
+ * or 0 for "no further attempt". */
+typedef struct { const gz_sign_round_t *failed; uint32_t blamed; int released; } gz_sign_retry_in_t;
+typedef int (*gz_sign_retry_fn)(void *ctx, const gz_sign_retry_in_t *in, gz_sign_begin_t *next);
 
 typedef struct {
     int host;                       /* 1: this party is participant 0 */
@@ -141,6 +202,7 @@ typedef struct {
     uint64_t tick_ms;               /* period of the engine's one timer */
     uint32_t resend_ticks;          /* resend what is unanswered every this many ticks */
     uint32_t deadline_ticks;        /* a step not finished after this many ticks fails */
+    uint32_t status_ticks;          /* host: at most one status answer per round and member in this many ticks */
     uint32_t max_attempts;          /* host: attempts in all, over restarts */
 } gz_sign_config_t;
 
@@ -151,20 +213,19 @@ enum {
     GZ_SIGN_ROUND_COMPLETE, GZ_SIGN_ROUND_FAILED /* host: attempt given up */, GZ_SIGN_ROUND_DONE /* host: every ack */
 };
 
-typedef struct {
-    uint8_t state, tier, ever_partial, me;
+struct gz_sign_round {
+    uint8_t state, tier, ever_partial, me, why;
+    uint16_t built;                 /* the builder's reason, when why is GZ_SIGN_WHY_BUILD */
     uint32_t seq;                   /* order in which this party took the round up */
     uint8_t tier_state[GZ_SIGN_MAX_TIERS];
     uint8_t id[32];
     uint32_t ticks, blamed;
-    uint8_t why;
     gz_sign_def_t def;
-    uint16_t proposal_len;
-    uint8_t proposal[48 + GZ_SIGN_MAX_PARAMS + 64];
-    uint8_t params[GZ_SIGN_MAX_PARAMS];
-    uint16_t params_len;
+    uint32_t proposal_len;
+    uint8_t proposal[GZ_SIGN_MAX_PROPOSAL];
     secp256k1_musig_keyagg_cache cache[GZ_SIGN_MAX_ITEMS];
-    uint8_t digest[GZ_SIGN_MAX_ITEMS][32];
+    uint8_t digest[GZ_SIGN_MAX_ITEMS][32];   /* each item's signature digest */
+    uint8_t tweak[GZ_SIGN_MAX_ITEMS][32];    /* each item's taproot tweak (7.1 mode_data) */
     /* slots: bit s of have_nonce[i] = signer s of item i has a nonce here */
     uint32_t have_nonce[GZ_SIGN_MAX_ITEMS], have_psig[GZ_SIGN_MAX_ITEMS];
     uint8_t nonce[GZ_SIGN_MAX_ITEMS][GZ_SIGN_MAX_SIGNERS][66];
@@ -179,43 +240,56 @@ typedef struct {
     uint8_t all_nonces_digest[GZ_SIGN_MAX_TIERS][32];
     uint8_t have_all_nonces[GZ_SIGN_MAX_TIERS];
     uint32_t acked;                 /* host: bit j = participant j acked */
+    uint64_t status_tick[GZ_SIGN_MAX_PARTICIPANTS];   /* host: the tick a status request was last answered + 1 */
+    /* member: its own saved messages and the host's it verified */
     uint32_t partials_len[GZ_SIGN_MAX_TIERS];
-    uint8_t partials_msg[GZ_SIGN_MAX_TIERS][40 + GZ_SIGN_MAX_ITEMS * 68 + 64];
+    uint8_t partials_msg[GZ_SIGN_MAX_TIERS][GZ_SIGN_MAX_LIST68_MSG];
     uint32_t result_len[GZ_SIGN_MAX_TIERS];
-    uint8_t result_msg[GZ_SIGN_MAX_TIERS][40 + GZ_SIGN_MAX_ITEMS * 68 + 64];
-    uint32_t nonces_len;            /* member: this incarnation's nonce message, for resending */
-    uint8_t nonces_msg[40 + GZ_SIGN_MAX_ITEMS * 134];
-    uint32_t tail_len;              /* member: ack or abort; host: complete */
-    uint8_t tail_msg[40 + 64 + 64];
-} gz_sign_round_t;
+    uint8_t result_msg[GZ_SIGN_MAX_TIERS][GZ_SIGN_MAX_LIST68_MSG];
+    uint32_t nonces_len;            /* this incarnation's nonce message, for resending */
+    uint8_t nonces_msg[GZ_SIGN_MAX_NONCES_MSG];
+    uint32_t complete_len;          /* host: the round_complete it sends; member: the one it verified */
+    uint8_t complete_msg[GZ_SIGN_MAX_SMALL_MSG];
+    uint32_t tail_len;              /* member: its ack or abort */
+    uint8_t tail_msg[GZ_SIGN_MAX_SMALL_MSG];
+    uint8_t evidence;               /* a second, different, validly signed proposal under this identifier was seen */
+};
 
 /* Caller-allocated (it is large: allocate it, do not put it on the stack);
  * treat the fields as private. */
 typedef struct {
     gz_sign_config_t cfg;
     gz_ports_t ports;
-    uint64_t incarnation, next_serial;
+    uint64_t incarnation;
+    uint64_t session_counter;       /* session_id32s made in this incarnation (S4, section 8) */
+    uint64_t attempt_counter;       /* host: attempts proposed in this incarnation (S4) */
+    uint64_t next_serial;           /* secret nonces made in this incarnation */
+    uint64_t tick;                  /* timer ticks in this incarnation */
     secp256k1_keypair factory_kp, contribution_kp;
     secp256k1_pubkey factory_pk;
-    uint8_t contribution_x[32];
+    uint8_t factory_key[33], contribution_key[33];   /* this party's current keys, compressed */
     uint32_t attempts, next_seq;
     gz_sign_round_t rounds[GZ_SIGN_MAX_ROUNDS];
     uint8_t known[GZ_SIGN_MAX_KNOWN][32];
     size_t n_known;
-    uint64_t counters[8];           /* see GZ_SIGN_COUNT_* */
+    uint64_t counters[9];           /* see GZ_SIGN_COUNT_* */
     uint8_t scratch[GZ_SIGN_MAX_MSG];
     gz_sign_def_t scratch_def;
     gz_sign_round_t pending;        /* a round is checked here before it takes a slot */
-    /* Work areas for large temporaries of functions the compiler inlines. */
+    gz_rmsg_propose_t prop;         /* the proposal being read */
+    /* Work areas for large temporaries of functions the compiler inlines:
+     * on the stack, gcc's AddressSanitizer would guard them with calls the
+     * isolation check refuses. */
     secp256k1_musig_partial_sig work_psig[GZ_SIGN_MAX_SIGNERS];
     uint8_t work_tx[GZ_SIGN_MAX_TX + 80];
+    uint8_t work_records[GZ_SIGN_MAX_PROPOSAL];
 } gz_sign_t;
 
 /* What the engine counts, for tests and reports. */
 enum {
     GZ_SIGN_COUNT_NONCES_MADE = 0, GZ_SIGN_COUNT_PARTIALS_MADE, GZ_SIGN_COUNT_PSIGS_VERIFIED,
     GZ_SIGN_COUNT_FINALS_VERIFIED, GZ_SIGN_COUNT_BLAME_FAULT, GZ_SIGN_COUNT_BLAME_SILENT,
-    GZ_SIGN_COUNT_REJECTED, GZ_SIGN_COUNT_DUPLICATES
+    GZ_SIGN_COUNT_REJECTED, GZ_SIGN_COUNT_DUPLICATES, GZ_SIGN_COUNT_EVIDENCE
 };
 
 /* Prepare an engine. `incarnation` is the runner's (runner.h): it never
@@ -235,9 +309,9 @@ gz_status_t gz_sign_start(gz_sign_t *e, const gz_storage_reader_t *storage, gz_a
  * parse, or that this party should not get, are counted and ignored. */
 gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *event, gz_action_list_t *out);
 
-/* Host: begin a round with these parameters. GZ_ERR_ARGUMENT if not a host,
- * a round is still running, or the builder refuses. */
-gz_status_t gz_sign_begin(gz_sign_t *e, const uint8_t *params, size_t len, gz_action_list_t *out);
+/* Host: begin a round. GZ_ERR_ARGUMENT if not a host, a round is still
+ * running, the attempts are spent, or the proposal or the builder refuses. */
+gz_status_t gz_sign_begin(gz_sign_t *e, const gz_sign_begin_t *b, gz_action_list_t *out);
 
 /* Write every live secret nonce as (8-byte little-endian serial, the 132
  * secret-nonce bytes) to `out`; returns the length, or 0 if `cap` is short.
@@ -277,19 +351,40 @@ size_t gz_sign_tx_attach(const uint8_t *tx, size_t len, const uint8_t sig64[64],
 /* 1 if `signed_tx` spends (amount, script) with a valid 64-byte key-path
  * signature, judged from its bytes alone. */
 int gz_sign_tx_verify(const secp256k1_context *ctx, const uint8_t *signed_tx, size_t len, uint64_t amount, const uint8_t script[34]);
+/* Output `vout`: its amount and script (a pointer into the bytes). 0 if none. */
+int gz_sign_tx_output(const gz_sign_tx_t *tx, uint32_t vout, uint64_t *amount, const uint8_t **script, size_t *script_len);
+/* Output `vout` of any transaction without witness (inputs of any number):
+ * 1 and its amount and script, or 0 if the bytes are not exactly one such
+ * transaction or it has no such output. */
+int gz_sign_tx_find_output(const uint8_t *tx, size_t len, uint32_t vout, uint64_t *amount, const uint8_t **script, size_t *script_len);
+/* The txid (internal order) of a transaction without witness. */
+void gz_sign_txid(const uint8_t *tx, size_t len, uint8_t out[32]);
 
-/* A decoded message: pointers into the bytes. Entry layouts per kind:
- * NONCES (u32 index, 66 nonce, 64 sig); ALL_NONCES (u32 index, u8 k, k x (66, 64));
- * PARTIALS (u32 index, 32 psig, 32 set digest); RESULT (u32 index, 64 sig);
- * ABORT (u32 index). */
+/* A decoded round message other than round_propose: one view of the per-kind
+ * decoders of round_msg.h, with pointers into the bytes. Entry layouts:
+ * NONCES (u32 index, 66 nonce, 64 sig); ALL_NONCES (u32 index, u16 k,
+ * k x (66, 64)); PARTIALS (u32 index, 32 psig, 32 set digest); RESULT
+ * (u32 index, 64 sig); ABORT (u32 index, when it names items). For
+ * round_propose only `kind`, `scope`, `records` and `round_id` are set. */
 typedef struct {
-    uint8_t kind, tier, reason;
-    const uint8_t *round_id, *host_random, *params, *held, *sig;
-    size_t params_len, signed_len;
+    uint16_t kind;
+    const uint8_t *scope, *records;
+    size_t records_len;
+    const uint8_t *round_id, *held, *sig;
+    uint8_t tier, has_tier;
+    uint16_t reason;
+    size_t signed_len;              /* record bytes the signature covers (messages.md 4.3) */
     uint16_t n;
-    const uint8_t *entry[GZ_SIGN_MAX_ITEMS];
+    const uint8_t *entry[GZ_RMSG_MAX_ENTRIES];
 } gz_sign_msg_t;
-/* 1 if `bytes` is one well-formed message (exact length, bounded counts). */
+/* 1 if `bytes` is one envelope holding a well-formed round message
+ * (messages.md 4 and 7), 0 otherwise. */
 int gz_sign_decode(const uint8_t *bytes, size_t len, gz_sign_msg_t *m);
+
+/* messages.md 7.1 and 7.12 over a definition whose items carry their
+ * signature digests and tweaks (`digest`, `tweak`: n_items x 32). */
+void gz_sign_round_id(const gz_sign_def_t *d, const uint8_t (*digest)[32], const uint8_t (*tweak)[32],
+                      const uint8_t host_random[32], uint8_t out[32]);
+void gz_sign_tree_digest(const gz_sign_def_t *d, const uint8_t (*digest)[32], const uint8_t (*tweak)[32], uint8_t out[32]);
 
 #endif

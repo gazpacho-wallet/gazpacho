@@ -182,61 +182,113 @@ int gz_sign_tx_verify(const secp256k1_context *ctx, const uint8_t *signed_tx, si
     return secp256k1_schnorrsig_verify(ctx, tx.witness_item, digest, 32, &key);
 }
 
-/* ---- messages ---- */
+int gz_sign_tx_output(const gz_sign_tx_t *tx, uint32_t vout, uint64_t *amount, const uint8_t **script, size_t *script_len)
+{
+    size_t at = tx->outputs_at;
+    uint64_t v;
+    for (uint32_t i = 0;; i++) {
+        if (at >= tx->outputs_end || tx->outputs_end - at < 9) return 0;
+        uint64_t a = 0;
+        for (int b = 0; b < 8; b++) a |= (uint64_t)tx->bytes[at + (size_t)b] << (8 * b);
+        at += 8;
+        if (!varint(tx->bytes, tx->outputs_end, &at, &v) || v > tx->outputs_end - at) return 0;
+        if (i == vout) { *amount = a; *script = tx->bytes + at; *script_len = (size_t)v; return 1; }
+        at += (size_t)v;
+    }
+}
 
-static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+int gz_sign_tx_find_output(const uint8_t *p, size_t len, uint32_t vout, uint64_t *amount, const uint8_t **script, size_t *script_len)
+{
+    size_t at = 4;
+    uint64_t n, v, k;
+    int found = 0;
+    if (len < 10 || len > 100000 || p[4] == 0) return 0;          /* no witness (messages.md 7.2 record 18) */
+    if (!varint(p, len, &at, &n) || n == 0 || n > len) return 0;
+    for (k = 0; k < n; k++) {
+        if (len - at < 36) return 0;
+        at += 36;
+        if (!varint(p, len, &at, &v) || v > len - at) return 0;
+        at += (size_t)v;
+        if (len - at < 4) return 0;
+        at += 4;
+    }
+    if (!varint(p, len, &at, &n) || n == 0 || n > len) return 0;
+    for (k = 0; k < n; k++) {
+        uint64_t a = 0;
+        if (len - at < 8) return 0;
+        for (int b = 0; b < 8; b++) a |= (uint64_t)p[at + (size_t)b] << (8 * b);
+        at += 8;
+        if (!varint(p, len, &at, &v) || v > len - at) return 0;
+        if (k == vout) { *amount = a; *script = p + at; *script_len = (size_t)v; found = 1; }
+        at += (size_t)v;
+    }
+    return found && len - at == 4;
+}
+
+void gz_sign_txid(const uint8_t *tx, size_t len, uint8_t out[32])
+{
+    uint8_t h[32];
+    sha(tx, len, h);
+    sha(h, 32, out);
+}
+
+/* ---- messages: one view of the decoders of round_msg.h ---- */
 
 int gz_sign_decode(const uint8_t *b, size_t len, gz_sign_msg_t *m)
 {
-    size_t at = 35, each = 0;
+    const uint8_t *scope, *r;
+    size_t rn, i;
+    uint16_t kind;
+    gz_rmsg_err_t err;
+    /* Function scope, not per case: no ASan use-after-scope calls (isolation). */
+    union { gz_rmsg_nonces_t n; gz_rmsg_all_nonces_t a; gz_rmsg_list68_t l; gz_rmsg_small_t s; gz_rmsg_abort_t ab; } d;
     memset(m, 0, sizeof *m);
-    if (len < 35 || len > GZ_SIGN_MAX_MSG || b[0] != 'G' || b[1] != 'S') return 0;
-    m->kind = b[2];
-    m->round_id = b + 3;
-    switch (m->kind) {
+    if (gz_rmsg_open(b, len, &kind, &scope, &r, &rn) != GZ_RMSG_OK) return 0;
+    m->kind = kind; m->scope = scope; m->records = r; m->records_len = rn;
+    switch (kind) {
     case GZ_SIGN_MSG_PROPOSE:
-        if (len < at + 34) return 0;
-        m->host_random = b + at; at += 32;
-        m->params_len = (size_t)b[at] << 8 | b[at + 1]; at += 2;
-        if (m->params_len > GZ_SIGN_MAX_PARAMS || len - at != m->params_len + 64) return 0;
-        m->params = b + at;
-        m->signed_len = at + m->params_len;
-        m->sig = b + m->signed_len;
+        /* Only the identifier here (record 2, the first a valid proposal
+         * holds); the engine decodes the whole proposal itself
+         * (gz_rmsg_propose_decode) into memory it owns. */
+        if (rn < 34 || r[0] != 2 || r[1] != 32) break;
+        m->round_id = r + 2;
         return 1;
-    case GZ_SIGN_MSG_COMPLETE: case GZ_SIGN_MSG_ACK:
-        if (m->kind == GZ_SIGN_MSG_ACK) { if (len < at + 32) return 0; m->held = b + at; at += 32; }
-        if (len - at != 64) return 0;
-        m->signed_len = at; m->sig = b + at;
+    case GZ_SIGN_MSG_NONCES:
+        if (gz_rmsg_nonces_decode(r, rn, &d.n) != GZ_RMSG_OK) break;
+        m->round_id = d.n.round_id; m->tier = d.n.tier; m->has_tier = 1; m->n = (uint16_t)d.n.n;
+        for (i = 0; i < d.n.n; i++) m->entry[i] = d.n.entries + 134 * i;
+        m->signed_len = rn;
         return 1;
-    case GZ_SIGN_MSG_STATUS:
-        return len == at;
-    case GZ_SIGN_MSG_NONCES: each = 134; break;
-    case GZ_SIGN_MSG_ALL_NONCES: break;
-    case GZ_SIGN_MSG_PARTIALS: each = 68; break;
-    case GZ_SIGN_MSG_RESULT: each = 68; break;
+    case GZ_SIGN_MSG_ALL_NONCES:
+        if (gz_rmsg_all_nonces_decode(r, rn, &d.a) != GZ_RMSG_OK) break;
+        m->round_id = d.a.round_id; m->tier = d.a.tier; m->has_tier = 1; m->n = (uint16_t)d.a.n;
+        for (i = 0; i < d.a.n; i++) m->entry[i] = d.a.item[i];
+        m->signed_len = rn;
+        return 1;
+    case GZ_SIGN_MSG_PARTIALS: case GZ_SIGN_MSG_RESULT:
+        err = kind == GZ_SIGN_MSG_PARTIALS ? gz_rmsg_partial_sigs_decode(r, rn, &d.l) : gz_rmsg_tier_result_decode(r, rn, &d.l);
+        if (err != GZ_RMSG_OK) break;
+        m->round_id = d.l.round_id; m->tier = d.l.tier; m->has_tier = 1; m->n = (uint16_t)d.l.n;
+        for (i = 0; i < d.l.n; i++) m->entry[i] = d.l.entries + 68 * i;
+        m->sig = d.l.sig; m->signed_len = d.l.signed_len;
+        return 1;
+    case GZ_SIGN_MSG_COMPLETE: case GZ_SIGN_MSG_ACK: case GZ_SIGN_MSG_STATUS: case GZ_SIGN_MSG_FUNDED:
+        err = kind == GZ_SIGN_MSG_COMPLETE ? gz_rmsg_complete_decode(r, rn, &d.s)
+            : kind == GZ_SIGN_MSG_ACK ? gz_rmsg_ack_decode(r, rn, &d.s)
+            : kind == GZ_SIGN_MSG_STATUS ? gz_rmsg_status_decode(r, rn, &d.s) : gz_rmsg_funded_decode(r, rn, &d.s);
+        if (err != GZ_RMSG_OK) break;
+        m->round_id = d.s.round_id; m->held = kind == GZ_SIGN_MSG_FUNDED ? d.s.funding_txid : d.s.held_digest;
+        m->sig = d.s.sig; m->signed_len = d.s.signed_len;
+        return 1;
     case GZ_SIGN_MSG_ABORT:
-        if (len < at + 1) return 0;
-        m->reason = b[at++];
-        each = 4; break;
-    default: return 0;
+        if (gz_rmsg_abort_decode(r, rn, &d.ab) != GZ_RMSG_OK) break;
+        m->round_id = d.ab.round_id; m->reason = d.ab.reason; m->tier = d.ab.tier; m->has_tier = (uint8_t)d.ab.has_tier;
+        m->n = (uint16_t)d.ab.n_items;
+        for (i = 0; i < d.ab.n_items; i++) m->entry[i] = d.ab.items + 4 * i;
+        m->sig = d.ab.sig; m->signed_len = d.ab.signed_len;
+        return 1;
+    default: break;
     }
-    if (len - at < 3) return 0;
-    m->tier = b[at++];
-    m->n = (uint16_t)((uint16_t)b[at] << 8 | b[at + 1]); at += 2;
-    if (m->n > GZ_SIGN_MAX_ITEMS) return 0;
-    for (uint16_t i = 0; i < m->n; i++) {
-        size_t size = each;
-        if (m->kind == GZ_SIGN_MSG_ALL_NONCES) {
-            if (len - at < 5 || b[at + 4] > GZ_SIGN_MAX_SIGNERS) return 0;
-            size = 5 + (size_t)b[at + 4] * 130;
-        }
-        if (len - at < size) return 0;
-        m->entry[i] = b + at;
-        if (be32(b + at) >= GZ_SIGN_MAX_ITEMS) return 0;
-        at += size;
-    }
-    int has_sig = m->kind != GZ_SIGN_MSG_NONCES && m->kind != GZ_SIGN_MSG_ALL_NONCES;
-    m->signed_len = at;
-    if (has_sig) { if (len - at != 64) return 0; m->sig = b + at; return 1; }
-    return len == at;
+    memset(m, 0, sizeof *m);
+    return 0;
 }

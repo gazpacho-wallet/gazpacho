@@ -1,7 +1,7 @@
 /* The signing engine's test world: fixed test trees built with the imported
- * SuperScalar code, simulated nodes running the engine, faulty programs, and
- * invariants judged on the secrets themselves. Faulty behaviour lives here,
- * never in the engine. */
+ * SuperScalar code from round_propose (messages.md 7.2), simulated nodes
+ * running the engine, faulty programs, and invariants judged on the secrets
+ * themselves. Faulty behaviour lives here, never in the engine. */
 #ifndef GZ_TEST_SIGNING_WORLD_H
 #define GZ_TEST_SIGNING_WORLD_H
 
@@ -45,14 +45,53 @@ static void w_secret(const char *what, uint32_t g, uint8_t out[32])
     gz_sign_sha256_done(&s, out);
 }
 
-/* ---- the fixed test tree ----
- * params (W_PARAMS bytes): [0] version 2, [1] tiers (1 or 2), [2..5] attempt
- * (BE), [6..9] member mask (BE; bit g = party g takes part, g = 1..16),
- * [10] flags, [11] 0.
- * Every leaf is pseudo-Spilman with one member: by default the binary shape
- * (factory_set_arity PS); with WF_T1 the shape of terms.md T1 (interior
- * width 4 above 4 members, leaf kind 3, every interior level fixed), which
- * at 16 members is 17 participants and 45 items. */
+static void w_pub33(const char *what, uint32_t g, uint8_t out[33])
+{
+    uint8_t sk[32];
+    secp256k1_keypair kp;
+    secp256k1_pubkey pk;
+    size_t l = 33;
+    w_secret(what, g, sk);
+    if (!secp256k1_keypair_create(w_ctx(), &kp, sk) || !secp256k1_keypair_pub(w_ctx(), &pk, &kp) ||
+        !secp256k1_ec_pubkey_serialize(w_ctx(), out, &l, &pk, SECP256K1_EC_COMPRESSED)) abort();
+}
+
+/* Party g's keys, cached: 0..W_MAX_NODES-1 and the extra parties 100..131. */
+typedef struct { uint8_t f[33], c[33]; int ready; } w_key_t;
+static w_key_t g_keys[132];
+static const w_key_t *w_keys(uint32_t g)
+{
+    w_key_t *k = &g_keys[g < 132 ? g : 131];
+    if (!k->ready) { w_pub33("test/factory", g, k->f); w_pub33("test/contribution", g, k->c); k->ready = 1; }
+    return k;
+}
+/* The party whose contribution key this is, or -1. */
+static int w_party_of(const uint8_t ckey[33])
+{
+    for (uint32_t g = 0; g < 132; g++) {
+        if (g >= W_MAX_NODES && g < 100) continue;
+        if (memcmp(w_keys(g)->c, ckey, 33) == 0) return (int)g;
+    }
+    return -1;
+}
+
+/* ---- the lobby every test round belongs to ---- */
+
+static void w_tag32(const char *tag, uint8_t out[32]) { w_secret(tag, 0, out); }
+static void w_chain(uint8_t out[32]) { w_tag32("test/chain", out); }
+static void w_outer(uint8_t out[32]) { w_tag32("test/outer", out); }   /* the scope of every message */
+static void w_terms(uint8_t out[32]) { w_tag32("test/terms", out); }
+
+/* ---- test parameters ----
+ * The host's user command (W_PARAMS bytes): [0] version 2, [1] tiers (1 or
+ * 2), [2..5] attempt (BE), [6..9] member mask (BE; bit g = party g takes
+ * part, g = 1..16), [10] flags, [11] 0. The host turns them into a
+ * round_propose (w_make_begin); every party's builder rebuilds the tree from
+ * the proposal alone. Every leaf is pseudo-Spilman with one member: by
+ * default the binary shape (factory_set_arity PS, fixed_levels 0); with
+ * WF_T1 the shape of terms.md T1 (interior width 4 above 4 members, leaf
+ * kind 3, every interior level fixed: fixed_levels D), which at 16 members is
+ * 17 participants and 45 items. */
 enum { WF_SAME_TREE = 1, WF_DUP_KEY = 2, WF_BAD_MODE = 4, WF_DUP_SIGNER = 8, WF_BAD_SCRIPT = 16, WF_T1 = 32 };
 
 static size_t w_params(uint8_t out[W_PARAMS], uint8_t tiers, uint32_t attempt, uint32_t mask, uint8_t flags)
@@ -64,53 +103,83 @@ static size_t w_params(uint8_t out[W_PARAMS], uint8_t tiers, uint32_t attempt, u
     return W_PARAMS;
 }
 static uint32_t w_be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+static void w_wr32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+
+/* The P2TR output of the BIP 86 tweaked aggregate of `n` factory keys. */
+static int w_agg_script(const uint8_t (*keys)[33], size_t n, uint8_t spk[34])
+{
+    secp256k1_pubkey pks[GZ_SIGN_MAX_PARTICIPANTS], tw;
+    const secp256k1_pubkey *ptr[GZ_SIGN_MAX_PARTICIPANTS];
+    secp256k1_xonly_pubkey agg, x;
+    secp256k1_musig_keyagg_cache c;
+    uint8_t ser[32], t[32];
+    for (size_t i = 0; i < n; i++) {
+        if (!secp256k1_ec_pubkey_parse(w_ctx(), &pks[i], keys[i], 33)) return 0;
+        ptr[i] = &pks[i];
+    }
+    if (!secp256k1_musig_pubkey_agg(w_ctx(), NULL, &agg, &c, ptr, n) || !secp256k1_xonly_pubkey_serialize(w_ctx(), ser, &agg)) return 0;
+    sha256_tagged("TapTweak", ser, 32, t);
+    if (!secp256k1_musig_pubkey_xonly_tweak_add(w_ctx(), &tw, &c, t) || !secp256k1_xonly_pubkey_from_pubkey(w_ctx(), &x, NULL, &tw)) return 0;
+    spk[0] = 0x51; spk[1] = 0x20;
+    return secp256k1_xonly_pubkey_serialize(w_ctx(), spk + 2, &x);
+}
+
+/* An unsigned funding transaction: one input (a made-up coin named by
+ * `seed`), one output of `amount` to `spk`. Returns its length (94). */
+static size_t w_funding_tx(const uint8_t seed[8], uint64_t amount, const uint8_t spk[34], uint8_t out[100])
+{
+    size_t n = 0;
+    uint8_t prev[32];
+    sha256_tagged("test/funding", seed, 8, prev);
+    out[n++] = 2; out[n++] = 0; out[n++] = 0; out[n++] = 0;             /* version */
+    out[n++] = 1;                                                        /* one input */
+    memcpy(out + n, prev, 32); n += 32;
+    memset(out + n, 0, 4); n += 4;                                       /* vout 0 */
+    out[n++] = 0;                                                        /* no script */
+    memset(out + n, 0xff, 4); n += 4;                                    /* sequence */
+    out[n++] = 1;                                                        /* one output */
+    for (int b = 0; b < 8; b++) out[n++] = (uint8_t)(amount >> (8 * b));
+    out[n++] = 34; memcpy(out + n, spk, 34); n += 34;
+    memset(out + n, 0, 4); n += 4;                                       /* lock time */
+    return n;
+}
+
+/* ---- the tree, from the proposal ---- */
 
 typedef struct {
-    uint8_t last_params[GZ_SIGN_MAX_PARAMS];
-    size_t last_len;
-    int have_last;
-    gz_sign_def_t last;
-    uint64_t builds;
-    void (*mutate)(gz_sign_def_t *d, int which);   /* tests only: damage the built definition */
-    int which;
-} w_builder_t;
+    size_t n;                                   /* participants, host first */
+    const gz_tree_participant_t *parts;
+    uint8_t tiers, t1;
+    uint8_t funding_txid[32];
+    uint32_t funding_vout;
+    uint64_t funding_amount;
+    uint8_t funding_script[34];
+    uint8_t damage;                             /* WF_BAD_MODE, WF_DUP_SIGNER, WF_BAD_SCRIPT */
+} w_tree_in_t;
 
-static int w_build_tree(const uint8_t *p, size_t len, gz_sign_def_t *d, factory_t **keep)
+static int w_build_tree(const w_tree_in_t *in, gz_sign_def_t *d, factory_t **keep)
 {
     secp256k1_context *ctx = w_ctx();
-    secp256k1_pubkey pks[W_MAX_NODES];
-    uint8_t g_of[W_MAX_NODES];
-    size_t n = 0;
-    if (len != W_PARAMS || p[0] != 2 || p[1] < 1 || p[1] > 2 || p[11] != 0) return 0;
-    uint32_t mask = w_be32(p + 6);
-    uint32_t attempt = w_be32(p + 2);
-    uint8_t flags = p[10];
-    if (mask & ~0x1fffeu) return 0;
+    secp256k1_pubkey pks[GZ_SIGN_MAX_PARTICIPANTS];
+    size_t n = in->n;
+    if (n < 2 || n > W_MAX_NODES || in->tiers < 1 || in->tiers > 2) return 0;
     memset(d, 0, sizeof *d);
-    for (uint32_t g = 0; g < W_MAX_NODES; g++) {
-        if (g && !(mask >> g & 1u)) continue;
-        uint8_t sk[32], x[32];
-        secp256k1_keypair kp;
-        secp256k1_xonly_pubkey xo;
-        w_secret("test/factory", (flags & WF_DUP_KEY) && g == 2 ? 1 : g, sk);
-        if (!secp256k1_keypair_create(ctx, &kp, sk) || !secp256k1_keypair_pub(ctx, &pks[n], &kp)) return 0;
-        size_t l = 33;
-        secp256k1_ec_pubkey_serialize(ctx, d->participants[n].factory_key, &l, &pks[n], SECP256K1_EC_COMPRESSED);
-        w_secret("test/contribution", g, sk);
-        if (!secp256k1_keypair_create(ctx, &kp, sk) || !secp256k1_keypair_xonly_pub(ctx, &xo, NULL, &kp)) return 0;
-        secp256k1_xonly_pubkey_serialize(ctx, x, &xo);
-        memcpy(d->participants[n].contribution_key, x, 32);
-        d->participants[n].peer = g;
-        g_of[n++] = (uint8_t)g;
+    for (size_t i = 0; i < n; i++) {
+        int g = w_party_of(in->parts[i].contribution_key);
+        if (!secp256k1_ec_pubkey_parse(ctx, &pks[i], in->parts[i].factory_key, 33)) return 0;
+        d->peer[i] = g >= 0 ? (uint64_t)g : 1000u + i;
     }
-    (void)g_of;
-    if (n < 2) return 0;
-    d->n_participants = (uint8_t)n; d->n_tiers = p[1]; d->purpose = 1;
+    /* The participants as the engine will set them (tests that change the items read them). */
+    d->n_participants = (uint8_t)n;
+    for (size_t i = 0; i < n; i++) d->participants[i] = in->parts[i];
+    w_chain(d->chain); w_outer(d->outer_digest);
+    memcpy(d->host_key, w_keys(0)->c, 33);
+    d->n_tiers = in->tiers;
 
     factory_t *f = calloc(1, sizeof *f);
     if (!f) return 0;
     factory_init_from_pubkeys(f, ctx, pks, n, 144, 4);
-    if (flags & WF_T1) {
+    if (in->t1) {
         /* terms.md T7: [3] with D = 2 up to 4 members; [4, 3], D = 2 up to 8; [4, 3], D = 3 up to 16 */
         uint8_t lv[2] = {4, 3};
         size_t members = n - 1;
@@ -124,34 +193,20 @@ static int w_build_tree(const uint8_t *p, size_t len, gz_sign_def_t *d, factory_
     f->placement_mode = PLACEMENT_SEQUENTIAL;
     f->cltv_timeout = 100000;
     f->use_tree_anchor = 1;
-    musig_keyagg_t ka;
-    uint8_t internal[32], tweak[32], spk[34], txid[32], seed[8];
-    secp256k1_pubkey tweaked;
-    secp256k1_xonly_pubkey tx_key;
-    if (!musig_aggregate_keys(ctx, &ka, pks, n)) { free(f); return 0; }
-    secp256k1_xonly_pubkey_serialize(ctx, internal, &ka.agg_pubkey);
-    sha256_tagged("TapTweak", internal, 32, tweak);
-    if (!secp256k1_musig_pubkey_xonly_tweak_add(ctx, &tweaked, &ka.cache, tweak) ||
-        !secp256k1_xonly_pubkey_from_pubkey(ctx, &tx_key, NULL, &tweaked)) { free(f); return 0; }
-    build_p2tr_script_pubkey(spk, &tx_key);
-    memcpy(seed, p + 2, 4); seed[4] = p[8]; seed[5] = p[9]; seed[4] ^= p[7]; seed[6] = 0x46; seed[7] = 0x44;
-    if (flags & WF_SAME_TREE) memset(seed, 0, 4);       /* every attempt on one funding outpoint */
-    sha256_tagged("test/funding", seed, 8, txid);
-    (void)attempt;
-    factory_set_funding(f, txid, 0, (uint64_t)n * 100000u + 1000000u, spk, 34);
+    factory_set_funding(f, in->funding_txid, in->funding_vout, in->funding_amount, in->funding_script, 34);
     if (!factory_build_tree(f) || f->n_nodes == 0 || f->n_nodes > GZ_SIGN_MAX_ITEMS) { factory_free(f); free(f); return 0; }
     d->n_items = (uint16_t)f->n_nodes;
     for (size_t i = 0; i < f->n_nodes; i++) {
         const factory_node_t *nd = &f->nodes[i];
         gz_sign_item_t *it = &d->items[i];
         if (nd->unsigned_tx.len > GZ_SIGN_MAX_TX || nd->n_signers > GZ_SIGN_MAX_SIGNERS) { factory_free(f); free(f); return 0; }
-        it->tier = (uint8_t)(p[1] == 2 && i >= f->n_nodes / 2);
-        it->mode = (flags & WF_BAD_MODE) ? 2 : GZ_SIGN_MODE_KEYPATH;
+        it->tier = (uint8_t)(in->tiers == 2 && i >= f->n_nodes / 2);
+        it->mode = (in->damage & WF_BAD_MODE) ? 2 : GZ_SIGN_MODE_KEYPATH;
         it->has_merkle_root = (uint8_t)(nd->has_taptree != 0);
         if (nd->has_taptree) memcpy(it->merkle_root, nd->merkle_root, 32);
         it->n_signers = (uint8_t)nd->n_signers;
         for (size_t s = 0; s < nd->n_signers; s++) it->signers[s] = (uint8_t)nd->signer_indices[s];
-        if ((flags & WF_DUP_SIGNER) && it->n_signers > 2) it->signers[1] = it->signers[2];
+        if ((in->damage & WF_DUP_SIGNER) && it->n_signers > 2) it->signers[1] = it->signers[2];
         if (nd->parent_index < 0) {
             it->spent_amount = f->funding_amount_sats;
             memcpy(it->spent_script, f->funding_spk, 34);
@@ -160,26 +215,7 @@ static int w_build_tree(const uint8_t *p, size_t len, gz_sign_def_t *d, factory_
             it->spent_amount = o->amount_sats;
             memcpy(it->spent_script, o->script_pubkey, 34);
         }
-        if ((flags & WF_BAD_SCRIPT) && i == f->n_nodes - 1) it->spent_script[5] ^= 1;
-        if ((flags & WF_DUP_SIGNER) && it->n_signers > 2) {
-            /* the script made consistent with the duplicated list, so only the duplicate check can refuse it */
-            const secp256k1_pubkey *ptr[GZ_SIGN_MAX_SIGNERS];
-            secp256k1_pubkey tw_pk;
-            secp256k1_xonly_pubkey agg2, x2;
-            secp256k1_musig_keyagg_cache c2;
-            uint8_t ser[32], tw[32];
-            gz_sign_sha256_t th;
-            for (int k = 0; k < it->n_signers; k++) ptr[k] = &pks[it->signers[k]];
-            if (!secp256k1_musig_pubkey_agg(ctx, NULL, &agg2, &c2, ptr, it->n_signers) ||
-                !secp256k1_xonly_pubkey_serialize(ctx, ser, &agg2)) abort();
-            gz_sign_tagged_init(&th, "TapTweak");
-            gz_sign_sha256_write(&th, ser, 32);
-            if (it->has_merkle_root) gz_sign_sha256_write(&th, it->merkle_root, 32);
-            gz_sign_sha256_done(&th, tw);
-            if (!secp256k1_musig_pubkey_xonly_tweak_add(ctx, &tw_pk, &c2, tw) ||
-                !secp256k1_xonly_pubkey_from_pubkey(ctx, &x2, NULL, &tw_pk) ||
-                !secp256k1_xonly_pubkey_serialize(ctx, it->spent_script + 2, &x2)) abort();
-        }
+        if ((in->damage & WF_BAD_SCRIPT) && i == f->n_nodes - 1) it->spent_script[5] ^= 1;
         it->tx_len = (uint16_t)nd->unsigned_tx.len;
         memcpy(it->tx, nd->unsigned_tx.data, nd->unsigned_tx.len);
     }
@@ -188,33 +224,219 @@ static int w_build_tree(const uint8_t *p, size_t len, gz_sign_def_t *d, factory_
     return 1;
 }
 
-static int w_build(void *ctx, const uint8_t *p, size_t len, gz_sign_def_t *out)
+/* The tree inputs a proposal names. */
+static void w_tree_in(const gz_tree_proposal_t *p, uint8_t damage, w_tree_in_t *t)
 {
-    w_builder_t *b = ctx;
-    if (b->mutate) {
-        if (len > GZ_SIGN_MAX_PARAMS || !w_build_tree(p, len, out, NULL)) return 0;
-        b->mutate(out, b->which);
-        return 1;
+    memset(t, 0, sizeof *t);
+    t->n = p->n_participants; t->parts = p->participants;
+    t->tiers = p->n_tiers > 2 ? 1 : p->n_tiers;   /* more tiers only in tests that spread the items themselves */
+    t->t1 = p->fixed_levels != 0;
+    memcpy(t->funding_txid, p->funding_txid, 32);
+    t->funding_vout = p->funding_vout; t->funding_amount = p->funding_amount;
+    memcpy(t->funding_script, p->funding_script, 34);
+    t->damage = damage;
+}
+
+/* What the host proposes, from test parameters: kept here so the pointers
+ * of gz_sign_begin_t stay valid. */
+typedef struct {
+    gz_tree_proposal_t p;
+    gz_tree_participant_t parts[GZ_SIGN_MAX_PARTICIPANTS];
+    uint8_t funding_tx[100];
+    uint8_t check_id[32];
+    gz_sign_begin_t b;
+} w_begin_t;
+
+typedef struct {
+    gz_sign_def_t last;
+    w_tree_in_t last_in;
+    gz_tree_participant_t last_parts[GZ_SIGN_MAX_PARTICIPANTS];
+    int have_last;
+    uint64_t builds;
+    uint8_t damage;                             /* tests only: every builder damages what it builds */
+    uint8_t flags;                              /* the flags of the host's latest parameters (for retries) */
+    void (*mutate)(gz_sign_def_t *d, int which);   /* tests only: damage the built definition */
+    int which;
+    void (*mutate_proposal)(gz_tree_proposal_t *p, int which);   /* tests only: damage what the host proposes */
+    w_begin_t next;                             /* storage for a retry */
+    uint16_t refuse;                            /* tests only: members refuse every proposal with this reason */
+} w_builder_t;
+
+/* Test parameters into a proposal. 0 if they are not valid parameters. */
+static int w_make_begin(w_builder_t *b, const uint8_t *p, size_t len, w_begin_t *out)
+{
+    uint8_t keys[GZ_SIGN_MAX_PARTICIPANTS][33], seed[8], t[32];
+    w_tree_in_t tin;
+    gz_sign_def_t *d;
+    size_t n = 0;
+    if (len != W_PARAMS || p[0] != 2 || p[1] < 1 || p[1] > 2 || p[11] != 0) return 0;
+    uint32_t mask = w_be32(p + 6), attempt = w_be32(p + 2);
+    uint8_t flags = p[10];
+    if (mask & ~0x1fffeu) return 0;
+    memset(out, 0, sizeof *out);
+    for (uint32_t g = 0; g < W_MAX_NODES; g++) {
+        if (g && !(mask >> g & 1u)) continue;
+        memcpy(out->parts[n].factory_key, w_keys((flags & WF_DUP_KEY) && g == 2 ? 1 : g)->f, 33);
+        memcpy(out->parts[n].contribution_key, w_keys(g)->c, 33);
+        memcpy(keys[n], out->parts[n].factory_key, 33);
+        n++;
     }
-    if (b->have_last && len == b->last_len && memcmp(p, b->last_params, len) == 0) { *out = b->last; return 1; }
-    if (len > GZ_SIGN_MAX_PARAMS || !w_build_tree(p, len, out, NULL)) return 0;
-    b->builds++;
-    memcpy(b->last_params, p, len); b->last_len = len; b->last = *out; b->have_last = 1;
+    if (n < 2) return 0;
+    gz_tree_proposal_t *q = &out->p;
+    q->purpose = 1; q->terms_version = 1;
+    w_terms(q->terms_digest);
+    q->funding_amount = (uint64_t)n * 100000u + 1000000u;
+    if (!w_agg_script((const uint8_t (*)[33])keys, n, q->funding_script)) return 0;
+    q->funding_script_len = 34;
+    memcpy(seed, p + 2, 4); seed[4] = p[8]; seed[5] = p[9]; seed[4] ^= p[7]; seed[6] = 0x46; seed[7] = 0x44;
+    if (flags & WF_SAME_TREE) memset(seed, 0, 4);       /* every attempt on one funding outpoint */
+    q->funding_tx_len = w_funding_tx(seed, q->funding_amount, q->funding_script, out->funding_tx);
+    q->funding_tx = out->funding_tx;
+    gz_sign_txid(out->funding_tx, q->funding_tx_len, q->funding_txid);
+    q->funding_vout = 0;
+    q->participants = out->parts; q->n_participants = n;
+    q->n_tiers = p[1];
+    q->end_height = 100000; q->tree_anchors = 1; q->fee_per_tx = 200; q->lstock_delay = 144;
+    q->fixed_levels = (flags & WF_T1) ? (n - 1 <= 8 ? 2 : 3) : 0;
+    q->k = 1; q->layer_step = 144; q->layer_states = 4;
+    q->nonces_due_ms = 30000; q->sigs_due_ms = 30000;
+    /* the tier sizes: the host builds the tree once to count */
+    w_tree_in(q, 0, &tin);
+    d = calloc(1, sizeof *d);
+    if (!d || !w_build_tree(&tin, d, NULL)) { free(d); return 0; }
+    if (b && b->mutate) {                   /* tests: the tiers of the definition as the builder will damage it */
+        b->mutate(d, b->which);
+        q->n_tiers = d->n_tiers > 8 ? 8 : d->n_tiers;
+    }
+    for (int i = 0; i < d->n_items && i < GZ_SIGN_MAX_ITEMS; i++)
+        if (d->items[i].tier < 8) q->tier_sizes[d->items[i].tier]++;
+    free(d);
+    if (b && b->mutate_proposal) b->mutate_proposal(q, b->which);
+    w_wr32(t, attempt); memset(t + 4, 0, 28);
+    sha256_tagged("test/check", t, 32, out->check_id);
+    out->b.p = q; out->b.check_id = out->check_id; out->b.has_attempt = 1; out->b.attempt = (uint16_t)attempt;
+    if (b) b->flags = flags;
     return 1;
 }
 
-/* Next attempt: attempt + 1, without the blamed (participant indexes of the failed round). */
-static size_t w_retry(void *ctx, const uint8_t *p, size_t len, uint32_t blamed, uint8_t *out)
+/* The tree test parameters give (for tests that build it themselves). */
+static inline int w_build_params(const uint8_t *p, gz_sign_def_t *d, factory_t **keep)
 {
-    (void)ctx;
-    if (len != W_PARAMS) return 0;
-    uint32_t mask = w_be32(p + 6), next = mask;
-    uint32_t idx = 1;
-    for (uint32_t g = 1; g < W_MAX_NODES; g++)
-        if (mask >> g & 1u) { if (blamed >> idx & 1u) next &= ~((uint32_t)1u << g); idx++; }
-    if (!next) return 0;
-    uint32_t attempt = w_be32(p + 2) + 1;
-    return w_params(out, p[1], attempt, next, p[10]);
+    static w_begin_t wb;
+    w_tree_in_t t;
+    if (!w_make_begin(NULL, p, W_PARAMS, &wb)) return 0;
+    w_tree_in(&wb.p, 0, &t);
+    return w_build_tree(&t, d, keep);
+}
+
+static uint16_t w_build(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t *out)
+{
+    w_builder_t *b = ctx;
+    const gz_tree_proposal_t *p = &in->msg->p;
+    w_tree_in_t t;
+    if (b->refuse && in->scope && !in->replay) return b->refuse;   /* a member's checks refuse (not the host's own build) */
+    w_tree_in(p, b->damage, &t);
+    if (b->mutate) {
+        if (!w_build_tree(&t, out, NULL)) return 1;
+        b->mutate(out, b->which);
+        return 0;
+    }
+    if (b->have_last && t.n == b->last_in.n && t.tiers == b->last_in.tiers && t.t1 == b->last_in.t1 && t.damage == b->last_in.damage &&
+        memcmp(t.funding_txid, b->last_in.funding_txid, 32) == 0 && t.funding_amount == b->last_in.funding_amount &&
+        t.funding_vout == b->last_in.funding_vout && memcmp(t.funding_script, b->last_in.funding_script, 34) == 0 &&
+        memcmp(t.parts, b->last_parts, t.n * sizeof *t.parts) == 0) { *out = b->last; return 0; }
+    if (!w_build_tree(&t, out, NULL)) return 1;
+    b->builds++;
+    b->last = *out; b->last_in = t;
+    memcpy(b->last_parts, t.parts, t.n * sizeof *t.parts);
+    b->last_in.parts = b->last_parts;
+    b->have_last = 1;
+    return 0;
+}
+
+/* The test parameters a round was proposed from (attempt from record 7). */
+static inline size_t w_params_of(const gz_sign_round_t *r, uint8_t out[W_PARAMS], uint8_t flags)
+{
+    uint32_t mask = 0;
+    uint16_t attempt = 0;
+    gz_sign_msg_t m;
+    static gz_rmsg_propose_t pr;
+    for (int j = 1; j < r->def.n_participants; j++) {
+        int g = w_party_of(r->def.participants[j].contribution_key);
+        if (g > 0 && g < W_MAX_NODES) mask |= (uint32_t)1u << g;
+    }
+    if (gz_sign_decode(r->proposal, r->proposal_len, &m) && gz_rmsg_propose_decode(m.records, m.records_len, &pr) == GZ_RMSG_OK)
+        attempt = pr.attempt;
+    return w_params(out, r->def.n_tiers, attempt, mask, flags);
+}
+
+/* Next attempt: attempt + 1, without the blamed (participant indexes of the failed round). */
+static int w_retry(void *ctx, const gz_sign_retry_in_t *in, gz_sign_begin_t *next)
+{
+    w_builder_t *b = ctx;
+    uint8_t p[W_PARAMS];
+    const gz_sign_round_t *r = in->failed;
+    w_params_of(r, p, b->flags);
+    uint32_t mask = w_be32(p + 6), next_mask = 0;
+    for (int j = 1; j < r->def.n_participants; j++) {
+        int g = w_party_of(r->def.participants[j].contribution_key);
+        if (g > 0 && g < W_MAX_NODES && !(in->blamed >> j & 1u)) next_mask |= (uint32_t)1u << g;
+    }
+    (void)mask;
+    if (!next_mask) return 0;
+    w_params(p, p[1], w_be32(p + 2) + 1, next_mask, b->flags);
+    if (!w_make_begin(b, p, W_PARAMS, &b->next)) return 0;
+    *next = b->next.b;
+    return 1;
+}
+
+/* ---- messages, as a program at fault would change them ---- */
+
+/* Sign the records of `msg` (an envelope) as party g would: the signature
+ * record 240 is the last 64 bytes. */
+static void w_resign(uint8_t *msg, size_t len, uint32_t g)
+{
+    uint8_t sk[32], d[32], aux[32] = {7};
+    secp256k1_keypair kp;
+    gz_sign_msg_t m;
+    if (!gz_sign_decode(msg, len, &m) || !m.sig) {
+        /* not decodable (damaged records, or a proposal, which the view does not
+         * read): sign everything before the last record, 240's 66 bytes */
+        if (len < GZ_RMSG_HEADER + 66) return;
+        gz_rmsg_hash((uint16_t)(msg[4] << 8 | msg[5]), msg + 6, msg + GZ_RMSG_HEADER, len - GZ_RMSG_HEADER - 66, d);
+    } else gz_rmsg_hash(m.kind, m.scope, m.records, m.signed_len, d);
+    w_secret("test/contribution", g, sk);
+    if (!secp256k1_keypair_create(w_ctx(), &kp, sk)) abort();
+    secp256k1_schnorrsig_sign32(w_ctx(), msg + len - 64, d, &kp, aux);
+}
+
+/* A nonce entry (u32 index, 66 nonce, 64 sig) signed by party g. */
+static void w_sign_nonce(uint8_t *entry, const uint8_t id[32], uint8_t tier, uint32_t g)
+{
+    uint8_t sk[32], d[32], aux[32] = {9};
+    secp256k1_keypair kp;
+    w_secret("test/contribution", g, sk);
+    if (!secp256k1_keypair_create(w_ctx(), &kp, sk)) abort();
+    gz_rmsg_nonce_hash(id, tier, w_be32(entry), entry + 4, d);
+    secp256k1_schnorrsig_sign32(w_ctx(), entry + 70, d, &kp, aux);
+}
+
+/* A message of `kind` in the test lobby's scope with the given records
+ * (types increasing; type 240 means "sign as party g"). Returns its length. */
+typedef struct { uint64_t type; const void *v; size_t len; } w_rec_t;
+static inline size_t w_message(uint8_t *out, size_t cap, uint16_t kind, const w_rec_t *recs, size_t n, int g)
+{
+    uint8_t scope[32], zero[64] = {0};
+    gz_rmsg_wr_t w;
+    size_t h;
+    w_outer(scope);
+    h = gz_rmsg_header(out, cap, kind, scope);
+    gz_rmsg_wr_init(&w, out + h, cap - h);
+    for (size_t i = 0; i < n; i++) gz_rmsg_put(&w, recs[i].type, recs[i].v, recs[i].len);
+    if (g >= 0) gz_rmsg_put(&w, GZ_RMSG_SIG_TYPE, zero, 64);
+    if (!gz_rmsg_wr_ok(&w)) return 0;
+    if (g >= 0) w_resign(out, h + w.n, (uint32_t)g);
+    return h + w.n;
 }
 
 /* ---- faults a program may have on purpose ---- */
@@ -242,7 +464,7 @@ typedef struct {
 } w_node_t;
 
 /* A sent contribution: (sender, round, item, kind) -> its bytes. */
-typedef struct { uint32_t node; uint8_t round[32]; uint32_t item; uint8_t kind; uint8_t value[66]; } w_contrib_t;
+typedef struct { uint32_t node; uint8_t round[32]; uint32_t item; uint16_t kind; uint8_t value[66]; } w_contrib_t;
 
 struct world {
     w_builder_t builder;
@@ -255,40 +477,13 @@ struct world {
     w_contrib_t *contrib;
     size_t n_contrib, cap_contrib;
     uint64_t second_contributions, sends_partials, sends_nonces;
-    uint8_t first_proposal[256];
+    uint8_t first_proposal[GZ_SIGN_MAX_PROPOSAL];
     size_t first_proposal_len;
     uint64_t secrets_checked, zero_checks;
     uint64_t fuzz_state, fuzzed;
     uint32_t fuzz_pm;
     uint32_t max_attempts;      /* 0: 16 */
 };
-
-static void w_resign(uint8_t *msg, size_t signed_len, uint32_t g)
-{
-    uint8_t sk[32], d[32], aux[32] = {7};
-    secp256k1_keypair kp;
-    gz_sign_sha256_t s;
-    w_secret("test/contribution", g, sk);
-    if (!secp256k1_keypair_create(w_ctx(), &kp, sk)) abort();
-    gz_sign_tagged_init(&s, "gazpacho/msg");
-    gz_sign_sha256_write(&s, msg, signed_len);
-    gz_sign_sha256_done(&s, d);
-    secp256k1_schnorrsig_sign32(w_ctx(), msg + signed_len, d, &kp, aux);
-}
-
-static void w_sign_nonce(uint8_t *entry, const uint8_t id[32], uint8_t tier, uint32_t g)
-{
-    uint8_t sk[32], d[32], aux[32] = {9};
-    secp256k1_keypair kp;
-    gz_sign_sha256_t s;
-    w_secret("test/contribution", g, sk);
-    if (!secp256k1_keypair_create(w_ctx(), &kp, sk)) abort();
-    gz_sign_tagged_init(&s, "gazpacho/nonce");
-    gz_sign_sha256_write(&s, id, 32); gz_sign_sha256_write(&s, &tier, 1); gz_sign_sha256_write(&s, entry, 4);
-    gz_sign_sha256_write(&s, entry + 4, 66);
-    gz_sign_sha256_done(&s, d);
-    secp256k1_schnorrsig_sign32(w_ctx(), entry + 70, d, &kp, aux);
-}
 
 /* Apply this program's fault to what it is about to hand over. */
 static uint64_t w_rand(world_t *w)
@@ -298,8 +493,8 @@ static uint64_t w_rand(world_t *w)
 }
 
 /* Fuzzing: damage some of what any party sends, in place: flip bytes, cut
- * the end, or change a count. The engine must neither crash nor reach the
- * library with an unparsed value. */
+ * the end, or change a byte of the records' start. The engine must neither
+ * crash nor reach the library with an unparsed value. */
 static void w_fuzz(world_t *w, gz_action_list_t *list)
 {
     for (size_t k = 0; k < list->count; k++) {
@@ -310,12 +505,14 @@ static void w_fuzz(world_t *w, gz_action_list_t *list)
         switch (w_rand(w) % 4) {
         case 0: for (int f = 0; f < 1 + (int)(w_rand(w) % 4); f++) b[w_rand(w) % len] ^= (uint8_t)(1u << (w_rand(w) % 8)); break;
         case 1: a->u.send.bytes.len = (size_t)(w_rand(w) % len); break;
-        case 2: if (len > 37) b[35 + w_rand(w) % 3] = (uint8_t)w_rand(w); break;
+        case 2: if (len > 41) b[38 + w_rand(w) % 4] = (uint8_t)w_rand(w); break;
         default: b[w_rand(w) % len] = (uint8_t)w_rand(w); break;
         }
         w->fuzzed++;
     }
 }
+
+static uint8_t w_copy[GZ_SIGN_MAX_MSG];
 
 static void w_apply_fault(w_node_t *n, gz_action_list_t *list)
 {
@@ -328,51 +525,48 @@ static void w_apply_fault(w_node_t *n, gz_action_list_t *list)
         gz_sign_msg_t m;
         if (a->kind != GZ_ACTION_SEND || !gz_sign_decode(a->u.send.bytes.data, a->u.send.bytes.len, &m)) continue;
         uint8_t *b = (uint8_t *)(uintptr_t)a->u.send.bytes.data;
+        size_t len = a->u.send.bytes.len;
         if (w->fault == WX_BAD_PARTIAL && m.kind == GZ_SIGN_MSG_PARTIALS && m.n) {
             uint8_t *ps = (uint8_t *)(uintptr_t)m.entry[0] + 4;
             ps[31] ^= 1; ps[0] &= 0x7f;
-            w_resign(b, m.signed_len, n->index);
+            w_resign(b, len, n->index);
         } else if (w->fault == WX_BAD_SCALAR && m.kind == GZ_SIGN_MSG_PARTIALS && m.n) {
             memset((uint8_t *)(uintptr_t)m.entry[0] + 4, 0xff, 32);
-            w_resign(b, m.signed_len, n->index);
+            w_resign(b, len, n->index);
         } else if (w->fault == WX_PARTIAL_TWICE && m.kind == GZ_SIGN_MSG_PARTIALS && m.n) {
             /* the honest message, then a second one with a different partial signature */
-            uint8_t copy[GZ_SIGN_MAX_MSG];
-            size_t len = a->u.send.bytes.len;
-            memcpy(copy, b, len);
-            copy[(size_t)(m.entry[0] - b) + 4 + 31] ^= 1;
-            w_resign(copy, m.signed_len, n->index);
+            memcpy(w_copy, b, len);
+            w_copy[(size_t)(m.entry[0] - b) + 4 + 31] ^= 1;
+            w_resign(w_copy, len, n->index);
             gz_action_t extra = *a;
-            extra.u.send.bytes.data = copy;
+            extra.u.send.bytes.data = w_copy;
             gz_action_list_add(list, &extra);
         } else if (w->fault == WX_BAD_RESULT && m.kind == GZ_SIGN_MSG_RESULT && m.n) {
             ((uint8_t *)(uintptr_t)m.entry[0])[4 + 10] ^= 1;
-            w_resign(b, m.signed_len, 0);
+            w_resign(b, len, 0);
         } else if ((w->fault == WX_ALTER_NONCE || w->fault == WX_SWAP_NONCE) && m.kind == GZ_SIGN_MSG_ALL_NONCES && m.n) {
             const gz_sign_round_t *r = gz_sign_latest(&n->eng);
             /* someone else's nonce, neither the host's nor the recipient's */
             for (int k2 = 0; r && k2 < m.n; k2++) {
                 uint8_t *e = (uint8_t *)(uintptr_t)m.entry[k2];
-                uint32_t i = (uint32_t)e[0] << 24 | (uint32_t)e[1] << 16 | (uint32_t)e[2] << 8 | e[3];
-                for (int s = 0; s < e[4]; s++) {
+                uint32_t i = w_be32(e);
+                for (int s = 0; s < e[5]; s++) {
                     uint8_t q = r->def.items[i].signers[s];
-                    if (q == 0 || r->def.participants[q].peer == a->u.send.peer_id) continue;
-                    if (w->fault == WX_ALTER_NONCE) { e[5 + 130 * s + 40] ^= 1; k2 = m.n; break; }
+                    if (q == 0 || r->def.peer[q] == a->u.send.peer_id) continue;
+                    if (w->fault == WX_ALTER_NONCE) { e[6 + 130 * s + 40] ^= 1; k2 = m.n; break; }
                     /* move q's signed nonce for item i into another item of q in this message */
                     for (int k3 = k2 + 1; k3 < m.n; k3++) {
                         uint8_t *e3 = (uint8_t *)(uintptr_t)m.entry[k3];
-                        uint32_t i3 = (uint32_t)e3[0] << 24 | (uint32_t)e3[1] << 16 | (uint32_t)e3[2] << 8 | e3[3];
-                        for (int s3 = 0; s3 < e3[4]; s3++)
-                            if (r->def.items[i3].signers[s3] == q) { memcpy(e3 + 5 + 130 * s3, e + 5 + 130 * s, 130); k2 = k3 = m.n; s = e[4]; break; }
+                        uint32_t i3 = w_be32(e3);
+                        for (int s3 = 0; s3 < e3[5]; s3++)
+                            if (r->def.items[i3].signers[s3] == q) { memcpy(e3 + 6 + 130 * s3, e + 6 + 130 * s, 130); k2 = k3 = m.n; s = e[5]; break; }
                     }
                 }
             }
         } else if ((w->fault == WX_EQUIVOCATE || w->fault == WX_BAD_POINT) && m.kind == GZ_SIGN_MSG_NONCES && m.n) {
-            uint8_t copy[GZ_SIGN_MAX_MSG];
-            size_t len = a->u.send.bytes.len;
-            memcpy(copy, b, len);
-            uint8_t *e = copy + (m.entry[0] - b);
-            if (w->fault == WX_BAD_POINT) { memset(e + 4, 0xff, 66); e[4] = 2; b = NULL; }
+            memcpy(w_copy, b, len);
+            uint8_t *e = w_copy + (m.entry[0] - b);
+            if (w->fault == WX_BAD_POINT) { memset(e + 4, 0xff, 66); e[4] = 2; }
             else {
                 /* a genuine second nonce for the same item: another public nonce made by the library */
                 secp256k1_musig_secnonce sn;
@@ -387,10 +581,10 @@ static void w_apply_fault(w_node_t *n, gz_action_list_t *list)
                 secp256k1_musig_pubnonce_serialize(w_ctx(), e + 4, &pn);
             }
             w_sign_nonce(e, m.round_id, m.tier, n->index);
+            if (w->fault == WX_BAD_POINT) { memcpy(b, w_copy, len); continue; }
             gz_action_t extra = {.kind = GZ_ACTION_SEND};
             extra.u.send.peer_id = a->u.send.peer_id;
-            extra.u.send.bytes.data = copy; extra.u.send.bytes.len = len;
-            if (b == NULL) { memcpy((uint8_t *)(uintptr_t)a->u.send.bytes.data, copy, len); continue; }
+            extra.u.send.bytes.data = w_copy; extra.u.send.bytes.len = len;
             gz_action_list_add(list, &extra);
         } else if (w->fault == WX_REPEAT_ALL) {
             gz_action_t again = *a;
@@ -419,18 +613,24 @@ static int w_next(void *ctx, gz_stored_batch_t *batch)
 }
 static void w_rewind(void *ctx) { ((w_node_t *)ctx)->batch_at = 0; }
 
+static void w_engine_config(world_t *w, uint32_t index, gz_sign_config_t *c)
+{
+    memset(c, 0, sizeof *c);
+    c->host = index == 0; c->ctx = w_ctx();
+    w_secret("test/factory", index, c->factory_secret);
+    w_secret("test/contribution", index, c->contribution_secret);
+    c->build = w_build; c->retry = w_retry; c->build_ctx = &w->builder;
+    c->tick_ms = 1; c->resend_ticks = 40; c->deadline_ticks = 400; c->status_ticks = 10;
+    c->max_attempts = w->max_attempts ? w->max_attempts : 16;
+}
+
 static void *w_create(void *ops_ctx, uint32_t index, const gz_ports_t *ports, const sim_storage_t *storage)
 {
     world_t *w = ops_ctx;
     w_node_t *n = calloc(1, sizeof *n);
-    if (!n) abort();
     gz_sign_config_t c;
-    memset(&c, 0, sizeof c);
-    c.host = index == 0; c.ctx = w_ctx();
-    w_secret("test/factory", index, c.factory_secret);
-    w_secret("test/contribution", index, c.contribution_secret);
-    c.build = w_build; c.retry = w_retry; c.build_ctx = &w->builder;
-    c.tick_ms = 1; c.resend_ticks = 40; c.deadline_ticks = 400; c.max_attempts = w->max_attempts ? w->max_attempts : 16;
+    if (!n) abort();
+    w_engine_config(w, index, &c);
     if (gz_sign_init(&n->eng, &c, ports, sim_storage_incarnation(storage)) != GZ_OK) abort();
     n->w = w; n->index = index; n->storage = storage;
     w->nodes[index] = n;
@@ -469,12 +669,20 @@ static gz_status_t w_start(void *node, gz_action_list_t *out, int *more)
     return st;
 }
 
+/* The host's user command: test parameters, turned into a proposal. */
+static gz_status_t w_begin_params(gz_sign_t *e, w_builder_t *b, const uint8_t *p, size_t len, gz_action_list_t *out)
+{
+    static w_begin_t wb;
+    if (!w_make_begin(b, p, len, &wb)) return GZ_ERR_ARGUMENT;
+    return gz_sign_begin(e, &wb.b, out);
+}
+
 static gz_status_t w_handle(void *node, const gz_event_t *ev, gz_action_list_t *out)
 {
     w_node_t *n = node;
     gz_status_t st;
     if (ev->kind == GZ_EVENT_USER_COMMAND) {
-        st = gz_sign_begin(&n->eng, ev->u.user.bytes.data, ev->u.user.bytes.len, out);
+        st = w_begin_params(&n->eng, &n->w->builder, ev->u.user.bytes.data, ev->u.user.bytes.len, out);
         if (st == GZ_ERR_ARGUMENT) st = GZ_OK;      /* refused: nothing to do */
     } else st = gz_sign_handle(&n->eng, ev, out);
     if (st == GZ_OK) w_apply_fault(n, out);
@@ -503,7 +711,7 @@ static void w_observe(void *ops_ctx, uint32_t index, const gz_action_t *a)
         w_contrib_t c;
         memset(&c, 0, sizeof c);
         c.node = index; c.kind = m.kind; memcpy(c.round, m.round_id, 32);
-        c.item = (uint32_t)m.entry[k][0] << 24 | (uint32_t)m.entry[k][1] << 16 | (uint32_t)m.entry[k][2] << 8 | m.entry[k][3];
+        c.item = w_be32(m.entry[k]);
         memcpy(c.value, m.entry[k] + 4, m.kind == GZ_SIGN_MSG_NONCES ? 66 : 32);
         int found = 0;
         for (size_t i = 0; i < w->n_contrib && !found; i++) {
@@ -582,7 +790,7 @@ static sim_config_t w_config(world_t *w, uint64_t seed, uint32_t members)
     sim_config_t c;
     memset(&c, 0, sizeof c);
     c.seed = seed; c.n_nodes = members + 1;
-    c.step_slots = 128; c.step_bytes = 1u << 20; c.runner_slots = 512; c.runner_bytes = 4u << 20;
+    c.step_slots = 128; c.step_bytes = 4u << 20; c.runner_slots = 512; c.runner_bytes = 8u << 20;
     c.ops.create = w_create; c.ops.destroy = w_destroy; c.ops.start = w_start; c.ops.handle = w_handle;
     c.ops.inspect = w_inspect; c.ops.observe = w_observe; c.ops.ctx = w;
     return c;

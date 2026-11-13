@@ -29,7 +29,7 @@ static size_t mutate(uint8_t *b, size_t len, size_t cap)
     case 0: for (int i = 0; i < 1 + (int)(rnd() % 8) && len; i++) b[rnd() % len] ^= (uint8_t)(1u << rnd() % 8); return len;
     case 1: return len ? (size_t)(rnd() % len) : 0;
     case 2: { size_t add = rnd() % 64; if (len + add > cap) add = cap - len; for (size_t i = 0; i < add; i++) b[len + i] = (uint8_t)rnd(); return len + add; }
-    case 3: if (len > 40) { b[35 + rnd() % 6] = (uint8_t)rnd(); } return len;
+    case 3: if (len > 44) { b[38 + rnd() % 6] = (uint8_t)rnd(); } return len;   /* the first records' types and lengths */
     case 4: if (len) memset(b + rnd() % len, rnd() % 2 ? 0xff : 0, 1 + rnd() % 8 > len ? 1 : 1 + rnd() % 8); return len;
     default: { size_t n = rnd() % cap; for (size_t i = 0; i < n; i++) b[i] = (uint8_t)rnd(); return n; }
     }
@@ -38,9 +38,11 @@ static size_t mutate(uint8_t *b, size_t len, size_t cap)
 /* A decoded message must point only inside its bytes. */
 static int decoded_sane(const uint8_t *b, size_t len, const gz_sign_msg_t *m)
 {
-    if (m->signed_len > len || (m->sig && (m->sig < b || m->sig + 64 > b + len))) return 0;
+    if (m->signed_len > len - GZ_RMSG_HEADER || (m->sig && (m->sig < b || m->sig + 64 > b + len))) return 0;
     for (int i = 0; i < m->n; i++) if (m->entry[i] < b || m->entry[i] + 4 > b + len) return 0;
-    return m->kind >= GZ_SIGN_MSG_PROPOSE && m->kind <= GZ_SIGN_MSG_ABORT;
+    if (m->round_id && (m->round_id < b || m->round_id + 32 > b + len)) return 0;
+    if (m->held && (m->held < b || m->held + 32 > b + len)) return 0;
+    return m->kind >= GZ_SIGN_MSG_PROPOSE && m->kind <= GZ_SIGN_MSG_FUNDED && m->records == b + GZ_RMSG_HEADER;
 }
 
 /* A reader over a list of (type, bytes) records, one per batch. */
@@ -85,7 +87,7 @@ int main(int argc, char **argv)
     }
     /* 3. Transaction reader, attach and verify. */
     gz_sign_def_t d;
-    CHECK(w_build_tree(p, W_PARAMS, &d, NULL));
+    CHECK(w_build_params(p, &d, NULL));
     for (long it = 0; it < iterations; it++) {
         const gz_sign_item_t *item = &d.items[rnd() % d.n_items];
         uint8_t out[GZ_SIGN_MAX_TX + 200], sig[64] = {1};

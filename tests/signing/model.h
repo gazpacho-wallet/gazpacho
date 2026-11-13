@@ -20,7 +20,8 @@
  *       Aborted in it; a member that sent an ack is Complete; a host round is
  *       Done exactly when an ack from every member it proposed to was saved.
  * S5 (restore epochs) and S6 (contribution keys inside the identifier) are not
- * modelled here: S5 is not built; S6 is checked by test_definitions. */
+ * modelled here: S5 is checked by the proposals scenario and test_definitions, S6 by
+ * test_definitions. */
 #ifndef GZ_TEST_SIGNING_MODEL_H
 #define GZ_TEST_SIGNING_MODEL_H
 
@@ -128,7 +129,7 @@ static void model_watch(harness_t *h, uint32_t g, const gz_action_t *a)
         break;
     }
     case GZ_SIGN_MSG_ABORT:
-        if (g != 0 && msg.tier == 0xff && h_find(h, g, msg.round_id)) {
+        if (g != 0 && !msg.has_tier && h_find(h, g, msg.round_id)) {
             if (m_find(m, MF_SENT_PARTIALS, g, msg.round_id, 0)) m_violate(m, "section 7: a whole-round abort after a partial signature");
             if (!m_find(m, MF_ABORTED, g, msg.round_id, 0)) m_add(m, MF_ABORTED, g, msg.round_id, 0, NULL, 0, inc);
         }
@@ -236,8 +237,11 @@ static int model_run(uint64_t seed, model_stats_t *st)
     int done = r && r->state == GZ_SIGN_ROUND_DONE;
     if (done) {
         for (int j = 1; j < r->def.n_participants; j++) {
-            const gz_sign_round_t *mr2 = h_find(&h, (uint32_t)r->def.participants[j].peer, r->id);
-            CHECK(mr2 && mr2->state == GZ_SIGN_ROUND_COMPLETE && memcmp(mr2->final_sig, r->final_sig, sizeof r->final_sig) == 0);
+            const gz_sign_round_t *mr2 = h_find(&h, (uint32_t)r->def.peer[j], r->id);
+            CHECK(mr2 && mr2->state == GZ_SIGN_ROUND_COMPLETE);
+            for (int i = 0; mr2 && i < r->def.n_items; i++)      /* the finals of its own items, as the host holds them */
+                for (int s = 0; s < r->def.items[i].n_signers; s++)
+                    if (r->def.items[i].signers[s] == j) CHECK(memcmp(mr2->final_sig[i], r->final_sig[i], 64) == 0);
         }
     } else st->exhausted += h.p[0].e->attempts >= 40;
     st->done += (uint64_t)done;
