@@ -67,8 +67,22 @@
 #define GZ_SIGN_MAX_TX           720     /* bytes of one unsigned transaction: core/tree's GZ_TREE_MAX_TX */
 #define GZ_SIGN_MAX_FUNDING_TX   8192    /* the funding transaction this engine holds (messages.md allows 100,000) */
 #define GZ_SIGN_MAX_ROUNDS       4       /* rounds a party keeps in full */
-#define GZ_SIGN_MAX_KNOWN        256     /* round identifiers remembered as refused */
-#define GZ_SIGN_MAX_EXPOSURES    256     /* C7 records (funding outpoint, tree digest) held */
+#define GZ_SIGN_MAX_KNOWN        256     /* the newest refused identifiers, kept exactly (a ring) */
+/* Every refused identifier, however many: a Bloom filter of 2^20 bits with 10
+ * positions per identifier. It has no false negatives, so a refused
+ * identifier is never forgotten; a false positive only refuses a new round
+ * (abort reason 3). With 10,000 identifiers the chance of one is below
+ * 10^-10, with 100,000 about 1%. The positions are public: a host that grinds
+ * identifiers to hit one only gets its own round refused. Fixed memory, no
+ * cap: the set never makes a start fail (review A, F2). */
+#define GZ_SIGN_KNOWN_FILTER_BITS 20
+#define GZ_SIGN_KNOWN_FILTER_K    10
+/* C7 records (funding outpoint, tree digest) held in memory: one per funding
+ * outpoint this party ever released a partial signature for. At the limit a
+ * new outpoint is refused (abort reason 9), never dropped; a journal holding
+ * more (never written by this build) still starts, with every new round
+ * refused (review A, F2). */
+#define GZ_SIGN_MAX_EXPOSURES    4096
 
 /* Message sizes (envelope included). A record's type and length take at
  * most 8 bytes here; 240, the signature, is 67. */
@@ -224,6 +238,11 @@ typedef struct {
 
 typedef struct gz_sign_round gz_sign_round_t;
 
+/* The newest round that made an exposure record, and its state when it left
+ * memory (GZ_SIGN_ROUND_FREE while it is held): C10 and gz_sign_resolve reach
+ * a round through it after the round has left the slots (review A, F3). */
+typedef struct { uint8_t round_id[32]; uint8_t state, why; } gz_sign_exposed_t;
+
 /* Host only: the next attempt after a failed one. `blamed` (bit i =
  * participant i of the failed round) are to be left out; `released` is 1 if
  * any partial signature may have left a member, in which case the next
@@ -332,8 +351,19 @@ typedef struct {
     uint8_t factory_key[33], contribution_key[33];   /* this party's current keys, compressed */
     uint32_t attempts, next_seq;
     gz_sign_round_t rounds[GZ_SIGN_MAX_ROUNDS];
-    uint8_t known[GZ_SIGN_MAX_KNOWN][32];
-    size_t n_known;
+    /* Host: the contribution keys of members that answered "restarted"
+     * (reason 3) in this lobby, since the program's last gz_sign_begin; a
+     * second such answer is blamed (review A, F4). */
+    uint8_t restarted[GZ_SIGN_MAX_PARTICIPANTS][33];
+    size_t n_restarted;
+    uint8_t known[GZ_SIGN_MAX_KNOWN][32];   /* the newest, at n % GZ_SIGN_MAX_KNOWN */
+    size_t n_known;                         /* refused identifiers in all */
+    uint8_t known_filter[1u << (GZ_SIGN_KNOWN_FILTER_BITS - 3)];
+    /* Set when a call failed after the engine had changed its state (its
+     * actions were not handed out): every call is then refused with
+     * GZ_ERR_FAILED until gz_sign_start rebuilds the engine from storage
+     * (review A, F1; node.h: on any error the node is as it was). */
+    int failed;
     uint64_t counters[9];           /* see GZ_SIGN_COUNT_* */
     uint8_t scratch[GZ_SIGN_MAX_MSG];
     gz_sign_def_t scratch_def;
@@ -341,8 +371,10 @@ typedef struct {
     gz_rmsg_propose_t prop;         /* the proposal being read */
     /* C7: every exposure record this party holds, of any epoch, never removed. */
     gz_tree_exposure_t exposures[GZ_SIGN_MAX_EXPOSURES];
+    gz_sign_exposed_t exposed[GZ_SIGN_MAX_EXPOSURES];
     size_t n_exposures;
-    gz_tree_outpoint_t unresolved[GZ_SIGN_MAX_ROUNDS];
+    int exposures_lost;             /* a start found more than fit: every new round is refused */
+    gz_tree_outpoint_t unresolved[GZ_SIGN_MAX_EXPOSURES + GZ_SIGN_MAX_ROUNDS];
     /* Work areas for large temporaries of functions the compiler inlines:
      * on the stack, gcc's AddressSanitizer would guard them with calls the
      * isolation check refuses. */
@@ -367,7 +399,10 @@ enum {
 gz_status_t gz_sign_init(gz_sign_t *e, const gz_sign_config_t *cfg, const gz_ports_t *ports, uint64_t incarnation);
 
 /* Start or restart from storage, in one step (`*more` is set to 0). Same
- * contract as gz_node_start. A member answers per item (S2): a round whose
+ * contract as gz_node_start. Every round held in memory is dropped first and
+ * rebuilt from storage, so it also recovers an engine that failed
+ * (GZ_ERR_FAILED); the counters that make session ids and host random values
+ * unique within the incarnation are kept. A member answers per item (S2): a round whose
  * nonce was sent and whose partial signature was not becomes Aborted (no
  * partial signature ever sent) or Unfinished, and is answered with an abort;
  * saved partial signatures are resent (S3). A host fails an unfinished
@@ -375,7 +410,9 @@ gz_status_t gz_sign_init(gz_sign_t *e, const gz_sign_config_t *cfg, const gz_por
 gz_status_t gz_sign_start(gz_sign_t *e, const gz_storage_reader_t *storage, gz_action_list_t *out, int *more);
 
 /* Handle one event; same contract as gz_node_handle. Messages that do not
- * parse, or that this party should not get, are counted and ignored. */
+ * parse, or that this party should not get, are counted and ignored. Any
+ * error leaves the action list as it was and the engine failed: this and
+ * every later call return GZ_ERR_FAILED until gz_sign_start. */
 gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *event, gz_action_list_t *out);
 
 /* Host: begin a round. GZ_ERR_ARGUMENT if not a host, a round is still
@@ -390,11 +427,6 @@ gz_status_t gz_sign_resolve(gz_sign_t *e, const uint8_t round_id[32], uint8_t ou
 
 /* The exposure records held (C7), for the embedding's checks. */
 size_t gz_sign_exposures(const gz_sign_t *e, const gz_tree_exposure_t **out);
-
-/* Write every live secret nonce as (8-byte little-endian serial, the 132
- * secret-nonce bytes) to `out`; returns the length, or 0 if `cap` is short.
- * For the simulator's inspection hook: the property is judged on these. */
-size_t gz_sign_inspect_secrets(const gz_sign_t *e, uint8_t *out, size_t cap);
 
 /* The newest round this party holds, or NULL. */
 const gz_sign_round_t *gz_sign_latest(const gz_sign_t *e);

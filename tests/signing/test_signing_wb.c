@@ -274,6 +274,205 @@ static void test_masks(void)
     CHECK(all_bits(&it) == 0xffffffffu);
 }
 
+/* ---- review A ---- */
+
+static size_t count_recs(const harness_t *h, uint32_t g, uint32_t type)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < h->p[g].n_recs; i++) n += h->p[g].recs[i].type == type;
+    return n;
+}
+
+/* Messages of `kind` that party g sent for round `id`. */
+static size_t sent_for(const harness_t *h, uint32_t g, uint8_t kind, const uint8_t id[32])
+{
+    size_t n = 0;
+    for (size_t i = 0; i < h->n_sent; i++) {
+        const h_sent_t *s = &h->sent[i];
+        if (s->party == g && s->kind == kind && s->len >= GZ_RMSG_HEADER + 34 && !memcmp(s->b + GZ_RMSG_HEADER + 2, id, 32)) n++;
+    }
+    return n;
+}
+
+/* Every round_partial_sigs party g ever sent belongs to a round with an exposure record in its journal (C7). */
+static int partials_all_exposed(const harness_t *h, uint32_t g)
+{
+    for (size_t i = 0; i < h->n_sent; i++) {
+        const h_sent_t *s = &h->sent[i];
+        int found = 0;
+        if (s->party != g || s->kind != GZ_SIGN_MSG_PARTIALS || s->len < GZ_RMSG_HEADER + 34) continue;
+        for (size_t k = 0; k < h->p[g].n_recs && !found; k++) {
+            const h_rec_t *rec = &h->p[g].recs[k];
+            found = rec->type == GZ_SIGN_REC_EXPOSURE && rec->len >= 34 && rec->b[0] == 2 && rec->b[1] == 32 &&
+                    !memcmp(rec->b + 2, s->b + GZ_RMSG_HEADER + 2, 32);
+        }
+        if (!found) return 0;
+    }
+    return 1;
+}
+
+/* F1 (review A's probes nospace-*): a round_all_nonces handled with an action
+ * list too short for the exposure batch. The engine is failed: given the
+ * same event again with room (retry), or a reconnect, it sends nothing; after
+ * a restart no partial signature has left without its exposure record. */
+static void test_nospace_exposure(void)
+{
+    harness_t h;
+    static gz_action_t slots[8];
+    static uint8_t bytes[256];
+    gz_action_list_t small;
+    gz_event_t ev;
+    uint8_t id[32];
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    while (h.nq && q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+    long k = q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES);
+    gz_sign_round_t *r = round_of(&h, 1);
+    CHECK(k >= 0 && r != NULL);
+    if (k < 0 || !r) { h_free(&h); return; }
+    memcpy(id, r->id, 32);
+    gz_action_list_init(&small, slots, 8, bytes, sizeof bytes);
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = 0;
+    ev.u.message.bytes.data = h.q[k].b; ev.u.message.bytes.len = h.q[k].len;
+    CHECK(gz_sign_handle(h.p[1].e, &ev, &small) == GZ_ERR_NO_SPACE && small.count == 0 && small.used == 0);
+    CHECK(h.p[1].e->failed && h.p[1].e->n_exposures == 0);
+    /* retry: the same event with room */
+    CHECK(h_deliver(&h, (size_t)k, 1) == GZ_ERR_FAILED);
+    CHECK(sent_for(&h, 1, GZ_SIGN_MSG_PARTIALS, id) == 0 && count_recs(&h, 1, GZ_SIGN_REC_EXPOSURE) == 0);
+    /* reconnect */
+    CHECK(h_connect(&h, 1, 0) == GZ_ERR_FAILED);
+    CHECK(sent_for(&h, 1, GZ_SIGN_MSG_PARTIALS, id) == 0);
+    /* restart: built from the journal, which holds no exposure; the round was in the nonce phase */
+    CHECK(h_restart(&h, 1) == GZ_OK && !h.p[1].e->failed && h.p[1].e->n_exposures == 0);
+    CHECK(h_find(&h, 1, id) && h_find(&h, 1, id)->state == GZ_SIGN_ROUND_ABORTED && !h_find(&h, 1, id)->ever_partial);
+    h_deliver(&h, (size_t)k, 0);                                    /* the old all_nonces now: refused */
+    CHECK(sent_for(&h, 1, GZ_SIGN_MSG_PARTIALS, id) == 0);
+    h_flush(&h, 100000);
+    for (uint32_t g = 1; g <= 3; g++) CHECK(partials_all_exposed(&h, g));
+    h_free(&h);
+}
+
+/* F1: an action list one slot short at every step of a two-tier round, each
+ * party in turn. Whatever the step, the engine is failed until a start, and
+ * no partial signature ever leaves without its exposure record. */
+static void test_short_lists(void)
+{
+    static gz_action_t slots[1];
+    static uint8_t bytes[64];
+    size_t steps = 0, failed = 0;
+    for (int at = 0; at < 60; at++) {
+        harness_t h;
+        gz_action_list_t small;
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+        for (int s = 0; s < at && h.nq; s++) h_deliver(&h, 0, 0);
+        if (h.nq) {
+            h_msg_t m = h.q[0];
+            gz_event_t ev;
+            memset(&ev, 0, sizeof ev);
+            ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = m.from;
+            ev.u.message.bytes.data = m.b; ev.u.message.bytes.len = m.len;
+            gz_action_list_init(&small, slots, 1, bytes, sizeof bytes);
+            gz_status_t st = gz_sign_handle(h.p[m.to].e, &ev, &small);
+            steps++;
+            if (st != GZ_OK) {
+                failed++;
+                CHECK(small.count == 0 && small.used == 0 && h.p[m.to].e->failed);
+                CHECK(h_deliver(&h, 0, 1) == GZ_ERR_FAILED);          /* again, with room: still refused */
+                CHECK(h_restart(&h, m.to) == GZ_OK);
+            }
+        }
+        h_flush(&h, 100000);
+        h_ticks(&h, 40);
+        for (uint32_t g = 1; g <= 3; g++) CHECK(partials_all_exposed(&h, g));
+        h_free(&h);
+    }
+    printf("  short lists: %zu steps, %zu refused for room\n", steps, failed);
+    CHECK(failed > 10);
+}
+
+/* F3 (review A's probe evict-unresolved): a Complete round pushed out of memory
+ * by later rounds is still unresolved for C10, across a restart, and still
+ * reachable by gz_sign_resolve. */
+static void test_evicted_unresolved(void)
+{
+    harness_t h;
+    gz_action_list_t list;
+    uint8_t a[32], c[32];
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+    h_flush(&h, 100000);
+    const gz_sign_round_t *ra = h_newest(&h, 1);
+    CHECK(ra && ra->state == GZ_SIGN_ROUND_COMPLETE);
+    if (!ra) { h_free(&h); return; }
+    memcpy(a, ra->id, 32);
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) { CHECK(h_begin(&h, 1, 3, 0) == GZ_OK); h_flush(&h, 100000); }
+    CHECK(h_find(&h, 1, a) == NULL && evicted(h.p[1].e, a) && evicted(h.p[1].e, a)->state == GZ_SIGN_ROUND_COMPLETE);
+    CHECK(unresolved(h.p[1].e) == GZ_SIGN_MAX_ROUNDS + 1);
+    for (int pass = 0; pass < 2; pass++) {                          /* before and after a restart */
+        CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);           /* the same tree on A's outpoint: C10 refuses */
+        memcpy(c, h_newest(&h, 0)->id, 32);
+        h_flush(&h, 100000);
+        CHECK(sent_for(&h, 1, GZ_SIGN_MSG_PARTIALS, c) == 0);
+        if (pass == 0) CHECK(h_restart(&h, 1) == GZ_OK && evicted(h.p[1].e, a) && evicted(h.p[1].e, a)->state == GZ_SIGN_ROUND_COMPLETE);
+    }
+    /* resolve reaches it, and the outcome is kept across a restart */
+    gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_resolve(h.p[1].e, a, GZ_SIGN_END_LIVE, &list) == GZ_OK && list.count == 1);
+    h_apply(&h, 1, &list);
+    CHECK(evicted(h.p[1].e, a)->state == GZ_SIGN_ROUND_LIVE);
+    gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_resolve(h.p[1].e, a, GZ_SIGN_END_DEAD, &list) == GZ_ERR_ARGUMENT);   /* Live is final */
+    CHECK(h_restart(&h, 1) == GZ_OK && evicted(h.p[1].e, a) && evicted(h.p[1].e, a)->state == GZ_SIGN_ROUND_LIVE);
+    h_free(&h);
+    /* the control: without the eviction the second round on the outpoint is refused the same way */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+    h_flush(&h, 100000);
+    CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+    memcpy(c, h_newest(&h, 0)->id, 32);
+    h_flush(&h, 100000);
+    CHECK(sent_for(&h, 1, GZ_SIGN_MSG_PARTIALS, c) == 0);
+    h_free(&h);
+}
+
+/* F2: when the C7 set has no room (here: a start found more records than
+ * fit), every new round is refused with reason 9 before any nonce, never
+ * signed with an exposure dropped. */
+static void test_exposure_room(void)
+{
+    harness_t h;
+    uint8_t z[32] = {1};
+    h_init(&h, 3);
+    gz_sign_t *e1 = h.p[1].e;
+    size_t n0 = e1->n_exposures;
+    e1->n_exposures = GZ_SIGN_MAX_EXPOSURES;                        /* as if full */
+    CHECK(add_exposure(e1, z, 0, z, z) == 0 && e1->exposures_lost);  /* not dropped silently */
+    e1->n_exposures = n0;
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    long k = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
+    CHECK(k >= 0);
+    size_t nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES), sent = h.n_sent;
+    if (k >= 0) h_deliver(&h, (size_t)k, 0);
+    gz_sign_msg_t m;
+    CHECK(h.n_sent == sent + 1 && gz_sign_decode(h.sent[sent].b, h.sent[sent].len, &m) && m.kind == GZ_SIGN_MSG_ABORT && m.reason == 9);
+    CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == nonces && h.p[1].e->n_exposures == 0);
+    h_free(&h);
+    /* and when the room goes between the proposal and the nonce set: no partial signature */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    while (h.nq && q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+    k = q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES);
+    CHECK(k >= 0);
+    h.p[1].e->exposures_lost = 1;
+    if (k >= 0) h_deliver(&h, (size_t)k, 0);
+    gz_sign_round_t *r = round_of(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_ABORTED && r->why == GZ_SIGN_WHY_CAPACITY && !r->ever_partial);
+    CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == 0 && h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == 0);
+    h_free(&h);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -284,6 +483,10 @@ int main(void)
     test_host_verify_final();
     test_wipe_after_sign();
     test_definition_lines();
+    test_nospace_exposure();
+    test_short_lists();
+    test_evicted_unresolved();
+    test_exposure_room();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);
