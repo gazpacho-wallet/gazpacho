@@ -2264,6 +2264,78 @@ static void test_p5_idle(void)
     fx_stop(&x);
 }
 
+/* ---- review B of PR 26 (B1-B4, B6) and review A's last two survivors ----------------------- */
+/* A connection opened, and accepted, before the clock moves: its request is
+ * read in the server's next turn, before an expiry tick can run, so a lazy
+ * expiry check is what answers it. */
+static int open_idle(fixture *x)
+{
+    int fd = tcp_connect(x->port);
+    sleep_ms(100);
+    return fd;
+}
+
+static void api_on(fixture *x, int fd, resp *r, const char *method, const char *path, const char *body)
+{
+    char req[4000];
+    int n = snprintf(req, sizeof req,
+                     "%s %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nOrigin: http://127.0.0.1:%d\r\n"
+                     "Sec-Fetch-Site: same-origin\r\nSec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\n%s%s%sConnection: close\r\n",
+                     method, path, x->port, x->port, g_session[0] ? "X-Gazpacho-Session: " : "", g_session,
+                     g_session[0] ? "\r\n" : "");
+    if (body)
+        n += snprintf(req + n, sizeof req - (size_t)n, "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+                      strlen(body), body);
+    else
+        n += snprintf(req + n, sizeof req - (size_t)n, "\r\n");
+    send(fd, req, (size_t)n, MSG_NOSIGNAL);
+    read_answer(fd, r, 3000);
+    close(fd);
+}
+
+/* B4: the one-second delay is kept in milliseconds: a wrong passphrase at x.990 s
+ * and another at x+1.005 s are one derivation, not two. Also a session past its
+ * idle sign-out is refused at once, before the expiry tick (b-lazy-expiry-off). */
+static void test_b4_ms_delay(void)
+{
+    fixture x;
+    resp r;
+    int64_t der, t;
+    clock_freeze(1);
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.cfg.limits.idle_sign_out_ms = 5000;
+    if (fx_go(&x)) { CHECK(0); clock_freeze(0); return; }
+    t = test_now(NULL) % 1000;
+    atomic_fetch_add(&clock_off, (990 - t + 1000) % 1000);
+    g_session[0] = 0;
+    der = FAKE_READ(&x, x.fake.derivations);
+    CHECK(expect(&x, "POST", "/api/v1/session", "{\"passphrase\":\"wrong at the end of a second\"}", 401, "wrong_passphrase"));
+    {
+        /* the file keeps the delay's end rounded up: x+2, never x+1 (a restart then never shortens it) */
+        uint32_t wrong;
+        uint64_t last, until;
+        CHECK(read_attempts(&x, &wrong, &last, &until) == 0 && (int64_t)until == (test_now(NULL) + 1000 + 999) / 1000);
+    }
+    atomic_fetch_add(&clock_off, 15);
+    api(&x, &r, "POST", "/api/v1/session", "{\"passphrase\":\"wrong just after the second\"}", NULL);
+    CHECK(is_code(&r, 429, "rate_limited") && strstr(r.body, "\"retry_after_s\":1}"));
+    resp_free(&r);
+    CHECK(FAKE_READ(&x, x.fake.derivations) == der + 1);
+    atomic_fetch_add(&clock_off, 1000);
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    CHECK(strlen(g_session) == 43);
+    {
+        int fd = open_idle(&x);
+        atomic_fetch_add(&clock_off, 6000);
+        api_on(&x, fd, &r, "GET", "/api/v1/lobbies", NULL);
+        CHECK(is_code(&r, 401, "not_signed_in"));
+        resp_free(&r);
+    }
+    clock_freeze(0);
+    fx_stop(&x);
+}
+
 int main(void)
 {
     test_binding();
@@ -2290,5 +2362,6 @@ int main(void)
     test_p5_generation();
     test_p5_held();
     test_p5_idle();
+    test_b4_ms_delay();
     return check_done();
 }

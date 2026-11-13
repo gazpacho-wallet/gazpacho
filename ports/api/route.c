@@ -792,7 +792,7 @@ static int start_job(gz_api_server *srv, gz_conn *c, int purpose, int op, const 
 {
     gz_req *r = &c->req;
     const char *pass = jstr(body, "passphrase");
-    int64_t retry = 0, now_s = gz_now_ms(srv) / 1000;
+    int64_t retry = 0, now_ms = gz_mono_ms(srv);
     gz_job *j;
     size_t plen;
     if (!pass) { gz_respond_error(srv, c, 400, "missing_field", "/passphrase", NULL); return 1; }
@@ -800,7 +800,7 @@ static int start_job(gz_api_server *srv, gz_conn *c, int purpose, int op, const 
     if (plen == 0 || plen > 4096) { gz_respond_error(srv, c, 400, "bad_value", "/passphrase", NULL); return 1; }
     /* 4.3: the attempts file's delay, then the slot, before any derivation */
     if (srv->att_loaded && op != GZ_API_PP_CREATE && op != GZ_API_PP_RESTORE &&
-        gz_attempts_gate(srv, now_s, &retry)) {
+        gz_attempts_gate(srv, now_ms, &retry)) {
         char params[48];
         if (retry < 0) { gz_respond_error(srv, c, 503, "passphrase_not_checked", NULL, NULL); return 1; }
         snprintf(params, sizeof params, "{\"retry_after_s\":%lld}", (long long)retry);
@@ -959,12 +959,12 @@ void gz_job_refuse(gz_api_server *srv, gz_job *j, int status, const char *code, 
     gz_job_free(j);
 }
 
-static void count_result(gz_api_server *srv, const gz_api_pp_job *pp, int64_t now_s)
+static void count_result(gz_api_server *srv, const gz_api_pp_job *pp, int64_t now_ms)
 {
     if (pp->result == GZ_API_PPR_WRONG) {
-        if (srv->att_last_wrong && now_s - srv->att_last_wrong < 2)
+        if (srv->att_last_wrong_ms && now_ms - srv->att_last_wrong_ms < 2000)
             gz_log(srv, "wrong passphrases are arriving faster than a person types: another program may be trying");
-        gz_attempts_wrong(srv, now_s);
+        gz_attempts_wrong(srv, now_ms);
         gz_log(srv, "wrong passphrase (%u in a row)", (unsigned)srv->att_wrong);
     } else if (pp->result == GZ_API_PPR_OK || pp->result == GZ_API_PPR_WORDS_DIFFER ||
                pp->result == GZ_API_PPR_FILES_BEHIND) {
@@ -978,12 +978,12 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
     gz_api_pp_job *pp = &j->pp;
     const char *fault = NULL;
     gz_session *s = req_session(srv, j->sess_slot, j->sess_no);
-    int64_t now = gz_now_ms(srv), now_s = now / 1000;
+    int64_t now = gz_now_ms(srv), now_s = now / 1000, mono = gz_mono_ms(srv);
     int verified = 0;
     if (pp->generation != gz_generation(srv)) {
         /* a lock, stop or restart since it was queued: nothing is installed, but a
          * wrong passphrase still counts (contract-v2 4, T4.4) */
-        if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, now_s);
+        if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, mono);
         if (srv->be->passphrase_discard) srv->be->passphrase_discard(srv->bectx, pp);
         gz_job_refuse(srv, j, 503, "passphrase_not_checked", NULL);
         return;
@@ -999,7 +999,7 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
         gz_events_notify(srv, "status", NULL);
     }
     /* the counter, whatever happens to the connection */
-    count_result(srv, pp, now_s);
+    count_result(srv, pp, mono);
     if (pp->result == GZ_API_PPR_OK || pp->result == GZ_API_PPR_WORDS_DIFFER || pp->result == GZ_API_PPR_FILES_BEHIND)
         verified = 1;
     if (pp->result == GZ_API_PPR_WRONG) {
@@ -1655,7 +1655,7 @@ static void handle(gz_api_server *srv, gz_conn *c)
             gz_respond_error(srv, c, 400, "bad_value", "/check_id", NULL);
             break;
         }
-        if (srv->att_loaded && gz_attempts_gate(srv, now_s, &gate)) {
+        if (srv->att_loaded && gz_attempts_gate(srv, gz_mono_ms(srv), &gate)) {
             char params[48];
             if (gate < 0) { gz_respond_error(srv, c, 503, "passphrase_not_checked", NULL, NULL); break; }
             snprintf(params, sizeof params, "{\"retry_after_s\":%lld}", (long long)gate);

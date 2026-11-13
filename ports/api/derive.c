@@ -159,7 +159,7 @@ static void promote(gz_api_server *srv)
             gz_job_refuse(srv, q, 503, "passphrase_not_checked", NULL);   /* never derived: nothing to count */
             continue;
         }
-        if (gz_job_gated(q) && srv->att_loaded && gz_attempts_gate(srv, gz_now_ms(srv) / 1000, &retry)) {
+        if (gz_job_gated(q) && srv->att_loaded && gz_attempts_gate(srv, gz_mono_ms(srv), &retry)) {
             char params[48];
             if (retry < 0) {
                 gz_job_refuse(srv, q, 503, "passphrase_not_checked", NULL);

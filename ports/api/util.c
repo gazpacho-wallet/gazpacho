@@ -105,6 +105,17 @@ int64_t gz_now_ms(gz_api_server *srv)
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* For delays that a wall clock set back or forward must not move (the
+ * attempts delay, review B4). The tests' clock when one is set, so they
+ * still control every delay. */
+int64_t gz_mono_ms(gz_api_server *srv)
+{
+    struct timespec ts;
+    if (srv && srv->cfg.now_ms) return srv->cfg.now_ms(srv->cfg.ctx);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 void gz_log(gz_api_server *srv, const char *fmt, ...)
 {
     char line[512];

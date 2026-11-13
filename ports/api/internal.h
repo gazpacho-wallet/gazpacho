@@ -29,6 +29,7 @@ int gz_b64url_decode(const char *in, size_t n, uint8_t *out, size_t outn); /* ex
 int gz_ct_eq(const void *a, const void *b, size_t n);    /* constant time, 1 if equal */
 void gz_hex(const uint8_t *in, size_t n, char *out);
 int64_t gz_now_ms(gz_api_server *srv);
+int64_t gz_mono_ms(gz_api_server *srv);                  /* monotonic (the test clock when set) */
 void gz_log(gz_api_server *srv, const char *fmt, ...)
 #if defined(__GNUC__)
     __attribute__((format(printf, 2, 3)))
@@ -224,7 +225,8 @@ struct gz_api_server {
     /* attempts (4.3, storage 12.3) */
     uint64_t att_counter;
     uint32_t att_wrong;
-    int64_t att_last_wrong, att_blocked_until;
+    /* in monotonic milliseconds (gz_mono_ms, review B4); the file keeps wall-clock seconds */
+    int64_t att_last_wrong_ms, att_blocked_until_ms;
     int att_loaded;
     int att_unsaved;                 /* the file could not be written: passphrases refused (F5.1) */
     int token_dir_refused;           /* the socket token folder is not ours (F5.5) */
@@ -307,8 +309,8 @@ const char *gz_start_token_present(gz_api_server *srv, const char *b64, int64_t 
 int gz_tunnel_host(gz_api_server *srv, const char *host);
 /* attempts */
 void gz_attempts_load(gz_api_server *srv);
-int gz_attempts_gate(gz_api_server *srv, int64_t now_s, int64_t *retry_after);
-void gz_attempts_wrong(gz_api_server *srv, int64_t now_s);
+int gz_attempts_gate(gz_api_server *srv, int64_t now_mono_ms, int64_t *retry_after_s);
+void gz_attempts_wrong(gz_api_server *srv, int64_t now_mono_ms);
 void gz_attempts_right(gz_api_server *srv);
 void gz_attempts_fresh_file(gz_api_server *srv);
 int gz_attempts_encode(const char *network, uint64_t counter, uint32_t wrong, uint64_t last,

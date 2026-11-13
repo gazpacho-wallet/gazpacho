@@ -418,12 +418,35 @@ int gz_attempts_decode(const char *network, const uint8_t in[85], uint64_t *coun
     return 0;
 }
 
+/* Memory keeps the delay in monotonic milliseconds (review B4): exact to the
+ * millisecond, and a wall clock set back or forward does not move it. The
+ * file keeps wall-clock seconds (storage 12.3), rounded up, so the delay it
+ * carries across a restart is never shorter than the one in force. */
+static uint64_t to_wall_s(gz_api_server *srv, int64_t mono_ms)
+{
+    int64_t wall_ms;
+    if (!mono_ms) return 0;
+    wall_ms = gz_now_ms(srv) + (mono_ms - gz_mono_ms(srv));
+    return wall_ms > 0 ? (uint64_t)((wall_ms + 999) / 1000) : 0;
+}
+
+/* From the file: wall seconds to monotonic milliseconds, at most cap_ms ahead
+ * (a clock set back must not block for longer than the ceiling, review F5.2). */
+static int64_t from_wall_s(gz_api_server *srv, uint64_t wall_s, int64_t cap_ms)
+{
+    int64_t left;
+    if (!wall_s) return 0;
+    left = wall_s > (uint64_t)(INT64_MAX / 2000) ? cap_ms : (int64_t)wall_s * 1000 - gz_now_ms(srv);
+    if (left > cap_ms) left = cap_ms;
+    return gz_mono_ms(srv) + left;
+}
+
 static void attempts_save(gz_api_server *srv)
 {
     uint8_t b[85];
     srv->att_counter++;
-    if (gz_attempts_encode(srv->be->network, srv->att_counter, srv->att_wrong, (uint64_t)srv->att_last_wrong,
-                           (uint64_t)srv->att_blocked_until, b) != 0 ||
+    if (gz_attempts_encode(srv->be->network, srv->att_counter, srv->att_wrong, to_wall_s(srv, srv->att_last_wrong_ms),
+                           to_wall_s(srv, srv->att_blocked_until_ms), b) != 0 ||
         write_private(srv->attempts_path, b, sizeof b) != 0) {
         if (!srv->att_unsaved) gz_log(srv, "warning: the attempts file could not be written: passphrases are refused until it can be");
         srv->att_unsaved = 1;                           /* fail closed (review F5.1): gz_attempts_gate refuses */
@@ -439,7 +462,6 @@ void gz_attempts_load(gz_api_server *srv)
     ssize_t n = -1;
     uint64_t counter, last, until;
     uint32_t wrong;
-    int64_t now = gz_now_ms(srv) / 1000;
     srv->att_loaded = 1;
     fd = open(srv->attempts_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd >= 0) {
@@ -449,28 +471,26 @@ void gz_attempts_load(gz_api_server *srv)
     if (n == 85 && gz_attempts_decode(srv->be->network, b, &counter, &wrong, &last, &until) == 0) {
         srv->att_counter = counter;
         srv->att_wrong = wrong;
-        srv->att_last_wrong = (int64_t)last;
-        srv->att_blocked_until = (int64_t)until;
-        /* a clock set back must not block for longer than the ceiling (review F5.2) */
-        if (srv->att_blocked_until > now + 900) srv->att_blocked_until = now + 900;
+        srv->att_last_wrong_ms = from_wall_s(srv, last, 0);
+        srv->att_blocked_until_ms = from_wall_s(srv, until, 900 * 1000);
         return;
     }
     /* missing, damaged or of another network: the strictest state, from now (storage 12.3) */
     gz_log(srv, "the attempts file is missing or damaged: sign-in is refused for 15 minutes");
     srv->att_wrong = 0;
-    srv->att_last_wrong = 0;
-    srv->att_blocked_until = now + 900;
+    srv->att_last_wrong_ms = 0;
+    srv->att_blocked_until_ms = gz_mono_ms(srv) + 900 * 1000;
     attempts_save(srv);
 }
 
-int gz_attempts_gate(gz_api_server *srv, int64_t now_s, int64_t *retry_after)
+int gz_attempts_gate(gz_api_server *srv, int64_t now_ms, int64_t *retry_after)
 {
     if (srv->att_unsaved) {                             /* the count could not be kept: nothing is checked */
         attempts_save(srv);                             /* try again; the retry is on the loop thread */
         if (srv->att_unsaved) { *retry_after = -1; return 1; }
     }
-    if (now_s < srv->att_blocked_until) {
-        *retry_after = srv->att_blocked_until - now_s;
+    if (now_ms < srv->att_blocked_until_ms) {
+        *retry_after = (srv->att_blocked_until_ms - now_ms + 999) / 1000;   /* seconds, rounded up */
         return 1;
     }
     return 0;
@@ -478,7 +498,7 @@ int gz_attempts_gate(gz_api_server *srv, int64_t now_s, int64_t *retry_after)
 
 /* One attempt per second; after 5 wrong in a row the delay doubles with each
  * further wrong attempt, up to 15 minutes (4.3, D15). */
-void gz_attempts_wrong(gz_api_server *srv, int64_t now_s)
+void gz_attempts_wrong(gz_api_server *srv, int64_t now_ms)
 {
     int64_t delay = 1;
     srv->att_wrong++;
@@ -487,24 +507,24 @@ void gz_attempts_wrong(gz_api_server *srv, int64_t now_s)
         delay = k >= 10 ? 900 : ((int64_t)1 << k);
         if (delay > 900) delay = 900;
     }
-    srv->att_last_wrong = now_s;
-    srv->att_blocked_until = now_s + delay;
+    srv->att_last_wrong_ms = now_ms;
+    srv->att_blocked_until_ms = now_ms + delay * 1000;
     attempts_save(srv);
 }
 
 void gz_attempts_right(gz_api_server *srv)
 {
-    if (srv->att_wrong == 0 && srv->att_blocked_until == 0) return;
+    if (srv->att_wrong == 0 && srv->att_blocked_until_ms == 0) return;
     srv->att_wrong = 0;
-    srv->att_blocked_until = 0;
+    srv->att_blocked_until_ms = 0;
     attempts_save(srv);
 }
 
 void gz_attempts_fresh_file(gz_api_server *srv)
 {
     srv->att_wrong = 0;
-    srv->att_last_wrong = 0;
-    srv->att_blocked_until = 0;
+    srv->att_last_wrong_ms = 0;
+    srv->att_blocked_until_ms = 0;
     srv->att_loaded = 1;
     attempts_save(srv);
 }
