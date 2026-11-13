@@ -17,24 +17,35 @@ typedef enum {
     GZ_EVENT_TIMER_FIRED,          /* a timer set by an earlier action is due */
     GZ_EVENT_CHAIN,                /* something happened on chain */
     GZ_EVENT_USER_COMMAND,         /* the user asked for something */
-    GZ_EVENT_STORAGE_CONFIRMED     /* a save batch is safely stored */
+    GZ_EVENT_STORAGE_CONFIRMED,    /* a save batch is safely stored */
+    GZ_EVENT_PEER_CONNECTED,       /* a connection to a peer is up */
+    GZ_EVENT_PEER_DISCONNECTED     /* a connection to a peer is down */
 } gz_event_kind_t;
 
-/* Kinds of chain event. More will be added as the engines need them. */
+/* Kinds of chain event. Every kind but NEW_TIP answers a watch (action.h,
+ * WATCHES, which says when each is reported). */
 typedef enum {
     GZ_CHAIN_SCRIPT_SPENT = 1,  /* an output paying a watched script was spent */
-    GZ_CHAIN_TX_CONFIRMED,      /* a transaction reached a number of confirmations */
-    GZ_CHAIN_NEW_TIP            /* the best chain has a new tip */
+    GZ_CHAIN_TX_CONFIRMED,      /* a watched transaction has a number of confirmations */
+    GZ_CHAIN_NEW_TIP,           /* the best chain has a new tip; after a reorganisation
+                                   its height may be lower than the last one reported */
+    GZ_CHAIN_TX_UNCONFIRMED,    /* a watched transaction reported as confirmed is no
+                                   longer in the best chain */
+    GZ_CHAIN_OUTPOINT_SPENT     /* a watched outpoint is spent, by `txid` */
 } gz_chain_kind_t;
 
 typedef struct {
     gz_chain_kind_t kind;
     gz_bytes_t script;       /* SCRIPT_SPENT: the watched script */
-    uint8_t txid[32];        /* SCRIPT_SPENT: the spending transaction;
-                                TX_CONFIRMED: the confirmed transaction */
-    uint32_t confirmations;  /* TX_CONFIRMED: how many, counting its own block */
-    uint32_t height;         /* NEW_TIP: the tip's height; otherwise the height of
-                                the block containing the transaction */
+    gz_outpoint_t outpoint;  /* OUTPOINT_SPENT: the watched outpoint */
+    uint8_t txid[32];        /* SCRIPT_SPENT, OUTPOINT_SPENT: the spending transaction;
+                                TX_CONFIRMED, TX_UNCONFIRMED: the watched transaction.
+                                In the byte order the chain hashes it, not reversed
+                                for display (types.h, action.h) */
+    uint32_t confirmations;  /* TX_CONFIRMED, OUTPOINT_SPENT: how many, counting its own
+                                block; 0 for a spender not in the best chain */
+    uint32_t height;         /* NEW_TIP: the tip's height; otherwise the height of the
+                                block containing the transaction, 0 if none */
 } gz_chain_event_t;
 
 typedef struct {
@@ -45,6 +56,7 @@ typedef struct {
         gz_chain_event_t chain;                                 /* CHAIN */
         struct { gz_bytes_t bytes; } user;                      /* USER_COMMAND: opaque for now */
         struct { gz_batch_id_t batch; } storage;                /* STORAGE_CONFIRMED */
+        struct { uint64_t peer_id; } peer;                      /* PEER_CONNECTED, PEER_DISCONNECTED */
     } u;
 } gz_event_t;
 

@@ -1,0 +1,321 @@
+# Mutants for tools/mutate-tree.py: NAME, FILE, OLD, NEW, [OCCURRENCE], tab-separated.
+# In OLD and NEW, \n stands for a newline and \\ for a backslash.
+# --- sha256.c
+sha-padding	core/tree/sha256.c	(119 - s->n % 64) % 64	(118 - s->n % 64) % 64
+sha-constant	core/tree/sha256.c	0x428a2f98u	0x428a2f99u
+sha-tag-once	core/tree/sha256.c	    tr_sha256_write(s, th, 32);\n    tr_sha256_write(s, th, 32);	    tr_sha256_write(s, th, 32);
+# --- terms.c: encoding (section 2)
+bigsize-fd-loose	core/tree/terms.c	(first == 0xfd && *v < 0xfd)	(first == 0xfd && *v < 0xfc)
+bigsize-fe-loose	core/tree/terms.c	(first == 0xfe && *v < 0x10000)	(first == 0xfe && *v < 0xffff)
+bigsize-ff-loose	core/tree/terms.c	(first == 0xff && *v < 0x100000000ull)	(first == 0xff && *v < 0xffffffffull)
+order-allows-repeat	core/tree/terms.c	if (have_last && t <= last) return GZ_TERMS_E_ORDER;	if (have_last && t < last) return GZ_TERMS_E_ORDER;
+length-past-end	core/tree/terms.c	if (l > r->n - r->i) return GZ_TERMS_E_TRUNCATED;	if (l > r->n - r->i + 1) return GZ_TERMS_E_TRUNCATED;
+outer-128-allowed	core/tree/terms.c	if (type >= 128) return GZ_TERMS_E_RESERVED_TYPE;	if (type > 128) return GZ_TERMS_E_RESERVED_TYPE;	1
+current-128-allowed	core/tree/terms.c	if (type >= 128) return GZ_TERMS_E_RESERVED_TYPE;	if (type > 128) return GZ_TERMS_E_RESERVED_TYPE;	2
+outer-unknown-even-adjustable	core/tree/terms.c	if (!known_adjustable(type) && type % 2 == 0) return GZ_TERMS_E_UNKNOWN_EVEN;		1
+current-unknown-even-adjustable	core/tree/terms.c	if (!known_adjustable(type) && type % 2 == 0) return GZ_TERMS_E_UNKNOWN_EVEN;		2
+outer-unknown-even-low	core/tree/terms.c	            if (type % 2 == 0) return GZ_TERMS_E_UNKNOWN_EVEN;\n            t->n_unknown_odd++;	            t->n_unknown_odd++;
+alias-33	core/tree/terms.c	if (len < 1 || len > 32) return GZ_TERMS_E_LENGTH;	if (len < 1 || len > 33) return GZ_TERMS_E_LENGTH;
+alias-empty	core/tree/terms.c	if (len < 1 || len > 32) return GZ_TERMS_E_LENGTH;	if (len > 32) return GZ_TERMS_E_LENGTH;
+description-281	core/tree/terms.c	if (len < 1 || len > 280) return GZ_TERMS_E_LENGTH;	if (len < 1 || len > 281) return GZ_TERMS_E_LENGTH;
+utf8-surrogates	core/tree/terms.c	 || (cp >= 0xd800 && cp <= 0xdfff)	
+utf8-overlong	core/tree/terms.c	extra = 1; cp = c & 0x1f; min = 0x80;	extra = 1; cp = c & 0x1f; min = 0;
+fixed-width-ignored	core/tree/terms.c	#define FIX(sz) if (len != (sz)) return GZ_TERMS_E_LENGTH	#define FIX(sz) if (len < (sz)) return GZ_TERMS_E_LENGTH
+required-ignored	core/tree/terms.c	if ((seen & REQUIRED_OUTER) != REQUIRED_OUTER || !joining	if (!joining
+prop-optional	core/tree/terms.c	            if (type == GZ_TT_FEE_PROP) prop = 1;	            prop = 1;
+shapes-stray-byte	core/tree/terms.c	if (t->n_shapes >= GZ_TERMS_MAX_SHAPES || len - i < 4) return GZ_TERMS_E_SHAPE_ENCODING;	if (t->n_shapes >= GZ_TERMS_MAX_SHAPES || len - i < 4) break;
+shapes-cut-entry	core/tree/terms.c	if (len - i < 4 + (size_t)ni) return GZ_TERMS_E_SHAPE_ENCODING;	if (len - i < 3 + (size_t)ni) return GZ_TERMS_E_SHAPE_ENCODING;
+# --- terms.c: bounds (sections 3 and 4)
+n-interior-7	core/tree/terms.c	if (ni > GZ_TERMS_MAX_INTERIOR) return GZ_TERMS_E_SHAPE_N_INTERIOR;	if (ni > GZ_TERMS_MAX_INTERIOR + 1) return GZ_TERMS_E_SHAPE_N_INTERIOR;
+max-members-2	core/tree/terms.c	if (e->max_members < 3 ||	if (e->max_members < 2 ||
+max-members-1001	core/tree/terms.c	e->max_members > 1000 ||	e->max_members > 1001 ||
+max-members-equal	core/tree/terms.c	e->max_members <= prev)	e->max_members < prev)
+width-3	core/tree/terms.c	if (e->interior[k] < 4 ||	if (e->interior[k] < 3 ||
+width-16	core/tree/terms.c	e->interior[k] > 15) return GZ_TERMS_E_SHAPE_WIDTH;	e->interior[k] > 16) return GZ_TERMS_E_SHAPE_WIDTH;
+leaf-kind-any	core/tree/terms.c	if (e->leaf_kind != GZ_TERMS_LEAF_PS) return GZ_TERMS_E_SHAPE_LEAF_KIND;	
+last-below-target	core/tree/terms.c	if (es[n_entries - 1].max_members < target)	if (es[n_entries - 1].max_members + 1 < target)
+split-check-gone	core/tree/terms.c	                return GZ_TERMS_E_SHAPE_SPLIT;	                (void)0;
+split-check-first-n	core/tree/terms.c	        for (m = prev + 1; m <= es[i].max_members; m++) {	        for (m = prev + 2; m <= es[i].max_members; m++) {
+split-check-last-n	core/tree/terms.c	        for (m = prev + 1; m <= es[i].max_members; m++) {	        for (m = prev + 1; m < es[i].max_members; m++) {
+chain-any	core/tree/terms.c	if (pol->slice1 && !tr_eq(t->chain, SIGNET, 32)) return GZ_TERMS_E_CHAIN;	
+host-prefix	core/tree/terms.c	if (t->host_key[0] != 2 && t->host_key[0] != 3) return GZ_TERMS_E_HOST_KEY;	
+profile-5	core/tree/terms.c	t->profile > 4) return GZ_TERMS_E_PROFILE;	t->profile > 5) return GZ_TERMS_E_PROFILE;
+target-2	core/tree/terms.c	if (t->target < 3 ||	if (t->target < 2 ||
+target-1001	core/tree/terms.c	t->target > 1000) return GZ_TERMS_E_TARGET;	t->target > 1001) return GZ_TERMS_E_TARGET;
+minimum-above-target	core/tree/terms.c	t->minimum > t->target) return GZ_TERMS_E_MINIMUM;	t->minimum > t->target + 1) return GZ_TERMS_E_MINIMUM;
+shortfall-2	core/tree/terms.c	if (t->on_shortfall > 1) return GZ_TERMS_E_SHORTFALL;	if (t->on_shortfall > 2) return GZ_TERMS_E_SHORTFALL;
+ready-999	core/tree/terms.c	t->ready_window_ms < 1000 ||	t->ready_window_ms < 999 ||
+ready-600001	core/tree/terms.c	t->ready_window_ms > 600000) return	t->ready_window_ms > 600001) return
+step-59999	core/tree/terms.c	t->step_timeout_ms < 60000 ||	t->step_timeout_ms < 59999 ||
+step-600001	core/tree/terms.c	t->step_timeout_ms > 600000) return	t->step_timeout_ms > 600001) return
+budget-below-step	core/tree/terms.c	t->signing_budget_ms < t->step_timeout_ms ||	t->signing_budget_ms + 1 < t->step_timeout_ms ||
+budget-day	core/tree/terms.c	t->signing_budget_ms > 86400000u)	t->signing_budget_ms > 86400001u)
+lifetime-0	core/tree/terms.c	if (t->lifetime_blocks < 1 ||	if (t->lifetime_blocks + 1 < 1 ||
+lifetime-52561	core/tree/terms.c	t->lifetime_blocks > 52560)	t->lifetime_blocks > 52561)
+winddown-52561	core/tree/terms.c	t->winddown_blocks > 52560)	t->winddown_blocks > 52561)
+channel-545	core/tree/terms.c	t->channel_sat < GZ_TREE_DUST_SAT ||	t->channel_sat + 1 < GZ_TREE_DUST_SAT ||
+channel-supply	core/tree/terms.c	t->channel_sat > SUPPLY_SAT)	t->channel_sat > SUPPLY_SAT + 1)
+feerate-0	core/tree/terms.c	if (t->tree_feerate < 1 ||	if (t->tree_feerate + 1 < 1 ||
+feerate-max	core/tree/terms.c	t->tree_feerate > 1000000)	t->tree_feerate > 1000001)
+switch-bit-3	core/tree/terms.c	if (t->switches & ~7u) return GZ_TERMS_E_SWITCHES;	if (t->switches & ~15u) return GZ_TERMS_E_SWITCHES;
+range-inverted	core/tree/terms.c	if (t->adj[i].min > t->adj[i].max ||	if (t->adj[i].min > t->adj[i].max + 1 ||
+range-ceiling-u32	core/tree/terms.c	if (t == GZ_TT_FEE_BASE || t == GZ_TT_FEE_PROP) return U32_MAX_;	if (t == GZ_TT_FEE_BASE || t == GZ_TT_FEE_PROP) return U32_MAX_ + 1;
+range-ceiling-supply	core/tree/terms.c	if (t == GZ_TT_JOINING_FEE) return SUPPLY_SAT;	if (t == GZ_TT_JOINING_FEE) return SUPPLY_SAT + 1;
+slice1-profile	core/tree/terms.c	(t->profile != 2 ||	(0 ||
+slice1-switches	core/tree/terms.c	|| t->switches != 0)) return GZ_TERMS_E_SLICE1;	)) return GZ_TERMS_E_SLICE1;
+# --- terms.c: the current record, receipt, versions, comparison
+current-version-0	core/tree/terms.c	if (c->version == 0) return GZ_TERMS_E_VERSION;	
+current-missing-value	core/tree/terms.c	if (c->n_values != outer->n_adj) return GZ_TERMS_E_ADJ_SET;	
+current-extra-type	core/tree/terms.c	if (outer && !outer_range(outer, type)) return GZ_TERMS_E_ADJ_SET;	if (outer && !outer_range(outer, type)) continue;
+current-above-range	core/tree/terms.c	c->val[i].value > rg->max) return GZ_TERMS_E_ADJ_VALUE;	c->val[i].value > rg->max + 1) return GZ_TERMS_E_ADJ_VALUE;
+current-below-range	core/tree/terms.c	if (c->val[i].value < rg->min ||	if (c->val[i].value + 1 < rg->min ||
+current-low-types	core/tree/terms.c	return type % 2 == 0 ? GZ_TERMS_E_UNKNOWN_EVEN : GZ_TERMS_E_TYPE_NOT_ALLOWED;	continue;
+current-digest-length	core/tree/terms.c	            if (len != 32) return GZ_TERMS_E_LENGTH;\n            memcpy(c->outer_digest	            if (len < 32) return GZ_TERMS_E_LENGTH;\n            memcpy(c->outer_digest
+outer-tag	core/tree/terms.c	digest("gazpacho/terms/outer", outer, n, out);	digest("gazpacho/terms/current", outer, n, out);
+receive-scope	core/tree/terms.c	if (!tr_eq(od, scope, 32)) return GZ_TERMS_E_SCOPE;	
+receive-pinned	core/tree/terms.c	if (!tr_eq(o->host_key, pinned_key, 33)) return GZ_TERMS_E_PINNED_KEY;	
+receive-point	core/tree/terms.c	if (!crypto->point_valid(crypto->ctx, o->host_key)) return GZ_TERMS_E_HOST_KEY;	
+receive-outer-sig	core/tree/terms.c	if (!crypto->verify(crypto->ctx, od, o->host_key, outer_sig)) return GZ_TERMS_E_OUTER_SIG;	
+receive-current-sig	core/tree/terms.c	if (!crypto->verify(crypto->ctx, cd, o->host_key, current_sig)) return GZ_TERMS_E_CURRENT_SIG;	
+receive-outer-digest	core/tree/terms.c	if (!tr_eq(c->outer_digest, od, 32)) return GZ_TERMS_E_OUTER_DIGEST;	
+version-equal-accepted	core/tree/terms.c	if (!have || new_version > have_version) return GZ_TERMS_V_ACCEPT;	if (!have || new_version >= have_version) return GZ_TERMS_V_ACCEPT;
+version-freeze-ignored	core/tree/terms.c	if (frozen) return same	if (frozen && 0) return same
+version-equivocation	core/tree/terms.c	return same ? GZ_TERMS_V_DUPLICATE : GZ_TERMS_V_EQUIVOCATION;	return GZ_TERMS_V_DUPLICATE;
+classify-range-current	core/tree/terms.c	if (r->max > l->max[j].max) cls = GZ_TERMS_FITS_ONLY_NOW;	if (value > l->max[j].max) cls = GZ_TERMS_FITS_ONLY_NOW;
+classify-current-limit	core/tree/terms.c	if (value > l->max[j].max) return GZ_TERMS_DOES_NOT_FIT;	if (value > l->max[j].max + 1) return GZ_TERMS_DOES_NOT_FIT;
+classify-channel	core/tree/terms.c	if (l->min_channel_sat && o->channel_sat < l->min_channel_sat)	if (l->min_channel_sat && o->channel_sat + 1 < l->min_channel_sat)
+classify-minimum	core/tree/terms.c	if (l->min_members && o->minimum < l->min_members)	if (l->min_members && o->minimum + 1 < l->min_members)
+# --- shape.c (terms.md 4.2)
+binary-split-ceil	core/tree/shape.c	        sizes[0] = m / 2;	        sizes[0] = (m + 1) / 2;
+binary-split-sizes	core/tree/shape.c	        sizes[1] = m - m / 2;	        sizes[1] = m / 2;
+width-split-floor	core/tree/shape.c	uint32_t c = (rem + (a - j) - 1) / (a - j);	uint32_t c = rem / (a - j);
+width-leaf-allowed	core/tree/shape.c	if (a < 4 || a > 15 || m <= a) return 0;	if (a < 4 || a > 15 || m < a) return 0;
+width-16-allowed	core/tree/shape.c	if (a < 4 || a > 15 || m <= a) return 0;	if (a < 4 || a > 16 || m <= a) return 0;
+vsize-floor	core/tree/shape.c	return (4 * (64 + 43 * k) + 2 + 66 + 3) / 4;	return (4 * (64 + 43 * k) + 2 + 66) / 4;
+vsize-no-witness	core/tree/shape.c	return (4 * (64 + 43 * k) + 2 + 66 + 3) / 4;	return (4 * (64 + 43 * k) + 3) / 4;
+fee-floor	core/tree/shape.c	p->fee_per_tx = ((uint64_t)t->tree_feerate * p->V + 999) / 1000;	p->fee_per_tx = ((uint64_t)t->tree_feerate * p->V) / 1000;
+leaf-one-anchor	core/tree/shape.c	            && add_ok(r, 2 * GZ_TREE_ANCHOR_SAT, out);	            && add_ok(r, GZ_TREE_ANCHOR_SAT, out);
+leaf-one-fee	core/tree/shape.c	mul_ok(fee, 2, &x)	mul_ok(fee, 1, &x)
+node-no-anchor	core/tree/shape.c	return mul_ok(best, n, &r) && add_ok(r, fee, &r) && add_ok(r, GZ_TREE_ANCHOR_SAT, out);	return mul_ok(best, n, &r) && add_ok(r, fee, out);
+node-sum-not-max	core/tree/shape.c	        if (r > best) best = r;\n    }	        if (r > best || 1) best = r;\n    }
+overflow-mul	core/tree/shape.c	if (a && b > UINT64_MAX / a) return 0;	
+overflow-add	core/tree/shape.c	if (a > UINT64_MAX - b) return 0;	
+deepest-leaf	core/tree/shape.c	if (p->depth[i] > p->D) p->D = p->depth[i];	if (p->depth[i] > p->D + 1) p->D = p->depth[i];
+leaf-tx-outputs	core/tree/shape.c	if (tr_level(levels, nl, d) == GZ_TERMS_LEAF_PS && m == 1) return 2;   /* the leaf transaction */	if (tr_level(levels, nl, d) == GZ_TERMS_LEAF_PS && m == 1) return 3;   /* the leaf transaction */
+path-wrong-member	core/tree/shape.c	        if (offset != member) return 0;	
+# --- model.c (the rebuild)
+kickoff-height	core/tree/model.c	height_less(in->end_height, (2 * depth - 1) * GZ_TREE_TIMEOUT_STEP)	height_less(in->end_height, 2 * depth * GZ_TREE_TIMEOUT_STEP)
+state-height	core/tree/model.c	height_less(in->end_height, 2 * depth * GZ_TREE_TIMEOUT_STEP)	height_less(in->end_height, (2 * depth + 1) * GZ_TREE_TIMEOUT_STEP)
+height-wraps	core/tree/model.c	static uint32_t height_less(uint32_t E, uint32_t off) { return E > off ? E - off : 0; }	static uint32_t height_less(uint32_t E, uint32_t off) { return E - off; }
+root-state-height	core/tree/model.c	uint32_t st = depth == 0 ? in->end_height :	uint32_t st = depth == 0 ? 0 :
+sequence-swapped	core/tree/model.c	kind == GZ_NODE_LEAF_KICKOFF ? 0xffffffffu : 0xfffffffeu	kind == GZ_NODE_LEAF_KICKOFF ? 0xfffffffeu : 0xffffffffu
+remainder-first-child	core/tree/model.c	if (!subtree(b, off, sizes[j], ko_idx, j, depth + 1, per + (j == k - 1 ? rem : 0))) return 0;	if (!subtree(b, off, sizes[j], ko_idx, j, depth + 1, per + (j == 0 ? rem : 0))) return 0;
+remainder-lost	core/tree/model.c	            add_output(&t->node[ko_idx], GZ_OUT_CHILD, per + (j == k - 1 ? rem : 0),	            add_output(&t->node[ko_idx], GZ_OUT_CHILD, per,
+lstock-remainder	core/tree/model.c	add_output(s, GZ_OUT_LSTOCK, per + (total - per * 2), lscript, 34);	add_output(s, GZ_OUT_LSTOCK, per, lscript, 34);
+channel-takes-remainder	core/tree/model.c	add_output(s, GZ_OUT_CHANNEL, per, s->spent_script, 34);	add_output(s, GZ_OUT_CHANNEL, per + (total - per * 2), s->spent_script, 34);
+dust-545	core/tree/model.c	if (per < GZ_TREE_DUST_SAT) { b->err = GZ_TREE_B_DUST; return 0; }	if (per + 1 < GZ_TREE_DUST_SAT) { b->err = GZ_TREE_B_DUST; return 0; }
+import-minimum	core/tree/model.c	min_funding = ub * in->fee_per_tx + 1092 * (uint64_t)in->n_members;	min_funding = ub * in->fee_per_tx + 1091 * (uint64_t)in->n_members;
+import-minimum-ub	core/tree/model.c	ub = 2 * (2 * (uint64_t)in->n_members - 1);	ub = 2 * (2 * (uint64_t)in->n_members - 2);
+fixed-levels-above	core/tree/model.c	if (in->fixed_levels != D) return GZ_TREE_B_FIXED_LEVELS;	if (in->fixed_levels < D) return GZ_TREE_B_FIXED_LEVELS;
+csv-is-cltv	core/tree/model.c	timelock_leaf(csv, 0xb2, in->host_key, lmerkle);	timelock_leaf(csv, 0xb1, in->host_key, lmerkle);
+lstock-default	core/tree/model.c	uint32_t csv = in->lstock_csv ? in->lstock_csv : GZ_TREE_LSTOCK_DEFAULT;	uint32_t csv = in->lstock_csv ? in->lstock_csv : 0;
+scriptnum-no-sign	core/tree/model.c	    if (tmp[n - 1] & 0x80) tmp[n++] = 0;	
+scriptnum-small	core/tree/model.c	if (v <= 16) { out[0] = (uint8_t)(0x50 + v); return 1; }	if (v <= 15) { out[0] = (uint8_t)(0x50 + v); return 1; }
+leaf-version	core/tree/model.c	    pre[0] = 0xc0;	    pre[0] = 0xc1;
+anchor-amount	core/tree/model.c	add_output(s, GZ_OUT_ANCHOR, GZ_TREE_ANCHOR_SAT, P2A, 4);	add_output(s, GZ_OUT_ANCHOR, GZ_TREE_ANCHOR_SAT + 1, P2A, 4);
+kickoff-no-anchor-cost	core/tree/model.c	        ko_out = input - cost;	        ko_out = input - fee;
+tweak-no-merkle	core/tree/model.c	    if (merkle) tr_sha256_write(&s, merkle, 32);	    if (merkle && 0) tr_sha256_write(&s, merkle, 32);
+sighash-type	core/tree/model.c	    m[0] = 0x00;                               /* SIGHASH_DEFAULT */	    m[0] = 0x01;                               /* SIGHASH_DEFAULT */
+sighash-amount	core/tree/model.c	    tr_le64(b, amount);                        /* sha_amounts */	    tr_le64(b, amount + 1);                    /* sha_amounts */
+sighash-outputs-count	core/tree/model.c	tr_sha256(tx + info.out_at, len - 4 - info.out_at, h);	tr_sha256(tx + info.out_at - 1, len - 3 - info.out_at, h);
+sighash-sequence	core/tree/model.c	    tr_le32(b, seq);                           /* sha_sequences */	    tr_le32(b, 0);                             /* sha_sequences */
+tx-trailing-bytes	core/tree/model.c	    if (len - i != 4) return 0;	    if (len - i < 4) return 0;
+tx-varint-noncanonical	core/tree/model.c	    return !((f == 0xfd && *v < 0xfd) ||	    return !((f == 0xfd && *v < 0x1) ||
+digest-signers	core/tree/model.c	        for (k = 0; k < n->count; k++) w_u16(s, 1 + (uint32_t)n->first + k);	        for (k = 0; k < n->count; k++) w_u16(s, (uint32_t)n->first + k);
+digest-tweak	core/tree/model.c	        tr_sha256_write(s, n->tweak, 32);	        tr_sha256_write(s, n->merkle, 32);
+digest-vout-endian	core/tree/model.c	    w_u32(s, vout);                             /* big-endian here (messages.md section 1) */	    { uint8_t b[4]; tr_le32(b, vout); tr_sha256_write(s, b, 4); }
+round-id-no-random	core/tree/model.c	    tr_sha256_write(&s, host_random, 32);	    tr_sha256_write(&s, host_random, 0);
+round-id-no-contribution	core/tree/model.c	    for (i = 0; i < np; i++) tr_sha256_write(&s, ps[i].contribution_key, 33);	
+# --- checks.c (C1 to C11, H1)
+c8a-purpose	core/tree/checks.c	if (p->purpose != 1) { fail(v, GZ_CHK_C8A_PURPOSE, -1); return; }	
+c8a-version	core/tree/checks.c	if (p->terms_version != in->frozen->version || in->ready_version != in->frozen->version) {	if (in->ready_version != in->frozen->version) {
+c8a-ready-version	core/tree/checks.c	if (p->terms_version != in->frozen->version || in->ready_version != in->frozen->version) {	if (p->terms_version != in->frozen->version) {
+c8a-digest	core/tree/checks.c	if (!tr_eq(p->terms_digest, in->frozen_digest, 32) ||	if (
+c8a-ready-digest	core/tree/checks.c	 || !tr_eq(in->ready_current_digest, in->frozen_digest, 32)) {	) {
+c8a-outer	core/tree/checks.c	if (!tr_eq(in->ready_outer_digest, in->outer_digest, 32) ||	if (
+c1-too-many	core/tree/checks.c	np > GZ_TREE_MAX_MEMBERS + 1) return fail(v, GZ_CHK_C1_PARTICIPANTS, -1);	np > GZ_TREE_MAX_MEMBERS + 2) return fail(v, GZ_CHK_C1_PARTICIPANTS, -1);
+c1-key-validity	core/tree/checks.c	            || !in->crypto->point_valid(in->crypto->ctx, ps[i].contribution_key))	)
+c1-dup-same-entry	core/tree/checks.c	if (tr_eq(ps[i].factory_key + 1, ps[i].contribution_key + 1, 32)) return fail(v, GZ_CHK_C1_DUPLICATE_KEY, (int32_t)i);	
+c1-dup-factory	core/tree/checks.c	            if (tr_eq(ps[i].factory_key + 1, ps[j].factory_key + 1, 32)\n                ||	            if (0\n                ||
+c1-dup-cross	core/tree/checks.c	                || tr_eq(ps[i].factory_key + 1, ps[j].contribution_key + 1, 32)\n	\n
+c1-host-key	core/tree/checks.c	if (!tr_eq(ps[0].contribution_key, in->outer->host_key, 33)) return fail(v, GZ_CHK_C1_HOST_KEY, 0);	
+binding-factory	core/tree/checks.c	if (!in->crypto->verify(in->crypto->ctx, h, q->factory_key, q->bind_by_factory)\n	if (0\n
+binding-contribution	core/tree/checks.c	            || !in->crypto->verify(in->crypto->ctx, h, q->contribution_key, q->bind_by_contribution))	)
+binding-no-scope	core/tree/checks.c	        tr_sha256_write(&s, in->outer_digest, 32);\n	
+c7-fresh-pair	core/tree/checks.c	                && tr_eq(p->participants[i].contribution_key, in->own_contribution_key, 33)) {	) {
+c7-as-host	core/tree/checks.c	        for (i = 1; i < p->n_participants; i++)\n            if (tr_eq(p->participants[i].factory_key, in->own_factory_key, 33)	        for (i = 0; i < p->n_participants; i++)\n            if (tr_eq(p->participants[i].factory_key, in->own_factory_key, 33)
+c10-gone	core/tree/checks.c	if (gz_tree_c10_busy(&fo, in->unresolved, in->n_unresolved)) { fail(v, GZ_CHK_C10_BUSY, -1); return; }	
+c10-txid-only	core/tree/checks.c	return a->vout == vout && tr_eq(a->txid, txid, 32);	return (a->vout == vout || 1) && tr_eq(a->txid, txid, 32);
+c8-placement	core/tree/checks.c	if (p->placement != 0) { fail(v, GZ_CHK_C8_PLACEMENT, -1); return; }	
+c8-anchors	core/tree/checks.c	if (p->tree_anchors != 1) { fail(v, GZ_CHK_C8_ANCHORS, -1); return; }	
+c8-k	core/tree/checks.c	if (p->k != 1) { fail(v, GZ_CHK_C8_K, -1); return; }	
+c8-step	core/tree/checks.c	if (p->layer_step != GZ_TREE_SLICE1_STEP) { fail(v, GZ_CHK_C8_LAYER_STEP, -1); return; }	
+c8-states	core/tree/checks.c	if (p->layer_states != GZ_TREE_SLICE1_STATES) { fail(v, GZ_CHK_C8_LAYER_STATES, -1); return; }	
+c8-hashes	core/tree/checks.c	if (p->n_lstock_hashes != 0) { fail(v, GZ_CHK_C8_HASHES, -1); return; }	
+c8-distribution	core/tree/checks.c	if (p->has_distribution) { fail(v, GZ_CHK_C8_DISTRIBUTION, -1); return; }	
+c8-members-minimum	core/tree/checks.c	if (n < o->minimum || n > o->target)	if (n + 1 < o->minimum || n > o->target)
+c8-members-target	core/tree/checks.c	if (n < o->minimum || n > o->target)	if (n < o->minimum || n > (uint32_t)o->target + 1u)
+c8-members-own-min	core/tree/checks.c	if (n < cond->min_members || n > cond->max_members)	if (n + 1 < cond->min_members || n > cond->max_members)
+c8-members-own-max	core/tree/checks.c	if (n < cond->min_members || n > cond->max_members)	if (n < cond->min_members || n > cond->max_members + 1)
+c8-lstock-zero	core/tree/checks.c	if (p->lstock_delay == 0 || p->lstock_delay > 0xffff	if (p->lstock_delay > 0xffff
+c8-lstock-65536	core/tree/checks.c	p->lstock_delay > 0xffff ||	p->lstock_delay > 0x10000 ||
+c8-lstock-min	core/tree/checks.c	p->lstock_delay < cond->min_lstock_delay	p->lstock_delay + 1 < cond->min_lstock_delay
+c8-lstock-max	core/tree/checks.c	|| p->lstock_delay > cond->max_lstock_delay) {	|| p->lstock_delay > cond->max_lstock_delay + 1) {
+c8-fixed-levels	core/tree/checks.c	if (p->fixed_levels != prm.D) { fail(v, GZ_CHK_C8_FIXED_LEVELS, -1); return; }	
+c8-fee-rule	core/tree/checks.c	if (p->fee_per_tx != prm.fee_per_tx) { fail(v, GZ_CHK_C8_FEE_RULE, -1); return; }	if (p->fee_per_tx < prm.fee_per_tx) { fail(v, GZ_CHK_C8_FEE_RULE, -1); return; }
+c8-fee-ceiling	core/tree/checks.c	if (p->fee_per_tx > cond->max_fee_per_tx_sat)	if (p->fee_per_tx > cond->max_fee_per_tx_sat + 1)
+c8-funding-rule	core/tree/checks.c	if (p->funding_amount != prm.funding_amount) { fail(v, GZ_CHK_C8_FUNDING_RULE, -1); return; }	if (p->funding_amount < prm.funding_amount) { fail(v, GZ_CHK_C8_FUNDING_RULE, -1); return; }
+c8-end-zero	core/tree/checks.c	if (E == 0) { fail(v, GZ_CHK_C8_END_ZERO, -1); return; }	
+c8-end-window-high	core/tree/checks.c	if (E > expect + cond->end_window ||	if (E > expect + cond->end_window + 1 ||
+c8-end-window-low	core/tree/checks.c	E < expect - cond->end_window) {	E + 1 < expect - cond->end_window) {
+c8-exit-time	core/tree/checks.c	(int64_t)in->tip + cond->funding_deadline_blocks, &cond->exit)) {	(int64_t)in->tip + cond->funding_deadline_blocks - 1, &cond->exit)) {
+c8-exit-other-depth	core/tree/checks.c	if (!gz_exit_signing_check(E, prm.depth[own],	if (!gz_exit_signing_check(E, prm.D,
+c1-funding-txid	core/tree/checks.c	if (!tr_eq(txid, p->funding_txid, 32)) return fail(v, GZ_CHK_C1_FUNDING_TXID, -1);	
+c1-funding-vout	core/tree/checks.c	if (p->funding_vout >= info.n_out) return fail(v, GZ_CHK_C1_FUNDING_VOUT, -1);	
+c1-funding-amount	core/tree/checks.c	if (amount != p->funding_amount) return fail(v, GZ_CHK_C1_FUNDING_AMOUNT, -1);	
+c1-funding-script-len	core/tree/checks.c	if (p->funding_script_len != 34) return fail(v, GZ_CHK_C1_FUNDING_SCRIPT_LEN, -1);	
+c1-funding-script	core/tree/checks.c	if (script_len != 34 || !tr_eq(script, p->funding_script, 34)) return fail(v, GZ_CHK_C1_FUNDING_SCRIPT, -1);	
+c1-not-aggregate	core/tree/checks.c	 || !tr_eq(p->funding_script + 2, out_key, 32))\n	)\n
+c1-import-bytes	core/tree/checks.c	 || !tr_eq(im->node[i].tx, n->tx, n->tx_len)\n	\n
+c1-import-count	core/tree/checks.c	if (im->n_nodes != t->n_nodes) return fail(v, GZ_CHK_C1_IMPORT_DIFFERS, -1);	
+c1-import-signers	core/tree/checks.c	 || im->node[i].n_signers != 1 + n->count)	)
+c1-import-parent	core/tree/checks.c	|| im->node[i].parent != n->parent ||	||
+c1-import-built	core/tree/checks.c	if (!in->import_build(in->import_ctx, bi, in->import_out)) return fail(v, GZ_CHK_C1_IMPORT_FAILED, -1);	(void)in->import_build(in->import_ctx, bi, in->import_out);
+c8-leaf-kind	core/tree/checks.c	if (im->node[i].is_ps_leaf != leaf || (leaf && im->node[i].n_signers != 2))	if (0)
+c8-leaf-count	core/tree/checks.c	if (leaves != t->n_members) return fail(v, GZ_CHK_C8_LEAF_KIND, -1);	
+c8-own-channel	core/tree/checks.c	if (t->node[t->leaf_state[own]].out_amount[0] < cond->min_own_channel_sat) {	if (t->node[t->leaf_state[own]].out_amount[0] + 1 < cond->min_own_channel_sat) {
+c8-channel-terms	core/tree/checks.c	if (t->node[t->leaf_state[i]].out_amount[0] < o->channel_sat)	if (t->node[t->leaf_state[i]].out_amount[0] + 1 < o->channel_sat)
+c6-tiers-count	core/tree/checks.c	if (p->n_tiers != 1 || p->tier_sizes[0] != t->n_nodes)	if (p->tier_sizes[0] != t->n_nodes)
+c6-tier-size	core/tree/checks.c	if (p->n_tiers != 1 || p->tier_sizes[0] != t->n_nodes)	if (p->n_tiers != 1 || p->tier_sizes[0] > t->n_nodes)
+c7-other-tree	core/tree/checks.c	            && !tr_eq(in->exposures[i].tree_digest, v->tree_digest, 32)) {	            && 0) {
+c7-same-tree-refused	core/tree/checks.c	            && !tr_eq(in->exposures[i].tree_digest, v->tree_digest, 32)) {	            ) {
+c5-path	core/tree/checks.c	    if (!check_path(t, own, p->end_height, v)) return;	    if (!check_path(t, own, p->end_height, v) && 0) return;
+c4d-self	core/tree/checks.c	    if (tr_eq(txid, spender_txid, 32)) return 0;	
+c4d-any-input	core/tree/checks.c	&& tr_eq(op, spent, 36)) return 1;	&& tr_eq(op, spent, 32)) return 1;
+c11-deadline	core/tree/checks.c	return (int64_t)in->tip > deadline ? GZ_C11_ABANDONED : GZ_C11_WAIT;	return (int64_t)in->tip >= deadline ? GZ_C11_ABANDONED : GZ_C11_WAIT;
+c11-burial	core/tree/checks.c	if (!in->seen || in->confirmations < in->cond->exit.B)	if (!in->seen || in->confirmations + 1 < in->cond->exit.B)
+c11-on-time	core/tree/checks.c	    if ((int64_t)in->buried_at <= deadline)\n        return gz_exit	    if ((int64_t)in->buried_at <= deadline + 1)\n        return gz_exit
+c11-late-margin	core/tree/checks.c	if (in->holds_whole_tree && leave_by >= (int64_t)in->buried_at + 1) return GZ_C11_LIVE;	if (in->holds_whole_tree && leave_by >= (int64_t)in->buried_at) return GZ_C11_LIVE;
+c11-late-tree	core/tree/checks.c	if (in->holds_whole_tree && leave_by >= (int64_t)in->buried_at + 1) return GZ_C11_LIVE;	if (1 && leave_by >= (int64_t)in->buried_at + 1) return GZ_C11_LIVE;
+c11-amount	core/tree/checks.c	if (in->seen && (in->seen_amount != in->funding_amount ||	if (in->seen && (
+h1-ack	core/tree/checks.c	if (!in->acked[i]) { *at = i; return GZ_H1_ACK_MISSING; }	
+h1-ack-first	core/tree/checks.c	    for (i = 0; i < in->n_members; i++)\n        if (!in->acked[i])	    for (i = 1; i < in->n_members; i++)\n        if (!in->acked[i])
+h1-signed	core/tree/checks.c	if (!in->signed_ok[i]) { *at = i; return GZ_H1_UNSIGNED; }	
+h1-same-tx	core/tree/checks.c	if (in->proposed_len != in->to_sign_len || !tr_eq(in->proposed_tx, in->to_sign_tx, in->to_sign_len))	if (in->proposed_len != in->to_sign_len)
+h1-scriptsig	core/tree/checks.c	if (script_len != 0 || !witness_program	if (!witness_program
+h1-legacy-prev	core/tree/checks.c	if (s[0] != 0x00 && (s[0] < 0x51 || s[0] > 0x60)) return 0;	
+h1-v0-length	core/tree/checks.c	if (s[0] == 0x00 && n - 2 != 20 && n - 2 != 32) return 0;	
+# --- exit.c
+leave-by-no-margin	core/tree/exit.c	return gz_exit_last_safe_confirm(E, d, c) - (int64_t)n_missing * c->A - c->M;	return gz_exit_last_safe_confirm(E, d, c) - (int64_t)n_missing * c->A;
+burial-whole	core/tree/exit.c	return gz_exit_h_leaf(E, d) - ((int64_t)c->B - 1);	return gz_exit_h_leaf(E, d) - (int64_t)c->B;
+h-leaf-5	core/tree/exit.c	return E - 2 * (int64_t)d * STEP;	return E - (int64_t)d * STEP;
+signing-check-strict	core/tree/exit.c	return gz_exit_leave_by(E, d, d + 3, c) >= funding_deadline + (int64_t)c->B + 1;	return gz_exit_leave_by(E, d, d + 3, c) > funding_deadline + (int64_t)c->B + 1;
+signing-check-steps	core/tree/exit.c	return gz_exit_leave_by(E, d, d + 3, c) >= funding_deadline	return gz_exit_leave_by(E, d, d + 2, c) >= funding_deadline
+step-due-order	core/tree/exit.c	((int64_t)n_missing - (int64_t)i) * c->A - c->M;	((int64_t)n_missing - (int64_t)i + 1) * c->A - c->M;
+unlock-no-allowance	core/tree/exit.c	if (!tree_late) return gz_exit_last_safe_confirm(E, d, c) - c->A - c->M;	if (!tree_late) return gz_exit_last_safe_confirm(E, d, c) - c->M;
+host-margin	core/tree/exit.c	(int64_t)n_host * c->A - c->M_host;	(int64_t)n_host * c->A - c->M;
+kickoff-timeout	core/tree/exit.c	        return E - (2 * j - 1) * STEP;	        return E - 2 * j * STEP;
+leaf-kickoff-timeout	core/tree/exit.c	        return E - (2 * (int64_t)d - 1) * STEP;	        return E - 2 * (int64_t)d * STEP;
+signet-margin	core/tree/include/gazpacho/tree.h	#define GZ_EXIT_SIGNET_INIT { 6, 3, 14, 8 }	#define GZ_EXIT_SIGNET_INIT { 6, 3, 13, 8 }
+# --- import/tree_import.c (the glue)
+glue-static-levels	core/tree/import/tree_import.c	    factory_set_static_near_root(f, in->fixed_levels);\n	
+glue-lstock	core/tree/import/tree_import.c	    factory_set_l_stock_csv(f, in->lstock_csv);\n	
+glue-placement	core/tree/import/tree_import.c	    f->placement_mode = PLACEMENT_SEQUENTIAL;\n	
+glue-anchors	core/tree/import/tree_import.c	    f->use_tree_anchor = 1;	    f->use_tree_anchor = 0;
+glue-fee	core/tree/import/tree_import.c	    f->fee_per_tx = in->fee_per_tx;\n	
+glue-ps-label	core/tree/import/tree_import.c	out->node[i].is_ps_leaf = nd->is_ps_leaf ? 1 : 0;	out->node[i].is_ps_leaf = 1;
+glue-tweak-tag	core/tree/import/tree_import.c	(const unsigned char *)"TapTweak", 8	(const unsigned char *)"TapTweaK", 8
+glue-verify-any	core/tree/import/tree_import.c	    return secp256k1_schnorrsig_verify(ctx, sig, msg, 32, &x);	    (void)sig; (void)msg; (void)x; return 1;
+glue-point-prefix	core/tree/import/tree_import.c	    if (pub[0] != 2 && pub[0] != 3) return 0;\n    return secp256k1_ec_pubkey_parse	    return secp256k1_ec_pubkey_parse
+glue-signers-run	core/tree/import/tree_import.c	if (nd->signer_indices[k] != nd->signer_indices[k - 1] + 1) { err = GZ_TREE_I_SIGNERS; goto done; }	
+c8-deadline-nonces	core/tree/checks.c	if (p->nonces_due_ms > o->step_timeout_ms ||	if (p->nonces_due_ms > o->step_timeout_ms + 1 ||
+c8-deadline-sigs	core/tree/checks.c	|| p->sigs_due_ms > o->step_timeout_ms) {	|| p->sigs_due_ms > o->step_timeout_ms + 1) {
+#
+# Survivors, triaged (tools/mutate-tree.py reads these lines: a survivor named
+# here is reported as triaged, not as a failure). Format: "# equivalent NAME: why".
+# equivalent n-interior-7: gz_terms_check_shapes refuses n_interior 7 with the same code; the parse-time bound only keeps memcpy inside interior[6], and the 7th byte lands in leaf_kind, inside the struct, before it is overwritten
+# equivalent max-members-2: prev starts at 2, so "max_members <= prev" already refuses 2 with the same code
+# equivalent vsize-floor: 4 (64 + 43 k) + 68 is a multiple of 4; the ceiling and the floor agree
+# equivalent path-wrong-member: the walk descends only into the child holding the member, so the leaf it reaches is always the member's
+# equivalent c8-fixed-levels: gz_tree_build refuses fixed_levels other than D with the same code; the early check only saves the rebuild
+# equivalent c8-leaf-count: the per-node loop already requires is_ps_leaf exactly on the rebuilt leaf transactions, of which there are n
+# equivalent c8-channel-terms: with funding_amount = R(root) (checked before) the smallest channel is exactly channel_sat; kept as defence in depth
+# equivalent c5-path: the path is rebuilt from the rules, so every output kind and timeout is the expected one; kept as defence in depth
+# equivalent glue-placement: with every profile zero the import's placement sort leaves the order unchanged on this C library; the write stays because signing-round.md 4.1 requires it and another qsort may reorder
+# equivalent glue-point-prefix: secp256k1_ec_pubkey_parse accepts only prefixes 2 and 3 for 33 bytes
+# --- after review A of PR 24
+c11-ontime-boundary	core/tree/checks.c	    if ((int64_t)in->buried_at <= deadline)\n        return gz_exit_signing_check	    if ((int64_t)in->buried_at < deadline)\n        return gz_exit_signing_check
+# Review A's equivalent mutants (its M12, M14, M15, M16, M26, M52, M59), listed here too
+leaf-signers-2	core/tree/checks.c	(leaf && im->node[i].n_signers != 2)	(0)
+c5-path-length	core/tree/checks.c	if (idx >= 0 || n != d + 2)	if (idx >= 0)
+c5-timeout-direction	core/tree/checks.c	(int64_t)nd->cltv != want)	(int64_t)nd->cltv > want)
+c7-found-once	core/tree/checks.c	if (found != 1)	if (found < 1)
+own-leaf-position	core/tree/checks.c	 || t->node[t->leaf_state[own]].first != own)	)
+leaf-tx-outputs-1	core/tree/shape.c	if (tr_level(levels, nl, d) == GZ_TERMS_LEAF_PS && m == 1) return 2;	if (tr_level(levels, nl, d) == GZ_TERMS_LEAF_PS && m == 1) return 1;
+split-leaves-count	core/tree/terms.c	 || leaves != m)	)
+# equivalent leaf-signers-2: check_import already requires n_signers == 1 + count on every node, and a rebuilt leaf has count 1
+# equivalent c5-path-length: the rebuilt tree's leaf is at depth d with d + 1 ancestors
+# equivalent c5-timeout-direction: on a rebuilt tree every timeout equals exit.md 4.1's
+# equivalent c7-found-once: the duplicate-key check makes two seats with the member's keys impossible
+# equivalent own-leaf-position: with sequential placement member i's leaf is leaf i
+# equivalent leaf-tx-outputs-1: every interior node has at least 2 children, so V never comes from the leaf transaction's 2
+# equivalent split-leaves-count: tr_split returns 1 only after placing every member
+c11-ontime-time	core/tree/checks.c	        return gz_exit_signing_check(in->end_height, in->own_depth, deadline, &in->cond->exit) ? GZ_C11_LIVE	        return 1 ? GZ_C11_LIVE
+c11-ontime-deadline	core/tree/checks.c	gz_exit_signing_check(in->end_height, in->own_depth, deadline, &in->cond->exit)	gz_exit_signing_check(in->end_height, in->own_depth, deadline - 1, &in->cond->exit)
+c11-not-seen	core/tree/checks.c	if (!in->seen || in->confirmations < in->cond->exit.B)	if (in->confirmations < in->cond->exit.B)
+may-ack-deadline	core/tree/checks.c	(int64_t)ack_tip + cond->funding_deadline_blocks, &cond->exit);	(int64_t)ack_tip, &cond->exit);
+h1-empty	core/tree/checks.c	if (in->n_members == 0 || in->n_nodes == 0) return GZ_H1_EMPTY;	
+h1-prev-count	core/tree/checks.c	if (in->n_prev != info.n_in) return GZ_H1_PREV_COUNT;	
+dup-parity	core/tree/checks.c	            if (tr_eq(ps[i].factory_key + 1, ps[j].factory_key + 1, 32)	            if (tr_eq(ps[i].factory_key, ps[j].factory_key, 33)
+dup-parity-self	core/tree/checks.c	if (tr_eq(ps[i].factory_key + 1, ps[i].contribution_key + 1, 32))	if (tr_eq(ps[i].factory_key, ps[i].contribution_key, 33))
+end-locktime	core/tree/checks.c	if (E >= 500000000)	if (E > 500000000)
+fundable-supply	core/tree/terms.c	if (p.funding_amount > SUPPLY_SAT	if (0
+fundable-minimum	core/tree/terms.c	            || p.funding_amount < 2 * (2 * (uint64_t)n - 1) * p.fee_per_tx + 1092 * (uint64_t)n)	            )
+fundable-last-n	core/tree/terms.c	for (n = t->minimum; n <= top; n++) {	for (n = t->minimum; n < top; n++) {
+fundable-from-3	core/tree/terms.c	for (n = t->minimum; n <= top; n++) {	for (n = 3; n <= top; n++) {
+funding-prefix	core/tree/checks.c	if (p->funding_script[0] != 0x51 || p->funding_script[1] != 0x20 ||	if (
+# --- after review B of PR 24
+c11-late-at-tip	core/tree/checks.c	leave_by >= (int64_t)in->buried_at + 1) return GZ_C11_LIVE;	leave_by >= (int64_t)in->tip + 1) return GZ_C11_LIVE;
+recheck-bounds-gone	core/tree/checks.c	    if ((e = gz_terms_check_outer(in->outer, in->policy)) != GZ_TERMS_OK)\n        return fail(v, GZ_CHK_C8A_TERMS_BOUNDS, (int32_t)e);\n	
+recheck-any-chain	core/tree/checks.c	gz_terms_check_outer(in->outer, in->policy)	gz_terms_check_outer(in->outer, &(const gz_terms_policy_t){0})
+recheck-frozen-gone	core/tree/checks.c	    if ((e = gz_terms_check_current(in->outer, in->frozen)) != GZ_TERMS_OK)\n        return fail(v, GZ_CHK_C8A_FROZEN_VALUES, (int32_t)e);\n	
+recheck-receive-ignored	core/tree/checks.c	    if (e != GZ_TERMS_OK) return fail(v, GZ_CHK_C8A_TERMS_RECORD, (int32_t)e);\n	
+recheck-frozen-digest	core/tree/checks.c	    if (!tr_eq(rcd, in->frozen_digest, 32)) return fail(v, GZ_CHK_C8A_TERMS_RECORD, -1);\n	
+recheck-outer-equal	core/tree/checks.c	if (!gz_terms_outer_equal(ro, in->outer) || !gz_terms_current_equal(rc, in->frozen))	if (!gz_terms_current_equal(rc, in->frozen))
+recheck-current-equal	core/tree/checks.c	if (!gz_terms_outer_equal(ro, in->outer) || !gz_terms_current_equal(rc, in->frozen))	if (!gz_terms_outer_equal(ro, in->outer))
+recheck-gone	core/tree/checks.c	    if (!check_terms(in, v, &ro, &rc)) return;\n	    if (!check_terms(in, v, &ro, &rc) && 0) return;\n
+
+equal-channel	core/tree/terms.c	|| a->channel_sat != b->channel_sat	
+equal-salt	core/tree/terms.c	 || !tr_eq(a->lobby_salt, b->lobby_salt, 16)	
+equal-unknown-odd	core/tree/terms.c	        || a->n_unknown_odd != b->n_unknown_odd)	        )
+equal-shape-width	core/tree/terms.c	            || !tr_eq(x->interior, y->interior, x->n_interior)	
+equal-adj-max	core/tree/terms.c	 || a->adj[i].max != b->adj[i].max) return 0;	) return 0;
+equal-value	core/tree/terms.c	 || a->val[i].value != b->val[i].value) return 0;	) return 0;
+equal-version	core/tree/terms.c	 || a->version != b->version	
+current-order	core/tree/terms.c	if ((i && c->val[i].type <= c->val[i - 1].type) || !outer_range	if (!outer_range
+fundable-minimum-256	core/tree/terms.c	    if (t->minimum > GZ_TREE_MAX_MEMBERS) return GZ_TERMS_E_UNFUNDABLE;\n	
+fundable-minimum-257	core/tree/terms.c	if (t->minimum > GZ_TREE_MAX_MEMBERS) return	if (t->minimum > GZ_TREE_MAX_MEMBERS + 1) return
+# Review B's test gaps (its b-glue-funding-vout, b-witness-push-len, b-witness-n-max, b-c4d-first-input,
+# b-utf8-*, b-current-version-len, b-fundable-top-64, b-bigsize-truncated, b-tx-scriptsig-bound), now killed
+glue-funding-vout	core/tree/import/tree_import.c	factory_set_funding(f, in->funding_txid, in->funding_vout,	factory_set_funding(f, in->funding_txid, 0,
+witness-push-len	core/tree/checks.c	    if (s[1] != n - 2) return 0;\n	
+witness-n-max	core/tree/checks.c	if (!s || n < 4 || n > 42) return 0;	if (!s || n < 4) return 0;
+c4d-first-input	core/tree/checks.c	for (i = 0; i < info.n_in; i++) {	for (i = 0; i < 1 && i < info.n_in; i++) {	1
+utf8-4byte-min	core/tree/terms.c	min = 0x10000;	min = 0x800;
+utf8-above-max	core/tree/terms.c	cp > 0x10ffff ||	
+utf8-continuation	core/tree/terms.c	            if ((s[i + k] & 0xc0) != 0x80) return 0;\n	
+utf8-truncated	core/tree/terms.c	if (n - i - 1 < extra) return 0;	if (n - i < extra) return 0;
+current-version-len	core/tree/terms.c	            if (len != 4) return GZ_TERMS_E_LENGTH;\n            c->version	            if (len < 4) return GZ_TERMS_E_LENGTH;\n            c->version
+fundable-top-64	core/tree/terms.c	top = t->target < GZ_TREE_MAX_MEMBERS ? t->target : GZ_TREE_MAX_MEMBERS;	top = t->target < 64 ? t->target : 64;
+bigsize-truncated	core/tree/terms.c	if (r->n - r->i < need) return GZ_TERMS_E_TRUNCATED;	if (r->n - r->i + 1 < need) return GZ_TERMS_E_TRUNCATED;
+tx-scriptsig-bound	core/tree/model.c	|| l > len - i) return 0;\n        i += (size_t)l;\n        if (len - i < 4) return 0;	) return 0;\n        i += (size_t)l;\n        if (len - i < 4) return 0;

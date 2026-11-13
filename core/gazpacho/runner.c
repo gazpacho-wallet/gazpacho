@@ -20,13 +20,18 @@ gz_status_t gz_runner_init(gz_runner_t *runner, gz_runner_slot_t *slots, size_t 
     return GZ_OK;
 }
 
+static int is_known_kind(gz_action_kind_t kind)
+{
+    return kind >= GZ_ACTION_SAVE && kind <= GZ_ACTION_WATCH_OUTPOINT;
+}
+
 /* The one byte string a queued action carries, or NULL for the timer kinds. */
 static gz_bytes_t *payload_of(gz_action_t *action)
 {
     switch (action->kind) {
     case GZ_ACTION_SEND:      return &action->u.send.bytes;
     case GZ_ACTION_BROADCAST: return &action->u.broadcast.tx;
-    case GZ_ACTION_WATCH:     return &action->u.watch.script;
+    case GZ_ACTION_WATCH_SCRIPT: return &action->u.watch_script.script;
     case GZ_ACTION_NOTIFY:    return &action->u.notify.bytes;
     default:                  return NULL;
     }
@@ -82,10 +87,11 @@ static void enqueue(gz_runner_t *runner, const gz_action_t *action)
     runner->count++;
 }
 
-/* Release from the front of the queue for as long as the rule allows. */
+/* Release from the front of the queue for as long as the rule allows and the
+ * runner has not failed. */
 static void release_ready(gz_runner_t *runner)
 {
-    while (runner->count > 0) {
+    while (runner->count > 0 && !runner->failed) {
         gz_runner_slot_t *slot = slot_at(runner, 0);
         if (gz_action_is_outward(&slot->action) && slot->needs > runner->confirmed) return;
         /* Take it out of the queue first, so the executor sees a consistent
@@ -99,18 +105,31 @@ static void release_ready(gz_runner_t *runner)
     }
 }
 
-/* 1 if the whole list can be accepted now. */
+/* 1 if a non-save action submitted when `held` actions are in the queue and
+ * `unconfirmed` batches are outstanding would go to the executor at once. */
+static int leaves_at_once(const gz_action_t *action, size_t held, uint64_t unconfirmed)
+{
+    return held == 0 && (!gz_action_is_outward(action) || unconfirmed == 0);
+}
+
+/* 1 if the whole list can be accepted now: walk it as submit would, counting
+ * only what would actually have to be held. */
 static int fits(const gz_runner_t *runner, const gz_action_list_t *list)
 {
-    size_t saves = 0, others = 0, bytes = 0;
+    uint64_t unconfirmed = runner->issued - runner->confirmed;
+    size_t held = runner->count, bytes = runner->bytes_tail - runner->bytes_head;
     for (size_t i = 0; i < list->count; i++) {
-        if (list->slots[i].kind == GZ_ACTION_SAVE) { saves++; continue; }
-        others++;
-        bytes += payload_len(&list->slots[i]);
+        const gz_action_t *action = &list->slots[i];
+        if (action->kind == GZ_ACTION_SAVE) {
+            if (++unconfirmed > GZ_RUNNER_MAX_UNCONFIRMED) return 0;
+        } else if (!leaves_at_once(action, held, unconfirmed)) {
+            size_t len = payload_len(action);
+            if (held == runner->n_slots || len > runner->n_bytes - bytes) return 0;
+            held++;
+            bytes += len;
+        }
     }
-    return saves <= GZ_RUNNER_MAX_UNCONFIRMED - (runner->issued - runner->confirmed) &&
-           others <= runner->n_slots - runner->count &&
-           bytes <= runner->n_bytes - (runner->bytes_tail - runner->bytes_head);
+    return 1;
 }
 
 /* Hand a save to the executor under the next batch identifier. */
@@ -122,25 +141,44 @@ static void release_save(gz_runner_t *runner, const gz_action_t *action)
     runner->execute(runner->ctx, &save);
 }
 
+/* Carry out one action of a submitted list. */
+static void take(gz_runner_t *runner, const gz_action_t *action)
+{
+    if (action->kind == GZ_ACTION_SAVE) {
+        release_save(runner, action);
+    } else if (leaves_at_once(action, runner->count, runner->issued - runner->confirmed)) {
+        runner->execute(runner->ctx, action);
+    } else {
+        enqueue(runner, action);
+    }
+}
+
 gz_status_t gz_runner_submit(gz_runner_t *runner, const gz_action_list_t *list)
 {
     if (!runner || !list) return GZ_ERR_ARGUMENT;
     if (runner->busy) return GZ_ERR_REENTRANT;
     if (runner->failed) return GZ_ERR_FAILED;
+    for (size_t i = 0; i < list->count; i++)
+        if (!is_known_kind(list->slots[i].kind)) return GZ_ERR_ARGUMENT;
     if (!fits(runner, list)) {
         runner->failed = 1;
         return GZ_ERR_REFUSED;
     }
     runner->busy = 1;
-    for (size_t i = 0; i < list->count; i++) {
-        if (list->slots[i].kind == GZ_ACTION_SAVE) {
-            release_save(runner, &list->slots[i]);
-        } else {
-            enqueue(runner, &list->slots[i]);
-            release_ready(runner);
-        }
-    }
+    for (size_t i = 0; i < list->count && !runner->failed; i++)
+        take(runner, &list->slots[i]);
     runner->busy = 0;
+    return runner->failed ? GZ_ERR_FAILED : GZ_OK;
+}
+
+/* What is wrong with a confirmation, or GZ_OK if it is the one expected. */
+static gz_status_t judge(const gz_runner_t *runner, gz_batch_id_t batch)
+{
+    if (batch.incarnation < runner->incarnation) return GZ_ERR_STALE_BATCH;
+    if (batch.incarnation > runner->incarnation || batch.sequence == 0 ||
+        batch.sequence > runner->issued || batch.sequence <= runner->confirmed)
+        return GZ_ERR_UNKNOWN_BATCH;
+    if (batch.sequence != runner->confirmed + 1) return GZ_ERR_OUT_OF_ORDER;
     return GZ_OK;
 }
 
@@ -149,22 +187,22 @@ gz_status_t gz_runner_confirm(gz_runner_t *runner, gz_batch_id_t batch)
     if (!runner) return GZ_ERR_ARGUMENT;
     if (runner->busy) return GZ_ERR_REENTRANT;
     if (runner->failed) return GZ_ERR_FAILED;
-    if (batch.incarnation < runner->incarnation) return GZ_ERR_STALE_BATCH;
-    if (batch.incarnation > runner->incarnation || batch.sequence == 0 ||
-        batch.sequence > runner->issued || batch.sequence <= runner->confirmed)
-        return GZ_ERR_UNKNOWN_BATCH;
-    if (batch.sequence != runner->confirmed + 1) return GZ_ERR_OUT_OF_ORDER;
+    gz_status_t st = judge(runner, batch);
+    if (st == GZ_ERR_STALE_BATCH) return st;
+    if (st != GZ_OK) {
+        runner->failed = 1;     /* storage has broken the journal contract */
+        return st;
+    }
     runner->confirmed++;
     runner->busy = 1;
     release_ready(runner);
     runner->busy = 0;
-    return GZ_OK;
+    return runner->failed ? GZ_ERR_FAILED : GZ_OK;
 }
 
 gz_status_t gz_runner_storage_failed(gz_runner_t *runner)
 {
     if (!runner) return GZ_ERR_ARGUMENT;
-    if (runner->busy) return GZ_ERR_REENTRANT;
     runner->failed = 1;
     return GZ_OK;
 }
