@@ -95,5 +95,13 @@ int main(void)
     CHECK(gz_ln_alert_read(out, 35, text, sizeof text) == GZ_LN_MALFORMED);
     out[1] = 18;
     CHECK(gz_ln_alert_read(out, n, text, sizeof text) == GZ_LN_MALFORMED);
+    /* A text exactly as long as the buffer: cut to leave room for the NUL,
+     * and nothing written past the buffer (review of PR 23, B7). */
+    {
+        char box[17];
+        memset(box, 'Z', sizeof box);
+        CHECK(gz_ln_alert_write(GZ_LN_WARNING, "sixteen chars ok", out, sizeof out, &n) == 0);
+        CHECK(gz_ln_alert_read(out, n, box, 16) == GZ_LN_OK && strlen(box) == 15 && box[16] == 'Z');
+    }
     return check_done();
 }

@@ -714,6 +714,13 @@ static void test_connect_failures(void)
     }
     free_sides();
 
+    /* A member opens at most max_conns connections (review of PR 23, B7). */
+    S[1].p = mk(MEM_KEY, 20000, 30000, NULL, two_conns);
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", 9, HOST_PUB, NULL, &mc) == GZ_PEERS_OK);
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", 9, HOST_PUB, NULL, &mc2) == GZ_PEERS_OK);
+    CHECK(gz_peers_connect(S[1].p, "127.0.0.1", 9, HOST_PUB, NULL, &mc3) == GZ_PEERS_ERR_LIMIT);
+    free_sides();
+
     /* Bad configurations. */
     {
         gz_peers_config_t c;

@@ -262,7 +262,7 @@ env-ignored-transfer-kept	ports/net/envelope.c	gz_env_reasm_reset(r); /* refused
 env-lazy-release-gone	ports/net/envelope.c	if (r->buf && r->held == 0) gz_env_reasm_reset(r); /* the last completed message is released */	
 peers-warning-before-init	ports/net/peers.c	if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(	if (c->phase == PH_OPEN && !gz_ln_alert_write(
 peers-no-admission	ports/net/peers.c	if (!c->outbound && !admit(p, c)) return;	
-peers-evict-newest-handshake	ports/net/peers.c	if (!best || c->t_start < best->t_start) best = c;	if (!best || c->t_start >= best->t_start) best = c;
+peers-evict-newest-handshake	ports/net/peers.c	if (c->t_start < best->t_start) best = c;	if (c->t_start > best->t_start) best = c;
 peers-address-cap-off-by-one	ports/net/peers.c	if (p->cfg.max_per_address && same >= p->cfg.max_per_address) {	if (p->cfg.max_per_address && same > p->cfg.max_per_address) {
 peers-no-handshake-eviction	ports/net/peers.c	if (pending >= p->cfg.max_handshakes) {	if (0) {
 peers-evict-seated	ports/net/peers.c	if (established_unseated ? !(c->init_got && !c->seated) : c->init_got) continue;	if (established_unseated ? !c->init_got : c->init_got) continue;
@@ -298,3 +298,7 @@ peers-mapped-ignored	ports/net/peers.c	if (memcmp(b, mapped, 12) == 0) {	if (0) 
 peers-ping-full-silent	ports/net/peers.c	fail(p, c, GZ_PEER_WHY_TIMEOUT_SEND, 0, "cannot answer ping: peer not reading");\n            return;	return;
 peers-peraddr-pending-only	ports/net/peers.c	if (same_host(&o->addr, &ss)) same++;	if (same_host(&o->addr, &ss) && !o->init_got) same++;
 peers-admit-counts-closing	ports/net/peers.c	if (p->conns[i]->init_got && !p->conns[i]->closing) established++;	if (p->conns[i]->init_got) established++;
+# Survivors of reviewer B's probes are boundary shifts of 1 ms or 1 count
+#   on timers and windows (no practical effect), the ping-length cycle and
+#   the full held mask (equivalent), the 64-unit cap (its value), and the
+#   bLIP-56 65,535-byte edge (unused in slice 1).
