@@ -108,10 +108,20 @@ def main():
         m2b.stop()
 
         # 3. a node error: fatal, and nothing saved after it ---------------------
+        # A host that pings fast, so several events wait in one turn when the
+        # error comes: none of them may reach the dead incarnation's node.
+        fast = Proc("fast-host", [exe, "--data-dir", os.path.join(work, "fast"), "--role", "host", "--listen",
+                                  "127.0.0.1:0", "--name", "fast", "--no-chain", "--no-interface",
+                                  "--test-pings", "300", "--test-ping-ms", "2"], logs)
+        procs.append(fast)
+        fk = fast.wait_for(r"host key=([0-9a-f]{66})")
+        fm = fast.wait_for(r"listening address=127\.0\.0\.1:(\d+)")
         d3 = os.path.join(work, "m3")
-        m3 = Proc("m3", [exe, "--data-dir", d3, "--role", "member", "--name", "m3", "--test-node-error-at", "6"]
-                  + connect + common, logs)
+        m3 = Proc("m3", [exe, "--data-dir", d3, "--role", "member", "--name", "m3", "--test-node-error-at", "40",
+                         "--connect", "%s@127.0.0.1:%s" % (fk.group(1) if fk else "00", fm.group(1) if fm else "1")]
+                  + common, logs)
         procs.append(m3)
+        hp = peer_id(fk.group(1)) if fk else hp
         fe = m3.wait_for(r"fatal why=node-error incarnation=1 issued=(\d+)")
         check(fe is not None and m3.wait_for(r"ready incarnation=2") is not None,
               "a node error is fatal and restarted from storage")

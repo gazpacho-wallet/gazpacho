@@ -83,7 +83,8 @@ static void fail(gzp_exec_t *ex, const char *why)
  * as the node's and fired by the same code, but logged instead of given to
  * the node: it shows that a timer due during a start fires after it, and that
  * a restart's old timers never fire. */
-#define GZP_TEST_TIMER_ID UINT64_C(0xfffffffffffff001)
+#define GZP_TEST_TIMER_BASE UINT64_C(0xffffffffffff0000) /* | the incarnation's low 16 bits */
+#define GZP_IS_TEST_TIMER(id) (((id) & UINT64_C(0xffffffffffff0000)) == GZP_TEST_TIMER_BASE)
 
 #ifdef GZP_TEST_BUILD
 static uint64_t be64(const uint8_t *p)
@@ -475,10 +476,13 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
                 (best < 0 || ex->timers[i].due_ms < ex->timers[best].due_ms))
                 best = i;
         if (best < 0 || ex->fatal) break;
-        if (ex->timers[best].id == GZP_TEST_TIMER_ID) {
+        if (GZP_IS_TEST_TIMER(ex->timers[best].id)) {
+            /* The incarnation that set it is in its id: an old incarnation's
+             * timer firing after a restart shows as such. */
+            uint64_t id = ex->timers[best].id;
             ex->timers[best].used = 0;
-            gzp_log("test-timer fired incarnation=%llu", (unsigned long long)ex->incarnation);
-            timer_set(ex, GZP_TEST_TIMER_ID, (uint64_t)ex->opt->test_timer_ms);
+            gzp_log("test-timer fired incarnation=%llu", (unsigned long long)(id & 0xffffu));
+            timer_set(ex, id, (uint64_t)ex->opt->test_timer_ms);
             continue;
         }
         memset(&ev, 0, sizeof ev);
@@ -605,19 +609,21 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     ex->delivered = 0;
 #ifdef GZP_TEST_BUILD
     /* Set before the start, so that with a held start it comes due during it. */
-    if (ex->opt->test_timer_ms) timer_set(ex, GZP_TEST_TIMER_ID, (uint64_t)ex->opt->test_timer_ms);
+    if (ex->opt->test_timer_ms)
+        timer_set(ex, GZP_TEST_TIMER_BASE | (ex->incarnation & 0xffffu), (uint64_t)ex->opt->test_timer_ms);
     if (ex->opt->test_listen_during_start && gzp_net_open(ex->net) != 0) fail(ex, "listen");
 #endif
-    start_node(ex);
 #ifdef GZP_TEST_BUILD
-    /* Tests: hold the start open with the loop running, so that what arrives
-     * meanwhile is seen to wait in the queue. */
+    /* Tests: hold the start open with the loop running, before the node's
+     * start calls, so that what connects meanwhile waits in the queue while
+     * the start resends (and those resends must still be dropped). */
     if (!ex->fatal && ex->opt->test_start_delay_ms) {
         uint64_t until = gzp_mono_ms() + (uint64_t)ex->opt->test_start_delay_ms;
         gzp_log("start-delay ms=%d", ex->opt->test_start_delay_ms);
         while (rc < 0 && gzp_mono_ms() < until) rc = turn(ex, fds, cap, until);
     }
 #endif
+    if (rc < 0) start_node(ex);
     ex->starting = 0;
     if (ex->fatal && gzp_standin_poisoned(&ex->store)) rc = GZP_RUN_RESTART; /* turned into POISONED below */
     if (rc < 0 && !ex->fatal) {
