@@ -3607,6 +3607,9 @@ static void test_review_b_member(void)
         if (o == 0) {
             CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
             mkeep();
+            CHECK(mb.start_len == 0 && mb.role == 0);          /* the start is spent */
+            acts_reset();                                     /* so a repeated Retry saves nothing */
+            CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, &A.l) == GZ_OK && !any_save());
         } else if (o == 1) {
             CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_FUNDING, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
             mkeep();
