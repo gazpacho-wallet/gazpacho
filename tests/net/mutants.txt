@@ -130,3 +130,201 @@ g-number-sign-ok	tools/gz-net/gz-net.c	    if (*s < '0' || *s > '9') return 0;\n
 g-number-end-unchecked	tools/gz-net/gz-net.c	if (errno || *end || v < min || v > max)	if (errno || v < min || v > max)
 g-key-file-trailing-ok	tools/gz-net/gz-net.c	if (n > 64 && buf[n - 1] == '\\n') n--;	if (n > 64) n = 64;
 g-hex-any-char	tools/gz-net/gz-net.c	if (hi < 0 || lo < 0) return 0;	if (0) return 0;
+# Lobby connections (stream S7): envelope.c, lnmsg.c, peers.c.
+env-type-any	ports/net/envelope.c	if (len < 2 || get16(msg) != GZ_ENV_TYPE)	if (len < 2)
+env-tag-ignored	ports/net/envelope.c	if (memcmp(p, GZ_ENV_PROTOCOL, 4) != 0) {	if (0) {
+env-short-header	ports/net/envelope.c	if (n < GZ_ENV_HDR_LEN) { *reason	if (n < 6) { *reason
+env-discovery-refused	ports/net/envelope.c	if (is_discovery(kind)) return GZ_ENV_IGNORE;	
+env-discovery-range	ports/net/envelope.c	return kind >= 128 && kind <= 159;	return kind >= 128 && kind <= 157;
+env-discovery-low	ports/net/envelope.c	return kind >= 128 && kind <= 159;	return kind >= 129 && kind <= 159;
+env-unknown-even-ignored	ports/net/envelope.c	if (kind & 1) return GZ_ENV_IGNORE;	return GZ_ENV_IGNORE;
+env-direction-ignored	ports/net/envelope.c	if (!(k->dir & (at == GZ_ENV_AT_HOST ? DIR_M2H : DIR_H2M))) {	if (0) {
+env-direction-swapped	ports/net/envelope.c	at == GZ_ENV_AT_HOST ? DIR_M2H : DIR_H2M	at == GZ_ENV_AT_HOST ? DIR_H2M : DIR_M2H
+env-zero-scope-ok	ports/net/envelope.c	if (kind != GZ_ENV_KIND_HELLO && all_zero(scope, 32)) {	if (0) {
+env-allzero-short	ports/net/envelope.c	for (i = 0; i < n; i++) acc |= p[i];	for (i = 0; i < n - 1; i++) acc |= p[i];
+env-required-ignored	ports/net/envelope.c	if (k->rules[i].required && !(c.seen & (1u << i))) {	if (0) {
+env-unknown-even-record-skipped	ports/net/envelope.c	if ((type & 1) == 0) { c->why = "unknown even record"; return 1; }	
+env-size-unchecked	ports/net/envelope.c	if (!value_ok(&c->k->rules[i], v, len)) {	if (0) {
+env-list-remainder	ports/net/envelope.c	if (len % r->entry) return 0;	
+env-list-max	ports/net/envelope.c	len / r->entry > r->max	len / r->entry > r->max + 1
+env-list-min	ports/net/envelope.c	if (len / r->entry < r->min ||	if (len / r->entry + 1 < r->min ||
+env-range-max	ports/net/envelope.c	if (len < r->min || len > r->max) return 0;	if (len < r->min || len > r->max + 1) return 0;
+env-range-min	ports/net/envelope.c	if (len < r->min || len > r->max) return 0;	if (len + 1 < r->min || len > r->max) return 0;
+env-ascii-del	ports/net/envelope.c	if (p[i] < 0x20 || p[i] > 0x7e) return 0;	if (p[i] < 0x20 || p[i] > 0x7f) return 0;
+env-utf8-overlong	ports/net/envelope.c	(need == 2 && cp < 0x800) ||	(0) ||
+env-utf8-surrogate	ports/net/envelope.c	(cp >= 0xd800 && cp <= 0xdfff)	(0)
+env-utf8-continuation	ports/net/envelope.c	if ((p[i + k] & 0xc0) != 0x80) return 0;	
+env-utf8-above-max	ports/net/envelope.c	(cp < 0x10000 || cp > 0x10ffff)	(cp < 0x10000)
+env-blocks-zero-signers	ports/net/envelope.c	if (signers == 0 || (n - at) / 130 < signers) return 0;	if ((n - at) / 130 < signers) return 0;
+env-blocks-max	ports/net/envelope.c	if (++items > hi) return 0;	if (++items > hi + 1) return 0;
+env-blocks-short	ports/net/envelope.c	if (signers == 0 || (n - at) / 130 < signers) return 0;	if (signers == 0 || (n - at) / 130 + 1 < signers) return 0;
+env-walk-order	ports/net/envelope.c	if (!first && type <= last)	if (!first && type < last)
+env-walk-past-end	ports/net/envelope.c	if (vlen > len - at) { *why = "record past the end"; return 1; }	if (vlen > len - at + 1) { *why = "record past the end"; return 1; }
+env-sig-not-last	ports/net/envelope.c	if (seen_sig) { *why = "record after the signature"; return 1; }	
+env-write-max	ports/net/envelope.c	if (records_len > GZ_ENV_MAX_RECORDS ||	if (records_len > GZ_ENV_MAX_RECORDS + 1 ||
+env-part-count-threshold	ports/net/envelope.c	if (body_len <= GZ_ENV_MAX_RECORDS || body_len > GZ_ENV_MAX_WHOLE) return 0;	if (body_len < GZ_ENV_MAX_RECORDS || body_len > GZ_ENV_MAX_WHOLE) return 0;
+env-part-count-max	ports/net/envelope.c	if (body_len <= GZ_ENV_MAX_RECORDS || body_len > GZ_ENV_MAX_WHOLE) return 0;	if (body_len <= GZ_ENV_MAX_RECORDS || body_len > GZ_ENV_MAX_WHOLE + 1) return 0;
+env-write-part-kind2	ports/net/envelope.c	if (!count || index >= count || inner_kind == GZ_ENV_KIND_PART) return 1;	if (!count || index >= count) return 1;
+env-reasm-inner2	ports/net/envelope.c	if (inner == GZ_ENV_KIND_PART) return reasm_refuse(r, reason, "part inside a part");	
+env-reasm-total-bound	ports/net/envelope.c	if (total > GZ_ENV_MAX_WHOLE || count < 2	if (count < 2
+env-reasm-count-min	ports/net/envelope.c	count < 2 || count > GZ_ENV_MAX_PARTS	count < 1 || count > GZ_ENV_MAX_PARTS
+env-reasm-count-consistent	ports/net/envelope.c	count != (total + GZ_ENV_PART_DATA - 1) / GZ_ENV_PART_DATA)	count < (total + GZ_ENV_PART_DATA - 1) / GZ_ENV_PART_DATA)
+env-reasm-index	ports/net/envelope.c	if (index >= count) return reasm_refuse	if (index > count) return reasm_refuse
+env-reasm-dlen	ports/net/envelope.c	if (dlen != want) return	if (dlen > want) return
+env-reasm-new-transfer-kept	ports/net/envelope.c	if (r->buf && memcmp(r->transfer_id, tid, 32) != 0) gz_env_reasm_reset(r);	
+env-reasm-scope-ignored	ports/net/envelope.c	memcmp(r->scope, part->scope, 32) != 0)	0)
+env-reasm-total-ignored	ports/net/envelope.c	if (r->inner_kind != inner || r->total_len != total ||	if (r->inner_kind != inner ||
+env-reasm-dup-other-data	ports/net/envelope.c	return reasm_refuse(r, reason, "part repeated with other data");	return GZ_ENV_IGNORE;
+env-reasm-dup-refused	ports/net/envelope.c	if (memcmp(r->buf + off, data, want) == 0) return GZ_ENV_IGNORE;	
+env-reasm-tid-unchecked	ports/net/envelope.c	if (memcmp(check, r->transfer_id, 32) != 0) return reasm_refuse(r, reason, "transfer_id does not match");	
+env-reasm-no-check	ports/net/envelope.c	v = gz_env_check(inner, r->scope, r->buf, total, at, reason);	v = GZ_ENV_DELIVER;
+env-reasm-complete-early	ports/net/envelope.c	if (r->held != (1u << count) - 1u) return GZ_ENV_HELD;	if ((r->held | 1u) != (1u << count) - 1u) return GZ_ENV_HELD;
+env-reasm-last-full	ports/net/envelope.c	want = index + 1u == count ? total - off : GZ_ENV_PART_DATA;	want = GZ_ENV_PART_DATA;
+env-tid-kind	ports/net/envelope.c	put16(buf, inner_kind);	put16(buf, 0);
+env-msghash-kind	ports/net/envelope.c	put16(pre + 4, m->kind);	put16(pre + 4, 0);
+env-msghash-before	ports/net/envelope.c	before = (size_t)(sig - 2 - m->records);	before = (size_t)(sig - m->records);
+env-verify-ignores	ports/net/envelope.c	return secp256k1_schnorrsig_verify(secp, sig, h, 32, &xk);	return 1;
+env-blip56-id-unchecked	ports/net/envelope.c	return rec->len == 32 && memcmp(rec->value, GZ_ENV_FACTORY_PROTOCOL_ID, 32) == 0;	return rec->len == 32;
+env-blip56-wrap-tag-kept	ports/net/envelope.c	gz_tlv_put(&w, 1024, native + 6, len - 6);	gz_tlv_put(&w, 1024, native + 2, len - 2);
+env-table-ready-sig-optional	ports/net/envelope.c	FIX(11, 2, 0), SIG};	FIX(11, 2, 0), FIX(240, 64, 0)};
+env-table-participants-min	ports/net/envelope.c	LIST(20, 194, 2, 1001, 1)	LIST(20, 194, 1, 1001, 1)
+env-table-abort-member-only	ports/net/envelope.c	K(GZ_ENV_KIND_ROUND_ABORT, DIR_EITHER, R_ABORT)	K(GZ_ENV_KIND_ROUND_ABORT, DIR_M2H, R_ABORT)
+env-table-part-either	ports/net/envelope.c	K(GZ_ENV_KIND_PART, DIR_H2M, R_PART)	K(GZ_ENV_KIND_PART, DIR_EITHER, R_PART)
+env-table-funded-gone	ports/net/envelope.c	K(GZ_ENV_KIND_FACTORY_FUNDED, DIR_H2M, R_ROUND_ID),	
+env-table-lstock-nonempty	ports/net/envelope.c	LIST(34, 36, 0, 4096, 1)	LIST(34, 36, 1, 4096, 1)
+ln-global-features-ignored	ports/net/lnmsg.c	if (has_even_bit(g, gl) || has_even_bit(f, fl)) return GZ_LN_REQUIRED_FEATURE;	if (has_even_bit(f, fl)) return GZ_LN_REQUIRED_FEATURE;
+ln-feature-mask	ports/net/lnmsg.c	if (f[i] & 0x55) return 1;	if (f[i] & 0x15) return 1;
+ln-networks-unchecked	ports/net/lnmsg.c	if (n != 1 || rec[0].len != 32 || memcmp(rec[0].value, chain, 32) != 0) return GZ_LN_NETWORK;	if (n != 1) return GZ_LN_NETWORK;
+ln-networks-optional	ports/net/lnmsg.c	if (n != 1 || rec[0].len != 32 ||	if (n == 1 && rec[0].len != 32 ||
+ln-networks-several	ports/net/lnmsg.c	rec[0].len != 32 ||	rec[0].len < 32 ||
+ln-gflen-unchecked	ports/net/lnmsg.c	if (len - 4 < gl + 2) return GZ_LN_MALFORMED;	if (len - 4 < gl) return GZ_LN_MALFORMED;
+ln-flen-unchecked	ports/net/lnmsg.c	if (len - at < fl) return GZ_LN_MALFORMED;	
+ln-ping-bytes-unchecked	ports/net/lnmsg.c	if (len - 6 < get16(msg + 4)) return GZ_LN_MALFORMED;	
+ln-pong-bytes-unchecked	ports/net/lnmsg.c	if (len - 4 < get16(msg + 2)) return GZ_LN_MALFORMED;	
+ln-ping-max	ports/net/lnmsg.c	if ((size_t)byteslen + 6 > out_cap || (size_t)byteslen + 6 > GZ_MSG_MAX) return 1;	if ((size_t)byteslen + 6 > out_cap) return 1;
+ln-alert-unsanitized	ports/net/lnmsg.c	text[i] = (msg[36 + i] >= 0x20 && msg[36 + i] <= 0x7e) ? (char)msg[36 + i] : '?';	text[i] = (char)msg[36 + i];
+ln-signet-byte	ports/net/lnmsg.c	0xf6, 0x1e, 0xee	0xf6, 0x1e, 0xef
+ln-init-tlv-networks-type	ports/net/lnmsg.c	out[6] = 1;	out[6] = 3;
+peers-huge-ping-answered	ports/net/peers.c	if (v >= GZ_LN_PONG_IGNORE_FROM) return; /* BOLT 1: ignore */	if (v > GZ_LN_PONG_IGNORE_FROM) return; /* BOLT 1: ignore */
+peers-pong-length-unchecked	ports/net/peers.c	if (v != c->ping_expect) { refuse(	if (0) { refuse(
+peers-pong-not-cleared	ports/net/peers.c	c->ping_out = 0;\n        p->stats.pongs_received++;	p->stats.pongs_received++;
+peers-ping-flood-off	ports/net/peers.c	if (++c->pings_in_window > p->cfg.max_pings) {	if (0) {
+peers-ping-window-never-resets	ports/net/peers.c	if (now - c->window_start >= p->cfg.pong_ms) {	if (0) {
+peers-pong-timeout-off	ports/net/peers.c	} else if (c->init_got && c->ping_out && now - c->t_ping >= p->cfg.pong_ms) {	} else if (0) {
+peers-no-ping	ports/net/peers.c	} else if (c->init_got && !c->ping_out && now - c->t_rx >= p->cfg.ping_ms) {	} else if (0) {
+peers-ping-from-start	ports/net/peers.c	!c->ping_out && now - c->t_rx >= p->cfg.ping_ms) {	!c->ping_out && now - c->t_start >= p->cfg.ping_ms) {
+peers-idle-cut-back	ports/net/peers.c	c->t_msg = 0;\n    on_message	c->t_msg = now_ms();\n    on_message
+peers-trickle-off	ports/net/peers.c	} else if (c->t_msg && now - c->t_msg >= p->cfg.recv_ms) {	} else if (0) {
+peers-send-timeout-off	ports/net/peers.c	} else if (queued(c) && now - c->t_tx >= p->cfg.send_ms) {	} else if (0) {
+peers-handshake-timeout-off	ports/net/peers.c	} else if (!c->init_got && now - c->t_start >= p->cfg.handshake_ms) {	} else if (0) {
+peers-ping-same-length	ports/net/peers.c	uint16_t want = (uint16_t)(1 + c->ping_seq++ % 16);	uint16_t want = 1;
+peers-rx-not-updated	ports/net/peers.c	    c->t_rx = now;\n	
+peers-init-first-unchecked	ports/net/peers.c	if (type != GZ_LN_INIT) { refuse(p, c, GZ_PEER_WHY_INIT, "first message is not init"); return; }	
+peers-init-unchecked	ports/net/peers.c	le = gz_ln_init_check(m, len, p->cfg.chain);	le = GZ_LN_OK;
+peers-second-init-ok	ports/net/peers.c	refuse(p, c, GZ_PEER_WHY_PROTOCOL, "second init");	
+peers-unknown-even-ignored	ports/net/peers.c	if (gz_msg_unknown_action(type) == GZ_MSG_CLOSE) refuse(	if (0) refuse(
+peers-warn-every-time	ports/net/peers.c	if (!c->warned && !gz_ln_alert_write(	if (!gz_ln_alert_write(
+peers-error-kept	ports/net/peers.c	fail(p, c, GZ_PEER_WHY_PEER_ERROR, 0, text);	set_text(push_event(p, c, GZ_PEER_EV_WARNING)->ev.text, text);
+peers-warning-dropped	ports/net/peers.c	set_text(push_event(p, c, GZ_PEER_EV_WARNING)->ev.text, text);\n        return;	return;
+peers-short-message-ok	ports/net/peers.c	if (len < 2) { refuse(p, c, GZ_PEER_WHY_PROTOCOL, "message shorter than its type"); return; }	if (len < 2) return;
+peers-member-check-skipped	ports/net/peers.c	if (!p->cfg.is_member(c->node_id, p->cfg.member_ctx)) {	if (0) {
+peers-member-sends-parts	ports/net/peers.c	if (c->outbound || !(count = gz_env_part_count(records_len))) return send_refused(p, c, GZ_PEERS_ERR_TOO_BIG);	if (!(count = gz_env_part_count(records_len))) return send_refused(p, c, GZ_PEERS_ERR_TOO_BIG);
+peers-no-reassembly	ports/net/peers.c	v = gz_env_reasm_add(&c->reasm, &env, at, p->cfg.secp, &whole, &reason);	v = GZ_ENV_HELD;
+peers-side-swapped	ports/net/peers.c	gz_env_side_t at = c->outbound ? GZ_ENV_AT_MEMBER : GZ_ENV_AT_HOST;	gz_env_side_t at = c->outbound ? GZ_ENV_AT_HOST : GZ_ENV_AT_MEMBER;
+peers-max-conns-off	ports/net/peers.c	if (p->n_conns >= p->cap || !prepare_socket(fd)	if (!prepare_socket(fd)
+peers-send-before-init	ports/net/peers.c	if (!c->init_got) return GZ_PEERS_ERR_NOT_READY;	
+peers-queue-cap-off	ports/net/peers.c	if (queued(c) + records_len + count * (2 + GZ_ENV_HDR_LEN + 100 + 34) > p->cfg.max_queue)\n        return send_refused(p, c, GZ_PEERS_ERR_FULL);	
+peers-refuse-no-warning	ports/net/peers.c	if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(GZ_LN_WARNING, reason, p->out, sizeof p->out, &n))	if (0)
+peers-refuse-no-flush	ports/net/peers.c	c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);	c->close_by = now_ms();	1
+peers-pong-queue-cap-off	ports/net/peers.c	if (queued(c) + v + 4 > p->cfg.max_queue) {	if (0) {
+peers-node-id-missing	ports/net/peers.c	c->have_id = 1;\n        if (!p->cfg.is_member	c->have_id = 0;\n        if (!p->cfg.is_member
+peers-refused-as-socket	ports/net/peers.c	fail(p, c, err == ECONNREFUSED ? GZ_PEER_WHY_REFUSED :	fail(p, c, err == ECONNREFUSED ? GZ_PEER_WHY_SOCKET :
+peers-lost-as-socket	ports/net/peers.c	if (r == 0) { fail(p, c, GZ_PEER_WHY_LOST, 0, "closed by the peer"); return; }	if (r == 0) { fail(p, c, GZ_PEER_WHY_SOCKET, 0, "closed by the peer"); return; }
+peers-was-connected-always	ports/net/peers.c	n->ev.was_connected = c->init_got;	n->ev.was_connected = 1;
+peers-event-node-missing	ports/net/peers.c	if (c->have_id) memcpy(n->ev.node_id, c->node_id, 33);	
+peers-handshake-as-crypto	ports/net/peers.c	fail_noise(p, c, GZ_PEER_WHY_HANDSHAKE, ne);\n            return 0;\n        }\n        if (!q_raw(c, act, GZ_NOISE_ACT2_LEN))	fail_noise(p, c, GZ_PEER_WHY_CRYPTO, ne);\n            return 0;\n        }\n        if (!q_raw(c, act, GZ_NOISE_ACT2_LEN))
+peers-connected-twice	ports/net/peers.c	c->init_got = 1;\n        push_event(p, c, GZ_PEER_EV_CONNECTED);	push_event(p, c, GZ_PEER_EV_CONNECTED);
+# Triage of the survivors of the lobby mutants (2026-11-12; 113 run, 110 killed):
+# peers-ping-same-length: equivalent. With one ping outstanding and BOLT 8
+#   delivering in order, a late pong cannot arrive; the varying length is
+#   defence in depth only.
+# peers-refuse-no-flush: not observable on loopback. The warning is queued
+#   and written in the same poll round, before the timers run, so closing
+#   "at once" still sends it. A slow link would show the difference.
+# peers-pong-queue-cap-off: not testable deterministically. With the ping
+#   flood limit (10 per window) a peer that never reads can make us queue at
+#   most about 650 KB of pongs, under the 4 MiB cap, and the kernel's socket
+#   buffers absorb most of it. The cap is defence in depth.
+# Review of PR 23 (reviewer A): admission, odd records in parts, warnings, wiping, fairness.
+env-part-odd-type-kept	ports/net/envelope.c	if (type <= 12 && (type & 1) == 0 && type >= 2) {	if (type <= 12 && type >= 2) {
+env-part-capped-again	ports/net/envelope.c	if (type <= 12 && (type & 1) == 0 && type >= 2) {	if (type <= 12 && (type & 1) == 0 && type >= 2 && pr->len[0]++ < 8) {
+env-ignored-transfer-kept	ports/net/envelope.c	gz_env_reasm_reset(r); /* refused or ignored: released at once */	if (v == GZ_ENV_REFUSE) gz_env_reasm_reset(r);
+env-lazy-release-gone	ports/net/envelope.c	if (r->buf && r->held == 0) gz_env_reasm_reset(r); /* the last completed message is released */	
+peers-warning-before-init	ports/net/peers.c	if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(	if (c->phase == PH_OPEN && !gz_ln_alert_write(
+peers-no-admission	ports/net/peers.c	if (!admit(p, c)) return;	
+peers-evict-newest-handshake	ports/net/peers.c	if (c->t_start < best->t_start) best = c;	if (c->t_start > best->t_start) best = c;
+peers-address-cap-off-by-one	ports/net/peers.c	if (p->cfg.max_per_address && same >= p->cfg.max_per_address) {	if (p->cfg.max_per_address && same > p->cfg.max_per_address) {
+peers-no-handshake-eviction	ports/net/peers.c	if (pending >= p->cfg.max_handshakes) {	if (0) {
+peers-evict-seated	ports/net/peers.c	if (established_unseated ? !(c->init_got && !is_seated(p, c)) : c->init_got) continue;	if (established_unseated ? !c->init_got : c->init_got) continue;
+peers-full-never	ports/net/peers.c	if (established < p->cfg.max_conns) return 1;	return 1;
+peers-close-keeps-events	ports/net/peers.c	if (n->ev.conn == conn) {	if (0) {
+peers-warning-events-unlimited	ports/net/peers.c	if (c->warnings >= p->cfg.max_warning_events) {	if (0) {
+peers-ignored-unlimited	ports/net/peers.c	if (++c->ignored > p->cfg.max_ignored) {	if (0) {
+peers-odd-not-counted	ports/net/peers.c	else count_ignored(p, c);	
+peers-delivered-transfer-kept	ports/net/peers.c	        gz_env_reasm_reset(&c->reasm);\n        break;	        break;
+peers-plain-not-wiped	ports/net/peers.c	gz_net_wipe(p->plain, body);	
+peers-closing-reads	ports/net/peers.c	(c->phase == PH_TCP ? 0 : c->closing ? 0 : POLLIN)	(c->phase == PH_TCP ? 0 : POLLIN)
+peers-no-unit-cap	ports/net/peers.c	while (units < 64) {	while (units < 1000000) {
+# Triage of the survivors after review A of PR 23 (2026-11-12):
+# env-part-odd-type-kept: equivalent. Odd types 1 to 11 would be stored in
+#   slots that are never read.
+# env-part-capped-again: equivalent as written. It counts only the six
+#   required types, so it never reaches its cap of 8; the real fault (a cap
+#   on all records) is covered by the eight odd records of test_envelope.
+# env-lazy-release-gone (the reviewer's a34): equivalent now. peers.c
+#   releases a delivered transfer at once (tested through reassembly_bytes);
+#   the release on the next part is a backstop whose effect rule 4 (a new
+#   transfer_id resets) or the same transfer's reuse of the buffer already
+#   gives.
+# peers-max-conns-off (the reviewer's c11): not reachable by a deterministic test. Handshake
+#   eviction keeps pending connections under max_handshakes and admission keeps
+#   established ones under max_conns; the array bound is reached only while
+#   refused connections are still flushing their warning. Kept as a memory guard.
+# Review B of PR 23: address groups, eviction by progress, unanswerable pings, admission counts.
+peers-evict-ignore-progress	ports/net/peers.c	if (!established_unseated && progress(c) != progress(best)) {	if (0) {
+peers-v6-low-half	ports/net/peers.c	memcpy(out, b, 8); /* the /64	memcpy(out, b + 8, 8); /* the /64
+peers-v6-whole	ports/net/peers.c	memcpy(out, b, 8); /* the /64	memcpy(out, b, 8); out[0] ^= b[15]; /* the /64
+peers-mapped-ignored	ports/net/peers.c	if (memcmp(b, mapped, 12) == 0) {	if (0) {
+peers-ping-full-silent	ports/net/peers.c	fail(p, c, GZ_PEER_WHY_TIMEOUT_SEND, 0, "cannot answer ping: peer not reading");\n            return;	return;
+peers-peraddr-pending-only	ports/net/peers.c	if (same_host(&o->addr, &ss)) same++;	if (same_host(&o->addr, &ss) && !o->init_got) same++;
+peers-admit-counts-closing	ports/net/peers.c	if (p->conns[i]->init_got && !p->conns[i]->closing) established++;	if (p->conns[i]->init_got) established++;
+# Survivors of reviewer B's probes are boundary shifts of 1 ms or 1 count
+#   on timers and windows (no practical effect), the ping-length cycle and
+#   the full held mask (equivalent), the 64-unit cap (its value), and the
+#   bLIP-56 65,535-byte edge (unused in slice 1).
+# Contract v2, step P2: refused sends close, replacement, seats by key, close_after_send, networks, one loop.
+p2-refusal-keeps-connection	ports/net/peers.c	fail(p, c, GZ_PEER_WHY_SEND_REFUSED, 0, gz_peers_err_name(e));	
+p2-no-replacement	ports/net/peers.c	replace_older(p, c);\n            if (!admit	if (!admit
+p2-replace-other-keys	ports/net/peers.c	memcmp(o->node_id, c->node_id, 33) != 0)	0)
+p2-seat-not-found	ports/net/peers.c	if (memcmp(p->seats[i], c->node_id, 33) == 0) return 1;	
+p2-unseat-ignored	ports/net/peers.c	memcpy(p->seats[i], p->seats[--p->n_seats], 33);	
+p2-close-after-send-no-flush	ports/net/peers.c	c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);\n    return GZ_PEERS_OK;	c->close_by = now_ms();\n    return GZ_PEERS_OK;
+p2-close-after-send-wrong-why	ports/net/peers.c	c->close_why = GZ_PEER_WHY_CLOSED_LOCAL;	c->close_why = GZ_PEER_WHY_LOCAL;
+p2-network-any	ports/net/peers.c	if (memcmp(config->chain, GZ_LN_CHAIN_SIGNET, 32) != 0 && memcmp(config->chain, GZ_LN_CHAIN_TESTNET4, 32) != 0) {	if (0) {
+p2-network-mainnet-only	ports/net/peers.c	if (memcmp(config->chain, GZ_LN_CHAIN_SIGNET, 32) != 0 && memcmp(config->chain, GZ_LN_CHAIN_TESTNET4, 32) != 0) {	if (memcmp(config->chain, GZ_LN_CHAIN_MAINNET, 32) == 0) {
+p2-network-no-testnet4	ports/net/peers.c	memcmp(config->chain, GZ_LN_CHAIN_SIGNET, 32) != 0 && memcmp(config->chain, GZ_LN_CHAIN_TESTNET4, 32) != 0	memcmp(config->chain, GZ_LN_CHAIN_SIGNET, 32) != 0
+p2-dispatch-no-timers	ports/net/peers.c	    p->pf_n = 0;\n    run_timers(p);	    p->pf_n = 0;
+p2-pollfds-events-not-urgent	ports/net/peers.c	if (p->head) *timeout_ms = 0;\n    else 	
+p2-pollfds-no-deadline	ports/net/peers.c	else if (wake == INT64_MAX) *timeout_ms = -1;	else if (1) *timeout_ms = -1;
+p2-testnet4-byte	ports/net/lnmsg.c	0x43, 0xf0, 0x8b, 0xda	0x43, 0xf0, 0x8c, 0xda
+# P2 triage: p2-close-after-send-no-flush is not observable on loopback, like
+#   peers-refuse-no-flush: the queued bytes are written in the same poll round.
+# Review B of PR 23, round 2: refusals outside the tested paths, close_after_send past the
+#   socket buffers, our own outbound link, and the test kind (built with GZ_TEST_KINDS).
+mbC-full-small-keeps	ports/net/peers.c	> p->cfg.max_queue) return send_refused(p, c, GZ_PEERS_ERR_FULL);\n        if (gz_env_write	> p->cfg.max_queue) return GZ_PEERS_ERR_FULL;\n        if (gz_env_write
+mbC-raw-toobig-keeps	ports/net/peers.c	if (len < 2 || len > GZ_NOISE_MAX_MSG) return send_refused(p, c, GZ_PEERS_ERR_TOO_BIG);	if (len < 2 || len > GZ_NOISE_MAX_MSG) return GZ_PEERS_ERR_TOO_BIG;
+mbC-raw-full-keeps	ports/net/peers.c	if (queued(c) + len + 34 > p->cfg.max_queue) return send_refused(p, c, GZ_PEERS_ERR_FULL);	if (queued(c) + len + 34 > p->cfg.max_queue) return GZ_PEERS_ERR_FULL;
+mbC-cas-immediate	ports/net/peers.c	c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);	c->close_by = now_ms();	2
+mbC-replace-outbound	ports/net/peers.c	if (o == c || o->outbound || !o->init_got	if (o == c || !o->init_got
+mbC-testkind-scope-off	ports/net/envelope.c	    if (kind == GZ_ENV_KIND_TEST && !all_zero(scope, 32)) {	    if (0) {
+mbC-testkind-split	ports/net/peers.c	    if (kind == GZ_ENV_KIND_TEST) return send_refused(p, c, GZ_PEERS_ERR_TOO_BIG); /* never split */	    (void)0;
