@@ -988,6 +988,16 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
         gz_job_refuse(srv, j, 503, "passphrase_not_checked", NULL);
         return;
     }
+    /* The wallet was locked since the passphrase was sent to be checked against
+     * the unlocked one (review B1). The lock's new generation refuses such a
+     * job first; this is the second guard. Nothing is installed or done; a
+     * wrong passphrase still counts. */
+    if (!j->was_locked && wallet_state(srv) != GZ_API_WALLET_UNLOCKED) {
+        if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, mono);
+        if (srv->be->passphrase_discard) srv->be->passphrase_discard(srv->bectx, pp);
+        gz_job_refuse(srv, j, 503, "passphrase_not_checked", NULL);
+        return;
+    }
     if (srv->be->passphrase_done) srv->be->passphrase_done(srv->bectx, pp);   /* installs, on this thread */
     if (c) c->job = NULL;
     if (c && c->state == CS_DEAD) c = NULL;
@@ -1361,6 +1371,7 @@ void gz_cmds_free(gz_api_server *srv)
 
 void gz_api_locked(gz_api_server *srv)
 {
+    gz_api_server_new_generation(srv);                   /* jobs in flight are discarded (contract-v2 4, review B1) */
     gz_sessions_end_all(srv);                            /* sessions end when the key is dropped (4.9) */
     gz_socket_token_drop(srv);
     gz_events_notify(srv, "status", NULL);
@@ -1524,6 +1535,8 @@ static void handle(gz_api_server *srv, gz_conn *c)
         break;
     }
     case H_LOCK:
+        /* a lock stops every passphrase job in flight, held lock or not (review B1) */
+        gz_api_server_new_generation(srv);
         call_backend(srv, c, 0, &answered);
         break;
     case H_START_AS_RESTORE: {

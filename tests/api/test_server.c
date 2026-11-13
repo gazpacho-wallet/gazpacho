@@ -2265,6 +2265,36 @@ static void test_p5_idle(void)
 }
 
 /* ---- review B of PR 26 (B1-B4, B6) and review A's last two survivors ----------------------- */
+static int api_open_as(fixture *x, const char *method, const char *path, const char *body, const char *session)
+{
+    char req[8000], sh[128];
+    int fd = tcp_connect(x->port), n;
+    sh[0] = 0;
+    if (session && session[0]) snprintf(sh, sizeof sh, "X-Gazpacho-Session: %s\r\n", session);
+    n = snprintf(req, sizeof req,
+                 "%s %s HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nOrigin: http://127.0.0.1:%d\r\nSec-Fetch-Site: same-origin\r\n"
+                 "Sec-Fetch-Mode: cors\r\nSec-Fetch-Dest: empty\r\n%sConnection: close\r\n"
+                 "Content-Type: application/json\r\nContent-Length: %zu\r\n\r\n%s",
+                 method, path, x->port, x->port, sh, strlen(body), body);
+    if (fd >= 0 && n > 0 && n < (int)sizeof req) send(fd, req, (size_t)n, MSG_NOSIGNAL);
+    return fd;
+}
+
+static void host_open_body(fixture *x, char *body, size_t cap, const char *rid)
+{
+    char draft[600], dd[80];
+    resp r;
+    snprintf(draft, sizeof draft,
+             "{\"name\":\"My first lobby\",\"profile\":\"standard\",\"target\":50,\"minimum\":30,\"deadline_at\":%lld,"
+             "\"on_shortfall\":\"cancel\",\"channel_sat\":500000,\"joining_fee_sat\":{\"now\":1000,\"min\":500,\"max\":1500}}",
+             (long long)(test_now(NULL) / 1000 + 86400));
+    api(x, &r, "POST", "/api/v1/host/preview", draft, NULL);
+    snprintf(dd, sizeof dd, "%s", jfield(&r, "draft_digest") ? jfield(&r, "draft_digest") : "");
+    resp_free(&r);
+    snprintf(body, cap, "{\"request_id\":\"%s\",\"draft\":%s,\"draft_digest\":\"%s\",\"confirm_funding_sat\":37500000,"
+                        "\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}", rid, draft, dd);
+}
+
 /* A connection opened, and accepted, before the clock moves: its request is
  * read in the server's next turn, before an expiry tick can run, so a lazy
  * expiry check is what answers it. */
@@ -2291,6 +2321,70 @@ static void api_on(fixture *x, int fd, resp *r, const char *method, const char *
     send(fd, req, (size_t)n, MSG_NOSIGNAL);
     read_answer(fd, r, 3000);
     close(fd);
+}
+
+#define LOCK_BODY "{\"confirm\":\"lock_wallet\",\"confirm_locked\":\"nobody_watching\"}"
+#define REVEAL_BODY "{\"confirm\":\"show_words\",\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}"
+#define RIGHT_BODY "{\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}"
+
+/* B1, T4.4 through POST /wallet/lock (never a hand-made new_generation): a
+ * sign-in and a kind A action are submitted, and the lock lands while the
+ * sign-in derives. Neither installs, acts or answers success; the waiting one
+ * is refused without a derivation. Then a kind A action deriving when the
+ * lock lands. */
+static void test_b1_lock(void)
+{
+    fixture x;
+    resp r;
+    char me[64], body[2400];
+    int fd1, fd2;
+    int64_t der, acted;
+    gz_api_counters ctr;
+    fx_prepare(&x, GZ_FAKE_LOCKED);
+    write_attempts(&x, "signet", 0, 0, 0);
+    x.fake.pp_delay_ms = 400;
+    if (fx_go(&x)) { CHECK(0); return; }
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(me, sizeof me, "%s", g_session);
+    host_open_body(&x, body, sizeof body, "req_open_b1_000001");
+    der = FAKE_READ(&x, x.fake.derivations);
+    acted = FAKE_READ(&x, x.fake.acted);
+    fd1 = api_open_as(&x, "POST", "/api/v1/session", RIGHT_BODY, NULL);    /* a check: the wallet is unlocked */
+    sleep_ms(100);
+    fd2 = api_open_as(&x, "POST", "/api/v1/host/lobbies", body, me);     /* waits behind it */
+    sleep_ms(100);
+    api(&x, &r, "POST", "/api/v1/wallet/lock", LOCK_BODY, NULL);
+    CHECK(r.status == 202 && r.body && strstr(r.body, "\"wallet\":\"locked\""));
+    resp_free(&r);
+    read_answer(fd1, &r, 3000);
+    CHECK(is_code(&r, 503, "passphrase_not_checked"));
+    resp_free(&r);
+    close(fd1);
+    read_answer(fd2, &r, 3000);
+    CHECK(is_code(&r, 503, "passphrase_not_checked"));
+    resp_free(&r);
+    close(fd2);
+    CHECK(FAKE_READ(&x, x.fake.derivations) == der + 1);
+    CHECK(FAKE_READ(&x, x.fake.acted) == acted + 1 && FAKE_READ(&x, x.fake.host_open) == 0);   /* the lock only */
+    fx_counters(&x, &ctr);
+    CHECK(ctr.sessions_open == 0);                      /* no normal session while locked (4.9) */
+    /* a kind A action whose derivation runs when the lock lands */
+    sign_in(&x, GZ_FAKE_PASSPHRASE);
+    snprintf(me, sizeof me, "%s", g_session);
+    host_open_body(&x, body, sizeof body, "req_open_b1_000002");
+    acted = FAKE_READ(&x, x.fake.acted);
+    fd2 = api_open_as(&x, "POST", "/api/v1/host/lobbies", body, me);
+    sleep_ms(150);
+    api(&x, &r, "POST", "/api/v1/wallet/lock", LOCK_BODY, NULL);
+    CHECK(r.status == 202);
+    resp_free(&r);
+    read_answer(fd2, &r, 3000);
+    CHECK(is_code(&r, 503, "passphrase_not_checked"));
+    resp_free(&r);
+    close(fd2);
+    CHECK(FAKE_READ(&x, x.fake.acted) == acted + 1 && FAKE_READ(&x, x.fake.host_open) == 0);   /* the lock only */
+    CHECK(FAKE_READ(&x, x.fake.wallet) == GZ_API_WALLET_LOCKED);
+    fx_stop(&x);
 }
 
 /* B4: the one-second delay is kept in milliseconds: a wrong passphrase at x.990 s
@@ -2362,6 +2456,7 @@ int main(void)
     test_p5_generation();
     test_p5_held();
     test_p5_idle();
+    test_b1_lock();
     test_b4_ms_delay();
     return check_done();
 }

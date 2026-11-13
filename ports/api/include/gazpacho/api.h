@@ -167,8 +167,9 @@ const char *gz_api_server_run_id(const gz_api_server *srv);
 void gz_api_notify(gz_api_server *srv, const char *topic, const char *id);
 
 /* A held lock has completed (4.7): the backend dropped the storage key after
- * the round ended. Every session ends and the socket token is deleted.
- * Loop thread only. */
+ * the round ended. Every session ends, the socket token is deleted and
+ * a new generation starts (passphrase jobs in flight are discarded, review
+ * B1). Loop thread. */
 void gz_api_locked(gz_api_server *srv);
 
 /* A first-run code for the terminal (4.3), only while no wallet exists.
