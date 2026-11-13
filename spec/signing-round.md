@@ -312,7 +312,7 @@ The engine must do these itself, because the imported functions do not:
 
 ### 12.1 Requirements on the core contract
 
-Not code changes made by this specification: requirements that `core/gazpacho/include/gazpacho/ports.h`, `action.h` and `event.h` must meet before the signing engine and the creation checks are written. The first four are met by the core contract for Slice 1 (pull request 21, `core-contract-slice1`); the fifth is a duty of the program, not of the core.
+Not code changes made by this specification: requirements that `core/gazpacho/include/gazpacho/ports.h`, `action.h` and `event.h` must meet before the signing engine and the creation checks are written. The first four are met by the core contract for Slice 1 (pull request 21, `core-contract-slice1`); the fifth is a duty of the program, not of the core. The last four come from the program skeleton's findings and are met by contract v2 (`docs/notes/contract-v2.md`), in the pull requests named.
 
 | Requirement | Why | Where it is met |
 |---|---|---|
@@ -321,6 +321,10 @@ Not code changes made by this specification: requirements that `core/gazpacho/in
 | **Watch an outpoint**: report when a given outpoint is spent, with the spending txid and its confirmations | C4(d) and Dead: the member watches each input of the funding transaction, whose scripts it does not know (the funding transaction is sent without its previous outputs) | `GZ_ACTION_WATCH_OUTPOINT`, answered by `GZ_CHAIN_OUTPOINT_SPENT`, 0 confirmations meaning not final (`action.h`). The Esplora-style chain view can answer both (`docs/CHAIN-SERVERS.md`) |
 | **A restore marker at start**: the program tells the node, before any other event, that this start follows a restore; the node answers with its first save batch (`key_epoch`, `restored`, `guard`) through the runner, as sequence 1 of the new incarnation | `safety-rule.md` R2; `journal.md` section 8 (review 3, F22: no batch is ever written outside the runner) | `restored` in `gz_storage_reader_t` (`ports.h`, the restore marker); the restore epoch is mixed with the incarnation (R2) |
 | **The guard's storage duty**: a batch holding a `guard` record is confirmed only after the guard file is replaced and synced as well (`journal.md` section 8.3) | `safety-rule.md` R6 | A duty of the program around the runner, like the journal's; nothing in the runner changes |
+| **The key before the handshake**: a connection with a fresh key index is made only after the batch holding that `key_index` (and its `guard`) is confirmed (section 2) | Section 2, review 3 F12: no key is shown to anyone before its index is saved | `GZ_ACTION_CONNECT`, outward, so the runner holds it behind the save (`docs/notes/contract-v2.md` section 3; pull request P4) |
+| **Messages carry kind and scope**: a round message is sent and received as (`kind`, `scope`, `records`), so the engine never builds or parses the envelope header | `messages.md` sections 4 and 5: the signature covers kind and scope; the transport splits and reassembles | `SEND` and `GZ_EVENT_MESSAGE_RECEIVED` (contract v2 section 7; P4) |
+| **A peer named by its keys**: resends after a restart are addressed to the link (our key, its key), which a restart does not change | Rule S3 and `messages.md` 6: the member resends `round_partial_sigs` after reconnecting | `gz_link_t` (contract v2 section 2; P4); resends at `GZ_EVENT_PEER_CONNECTED` (node rule 6) |
+| **An incarnation that a restore of the journal alone cannot rewind**: the restore epoch and nonce inputs mix in the incarnation. A snapshot of the whole data folder or machine rolls it back too and is not defended (storage 6.4); there only the epoch's random draw protects | Section 8; `safety-rule.md` R2 | The start counter `starts.gzs` (contract v2 section 8): a stand-in in P3, sealed in P9; a duty of storage |
 
 ## 13. Use of the imported code
 

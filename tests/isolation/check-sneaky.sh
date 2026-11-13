@@ -126,6 +126,22 @@ build_case 19 && {   # real writable data is still caught: symbol test runs unde
         echo "note: case 19 refused under --sanitized"
 }
 
+echo "-- clang's -fsanitize=function prologue: skipped under --sanitized, only just before a function start"
+if [ "$x86" -eq 1 ]; then
+    if build_case 52; then   # (a) the magic and a hash ending in 0x64 (a lone fs prefix) before a function
+        out=$(sh "$checker" --sanitized "$work/case-52.o" 2>&1) && echo "ok: case 52 (the prologue before a function) passes --sanitized" ||
+            { fail "case 52 (the prologue before a function) refused under --sanitized"; printf '%s\n' "$out" | grep '^FOUND'; }
+    else fail "case 52 did not compile"; cat "$work/case-52.err"; fi
+    refuses_object 52 "instruction: floating-point or vector register\$"   # (d) plain mode reads the bytes as before
+    mode="--sanitized"
+    refuses_object 53 "instruction: floating-point or vector register\$"   # (b) x87 and SSE in the body
+    refuses_object 90 "instruction: floating-point or vector register\$"   # (b) x87 by mnemonic
+    refuses_object 54 "instruction: floating-point or vector register\$"   # (c) one byte before the start
+    refuses_object 55 "instruction: floating-point or vector register\$"   # (c) before a label that is no function
+    refuses_object 56 "instruction: floating-point or vector register\$"   # (c) inside a function body
+    mode=""
+fi
+
 echo "-- honest objects pass"
 for n in 50 51; do
     build_case "$n" || { fail "case $n did not compile"; continue; }

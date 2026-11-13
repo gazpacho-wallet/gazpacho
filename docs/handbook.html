@@ -349,7 +349,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c27-rough-totals" title="Rough totals">Rough totals</a>
 <a class="sec" href="#c27-biggest-unknowns" title="Biggest unknowns">Biggest unknowns</a></nav>
 <main>
-<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-12 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
+<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-13 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
 <section class="chapter" id="c1"><h2>Start here</h2><p class="desc">Terms, facts, decisions in force, and how sure we are of each claim.</p><p class="file">Gazpacho knowledge base · <code>docs/KNOWLEDGE-BASE.md</code></p>
 <div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.</p></div>
 <details id="c1-1-where-everything-is"><summary>1. Where everything is</summary><div class="body"><div class="tw"><table>
@@ -1983,7 +1983,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>What stays true in every case.</strong> The host's spare liquidity in an old state is a deterrent only: the member can take it if the host publishes that state, and it is not counted in exit value. An older state that wins delays the exit.</p></div></details>
 <details id="c4-9-restore"><summary>9. Restore</summary><div class="body"><p>The host keeps a copy of each member's backup and chooses which version to return; the user may also keep an export of their own (<code>DESIGN.md</code> sections 8 and 9). A backup may be older than rounds the member took part in. Draft 2's C12 protected only factories that existed at the backup's date. These rules replace it.</p>
 <p><strong>R1. Every load from a backup is a restore.</strong> The node knows it is restoring; nothing it reads tells it how old the backup is.</p>
-<p><strong>R2. A new restore epoch at every restore.</strong> The original installation uses epoch 0, written in a <code>key_epoch</code> record at the journal's first start. At the first start after a restore, before any key is derived and before any message is sent, the node draws 8 bytes from the randomness port with the <strong>ordinary, untagged</strong> request and takes as the epoch 31 bits of a bijective mix of those bytes with its incarnation (the SplitMix64 finaliser of the bytes XOR the incarnation times an odd constant; the placeholder in <code>core/gazpacho/node.c</code> shows it), retrying while it is 0, and saves it at once in a <code>key_epoch</code> record, so later backups carry it (<code>journal.md</code> section 8). The epoch is not a secret: it is stored and backed up, so it must not be drawn with the secret tag, whose bytes are never journaled (<code>signing-round.md</code> section 8; review 3, F3). Every per-lobby key, factory key and contribution key alike, is derived under (epoch, index); 31 bits fit a hardened BIP 32 index. The incarnation never repeats and a restore cannot rewind it (<code>runner.h</code>), so a port that repeats its draws after a restore (a machine restored from a snapshot) does not repeat the epoch (PR 9 review round 4, N3). Two restores drawing the same epoch is the only way a key could repeat; for n restores the chance is about n² in 2^32, under one in forty million for ten restores [R].</p>
+<p><strong>R2. A new restore epoch at every restore.</strong> The original installation uses epoch 0, written in a <code>key_epoch</code> record at the journal's first start. At the first start after a restore, before any key is derived and before any message is sent, the node draws 8 bytes from the randomness port with the <strong>ordinary, untagged</strong> request and takes as the epoch 31 bits of a bijective mix of those bytes with its incarnation (the SplitMix64 finaliser of the bytes XOR the incarnation times an odd constant; the placeholder in <code>core/gazpacho/node.c</code> shows it), retrying while it is 0, and saves it at once in a <code>key_epoch</code> record, so later backups carry it (<code>journal.md</code> section 8). The epoch is not a secret: it is stored and backed up, so it must not be drawn with the secret tag, whose bytes are never journaled (<code>signing-round.md</code> section 8; review 3, F3). Every per-lobby key, factory key and contribution key alike, is derived under (epoch, index); 31 bits fit a hardened BIP 32 index. The incarnation never repeats on one device, and a restore of the journal alone cannot rewind it (<code>runner.h</code>; the start counter, <code>docs/notes/contract-v2.md</code> section 8), so a port that repeats its draws after such a restore does not repeat the epoch (PR 9 review round 4, N3). A snapshot of the whole data folder or of the machine rolls the incarnation back too and is not defended (<code>storage-encryption.md</code> 6.4); there only the 31-bit random draw protects the epoch. Two restores drawing the same epoch is the only way a key could repeat; for n restores the chance is about n² in 2^32, under one in forty million for ten restores [R].</p>
 <p><strong>R3. Old keys are recovery-only.</strong> Every key derived under an earlier epoch is recovery-only. The key index is never restored backwards into use: a restored node never derives a key it may have used before. A member restored while in an open lobby loses its seat there and must join again with a new key. There is no separate "fresh start" confirmation: the new epoch is enough, and the app simply tells the user that it was restored and which seats were lost.</p>
 <p><strong>R4. Nothing is signed with a recovery-only key</strong> except the recovery procedure (C12; its 1.0.0 part is <code>exit.md</code> 5.7). R4 is a consequence of C7's fresh-key rule and needs no step of its own: a replayed proposal names the member's old key, the member's current key for that lobby is absent from it (or the member has no current key for that lobby at all), and the member refuses with <code>round_abort</code> reason 12 (<code>messages.md</code> section 7.9). It signs no nonce for it. This closes the restart frame of review 2, N1, step 4a.</p>
 <p><strong>R5. A creation round needs a fresh funding output</strong> (C7, "Fresh funding output"). This closes the second tree on an old outpoint, review 2, N1, step 4b: every tree signed before the restore commits to an old key, so it cannot spend an output whose script commits to the new one [R].</p>
@@ -2968,7 +2968,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tbody>
 </table></div>
 <h4>12.1 Requirements on the core contract</h4>
-<p>Not code changes made by this specification: requirements that <code>core/gazpacho/include/gazpacho/ports.h</code>, <code>action.h</code> and <code>event.h</code> must meet before the signing engine and the creation checks are written. The first four are met by the core contract for Slice 1 (pull request 21, <code>core-contract-slice1</code>); the fifth is a duty of the program, not of the core.</p>
+<p>Not code changes made by this specification: requirements that <code>core/gazpacho/include/gazpacho/ports.h</code>, <code>action.h</code> and <code>event.h</code> must meet before the signing engine and the creation checks are written. The first four are met by the core contract for Slice 1 (pull request 21, <code>core-contract-slice1</code>); the fifth is a duty of the program, not of the core. The last four come from the program skeleton's findings and are met by contract v2 (<code>docs/notes/contract-v2.md</code>), in the pull requests named.</p>
 <div class="tw"><table>
 <thead>
 <tr>
@@ -3002,6 +3002,26 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td><strong>The guard's storage duty</strong>: a batch holding a <code>guard</code> record is confirmed only after the guard file is replaced and synced as well (<code>journal.md</code> section 8.3)</td>
 <td><code>safety-rule.md</code> R6</td>
 <td>A duty of the program around the runner, like the journal's; nothing in the runner changes</td>
+</tr>
+<tr>
+<td><strong>The key before the handshake</strong>: a connection with a fresh key index is made only after the batch holding that <code>key_index</code> (and its <code>guard</code>) is confirmed (section 2)</td>
+<td>Section 2, review 3 F12: no key is shown to anyone before its index is saved</td>
+<td><code>GZ_ACTION_CONNECT</code>, outward, so the runner holds it behind the save (<code>docs/notes/contract-v2.md</code> section 3; pull request P4)</td>
+</tr>
+<tr>
+<td><strong>Messages carry kind and scope</strong>: a round message is sent and received as (<code>kind</code>, <code>scope</code>, <code>records</code>), so the engine never builds or parses the envelope header</td>
+<td><code>messages.md</code> sections 4 and 5: the signature covers kind and scope; the transport splits and reassembles</td>
+<td><code>SEND</code> and <code>GZ_EVENT_MESSAGE_RECEIVED</code> (contract v2 section 7; P4)</td>
+</tr>
+<tr>
+<td><strong>A peer named by its keys</strong>: resends after a restart are addressed to the link (our key, its key), which a restart does not change</td>
+<td>Rule S3 and <code>messages.md</code> 6: the member resends <code>round_partial_sigs</code> after reconnecting</td>
+<td><code>gz_link_t</code> (contract v2 section 2; P4); resends at <code>GZ_EVENT_PEER_CONNECTED</code> (node rule 6)</td>
+</tr>
+<tr>
+<td><strong>An incarnation that a restore of the journal alone cannot rewind</strong>: the restore epoch and nonce inputs mix in the incarnation. A snapshot of the whole data folder or machine rolls it back too and is not defended (storage 6.4); there only the epoch's random draw protects</td>
+<td>Section 8; <code>safety-rule.md</code> R2</td>
+<td>The start counter <code>starts.gzs</code> (contract v2 section 8): a stand-in in P3, sealed in P9; a duty of storage</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -8591,7 +8611,7 @@ docs/      plan, assessment, user guides
 {
  "about": "Not displayed. Sources and conventions for readers working from this file alone. The full text of every document is in the page itself, inside the collapsed sections.",
  "repository": "https://github.com/gazpacho-wallet/gazpacho",
- "built": "2026-11-12",
+ "built": "2026-11-13",
  "wording": "Say host (the papers say LSP) and member (client). Never say staking; say hosting, providing liquidity, fees.",
  "authoritative": "The Markdown files in the repository. This page is generated from them by tools/build-handbook.py.",
  "chapters": [

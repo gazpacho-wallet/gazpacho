@@ -261,3 +261,6 @@ endif()
 gz_add_test(journal_restore tests/journal/test_journal_restore.c gazpacho_journal_testfs)
 # Under valgrind: every journal test runs in the valgrind job
 # (tools/valgrind-tests.py, which takes journal_fuzz on a smaller case).
+
+# --- trees from terms and the creation checks (core/tree) ---
+add_subdirectory(core/tree)
