@@ -185,3 +185,6 @@ add_subdirectory(wallet)
 
 # --- chain view port (Esplora backend, comparing backend, gz-chain) ------------
 add_subdirectory(ports/chain)
+
+# --- the gazpacho program (stream S11): executor, port adapters, executable ----
+add_subdirectory(program)
