@@ -2979,6 +2979,72 @@ static void test_review_member(void)
     CHECK(gz_lobby_member_resume(&m2, &A.l) == GZ_OK && A.l.count == 0 && SG.resumes == 1);
     CHECK(gz_lobby_member_resume(NULL, &A.l) == GZ_ERR_ARGUMENT);
 
+    /* a version lower than the frozen one is ignored, not a fault (messages.md 6.2) */
+    {
+        uint8_t o3[8000];
+        size_t o3n = offer(o3, sizeof o3, SCOPE, T1, T1N, T3, T3N, &HOST);
+        static gz_lobby_member_t mf;
+        member_sg(&mf, &cond);
+        feed(&mf, o3, o3n);                            /* version 2 */
+        {
+            uint8_t cd3[32];
+            gz_terms_current_digest(T3, T3N, cd3);
+            xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk, 2, cd3, 30000, 0, &HOST);
+        }
+        CHECK(feed(&mf, x, xn) == GZ_OK && mf.frozen && mf.frozen_version == 2);
+        CHECK(feed(&mf, ob, on) == GZ_OK && A.l.count == 0 && !mf.ended);   /* version 1 */
+        CHECK(feed(&mf, o3, o3n) == GZ_OK && A.l.count == 0 && !mf.ended);  /* the same: a duplicate */
+    }
+    /* may_sign needs every condition */
+    {
+        static gz_lobby_member_t ms;
+        uint8_t other[32];
+        memset(other, 0x3e, 32);
+        member_sg(&ms, &cond);
+        feed(&ms, ob, on);
+        CHECK(!gz_lobby_member_may_sign(&ms, chk));                  /* not frozen, no answer */
+        xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk, 1, cd2, 30000, 0, &HOST);
+        feed(&ms, x, xn);
+        CHECK(gz_lobby_member_may_sign(&ms, chk) && !gz_lobby_member_may_sign(&ms, other));
+        CHECK(!gz_lobby_member_may_sign(NULL, chk) && !gz_lobby_member_may_sign(&ms, NULL));
+        ms.ended = 1; CHECK(!gz_lobby_member_may_sign(&ms, chk)); ms.ended = 0;
+        ms.user_unready = 1; CHECK(!gz_lobby_member_may_sign(&ms, chk)); ms.user_unready = 0;
+        ms.ready = 0; CHECK(!gz_lobby_member_may_sign(&ms, chk)); ms.ready = 1;
+        ms.frozen = 0; CHECK(!gz_lobby_member_may_sign(&ms, chk)); ms.frozen = 1;
+        ms.ready_version = 2; CHECK(!gz_lobby_member_may_sign(&ms, chk)); ms.ready_version = 1;
+        CHECK(gz_lobby_member_may_sign(&ms, chk));
+        /* resume: role 2, or an ended member, begins nothing */
+        memset(&SG, 0, sizeof SG);
+        xn = host_msg(x, sizeof x, GZ_KIND_START, chk, 0, NULL, 0, 2, &HOST);
+        CHECK(feed(&ms, x, xn) == GZ_OK && saves(GZ_REC_START_RECEIVED) == 1 && SG.begins == 0);
+        acts_reset();
+        CHECK(gz_lobby_member_resume(&ms, &A.l) == GZ_OK && SG.resumes == 0 && A.l.count == 0);
+        ms.role = 1; ms.ended = 1;
+        CHECK(gz_lobby_member_resume(&ms, &A.l) == GZ_OK && SG.resumes == 0);
+        ms.ended = 0;
+        CHECK(gz_lobby_member_resume(&ms, &A.l) == GZ_OK && SG.resumes == 1);   /* the control */
+        CHECK(gz_lobby_member_resume(&ms, NULL) == GZ_ERR_ARGUMENT);
+        CHECK(gz_lobby_member_round_result(&ms, 0, &A.l) == GZ_ERR_ARGUMENT && gz_lobby_member_round_result(&ms, 5, &A.l) == GZ_ERR_ARGUMENT);
+        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_ACTIVE, NULL) == GZ_ERR_ARGUMENT);
+        ms.ended = 1;
+        acts_reset();
+        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_ACTIVE, &A.l) == GZ_OK && refused(GZ_CMD_ROUND_RESULT));
+    }
+    /* a lost unready is resent while Open or in a check, not once Signing */
+    {
+        static gz_lobby_member_t mu;
+        member_sg(&mu, &cond);
+        feed(&mu, ob, on);
+        acts_reset();
+        gz_lobby_member_unready(&mu, &A.l);
+        n = st_msg(buf, sizeof buf, GZ_LOBBY_SIGNING, GZ_SEAT_READY, 1);
+        CHECK(feed(&mu, buf, n) == GZ_OK && sends(GZ_KIND_UNREADY) == 0);
+        n = st_msg(buf, sizeof buf, GZ_LOBBY_OPEN, GZ_SEAT_READY, 1);
+        CHECK(feed(&mu, buf, n) == GZ_OK && sends(GZ_KIND_UNREADY) == 1);
+        mu.unready_reason = 0;                         /* restored from an older record: reason 2 */
+        CHECK(feed(&mu, buf, n) == GZ_OK && last_sent(GZ_KIND_UNREADY, &g, NULL, NULL) && g.reason == 2);
+    }
+
     /* S3: after the freeze a seat back in Joined readies by itself again */
     acts_reset();
     CHECK(gz_lobby_member_set_conditions(&m, &cond, &A.l) == GZ_OK && sends(GZ_KIND_READY) == 1);
@@ -3167,6 +3233,24 @@ static void test_review_host(void)
     }
     CHECK(HOST.verifies == 0);
 
+    /* h05: ten answers, target 8: the two who joined last are not chosen */
+    CLOCK = W_T0 - 3600000;
+    host_open(2);
+    for (i = 1; i <= 7; i++) { seat_up(i, 0); CLOCK += 1000; }
+    H.state = GZ_LOBBY_SIGNING;                       /* hold the check back while 8 to 10 join */
+    for (i = 8; i <= 10; i++) { seat_up(i, 0); CLOCK += 1000; }
+    H.state = GZ_LOBBY_OPEN;
+    H.rule_dirty = 1;
+    fresh(1);
+    CHECK(H.state == GZ_LOBBY_READY_CHECK && last_sent(GZ_KIND_READY_CHECK, &g, NULL, NULL));
+    memcpy(chk, g.check_id, 32);
+    for (i = 10; i >= 1; i--) {                       /* answers arrive in reverse */
+        n = ready_msg(buf, sizeof buf, i, 1, cd2_of(), chk, 0);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+    }
+    CHECK(timer_in(GZ_LOBBY_TIMER_WINDOW) == GZ_OK && sends(GZ_KIND_START) == 10 && H.state == GZ_LOBBY_SIGNING);
+    for (i = 1; i <= 10; i++) CHECK(H.seats[i - 1].chosen == (i <= 8));
+
     /* h09: without standby seats no join is taken during a check */
     host_open(0);
     for (i = 1; i <= 3; i++) seat_up(i, 0);
@@ -3205,11 +3289,11 @@ static void test_review_host(void)
         gz_record_t r;
         int v;
         gz_terms_current_digest(T3, T3N, cd3);
-        for (v = 1; v <= 2; v++) {
-            cml = host_msg(cm, sizeof cm, GZ_KIND_READY_CHECK, chk, (uint32_t)v, v == 1 ? cd2_of() : cd3, 30000, 0, &HOST);
+        for (v = 1; v <= 3; v++) {
+            cml = host_msg(cm, sizeof cm, GZ_KIND_READY_CHECK, chk, (uint32_t)(v == 3 ? 2 : v), v == 2 ? cd3 : cd2_of(), 30000, 0, &HOST);
             memcpy(fz, chk, 32);
-            gz_lw_put(fz + 32, (uint64_t)v, 4);
-            memcpy(fz + 36, v == 1 ? cd2_of() : cd3, 32);
+            gz_lw_put(fz + 32, (uint64_t)(v == 3 ? 2 : v), 4);
+            memcpy(fz + 36, v == 2 ? cd3 : cd2_of(), 32);
             fn = 68 + gz_la_put_blob(fz + 68, cm, cml);
             CHECK(gz_la_freeze_ok(fz, fn));
             restore_kept(&R2);
