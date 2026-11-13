@@ -1,0 +1,53 @@
+name: Wallet break-checks
+# wallet/tests/break-checks.sh: damage one wallet protection at a time and
+# require a wallet test to fail. It runs on every pull request, but does the
+# work only when the request changes the wallet, its tools, the root build
+# file or this workflow, so it can be a required check without costing every
+# other request anything; on every push to main; and nightly.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wallet-break-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  break-checks:
+    name: wallet break-checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Does this change touch the wallet?
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if git diff --name-only "$BASE" HEAD | grep -Eq '^(wallet/|tools/gz-wallet-|CMakeLists\.txt$|\.github/workflows/wallet-break-checks\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No change to the wallet, its tools or the build: nothing to check."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install dependencies
+        if: steps.scope.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
+      - name: Configure
+        if: steps.scope.outputs.run == 'true'
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_WERROR=ON
+      - name: Break-checks
+        if: steps.scope.outputs.run == 'true'
+        run: ctest --test-dir build --output-on-failure --timeout 1500 -R '^wallet_break_checks$'

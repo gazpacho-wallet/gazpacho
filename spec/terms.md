@@ -60,7 +60,7 @@ Required unless marked. "Slice 1" says which values a Slice 1 app accepts; other
 
 | Type | Term | Size | Bounds | Slice 1 | Why it is here |
 |---|---|---|---|---|---|
-| 2 | `chain` | 32 | | Signet's genesis hash, `f61eee3b…08000000` (internal order) | A record for one network can never be used on another. Mainnet is refused (`SLICES.md` rule 3) |
+| 2 | `chain` | 32 | | The genesis hash of the host's network, internal order: signet `f61eee3b…08000000` or testnet4 `43f08bda…00000000` | A record for one network can never be used on another. Mainnet is refused (`SLICES.md` rule 3). The member refuses a chain other than its own (`messages.md` section 2, contract v2 item 15) |
 | 3 | `host_alias` | 1 to 32 | UTF-8 | Optional | Display only |
 | 4 | `host_key` | 33 | Valid point | Must equal the pinned BOLT 8 key | Binds the terms to the key the member connected to |
 | 5 | `description` | 1 to 280 | UTF-8 | Optional | Display only |
@@ -193,7 +193,7 @@ In this order; any failure refuses the offer and saves nothing.
 1. Both records decode under section 2, inside their size limits.
 2. `TH("gazpacho/terms/outer", outer)` equals the message's `scope`.
 3. `host_key` equals the pinned BOLT 8 key; both signatures verify under it.
-4. `chain` is signet.
+4. `chain` is the member's own network (signet or testnet4).
 5. Every bound in sections 3 and 4, including the shape check of section 4.3.
 6. The current record's `outer_digest` equals the computed outer digest; it has exactly the outer record's adjustable types; each value is inside its range.
 7. Its `version` is higher than any accepted for this lobby, or equal with identical bytes (a duplicate). Equal with different bytes is the host signing two values under one version: keep both as evidence and leave.

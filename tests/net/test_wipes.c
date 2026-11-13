@@ -119,7 +119,7 @@ static const size_t ACT3[] = {32, 33, 32, 32, 32, 32, 33, 32, 32, 32, 32, 32, 32
 
 static void test_handshake_wipes(void)
 {
-    gz_random_port_t ri = {fill, K12}, rr = {fill, K22};
+    gz_net_random_t ri = {fill, K12}, rr = {fill, K22};
     gz_noise_t ini, res;
     uint8_t a[66], k1[32], k2[32];
     n_wipes = 0;
@@ -148,7 +148,7 @@ static void test_handshake_wipes(void)
 
 static int pair(gz_noise_t *ini, gz_noise_t *res, gz_noise_err_t *err)
 {
-    gz_random_port_t ri = {fill, K12}, rr = {fill, K22};
+    gz_net_random_t ri = {fill, K12}, rr = {fill, K22};
     uint8_t a[66];
     if ((*err = gz_noise_init_initiator(ini, secp, K11, RS, ri)) || (*err = gz_noise_init_responder(res, secp, K21, rr)) ||
         (*err = gz_noise_act1_write(ini, a)) || (*err = gz_noise_act1_read(res, a, 50)) ||

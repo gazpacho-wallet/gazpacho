@@ -233,6 +233,8 @@ static void own_sighash(const parsed_tx_t *tx, uint64_t amount, const unsigned c
  * of the output spent: a non-zero value must make the check fail, which is
  * how the check itself is tested. Returns 1 if everything holds:
  *   - the transaction is well formed and its ID is the double hash of its bytes;
+ *   - if its input carries a relative delay, its version is at least 2, so
+ *     the delay binds;
  *   - its input names the double hash of the parent's bytes and the right output;
  *   - the signed transaction is the unsigned one plus a single 64-byte witness;
  *   - that signature verifies, under this program's own signature hash,
@@ -247,6 +249,10 @@ static int verify_node(const factory_t *f, const factory_node_t *nd, uint64_t am
     secp256k1_xonly_pubkey key;
 
     if (!nd->is_built || !nd->is_signed || !parse_tx(u, ul, &tx)) return 0;
+    /* A relative delay only binds in a transaction of version 2 or more
+     * (BIP 68). The exit delays reported below are sums of these fields, so a
+     * delayed transaction of a lower version is an error here. */
+    if (!(tx.sequence & 0x80000000u) && (tx.sequence & 0xFFFFu) != 0 && le32(u) < 2) return 0;
     sha256d(u, ul, txid);
     if (memcmp(txid, nd->txid, 32) != 0) return 0;
 

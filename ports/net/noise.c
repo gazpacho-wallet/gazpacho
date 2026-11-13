@@ -138,14 +138,14 @@ static gz_noise_err_t make_ephemeral(gz_noise_t *st)
 {
     int i;
     for (i = 0; i < EPHEMERAL_TRIES; i++) {
-        st->random.fill(st->random.ctx, st->e_priv, 32);
+        st->random.fill(st->random.ctx, st->e_priv, 32);   /* never saved */
         if (pub_of(st, st->e_pub, st->e_priv)) return GZ_NOISE_OK;
     }
     return GZ_NOISE_ERR_RANDOM;
 }
 
 static gz_noise_err_t init_common(gz_noise_t *st, const secp256k1_context *secp,
-                                  const uint8_t ls_priv[32], gz_random_port_t random)
+                                  const uint8_t ls_priv[32], gz_net_random_t random)
 {
     memset(st, 0, sizeof *st);
     st->secp = secp;
@@ -161,7 +161,7 @@ static gz_noise_err_t init_common(gz_noise_t *st, const secp256k1_context *secp,
 
 gz_noise_err_t gz_noise_init_initiator(gz_noise_t *st, const secp256k1_context *secp,
                                        const uint8_t ls_priv[32], const uint8_t rs[33],
-                                       gz_random_port_t random)
+                                       gz_net_random_t random)
 {
     secp256k1_pubkey pk;
     gz_noise_err_t e = init_common(st, secp, ls_priv, random);
@@ -174,7 +174,7 @@ gz_noise_err_t gz_noise_init_initiator(gz_noise_t *st, const secp256k1_context *
 }
 
 gz_noise_err_t gz_noise_init_responder(gz_noise_t *st, const secp256k1_context *secp,
-                                       const uint8_t ls_priv[32], gz_random_port_t random)
+                                       const uint8_t ls_priv[32], gz_net_random_t random)
 {
     gz_noise_err_t e = init_common(st, secp, ls_priv, random);
     if (e) return e;

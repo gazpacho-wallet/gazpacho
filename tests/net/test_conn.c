@@ -29,7 +29,7 @@ static void counter_fill(void *ctx, uint8_t *out, size_t len)
     memset(out, 0x40, len);
     out[len - 1] = n++;
 }
-static const gz_random_port_t RNG = {counter_fill, NULL};
+static const gz_net_random_t RNG = {counter_fill, NULL};
 
 static void pub(const uint8_t k[32], uint8_t out[33])
 {

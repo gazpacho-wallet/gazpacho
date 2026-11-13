@@ -1,39 +1,183 @@
 #!/bin/sh
-# The isolation check must itself be checked: it has to refuse an object that
-# does what the core must never do, and name every problem.
+# The isolation check must itself be checked: it has to refuse objects and
+# sources that do what the core must never do, let honest ones through, and
+# not compile the ones the compiler is relied on to reject.
 #
-# usage: check-sneaky.sh CHECKER SNEAKY_OBJECT C_COMPILER VLA_SOURCE WORK_DIR CORE_FLAGS
-# CORE_FLAGS is the one string of flags the core library is compiled with.
+# usage: check-sneaky.sh CHECKER SNEAKY_OBJECT C_COMPILER SOURCE_DIR WORK_DIR CORE_FLAGS
 set -u
-checker="$1"; object="$2"; cc="$3"; vla="$4"; work="$5"; flags="$6"
+checker="$1"; object="$2"; cc="$3"; dir="$4"; work="$5"; flags="$6"
 failed=0
+x86=0; [ "$(uname -m)" = "x86_64" ] && x86=1
 
-out=$(sh "$checker" "$object" 2>&1) && { echo "FAIL: the isolation check passed the sneaky object"; failed=1; }
-echo "$out"
+fail() { echo "FAIL: $1"; failed=1; }
+# `extra`: flags added to the core's for one case; `mode`: --sanitized or empty.
+extra=""; mode=""
+build_case() { "$cc" $flags $extra -I"$dir" -DCASE="$1" -c "$dir/cases.c" -o "$work/case-$1.o" 2>"$work/case-$1.err"; }
 
-expect() {
-    if printf '%s\n' "$out" | grep -q "^FOUND $1\$"; then echo "ok: reported: $1"
-    else echo "FAIL: not reported: $1"; failed=1; fi
+# The check, run on the object of case $1 (plus cases.c as a source), must
+# print a FOUND line matching $2.
+refuses_object() {
+    build_case "$1" || { fail "case $1 did not compile"; cat "$work/case-$1.err"; return; }
+    out=$(sh "$checker" $mode "$work/case-$1.o" --sources "$cc" "$flags $extra -I$dir -DCASE=$1" "$dir/cases.c" 2>&1) &&
+        { fail "case $1 was not refused${mode:+ under $mode}"; return; }
+    printf '%s\n' "$out" | grep -Eq "^FOUND $2" && echo "ok: case $1 refused${mode:+ under $mode} for: $2" ||
+        { fail "case $1 not refused${mode:+ under $mode} for: $2"; printf '%s\n' "$out"; }
 }
-expect "outside symbol: time"
-expect "weak symbol: getenv"
-expect "writable data: sneaky_counter"
-expect "writable data: sneaky_table"
-case "$(uname -m)" in
-    x86_64)
-        expect "instruction: syscall"
-        expect "instruction: rdtsc" ;;
-esac
 
-# The flags the core is compiled with must reject a variable-length array, and
-# the same file must compile once -Wvla is taken out of them (so the rejection
-# is for that reason and no other).
-echo "core flags: $flags"
+echo "-- an object that does several forbidden things at once"
+build_asan=1
+refuses_object_simple() {
+    out=$(sh "$checker" "$object" 2>&1) && { fail "the sneaky object was not refused"; return; }
+    printf '%s\n' "$out" | grep -Eq "^FOUND $1" && echo "ok: refused for: $1" || fail "not refused for: $1"
+}
+refuses_object_simple "outside symbol: time\$"
+refuses_object_simple "weak symbol: getenv\$"
+refuses_object_simple "writable data: sneaky_counter\$"
+refuses_object_simple "writable data: sneaky_table\$"
+if [ "$x86" -eq 1 ]; then
+    refuses_object_simple "instruction: syscall\$"
+    refuses_object_simple "instruction: rdtsc\$"
+fi
+
+echo "-- one forbidden thing at a time, built with the core's flags: $flags"
+if [ "$x86" -eq 1 ]; then
+    refuses_object 1 "instruction: syscall\$"
+    refuses_object 2 "instruction: syscall\$"
+    refuses_object 3 "instruction: int\$"
+    refuses_object 4 "instruction: sysenter\$"
+    refuses_object 5 "instruction: cpuid\$"
+    refuses_object 6 "instruction: rdpmc\$"
+    refuses_object 7 "instruction: xgetbv\$"
+    refuses_object 8 "instruction: rdrand\$"
+    refuses_object 9 "instruction: rdrand\$"
+    refuses_object 10 "instruction: rdpid\$"
+    refuses_object 11 "instruction: rdfsbase\$"
+    refuses_object 12 "instruction: stmxcsr\$"
+    refuses_object 13 "instruction: rdsspq\$"
+    refuses_object 14 "instruction: xbegin\$"
+    refuses_object 15 "instruction: rdtsc\$"
+    refuses_object 16 "instruction: sgdt\$"
+    refuses_object 17 "instruction: lsl\$"
+    refuses_object 18 "instruction: segment register access\$"
+    refuses_object 19 "writable section: .data "
+    refuses_object 32 "instruction: rdseed\$"
+    refuses_object 33 "instruction: rdtscp\$"
+    refuses_object 34 "instruction: segment register access\$"
+    refuses_object 35 "instruction: call or jump to a fixed address\$"
+    refuses_object 38 "thread-local reference: t\$"
+    n=70
+    for insn in lar sidt smsw verr verw xabort xtest rdpkru 'sysexit[lq]?' 'sysret[lq]?' swapgs \
+                tpause umwait umonitor 'ptwrite[lq]?' rdpru vmcall vmmcall xsave xrstor; do
+        refuses_object "$n" "instruction: $insn\$"; n=$((n + 1))
+    done
+    refuses_object 90 "instruction: floating-point or vector register\$"   # x87, which gcc never emits here
+fi
+refuses_object 36 "common symbol: counter\$"
+refuses_object 37 "writable data: p\$"
+refuses_object 39 "outside symbol: __sanitizer_get_current_allocated_bytes\$"
+refuses_object 41 "inline assembly: "
+extra="-fasm -Wno-language-extension-token"; refuses_object 42 "inline assembly: "; extra=""
+refuses_object 43 "inline assembly: "            # seen in the release preprocessing only
+refuses_object 44 "inline assembly: "            # seen in the optimised preprocessing only
+refuses_object 45 "checker name in source: "    # seen in the sanitizer preprocessing only
+refuses_object 45 "sanitizer test in source: "
+refuses_object 20 "writable section: mystate "
+refuses_object 21 "writable (data|section): "
+refuses_object 22 "writable section: .tbss "
+refuses_object 23 "init/fini array: .init_array"
+refuses_object 24 "writable data: __asan_sneaky\$"
+refuses_object 25 "outside symbol: __sanitizer_now\$"
+refuses_object 26 "outside symbol: __stpcpy_chk\$"
+refuses_object 27 "outside symbol: memfrob\$"
+refuses_object 28 "ifunc: f\$"
+refuses_object 30 "inline assembly: "
+refuses_object 31 "inline assembly: "
+
+echo "-- a source the scan cannot preprocess is refused, not passed unread"
+build_case 50 && {
+    out=$(sh "$checker" "$work/case-50.o" --sources "$work/no-such-compiler" "$flags" "$dir/cases.c" 2>&1) &&
+        fail "a source that could not be preprocessed was passed" ||
+        { printf '%s
+' "$out" | grep -q "^FOUND source scan" && echo "ok: an unreadable source is refused" ||
+          { fail "refused, but not for the source scan"; printf '%s
+' "$out"; }; }
+}
+
+echo "-- a sanitized build allows the checkers' listed entry points, nothing else"
+out=$(sh "$checker" --sanitized "$object" 2>&1) && fail "the sneaky object passed --sanitized" ||
+    { printf '%s\n' "$out" | grep -q "^FOUND weak symbol: getenv$" && echo "ok: a weak getenv is still refused under --sanitized" ||
+      fail "a weak getenv is not refused under --sanitized"; }
+mode="--sanitized"
+refuses_object 24 "writable data: __asan_sneaky\$"                  # a checker's name for ordinary state
+refuses_object 25 "outside symbol: __sanitizer_now\$"
+refuses_object 39 "outside symbol: __sanitizer_get_current_allocated_bytes\$"   # a real runtime function
+if [ "$x86" -eq 1 ]; then
+    refuses_object 22 "thread-local reference: "                    # local-exec thread-local state
+    refuses_object 38 "thread-local reference: t\$"                 # initial-exec thread-local state
+    refuses_object 18 "instruction: segment register access\$"      # %gs
+    refuses_object 34 "instruction: segment register access\$"      # %fs at an offset of its own
+    refuses_object 46 "instruction: segment register access\$"      # %gs, with an allowed thread-local reference
+    refuses_object 47 "instruction: segment register access\$"      # %fs:0x10, with the same
+fi
+mode=""
+build_case 19 && {   # real writable data is still caught: symbol test runs under --sanitized
+    sh "$checker" --sanitized "$work/case-19.o" >/dev/null 2>&1 &&
+        echo "note: case 19 (nameless .data) passes --sanitized, as the section test is off there" ||
+        echo "note: case 19 refused under --sanitized"
+}
+
+echo "-- clang's -fsanitize=function prologue: skipped under --sanitized, only just before a function start"
+if [ "$x86" -eq 1 ]; then
+    if build_case 52; then   # (a) the magic and a hash ending in 0x64 (a lone fs prefix) before a function
+        out=$(sh "$checker" --sanitized "$work/case-52.o" 2>&1) && echo "ok: case 52 (the prologue before a function) passes --sanitized" ||
+            { fail "case 52 (the prologue before a function) refused under --sanitized"; printf '%s\n' "$out" | grep '^FOUND'; }
+    else fail "case 52 did not compile"; cat "$work/case-52.err"; fi
+    refuses_object 52 "instruction: floating-point or vector register\$"   # (d) plain mode reads the bytes as before
+    mode="--sanitized"
+    refuses_object 53 "instruction: floating-point or vector register\$"   # (b) x87 and SSE in the body
+    refuses_object 90 "instruction: floating-point or vector register\$"   # (b) x87 by mnemonic
+    refuses_object 54 "instruction: floating-point or vector register\$"   # (c) one byte before the start
+    refuses_object 55 "instruction: floating-point or vector register\$"   # (c) before a label that is no function
+    refuses_object 56 "instruction: floating-point or vector register\$"   # (c) inside a function body
+    mode=""
+fi
+
+echo "-- honest objects pass"
+for n in 50 51; do
+    build_case "$n" || { fail "case $n did not compile"; continue; }
+    sh "$checker" "$work/case-$n.o" >/dev/null 2>&1 && echo "ok: case $n (honest table) passes" ||
+        { fail "case $n (honest table) refused"; sh "$checker" "$work/case-$n.o" 2>&1 | grep '^FOUND'; }
+done
+
+echo "-- floating point: refused by the compiler, or on x86 by the check where the compiler accepts it"
+if ! build_case 40 2>/dev/null; then echo "ok: case 40 rejected by the compiler"
+elif [ "$x86" -eq 1 ]; then refuses_object 40 "(instruction: floating-point or vector register|outside symbol: .*)\$"
+else fail "case 40 compiled; the compiler was relied on to reject it"; fi
+if [ "$x86" -eq 1 ]; then   # the same source without -mgeneral-regs-only: the check alone must refuse it
+    without_gro=$(printf '%s' "$flags" | sed 's/-mgeneral-regs-only//')
+    if "$cc" $without_gro -I"$dir" -DCASE=40 -c "$dir/cases.c" -o "$work/case-40-fp.o" 2>/dev/null; then
+        out=$(sh "$checker" "$work/case-40-fp.o" 2>&1) && fail "floating-point code passed the check" ||
+            { printf '%s\n' "$out" | grep -q "^FOUND instruction: floating-point or vector register$" &&
+              echo "ok: floating-point code refused by the check" ||
+              { fail "floating-point code refused, but not for its registers"; printf '%s\n' "$out"; }; }
+    else fail "case 40 does not compile even without -mgeneral-regs-only"; fi
+fi
+# A variable-length array must be rejected, and the same file must compile once
+# -Wvla is taken out of the flags (so it is rejected for that reason).
 without=$(printf '%s' "$flags" | sed 's/-Wvla//')
-if "$cc" $without -c "$vla" -o "$work/vla-control.o" 2>/dev/null; then echo "ok: the VLA file compiles without -Wvla"
-else echo "FAIL: the VLA file does not compile even without -Wvla"; failed=1; fi
-if "$cc" $flags -c "$vla" -o "$work/vla.o" 2>/dev/null; then echo "FAIL: the core's flags did not reject a variable-length array"; failed=1
-else echo "ok: the core's flags reject a variable-length array"; fi
+"$cc" $without -c "$dir/vla.c" -o "$work/vla-control.o" 2>/dev/null &&
+    echo "ok: the VLA file compiles without -Wvla" || fail "the VLA file does not compile even without -Wvla"
+"$cc" $flags -c "$dir/vla.c" -o "$work/vla.o" 2>/dev/null &&
+    fail "the core's flags did not reject a variable-length array" || echo "ok: the core's flags reject a variable-length array"
 
-[ "$failed" -eq 0 ] && echo "PASS: the isolation check refuses the sneaky object for every reason it should"
+echo "-- known not to be caught (listed in the check's own header)"
+if [ "$x86" -eq 1 ]; then
+    for n in 60 61 62 63 64; do
+        if build_case "$n" 2>/dev/null && sh "$checker" "$work/case-$n.o" >/dev/null 2>&1; then echo "as documented: case $n passes the check"
+        elif build_case "$n" 2>/dev/null; then fail "case $n is now refused: it can be moved out of the not-caught list"
+        else echo "as documented: case $n does not compile"; fi
+    done
+fi
+
+[ "$failed" -eq 0 ] && echo "PASS: the isolation check behaves as its documentation says for every case"
 exit "$failed"

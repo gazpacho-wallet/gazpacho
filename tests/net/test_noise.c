@@ -30,14 +30,14 @@ static fixed_rng_t rng_i, rng_r;
 
 static void new_initiator(gz_noise_t *st)
 {
-    gz_random_port_t r = {fixed_fill, &rng_i};
+    gz_net_random_t r = {fixed_fill, &rng_i};
     rng_i.keys = K12; rng_i.n = 1; rng_i.next = 0;
     CHECK(gz_noise_init_initiator(st, secp, K11, RS_PUB, r) == GZ_NOISE_OK);
 }
 
 static void new_responder(gz_noise_t *st)
 {
-    gz_random_port_t r = {fixed_fill, &rng_r};
+    gz_net_random_t r = {fixed_fill, &rng_r};
     rng_r.keys = K22; rng_r.n = 1; rng_r.next = 0;
     CHECK(gz_noise_init_responder(st, secp, K21, r) == GZ_NOISE_OK);
 }
@@ -285,7 +285,7 @@ static void test_hostile(void)
         static const uint8_t other[32] = {0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
                                           0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
                                           0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33};
-        gz_random_port_t r = {fixed_fill, &rng_r};
+        gz_net_random_t r = {fixed_fill, &rng_r};
         CHECK(gz_noise_init_responder(&res, secp, K21, r) == GZ_NOISE_OK);
         rng_r.keys = other; rng_r.n = 1; rng_r.next = 0;
         CHECK(gz_noise_act1_read(&res, buf, in(ACT1, buf)) == GZ_NOISE_OK);
@@ -465,7 +465,7 @@ static void test_keys_and_randomness(void)
     gz_noise_t st;
     uint8_t out[50], zeros[33] = {0}, ffs[32], seq[64];
     fixed_rng_t r = {zeros, 1, 0};
-    gz_random_port_t port = {fixed_fill, &r};
+    gz_net_random_t port = {fixed_fill, &r};
     memset(ffs, 0xff, sizeof ffs);
     /* Our static key invalid; remote key invalid. */
     CHECK(gz_noise_init_responder(&st, secp, zeros, port) == GZ_NOISE_ERR_KEY);
@@ -500,7 +500,7 @@ static void test_wrong_pin(void)
 {
     gz_noise_t ini, res;
     uint8_t a[50], wrong[33];
-    gz_random_port_t r = {fixed_fill, &rng_i};
+    gz_net_random_t r = {fixed_fill, &rng_i};
     secp256k1_pubkey pk;
     size_t n = 33;
     CHECK(secp256k1_ec_pubkey_create(secp, &pk, K22) &&

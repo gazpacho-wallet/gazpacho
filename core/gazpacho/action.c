@@ -76,7 +76,9 @@ static gz_status_t copy_payload(gz_action_list_t *list, gz_action_t *dst, const 
     case GZ_ACTION_SAVE:         return copy_save(list, dst, src);
     case GZ_ACTION_SEND:         return copy_bytes(list, &dst->u.send.bytes, src->u.send.bytes);
     case GZ_ACTION_BROADCAST:    return copy_bytes(list, &dst->u.broadcast.tx, src->u.broadcast.tx);
-    case GZ_ACTION_WATCH:        return copy_bytes(list, &dst->u.watch.script, src->u.watch.script);
+    case GZ_ACTION_WATCH_SCRIPT: return copy_bytes(list, &dst->u.watch_script.script, src->u.watch_script.script);
+    case GZ_ACTION_WATCH_TX:     return src->u.watch_tx.depth ? GZ_OK : GZ_ERR_ARGUMENT;
+    case GZ_ACTION_WATCH_OUTPOINT: return src->u.watch_outpoint.depth ? GZ_OK : GZ_ERR_ARGUMENT;
     case GZ_ACTION_NOTIFY:       return copy_bytes(list, &dst->u.notify.bytes, src->u.notify.bytes);
     case GZ_ACTION_SET_TIMER:
     case GZ_ACTION_CANCEL_TIMER: return GZ_OK;
