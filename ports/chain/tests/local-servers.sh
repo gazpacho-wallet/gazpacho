@@ -11,12 +11,21 @@ transport=$1 tool=$2 tests=$3 work=$4
 command -v python3 >/dev/null 2>&1 || { echo "python3 not found: skipped"; exit 77; }
 command -v openssl >/dev/null 2>&1 || { echo "openssl not found: skipped"; exit 77; }
 
-rm -rf "$work" && mkdir -p "$work" || exit 1
+# A fresh directory for each run, so that a run left behind by an earlier
+# one (a killed break check, say) can never share it.
+mkdir -p "$(dirname "$work")" || exit 1
+work=$(mktemp -d "$work.XXXXXX") || exit 1
 cd "$work" || exit 1
 fail=0
 server=
+socks=
 
-cleanup() { [ -n "$server" ] && kill "$server" 2>/dev/null; wait 2>/dev/null; }
+cleanup() {
+  [ -n "$server" ] && kill "$server" 2>/dev/null
+  [ -n "$socks" ] && kill "$socks" 2>/dev/null
+  wait 2>/dev/null
+  cd / && rm -rf "$work"
+}
 trap cleanup EXIT
 
 # --- certificates: a test authority, a good one, one for another name, a self-signed one
@@ -129,6 +138,30 @@ expect "--proxy http:// is refused" 2 "takes socks5h://HOST:PORT" \
   "$tool" --proxy http://127.0.0.1:8080 $A --server $L/honest2 --operator second-operator tip
 expect "--proxy socks5h:// is accepted; this machine bypasses it" 0 "verdict: ok" \
   "$tool" --proxy socks5h://127.0.0.1:9 $A --server $L/honest2 --operator second-operator tip
+# review of PR 39: the configured proxy is really used for a host off this
+# machine, the name goes to the proxy (socks5h), and only "no
+# authentication" is offered. The recorder refuses every connection.
+python3 -I "$tests/socks_recorder.py" "$work" 2>socks.err &
+socks=$!
+for _ in $(seq 1 100); do [ -f socks_port ] && break; sleep 0.1; done
+if [ ! -f socks_port ]; then
+  echo "FAIL SOCKS recorder did not start"; cat socks.err; fail=1
+else
+  SP=$(cat socks_port)
+  : > socks.log
+  expect "a host off this machine goes through --proxy" 1 "." \
+    env NO_PROXY='*' no_proxy='*' "$tool" --proxy socks5h://127.0.0.1:$SP \
+    --server https://review-check.invalid/api --operator first-operator tip
+  # 05 01 00: version 5, one method, "no authentication" (no GSSAPI);
+  # 05 01 00 03 14 "review-check.invalid" 01bb: CONNECT by name, port 443
+  name=$(printf 'review-check.invalid' | od -An -tx1 | tr -d ' \n')
+  want="greeting 050100 connect 0501000314${name}01bb"
+  if grep -qx "$want" socks.log; then
+    echo "ok   the proxy got the name, and was offered no authentication only"
+  else
+    echo "FAIL proxy log (wanted: $want)"; sed 's/^/    /' socks.log; fail=1
+  fi
+fi
 expect "broadcast --network mainnet is refused before any request" 2 "refusing to broadcast on mainnet" \
   "$tool" --network mainnet --server $H/honest broadcast "$(cat "$tests/data/tx_a_hex.txt")"
 if [ -s posts.log ]; then echo "FAIL a transaction was posted to a server"; fail=1; fi

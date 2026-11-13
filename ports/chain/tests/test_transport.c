@@ -111,15 +111,12 @@ int main(int argc, char **argv) {
     snprintf(url, sizeof url, "https://localhost:%s/ok", argv[2]);
     r = get(&env_trusting, url, 100, 5000);
     CHECK(r.r == GZ_HTTP_OK && r.status == 200 && r.len == 6);
-    /* a configured socks5h proxy is used for hosts off this machine:
-     * nothing listens on port 9, so the request fails instead of going out
-     * directly */
+    /* with a proxy configured, this machine is still reached directly (that
+     * the proxy is used for other hosts is shown in local-servers.sh, with a
+     * recording SOCKS listener) */
     gz_http_curl_config via = {NULL, "socks5h://127.0.0.1:9"};
     gz_http prox;
     CHECK(gz_http_curl_create(&prox, &via));
-    r = get(&prox, "https://review-check.invalid/ok", 100, 3000);
-    CHECK(r.r == GZ_HTTP_E_CONNECT);
-    /* and this machine is still reached directly */
     snprintf(url, sizeof url, "%s/ok", base);
     r = get(&prox, url, 100, 3000);
     CHECK(r.r == GZ_HTTP_OK && r.status == 200);
@@ -133,13 +130,21 @@ int main(int argc, char **argv) {
    * transport is created */
   {
     static const char *good[] = {"socks5h://127.0.0.1:9050", "socks5h://localhost:9050/",
-                                 "socks5h://[::1]:9050", "socks5h://tor.example:1"};
+                                 "socks5h://[::1]:9050",     "socks5h://tor.example:1",
+                                 "socks5h://a-b.example:65535", "socks5h://[fe80::1]:9050"};
     static const char *bad[] = {
         "socks5://127.0.0.1:9050",  "socks4://127.0.0.1:9050",      "socks4a://127.0.0.1:9050",
         "http://127.0.0.1:8080",    "https://127.0.0.1:8080",       "SOCKS5H://127.0.0.1:9050",
         "socks5h://127.0.0.1",      "socks5h://127.0.0.1:",         "socks5h://u:p@127.0.0.1:9050",
         "socks5h://:9050",          "127.0.0.1:9050",               "socks5h://127.0.0.1:9050/x",
-        "socks5h://127.0.0.1:1234567"};
+        "socks5h://127.0.0.1:1234567",
+        /* review of PR 39: brackets, labels and the port range */
+        "socks5h://[]:9050",        "socks5h://[:]:9050",           "socks5h://[192.0.2.1]:9050",
+        "socks5h://[::1:9050",      "socks5h://[::g]:9050",         "socks5h://-:9050",
+        "socks5h://..:9050",        "socks5h://.:9050",             "socks5h://a..b:9050",
+        "socks5h://-a.b:9050",      "socks5h://a.-b:9050",          "socks5h://a.:9050",
+        "socks5h://127.0.0.1:0",    "socks5h://127.0.0.1:00000",    "socks5h://127.0.0.1:65536",
+        "socks5h://127.0.0.1:99999"};
     for (size_t i = 0; i < sizeof good / sizeof good[0]; i++) {
       gz_http_curl_config pc = {NULL, good[i]};
       gz_http ph;

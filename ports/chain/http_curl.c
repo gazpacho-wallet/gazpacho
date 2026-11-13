@@ -105,28 +105,48 @@ bool gz_http_proxy_valid(const char *proxy) {
   if (end > 0 && auth[end - 1] == '/') end--; /* one trailing slash */
   size_t host_len = 0;
   if (auth[0] == '[') {
+    /* an IPv6 address: hex digits, ':' and '.', at least two ':' (so not
+     * empty, not "[:]" and not a bracketed IPv4 address) */
+    size_t colons = 0;
+    host_len = 1;
     while (host_len < end && auth[host_len] != ']') {
       char c = auth[host_len];
-      if (!(host_len == 0 || is_alnum(c) || c == ':' || c == '.')) return false;
+      bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+      if (!hex && c != ':' && c != '.') return false;
+      if (c == ':') colons++;
       host_len++;
     }
-    if (host_len == end) return false;
+    if (host_len == end || colons < 2) return false;
     host_len++;
   } else {
+    /* a name or IPv4 address: labels of letters, digits and '-', separated
+     * by single dots; no label empty or starting with '-' */
+    bool label_start = true;
     while (host_len < end && auth[host_len] != ':') {
       char c = auth[host_len];
-      if (!is_alnum(c) && c != '.' && c != '-') return false;
+      if (c == '.') {
+        if (label_start) return false;
+        label_start = true;
+      } else if (is_alnum(c) || (c == '-' && !label_start)) {
+        label_start = false;
+      } else {
+        return false;
+      }
       host_len++;
     }
+    if (label_start) return false; /* empty, or ends with '.' */
   }
-  if (host_len == 0 || host_len >= HOST_CAP) return false;
-  /* the port is required: libcurl would otherwise assume 1080 */
-  size_t digits = end - host_len;
-  if (digits < 2 || digits > 6 || auth[host_len] != ':') return false;
+  if (host_len >= HOST_CAP) return false;
+  /* the port is required (libcurl would otherwise assume 1080), 1 to 65535 */
+  if (host_len >= end || auth[host_len] != ':') return false;
+  size_t digits = end - host_len - 1;
+  if (digits == 0 || digits > 5) return false;
+  unsigned long port = 0;
   for (size_t i = host_len + 1; i < end; i++) {
     if (auth[i] < '0' || auth[i] > '9') return false;
+    port = port * 10u + (unsigned long)(auth[i] - '0');
   }
-  return true;
+  return port >= 1 && port <= 65535;
 }
 
 /* This machine, under the three names plain http is allowed for. */
@@ -202,6 +222,9 @@ static gz_http_result curl_request(void *ctx, const gz_http_request *req, uint8_
   ok = ok && curl_easy_setopt(e, CURLOPT_PROXY, c->proxy != NULL ? c->proxy : "") == CURLE_OK;
   ok = ok && curl_easy_setopt(e, CURLOPT_NOPROXY,
                               c->proxy != NULL ? "localhost,127.0.0.1,::1" : "") == CURLE_OK;
+  /* offer "no authentication" only: never GSSAPI, which would start a
+   * Kerberos exchange with the proxy and could reveal the user's principal */
+  ok = ok && curl_easy_setopt(e, CURLOPT_SOCKS5_AUTH, (long)CURLAUTH_NONE) == CURLE_OK;
   ok = ok && curl_easy_setopt(e, CURLOPT_USERAGENT, GZ_HTTP_USER_AGENT) == CURLE_OK;
   ok = ok && curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_body) == CURLE_OK;
   ok = ok && curl_easy_setopt(e, CURLOPT_WRITEDATA, &s) == CURLE_OK;

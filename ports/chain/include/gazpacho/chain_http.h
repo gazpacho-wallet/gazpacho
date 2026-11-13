@@ -58,10 +58,12 @@ typedef struct gz_http {
 } gz_http;
 
 /* What the libcurl transport sends as its User-Agent header on every
- * request. A common browser string (the one Tor Browser sends), so that the
- * header does not tell a chain server that the client is Gazpacho. It says
- * nothing about the user or machine. */
-#define GZ_HTTP_USER_AGENT "Mozilla/5.0 (Windows NT 10.0; rv:128.0) Gecko/20100101 Firefox/128.0"
+ * request: the current Tor Browser string (Firefox 140 ESR; bump it with
+ * each new ESR). It keeps the product name out of every request and says
+ * nothing about the user or machine. It does NOT disguise the client: the
+ * TLS fingerprint, header order and access pattern still show a server that
+ * this is not a browser, and can point to Gazpacho. */
+#define GZ_HTTP_USER_AGENT "Mozilla/5.0 (Windows NT 10.0; rv:140.0) Gecko/20100101 Firefox/140.0"
 
 typedef struct gz_http_curl_config {
   /* Optional. A file of certificate authorities to trust INSTEAD of the
@@ -74,13 +76,17 @@ typedef struct gz_http_curl_config {
    * not created. NULL or "": no proxy at all. Either way the proxy
    * environment variables (http_proxy, https_proxy, ALL_PROXY, NO_PROXY and
    * the like) are never used. Requests to this machine (localhost,
-   * 127.0.0.1, [::1]) bypass the proxy. Copied. */
+   * 127.0.0.1, [::1]) bypass the proxy; a server elsewhere on the local
+   * network does not, and over Tor cannot be reached. Only "no
+   * authentication" is offered to the proxy (never GSSAPI). A proxy given by
+   * name is looked up by the system resolver; prefer an IP address. Copied. */
   const char *proxy;
 } gz_http_curl_config;
 
 /* True if `proxy` is a proxy setting gz_http_curl_create accepts: NULL, "",
- * or "socks5h://HOST:PORT" with a plain host (letters, digits, '.', '-', or
- * an address in brackets) and a port of 1 to 5 digits. */
+ * or "socks5h://HOST:PORT" (one trailing '/' allowed). HOST is a name or
+ * IPv4 address of non-empty labels (letters, digits, '-', not starting with
+ * '-'), or an IPv6 address in brackets; PORT is 1 to 65535. */
 bool gz_http_proxy_valid(const char *proxy);
 
 /*
