@@ -71,7 +71,7 @@ static int wait_ev(int who, gz_peer_ev_type_t type, gz_peer_event_t *out, uint8_
             while (gz_peers_poll(side[s2], 2, &ev) && nlg[s2] < 64) {
                 lg[s2][nlg[s2]].ev = ev;
                 lg[s2][nlg[s2]].used = 0;
-                if (ev.records_len <= sizeof lg[s2][0].body) memcpy(lg[s2][nlg[s2]].body, ev.records, ev.records_len);
+                if (ev.records_len && ev.records_len <= sizeof lg[s2][0].body) memcpy(lg[s2][nlg[s2]].body, ev.records, ev.records_len);
                 nlg[s2]++;
             }
         }

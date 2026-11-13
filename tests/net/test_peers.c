@@ -911,7 +911,7 @@ static void test_limits(void)
 
 static void test_fairness(void)
 {
-    uint64_t hc, mc, bc, bh = 0;
+    uint64_t hc, mc, bc = 0, bh = 0;
     uint16_t port;
     gz_peers_t *b;
     gz_peer_event_t ev, *e;
@@ -1377,7 +1377,7 @@ static void test_replacement(void)
 /* The program's own poll loop drives the transport (contract v2, section 4). */
 static void test_pollfds(void)
 {
-    uint16_t port;
+    uint16_t port = 0;
     uint64_t mc;
     gz_peers_t *h;
     struct pollfd *fds;
