@@ -26,7 +26,11 @@
  * over when the start is complete: a connection's messages only between its
  * own connected and disconnected, a connection that came and went during the
  * start not at all, at most 1 MiB per connection, counting 64 bytes of
- * overhead per message (past that the connection is closed). */
+ * overhead per message (past that the connection is closed). A connection
+ * that closes during the start is forgotten at once, with what it queued, and
+ * the queue as a whole holds at most 4 MiB (the connection whose message
+ * would pass that is closed): a long start cannot be made to grow memory
+ * without bound (review B of PR 27, B5). */
 #ifndef GZP_NET_H
 #define GZP_NET_H
 
@@ -42,6 +46,7 @@
 #define GZP_MAX_CONNS 64
 #define GZP_QUEUE_PER_CONN (1u << 20)
 #define GZP_QUEUE_OVERHEAD 64u     /* counted per queued message, so empty ones count too */
+#define GZP_QUEUE_TOTAL (4u << 20) /* the whole start queue, every connection together */
 /* Most transport events handled per loop turn (review of PR 27, M1): a peer
  * that keeps sending cannot hold the loop, so the stop pipe, the timers and
  * the chain are seen at least once per GZP_DRAIN_MAX events. */
@@ -96,11 +101,16 @@ typedef struct {
     int queueing;
     gzp_qev_t *q;
     size_t nq, capq;
+    size_t queued_total; /* bytes plus GZP_QUEUE_OVERHEAD per entry */
     /* counters */
     uint64_t dropped_unconnected, closed_while_starting;
 } gzp_net_t;
 
 uint64_t gzp_peer_id(const uint8_t key[33]);
+
+/* The bytes of record 1 in a TLV stream (the placeholder's carrier), or NULL
+ * if there is none or the stream is malformed; never reads past `len`. */
+const uint8_t *gzp_net_record1(const uint8_t *s, size_t len, size_t *out_len);
 
 /* `priv` is copied into the transport's configuration and wiped with it.
  * `chain` is init's chain hash (signet or testnet4; the transport refuses the

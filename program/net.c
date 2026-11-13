@@ -115,7 +115,7 @@ int gzp_net_connected(const gzp_net_t *n, uint64_t peer_id)
 /* ---- the placeholder carrier ---------------------------------------------- */
 
 /* The bytes of record 1 in a TLV stream, or NULL. */
-static const uint8_t *test_record(const uint8_t *s, size_t len, size_t *out_len)
+const uint8_t *gzp_net_record1(const uint8_t *s, size_t len, size_t *out_len)
 {
     size_t off = 0;
     while (off < len) {
@@ -192,6 +192,7 @@ static void enqueue(gzp_net_t *n, int type, uint64_t conn, const uint8_t *bytes,
     e->why = why;
     e->len = len;
     e->bytes = NULL;
+    n->queued_total += len + GZP_QUEUE_OVERHEAD;
     if (len) {
         e->bytes = malloc(len);
         if (!e->bytes) abort();
@@ -199,17 +200,22 @@ static void enqueue(gzp_net_t *n, int type, uint64_t conn, const uint8_t *bytes,
     }
 }
 
-static void unqueue_conn(gzp_net_t *n, uint64_t conn)
+/* Forget everything queued for `conn` (its connected and its messages).
+ * Returns the number of messages forgotten. */
+static size_t unqueue_conn(gzp_net_t *n, uint64_t conn)
 {
-    size_t i, j = 0;
+    size_t i, j = 0, msgs = 0;
     for (i = 0; i < n->nq; i++) {
         if (n->q[i].conn == conn) {
+            if (n->q[i].type == GZ_PEER_EV_MESSAGE) msgs++;
+            n->queued_total -= n->q[i].len + GZP_QUEUE_OVERHEAD;
             free(n->q[i].bytes);
             continue;
         }
         n->q[j++] = n->q[i];
     }
     n->nq = j;
+    return msgs;
 }
 
 /* A reason as one word for output lines: "handshake timed out" becomes
@@ -260,18 +266,22 @@ static void handle(gzp_net_t *n, const gz_peer_event_t *ev, uint64_t now)
         const uint8_t *b = NULL;
         size_t bl = 0;
         if (!c) break;
-        if (ev->kind == GZP_KIND_TEST) b = test_record(ev->records, ev->records_len, &bl);
+        if (ev->kind == GZP_KIND_TEST) b = gzp_net_record1(ev->records, ev->records_len, &bl);
         if (!b) {
             gzp_log("message-ignored peer=%016llx kind=%u", (unsigned long long)c->peer_id, (unsigned)ev->kind);
             break;
         }
         if (n->queueing) {
             c->queued_bytes += bl + GZP_QUEUE_OVERHEAD;
-            if (c->queued_bytes > GZP_QUEUE_PER_CONN) {
-                /* Past the start queue's limit: close it; it was never
+            if (c->queued_bytes > GZP_QUEUE_PER_CONN ||
+                n->queued_total + bl + GZP_QUEUE_OVERHEAD > GZP_QUEUE_TOTAL) {
+                /* Past the start queue's limit, for this connection or for
+                 * the queue as a whole (B5): close it; it was never
                  * reported. gz_peers_close gives no CLOSED event, so a
                  * member's own connection is rescheduled here. */
-                gzp_log("start-queue closed conn=%llu why=over-1MiB", (unsigned long long)c->conn);
+                gzp_log("start-queue closed conn=%llu why=%s peer=%016llx", (unsigned long long)c->conn,
+                        c->queued_bytes > GZP_QUEUE_PER_CONN ? "over-1MiB" : "over-total",
+                        (unsigned long long)c->peer_id);
                 if (c->conn == n->target_conn && n->target_live) schedule_reconnect(n, now);
                 gz_peers_close(n->peers, c->conn);
                 unqueue_conn(n, c->conn);
@@ -294,7 +304,14 @@ static void handle(gzp_net_t *n, const gz_peer_event_t *ev, uint64_t now)
         if (ev->outbound && ev->conn == n->target_conn && n->target_live) schedule_reconnect(n, now);
         if (c) {
             uint64_t id = c->peer_id;
-            if (n->queueing) enqueue(n, GZ_PEER_EV_CLOSED, ev->conn, NULL, 0, why);
+            if (n->queueing) {
+                /* It came and went during the start: never reported, and
+                 * what it queued is freed now, not at the end of the start
+                 * (review B of PR 27, B5). */
+                size_t k = unqueue_conn(n, ev->conn);
+                gzp_log("start-queue dropped conn=%llu why=closed-during-start peer=%016llx messages=%zu",
+                        (unsigned long long)ev->conn, (unsigned long long)id, k);
+            }
             memset(c, 0, sizeof *c);
             if (!n->queueing && ev->was_connected && n->ev.disconnected) n->ev.disconnected(n->ev.ctx, id, why);
         }
@@ -311,8 +328,11 @@ void gzp_net_queue_begin(gzp_net_t *n)
     n->queueing = 1;
 }
 
-/* The connection's peer id and key, as reported when it connected, kept in
- * the queue's own record of it (the slot may be gone). */
+/* Hand the queue over: per connection still open, its connected, then its
+ * messages in order. A connection closed during the start was unqueued when
+ * its CLOSED arrived (that is the guard the tests cover: two_process's member
+ * 4, queue_overhead's "gone"); the slot check below is a second guard only
+ * (connection numbers are never reused, and a closed slot is cleared). */
 void gzp_net_queue_end(gzp_net_t *n)
 {
     size_t i, j;
@@ -321,14 +341,12 @@ void gzp_net_queue_end(gzp_net_t *n)
     n->queueing = 0;
     n->q = NULL;
     n->nq = n->capq = 0;
+    n->queued_total = 0;
     for (i = 0; i < nq; i++) {
-        int came_and_went = 0;
         gzp_conn_t *c;
         if (q[i].type != GZ_PEER_EV_CONNECTED) continue;
-        for (j = i + 1; j < nq; j++)
-            if (q[j].conn == q[i].conn && q[j].type == GZ_PEER_EV_CLOSED) came_and_went = 1;
         c = by_conn(n, q[i].conn);
-        if (came_and_went || !c) {
+        if (!c) {
             gzp_log("start-queue dropped conn=%llu why=closed-during-start", (unsigned long long)q[i].conn);
             continue;
         }
@@ -396,6 +414,7 @@ int gzp_net_reset(gzp_net_t *n)
     n->queueing = 0;
     memset(n->conns, 0, sizeof n->conns);
     n->listening = 0;
+    n->queued_total = 0;
     n->target_live = 0;
     n->target_conn = 0;
     n->peers = gz_peers_new(&n->cfg);
