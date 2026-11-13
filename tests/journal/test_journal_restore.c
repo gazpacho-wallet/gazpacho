@@ -29,8 +29,9 @@
 static gz_journal_t *jopen(memfs_t *fs, int pull, gz_journal_status_t *st, gz_journal_open_info_t *info)
 {
     gz_journal_t *j = NULL;
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 11, &fs->os, 0, 0, 0, pull};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 11, &fs->os, 0, 0, 0, pull, 0, NULL, NULL};
     *st = gz_journal_open(&j, &cfg, info);
+    if (j && !pull) gz_journal_attach(j, NULL, NULL, NULL); /* nobody confirms; nd_start attaches a runner */
     return j;
 }
 
@@ -140,8 +141,15 @@ static void test_marker(void)
     gz_journal_close(j);
     CHECK(gz_journal_mark_restored(NULL, gz_journal_chain_signet, &fs.os, 0) == GZ_JOURNAL_ERR_ARGUMENT);
     memfs_free(&fs);
+    /* No journal yet (a key file with no journal, storage 6.3 step 0): marked
+     * with base 0; the open creates the journal and starts restored. */
     memfs_init(&fs);
-    CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0) == GZ_JOURNAL_ERR_IO);
+    CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0) == GZ_JOURNAL_OK && has_marker(&fs));
+    j = jopen(&fs, 0, &st, &info);
+    CHECK(st == GZ_JOURNAL_OK && info.created && info.restored && info.incarnation == 1);
+    CHECK(save1(j, 1, 1, GZ_RECORD_TEST_RESTORED) == GZ_JOURNAL_OK && gz_journal_flush(j) == GZ_JOURNAL_OK);
+    CHECK(!gz_journal_restored(j) && !has_marker(&fs));
+    gz_journal_close(j);
     memfs_free(&fs);
 }
 
@@ -283,7 +291,7 @@ static void test_node(void)
 /* 5. Pull mode. */
 static void run_workload(h_t *h, int pull, int *order_ok, int *guard_ok)
 {
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 1794000000000ull, &h->fs.os, 0, 0, 0, pull};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 1794000000000ull, &h->fs.os, 0, 0, 0, pull, 0, NULL, NULL};
     h->fs.on_sync = h_on_sync;
     h->fs.on_sync_ctx = h;
     gz_journal_open(&h->j, &cfg, NULL);
@@ -479,7 +487,7 @@ static void test_marker_edges(void)
         CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 3) == GZ_JOURNAL_OK);
         j = jopen(&fs, 0, &st, &info);
         CHECK(st == GZ_JOURNAL_OK && info.restored && info.incarnation == 10);
-        CHECK(memfs_open_fds(&fs) == 1);
+        CHECK(memfs_open_fds(&fs) == 2); /* the journal and the folder's lock */
         gz_journal_close(j);
         CHECK(memfs_open_fds(&fs) == 0 && fs.bad_closes == 0);
         memfs_free(&fs);
@@ -509,12 +517,12 @@ static void test_marker_edges(void)
         memfs_free(&fs);
     }
     /* The same failures while an open removes an answered marker. */
-    for (uint64_t fp = 1; fp <= 2; fp++) {
+    for (uint64_t fp = 2; fp <= 3; fp++) {
         memfs_init(&fs);
         history(&fs);
         put_marker(&fs, gz_journal_chain_signet, 1, 0, 0, 0); /* incarnation 2 started after it */
         fs.points = 0;
-        fs.fail_at = fp; /* unlink (1), folder sync (2) */
+        fs.fail_at = fp; /* the open's sync (1), unlink (2), folder sync (3) */
         fs.fail_mode = MEMFS_FAIL_ERROR;
         j = jopen(&fs, 0, &st, &info);
         CHECK(st == GZ_JOURNAL_ERR_IO && j == NULL && memfs_open_fds(&fs) == 0 && fs.after_fail == 0);

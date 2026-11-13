@@ -1,4 +1,8 @@
-/* The storage journal. See journal.h and spec/journal.md (draft 2). */
+/* The storage journal. See journal.h and spec/journal.md (draft 3's crash
+ * logic; draft 2's clear format, a stand-in that will not ship). */
+#if defined(__linux__)
+#define _GNU_SOURCE /* O_DIRECT */
+#endif
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 #include "journal.h"
@@ -28,7 +32,8 @@ const char *gz_journal_status_name(gz_journal_status_t s)
 {
     static const char *const names[] = {
         "ok", "argument", "io", "locked", "header", "network", "corrupt", "order",
-        "unknown_record", "full", "too_large", "sequence", "guard", "no_memory", "failed", "marker"};
+        "unknown_record", "full", "too_large", "sequence", "guard", "no_memory", "failed", "marker",
+        "incarnation"};
     return (unsigned)s < sizeof names / sizeof names[0] ? names[s] : "?";
 }
 
@@ -348,6 +353,7 @@ static int px_open(void *ctx, const char *path, int how)
     int flags = how == GZ_JOURNAL_OPEN_READ          ? O_RDONLY
                 : how == GZ_JOURNAL_OPEN_RW          ? O_RDWR
                 : how == GZ_JOURNAL_OPEN_CREATE_EXCL ? O_RDWR | O_CREAT | O_EXCL
+                : how == GZ_JOURNAL_OPEN_CREATE      ? O_RDWR | O_CREAT
                                                      : O_RDWR | O_CREAT | O_TRUNC;
     int fd = open(path, flags | O_CLOEXEC, 0600);
     if (fd >= 0 && (flags & O_CREAT) && fchmod(fd, 0600) != 0) {
@@ -402,9 +408,86 @@ static int px_link(void *ctx, const char *a, const char *b) { (void)ctx; return 
 static int px_rename(void *ctx, const char *a, const char *b) { (void)ctx; return rename(a, b); }
 static int px_unlink(void *ctx, const char *p) { (void)ctx; return unlink(p); }
 
+/* Reading what the device holds (journal.h, pread_device; spec section 4).
+ *
+ * After a failed writeback, ext4 and XFS clear the pages' dirty bit and keep
+ * them, with the bytes that never reached the disk, in the page cache; a
+ * later read returns them and a later fsync does not write them again
+ * (PostgreSQL's "fsyncgate", 2018; Rebello et al., "Can Applications Recover
+ * from fsync Failures?", USENIX ATC 2020). Two mechanisms, both used:
+ *
+ * - posix_fadvise(POSIX_FADV_DONTNEED) after the sync. On Linux it calls
+ *   invalidate_mapping_pages(), which drops clean, unlocked, unmapped pages
+ *   that are not under writeback, which is what the failed pages are. It is
+ *   advisory: it returns 0 even when it drops nothing (a page mapped by
+ *   another process, posix_fadvise(2)), so it cannot be relied on alone.
+ * - O_DIRECT reads. A direct read on Linux first writes back dirty pages in
+ *   its range and then reads the device; it never returns a clean cached
+ *   page, so where the file system honours it, it is the reliable one.
+ *   ext4 honours it in its default data=ordered mode and XFS always; ext4
+ *   with data=journal (and for inline-data files) quietly falls back to
+ *   buffered reads (Documentation/filesystems/ext4.rst), which is why the
+ *   fadvise comes first. A file system that refuses O_DIRECT (EINVAL: tmpfs
+ *   before Linux 6.6, some FUSE mounts) gets the fadvise and an ordinary read.
+ *   Alignment: 4096 bytes for offset, length and buffer, which covers 512-
+ *   and 4096-byte logical blocks; a device needing more answers EINVAL and
+ *   takes the fallback.
+ *
+ * macOS: F_NOCACHE for the read (and F_FULLFSYNC for the sync, above). */
+#if defined(__linux__) && defined(O_DIRECT)
+#define DIRECT_ALIGN 4096u
+#define DIRECT_CHUNK (1u << 20)
+static long direct_read(int fd, uint8_t *buf, size_t len, uint64_t off)
+{
+    uint64_t start = off & ~(uint64_t)(DIRECT_ALIGN - 1);
+    size_t lead = (size_t)(off - start), want = len + lead;
+    if (want > DIRECT_CHUNK) want = DIRECT_CHUNK;
+    want = (want + DIRECT_ALIGN - 1) & ~(size_t)(DIRECT_ALIGN - 1);
+    void *b = NULL;
+    if (posix_memalign(&b, DIRECT_ALIGN, want) != 0) { errno = ENOMEM; return -1; }
+    ssize_t r = pread(fd, b, want, (off_t)start);
+    long out = -1;
+    if (r >= 0) {
+        size_t n = (size_t)r > lead ? (size_t)r - lead : 0;
+        if (n > len) n = len;
+        if (n) memcpy(buf, (uint8_t *)b + lead, n);
+        out = (long)n;
+    }
+    int saved = errno;
+    free(b);
+    errno = saved;
+    return out;
+}
+#endif
+static long px_pread_device(void *ctx, int fd, void *buf, size_t len, uint64_t off)
+{
+    (void)ctx;
+#if defined(__linux__) && defined(O_DIRECT)
+    (void)posix_fadvise(fd, (off_t)off, (off_t)len, POSIX_FADV_DONTNEED);
+    int fl = fcntl(fd, F_GETFL);
+    if (fl >= 0 && fcntl(fd, F_SETFL, fl | O_DIRECT) == 0) {
+        long r = direct_read(fd, buf, len, off);
+        int saved = errno;
+        (void)fcntl(fd, F_SETFL, fl);
+        if (r >= 0) return r;
+        if (saved != EINVAL) { errno = saved; return -1; }
+    }
+    return (long)pread(fd, buf, len, (off_t)off);
+#elif defined(F_NOCACHE)
+    (void)fcntl(fd, F_NOCACHE, 1);
+    long r = (long)pread(fd, buf, len, (off_t)off);
+    int saved = errno;
+    (void)fcntl(fd, F_NOCACHE, 0);
+    errno = saved;
+    return r;
+#else
+    return (long)pread(fd, buf, len, (off_t)off);
+#endif
+}
+
 static const gz_journal_os_t POSIX_OS = {px_open, px_close, px_pread, px_pwrite, px_sync,
                                          px_sync_dir, px_truncate, px_size, px_lock, px_link,
-                                         px_rename, px_unlink, NULL};
+                                         px_rename, px_unlink, px_pread_device, NULL};
 
 const gz_journal_os_t *gz_journal_os_posix(void) { return &POSIX_OS; }
 
@@ -418,8 +501,8 @@ typedef struct {
 
 struct gz_journal {
     gz_journal_os_t os;
-    char *dir, *path, *tmp_path, *guard_path, *guard_tmp;
-    int fd;
+    char *dir, *path, *tmp_path, *guard_path, *guard_tmp, *lock_path;
+    int fd, lock_fd;
     uint8_t chain[32];
     uint64_t soft_limit, hard_limit, unsynced_max;
     uint64_t end;          /* bytes written */
@@ -440,6 +523,8 @@ struct gz_journal {
     gz_runner_t *runner;
     gz_journal_confirmed_fn on_confirmed;
     void *confirmed_ctx;
+    int attached;        /* gz_journal_attach was called (a NULL runner: nobody confirms) */
+    int in_flush, flush_again; /* a flush is confirming; one was asked for meanwhile */
     /* Pull mode (config.pull): durable batches waiting for gz_journal_complete. */
     int pull;
     gz_batch_id_t comp[GZ_RUNNER_MAX_UNCONFIRMED];
@@ -470,7 +555,7 @@ static void free_journal(gz_journal_t *j)
 {
     if (!j) return;
     free(j->dir); free(j->path); free(j->tmp_path); free(j->guard_path); free(j->guard_tmp);
-    free(j->marker_path);
+    free(j->marker_path); free(j->lock_path);
     free(j->idx_off); free(j->idx_size); free(j->guard); free(j->rbuf); free(j->recs);
     free(j);
 }
@@ -545,6 +630,44 @@ static int read_all(gz_journal_t *j, uint8_t *buf, uint64_t len, uint64_t off)
     return 1;
 }
 
+/* Take the folder's lock (journal.h): `dir`/journal.lock, created if
+ * missing and never replaced, so a replaced journal.gzj cannot let a second
+ * writer in. GZ_JOURNAL_OK with *fd held, ERR_LOCKED or ERR_IO. */
+static gz_journal_status_t take_lock(const gz_journal_os_t *os, const char *lock_path, int *fd)
+{
+    *fd = os->open(os->ctx, lock_path, GZ_JOURNAL_OPEN_CREATE);
+    if (*fd < 0) return GZ_JOURNAL_ERR_IO;
+    if (os->lock(os->ctx, *fd) != 0) {
+        gz_journal_status_t st =
+            (errno == EWOULDBLOCK || errno == EAGAIN) ? GZ_JOURNAL_ERR_LOCKED : GZ_JOURNAL_ERR_IO;
+        os->close(os->ctx, *fd);
+        *fd = -1;
+        return st;
+    }
+    return GZ_JOURNAL_OK;
+}
+
+/* Sync `fd`, then read the whole file as the storage device holds it (spec
+ * section 4, failures: after a failed writeback the page cache may hold
+ * bytes the disk does not). A file larger than `limit` is not read
+ * (ERR_FULL). On success *data (malloc'd, the caller frees) and *size. */
+static gz_journal_status_t read_device(const gz_journal_os_t *os, int fd, uint64_t limit,
+                                       uint8_t **data, uint64_t *size)
+{
+    *data = NULL;
+    if (os->sync(os->ctx, fd) != 0 || os->size(os->ctx, fd, size) != 0) return GZ_JOURNAL_ERR_IO;
+    if (*size > limit) return GZ_JOURNAL_ERR_FULL;
+    uint8_t *d = malloc(*size ? (size_t)*size : 1);
+    if (!d) return GZ_JOURNAL_ERR_NO_MEMORY;
+    for (uint64_t got = 0; got < *size;) {
+        long r = os->pread_device(os->ctx, fd, d + got, (size_t)(*size - got), got);
+        if (r <= 0) { free(d); return GZ_JOURNAL_ERR_IO; }
+        got += (uint64_t)r;
+    }
+    *data = d;
+    return GZ_JOURNAL_OK;
+}
+
 static int index_add(gz_journal_t *j, uint64_t off, uint32_t size)
 {
     if (j->n_idx == j->cap_idx) {
@@ -605,15 +728,27 @@ typedef struct {
     int marker;          /* a marker was found; `base` is valid */
     uint64_t base;
     int answered;        /* a kept batch has sequence 1 under an incarnation above `base` */
+    const uint8_t *guard; /* the newest kept guard record's bytes (into the scanned data) */
+    size_t guard_len;
 } collect_t;
 
 static void collect(void *ctx, uint64_t off, uint32_t size, gz_batch_id_t id, const uint8_t *payload,
                     size_t len)
 {
     collect_t *c = ctx;
-    (void)payload; (void)len;
     if (c->marker && id.incarnation > c->base && id.sequence == 1) c->answered = 1;
     if (!index_add(c->j, off, size)) c->oom = 1;
+    /* The scan has checked that the records fill the payload exactly. */
+    uint32_t n = get32(payload);
+    size_t p = 4;
+    for (uint32_t i = 0; i < n && len - p >= 8; i++) {
+        uint32_t type = get32(payload + p), rlen = get32(payload + p + 4);
+        if (type == GZ_RECORD_GUARD) {
+            c->guard = payload + p + 8;
+            c->guard_len = rlen;
+        }
+        p += 8 + (size_t)rlen;
+    }
 }
 
 /* Sync, append a sync mark, sync again (spec section 4, steps 2 and 3). */
@@ -629,6 +764,16 @@ static int make_durable(gz_journal_t *j)
     return 1;
 }
 
+/* 1 for the errors of a link on a file system without hard links. */
+static int no_hard_links(int e)
+{
+    if (e == EPERM || e == ENOTSUP || e == ENOSYS || e == EMLINK) return 1;
+#if defined(EOPNOTSUPP) && EOPNOTSUPP != ENOTSUP
+    if (e == EOPNOTSUPP) return 1;
+#endif
+    return 0;
+}
+
 static gz_journal_status_t create_file(gz_journal_t *j)
 {
     uint8_t hdr[GZ_JOURNAL_HEADER_LEN];
@@ -641,11 +786,50 @@ static gz_journal_status_t create_file(gz_journal_t *j)
     header_seal(hdr, j->chain);
     int ok = write_all(j, fd, hdr, sizeof hdr, 0) && j->os.sync(j->os.ctx, fd) == 0;
     ok = j->os.close(j->os.ctx, fd) == 0 && ok;
-    /* link, not rename: it never replaces a journal another process created meanwhile. */
-    if (ok && j->os.link(j->os.ctx, j->tmp_path, j->path) != 0 && errno != EEXIST) ok = 0;
-    if (j->os.unlink(j->os.ctx, j->tmp_path) != 0) ok = 0;
+    /* The folder's lock is held, so no other writer can create journal.gzj
+     * meanwhile. link, which never replaces, guards against anything else
+     * that might (a person's copy); where the file system has no hard links
+     * (FAT, exFAT, some FUSE and SMB mounts: EPERM, ENOTSUP, ENOSYS, EMLINK),
+     * rename the temporary file instead, which the lock makes safe. */
+    int moved = 0;
+    if (ok && j->os.link(j->os.ctx, j->tmp_path, j->path) != 0 && errno != EEXIST) {
+        if (no_hard_links(errno)) moved = ok = j->os.rename(j->os.ctx, j->tmp_path, j->path) == 0;
+        else ok = 0;
+    }
+    if (!moved && j->os.unlink(j->os.ctx, j->tmp_path) != 0) ok = 0;
     if (ok && j->os.sync_dir(j->os.ctx, j->dir) != 0) ok = 0;
     return ok ? GZ_JOURNAL_OK : GZ_JOURNAL_ERR_IO;
+}
+
+static int guard_valid(const gz_journal_t *j, const gz_record_t *r);
+static int write_guard(gz_journal_t *j);
+
+/* At open: if the newest kept guard record `rec` is newer than guard.gzg (a
+ * higher counter), or the file is missing, replace the file with it. A
+ * damaged file is left for the start rule (storage 6.3) to judge. 1 on
+ * success (including nothing to do). */
+static int settle_guard(gz_journal_t *j, const uint8_t *rec, size_t len)
+{
+    gz_record_t r = {GZ_RECORD_GUARD, {rec, len}};
+    if (!rec || !guard_valid(j, &r)) return 1;
+    size_t cap = len + 16, flen = 0;
+    uint8_t *buf = malloc(cap);
+    if (!buf) return 0;
+    int fr = read_small(&j->os, j->guard_path, buf, cap, &flen);
+    int replace = fr == 0;
+    if (fr > 0 && flen <= cap && flen >= GZ_GUARD_MIN_LEN + 8 && memcmp(buf, GUARD_MAGIC, 8) == 0 &&
+        memcmp(buf + 8, j->chain, 32) == 0 && check8_ok(buf, flen - 8, buf + flen - 8))
+        replace = get64(buf + 40) < get64(rec + 40);
+    free(buf);
+    if (fr < 0) return 0;
+    if (!replace) return 1;
+    uint8_t *g = malloc(len);
+    if (!g) return 0;
+    memcpy(g, rec, len);
+    free(j->guard);
+    j->guard = g;
+    j->guard_len = len;
+    return write_guard(j);
 }
 
 gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_t *cfg,
@@ -674,14 +858,20 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
     j->guard_path = join(cfg->dir, GZ_JOURNAL_GUARD_FILE);
     j->guard_tmp = join(cfg->dir, GZ_JOURNAL_GUARD_FILE ".tmp");
     j->marker_path = join(cfg->dir, GZ_JOURNAL_MARKER_FILE);
+    j->lock_path = join(cfg->dir, GZ_JOURNAL_LOCK_FILE);
+    j->lock_fd = -1;
     j->pull = cfg->pull;
-    if (!j->dir || !j->path || !j->tmp_path || !j->guard_path || !j->guard_tmp || !j->marker_path) {
+    if (!j->dir || !j->path || !j->tmp_path || !j->guard_path || !j->guard_tmp || !j->marker_path ||
+        !j->lock_path) {
         st = GZ_JOURNAL_ERR_NO_MEMORY;
         goto out;
     }
     j->dir[strlen(cfg->dir)] = '\0';
 
-    /* 1. Open or create, and lock. */
+    /* 1. Lock the folder, before anything is created; then open or create.
+     * The journal's own file is locked too. */
+    st = take_lock(&j->os, j->lock_path, &j->lock_fd);
+    if (st != GZ_JOURNAL_OK) goto out;
     j->fd = j->os.open(j->os.ctx, j->path, GZ_JOURNAL_OPEN_RW);
     if (j->fd < 0 && errno == ENOENT) {
         st = create_file(j);
@@ -695,15 +885,14 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
         goto out;
     }
 
-    /* 2 to 4. Read, check the header, scan, judge the tail. */
+    /* 2 to 4. Sync, read what the device holds (an earlier program's failed
+     * writeback may have left bytes in the page cache that are not on the
+     * disk: spec section 4), check the header, scan, judge the tail. The
+     * writer never passes the hard limit, so a larger file is not read. */
     uint64_t size;
-    if (j->os.size(j->os.ctx, j->fd, &size) != 0) { st = GZ_JOURNAL_ERR_IO; goto out; }
-    /* The writer never passes the hard limit, so a larger file is not read. */
-    if (size > j->hard_limit) { st = GZ_JOURNAL_ERR_FULL; goto out; }
-    data = malloc(size ? (size_t)size : 1);
-    if (!data) { st = GZ_JOURNAL_ERR_NO_MEMORY; goto out; }
-    if (!read_all(j, data, size, 0)) { st = GZ_JOURNAL_ERR_IO; goto out; }
-    collect_t c = {j, 0, 0, 0, 0};
+    st = read_device(&j->os, j->fd, j->hard_limit, &data, &size);
+    if (st != GZ_JOURNAL_OK) goto out;
+    collect_t c = {j, 0, 0, 0, 0, NULL, 0};
     uint64_t floor = 0;
     uint8_t mk[MARKER_LEN + 16]; /* room to see a marker that is too long */
     size_t mk_len = 0;
@@ -716,6 +905,22 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
     st = gz_journal_scan(data, (size_t)size, j->chain, &info->scan, collect, &c);
     if (st != GZ_JOURNAL_OK) goto out;
     if (c.oom) { st = GZ_JOURNAL_ERR_NO_MEMORY; goto out; }
+    j->end = info->scan.valid_end;
+    /* The restore marker: answered if the kept journal holds the answer (a
+     * crash came between it becoming durable and the marker's removal). */
+    j->restored = c.marker && !c.answered;
+
+    /* 5, decided before anything is written, so that a refusal leaves the
+     * file untouched. The new incarnation is above the journal's highest,
+     * the start counter, and the floor while restored (contract-v2 section
+     * 8), and below 2^63; there must be room for its entry and mark. */
+    uint64_t highest = info->scan.highest_incarnation;
+    if (cfg->start_counter > highest) highest = cfg->start_counter;
+    if (j->restored && floor > highest) highest = floor;
+    if (highest >= GZ_JOURNAL_INCARNATION_LIMIT - 1) { st = GZ_JOURNAL_ERR_INCARNATION; goto out; }
+    if (j->end + 2 * GZ_JOURNAL_MARK_LEN > j->hard_limit) { st = GZ_JOURNAL_ERR_FULL; goto out; }
+
+    /* 4. Cut the torn tail. */
     if (info->scan.verdict == GZ_JOURNAL_TORN) {
         if (j->os.truncate(j->os.ctx, j->fd, info->scan.valid_end) != 0 ||
             j->os.sync(j->os.ctx, j->fd) != 0) {
@@ -724,21 +929,24 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
         }
         info->cut_bytes = size - info->scan.valid_end;
     }
-    j->end = info->scan.valid_end;
-
-    /* The restore marker: answered if the cut journal holds the answer (a
-     * crash came between it becoming durable and the marker's removal). */
     if (c.marker && c.answered && !clear_marker(j)) { st = GZ_JOURNAL_ERR_IO; goto out; }
-    j->restored = c.marker && !c.answered;
-    uint64_t highest = info->scan.highest_incarnation;
-    if (j->restored && floor > highest) highest = floor;
+
+    /* The guard file follows the newest kept guard record (spec 8.3): an
+     * earlier program may have kept such a batch without its flush (killed
+     * between the append and the flush), so the file is brought up to it
+     * before the runner exists. Not on a restored start: there the guard
+     * file is newer than the backup, and is the stale-backup evidence of
+     * storage 6.3; the node's restore batch writes it. */
+    if (!j->restored && !settle_guard(j, c.guard, c.guard_len)) { st = GZ_JOURNAL_ERR_IO; goto out; }
 
     /* 5. A new incarnation, durable before the runner exists. */
-    if (highest == UINT64_MAX || j->end + 2 * GZ_JOURNAL_MARK_LEN > j->hard_limit) {
-        st = GZ_JOURNAL_ERR_FULL;
+    j->incarnation = highest + 1;
+    /* The start counter is written first, so a restored journal, whose
+     * counter is older, cannot reuse a number used since its backup. */
+    if (cfg->write_counter && cfg->write_counter(cfg->counter_ctx, j->incarnation) != 0) {
+        st = GZ_JOURNAL_ERR_IO;
         goto out;
     }
-    j->incarnation = highest + 1;
     uint8_t ent[GZ_JOURNAL_MARK_LEN];
     encode_small_at(ent, GZ_JOURNAL_KIND_INCARNATION, j->incarnation, cfg->clock_ms, j->end);
     if (!write_all(j, j->fd, ent, sizeof ent, j->end)) { st = GZ_JOURNAL_ERR_IO; goto out; }
@@ -752,6 +960,7 @@ out:
     free(data);
     if (st != GZ_JOURNAL_OK) {
         if (j->fd >= 0) j->os.close(j->os.ctx, j->fd);
+        if (j->lock_fd >= 0) j->os.close(j->os.ctx, j->lock_fd);
         free_journal(j);
         return st;
     }
@@ -764,6 +973,7 @@ void gz_journal_attach(gz_journal_t *j, gz_runner_t *runner, gz_journal_confirme
     j->runner = runner;
     j->on_confirmed = fn;
     j->confirmed_ctx = ctx;
+    j->attached = 1;
 }
 
 uint64_t gz_journal_incarnation(const gz_journal_t *j) { return j->incarnation; }
@@ -829,12 +1039,14 @@ gz_journal_status_t gz_journal_save(gz_journal_t *j, const gz_action_t *a)
             guard = &recs[i];
         }
     }
-    /* Room for the entry and the sync mark that must follow it. */
-    if (j->end + size + GZ_JOURNAL_MARK_LEN > j->hard_limit) return fail(j, GZ_JOURNAL_ERR_FULL);
-    /* Keep what a crash can lose under the bound (spec section 4). */
-    if (j->end > j->durable_end && j->end - j->durable_end + size > j->unsynced_max &&
-        !(make_durable(j) && mark_pending_durable(j)))
-        return fail(j, GZ_JOURNAL_ERR_IO);
+    /* Keep what a crash can lose under the bound (spec section 4): a sync,
+     * and its mark, before this entry. */
+    int sync_first = j->end > j->durable_end && j->end - j->durable_end + size > j->unsynced_max;
+    /* Room for the entry and the sync mark that must follow it, and for the
+     * mark the bound's sync writes before it (spec section 7). */
+    if (j->end + (sync_first ? GZ_JOURNAL_MARK_LEN : 0) + size + GZ_JOURNAL_MARK_LEN > j->hard_limit)
+        return fail(j, GZ_JOURNAL_ERR_FULL);
+    if (sync_first && !(make_durable(j) && mark_pending_durable(j))) return fail(j, GZ_JOURNAL_ERR_IO);
     uint8_t *buf = malloc((size_t)size);
     if (!buf) return fail(j, GZ_JOURNAL_ERR_NO_MEMORY);
     if (guard) {
@@ -859,9 +1071,33 @@ gz_journal_status_t gz_journal_save(gz_journal_t *j, const gz_action_t *a)
     return GZ_JOURNAL_OK;
 }
 
+static gz_journal_status_t flush_once(gz_journal_t *j);
+
 gz_journal_status_t gz_journal_flush(gz_journal_t *j)
 {
     if (!j) return GZ_JOURNAL_ERR_ARGUMENT;
+    /* From on_confirmed, inside a flush: the running flush takes the new
+     * batches after confirming its own, so confirmations stay in order. */
+    if (j->in_flush) {
+        j->flush_again = 1;
+        return GZ_JOURNAL_OK;
+    }
+    if (j->failed) return GZ_JOURNAL_ERR_FAILED;
+    if (j->n_pend == 0) return GZ_JOURNAL_OK;
+    /* Nobody to confirm to: refuse rather than drop the confirmations. */
+    if (!j->pull && !j->attached) return GZ_JOURNAL_ERR_ARGUMENT;
+    j->in_flush = 1;
+    gz_journal_status_t st;
+    do {
+        j->flush_again = 0;
+        st = flush_once(j);
+    } while (st == GZ_JOURNAL_OK && j->flush_again);
+    j->in_flush = j->flush_again = 0;
+    return st;
+}
+
+static gz_journal_status_t flush_once(gz_journal_t *j)
+{
     if (j->failed) return GZ_JOURNAL_ERR_FAILED;
     if (j->n_pend == 0) return GZ_JOURNAL_OK;
     if (j->end > j->durable_end && !make_durable(j)) return fail(j, GZ_JOURNAL_ERR_IO);
@@ -962,50 +1198,113 @@ int gz_journal_complete(gz_journal_t *j, gz_batch_id_t *id)
     return 1;
 }
 
+/* Read (after a sync, from the device) and scan the journal file at `path`.
+ * *missing 1 and GZ_JOURNAL_OK if there is no such file. */
+static gz_journal_status_t load_scan(const gz_journal_os_t *os, const char *path, const uint8_t chain[32],
+                                     gz_journal_scan_t *sc, int *missing)
+{
+    *missing = 0;
+    int fd = os->open(os->ctx, path, GZ_JOURNAL_OPEN_READ);
+    if (fd < 0) {
+        if (errno != ENOENT) return GZ_JOURNAL_ERR_IO;
+        *missing = 1;
+        return GZ_JOURNAL_OK;
+    }
+    uint8_t *data = NULL;
+    uint64_t size = 0;
+    gz_journal_status_t st = read_device(os, fd, GZ_JOURNAL_HARD_LIMIT, &data, &size);
+    os->close(os->ctx, fd);
+    if (st == GZ_JOURNAL_OK) st = gz_journal_scan(data, (size_t)size, chain, sc, NULL, NULL);
+    free(data);
+    return st;
+}
+
+typedef struct {
+    char *jpath, *mpath, *mtmp, *lock;
+    int lock_fd;
+} folder_t;
+
+static void folder_close(const gz_journal_os_t *os, folder_t *f)
+{
+    if (f->lock_fd >= 0) os->close(os->ctx, f->lock_fd);
+    free(f->jpath); free(f->mpath); free(f->mtmp); free(f->lock);
+}
+
+/* The paths, and the folder's lock taken. */
+static gz_journal_status_t folder_open(const gz_journal_os_t *os, const char *dir, folder_t *f)
+{
+    f->jpath = join(dir, GZ_JOURNAL_FILE);
+    f->mpath = join(dir, GZ_JOURNAL_MARKER_FILE);
+    f->mtmp = join(dir, GZ_JOURNAL_MARKER_FILE ".tmp");
+    f->lock = join(dir, GZ_JOURNAL_LOCK_FILE);
+    f->lock_fd = -1;
+    if (!f->jpath || !f->mpath || !f->mtmp || !f->lock) return GZ_JOURNAL_ERR_NO_MEMORY;
+    return take_lock(os, f->lock, &f->lock_fd);
+}
+
+/* Write the marker (base, floor), durably; a marker already there (a second
+ * import before the first was answered) keeps the higher floor. */
+static gz_journal_status_t write_marker(const gz_journal_os_t *os, const char *dir, const folder_t *f,
+                                        const uint8_t chain[32], uint64_t base, uint64_t floor)
+{
+    uint8_t mk[MARKER_LEN + 16]; /* room to see a marker that is too long */
+    size_t mk_len = 0;
+    uint64_t old_base, old_floor;
+    int mr = read_small(os, f->mpath, mk, sizeof mk, &mk_len);
+    if (mr < 0) return GZ_JOURNAL_ERR_IO;
+    if (mr > 0) {
+        if (!marker_decode(mk, mk_len, chain, &old_base, &old_floor)) return GZ_JOURNAL_ERR_MARKER;
+        if (old_floor > floor) floor = old_floor;
+    }
+    marker_encode(mk, chain, base, floor);
+    return replace_file(os, dir, f->mtmp, f->mpath, mk, 56, mk + 56, 8) ? GZ_JOURNAL_OK : GZ_JOURNAL_ERR_IO;
+}
+
 gz_journal_status_t gz_journal_mark_restored(const char *dir, const uint8_t chain[32],
                                              const gz_journal_os_t *os, uint64_t floor)
 {
     if (!dir || !chain) return GZ_JOURNAL_ERR_ARGUMENT;
     if (!os) os = &POSIX_OS;
-    gz_journal_status_t st = GZ_JOURNAL_ERR_NO_MEMORY;
-    char *jpath = join(dir, GZ_JOURNAL_FILE), *mpath = join(dir, GZ_JOURNAL_MARKER_FILE),
-         *mtmp = join(dir, GZ_JOURNAL_MARKER_FILE ".tmp");
-    uint8_t *data = NULL;
-    int fd = -1;
-    if (!jpath || !mpath || !mtmp) goto out;
-    /* The imported journal's highest incarnation (read only; the open that
-     * follows judges the file as usual). */
-    st = GZ_JOURNAL_ERR_IO;
-    fd = os->open(os->ctx, jpath, GZ_JOURNAL_OPEN_READ);
-    uint64_t size;
-    if (fd < 0 || os->size(os->ctx, fd, &size) != 0) goto out;
-    if (size > GZ_JOURNAL_HARD_LIMIT) { st = GZ_JOURNAL_ERR_FULL; goto out; }
-    data = malloc(size ? (size_t)size : 1);
-    if (!data) { st = GZ_JOURNAL_ERR_NO_MEMORY; goto out; }
-    for (uint64_t got = 0; got < size;) {
-        long r = os->pread(os->ctx, fd, data + got, (size_t)(size - got), got);
-        if (r <= 0) goto out;
-        got += (uint64_t)r;
+    folder_t f;
+    gz_journal_status_t st = folder_open(os, dir, &f);
+    if (st == GZ_JOURNAL_OK) {
+        /* The journal's highest incarnation (the open that follows judges the
+         * file as usual); with no journal yet, 0. */
+        gz_journal_scan_t sc;
+        int missing;
+        st = load_scan(os, f.jpath, chain, &sc, &missing);
+        if (st == GZ_JOURNAL_OK) st = write_marker(os, dir, &f, chain, missing ? 0 : sc.highest_incarnation, floor);
     }
-    gz_journal_scan_t sc;
-    st = gz_journal_scan(data, (size_t)size, chain, &sc, NULL, NULL);
-    if (st != GZ_JOURNAL_OK) goto out;
-    /* A marker already there (a second import before the first was
-     * answered) keeps the higher floor. */
-    uint8_t mk[MARKER_LEN + 16]; /* room to see a marker that is too long */
-    size_t mk_len = 0;
-    uint64_t old_base, old_floor;
-    int mr = read_small(os, mpath, mk, sizeof mk, &mk_len);
-    if (mr < 0) { st = GZ_JOURNAL_ERR_IO; goto out; }
-    if (mr > 0) {
-        if (!marker_decode(mk, mk_len, chain, &old_base, &old_floor)) { st = GZ_JOURNAL_ERR_MARKER; goto out; }
-        if (old_floor > floor) floor = old_floor;
+    folder_close(os, &f);
+    return st;
+}
+
+gz_journal_status_t gz_journal_import(const char *dir, const uint8_t chain[32], const gz_journal_os_t *os,
+                                      const char *staged, uint64_t floor)
+{
+    if (!dir || !chain || !staged) return GZ_JOURNAL_ERR_ARGUMENT;
+    if (!os) os = &POSIX_OS;
+    folder_t f;
+    gz_journal_status_t st = folder_open(os, dir, &f);
+    gz_journal_scan_t sb, sj;
+    int missing;
+    /* The backup, synced and read: refused as the scan refuses it. */
+    if (st == GZ_JOURNAL_OK) {
+        st = load_scan(os, staged, chain, &sb, &missing);
+        if (st == GZ_JOURNAL_OK && missing) st = GZ_JOURNAL_ERR_IO;
     }
-    marker_encode(mk, chain, sc.highest_incarnation, floor);
-    st = replace_file(os, dir, mtmp, mpath, mk, 56, mk + 56, 8) ? GZ_JOURNAL_OK : GZ_JOURNAL_ERR_IO;
-out:
-    if (fd >= 0) os->close(os->ctx, fd);
-    free(data); free(jpath); free(mpath); free(mtmp);
+    /* The journal it replaces: its highest incarnation raises the floor. One
+     * the scan refuses, or none, leaves the caller's floor (and the start
+     * counter) to cover it. */
+    if (st == GZ_JOURNAL_OK && load_scan(os, f.jpath, chain, &sj, &missing) == GZ_JOURNAL_OK && !missing &&
+        sj.highest_incarnation > floor)
+        floor = sj.highest_incarnation;
+    /* The marker first, then the file (review A, R2). */
+    if (st == GZ_JOURNAL_OK) st = write_marker(os, dir, &f, chain, sb.highest_incarnation, floor);
+    if (st == GZ_JOURNAL_OK &&
+        (os->rename(os->ctx, staged, f.jpath) != 0 || os->sync_dir(os->ctx, dir) != 0))
+        st = GZ_JOURNAL_ERR_IO;
+    folder_close(os, &f);
     return st;
 }
 
@@ -1013,5 +1312,6 @@ void gz_journal_close(gz_journal_t *j)
 {
     if (!j) return;
     if (j->fd >= 0) j->os.close(j->os.ctx, j->fd);
+    if (j->lock_fd >= 0) j->os.close(j->os.ctx, j->lock_fd);
     free_journal(j);
 }

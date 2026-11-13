@@ -25,8 +25,9 @@ static gz_journal_t *open_on(memfs_t *fs, uint64_t soft, uint64_t hard, uint64_t
                              gz_journal_status_t *st, gz_journal_open_info_t *info)
 {
     gz_journal_t *j = NULL;
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 3, &fs->os, soft, hard, unsynced, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 3, &fs->os, soft, hard, unsynced, 0, 0, NULL, NULL};
     *st = gz_journal_open(&j, &cfg, info);
+    if (j) gz_journal_attach(j, NULL, NULL, NULL); /* nobody confirms */
     return j;
 }
 
@@ -58,10 +59,11 @@ static void test_constants(void)
     CHECK(memcmp(gz_journal_chain_mainnet, mainnet, 32) == 0); /* the genesis block hash */
     static const char *const names[] = {"ok", "argument", "io", "locked", "header", "network",
                                         "corrupt", "order", "unknown_record", "full", "too_large",
-                                        "sequence", "guard", "no_memory", "failed", "marker"};
-    for (int s = 0; s <= GZ_JOURNAL_ERR_MARKER; s++)
+                                        "sequence", "guard", "no_memory", "failed", "marker",
+                                        "incarnation"};
+    for (int s = 0; s <= GZ_JOURNAL_ERR_INCARNATION; s++)
         CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)s), names[s]) == 0);
-    CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)(GZ_JOURNAL_ERR_MARKER + 1)), "?") == 0);
+    CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)(GZ_JOURNAL_ERR_INCARNATION + 1)), "?") == 0);
     /* Every type of spec section 9, and none of its odd neighbours. */
     static const uint32_t known[] = {
         0x00040002, 0x00040004, 0x00040006, 0x0004000a, 0x00010002, 0x00010004, 0x00010006,
@@ -105,7 +107,8 @@ static void test_scan_edges(void)
     memcpy(e + 20, h, 8);
     CHECK(gz_journal_scan(d, n + 28, gz_journal_chain_signet, &s, NULL, NULL) == GZ_JOURNAL_OK &&
           s.verdict == GZ_JOURNAL_TORN && s.valid_end == v);
-    /* The last possible incarnation cannot be followed. */
+    /* The last possible incarnation cannot be followed (and none at or
+     * above 2^63 is used: contract-v2 section 8). */
     n = 48;
     n += small(d + n, 1, UINT64_MAX, 0);
     memfs_t fs;
@@ -113,7 +116,7 @@ static void test_scan_edges(void)
     memfs_put(&fs, H_JOURNAL, d, n);
     gz_journal_status_t st;
     gz_journal_t *j = open_on(&fs, 0, 0, 0, &st, NULL);
-    CHECK(st == GZ_JOURNAL_ERR_FULL && j == NULL);
+    CHECK(st == GZ_JOURNAL_ERR_INCARNATION && j == NULL);
     memfs_free(&fs);
 }
 
@@ -251,7 +254,7 @@ static void test_save_arguments(void)
     }
     /* Arguments of open. */
     gz_journal_t *jj;
-    gz_journal_config_t cfg = {H_DIR, NULL, 3, &fs.os, 0, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, NULL, 3, &fs.os, 0, 0, 0, 0, 0, NULL, NULL};
     CHECK(gz_journal_open(&jj, &cfg, NULL) == GZ_JOURNAL_ERR_ARGUMENT && jj == NULL);
     cfg.chain = gz_journal_chain_signet;
     cfg.dir = NULL;
@@ -332,7 +335,7 @@ static void test_more(void)
     gz_journal_open_info_t info;
     memfs_init(&fs);
     gz_journal_t *j = open_on(&fs, 0, 0, 0, &st, NULL);
-    CHECK(st == GZ_JOURNAL_OK && memfs_open_fds(&fs) == 1);
+    CHECK(st == GZ_JOURNAL_OK && memfs_open_fds(&fs) == 2); /* journal and lock */
     static uint8_t g[66];
     h_guard_bytes(g, 1);
     gz_record_t gr = {GZ_RECORD_GUARD, {g, 66}};
@@ -341,7 +344,7 @@ static void test_more(void)
     a.u.save.records = &gr;
     a.u.save.n_records = 1;
     CHECK(gz_journal_save(j, &a) == GZ_JOURNAL_OK && gz_journal_flush(j) == GZ_JOURNAL_OK);
-    CHECK(memfs_open_fds(&fs) == 1); /* the guard's temporary file is closed */
+    CHECK(memfs_open_fds(&fs) == 2); /* the guard's temporary file is closed */
     for (uint64_t s = 2; s <= 200; s++) {
         CHECK(save_n(j, 1, s, 3, 0x7e570001) == GZ_JOURNAL_OK);
         if (s % 7 == 0 || s == 200) CHECK(gz_journal_flush(j) == GZ_JOURNAL_OK);

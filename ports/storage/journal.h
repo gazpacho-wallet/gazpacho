@@ -1,22 +1,30 @@
 /* The storage journal: how a node's saved batches survive a crash.
  *
- * Specification: spec/journal.md, draft 2's clear format (draft 3 encrypts
- * it: see "Encryption" below). This is the outer layer
+ * Specification: spec/journal.md. The bytes are draft 2's CLEAR FORMAT, a
+ * stand-in that will not ship: draft 3 encrypts every entry (see
+ * "Encryption" below), and the J vectors are kept for history only. The
+ * crash logic is draft 3's. This is the outer layer
  * (DESIGN.md section 3, L4): it uses the operating system, the core does not.
  * Every operating-system call goes through a gz_journal_os_t table, so tests
  * can fail or "crash" at any write or sync; NULL selects the POSIX one.
  *
- * ONE FILE PER NODE, ONE WRITER. `journal.gzj` in the node's data folder,
- * locked exclusively while open (flock). Bytes are only ever appended; the
- * one exception is cutting a torn tail at open, which removes only bytes
- * after the last sync mark (spec section 5).
+ * ONE FILE PER NODE, ONE WRITER. `journal.gzj` in the node's data folder.
+ * The writer holds an exclusive lock on `journal.lock` in the same folder, a
+ * file that is never replaced or removed, so replacing `journal.gzj` (an
+ * import, a person's copy) cannot let a second program in; it is taken
+ * before the journal is created, imported or marked. Bytes are only ever
+ * appended; the one exception is cutting a torn tail at open, which removes
+ * only bytes after the last sync mark (spec section 5).
  *
  * HOW THE PROGRAM USES IT
  *
- *   gz_journal_open        lock, check the header, scan, cut a torn tail or
- *                          refuse corruption, write and sync a new
- *                          incarnation entry and its sync mark. Pass the
- *                          returned incarnation to gz_runner_init.
+ *   gz_journal_open        lock, sync the file and read it from the storage
+ *                          device (not the page cache: spec section 4,
+ *                          failures), check the header, scan, cut a torn
+ *                          tail or refuse corruption, write the start
+ *                          counter (config.write_counter), then write and
+ *                          sync a new incarnation entry and its sync mark.
+ *                          Pass the returned incarnation to gz_runner_init.
  *   gz_journal_attach      give it the runner and the function that hands a
  *                          GZ_EVENT_STORAGE_CONFIRMED event to the node.
  *   gz_journal_reader      the gz_storage_reader_t for gz_node_start.
@@ -26,7 +34,10 @@
  *                          sync again, replace the guard file if a batch held
  *                          a guard record, then confirm every batch the sync
  *                          covered, oldest first. Only a confirmation the
- *                          runner accepts reaches the node.
+ *                          runner accepts reaches the node. Refused, with
+ *                          nothing done, while no runner is attached. A
+ *                          flush called from `on_confirmed` is deferred
+ *                          until the running one has confirmed its batches.
  *   gz_journal_close       release the lock and free. Writes nothing.
  *
  * OR, for a program that confirms batches itself (program/store.h on the
@@ -38,22 +49,39 @@
  * before any identifier is reported.
  *
  * THE FENCE (ports.h). gz_journal_open settles everything an earlier program
- * left: it scans, cuts the torn tail or refuses, and makes the new
- * incarnation durable before the reader exists. No earlier program's batch
+ * left: it scans the file as the device holds it, cuts the torn tail or
+ * refuses, brings guard.gzg up to the newest kept guard record when an
+ * earlier program kept such a batch without writing the file (not on a
+ * restored start, whose guard file is the stale-backup evidence of storage
+ * 6.3), and makes the new incarnation durable before the reader exists. No earlier program's batch
  * can appear afterwards: the file is locked, and only this incarnation's
  * batches are added to the reader, as they become durable.
  *
- * THE RESTORE MARKER (ports.h). A program that imports a backup as
- * journal.gzj calls gz_journal_mark_restored before opening it. From then on
- * every open sets the reader's `restored` until the batch with sequence 1 of
- * an incarnation started after the import is durable (the node's restore
- * batch); the marker file is then removed, before that batch is confirmed.
- * A crash between the two is recognised at the next open from the journal
- * itself.
+ * THE RESTORE MARKER (ports.h). A program imports a backup with
+ * gz_journal_import, which writes the marker FIRST and only then renames the
+ * backup to journal.gzj, so a crash at any point leaves either the old
+ * journal (the marker is then found answered and cleared: the import did
+ * not happen) or the backup marked as a restore. A key file with no journal
+ * (storage 6.3 step 0) is started as a restore with gz_journal_mark_restored
+ * before the first open. From then on every open sets the reader's
+ * `restored` until the batch with sequence 1 of an incarnation started after
+ * the import is durable (the node's restore batch); the marker file is then
+ * removed, before that batch is confirmed. A crash between the two is
+ * recognised at the next open from the journal itself.
+ *
+ * THE INCARNATION. 1 + the largest of the journal's highest, the start
+ * counter (config.start_counter: contract-v2 section 8, `starts.gzs`) and,
+ * while a restore is unanswered, the marker's floor. It must stay below
+ * 2^63, or the open refuses (GZ_JOURNAL_ERR_INCARNATION). The number is
+ * handed to config.write_counter, which writes the counter, before the
+ * incarnation entry is appended.
  *
  * A write, sync, limit or contract failure calls gz_runner_storage_failed (if
  * a runner is attached), and the journal then writes and confirms nothing
- * more. A failed sync is never retried (spec section 4).
+ * more. A failed sync is never retried (spec section 4), and since the page
+ * cache may still hold the bytes that failed, every open reads the file from
+ * the device after syncing it: an in-process restart after a storage
+ * failure takes that path like any other start (there is no other).
  *
  * ENCRYPTION (spec/storage-encryption.md; PR 25's ports/storage/crypto).
  * Every byte of a frame's layout and protection is in the codec section of
@@ -85,6 +113,8 @@
 #define GZ_JOURNAL_FILE       "journal.gzj"
 #define GZ_JOURNAL_GUARD_FILE "guard.gzg"
 #define GZ_JOURNAL_MARKER_FILE "restore.gzr"
+#define GZ_JOURNAL_LOCK_FILE  "journal.lock"   /* never replaced or removed */
+#define GZ_JOURNAL_INCARNATION_LIMIT (1ull << 63) /* contract-v2 section 8 */
 #define GZ_RECORD_GUARD       0x0004000au   /* spec section 9 */
 #define GZ_GUARD_MIN_LEN      58u           /* guard record with no epochs */
 
@@ -108,7 +138,8 @@ typedef enum {
     GZ_JOURNAL_ERR_GUARD,          /* a guard record that is not a guard (spec 8.3) */
     GZ_JOURNAL_ERR_NO_MEMORY,
     GZ_JOURNAL_ERR_FAILED,         /* the journal has failed and does nothing more */
-    GZ_JOURNAL_ERR_MARKER          /* restore.gzr is damaged or for another network */
+    GZ_JOURNAL_ERR_MARKER,         /* restore.gzr is damaged or for another network */
+    GZ_JOURNAL_ERR_INCARNATION     /* the next incarnation would reach 2^63 */
 } gz_journal_status_t;
 
 const char *gz_journal_status_name(gz_journal_status_t status);
@@ -120,6 +151,7 @@ const char *gz_journal_status_name(gz_journal_status_t status);
 #define GZ_JOURNAL_OPEN_RW          2  /* read and write an existing file */
 #define GZ_JOURNAL_OPEN_CREATE_EXCL 3  /* new file, mode 0600; errno EEXIST if present */
 #define GZ_JOURNAL_OPEN_CREATE_TRUNC 4 /* create or empty, mode 0600 */
+#define GZ_JOURNAL_OPEN_CREATE      5  /* open, or create empty if missing, mode 0600; never truncates */
 
 typedef struct {
     int (*open)(void *ctx, const char *path, int how);
@@ -131,9 +163,17 @@ typedef struct {
     int (*truncate)(void *ctx, int fd, uint64_t len);
     int (*size)(void *ctx, int fd, uint64_t *out);
     int (*lock)(void *ctx, int fd);                 /* exclusive, non-blocking; errno EWOULDBLOCK if held */
-    int (*link)(void *ctx, const char *from, const char *to);   /* never replaces; EEXIST */
+    int (*link)(void *ctx, const char *from, const char *to);   /* never replaces; EEXIST;
+                                                                   EPERM etc. without hard links */
     int (*rename)(void *ctx, const char *from, const char *to); /* replaces */
     int (*unlink)(void *ctx, const char *path);
+    /* Read what the storage device holds, not what the page cache holds:
+     * called only after a successful sync of `fd`. After a failed writeback,
+     * Linux keeps the failed bytes readable in the cache, marked clean, and
+     * never writes them (spec section 4). POSIX: drop the file's clean cached
+     * pages (posix_fadvise DONTNEED), then read with O_DIRECT where the file
+     * system takes it, else an ordinary read; macOS: F_NOCACHE. */
+    long (*pread_device)(void *ctx, int fd, void *buf, size_t len, uint64_t off);
     void *ctx;
 } gz_journal_os_t;
 
@@ -206,6 +246,17 @@ typedef struct {
     /* 1: never call a runner; report durable batches through
      * gz_journal_complete instead (the program confirms them). */
     int pull;
+    /* The start counter (contract-v2 section 8, `starts.gzs`): the value the
+     * program read, 0 if the file is missing or damaged. Applied on every
+     * start: the new incarnation is above it. */
+    uint64_t start_counter;
+    /* Called once per open with the new incarnation, after the scan and
+     * before the incarnation entry is appended: write the counter (write
+     * `starts.gzs.tmp`, sync, rename, sync the folder). Nonzero: the open
+     * fails (GZ_JOURNAL_ERR_IO) and appends nothing. A crash between the two
+     * skips a number, which is harmless. May be NULL. */
+    int (*write_counter)(void *ctx, uint64_t incarnation);
+    void *counter_ctx;
 } gz_journal_config_t;
 
 typedef struct {
@@ -246,7 +297,13 @@ gz_storage_reader_t gz_journal_reader(gz_journal_t *journal);
 gz_journal_status_t gz_journal_save(gz_journal_t *journal, const gz_action_t *save);
 
 /* Make every appended batch durable and confirm them in order. Call outside
- * the executor. A no-op when nothing awaits confirmation. */
+ * the executor. A no-op when nothing awaits confirmation. Without pull mode
+ * and with no runner attached, GZ_JOURNAL_ERR_ARGUMENT and nothing is done
+ * (the batches stay pending: no confirmation is dropped). Called again from
+ * `on_confirmed` (the node saved in answer and the program flushes at
+ * once), it returns GZ_JOURNAL_OK at once and the running flush makes the
+ * new batches durable and confirms them after its own, so confirmations
+ * stay in order. */
 gz_journal_status_t gz_journal_flush(gz_journal_t *journal);
 
 /* Pull mode only: the oldest durable batch not yet reported, once each; 1 and
@@ -258,13 +315,35 @@ int gz_journal_complete(gz_journal_t *journal, gz_batch_id_t *id);
  * restored node's answer is durable. */
 int gz_journal_restored(const gz_journal_t *journal);
 
-/* After importing a backup as `dir`/journal.gzj, and before opening it: set
- * the restore marker, durably. `floor` is the highest incarnation the
- * journal that was replaced had used (0 if none or unknown); no start
- * under the marker uses a number at or below it. Reads the imported journal
- * (refusing one the scan refuses) and writes restore.gzr. A second call before
- * the restore is answered keeps the higher floor. Not while the journal is
- * open. `os` NULL: POSIX. */
+/* Import a backup as a restore (ports.h; spec 8.2). `staged` is the backup,
+ * already copied to a file IN `dir` (the same file system, so the rename is
+ * atomic), for example `dir`/journal.gzj.import. Under the lock: syncs and
+ * reads the staged file (refusing one the scan refuses), takes the floor as
+ * the larger of `floor` and the highest incarnation of the journal it
+ * replaces (when that one scans; otherwise the caller's floor and the start
+ * counter must cover it), writes the restore marker, durably, and only then
+ * renames the staged file over journal.gzj and syncs the folder. A crash
+ * before the rename leaves the old journal with a marker whose `base` it is
+ * already above, so the next open clears the marker as answered: the import
+ * did not happen (in the rare case that the old journal holds no batch
+ * above `base`, the old journal starts as a restore, which is safe). A crash
+ * after it is a marked restore. GZ_JOURNAL_ERR_LOCKED while a program has
+ * the journal open. `os` NULL: POSIX. */
+gz_journal_status_t gz_journal_import(const char *dir, const uint8_t chain[32],
+                                      const gz_journal_os_t *os, const char *staged,
+                                      uint64_t floor);
+
+/* Start the files in place as a restore (storage 6.3: files found behind,
+ * started as a restore; or step 0, a key file with no journal): set the
+ * restore marker, durably, under the lock. `floor` is the highest
+ * incarnation known to have been used (0 if none or unknown); no start
+ * under the marker uses a number at or below it. Reads the journal
+ * (refusing one the scan refuses); with no journal yet, the marker's base is
+ * 0 and the open that follows creates the journal and starts restored. A
+ * second call before the restore is answered keeps the higher floor. Never
+ * use it after replacing journal.gzj yourself: gz_journal_import writes the
+ * marker before the file. GZ_JOURNAL_ERR_LOCKED while the journal is open.
+ * `os` NULL: POSIX. */
 gz_journal_status_t gz_journal_mark_restored(const char *dir, const uint8_t chain[32],
                                              const gz_journal_os_t *os, uint64_t floor);
 

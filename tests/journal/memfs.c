@@ -117,6 +117,19 @@ static void clear_ops(memfs_inode_t *n)
     n->n_ops = 0;
 }
 
+/* The dirty writes reach the disk, and the size the file has now (bytes of
+ * a failed sync that a later write did not cover are zeros there). */
+static void persist(memfs_inode_t *n)
+{
+    for (size_t k = 0; k < n->n_ops; k++) apply(&n->dur, &n->dur_len, &n->ops[k], n->ops[k].len);
+    clear_ops(n);
+    if (n->dur_len != n->vol_len) {
+        n->dur = xrealloc(n->dur, n->vol_len);
+        if (n->vol_len > n->dur_len) memset(n->dur + n->dur_len, 0, n->vol_len - n->dur_len);
+        n->dur_len = n->vol_len;
+    }
+}
+
 /* Free every file no name (current or durable) and no descriptor refers to:
  * a replaced guard or marker file, once the folder's names no longer hold it. */
 static void gc(memfs_t *m)
@@ -148,6 +161,8 @@ static int m_open(void *ctx, const char *path, int how)
     if (how == GZ_JOURNAL_OPEN_READ || how == GZ_JOURNAL_OPEN_RW) {
         if (k < 0) { errno = ENOENT; return -1; }
         ino = m->vol[k].inode;
+    } else if (how == GZ_JOURNAL_OPEN_CREATE && k >= 0) {
+        ino = m->vol[k].inode; /* opened as it is: not a point */
     } else {
         if (point(m, 0)) { errno = EIO; return -1; }
         if (k >= 0 && how == GZ_JOURNAL_OPEN_CREATE_EXCL) { errno = EEXIST; return -1; }
@@ -223,20 +238,43 @@ static int m_sync(void *ctx, int fd)
     int pt = point(m, 1);
     if (pt == 2) { errno = EIO; return -1; }
     if (pt) {
-        /* A failed fsync on Linux may drop the dirty pages: model the worst. */
-        clear_ops(n);
-        n->vol = xrealloc(n->vol, n->dur_len);
-        if (n->dur_len) memcpy(n->vol, n->dur, n->dur_len);
-        n->vol_len = n->dur_len;
+        if (m->sync_fail_drops) {
+            /* The older model: the failed writes vanish from view too. */
+            clear_ops(n);
+            n->vol = xrealloc(n->vol, n->dur_len);
+            if (n->dur_len) memcpy(n->vol, n->dur, n->dur_len);
+            n->vol_len = n->dur_len;
+        } else {
+            /* Linux (ext4, XFS): the pages are marked clean and kept, with
+             * the bytes, in the cache; the disk never gets them. */
+            clear_ops(n);
+        }
         errno = EIO;
         return -1;
     }
-    n->dur = xrealloc(n->dur, n->vol_len);
-    if (n->vol_len) memcpy(n->dur, n->vol, n->vol_len);
-    n->dur_len = n->vol_len;
-    clear_ops(n);
+    persist(n);
     if (m->on_sync) m->on_sync(m->on_sync_ctx, ino, n->dur_len);
     return 0;
+}
+
+/* The disk side of a pread: what the device holds. The journal calls it
+ * only after a successful sync, so no write is dirty; the clean cache is
+ * then dropped (posix_fadvise DONTNEED). */
+static long m_pread_device(void *ctx, int fd, void *buf, size_t len, uint64_t off)
+{
+    memfs_t *m = ctx;
+    if (!fd_ok(m, fd)) { errno = EBADF; return -1; }
+    memfs_inode_t *n = &m->inode[m->fd_inode[fd]];
+    if (n->n_ops == 0) {
+        n->vol = xrealloc(n->vol, n->dur_len);
+        if (n->dur_len) memcpy(n->vol, n->dur, n->dur_len);
+        n->vol_len = n->dur_len;
+    }
+    if (off >= n->dur_len) return 0;
+    if (len > n->dur_len - off) len = n->dur_len - (size_t)off;
+    if (m->max_read && len > m->max_read) len = m->max_read;
+    memcpy(buf, n->dur + off, len);
+    return (long)len;
 }
 
 static int m_sync_dir(void *ctx, const char *dir)
@@ -280,6 +318,7 @@ static int m_link(void *ctx, const char *from, const char *to)
 {
     memfs_t *m = ctx;
     if (point(m, 0)) { errno = EIO; return -1; }
+    if (m->no_links) { errno = m->no_links; return -1; }
     int a = find(m->vol, from);
     if (a < 0) { errno = ENOENT; return -1; }
     if (find(m->vol, to) >= 0) { errno = EEXIST; return -1; }
@@ -316,7 +355,7 @@ void memfs_init(memfs_t *m)
     for (int i = 0; i < MEMFS_FILES; i++) m->vol[i].inode = m->dur[i].inode = -1;
     for (int i = 0; i < MEMFS_FDS; i++) m->fd_inode[i] = -1;
     gz_journal_os_t os = {m_open, m_close, m_pread, m_pwrite, m_sync, m_sync_dir, m_truncate,
-                          m_size, m_lock, m_link, m_rename, m_unlink, m};
+                          m_size, m_lock, m_link, m_rename, m_unlink, m_pread_device, m};
     m->os = os;
 }
 
@@ -338,9 +377,11 @@ void memfs_settle(memfs_t *m, int mode, uint64_t seed)
         memfs_inode_t *n = &m->inode[i];
         if (!n->used) continue;
         if (mode == MEMFS_KEEP) {
-            n->dur = xrealloc(n->dur, n->vol_len);
-            if (n->vol_len) memcpy(n->dur, n->vol, n->vol_len);
-            n->dur_len = n->vol_len;
+            /* A kill: the dirty writes reach the disk in time; the page cache,
+             * with any bytes of a failed sync, stays as it is. */
+            persist(n);
+            n->lock_fd = -1;
+            continue;
         } else if (mode == MEMFS_REORDER) {
             size_t torn = n->n_ops ? (size_t)(mix(&s) % (2 * n->n_ops)) : 0; /* >= n_ops: none */
             for (size_t k = 0; k < n->n_ops; k++) {
@@ -380,6 +421,14 @@ const uint8_t *memfs_get(const memfs_t *m, const char *path, size_t *len)
     if (k < 0) return NULL;
     *len = m->inode[m->vol[k].inode].vol_len;
     return m->inode[m->vol[k].inode].vol;
+}
+
+const uint8_t *memfs_disk(const memfs_t *m, const char *path, size_t *len)
+{
+    int k = find(m->vol, path);
+    if (k < 0) return NULL;
+    *len = m->inode[m->vol[k].inode].dur_len;
+    return m->inode[m->vol[k].inode].dur;
 }
 
 void memfs_put(memfs_t *m, const char *path, const uint8_t *data, size_t len)

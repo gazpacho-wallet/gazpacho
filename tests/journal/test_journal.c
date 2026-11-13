@@ -93,7 +93,7 @@ static gz_journal_status_t open_bytes(const uint8_t *bytes, size_t len, gz_journ
     memfs_init(&fs);
     memfs_put(&fs, H_JOURNAL, bytes, len);
     gz_journal_t *j = NULL;
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 5, &fs.os, 0, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 5, &fs.os, 0, 0, 0, 0, 0, NULL, NULL};
     gz_journal_status_t st = gz_journal_open(&j, &cfg, info);
     size_t now = 0;
     const uint8_t *d = memfs_get(&fs, H_JOURNAL, &now);
@@ -120,9 +120,10 @@ static void test_vectors(void)
     /* The writer itself produces header, J2, J5, J3 and the second mark. */
     h_t *h = calloc(1, sizeof *h);
     memfs_init(&h->fs);
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 1794000000000ull, &h->fs.os, 0, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 1794000000000ull, &h->fs.os, 0, 0, 0, 0, 0, NULL, NULL};
     gz_journal_open_info_t info;
     CHECK(gz_journal_open(&h->j, &cfg, &info) == GZ_JOURNAL_OK && info.created && info.incarnation == 1);
+    gz_journal_attach(h->j, NULL, NULL, NULL); /* nobody confirms */
     gz_record_t r = {0x7e570001, {(const uint8_t *)"ping", 4}};
     gz_action_t s = {.kind = GZ_ACTION_SAVE};
     s.u.save.batch.incarnation = 1;
@@ -395,7 +396,7 @@ static void test_write_read(void)
     memfs_t fs;
     CHECK(open_bytes(d, n, NULL, NULL, &fs) == GZ_JOURNAL_OK);
     gz_journal_t *j;
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 5, &fs.os, 0, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 5, &fs.os, 0, 0, 0, 0, 0, NULL, NULL};
     CHECK(gz_journal_open(&j, &cfg, NULL) == GZ_JOURNAL_OK);
     rd = gz_journal_reader(j);
     CHECK(rd.next(rd.ctx, &sb) == 1 && sb.n_records == 2 && sb.records[0].type == 0x00020006 &&
@@ -443,7 +444,7 @@ static void test_tails(void)
     d[130] ^= 0x10;
     CHECK(open_bytes(d, n, &info, NULL, &fs) == GZ_JOURNAL_OK && info.cut_bytes == n - 122);
     gz_journal_t *j;
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 5, &fs.os, 0, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 5, &fs.os, 0, 0, 0, 0, 0, NULL, NULL};
     CHECK(gz_journal_open(&j, &cfg, NULL) == GZ_JOURNAL_OK);
     gz_storage_reader_t rd = gz_journal_reader(j);
     gz_stored_batch_t sb;
@@ -651,7 +652,7 @@ static void test_limits(void)
 {
     h_t *h = calloc(1, sizeof *h);
     memfs_init(&h->fs);
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 1, &h->fs.os, 2000, 3000, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 1, &h->fs.os, 2000, 3000, 0, 0, 0, NULL, NULL};
     gz_journal_open_info_t info;
     CHECK(gz_journal_open(&h->j, &cfg, &info) == GZ_JOURNAL_OK && !info.soft_full);
     h->inc = 1;
@@ -693,7 +694,7 @@ static void test_limits(void)
     /* The unsynced bound: a group past it is synced and marked inside save. */
     h = calloc(1, sizeof *h);
     memfs_init(&h->fs);
-    gz_journal_config_t c2 = {H_DIR, gz_journal_chain_signet, 1, &h->fs.os, 0, 0, 300, 0};
+    gz_journal_config_t c2 = {H_DIR, gz_journal_chain_signet, 1, &h->fs.os, 0, 0, 300, 0, 0, NULL, NULL};
     CHECK(gz_journal_open(&h->j, &c2, NULL) == GZ_JOURNAL_OK);
     h->inc = 1;
     gz_runner_init(&h->runner, h->slots, 64, h->rbytes, sizeof h->rbytes, 1, h_execute, h);
@@ -727,9 +728,10 @@ static void test_posix(void)
     fputs("junk", f);
     fclose(f);
     gz_journal_t *j, *j2;
-    gz_journal_config_t cfg = {dir, gz_journal_chain_signet, 1794000000000ull, NULL, 0, 0, 0, 0};
+    gz_journal_config_t cfg = {dir, gz_journal_chain_signet, 1794000000000ull, NULL, 0, 0, 0, 0, 0, NULL, NULL};
     gz_journal_open_info_t info;
     CHECK(gz_journal_open(&j, &cfg, &info) == GZ_JOURNAL_OK && info.created && info.incarnation == 1);
+    gz_journal_attach(j, NULL, NULL, NULL); /* nobody confirms */
     struct stat st;
     CHECK(stat(path, &st) == 0 && (st.st_mode & 0777) == 0600);
     CHECK(access(tmp, F_OK) != 0);
@@ -767,7 +769,9 @@ static void test_posix(void)
     cfg.chain = gz_journal_chain_mainnet;
     CHECK(gz_journal_open(&j, &cfg, NULL) == GZ_JOURNAL_ERR_NETWORK);
     unlink(path);
-    rmdir(dir);
+    snprintf(path, sizeof path, "%s/%s", dir, GZ_JOURNAL_LOCK_FILE);
+    CHECK(unlink(path) == 0); /* the folder's lock file, never removed by the journal */
+    CHECK(rmdir(dir) == 0);
     CHECK(gz_journal_open(&j, &cfg, NULL) == GZ_JOURNAL_ERR_IO); /* no folder */
     CHECK(gz_journal_open(NULL, &cfg, NULL) == GZ_JOURNAL_ERR_ARGUMENT);
     CHECK(gz_journal_open(&j, NULL, NULL) == GZ_JOURNAL_ERR_ARGUMENT);

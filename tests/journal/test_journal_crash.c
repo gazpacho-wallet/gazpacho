@@ -218,6 +218,8 @@ static int kill_sweep(void)
     }
     unlink(path);
     unlink(gpath);
+    snprintf(path, sizeof path, "%s/%s", dir, GZ_JOURNAL_LOCK_FILE);
+    unlink(path);
     rmdir(dir);
     munmap(h, sizeof *h);
     return runs;
@@ -280,7 +282,7 @@ static void n_confirmed(void *ctx, gz_batch_id_t id)
  * if the open was refused. */
 static int node_run(node_h_t *n, int pings)
 {
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 7, &n->fs.os, 0, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 7, &n->fs.os, 0, 0, 0, 0, 0, NULL, NULL};
     if (gz_journal_open(&n->j, &cfg, NULL) != GZ_JOURNAL_OK) return 1;
     gz_runner_init(&n->runner, n->slots, 64, n->rbytes, sizeof n->rbytes, gz_journal_incarnation(n->j),
                    n_execute, n);

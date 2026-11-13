@@ -19,6 +19,16 @@
  *                  combination, one of them possibly torn, and either the old
  *                  or the new folder names.
  *
+ * A FAILED SYNC behaves as Linux's ext4 and XFS do after a writeback error
+ * (review A, R1): the call reports EIO, the writes it covered are marked
+ * clean without reaching the disk, and they stay readable through pread
+ * (the page cache) while the disk lacks them; a later successful sync does
+ * not write them (only the file's size, with zeros). pread_device reads the
+ * disk and drops the clean cache. A power cut (LOSE, REORDER) shows the
+ * disk; a process kill (KEEP) writes the dirty writes and keeps the cache.
+ * `sync_fail_drops` selects the older model instead: the failed writes are
+ * dropped from the readable contents too.
+ *
  * Test code only; never linked into the journal. */
 #ifndef GZ_TEST_MEMFS_H
 #define GZ_TEST_MEMFS_H
@@ -69,6 +79,8 @@ typedef struct {
     int bad_closes;                    /* closes of a descriptor that was not open */
     uint64_t after_fail;               /* points passed after the failed one */
     int crashed;                       /* set at the crash point; cleared by settle */
+    int sync_fail_drops;               /* 1: a failed sync drops the failed writes from view too */
+    int no_links;                      /* nonzero: link fails with this errno (EPERM: FAT, exFAT) */
     /* Called after every successful file sync with the inode's durable length. */
     void (*on_sync)(void *ctx, int inode, size_t durable_len);
     void *on_sync_ctx;
@@ -80,8 +92,10 @@ void memfs_free(memfs_t *m);
 /* After a crash: settle the disk as `mode` says, using `seed` for REORDER,
  * and close every descriptor. */
 void memfs_settle(memfs_t *m, int mode, uint64_t seed);
-/* Durable-and-current contents of a named file (NULL if absent). */
+/* Current contents of a named file, as a read sees them (NULL if absent). */
 const uint8_t *memfs_get(const memfs_t *m, const char *path, size_t *len);
+/* What the disk holds for a named file now (NULL if no such current name). */
+const uint8_t *memfs_disk(const memfs_t *m, const char *path, size_t *len);
 /* Replace a file's contents, durably (to set up a test). */
 void memfs_put(memfs_t *m, const char *path, const uint8_t *data, size_t len);
 void memfs_copy(memfs_t *dst, const memfs_t *src);

@@ -158,7 +158,7 @@ static inline void h_on_confirmed(void *ctx, gz_batch_id_t id)
 static inline gz_journal_status_t h_open(h_t *h, gz_journal_open_info_t *info)
 {
     gz_journal_config_t cfg = {h->dir ? h->dir : H_DIR, gz_journal_chain_signet, 1794000000000ull,
-                               h->os ? h->os : &h->fs.os, 0, 0, 0, 0};
+                               h->os ? h->os : &h->fs.os, 0, 0, 0, 0, 0, NULL, NULL};
     h->fs.on_sync = h_on_sync;
     h->fs.on_sync_ctx = h;
     gz_journal_status_t st = gz_journal_open(&h->j, &cfg, info);
@@ -275,8 +275,9 @@ static inline int h_verify(h_t *h, int oracle, int quiet)
 static inline gz_journal_t *h_open_on(memfs_t *fs, gz_journal_status_t *st, gz_journal_open_info_t *info)
 {
     gz_journal_t *j = NULL;
-    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 3, &fs->os, 0, 0, 0, 0};
+    gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 3, &fs->os, 0, 0, 0, 0, 0, NULL, NULL};
     *st = gz_journal_open(&j, &cfg, info);
+    if (j) gz_journal_attach(j, NULL, NULL, NULL); /* nobody confirms */
     return j;
 }
 

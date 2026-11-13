@@ -6,7 +6,8 @@
  *   - a torn verdict cut at V scans clean, with the same counts;
  *   - after an accepted open the file is exactly data[0..V] plus a new
  *     incarnation and its mark, and the reader yields every kept batch;
- *   - a refused open leaves the file untouched.
+ *   - a refused open leaves the file untouched, including one refused
+ *     because the next incarnation would reach 2^63.
  * Usage: test_journal_fuzz [iterations] [seed] */
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,12 +128,15 @@ int main(int argc, char **argv)
         memfs_init(&fs);
         memfs_put(&fs, H_JOURNAL, d, len);
         gz_journal_t *j = NULL;
-        gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 9, &fs.os, 0, 0, 0, 0};
+        gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 9, &fs.os, 0, 0, 0, 0, 0, NULL, NULL};
         gz_journal_status_t ost = gz_journal_open(&j, &cfg, NULL);
         size_t now;
         const uint8_t *after = memfs_get(&fs, H_JOURNAL, &now);
         if (len < GZ_JOURNAL_HEADER_LEN && ost == GZ_JOURNAL_ERR_HEADER) {
             /* nothing more to check */
+        } else if (st == GZ_JOURNAL_OK && sc.highest_incarnation >= GZ_JOURNAL_INCARNATION_LIMIT - 1) {
+            /* No incarnation at or above 2^63 (contract-v2 section 8): refused, the file untouched. */
+            bad |= ost != GZ_JOURNAL_ERR_INCARNATION || now != len || memcmp(after, d, len) != 0;
         } else if (ost != st) {
             bad = 1;
         } else if (ost == GZ_JOURNAL_OK) {

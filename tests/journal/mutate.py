@@ -3,11 +3,11 @@
 Makes one small change at a time (a comparison, a logical operator, + or -,
 a constant, a negation, a return value, a deleted statement), rebuilds the
 journal's tests and the gz-journal tool against the mutant, and runs, in this
-order, test_journal, the cross-check against the independent reader (2,000
+order, test_journal, test_journal_review, the cross-check against the independent reader (2,000
 journals), the fuzzer (20,000 inputs) and the crash sweeps. A mutant is killed
 by the first that fails or times out. Each one that passes them all is then
 built again with AddressSanitizer, UBSan and leak detection and run through
-test_journal, test_journal_edges, the fuzzer (3,000 inputs) and the crash
+test_journal, test_journal_edges, test_journal_restore, test_journal_review, the fuzzer (3,000 inputs) and the crash
 sweeps: that stage sees what the plain tests cannot, such as a deleted free
 or a read one byte past a buffer. A mutant that passes both survived. Each
 test runs in its own process group, killed whole on timeout.
@@ -33,10 +33,12 @@ CFLAGS = ["-std=gnu11", "-O1", "-w",
           "-I" + os.path.join(SRC, "core/superscalar/include")]
 SAN = ["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined", "-g"]
 SAN_TESTS = [("test_journal", [], 300), ("test_journal_edges", [], 300), ("test_journal_restore", [], 300),
-             ("test_journal_fuzz", ["3000", "5"], 300), ("test_journal_crash", [], 600)]
+             ("test_journal_review", [], 300), ("test_journal_fuzz", ["3000", "5"], 300),
+             ("test_journal_crash", [], 600)]
 TESTS = [("test_journal", [], 120),
          ("test_journal_edges", [], 120),
          ("test_journal_restore", [], 120),
+         ("test_journal_review", [], 120),
          ("crosscheck", None, 120),
          ("test_journal_fuzz", ["20000", "5"], 120),
          ("test_journal_crash", [], 240)]
@@ -152,7 +154,8 @@ def common_objects(name, flags):
     subprocess.run(["gcc", *flags, "-c", os.path.join(t, "memfs.c"), "-o", memfs], check=True)
     for name, srcf in [("test_journal", "test_journal.c"), ("test_journal_crash", "test_journal_crash.c"),
                        ("test_journal_fuzz", "test_journal_fuzz.c"), ("test_journal_edges", "test_journal_edges.c"),
-                       ("test_journal_restore", "test_journal_restore.c")]:
+                       ("test_journal_restore", "test_journal_restore.c"),
+                       ("test_journal_review", "test_journal_review.c")]:
         o = os.path.join(common, name + ".o")
         subprocess.run(["gcc", *flags, "-c", os.path.join(t, srcf), "-o", o], check=True)
         objs[name] = [o, memfs]

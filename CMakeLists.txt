@@ -259,6 +259,10 @@ if(Python3_Interpreter_FOUND)
 endif()
 # The restore marker, pull mode (program/store.h's complete()) and the fence.
 gz_add_test(journal_restore tests/journal/test_journal_restore.c gazpacho_journal_testfs)
+# Review A's findings: a failed sync the way Linux fails one, the import's
+# order, the folder lock, the start counter, the hard limit with two marks,
+# a kept guard batch, 2^63, flushes with no runner or from on_confirmed.
+gz_add_test(journal_review  tests/journal/test_journal_review.c  gazpacho_journal_testfs)
 # Under valgrind: every journal test runs in the valgrind job
 # (tools/valgrind-tests.py, which takes journal_fuzz on a smaller case).
 
