@@ -16,12 +16,12 @@ static secp256k1_context *secp;
 static gz_noise_t ini0, res0;
 static uint8_t wire[GZ_NOISE_HDR_LEN + GZ_NOISE_MAX_MSG + GZ_NOISE_MAC_LEN], plain[GZ_NOISE_MAX_MSG];
 
-static void fill(void *ctx, uint32_t purpose, uint8_t *out, size_t len) { (void)purpose; memset(out, *(const uint8_t *)ctx, len); }
+static void fill(void *ctx, uint8_t *out, size_t len) { memset(out, *(const uint8_t *)ctx, len); }
 
 static void setup(void)
 {
     static const uint8_t e1 = 0x12, e2 = 0x22;
-    gz_random_port_t r1 = {fill, (void *)&e1}, r2 = {fill, (void *)&e2};
+    gz_net_random_t r1 = {fill, (void *)&e1}, r2 = {fill, (void *)&e2};
     uint8_t k1[32], k2[32], pub[33], a[66];
     secp256k1_pubkey pk;
     size_t n = 33;

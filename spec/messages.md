@@ -26,6 +26,15 @@ Specification draft 2, 2026-11-12. Status: draft 1 brought fully in line with `s
 | Missing tags | A table of every tag, including `nonce-extra` and the new `tree` | 1 |
 | Slice 1 values | No distribution transaction (record 44 refused); layer step and states fixed at 144 and 4 (**proposed, owner to confirm**) | 7.2, 9 |
 
+## Changes from contract v2 (`docs/notes/contract-v2.md`, 2026-11-12)
+
+| Item | Change | Where |
+|---|---|---|
+| 15 networks | `init` names one chain, signet or testnet4; terms checked against the member's own network | 2, 6.2, test 18 |
+| 13 member keys | Derivation path proposed (owner to confirm), with a network level and index pairs; a fresh index pair per `CONNECT`, not per TCP connection | 2, open point 3 |
+| 7 test traffic | Kind 32767 reserved for test builds | 4.1 |
+| 3 reconnect limits | `hello` duplicates, the 20-`hello` limit and status answers counted per link (per member key), not per connection | 6.1, 7.10 |
+
 Related: `terms.md` (the host terms record carried by `terms_offer`), `signing-round.md` (what the round messages mean), `safety-rule.md` (what a member checks before it contributes), `journal.md` (what is saved before each message is sent).
 
 ## 1. Conventions
@@ -58,8 +67,8 @@ Related: `terms.md` (the host terms record carried by `terms_offer`), `signing-r
 |---|---|---|
 | Transport | BOLT 8 (Noise XK) over TCP | Decided in `RECORD.md` section 6. XK needs the responder's static key before the handshake, which is exactly a pinned host key |
 | Host key | The host's long-term key is its BOLT 8 static key. The member is given `<host point, 66 hex>@<address>:<port>` and refuses a handshake that does not match | One key to pin, check and show. The same key signs the terms (`terms.md`) and every host message, so the key the member connected to is the key that bound itself to the terms |
-| Member key | A BOLT 8 static key derived from the member's seed, its current restore epoch (31 bits; 0 for the original installation, `safety-rule.md` R2) and a key index (`journal.md` section 8; the derivation path itself belongs in the wallet specification, **(open)**). **Which index:** a connection for a lobby where the member has a seat uses that seat's key; any other new connection gets a fresh index, saved (with the guard) before the handshake, and if the member joins a lobby on it, that key becomes the lobby's key (`signing-round.md` section 2). It is also the member's **contribution key** | Identity is new per lobby by default (`LOBBY.md`). Deriving it means a restarted member reconnects with the same key and finds its seat. A restored member derives under a new epoch, so it has no old seat: it joins again |
-| First message | BOLT 1 `init`. `networks` must contain the signet chain hash and nothing else; otherwise close | Slices refuse to start on mainnet (`SLICES.md` rule 3) |
+| Member key | A BOLT 8 static key derived from the member's seed, its current restore epoch (31 bits; 0 for the original installation, `safety-rule.md` R2) and a key index (`journal.md` section 8), at `m / 254315617' / net' / 0' / epoch' / index'`, every step hardened, `net` 1 for testnet4 and 2 for signet (so one seed's keys differ between networks); the factory key is at `index + 1`, so indexes are **allocated in pairs** (i, i + 1) and `key_index` records i + 1; the host's long-term key is at `m / 254315617' / net' / 1' / k'`, k the first valid of 0, 1, 2, …. 254315617 is `SHA256("gazpacho keys")[0..4]` with the top bit cleared; every invalid-child case is in `docs/notes/contract-v2.md` section 13 (**proposed, owner to confirm**). **Which index:** a connection for a lobby where the member has a seat uses that seat's key; any other connection the member asks for (each `CONNECT`, contract v2 section 3) gets a fresh index pair, saved (with the guard) before the handshake; the program's automatic reconnects under one standing `CONNECT` reuse its key. If the member joins a lobby on a fresh key, that key becomes the lobby's key (`signing-round.md` section 2). It is also the member's **contribution key** | Identity is new per lobby by default (`LOBBY.md`). Deriving it means a restarted member reconnects with the same key and finds its seat. A restored member derives under a new epoch, so it has no old seat: it joins again |
+| First message | BOLT 1 `init`. `networks` must contain exactly one chain hash, that of the network this party was set up for: **signet or testnet4**. A party whose peer names another chain, several, or none closes the connection. The chain hash is BOLT 0's, the hash of the network's block 0 | Slices refuse to start on mainnet (`SLICES.md` rule 3). A party runs one network per data folder, so it lists one. Slice 1 runs on either test network (`docs/notes/contract-v2.md` section 15) |
 | Feature bit | The factory messages need none: a member that sends them to a node that does not speak them is simply ignored, because the message type is odd. A build that includes discovery (`discovery.md` design C, the demo wallet) sets `factory_capable`, candidate bit 449, in `init` (`discovery.md` 3); a build without discovery sets nothing. Bit 271 of bLIP-56 is set only by builds that offer the adapter of section 10 | Slice 1 needs no negotiation. The adapter, when offered, uses bLIP-56's bit (bLIP 2: bits 0 to 255 are kept for BOLTs) |
 | Keep-alive | BOLT 1 `ping`/`pong`, a `ping` every 15 seconds of silence. A side that gets no `pong` within 30 seconds closes the connection | BOLT 1 allows closing. The shortest step timeout a host may set is 60 s (`terms.md` section 3), twice this, so a dead connection is noticed and replaced within one step (review 3, F11) |
 | Size | A Lightning message is at most 65,535 bytes, its 2-byte type included (BOLT 1 and BOLT 8) | Hence section 5 |
@@ -117,12 +126,15 @@ Why a `protocol` field when Lightning uses no version numbers: it is not a versi
 | 78 | `round_abort` | either | 7.9 | Yes |
 | 80 | `round_status_request` | member → host | 7.10 | Yes |
 | 81 | `factory_funded` | host → member | 7.11 | Optional hint |
+| 32767 | `test` | either | below | Test builds only |
 
 Kinds 128 to 159 are reserved for discovery and defined in `discovery.md`; they always carry an all-zero `scope`. **Discovery is never worth a disconnect:** for kinds 128 to 159 every case this document would "refuse" (a nonzero `scope`, malformed records, an unknown even record, the wrong direction) is **ignored** instead, and `discovery.md` 8.7 says what else a receiver may do. This overrides sections 1, 4.2 and 4.1's direction rule for those kinds only.
 
 Numbering: lobby kinds from 16, round kinds from 64, discovery kinds from 128, so each group has room for more than twenty additions without interleaving. 0 is never used, so an all-zero envelope is invalid.
 
 A kind sent in the wrong direction (for example `ready` from the host) is refused, except a discovery kind, which is ignored (above).
+
+**Kind 32767, `test`**, is reserved for test traffic (the core's placeholder node and the program's multi-process tests; `docs/notes/contract-v2.md` section 7): `scope` all zero, any valid record stream, either direction, never split. A release build never sends it and, since it is odd, ignores it like any unknown kind; only a build made with the test kinds delivers it.
 
 ### 4.2 Records
 
@@ -254,7 +266,7 @@ Sent first after `init`, and after every reconnect.
 
 - `scope` all zero: the host answers with one `terms_offer` for each **listed** lobby it has open, at most 4 (the same cap as a host's live listings in `discovery.md`). An unlisted lobby is never named in this answer; a member reaches it only with its identifier, from an invitation. A slice 1 host has one. Finding lobbies without connecting first is specified in `discovery.md` (beacons, store nodes, the pool request, the Nostr annex); this answer serves a member already connected to the host.
 - `scope` a lobby identifier: the host answers with that lobby's `terms_offer`, then `lobby_status` for this key's seat. For an unknown lobby, `lobby_status` with lobby state 0 alone.
-- Duplicates: answered again, at most once per second per connection; more are ignored. A connection that sends more than 20 ignored `hello`s is closed. One `hello` per connection is normal; the limits stop a peer from making the host send terms in a loop. Answers to scope-zero `hello`s are also limited across all connections to 4 per second (review 3, F13: up to 16 offers of about 5 KB each per small request).
+- Duplicates: answered again, at most once per second **per link (per member key)**, counted across that key's connections, so reconnecting does not reset the limit; more are ignored. A member key that sends more than 20 ignored `hello`s within 10 minutes, across its connections, has its connection closed. One `hello` per connection is normal; the limits stop a peer from making the host send terms in a loop. Answers to scope-zero `hello`s are also limited across all connections to 4 per second (review 3, F13: up to 16 offers of about 5 KB each per small request).
 
 ### 6.2 `terms_offer` (18), host → member
 
@@ -267,7 +279,7 @@ Sent first after `init`, and after every reconnect.
 
 Unsigned as a message: each record carries its own signature, made over its digest (`terms.md` section 6), so it can be shown to anyone later.
 
-Valid when: `TH("gazpacho/terms/outer", outer)` equals `scope`; both records decode under `terms.md`'s rules; both signatures verify under the record's `host_key`; that key equals the pinned BOLT 8 key; the chain is signet.
+Valid when: `TH("gazpacho/terms/outer", outer)` equals `scope`; both records decode under `terms.md`'s rules; both signatures verify under the record's `host_key`; that key equals the pinned BOLT 8 key; the chain is the member's own network.
 
 When sent: in answer to `hello`, and to every connected seat whenever the host signs a new current version.
 
@@ -664,7 +676,7 @@ The host, on a member's `round_abort`: removes the member from the attempt and r
 |---|---|---|---|
 | 2 | `round_id` | 32 | Yes |
 
-Sent by a member whose round is Unfinished or Complete-but-unfunded, after every reconnect, after `hello` and after resending any saved `round_partial_sigs` (section 6, "Seats and reconnects"). The host answers with the saved bytes it holds for that member and round: every `round_tier_result`, then `round_complete`. If the round failed, it answers `round_abort` with the reason. If it knows no such round, it ignores the request. Unsigned: it asks for nothing new. At most one answer per round per 10 seconds per connection; a member needs one.
+Sent by a member whose round is Unfinished or Complete-but-unfunded, after every reconnect, after `hello` and after resending any saved `round_partial_sigs` (section 6, "Seats and reconnects"). The host answers with the saved bytes it holds for that member and round: every `round_tier_result`, then `round_complete`. If the round failed, it answers `round_abort` with the reason. If it knows no such round, it ignores the request. Unsigned: it asks for nothing new. At most one answer per round per 10 seconds **per link (per member key)**, counted across that key's connections; a member needs one.
 
 ### 7.11 `factory_funded` (81), host → member
 
@@ -866,7 +878,7 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 17. A member restarts in every lobby state and reconnects with the same derived key: it finds its seat, and receiving every lobby message again changes nothing.
 
 **Lobby, hostile**
-18. Terms signed by a key other than the pinned one; scope not equal to the outer digest; chain not signet; current value outside its range: each refused, nothing saved.
+18. Terms signed by a key other than the pinned one; scope not equal to the outer digest; chain not the member's own network; current value outside its range: each refused, nothing saved.
 19. Two different current records with the same version: the member leaves with both as evidence.
 20. A new version after the first ready check: the member leaves with evidence.
 21. `ready_check` with values other than the latest accepted: the member fetches terms and does not answer with the unchecked values.
@@ -916,7 +928,7 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 
 1. Closed: **feature bit.** The factory messages need none; the adapter (section 10) uses bLIP-56's bit 271. Discovery uses one bit of our own, `factory_capable` (candidate 448/449, sent odd 449), set in `init` by every build that includes discovery (section 2; `discovery.md` section 3, rule 1); a build without discovery sets no bit. There is no separate hosting bit.
 2. **Custom type collisions** with unregistered experiments: check the list BOLT 1 points to, and consider registering 52791 in bLIP 2.
-3. **Member key derivation path** per lobby (contribution key, factory key): belongs in the wallet specification. Its inputs are settled: seed, restore epoch (31 bits, a hardened BIP 32 index) and key index (section 2).
+3. **Member key derivation path**: proposed in section 2 (`docs/notes/contract-v2.md` section 13), owner to confirm; the wallet's functions and vectors follow. Its inputs were already settled: seed, restore epoch (31 bits, a hardened BIP 32 index) and key index.
 4. Closed: Slice 1 signs the tree only (`signing-round.md` section 15).
 5. Closed: `round_ack` and `round_status_request` match `signing-round.md` draft 4.
 6. **Evidence encoding** in `round_abort`, and parts from members once evidence exists.

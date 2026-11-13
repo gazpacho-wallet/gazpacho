@@ -37,4 +37,11 @@ typedef struct {
     size_t len;
 } gz_bytes_t;
 
+/* A transaction output: the transaction's identifier, in the byte order the
+ * chain hashes it (not reversed for display), and the output's index. */
+typedef struct {
+    uint8_t txid[32];
+    uint32_t vout;
+} gz_outpoint_t;
+
 #endif

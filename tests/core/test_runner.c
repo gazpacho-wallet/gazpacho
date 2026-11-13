@@ -50,7 +50,9 @@ static uint64_t action_id(const gz_action_t *a)
     case GZ_ACTION_SEND:         if (a->u.send.peer_id != bytes_id(a->u.send.bytes)) g_payloads_ok = 0;
                                  return a->u.send.peer_id;
     case GZ_ACTION_BROADCAST:    return bytes_id(a->u.broadcast.tx);
-    case GZ_ACTION_WATCH:        return bytes_id(a->u.watch.script);
+    case GZ_ACTION_WATCH_SCRIPT: return bytes_id(a->u.watch_script.script);
+    case GZ_ACTION_WATCH_TX:     return bytes_id((gz_bytes_t){a->u.watch_tx.txid, 8});
+    case GZ_ACTION_WATCH_OUTPOINT: return bytes_id((gz_bytes_t){a->u.watch_outpoint.outpoint.txid, 8});
     case GZ_ACTION_NOTIFY:       if (a->u.notify.code != (uint32_t)bytes_id(a->u.notify.bytes)) g_payloads_ok = 0;
                                  return bytes_id(a->u.notify.bytes);
     case GZ_ACTION_SET_TIMER:    return a->u.set_timer.timer_id;
@@ -182,7 +184,9 @@ static void add_kind(gz_action_kind_t kind, uint64_t id)
     switch (kind) {
     case GZ_ACTION_SEND:      a.u.send.peer_id = id; a.u.send.bytes = (gz_bytes_t){b, 8}; break;
     case GZ_ACTION_BROADCAST: a.u.broadcast.tx = (gz_bytes_t){b, 8}; break;
-    case GZ_ACTION_WATCH:     a.u.watch.script = (gz_bytes_t){b, 8}; break;
+    case GZ_ACTION_WATCH_SCRIPT:     a.u.watch_script.script = (gz_bytes_t){b, 8}; break;
+    case GZ_ACTION_WATCH_TX:  memcpy(a.u.watch_tx.txid, b, 8); a.u.watch_tx.depth = 1; break;
+    case GZ_ACTION_WATCH_OUTPOINT: memcpy(a.u.watch_outpoint.outpoint.txid, b, 8); a.u.watch_outpoint.depth = 1; break;
     case GZ_ACTION_NOTIFY:    a.u.notify.code = (uint32_t)id; a.u.notify.bytes = (gz_bytes_t){b, 8}; break;
     case GZ_ACTION_SET_TIMER: a.u.set_timer.timer_id = id; break;
     default:                  a.u.cancel_timer.timer_id = id; break;
@@ -193,7 +197,9 @@ static void add_kind(gz_action_kind_t kind, uint64_t id)
 static void add_send(uint64_t id)      { add_kind(GZ_ACTION_SEND, id); }
 static void add_notify(uint64_t id)    { add_kind(GZ_ACTION_NOTIFY, id); }
 static void add_broadcast(uint64_t id) { add_kind(GZ_ACTION_BROADCAST, id); }
-static void add_watch(uint64_t id)     { add_kind(GZ_ACTION_WATCH, id); }
+static void add_watch(uint64_t id)     { add_kind(GZ_ACTION_WATCH_SCRIPT, id); }
+static void add_watch_tx(uint64_t id)  { add_kind(GZ_ACTION_WATCH_TX, id); }
+static void add_watch_outpoint(uint64_t id) { add_kind(GZ_ACTION_WATCH_OUTPOINT, id); }
 static void add_timer(uint64_t id)     { add_kind(GZ_ACTION_SET_TIMER, id); }
 
 static gz_batch_id_t batch(uint64_t incarnation, uint64_t sequence)
@@ -392,13 +398,15 @@ static size_t scenario_random(driver_t *d, uint64_t seed, int confirm_everything
         uint64_t saves_in_list = 0;
         list_begin();
         for (uint32_t n = next_random(6); n > 0; n--) {
-            switch (next_random(8)) {
+            switch (next_random(10)) {
             case 0: case 1: add_save(next_id++); saves_in_list++; break;
             case 2: add_empty_save(); saves_in_list++; break;
             case 3: add_send(next_id++); break;
             case 4: add_notify(next_id++); break;
             case 5: add_broadcast(next_id++); break;
             case 6: add_watch(next_id++); break;
+            case 7: add_watch_tx(next_id++); break;
+            case 8: add_watch_outpoint(next_id++); break;
             default: add_timer(next_id++); break;
             }
         }
@@ -1061,7 +1069,7 @@ static size_t g_edge_len[3], g_edge_n;
 static void edge_execute(void *ctx, const gz_action_t *a)
 {
     (void)ctx;
-    const gz_bytes_t *b = a->kind == GZ_ACTION_SEND ? &a->u.send.bytes : a->kind == GZ_ACTION_WATCH ? &a->u.watch.script : NULL;
+    const gz_bytes_t *b = a->kind == GZ_ACTION_SEND ? &a->u.send.bytes : a->kind == GZ_ACTION_WATCH_SCRIPT ? &a->u.watch_script.script : NULL;
     if (!b || g_edge_n >= 3) return;
     memcpy(g_edge_seen[g_edge_n], b->data, b->len);
     g_edge_len[g_edge_n++] = b->len;
@@ -1080,8 +1088,8 @@ static void test_compaction_at_the_edge_of_the_block(void)
         if (guarded) block[BLOCK] = 0xa5;
         g_edge_n = 0;
         CHECK(gz_runner_init(&r, slots, 4, block, BLOCK, INCARNATION, edge_execute, NULL) == GZ_OK);
-        gz_action_t first = plain_send(eight, 8), second = plain_send(two, 2), watch = {.kind = GZ_ACTION_WATCH};
-        watch.u.watch.script = (gz_bytes_t){fourteen, sizeof fourteen};
+        gz_action_t first = plain_send(eight, 8), second = plain_send(two, 2), watch = {.kind = GZ_ACTION_WATCH_SCRIPT};
+        watch.u.watch_script.script = (gz_bytes_t){fourteen, sizeof fourteen};
         list_begin(); add_save(100);
         CHECK(gz_action_list_add(&l, &first) == GZ_OK);
         add_save(101);

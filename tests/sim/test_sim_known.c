@@ -11,14 +11,14 @@
 #include "sim_nodes.h"
 #include "../check.h"
 
-#define KNOWN_PING_NODE  0x679b6999143ba5ccull
-#define KNOWN_MULTI_NODE 0x830fff1c7f84544dull
+#define KNOWN_PING_NODE  0xb44e174c299838a5ull
+#define KNOWN_MULTI_NODE 0x2119f18990b4a27full
 
 static uint64_t run(int multi)
 {
     sim_config_t c;
     memset(&c, 0, sizeof c);
-    c.seed = 20261111; c.n_nodes = 5; c.confirm_depth = 3; c.allow_refusals = 1;
+    c.seed = 20261111; c.n_nodes = 5; c.allow_refusals = 1;
     c.drop_pm = 100; c.duplicate_pm = 100; c.delay_pm = 200; c.max_delay_steps = 6; c.reorder_pm = 200;
     c.save_delay_pm = 400; c.max_save_delay_steps = 4; c.save_never_pm = 5; c.save_fail_pm = 5;
     c.confirm_delay_pm = 300; c.max_confirm_delay_steps = 3;

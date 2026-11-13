@@ -10,7 +10,7 @@ Documents it maps (drafts as of 2026-11-12; the five Slice 1 specifications are 
 
 | Document | What it is |
 |---|---|
-| `transport.md` | The transport profile of BOLT 8 and BOLT 1. **On branch `transport` (pull request 10), not yet merged here.** It does not yet do `init`, ping or pong, which `messages.md` section 2 requires; until the two agree, `messages.md` section 2 is the profile |
+| `transport.md` | The transport profile of BOLT 8 and BOLT 1: the pinned host key, `init` with `networks` exactly signet, ping and pong keep-alive (15 s and 30 s), the factory envelope and splitting of `messages.md` sections 3 to 5, and admission limits for lobby hosts (draft 3, pull request 23) |
 | `messages.md` | The envelope, splitting, the bLIP-56 adapter, the lobby and signing-round messages |
 | `terms.md` | The signed host terms record: outer rules, ranges, current values, freeze |
 | `signing-round.md` | The multi-party MuSig2 signing round and proof of fault |
