@@ -58,15 +58,36 @@ typedef struct gz_http {
 } gz_http;
 
 /* What the libcurl transport sends as its User-Agent header on every
- * request. It names the software and nothing about the user or machine. */
-#define GZ_HTTP_USER_AGENT "gazpacho-chain/0.0.1"
+ * request: the current Tor Browser string (Firefox 140 ESR; bump it with
+ * each new ESR). It keeps the product name out of every request and says
+ * nothing about the user or machine. It does NOT disguise the client: the
+ * TLS fingerprint, header order and access pattern still show a server that
+ * this is not a browser, and can point to Gazpacho. */
+#define GZ_HTTP_USER_AGENT "Mozilla/5.0 (Windows NT 10.0; rv:140.0) Gecko/20100101 Firefox/140.0"
 
 typedef struct gz_http_curl_config {
   /* Optional. A file of certificate authorities to trust INSTEAD of the
    * system's, for a server the user runs with a private certificate.
    * NULL: the system's authorities. Copied. */
   const char *ca_file;
+  /* Optional. A SOCKS5 proxy that resolves names itself, written
+   * "socks5h://HOST:PORT" (Tor: "socks5h://127.0.0.1:9050"). Any other
+   * scheme, user information or a missing port is refused: the transport is
+   * not created. NULL or "": no proxy at all. Either way the proxy
+   * environment variables (http_proxy, https_proxy, ALL_PROXY, NO_PROXY and
+   * the like) are never used. Requests to this machine (localhost,
+   * 127.0.0.1, [::1]) bypass the proxy; a server elsewhere on the local
+   * network does not, and over Tor cannot be reached. Only "no
+   * authentication" is offered to the proxy (never GSSAPI). A proxy given by
+   * name is looked up by the system resolver; prefer an IP address. Copied. */
+  const char *proxy;
 } gz_http_curl_config;
+
+/* True if `proxy` is a proxy setting gz_http_curl_create accepts: NULL, "",
+ * or "socks5h://HOST:PORT" (one trailing '/' allowed). HOST is a name or
+ * IPv4 address of non-empty labels (letters, digits, '-', not starting with
+ * '-'), or an IPv6 address in brackets; PORT is 1 to 65535. */
+bool gz_http_proxy_valid(const char *proxy);
 
 /*
  * The libcurl transport (http_curl.c; built only when libcurl is found).
@@ -85,12 +106,14 @@ typedef struct gz_http_curl_config {
  * - The body is counted as it arrives and the transfer is stopped as soon as
  *   it passes the caller's cap.
  * - Compressed responses are not requested.
+ * - The proxy is set explicitly, from `cfg->proxy` only (socks5h or none);
+ *   the proxy environment variables are ignored.
  * - POSIX only: it uses clock_gettime and nanosleep. A Windows build needs
  *   another transport behind the same gz_http interface.
  *
  * `cfg` may be NULL for the defaults. On success *out is ready to use;
  * release it with gz_http_curl_destroy. Returns false if libcurl could not
- * be initialised.
+ * be initialised or the proxy setting is refused.
  */
 bool gz_http_curl_create(gz_http *out, const gz_http_curl_config *cfg);
 void gz_http_curl_destroy(gz_http *http);
