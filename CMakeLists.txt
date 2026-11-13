@@ -224,3 +224,5 @@ add_subdirectory(ports/chain)
 
 # --- trees from terms and the creation checks (core/tree) ---
 add_subdirectory(core/tree)
+# --- the gazpacho program (stream S11): executor, port adapters, executable ----
+add_subdirectory(program)
