@@ -18,7 +18,8 @@
  *   R5  The hard limit holds when the unsynced bound adds a mark (F2).
  *   R6  A guard batch kept across a kill reaches guard.gzg (F5).
  *   R7  2^63 refused (F6); a flush with no runner attached refuses and
- *       keeps the batches; a flush from on_confirmed confirms in order; a
+ *       keeps the batches; a flush from on_confirmed confirms in order and
+ *       never runs on a journal that failed meanwhile; a
  *       file system without hard links. */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
@@ -714,6 +715,39 @@ static void test_reentrant_flush(void)
     free(h);
 }
 
+/* The journal fails inside on_confirmed, after a new batch was appended and
+ * with a flush asked for: the deferred flush must not run on a failed
+ * journal (nothing written after the failure, nothing more confirmed). */
+static size_t re2_len;
+static int re2_calls;
+static void re2_confirmed(void *ctx, gz_batch_id_t id)
+{
+    h_on_confirmed(ctx, id);
+    if (re2_calls++) return;
+    h_step(re_h); /* appended, not yet durable */
+    gz_action_t bad = {.kind = GZ_ACTION_SAVE};
+    bad.u.save.batch = (gz_batch_id_t){re_h->inc, 99};
+    gz_journal_save(re_h->j, &bad); /* a wrong sequence: the journal fails */
+    re2_len = file_len(&re_h->fs, H_JOURNAL);
+    gz_journal_flush(re_h->j);
+}
+
+static void test_reentrant_failure(void)
+{
+    h_t *h = calloc(1, sizeof *h);
+    memfs_init(&h->fs);
+    re_h = h;
+    re2_calls = 0;
+    CHECK(h_open(h, NULL) == GZ_JOURNAL_OK);
+    gz_journal_attach(h->j, &h->runner, re2_confirmed, h);
+    h_step(h);
+    CHECK(gz_journal_flush(h->j) == GZ_JOURNAL_ERR_FAILED && gz_journal_failed(h->j));
+    CHECK(re2_calls == 1 && h->confirmed[0] && !h->confirmed[1] && file_len(&h->fs, H_JOURNAL) == re2_len);
+    h_close(h);
+    memfs_free(&h->fs);
+    free(h);
+}
+
 static void test_no_links(void)
 {
     memfs_t fs;
@@ -780,6 +814,7 @@ int main(int argc, char **argv)
                  {"first_starts", test_first_starts}, {"counter", test_counter},
                  {"hard_limit", test_hard_limit},   {"guard_kept", test_guard_kept},
                  {"no_runner", test_no_runner},     {"reentrant_flush", test_reentrant_flush},
+                 {"reentrant_failure", test_reentrant_failure},
                  {"no_links", test_no_links}};
     for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++)
         if (argc < 2 || strcmp(argv[1], parts[i].name) == 0) parts[i].fn();
