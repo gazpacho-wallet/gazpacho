@@ -26,6 +26,8 @@ FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp
 # Each name the release check looks for, and that the test build does have, so
 # that each half of the check can fail (review of PR 27, M5).
 IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
+TEST_STRINGS = (b"--test-pings", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at",
+                b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload")
 
 
 def symbols(path):
@@ -47,6 +49,18 @@ def main():
         check(len(rs) > 100 and not bad, "the release binary names no seeded source and no test code %s" % bad[:5])
         missing = [n for n in IN_TEST if not any(n in s for s in ts)]
         check(not missing, "the check would see them: the test build has each of %s (missing %s)" % (IN_TEST, missing))
+        # Review B of PR 27 (B4, B6): not even the names of the test options,
+        # their usage lines, the test timer's line, or a format that prints
+        # message bytes. Each is in the test build, so each half can fail.
+        with open(rel, "rb") as f:
+            relb = f.read()
+        with open(tst, "rb") as f:
+            tstb = f.read()
+        leaked = [n.decode() for n in TEST_STRINGS if n in relb]
+        check(not leaked, "the release binary holds no test option name, test usage line, test-timer line or "
+                          "payload format %s" % leaked)
+        unseen = [n.decode() for n in TEST_STRINGS if n not in tstb]
+        check(not unseen, "the check would see them: the test build has each (missing %s)" % unseen)
         code, out = run(rel, "--data-dir", os.path.join(work, "x"), "--role", "host", "--no-chain",
                         "--test-pings", "1")
         check(code == 2 and "only in the test build" in out and not os.path.exists(os.path.join(work, "x")),

@@ -79,14 +79,15 @@ static void fail(gzp_exec_t *ex, const char *why)
     }
 }
 
+#ifdef GZP_TEST_BUILD
 /* A timer of the test build's own (--test-timer-ms), kept in the same table
  * as the node's and fired by the same code, but logged instead of given to
  * the node: it shows that a timer due during a start fires after it, and that
- * a restart's old timers never fire. */
+ * a restart's old timers never fire. Test build only (review B of PR 27, B4):
+ * in the release build every timer id is the node's. */
 #define GZP_TEST_TIMER_BASE UINT64_C(0xffffffffffff0000) /* | the incarnation's low 16 bits */
 #define GZP_IS_TEST_TIMER(id) (((id) & UINT64_C(0xffffffffffff0000)) == GZP_TEST_TIMER_BASE)
 
-#ifdef GZP_TEST_BUILD
 static uint64_t be64(const uint8_t *p)
 {
     uint64_t v = 0;
@@ -140,6 +141,10 @@ static int timer_timeout(const gzp_exec_t *ex, uint64_t now)
 
 /* ---- the runner's executor callback ------------------------------------- */
 
+/* Output lines never carry message bytes in the release build (review B of
+ * PR 27, B6): from P4 on these would be engine messages. The test build
+ * prints the placeholder's payload, which its tests read. */
+#ifdef GZP_TEST_BUILD
 static void log_hex_payload(const char *what, uint64_t peer, const uint8_t *p, size_t n)
 {
     char hex[2 * 64 + 1];
@@ -147,6 +152,7 @@ static void log_hex_payload(const char *what, uint64_t peer, const uint8_t *p, s
     gzp_hex(p, n, hex);
     gzp_log("%s peer=%016llx payload=%s", what, (unsigned long long)peer, hex);
 }
+#endif
 
 static void do_save(gzp_exec_t *ex, const gz_action_t *a)
 {
@@ -154,6 +160,10 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
     if (ex->storage_broken) return; /* nothing more may be appended */
     if (ex->store.ops->append(ex->store.ctx, a->u.save.batch, a->u.save.records, a->u.save.n_records) != 0) {
         ex->storage_broken = 1;
+#ifndef GZP_TEST_BUILD
+        gzp_log("save-failed seq=%llu records=%zu", (unsigned long long)a->u.save.batch.sequence,
+                a->u.save.n_records);
+#else
         for (i = 0; i < a->u.save.n_records; i++) {
             const gz_record_t *r = &a->u.save.records[i];
             char hex[2 * 64 + 1];
@@ -163,6 +173,7 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
             gzp_hex(r->bytes.data + GZ_PING_RECORD_HEADER, pl > 64 ? 64 : pl, hex);
             gzp_log("save-failed seq=%llu ping-payload=%s", (unsigned long long)a->u.save.batch.sequence, hex);
         }
+#endif
         /* Allowed from inside the executor: nothing more of this list is
          * handed over (runner.h). */
         gz_runner_storage_failed(&ex->runner);
@@ -205,7 +216,11 @@ static void execute(void *ctx, const gz_action_t *a)
         int r;
         if (ex->starting && len >= GZ_PING_PREFIX_LEN) {
             ex->resent++;
+#ifdef GZP_TEST_BUILD
             log_hex_payload("start-resend", a->u.send.peer_id, data + GZ_PING_PREFIX_LEN, len - GZ_PING_PREFIX_LEN);
+#else
+            gzp_log("start-resend peer=%016llx len=%zu", (unsigned long long)a->u.send.peer_id, len);
+#endif
         }
 #ifdef GZP_TEST_BUILD
         if (ex->opt->test_oversize_send && (size_t)ex->opt->test_oversize_send > len) {
@@ -476,6 +491,7 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
                 (best < 0 || ex->timers[i].due_ms < ex->timers[best].due_ms))
                 best = i;
         if (best < 0 || ex->fatal) break;
+#ifdef GZP_TEST_BUILD
         if (GZP_IS_TEST_TIMER(ex->timers[best].id)) {
             /* The incarnation that set it is in its id: an old incarnation's
              * timer firing after a restart shows as such. */
@@ -485,6 +501,7 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
             timer_set(ex, id, (uint64_t)ex->opt->test_timer_ms);
             continue;
         }
+#endif
         memset(&ev, 0, sizeof ev);
         ev.kind = GZ_EVENT_TIMER_FIRED;
         ev.u.timer.timer_id = ex->timers[best].id;

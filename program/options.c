@@ -115,7 +115,9 @@ void gzp_usage(void)
         "  --check-chain                 check the chain server (read-only) and stop\n"
         "  --handshake-ms, --recv-ms, --send-ms, --ping-ms, --pong-ms MS   transport timers\n"
         "  --reconnect-ms MS             member: first reconnect delay, doubling to 60 s (default 1000)\n"
-        "  --max-per-address N           host: accepted connections per address (0: no cap)\n"
+        "  --max-per-address N           host: accepted connections per address (0: no cap)\n");
+#ifdef GZP_TEST_BUILD
+    fprintf(stderr,
         "tests only (gazpacho-test):\n"
         "  --test-pings N --test-ping-ms MS   send N placeholder pings to each peer\n"
         "  --test-crash-at-ping K        exit once the batch with the K-th ping record is durable\n"
@@ -128,7 +130,10 @@ void gzp_usage(void)
         "  --test-timer-ms MS            a test timer in the executor's table\n"
         "  --test-burst NxBYTES          send N messages of BYTES at each connection\n"
         "  --test-oversize-send BYTES    pad every node send (too big is fatal)\n"
-        "  --test-node-error-at K        treat the K-th delivered event as a node error\n");
+        "  --test-node-error-at K        treat the K-th delivered event as a node error\n"
+        "  --test-node-error-always      ... in every incarnation, not only the first\n"
+        "  --test-stop-at-restart        a SIGTERM to itself as an incarnation ends\n");
+#endif
 }
 
 static int num(const char *s, long min, long max, long *out)
@@ -190,12 +195,25 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
     for (i = 1; i < argc; i++) {
         const char *a = argv[i], *val = i + 1 < argc ? argv[i + 1] : NULL;
         int takes = 1, ok = 1;
+#ifndef GZP_TEST_BUILD
+        /* The release build has no test hooks (contract-v2.md, T12), and not
+         * even their names (review B of PR 27, B4): any --test-* is refused
+         * here, before it is looked at. */
+        if (!strncmp(a, "--test-", 7)) {
+            fprintf(stderr, "gazpacho: %s exists only in the test build (gazpacho-test)\n", a);
+            return GZP_EXIT_USAGE;
+        }
+#endif
         if (!strcmp(a, "--no-interface")) { o->no_interface = 1; takes = 0; }
         else if (!strcmp(a, "--no-chain")) { o->no_chain = 1; takes = 0; }
         else if (!strcmp(a, "--check-chain")) { o->check_chain = 1; takes = 0; }
+#ifdef GZP_TEST_BUILD
         else if (!strcmp(a, "--test-listen-during-start")) { o->test_listen_during_start = 1; takes = 0; }
         else if (!strcmp(a, "--test-cut-fail")) { o->test_cut_fail = 1; takes = 0; }
         else if (!strcmp(a, "--test-crash-after-counter")) { o->test_crash_after_counter = 1; takes = 0; }
+        else if (!strcmp(a, "--test-node-error-always")) { o->test_node_error_always = 1; takes = 0; }
+        else if (!strcmp(a, "--test-stop-at-restart")) { o->test_stop_at_restart = 1; takes = 0; }
+#endif
         else if (!val) ok = 0;
         else if (!strcmp(a, "--data-dir")) o->data_dir = val;
         else if (!strcmp(a, "--role")) {
@@ -225,6 +243,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--pong-ms")) { ok = num(val, 10, 600000, &v); o->pong_ms = (int)v; }
         else if (!strcmp(a, "--max-per-address")) { ok = num(val, 0, 1000, &v); o->max_per_address = (int)v; }
         else if (!strcmp(a, "--name")) o->name = val;
+#ifdef GZP_TEST_BUILD
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
         else if (!strcmp(a, "--test-crash-at-ping")) { ok = num(val, 1, 1000000, &v); o->test_crash_at_ping = (int)v; }
@@ -248,14 +267,8 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         }
         else if (!strcmp(a, "--test-oversize-send")) { ok = num(val, 1, 2000000, &v); o->test_oversize_send = (int)v; }
         else if (!strcmp(a, "--test-node-error-at")) { ok = num(val, 1, 1000000, &v); o->test_node_error_at = (int)v; }
-        else ok = 0;
-#ifndef GZP_TEST_BUILD
-        /* The release build has no test hooks (contract-v2.md, T12). */
-        if (ok && !strncmp(a, "--test-", 7)) {
-            fprintf(stderr, "gazpacho: %s exists only in the test build (gazpacho-test)\n", a);
-            return GZP_EXIT_USAGE;
-        }
 #endif
+        else ok = 0;
         if (!ok) {
             fprintf(stderr, "gazpacho: bad argument: %s%s%s\n", a, takes && val ? " " : "", takes && val ? val : "");
             gzp_usage();
