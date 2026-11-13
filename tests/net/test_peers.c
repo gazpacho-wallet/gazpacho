@@ -397,19 +397,18 @@ static void hostile(int how, gz_peer_why_t want, const char *text, int ping, int
         e = expect(0, GZ_PEER_EV_CONNECTED, 5000);
         CHECK(e && memcmp(e->node_id, CHILD_PUB, 33) == 0);
         if (how == CH_NO_READ && e) {
-            /* Fill the queue until it is full; the child never reads, so the
-             * send deadline passes. */
+            /* Three 1 MiB messages fit in the 4 MiB queue; the child never
+             * reads, so the send deadline passes. */
             gz_peers_err_t pe = GZ_PEERS_OK;
             int i;
-            for (i = 0; i < 64; i++) {
+            for (i = 0; i < 3; i++) {
                 pe = gz_peers_send(S[0].p, e->conn, 68, SCOPE, big, GZ_ENV_MAX_WHOLE);
                 if (pe != GZ_PEERS_OK) break;
-                pump(5);
             }
+            CHECK(pe == GZ_PEERS_OK || pe == GZ_PEERS_ERR_NO_CONN);
             /* Under valgrind the send deadline may pass before the queue is
              * full; the queue limit itself is tested in test_basic. */
-            CHECK(pe == GZ_PEERS_ERR_FULL || pe == GZ_PEERS_ERR_NO_CONN);
-            if (pe == GZ_PEERS_ERR_FULL) want = GZ_PEER_WHY_SEND_REFUSED; /* the refusal closes it */
+
         }
     }
     e = expect(0, GZ_PEER_EV_CLOSED, 8000);

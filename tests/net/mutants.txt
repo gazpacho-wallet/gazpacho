@@ -228,12 +228,12 @@ peers-error-kept	ports/net/peers.c	fail(p, c, GZ_PEER_WHY_PEER_ERROR, 0, text);	
 peers-warning-dropped	ports/net/peers.c	set_text(push_event(p, c, GZ_PEER_EV_WARNING)->ev.text, text);\n        return;	return;
 peers-short-message-ok	ports/net/peers.c	if (len < 2) { refuse(p, c, GZ_PEER_WHY_PROTOCOL, "message shorter than its type"); return; }	if (len < 2) return;
 peers-member-check-skipped	ports/net/peers.c	if (!p->cfg.is_member(c->node_id, p->cfg.member_ctx)) {	if (0) {
-peers-member-sends-parts	ports/net/peers.c	if (c->outbound || !(count = gz_env_part_count(records_len))) return GZ_PEERS_ERR_TOO_BIG;	if (!(count = gz_env_part_count(records_len))) return GZ_PEERS_ERR_TOO_BIG;
+peers-member-sends-parts	ports/net/peers.c	if (c->outbound || !(count = gz_env_part_count(records_len))) return send_refused(p, c, GZ_PEERS_ERR_TOO_BIG);	if (!(count = gz_env_part_count(records_len))) return send_refused(p, c, GZ_PEERS_ERR_TOO_BIG);
 peers-no-reassembly	ports/net/peers.c	v = gz_env_reasm_add(&c->reasm, &env, at, p->cfg.secp, &whole, &reason);	v = GZ_ENV_HELD;
 peers-side-swapped	ports/net/peers.c	gz_env_side_t at = c->outbound ? GZ_ENV_AT_MEMBER : GZ_ENV_AT_HOST;	gz_env_side_t at = c->outbound ? GZ_ENV_AT_HOST : GZ_ENV_AT_MEMBER;
 peers-max-conns-off	ports/net/peers.c	if (p->n_conns >= p->cap || !prepare_socket(fd)	if (!prepare_socket(fd)
 peers-send-before-init	ports/net/peers.c	if (!c->init_got) return GZ_PEERS_ERR_NOT_READY;	
-peers-queue-cap-off	ports/net/peers.c	if (queued(c) + records_len + count * (2 + GZ_ENV_HDR_LEN + 100 + 34) > p->cfg.max_queue) return GZ_PEERS_ERR_FULL;	
+peers-queue-cap-off	ports/net/peers.c	if (queued(c) + records_len + count * (2 + GZ_ENV_HDR_LEN + 100 + 34) > p->cfg.max_queue)\n        return send_refused(p, c, GZ_PEERS_ERR_FULL);	
 peers-refuse-no-warning	ports/net/peers.c	if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(GZ_LN_WARNING, reason, p->out, sizeof p->out, &n))	if (0)
 peers-refuse-no-flush	ports/net/peers.c	c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);	c->close_by = now_ms();
 peers-pong-queue-cap-off	ports/net/peers.c	if (queued(c) + v + 4 > p->cfg.max_queue) {	if (0) {
