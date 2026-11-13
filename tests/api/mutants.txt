@@ -25,7 +25,7 @@ peer-uid-not-compared	ports/api/peer.c	    return (int64_t)uid == srv->expect_ui
 # (uid_t)-1, which is never the program's own account (geteuid), so the uid comparison refuses it the same.
 # peer-not-found-served	ports/api/peer.c	if (r != FOUND) return 0;	if (r == UNAVAILABLE) return 0;
 peercred-not-compared	ports/api/peer.c	return (int64_t)cr.uid == srv->expect_uid;	return 1;
-proc-ports-swapped	ports/api/peer.c	if (lp == pport && rp == lport &&	if (lp == lport && rp == pport &&
+proc-ports-swapped	ports/api/peer.c	ph, pport, lh, lport);	lh, lport, ph, pport);
 session-host-unbound	ports/api/session.c	if (strcmp(match->host, host) != 0) return NULL;	
 idle-sign-out-off	ports/api/session.c	if (now - s->last_input >= srv->lim.idle_sign_out_ms) return 1;	
 events-keep-session-awake	ports/api/route.c	if (strcmp(r->user, "1") == 0) s->last_input = now;	s->last_input = now;
@@ -33,12 +33,12 @@ ninth-ends-newest	ports/api/session.c	if (!oldest || srv->sess[i].last_used < ol
 fresh-window-ignored	ports/api/route.c	if ((r->route->flags & F_FRESH) && !r->fresh && !r->bearer) {	if (0) {
 fresh-forever	ports/api/session.c	return s && gz_now_ms(srv) < s->fresh_until;	return s != NULL;
 resume-without-fresh	ports/api/route.c	if (!r->fresh && !r->bearer) { gz_respond_error(srv, c, 403, "fresh_sign_in_needed", NULL, NULL); break; }	
-attempts-gate-off	ports/api/route.c	        gz_attempts_gate(srv, now_s, &retry)) {	        0) {
-wrong-not-counted	ports/api/route.c	        gz_attempts_wrong(srv, now_s);	
+attempts-gate-off	ports/api/route.c	        gz_attempts_gate(srv, now_ms, &retry)) {	        0) {
+wrong-not-counted	ports/api/route.c	        gz_attempts_wrong(srv, now_ms);	
 delay-never-doubles	ports/api/session.c	delay = k >= 10 ? 900 : ((int64_t)1 << k);	delay = 1;
-missing-file-not-strict	ports/api/session.c	srv->att_blocked_until = now + 900;	srv->att_blocked_until = 0;	2
+missing-file-not-strict	ports/api/session.c	srv->att_blocked_until_ms = gz_mono_ms(srv) + 900 * 1000;	srv->att_blocked_until_ms = 0;
 attempts-checksum-unchecked	ports/api/session.c	if (!gz_ct_eq(h, in + 69, 16)) return -1;	
-right-does-not-reset	ports/api/session.c	    srv->att_wrong = 0;\n    srv->att_blocked_until = 0;\n    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file	    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file
+right-does-not-reset	ports/api/session.c	    srv->att_wrong = 0;\n    srv->att_blocked_until_ms = 0;\n    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file	    attempts_save(srv);\n}\n\nvoid gz_attempts_fresh_file
 slot-unbounded	ports/api/derive.c	} else if (!srv->slot_queued) {	} else if (1) {
 # Request ids are the engine's now (contract-v2 11): the server hands over the id, method, path and digest.
 digest-not-handed-over	ports/api/route.c	        call.digest = r->digest;	        call.digest = NULL;
@@ -90,7 +90,7 @@ normal-session-while-locked	ports/api/route.c	if (s->kind == SK_NORMAL && ws != 
 bearer-unchecked	ports/api/route.c	if (!gz_socket_token_check(srv, r->auth)) return answer(srv, c, 401, "not_signed_in", NULL);	if (0) return 1;
 bearer-may-create	ports/api/route.c	if (r->bearer) { gz_respond_error(srv, c, 403, "not_setup_session", NULL, NULL); break; }	
 confirm-pass-length-only	ports/api/route.c	if (p1->len != p2->len || !gz_ct_eq(p1->s, p2->s, p1->len)) {	if (p1->len != p2->len) {
-check-id-any-session	ports/api/route.c	if (!same || srv->check_session_no != (r->bearer ? 0 : r->sess_no)) {	if (!same) {
+check-id-any-session	ports/api/route.c	if (!same || srv->check_busy || srv->check_session_no != (r->bearer ? 0 : r->sess_no)) {	if (!same) {
 checks-left-zero-ok	ports/api/route.c	words_checks_left(srv->bectx, now_s, &retry) <= 0) {	words_checks_left(srv->bectx, now_s, &retry) < 0) {
 empty-passphrase-derived	ports/api/route.c	if (plen == 0 || plen > 4096)	if (plen > 4096)
 revoke-keeps-socket-token	ports/api/route.c	if (srv->have_socket_token) gz_socket_token_make(srv);   /* rotated (4.9) */	
@@ -117,13 +117,35 @@ socket-mode-open	ports/api/server.c	chmod(srv->sock_path, 0600);	chmod(srv->sock
 # Review A F1, F2, F5 and contract-v2 P5: the new code.
 peer-time-wait-served	ports/api/peer.c	if (m->idiag_state == TCP_STATE_TIME_WAIT || m->idiag_state == TCP_STATE_SYN_RECV || m->idiag_inode == 0)	if (0)
 proc-time-wait-served	ports/api/peer.c	if (st == TCP_STATE_TIME_WAIT || st == TCP_STATE_SYN_RECV || inode == 0) break;	
-queued-ungated	ports/api/derive.c	if (gz_job_gated(q) && srv->att_loaded && gz_attempts_gate(srv, gz_now_ms(srv) / 1000, &retry)) {	if (0) {
+queued-ungated	ports/api/derive.c	if (gz_job_gated(q) && srv->att_loaded && gz_attempts_gate(srv, gz_mono_ms(srv), &retry)) {	if (0) {
 old-generation-installed	ports/api/route.c	if (pp->generation != gz_generation(srv)) {	if (0) {
-old-generation-uncounted	ports/api/route.c	if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, now_s);	
+old-generation-uncounted	ports/api/route.c	if (pp->result == GZ_API_PPR_WRONG) count_result(srv, pp, mono);		1
 held-no-deadline	ports/api/server.c	if (c->state == CS_BUSY && c->held && now >= c->deadline) {	if (0) {
 node-stopped-ignored	ports/api/route.c	if (c->held && c->state == CS_BUSY) gz_held_answer(srv, c, 503, NULL, "node_stopped", NULL, params);	if (0) gz_held_answer(srv, c, 503, NULL, "node_stopped", NULL, params);
 unsaved-not-refused	ports/api/session.c	if (srv->att_unsaved) { *retry_after = -1; return 1; }	if (0) { *retry_after = -1; return 1; }
-loaded-delay-uncapped	ports/api/session.c	if (srv->att_blocked_until > now + 900) srv->att_blocked_until = now + 900;	
+loaded-delay-uncapped	ports/api/session.c	srv->att_blocked_until_ms = from_wall_s(srv, until, 900 * 1000);	srv->att_blocked_until_ms = from_wall_s(srv, until, INT64_MAX / 4);
 token-folder-refusal-unreported	ports/api/session.c	        srv->token_dir_refused = 1;\n	\n
 fault-as-failure	ports/api/route.c	if (pp->result == GZ_API_PPR_DONE_WITH_FAULT) {	if (0) {
 rebuilding-not-shown	ports/api/status.c	if (f->wallet == GZ_API_STW_NODE_STOPPED && !have_stopped) {	if (0) {
+# The fixes of review B (B1-B5) and their own faults
+# Equivalent with the fake, so not run: each of the two lock bumps alone is covered by the other.
+# The fake never holds a lock, so gz_api_locked always follows the handler's bump at once; the
+# handler's own bump matters for a held lock (S11's engine). Removing both is the first mutant's
+# fault with the second's applied; the B1 test kills that (checked by hand, not listed here).
+# fix-lock-no-generation	ports/api/route.c	        gz_api_server_new_generation(srv);\n        call_backend(srv, c, 0, &answered);	        call_backend(srv, c, 0, &answered);
+# fix-locked-no-generation	ports/api/route.c	    gz_api_server_new_generation(srv);                   /* jobs in flight are discarded (contract-v2 4, review B1) */\n	
+fix-ended-session-answered	ports/api/route.c	if ((j->purpose != JP_SIGN_IN && j->sess_slot >= 0 && !s) || (j->bearer && j->token_gen != srv->token_gen)) {	if (0) {
+fix-rotated-token-answered	ports/api/route.c	 || (j->bearer && j->token_gen != srv->token_gen)	
+fix-check-not-busy	ports/api/route.c	if (!same || srv->check_busy || 	if (!same || 
+fix-delay-whole-seconds	ports/api/session.c	srv->att_blocked_until_ms = now_ms + delay * 1000;	srv->att_blocked_until_ms = (now_ms / 1000 + delay) * 1000;
+fix-retry-rounded-down	ports/api/session.c	*retry_after = (srv->att_blocked_until_ms - now_ms + 999) / 1000;	*retry_after = (srv->att_blocked_until_ms - now_ms) / 1000;
+fix-file-delay-rounded-down	ports/api/session.c	return wall_ms > 0 ? (uint64_t)((wall_ms + 999) / 1000) : 0;	return wall_ms > 0 ? (uint64_t)(wall_ms / 1000) : 0;
+fix-shutdown-answers-unsent	ports/api/server.c	        send_left(srv->conns);\n	
+fix-run-keeps-stop	ports/api/server.c	while (!atomic_exchange_explicit(&srv->stop, 0, memory_order_relaxed))	while (!atomic_load_explicit(&srv->stop, memory_order_relaxed))
+# Equivalent, so not run: the state check after a generation check. A lock (the only way the
+# wallet leaves the unlocked state while the server runs) starts a new generation first, so
+# a job it would refuse is already refused as of an older generation; it stays as a second guard.
+# fix-locked-since-check-answered	ports/api/route.c	if (!j->was_locked && wallet_state(srv) != GZ_API_WALLET_UNLOCKED) {	if (0) {
+# Not run: the /proc bound (F5.4) needs a table of over 32 MiB to show (the kernel's TIME-WAIT
+# limit keeps real ones near 10 MB); the netlink lookup answers first wherever it exists.
+# fix-proc-unbounded	ports/api/peer.c	while (total < PROC_MAX_BYTES) {	for (;;) {
