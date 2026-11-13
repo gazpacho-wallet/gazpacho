@@ -199,16 +199,21 @@ jobs:
       - name: Every compiled test under memcheck
         # The 1,000-seed simulator run takes over eight minutes under valgrind;
         # 200 seeds of the same length here, all 1,000 in every other build.
+        # storage_vector_e2r (Argon2id at 256 MiB) is E2's code at more memory.
         # The signing sections run their "tiny" sets (every path, fewer seeds)
         # and the engine fuzzer a short run: the full sets take hours here.
         run: >-
           python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0"
+          --exclude '^storage_vector_e2r$'
           --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
           --args "signing_golden=golden tiny" --args "signing_model=model tiny"
           --args "signing_faults=faults tiny" --args "signing_honest=honest tiny"
           --args "signing_t1=t1 tiny" --args "signing_crashes=crashes tiny"
           --args "signing_restores=restores tiny" --args "signing_fuzz=1000 2"
           --args "signing_node=tiny" --args "signing_fuzz_replay=1000"
+      - name: Storage constant-time check (secrets marked undefined, under memcheck)
+        # Registered only where valgrind and its headers are installed: here.
+        run: ctest --test-dir build -R '^storage_ctime$' --output-on-failure --no-tests=error
 
   fuzz:
     name: libFuzzer, 60 s per target
