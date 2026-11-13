@@ -227,11 +227,41 @@ static gz_sign_round_t *find(gz_sign_t *e, const uint8_t id[32])
     return NULL;
 }
 
+/* The refused identifiers: the newest exactly, all of them in the filter. */
+static void filter_positions(const gz_sign_t *e, const uint8_t id[32], uint32_t pos[GZ_SIGN_KNOWN_FILTER_K])
+{
+    uint8_t h[32];
+    (void)e;
+    tagged("gazpacho/known-filter", id, 32, NULL, 0, h);
+    for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++)
+        pos[k] = ((uint32_t)h[3 * k] | (uint32_t)h[3 * k + 1] << 8 | (uint32_t)h[3 * k + 2] << 16) & ((1u << GZ_SIGN_KNOWN_FILTER_BITS) - 1u);
+}
+
 static int is_known(const gz_sign_t *e, const uint8_t id[32])
 {
-    for (size_t i = 0; i < e->n_known; i++)
+    uint32_t pos[GZ_SIGN_KNOWN_FILTER_K];
+    size_t n = e->n_known < GZ_SIGN_MAX_KNOWN ? e->n_known : GZ_SIGN_MAX_KNOWN;
+    for (size_t i = 0; i < n; i++)
         if (same(e->known[i], id, 32)) return 1;
-    return 0;
+    filter_positions(e, id, pos);
+    for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++)                         /* RULE:KNOWN_FILTER */
+        if (!(e->known_filter[pos[k] >> 3] >> (pos[k] & 7) & 1u)) return 0;
+    return 1;
+}
+
+static void add_known(gz_sign_t *e, const uint8_t id[32])
+{
+    uint32_t pos[GZ_SIGN_KNOWN_FILTER_K];
+    memcpy(e->known[e->n_known % GZ_SIGN_MAX_KNOWN], id, 32);
+    e->n_known++;
+    filter_positions(e, id, pos);
+    for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++) e->known_filter[pos[k] >> 3] |= (uint8_t)(1u << (pos[k] & 7));
+}
+
+/* A round that is over for this party: nothing more will be sent or asked for it. */
+static int settled(const gz_sign_round_t *r)
+{
+    return r->state == GZ_SIGN_ROUND_ABORTED || r->state == GZ_SIGN_ROUND_FAILED || r->state == GZ_SIGN_ROUND_DONE;
 }
 
 static void wipe_secrets(gz_sign_round_t *r)
@@ -240,18 +270,21 @@ static void wipe_secrets(gz_sign_round_t *r)
     memset(r->secnonce_serial, 0, sizeof r->secnonce_serial);
 }
 
-/* A slot for a new round: a free one, or the oldest that is not running,
- * whose identifier then moves to the refused list. NULL if none (refuse). */
+/* A slot for a new round: a free one, or the oldest settled one, or else the
+ * oldest that is not running (review A, F3: a Complete or Unfinished round
+ * goes last), whose identifier then moves to the refused set. NULL if every
+ * slot runs a round (refuse). */
 static gz_sign_round_t *take_slot(gz_sign_t *e, int replaying)
 {
     gz_sign_round_t *best = NULL;
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
         gz_sign_round_t *r = &e->rounds[i];
         if (r->state == GZ_SIGN_ROUND_FREE) return r;
-        if ((replaying || r->state != GZ_SIGN_ROUND_ACTIVE) && (!best || r->seq < best->seq)) best = r;
+        if (!replaying && r->state == GZ_SIGN_ROUND_ACTIVE) continue;
+        if (!best || settled(r) > settled(best) || (settled(r) == settled(best) && r->seq < best->seq)) best = r;   /* RULE:EVICT_SETTLED_FIRST */
     }
-    if (!best || e->n_known == GZ_SIGN_MAX_KNOWN) return NULL;
-    memcpy(e->known[e->n_known++], best->id, 32);
+    if (!best) return NULL;
+    add_known(e, best->id);
     wipe_secrets(best);
     memset(best, 0, sizeof *best);
     return best;
@@ -979,6 +1012,32 @@ static void host_tick(gz_sign_t *e, gz_sign_round_t *r, emit_t *em)
 
 /* ---- start ---- */
 
+/* Drop every round and refused identifier held in memory (a start rebuilds
+ * them from storage). The keys, the configuration and the counters that keep
+ * session ids and host random values unique in this incarnation stay. */
+static void reset_rounds(gz_sign_t *e)
+{
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) wipe_secrets(&e->rounds[i]);
+    wipe_secrets(&e->pending);
+    memset(e->rounds, 0, sizeof e->rounds);
+    memset(&e->pending, 0, sizeof e->pending);
+    memset(e->known, 0, sizeof e->known);
+    memset(e->known_filter, 0, sizeof e->known_filter);
+    e->n_known = 0;
+    e->attempts = 0;
+    e->next_seq = 0;
+}
+
+/* After an error the engine's state may be ahead of what was handed out:
+ * refuse everything until a start (review A, F1). */
+static gz_status_t fail_engine(gz_sign_t *e, gz_status_t st)
+{
+    e->failed = 1;                                                            /* RULE:FAIL_ON_ERROR */
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) wipe_secrets(&e->rounds[i]);
+    wipe_secrets(&e->pending);
+    return st;
+}
+
 static gz_sign_round_t *start_round(gz_sign_t *e, const uint8_t *proposal, size_t len, const uint8_t *id)
 {
     gz_sign_msg_t m;
@@ -1061,6 +1120,8 @@ gz_status_t gz_sign_start(gz_sign_t *e, const gz_storage_reader_t *storage, gz_a
     size_t count = out->count, used = out->used;
     emit_t em = {out, GZ_OK};
     gz_stored_batch_t batch;
+    reset_rounds(e);
+    e->failed = 1;                                  /* until this start has succeeded */
     storage->rewind(storage->ctx);
     while (storage->next(storage->ctx, &batch))
         for (size_t i = 0; i < batch.n_records; i++) {
@@ -1091,6 +1152,7 @@ gz_status_t gz_sign_start(gz_sign_t *e, const gz_storage_reader_t *storage, gz_a
     if (unfinished) host_fail(e, unfinished, 0, GZ_SIGN_WHY_HOST_RESTART, &em);   /* then the next attempt (H13) */
     emit_timer(e, &em);
     if (em.st != GZ_OK) { out->count = count; out->used = used; return em.st; }
+    e->failed = 0;
     *more = 0;
     return GZ_OK;
 }
@@ -1113,12 +1175,14 @@ gz_status_t gz_sign_init(gz_sign_t *e, const gz_sign_config_t *cfg, const gz_por
     secp256k1_xonly_pubkey x;
     if (!secp256k1_keypair_xonly_pub(cfg->ctx, &x, NULL, &e->contribution_kp) ||
         !secp256k1_xonly_pubkey_serialize(cfg->ctx, e->contribution_x, &x)) { gz_sign_wipe(e); return GZ_ERR_ARGUMENT; }
+    e->failed = 0;                                  /* fresh: nothing to rebuild yet */
     return GZ_OK;
 }
 
 gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *ev, gz_action_list_t *out)
 {
     if (!e || !ev || !out) return GZ_ERR_ARGUMENT;
+    if (e->failed) return GZ_ERR_FAILED;
     size_t count = out->count, used = out->used;
     emit_t em = {out, GZ_OK};
     gz_sign_msg_t m;
@@ -1145,33 +1209,21 @@ gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *ev, gz_action_list_t 
             if (e->rounds[i].state != GZ_SIGN_ROUND_FREE && e->rounds[i].def.participants[0].peer == ev->u.peer.peer_id)
                 member_resend(e, &e->rounds[i], &em);
     }
-    if (em.st != GZ_OK) { out->count = count; out->used = used; }
-    return em.st;
+    if (em.st != GZ_OK) { out->count = count; out->used = used; return fail_engine(e, em.st); }
+    return GZ_OK;
 }
 
 gz_status_t gz_sign_begin(gz_sign_t *e, const uint8_t *params, size_t len, gz_action_list_t *out)
 {
     if (!e || !out || (!params && len) || !e->cfg.host) return GZ_ERR_ARGUMENT;
+    if (e->failed) return GZ_ERR_FAILED;
     size_t count = out->count, used = out->used;
     emit_t em = {out, GZ_OK};
     gz_status_t st = host_begin(e, params, len, &em);
-    if (st == GZ_OK) st = em.st;
-    if (st != GZ_OK) { out->count = count; out->used = used; }
+    /* A refusal before anything changed is GZ_ERR_ARGUMENT; an emit failure fails the engine. */
+    if (st == GZ_OK && em.st != GZ_OK) { out->count = count; out->used = used; return fail_engine(e, em.st); }
+    if (st != GZ_OK) { out->count = count; out->used = used; if (em.st != GZ_OK || st == GZ_ERR_NO_SPACE) return fail_engine(e, st); }
     return st;
-}
-
-size_t gz_sign_inspect_secrets(const gz_sign_t *e, uint8_t *out, size_t cap)
-{
-    size_t n = 0;
-    for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++)
-        for (int i = 0; i < GZ_SIGN_MAX_ITEMS; i++) {
-            if (!e->rounds[k].secnonce_serial[i]) continue;
-            if (cap - n < 140) return 0;
-            for (int b = 0; b < 8; b++) out[n + (size_t)b] = (uint8_t)(e->rounds[k].secnonce_serial[i] >> (8 * b));
-            memcpy(out + n + 8, e->rounds[k].secnonce[i].data, 132);
-            n += 140;
-        }
-    return n;
 }
 
 const gz_sign_round_t *gz_sign_latest(const gz_sign_t *e)
@@ -1185,6 +1237,7 @@ const gz_sign_round_t *gz_sign_latest(const gz_sign_t *e)
 void gz_sign_wipe(gz_sign_t *e)
 {
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) wipe_secrets(&e->rounds[i]);
+    wipe_secrets(&e->pending);
     wipe(e->cfg.factory_secret, 32);
     wipe(e->cfg.contribution_secret, 32);
     wipe(&e->factory_kp, sizeof e->factory_kp);

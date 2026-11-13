@@ -164,7 +164,7 @@ target_link_libraries(test_signing PRIVATE gazpacho_signing gazpacho_sim gazpach
 target_compile_options(test_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
 # One CTest test per section, so they run in parallel and each stays inside
 # CI's per-test limit.
-foreach(section blocks decoders golden model faults honest t1 crashes restores)
+foreach(section blocks decoders golden model faults honest t1 crashes restores errors)
   add_test(NAME signing_${section} COMMAND test_signing ${section})
 endforeach()
 # fuzz_signing drives whole engines from generated journals and messages with
@@ -176,6 +176,10 @@ if(NOT GZ_LIBFUZZER)
   target_compile_options(fuzz_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
   add_test(NAME signing_fuzz COMMAND fuzz_signing 20000 20)
 endif()
+# No call in the library hands out a secret nonce (review A, F5): the
+# simulator's inspection reads the engine's structure in the test world.
+add_test(NAME signing_no_secret_export
+  COMMAND sh -c "nm -g \"$1\" > /dev/null && ! nm -g \"$1\" | grep -i -e inspect -e secnonce" sh $<TARGET_FILE:gazpacho_signing>)
 add_test(NAME signing_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
           --allow ${CMAKE_CURRENT_SOURCE_DIR}/tools/signing-allowed-calls.txt

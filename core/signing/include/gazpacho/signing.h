@@ -55,7 +55,17 @@
 #define GZ_SIGN_MAX_TX           720     /* bytes of one unsigned transaction: core/tree's GZ_TREE_MAX_TX */
 #define GZ_SIGN_MAX_PARAMS       8192    /* bytes of a proposal's parameters (about 290 + 194 per participant) */
 #define GZ_SIGN_MAX_ROUNDS       4       /* rounds a member keeps in full */
-#define GZ_SIGN_MAX_KNOWN        256     /* round identifiers remembered as refused */
+#define GZ_SIGN_MAX_KNOWN        256     /* the newest refused identifiers, kept exactly (a ring) */
+/* Every refused identifier, however many: a Bloom filter of 2^20 bits with
+ * 10 positions per identifier. It has no false
+ * negatives, so a refused identifier is never forgotten; a false positive only
+ * refuses a new round (abort reason 3). With 10,000 identifiers the chance
+ * of one is below 10^-10, with 100,000 about 1%. The positions are public:
+ * a host that grinds identifiers to hit one only gets its own round refused.
+ * Fixed memory, no cap: the
+ * set never makes a start fail (review A, F2). */
+#define GZ_SIGN_KNOWN_FILTER_BITS 20
+#define GZ_SIGN_KNOWN_FILTER_K    10
 #define GZ_SIGN_MAX_MSG          (40 + GZ_SIGN_MAX_ITEMS * (5 + GZ_SIGN_MAX_SIGNERS * 130) + 64)
 
 /* The one signing mode: key path, BIP 341 tweak of the ordered aggregate key
@@ -200,8 +210,14 @@ typedef struct {
     uint8_t contribution_x[32];
     uint32_t attempts, next_seq;
     gz_sign_round_t rounds[GZ_SIGN_MAX_ROUNDS];
-    uint8_t known[GZ_SIGN_MAX_KNOWN][32];
-    size_t n_known;
+    uint8_t known[GZ_SIGN_MAX_KNOWN][32];   /* the newest, at n % GZ_SIGN_MAX_KNOWN */
+    size_t n_known;                         /* refused identifiers in all */
+    uint8_t known_filter[1u << (GZ_SIGN_KNOWN_FILTER_BITS - 3)];
+    /* Set when a call failed after the engine had changed its state (its
+     * actions were not handed out): every call is then refused with
+     * GZ_ERR_FAILED until gz_sign_start rebuilds the engine from storage
+     * (review A, F1; node.h: on any error the node is as it was). */
+    int failed;
     uint64_t counters[8];           /* see GZ_SIGN_COUNT_* */
     uint8_t scratch[GZ_SIGN_MAX_MSG];
     gz_sign_def_t scratch_def;
@@ -224,7 +240,10 @@ enum {
 gz_status_t gz_sign_init(gz_sign_t *e, const gz_sign_config_t *cfg, const gz_ports_t *ports, uint64_t incarnation);
 
 /* Start or restart from storage, in one step (`*more` is set to 0). Same
- * contract as gz_node_start. A member answers per item (S2): a round whose
+ * contract as gz_node_start. Every round held in memory is dropped first and
+ * rebuilt from storage, so it also recovers an engine that failed
+ * (GZ_ERR_FAILED); the counters that make session ids and host random values
+ * unique within the incarnation are kept. A member answers per item (S2): a round whose
  * nonce was sent and whose partial signature was not becomes Aborted (no
  * partial signature ever sent) or Unfinished, and is answered with an abort;
  * saved partial signatures are resent (S3). A host fails an unfinished
@@ -232,17 +251,14 @@ gz_status_t gz_sign_init(gz_sign_t *e, const gz_sign_config_t *cfg, const gz_por
 gz_status_t gz_sign_start(gz_sign_t *e, const gz_storage_reader_t *storage, gz_action_list_t *out, int *more);
 
 /* Handle one event; same contract as gz_node_handle. Messages that do not
- * parse, or that this party should not get, are counted and ignored. */
+ * parse, or that this party should not get, are counted and ignored. Any
+ * error leaves the action list as it was and the engine failed: this and
+ * every later call return GZ_ERR_FAILED until gz_sign_start. */
 gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *event, gz_action_list_t *out);
 
 /* Host: begin a round with these parameters. GZ_ERR_ARGUMENT if not a host,
  * a round is still running, or the builder refuses. */
 gz_status_t gz_sign_begin(gz_sign_t *e, const uint8_t *params, size_t len, gz_action_list_t *out);
-
-/* Write every live secret nonce as (8-byte little-endian serial, the 132
- * secret-nonce bytes) to `out`; returns the length, or 0 if `cap` is short.
- * For the simulator's inspection hook: the property is judged on these. */
-size_t gz_sign_inspect_secrets(const gz_sign_t *e, uint8_t *out, size_t cap);
 
 /* The newest round this party holds, or NULL. */
 const gz_sign_round_t *gz_sign_latest(const gz_sign_t *e);
