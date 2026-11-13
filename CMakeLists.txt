@@ -258,5 +258,8 @@ add_subdirectory(ports/chain)
 # --- trees from terms and the creation checks (core/tree) ---
 add_subdirectory(core/tree)
 
+# --- storage encryption (ports/storage/crypto): libsodium, outside the core ---
+add_subdirectory(ports/storage/crypto)
+
 # --- the local API server (spec/local-api.md), its fake backend and tests ------
 add_subdirectory(ports/api)
