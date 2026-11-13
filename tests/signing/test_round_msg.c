@@ -149,9 +149,11 @@ static long find_rec(const uint8_t *r, size_t n, uint64_t type, size_t *total, s
 /* Replace bytes [at, at + cut) of g_buf (length n) by `ins` (k bytes), into g_buf2. */
 static size_t splice(size_t n, size_t at, size_t cut, const uint8_t *ins, size_t k)
 {
+    if (at > n || cut > n - at || k > sizeof g_buf2 - (n - cut)) abort();
+    size_t rest = n - at - cut;
     memcpy(g_buf2, g_buf, at);
     if (k) memcpy(g_buf2 + at, ins, k);
-    memcpy(g_buf2 + at + k, g_buf + at + cut, n - at - cut);
+    if (rest) memmove(g_buf2 + at + k, g_buf + at + cut, rest);
     return n - cut + k;
 }
 
