@@ -2,7 +2,7 @@
 
 What `.github/workflows/ci.yml` runs, what each job guards, and how to run the same check on your own machine. Written 2026-11-12 with the CI hardening branch (PR 16); brought up to date the same day, after the transport, chain view and wallet transactions merged.
 
-CI runs on every pull request and on every push to `main`. All jobs run in parallel on GitHub's `ubuntu-24.04` runners; the longest is the gcc build without sanitizers (the wallet break-checks), about 12 to 20 minutes. Everything else finishes in a few minutes.
+CI runs on every pull request and on every push to `main`. All jobs run in parallel on GitHub's `ubuntu-24.04` runners; the longest is valgrind, about 10 to 13 minutes. Every job has a 30-minute limit or less, so that a real slowdown shows. The wallet break-checks run in a workflow of their own (`wallet-break-checks.yml`, below).
 
 ## Rules for the workflow file
 
@@ -16,7 +16,13 @@ CI runs on every pull request and on every push to `main`. All jobs run in paral
 
 ### build (OFF) and build (ON): gcc, the original job
 
-Guards: the whole tree builds with gcc 13 and every CTest test passes, once without sanitizers and once with AddressSanitizer and UndefinedBehaviorSanitizer (`-DGZ_SANITIZE=ON`). The build without sanitizers also runs the wallet break-checks (label `slow`), which damage one protection at a time and require a test to fail. Then the scale check: one small tree and the two upstream defect reproductions.
+Guards: the whole tree builds with gcc 13 and every CTest test passes, once without sanitizers and once with AddressSanitizer and UndefinedBehaviorSanitizer (`-DGZ_SANITIZE=ON`), except the wallet break-checks (label `slow`, `-LE slow`). The build without sanitizers runs the core and simulator tests a second time under valgrind. Then the scale check: one small tree and the two upstream defect reproductions.
+
+### wallet break-checks (`.github/workflows/wallet-break-checks.yml`)
+
+Guards: `wallet/tests/break-checks.sh` damages one wallet protection at a time (about 110 faults) and requires a wallet test to fail. For each fault it rebuilds only the wallet's directory (`make -C build/wallet`, which builds the wallet tools as well) and runs only the wallet's tests (`ctest -R '^wallet_'`, less `wallet_tx_tool_chain`, which waits on the chain port's retry pauses and runs once in the baseline): nothing else in the tree links the wallet, so no other test could notice a wallet fault. A run takes a few minutes, under a 30-minute limit.
+
+When: on every push to `main`, nightly at 03:17 UTC, by hand (`workflow_dispatch`), and on every pull request. On a pull request the job always runs and always reports, but does the work only if the request changes `wallet/`, `tools/gz-wallet-*`, the root `CMakeLists.txt` or this workflow; otherwise it passes at once. That is what lets it be a required check without making every other request wait. Whether it is required is set in branch protection, not here.
 
 Locally:
 
@@ -146,7 +152,7 @@ Locally (Linux, clang 18):
 The first clang runs failed two existing tests on `main`, not because the code changed but because the checks only knew gcc's output:
 
 - `wallet_keys_no_io` (`wallet/tests/check_no_io.py`): clang emits `bcmp` for a `memcmp` whose result is only compared with zero, and `memchr` for a byte-search loop. Both are now on the allow-list beside `memcmp` and `strchr`. Under clang's ASan it also saw `__start_asan_globals` and `__stop_asan_globals` (weak references to ASan's section bounds), `___asan_globals_registered`, and `switch.table.<function>` lookup tables shown as data; these are accepted by prefix, each with its reason in the file.
-- `core_isolation` (`tools/check-core-isolation.sh`): the same ASan names, and under MSan the `__msan_*` runtime calls and its weak `__msan_track_origins`. Accepted by exact name or the sanitizer prefix, as `__asan_*` already was.
+- `core_isolation` (`tools/check-core-isolation.sh`): the same ASan names, and under MSan the `__msan_*` runtime calls, its weak `__msan_track_origins` and its thread-local shadows reached through `%fs`. Since round 4 of PR 9's review these are accepted only from an exact list of the instrumentation's entry points (numbered families such as `__asan_report_load<N>` written as such), not by prefix: a call to any other runtime function, such as `__sanitizer_print_stack_trace`, is refused in every build, and so is ordinary state under a checker's name.
 
 The negative tests of both checks (the sneaky object, the five bad libraries) still fail as they must in every build.
 

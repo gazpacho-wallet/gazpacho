@@ -184,6 +184,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c13-state-and-storage" title="State and storage">State and storage</a>
 <a class="sec" href="#c13-code" title="Code">Code</a>
 <a class="sec" href="#c13-hand-over" title="Hand-over">Hand-over</a>
+<a class="sec" href="#c13-added-after-the-third-m1a-review" title="Added after the third M1a review">Added after the third M1a review</a>
 <a class="ch" href="#c14">Testing</a>
 <a class="sec" href="#c14-principles" title="Principles">Principles</a>
 <a class="sec" href="#c14-on-github-on-every-pull-request-and-ever" title="On GitHub, on every pull request and every push to `main`">On GitHub, on every pull request and every push to `main`</a>
@@ -4465,6 +4466,23 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Small pull requests.</strong> One piece of work, reviewable in one sitting. The first core pull request was over four thousand lines and needed three rounds.</li>
 <li><strong>The report says what was decided where the specification was silent</strong>, so those decisions can be confirmed or overruled.</li>
 <li><strong>Nothing is published by the builder.</strong> The branch is fetched, opened as a pull request, reviewed by an agent that did not write it, and merged only when the review and the automated checks pass.</li>
+</ol></div></details>
+<details id="c13-added-after-the-third-m1a-review"><summary>Added after the third M1a review</summary><div class="body"><ol>
+<li>
+<p><strong>A multi-step start that reads storage must work from a fixed view, or
+    record only what it has actually done.</strong> A start that re-reads storage
+    between steps can record an action (a message as "sent") against a record
+    that appeared after the step began but was never acted on. Storage may
+    grow during a start (late writes from a dead program, the node's own
+    saves); a start must still never claim to have done what it has not.</p>
+</li>
+<li>
+<p><strong>A fault the code describes must be one the test harness can produce.</strong>
+    The runner's contract allowed storage to fail from inside the executor,
+    but the simulator had no way to make it happen, so a mutation that ignored
+    that path looked equivalent to correct. Every path a contract names needs
+    a fault that exercises it.</p>
+</li>
 </ol></div></details>
 </section>
 <section class="chapter" id="c14"><h2>Testing</h2><p class="desc">What runs today and where; then the plan, each item with its milestone.</p><p class="file">Testing · <code>docs/TESTING.md</code></p>

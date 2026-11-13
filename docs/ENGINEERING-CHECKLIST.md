@@ -49,3 +49,18 @@ What every piece of work must satisfy before it is handed to review. It is made 
 24. **Small pull requests.** One piece of work, reviewable in one sitting. The first core pull request was over four thousand lines and needed three rounds.
 25. **The report says what was decided where the specification was silent**, so those decisions can be confirmed or overruled.
 26. **Nothing is published by the builder.** The branch is fetched, opened as a pull request, reviewed by an agent that did not write it, and merged only when the review and the automated checks pass.
+
+## Added after the third M1a review
+
+31. **A multi-step start that reads storage must work from a fixed view, or
+    record only what it has actually done.** A start that re-reads storage
+    between steps can record an action (a message as "sent") against a record
+    that appeared after the step began but was never acted on. Storage may
+    grow during a start (late writes from a dead program, the node's own
+    saves); a start must still never claim to have done what it has not.
+
+32. **A fault the code describes must be one the test harness can produce.**
+    The runner's contract allowed storage to fail from inside the executor,
+    but the simulator had no way to make it happen, so a mutation that ignored
+    that path looked equivalent to correct. Every path a contract names needs
+    a fault that exercises it.
