@@ -1414,6 +1414,24 @@ static void test_pollfds(void)
         if (me) CHECK(gz_peers_send(S[1].p, mc, GZ_ENV_KIND_HELLO, zero, NULL, 0) == GZ_PEERS_OK);
     }
     CHECK(got_conn && got_hello);
+    /* Events waiting: pollfds says not to wait (timeout 0), though the next
+     * deadline (a ping) is far off. */
+    CHECK(gz_peers_send(S[1].p, mc, GZ_ENV_KIND_HELLO, zero, NULL, 0) == GZ_PEERS_OK);
+    pump(50);
+    {
+        int seen_zero = 0;
+        end = ms() + 3000;
+        while (ms() < end && !seen_zero) {
+            n = gz_peers_pollfds(h, fds, gz_peers_max_fds(h), &timeout);
+            if (timeout == 0) {
+                seen_zero = 1;
+                break;
+            }
+            if (poll(fds, (nfds_t)n, 5) < 0) break;
+            gz_peers_dispatch(h, fds, n);
+        }
+        CHECK(seen_zero && gz_peers_poll(h, 0, &ev) && ev.type == GZ_PEER_EV_MESSAGE);
+    }
     /* gz_peers_poll(p, 0) never blocks. */
     {
         int64_t t0 = ms();

@@ -235,7 +235,7 @@ peers-max-conns-off	ports/net/peers.c	if (p->n_conns >= p->cap || !prepare_socke
 peers-send-before-init	ports/net/peers.c	if (!c->init_got) return GZ_PEERS_ERR_NOT_READY;	
 peers-queue-cap-off	ports/net/peers.c	if (queued(c) + records_len + count * (2 + GZ_ENV_HDR_LEN + 100 + 34) > p->cfg.max_queue)\n        return send_refused(p, c, GZ_PEERS_ERR_FULL);	
 peers-refuse-no-warning	ports/net/peers.c	if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(GZ_LN_WARNING, reason, p->out, sizeof p->out, &n))	if (0)
-peers-refuse-no-flush	ports/net/peers.c	c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);	c->close_by = now_ms();
+peers-refuse-no-flush	ports/net/peers.c	c->close_by = now_ms() + (queued(c) ? p->cfg.send_ms : 0);	c->close_by = now_ms();	1
 peers-pong-queue-cap-off	ports/net/peers.c	if (queued(c) + v + 4 > p->cfg.max_queue) {	if (0) {
 peers-node-id-missing	ports/net/peers.c	c->have_id = 1;\n        if (!p->cfg.is_member	c->have_id = 0;\n        if (!p->cfg.is_member
 peers-refused-as-socket	ports/net/peers.c	fail(p, c, err == ECONNREFUSED ? GZ_PEER_WHY_REFUSED :	fail(p, c, err == ECONNREFUSED ? GZ_PEER_WHY_SOCKET :
@@ -261,11 +261,11 @@ env-part-capped-again	ports/net/envelope.c	if (type <= 12 && (type & 1) == 0 && 
 env-ignored-transfer-kept	ports/net/envelope.c	gz_env_reasm_reset(r); /* refused or ignored: released at once */	if (v == GZ_ENV_REFUSE) gz_env_reasm_reset(r);
 env-lazy-release-gone	ports/net/envelope.c	if (r->buf && r->held == 0) gz_env_reasm_reset(r); /* the last completed message is released */	
 peers-warning-before-init	ports/net/peers.c	if (c->phase == PH_OPEN && c->peer_init && !gz_ln_alert_write(	if (c->phase == PH_OPEN && !gz_ln_alert_write(
-peers-no-admission	ports/net/peers.c	if (!c->outbound && !admit(p, c)) return;	
+peers-no-admission	ports/net/peers.c	if (!admit(p, c)) return;	
 peers-evict-newest-handshake	ports/net/peers.c	if (c->t_start < best->t_start) best = c;	if (c->t_start > best->t_start) best = c;
 peers-address-cap-off-by-one	ports/net/peers.c	if (p->cfg.max_per_address && same >= p->cfg.max_per_address) {	if (p->cfg.max_per_address && same > p->cfg.max_per_address) {
 peers-no-handshake-eviction	ports/net/peers.c	if (pending >= p->cfg.max_handshakes) {	if (0) {
-peers-evict-seated	ports/net/peers.c	if (established_unseated ? !(c->init_got && !c->seated) : c->init_got) continue;	if (established_unseated ? !c->init_got : c->init_got) continue;
+peers-evict-seated	ports/net/peers.c	if (established_unseated ? !(c->init_got && !is_seated(p, c)) : c->init_got) continue;	if (established_unseated ? !c->init_got : c->init_got) continue;
 peers-full-never	ports/net/peers.c	if (established < p->cfg.max_conns) return 1;	return 1;
 peers-close-keeps-events	ports/net/peers.c	if (n->ev.conn == conn) {	if (0) {
 peers-warning-events-unlimited	ports/net/peers.c	if (c->warnings >= p->cfg.max_warning_events) {	if (0) {
@@ -315,3 +315,5 @@ p2-dispatch-no-timers	ports/net/peers.c	    p->pf_n = 0;\n    run_timers(p);	   
 p2-pollfds-events-not-urgent	ports/net/peers.c	if (p->head) *timeout_ms = 0;\n    else 	
 p2-pollfds-no-deadline	ports/net/peers.c	else if (wake == INT64_MAX) *timeout_ms = -1;	else if (1) *timeout_ms = -1;
 p2-testnet4-byte	ports/net/lnmsg.c	0x43, 0xf0, 0x8b, 0xda	0x43, 0xf0, 0x8c, 0xda
+# P2 triage: p2-close-after-send-no-flush is not observable on loopback, like
+#   peers-refuse-no-flush: the queued bytes are written in the same poll round.

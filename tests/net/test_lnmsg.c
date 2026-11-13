@@ -25,6 +25,11 @@ int main(void)
     char text[16];
     /* Signet's chain hash, and our init: no features, networks = [signet]. */
     CHECK(unhex(SIGNET_HEX, other, 32) == 32 && memcmp(other, GZ_LN_CHAIN_SIGNET, 32) == 0);
+    /* testnet4's and the main network's block 0, byte-reversed (contract v2, section 15). */
+    CHECK(unhex("43f08bdab050e35b567c864b91f47f50ae725ae2de53bcfbbaf284da00000000", other, 32) == 32 &&
+          memcmp(other, GZ_LN_CHAIN_TESTNET4, 32) == 0);
+    CHECK(unhex("6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000", other, 32) == 32 &&
+          memcmp(other, GZ_LN_CHAIN_MAINNET, 32) == 0);
     CHECK(gz_ln_init_write(GZ_LN_CHAIN_SIGNET, out, sizeof out, &n) == 0 && n == 40);
     CHECK(unhex(INIT_HEX, m, sizeof m) == 40 && memcmp(out, m, 40) == 0);
     CHECK(gz_ln_init_write(GZ_LN_CHAIN_SIGNET, out, 39, &n) != 0);
