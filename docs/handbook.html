@@ -4263,7 +4263,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tr>
 <td>See payments, membership and network addresses</td>
 <td>—</td>
-<td>Accepted</td>
+<td>Accepted. The member's IP address also undoes the fresh per-lobby keys towards this host: the host (and any host it shares logs with) links a person's lobbies, and who only browsed or refused terms, by address. Section 1 lists those links as an asset; without Tor they are not protected from the host. 1.0.0 plan in 2.8</td>
 </tr>
 </tbody>
 </table></div>
@@ -4361,6 +4361,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>—</td>
 <td>Not addressed</td>
 </tr>
+<tr>
+<td><strong>Observe</strong>: link every member's IP address, and the host's, to one factory</td>
+<td>Slice 1: the User-Agent is a common browser string, not a Gazpacho name; no proxy is taken from the environment, and an optional <code>socks5h://</code> proxy (Tor) can be set (<code>ports/chain</code>, <code>gz-chain --proxy</code>); a member must not ask about the funding txid before it can have been broadcast (<code>docs/notes/chain-port.md</code> section 9)</td>
+<td>Each member polls the same funding txid and tree outputs from its own address, and every query goes to every configured operator, so each operator can group a factory's members and host by address, add each member's wallet scripts, and see the host as the first broadcaster. Not defended without Tor or the user's own server. 1.0.0 plan in 2.8</td>
+</tr>
 </tbody>
 </table></div>
 <h4>2.5 Nostr relays</h4>
@@ -4410,7 +4415,16 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>The member loses sight of factories joined after the backup, and may not be able to re-derive their keys without the guard record or a later export (R7)</td>
 </tr>
 </tbody>
-</table></div></div></details>
+</table></div>
+<h4>2.8 Network addresses: the Tor trap and the 1.0.0 plan</h4>
+<p><strong>The Tor trap.</strong> The transport caps connections at 4 per address (IPv4, or IPv6 by /64; <code>transport.md</code> L9). Over Tor, all members of a clearnet host arrive from a few exit addresses, and at an onion-service host every connection arrives from <code>127.0.0.1</code>. So the cap that guards against floods refuses the fifth Tor member. Before Tor ships, an onion listener must be counted per connection, not per address (as <code>discovery.md</code> H2 already does for queries).</p>
+<p><strong>The 1.0.0 plan.</strong></p>
+<ul>
+<li><strong>Tor for members.</strong> A SOCKS5h dialer for member-to-host connections, a fresh Tor stream per <code>CONNECT</code> (matching the fresh BOLT 8 key), on by default when a Tor proxy is found, with no silent fall-back to the open network.</li>
+<li><strong>Onion hosts.</strong> Invites and the transport accept <code>&lt;key&gt;@&lt;name&gt;.onion:&lt;port&gt;</code>; the host keeps listening on <code>127.0.0.1</code> behind a <code>HiddenServicePort</code>, with the per-connection count above.</li>
+<li><strong>The chain over Tor.</strong> One proxy setting for host, chain and discovery traffic, isolated per chain operator; the user's own server as a first-class choice.</li>
+<li><strong>Whole blocks for lookups.</strong> Watch factory outputs by fetching each new block's transaction ids (and the raw block when one may match) and matching locally, so an operator learns only that a wallet follows blocks, not which txids it cares about.</li>
+</ul></div></details>
 <details id="c12-3-not-defended-in-one-list"><summary>3. Not defended, in one list</summary><div class="body"><ul>
 <li>Refusal of service.</li>
 <li>A host with a seat of its own escaping blame.</li>
@@ -4425,7 +4439,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Relay rules that obstruct pre-signed transactions.</li>
 <li>Bugs in the imported tree builder.</li>
 <li>A reorganisation of the funding after it was buried, or (1.1.0) of a leaf link.</li>
-<li>The host's view of all payments and of members' network addresses.</li>
+<li>The host's view of all payments and of members' network addresses, which also links a person's lobbies with that host despite fresh per-lobby keys (until Tor, 2.8).</li>
+<li>Chain-server operators linking all members of one factory, and the host, by network address (until Tor, the user's own server, or block-based watching, 2.8).</li>
 <li>Withheld results and withheld closes, which force the member to exit at its own cost.</li>
 <li>Factories joined after an old backup, whose keys may be lost without the guard record (R7).</li>
 <li>For 1.1.0 members above their coverage: losing a one-step race in a timed layer.</li>
