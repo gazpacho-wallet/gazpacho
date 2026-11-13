@@ -24,8 +24,8 @@ static void done(void)
 }
 static uint8_t buf[GZ_NOISE_MAX_MSG];
 
-static void counter(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
-{ (void)purpose;
+static void counter(void *ctx, uint8_t *out, size_t len)
+{
     static uint8_t n = 1;
     (void)ctx;
     memset(out, 0x55, len);
@@ -52,7 +52,7 @@ int main(int argc, char **argv)
     static const uint8_t key[32] = {0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
                                     0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44,
                                     0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44};
-    gz_random_port_t rng = {counter, NULL};
+    gz_net_random_t rng = {counter, NULL};
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     atexit(done);
     gz_conn_limits_t lim;
