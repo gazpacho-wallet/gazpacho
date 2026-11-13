@@ -2462,6 +2462,16 @@ static gz_status_t timer_in(uint64_t id)
     return gz_lobby_host_handle(&H, &in, &A.l);
 }
 
+static gz_status_t lk_in(int i, int kind, const uint8_t *key, const uint8_t *b, size_t n)
+{
+    gz_lobby_input_t in;
+    memset(&in, 0, sizeof in);
+    in.kind = kind; in.peer_id = 5000u + (uint64_t)i; in.bytes = b; in.len = n;
+    in.peer_key = key;
+    acts_reset();
+    return gz_lobby_host_handle(&H, &in, &A.l);
+}
+
 static void test_contract_v2(void)
 {
     uint8_t buf[600], lv[64];
@@ -2518,6 +2528,9 @@ static void test_contract_v2(void)
     CLOCK += 1;
     CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && A.s[0].u.send.peer_id == W_PEER(3));
     CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 1 && A.s[A.l.count - 1].u.set_timer.delay_ms == 20000);
+    hin(GZ_LIN_CONNECTED, 7, NULL, 0);                               /* armed by the sweep: not again */
+    CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 0);
+    hin(GZ_LIN_DISCONNECTED, 7, NULL, 0);
     CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 0);  /* 3 is not closed twice */
     CLOCK += 20000;
     CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && A.s[0].u.send.peer_id == W_PEER(4));
@@ -2563,6 +2576,13 @@ static void test_contract_v2(void)
         acts_reset();
         CHECK(gz_lobby_host_resume(&R, &A.l) == GZ_OK && seated_notes(NULL, 1) == 2 && seated_notes(NULL, 0) == 0);
         CHECK(seated_notes(MEM[1].key[2].pub, 1) == 1 && seated_notes(MEM[2].key[2].pub, 1) == 1);
+        {
+            gz_lobby_input_t ci;                                     /* timers do not survive a restart */
+            memset(&ci, 0, sizeof ci);
+            ci.kind = GZ_LIN_CONNECTED; ci.peer_id = W_PEER(9); ci.peer_key = MEM[9].key[2].pub;
+            acts_reset();
+            CHECK(gz_lobby_host_handle(&R, &ci, &A.l) == GZ_OK && timers(GZ_LOBBY_TIMER_IDLE) == 1);
+        }
         for (q = 0; q < N_KEPT; q++) free(KEPT_B[q]);
         N_KEPT = 0;
     }
@@ -2661,7 +2681,76 @@ static void test_contract_v2(void)
         gz_lobby_member_init(&ma, &p, &ca, NULL, &cond_fits_g, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 1);
         for (q = 0; q < nrec; q++) CHECK(gz_lobby_member_restore(&ma, &recs[q]) == GZ_OK);
         CHECK(ma.joined && ma.ready);                               /* the same keys: resumed */
+        {
+            static gz_lobby_member_t mc;
+            gz_record_t er;
+            uint8_t eb[600];
+            int found = 0;
+            acts_reset();
+            CHECK(gz_lobby_member_leave(&ma, &A.l) == GZ_OK);
+            for (q = 0; q < A.l.count; q++)
+                if (A.s[q].kind == GZ_ACTION_SAVE)
+                    for (j = 0; j < A.s[q].u.save.n_records; j++)
+                        if (A.s[q].u.save.records[j].type == GZ_REC_LOBBY_ENDED &&
+                            A.s[q].u.save.records[j].bytes.len <= sizeof eb) {
+                            er = A.s[q].u.save.records[j];
+                            memcpy(eb, er.bytes.data, er.bytes.len);
+                            er.bytes.data = eb;
+                            found = 1;
+                        }
+            CHECK(found && eb[0] == 0);
+            gz_lobby_member_init(&mc, &p, &cb, NULL, &cond_fits_g, SCOPE, HOST.key[1].pub, M1.key[2].pub, nb.key[3].pub, 1);
+            for (q = 0; q < nrec; q++) CHECK(gz_lobby_member_restore(&mc, &recs[q]) == GZ_OK);
+            CHECK(gz_lobby_member_restore(&mc, &er) == GZ_OK && !mc.ended && !mc.left);   /* the old seat left */
+            acts_reset();
+            gz_lobby_member_handle(&mc, &in, &A.l);
+            CHECK(feed(&mc, ob, n) == GZ_OK && sends(GZ_KIND_JOIN) == 1);
+            eb[0] = GZ_LOBBY_CANCELLED;                              /* the lobby itself ended: it stays ended */
+            gz_lobby_member_init(&mc, &p, &cb, NULL, &cond_fits_g, SCOPE, HOST.key[1].pub, M1.key[2].pub, nb.key[3].pub, 1);
+            for (q = 0; q < nrec; q++) CHECK(gz_lobby_member_restore(&mc, &recs[q]) == GZ_OK);
+            CHECK(gz_lobby_member_restore(&mc, &er) == GZ_OK && mc.ended && mc.lobby_state == GZ_LOBBY_CANCELLED);
+        }
         for (q = 0; q < nrec; q++) free(store[q]);
+    }
+
+    /* 6. hello limits: kept for the 64 most recent keys, the oldest pushed out first */
+    {
+        static lt_key_t lk[GZ_LOBBY_MAX_LINKS + 1];
+        char label[48];
+        int i;
+        n = hello_msg(buf, sizeof buf, SCOPE);
+        for (i = 0; i <= GZ_LOBBY_MAX_LINKS; i++) {
+            snprintf(label, sizeof label, "link key %d", i);
+            lt_key(&lk[i], label);
+        }
+        CLOCK = W_T0 - 3600000;
+        host_open(0);
+#define LK_HELLO(i) (lk_in((i), GZ_LIN_DISCONNECTED, lk[i].pub, NULL, 0), lk_in((i), GZ_LIN_CONNECTED, lk[i].pub, NULL, 0), lk_in((i), GZ_LIN_MESSAGE, lk[i].pub, buf, n))
+        for (i = 0; i < 2; i++) { CHECK(LK_HELLO(i) == GZ_OK && sends(GZ_KIND_TERMS_OFFER) == 1); CLOCK += 1; }
+        CHECK(LK_HELLO(0) == GZ_OK && A.l.count == 0);               /* two keys: each keeps its own */
+        CHECK(LK_HELLO(1) == GZ_OK && A.l.count == 0);
+        for (i = 2; i < GZ_LOBBY_MAX_LINKS; i++) {
+            CHECK(LK_HELLO(i) == GZ_OK && sends(GZ_KIND_TERMS_OFFER) == 1);
+            lk_in(i, GZ_LIN_DISCONNECTED, lk[i].pub, NULL, 0);
+            CLOCK += 1;
+        }
+        CHECK(LK_HELLO(0) == GZ_OK && A.l.count == 0);               /* 64 keys: all still kept */
+        CHECK(LK_HELLO(GZ_LOBBY_MAX_LINKS - 1) == GZ_OK && A.l.count == 0);
+        CHECK(LK_HELLO(GZ_LOBBY_MAX_LINKS) == GZ_OK && sends(GZ_KIND_TERMS_OFFER) == 1);   /* a 65th */
+        CHECK(LK_HELLO(1) == GZ_OK && A.l.count == 0);               /* 1 is kept, */
+        CHECK(LK_HELLO(0) == GZ_OK && sends(GZ_KIND_TERMS_OFFER) == 1);   /* 0, the oldest, starts afresh */
+#undef LK_HELLO
+
+        /* a new window begins exactly ten minutes after the last one began */
+        CLOCK = W_T0 - 3600000;
+        host_open(0);
+        hin(GZ_LIN_CONNECTED, 7, NULL, 0);
+        CHECK(hin(GZ_LIN_MESSAGE, 7, buf, n) == GZ_OK && sends(GZ_KIND_TERMS_OFFER) == 1);
+        for (k = 0; k < 20; k++) { CLOCK += 1; CHECK(hin(GZ_LIN_MESSAGE, 7, buf, n) == GZ_OK && A.l.count == 0); }
+        CLOCK += 599500 - 20;
+        CHECK(hin(GZ_LIN_MESSAGE, 7, buf, n) == GZ_OK && sends(GZ_KIND_TERMS_OFFER) == 1);
+        CLOCK += 501;                                                /* 600,000 ms after the window began */
+        CHECK(hin(GZ_LIN_MESSAGE, 7, buf, n) == GZ_OK && A.l.count == 0 && !note(GZ_NOTE_CLOSE, -1, -1));
     }
 }
 
