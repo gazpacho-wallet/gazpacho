@@ -1,9 +1,13 @@
 /* Sequence fuzz target (review A of PR 30, S9; strengthened after review B):
  * each input is a script. Its first byte picks a host fed signed messages,
  * connections, timers, clock steps, commands and restarts from up to 64
- * member keys (enough to reach every cap: 16 unseated connections, 48
- * connections, 32 seats, 4 x target creations), or a member fed the same
- * from its host. The engines live across the whole script, so the stateful
+ * member keys (enough to reach the caps: 16 unseated connections, 48
+ * connections, target + standbys seats taken, 4 x target creations), or a
+ * member fed the same from its host. With the vectors' terms (target 8),
+ * 4 x target is 32: the creation cap stops a 33rd seat first, so the
+ * 32-seat table's own refusal is not reached here (test_lobby restores a
+ * full table). The plain driver counts the scripts that reach the creation
+ * cap and the budget timers that fire in Signing (the B3 check below). The engines live across the whole script, so the stateful
  * rules are reached: a refused ready (F5), strangers and failed checks (F6),
  * joins that are refused (F8), restarts in Signing (F3), commands at the
  * wrong moment (F10), a chosen seat that leaves and comes back (B1).
@@ -40,7 +44,8 @@
 #include <stdlib.h>
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
-unsigned long lobby_seq_stats[8];   /* steps, seats, checks, starts, begins, restarts, refused, cancels */
+unsigned long lobby_seq_stats[10];  /* steps, seats, checks, starts, begins, restarts, refused, cancels,
+                                       lobbies at the creation cap, budget timers in Signing */
 
 #define MUST(c) do { if (!(c)) { fprintf(stderr, "fuzz_lobby_seq: %s (step %lu)\n", #c, lobby_seq_stats[0]); abort(); } } while (0)
 #define NK 64                        /* member keys; any may stay a stranger */
@@ -452,6 +457,7 @@ static void host_script(const uint8_t *d, size_t n)
             static const uint64_t T[5] = {GZ_LOBBY_TIMER_WINDOW, GZ_LOBBY_TIMER_IDLE, GZ_LOBBY_TIMER_STATUS,
                                           GZ_LOBBY_TIMER_DEADLINE, GZ_LOBBY_TIMER_BUDGET};
             int signing = H.state == GZ_LOBBY_SIGNING;
+            if (arg % 5 == 4 && signing) lobby_seq_stats[9]++;
             st = h_in(GZ_LIN_TIMER, who, NULL, 0, T[arg % 5]);
             if (arg % 5 == 0 && sends_kind(GZ_KIND_START)) lobby_seq_stats[3]++;
             if (arg % 5 == 4 && signing) MUST(L.count == 0 && H.state == GZ_LOBBY_SIGNING);   /* B3 */
@@ -510,6 +516,7 @@ static void host_script(const uint8_t *d, size_t n)
     }
     lobby_seq_stats[1] += H.n_seats;
     lobby_seq_stats[7] += H.state >= GZ_LOBBY_CANCELLED;
+    lobby_seq_stats[8] += H.created >= 4u * H.terms.target;
 }
 
 /* ------------------------------------------------------------ the member */

@@ -955,7 +955,8 @@ static void test_host_hostile(void)
     n = host_msg(buf, sizeof buf, GZ_KIND_CANCEL, NULL, 2, NULL, 0, 0, &HOST);
     CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && sends(1) == 1 && H.state == GZ_LOBBY_OPEN);
     fresh(2);                                         /* the host asked for that connection to close */
-    /* test 56: a seat that loops ready/unready saves at most 10 changes in 10 minutes */
+    /* test 56: a seat that loops ready/unready: past 10 changes in 10 minutes a
+     * move into Ready is refused; moves out are always saved */
     {
         int saved = 0;
         uint8_t un[64];
@@ -1535,6 +1536,18 @@ static void test_host_checks(void)
                             sent++;
                 }
                 CHECK(sent == 6 && at == rl);
+                {   /* the same record with a budget of 0 is damaged (b14) */
+                    uint8_t *z = malloc(rl);
+                    gz_record_t rec;
+                    uint64_t budget = H.budget_ms;
+                    CHECK(z != NULL);
+                    memcpy(z, r, rl);
+                    memset(z + 32, 0, 8);
+                    rec.type = GZ_REC_START_SENT; rec.bytes.data = z; rec.bytes.len = rl;
+                    CHECK(gz_lobby_host_restore(&H, &rec) == GZ_ERR_CORRUPT);
+                    H.budget_ms = budget;                       /* the rest it rewrote is the same */
+                    free(z);
+                }
             }
     }
     /* the window timer again: nothing (the check is closed) */
@@ -2570,6 +2583,13 @@ static void test_contract_v2(void)
     CLOCK += 20000;
     CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && A.s[0].u.send.peer_id == W_PEER(4));
     CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 0);                         /* 5 joined: nobody left to watch */
+    /* a seated key's new connection that says nothing is closed too (b04) */
+    hin(GZ_LIN_DISCONNECTED, 5, NULL, 0);
+    hin(GZ_LIN_CONNECTED, 5, NULL, 0);
+    CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 1);
+    CLOCK += GZ_LOBBY_IDLE_MS;
+    CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && A.s[0].u.send.peer_id == W_PEER(5));
+    CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 0);
     hin(GZ_LIN_CONNECTED, 6, NULL, 0);                               /* and the next connection arms it again */
     CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 1);
     n = hello_msg(buf, sizeof buf, SCOPE);
@@ -3586,7 +3606,6 @@ static void test_review_b_member(void)
     uint8_t chk[32], cd2[32];
     size_t xn, on;
     gz_record_t r;
-    uint8_t b1;
     int o;
     memcpy(cd2, cd2_of(), 32);
     memset(chk, 0x5c, 32);
@@ -3633,15 +3652,61 @@ static void test_review_b_member(void)
             CHECK(feed(&mb2, x, xn) == GZ_OK && SG.begins == 2);
         }
     }
-    /* the record: 1 Open, 4 Funding, 5 Active; nothing else */
-    member_sg(&mb, &cond);
-    r.type = GZ_REC_LOBBY_STATE; r.bytes.data = &b1; r.bytes.len = 1;
-    for (o = 0; o < 8; o++) {
-        b1 = (uint8_t)o;
-        CHECK(gz_lobby_member_restore(&mb, &r) == (o == 1 || o == 4 || o == 5 ? GZ_OK : GZ_ERR_CORRUPT));
+    /* N1 (confirmation review): the member answered check 2 before its signing
+     * engine reported the Retry of check 1. The Retry spends check 1's start
+     * but keeps the answer to check 2, live (o 0) and after a restart (o 1),
+     * and check 2's start then begins. */
+    for (o = 0; o < 2; o++) {
+        uint8_t chk2[32];
+        gz_lobby_member_t *mp = &mb;
+        memset(chk2, 0x5d, 32);
+        memset(&SG, 0, sizeof SG);
+        mfree();
+        member_sg(&mb, &cond);
+        CHECK(feed(&mb, ob, on) == GZ_OK); mkeep();
+        xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk, 1, cd2, 30000, 0, &HOST);
+        CHECK(feed(&mb, x, xn) == GZ_OK); mkeep();
+        xn = host_msg(x, sizeof x, GZ_KIND_START, chk, 0, NULL, 0, 1, &HOST);
+        CHECK(feed(&mb, x, xn) == GZ_OK && SG.begins == 1); mkeep();
+        xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk2, 1, cd2, 30000, 0, &HOST);
+        CHECK(feed(&mb, x, xn) == GZ_OK && gz_lobby_member_may_sign(&mb, chk2)); mkeep();
+        acts_reset();
+        CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
+        mkeep();
+        CHECK(mb.start_len == 0 && mb.role == 0 && gz_lobby_member_may_sign(&mb, chk2));
+        if (o == 1) {
+            mrestore(&mb2, &cond);
+            mp = &mb2;
+            CHECK(mb2.start_len == 0 && gz_lobby_member_may_sign(&mb2, chk2) && !gz_lobby_member_may_sign(&mb2, chk));
+            acts_reset();
+            CHECK(gz_lobby_member_resume(&mb2, &A.l) == GZ_OK && SG.begins == 1);
+            CHECK(m_in(&mb2, GZ_LIN_CONNECTED) == GZ_OK);
+        }
+        xn = host_msg(x, sizeof x, GZ_KIND_START, chk, 0, NULL, 0, 1, &HOST);   /* check 1's, resent: ignored */
+        CHECK(feed(mp, x, xn) == GZ_OK && SG.begins == 1);
+        xn = host_msg(x, sizeof x, GZ_KIND_START, chk2, 0, NULL, 0, 1, &HOST);
+        CHECK(feed(mp, x, xn) == GZ_OK && SG.begins == 2);
     }
-    r.bytes.len = 2;
-    CHECK(gz_lobby_member_restore(&mb, &r) == GZ_ERR_CORRUPT);
+    /* the record: 1 Open with the spent check (33 bytes), 4 Funding or 5
+     * Active alone; nothing else */
+    {
+        uint8_t rb[34];
+        memset(rb, 0x5c, sizeof rb);
+        member_sg(&mb, &cond);
+        r.type = GZ_REC_LOBBY_STATE; r.bytes.data = rb;
+        for (o = 0; o < 8; o++) {
+            rb[0] = (uint8_t)o;
+            r.bytes.len = 1;
+            CHECK(gz_lobby_member_restore(&mb, &r) == (o == 4 || o == 5 ? GZ_OK : GZ_ERR_CORRUPT));
+            r.bytes.len = 33;
+            CHECK(gz_lobby_member_restore(&mb, &r) == (o == 1 ? GZ_OK : GZ_ERR_CORRUPT));
+        }
+        rb[0] = 1;
+        r.bytes.len = 2;
+        CHECK(gz_lobby_member_restore(&mb, &r) == GZ_ERR_CORRUPT);
+        r.bytes.len = 34;
+        CHECK(gz_lobby_member_restore(&mb, &r) == GZ_ERR_CORRUPT);
+    }
     mfree();
 }
 

@@ -47,7 +47,7 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
 | `host_fault` | fault (`u8`: 1 two values under one version, 2 a new version or a check at other values after the freeze), blob evidence a, blob evidence b (current records with their signatures, or digest and version) |
 | `start_sent` | `check_id` (32), the time the signing budget began (`u64`, Unix ms: the first start of the lobby, the same in every later attempt), `u16` n ≥ 1, then n × (contribution key (33), blob of that seat's signed `start`); each start names the record's check |
 | `start_received` | the signed `start` bytes |
-| `lobby_state` | state (`u8`: 1 Open, 4 Funding, 5 Active). Host: Funding or Active may follow `lobby_ended` (a creation the signing engine completed stands, decision 26). Member: 1 is a retry (its saved start is spent), 4 and 5 the creation's state |
+| `lobby_state` | state (`u8`: 1 Open, 4 Funding, 5 Active). Host: Funding or Active may follow `lobby_ended` (a creation the signing engine completed stands, decision 26). Member: 1 is a retry, followed by the spent start's `check_id` (32): its saved start is spent, and its answer too if it is to that check (an answer to a later check stands, decision 29); 4 and 5 (alone) the creation's state |
 
 ## 2. Decisions to confirm or overrule
 
@@ -294,9 +294,12 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
     showed the loss (scenario S12). Not changed here beyond the above.
 29. **The signing outcome is saved on both sides** (review B, B2, the owner's
     coordinator's decision). The member saves its round's outcome in its own
-    `lobby_state` record: a retry spends its saved start (and the check it
-    answered, so a start for it resent by a host that is behind is ignored),
-    and Funding or Active are its creation's state. So
+    `lobby_state` record: a retry spends its saved start, and the answer to
+    that start's check, so a start for it resent by a host that is behind is
+    ignored. The record names that check: the Retry itself names none, and a
+    member that answered the next check before its signing engine reported
+    the retry keeps that answer (confirmation review, N1). Funding or Active
+    are its creation's state. So
     `gz_lobby_member_resume` never hands a finished check to the signing
     engine again, and the shown state survives a restart. A crash can still
     lose that save, so the hand-off stays idempotent: `begin` for a finished

@@ -108,7 +108,15 @@ typedef struct {
  * hand-off (Open and a ready check after a retry), where it ends the lobby
  * with cancel reason 3. A Funding or Active outcome is always accepted, also
  * after the lobby ended by a cancel: a creation the signing engine completed
- * is never refused. */
+ * is never refused. The signing engine reports Funding or Active only for the
+ * round it was last handed and is still running: after a Retry, or once that
+ * round has ended, it has no round to complete and reports neither (the
+ * lobby, once a round was ever handed over, cannot tell a late report from a
+ * current one).
+ *
+ * A Retry names no check. The member spends its saved start; it withdraws
+ * its answer only if that answer is to the spent start's check, so an answer
+ * to a later check given before the Retry arrived stands. */
 #define GZ_LOBBY_ROUND_FUNDING 1     /* the creation is signed: funding */
 #define GZ_LOBBY_ROUND_ACTIVE  2     /* the factory is funded */
 #define GZ_LOBBY_ROUND_RETRY   3     /* host: members named failed; the rest go back to Ready.

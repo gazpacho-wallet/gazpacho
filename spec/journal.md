@@ -335,7 +335,7 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 
 | Type | Record | Contents | Saved before | Release |
 |---|---|---|---|---|
-| `0x00010018` | `lobby_state` | Host: the lobby's state after a signing attempt, `u8`: 1 Open (a retry without the named seats), 4 Funding, 5 Active; Funding or Active may follow `lobby_ended` (a creation the signing engine completed stands). Member: its round's outcome, `u8`: 1 a retry (the saved start is spent), 4 Funding, 5 Active | Host: the `lobby_status` that shows it. Member: anything that shows it; a restart then never hands the finished check to the signing engine again | S1 |
+| `0x00010018` | `lobby_state` | Host: the lobby's state after a signing attempt, `u8`: 1 Open (a retry without the named seats), 4 Funding, 5 Active; Funding or Active may follow `lobby_ended` (a creation the signing engine completed stands). Member: its round's outcome: 1 a retry, then the spent start's `check_id` (32; the start is spent, and the member's answer too if it is to that check: an answer to a later check stands), or 4 Funding, 5 Active (the `u8` alone) | Host: the `lobby_status` that shows it. Member: anything that shows it; a restart then never hands the finished check to the signing engine again | S1 |
 
 ## 10. What is never stored
 

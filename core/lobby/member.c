@@ -8,9 +8,11 @@
  *   HOST_FAULT     fault u8, u16 len, evidence a, u16 len, evidence b
  *   START_RECEIVED the signed start bytes
  *   LOBBY_ENDED    state u8 (0: the member left), reason u16, u16 len, the cancel
- *   LOBBY_STATE    state u8: the signing engine's outcome (1 Open: a retry, the
- *                  start is spent; 4 Funding; 5 Active), so that a restart never
- *                  hands a finished check to the signing engine again */
+ *   LOBBY_STATE    state u8: the signing engine's outcome, so that a restart
+ *                  never hands a finished check to the signing engine again:
+ *                  1 Open (a retry) then the spent start's check_id (32): the
+ *                  start is spent, and the answer too if it is to that check;
+ *                  4 Funding or 5 Active (the u8 alone) */
 #include "lobby_internal.h"
 #include <string.h>
 
@@ -294,6 +296,17 @@ int gz_lobby_member_may_sign(const gz_lobby_member_t *m, const uint8_t check_id[
            memcmp(m->answered_check, check_id, 32) == 0 && m->ready_version == m->frozen_version;
 }
 
+/* A retry spent the saved start, of check `check`. The answer goes too if it
+ * is to that check, so a start for it resent by a host that is behind is
+ * ignored; an answer to a later check, given before the signing engine
+ * reported the retry, stands (confirmation review, N1). */
+static void spend_start(gz_lobby_member_t *m, const uint8_t check[32])
+{
+    m->start_len = 0;
+    m->role = 0;
+    if (m->has_answered && memcmp(m->answered_check, check, 32) == 0) m->has_answered = 0;
+}
+
 /* The saved start to the signing engine. */
 static gz_status_t begin_signing(gz_lobby_member_t *m, int resume, gz_action_list_t *out)
 {
@@ -547,10 +560,10 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
         else m->lobby_state = p[0];
         return GZ_OK;
     case GZ_REC_LOBBY_STATE:                          /* the signing outcome (B2) */
-        if (len != 1 || (p[0] != GZ_LOBBY_OPEN && p[0] != GZ_LOBBY_FUNDING && p[0] != GZ_LOBBY_ACTIVE))
+        if (len == 33 ? p[0] != GZ_LOBBY_OPEN : (len != 1 || (p[0] != GZ_LOBBY_FUNDING && p[0] != GZ_LOBBY_ACTIVE)))
             return GZ_ERR_CORRUPT;
         if (m->stale_seat) return GZ_OK;              /* an older epoch's round */
-        if (p[0] == GZ_LOBBY_OPEN) { m->start_len = 0; m->role = 0; m->has_answered = 0; }
+        if (p[0] == GZ_LOBBY_OPEN) spend_start(m, p + 1);
         else m->round_state = m->lobby_state = p[0];
         return GZ_OK;
     default:
@@ -570,7 +583,8 @@ gz_status_t gz_lobby_member_resume(gz_lobby_member_t *m, gz_action_list_t *out)
 
 gz_status_t gz_lobby_member_round_result(gz_lobby_member_t *m, int outcome, gz_action_list_t *out)
 {
-    uint8_t st8;
+    uint8_t st8, r[33];
+    gz_lobby_msg_t g;
     if (!m || !out || outcome < GZ_LOBBY_ROUND_FUNDING || outcome > GZ_LOBBY_ROUND_FAILED) return GZ_ERR_ARGUMENT;
     if (outcome == GZ_LOBBY_ROUND_FUNDING || outcome == GZ_LOBBY_ROUND_ACTIVE) {
         /* Saved, so that a restart never hands this check over again (review
@@ -586,11 +600,11 @@ gz_status_t gz_lobby_member_round_result(gz_lobby_member_t *m, int outcome, gz_a
     }
     if (m->ended || m->round_state >= GZ_LOBBY_FUNDING) return gz_la_cmd_refused(out, GZ_CMD_ROUND_RESULT, m->lobby_state);
     if (outcome == GZ_LOBBY_ROUND_RETRY && m->start_len) {   /* the start is spent; the next check's is new */
-        st8 = GZ_LOBBY_OPEN;
-        TRY(gz_la_save1(out, GZ_REC_LOBBY_STATE, &st8, 1));
-        m->start_len = 0;
-        m->role = 0;
-        m->has_answered = 0;                          /* its check is over: a resent start for it is ignored */
+        r[0] = GZ_LOBBY_OPEN;
+        if (gz_lobby_decode(m->start_msg, m->start_len, &g) != GZ_DEC_OK) return GZ_ERR_CORRUPT;   /* verified when taken */
+        memcpy(r + 1, g.check_id, 32);
+        TRY(gz_la_save1(out, GZ_REC_LOBBY_STATE, r, sizeof r));
+        spend_start(m, r + 1);
     }
     return GZ_OK;                                     /* Failed: the host's cancel follows */
 }

@@ -10,7 +10,7 @@
 #include <string.h>
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
-extern unsigned long lobby_seq_stats[8];
+extern unsigned long lobby_seq_stats[10];
 
 int main(int argc, char **argv)
 {
@@ -37,7 +37,10 @@ int main(int argc, char **argv)
                 buf[k] = ops[sim_rng_below(&R, sizeof ops)];
                 buf[k + 1] = (uint8_t)sim_rng_below(&R, 10);
                 if (buf[k] == 5) buf[k + 2] = sim_rng_below(&R, 4) ? 11 : 3;     /* the latest values, with the check */
-                if (buf[k] == 8) buf[k + 2] = sim_rng_below(&R, 4) ? 0 : 3;      /* mostly the window, or the deadline */
+                if (buf[k] == 8) {                                                /* mostly the window; the deadline; */
+                    w = sim_rng_below(&R, 8);                                     /* the budget, in Signing too (B3) */
+                    buf[k + 2] = w < 5 ? 0 : w == 5 ? 3 : 4;
+                }
                 if (buf[k] == 9)                                                  /* seconds, sometimes minutes */
                     buf[k + 2] = sim_rng_below(&R, 4) ? (uint8_t)sim_rng_below(&R, 100) : (uint8_t)(128 + sim_rng_below(&R, 3));
                 if (buf[k] == 10) buf[k + 2] = (uint8_t)(5 * sim_rng_below(&R, 51) + 3 + sim_rng_below(&R, 2));   /* an outcome */
@@ -46,6 +49,18 @@ int main(int argc, char **argv)
             /* a crowd of keys: the connection, seat and creation caps are reached */
             static const uint8_t ops[] = {0, 0, 0, 2, 3, 3, 5, 7, 8, 9, 10, 11};
             buf[0] = (uint8_t)(2 * sim_rng_below(&R, 4));
+            if (sim_rng_below(&R, 2)) {
+                /* half of them: 36 keys in turn connect, join and leave, a second
+                 * apart, so the 4 x target creation cap is reached (N3) */
+                n = 1 + 3 * 153;
+                for (w = 1; w < n; w++) buf[w] = (uint8_t)sim_rng_below(&R, 256);
+                for (w = 0; w < 36 && k + 12 <= n; w++, k += 12) {
+                    buf[k] = 0; buf[k + 1] = (uint8_t)w;
+                    buf[k + 3] = 3; buf[k + 4] = (uint8_t)w;
+                    buf[k + 6] = 7; buf[k + 7] = (uint8_t)w; buf[k + 8] = 0;
+                    buf[k + 9] = 9; buf[k + 11] = 10;                         /* one second */
+                }
+            }
             for (; k + 3 <= n; k += 3) {
                 buf[k] = ops[sim_rng_below(&R, sizeof ops)];
                 buf[k + 1] = (uint8_t)sim_rng_below(&R, 64);
@@ -70,10 +85,11 @@ int main(int argc, char **argv)
         LLVMFuzzerTestOneInput(buf, n);
     }
     printf("fuzz_seq: %lu scripts, %lu steps; %lu seats, %lu inputs with a check, %lu starts, %lu begins, "
-           "%lu restarts, %lu members ended, %lu lobbies ended\n", iters, lobby_seq_stats[0], lobby_seq_stats[1],
-           lobby_seq_stats[2], lobby_seq_stats[3], lobby_seq_stats[4], lobby_seq_stats[5], lobby_seq_stats[6],
-           lobby_seq_stats[7]);
+           "%lu restarts, %lu members ended, %lu lobbies ended; %lu at the creation cap, %lu budget timers in Signing\n",
+           iters, lobby_seq_stats[0], lobby_seq_stats[1], lobby_seq_stats[2], lobby_seq_stats[3], lobby_seq_stats[4],
+           lobby_seq_stats[5], lobby_seq_stats[6], lobby_seq_stats[7], lobby_seq_stats[8], lobby_seq_stats[9]);
     CHECK(lobby_seq_stats[1] > 0 && lobby_seq_stats[2] > 0 && lobby_seq_stats[3] > 0 && lobby_seq_stats[4] > 0 &&
           lobby_seq_stats[5] > 0);
+    if (iters >= 2000) CHECK(lobby_seq_stats[8] > 0 && lobby_seq_stats[9] > 0);   /* N3: the long run reaches both */
     return check_done();
 }
