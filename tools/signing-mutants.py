@@ -46,6 +46,10 @@ RULES = {
     "WIPE_AFTER_SIGN": ("wipe(&r->secnonce[i], sizeof r->secnonce[i]);", ""),
     "INCARNATION_MIX": ("put(&w, rnd, 32); put64(&w, e->incarnation); put64(&w, serial);", "put(&w, rnd, 32); (void)serial;"),
     "NO_UNSET_SLOT": ("if (r->have_nonce[i] != all_bits(it)) return 0;", ""),
+    # review A: F2 (refused identifiers beyond the exact list), F3 (eviction order), F1 (failed until a start)
+    "KNOWN_FILTER": ("for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++)", "for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++) if (k >= 0) return 0; else"),
+    "EVICT_SETTLED_FIRST": ("settled(r) > settled(best) ||", "0 ||"),
+    "FAIL_ON_ERROR": ("e->failed = 1;", "(void)0;"),
 }
 
 
