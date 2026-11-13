@@ -11,8 +11,8 @@ M1, M4, M5, L6).
   2. An idle program's poll timeout honours its timers: a 200 ms test timer
      fires about ten times in 2 s with nothing else to wake the loop.
   3. Listening only after the start, seen from outside: a TCP connect to the
-     host's port is refused until it prints "ready" (a start held 2 s), and
-     accepted after.
+     host's port is refused for the whole of a start held 2 s; when one is
+     first accepted, "ready" has been written.
   4. SIGPIPE: the reader of the host's standard output goes away; the host
      carries on and stops cleanly on SIGTERM.
 """
@@ -95,13 +95,24 @@ def main():
                     logs)
         procs.append(late)
         check(late.wait_for(r"start-delay ms=2000") is not None, "a host holds its start 2 s")
-        refused = []
-        while late.find(r"ready incarnation")[0] is None and late.p.poll() is None:
-            refused.append(not can_connect(p3))
+        # Wait for the listener itself (a connect that succeeds), not for the
+        # "ready" line: the program writes "ready" and then listens, so when a
+        # connect first succeeds, "ready" is already in the pipe, however far
+        # behind this test's reader is (review B of PR 27, B3: reading the
+        # line first raced with the reader thread).
+        t_held = time.time()
+        refused, t_open = 0, None
+        while late.p.poll() is None and time.time() < t_held + 30:
+            if can_connect(p3):
+                t_open = time.time()
+                break
+            refused += 1
             time.sleep(0.1)
-        check(len(refused) >= 5 and all(refused), "every connect before ready is refused (%d tries)" % len(refused))
-        late.wait_for(r"listening address")
-        check(can_connect(p3), "a connect after ready is accepted")
+        ready_seen = late.wait_for(r"ready incarnation", timeout=5.0) is not None
+        check(t_open is not None and refused >= 5 and t_open - t_held >= 1.0 and ready_seen,
+              "connects are refused until the start is over: %d refused, the first accepted %.2f s into a "
+              "2 s held start, \"ready\" already written then (%s)"
+              % (refused, (t_open or 0) - t_held, ready_seen))
         late.stop()
 
         # 4. SIGPIPE on standard output ---------------------------------------------
