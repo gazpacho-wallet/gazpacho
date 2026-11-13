@@ -365,13 +365,23 @@ static int m_unlink(void *ctx, const char *path)
     return 0;
 }
 
+/* Deterministic "random" bytes: a counter, so the first file a fresh memfs
+ * creates has the salt 00 01 .. 1f (spec 11's vectors). */
+static int m_random(void *ctx, uint8_t *buf, size_t len)
+{
+    memfs_t *m = ctx;
+    if (m->random_fails) { errno = EIO; return -1; }
+    for (size_t i = 0; i < len; i++) buf[i] = (uint8_t)(m->random_ctr++);
+    return 0;
+}
+
 void memfs_init(memfs_t *m)
 {
     memset(m, 0, sizeof *m);
     for (int i = 0; i < MEMFS_FILES; i++) m->vol[i].inode = m->dur[i].inode = -1;
     for (int i = 0; i < MEMFS_FDS; i++) m->fd_inode[i] = -1;
     gz_journal_os_t os = {m_open, m_close, m_pread, m_pwrite, m_sync, m_sync_dir, m_truncate,
-                          m_size, m_lock, m_link, m_rename, m_unlink, m_pread_device, m};
+                          m_size, m_lock, m_link, m_rename, m_unlink, m_pread_device, m_random, m};
     m->os = os;
 }
 

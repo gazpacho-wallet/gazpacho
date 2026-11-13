@@ -26,13 +26,16 @@ def tool(*args):
     return r.returncode, r.stdout + r.stderr
 
 
+SALT = bytes(range(32))
+
+
 def journal(extra=b""):
-    d = bytearray(header())
-    d += entry(1, 1, 0, bytes(8))
-    d += entry(3, 1, 0, len(d).to_bytes(8, "big"))
+    d = bytearray(header(SALT))
+    d += entry(1, 1, 0, bytes(8), len(d), SALT)
+    d += entry(3, 1, 0, len(d).to_bytes(8, "big"), len(d), SALT)
     rec = (0x00020006).to_bytes(4, "big") + len(SECRET).to_bytes(4, "big") + SECRET
-    d += entry(2, 1, 1, (1).to_bytes(4, "big") + rec)
-    d += entry(3, 1, 0, len(d).to_bytes(8, "big"))
+    d += entry(2, 1, 1, (1).to_bytes(4, "big") + rec, len(d), SALT)
+    d += entry(3, 1, 0, len(d).to_bytes(8, "big"), len(d), SALT)
     return d + extra
 
 
@@ -43,8 +46,8 @@ with tempfile.TemporaryDirectory() as tmp:
     open(clean, "wb").write(journal())
     open(torn, "wb").write(journal(b"\x00\x00\x00"))
     bad = journal()
-    bad[150] ^= 1
-    bad += entry(3, 1, 0, len(bad).to_bytes(8, "big"))
+    bad[178 + 30] ^= 1                 # inside the batch, before the last mark
+    bad += entry(3, 1, 0, len(bad).to_bytes(8, "big"), len(bad), SALT)
     open(corrupt, "wb").write(bad)
 
     for path, code, word in [(clean, 0, "clean"), (torn, 1, "torn"), (corrupt, 2, "corrupt")]:

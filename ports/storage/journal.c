@@ -1,5 +1,5 @@
 /* The storage journal. See journal.h and spec/journal.md (draft 3's crash
- * logic; draft 2's clear format, a stand-in that will not ship). */
+ * logic; the salted clear format, a stand-in that will not ship). */
 #if defined(__linux__)
 #define _GNU_SOURCE /* O_DIRECT */
 #endif
@@ -25,7 +25,7 @@ const uint8_t gz_journal_chain_mainnet[32] = {
     0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72, 0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f,
     0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c, 0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00};
 
-static const uint8_t MAGIC[8] = {'G', 'Z', 'J', 'O', 'U', 'R', 'N', 'L'};
+static const uint8_t MAGIC[8] = {'G', 'Z', 'J', 'O', 'U', 'R', 'N', 'S'}; /* S: salted */
 static const uint8_t GUARD_MAGIC[8] = {'G', 'Z', 'G', 'U', 'A', 'R', 'D', '1'};
 
 const char *gz_journal_status_name(gz_journal_status_t s)
@@ -54,21 +54,54 @@ static void put64(uint8_t *p, uint64_t v) { put32(p, (uint32_t)(v >> 32)); put32
  * Everything that knows how the header and an entry are framed and protected
  * is in this section, and nothing outside it reads or writes a frame's own
  * bytes: the scan, the writer and the reader call frame_seal, frame_open,
- * frame_mark_candidate, header_seal and header_open. This is draft 2's format
- * (spec/journal.md 2.1 and 3): a clear payload and an 8-byte truncated
- * SHA-256 check. The encrypted format of spec/storage-encryption.md (5.3,
- * 5.4) is meant to replace this section alone; the crash logic around it
- * (scan, torn tail, sync marks, confirmation order) does not change.
- *
- * `offset` is the file offset at which the frame starts. This format does not
- * use it (a sync mark carries its own offset in its payload, checked outside
- * the codec); the encrypted format binds every entry to it. */
+ * frame_mark_candidate, header_seal and header_open. This is the clear
+ * format (spec/journal.md 2.1 and 3): a clear payload, and a 16-byte check
+ * SHA-256(salt || u64 offset || frame) truncated, where `salt` is 32 random
+ * bytes written once in the header and `offset` the frame's own position in
+ * the file. The salt and the offset bind every entry to this file and this
+ * place, so bytes a peer chose (inside a record) cannot form a valid entry or
+ * sync mark that the scan would accept (review of PR 29, H1). The encrypted
+ * format of spec/storage-encryption.md (5.3, 5.4) is meant to replace this
+ * section alone; the crash logic around it does not change. */
 
 #define FRAME_HEAD 21u    /* length, kind, incarnation, sequence */
-#define FRAME_TAIL 8u     /* check */
+#define FRAME_TAIL GZ_JOURNAL_CHECK_LEN
 #define SMALL_PAYLOAD 8u  /* incarnation entry and sync mark */
 #define SMALL_LENGTH (FRAME_HEAD - 4 + SMALL_PAYLOAD) /* their `length`: 25 */
+#define HEADER_BODY (8u + 32u + GZ_JOURNAL_SALT_LEN)  /* magic, chain, salt */
 
+/* The check of a frame: SHA-256(salt || u64 offset || frame[0..len)), the
+ * first GZ_JOURNAL_CHECK_LEN bytes. */
+void gz_journal_entry_check(const uint8_t salt[GZ_JOURNAL_SALT_LEN], uint64_t offset, const uint8_t *frame,
+                            size_t len, uint8_t out[GZ_JOURNAL_CHECK_LEN])
+{
+    uint8_t small[512], h[32];
+    size_t n = GZ_JOURNAL_SALT_LEN + 8 + len;
+    uint8_t *buf = n <= sizeof small ? small : malloc(n);
+    if (!buf) { /* no memory: a check that matches nothing a writer made */
+        memset(out, 0, GZ_JOURNAL_CHECK_LEN);
+        out[0] = 1;
+        memcpy(out + 1, frame, len < GZ_JOURNAL_CHECK_LEN - 1 ? len : GZ_JOURNAL_CHECK_LEN - 1);
+        out[GZ_JOURNAL_CHECK_LEN - 1] ^= 0x5a;
+        return;
+    }
+    memcpy(buf, salt, GZ_JOURNAL_SALT_LEN);
+    put64(buf + GZ_JOURNAL_SALT_LEN, offset);
+    if (len) memcpy(buf + GZ_JOURNAL_SALT_LEN + 8, frame, len);
+    sha256(buf, n, h);
+    if (buf != small) free(buf);
+    memcpy(out, h, GZ_JOURNAL_CHECK_LEN);
+}
+
+static int check_ok(const uint8_t *salt, uint64_t offset, const uint8_t *frame, size_t len, const uint8_t *check)
+{
+    uint8_t c[GZ_JOURNAL_CHECK_LEN];
+    gz_journal_entry_check(salt, offset, frame, len, c);
+    return memcmp(c, check, GZ_JOURNAL_CHECK_LEN) == 0;
+}
+
+/* The 8-byte check of the side files (guard, restore marker): their own
+ * formats, not journal entries. */
 static void check8(const uint8_t *data, size_t len, uint8_t out[8])
 {
     uint8_t h[32];
@@ -85,17 +118,16 @@ static int check8_ok(const uint8_t *data, size_t len, const uint8_t *check)
 /* Where the caller writes the payload before frame_seal. */
 static uint8_t *frame_payload(uint8_t *out) { return out + FRAME_HEAD; }
 
-/* Complete the frame whose payload is already at frame_payload(out); returns
- * its size in the file. */
-static size_t frame_seal(uint8_t *out, uint8_t kind, uint64_t incarnation, uint64_t sequence,
-                         size_t payload_len, uint64_t offset)
+/* Complete the frame whose payload is already at frame_payload(out), to sit
+ * at file offset `offset`; returns its size in the file. */
+static size_t frame_seal(uint8_t *out, const uint8_t *salt, uint8_t kind, uint64_t incarnation,
+                         uint64_t sequence, size_t payload_len, uint64_t offset)
 {
-    (void)offset;
     put32(out, (uint32_t)(FRAME_HEAD - 4 + payload_len));
     out[4] = kind;
     put64(out + 5, incarnation);
     put64(out + 13, sequence);
-    check8(out, FRAME_HEAD + payload_len, out + FRAME_HEAD + payload_len);
+    gz_journal_entry_check(salt, offset, out, FRAME_HEAD + payload_len, out + FRAME_HEAD + payload_len);
     return FRAME_HEAD + payload_len + FRAME_TAIL;
 }
 
@@ -109,11 +141,11 @@ typedef struct {
 
 /* 1 if `q[0..avail)`, at file offset `offset`, starts with an intact frame:
  * length in bounds and right for its kind, enough bytes, known kind, check
- * correct. Fills `*e`, the payload pointing into `q`. `e->size` is set as
- * soon as the length is known, even when the frame then proves invalid. */
-static int frame_open(const uint8_t *q, uint64_t avail, uint64_t offset, entry_t *e)
+ * correct for this file's salt and this offset. Fills `*e`, the payload
+ * pointing into `q`. `e->size` is set as soon as the length is known, even
+ * when the frame then proves invalid. */
+static int frame_open(const uint8_t *q, uint64_t avail, uint64_t offset, const uint8_t *salt, entry_t *e)
 {
-    (void)offset;
     if (avail < 4) return 0;
     uint32_t length = get32(q);
     if (length < GZ_JOURNAL_ENTRY_MIN || length > GZ_JOURNAL_ENTRY_MAX) return 0;
@@ -122,7 +154,7 @@ static int frame_open(const uint8_t *q, uint64_t avail, uint64_t offset, entry_t
     e->kind = q[4];
     if (e->kind < GZ_JOURNAL_KIND_INCARNATION || e->kind > GZ_JOURNAL_KIND_MARK) return 0;
     if (e->kind != GZ_JOURNAL_KIND_BATCH && length != SMALL_LENGTH) return 0;
-    if (!check8_ok(q, 4 + (size_t)length, q + 4 + length)) return 0;
+    if (!check_ok(salt, offset, q, 4 + (size_t)length, q + 4 + length)) return 0;
     e->incarnation = get64(q + 5);
     e->sequence = get64(q + 13);
     e->payload = q + FRAME_HEAD;
@@ -137,34 +169,41 @@ static int frame_mark_candidate(const uint8_t *q, uint64_t avail)
     return avail >= GZ_JOURNAL_MARK_LEN && get32(q) == SMALL_LENGTH && q[4] == GZ_JOURNAL_KIND_MARK;
 }
 
-static size_t header_seal(uint8_t out[48], const uint8_t chain[32])
+static size_t header_seal(uint8_t out[GZ_JOURNAL_HEADER_LEN], const uint8_t chain[32], const uint8_t *salt)
 {
+    uint8_t h[32];
     memcpy(out, MAGIC, 8);
     memcpy(out + 8, chain, 32);
-    check8(out, 40, out + 40);
+    memcpy(out + 40, salt, GZ_JOURNAL_SALT_LEN);
+    sha256(out, HEADER_BODY, h);
+    memcpy(out + HEADER_BODY, h, GZ_JOURNAL_CHECK_LEN);
     return GZ_JOURNAL_HEADER_LEN;
 }
 
-/* GZ_JOURNAL_OK, ERR_HEADER (short, magic, check) or ERR_NETWORK. */
-static gz_journal_status_t header_open(const uint8_t *d, size_t len, const uint8_t chain[32])
+/* GZ_JOURNAL_OK, ERR_HEADER (short, magic, check) or ERR_NETWORK. On OK,
+ * *salt points at the file's salt. */
+static gz_journal_status_t header_open(const uint8_t *d, size_t len, const uint8_t chain[32], const uint8_t **salt)
 {
-    if (len < GZ_JOURNAL_HEADER_LEN || memcmp(d, MAGIC, 8) != 0 || !check8_ok(d, 40, d + 40))
-        return GZ_JOURNAL_ERR_HEADER;
+    uint8_t h[32];
+    if (len < GZ_JOURNAL_HEADER_LEN || memcmp(d, MAGIC, 8) != 0) return GZ_JOURNAL_ERR_HEADER;
+    sha256(d, HEADER_BODY, h);
+    if (memcmp(h, d + HEADER_BODY, GZ_JOURNAL_CHECK_LEN) != 0) return GZ_JOURNAL_ERR_HEADER;
     if (memcmp(d + 8, chain, 32) != 0) return GZ_JOURNAL_ERR_NETWORK;
+    *salt = d + 40;
     return GZ_JOURNAL_OK;
 }
 
 /* --- encoders, on top of the codec ---------------------------------------- */
 
-static size_t encode_small_at(uint8_t *out, uint8_t kind, uint64_t incarnation, uint64_t value,
-                              uint64_t offset)
+static size_t encode_small_at(uint8_t *out, const uint8_t *salt, uint8_t kind, uint64_t incarnation,
+                              uint64_t value, uint64_t offset)
 {
     put64(frame_payload(out), value);
-    return frame_seal(out, kind, incarnation, 0, SMALL_PAYLOAD, offset);
+    return frame_seal(out, salt, kind, incarnation, 0, SMALL_PAYLOAD, offset);
 }
 
-static size_t encode_batch_at(uint8_t *out, gz_batch_id_t id, const gz_record_t *records, size_t n,
-                              uint64_t offset)
+static size_t encode_batch_at(uint8_t *out, const uint8_t *salt, gz_batch_id_t id, const gz_record_t *records,
+                              size_t n, uint64_t offset)
 {
     uint8_t *pl = frame_payload(out);
     size_t p = 4;
@@ -176,20 +215,19 @@ static size_t encode_batch_at(uint8_t *out, gz_batch_id_t id, const gz_record_t 
         if (records[i].bytes.len) memcpy(pl + p, records[i].bytes.data, records[i].bytes.len);
         p += records[i].bytes.len;
     }
-    return frame_seal(out, GZ_JOURNAL_KIND_BATCH, id.incarnation, id.sequence, p, offset);
+    return frame_seal(out, salt, GZ_JOURNAL_KIND_BATCH, id.incarnation, id.sequence, p, offset);
 }
 
-/* The public encoders do not know where their output will sit in a file (a
- * mark's offset is its value); the encrypted format will need an offset
- * argument here. The writer uses the *_at forms with the real offset. */
-size_t gz_journal_encode_header(uint8_t out[48], const uint8_t chain[32])
+size_t gz_journal_encode_header(uint8_t out[GZ_JOURNAL_HEADER_LEN], const uint8_t chain[32],
+                                const uint8_t salt[GZ_JOURNAL_SALT_LEN])
 {
-    return header_seal(out, chain);
+    return header_seal(out, chain, salt);
 }
 
-size_t gz_journal_encode_small(uint8_t out[37], uint8_t kind, uint64_t incarnation, uint64_t value)
+size_t gz_journal_encode_small(uint8_t out[GZ_JOURNAL_MARK_LEN], const uint8_t salt[GZ_JOURNAL_SALT_LEN],
+                               uint64_t offset, uint8_t kind, uint64_t incarnation, uint64_t value)
 {
-    return encode_small_at(out, kind, incarnation, value, kind == GZ_JOURNAL_KIND_MARK ? value : 0);
+    return encode_small_at(out, salt, kind, incarnation, value, offset);
 }
 
 uint64_t gz_journal_batch_size(const gz_record_t *records, size_t n)
@@ -203,9 +241,10 @@ uint64_t gz_journal_batch_size(const gz_record_t *records, size_t n)
     return FRAME_HEAD + payload + FRAME_TAIL;
 }
 
-size_t gz_journal_encode_batch(uint8_t *out, gz_batch_id_t id, const gz_record_t *records, size_t n)
+size_t gz_journal_encode_batch(uint8_t *out, const uint8_t salt[GZ_JOURNAL_SALT_LEN], uint64_t offset,
+                               gz_batch_id_t id, const gz_record_t *records, size_t n)
 {
-    return encode_batch_at(out, id, records, n, 0);
+    return encode_batch_at(out, salt, id, records, n, offset);
 }
 
 /* --- reading -------------------------------------------------------------- */
@@ -254,9 +293,9 @@ long gz_journal_parse_batch(const uint8_t *payload, size_t len, gz_record_t *rec
 /* 1 if `q[0..avail)` starts with a valid entry, found at file offset `pos`
  * (spec section 5, step 3): an intact frame whose payload is right for its
  * kind. */
-static int entry_at(const uint8_t *q, uint64_t avail, uint64_t pos, entry_t *e)
+static int entry_at(const uint8_t *q, uint64_t avail, uint64_t pos, const uint8_t *salt, entry_t *e)
 {
-    if (!frame_open(q, avail, pos, e)) return 0;
+    if (!frame_open(q, avail, pos, salt, e)) return 0;
     e->value = e->kind == GZ_JOURNAL_KIND_BATCH ? 0 : get64(e->payload);
     if (e->kind == GZ_JOURNAL_KIND_MARK && e->value != pos) return 0;
     if (e->kind == GZ_JOURNAL_KIND_BATCH &&
@@ -265,11 +304,11 @@ static int entry_at(const uint8_t *q, uint64_t avail, uint64_t pos, entry_t *e)
     return 1;
 }
 
-static int mark_at(const uint8_t *d, uint64_t len, uint64_t p)
+static int mark_at(const uint8_t *d, uint64_t len, uint64_t p, const uint8_t *salt)
 {
     entry_t e;
     if (!frame_mark_candidate(d + p, len - p)) return 0;
-    return entry_at(d + p, len - p, p, &e);
+    return entry_at(d + p, len - p, p, salt, &e);
 }
 
 static gz_journal_status_t refuse(gz_journal_scan_t *o, gz_journal_status_t s, uint64_t at)
@@ -280,11 +319,13 @@ static gz_journal_status_t refuse(gz_journal_scan_t *o, gz_journal_status_t s, u
     return s;
 }
 
-/* An order refusal still records the highest incarnation any valid entry
- * named (an import takes its floor from it: review B, B2). */
-static gz_journal_status_t refuse_order(gz_journal_scan_t *o, uint64_t at, uint64_t inc, uint64_t named)
+/* An order refusal still records the highest incarnation of the valid
+ * prefix, before the offending entry (an import takes its floor from it:
+ * review B, B2). Never what the rejected entry names: the scan has refused it
+ * (confirmation review of PR 29). */
+static gz_journal_status_t refuse_order(gz_journal_scan_t *o, uint64_t at, uint64_t inc)
 {
-    o->highest_incarnation = inc > named ? inc : named;
+    o->highest_incarnation = inc;
     return refuse(o, GZ_JOURNAL_ERR_ORDER, at);
 }
 
@@ -293,26 +334,27 @@ gz_journal_status_t gz_journal_scan(const uint8_t *d, size_t len, const uint8_t 
 {
     memset(o, 0, sizeof *o);
     o->file_end = len;
-    gz_journal_status_t hs = header_open(d, len, chain);
+    const uint8_t *salt = NULL;
+    gz_journal_status_t hs = header_open(d, len, chain, &salt);
     if (hs != GZ_JOURNAL_OK) return refuse(o, hs, 0);
 
     uint64_t p = GZ_JOURNAL_HEADER_LEN, inc = 0, seq = 0;
     int bad_type = 0;
     entry_t e;
-    while (p < len && entry_at(d + p, len - p, p, &e)) {
+    while (p < len && entry_at(d + p, len - p, p, salt, &e)) {
         /* Order rules, spec section 3.4. */
         if (e.kind == GZ_JOURNAL_KIND_INCARNATION) {
-            if (e.incarnation <= inc || e.sequence != 0) return refuse_order(o, p, inc, e.incarnation);
+            if (e.incarnation <= inc || e.sequence != 0) return refuse_order(o, p, inc);
             inc = e.incarnation;
             seq = 0;
             o->n_incarnations++;
         } else {
-            if (inc == 0 || e.incarnation != inc) return refuse_order(o, p, inc, e.incarnation);
+            if (inc == 0 || e.incarnation != inc) return refuse_order(o, p, inc);
             if (e.kind == GZ_JOURNAL_KIND_MARK) {
-                if (e.sequence != 0) return refuse_order(o, p, inc, e.incarnation);
+                if (e.sequence != 0) return refuse_order(o, p, inc);
                 o->n_marks++;
             } else {
-                if (e.sequence != seq + 1) return refuse_order(o, p, inc, e.incarnation);
+                if (e.sequence != seq + 1) return refuse_order(o, p, inc);
                 seq = e.sequence;
                 o->n_batches++;
                 uint32_t n = get32(e.payload);
@@ -343,7 +385,7 @@ gz_journal_status_t gz_journal_scan(const uint8_t *d, size_t len, const uint8_t 
          * newest mark too: each proves its incarnation was used, and an
          * import takes its floor from it (review B, B2). */
         for (uint64_t m = p + 1; m + GZ_JOURNAL_MARK_LEN <= len; m++) {
-            if (mark_at(d, len, m)) {
+            if (mark_at(d, len, m, salt)) {
                 if (!o->mark_at) o->mark_at = m;
                 uint64_t mi = get64(d + m + 5);
                 if (mi > o->highest_incarnation) o->highest_incarnation = mi;
@@ -508,9 +550,27 @@ static long px_pread_device(void *ctx, int fd, void *buf, size_t len, uint64_t o
 #endif
 }
 
+/* Random bytes for a new file's salt: /dev/urandom, which every POSIX system
+ * the program targets has. */
+static int px_random(void *ctx, uint8_t *buf, size_t len)
+{
+    (void)ctx;
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    size_t got = 0;
+    while (got < len) {
+        ssize_t r = read(fd, buf + got, len - got);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        got += (size_t)r;
+    }
+    close(fd);
+    return got == len ? 0 : -1;
+}
+
 static const gz_journal_os_t POSIX_OS = {px_open, px_close, px_pread, px_pwrite, px_sync,
                                          px_sync_dir, px_truncate, px_size, px_lock, px_link,
-                                         px_rename, px_unlink, px_pread_device, NULL};
+                                         px_rename, px_unlink, px_pread_device, px_random, NULL};
 
 const gz_journal_os_t *gz_journal_os_posix(void) { return &POSIX_OS; }
 
@@ -527,6 +587,7 @@ struct gz_journal {
     char *dir, *path, *tmp_path, *guard_path, *guard_tmp, *lock_path;
     int fd, lock_fd;
     uint8_t chain[32];
+    uint8_t salt[GZ_JOURNAL_SALT_LEN]; /* this file's, from its header */
     uint64_t soft_limit, hard_limit, unsynced_max;
     uint64_t end;          /* bytes written */
     uint64_t durable_end;  /* bytes covered by the last synced sync mark */
@@ -779,7 +840,7 @@ static int make_durable(gz_journal_t *j)
 {
     uint8_t mark[GZ_JOURNAL_MARK_LEN];
     if (j->os.sync(j->os.ctx, j->fd) != 0) return 0;
-    encode_small_at(mark, GZ_JOURNAL_KIND_MARK, j->incarnation, j->end, j->end);
+    encode_small_at(mark, j->salt, GZ_JOURNAL_KIND_MARK, j->incarnation, j->end, j->end);
     if (!write_all(j, j->fd, mark, sizeof mark, j->end)) return 0;
     j->end += sizeof mark;
     if (j->os.sync(j->os.ctx, j->fd) != 0) return 0;
@@ -800,13 +861,15 @@ static int no_hard_links(int e)
 static gz_journal_status_t create_file(gz_journal_t *j)
 {
     uint8_t hdr[GZ_JOURNAL_HEADER_LEN];
+    /* A fresh random salt for this file (spec 2.1), before anything is made. */
+    if (j->os.random(j->os.ctx, j->salt, GZ_JOURNAL_SALT_LEN) != 0) return GZ_JOURNAL_ERR_IO;
     int fd = j->os.open(j->os.ctx, j->tmp_path, GZ_JOURNAL_OPEN_CREATE_EXCL);
     if (fd < 0 && errno == EEXIST) { /* left by a creation that crashed */
         if (j->os.unlink(j->os.ctx, j->tmp_path) != 0) return GZ_JOURNAL_ERR_IO;
         fd = j->os.open(j->os.ctx, j->tmp_path, GZ_JOURNAL_OPEN_CREATE_EXCL);
     }
     if (fd < 0) return GZ_JOURNAL_ERR_IO;
-    header_seal(hdr, j->chain);
+    header_seal(hdr, j->chain, j->salt);
     int ok = write_all(j, fd, hdr, sizeof hdr, 0) && j->os.sync(j->os.ctx, fd) == 0;
     ok = j->os.close(j->os.ctx, fd) == 0 && ok;
     /* The folder's lock is held, so no other writer can create journal.gzj
@@ -931,6 +994,7 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
     }
     st = gz_journal_scan(data, (size_t)size, j->chain, &info->scan, collect, &c);
     if (st != GZ_JOURNAL_OK) goto out;
+    memcpy(j->salt, data + 40, GZ_JOURNAL_SALT_LEN); /* the header passed the scan */
     if (c.oom) { st = GZ_JOURNAL_ERR_NO_MEMORY; goto out; }
     j->end = info->scan.valid_end;
     /* The restore marker: answered if the kept journal holds the answer (a
@@ -975,7 +1039,7 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
         goto out;
     }
     uint8_t ent[GZ_JOURNAL_MARK_LEN];
-    encode_small_at(ent, GZ_JOURNAL_KIND_INCARNATION, j->incarnation, cfg->clock_ms, j->end);
+    encode_small_at(ent, j->salt, GZ_JOURNAL_KIND_INCARNATION, j->incarnation, cfg->clock_ms, j->end);
     if (!write_all(j, j->fd, ent, sizeof ent, j->end)) { st = GZ_JOURNAL_ERR_IO; goto out; }
     j->end += sizeof ent;
     if (!make_durable(j)) { st = GZ_JOURNAL_ERR_IO; goto out; }
@@ -1085,7 +1149,7 @@ gz_journal_status_t gz_journal_save(gz_journal_t *j, const gz_action_t *a)
         j->guard_len = guard->bytes.len;
         j->guard_due = 1;
     }
-    encode_batch_at(buf, id, recs, n, j->end);
+    encode_batch_at(buf, j->salt, id, recs, n, j->end);
     int ok = write_all(j, j->fd, buf, (size_t)size, j->end);
     free(buf);
     if (!ok) return fail(j, GZ_JOURNAL_ERR_IO);
@@ -1176,7 +1240,7 @@ static int reader_next(void *ctx, gz_stored_batch_t *batch)
     }
     entry_t e;
     /* Read back and checked again: what was durable must still be there. */
-    if (!read_all(j, j->rbuf, size, off) || !entry_at(j->rbuf, size, off, &e) ||
+    if (!read_all(j, j->rbuf, size, off) || !entry_at(j->rbuf, size, off, j->salt, &e) ||
         e.kind != GZ_JOURNAL_KIND_BATCH || e.size != size) {
         fail(j, GZ_JOURNAL_ERR_IO);
         return 0;

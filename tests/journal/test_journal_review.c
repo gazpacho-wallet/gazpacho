@@ -36,6 +36,8 @@
 #define H_MARKER H_DIR "/" GZ_JOURNAL_MARKER_FILE
 #define H_LOCK   H_DIR "/" GZ_JOURNAL_LOCK_FILE
 #define H_STAGED H_DIR "/journal.gzj.import"
+/* A batch entry holding one 100-byte record, in the file. */
+#define B100 (4u + 17u + 4u + 8u + 100u + GZ_JOURNAL_CHECK_LEN)
 
 static gz_journal_t *jopen_c(memfs_t *fs, const gz_journal_os_t *os, uint64_t hard, uint64_t unsynced,
                              uint64_t counter, gz_journal_status_t *st, gz_journal_open_info_t *info)
@@ -114,7 +116,7 @@ static void failed_sync_then_restart(uint64_t which, int drops)
     memfs_get(&fs, H_JOURNAL, &seen);
     memfs_disk(&fs, H_JOURNAL, &disk);
     /* Linux: what failed is readable and not durable. */
-    CHECK(drops ? seen == disk : seen == disk + (which == 1 ? 141 : GZ_JOURNAL_MARK_LEN));
+    CHECK(drops ? seen == disk : seen == disk + (which == 1 ? B100 : GZ_JOURNAL_MARK_LEN));
     gz_journal_close(a);
     fs.fail_at = 0;
 
@@ -122,7 +124,7 @@ static void failed_sync_then_restart(uint64_t which, int drops)
     int ok = st == GZ_JOURNAL_OK && has_batch(b, inc, 1);
     /* (inc, 2) was durable only if its own sync passed. */
     ok = ok && has_batch(b, inc, 2) == (which == 3);
-    ok = ok && info.cut_bytes == (drops ? 0 : which == 1 ? 141 : GZ_JOURNAL_MARK_LEN);
+    ok = ok && info.cut_bytes == (drops ? 0 : which == 1 ? B100 : GZ_JOURNAL_MARK_LEN);
     if (!ok) printf("  failed sync %llu (drops %d): B open %s, cut %llu, kept (%llu,2) %d\n",
                     (unsigned long long)which, drops, gz_journal_status_name(st),
                     (unsigned long long)info.cut_bytes, (unsigned long long)inc, b ? has_batch(b, inc, 2) : -1);
@@ -568,16 +570,16 @@ static void test_hard_limit(void)
         memfs_init(&fs);
         gz_journal_t *j = jopen_c(&fs, NULL, hard, 300, 0, &st, NULL);
         uint64_t start = gz_journal_size(j);
-        CHECK(save(j, 1, 100, 1) == GZ_JOURNAL_OK); /* 141 bytes, not synced */
+        CHECK(save(j, 1, 100, 1) == GZ_JOURNAL_OK); /* B100 bytes, not synced */
         /* Exactly what a check for the entry and one mark lets in; the
          * unsynced bound then writes a mark before it. */
-        uint64_t room = hard - (start + 141) - GZ_JOURNAL_MARK_LEN;
-        size_t rec = (size_t)(room - 41 - (fits ? GZ_JOURNAL_MARK_LEN : 0));
+        uint64_t room = hard - (start + B100) - GZ_JOURNAL_MARK_LEN;
+        size_t rec = (size_t)(room - (B100 - 100) - (fits ? GZ_JOURNAL_MARK_LEN : 0));
         gz_journal_status_t s2 = save(j, 2, rec, 2);
         int n = drain(j);
         uint64_t end = gz_journal_size(j);
         CHECK(fits ? s2 == GZ_JOURNAL_OK && n == 2 && end == hard
-                   : s2 == GZ_JOURNAL_ERR_FULL && gz_journal_failed(j) && n == 0 && end == start + 141);
+                   : s2 == GZ_JOURNAL_ERR_FULL && gz_journal_failed(j) && n == 0 && end == start + B100);
         CHECK(end <= hard && file_len(&fs, H_JOURNAL) <= hard);
         gz_journal_close(j);
         /* Never past the limit: an open with room for its incarnation entry

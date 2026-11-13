@@ -13,7 +13,14 @@
  *   M28 An unreadable restore.gzr refuses the start.
  *   M5  The O_DIRECT refusal (EINVAL) falls back to an ordinary read.
  *   M24 The reader yields nothing once the journal has failed.
- *   M36 The guard file is settled from the newest kept guard record. */
+ *   M36 The guard file is settled from the newest kept guard record.
+ *
+ * And for the confirmation review of the fixes:
+ *   H1  A peer's sync mark inside a record (sealed without the file's salt,
+ *       or for another offset) followed by a tear is cut as a torn tail, not
+ *       refused, and gives an import no floor; a failing random source
+ *       refuses the creation; two real journals get different salts.
+ *   The import holds journal.gzj's lock until its rename. */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <signal.h>
@@ -267,8 +274,9 @@ static void test_import_floor(void)
 
     /* The journal it replaces is refused by the scan: its highest
      * incarnation still raises the floor. 0: an order violation (a valid
-     * batch under incarnation 9 after the end); 1: damage in the first
-     * batch, before every later mark (the newest mark names 5). */
+     * batch under incarnation 9 after the end): the valid prefix's 5, not the
+     * rejected entry's 9; 1: damage in the first batch, before every later
+     * mark (the newest mark names 5). */
     for (int how = 0; how < 2; how++) {
         memfs_init(&fs);
         starts(&fs, 5, &backup, &blen);
@@ -283,8 +291,8 @@ static void test_import_floor(void)
         if (how == 0) {
             uint8_t z[10] = {0};
             gz_record_t r = {0x7e570001, {z, 10}};
-            jl += gz_journal_encode_batch(bad + jl, (gz_batch_id_t){9, 1}, &r, 1);
-            want = 9;
+            jl += gz_journal_encode_batch(bad + jl, h_salt, jl, (gz_batch_id_t){9, 1}, &r, 1);
+            want = 5; /* the valid prefix's, never the rejected entry's 9 */
             want_st = GZ_JOURNAL_ERR_ORDER;
         } else {
             bad[GZ_JOURNAL_HEADER_LEN + 2 * GZ_JOURNAL_MARK_LEN + 30] ^= 1; /* inside batch (1, 1) */
@@ -477,6 +485,162 @@ static void test_guard_newest(void)
     memfs_free(&fs);
 }
 
+/* --- H1 (confirmation review) -------------------------------------------- */
+
+/* A peer's record holding a well-formed sync mark that names the offset where
+ * it lands in the file, sealed with a guessed salt (or the right salt for
+ * another offset); the batch is then torn after it (a crash). The start cuts
+ * the torn tail; it does not refuse the journal as corrupt, and an import
+ * over it takes no floor from the forged mark (even one near 2^63). */
+static void test_forged_mark(void)
+{
+    for (int variant = 0; variant < 3; variant++) {
+        memfs_t fs;
+        gz_journal_status_t st;
+        gz_journal_open_info_t info;
+        uint8_t *backup = NULL;
+        size_t blen = 0, len;
+        memfs_init(&fs);
+        starts(&fs, 2, &backup, &blen);
+        memfs_put(&fs, H_STAGED, backup, blen);
+        free(backup);
+        gz_journal_t *j = jopen(&fs, &st, &info);
+        CHECK(st == GZ_JOURNAL_OK);
+        uint64_t at = gz_journal_size(j);
+        uint64_t inner = at + 21 + 4 + 8;  /* where the record's bytes land */
+        uint64_t forged_inc = variant == 1 ? GZ_JOURNAL_INCARNATION_LIMIT - 5 : info.incarnation;
+        uint8_t rec[GZ_JOURNAL_MARK_LEN + 40], guess[GZ_JOURNAL_SALT_LEN] = {0};
+        memset(rec, 0x5a, sizeof rec);
+        if (variant == 2) /* the right salt, the wrong place: still no mark */
+            gz_journal_encode_small(rec, h_salt, inner + 1, GZ_JOURNAL_KIND_MARK, forged_inc, inner);
+        else
+            gz_journal_encode_small(rec, guess, inner, GZ_JOURNAL_KIND_MARK, forged_inc, inner);
+        gz_record_t r = {0x7e570001, {rec, sizeof rec}};
+        gz_action_t a = {.kind = GZ_ACTION_SAVE};
+        a.u.save.batch = (gz_batch_id_t){info.incarnation, 1};
+        a.u.save.records = &r;
+        a.u.save.n_records = 1;
+        CHECK(gz_journal_save(j, &a) == GZ_JOURNAL_OK);
+        gz_journal_close(j); /* killed before the flush */
+        /* The crash tears the batch just after the forged mark. */
+        const uint8_t *d = memfs_get(&fs, H_JOURNAL, &len);
+        size_t cut = (size_t)inner + GZ_JOURNAL_MARK_LEN + 5;
+        CHECK(len > cut);
+        uint8_t *torn = malloc(cut);
+        memcpy(torn, d, cut);
+        memfs_put(&fs, H_JOURNAL, torn, cut);
+        gz_journal_scan_t sc;
+        CHECK(gz_journal_scan(torn, cut, gz_journal_chain_signet, &sc, NULL, NULL) == GZ_JOURNAL_OK &&
+              sc.verdict == GZ_JOURNAL_TORN && sc.valid_end == at && sc.highest_incarnation == info.incarnation);
+        free(torn);
+        /* An import over it: the floor is the journal's, not the forged mark's. */
+        CHECK(gz_journal_import(H_DIR, gz_journal_chain_signet, &fs.os, H_STAGED, 0) == GZ_JOURNAL_OK);
+        j = jopen(&fs, &st, &info);
+        CHECK(st == GZ_JOURNAL_OK && info.restored && info.incarnation == 4);
+        gz_journal_close(j);
+        memfs_free(&fs);
+    }
+    /* The same torn file opened (not imported): cut, not refused. */
+    memfs_t fs;
+    gz_journal_status_t st;
+    gz_journal_open_info_t info;
+    size_t len;
+    memfs_init(&fs);
+    gz_journal_t *j = jopen(&fs, &st, &info);
+    uint64_t at = gz_journal_size(j), inner = at + 33;
+    uint8_t rec[GZ_JOURNAL_MARK_LEN + 40] = {0}, guess[GZ_JOURNAL_SALT_LEN] = {0};
+    gz_journal_encode_small(rec, guess, inner, GZ_JOURNAL_KIND_MARK, 1, inner);
+    gz_record_t r = {0x7e570001, {rec, sizeof rec}};
+    gz_action_t a = {.kind = GZ_ACTION_SAVE};
+    a.u.save.batch = (gz_batch_id_t){1, 1};
+    a.u.save.records = &r;
+    a.u.save.n_records = 1;
+    CHECK(gz_journal_save(j, &a) == GZ_JOURNAL_OK);
+    gz_journal_close(j);
+    const uint8_t *d = memfs_get(&fs, H_JOURNAL, &len);
+    uint8_t *torn = malloc(len);
+    memcpy(torn, d, len);
+    memfs_put(&fs, H_JOURNAL, torn, (size_t)inner + GZ_JOURNAL_MARK_LEN + 5);
+    free(torn);
+    j = jopen(&fs, &st, &info);
+    CHECK(st == GZ_JOURNAL_OK && info.cut_bytes == inner + GZ_JOURNAL_MARK_LEN + 5 - at && info.incarnation == 2);
+    gz_journal_close(j);
+    memfs_free(&fs);
+    /* No salt, no journal: a failing random source refuses the creation. */
+    memfs_init(&fs);
+    fs.random_fails = 1;
+    j = jopen(&fs, &st, &info);
+    CHECK(st == GZ_JOURNAL_ERR_IO && j == NULL && !memfs_get(&fs, H_JOURNAL, &len) && memfs_open_fds(&fs) == 0);
+    memfs_free(&fs);
+}
+
+/* Two journals created on the real file system get different salts. */
+static void test_salt_random(void)
+{
+    char d1[] = "/tmp/gzj-s1-XXXXXX", d2[] = "/tmp/gzj-s2-XXXXXX";
+    CHECK(mkdtemp(d1) != NULL && mkdtemp(d2) != NULL);
+    uint8_t h[2][GZ_JOURNAL_HEADER_LEN];
+    char *dirs[2] = {d1, d2};
+    for (int i = 0; i < 2; i++) {
+        gz_journal_status_t st;
+        gz_journal_t *j = jopen_os(gz_journal_os_posix(), dirs[i], &st, NULL);
+        CHECK(st == GZ_JOURNAL_OK);
+        gz_journal_close(j);
+        char p[300];
+        snprintf(p, sizeof p, "%s/%s", dirs[i], GZ_JOURNAL_FILE);
+        FILE *f = fopen(p, "rb");
+        CHECK(f && fread(h[i], 1, sizeof h[i], f) == sizeof h[i]);
+        if (f) fclose(f);
+        unlink(p);
+        snprintf(p, sizeof p, "%s/%s", dirs[i], GZ_JOURNAL_LOCK_FILE);
+        unlink(p);
+        rmdir(dirs[i]);
+    }
+    CHECK(memcmp(h[0], h[1], 40) == 0 && memcmp(h[0] + 40, h[1] + 40, GZ_JOURNAL_SALT_LEN) != 0);
+}
+
+/* The import holds journal.gzj's lock until the rename: a start attempted
+ * just before the rename, with journal.lock removed, is refused. */
+static memfs_t *hold_fs;
+static gz_journal_status_t hold_st;
+static int hold_seen;
+static int hold_rename(void *ctx, const char *from, const char *to)
+{
+    if (strcmp(to, H_JOURNAL) == 0 && !hold_seen) {
+        hold_seen = 1;
+        hold_fs->os.unlink(hold_fs->os.ctx, H_LOCK);
+        gz_journal_t *k = NULL;
+        gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 2, &hold_fs->os, 0, 0, 0, 1, 0, NULL, NULL};
+        hold_st = gz_journal_open(&k, &cfg, NULL);
+        gz_journal_close(k);
+    }
+    return hold_fs->os.rename(ctx, from, to);
+}
+
+static void test_import_lock_held(void)
+{
+    memfs_t fs;
+    gz_journal_status_t st;
+    gz_journal_open_info_t info;
+    uint8_t *backup = NULL;
+    size_t blen = 0;
+    memfs_init(&fs);
+    starts(&fs, 3, &backup, &blen);
+    memfs_put(&fs, H_STAGED, backup, blen);
+    free(backup);
+    hold_fs = &fs;
+    hold_seen = 0;
+    hold_st = GZ_JOURNAL_OK;
+    gz_journal_os_t os = fs.os;
+    os.rename = hold_rename;
+    CHECK(gz_journal_import(H_DIR, gz_journal_chain_signet, &os, H_STAGED, 0) == GZ_JOURNAL_OK);
+    CHECK(hold_seen && hold_st == GZ_JOURNAL_ERR_LOCKED);
+    gz_journal_t *j = jopen(&fs, &st, &info);
+    CHECK(st == GZ_JOURNAL_OK && info.restored && info.incarnation == 4);
+    gz_journal_close(j);
+    memfs_free(&fs);
+}
+
 int main(int argc, char **argv)
 {
     static const struct {
@@ -485,7 +649,8 @@ int main(int argc, char **argv)
     } parts[] = {{"lock_memfs", test_lock_memfs},        {"import_floor", test_import_floor},
                  {"name_durable", test_name_durable},    {"marker_unreadable", test_marker_unreadable},
                  {"direct_refused", test_direct_refused}, {"reader_after_failure", test_reader_after_failure},
-                 {"guard_newest", test_guard_newest}};
+                 {"guard_newest", test_guard_newest},    {"forged_mark", test_forged_mark},
+                 {"salt_random", test_salt_random},      {"import_lock_held", test_import_lock_held}};
     int rounds = argc > 2 ? atoi(argv[2]) : 200;
     for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++)
         if (argc < 2 || strcmp(argv[1], parts[i].name) == 0) parts[i].fn();

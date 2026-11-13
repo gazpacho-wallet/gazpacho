@@ -76,10 +76,10 @@ static uint64_t last_unmarked_batch(const uint8_t *d, size_t len)
     uint64_t p = GZ_JOURNAL_HEADER_LEN, last = 0;
     while (p + 21 <= len) {
         uint32_t l = (uint32_t)d[p] << 24 | (uint32_t)d[p + 1] << 16 | (uint32_t)d[p + 2] << 8 | d[p + 3];
-        if (p + 12 + l > len) break;
+        if (p + 4 + GZ_JOURNAL_CHECK_LEN + l > len) break;
         if (d[p + 4] == GZ_JOURNAL_KIND_MARK) last = 0;
         if (d[p + 4] == GZ_JOURNAL_KIND_BATCH) last = p;
-        p += 12 + l;
+        p += 4 + GZ_JOURNAL_CHECK_LEN + l;
     }
     return last;
 }
@@ -383,14 +383,14 @@ static int node_sweep(int *runs)
  * tail, crashed under each settle (the failed variant is in test_journal_edges.c). */
 static void open_crashes(void)
 {
-    uint8_t torn[300];
-    size_t n = gz_journal_encode_header(torn, gz_journal_chain_signet);
-    n += gz_journal_encode_small(torn + n, 1, 1, 0);
-    n += gz_journal_encode_small(torn + n, 3, 1, n);
+    uint8_t torn[512];
+    size_t n = gz_journal_encode_header(torn, gz_journal_chain_signet, h_salt);
+    n += gz_journal_encode_small(torn + n, h_salt, n, 1, 1, 0);
+    n += gz_journal_encode_small(torn + n, h_salt, n, 3, 1, n);
     gz_record_t r = {0x7e570001, {(const uint8_t *)"abcd", 4}};
-    n += gz_journal_encode_batch(torn + n, (gz_batch_id_t){1, 1}, &r, 1);
-    n += gz_journal_encode_small(torn + n, 3, 1, n);
-    n += gz_journal_encode_batch(torn + n, (gz_batch_id_t){1, 2}, &r, 1) - 5;
+    n += gz_journal_encode_batch(torn + n, h_salt, n, (gz_batch_id_t){1, 1}, &r, 1);
+    n += gz_journal_encode_small(torn + n, h_salt, n, 3, 1, n);
+    n += gz_journal_encode_batch(torn + n, h_salt, n, (gz_batch_id_t){1, 2}, &r, 1) - 5;
     int runs = 0;
     for (int seeded = 0; seeded < 2; seeded++)
         for (int mode = 0; mode < 3; mode++) runs += open_points(seeded ? torn : NULL, n, 1, mode);

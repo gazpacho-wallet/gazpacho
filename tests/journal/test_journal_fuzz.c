@@ -75,13 +75,13 @@ static size_t mutate(uint8_t *d, size_t len, size_t cap)
             break;
         }
         case 6: { /* change an entry field and fix its checksum, if one starts here */
-            if (len - at < 29) break;
+            if (len < GZ_JOURNAL_HEADER_LEN || at < GZ_JOURNAL_HEADER_LEN || len - at < 21 + GZ_JOURNAL_CHECK_LEN)
+                break;
             uint32_t l = (uint32_t)d[at] << 24 | (uint32_t)d[at + 1] << 16 | (uint32_t)d[at + 2] << 8 | d[at + 3];
-            if (l < 21 || at + 4 + l + 8 > len) break;
+            if (l < 21 || at + 4 + l + GZ_JOURNAL_CHECK_LEN > len) break;
             d[at + 4 + (rnd() % l)] ^= (uint8_t)(1u << (rnd() % 8));
-            uint8_t hsh[32];
-            sha256(d + at, 4 + l, hsh);
-            memcpy(d + at + 4 + l, hsh, 8);
+            /* Resealed with the file's salt and this offset: a valid entry. */
+            gz_journal_entry_check(d + 40, at, d + at, 4 + l, d + at + 4 + l);
             break;
         }
         default: /* append zeros */
@@ -140,7 +140,7 @@ int main(int argc, char **argv)
         } else if (ost != st) {
             bad = 1;
         } else if (ost == GZ_JOURNAL_OK) {
-            bad |= now != sc.valid_end + 74 || memcmp(after, d, (size_t)sc.valid_end) != 0;
+            bad |= now != sc.valid_end + 2 * GZ_JOURNAL_MARK_LEN || memcmp(after, d, (size_t)sc.valid_end) != 0;
             gz_storage_reader_t rd = gz_journal_reader(j);
             gz_stored_batch_t sb;
             uint64_t k = 0;

@@ -1,4 +1,5 @@
-"""Independent reader for the Gazpacho storage journal (journal.md draft 2).
+"""Independent reader for the Gazpacho storage journal (journal.md section 11's
+salted clear format; draft 2's framing with a salt and an offset-bound check).
 
 Written only from the specification, as a cross-check for the C implementation,
 by an author who had not seen that implementation. Do not change it to match
@@ -7,11 +8,13 @@ the C code: a disagreement is a finding about one of the two, or the spec.
 import hashlib
 import struct
 
-MAGIC = b"GZJOURNL"
-HEADER_LEN = 48
+MAGIC = b"GZJOURNS"
+SALT_LEN = 32
+CHECK_LEN = 16
+HEADER_LEN = 8 + 32 + SALT_LEN + CHECK_LEN  # 88
 MIN_LEN = 21
 MAX_LEN = 8_388_625
-MARK_TOTAL = 37  # 4 + 25 + 8
+MARK_TOTAL = 4 + 25 + CHECK_LEN  # 45
 
 KIND_INC, KIND_BATCH, KIND_MARK = 1, 2, 3
 
@@ -26,8 +29,9 @@ KNOWN_TYPES = {
 }
 
 
-def sha8(b):
-    return hashlib.sha256(b).digest()[:8]
+def check(salt, off, frame):
+    """Section 11: SHA-256(salt || u64 offset || frame), the first 16 bytes."""
+    return hashlib.sha256(salt + struct.pack(">Q", off) + frame).digest()[:CHECK_LEN]
 
 
 def is_placeholder(t):
@@ -52,14 +56,14 @@ def parse_records(payload):
     return recs if pos == len(payload) else None
 
 
-def parse_entry(data, off):
+def parse_entry(data, off, salt):
     """Parse the entry at `off`. Return a dict for a valid entry, None for an invalid one."""
     if len(data) - off < 4:
         return None
     (length,) = struct.unpack_from(">I", data, off)
     if length < MIN_LEN or length > MAX_LEN:
         return None
-    if len(data) - off < 4 + length + 8:  # tested before the checksum is read
+    if len(data) - off < 4 + length + CHECK_LEN:  # tested before the check is read
         return None
     kind = data[off + 4]
     if kind not in (KIND_INC, KIND_BATCH, KIND_MARK):
@@ -67,11 +71,11 @@ def parse_entry(data, off):
     if kind in (KIND_INC, KIND_MARK) and length != 25:
         return None
     body = data[off:off + 4 + length]
-    if sha8(body) != data[off + 4 + length:off + 4 + length + 8]:
+    if check(salt, off, body) != data[off + 4 + length:off + 4 + length + CHECK_LEN]:
         return None
     inc, seq = struct.unpack_from(">QQ", data, off + 5)
     payload = data[off + 21:off + 4 + length]
-    e = {"kind": kind, "inc": inc, "seq": seq, "end": off + 4 + length + 8, "records": None}
+    e = {"kind": kind, "inc": inc, "seq": seq, "end": off + 4 + length + CHECK_LEN, "records": None}
     if kind == KIND_MARK:
         (mark_off,) = struct.unpack(">Q", payload)
         if mark_off != off:
@@ -90,15 +94,18 @@ def result(state, cut_to=None, next_inc=None, records=None, batches=None):
 
 def read(data: bytes, chain: bytes) -> dict:
     data = bytes(data)
+    body = 8 + 32 + SALT_LEN
     if (len(data) < HEADER_LEN or data[0:8] != MAGIC
-            or sha8(data[0:40]) != data[40:48] or data[8:40] != chain):
+            or hashlib.sha256(data[0:body]).digest()[:CHECK_LEN] != data[body:HEADER_LEN]
+            or data[8:40] != chain):
         return result("bad_header")
+    salt = data[40:40 + SALT_LEN]
 
     # Section 5 step 3: scan, checking order rules (3.4) on every valid entry.
     entries, off, cur_inc, next_seq = [], HEADER_LEN, None, 1
     end = len(data)
     while off < end:
-        e = parse_entry(data, off)
+        e = parse_entry(data, off, salt)
         if e is None:
             break
         if e["kind"] == KIND_INC:
@@ -121,7 +128,7 @@ def read(data: bytes, chain: bytes) -> dict:
     # Section 5 step 4: torn tail or corruption.
     if v < end:
         for p in range(v + 1, end - MARK_TOTAL + 1):
-            m = parse_entry(data, p)
+            m = parse_entry(data, p, salt)
             if m is not None and m["kind"] == KIND_MARK:
                 return result("corrupt")
 

@@ -26,17 +26,27 @@ static size_t unhex(const char *s, uint8_t *out)
     return n;
 }
 
-/* Spec section 11, as printed there. */
-static const char *J1 = "475a4a4f55524e4c f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c4225e973988108000000"
-                        "5477d18c2a8b6425";
-static const char *J2 = "00000019 01 0000000000000001 0000000000000000 000001a1b2bb9400 5ba5a611f1eac4ed";
+/* Spec section 11, as printed there (the salt 00 01 .. 1f). */
+static const char *J1 = "475a4a4f55524e53 f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c4225e973988108000000"
+                        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+                        "598cbcfdcc7c3d3b1a1eab6adac61dac";
+static const char *J2 = "00000019 01 0000000000000001 0000000000000000 000001a1b2bb9400"
+                        "d0742bb1d178d951a10a23fc4da6e5dd";
 static const char *J3 = "00000021 02 0000000000000001 0000000000000001 00000001 7e570001 00000004 70696e67"
-                        "ff0269042d9a3f7d";
-static const char *J5 = "00000019 03 0000000000000001 0000000000000000 0000000000000055 11b8de34bb2fdb81";
-static const char *J6M = "00000019 03 0000000000000001 0000000000000000 00000000000000a7 aecd69c7d1113773";
+                        "ddde3c927fd591a41118a5ec813fcd5a";
+static const char *J5 = "00000019 03 0000000000000001 0000000000000000 0000000000000085"
+                        "67591b2f763b7489609793e88e380adc";
+static const char *J6M = "00000019 03 0000000000000001 0000000000000000 00000000000000e7"
+                         "8e9c126043c3bea83a91d7802d2d4c10";
 
-static uint8_t clean[256];
-static size_t clean_len; /* header, J2, J5, J3, second mark: 204 bytes */
+#define HL GZ_JOURNAL_HEADER_LEN        /* 88 */
+#define ML GZ_JOURNAL_MARK_LEN          /* 45 */
+#define C0 (HL + 2 * ML)                /* after header, J2, J5: 178, where J3 sits */
+#define J3L 53u                         /* J3's size */
+#define C1 (C0 + J3L)                   /* the second mark: 231 */
+
+static uint8_t clean[512];
+static size_t clean_len; /* header, J2, J5, J3, second mark: 276 bytes */
 
 static void build_clean(void)
 {
@@ -47,8 +57,9 @@ static void build_clean(void)
     clean_len += unhex(J6M, clean + clean_len);
 }
 
-/* An entry with any fields, its check computed over what is given. */
-static size_t raw_entry(uint8_t *out, uint32_t length, uint8_t kind, uint64_t inc, uint64_t seq,
+/* An entry with any fields, its check computed over what is given, for
+ * file offset `at`. */
+static size_t raw_entry(uint8_t *out, uint64_t at, uint32_t length, uint8_t kind, uint64_t inc, uint64_t seq,
                         const uint8_t *payload, size_t plen)
 {
     out[0] = (uint8_t)(length >> 24); out[1] = (uint8_t)(length >> 16);
@@ -59,22 +70,28 @@ static size_t raw_entry(uint8_t *out, uint32_t length, uint8_t kind, uint64_t in
         out[13 + i] = (uint8_t)(seq >> (56 - 8 * i));
     }
     if (plen) memcpy(out + 21, payload, plen);
-    uint8_t h[32];
-    sha256(out, 21 + plen, h);
-    memcpy(out + 21 + plen, h, 8);
-    return 29 + plen;
+    gz_journal_entry_check(h_salt, at, out, 21 + plen, out + 21 + plen);
+    return 21 + plen + GZ_JOURNAL_CHECK_LEN;
 }
 
-static size_t mark(uint8_t *out, uint64_t inc, uint64_t at)
+/* A sync mark at offset `at` naming `value` (a correct mark names `at`). */
+static size_t mark_val(uint8_t *out, uint64_t inc, uint64_t at, uint64_t value)
 {
-    return gz_journal_encode_small(out, GZ_JOURNAL_KIND_MARK, inc, at);
+    return gz_journal_encode_small(out, h_salt, at, GZ_JOURNAL_KIND_MARK, inc, value);
 }
 
-static size_t batch(uint8_t *out, uint64_t inc, uint64_t seq, uint32_t type, const char *bytes)
+static size_t mark(uint8_t *out, uint64_t inc, uint64_t at) { return mark_val(out, inc, at, at); }
+
+static size_t small(uint8_t *out, uint64_t at, uint8_t kind, uint64_t inc, uint64_t value)
+{
+    return gz_journal_encode_small(out, h_salt, at, kind, inc, value);
+}
+
+static size_t batch(uint8_t *out, uint64_t at, uint64_t inc, uint64_t seq, uint32_t type, const char *bytes)
 {
     gz_record_t r = {type, {(const uint8_t *)bytes, strlen(bytes)}};
     gz_batch_id_t id = {inc, seq};
-    return gz_journal_encode_batch(out, id, &r, 1);
+    return gz_journal_encode_batch(out, h_salt, at, id, &r, 1);
 }
 
 static gz_journal_scan_t scan(const uint8_t *d, size_t len)
@@ -109,13 +126,17 @@ static gz_journal_status_t open_bytes(const uint8_t *bytes, size_t len, gz_journ
 
 static void test_vectors(void)
 {
-    uint8_t a[64], b[64];
+    uint8_t a[128], b[128];
     /* 1. J1, J2, J3, J5 and the second mark from the encoders. */
-    CHECK(gz_journal_encode_header(a, gz_journal_chain_signet) == unhex(J1, b) && !memcmp(a, b, 48));
-    CHECK(gz_journal_encode_small(a, 1, 1, 1794000000000ull) == unhex(J2, b) && !memcmp(a, b, 37));
-    CHECK(batch(a, 1, 1, 0x7e570001, "ping") == unhex(J3, b) && !memcmp(a, b, 45));
-    CHECK(mark(a, 1, 85) == unhex(J5, b) && !memcmp(a, b, 37));
-    CHECK(mark(a, 1, 167) == unhex(J6M, b) && !memcmp(a, b, 37));
+    CHECK(gz_journal_encode_header(a, gz_journal_chain_signet, h_salt) == unhex(J1, b) && !memcmp(a, b, HL));
+    CHECK(small(a, HL, 1, 1, 1794000000000ull) == unhex(J2, b) && !memcmp(a, b, ML));
+    CHECK(batch(a, C0, 1, 1, 0x7e570001, "ping") == unhex(J3, b) && !memcmp(a, b, J3L));
+    CHECK(mark(a, 1, HL + ML) == unhex(J5, b) && !memcmp(a, b, ML));
+    CHECK(mark(a, 1, C1) == unhex(J6M, b) && !memcmp(a, b, ML));
+    /* The same bytes at another offset, or under another salt, differ. */
+    uint8_t other[GZ_JOURNAL_SALT_LEN] = {1};
+    CHECK(mark(b, 1, C1) == ML && small(a, C1 + 1, GZ_JOURNAL_KIND_MARK, 1, C1) == ML && memcmp(a, b, ML) != 0);
+    CHECK(gz_journal_encode_small(a, other, C1, GZ_JOURNAL_KIND_MARK, 1, C1) == ML && memcmp(a, b, ML) != 0);
 
     /* The writer itself produces header, J2, J5, J3 and the second mark. */
     h_t *h = calloc(1, sizeof *h);
@@ -140,23 +161,23 @@ static void test_vectors(void)
     free(h);
 
     /* J4: header, J2, J5, J3 without its last 3 bytes. */
-    gz_journal_scan_t sc = scan(clean, 164);
-    CHECK(sc.verdict == GZ_JOURNAL_TORN && sc.valid_end == 122 && sc.highest_incarnation == 1);
+    gz_journal_scan_t sc = scan(clean, C1 - 3);
+    CHECK(sc.verdict == GZ_JOURNAL_TORN && sc.valid_end == C0 && sc.highest_incarnation == 1);
     int untouched;
     memfs_t fs;
-    CHECK(open_bytes(clean, 164, &info, &untouched, &fs) == GZ_JOURNAL_OK);
-    CHECK(info.incarnation == 2 && info.cut_bytes == 42);
+    CHECK(open_bytes(clean, C1 - 3, &info, &untouched, &fs) == GZ_JOURNAL_OK);
+    CHECK(info.incarnation == 2 && info.cut_bytes == J3L - 3);
     d = memfs_get(&fs, H_JOURNAL, &len);
-    CHECK(len == 122 + 74 && !memcmp(d, clean, 122));
+    CHECK(len == C0 + 2 * ML && !memcmp(d, clean, C0));
     memfs_free(&fs);
 
     /* J6: J3's byte 25 has bit 0 flipped, the second mark follows. */
-    uint8_t j6[256];
+    uint8_t j6[512];
     memcpy(j6, clean, clean_len);
-    j6[122 + 25] ^= 1;
+    j6[C0 + 25] ^= 1;
     sc = scan(j6, clean_len);
     CHECK(sc.verdict == GZ_JOURNAL_REFUSED && sc.status == GZ_JOURNAL_ERR_CORRUPT);
-    CHECK(sc.error_at == 122 && sc.mark_at == 167);
+    CHECK(sc.error_at == C0 && sc.mark_at == C1);
     CHECK(open_bytes(j6, clean_len, &info, &untouched, NULL) == GZ_JOURNAL_ERR_CORRUPT && untouched);
 
     sc = scan(clean, clean_len);
@@ -167,39 +188,50 @@ static void test_vectors(void)
 
 static void test_header(void)
 {
-    uint8_t d[256];
+    uint8_t d[512];
     int untouched;
-    /* 2. Wrong magic, wrong check, mainnet chain, too short. */
+    /* 2. Wrong magic, wrong check (a salt byte, a check byte), mainnet chain, too short. */
     memcpy(d, clean, clean_len);
     d[0] ^= 1;
     CHECK(open_bytes(d, clean_len, NULL, &untouched, NULL) == GZ_JOURNAL_ERR_HEADER && untouched);
     memcpy(d, clean, clean_len);
     d[45] ^= 0x80;
     CHECK(open_bytes(d, clean_len, NULL, &untouched, NULL) == GZ_JOURNAL_ERR_HEADER && untouched);
-    gz_journal_encode_header(d, gz_journal_chain_mainnet);
-    CHECK(open_bytes(d, 48, NULL, &untouched, NULL) == GZ_JOURNAL_ERR_NETWORK && untouched);
+    memcpy(d, clean, clean_len);
+    d[HL - 1] ^= 0x01;
+    CHECK(open_bytes(d, clean_len, NULL, &untouched, NULL) == GZ_JOURNAL_ERR_HEADER && untouched);
+    gz_journal_encode_header(d, gz_journal_chain_mainnet, h_salt);
+    CHECK(open_bytes(d, HL, NULL, &untouched, NULL) == GZ_JOURNAL_ERR_NETWORK && untouched);
     memcpy(d, clean, clean_len);
     d[20] ^= 1; /* chain changed, check not recomputed */
     CHECK(open_bytes(d, clean_len, NULL, NULL, NULL) == GZ_JOURNAL_ERR_HEADER);
-    for (size_t n = 0; n < 48; n++)
+    for (size_t n = 0; n < HL; n++)
         CHECK(open_bytes(clean, n, NULL, &untouched, NULL) == GZ_JOURNAL_ERR_HEADER && untouched);
     /* A header alone is a clean, empty journal. */
     gz_journal_open_info_t info;
-    CHECK(open_bytes(clean, 48, &info, NULL, NULL) == GZ_JOURNAL_OK && info.incarnation == 1);
+    CHECK(open_bytes(clean, HL, &info, NULL, NULL) == GZ_JOURNAL_OK && info.incarnation == 1);
+    /* Entries are bound to the salt: the same file under another salt
+     * (header check recomputed) keeps no entry, and is torn at once. */
+    memcpy(d, clean, clean_len);
+    uint8_t salt2[GZ_JOURNAL_SALT_LEN];
+    for (int i = 0; i < 32; i++) salt2[i] = (uint8_t)(i + 1);
+    gz_journal_encode_header(d, gz_journal_chain_signet, salt2);
+    gz_journal_scan_t sc = scan(d, clean_len);
+    CHECK(sc.verdict == GZ_JOURNAL_TORN && sc.valid_end == HL && sc.n_incarnations == 0);
 }
 
 /* `entry` placed after header, J2, J5: invalid, so torn without a mark after
  * it and corrupt with one. */
 static void expect_invalid(const uint8_t *entry, size_t elen, const char *what)
 {
-    uint8_t d[600];
-    memcpy(d, clean, 122);
-    memcpy(d + 122, entry, elen);
-    gz_journal_scan_t sc = scan(d, 122 + elen);
-    int ok1 = sc.verdict == GZ_JOURNAL_TORN && sc.valid_end == 122;
-    size_t m = mark(d + 122 + elen, 1, 122 + elen);
-    sc = scan(d, 122 + elen + m);
-    int ok2 = sc.verdict == GZ_JOURNAL_REFUSED && sc.status == GZ_JOURNAL_ERR_CORRUPT && sc.error_at == 122;
+    uint8_t d[700];
+    memcpy(d, clean, C0);
+    memcpy(d + C0, entry, elen);
+    gz_journal_scan_t sc = scan(d, C0 + elen);
+    int ok1 = sc.verdict == GZ_JOURNAL_TORN && sc.valid_end == C0;
+    size_t m = mark(d + C0 + elen, 1, C0 + elen);
+    sc = scan(d, C0 + elen + m);
+    int ok2 = sc.verdict == GZ_JOURNAL_REFUSED && sc.status == GZ_JOURNAL_ERR_CORRUPT && sc.error_at == C0;
     if (!ok1 || !ok2) printf("  not invalid: %s\n", what);
     CHECK(ok1 && ok2);
 }
@@ -210,24 +242,32 @@ static void test_fields(void)
     /* 3. Lengths 20, 16, 0 and the maximum + 1 (each with a correct check over what follows). */
     static const uint32_t lens[] = {20, 16, 0, GZ_JOURNAL_ENTRY_MAX + 1};
     for (int i = 0; i < 4; i++) {
-        size_t n = raw_entry(e, lens[i], 2, 1, 1, p, 8);
+        size_t n = raw_entry(e, C0, lens[i], 2, 1, 1, p, 8);
         expect_invalid(e, n, "length");
     }
     /* Incarnation and mark entries whose length is not 25. */
     for (uint32_t len = 21; len <= 30; len++) {
         if (len == 25) continue;
-        expect_invalid(e, raw_entry(e, len, 1, 2, 0, p, len - 17), "incarnation length");
-        expect_invalid(e, raw_entry(e, len, 3, 1, 0, p, len - 17), "mark length");
+        expect_invalid(e, raw_entry(e, C0, len, 1, 2, 0, p, len - 17), "incarnation length");
+        expect_invalid(e, raw_entry(e, C0, len, 3, 1, 0, p, len - 17), "mark length");
     }
     /* Unknown kinds. */
     static const uint8_t kinds[] = {0, 4, 5, 0x7f, 0x80, 0xff};
-    for (int i = 0; i < 6; i++) expect_invalid(e, raw_entry(e, 25, kinds[i], 1, 0, p, 8), "kind");
-    /* A mark naming another offset, check correct. */
-    expect_invalid(e, mark(e, 1, 121), "mark offset - 1");
-    expect_invalid(e, mark(e, 1, 123), "mark offset + 1");
-    expect_invalid(e, mark(e, 1, 0), "mark offset 0");
+    for (int i = 0; i < 6; i++) expect_invalid(e, raw_entry(e, C0, 25, kinds[i], 1, 0, p, 8), "kind");
+    /* A mark naming another offset, check correct for where it sits. */
+    expect_invalid(e, mark_val(e, 1, C0, C0 - 1), "mark offset - 1");
+    expect_invalid(e, mark_val(e, 1, C0, C0 + 1), "mark offset + 1");
+    expect_invalid(e, mark_val(e, 1, C0, 0), "mark offset 0");
+    /* Entries sealed for another offset or another salt (review H1). */
+    expect_invalid(e, mark_val(e, 1, C0 + 1, C0), "mark sealed for offset + 1");
+    expect_invalid(e, batch(e, C0 - 1, 1, 1, 0x7e570001, "x"), "batch sealed for offset - 1");
+    expect_invalid(e, mark_val(e, 1, 0, C0), "mark sealed for offset 0");
+    {
+        uint8_t zero[GZ_JOURNAL_SALT_LEN] = {0};
+        expect_invalid(e, gz_journal_encode_small(e, zero, C0, GZ_JOURNAL_KIND_MARK, 1, C0), "mark, another salt");
+    }
     /* A flipped bit in every byte of a batch entry and of a mark entry. */
-    size_t n = batch(e, 1, 1, 0x7e570001, "region");
+    size_t n = batch(e, C0, 1, 1, 0x7e570001, "region");
     for (size_t i = 0; i < n; i++)
         for (int bit = 0; bit < 8; bit += 7) {
             uint8_t f[64];
@@ -235,7 +275,7 @@ static void test_fields(void)
             f[i] ^= (uint8_t)(1 << bit);
             expect_invalid(f, n, "flipped bit in a batch");
         }
-    n = mark(e, 1, 122);
+    n = mark(e, 1, C0);
     for (size_t i = 0; i < n; i++) {
         uint8_t f[64];
         memcpy(f, e, n);
@@ -252,7 +292,7 @@ static void test_fields(void)
     for (int i = 0; i < 5; i++) {
         uint8_t pl[64];
         size_t pn = unhex(bad[i], pl);
-        expect_invalid(e, raw_entry(e, (uint32_t)(17 + pn), 2, 1, 1, pl, pn), "records fill");
+        expect_invalid(e, raw_entry(e, C0, (uint32_t)(17 + pn), 2, 1, 1, pl, pn), "records fill");
     }
     /* The largest allowed entry is valid; one byte more is not. */
     size_t big = GZ_JOURNAL_ENTRY_MAX - 17 - 4 - 8;
@@ -260,10 +300,10 @@ static void test_fields(void)
     gz_record_t r = {0x7e570001, {buf + GZ_JOURNAL_ENTRY_MAX + 200, 0}};
     r.bytes.data = calloc(1, big + 1);
     r.bytes.len = big;
-    CHECK(gz_journal_batch_size(&r, 1) == 4 + GZ_JOURNAL_ENTRY_MAX + 8);
-    memcpy(buf, clean, 122);
-    size_t w = gz_journal_encode_batch(buf + 122, (gz_batch_id_t){1, 1}, &r, 1);
-    gz_journal_scan_t sc = scan(buf, 122 + w);
+    CHECK(gz_journal_batch_size(&r, 1) == 4 + GZ_JOURNAL_ENTRY_MAX + GZ_JOURNAL_CHECK_LEN);
+    memcpy(buf, clean, C0);
+    size_t w = gz_journal_encode_batch(buf + C0, h_salt, C0, (gz_batch_id_t){1, 1}, &r, 1);
+    gz_journal_scan_t sc = scan(buf, C0 + w);
     CHECK(sc.verdict == GZ_JOURNAL_CLEAN && sc.n_batches == 1);
     r.bytes.len = big + 1;
     CHECK(gz_journal_batch_size(&r, 1) == 0);
@@ -279,35 +319,35 @@ static void test_order(void)
     struct { const char *what; size_t len; } c[12];
     uint8_t cases[12][600];
     int k = 0;
-#define CASE(w) (c[k].what = (w), n = 48, memcpy(cases[k], clean, 48))
+#define CASE(w) (c[k].what = (w), n = HL, memcpy(cases[k], clean, HL))
 #define ADD(x) (n += (x))
 #define END() (c[k].len = n, k++)
     uint8_t *e;
     /* 5. A batch before any incarnation. */
-    CASE("batch first"); e = cases[k]; ADD(batch(e + n, 1, 1, 0x7e570001, "x")); END();
-    CASE("mark first"); e = cases[k]; ADD(mark(e + n, 1, 48)); END();
+    CASE("batch first"); e = cases[k]; ADD(batch(e + n, n, 1, 1, 0x7e570001, "x")); END();
+    CASE("mark first"); e = cases[k]; ADD(mark(e + n, 1, HL)); END();
     CASE("incarnation equal"); e = cases[k];
-    ADD(gz_journal_encode_small(e + n, 1, 1, 0)); ADD(gz_journal_encode_small(e + n, 1, 1, 0)); END();
+    ADD(small(e + n, n, 1, 1, 0)); ADD(small(e + n, n, 1, 1, 0)); END();
     CASE("incarnation lower"); e = cases[k];
-    ADD(gz_journal_encode_small(e + n, 1, 3, 0)); ADD(gz_journal_encode_small(e + n, 1, 2, 0)); END();
+    ADD(small(e + n, n, 1, 3, 0)); ADD(small(e + n, n, 1, 2, 0)); END();
     CASE("batch under older incarnation"); e = cases[k];
-    ADD(gz_journal_encode_small(e + n, 1, 1, 0)); ADD(gz_journal_encode_small(e + n, 1, 2, 0));
-    ADD(batch(e + n, 1, 1, 0x7e570001, "x")); END();
+    ADD(small(e + n, n, 1, 1, 0)); ADD(small(e + n, n, 1, 2, 0));
+    ADD(batch(e + n, n, 1, 1, 0x7e570001, "x")); END();
     CASE("batch under newer incarnation"); e = cases[k];
-    ADD(gz_journal_encode_small(e + n, 1, 1, 0)); ADD(batch(e + n, 2, 1, 0x7e570001, "x")); END();
+    ADD(small(e + n, n, 1, 1, 0)); ADD(batch(e + n, n, 2, 1, 0x7e570001, "x")); END();
     CASE("sequence gap"); e = cases[k];
-    ADD(gz_journal_encode_small(e + n, 1, 1, 0)); ADD(batch(e + n, 1, 1, 0x7e570001, "x"));
-    ADD(batch(e + n, 1, 3, 0x7e570001, "x")); END();
+    ADD(small(e + n, n, 1, 1, 0)); ADD(batch(e + n, n, 1, 1, 0x7e570001, "x"));
+    ADD(batch(e + n, n, 1, 3, 0x7e570001, "x")); END();
     CASE("sequence repeated"); e = cases[k];
-    ADD(gz_journal_encode_small(e + n, 1, 1, 0)); ADD(batch(e + n, 1, 1, 0x7e570001, "x"));
-    ADD(batch(e + n, 1, 1, 0x7e570001, "x")); END();
+    ADD(small(e + n, n, 1, 1, 0)); ADD(batch(e + n, n, 1, 1, 0x7e570001, "x"));
+    ADD(batch(e + n, n, 1, 1, 0x7e570001, "x")); END();
     CASE("sequence starts at 2"); e = cases[k];
-    ADD(gz_journal_encode_small(e + n, 1, 1, 0)); ADD(batch(e + n, 1, 2, 0x7e570001, "x")); END();
+    ADD(small(e + n, n, 1, 1, 0)); ADD(batch(e + n, n, 1, 2, 0x7e570001, "x")); END();
     CASE("sequence 0"); e = cases[k];
-    ADD(gz_journal_encode_small(e + n, 1, 1, 0)); ADD(batch(e + n, 1, 0, 0x7e570001, "x")); END();
+    ADD(small(e + n, n, 1, 1, 0)); ADD(batch(e + n, n, 1, 0, 0x7e570001, "x")); END();
     CASE("mark of another incarnation"); e = cases[k];
-    ADD(gz_journal_encode_small(e + n, 1, 1, 0)); ADD(mark(e + n, 2, n)); END();
-    CASE("incarnation 0"); e = cases[k]; ADD(gz_journal_encode_small(e + n, 1, 0, 0)); END();
+    ADD(small(e + n, n, 1, 1, 0)); ADD(mark(e + n, 2, n)); END();
+    CASE("incarnation 0"); e = cases[k]; ADD(small(e + n, n, 1, 0, 0)); END();
     for (int i = 0; i < k; i++) {
         memcpy(d, cases[i], c[i].len);
         gz_journal_status_t st = open_bytes(d, c[i].len, NULL, &untouched, NULL);
@@ -315,10 +355,10 @@ static void test_order(void)
         CHECK(st == GZ_JOURNAL_ERR_ORDER && untouched);
     }
     /* A new incarnation restarts the sequence at 1. */
-    n = 48;
-    memcpy(d, clean, 48);
-    ADD(gz_journal_encode_small(d + n, 1, 1, 0)); ADD(batch(d + n, 1, 1, 0x7e570001, "x"));
-    ADD(gz_journal_encode_small(d + n, 1, 4, 0)); ADD(batch(d + n, 4, 1, 0x7e570001, "x"));
+    n = HL;
+    memcpy(d, clean, HL);
+    ADD(small(d + n, n, 1, 1, 0)); ADD(batch(d + n, n, 1, 1, 0x7e570001, "x"));
+    ADD(small(d + n, n, 1, 4, 0)); ADD(batch(d + n, n, 4, 1, 0x7e570001, "x"));
     gz_journal_open_info_t info;
     CHECK(open_bytes(d, n, &info, NULL, NULL) == GZ_JOURNAL_OK && info.incarnation == 5);
 #undef CASE
@@ -377,22 +417,22 @@ static void test_write_read(void)
     free(h);
 
     /* 18. Unknown even type: refused. Unknown odd: skipped. 0x00040008 is unused: refused. */
-    uint8_t d[400];
-    size_t n = 122;
-    memcpy(d, clean, 122);
-    n += batch(d + n, 1, 1, 0x00050002, "even");
+    uint8_t d[600];
+    size_t n = C0;
+    memcpy(d, clean, C0);
+    n += batch(d + n, n, 1, 1, 0x00050002, "even");
     gz_journal_scan_t sc = scan(d, n);
-    CHECK(sc.status == GZ_JOURNAL_ERR_UNKNOWN_RECORD && sc.bad_type == 0x00050002 && sc.error_at == 122);
+    CHECK(sc.status == GZ_JOURNAL_ERR_UNKNOWN_RECORD && sc.bad_type == 0x00050002 && sc.error_at == C0);
     int untouched;
     CHECK(open_bytes(d, n, NULL, &untouched, NULL) == GZ_JOURNAL_ERR_UNKNOWN_RECORD && untouched);
-    n = 122;
-    n += batch(d + n, 1, 1, 0x00040008, "fresh");
+    n = C0;
+    n += batch(d + n, n, 1, 1, 0x00040008, "fresh");
     CHECK(open_bytes(d, n, NULL, NULL, NULL) == GZ_JOURNAL_ERR_UNKNOWN_RECORD);
-    n = 122;
+    n = C0;
     gz_record_t rs[3] = {{0x00050001, {(const uint8_t *)"odd", 3}},
                          {0x00020006, {(const uint8_t *)"exp", 3}},
                          {0x7e570001, {(const uint8_t *)"ping", 4}}};
-    n += gz_journal_encode_batch(d + n, (gz_batch_id_t){1, 1}, rs, 3);
+    n += gz_journal_encode_batch(d + n, h_salt, n, (gz_batch_id_t){1, 1}, rs, 3);
     memfs_t fs;
     CHECK(open_bytes(d, n, NULL, NULL, &fs) == GZ_JOURNAL_OK);
     gz_journal_t *j;
@@ -405,8 +445,8 @@ static void test_write_read(void)
     gz_journal_close(j);
     memfs_free(&fs);
     /* An unknown even type in a torn tail is cut with it, not refused. */
-    n = 122;
-    n += batch(d + n, 1, 1, 0x00050002, "even");
+    n = C0;
+    n += batch(d + n, n, 1, 1, 0x00050002, "even");
     CHECK(scan(d, n - 1).verdict == GZ_JOURNAL_TORN);
     CHECK(gz_journal_type_known(0x00020006) && !gz_journal_type_known(0x00020010) &&
           gz_journal_type_known(0x7e57ffff) && !gz_journal_type_known(0x00040008));
@@ -418,18 +458,18 @@ static void test_tails(void)
     gz_journal_open_info_t info;
     int untouched;
     memfs_t fs;
-    /* 7. Every cut inside the last entry after the last mark (J3, 122..166). */
-    for (size_t cut = 122; cut < 167; cut++) {
+    /* 7. Every cut inside the last entry after the last mark (J3, C0..C1-1). */
+    for (size_t cut = C0; cut < C1; cut++) {
         int ok = open_bytes(clean, cut, &info, NULL, &fs) == GZ_JOURNAL_OK && info.incarnation == 2 &&
-                 info.cut_bytes == cut - 122;
+                 info.cut_bytes == cut - C0;
         size_t len;
         const uint8_t *d = memfs_get(&fs, H_JOURNAL, &len);
-        ok = ok && len == 122 + 74 && !memcmp(d, clean, 122);
+        ok = ok && len == C0 + 2 * ML && !memcmp(d, clean, C0);
         memfs_free(&fs);
         CHECK(ok);
     }
     /* 8. Zero bytes after the last mark. */
-    uint8_t d[600];
+    uint8_t d[800];
     memcpy(d, clean, clean_len);
     for (size_t z = 1; z <= 100; z += 33) {
         memset(d + clean_len, 0, z);
@@ -437,12 +477,12 @@ static void test_tails(void)
               info.cut_bytes == z && info.incarnation == 2);
     }
     /* 9. Earlier batch torn, later one intact, no mark: both dropped. */
-    size_t n = 122;
-    memcpy(d, clean, 122);
-    n += batch(d + n, 1, 1, 0x7e570001, "first");
-    n += batch(d + n, 1, 2, 0x7e570001, "second");
-    d[130] ^= 0x10;
-    CHECK(open_bytes(d, n, &info, NULL, &fs) == GZ_JOURNAL_OK && info.cut_bytes == n - 122);
+    size_t n = C0;
+    memcpy(d, clean, C0);
+    n += batch(d + n, n, 1, 1, 0x7e570001, "first");
+    n += batch(d + n, n, 1, 2, 0x7e570001, "second");
+    d[C0 + 8] ^= 0x10;
+    CHECK(open_bytes(d, n, &info, NULL, &fs) == GZ_JOURNAL_OK && info.cut_bytes == n - C0);
     gz_journal_t *j;
     gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 5, &fs.os, 0, 0, 0, 0, 0, NULL, NULL};
     CHECK(gz_journal_open(&j, &cfg, NULL) == GZ_JOURNAL_OK);
@@ -452,21 +492,21 @@ static void test_tails(void)
     gz_journal_close(j);
     memfs_free(&fs);
     /* 10. An invalid entry just before the final mark. */
-    n = 122;
-    n += batch(d + n, 1, 1, 0x7e570001, "first");
+    n = C0;
+    n += batch(d + n, n, 1, 1, 0x7e570001, "first");
     size_t at = n;
-    n += batch(d + n, 1, 2, 0x7e570001, "second");
+    n += batch(d + n, n, 1, 2, 0x7e570001, "second");
     n += mark(d + n, 1, n);
     d[at + 30] ^= 4;
     CHECK(open_bytes(d, n, NULL, &untouched, NULL) == GZ_JOURNAL_ERR_CORRUPT && untouched);
     /* A false mark in the torn tail, offset right but check wrong, is not a mark. */
-    n = 122;
-    n += batch(d + n, 1, 1, 0x7e570001, "first");
+    n = C0;
+    n += batch(d + n, n, 1, 1, 0x7e570001, "first");
     d[n - 1] ^= 1;
     size_t m = n;
     n += mark(d + n, 1, m);
     d[n - 1] ^= 1;
-    CHECK(open_bytes(d, n, &info, NULL, NULL) == GZ_JOURNAL_OK && info.cut_bytes == n - 122);
+    CHECK(open_bytes(d, n, &info, NULL, NULL) == GZ_JOURNAL_OK && info.cut_bytes == n - C0);
 }
 
 /* 25. A member journal of about 40 KB; a bit flipped in a confirmed exposure entry. */
@@ -503,7 +543,7 @@ static void test_member_journal(void)
     /* The last batch, after the last mark: a torn tail. */
     d[len - 20] ^= 0x20;
     gz_journal_open_info_t info;
-    CHECK(open_bytes(d, len, &info, NULL, NULL) == GZ_JOURNAL_OK && info.cut_bytes == 4 + 17 + 4 + 8 + 40 + 8);
+    CHECK(open_bytes(d, len, &info, NULL, NULL) == GZ_JOURNAL_OK && info.cut_bytes == 4 + 17 + 4 + 8 + 40 + GZ_JOURNAL_CHECK_LEN);
     free(d);
     memfs_free(&h->fs);
     free(h);
@@ -569,7 +609,7 @@ static void test_failures(void)
     printf("  failure injection: %d runs\n", runs);
     /* A full disk at every capacity from the header up. */
     fails = runs = 0;
-    for (uint64_t cap = 48; cap < 1400; cap += 7) {
+    for (uint64_t cap = HL; cap < 1500; cap += 7) {
         int r = run_failure(0, 0, cap, 0, &any);
         if (r == -1) continue;
         runs++;
@@ -754,7 +794,18 @@ static void test_posix(void)
     uint8_t d[400];
     size_t n = fread(d, 1, sizeof d, f);
     fclose(f);
-    CHECK(n == clean_len && !memcmp(d, clean, n));
+    /* The same entries as J1 to J6 under this file's own random salt. */
+    {
+        uint8_t want[512];
+        const uint8_t *sl = d + 40;
+        size_t w = gz_journal_encode_header(want, gz_journal_chain_signet, sl);
+        w += gz_journal_encode_small(want + w, sl, w, GZ_JOURNAL_KIND_INCARNATION, 1, 1794000000000ull);
+        w += gz_journal_encode_small(want + w, sl, w, GZ_JOURNAL_KIND_MARK, 1, w);
+        gz_record_t pr = {0x7e570001, {(const uint8_t *)"ping", 4}};
+        w += gz_journal_encode_batch(want + w, sl, w, (gz_batch_id_t){1, 1}, &pr, 1);
+        w += gz_journal_encode_small(want + w, sl, w, GZ_JOURNAL_KIND_MARK, 1, w);
+        CHECK(n == clean_len && w == n && !memcmp(d, want, n) && memcmp(sl, h_salt, GZ_JOURNAL_SALT_LEN) != 0);
+    }
     CHECK(gz_journal_open(&j, &cfg, &info) == GZ_JOURNAL_OK && info.incarnation == 2 && !info.created);
     gz_storage_reader_t rd = gz_journal_reader(j);
     gz_stored_batch_t sb;

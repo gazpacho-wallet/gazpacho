@@ -20,8 +20,25 @@ static uint32_t g32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)
 static uint64_t g64(const uint8_t *p) { return (uint64_t)g32(p) << 32 | g32(p + 4); }
 static void p32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
 static void p64(uint8_t *p, uint64_t v) { p32(p, (uint32_t)(v >> 32)); p32(p + 4, (uint32_t)v); }
-static int chk(const uint8_t *d, size_t n, const uint8_t *c) { uint8_t h[32]; sha256(d, n, h); return memcmp(h, c, 8) == 0; }
-static void seal(uint8_t *d, size_t n) { uint8_t h[32]; sha256(d, n, h); memcpy(d + n, h, 8); }
+/* The salted check of spec section 11, written here from the text:
+ * SHA-256(salt || u64 offset || frame), the first 16 bytes. */
+static uint8_t HB[CAP + 64];
+static void check_of(const uint8_t *salt, uint64_t off, const uint8_t *d, size_t n, uint8_t out[16])
+{
+    uint8_t h[32];
+    memcpy(HB, salt, 32);
+    p64(HB + 32, off);
+    memcpy(HB + 40, d, n);
+    sha256(HB, 40 + n, h);
+    memcpy(out, h, 16);
+}
+static int chk(const uint8_t *salt, uint64_t off, const uint8_t *d, size_t n, const uint8_t *c)
+{
+    uint8_t x[16];
+    check_of(salt, off, d, n, x);
+    return memcmp(x, c, 16) == 0;
+}
+static void seal(const uint8_t *salt, uint64_t off, uint8_t *d, size_t n) { check_of(salt, off, d, n, d + n); }
 
 /* --- the independent reader ------------------------------------------------ */
 typedef struct { int status; uint64_t V, highest, nb; } ind_t; /* status: gz_journal_status_t values */
@@ -43,11 +60,11 @@ static uint64_t valid_at(const uint8_t *d, uint64_t E, uint64_t p, int *kind, ui
     if (E - p < 4) return 0;
     uint64_t L = g32(d + p);
     if (L < 21 || L > 8388625) return 0;
-    if (E - p < 4 + L + 8) return 0;
+    if (E - p < 4 + L + 16) return 0;
     int k = d[p + 4];
     if (k < 1 || k > 3) return 0;
     if (k != 2 && L != 25) return 0;
-    if (!chk(d + p, 4 + L, d + p + 4 + L)) return 0;
+    if (!chk(d + 40, p, d + p, 4 + L, d + p + 4 + L)) return 0;
     *kind = k; *inc = g64(d + p + 5); *seq = g64(d + p + 13);
     const uint8_t *pl = d + p + 21; uint64_t pn = L - 17;
     if (k == 3 && g64(pl) != p) return 0;
@@ -65,22 +82,24 @@ static uint64_t valid_at(const uint8_t *d, uint64_t E, uint64_t p, int *kind, ui
         }
         if (q != pn) return 0;
     }
-    return 4 + L + 8;
+    return 4 + L + 16;
 }
 
 static ind_t ind_scan(const uint8_t *d, uint64_t E, const uint8_t chain[32])
 {
     ind_t r = {0, 0, 0, 0};
-    static const uint8_t mg[8] = {'G', 'Z', 'J', 'O', 'U', 'R', 'N', 'L'};
-    if (E < 48 || memcmp(d, mg, 8) || !chk(d, 40, d + 40)) { r.status = GZ_JOURNAL_ERR_HEADER; return r; }
+    static const uint8_t mg[8] = {'G', 'Z', 'J', 'O', 'U', 'R', 'N', 'S'};
+    uint8_t hh[32];
+    if (E >= 88) sha256(d, 72, hh);
+    if (E < 88 || memcmp(d, mg, 8) || memcmp(hh, d + 72, 16)) { r.status = GZ_JOURNAL_ERR_HEADER; return r; }
     if (memcmp(d + 8, chain, 32)) { r.status = GZ_JOURNAL_ERR_NETWORK; return r; }
-    uint64_t p = 48, inc = 0, seq = 0;
+    uint64_t p = 88, inc = 0, seq = 0;
     int bad = 0;
     for (;;) {
         int k, bt = 0; uint64_t i, s;
         uint64_t sz = p < E ? valid_at(d, E, p, &k, &i, &s, &bt) : 0;
         if (!sz) break;
-        if (p == 48 && k != 1) { r.status = GZ_JOURNAL_ERR_ORDER; return r; }
+        if (p == 88 && k != 1) { r.status = GZ_JOURNAL_ERR_ORDER; return r; }
         if (k == 1) { if (i <= inc || s != 0) { r.status = GZ_JOURNAL_ERR_ORDER; return r; } inc = i; seq = 0; }
         else if (i != inc) { r.status = GZ_JOURNAL_ERR_ORDER; return r; }
         else if (k == 3) { if (s != 0) { r.status = GZ_JOURNAL_ERR_ORDER; return r; } }
@@ -89,7 +108,7 @@ static ind_t ind_scan(const uint8_t *d, uint64_t E, const uint8_t chain[32])
     }
     r.V = p; r.highest = inc;
     if (p < E)
-        for (uint64_t m = p + 1; m + 37 <= E; m++) {
+        for (uint64_t m = p + 1; m + 45 <= E; m++) {
             int k, bt; uint64_t i, s;
             if (valid_at(d, E, m, &k, &i, &s, &bt) && k == 3) { r.status = GZ_JOURNAL_ERR_CORRUPT; return r; }
         }
@@ -102,13 +121,15 @@ static size_t build(const uint8_t *in, size_t n)
 {
     if (n == 0) return 0;
     if (in[0] & 1) { size_t l = n - 1 < CAP ? n - 1 : CAP; memcpy(F, in + 1, l); return l; } /* raw */
-    size_t len = gz_journal_encode_header(F, gz_journal_chain_signet);
+    uint8_t salt[32];
+    for (int k = 0; k < 32; k++) salt[k] = (uint8_t)(in[0] * 37u + (unsigned)k);
+    size_t len = gz_journal_encode_header(F, gz_journal_chain_signet, salt);
     uint64_t inc = 0, seq = 0;
     size_t i = 1;
     while (i < n && len + 600 < CAP) {
         uint8_t op = in[i++], a = i < n ? in[i++] : 0;
         switch (op % 8) {
-        case 0: inc += 1 + (a & 3); seq = 0; len += gz_journal_encode_small(F + len, 1, inc, 7); break;
+        case 0: inc += 1 + (a & 3); seq = 0; len += gz_journal_encode_small(F + len, salt, len, 1, inc, 7); break;
         case 1: case 2: { /* a batch: a records, types chosen by the next bytes */
             uint8_t *e = F + len, *pl = e + 21;
             uint32_t nr = a % 4; size_t q = 4;
@@ -117,21 +138,33 @@ static size_t build(const uint8_t *in, size_t n)
                 uint8_t tb = i < n ? in[i++] : 0;
                 uint32_t t = tb == 0xff ? 0x00050002u : tb == 0xfe ? 0x00050003u : 0x7e570001u;
                 uint32_t rl = tb % 40;
+                if (tb >= 0xf0 && tb < 0xfe) rl = 45 + tb % 4; /* a peer's forged sync mark (H1) */
                 p32(pl + q, t); p32(pl + q + 4, rl); q += 8;
                 for (uint32_t z = 0; z < rl; z++) pl[q + z] = (uint8_t)(z * 7 + tb);
+                if (rl >= 45) {
+                    /* Well formed, naming the offset where it lands, sealed
+                     * with a salt the peer had to guess (or, at 0xf0, the real
+                     * salt at the wrong offset). */
+                    uint8_t *mk = pl + q;
+                    uint64_t at = len + 21 + q;
+                    uint8_t guess[32] = {0};
+                    p32(mk, 25); mk[4] = 3; p64(mk + 5, inc); p64(mk + 13, 0); p64(mk + 21, at);
+                    if (tb == 0xf0) seal(salt, at + 1, mk, 29);
+                    else seal(guess, at, mk, 29);
+                }
                 q += rl;
             }
             p32(e, (uint32_t)(17 + q)); e[4] = 2;
             uint64_t s = (a & 0x80) ? seq + 2 : seq + 1; /* sometimes a gap */
             p64(e + 5, (a & 0x40) ? inc + 1 : inc); p64(e + 13, s); seq = s;
-            seal(e, 21 + q);
-            len += 21 + q + 8;
+            seal(salt, len, e, 21 + q);
+            len += 21 + q + 16;
             break;
         }
-        case 3: len += gz_journal_encode_small(F + len, 3, inc, (a & 0x10) ? len + 1 : len); break;
+        case 3: len += gz_journal_encode_small(F + len, salt, len, 3, inc, (a & 0x10) ? len + 1 : len); break;
         case 4: { size_t k = a % 60; for (size_t z = 0; z < k && i < n; z++) F[len++] = in[i++]; break; } /* garbage */
-        case 5: if (len > 48) F[48 + (size_t)(a * 977u) % (len - 48)] ^= (uint8_t)(1u << (a & 7)); break; /* flip */
-        case 6: if (len > 49) len -= 1 + a % (len - 48 > 64 ? 64 : len - 49); break;  /* cut */
+        case 5: if (len > 88) F[88 + (size_t)(a * 977u) % (len - 88)] ^= (uint8_t)(1u << (a & 7)); break; /* flip */
+        case 6: if (len > 89) len -= 1 + a % (len - 88 > 64 ? 64 : len - 89); break;  /* cut */
         case 7: { size_t k = 1 + a % 32; memset(F + len, 0, k); len += k; break; } /* zeros */
         }
     }
@@ -168,12 +201,12 @@ int LLVMFuzzerTestOneInput(const uint8_t *in, size_t n)
     uint64_t hi = o.highest > counter ? o.highest : counter;
     if (st == GZ_JOURNAL_OK && hi >= GZ_JOURNAL_INCARNATION_LIMIT - 1) {
         if (os != GZ_JOURNAL_ERR_INCARNATION || now != len || memcmp(after, F, len)) abort();
-    } else if (len < 48) {
+    } else if (len < 88) {
         if (os != GZ_JOURNAL_ERR_HEADER) abort();
     } else if (os != st) {
         abort();
     } else if (os == GZ_JOURNAL_OK) {
-        if (info.incarnation != hi + 1 || now != o.V + 74 || memcmp(after, F, o.V)) abort();
+        if (info.incarnation != hi + 1 || now != o.V + 90 || memcmp(after, F, o.V)) abort();
         gz_storage_reader_t rd = gz_journal_reader(j);
         gz_stored_batch_t sb; uint64_t k = 0;
         while (rd.next(rd.ctx, &sb)) k++;

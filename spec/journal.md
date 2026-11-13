@@ -20,9 +20,10 @@ Review B of the same code:
 | Finding | Change | Where |
 |---|---|---|
 | B1 import while `journal.lock` is gone | An import and a restore mark lock `journal.gzj` itself too, as the start does, so they are refused while a program runs even if `journal.lock` was removed or replaced by hand | Sections 2, 8.2 |
-| B2 the floor of an import | A journal to replace that cannot be read refuses the import; one the scan refuses still gives the highest incarnation it saw (before the damage, the newest valid sync mark after it, or the entry that broke the order) | Section 8.2 |
+| B2 the floor of an import | A journal to replace that cannot be read refuses the import; one the scan refuses still gives the highest incarnation of its valid prefix, or of the newest valid sync mark after damage (never what a rejected entry names) | Section 8.2 |
 | B3 the journal's name | Every start syncs the folder once before writing, not only the start that created the file | Section 5 step 1 |
 | B4 the first start after an unseen writeback error | Stated: it is refused with an I/O error, and the program opens once more before reporting a failure | Section 5 step 2 |
+| H1 (confirmation review) a sync mark forged in a record | The clear format's check was unkeyed SHA-256 truncated to 8 bytes, and only a mark named its offset, so peer-chosen bytes inside a batch could form a valid sync mark; a tear after it made the start refuse a torn tail as corruption, and an import took its floor from it. The clear format now has a random 32-byte salt in the header and a 16-byte check SHA-256(salt, offset, frame) on every entry. An order refusal gives the import only the valid prefix's highest incarnation. An import over a journal past the hard limit is refused: the person moves it aside first | Sections 8.2, 11 |
 | B5 limits of the device read | Stated: where `O_DIRECT` falls back the `fadvise` alone acts and keeps pages another process maps; macOS unverified; the stale-block residual | Sections 4, 5 step 2 |
 
 ## Changes after cross-spec review 1
@@ -114,6 +115,8 @@ After the header the file is a sequence of entries. ("Entry" is the framed unit 
 | 4 + `length` − 16 | `tag` | 16 | XChaCha20-Poly1305's tag |
 
 All integers big-endian. The **associated data** of every entry is the header's `file_id`, the entry's own offset in the file as a `u64`, and bytes 0 to 20 of the entry, so an entry is valid only where it was written, only in this journal, and with its clear kind, incarnation and sequence exactly as written (storage 5.4).
+
+**The clear stand-in format** the code builds until the encrypted codec lands has the same framing with a clear payload and a salted, offset-bound 16-byte check instead of the nonce and tag (section 11).
 
 **The tag replaces draft 2's checksum.** Draft 2 used the first 8 bytes of SHA-256, which caught a torn write but not an attacker, who could rewrite the checksum too. The tag catches both: a torn or half-written entry fails it, and so does any change by someone without the storage key. What it cannot catch is a whole entry cut off at an entry boundary, or an older copy of the file; section 8.3's mark file and storage 6 cover those where it matters.
 
@@ -232,7 +235,7 @@ The index within an epoch is recorded too (`key_index`), so that an ordinary res
 
 **How a restore is recognised and who writes the first batch.** A restore is an explicit program action: importing a backup file (storage 11), the person starting files found behind as a restore (storage 6.3 step 4; `local-api.md` `start-as-restore`), or the program finding a key file with no journal (storage 6.3 step 0). The program then starts normally (section 5), creating the runner under the new incarnation, and tells the node, **before any other event and before connecting to anyone**, that this start follows a restore (`signing-round.md` section 12.1). The node answers with one save batch, `key_epoch`, `restored` and `guard`, which the runner issues as sequence 1 of that incarnation like any other batch; nothing else is sent until it is confirmed (review 3, F22). A copy of the data folder made by other means is not recognised; that is the "copy of a running program" limit of `signing-round.md` section 8 and is not defended.
 
-**The restore marker and its order.** The program marks a restore in `restore.gzr` beside the journal (outside the backup set), holding the imported journal's highest incarnation (`base`) and the highest the replaced one had used (`floor`). Every start is restored until a batch with sequence 1 of an incarnation above `base` is durable (the restore's first batch); the marker is then removed before that batch is confirmed. **An import writes the marker first, then the file**: under the lock, read the backup (copied first to a temporary name in the data folder), take the floor from the journal it replaces, write and sync the marker, then rename the backup over `journal.gzj` and sync the folder. A crash before the rename leaves the old journal with a marker whose `base` it is already above, so the next start finds the marker answered and removes it (the import did not happen); a crash after it is a marked restore. The other order (file first) has a window in which the backup starts as an ordinary journal and reuses an incarnation. A key file with no journal is marked with `base` 0 before the first start. The new incarnation is taken from the start counter as at every start (section 5 step 5), so it is above every incarnation this device used since the backup. A restore that finds no counter tells the person.
+**The restore marker and its order.** The program marks a restore in `restore.gzr` beside the journal (outside the backup set), holding the imported journal's highest incarnation (`base`) and the highest the replaced one had used (`floor`). Every start is restored until a batch with sequence 1 of an incarnation above `base` is durable (the restore's first batch); the marker is then removed before that batch is confirmed. **An import writes the marker first, then the file**: under the lock, read the backup (copied first to a temporary name in the data folder), take the floor from the journal it replaces, write and sync the marker, then rename the backup over `journal.gzj` and sync the folder. A journal to replace that cannot be read refuses the import, and one past the hard limit (section 7) is refused too: the person moves it aside first. A crash before the rename leaves the old journal with a marker whose `base` it is already above, so the next start finds the marker answered and removes it (the import did not happen); a crash after it is a marked restore. The other order (file first) has a window in which the backup starts as an ordinary journal and reuses an incarnation. A key file with no journal is marked with `base` 0 before the first start. The new incarnation is taken from the start counter as at every start (section 5 step 5), so it is above every incarnation this device used since the backup. A restore that finds no counter tells the person.
 
 ### 8.3 The guard file and the mark file
 
@@ -367,42 +370,50 @@ A test checks this directly: the simulator records every secret nonce it creates
 
 ## 11. Test vectors
 
-Computed by `tools/spec-vectors.py`. **J1 to J6 are draft 2's clear format, which is not built**: the encrypted journal's vectors are storage's E5 (header), E6 (entries), E7 (tampering; E7f is J4's torn tail and E7a is J6's corruption) and E9m (the mark file). J1 to J6 are kept because the tool still prints them, and because their framing logic (marks, torn tails, order rules) is the same.
+Computed by `tools/spec-vectors.py`. **J1 to J6 are the clear format the code builds now** (`ports/storage/journal.c`), a stand-in that will not ship: the encrypted journal's vectors are storage's E5 (header), E6 (entries), E7 (tampering; E7f is J4's torn tail and E7a is J6's corruption) and E9m (the mark file). Their framing logic (marks, torn tails, order rules) is the same as the encrypted format's.
 
-**J1. Header, signet.** 48 bytes:
+**The clear format** (salted after the confirmation review of PR 29, finding H1). The header is 88 bytes: `magic` ASCII `GZJOURNS` (8), `chain` (32), `salt` (32 random bytes, drawn once when the file is created), then a check (16): the first 16 bytes of SHA-256 over the 72 bytes before it. Every entry is framed as in section 3 up to `sequence`, then the clear payload, then a 16-byte check in place of the nonce and tag: the first 16 bytes of SHA-256(`salt` || the entry's own offset in the file as a `u64` || the entry's bytes from `length` to the end of the payload). `length` is 17 + the payload's length, at least 21, at most 8,388,625, exactly 25 for kinds 1 and 3, so incarnation entries and sync marks are 45 bytes. The salt and the offset bind every entry to its file and its place, as the associated data does in the encrypted format: bytes a peer chose, written inside a record, cannot form an entry or a sync mark the scan accepts, because the peer does not know the salt. Draft 2's unsalted 8-byte check could be forged that way, and a forged mark inside a torn batch made the start refuse a torn tail as corruption (H1). The vectors use the salt `00 01 .. 1f`.
 
-```
-475a4a4f55524e4c f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c4225e973988108000000
-5477d18c2a8b6425
-```
-
-**J2. Incarnation 1, clock 1,794,000,000,000 ms.** 37 bytes:
+**J1. Header, signet, salt 000102..1f.** 88 bytes:
 
 ```
-00000019 01 0000000000000001 0000000000000000 000001a1b2bb9400 5ba5a611f1eac4ed
+475a4a4f55524e53 f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c4225e973988108000000
+000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+598cbcfdcc7c3d3b1a1eab6adac61dac
 ```
 
-**J3. Batch (1, 1) with one record of type `0x7e570001` and bytes `ping`.** 45 bytes:
+**J2. Incarnation 1, clock 1,794,000,000,000 ms,** at offset 88. 45 bytes:
+
+```
+00000019 01 0000000000000001 0000000000000000 000001a1b2bb9400
+d0742bb1d178d951a10a23fc4da6e5dd
+```
+
+**J5. Sync mark** of incarnation 1 at offset 133, just after J2. 45 bytes:
+
+```
+00000019 03 0000000000000001 0000000000000000 0000000000000085
+67591b2f763b7489609793e88e380adc
+```
+
+**J3. Batch (1, 1) with one record of type `0x7e570001` and bytes `ping`,** at offset 178, just after J5. 53 bytes:
 
 ```
 00000021 02 0000000000000001 0000000000000001
 00000001 7e570001 00000004 70696e67
-ff0269042d9a3f7d
+ddde3c927fd591a41118a5ec813fcd5a
 ```
 
-**J5. Sync mark** of incarnation 1 at offset 85, just after J2 (the header is 48 bytes). 37 bytes:
+**J4. Torn tail.** The header, J2, J5, then J3 without its last 3 bytes: 228 bytes in all. No sync mark follows the damage at offset 178, so the reader cuts the file to 178, keeping J2 and J5, and the next incarnation is 2.
+
+**J6. Corruption.** The header, J2, J5, J3 with bit 0 of its byte 25 flipped (the first byte of the record type), then a sync mark at offset 231: 276 bytes. The damaged entry at 178 lies before a valid mark that names its own offset, so the start is **refused**, nothing cut. The second mark is:
 
 ```
-00000019 03 0000000000000001 0000000000000000 0000000000000055 11b8de34bb2fdb81
+00000019 03 0000000000000001 0000000000000000 00000000000000e7
+8e9c126043c3bea83a91d7802d2d4c10
 ```
 
-**J4. Torn tail** (changed after review 3). The header, J2, J5, then J3 without its last 3 bytes: 164 bytes in all. No sync mark follows the damage at offset 122, so the reader cuts the file to 122, keeping J2 and J5, and the next incarnation is 2.
-
-**J6. Corruption** (new). The header, J2, J5, J3 with bit 0 of its byte 25 flipped (the first byte of the record type), then a sync mark at offset 167: 204 bytes. The damaged entry at 122 lies before a valid mark that names its own offset, so the start is **refused**, nothing cut. The second mark is:
-
-```
-00000019 03 0000000000000001 0000000000000000 00000000000000a7 aecd69c7d1113773
-```
+**H1 check** (printed by the tool, not a byte vector). A batch at 178 whose record carries a well-formed sync mark naming the offset where it lands, sealed with a salt other than the file's (all zeros, as a peer would have to guess), cut 10 bytes short: a torn tail, cut at 178, never corruption.
 
 ## 12. Tests
 

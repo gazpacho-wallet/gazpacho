@@ -9,16 +9,20 @@
 #include "../check.h"
 #include "harness.h"
 
-static size_t small(uint8_t *out, uint8_t kind, uint64_t inc, uint64_t v)
+#define HL GZ_JOURNAL_HEADER_LEN
+#define ML GZ_JOURNAL_MARK_LEN
+#define C0 (HL + 2 * ML) /* a fresh journal: header, incarnation, mark */
+
+static size_t small(uint8_t *out, uint64_t at, uint8_t kind, uint64_t inc, uint64_t v)
 {
-    return gz_journal_encode_small(out, kind, inc, v);
+    return gz_journal_encode_small(out, h_salt, at, kind, inc, v);
 }
 
-static size_t one_batch(uint8_t *out, uint64_t inc, uint64_t seq, uint32_t type, size_t len)
+static size_t one_batch(uint8_t *out, uint64_t at, uint64_t inc, uint64_t seq, uint32_t type, size_t len)
 {
     static uint8_t zero[64];
     gz_record_t r = {type, {zero, len}};
-    return gz_journal_encode_batch(out, (gz_batch_id_t){inc, seq}, &r, 1);
+    return gz_journal_encode_batch(out, h_salt, at, (gz_batch_id_t){inc, seq}, &r, 1);
 }
 
 static gz_journal_t *open_on(memfs_t *fs, uint64_t soft, uint64_t hard, uint64_t unsynced,
@@ -80,13 +84,13 @@ static void test_constants(void)
 static void test_scan_edges(void)
 {
     uint8_t d[600];
-    size_t n = gz_journal_encode_header(d, gz_journal_chain_signet);
+    size_t n = gz_journal_encode_header(d, gz_journal_chain_signet, h_salt);
     gz_journal_scan_t s;
     /* Incarnations above 2^32 (the high word counts). */
     uint64_t big = 0x100000005ull;
-    n += small(d + n, 1, big, 0);
-    n += one_batch(d + n, big, 1, 0x7e570001, 3);
-    n += small(d + n, 3, big, n);
+    n += small(d + n, n, 1, big, 0);
+    n += one_batch(d + n, n, big, 1, 0x7e570001, 3);
+    n += small(d + n, n, 3, big, n);
     CHECK(gz_journal_scan(d, n, gz_journal_chain_signet, &s, NULL, NULL) == GZ_JOURNAL_OK &&
           s.verdict == GZ_JOURNAL_CLEAN && s.highest_incarnation == big);
     CHECK(s.n_incarnations == 1 && s.n_batches == 1 && s.n_marks == 1 && s.n_records == 1 &&
@@ -94,23 +98,21 @@ static void test_scan_edges(void)
     /* A mark found at V + 1 exactly. */
     size_t v = n;
     d[n++] = 0xee;
-    n += small(d + n, 3, big, n);
+    n += small(d + n, n, 3, big, n);
     CHECK(gz_journal_scan(d, n, gz_journal_chain_signet, &s, NULL, NULL) == GZ_JOURNAL_ERR_CORRUPT &&
           s.error_at == v && s.mark_at == v + 1);
     /* A length of 16 with a correct check over its 20 bytes: invalid. */
     n = v;
     uint8_t *e = d + n;
-    memset(e, 0, 28);
+    memset(e, 0, 20 + GZ_JOURNAL_CHECK_LEN);
     e[3] = 16; e[4] = 2;
-    uint8_t h[32];
-    sha256(e, 20, h);
-    memcpy(e + 20, h, 8);
-    CHECK(gz_journal_scan(d, n + 28, gz_journal_chain_signet, &s, NULL, NULL) == GZ_JOURNAL_OK &&
+    gz_journal_entry_check(h_salt, n, e, 20, e + 20);
+    CHECK(gz_journal_scan(d, n + 20 + GZ_JOURNAL_CHECK_LEN, gz_journal_chain_signet, &s, NULL, NULL) == GZ_JOURNAL_OK &&
           s.verdict == GZ_JOURNAL_TORN && s.valid_end == v);
     /* The last possible incarnation cannot be followed (and none at or
      * above 2^63 is used: contract-v2 section 8). */
-    n = 48;
-    n += small(d + n, 1, UINT64_MAX, 0);
+    n = HL;
+    n += small(d + n, n, 1, UINT64_MAX, 0);
     memfs_t fs;
     memfs_init(&fs);
     memfs_put(&fs, H_JOURNAL, d, n);
@@ -126,31 +128,31 @@ static void test_limit_edges(void)
     memfs_t fs;
     gz_journal_status_t st;
     gz_journal_open_info_t info;
-    /* Fresh journal after open: 48 + 37 + 37 = 122 bytes. */
+    /* Fresh journal after open: 88 + 45 + 45 = 178 bytes. */
     memfs_init(&fs);
-    gz_journal_t *j = open_on(&fs, 122, 122, 0, &st, &info);
-    CHECK(st == GZ_JOURNAL_OK && info.soft_full && gz_journal_soft_full(j) && gz_journal_size(j) == 122);
+    gz_journal_t *j = open_on(&fs, C0, C0, 0, &st, &info);
+    CHECK(st == GZ_JOURNAL_OK && info.soft_full && gz_journal_soft_full(j) && gz_journal_size(j) == C0);
     gz_journal_close(j);
     memfs_free(&fs);
     memfs_init(&fs);
-    j = open_on(&fs, 123, 121, 0, &st, &info);
+    j = open_on(&fs, C0 + 1, C0 - 1, 0, &st, &info);
     CHECK(st == GZ_JOURNAL_ERR_FULL && j == NULL);
     memfs_free(&fs);
     memfs_init(&fs);
-    j = open_on(&fs, 123, 400, 0, &st, &info);
+    j = open_on(&fs, C0 + 1, 500, 0, &st, &info);
     CHECK(st == GZ_JOURNAL_OK && !info.soft_full && !gz_journal_soft_full(j));
     gz_journal_close(j);
     /* A file larger than the hard limit is refused before it is read, even
      * when cutting its tail would make room; one of exactly the limit is not. */
     size_t len;
     const uint8_t *cur = memfs_get(&fs, H_JOURNAL, &len);
-    uint8_t *copy = calloc(1, len + 100);
+    uint8_t *copy = calloc(1, len + 200);
     memcpy(copy, cur, len);
-    for (int z = 74; z <= 100; z += 26) {
+    for (unsigned z = 2 * ML; z <= 2 * ML + 26; z += 26) {
         memfs_put(&fs, H_JOURNAL, copy, len + (size_t)z);
-        j = open_on(&fs, 0, len + 74, 0, &st, &info);
-        CHECK(z == 100 ? st == GZ_JOURNAL_ERR_FULL && j == NULL
-                       : st == GZ_JOURNAL_OK && info.cut_bytes == 74);
+        j = open_on(&fs, 0, len + 2 * ML, 0, &st, &info);
+        CHECK(z != 2 * ML ? st == GZ_JOURNAL_ERR_FULL && j == NULL
+                          : st == GZ_JOURNAL_OK && info.cut_bytes == 2 * ML);
         gz_journal_close(j);
     }
     free(copy);
@@ -159,20 +161,20 @@ static void test_limit_edges(void)
     /* A batch fits exactly with its mark; one byte less of room and it does not. */
     for (int room = 0; room < 2; room++) {
         memfs_init(&fs);
-        uint64_t batch = 4 + 17 + 4 + 8 + 10 + 8; /* 51 */
-        j = open_on(&fs, 0, 122 + batch + 37 - (uint64_t)room, 0, &st, NULL);
+        uint64_t batch = 4 + 17 + 4 + 8 + 10 + GZ_JOURNAL_CHECK_LEN; /* 59 */
+        j = open_on(&fs, 0, C0 + batch + ML - (uint64_t)room, 0, &st, NULL);
         CHECK(st == GZ_JOURNAL_OK);
         gz_journal_status_t s = save_n(j, 1, 1, 10, 0x7e570001);
-        CHECK(room ? s == GZ_JOURNAL_ERR_FULL && gz_journal_size(j) == 122
+        CHECK(room ? s == GZ_JOURNAL_ERR_FULL && gz_journal_size(j) == C0
                    : s == GZ_JOURNAL_OK && gz_journal_flush(j) == GZ_JOURNAL_OK);
         gz_journal_close(j);
         memfs_free(&fs);
     }
 
-    /* The unsynced bound: two batches of 51 bytes fill 102 exactly and stay
+    /* The unsynced bound: two batches of 59 bytes fill 118 exactly and stay
      * unsynced; a third passes it and makes the first two durable first. */
     memfs_init(&fs);
-    j = open_on(&fs, 0, 0, 102, &st, NULL);
+    j = open_on(&fs, 0, 0, 118, &st, NULL);
     CHECK(save_n(j, 1, 1, 10, 0x7e570001) == GZ_JOURNAL_OK && save_n(j, 1, 2, 10, 0x7e570001) == GZ_JOURNAL_OK);
     CHECK(marks_in(&fs) == 1);
     CHECK(save_n(j, 1, 3, 10, 0x7e570001) == GZ_JOURNAL_OK && marks_in(&fs) == 2);
@@ -292,9 +294,9 @@ static void test_reader_recheck(void)
         const uint8_t *cur = memfs_get(&h->fs, H_JOURNAL, &len);
         uint8_t *d = malloc(len);
         memcpy(d, cur, len);
-        if (how == 0) d[130] ^= 1;              /* inside the batch */
-        if (how == 1) len = 140;                /* cut inside it */
-        if (how == 2) d[126] = 3;               /* now a mark-kind entry */
+        if (how == 0) d[C0 + 8] ^= 1;              /* inside the batch */
+        if (how == 1) len = C0 + 10;                /* cut inside it */
+        if (how == 2) d[C0 + 4] = 3;               /* now a mark-kind entry */
         memfs_put(&h->fs, H_JOURNAL, d, len);
         gz_storage_reader_t rd = gz_journal_reader(h->j);
         gz_stored_batch_t sb;
@@ -308,14 +310,14 @@ static void test_reader_recheck(void)
 
 static void test_open_points(void)
 {
-    uint8_t torn[300];
+    uint8_t torn[512];
     /* (The same points crashed instead of failed: test_journal_crash.c.) */
-    size_t n = gz_journal_encode_header(torn, gz_journal_chain_signet);
-    n += small(torn + n, 1, 1, 0);
-    n += small(torn + n, 3, 1, n);
-    n += one_batch(torn + n, 1, 1, 0x7e570001, 4);
-    n += small(torn + n, 3, 1, n);
-    n += one_batch(torn + n, 1, 2, 0x7e570001, 4) - 5; /* torn */
+    size_t n = gz_journal_encode_header(torn, gz_journal_chain_signet, h_salt);
+    n += small(torn + n, n, 1, 1, 0);
+    n += small(torn + n, n, 3, 1, n);
+    n += one_batch(torn + n, n, 1, 1, 0x7e570001, 4);
+    n += small(torn + n, n, 3, 1, n);
+    n += one_batch(torn + n, n, 1, 2, 0x7e570001, 4) - 5; /* torn */
     int runs = 0;
     for (int seeded = 0; seeded < 2; seeded++) {
         runs += open_points(seeded ? torn : NULL, n, 0, MEMFS_LOSE);
@@ -369,7 +371,7 @@ static void test_more(void)
     /* A refused open leaves the file as it was, and nothing open. */
     size_t before, after;
     memfs_get(&fs, H_JOURNAL, &before);
-    j = open_on(&fs, 0, before + 73, 0, &st, NULL);
+    j = open_on(&fs, 0, before + 2 * ML - 1, 0, &st, NULL);
     memfs_get(&fs, H_JOURNAL, &after);
     CHECK(st == GZ_JOURNAL_ERR_FULL && j == NULL && after == before);
     CHECK(memfs_open_fds(&fs) == 0 && fs.bad_closes == 0);
@@ -392,7 +394,7 @@ static void test_more(void)
     const uint8_t *cur = memfs_get(&fs, H_JOURNAL, &len);
     uint8_t *d = malloc(len);
     memcpy(d, cur, len);
-    one_batch(d + 122, 1, 1, 0x7e570001, 2);
+    one_batch(d + C0, C0, 1, 1, 0x7e570001, 2);
     memfs_put(&fs, H_JOURNAL, d, len);
     rd = gz_journal_reader(j);
     CHECK(rd.next(rd.ctx, &sb) == 0 && gz_journal_failed(j));
@@ -429,10 +431,10 @@ static void test_every_byte(void)
     /* The entry map. */
     uint64_t start[128], last_mark = 0;
     size_t n = 0;
-    for (uint64_t p = 48; p < len; n++) {
+    for (uint64_t p = HL; p < len; n++) {
         start[n] = p;
         if (orig[p + 4] == GZ_JOURNAL_KIND_MARK) last_mark = p;
-        p += 12 + ((uint64_t)orig[p] << 24 | (uint64_t)orig[p + 1] << 16 | (uint64_t)orig[p + 2] << 8 | orig[p + 3]);
+        p += 4 + GZ_JOURNAL_CHECK_LEN + ((uint64_t)orig[p] << 24 | (uint64_t)orig[p + 1] << 16 | (uint64_t)orig[p + 2] << 8 | orig[p + 3]);
     }
     start[n] = len;
     int bad = 0, cases = 0;
@@ -444,7 +446,7 @@ static void test_every_byte(void)
         size_t k = 0; /* the last entry starting at or before the cut */
         while (k < n && start[k + 1] <= cut) k++;
         uint64_t v = k < n && start[k] < cut ? start[k] : cut;
-        if (cut < 48) bad += st != GZ_JOURNAL_ERR_HEADER;
+        if (cut < HL) bad += st != GZ_JOURNAL_ERR_HEADER;
         else bad += st != GZ_JOURNAL_OK || info.scan.valid_end != v || info.cut_bytes != cut - v;
         gz_journal_close(j);
         memfs_free(&fs);
@@ -460,7 +462,7 @@ static void test_every_byte(void)
             gz_journal_t *j = open_on(&fs, 0, 0, 0, &st, &info);
             size_t now;
             const uint8_t *after = memfs_get(&fs, H_JOURNAL, &now);
-            if (i < 48) {
+            if (i < HL) {
                 bad += st != GZ_JOURNAL_ERR_HEADER || now != len;
             } else {
                 size_t k = 0;
@@ -470,14 +472,14 @@ static void test_every_byte(void)
                            memcmp(after, d, len) != 0;
                 else
                     bad += st != GZ_JOURNAL_OK || info.scan.valid_end != start[k] ||
-                           now != start[k] + 74 || memcmp(after, orig, start[k]) != 0;
+                           now != start[k] + 2 * ML || memcmp(after, orig, start[k]) != 0;
             }
             gz_journal_close(j);
             memfs_free(&fs);
             cases++;
         }
     printf("  every byte: %zu-byte journal, %zu entries, %d cuts and flips\n", len, n, cases);
-    CHECK(bad == 0 && n > 15 && last_mark > 48);
+    CHECK(bad == 0 && n > 15 && last_mark > HL);
     free(orig);
     free(d);
 }

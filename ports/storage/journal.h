@@ -1,8 +1,10 @@
 /* The storage journal: how a node's saved batches survive a crash.
  *
- * Specification: spec/journal.md. The bytes are draft 2's CLEAR FORMAT, a
- * stand-in that will not ship: draft 3 encrypts every entry (see
- * "Encryption" below), and the J vectors are kept for history only. The
+ * Specification: spec/journal.md. The bytes are the SALTED CLEAR FORMAT
+ * (spec 2.1 and 3; vectors J1 to J6), a stand-in that will not ship: draft 3
+ * encrypts every entry (see "Encryption" below). Every entry's 16-byte check
+ * is SHA-256 over the file's random salt, the entry's own offset and its
+ * bytes, so bytes a peer chose cannot form an entry the scan accepts. The
  * crash logic is draft 3's. This is the outer layer
  * (DESIGN.md section 3, L4): it uses the operating system, the core does not.
  * Every operating-system call goes through a gz_journal_os_t table, so tests
@@ -98,10 +100,12 @@
 #include "gazpacho/ports.h"
 #include "gazpacho/runner.h"
 
-#define GZ_JOURNAL_HEADER_LEN   48u
+#define GZ_JOURNAL_SALT_LEN     32u          /* random, per file, in the header */
+#define GZ_JOURNAL_CHECK_LEN    16u          /* every entry's and the header's check */
+#define GZ_JOURNAL_HEADER_LEN   88u          /* magic, chain, salt, check */
 #define GZ_JOURNAL_ENTRY_MIN    21u          /* smallest `length` */
 #define GZ_JOURNAL_ENTRY_MAX    8388625u     /* 8 MiB payload + 17 */
-#define GZ_JOURNAL_MARK_LEN     37u          /* incarnation and mark entries, in the file */
+#define GZ_JOURNAL_MARK_LEN     45u          /* incarnation and mark entries, in the file */
 #define GZ_JOURNAL_UNSYNCED_MAX (16ull << 20)
 #define GZ_JOURNAL_SOFT_LIMIT   (768ull << 20)
 #define GZ_JOURNAL_HARD_LIMIT   (1ull << 30)
@@ -182,6 +186,8 @@ typedef struct {
      * unverified: Apple's fcntl(2) does not say F_NOCACHE bypasses a page
      * already cached. */
     long (*pread_device)(void *ctx, int fd, void *buf, size_t len, uint64_t off);
+    /* Fill buf with len random bytes (a new file's salt). 0 on success. */
+    int (*random)(void *ctx, uint8_t *buf, size_t len);
     void *ctx;
 } gz_journal_os_t;
 
@@ -236,14 +242,21 @@ long gz_journal_parse_batch(const uint8_t *payload, size_t len, gz_record_t *rec
 
 /* Encoders, used by the writer and the tests. Each writes into `out`
  * (GZ_JOURNAL_HEADER_LEN, GZ_JOURNAL_MARK_LEN, or the batch's size) and
- * returns the number of bytes. */
-size_t gz_journal_encode_header(uint8_t out[48], const uint8_t chain[32]);
-size_t gz_journal_encode_small(uint8_t out[37], uint8_t kind, uint64_t incarnation,
-                               uint64_t value);
+ * returns the number of bytes. An entry's check binds it to the file's salt
+ * and to `offset`, the position it will have in the file (spec 3): written
+ * anywhere else, it is invalid. A sync mark's value must be its offset. */
+size_t gz_journal_encode_header(uint8_t out[GZ_JOURNAL_HEADER_LEN], const uint8_t chain[32],
+                                const uint8_t salt[GZ_JOURNAL_SALT_LEN]);
+size_t gz_journal_encode_small(uint8_t out[GZ_JOURNAL_MARK_LEN], const uint8_t salt[GZ_JOURNAL_SALT_LEN],
+                               uint64_t offset, uint8_t kind, uint64_t incarnation, uint64_t value);
 /* Size of a batch entry in the file, or 0 if larger than allowed. */
 uint64_t gz_journal_batch_size(const gz_record_t *records, size_t n);
-size_t gz_journal_encode_batch(uint8_t *out, gz_batch_id_t id, const gz_record_t *records,
-                               size_t n);
+size_t gz_journal_encode_batch(uint8_t *out, const uint8_t salt[GZ_JOURNAL_SALT_LEN], uint64_t offset,
+                               gz_batch_id_t id, const gz_record_t *records, size_t n);
+/* The check of the frame frame[0..len) (length field to the end of the
+ * payload) at file offset `offset` under `salt` (spec 3). */
+void gz_journal_entry_check(const uint8_t salt[GZ_JOURNAL_SALT_LEN], uint64_t offset, const uint8_t *frame,
+                            size_t len, uint8_t out[GZ_JOURNAL_CHECK_LEN]);
 
 /* --- The writer ------------------------------------------------------------ */
 
@@ -344,9 +357,12 @@ int gz_journal_restored(const gz_journal_t *journal);
  * journal.lock and then journal.gzj itself, so a running program is never
  * replaced even if journal.lock was removed or replaced by hand. A journal
  * to replace that cannot be read (I/O error, no memory, over the hard limit)
- * refuses the import (GZ_JOURNAL_ERR_IO etc., nothing written); one the scan
+ * refuses the import (GZ_JOURNAL_ERR_IO etc., nothing written). A journal
+ * over the hard limit (GZ_JOURNAL_ERR_FULL) must be moved aside by hand
+ * before a backup can be imported in its place; one the scan
  * refuses gives the highest incarnation the scan saw (before the damage,
- * the newest valid sync mark after it, or a valid entry breaking the order)
+ * the newest valid sync mark after it, or the valid prefix before an entry
+ * that breaks the order)
  * to the floor. `staged` is the backup,
  * already copied to a file IN `dir` (the same file system, so the rename is
  * atomic), for example `dir`/journal.gzj.import. Under the lock: syncs and

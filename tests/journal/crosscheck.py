@@ -26,28 +26,34 @@ TYPES = [0x7E570001, 0x7E570002, 0x00020006, 0x00010006, 0x0004000A, 0x00030004,
 RARE = [0x00050002, 0x00040008]           # unknown even
 
 
-def sha8(b):
-    return hashlib.sha256(b).digest()[:8]
+def seal(salt, off, frame):
+    return frame + hashlib.sha256(salt + struct.pack(">Q", off) + frame).digest()[:16]
 
 
-def entry(kind, inc, seq, payload):
+def entry(kind, inc, seq, payload, off, salt):
+    """An entry to sit at file offset `off` of a file salted `salt`."""
     body = struct.pack(">IBQQ", 17 + len(payload), kind, inc, seq) + payload
-    return body + sha8(body)
+    return seal(salt, off, body)
 
 
-def header(chain=SIGNET):
-    h = b"GZJOURNL" + chain
-    return h + sha8(h)
+def salt_of(d):
+    return bytes(d[40:72])
+
+
+def header(salt, chain=SIGNET):
+    h = b"GZJOURNS" + chain + salt
+    return h + hashlib.sha256(h).digest()[:16]
 
 
 def gen(rng):
     """A valid journal, as the writer would leave it (possibly with unmarked batches)."""
-    d = bytearray(header())
+    salt = rng.randbytes(32)
+    d = bytearray(header(salt))
     inc = 0
     for _ in range(rng.randint(0, 4)):
         inc += rng.choice([1, 1, 1, 2, 7])
-        d += entry(1, inc, 0, struct.pack(">Q", rng.getrandbits(40)))
-        d += entry(3, inc, 0, struct.pack(">Q", len(d)))
+        d += entry(1, inc, 0, struct.pack(">Q", rng.getrandbits(40)), len(d), salt)
+        d += entry(3, inc, 0, struct.pack(">Q", len(d)), len(d), salt)
         seq = 0
         for _ in range(rng.randint(0, 5)):
             recs = []
@@ -57,16 +63,17 @@ def gen(rng):
             seq += 1
             payload = struct.pack(">I", len(recs)) + b"".join(
                 struct.pack(">II", t, len(b)) + b for t, b in recs)
-            d += entry(2, inc, seq, payload)
+            d += entry(2, inc, seq, payload, len(d), salt)
             if rng.random() < 0.6:
-                d += entry(3, inc, 0, struct.pack(">Q", len(d)))
+                d += entry(3, inc, 0, struct.pack(">Q", len(d)), len(d), salt)
     return d
 
 
 def damage(rng, d):
-    k = rng.randrange(12)
-    if k <= 1 or len(d) <= 48:
+    k = rng.randrange(14)
+    if k <= 1 or len(d) <= 88:
         return d
+    salt = salt_of(d)
     at = rng.randrange(len(d))
     if k == 2:
         d[at] ^= 1 << rng.randrange(8)
@@ -78,17 +85,31 @@ def damage(rng, d):
         return d + rng.randbytes(rng.randint(1, 50))
     elif k == 6:                       # a well-formed entry that breaks an order rule
         inc = rng.choice([0, 1, 2, 3, 50])
-        d += rng.choice([entry(1, inc, 0, bytes(8)), entry(2, inc, rng.randint(0, 4), bytes(4)),
-                         entry(3, inc, 0, struct.pack(">Q", len(d))), entry(1, inc, 5, bytes(8))])
-    elif k == 7:                       # a mark naming another offset
-        d += entry(3, 1, 0, struct.pack(">Q", len(d) + rng.choice([-1, 1, 37])))
+        n = len(d)
+        d += rng.choice([entry(1, inc, 0, bytes(8), n, salt), entry(2, inc, rng.randint(0, 4), bytes(4), n, salt),
+                         entry(3, inc, 0, struct.pack(">Q", n), n, salt), entry(1, inc, 5, bytes(8), n, salt)])
+    elif k == 7:                       # a mark naming another offset, or sealed for another
+        n = len(d)
+        if rng.random() < 0.5:
+            d += entry(3, 1, 0, struct.pack(">Q", n + rng.choice([-1, 1, 45])), n, salt)
+        else:
+            d += entry(3, 1, 0, struct.pack(">Q", n), n + rng.choice([-1, 1, 45]), salt)
     elif k == 8:                       # damage, then a valid mark: corruption if before it
         d[at] ^= 0x80
-        d += entry(3, 1, 0, struct.pack(">Q", len(d)))
+        d += entry(3, 1, 0, struct.pack(">Q", len(d)), len(d), salt)
     elif k == 9:
         d = d[:at] + rng.randbytes(rng.randint(1, 9)) + d[at:]
     elif k == 10:
-        return bytearray(header(MAINNET)) + d[48:]
+        return bytearray(header(salt, MAINNET)) + d[88:]
+    elif k in (12, 13):                # H1: a peer's sync mark inside a batch's record, then a tear
+        n = len(d)
+        inner = n + 21 + 4 + 8         # where the record's bytes land
+        guess = bytes(32) if k == 12 else salt
+        mark = entry(3, 1, 0, struct.pack(">Q", inner), inner if k == 12 else inner + 1, guess)
+        rec = mark + rng.randbytes(rng.randint(5, 30))
+        payload = struct.pack(">I", 1) + struct.pack(">II", 0x7E570001, len(rec)) + rec
+        b = entry(2, 1, 1, payload, n, salt)
+        return d + b[:rng.randint(len(mark) + 33, len(b) - 1)]
     else:
         a, b = sorted((rng.randrange(len(d)), rng.randrange(len(d))))
         d += d[a:b]

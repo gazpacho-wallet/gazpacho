@@ -86,6 +86,8 @@ typedef struct {
      * writing, 2 every pread through a descriptor on it; errno, 0: EIO. */
     const char *fail_path;
     int fail_path_how, fail_path_errno;
+    uint64_t random_ctr;               /* the next "random" byte (a counter) */
+    int random_fails;                  /* 1: the random source fails */
     /* Called after every successful file sync with the inode's durable length. */
     void (*on_sync)(void *ctx, int inode, size_t durable_len);
     void *on_sync_ctx;

@@ -22,6 +22,12 @@
 #define H_GUARD    H_DIR "/" GZ_JOURNAL_GUARD_FILE
 #define H_MAX_STEP 4096
 
+/* The salt of the first file a fresh memfs creates (its "random" source is a
+ * counter), and of spec section 11's vectors. */
+static const uint8_t h_salt[GZ_JOURNAL_SALT_LEN] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  10,
+                                                     11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+                                                     22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
+
 static inline uint64_t h_mix(uint64_t x)
 {
     x += 0x9e3779b97f4a7c15ull;
