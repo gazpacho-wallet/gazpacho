@@ -954,7 +954,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Later</td>
-<td>Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves. Built-in Tor (for example Arti), a BIP 157/158 compact block filter light client, automatic onion creation and DNS-name hosts (owner decision 16g). Accountability proofs published to Nostr from fresh keys after a lobby ends. After 1.2.0: mode D, watchtower services, as the fourth way to take part (research pending)</td>
+<td>Payout to an outside or cold wallet. Closing into the next factory; the reference's key-hand-over rotation; swap-out as a fallback; a companion device for unattended moves. Built-in Tor (for example Arti), a BIP 157/158 compact block filter light client, automatic onion creation and DNS-name hosts (owner decision 16g). Accountability proofs published to Nostr from fresh keys after a lobby ends. After 1.2.0: mode D, watchtower services, as the fourth way to take part: D2 first, then D1 (opt-in, at least two services, built-in watcher stays on); D3 off by default; D4 never offered (decision 16h)</td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -990,6 +990,10 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tr>
 <td>Terms draft 3: <code>internal_fee_base_msat</code>, <code>internal_fee_ppm</code>, <code>move_fee_sat</code> (even, ranges) and <code>successor_of</code> (even, fixed); an invitation message for standing invitations</td>
 <td><code>MULTI-FACTORY.md</code> 3.4, 6</td>
+</tr>
+<tr>
+<td>1.0.0 requirements so watchtowers are not blocked later: hardened per-lobby factory and channel keys on their own branch, no stored parent key; payout destination not the factory key, fixed before formation (E2); HTLC second-stage txids fixed in <code>channel.md</code>; no revocable or superseded data in watch data; status fields for more than one watcher; P2A anchors on everything a tower might publish</td>
+<td>Decision 16h</td>
 </tr>
 <tr>
 <td>A UI/UX review pass after 1.0.0, to add the signing modes and the other settings gracefully</td>
@@ -1278,7 +1282,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>Listings carry fixed terms, ranges, size and start time. Live details come from the host.</li>
 <li><strong>Terms</strong> (owner decision 1, <code>spec/terms.md</code>): a lobby's outer rules are fixed when it opens; adjustable terms move only inside signed ranges; values freeze at the ready check; the outer rules' digest is the rules fingerprint and the lobby's identity. Changing an outer rule makes a new lobby.</li>
 <li><strong>Several lobbies at once</strong> per wallet from Slice 1 (owner decision 16b).</li>
-<li><strong>Member signing modes</strong> (owner decision 16d): A signs automatically; B asks for the passphrase when the lobby fills; C unlocks that lobby's keys once at join, signs only that factory within the approved terms, then wipes them (the default, owner confirmed; members and hosts can still choose A or B); D, watchtower services, is the fourth way to take part, after 1.2.0: D1 passive third party with no keys, D2 passive run yourself, D3 a keyed home node run yourself, D4 keyed third party, which is custody and at most an explicit, warned expert option. In B and C, "not unlocked" counts as not answering the ready check. The ready check closes as soon as every seat has answered.</li>
+<li><strong>Member signing modes</strong> (owner decision 16d): A signs automatically; B asks for the passphrase when the lobby fills; C unlocks that lobby's keys once at join, signs only that factory within the approved terms, then wipes them (the default, owner confirmed; members and hosts can still choose A or B); D, watchtower services, is the fourth way to take part, after 1.2.0: D1 passive third party with no keys, D2 passive run yourself, D3 a keyed home node run yourself, D4 keyed third party, which is custody and is never offered, since today's Bitcoin cannot restrict a key to one destination. The built-in locked watcher stays in 1.0.0. 1.0.0 meets six requirements so D is not blocked later (<code>ux/decisions.md</code> 16h). In B and C, "not unlocked" counts as not answering the ready check. The ready check closes as soon as every seat has answered.</li>
 <li><strong>Understudies</strong> in 1.0.0 (owner decision 16e): standby seats that answered the ready check replace a no-show, or a member who drops mid-signing. A mid-signing swap is a new attempt with fresh nonces from everyone, and every member's limits are re-checked against the new set.</li>
 </ul></div></details>
 <details id="c3-12-the-host"><summary>12. The host</summary><div class="body"><ul>
@@ -5879,7 +5883,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <ul>
 <li><strong>The proposed timing defaults:</strong> a 60 s ready window, 60 s per step, a 10-minute signing budget.</li>
 </ul>
-<p>Confirmed the same day: mode C is the default signing mode; members and hosts can still choose A or B. Mode D, watchtower services, is the fourth way to take part (variants D1 to D4, <code>ux/decisions.md</code> 16d), scheduled after 1.2.0; research is pending.</p></div></details>
+<p>Confirmed the same day: mode C is the default signing mode; members and hosts can still choose A or B. Mode D, watchtower services, is the fourth way to take part (variants D1 to D4, <code>ux/decisions.md</code> 16d), scheduled after 1.2.0. The watchtower research then set the order (D2, then D1; D3 off by default; D4 never offered) and six 1.0.0 requirements so D is not blocked later (<code>ux/decisions.md</code> 16h).</p></div></details>
 <details id="c20-1-awaiting-the-owner-s-yes"><summary>1. Awaiting the owner&#x27;s yes</summary><div class="body"><p>Values that a specification or design document marks <strong>proposed, owner to confirm</strong>. Builders may use them; none is settled until the owner says yes. The questionnaire <code>questions-5-decisions.html</code> covers most of them: open it, pick Keep, Change or Discuss for each item, and paste the answers back.</p>
 <div class="tw"><table>
 <thead>

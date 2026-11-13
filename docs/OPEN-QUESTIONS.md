@@ -42,7 +42,7 @@ Still for the owner to confirm:
 
 - **The proposed timing defaults:** a 60 s ready window, 60 s per step, a 10-minute signing budget.
 
-Confirmed the same day: mode C is the default signing mode; members and hosts can still choose A or B. Mode D, watchtower services, is the fourth way to take part (variants D1 to D4, `ux/decisions.md` 16d), scheduled after 1.2.0; research is pending.
+Confirmed the same day: mode C is the default signing mode; members and hosts can still choose A or B. Mode D, watchtower services, is the fourth way to take part (variants D1 to D4, `ux/decisions.md` 16d), scheduled after 1.2.0. The watchtower research then set the order (D2, then D1; D3 off by default; D4 never offered) and six 1.0.0 requirements so D is not blocked later (`ux/decisions.md` 16h).
 
 ## 1. Awaiting the owner's yes
 

@@ -165,7 +165,7 @@ Proofs may be published to Nostr later: only from fresh keys, only after the lob
   - **D1:** passive, run by a third party, no keys.
   - **D2:** passive, run yourself.
   - **D3:** keyed, run yourself: a "home node" that can monitor, sign and join new factories for you.
-  - **D4:** keyed, run by a third party. This is custody: never a default, at most an explicit, warned expert option.
+  - **D4:** keyed, run by a third party. This is custody. Never offered (see h).
 
 In modes B and C, "not unlocked" counts as not answering the ready check. Slice 1 closes the ready check as soon as every seat has answered. Proposed defaults (owner to confirm): a 60 s ready window, 60 s per step, and a 10-minute signing budget. Measured signing on signet took 193 ms for 3 members.
 
@@ -182,3 +182,23 @@ In modes B and C, "not unlocked" counts as not answering the ready check. Slice 
   - the chain server over Tor, plus a "your own node" mode;
   - block-based chain lookups instead of per-txid and per-script queries.
 - Later: built-in Tor (for example Arti) and a BIP 157/158 compact block filter light client, plus automatic onion creation and DNS-name hosts.
+
+**h. Watchtower variants, and what 1.0.0 must do now (owner, 2026-11-13, from the watchtower research).**
+
+Every D variant comes after 1.2.0. The built-in locked watcher stays in 1.0.0, as already specified (`spec/exit.md`, `spec/storage-encryption.md`).
+
+Order and shape:
+
+- **D2, passive, run yourself,** comes first.
+- **D1, passive, third party,** comes next. It is opt-in, uses at least two services, and the built-in watcher always stays on.
+- **D3, keyed, run yourself,** is an "always-on mode", off by default. Setup warns: "This machine can spend your factory balance".
+- **D4, keyed, third party,** is never offered. Today's Bitcoin cannot restrict a key to one destination, so a keyed tower working with the host could sign any spend.
+
+1.0.0 requirements, so that D is not blocked later:
+
+1. Factory and channel keys are derived hardened, per lobby, under their own branch, with no stored parent that yields future factory keys. **Checked against the key path in `spec/messages.md` section 2:** factory keys are at `m / 254315617' / net' / 0' / epoch' / index'`, every step hardened, on a branch of their own, one index pair per lobby seat. That spec does not yet say that no parent key is stored; this requirement adds it. Channel keys are not specified yet; they follow the same rule when `channel.md` is written. The path itself still awaits the owner's yes (W2).
+2. The payout destination is not the factory key, and is fixed before formation. This is the upstream request E2 (`handoff/2026-11-12-to-superscalar.md`).
+3. HTLC second-stage txids are fixed when `channel.md` is written, so penalties can be pre-signed.
+4. Watch data never contains anything revocable or superseded.
+5. The watcher's status fields can hold more than one watcher.
+6. P2A anchors go on everything a tower might publish, even at 0.1 sat/vB.
