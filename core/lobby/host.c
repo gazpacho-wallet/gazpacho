@@ -294,6 +294,7 @@ static gz_status_t window_closed(gz_lobby_host_t *h, gz_action_list_t *out)
     uint16_t mins[GZ_LOBBY_MAX_SEATS];
     int idx[GZ_LOBBY_MAX_SEATS], n = 0, k, i, j;
     uint8_t rec[36 + GZ_LOBBY_MAX_SEATS * (35 + GZ_LOBBY_MAX_SAVED_MSG)];
+    gz_lobby_enc_t e;                 /* function scope: no ASan use-after-scope calls (isolation) */
     size_t rn;
     if (h->state != GZ_LOBBY_READY_CHECK) return GZ_OK;
     h->check_open = 0;
@@ -315,7 +316,6 @@ static gz_status_t window_closed(gz_lobby_host_t *h, gz_action_list_t *out)
     rn = 34;
     for (i = 0; i < n; i++) {
         gz_lobby_seat_t *s = (gz_lobby_seat_t *)order[i];
-        gz_lobby_enc_t e;
         s->chosen = 0;
         for (j = 0; j < k; j++) if (idx[j] == i) s->chosen = 1;
         gz_lobby_enc_start(&e, s->start_msg, sizeof s->start_msg, GZ_KIND_START, h->scope);

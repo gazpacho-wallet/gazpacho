@@ -138,13 +138,14 @@ static gz_status_t evaluate(gz_lobby_member_t *m, gz_action_list_t *out)
 {
     int cls, ok;
     uint8_t term;
+    /* Function scope, not the join block: no ASan use-after-scope calls (isolation). */
+    uint8_t b[32], tr[GZ_TERMS_OUTER_MAX + GZ_TERMS_CURRENT_MAX + 140];
+    uint8_t sf[64], sc[64];
+    gz_record_t recs[2];
+    gz_lobby_enc_t e;
     if (!m->have_terms || m->ended) return GZ_OK;
     ok = class_ok(m, &cls, &term);
     if (ok && !m->joined && m->auto_join) {
-        uint8_t b[32], tr[GZ_TERMS_OUTER_MAX + GZ_TERMS_CURRENT_MAX + 140];
-        uint8_t sf[64], sc[64];
-        gz_record_t recs[2];
-        gz_lobby_enc_t e;
         gz_lobby_binding(m->scope, m->factory_key, m->ckey, b);
         if (m->crypto.sign(m->crypto.ctx, GZ_LOBBY_KEY_FACTORY, b, sf) != 1 ||
             m->crypto.sign(m->crypto.ctx, GZ_LOBBY_KEY_CONTRIBUTION, b, sc) != 1)
