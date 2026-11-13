@@ -10,14 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "gazpacho/ports.h"
 
-/* The random port's purpose tag: uint32_t on main (PR 9), an enum in PR 21. */
-#if defined(GZP_CORE_RANDOM_ENUM)
-typedef gz_random_purpose_t gzp_purpose_t;
-#elif defined(GZP_CORE_RANDOM_PURPOSE)
-typedef uint32_t gzp_purpose_t;
-#endif
 
 /* Exit statuses. */
 #define GZP_EXIT_OK        0
@@ -54,15 +47,19 @@ typedef struct {
     const char *chain_urls[GZP_MAX_CHAIN_URLS];
     int n_chain_urls;
     uint32_t chain_poll_ms;
-    /* timers */
-    int handshake_ms, recv_ms, send_ms, reconnect_ms;
+    int check_chain;               /* --check-chain: the start-up chain check, read-only, then stop */
+    /* transport (peers.h) */
+    int handshake_ms, recv_ms, send_ms, ping_ms, pong_ms, reconnect_ms;
+    int max_per_address;           /* -1: the transport's default */
     const char *name;              /* label in output lines and test pings */
-    /* tests only */
+    /* tests only: accepted by gazpacho-test (GZP_TEST_BUILD), refused by gazpacho */
     int test_pings;                /* pings this program sends each peer, outside the node */
     int test_ping_ms;
     int test_crash_at_ping;        /* _exit after the batch holding the K-th ping record is durable */
     int test_storage_fail_at;      /* the K-th append of the first incarnation fails */
-    int test_exit_after_chain;     /* stop after the start-up chain check */
+    int test_start_delay_ms;       /* keep the start open this long, the loop running (inputs queued) */
+    int test_listen_during_start;  /* host: listen before the start, so its queue is exercised */
+    const char *test_restore_from; /* put this journal in place as a restore (sets the marker) */
 } gzp_options_t;
 
 /* Parses argv into `o` (defaults first). Returns 0, or GZP_EXIT_USAGE after

@@ -32,7 +32,7 @@ typedef struct {
     int n, every_ms;
     const char *name;
     uint64_t next_ms;
-    gzp_tp_peer_t peers[GZP_MAX_PEERS];
+    gzp_tp_peer_t peers[GZP_MAX_CONNS];
 } gzp_testping_t;
 
 void gzp_testping_init(gzp_testping_t *t, int n, int every_ms, const char *name);

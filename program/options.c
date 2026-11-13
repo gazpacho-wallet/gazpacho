@@ -112,12 +112,17 @@ void gzp_usage(void)
         "  --chain-url URL               an Esplora chain server (https); --no-chain for none\n"
         "  --chain-poll-ms MS            how often to ask for the chain tip (default 60000)\n"
         "  --name LABEL                  label for output lines (default: the role)\n"
-        "  --handshake-ms, --recv-ms, --send-ms, --reconnect-ms MS   transport timers\n"
-        "tests only:\n"
+        "  --check-chain                 check the chain server (read-only) and stop\n"
+        "  --handshake-ms, --recv-ms, --send-ms, --ping-ms, --pong-ms MS   transport timers\n"
+        "  --reconnect-ms MS             member: first reconnect delay, doubling to 60 s (default 1000)\n"
+        "  --max-per-address N           host: accepted connections per address (0: no cap)\n"
+        "tests only (gazpacho-test):\n"
         "  --test-pings N --test-ping-ms MS   send N placeholder pings to each peer\n"
         "  --test-crash-at-ping K        exit once the batch with the K-th ping record is durable\n"
         "  --test-storage-fail-at K      make the K-th journal append fail (first incarnation)\n"
-        "  --test-exit-after-chain       stop after the start-up chain check\n");
+        "  --test-start-delay-ms MS      keep the start open (inputs queued) this long\n"
+        "  --test-listen-during-start    host: listen before the start completes\n"
+        "  --test-restore-from FILE      put FILE in place as the journal, as a restore\n");
 }
 
 static int num(const char *s, long min, long max, long *out)
@@ -171,14 +176,18 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
     o->handshake_ms = 10000;
     o->recv_ms = 30000;
     o->send_ms = 10000;
-    o->reconnect_ms = 2000;
+    o->ping_ms = 15000;
+    o->pong_ms = 30000;
+    o->reconnect_ms = 1000;
+    o->max_per_address = -1;
     o->test_ping_ms = 100;
     for (i = 1; i < argc; i++) {
         const char *a = argv[i], *val = i + 1 < argc ? argv[i + 1] : NULL;
         int takes = 1, ok = 1;
         if (!strcmp(a, "--no-interface")) { o->no_interface = 1; takes = 0; }
         else if (!strcmp(a, "--no-chain")) { o->no_chain = 1; takes = 0; }
-        else if (!strcmp(a, "--test-exit-after-chain")) { o->test_exit_after_chain = 1; takes = 0; }
+        else if (!strcmp(a, "--check-chain")) { o->check_chain = 1; takes = 0; }
+        else if (!strcmp(a, "--test-listen-during-start")) { o->test_listen_during_start = 1; takes = 0; }
         else if (!val) ok = 0;
         else if (!strcmp(a, "--data-dir")) o->data_dir = val;
         else if (!strcmp(a, "--role")) {
@@ -204,12 +213,24 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--recv-ms")) { ok = num(val, 10, 600000, &v); o->recv_ms = (int)v; }
         else if (!strcmp(a, "--send-ms")) { ok = num(val, 10, 600000, &v); o->send_ms = (int)v; }
         else if (!strcmp(a, "--reconnect-ms")) { ok = num(val, 10, 600000, &v); o->reconnect_ms = (int)v; }
+        else if (!strcmp(a, "--ping-ms")) { ok = num(val, 10, 600000, &v); o->ping_ms = (int)v; }
+        else if (!strcmp(a, "--pong-ms")) { ok = num(val, 10, 600000, &v); o->pong_ms = (int)v; }
+        else if (!strcmp(a, "--max-per-address")) { ok = num(val, 0, 1000, &v); o->max_per_address = (int)v; }
         else if (!strcmp(a, "--name")) o->name = val;
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 1000, &v); o->test_pings = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
         else if (!strcmp(a, "--test-crash-at-ping")) { ok = num(val, 1, 1000000, &v); o->test_crash_at_ping = (int)v; }
         else if (!strcmp(a, "--test-storage-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_storage_fail_at = (int)v; }
+        else if (!strcmp(a, "--test-start-delay-ms")) { ok = num(val, 0, 600000, &v); o->test_start_delay_ms = (int)v; }
+        else if (!strcmp(a, "--test-restore-from")) o->test_restore_from = val;
         else ok = 0;
+#ifndef GZP_TEST_BUILD
+        /* The release build has no test hooks (contract-v2.md, T12). */
+        if (ok && !strncmp(a, "--test-", 7)) {
+            fprintf(stderr, "gazpacho: %s exists only in the test build (gazpacho-test)\n", a);
+            return GZP_EXIT_USAGE;
+        }
+#endif
         if (!ok) {
             fprintf(stderr, "gazpacho: bad argument: %s%s%s\n", a, takes && val ? " " : "", takes && val ? val : "");
             gzp_usage();
@@ -242,6 +263,10 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
     }
     if (o->no_chain && o->n_chain_urls) {
         fprintf(stderr, "gazpacho: --no-chain and --chain-url together\n");
+        return GZP_EXIT_USAGE;
+    }
+    if (o->check_chain && o->no_chain) {
+        fprintf(stderr, "gazpacho: --check-chain needs --chain-url\n");
         return GZP_EXIT_USAGE;
     }
     if (!o->no_chain && o->n_chain_urls == 0) {

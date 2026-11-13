@@ -1,12 +1,9 @@
 /* SPDX-License-Identifier: MIT */
-/* The network adapter over ports/net/conn.h. See net.h. */
+/* The network adapter over ports/net/peers.h. See net.h. */
 #define _POSIX_C_SOURCE 200809L
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -26,35 +23,40 @@ uint64_t gzp_peer_id(const uint8_t key[33])
     return v;
 }
 
-int gzp_net_init(gzp_net_t *n, const secp256k1_context *secp, const uint8_t priv[32],
-                 gz_random_port_t random, const gz_conn_limits_t *limits, int reconnect_ms,
+int gzp_net_init(gzp_net_t *n, const secp256k1_context *secp, const uint8_t priv[32], gz_net_random_t random,
+                 const uint8_t chain[32], const gzp_net_limits_t *lim, int reconnect_ms,
                  const gzp_net_events_t *ev)
 {
     secp256k1_pubkey pk;
     size_t len = 33;
     memset(n, 0, sizeof *n);
-    n->listen_fd = -1;
-    n->secp = secp;
-    memcpy(n->priv, priv, 32);
-    if (!secp256k1_ec_pubkey_create(secp, &pk, n->priv) ||
+    gz_peers_default_config(&n->cfg);
+    n->cfg.secp = secp;
+    memcpy(n->cfg.static_key, priv, 32);
+    n->cfg.random = random;
+    memcpy(n->cfg.chain, chain, 32);
+    n->cfg.is_member = gz_conn_any_member; /* slice 1's host: transport.md rule 13 */
+    n->cfg.handshake_ms = lim->handshake_ms;
+    n->cfg.recv_ms = lim->recv_ms;
+    n->cfg.send_ms = lim->send_ms;
+    n->cfg.ping_ms = lim->ping_ms;
+    n->cfg.pong_ms = lim->pong_ms;
+    if (lim->max_per_address >= 0) n->cfg.max_per_address = (unsigned)lim->max_per_address;
+    if (n->cfg.max_conns > GZP_MAX_CONNS) n->cfg.max_conns = GZP_MAX_CONNS;
+    if (!secp256k1_ec_pubkey_create(secp, &pk, n->cfg.static_key) ||
         !secp256k1_ec_pubkey_serialize(secp, n->pub, &len, &pk, SECP256K1_EC_COMPRESSED))
         return -1;
-    n->random = random;
-    n->limits = *limits;
-    n->reconnect_ms = reconnect_ms;
     n->ev = *ev;
-    return 0;
+    n->first_backoff_ms = n->backoff_ms = reconnect_ms;
+    n->peers = gz_peers_new(&n->cfg);
+    return n->peers ? 0 : -1;
 }
 
-int gzp_net_listen(gzp_net_t *n, const char *host, uint16_t port)
+void gzp_net_set_listen(gzp_net_t *n, const char *host, uint16_t port)
 {
-    gz_conn_err_t e = gz_conn_listen(host, port, &n->listen_fd, &n->bound_port);
-    if (e) {
-        fprintf(stderr, "gazpacho: cannot listen on %s:%u: %s\n", host, (unsigned)port, gz_conn_err_name(e));
-        n->listen_fd = -1;
-        return -1;
-    }
-    return 0;
+    n->want_listen = 1;
+    snprintf(n->listen_host, sizeof n->listen_host, "%s", host);
+    n->listen_port = port;
 }
 
 void gzp_net_target(gzp_net_t *n, const char *host, uint16_t port, const uint8_t key[33])
@@ -63,300 +65,339 @@ void gzp_net_target(gzp_net_t *n, const char *host, uint16_t port, const uint8_t
     snprintf(n->target_host, sizeof n->target_host, "%s", host);
     n->target_port = port;
     memcpy(n->target_key, key, 33);
-    n->next_connect_ms = 0;
 }
 
-static gzp_peer_t *find(gzp_net_t *n, uint64_t peer_id)
+int gzp_net_open(gzp_net_t *n)
+{
+    if (n->want_listen && !n->listening) {
+        /* After a restart the same port again, also when 0 picked it. */
+        uint16_t port = n->bound_port ? n->bound_port : n->listen_port, bound = 0;
+        gz_peers_err_t e = gz_peers_listen(n->peers, n->listen_host, port, &bound);
+        if (e) {
+            fprintf(stderr, "gazpacho: cannot listen on %s:%u: %s\n", n->listen_host, (unsigned)port,
+                    gz_peers_err_name(e));
+            return -1;
+        }
+        n->bound_port = bound;
+        n->listening = 1;
+    }
+    if (n->has_target) {
+        n->target_live = 1;
+        n->next_connect_ms = 0;
+        n->backoff_ms = n->first_backoff_ms;
+    }
+    return 0;
+}
+
+/* ---- connections ---------------------------------------------------------- */
+
+static gzp_conn_t *by_conn(gzp_net_t *n, uint64_t conn)
 {
     int i;
-    for (i = 0; i < GZP_MAX_PEERS; i++)
-        if (n->peers[i].used && !n->peers[i].closing && n->peers[i].peer_id == peer_id) return &n->peers[i];
+    for (i = 0; i < GZP_MAX_CONNS; i++)
+        if (n->conns[i].used && n->conns[i].conn == conn) return &n->conns[i];
+    return NULL;
+}
+
+static gzp_conn_t *by_peer(const gzp_net_t *n, uint64_t peer_id)
+{
+    int i;
+    for (i = 0; i < GZP_MAX_CONNS; i++)
+        if (n->conns[i].used && n->conns[i].peer_id == peer_id) return (gzp_conn_t *)&n->conns[i];
     return NULL;
 }
 
 int gzp_net_connected(const gzp_net_t *n, uint64_t peer_id)
 {
-    return find((gzp_net_t *)n, peer_id) != NULL;
+    return by_peer(n, peer_id) != NULL;
 }
 
-/* Mark for closing; reported (and freed) by gzp_net_poll_done. */
-static void doom(gzp_peer_t *p, const char *why)
-{
-    if (!p->closing) {
-        p->closing = 1;
-        p->why = why;
-        gz_conn_close(p->conn);
-    }
-}
+/* ---- the placeholder carrier ---------------------------------------------- */
 
-static int carrier_send(gzp_peer_t *p, const uint8_t *bytes, size_t len)
+/* The bytes of record 1 in a TLV stream, or NULL. */
+static const uint8_t *test_record(const uint8_t *s, size_t len, size_t *out_len)
 {
-    uint8_t *msg;
-    size_t mlen = 0;
-    gz_conn_err_t e;
-    if (len + 2 > GZ_MSG_MAX) return -1;
-    msg = malloc(len + 2);
-    if (!msg) return -1;
-    if (gz_msg_write((uint16_t)GZP_CARRIER_TYPE, bytes, len, msg, len + 2, &mlen) != GZ_FRAME_OK) {
-        free(msg);
-        return -1;
+    size_t off = 0;
+    while (off < len) {
+        uint64_t type, l;
+        size_t u1, u2;
+        if (gz_bigsize_read(s + off, len - off, &type, &u1) != GZ_FRAME_OK) return NULL;
+        if (gz_bigsize_read(s + off + u1, len - off - u1, &l, &u2) != GZ_FRAME_OK) return NULL;
+        off += u1 + u2;
+        if (l > len - off) return NULL;
+        if (type == 1) {
+            *out_len = (size_t)l;
+            return s + off;
+        }
+        off += (size_t)l;
     }
-    e = gz_conn_send(p->conn, msg, mlen);
-    free(msg);
-    if (e) {
-        doom(p, gz_conn_err_name(e));
-        return -1;
-    }
-    return 0;
-}
-
-static int keep(gzp_net_t *n, uint64_t peer_id, const uint8_t *bytes, size_t len)
-{
-    gzp_out_t *o;
-    if (n->out_bytes + len > GZP_OUTBOX_MAX_BYTES) {
-        n->dropped++;
-        return -1;
-    }
-    if (n->n_out == n->cap_out) {
-        size_t c = n->cap_out ? n->cap_out * 2 : 32;
-        gzp_out_t *no = realloc(n->out, c * sizeof *no);
-        if (!no) return -1;
-        n->out = no;
-        n->cap_out = c;
-    }
-    o = &n->out[n->n_out];
-    o->bytes = malloc(len ? len : 1);
-    if (!o->bytes) return -1;
-    if (len) memcpy(o->bytes, bytes, len);
-    o->len = len;
-    o->peer_id = peer_id;
-    n->n_out++;
-    n->out_bytes += len;
-    return 1;
+    return NULL;
 }
 
 int gzp_net_send(gzp_net_t *n, uint64_t peer_id, const uint8_t *bytes, size_t len)
 {
-    gzp_peer_t *p = find(n, peer_id);
-    if (len + 2 > GZ_MSG_MAX) return -1;
-    if (p && carrier_send(p, bytes, len) == 0) return 0;
-    /* Not connected, or the send failed (the connection is now closing):
-     * keep it for the next connection. */
-    return keep(n, peer_id, bytes, len);
+    gzp_conn_t *c = by_peer(n, peer_id);
+    if (!c || n->queueing) {
+        /* No outbox (contract-v2.md section 1). During a start nothing of a
+         * connection has been reported to the node, so nothing is sent on it. */
+        n->dropped_unconnected++;
+        gzp_log("send-dropped peer=%016llx why=not-connected", (unsigned long long)peer_id);
+        return 1;
+    }
+#ifdef GZP_TEST_BUILD
+    {
+        uint8_t hdr[18], scope[32];
+        uint8_t *rec;
+        size_t h = 0, rl;
+        gz_peers_err_t e;
+        h += gz_bigsize_write(1, hdr);
+        h += gz_bigsize_write(len, hdr + h);
+        rl = h + len;
+        rec = malloc(rl ? rl : 1);
+        if (!rec) abort();
+        memcpy(rec, hdr, h);
+        if (len) memcpy(rec + h, bytes, len);
+        memset(scope, 0, sizeof scope);
+        e = gz_peers_send(n->peers, c->conn, GZP_KIND_TEST, scope, rec, rl);
+        free(rec);
+        if (e == GZ_PEERS_OK) return 0;
+        if (e == GZ_PEERS_ERR_TOO_BIG) return -1;
+        /* FULL or ARGS closed the connection (SEND_REFUSED, an event follows);
+         * NO_CONN and NOT_READY: it is going or not there. */
+        gzp_log("send-refused peer=%016llx why=%s", (unsigned long long)peer_id, gz_peers_err_name(e));
+        return 1;
+    }
+#else
+    (void)bytes;
+    gzp_log("send-dropped peer=%016llx len=%zu why=no-kind-in-release-build", (unsigned long long)peer_id, len);
+    return 1;
+#endif
 }
 
-int gzp_net_send_raw_carrier(gzp_net_t *n, uint64_t peer_id, const uint8_t *bytes, size_t len)
+/* ---- events --------------------------------------------------------------- */
+
+static void enqueue(gzp_net_t *n, int type, uint64_t conn, const uint8_t *bytes, size_t len, const char *why)
 {
-    gzp_peer_t *p = find(n, peer_id);
-    return p ? carrier_send(p, bytes, len) : -1;
+    gzp_qev_t *e;
+    if (n->nq == n->capq) {
+        size_t c = n->capq ? n->capq * 2 : 32;
+        gzp_qev_t *nq = realloc(n->q, c * sizeof *nq);
+        if (!nq) abort(); /* an input must not be lost silently */
+        n->q = nq;
+        n->capq = c;
+    }
+    e = &n->q[n->nq++];
+    e->type = type;
+    e->conn = conn;
+    e->why = why;
+    e->len = len;
+    e->bytes = NULL;
+    if (len) {
+        e->bytes = malloc(len);
+        if (!e->bytes) abort();
+        memcpy(e->bytes, bytes, len);
+    }
 }
 
-/* Send what the outbox holds for this peer, oldest first. */
-static void flush(gzp_net_t *n, gzp_peer_t *p)
+static void unqueue_conn(gzp_net_t *n, uint64_t conn)
 {
     size_t i, j = 0;
-    for (i = 0; i < n->n_out; i++) {
-        gzp_out_t *o = &n->out[i];
-        if (o->peer_id == p->peer_id && !p->closing && carrier_send(p, o->bytes, o->len) == 0) {
-            n->out_bytes -= o->len;
-            free(o->bytes);
+    for (i = 0; i < n->nq; i++) {
+        if (n->q[i].conn == conn) {
+            free(n->q[i].bytes);
             continue;
         }
-        n->out[j++] = *o;
+        n->q[j++] = n->q[i];
     }
-    n->n_out = j;
+    n->nq = j;
 }
 
-static gzp_peer_t *new_slot(gzp_net_t *n)
+/* A reason as one word for output lines: "handshake timed out" becomes
+ * "handshake-timed-out". Valid until the next call. */
+static const char *word(const char *s)
 {
-    int i;
-    for (i = 0; i < GZP_MAX_PEERS; i++)
-        if (!n->peers[i].used) {
-            gzp_peer_t *p = &n->peers[i];
-            memset(p, 0, sizeof *p);
-            p->conn = calloc(1, sizeof *p->conn); /* 64 KiB buffer each */
-            if (!p->conn) return NULL;
-            p->used = 1;
-            return p;
-        }
-    return NULL;
+    static char buf[64];
+    size_t i;
+    for (i = 0; s[i] && i + 1 < sizeof buf; i++) buf[i] = s[i] == ' ' ? '-' : s[i];
+    buf[i] = 0;
+    return buf;
 }
 
-static void free_slot(gzp_peer_t *p)
+static void schedule_reconnect(gzp_net_t *n, uint64_t now)
 {
-    gz_conn_close(p->conn);
-    free(p->conn);
-    memset(p, 0, sizeof *p);
+    n->target_conn = 0;
+    n->next_connect_ms = now + (uint64_t)n->backoff_ms;
+    n->backoff_ms = n->backoff_ms * 2 > GZP_BACKOFF_MAX_MS ? GZP_BACKOFF_MAX_MS : n->backoff_ms * 2;
 }
 
-/* A connection is up: replace an older one from the same key, then deliver. */
-static void up(gzp_net_t *n, gzp_peer_t *p)
+static void handle(gzp_net_t *n, const gz_peer_event_t *ev, uint64_t now)
 {
-    int i;
-    gz_conn_remote_static(p->conn, p->key);
-    p->peer_id = gzp_peer_id(p->key);
-    for (i = 0; i < GZP_MAX_PEERS; i++) {
-        gzp_peer_t *q = &n->peers[i];
-        if (q != p && q->used && !q->closing && q->peer_id == p->peer_id) doom(q, "replaced by a newer connection");
-    }
-    /* Report the replaced one's loss before the new one's arrival. */
-    {
-        for (i = 0; i < GZP_MAX_PEERS; i++) {
-            gzp_peer_t *q = &n->peers[i];
-            if (q->used && q->closing && q != p) {
-                uint64_t id = q->peer_id;
-                const char *why = q->why;
-                free_slot(q);
-                if (n->ev.disconnected) n->ev.disconnected(n->ev.ctx, id, why);
+    gzp_conn_t *c = by_conn(n, ev->conn);
+    switch (ev->type) {
+    case GZ_PEER_EV_CONNECTED: {
+        int i;
+        if (!c) {
+            for (i = 0; i < GZP_MAX_CONNS && n->conns[i].used; i++) {
             }
+            if (i == GZP_MAX_CONNS) { /* cannot happen: max_conns is capped to the table */
+                gz_peers_close(n->peers, ev->conn);
+                return;
+            }
+            c = &n->conns[i];
+        }
+        memset(c, 0, sizeof *c);
+        c->used = 1;
+        c->conn = ev->conn;
+        c->outbound = ev->outbound;
+        memcpy(c->key, ev->node_id, 33);
+        c->peer_id = gzp_peer_id(ev->node_id);
+        if (ev->outbound && ev->conn == n->target_conn) n->backoff_ms = n->first_backoff_ms;
+        if (n->queueing) enqueue(n, GZ_PEER_EV_CONNECTED, ev->conn, NULL, 0, NULL);
+        else if (n->ev.connected) n->ev.connected(n->ev.ctx, c->peer_id, c->key, c->outbound);
+        break;
+    }
+    case GZ_PEER_EV_MESSAGE: {
+        const uint8_t *b = NULL;
+        size_t bl = 0;
+        if (!c) break;
+        if (ev->kind == GZP_KIND_TEST) b = test_record(ev->records, ev->records_len, &bl);
+        if (!b) {
+            gzp_log("message-ignored peer=%016llx kind=%u", (unsigned long long)c->peer_id, (unsigned)ev->kind);
+            break;
+        }
+        if (n->queueing) {
+            c->queued_bytes += bl;
+            if (c->queued_bytes > GZP_QUEUE_PER_CONN) {
+                /* Past the start queue's limit: close it; it was never reported. */
+                gz_peers_close(n->peers, c->conn);
+                unqueue_conn(n, c->conn);
+                n->closed_while_starting++;
+                memset(c, 0, sizeof *c);
+                break;
+            }
+            enqueue(n, GZ_PEER_EV_MESSAGE, ev->conn, b, bl, NULL);
+        } else if (n->ev.message) {
+            n->ev.message(n->ev.ctx, c->peer_id, b, bl);
+        }
+        break;
+    }
+    case GZ_PEER_EV_CLOSED: {
+        const char *why = word(gz_peer_why_name(ev->why));
+        char hex[67];
+        gzp_hex(ev->node_id, 33, hex);
+        gzp_log("closed conn=%llu why=%s was_connected=%d key=%s", (unsigned long long)ev->conn, why,
+                ev->was_connected, ev->have_node_id ? hex : "-");
+        if (ev->outbound && ev->conn == n->target_conn && n->target_live) schedule_reconnect(n, now);
+        if (c) {
+            uint64_t id = c->peer_id;
+            if (n->queueing) enqueue(n, GZ_PEER_EV_CLOSED, ev->conn, NULL, 0, why);
+            memset(c, 0, sizeof *c);
+            if (!n->queueing && ev->was_connected && n->ev.disconnected) n->ev.disconnected(n->ev.ctx, id, why);
+        }
+        break;
+    }
+    case GZ_PEER_EV_WARNING:
+        gzp_log("warning conn=%llu text=%s", (unsigned long long)ev->conn, ev->text);
+        break;
+    }
+}
+
+void gzp_net_queue_begin(gzp_net_t *n)
+{
+    n->queueing = 1;
+}
+
+/* The connection's peer id and key, as reported when it connected, kept in
+ * the queue's own record of it (the slot may be gone). */
+void gzp_net_queue_end(gzp_net_t *n)
+{
+    size_t i, j;
+    gzp_qev_t *q = n->q;
+    size_t nq = n->nq;
+    n->queueing = 0;
+    n->q = NULL;
+    n->nq = n->capq = 0;
+    for (i = 0; i < nq; i++) {
+        int came_and_went = 0;
+        gzp_conn_t *c;
+        if (q[i].type != GZ_PEER_EV_CONNECTED) continue;
+        for (j = i + 1; j < nq; j++)
+            if (q[j].conn == q[i].conn && q[j].type == GZ_PEER_EV_CLOSED) came_and_went = 1;
+        c = by_conn(n, q[i].conn);
+        if (came_and_went || !c) {
+            gzp_log("start-queue dropped conn=%llu why=closed-during-start", (unsigned long long)q[i].conn);
+            continue;
+        }
+        c->queued_bytes = 0;
+        if (n->ev.connected) n->ev.connected(n->ev.ctx, c->peer_id, c->key, c->outbound);
+        for (j = i + 1; j < nq; j++) {
+            if (q[j].conn != q[i].conn || q[j].type != GZ_PEER_EV_MESSAGE) continue;
+            /* A delivery may close the connection (a refused send): stop then. */
+            if (!by_conn(n, q[i].conn)) break;
+            if (n->ev.message) n->ev.message(n->ev.ctx, c->peer_id, q[j].bytes, q[j].len);
         }
     }
-    flush(n, p);
-    if (n->ev.connected) n->ev.connected(n->ev.ctx, p->peer_id, p->key);
+    for (i = 0; i < nq; i++) free(q[i].bytes);
+    free(q);
 }
 
-static void do_accept(gzp_net_t *n)
+/* ---- the loop ------------------------------------------------------------- */
+
+size_t gzp_net_max_fds(const gzp_net_t *n)
 {
-    gzp_peer_t *p = new_slot(n);
-    gz_conn_limits_t lim = n->limits;
-    gz_conn_err_t e;
-    if (!p) {
-        /* Full: take the connection and drop it, so poll does not spin. */
-        int fd = accept(n->listen_fd, NULL, NULL);
-        if (fd >= 0) close(fd);
-        return;
-    }
-    lim.accept_ms = 1000; /* poll said one is waiting */
-    /* Slice 1's host accepts any member key (transport.md rule 13). The
-     * handshake blocks the loop for up to handshake_ms (transport.md,
-     * "Limits"; peers.h in PR 23 steps it without blocking). */
-    e = gz_conn_accept(p->conn, n->listen_fd, n->secp, n->priv, n->random, &lim, gz_conn_any_member, NULL);
-    if (e) {
-        gzp_log("accept-failed why=%s", gz_conn_err_name(e));
-        free_slot(p);
-        return;
-    }
-    up(n, p);
+    return gz_peers_max_fds(n->peers);
 }
 
-static void do_connect(gzp_net_t *n, uint64_t now)
+size_t gzp_net_pollfds(gzp_net_t *n, struct pollfd *fds, size_t cap, int *timeout_ms, uint64_t now)
 {
-    gzp_peer_t *p;
-    gz_conn_err_t e;
-    n->next_connect_ms = now + (uint64_t)n->reconnect_ms;
-    if (find(n, gzp_peer_id(n->target_key))) return;
-    p = new_slot(n);
-    if (!p) return;
-    /* Blocks for up to handshake_ms. */
-    e = gz_conn_connect(p->conn, n->target_host, n->target_port, n->secp, n->priv, n->target_key,
-                        n->random, &n->limits);
-    if (e) {
-        gzp_log("connect-failed why=%s", gz_conn_err_name(e));
-        free_slot(p);
-        return;
-    }
-    up(n, p);
-}
-
-static void do_recv(gzp_net_t *n, gzp_peer_t *p)
-{
-    uint8_t *msg = malloc(GZ_MSG_MAX);
-    size_t len = 0;
-    uint16_t type;
-    const uint8_t *rest;
-    size_t rest_len;
-    gz_conn_err_t e;
-    if (!msg) return;
-    /* poll said bytes are waiting; a whole message must follow within recv_ms. */
-    e = gz_conn_recv(p->conn, msg, GZ_MSG_MAX, &len);
-    if (e) {
-        doom(p, gz_conn_err_name(e));
-    } else if (gz_msg_parse(msg, len, &type, &rest, &rest_len) != GZ_FRAME_OK) {
-        doom(p, "malformed message");
-    } else if (type == GZP_CARRIER_TYPE) {
-        if (n->ev.message) n->ev.message(n->ev.ctx, p->peer_id, rest, rest_len);
-    } else if (gz_msg_unknown_action(type) == GZ_MSG_CLOSE) {
-        doom(p, "unknown even message");
-    } /* else an unknown odd message: ignored (BOLT 1) */
-    free(msg);
-}
-
-size_t gzp_net_pollfds(gzp_net_t *n, struct pollfd *fds, size_t cap)
-{
-    size_t k = 0;
-    int i;
-    if (n->listen_fd >= 0 && k < cap) {
-        fds[k].fd = n->listen_fd;
-        fds[k].events = POLLIN;
-        fds[k].revents = 0;
-        k++;
-    }
-    for (i = 0; i < GZP_MAX_PEERS && k < cap; i++) {
-        gzp_peer_t *p = &n->peers[i];
-        if (!p->used || p->closing) continue;
-        fds[k].fd = p->conn->fd;
-        fds[k].events = POLLIN;
-        fds[k].revents = 0;
-        k++;
+    size_t k = gz_peers_pollfds(n->peers, fds, cap, timeout_ms);
+    if (n->has_target && n->target_live && !n->target_conn) {
+        int t = n->next_connect_ms > now ? (int)(n->next_connect_ms - now) : 0;
+        if (*timeout_ms < 0 || t < *timeout_ms) *timeout_ms = t;
     }
     return k;
 }
 
-void gzp_net_poll_done(gzp_net_t *n, const struct pollfd *fds, size_t count, uint64_t now)
+void gzp_net_dispatch(gzp_net_t *n, const struct pollfd *fds, size_t count, uint64_t now)
 {
-    size_t k;
-    int i;
-    for (k = 0; k < count; k++) {
-        if (!fds[k].revents) continue;
-        if (fds[k].fd == n->listen_fd) {
-            if (fds[k].revents & POLLIN) do_accept(n);
-            continue;
-        }
-        for (i = 0; i < GZP_MAX_PEERS; i++) {
-            gzp_peer_t *p = &n->peers[i];
-            if (p->used && !p->closing && p->conn->fd == fds[k].fd) {
-                if (fds[k].revents & (POLLIN | POLLHUP | POLLERR)) do_recv(n, p);
-                break;
-            }
+    gz_peer_event_t ev;
+    gz_peers_dispatch(n->peers, fds, count);
+    while (gz_peers_poll(n->peers, 0, &ev)) handle(n, &ev, now);
+    if (n->has_target && n->target_live && !n->target_conn && now >= n->next_connect_ms) {
+        uint64_t conn = 0;
+        gz_peers_err_t e = gz_peers_connect(n->peers, n->target_host, n->target_port, n->target_key, NULL, &conn);
+        if (e) {
+            gzp_log("connect-failed why=%s", gz_peers_err_name(e));
+            schedule_reconnect(n, now);
+        } else {
+            n->target_conn = conn;
         }
     }
-    /* Report losses, including sends that failed inside the executor. */
-    for (i = 0; i < GZP_MAX_PEERS; i++) {
-        gzp_peer_t *p = &n->peers[i];
-        if (p->used && p->closing) {
-            uint64_t id = p->peer_id;
-            const char *why = p->why;
-            free_slot(p);
-            if (n->ev.disconnected) n->ev.disconnected(n->ev.ctx, id, why);
-        }
-    }
-    if (n->has_target && now >= n->next_connect_ms) do_connect(n, now);
 }
 
-int gzp_net_timeout(const gzp_net_t *n, uint64_t now)
+int gzp_net_reset(gzp_net_t *n)
 {
-    if (!n->has_target || gzp_net_connected(n, gzp_peer_id(n->target_key))) return -1;
-    return n->next_connect_ms > now ? (int)(n->next_connect_ms - now) : 0;
-}
-
-void gzp_net_drop_all(gzp_net_t *n)
-{
-    int j;
-    for (j = 0; j < GZP_MAX_PEERS; j++)
-        if (n->peers[j].used) free_slot(&n->peers[j]);
-    n->next_connect_ms = 0;
+    size_t i;
+    gz_peers_free(n->peers); /* every connection and the listener, no events */
+    for (i = 0; i < n->nq; i++) free(n->q[i].bytes);
+    free(n->q);
+    n->q = NULL;
+    n->nq = n->capq = 0;
+    n->queueing = 0;
+    memset(n->conns, 0, sizeof n->conns);
+    n->listening = 0;
+    n->target_live = 0;
+    n->target_conn = 0;
+    n->peers = gz_peers_new(&n->cfg);
+    return n->peers ? 0 : -1;
 }
 
 void gzp_net_free(gzp_net_t *n)
 {
     size_t i;
-    int j;
-    for (j = 0; j < GZP_MAX_PEERS; j++)
-        if (n->peers[j].used) free_slot(&n->peers[j]);
-    for (i = 0; i < n->n_out; i++) free(n->out[i].bytes);
-    free(n->out);
-    if (n->listen_fd >= 0) close(n->listen_fd);
-    OPENSSL_cleanse(n->priv, sizeof n->priv);
+    if (n->peers) gz_peers_free(n->peers);
+    for (i = 0; i < n->nq; i++) free(n->q[i].bytes);
+    free(n->q);
+    OPENSSL_cleanse(n->cfg.static_key, sizeof n->cfg.static_key);
     memset(n, 0, sizeof *n);
-    n->listen_fd = -1;
 }

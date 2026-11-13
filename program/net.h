@@ -1,24 +1,32 @@
 /* SPDX-License-Identifier: MIT */
-/* The network adapter: SEND actions out, received messages in, over the
- * merged transport (ports/net/conn.h, one BOLT 8 connection per peer).
+/* The network adapter: SEND actions out, received messages and connection
+ * changes in, over the lobby transport (ports/net/peers.h). The program never
+ * uses conn.h (contract-v2.md section 6): every handshake and message is
+ * stepped through gz_peers_pollfds / gz_peers_dispatch in the one poll loop.
  *
- * Peer identifiers. The core names a peer by a uint64_t; the transport by its
- * 33-byte static key. The adapter's peer id is the first 8 bytes, big-endian,
- * of SHA-256 of that key, so it is the same after a restart of either side:
- * the placeholder node stores the peer id with each ping and resends the
- * reply to it after a restart. A connection from a key already connected
- * replaces the older one.
+ * Peer identifiers. Until P4 gives the core links (contract-v2.md section 2)
+ * the core still names a peer by a uint64_t: here the first 8 bytes,
+ * big-endian, of SHA-256 of the peer's 33-byte static key. The transport
+ * keeps one live connection per key (GZ_PEER_WHY_REPLACED).
  *
- * Carrier. The node's message bytes travel as the body of one odd custom
- * Lightning message, GZP_CARRIER_TYPE. This is a skeleton carrier: when the
- * lobby transport (PR 23) is merged, node messages travel in the factory
- * envelope (messages.md section 3, type 52791) instead, through
- * ports/net/peers.h.
+ * Carrier. Until P4 gives SEND a kind and a scope, the placeholder's bytes
+ * travel as record 1 (odd) of the test kind 32767, scope zero, which only the
+ * test build's transport knows (GZ_TEST_KINDS). The release build sends
+ * nothing for the placeholder and ignores kind 32767 like any unknown odd
+ * kind.
  *
- * Sends to a peer that is not connected are kept, in order, in a bounded
- * outbox and go out when it connects. They are lost if the program stops: a
- * SEND released by the runner has not necessarily left this machine
- * (docs/notes/program.md, "Mismatches"). */
+ * Losses (contract-v2.md section 1). There is no outbox: a SEND to a peer
+ * with no live connection is dropped and counted. Any refusal of a send on a
+ * live connection closes it in the transport (GZ_PEER_WHY_SEND_REFUSED), so
+ * every loss coincides with a reconnect; a message too big is fatal for the
+ * incarnation.
+ *
+ * Starts (contract-v2.md section 1). While the executor starts a node the
+ * adapter queues what the transport reports, per connection, and hands it
+ * over when the start is complete: a connection's messages only between its
+ * own connected and disconnected, a connection that came and went during the
+ * start not at all, at most 1 MiB of messages per connection (past that the
+ * connection is closed). */
 #ifndef GZP_NET_H
 #define GZP_NET_H
 
@@ -28,86 +36,99 @@
 
 #include <secp256k1.h>
 
-#include "conn.h"
+#include "peers.h"
 
-#define GZP_CARRIER_TYPE 32771u
-#define GZP_MAX_PEERS 16
-#define GZP_OUTBOX_MAX_BYTES (1u << 20)
+#define GZP_KIND_TEST 32767u
+#define GZP_MAX_CONNS 64
+#define GZP_QUEUE_PER_CONN (1u << 20)
+#define GZP_BACKOFF_MAX_MS 60000
 
 typedef struct {
-    void (*connected)(void *ctx, uint64_t peer_id, const uint8_t key[33]);
+    void (*connected)(void *ctx, uint64_t peer_id, const uint8_t key[33], int outbound);
     void (*disconnected)(void *ctx, uint64_t peer_id, const char *why);
     void (*message)(void *ctx, uint64_t peer_id, const uint8_t *bytes, size_t len);
     void *ctx;
 } gzp_net_events_t;
 
 typedef struct {
-    int used, closing;
-    gz_conn_t *conn;
-    uint64_t peer_id;
-    uint8_t key[33];
-    const char *why;
-} gzp_peer_t;
+    int handshake_ms, recv_ms, send_ms, ping_ms, pong_ms;
+    int max_per_address; /* -1: the transport's default */
+} gzp_net_limits_t;
 
 typedef struct {
-    uint64_t peer_id;
+    int used, outbound;
+    uint64_t conn, peer_id;
+    uint8_t key[33];
+    size_t queued_bytes;
+} gzp_conn_t;
+
+typedef struct {
+    int type; /* GZ_PEER_EV_CONNECTED, _MESSAGE, _CLOSED */
+    uint64_t conn;
     uint8_t *bytes;
     size_t len;
-} gzp_out_t;
+    const char *why;
+} gzp_qev_t;
 
 typedef struct {
-    const secp256k1_context *secp;
-    uint8_t priv[32];
+    gz_peers_config_t cfg;
+    gz_peers_t *peers;
     uint8_t pub[33];
-    gz_random_port_t random;
-    gz_conn_limits_t limits;
     gzp_net_events_t ev;
-    int listen_fd;
-    uint16_t bound_port;
-    /* member: the host to keep a connection to */
-    int has_target;
+    /* host */
+    int want_listen, listening;
+    char listen_host[64];
+    uint16_t listen_port, bound_port;
+    /* member: one connection to the pinned host, the stand-in for CONNECT (P4) */
+    int has_target, target_live;
     char target_host[64];
     uint16_t target_port;
     uint8_t target_key[33];
-    uint64_t next_connect_ms;
-    int reconnect_ms;
-    gzp_peer_t peers[GZP_MAX_PEERS];
-    gzp_out_t *out;
-    size_t n_out, cap_out, out_bytes;
-    uint64_t dropped;
+    uint64_t target_conn, next_connect_ms;
+    int backoff_ms, first_backoff_ms;
+    gzp_conn_t conns[GZP_MAX_CONNS];
+    /* the start queue */
+    int queueing;
+    gzp_qev_t *q;
+    size_t nq, capq;
+    /* counters */
+    uint64_t dropped_unconnected, closed_while_starting;
 } gzp_net_t;
 
 uint64_t gzp_peer_id(const uint8_t key[33]);
 
-/* `priv` is copied; the caller wipes its own copy. 0 or -1. */
-int gzp_net_init(gzp_net_t *n, const secp256k1_context *secp, const uint8_t priv[32],
-                 gz_random_port_t random, const gz_conn_limits_t *limits, int reconnect_ms,
+/* `priv` is copied into the transport's configuration and wiped with it.
+ * `chain` is init's chain hash (signet or testnet4; the transport refuses the
+ * main network). 0, or -1 if the transport refuses the configuration. */
+int gzp_net_init(gzp_net_t *n, const secp256k1_context *secp, const uint8_t priv[32], gz_net_random_t random,
+                 const uint8_t chain[32], const gzp_net_limits_t *lim, int reconnect_ms,
                  const gzp_net_events_t *ev);
-/* Host: listen on a numeric address. 0, or -1 with a reason printed. */
-int gzp_net_listen(gzp_net_t *n, const char *host, uint16_t port);
-/* Member: keep one connection to the host whose key is `key`. */
+/* Host: where to listen. Nothing is opened until gzp_net_open (after the start). */
+void gzp_net_set_listen(gzp_net_t *n, const char *host, uint16_t port);
+/* Member: keep one connection to the host whose key is `key`, from gzp_net_open on. */
 void gzp_net_target(gzp_net_t *n, const char *host, uint16_t port, const uint8_t key[33]);
+/* Open the listener (host) and allow connecting (member). 0, or -1 printed. */
+int gzp_net_open(gzp_net_t *n);
 
-/* Called from the executor: send now if connected, else keep in the outbox.
- * Never calls back into the events (it may run inside the runner's executor
- * callback); a failure closes the connection and is reported at the next
- * gzp_net_poll_done. Returns 0 sent, 1 kept, -1 dropped (too big, or the
- * outbox is full). */
+/* Queue the transport's reports (a start), then hand them over. */
+void gzp_net_queue_begin(gzp_net_t *n);
+void gzp_net_queue_end(gzp_net_t *n);
+
+/* From the executor (possibly inside the runner's callback; never calls back
+ * into the events): 0 handed to the transport, 1 dropped (not connected, or
+ * the connection was closed by the refusal), -1 too big (fatal). */
 int gzp_net_send(gzp_net_t *n, uint64_t peer_id, const uint8_t *bytes, size_t len);
-/* Send any Lightning message to a connected peer (tests). 0 or -1. */
-int gzp_net_send_raw_carrier(gzp_net_t *n, uint64_t peer_id, const uint8_t *bytes, size_t len);
 int gzp_net_connected(const gzp_net_t *n, uint64_t peer_id);
 
-/* The poll loop: add our descriptors (returns how many), then after poll()
- * handle them; events are delivered from gzp_net_poll_done only. */
-size_t gzp_net_pollfds(gzp_net_t *n, struct pollfd *fds, size_t cap);
-void gzp_net_poll_done(gzp_net_t *n, const struct pollfd *fds, size_t count, uint64_t now_ms);
-/* Milliseconds until the adapter next wants to act (a reconnect), or -1. */
-int gzp_net_timeout(const gzp_net_t *n, uint64_t now_ms);
+/* The poll loop. */
+size_t gzp_net_max_fds(const gzp_net_t *n);
+size_t gzp_net_pollfds(gzp_net_t *n, struct pollfd *fds, size_t cap, int *timeout_ms, uint64_t now_ms);
+void gzp_net_dispatch(gzp_net_t *n, const struct pollfd *fds, size_t count, uint64_t now_ms);
 
-/* Close every connection without events (a restart from storage: peers see
- * the loss and send again what was not answered). The outbox is kept. */
-void gzp_net_drop_all(gzp_net_t *n);
+/* A restart from storage: close every connection and the listener without
+ * events (gz_peers_free), forget the queue, and make a fresh transport;
+ * gzp_net_open opens again after the next start. 0 or -1. */
+int gzp_net_reset(gzp_net_t *n);
 void gzp_net_free(gzp_net_t *n);
 
 #endif

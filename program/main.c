@@ -3,19 +3,24 @@
  *
  *   gazpacho --data-dir DIR --role host|member [options]   (gazpacho --help)
  *
- * One program per data folder (a lock), test networks only (mainnet is
+ * One program per data folder (a lock), signet or testnet4 only (mainnet is
  * refused before anything is opened), host and member roles in one
- * executable. See docs/notes/program.md. */
+ * executable. gazpacho-test is the same program built with the transport's
+ * test kind and the --test-* hooks. See docs/notes/program.md. */
 #define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <openssl/crypto.h>
 #include <secp256k1.h>
 
 #include "gazpacho/wallet_keys.h"
+#include "lnmsg.h"
 
 #include "datadir.h"
 #include "executor.h"
@@ -28,10 +33,19 @@
 #define RESTART_LIMIT 5
 
 static volatile sig_atomic_t stop_flag;
+static int stop_pipe[2] = {-1, -1};
+
+/* The self-pipe: the one loop sees a stop as a readable descriptor
+ * (contract-v2.md section 4), so it needs no fixed wake-up. */
 static void on_signal(int sig)
 {
+    int saved = errno;
     (void)sig;
     stop_flag = 1;
+    if (stop_pipe[1] >= 0 && write(stop_pipe[1], "x", 1) < 0) {
+        /* full or closed: the flag is enough */
+    }
+    errno = saved;
 }
 
 static gzp_exec_t ex;          /* large: kept off the stack */
@@ -45,20 +59,12 @@ static int key_ok(const uint8_t key[32], void *ctx)
     return secp256k1_ec_seckey_verify((const secp256k1_context *)ctx, key);
 }
 
-#ifdef GZP_CORE_RANDOM_PURPOSE
-static void net_random(void *ctx, gzp_purpose_t purpose, uint8_t *out, size_t len)
-{
-    (void)ctx;
-    (void)purpose;
-    gzp_os_random(out, len);
-}
-#else
+/* The transport's own random type (noise.h): the system's source at each call. */
 static void net_random(void *ctx, uint8_t *out, size_t len)
 {
     (void)ctx;
     gzp_os_random(out, len);
 }
-#endif
 
 /* The wallet: 24 words from the stand-in seed file, and the first receive
  * address (BIP 86, account 0) as a check that the keys are reachable. */
@@ -87,17 +93,17 @@ int main(int argc, char **argv)
     gzp_options_t opt;
     secp256k1_context *secp = NULL;
     uint8_t priv[32], rseed[32];
-    gz_conn_limits_t lim;
-    gz_random_port_t rnd;
+    gzp_net_limits_t lim;
+    gz_net_random_t rnd;
     gzp_net_events_t nev;
     gz_network network;
     gzw_network wnet;
     gzw_bip86_output first;
     struct sigaction sa;
     char hex[67];
-    int rc, i, restarts = 0;
+    const uint8_t *chain_hash;
+    int rc, i, restarts = 0, have_net = 0, have_dir = 0, stopped = 0;
 
-    net.listen_fd = -1;
     if (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
         gzp_usage();
         return 0;
@@ -109,7 +115,19 @@ int main(int argc, char **argv)
         fprintf(stderr, "gazpacho: refusing network %s\n", opt.network);
         return GZP_EXIT_USAGE;
     }
+    chain_hash = network == GZ_NET_SIGNET ? GZ_LN_CHAIN_SIGNET
+               : network == GZ_NET_TESTNET4 ? GZ_LN_CHAIN_TESTNET4 : NULL;
+    if (!chain_hash) {
+        fprintf(stderr, "gazpacho: refusing network %s (signet or testnet4)\n", opt.network);
+        return GZP_EXIT_USAGE;
+    }
 
+    if (pipe(stop_pipe) != 0 || fcntl(stop_pipe[0], F_SETFL, O_NONBLOCK) != 0 ||
+        fcntl(stop_pipe[1], F_SETFL, O_NONBLOCK) != 0 || fcntl(stop_pipe[0], F_SETFD, FD_CLOEXEC) != 0 ||
+        fcntl(stop_pipe[1], F_SETFD, FD_CLOEXEC) != 0) {
+        fprintf(stderr, "gazpacho: cannot make the stop pipe\n");
+        return GZP_EXIT_FAILED;
+    }
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_signal;
     sigemptyset(&sa.sa_mask);
@@ -118,6 +136,7 @@ int main(int argc, char **argv)
 
     rc = gzp_datadir_open(&dir, opt.data_dir, opt.role == GZP_ROLE_HOST ? "host" : "member", opt.network);
     if (rc) return rc;
+    have_dir = 1;
 
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     gzp_os_random(rseed, sizeof rseed);
@@ -131,51 +150,56 @@ int main(int argc, char **argv)
     if ((rc = wallet_open(secp, wnet, &first)) != 0) goto out;
     gzp_log("wallet network=%s first-address=%s", opt.network, first.address);
 
-    /* The transport. */
-    gz_conn_default_limits(&lim);
-    lim.handshake_ms = opt.handshake_ms;
-    lim.recv_ms = opt.recv_ms;
-    lim.send_ms = opt.send_ms;
-    rnd.fill = net_random;
-    rnd.ctx = NULL;
-    memset(&nev, 0, sizeof nev); /* the executor sets the events */
-    if (gzp_net_init(&net, secp, priv, rnd, &lim, opt.reconnect_ms, &nev) != 0) {
-        OPENSSL_cleanse(priv, sizeof priv);
-        fprintf(stderr, "gazpacho: bad transport key\n");
-        rc = GZP_EXIT_DATA;
-        goto out;
-    }
-    OPENSSL_cleanse(priv, sizeof priv);
-    gzp_hex(net.pub, 33, hex);
-    if (opt.role == GZP_ROLE_HOST) {
-        if (gzp_net_listen(&net, opt.listen_host, opt.listen_port) != 0) {
-            rc = GZP_EXIT_FAILED;
-            goto out;
-        }
-        gzp_log("listening address=%s:%u key=%s", opt.listen_host, (unsigned)net.bound_port, hex);
-    } else {
-        gzp_net_target(&net, opt.connect_host, opt.connect_port, opt.connect_key);
-        gzp_log("member key=%s host-peer=%016llx", hex, (unsigned long long)gzp_peer_id(opt.connect_key));
-    }
-
-    /* The chain. */
+    /* The chain (before the transport: --check-chain needs nothing else). */
     if (opt.no_chain) {
         gzp_chain_none(&chain, network);
         gzp_log("chain off");
     } else if ((rc = gzp_chain_open(&chain, opt.chain_urls[0], network, opt.chain_poll_ms)) != 0) {
+        OPENSSL_cleanse(priv, sizeof priv);
         goto out;
     }
-    if (opt.test_exit_after_chain) {
+    if (opt.check_chain) {
+        OPENSSL_cleanse(priv, sizeof priv);
         if (chain.active) gzp_chain_show_outputs(&chain, first.script_pubkey, sizeof first.script_pubkey);
         rc = 0;
         goto out;
     }
 
-    /* The local interface: the API server (PR 26) is not merged yet. */
-    if (opt.no_interface) gzp_log("interface off");
-    else gzp_log("interface not-built port=%u", (unsigned)(opt.interface_port ? opt.interface_port : 39735));
+    /* The transport (peers.h). Nothing listens or connects until the start. */
+    lim.handshake_ms = opt.handshake_ms;
+    lim.recv_ms = opt.recv_ms;
+    lim.send_ms = opt.send_ms;
+    lim.ping_ms = opt.ping_ms;
+    lim.pong_ms = opt.pong_ms;
+    lim.max_per_address = opt.max_per_address;
+    rnd.fill = net_random;
+    rnd.ctx = NULL;
+    memset(&nev, 0, sizeof nev); /* the executor sets the events */
+    i = gzp_net_init(&net, secp, priv, rnd, chain_hash, &lim, opt.reconnect_ms, &nev);
+    OPENSSL_cleanse(priv, sizeof priv);
+    if (i != 0) {
+        fprintf(stderr, "gazpacho: the transport refused its configuration\n");
+        rc = GZP_EXIT_DATA;
+        goto out;
+    }
+    have_net = 1;
+    gzp_hex(net.pub, 33, hex);
+    if (opt.role == GZP_ROLE_HOST) {
+        gzp_net_set_listen(&net, opt.listen_host, opt.listen_port);
+        gzp_log("host key=%s", hex);
+    } else {
+        gzp_net_target(&net, opt.connect_host, opt.connect_port, opt.connect_key);
+        gzp_log("member key=%s host-peer=%016llx", hex, (unsigned long long)gzp_peer_id(opt.connect_key));
+    }
 
+    /* The local interface: the API server is not wired yet (P5, P6). */
+    if (opt.no_interface) gzp_log("interface off");
+    else gzp_log("interface not-built port=%u", (unsigned)(opt.interface_port ? opt.interface_port
+                                                         : network == GZ_NET_TESTNET4 ? 39736 : 39735));
+
+#ifdef GZP_TEST_BUILD
     gzp_testping_init(&tp, opt.test_pings, opt.test_ping_ms, opt.name);
+#endif
     gzp_notify_lines(&ex.notify);
     ex.opt = &opt;
     ex.dir = &dir;
@@ -183,33 +207,48 @@ int main(int argc, char **argv)
     ex.chain = &chain;
     ex.tp = &tp;
     ex.stop = &stop_flag;
+    ex.stop_fd = stop_pipe[0];
 
     for (i = 1;; i++) {
         int r = gzp_exec_incarnation(&ex, i);
         if (r == GZP_RUN_STOP) {
             rc = 0;
+            stopped = 1;
             break;
         }
         if (r == GZP_RUN_FAILED) {
             rc = GZP_EXIT_DATA;
             break;
         }
-        /* Fatal: start again from storage, under a new incarnation. Peers see
-         * the connection go and send again what was not answered. */
+        /* Fatal: start again from storage, under a new incarnation. Every
+         * connection and the listener close (peers see the loss and repair it
+         * through their reconnect step); the next start opens them again. */
         if (++restarts > RESTART_LIMIT) {
             gzp_log("stopping after %d restarts", RESTART_LIMIT);
             rc = GZP_EXIT_FAILED;
             break;
         }
         gzp_log("restart-from-storage after=%s", ex.fatal_why ? ex.fatal_why : "-");
-        gzp_net_drop_all(&net);
+        if (gzp_net_reset(&net) != 0) {
+            rc = GZP_EXIT_FAILED;
+            break;
+        }
     }
-    gzp_log("stopped status=%d", rc);
 
 out:
-    gzp_net_free(&net);
+    /* The shutdown order (contract-v2.md section 4): the node is stopped (its
+     * runner and every held action are gone with the incarnation); the API
+     * server and the chain worker come here with P5 to P7; then every
+     * connection closes without events; then storage; then the lock. */
+    if (stopped) gzp_log("shutdown node-stopped");
+    if (have_net) gzp_net_free(&net);
+    if (stopped) gzp_log("shutdown connections-closed");
     gzp_chain_close(&chain);
+    gzp_exec_close_storage(&ex);
+    if (stopped) gzp_log("shutdown storage-closed");
     if (secp) secp256k1_context_destroy(secp);
-    gzp_datadir_close(&dir);
+    if (have_dir) gzp_datadir_close(&dir);
+    if (stopped) gzp_log("shutdown lock-released");
+    gzp_log("stopped status=%d", rc);
     return rc;
 }

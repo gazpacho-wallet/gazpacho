@@ -4,7 +4,9 @@
  * increase and are durable at begin; batches come back in order with their
  * records; complete() reports each new batch once, oldest first; a torn tail
  * is cut, corruption refuses to open; appends out of order or under another
- * incarnation fail and fail for good. */
+ * incarnation fail and fail for good; the start counter keeps a journal
+ * restored alone from reusing an incarnation (contract-v2.md section 8), and
+ * the restore marker goes once batch 1 of a restored incarnation is durable. */
 #define _POSIX_C_SOURCE 200809L
 #include <fcntl.h>
 #include <stdio.h>
@@ -18,7 +20,7 @@
 static int failures;
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #c); failures++; } } while (0)
 
-static char path[512];
+static char dir[512], path[600];
 
 static gz_batch_id_t id(uint64_t i, uint64_t s)
 {
@@ -31,7 +33,7 @@ static gz_batch_id_t id(uint64_t i, uint64_t s)
 static int open_store(gzp_store_t *s)
 {
     char err[200] = "";
-    int r = gzp_standin_open(s, path, err, sizeof err);
+    int r = gzp_standin_open(s, dir, err, sizeof err);
     if (r) fprintf(stderr, "open: %s\n", err);
     return r;
 }
@@ -63,7 +65,9 @@ int main(void)
     off_t size_ok;
     int fd;
 
-    snprintf(path, sizeof path, "/tmp/gzp-test-store-%ld.journal", (long)getpid());
+    snprintf(dir, sizeof dir, "/tmp/gzp-test-store-%ld", (long)getpid());
+    snprintf(path, sizeof path, "%s/journal.standin", dir);
+    mkdir(dir, 0700);
     unlink(path);
 
     /* A new file: incarnation 1, two batches, reported once each in order. */
@@ -137,16 +141,97 @@ int main(void)
     }
     close(fd);
     err[0] = 0;
-    CHECK(gzp_standin_open(&s, path, err, sizeof err) != 0 && strstr(err, "corrupt"));
+    CHECK(gzp_standin_open(&s, dir, err, sizeof err) != 0 && strstr(err, "corrupt"));
 
     /* Not a journal at all. */
     fd = open(path, O_WRONLY | O_TRUNC);
     CHECK(fd >= 0 && write(fd, "something else entirely", 23) == 23);
     close(fd);
-    CHECK(gzp_standin_open(&s, path, err, sizeof err) != 0);
+    CHECK(gzp_standin_open(&s, dir, err, sizeof err) != 0);
+
+    /* The start counter: a fresh folder; three starts; the journal of the
+     * first start put back alone; the next incarnation is above the counter. */
+    {
+        char backup[700], cpath[700], mpath[700], buf[64];
+        uint64_t v = 0;
+        unlink(path);
+        snprintf(backup, sizeof backup, "%s/backup", dir);
+        snprintf(cpath, sizeof cpath, "%s/starts.standin", dir);
+        snprintf(mpath, sizeof mpath, "%s/restore.pending", dir);
+        unlink(cpath);
+        CHECK(open_store(&s) == 0);
+        CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) == 0 && inc == 1);
+        CHECK(gzp_standin_counter_state(&s, &v) == GZP_COUNTER_CREATED && v == 1);
+        CHECK(s.ops->append(s.ctx, id(1, 1), recs, 1) == 0);
+        s.ops->close(s.ctx);
+        /* the backup: a copy of the journal now */
+        {
+            FILE *in = fopen(path, "rb"), *out = fopen(backup, "wb");
+            char cb[4096];
+            size_t n;
+            CHECK(in && out);
+            while (in && out && (n = fread(cb, 1, sizeof cb, in)) > 0) CHECK(fwrite(cb, 1, n, out) == n);
+            if (in) fclose(in);
+            if (out) fclose(out);
+        }
+        CHECK(open_store(&s) == 0);
+        CHECK(s.ops->restored(s.ctx) == 0);
+        CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) == 0 && inc == 2);
+        CHECK(gzp_standin_counter_state(&s, &v) == GZP_COUNTER_FOUND && v == 2);
+        s.ops->close(s.ctx);
+        CHECK(open_store(&s) == 0);
+        CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) == 0 && inc == 3);
+        s.ops->close(s.ctx);
+        /* restore the journal of incarnation 1: the counter says 3, so 4 */
+        CHECK(gzp_standin_put_restore(dir, backup, err, sizeof err) == 0);
+        CHECK(open_store(&s) == 0);
+        CHECK(s.ops->restored(s.ctx) == 1);
+        CHECK(count_batches(&s) == 1);
+        CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) == 0 && inc == 4);
+        CHECK(s.ops->restored(s.ctx) == 1);
+        CHECK(gzp_standin_take_restore_answered(&s) == 0);
+        CHECK(s.ops->append(s.ctx, id(4, 1), recs, 1) == 0); /* batch 1: the restore is answered */
+        CHECK(s.ops->restored(s.ctx) == 0 && access(mpath, F_OK) != 0);
+        CHECK(gzp_standin_take_restore_answered(&s) == 1);
+        CHECK(gzp_standin_take_restore_answered(&s) == 0);
+        s.ops->close(s.ctx);
+        /* without the counter, a restore falls back to the journal alone */
+        CHECK(gzp_standin_put_restore(dir, backup, err, sizeof err) == 0);
+        unlink(cpath);
+        CHECK(open_store(&s) == 0);
+        CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) == 0 && inc == 2);
+        CHECK(gzp_standin_counter_state(&s, NULL) == GZP_COUNTER_MISSING);
+        s.ops->close(s.ctx);
+        /* a counter at 2^63 refuses the start; a damaged one counts as missing */
+        fd = open(cpath, O_WRONLY | O_TRUNC);
+        CHECK(fd >= 0);
+        snprintf(buf, sizeof buf, "GZSTART0 9223372036854775808\n");
+        CHECK(write(fd, buf, strlen(buf)) == (ssize_t)strlen(buf));
+        close(fd);
+        CHECK(open_store(&s) == 0);
+        err[0] = 0;
+        CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) != 0 && strstr(err, "2^63"));
+        s.ops->close(s.ctx);
+        fd = open(cpath, O_WRONLY | O_TRUNC);
+        CHECK(fd >= 0 && write(fd, "GZSTART0 7x\n", 12) == 12);
+        close(fd);
+        CHECK(open_store(&s) == 0);
+        CHECK(s.ops->begin(s.ctx, &inc, err, sizeof err) == 0 && inc == 3);
+        CHECK(gzp_standin_counter_state(&s, NULL) == GZP_COUNTER_MISSING);
+        s.ops->close(s.ctx);
+        unlink(backup);
+        unlink(cpath);
+        unlink(mpath);
+        {
+            char tmp[720];
+            snprintf(tmp, sizeof tmp, "%s.tmp", cpath);
+            unlink(tmp);
+        }
+    }
 
     (void)c;
     unlink(path);
+    rmdir(dir);
     if (failures) {
         fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

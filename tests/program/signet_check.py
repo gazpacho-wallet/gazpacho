@@ -29,7 +29,7 @@ def check(cond, what):
 
 def run(exe, d, url):
     r = subprocess.run([exe, "--data-dir", d, "--role", "host", "--listen", "127.0.0.1:0", "--no-interface",
-                        "--chain-url", url, "--test-exit-after-chain"],
+                        "--chain-url", url, "--check-chain"],
                        capture_output=True, text=True, timeout=120)
     print(r.stdout + r.stderr, flush=True)
     return r.returncode, r.stdout + r.stderr
