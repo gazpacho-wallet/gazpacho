@@ -9,11 +9,11 @@
 
 #define STEP_SLOTS     16      /* actions one node step may return */
 #define STEP_BYTES     4096
-#define START_SLOTS    80      /* actions a node's start may return */
-#define START_BYTES    8192
 #define RUNNER_SLOTS   64      /* actions one node's runner may hold */
 #define RUNNER_BYTES   16384
 #define MAX_INVARIANTS 8
+#define MAX_START_STEPS 100000
+#define READER_RECORDS 16      /* records of one batch the default node's reader presents */
 #define NEVER          UINT64_MAX
 #define NOT_ARMED      UINT64_MAX
 #define FNV_OFFSET     0xcbf29ce484222325ull
@@ -22,7 +22,9 @@
 typedef struct { uint8_t *bytes; size_t len; } blob_t;
 typedef struct { uint64_t from, to; blob_t blob; uint64_t due, seq; } message_t;
 typedef struct { uint64_t id, due; } node_timer_t;
-typedef struct { blob_t blob; uint32_t origin; uint32_t height; } chain_tx_t;   /* height 0: in the mempool */
+typedef struct { blob_t blob; uint32_t origin; uint32_t height; int never; uint8_t txid[32]; } chain_tx_t;   /* height 0: in the mempool */
+typedef struct { uint8_t txid[32]; uint32_t depth; int reported; } tx_watch_t;          /* reported: told confirmed, still in the chain */
+typedef struct { gz_outpoint_t outpoint; uint32_t depth; int seen, in_chain; } op_watch_t;
 
 /* One batch in a node's storage. */
 typedef struct {
@@ -39,6 +41,8 @@ struct sim_storage {
     batch_t *durable; size_t n_durable, cap_durable;
     size_t next_confirm;        /* durable[0..next_confirm) have had their confirmation delivered */
     batch_t *pending; size_t n_pending, cap_pending;
+    uint64_t reader_incarnation; /* the incarnation of the node being built from this storage */
+    int reader_restored;        /* the restore marker that node is given (ports.h) */
 };
 
 /* The harness's own record of a batch that became durable. */
@@ -58,17 +62,36 @@ typedef struct {
     gz_ports_t ports;
     sim_rng_t rng;
     uint64_t incarnation;       /* how many times the node has been built */
+    uint64_t repeat_stream;     /* after a restore: the incarnation whose random stream to repeat, or 0 */
     gz_runner_t runner;
     gz_runner_slot_t runner_slots[RUNNER_SLOTS];
     uint8_t runner_bytes[RUNNER_BYTES];
     struct sim_storage storage;
     node_timer_t *timers; size_t n_timers, cap_timers;
     blob_t *watches; size_t n_watches, cap_watches;
+    tx_watch_t *tx_watches; size_t n_tx_watches, cap_tx_watches;
+    op_watch_t *op_watches; size_t n_op_watches, cap_op_watches;
+    sim_draw_t *draws; size_t n_draws, cap_draws;
+    /* The difference signature of every 8-byte window of every secret-tagged
+     * draw, forwards and backwards: an open-addressing table (0 marks a free
+     * place), for the "secrets never leave" check. */
+    uint64_t *secret_keys; size_t n_secret_keys, cap_secret_keys;
+
+    int restore_pending;        /* restored, and no restore batch is durable yet */
+    uint64_t restore_first_incarnation;   /* the first incarnation started after that restore */
+    int started_restored;       /* this incarnation was started with the restore marker */
+    int emitted_any;            /* this incarnation has emitted an action */
 
     int needs_rebuild;          /* crashed, refused or storage failed: rebuild before going on */
     int dying;                  /* crashed inside a release: nothing more is carried out */
     int died_this_step;
     uint64_t crash_countdown;   /* executor calls left before an armed crash, or NOT_ARMED */
+    int storage_failed;         /* this incarnation's storage has failed: nothing more may be carried out */
+
+    int starting;               /* the node's start has not finished */
+    size_t start_steps;         /* start steps taken by this incarnation */
+    queued_t *deferred; size_t n_deferred, cap_deferred;   /* events held back until the start finishes */
+    batch_t *orphans; size_t n_orphans, cap_orphans;       /* an earlier program's pending batches */
 
     /* What the harness observed this node emit since it was last built, for
      * the save-before-send check. Kept apart from the runner on purpose, and
@@ -87,7 +110,9 @@ struct sim {
     void *ops_ctx;
     sim_rng_t rng;
     uint64_t step;
+    int64_t clock_offset;
     slot_t *slots;
+    uint8_t *link_down;             /* (n_nodes + 1) squared; the last index is the world */
     queued_t *queue; size_t q_head, q_len, cap_queue;
     message_t *net; size_t n_net, cap_net;
     uint64_t next_seq;
@@ -205,6 +230,9 @@ static void note_emitted(slot_t *s, const gz_action_list_t *list)
 {
     for (size_t i = 0; i < list->count; i++) {
         const gz_action_t *a = &list->slots[i];
+        if (s->started_restored && !s->emitted_any && a->kind != GZ_ACTION_SAVE)
+            violate(s->sim, "a node started with the restore marker did something before saving its restore batch");
+        s->emitted_any = 1;
         if (a->kind == GZ_ACTION_SAVE) {
             s->emitted_saves = grow(s->emitted_saves, &s->cap_emitted_saves, s->n_emitted_saves + 1,
                                     sizeof *s->emitted_saves);
@@ -253,8 +281,8 @@ static gz_bytes_t *event_bytes(gz_event_t *ev)
     }
 }
 
-/* Queue a copy of an event for a node. */
-static void post(slot_t *s, const gz_event_t *ev, uint64_t node_incarnation)
+/* Queue a copy of an event for a node, as it is built now. */
+static void post_as(slot_t *s, const gz_event_t *ev, uint64_t node_incarnation)
 {
     sim_t *sim = s->sim;
     queued_t q = {s->index, node_incarnation, *ev, {NULL, 0}};
@@ -266,6 +294,8 @@ static void post(slot_t *s, const gz_event_t *ev, uint64_t node_incarnation)
     sim->queue = grow(sim->queue, &sim->cap_queue, sim->q_len + 1, sizeof *sim->queue);
     sim->queue[sim->q_len++] = q;
 }
+
+static void post(slot_t *s, const gz_event_t *ev) { post_as(s, ev, s->incarnation); }
 
 /* ---- pretend storage ---- */
 
@@ -287,6 +317,8 @@ static blob_t encode_records(const gz_action_t *save)
     return b;
 }
 
+static void fail_storage(slot_t *s);
+
 /* Take a save batch and decide, from the schedule, what becomes of it. */
 static void storage_accept(slot_t *s, const gz_action_t *save)
 {
@@ -300,6 +332,14 @@ static void storage_accept(slot_t *s, const gz_action_t *save)
     int confirm_late = sim_rng_chance(&sim->rng, c->confirm_delay_pm);
     uint64_t confirm_extra = 1 + sim_rng_below(&sim->rng, c->max_confirm_delay_steps ? c->max_confirm_delay_steps : 1);
 
+    int fails_inline = sim_rng_chance(&sim->rng, c->save_fail_inline_pm);
+    if (fails_inline) {     /* storage that writes as it is called finds out at once, inside the executor */
+        sim->stats.inline_storage_failures++;
+        trace(sim, "storage-failed-inline node=%u", s->index);
+        sim->stats.saves_lost++;
+        fail_storage(s);
+        return;
+    }
     batch_t b = {save->u.save.batch, encode_records(save), records_digest(save), s->incarnation, 0, NEVER, fails};
     b.durable_at = never ? NEVER : sim->step + (late ? extra : 0);
     if (st->n_pending && st->pending[st->n_pending - 1].durable_at > b.durable_at)
@@ -323,7 +363,19 @@ static void fail_storage(slot_t *s)
     for (size_t i = 0; i < s->storage.n_pending; i++) free(s->storage.pending[i].blob.bytes);
     s->storage.n_pending = 0;
     if (!sim->cfg.ops.release) (void)gz_runner_storage_failed(&s->runner);
+    s->storage_failed = 1;
     s->needs_rebuild = 1;
+}
+
+/* A batch has become durable: if it is the restore batch of a start made
+ * with the restore marker (sequence 1 of such an incarnation), the restore is
+ * answered and later starts are given no marker. */
+static void note_durable(slot_t *s, gz_batch_id_t id)
+{
+    if (!s->restore_pending || id.sequence != 1 || id.incarnation < s->restore_first_incarnation) return;
+    s->restore_pending = 0;
+    s->sim->stats.restores_answered++;
+    trace(s->sim, "restore-answered node=%u batch=%llu.1", s->index, (unsigned long long)id.incarnation);
 }
 
 /* Make every due pending batch durable, oldest first, and queue every due
@@ -344,12 +396,13 @@ static void settle_storage(slot_t *s)
         sim->stats.saves_durable++;
         trace(sim, "stored node=%u batch=%llu.%llu", s->index,
               (unsigned long long)b.id.incarnation, (unsigned long long)b.id.sequence);
+        note_durable(s, b.id);
     }
     while (st->next_confirm < st->n_durable && st->durable[st->next_confirm].confirm_at <= sim->step) {
         const batch_t *b = &st->durable[st->next_confirm++];
         gz_event_t ev = {.kind = GZ_EVENT_STORAGE_CONFIRMED};
         ev.u.storage.batch = b->id;
-        post(s, &ev, b->node_incarnation);
+        post_as(s, &ev, b->node_incarnation);
     }
 }
 
@@ -371,7 +424,73 @@ static void check_storage(slot_t *s)
     }
 }
 
+static void discard_orphans(slot_t *s);
+
+/* A restore from an older backup: storage goes back to its oldest `keep`
+ * batches, nothing pending and no confirmation from before can arrive, and
+ * the node restarts. */
+static void restore(slot_t *s, size_t keep)
+{
+    sim_t *sim = s->sim;
+    struct sim_storage *st = &s->storage;
+    if (keep > st->n_durable) keep = st->n_durable;
+    sim->stats.restores++;
+    trace(sim, "restore node=%u keeps=%zu of=%zu", s->index, keep, st->n_durable);
+    if (sim->cfg.restore_repeats_random) {
+        s->repeat_stream = keep ? st->durable[keep - 1].node_incarnation : 1;
+        sim->stats.restores_repeating++;
+    }
+    for (size_t i = keep; i < st->n_durable; i++) free(st->durable[i].blob.bytes);
+    st->n_durable = s->n_shadow = st->next_confirm = keep;
+    /* Storage is opened afresh: nothing the program had handed over can still
+     * complete into the restored copy. */
+    sim->stats.saves_lost += st->n_pending;
+    for (size_t i = 0; i < st->n_pending; i++) free(st->pending[i].blob.bytes);
+    st->n_pending = 0;
+    s->restore_pending = 1;                 /* the program knows it restored; the node must be told */
+    s->restore_first_incarnation = s->incarnation + 1;
+    s->needs_rebuild = 1;
+}
+
 /* ---- pretend network ---- */
+
+/* Index of a peer in the link table: nodes first, then the world. -1 if there
+ * is no such peer. */
+static long peer_index(const sim_t *sim, uint64_t peer)
+{
+    if (peer == SIM_WORLD_PEER) return (long)sim->cfg.n_nodes;
+    return peer < sim->cfg.n_nodes ? (long)peer : -1;
+}
+
+static uint8_t *link_cell(const sim_t *sim, long a, long b)
+{
+    return &sim->link_down[(size_t)a * (sim->cfg.n_nodes + 1) + (size_t)b];
+}
+
+static int link_is_up(const sim_t *sim, uint64_t a, uint64_t b)
+{
+    long ia = peer_index(sim, a), ib = peer_index(sim, b);
+    return ia < 0 || ib < 0 || !*link_cell(sim, ia, ib);
+}
+
+/* Tell a node that its connection to `peer` is up or down. */
+static void tell_peer(slot_t *s, uint64_t peer, int up)
+{
+    gz_event_t ev = {.kind = up ? GZ_EVENT_PEER_CONNECTED : GZ_EVENT_PEER_DISCONNECTED};
+    ev.u.peer.peer_id = peer;
+    post(s, &ev);
+}
+
+static void set_link(sim_t *sim, uint64_t a, uint64_t b, int up)
+{
+    long ia = peer_index(sim, a), ib = peer_index(sim, b);
+    if (ia < 0 || ib < 0 || ia == ib || !*link_cell(sim, ia, ib) == !!up) return;
+    *link_cell(sim, ia, ib) = *link_cell(sim, ib, ia) = (uint8_t)!up;
+    sim->stats.link_changes++;
+    trace(sim, "link %lld-%lld %s", (long long)a, (long long)b, up ? "up" : "down");
+    if (a != SIM_WORLD_PEER) tell_peer(&sim->slots[a], b, up);
+    if (b != SIM_WORLD_PEER) tell_peer(&sim->slots[b], a, up);
+}
 
 static void network_send(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len)
 {
@@ -426,28 +545,35 @@ static void deliver_one_message(sim_t *sim)
     if (i < 0) return;
     message_t m = sim->net[i];
     memmove(sim->net + i, sim->net + i + 1, (--sim->n_net - (size_t)i) * sizeof *sim->net);
-    trace(sim, "deliver seq=%llu %lld->%lld len=%zu", (unsigned long long)m.seq,
-          (long long)m.from, (long long)m.to, m.blob.len);
-    if (m.to == SIM_WORLD_PEER) {
-        sim->stats.messages_delivered++;
-        sim->stats.world_replies++;
-    } else if (m.to < sim->cfg.n_nodes) {
-        sim->stats.messages_delivered++;
-        gz_event_t ev = {.kind = GZ_EVENT_MESSAGE_RECEIVED};
-        ev.u.message.peer_id = m.from;
-        ev.u.message.bytes = (gz_bytes_t){m.blob.bytes, m.blob.len};
-        post(&sim->slots[m.to], &ev, sim->slots[m.to].incarnation);
+    if (!link_is_up(sim, m.from, m.to)) {
+        sim->stats.messages_lost_to_links++;
+        trace(sim, "lost-to-link seq=%llu %lld->%lld", (unsigned long long)m.seq, (long long)m.from, (long long)m.to);
+    } else {
+        trace(sim, "deliver seq=%llu %lld->%lld len=%zu", (unsigned long long)m.seq,
+              (long long)m.from, (long long)m.to, m.blob.len);
+        if (m.to == SIM_WORLD_PEER) {
+            sim->stats.messages_delivered++;
+            sim->stats.world_replies++;
+        } else if (m.to < sim->cfg.n_nodes) {
+            sim->stats.messages_delivered++;
+            gz_event_t ev = {.kind = GZ_EVENT_MESSAGE_RECEIVED};
+            ev.u.message.peer_id = m.from;
+            ev.u.message.bytes = (gz_bytes_t){m.blob.bytes, m.blob.len};
+            post(&sim->slots[m.to], &ev);
+        }
     }
     free(m.blob.bytes);
 }
 
 /* ---- pretend chain ---- */
 
+static uint64_t first8(const uint8_t *b);
+
 /* 32 bytes from four digests of the transaction, each written low byte first. */
-static void pretend_txid(const blob_t *tx, uint8_t txid[32])
+static void txid_of(const uint8_t *tx, size_t len, uint8_t txid[32])
 {
     for (uint64_t part = 0; part < 4; part++) {
-        uint64_t h = fnv(fnv_number(FNV_OFFSET, part, 8), tx->bytes, tx->len);
+        uint64_t h = fnv(fnv_number(FNV_OFFSET, part, 8), tx, len);
         for (int k = 0; k < 8; k++) txid[8 * part + (uint64_t)k] = (uint8_t)(h >> (8 * k));
     }
 }
@@ -460,17 +586,72 @@ static gz_bytes_t spent_script(const blob_t *tx)
     return (gz_bytes_t){tx->bytes + 1, tx->bytes[0]};
 }
 
-static void chain_broadcast(sim_t *sim, uint32_t origin, gz_bytes_t tx)
+#define TX_INPUTS_MARK 0xF0u
+#define TX_INPUT_LEN   36
+
+/* The outpoints a pretend transaction spends: their number, and through
+ * `*first` where the first one starts. */
+static size_t tx_inputs(const uint8_t *tx, size_t len, const uint8_t **first)
 {
-    uint64_t digest = digest_bytes(tx.data, tx.len);
-    for (size_t i = 0; i < sim->n_txs; i++)
-        if (same_bytes(sim->txs[i].blob.bytes, sim->txs[i].blob.len, tx.data, tx.len)) {
-            trace(sim, "broadcast node=%u digest=%016llx already-known", origin, (unsigned long long)digest);
-            return;
-        }
-    sim->txs = grow(sim->txs, &sim->cap_txs, sim->n_txs + 1, sizeof *sim->txs);
-    sim->txs[sim->n_txs++] = (chain_tx_t){blob_copy(tx.data, tx.len), origin, 0};
-    trace(sim, "broadcast node=%u len=%zu digest=%016llx", origin, tx.len, (unsigned long long)digest);
+    if (len == 0) return 0;
+    size_t at = 1 + (size_t)tx[0];
+    if (at + 2 > len || tx[at] != TX_INPUTS_MARK) return 0;
+    size_t n = tx[at + 1];
+    if (n * TX_INPUT_LEN > len - at - 2) return 0;
+    *first = tx + at + 2;
+    return n;
+}
+
+static uint32_t le32(const uint8_t *p)
+{
+    return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+static int spends(const uint8_t *tx, size_t len, const gz_outpoint_t *op)
+{
+    const uint8_t *in = NULL;
+    size_t n = tx_inputs(tx, len, &in);
+    for (size_t i = 0; i < n; i++, in += TX_INPUT_LEN)
+        if (memcmp(in, op->txid, 32) == 0 && le32(in + 32) == op->vout) return 1;
+    return 0;
+}
+
+static long find_tx(const sim_t *sim, const uint8_t txid[32])
+{
+    for (size_t t = 0; t < sim->n_txs; t++)
+        if (memcmp(sim->txs[t].txid, txid, 32) == 0) return (long)t;
+    return -1;
+}
+
+/* The known transaction spending `op`, or -1. At most one: conflicts are dropped. */
+static long find_spender(const sim_t *sim, const gz_outpoint_t *op)
+{
+    for (size_t t = 0; t < sim->n_txs; t++)
+        if (spends(sim->txs[t].blob.bytes, sim->txs[t].blob.len, op)) return (long)t;
+    return -1;
+}
+
+static uint32_t confirmations_of(const sim_t *sim, size_t t)
+{
+    return sim->txs[t].height ? sim->height - sim->txs[t].height + 1 : 0;
+}
+
+/* An event about the transaction at index `t`, for node `n`. */
+static void post_chain(sim_t *sim, uint32_t n, gz_chain_kind_t kind, size_t t, const gz_outpoint_t *op,
+                       uint32_t confirmations)
+{
+    static const char *const names[] = {"?", "spent", "confirmed", "tip", "unconfirmed", "outpoint-spent"};
+    gz_event_t ev = {.kind = GZ_EVENT_CHAIN};
+    ev.u.chain.kind = kind;
+    if (kind == GZ_CHAIN_SCRIPT_SPENT) ev.u.chain.script = spent_script(&sim->txs[t].blob);
+    if (op) ev.u.chain.outpoint = *op;
+    ev.u.chain.confirmations = confirmations;
+    ev.u.chain.height = sim->txs[t].height;
+    memcpy(ev.u.chain.txid, sim->txs[t].txid, 32);
+    sim->stats.chain_reports++;
+    trace(sim, "chain %s node=%u confirmations=%u tx=%016llx", names[kind], n, confirmations,
+          (unsigned long long)first8(sim->txs[t].txid));
+    post(&sim->slots[n], &ev);
 }
 
 static int watches(const slot_t *s, gz_bytes_t script)
@@ -480,35 +661,112 @@ static int watches(const slot_t *s, gz_bytes_t script)
     return 0;
 }
 
+static tx_watch_t *add_tx_watch(slot_t *s, const uint8_t txid[32], uint32_t depth)
+{
+    for (size_t i = 0; i < s->n_tx_watches; i++)
+        if (memcmp(s->tx_watches[i].txid, txid, 32) == 0) {
+            s->tx_watches[i].depth = depth;
+            return &s->tx_watches[i];
+        }
+    s->tx_watches = grow(s->tx_watches, &s->cap_tx_watches, s->n_tx_watches + 1, sizeof *s->tx_watches);
+    tx_watch_t *w = &s->tx_watches[s->n_tx_watches++];
+    memcpy(w->txid, txid, 32);
+    w->depth = depth;
+    w->reported = 0;
+    return w;
+}
+
+static op_watch_t *add_op_watch(slot_t *s, const gz_outpoint_t *op, uint32_t depth)
+{
+    for (size_t i = 0; i < s->n_op_watches; i++)
+        if (memcmp(s->op_watches[i].outpoint.txid, op->txid, 32) == 0 && s->op_watches[i].outpoint.vout == op->vout) {
+            s->op_watches[i].depth = depth;
+            return &s->op_watches[i];
+        }
+    s->op_watches = grow(s->op_watches, &s->cap_op_watches, s->n_op_watches + 1, sizeof *s->op_watches);
+    op_watch_t *w = &s->op_watches[s->n_op_watches++];
+    *w = (op_watch_t){*op, depth, 0, 0};
+    return w;
+}
+
+/* Answer a transaction watch: when it is set (`at_set`), with the current
+ * count if the transaction is in the chain; at a block, with the new count
+ * while it is at most the depth. */
+static void answer_tx_watch(sim_t *sim, uint32_t n, tx_watch_t *w, int at_set)
+{
+    long t = find_tx(sim, w->txid);
+    if (t < 0) return;
+    uint32_t c = confirmations_of(sim, (size_t)t);
+    if (c == 0 || (!at_set && c > w->depth)) return;
+    w->reported = 1;
+    post_chain(sim, n, GZ_CHAIN_TX_CONFIRMED, (size_t)t, NULL, c);
+}
+
+/* Answer an outpoint watch: when it is set, if a spender is known; when a
+ * spender is first seen; at a block, while its count is from 1 to the depth. */
+static void answer_op_watch(sim_t *sim, uint32_t n, op_watch_t *w, int at_set)
+{
+    long t = find_spender(sim, &w->outpoint);
+    if (t < 0) return;
+    uint32_t c = confirmations_of(sim, (size_t)t);
+    if (w->seen && !at_set && (c == 0 || c > w->depth)) return;
+    w->seen = 1;
+    w->in_chain = c > 0;
+    post_chain(sim, n, GZ_CHAIN_OUTPOINT_SPENT, (size_t)t, &w->outpoint, c);
+}
+
+static void chain_broadcast(sim_t *sim, uint32_t origin, gz_bytes_t tx)
+{
+    uint64_t digest = digest_bytes(tx.data, tx.len);
+    for (size_t i = 0; i < sim->n_txs; i++)
+        if (same_bytes(sim->txs[i].blob.bytes, sim->txs[i].blob.len, tx.data, tx.len)) {
+            trace(sim, "broadcast node=%u digest=%016llx already-known", origin, (unsigned long long)digest);
+            return;
+        }
+    const uint8_t *in = NULL;
+    size_t n_in = tx_inputs(tx.data, tx.len, &in);
+    for (size_t i = 0; i < n_in; i++) {
+        gz_outpoint_t op;
+        memcpy(op.txid, in + TX_INPUT_LEN * i, 32);
+        op.vout = le32(in + TX_INPUT_LEN * i + 32);
+        if (find_spender(sim, &op) >= 0) {
+            sim->stats.txs_conflicting++;
+            trace(sim, "broadcast node=%u digest=%016llx conflicts", origin, (unsigned long long)digest);
+            return;
+        }
+    }
+    int never = sim_rng_chance(&sim->rng, sim->cfg.tx_never_pm);
+    sim->txs = grow(sim->txs, &sim->cap_txs, sim->n_txs + 1, sizeof *sim->txs);
+    chain_tx_t *t = &sim->txs[sim->n_txs++];
+    *t = (chain_tx_t){blob_copy(tx.data, tx.len), origin, 0, never, {0}};
+    txid_of(tx.data, tx.len, t->txid);
+    sim->stats.txs_never += (uint64_t)never;
+    trace(sim, "broadcast node=%u len=%zu digest=%016llx%s", origin, tx.len, (unsigned long long)digest,
+          never ? " never-confirms" : "");
+    if (n_in)                               /* a new spender, seen in the mempool */
+        for (uint32_t n = 0; n < sim->cfg.n_nodes; n++)
+            for (size_t w = 0; w < sim->slots[n].n_op_watches; w++)
+                if (!sim->slots[n].op_watches[w].seen) answer_op_watch(sim, n, &sim->slots[n].op_watches[w], 0);
+}
+
 /* Tell watchers about the script spent by the transaction at index `t`. */
 static void report_spend(sim_t *sim, size_t t)
 {
+    gz_bytes_t script = spent_script(&sim->txs[t].blob);
     for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
-        gz_bytes_t script = spent_script(&sim->txs[t].blob);
         if (script.len == 0 || !watches(&sim->slots[n], script)) continue;
-        gz_event_t ev = {.kind = GZ_EVENT_CHAIN};
-        ev.u.chain.kind = GZ_CHAIN_SCRIPT_SPENT;
-        ev.u.chain.script = script;
-        ev.u.chain.height = sim->txs[t].height;
-        pretend_txid(&sim->txs[t].blob, ev.u.chain.txid);
-        trace(sim, "chain spent node=%u height=%u", n, sim->height);
-        post(&sim->slots[n], &ev, sim->slots[n].incarnation);
+        post_chain(sim, n, GZ_CHAIN_SCRIPT_SPENT, t, NULL, 0);
     }
 }
 
-/* Tell the broadcaster of the transaction at index `t` how deep it now is. */
-static void report_confirmations(sim_t *sim, size_t t)
+static void post_tip(sim_t *sim)
 {
-    uint32_t confirmations = sim->height - sim->txs[t].height + 1;
-    uint32_t origin = sim->txs[t].origin;
-    if (confirmations > sim->cfg.confirm_depth || origin >= sim->cfg.n_nodes) return;
-    gz_event_t ev = {.kind = GZ_EVENT_CHAIN};
-    ev.u.chain.kind = GZ_CHAIN_TX_CONFIRMED;
-    ev.u.chain.confirmations = confirmations;
-    ev.u.chain.height = sim->txs[t].height;
-    pretend_txid(&sim->txs[t].blob, ev.u.chain.txid);
-    trace(sim, "chain confirmed node=%u confirmations=%u", origin, confirmations);
-    post(&sim->slots[origin], &ev, sim->slots[origin].incarnation);
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
+        gz_event_t ev = {.kind = GZ_EVENT_CHAIN};
+        ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
+        ev.u.chain.height = sim->height;
+        post(&sim->slots[n], &ev);
+    }
 }
 
 static void mine_block(sim_t *sim)
@@ -516,18 +774,47 @@ static void mine_block(sim_t *sim)
     sim->height++;
     sim->stats.blocks++;
     for (size_t t = 0; t < sim->n_txs; t++)
-        if (sim->txs[t].height == 0) sim->txs[t].height = sim->height;
+        if (sim->txs[t].height == 0 && !sim->txs[t].never) sim->txs[t].height = sim->height;
     trace(sim, "block height=%u", sim->height);
-    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
-        gz_event_t ev = {.kind = GZ_EVENT_CHAIN};
-        ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
-        ev.u.chain.height = sim->height;
-        post(&sim->slots[n], &ev, sim->slots[n].incarnation);
-    }
+    post_tip(sim);
     for (size_t t = 0; t < sim->n_txs; t++)
         if (sim->txs[t].height == sim->height) report_spend(sim, t);
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
+        slot_t *s = &sim->slots[n];
+        for (size_t w = 0; w < s->n_tx_watches; w++) answer_tx_watch(sim, n, &s->tx_watches[w], 0);
+        for (size_t w = 0; w < s->n_op_watches; w++) answer_op_watch(sim, n, &s->op_watches[w], 0);
+    }
+}
+
+/* Remove the newest `depth` blocks: their transactions return to the mempool. */
+static void reorg(sim_t *sim, uint32_t depth)
+{
+    if (depth > sim->height) depth = sim->height;
+    if (depth == 0) return;
+    uint32_t new_height = sim->height - depth;
+    sim->stats.reorgs++;
+    trace(sim, "reorg from=%u to=%u", sim->height, new_height);
     for (size_t t = 0; t < sim->n_txs; t++)
-        report_confirmations(sim, t);
+        if (sim->txs[t].height > new_height) sim->txs[t].height = 0;
+    sim->height = new_height;
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
+        slot_t *s = &sim->slots[n];
+        for (size_t i = 0; i < s->n_tx_watches; i++) {
+            tx_watch_t *w = &s->tx_watches[i];
+            long t = find_tx(sim, w->txid);
+            if (!w->reported || t < 0 || confirmations_of(sim, (size_t)t) > 0) continue;
+            w->reported = 0;
+            post_chain(sim, n, GZ_CHAIN_TX_UNCONFIRMED, (size_t)t, NULL, 0);
+        }
+        for (size_t i = 0; i < s->n_op_watches; i++) {
+            op_watch_t *w = &s->op_watches[i];
+            long t = find_spender(sim, &w->outpoint);
+            if (!w->in_chain || t < 0 || confirmations_of(sim, (size_t)t) > 0) continue;
+            w->in_chain = 0;
+            post_chain(sim, n, GZ_CHAIN_OUTPOINT_SPENT, (size_t)t, &w->outpoint, 0);
+        }
+    }
+    post_tip(sim);
 }
 
 /* ---- timers and watches ---- */
@@ -557,7 +844,7 @@ static void fire_timers(slot_t *s)
         gz_event_t ev = {.kind = GZ_EVENT_TIMER_FIRED};
         ev.u.timer.timer_id = s->timers[i].id;
         trace(s->sim, "timer node=%u id=%llu", s->index, (unsigned long long)ev.u.timer.timer_id);
-        post(s, &ev, s->incarnation);
+        post(s, &ev);
     }
     s->n_timers = kept;
 }
@@ -571,9 +858,25 @@ static void add_watch(slot_t *s, gz_bytes_t script)
 
 /* ---- carrying out actions ---- */
 
+static int action_holds_secret(const slot_t *s, const gz_action_t *a);
+static uint64_t first8(const uint8_t *b);
+static tx_watch_t *add_tx_watch(slot_t *s, const uint8_t txid[32], uint32_t depth);
+static op_watch_t *add_op_watch(slot_t *s, const gz_outpoint_t *op, uint32_t depth);
+static void answer_tx_watch(sim_t *sim, uint32_t n, tx_watch_t *w, int at_set);
+static void answer_op_watch(sim_t *sim, uint32_t n, op_watch_t *w, int at_set);
+
 void sim_execute(sim_t *sim, uint32_t index, const gz_action_t *a)
 {
     slot_t *s = &sim->slots[index];
+    if (s->storage_failed) {
+        violate(sim, "an action was carried out after its program's storage had failed");
+        return;
+    }
+    if (action_holds_secret(s, a)) {
+        sim->stats.secret_leaks++;
+        violate(sim, "the bytes of a secret-tagged random draw left the node in an action");
+        return;
+    }
     switch (a->kind) {
     case GZ_ACTION_SAVE:
         note_stored(s, a);
@@ -581,6 +884,7 @@ void sim_execute(sim_t *sim, uint32_t index, const gz_action_t *a)
         break;
     case GZ_ACTION_SEND:
         note_left(s, a);
+        sim->stats.node_sends++;
         network_send(sim, index, a->u.send.peer_id, a->u.send.bytes.data, a->u.send.bytes.len);
         break;
     case GZ_ACTION_BROADCAST:
@@ -592,10 +896,21 @@ void sim_execute(sim_t *sim, uint32_t index, const gz_action_t *a)
         trace(sim, "notify node=%u code=%u len=%zu digest=%016llx", index, a->u.notify.code, a->u.notify.bytes.len,
               (unsigned long long)digest_bytes(a->u.notify.bytes.data, a->u.notify.bytes.len));
         break;
-    case GZ_ACTION_WATCH:
-        add_watch(s, a->u.watch.script);
-        trace(sim, "watch node=%u len=%zu digest=%016llx", index, a->u.watch.script.len,
-              (unsigned long long)digest_bytes(a->u.watch.script.data, a->u.watch.script.len));
+    case GZ_ACTION_WATCH_SCRIPT:
+        add_watch(s, a->u.watch_script.script);
+        trace(sim, "watch node=%u len=%zu digest=%016llx", index, a->u.watch_script.script.len,
+              (unsigned long long)digest_bytes(a->u.watch_script.script.data, a->u.watch_script.script.len));
+        break;
+    case GZ_ACTION_WATCH_TX:
+        trace(sim, "watch-tx node=%u txid=%016llx depth=%u", index, (unsigned long long)first8(a->u.watch_tx.txid),
+              a->u.watch_tx.depth);
+        answer_tx_watch(sim, index, add_tx_watch(s, a->u.watch_tx.txid, a->u.watch_tx.depth), 1);
+        break;
+    case GZ_ACTION_WATCH_OUTPOINT:
+        trace(sim, "watch-outpoint node=%u txid=%016llx vout=%u depth=%u", index,
+              (unsigned long long)first8(a->u.watch_outpoint.outpoint.txid), a->u.watch_outpoint.outpoint.vout,
+              a->u.watch_outpoint.depth);
+        answer_op_watch(sim, index, add_op_watch(s, &a->u.watch_outpoint.outpoint, a->u.watch_outpoint.depth), 1);
         break;
     case GZ_ACTION_SET_TIMER:
         set_timer(s, a->u.set_timer.timer_id, a->u.set_timer.delay_ms);
@@ -647,7 +962,10 @@ static void release_list(slot_t *s, const gz_action_list_t *list, int is_start)
     gz_status_t st = sim->cfg.ops.release
         ? sim->cfg.ops.release(sim->ops_ctx, sim, s->index, list)
         : gz_runner_submit(&s->runner, list);
-    if (st != GZ_OK) {
+    if (st != GZ_OK && s->storage_failed) {            /* storage failed while the list was carried out */
+        trace(sim, "list-stopped node=%u: storage failed", s->index);
+        s->needs_rebuild = 1;
+    } else if (st != GZ_OK) {
         sim->stats.lists_refused++;
         trace(sim, "refused node=%u actions=%zu status=%d", s->index, list->count, (int)st);
         if (is_start) violate(sim, "a node's start actions were refused");
@@ -659,34 +977,279 @@ static void release_list(slot_t *s, const gz_action_list_t *list, int is_start)
 
 /* ---- nodes ---- */
 
-static void random_fill(void *ctx, uint8_t *out, size_t len) { sim_rng_fill(&((slot_t *)ctx)->rng, out, len); }
-static uint64_t clock_now(void *ctx) { return ((slot_t *)ctx)->sim->step; }
+static uint64_t first8(const uint8_t *b)
+{
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v |= (uint64_t)b[i] << (8 * i);
+    return v ? v : 1;                       /* 0 marks a free place in the table */
+}
 
-/* Build the node from its storage under a new incarnation and run its start
- * actions. */
+/* ---- "secrets never leave" (sim.h) ----
+ *
+ * Every 8-byte window of every secret-tagged draw, read forwards and
+ * backwards, is indexed by its difference signature: the seven XORs of
+ * neighbouring bytes. Two windows have the same signature exactly when one is
+ * the other XOR a single repeated byte, so one lookup finds a window copied
+ * raw, XORed with any one-byte constant, or byte-reversed, anywhere in an
+ * action's bytes. Hex text in an action is decoded and searched the same way,
+ * and so are the action's 8-byte integer fields (a timer's identifier, a
+ * send's peer). A secret draw shorter than 16 bytes is itself refused: a
+ * secret built from short draws could not be told apart from chance. */
+static uint64_t window_signature(const uint8_t *w, int reversed)
+{
+    uint64_t v = 1;                         /* a set top bit: 0 marks a free place in the table */
+    for (int i = 1; i < 8; i++) {
+        uint8_t a = reversed ? w[7 - i] : w[i], b = reversed ? w[8 - i] : w[i - 1];
+        v = v << 8 | (uint8_t)(a ^ b);
+    }
+    return v;
+}
+
+static void secret_table_put(slot_t *s, uint64_t key)
+{
+    if (2 * (s->n_secret_keys + 1) > s->cap_secret_keys) {
+        size_t old_cap = s->cap_secret_keys, cap = old_cap ? 2 * old_cap : 256;
+        uint64_t *old_keys = s->secret_keys;
+        s->secret_keys = calloc(cap, sizeof *s->secret_keys);
+        if (!s->secret_keys) abort();
+        s->cap_secret_keys = cap;
+        s->n_secret_keys = 0;
+        for (size_t i = 0; i < old_cap; i++)
+            if (old_keys[i]) secret_table_put(s, old_keys[i]);
+        free(old_keys);
+    }
+    size_t at = (size_t)(key * 0x9E3779B97F4A7C15ull >> 20) & (s->cap_secret_keys - 1);
+    while (s->secret_keys[at]) {
+        if (s->secret_keys[at] == key) return;
+        at = (at + 1) & (s->cap_secret_keys - 1);
+    }
+    s->secret_keys[at] = key;
+    s->n_secret_keys++;
+}
+
+static int secret_table_has(const slot_t *s, uint64_t key)
+{
+    for (size_t at = (size_t)(key * 0x9E3779B97F4A7C15ull >> 20) & (s->cap_secret_keys - 1); s->secret_keys[at];
+         at = (at + 1) & (s->cap_secret_keys - 1))
+        if (s->secret_keys[at] == key) return 1;
+    return 0;
+}
+
+/* A secret-tagged draw: refuse it if short, else index all its windows. */
+static void note_secret(slot_t *s, const uint8_t *out, size_t len)
+{
+    if (len < 16) {
+        violate(s->sim, "a secret-tagged random draw was shorter than 16 bytes");
+        return;
+    }
+    for (size_t i = 0; i + 8 <= len; i++) {
+        secret_table_put(s, window_signature(out + i, 0));
+        secret_table_put(s, window_signature(out + i, 1));
+    }
+}
+
+/* 1 if some 8 contiguous bytes of `data[0..len)` are 8 contiguous bytes of a
+ * secret-tagged draw of this node, raw, XORed with one repeated byte, or in
+ * reverse order. */
+static int holds_secret_raw(const slot_t *s, const uint8_t *data, size_t len)
+{
+    for (size_t i = 0; i + 8 <= len; i++)
+        if (secret_table_has(s, window_signature(data + i, 0))) return 1;
+    return 0;
+}
+
+static int hex_value(uint8_t c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* The same, also through hex text: every run of 16 or more hex digits is
+ * decoded, at both alignments, and searched. */
+static int holds_secret(const slot_t *s, const uint8_t *data, size_t len)
+{
+    if (!data || !s->n_secret_keys) return 0;
+    if (holds_secret_raw(s, data, len)) return 1;
+    uint8_t decoded[512];
+    for (size_t i = 0; i < len;) {
+        size_t run = 0;
+        while (i + run < len && hex_value(data[i + run]) >= 0) run++;
+        for (size_t align = 0; run >= 16 && align < 2; align++) {
+            for (size_t from = i + align; from + 16 <= i + run; from += 2 * sizeof decoded - 16) {
+                size_t n = 0;
+                for (size_t k = from; k + 1 < i + run && n < sizeof decoded; k += 2)
+                    decoded[n++] = (uint8_t)(hex_value(data[k]) << 4 | hex_value(data[k + 1]));
+                if (holds_secret_raw(s, decoded, n)) return 1;
+            }
+        }
+        i += run ? run : 1;
+    }
+    return 0;
+}
+
+static int holds_secret_u64(const slot_t *s, uint64_t v)
+{
+    uint8_t b[8];
+    for (int i = 0; i < 8; i++) b[i] = (uint8_t)(v >> (8 * i));
+    return s->n_secret_keys && holds_secret_raw(s, b, 8);
+}
+
+static int action_holds_secret(const slot_t *s, const gz_action_t *a)
+{
+    switch (a->kind) {
+    case GZ_ACTION_SAVE:
+        for (size_t i = 0; i < a->u.save.n_records; i++)
+            if (holds_secret(s, a->u.save.records[i].bytes.data, a->u.save.records[i].bytes.len)) return 1;
+        return 0;
+    case GZ_ACTION_SEND:           return holds_secret_u64(s, a->u.send.peer_id) ||
+                                          holds_secret(s, a->u.send.bytes.data, a->u.send.bytes.len);
+    case GZ_ACTION_BROADCAST:      return holds_secret(s, a->u.broadcast.tx.data, a->u.broadcast.tx.len);
+    case GZ_ACTION_NOTIFY:         return holds_secret(s, a->u.notify.bytes.data, a->u.notify.bytes.len);
+    case GZ_ACTION_WATCH_SCRIPT:   return holds_secret(s, a->u.watch_script.script.data, a->u.watch_script.script.len);
+    case GZ_ACTION_WATCH_TX:       return holds_secret(s, a->u.watch_tx.txid, 32);
+    case GZ_ACTION_WATCH_OUTPOINT: return holds_secret(s, a->u.watch_outpoint.outpoint.txid, 32);
+    case GZ_ACTION_SET_TIMER:      return holds_secret_u64(s, a->u.set_timer.timer_id);
+    case GZ_ACTION_CANCEL_TIMER:   return holds_secret_u64(s, a->u.cancel_timer.timer_id);
+    }
+    return 0;
+}
+
+static void random_fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
+{
+    slot_t *s = ctx;
+    sim_draw_t draw = {purpose, s->incarnation, len, {0}};
+    sim_rng_fill(&s->rng, out, len);
+    memcpy(draw.bytes, out, len < sizeof draw.bytes ? len : sizeof draw.bytes);
+    s->draws = grow(s->draws, &s->cap_draws, s->n_draws + 1, sizeof *s->draws);
+    s->draws[s->n_draws++] = draw;
+    if (purpose == GZ_RANDOM_SECRET) note_secret(s, out, len);
+}
+
+static uint64_t clock_now(void *ctx)
+{
+    const sim_t *sim = ((slot_t *)ctx)->sim;
+    int64_t now = (int64_t)sim->step + sim->clock_offset;
+    return now < 0 ? 0 : (uint64_t)now;
+}
+
+/* The extra invariants only. Run just before a node is destroyed, so that they
+ * see its last state; the built-in ones are judged after the step. */
+static void check_extra_invariants(sim_t *sim);
+
+/* A batch an earlier program handed over completes now, late. It takes its
+ * place in the journal before any batch of a later incarnation. */
+static void land_orphan(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    struct sim_storage *st = &s->storage;
+    batch_t b = s->orphans[0];
+    memmove(s->orphans, s->orphans + 1, --s->n_orphans * sizeof *s->orphans);
+    /* It lands only before the new program's first start step (the fence,
+     * settle_orphans), so it goes last, and the journal stays in order. */
+    size_t at = st->n_durable;
+    b.durable_at = b.confirm_at = sim->step;
+    st->durable = grow(st->durable, &st->cap_durable, st->n_durable + 1, sizeof *st->durable);
+    s->shadow = grow(s->shadow, &s->cap_shadow, s->n_shadow + 1, sizeof *s->shadow);
+    st->durable[st->n_durable++] = b;
+    s->shadow[s->n_shadow++] = (shadow_t){b.id, b.digest};
+    if (at < st->next_confirm) abort();                 /* every earlier batch was confirmed or stale: cannot be */
+    st->next_confirm = st->n_durable;                   /* its program is dead: no confirmation */
+    sim->stats.saves_durable++;
+    sim->stats.late_landings++;
+    trace(sim, "late-landing node=%u batch=%llu.%llu at=%zu", s->index,
+          (unsigned long long)b.id.incarnation, (unsigned long long)b.id.sequence, at);
+    note_durable(s, b.id);
+}
+
+/* What an earlier program left pending is gone for good. */
+static void discard_orphans(slot_t *s)
+{
+    s->sim->stats.saves_lost += s->n_orphans;
+    for (size_t i = 0; i < s->n_orphans; i++) free(s->orphans[i].blob.bytes);
+    s->n_orphans = 0;
+}
+
+/* The fence (ports.h): before the new program's first start step, storage
+ * settles what the earlier one left pending. Batches complete in the order
+ * handed over, each with chance late_save_pm; the first that does not is
+ * gone, and so is everything after it. */
+static void settle_orphans(slot_t *s)
+{
+    while (s->n_orphans && sim_rng_chance(&s->sim->rng, s->sim->cfg.late_save_pm)) land_orphan(s);
+    if (s->n_orphans) trace(s->sim, "orphans-lost node=%u gone=%zu", s->index, s->n_orphans);
+    discard_orphans(s);
+}
+
+/* The start has finished: the events held back are handed on. */
+static void finish_start(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    s->starting = 0;
+    trace(sim, "started node=%u steps=%zu held-back=%zu", s->index, s->start_steps, s->n_deferred);
+    for (size_t i = 0; i < s->n_deferred; i++) {
+        sim->queue = grow(sim->queue, &sim->cap_queue, sim->q_len + 1, sizeof *sim->queue);
+        sim->queue[sim->q_len++] = s->deferred[i];
+    }
+    s->n_deferred = 0;
+}
+
+/* Go on with the node's start, one step at a time, each step's actions going
+ * through its program before the next is asked for, until it finishes, waits
+ * for a confirmation, or the node stops. */
+static void continue_start(slot_t *s)
+{
+    sim_t *sim = s->sim;
+    gz_action_t slots[STEP_SLOTS];
+    uint8_t bytes[STEP_BYTES];
+    gz_action_list_t list;
+    while (s->starting && !s->needs_rebuild && !sim->violation) {
+        int more = 1;
+        gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
+        gz_status_t st = s->start_steps++ == MAX_START_STEPS ? GZ_ERR_NO_SPACE : sim->cfg.ops.start(s->node, &list, &more);
+        if (st == GZ_WAITING) {
+            trace(sim, "start-waiting node=%u", s->index);
+            return;
+        }
+        if (st != GZ_OK) {
+            sim->stats.handle_errors++;
+            trace(sim, "start-error node=%u status=%d", s->index, (int)st);
+            violate(sim, "a node failed to start");
+            return;
+        }
+        release_list(s, &list, 1);
+        if (!more && !s->needs_rebuild) finish_start(s);
+    }
+}
+
+/* Build the node from its storage under a new incarnation, start it and tell
+ * it which of its links are up (news it gets once its start has finished). */
 static void build_node(slot_t *s)
 {
     sim_t *sim = s->sim;
-    gz_action_t slots[START_SLOTS];
-    uint8_t bytes[START_BYTES];
-    gz_action_list_t list;
-
     s->incarnation++;
-    /* A stream no earlier incarnation of any node has used. */
-    sim_rng_init(&s->rng, sim->cfg.seed, s->incarnation << 32 | ((uint64_t)s->index + 1));
+    /* A stream no earlier incarnation of any node has used, unless a restore
+     * was set to make the generator repeat. */
+    sim_rng_init(&s->rng, sim->cfg.seed,
+                 (s->repeat_stream ? s->repeat_stream : s->incarnation) << 32 | ((uint64_t)s->index + 1));
+    s->repeat_stream = 0;
     (void)gz_runner_init(&s->runner, s->runner_slots, RUNNER_SLOTS, s->runner_bytes, RUNNER_BYTES,
                          s->incarnation, runner_execute, s);
+    s->storage.reader_incarnation = s->incarnation;
+    settle_orphans(s);                                  /* the fence: before anything reads storage */
+    s->storage.reader_restored = s->restore_pending;
+    s->started_restored = s->restore_pending && sim->cfg.ops.start != NULL;
+    s->emitted_any = 0;
+    if (s->restore_pending) trace(sim, "restore-marker node=%u incarnation=%llu", s->index, (unsigned long long)s->incarnation);
     s->node = sim->cfg.ops.create(sim->ops_ctx, s->index, &s->ports, &s->storage);
     if (!s->node) abort();
-    if (!sim->cfg.ops.start) return;
-    gz_action_list_init(&list, slots, START_SLOTS, bytes, START_BYTES);
-    if (sim->cfg.ops.start(s->node, &list) != GZ_OK) {
-        sim->stats.handle_errors++;
-        trace(sim, "start-error node=%u", s->index);
-        violate(sim, "a node failed to start");
-        return;
-    }
-    release_list(s, &list, 1);
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++)
+        if (n != s->index && link_is_up(sim, s->index, n)) tell_peer(s, n, 1);
+    if (link_is_up(sim, s->index, SIM_WORLD_PEER)) tell_peer(s, SIM_WORLD_PEER, 1);
+    s->start_steps = 0;
+    s->starting = sim->cfg.ops.start != NULL;
+    if (s->starting) continue_start(s);
 }
 
 static void free_blobs(blob_t *blobs, size_t n)
@@ -695,22 +1258,36 @@ static void free_blobs(blob_t *blobs, size_t n)
 }
 
 /* A crash: destroy everything of the node except its durable storage, then
- * build it again. */
+ * build it again. Its peers see the connection drop and come back. What the
+ * dead program had handed to storage and was still pending is lost, or, with
+ * late_save_pm, may still complete before the new program reads storage. */
 static void rebuild(slot_t *s)
 {
     sim_t *sim = s->sim;
     sim->stats.crashes++;
-    sim->stats.saves_lost += s->storage.n_pending;
-    trace(sim, "crash node=%u lost-saves=%zu held-actions=%zu", s->index, s->storage.n_pending,
+    trace(sim, "crash node=%u pending-saves=%zu held-actions=%zu", s->index, s->storage.n_pending,
           sim->cfg.ops.release ? (size_t)0 : gz_runner_held(&s->runner));
+    check_extra_invariants(sim);
     sim->cfg.ops.destroy(sim->ops_ctx, s->node);
-    for (size_t i = 0; i < s->storage.n_pending; i++) free(s->storage.pending[i].blob.bytes);
+    if (sim->cfg.late_save_pm && s->storage.n_pending > 0) {
+        s->orphans = grow(s->orphans, &s->cap_orphans, s->storage.n_pending, sizeof *s->orphans);
+        memcpy(s->orphans, s->storage.pending, s->storage.n_pending * sizeof *s->orphans);
+        s->n_orphans = s->storage.n_pending;
+    } else {
+        sim->stats.saves_lost += s->storage.n_pending;
+        for (size_t i = 0; i < s->storage.n_pending; i++) free(s->storage.pending[i].blob.bytes);
+    }
     free_blobs(s->watches, s->n_watches);
-    s->storage.n_pending = s->n_timers = s->n_watches = 0;
+    s->storage.n_pending = s->n_timers = s->n_watches = s->n_tx_watches = s->n_op_watches = 0;
     s->n_emitted_saves = s->n_saves_stored = s->n_saves_durable = s->n_expected = s->head_expected = 0;
-    s->needs_rebuild = s->dying = 0;
+    s->needs_rebuild = s->dying = s->storage_failed = 0;
     s->crash_countdown = NOT_ARMED;
     build_node(s);
+    for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) {
+        if (n == s->index || !link_is_up(sim, s->index, n)) continue;
+        tell_peer(&sim->slots[n], s->index, 0);
+        tell_peer(&sim->slots[n], s->index, 1);
+    }
 }
 
 /* Bring a node up to date: rebuild it if it has stopped, and let its storage
@@ -729,15 +1306,15 @@ static int accept_confirmation(slot_t *s, const queued_t *q)
     sim_t *sim = s->sim;
     gz_batch_id_t id = q->ev.u.storage.batch;
     int stale = q->node_incarnation != s->incarnation;
+    int has_runner = !sim->cfg.ops.release || sim->cfg.ops.confirm;
     gz_status_t st = GZ_OK;
-    if (!sim->cfg.ops.release) {
-        st = gz_runner_confirm(&s->runner, id);
-        if (s->dying) s->needs_rebuild = 1;
-        if (stale && st != GZ_ERR_STALE_BATCH)
-            violate(sim, "a confirmation from before a crash was not reported as stale");
-        if (!stale && st != GZ_OK)
-            violate(sim, "the runner rejected a confirmation that storage delivered in order");
-    }
+    if (!sim->cfg.ops.release) st = gz_runner_confirm(&s->runner, id);
+    else if (sim->cfg.ops.confirm) st = sim->cfg.ops.confirm(sim->ops_ctx, sim, s->index, id);
+    if (s->dying) s->needs_rebuild = 1;
+    if (has_runner && stale && st != GZ_ERR_STALE_BATCH)
+        violate(sim, "a confirmation from before a crash was not reported as stale");
+    if (has_runner && !stale && st != GZ_OK)
+        violate(sim, "the runner rejected a confirmation that storage delivered in order");
     if (stale || st != GZ_OK) {
         sim->stats.stale_confirmations += (uint64_t)stale;
         trace(sim, "confirmation-ignored node=%u batch=%llu.%llu status=%d", s->index,
@@ -750,22 +1327,49 @@ static int accept_confirmation(slot_t *s, const queued_t *q)
     return 1;
 }
 
-/* Handle one queued event: give it to its node and carry out what comes back. */
-static void process(sim_t *sim, const queued_t *q)
+/* 1 if an event queued for a program that has since died may still be given
+ * to its successor: only what comes from outside and would have arrived
+ * anyway. */
+static int outlives_a_crash(gz_event_kind_t kind)
+{
+    return kind == GZ_EVENT_MESSAGE_RECEIVED || kind == GZ_EVENT_CHAIN;
+}
+
+/* Handle one queued event: give it to its node and carry out what comes back.
+ * Returns 1 if the event was held back until the node's start finishes (the
+ * event, and its bytes, are then kept), 0 if it is done with. */
+static int process(sim_t *sim, const queued_t *q)
 {
     slot_t *s = &sim->slots[q->node];
     gz_action_t slots[STEP_SLOTS];
     uint8_t bytes[STEP_BYTES];
     gz_action_list_t list;
 
-    if (q->ev.kind == GZ_EVENT_STORAGE_CONFIRMED && !accept_confirmation(s, q)) return;
+    if (q->ev.kind == GZ_EVENT_STORAGE_CONFIRMED) {
+        if (!accept_confirmation(s, q)) return 0;
+    } else if (s->starting) {
+        s->deferred = grow(s->deferred, &s->cap_deferred, s->n_deferred + 1, sizeof *s->deferred);
+        s->deferred[s->n_deferred++] = *q;
+        return 1;
+    } else if (q->node_incarnation != s->incarnation && !outlives_a_crash(q->ev.kind)) {
+        sim->stats.events_not_delivered++;
+        trace(sim, "not-delivered node=%u event=%d from-incarnation=%llu", s->index, (int)q->ev.kind,
+              (unsigned long long)q->node_incarnation);
+        if (q->ev.kind == GZ_EVENT_USER_COMMAND) {      /* the user is told, not left wondering */
+            sim->stats.commands_not_done++;
+            trace(sim, "ui node=%u command-not-done: the app restarted", s->index);
+        }
+        return 0;
+    }
     gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
     if (sim->cfg.ops.handle(s->node, &q->ev, &list) != GZ_OK) {
         sim->stats.handle_errors++;
         trace(sim, "handle-error node=%u event=%d", s->index, (int)q->ev.kind);
-        return;
+        return 0;
     }
     release_list(s, &list, 0);
+    if (q->ev.kind == GZ_EVENT_STORAGE_CONFIRMED && s->starting) continue_start(s);
+    return 0;
 }
 
 /* Handle queued events until none are left. Handling one may queue more. */
@@ -773,35 +1377,42 @@ static void drain(sim_t *sim)
 {
     while (sim->q_head < sim->q_len) {
         queued_t q = sim->queue[sim->q_head++];
-        process(sim, &q);
-        free(q.blob.bytes);
+        if (!process(sim, &q)) free(q.blob.bytes);
         service(&sim->slots[q.node]);
     }
     sim->q_head = sim->q_len = 0;
 }
 
-/* The default node: a gz_node_t started from the records in storage. */
-typedef struct { gz_node_t node; gz_record_t *records; size_t n_records; } default_node_t;
+/* The default node: a gz_node_t that reads its storage through a reader. */
+typedef struct {
+    gz_node_t node;
+    const sim_storage_t *storage;
+    size_t next_batch;
+    gz_record_t records[READER_RECORDS];
+} default_node_t;
 
 static uint32_t read_u32(const uint8_t *p)
 {
     return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
 }
 
-/* Decode every stored record, oldest first. The records point into storage. */
-static void load_records(default_node_t *d, const sim_storage_t *storage)
+static void reader_rewind(void *ctx) { ((default_node_t *)ctx)->next_batch = 0; }
+
+/* The next durable batch, its records decoded in place. The placeholder node
+ * saves one record per batch; a batch with more than READER_RECORDS would
+ * show only its first ones. */
+static int reader_next(void *ctx, gz_stored_batch_t *batch)
 {
-    size_t cap = 0;
-    for (size_t i = 0; i < sim_storage_count(storage); i++) {
-        size_t len = 0;
-        const uint8_t *p = sim_storage_batch_bytes(storage, i, &len), *end = p + len;
-        while (p < end) {
-            gz_record_t r = {read_u32(p), {p + 8, read_u32(p + 4)}};
-            d->records = grow(d->records, &cap, d->n_records + 1, sizeof *d->records);
-            d->records[d->n_records++] = r;
-            p += 8 + r.bytes.len;
-        }
-    }
+    default_node_t *d = ctx;
+    if (d->next_batch >= sim_storage_count(d->storage)) return 0;
+    size_t len = 0, n = 0;
+    const uint8_t *p = sim_storage_batch_bytes(d->storage, d->next_batch, &len), *end = p + len;
+    for (; p < end && n < READER_RECORDS; p += 8 + read_u32(p + 4))
+        d->records[n++] = (gz_record_t){read_u32(p), {p + 8, read_u32(p + 4)}};
+    batch->id = sim_storage_batch_id(d->storage, d->next_batch++);
+    batch->records = d->records;
+    batch->n_records = n;
+    return 1;
 }
 
 static void *default_create(void *ops_ctx, uint32_t index, const gz_ports_t *ports,
@@ -810,26 +1421,36 @@ static void *default_create(void *ops_ctx, uint32_t index, const gz_ports_t *por
     (void)ops_ctx; (void)index;
     default_node_t *d = calloc(1, sizeof *d);
     if (!d || gz_node_init(&d->node, ports) != GZ_OK) abort();
-    load_records(d, storage);
+    d->storage = storage;
     return d;
 }
 
-static void default_destroy(void *ops_ctx, void *node)
-{
-    (void)ops_ctx;
-    free(((default_node_t *)node)->records);
-    free(node);
-}
+static void default_destroy(void *ops_ctx, void *node) { (void)ops_ctx; free(node); }
 
-static gz_status_t default_start(void *node, gz_action_list_t *out)
+static gz_status_t default_start(void *node, gz_action_list_t *out, int *more)
 {
     default_node_t *d = node;
-    return gz_node_start(&d->node, d->records, d->n_records, out);
+    gz_storage_reader_t reader = {reader_next, reader_rewind, d, sim_storage_incarnation(d->storage),
+                                  sim_storage_restored(d->storage)};
+    return gz_node_start(&d->node, &reader, out, more);
 }
 
 static gz_status_t default_handle(void *node, const gz_event_t *event, gz_action_list_t *out)
 {
     return gz_node_handle(&((default_node_t *)node)->node, event, out);
+}
+
+/* The placeholder node shows its next serial and how many of its batches
+ * await confirmation, each as 8 bytes, low byte first. */
+static size_t default_inspect(const void *node, uint8_t *out, size_t cap)
+{
+    const gz_node_t *n = &((const default_node_t *)node)->node;
+    if (cap < 16) return 0;
+    for (int i = 0; i < 8; i++) {
+        out[i] = (uint8_t)(n->next_serial >> (8 * i));
+        out[8 + i] = (uint8_t)((uint64_t)n->n_awaiting >> (8 * i));
+    }
+    return 16;
 }
 
 /* ---- invariants ---- */
@@ -841,6 +1462,13 @@ static void fail(sim_t *sim, const char *reason)
     sim->failure_step = sim->step;
     sim->failure_reason = reason;
     trace(sim, "FAILED %s", reason);
+}
+
+static void check_extra_invariants(sim_t *sim)
+{
+    const char *why = "an invariant failed";
+    for (size_t i = 0; i < sim->n_invariants && !sim->failed; i++)
+        if (!sim->invariants[i].check(sim, sim->invariants[i].ctx, &why)) fail(sim, why);
 }
 
 static void check_invariants(sim_t *sim)
@@ -871,6 +1499,39 @@ static void maybe_crash(sim_t *sim)
     if (crash_now) sim->slots[who].needs_rebuild = 1;
 }
 
+static void maybe_restore(sim_t *sim)
+{
+    int restore_now = sim_rng_chance(&sim->rng, sim->cfg.restore_pm);
+    slot_t *s = &sim->slots[sim_rng_below(&sim->rng, sim->cfg.n_nodes)];
+    uint64_t share = sim_rng_below(&sim->rng, 1001);
+    if (restore_now) restore(s, (size_t)(s->storage.n_durable * share / 1000));
+}
+
+static void maybe_flap_link(sim_t *sim)
+{
+    int flap_now = sim_rng_chance(&sim->rng, sim->cfg.link_flap_pm);
+    uint64_t a = sim_rng_below(&sim->rng, sim->cfg.n_nodes);
+    uint64_t b = sim_rng_below(&sim->rng, (uint64_t)sim->cfg.n_nodes + 1);
+    if (!flap_now || a == b) return;
+    if (b == sim->cfg.n_nodes) b = SIM_WORLD_PEER;
+    set_link(sim, a, b, !link_is_up(sim, a, b));
+}
+
+static void jump_clock(sim_t *sim, int64_t delta)
+{
+    sim->clock_offset += delta;
+    sim->stats.clock_jumps++;
+    trace(sim, "clock-jump by=%lld", (long long)delta);
+}
+
+static void maybe_jump_clock(sim_t *sim)
+{
+    int jump_now = sim_rng_chance(&sim->rng, sim->cfg.clock_jump_pm);
+    int64_t size = 1 + (int64_t)sim_rng_below(&sim->rng, sim->cfg.max_clock_jump ? sim->cfg.max_clock_jump : 1);
+    int back = sim_rng_chance(&sim->rng, 500);
+    if (jump_now) jump_clock(sim, back ? -size : size);
+}
+
 static void maybe_ping(sim_t *sim)
 {
     uint8_t ping[GZ_PING_PREFIX_LEN + 8] = {'G', 'Z', 'P', 'I'};
@@ -883,17 +1544,28 @@ static void maybe_ping(sim_t *sim)
     network_send(sim, from, to, ping, sizeof ping);
 }
 
+static void maybe_reorg(sim_t *sim)
+{
+    int reorg_now = sim_rng_chance(&sim->rng, sim->cfg.reorg_pm);
+    uint32_t depth = 1 + (uint32_t)sim_rng_below(&sim->rng, sim->cfg.max_reorg_depth ? sim->cfg.max_reorg_depth : 1);
+    if (reorg_now) reorg(sim, depth);
+}
+
 static void advance(sim_t *sim)
 {
     sim->step++;
     for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) sim->slots[n].died_this_step = 0;
     maybe_crash(sim);
+    maybe_restore(sim);
+    maybe_flap_link(sim);
+    maybe_jump_clock(sim);
     maybe_ping(sim);
     service_all(sim);
     for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) fire_timers(&sim->slots[n]);
     drain(sim);
     deliver_one_message(sim);
     drain(sim);
+    maybe_reorg(sim);
     if (sim_rng_chance(&sim->rng, sim->cfg.block_pm)) mine_block(sim);
     drain(sim);
 }
@@ -911,11 +1583,13 @@ static sim_t *create(const sim_config_t *config, int is_twin)
         sim->cfg.ops.destroy = default_destroy;
         sim->cfg.ops.start = default_start;
         sim->cfg.ops.handle = default_handle;
+        sim->cfg.ops.inspect = default_inspect;
     }
     sim->trace_hash = FNV_OFFSET;
     sim_rng_init(&sim->rng, config->seed, 0);
     sim->slots = calloc(config->n_nodes, sizeof *sim->slots);
-    if (!sim->slots) abort();
+    sim->link_down = calloc(((size_t)config->n_nodes + 1) * ((size_t)config->n_nodes + 1), 1);
+    if (!sim->slots || !sim->link_down) abort();
     for (uint32_t n = 0; n < config->n_nodes; n++) {
         slot_t *s = &sim->slots[n];
         s->sim = sim;
@@ -923,8 +1597,8 @@ static sim_t *create(const sim_config_t *config, int is_twin)
         s->crash_countdown = NOT_ARMED;
         s->ports.random = (gz_random_port_t){random_fill, s};
         s->ports.clock = (gz_clock_port_t){clock_now, s};
-        build_node(s);
     }
+    for (uint32_t n = 0; n < config->n_nodes; n++) build_node(&sim->slots[n]);
     service_all(sim);
     return sim;
 }
@@ -949,12 +1623,16 @@ void sim_destroy(sim_t *sim)
         for (size_t i = 0; i < s->storage.n_durable; i++) free(s->storage.durable[i].blob.bytes);
         free_blobs(s->watches, s->n_watches);
         free(s->storage.pending); free(s->storage.durable);
-        free(s->watches); free(s->timers); free(s->emitted_saves); free(s->expected); free(s->shadow);
+        for (size_t i = 0; i < s->n_deferred; i++) free(s->deferred[i].blob.bytes);
+        for (size_t i = 0; i < s->n_orphans; i++) free(s->orphans[i].blob.bytes);
+        free(s->deferred); free(s->orphans);
+        free(s->tx_watches); free(s->op_watches); free(s->secret_keys);
+        free(s->watches); free(s->timers); free(s->draws); free(s->emitted_saves); free(s->expected); free(s->shadow);
     }
     for (size_t i = sim->q_head; i < sim->q_len; i++) free(sim->queue[i].blob.bytes);
     for (size_t i = 0; i < sim->n_net; i++) free(sim->net[i].blob.bytes);
     for (size_t i = 0; i < sim->n_txs; i++) free(sim->txs[i].blob.bytes);
-    free(sim->queue); free(sim->net); free(sim->txs); free(sim->slots); free(sim->trace);
+    free(sim->queue); free(sim->net); free(sim->txs); free(sim->slots); free(sim->link_down); free(sim->trace);
     free(sim);
 }
 
@@ -990,6 +1668,14 @@ uint64_t sim_trace_hash(const sim_t *sim) { return sim->trace_hash; }
 const sim_stats_t *sim_stats(const sim_t *sim) { return &sim->stats; }
 uint32_t sim_chain_height(const sim_t *sim) { return sim->height; }
 uint64_t sim_node_incarnation(const sim_t *sim, uint32_t index) { return sim->slots[index].incarnation; }
+int sim_node_starting(const sim_t *sim, uint32_t index) { return sim->slots[index].starting; }
+size_t sim_node_draw_count(const sim_t *sim, uint32_t index) { return sim->slots[index].n_draws; }
+const sim_draw_t *sim_node_draw(const sim_t *sim, uint32_t index, size_t i) { return &sim->slots[index].draws[i]; }
+
+size_t sim_node_inspect(const sim_t *sim, uint32_t index, uint8_t *out, size_t cap)
+{
+    return sim->cfg.ops.inspect ? sim->cfg.ops.inspect(sim->slots[index].node, out, cap) : 0;
+}
 
 const char *sim_trace(const sim_t *sim, size_t *len)
 {
@@ -1041,11 +1727,81 @@ void sim_fail_storage(sim_t *sim, uint32_t index)
     check_invariants(sim);
 }
 
+static void restore_now(sim_t *sim, uint32_t index, size_t keep)
+{
+    restore(&sim->slots[index], keep);
+    service_all(sim);
+}
+
+void sim_restore_backup(sim_t *sim, uint32_t index, size_t keep)
+{
+    if (sim->failed || index >= sim->cfg.n_nodes) return;
+    restore_now(sim, index, keep);
+    if (sim->twin) restore_now(sim->twin, index, keep);
+    check_invariants(sim);
+}
+
+static void damage(sim_t *sim, uint32_t index, int drop)
+{
+    struct sim_storage *st = &sim->slots[index].storage;
+    trace(sim, "damage node=%u %s", index, drop ? "drop" : "alter");
+    if (drop && st->n_durable) {
+        free(st->durable[--st->n_durable].blob.bytes);
+        if (st->next_confirm > st->n_durable) st->next_confirm = st->n_durable;
+    }
+    for (size_t i = st->n_durable; !drop && i-- > 0;)
+        if (st->durable[i].blob.len) { st->durable[i].blob.bytes[st->durable[i].blob.len - 1] ^= 1; break; }
+}
+
+void sim_damage_storage(sim_t *sim, uint32_t index, int drop)
+{
+    if (sim->failed || index >= sim->cfg.n_nodes) return;
+    damage(sim, index, drop);
+    if (sim->twin) damage(sim->twin, index, drop);
+    check_invariants(sim);
+}
+
+static void set_link_now(sim_t *sim, uint64_t a, uint64_t b, int up)
+{
+    set_link(sim, a, b, up);
+    drain(sim);
+}
+
+void sim_set_link(sim_t *sim, uint64_t a, uint64_t b, int up)
+{
+    if (sim->failed) return;
+    set_link_now(sim, a, b, up);
+    if (sim->twin) set_link_now(sim->twin, a, b, up);
+    check_invariants(sim);
+}
+
+static void reorg_now(sim_t *sim, uint32_t depth)
+{
+    reorg(sim, depth);
+    drain(sim);
+}
+
+void sim_reorg(sim_t *sim, uint32_t depth)
+{
+    if (sim->failed) return;
+    reorg_now(sim, depth);
+    if (sim->twin) reorg_now(sim->twin, depth);
+    check_invariants(sim);
+}
+
+void sim_jump_clock(sim_t *sim, int64_t delta)
+{
+    if (sim->failed) return;
+    jump_clock(sim, delta);
+    if (sim->twin) jump_clock(sim->twin, delta);
+}
+
 static void quiesce(sim_t *sim)
 {
     sim_config_t *c = &sim->cfg;
-    c->drop_pm = c->duplicate_pm = c->save_never_pm = c->save_fail_pm = 0;
-    c->crash_pm = c->crash_in_release_pm = c->ping_pm = c->block_pm = 0;
+    c->drop_pm = c->duplicate_pm = c->link_flap_pm = c->save_never_pm = c->save_fail_pm = c->save_fail_inline_pm = 0;
+    c->crash_pm = c->crash_in_release_pm = c->restore_pm = c->ping_pm = 0;
+    c->block_pm = c->reorg_pm = c->clock_jump_pm = 0;
     trace(sim, "quiet from here: %zu messages in flight discarded", sim->n_net);
     for (size_t i = 0; i < sim->n_net; i++) free(sim->net[i].blob.bytes);
     sim->n_net = 0;
@@ -1071,7 +1827,7 @@ static void user_command(sim_t *sim, uint32_t index, const uint8_t *bytes, size_
     gz_event_t ev = {.kind = GZ_EVENT_USER_COMMAND};
     ev.u.user.bytes = (gz_bytes_t){bytes, len};
     trace(sim, "user node=%u len=%zu digest=%016llx", index, len, (unsigned long long)digest_bytes(bytes, len));
-    post(&sim->slots[index], &ev, sim->slots[index].incarnation);
+    post(&sim->slots[index], &ev);
     drain(sim);
 }
 
@@ -1080,6 +1836,38 @@ void sim_user_command(sim_t *sim, uint32_t index, const uint8_t *bytes, size_t l
     if (sim->failed || index >= sim->cfg.n_nodes) return;
     user_command(sim, index, bytes, len);
     if (sim->twin) user_command(sim->twin, index, bytes, len);
+    check_invariants(sim);
+}
+
+void sim_pretend_txid(const uint8_t *tx, size_t len, uint8_t txid[32]) { txid_of(tx, len, txid); }
+
+size_t sim_pretend_tx(uint8_t *out, size_t cap, const gz_outpoint_t *inputs, size_t n,
+                      const uint8_t *tag, size_t tag_len)
+{
+    size_t len = 3 + TX_INPUT_LEN * n + tag_len;
+    if (n > 255 || len > cap) return 0;
+    out[0] = 0;                             /* no watched script */
+    out[1] = TX_INPUTS_MARK;
+    out[2] = (uint8_t)n;
+    for (size_t i = 0; i < n; i++) {
+        memcpy(out + 3 + TX_INPUT_LEN * i, inputs[i].txid, 32);
+        for (int k = 0; k < 4; k++) out[3 + TX_INPUT_LEN * i + 32 + (size_t)k] = (uint8_t)(inputs[i].vout >> (8 * k));
+    }
+    if (tag_len) memcpy(out + 3 + TX_INPUT_LEN * n, tag, tag_len);
+    return len;
+}
+
+static void broadcast_now(sim_t *sim, const uint8_t *tx, size_t len)
+{
+    chain_broadcast(sim, UINT32_MAX, (gz_bytes_t){tx, len});    /* the world: no node */
+    drain(sim);
+}
+
+void sim_broadcast(sim_t *sim, const uint8_t *tx, size_t len)
+{
+    if (sim->failed) return;
+    broadcast_now(sim, tx, len);
+    if (sim->twin) broadcast_now(sim->twin, tx, len);
     check_invariants(sim);
 }
 
@@ -1102,6 +1890,8 @@ size_t sim_storage_count(const sim_storage_t *storage) { return storage->n_durab
 gz_batch_id_t sim_storage_batch_id(const sim_storage_t *storage, size_t i) { return storage->durable[i].id; }
 size_t sim_storage_pending(const sim_storage_t *storage) { return storage->n_pending; }
 size_t sim_storage_unconfirmed(const sim_storage_t *storage) { return storage->n_durable - storage->next_confirm; }
+uint64_t sim_storage_incarnation(const sim_storage_t *storage) { return storage->reader_incarnation; }
+int sim_storage_restored(const sim_storage_t *storage) { return storage->reader_restored; }
 
 const uint8_t *sim_storage_batch_bytes(const sim_storage_t *storage, size_t i, size_t *len)
 {

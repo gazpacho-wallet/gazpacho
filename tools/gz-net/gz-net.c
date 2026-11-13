@@ -56,10 +56,11 @@
 /* Randomness straight from the kernel, with no buffer of future key bytes
  * left in the process. The port cannot report a failure, so a failure ends
  * the program rather than hand out weak keys. */
-static void os_fill(void *ctx, uint8_t *out, size_t len)
+static void os_fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
 {
     size_t done = 0;
     (void)ctx;
+    (void)purpose;
     while (done < len) {
 #if defined(__linux__)
         ssize_t r = getrandom(out + done, len - done, 0);
@@ -126,7 +127,7 @@ static int load_key(const char *path, uint8_t key[32])
     int ok;
     FILE *f;
     if (!path) {
-        os_fill(NULL, key, 32);
+        os_fill(NULL, GZ_RANDOM_ORDINARY, key, 32);
         return 1;
     }
     f = fopen(path, "rb");
@@ -503,7 +504,7 @@ int main(int argc, char **argv)
         return 1;
     }
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
-    os_fill(NULL, seed, sizeof seed);
+    os_fill(NULL, GZ_RANDOM_ORDINARY, seed, sizeof seed);
     rc = secp && secp256k1_context_randomize(secp, seed);
     OPENSSL_cleanse(seed, sizeof seed);
     if (!rc) return 1;

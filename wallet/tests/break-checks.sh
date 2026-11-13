@@ -24,11 +24,18 @@ src="$scratch/src"; build="$scratch/build"
 # GZW_BREAK_CHECKS=OFF: the copy must not run this script again from its own tests.
 # GZ_CHAIN_TESTS=OFF: the chain port's tests (ports/chain) cannot notice a wallet
 # fault, and running them for every fault would only add time.
-opts="-DCMAKE_BUILD_TYPE=Release -DGZW_BREAK_CHECKS=OFF -DGZ_CHAIN_TESTS=OFF"
+# GZ_VALGRIND_TESTS=OFF: the same for the core's tests run again under valgrind
+# (about a minute per fault, which passed the CI job's time limit).
+opts="-DCMAKE_BUILD_TYPE=Release -DGZW_BREAK_CHECKS=OFF -DGZ_CHAIN_TESTS=OFF -DGZ_VALGRIND_TESTS=OFF"
 [ -n "$secp" ] && opts="$opts -DFETCHCONTENT_SOURCE_DIR_SECP256K1-ZKP=$secp"
-cmake -S "$src" -B "$build" $opts >"$scratch/configure.out" 2>&1 || { echo "configure failed"; exit 2; }
+# Makefiles, so that a fault rebuilds only the wallet's directory (wallet/,
+# which also builds the wallet tools) and what it depends on.
+cmake -G "Unix Makefiles" -S "$src" -B "$build" $opts >"$scratch/configure.out" 2>&1 || { echo "configure failed"; exit 2; }
 cmake --build "$build" -j4 >"$scratch/build0.out" 2>&1 || { echo "clean build failed"; exit 2; }
-(cd "$build" && ctest >"$scratch/ctest0.out" 2>&1) || { echo "tests fail before any fault"; exit 2; }
+# Only the wallet's tests, here and for every fault: nothing else in the tree
+# links the wallet, so no other test can notice a wallet fault.
+wallet_tests='^wallet_'
+(cd "$build" && ctest -j4 -R "$wallet_tests" >"$scratch/ctest0.out" 2>&1) || { echo "tests fail before any fault"; exit 2; }
 echo "baseline: $(grep 'tests passed' "$scratch/ctest0.out")"
 
 survived=0; n=0
@@ -39,17 +46,14 @@ mut() { # mut NAME FILE SED-EXPRESSION WHAT-WAS-BROKEN
   if cmp -s "$file" "$scratch/keep"; then
     echo "$name: FAULT DID NOT APPLY"; survived=$((survived + 1)); return
   fi
-  if ! cmake --build "$build" -j4 >"$scratch/build.out" 2>&1; then
+  if ! make -C "$build/wallet" -j4 >"$scratch/build.out" 2>&1; then
     echo "$name: BUILD ERROR (not a valid break-check)"; survived=$((survived + 1))
   else
     # wallet_tx_tool_chain is left out of the runs with a fault: it waits on
     # the chain port's retry pauses (about 30 s), which over every fault would
     # pass the CI job's time limit; it ran in the baseline above, and the
-    # offline tool tests still run with every fault. The transport's tests
-    # (net_*) cannot notice a wallet fault either and take about a minute,
-    # which over every fault passes the time limit too; they ran in the
-    # baseline.
-    (cd "$build" && ctest -j4 -E '^(wallet_tx_tool_chain|net_.*)$' >"$scratch/ctest.out" 2>&1)
+    # offline tool tests still run with every fault.
+    (cd "$build" && ctest -j4 -R "$wallet_tests" -E '^wallet_tx_tool_chain$' >"$scratch/ctest.out" 2>&1)
     failed=$(sed -n 's/^[[:space:]]*[0-9][0-9]* - \([a-z_0-9]*\) (.*$/\1/p' "$scratch/ctest.out" | tr '\n' ' ')
     if [ -n "$failed" ]; then
       echo "$name: caught by: $failed-- broke: $what"
