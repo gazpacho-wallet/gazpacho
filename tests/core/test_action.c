@@ -38,8 +38,8 @@ static void test_deep_copy_of_every_kind(void)
     a = (gz_action_t){.kind = GZ_ACTION_BROADCAST};
     a.u.broadcast.tx = (gz_bytes_t){src, 3};
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
-    a = (gz_action_t){.kind = GZ_ACTION_WATCH};
-    a.u.watch.script = (gz_bytes_t){src, 2};
+    a = (gz_action_t){.kind = GZ_ACTION_WATCH_SCRIPT};
+    a.u.watch_script.script = (gz_bytes_t){src, 2};
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
     a = (gz_action_t){.kind = GZ_ACTION_NOTIFY};
     a.u.notify.code = 5;
@@ -53,9 +53,37 @@ static void test_deep_copy_of_every_kind(void)
           list.slots[0].u.send.bytes.data[3] == 6);
     CHECK(list.slots[0].u.send.bytes.data != src);
     CHECK(list.slots[1].u.broadcast.tx.len == 3 && list.slots[1].u.broadcast.tx.data[2] == 7);
-    CHECK(list.slots[2].u.watch.script.len == 2 && list.slots[2].u.watch.script.data[1] == 8);
+    CHECK(list.slots[2].u.watch_script.script.len == 2 && list.slots[2].u.watch_script.script.data[1] == 8);
     CHECK(list.slots[3].u.notify.code == 5 && list.slots[3].u.notify.bytes.len == 1 &&
           list.slots[3].u.notify.bytes.data[0] == 9);
+}
+
+/* The chain watches hold everything by value: no bytes are used, the values
+ * are kept, and a depth of 0 is refused without changing the list. */
+static void test_chain_watches(void)
+{
+    gz_action_t a = {.kind = GZ_ACTION_WATCH_TX};
+    for (int i = 0; i < 32; i++) a.u.watch_tx.txid[i] = (uint8_t)(i + 1);
+    a.u.watch_tx.depth = 6;
+    gz_action_list_init(&list, slots, 4, bytes, sizeof bytes);
+    CHECK(gz_action_list_add(&list, &a) == GZ_OK);
+    a.u.watch_tx.depth = 0;
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
+    gz_action_t o = {.kind = GZ_ACTION_WATCH_OUTPOINT};
+    o.u.watch_outpoint.outpoint.txid[31] = 0xee;
+    o.u.watch_outpoint.outpoint.vout = 70000;
+    o.u.watch_outpoint.depth = 1;
+    CHECK(gz_action_list_add(&list, &o) == GZ_OK);
+    o.u.watch_outpoint.depth = 0;
+    CHECK(gz_action_list_add(&list, &o) == GZ_ERR_ARGUMENT);
+    CHECK(list.count == 2 && list.used == 0);
+    CHECK(list.slots[0].u.watch_tx.depth == 6 && list.slots[0].u.watch_tx.txid[0] == 1 &&
+          list.slots[0].u.watch_tx.txid[31] == 32);
+    CHECK(list.slots[1].u.watch_outpoint.outpoint.vout == 70000 &&
+          list.slots[1].u.watch_outpoint.outpoint.txid[31] == 0xee && list.slots[1].u.watch_outpoint.depth == 1);
+    gz_action_t unknown = {.kind = (gz_action_kind_t)(GZ_ACTION_WATCH_OUTPOINT + 1)};
+    CHECK(gz_action_list_add(&list, &unknown) == GZ_ERR_ARGUMENT);
+    CHECK(list.count == 2);
 }
 
 static void test_timers_use_no_bytes(void)
@@ -176,8 +204,9 @@ static void test_bad_arguments(void)
 static void test_which_actions_are_outward(void)
 {
     static const struct { gz_action_kind_t kind; int outward; } cases[] = {
-        {GZ_ACTION_SAVE, 0}, {GZ_ACTION_SEND, 1}, {GZ_ACTION_BROADCAST, 1}, {GZ_ACTION_WATCH, 0},
+        {GZ_ACTION_SAVE, 0}, {GZ_ACTION_SEND, 1}, {GZ_ACTION_BROADCAST, 1}, {GZ_ACTION_WATCH_SCRIPT, 0},
         {GZ_ACTION_SET_TIMER, 0}, {GZ_ACTION_CANCEL_TIMER, 0}, {GZ_ACTION_NOTIFY, 1},
+        {GZ_ACTION_WATCH_TX, 0}, {GZ_ACTION_WATCH_OUTPOINT, 0},
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         gz_action_t a = {.kind = cases[i].kind};
@@ -189,6 +218,7 @@ int main(void)
 {
     test_init_and_reset();
     test_deep_copy_of_every_kind();
+    test_chain_watches();
     test_timers_use_no_bytes();
     test_save_copies_records();
     test_full_list_is_left_unchanged();

@@ -16,7 +16,7 @@ static secp256k1_context *secp;
 static gz_noise_t ini0, res0;
 static uint8_t wire[GZ_NOISE_HDR_LEN + GZ_NOISE_MAX_MSG + GZ_NOISE_MAC_LEN], plain[GZ_NOISE_MAX_MSG];
 
-static void fill(void *ctx, uint32_t purpose, uint8_t *out, size_t len) { (void)purpose; memset(out, *(const uint8_t *)ctx, len); }
+static void fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len) { (void)purpose; memset(out, *(const uint8_t *)ctx, len); }
 
 static void setup(void)
 {

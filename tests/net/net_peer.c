@@ -24,7 +24,7 @@ static void done(void)
 }
 static uint8_t buf[GZ_NOISE_MAX_MSG];
 
-static void counter(void *ctx, uint32_t purpose, uint8_t *out, size_t len)
+static void counter(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
 { (void)purpose;
     static uint8_t n = 1;
     (void)ctx;

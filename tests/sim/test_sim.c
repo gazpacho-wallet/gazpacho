@@ -14,7 +14,7 @@ static sim_config_t quiet_config(uint64_t seed, uint32_t n_nodes)
     memset(&c, 0, sizeof c);
     c.seed = seed;
     c.n_nodes = n_nodes;
-    c.confirm_depth = 3;
+
     return c;
 }
 
@@ -448,13 +448,13 @@ static void test_multi_node_plain_run(void)
     sim_destroy(sim);
 }
 
-/* A crash before each of the nine actions one command makes the runner hand
- * over, and after the last. Three are saves, released by the submit; the
- * second confirmation releases five (notify, watch, broadcast, timer, send);
- * the third releases the last send. */
+/* A crash before each of the eleven actions one command makes the runner
+ * hand over, and after the last. Three are saves, released by the submit; the
+ * second confirmation releases seven (notify, three watches, broadcast, timer,
+ * send); the third releases the last send. */
 static void test_crash_inside_a_release(void)
 {
-    for (uint32_t k = 0; k <= 9; k++) {
+    for (uint32_t k = 0; k <= 11; k++) {
         sim_config_t c = quiet_config(9, 2);
         c.ops = multi_ops();
         c.check_same_seed = 1;
@@ -464,8 +464,8 @@ static void test_crash_inside_a_release(void)
         CHECK(sim_run(sim, 10) == 10 && !sim_failed(sim));
         const sim_stats_t *s = sim_stats(sim);
         const sim_storage_t *st = sim_node_storage(sim, 0);
-        CHECK(s->crashes_in_release == (k < 9) && s->crashes == (k < 9));
-        CHECK(sim_node_incarnation(sim, 0) == (k < 9 ? 2u : 1u));
+        CHECK(s->crashes_in_release == (k < 11) && s->crashes == (k < 11));
+        CHECK(sim_node_incarnation(sim, 0) == (k < 11 ? 2u : 1u));
         if (k < 3) {
             /* Crashed while handing over the saves: those already handed over were
              * still pending and are lost; nothing else was ever carried out. */
@@ -477,10 +477,10 @@ static void test_crash_inside_a_release(void)
              * the message sent, once or (if they had already left) twice. */
             CHECK(sim_storage_count(st) == 3 && s->saves_lost == 0);
             CHECK(trace_count(sim, "notify node=0 code=1") == (k >= 4));
-            CHECK(trace_count(sim, "broadcast node=0") == 1 + (size_t)(k >= 6 && k < 9));
-            CHECK(trace_count(sim, "already-known") == (size_t)(k >= 6 && k < 9));
-            /* "Mabc" before the crash from k = 8, "Cabc" only with no crash, and the restart's resend. */
-            CHECK(s->messages_sent == (uint64_t)(k >= 8) + (k >= 9) + (k < 9));
+            CHECK(trace_count(sim, "broadcast node=0") == 1 + (size_t)(k >= 8 && k < 11));
+            CHECK(trace_count(sim, "already-known") == (size_t)(k >= 8 && k < 11));
+            /* "Mabc" before the crash from k = 10, "Cabc" only with no crash, and the restart's resend. */
+            CHECK(s->messages_sent == (uint64_t)(k >= 10) + (k >= 11) + (k < 11));
         }
         sim_destroy(sim);
     }
@@ -499,7 +499,7 @@ static void test_saved_decision_is_broadcast_after_a_crash(void)
     CHECK(sim_storage_count(st) == 3 && sim_storage_unconfirmed(st) == 3);
     CHECK(!trace_has(sim, "broadcast node=0") && sim_stats(sim)->messages_sent == 0);   /* nothing has left */
     sim_crash_node(sim, 0);
-    CHECK(trace_count(sim, "broadcast node=0 len=5") == 1 && sim_stats(sim)->messages_sent == 1);
+    CHECK(trace_count(sim, "broadcast node=0 len=43") == 1 && sim_stats(sim)->messages_sent == 1);
     sim_mine_block(sim);
     CHECK(trace_has(sim, "chain confirmed node=0 confirmations=1"));
     CHECK(sim_run(sim, 20) == 20 && !sim_failed(sim));
@@ -555,6 +555,9 @@ typedef struct {
     uint32_t connected, disconnected;
     uint64_t last_sender, last_peer, last_clock;
     uint8_t spent_txid[32], confirmed_txid[32];
+    uint32_t op_spent, last_op_confirmations;
+    uint8_t op_txid[32];
+    gz_outpoint_t op_outpoint;
     int notify_on_timer, notify_on_tip;     /* make those events produce an action, so a crash can interrupt it */
     const gz_ports_t *ports;
 } probe_t;
@@ -568,19 +571,24 @@ static void *probe_create(void *ctx, uint32_t index, const gz_ports_t *ports, co
 }
 static void probe_destroy(void *ctx, void *node) { (void)ctx; (void)node; }
 
-/* User commands: 'B' tx.. broadcast; 'W' script.. watch; 'T' id delay: set a
+/* User commands: 'B' tx.. broadcast; 'W' script.. watch; 'X' depth tx..:
+ * watch that transaction; 'P' depth txid(32) vout(4): watch that outpoint;
+ * 'T' id delay: set a
  * timer; 'C' id: cancel it; 'N' code: notify; 'O': two notifies; 'S' x: save
  * then notify x; 'D' x: two saves; 'R': save eight bytes from the random
- * port; 'E': a save, and another at each confirmation, 100,000 times. */
+ * port; 'K': 32 bytes the same way, tagged secret, saved and shown (wrong); 'E': a save,
+ * and another at each confirmation, 100,000 times. */
 static gz_status_t probe_command(probe_t *p, gz_bytes_t cmd, gz_action_list_t *out)
 {
-    uint8_t drawn[8];
+    uint8_t drawn[32];
     const uint8_t *rest = cmd.data + 1;
     size_t rest_len = cmd.len - 1;
     gz_status_t st;
     switch (cmd.data[0]) {
     case 'B': return multi_add(out, GZ_ACTION_BROADCAST, 0, rest, rest_len);
-    case 'W': return multi_add(out, GZ_ACTION_WATCH, 0, rest_len ? rest : NULL, rest_len);
+    case 'W': return multi_add(out, GZ_ACTION_WATCH_SCRIPT, 0, rest_len ? rest : NULL, rest_len);
+    case 'X': return multi_add(out, GZ_ACTION_WATCH_TX, cmd.data[1], rest + 1, rest_len - 1);
+    case 'P': return multi_add(out, GZ_ACTION_WATCH_OUTPOINT, cmd.data[1], rest + 1, rest_len - 1);
     case 'T': return multi_add(out, GZ_ACTION_SET_TIMER, cmd.data[1], NULL, cmd.data[2]);
     case 'C': {
         gz_action_t a = {.kind = GZ_ACTION_CANCEL_TIMER};
@@ -598,8 +606,8 @@ static gz_status_t probe_command(probe_t *p, gz_bytes_t cmd, gz_action_list_t *o
         st = multi_save(out, 7, (const uint8_t *)"first", 5);
         return st == GZ_OK ? multi_save(out, 7, (const uint8_t *)"second", 6) : st;
     case 'R':
-        p->ports->random.fill(p->ports->random.ctx, GZ_RANDOM_OTHER, drawn, sizeof drawn);
-        return multi_save(out, 8, drawn, sizeof drawn);
+        p->ports->random.fill(p->ports->random.ctx, GZ_RANDOM_ORDINARY, drawn, 8);
+        return multi_save(out, 8, drawn, 8);
     case 'K':   /* a "secret" taken straight from the random port, saved and used */
         p->ports->random.fill(p->ports->random.ctx, GZ_RANDOM_SECRET, drawn, sizeof drawn);
         st = multi_save(out, 8, drawn, sizeof drawn);
@@ -643,6 +651,11 @@ static gz_status_t probe_handle(void *node, const gz_event_t *ev, gz_action_list
         if (ev->u.chain.kind == GZ_CHAIN_TX_CONFIRMED) {
             p->confirmed++; p->last_confirmations = ev->u.chain.confirmations;
             memcpy(p->confirmed_txid, ev->u.chain.txid, 32);
+        }
+        if (ev->u.chain.kind == GZ_CHAIN_OUTPOINT_SPENT) {
+            p->op_spent++; p->last_op_confirmations = ev->u.chain.confirmations;
+            memcpy(p->op_txid, ev->u.chain.txid, 32);
+            p->op_outpoint = ev->u.chain.outpoint;
         }
         break;
     }
@@ -729,14 +742,14 @@ static void test_chain_events(void)
     CHECK(sim_chain_height(sim) == 1 && sim_stats(sim)->blocks == 1);
     for (int n = 0; n < 3; n++) CHECK(g_probe[n].tips == 1 && g_probe[n].last_tip == 1);
     CHECK(g_probe[0].spent == 1 && g_probe[1].spent == 0 && g_probe[2].spent == 0);
-    CHECK(g_probe[1].confirmed == 1 && g_probe[1].last_confirmations == 1);
-    CHECK(g_probe[2].confirmed == 1 && g_probe[0].confirmed == 0);
-    CHECK(memcmp(g_probe[0].spent_txid, g_probe[1].confirmed_txid, 32) == 0);   /* the same transaction */
-    CHECK(memcmp(g_probe[1].confirmed_txid, g_probe[2].confirmed_txid, 32) != 0);
+    uint8_t txid[32];
+    sim_pretend_txid(spend + 1, sizeof spend - 1, txid);
+    CHECK(memcmp(g_probe[0].spent_txid, txid, 32) == 0);           /* the spending transaction */
+    for (int n = 0; n < 3; n++) CHECK(g_probe[n].confirmed == 0); /* broadcasting watches nothing */
 
     sim_mine_block(sim); sim_mine_block(sim); sim_mine_block(sim); sim_mine_block(sim);
-    CHECK(g_probe[1].confirmed == 3 && g_probe[1].last_confirmations == 3);     /* reported to confirm_depth */
     CHECK(g_probe[0].spent == 1 && g_probe[0].tips == 5 && g_probe[0].last_tip == 5);
+    for (int n = 0; n < 3; n++) CHECK(g_probe[n].confirmed == 0);
     CHECK(!sim_failed(sim));
     sim_destroy(sim);
 
@@ -922,17 +935,20 @@ static void test_restore_from_an_older_backup(void)
     sim_restore_backup(sim, 0, 3);                          /* back to: ping 1, its "sent" record, ping 2 */
     CHECK(sim_stats(sim)->restores == 1 && sim_node_incarnation(sim, 0) == 2);
     CHECK(sim_stats(sim)->node_sends == 4);                 /* ping 2 has no "sent" record any more: resent */
-    CHECK(sim_storage_count(st) == 4);                      /* the three kept, and the new "sent" record */
-    CHECK(same_batch(sim_storage_batch_id(st, 3), 2, 1));   /* and recorded under the new incarnation */
+    CHECK(sim_storage_count(st) == 5);                      /* the three kept, the restore batch, the new "sent" record */
+    CHECK(same_batch(sim_storage_batch_id(st, 3), 2, 1));   /* the restore batch first, as sequence 1 */
+    CHECK(same_batch(sim_storage_batch_id(st, 4), 2, 2));
+    CHECK(sim_stats(sim)->restores_answered == 1);
     world_ping(sim, 0, 9);
     CHECK(sim_run(sim, 10) == 10 && !sim_failed(sim));
     CHECK(sim_stats(sim)->stale_confirmations == 0);        /* nothing from before the restore arrived */
     uint8_t shown[16] = {0};
     CHECK(sim_node_inspect(sim, 0, shown, sizeof shown) == 16 && shown[0] == 4);   /* serials went on from the backup: 3 was used again */
     sim_restore_backup(sim, 0, 999);                        /* more than there is: everything is kept */
-    CHECK(sim_storage_count(st) == 6 && !sim_failed(sim));
+    CHECK(sim_storage_count(st) == 8 && !sim_failed(sim));  /* seven kept, and the new restore batch */
     sim_restore_backup(sim, 0, 0);
-    CHECK(sim_storage_count(st) == 0 && !sim_failed(sim) && sim_node_incarnation(sim, 0) == 4);
+    CHECK(sim_storage_count(st) == 1 && !sim_failed(sim) && sim_node_incarnation(sim, 0) == 4);
+    CHECK(same_batch(sim_storage_batch_id(st, 0), 4, 1) && sim_stats(sim)->restores_answered == 3);
     sim_destroy(sim);
 
     /* After a crash the old batches' confirmations still arrive, and are stale. After a
@@ -957,6 +973,388 @@ static void test_restore_from_an_older_backup(void)
     c.check_same_seed = 1;
     sim = sim_create(&c);
     CHECK(sim_run(sim, 1500) == 1500 && sim_stats(sim)->restores > 10);
+    sim_destroy(sim);
+}
+
+/* ---- secrets never leave ---- */
+
+/* FAULTY ON PURPOSE: a node that leaks a secret draw in one chosen way (the
+ * review's 13 leaks, round 4, N4, and a watched outpoint). */
+static const gz_ports_t *g_leaker_ports;
+static void *leaker_create(void *ctx, uint32_t index, const gz_ports_t *ports, const sim_storage_t *storage)
+{
+    (void)ctx; (void)index; (void)storage;
+    g_leaker_ports = ports;
+    return &g_leaker_ports;
+}
+static gz_status_t leak_bytes(gz_action_list_t *out, gz_action_kind_t kind, const uint8_t *b, size_t len)
+{
+    if (kind == GZ_ACTION_SAVE) return multi_save(out, 9, b, len);
+    if (kind == GZ_ACTION_SEND) {
+        gz_action_t a = {.kind = GZ_ACTION_SEND};
+        a.u.send.peer_id = SIM_WORLD_PEER;
+        a.u.send.bytes = (gz_bytes_t){b, len};
+        return gz_action_list_add(out, &a);
+    }
+    return multi_add(out, GZ_ACTION_NOTIFY, 1, b, len);
+}
+static gz_status_t leaker_handle(void *node, const gz_event_t *ev, gz_action_list_t *out)
+{
+    (void)node;
+    if (ev->kind != GZ_EVENT_USER_COMMAND) return GZ_OK;
+    const gz_random_port_t *r = &g_leaker_ports->random;
+    static const char HEX[] = "0123456789abcdef";
+    uint8_t s[64], x[128];
+    gz_action_t a;
+    memset(&a, 0, sizeof a);
+    switch (ev->u.user.bytes.data[0]) {
+    case 'a': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32); return leak_bytes(out, GZ_ACTION_NOTIFY, s, 32);
+    case 'b': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32); return leak_bytes(out, GZ_ACTION_NOTIFY, s, 16);
+    case 'c': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32); return leak_bytes(out, GZ_ACTION_NOTIFY, s + 1, 31);
+    case 'd': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              for (int i = 0; i < 32; i++) x[i] = s[31 - i];
+              return leak_bytes(out, GZ_ACTION_SAVE, x, 32);
+    case 'e': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              for (int i = 0; i < 32; i++) { x[2 * i] = (uint8_t)HEX[s[i] >> 4]; x[2 * i + 1] = (uint8_t)HEX[s[i] & 15]; }
+              return leak_bytes(out, GZ_ACTION_SEND, x, 64);
+    case 'f': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              for (int i = 0; i < 32; i++) x[i] = s[i] ^ 1;
+              return leak_bytes(out, GZ_ACTION_NOTIFY, x, 32);
+    case 'g': for (int i = 0; i < 8; i++) r->fill(r->ctx, GZ_RANDOM_SECRET, s + 4 * i, 4);
+              return leak_bytes(out, GZ_ACTION_SAVE, s, 32);
+    case 'h': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              a.kind = GZ_ACTION_SET_TIMER; memcpy(&a.u.set_timer.timer_id, s, 8); a.u.set_timer.delay_ms = 1000;
+              return gz_action_list_add(out, &a);
+    case 'i': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 64); return leak_bytes(out, GZ_ACTION_NOTIFY, s + 32, 32);
+    case 'j': { r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              gz_status_t st = leak_bytes(out, GZ_ACTION_NOTIFY, s, 16);
+              return st == GZ_OK ? leak_bytes(out, GZ_ACTION_SEND, s + 16, 16) : st; }
+    case 'k': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              a.kind = GZ_ACTION_SEND; memcpy(&a.u.send.peer_id, s, 8); a.u.send.bytes = (gz_bytes_t){(const uint8_t *)"x", 1};
+              return gz_action_list_add(out, &a);
+    case 'm': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              a.kind = GZ_ACTION_WATCH_TX; memcpy(a.u.watch_tx.txid, s, 32); a.u.watch_tx.depth = 1;
+              return gz_action_list_add(out, &a);
+    case 'n': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 7); return leak_bytes(out, GZ_ACTION_NOTIFY, s, 7);
+    case 'o': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);
+              a.kind = GZ_ACTION_WATCH_OUTPOINT; memcpy(a.u.watch_outpoint.outpoint.txid, s, 32); a.u.watch_outpoint.depth = 1;
+              return gz_action_list_add(out, &a);
+    case 'p': r->fill(r->ctx, GZ_RANDOM_SECRET, s, 32);     /* control: only 7 contiguous bytes, which is not seen */
+              memcpy(x, s, 7); memset(x + 7, 0, 25);
+              return leak_bytes(out, GZ_ACTION_NOTIFY, x, 32);
+    }
+    return GZ_OK;
+}
+
+static void test_the_ways_a_secret_can_leave(void)
+{
+    /* a: raw (control); b: first half; c: all but byte 0; d: reversed, saved;
+     * e: hex, sent; f: XOR 1; g: eight 4-byte draws; h: timer id; i: second
+     * half of a 64-byte draw; j: two halves in two actions; k: peer id;
+     * m: watched txid; n: a 7-byte draw; o: watched outpoint. */
+    const char *caught = "abcdefghijkmno";
+    for (const char *m = caught; *m; m++) {
+        sim_config_t c = quiet_config(5, 1);
+        c.ops = (sim_node_ops_t){.create = leaker_create, .destroy = probe_destroy, .handle = leaker_handle};
+        sim_t *sim = sim_create(&c);
+        uint8_t cmd = (uint8_t)*m;
+        sim_user_command(sim, 0, &cmd, 1);
+        sim_run(sim, 3);
+        if (!sim_failed(sim)) printf("leak %c not caught\n", *m);
+        CHECK(sim_failed(sim) && (strstr(sim_failure_reason(sim), "secret-tagged random draw") != NULL));
+        sim_destroy(sim);
+    }
+    sim_config_t c = quiet_config(5, 1);                    /* the documented limit: 7 bytes are not seen */
+    c.ops = (sim_node_ops_t){.create = leaker_create, .destroy = probe_destroy, .handle = leaker_handle};
+    sim_t *sim = sim_create(&c);
+    sim_user_command(sim, 0, (const uint8_t *)"p", 1);
+    sim_run(sim, 3);
+    CHECK(!sim_failed(sim));
+    sim_destroy(sim);
+}
+
+static void test_secret_bytes_never_leave(void)
+{
+    sim_config_t c = probe_config(1);
+    sim_t *sim = sim_create(&c);
+    sim_user_command(sim, 0, (const uint8_t *)"R", 1);      /* ordinary bytes, saved: allowed */
+    CHECK(!sim_failed(sim) && sim_stats(sim)->secret_leaks == 0);
+    sim_user_command(sim, 0, (const uint8_t *)"K", 1);      /* secret bytes, saved: caught */
+    CHECK(sim_failed(sim) && strstr(sim_failure_reason(sim), "secret-tagged random draw left the node") != NULL);
+    CHECK(sim_stats(sim)->secret_leaks == 1);
+    sim_destroy(sim);
+
+    /* The multi node's secrets are mixed with its incarnation: what it uses may
+     * not even be checked, but the raw bytes the port gave must not leave. */
+    for (int leaks = 0; leaks <= 1; leaks++) {
+        c = quiet_config(64, 2);
+        c.ops = multi_ops();
+        g_secret_leaks = leaks;
+        sim = sim_create(&c);
+        sim_user_command(sim, 0, (const uint8_t *)"abc", 3);
+        sim_run(sim, 10);
+        CHECK(sim_failed(sim) == leaks);
+        if (leaks) CHECK(strstr(sim_failure_reason(sim), "secret-tagged random draw left the node") != NULL);
+        sim_destroy(sim);
+        g_secret_leaks = 0;
+    }
+}
+
+/* ---- the restore marker ---- */
+
+static uint32_t be32_at(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+static uint32_t le32_at(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+
+/* The default (placeholder) node answers the marker with its restore batch,
+ * sequence 1 of the new incarnation; later starts get no marker. */
+static void test_the_restore_marker(void)
+{
+    sim_config_t c = quiet_config(71, 1);
+    sim_t *sim = sim_create(&c);
+    world_ping(sim, 0, 1);
+    CHECK(sim_run(sim, 5) == 5);
+    CHECK(trace_count(sim, "restore-marker") == 0);
+    sim_restore_backup(sim, 0, 1);
+    const sim_storage_t *st = sim_node_storage(sim, 0);
+    CHECK(trace_count(sim, "restore-marker node=0 incarnation=2") == 1 && sim_stats(sim)->restores_answered == 1);
+    CHECK(same_batch(sim_storage_batch_id(st, 1), 2, 1));
+    size_t len = 0;
+    const uint8_t *b = sim_storage_batch_bytes(st, 1, &len);
+    CHECK(len == 8 + GZ_RESTORED_RECORD_LEN && le32_at(b) == GZ_RECORD_TEST_RESTORED);
+    CHECK(le32_at(b + 4) == GZ_RESTORED_RECORD_LEN && b[8 + 7] == 2 && b[8] == 0);   /* incarnation 2, big-endian */
+    uint32_t epoch = be32_at(b + 16);
+    CHECK(epoch != 0 && epoch < 0x80000000u);
+    CHECK(sim_node_draw(sim, 0, sim_node_draw_count(sim, 0) - 1)->purpose == GZ_RANDOM_ORDINARY);
+    sim_crash_node(sim, 0);                                 /* answered: an ordinary restart gets no marker */
+    CHECK(trace_count(sim, "restore-marker") == 1 && !sim_failed(sim));
+    sim_destroy(sim);
+
+    /* A crash before the restore batch is durable has not answered the
+     * restore: the next start gets the marker again. */
+    c = quiet_config(73, 1);
+    c.save_delay_pm = 1000; c.max_save_delay_steps = 4;
+    sim = sim_create(&c);
+    sim_restore_backup(sim, 0, 0);                          /* the restore batch is pending ... */
+    CHECK(sim_storage_pending(sim_node_storage(sim, 0)) == 1 && sim_stats(sim)->restores_answered == 0);
+    sim_crash_node(sim, 0);                                 /* ... and lost with its program */
+    CHECK(trace_count(sim, "restore-marker") == 2);
+    CHECK(sim_run(sim, 10) == 10 && sim_stats(sim)->restores_answered == 1 && !sim_failed(sim));
+    st = sim_node_storage(sim, 0);
+    CHECK(sim_storage_count(st) == 1 && same_batch(sim_storage_batch_id(st, 0), 3, 1));
+    sim_crash_node(sim, 0);
+    CHECK(trace_count(sim, "restore-marker") == 2);
+    sim_destroy(sim);
+}
+
+/* The epoch of the newest restore batch in node 0's storage, or 0. */
+static uint32_t newest_restore_epoch(const sim_t *sim)
+{
+    const sim_storage_t *st = sim_node_storage(sim, 0);
+    uint32_t e = 0;
+    for (size_t i = 0; i < sim_storage_count(st); i++) {
+        size_t len = 0;
+        const uint8_t *b = sim_storage_batch_bytes(st, i, &len);
+        if (len == 8 + GZ_RESTORED_RECORD_LEN && le32_at(b) == GZ_RECORD_TEST_RESTORED) e = be32_at(b + 16);
+    }
+    return e;
+}
+
+/* The same backup restored twice, with and without the port repeating after
+ * a restore: the two restores' epochs differ either way (review round 4,
+ * N3: drawn from the port alone, they were equal under the repeating port),
+ * and the invariant that a node's restore epochs all differ holds. */
+static void test_restore_epochs_differ_when_the_port_repeats(void)
+{
+    for (int repeat = 0; repeat <= 1; repeat++) {
+        sim_config_t c = quiet_config(9, 1);
+        c.restore_repeats_random = repeat;
+        sim_t *sim = sim_create(&c);
+        epoch_watch_t w;
+        memset(&w, 0, sizeof w);
+        w.n_nodes = 1;
+        CHECK(sim_add_invariant(sim, restore_epochs_differ, &w));
+        world_ping(sim, 0, 1);
+        sim_run(sim, 3);
+        sim_restore_backup(sim, 0, 1);
+        sim_run(sim, 3);
+        uint32_t e1 = newest_restore_epoch(sim);
+        sim_restore_backup(sim, 0, 1);
+        sim_run(sim, 3);
+        uint32_t e2 = newest_restore_epoch(sim);
+        CHECK(e1 != 0 && e2 != 0 && e1 != e2 && w.n == 2 && !sim_failed(sim));
+        CHECK(sim_stats(sim)->restores_repeating == (uint64_t)(2 * repeat));
+        sim_destroy(sim);
+        free(w.seen);
+    }
+}
+
+/* AT LEAST ONCE AFTER A RESTORE (review round 4, N1). A ping is saved and its
+ * confirmation delayed, so no reply has left; that journal is restored; the
+ * restored start resends the reply, which the runner holds behind the
+ * restore batch; the program then stops before that batch's confirmation
+ * arrives. The start must not have saved a "sent" record for the held reply:
+ * the reply must still leave, after the next start. */
+static void test_a_reply_held_behind_the_restore_batch_is_not_recorded_as_sent(void)
+{
+    int tried = 0, answered = 0;
+    for (uint64_t seed = 1; seed <= 400; seed++) {
+        sim_config_t c = quiet_config(seed, 1);
+        c.confirm_delay_pm = 1000; c.max_confirm_delay_steps = 6;
+        sim_t *sim = sim_create(&c);
+        world_ping(sim, 0, 0x33);
+        sim_run(sim, 1);                                    /* durable, its confirmation delayed: no reply yet */
+        if (sim_stats(sim)->world_replies || sim_storage_count(sim_node_storage(sim, 0)) != 1) { sim_destroy(sim); continue; }
+        sim_restore_backup(sim, 0, 1);                      /* the restored start; the reply is held */
+        sim_run(sim, 1);
+        sim_crash_node(sim, 0);                             /* before the restore batch's confirmation */
+        sim_run(sim, 60);                                   /* no faults: what left is delivered */
+        tried++;
+        answered += sim_stats(sim)->world_replies > 0 && saved_replies_not_sent(sim, 1) == 0 && !sim_failed(sim);
+        sim_destroy(sim);
+    }
+    if (answered != tried) printf("held-reply test: %d of %d tried answered\n", answered, tried);
+    CHECK(tried > 100 && answered == tried);
+}
+
+/* A start hook that does something before saving, when given the marker, is caught. */
+static gz_status_t notify_first_start(void *node, gz_action_list_t *out, int *more)
+{
+    (void)node;
+    *more = 0;
+    return multi_add(out, GZ_ACTION_NOTIFY, 1, NULL, 0);
+}
+
+static void test_a_node_that_ignores_the_restore_marker(void)
+{
+    sim_config_t c = probe_config(1);
+    c.ops.start = notify_first_start;
+    sim_t *sim = sim_create(&c);
+    sim_crash_node(sim, 0);
+    CHECK(!sim_failed(sim));                                /* no marker: anything may come first */
+    sim_restore_backup(sim, 0, 0);
+    CHECK(sim_failed(sim) && strstr(sim_failure_reason(sim), "before saving its restore batch") != NULL);
+    sim_destroy(sim);
+}
+
+/* ---- watching a transaction and an outpoint ---- */
+
+static void test_watching_a_transaction(void)
+{
+    sim_t *sim = probe_sim(2);
+    uint8_t tx[16], cmd[24], txid[32];
+    size_t len = sim_pretend_tx(tx, sizeof tx, NULL, 0, (const uint8_t *)"A", 1);
+    CHECK(len == 4);
+    sim_pretend_txid(tx, len, txid);
+    cmd[0] = 'X'; cmd[1] = 2; memcpy(cmd + 2, tx, len);
+    sim_user_command(sim, 0, cmd, 2 + len);                 /* watched before it exists: nothing yet */
+    sim_user_command(sim, 0, cmd, 2 + len);                 /* set twice: still one watch */
+    CHECK(g_probe[0].confirmed == 0);
+    sim_broadcast(sim, tx, len);
+    CHECK(g_probe[0].confirmed == 0);                       /* in the mempool: not confirmed */
+    sim_mine_block(sim);
+    CHECK(g_probe[0].confirmed == 1 && g_probe[0].last_confirmations == 1 && memcmp(g_probe[0].confirmed_txid, txid, 32) == 0);
+    sim_mine_block(sim);
+    CHECK(g_probe[0].confirmed == 2 && g_probe[0].last_confirmations == 2);
+    sim_mine_block(sim);
+    CHECK(g_probe[0].confirmed == 2);                       /* past the depth: no more counts */
+    CHECK(g_probe[1].confirmed == 0);                       /* node 1 never asked */
+
+    cmd[1] = 1;
+    sim_user_command(sim, 1, cmd, 2 + len);                 /* set late: told the current count, beyond its depth */
+    CHECK(g_probe[1].confirmed == 1 && g_probe[1].last_confirmations == 3);
+
+    sim_reorg(sim, 2);                                      /* still in block 1: nothing to tell */
+    CHECK(g_probe[0].unconfirmed == 0 && g_probe[1].unconfirmed == 0);
+    sim_reorg(sim, 1);                                      /* block 1 gone: both told, past their depth or not */
+    CHECK(g_probe[0].unconfirmed == 1 && g_probe[1].unconfirmed == 1);
+    sim_mine_block(sim);                                    /* counting starts again */
+    CHECK(g_probe[0].confirmed == 3 && g_probe[0].last_confirmations == 1);
+    CHECK(g_probe[1].confirmed == 2 && g_probe[1].last_confirmations == 1);
+    sim_reorg(sim, 1);
+    CHECK(g_probe[0].unconfirmed == 2 && g_probe[1].unconfirmed == 2);
+    sim_reorg(sim, 1);                                      /* already out: not told twice */
+    CHECK(g_probe[0].unconfirmed == 2);
+
+    sim_crash_node(sim, 0);                                 /* a rebuilt node has no watches */
+    sim_mine_block(sim);
+    CHECK(g_probe[0].confirmed == 3 && g_probe[1].confirmed == 3 && !sim_failed(sim));
+    sim_destroy(sim);
+}
+
+static void test_watching_an_outpoint(void)
+{
+    sim_t *sim = probe_sim(2);
+    gz_outpoint_t op = {{0}, 1};
+    sim_pretend_txid((const uint8_t *)"funding", 7, op.txid);
+    uint8_t spender[64], rival[64], cmd[40], txid[32];
+    size_t len = sim_pretend_tx(spender, sizeof spender, &op, 1, (const uint8_t *)"S", 1);
+    size_t rival_len = sim_pretend_tx(rival, sizeof rival, &op, 1, (const uint8_t *)"R", 1);
+    CHECK(len == 40 && rival_len == 40);
+    sim_pretend_txid(spender, len, txid);
+    cmd[0] = 'P'; cmd[1] = 2; memcpy(cmd + 2, op.txid, 32);
+    cmd[34] = 1; cmd[35] = cmd[36] = cmd[37] = 0;           /* vout 1 */
+    sim_user_command(sim, 0, cmd, 38);
+    CHECK(g_probe[0].op_spent == 0);
+
+    gz_outpoint_t other = op;
+    other.vout = 0;                                         /* another output of the same transaction */
+    uint8_t unrelated[64];
+    size_t unrelated_len = sim_pretend_tx(unrelated, sizeof unrelated, &other, 1, (const uint8_t *)"U", 1);
+    sim_broadcast(sim, unrelated, unrelated_len);
+    CHECK(g_probe[0].op_spent == 0);
+
+    sim_broadcast(sim, spender, len);                       /* seen in the mempool */
+    CHECK(g_probe[0].op_spent == 1 && g_probe[0].last_op_confirmations == 0);
+    CHECK(memcmp(g_probe[0].op_txid, txid, 32) == 0 && g_probe[0].op_outpoint.vout == 1 &&
+          memcmp(g_probe[0].op_outpoint.txid, op.txid, 32) == 0);
+    sim_broadcast(sim, rival, rival_len);                   /* a conflict: dropped, not reported */
+    CHECK(g_probe[0].op_spent == 1 && sim_stats(sim)->txs_conflicting == 1 && trace_has(sim, "conflicts"));
+
+    sim_mine_block(sim);
+    CHECK(g_probe[0].op_spent == 2 && g_probe[0].last_op_confirmations == 1);
+    sim_mine_block(sim);
+    CHECK(g_probe[0].op_spent == 3 && g_probe[0].last_op_confirmations == 2);
+    sim_mine_block(sim);
+    CHECK(g_probe[0].op_spent == 3);                        /* past the depth */
+
+    cmd[1] = 1;
+    sim_user_command(sim, 1, cmd, 38);                      /* set late: told at once */
+    CHECK(g_probe[1].op_spent == 1 && g_probe[1].last_op_confirmations == 3);
+
+    sim_reorg(sim, 3);                                      /* the spender leaves the chain: still spent, unconfirmed */
+    CHECK(g_probe[0].op_spent == 4 && g_probe[0].last_op_confirmations == 0);
+    CHECK(g_probe[1].op_spent == 2 && g_probe[1].last_op_confirmations == 0);
+    sim_mine_block(sim);
+    CHECK(g_probe[0].op_spent == 5 && g_probe[0].last_op_confirmations == 1);
+
+    sim_crash_node(sim, 0);
+    sim_mine_block(sim);
+    CHECK(g_probe[0].op_spent == 5 && !sim_failed(sim));    /* forgotten with its program */
+    sim_destroy(sim);
+
+    /* A depth-0 watch is refused by the action list (test_action.c); a
+     * watch may be set again after a restart, and is answered at once. */
+    sim = probe_sim(1);
+    sim_broadcast(sim, spender, len);
+    sim_mine_block(sim);
+    cmd[1] = 3;
+    sim_user_command(sim, 0, cmd, 38);
+    CHECK(g_probe[0].op_spent == 1 && g_probe[0].last_op_confirmations == 1);
+    sim_destroy(sim);
+}
+
+/* The multi node watches what it broadcasts and what that spends, from the
+ * schedule, with reorganisations; and the twin follows. */
+static void test_watches_from_the_schedule(void)
+{
+    sim_config_t c = busy_config(75);
+    c.ops = multi_ops();
+    c.reorg_pm = 30; c.max_reorg_depth = 3; c.block_pm = 200;
+    c.check_same_seed = 1;
+    sim_t *sim = sim_create(&c);
+    CHECK(sim_run(sim, 1500) == 1500);
+    CHECK(trace_has(sim, "chain confirmed node=") && trace_has(sim, "chain outpoint-spent node="));
+    CHECK(trace_has(sim, "chain unconfirmed node=") && sim_stats(sim)->chain_reports > 50);
     sim_destroy(sim);
 }
 
@@ -1386,7 +1784,8 @@ static void test_links(void)
 static void test_reorganisation_and_never_confirming(void)
 {
     sim_t *sim = probe_sim(2);
-    const uint8_t tx[4] = {'B', 0, 7, 7};
+    const uint8_t tx[4] = {'B', 0, 7, 7}, watch[5] = {'X', 9, 0, 7, 7};
+    sim_user_command(sim, 0, watch, sizeof watch);
     sim_user_command(sim, 0, tx, sizeof tx);
     sim_mine_block(sim);
     sim_mine_block(sim);
@@ -1406,6 +1805,7 @@ static void test_reorganisation_and_never_confirming(void)
     sim_config_t c = probe_config(2);
     c.tx_never_pm = 1000;
     sim = sim_create(&c);
+    sim_user_command(sim, 0, watch, sizeof watch);
     sim_user_command(sim, 0, tx, sizeof tx);
     for (int i = 0; i < 5; i++) sim_mine_block(sim);
     CHECK(g_probe[0].confirmed == 0 && g_probe[0].tips == 5 && sim_stats(sim)->txs_never == 1);
@@ -1671,6 +2071,15 @@ int main(void)
     test_a_program_that_goes_on_after_a_storage_failure();
     test_invariants_can_look_inside_a_node();
     test_links();
+    test_secret_bytes_never_leave();
+    test_the_ways_a_secret_can_leave();
+    test_the_restore_marker();
+    test_restore_epochs_differ_when_the_port_repeats();
+    test_a_reply_held_behind_the_restore_batch_is_not_recorded_as_sent();
+    test_a_node_that_ignores_the_restore_marker();
+    test_watching_a_transaction();
+    test_watching_an_outpoint();
+    test_watches_from_the_schedule();
     test_reorganisation_and_never_confirming();
     test_clock_jumps();
     test_a_dead_programs_timer_does_not_fire_into_its_successor();
