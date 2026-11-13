@@ -152,10 +152,12 @@ add_test(NAME core_isolation_refuses_sneaky_object
 # calling only secp256k1-zkp (an exact allow-list) and the core's action list.
 set(GZ_SIGNING_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/sign_tx.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/sign_tx.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/round_msg.c)
 add_library(gazpacho_signing STATIC ${GZ_SIGNING_SOURCES})
 set_target_properties(gazpacho_signing PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
-target_include_directories(gazpacho_signing PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include)
+target_include_directories(gazpacho_signing PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include)
 target_link_libraries(gazpacho_signing PUBLIC gazpacho_core secp256k1)
 target_compile_options(gazpacho_signing PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
 
@@ -167,15 +169,32 @@ target_compile_options(test_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
 foreach(section blocks decoders golden model faults honest t1 crashes restores)
   add_test(NAME signing_${section} COMMAND test_signing ${section})
 endforeach()
-add_executable(fuzz_signing tests/signing/fuzz_signing.c)
-target_link_libraries(fuzz_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar)
-target_compile_options(fuzz_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
-add_test(NAME signing_fuzz COMMAND fuzz_signing 20000 20)
+gz_add_test(round_msg tests/signing/test_round_msg.c gazpacho_signing)
+# fuzz_signing drives whole engines from generated journals and messages with
+# its own main; it is not a libFuzzer target (tools/run-fuzz.sh runs every
+# fuzz_* there is), so it is built only with the plain drivers.
+if(NOT GZ_LIBFUZZER)
+  add_executable(fuzz_signing tests/signing/fuzz_signing.c)
+  target_link_libraries(fuzz_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar)
+  target_compile_options(fuzz_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
+  add_test(NAME signing_fuzz COMMAND fuzz_signing 20000 20)
+endif()
+# Every round message decoder (messages.md 7), with libFuzzer or the plain driver.
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_round_msg tests/signing/fuzz_round_msg.c)
+  target_link_options(fuzz_round_msg PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_round_msg tests/signing/fuzz_round_msg.c tests/net/fuzz_main.c)
+  add_test(NAME signing_fuzz_round_msg COMMAND fuzz_round_msg 200000)
+  add_test(NAME signing_fuzz_round_msg_seed COMMAND fuzz_round_msg ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/round_msg/propose-4)
+endif()
+target_link_libraries(fuzz_round_msg PRIVATE gazpacho_signing)
+target_compile_options(fuzz_round_msg PRIVATE ${GZ_NEW_CODE_WARNINGS})
 add_test(NAME signing_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
           --allow ${CMAKE_CURRENT_SOURCE_DIR}/tools/signing-allowed-calls.txt
           $<TARGET_FILE:gazpacho_signing> --sources ${CMAKE_C_COMPILER}
-          "${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include -I${secp256k1-zkp_SOURCE_DIR}/include"
+          "${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include -I${secp256k1-zkp_SOURCE_DIR}/include"
           ${GZ_SIGNING_SOURCES})
 
 # The same tests under valgrind's memcheck with origin tracking, which sees
@@ -195,6 +214,7 @@ if(GZ_VALGRIND AND GZ_VALGRIND_TESTS AND NOT GZ_SANITIZE)
   add_test(NAME valgrind_sim_seeds COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 20 300 1 0)
   add_test(NAME valgrind_sim_profile_3 COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 10 200 1 3)
   add_test(NAME valgrind_signing COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_signing> tiny)
+  add_test(NAME valgrind_round_msg COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_round_msg>)
 endif()
 
 # --- Transport (ports/net): BOLT 8 and BOLT 1, outside the core ----------------
