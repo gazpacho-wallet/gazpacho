@@ -22,14 +22,14 @@ static uint8_t HOST_KEY[32], MEMBER_KEY[32], HOST_PUB[33], MEMBER_PUB[33], OTHER
 static gz_conn_t host, member;
 static uint8_t msg[GZ_NOISE_MAX_MSG];
 
-static void counter_fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
-{ (void)purpose;
+static void counter_fill(void *ctx, uint8_t *out, size_t len)
+{
     static uint8_t n = 1;
     (void)ctx;
     memset(out, 0x40, len);
     out[len - 1] = n++;
 }
-static const gz_random_port_t RNG = {counter_fill, NULL};
+static const gz_net_random_t RNG = {counter_fill, NULL};
 
 static void pub(const uint8_t k[32], uint8_t out[33])
 {

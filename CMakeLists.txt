@@ -220,10 +220,11 @@ endif()
 # --- Transport (ports/net): BOLT 8 and BOLT 1, outside the core ----------------
 # Strict C11 like the core, but not freestanding: conn.c uses POSIX sockets.
 # noise.c and frame.c do no input or output (spec/transport.md).
-add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c)
+add_library(gazpacho_net STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c
+            ports/net/envelope.c ports/net/lnmsg.c ports/net/peers.c)
 set_target_properties(gazpacho_net PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_net PUBLIC
-  ${CMAKE_CURRENT_SOURCE_DIR}/ports/net ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/ports/net)
 target_link_libraries(gazpacho_net PUBLIC secp256k1 OpenSSL::Crypto)
 target_compile_options(gazpacho_net PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
 
@@ -234,6 +235,23 @@ target_compile_options(gz-net PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(net_noise tests/net/test_noise.c gazpacho_net)
 gz_add_test(net_frame tests/net/test_frame.c gazpacho_net 20000)
 gz_add_test(net_conn  tests/net/test_conn.c  gazpacho_net)
+gz_add_test(net_envelope tests/net/test_envelope.c gazpacho_net)
+gz_add_test(net_lnmsg tests/net/test_lnmsg.c gazpacho_net)
+gz_add_test(net_peers tests/net/test_peers.c gazpacho_net)
+# Kind 32767 (test traffic, contract v2 section 7) exists only in a build
+# with GZ_TEST_KINDS: a second copy of the library for its test, so the
+# library everything else links never knows it.
+add_library(gazpacho_net_testkinds STATIC ports/net/noise.c ports/net/frame.c ports/net/conn.c ports/net/wipe.c
+            ports/net/envelope.c ports/net/lnmsg.c ports/net/peers.c)
+set_target_properties(gazpacho_net_testkinds PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_net_testkinds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ports/net)
+target_compile_definitions(gazpacho_net_testkinds PUBLIC GZ_TEST_KINDS)
+target_link_libraries(gazpacho_net_testkinds PUBLIC secp256k1 OpenSSL::Crypto)
+target_compile_options(gazpacho_net_testkinds PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
+gz_add_test(net_test_kind tests/net/test_testkind.c gazpacho_net_testkinds)
+# ports/net and gz-net include no core header (contract v2, section 12).
+add_test(NAME net_no_core_headers COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-net-no-core.sh
+         ${CMAKE_C_COMPILER} ${secp256k1-zkp_SOURCE_DIR}/include)
 # Every wipe of a stack secret is counted, and HMAC is made to fail on demand
 # (GNU ld's --wrap; review of PR 10, section 6).
 gz_add_test(net_wipes tests/net/test_wipes.c gazpacho_net)
@@ -244,6 +262,17 @@ target_link_libraries(net_peer PRIVATE gazpacho_net)
 target_compile_options(net_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 add_test(NAME net_gz_net COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_gz_net.sh
          $<TARGET_FILE:gz-net> $<TARGET_FILE:net_peer>)
+# Two processes hold a lobby connection with pings: 4 s at a 100 ms ping in
+# CI; with -DGZ_LONG_TESTS=ON also six minutes at messages.md's 15 s ping and
+# 30 s pong timeout (not run in CI).
+add_test(NAME net_keepalive COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_keepalive.sh
+         $<TARGET_FILE:gz-net> 4 100 1000)
+option(GZ_LONG_TESTS "Register the long keep-alive test (six minutes)" OFF)
+if(GZ_LONG_TESTS)
+  add_test(NAME net_keepalive_long COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/net/test_keepalive.sh
+           $<TARGET_FILE:gz-net> 360 15000 30000)
+  set_tests_properties(net_keepalive_long PROPERTIES TIMEOUT 600 LABELS slow)
+endif()
 # gz-net against an independent Python BOLT 8 peer (the PR 10 reviewer's),
 # in both roles past key rotation. Opt-in: needs python3 and `cryptography`.
 # It should run in the automated checks wherever `cryptography` is installed
@@ -256,10 +285,14 @@ endif()
 # Fuzz targets. Normally with the plain driver, as CTest tests; with
 # -DGZ_LIBFUZZER=ON (clang; the option is declared at the top), linked with
 # libFuzzer instead and run by tools/run-fuzz.sh (docs/notes/ci.md).
-foreach(target noise tlv)
+# fuzz_envelope runs fewer plain-driver inputs: some build 65,000-byte parts.
+foreach(target noise tlv envelope)
   if(GZ_LIBFUZZER)
     add_executable(fuzz_${target} tests/net/fuzz_${target}.c)
     target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer)
+  elseif(target STREQUAL "envelope")
+    add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
+    add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 5000)
   else()
     add_executable(fuzz_${target} tests/net/fuzz_${target}.c tests/net/fuzz_main.c)
     add_test(NAME net_fuzz_${target} COMMAND fuzz_${target} 200000)
@@ -275,3 +308,6 @@ add_subdirectory(ports/chain)
 
 # --- trees from terms and the creation checks (core/tree) ---
 add_subdirectory(core/tree)
+
+# --- storage encryption (ports/storage/crypto): libsodium, outside the core ---
+add_subdirectory(ports/storage/crypto)
