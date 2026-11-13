@@ -250,7 +250,7 @@ void gz_api_server_stop(gz_api_server *srv)
 {
     char b = 0;
     ssize_t w;
-    srv->stop = 1;
+    atomic_store_explicit(&srv->stop, 1, memory_order_relaxed);
     w = write(srv->wake[1], &b, 1);
     (void)w;
 }
@@ -480,7 +480,8 @@ int gz_api_server_poll(gz_api_server *srv, int timeout_ms)
 int gz_api_server_run(gz_api_server *srv)
 {
     signal(SIGPIPE, SIG_IGN);
-    while (!srv->stop)
+    /* the stop is taken as run returns, so the loop can be run again (the tests pause it) */
+    while (!atomic_exchange_explicit(&srv->stop, 0, memory_order_relaxed))
         if (gz_api_server_poll(srv, 1000) != 0) return -1;
     return 0;
 }

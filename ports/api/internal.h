@@ -5,6 +5,7 @@
 
 #include <poll.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -191,7 +192,7 @@ struct gz_api_server {
     char attempts_path[600];
     char run_id[9];
     int wake[2];
-    volatile int stop;
+    atomic_int stop;                 /* gz_api_server_stop, from any thread or a signal handler (review B5) */
     gz_conn *conns;
     int nconns;
     gz_api_counters ctr;

@@ -96,14 +96,15 @@ static const char *weak(const gz_api_pp_job *j, int64_t *len)
 static void pp_op(void *be, gz_api_pp_job *j)
 {
     gz_fake *f = be;
-    int i;
+    int i, delay;
     pthread_mutex_lock(&f->mu);
+    delay = f->pp_delay_ms;                          /* a test switch, set from other threads */
     f->inside++;
     if (f->inside > f->max_inside) f->max_inside = f->inside;
     f->derivations++;
     pthread_mutex_unlock(&f->mu);
-    if (f->pp_delay_ms) {
-        struct timespec ts = {f->pp_delay_ms / 1000, (long)(f->pp_delay_ms % 1000) * 1000000L};
+    if (delay) {
+        struct timespec ts = {delay / 1000, (long)(delay % 1000) * 1000000L};
         nanosleep(&ts, NULL);
     }
     pthread_mutex_lock(&f->mu);

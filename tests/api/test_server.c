@@ -166,6 +166,38 @@ static void fx_stop(fixture *x)
     rm_rf(x->rt);
 }
 
+/* Reads of the fake's counters from the test thread, under its mutex (review B5). */
+static int64_t fake_tmp;
+static void fake_lock(fixture *x) { pthread_mutex_lock(&x->fake.mu); }
+static void fake_unlock(fixture *x) { pthread_mutex_unlock(&x->fake.mu); }
+#define FAKE_READ(x, expr) (fake_lock(x), fake_tmp = (int64_t)(expr), fake_unlock(x), fake_tmp)
+
+/* The loop thread's functions (api.h: counters, first-run codes) are called
+ * with the loop stopped, then the loop runs again (review B5). */
+static void fx_pause(fixture *x)
+{
+    gz_api_server_stop(x->srv);
+    pthread_join(x->th, NULL);
+}
+
+static void fx_resume(fixture *x) { pthread_create(&x->th, NULL, run, x); }
+
+static void fx_counters(fixture *x, gz_api_counters *c)
+{
+    fx_pause(x);
+    gz_api_server_counters(x->srv, c);
+    fx_resume(x);
+}
+
+static int fx_first_run_code(fixture *x, char code[12])
+{
+    int r;
+    fx_pause(x);
+    r = gz_api_first_run_code(x->srv, code);
+    fx_resume(x);
+    return r;
+}
+
 /* ---- a raw HTTP client -------------------------------------------------------------- */
 typedef struct {
     int status;
@@ -657,7 +689,7 @@ static void test_timeouts(void)
     resp_free(&r);
     {
         gz_api_counters c;
-        gz_api_server_counters(x.srv, &c);
+        fx_counters(&x, &c);
         CHECK(c.connections_open <= 32);
     }
     for (i = 0; i < 33; i++) close(fds[i]);
@@ -691,7 +723,7 @@ static void test_other_user(void)
     close(fd);
     {
         gz_api_counters c;
-        gz_api_server_counters(x.srv, &c);
+        fx_counters(&x, &c);
         CHECK(c.handler_calls == 0);
     }
     fx_stop(&x);
@@ -1055,15 +1087,15 @@ static void test_flood(void)
         if (a[i].status == 401) wrong++;
         else if (a[i].status == 429) limited++;
     }
-    gz_api_server_counters(x.srv, &c);
+    fx_counters(&x, &c);
     /* the gate is checked again when the waiting job starts (review F2): exactly one per window */
     if (!(wrong == 1 && wrong + limited == 20)) {
         printf("  flood:");
         for (i = 0; i < 20; i++) printf(" %d", a[i].status);
-        printf(" (max concurrent %d, inside %d)\n", c.derivations_max_concurrent, x.fake.max_inside);
+        printf(" (max concurrent %d, inside %d)\n", c.derivations_max_concurrent, (int)FAKE_READ(&x, x.fake.max_inside));
     }
     CHECK(wrong == 1 && wrong + limited == 20);
-    CHECK(c.derivations_max_concurrent == 1 && x.fake.max_inside == 1);
+    CHECK(c.derivations_max_concurrent == 1 && FAKE_READ(&x, x.fake.max_inside) == 1);
     fx_stop(&x);
 }
 
@@ -1119,9 +1151,9 @@ static void test_request_ids(void)
         resp_free(&r);
         snprintf(body, sizeof body, "{\"request_id\":\"req_open_0000000001\",\"draft\":%s,\"draft_digest\":\"%s\","
                                     "\"confirm_funding_sat\":1,\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}", draft, dd);
-        before = x.fake.derivations;
+        before = FAKE_READ(&x, x.fake.derivations);
         CHECK(expect(&x, "POST", "/api/v1/host/lobbies", body, 409, "confirm_mismatch"));
-        CHECK(x.fake.derivations == before);            /* refused before any derivation */
+        CHECK(FAKE_READ(&x, x.fake.derivations) == before);            /* refused before any derivation */
         snprintf(body, sizeof body, "{\"request_id\":\"req_open_0000000001\",\"draft\":%s,\"draft_digest\":\"%s\","
                                     "\"confirm_funding_sat\":37500000}", draft, dd);
         CHECK(expect(&x, "POST", "/api/v1/host/lobbies", body, 400, "missing_field"));
@@ -1130,13 +1162,13 @@ static void test_request_ids(void)
         api(&x, &r, "POST", "/api/v1/host/lobbies", body, NULL);
         CHECK(r.status == 201 && strstr(r.body, "\"id\":\"lob_4c08\""));
         resp_free(&r);
-        before = x.fake.derivations;
+        before = FAKE_READ(&x, x.fake.derivations);
         snprintf(body, sizeof body, "{\"request_id\":\"req_open_0000000001\",\"draft\":%s,\"draft_digest\":\"%s\","
                                     "\"confirm_funding_sat\":37500000,\"passphrase\":\"any other passphrase\"}", draft, dd);
         api(&x, &r, "POST", "/api/v1/host/lobbies", body, NULL);
         CHECK(r.status == 201 && strstr(r.body, "\"replayed\":true"));
         resp_free(&r);
-        CHECK(x.fake.derivations == before);
+        CHECK(FAKE_READ(&x, x.fake.derivations) == before);
     }
     /* kind B with an echo: the early start (4.8) */
     atomic_fetch_add(&clock_off, 6 * 60 * 1000);
@@ -1185,7 +1217,7 @@ static void test_reserved(void)
     CHECK(seen > 80);
     {
         gz_api_counters c;
-        gz_api_server_counters(x.srv, &c);
+        fx_counters(&x, &c);
         CHECK(c.handler_calls == 0);                     /* no reserved call reaches the backend */
     }
     fx_stop(&x);
@@ -1537,7 +1569,7 @@ static void test_files_behind_and_socket(void)
     {
         char code[16], body[200];
         int i;
-        CHECK(gz_api_first_run_code(x.srv, code) == 0 && strlen(code) == 11);
+        CHECK(fx_first_run_code(&x, code) == 0 && strlen(code) == 11);
         g_session[0] = 0;
         for (i = 0; i < 5; i++) {
             atomic_fetch_add(&clock_off, 1100);
@@ -1732,9 +1764,9 @@ static void test_review_walls(void)
     resp_free(&r);
     /* empty-passphrase-derived: an empty passphrase is refused before any derivation */
     {
-        int64_t before = x.fake.derivations;
+        int64_t before = FAKE_READ(&x, x.fake.derivations);
         CHECK(expect(&x, "POST", "/api/v1/session", "{\"passphrase\":\"\"}", 400, "bad_value"));
-        CHECK(x.fake.derivations == before);
+        CHECK(FAKE_READ(&x, x.fake.derivations) == before);
     }
     sign_in(&x, GZ_FAKE_PASSPHRASE);
     CHECK(strlen(g_session) == 43);
@@ -1791,7 +1823,7 @@ static void test_review_setup(void)
     start_token_from_file(&x, tok);
     CHECK(strlen(tok) == 43);
     /* a setup session from a code, while the start token is still unspent */
-    CHECK(gz_api_first_run_code(x.srv, code) == 0);
+    CHECK(fx_first_run_code(&x, code) == 0);
     g_session[0] = 0;
     snprintf(body, sizeof body, "{\"code\":\"%s\"}", code);
     api(&x, &r, "POST", "/api/v1/session/start", body, NULL);
@@ -1814,11 +1846,11 @@ static void test_review_setup(void)
     CHECK(r.status == 200 && r.body && strstr(r.body, "\"words\"") &&
           strstr(r.body, "\"warning\":{\"code\":\"done_with_fault\",\"fault\":\"mark_file\"}"));
     resp_free(&r);
-    CHECK(x.fake.wallet == GZ_API_WALLET_UNLOCKED);
+    CHECK(FAKE_READ(&x, x.fake.wallet) == GZ_API_WALLET_UNLOCKED);
     /* create-keeps-first-run: the start token's file and every code go at create (4.9) */
     snprintf(path, sizeof path, "%s/first-run.html", x.dir);
     CHECK(access(path, F_OK) != 0);
-    CHECK(gz_api_first_run_code(x.srv, code) != 0);
+    CHECK(fx_first_run_code(&x, code) != 0);
     fx_stop(&x);
 }
 
@@ -1920,10 +1952,10 @@ static void test_review_words(void)
     snprintf(id, sizeof id, "%s", jfield(&r, "check_id") ? jfield(&r, "check_id") : "");
     resp_free(&r);
     {
-        int64_t before = x.fake.derivations;
+        int64_t before = FAKE_READ(&x, x.fake.derivations);
         snprintf(body, sizeof body, "{\"check_id\":\"%s\",\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\",\"words\":[\"abandon\",\"abandon\",\"abandon\"]}", id);
         CHECK(expect(&x, "POST", "/api/v1/wallet/phrase/check", body, 429, "rate_limited"));
-        CHECK(x.fake.derivations == before);
+        CHECK(FAKE_READ(&x, x.fake.derivations) == before);
     }
     fx_stop(&x);
 }
@@ -2042,7 +2074,7 @@ static void test_review_streams(void)
         if (k % 200 == 0) sleep_ms(20);
     }
     sleep_ms(500);
-    gz_api_server_counters(x.srv, &ctr);
+    fx_counters(&x, &ctr);
     CHECK(ctr.streams_open == 0);
     close(fd);
     fx_stop(&x);
@@ -2076,7 +2108,7 @@ static void test_p5_generation(void)
     if (fx_go(&x)) { CHECK(0); return; }
     g_session[0] = 0;
     /* a lock during a right sign-in: discarded, nothing installed (T4.4) */
-    installs = x.fake.installs;
+    installs = FAKE_READ(&x, x.fake.installs);
     memset(&b, 0, sizeof b);
     b.x = &x;
     b.body = "{\"passphrase\":\"" GZ_FAKE_PASSPHRASE "\"}";
@@ -2085,7 +2117,7 @@ static void test_p5_generation(void)
     gz_api_server_new_generation(x.srv);
     pthread_join(th, NULL);
     CHECK(b.status == 503 && strcmp(b.code, "passphrase_not_checked") == 0);
-    CHECK(x.fake.installs == installs && x.fake.wallet == GZ_API_WALLET_LOCKED);
+    CHECK(FAKE_READ(&x, x.fake.installs) == installs && FAKE_READ(&x, x.fake.wallet) == GZ_API_WALLET_LOCKED);
     /* ... and a wrong one is still counted */
     sleep_ms(1100);
     memset(&b, 0, sizeof b);
@@ -2163,7 +2195,7 @@ static void test_p5_held(void)
     snprintf(join1, sizeof join1, "{\"request_id\":\"rid-held-0000000001\",\"seen_current_digest\":\"%s\"}", digest);
     snprintf(join2, sizeof join2, "{\"request_id\":\"rid-held-0000000002\"}");   /* a leave */
     {
-        int64_t acted = x.fake.acted;
+        int64_t acted = FAKE_READ(&x, x.fake.acted);
         fd = api_open(&x, "POST", path, join1);
         read_answer(fd, &r, 3000);
         CHECK(is_code(&r, 503, "node_busy"));
@@ -2171,7 +2203,7 @@ static void test_p5_held(void)
         close(fd);
         fd2 = api_open(&x, "POST", path, join1);
         CHECK(no_answer_yet(fd2, 200));
-        CHECK(x.fake.acted == acted + 1);
+        CHECK(FAKE_READ(&x, x.fake.acted) == acted + 1);
         pthread_mutex_lock(&x.fake.mu);
         x.fake.hold_forever = 0;
         pthread_mutex_unlock(&x.fake.mu);
@@ -2180,7 +2212,7 @@ static void test_p5_held(void)
         CHECK(r.status == 202 && r.body && strstr(r.body, "\"replayed\":true"));
         resp_free(&r);
         close(fd2);
-        CHECK(x.fake.acted == acted + 1);
+        CHECK(FAKE_READ(&x, x.fake.acted) == acted + 1);
         /* the same id with another body: the engine's 409 */
         api(&x, &r, "POST", path, "{\"request_id\":\"rid-held-0000000001\",\"seen_current_digest\":\""
                                   "1111111111111111111111111111111111111111111111111111111111111111\"}", NULL);
