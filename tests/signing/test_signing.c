@@ -621,7 +621,10 @@ static void damage(gz_sign_def_t *d, int which)
     case 2: d->n_tiers = GZ_SIGN_MAX_TIERS + 1; break;
     case 3: d->n_items = 0; break;
     case 4: d->n_items = GZ_SIGN_MAX_ITEMS + 1; break;
-    case 5: d->n_tiers = 3; it->tier = 2; break;                              /* a tier skipped */
+    case 5: d->n_tiers = 3;                 /* a tier skipped: the items in reverse (children first, C6), the root alone in tier 2 */
+        for (int i = 0; i < d->n_items / 2; i++) { gz_sign_item_t t = d->items[i]; d->items[i] = d->items[d->n_items - 1 - i]; d->items[d->n_items - 1 - i] = t; }
+        it->tier = 2;
+        break;
     case 6: d->items[0].tier = 1; d->n_tiers = 2; break;                     /* tiers out of order */
     case 7: it->n_signers = 1; break;
     case 8: it->signers[it->n_signers - 1] = 40; break;                       /* no such participant */
@@ -1337,6 +1340,7 @@ static void test_blame_across_attempts(void)
     /* P3: every attempt begun by the program (no retry hook), each on its own outpoint; reason 3 every time */
     h_init(&h, 3);
     h.p[0].e->cfg.retry = NULL;
+    h.p[0].e->cfg.max_attempts = 16;
     unblamed = 0;
     for (int k = 0; k < 7; k++) {
         CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
@@ -1355,6 +1359,13 @@ static void test_blame_across_attempts(void)
     h_inject(&h, 2, 0, buf, make_abort(buf, id, 3, 2));
     f = h_find(&h, 0, id);
     CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
+    /* and when the list of those who used theirs is full, nobody new is excused (mutant H64) */
+    h.p[0].e->n_restarted = GZ_SIGN_MAX_RESTARTED;
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    h_inject(&h, 3, 0, buf, make_abort(buf, id, 3, 3));
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 8u && h.p[0].e->n_restarted == GZ_SIGN_MAX_RESTARTED);
     h_free(&h);
     /* Reason 6 from an honest member: the host restarts after the nonce sets of attempt 1 went out, which
      * fails that attempt (H13), and the test's host puts attempt 2 on the same outpoint, against H11.
