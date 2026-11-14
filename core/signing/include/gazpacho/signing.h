@@ -91,12 +91,17 @@
  * Dead; a journal holding more live ones still starts, with every new round
  * refused until a start finds room (review A, F2). */
 #define GZ_SIGN_MAX_EXPOSURES    4096
-/* A member waits this many ticks longer than deadline_ticks for a tier's nonce
- * set before it gives up (abort reason 4). Each party counts its own ticks, a
- * member from when the proposal reached it, and the timers are not in step:
- * with the same deadline_ticks on both sides and this margin, the host's own
- * deadline always comes first, so an honest member never gives up before the
- * host does (review B's confirmation, N1). */
+/* The nonce step's deadline is the proposal's nonces_due_ms (messages.md 7.2)
+ * for both sides, read from the same signed bytes, so that two configurations
+ * cannot drift apart. The host counts it in whole ticks, rounded down; a
+ * member rounds up and waits this many ticks more before it gives up (abort
+ * reason 4). Each party counts its own ticks, a member from when it sent its
+ * nonces, which is after the host's step began, and the timers are not in
+ * step: the host's deadline passes after at most nonces_due_ms, a member's
+ * after at least nonces_due_ms and one of its own tick periods. So the
+ * host's deadline always comes first, an honest member never gives up before
+ * the host does, and a reason 4 that reaches the host while its attempt still
+ * runs is not an honest one (review B's confirmations, N1 and N1b). */
 #define GZ_SIGN_NONCE_MARGIN_TICKS 2
 
 /* Message sizes (envelope included). A record's type and length take at
@@ -302,7 +307,7 @@ typedef struct {
     void *build_ctx;
     uint64_t tick_ms;               /* period of the engine's one timer */
     uint32_t resend_ticks;          /* resend what is unanswered every this many ticks */
-    uint32_t deadline_ticks;        /* a step not finished after this many ticks fails */
+    uint32_t deadline_ticks;        /* a step not finished after this many ticks fails (but the nonce step: the proposal's nonces_due_ms) */
     uint32_t status_ticks;          /* host: at most one status answer per round and member in this many ticks */
     uint32_t max_attempts;          /* host: attempts in all, over restarts */
     uint32_t unfinished_ticks;      /* member: an Unfinished creation round is Abandoned after this many more ticks (0: never) */
@@ -356,7 +361,7 @@ struct gz_sign_round {
     uint8_t all_nonces_digest[GZ_SIGN_MAX_TIERS][32];
     uint8_t have_all_nonces[GZ_SIGN_MAX_TIERS];
     uint32_t acked;                 /* host: bit j = participant j acked */
-    uint32_t gave_up;               /* host: bit j = participant j sent a deadline abort (reason 4) while others still owed (review B, B4) */
+    uint32_t nonce_ticks;           /* the nonce step's deadline in this party's ticks, from the proposal's nonces_due_ms; a member's with its margin */
     uint64_t status_tick[GZ_SIGN_MAX_PARTICIPANTS];   /* host: the tick a status request was last answered + 1 */
     /* member: its own saved messages and the host's it verified */
     uint32_t partials_len[GZ_SIGN_MAX_TIERS];
@@ -405,7 +410,7 @@ typedef struct {
      * GZ_ERR_FAILED until gz_sign_start rebuilds the engine from storage
      * (review A, F1; node.h: on any error the node is as it was). */
     int failed;
-    uint64_t counters[10];          /* see GZ_SIGN_COUNT_* */
+    uint64_t counters[9];           /* see GZ_SIGN_COUNT_* */
     uint8_t scratch[GZ_SIGN_MAX_MSG];
     gz_sign_def_t scratch_def;
     gz_sign_round_t pending;        /* a round is checked here before it takes a slot */
@@ -431,8 +436,7 @@ typedef struct {
 enum {
     GZ_SIGN_COUNT_NONCES_MADE = 0, GZ_SIGN_COUNT_PARTIALS_MADE, GZ_SIGN_COUNT_PSIGS_VERIFIED,
     GZ_SIGN_COUNT_FINALS_VERIFIED, GZ_SIGN_COUNT_BLAME_FAULT, GZ_SIGN_COUNT_BLAME_SILENT,
-    GZ_SIGN_COUNT_REJECTED, GZ_SIGN_COUNT_DUPLICATES, GZ_SIGN_COUNT_EVIDENCE,
-    GZ_SIGN_COUNT_GAVE_UP           /* host: attempts ended, nobody blamed, because a member had given up before the last nonces came */
+    GZ_SIGN_COUNT_REJECTED, GZ_SIGN_COUNT_DUPLICATES, GZ_SIGN_COUNT_EVIDENCE
 };
 
 /* Prepare an engine. `incarnation` is the runner's (runner.h): it never

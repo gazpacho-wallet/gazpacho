@@ -206,6 +206,7 @@ static void h_init(harness_t *h, uint32_t members)
     memset(h, 0, sizeof *h);
     h->n = members + 1;
     h->resend_ticks = 3; h->deadline_ticks = 12; h->max_attempts = 8; h->status_ticks = 0;
+    h->builder.nonces_due_ms = h->deadline_ticks;   /* the nonce step's deadline is the proposal's: 12 ticks of 1 ms */
     gz_sign_tagged_init(&h->tr, "test/transcript");
     for (uint32_t g = 0; g < h->n; g++) { h_build(h, g); h_start(h, g); }
 }
