@@ -62,6 +62,11 @@ RULES = {
     # review B: B6 (C6: children before parents), B5 (a start leaves a superseded round Unfinished)
     "C6_CHILDREN_FIRST": ("if (it->tier > d->items[j].tier) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
     "REPLAY_SUPERSEDES": ("{ o->state = GZ_SIGN_ROUND_UNFINISHED; o->why = GZ_SIGN_WHY_SUPERSEDED; }", "{ }"),
+    # review B: B3 and B4 (blame), B9 (resends)
+    "EXCUSE_ONLY_RELEASED": ("may_have_released(o, o->why) &&", ""),
+    "DEADLINE_ABORT_WAITS": ("if (m->reason == 4 &&", "if (0 &&"),
+    "GAVE_UP_BLAMED": ("if (r->gave_up) {", "if (0) {"),
+    "ANSWER_RATE": ("if (r->status_tick[j] &&", "if (0 &&"),
 }
 
 

@@ -76,6 +76,11 @@
  * cap: the set never makes a start fail (review A, F2). */
 #define GZ_SIGN_KNOWN_FILTER_BITS 20
 #define GZ_SIGN_KNOWN_FILTER_K    10
+/* Host: the members that used their one "I restarted" (abort reason 3)
+ * without blame, by contribution key (a member's key is its seat in one
+ * lobby); kept for the engine's life in memory. Full: every reason 3 is
+ * blamed (review B, B3). */
+#define GZ_SIGN_MAX_RESTARTED    128
 
 /* Message sizes (envelope included). A record's type and length take at
  * most 8 bytes here; 240, the signature, is 67. */
@@ -85,6 +90,9 @@
 #define GZ_SIGN_MAX_LIST68_MSG   (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * 68 + 67)
 #define GZ_SIGN_MAX_SMALL_MSG    (GZ_RMSG_HEADER + 128 + 67)
 #define GZ_SIGN_MAX_MSG          (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * (6 + GZ_SIGN_MAX_SIGNERS * 130))
+/* The work area the engine's records are written in: the largest is a member's first record of a
+ * round, which carries the proposal (review B, B2: a proposal at its limit must still fit). */
+#define GZ_SIGN_WORK_RECORDS     (GZ_SIGN_MAX_PROPOSAL + 64u + 4u * GZ_SIGN_MAX_ITEMS)
 
 /* The one signing mode: key path (messages.md 7.1 mode 0), BIP 341 tweak of
  * the ordered aggregate key with the stated merkle root (or none: BIP 86),
@@ -249,6 +257,7 @@ struct gz_sign_round {
     uint8_t all_nonces_digest[GZ_SIGN_MAX_TIERS][32];
     uint8_t have_all_nonces[GZ_SIGN_MAX_TIERS];
     uint32_t acked;                 /* host: bit j = participant j acked */
+    uint32_t gave_up;               /* host: bit j = participant j sent a deadline abort (reason 4) while others still owed (review B, B4) */
     uint64_t status_tick[GZ_SIGN_MAX_PARTICIPANTS];   /* host: the tick a status request was last answered + 1 */
     /* member: its own saved messages and the host's it verified */
     uint32_t partials_len[GZ_SIGN_MAX_TIERS];
@@ -280,9 +289,9 @@ typedef struct {
     uint32_t attempts, next_seq;
     gz_sign_round_t rounds[GZ_SIGN_MAX_ROUNDS];
     /* Host: the contribution keys of members that answered "restarted"
-     * (reason 3) in this lobby, since the program's last gz_sign_begin; a
-     * second such answer is blamed (review A, F4). */
-    uint8_t restarted[GZ_SIGN_MAX_PARTICIPANTS][33];
+     * (reason 3) once without blame; a second such answer of the same key is
+     * blamed (review A, F4), whoever began the attempt (review B, B3). */
+    uint8_t restarted[GZ_SIGN_MAX_RESTARTED][33];
     size_t n_restarted;
     uint8_t known[GZ_SIGN_MAX_KNOWN][32];   /* the newest, at n % GZ_SIGN_MAX_KNOWN */
     size_t n_known;                         /* refused identifiers in all */
@@ -302,7 +311,7 @@ typedef struct {
      * isolation check refuses. */
     secp256k1_musig_partial_sig work_psig[GZ_SIGN_MAX_SIGNERS];
     uint8_t work_tx[GZ_SIGN_MAX_TX + 80];
-    uint8_t work_records[GZ_SIGN_MAX_PROPOSAL];
+    uint8_t work_records[GZ_SIGN_WORK_RECORDS];
 } gz_sign_t;
 
 /* What the engine counts, for tests and reports. */

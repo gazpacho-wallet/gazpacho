@@ -264,6 +264,8 @@ typedef struct {
     int which;
     void (*mutate_proposal)(gz_tree_proposal_t *p, int which);   /* tests only: damage what the host proposes */
     w_begin_t next;                             /* storage for a retry */
+    uint64_t retries;                           /* what the retry hook was told (w_retry) */
+    int last_released;
     uint16_t refuse;                            /* tests only: members refuse every proposal with this reason */
 } w_builder_t;
 
@@ -381,6 +383,7 @@ static int w_retry(void *ctx, const gz_sign_retry_in_t *in, gz_sign_begin_t *nex
     w_builder_t *b = ctx;
     uint8_t p[W_PARAMS];
     const gz_sign_round_t *r = in->failed;
+    b->retries++; b->last_released = in->released;
     w_params_of(r, p, b->flags);
     uint32_t mask = w_be32(p + 6), next_mask = 0;
     for (int j = 1; j < r->def.n_participants; j++) {
@@ -413,6 +416,22 @@ static void w_resign(uint8_t *msg, size_t len, uint32_t g)
     w_secret("test/contribution", g, sk);
     if (!secp256k1_keypair_create(w_ctx(), &kp, sk)) abort();
     secp256k1_schnorrsig_sign32(w_ctx(), msg + len - 64, d, &kp, aux);
+}
+
+/* `in` with one more record of `pad` bytes and an odd type no reader knows
+ * (messages.md 4.2: skipped, and covered by the signature), put before the
+ * signature when party `signer` signs the message again (-1: the message is
+ * not signed, the record goes last). Returns the new length. */
+static inline size_t w_pad(const uint8_t *in, size_t len, size_t pad, int signer, uint8_t *out)
+{
+    size_t at = signer >= 0 ? len - 66 : len;
+    memcpy(out, in, at);
+    out[at++] = 239;
+    if (pad < 253) out[at++] = (uint8_t)pad;
+    else { out[at++] = 0xfd; out[at++] = (uint8_t)(pad >> 8); out[at++] = (uint8_t)pad; }
+    memset(out + at, 0x41, pad); at += pad;
+    if (signer >= 0) { memcpy(out + at, in + len - 66, 66); at += 66; w_resign(out, at, (uint32_t)signer); }
+    return at;
 }
 
 /* A nonce entry (u32 index, 66 nonce, 64 sig) signed by party g. */
