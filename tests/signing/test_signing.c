@@ -594,7 +594,10 @@ static void damage(gz_sign_def_t *d, int which)
     case 6: d->n_items = GZ_SIGN_MAX_ITEMS + 1; break;
     case 7: d->participants[1].factory_key[0] = 5; break;                      /* not a key */
     case 8: memset(d->participants[1].contribution_key, 0xff, 32); break;     /* not a key */
-    case 9: d->n_tiers = 3; it->tier = 2; break;                              /* a tier skipped */
+    case 9: d->n_tiers = 3;                 /* a tier skipped: the items in reverse (children first, C6), the root alone in tier 2 */
+        for (int i = 0; i < d->n_items / 2; i++) { gz_sign_item_t t = d->items[i]; d->items[i] = d->items[d->n_items - 1 - i]; d->items[d->n_items - 1 - i] = t; }
+        it->tier = 2;
+        break;
     case 10: d->items[0].tier = 1; d->n_tiers = 2; break;                     /* tiers out of order */
     case 11: it->n_signers = 1; break;
     case 12: it->signers[it->n_signers - 1] = d->n_participants; break;       /* no such participant */
