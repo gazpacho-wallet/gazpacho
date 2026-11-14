@@ -91,6 +91,13 @@
  * Dead; a journal holding more live ones still starts, with every new round
  * refused until a start finds room (review A, F2). */
 #define GZ_SIGN_MAX_EXPOSURES    4096
+/* A member waits this many ticks longer than deadline_ticks for a tier's nonce
+ * set before it gives up (abort reason 4). Each party counts its own ticks, a
+ * member from when the proposal reached it, and the timers are not in step:
+ * with the same deadline_ticks on both sides and this margin, the host's own
+ * deadline always comes first, so an honest member never gives up before the
+ * host does (review B's confirmation, N1). */
+#define GZ_SIGN_NONCE_MARGIN_TICKS 2
 
 /* Message sizes (envelope included). A record's type and length take at
  * most 8 bytes here; 240, the signature, is 67. */
@@ -398,7 +405,7 @@ typedef struct {
      * GZ_ERR_FAILED until gz_sign_start rebuilds the engine from storage
      * (review A, F1; node.h: on any error the node is as it was). */
     int failed;
-    uint64_t counters[9];           /* see GZ_SIGN_COUNT_* */
+    uint64_t counters[10];          /* see GZ_SIGN_COUNT_* */
     uint8_t scratch[GZ_SIGN_MAX_MSG];
     gz_sign_def_t scratch_def;
     gz_sign_round_t pending;        /* a round is checked here before it takes a slot */
@@ -424,7 +431,8 @@ typedef struct {
 enum {
     GZ_SIGN_COUNT_NONCES_MADE = 0, GZ_SIGN_COUNT_PARTIALS_MADE, GZ_SIGN_COUNT_PSIGS_VERIFIED,
     GZ_SIGN_COUNT_FINALS_VERIFIED, GZ_SIGN_COUNT_BLAME_FAULT, GZ_SIGN_COUNT_BLAME_SILENT,
-    GZ_SIGN_COUNT_REJECTED, GZ_SIGN_COUNT_DUPLICATES, GZ_SIGN_COUNT_EVIDENCE
+    GZ_SIGN_COUNT_REJECTED, GZ_SIGN_COUNT_DUPLICATES, GZ_SIGN_COUNT_EVIDENCE,
+    GZ_SIGN_COUNT_GAVE_UP           /* host: attempts ended, nobody blamed, because a member had given up before the last nonces came */
 };
 
 /* Prepare an engine. `incarnation` is the runner's (runner.h): it never

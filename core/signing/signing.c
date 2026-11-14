@@ -1461,9 +1461,15 @@ static void host_nonces(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, const gz_si
         r->have_nonce[i] |= bit((unsigned)s);
     }
     if (members_missing(r, 0)) return;
-    /* Every nonce is in, and a member gave up waiting for them (reason 4): it will not sign, so the
-     * attempt ends here, with that member blamed (review B, B4). */
-    if (r->gave_up) { host_fail(e, r, r->gave_up, GZ_SIGN_WHY_MEMBER_ABORT, em); return; }   /* RULE:GAVE_UP_BLAMED */
+    /* Every nonce is in, but a member gave up waiting for them (reason 4) and will not sign: the
+     * attempt ends here, counted, with nobody blamed. The member that gave up waited as long as it
+     * was asked to, and the one whose nonces came last was in time by the host's own clock; blaming
+     * either would let a slow member decide who is removed (review B, B4; its confirmation, N1). */
+    if (r->gave_up) {
+        e->counters[GZ_SIGN_COUNT_GAVE_UP]++;
+        host_fail(e, r, 0, GZ_SIGN_WHY_MEMBER_ABORT, em);                        /* RULE:GAVE_UP_UNBLAMED */
+        return;
+    }
     for (int i = 0; i < r->def.n_items; i++)
         if (r->def.items[i].tier == r->tier && !make_session(e, r, i)) { host_fail(e, r, 0, GZ_SIGN_WHY_BAD_NONCE, em); return; }
     r->tier_state[r->tier] = GZ_SIGN_TIER_SIGNED;
@@ -1606,7 +1612,7 @@ static void host_message(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, em
         /* A member whose own step deadline passed (reason 4) while other members still owe their nonces
          * is not the one at fault, and whose clock runs out first must not decide who is removed. The
          * attempt goes on to the host's own deadline, which blames whoever is silent then; if the
-         * missing nonces do arrive, this member is the one that will not sign (host_nonces) (review B, B4). */
+         * missing nonces do arrive, the attempt ends with nobody blamed (host_nonces) (review B, B4, N1). */
         if (m->reason == 4 && r->tier_state[r->tier] == GZ_SIGN_TIER_NONCES && (members_missing(r, 0) & ~bit(j))) {   /* RULE:DEADLINE_ABORT_WAITS */
             r->gave_up |= bit(j);
             return;
@@ -2070,10 +2076,15 @@ gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *ev, gz_action_list_t 
             if (r->state == GZ_SIGN_ROUND_FREE) continue;
             if (e->cfg.host) { host_tick(e, r, &em); continue; }
             r->ticks++;
-            if (r->state == GZ_SIGN_ROUND_ACTIVE && r->tier_state[r->tier] == GZ_SIGN_TIER_NONCES && r->ticks >= e->cfg.deadline_ticks)
+            /* The nonce step: later than the host's own deadline by a margin, so that an honest member
+             * never gives up before the host does (N1). */
+            if (r->state == GZ_SIGN_ROUND_ACTIVE && r->tier_state[r->tier] == GZ_SIGN_TIER_NONCES &&
+                r->ticks >= (uint64_t)e->cfg.deadline_ticks + GZ_SIGN_NONCE_MARGIN_TICKS)   /* RULE:NONCE_MARGIN */
                 member_fail(e, r, GZ_SIGN_WHY_DEADLINE, &em);
-            else if (r->state == GZ_SIGN_ROUND_ACTIVE && r->ever_partial && r->ticks >= e->cfg.deadline_ticks) {
-                /* the result has not come within the step timeout: Unfinished (spec section 6, step 8) */
+            else if (r->state == GZ_SIGN_ROUND_ACTIVE && r->ever_partial && r->tier_state[r->tier] != GZ_SIGN_TIER_NONCES &&
+                     r->ticks >= e->cfg.deadline_ticks) {
+                /* the result has not come within the step timeout: Unfinished (spec section 6, step 8). Not in
+                 * a later tier's nonce step, which has the margin above (N1). */
                 r->state = GZ_SIGN_ROUND_UNFINISHED; r->why = GZ_SIGN_WHY_DEADLINE; r->ticks = 0;
                 member_resend(e, r, &em);
             } else if (r->state == GZ_SIGN_ROUND_UNFINISHED && e->cfg.unfinished_ticks && r->ticks >= e->cfg.unfinished_ticks) {
