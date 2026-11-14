@@ -953,22 +953,22 @@ static void test_definitions(int print)
 /* Transcript digests of the scenarios (scenarios.h). After an intended change:
  * run "test_signing golden-print", check what changed, update. */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
-    0x3019f11ce6c6371eull, /* honest-1 */
-    0xaa68b9375ca7f2cbull, /* honest-2 */
-    0xf768fc5df9ae3600ull, /* duplicates */
-    0xe83624ff1416866bull, /* member-restart-nonces */
-    0x21a11886f51c4816ull, /* member-restart-signed */
-    0x4599dbe2fe79bfaeull, /* tier-abort */
-    0x2be676722e9b47f1ull, /* host-restarts */
-    0x7d576a6155ff8907ull, /* timers */
-    0xed2046bfca206e0bull, /* host-faults */
-    0x418e111b10c8cd05ull, /* member-faults */
-    0xbca0101572ec4e6bull, /* proposals */
-    0xc464b5651ca52d0dull, /* journal */
-    0x5eea8ae60966c09cull, /* edges */
-    0x9463dda8569004e0ull, /* reconnect */
-    0x23b495c66d0e1076ull, /* records */
-    0x4e3c836601ddc368ull, /* exposure */
+    0x9a5bdac3ec22b0c0ull, /* honest-1 */
+    0x67c6eb5fc98e32c9ull, /* honest-2 */
+    0xaebd3311f0b69fcfull, /* duplicates */
+    0xfa8f4a29da7b92bfull, /* member-restart-nonces */
+    0x0fb119a7d415e9faull, /* member-restart-signed */
+    0x042e34c0715de228ull, /* tier-abort */
+    0x40b07b1416fedbc3ull, /* host-restarts */
+    0xc18536e9f1343f75ull, /* timers */
+    0xf280a19ad7e1ebe6ull, /* host-faults */
+    0xf0f739e33eb74750ull, /* member-faults */
+    0x07c7182a0178b96cull, /* proposals */
+    0x1d28a0dca0606725ull, /* journal */
+    0x486a97e6ee2d199cull, /* edges */
+    0xfef66b344c326edaull, /* reconnect */
+    0xb7eb7fcb0f64ab2aull, /* records */
+    0x943e222447bab8ffull, /* exposure */
 };
 
 static void test_golden(int print)
@@ -1391,79 +1391,64 @@ static void test_blame_across_attempts(void)
     h_free(&h);
 }
 
-/* Review B, B4 (probe P12) and its confirmation, N1 (probe C1): a member that
- * gives up at its own step deadline (reason 4) while another member still
- * owes its nonces is never blamed in its place, and whose clock runs out
- * first does not decide who is removed.
- *   - The silent member is blamed, at the host's own deadline.
- *   - If the slow member's nonces do arrive after others gave up, the attempt
- *     ends with nobody blamed, counted.
- *   - A member waits GZ_SIGN_NONCE_MARGIN_TICKS longer than the host for a
- *     nonce set, so with the same deadline on both sides an honest member
- *     never gives up before the host does. */
+/* Review B, B4 (probe P12) and its confirmations, N1 (probe C1) and N1b
+ * (probe E1): the deadline of the nonce step and who is blamed for it.
+ *   - Both sides take the deadline from the proposal's nonces_due_ms, the
+ *     member's with a margin, whatever each one's own configuration says: the
+ *     host's deadline always passes first.
+ *   - A silent member is blamed, at the host's deadline; the members that
+ *     waited are not, and they never give up before it.
+ *   - A slow member whose nonces arrive inside the deadline completes.
+ *   - A reason 4 that reaches the host while its attempt still runs was sent
+ *     early: its sender is blamed at once, in every attempt, whoever else
+ *     still owes nonces. */
 static void test_deadline_abort(void)
 {
     harness_t h;
     uint8_t id[32], buf[512];
     const gz_sign_round_t *f;
-    /* members 1 and 3 with a deadline of 6 ticks, the host's 30; member 2 is silent */
+    /* Configurations that disagree (the host's deadline_ticks 30, the members' 6) change nothing: the
+     * proposal says 12. Member 2 is silent: the host blames it at tick 12, and nobody gave up before. */
     h_init(&h, 3);
     h.p[0].e->cfg.deadline_ticks = 30;
     for (uint32_t g = 1; g <= 3; g++) h.p[g].e->cfg.deadline_ticks = 6;
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     memcpy(id, h_newest(&h, 0)->id, 32);
+    CHECK(h_newest(&h, 0)->nonce_ticks == 12);
     int failed_at = 0;
     for (int t = 1; t <= 60 && !failed_at; t++) {
         for (uint32_t g = 0; g <= 3; g++) h_tick(&h, g);
-        flush_but(&h, 2, 1);
         f = h_find(&h, 0, id);
-        if (f && f->state == GZ_SIGN_ROUND_FAILED) failed_at = t;
-        else if (t == 12) CHECK(f && f->state == GZ_SIGN_ROUND_ACTIVE && f->gave_up == 0xau && h_count_kind(&h, 1, GZ_SIGN_MSG_ABORT) == 1);
+        if (f && f->state == GZ_SIGN_ROUND_FAILED) {
+            failed_at = t;
+            CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_ABORT) == 0 && h_count_kind(&h, 3, GZ_SIGN_MSG_ABORT) == 0);   /* nobody gave up first */
+        }
+        flush_but(&h, 2, 1);
     }
     f = h_find(&h, 0, id);
-    CHECK(failed_at == 30 && f && f->why == GZ_SIGN_WHY_DEADLINE && f->blamed == 4u);   /* the silent one, at the host's deadline */
-    CHECK(h.p[0].e->counters[GZ_SIGN_COUNT_GAVE_UP] == 0);
+    CHECK(failed_at == 12 && f && f->why == GZ_SIGN_WHY_DEADLINE && f->blamed == 4u);   /* the silent one, at the host's deadline */
+    CHECK(h_find(&h, 1, id) && h_find(&h, 1, id)->nonce_ticks == 12 + GZ_SIGN_NONCE_MARGIN_TICKS);
     f = h_newest(&h, 0);                                                 /* the retry keeps members 1 and 3 */
     CHECK(f && f->def.n_participants == 3 && f->def.peer[1] == 1 && f->def.peer[2] == 3);
     h_free(&h);
-    /* equal deadlines: the host's own fires first, the same member is blamed, nobody gave up */
+    /* A slow member inside the deadline: member 2's nonces arrive at tick 11. Nobody gave up, the round
+     * completes, nobody is blamed. */
     h_init(&h, 3);
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     memcpy(id, h_newest(&h, 0)->id, 32);
-    for (int t = 1; t <= 12; t++) { for (uint32_t g = 0; g <= 3; g++) h_tick(&h, g); flush_but(&h, 2, 1); }
-    f = h_find(&h, 0, id);
-    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_DEADLINE && f->blamed == 4u && f->gave_up == 0);
-    h_free(&h);
-    /* N1, the reviewer's probe C1: honest members 1 and 3 (deadline 6), slow member 2, the host's deadline 30.
-     * Member 2's nonces arrive at tick 8, before the others' margin is over: nobody gave up, the round
-     * completes. At tick 12, after they gave up: the attempt ends with nobody blamed, and is counted. */
-    for (int arrive = 8; arrive <= 12; arrive += 4) {
-        h_init(&h, 3);
-        h.p[0].e->cfg.deadline_ticks = 30; h.p[2].e->cfg.deadline_ticks = 30;
-        h.p[1].e->cfg.deadline_ticks = 6; h.p[3].e->cfg.deadline_ticks = 6;
-        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
-        memcpy(id, h_newest(&h, 0)->id, 32);
-        for (int t = 1; t <= 40; t++) {
-            for (uint32_t g = 0; g <= 3; g++) h_tick(&h, g);
-            flush_but(&h, 2, 0);                                         /* member 2's messages wait */
-            if (t >= arrive) h_flush(&h, 100000);                        /* and from then on arrive */
-            f = h_find(&h, 0, id);
-            if (!f || f->state != GZ_SIGN_ROUND_ACTIVE) break;
-        }
-        f = h_find(&h, 0, id);
-        if (arrive == 8) {
-            CHECK(f && f->state == GZ_SIGN_ROUND_DONE && f->blamed == 0 && f->gave_up == 0);
-            CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_ABORT) == 0 && h_count_kind(&h, 3, GZ_SIGN_MSG_ABORT) == 0);
-        } else {
-            CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_MEMBER_ABORT && f->blamed == 0 && f->gave_up == 0xau);
-            CHECK(h.p[0].e->counters[GZ_SIGN_COUNT_GAVE_UP] == 1 && h.p[0].e->counters[GZ_SIGN_COUNT_BLAME_SILENT] == 0);
-            CHECK(f->tier_state[0] == GZ_SIGN_TIER_NONCES);              /* no nonce set went out for nothing */
-            f = h_newest(&h, 0);                                         /* the next attempt has all three again */
-            CHECK(f && memcmp(f->id, id, 32) != 0 && f->def.n_participants == 4);
-        }
-        h_free(&h);
+    for (int t = 1; t <= 11; t++) {
+        for (uint32_t g = 0; g <= 3; g++) h_tick(&h, g);
+        flush_but(&h, 2, 0);                                             /* member 2's messages wait */
     }
-    /* the margin itself: a member waits deadline_ticks and two more for the nonce set, then gives up */
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_ACTIVE && h_count_kind(&h, 1, GZ_SIGN_MSG_ABORT) == 0);
+    h_flush(&h, 100000);
+    CHECK(f && f->state == GZ_SIGN_ROUND_DONE && f->blamed == 0);
+    for (uint32_t g = 1; g <= 3; g++) CHECK(h_count_kind(&h, g, GZ_SIGN_MSG_ABORT) == 0);
+    CHECK(h.p[0].e->counters[GZ_SIGN_COUNT_BLAME_SILENT] == 0 && h.p[0].e->counters[GZ_SIGN_COUNT_BLAME_FAULT] == 0);
+    h_free(&h);
+    /* The margin itself: a member waits the proposal's deadline and two ticks more for the nonce set,
+     * then gives up. By then the host's attempt has ended, and the abort changes nothing there. */
     h_init(&h, 3);
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     memcpy(id, h_newest(&h, 0)->id, 32);
@@ -1471,22 +1456,59 @@ static void test_deadline_abort(void)
         long q = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
         CHECK(q >= 0);
         if (q >= 0) h_deliver(&h, (size_t)q, 0);
-        for (uint32_t t = 0; t < h.deadline_ticks + GZ_SIGN_NONCE_MARGIN_TICKS - 1; t++) h_tick(&h, 1);
+        while (h.nq) h_drop_msg(&h, 0);                                  /* everything else is lost: the host hears nobody */
+        for (uint32_t t = 0; t < 12 + GZ_SIGN_NONCE_MARGIN_TICKS - 1; t++) { h_tick(&h, 0); h_tick(&h, 1); while (h.nq) h_drop_msg(&h, 0); }
         f = h_find(&h, 1, id);
         CHECK(f && f->state == GZ_SIGN_ROUND_ACTIVE && h_count_kind(&h, 1, GZ_SIGN_MSG_ABORT) == 0);
+        CHECK(h_find(&h, 0, id)->state == GZ_SIGN_ROUND_FAILED && h_find(&h, 0, id)->blamed == 0xeu);   /* the host's deadline came first */
         h_tick(&h, 1);
         CHECK(f && f->state == GZ_SIGN_ROUND_ABORTED && f->why == GZ_SIGN_WHY_DEADLINE);
         CHECK(check_abort(h_sent_kind(&h, 1, GZ_SIGN_MSG_ABORT, 0), 4, WHOLE, 0, NULL));
+        h_flush(&h, 100000);                                             /* the member's abort reaches the host: nothing changes */
+        CHECK(h_find(&h, 0, id)->state == GZ_SIGN_ROUND_FAILED && h_find(&h, 0, id)->blamed == 0xeu && h_find(&h, 0, id)->why == GZ_SIGN_WHY_DEADLINE);
     }
     h_free(&h);
-    /* a deadline abort when nobody else owes anything is the member's own: blamed */
+    /* N1b, the reviewer's probe E1: member 1 sends its nonces and then, at once, a signed reason 4, while
+     * member 2's nonces are still on their way. It is blamed at once, and again in every attempt the
+     * program begins with it (no retry hook): it never fails one with nobody blamed. */
+    h_init(&h, 3);
+    h.p[0].e->cfg.retry = NULL;
+    int unblamed = 0;
+    for (int k = 0; k < 6; k++) {
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        memcpy(id, h_newest(&h, 0)->id, 32);
+        flush_but(&h, 2, 0);                                             /* members 1 and 3 delivered; member 2's nonces wait */
+        h_inject(&h, 1, 0, buf, make_abort(buf, id, 4, 1));
+        f = h_find(&h, 0, id);
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_MEMBER_ABORT && f->blamed == 2u);
+        unblamed += !f || f->blamed == 0;
+        h_flush(&h, 100000);                                             /* member 2's nonces arrive: too late to change it */
+        f = h_find(&h, 0, id);
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 2u && f->tier_state[0] == GZ_SIGN_TIER_NONCES);
+    }
+    CHECK(unblamed == 0 && h.p[0].e->counters[GZ_SIGN_COUNT_BLAME_SILENT] == 6);
+    h_free(&h);
+    /* and with the retry hook: the next attempt leaves member 1 out and completes */
     h_init(&h, 3);
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     memcpy(id, h_newest(&h, 0)->id, 32);
-    flush_but(&h, 1, 1);                                                 /* members 2 and 3 delivered; member 1's nonces lost */
+    flush_but(&h, 2, 0);
     h_inject(&h, 1, 0, buf, make_abort(buf, id, 4, 1));
     f = h_find(&h, 0, id);
-    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_MEMBER_ABORT && f->blamed == 2u);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 2u);
+    h_flush(&h, 100000);
+    f = h_newest(&h, 0);
+    CHECK(f && f->state == GZ_SIGN_ROUND_DONE && f->def.n_participants == 3 && f->def.peer[1] == 2 && f->def.peer[2] == 3 && h.p[0].e->attempts == 2);
+    h_free(&h);
+    /* a reason 4 once the nonce sets are out: its sender owes its partial signatures, and is blamed */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    while (h.nq && h_count_kind(&h, 0, GZ_SIGN_MSG_ALL_NONCES) == 0) h_deliver(&h, 0, 0);
+    CHECK(h_find(&h, 0, id)->tier_state[0] == GZ_SIGN_TIER_SIGNED);
+    h_inject(&h, 3, 0, buf, make_abort(buf, id, 4, 3));
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_MEMBER_ABORT && f->blamed == 8u);
     h_free(&h);
 }
 

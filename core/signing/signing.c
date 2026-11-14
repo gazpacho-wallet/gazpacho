@@ -595,6 +595,16 @@ static size_t unresolved(gz_sign_t *e)
     return n;
 }
 
+/* The nonce step's deadline in this party's ticks, from the proposal's nonces_due_ms: the host's rounded
+ * down, a member's rounded up and with its margin (signing.h, GZ_SIGN_NONCE_MARGIN_TICKS). */
+static uint32_t nonce_deadline(const gz_sign_t *e, uint32_t due_ms)
+{
+    uint64_t t = e->cfg.host ? due_ms / e->cfg.tick_ms : (due_ms + e->cfg.tick_ms - 1) / e->cfg.tick_ms;
+    if (t < 1) t = 1;
+    if (!e->cfg.host) t += GZ_SIGN_NONCE_MARGIN_TICKS;                           /* RULE:NONCE_MARGIN */
+    return t > 0xffffffffu ? 0xffffffffu : (uint32_t)t;
+}
+
 /* Read a round_propose (the envelope `bytes`, whose view is `m`) into `r`:
  * the host's signature, the proposal's own consistency, the builder, the
  * engine's checks of what it built, and the identifier. `peer` is where it
@@ -660,6 +670,7 @@ static uint8_t load_round(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_t 
     memcpy(r->id, id, 32);
     r->attempt = pr->has_attempt ? pr->attempt : 0;
     r->seq = ++e->next_seq;
+    r->nonce_ticks = nonce_deadline(e, pr->p.nonces_due_ms);
     r->proposal_len = (uint32_t)len;
     memcpy(r->proposal, bytes, len);
     r->state = GZ_SIGN_ROUND_ACTIVE;
@@ -1472,15 +1483,6 @@ static void host_nonces(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, const gz_si
         r->have_nonce[i] |= bit((unsigned)s);
     }
     if (members_missing(r, 0)) return;
-    /* Every nonce is in, but a member gave up waiting for them (reason 4) and will not sign: the
-     * attempt ends here, counted, with nobody blamed. The member that gave up waited as long as it
-     * was asked to, and the one whose nonces came last was in time by the host's own clock; blaming
-     * either would let a slow member decide who is removed (review B, B4; its confirmation, N1). */
-    if (r->gave_up) {
-        e->counters[GZ_SIGN_COUNT_GAVE_UP]++;
-        host_fail(e, r, 0, GZ_SIGN_WHY_MEMBER_ABORT, em);                        /* RULE:GAVE_UP_UNBLAMED */
-        return;
-    }
     for (int i = 0; i < r->def.n_items; i++)
         if (r->def.items[i].tier == r->tier && !make_session(e, r, i)) { host_fail(e, r, 0, GZ_SIGN_WHY_BAD_NONCE, em); return; }
     r->tier_state[r->tier] = GZ_SIGN_TIER_SIGNED;
@@ -1520,19 +1522,29 @@ static void host_partials(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, const gz_
     if (!members_missing(r, 1)) host_combine(e, r, em);
 }
 
-/* Whom a member's signed abort blames (review A, F4; review B, B3; spec
- * section 10: a fault costs a seat, not the lobby).
+/* Whom a member's signed abort blames, while the host's attempt runs (after
+ * it ended, an abort changes nothing). Spec section 10: a fault costs a seat,
+ * not the lobby; review A, F4; review B, B3, B4, N1, N1b. Every abort ends
+ * the attempt; the question is only whether its sender sits in the next one.
  *   Reason 3 (it restarted) is honest once for a member's key, which is its
  *   seat in one lobby: a second one is blamed, whichever attempt it comes in
  *   and whoever began that attempt (the engine's retry or the program).
+ *   Reason 4 (its step deadline passed) is blamed. A member's deadline for a
+ *   nonce set is the host's own (the proposal's nonces_due_ms) and a margin,
+ *   counted from later, so the host's deadline, which blames whoever is
+ *   silent, always passes first and ends the attempt: a reason 4 that finds
+ *   the attempt still running was sent early. An honest member never sends
+ *   one then; a member that does is the one keeping the others from signing,
+ *   whoever else is slow. (Once the nonce sets are out, a member that still
+ *   waits for one owes its partial signatures and says it will not send
+ *   them: it is the one the host's deadline would name.)
  *   Reason 6 (another round on its outputs) is honest only if this host's own
  *   records show another round on the same funding outpoint from which a
  *   partial signature may have left: only such a round can be unresolved at
  *   an honest member (C10; a round that ended before any partial signature
  *   is Aborted there and blocks nothing). Otherwise the member is blamed.
- *   Any other reason is the member's own refusal: blamed. (A deadline, reason
- *   4, in the nonce step while others still owe nonces never comes here: see
- *   host_message.) */
+ *   Any other reason is the member's own refusal of the round: blamed, since
+ *   the next attempt can only succeed without it. */
 static uint32_t abort_blame(gz_sign_t *e, const gz_sign_round_t *r, uint8_t j, uint16_t reason)
 {
     const uint8_t *key = r->def.participants[j].contribution_key;
@@ -1543,6 +1555,7 @@ static uint32_t abort_blame(gz_sign_t *e, const gz_sign_round_t *r, uint8_t j, u
         memcpy(e->restarted[e->n_restarted++], key, 33);
         return 0;
     }
+    if (reason == 4) return bit(j);                                                /* RULE:BLAME_EARLY_DEADLINE */
     if (reason == 6) {
         for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
             const gz_sign_round_t *o = &e->rounds[i];
@@ -1619,17 +1632,8 @@ static void host_message(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, em
     if (r->state != GZ_SIGN_ROUND_ACTIVE) return;
     if (m->kind == GZ_SIGN_MSG_NONCES) host_nonces(e, r, j, m, em);
     else if (m->kind == GZ_SIGN_MSG_PARTIALS) host_partials(e, r, j, m, em);
-    else if (m->kind == GZ_SIGN_MSG_ABORT && signed_by(e, m, r->def.participants[j].contribution_key)) {
-        /* A member whose own step deadline passed (reason 4) while other members still owe their nonces
-         * is not the one at fault, and whose clock runs out first must not decide who is removed. The
-         * attempt goes on to the host's own deadline, which blames whoever is silent then; if the
-         * missing nonces do arrive, the attempt ends with nobody blamed (host_nonces) (review B, B4, N1). */
-        if (m->reason == 4 && r->tier_state[r->tier] == GZ_SIGN_TIER_NONCES && (members_missing(r, 0) & ~bit(j))) {   /* RULE:DEADLINE_ABORT_WAITS */
-            r->gave_up |= bit(j);
-            return;
-        }
+    else if (m->kind == GZ_SIGN_MSG_ABORT && signed_by(e, m, r->def.participants[j].contribution_key))
         host_fail(e, r, abort_blame(e, r, j, m->reason), GZ_SIGN_WHY_MEMBER_ABORT, em);
-    }
 }
 
 /* The host's proposal: encoded once with a zero identifier and read back as
@@ -1737,7 +1741,11 @@ static void host_tick(gz_sign_t *e, gz_sign_round_t *r, emit_t *em)
     if (r->state != GZ_SIGN_ROUND_ACTIVE) return;
     psigs = r->tier_state[r->tier] == GZ_SIGN_TIER_SIGNED;
     miss = members_missing(r, psigs);
-    if (r->ticks >= e->cfg.deadline_ticks) { host_fail(e, r, miss, GZ_SIGN_WHY_DEADLINE, em); return; }
+    /* The nonce step ends at the proposal's nonces_due_ms, for the host and (with a margin) its members alike. */
+    if (r->ticks >= (psigs ? e->cfg.deadline_ticks : r->nonce_ticks)) {            /* RULE:NONCE_DUE_FROM_PROPOSAL */
+        host_fail(e, r, miss, GZ_SIGN_WHY_DEADLINE, em);
+        return;
+    }
     /* The step timer (contract v2 section 3): the only repair of the nonce phase. */
     for (uint8_t j = 1; resend && j < r->def.n_participants; j++) {
         if (!(miss >> j & 1u)) continue;
@@ -2090,10 +2098,9 @@ gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *ev, gz_action_list_t 
             if (r->state == GZ_SIGN_ROUND_FREE) continue;
             if (e->cfg.host) { host_tick(e, r, &em); continue; }
             r->ticks++;
-            /* The nonce step: later than the host's own deadline by a margin, so that an honest member
-             * never gives up before the host does (N1). */
-            if (r->state == GZ_SIGN_ROUND_ACTIVE && r->tier_state[r->tier] == GZ_SIGN_TIER_NONCES &&
-                r->ticks >= (uint64_t)e->cfg.deadline_ticks + GZ_SIGN_NONCE_MARGIN_TICKS)   /* RULE:NONCE_MARGIN */
+            /* The nonce step: the proposal's nonces_due_ms and a margin, so later than the host's own
+             * deadline: an honest member never gives up before the host does (N1, N1b). */
+            if (r->state == GZ_SIGN_ROUND_ACTIVE && r->tier_state[r->tier] == GZ_SIGN_TIER_NONCES && r->ticks >= r->nonce_ticks)
                 member_fail(e, r, GZ_SIGN_WHY_DEADLINE, &em);
             else if (r->state == GZ_SIGN_ROUND_ACTIVE && r->ever_partial && r->tier_state[r->tier] != GZ_SIGN_TIER_NONCES &&
                      r->ticks >= e->cfg.deadline_ticks) {

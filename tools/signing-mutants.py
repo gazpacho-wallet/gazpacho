@@ -79,9 +79,9 @@ RULES = {
     "REPLAY_SUPERSEDES": ("{ o->state = GZ_SIGN_ROUND_UNFINISHED; o->why = GZ_SIGN_WHY_SUPERSEDED; }", "{ }"),
     # review B: B3 and B4 (blame), B9 (resends)
     "EXCUSE_ONLY_RELEASED": ("may_have_released(o, o->why) &&", ""),
-    "DEADLINE_ABORT_WAITS": ("if (m->reason == 4 &&", "if (0 &&"),
-    "GAVE_UP_UNBLAMED": ("host_fail(e, r, 0, GZ_SIGN_WHY_MEMBER_ABORT, em);", "host_fail(e, r, r->gave_up, GZ_SIGN_WHY_MEMBER_ABORT, em);"),
-    "NONCE_MARGIN": ("+ GZ_SIGN_NONCE_MARGIN_TICKS)", ")"),
+    "BLAME_EARLY_DEADLINE": ("if (reason == 4) return bit(j);", "if (reason == 4) return 0;"),
+    "NONCE_MARGIN": ("if (!e->cfg.host) t += GZ_SIGN_NONCE_MARGIN_TICKS;", ""),
+    "NONCE_DUE_FROM_PROPOSAL": ("(psigs ? e->cfg.deadline_ticks : r->nonce_ticks)", "e->cfg.deadline_ticks"),
     "ANSWER_RATE": ("if (r->status_tick[j] &&", "if (0 &&"),
     # review B: B1 (what is saved is read back), B10 (a filter hit at a start), B5 (rounds that left memory,
     # across a start), B8 (Dead leaves C7), B11 (a failed start wipes)
