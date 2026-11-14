@@ -479,7 +479,11 @@ int gz_lobby_member_may_sign(const gz_lobby_member_t *m, const uint8_t check_id[
  * (lobby_state) so that gz_lobby_member_resume never hands a finished check
  * over again: Funding and Active are shown (GZ_NOTE_SEAT), also after a
  * cancel; Retry spends the start so that the next check's start is taken;
- * Failed waits for the host's cancel. */
-gz_status_t gz_lobby_member_round_result(gz_lobby_member_t *m, int outcome, gz_action_list_t *out);
+ * Failed waits for the host's cancel. `check_id` is the check of the round
+ * that ended (the hand-off's check_id), required for GZ_LOBBY_ROUND_RETRY and
+ * not read otherwise: a Retry acts only if it names the check of the start
+ * the member holds; a Retry for another (older) check is ignored. */
+gz_status_t gz_lobby_member_round_result(gz_lobby_member_t *m, int outcome, const uint8_t *check_id,
+                                         gz_action_list_t *out);
 
 #endif

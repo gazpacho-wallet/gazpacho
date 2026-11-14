@@ -680,10 +680,18 @@ static void member_script(const uint8_t *d, size_t n)
             uint8_t sc[32];
             int outcome = 1 + arg % 4, began = M.start_len && M.role == 1 &&
                           gz_lobby_decode(M.start_msg, M.start_len, &g) == GZ_DEC_OK;
+            int other = outcome == GZ_LOBBY_ROUND_RETRY && (arg & 64);   /* a Retry naming another check */
+            size_t q;
             memset(sc, 0, sizeof sc);
             if (began) memcpy(sc, g.check_id, 32);
             lreset();
-            st = gz_lobby_member_round_result(&M, outcome, &L);
+            if (other) {
+                sc[0] ^= 1;
+                st = gz_lobby_member_round_result(&M, outcome, sc, &L);
+                for (q = 0; q < L.count; q++) MUST(L.slots[q].kind != GZ_ACTION_SAVE);   /* ignored */
+                break;
+            }
+            st = gz_lobby_member_round_result(&M, outcome, sc, &L);
             if (st == GZ_OK && began && outcome != GZ_LOBBY_ROUND_FAILED && !refused_now()) {
                 keep();
                 finish(sc, from, GZ_REC_LOBBY_STATE, GZ_REC_LOBBY_STATE);

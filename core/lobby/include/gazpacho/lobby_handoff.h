@@ -114,9 +114,13 @@ typedef struct {
  * lobby, once a round was ever handed over, cannot tell a late report from a
  * current one).
  *
- * A Retry names no check. The member spends its saved start; it withdraws
- * its answer only if that answer is to the spent start's check, so an answer
- * to a later check given before the Retry arrived stands. */
+ * A Retry names its check: the check_id of the hand-off whose round ended
+ * (gz_lobby_member_round_result's `check_id`, required). The member acts on
+ * it only if that is the check of the start it holds, and then spends that
+ * start; a Retry for an older check, reported after the next check's start
+ * arrived, is ignored, so the next check proceeds. It withdraws its answer
+ * only if that answer is to the spent start's check, so an answer to a later
+ * check given before the Retry arrived stands. */
 #define GZ_LOBBY_ROUND_FUNDING 1     /* the creation is signed: funding */
 #define GZ_LOBBY_ROUND_ACTIVE  2     /* the factory is funded */
 #define GZ_LOBBY_ROUND_RETRY   3     /* host: members named failed; the rest go back to Ready.

@@ -296,10 +296,13 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
     coordinator's decision). The member saves its round's outcome in its own
     `lobby_state` record: a retry spends its saved start, and the answer to
     that start's check, so a start for it resent by a host that is behind is
-    ignored. The record names that check: the Retry itself names none, and a
-    member that answered the next check before its signing engine reported
-    the retry keeps that answer (confirmation review, N1). Funding or Active
-    are its creation's state. So
+    ignored. The Retry names its check (the hand-off's `check_id`) and is
+    taken only for the check of the start the member holds: a Retry for an
+    older check, reported after the next check's start arrived, is ignored,
+    and a member that answered the next check before its signing engine
+    reported the retry keeps that answer (confirmation review, N1). The
+    record names the check too, and restore applies the same rule. Funding
+    or Active are its creation's state. So
     `gz_lobby_member_resume` never hands a finished check to the signing
     engine again, and the shown state survives a restart. A crash can still
     lose that save, so the hand-off stays idempotent: `begin` for a finished

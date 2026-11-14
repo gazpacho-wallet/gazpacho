@@ -10,8 +10,9 @@
  *   LOBBY_ENDED    state u8 (0: the member left), reason u16, u16 len, the cancel
  *   LOBBY_STATE    state u8: the signing engine's outcome, so that a restart
  *                  never hands a finished check to the signing engine again:
- *                  1 Open (a retry) then the spent start's check_id (32): the
- *                  start is spent, and the answer too if it is to that check;
+ *                  1 Open (a retry) then the check_id it named (32), which is
+ *                  the held start's: the start is spent, and the answer too if
+ *                  it is to that check;
  *                  4 Funding or 5 Active (the u8 alone) */
 #include "lobby_internal.h"
 #include <string.h>
@@ -296,10 +297,18 @@ int gz_lobby_member_may_sign(const gz_lobby_member_t *m, const uint8_t check_id[
            memcmp(m->answered_check, check_id, 32) == 0 && m->ready_version == m->frozen_version;
 }
 
-/* A retry spent the saved start, of check `check`. The answer goes too if it
- * is to that check, so a start for it resent by a host that is behind is
- * ignored; an answer to a later check, given before the signing engine
- * reported the retry, stands (confirmation review, N1). */
+/* A Retry names its check; it spends the saved start only if that start is
+ * of the check named (holds_start_of). The answer goes too if it is to that
+ * check, so a start for it resent by a host that is behind is ignored; an
+ * answer to a later check, given before the signing engine reported the
+ * retry, stands (confirmation review, N1). */
+static int holds_start_of(const gz_lobby_member_t *m, const uint8_t check[32])
+{
+    gz_lobby_msg_t g;
+    return m->start_len && gz_lobby_decode(m->start_msg, m->start_len, &g) == GZ_DEC_OK &&
+           memcmp(g.check_id, check, 32) == 0;
+}
+
 static void spend_start(gz_lobby_member_t *m, const uint8_t check[32])
 {
     m->start_len = 0;
@@ -563,7 +572,9 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
         if (len == 33 ? p[0] != GZ_LOBBY_OPEN : (len != 1 || (p[0] != GZ_LOBBY_FUNDING && p[0] != GZ_LOBBY_ACTIVE)))
             return GZ_ERR_CORRUPT;
         if (m->stale_seat) return GZ_OK;              /* an older epoch's round */
-        if (p[0] == GZ_LOBBY_OPEN) spend_start(m, p + 1);
+        if (p[0] == GZ_LOBBY_OPEN) {                  /* the same rule as live */
+            if (holds_start_of(m, p + 1)) spend_start(m, p + 1);
+        }
         else m->round_state = m->lobby_state = p[0];
         return GZ_OK;
     default:
@@ -581,11 +592,13 @@ gz_status_t gz_lobby_member_resume(gz_lobby_member_t *m, gz_action_list_t *out)
     return begin_signing(m, 1, out);
 }
 
-gz_status_t gz_lobby_member_round_result(gz_lobby_member_t *m, int outcome, gz_action_list_t *out)
+gz_status_t gz_lobby_member_round_result(gz_lobby_member_t *m, int outcome, const uint8_t *check_id,
+                                         gz_action_list_t *out)
 {
     uint8_t st8, r[33];
-    gz_lobby_msg_t g;
-    if (!m || !out || outcome < GZ_LOBBY_ROUND_FUNDING || outcome > GZ_LOBBY_ROUND_FAILED) return GZ_ERR_ARGUMENT;
+    if (!m || !out || outcome < GZ_LOBBY_ROUND_FUNDING || outcome > GZ_LOBBY_ROUND_FAILED ||
+        (outcome == GZ_LOBBY_ROUND_RETRY && !check_id))
+        return GZ_ERR_ARGUMENT;
     if (outcome == GZ_LOBBY_ROUND_FUNDING || outcome == GZ_LOBBY_ROUND_ACTIVE) {
         /* Saved, so that a restart never hands this check over again (review
          * B, B2); taken also after a cancel, since a completed creation stands
@@ -599,10 +612,12 @@ gz_status_t gz_lobby_member_round_result(gz_lobby_member_t *m, int outcome, gz_a
         return note2(out, GZ_NOTE_SEAT, (uint8_t)m->lobby_state, (uint8_t)m->seat_state);
     }
     if (m->ended || m->round_state >= GZ_LOBBY_FUNDING) return gz_la_cmd_refused(out, GZ_CMD_ROUND_RESULT, m->lobby_state);
-    if (outcome == GZ_LOBBY_ROUND_RETRY && m->start_len) {   /* the start is spent; the next check's is new */
+    /* A Retry for the check of the start held: that start is spent, the next
+     * check's is new. A Retry for another check, an older one whose report
+     * came late, is ignored: the start held, and the answer to it, stand. */
+    if (outcome == GZ_LOBBY_ROUND_RETRY && holds_start_of(m, check_id)) {
         r[0] = GZ_LOBBY_OPEN;
-        if (gz_lobby_decode(m->start_msg, m->start_len, &g) != GZ_DEC_OK) return GZ_ERR_CORRUPT;   /* verified when taken */
-        memcpy(r + 1, g.check_id, 32);
+        memcpy(r + 1, check_id, 32);
         TRY(gz_la_save1(out, GZ_REC_LOBBY_STATE, r, sizeof r));
         spend_start(m, r + 1);
     }

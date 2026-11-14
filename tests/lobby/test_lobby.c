@@ -817,6 +817,17 @@ static gz_status_t hin(int kind, int who, const uint8_t *b, size_t n);
 /* A new connection for member `who` (its per-connection counts start afresh). */
 static void fresh(int who) { hin(GZ_LIN_DISCONNECTED, who, NULL, 0); hin(GZ_LIN_CONNECTED, who, NULL, 0); }
 
+/* The check of the start a member holds (zeros if none): what its signing
+ * engine names in a Retry for the round it was handed. */
+static const uint8_t *held_check(const gz_lobby_member_t *m)
+{
+    static uint8_t c[32];
+    gz_lobby_msg_t g;
+    memset(c, 0, sizeof c);
+    if (m->start_len && gz_lobby_decode(m->start_msg, m->start_len, &g) == GZ_DEC_OK) memcpy(c, g.check_id, 32);
+    return c;
+}
+
 static void host_open(uint16_t standbys)
 {
     gz_ports_t p = ports();
@@ -3023,14 +3034,14 @@ static void test_review_member(void)
     CHECK(feed(&m2, x, xn) == GZ_OK && A.l.count == 0 && SG.begins == 1);         /* the host's resend */
     /* the signing engine's outcome for the member (F9) */
     acts_reset();
-    CHECK(gz_lobby_member_round_result(&m2, 99, &A.l) == GZ_ERR_ARGUMENT && gz_lobby_member_round_result(NULL, 1, &A.l) == GZ_ERR_ARGUMENT);
-    CHECK(gz_lobby_member_round_result(&m2, GZ_LOBBY_ROUND_FUNDING, &A.l) == GZ_OK && m2.lobby_state == GZ_LOBBY_FUNDING &&
+    CHECK(gz_lobby_member_round_result(&m2, 99, NULL, &A.l) == GZ_ERR_ARGUMENT && gz_lobby_member_round_result(NULL, 1, NULL, &A.l) == GZ_ERR_ARGUMENT);
+    CHECK(gz_lobby_member_round_result(&m2, GZ_LOBBY_ROUND_FUNDING, NULL, &A.l) == GZ_OK && m2.lobby_state == GZ_LOBBY_FUNDING &&
           note(GZ_NOTE_SEAT, GZ_LOBBY_FUNDING, -1) && saves(GZ_REC_LOBBY_STATE) == 1);
     acts_reset();                                      /* funded: no retry, and Funding once */
-    CHECK(gz_lobby_member_round_result(&m2, GZ_LOBBY_ROUND_RETRY, &A.l) == GZ_OK && refused(GZ_CMD_ROUND_RESULT) && m2.start_len == xn);
+    CHECK(gz_lobby_member_round_result(&m2, GZ_LOBBY_ROUND_RETRY, held_check(&m2), &A.l) == GZ_OK && refused(GZ_CMD_ROUND_RESULT) && m2.start_len == xn);
     acts_reset();
-    CHECK(gz_lobby_member_round_result(&m2, GZ_LOBBY_ROUND_FUNDING, &A.l) == GZ_OK && refused(GZ_CMD_ROUND_RESULT) && !any_save());
-    CHECK(gz_lobby_member_round_result(&m2, GZ_LOBBY_ROUND_FAILED, &A.l) == GZ_OK);
+    CHECK(gz_lobby_member_round_result(&m2, GZ_LOBBY_ROUND_FUNDING, NULL, &A.l) == GZ_OK && refused(GZ_CMD_ROUND_RESULT) && !any_save());
+    CHECK(gz_lobby_member_round_result(&m2, GZ_LOBBY_ROUND_FAILED, NULL, &A.l) == GZ_OK);
     /* unreadied after the start, then restarted: nothing resumes */
     acts_reset();
     CHECK(gz_lobby_member_unready(&m, &A.l) == GZ_OK); mkeep();
@@ -3084,15 +3095,15 @@ static void test_review_member(void)
         ms.ended = 0;
         CHECK(gz_lobby_member_resume(&ms, &A.l) == GZ_OK && SG.resumes == 1);   /* the control */
         CHECK(gz_lobby_member_resume(&ms, NULL) == GZ_ERR_ARGUMENT);
-        CHECK(gz_lobby_member_round_result(&ms, 0, &A.l) == GZ_ERR_ARGUMENT && gz_lobby_member_round_result(&ms, 5, &A.l) == GZ_ERR_ARGUMENT);
-        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_ACTIVE, NULL) == GZ_ERR_ARGUMENT);
+        CHECK(gz_lobby_member_round_result(&ms, 0, NULL, &A.l) == GZ_ERR_ARGUMENT && gz_lobby_member_round_result(&ms, 5, NULL, &A.l) == GZ_ERR_ARGUMENT);
+        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_ACTIVE, NULL, NULL) == GZ_ERR_ARGUMENT);
         ms.ended = 1;                                  /* a completed creation is taken after a cancel too (B3) */
         acts_reset();
-        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_ACTIVE, &A.l) == GZ_OK && !refused(GZ_CMD_ROUND_RESULT) &&
+        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_ACTIVE, NULL, &A.l) == GZ_OK && !refused(GZ_CMD_ROUND_RESULT) &&
               saves(GZ_REC_LOBBY_STATE) == 1 && ms.lobby_state == GZ_LOBBY_ACTIVE);
         acts_reset();
-        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_ACTIVE, &A.l) == GZ_OK && refused(GZ_CMD_ROUND_RESULT) && !any_save());
-        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_RETRY, &A.l) == GZ_OK && refused(GZ_CMD_ROUND_RESULT));
+        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_ACTIVE, NULL, &A.l) == GZ_OK && refused(GZ_CMD_ROUND_RESULT) && !any_save());
+        CHECK(gz_lobby_member_round_result(&ms, GZ_LOBBY_ROUND_RETRY, held_check(&ms), &A.l) == GZ_OK && refused(GZ_CMD_ROUND_RESULT));
     }
     /* a lost unready is resent while Open or in a check, not once Signing */
     {
@@ -3658,16 +3669,16 @@ static void test_review_b_member(void)
         CHECK(feed(&mb, x, xn) == GZ_OK && SG.begins == 1); mkeep();
         acts_reset();
         if (o == 0) {
-            CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
+            CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, held_check(&mb), &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
             mkeep();
             CHECK(mb.start_len == 0 && mb.role == 0);          /* the start is spent */
             acts_reset();                                     /* so a repeated Retry saves nothing */
-            CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, &A.l) == GZ_OK && !any_save());
+            CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, held_check(&mb), &A.l) == GZ_OK && !any_save());
         } else if (o == 1) {
-            CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_FUNDING, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
+            CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_FUNDING, NULL, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
             mkeep();
             acts_reset();
-            CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_ACTIVE, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
+            CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_ACTIVE, NULL, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
             mkeep();
         }   /* o == 2: the control, no outcome: the start resumes */
         mrestore(&mb2, &cond);
@@ -3705,7 +3716,11 @@ static void test_review_b_member(void)
         xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk2, 1, cd2, 30000, 0, &HOST);
         CHECK(feed(&mb, x, xn) == GZ_OK && gz_lobby_member_may_sign(&mb, chk2)); mkeep();
         acts_reset();
-        CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
+        CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, chk2, &A.l) == GZ_OK && !any_save() &&
+              mb.start_len != 0);                                /* names another check: ignored */
+        CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, NULL, &A.l) == GZ_ERR_ARGUMENT);
+        acts_reset();
+        CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, chk, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_STATE) == 1);
         mkeep();
         CHECK(mb.start_len == 0 && mb.role == 0 && gz_lobby_member_may_sign(&mb, chk2));
         if (o == 1) {
@@ -3720,6 +3735,59 @@ static void test_review_b_member(void)
         CHECK(feed(mp, x, xn) == GZ_OK && SG.begins == 1);
         xn = host_msg(x, sizeof x, GZ_KIND_START, chk2, 0, NULL, 0, 1, &HOST);
         CHECK(feed(mp, x, xn) == GZ_OK && SG.begins == 2);
+    }
+    /* The second case: check 2's start arrived, and was handed over, before
+     * the Retry of check 1. That Retry names check 1, not the start held, so
+     * it is ignored and check 2 proceeds, live (o 0) and after a restart
+     * (o 1: resumed). A Retry naming check 2 is then taken. */
+    for (o = 0; o < 2; o++) {
+        uint8_t chk2[32];
+        gz_lobby_member_t *mp = &mb;
+        memset(chk2, 0x5d, 32);
+        memset(&SG, 0, sizeof SG);
+        mfree();
+        member_sg(&mb, &cond);
+        CHECK(feed(&mb, ob, on) == GZ_OK); mkeep();
+        xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk, 1, cd2, 30000, 0, &HOST);
+        CHECK(feed(&mb, x, xn) == GZ_OK); mkeep();
+        xn = host_msg(x, sizeof x, GZ_KIND_START, chk, 0, NULL, 0, 1, &HOST);
+        CHECK(feed(&mb, x, xn) == GZ_OK && SG.begins == 1); mkeep();
+        xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk2, 1, cd2, 30000, 0, &HOST);
+        CHECK(feed(&mb, x, xn) == GZ_OK && gz_lobby_member_may_sign(&mb, chk2)); mkeep();
+        xn = host_msg(x, sizeof x, GZ_KIND_START, chk2, 0, NULL, 0, 1, &HOST);
+        CHECK(feed(&mb, x, xn) == GZ_OK && SG.begins == 2); mkeep();
+        acts_reset();
+        CHECK(gz_lobby_member_round_result(&mb, GZ_LOBBY_ROUND_RETRY, chk, &A.l) == GZ_OK && !any_save());
+        CHECK(memcmp(held_check(&mb), chk2, 32) == 0 && mb.role == 1 && gz_lobby_member_may_sign(&mb, chk2));
+        if (o == 1) {
+            mrestore(&mb2, &cond);
+            mp = &mb2;
+            acts_reset();
+            CHECK(gz_lobby_member_resume(&mb2, &A.l) == GZ_OK && SG.begins == 2 && SG.resumes == 1);
+            CHECK(memcmp(held_check(&mb2), chk2, 32) == 0 && gz_lobby_member_may_sign(&mb2, chk2));
+        }
+        acts_reset();
+        CHECK(gz_lobby_member_round_result(mp, GZ_LOBBY_ROUND_RETRY, chk2, &A.l) == GZ_OK &&
+              saves(GZ_REC_LOBBY_STATE) == 1 && mp->start_len == 0 && !gz_lobby_member_may_sign(mp, chk2));
+    }
+    /* restore follows the rule too: a retry record that names another check
+     * than the start restored changes nothing */
+    {
+        uint8_t rb[33];
+        mfree();
+        member_sg(&mb, &cond);
+        CHECK(feed(&mb, ob, on) == GZ_OK); mkeep();
+        xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, chk, 1, cd2, 30000, 0, &HOST);
+        CHECK(feed(&mb, x, xn) == GZ_OK); mkeep();
+        xn = host_msg(x, sizeof x, GZ_KIND_START, chk, 0, NULL, 0, 1, &HOST);
+        CHECK(feed(&mb, x, xn) == GZ_OK); mkeep();
+        mrestore(&mb2, &cond);
+        rb[0] = GZ_LOBBY_OPEN;
+        memset(rb + 1, 0x5d, 32);
+        r.type = GZ_REC_LOBBY_STATE; r.bytes.data = rb; r.bytes.len = 33;
+        CHECK(gz_lobby_member_restore(&mb2, &r) == GZ_OK && mb2.start_len != 0 && gz_lobby_member_may_sign(&mb2, chk));
+        memcpy(rb + 1, chk, 32);
+        CHECK(gz_lobby_member_restore(&mb2, &r) == GZ_OK && mb2.start_len == 0 && !gz_lobby_member_may_sign(&mb2, chk));
     }
     /* the record: 1 Open with the spent check (33 bytes), 4 Funding or 5
      * Active alone; nothing else */
@@ -3776,7 +3844,7 @@ static void wr_member(world_t *w, int i, int outcome)
 {
     gz_action_list_t l;
     gz_action_list_init(&l, w_slots, 512, w_bytes, sizeof w_bytes);
-    CHECK((outcome ? gz_lobby_member_round_result(w->node[i].mem, outcome, &l) : gz_lobby_member_leave(w->node[i].mem, &l)) == GZ_OK);
+    CHECK((outcome ? gz_lobby_member_round_result(w->node[i].mem, outcome, held_check(w->node[i].mem), &l) : gz_lobby_member_leave(w->node[i].mem, &l)) == GZ_OK);
     w_submit(&w->node[i], &l);
 }
 
