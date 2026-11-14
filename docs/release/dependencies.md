@@ -1,8 +1,8 @@
 # Release input inventory
 
-Observed on Gazpacho `ae023f3818b2c5ebb9ca82d0d0a49c23c205ca8c`,
-2026-11-13. This is an inventory for review, **not a release lockfile**.
-Reconcile it with the actual release link map and input closure in RE3.
+Updated through Gazpacho `5c68e50b75ecda04ebabf80eb55e63fd48d3be7a`,
+2026-11-14. This is an inventory for review, **not a release lockfile**.
+Reconcile it with the actual release link map and input closure in RE3a-RE3c.
 Branches may add inputs before merge; snapshot them again for each candidate.
 
 ## Project and fetched runtime code
@@ -15,12 +15,43 @@ Branches may add inputs before merge; snapshot them again for each candidate.
 | utf8proc | 2.12.0 release asset; SHA-256 `a393fbef160835fb315bc3e91ba8d86f7a73a7cec9e6198b6c60b848b498bfeb` | `ports/storage/crypto/CMakeLists.txt` | Preserve release-asset bytes, Unicode-related notices and actual dependency closure |
 | OpenSSL libcrypto | System discovery via `find_package(OpenSSL REQUIRED)` | Root, wallet and chain CMake files | Production package/source identity, ABI/runtime floor and transitive dependencies are not locked |
 | libcurl / HTTPS dependencies | Optional system discovery in the developer build | `ports/chain/CMakeLists.txt` | Required in release profile; lock TLS backend, transitive dependencies, CA trust handling and runtime requirements |
+| llhttp | Vendored v9.4.3; commit `0e815792b167a9bd8ace259b95b7da953776c288`; archive SHA-256 `1eb813c7437b31a87496a1cd3ed79f00746720f5e7e29c79b42c02cb69f36c39`; per-file hashes | `ports/api/third_party/llhttp/IMPORT.md`, `SHA256SUMS`, `tools/check-llhttp.sh` | Now on main through PR 26; preserve exact vendored bytes/notices and per-file hashes. Retain acquired bytes rather than rely on regenerated GitHub tag archives |
 | C library and dynamic loader | Supplied by the build/runtime system | Release link map, not yet generated | Define minimum runtime and verify symbol versions; record both build and runtime requirements |
 
-The API branch (PR 26) adds a vendored llhttp parser. At this snapshot it is
-not on main. Include its branch-local version, checksums, notices and parser
-configuration once that code becomes part of the candidate. Do not fabricate
-a pin from the PR title or treat this inventory as frozen while engines land.
+The original inventory preceded PR 26; its merge is included above. Resnapshot
+the closure as engines land. The production design calls for OpenSSL/curl from
+pinned source and static linkage, plus a documented dynamic-glibc ceiling and
+CA policy. Record rebuild responsibility for advisories in statically linked
+components. OpenSSL is used for HMAC and ChaCha20-Poly1305 in the transport,
+as well as hashing; removing it is not a release-engineering change.
+
+## Findings to resolve in RE3a-RE4
+
+The independent review reports two builds on a separate server: `gz-chain`
+matched byte-for-byte; `gazpacho` and `gz-wallet-keys` differed, with an embedded
+BPPP module path. It also reports distro-default hardening and a glibc 2.38
+symbol requirement in the tested `gazpacho`. These binary results have not
+been independently repeated by the release contributor; preserve that evidence
+boundary. Reproduce them on Actions or an independently controlled builder.
+
+Source inspection confirms the pinned secp module defaults include unused
+experimental modules and `SECP256K1_VALGRIND=AUTO` probes the host. Noise needs
+ECDH, and MuSig adaptor operations are not the optional ECDSA adaptor module.
+Map imports/call sites before disabling modules and obtain crypto review.
+RE3a adds retained, SHA-256-verified secp source archive acquisition without
+upgrading the approved commit; RE3c supplies the explicit production options.
+
+libsodium receives parent CMake flags plus `-g`. A genuinely empty effective
+build-type flag set risks unoptimized code when that override suppresses its
+own defaults. However, pinned secp's single-config CMake sets an unspecified
+build type to RelWithDebInfo: do not state that omitting the top-level option
+always produces `-O0`. Test single/multi-config generators, empty/unknown types
+and the effective compiler command. Production requires an explicit reviewed
+Release profile and optimization checks. Diagnostic builds remain separate.
+
+The production profile must also introduce installation rules, prefix maps,
+explicit application hardening and checked oldest-runtime compatibility.
+Compiler/default changes affect crypto behavior and need the owning reviews.
 
 ## Build, documentation and test inputs
 
@@ -36,10 +67,13 @@ a pin from the PR title or treat this inventory as frozen while engines land.
 
 ## Candidate lock and licence inventory
 
-RE3 must produce an input manifest with each input's role, exact version or
+RE3a must produce an input manifest with each input's role, exact version or
 commit, source location, digest, verification method, redistribution status,
 licence-file references and source availability. Capture transitive entries,
-not just the rows above. Unknown licence metadata stays unresolved; do not
+not just the rows above. RE3b locks the actual environment and RE5 derives an
+SPDX SBOM reconciled against the linked/packaged output. REUSE annotations cover
+unchanged imports/vendor/generated files without inserting headers into them.
+Unknown licence metadata stays unresolved; do not
 assign the project's MIT licence to another author's files.
 
 Generated evidence lists sanitized compiler/package identities, target,
@@ -50,4 +84,5 @@ documented normalization scheme and are exercised in the reproducibility test.
 Pinning fixes which bytes are used; it does not prove those bytes safe or
 maintained. Monitor advisories, authenticate upstream releases where possible,
 review updates and regenerate the lock deliberately. Dependabot covers only
-its supported manifests; custom CMake pins need a named maintenance procedure.
+its supported manifests; custom CMake pins need the required retained
+scheduled pin/advisory report and a candidate freshness gate.

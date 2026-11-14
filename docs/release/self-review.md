@@ -27,9 +27,12 @@
 
 ## Still required
 
-An independent build/supply-chain reviewer must review draft 2 and the
-implementation boundaries. CI success cannot substitute for that review.
+Follow-up, 2026-11-14: independent review of draft 2 returned accept after
+changes. The [response](review-response.md) maps corrections in draft 3;
+confirmation of those corrections is pending. CI success cannot substitute
+for that review.
 The toolchain closure, concrete manifest schema/limits, runtime floor, signer
 identity, version and support policy remain explicitly unresolved inputs for
 their owning implementation PRs. Reproducibility, package and signing tests
-R1-R12 are specified but have not been implemented or executed by this PR.
+R1-R12 were specified in draft 2; draft 3 also adds R13-R18. None has been
+implemented or executed by this planning PR.

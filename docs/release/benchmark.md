@@ -1,6 +1,7 @@
 # Reference comparison and choices
 
-Reviewed 2026-11-13 against the exact revisions below. This compares selected
+Reviewed 2026-11-13 against the exact revisions below; corrected after
+independent review on 2026-11-14. This compares selected
 public source files, not the projects' overall security, current production
 deployments or the results of their CI runs. Bitcoin Core is C++; secp256k1,
 libsodium and curl are C references, and Core Lightning is the Lightning
@@ -10,12 +11,12 @@ implementation reference. Size and age make an overall ranking misleading.
 
 | Reference | Observed practice | Gazpacho choice |
 |---|---|---|
-| Bitcoin Core | Guix build environment; separate non-codesigned output attestations; verification of other builders; signed release process; compiled-binary security checks | Adopt exact artifact identity, independent reproduction, detached signing and ELF verification. Defer a bootstrappable Guix toolchain; do not claim equivalent assurance |
+| Bitcoin Core | Guix build environment; separate non-codesigned attestations; multiple builders sign matching checksum manifests; compiled-binary checks | Adopt exact artifact identity, required independent reproduction, multi-signer detached signatures and ELF verification. Guix is a long-term target; do not claim equivalent assurance now |
 | libsecp256k1 | Release PR sanity checks include distcheck, installation through CMake/Autotools and ABI checks; CI includes Valgrind/constant-time and sanitizer configurations | Test the actual extracted/installed package and clean source build. Preserve Gazpacho's existing diagnostics. Library ABI tooling becomes relevant if Gazpacho distributes a supported library ABI |
-| Core Lightning | Explicit RC checklist; local reproduction compared with draft assets; separated build workflow; scheduled reproduction; documented matching checksums/signatures and existing-asset behavior | Separate build, verify, sign and publish; require final-download verification and immutable candidate contents. Start with one architecture instead of copying its full distro matrix |
+| Core Lightning | RC checklist compares local and draft checksums and appends builder signatures; separated builds; nightly build in the reproducible environment checks a clean version/tree, not equality of two builds | Separate build, verify, sign and publish; require matching independent builds and a pre-publication signer quorum. Do not count the nightly job as a two-build comparison |
 | libsodium | Authenticated distribution tarballs; signature verification instructions; production compiler guidance; CI includes multiple build modes and CIFuzz | Verify dependency origin/digest and follow upstream crypto build constraints. Diagnostic flags are not a production optimization policy |
 | curl | Signed source releases and reviewed notes; distribution CI rebuilds/tests/installs generated archives; grouped monthly dependency updates | Test the source tarball outside Git, include correct notices, and keep update volume bounded. Do not inherit its release calendar or every platform job |
-| SuperScalar | Defined release manager/RC process, signed tags and offline GPG checksum signing; multi-platform artifact workflow; broad development CI | Reuse the vocabulary, human signing boundary and release checklist. Fix the build-input and draft-before-publication gaps in Gazpacho's own design |
+| SuperScalar | Defined manager/RC process, signed tags, recommended offline GPG checksum signing; multi-platform artifacts; broad development CI | Reuse the vocabulary, human signing boundary and checklist. Improve input locking and draft-before-publication handling in Gazpacho's design |
 
 ## SuperScalar and Gazpacho, specifically
 
@@ -57,12 +58,14 @@ that either whole project is safer than the other.
 ## Selected combination
 
 The proposal is **Gazpacho's existing C checks + a locked Linux build closure +
-distribution tests + reproducible unsigned outputs + a separately controlled
-signing/publication step**. A clean same-provider rebuild is the first evidence;
-an independently controlled second builder is the stronger follow-up.
+distribution tests + reproducible unsigned outputs + required independent
+builder signatures + a separately controlled publication step**. A clean
+same-provider rebuild finds nondeterminism; it does not satisfy the independent
+builder requirement for the first official M6 publication.
 
 ELF checks inspect the generated application, not a wish list of compiler
-flags. Add PIE, non-executable stack, RELRO/binding, stack protection and ABI
+flags. Add PIE, non-executable stack, RELRO/binding, stack protection, FORTIFY,
+separate code/data segments, applicable CET and ABI
 checks in RE4, with applicability and dependency-specific review. In particular,
 libsodium warns about LTO and sanitizer/custom production compiler flags.
 Do not globally alter crypto flags or Gazpacho's freestanding core contract.
@@ -76,15 +79,20 @@ PR so the core team's merge queue is not expanded accidentally.
 
 ## Current work versus proposed work
 
-| Capability | Current Gazpacho | After accepted RE2-RE6 implementation |
+| Capability | Observed Gazpacho baseline | After accepted release work packages |
 |---|---|---|
 | Existing C memory/fault checks | Present, with scoped workloads and exclusions | Preserved; release profile additionally tested |
 | Complete release input lock | Partial dependency pins; system build inputs mutable | Recorded and verified release closure |
 | Byte-identical artifact comparison | No release comparison in inspected main workflows | Required two-build comparison, with an explicit assurance limit |
 | Source/package install test | Development and executable tests; no complete release distribution pipeline observed | Clean source archive and extracted package verified |
-| Release authentication | No complete workflow observed | Trusted signed tag and checksum manifest, verified final downloads |
+| Release authentication | No complete workflow observed | Trusted tag plus manager/independent-builder signatures on matching sums; verified final downloads |
 | Publication boundary | No complete release workflow observed | Checked candidate, separate signer/uploader, draft then explicit publication |
 | Supply-chain certification | None established by this review | None claimed without separate evidence/assessment |
+
+Core Lightning and Bitcoin Core allow multiple builders' signatures over the
+same checksum bytes. This is stronger than draft 2's single-manager signature.
+Draft 3 adopts that quorum and distinguishes additive signatures in a draft
+from immutable published assets: late attestations use a separate store.
 
 The right-hand column is a specification target, **not functionality delivered
 by this PR**. The current pin/CI baseline must be rechecked when engines merge.
@@ -94,12 +102,15 @@ by this PR**. The current pin/CI baseline must be rechecked when engines merge.
 Commit links make this comparison reproducible even if the reference branches
 change. All text above is a summary; no code or release scripts were copied.
 
-- Bitcoin Core [release process](https://github.com/bitcoin/bitcoin/blob/a527a0077a0fcae913188410214efe98021c0cca/doc/release-process.md), [Guix build/attestation guide](https://github.com/bitcoin/bitcoin/blob/a527a0077a0fcae913188410214efe98021c0cca/contrib/guix/README.md), [binary checks](https://github.com/bitcoin/bitcoin/blob/a527a0077a0fcae913188410214efe98021c0cca/contrib/guix/security-check.py).
+- Bitcoin Core [release process](https://github.com/bitcoin/bitcoin/blob/a527a0077a0fcae913188410214efe98021c0cca/doc/release-process.md), [Guix build/attestation guide](https://github.com/bitcoin/bitcoin/blob/a527a0077a0fcae913188410214efe98021c0cca/contrib/guix/README.md), [binary hardening](https://github.com/bitcoin/bitcoin/blob/a527a0077a0fcae913188410214efe98021c0cca/contrib/guix/security-check.py), [symbol/runtime checks](https://github.com/bitcoin/bitcoin/blob/a527a0077a0fcae913188410214efe98021c0cca/contrib/guix/symbol-check.py).
 - libsecp256k1 [release process](https://github.com/bitcoin-core/secp256k1/blob/2e1e6c60e970b8c27adfd6e5f0e6d23a91bc70f6/doc/release-process.md) and [CI](https://github.com/bitcoin-core/secp256k1/blob/2e1e6c60e970b8c27adfd6e5f0e6d23a91bc70f6/.github/workflows/ci.yml).
-- Core Lightning [checklist](https://github.com/ElementsProject/lightning/blob/fce8f5375669eaa373db3d0713f8986420f304bd/doc/contribute-to-core-lightning/release-checklist.md), [release builds](https://github.com/ElementsProject/lightning/blob/fce8f5375669eaa373db3d0713f8986420f304bd/.github/workflows/release-build.yml), [scheduled reproduction](https://github.com/ElementsProject/lightning/blob/fce8f5375669eaa373db3d0713f8986420f304bd/.github/workflows/repro.yml).
+- Core Lightning [checklist](https://github.com/ElementsProject/lightning/blob/fce8f5375669eaa373db3d0713f8986420f304bd/doc/contribute-to-core-lightning/release-checklist.md), [release builds](https://github.com/ElementsProject/lightning/blob/fce8f5375669eaa373db3d0713f8986420f304bd/.github/workflows/release-build.yml), [nightly environment build](https://github.com/ElementsProject/lightning/blob/fce8f5375669eaa373db3d0713f8986420f304bd/.github/workflows/repro.yml).
 - libsodium [installation, compiler guidance and signatures](https://doc.libsodium.org/installation), [CI](https://github.com/jedisct1/libsodium/blob/c000d33005c607c55bb4eb0c1002ee079f774110/.github/workflows/ci.yml), [CIFuzz](https://github.com/jedisct1/libsodium/blob/c000d33005c607c55bb4eb0c1002ee079f774110/.github/workflows/cifuzz.yml).
 - curl [release procedure](https://github.com/curl/curl/blob/4f2b5fba5212a32c4e4a889492cc153e1220e619/docs/RELEASE-PROCEDURE.md), [distribution checks](https://github.com/curl/curl/blob/4f2b5fba5212a32c4e4a889492cc153e1220e619/.github/workflows/distcheck.yml), [update grouping](https://github.com/curl/curl/blob/4f2b5fba5212a32c4e4a889492cc153e1220e619/.github/dependabot.yml).
 - SuperScalar [release process](https://github.com/8144225309/SuperScalar/blob/9482de06a6ff56c3989dc9620516ce089d0ac99a/docs/release-process.md), [release workflow](https://github.com/8144225309/SuperScalar/blob/9482de06a6ff56c3989dc9620516ce089d0ac99a/.github/workflows/release.yml), [development CI](https://github.com/8144225309/SuperScalar/blob/9482de06a6ff56c3989dc9620516ce089d0ac99a/.github/workflows/ci.yml), [dependency definitions](https://github.com/8144225309/SuperScalar/blob/9482de06a6ff56c3989dc9620516ce089d0ac99a/CMakeLists.txt).
 - Reproducible Builds [definition](https://reproducible-builds.org/docs/definition/) and [source timestamp convention](https://reproducible-builds.org/specs/source-date-epoch/).
 - GitHub [required-check behavior](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks) and [Dependabot scope](https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories).
 - SLSA [build requirements and signing isolation](https://slsa.dev/spec/v1.2/build-requirements).
+- GitHub [immutable release asset/tag restrictions](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases); additions belong in the draft before publication.
+- [REUSE 3.3](https://reuse.software/spec-3.3/) for unchanged-file annotations and [SPDX](https://spdx.github.io/spdx-spec/v2.3.1/) for the SBOM.
+- GnuPG [automated/batch verification](https://www.gnupg.org/documentation/manuals/gnupg/GPG-Configuration-Options.html) and [signature commands](https://www.gnupg.org/documentation/manuals/gnupg/Operational-GPG-Commands.html).
