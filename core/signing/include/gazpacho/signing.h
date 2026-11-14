@@ -83,10 +83,13 @@
  * blamed (review B, B3). */
 #define GZ_SIGN_MAX_RESTARTED    128
 /* C7 records (funding outpoint, tree digest) held in memory: one per funding
- * outpoint this party ever released a partial signature for. At the limit a
- * new outpoint is refused (abort reason 9), never dropped; a journal holding
- * more (never written by this build) still starts, with every new round
- * refused (review A, F2). */
+ * outpoint this party released a partial signature for whose creation is not
+ * Dead (safety-rule.md C4(d): a Dead record stays in the journal and is no
+ * longer consulted, so it leaves this set when its round is resolved Dead:
+ * review B, B8). While the set is full a new outpoint is refused (abort
+ * reason 9), never dropped, and signing comes back as entries are resolved
+ * Dead; a journal holding more live ones still starts, with every new round
+ * refused until a start finds room (review A, F2). */
 #define GZ_SIGN_MAX_EXPOSURES    4096
 
 /* Message sizes (envelope included). A record's type and length take at
@@ -267,7 +270,11 @@ typedef struct gz_sign_round gz_sign_round_t;
 /* The newest round that made an exposure record, and its state when it left
  * memory (GZ_SIGN_ROUND_FREE while it is held): C10 and gz_sign_resolve reach
  * a round through it after the round has left the slots (review A, F3). */
-typedef struct { uint8_t round_id[32]; uint8_t state, why; } gz_sign_exposed_t;
+typedef struct {
+    uint8_t round_id[32];
+    uint8_t state, why;
+    uint32_t ticks;                 /* timer ticks since it left memory Unfinished (the unfinished deadline: review B, B5) */
+} gz_sign_exposed_t;
 
 /* Host only: the next attempt after a failed one. `blamed` (bit i =
  * participant i of the failed round) are to be left out; `released` is 1 if
@@ -396,7 +403,7 @@ typedef struct {
     gz_sign_def_t scratch_def;
     gz_sign_round_t pending;        /* a round is checked here before it takes a slot */
     gz_rmsg_propose_t prop;         /* the proposal being read */
-    /* C7: every exposure record this party holds, of any epoch, never removed. */
+    /* C7: every exposure record this party holds, of any epoch, but those of Dead creations (C4(d)). */
     gz_tree_exposure_t exposures[GZ_SIGN_MAX_EXPOSURES];
     gz_sign_exposed_t exposed[GZ_SIGN_MAX_EXPOSURES];
     size_t n_exposures;
@@ -449,7 +456,8 @@ gz_status_t gz_sign_begin(gz_sign_t *e, const gz_sign_begin_t *b, gz_action_list
 /* Member: the round's end as the embedding judged it from the chain
  * (safety-rule.md C11, C4(d)): GZ_SIGN_END_LIVE, _DEAD or _ABANDONED, saved as
  * round_ended. Rounds that are Complete, Unfinished or Abandoned only.
- * GZ_ERR_ARGUMENT otherwise. */
+ * GZ_ERR_ARGUMENT otherwise. A round resolved Dead leaves the C7 set: its
+ * funding output can never exist (C4(d)). */
 gz_status_t gz_sign_resolve(gz_sign_t *e, const uint8_t round_id[32], uint8_t outcome, gz_action_list_t *out);
 
 /* The exposure records held (C7), for the embedding's checks. */

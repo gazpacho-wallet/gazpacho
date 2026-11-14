@@ -69,7 +69,7 @@ RULES = {
     "C7_AFTER_SAVE": ("if (em->st == GZ_OK && !add_exposure(", "if (!add_exposure("),
     "EXPOSURE_ROOM": ("if (!exposure_room(e, r)) return GZ_SIGN_WHY_CAPACITY;", ""),
     "EXPOSURE_NOT_DROPPED": ("{ e->exposures_lost = 1; return 0; }", "return 0;"),
-    "KEEP_EVICTED": ("{ e->exposed[i].state = r->state; e->exposed[i].why = r->why; }", "{ }"),
+    "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }", "{ }"),
     "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
     "RESOLVE_EVICTED": ("if (!(r = find(e, round_id)) && !(x = evicted(e, round_id))) return GZ_ERR_ARGUMENT;", "if (!(r = find(e, round_id))) return GZ_ERR_ARGUMENT;"),
     # review B: B6 (C6: children before parents), B5 (a start leaves a superseded round Unfinished)
@@ -80,6 +80,14 @@ RULES = {
     "DEADLINE_ABORT_WAITS": ("if (m->reason == 4 &&", "if (0 &&"),
     "GAVE_UP_BLAMED": ("if (r->gave_up) {", "if (0) {"),
     "ANSWER_RATE": ("if (r->status_tick[j] &&", "if (0 &&"),
+    # review B: B1 (what is saved is read back), B10 (a filter hit at a start), B5 (rounds that left memory,
+    # across a start), B8 (Dead leaves C7), B11 (a failed start wipes)
+    "ACK_BOUND": ("if (GZ_RMSG_HEADER + m->records_len > GZ_SIGN_MAX_SMALL_MSG) { e->counters[GZ_SIGN_COUNT_REJECTED]++; return; }", ""),
+    "REPLAY_EXACT": ("if (known_exactly(e, id))", "if (is_known(e, id))"),
+    "REPLAY_UNHELD_UNFINISHED": ("x->state = GZ_SIGN_ROUND_UNFINISHED;", "x->state = GZ_SIGN_ROUND_FREE;"),
+    "EVICTED_ABANDONED": ("x->state = GZ_SIGN_ROUND_ABANDONED;", "x->state = GZ_SIGN_ROUND_COMPLETE;"),
+    "DEAD_LEAVES_C7": ("if (state == GZ_SIGN_ROUND_DEAD) drop_exposure(e, round_id);", ""),
+    "FAILED_START_WIPES": ("return fail_engine(e, em.st); }", "return em.st; }"),
 }
 
 
