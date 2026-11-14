@@ -56,6 +56,19 @@ foreach(t json headers esplora multi confirm model fuzz)
   add_test(NAME chain_${t} COMMAND chain_test_${t})
 endforeach()
 
+# Fuzz targets (docs/notes/ci.md): with the plain driver as CTest tests; with
+# -DGZ_LIBFUZZER=ON (clang) linked with libFuzzer and run by tools/run-fuzz.sh.
+#   chain_parse  every parser of a chain server's answer
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_chain_parse tests/fuzz_chain_parse.c)
+  target_link_options(fuzz_chain_parse PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_chain_parse tests/fuzz_chain_parse.c tests/fuzz_main.c)
+  add_test(NAME chain_fuzz_parse COMMAND fuzz_chain_parse 200000)
+endif()
+target_link_libraries(fuzz_chain_parse PRIVATE gazpacho_chain)
+target_compile_options(fuzz_chain_parse PRIVATE ${GZ_CHAIN_WARNINGS})
+
 if(CURL_FOUND)
   # The tool must refuse to broadcast on mainnet, before touching the network.
   # The refusal exits 2; the wrapper checks that exit status and the text.
