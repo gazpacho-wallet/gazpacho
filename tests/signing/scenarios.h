@@ -513,12 +513,15 @@ static uint64_t sc_timers(void)
     d ^= h_digest(&h);
     h_free(&h);
 
-    /* the host never hears: members give up at their deadline, Aborted, with the reason */
+    /* the host never hears: members give up at their deadline (the host's and the margin), Aborted, with the reason */
     h_init(&h, 3);
     h.drop_to = 1u;
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     h_flush(&h, 100000);
-    for (int t = 0; t < 12; t++) h_ticks(&h, 1);
+    for (int t = 0; t < 12 + GZ_SIGN_NONCE_MARGIN_TICKS - 1; t++)          /* the members' timers only: the host's own deadline is not this case */
+        for (uint32_t j = 1; j <= 3; j++) h_tick(&h, j);
+    for (uint32_t j = 1; j <= 3; j++) CHECK(h_newest(&h, j)->state == GZ_SIGN_ROUND_ACTIVE);   /* one tick before */
+    for (uint32_t j = 1; j <= 3; j++) h_tick(&h, j);
     for (uint32_t j = 1; j <= 3; j++) {
         const gz_sign_round_t *m = h_newest(&h, j);
         CHECK(m->state == GZ_SIGN_ROUND_ABORTED && m->why == GZ_SIGN_WHY_DEADLINE && m->tail_len > 0);
@@ -1161,7 +1164,7 @@ static uint64_t sc_edges(void)
         h.drop_to = 1u;
         h_deliver(&h, (size_t)q_find(&h, 0, j, GZ_SIGN_MSG_RESULT), 0);
         CHECK(h_newest(&h, j)->tier == 1 && h_newest(&h, j)->tier_state[1] == GZ_SIGN_TIER_NONCES);
-        for (int t = 0; t < 11; t++) h_tick(&h, j);
+        for (int t = 0; t < 11 + GZ_SIGN_NONCE_MARGIN_TICKS; t++) h_tick(&h, j);
         CHECK(h_newest(&h, j)->state == GZ_SIGN_ROUND_ACTIVE);
         h_tick(&h, j);
         CHECK(h_newest(&h, j)->state == GZ_SIGN_ROUND_UNFINISHED && h_newest(&h, j)->why == GZ_SIGN_WHY_DEADLINE);

@@ -1128,6 +1128,52 @@ static void test_exposures_recover(void)
     h_free(&h);
 }
 
+/* Review B's confirmation, N2 (probe C6): round A's result is withheld, round
+ * B is proposed (A is Unfinished, superseded), then A's result arrives and A
+ * runs again. A crash before round_complete: the start must bring A back
+ * running, as it was, so that it acks and completes when the host answers.
+ * With and without the restart. */
+static void test_revived_round_across_restart(void)
+{
+    for (int restart = 0; restart < 2; restart++) {
+        harness_t h;
+        uint8_t a_id[32];
+        gz_sign_round_t *a;
+        h_init(&h, 1);
+        CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+        flush_without(&h, 1, GZ_SIGN_MSG_RESULT, GZ_SIGN_MSG_COMPLETE);
+        CHECK(h_newest(&h, 1) != NULL);
+        if (!h_newest(&h, 1)) { h_free(&h); continue; }
+        memcpy(a_id, h_newest(&h, 1)->id, 32);
+        CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+        flush_without(&h, 1, GZ_SIGN_MSG_RESULT, GZ_SIGN_MSG_COMPLETE);
+        a = find(h.p[1].e, a_id);
+        CHECK(a && a->state == GZ_SIGN_ROUND_UNFINISHED && a->why == GZ_SIGN_WHY_SUPERSEDED);
+        h_connect(&h, 1, 0);                                 /* the member asks again */
+        for (size_t guard = 0; h.nq && guard < 10000; guard++) {      /* of the host's answers only A's result arrives */
+            const h_msg_t *m = &h.q[0];
+            if (m->to == 1 && !(h_kind_of(m->b, m->len) == GZ_SIGN_MSG_RESULT && same(m->b + GZ_RMSG_HEADER + 2, a_id, 32))) h_drop_msg(&h, 0);
+            else h_deliver(&h, 0, 0);
+        }
+        a = find(h.p[1].e, a_id);
+        CHECK(a && a->state == GZ_SIGN_ROUND_ACTIVE && a->tier_state[0] == GZ_SIGN_TIER_DONE);
+        if (restart) {
+            CHECK(h_restart(&h, 1) == GZ_OK);
+            a = find(h.p[1].e, a_id);
+            CHECK(a && a->state == GZ_SIGN_ROUND_ACTIVE && a->tier_state[0] == GZ_SIGN_TIER_DONE && a->ever_partial);
+        }
+        while (h.nq) h_drop_msg(&h, 0);
+        h_tick(&h, 0);                                       /* a tick later the host answers a request again */
+        while (h.nq) h_drop_msg(&h, 0);
+        h_connect(&h, 1, 0);
+        h_flush(&h, 10000);
+        a = find(h.p[1].e, a_id);
+        CHECK(a && a->state == GZ_SIGN_ROUND_COMPLETE && sent_for(&h, 1, GZ_SIGN_MSG_ACK, a_id) == 1);
+        CHECK(h_find(&h, 0, a_id) && h_find(&h, 0, a_id)->state == GZ_SIGN_ROUND_DONE && h.errors == 0);
+        h_free(&h);
+    }
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -1156,6 +1202,7 @@ int main(void)
     test_nonce_inputs_wiped();
     test_all_nonces_other_tier();
     test_decode_first();
+    test_revived_round_across_restart();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);

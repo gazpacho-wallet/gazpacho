@@ -16,7 +16,11 @@
  *      nothing), and with memory back the journal opens, every confirmed
  *      batch is there with its bytes, and nothing unconfirmed that is kept
  *      differs from what was saved.
- *   4. The same for an import and a restore mark. */
+ *   4. The same for an import and a restore mark.
+ *   5. The guard file settled at open (final review of PR 29): a guard batch
+ *      kept without its flush makes the open bring guard.gzg up to it, with
+ *      two allocations of its own. Each failed in turn: the open says
+ *      no_memory, and never ok with the guard file left behind. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -33,6 +37,7 @@ static unsigned long a_fail_at;    /* fail the N-th (1-based); 0: none */
 static int a_fail_from;            /* with a_fail_at: fail every one from the N-th on */
 static size_t a_fail_size;         /* fail every allocation of exactly this size; 0: none */
 static unsigned long a_failed;     /* how many were failed */
+static size_t a_failed_size;       /* the size of the last one failed */
 
 static int a_fails(size_t n)
 {
@@ -40,6 +45,7 @@ static int a_fails(size_t n)
     int f = (a_fail_at && (a_fail_from ? a_count >= a_fail_at : a_count == a_fail_at)) ||
             (a_fail_size && n == a_fail_size);
     a_failed += (unsigned long)f;
+    if (f) a_failed_size = n;
     return f;
 }
 
@@ -50,7 +56,7 @@ void *gz_test_malloc(size_t n) { return a_fails(n) ? NULL : malloc(n); }
 void *gz_test_calloc(size_t k, size_t n) { return a_fails(k * n) ? NULL : calloc(k, n); }
 void *gz_test_realloc(void *p, size_t n) { return a_fails(n) ? NULL : realloc(p, n); }
 
-static void a_reset(void) { a_count = a_fail_at = a_fail_size = a_failed = 0; a_fail_from = 0; }
+static void a_reset(void) { a_count = a_fail_at = a_fail_size = a_failed = 0; a_fail_from = 0; a_failed_size = 0; }
 
 /* --- helpers ---------------------------------------------------------------- */
 static gz_journal_t *jopen(memfs_t *fs, gz_journal_status_t *st, gz_journal_open_info_t *info)
@@ -285,10 +291,92 @@ static void test_import_allocations(void)
     CHECK(bad == 0 && runs >= 8);
 }
 
+/* --- 5 ---------------------------------------------------------------------- */
+
+/* The counter in guard.gzg; 0 if the file is missing or not a whole guard. */
+static uint64_t guard_file_counter(memfs_t *fs)
+{
+    size_t len;
+    uint8_t h[32];
+    const uint8_t *g = memfs_get(fs, H_GUARD, &len);
+    if (!g || len != 74) return 0;
+    sha256(g, 66, h);
+    if (memcmp(h, g + 66, 8) != 0) return 0;
+    uint64_t c = 0;
+    for (int i = 0; i < 8; i++) c = c << 8 | g[40 + i];
+    return c;
+}
+
+/* The seeded journal's guard file holds counter 202. A fourth program saves
+ * a guard batch with counter 401 and is killed before its flush: the batch
+ * is kept, the file is behind. The next open settles it (journal.c,
+ * settle_guard), allocating a buffer to read the file (the record's 66 bytes
+ * and 16) and then its own copy of the record (66). Every allocation of that
+ * open failed in turn: an open that returns ok has written the file; one
+ * that could not says no_memory; with memory back the file is written. The
+ * two allocations of the settling must be among those failed. */
+static void test_settle_guard(void)
+{
+    int bad = 0, runs = 0, read_buffer = 0, own_copy = 0;
+    for (int from = 0; from < 2; from++)
+        for (unsigned long n = 1;; n++) {
+            memfs_t fs;
+            gz_journal_status_t st;
+            gz_journal_open_info_t info;
+            int has;
+            seed(&fs);
+            a_reset();
+            gz_journal_t *j = jopen(&fs, &st, &info);
+            if (!j || info.incarnation != 4 || save(j, 1, 40, 1) != GZ_JOURNAL_OK) bad++;
+            gz_journal_close(j); /* killed before the flush */
+            if (guard_file_counter(&fs) != 202) bad++;
+            a_reset();
+            a_fail_at = n;
+            a_fail_from = from;
+            j = jopen(&fs, &st, &info);
+            int injected = a_failed > 0;
+            size_t size = a_failed_size;
+            a_reset();
+            if (j) {
+                /* Ok means settled: the file is at the kept record. */
+                if (guard_file_counter(&fs) != 401) {
+                    bad++;
+                    printf("  open ok with allocation %lu (%zu bytes) failed, guard file at %llu\n", n, size,
+                           (unsigned long long)guard_file_counter(&fs));
+                }
+            } else {
+                if (st != GZ_JOURNAL_ERR_NO_MEMORY) { bad++; printf("  settle at %lu: %s\n", n, gz_journal_status_name(st)); }
+                if (memfs_open_fds(&fs) != 0) bad++;
+                if (!from && guard_file_counter(&fs) == 202) {
+                    read_buffer += size == 66 + 16;
+                    own_copy += size == 66;
+                }
+            }
+            gz_journal_close(j);
+            /* With memory back: the batch is there and the file follows it. */
+            j = jopen(&fs, &st, &info);
+            if (st != GZ_JOURNAL_OK || guard_file_counter(&fs) != 401 || read_all_batches(j, 4, 1, &has) != 10 || !has) {
+                bad++;
+                printf("  after a failure at %lu: reopen %s, guard file at %llu\n", n, gz_journal_status_name(st),
+                       (unsigned long long)guard_file_counter(&fs));
+            }
+            gz_journal_close(j);
+            if (memfs_open_fds(&fs) != 0) bad++;
+            memfs_free(&fs);
+            if (!injected) break;
+            runs++;
+        }
+    printf("  guard settled at open: %d opens, %d refused at its read buffer, %d at its copy of the record\n", runs,
+           read_buffer, own_copy);
+    CHECK(bad == 0 && runs >= 10);
+    CHECK(read_buffer == 1 && own_copy == 1);
+}
+
 int main(void)
 {
     test_n1();
     test_every_allocation();
     test_import_allocations();
+    test_settle_guard();
     return check_done();
 }
