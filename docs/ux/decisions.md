@@ -138,3 +138,67 @@ The owner answered the nine questions that blocked the first factory (`questions
 - **Q9, A:** the transport's code review counts as its specification review; the specification is to be re-reviewed fully once the program is built.
 
 This also confirms decision 11's answer to `OPEN-QUESTIONS.md` Q1: the screens are in Slice 1.
+
+## 2026-11-13
+
+### 16. Owner decisions of 13 November (owner, 2026-11-13)
+
+**a. Host funding is automatic and on by default.** Once the host's H1 check passes, the host broadcasts the funding transaction without asking. Consent belongs at opening the lobby and at the start, not at funding. This holds on test networks now. Before real money it becomes a setting, and the setting still defaults to automatic.
+
+**b. Several lobbies at once per wallet, from Slice 1.** This replaces the Slice 1 limit of one joined and one hosted lobby (Q8 of questions 6). Every lobby record carries a lobby field. The composite node design is PR 37.
+
+**c. Host accountability in 1.0.0.**
+
+- Signed seat receipts.
+- The signer-choice rule written into the outer terms, so the member's app can check it.
+- Removals always signed, with a reason.
+- Signed lobby-wide counts, including seats removed by the host, with no identities.
+
+Proofs may be published to Nostr later: only from fresh keys, only after the lobby ends, and never with member keys or addresses. The research behind this (lobby accountability and liveness) found that the host's choices are the main unchecked power in a lobby. Signed receipts and counts let a member prove what the host did without revealing who else was there.
+
+**d. Member signing modes, selectable by members and hosts.**
+
+- **A:** sign automatically.
+- **B:** ask for the passphrase when the lobby fills.
+- **C:** unlock that lobby's keys once at join. They sign only that factory, within the approved terms, and are wiped afterwards. **C is the default** (owner confirmed, 2026-11-13). Members and hosts can still choose A or B.
+- **D:** watchtower services, the fourth way to take part in a lobby and join a factory. Scheduled after 1.2.0; research is pending. Four variants:
+  - **D1:** passive, run by a third party, no keys.
+  - **D2:** passive, run yourself.
+  - **D3:** keyed, run yourself: a "home node" that can monitor, sign and join new factories for you.
+  - **D4:** keyed, run by a third party. This is custody. Never offered (see h).
+
+In modes B and C, "not unlocked" counts as not answering the ready check. Slice 1 closes the ready check as soon as every seat has answered. Proposed defaults (owner to confirm): a 60 s ready window, 60 s per step, and a 10-minute signing budget. Measured signing on signet took 193 ms for 3 members.
+
+**e. Understudies in 1.0.0** (moved from 1.1.0 by the owner the same day). Standby seats that answered the ready check are swapped in automatically: at the ready check for a no-show, and mid-signing for a member who drops. A mid-signing swap is a new attempt with fresh nonces from everyone. Every member's limits are re-checked against the new set. Standby order is covered by the signed receipts.
+
+**f. A UI/UX review pass after 1.0.0,** to add all these modes and settings gracefully.
+
+**g. Privacy roadmap.**
+
+- Slice 1 (PR in progress): a generic user agent, an explicit chain proxy, and no addresses in logs.
+- 1.0.0:
+  - one Tor setting for hosts, chain and discovery; `socks5h` only; on by default when Tor is present; no silent clearnet fallback;
+  - onion-service hosts, after the per-address connection limit is fixed for Tor;
+  - the chain server over Tor, plus a "your own node" mode;
+  - block-based chain lookups instead of per-txid and per-script queries.
+- Later: built-in Tor (for example Arti) and a BIP 157/158 compact block filter light client, plus automatic onion creation and DNS-name hosts.
+
+**h. Watchtower variants, and what 1.0.0 must do now (owner, 2026-11-13, from the watchtower research).**
+
+Every D variant comes after 1.2.0. The built-in locked watcher stays in 1.0.0, as already specified (`spec/exit.md`, `spec/storage-encryption.md`).
+
+Order and shape:
+
+- **D2, passive, run yourself,** comes first.
+- **D1, passive, third party,** comes next. It is opt-in, uses at least two services, and the built-in watcher always stays on.
+- **D3, keyed, run yourself,** is an "always-on mode", off by default. Setup warns: "This machine can spend your factory balance".
+- **D4, keyed, third party,** is never offered. Today's Bitcoin cannot restrict a key to one destination, so a keyed tower working with the host could sign any spend.
+
+1.0.0 requirements, so that D is not blocked later:
+
+1. Factory and channel keys are derived hardened, per lobby, under their own branch, with no stored parent that yields future factory keys. **Checked against the key path in `spec/messages.md` section 2:** factory keys are at `m / 254315617' / net' / 0' / epoch' / index'`, every step hardened, on a branch of their own, one index pair per lobby seat. That spec does not yet say that no parent key is stored; this requirement adds it. Channel keys are not specified yet; they follow the same rule when `channel.md` is written. The path itself still awaits the owner's yes (W2).
+2. The payout destination is not the factory key, and is fixed before formation. This is the upstream request E2 (`handoff/2026-11-12-to-superscalar.md`).
+3. HTLC second-stage txids are fixed when `channel.md` is written, so penalties can be pre-signed.
+4. Watch data never contains anything revocable or superseded.
+5. The watcher's status fields can hold more than one watcher.
+6. P2A anchors go on everything a tower might publish, even at 0.1 sat/vB.
