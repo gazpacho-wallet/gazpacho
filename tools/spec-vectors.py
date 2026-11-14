@@ -404,34 +404,38 @@ for name, (t, lim) in limits.items():
           f"{'fits the whole range' if whole else ('fits only now' if now else 'does not fit')}")
 
 # --------------------------------------------- journal entries ----------------
-print("\n== journal.md: vector J1, file header")
-jmagic = b"GZJOURNL"
-hdr = jmagic + chain
-hdr_check = hashlib.sha256(hdr).digest()[:8]
+# The salted clear format (after the confirmation review of PR 29, H1): a
+# random 32-byte salt in the header, and every entry's 16-byte check is
+# SHA-256(salt || u64 offset || frame), so an entry is valid only in its own
+# file at its own offset. The vectors use the salt 00 01 .. 1f.
+print("\n== journal.md: vector J1, file header, salt 000102..1f")
+jmagic = b"GZJOURNS"
+jsalt = bytes(range(32))
+hdr = jmagic + chain + jsalt
+hdr_check = hashlib.sha256(hdr).digest()[:16]
 show("header", hdr + hdr_check)
+HEADER_LEN = len(hdr) + 16         # 88
 
-def entry(kind, inc, seq, payload):
+def entry(kind, inc, seq, payload, offset):
     body = u8(kind) + u64(inc) + u64(seq) + payload
     head = u32(len(body)) + body
-    return head + hashlib.sha256(head).digest()[:8]
+    return head + hashlib.sha256(jsalt + u64(offset) + head).digest()[:16]
 
-HEADER_LEN = len(hdr) + 8          # 48
-inc_entry = entry(1, 1, 0, u64(1_794_000_000_000))
+inc_entry = entry(1, 1, 0, u64(1_794_000_000_000), HEADER_LEN)
 print("== vector J2, incarnation 1, clock 1794000000000 ms")
 show("entry", inc_entry)
-rec = u32(1) + u32(0x7e570001) + u32(4) + b"ping"
-batch_entry = entry(2, 1, 1, rec)
-print("== vector J3, batch (1,1) holding one record of type 0x7e570001 with bytes 'ping'")
-show("entry", batch_entry)
-
-
 def mark(inc, offset):
     """Sync mark (kind 3): written after a sync returned; says 'every byte before
     this entry was synced'. Its payload is its own offset in the file."""
-    return entry(3, inc, 0, u64(offset))
+    return entry(3, inc, 0, u64(offset), offset)
 
 
 mark1 = mark(1, HEADER_LEN + len(inc_entry))
+rec = u32(1) + u32(0x7e570001) + u32(4) + b"ping"
+off_j3 = HEADER_LEN + len(inc_entry) + len(mark1)
+batch_entry = entry(2, 1, 1, rec, off_j3)
+print(f"== vector J3, batch (1,1) holding one record of type 0x7e570001 with bytes 'ping', at offset {off_j3}")
+show("entry", batch_entry)
 print(f"== vector J5, sync mark of incarnation 1 at offset {HEADER_LEN + len(inc_entry)} (just after J2)")
 show("entry", mark1)
 
@@ -443,15 +447,16 @@ def read_journal(data: bytes):
         if p + 4 > len(data):
             return None
         ln = int.from_bytes(data[p:p + 4], "big")
-        if ln < 21 or ln > 8_388_625 or p + 4 + ln + 8 > len(data):
+        if ln < 21 or ln > 8_388_625 or p + 4 + ln + 16 > len(data):
             return None
         body = data[p:p + 4 + ln]
-        if hashlib.sha256(body).digest()[:8] != data[p + 4 + ln:p + 4 + ln + 8]:
+        salt = data[40:72]
+        if hashlib.sha256(salt + u64(p) + body).digest()[:16] != data[p + 4 + ln:p + 4 + ln + 16]:
             return None
         kind = data[p + 4]
         if kind not in (1, 2, 3) or (kind in (1, 3) and ln != 25):
             return None
-        return p + 4 + ln + 8, kind, body
+        return p + 4 + ln + 16, kind, body
     while pos < len(data):
         r = valid_at(pos)
         if r is None:
@@ -472,7 +477,6 @@ state, v = read_journal(j4)
 assert state == "torn" and v == HEADER_LEN + len(inc_entry) + len(mark1)
 print(f"== vector J4 (torn): header, J2, J5, then J3 with its last 3 bytes missing: {len(j4)} bytes;"
       f" no sync mark after the damage, so the reader cuts to offset {v} and keeps J2 and J5")
-off_j3 = HEADER_LEN + len(inc_entry) + len(mark1)
 mark2 = mark(1, off_j3 + len(batch_entry))
 damaged = bytearray(batch_entry)
 damaged[25] ^= 0x01                 # one bit of the record type inside J3
@@ -484,6 +488,18 @@ print(f"== vector J6 (corruption): header, J2, J5, J3 with bit 0 of byte 25 flip
       f" so the start is refused")
 show("second sync mark (offset %d)" % (off_j3 + len(batch_entry)), mark2)
 assert read_journal(hdr + hdr_check + inc_entry + mark1 + batch_entry + mark2)[0] == "clean"
+# H1: a valid-looking sync mark written by a peer inside a record, at the
+# offset it would land on, but sealed without the salt (a peer does not know
+# it), followed by a tear: still a torn tail, never corruption.
+inner_off = off_j3 + 21 + 4 + 8                     # where the record's bytes start
+fake = bytearray(u32(25) + u8(3) + u64(1) + u64(0) + u64(inner_off))
+fake += hashlib.sha256(bytes(32) + u64(inner_off) + bytes(fake)).digest()[:16]
+rec_h1 = u32(1) + u32(0x7e570001) + u32(len(fake) + 20) + bytes(fake) + bytes(20)
+h1_batch = entry(2, 1, 1, rec_h1, off_j3)
+h1 = hdr + hdr_check + inc_entry + mark1 + h1_batch[:-10]
+state, v = read_journal(h1)
+assert state == "torn" and v == off_j3
+print(f"== H1 check: a peer's mark inside a torn batch (no salt) is cut as a torn tail at {v}")
 
 # ===================================================== discovery.md ==========
 # Draft 4.1 (after docs/reviews/review-discovery-d4-confirm.md): the reader's pending

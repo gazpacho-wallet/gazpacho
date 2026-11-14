@@ -2,6 +2,31 @@
 
 Specification draft 3, 2026-11-12. Draft 3 folds in `spec/storage-encryption.md` draft 3: from the first build every file is encrypted (owner decision 13), so the header, the entry framing, the limits and the guard file below are storage's, and a mark file holds the journal's high-water mark. The write, sync, mark and confirm rules, the order rules, the torn-tail rule and the restore rules are unchanged. Draft 2 corrected draft 1 after the third, joint review of the five Slice 1 specifications (`docs/reviews/spec-review-3.md`), which found its torn-tail rule and its restore section wrong. Neither draft 2 nor draft 3 has itself been reviewed. The file-based journal that slice 1 needs (`docs/SLICES.md`: "A file-based journal"). It implements the storage side of the runner contract in `core/gazpacho/include/gazpacho/runner.h`. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: `safety-rule.md` and `signing-round.md` draft 4 settle them.
 
+## Changes after the code review of the journal (PR 29, review A)
+
+Corrections found by reviewing the code against this text. No new draft number: the formats are unchanged; the start and failure rules are stated as they must be on Linux.
+
+| Finding | Change | Where |
+|---|---|---|
+| R1 a failed sync, then a start in the same boot | Section 4 said the next start "reads the file from disk". On Linux an ordinary read returns the page cache, which after a failed writeback still holds the bytes that never reached the disk (ext4, XFS). Every start now syncs the file and reads it **from the device** (`posix_fadvise(POSIX_FADV_DONTNEED)`, then `O_DIRECT` where the file system takes it); an in-process restart takes the same path, as there is no other | Sections 4, 5 step 2 |
+| R2 import order | An import writes the restore marker **first**, then renames the backup over `journal.gzj`; a crash at either point is safe | Section 8.2 |
+| R3 lock | The lock is on `journal.lock`, a file in the data folder that is never replaced or removed, taken before the journal is created, imported or marked | Sections 2, 5 step 1 |
+| R4 start counter; no journal | Section 5 step 5 takes contract v2 section 8's text: the start counter on every start, written before the incarnation entry, 2^63 refused. A key file with no journal is marked before the first open | Sections 5, 8.2 |
+| R7e hard links | Creation uses `link` and, on file systems without hard links, `rename` under the lock | Section 2.1 |
+| Crash model | A power-cut job on a real file system is described, not yet in CI | Section 12, test 34 |
+
+Review B of the same code:
+
+| Finding | Change | Where |
+|---|---|---|
+| B1 import while `journal.lock` is gone | An import and a restore mark lock `journal.gzj` itself too, as the start does, so they are refused while a program runs even if `journal.lock` was removed or replaced by hand | Sections 2, 8.2 |
+| B2 the floor of an import | A journal to replace that cannot be read refuses the import; one the scan refuses still gives the highest incarnation of its valid prefix, or of the newest valid sync mark after damage (never what a rejected entry names) | Section 8.2 |
+| B3 the journal's name | Every start syncs the folder once before writing, not only the start that created the file | Section 5 step 1 |
+| B4 the first start after an unseen writeback error | Stated: it is refused with an I/O error, and the program opens once more before reporting a failure | Section 5 step 2 |
+| H1 (confirmation review) a sync mark forged in a record | The clear format's check was unkeyed SHA-256 truncated to 8 bytes, and only a mark named its offset, so peer-chosen bytes inside a batch could form a valid sync mark; a tear after it made the start refuse a torn tail as corruption, and an import took its floor from it. The clear format now has a random 32-byte salt in the header and a 16-byte check SHA-256(salt, offset, frame) on every entry. An order refusal gives the import only the valid prefix's highest incarnation. An import over a journal past the hard limit is refused: the person moves it aside first | Sections 8.2, 11 |
+| N1 (re-confirmation review) a check that could fail | The salted check copied salt, offset and frame into allocated memory; without memory it returned a made-up value, so a save could write an entry its own reader refuses and an open could call a good journal corrupt. The check is now hashed incrementally, in place, and allocates nothing | Section 11 |
+| B5 limits of the device read | Stated: where `O_DIRECT` falls back the `fadvise` alone acts and keeps pages another process maps; macOS unverified; the stale-block residual | Sections 4, 5 step 2 |
+
 ## Changes after cross-spec review 1
 
 Alignment fixes from `docs/reviews/review-cross-spec-1.md`, made in one pass with `spec/exit.md`, `spec/storage-encryption.md`, `spec/local-api.md` and `spec/safety-rule.md`. No new draft number: the formats and rules of draft 3 are unchanged.
@@ -55,7 +80,7 @@ The journal belongs to the outer layer (`DESIGN.md` section 3, L4 ports). It may
 ## 2. The file
 
 - **One append-only file per node**, `journal.gzj` in the node's data folder. Bytes are only ever added at the end. The one exception is cutting off a torn tail at start (section 5), which removes only bytes after the last sync mark, which were never confirmed.
-- **One writer.** The program takes an exclusive lock on the file (`flock` on POSIX, `LockFileEx` on Windows) for as long as it runs, and refuses to start if the lock is held. Two processes appending to one journal would interleave batches, and two live copies of one node is a hazard of its own (`safety-rule.md` section 10, "the same key running on two devices").
+- **One writer.** The program takes an exclusive lock (`flock` on POSIX, `LockFileEx` on Windows) on `journal.lock` in the data folder for as long as it runs, and refuses to start if the lock is held. Everything that writes the folder (the start, an import, a restore mark) then also locks `journal.gzj` itself, so that a `journal.lock` removed or replaced by hand while a program runs still lets no one replace the journal under it. The lock file is created if missing and is never replaced or removed: a lock on `journal.gzj` itself would stay on the old file when the name is replaced (an import, a person's copy, a sync tool), and a second program could lock the new one. It is taken before the journal is created, imported or marked; the journal file is locked too. Two processes appending to one journal would interleave batches, and two live copies of one node is a hazard of its own (`safety-rule.md` section 10, "the same key running on two devices").
 - Permissions: readable and writable by the owner only (0600 on POSIX).
 - **Encrypted from the first build**, on test networks too (owner decision 13; `spec/storage-encryption.md`, "storage" below). The header is authenticated and every entry is sealed under the journal key KJ, a subkey of the storage key, which is unlocked by the wallet passphrase (storage 4, 5). A locked program cannot read or write the journal.
 
@@ -75,7 +100,7 @@ Written once, when the file is created, then never changed. 185 bytes, storage 5
 
 A program refuses a journal whose `magic` or `format` is wrong, or whose `chain` is not its own network, before asking for anything, so a signet journal can never be opened by a mainnet build, and the other way round (`SLICES.md` rule 3). After unlock it checks the header tag; a failure there is "this journal is not this wallet's", distinct from damage.
 
-Creating the file: write the header to a temporary name, sync it, rename it to `journal.gzj`, then sync the folder (POSIX). Without the folder sync the file itself may not survive a power cut.
+Creating the file, under the lock: write the header to a temporary name, sync it, give it the name `journal.gzj` with `link` (which never replaces a file that appeared meanwhile) and remove the temporary name, or, on a file system without hard links (FAT, exFAT, some FUSE and SMB mounts, where `link` fails with `EPERM` or `ENOTSUP`), `rename` it, which the lock makes safe; then sync the folder (POSIX). Without the folder sync the file itself may not survive a power cut.
 
 ## 3. Entries
 
@@ -92,6 +117,8 @@ After the header the file is a sequence of entries. ("Entry" is the framed unit 
 | 4 + `length` − 16 | `tag` | 16 | XChaCha20-Poly1305's tag |
 
 All integers big-endian. The **associated data** of every entry is the header's `file_id`, the entry's own offset in the file as a `u64`, and bytes 0 to 20 of the entry, so an entry is valid only where it was written, only in this journal, and with its clear kind, incarnation and sequence exactly as written (storage 5.4).
+
+**The clear stand-in format** the code builds until the encrypted codec lands has the same framing with a clear payload and a salted, offset-bound 16-byte check instead of the nonce and tag (section 11).
 
 **The tag replaces draft 2's checksum.** Draft 2 used the first 8 bytes of SHA-256, which caught a torn write but not an attacker, who could rewrite the checksum too. The tag catches both: a torn or half-written entry fails it, and so does any change by someone without the storage key. What it cannot catch is a whole entry cut off at an entry boundary, or an older copy of the file; section 8.3's mark file and storage 6 cover those where it matters.
 
@@ -147,7 +174,7 @@ One writer, fed in the order the runner's executor receives save actions.
 
 **Group sync.** The writer may append several batch entries and run steps 2 to 5 once for all of them (one mark-file entry covers them all), confirming them in order. The bytes appended since the last successful sync stay below **16 MiB**, unless a single entry is larger by itself, which section 7 forbids; this now only bounds memory and loss on a crash, and the reader no longer relies on it. The runner allows 32 unconfirmed batches.
 
-**Failures.** If a write or a sync fails, the writer calls `gz_runner_storage_failed`, confirms nothing more, writes nothing more, and the program stops the node. It never retries a failed sync and carries on: after a failed `fsync`, Linux may already have dropped the unwritten pages, so a second `fsync` can succeed without the data being there. The next start reads the file from disk and finds out what survived.
+**Failures.** If a write or a sync fails, the writer calls `gz_runner_storage_failed`, confirms nothing more, writes nothing more, and the program stops the node. It never retries a failed sync and carries on: after a failed `fsync`, ext4 and XFS mark the unwritten pages clean and keep them, with the new bytes, in the page cache, so a second `fsync` succeeds without writing them and an ordinary read still returns them (PostgreSQL's "fsyncgate", 2018; Rebello et al., "Can Applications Recover from fsync Failures?", USENIX ATC 2020). Since Linux 4.13 the error is reported once per open file description, so a later program's `fsync` usually returns 0. The next start, in another process or in the same one (a restart from storage after this failure), therefore must not trust the page cache: it syncs the file, then reads it **from the device** (section 5 step 2), and finds out what survived. Reading the cache instead would give the node a batch that was never durable and append a sync mark after it, which a later power cut turns into corruption (XFS, ext4 `data=journal`) or, on ext4 `data=ordered`, into the silent loss of later confirmed batches (review B, measured with device-mapper write errors). One residual is outside the clear format's reach: a file system that can expose stale blocks after a failed or lost write (ext4 `data=writeback`) can show an earlier, freed journal's bytes, sync mark included, at the same offset; the encrypted format binds every entry to `file_id` and its offset, which closes it.
 
 **Nothing is confirmed early.** A confirmation means the batch, and a sync mark after it, have passed a successful sync. Everything the runner releases after a confirmation (sends, broadcasts, notices) therefore rests on durable data. This is "save before send" at the storage end.
 
@@ -155,8 +182,8 @@ One writer, fed in the order the runner's executor receives save actions.
 
 In this order. Every step that writes syncs before the next step.
 
-1. Take the lock. Open the file. A data folder with a key file and no journal starts **as a restore** (storage 6.3 step 0; section 8.2): the journal is created (section 2.1) and the restore's first batch follows step 5.
-2. Check the header (section 2.1), after the wallet was unlocked (storage 8.2).
+1. Take the lock (`journal.lock`, then `journal.gzj`, section 2). Open the file, and sync the folder once (POSIX), so that a name the creating start never made durable (it failed or was stopped before its folder sync) is durable before anything rests on it. A data folder with a key file and no journal starts **as a restore** (storage 6.3 step 0; section 8.2): the restore marker is written, the journal is created (section 2.1) and the restore's first batch follows step 5.
+2. **Read what the device holds.** Sync the file (refuse to start if that fails), then read it bypassing the page cache: on Linux, `posix_fadvise(POSIX_FADV_DONTNEED)` over the file, which drops clean cached pages and so the pages a failed writeback left, then `O_DIRECT` reads where the file system takes them (a direct read never returns a cached page; ext4 with `data=journal` silently falls back to buffered reads, which is why the `fadvise` comes first; a file system that refuses `O_DIRECT` gets the `fadvise` and an ordinary read). macOS: `F_NOCACHE`. Windows: `FILE_FLAG_NO_BUFFERING` **(open: the Windows port)**. Limits: where `O_DIRECT` falls back silently (ext4 `data=journal`, inline-data files, fscrypt without inline encryption, compressed btrfs, ZFS before 2.3) or is refused, the `fadvise` is the only defence, and it does not drop pages another process has mapped, so nothing may map `journal.gzj` while the wallet runs; the macOS path is **unverified** (Apple's `fcntl(2)` does not say `F_NOCACHE` bypasses a page already cached). The sync here also returns a writeback error that no program saw (the earlier one was stopped before its own sync): that first start is then refused with an I/O error although nothing is damaged, and the next start reads what survived. The program opens once more before telling the person anything more than "trying again". Check the header (section 2.1), after the wallet was unlocked (storage 8.2).
 3. **Scan** entries from the start. An entry is **invalid** if its `length` is below 61, above the maximum or wrong for its kind, if fewer bytes remain in the file than it claims, if its `kind` is unknown, if its tag does not verify under KJ with its own offset in the associated data, or if it is a sync mark whose decrypted `offset` is not its own position (storage 5.5). Stop at the first invalid entry, or at the end of the file. Check the order rules (section 3.4) on every valid entry; a violation stops the start (corruption).
 4. **Torn tail or corruption.** Let V be the offset just after the last valid entry, and E the end of the file.
    - V = E: the file is clean.
@@ -165,7 +192,7 @@ In this order. Every step that writes syncs before the next step.
      - **One found: corruption.** The damaged entry at V lies before a mark that proves it was synced, so it may hold a confirmed batch, a `round_started` or an `exposure` record that a peer has seen. **Refuse to start and tell the user**; never cut it away. The remedy is a restore (section 8), whose new epoch makes it safe (`safety-rule.md` section 9).
 
    Valid-looking entries after an invalid one, in a torn tail, are dropped with it. A group sync can reach the disk out of order, so a later entry may survive while an earlier one is torn. Keeping the later one would break the order the runner relies on, and it was never confirmed: its mark, if written at all, did not survive.
-5. **Incarnation.** New incarnation = 1 + the highest found, or 1 for an empty journal. Append its entry, sync, append a sync mark, sync. Only then may the runner be created with `gz_runner_init(…, incarnation, …)`. This meets the runner's duty: strictly greater than any before, durable before use. An incarnation is consumed even if the program then stops without saving anything; that is harmless.
+5. **Incarnation.** Read the start counter (storage 10.3; `docs/notes/contract-v2.md` section 8). New incarnation = 1 + the larger of the highest found in the journal and the counter (the journal alone if the file is missing or damaged), and, while a restore is unanswered, above the restore marker's floor; refuse to start if the result would reach 2^63. Write the counter with it, then append the incarnation entry, sync, append a sync mark, sync. Only then may the runner be created with `gz_runner_init(…, incarnation, …)`. This meets the runner's duty: strictly greater than any before, durable before use. Writing the counter first keeps a restored journal, whose counter is older, from reusing a number used on this device since its backup; it does not defend a snapshot of the whole folder (storage 6.4). An incarnation is consumed even if the program then stops without saving anything; that is harmless.
 6. **The start rule** (storage 6.3): the journal is compared with its mark file and guard (section 8.3) and, in 1.0.0, with the watch bundle and the penalty file. A journal **behind** any of them, or **possibly old** (a guard or mark file missing or damaged), is not started: the person may start it as a restore (section 8.2) or put the newer files back (`local-api.md` 4.7). A mark file whose newest entry is the restore marker (storage 6.3 step 0, 10.2) makes the start a restore, never "behind" or "possibly old": a restore whose first batch was not yet anchored (step 1's, a start as a restore, or one interrupted) is started again, and its first batch follows step 5.
 7. **Read** the records with the reader (section 6) and pass them to `gz_node_start`.
 
@@ -209,6 +236,8 @@ The backup is a copy of this journal, and the host keeps one. A copy dated befor
 The index within an epoch is recorded too (`key_index`), so that an ordinary restart never derives the same key twice.
 
 **How a restore is recognised and who writes the first batch.** A restore is an explicit program action: importing a backup file (storage 11), the person starting files found behind as a restore (storage 6.3 step 4; `local-api.md` `start-as-restore`), or the program finding a key file with no journal (storage 6.3 step 0). The program then starts normally (section 5), creating the runner under the new incarnation, and tells the node, **before any other event and before connecting to anyone**, that this start follows a restore (`signing-round.md` section 12.1). The node answers with one save batch, `key_epoch`, `restored` and `guard`, which the runner issues as sequence 1 of that incarnation like any other batch; nothing else is sent until it is confirmed (review 3, F22). A copy of the data folder made by other means is not recognised; that is the "copy of a running program" limit of `signing-round.md` section 8 and is not defended.
+
+**The restore marker and its order.** The program marks a restore in `restore.gzr` beside the journal (outside the backup set), holding the imported journal's highest incarnation (`base`) and the highest the replaced one had used (`floor`). Every start is restored until a batch with sequence 1 of an incarnation above `base` is durable (the restore's first batch); the marker is then removed before that batch is confirmed. **An import writes the marker first, then the file**: under the lock, read the backup (copied first to a temporary name in the data folder), take the floor from the journal it replaces, write and sync the marker, then rename the backup over `journal.gzj` and sync the folder. A journal to replace that cannot be read refuses the import, and one past the hard limit (section 7) is refused too: the person moves it aside first. A crash before the rename leaves the old journal with a marker whose `base` it is already above, so the next start finds the marker answered and removes it (the import did not happen); a crash after it is a marked restore. The other order (file first) has a window in which the backup starts as an ordinary journal and reuses an incarnation. A key file with no journal is marked with `base` 0 before the first start. The new incarnation is taken from the start counter as at every start (section 5 step 5), so it is above every incarnation this device used since the backup. A restore that finds no counter tells the person.
 
 ### 8.3 The guard file and the mark file
 
@@ -349,42 +378,50 @@ A test checks this directly: the simulator records every secret nonce it creates
 
 ## 11. Test vectors
 
-Computed by `tools/spec-vectors.py`. **J1 to J6 are draft 2's clear format, which is not built**: the encrypted journal's vectors are storage's E5 (header), E6 (entries), E7 (tampering; E7f is J4's torn tail and E7a is J6's corruption) and E9m (the mark file). J1 to J6 are kept because the tool still prints them, and because their framing logic (marks, torn tails, order rules) is the same.
+Computed by `tools/spec-vectors.py`. **J1 to J6 are the clear format the code builds now** (`ports/storage/journal.c`), a stand-in that will not ship: the encrypted journal's vectors are storage's E5 (header), E6 (entries), E7 (tampering; E7f is J4's torn tail and E7a is J6's corruption) and E9m (the mark file). Their framing logic (marks, torn tails, order rules) is the same as the encrypted format's.
 
-**J1. Header, signet.** 48 bytes:
+**The clear format** (salted after the confirmation review of PR 29, finding H1). The header is 88 bytes: `magic` ASCII `GZJOURNS` (8), `chain` (32), `salt` (32 random bytes, drawn once when the file is created), then a check (16): the first 16 bytes of SHA-256 over the 72 bytes before it. Every entry is framed as in section 3 up to `sequence`, then the clear payload, then a 16-byte check in place of the nonce and tag: the first 16 bytes of SHA-256(`salt` || the entry's own offset in the file as a `u64` || the entry's bytes from `length` to the end of the payload). `length` is 17 + the payload's length, at least 21, at most 8,388,625, exactly 25 for kinds 1 and 3, so incarnation entries and sync marks are 45 bytes. The check is computed incrementally over the three parts where they lie, with no copy and no allocation, so it cannot fail: want of memory must never turn into a wrong check on disk or a verdict of corruption (N1). The salt and the offset bind every entry to its file and its place, as the associated data does in the encrypted format: bytes a peer chose, written inside a record, cannot form an entry or a sync mark the scan accepts, because the peer does not know the salt. Draft 2's unsalted 8-byte check could be forged that way, and a forged mark inside a torn batch made the start refuse a torn tail as corruption (H1). The vectors use the salt `00 01 .. 1f`.
 
-```
-475a4a4f55524e4c f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c4225e973988108000000
-5477d18c2a8b6425
-```
-
-**J2. Incarnation 1, clock 1,794,000,000,000 ms.** 37 bytes:
+**J1. Header, signet, salt 000102..1f.** 88 bytes:
 
 ```
-00000019 01 0000000000000001 0000000000000000 000001a1b2bb9400 5ba5a611f1eac4ed
+475a4a4f55524e53 f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c4225e973988108000000
+000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+598cbcfdcc7c3d3b1a1eab6adac61dac
 ```
 
-**J3. Batch (1, 1) with one record of type `0x7e570001` and bytes `ping`.** 45 bytes:
+**J2. Incarnation 1, clock 1,794,000,000,000 ms,** at offset 88. 45 bytes:
+
+```
+00000019 01 0000000000000001 0000000000000000 000001a1b2bb9400
+d0742bb1d178d951a10a23fc4da6e5dd
+```
+
+**J5. Sync mark** of incarnation 1 at offset 133, just after J2. 45 bytes:
+
+```
+00000019 03 0000000000000001 0000000000000000 0000000000000085
+67591b2f763b7489609793e88e380adc
+```
+
+**J3. Batch (1, 1) with one record of type `0x7e570001` and bytes `ping`,** at offset 178, just after J5. 53 bytes:
 
 ```
 00000021 02 0000000000000001 0000000000000001
 00000001 7e570001 00000004 70696e67
-ff0269042d9a3f7d
+ddde3c927fd591a41118a5ec813fcd5a
 ```
 
-**J5. Sync mark** of incarnation 1 at offset 85, just after J2 (the header is 48 bytes). 37 bytes:
+**J4. Torn tail.** The header, J2, J5, then J3 without its last 3 bytes: 228 bytes in all. No sync mark follows the damage at offset 178, so the reader cuts the file to 178, keeping J2 and J5, and the next incarnation is 2.
+
+**J6. Corruption.** The header, J2, J5, J3 with bit 0 of its byte 25 flipped (the first byte of the record type), then a sync mark at offset 231: 276 bytes. The damaged entry at 178 lies before a valid mark that names its own offset, so the start is **refused**, nothing cut. The second mark is:
 
 ```
-00000019 03 0000000000000001 0000000000000000 0000000000000055 11b8de34bb2fdb81
+00000019 03 0000000000000001 0000000000000000 00000000000000e7
+8e9c126043c3bea83a91d7802d2d4c10
 ```
 
-**J4. Torn tail** (changed after review 3). The header, J2, J5, then J3 without its last 3 bytes: 164 bytes in all. No sync mark follows the damage at offset 122, so the reader cuts the file to 122, keeping J2 and J5, and the next incarnation is 2.
-
-**J6. Corruption** (new). The header, J2, J5, J3 with bit 0 of its byte 25 flipped (the first byte of the record type), then a sync mark at offset 167: 204 bytes. The damaged entry at 122 lies before a valid mark that names its own offset, so the start is **refused**, nothing cut. The second mark is:
-
-```
-00000019 03 0000000000000001 0000000000000000 00000000000000a7 aecd69c7d1113773
-```
+**H1 check** (printed by the tool, not a byte vector). A batch at 178 whose record carries a well-formed sync mark naming the offset where it lands, sealed with a salt other than the file's (all zeros, as a peer would have to guess), cut 10 bytes short: a torn tail, cut at 178, never corruption.
 
 ## 12. Tests
 
@@ -423,6 +460,17 @@ ff0269042d9a3f7d
 23. Restore (review 2, N1, test 4b): a journal copy from before a creation round is restored; the host replays that round's proposal and proposes a second tree on the same outpoint. Both are refused with reason 12; no key from after the backup is derived again; the first batch of the restored node is `key_epoch` (non-zero), `restored` and `guard`, issued by the runner as sequence 1; nothing is sent before it is confirmed. The epoch is drawn with the untagged request (the simulator's port records the tag).
 28. Guard and mark file: with a guard file ahead of the backup, the restore tells the user the backup is stale and keeps the file's epochs; with none, it says "possibly stale". A batch with a `guard` record is not confirmed until the guard file is replaced and synced, and an anchored batch not until its mark-file entry is synced; a failure there is a storage failure. The journal cut back after an anchored batch is not started (storage test 8).
 24. Rule removed: with the `exposure` record written after `round_partial_sigs` is sent instead of before, test 21 combined with a crash at that point must show a second tree signed on one outpoint. That test must fail.
+
+**Failed syncs, imports and the folder (code review of PR 29)**
+29. A failed sync modelled as Linux fails one (the bytes readable, never durable; a later sync does not write them), for the batch's sync and for its mark's: the next start in the same boot, or the same process restarting, does not give the node the batch that failed, and after a power cut the start after that is not refused. The older model (failed bytes vanish from view) passes too.
+30. An import crashed at every point, every settle: the next start is the old journal, not restored, or the backup, restored, and never reuses an incarnation. With the counter, a backup put in place without a marker does not reuse one either.
+31. A copy renamed over `journal.gzj` while a program runs does not let a second program in; two first starts at once: the second finds the folder locked; marking or importing while the journal is open is refused.
+32. The start counter: above the journal, handed out before the incarnation entry, a failure to write it appends nothing; contract v2's test T8 on the journal alone (backup at 2, five starts, restore: 6); a counter, floor or journal at 2^63 - 1 or above refuses the start. A key file with no journal starts restored.
+33. The hard limit with the unsynced bound's extra mark; a guard batch kept across a kill reaches the guard file (not on a restored start, not over a newer or damaged one); a flush with no runner attached refuses and keeps its batches; a flush from the confirmation callback confirms in order; a file system without hard links.
+
+**Writeback failures on a real file system (nightly, not in CI).** Review B's device-mapper harness (a loop file under `dm-flakey` with `error_writes` over the journal's last blocks, ext4 `data=ordered` and `data=journal`, XFS with an external log; restarts in the same process, in a new one, after an unseen error, and with the log device failing) is the only test of the POSIX table under the failure of section 4; it needs root and runs in under a minute.
+
+**Power cuts on a real file system (34, not yet in CI).** The memfs crash model settles a crash as LOSE, KEEP or REORDER, and test 29 adds Linux's failed sync; the real-process kill sweep keeps the page cache. Neither cuts the power under a real file system. The job that would: LazyFS (`github.com/dsrhaslab/lazyfs`, a FUSE file system that keeps unsynced writes in its own cache and drops them on command, used to find such bugs in etcd and PostgreSQL), mounted over an ext4 folder: run the kill sweep's workload in it, tell LazyFS to clear its cache at random points instead of a SIGKILL, remount, open, and run the harness's check that no confirmed batch is missing. Or `dm-log-writes` under ext4 and XFS, replaying the log to every flush and FUA and opening the journal at each. Neither fits the existing CI cleanly: both need root, FUSE or device-mapper on the runner, and LazyFS a build from source, so this is meant as a nightly job on the build server rather than a check on every push. Its expected result is test 14's.
 
 ## 13. Open points
 
