@@ -616,7 +616,10 @@ static void damage(gz_sign_def_t *d, int which)
     case 2: d->n_tiers = GZ_SIGN_MAX_TIERS + 1; break;
     case 3: d->n_items = 0; break;
     case 4: d->n_items = GZ_SIGN_MAX_ITEMS + 1; break;
-    case 5: d->n_tiers = 3; it->tier = 2; break;                              /* a tier skipped */
+    case 5: d->n_tiers = 3;                 /* a tier skipped: the items in reverse (children first, C6), the root alone in tier 2 */
+        for (int i = 0; i < d->n_items / 2; i++) { gz_sign_item_t t = d->items[i]; d->items[i] = d->items[d->n_items - 1 - i]; d->items[d->n_items - 1 - i] = t; }
+        it->tier = 2;
+        break;
     case 6: d->items[0].tier = 1; d->n_tiers = 2; break;                     /* tiers out of order */
     case 7: it->n_signers = 1; break;
     case 8: it->signers[it->n_signers - 1] = 40; break;                       /* no such participant */
