@@ -5,7 +5,16 @@
  * later request with a larger depth issues it again with that depth; other
  * repeats issue nothing. Reports go to every engine in the set, and each
  * ignores what it no longer needs. Memory only: every engine sets its watches
- * again at start (node.h rule 4). */
+ * again at start (node.h rule 4).
+ *
+ * BUDGETS. An engine cannot see how full the registry is, so it is never
+ * full: each engine has a budget of distinct watches (internal.h), their sum
+ * fits the registry, and an engine keeps its own cap below its budget and
+ * answers a request past it with a refusal. One that asks for more anyway
+ * broke that cap (GZ_ERR_BUG, as for timers). There is no "unwatch" action
+ * (action.h), but the registry forgets: when a slot closes, its engine's bit
+ * leaves every entry, and an entry nobody asks for any more is free. The
+ * program goes on reporting it; the report then reaches nobody. */
 #include "internal.h"
 #include <string.h>
 
@@ -32,6 +41,21 @@ static int find(const gz_node_t *c, int is_tx, const uint8_t key[36])
     return -1;
 }
 
+static size_t budget(int eng)
+{
+    if (eng == ENG_TEST0 || eng == ENG_TEST1) return TE_MAX_WATCHES;
+    if (eng >= ENG_SLOT0 && eng < ENG_N) return TS_MAX_WATCHES;
+    return 0;
+}
+
+static size_t held_by(const gz_node_t *c, int eng)
+{
+    size_t n = 0;
+    for (int i = 0; i < MAX_WATCHES; i++)
+        if (c->watches[i].used && (c->watches[i].mask & (1u << eng))) n++;
+    return n;
+}
+
 int gz_watch_note(gz_node_t *c, const gz_action_t *a, int eng)
 {
     int is_tx, i;
@@ -39,6 +63,8 @@ int gz_watch_note(gz_node_t *c, const gz_action_t *a, int eng)
     uint32_t depth;
     key_of_action(a, &is_tx, key, &depth);
     i = find(c, is_tx, key);
+    /* One more watch for this engine: within its budget. */
+    if ((i < 0 || !(c->watches[i].mask & (1u << eng))) && held_by(c, eng) >= budget(eng)) return -1;
     if (i >= 0) {
         c->watches[i].mask |= (uint16_t)(1u << eng);
         if (depth <= c->watches[i].depth) return 0;
@@ -73,4 +99,15 @@ uint16_t gz_watch_mask(const gz_node_t *c, const gz_chain_event_t *ev)
         return 0;
     }
     return i < 0 ? 0 : c->watches[i].mask;
+}
+
+/* An engine has ended (its slot closed): nothing is reported to it again,
+ * and what only it watched is forgotten. */
+void gz_watch_forget(gz_node_t *c, int eng)
+{
+    for (int i = 0; i < MAX_WATCHES; i++) {
+        if (!c->watches[i].used) continue;
+        c->watches[i].mask &= (uint16_t)~(1u << eng);
+        if (!c->watches[i].mask) c->watches[i].used = 0;
+    }
 }

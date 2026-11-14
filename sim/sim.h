@@ -293,6 +293,7 @@ typedef struct {
     uint64_t messages_sent;       /* handed to the network, before faults */
     uint64_t node_sends;          /* of those, sent by a node's program (the rest are stimulus) */
     uint64_t messages_dropped;
+    uint64_t closed_on_loss;      /* connections closed and opened again because a message on them was lost */
     uint64_t messages_duplicated;
     uint64_t messages_delayed;
     uint64_t messages_delivered;  /* to nodes and to the world */

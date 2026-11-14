@@ -202,6 +202,21 @@ static void test_marker_crashes(void)
     CHECK(bad == 0 && runs > 15 && answered > 0 && unanswered > 0);
 }
 
+/* The epochs of a guard file (newest last), its counter; 0 if there is none. */
+static size_t guard_file_epochs(memfs_t *fs, uint32_t *out, size_t cap, uint64_t *counter)
+{
+    size_t len;
+    const uint8_t *g = memfs_get(fs, H_GUARD, &len);
+    if (!g || len < GZ_GUARD_MIN_LEN + 8) return 0;
+    size_t n = (size_t)g[48] << 8 | g[49];
+    *counter = 0;
+    for (int i = 0; i < 8; i++) *counter = *counter << 8 | g[40 + i];
+    for (size_t i = 0; i < n && i < cap; i++)
+        out[i] = (uint32_t)g[50 + 8 * i] << 24 | (uint32_t)g[51 + 8 * i] << 16 | (uint32_t)g[52 + 8 * i] << 8 |
+                 g[53 + 8 * i];
+    return n;
+}
+
 /* 4. The real node. */
 typedef struct {
     gz_journal_t *j;
@@ -258,7 +273,7 @@ static int nd_start(nd_t *n, memfs_t *fs)
     gz_runner_init(&n->runner, n->slots, 64, n->rbytes, sizeof n->rbytes, gz_journal_incarnation(n->j),
                    nd_exec, n);
     gz_journal_attach(n->j, &n->runner, nd_confirmed, n);
-    gz_ports_t ports = {{nd_fill, n}, {nd_now, n}};
+    gz_ports_t ports = {{nd_fill, n}, {nd_now, nd_now, n}};
     gz_node_config_t nc;
     memset(&nc, 0, sizeof nc);
     nc.host = 1;
@@ -279,6 +294,47 @@ static int nd_start(nd_t *n, memfs_t *fs)
     }
     gz_journal_flush(n->j);
     return more ? -3 : 0;
+}
+
+/* Review A F7, review B 4: 22 restores on one device, then its oldest backup
+ * put back. The node is given the guard file with the restore marker and
+ * writes back the union: the counter goes up, never back, and the newest
+ * epochs used since the backup are still in the file. */
+static void test_stale_backup_keeps_the_guard(void)
+{
+    static nd_t n;
+    memfs_t fs;
+    uint32_t before[64], after[64];
+    uint64_t c_before = 0, c_after = 0;
+    memfs_init(&fs);
+    CHECK(nd_start(&n, &fs) == 0);
+    gz_journal_close(n.j);
+    size_t blen;
+    const uint8_t *b = memfs_get(&fs, H_JOURNAL, &blen);
+    uint8_t *backup = malloc(blen);
+    memcpy(backup, b, blen);
+    for (int r = 0; r < 22; r++) {
+        CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0) == GZ_JOURNAL_OK);
+        CHECK(nd_start(&n, &fs) == 0 && n.first_type == GZ_RECORD_RESTORED && !gz_journal_failed(n.j));
+        gz_journal_close(n.j);
+    }
+    size_t nb = guard_file_epochs(&fs, before, 64, &c_before);
+    CHECK(nb == 16 && c_before == 22);
+    /* The oldest backup, imported. */
+    memfs_put(&fs, H_DIR "/journal.gzj.import", backup, blen);
+    CHECK(gz_journal_import(H_DIR, gz_journal_chain_signet, &fs.os, H_DIR "/journal.gzj.import", 0) == GZ_JOURNAL_OK);
+    CHECK(nd_start(&n, &fs) == 0 && n.first_type == GZ_RECORD_RESTORED && !gz_journal_failed(n.j));
+    gz_journal_close(n.j);
+    size_t na = guard_file_epochs(&fs, after, 64, &c_after);
+    CHECK(c_after == c_before + 1);                     /* never back: 23, not the backup's 1 */
+    CHECK(na == 16);
+    /* The fifteen newest epochs before the restore, in order, then the new one. */
+    for (size_t i = 0; i + 1 < na && i + 1 < nb; i++) CHECK(after[i] == before[i + 1]);
+    for (size_t i = 0; i < nb; i++) CHECK(after[na - 1] != before[i]);
+    free(backup);
+    free(n.node);
+    n.node = NULL;
+    memfs_free(&fs);
 }
 
 static void test_node(void)
@@ -614,6 +670,7 @@ int main(void)
     test_marker();
     test_marker_crashes();
     test_node();
+    test_stale_backup_keeps_the_guard();
     test_pull();
     test_fence();
     return check_done();

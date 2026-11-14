@@ -380,8 +380,10 @@ static inline sim_node_ops_t multi_ops(void)
  * hello). To be called at the end of a run with a quiet tail (sim_quiesce,
  * then enough steps for every delay to pass). Returns the number of durable
  * ping records from another node, over all nodes, whose reply has not left
- * its node at least once for each time it was saved. The world never comes
- * back with a hello, so pings from it are not counted. A ping record is the
+ * its node at least once for each time it was saved. Pings from the world
+ * count too: the world comes back in the quiet tail and asks each node with
+ * its hello (sim.c, quiesce), as any pinger that comes back. A ping record
+ * is the
  * clock (8), the link (local 33, remote 33), the serial (8), the payload; the
  * reply is the envelope of kind 32767 with record 1 "GZPO", serial, payload
  * and record 3 the area. Whether a reply left is read from the trace, which
@@ -402,7 +404,6 @@ static inline size_t saved_replies_not_sent(const sim_t *sim, uint32_t n_nodes)
                 uint32_t n = multi_u32(p + 4);
                 if (multi_u32(p) != 0x7e570001u || n < 82 || n > 82 + 64) continue;
                 uint64_t peer = sim_key_peer(p + 8 + 41), digest = 0xcbf29ce484222325ull;
-                if (peer == SIM_WORLD_PEER) continue;
                 uint8_t env[38 + 2 + 4 + 8 + 64 + 4] = {0x67, 0x7a, 0x66, 0x01, 0x7f, 0xff};
                 size_t at = 38, plen = n - 82, earlier = 0, left = 0;
                 env[at++] = 1;
@@ -422,6 +423,9 @@ static inline size_t saved_replies_not_sent(const sim_t *sim, uint32_t n_nodes)
                 for (size_t k = 0; k < n_seen; k++) earlier += strcmp(seen[k], needle) == 0;
                 if (n_seen < 1024) strcpy(seen[n_seen++], needle);
                 for (const char *t = strstr(trace, needle); t; t = strstr(t + 1, needle)) left++;
+                if (left <= earlier && getenv("GZ_SIM_TRACE"))
+                    printf("missing reply: node %u serial %016llx needle '%s'\n", node,
+                           (unsigned long long)((uint64_t)multi_u32(p + 8 + 74) << 32 | multi_u32(p + 8 + 78)), needle);
                 missing += left <= earlier;
             }
         }

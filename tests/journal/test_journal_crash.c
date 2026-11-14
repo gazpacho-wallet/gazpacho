@@ -330,7 +330,7 @@ static int node_run(node_h_t *n, int pings)
     gz_runner_init(&n->runner, n->slots, 64, n->rbytes, sizeof n->rbytes, gz_journal_incarnation(n->j),
                    n_execute, n);
     gz_journal_attach(n->j, &n->runner, n_confirmed, n);
-    gz_ports_t ports = {{n_fill, n}, {n_now, n}};
+    gz_ports_t ports = {{n_fill, n}, {n_now, n_now, n}};
     gz_node_config_t nc;
     memset(&nc, 0, sizeof nc);
     nc.host = 1;

@@ -55,6 +55,11 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
 gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
+# Kind 0xffff (the lobby's SEND bridge until P4.2) never reaches a program
+# (composite-node.md, task T-P42-1).
+add_test(NAME program_send_whole_unlinked
+  COMMAND sh ${CMAKE_SOURCE_DIR}/tools/check-send-whole.sh ${CMAKE_SOURCE_DIR} $<TARGET_FILE:gazpacho>
+          $<TARGET_FILE:gazpacho-test>)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)

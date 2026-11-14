@@ -44,6 +44,9 @@ int gzp_net_init(gzp_net_t *n, const secp256k1_context *secp, const uint8_t priv
     n->cfg.pong_ms = lim->pong_ms;
     if (lim->max_per_address >= 0) n->cfg.max_per_address = (unsigned)lim->max_per_address;
     if (lim->max_queue) n->cfg.max_queue = lim->max_queue;
+    if (lim->max_conns) n->cfg.max_conns = lim->max_conns;
+    /* The transport holds no more connections than this table and the node
+     * part (node.h: one number for the three). */
     if (n->cfg.max_conns > GZP_MAX_CONNS) n->cfg.max_conns = GZP_MAX_CONNS;
     if (!secp256k1_ec_pubkey_create(secp, &pk, n->cfg.static_key) ||
         !secp256k1_ec_pubkey_serialize(secp, n->pub, &len, &pk, SECP256K1_EC_COMPRESSED))
@@ -118,6 +121,11 @@ int gzp_net_send(gzp_net_t *n, const gz_link_t *link, uint16_t kind, const uint8
     gzp_conn_t *c = by_key(n, link->remote.key);
     gz_peers_err_t e;
     unsigned long long pid = (unsigned long long)gzp_peer_id(link->remote.key);
+    if (kind == GZ_SEND_KIND_RESERVED) {
+        /* Never on the wire (action.h): whatever asked for it is a bug. */
+        gzp_log("send-refused peer=%016llx why=reserved-kind", pid);
+        return -2;
+    }
     if (memcmp(link->local.key, n->pub, 33) != 0) {
         n->dropped_unconnected++;
         gzp_log("send-dropped peer=%016llx why=not-our-key", pid);
@@ -139,27 +147,47 @@ int gzp_net_send(gzp_net_t *n, const gz_link_t *link, uint16_t kind, const uint8
     return 1;
 }
 
+static const char *word(const char *s);
+
+/* A CONNECT, or an attempt to connect, that could not be carried out:
+ * reported and counted, never an error (net.h). */
+static int connect_failed(gzp_net_t *n, const uint8_t host_key[33], const char *why)
+{
+    n->connect_failed++;
+    gzp_log("connect-failed why=%s host=%016llx count=%llu", word(why), (unsigned long long)gzp_peer_id(host_key),
+            (unsigned long long)n->connect_failed);
+    return 1;
+}
+
 int gzp_net_connect(gzp_net_t *n, const uint8_t host_key[33], const uint8_t *address, size_t address_len,
                     uint32_t key_epoch, uint32_t key_index)
 {
-    char buf[80], *colon, *end;
+    char buf[80], *colon, *end, *host = buf;
+    const char *d;
     long port;
     int i, free_i = -1;
     gzp_target_t *t;
-    if (address_len == 0 || address_len >= sizeof buf) return -1;
+    if (address_len == 0 || address_len >= sizeof buf) return connect_failed(n, host_key, "bad-address");
     memcpy(buf, address, address_len);
     buf[address_len] = 0;
     colon = strrchr(buf, ':');
-    if (!colon || colon == buf || colon - buf >= 64) return -1;
+    if (!colon || colon == buf || colon - buf >= 64) return connect_failed(n, host_key, "bad-address");
     *colon = 0;
+    for (d = colon + 1; *d; d++)
+        if (*d < '0' || *d > '9') return connect_failed(n, host_key, "bad-address");
     port = strtol(colon + 1, &end, 10);
-    if (*end || port <= 0 || port > 65535) return -1;
+    if (end == colon + 1 || *end || port <= 0 || port > 65535) return connect_failed(n, host_key, "bad-address");
+    /* An IPv6 address comes in brackets (the address rule); the resolver takes it bare. */
+    if (host[0] == '[' && colon - buf > 2 && colon[-1] == ']') {
+        colon[-1] = 0;
+        host++;
+    }
     for (i = 0; i < GZP_MAX_TARGETS; i++) {
         if (n->targets[i].used && !memcmp(n->targets[i].key, host_key, 33)) break;
         if (!n->targets[i].used && free_i < 0) free_i = i;
     }
     if (i == GZP_MAX_TARGETS) {
-        if (free_i < 0) return -1;
+        if (free_i < 0) return connect_failed(n, host_key, "table-full");
         i = free_i;
         memset(&n->targets[i], 0, sizeof n->targets[i]);
         n->targets[i].backoff_ms = n->first_backoff_ms;
@@ -168,11 +196,11 @@ int gzp_net_connect(gzp_net_t *n, const uint8_t host_key[33], const uint8_t *add
     /* A second CONNECT with the same host and key replaces the address. */
     t->used = 1;
     memcpy(t->key, host_key, 33);
-    snprintf(t->host, sizeof t->host, "%s", buf);
+    snprintf(t->host, sizeof t->host, "%s", host);
     t->port = (uint16_t)port;
     t->epoch = key_epoch;
     t->index = key_index;
-    gzp_log("connect-kept host=%016llx address=%s:%ld", (unsigned long long)gzp_peer_id(host_key), buf, port);
+    gzp_log("connect-kept host=%016llx address=%s:%ld", (unsigned long long)gzp_peer_id(host_key), host, port);
     return 0;
 }
 
@@ -190,6 +218,9 @@ void gzp_net_disconnect(gzp_net_t *n, const gz_link_t *link, unsigned why)
     if (!c) return;
     if (why == 1) gz_peers_refuse(n->peers, c->conn, "refused");
     else gz_peers_close_after_send(n->peers, c->conn);
+    /* The transport reads nothing more; what it had read already is no
+     * longer for the node (handle below). */
+    c->closing = 1;
 }
 
 void gzp_net_set_seated(gzp_net_t *n, const uint8_t key[33], int seated)
@@ -328,6 +359,16 @@ static void handle(gzp_net_t *n, const gz_peer_event_t *ev, uint64_t now)
     case GZ_PEER_EV_MESSAGE: {
         gz_link_t l;
         if (!c) break;
+        if (c->closing) {
+            /* Read before the DISCONNECT of the node, handled after it:
+             * dropped and counted. The node closed this connection; nothing
+             * but its PEER_DISCONNECTED follows. */
+            n->dropped_closing++;
+            if (c->dropped_closing++ == 0)
+                gzp_log("message-dropped why=closing peer=%016llx conn=%llu", (unsigned long long)c->peer_id,
+                        (unsigned long long)c->conn);
+            break;
+        }
         if (n->drop_kind && ev->kind == n->drop_kind) {
             gzp_log("test-drop kind=%u peer=%016llx", (unsigned)ev->kind, (unsigned long long)c->peer_id);
             break;
@@ -370,6 +411,9 @@ static void handle(gzp_net_t *n, const gz_peer_event_t *ev, uint64_t now)
             uint64_t id = c->peer_id;
             gz_link_t l;
             link_of(n, c, &l);
+            if (c->dropped_closing)
+                gzp_log("messages-dropped why=closing conn=%llu count=%u", (unsigned long long)ev->conn,
+                        c->dropped_closing);
             if (n->queueing) {
                 size_t k = unqueue_conn(n, ev->conn);
                 gzp_log("start-queue dropped conn=%llu why=closed-during-start peer=%016llx messages=%zu",
@@ -418,7 +462,8 @@ void gzp_net_queue_end(gzp_net_t *n)
         /* Every queued message of the connection, in order. */
         for (j = i + 1; j < nq; j++) {
             if (q[j].conn != q[i].conn || q[j].type != GZ_PEER_EV_MESSAGE) continue;
-            if (!by_conn(n, q[i].conn)) break; /* closed by a delivery's refusal: the rest go with it */
+            /* Closed by a refusal at a delivery, or its close asked for: the rest go with it. */
+            if (!(c = by_conn(n, q[i].conn)) || c->closing) break;
             if (n->ev.message) n->ev.message(n->ev.ctx, &l, q[j].kind, q[j].scope, q[j].bytes, q[j].len);
         }
     }
@@ -463,7 +508,9 @@ void gzp_net_dispatch(gzp_net_t *n, const struct pollfd *fds, size_t count, uint
         if (!t->used || t->conn || now < t->next_connect_ms) continue;
         e = gz_peers_connect(n->peers, t->host, t->port, t->key, NULL, &conn);
         if (e) {
-            gzp_log("connect-failed why=%s", gz_peers_err_name(e));
+            /* An address the resolver refuses, or no socket: a failed
+             * attempt, tried again with the backoff. */
+            connect_failed(n, t->key, gz_peers_err_name(e));
             schedule_reconnect(n, i, now);
         } else {
             t->conn = conn;

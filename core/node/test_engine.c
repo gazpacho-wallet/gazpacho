@@ -162,6 +162,16 @@ static int add_pending(te_t *t, uint64_t serial, const gz_link_t *link, const ui
     return 0;
 }
 
+/* Replies one link is owed: its share of the table is TE_MAX_PENDING_LINK, so
+ * a key that acknowledges nothing cannot fill the table for the others. */
+static size_t pending_on(const te_t *t, const gz_link_t *link)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < TE_MAX_PENDING; i++)
+        if (t->pending[i].used && link_eq(&t->pending[i].link, link)) n++;
+    return n;
+}
+
 static te_pending_t *find_pending(te_t *t, uint64_t serial, const gz_link_t *link)
 {
     for (size_t i = 0; i < TE_MAX_PENDING; i++)
@@ -253,13 +263,29 @@ static gz_status_t te_connect(te_t *t, const te_target_t *g, gz_action_list_t *o
 }
 
 /* The start: CONNECT again (rule 4) and the view (rule 7). Nothing is saved
- * and nothing is resent: replies go out again when the peer asks (rule 6). */
+ * and nothing is resent: replies go out again when the peer asks (rule 6).
+ * A saved target whose address fails the address rule (one saved before the
+ * rule was checked at the command) is passed over with a notice and counted:
+ * what storage holds must never stop a start. */
 static gz_status_t te_resume(void *e, gz_action_list_t *out, int *more)
 {
     te_t *t = e;
     gz_status_t st = GZ_OK;
     *more = 0;
-    for (size_t i = 0; i < t->n_targets && st == GZ_OK; i++) st = te_connect(t, &t->targets[i], out);
+    for (size_t i = 0; i < t->n_targets && st == GZ_OK; i++) {
+        gz_bytes_t addr = {t->targets[i].addr, t->targets[i].addr_len};
+        if (gz_connect_address_ok(addr)) {
+            st = te_connect(t, &t->targets[i], out);
+        } else {
+            text_t x = {{0}, 0};
+            t->skipped_targets++;
+            t_str(&x, "test-connect-skipped area=");
+            t_hex16(&x, t->area);
+            t_str(&x, " why=bad-address count=");
+            t_u64(&x, t->skipped_targets);
+            st = log_text(out, &x);
+        }
+    }
     return st == GZ_OK ? view(t, out) : st;
 }
 
@@ -310,29 +336,52 @@ static gz_status_t resend_step(te_t *t, te_limit_t *first, gz_action_list_t *out
     return st;
 }
 
-/* The link's entry if a hello on it may be answered now: at most one answer
- * a second per link (per link, not per connection). NULL if not, or if every
- * entry is still sending an answer. */
-static te_limit_t *hello_allowed(te_t *t, const gz_link_t *link)
+static uint64_t mono(const te_t *t)
 {
-    uint64_t now = t->ports.clock.now_ms(t->ports.clock.ctx);
+    return t->ports.clock.mono_ms(t->ports.clock.ctx); /* intervals: the monotonic clock */
+}
+
+/* The link's entry for a hello, its own or a spare one (`*fresh`). NULL if
+ * every entry is busy answering or waiting to. */
+static te_limit_t *hello_entry(te_t *t, const gz_link_t *link, int *fresh)
+{
     te_limit_t *spare = NULL;
+    *fresh = 0;
     for (size_t i = 0; i < TE_MAX_LIMITS; i++) {
         te_limit_t *l = &t->limits[i];
-        if (l->used && link_eq(&l->link, link)) {
-            if (now >= l->last_ms && now - l->last_ms < 1000) return NULL;
-            l->last_ms = now;
-            return l;
-        }
-        if (l->used && l->resending) continue;
+        if (l->used && link_eq(&l->link, link)) return l;
+        if (l->used && (l->resending || l->deferred)) continue;
         if (!spare || !l->used || (spare->used && l->last_ms < spare->last_ms)) spare = l;
     }
     if (!spare) return NULL;
     memset(spare, 0, sizeof *spare);
     spare->used = 1;
     spare->link = *link;
-    spare->last_ms = now;
+    *fresh = 1;
     return spare;
+}
+
+/* Set the deferred-hello timer (id 4) for the soonest deferred answer. */
+static gz_status_t arm_deferred(te_t *t, uint64_t now, gz_action_list_t *out)
+{
+    uint64_t soonest = 0;
+    for (size_t i = 0; i < TE_MAX_LIMITS; i++) {
+        const te_limit_t *l = &t->limits[i];
+        if (!l->used || !l->deferred) continue;
+        uint64_t due = l->last_ms + 1000;
+        if (!soonest || due < soonest) soonest = due;
+    }
+    if (!soonest) return GZ_OK;
+    return timer(out, 4, soonest > now ? soonest - now : 0);
+}
+
+/* Start answering a link: every reply it is owed, from the oldest. */
+static void begin_answer(te_limit_t *l, uint64_t now)
+{
+    l->last_ms = now;
+    l->deferred = 0;
+    l->after = 0;
+    l->resending = 1;
 }
 
 static gz_status_t on_message(te_t *t, const gz_event_t *ev, gz_action_list_t *out)
@@ -346,8 +395,9 @@ static gz_status_t on_message(te_t *t, const gz_event_t *ev, gz_action_list_t *o
     if (!memcmp(r.data, "GZPI", 4)) {
         uint8_t rec[GZ_TE_PING_HEADER + GZ_TE_MAX_PAYLOAD], reply[8 + GZ_TE_MAX_PAYLOAD];
         if (blen > GZ_TE_MAX_PAYLOAD) return GZ_OK;
-        if (t->n_pending == TE_MAX_PENDING) {
-            /* A full table is a peer's doing: counted, never an error. */
+        if (t->n_pending == TE_MAX_PENDING || pending_on(t, link) >= TE_MAX_PENDING_LINK) {
+            /* A full table, or a link at its share of it, is a peer's doing:
+             * counted, never an error. */
             text_t x = {{0}, 0};
             t->dropped++;
             t_str(&x, "test-ping-dropped area=");
@@ -397,13 +447,39 @@ static gz_status_t on_message(te_t *t, const gz_event_t *ev, gz_action_list_t *o
         return GZ_OK;
     }
     if (!memcmp(r.data, "GZPH", 4)) {
-        te_limit_t *l = hello_allowed(t, link);
-        if (!l) return GZ_OK;
-        l->after = 0;
-        l->resending = 1;
+        /* At most one answer a second per link (per link, not per
+         * connection). A hello inside the second is not dropped: the pinger
+         * asks once per connection, so it is answered, once, when the
+         * second is over (the deferred-hello timer). */
+        int fresh;
+        uint64_t now = mono(t);
+        te_limit_t *l = hello_entry(t, link, &fresh);
+        if (!l) return GZ_OK; /* every entry busy: it asks again on its next connection */
+        if (!fresh && now >= l->last_ms && now - l->last_ms < 1000) {
+            if (l->deferred) return GZ_OK;
+            l->deferred = 1;
+            return arm_deferred(t, now, out);
+        }
+        begin_answer(l, now);
         return resend_step(t, l, out);
     }
     return GZ_OK; /* GZPX and anything else: ignored */
+}
+
+/* The engine's own cap on watches (7.2): it keeps the ones it asked for and
+ * answers a request for one more than TE_MAX_WATCHES with a refusal. 1 if
+ * the watch is one it has or may add (and is then noted); 0 at the cap. */
+static int own_watch(te_t *t, int is_tx, const uint8_t txid[32], uint32_t vout)
+{
+    uint8_t key[37];
+    key[0] = (uint8_t)is_tx;
+    memcpy(key + 1, txid, 32);
+    gz_put_u32(key + 33, vout);
+    for (size_t i = 0; i < t->n_watches; i++)
+        if (!memcmp(t->watches[i], key, sizeof key)) return 1;
+    if (t->n_watches == TE_MAX_WATCHES) return 0;
+    memcpy(t->watches[t->n_watches++], key, sizeof key);
+    return 1;
 }
 
 static int cmd_arg(gz_bytes_t cmd, uint64_t type, size_t len, gz_bytes_t *v)
@@ -424,8 +500,10 @@ static gz_status_t on_command(te_t *t, gz_bytes_t cmd, gz_action_list_t *out)
     if (cmd_arg(cmd, GZ_CMD_REC_COMMAND, 2, &v)) code = gz_get_u16(v.data);
     switch (code) {
     case GZ_TE_CMD_CONNECT: {
-        if (!cmd_arg(cmd, 12, 33, &v) || !cmd_arg(cmd, 14, 0, &w) || w.len == 0 || w.len > 64)
-            return result(out, cmd, 400, "bad_request");
+        if (!cmd_arg(cmd, 12, 33, &v) || !cmd_arg(cmd, 14, 0, &w)) return result(out, cmd, 400, "bad_request");
+        /* The address rule (action.h), before the target is saved: a bad one
+         * is refused here and nothing is kept, so no start ever meets it. */
+        if (!gz_connect_address_ok(w)) return result(out, cmd, 400, "bad_address");
         size_t at = t->n_targets;
         for (size_t i = 0; i < t->n_targets; i++)
             if (key_eq(t->targets[i].host.key, v.data, 33)) at = i;
@@ -484,6 +562,7 @@ static gz_status_t on_command(te_t *t, gz_bytes_t cmd, gz_action_list_t *out)
         memcpy(a.u.watch_tx.txid, v.data, 32);
         a.u.watch_tx.depth = gz_get_u32(w.data);
         if (!a.u.watch_tx.depth) return result(out, cmd, 400, "bad_request");
+        if (!own_watch(t, 1, v.data, 0)) return result(out, cmd, 409, "too_many_watches");
         if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
         return result(out, cmd, 200, NULL);
     }
@@ -495,17 +574,29 @@ static gz_status_t on_command(te_t *t, gz_bytes_t cmd, gz_action_list_t *out)
         a.u.watch_outpoint.outpoint.vout = gz_get_u32(w.data);
         a.u.watch_outpoint.depth = gz_get_u32(x.data);
         if (!a.u.watch_outpoint.depth) return result(out, cmd, 400, "bad_request");
+        if (!own_watch(t, 0, v.data, gz_get_u32(w.data))) return result(out, cmd, 409, "too_many_watches");
         if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
         return result(out, cmd, 200, NULL);
     }
     case GZ_TE_CMD_SEND: {
         gz_link_t l;
         size_t i;
+        gz_bytes_t z;
+        uint32_t pad = 0;
         if (!cmd_arg(cmd, 12, 33, &v) || !cmd_arg(cmd, 14, 2, &w) || !cmd_arg(cmd, 16, 32, &x) ||
             !cmd_arg(cmd, 18, 0, &y) || y.len > TE_MAX_SEND || !gz_rec_valid(y))
             return result(out, cmd, 400, "bad_request");
+        /* 20, optional: a pad record of that many zero bytes after the
+         * records (type 1001, odd: ignored by every reader), so that a
+         * message the transport splits needs no long command. */
+        if (gz_rec_find(cmd, 20, &z) == 1) {
+            gz_bytes_t last;
+            if (z.len != 4 || (pad = gz_get_u32(z.data)) > TE_MAX_SEND_PAD ||
+                y.len + 10 + pad > TE_MAX_SEND_TOTAL || gz_rec_find(y, 1001, &last) != 0)
+                return result(out, cmd, 400, "bad_request");
+        }
         uint16_t kind = gz_get_u16(w.data);
-        if (kind == 0 || kind == 2) return result(out, cmd, 400, "bad_request");
+        if (kind == 0 || kind == 2 || kind == GZ_SEND_KIND_RESERVED) return result(out, cmd, 400, "bad_request");
         memcpy(l.remote.key, v.data, 33);
         if (t->host) {
             if (!t->keys.host_pub || !t->keys.host_pub(t->keys.ctx, l.local.key)) return result(out, cmd, 404, "no_key");
@@ -521,7 +612,34 @@ static gz_status_t on_command(te_t *t, gz_bytes_t cmd, gz_action_list_t *out)
         a.u.send.kind = kind;
         memcpy(a.u.send.scope, x.data, 32);
         a.u.send.records = y;
-        if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
+        if (pad) {
+            /* Built in the list's own byte block, as send_msg's padding is. */
+            uint8_t ph[18];
+            size_t hn = gz_bigsize_put(1001, ph);
+            hn += gz_bigsize_put(pad, ph + hn);
+            size_t total = y.len + hn + pad;
+            if (out->count >= out->n_slots || out->used > out->n_bytes || total > out->n_bytes - out->used)
+                return GZ_ERR_NO_SPACE;
+            uint8_t *dst = out->bytes + out->used;
+            if (y.len) memcpy(dst, y.data, y.len);
+            memcpy(dst + y.len, ph, hn);
+            memset(dst + y.len + hn, 0, pad);
+            out->used += total;
+            a.u.send.records.data = dst;
+            a.u.send.records.len = total;
+            out->slots[out->count++] = a;
+        } else if ((st = gz_action_list_add(out, &a)) != GZ_OK) {
+            return st;
+        }
+        /* 22, optional: then DISCONNECT the link with that `why`. What was
+         * sent before it is never lost (action.h): the program sends what is
+         * queued, then closes. */
+        if (gz_rec_find(cmd, 22, &z) == 1 && z.len == 1 && z.data[0] <= GZ_DISCONNECT_HOST_FAULT) {
+            gz_action_t d = {.kind = GZ_ACTION_DISCONNECT};
+            d.u.disconnect.link = l;
+            d.u.disconnect.why = z.data[0];
+            if ((st = gz_action_list_add(out, &d)) != GZ_OK) return st;
+        }
         return result(out, cmd, 200, NULL);
     }
     case GZ_TE_CMD_BIG_REPLY:
@@ -533,6 +651,16 @@ static gz_status_t on_command(te_t *t, gz_bytes_t cmd, gz_action_list_t *out)
         gz_action_t a = {.kind = GZ_ACTION_BROADCAST};
         a.u.broadcast.tx.data = tx;
         a.u.broadcast.tx.len = sizeof tx;
+        if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
+        return result(out, cmd, 200, NULL);
+    }
+    case GZ_TE_CMD_SEND_RESERVED: {
+        /* A bug: a SEND of the reserved kind, written past the list's check
+         * (as the lobby's bridge is until P4.2). The composite refuses it. */
+        gz_action_t a = {.kind = GZ_ACTION_SEND};
+        if (!t->keys.pub || !t->keys.pub(t->keys.ctx, 0, 0, a.u.send.link.local.key)) return result(out, cmd, 404, "no_key");
+        memset(a.u.send.link.remote.key, 2, 33);
+        a.u.send.kind = GZ_SEND_KIND_RESERVED;
         if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
         return result(out, cmd, 200, NULL);
     }
@@ -612,10 +740,21 @@ static gz_status_t te_handle(void *e, const gz_event_t *ev, gz_action_list_t *ou
         return send_msg(t, &ev->u.peer.link, "GZPH", NULL, 0, 0, out);
     case GZ_EVENT_PEER_DISCONNECTED:
         for (size_t i = 0; i < TE_MAX_LIMITS; i++)
-            if (t->limits[i].used && link_eq(&t->limits[i].link, &ev->u.peer.link)) t->limits[i].resending = 0;
+            if (t->limits[i].used && link_eq(&t->limits[i].link, &ev->u.peer.link))
+                t->limits[i].resending = t->limits[i].deferred = 0;
         return GZ_OK;
     case GZ_EVENT_TIMER_FIRED:
         if (ev->u.timer.timer_id == 2) return resend_step(t, NULL, out);
+        if (ev->u.timer.timer_id == 4) {
+            /* Deferred hellos whose second is over: answered now. */
+            uint64_t now = mono(t);
+            for (size_t i = 0; i < TE_MAX_LIMITS; i++) {
+                te_limit_t *l = &t->limits[i];
+                if (l->used && l->deferred && (now < l->last_ms || now - l->last_ms >= 1000)) begin_answer(l, now);
+            }
+            st = resend_step(t, NULL, out);
+            return st == GZ_OK ? arm_deferred(t, now, out) : st;
+        }
         t_str(&x, "test-timer area=");
         t_hex16(&x, t->area);
         t_str(&x, " id=");

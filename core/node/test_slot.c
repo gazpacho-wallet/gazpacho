@@ -1,9 +1,13 @@
 /* The slot stand-in (test builds): in P4.1 a slot's engine is this, in place
  * of the lobby that P4.2 brings. It shows routing reach the right slot, a
  * slot's timers carry its generation, and seats bind connections. Area
- * 0x7e59; it saves nothing. Its notices:
+ * 0x7e59. On a test command it asks for a watch or saves one record (type
+ * 0x7e590001, its scope), so that reports and confirmations can be shown to
+ * reach a slot's engine and to stop when the slot closes; its records are
+ * not read back at a start. Its notices:
  *   slot-open gen=G host=H     slot-msg gen=G kind=K     slot-peer gen=G up=U
- *   slot-timer gen=G id=I */
+ *   slot-timer gen=G id=I      slot-chain gen=G conf=N   slot-saved gen=G n=1
+ *   slot-confirmed gen=G n=1 */
 #include "internal.h"
 
 #ifdef GZ_TEST_KINDS
@@ -70,12 +74,32 @@ gz_status_t ts_seat(ts_t *s, const gz_node_id_t *member, int seated, gz_action_l
     return gz_action_list_add(out, &a);
 }
 
+gz_status_t ts_watch(ts_t *s, const uint8_t txid[32], uint32_t depth, gz_action_list_t *out)
+{
+    (void)s;
+    gz_action_t a = {.kind = GZ_ACTION_WATCH_TX};
+    memcpy(a.u.watch_tx.txid, txid, 32);
+    a.u.watch_tx.depth = depth;
+    return gz_action_list_add(out, &a);
+}
+
+/* A save, then its notice (which waits for it). */
+gz_status_t ts_save(ts_t *s, gz_action_list_t *out)
+{
+    gz_record_t r = {((uint32_t)GZ_AREA_TEST_SLOT << 16) | 1u, {s->scope, 32}};
+    gz_action_t a = {.kind = GZ_ACTION_SAVE};
+    a.u.save.records = &r;
+    a.u.save.n_records = 1;
+    gz_status_t st = gz_action_list_add(out, &a);
+    return st == GZ_OK ? ts_log(s, out, "slot-saved", "n", 1) : st;
+}
+
 static gz_status_t ts_load(void *e, const gz_record_t *rec, gz_batch_id_t at)
 {
     (void)e;
     (void)rec;
     (void)at;
-    return GZ_ERR_CORRUPT; /* it saves nothing */
+    return GZ_ERR_CORRUPT; /* never called: the composite passes its records by (composite.c) */
 }
 
 static gz_status_t ts_resume(void *e, gz_action_list_t *out, int *more)
@@ -94,6 +118,8 @@ static gz_status_t ts_handle(void *e, const gz_event_t *ev, gz_action_list_t *ou
     case GZ_EVENT_PEER_CONNECTED: return ts_log(s, out, "slot-peer", "up", 1);
     case GZ_EVENT_PEER_DISCONNECTED: return ts_log(s, out, "slot-peer", "up", 0);
     case GZ_EVENT_TIMER_FIRED: return ts_log(s, out, "slot-timer", "id", ev->u.timer.timer_id);
+    case GZ_EVENT_CHAIN: return ts_log(s, out, "slot-chain", "conf", ev->u.chain.confirmations);
+    case GZ_EVENT_STORAGE_CONFIRMED: return ts_log(s, out, "slot-confirmed", "n", 1);
     default: return GZ_OK;
     }
 }

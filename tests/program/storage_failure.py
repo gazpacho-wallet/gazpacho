@@ -5,8 +5,11 @@ restart (review of PR 27: H1, M5, L6; contract v2 section 1).
     python3 -I storage_failure.py PATH_TO_GAZPACHO_TEST WORK_DIR
 
 A host and one member at a time:
-  1. The member's 3rd batch (a ping record) is written and its sync fails
-     (--test-sync-fail-at). The stand-in cuts it back: the incarnation ends,
+  1. Once the member's test timer has fired, the next batch that holds a ping
+     record is written and its sync fails ("sync-fail-ping" on standard
+     input: picked by content, never by number, so how the host's pings and
+     the member's acknowledgements interleave cannot move it onto another
+     record). The stand-in cuts it back: the incarnation ends,
      the program starts again in process, and that ping is not in the journal
      and its reply is never resent (no "start-resend" of it). The restart
      closes every connection: the host sees the member's old connection close
@@ -40,8 +43,10 @@ def main():
     common = ["--no-chain", "--no-interface", "--reconnect-ms", "100", "--test-pings", "10", "--test-ping-ms", "60"]
     procs = []
     try:
+        # The host pings 40 times, so that ping records still arrive however
+        # late the test arms the failure (the later option wins).
         host = Proc("host", [exe, "--data-dir", os.path.join(work, "host"), "--role", "host",
-                             "--listen", "127.0.0.1:0", "--name", "host"] + common, logs)
+                             "--listen", "127.0.0.1:0", "--name", "host"] + common + ["--test-pings", "40"], logs)
         procs.append(host)
         k = host.wait_for(r"host key=([0-9a-f]{66})")
         m = host.wait_for(r"listening address=127\.0\.0\.1:(\d+)")
@@ -54,14 +59,21 @@ def main():
 
         # 1. a sync that fails, cut back, restarted in process -----------------
         d1 = os.path.join(work, "m1")
-        m1 = Proc("m1", [exe, "--data-dir", d1, "--role", "member", "--name", "m1", "--test-sync-fail-at", "8",
-                         "--test-timer-ms", "100"] + connect + common, logs)
+        m1 = Proc("m1", [exe, "--data-dir", d1, "--role", "member", "--name", "m1", "--test-commands",
+                         "--test-timer-ms", "100"] + connect + common, logs, stdin=True)
         procs.append(m1)
         mk = m1.wait_for(r"member key=([0-9a-f]{66})")
         mp = peer_id(mk.group(1)) if mk else "?"
+        # The timer first, so incarnation 1 has a firing to show; then the
+        # failure, armed for the next ping record's batch.
+        check(m1.wait_for(r"test-timer fired incarnation=1") is not None, "member 1's test timer fires in incarnation 1")
+        # ... and a ping of the host's saved and answered, so that the
+        # incarnation's journal holds another ping beside the one that fails.
+        check(host.wait_for(r"pong peer=%s" % mp) is not None, "member 1 answers a first ping of the host's")
+        m1.send("sync-fail-ping")
         f = m1.wait_for(r"save-failed .*ping-payload=([0-9a-f]+)")
         lost = bytes.fromhex(f.group(1)) if f else b"?"
-        check(f is not None, "member 1's 8th batch, a ping record (%s), fails to sync" % lost.decode(errors="replace"))
+        check(f is not None, "member 1's batch with a ping record (%s) fails to sync" % lost.decode(errors="replace"))
         i_fatal = m1.index_of(r"fatal why=storage-failed incarnation=1")
         i_rs = m1.index_of(r"restart-from-storage after=storage-failed")
         r2 = m1.wait_for(r"ready incarnation=2 resent=(\d+)")
@@ -70,7 +82,7 @@ def main():
         check(m1.find(r"start-resend peer=%s payload=%s" % (hp, lost.hex()))[0] is None,
               "the reply to the ping whose sync failed is never resent")
         check(m1.wait_for(r"pings-done peer=%s n=10" % hp) is not None, "member 1's pings are all answered")
-        check(host.wait_for(r"pings-done peer=%s n=10" % mp) is not None,
+        check(host.wait_for(r"pings-done peer=%s n=40" % mp) is not None,
               "the host's pings to member 1 are all answered after its restart (no stale connection is used)")
         m1.stop()
         j = parse_journal(os.path.join(d1, "journal.standin"))

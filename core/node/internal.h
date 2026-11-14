@@ -26,14 +26,18 @@
 /* ---- the test engine (test builds) -------------------------------------- */
 
 #define TE_MAX_PENDING     512       /* unacknowledged replies held in memory */
+#define TE_MAX_PENDING_LINK 128      /* of them, on one link: no key fills the table for the others */
+#define TE_MAX_WATCHES     16        /* distinct watches one test engine may ask for (7.2) */
 #define TE_MAX_TARGETS     4         /* saved CONNECT targets (member) */
 #define TE_MAX_LIMITS      16        /* links with a hello limit */
 #define TE_MAX_SEND        70000u    /* records of a test SEND command */
+#define TE_MAX_SEND_PAD    200000u   /* and a pad record after them: a message the transport splits */
+#define TE_MAX_SEND_TOTAL  210000u   /* records and pad together */
 #define TE_MAX_PAD         60000u    /* big-reply padding: the test kind is never split */
 #define TE_CHUNK_BYTES     (70u * 1024u)
 #define TE_MAX_STEP_ACTIONS 24
-#define TE_MAX_STEP_BYTES  (80u * 1024u)
-#define TE_MAX_TIMERS      4
+#define TE_MAX_STEP_BYTES  (TE_MAX_SEND_TOTAL + 8u * 1024u)
+#define TE_MAX_TIMERS      4          /* ids 1 (command), 2 (continuation), 3 (hand-off), 4 (deferred hello) */
 
 typedef struct {
     int used;
@@ -57,6 +61,7 @@ typedef struct {
     uint64_t last_ms;
     int used;
     int resending;                         /* replies after `after` still to send */
+    int deferred;                          /* a hello inside the second: answered when it is over */
     uint64_t after;
 } te_limit_t;
 
@@ -88,7 +93,10 @@ typedef struct {
     uint32_t fail_in;                      /* fail at the fail_in-th next step; 0: never */
     uint64_t handoff_tag;
     uint64_t batches;                      /* confirmations seen (per merged batch) */
-    uint64_t dropped;                      /* pings not saved: the pending table was full */
+    uint64_t dropped;                      /* pings not saved: the table, or the link's share, was full */
+    uint64_t skipped_targets;              /* saved CONNECT targets not issued: a bad address */
+    uint8_t watches[TE_MAX_WATCHES][37];   /* the watches asked for: kind (1 tx, 0 outpoint), txid, vout */
+    size_t n_watches;
 } te_t;
 
 gz_status_t te_init(te_t *t, uint16_t area, int host, const gz_ports_t *ports, const gz_key_port_t *keys,
@@ -101,6 +109,7 @@ const gz_engine_ops_t *gz_te_ops(void);
 #define TS_MAX_STEP_ACTIONS 8
 #define TS_MAX_STEP_BYTES  (4u * 1024u)
 #define TS_MAX_TIMERS      6           /* the lobby's: 0x4c000001 to 0x4c000006 */
+#define TS_MAX_WATCHES     4           /* watches a slot's engine may ask for (7.2) */
 
 typedef struct {
     uint16_t gen;
@@ -112,6 +121,8 @@ typedef struct {
 gz_status_t ts_open(ts_t *s, uint16_t gen, int host, const uint8_t scope[32], uint32_t timer_ms,
                     gz_action_list_t *out);
 gz_status_t ts_seat(ts_t *s, const gz_node_id_t *member, int seated, gz_action_list_t *out);
+gz_status_t ts_watch(ts_t *s, const uint8_t txid[32], uint32_t depth, gz_action_list_t *out);
+gz_status_t ts_save(ts_t *s, gz_action_list_t *out);
 const gz_engine_ops_t *gz_ts_ops(void);
 
 /* ---- engines and slots -------------------------------------------------- */
@@ -152,26 +163,40 @@ typedef struct {
 
 /* ---- the node part ------------------------------------------------------ */
 
-#define NP_MAX_CONNS 96
-#define NP_MAX_UNBOUND 16             /* the lobby's numbers, moved up (reviewer B, B7) */
+/* CONNECTIONS (composite-node.md section 3). The table holds what the
+ * transport can have open at once (GZ_NODE_MAX_CONNS, node.h: the program's
+ * and the transport's tables are held to it). A connection whose key holds a
+ * seat in an Open host slot is SEATED; every other one is UNSEATED, whether a
+ * message has bound it to a slot or not. The one rule for the unseated: at
+ * most NP_MAX_UNSEATED of them, a newcomer pushing out the oldest silent one
+ * first, and each closed after NP_IDLE_MS without a message. A seated one is
+ * never pushed out and never closed as idle. */
+#define NP_MAX_CONNS GZ_NODE_MAX_CONNS
+#define NP_MAX_UNSEATED 16            /* the lobby's numbers, moved up (reviewer B, B7) */
 #define NP_IDLE_MS 60000u
 #define NP_HELLO_GAP_MS 1000u          /* one answer a second per link */
 #define NP_HELLO_WINDOW_MS 600000u     /* 20 ignored hellos in 10 minutes close it */
 #define NP_HELLO_IGNORED_MAX 20
 #define NP_MAX_LISTED 4
-#define NP_MAX_STEP_ACTIONS 40
+/* The node part's worst step: every connection closed at once (the idle
+ * timer, or a slot's close putting its connections over the cap), with the
+ * step's notices, timer and result. Test builds hold every step to it. */
+#define NP_MAX_STEP_ACTIONS (NP_MAX_CONNS + 8)
 #define NP_MAX_STEP_BYTES (16u * 1024u)
 #define NP_MAX_TIMERS 2                /* the unbound idle timer, the continuation timer */
 #define NP_TIMER_IDLE 1u
 #define NP_TIMER_CONTINUE 2u
 
 typedef struct {
-    int used, connected;
+    int used;
+    int connected;                  /* between its PEER_CONNECTED and its PEER_DISCONNECTED */
+    int closing;                    /* the node part asked for its close: nothing more is taken from it */
+    int seated;                     /* its key holds a seat in an Open host slot */
     int slot;                       /* bound slot, or -1 */
     gz_link_t link;
-    uint64_t since_ms;              /* connected, or last message */
+    uint64_t since_ms;              /* connected, or last message (the monotonic clock) */
     int spoke;
-    uint64_t hello_last_ms, hello_window_ms;
+    uint64_t hello_last_ms, hello_window_ms; /* the monotonic clock */
     uint32_t hello_ignored;
 } np_conn_t;
 
@@ -188,6 +213,7 @@ enum {
     DROP_NO_ENGINE,      /* routed to an engine this build does not have yet */
     DROP_TIMER,          /* a timer of a slot generation no longer in use */
     DROP_CONFIRM,        /* a confirmation with no batch awaiting */
+    DROP_UNCONNECTED,    /* host: a message on a link not held as connected (closed, refused, never reported) */
     DROP_N
 };
 
@@ -203,10 +229,17 @@ typedef struct {
     uint32_t highest_index;
     uint32_t old_epochs[NP_MAX_OLD_EPOCHS][2]; /* epoch, its highest index */
     uint32_t n_old_epochs;
+    /* The guard file as storage gave it with the restore marker (ports.h):
+     * its counter, rounds started, and its newest NP_MAX_OLD_EPOCHS + 1
+     * epochs, oldest first. */
+    int have_file;
+    uint64_t file_counter, file_rounds;
+    uint32_t file_epochs[NP_MAX_OLD_EPOCHS + 1][2];
+    uint32_t n_file_epochs;
     uint64_t newest_incarnation;    /* of the newest batch storage held at load */
     np_conn_t conns[NP_MAX_CONNS];
-    uint32_t n_unbound;
-    uint64_t idle_due_ms;           /* 0: the idle timer is not set */
+    uint64_t idle_due_ms;           /* 0: the idle timer is not set (the monotonic clock) */
+    int idle_check;                 /* a seat was given up in this bracket: look at the idle timer at its end */
     uint64_t drops[DROP_N];
     gz_node_id_t seat_key;          /* test builds: a slot-seat command being carried out */
     int seat_val;
@@ -222,6 +255,12 @@ typedef struct {
     uint32_t depth;
     uint16_t mask;                  /* engines that asked */
 } watch_t;
+
+/* Each engine's budget of distinct watches (7.2), as for timers: an engine
+ * that asks for more broke its own cap (GZ_ERR_BUG), so the registry can
+ * never be full. A slot's watches are forgotten when it closes. */
+_Static_assert(2 * TE_MAX_WATCHES + GZ_NODE_MAX_SLOTS * TS_MAX_WATCHES <= MAX_WATCHES,
+               "the engines' watch budgets must fit the registry (7.2)");
 
 /* ---- hand-offs ---------------------------------------------------------- */
 
@@ -288,6 +327,8 @@ void gz_c_confirmed(gz_node_t *c, gz_action_list_t *out, gz_status_t *st);
 gz_status_t gz_c_postprocess(gz_node_t *c, size_t from, int merge_all, gz_action_list_t *out);
 gz_status_t gz_c_resume(gz_node_t *c, int eng, gz_action_list_t *out, int *more);
 gz_status_t gz_c_release_held(gz_node_t *c, int eng, gz_action_list_t *out);
+void gz_c_engine_opened(gz_node_t *c, int eng);
+void gz_c_engine_closed(gz_node_t *c, int eng);
 gz_status_t gz_c_slot_inline(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t *, int, gz_action_list_t *),
                              gz_action_list_t *out);
 
@@ -300,8 +341,9 @@ gz_status_t gz_timer_cancel_slot(slot_t *s, gz_action_list_t *out);
 int gz_timer_route(const gz_node_t *c, uint64_t packed, int *eng, uint32_t *id);
 
 /* watches.c */
-int gz_watch_note(gz_node_t *c, const gz_action_t *a, int eng); /* 1 keep, 0 drop, -1 full */
+int gz_watch_note(gz_node_t *c, const gz_action_t *a, int eng); /* 1 keep, 0 drop, -1 over the engine's budget */
 uint16_t gz_watch_mask(const gz_node_t *c, const gz_chain_event_t *ev);
+void gz_watch_forget(gz_node_t *c, int eng);
 
 /* route.c */
 typedef enum {
@@ -332,6 +374,9 @@ int gz_route_slot_seated(const gz_node_t *c, const gz_node_id_t *key);
 
 /* nodepart.c */
 gz_status_t np_load(gz_node_t *c, const gz_record_t *rec, gz_batch_id_t at);
+void np_guard_file(gz_node_t *c, gz_bytes_t guard);
+void np_seat_changed(gz_node_t *c, int slot, const gz_node_id_t *member, int seated);
+gz_status_t np_idle_check(gz_node_t *c, gz_action_list_t *out);
 gz_status_t np_restore_batch(gz_node_t *c, gz_action_list_t *out);
 gz_status_t np_resume(gz_node_t *c, gz_action_list_t *out);
 gz_status_t np_message(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out);

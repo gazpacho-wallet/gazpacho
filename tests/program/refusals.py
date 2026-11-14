@@ -81,8 +81,11 @@ def main():
         check(fails >= 6, "with the host down the member keeps trying, its delay growing (%d attempts)" % fails)
         # Mutant B38 ("backoff never grows"): the gaps between failed attempts
         # at least double across three failed connects (100, 200, 400 ms).
-        rx = r"connect-failed|closed conn=\d+ why=\S+ was_connected=0"
-        at = [mem.times[i] for i in range(len(mem.lines)) if re.search(rx, mem.lines[i])][:4]
+        # The program's own monotonic clock (mono=, in ms, on each closed
+        # line), not the times at which this harness happened to read the
+        # lines: under load those bunch together.
+        rx = r"closed conn=\d+ why=\S+ was_connected=0 .*mono=(\d+)"
+        at = [int(m.group(1)) / 1000.0 for m in (re.search(rx, l) for l in mem.lines) if m][:4]
         gaps = [b - a for a, b in zip(at, at[1:])]
         check(len(gaps) == 3 and gaps[2] >= 2 * gaps[0] and gaps[1] > gaps[0],
               "the reconnect delay at least doubles across three failed connects (gaps %s)"

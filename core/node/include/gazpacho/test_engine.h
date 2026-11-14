@@ -19,7 +19,9 @@
  * the node goes on running or is started again and the peer connects again
  * with the same keys. It follows the pull model of node.h rule 6: at
  * PEER_CONNECTED on a connection it made, an engine sends GZPH; an engine
- * answers a GZPH, at most once a second per link, with every reply on that
+ * answers a GZPH, at most once a second per link (a hello inside the second
+ * is answered once when the second is over: the pinger asks only once per
+ * connection), with every reply on that
  * link that has no stored acknowledgement, oldest first, at most
  * GZ_TE_RESEND_CHUNK per step (the rest on its continuation timer, one chunk
  * per firing); the pinger answers each reply with GZPA, which the replier
@@ -41,16 +43,22 @@
  * notice after its save, if any.
  *   0x7e01 connect      12 host key (33), 14 address: save CONNECT, then CONNECT (a
  *                       host already saved at another address: the address replaced);
- *                       re-issued at every start (contract-v2.md section 3)
+ *                       re-issued at every start (contract-v2.md section 3). An
+ *                       address that fails the address rule (action.h) is refused,
+ *                       400 bad_address, and nothing is saved
  *   0x7e02 timer        12 delay ms (u32): set the engine's timer id 1
  *   0x7e03 handoff      12 target area (u16), 14 send-between (u8, 0 or 1): save
  *                       HANDOFF_A, [NOTIFY], set timer id 3, hand off to the
  *                       target, which saves HANDOFF_B (one bracket, one batch)
  *   0x7e04 fail         12 after (u32): the engine's step `after` events from now
  *                       appends a save and then returns an error
- *   0x7e05 watch        12 txid (32), 14 depth (u32): WATCH_TX
+ *   0x7e05 watch        12 txid (32), 14 depth (u32): WATCH_TX; past the engine's
+ *                       16 distinct watches, 409 too_many_watches
  *   0x7e06 send         12 remote key (33), 14 kind (u16), 16 scope (32),
- *                       18 records: SEND on the link to that key
+ *                       18 records, 20 pad (u32, optional, at most 200,000): SEND on
+ *                       the link to that key, the records followed by a record of type
+ *                       1001 holding `pad` zero bytes (a message the transport splits);
+ *                       22 why (u8, optional): then DISCONNECT the link with it
  *   0x7e07 big-reply    12 bytes (u32): pad every later reply with record 5
  *   0x7e08 broadcast    a BROADCAST (a bug: only funding broadcasts)
  *   0x7e09 self-handoff hand off to itself: deferred until its call returns
@@ -61,14 +69,19 @@
  *                       past the engine's declared worst step)
  *   0x7e0e two-saves    12 between (u8, 0 or 1): two saves in one step with no
  *                       hand-off, a log line between them if `between`
+ *   0x7e0f send-reserved  a SEND of the reserved kind 0xffff (a bug: action.h)
  * Node-part test commands (slots, test builds):
  *   0x7e80 slot-open    12 scope (32), 14 role (u8: 1 host, 0 member), 16 host
  *                       key (33, member), 18 address (member), 20 timer ms
  *                       (u32, optional), 22 listed (u8, optional)
  *   0x7e81 slot-close   12 scope
- *   0x7e82 slot-seat    12 scope, 14 member key (33), 16 seated (u8)
+ *   0x7e82 slot-seat    12 scope, 14 member key (33), 16 seated (u8); a 33rd
+ *                       seat is refused, 409 too_many_seats
  *   0x7e83 slot-round   12 scope: the slot's lobby has answered a check / sent
- *                       a start (round kinds may route to signing) */
+ *                       a start (round kinds may route to signing)
+ *   0x7e84 slot-watch   12 scope, 14 txid (32), 16 depth (u32): the slot's engine
+ *                       asks for a WATCH_TX; past its 4 watches, 409
+ *   0x7e85 slot-save    12 scope: the slot's engine saves one record */
 #ifndef GAZPACHO_TEST_ENGINE_H
 #define GAZPACHO_TEST_ENGINE_H
 
@@ -100,9 +113,12 @@
 #define GZ_TE_CMD_WATCH_OUTPOINT 0x7e0cu
 #define GZ_TE_CMD_FLOOD          0x7e0du
 #define GZ_TE_CMD_TWO_SAVES      0x7e0eu
+#define GZ_TE_CMD_SEND_RESERVED  0x7e0fu
 #define GZ_TE_CMD_SLOT_OPEN      0x7e80u
 #define GZ_TE_CMD_SLOT_CLOSE     0x7e81u
 #define GZ_TE_CMD_SLOT_SEAT      0x7e82u
 #define GZ_TE_CMD_SLOT_ROUND     0x7e83u
+#define GZ_TE_CMD_SLOT_WATCH     0x7e84u
+#define GZ_TE_CMD_SLOT_SAVE      0x7e85u
 
 #endif

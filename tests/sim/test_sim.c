@@ -1613,6 +1613,30 @@ static void test_an_armed_crash_does_not_outlive_its_program(void)
     sim_destroy(sim);
 }
 
+/* The number of distinct texts that follow `needle` (up to the end of the
+ * line) in the trace. */
+static size_t distinct_after(const sim_t *sim, const char *needle)
+{
+    const char *t = sim_trace(sim, NULL), *p;
+    char seen[16][32];
+    size_t n = 0, len = strlen(needle);
+    for (p = strstr(t, needle); p; p = strstr(p + 1, needle)) {
+        char d[32];
+        size_t k = 0;
+        const char *q = p + len;
+        while (q[k] && q[k] != '\n' && q[k] != ' ' && k + 1 < sizeof d) {
+            d[k] = q[k];
+            k++;
+        }
+        d[k] = 0;
+        size_t i;
+        for (i = 0; i < n && strcmp(seen[i], d) != 0; i++) {
+        }
+        if (i == n && n < 16) strcpy(seen[n++], d);
+    }
+    return n;
+}
+
 /* ---- storage that completes a dead program's batch during the next start ---- */
 
 /* Ping A (from node 1) is durable and its confirmation is far off. Ping B is
@@ -1642,7 +1666,10 @@ static void test_a_batch_that_completes_late_is_resent(void)
         sim_quiesce(sim);
         CHECK(sim_run(sim, 1100) == 1100 && !sim_failed(sim));
         CHECK(saved_replies_not_sent(sim, 2) == 0);
-        CHECK(trace_count(sim, " 0->1 len=57 digest=") == 1 + (size_t)late);   /* handed to the network: A's reply, and B's if it completed */
+        /* Handed to the network: A's reply, and B's if it completed. Each
+         * may go more than once (every reconnect asks again), so the
+         * replies are counted by their digest. */
+        CHECK(distinct_after(sim, " 0->1 len=57 digest=") == 1 + (size_t)late);
         sim_destroy(sim);
     }
 }

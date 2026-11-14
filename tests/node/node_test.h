@@ -52,6 +52,26 @@ typedef struct {
     int restored;
     gz_status_t last;
     int confirm_auto;          /* give confirmations back at once (default 1) */
+    /* The monotonic clock: it follows `clock` forward and never back. A test
+     * that steps the wall clock back uses h_clock_back. */
+    uint64_t mono, clock_seen;
+    /* The guard file given with the restore marker (ports.h), if any. */
+    const uint8_t *guard;
+    size_t guard_len;
+    /* Host: a message on a link not yet reported connected is preceded by
+     * its PEER_CONNECTED, kept out of the log (default 1; 0 to send on a
+     * link the node does not hold as connected). */
+    int auto_connect, mute;
+    gz_link_t up[128];
+    size_t n_up;
+    /* The random port: draws made, and a draw of 8 bytes to give next
+     * (force_n times) in place of the generator's. */
+    uint64_t draws, force_draw;
+    int force_n;
+    /* Called at each rewind of the storage reader, if set (a test changes
+     * storage between two walks of one start step). */
+    void (*on_rewind)(void *h);
+    int rewinds;
 } h_t;
 
 static inline void h_key(uint8_t tag, uint32_t i, uint8_t out[33])
@@ -82,12 +102,34 @@ static inline void h_fill(void *ctx, gz_random_purpose_t p, uint8_t *out, size_t
 {
     h_t *h = ctx;
     (void)p;
+    h->draws++;
+    if (h->force_n > 0 && len == 8) {
+        h->force_n--;
+        gz_put_u64(out, h->force_draw);
+        return;
+    }
     for (size_t i = 0; i < len; i++) out[i] = (uint8_t)(++h->rnd * 131u);
 }
 
 static inline uint64_t h_now(void *ctx)
 {
     return ((h_t *)ctx)->clock;
+}
+
+static inline uint64_t h_mono(void *ctx)
+{
+    h_t *h = ctx;
+    if (h->clock > h->clock_seen) h->mono += h->clock - h->clock_seen;
+    h->clock_seen = h->clock;
+    return h->mono;
+}
+
+/* Step the wall clock back; the monotonic clock goes on from where it is. */
+static inline void h_clock_back(h_t *h, uint64_t ms)
+{
+    (void)h_mono(h);
+    h->clock -= ms;
+    h->clock_seen = h->clock;
 }
 
 static inline int h_next(void *ctx, gz_stored_batch_t *b)
@@ -103,7 +145,27 @@ static inline int h_next(void *ctx, gz_stored_batch_t *b)
 
 static inline void h_rewind(void *ctx)
 {
-    ((h_t *)ctx)->read_at = 0;
+    h_t *h = ctx;
+    h->read_at = 0;
+    h->rewinds++;
+    if (h->on_rewind) h->on_rewind(h);
+}
+
+/* Put a batch of one record straight into storage, as another program left it. */
+static inline void h_add_batch(h_t *h, uint64_t incarnation, uint64_t sequence, uint32_t type, const uint8_t *bytes,
+                               size_t len)
+{
+    if (h->n_batches == H_MAX_BATCHES) abort();
+    h_batch_t *b = &h->batches[h->n_batches++];
+    uint8_t *c = malloc(len + 1);
+    if (len) memcpy(c, bytes, len);
+    b->id.incarnation = incarnation;
+    b->id.sequence = sequence;
+    b->n = 1;
+    b->recs = calloc(1, sizeof *b->recs);
+    b->recs[0].type = type;
+    b->recs[0].bytes.data = c;
+    b->recs[0].bytes.len = len;
 }
 
 static inline void h_new_node(h_t *h)
@@ -113,10 +175,12 @@ static inline void h_new_node(h_t *h)
     ports.random.fill = h_fill;
     ports.random.ctx = h;
     ports.clock.now_ms = h_now;
+    ports.clock.mono_ms = h_mono;
     ports.clock.ctx = h;
     h->incarnation++;
     h->seq = 0;
     h->n_pending = 0;
+    h->n_up = 0; /* a new node has seen no connection */
     if (!h->n) h->n = malloc(gz_node_size());
     CHECK(gz_node_init(h->n, &ports, &h->cfg, h->incarnation) == GZ_OK);
 }
@@ -126,7 +190,10 @@ static inline void h_init(h_t *h, int host, uint32_t engines)
     memset(h, 0, sizeof *h);
     h->host = host;
     h->clock = 1000000;
+    h->clock_seen = h->clock;
+    h->mono = 5000;
     h->confirm_auto = 1;
+    h->auto_connect = 1;
     h->cfg.host = host;
     memset(h->cfg.chain, 0xc4, sizeof h->cfg.chain);
     h->cfg.keys.pub = h_pub;
@@ -169,7 +236,7 @@ static inline void h_execute(h_t *h, const gz_action_list_t *l)
 {
     for (size_t i = 0; i < l->count; i++) {
         const gz_action_t *a = &l->slots[i];
-        h_log_t *g = h->n_log < H_MAX_LOG ? &h->log[h->n_log++] : NULL;
+        h_log_t *g = !h->mute && h->n_log < H_MAX_LOG ? &h->log[h->n_log++] : NULL;
         if (g) {
             memset(g, 0, sizeof *g);
             g->a = *a;
@@ -278,6 +345,8 @@ static inline gz_status_t h_start(h_t *h)
     rd.ctx = h;
     rd.incarnation = h->incarnation;
     rd.restored = h->restored;
+    rd.guard.data = h->guard;
+    rd.guard.len = h->guard_len;
     while (more && steps++ < 1000) {
         gz_action_list_reset(&h->list);
         gz_status_t st = gz_node_start(h->n, &rd, &h->list, &more);
@@ -319,6 +388,17 @@ static inline gz_link_t h_host_link(uint32_t member)
     return h_link(a, b);
 }
 
+static inline int h_is_up(h_t *h, const gz_link_t *l, int set)
+{
+    size_t i;
+    for (i = 0; i < h->n_up; i++)
+        if (!memcmp(&h->up[i], l, sizeof *l)) break;
+    if (set < 0) return i < h->n_up;
+    if (set && i == h->n_up && h->n_up < 128) h->up[h->n_up++] = *l;
+    if (!set && i < h->n_up) h->up[i] = h->up[--h->n_up];
+    return 0;
+}
+
 static inline gz_status_t h_peer(h_t *h, const gz_link_t *l, int up, int outbound)
 {
     gz_event_t ev;
@@ -326,6 +406,7 @@ static inline gz_status_t h_peer(h_t *h, const gz_link_t *l, int up, int outboun
     ev.kind = up ? GZ_EVENT_PEER_CONNECTED : GZ_EVENT_PEER_DISCONNECTED;
     ev.u.peer.link = *l;
     ev.u.peer.outbound = outbound;
+    h_is_up(h, l, up);
     return h_event(h, &ev);
 }
 
@@ -333,6 +414,13 @@ static inline gz_status_t h_msg(h_t *h, const gz_link_t *l, uint16_t kind, const
                          size_t len)
 {
     gz_event_t ev;
+    if (h->host && h->auto_connect && !h_is_up(h, l, -1)) {
+        /* The program reports a connection before its messages. */
+        h->mute = 1;
+        gz_status_t st = h_peer(h, l, 1, 0);
+        h->mute = 0;
+        if (st != GZ_OK) return st;
+    }
     memset(&ev, 0, sizeof ev);
     ev.kind = GZ_EVENT_MESSAGE_RECEIVED;
     ev.u.message.link = *l;
@@ -366,7 +454,8 @@ typedef struct {
 
 static inline gz_status_t h_cmd(h_t *h, uint16_t code, const h_arg_t *args, size_t n)
 {
-    uint8_t buf[80000], c2[2];
+    static uint8_t buf[80000];
+    uint8_t c2[2];
     size_t at = 0;
     gz_event_t ev;
     gz_put_u16(c2, code);

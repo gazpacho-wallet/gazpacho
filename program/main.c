@@ -215,6 +215,7 @@ int main(int argc, char **argv)
     lim.pong_ms = opt.pong_ms;
     lim.max_per_address = opt.max_per_address;
     lim.max_queue = opt.max_queue;
+    lim.max_conns = (unsigned)opt.test_max_conns;
     rnd.fill = net_random;
     rnd.ctx = NULL;
     memset(&nev, 0, sizeof nev); /* the executor sets the events */

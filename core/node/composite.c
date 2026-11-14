@@ -18,14 +18,17 @@
 gz_status_t gz_c_resume(gz_node_t *c, int eng, gz_action_list_t *out, int *more);
 gz_status_t gz_c_release_held(gz_node_t *c, int eng, gz_action_list_t *out);
 
-/* The worst list one event fills: the node part, both test engines (a peer
- * event reaches both), one slot's engine (an event reaches at most one
- * slot's lobby, R3), the composite's cancels of a freed slot's timers, and
- * the record array of a bracket's merge. */
+/* The worst list one event fills: the node part's worst step, both test
+ * engines (a peer event reaches both), every slot's engine (a message reaches
+ * one slot's lobby, R3, a listing at most NP_MAX_LISTED, but a chain report
+ * reaches every engine in a watch's set, which can be all the slots), the
+ * composite's cancels of a freed slot's timers, and the record array of a
+ * bracket's merge. */
 #define LIST_ACTIONS_NEEDED (NP_MAX_STEP_ACTIONS + GZ_NODE_N_TEST * TE_MAX_STEP_ACTIONS + \
-                             NP_MAX_LISTED * TS_MAX_STEP_ACTIONS + SLOT_MAX_TIMERS)
+                             GZ_NODE_MAX_SLOTS * TS_MAX_STEP_ACTIONS + SLOT_MAX_TIMERS)
 #define LIST_BYTES_NEEDED (NP_MAX_STEP_BYTES + GZ_NODE_N_TEST * TE_MAX_STEP_BYTES + \
-                           NP_MAX_LISTED * TS_MAX_STEP_BYTES + GZ_ACTION_MERGE_BYTES(GZ_NODE_LIST_ACTIONS))
+                           GZ_NODE_MAX_SLOTS * TS_MAX_STEP_BYTES + GZ_ACTION_MERGE_BYTES(GZ_NODE_LIST_ACTIONS))
+_Static_assert(NP_MAX_LISTED <= GZ_NODE_MAX_SLOTS, "a listing reaches no more engines than there are slots");
 _Static_assert(LIST_ACTIONS_NEEDED <= GZ_NODE_LIST_ACTIONS, "GZ_NODE_LIST_ACTIONS below the engines' worst steps");
 _Static_assert(LIST_BYTES_NEEDED <= GZ_NODE_LIST_BYTES, "GZ_NODE_LIST_BYTES below the engines' worst steps");
 _Static_assert(ENG_N <= 16, "a confirmation mask has one bit per engine");
@@ -38,7 +41,8 @@ size_t gz_node_size(void)
 
 gz_status_t gz_node_init(gz_node_t *c, const gz_ports_t *ports, const gz_node_config_t *cfg, uint64_t incarnation)
 {
-    if (!c || !ports || !cfg || !ports->random.fill || !ports->clock.now_ms) return GZ_ERR_ARGUMENT;
+    if (!c || !ports || !cfg || !ports->random.fill || !ports->clock.now_ms || !ports->clock.mono_ms)
+        return GZ_ERR_ARGUMENT;
     if (cfg->test_engines > GZ_NODE_N_TEST) return GZ_ERR_ARGUMENT;
     memset(c, 0, sizeof *c);
     c->ports = *ports;
@@ -121,6 +125,8 @@ static gz_status_t load_record(gz_node_t *c, const gz_record_t *rec, gz_batch_id
 #ifdef GZ_TEST_KINDS
     for (int i = 0; i < c->n_test; i++)
         if (c->test[i].area == area) return gz_te_ops()->load(&c->test[i], rec, at);
+    /* The slot stand-in's records: its slots are not kept across a start. */
+    if (area == GZ_AREA_TEST_SLOT) return GZ_OK;
 #endif
     return GZ_ERR_CORRUPT;
 }
@@ -143,6 +149,9 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
             return GZ_ERR_CORRUPT;
         if (batch.id.incarnation < storage->incarnation && id_after(c->fence, batch.id)) return GZ_ERR_CORRUPT;
         previous = batch.id;
+        /* The newest batch storage holds, whatever areas its records are of
+         * (the `restored` record names its incarnation). */
+        c->np.newest_incarnation = batch.id.incarnation;
         for (size_t i = 0; i < batch.n_records; i++) {
             gz_status_t st = load_record(c, &batch.records[i], batch.id);
             if (st != GZ_OK) return st;
@@ -150,6 +159,7 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
     }
     c->loaded = 1;
     c->restored = storage->restored;
+    if (c->restored) np_guard_file(c, storage->guard);
     return GZ_OK;
 }
 
@@ -230,6 +240,9 @@ gz_status_t gz_node_start(gz_node_t *c, const gz_storage_reader_t *storage, gz_a
         if (st == GZ_OK && c->resume_at == R_NODE && out->count > m.count) break;
     }
     if (st == GZ_WAITING && out->count == m.count) return GZ_WAITING;
+    /* "Wait" after appending something is no answer a caller can act on: an
+     * engine's bug, and the node says so. */
+    if (st == GZ_WAITING) st = gz_c_bug(c, ENG_NODE);
     if (st != GZ_OK) return fail(c, out, &m, st);
     if (finished) c->started = 1;
     *more = !finished;
@@ -251,8 +264,12 @@ static gz_status_t on_chain(gz_node_t *c, const gz_event_t *ev, gz_action_list_t
     case GZ_CHAIN_TX_UNCONFIRMED:
     case GZ_CHAIN_OUTPOINT_SPENT:
         mask = gz_watch_mask(c, &ev->u.chain);
-        for (int e = ENG_TEST0; e < ENG_N && st == GZ_OK; e++)
+        for (int e = ENG_TEST0; e < ENG_N && st == GZ_OK; e++) {
+            /* A slot's engine only while its slot is Open (its bit left the
+             * registry when it closed: the second guard). */
+            if (e >= ENG_SLOT0 && c->slots[e - ENG_SLOT0].state != SLOT_OPEN) continue;
             if (mask & (1u << e)) st = gz_c_bracket(c, e, ev, out);
+        }
         return st;
     case GZ_CHAIN_BROADCAST_RESULT: /* the funding engine's (P4.5) */
     case GZ_CHAIN_SCRIPT_SPENT:     /* retired */

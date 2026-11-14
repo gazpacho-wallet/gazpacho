@@ -79,6 +79,7 @@ typedef struct {
     int test_crash_after_save;     /* exit once the K-th batch is durable, before the rest of its list */
     int test_crash_before_confirm; /* exit just before the K-th confirmation reaches the runner */
     int test_exit_after_send;      /* exit once the first test ping has been handed to the transport */
+    int test_max_conns;            /* the transport's max_conns (0: the default, GZ_NODE_MAX_CONNS) */
 } gzp_options_t;
 
 /* Parses argv into `o` (defaults first). Returns 0, or GZP_EXIT_USAGE after

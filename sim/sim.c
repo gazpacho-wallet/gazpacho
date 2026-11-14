@@ -119,6 +119,8 @@ struct sim {
     int64_t clock_offset;
     slot_t *slots;
     uint8_t *link_down;             /* (n_nodes + 1) squared; the last index is the world */
+    uint8_t *link_lost;             /* the same shape: a message on it was lost; closed at the next step */
+    int quiet;                      /* sim_quiesce was called: the world has come back */
     queued_t *queue; size_t q_head, q_len, cap_queue;
     message_t *net; size_t n_net, cap_net;
     uint64_t next_seq;
@@ -564,6 +566,25 @@ static void tell_peer(slot_t *s, uint64_t peer, int up)
     post(s, &ev);
 }
 
+static void network_send_message(sim_t *sim, uint64_t from, uint64_t to, uint16_t kind, const uint8_t scope[32],
+                                 const uint8_t *records, size_t len);
+
+static void *default_create(void *ops_ctx, uint32_t index, const gz_ports_t *ports,
+                            const sim_storage_t *storage);
+
+/* The world's reconnect step: when it comes back in the quiet tail
+ * (quiesce), it asks each node with the test engine's hello (node.h rule 6),
+ * as a pinger that comes back does. During the run the world never asks. */
+static void world_hello(sim_t *sim, uint64_t node)
+{
+    static const uint8_t zero[32] = {0};
+    uint8_t recs[8];
+    size_t at = 0;
+    if (!sim->created || node >= sim->cfg.n_nodes) return;
+    if (gz_rec_put(recs, sizeof recs, &at, 1, (const uint8_t *)"GZPH", 4) != GZ_OK) return;
+    network_send_message(sim, SIM_WORLD_PEER, node, GZ_MSG_KIND_TEST, zero, recs, at);
+}
+
 static void set_link(sim_t *sim, uint64_t a, uint64_t b, int up)
 {
     long ia = peer_index(sim, a), ib = peer_index(sim, b);
@@ -573,6 +594,38 @@ static void set_link(sim_t *sim, uint64_t a, uint64_t b, int up)
     trace(sim, "link %lld-%lld %s", (long long)a, (long long)b, up ? "up" : "down");
     if (a != SIM_WORLD_PEER) tell_peer(&sim->slots[a], b, up);
     if (b != SIM_WORLD_PEER) tell_peer(&sim->slots[b], a, up);
+}
+
+/* A message lost on a link: its connection is closed on both sides and
+ * opened again (contract-v2.md section 1: the program never lets a
+ * connection outlive a lost message). Marked here and done at the start of
+ * the next step (bounce_lost_links), so that a hello lost on the new
+ * connection closes that one in its turn without recursion. */
+static void close_on_loss(sim_t *sim, uint64_t from, uint64_t to)
+{
+    long a = peer_index(sim, from), b = peer_index(sim, to);
+    if (a < 0 || b < 0 || a == b) return;
+    *(sim->link_lost + (size_t)a * (sim->cfg.n_nodes + 1) + (size_t)b) = 1;
+}
+
+/* Both ends see PEER_DISCONNECTED, then PEER_CONNECTED, and the reconnect
+ * step runs (the world asks with its hello). A link that is down now is
+ * closed already. */
+static void bounce_lost_links(sim_t *sim)
+{
+    size_t side = (size_t)sim->cfg.n_nodes + 1;
+    for (size_t a = 0; a < side; a++)
+        for (size_t b = 0; b < side; b++) {
+            uint8_t *cell = sim->link_lost + a * side + b;
+            if (!*cell) continue;
+            *cell = 0;
+            *(sim->link_lost + b * side + a) = 0;
+            uint64_t pa = a == side - 1 ? SIM_WORLD_PEER : a, pb = b == side - 1 ? SIM_WORLD_PEER : b;
+            if (!link_is_up(sim, pa, pb)) continue;
+            sim->stats.closed_on_loss++;
+            set_link(sim, pa, pb, 0);
+            set_link(sim, pa, pb, 1);
+        }
 }
 
 static void network_send(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len)
@@ -585,6 +638,7 @@ static void network_send(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *
         sim->stats.messages_dropped++;
         trace(sim, "drop %lld->%lld len=%zu digest=%016llx", (long long)from, (long long)to, len,
               (unsigned long long)digest);
+        close_on_loss(sim, from, to);
         return;
     }
     if (twice) sim->stats.messages_duplicated++;
@@ -1224,6 +1278,12 @@ static uint64_t clock_now(void *ctx)
     return now < 0 ? 0 : (uint64_t)now;
 }
 
+/* The monotonic clock (ports.h): the steps, which clock jumps never move. */
+static uint64_t clock_mono(void *ctx)
+{
+    return ((slot_t *)ctx)->sim->step;
+}
+
 /* The extra invariants only. Run just before a node is destroyed, so that they
  * see its last state; the built-in ones are judged after the step. */
 static void check_extra_invariants(sim_t *sim);
@@ -1348,7 +1408,11 @@ static void build_node(slot_t *s)
     if (!s->node) abort();
     for (uint32_t n = 0; n < sim->cfg.n_nodes; n++)
         if (n != s->index && link_is_up(sim, s->index, n)) tell_peer(s, n, 1);
-    if (link_is_up(sim, s->index, SIM_WORLD_PEER)) tell_peer(s, SIM_WORLD_PEER, 1);
+    if (link_is_up(sim, s->index, SIM_WORLD_PEER)) {
+        tell_peer(s, SIM_WORLD_PEER, 1);
+        /* In the quiet tail the world is back: it asks a rebuilt node again. */
+        if (sim->quiet && sim->cfg.ops.create == default_create) world_hello(sim, s->index);
+    }
     s->start_steps = 0;
     s->starting = sim->cfg.ops.start != NULL;
     if (s->starting) continue_start(s);
@@ -1557,7 +1621,7 @@ static gz_status_t default_start(void *node, gz_action_list_t *out, int *more)
 {
     default_node_t *d = node;
     gz_storage_reader_t reader = {reader_next, reader_rewind, d, sim_storage_incarnation(d->storage),
-                                  sim_storage_restored(d->storage)};
+                                  sim_storage_restored(d->storage), {NULL, 0}}; /* the simulator keeps no guard file */
     return gz_node_start(d->node, &reader, out, more);
 }
 
@@ -1680,6 +1744,7 @@ static void advance(sim_t *sim)
 {
     sim->step++;
     for (uint32_t n = 0; n < sim->cfg.n_nodes; n++) sim->slots[n].died_this_step = 0;
+    bounce_lost_links(sim);
     maybe_crash(sim);
     maybe_restore(sim);
     maybe_flap_link(sim);
@@ -1714,14 +1779,15 @@ static sim_t *create(const sim_config_t *config, int is_twin)
     sim_rng_init(&sim->rng, config->seed, 0);
     sim->slots = calloc(config->n_nodes, sizeof *sim->slots);
     sim->link_down = calloc(((size_t)config->n_nodes + 1) * ((size_t)config->n_nodes + 1), 1);
-    if (!sim->slots || !sim->link_down) abort();
+    sim->link_lost = calloc(((size_t)config->n_nodes + 1) * ((size_t)config->n_nodes + 1), 1);
+    if (!sim->slots || !sim->link_down || !sim->link_lost) abort();
     for (uint32_t n = 0; n < config->n_nodes; n++) {
         slot_t *s = &sim->slots[n];
         s->sim = sim;
         s->index = n;
         s->crash_countdown = NOT_ARMED;
         s->ports.random = (gz_random_port_t){random_fill, s};
-        s->ports.clock = (gz_clock_port_t){clock_now, s};
+        s->ports.clock = (gz_clock_port_t){clock_now, clock_mono, s};
     }
     for (uint32_t n = 0; n < config->n_nodes; n++) build_node(&sim->slots[n]);
     sim->created = 1;
@@ -1757,7 +1823,7 @@ void sim_destroy(sim_t *sim)
     for (size_t i = sim->q_head; i < sim->q_len; i++) free(sim->queue[i].blob.bytes);
     for (size_t i = 0; i < sim->n_net; i++) free(sim->net[i].blob.bytes);
     for (size_t i = 0; i < sim->n_txs; i++) free(sim->txs[i].blob.bytes);
-    free(sim->queue); free(sim->net); free(sim->txs); free(sim->slots); free(sim->link_down); free(sim->trace);
+    free(sim->queue); free(sim->net); free(sim->txs); free(sim->slots); free(sim->link_down); free(sim->link_lost); free(sim->trace);
     free(sim);
 }
 
@@ -1927,9 +1993,42 @@ static void quiesce(sim_t *sim)
     c->drop_pm = c->duplicate_pm = c->link_flap_pm = c->save_never_pm = c->save_fail_pm = c->save_fail_inline_pm = 0;
     c->crash_pm = c->crash_in_release_pm = c->restore_pm = c->ping_pm = 0;
     c->block_pm = c->reorg_pm = c->clock_jump_pm = 0;
+    sim->quiet = 1;
     trace(sim, "quiet from here: %zu messages in flight discarded", sim->n_net);
-    for (size_t i = 0; i < sim->n_net; i++) free(sim->net[i].blob.bytes);
+    /* Discarding them is a loss on each link that carried one: those
+     * connections close and open again (contract v2 section 1). */
+    for (size_t i = 0; i < sim->n_net; i++) {
+        close_on_loss(sim, sim->net[i].from, sim->net[i].to);
+        free(sim->net[i].blob.bytes);
+    }
     sim->n_net = 0;
+    bounce_lost_links(sim); /* now: the world's hellos it queues are kept */
+    /* The network recovers: every link that is down comes up again (a peer
+     * that comes back), and the reconnect step runs on each. Nodes are not
+     * restarted. */
+    for (uint64_t a = 0; a < c->n_nodes; a++) {
+        for (uint64_t b = a + 1; b < c->n_nodes; b++) set_link(sim, a, b, 1);
+        /* The world comes back: a new connection to each node, and it asks.
+         * Only the default node has the test engine that answers. */
+        set_link(sim, a, SIM_WORLD_PEER, 0);
+        set_link(sim, a, SIM_WORLD_PEER, 1);
+        if (sim->cfg.ops.create == default_create) world_hello(sim, a);
+    }
+    /* A save that would never complete completes now: the disk came back.
+     * A node whose storage hangs holds its sends behind it (runner.h); the
+     * quiet tail is about a network that recovers, not a disk that never
+     * does. */
+    for (uint32_t n = 0; n < c->n_nodes; n++) {
+        struct sim_storage *st = &sim->slots[n].storage;
+        uint64_t at = sim->step + 1;
+        for (size_t i = 0; i < st->n_pending; i++) {
+            if (st->pending[i].durable_at == NEVER) {
+                st->pending[i].durable_at = at;     /* in order: no earlier than the one before */
+                st->pending[i].confirm_at = at;
+            }
+            if (st->pending[i].durable_at > at) at = st->pending[i].durable_at;
+        }
+    }
 }
 
 void sim_quiesce(sim_t *sim)

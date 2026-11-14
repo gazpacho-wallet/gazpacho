@@ -54,6 +54,14 @@ static uint64_t port_clock(void *ctx)
     return gzp_wall_ms();
 }
 
+/* The monotonic clock (ports.h): the intervals the node measures never
+ * follow a wall clock that is stepped. */
+static uint64_t port_mono(void *ctx)
+{
+    (void)ctx;
+    return gzp_mono_ms();
+}
+
 /* The key port (ports.h) over the stand-in transport key, until P8 derives
  * per-lobby keys: every (epoch, index) is the transport's key, and the host
  * key is it too. No secret is handed out before the signing engine needs one. */
@@ -202,6 +210,9 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
         gzp_log("save-failed seq=%llu records=%zu", (unsigned long long)a->u.save.batch.sequence,
                 a->u.save.n_records);
 #else
+        /* Tests: the line for every failed batch, then one per ping record in it. */
+        gzp_log("save-failed seq=%llu records=%zu", (unsigned long long)a->u.save.batch.sequence,
+                a->u.save.n_records);
         for (i = 0; i < a->u.save.n_records; i++) {
             const gz_record_t *r = &a->u.save.records[i];
             char hex[2 * 64 + 1];
@@ -319,13 +330,17 @@ static void execute(void *ctx, const gz_action_t *a)
 #endif
         r = gzp_net_send(ex->net, &a->u.send.link, a->u.send.kind, a->u.send.scope, data, len);
         free(padded);
-        if (r < 0) fail(ex, "message-too-big"); /* an engine bug (contract-v2.md section 1) */
+        if (r == -2) fail(ex, "send-reserved-kind"); /* an engine bug (action.h): never on the wire */
+        else if (r < 0) fail(ex, "message-too-big"); /* an engine bug (contract-v2.md section 1) */
         break;
     }
     case GZ_ACTION_CONNECT:
-        if (gzp_net_connect(ex->net, a->u.connect.host.key, a->u.connect.address.data, a->u.connect.address.len,
-                            a->u.connect.key_epoch, a->u.connect.key_index) != 0)
-            fail(ex, "connect-refused"); /* a bad address or a full table: an engine bug */
+        /* A CONNECT the adapter cannot carry out is never fatal: a bad
+         * address is an unreachable host, not a bug, and the target is saved
+         * and comes again at every start. The adapter reports and counts it
+         * ("connect-failed"), and retries what can be retried. */
+        (void)gzp_net_connect(ex->net, a->u.connect.host.key, a->u.connect.address.data, a->u.connect.address.len,
+                              a->u.connect.key_epoch, a->u.connect.key_index);
         break;
     case GZ_ACTION_DISCONNECT:
         gzp_net_disconnect(ex->net, &a->u.disconnect.link, a->u.disconnect.why);
@@ -572,6 +587,7 @@ static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, 
  *   chain-tx TXID-HEX CONF        a GZ_CHAIN_TX_CONFIRMED report
  *   tip HEIGHT                    a GZ_CHAIN_NEW_TIP
  *   raw-kind KIND [zero]          a raw factory message of KIND on every connection
+ *   sync-fail-ping                the next batch that holds a ping record is written and its sync fails
  * During a start a command is answered 503 node_stopped (contract-v2.md 1),
  * and the other lines wait. */
 static void test_line(gzp_exec_t *ex, char *line)
@@ -609,6 +625,9 @@ static void test_line(gzp_exec_t *ex, char *line)
         drain(ex);
     } else if (!strcmp(w, "raw-kind") && a1) {
         gzp_net_test_raw(ex->net, (uint16_t)strtoul(a1, NULL, 10), a2 && !strcmp(a2, "zero"));
+    } else if (!strcmp(w, "sync-fail-ping")) {
+        gzp_standin_fail_next_ping(&ex->store);
+        gzp_log("test-sync-fail armed for the next ping record");
     } else {
         gzp_log("test-command bad line");
     }
@@ -929,6 +948,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     memset(&ports, 0, sizeof ports);
     ports.random.fill = port_random;
     ports.clock.now_ms = port_clock;
+    ports.clock.mono_ms = port_mono;
     memset(&cfg, 0, sizeof cfg);
     cfg.host = ex->opt->role == GZP_ROLE_HOST;
     if (ex->chain_hash) memcpy(cfg.chain, ex->chain_hash, 32);

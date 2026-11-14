@@ -94,7 +94,7 @@ def main():
         check(m.wait_for(r"test-reply area=0x7e57 serial=1", timeout=20) is not None,
               "2: after the restarts the member's hello pulls reply 1")
         end = time.time() + 10
-        while time.time() < end and h.count(r"connected") and acked(work) == 0:
+        while time.time() < end and acked(work) == 0:  # the journal alone: the harness may not have read the host's lines yet
             time.sleep(0.2)
         check(acked(work) == 1, "2: the host saved PING_ACKED 1")
 

@@ -101,7 +101,7 @@
 
 /* The list one node call may fill, at most (see SIZING). */
 #define GZ_NODE_LIST_ACTIONS 192
-#define GZ_NODE_LIST_BYTES   (256u * 1024u)
+#define GZ_NODE_LIST_BYTES   (512u * 1024u)
 
 /* Timers the node may have set at once: the program's table holds this many.
  * core/node keeps the engines' budgets within it by a static assertion. */
@@ -111,6 +111,12 @@
  * ended lobbies whose rounds are still held (composite-node.md 2.4). */
 #define GZ_NODE_MAX_SLOTS 8
 #define GZ_NODE_MAX_TOMBSTONES 64
+
+/* Connections a host's node holds at once (composite-node.md section 3). ONE
+ * NUMBER for the three tables: the node part's, the program's adapter's and
+ * the transport's (`max_conns`); the program asserts the last two against it.
+ * Within it, at most 16 connections whose key holds no seat. */
+#define GZ_NODE_MAX_CONNS 64
 
 /* Journal areas: an engine's records, timers and commands are tagged with it. */
 #define GZ_AREA_LOBBY     0x0001u
@@ -128,9 +134,12 @@
  * tables (journal.md open point 3) by P4.2:
  *   key_epoch  2: epoch (u32)
  *   restored   2: clock (u64), 4: the incarnation of the newest batch the
- *              restored journal holds (u64)
- *   guard      2: counter (u64), 4: per epoch, epoch and highest index
- *              (u32, u32), 6: rounds started (u64) */
+ *              restored journal holds (u64), whatever area its records are
+ * The guard record is not a TLV stream: it is the guard file's contents as
+ * storage reads them (journal.md section 8.3), "GZGUARD1", the chain (32),
+ * the counter (u64), the number of epochs (u16), per epoch its number and
+ * highest index (u32, u32; oldest first, the current one last; the newest 16
+ * at most), rounds started (u64). */
 #define GZ_RECORD_KEY_EPOCH 0x00040002u
 #define GZ_RECORD_KEY_INDEX 0x00040004u
 #define GZ_RECORD_RESTORED  0x00040006u

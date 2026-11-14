@@ -73,9 +73,18 @@ typedef struct {
 /* Clock. `now_ms` returns the current time in milliseconds since an epoch of
  * the caller's choosing. The core uses it only to stamp what it records. It
  * never waits on it: waiting is done by asking for a timer. The clock may
- * jump, forwards or backwards; nothing in the core may assume it does not. */
+ * jump, forwards or backwards; nothing in the core may assume it does not.
+ *
+ * `mono_ms` is the monotonic clock: milliseconds since a moment of the
+ * caller's choosing within this run of the program, never going back,
+ * whatever is done to the wall clock. The core measures intervals with it
+ * and with nothing else: how long a connection has been silent, the gap
+ * between two answers to `hello`. It is never saved (it means nothing to the
+ * next program) and never compared with `now_ms`. The node refuses ports
+ * without it. */
 typedef struct {
     uint64_t (*now_ms)(void *ctx);
+    uint64_t (*mono_ms)(void *ctx);
     void *ctx;
 } gz_clock_port_t;
 
@@ -153,13 +162,26 @@ typedef struct {
  * altering one. A node refuses storage that gains a batch of an earlier
  * incarnation after its start's first call (GZ_ERR_CORRUPT). Without the
  * fence, a ping that completed between two steps could be recorded as
- * answered by a start that never resent its reply. */
+ * answered by a start that never resent its reply.
+ *
+ * `guard` is THE GUARD FILE'S CONTENTS, given with the restore marker: the
+ * bytes of a guard record (journal.md section 8.3: "GZGUARD1", the chain, the
+ * counter, the epochs, the rounds started) as storage's guard file holds
+ * them, or empty if storage has no guard file, cannot read it, or it is for
+ * another chain. The guard file is outside the backup set, so after a restore
+ * it is newer than the backup: it lists the epochs used since. The node's
+ * restore batch must not write over it with less: its guard record carries a
+ * counter above both the file's and the backup's, the union of both epoch
+ * lists and the larger count of rounds started (the node part does this).
+ * Used only during the first gz_node_start call. With `restored` 0 it is
+ * ignored. */
 typedef struct {
     int (*next)(void *ctx, gz_stored_batch_t *batch);
     void (*rewind)(void *ctx);
     void *ctx;
     uint64_t incarnation;
     int restored;
+    gz_bytes_t guard;
 } gz_storage_reader_t;
 
 #endif

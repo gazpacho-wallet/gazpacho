@@ -55,7 +55,10 @@
  * refuses, brings guard.gzg up to the newest kept guard record when an
  * earlier program kept such a batch without writing the file (not on a
  * restored start, whose guard file is the stale-backup evidence of storage
- * 6.3), and makes the new incarnation durable before the reader exists. No earlier program's batch
+ * 6.3: there it reads the file and the reader gives it to the node, which
+ * writes back the union of its epochs and the backup's with a higher
+ * counter, spec 8.3), and makes the new incarnation durable before the
+ * reader exists. No earlier program's batch
  * can appear afterwards: the file is locked, and only this incarnation's
  * batches are added to the reader, as they become durable.
  *

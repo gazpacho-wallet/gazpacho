@@ -24,9 +24,25 @@ real runners and the journal stand-in, test commands on standard input.
      a report reaches both.
   7. A storage failure in the middle: one in-process restart; the engines'
      timers fire only after the new start (none was set again).
+Review fixes (PR 41):
+  4. The host closes the member's connection with the transport's warning at
+     the twentieth ignored hello: exactly twenty are counted, nothing after
+     the close reaches the node (an adapter that ignores DISCONNECT, or one
+     that goes on delivering what it had read, fails here).
+  8. CONNECT: a bad address is refused to the person (400 bad_address),
+     nothing saved, never fatal; an address the resolver refuses is a counted
+     failure retried with backoff, live and across restarts; a bad target
+     already in storage is passed over at every start.
+  9. Seventy watches: sixteen taken, the rest refused (409), no node error.
+ 10. Thirty-three seats on one slot: the 33rd refused (409), no node error.
+ 11. A 200,000-byte message (split by the transport) and a DISCONNECT after
+     it in one list: the member receives it whole; the close never drops it.
+ 12. SET_SEATED reaches the transport: with room for two connections, a
+     seated member is never evicted for a newcomer; an unseated one is.
 Every process asserts that no node-error line appears, except where the case
 is about one.
 """
+import hashlib
 import os
 import shutil
 import struct
@@ -40,7 +56,50 @@ from gzp_harness import (Checks, Proc, area, cmd, journal_types, kill_all, peer_
 check = Checks()
 A, B = 0x7e57, 0x7e58
 TE_CONNECT, TE_TIMER, TE_HANDOFF, TE_FAIL, TE_WATCH, TE_SEND = 0x7e01, 0x7e02, 0x7e03, 0x7e04, 0x7e05, 0x7e06
-SLOT_OPEN, SLOT_CLOSE = 0x7e80, 0x7e81
+SLOT_OPEN, SLOT_CLOSE, SLOT_SEAT = 0x7e80, 0x7e81, 0x7e82
+TE_WATCH_LIMIT = 16
+
+
+def results_since(p, mark):
+    """(status, error) of every command-result line from `mark` on."""
+    out = []
+    for line in p.lines[mark:]:
+        if line.startswith("command-result ") or " command-result " in line:
+            st = line.split("status=")[1].split()[0]
+            er = line.split("error=")[1].split()[0] if "error=" in line else "-"
+            out.append((int(st), er))
+    return out
+
+
+def wait_results(p, mark, n, timeout=20):
+    end = time.time() + timeout
+    while time.time() < end and len(results_since(p, mark)) < n:
+        time.sleep(0.05)
+    return results_since(p, mark)
+
+
+def append_batch(path, records):
+    """Append one batch of `records` [(type, bytes)] to a stopped program's
+    journal stand-in, under its newest incarnation and the next sequence, as
+    an earlier program would have saved it (gzp_harness.parse_journal's
+    format)."""
+    with open(path, "rb") as fh:
+        data = fh.read()
+    inc, seq, off = 0, 0, 16
+    while off + 8 <= len(data):
+        tag, ln = struct.unpack(">II", data[off:off + 8])
+        body = data[off + 8:off + 8 + ln]
+        if tag == 0x494e434e:
+            inc, seq = struct.unpack(">Q", body)[0], 0
+        elif tag == 0x42544348:
+            seq = max(seq, struct.unpack(">Q", body[8:16])[0])
+        off += 8 + ln + 32
+    body = struct.pack(">QQI", inc, seq + 1, len(records))
+    for t, b in records:
+        body += struct.pack(">II", t, len(b)) + b
+    head = struct.pack(">II", 0x42544348, len(body))
+    with open(path, "ab") as fh:
+        fh.write(head + body + hashlib.sha256(head + body).digest())
 
 
 def host(exe, work, logs, name, *extra):
@@ -120,8 +179,38 @@ def main():
         time.sleep(1.5)
         answers = mem.count(r"node-log drop why=no-slot kind=28", start=mark)
         check(answers == 1, "4: 30 hellos for an unknown scope within a second get one lobby state 0 (%d)" % answers)
-        check(h.count(r"drop why=hello-limit", start=hmark) >= 20, "4: the rest are counted on the host")
+        mp = peer_id(mkey)
+        check(h.wait_for(r"disconnect peer=%s why=1 connected=1" % mp, start=hmark, timeout=10) is not None,
+              "4: at the twentieth ignored hello the host refuses the member (DISCONNECT refused)")
+        check(mem.wait_for(r"warning conn=\d+ text=.*refused", start=mark, timeout=10) is not None and
+              mem.wait_for(r"disconnected peer=%s" % peer_id(hkey), start=mark, timeout=10) is not None,
+              "4: ... the member gets the transport's warning and the connection closes")
+        time.sleep(0.5)
+        ignored = h.count(r"drop why=hello-limit", start=hmark)
+        check(ignored == 20, "4: exactly twenty ignored hellos are counted; nothing after the close reaches the "
+                             "node part as a hello (%d)" % ignored)
+        check(mem.wait_for(r"connected peer=%s" % peer_id(hkey), start=mem.index_of(r"disconnected peer=", start=mark) or mark,
+                           timeout=10) is not None, "4: the member's CONNECT stands: it connects again")
         no_node_error(mem, "member")
+
+        # 8. CONNECT targets the program cannot reach ---------------------------
+        mark = mem.mark()
+        other = bytes.fromhex("02" + "ab" * 32)
+        for addr in (b"not-an-address", b"127.0.0.1", b"127.0.0.1:0", b"host.example:9735"):
+            mem.send(cmd(TE_CONNECT, (12, other), (14, addr)))
+        res = wait_results(mem, mark, 4)
+        check(res == [(400, "bad_address")] * 4,
+              "8: a CONNECT address that is not host:port, numeric, is refused to the person (%s)" % res)
+        mark = mem.mark()
+        mem.send(cmd(TE_CONNECT, (12, other), (14, b"999.999.999.999:9735")))
+        res = wait_results(mem, mark, 1)
+        check(res == [(200, "-")], "8: an address of the right form is taken (%s)" % res)
+        check(mem.wait_for(r"connect-failed why=\S+ host=%s count=2" % peer_id(other.hex()), start=mark,
+                           timeout=10) is not None,
+              "8: the resolver refuses it: a counted failure, tried again with backoff")
+        check(mem.count(r"fatal", start=mark) == 0, "8: ... never fatal")
+
+
 
         # 5. slot generations ---------------------------------------------------
         hmark = h.mark()
@@ -149,6 +238,41 @@ def main():
         check(h.wait_for(r"test-chain area=0x7e57 .*conf=2", start=hmark, timeout=5) is not None and
               h.wait_for(r"test-chain area=0x7e58 .*conf=2", start=hmark, timeout=5) is not None,
               "6: the report reaches both engines")
+
+        # 9. seventy watches ------------------------------------------------------
+        hmark = h.mark()
+        for i in range(70):
+            h.send(cmd(TE_WATCH, area(A), (12, bytes([0x90, i]) * 16), (14, struct.pack(">I", 1))))
+        res = wait_results(h, hmark, 70)
+        # Engine A holds one watch already (case 6): fifteen more fit.
+        check(res.count((200, "-")) == TE_WATCH_LIMIT - 1 and res.count((409, "too_many_watches")) == 70 - 15,
+              "9: an engine's sixteen distinct watches are taken, the rest refused (%d taken)" % res.count((200, "-")))
+        no_node_error(h, "host after seventy watches")
+
+        # 10. thirty-three seats on one slot ---------------------------------------
+        hmark = h.mark()
+        s3 = bytes([3]) * 32
+        h.send(cmd(SLOT_OPEN, (12, s3), (14, b"\x01")))
+        for i in range(33):
+            h.send(cmd(SLOT_SEAT, (12, s3), (14, bytes([2]) + bytes([0x70, i]) * 16)))
+        res = wait_results(h, hmark, 34)
+        check(res[:33] == [(200, "-")] * 33 and res[33:] == [(409, "too_many_seats")],
+              "10: thirty-two seats are taken, the 33rd refused (%s)" % res[30:])
+        h.send(cmd(SLOT_CLOSE, (12, s3)))
+        no_node_error(h, "host after thirty-three seats")
+
+        # 11. a split message, then a DISCONNECT, in one list -------------------------
+        hmark, mark = h.mark(), mem.mark()
+        h.send(cmd(TE_SEND, (12, bytes.fromhex(mkey)), (14, struct.pack(">H", 28)), (16, bytes([0x66]) * 32),
+                   (18, tlv((2, b"\0"), (4, b"\0"), (6, b"\0" * 4), (8, b"\0\0"), (10, b"\0\0"))),
+                   (20, struct.pack(">I", 200000)), (22, b"\x00")))
+        check(h.wait_for(r"disconnect peer=%s why=0 connected=1" % mp, start=hmark, timeout=10) is not None,
+              "11: the host sends 200,010 bytes of kind 28, then closes the connection (why 0)")
+        check(mem.wait_for(r"node-log drop why=no-slot kind=28", start=mark, timeout=15) is not None,
+              "11: the member receives the message, put together from its parts: the close sent it first")
+        check(mem.wait_for(r"connected peer=%s" % peer_id(hkey), start=mark, timeout=10) is not None,
+              "11: and connects again")
+        no_node_error(mem, "member after the split message")
 
         # 2. a hand-off in one batch --------------------------------------------
         hmark = h.mark()
@@ -207,12 +331,16 @@ def main():
         port = he.wait_for(r"listening address=127\.0\.0\.1:(\d+)").group(1)
         he.send(cmd(TE_FAIL, area(B), (12, struct.pack(">I", 1))))
         he.wait_for(r"command-result")
-        me = member(exe, work, logs, "member-3", hkey, port)
+        me = member(exe, work, logs, "member-3", hkey, port, "--test-pings", "3")
         procs.append(me)
         check(he.wait_for(r"node-error engine=0x7e58 status=no-space", timeout=15) is not None,
               "3: engine B's error is a node error naming it")
         check(he.wait_for(r"restart-from-storage after=node-error", timeout=10) is not None,
               "3: the node restarts from storage")
+        inc = he.wait_for(r"ready incarnation=(\d+)", start=he.index_of(r"restart-from-storage") or 0)
+        rep = me.wait_for(r"test-reply area=0x7e5[78] serial=\d+ incarnation=(\d+)", timeout=20)
+        check(inc is not None and rep is not None and int(rep.group(1)) > 1,
+              "3: the host's replies carry the incarnation its node was given (%s)" % (rep.group(1) if rep else None))
         he.stop()
         me.stop()
         b3 = dump(exe, work, "host")[1]
@@ -238,6 +366,65 @@ def main():
               "7: the old incarnation's engine timer never fires into the new node")
         no_node_error(hs, "host with a storage failure")
         hs.stop()
+
+        # 8. across restarts: the target that cannot be reached, and one saved
+        #    before the address rule ---------------------------------------------
+        hb = host(exe, work, logs, "host-8")
+        procs.append(hb)
+        port = hb.wait_for(r"listening address=127\.0\.0\.1:(\d+)").group(1)
+        mb = member(exe, work, logs, "member-8", hkey, port)
+        procs.append(mb)
+        check(mb.wait_for(r"ready incarnation") is not None and
+              mb.wait_for(r"connect-failed why=\S+ host=%s" % peer_id(other.hex()), timeout=10) is not None,
+              "8: after a restart the saved target is issued again: a counted failure, not fatal")
+        mb.stop()
+        append_batch(os.path.join(work, "member", "journal.standin"),
+                     [(0x7e570005, bytes.fromhex("02" + "cd" * 32) + struct.pack(">II", 0, 40) + b"not-an-address")])
+        for run_no in (1, 2):
+            mc = member(exe, work, logs, "member-8-saved-%d" % run_no, hkey, port)
+            procs.append(mc)
+            check(mc.wait_for(r"node-log test-connect-skipped area=0x7e57 why=bad-address count=1", timeout=15)
+                  is not None and mc.wait_for(r"ready incarnation") is not None,
+                  "8: a bad target in storage is passed over with a notice; the start completes (run %d)" % run_no)
+            check(mc.wait_for(r"connected peer=%s" % peer_id(hkey), timeout=10) is not None,
+                  "8: ... and the good target beside it is connected (run %d)" % run_no)
+            check(mc.count(r"fatal") == 0, "8: ... never fatal (run %d)" % run_no)
+            no_node_error(mc, "member with a bad saved target")
+            mc.stop()
+        hb.stop()
+
+        # 12. SET_SEATED reaches the transport ------------------------------------
+        hq = Proc("host-seats", [exe, "--data-dir", os.path.join(work, "host12"), "--role", "host", "--listen",
+                                 "127.0.0.1:0", "--name", "host12", "--no-chain", "--no-interface",
+                                 "--test-engines", "1", "--test-commands", "--test-max-conns", "2"], logs, stdin=True)
+        procs.append(hq)
+        qk = hq.wait_for(r"host key=([0-9a-f]{66})").group(1)
+        qport = hq.wait_for(r"listening address=127\.0\.0\.1:(\d+)").group(1)
+        hq.send(cmd(SLOT_OPEN, (12, bytes([0x12]) * 32), (14, b"\x01")))
+        seats = {}
+        for n in ("seated", "x", "y"):
+            p = Proc("m12-" + n, [exe, "--data-dir", os.path.join(work, "m12-" + n), "--role", "member", "--name", n,
+                                  "--no-chain", "--no-interface", "--reconnect-ms", "200",
+                                  "--connect", "%s@127.0.0.1:%s" % (qk, qport)], logs)
+            procs.append(p)
+            seats[n] = (p, p.wait_for(r"member key=([0-9a-f]{66})").group(1))
+            check(hq.wait_for(r"connected peer=%s" % peer_id(seats[n][1]), timeout=15) is not None,
+                  "12: member %s connects" % n)
+            if n == "seated":
+                hq.send(cmd(SLOT_SEAT, (12, bytes([0x12]) * 32), (14, bytes.fromhex(seats[n][1]))))
+                hq.wait_for(r"seated key=\S+ seated=1", timeout=10)
+        time.sleep(1.5)
+        sk = seats["seated"][1]
+        check(not any("closed conn=" in l and ("key=" + sk) in l for l in hq.lines) and
+              seats["seated"][0].count(r"disconnected peer=") == 0,
+              "12: the seated member is never evicted for a newcomer")
+        xk = seats["x"][1]
+        check(any("closed conn=" in l and "evict" in l and ("key=" + xk) in l for l in hq.lines),
+              "12: an unseated one is (the transport has the seat)")
+        no_node_error(hq, "host with two connections")
+        for p, _ in seats.values():
+            p.stop()
+        hq.stop()
     finally:
         kill_all(procs)
     return check.result("composite", logs)

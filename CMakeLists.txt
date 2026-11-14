@@ -126,7 +126,7 @@ gz_add_test(runner    tests/core/test_runner.c    gazpacho_core)
 # sizing, poisoning, and a hostile peer that never causes a node error. The
 # tests see the composite's internals (core/node/internal.h), so they are
 # built with the test library's GZ_TEST_KINDS.
-foreach(name node node_route node_timers node_handoff node_sizing node_hostile)
+foreach(name node node_route node_conns node_timers node_handoff node_sizing node_hostile)
   gz_add_test(${name} tests/node/test_${name}.c gazpacho_node_test)
   target_include_directories(test_${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
   target_compile_definitions(test_${name} PRIVATE GZ_TEST_KINDS)
@@ -154,12 +154,13 @@ gz_add_test(sim       tests/sim/test_sim.c        gazpacho_sim)
 gz_add_test(sim_known_trace tests/sim/test_sim_known.c gazpacho_sim)
 # 1,000 seeds with every fault at a moderate rate, then the extreme profiles
 # (see tests/sim/test_sim_seeds.c): 100 seeds of 300 steps each. Profile 6
-# (64 nodes, a crash in three steps of ten) runs 25 seeds: since the composite,
-# every crash is followed by 63 hellos and their answers, four times the work.
+# (64 nodes, a crash in three steps of ten) runs 100 seeds in a plain build
+# and 25 under the sanitizers (and under valgrind: ci.yml): since the
+# composite, every crash is followed by 63 hellos and their answers.
 gz_add_test(sim_seeds tests/sim/test_sim_seeds.c  gazpacho_sim 1000 400 1 0)
 foreach(profile RANGE 1 10)
   set(profile_seeds 100)
-  if(profile EQUAL 6)
+  if(profile EQUAL 6 AND (GZ_SANITIZE OR CMAKE_C_FLAGS MATCHES "-fsanitize="))
     set(profile_seeds 25)
   endif()
   add_test(NAME sim_profile_${profile} COMMAND test_sim_seeds ${profile_seeds} 300 1 ${profile})
@@ -212,7 +213,7 @@ option(GZ_VALGRIND_TESTS "Register the core tests again under valgrind, where it
 find_program(GZ_VALGRIND valgrind)
 if(GZ_VALGRIND AND GZ_VALGRIND_TESTS AND NOT GZ_SANITIZE)
   set(GZ_MEMCHECK ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes --leak-check=full)
-  foreach(name action runner rng sim sim_known_trace node node_route node_timers node_handoff node_sizing
+  foreach(name action runner rng sim sim_known_trace node node_route node_conns node_timers node_handoff node_sizing
                node_hostile node_release)
     add_test(NAME valgrind_${name} COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_${name}>)
   endforeach()

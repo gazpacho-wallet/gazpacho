@@ -76,10 +76,43 @@ static gz_status_t copy_send(gz_action_list_t *list, gz_action_t *dst, const gz_
     return copy_bytes(list, &dst->u.send.records, src->u.send.records);
 }
 
+/* "host:port", numeric (action.h). */
+int gz_connect_address_ok(gz_bytes_t address)
+{
+    const uint8_t *p = address.data;
+    size_t n = address.len, colon, i, host_end;
+    uint32_t port = 0;
+    if (!p || n == 0 || n > GZ_CONNECT_MAX_ADDRESS) return 0;
+    for (colon = n; colon > 0 && p[colon - 1] != ':'; colon--) {
+    }
+    /* p[colon - 1] is the last ':'; the port follows it. */
+    if (colon < 2 || colon == n || n - colon > 5 || p[colon] == '0') return 0;
+    for (i = colon; i < n; i++) {
+        if (p[i] < '0' || p[i] > '9') return 0;
+        port = port * 10 + (uint32_t)(p[i] - '0');
+    }
+    if (port == 0 || port > 65535) return 0;
+    host_end = colon - 1;
+    if (p[0] == '[') {
+        /* An IPv6 address in brackets: hexadecimal digits, ':' and '.'. */
+        if (host_end < 4 || p[host_end - 1] != ']') return 0;
+        for (i = 1; i + 1 < host_end; i++) {
+            uint8_t ch = p[i];
+            int hex = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F');
+            if (!hex && ch != ':' && ch != '.') return 0;
+        }
+        return 1;
+    }
+    /* An IPv4 address: digits and dots, a digit at each end. */
+    if (p[0] == '.' || p[host_end - 1] == '.') return 0;
+    for (i = 0; i < host_end; i++)
+        if ((p[i] < '0' || p[i] > '9') && p[i] != '.') return 0;
+    return 1;
+}
+
 static gz_status_t copy_connect(gz_action_list_t *list, gz_action_t *dst, const gz_action_t *src)
 {
-    size_t n = src->u.connect.address.len;
-    if (n == 0 || n > GZ_CONNECT_MAX_ADDRESS) return GZ_ERR_ARGUMENT;
+    if (!gz_connect_address_ok(src->u.connect.address)) return GZ_ERR_ARGUMENT;
     return copy_bytes(list, &dst->u.connect.address, src->u.connect.address);
 }
 

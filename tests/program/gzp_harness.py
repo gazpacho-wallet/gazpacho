@@ -49,7 +49,9 @@ class Proc:
         self.log = open(os.path.join(log_dir, name + ".log"), "a")
         self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   stdin=subprocess.PIPE if stdin else subprocess.DEVNULL, text=True, bufsize=1)
-        threading.Thread(target=self._read, daemon=True).start()
+        self.eof = False
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
 
     def send(self, line):
         """A line on standard input (--test-commands)."""
@@ -66,6 +68,7 @@ class Proc:
                 self.times.append(time.time())
                 self.cv.notify_all()
         with self.cv:
+            self.eof = True
             self.cv.notify_all()
 
     def find(self, pattern, start=0):
@@ -92,10 +95,11 @@ class Proc:
                     i += 1
                 if time.time() >= end:
                     return None
+                if self.eof:
+                    # The process has ended and every line it wrote is here.
+                    return None
                 if self.p.poll() is not None:
                     self.cv.wait(0.2)
-                    if i >= len(self.lines):
-                        return None
                     continue
                 self.cv.wait(min(end - time.time(), 0.2))
 
@@ -114,11 +118,15 @@ class Proc:
             return len(self.lines)
 
     def exit_code(self, timeout=TIMEOUT):
+        """The exit status, once the reader has every line the process wrote:
+        a check made after this sees the last line (review B of PR 41, 5)."""
         try:
-            return self.p.wait(timeout)
+            code = self.p.wait(timeout)
         except subprocess.TimeoutExpired:
             self.p.kill()
-            return None
+            code = None
+        self.reader.join(10)
+        return code
 
     def stop(self, timeout=10):
         if self.p.poll() is None:

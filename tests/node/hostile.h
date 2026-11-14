@@ -62,8 +62,9 @@ static inline gz_status_t hostile_step(h_t *h, src_t *s)
     }
     memset(scope, 0, sizeof scope);
     if (src_byte(s) & 1) memset(scope, 1 + src_byte(s) % 4, sizeof scope);
+    h->auto_connect = 0; /* a peer may send on a link the node never saw connect, or closed */
     h->clock += src_byte(s) * 37u;
-    if ((src_byte(s) & 31) == 0) h->clock -= 5000; /* the clock may jump back */
+    if ((src_byte(s) & 31) == 0) h_clock_back(h, 5000); /* the wall clock may jump back */
     switch (op % 10) {
     case 0:
     case 1:
@@ -92,7 +93,9 @@ static inline gz_status_t hostile_step(h_t *h, src_t *s)
         memset(&ev, 0, sizeof ev);
         ev.kind = GZ_EVENT_CHAIN;
         ev.u.chain.kind = (gz_chain_kind_t)(1 + src_byte(s) % 6);
-        memset(ev.u.chain.txid, src_byte(s) % 3, 32);
+        memset(ev.u.chain.txid, src_byte(s) % 100, 32); /* among the txids the commands below watch */
+        memset(ev.u.chain.outpoint.txid, ev.u.chain.txid[0], 32);
+        ev.u.chain.outpoint.vout = src_byte(s) % 2;
         ev.u.chain.confirmations = src_byte(s);
         ev.u.chain.height = src_u32(s);
         ev.u.chain.outcome = (gz_broadcast_outcome_t)(1 + src_byte(s) % 3);
@@ -101,7 +104,16 @@ static inline gz_status_t hostile_step(h_t *h, src_t *s)
     case 8: {
         /* A user command: a code from the ranges, random arguments. */
         static const uint16_t codes[] = {0x7e01, 0x7e02, 0x7e05, 0x7e06, 0x7e07, 0x7e09, 0x7e0c, 0x7e80, 0x7e81,
-                                         0x7e82, 0x7e83, 0x0101, 0x0301, 0x0401, 0x0d01, 0x7e7f, 0};
+                                         0x7e82, 0x7e83, 0x7e84, 0x7e85, 0x7e05, 0x7e0c, 0x7e84, 0x0101, 0x0301,
+                                         0x0401, 0x0d01, 0x7e7f, 0};
+        /* Addresses a person or an invitation could give: good, and bad in
+         * every way the address rule and the program's own parsing refuse. */
+        static const char *addrs[] = {"127.0.0.1:1", "not-an-address", "no-port-here", "127.0.0.1", "127.0.0.1:",
+                                      ":1", "127.0.0.1:0", "127.0.0.1:65536", "127.0.0.1:99999", "host:1",
+                                      "[::1]:1", "[::1:1", "192.0.2.4:01", "999.999.999.999:1", "", "1:1:1",
+                                      "127.0.0.1:1 ", "127.0.0.1:-1", "0000000000000000000000000000000000000000000000000000000000000000:1",
+                                      "00000000000000000000000000000000000000000000000000000000000000000000000000000000:1"};
+        const char *addr = (src_byte(s) & 3) ? addrs[0] : addrs[src_byte(s) % (sizeof addrs / sizeof addrs[0])];
         uint16_t code = codes[src_byte(s) % (sizeof codes / sizeof codes[0])];
         uint8_t c2[2], a[64], role = src_byte(s) & 1, mk[33];
         if (bug_command(code)) return GZ_OK;
@@ -115,15 +127,31 @@ static inline gz_status_t hostile_step(h_t *h, src_t *s)
         }
         h_key('H', 0, mk);
         if (code == 0x7e01) {
+            /* Hosts enough to pass the engine's table of targets. */
+            h_key('H', src_byte(s) % 6, mk);
             gz_rec_put(rec, sizeof rec, &at, 12, mk, 33);
-            gz_rec_put(rec, sizeof rec, &at, 14, (const uint8_t *)"127.0.0.1:1", 11);
+            gz_rec_put(rec, sizeof rec, &at, 14, (const uint8_t *)addr, strlen(addr));
+        } else if (code == 0x7e05 || code == 0x7e0c || code == 0x7e84) {
+            /* Watches: a hundred txids, more than any engine's budget or the
+             * registry holds. */
+            uint8_t txid[32], d[4];
+            memset(txid, src_byte(s) % 100, sizeof txid);
+            gz_put_u32(d, src_byte(s) % 4);
+            if (code == 0x7e84) gz_rec_put(rec, sizeof rec, &at, 12, scope, 32);
+            gz_rec_put(rec, sizeof rec, &at, code == 0x7e84 ? 14 : 12, txid, 32);
+            if (code == 0x7e0c) {
+                uint8_t vout[4];
+                gz_put_u32(vout, src_byte(s) % 2);
+                gz_rec_put(rec, sizeof rec, &at, 14, vout, 4);
+            }
+            gz_rec_put(rec, sizeof rec, &at, code == 0x7e05 ? 14 : 16, d, 4);
         } else if (code >= 0x7e80) {
             gz_rec_put(rec, sizeof rec, &at, 12, scope, 32);
             if (code == 0x7e82) h_key('M', who, mk);
             gz_rec_put(rec, sizeof rec, &at, 14, code == 0x7e82 ? mk : &role, code == 0x7e82 ? 33 : 1);
             h_key('H', 0, mk);
             gz_rec_put(rec, sizeof rec, &at, 16, mk, 33);
-            gz_rec_put(rec, sizeof rec, &at, 18, (const uint8_t *)"127.0.0.1:1", 11);
+            gz_rec_put(rec, sizeof rec, &at, 18, (const uint8_t *)addr, strlen(addr));
             a[0] = 0;
             a[1] = 0;
             a[2] = 0;

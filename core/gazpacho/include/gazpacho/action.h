@@ -119,6 +119,13 @@ typedef enum {
 #define GZ_SEND_MAX_RECORDS 1048576u
 /* Longest CONNECT address: "host:port", numeric. */
 #define GZ_CONNECT_MAX_ADDRESS 64u
+/* A kind no engine may SEND and no peer's message carries to an engine: until
+ * P4.2 the lobby, which no program links yet, marks with it a SEND that still
+ * holds a whole message (lobby.h, GZ_LOBBY_SEND_WHOLE). The composite refuses
+ * it from an engine and the program never puts it on the wire. P4.2 removes
+ * the lobby's use (composite-node.md, task T-P42-1; tools/check-send-whole.sh
+ * fails if a program links the lobby while the bridge exists). */
+#define GZ_SEND_KIND_RESERVED 0xffffu
 
 /* One stored record: an opaque byte string with a type tag. */
 typedef struct {
@@ -196,8 +203,8 @@ void gz_action_list_reset(gz_action_list_t *list);
  * Returns GZ_OK; GZ_ERR_ARGUMENT for an unknown or retired kind
  * (WATCH_SCRIPT), a byte string with a length but no data, a transaction or
  * outpoint watch of depth 0, a SEND of kind 0 or 2 or with records over
- * GZ_SEND_MAX_RECORDS, a CONNECT with an empty address or one over
- * GZ_CONNECT_MAX_ADDRESS, a DISCONNECT whose `why` is not a GZ_DISCONNECT_*
+ * GZ_SEND_MAX_RECORDS, a CONNECT whose address fails gz_connect_address_ok
+ * (below), a DISCONNECT whose `why` is not a GZ_DISCONNECT_*
  * value, or a SET_SEATED whose `seated` is not 0 or 1; GZ_ERR_NO_SPACE if a
  * slot or the bytes do not fit. On any error the list is exactly as it was. */
 gz_status_t gz_action_list_add(gz_action_list_t *list, const gz_action_t *action);
@@ -211,6 +218,19 @@ gz_status_t gz_action_list_add(gz_action_list_t *list, const gz_action_t *action
  * GZ_ERR_ARGUMENT if the range is not within the list; GZ_ERR_NO_SPACE if the
  * merged array does not fit. On any error the list is exactly as it was. */
 gz_status_t gz_action_list_merge_saves(gz_action_list_t *list, size_t from, size_t to);
+
+/* THE ADDRESS RULE, one for every engine and for the list: 1 if `address` is
+ * a CONNECT address, "host:port" with a numeric host and a decimal port from
+ * 1 to 65535 without a leading zero, at most GZ_CONNECT_MAX_ADDRESS bytes.
+ * The host is an IPv4 address (digits and dots) or an IPv6 address in square
+ * brackets (hexadecimal digits, colons and dots). No name is ever looked up
+ * (transport.md). An engine checks an address with this BEFORE it saves it,
+ * when the command or the invitation that carries it is accepted, and answers
+ * a bad one with a refusal (node.h, the engine rule): a saved target is
+ * issued again at every start. The rule checks the form only: an address
+ * that passes it may still be unreachable, which the program reports and
+ * retries with its backoff and never treats as an error. */
+int gz_connect_address_ok(gz_bytes_t address);
 
 /* The most bytes gz_action_list_merge_saves needs for `n` records in all. */
 #define GZ_ACTION_MERGE_BYTES(n) ((size_t)(n) * sizeof(gz_record_t) + _Alignof(gz_record_t))

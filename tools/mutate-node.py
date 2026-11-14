@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 
-TESTS = ["node", "node_route", "node_timers", "node_handoff", "node_sizing", "node_hostile", "node_release", "action"]
+TESTS = ["node", "node_route", "node_conns", "node_timers", "node_handoff", "node_sizing", "node_hostile", "node_release", "action"]
 TARGETS = ["test_" + t for t in TESTS]
 
 

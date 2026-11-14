@@ -1,6 +1,7 @@
 /* Routing: by kind, then scope, then link (composite-node.md sections 3 to 5,
- * layer 1 of section 13), connection binding on the host, the unbound caps
- * and the per-link hello limits. No case may cause a node error. */
+ * layer 1 of section 13), connection binding on the host, the caps on
+ * connections without a seat and the per-link hello limits (more of both in
+ * test_node_conns.c). No case may cause a node error. */
 #include "node_test.h"
 #include "internal.h"
 
@@ -24,6 +25,17 @@ static void open_member_slot(h_t *h, uint8_t b)
     h_key('H', 0, hk);
     h_arg_t a[4] = {{12, s, 32}, {14, &role, 1}, {16, hk, 33}, {18, "127.0.0.1:1", 11}};
     h_cmd(h, GZ_TE_CMD_SLOT_OPEN, a, 4);
+}
+
+/* Live connections whose key holds no seat. */
+static uint32_t n_unseated(const h_t *h)
+{
+    uint32_t n = 0;
+    for (int i = 0; i < NP_MAX_CONNS; i++) {
+        const np_conn_t *k = &h->n->np.conns[i];
+        if (k->used && k->connected && !k->closing && !k->seated) n++;
+    }
+    return n;
 }
 
 static void test_family(void)
@@ -137,12 +149,12 @@ static void test_host_binding(void)
     open_host_slot(&h, 1, 1);
     open_host_slot(&h, 2, 0);
     h_peer(&h, &a, 1, 0);
-    CHECK(h.n->np.n_unbound == 1);
+    CHECK(n_unseated(&h) == 1);
     /* The first message with a nonzero scope binds it: connected, then the message. */
     size_t m = h_mark(&h);
     h_msg(&h, &a, GZ_MSG_KIND_HELLO, s1, NULL, 0);
     CHECK(h_said(&h, m, "slot-peer gen=1 up=1") && h_said(&h, m, "slot-msg gen=1 kind=16"));
-    CHECK(h.n->np.n_unbound == 0);
+    CHECK(n_unseated(&h) == 1); /* bound, and still without a seat */
     /* Another nonzero scope on a bound link: refused. */
     m = h_mark(&h);
     h_msg(&h, &a, 20, s2, NULL, 0);
@@ -156,7 +168,7 @@ static void test_host_binding(void)
     CHECK(h_count(&h, m, GZ_ACTION_SET_SEATED) == 1);
     m = h_mark(&h);
     h_peer(&h, &b, 1, 0);
-    CHECK(h_said(&h, m, "slot-peer gen=2 up=1") && h.n->np.n_unbound == 0);
+    CHECK(h_said(&h, m, "slot-peer gen=2 up=1") && n_unseated(&h) == 0); /* a: refused; b: seated */
     m = h_mark(&h);
     h_peer(&h, &b, 0, 0);
     CHECK(h_said(&h, m, "slot-peer gen=2 up=0"));
@@ -182,13 +194,23 @@ static void test_hello_limits(void)
     for (size_t i = m; i < h.n_log; i++)
         if (h.log[i].a.kind == GZ_ACTION_SEND) CHECK(h.log[i].kind == GZ_MSG_KIND_LOBBY_STATUS);
     CHECK(h_count(&h, m, GZ_ACTION_DISCONNECT) >= 1);
-    /* The limit is the link's, not the connection's: reconnecting resets nothing. */
+    /* The limit is the link's, not the connection's: reconnecting resets
+     * nothing. A hello inside the second is one more ignored one, past the
+     * twenty: the new connection is closed at once. */
     h_peer(&h, &a, 0, 0);
     h_peer(&h, &a, 1, 0);
     m = h_mark(&h);
     h_msg(&h, &a, GZ_MSG_KIND_HELLO, s, NULL, 0);
-    CHECK(h_count(&h, m, GZ_ACTION_SEND) == 0);
+    CHECK(h_count(&h, m, GZ_ACTION_SEND) == 0 && h_count(&h, m, GZ_ACTION_DISCONNECT) == 1);
+    /* Closed: nothing is taken from it until it connects again. */
     h.clock += 1000;
+    m = h_mark(&h);
+    h.auto_connect = 0;
+    h_msg(&h, &a, GZ_MSG_KIND_HELLO, s, NULL, 0);
+    h.auto_connect = 1;
+    CHECK(h_count(&h, m, GZ_ACTION_SEND) == 0 && h_said(&h, m, "drop why=unconnected"));
+    h_peer(&h, &a, 0, 0);
+    h_peer(&h, &a, 1, 0);
     m = h_mark(&h);
     h_msg(&h, &a, GZ_MSG_KIND_HELLO, s, NULL, 0);
     CHECK(h_count(&h, m, GZ_ACTION_SEND) == 1);
@@ -233,7 +255,7 @@ static void test_unbound_caps(void)
         h_peer(&h, &l, 1, 0);
         if (i != 1) h_test_msg(&h, &l, "GZPX", NULL, 0, GZ_AREA_TEST); /* all but 1 speak */
     }
-    CHECK(h.n->np.n_unbound == 16);
+    CHECK(n_unseated(&h) == 16);
     gz_link_t l17 = h_host_link(17);
     size_t m = h_mark(&h);
     h_peer(&h, &l17, 1, 0);
@@ -241,7 +263,7 @@ static void test_unbound_caps(void)
     uint8_t k1[33];
     h_key('M', 1, k1);
     CHECK(!memcmp(h.log[m].key, k1, 33) && h.log[m].why == GZ_DISCONNECT_IDLE); /* the silent one */
-    CHECK(h.n->np.n_unbound == 16);
+    CHECK(n_unseated(&h) == 16);
     /* The idle timer: everything unbound for 60 s goes; the seated one stays. */
     uint64_t t = 0;
     for (size_t i = 0; i < h.n_log; i++)
@@ -253,7 +275,7 @@ static void test_unbound_caps(void)
     CHECK(h_count(&h, m, GZ_ACTION_DISCONNECT) == 16);
     for (size_t i = m; i < h.n_log; i++)
         if (h.log[i].a.kind == GZ_ACTION_DISCONNECT) CHECK(memcmp(h.log[i].key, mk, 33) != 0);
-    CHECK(h.n->np.n_unbound == 0);
+    CHECK(n_unseated(&h) == 0);
     CHECK_NO_NODE_ERROR(&h);
     h_free(&h);
 }
@@ -275,7 +297,7 @@ static void test_conn_table_full(void)
         gz_link_t l = h_host_link(1000 + i);
         CHECK(h_peer(&h, &l, 1, 0) == GZ_OK);
     }
-    CHECK(h.n->np.n_unbound <= NP_MAX_UNBOUND);
+    CHECK(n_unseated(&h) <= NP_MAX_UNSEATED);
     CHECK_NO_NODE_ERROR(&h);
     h_free(&h);
 }

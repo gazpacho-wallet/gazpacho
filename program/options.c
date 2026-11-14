@@ -282,6 +282,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-oversize-send")) { ok = num(val, 1, 2000000, &v); o->test_oversize_send = (int)v; }
         else if (!strcmp(a, "--test-node-error-at")) { ok = num(val, 1, 1000000, &v); o->test_node_error_at = (int)v; }
         else if (!strcmp(a, "--test-engines")) { ok = num(val, 0, 2, &v); o->test_engines = (int)v; }
+        else if (!strcmp(a, "--test-max-conns")) { ok = num(val, 1, 64, &v); o->test_max_conns = (int)v; }
         else if (!strcmp(a, "--test-drop-kind")) { ok = num(val, 1, 65535, &v); o->test_drop_kind = (int)v; }
         else if (!strcmp(a, "--test-big-reply")) { ok = num(val, 1, 60000, &v); o->test_big_reply = (int)v; }
         else if (!strcmp(a, "--test-crash-after-save")) { ok = num(val, 1, 1000000, &v); o->test_crash_after_save = (int)v; }

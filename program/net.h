@@ -20,10 +20,23 @@
  *
  * Connections. A CONNECT keeps a connection to a host while it stands,
  * reconnecting with backoff (the first delay doubling to 60 s); a DISCONNECT
- * of its link stops keeping it. DISCONNECT sends what is queued, then
+ * of its link stops keeping it. A CONNECT that cannot be carried out is
+ * never an error of the node (contract-v2.md section 3): an address the
+ * resolver refuses or a host that does not answer is a failed attempt,
+ * reported ("connect-failed ... count=N"), counted, and tried again with the
+ * same backoff; an address that is not "host:port" at all, or a seventeenth
+ * target, is reported and counted and not kept (there is nothing to try
+ * again). The core checks addresses before it saves them (action.h, the
+ * address rule), so the second kind can only come from storage written
+ * before that rule. DISCONNECT sends what is queued, then
  * closes (gz_peers_close_after_send), or for `refused` sends a warning and
- * closes (gz_peers_refuse). SET_SEATED marks a member's key
- * (gz_peers_set_seated_key).
+ * closes (gz_peers_refuse). From the DISCONNECT on, nothing more of that
+ * connection reaches the node but its PEER_DISCONNECTED: messages the
+ * transport had already read are dropped and counted ("message-dropped
+ * why=closing"). SET_SEATED marks a member's key (gz_peers_set_seated_key).
+ *
+ * One number (node.h, GZ_NODE_MAX_CONNS) sizes the node part's connection
+ * table, this adapter's and the transport's `max_conns`.
  *
  * Losses (contract-v2.md section 1). There is no outbox: a SEND to a peer
  * with no live connection is dropped and counted. Any refusal of a send on a
@@ -49,12 +62,16 @@
 
 #include <secp256k1.h>
 
+#include "gazpacho/node.h"
 #include "gazpacho/types.h"
 #include "peers.h"
 
 #define GZP_KIND_TEST 32767u
-#define GZP_MAX_CONNS 64
+#define GZP_MAX_CONNS GZ_NODE_MAX_CONNS
+/* CONNECT targets: one per slot (Open, or Closing with a round held), and in
+ * the test build four per test engine. */
 #define GZP_MAX_TARGETS 16
+_Static_assert(GZP_MAX_TARGETS >= GZ_NODE_MAX_SLOTS + 2 * 4, "a CONNECT target for every slot and test-engine host");
 #define GZP_QUEUE_PER_CONN (1u << 20)
 #define GZP_QUEUE_OVERHEAD 64u     /* counted per queued message, so empty ones count too */
 #define GZP_QUEUE_TOTAL (4u << 20) /* the whole start queue, every connection together */
@@ -75,10 +92,13 @@ typedef struct {
     int handshake_ms, recv_ms, send_ms, ping_ms, pong_ms;
     int max_per_address; /* -1: the transport's default */
     unsigned max_queue;  /* 0: the transport's default */
+    unsigned max_conns;  /* tests: 0, or fewer than GZP_MAX_CONNS */
 } gzp_net_limits_t;
 
 typedef struct {
     int used, outbound, target;   /* target: the CONNECT it serves, or -1 */
+    int closing;                  /* the node asked for its close (DISCONNECT) */
+    unsigned dropped_closing;     /* messages read before the close and dropped after it */
     uint64_t conn, peer_id;
     uint8_t key[33];
     size_t queued_bytes;
@@ -126,6 +146,8 @@ typedef struct {
     unsigned drop_kind;
     /* counters */
     uint64_t dropped_unconnected, closed_while_starting;
+    uint64_t connect_failed;   /* CONNECTs and connection attempts that could not be carried out */
+    uint64_t dropped_closing;  /* messages dropped after the node asked for their connection to close */
 } gzp_net_t;
 
 uint64_t gzp_peer_id(const uint8_t key[33]);
@@ -148,9 +170,10 @@ void gzp_net_queue_end(gzp_net_t *n);
 /* The actions, from the executor (possibly inside the runner's callback;
  * none calls back into the events).
  * send: 0 handed to the transport, 1 dropped (not connected, a local key not
- * ours, or the connection was closed by the refusal), -1 too big (fatal).
- * connect: 0, or -1 if `address` is not "host:port" or the table is full
- * (an engine bug: fatal). */
+ * ours, or the connection was closed by the refusal), -1 too big (fatal), -2
+ * the reserved kind 0xffff, which is never put on the wire (fatal: action.h).
+ * connect: 0 kept, or 1 if it cannot be kept (`address` is not "host:port",
+ * or the table is full): reported and counted, never fatal. */
 int gzp_net_send(gzp_net_t *n, const gz_link_t *link, uint16_t kind, const uint8_t scope[32],
                  const uint8_t *records, size_t len);
 int gzp_net_connect(gzp_net_t *n, const uint8_t host_key[33], const uint8_t *address, size_t address_len,

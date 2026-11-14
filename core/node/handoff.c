@@ -14,7 +14,9 @@
  *     or above 2^32 (GZ_ERR_BUG);
  *   - refuses a BROADCAST from any engine but funding (GZ_ERR_BUG);
  *   - keeps the watch registry and drops repeated watches (watches.c);
- *   - notes the seats a slot's engine marks (SET_SEATED);
+ *   - notes the seats a slot's engine marks (SET_SEATED), and seats or
+ *     unseats the key's connection (nodepart.c);
+ *   - refuses a SEND of the reserved kind 0xffff (GZ_ERR_BUG: action.h);
  *   - with a hand-off: in test builds, checks that no outward action sat
  *     between two of the bracket's saves (an engine that sends before it
  *     saves, which the merge would hide), then merges every SAVE of the
@@ -206,6 +208,17 @@ gz_status_t gz_c_node_bracket_begin(gz_node_t *c, gz_action_list_t *out)
 
 gz_status_t gz_c_node_bracket_end(gz_node_t *c, gz_action_list_t *out)
 {
+#if GZ_NODE_CHECKS
+    /* 8.3: the node part's own steps too, within its declared worst step
+     * (what a slot's engine appended inline is that engine's). */
+    size_t own = 0, k;
+    for (size_t i = c->bracket_from; i < out->count; i++)
+        if ((k = i - c->base) < GZ_NODE_LIST_ACTIONS && (c->owner[k] < 0 || c->owner[k] == ENG_NODE)) own++;
+    if (own > NP_MAX_STEP_ACTIONS) {
+        c->bracket_on = 0;
+        return gz_c_bug(c, ENG_NODE);
+    }
+#endif
     return bracket_end(c, out);
 }
 
@@ -335,7 +348,20 @@ gz_status_t gz_c_postprocess(gz_node_t *c, size_t from, int merge_all, gz_action
             }
         } else if (a->kind == GZ_ACTION_SET_SEATED && eng >= ENG_SLOT0) {
             if (!seat_note(&c->slots[eng - ENG_SLOT0], &a->u.set_seated.member, a->u.set_seated.seated))
-                return gz_c_bug(c, eng);
+                return gz_c_bug(c, eng); /* past the seat table: its own cap should have refused */
+            /* The key's connection is seated or unseated with it. One that
+             * lost its seat may put the unseated over their cap, and the
+             * idle timer may need setting: the node part's actions, appended
+             * here and passed over by this loop like the rest. */
+            size_t before = out->count;
+            np_seat_changed(c, eng - ENG_SLOT0, &a->u.set_seated.member, a->u.set_seated.seated);
+            if ((st = np_idle_check(c, out)) != GZ_OK) return st;
+            for (size_t j = before; j < out->count; j++) {
+                if (j - c->base >= GZ_NODE_LIST_ACTIONS) return gz_c_bug(c, ENG_NODE);
+                c->owner[j - c->base] = (int8_t)ENG_NODE;
+            }
+        } else if (a->kind == GZ_ACTION_SEND && a->u.send.kind == GZ_SEND_KIND_RESERVED) {
+            return gz_c_bug(c, eng); /* never on the wire (action.h) */
         }
         i++;
     }
@@ -407,6 +433,9 @@ void gz_c_confirmed(gz_node_t *c, gz_action_list_t *out, gz_status_t *result)
     for (int e = ENG_TEST0; e < ENG_N; e++) {
         void *inst;
         if (!(mask & (1u << e)) || !ops_of(c, e, &inst)) continue;
+        /* A slot's engine only while its slot is Open (a closed slot's bit
+         * was cleared when it closed: the second guard). */
+        if (e >= ENG_SLOT0 && c->slots[e - ENG_SLOT0].state != SLOT_OPEN) continue;
         /* During the start, held for an engine not yet resumed (R4). */
         if (!c->resumed[e]) {
             c->held[e]++;
@@ -415,6 +444,25 @@ void gz_c_confirmed(gz_node_t *c, gz_action_list_t *out, gz_status_t *result)
         *result = gz_c_bracket(c, e, &ev, out);
         if (*result != GZ_OK) return;
     }
+}
+
+/* A slot's engine begins: it takes its confirmations from now on. (A slot
+ * loaded at a start is marked when its lobby's resume is done, P4.2.) */
+void gz_c_engine_opened(gz_node_t *c, int eng)
+{
+    c->resumed[eng] = 1;
+    c->held[eng] = 0;
+}
+
+/* A slot's engine has ended: its bit leaves every batch still awaiting its
+ * confirmation and every watch, so that the next slot at its index is given
+ * nothing of this one's. The batches themselves are confirmed as before. */
+void gz_c_engine_closed(gz_node_t *c, int eng)
+{
+    c->resumed[eng] = 0;
+    c->held[eng] = 0;
+    for (size_t k = 0; k < c->cq_n; k++) c->cq[(c->cq_head + k) % CQ_MAX] &= (uint16_t)~(1u << eng);
+    gz_watch_forget(c, eng);
 }
 
 /* Give an engine the confirmations held for it during the start. */

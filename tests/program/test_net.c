@@ -50,7 +50,7 @@ int main(void)
     secp256k1_context *secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     uint8_t priv[32], scope[32] = {0}, chain[32];
     gz_net_random_t rnd = {fill, NULL};
-    gzp_net_limits_t lim = {1000, 1000, 1000, 1000, 1000, -1, 0};
+    gzp_net_limits_t lim = {1000, 1000, 1000, 1000, 1000, -1, 0, 0};
     gzp_net_events_t ev;
     gz_link_t l;
     memset(&ev, 0, sizeof ev);
@@ -62,7 +62,18 @@ int main(void)
     CHECK(!strcmp(n.targets[0].host, "127.0.0.1") && n.targets[0].port == 9736 && n.targets[0].index == 2);
     CHECK(connect_addr(&n, 1, "127.0.0.1:1") == 0 && targets(&n) == 1); /* the same host: the address replaced */
     CHECK(!strcmp(n.targets[0].host, "127.0.0.1") && n.targets[0].port == 1);
-    CHECK(connect_addr(&n, 2, "") != 0);
+    /* A CONNECT the adapter cannot keep is reported and counted, never an
+     * error the caller must make fatal (1, not -1). */
+    CHECK(connect_addr(&n, 2, "") == 1);
+    CHECK(connect_addr(&n, 2, "not-an-address") == 1 && connect_addr(&n, 2, "no-port-here") == 1);
+    CHECK(n.connect_failed == 3);
+    CHECK(connect_addr(&n, 3, "[::1]:9735") == 0 && !strcmp(n.targets[1].host, "::1") && n.targets[1].port == 9735);
+    gz_link_t l6;
+    memcpy(l6.local.key, n.pub, 33);
+    memset(l6.remote.key, 3, 33);
+    l6.remote.key[0] = 2;
+    gzp_net_disconnect(&n, &l6, 0);
+    n.connect_failed = 0;
     CHECK(connect_addr(&n, 2, "127.0.0.1") != 0);
     CHECK(connect_addr(&n, 2, ":80") != 0);
     CHECK(connect_addr(&n, 2, "127.0.0.1:0") != 0);
@@ -71,7 +82,8 @@ int main(void)
     CHECK(connect_addr(&n, 2, "1234567890123456789012345678901234567890123456789012345678901234567890:1") != 0);
     CHECK(targets(&n) == 1);
     for (int i = 0; i < GZP_MAX_TARGETS - 1; i++) CHECK(connect_addr(&n, (uint8_t)(10 + i), "127.0.0.1:2") == 0);
-    CHECK(connect_addr(&n, 99, "127.0.0.1:2") != 0 && targets(&n) == GZP_MAX_TARGETS);
+    CHECK(connect_addr(&n, 99, "127.0.0.1:2") == 1 && targets(&n) == GZP_MAX_TARGETS);
+    CHECK(n.connect_failed == 7); /* the six bad addresses above and the full table */
 
     /* DISCONNECT stops keeping the target. */
     memcpy(l.local.key, n.pub, 33);
@@ -82,6 +94,11 @@ int main(void)
 
     /* SENDs: dropped with no connection, and with a local key not ours. */
     CHECK(gzp_net_send(&n, &l, 16, scope, NULL, 0) == 1);
+    /* Kind 0xffff, the lobby's bridge until P4.2 (action.h): never on the
+     * wire. The adapter refuses it whatever the link, and the executor makes
+     * that fatal. This fails if the adapter is ever asked to send it and does. */
+    CHECK(gzp_net_send(&n, &l, GZ_SEND_KIND_RESERVED, scope, NULL, 0) == -2);
+    CHECK(n.dropped_unconnected == 1);
     l.local.key[5] ^= 1;
     CHECK(gzp_net_send(&n, &l, 16, scope, NULL, 0) == 1);
     CHECK(n.dropped_unconnected == 2);

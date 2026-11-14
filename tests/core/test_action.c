@@ -30,7 +30,7 @@ static void test_init_and_reset(void)
 
 static void test_deep_copy_of_every_kind(void)
 {
-    uint8_t src[4] = {9, 8, 7, 6};
+    uint8_t src[4] = {9, 8, 7, 6}, addr[8] = {'1', '.', '2', '.', '3', '.', '4', ':'};
     gz_action_t a;
     gz_action_list_init(&list, slots, 4, bytes, sizeof bytes);
 
@@ -40,7 +40,9 @@ static void test_deep_copy_of_every_kind(void)
     a.u.broadcast.tx = (gz_bytes_t){src, 3};
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
     a = (gz_action_t){.kind = GZ_ACTION_CONNECT};
-    a.u.connect.address = (gz_bytes_t){src, 2};
+    a.u.connect.address = (gz_bytes_t){addr, 7};           /* no port: not an address (the address rule) */
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT && list.count == 2);
+    a.u.connect.address = (gz_bytes_t){(const uint8_t *)"192.0.2.4:8", 11};
     a.u.connect.key_index = 77;
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
     a = (gz_action_t){.kind = GZ_ACTION_NOTIFY};
@@ -56,8 +58,9 @@ static void test_deep_copy_of_every_kind(void)
           list.slots[0].u.send.records.data[3] == 6);
     CHECK(list.slots[0].u.send.records.data != src);
     CHECK(list.slots[1].u.broadcast.tx.len == 3 && list.slots[1].u.broadcast.tx.data[2] == 7);
-    CHECK(list.slots[2].u.connect.address.len == 2 && list.slots[2].u.connect.address.data[1] == 8 &&
-          list.slots[2].u.connect.address.data != src && list.slots[2].u.connect.key_index == 77);
+    CHECK(list.slots[2].u.connect.address.len == 11 && list.slots[2].u.connect.address.data[10] == '8' &&
+          list.slots[2].u.connect.key_index == 77);
+    CHECK(list.slots[2].u.connect.address.data >= bytes && list.slots[2].u.connect.address.data < bytes + sizeof bytes);
     CHECK(list.slots[3].u.notify.code == 5 && list.slots[3].u.notify.bytes.len == 1 &&
           list.slots[3].u.notify.bytes.data[0] == 9);
 }
@@ -222,9 +225,10 @@ static void test_which_actions_are_outward(void)
 /* Contract v2: what gz_action_list_add refuses, each leaving the list as it was. */
 static void test_contract_v2_refusals(void)
 {
-    uint8_t b[70] = {1};
+    uint8_t b[70] = {1}, longest[66];
     gz_action_t a;
     gz_action_list_init(&list, slots, 4, bytes, sizeof bytes);
+    memset(longest, '1', sizeof longest);                           /* a host of digits, ":7" at the end */
     a = (gz_action_t){.kind = GZ_ACTION_WATCH_SCRIPT};
     CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);       /* retired */
     a = send_action(1, b, 1);
@@ -237,7 +241,11 @@ static void test_contract_v2_refusals(void)
     CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
     a = (gz_action_t){.kind = GZ_ACTION_CONNECT};
     CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);       /* no address */
-    a.u.connect.address = (gz_bytes_t){b, 65};
+    longest[63] = ':';
+    longest[64] = '7';
+    a.u.connect.address = (gz_bytes_t){longest, 65};                /* over GZ_CONNECT_MAX_ADDRESS */
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
+    a.u.connect.address = (gz_bytes_t){b, 64};                      /* 64 bytes that are no address */
     CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
     a = (gz_action_t){.kind = GZ_ACTION_DISCONNECT};
     a.u.disconnect.why = 4;
@@ -252,7 +260,9 @@ static void test_contract_v2_refusals(void)
     a.u.disconnect.why = GZ_DISCONNECT_HOST_FAULT;
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
     a = (gz_action_t){.kind = GZ_ACTION_CONNECT};
-    a.u.connect.address = (gz_bytes_t){b, 64};
+    longest[62] = ':';
+    longest[63] = '7';
+    a.u.connect.address = (gz_bytes_t){longest, 64};                /* the longest address there is */
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
     CHECK(list.count == 3 && list.used == 64);
 }

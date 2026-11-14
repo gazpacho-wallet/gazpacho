@@ -10,9 +10,10 @@ kind, scope and records from engine to engine.
   2. A raw factory message of an unknown even kind: the host closes the
      connection. An unknown odd kind: ignored, the connection kept.
   3. A host test reply padded to 60,000 bytes reaches the member whole and the
-     member's acknowledgement comes back. (Contract v2 asks for 200,000 bytes
-     as parts; kind 32767 is never split by the transport, so a reply over
-     65,495 bytes cannot travel as test traffic: reported, not improvised.)
+     member's acknowledgement comes back. And a message of 200,010 bytes, as
+     parts: kind 32767 is never split, so it is a lobby kind (28) sent by the
+     host's test engine (send, with a pad); the member puts it together and
+     its node takes it as the lobby kind it is (no slot: counted).
   4. A member test message of 70,000 bytes: the member's incarnation ends
      (message-too-big, fatal) and it restarts from storage.
 """
@@ -43,7 +44,8 @@ def main():
     procs = []
     try:
         h = Proc("host", [exe, "--data-dir", os.path.join(work, "host"), "--role", "host", "--listen",
-                          "127.0.0.1:%d" % port, "--name", "host", "--test-big-reply", "60000"] + base, logs)
+                          "127.0.0.1:%d" % port, "--name", "host", "--test-big-reply", "60000", "--test-commands"]
+                 + base, logs, stdin=True)
         procs.append(h)
         hkey = h.wait_for(r"host key=([0-9a-f]{66})").group(1)
         h.wait_for(r"listening address")
@@ -66,6 +68,19 @@ def main():
               "2: an unknown even kind: the host closes the connection")
         check(m.wait_for(r" connected peer=%s" % peer_id(hkey), start=m.index_of(r"disconnected", start=mark) or mark,
                          timeout=10) is not None, "2: the member connects again")
+
+        # 3: 200,010 bytes, as parts ----------------------------------------------
+        mark, hmark = m.mark(), h.mark()
+        mkey = m.wait_for(r"member key=([0-9a-f]{66})").group(1)
+        status = tlv((2, b"\0"), (4, b"\0"), (6, b"\0" * 4), (8, b"\0\0"), (10, b"\0\0"))
+        h.send(cmd(0x7e06, (12, bytes.fromhex(mkey)), (14, struct.pack(">H", 28)), (16, bytes([0x66]) * 32),
+                   (18, status), (20, struct.pack(">I", 200000))))
+        check(h.wait_for(r"command-result id=\S+ status=200", start=hmark, timeout=10) is not None and
+              h.count(r"send-refused", start=hmark) == 0,
+              "3: the host sends 200,010 bytes of kind 28 (over 65,495: only as parts)")
+        check(m.wait_for(r"node-log drop why=no-slot kind=28", start=mark, timeout=15) is not None,
+              "3: the member puts the parts together; its node takes the lobby kind (no slot: counted)")
+        check(m.count(r"disconnected", start=mark) == 0, "3: the connection is kept")
 
         # 4: a member message too big ---------------------------------------------
         mark = m.mark()
