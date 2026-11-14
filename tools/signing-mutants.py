@@ -69,7 +69,7 @@ RULES = {
     "C7_AFTER_SAVE": ("if (em->st == GZ_OK && !add_exposure(", "if (!add_exposure("),
     "EXPOSURE_ROOM": ("if (!exposure_room(e, r)) return GZ_SIGN_WHY_CAPACITY;", ""),
     "EXPOSURE_NOT_DROPPED": ("{ e->exposures_lost = 1; return 0; }", "return 0;"),
-    "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }", "{ }"),
+    "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }", "{ (void)state; }"),
     "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
     "RESOLVE_EVICTED": ("if (!(r = find(e, round_id)) && !(x = evicted(e, round_id))) return GZ_ERR_ARGUMENT;", "if (!(r = find(e, round_id))) return GZ_ERR_ARGUMENT;"),
     # review B: B6 (C6: children before parents), B5 (a start leaves a superseded round Unfinished)
