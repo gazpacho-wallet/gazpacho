@@ -9,6 +9,20 @@
 
 #define TIMER_ID 0x5347u
 
+/* What is saved always fits where it is written and is always read back
+ * (review B, B1, B2, B12): each record's largest size against the work area
+ * it is written in. The reader's tables (T_* below) take their bounds from
+ * the same constants. */
+_Static_assert(GZ_SIGN_WORK_RECORDS >= GZ_SIGN_REC_PROPOSAL_MAX && GZ_SIGN_WORK_RECORDS >= GZ_SIGN_REC_EXPOSURE_MAX &&
+               GZ_SIGN_WORK_RECORDS >= GZ_SIGN_REC_SIGNED_MAX && GZ_SIGN_WORK_RECORDS >= GZ_SIGN_REC_COMPLETED_MAX,
+               "a large record does not fit work_records");
+_Static_assert(GZ_SIGN_WORK_REC2 >= GZ_SIGN_REC_STARTED_MAX && GZ_SIGN_WORK_REC2 >= GZ_SIGN_REC_ACK_MAX &&
+               GZ_SIGN_WORK_REC2 >= GZ_SIGN_REC_ENDED_MAX && GZ_SIGN_WORK_REC2 >= GZ_SIGN_REC_FUNDING_MAX &&
+               GZ_SIGN_WORK_REC2 >= GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_SMALL_MSG),
+               "a small record does not fit work_rec2");
+_Static_assert(GZ_SIGN_MAX_ITEMS <= GZ_RMSG_MAX_ENTRIES && GZ_SIGN_MAX_PARTICIPANTS <= 32 && GZ_SIGN_MAX_SIGNERS <= 32,
+               "the lists of a record or the bit masks are too small");
+
 /* ---- small helpers ---- */
 
 typedef struct { uint8_t *p; size_t n, cap; } wr_t;
@@ -236,11 +250,13 @@ static uint8_t check_def(gz_sign_t *e, gz_sign_def_t *d, gz_sign_round_t *r)
         const gz_tree_participant_t *p = &d->participants[i];
         if (!secp256k1_ec_pubkey_parse(ctx, &pks[i], p->factory_key, 33) ||
             !secp256k1_ec_pubkey_parse(ctx, &cpk, p->contribution_key, 33)) return GZ_SIGN_WHY_INVALID_ROUND;
-        if (same(p->factory_key, p->contribution_key, 33)) return GZ_SIGN_WHY_INVALID_ROUND;
+        /* Keys are told apart by their x coordinate: a contribution key signs and is
+         * checked x-only (BIP 340), so two that differ in the parity byte are one key (review B, B13). */
+        if (same(p->factory_key + 1, p->contribution_key + 1, 32)) return GZ_SIGN_WHY_INVALID_ROUND;
         for (int j = 0; j < i; j++)                                                   /* RULE:DUPLICATE_KEYS */
-            if (same(p->factory_key, d->participants[j].factory_key, 33) || same(p->factory_key, d->participants[j].contribution_key, 33) ||
-                same(p->contribution_key, d->participants[j].factory_key, 33) ||
-                same(p->contribution_key, d->participants[j].contribution_key, 33)) return GZ_SIGN_WHY_INVALID_ROUND;
+            if (same(p->factory_key + 1, d->participants[j].factory_key + 1, 32) || same(p->factory_key + 1, d->participants[j].contribution_key + 1, 32) ||
+                same(p->contribution_key + 1, d->participants[j].factory_key + 1, 32) ||
+                same(p->contribution_key + 1, d->participants[j].contribution_key + 1, 32)) return GZ_SIGN_WHY_INVALID_ROUND;
         if (e->cfg.host && i > 0)
             for (int j = 1; j < i; j++)
                 if (d->peer[i] == d->peer[j]) return GZ_SIGN_WHY_INVALID_ROUND;
@@ -286,6 +302,10 @@ static uint8_t check_def(gz_sign_t *e, gz_sign_def_t *d, gz_sign_round_t *r)
                 found = 1;
                 if (!gz_sign_tx_output(&ptx, be32(spent + 32), &amount, &script, &slen) ||
                     amount != it->spent_amount || slen != 34 || !same(script, it->spent_script, 34)) return GZ_SIGN_WHY_INVALID_ROUND;
+                /* C6, children before parents: an item is signed in the tier of the item
+                 * whose output it spends or in an earlier one, so that nobody helps make an
+                 * output before holding the signed transactions that spend it (review B, B6). */
+                if (it->tier > d->items[j].tier) return GZ_SIGN_WHY_INVALID_ROUND;   /* RULE:C6_CHILDREN_FIRST */
             }
             if (!found) return GZ_SIGN_WHY_INVALID_ROUND;
         }
@@ -387,12 +407,19 @@ static void filter_positions(const gz_sign_t *e, const uint8_t id[32], uint32_t 
         pos[k] = ((uint32_t)h[3 * k] | (uint32_t)h[3 * k + 1] << 8 | (uint32_t)h[3 * k + 2] << 16) & ((1u << GZ_SIGN_KNOWN_FILTER_BITS) - 1u);
 }
 
-static int is_known(const gz_sign_t *e, const uint8_t id[32])
+/* Among the newest refused identifiers, which are held exactly: never a false "yes". */
+static int known_exactly(const gz_sign_t *e, const uint8_t id[32])
 {
-    uint32_t pos[GZ_SIGN_KNOWN_FILTER_K];
     size_t n = e->n_known < GZ_SIGN_MAX_KNOWN ? e->n_known : GZ_SIGN_MAX_KNOWN;
     for (size_t i = 0; i < n; i++)
         if (same(e->known[i], id, 32)) return 1;
+    return 0;
+}
+
+static int is_known(const gz_sign_t *e, const uint8_t id[32])
+{
+    uint32_t pos[GZ_SIGN_KNOWN_FILTER_K];
+    if (known_exactly(e, id)) return 1;
     filter_positions(e, id, pos);
     for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++)                         /* RULE:KNOWN_FILTER */
         if (!(e->known_filter[pos[k] >> 3] >> (pos[k] & 7) & 1u)) return 0;
@@ -429,8 +456,35 @@ static void wipe_secrets(gz_sign_round_t *r)
  * C10 and gz_sign_resolve still reach it (review A, F3). */
 static void keep_exposed_state(gz_sign_t *e, const gz_sign_round_t *r)
 {
+    /* A round with partial signatures out that leaves memory while still running is Unfinished: nothing
+     * here will finish it, and Unfinished is what gz_sign_resolve and the unfinished deadline take (review B, B5). */
+    uint8_t state = r->state == GZ_SIGN_ROUND_ACTIVE ? GZ_SIGN_ROUND_UNFINISHED : r->state;
     for (size_t i = 0; i < e->n_exposures; i++)
-        if (same(e->exposed[i].round_id, r->id, 32)) { e->exposed[i].state = r->state; e->exposed[i].why = r->why; }   /* RULE:KEEP_EVICTED */
+        if (same(e->exposed[i].round_id, r->id, 32)) { e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }   /* RULE:KEEP_EVICTED */
+}
+
+/* The exposure entry of a round, whether it is held in a slot or has left memory, or NULL. */
+static gz_sign_exposed_t *exposed_of(gz_sign_t *e, const uint8_t id[32])
+{
+    for (size_t i = 0; i < e->n_exposures; i++)
+        if (same(e->exposed[i].round_id, id, 32)) return &e->exposed[i];
+    return NULL;
+}
+
+/* A creation that is Dead (C4(d): an input of its funding transaction was spent elsewhere and buried, so
+ * its funding output can never exist) is no longer consulted: its record leaves the C7 set, which makes
+ * room for the next (review B, B8). The journal keeps the record. */
+static void drop_exposure(gz_sign_t *e, const uint8_t id[32])
+{
+    gz_sign_exposed_t *x = exposed_of(e, id);
+    size_t i;
+    if (!x) return;
+    i = (size_t)(x - e->exposed);
+    e->n_exposures--;
+    e->exposures[i] = e->exposures[e->n_exposures];
+    e->exposed[i] = e->exposed[e->n_exposures];
+    memset(&e->exposures[e->n_exposures], 0, sizeof e->exposures[0]);
+    memset(&e->exposed[e->n_exposures], 0, sizeof e->exposed[0]);
 }
 
 /* The entry of a round that has left memory, or NULL. */
@@ -443,13 +497,17 @@ static gz_sign_exposed_t *evicted(gz_sign_t *e, const uint8_t id[32])
 
 static gz_sign_round_t *take_slot(gz_sign_t *e, int replaying)
 {
-    gz_sign_round_t *best = NULL;
+    gz_sign_round_t *best = NULL, *running = NULL;
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
         gz_sign_round_t *r = &e->rounds[i];
         if (r->state == GZ_SIGN_ROUND_FREE) return r;
-        if (!replaying && r->state == GZ_SIGN_ROUND_ACTIVE) continue;
+        if (r->state == GZ_SIGN_ROUND_ACTIVE) { if (!running || r->seq < running->seq) running = r; continue; }
         if (!best || settled(r) > settled(best) || (settled(r) == settled(best) && r->seq < best->seq)) best = r;   /* RULE:EVICT_SETTLED_FIRST */
     }
+    /* A start pushes out the rounds the running engine pushed out, in the same order (review B, B5). Only
+     * when every slot holds a running round, which no journal of this engine does, the oldest of them
+     * goes, so that a start never fails for room. */
+    if (!best && replaying) best = running;
     if (!best) return NULL;
     add_known(e, best->id);
     if (best->ever_partial) keep_exposed_state(e, best);
@@ -500,6 +558,7 @@ static int add_exposure(gz_sign_t *e, const uint8_t txid[32], uint32_t vout, con
     }
     memcpy(e->exposed[i].round_id, round_id, 32);
     e->exposed[i].state = GZ_SIGN_ROUND_FREE;                   /* held in a slot */
+    e->exposed[i].why = 0; e->exposed[i].ticks = 0;
     return 1;
 }
 
@@ -961,31 +1020,38 @@ static void member_propose(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, 
 /* The C7 exposure record of tier t, with the round_partial_sigs it
  * releases: one batch, saved before the first partial signature for this
  * funding outpoint leaves (journal.md 9; safety-rule.md C7). */
+/* The exposure record of tier t in `w` over the engine's work area. 0 if an item of the round does not parse. */
+static int exposure_record(gz_sign_t *e, const gz_sign_round_t *r, uint8_t t, const uint8_t *funding_tx, size_t funding_tx_len, gz_rmsg_wr_t *w)
+{
+    uint8_t *q;
+    uint16_t n = count_items(r, r->me, t);
+    gz_sign_tx_t tx;
+    gz_rmsg_wr_init(w, e->work_records, sizeof e->work_records);
+    gz_rmsg_put(w, 2, r->id, 32);
+    f8(w, 4, t);
+    f_outpoint(w, 6, r->def.funding_txid, r->def.funding_vout);
+    gz_rmsg_put(w, 8, funding_tx, funding_tx_len);
+    gz_rmsg_put(w, 10, r->def.tree_digest, 32);
+    if ((q = gz_rmsg_reserve(w, 12, 72u * n)) != NULL)
+        for (int i = 0; i < r->def.n_items; i++) {
+            if (r->def.items[i].tier != t || pos_of(&r->def.items[i], r->me) < 0) continue;
+            if (!gz_sign_tx_parse(r->def.items[i].tx, r->def.items[i].tx_len, &tx)) return 0;
+            wr32(q, (uint32_t)i); spent_of(&tx, q + 4); memcpy(q + 40, r->digest[i], 32); q += 72;
+        }
+    gz_rmsg_put(w, 14, r->partials_msg[t], r->partials_len[t]);
+    return 1;
+}
+
 static void save_exposure(gz_sign_t *e, gz_sign_round_t *r, uint8_t t, emit_t *em)
 {
     gz_rmsg_wr_t w;
     gz_record_t rec;
-    uint8_t *q;
-    uint16_t n = count_items(r, r->me, t);
-    gz_sign_tx_t tx;
     gz_rmsg_propose_t *pr = &e->prop;
     gz_sign_msg_t *pm = &e->work_msg;       /* large and inlined: in the engine, not on the stack (isolation) */
-    if (!gz_sign_decode(r->proposal, r->proposal_len, pm) || gz_rmsg_propose_decode(pm->records, pm->records_len, pr) != GZ_RMSG_OK) {
+    if (!gz_sign_decode(r->proposal, r->proposal_len, pm) || gz_rmsg_propose_decode(pm->records, pm->records_len, pr) != GZ_RMSG_OK ||
+        !exposure_record(e, r, t, pr->p.funding_tx, pr->p.funding_tx_len, &w)) {
         em->st = GZ_ERR_ARGUMENT; return;
     }
-    gz_rmsg_wr_init(&w, e->work_records, sizeof e->work_records);
-    gz_rmsg_put(&w, 2, r->id, 32);
-    f8(&w, 4, t);
-    f_outpoint(&w, 6, r->def.funding_txid, r->def.funding_vout);
-    gz_rmsg_put(&w, 8, pr->p.funding_tx, pr->p.funding_tx_len);
-    gz_rmsg_put(&w, 10, r->def.tree_digest, 32);
-    if ((q = gz_rmsg_reserve(&w, 12, 72u * n)) != NULL)
-        for (int i = 0; i < r->def.n_items; i++) {
-            if (r->def.items[i].tier != t || pos_of(&r->def.items[i], r->me) < 0) continue;
-            if (!gz_sign_tx_parse(r->def.items[i].tx, r->def.items[i].tx_len, &tx)) { em->st = GZ_ERR_ARGUMENT; return; }
-            wr32(q, (uint32_t)i); spent_of(&tx, q + 4); memcpy(q + 40, r->digest[i], 32); q += 72;
-        }
-    gz_rmsg_put(&w, 14, r->partials_msg[t], r->partials_len[t]);
     if (!rec_of(em, &rec, GZ_SIGN_REC_EXPOSURE, &w)) return;
     emit_batch(em, &rec, 1);
     /* The in-memory C7 set follows the saved record, never runs ahead of it (review A, F1). */
@@ -1135,6 +1201,18 @@ static void member_result(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_t 
     if (t + 1 < r->def.n_tiers) member_begin_tier(e, r, (uint8_t)(t + 1), em);
 }
 
+/* round_completed in `w` over `buf`: the round_complete, and a member's ack and the tip it acked at. */
+static void completed_record(const gz_sign_round_t *r, int member, gz_rmsg_wr_t *w, uint8_t *buf, size_t cap)
+{
+    gz_rmsg_wr_init(w, buf, cap);
+    gz_rmsg_put(w, 2, r->id, 32);
+    gz_rmsg_put(w, 4, r->complete_msg, r->complete_len);
+    if (member) {
+        gz_rmsg_put(w, 6, r->tail_msg, r->tail_len);
+        f32(w, 8, r->ack_tip);
+    }
+}
+
 static void member_complete(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_t *m, const uint8_t *bytes, size_t len, emit_t *em)
 {
     uint8_t held[32];
@@ -1165,11 +1243,7 @@ static void member_complete(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_
     r->state = GZ_SIGN_ROUND_COMPLETE;
     r->ticks = 0;
     /* round_completed and funding_status in one batch, before the ack leaves. */
-    gz_rmsg_wr_init(&wc, e->work_records, sizeof e->work_records);
-    gz_rmsg_put(&wc, 2, r->id, 32);
-    gz_rmsg_put(&wc, 4, r->complete_msg, r->complete_len);
-    gz_rmsg_put(&wc, 6, r->tail_msg, r->tail_len);
-    f32(&wc, 8, tip);
+    completed_record(r, 1, &wc, e->work_records, sizeof e->work_records);
     gz_rmsg_wr_init(&wf, e->work_rec2, sizeof e->work_rec2);
     gz_rmsg_put(&wf, 2, r->def.funding_txid, 32);
     f8(&wf, 4, 0);
@@ -1268,12 +1342,21 @@ static void host_retry(gz_sign_t *e, const gz_sign_round_t *r, int released, emi
 static gz_status_t host_begin(gz_sign_t *e, const gz_sign_begin_t *b, emit_t *em);
 static void report(gz_sign_t *e, gz_sign_outcome_kind_t kind, const gz_sign_round_t *r, emit_t *em);
 
-static void host_fail(gz_sign_t *e, gz_sign_round_t *r, uint32_t blamed, uint8_t why, emit_t *em)
+/* 1 if a partial signature may have left a member in round r, which ends or ended for `why`: the host
+ * sent a tier's nonce sets, or restarted with the round open. After it, H11 puts the next attempt on a
+ * new funding outpoint, and a member holds the round unresolved (C10). */
+static int may_have_released(const gz_sign_round_t *r, uint8_t why)
 {
     int released = 0;
-    size_t n;
     for (int t = 0; t < r->def.n_tiers; t++) released |= r->tier_state[t] >= GZ_SIGN_TIER_SIGNED;
     if (why == GZ_SIGN_WHY_HOST_RESTART) released = 1;      /* what left before the restart is not known */
+    return released;
+}
+
+static void host_fail(gz_sign_t *e, gz_sign_round_t *r, uint32_t blamed, uint8_t why, emit_t *em)
+{
+    int released = may_have_released(r, why);
+    size_t n;
     wipe_secrets(r);
     r->state = GZ_SIGN_ROUND_FAILED; r->blamed = blamed; r->why = why;
     /* A fault the host saw itself, against a refusal or a silence it cannot show anyone. */
@@ -1334,9 +1417,7 @@ static void host_combine(gz_sign_t *e, gz_sign_round_t *r, emit_t *em)
         msg_begin(&c, r->complete_msg, sizeof r->complete_msg, GZ_SIGN_MSG_COMPLETE, r->def.outer_digest);
         gz_rmsg_put(&c.w, 2, r->id, 32);
         r->complete_len = (uint32_t)msg_end_signed(e, &c, 0);
-        gz_rmsg_wr_init(&wc, e->work_rec2, sizeof e->work_rec2);
-        gz_rmsg_put(&wc, 2, r->id, 32);
-        gz_rmsg_put(&wc, 4, r->complete_msg, r->complete_len);
+        completed_record(r, 0, &wc, e->work_rec2, sizeof e->work_rec2);
         if (rec_of(em, &rec, GZ_SIGN_REC_ROUND_COMPLETED, &wc)) emit_batch(em, &rec, 1);
         r->state = GZ_SIGN_ROUND_COMPLETE;
         r->ticks = 0;
@@ -1391,6 +1472,9 @@ static void host_nonces(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, const gz_si
         r->have_nonce[i] |= bit((unsigned)s);
     }
     if (members_missing(r, 0)) return;
+    /* Every nonce is in, and a member gave up waiting for them (reason 4): it will not sign, so the
+     * attempt ends here, with that member blamed (review B, B4). */
+    if (r->gave_up) { host_fail(e, r, r->gave_up, GZ_SIGN_WHY_MEMBER_ABORT, em); return; }   /* RULE:GAVE_UP_BLAMED */
     for (int i = 0; i < r->def.n_items; i++)
         if (r->def.items[i].tier == r->tier && !make_session(e, r, i)) { host_fail(e, r, 0, GZ_SIGN_WHY_BAD_NONCE, em); return; }
     r->tier_state[r->tier] = GZ_SIGN_TIER_SIGNED;
@@ -1430,33 +1514,58 @@ static void host_partials(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, const gz_
     if (!members_missing(r, 1)) host_combine(e, r, em);
 }
 
-/* Whom a member's signed abort blames (review A, F4; spec section 10: a fault
- * costs a seat, not the lobby). Reason 3 (it restarted) is honest once in a
- * lobby: the second is blamed. Reason 6 (another round on its outputs) is
- * honest only while this host holds another round on the same funding
- * outpoint, in any state: a failed attempt there may have left the member's
- * partial signatures without the host seeing them, so the member's round is
- * unresolved (C10). Otherwise the member is blamed. Any other reason is the
- * member's own refusal: blamed, as before. */
+/* Whom a member's signed abort blames (review A, F4; review B, B3; spec
+ * section 10: a fault costs a seat, not the lobby).
+ *   Reason 3 (it restarted) is honest once for a member's key, which is its
+ *   seat in one lobby: a second one is blamed, whichever attempt it comes in
+ *   and whoever began that attempt (the engine's retry or the program).
+ *   Reason 6 (another round on its outputs) is honest only if this host's own
+ *   records show another round on the same funding outpoint from which a
+ *   partial signature may have left: only such a round can be unresolved at
+ *   an honest member (C10; a round that ended before any partial signature
+ *   is Aborted there and blocks nothing). Otherwise the member is blamed.
+ *   Any other reason is the member's own refusal: blamed. (A deadline, reason
+ *   4, in the nonce step while others still owe nonces never comes here: see
+ *   host_message.) */
 static uint32_t abort_blame(gz_sign_t *e, const gz_sign_round_t *r, uint8_t j, uint16_t reason)
 {
     const uint8_t *key = r->def.participants[j].contribution_key;
     if (reason == 3) {
         for (size_t k = 0; k < e->n_restarted; k++)
             if (same(e->restarted[k], key, 33)) return bit(j);                 /* RULE:BLAME_SECOND_RESTART */
-        if (e->n_restarted == GZ_SIGN_MAX_PARTICIPANTS) return bit(j);
+        if (e->n_restarted == GZ_SIGN_MAX_RESTARTED) return bit(j);
         memcpy(e->restarted[e->n_restarted++], key, 33);
         return 0;
     }
     if (reason == 6) {
         for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
             const gz_sign_round_t *o = &e->rounds[i];
-            if (o != r && o->state != GZ_SIGN_ROUND_FREE &&
+            if (o != r && o->state != GZ_SIGN_ROUND_FREE && may_have_released(o, o->why) &&   /* RULE:EXCUSE_ONLY_RELEASED */
                 same(o->def.funding_txid, r->def.funding_txid, 32) && o->def.funding_vout == r->def.funding_vout) return 0;
         }
         return bit(j);                                                             /* RULE:BLAME_FALSE_SUPERSEDED */
     }
     return bit(j);
+}
+
+/* At most one answer to a member's status request, or to an ack that holds
+ * something else, per round and member in status_ticks, and never more than
+ * one in a tick (messages.md 7.10; review B, B9). */
+static int answer_due(gz_sign_t *e, gz_sign_round_t *r, uint8_t j)
+{
+    uint64_t every = e->cfg.status_ticks ? e->cfg.status_ticks : 1;
+    if (r->status_tick[j] && e->tick + 1 < r->status_tick[j] + every) { e->counters[GZ_SIGN_COUNT_DUPLICATES]++; return 0; }   /* RULE:ANSWER_RATE */
+    r->status_tick[j] = e->tick + 1;
+    return 1;
+}
+
+/* ack_received in `w` over `buf`: the member's key and its round_ack, whole. */
+static void ack_record(const gz_sign_round_t *r, uint8_t j, const uint8_t *ack, size_t len, gz_rmsg_wr_t *w, uint8_t *buf, size_t cap)
+{
+    gz_rmsg_wr_init(w, buf, cap);
+    gz_rmsg_put(w, 2, r->id, 32);
+    gz_rmsg_put(w, 4, r->def.participants[j].contribution_key, 33);
+    gz_rmsg_put(w, 6, ack, len);
 }
 
 static void host_message(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, emit_t *em)
@@ -1473,9 +1582,7 @@ static void host_message(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, em
         if (r->def.peer[q] == peer) j = q;
     if (j == 0 || !same(m->scope, r->def.outer_digest, 32)) return;
     if (m->kind == GZ_SIGN_MSG_STATUS) {
-        /* At most one answer per round and member key in status_ticks (7.10). */
-        if (r->status_tick[j] && e->tick + 1 < r->status_tick[j] + e->cfg.status_ticks) { e->counters[GZ_SIGN_COUNT_DUPLICATES]++; return; }
-        r->status_tick[j] = e->tick + 1;
+        if (!answer_due(e, r, j)) return;
         if (r->state == GZ_SIGN_ROUND_FAILED) {
             n = host_abort_for(e, r, j, e->scratch, sizeof e->scratch);
             emit_send(em, peer, e->scratch, n);
@@ -1484,14 +1591,18 @@ static void host_message(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, em
     }
     if (m->kind == GZ_SIGN_MSG_ACK) {
         if ((r->state != GZ_SIGN_ROUND_COMPLETE && r->state != GZ_SIGN_ROUND_DONE) || (r->acked >> j & 1u)) return;
+        /* The ack is saved whole, and what is saved must be what a start reads back: an ack longer than its
+         * record's field (a member may pad one with unknown odd records, under its own signature) is counted
+         * and dropped before anything changes, never saved and never an error (review B, B1). */
+        if (GZ_RMSG_HEADER + m->records_len > GZ_SIGN_MAX_SMALL_MSG) { e->counters[GZ_SIGN_COUNT_REJECTED]++; return; }   /* RULE:ACK_BOUND */
         if (!signed_by(e, m, r->def.participants[j].contribution_key)) return;
         held_digest(r, j, held);
-        if (!same(held, m->held, 32)) { host_send_results(e, r, j, em); return; }   /* it holds something else: resend (7.8) */
+        if (!same(held, m->held, 32)) {                 /* it holds something else: resend (7.8), at the rate of status answers */
+            if (answer_due(e, r, j)) host_send_results(e, r, j, em);
+            return;
+        }
         r->acked |= bit(j);
-        gz_rmsg_wr_init(&wa, e->work_rec2, sizeof e->work_rec2);
-        gz_rmsg_put(&wa, 2, r->id, 32);
-        gz_rmsg_put(&wa, 4, r->def.participants[j].contribution_key, 33);
-        gz_rmsg_put(&wa, 6, m->records - GZ_RMSG_HEADER, GZ_RMSG_HEADER + m->records_len);
+        ack_record(r, j, m->records - GZ_RMSG_HEADER, GZ_RMSG_HEADER + m->records_len, &wa, e->work_rec2, sizeof e->work_rec2);
         if (rec_of(em, &ra, GZ_SIGN_REC_ACK_RECEIVED, &wa)) emit_batch(em, &ra, 1);
         if (r->acked == members_mask(r)) {
             r->state = GZ_SIGN_ROUND_DONE;
@@ -1502,8 +1613,17 @@ static void host_message(gz_sign_t *e, uint64_t peer, const gz_sign_msg_t *m, em
     if (r->state != GZ_SIGN_ROUND_ACTIVE) return;
     if (m->kind == GZ_SIGN_MSG_NONCES) host_nonces(e, r, j, m, em);
     else if (m->kind == GZ_SIGN_MSG_PARTIALS) host_partials(e, r, j, m, em);
-    else if (m->kind == GZ_SIGN_MSG_ABORT && signed_by(e, m, r->def.participants[j].contribution_key))
+    else if (m->kind == GZ_SIGN_MSG_ABORT && signed_by(e, m, r->def.participants[j].contribution_key)) {
+        /* A member whose own step deadline passed (reason 4) while other members still owe their nonces
+         * is not the one at fault, and whose clock runs out first must not decide who is removed. The
+         * attempt goes on to the host's own deadline, which blames whoever is silent then; if the
+         * missing nonces do arrive, this member is the one that will not sign (host_nonces) (review B, B4). */
+        if (m->reason == 4 && r->tier_state[r->tier] == GZ_SIGN_TIER_NONCES && (members_missing(r, 0) & ~bit(j))) {   /* RULE:DEADLINE_ABORT_WAITS */
+            r->gave_up |= bit(j);
+            return;
+        }
         host_fail(e, r, abort_blame(e, r, j, m->reason), GZ_SIGN_WHY_MEMBER_ABORT, em);
+    }
 }
 
 /* The host's proposal: encoded once with a zero identifier and read back as
@@ -1632,11 +1752,13 @@ static void host_tick(gz_sign_t *e, gz_sign_round_t *r, emit_t *em)
 #define FL(type, size, lo, hi) {type, 1, GZ_RMSG_LIST, size, lo, hi}
 #define OX(type, size) {type, 0, GZ_RMSG_FIX, size, 0, 0}
 #define OV(type, lo, hi) {type, 0, GZ_RMSG_VAR, 0, lo, hi}
-static const gz_rmsg_field_t T_STARTED[] = {FX(2, 32), FX(4, 36), FX(6, 1), FX(8, 2), FX(10, 1), FL(12, 4, 1, 256), FX(14, 33)};
+/* The bounds are those of the writers (GZ_SIGN_REC_*_MAX in signing.h is the sum of each table's largest
+ * fields): a record the engine saved is never refused here for its size (review B, B1). */
+static const gz_rmsg_field_t T_STARTED[] = {FX(2, 32), FX(4, 36), FX(6, 1), FX(8, 2), FX(10, 1), FL(12, 4, 1, GZ_SIGN_MAX_ITEMS), FX(14, 33)};
 static const gz_rmsg_field_t T_PROPOSAL[] = {FX(2, 32), FV(4, GZ_RMSG_HEADER, GZ_SIGN_MAX_PROPOSAL)};
-static const gz_rmsg_field_t T_EXPOSURE[] = {FX(2, 32), FX(4, 1), FX(6, 36), FV(8, 60, 100000), FX(10, 32), FL(12, 72, 1, 256),
-                                             FV(14, GZ_RMSG_HEADER, GZ_SIGN_MAX_LIST68_MSG)};
-static const gz_rmsg_field_t T_SIGNED[] = {FX(2, 32), FX(4, 1), FL(6, 68, 1, 256), OV(8, GZ_RMSG_HEADER, GZ_SIGN_MAX_LIST68_MSG)};
+static const gz_rmsg_field_t T_EXPOSURE[] = {FX(2, 32), FX(4, 1), FX(6, 36), FV(8, 60, GZ_SIGN_MAX_FUNDING_TX), FX(10, 32),
+                                             FL(12, 72, 1, GZ_SIGN_MAX_ITEMS), FV(14, GZ_RMSG_HEADER, GZ_SIGN_MAX_LIST68_MSG)};
+static const gz_rmsg_field_t T_SIGNED[] = {FX(2, 32), FX(4, 1), FL(6, 68, 1, GZ_SIGN_MAX_ITEMS), OV(8, GZ_RMSG_HEADER, GZ_SIGN_MAX_LIST68_MSG)};
 static const gz_rmsg_field_t T_COMPLETED[] = {FX(2, 32), FV(4, GZ_RMSG_HEADER, GZ_SIGN_MAX_SMALL_MSG),
                                               OV(6, GZ_RMSG_HEADER, GZ_SIGN_MAX_SMALL_MSG), OX(8, 4)};
 static const gz_rmsg_field_t T_ACK[] = {FX(2, 32), FX(4, 33), FV(6, GZ_RMSG_HEADER, GZ_SIGN_MAX_SMALL_MSG)};
@@ -1719,8 +1841,12 @@ static int replay(gz_sign_t *e, const gz_record_t *rec, const uint8_t **pending_
                 *pending_proposal = NULL;
                 return refuse_id(e, id);                                             /* RULE:OLD_EPOCH_REFUSED */
             }
-            if (is_known(e, id)) { *pending_proposal = NULL; return 1; }
-            if (!*pending_proposal) return 0;                         /* the first round_started comes with its proposal */
+            /* A round's first round_started comes with its proposal: without one, this is a later tier of
+             * a round that has left memory or is refused. With one, the round is taken up unless it is
+             * among the identifiers held exactly: a hit of the filter alone, which may be false, never
+             * drops a saved round (review B, B10). */
+            if (!*pending_proposal) return is_known(e, id);
+            if (known_exactly(e, id)) { *pending_proposal = NULL; return 1; }   /* RULE:REPLAY_EXACT */
             if (!gz_sign_decode(*pending_proposal, *pending_len, &m) || !same(m.round_id, id, 32)) return 0;
             why = load_round(e, &e->pending, &m, *pending_proposal, *pending_len, 0, 1);
             if (why != GZ_SIGN_WHY_NONE || !same(e->pending.id, id, 32)) {
@@ -1734,6 +1860,12 @@ static int replay(gz_sign_t *e, const gz_record_t *rec, const uint8_t **pending_
             if (!(r = adopt(e, 1))) return 0;
             r->proposal_saved = 1;
             if (e->cfg.host) e->attempts++;
+            /* As when it ran (member_propose): a new round left a round with partial signatures out
+             * Unfinished, which no record says (review B, B5). */
+            for (int i = 0; !e->cfg.host && i < GZ_SIGN_MAX_ROUNDS; i++) {
+                gz_sign_round_t *o = &e->rounds[i];
+                if (o != r && o->state == GZ_SIGN_ROUND_ACTIVE && o->ever_partial) { o->state = GZ_SIGN_ROUND_UNFINISHED; o->why = GZ_SIGN_WHY_SUPERSEDED; }   /* RULE:REPLAY_SUPERSEDES */
+            }
         }
         if (t >= r->def.n_tiers || be32(g[1].v + 32) != r->def.funding_vout || !same(g[1].v, r->def.funding_txid, 32)) return 0;
         /* exactly this party's items of the tier */
@@ -1745,7 +1877,13 @@ static int replay(gz_sign_t *e, const gz_record_t *rec, const uint8_t **pending_
         if (e->cfg.host || gz_rmsg_fields(b, len, T_EXPOSURE, NFIELDS(T_EXPOSURE), g, NULL) != GZ_RMSG_OK) return 0;
         (void)add_exposure(e, g[2].v, be32(g[2].v + 32), g[4].v, g[0].v);   /* C7: whatever epoch it was made in; none lost silently */
         r = find(e, g[0].v);
-        if (!r) return is_known(e, g[0].v);
+        if (!r) {
+            /* Partial signatures out for a round this start does not hold (an earlier epoch, one the builder
+             * no longer rebuilds): Unfinished, so that gz_sign_resolve and the unfinished deadline reach it. */
+            gz_sign_exposed_t *x = exposed_of(e, g[0].v);
+            if (x && x->state == GZ_SIGN_ROUND_FREE) x->state = GZ_SIGN_ROUND_UNFINISHED;   /* RULE:REPLAY_UNHELD_UNFINISHED */
+            return is_known(e, g[0].v);
+        }
         t = g[1].v[0];
         if (t >= r->def.n_tiers || g[6].len > sizeof r->partials_msg[t] || !same(g[4].v, r->def.tree_digest, 32) ||
             !saved_msg(e, r, g[6].v, g[6].len, GZ_SIGN_MSG_PARTIALS, r->me, &m) || m.tier != t) return 0;
@@ -1816,7 +1954,7 @@ static int replay(gz_sign_t *e, const gz_record_t *rec, const uint8_t **pending_
         if (!r && !e->cfg.host && (x = evicted(e, g[0].v)) != NULL) {     /* resolved after it left memory (F3) */
             outcome = g[1].v[0];
             if (outcome == GZ_SIGN_END_LIVE) x->state = GZ_SIGN_ROUND_LIVE;
-            else if (outcome == GZ_SIGN_END_DEAD) x->state = GZ_SIGN_ROUND_DEAD;
+            else if (outcome == GZ_SIGN_END_DEAD) drop_exposure(e, g[0].v);       /* C4(d): no longer consulted */
             else if (outcome == GZ_SIGN_END_ABANDONED) x->state = GZ_SIGN_ROUND_ABANDONED;
             else return 0;
             return 1;
@@ -1836,7 +1974,7 @@ static int replay(gz_sign_t *e, const gz_record_t *rec, const uint8_t **pending_
             r->state = GZ_SIGN_ROUND_ABORTED;
             return 1;
         case GZ_SIGN_END_ABANDONED: r->state = GZ_SIGN_ROUND_ABANDONED; return 1;
-        case GZ_SIGN_END_DEAD: r->state = GZ_SIGN_ROUND_DEAD; return 1;
+        case GZ_SIGN_END_DEAD: r->state = GZ_SIGN_ROUND_DEAD; drop_exposure(e, r->id); return 1;
         case GZ_SIGN_END_LIVE: r->state = GZ_SIGN_ROUND_LIVE; return 1;
         default: return 0;
         }
@@ -1867,9 +2005,9 @@ gz_status_t gz_sign_start(gz_sign_t *e, const gz_storage_reader_t *storage, gz_a
              * key_epoch, restored, guard), funding_status and other engines'
              * records are theirs to read. */
             if ((batch.records[i].type >> 16) != GZ_SIGN_REC_AREA) continue;
-            if (!replay(e, &batch.records[i], &proposal, &plen)) return GZ_ERR_CORRUPT;
+            if (!replay(e, &batch.records[i], &proposal, &plen)) return fail_engine(e, GZ_ERR_CORRUPT);
         }
-        if (proposal) return GZ_ERR_CORRUPT;                       /* a proposal without its round_started */
+        if (proposal) return fail_engine(e, GZ_ERR_CORRUPT);      /* a proposal without its round_started */
     }
     /* What is left open: no secret nonce survived, so answer per item (S2). */
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
@@ -1888,7 +2026,9 @@ gz_status_t gz_sign_start(gz_sign_t *e, const gz_storage_reader_t *storage, gz_a
     }
     if (unfinished) host_fail(e, unfinished, 0, GZ_SIGN_WHY_HOST_RESTART, &em);   /* then the next attempt (H13) */
     emit_timer(e, &em);
-    if (em.st != GZ_OK) { out->count = count; out->used = used; return em.st; }
+    /* A start that fails leaves no secret behind: it may have begun a member's next tier, with new
+     * secret nonces, before the list ran out (review B, B11). */
+    if (em.st != GZ_OK) { out->count = count; out->used = used; return fail_engine(e, em.st); }   /* RULE:FAILED_START_WIPES */
     e->failed = 0;
     *more = 0;
     return GZ_OK;
@@ -1953,6 +2093,17 @@ gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *ev, gz_action_list_t 
                 save_ended(e, r, GZ_SIGN_END_ABANDONED, gz_sign_reason(r->why, 0), &em);
             } else if (e->cfg.resend_ticks && r->ticks % e->cfg.resend_ticks == 0) member_resend(e, r, &em);
         }
+        /* The unfinished deadline of the rounds that have left memory (review B, B5): a few in a tick, so
+         * that their records always fit one step's actions, whatever a start found. */
+        for (size_t i = 0, ended = 0; !e->cfg.host && e->cfg.unfinished_ticks && i < e->n_exposures; i++) {
+            gz_sign_exposed_t *x = &e->exposed[i];
+            if (x->state != GZ_SIGN_ROUND_UNFINISHED) continue;
+            if (x->ticks < e->cfg.unfinished_ticks) x->ticks++;
+            if (x->ticks < e->cfg.unfinished_ticks || ended == GZ_SIGN_MAX_ROUNDS) continue;
+            x->state = GZ_SIGN_ROUND_ABANDONED;                                          /* RULE:EVICTED_ABANDONED */
+            save_ended_of(e, x->round_id, 0, x->why, NULL, 0, GZ_SIGN_END_ABANDONED, gz_sign_reason(x->why, 0), &em);
+            ended++;
+        }
         emit_timer(e, &em);
     } else if (ev->kind == GZ_EVENT_PEER_CONNECTED && !e->cfg.host) {
         for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++)
@@ -1972,7 +2123,6 @@ gz_status_t gz_sign_begin(gz_sign_t *e, const gz_sign_begin_t *b, gz_action_list
     count = out->count; used = out->used;
     em.out = out; em.st = GZ_OK;
     if (e->failed) return GZ_ERR_FAILED;
-    e->n_restarted = 0;                             /* the program's begin: a new lobby (F4) */
     st = host_begin(e, b, &em);
     /* A refusal before anything changed is GZ_ERR_ARGUMENT; an emit failure fails the engine. */
     if (st == GZ_OK && em.st != GZ_OK) { out->count = count; out->used = used; return fail_engine(e, em.st); }
@@ -2004,6 +2154,7 @@ gz_status_t gz_sign_resolve(gz_sign_t *e, const uint8_t round_id[32], uint8_t ou
     if (em.st != GZ_OK) { out->count = count; out->used = used; return fail_engine(e, em.st); }
     state = outcome == GZ_SIGN_END_LIVE ? GZ_SIGN_ROUND_LIVE : outcome == GZ_SIGN_END_DEAD ? GZ_SIGN_ROUND_DEAD : GZ_SIGN_ROUND_ABANDONED;
     if (r) r->state = state; else x->state = state;
+    if (state == GZ_SIGN_ROUND_DEAD) drop_exposure(e, round_id);            /* RULE:DEAD_LEAVES_C7 */
     return GZ_OK;
 }
 

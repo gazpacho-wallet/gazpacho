@@ -77,11 +77,19 @@
  * cap: the set never makes a start fail (review A, F2). */
 #define GZ_SIGN_KNOWN_FILTER_BITS 20
 #define GZ_SIGN_KNOWN_FILTER_K    10
+/* Host: the members that used their one "I restarted" (abort reason 3)
+ * without blame, by contribution key (a member's key is its seat in one
+ * lobby); kept for the engine's life in memory. Full: every reason 3 is
+ * blamed (review B, B3). */
+#define GZ_SIGN_MAX_RESTARTED    128
 /* C7 records (funding outpoint, tree digest) held in memory: one per funding
- * outpoint this party ever released a partial signature for. At the limit a
- * new outpoint is refused (abort reason 9), never dropped; a journal holding
- * more (never written by this build) still starts, with every new round
- * refused (review A, F2). */
+ * outpoint this party released a partial signature for whose creation is not
+ * Dead (safety-rule.md C4(d): a Dead record stays in the journal and is no
+ * longer consulted, so it leaves this set when its round is resolved Dead:
+ * review B, B8). While the set is full a new outpoint is refused (abort
+ * reason 9), never dropped, and signing comes back as entries are resolved
+ * Dead; a journal holding more live ones still starts, with every new round
+ * refused until a start finds room (review A, F2). */
 #define GZ_SIGN_MAX_EXPOSURES    4096
 
 /* Message sizes (envelope included). A record's type and length take at
@@ -92,6 +100,27 @@
 #define GZ_SIGN_MAX_LIST68_MSG   (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * 68 + 67)
 #define GZ_SIGN_MAX_SMALL_MSG    (GZ_RMSG_HEADER + 128 + 67)
 #define GZ_SIGN_MAX_MSG          (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * (6 + GZ_SIGN_MAX_SIGNERS * 130))
+
+/* The largest record of each kind the engine saves (review B, B1, B2, B12):
+ * one table for the writer and for the reader at start. A field is its type
+ * (below 253: one byte), its BigSize length and its bytes. Everything a
+ * record holds is bounded before it is saved: a message from a peer longer
+ * than its field is refused or dropped on receipt (the proposal with reason
+ * 9, an ack counted and ignored), and the work areas the records are written
+ * in are sized from these (static assertions in signing.c), so that no
+ * writer overflows and every record saved is one the start accepts. */
+#define GZ_SIGN_FIELD(n)             (1u + ((n) < 253u ? 1u : 3u) + (n))
+#define GZ_SIGN_REC_STARTED_MAX      (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(36u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(2u) + GZ_SIGN_FIELD(1u) +                                       GZ_SIGN_FIELD(4u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(33u))
+#define GZ_SIGN_REC_PROPOSAL_MAX     (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_PROPOSAL))
+#define GZ_SIGN_REC_EXPOSURE_MAX     (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(36u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_FUNDING_TX) +                                       GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(72u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(GZ_SIGN_MAX_LIST68_MSG))
+#define GZ_SIGN_REC_SIGNED_MAX       (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(68u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(GZ_SIGN_MAX_LIST68_MSG))
+#define GZ_SIGN_REC_COMPLETED_MAX    (GZ_SIGN_FIELD(32u) + 2u * GZ_SIGN_FIELD(GZ_SIGN_MAX_SMALL_MSG) + GZ_SIGN_FIELD(4u))
+#define GZ_SIGN_REC_ACK_MAX          (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(33u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_SMALL_MSG))
+#define GZ_SIGN_REC_ENDED_MAX        (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(2u) + GZ_SIGN_FIELD(4u) + GZ_SIGN_FIELD(1u) +                                       GZ_SIGN_FIELD(GZ_SIGN_MAX_SMALL_MSG))
+#define GZ_SIGN_REC_FUNDING_MAX      (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(4u))
+/* The two work areas: the large records, and the small ones that share a batch with a large one. */
+#define GZ_SIGN_WORK_RECORDS         GZ_SIGN_REC_EXPOSURE_MAX
+#define GZ_SIGN_WORK_REC2            512u
 
 /* The one signing mode: key path (messages.md 7.1 mode 0), BIP 341 tweak of
  * the ordered aggregate key with the stated merkle root (or none: BIP 86),
@@ -241,7 +270,11 @@ typedef struct gz_sign_round gz_sign_round_t;
 /* The newest round that made an exposure record, and its state when it left
  * memory (GZ_SIGN_ROUND_FREE while it is held): C10 and gz_sign_resolve reach
  * a round through it after the round has left the slots (review A, F3). */
-typedef struct { uint8_t round_id[32]; uint8_t state, why; } gz_sign_exposed_t;
+typedef struct {
+    uint8_t round_id[32];
+    uint8_t state, why;
+    uint32_t ticks;                 /* timer ticks since it left memory Unfinished (the unfinished deadline: review B, B5) */
+} gz_sign_exposed_t;
 
 /* Host only: the next attempt after a failed one. `blamed` (bit i =
  * participant i of the failed round) are to be left out; `released` is 1 if
@@ -316,6 +349,7 @@ struct gz_sign_round {
     uint8_t all_nonces_digest[GZ_SIGN_MAX_TIERS][32];
     uint8_t have_all_nonces[GZ_SIGN_MAX_TIERS];
     uint32_t acked;                 /* host: bit j = participant j acked */
+    uint32_t gave_up;               /* host: bit j = participant j sent a deadline abort (reason 4) while others still owed (review B, B4) */
     uint64_t status_tick[GZ_SIGN_MAX_PARTICIPANTS];   /* host: the tick a status request was last answered + 1 */
     /* member: its own saved messages and the host's it verified */
     uint32_t partials_len[GZ_SIGN_MAX_TIERS];
@@ -352,9 +386,9 @@ typedef struct {
     uint32_t attempts, next_seq;
     gz_sign_round_t rounds[GZ_SIGN_MAX_ROUNDS];
     /* Host: the contribution keys of members that answered "restarted"
-     * (reason 3) in this lobby, since the program's last gz_sign_begin; a
-     * second such answer is blamed (review A, F4). */
-    uint8_t restarted[GZ_SIGN_MAX_PARTICIPANTS][33];
+     * (reason 3) once without blame; a second such answer of the same key is
+     * blamed (review A, F4), whoever began the attempt (review B, B3). */
+    uint8_t restarted[GZ_SIGN_MAX_RESTARTED][33];
     size_t n_restarted;
     uint8_t known[GZ_SIGN_MAX_KNOWN][32];   /* the newest, at n % GZ_SIGN_MAX_KNOWN */
     size_t n_known;                         /* refused identifiers in all */
@@ -369,7 +403,7 @@ typedef struct {
     gz_sign_def_t scratch_def;
     gz_sign_round_t pending;        /* a round is checked here before it takes a slot */
     gz_rmsg_propose_t prop;         /* the proposal being read */
-    /* C7: every exposure record this party holds, of any epoch, never removed. */
+    /* C7: every exposure record this party holds, of any epoch, but those of Dead creations (C4(d)). */
     gz_tree_exposure_t exposures[GZ_SIGN_MAX_EXPOSURES];
     gz_sign_exposed_t exposed[GZ_SIGN_MAX_EXPOSURES];
     size_t n_exposures;
@@ -380,8 +414,8 @@ typedef struct {
      * isolation check refuses. */
     secp256k1_musig_partial_sig work_psig[GZ_SIGN_MAX_SIGNERS];
     uint8_t work_tx[GZ_SIGN_MAX_TX + 80];
-    uint8_t work_records[GZ_SIGN_MAX_PROPOSAL];
-    uint8_t work_rec2[2048];
+    uint8_t work_records[GZ_SIGN_WORK_RECORDS];
+    uint8_t work_rec2[GZ_SIGN_WORK_REC2];
     gz_sign_msg_t work_msg;
     uint8_t work_keys[GZ_SIGN_MAX_PARTICIPANTS][33];
     /* A nonce's secret inputs while it is made: here rather than on the
@@ -426,7 +460,8 @@ gz_status_t gz_sign_begin(gz_sign_t *e, const gz_sign_begin_t *b, gz_action_list
 /* Member: the round's end as the embedding judged it from the chain
  * (safety-rule.md C11, C4(d)): GZ_SIGN_END_LIVE, _DEAD or _ABANDONED, saved as
  * round_ended. Rounds that are Complete, Unfinished or Abandoned only.
- * GZ_ERR_ARGUMENT otherwise. */
+ * GZ_ERR_ARGUMENT otherwise. A round resolved Dead leaves the C7 set: its
+ * funding output can never exist (C4(d)). */
 gz_status_t gz_sign_resolve(gz_sign_t *e, const uint8_t round_id[32], uint8_t outcome, gz_action_list_t *out);
 
 /* The exposure records held (C7), for the embedding's checks. */
