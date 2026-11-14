@@ -202,8 +202,12 @@ jobs:
         # storage_vector_e2r (Argon2id at 256 MiB) is E2's code at more memory.
         # The signing sections run their "tiny" sets (every path, fewer seeds)
         # and the engine fuzzer a short run: the full sets take hours here.
-        run: >-
-          python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0"
+        run: >
+          python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0" --args "journal_fuzz=3000 7"
+          --args "journal_fuzz_model=200 1" --args "journal_fuzz_open=3000 1"
+          --args "lobby_sim_profile_0=3 0" --args "lobby_sim_profile_1=3 1"
+          --args "lobby_sim_profile_2=3 2" --args "lobby_sim_profile_3=3 3"
+          --args "lobby_fuzz=3000 2" --args "lobby_fuzz_seq=300 2"
           --args "api_http_fuzz=3000" --args "api_json_fuzz=20000"
           --exclude '^storage_vector_e2r$'
           --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
