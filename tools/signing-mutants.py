@@ -69,7 +69,7 @@ RULES = {
     "C7_AFTER_SAVE": ("if (em->st == GZ_OK && !add_exposure(", "if (!add_exposure("),
     "EXPOSURE_ROOM": ("if (!exposure_room(e, r)) return GZ_SIGN_WHY_CAPACITY;", ""),
     "EXPOSURE_NOT_DROPPED": ("{ e->exposures_lost = 1; return 0; }", "return 0;"),
-    "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }", "{ }"),
+    "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }", "{ (void)state; }"),
     "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
     "DECODE_FIRST": ("if (!b || !gz_sign_decode(b, len, &m))", "if (!b || (gz_sign_decode(b, len, &m), 0))"),
     "WIPE_NONCE_INPUTS": ("wipe(rnd, sizeof e->work_rnd); ", ""),

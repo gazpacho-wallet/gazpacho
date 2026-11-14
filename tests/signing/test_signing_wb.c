@@ -684,7 +684,7 @@ static void test_record_bounds(void)
 {
     harness_t h;
     static gz_sign_round_t r;
-    static uint8_t funding[GZ_SIGN_MAX_FUNDING_TX + 1], msg[GZ_SIGN_MAX_SMALL_MSG];
+    static uint8_t funding[GZ_SIGN_MAX_FUNDING_TX + 1], msg[GZ_SIGN_MAX_SMALL_MSG + 1];
     gz_rmsg_wr_t w;
     gz_action_list_t list;
     h_init(&h, 1);
