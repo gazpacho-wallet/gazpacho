@@ -50,6 +50,9 @@ RULES = {
     "KNOWN_FILTER": ("for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++)", "for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++) if (k >= 0) return 0; else"),
     "EVICT_SETTLED_FIRST": ("settled(r) > settled(best) ||", "0 ||"),
     "FAIL_ON_ERROR": ("e->failed = 1;", "(void)0;"),
+    # review B: B6 (C6: children before parents), B5 (a start leaves a superseded round Unfinished)
+    "C6_CHILDREN_FIRST": ("if (same(id, tx.outpoint, 32) && d->items[i].tier > d->items[j].tier) return 0;", ""),
+    "REPLAY_SUPERSEDES": ("{ o->state = GZ_SIGN_ROUND_UNFINISHED; o->why = GZ_SIGN_WHY_SUPERSEDED; }", "{ }"),
 }
 
 
