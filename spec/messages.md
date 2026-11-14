@@ -34,6 +34,10 @@ Specification draft 2, 2026-11-12. Status: draft 1 brought fully in line with `s
 | 13 member keys | Derivation path proposed (owner to confirm), with a network level and index pairs; a fresh index pair per `CONNECT`, not per TCP connection | 2, open point 3 |
 | 7 test traffic | Kind 32767 reserved for test builds | 4.1 |
 | 3 reconnect limits | `hello` duplicates, the 20-`hello` limit and status answers counted per link (per member key), not per connection | 6.1, 7.10 |
+| Standby seats (lobby engine) | `join` accepted during a ready check or Signing when the host keeps standby seats, up to the target plus those seats | 6.3 |
+| Review A of PR 30 | The lobby-state table names standby joins; a seat that joins during a check is not sent that check; creations are a bucket of `target` refilled at one a second (a burst of honest joins passes); a connection is closed after 3 joins refused as invalid or 32 refused for a limit; the creation limit's weakness against throwaway keys recorded | 6, 6.8, open point 11 |
+| Confirmation review of PR 30 | The signing engine's Retry names its check (the hand-off's `check_id`); a member takes it only for the check of the start it holds, so a late Retry for an older check never spends the next check's start or answer. A local report (`lobby_handoff.h`), not a message: no wire format changes | 7.2 |
+| Review B of PR 30 | Moves that take a seat out (`unready`, `leave`) are never limited; a seat chosen in the running attempt does not join again until the round is resolved; a seat whose `min_members` exceeds the target is left out of the choice; the signing budget's owner is the signing engine once a round is handed over, and a completed creation is never refused | 6, 6.3, 6.9, 6.10 |
 
 Related: `terms.md` (the host terms record carried by `terms_offer`), `signing-round.md` (what the round messages mean), `safety-rule.md` (what a member checks before it contributes), `journal.md` (what is saved before each message is sent).
 
@@ -226,7 +230,7 @@ A message that fits in one envelope is never split.
 - Lobby messages state a **state**, not a change: "I am ready for version 3", "I have left". Receiving one twice changes nothing. This is how every lobby message survives a reconnect or a restart, as `ENGINEERING-CHECKLIST.md` item 16 requires.
 - After every (re)connect the member sends `hello` with the lobby's scope, and the host answers with the full current state (`terms_offer`, `lobby_status`, and, while the lobby is Signing and the seat was chosen, the saved signed `start`). Nothing in the lobby relies on a message from an earlier connection having arrived.
 - A member with an unresolved round also, after `hello`: resends its saved `round_partial_sigs` bytes if it has sent partial signatures and lacks the result (rule S3; review 3, F26), then sends `round_status_request` (7.10).
-- **Limits on state changes** (review 3, F13; first guesses, open point 11). The host saves a seat change only when the seat's state actually changes; a message that returns a seat to the state it already has saved (a duplicate `ready` for the same version, `unready` when Joined) is answered and not saved. Per seat, at most 10 saved changes in any 10 minutes; past that the host ignores the seat's changes and may remove it (state 6). Per connection, at most one `join`; per lobby, at most 4 × `target` seats ever created, and at most one creation per second. A `leave` then `join` with the same key counts against both.
+- **Limits on state changes** (review 3, F13; first guesses, open point 11). The host saves a seat change only when the seat's state actually changes; a message that returns a seat to the state it already has saved (a duplicate `ready` for the same version, `unready` when Joined) is answered and not saved. Per seat, at most 10 saved changes in any 10 minutes; past that the host ignores the seat's moves into Ready and may remove it (state 6). A move that takes the seat out (`unready`, `leave`) is never limited: it is always applied, so a seat that withdrew is never chosen and a chosen seat's `leave` always reaches the signing round. Per connection, at most one `join`; per lobby, at most 4 × `target` seats ever created, and at most one creation per second on average: a bucket of `target` creations, refilled at one a second, so that a burst of honest joins passes. A `leave` then `join` with the same key counts against both. A connection whose `join`s are refused 3 times as invalid, or 32 times for a limit, is closed; the host checks the cheap conditions (lobby state, seats taken, one `join` per connection, the creation limits) before it verifies any signature.
 
 Lobby states (host side; shown to members in `lobby_status`):
 
@@ -234,8 +238,8 @@ Lobby states (host side; shown to members in `lobby_status`):
 |---|---|---|---|
 | 0 | Unknown (no such lobby) | | |
 | 1 | Open | Yes | Until the first ready check |
-| 2 | Ready check | No | No |
-| 3 | Signing | No | No |
+| 2 | Ready check | Standby seats only (6.3) | No |
+| 3 | Signing | Standby seats only (6.3) | No |
 | 4 | Funding | No | No |
 | 5 | Active | No | No |
 | 6 | Cancelled | No | No |
@@ -306,7 +310,7 @@ Receiver:
 
 The binding is two-way: the factory key vouches for the contribution key and the contribution key for the factory key, so no seat can claim another party's key of either kind. Both signatures travel to every signer in `round_propose`, so anyone can check them. The contribution key is the per-lobby BOLT 8 key, never the member's long-lived identity, so publishing the binding in evidence links nothing beyond this lobby (review 2, N17).
 
-Valid when: the lobby is Open; both binding signatures verify; no other seat uses this factory key or this contribution key (`signing-round.md` section 2: a list with a key twice is refused); neither is the host's; seats taken are fewer than the target.
+Valid when: the lobby is Open, or, for a host that keeps **standby seats**, in a ready check or Signing; both binding signatures verify; no other seat uses this factory key or this contribution key (`signing-round.md` section 2: a list with a key twice is refused); neither is the host's; seats taken are fewer than the target plus the host's standby seats; the key's seat is not chosen in the running attempt (a chosen seat keeps the keys it was chosen with until the round is resolved, also after its `leave`). A standby seat joined during a check or an attempt can fill a gap in the next attempt (owner decision 10, `LOBBY.md` "standbys"); without standby seats a join is accepted only while Open. From Funding on, no join is accepted.
 
 Host: creates the seat (saved before it answers, within the limits of "Seats and reconnects") and sends `lobby_status`. If invalid, it sends `lobby_status` with seat state 7 and a reason, and keeps the connection.
 
@@ -390,7 +394,7 @@ Even though unsigned, it is kind 28 (even): a member that cannot read its seat s
 
 **This message freezes the current values** (`terms.md` section 8). The host saves the freeze before it sends the first `ready_check` of a lobby. Signed so the member holds the host's own statement of what was frozen.
 
-Sent when the start rule is met: to every seat in Joined or Ready.
+Sent when the start rule is met: to every seat in Joined or Ready. A seat that joins during the check (a standby seat, 6.3) is not sent that check; a later check may choose it.
 
 Member: if the version and digest are the latest it accepted (or its frozen ones) and its conditions hold, it saves the freeze and answers `ready` with `check_id`, within `answer_within_ms` on its own clock. If they are not the latest it accepted, it sends `hello` to fetch terms, then answers or not. If the lobby was already frozen at other values, that is a fault: keep the evidence, `leave`.
 
@@ -407,7 +411,7 @@ Duplicates: the same `check_id` again: answer again with the same saved `ready` 
 
 **Signed, saved and resent** (draft 2; review 3, F9). The host saves every `start` of a check (`journal.md` record `start_sent`) before sending the first, and resends a chosen seat's saved bytes after that seat's `hello` while the lobby is Signing. The member saves a received `start` (`start_received`) and keeps it with the check it answered. So a reconnect or a member restart between `start` and `round_propose` costs nothing. In addition, a member accepts a validly signed `round_propose` whose `check_id` it answered even without a `start`: the proposal is signed and carries everything (7.2).
 
-Sent after the ready window closes, to every seat that answered the check. The host chooses the signers: every seat that answered, cut to the target in order of joining; then, **repeatedly, every chosen seat whose `min_members` exceeds the current number of chosen seats is dropped**, until no such seat remains (dropping seats can only lower the count, so this ends). If fewer than the minimum remain, the host sends no `start`; the lobby goes back to Open, or is cancelled if the deadline has passed.
+Sent after the ready window closes, to every seat that answered the check. The host chooses the signers: every seat that answered, except one whose `min_members` exceeds the target (it can never be met), cut to the target in order of joining; then, **repeatedly, every chosen seat whose `min_members` exceeds the current number of chosen seats is dropped**, until no such seat remains (dropping seats can only lower the count, so this ends). If fewer than the minimum remain, the host sends no `start`; the lobby goes back to Open, or is cancelled if the deadline has passed.
 
 Member with role 1: waits for `round_propose`, up to the terms' step timeout. Member with role 2: back to Ready; a later check may choose it. Duplicate: ignore.
 
@@ -421,6 +425,8 @@ Member with role 1: waits for `round_propose`, up to the terms' step timeout. Me
 Ends the lobby. Signed so that a member's history can show the host's own reason. The member saves the end, erases any secret nonces, and keeps every round identifier it saved (they stay refused). Duplicate: ignore.
 
 A `cancel` does not undo partial signatures already sent. A member with an unresolved creation round keeps watching that round's funding outpoint, as section 7.9 says.
+
+**The signing budget** (`terms.md` 3: one budget for all attempts, from the lobby's first `start`). Once the host hands a round to its signing engine, the signing round alone owns the budget: it ends the attempt when the budget is spent, and the lobby then sends `cancel` reason 3. The lobby itself cancels for the budget (reason 3) only between attempts, while Open or in a ready check after a retry; it never cancels a round that is signing. A creation the signing round completed is never refused: if the lobby ended by a `cancel` meanwhile (the host's own), the lobby moves on to Funding all the same, and a member does too.
 
 ## 7. Signing round messages
 
@@ -936,7 +942,7 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 8. **The host's own binding**: the host is a participant with its own factory key; this document makes it sign a binding to its long-term key like any member. Confirm.
 9. **Using the BOLT 8 key for BIP 340 signatures.** Lightning already signs with node keys (BOLT 7 with ECDSA, BOLT 12 with BIP 340). No proof was looked for that ECDH in Noise and Schnorr signatures under one key are safe together. A separate host signing key bound by a statement is the alternative.
 10. **Signers chosen in order of joining** (6.9) is a simple fair rule, not decided.
-11. **Rate and size limits** (one status a second, 4 lobbies, 20 hellos, 4 scope-zero answers a second, 10 seat changes per 10 minutes, 4 × target seats) are first guesses to be measured. Known weakness (confirmation review): seats cost nothing and a member key is fresh per connection, so one peer can use up the lobby-wide seat cap (32 creations for T1) in about half a minute and block joining. Money is not at risk; liveness is. It ties to the open owner question of a seat cost or deposit; until then a host may run invitation-only lobbies.
+11. **Rate and size limits** (one status a second, 4 lobbies, 20 hellos, 4 scope-zero answers a second, 10 seat changes per 10 minutes, 4 × target seats) are first guesses to be measured. Known weakness (confirmation review): seats cost nothing and a member key is fresh per connection, so one peer can use up the lobby-wide seat cap (32 creations for T1) in about half a minute and block joining. Money is not at risk; liveness is. It ties to the open owner question of a seat cost or deposit; until then a host may run invitation-only lobbies. Known weakness of the creation limit (review A of PR 30, S4): keys cost nothing, so one outsider joining and leaving with new keys can spend the 4 × `target` creations in about as many seconds, after which the lobby seats nobody; counting creations per address or per connection age, or exempting keys that readied, would close it.
 12. **bLIP-56.** Read in full on 2026-11-12 from the open pull request; the native envelope is kept and bLIP-56 is an adapter (section 10). Its numbers are reserved only in the open pull request, and its gaps (10.5) are candidates for amendment proposals at the owner's decision; nothing is to be posted on the pull request.
 13. Closed: the parameter table (7.2) follows `signing-round.md` draft 4 section 4.1. Lobby-constant values stay proposal fields; the fee rule is `terms.md` section 4.2's.
 14. **The distribution transaction** is not signed in Slice 1 and the host recovers its coins by its timeouts (`safety-rule.md` section 12) — **proposed, owner to confirm**. Record 44 is reserved and even.
