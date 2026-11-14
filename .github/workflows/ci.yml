@@ -215,7 +215,8 @@ jobs:
   fuzz:
     name: libFuzzer, 60 s per target
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # One minute per target, plus the build: 17 targets took 19 min 21 s.
+    timeout-minutes: 30
     env:
       CC: clang-18
     steps:
