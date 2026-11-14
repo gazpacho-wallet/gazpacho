@@ -64,6 +64,36 @@ echo "$l6" | grep -Eqx 'peer 0[23][0-9a-f]{64}' && [ "$l6" = "$l8" ] && [ "$(sed
 grep -qx 'gz-net: accept: handshake refused (authentication failed)' "$T/err" && ok "host saw act one fail" || no "listener stderr: $(cat "$T/err")"
 grep -qx 'gz-net: connection ended: message refused' "$T/err" && [ "$(wc -l < "$T/err")" -eq 2 ] && ok "host reports the unknown even message" || no "listener stderr: $(cat "$T/err")"
 
+# No peer address in the transport's output: the listener's lines name
+# connections by key only, and its errors say what failed, not who from.
+# Every peer above connected from 127.0.0.1. The output must hold its peer
+# lines first, so an empty file cannot pass.
+no_addr() { # NAME FILE...: the files hold peer lines and no loopback address
+  name=$1; shift
+  if ! grep -q '^peer ' "$1"; then
+    no "$name: no peer lines to check: $(cat "$@")"
+  elif grep -Eq '127\.0\.0\.1|::1|localhost|\[' "$@"; then
+    no "$name: a peer address appears: $(grep -E '127\.0\.0\.1|::1|localhost|\[' "$@")"
+  else
+    ok "$name"
+  fi
+}
+no_addr "no peer address in the listener's output (IPv4)" "$T/out" "$T/err"
+
+# The same over IPv6 loopback, where the machine has it.
+"$B" listen --host ::1 --port 0 --key-file "$T/host.key" --accept 1 > "$T/out6" 2> "$T/err6" &
+LP=$!
+if wait_line "$T/out6"; then
+  PORT6=$(sed -n 's/^listening \([0-9]*\) .*/\1/p' "$T/out6")
+  out=$("$B" connect --host ::1 --port "$PORT6" --pin "$HOST_NODE" 2>&1)
+  [ "$out" = "ok 1" ] || no "IPv6 connect: $out"
+  wait "$LP"; LP=
+  no_addr "no peer address in the listener's output (IPv6)" "$T/out6" "$T/err6"
+else
+  kill "$LP" 2>/dev/null; wait "$LP" 2>/dev/null; LP=
+  echo "skip IPv6 loopback not available: $(cat "$T/err6")"
+fi
+
 # A host that answers with the wrong sequence number.
 "$P" badpong > "$T/bp" &
 PP=$!
