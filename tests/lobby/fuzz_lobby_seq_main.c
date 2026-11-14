@@ -51,14 +51,15 @@ int main(int argc, char **argv)
             buf[0] = (uint8_t)(2 * sim_rng_below(&R, 4));
             if (sim_rng_below(&R, 2)) {
                 /* half of them: 36 keys in turn connect, join and leave, a second
-                 * apart, so the 4 x target creation cap is reached (N3) */
+                 * apart, so the 4 x target creation cap is reached and the last
+                 * four joins are refused by it (N3) */
                 n = 1 + 3 * 153;
                 for (w = 1; w < n; w++) buf[w] = (uint8_t)sim_rng_below(&R, 256);
                 for (w = 0; w < 36 && k + 12 <= n; w++, k += 12) {
                     buf[k] = 0; buf[k + 1] = (uint8_t)w;
                     buf[k + 3] = 3; buf[k + 4] = (uint8_t)w;
                     buf[k + 6] = 7; buf[k + 7] = (uint8_t)w; buf[k + 8] = 0;
-                    buf[k + 9] = 9; buf[k + 11] = 10;                         /* one second */
+                    buf[k + 9] = 9; buf[k + 10] = (uint8_t)w; buf[k + 11] = 10;   /* one second (a connected key's step) */
                 }
             }
             for (; k + 3 <= n; k += 3) {
@@ -85,7 +86,7 @@ int main(int argc, char **argv)
         LLVMFuzzerTestOneInput(buf, n);
     }
     printf("fuzz_seq: %lu scripts, %lu steps; %lu seats, %lu inputs with a check, %lu starts, %lu begins, "
-           "%lu restarts, %lu members ended, %lu lobbies ended; %lu at the creation cap, %lu budget timers in Signing\n",
+           "%lu restarts, %lu members ended, %lu lobbies ended; %lu joins refused at the creation cap, %lu budget timers in Signing\n",
            iters, lobby_seq_stats[0], lobby_seq_stats[1], lobby_seq_stats[2], lobby_seq_stats[3], lobby_seq_stats[4],
            lobby_seq_stats[5], lobby_seq_stats[6], lobby_seq_stats[7], lobby_seq_stats[8], lobby_seq_stats[9]);
     CHECK(lobby_seq_stats[1] > 0 && lobby_seq_stats[2] > 0 && lobby_seq_stats[3] > 0 && lobby_seq_stats[4] > 0 &&

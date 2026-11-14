@@ -6,8 +6,10 @@
  * member fed the same from its host. With the vectors' terms (target 8),
  * 4 x target is 32: the creation cap stops a 33rd seat first, so the
  * 32-seat table's own refusal is not reached here (test_lobby restores a
- * full table). The plain driver counts the scripts that reach the creation
- * cap and the budget timers that fire in Signing (the B3 check below). The engines live across the whole script, so the stateful
+ * full table). A join from a key without a seat, while the lobby is Open and
+ * 4 x target seats were created, must create none: the plain driver counts
+ * those refusals, and the budget timers that fire in Signing (the B3 check
+ * below). The engines live across the whole script, so the stateful
  * rules are reached: a refused ready (F5), strangers and failed checks (F6),
  * joins that are refused (F8), restarts in Signing (F3), commands at the
  * wrong moment (F10), a chosen seat that leaves and comes back (B1).
@@ -45,7 +47,7 @@
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
 unsigned long lobby_seq_stats[10];  /* steps, seats, checks, starts, begins, restarts, refused, cancels,
-                                       lobbies at the creation cap, budget timers in Signing */
+                                       joins refused at the creation cap, budget timers in Signing */
 
 #define MUST(c) do { if (!(c)) { fprintf(stderr, "fuzz_lobby_seq: %s (step %lu)\n", #c, lobby_seq_stats[0]); abort(); } } while (0)
 #define NK 64                        /* member keys; any may stay a stranger */
@@ -404,7 +406,7 @@ static void host_script(const uint8_t *d, size_t n)
         int op = d[at] % 13, who = d[at + 1] % NK;
         uint8_t arg = d[at + 2];
         unsigned long v0 = HOST.verifies;
-        int seated_key;
+        int seated_key, no_seat;
         STEP++;
         lobby_seq_stats[0]++;
         if (op != 0 && op != 11 && op != 12 && !CONN[who]) op = 0;   /* messages need a connection */
@@ -413,6 +415,7 @@ static void host_script(const uint8_t *d, size_t n)
             uint16_t k;
             for (k = 0; k < H.n_seats; k++) if (memcmp(H.seats[k].ckey, K[who].key[2].pub, 33) == 0) s = &H.seats[k];
             seated_key = s && (s->state == GZ_SEAT_JOINED || s->state == GZ_SEAT_READY);
+            no_seat = s == NULL;
         }
         switch (op) {
         case 0:                                                       /* connect */
@@ -430,10 +433,18 @@ static void host_script(const uint8_t *d, size_t n)
             bn = gz_lobby_enc_done(&e);
             st = h_in(GZ_LIN_MESSAGE, who, buf, bn, 0);
             break;
-        case 3: case 4:                                               /* join; 4: another factory key, maybe invalid */
+        case 3: case 4: {                                             /* join; 4: another factory key, maybe invalid */
+            uint64_t made = H.created;
+            uint16_t seats = H.n_seats;
+            int capped = no_seat && H.state == GZ_LOBBY_OPEN && H.created >= 4u * H.terms.target;
             bn = join_msg(buf, sizeof buf, who, op == 3 ? who : (arg >> 1) % NK, op == 4 && (arg & 1) ? 1 + (arg >> 1) : 0);
             st = h_in(GZ_LIN_MESSAGE, who, buf, bn, 0);
+            if (capped) {                                             /* the creation cap: no seat is made */
+                MUST(H.created == made && H.n_seats == seats);
+                lobby_seq_stats[8]++;
+            }
             break;
+        }
         case 5: {                                                     /* ready */
             uint32_t ver = arg % 4 == 3 ? H.values.version : (uint32_t)(1 + arg % 2);
             cr = lt_crypto(&K[who]);
@@ -516,7 +527,6 @@ static void host_script(const uint8_t *d, size_t n)
     }
     lobby_seq_stats[1] += H.n_seats;
     lobby_seq_stats[7] += H.state >= GZ_LOBBY_CANCELLED;
-    lobby_seq_stats[8] += H.created >= 4u * H.terms.target;
 }
 
 /* ------------------------------------------------------------ the member */
