@@ -1,6 +1,6 @@
 /* The signing engine's outcome into the lobby host (core/signing/lobby_outcome.c),
  * against the real gz_lobby_host_round_result: built only with the lobby
- * engine (PR 30). The host's state is set directly, as the lobby's own tests
+ * engine. The host's state is set directly, as the lobby's own tests
  * reach Signing only through a whole lobby; the transitions themselves are
  * the lobby's (its tests cover cancel reason 3, which FAILED maps to). */
 #include "gazpacho/lobby.h"
@@ -46,6 +46,7 @@ int main(void)
 
     /* FUNDING: Signing to Funding, saved */
     h.state = GZ_LOBBY_SIGNING;
+    h.budget_ms = 1;                               /* a round was handed over (lobby_handoff.h) */
     o.kind = GZ_SIGN_OUTCOME_FUNDING;
     gz_action_list_init(&l, slots, 64, bytes, sizeof bytes);
     CHECK(gz_sign_lobby_outcome(&h, &o, &l) == GZ_OK && h.state == GZ_LOBBY_FUNDING && saves_of(&l, GZ_REC_LOBBY_STATE) == 1);
@@ -59,10 +60,11 @@ int main(void)
     CHECK(h.seats[1].state == GZ_SEAT_JOINED && h.seats[0].state == GZ_SEAT_READY && !h.seats[0].chosen);
     CHECK(saves_of(&l, GZ_REC_LOBBY_STATE) == 1);
 
-    /* not while the lobby is not signing; a blamed count without keys; an unknown kind */
+    /* not while the lobby is not signing: the lobby refuses the command with a notice and changes
+     * nothing; a blamed count without keys; an unknown kind */
     o.kind = GZ_SIGN_OUTCOME_FUNDING; o.blamed = NULL; o.n_blamed = 0;
     gz_action_list_init(&l, slots, 64, bytes, sizeof bytes);
-    CHECK(gz_sign_lobby_outcome(&h, &o, &l) == GZ_ERR_ARGUMENT);
+    CHECK(gz_sign_lobby_outcome(&h, &o, &l) == GZ_OK && h.state == GZ_LOBBY_OPEN && saves_of(&l, GZ_REC_LOBBY_STATE) == 0);
     h.state = GZ_LOBBY_SIGNING;
     o.kind = GZ_SIGN_OUTCOME_RETRY; o.n_blamed = 1;
     CHECK(gz_sign_lobby_outcome(&h, &o, &l) == GZ_ERR_ARGUMENT);
