@@ -59,6 +59,9 @@ RULES = {
     "C1_ROOT_ALL": ("if (it->n_signers != d->n_participants) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
     "BLAME_SECOND_RESTART": ("if (same(e->restarted[k], key, 33)) return bit(j);", "if (same(e->restarted[k], key, 33)) return 0;"),
     "BLAME_FALSE_SUPERSEDED": ("return bit(j);", "return 0;"),
+    # review B: B6 (C6: children before parents), B5 (a start leaves a superseded round Unfinished)
+    "C6_CHILDREN_FIRST": ("if (it->tier > d->items[j].tier) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
+    "REPLAY_SUPERSEDES": ("{ o->state = GZ_SIGN_ROUND_UNFINISHED; o->why = GZ_SIGN_WHY_SUPERSEDED; }", "{ }"),
 }
 
 

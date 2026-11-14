@@ -196,11 +196,16 @@ static int w_build_tree(const w_tree_in_t *in, gz_sign_def_t *d, factory_t **kee
     factory_set_funding(f, in->funding_txid, in->funding_vout, in->funding_amount, in->funding_script, 34);
     if (!factory_build_tree(f) || f->n_nodes == 0 || f->n_nodes > GZ_SIGN_MAX_ITEMS) { factory_free(f); free(f); return 0; }
     d->n_items = (uint16_t)f->n_nodes;
+    /* Two tiers: children before parents (safety-rule.md C6). The imported tree lists the root first
+     * (node 0, which spends the funding output and which every participant signs): it alone is tier
+     * 1, signed once every transaction below it is, and the rest is tier 0. Items are in tier order, so
+     * with two tiers item i is node i + 1 and the last item is the root; with one, item i is node i. */
     for (size_t i = 0; i < f->n_nodes; i++) {
-        const factory_node_t *nd = &f->nodes[i];
+        int two = in->tiers == 2 && f->n_nodes > 1;
+        const factory_node_t *nd = &f->nodes[two ? (i + 1) % f->n_nodes : i];
         gz_sign_item_t *it = &d->items[i];
         if (nd->unsigned_tx.len > GZ_SIGN_MAX_TX || nd->n_signers > GZ_SIGN_MAX_SIGNERS) { factory_free(f); free(f); return 0; }
-        it->tier = (uint8_t)(in->tiers == 2 && i >= f->n_nodes / 2);
+        it->tier = (uint8_t)(two && i == f->n_nodes - 1);
         it->mode = (in->damage & WF_BAD_MODE) ? 2 : GZ_SIGN_MODE_KEYPATH;
         it->has_merkle_root = (uint8_t)(nd->has_taptree != 0);
         if (nd->has_taptree) memcpy(it->merkle_root, nd->merkle_root, 32);

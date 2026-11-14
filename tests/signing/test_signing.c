@@ -21,7 +21,7 @@
 static int g_quick;
 /* The digest of fixed-generator outputs (test_definitions). After an intended
  * change: run "test_signing known", check, update. */
-#define KNOWN_ANSWERS 0xad0154c39ed26b9bull
+#define KNOWN_ANSWERS 0xbcd296e0ce570794ull
 
 typedef struct {
     int done;                   /* the host's newest round has every ack */
@@ -633,7 +633,8 @@ static void damage(gz_sign_def_t *d, int which)
     case 19: it->spent_script[5] ^= 1; break;                                /* not the aggregate */
     case 20: d->items[0].tx[5] ^= 1; break;                                  /* the root does not spend the funding */
     /* at the limits: accepted (21 to 23); one past them: refused (24, 25) */
-    case 21: d->n_tiers = GZ_SIGN_MAX_TIERS;
+    case 21: d->n_tiers = GZ_SIGN_MAX_TIERS;                               /* the items in reverse, so that children come first (C6) */
+        for (int i = 0; i < d->n_items / 2; i++) { gz_sign_item_t t = d->items[i]; d->items[i] = d->items[d->n_items - 1 - i]; d->items[d->n_items - 1 - i] = t; }
         for (int i = 0; i < d->n_items; i++) d->items[i].tier = (uint8_t)(i * GZ_SIGN_MAX_TIERS / d->n_items);
         break;
     case 22: for (int i = d->n_items; i < GZ_SIGN_MAX_ITEMS; i++) d->items[i] = d->items[i % d->n_items];
@@ -646,6 +647,23 @@ static void damage(gz_sign_def_t *d, int which)
     /* review A, F7: refused by one line each */
     case 26: item_without_host(d); break;                                    /* the host does not sign an item */
     case 27: d->items[0].n_signers--; break;     /* the root without the last participant (with proposal damage 27) */
+    /* review B: refused by one line each */
+    case 28: d->n_tiers = 2;                     /* B6: the root (item 0) alone in tier 0, before its children: against C6 */
+        for (int i = 1; i < d->n_items; i++) d->items[i].tier = 1;
+        break;
+    case 29: {                                   /* mutant D48: the last item (a leaf nobody spends) carries a witness */
+        uint8_t t[GZ_SIGN_MAX_TX];
+        size_t n = it->tx_len;
+        gz_sign_tx_t x;
+        if (n + 68 > GZ_SIGN_MAX_TX) abort();
+        memcpy(t, it->tx, 4); t[4] = 0; t[5] = 1;
+        memcpy(t + 6, it->tx + 4, n - 8);
+        t[n - 2] = 1; t[n - 1] = 64; memset(t + n, 0x11, 64);
+        memcpy(t + n + 64, it->tx + n - 4, 4);
+        if (!gz_sign_tx_parse(t, n + 68, &x) || !x.witness_item) abort();
+        memcpy(it->tx, t, n + 68); it->tx_len = (uint16_t)(n + 68);
+        break;
+    }
     default: break;
     }
 }
@@ -740,8 +758,9 @@ static void test_definitions(int print)
         CHECK(m > 0 && memcmp(id_of(other), id_of(clean), 32) != 0);
     }
     /* review A, F7: an item the host does not sign (26); a root without every participant, the
-     * funding made to match (27, C1). Each is consistent everywhere else. */
-    for (int which = 26; which <= 27; which++) {
+     * funding made to match (27, C1). Review B: a parent signed before its children (28, C6); an
+     * item with a witness (29). Each is consistent everywhere else. */
+    for (int which = 26; which <= 29; which++) {
         b.which = which;
         b.mutate_proposal = which == 27 ? damage_proposal : NULL;
         size_t m = begin_proposal(&b, 1, other, sizeof other);
@@ -925,18 +944,18 @@ static void test_definitions(int print)
  * run "test_signing golden-print", check what changed, update. */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
     0x5a93658ed96d444bull, /* honest-1 */
-    0xb0c2295d26895278ull, /* honest-2 */
-    0xd9f41f37f985e69cull, /* duplicates */
+    0x2e312808cf4773d4ull, /* honest-2 */
+    0xba1f1a7110646c4full, /* duplicates */
     0x4f0229c7cd36bf1full, /* member-restart-nonces */
     0x99d14a22114ae741ull, /* member-restart-signed */
-    0xd014fc3857dff1ddull, /* tier-abort */
+    0xf053d49e878c939bull, /* tier-abort */
     0x7442763cd500d86aull, /* host-restarts */
     0xc2931041b87a72b5ull, /* timers */
     0x2669cd1e0c008ac1ull, /* host-faults */
     0xd14200db650773fdull, /* member-faults */
     0x10874665f7589edfull, /* proposals */
-    0xa4e56bacf6229921ull, /* journal */
-    0xdd6ca7028bf802ebull, /* edges */
+    0x7bf6e17683decf57ull, /* journal */
+    0x54664539883806e1ull, /* edges */
 };
 
 static void test_golden(int print)
@@ -1166,6 +1185,40 @@ static void test_proposal_scope(void)
     h_free(&h);
 }
 
+/* Review B, B5: a member's rounds with partial signatures out come back from
+ * a restart as they were. Five rounds, each with its partial signatures sent
+ * and its result withheld: a new proposal leaves the one before it
+ * Unfinished, which no record says. After a restart the same rounds are in
+ * memory in the same states: the newest still waits for its result, the
+ * others are Unfinished, not running again. */
+static void test_restart_keeps_unfinished(void)
+{
+    harness_t h;
+    uint8_t ids[5][32];
+    const gz_sign_round_t *r;
+    h_init(&h, 1);
+    for (int k = 0; k < 5; k++) {
+        CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+        memcpy(ids[k], h_newest(&h, 0)->id, 32);
+        while (h.nq) {                              /* the host's result and round_complete never reach the member */
+            long q;
+            while ((q = q_find(&h, 0, 1, GZ_SIGN_MSG_RESULT)) >= 0 || (q = q_find(&h, 0, 1, GZ_SIGN_MSG_COMPLETE)) >= 0) h_drop_msg(&h, (size_t)q);
+            if (h.nq) h_deliver(&h, 0, 0);
+        }
+        r = h_find(&h, 1, ids[k]);
+        CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->ever_partial);
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        CHECK(h_find(&h, 1, ids[0]) == NULL);
+        for (int k = 1; k < 5; k++) {
+            r = h_find(&h, 1, ids[k]);
+            CHECK(r && r->ever_partial && r->state == (k == 4 ? GZ_SIGN_ROUND_ACTIVE : GZ_SIGN_ROUND_UNFINISHED));
+        }
+        if (pass == 0) CHECK(h_restart(&h, 1) == GZ_OK);
+    }
+    h_free(&h);
+}
+
 int main(int argc, char **argv)
 {
     const char *only = "";
@@ -1189,7 +1242,7 @@ int main(int argc, char **argv)
     SECTION("t1", test_t1());
     SECTION("crashes", test_crashes());
     SECTION("restores", test_restores());
-    SECTION("errors", (test_errors(), test_eviction_order(), test_abort_blame(), test_result_foreign_item(), test_proposal_scope(), test_many_rounds(g_quick ? 60 : 1000)));
+    SECTION("errors", (test_errors(), test_eviction_order(), test_restart_keeps_unfinished(), test_abort_blame(), test_result_foreign_item(), test_proposal_scope(), test_many_rounds(g_quick ? 60 : 1000)));
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);
