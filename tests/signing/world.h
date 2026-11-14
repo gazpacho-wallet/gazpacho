@@ -264,6 +264,7 @@ typedef struct {
     int which;
     void (*mutate_proposal)(gz_tree_proposal_t *p, int which);   /* tests only: damage what the host proposes */
     w_begin_t next;                             /* storage for a retry */
+    uint32_t nonces_due_ms;                     /* the proposal's nonce deadline (0: 30,000); the worlds tick every millisecond */
     uint64_t retries;                           /* what the retry hook was told (w_retry) */
     int last_released;
     uint16_t refuse;                            /* tests only: members refuse every proposal with this reason */
@@ -306,7 +307,7 @@ static int w_make_begin(w_builder_t *b, const uint8_t *p, size_t len, w_begin_t 
     q->end_height = 100000; q->tree_anchors = 1; q->fee_per_tx = 200; q->lstock_delay = 144;
     q->fixed_levels = (flags & WF_T1) ? (n - 1 <= 8 ? 2 : 3) : 0;
     q->k = 1; q->layer_step = 144; q->layer_states = 4;
-    q->nonces_due_ms = 30000; q->sigs_due_ms = 30000;
+    q->nonces_due_ms = b && b->nonces_due_ms ? b->nonces_due_ms : 30000; q->sigs_due_ms = 30000;
     /* the tier sizes: the host builds the tree once to count */
     w_tree_in(q, 0, &tin);
     d = calloc(1, sizeof *d);
@@ -645,6 +646,7 @@ static void w_engine_config(world_t *w, uint32_t index, gz_sign_config_t *c)
     w_secret("test/contribution", index, c->contribution_secret);
     c->build = w_build; c->retry = w_retry; c->build_ctx = &w->builder;
     c->tick_ms = 1; c->resend_ticks = 40; c->deadline_ticks = 400; c->status_ticks = 10;
+    w->builder.nonces_due_ms = 400;             /* the nonce step's deadline, as the other steps' */
     c->max_attempts = w->max_attempts ? w->max_attempts : 16;
 }
 
