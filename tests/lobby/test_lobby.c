@@ -1424,6 +1424,40 @@ static void test_host_details(void)
     }
 }
 
+/* Only a Ready seat's reconnect is a seat event (decision 8; b21): after a
+ * check that started nobody and saw no change, a Joined seat that reconnects
+ * starts no new check, and a Ready one does. */
+static void test_reconnect_joined(void)
+{
+    uint8_t buf[600], cd2[32];
+    size_t n;
+    int i;
+    gz_lobby_input_t in;
+    gz_terms_current_digest(T2, T2N, cd2);
+    CLOCK = W_T0 - 3600000;
+    host_open(1);                                     /* one standby place: nine seats */
+    for (i = 1; i <= 9; i++) {
+        hin(GZ_LIN_CONNECTED, i, NULL, 0);
+        CLOCK += 1000;
+        n = join_msg(buf, sizeof buf, i, MEM[i].key[3].pub, i, i);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+    }
+    for (i = 1; i <= 8; i++) {                        /* member 9 stays Joined */
+        n = ready_msg(buf, sizeof buf, i, 1, cd2, NULL, 0);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+    }
+    CHECK(H.state == GZ_LOBBY_READY_CHECK && H.n_seats == 9);
+    memset(&in, 0, sizeof in);
+    in.kind = GZ_LIN_TIMER; in.timer_id = GZ_LOBBY_TIMER_WINDOW;
+    acts_reset();
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && sends(GZ_KIND_START) == 0 &&
+          sends(GZ_KIND_READY_CHECK) == 0 && H.state == GZ_LOBBY_OPEN);
+    hin(GZ_LIN_DISCONNECTED, 9, NULL, 0);
+    CHECK(hin(GZ_LIN_CONNECTED, 9, NULL, 0) == GZ_OK && sends(GZ_KIND_READY_CHECK) == 0 && H.state == GZ_LOBBY_OPEN);
+    hin(GZ_LIN_DISCONNECTED, 1, NULL, 0);
+    CHECK(hin(GZ_LIN_CONNECTED, 1, NULL, 0) == GZ_OK && sends(GZ_KIND_READY_CHECK) > 0 && H.state == GZ_LOBBY_READY_CHECK);
+}
+
 /* The ready check: an answer withdrawn by unready no longer counts; a failed
  * check before the deadline leaves the lobby Open, and the next change starts
  * a new check with a new identifier. */
@@ -4065,6 +4099,7 @@ int main(void)
     test_host_restart();
     test_host_details();
     test_host_checks();
+    test_reconnect_joined();
     test_host_creations();
     test_host_order();
     test_host_join_keys();
