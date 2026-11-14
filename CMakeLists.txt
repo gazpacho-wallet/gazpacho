@@ -392,3 +392,9 @@ if(TARGET gazpacho_lobby)
   target_compile_options(test_signing_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS})
   add_test(NAME signing_lobby COMMAND test_signing_lobby)
 endif()
+
+# --- the local API server (spec/local-api.md), its fake backend and tests ------
+add_subdirectory(ports/api)
+
+# --- the gazpacho program (stream S11): executor, port adapters, executables ----
+add_subdirectory(program)

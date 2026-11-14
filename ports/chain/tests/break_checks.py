@@ -14,6 +14,7 @@ test except that one. Not part of ctest: it edits the working tree while it
 runs, so it refuses to start with uncommitted changes in ports/chain.
 """
 import os
+import signal
 import subprocess
 import sys
 
@@ -385,6 +386,23 @@ CHECKS = [
     ("h9 transport: loopback recognised by prefix (review E)", T,
      "  bool local_http = !https && is_loopback_host(host);",
      "  (void)is_loopback_host;\n  bool local_http = !https && strncmp(req->url, \"http://localhost\", 16) == 0;", SLOW),
+    ("h10 proxy from the environment followed", T,
+     '  ok = ok && curl_easy_setopt(e, CURLOPT_PROXY, c->proxy != NULL ? c->proxy : "") == CURLE_OK;\n',
+     "", SLOW),
+    ("h12 configured proxy never used", T,
+     'curl_easy_setopt(e, CURLOPT_PROXY, c->proxy != NULL ? c->proxy : "")',
+     'curl_easy_setopt(e, CURLOPT_PROXY, "")', SLOW),
+    ("h13 every host bypasses the proxy (NOPROXY \"*\")", T,
+     'c->proxy != NULL ? "localhost,127.0.0.1,::1" : ""',
+     'c->proxy != NULL ? "*" : ""', SLOW),
+    ("h14 GSSAPI offered to the proxy", T,
+     "  ok = ok && curl_easy_setopt(e, CURLOPT_SOCKS5_AUTH, (long)CURLAUTH_NONE) == CURLE_OK;\n",
+     "", SLOW),
+    ("h15 proxy port range not checked", T,
+     "  return port >= 1 && port <= 65535;", "  return true;", SLOW),
+    ("h16 empty proxy host labels accepted", T,
+     "        if (label_start) return false;\n        label_start = true;",
+     "        label_start = true;", SLOW),
     ("h7 User-Agent not set", T,
      "  ok = ok && curl_easy_setopt(e, CURLOPT_USERAGENT, GZ_HTTP_USER_AGENT) == CURLE_OK;\n", "", SLOW),
     # ---------------------------------------------------------------- the tool (review g1-g4)
@@ -416,10 +434,20 @@ CHECKS = [
 
 
 def sh(cmd, cwd, timeout=900):
+    # Each step in its own process group, and the whole group killed on a
+    # timeout: killing only the shell would leave ctest and the local
+    # servers under it running into the next step.
+    p = subprocess.Popen(cmd, shell=True, cwd=cwd, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, text=True, start_new_session=True)
     try:
-        p = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, p.stdout + p.stderr
+        out, _ = p.communicate(timeout=timeout)
+        return p.returncode, out
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        p.communicate()
         return 124, "TIMEOUT"
 
 
@@ -467,7 +495,9 @@ def main():
                 counts["SURVIVED"] += 1
         sh("git checkout -q -- %s" % path, root)
     sh("git checkout -q -- ports/chain", root)
-    rc, out = sh("cmake --build %s -j4 && cd %s && ctest -R '^chain_' -LE slow" % (build, build), root)
+    # the slow local-server test too: a bad restore of the transport or the
+    # tool shows here, not in the next ordinary run
+    rc, out = sh("cmake --build %s -j4 && cd %s && ctest -R '^chain_'" % (build, build), root)
     print("restored and rebuilt; tests on the unchanged source: %s" %
           ("pass" if rc == 0 else "FAIL\n" + out[-2000:]))
     total = sum(counts.values())
