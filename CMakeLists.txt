@@ -255,6 +255,76 @@ add_subdirectory(wallet)
 # --- chain view port (Esplora backend, comparing backend, gz-chain) ------------
 add_subdirectory(ports/chain)
 
+# --- Storage journal (spec/journal.md): the outer layer's file storage. -------
+# POSIX file I/O, so it is not part of the core and not under its isolation
+# check. Everything it asks of the operating system goes through a table the
+# tests replace (tests/journal/memfs.c) to fail or crash at any write or sync.
+add_library(gazpacho_journal STATIC ports/storage/journal.c)
+set_target_properties(gazpacho_journal PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_journal PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/ports/storage)
+target_link_libraries(gazpacho_journal PUBLIC gazpacho_core gazpacho_superscalar)
+target_compile_options(gazpacho_journal PRIVATE ${GZ_NEW_CODE_WARNINGS} -pedantic -Wvla)
+
+add_executable(gz-journal tools/gz-journal.c)
+target_link_libraries(gz-journal PRIVATE gazpacho_journal)
+target_compile_options(gz-journal PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+add_library(gazpacho_journal_testfs STATIC tests/journal/memfs.c)
+target_link_libraries(gazpacho_journal_testfs PUBLIC gazpacho_journal)
+target_compile_options(gazpacho_journal_testfs PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+gz_add_test(journal       tests/journal/test_journal.c       gazpacho_journal_testfs)
+gz_add_test(journal_edges tests/journal/test_journal_edges.c gazpacho_journal_testfs)
+# Crash before every write and sync point, power-loss settles, process kills,
+# the real node; and the "rule removed" run that must find a loss.
+gz_add_test(journal_crash tests/journal/test_journal_crash.c gazpacho_journal_testfs)
+gz_add_test(journal_fuzz  tests/journal/test_journal_fuzz.c  gazpacho_journal_testfs 100000 1)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  # 10,000 random journals against the independent reader written from the spec.
+  add_test(NAME journal_crosscheck
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/journal/crosscheck.py
+            $<TARGET_FILE:gz-journal> 10000 1)
+  # The tool's verdicts and exit codes; its dump never prints record bytes.
+  add_test(NAME journal_tool
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/journal/test_tool.py
+            $<TARGET_FILE:gz-journal>)
+endif()
+# The restore marker, pull mode (program/store.h's complete()) and the fence.
+gz_add_test(journal_restore tests/journal/test_journal_restore.c gazpacho_journal_testfs)
+# Review A's findings: a failed sync the way Linux fails one, the import's
+# order, the folder lock, the start counter, the hard limit with two marks,
+# a kept guard batch, 2^63, flushes with no runner or from on_confirmed.
+gz_add_test(journal_review  tests/journal/test_journal_review.c  gazpacho_journal_testfs)
+# Review B: journal.lock removed or replaced during an import (200 rounds of
+# two processes), the import's floor, the name's durability, an unreadable
+# marker, the O_DIRECT fallback, the reader after a failure, the guard.
+gz_add_test(journal_review_b tests/journal/test_journal_review_b.c gazpacho_journal_testfs)
+# The journal with its own allocations failing: journal.c is compiled into
+# this test with malloc, calloc and realloc routed through the test's hook.
+add_executable(test_journal_alloc tests/journal/test_journal_alloc.c tests/journal/journal_alloc_hook.c)
+target_link_libraries(test_journal_alloc PRIVATE gazpacho_journal_testfs)
+target_compile_options(test_journal_alloc PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME journal_alloc COMMAND test_journal_alloc)
+# Review B's stateful model of the whole API and its scan-and-open target
+# against an independent reader: libFuzzer targets with GZ_LIBFUZZER, plain
+# drivers (and tests) otherwise.
+foreach(target journal_model journal_open)
+  add_executable(fuzz_${target} tests/journal/fuzz_${target}.c)
+  target_link_libraries(fuzz_${target} PRIVATE gazpacho_journal_testfs)
+  target_compile_options(fuzz_${target} PRIVATE ${GZ_NEW_CODE_WARNINGS})
+  if(GZ_LIBFUZZER)
+    target_compile_definitions(fuzz_${target} PRIVATE LIBFUZZER)
+    target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer)
+  endif()
+endforeach()
+if(NOT GZ_LIBFUZZER)
+  add_test(NAME journal_fuzz_model COMMAND fuzz_journal_model 2000 1)
+  add_test(NAME journal_fuzz_open  COMMAND fuzz_journal_open 20000 1)
+endif()
+# Under valgrind: every journal test runs in the valgrind job
+# (tools/valgrind-tests.py, which takes journal_fuzz on a smaller case).
+
 # --- trees from terms and the creation checks (core/tree) ---
 add_subdirectory(core/tree)
 
