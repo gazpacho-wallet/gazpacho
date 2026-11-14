@@ -100,10 +100,11 @@ int gz_rmsg_wr_ok(const gz_rmsg_wr_t *w) { return !w->bad; }
 
 /* ---- the table-driven record reader ---- */
 
-enum { F_FIX = 1, F_LIST, F_VAR };
-typedef struct { uint16_t type; uint8_t required, form; uint32_t a, lo, hi; } fld_t;
-/* F_FIX: exactly a bytes. F_LIST: entries of a bytes, lo..hi of them. F_VAR: lo..hi bytes. */
-typedef struct { const uint8_t *v; size_t len; int present; } got_t;
+#define F_FIX GZ_RMSG_FIX
+#define F_LIST GZ_RMSG_LIST
+#define F_VAR GZ_RMSG_VAR
+typedef gz_rmsg_field_t fld_t;
+typedef gz_rmsg_got_t got_t;
 
 static gz_rmsg_err_t parse(const uint8_t *r, size_t n, const fld_t *f, size_t nf, got_t *g, size_t *signed_len)
 {
@@ -141,6 +142,13 @@ static gz_rmsg_err_t parse(const uint8_t *r, size_t n, const fld_t *f, size_t nf
     for (size_t i = 0; i < nf; i++)
         if (f[i].required && !g[i].present) return GZ_RMSG_E_MISSING;
     return GZ_RMSG_OK;
+}
+
+gz_rmsg_err_t gz_rmsg_fields(const uint8_t *records, size_t len, const gz_rmsg_field_t *f, size_t nf, gz_rmsg_got_t *got,
+                             size_t *signed_len)
+{
+    size_t sl;
+    return parse(records, len, f, nf, got, signed_len ? signed_len : &sl);
 }
 
 #define NF(a) (sizeof (a) / sizeof (a)[0])

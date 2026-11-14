@@ -19,7 +19,7 @@ ENGINE = ["core/signing/signing.c", "core/signing/sign_tx.c", "core/signing/roun
 # rule -> (file, text on the marked line, replacement). The line is found by
 # its RULE marker; the text must occur in it.
 RULES = {
-    "S1_SAVE_FIRST": ("emit_save(em, GZ_SIGN_REC_M_STARTED, e->work_records, rw.n);", ""),
+    "S1_SAVE_FIRST": ("emit_batch(em, recs, n);", "{}"),
     "S2_KNOWN_ROUND": ("if (r) {", "if (0) {"),
     "S2_ONE_NONCE": ("if (s < 0 || r->secnonce_serial[i] || (r->have_nonce[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
     "S2_ONE_PARTIAL": ("if (s < 0 || !r->secnonce_serial[i] || (r->have_psig[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
@@ -37,6 +37,12 @@ RULES = {
     "PARSE_PSIG_FIRST": ("!secp256k1_musig_partial_sig_parse(e->cfg.ctx, &ps, p + 4) ||", ""),
     "VERIFY_PARTIAL": ("!secp256k1_musig_partial_sig_verify(e->cfg.ctx, &ps, &pn, &pk, &r->cache[i], &r->session[i])) {", "0) {"),
     "VERIFY_FINAL": ("if (!n || !gz_sign_tx_verify(e->cfg.ctx, e->work_tx, n, it->spent_amount, it->spent_script)) return 0;", "if (!n) return 0;"),
+    "C10_UNRESOLVED": ("return GZ_SIGN_WHY_BUSY;", "{}"),
+    "C7_OTHER_TREE": ("!same(e->exposures[i].tree_digest, r->def.tree_digest, 32)) return GZ_SIGN_WHY_OTHER_TREE;", "0) return GZ_SIGN_WHY_OTHER_TREE;"),
+    "EXPOSURE_FIRST": ("save_exposure(e, r, t, em);", "if (0) save_exposure(e, r, t, em);"),
+    "MAY_ACK": ("if (e->cfg.may_ack && !e->cfg.may_ack(e->cfg.hook_ctx, r, &tip)) {", "if (0) {"),
+    "OLD_EPOCH_REFUSED": ("return refuse_id(e, id);", "return 1;"),
+    "UNFINISHED_ABANDONED": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "r->state = GZ_SIGN_ROUND_UNFINISHED;"),
     "PER_ITEM_ANSWER": ("wr32(q, (uint32_t)i); q += 4;", "wr32(q, 0u); q += 4;"),
     "HOST_VERIFY_FINAL": ("if (!len || !gz_sign_tx_verify(e->cfg.ctx, tx, len, it->spent_amount, it->spent_script)) {", "if (!len) {"),
     "DUPLICATE_KEYS": ("for (int j = 0; j < i; j++)", "for (int j = 0; j < 0; j++)"),
@@ -59,6 +65,13 @@ RULES = {
     "C1_ROOT_ALL": ("if (it->n_signers != d->n_participants) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
     "BLAME_SECOND_RESTART": ("if (same(e->restarted[k], key, 33)) return bit(j);", "if (same(e->restarted[k], key, 33)) return 0;"),
     "BLAME_FALSE_SUPERSEDED": ("return bit(j);", "return 0;"),
+    # review A: F1 (the C7 set follows the save), F2 (room, never dropped), F3 (rounds that left memory)
+    "C7_AFTER_SAVE": ("if (em->st == GZ_OK && !add_exposure(", "if (!add_exposure("),
+    "EXPOSURE_ROOM": ("if (!exposure_room(e, r)) return GZ_SIGN_WHY_CAPACITY;", ""),
+    "EXPOSURE_NOT_DROPPED": ("{ e->exposures_lost = 1; return 0; }", "return 0;"),
+    "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }", "{ (void)state; }"),
+    "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
+    "RESOLVE_EVICTED": ("if (!(r = find(e, round_id)) && !(x = evicted(e, round_id))) return GZ_ERR_ARGUMENT;", "if (!(r = find(e, round_id))) return GZ_ERR_ARGUMENT;"),
     # review B: B6 (C6: children before parents), B5 (a start leaves a superseded round Unfinished)
     "C6_CHILDREN_FIRST": ("if (it->tier > d->items[j].tier) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
     "REPLAY_SUPERSEDES": ("{ o->state = GZ_SIGN_ROUND_UNFINISHED; o->why = GZ_SIGN_WHY_SUPERSEDED; }", "{ }"),
@@ -67,6 +80,14 @@ RULES = {
     "DEADLINE_ABORT_WAITS": ("if (m->reason == 4 &&", "if (0 &&"),
     "GAVE_UP_BLAMED": ("if (r->gave_up) {", "if (0) {"),
     "ANSWER_RATE": ("if (r->status_tick[j] &&", "if (0 &&"),
+    # review B: B1 (what is saved is read back), B10 (a filter hit at a start), B5 (rounds that left memory,
+    # across a start), B8 (Dead leaves C7), B11 (a failed start wipes)
+    "ACK_BOUND": ("if (GZ_RMSG_HEADER + m->records_len > GZ_SIGN_MAX_SMALL_MSG) { e->counters[GZ_SIGN_COUNT_REJECTED]++; return; }", ""),
+    "REPLAY_EXACT": ("if (known_exactly(e, id))", "if (is_known(e, id))"),
+    "REPLAY_UNHELD_UNFINISHED": ("x->state = GZ_SIGN_ROUND_UNFINISHED;", "x->state = GZ_SIGN_ROUND_FREE;"),
+    "EVICTED_ABANDONED": ("x->state = GZ_SIGN_ROUND_ABANDONED;", "x->state = GZ_SIGN_ROUND_COMPLETE;"),
+    "DEAD_LEAVES_C7": ("if (state == GZ_SIGN_ROUND_DEAD) drop_exposure(e, round_id);", ""),
+    "FAILED_START_WIPES": ("return fail_engine(e, em.st); }", "return em.st; }"),
 }
 
 
@@ -131,14 +152,18 @@ def run_variant(build, rel, text, args, timeout):
     orig = open(path).read()
     try:
         open(path, "w").write(text)
-        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing"], capture_output=True, timeout=600)
+        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg"], capture_output=True, timeout=600)
         if b.returncode != 0:
             return "no-compile", ""
         try:
             env = dict(os.environ, GZ_STOP_ON_FAIL="1")
-            t = subprocess.run([os.path.join(build, "test_signing")] + args, capture_output=True, timeout=timeout, env=env)
-            fails = sorted(set(re.findall(r"FAIL \S+/(\w+\.[ch]:\d+)", t.stdout.decode(errors="replace"))))
-            return ("killed" if t.returncode != 0 else "survived"), ",".join(fails[:6])
+            # the white-box guards first (seconds), then the whole suite
+            for exe, a in (("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args)):
+                t = subprocess.run([os.path.join(build, exe)] + a, capture_output=True, timeout=timeout, env=env)
+                if t.returncode != 0:
+                    fails = sorted(set(re.findall(r"FAIL \S+/(\w+\.[ch]:\d+)", t.stdout.decode(errors="replace"))))
+                    return "killed", ",".join(fails[:6]) or exe
+            return "survived", ""
         except subprocess.TimeoutExpired:
             return "killed", "timeout"
     finally:

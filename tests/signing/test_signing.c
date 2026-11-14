@@ -131,6 +131,8 @@ static void world_reset(world_t *w)
     int attempts = w->max_attempts;
     memset(w, 0, sizeof *w);
     w->builder = keep;
+    memset(w->builder.epoch, 0, sizeof w->builder.epoch);      /* a new world: every party in its first epoch */
+    w->builder.n_outcomes = 0;
     w->max_attempts = attempts;
 }
 
@@ -351,7 +353,7 @@ static void test_restores(void)
 {
     world_t w;
     memset(&w, 0, sizeof w);
-    uint64_t repeated_draws = 0, runs = 0, second = 0, restores = 0;
+    uint64_t repeated_draws = 0, runs = 0, second = 0, restores = 0, epochs = 0;
     for (uint32_t node = 0; node <= 3; node++)
         for (uint32_t when = 6; when < (g_quick > 1 ? 12u : g_quick ? 20u : 40u); when += 3)
             for (size_t keep = 0; keep < 4; keep++) {
@@ -378,15 +380,18 @@ static void test_restores(void)
                             memcmp(a->bytes, b->bytes, 32) == 0) repeated_draws++;
                     }
                 second += w.second_contributions;
+                for (uint32_t g = 1; g <= 3; g++) epochs += w.builder.epoch[g];
                 runs++;
                 if (!o.done) { printf("  restore node %u at %u keep %zu: attempts %u\n", node, when, keep, o.attempts); dump(&w); }
                 CHECK(!sim_failed(sim));
                 CHECK(o.done);
                 sim_destroy(sim);
             }
-    printf("  restores: %llu runs, %llu repeated secret draws, %llu second contributions after a restore (S5, not built)\n",
-           (unsigned long long)runs, (unsigned long long)repeated_draws, (unsigned long long)second);
+    printf("  restores: %llu runs, %llu repeated secret draws, %llu second contributions after a restore, %llu new key epochs\n",
+           (unsigned long long)runs, (unsigned long long)repeated_draws, (unsigned long long)second, (unsigned long long)epochs);
     CHECK(repeated_draws > 0);
+    CHECK(second == 0);                 /* S5: a restored member contributes only under its new keys */
+    CHECK(epochs > 0);
     CHECK(restores == runs);
     world_reset(&w);
 }
@@ -948,19 +953,22 @@ static void test_definitions(int print)
 /* Transcript digests of the scenarios (scenarios.h). After an intended change:
  * run "test_signing golden-print", check what changed, update. */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
-    0x5a93658ed96d444bull, /* honest-1 */
-    0x2e312808cf4773d4ull, /* honest-2 */
-    0xba1f1a7110646c4full, /* duplicates */
-    0x4f0229c7cd36bf1full, /* member-restart-nonces */
-    0x99d14a22114ae741ull, /* member-restart-signed */
-    0xf053d49e878c939bull, /* tier-abort */
-    0x7442763cd500d86aull, /* host-restarts */
-    0xc2931041b87a72b5ull, /* timers */
-    0x2669cd1e0c008ac1ull, /* host-faults */
-    0xd14200db650773fdull, /* member-faults */
-    0x10874665f7589edfull, /* proposals */
-    0x7bf6e17683decf57ull, /* journal */
-    0x54664539883806e1ull, /* edges */
+    0x3019f11ce6c6371eull, /* honest-1 */
+    0xaa68b9375ca7f2cbull, /* honest-2 */
+    0xf768fc5df9ae3600ull, /* duplicates */
+    0xe83624ff1416866bull, /* member-restart-nonces */
+    0x21a11886f51c4816ull, /* member-restart-signed */
+    0x4599dbe2fe79bfaeull, /* tier-abort */
+    0x2be676722e9b47f1ull, /* host-restarts */
+    0x827ec25cef459ac8ull, /* timers */
+    0xed2046bfca206e0bull, /* host-faults */
+    0x418e111b10c8cd05ull, /* member-faults */
+    0xbca0101572ec4e6bull, /* proposals */
+    0xc464b5651ca52d0dull, /* journal */
+    0x5459a44e70529edeull, /* edges */
+    0x9463dda8569004e0ull, /* reconnect */
+    0x6af204a82983a812ull, /* records */
+    0x4e3c836601ddc368ull, /* exposure */
 };
 
 static void test_golden(int print)
@@ -1080,6 +1088,7 @@ static void test_many_rounds(int rounds)
     }
     CHECK(stopped < 0 && h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
     for (uint32_t g = 0; g <= 3; g++) CHECK(h_restart(&h, g) == GZ_OK && h.p[g].e->n_known == (size_t)rounds - GZ_SIGN_MAX_ROUNDS);
+    for (uint32_t g = 1; g <= 3; g++) CHECK(h.p[g].e->n_exposures == (size_t)rounds && !h.p[g].e->exposures_lost);   /* C7: each kept */
     const h_sent_t *p0 = h_sent_kind(&h, 0, GZ_SIGN_MSG_PROPOSE, 0);
     size_t nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
     h_inject(&h, 0, 1, p0->b, p0->len);

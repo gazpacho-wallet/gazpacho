@@ -35,6 +35,25 @@ static void flush_until(harness_t *h, uint32_t from, uint8_t kind, size_t count)
     while (h->nq && h_count_kind(h, from, kind) < count) h_deliver(h, 0, 0);
 }
 
+/* A field of a journal record (journal.md 9; the code table in signing.h), or NULL. */
+static const uint8_t *rec_field(const h_rec_t *rec, uint64_t type, size_t *len)
+{
+    size_t at = 0;
+    while (at + 2 <= rec->len) {
+        uint64_t t = rec->b[at], l;
+        if (t >= 0xfd) return NULL;                       /* the engine's field numbers are all one byte */
+        at++;
+        l = rec->b[at];
+        if (l == 0xfd) { l = (uint64_t)rec->b[at + 1] << 8 | rec->b[at + 2]; at += 3; }
+        else if (l == 0xfe) { l = (uint64_t)rec->b[at + 1] << 24 | (uint64_t)rec->b[at + 2] << 16 | (uint64_t)rec->b[at + 3] << 8 | rec->b[at + 4]; at += 5; }
+        else at++;
+        if (l > rec->len - at) return NULL;
+        if (t == type) { if (len) *len = (size_t)l; return rec->b + at; }
+        at += (size_t)l;
+    }
+    return NULL;
+}
+
 /* The messages.md 7.9 reason for an engine's `why`. */
 #define R(why) gz_sign_reason((uint8_t)(why), 0)
 #define WHOLE (-1)
@@ -207,11 +226,22 @@ static void honest_counts(harness_t *h, uint8_t tiers)
         for (int k = 0; k < nm; k++) memcpy(fin[k], r->final_sig[idx[k]], 64);
         gz_rmsg_held_hash(idx, (const uint8_t (*)[64])fin, (size_t)nm, d);
         CHECK(ack && ack->len == GZ_RMSG_HEADER + rl(32) + rl(32) + rl(64) && gz_sign_decode(ack->b, ack->len, &ma) && memcmp(ma.held, d, 32) == 0);
-        /* the member's journal, in order */
-        static const uint32_t one[] = {GZ_SIGN_REC_M_STARTED, GZ_SIGN_REC_M_SIGNED, GZ_SIGN_REC_M_RESULT, GZ_SIGN_REC_M_COMPLETE};
+        /* the member's journal, in order, batch by batch (journal.md 9) */
+        static const uint32_t one[] = {GZ_SIGN_REC_ROUND_PROPOSAL, GZ_SIGN_REC_ROUND_STARTED, GZ_SIGN_REC_GUARD, GZ_SIGN_REC_EXPOSURE,
+                                       GZ_SIGN_REC_ROUND_SIGNED, GZ_SIGN_REC_ROUND_COMPLETED, GZ_SIGN_REC_FUNDING_STATUS};
+        static const uint64_t batch[] = {1, 1, 1, 2, 3, 4, 4};
         if (tiers == 1) {
-            CHECK(h->p[j].n_recs == 4);
-            for (int k = 0; k < 4 && h->p[j].n_recs == 4; k++) CHECK(h->p[j].recs[k].type == one[k]);
+            CHECK(h->p[j].n_recs == 7);
+            for (int k = 0; k < 7 && h->p[j].n_recs == 7; k++)
+                CHECK(h->p[j].recs[k].type == one[k] && h->p[j].recs[k].batch == batch[k]);
+            /* the exposure record: the funding transaction, the tree digest, the items, the partial signatures */
+            size_t fl, il, pl;
+            const h_rec_t *xr = h->p[j].n_recs == 7 ? &h->p[j].recs[3] : NULL;
+            const uint8_t *ftx = xr ? rec_field(xr, 8, &fl) : NULL, *dig = xr ? rec_field(xr, 10, NULL) : NULL;
+            const uint8_t *its = xr ? rec_field(xr, 12, &il) : NULL, *pms = xr ? rec_field(xr, 14, &pl) : NULL;
+            const h_sent_t *ps0 = h_sent_kind(h, j, GZ_SIGN_MSG_PARTIALS, 0);
+            CHECK(ftx && fl == 94 && dig && memcmp(dig, r->def.tree_digest, 32) == 0 && its && il == 72u * (size_t)mine);
+            CHECK(pms && ps0 && pl == ps0->len && memcmp(pms, ps0->b, pl) == 0);
         }
     }
     /* the host: one proposal, one nonce set and one result per member per tier, one complete each */
@@ -220,7 +250,8 @@ static void honest_counts(harness_t *h, uint8_t tiers)
     for (int t = 0; t < tiers; t++)
         for (uint32_t j = 1; j < h->n; j++) sets += items_of(r, j, t, NULL) > 0;
     CHECK(h_count_kind(h, 0, GZ_SIGN_MSG_ALL_NONCES) == sets && h_count_kind(h, 0, GZ_SIGN_MSG_RESULT) == sets);
-    CHECK(h->p[0].n_recs == (size_t)(1 + tiers + 1 + (h->n - 1)));
+    /* proposal, started and guard; started and guard for each later tier; signed per tier; completed; acks */
+    CHECK(h->p[0].n_recs == (size_t)(3 + 2 * (tiers - 1) + tiers + 1 + (h->n - 1)));
     const h_sent_t *res = h_sent_to(h, 0, 1, GZ_SIGN_MSG_RESULT, 0);    /* member 1's: its own items of tier 0 */
     gz_sign_msg_t mr;
     int tier0 = items_of(r, 1, 0, NULL);
@@ -268,7 +299,7 @@ static uint64_t sc_duplicates(void)
     }
     /* acks counted once each */
     size_t acks = 0;
-    for (size_t i = 0; i < h.p[0].n_recs; i++) acks += h.p[0].recs[i].type == GZ_SIGN_REC_H_ACK;
+    for (size_t i = 0; i < h.p[0].n_recs; i++) acks += h.p[0].recs[i].type == GZ_SIGN_REC_ACK_RECEIVED;
     CHECK(acks == 3);
     uint64_t d = h_digest(&h);
     h_free(&h);
@@ -295,7 +326,7 @@ static uint64_t sc_member_restart_nonces(void)
     CHECK(r1 && r1->state == GZ_SIGN_ROUND_ABORTED && r1->why == GZ_SIGN_WHY_RESTARTED && !r1->ever_partial);
     for (int i = 0; r1 && i < r1->def.n_items; i++) CHECK(r1->secnonce_serial[i] == 0);
     CHECK(check_abort(h_sent_kind(&h, 2, GZ_SIGN_MSG_ABORT, 0), R(GZ_SIGN_WHY_RESTARTED), WHOLE, 0, NULL));
-    CHECK(h.p[2].recs[h.p[2].n_recs - 1].type == GZ_SIGN_REC_M_ABORTED);
+    CHECK(h.p[2].recs[h.p[2].n_recs - 1].type == GZ_SIGN_REC_ROUND_ENDED && rec_field(&h.p[2].recs[h.p[2].n_recs - 1], 4, NULL)[0] == GZ_SIGN_END_ABORTED);
     uint8_t id1[32];
     memcpy(id1, r1->id, 32);
     /* the proposal again: the same abort, never a second nonce */
@@ -398,7 +429,8 @@ static uint64_t sc_host_restarts(void)
     const gz_sign_round_t *r = h_find(&h, 0, id1);
     CHECK(r && r->state == GZ_SIGN_ROUND_FAILED && r->why == GZ_SIGN_WHY_HOST_RESTART && r->blamed == 0);
     CHECK(h.p[0].e->attempts == 2 && memcmp(h_newest(&h, 0)->id, id1, 32) != 0);
-    CHECK(h.p[0].recs[h.p[0].n_recs - 1].type == GZ_SIGN_REC_H_PROPOSED);
+    CHECK(h.p[0].recs[h.p[0].n_recs - 1].type == GZ_SIGN_REC_GUARD && h.p[0].recs[h.p[0].n_recs - 2].type == GZ_SIGN_REC_ROUND_STARTED &&
+          h.p[0].recs[h.p[0].n_recs - 3].type == GZ_SIGN_REC_ROUND_PROPOSAL);
     h_flush(&h, 100000);
     for (uint32_t j = 1; j <= 3; j++) {
         const gz_sign_round_t *m = h_find(&h, j, id1);
@@ -496,14 +528,16 @@ static uint64_t sc_timers(void)
     d ^= h_digest(&h);
     h_free(&h);
 
-    /* a member waiting for a result resends its partial signatures and asks, every third tick; never Aborted */
+    /* a member waiting for a result resends its partial signatures and asks, every third tick; Unfinished
+     * after the step timeout (spec section 6, step 8), never Aborted */
     h_init(&h, 3);
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     flush_until(&h, 1, GZ_SIGN_MSG_PARTIALS, 1);
     h.drop_to = 1u << 1;
     h_flush(&h, 100000);
     for (int t = 0; t < 20; t++) h_tick(&h, 1);
-    CHECK(h_newest(&h, 1)->state == GZ_SIGN_ROUND_ACTIVE && h_newest(&h, 1)->tier_state[0] == GZ_SIGN_TIER_SIGNED);
+    CHECK(h_newest(&h, 1)->state == GZ_SIGN_ROUND_UNFINISHED && h_newest(&h, 1)->why == GZ_SIGN_WHY_DEADLINE &&
+          h_newest(&h, 1)->tier_state[0] == GZ_SIGN_TIER_SIGNED);
     CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == 1 + 6 && h_count_kind(&h, 1, GZ_SIGN_MSG_STATUS) == 6);
     d ^= h_digest(&h);
     h_free(&h);
@@ -574,8 +608,11 @@ static uint64_t sc_host_faults(void)
             CHECK(check_abort(h_sent_to(&h, 0, 2, GZ_SIGN_MSG_ABORT, 0), R(cases[c].why), WHOLE, 0, NULL));   /* the blamed member: the fault */
             CHECK(check_abort(h_sent_to(&h, 0, 1, GZ_SIGN_MSG_ABORT, 0), 4, WHOLE, 0, NULL));                  /* the others: the attempt ended */
             size_t i = h.p[0].n_recs;
-            while (i && h.p[0].recs[i - 1].type != GZ_SIGN_REC_H_FAILED) i--;
-            CHECK(i && h.p[0].recs[i - 1].len == 37 && h.p[0].recs[i - 1].b[36] == cases[c].why && be32p(h.p[0].recs[i - 1].b + 32) == 1u << 2);
+            while (i && h.p[0].recs[i - 1].type != GZ_SIGN_REC_ROUND_ENDED) i--;
+            const uint8_t *oc = i ? rec_field(&h.p[0].recs[i - 1], 4, NULL) : NULL, *bl = i ? rec_field(&h.p[0].recs[i - 1], 8, NULL) : NULL;
+            const uint8_t *wy = i ? rec_field(&h.p[0].recs[i - 1], 10, NULL) : NULL, *rs = i ? rec_field(&h.p[0].recs[i - 1], 6, NULL) : NULL;
+            CHECK(oc && oc[0] == GZ_SIGN_END_FAILED && wy && wy[0] == cases[c].why && bl && be32p(bl) == 1u << 2 &&
+                  rs && (rs[0] << 8 | rs[1]) == R(cases[c].why));
             h_flush(&h, 100000);
             h_ticks(&h, 2);
             CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE && h_newest(&h, 0)->def.n_participants == 3);
@@ -929,7 +966,13 @@ static uint64_t sc_journal(void)
                 gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
                 gz_status_t st = gz_sign_start(p->e, &rd, &list, &more);
                 /* every damage is refused, except in the two records that carry no signature */
-                int must = keep.type != GZ_SIGN_REC_H_FAILED && !(how == 4 && keep.type == GZ_SIGN_REC_H_ACK);
+                /* Every damage is refused, except where the bytes carry no signature and nothing to
+                 * check them against: funding_status and the guard (not the engine's to read); and in the last byte, a
+                 * round_started's own key (read as a key of an earlier epoch: refused, never resumed), a
+                 * host's round_ended (its why, for display) and a member's round_completed (its ack tip). */
+                int must = keep.type != GZ_SIGN_REC_FUNDING_STATUS && keep.type != GZ_SIGN_REC_GUARD &&
+                           !(how == 4 && (keep.type == GZ_SIGN_REC_ROUND_STARTED || (g == 0 && keep.type == GZ_SIGN_REC_ROUND_ENDED) ||
+                                          (g != 0 && keep.type == GZ_SIGN_REC_ROUND_COMPLETED)));
                 if (must && st != GZ_ERR_CORRUPT) printf("  journal: party %u record %zu (type %x) damage %d accepted\n", g, k, keep.type, how);
                 if (must) CHECK(st == GZ_ERR_CORRUPT);
                 CHECK(st == GZ_OK || st == GZ_ERR_CORRUPT);
@@ -1192,10 +1235,319 @@ static uint64_t sc_edges(void)
     return d;
 }
 
-#define N_SCENARIOS 13
+/* ---- contract v2 section 3: the reconnect table, row by row ---- */
+
+static size_t sent_since(const harness_t *h, size_t from, uint32_t party, uint8_t kind)
+{
+    size_t n = 0;
+    for (size_t i = from; i < h->n_sent; i++) n += h->sent[i].party == party && (kind == 0 || h->sent[i].kind == kind);
+    return n;
+}
+/* Drop every queued message from `from` to `to` of `kind` (0: any). */
+static size_t drop_queued(harness_t *h, uint32_t from, uint32_t to, uint8_t kind)
+{
+    size_t n = 0;
+    for (size_t k = 0; k < h->nq; k++)
+        if (h->q[k].from == from && h->q[k].to == to && (kind == 0 || h_kind_of(h->q[k].b, h->q[k].len) == kind)) { h_drop_msg(h, k); k--; n++; }
+    return n;
+}
+
+static uint64_t sc_reconnect(void)
+{
+    uint64_t d = 0;
+    /* Row "member": partial signatures sent and lost with the connection, the result missing.
+     * At PEER_CONNECTED the member resends its saved partial signatures, then asks for the status. */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        flush_until(&h, 1, GZ_SIGN_MSG_PARTIALS, 1);
+        CHECK(drop_queued(&h, 1, 0, GZ_SIGN_MSG_PARTIALS) == 1);       /* lost with the connection */
+        size_t at = h.n_sent;
+        CHECK(h_connect(&h, 1, 0) == GZ_OK);
+        CHECK(h.n_sent == at + 2 && h.sent[at].kind == GZ_SIGN_MSG_PARTIALS && h.sent[at + 1].kind == GZ_SIGN_MSG_STATUS);
+        const h_sent_t *p0 = h_sent_kind(&h, 1, GZ_SIGN_MSG_PARTIALS, 0);
+        CHECK(p0 && h.sent[at].len == p0->len && memcmp(h.sent[at].b, p0->b, p0->len) == 0);   /* the saved bytes (S3) */
+        h_flush(&h, 100000);
+        CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE && h.p[0].e->attempts == 1);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    /* Row "either, in the nonce phase": nothing at PEER_CONNECTED, on either side; the host's
+     * step timer alone repairs it: a lost round_nonces by resending the saved round_propose, which
+     * the member answers with its saved nonces; a lost round_all_nonces by resending it. */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        flush_until(&h, 2, GZ_SIGN_MSG_NONCES, 1);
+        CHECK(drop_queued(&h, 2, 0, GZ_SIGN_MSG_NONCES) == 1);
+        size_t at = h.n_sent;
+        CHECK(h_connect(&h, 2, 0) == GZ_OK && h_connect(&h, 0, 2) == GZ_OK);
+        CHECK(h.n_sent == at);                                         /* nobody pushes anything at connect */
+        h_flush(&h, 100000);
+        CHECK(h_newest(&h, 0)->tier_state[0] == GZ_SIGN_TIER_NONCES);
+        for (int t = 0; t < 3; t++) h_tick(&h, 0);                     /* the step timer, every resend_ticks */
+        CHECK(sent_since(&h, at, 0, GZ_SIGN_MSG_PROPOSE) == 1 && h.sent[h.n_sent - 1].peer == 2);
+        h_deliver(&h, (size_t)q_find(&h, 0, 2, GZ_SIGN_MSG_PROPOSE), 0);
+        const h_sent_t *n0 = h_sent_kind(&h, 2, GZ_SIGN_MSG_NONCES, 0), *n1 = h_sent_kind(&h, 2, GZ_SIGN_MSG_NONCES, 1);
+        CHECK(n0 && n1 && n0->len == n1->len && memcmp(n0->b, n1->b, n0->len) == 0);   /* never new nonces */
+        /* now the nonce set to member 3 is lost */
+        while (q_find(&h, 0, 3, GZ_SIGN_MSG_ALL_NONCES) < 0 && h.nq) h_deliver(&h, 0, 0);
+        CHECK(drop_queued(&h, 0, 3, GZ_SIGN_MSG_ALL_NONCES) == 1);
+        h_flush(&h, 100000);
+        CHECK(h_newest(&h, 0)->tier_state[0] == GZ_SIGN_TIER_SIGNED);
+        at = h.n_sent;
+        for (int t = 0; t < 3; t++) h_tick(&h, 0);
+        CHECK(sent_since(&h, at, 0, GZ_SIGN_MSG_ALL_NONCES) == 1 && h.sent[h.n_sent - 1].peer == 3);
+        h_flush(&h, 100000);
+        CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE && h.p[0].e->attempts == 1);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    /* Row "member", Complete and not yet live: the ack lost; at PEER_CONNECTED the member asks for
+     * the status, the host answers with the saved results and round_complete, the member resends its
+     * saved ack. The host answers one status request per round and member key in status_ticks. */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        h.status_ticks = 10;
+        for (uint32_t g = 0; g < h.n; g++) h.p[g].e->cfg.status_ticks = 10;
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        flush_until(&h, 3, GZ_SIGN_MSG_ACK, 1);
+        CHECK(drop_queued(&h, 3, 0, GZ_SIGN_MSG_ACK) == 1);
+        h_flush(&h, 100000);
+        CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_COMPLETE && h_newest(&h, 3)->state == GZ_SIGN_ROUND_COMPLETE);
+        size_t at = h.n_sent;
+        CHECK(h_connect(&h, 3, 0) == GZ_OK);
+        CHECK(h.n_sent == at + 1 && h.sent[at].kind == GZ_SIGN_MSG_STATUS);
+        CHECK(h_connect(&h, 3, 0) == GZ_OK);                           /* a second connection at once */
+        h_flush(&h, 100000);
+        /* one answer: the result and the complete, once; the ack again, the same bytes */
+        CHECK(sent_since(&h, at, 0, GZ_SIGN_MSG_RESULT) == 1 && sent_since(&h, at, 0, GZ_SIGN_MSG_COMPLETE) == 1);
+        CHECK(h.p[0].e->counters[GZ_SIGN_COUNT_DUPLICATES] >= 1);
+        const h_sent_t *a0 = h_sent_kind(&h, 3, GZ_SIGN_MSG_ACK, 0), *a1 = h_sent_kind(&h, 3, GZ_SIGN_MSG_ACK, 1);
+        CHECK(a0 && a1 && a0->len == a1->len && memcmp(a0->b, a1->b, a0->len) == 0);
+        CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
+        /* after status_ticks, answered again */
+        for (int t = 0; t < 10; t++) h_tick(&h, 0);
+        h_flush(&h, 100000);
+        at = h.n_sent;
+        CHECK(h_connect(&h, 3, 0) == GZ_OK);
+        h_flush(&h, 100000);
+        CHECK(sent_since(&h, at, 0, GZ_SIGN_MSG_RESULT) == 1);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    /* Row "member", after a restart while the host still collects partial signatures (F26):
+     * the restarted member resends them and the round completes; a restart in the nonce phase
+     * answers the replayed proposal with reason 3 only (S2). */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        flush_until(&h, 2, GZ_SIGN_MSG_PARTIALS, 1);
+        CHECK(drop_queued(&h, 2, 0, GZ_SIGN_MSG_PARTIALS) == 1);
+        CHECK(h_restart(&h, 2) == GZ_OK);
+        CHECK(h_count_kind(&h, 2, GZ_SIGN_MSG_PARTIALS) == 2);
+        h_flush(&h, 100000);
+        CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE && h.p[0].e->attempts == 1);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    return d;
+}
+
+/* ---- the journal's records, the hooks and the round's end ---- */
+
+static const h_rec_t *last_rec(const harness_t *h, uint32_t g, uint32_t type)
+{
+    for (size_t i = h->p[g].n_recs; i-- > 0;)
+        if (h->p[g].recs[i].type == type) return &h->p[g].recs[i];
+    return NULL;
+}
+
+static uint64_t sc_records(void)
+{
+    uint64_t d = 0;
+    /* The guard is in the batch of every round_started (journal.md 8.3); may_ack runs before the
+     * ack, and its tip is saved with it (round_completed, funding_status) and read back; FUNDING
+     * is reported once, when every ack is in. */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        h.builder.tip = 1234;
+        CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+        h_flush(&h, 100000);
+        CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
+        for (uint32_t g = 0; g < h.n; g++)
+            for (size_t i = 0; i < h.p[g].n_recs; i++) {
+                if (h.p[g].recs[i].type != GZ_SIGN_REC_ROUND_STARTED) continue;
+                int guarded = 0;
+                for (size_t k = 0; k < h.p[g].n_recs; k++)
+                    guarded |= h.p[g].recs[k].batch == h.p[g].recs[i].batch && h.p[g].recs[k].type == GZ_SIGN_REC_GUARD;
+                CHECK(guarded);
+            }
+        CHECK(h.builder.may_ack_calls == 3 && h.builder.may_ack_refused == 0);
+        for (uint32_t j = 1; j <= 3; j++) {
+            const h_rec_t *c = last_rec(&h, j, GZ_SIGN_REC_ROUND_COMPLETED), *f = last_rec(&h, j, GZ_SIGN_REC_FUNDING_STATUS);
+            const uint8_t *tip = c ? rec_field(c, 8, NULL) : NULL, *ft = f ? rec_field(f, 6, NULL) : NULL;
+            CHECK(tip && be32p(tip) == 1234 && ft && be32p(ft) == 1234 && c->batch == f->batch);
+            CHECK(f && memcmp(rec_field(f, 2, NULL), h_newest(&h, j)->def.funding_txid, 32) == 0);
+        }
+        CHECK(h.builder.n_outcomes == 1 && h.builder.outcomes[0] == GZ_SIGN_OUTCOME_FUNDING);
+        check_restart_keeps(&h);
+        for (uint32_t j = 1; j <= 3; j++) CHECK(h_newest(&h, j)->ack_tip == 1234);   /* read back, never the new tip */
+        /* resolved Live: saved; the member stops asking */
+        static gz_action_t s[8];
+        static uint8_t sb[4096];
+        gz_action_list_t l;
+        gz_action_list_init(&l, s, 8, sb, sizeof sb);
+        CHECK(gz_sign_resolve(h.p[1].e, h_newest(&h, 1)->id, GZ_SIGN_END_LIVE, &l) == GZ_OK && l.count == 1);
+        h_apply(&h, 1, &l);
+        CHECK(h_newest(&h, 1)->state == GZ_SIGN_ROUND_LIVE);
+        gz_action_list_init(&l, s, 8, sb, sizeof sb);
+        CHECK(gz_sign_resolve(h.p[1].e, h_newest(&h, 1)->id, GZ_SIGN_END_DEAD, &l) == GZ_ERR_ARGUMENT);   /* Live is final */
+        size_t st = h_count_kind(&h, 1, GZ_SIGN_MSG_STATUS);
+        for (int t = 0; t < 6; t++) h_tick(&h, 1);
+        CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_STATUS) == st);
+        CHECK(h_restart(&h, 1) == GZ_OK && h_newest(&h, 1)->state == GZ_SIGN_ROUND_LIVE);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    /* may_ack refuses (the tip too late for the exit time): no ack, no funding; Unfinished, then
+     * Abandoned at the unfinished deadline, saved as round_ended. */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        h.unfinished_ticks = 6;
+        for (uint32_t g = 0; g < h.n; g++) h.p[g].e->cfg.unfinished_ticks = 6;
+        h.builder.tip = 99990;
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        h_flush(&h, 100000);
+        CHECK(h.builder.may_ack_refused == 3 && h_count_kind(&h, 1, GZ_SIGN_MSG_ACK) == 0);
+        const gz_sign_round_t *m = h_newest(&h, 1);
+        CHECK(m->state == GZ_SIGN_ROUND_UNFINISHED && m->why == GZ_SIGN_WHY_ACK_REFUSED && h_newest(&h, 0)->state == GZ_SIGN_ROUND_COMPLETE);
+        for (int t = 0; t < 6; t++) h_tick(&h, 1);
+        CHECK(h_newest(&h, 1)->state == GZ_SIGN_ROUND_ABANDONED);
+        const h_rec_t *e = last_rec(&h, 1, GZ_SIGN_REC_ROUND_ENDED);
+        CHECK(e && rec_field(e, 4, NULL)[0] == GZ_SIGN_END_ABANDONED);
+        CHECK(h_restart(&h, 1) == GZ_OK && h_newest(&h, 1)->state == GZ_SIGN_ROUND_ABANDONED);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    /* No retry hook: a failed attempt is reported RETRY with the blamed members' keys; the last
+     * attempt FAILED. */
+    {
+        harness_t h;
+        h_init(&h, 3);
+        h.max_attempts = 2;
+        for (uint32_t g = 0; g < h.n; g++) h.p[g].e->cfg.max_attempts = 2;
+        h.p[0].e->cfg.retry = NULL;
+        h.drop_to = 1u << 3;                                            /* member 3 hears nothing */
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        h_flush(&h, 100000);
+        h_ticks(&h, 12);
+        CHECK(h.builder.n_outcomes == 1 && h.builder.outcomes[0] == GZ_SIGN_OUTCOME_RETRY && h.builder.outcome_blamed[0] == 1);
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        h_flush(&h, 100000);
+        h_ticks(&h, 12);
+        CHECK(h.builder.n_outcomes == 2 && h.builder.outcomes[1] == GZ_SIGN_OUTCOME_FAILED);
+        d ^= h_digest(&h);
+        h_free(&h);
+    }
+    return d;
+}
+
+/* ---- C7 and C10 (safety-rule.md): one tree per funding outpoint, one round per output ---- */
+
+/* Another tree on the same funding output: the last leaf's version changed (nobody spends it). */
+static void other_tree(gz_sign_def_t *dd, int which)
+{
+    (void)which;
+    dd->items[dd->n_items - 1].tx[0] ^= 1;
+}
+
+/* Every member's unresolved rounds, past their step timeout, resolved Abandoned. */
+static void resolve_all(harness_t *h)
+{
+    static gz_action_t s[8];
+    static uint8_t sb[4096];
+    gz_action_list_t l;
+    for (uint32_t j = 1; j < h->n; j++)
+        for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++) {
+            const gz_sign_round_t *r = &h->p[j].e->rounds[k];
+            if (r->state != GZ_SIGN_ROUND_UNFINISHED && r->state != GZ_SIGN_ROUND_COMPLETE) continue;
+            gz_action_list_init(&l, s, 8, sb, sizeof sb);
+            CHECK(gz_sign_resolve(h->p[j].e, r->id, GZ_SIGN_END_ABANDONED, &l) == GZ_OK);
+            h_apply(h, j, &l);
+        }
+}
+
+static uint64_t sc_exposure(void)
+{
+    harness_t h;
+    gz_action_list_t l;
+    static gz_action_t s[8];
+    static uint8_t sb[4096];
+    h_init(&h, 3);
+    h.p[0].e->cfg.retry = NULL;
+    /* Round A on one outpoint (WF_SAME_TREE): member 1 releases its partial signatures (its
+     * exposure record), then member 2 hears nothing more. */
+    CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+    uint8_t ida[32];
+    memcpy(ida, h_newest(&h, 0)->id, 32);
+    flush_until(&h, 1, GZ_SIGN_MSG_PARTIALS, 1);
+    CHECK(h.p[1].e->n_exposures == 1 && memcmp(h.p[1].e->exposures[0].tree_digest, h_find(&h, 1, ida)->def.tree_digest, 32) == 0);
+    h.drop_to = 1u << 2;
+    h_flush(&h, 100000);
+    h_ticks(&h, 12);
+    h.drop_to = 0;
+    CHECK(h_find(&h, 0, ida)->state == GZ_SIGN_ROUND_FAILED);
+    /* C10: a new round on the same outpoint while member 1's round on it is unresolved: reason 6 */
+    CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+    long pi = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
+    CHECK(pi >= 0);
+    h_deliver(&h, (size_t)pi, 0);
+    CHECK(check_abort(&h.sent[h.n_sent - 1], 6, WHOLE, 0, NULL) && h.sent[h.n_sent - 1].party == 1);
+    h_flush(&h, 100000);
+    h_ticks(&h, 12);
+    /* the members resolve what is open on it (Abandoned): their exposure records stay */
+    /* member 2's result was lost, so the host's ack deadline failed the attempt: member 1 holds it Complete */
+    CHECK(h_find(&h, 1, ida)->state == GZ_SIGN_ROUND_COMPLETE);
+    resolve_all(&h);
+    CHECK(h_find(&h, 1, ida)->state == GZ_SIGN_ROUND_ABANDONED && h.p[1].e->n_exposures == 1);
+    gz_action_list_init(&l, s, 8, sb, sizeof sb);
+    CHECK(gz_sign_resolve(h.p[1].e, ida, GZ_SIGN_END_ABANDONED, &l) == GZ_ERR_ARGUMENT);   /* already Abandoned */
+    /* C7: another tree on that outpoint: reason 11 from member 1; the others accept it */
+    h.builder.mutate = other_tree;
+    CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+    pi = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
+    CHECK(pi >= 0);
+    h_deliver(&h, (size_t)pi, 0);
+    CHECK(check_abort(&h.sent[h.n_sent - 1], 11, WHOLE, 0, NULL) && h.sent[h.n_sent - 1].party == 1);
+    h_flush(&h, 100000);
+    h_ticks(&h, 12);
+    /* the same tree as A on it: accepted, and the round completes */
+    resolve_all(&h);
+    h.builder.mutate = NULL;
+    CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+    h_flush(&h, 100000);
+    CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
+    CHECK(memcmp(h_newest(&h, 0)->def.tree_digest, h.p[1].e->exposures[0].tree_digest, 32) == 0);
+    /* the exposure records survive a restart, also of rounds pushed out of memory */
+    size_t ne = h.p[1].e->n_exposures;
+    CHECK(h_restart(&h, 1) == GZ_OK && h.p[1].e->n_exposures == ne);
+    uint64_t d = h_digest(&h);
+    h_free(&h);
+    return d;
+}
+
+#define N_SCENARIOS 16
 static const char *const SC_NAMES[N_SCENARIOS] = {
     "honest-1", "honest-2", "duplicates", "member-restart-nonces", "member-restart-signed", "tier-abort",
-    "host-restarts", "timers", "host-faults", "member-faults", "proposals", "journal", "edges"};
+    "host-restarts", "timers", "host-faults", "member-faults", "proposals", "journal", "edges",
+    "reconnect", "records", "exposure"};
 
 static uint64_t run_scenario(int k)
 {
@@ -1212,7 +1564,10 @@ static uint64_t run_scenario(int k)
     case 9: return sc_member_faults();
     case 10: return sc_proposals();
     case 11: return sc_journal();
-    default: return sc_edges();
+    case 12: return sc_edges();
+    case 13: return sc_reconnect();
+    case 14: return sc_records();
+    default: return sc_exposure();
     }
 }
 
