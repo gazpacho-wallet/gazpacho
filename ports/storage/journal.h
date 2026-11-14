@@ -254,7 +254,10 @@ uint64_t gz_journal_batch_size(const gz_record_t *records, size_t n);
 size_t gz_journal_encode_batch(uint8_t *out, const uint8_t salt[GZ_JOURNAL_SALT_LEN], uint64_t offset,
                                gz_batch_id_t id, const gz_record_t *records, size_t n);
 /* The check of the frame frame[0..len) (length field to the end of the
- * payload) at file offset `offset` under `salt` (spec 3). */
+ * payload) at file offset `offset` under `salt` (spec 3). Hashed in place
+ * with the journal's own incremental SHA-256: it allocates nothing and
+ * cannot fail, so want of memory can neither make a save write an entry its
+ * reader refuses nor make an open call a good journal corrupt. */
 void gz_journal_entry_check(const uint8_t salt[GZ_JOURNAL_SALT_LEN], uint64_t offset, const uint8_t *frame,
                             size_t len, uint8_t out[GZ_JOURNAL_CHECK_LEN]);
 

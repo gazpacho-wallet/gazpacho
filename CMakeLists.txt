@@ -300,6 +300,12 @@ gz_add_test(journal_review  tests/journal/test_journal_review.c  gazpacho_journa
 # two processes), the import's floor, the name's durability, an unreadable
 # marker, the O_DIRECT fallback, the reader after a failure, the guard.
 gz_add_test(journal_review_b tests/journal/test_journal_review_b.c gazpacho_journal_testfs)
+# The journal with its own allocations failing: journal.c is compiled into
+# this test with malloc, calloc and realloc routed through the test's hook.
+add_executable(test_journal_alloc tests/journal/test_journal_alloc.c tests/journal/journal_alloc_hook.c)
+target_link_libraries(test_journal_alloc PRIVATE gazpacho_journal_testfs)
+target_compile_options(test_journal_alloc PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME journal_alloc COMMAND test_journal_alloc)
 # Review B's stateful model of the whole API and its scan-and-open target
 # against an independent reader: libFuzzer targets with GZ_LIBFUZZER, plain
 # drivers (and tests) otherwise.
