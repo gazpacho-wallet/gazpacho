@@ -1912,6 +1912,9 @@ static int replay(gz_sign_t *e, const gz_record_t *rec, const uint8_t **pending_
             r->have_final[i] = 1;
         }
         r->tier_state[t] = GZ_SIGN_TIER_DONE; r->tier = t;
+        /* As when it ran (member_result): a verified result makes a round run again that a newer
+         * proposal or a deadline had left Unfinished, so that it can still ack (review B's confirmation, N2). */
+        if (!e->cfg.host && r->state == GZ_SIGN_ROUND_UNFINISHED) r->state = GZ_SIGN_ROUND_ACTIVE;   /* RULE:REPLAY_REVIVES */
         return 1;
     }
     case GZ_SIGN_REC_ROUND_COMPLETED:

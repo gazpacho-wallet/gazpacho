@@ -89,6 +89,7 @@ RULES = {
     "EVICTED_ABANDONED": ("x->state = GZ_SIGN_ROUND_ABANDONED;", "x->state = GZ_SIGN_ROUND_COMPLETE;"),
     "DEAD_LEAVES_C7": ("if (state == GZ_SIGN_ROUND_DEAD) drop_exposure(e, round_id);", ""),
     "FAILED_START_WIPES": ("return fail_engine(e, em.st); }", "return em.st; }"),
+    "REPLAY_REVIVES": ("if (!e->cfg.host && r->state == GZ_SIGN_ROUND_UNFINISHED) r->state = GZ_SIGN_ROUND_ACTIVE;", ""),
 }
 
 
