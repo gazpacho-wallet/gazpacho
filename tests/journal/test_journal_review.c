@@ -20,7 +20,11 @@
  *   R7  2^63 refused (F6); a flush with no runner attached refuses and
  *       keeps the batches; a flush from on_confirmed confirms in order and
  *       never runs on a journal that failed meanwhile; a
- *       file system without hard links. */
+ *       file system without hard links.
+ *
+ * And the case the model fuzz target reported on main (import_failed): an
+ * import failed at each of its points, on a journal whose readable bytes
+ * already equal the backup's, never leaves the backup in place unmarked. */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
@@ -319,6 +323,95 @@ static void test_import(void)
     }
     printf("  import crash points: %d runs, %d left the old journal, %d the marked backup\n", runs, olds, backups);
     CHECK(wrong == 0 && runs >= 12 && olds > 0 && backups > 0);
+}
+
+/* --- an import that fails ------------------------------------------------- */
+
+/* The state the model fuzz target reached on main (the CI run of commit
+ * f9220c4; fuzz/corpus/journal_model/import-fails-before-marker): a start, a
+ * backup of its journal, then two starts that fail. The first fails at the
+ * sync of its incarnation entry, as Linux fails one: the entry stays
+ * readable and never reaches the disk. The second reads the device, finds
+ * zeros in the entry's place, cuts them and fails at the sync of the cut. A
+ * read of journal.gzj now gives exactly the backup's bytes, while the disk
+ * holds 45 more. Returns the backup. */
+static uint8_t *cut_not_synced(memfs_t *fs, size_t *blen)
+{
+    gz_journal_status_t st;
+    size_t len;
+    memfs_init(fs);
+    gz_journal_close(jopen(fs, &st, NULL));
+    const uint8_t *d = memfs_disk(fs, H_JOURNAL, blen);
+    uint8_t *backup = malloc(*blen);
+    memcpy(backup, d, *blen);
+    for (int i = 0; i < 2; i++) {
+        fs->fail_at = fs->points + 4; /* folder sync, file sync, then the entry and its sync, or the cut and its sync */
+        fs->fail_mode = MEMFS_FAIL_ERROR;
+        gz_journal_t *j = jopen(fs, &st, NULL);
+        CHECK(j == NULL && st == GZ_JOURNAL_ERR_IO);
+        fs->fail_at = 0;
+        fs->after_fail = 0;
+    }
+    const uint8_t *v = memfs_get(fs, H_JOURNAL, &len);
+    CHECK(v && len == *blen && memcmp(v, backup, len) == 0);
+    d = memfs_disk(fs, H_JOURNAL, &len);
+    CHECK(d && len == *blen + GZ_JOURNAL_MARK_LEN);
+    return backup;
+}
+
+/* The import of that backup, failed at each of its points in turn (the
+ * program lives on; nothing is settled). The model compared the disk before
+ * the import with a read after it, and so took the import that failed at
+ * its third point, before the marker existed, for one that had moved the
+ * backup in without a marker. It had moved nothing. What the journal must
+ * do, and does (spec 8.2, the marker first, then the file): the backup is
+ * never journal.gzj without the marker beside it; an import that fails
+ * before the marker leaves the old journal, the staged file and no marker,
+ * and the next start is not restored; from the marker on, the next start is
+ * restored, whichever file is there. No incarnation is reused. */
+static void test_import_failed(void)
+{
+    memfs_t fs;
+    gz_journal_status_t st;
+    gz_journal_open_info_t info;
+    size_t blen, len;
+    int runs = 0, untouched = 0, marked = 0, moved_in = 0, wrong = 0;
+    for (uint64_t p = 1;; p++) {
+        uint8_t *backup = cut_not_synced(&fs, &blen);
+        memfs_put(&fs, H_STAGED, backup, blen);
+        free(backup);
+        fs.fail_at = fs.points + p;
+        fs.fail_mode = MEMFS_FAIL_ERROR;
+        gz_journal_status_t is = gz_journal_import(H_DIR, gz_journal_chain_signet, &fs.os, H_STAGED, 0);
+        int hit = fs.points >= fs.fail_at;
+        fs.fail_at = 0;
+        fs.after_fail = 0;
+        if (!hit) {
+            CHECK(is == GZ_JOURNAL_OK && memfs_get(&fs, H_MARKER, &len) && !memfs_get(&fs, H_STAGED, &len));
+            memfs_free(&fs);
+            break;
+        }
+        int moved = memfs_get(&fs, H_STAGED, &len) == NULL; /* renamed over journal.gzj */
+        int marker = memfs_get(&fs, H_MARKER, &len) != NULL;
+        int ok = is == GZ_JOURNAL_ERR_IO && memfs_open_fds(&fs) == 0 && (marker || !moved);
+        if (p == 3) ok = ok && !marker && !moved; /* the model's case: the marker's temporary file */
+        gz_journal_t *j = jopen(&fs, &st, &info);
+        ok = ok && st == GZ_JOURNAL_OK && info.restored == marker && info.scan.highest_incarnation == 1 &&
+             info.incarnation >= 2;
+        if (!ok) printf("  import failed at point %llu: %s, marker %d, moved %d; then %s, restored %d, incarnation %llu\n",
+                        (unsigned long long)p, gz_journal_status_name(is), marker, moved, gz_journal_status_name(st),
+                        info.restored, (unsigned long long)info.incarnation);
+        wrong += !ok;
+        untouched += !marker && !moved;
+        marked += marker;
+        moved_in += moved;
+        gz_journal_close(j);
+        memfs_free(&fs);
+        runs++;
+    }
+    printf("  import failure points: %d, %d before the marker (nothing moved), %d marked, %d with the backup in place\n",
+           runs, untouched, marked, moved_in);
+    CHECK(wrong == 0 && runs >= 6 && untouched >= 3 && marked >= 2 && moved_in >= 1);
 }
 
 /* --- R3 ------------------------------------------------------------------- */
@@ -812,7 +905,8 @@ int main(int argc, char **argv)
         const char *name;
         void (*fn)(void);
     } parts[] = {{"failed_sync", test_failed_sync}, {"device_read", test_posix_device_read},
-                 {"import", test_import},           {"lock_real", test_lock_real},
+                 {"import", test_import},           {"import_failed", test_import_failed},
+                 {"lock_real", test_lock_real},
                  {"first_starts", test_first_starts}, {"counter", test_counter},
                  {"hard_limit", test_hard_limit},   {"guard_kept", test_guard_kept},
                  {"no_runner", test_no_runner},     {"reentrant_flush", test_reentrant_flush},
