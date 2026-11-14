@@ -73,7 +73,8 @@ static void put64(uint8_t *p, uint64_t v) { put32(p, (uint32_t)(v >> 32)); put32
  * save write an entry its own reader refuses, or make an open call a good
  * journal corrupt (re-confirmation review of PR 29, N1); the one-shot SHA-256
  * of the imported library goes through OpenSSL's EVP, which allocates. The
- * vectors of spec section 11 and the independent Python reader check it. */
+ * vectors of spec section 11 and the independent Python reader check it, and
+ * tests/journal/test_journal_sha.c directly (the NIST vectors, split updates). */
 typedef struct {
     uint32_t h[8];
     uint8_t buf[64];
@@ -121,6 +122,7 @@ static void sha_init(sha_t *s)
 
 static void sha_update(sha_t *s, const uint8_t *d, size_t len)
 {
+    if (!len) return; /* nothing to add; `d` may be null, which memcpy must never be given */
     s->total += len;
     if (s->used) {
         size_t take = 64 - s->used < len ? 64 - s->used : len;

@@ -398,6 +398,9 @@ add_executable(test_journal_alloc tests/journal/test_journal_alloc.c tests/journ
 target_link_libraries(test_journal_alloc PRIVATE gazpacho_journal_testfs)
 target_compile_options(test_journal_alloc PRIVATE ${GZ_NEW_CODE_WARNINGS})
 add_test(NAME journal_alloc COMMAND test_journal_alloc)
+# The journal's own SHA-256, called directly: the test includes journal.c for
+# its static functions, so the library's copy of that file is not linked in.
+gz_add_test(journal_sha tests/journal/test_journal_sha.c gazpacho_journal)
 # Review B's stateful model of the whole API and its scan-and-open target
 # against an independent reader: libFuzzer targets with GZ_LIBFUZZER, plain
 # drivers (and tests) otherwise.
@@ -412,6 +415,10 @@ foreach(target journal_model journal_open)
 endforeach()
 if(NOT GZ_LIBFUZZER)
   add_test(NAME journal_fuzz_model COMMAND fuzz_journal_model 2000 1)
+  # The model's saved cases, replayed one run each: inputs on which the model
+  # or the journal was once wrong. The same files start libFuzzer's corpus.
+  file(GLOB GZ_JOURNAL_MODEL_CASES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/journal_model/*)
+  add_test(NAME journal_model_cases COMMAND fuzz_journal_model cases ${GZ_JOURNAL_MODEL_CASES})
   add_test(NAME journal_fuzz_open  COMMAND fuzz_journal_open 20000 1)
 endif()
 # Under valgrind: every journal test runs in the valgrind job

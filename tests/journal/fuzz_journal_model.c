@@ -7,7 +7,10 @@
  * every operation the contract invariants of ports.h, runner.h, journal.h and
  * contract-v2 section 8 are checked against the model; a violation aborts.
  * Built as a libFuzzer target (GZ_LIBFUZZER: -DLIBFUZZER) or with a random
- * driver:  fuzz_journal_model ITERATIONS SEED [VERBOSE [RUN]] */
+ * driver:  fuzz_journal_model ITERATIONS SEED [VERBOSE [RUN]]
+ * The same program replays saved inputs, one run each, as a test does with
+ * the cases kept in fuzz/corpus/journal_model (libFuzzer's starting corpus):
+ *          fuzz_journal_model cases [-v] FILE... */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,7 +45,7 @@ typedef struct {
     uint64_t base;
     uint8_t *snap; size_t snap_len; int have_snap;
     uint8_t *staged; size_t staged_len; int import_unknown;
-    uint8_t *before; size_t before_len;   /* journal before an import that crashed */
+    int staged_inode;           /* the staged backup's file, as the import was handed it */
     uint64_t gctr;              /* the next guard counter */
     uint64_t soft, hard, unsynced;
     int wc_fail, had_journal, stop, import_under_fault, b1_risk;
@@ -289,14 +292,33 @@ static void adopt_backup(M *m, const uint8_t *b, size_t bl)
     m->base = sc.highest_incarnation;
 }
 
+/* The file a current name refers to; -1 if there is no such name. */
+static int inode_of(const memfs_t *fs, const char *path)
+{
+    for (int k = 0; k < MEMFS_FILES; k++)
+        if (fs->vol[k].inode >= 0 && !strcmp(fs->vol[k].name, path)) return fs->vol[k].inode;
+    return -1;
+}
+
+/* Did the import's rename take effect: is journal.gzj now the staged file
+ * itself? The folder's names answer that; the bytes cannot. The journal an
+ * import is to replace may already read as the backup's bytes while the disk
+ * holds others (a start cut a tail and the cut's sync failed). The model
+ * used to compare the disk before the import with a read after it, and so
+ * took an import that failed before its marker, and moved nothing, for the
+ * backup put in place unmarked: the failure of CI on main at f9220c4, kept
+ * as fuzz/corpus/journal_model/import-fails-before-marker. */
+static int import_took(const M *m)
+{
+    return m->staged_inode >= 0 && inode_of(&m->fs, JP) == m->staged_inode;
+}
+
 static void do_import(M *m)
 {
     if (!m->have_snap) return;
     uint64_t floor = b8() & 3 ? 0 : m->max_inc + b8();
     memfs_put(&m->fs, SP, m->snap, m->snap_len);
-    size_t ol; const uint8_t *old = memfs_disk(&m->fs, JP, &ol);
-    free(m->before); m->before = NULL; m->before_len = 0;
-    if (old) { m->before = malloc(ol ? ol : 1); memcpy(m->before, old, ol); m->before_len = ol; }
+    m->staged_inode = inode_of(&m->fs, SP);
     gz_journal_status_t st = gz_journal_import(D, gz_journal_chain_signet, &m->fs.os, SP, floor);
     if (m->fs.fail_at && st == GZ_JOURNAL_OK) m->import_under_fault = 1;
     if (verbose) printf("import -> %s\n", gz_journal_status_name(st));
@@ -315,11 +337,8 @@ static void resolve_import(M *m)
 {
     if (!m->import_unknown) return;
     m->import_unknown = 0;
-    size_t l; const uint8_t *now = memfs_disk(&m->fs, JP, &l);
     size_t ml; const uint8_t *mk = memfs_disk(&m->fs, D "/" GZ_JOURNAL_MARKER_FILE, &ml);
-    int is_backup = now && l == m->snap_len && memcmp(now, m->snap, l) == 0;
-    int was_backup = m->before && m->before_len == m->snap_len && memcmp(m->before, m->snap, m->snap_len) == 0;
-    if (is_backup && !was_backup) {
+    if (import_took(m)) {
         if (!mk) BUG("an import that crashed left the backup without a restore marker (R2)");
         adopt_backup(m, m->snap, m->snap_len);
         m->marker = 1;
@@ -332,6 +351,7 @@ static void do_mark(M *m)
 {
     uint64_t floor = b8() & 1 ? m->max_inc + 3 : 0;
     gz_journal_status_t st = gz_journal_mark_restored(D, gz_journal_chain_signet, &m->fs.os, floor);
+    if (verbose) printf("mark -> %s\n", gz_journal_status_name(st));
     if (m->j) { if (st != GZ_JOURNAL_ERR_LOCKED) BUG("mark while open"); return; }
     if (m->fs.crashed || m->fs.fail_at) { if (st == GZ_JOURNAL_OK) { m->marker = 1; size_t l; const uint8_t *d = memfs_disk(&m->fs, JP, &l); gz_journal_scan_t sc; m->base = d && gz_journal_scan(d, l, gz_journal_chain_signet, &sc, NULL, NULL) == GZ_JOURNAL_OK ? sc.highest_incarnation : 0; } else m->marker = -1; return; }
     if (st != GZ_JOURNAL_OK) BUG("mark failed: %s", gz_journal_status_name(st));
@@ -339,6 +359,20 @@ static void do_mark(M *m)
     gz_journal_scan_t sc;
     uint64_t base = d && gz_journal_scan(d, l, gz_journal_chain_signet, &sc, NULL, NULL) == GZ_JOURNAL_OK ? sc.highest_incarnation : 0;
     m->marker = 1; m->base = base;
+}
+
+/* Verbose: the journal as a read sees it and as the disk holds it, against
+ * the backup; and the marker. */
+static void trace_files(M *m)
+{
+    size_t vl = 0, dl = 0, ml = 0;
+    const uint8_t *v = memfs_get(&m->fs, JP, &vl), *d = memfs_disk(&m->fs, JP, &dl);
+    int vs = m->have_snap && v && vl == m->snap_len && memcmp(v, m->snap, vl) == 0;
+    int ds = m->have_snap && d && dl == m->snap_len && memcmp(d, m->snap, dl) == 0;
+    printf("   files: journal read %s%zu%s, disk %s%zu%s; marker %s; backup %s%zu\n", v ? "" : "none ", vl,
+           vs ? " (= backup)" : "", d ? "" : "none ", dl, ds ? " (= backup)" : "",
+           memfs_get(&m->fs, D "/" GZ_JOURNAL_MARKER_FILE, &ml) ? "there" : "none", m->have_snap ? "" : "none ",
+           m->snap_len);
 }
 
 static void sub_op(M *m, uint8_t which)
@@ -368,8 +402,11 @@ static void run(const uint8_t *data, size_t size)
     uint8_t op;
     int steps = 0;
     while (!m->stop && nb(&op) && steps++ < 400) {
-        if (verbose) printf("op %d (j %s, points %llu, counter %llu, max_inc %llu, marker %d base %llu, nc %d)\n", op % 12, m->j ? "open" : "closed",
-                            (unsigned long long)m->fs.points, (unsigned long long)m->counter, (unsigned long long)m->max_inc, m->marker, (unsigned long long)m->base, m->nc);
+        if (verbose) {
+            printf("op %d (j %s, points %llu, counter %llu, max_inc %llu, marker %d base %llu, nc %d)\n", op % 12, m->j ? "open" : "closed",
+                   (unsigned long long)m->fs.points, (unsigned long long)m->counter, (unsigned long long)m->max_inc, m->marker, (unsigned long long)m->base, m->nc);
+            trace_files(m);
+        }
         switch (op % 12) {
         case 0: case 1: do_open(m); break;
         case 2: case 3: do_save(m); break;
@@ -386,12 +423,9 @@ static void run(const uint8_t *data, size_t size)
             m->fs.fail_at = 0; m->fs.after_fail = 0;
             if (m->import_unknown) {
                 /* No settle: the process lives on; the files are as they are. */
-                size_t l; const uint8_t *now = memfs_get(&m->fs, JP, &l);
                 size_t ml; const uint8_t *mk = memfs_get(&m->fs, D "/" GZ_JOURNAL_MARKER_FILE, &ml);
-                int is_backup = now && l == m->snap_len && memcmp(now, m->snap, l) == 0;
-                int was_backup = m->before && m->before_len == m->snap_len && memcmp(m->before, m->snap, m->snap_len) == 0;
                 m->import_unknown = 0;
-                if (is_backup && !was_backup) { if (!mk) BUG("failed import left the backup unmarked"); adopt_backup(m, m->snap, m->snap_len); m->marker = 1; }
+                if (import_took(m)) { if (!mk) BUG("failed import left the backup unmarked"); adopt_backup(m, m->snap, m->snap_len); m->marker = 1; }
                 else m->marker = mk ? -1 : 0;
             }
             (void)hit;
@@ -414,7 +448,7 @@ static void run(const uint8_t *data, size_t size)
     }
     gz_journal_close(m->j);
     memfs_free(&m->fs);
-    free(m->snap); free(m->before);
+    free(m->snap);
 }
 
 #ifdef LIBFUZZER
@@ -424,12 +458,33 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     return 0;
 }
 #else
+/* Replay saved inputs: one run of the model on each file's bytes. */
+static int replay(int argc, char **argv)
+{
+    static uint8_t buf[1 << 16];
+    int n = 0;
+    for (int a = 2; a < argc; a++) {
+        if (!strcmp(argv[a], "-v")) { verbose = 1; continue; }
+        FILE *f = fopen(argv[a], "rb");
+        if (!f) { printf("RESULT: FAIL (cannot read %s)\n", argv[a]); return 1; }
+        size_t len = fread(buf, 1, sizeof buf, f);
+        fclose(f);
+        cur_it = n++;
+        if (verbose) printf("case %s (%zu bytes)\n", argv[a], len);
+        run(buf, len);
+    }
+    if (!n) { printf("RESULT: FAIL (no case given)\n"); return 1; }
+    printf("RESULT: PASS (model: %d saved cases, no violation)\n", n);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    if (argc > 1 && !strcmp(argv[1], "cases")) return replay(argc, argv);
     long iters = argc > 1 ? atol(argv[1]) : 10000;
     uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 10) : 1;
     verbose = argc > 3;
-    setvbuf(stdout, NULL, _IONBF, 0);
     static uint8_t buf[600];
     for (long it = 0; it < iters; it++) {
         uint64_t s = seed * 1000003u + (uint64_t)it;
