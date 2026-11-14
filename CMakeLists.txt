@@ -74,6 +74,12 @@ target_compile_options(tree_shapes PRIVATE -Wall -Wextra -Werror)
 # --- Gazpacho core: new code, portable C with no system calls -----------------
 # -Werror applies to new code only; the imported files above keep their own flags.
 set(GZ_NEW_CODE_WARNINGS -Wall -Wextra -Werror)
+# A mutation run (tools/mutate-node.py) builds deliberate faults: a variable
+# a fault leaves unused must not stop the build.
+option(GZ_MUTATION_BUILD "Warnings do not stop the build (mutation runs only)" OFF)
+if(GZ_MUTATION_BUILD)
+  list(APPEND GZ_NEW_CODE_WARNINGS -Wno-error)
+endif()
 
 # The core is strict C11 (no GNU extensions), freestanding, with no
 # variable-length arrays and no floating point or vector registers.
@@ -89,16 +95,22 @@ endif()
 set(GZ_CORE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/action.c
   ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/runner.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/node.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/envelope.c)
 add_library(gazpacho_core STATIC ${GZ_CORE_SOURCES})
 set_target_properties(gazpacho_core PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
 target_compile_options(gazpacho_core PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
 
+# --- The composite node (core/node): the node behind gz_node_start and
+# gz_node_handle, with its engines. Two builds: gazpacho_node (release, the
+# node part alone until P4.2) and gazpacho_node_test (GZ_TEST_KINDS: the test
+# engine and the slot stand-in). docs/notes/composite-node.md.
+add_subdirectory(core/node)
+
 # --- Simulator: deterministic harness around the core. Never linked into it. ---
 add_library(gazpacho_sim STATIC sim/rng.c sim/sim.c)
 target_include_directories(gazpacho_sim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sim)
-target_link_libraries(gazpacho_sim PUBLIC gazpacho_core)
+target_link_libraries(gazpacho_sim PUBLIC gazpacho_node_test)
 target_compile_options(gazpacho_sim PRIVATE ${GZ_NEW_CODE_WARNINGS})
 
 function(gz_add_test name source library)
@@ -110,7 +122,30 @@ endfunction()
 
 gz_add_test(action    tests/core/test_action.c    gazpacho_core)
 gz_add_test(runner    tests/core/test_runner.c    gazpacho_core)
-gz_add_test(node      tests/core/test_node.c      gazpacho_core)
+# The composite node (core/node), P4.1: the frame, routing, timers, brackets,
+# sizing, poisoning, and a hostile peer that never causes a node error. The
+# tests see the composite's internals (core/node/internal.h), so they are
+# built with the test library's GZ_TEST_KINDS.
+foreach(name node node_route node_timers node_handoff node_sizing node_hostile)
+  gz_add_test(${name} tests/node/test_${name}.c gazpacho_node_test)
+  target_include_directories(test_${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+  target_compile_definitions(test_${name} PRIVATE GZ_TEST_KINDS)
+endforeach()
+# The release node: no test engine, and kind 32767 is just an unknown kind.
+gz_add_test(node_release tests/node/test_node_release.c gazpacho_node)
+target_include_directories(test_node_release PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+# Hostile peer events in a fuzz target: never an error from the node.
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_node tests/node/fuzz_node.c)
+  target_link_options(fuzz_node PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_node tests/node/fuzz_node.c tests/net/fuzz_main.c)
+  add_test(NAME node_fuzz COMMAND fuzz_node 20000)
+endif()
+target_link_libraries(fuzz_node PRIVATE gazpacho_node_test)
+target_include_directories(fuzz_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+target_compile_definitions(fuzz_node PRIVATE GZ_TEST_KINDS)
+target_compile_options(fuzz_node PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(rng       tests/sim/test_rng.c        gazpacho_sim)
 gz_add_test(sim       tests/sim/test_sim.c        gazpacho_sim)
 # One fixed seed must give the trace digest written in the test: compares
@@ -118,10 +153,16 @@ gz_add_test(sim       tests/sim/test_sim.c        gazpacho_sim)
 # in one process.
 gz_add_test(sim_known_trace tests/sim/test_sim_known.c gazpacho_sim)
 # 1,000 seeds with every fault at a moderate rate, then the extreme profiles
-# (see tests/sim/test_sim_seeds.c): 100 seeds of 300 steps each.
+# (see tests/sim/test_sim_seeds.c): 100 seeds of 300 steps each. Profile 6
+# (64 nodes, a crash in three steps of ten) runs 25 seeds: since the composite,
+# every crash is followed by 63 hellos and their answers, four times the work.
 gz_add_test(sim_seeds tests/sim/test_sim_seeds.c  gazpacho_sim 1000 400 1 0)
 foreach(profile RANGE 1 10)
-  add_test(NAME sim_profile_${profile} COMMAND test_sim_seeds 100 300 1 ${profile})
+  set(profile_seeds 100)
+  if(profile EQUAL 6)
+    set(profile_seeds 25)
+  endif()
+  add_test(NAME sim_profile_${profile} COMMAND test_sim_seeds ${profile_seeds} 300 1 ${profile})
 endforeach()
 
 # What the compiled core can reach and remember, and proof that the check
@@ -137,6 +178,18 @@ string(JOIN " " GZ_CORE_SCAN_FLAGS ${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${GZ_BUILD_T
 add_test(NAME core_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
           $<TARGET_FILE:gazpacho_core> --sources ${CMAKE_C_COMPILER} ${GZ_CORE_SCAN_FLAGS} ${GZ_CORE_SOURCES})
+# core/node, release and test builds, each checked with the core in one
+# archive (its calls into the core are calls inside the library).
+string(JOIN " " GZ_NODE_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/node/include
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+add_test(NAME node_isolation
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          $<TARGET_FILE:gazpacho_node_isolation_release> --sources ${CMAKE_C_COMPILER} ${GZ_NODE_SCAN_FLAGS}
+          ${GZ_NODE_SOURCES})
+add_test(NAME node_test_isolation
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          $<TARGET_FILE:gazpacho_node_isolation_test> --sources ${CMAKE_C_COMPILER}
+          "${GZ_NODE_SCAN_FLAGS} -DGZ_TEST_KINDS" ${GZ_NODE_SOURCES})
 add_library(isolation_sneaky OBJECT tests/isolation/sneaky.c)
 string(JOIN " " GZ_CORE_FLAGS_TEXT -std=c11 ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
 add_test(NAME core_isolation_refuses_sneaky_object
@@ -159,7 +212,8 @@ option(GZ_VALGRIND_TESTS "Register the core tests again under valgrind, where it
 find_program(GZ_VALGRIND valgrind)
 if(GZ_VALGRIND AND GZ_VALGRIND_TESTS AND NOT GZ_SANITIZE)
   set(GZ_MEMCHECK ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes --leak-check=full)
-  foreach(name action runner node rng sim sim_known_trace)
+  foreach(name action runner rng sim sim_known_trace node node_route node_timers node_handoff node_sizing
+               node_hostile node_release)
     add_test(NAME valgrind_${name} COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_${name}>)
   endforeach()
   add_test(NAME valgrind_sim_seeds COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 20 300 1 0)
@@ -370,6 +424,7 @@ gz_add_test(journal_edges tests/journal/test_journal_edges.c gazpacho_journal_te
 # Crash before every write and sync point, power-loss settles, process kills,
 # the real node; and the "rule removed" run that must find a loss.
 gz_add_test(journal_crash tests/journal/test_journal_crash.c gazpacho_journal_testfs)
+target_link_libraries(test_journal_crash PRIVATE gazpacho_node_test) # the composite with its test engine
 gz_add_test(journal_fuzz  tests/journal/test_journal_fuzz.c  gazpacho_journal_testfs 100000 1)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
@@ -384,6 +439,7 @@ if(Python3_Interpreter_FOUND)
 endif()
 # The restore marker, pull mode (program/store.h's complete()) and the fence.
 gz_add_test(journal_restore tests/journal/test_journal_restore.c gazpacho_journal_testfs)
+target_link_libraries(test_journal_restore PRIVATE gazpacho_node_test)
 # Review A's findings: a failed sync the way Linux fails one, the import's
 # order, the folder lock, the start counter, the hard limit with two marks,
 # a kept guard batch, 2^63, flushes with no runner or from on_confirmed.

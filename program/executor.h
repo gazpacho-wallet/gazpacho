@@ -32,11 +32,15 @@
 #define GZP_RUN_FAILED  2   /* storage cannot even be opened or begun: no restart */
 #define GZP_RUN_POISONED 3  /* a failed append could not be undone (store.h): exit, never restart */
 
-#define GZP_RUNNER_SLOTS 256
-#define GZP_RUNNER_BYTES (256u * 1024u)
-#define GZP_LIST_SLOTS 128
-#define GZP_LIST_BYTES (128u * 1024u)
-#define GZP_MAX_TIMERS 64
+/* The node fills at most one list of GZ_NODE_LIST_ACTIONS actions and
+ * GZ_NODE_LIST_BYTES bytes per call (node.h, SIZING); the runner holds two
+ * such lists, so a list is never refused for size. */
+#define GZP_LIST_SLOTS GZ_NODE_LIST_ACTIONS
+#define GZP_LIST_BYTES GZ_NODE_LIST_BYTES
+#define GZP_RUNNER_SLOTS (2 * GZ_NODE_LIST_ACTIONS)
+#define GZP_RUNNER_BYTES (2u * GZ_NODE_LIST_BYTES)
+#define GZP_MAX_TIMERS GZ_NODE_MAX_TIMERS
+#define GZP_STDIN_MAX (256u * 1024u)
 
 typedef struct {
     int used;
@@ -47,6 +51,7 @@ typedef struct {
     const gzp_options_t *opt;
     gzp_datadir_t *dir;
     gzp_net_t *net;
+    const uint8_t *chain_hash;     /* the network's genesis hash (32 bytes): the node writes it in guard records */
     gzp_chain_t *chain;
     gzp_notify_sink_t notify;
     gzp_testping_t *tp;
@@ -57,7 +62,7 @@ typedef struct {
     gzp_store_t store;
     int store_open;
     uint64_t incarnation;
-    gz_node_t node;
+    gz_node_t *node;             /* gz_node_size() bytes, made once per process */
     gz_runner_t runner;
     gz_runner_slot_t rslots[GZP_RUNNER_SLOTS];
     uint8_t rbytes[GZP_RUNNER_BYTES];
@@ -73,6 +78,12 @@ typedef struct {
     uint64_t pings_saved;    /* ping records made durable (tests) */
     uint64_t delivered;      /* events given to the node (tests: --test-node-error-at) */
     int number;              /* 1 for the first incarnation of this process */
+    uint64_t saves;          /* batches made durable this incarnation (tests: --test-crash-after-save) */
+    uint64_t confirms;       /* confirmations taken this incarnation (tests: --test-crash-before-confirm) */
+    char in[GZP_STDIN_MAX];  /* tests: --test-commands, a partial line from standard input */
+    size_t in_len;
+    int in_eof;
+    uint64_t next_request;
 } gzp_exec_t;
 
 int gzp_exec_incarnation(gzp_exec_t *ex, int number);

@@ -9,7 +9,7 @@
  *
  *   1. A save is handed to the executor at once, when its list is submitted,
  *      in submission order. Saves never wait for anything.
- *   2. An outward action (send, broadcast, notify) is released only when every
+ *   2. An outward action (send, broadcast, notify, connect) is released only when every
  *      save submitted before it has been confirmed as stored.
  *   3. Actions other than saves are released in the order submitted. A watch
  *      or timer does not wait for confirmations itself, but never overtakes

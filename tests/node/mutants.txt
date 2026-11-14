@@ -1,0 +1,87 @@
+# Mutants for tools/mutate-node.py: NAME, FILE, OLD, NEW, [OCCURRENCE], tab-separated.
+# In OLD and NEW, \n stands for a newline and \\ for a backslash.
+# --- route.c: by kind
+kind-lobby-first	core/node/route.c	kind >= GZ_MSG_KIND_LOBBY_FIRST &&	kind > GZ_MSG_KIND_LOBBY_FIRST &&
+kind-lobby-last	core/node/route.c	kind <= GZ_MSG_KIND_LOBBY_LAST)	kind < GZ_MSG_KIND_LOBBY_LAST)
+kind-round-first	core/node/route.c	kind >= GZ_MSG_KIND_ROUND_FIRST &&	kind > GZ_MSG_KIND_ROUND_FIRST &&
+kind-round-last	core/node/route.c	kind <= GZ_MSG_KIND_ROUND_LAST)	kind < GZ_MSG_KIND_ROUND_LAST)
+kind-funded-gone	core/node/route.c	    if (kind == GZ_MSG_KIND_FACTORY_FUNDED) return FAM_FUNDED;\n	
+kind-test-in-release	core/node/route.c	if (kind == GZ_MSG_KIND_TEST && test_build) return FAM_TEST;	if (kind == GZ_MSG_KIND_TEST) return FAM_TEST;
+kind-discovery-first	core/node/route.c	kind >= GZ_MSG_KIND_DISCOVERY_FIRST &&	kind > GZ_MSG_KIND_DISCOVERY_FIRST &&
+kind-discovery-last	core/node/route.c	kind <= GZ_MSG_KIND_DISCOVERY_LAST)	kind < GZ_MSG_KIND_DISCOVERY_LAST)
+# --- route.c: by scope
+scope-any-state	core/node/route.c	if (c->slots[i].state == SLOT_OPEN && memcmp(c->slots[i].scope, scope, 32) == 0) return i;	if (memcmp(c->slots[i].scope, scope, 32) == 0) return i;
+scope-any-slot	core/node/route.c	if (c->slots[i].state == SLOT_OPEN && memcmp(c->slots[i].scope, scope, 32) == 0) return i;	if (c->slots[i].state == SLOT_OPEN) return i;
+zero-scope-partial	core/node/route.c	    for (size_t i = 0; i < n; i++) acc |= p[i];	    for (size_t i = 1; i < n; i++) acc |= p[i];
+host-zero-any-kind	core/node/route.c	if (zero) return kind == GZ_MSG_KIND_HELLO ? mk(RT_LISTING, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);	if (zero) return mk(RT_LISTING, -1, -1, 0);
+host-unknown-any-kind	core/node/route.c	return kind == GZ_MSG_KIND_HELLO ? mk(RT_UNKNOWN_HELLO, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_NO_SLOT);	return mk(RT_UNKNOWN_HELLO, -1, -1, 0);
+host-unknown-never	core/node/route.c	return kind == GZ_MSG_KIND_HELLO ? mk(RT_UNKNOWN_HELLO, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_NO_SLOT);	return mk(RT_DROP, -1, -1, DROP_NO_SLOT);
+member-zero-scope-taken	core/node/route.c	    if (zero) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);\n    s = gz_route_slot_by_scope(c, scope);\n    if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);	    s = gz_route_slot_by_scope(c, scope);\n    if (s < 0) return mk(RT_DROP, -1, -1, zero ? DROP_NO_SLOT : DROP_NO_SLOT);
+member-no-slot-refused	core/node/route.c	    if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);\n    gz_link_t l;	    if (s < 0) return mk(RT_REFUSE, -1, -1, DROP_NO_SLOT);\n    gz_link_t l;
+round-without-check	core/node/route.c	if (s < 0 || !c->slots[s].round_ok) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);	if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);
+round-zero-scope	core/node/route.c	    if (all_zero(scope, 32)) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);\n    /* (P4.3	    /* (P4.3
+# --- route.c: the link
+member-link-unchecked	core/node/route.c	    if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_REFUSE, -1, -1, DROP_LINK);\n    return mk(RT_SLOT, s, -1, 0);	    return mk(RT_SLOT, s, -1, 0);
+member-link-dropped-only	core/node/route.c	    if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_REFUSE, -1, -1, DROP_LINK);\n    return mk(RT_SLOT, s, -1, 0);	    if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_DROP, -1, -1, DROP_LINK);\n    return mk(RT_SLOT, s, -1, 0);
+member-round-link-unchecked	core/node/route.c	        if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_REFUSE, -1, -1, DROP_LINK);\n    }\n    return mk(RT_SIGNING, s, -1, 0);	    }\n    return mk(RT_SIGNING, s, -1, 0);
+link-local-ignored	core/node/route.c	    return np_same_key(&a->local, &b->local) && np_same_key(&a->remote, &b->remote);	    return np_same_key(&a->remote, &b->remote);
+link-remote-ignored	core/node/route.c	    return np_same_key(&a->local, &b->local) && np_same_key(&a->remote, &b->remote);	    return np_same_key(&a->local, &b->local);
+key-compare-short	core/node/route.c	    return memcmp(a->key, b->key, GZ_NODE_ID_LEN) == 0;	    return memcmp(a->key, b->key, GZ_NODE_ID_LEN - 1) == 0;
+slot-link-host-key	core/node/route.c	    link->remote = s->host_key;\n    return 1;	    link->remote = link->local;\n    return 1;
+host-bound-other-slot	core/node/route.c	if (bound >= 0) return s == bound ? mk(RT_SLOT, s, -1, 0) : mk(RT_REFUSE, -1, -1, DROP_REBIND);	if (bound >= 0) return s >= 0 ? mk(RT_SLOT, s, -1, 0) : mk(RT_REFUSE, -1, -1, DROP_REBIND);
+host-rebind-dropped-only	core/node/route.c	if (bound >= 0) return s == bound ? mk(RT_SLOT, s, -1, 0) : mk(RT_REFUSE, -1, -1, DROP_REBIND);	if (bound >= 0) return s == bound ? mk(RT_SLOT, s, -1, 0) : mk(RT_DROP, -1, -1, DROP_REBIND);
+host-no-bind	core/node/route.c	        if (s >= 0) return mk(RT_BIND, s, -1, 0);	        if (s >= 0) return mk(RT_SLOT, s, -1, 0);
+seated-any-slot	core/node/route.c	        if (s->state != SLOT_OPEN || !s->host) continue;\n        for (size_t j = 0; j < s->n_seated; j++)	        if (!s->host) continue;\n        for (size_t j = 0; j < s->n_seated; j++)
+seated-first-only	core/node/route.c	        for (size_t j = 0; j < s->n_seated; j++)\n            if (np_same_key(&s->seated[j], key)) return i;	        for (size_t j = 0; j < s->n_seated && j < 1; j++)\n            if (np_same_key(&s->seated[j], key)) return i;
+member-slot-of-host	core/node/route.c	if (c->slots[i].state == SLOT_OPEN && !c->slots[i].host && gz_route_slot_link(c, i, &l) &&	if (c->slots[i].state == SLOT_OPEN && gz_route_slot_link(c, i, &l) &&
+# --- route.c: the test family
+test-area-ignored	core/node/route.c	        if (c->test[i].area == area) return mk(RT_TEST, -1, ENG_TEST0 + i, 0);	        return mk(RT_TEST, -1, ENG_TEST0 + i, 0);
+test-area-length	core/node/route.c	        if (v.len != 2) return mk(RT_DROP, -1, -1, DROP_KIND);	        if (v.len < 2) return mk(RT_DROP, -1, -1, DROP_KIND);
+test-malformed-taken	core/node/route.c	    if (f < 0) return mk(RT_DROP, -1, -1, DROP_KIND);	    if (f < -1) return mk(RT_DROP, -1, -1, DROP_KIND);
+# --- handoff.c: calls and brackets
+reentry-unchecked	core/node/handoff.c	    if (c->busy[eng]) return gz_c_bug(c, eng); /* U1: entered while its own call runs */	
+busy-never-set	core/node/handoff.c	    c->busy[eng] = 1;\n    c->nested_bytes = 0;	    c->nested_bytes = 0;
+busy-never-cleared	core/node/handoff.c	    (void)tag;\n    c->busy[eng] = 0;	    (void)tag;
+claim-all	core/node/handoff.c	        if (c->owner[k] < 0) {\n            c->owner[k] = (int8_t)eng;\n            own++;\n        }	        {\n            c->owner[k] = (int8_t)eng;\n            own++;\n        }
+step-actions-unchecked	core/node/handoff.c	    if (own > ops->max_step_actions || own_bytes > ops->max_step_bytes) return gz_c_bug(c, eng);	    if (own_bytes > ops->max_step_bytes) return gz_c_bug(c, eng);
+error-area-lost	core/node/handoff.c	    if (st != GZ_OK && st != GZ_WAITING) {\n        if (!c->err_area) c->err_area = gz_c_area(c, eng);\n        return st;\n    }	    if (st != GZ_OK && st != GZ_WAITING) {\n        return st;\n    }
+error-swallowed	core/node/handoff.c	    if (st != GZ_OK && st != GZ_WAITING) {\n        if (!c->err_area) c->err_area = gz_c_area(c, eng);\n        return st;\n    }	    if (st != GZ_OK && st != GZ_WAITING) {\n        if (!c->err_area) c->err_area = gz_c_area(c, eng);\n        return GZ_OK;\n    }
+deferred-never-run	core/node/handoff.c	    gz_status_t st = run_deferred(c, out);\n    if (st == GZ_OK) st = gz_c_postprocess	    gz_status_t st = GZ_OK;\n    if (st == GZ_OK) st = gz_c_postprocess
+no-defer	core/node/handoff.c	    if (may_defer && c->busy[target]) {	    if (0 && may_defer && c->busy[target]) {
+defer-always	core/node/handoff.c	    if (may_defer && c->busy[target]) {	    if (may_defer) {
+handoff-flag-lost	core/node/handoff.c	    c->bracket_handoff = 1;\n    if (may_defer	    if (may_defer
+handoff-outside-bracket	core/node/handoff.c	if (target < 0 || source < 0 || !c->bracket_on) return	if (target < 0 || source < 0) return
+handoff-no-target	core/node/handoff.c	if (target < 0 || source < 0 || !c->bracket_on) return	if (source < 0 || !c->bracket_on) return
+bracket-nested	core/node/handoff.c	    if (c->bracket_on) return gz_c_bug(c, ENG_NODE);\n    c->bracket_on = 1;\n    c->bracket_handoff = 0;\n    c->bracket_top = eng;\n    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);	    c->bracket_on = 1;\n    c->bracket_handoff = 0;\n    c->bracket_top = eng;\n    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
+bracket-from-zero	core/node/handoff.c	    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);	    c->bracket_from = 0;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
+# --- handoff.c: after a bracket
+timer-big-allowed	core/node/handoff.c	                if (eng != ENG_NODE) return gz_c_bug(c, eng);	                if (eng == ENG_NODE) return gz_c_bug(c, eng);
+timer-not-packed	core/node/handoff.c	                *id = gz_timer_pack(gz_c_area(c, eng), gen_of(c, eng), (uint32_t)*id);	                *id = gz_timer_pack(gz_c_area(c, eng), 0, (uint32_t)*id);
+timer-no-area	core/node/handoff.c	                *id = gz_timer_pack(gz_c_area(c, eng), gen_of(c, eng), (uint32_t)*id);	                *id = gz_timer_pack(0, gen_of(c, eng), (uint32_t)*id);
+timer-untracked	core/node/handoff.c	                if (eng >= ENG_SLOT0 && !gz_timer_track(&c->slots[eng - ENG_SLOT0], *id,\n                                                         a->kind == GZ_ACTION_SET_TIMER))\n                    return gz_c_bug(c, eng); /* over its timer budget (7.1) */	
+broadcast-any-engine	core/node/handoff.c	            if (gz_c_area(c, eng) != GZ_AREA_FUNDING) return gz_c_bug(c, eng); /* 14.2, A11 */	
+watch-never-dropped	core/node/handoff.c	            if (!keep) {\n                drop_action(c, out, i);\n                continue;\n            }	
+seat-not-noted	core/node/handoff.c	        } else if (a->kind == GZ_ACTION_SET_SEATED && eng >= ENG_SLOT0) {	        } else if (a->kind == GZ_ACTION_SET_SEATED && eng > ENG_N) {
+adjacency-unchecked	core/node/handoff.c	            if (gz_action_is_outward(&out->slots[i])) return gz_c_bug(c, c->owner[i - c->base]);	            if (0) return gz_c_bug(c, c->owner[i - c->base]);
+adjacency-off-by-one	core/node/handoff.c	        for (i = first + 1; n > 1 && i < last; i++)	        for (i = first + 2; n > 1 && i < last; i++)
+merge-all-skipped	core/node/handoff.c	        if (n > 1) {\n            size_t before = out->count;	        if (n > 99) {\n            size_t before = out->count;
+merge-mask-first-only	core/node/handoff.c	            last = i;\n            mask |= (uint16_t)(1u << c->owner[i - c->base]);	            last = i;\n            if (n == 1) mask |= (uint16_t)(1u << c->owner[i - c->base]);
+merge-all-no-mask	core/node/handoff.c	        if (n > 0 && (st = push_mask(c, mask)) != GZ_OK) return st;	
+adjacent-not-merged	core/node/handoff.c	        if (j - i > 1) {	        if (j - i > 99) {
+adjacent-no-mask	core/node/handoff.c	        if ((st = push_mask(c, mask)) != GZ_OK) return st;\n    }\n    return GZ_OK;	    }\n    return GZ_OK;
+handoff-merges-adjacent-only	core/node/handoff.c	    if (st == GZ_OK) st = gz_c_postprocess(c, c->bracket_from, c->bracket_handoff, out);	    if (st == GZ_OK) st = gz_c_postprocess(c, c->bracket_from, 0, out);
+always-merge-all	core/node/handoff.c	    if (st == GZ_OK) st = gz_c_postprocess(c, c->bracket_from, c->bracket_handoff, out);	    if (st == GZ_OK) st = gz_c_postprocess(c, c->bracket_from, 1, out);
+# --- handoff.c: confirmations
+confirm-queue-lifo	core/node/handoff.c	    mask = c->cq[c->cq_head];\n    c->cq_head = (c->cq_head + 1) % CQ_MAX;	    mask = c->cq[(c->cq_head + c->cq_n - 1) % CQ_MAX];
+confirm-not-held	core/node/handoff.c	        if (!c->resumed[e]) {\n            c->held[e]++;\n            continue;\n        }	
+confirm-held-lost	core/node/handoff.c	        if (!c->resumed[e]) {\n            c->held[e]++;\n            continue;\n        }	        if (!c->resumed[e]) {\n            continue;\n        }
+confirm-to-all	core/node/handoff.c	        if (!(mask & (1u << e)) || !ops_of(c, e, &inst)) continue;	        if (!ops_of(c, e, &inst)) continue;
+confirm-empty-error	core/node/handoff.c	        *result = np_drop(c, DROP_CONFIRM, 0, out);\n        return;	        *result = GZ_ERR_BUG;\n        return;
+# --- action.c: the merge primitive
+merge-order-reversed	core/gazpacho/action.c	        for (size_t r = 0; r < a->u.save.n_records; r++) merged[k++] = a->u.save.records[r];	        for (size_t r = a->u.save.n_records; r > 0; r--) merged[k++] = a->u.save.records[r - 1];
+merge-keeps-later-saves	core/gazpacho/action.c	        if (i < to && list->slots[i].kind == GZ_ACTION_SAVE) continue;\n        list->slots[at++] = list->slots[i];	        list->slots[at++] = list->slots[i];
+merge-drops-past-range	core/gazpacho/action.c	        if (i < to && list->slots[i].kind == GZ_ACTION_SAVE) continue;\n        list->slots[at++] = list->slots[i];	        if (list->slots[i].kind == GZ_ACTION_SAVE) continue;\n        list->slots[at++] = list->slots[i];
+merge-one-save	core/gazpacho/action.c	    if (n_saves < 2) return GZ_OK;\n    gz_record_t *merged = NULL;	    if (n_saves < 1) return GZ_OK;\n    gz_record_t *merged = NULL;
+merge-range-unchecked	core/gazpacho/action.c	    if (!list || from > to || to > list->count) return GZ_ERR_ARGUMENT;	    if (!list || from > to) return GZ_ERR_ARGUMENT;
+merge-count-wrong	core/gazpacho/action.c	    list->slots[first].u.save.n_records = n_records;	    list->slots[first].u.save.n_records = n_records - 1;
+# equivalent member-slot-of-host: gz_route_slot_link itself answers 0 for a host slot, so the test the mutant removes decides nothing

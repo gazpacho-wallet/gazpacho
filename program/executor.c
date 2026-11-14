@@ -28,7 +28,14 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <fcntl.h>
+
+#include "gazpacho/command.h"
+#include "gazpacho/envelope.h"
 #include "executor.h"
+#ifdef GZP_TEST_BUILD
+#include "gazpacho/test_engine.h"
+#endif
 
 /* ---- ports -------------------------------------------------------------- */
 
@@ -47,6 +54,35 @@ static uint64_t port_clock(void *ctx)
     return gzp_wall_ms();
 }
 
+/* The key port (ports.h) over the stand-in transport key, until P8 derives
+ * per-lobby keys: every (epoch, index) is the transport's key, and the host
+ * key is it too. No secret is handed out before the signing engine needs one. */
+static int port_pub(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33])
+{
+    gzp_exec_t *ex = ctx;
+    (void)epoch;
+    (void)index;
+    memcpy(pub33, ex->net->pub, 33);
+    return 1;
+}
+
+static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
+{
+    (void)ctx;
+    (void)epoch;
+    (void)index;
+    (void)sec32;
+    return 0;
+}
+
+static int port_host_pub(void *ctx, uint8_t pub33[33])
+{
+    gzp_exec_t *ex = ctx;
+    if (ex->opt->role != GZP_ROLE_HOST) return 0;
+    memcpy(pub33, ex->net->pub, 33);
+    return 1;
+}
+
 /* ---- helpers ------------------------------------------------------------ */
 
 static const char *status_name(gz_status_t st)
@@ -63,6 +99,7 @@ static const char *status_name(gz_status_t st)
     case GZ_ERR_OUT_OF_ORDER: return "out-of-order";
     case GZ_ERR_CORRUPT: return "corrupt";
     case GZ_WAITING: return "waiting";
+    case GZ_ERR_BUG: return "bug";
     }
     return "unknown";
 }
@@ -87,14 +124,6 @@ static void fail(gzp_exec_t *ex, const char *why)
  * in the release build every timer id is the node's. */
 #define GZP_TEST_TIMER_BASE UINT64_C(0xffffffffffff0000) /* | the incarnation's low 16 bits */
 #define GZP_IS_TEST_TIMER(id) (((id) & UINT64_C(0xffffffffffff0000)) == GZP_TEST_TIMER_BASE)
-
-static uint64_t be64(const uint8_t *p)
-{
-    uint64_t v = 0;
-    int i;
-    for (i = 0; i < 8; i++) v = v << 8 | p[i];
-    return v;
-}
 #endif
 
 /* ---- timers ------------------------------------------------------------- */
@@ -154,9 +183,18 @@ static void log_hex_payload(const char *what, uint64_t peer, const uint8_t *p, s
 }
 #endif
 
+/* A test engine's ping record (test_engine.h): area 0x7e57 or 0x7e58, kind 1,
+ * clock 8, link 66 (the remote key at 41), serial 8, payload. */
+#define PING_HEADER 82u
+static int is_ping_record(const gz_record_t *r)
+{
+    return (r->type == 0x7e570001u || r->type == 0x7e580001u) && r->bytes.len >= PING_HEADER;
+}
+
 static void do_save(gzp_exec_t *ex, const gz_action_t *a)
 {
     size_t i;
+    int restored = 0;
     if (ex->storage_broken) return; /* nothing more may be appended */
     if (ex->store.ops->append(ex->store.ctx, a->u.save.batch, a->u.save.records, a->u.save.n_records) != 0) {
         ex->storage_broken = 1;
@@ -168,9 +206,9 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
             const gz_record_t *r = &a->u.save.records[i];
             char hex[2 * 64 + 1];
             size_t pl;
-            if (r->type != GZ_RECORD_TEST_PING || r->bytes.len < GZ_PING_RECORD_HEADER) continue;
-            pl = r->bytes.len - GZ_PING_RECORD_HEADER;
-            gzp_hex(r->bytes.data + GZ_PING_RECORD_HEADER, pl > 64 ? 64 : pl, hex);
+            if (!is_ping_record(r)) continue;
+            pl = r->bytes.len - PING_HEADER;
+            gzp_hex(r->bytes.data + PING_HEADER, pl > 64 ? 64 : pl, hex);
             gzp_log("save-failed seq=%llu ping-payload=%s", (unsigned long long)a->u.save.batch.sequence, hex);
         }
 #endif
@@ -179,28 +217,77 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
         gz_runner_storage_failed(&ex->runner);
         return;
     }
+    ex->saves++;
+    for (i = 0; i < a->u.save.n_records; i++)
+        if (a->u.save.records[i].type == GZ_RECORD_RESTORED) restored = 1;
     for (i = 0; i < a->u.save.n_records; i++) {
         const gz_record_t *r = &a->u.save.records[i];
-        if (r->type == GZ_RECORD_TEST_RESTORED && r->bytes.len == GZ_RESTORED_RECORD_LEN) {
-            gzp_log("restore-batch seq=%llu epoch=%02x%02x%02x%02x", (unsigned long long)a->u.save.batch.sequence,
-                    r->bytes.data[8], r->bytes.data[9], r->bytes.data[10], r->bytes.data[11]);
+        if (r->type == GZ_RECORD_KEY_EPOCH) {
+            gz_bytes_t v;
+            if (gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4)
+                gzp_log("%s seq=%llu epoch=%02x%02x%02x%02x", restored ? "restore-batch" : "key-epoch",
+                        (unsigned long long)a->u.save.batch.sequence, v.data[0], v.data[1], v.data[2], v.data[3]);
             continue;
         }
-        if (r->type != GZ_RECORD_TEST_PING || r->bytes.len < GZ_PING_RECORD_HEADER) continue;
+        if (!is_ping_record(r)) continue;
         ex->pings_saved++;
 #ifdef GZP_TEST_BUILD
         /* Tests: stop dead once the K-th ping record is durable, before its
          * batch is confirmed, so its reply has not left. */
         if (ex->opt->test_crash_at_ping && ex->pings_saved == (uint64_t)ex->opt->test_crash_at_ping) {
-            log_hex_payload("test-crash ping-durable", be64(r->bytes.data + 8),
-                            r->bytes.data + GZ_PING_RECORD_HEADER, r->bytes.len - GZ_PING_RECORD_HEADER);
+            log_hex_payload("test-crash ping-durable", gzp_peer_id(r->bytes.data + 41), r->bytes.data + PING_HEADER,
+                            r->bytes.len - PING_HEADER);
             fflush(stdout);
             _exit(GZP_EXIT_TEST);
         }
 #endif
     }
     if (gzp_standin_take_restore_answered(&ex->store)) gzp_log("restore answered: the restore marker is gone");
+#ifdef GZP_TEST_BUILD
+    /* Tests: stop once the K-th batch is durable, before the rest of its list
+     * (its sends, timers, notices) is carried out. */
+    if (ex->number == 1 && ex->opt->test_crash_after_save && ex->saves == (uint64_t)ex->opt->test_crash_after_save) {
+        gzp_log("test-crash after-save seq=%llu", (unsigned long long)a->u.save.batch.sequence);
+        fflush(stdout);
+        _exit(GZP_EXIT_TEST);
+    }
+#endif
 }
+
+#ifdef GZP_TEST_BUILD
+/* Tests: a NOTIFY as an output line. The core's log notices and command
+ * results are ASCII it wrote itself; a view object is shown by kind, id and
+ * version only. */
+static void show_notify(uint32_t code, gz_bytes_t b)
+{
+    gz_bytes_t v, w;
+    char text[200];
+    size_t i, n;
+    if (code == GZ_NOTIFY_LOG && gz_rec_find(b, 0, &v) == 1) {
+        n = v.len < sizeof text - 1 ? v.len : sizeof text - 1;
+        for (i = 0; i < n; i++) text[i] = v.data[i] >= 32 && v.data[i] < 127 ? (char)v.data[i] : '?';
+        text[n] = 0;
+        gzp_log("node-log %s", text);
+    } else if (code == GZ_NOTIFY_COMMAND_RESULT && gz_rec_find(b, GZ_RESULT_REC_STATUS, &v) == 1 && v.len == 2) {
+        char id[70] = "-", err[70] = "-";
+        if (gz_rec_find(b, GZ_RESULT_REC_REQUEST_ID, &w) == 1 && w.len < sizeof id) {
+            for (i = 0; i < w.len; i++) id[i] = w.data[i] > 32 && w.data[i] < 127 ? (char)w.data[i] : '?';
+            id[w.len] = 0;
+        }
+        if (gz_rec_find(b, GZ_RESULT_REC_ERROR, &w) == 1 && w.len < sizeof err) {
+            for (i = 0; i < w.len; i++) err[i] = w.data[i] > 32 && w.data[i] < 127 ? (char)w.data[i] : '?';
+            err[w.len] = 0;
+        }
+        gzp_log("command-result id=%s status=%u error=%s", id, (unsigned)gz_get_u16(v.data), err);
+    } else if ((code >> 16) == 1 && gz_rec_find(b, GZ_VIEW_REC_ID, &v) == 1 && v.len < 65) {
+        char id[70];
+        for (i = 0; i < v.len; i++) id[i] = v.data[i] > 32 && v.data[i] < 127 ? (char)v.data[i] : '?';
+        id[v.len] = 0;
+        unsigned long long ver = gz_rec_find(b, GZ_VIEW_REC_VERSION, &w) == 1 && w.len == 8 ? gz_get_u64(w.data) : 0;
+        gzp_log("view kind=%u id=%s version=%llu", (unsigned)(code & 0xffffu), id, ver);
+    }
+}
+#endif
 
 static void execute(void *ctx, const gz_action_t *a)
 {
@@ -210,17 +297,15 @@ static void execute(void *ctx, const gz_action_t *a)
         do_save(ex, a);
         break;
     case GZ_ACTION_SEND: {
-        const uint8_t *data = a->u.send.bytes.data;
-        size_t len = a->u.send.bytes.len;
+        const uint8_t *data = a->u.send.records.data;
+        size_t len = a->u.send.records.len;
         uint8_t *padded = NULL;
         int r;
-        if (ex->starting && len >= GZ_PING_PREFIX_LEN) {
+        if (ex->starting) {
+            /* The start resends nothing since contract v2 (rule 6): counted. */
             ex->resent++;
-#ifdef GZP_TEST_BUILD
-            log_hex_payload("start-resend", a->u.send.peer_id, data + GZ_PING_PREFIX_LEN, len - GZ_PING_PREFIX_LEN);
-#else
-            gzp_log("start-resend peer=%016llx len=%zu", (unsigned long long)a->u.send.peer_id, len);
-#endif
+            gzp_log("start-resend peer=%016llx kind=%u len=%zu",
+                    (unsigned long long)gzp_peer_id(a->u.send.link.remote.key), (unsigned)a->u.send.kind, len);
         }
 #ifdef GZP_TEST_BUILD
         if (ex->opt->test_oversize_send && (size_t)ex->opt->test_oversize_send > len) {
@@ -232,19 +317,33 @@ static void execute(void *ctx, const gz_action_t *a)
             len = (size_t)ex->opt->test_oversize_send;
         }
 #endif
-        r = gzp_net_send(ex->net, a->u.send.peer_id, data, len);
+        r = gzp_net_send(ex->net, &a->u.send.link, a->u.send.kind, a->u.send.scope, data, len);
         free(padded);
         if (r < 0) fail(ex, "message-too-big"); /* an engine bug (contract-v2.md section 1) */
         break;
-    }    case GZ_ACTION_BROADCAST:
+    }
+    case GZ_ACTION_CONNECT:
+        if (gzp_net_connect(ex->net, a->u.connect.host.key, a->u.connect.address.data, a->u.connect.address.len,
+                            a->u.connect.key_epoch, a->u.connect.key_index) != 0)
+            fail(ex, "connect-refused"); /* a bad address or a full table: an engine bug */
+        break;
+    case GZ_ACTION_DISCONNECT:
+        gzp_net_disconnect(ex->net, &a->u.disconnect.link, a->u.disconnect.why);
+        break;
+    case GZ_ACTION_SET_SEATED:
+        gzp_net_set_seated(ex->net, a->u.set_seated.member.key, a->u.set_seated.seated);
+        gzp_log("seated key=%016llx seated=%d", (unsigned long long)gzp_peer_id(a->u.set_seated.member.key),
+                a->u.set_seated.seated);
+        break;
+    case GZ_ACTION_BROADCAST:
         gzp_chain_broadcast(ex->chain, a->u.broadcast.tx.data, a->u.broadcast.tx.len);
         break;
-    case GZ_ACTION_WATCH_SCRIPT:
-        gzp_chain_watch_script(ex->chain, a->u.watch_script.script.data, a->u.watch_script.script.len);
+    case GZ_ACTION_WATCH_TX: {
+        char hex[65];
+        gzp_hex(a->u.watch_tx.txid, 32, hex);
+        gzp_log("watch-tx txid=%s depth=%u (no watch loop yet: P7)", hex, (unsigned)a->u.watch_tx.depth);
         break;
-    case GZ_ACTION_WATCH_TX:
-        gzp_log("watch-tx depth=%u (no watch loop yet: P7)", (unsigned)a->u.watch_tx.depth);
-        break;
+    }
     case GZ_ACTION_WATCH_OUTPOINT:
         gzp_log("watch-outpoint vout=%u depth=%u (no watch loop yet: P7)",
                 (unsigned)a->u.watch_outpoint.outpoint.vout, (unsigned)a->u.watch_outpoint.depth);
@@ -257,6 +356,9 @@ static void execute(void *ctx, const gz_action_t *a)
         break;
     case GZ_ACTION_NOTIFY:
         ex->notify.emit(ex->notify.ctx, a->u.notify.code, a->u.notify.bytes.data, a->u.notify.bytes.len);
+#ifdef GZP_TEST_BUILD
+        show_notify(a->u.notify.code, a->u.notify.bytes);
+#endif
         break;
     default:
         fail(ex, "unknown-action");
@@ -278,7 +380,7 @@ static void deliver(gzp_exec_t *ex, const gz_event_t *ev)
     gz_status_t st;
     if (ex->fatal) return; /* nothing reaches a node after its incarnation's fatal error */
     gz_action_list_reset(&ex->list);
-    st = gz_node_handle(&ex->node, ev, &ex->list);
+    st = gz_node_handle(ex->node, ev, &ex->list);
     ex->delivered++;
 #ifdef GZP_TEST_BUILD
     if ((ex->number == 1 || ex->opt->test_node_error_always) && ex->opt->test_node_error_at &&
@@ -288,8 +390,9 @@ static void deliver(gzp_exec_t *ex, const gz_event_t *ev)
     }
 #endif
     if (st != GZ_OK) {
-        /* The node is unchanged, but an event it could not take (a
-         * confirmation above all) leaves it out of step with storage. */
+        /* Fatal for the whole node (node.h, ERRORS): the list is as it was,
+         * the node is poisoned and never called again; start from storage. */
+        gzp_log("node-error engine=0x%04x status=%s", (unsigned)gz_node_error_area(ex->node), status_name(st));
         fail(ex, "node-error");
         return;
     }
@@ -303,6 +406,15 @@ static int confirm_one(gzp_exec_t *ex)
     gz_status_t st;
     gz_event_t ev;
     if (ex->fatal || !ex->store.ops->complete(ex->store.ctx, &id)) return 0;
+    ex->confirms++;
+#ifdef GZP_TEST_BUILD
+    if (ex->number == 1 && ex->opt->test_crash_before_confirm &&
+        ex->confirms == (uint64_t)ex->opt->test_crash_before_confirm) {
+        gzp_log("test-crash before-confirm seq=%llu", (unsigned long long)id.sequence);
+        fflush(stdout);
+        _exit(GZP_EXIT_TEST);
+    }
+#endif
     st = gz_runner_confirm(&ex->runner, id);
     if (ex->storage_broken) {
         fail(ex, "storage-failed");
@@ -352,12 +464,14 @@ static int *seen_count(uint64_t peer, int make)
 }
 #endif
 
-static void on_connected(void *ctx, uint64_t peer_id, const uint8_t key[33], int outbound, uint64_t conn)
+static void on_connected(void *ctx, const gz_link_t *link, int outbound, uint32_t key_epoch, uint32_t key_index,
+                         uint64_t conn)
 {
     gzp_exec_t *ex = ctx;
     gz_event_t ev;
     char hex[67];
-    gzp_hex(key, 33, hex);
+    uint64_t peer_id = gzp_peer_id(link->remote.key);
+    gzp_hex(link->remote.key, 33, hex);
     gzp_log("connected peer=%016llx key=%s outbound=%d conn=%llu", (unsigned long long)peer_id, hex, outbound,
             (unsigned long long)conn);
 #ifdef GZP_TEST_BUILD
@@ -368,19 +482,23 @@ static void on_connected(void *ctx, uint64_t peer_id, const uint8_t key[33], int
 #endif
     memset(&ev, 0, sizeof ev);
     ev.kind = GZ_EVENT_PEER_CONNECTED;
-    ev.u.peer.peer_id = peer_id;
+    ev.u.peer.link = *link;
+    ev.u.peer.outbound = outbound;
+    ev.u.peer.key_epoch = key_epoch;
+    ev.u.peer.key_index = key_index;
     deliver(ex, &ev);
     drain(ex);
 #ifdef GZP_TEST_BUILD
     /* The test traffic's own reconnect step: send again what is unanswered. */
-    gzp_testping_connected(ex->tp, ex->net, peer_id);
+    gzp_testping_connected(ex->tp, ex->net, link->remote.key);
 #endif
 }
 
-static void on_disconnected(void *ctx, uint64_t peer_id, const char *why)
+static void on_disconnected(void *ctx, const gz_link_t *link, const char *why)
 {
     gzp_exec_t *ex = ctx;
     gz_event_t ev;
+    uint64_t peer_id = gzp_peer_id(link->remote.key);
     gzp_log("disconnected peer=%016llx why=%s", (unsigned long long)peer_id, why ? why : "-");
 #ifdef GZP_TEST_BUILD
     {
@@ -390,28 +508,142 @@ static void on_disconnected(void *ctx, uint64_t peer_id, const char *why)
 #endif
     memset(&ev, 0, sizeof ev);
     ev.kind = GZ_EVENT_PEER_DISCONNECTED;
-    ev.u.peer.peer_id = peer_id;
+    ev.u.peer.link = *link;
     deliver(ex, &ev);
     drain(ex);
 }
 
-static void on_message(void *ctx, uint64_t peer_id, const uint8_t *bytes, size_t len)
+static void on_message(void *ctx, const gz_link_t *link, uint16_t kind, const uint8_t scope[32],
+                       const uint8_t *records, size_t len)
 {
     gzp_exec_t *ex = ctx;
     gz_event_t ev;
 #ifdef GZP_TEST_BUILD
-    if (!seen_count(peer_id, 0))
-        gzp_log("test-order message-from-unreported-peer peer=%016llx", (unsigned long long)peer_id);
-    gzp_testping_message(ex->tp, peer_id, bytes, len);
+    if (!seen_count(gzp_peer_id(link->remote.key), 0))
+        gzp_log("test-order message-from-unreported-peer peer=%016llx",
+                (unsigned long long)gzp_peer_id(link->remote.key));
+    gzp_testping_message(ex->tp, link->remote.key, kind, records, len);
 #endif
     memset(&ev, 0, sizeof ev);
     ev.kind = GZ_EVENT_MESSAGE_RECEIVED;
-    ev.u.message.peer_id = peer_id;
-    ev.u.message.bytes.data = bytes;
-    ev.u.message.bytes.len = len;
+    ev.u.message.link = *link;
+    ev.u.message.kind = kind;
+    memcpy(ev.u.message.scope, scope, 32);
+    ev.u.message.records.data = records;
+    ev.u.message.records.len = len;
     deliver(ex, &ev);
     drain(ex);
 }
+
+/* ---- user commands ------------------------------------------------------ */
+
+#ifdef GZP_TEST_BUILD
+
+/* A USER_COMMAND: request_id, command code, then the arguments (already a
+ * TLV stream of records 10 and up). */
+static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, size_t args_len)
+{
+    uint8_t *buf = malloc(args_len + 64), c2[2];
+    char rid[32];
+    size_t at = 0;
+    gz_event_t ev;
+    if (!buf) abort();
+    snprintf(rid, sizeof rid, "p-%llu-%llu", (unsigned long long)ex->incarnation,
+             (unsigned long long)++ex->next_request);
+    gz_put_u16(c2, code);
+    if (gz_rec_put(buf, args_len + 64, &at, GZ_CMD_REC_REQUEST_ID, (const uint8_t *)rid, strlen(rid)) != GZ_OK ||
+        gz_rec_put(buf, args_len + 64, &at, GZ_CMD_REC_COMMAND, c2, 2) != GZ_OK) {
+        free(buf);
+        return;
+    }
+    if (args_len) memcpy(buf + at, args, args_len);
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_USER_COMMAND;
+    ev.u.user.bytes.data = buf;
+    ev.u.user.bytes.len = at + args_len;
+    gzp_log("command id=%s code=0x%04x", rid, (unsigned)code);
+    deliver(ex, &ev);
+    drain(ex);
+    free(buf);
+}
+
+/* Test commands from standard input (--test-commands), one per line:
+ *   cmd CODE [ARGS-HEX]   a USER_COMMAND (CODE hex, ARGS a TLV stream of records 10 and up)
+ *   chain-tx TXID-HEX CONF        a GZ_CHAIN_TX_CONFIRMED report
+ *   tip HEIGHT                    a GZ_CHAIN_NEW_TIP
+ *   raw-kind KIND [zero]          a raw factory message of KIND on every connection
+ * During a start a command is answered 503 node_stopped (contract-v2.md 1),
+ * and the other lines wait. */
+static void test_line(gzp_exec_t *ex, char *line)
+{
+    char *w = strtok(line, " "), *a1 = strtok(NULL, " "), *a2 = strtok(NULL, " ");
+    gz_event_t ev;
+    if (!w) return;
+    if (!strcmp(w, "cmd") && a1) {
+        unsigned long code = strtoul(a1, NULL, 16);
+        size_t n = a2 ? strlen(a2) / 2 : 0;
+        uint8_t *args = malloc(n + 1);
+        if (!args) abort();
+        if (ex->starting) {
+            gzp_log("command-answer status=503 code=node_stopped reason=rebuilding");
+        } else if (code <= 0xffff && (!a2 || gzp_unhex(a2, strlen(a2), args, n))) {
+            deliver_command(ex, (uint16_t)code, args, n);
+        } else {
+            gzp_log("test-command bad line");
+        }
+        free(args);
+        return;
+    }
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_CHAIN;
+    if (!strcmp(w, "chain-tx") && a1 && a2 && strlen(a1) == 64 && gzp_unhex(a1, 64, ev.u.chain.txid, 32)) {
+        ev.u.chain.kind = GZ_CHAIN_TX_CONFIRMED;
+        ev.u.chain.confirmations = (uint32_t)strtoul(a2, NULL, 10);
+        gzp_log("test-chain-report confirmations=%u", ev.u.chain.confirmations);
+        deliver(ex, &ev);
+        drain(ex);
+    } else if (!strcmp(w, "tip") && a1) {
+        ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
+        ev.u.chain.height = (uint32_t)strtoul(a1, NULL, 10);
+        deliver(ex, &ev);
+        drain(ex);
+    } else if (!strcmp(w, "raw-kind") && a1) {
+        gzp_net_test_raw(ex->net, (uint16_t)strtoul(a1, NULL, 10), a2 && !strcmp(a2, "zero"));
+    } else {
+        gzp_log("test-command bad line");
+    }
+}
+
+/* Read what standard input has and act on each whole line. During a start
+ * only commands are taken (and refused); other lines stay for later. */
+static void read_commands(gzp_exec_t *ex)
+{
+    for (;;) {
+        char *nl;
+        ssize_t r;
+        if (ex->in_len < sizeof ex->in - 1 && !ex->in_eof) {
+            r = read(0, ex->in + ex->in_len, sizeof ex->in - 1 - ex->in_len);
+            if (r > 0) ex->in_len += (size_t)r;
+            else if (r == 0) ex->in_eof = 1;
+        }
+        ex->in[ex->in_len] = 0;
+        nl = memchr(ex->in, '\n', ex->in_len);
+        if (!nl) {
+            if (ex->in_len == sizeof ex->in - 1) ex->in_len = 0; /* an overlong line: dropped */
+            return;
+        }
+        if (ex->starting && strncmp(ex->in, "cmd ", 4) != 0) return;
+        *nl = 0;
+        {
+            size_t n = (size_t)(nl - ex->in) + 1;
+            test_line(ex, ex->in); /* in place: nothing reads the buffer meanwhile */
+            memmove(ex->in, ex->in + n, ex->in_len - n);
+            ex->in_len -= n;
+        }
+        if (ex->fatal) return;
+    }
+}
+#endif
 
 /* ---- the start ---------------------------------------------------------- */
 
@@ -449,7 +681,7 @@ static void start_node(gzp_exec_t *ex)
     while (more && !ex->fatal) {
         gz_status_t st;
         gz_action_list_reset(&ex->list);
-        st = gz_node_start(&ex->node, &rd, &ex->list, &more);
+        st = gz_node_start(ex->node, &rd, &ex->list, &more);
         steps++;
         if (st == GZ_WAITING) {
             more = 1;
@@ -460,6 +692,7 @@ static void start_node(gzp_exec_t *ex)
             continue;
         }
         if (st != GZ_OK) {
+            gzp_log("node-error engine=0x%04x status=%s", (unsigned)gz_node_error_area(ex->node), status_name(st));
             fail(ex, st == GZ_ERR_CORRUPT ? "start-storage-corrupt" : "start-failed");
             break;
         }
@@ -501,7 +734,14 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     fds[0].fd = ex->stop_fd;
     fds[0].events = POLLIN;
     fds[0].revents = 0;
-    nfds = 1 + gzp_net_pollfds(ex->net, fds + 1, cap - 1, &t, now);
+    /* Standard input, for test commands (test build, --test-commands). */
+    fds[1].fd = -1;
+    fds[1].events = POLLIN;
+    fds[1].revents = 0;
+#ifdef GZP_TEST_BUILD
+    if (ex->opt->test_commands && !ex->in_eof) fds[1].fd = 0;
+#endif
+    nfds = 2 + gzp_net_pollfds(ex->net, fds + 2, cap - 2, &t, now);
     timeout = min_timeout(timeout, t);
     if (until_ms) {
         timeout = min_timeout(timeout, until_ms > now ? (int)(until_ms - now) : 0);
@@ -518,7 +758,10 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     }
     if (fds[0].revents || *ex->stop) return GZP_RUN_STOP;
     now = gzp_mono_ms();
-    gzp_net_dispatch(ex->net, fds + 1, nfds - 1, now);
+    gzp_net_dispatch(ex->net, fds + 2, nfds - 2, now);
+#ifdef GZP_TEST_BUILD
+    if (fds[1].revents && !ex->fatal) read_commands(ex);
+#endif
     if (until_ms) return ex->fatal ? GZP_RUN_RESTART : -1;
     /* Due timers, earliest first, each fired once. */
     for (;;) {
@@ -569,6 +812,39 @@ static const char *counter_name(int s)
     return s == GZP_COUNTER_FOUND ? "found" : s == GZP_COUNTER_CREATED ? "created" : "missing";
 }
 
+/* After the start: what the options ask of the node. A member's --connect
+ * is the test engine's "connect" command, given after each start (the
+ * same target again changes nothing); the test engine saves the target
+ * with a key index pair and issues CONNECT again at every start (contract-v2.md section 3). Then the
+ * test commands waiting on standard input. */
+static void after_start(gzp_exec_t *ex)
+{
+#ifdef GZP_TEST_BUILD
+    uint8_t args[200];
+    char addr[80];
+    size_t at = 0;
+    int a;
+    if (ex->opt->have_connect && ex->opt->test_engines > 0) {
+        snprintf(addr, sizeof addr, "%s:%u", ex->opt->connect_host, (unsigned)ex->opt->connect_port);
+        if (gz_rec_put(args, sizeof args, &at, 12, ex->opt->connect_key, 33) == GZ_OK &&
+            gz_rec_put(args, sizeof args, &at, 14, (const uint8_t *)addr, strlen(addr)) == GZ_OK)
+            deliver_command(ex, GZ_TE_CMD_CONNECT, args, at);
+    }
+    for (a = 0; ex->opt->test_big_reply && a < ex->opt->test_engines && !ex->fatal; a++) {
+        uint8_t ar[2], v[4];
+        at = 0;
+        gz_put_u16(ar, (uint16_t)(GZ_AREA_TEST + (unsigned)a));
+        gz_put_u32(v, (uint32_t)ex->opt->test_big_reply);
+        if (gz_rec_put(args, sizeof args, &at, 10, ar, 2) == GZ_OK && gz_rec_put(args, sizeof args, &at, 12, v, 4) == GZ_OK)
+            deliver_command(ex, GZ_TE_CMD_BIG_REPLY, args, at);
+    }
+    if (ex->opt->test_commands && !ex->fatal) read_commands(ex);
+#else
+    if (ex->number == 1 && ex->opt->have_connect)
+        gzp_log("connect: no engine in this build makes the connection yet (the lobby, P4.2)");
+#endif
+}
+
 void gzp_exec_close_storage(gzp_exec_t *ex)
 {
     if (ex->store_open) ex->store.ops->close(ex->store.ctx);
@@ -579,6 +855,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
 {
     char err[200] = "";
     gz_ports_t ports;
+    gz_node_config_t cfg;
     gzp_net_events_t nev;
     struct pollfd *fds;
     size_t cap;
@@ -652,7 +929,20 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     memset(&ports, 0, sizeof ports);
     ports.random.fill = port_random;
     ports.clock.now_ms = port_clock;
-    if (gz_node_init(&ex->node, &ports) != GZ_OK ||
+    memset(&cfg, 0, sizeof cfg);
+    cfg.host = ex->opt->role == GZP_ROLE_HOST;
+    if (ex->chain_hash) memcpy(cfg.chain, ex->chain_hash, 32);
+    cfg.keys.pub = port_pub;
+    cfg.keys.secret = port_secret;
+    cfg.keys.host_pub = port_host_pub;
+    cfg.keys.ctx = ex;
+    cfg.host_funding = GZ_HOST_FUNDING_AUTO;
+    cfg.member_signing = GZ_MEMBER_SIGNING_AT_JOIN;
+#ifdef GZP_TEST_BUILD
+    cfg.test_engines = (uint32_t)ex->opt->test_engines;
+#endif
+    if (!ex->node && !(ex->node = malloc(gz_node_size()))) abort();
+    if (gz_node_init(ex->node, &ports, &cfg, ex->incarnation) != GZ_OK ||
         gz_runner_init(&ex->runner, ex->rslots, GZP_RUNNER_SLOTS, ex->rbytes, GZP_RUNNER_BYTES,
                        ex->incarnation, execute, ex) != GZ_OK) {
         gzp_exec_close_storage(ex);
@@ -660,7 +950,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     }
     gz_action_list_init(&ex->list, ex->lslots, GZP_LIST_SLOTS, ex->lbytes, GZP_LIST_BYTES);
 
-    cap = 1 + gzp_net_max_fds(ex->net);
+    cap = 2 + gzp_net_max_fds(ex->net);
     fds = calloc(cap, sizeof *fds);
     if (!fds) abort();
 
@@ -706,6 +996,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
             drain(ex);
         }
         gzp_net_queue_end(ex->net);
+        after_start(ex);
     }
     while (rc < 0) rc = turn(ex, fds, cap, 0);
     free(fds);

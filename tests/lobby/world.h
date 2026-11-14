@@ -228,9 +228,9 @@ static inline void w_execute(void *ctx, const gz_action_t *a)
         d->unconfirmed[d->n_unconf++] = a->u.save.batch.sequence;
         break;
     case GZ_ACTION_SEND: {
-        int to = d->idx == 0 ? (int)(a->u.send.peer_id - 1000) : 0;
+        int to = d->idx == 0 ? (int)(gz_lobby_sent_peer(a) - 1000) : 0;
         if (to < 0 || to > w->n || !w->link_up[d->idx ? d->idx : to]) break;
-        w_send(w, d->idx, to, a->u.send.bytes.data, a->u.send.bytes.len);
+        w_send(w, d->idx, to, a->u.send.records.data, a->u.send.records.len);
         break;
     }
     case GZ_ACTION_SET_TIMER:

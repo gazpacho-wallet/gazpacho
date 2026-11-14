@@ -76,14 +76,14 @@ def main():
         for p in mem.values():
             p.stop()
         recs = [r[1] for e in parse_journal(os.path.join(hd, "journal.standin")) if e[0] == "BTCH"
-                for r in e[3] if r[0] == RECORD_TEST_PING and len(r[1]) >= 24]
+                for r in e[3] if r[0] in RECORD_TEST_PING and len(r[1]) >= 82]
         wrong, per = [], {"a": 0, "b": 0}
         for r in recs:
-            who = r[24:].split(b"/")[0].decode(errors="replace")
+            who = r[82:].split(b"/")[0].decode(errors="replace")
             if who in keys:
                 per[who] += 1
-                if r[8:16].hex() != peer_id(keys[who]):
-                    wrong.append((r[24:].decode(errors="replace"), r[8:16].hex()))
+                if r[41:74].hex() != keys[who]:    # the link's remote key (test_engine.h)
+                    wrong.append((r[82:].decode(errors="replace"), r[41:74].hex()))
         check(per["a"] >= 5 and per["b"] >= 5 and not wrong,
               "every ping record names the member that sent it (a %d, b %d, wrong %s)" % (per["a"], per["b"], wrong[:4]))
         check(host.count(r"test-order message-from-unreported-peer") == 0,

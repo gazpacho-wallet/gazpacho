@@ -384,7 +384,7 @@ static void test_write_read(void)
     uint64_t g0 = 0;
     while (h_records(g0, &eb, 0) != 0) g0++;
     gz_action_t send = {.kind = GZ_ACTION_SEND};
-    send.u.send.peer_id = g0;
+    h_send_mark(&send, g0);
     gz_action_list_add(&list, &send);
     h->pending_step[1] = g0;
     h->next_step = g0 + 1;

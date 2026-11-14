@@ -11,10 +11,10 @@ data folder, over the lobby transport (peers.h) on loopback, short timers:
      and journal stand-in. The host listens only after its start.
   2. The host stops dead (--test-crash-at-ping) right after one ping record is
      durable, before its reply could leave. Restarted on the same folder, it
-     starts under incarnation 2; its start resends that reply, which is
-     dropped (no outbox: nobody is connected during a start); the member's
-     reconnect repairs it (the test traffic's stand-in for rule 6: what is
-     unanswered is sent again at connect) and the reply arrives.
+     starts under incarnation 2; its start sends nothing; the member's
+     reconnect repairs it (node.h rule 6: the member's test engine asks with
+     its hello, and the test traffic sends its unanswered ping again) and
+     the reply arrives.
   3. Member 1's journal fails (--test-storage-fail-at): fatal; the program
      closes every connection, starts again from storage in the same process
      under incarnation 2, reconnects and goes on.
@@ -127,14 +127,11 @@ def main():
             time.sleep(0.25)
         procs.append(host2)
         r = host2.wait_for(r"ready incarnation=(\d+) resent=(\d+)")
-        check(r is not None and r.group(1) == "2" and int(r.group(2)) >= 1,
-              "the restarted host starts from storage under incarnation 2 and resends (resent=%s)"
+        check(r is not None and r.group(1) == "2" and int(r.group(2)) == 0,
+              "the restarted host starts from storage under incarnation 2; its start sends nothing (resent=%s)"
               % (r.group(2) if r else "?"))
-        i_resend = host2.index_of(r"start-resend peer=%s payload=%s" % (crash_peer, crash_payload.encode().hex()),
-                                  timeout=1)
-        i_drop = host2.index_of(r"send-dropped peer=%s why=not-connected" % crash_peer, timeout=1)
-        check(i_resend is not None and i_drop is not None and i_drop > i_resend,
-              "its start resends the reply that never left, and it is dropped: nobody is connected (no outbox)")
+        check(host2.count(r"start-resend ") == 0,
+              "the reply that never left is not pushed by the start: the member's hello pulls it (node.h rule 6)")
         who = "m1" if crash_peer == peer_id(keys["m1"]) else "m2"
         mp = m1 if who == "m1" else m2
         i_r = host2.index_of(r"ready incarnation=2")

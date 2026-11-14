@@ -183,7 +183,28 @@ int main(int argc, char **argv)
             sim_quiesce(sim);
             sim_run(sim, 120);
             tail_runs++;
-            never_sent += saved_replies_not_sent(sim, c.n_nodes);
+            if (saved_replies_not_sent(sim, c.n_nodes) > 0) {
+                /* A reply is pulled by the pinger's hello. The run's network may
+                 * have lost that hello without closing the connection (a real
+                 * transport closes it: contract v2 section 1), and a node
+                 * whose save never completes holds every later send behind it
+                 * until its program is restarted (runner.h). So every link
+                 * comes up and every node is restarted once more, with no
+                 * faults left: each peer asks again, past the engines'
+                 * one-answer-a-second limit, and every saved reply must then
+                 * have left. */
+                sim_jump_clock(sim, 2000);
+                for (uint32_t a = 0; a < c.n_nodes; a++)
+                    for (uint32_t b = a + 1; b < c.n_nodes; b++) sim_set_link(sim, a, b, 1);
+                for (uint32_t a = 0; a < c.n_nodes; a++) sim_crash_node(sim, a);
+                sim_run(sim, 200 + 6ull * c.n_nodes * c.n_nodes);
+            }
+            size_t missing = saved_replies_not_sent(sim, c.n_nodes);
+            if (missing && never_sent < 5) {
+                printf("seed %llu: %zu saved replies never sent\n", (unsigned long long)c.seed, missing);
+                if (getenv("GZ_SIM_TRACE")) fputs(sim_trace(sim, NULL), stdout);
+            }
+            never_sent += missing;
             failed += (uint64_t)sim_failed(sim);
         }
         sim_destroy(sim);

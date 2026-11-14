@@ -225,7 +225,10 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
 23. **Not yet against contract v2's P4.** Peers are still `uint64_t` ids and
     messages whole Lightning messages, as on `main` today; links, `SEND` with
     kind and scope, and `CONNECT`, `DISCONNECT` and `SET_SEATED` arrive with
-    P4. The engine has no view objects yet (contract v2 section 11, kinds 2
+    P4. Since P4.1 changed the core's `SEND`, the lobby's carries the peer's
+    number in the link's remote key and the whole message in `records`, under
+    kind `GZ_LOBBY_SEND_WHOLE` (`lobby.h`), until P4.2 puts the lobby on links.
+    The engine has no view objects yet (contract v2 section 11, kinds 2
     and 3): its notices are listed in `lobby.h`, each after the save of what
     it reports (node rule 8), and their mapping to the view is left to the
     program's pull request.

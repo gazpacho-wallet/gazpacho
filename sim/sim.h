@@ -121,7 +121,8 @@
  * A broadcast goes to the mempool and into the next block, unless the
  * schedule decides it never confirms (tx_never_pm). By convention of this
  * pretend chain only, the first byte of a transaction is a length L and the
- * next L bytes are the script whose output it spends (L may be 0). If the
+ * next L bytes are a script (L may be 0; nothing watches scripts since
+ * contract v2 retired WATCH_SCRIPT). If the
  * byte after them is 0xF0, the next byte is a count n and n outpoints follow
  * (32-byte txid, 4-byte vout low byte first): the outpoints it spends
  * (sim_pretend_tx builds one). A transaction's identifier is a digest of its
@@ -130,8 +131,7 @@
  * without replacement would. Broadcasting watches nothing.
  *
  * Watches (action.h, WATCHES) are kept per node, forgotten when it is
- * rebuilt, and answered as action.h says: script spends at each block;
- * transaction confirmations up to the watch's depth, and their leaving the
+ * rebuilt, and answered as action.h says: transaction confirmations up to the watch's depth, and their leaving the
  * chain; outpoint spends, when the spender appears in the mempool or a block
  * and at each confirmation up to the depth. Each block also gives every node
  * a new-tip event. A reorganisation (reorg_pm, sim_reorg) removes the newest
@@ -158,16 +158,21 @@
  *     No action a node's program carries out holds 8 contiguous bytes of
  *     one of that node's secret-tagged draws, anywhere: copied raw, XORed
  *     with one repeated byte, or in reverse order; in a save's records, a
- *     send's bytes, a broadcast, a notify's bytes, a watched script, txid
- *     or outpoint txid; inside hex text in any of these; or as an 8-byte
- *     integer field (a timer's identifier, a send's peer, in either byte
- *     order). Not seen: fewer than 8 contiguous bytes, the 4-byte fields
+ *     send's link keys, scope and records, a broadcast, a notify's bytes, a
+ *     connect's key and address, a watched txid or outpoint txid; inside hex text in any of these; or as an 8-byte
+ *     integer field (a timer's identifier, in either byte order). Not seen: fewer than 8 contiguous bytes, the 4-byte fields
  *     (notify code, vout, depth, delay), and any other transformation of the
  *     bytes, such as a hash, another encoding or a mix with other data
  *     (ports.h).
  *   - A node started with the restore marker saves before it does anything
  *     else. Which save it is is not checked: each engine checks that its
  *     restore batch comes first (node.h, rule 5).
+ *   - The view is never older after a start (node.h rules 7 and 8). For each
+ *     view object a node released (a NOTIFY of GZ_NOTIFY_VIEW with an id and
+ *     a version, command.h), the next start of that node must emit the object
+ *     again, with a version at least the newest one released. A view notice
+ *     follows the save of what it shows, so what was released was durable; a
+ *     restore from a backup rolls the state back, and the record with it.
  *   - Same seed, same run (with check_same_seed).
  *   - Any added with sim_add_invariant. Those can look inside: at each node's
  *     own state through its inspection hook (sim_node_inspect), and at every
@@ -181,7 +186,16 @@
 
 /* Peer identifier of the outside world: the source of pings that come from no
  * node and the destination that records replies to them. Nodes are peers
- * 0..n_nodes-1. */
+ * 0..n_nodes-1.
+ *
+ * LINKS. The core names peers by links (types.h). In the simulator a peer's
+ * key is made from its number (sim_peer_key: 02 "SIM" and the number for a
+ * node, 03 ff... for the world), so a link is (the node's key, the peer's
+ * key), and sim_key_peer gives the number back. A connection between two
+ * nodes made after the run began is outbound on both sides (each asks the
+ * other with its reconnect step); those that exist when the run begins are
+ * reported as accepted, and the world never asks. MESSAGES travel as envelopes
+ * (envelope.h): kind, scope and records. */
 #define SIM_WORLD_PEER UINT64_MAX
 
 typedef struct sim sim_t;
@@ -441,8 +455,16 @@ void sim_jump_clock(sim_t *sim, int64_t delta);
 void sim_quiesce(sim_t *sim);
 
 /* Put a message on the network from peer `from` to peer `to`, subject to the
- * configured faults. */
+ * configured faults: kind 32767 (test traffic), scope zero, `bytes` as its
+ * records; or, with sim_send_kind, any kind and scope. */
 void sim_send_message(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len);
+void sim_send_kind(sim_t *sim, uint64_t from, uint64_t to, uint16_t kind, const uint8_t scope[32],
+                   const uint8_t *records, size_t len);
+
+/* Keys and links (LINKS above). */
+void sim_peer_key(uint64_t peer, uint8_t key[33]);
+uint64_t sim_key_peer(const uint8_t key[33]);
+void sim_peer_link(uint32_t node, uint64_t peer, gz_link_t *link);
 
 /* Deliver a user-command event to node `index`, now. */
 void sim_user_command(sim_t *sim, uint32_t index, const uint8_t *bytes, size_t len);

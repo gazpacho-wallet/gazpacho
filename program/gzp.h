@@ -52,6 +52,7 @@ typedef struct {
     /* transport (peers.h) */
     int handshake_ms, recv_ms, send_ms, ping_ms, pong_ms, reconnect_ms;
     int max_per_address;           /* -1: the transport's default */
+    unsigned max_queue;            /* bytes queued per connection; 0: the transport's default (4 MiB) */
     const char *name;              /* label in output lines and test pings */
     /* tests only: accepted by gazpacho-test (GZP_TEST_BUILD), refused by gazpacho */
     int test_pings;                /* pings this program sends each peer, outside the node */
@@ -70,6 +71,14 @@ typedef struct {
     int test_node_error_at;        /* the K-th event delivered is treated as a node error */
     int test_node_error_always;    /* ... in every incarnation (restart policy tests) */
     int test_stop_at_restart;      /* SIGTERM to itself as an incarnation ends (a stop during a restart) */
+    int test_engines;              /* test engines in the node, 0 to 2 (default 1) */
+    int test_dump_journal;         /* print the journal and stop */
+    int test_drop_kind;            /* drop received messages of this kind (0: none) */
+    int test_commands;             /* read test commands from standard input */
+    int test_big_reply;            /* pad every test reply with this many bytes */
+    int test_crash_after_save;     /* exit once the K-th batch is durable, before the rest of its list */
+    int test_crash_before_confirm; /* exit just before the K-th confirmation reaches the runner */
+    int test_exit_after_send;      /* exit once the first test ping has been handed to the transport */
 } gzp_options_t;
 
 /* Parses argv into `o` (defaults first). Returns 0, or GZP_EXIT_USAGE after

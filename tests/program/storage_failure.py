@@ -54,14 +54,14 @@ def main():
 
         # 1. a sync that fails, cut back, restarted in process -----------------
         d1 = os.path.join(work, "m1")
-        m1 = Proc("m1", [exe, "--data-dir", d1, "--role", "member", "--name", "m1", "--test-sync-fail-at", "9",
+        m1 = Proc("m1", [exe, "--data-dir", d1, "--role", "member", "--name", "m1", "--test-sync-fail-at", "8",
                          "--test-timer-ms", "100"] + connect + common, logs)
         procs.append(m1)
         mk = m1.wait_for(r"member key=([0-9a-f]{66})")
         mp = peer_id(mk.group(1)) if mk else "?"
         f = m1.wait_for(r"save-failed .*ping-payload=([0-9a-f]+)")
         lost = bytes.fromhex(f.group(1)) if f else b"?"
-        check(f is not None, "member 1's 9th batch, a ping record (%s), fails to sync" % lost.decode(errors="replace"))
+        check(f is not None, "member 1's 8th batch, a ping record (%s), fails to sync" % lost.decode(errors="replace"))
         i_fatal = m1.index_of(r"fatal why=storage-failed incarnation=1")
         i_rs = m1.index_of(r"restart-from-storage after=storage-failed")
         r2 = m1.wait_for(r"ready incarnation=2 resent=(\d+)")
@@ -74,17 +74,24 @@ def main():
               "the host's pings to member 1 are all answered after its restart (no stale connection is used)")
         m1.stop()
         j = parse_journal(os.path.join(d1, "journal.standin"))
-        inc1 = [r[1][24:] for e in j if e[0] == "BTCH" and e[1] == 1 for r in e[3] if r[0] == 0x7e570001]
+        inc1 = [r[1][82:] for e in j if e[0] == "BTCH" and e[1] == 1 for r in e[3] if r[0] == 0x7e570001]
         check(lost not in inc1 and len(inc1) > 0,
               "incarnation 1's journal holds its other pings but not the one whose sync failed")
-        # every connection closed by the restart
-        t_rs = m1.times[i_rs] if i_rs is not None else 0
-        closes = [(host.times[i], l) for i, l in enumerate(host.lines)
+        # every connection closed by the restart. Both lines carry the
+        # machine's monotonic clock (mono=, in ms), written by the programs
+        # themselves: the times at which the harness happened to read the two
+        # processes' lines are not compared.
+        def mono(line):
+            return int(line.split("mono=")[1].split()[0])
+
+        t_rs = mono(m1.lines[i_rs]) if i_rs is not None else 0
+        closes = [mono(l) for l in host.lines
                   if "closed conn=" in l and "was_connected=1" in l and ("key=" + (mk.group(1) if mk else "?")) in l]
         conns = sorted(set(l.split("conn=")[1].split()[0] for l in host.lines
                            if " connected peer=%s " % mp in l))
-        check(any(0 <= t - t_rs <= 1.0 for t, _ in closes),
-              "the restart closes the member's connection: the host sees it close within 1 s")
+        check(any(0 <= t - t_rs <= 1000 for t in closes),
+              "the restart closes the member's connection: the host sees it close within 1 s "
+              "(restart at %d, closes at %s, monotonic ms)" % (t_rs, closes))
         check(len(conns) >= 2, "the member comes back on a new connection (host conns %s)" % conns)
         # timers: the old incarnation's never fires after the restart
         late_old = [l for l in m1.lines[i_rs or 0:] if "test-timer fired incarnation=1" in l]

@@ -59,6 +59,33 @@ static gzp_chain_t chain;
 static gzp_testping_t tp;
 static gzp_datadir_t dir;
 
+#ifdef GZP_TEST_BUILD
+/* --test-dump-journal: every batch and record of the journal, read only (the
+ * stand-in's scan may cut a torn tail, as at any start). */
+static int dump_journal(gzp_datadir_t *d)
+{
+    gzp_store_t st;
+    gzp_batch_t b;
+    char err[200] = "";
+    size_t i;
+    if (gzp_standin_open(&st, d->dir, err, sizeof err) != 0) {
+        fprintf(stderr, "gazpacho: %s\n", err);
+        return GZP_EXIT_DATA;
+    }
+    st.ops->rewind(st.ctx);
+    while (st.ops->next(st.ctx, &b)) {
+        printf("journal-batch inc=%llu seq=%llu records=%zu\n", (unsigned long long)b.id.incarnation,
+               (unsigned long long)b.id.sequence, b.n_records);
+        for (i = 0; i < b.n_records; i++)
+            printf("journal-record inc=%llu seq=%llu type=0x%08x len=%zu\n", (unsigned long long)b.id.incarnation,
+                   (unsigned long long)b.id.sequence, (unsigned)b.records[i].type, b.records[i].bytes.len);
+    }
+    st.ops->close(st.ctx);
+    fflush(stdout);
+    return 0;
+}
+#endif
+
 static int key_ok(const uint8_t key[32], void *ctx)
 {
     return secp256k1_ec_seckey_verify((const secp256k1_context *)ctx, key);
@@ -145,6 +172,13 @@ int main(int argc, char **argv)
     rc = gzp_datadir_open(&dir, opt.data_dir, opt.role == GZP_ROLE_HOST ? "host" : "member", opt.network);
     if (rc) return rc;
     have_dir = 1;
+#ifdef GZP_TEST_BUILD
+    if (opt.test_dump_journal) {
+        rc = dump_journal(&dir);
+        gzp_datadir_close(&dir);
+        return rc;
+    }
+#endif
 
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     gzp_os_random(rseed, sizeof rseed);
@@ -180,6 +214,7 @@ int main(int argc, char **argv)
     lim.ping_ms = opt.ping_ms;
     lim.pong_ms = opt.pong_ms;
     lim.max_per_address = opt.max_per_address;
+    lim.max_queue = opt.max_queue;
     rnd.fill = net_random;
     rnd.ctx = NULL;
     memset(&nev, 0, sizeof nev); /* the executor sets the events */
@@ -196,7 +231,6 @@ int main(int argc, char **argv)
         gzp_net_set_listen(&net, opt.listen_host, opt.listen_port);
         gzp_log("host key=%s", hex);
     } else {
-        gzp_net_target(&net, opt.connect_host, opt.connect_port, opt.connect_key);
         gzp_log("member key=%s host-peer=%016llx", hex, (unsigned long long)gzp_peer_id(opt.connect_key));
     }
 
@@ -206,13 +240,17 @@ int main(int argc, char **argv)
                                                          : network == GZ_NET_TESTNET4 ? 39736 : 39735));
 
 #ifdef GZP_TEST_BUILD
-    gzp_testping_init(&tp, opt.test_pings, opt.test_ping_ms, opt.name);
+    gzp_testping_init(&tp, opt.test_pings, opt.test_ping_ms, opt.name, opt.test_engines);
     gzp_testping_burst(&tp, opt.test_burst_n, opt.test_burst_bytes);
+    tp.exit_after_send = opt.test_exit_after_send;
+    net.drop_kind = (unsigned)opt.test_drop_kind;
+    if (opt.test_commands) fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
 #endif
     gzp_notify_lines(&ex.notify);
     ex.opt = &opt;
     ex.dir = &dir;
     ex.net = &net;
+    ex.chain_hash = chain_hash;
     ex.chain = &chain;
     ex.tp = &tp;
     ex.stop = &stop_flag;
@@ -255,7 +293,9 @@ int main(int argc, char **argv)
             rc = GZP_EXIT_FAILED;
             break;
         }
-        gzp_log("restart-from-storage after=%s", ex.fatal_why ? ex.fatal_why : "-");
+        /* mono: this machine's monotonic clock, so tests can compare lines of two processes. */
+        gzp_log("restart-from-storage after=%s mono=%llu", ex.fatal_why ? ex.fatal_why : "-",
+                (unsigned long long)gzp_mono_ms());
         if (gzp_net_reset(&net) != 0) {
             rc = GZP_EXIT_FAILED;
             break;

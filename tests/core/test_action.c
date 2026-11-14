@@ -10,8 +10,9 @@ static gz_action_list_t list;
 static gz_action_t send_action(uint64_t peer, const uint8_t *data, size_t len)
 {
     gz_action_t a = {.kind = GZ_ACTION_SEND};
-    a.u.send.peer_id = peer;
-    a.u.send.bytes = (gz_bytes_t){data, len};
+    a.u.send.link.remote.key[1] = (uint8_t)peer;
+    a.u.send.kind = 32767;
+    a.u.send.records = (gz_bytes_t){data, len};
     return a;
 }
 
@@ -38,8 +39,9 @@ static void test_deep_copy_of_every_kind(void)
     a = (gz_action_t){.kind = GZ_ACTION_BROADCAST};
     a.u.broadcast.tx = (gz_bytes_t){src, 3};
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
-    a = (gz_action_t){.kind = GZ_ACTION_WATCH_SCRIPT};
-    a.u.watch_script.script = (gz_bytes_t){src, 2};
+    a = (gz_action_t){.kind = GZ_ACTION_CONNECT};
+    a.u.connect.address = (gz_bytes_t){src, 2};
+    a.u.connect.key_index = 77;
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
     a = (gz_action_t){.kind = GZ_ACTION_NOTIFY};
     a.u.notify.code = 5;
@@ -48,12 +50,14 @@ static void test_deep_copy_of_every_kind(void)
 
     memset(src, 0, sizeof src);     /* the list must not depend on the source any more */
     CHECK(list.count == 4);
-    CHECK(list.slots[0].kind == GZ_ACTION_SEND && list.slots[0].u.send.peer_id == 42);
-    CHECK(list.slots[0].u.send.bytes.len == 4 && list.slots[0].u.send.bytes.data[0] == 9 &&
-          list.slots[0].u.send.bytes.data[3] == 6);
-    CHECK(list.slots[0].u.send.bytes.data != src);
+    CHECK(list.slots[0].kind == GZ_ACTION_SEND && list.slots[0].u.send.link.remote.key[1] == 42 &&
+          list.slots[0].u.send.kind == 32767);
+    CHECK(list.slots[0].u.send.records.len == 4 && list.slots[0].u.send.records.data[0] == 9 &&
+          list.slots[0].u.send.records.data[3] == 6);
+    CHECK(list.slots[0].u.send.records.data != src);
     CHECK(list.slots[1].u.broadcast.tx.len == 3 && list.slots[1].u.broadcast.tx.data[2] == 7);
-    CHECK(list.slots[2].u.watch_script.script.len == 2 && list.slots[2].u.watch_script.script.data[1] == 8);
+    CHECK(list.slots[2].u.connect.address.len == 2 && list.slots[2].u.connect.address.data[1] == 8 &&
+          list.slots[2].u.connect.address.data != src && list.slots[2].u.connect.key_index == 77);
     CHECK(list.slots[3].u.notify.code == 5 && list.slots[3].u.notify.bytes.len == 1 &&
           list.slots[3].u.notify.bytes.data[0] == 9);
 }
@@ -198,13 +202,14 @@ static void test_bad_arguments(void)
 
     a = send_action(1, NULL, 0);                    /* an empty message is fine */
     CHECK(gz_action_list_add(&list, &a) == GZ_OK);
-    CHECK(list.slots[0].u.send.bytes.data == NULL && list.slots[0].u.send.bytes.len == 0);
+    CHECK(list.slots[0].u.send.records.data == NULL && list.slots[0].u.send.records.len == 0);
 }
 
 static void test_which_actions_are_outward(void)
 {
     static const struct { gz_action_kind_t kind; int outward; } cases[] = {
         {GZ_ACTION_SAVE, 0}, {GZ_ACTION_SEND, 1}, {GZ_ACTION_BROADCAST, 1}, {GZ_ACTION_WATCH_SCRIPT, 0},
+        {GZ_ACTION_CONNECT, 1}, {GZ_ACTION_DISCONNECT, 0}, {GZ_ACTION_SET_SEATED, 0},
         {GZ_ACTION_SET_TIMER, 0}, {GZ_ACTION_CANCEL_TIMER, 0}, {GZ_ACTION_NOTIFY, 1},
         {GZ_ACTION_WATCH_TX, 0}, {GZ_ACTION_WATCH_OUTPOINT, 0},
     };
@@ -214,8 +219,47 @@ static void test_which_actions_are_outward(void)
     }
 }
 
+/* Contract v2: what gz_action_list_add refuses, each leaving the list as it was. */
+static void test_contract_v2_refusals(void)
+{
+    uint8_t b[70] = {1};
+    gz_action_t a;
+    gz_action_list_init(&list, slots, 4, bytes, sizeof bytes);
+    a = (gz_action_t){.kind = GZ_ACTION_WATCH_SCRIPT};
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);       /* retired */
+    a = send_action(1, b, 1);
+    a.u.send.kind = 0;
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
+    a.u.send.kind = 2;                                               /* part: the transport's own */
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
+    a.u.send.kind = 16;
+    a.u.send.records.len = GZ_SEND_MAX_RECORDS + 1;
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
+    a = (gz_action_t){.kind = GZ_ACTION_CONNECT};
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);       /* no address */
+    a.u.connect.address = (gz_bytes_t){b, 65};
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
+    a = (gz_action_t){.kind = GZ_ACTION_DISCONNECT};
+    a.u.disconnect.why = 4;
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
+    a = (gz_action_t){.kind = GZ_ACTION_SET_SEATED};
+    a.u.set_seated.seated = 2;
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT);
+    CHECK(list.count == 0 && list.used == 0);
+    a.u.set_seated.seated = 1;
+    CHECK(gz_action_list_add(&list, &a) == GZ_OK);
+    a = (gz_action_t){.kind = GZ_ACTION_DISCONNECT};
+    a.u.disconnect.why = GZ_DISCONNECT_HOST_FAULT;
+    CHECK(gz_action_list_add(&list, &a) == GZ_OK);
+    a = (gz_action_t){.kind = GZ_ACTION_CONNECT};
+    a.u.connect.address = (gz_bytes_t){b, 64};
+    CHECK(gz_action_list_add(&list, &a) == GZ_OK);
+    CHECK(list.count == 3 && list.used == 64);
+}
+
 int main(void)
 {
+    test_contract_v2_refusals();
     test_init_and_reset();
     test_deep_copy_of_every_kind();
     test_chain_watches();
