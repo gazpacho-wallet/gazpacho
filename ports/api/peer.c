@@ -1,0 +1,253 @@
+/* SPDX-License-Identifier: MIT */
+/* The same-user check (spec/local-api.md 3.4): on every accepted loopback
+ * connection, before a byte is read, ask Linux which account owns the other
+ * end, and refuse every account but the program's own. NETLINK_SOCK_DIAG with
+ * an exact inet_diag_req_v2 lookup first (sock_diag(7)); the uid column of
+ * /proc/net/tcp or /proc/net/tcp6 when the netlink family is unavailable
+ * (proc_pid_net(5)). A peer that is not found, because it closed before the
+ * lookup or the system does not list it, is refused. The local socket uses
+ * SO_PEERCRED (unix(7)). */
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
+#if defined(__linux__)
+#include <linux/inet_diag.h>
+#include <linux/netlink.h>
+#include <linux/sock_diag.h>
+#endif
+
+#include "internal.h"
+
+#define FOUND 1
+#define NOT_FOUND 0
+#define UNAVAILABLE -1
+
+/* TCP states as Linux numbers them (include/net/tcp_states.h), in sock_diag
+ * and in the st column of /proc/net/tcp. */
+#define TCP_STATE_SYN_RECV 3
+#define TCP_STATE_TIME_WAIT 6
+/* The /proc fallback (review F5.4): the peer's row is found with one memmem
+ * over the table, read in chunks, not by parsing every row, so the bound can
+ * be one no real table reaches: the kernel keeps at most
+ * net.ipv4.tcp_max_tw_buckets TIME-WAIT rows (65,536 by default, about 10 MB
+ * of text). A row-count bound refused the program's own user on a busy
+ * machine; past PROC_MAX_BYTES the peer is not found and is refused. */
+#define PROC_CHUNK 65536
+#define PROC_MAX_BYTES ((size_t)32 << 20)
+
+#if defined(__linux__)
+static int netlink_uid(const struct sockaddr_storage *peer, const struct sockaddr_storage *local,
+                       uint32_t *uid)
+{
+    struct {
+        struct nlmsghdr nlh;
+        struct inet_diag_req_v2 r;
+    } req;
+    struct sockaddr_nl sa;
+    union {
+        struct nlmsghdr h;
+        char b[8192];
+    } ans;
+    struct timeval tv = {0, 10000};                      /* 10 ms: a local diag answer is immediate (P5: the loop never waits long) */
+    ssize_t n;
+    int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
+    if (fd < 0) return UNAVAILABLE;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    memset(&req, 0, sizeof req);
+    req.nlh.nlmsg_len = sizeof req;
+    req.nlh.nlmsg_type = SOCK_DIAG_BY_FAMILY;
+    req.nlh.nlmsg_flags = NLM_F_REQUEST;
+    req.nlh.nlmsg_seq = 1;
+    req.r.sdiag_family = (uint8_t)peer->ss_family;
+    req.r.sdiag_protocol = IPPROTO_TCP;
+    req.r.idiag_states = ~0u;
+    req.r.id.idiag_cookie[0] = INET_DIAG_NOCOOKIE;
+    req.r.id.idiag_cookie[1] = INET_DIAG_NOCOOKIE;
+    /* the peer's socket: its source is the peer's address and port, its
+     * destination the program's */
+    if (peer->ss_family == AF_INET) {
+        const struct sockaddr_in *p = (const struct sockaddr_in *)peer, *l = (const struct sockaddr_in *)local;
+        req.r.id.idiag_sport = p->sin_port;
+        req.r.id.idiag_dport = l->sin_port;
+        memcpy(req.r.id.idiag_src, &p->sin_addr, 4);
+        memcpy(req.r.id.idiag_dst, &l->sin_addr, 4);
+    } else {
+        const struct sockaddr_in6 *p = (const struct sockaddr_in6 *)peer, *l = (const struct sockaddr_in6 *)local;
+        req.r.id.idiag_sport = p->sin6_port;
+        req.r.id.idiag_dport = l->sin6_port;
+        memcpy(req.r.id.idiag_src, &p->sin6_addr, 16);
+        memcpy(req.r.id.idiag_dst, &l->sin6_addr, 16);
+    }
+    memset(&sa, 0, sizeof sa);
+    sa.nl_family = AF_NETLINK;
+    if (sendto(fd, &req, sizeof req, 0, (struct sockaddr *)&sa, sizeof sa) != (ssize_t)sizeof req) {
+        close(fd);
+        return UNAVAILABLE;
+    }
+    n = recv(fd, &ans, sizeof ans, 0);
+    close(fd);
+    if (n < (ssize_t)sizeof(struct nlmsghdr)) return UNAVAILABLE;
+    if (ans.h.nlmsg_len < sizeof(struct nlmsghdr) || ans.h.nlmsg_len > (size_t)n) return UNAVAILABLE;
+    if (ans.h.nlmsg_type == NLMSG_ERROR) {
+        const struct nlmsgerr *e = NLMSG_DATA(&ans.h);
+        if (ans.h.nlmsg_len < NLMSG_LENGTH(sizeof *e)) return UNAVAILABLE;
+        return e->error == -ENOENT ? NOT_FOUND : UNAVAILABLE;
+    }
+    if (ans.h.nlmsg_type == SOCK_DIAG_BY_FAMILY &&
+        ans.h.nlmsg_len >= NLMSG_LENGTH(sizeof(struct inet_diag_msg))) {
+        const struct inet_diag_msg *m = NLMSG_DATA(&ans.h);
+        /* the answer must be the socket asked for */
+        if (m->id.idiag_sport != req.r.id.idiag_sport || m->id.idiag_dport != req.r.id.idiag_dport ||
+            memcmp(m->id.idiag_src, req.r.id.idiag_src, sizeof m->id.idiag_src) != 0 ||
+            memcmp(m->id.idiag_dst, req.r.id.idiag_dst, sizeof m->id.idiag_dst) != 0)
+            return NOT_FOUND;
+        /* An orphan (closed before accept) becomes a TIME-WAIT socket, which
+         * sock_diag reports as uid 0 with no inode: its owner is unknown, so
+         * it is not found (review F1). A SYN-RECV entry has no owner either. */
+        if (m->idiag_state == TCP_STATE_TIME_WAIT || m->idiag_state == TCP_STATE_SYN_RECV || m->idiag_inode == 0)
+            return NOT_FOUND;
+        *uid = m->idiag_uid;
+        return FOUND;
+    }
+    return UNAVAILABLE;
+}
+#endif
+
+/* /proc/net/tcp prints each 32-bit word of an address as the %08X of the
+ * host-order integer whose memory is the network-order bytes. */
+static void hex_addr(const uint8_t *a, size_t alen, char *out)
+{
+    size_t w;
+    for (w = 0; w < alen / 4; w++) {
+        uint32_t v;
+        memcpy(&v, a + 4 * w, 4);
+        snprintf(out + 8 * w, 9, "%08X", (unsigned)v);
+    }
+}
+
+static int proc_uid(const struct sockaddr_storage *peer, const struct sockaddr_storage *local, uint32_t *uid)
+{
+    const char *file = peer->ss_family == AF_INET ? "/proc/net/tcp" : "/proc/net/tcp6";
+    char ph[33], lh[33], needle[96], *buf;
+    uint8_t pa[16], la[16];
+    unsigned pport, lport;
+    size_t alen, nlen, len = 0, total = 0;
+    int fd, result = NOT_FOUND;
+    if (peer->ss_family == AF_INET) {
+        const struct sockaddr_in *p = (const struct sockaddr_in *)peer, *l = (const struct sockaddr_in *)local;
+        memcpy(pa, &p->sin_addr, 4);
+        memcpy(la, &l->sin_addr, 4);
+        pport = ntohs(p->sin_port);
+        lport = ntohs(l->sin_port);
+        alen = 4;
+    } else {
+        const struct sockaddr_in6 *p = (const struct sockaddr_in6 *)peer, *l = (const struct sockaddr_in6 *)local;
+        memcpy(pa, &p->sin6_addr, 16);
+        memcpy(la, &l->sin6_addr, 16);
+        pport = ntohs(p->sin6_port);
+        lport = ntohs(l->sin6_port);
+        alen = 16;
+    }
+    hex_addr(pa, alen, ph);
+    hex_addr(la, alen, lh);
+    /* the peer's row: its local end is the peer, its remote end the program */
+    nlen = (size_t)snprintf(needle, sizeof needle, " %s:%04X %s:%04X ", ph, pport, lh, lport);
+    fd = open(file, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return UNAVAILABLE;
+    buf = malloc(PROC_CHUNK + 2048);
+    if (!buf) { close(fd); return UNAVAILABLE; }
+    while (total < PROC_MAX_BYTES) {
+        ssize_t n = read(fd, buf + len, PROC_CHUNK);
+        char *hit;
+        if (n <= 0) break;
+        total += (size_t)n;
+        len += (size_t)n;
+        buf[len] = 0;
+        hit = memmem(buf, len, needle, nlen);
+        if (!hit) {                                     /* keep the tail a match may start in */
+            size_t keep = len < nlen - 1 ? len : nlen - 1;
+            memmove(buf, buf + len - keep, keep);
+            len = keep;
+            continue;
+        }
+        if (!memchr(hit, '\n', (size_t)(buf + len - hit))) {   /* the row's end is still to read */
+            len = (size_t)(buf + len - hit);
+            memmove(buf, hit, len);
+            hit = buf;
+            n = len < 1024 ? read(fd, buf + len, 1024) : 0;
+            if (n > 0) len += (size_t)n;
+            buf[len] = 0;
+        }
+        do {
+            char lhex[40], rhex[40];
+            unsigned lp, rp, st, u;
+            unsigned long inode;
+            if (sscanf(hit, " %39[0-9A-Fa-f]:%x %39[0-9A-Fa-f]:%x %x %*x:%*x %*x:%*x %*x %u %*d %lu", lhex, &lp, rhex,
+                       &rp, &st, &u, &inode) != 7)
+                break;
+            /* a TIME-WAIT or SYN-RECV row, or no inode: no owner (review F1) */
+            if (st == TCP_STATE_TIME_WAIT || st == TCP_STATE_SYN_RECV || inode == 0) break;
+            *uid = u;
+            result = FOUND;
+        } while (0);
+        break;
+    }
+    free(buf);
+    close(fd);
+    return result;
+}
+
+int gz_peer_check_available(gz_api_server *srv)
+{
+    int mode = srv->cfg.peer_mode;
+    FILE *f;
+    if (mode == GZ_API_PEER_UNAVAILABLE) return 0;
+#if defined(__linux__)
+    if (mode != GZ_API_PEER_PROC_ONLY) {
+        int fd = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
+        if (fd >= 0) { close(fd); return 1; }
+        if (mode == GZ_API_PEER_NETLINK_ONLY) return 0;
+    }
+#endif
+    f = fopen("/proc/net/tcp", "re");
+    if (f) { fclose(f); return 1; }
+    return 0;
+}
+
+int gz_peer_same_user(gz_api_server *srv, int fd)
+{
+    struct sockaddr_storage peer, local;
+    socklen_t pl = sizeof peer, ll = sizeof local;
+    uint32_t uid = UINT32_MAX;                         /* no account's: a lookup that fails matches nobody */
+    int r = UNAVAILABLE;
+    if (getpeername(fd, (struct sockaddr *)&peer, &pl) != 0 || getsockname(fd, (struct sockaddr *)&local, &ll) != 0)
+        return 0;
+    if (peer.ss_family == AF_UNIX) {
+#if defined(SO_PEERCRED)
+        struct ucred cr;
+        socklen_t cl = sizeof cr;
+        if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &cl) != 0 || cl != sizeof cr) return 0;
+        return (int64_t)cr.uid == srv->expect_uid;
+#else
+        return 0;
+#endif
+    }
+    if (peer.ss_family != AF_INET && peer.ss_family != AF_INET6) return 0;
+    if (!srv->peer_check_ok) return 1;                 /* reported as unavailable in status (3.4) */
+#if defined(__linux__)
+    if (srv->cfg.peer_mode != GZ_API_PEER_PROC_ONLY) r = netlink_uid(&peer, &local, &uid);
+#endif
+    if (r == UNAVAILABLE && srv->cfg.peer_mode != GZ_API_PEER_NETLINK_ONLY) r = proc_uid(&peer, &local, &uid);
+    if (r != FOUND) return 0;                          /* not found or not readable: refused */
+    return (int64_t)uid == srv->expect_uid;
+}

@@ -204,6 +204,7 @@ jobs:
         # and the engine fuzzer a short run: the full sets take hours here.
         run: >-
           python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0"
+          --args "api_http_fuzz=3000" --args "api_json_fuzz=20000"
           --exclude '^storage_vector_e2r$'
           --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
           --args "signing_golden=golden tiny" --args "signing_model=model tiny"

@@ -16,6 +16,7 @@
 typedef struct curl_ctx {
   CURL *easy;
   char *ca_file; /* NULL: the system's certificate authorities */
+  char *proxy;   /* NULL: no proxy; else "socks5h://HOST:PORT" */
 } curl_ctx;
 
 typedef struct sink {
@@ -95,6 +96,59 @@ static bool split_url(const char *url, bool *https, char host[HOST_CAP]) {
   return true;
 }
 
+bool gz_http_proxy_valid(const char *proxy) {
+  static const char scheme[] = "socks5h://";
+  if (proxy == NULL || proxy[0] == '\0') return true;
+  if (strncmp(proxy, scheme, sizeof scheme - 1) != 0) return false;
+  const char *auth = proxy + sizeof scheme - 1;
+  size_t end = strlen(auth);
+  if (end > 0 && auth[end - 1] == '/') end--; /* one trailing slash */
+  size_t host_len = 0;
+  if (auth[0] == '[') {
+    /* an IPv6 address: hex digits, ':' and '.', at least two ':' (so not
+     * empty, not "[:]" and not a bracketed IPv4 address) */
+    size_t colons = 0;
+    host_len = 1;
+    while (host_len < end && auth[host_len] != ']') {
+      char c = auth[host_len];
+      bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+      if (!hex && c != ':' && c != '.') return false;
+      if (c == ':') colons++;
+      host_len++;
+    }
+    if (host_len == end || colons < 2) return false;
+    host_len++;
+  } else {
+    /* a name or IPv4 address: labels of letters, digits and '-', separated
+     * by single dots; no label empty or starting with '-' */
+    bool label_start = true;
+    while (host_len < end && auth[host_len] != ':') {
+      char c = auth[host_len];
+      if (c == '.') {
+        if (label_start) return false;
+        label_start = true;
+      } else if (is_alnum(c) || (c == '-' && !label_start)) {
+        label_start = false;
+      } else {
+        return false;
+      }
+      host_len++;
+    }
+    if (label_start) return false; /* empty, or ends with '.' */
+  }
+  if (host_len >= HOST_CAP) return false;
+  /* the port is required (libcurl would otherwise assume 1080), 1 to 65535 */
+  if (host_len >= end || auth[host_len] != ':') return false;
+  size_t digits = end - host_len - 1;
+  if (digits == 0 || digits > 5) return false;
+  unsigned long port = 0;
+  for (size_t i = host_len + 1; i < end; i++) {
+    if (auth[i] < '0' || auth[i] > '9') return false;
+    port = port * 10u + (unsigned long)(auth[i] - '0');
+  }
+  return port >= 1 && port <= 65535;
+}
+
 /* This machine, under the three names plain http is allowed for. */
 static bool is_loopback_host(const char *host) {
   return strcmp(host, "localhost") == 0 || strcmp(host, "127.0.0.1") == 0 ||
@@ -161,6 +215,16 @@ static gz_http_result curl_request(void *ctx, const gz_http_request *req, uint8_
     ok = ok && curl_easy_setopt(e, CURLOPT_CAINFO, c->ca_file) == CURLE_OK;
     ok = ok && curl_easy_setopt(e, CURLOPT_CAPATH, NULL) == CURLE_OK;
   }
+  /* The proxy is always set: "" turns proxies off, including those named in
+   * the environment (http_proxy, https_proxy, ALL_PROXY), which libcurl
+   * would otherwise follow silently. NOPROXY "" likewise overrides NO_PROXY.
+   * With a proxy configured, this machine is reached directly. */
+  ok = ok && curl_easy_setopt(e, CURLOPT_PROXY, c->proxy != NULL ? c->proxy : "") == CURLE_OK;
+  ok = ok && curl_easy_setopt(e, CURLOPT_NOPROXY,
+                              c->proxy != NULL ? "localhost,127.0.0.1,::1" : "") == CURLE_OK;
+  /* offer "no authentication" only: never GSSAPI, which would start a
+   * Kerberos exchange with the proxy and could reveal the user's principal */
+  ok = ok && curl_easy_setopt(e, CURLOPT_SOCKS5_AUTH, (long)CURLAUTH_NONE) == CURLE_OK;
   ok = ok && curl_easy_setopt(e, CURLOPT_USERAGENT, GZ_HTTP_USER_AGENT) == CURLE_OK;
   ok = ok && curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, on_body) == CURLE_OK;
   ok = ok && curl_easy_setopt(e, CURLOPT_WRITEDATA, &s) == CURLE_OK;
@@ -228,6 +292,7 @@ static void curl_sleep_ms(void *ctx, uint32_t ms) {
 bool gz_http_curl_create(gz_http *out, const gz_http_curl_config *cfg) {
   if (out == NULL) return false;
   memset(out, 0, sizeof *out);
+  if (cfg != NULL && !gz_http_proxy_valid(cfg->proxy)) return false;
   /* libcurl keeps its own process-wide reference count here; this library
    * holds no global state of its own */
   if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) return false;
@@ -241,10 +306,18 @@ bool gz_http_curl_create(gz_http *out, const gz_http_curl_config *cfg) {
     c->ca_file = malloc(n + 1);
     if (c->ca_file != NULL) memcpy(c->ca_file, cfg->ca_file, n + 1);
   }
+  if (cfg != NULL && cfg->proxy != NULL && cfg->proxy[0] != '\0') {
+    size_t n = strlen(cfg->proxy);
+    c->proxy = malloc(n + 1);
+    if (c->proxy != NULL) memcpy(c->proxy, cfg->proxy, n + 1);
+  }
   c->easy = curl_easy_init();
-  if (c->easy == NULL || (cfg != NULL && cfg->ca_file != NULL && c->ca_file == NULL)) {
+  bool want_proxy = cfg != NULL && cfg->proxy != NULL && cfg->proxy[0] != '\0';
+  if (c->easy == NULL || (cfg != NULL && cfg->ca_file != NULL && c->ca_file == NULL) ||
+      (want_proxy && c->proxy == NULL)) {
     if (c->easy != NULL) curl_easy_cleanup(c->easy);
     free(c->ca_file);
+    free(c->proxy);
     free(c);
     curl_global_cleanup();
     return false;
@@ -261,6 +334,7 @@ void gz_http_curl_destroy(gz_http *http) {
   curl_ctx *c = http->ctx;
   curl_easy_cleanup(c->easy);
   free(c->ca_file);
+  free(c->proxy);
   free(c);
   curl_global_cleanup();
   memset(http, 0, sizeof *http);
