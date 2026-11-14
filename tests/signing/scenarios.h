@@ -25,7 +25,7 @@ static int items_of(const gz_sign_round_t *r, uint32_t j, int t, uint32_t *out)
 static long q_find(const harness_t *h, uint32_t from, uint32_t to, uint8_t kind)
 {
     for (size_t i = 0; i < h->nq; i++)
-        if (h->q[i].from == from && h->q[i].to == to && h->q[i].len > 2 && h->q[i].b[2] == kind) return (long)i;
+        if (h->q[i].from == from && h->q[i].to == to && h_kind_of(h->q[i].b, h->q[i].len) == kind) return (long)i;
     return -1;
 }
 
@@ -35,32 +35,69 @@ static void flush_until(harness_t *h, uint32_t from, uint8_t kind, size_t count)
     while (h->nq && h_count_kind(h, from, kind) < count) h_deliver(h, 0, 0);
 }
 
-/* An abort as `from` (participant index = party here) would sign it. */
-static size_t make_abort(uint8_t *out, const uint8_t id[32], uint8_t reason, uint8_t tier, uint32_t from)
+/* The messages.md 7.9 reason for an engine's `why`. */
+#define R(why) gz_sign_reason((uint8_t)(why), 0)
+#define WHOLE (-1)
+
+/* A whole-round abort as `from` (participant index = party here) would sign it. */
+static size_t make_abort(uint8_t *out, const uint8_t id[32], uint16_t reason, uint32_t from)
 {
-    size_t n = 0;
-    out[n++] = 'G'; out[n++] = 'S'; out[n++] = GZ_SIGN_MSG_ABORT;
-    memcpy(out + n, id, 32); n += 32;
-    out[n++] = reason; out[n++] = tier; out[n++] = 0; out[n++] = 0;
-    w_resign(out, n, from);
-    return n + 64;
+    uint8_t r2[2] = {(uint8_t)(reason >> 8), (uint8_t)reason};
+    w_rec_t recs[2] = {{2, id, 32}, {4, r2, 2}};
+    return w_message(out, 512, GZ_SIGN_MSG_ABORT, recs, 2, (int)from);
 }
 
 static size_t make_status(uint8_t *out, const uint8_t id[32])
 {
-    out[0] = 'G'; out[1] = 'S'; out[2] = GZ_SIGN_MSG_STATUS;
-    memcpy(out + 3, id, 32);
-    return 35;
+    w_rec_t recs[1] = {{2, id, 32}};
+    return w_message(out, 128, GZ_SIGN_MSG_STATUS, recs, 1, -1);
 }
 
-/* An abort that went out: its reason, tier and items. */
-static int check_abort(const h_sent_t *s, uint8_t reason, uint8_t tier, int n, const uint32_t *items)
+/* An abort that went out: its reason, its tier (WHOLE: none) and items. */
+static int check_abort(const h_sent_t *s, uint16_t reason, int tier, int n, const uint32_t *items)
 {
     gz_sign_msg_t m;
     if (!s || !gz_sign_decode(s->b, s->len, &m) || m.kind != GZ_SIGN_MSG_ABORT) return 0;
-    if (m.reason != reason || m.tier != tier || m.n != n) return 0;
+    if (m.reason != reason || m.n != n || (tier == WHOLE ? m.has_tier != 0 : !m.has_tier || m.tier != tier)) return 0;
     for (int k = 0; k < n; k++) if (be32p(m.entry[k]) != items[k]) return 0;
     return 1;
+}
+
+/* The n-th message of `kind` party `from` sent to `to`, or NULL. */
+static const h_sent_t *h_sent_to(const harness_t *h, uint32_t from, uint32_t to, uint8_t kind, size_t nth)
+{
+    for (size_t i = 0; i < h->n_sent; i++)
+        if (h->sent[i].party == from && h->sent[i].peer == to && h->sent[i].kind == kind && nth-- == 0) return &h->sent[i];
+    return NULL;
+}
+
+/* A record's length: BigSize type (one byte here) and length, then the value. */
+static size_t rl(size_t v) { return 1 + (v < 0xfd ? 1 : v <= 0xffff ? 3 : 5) + v; }
+
+/* A list message (nonces, all_nonces, partials, result) written again with
+ * other entries: records 2 and 4 as they were, record 6 the given blocks,
+ * and a signature record (to be re-signed) if the message had one. */
+static size_t rebuild_list(uint8_t *b, size_t cap, const gz_sign_msg_t *m, const uint8_t *const *blocks, const size_t *sizes, size_t n)
+{
+    static uint8_t value[GZ_SIGN_MAX_MSG], copy_id[32];
+    size_t v = 0;
+    uint8_t tier = m->tier, zero[64] = {0};
+    int sig = m->sig != NULL;
+    uint16_t kind = m->kind;
+    memcpy(copy_id, m->round_id, 32);
+    for (size_t i = 0; i < n; i++) { memmove(value + v, blocks[i], sizes[i]); v += sizes[i]; }
+    w_rec_t recs[4] = {{2, copy_id, 32}, {4, &tier, 1}, {6, value, v}, {240, zero, 64}};
+    return w_message(b, cap, kind, recs, sig ? 4 : 3, -1);
+}
+/* The size of entry k of a list message. */
+static size_t entry_size(const uint8_t *b, size_t len, const gz_sign_msg_t *m, int k)
+{
+    const uint8_t *end = k + 1 < m->n ? m->entry[k + 1] : NULL;
+    if (end) return (size_t)(end - m->entry[k]);
+    if (m->kind == GZ_SIGN_MSG_ALL_NONCES) return 6 + 130u * (size_t)(m->entry[k][4] << 8 | m->entry[k][5]);
+    if (m->kind == GZ_SIGN_MSG_NONCES) return 134;
+    (void)b; (void)len;
+    return 68;
 }
 
 /* What a party holds of each round, in a form that must survive a restart. */
@@ -105,6 +142,13 @@ static void check_restart_keeps(harness_t *h)
     }
 }
 
+static const uint8_t g_zero64[64];
+static int items_of_has(const gz_sign_round_t *r, uint32_t j, int i)
+{
+    for (int s = 0; s < r->def.items[i].n_signers; s++) if (r->def.items[i].signers[s] == j) return 1;
+    return 0;
+}
+
 static void honest_counts(harness_t *h, uint8_t tiers)
 {
     const gz_sign_round_t *r = h_newest(h, 0);
@@ -119,9 +163,11 @@ static void honest_counts(harness_t *h, uint8_t tiers)
         const gz_sign_round_t *m = h_find(h, j, r->id);
         const uint64_t *mc = h->p[j].e->counters;
         int mine = items_of(r, j, -1, NULL);
-        CHECK(m && m->state == GZ_SIGN_ROUND_COMPLETE && memcmp(m->final_sig, r->final_sig, sizeof r->final_sig) == 0);
+        CHECK(m && m->state == GZ_SIGN_ROUND_COMPLETE);
+        for (int i = 0; m && i < items; i++)        /* a member holds the finals of its own items, and only those */
+            CHECK(memcmp(m->final_sig[i], items_of_has(r, j, i) ? r->final_sig[i] : (const uint8_t *)g_zero64, 64) == 0);
         CHECK(mc[GZ_SIGN_COUNT_NONCES_MADE] == (uint64_t)mine && mc[GZ_SIGN_COUNT_PARTIALS_MADE] == (uint64_t)mine);
-        CHECK(mc[GZ_SIGN_COUNT_FINALS_VERIFIED] == (uint64_t)items && mc[GZ_SIGN_COUNT_REJECTED] == 0 && mc[GZ_SIGN_COUNT_DUPLICATES] == 0);
+        CHECK(mc[GZ_SIGN_COUNT_FINALS_VERIFIED] == (uint64_t)mine && mc[GZ_SIGN_COUNT_REJECTED] == 0 && mc[GZ_SIGN_COUNT_DUPLICATES] == 0);
         /* Each message, exactly: one nonce message per tier with items, one partial message, one ack. */
         int tiers_with = 0;
         for (int t = 0; t < tiers; t++) tiers_with += items_of(r, j, t, NULL) > 0;
@@ -135,8 +181,8 @@ static void honest_counts(harness_t *h, uint8_t tiers)
             const h_sent_t *ns = h_sent_kind(h, j, GZ_SIGN_MSG_NONCES, nth), *ps = h_sent_kind(h, j, GZ_SIGN_MSG_PARTIALS, nth);
             nth++;
             gz_sign_msg_t mn, mp;
-            CHECK(ns && ns->len == 38 + (size_t)n * 134 && gz_sign_decode(ns->b, ns->len, &mn) && mn.tier == t && mn.n == n);
-            CHECK(ps && ps->len == 38 + (size_t)n * 68 + 64 && gz_sign_decode(ps->b, ps->len, &mp) && mp.tier == t && mp.n == n);
+            CHECK(ns && ns->len == GZ_RMSG_HEADER + rl(32) + rl(1) + rl((size_t)n * 134) && gz_sign_decode(ns->b, ns->len, &mn) && mn.tier == t && mn.n == n);
+            CHECK(ps && ps->len == GZ_RMSG_HEADER + rl(32) + rl(1) + rl((size_t)n * 68) + rl(64) && gz_sign_decode(ps->b, ps->len, &mp) && mp.tier == t && mp.n == n);
             for (int k = 0; ns && ps && k < n; k++) {
                 CHECK(be32p(mn.entry[k]) == list[k] && be32p(mp.entry[k]) == list[k]);
                 /* the nonce sent is the one the host holds for that signer, and the set digest is over the host's set */
@@ -151,15 +197,16 @@ static void honest_counts(harness_t *h, uint8_t tiers)
                 CHECK(memcmp(mp.entry[k] + 36, d, 32) == 0 && memcmp(mp.entry[k] + 4, r->psig[list[k]][s], 32) == 0);
             }
         }
-        /* the ack names what the member holds: TH(held, id || every final signature) */
+        /* the ack names what the member holds: TH(held, its items' u32 index || final signature) (7.8) */
         const h_sent_t *ack = h_sent_kind(h, j, GZ_SIGN_MSG_ACK, 0);
-        gz_sign_sha256_t hs;
+        uint32_t idx[GZ_SIGN_MAX_ITEMS];
+        static uint8_t fin[GZ_SIGN_MAX_ITEMS][64];
         uint8_t d[32];
-        gz_sign_tagged_init(&hs, "gazpacho/held");
-        gz_sign_sha256_write(&hs, r->id, 32);
-        for (int i = 0; i < items; i++) gz_sign_sha256_write(&hs, r->final_sig[i], 64);
-        gz_sign_sha256_done(&hs, d);
-        CHECK(ack && ack->len == 35 + 32 + 64 && memcmp(ack->b + 35, d, 32) == 0);
+        gz_sign_msg_t ma;
+        int nm = items_of(r, j, -1, idx);
+        for (int k = 0; k < nm; k++) memcpy(fin[k], r->final_sig[idx[k]], 64);
+        gz_rmsg_held_hash(idx, (const uint8_t (*)[64])fin, (size_t)nm, d);
+        CHECK(ack && ack->len == GZ_RMSG_HEADER + rl(32) + rl(32) + rl(64) && gz_sign_decode(ack->b, ack->len, &ma) && memcmp(ma.held, d, 32) == 0);
         /* the member's journal, in order */
         static const uint32_t one[] = {GZ_SIGN_REC_M_STARTED, GZ_SIGN_REC_M_SIGNED, GZ_SIGN_REC_M_RESULT, GZ_SIGN_REC_M_COMPLETE};
         if (tiers == 1) {
@@ -172,13 +219,12 @@ static void honest_counts(harness_t *h, uint8_t tiers)
     size_t sets = 0;                     /* a nonce set only to members with items in the tier */
     for (int t = 0; t < tiers; t++)
         for (uint32_t j = 1; j < h->n; j++) sets += items_of(r, j, t, NULL) > 0;
-    CHECK(h_count_kind(h, 0, GZ_SIGN_MSG_ALL_NONCES) == sets && h_count_kind(h, 0, GZ_SIGN_MSG_RESULT) == (size_t)(h->n - 1) * tiers);
+    CHECK(h_count_kind(h, 0, GZ_SIGN_MSG_ALL_NONCES) == sets && h_count_kind(h, 0, GZ_SIGN_MSG_RESULT) == sets);
     CHECK(h->p[0].n_recs == (size_t)(1 + tiers + 1 + (h->n - 1)));
-    const h_sent_t *res = h_sent_kind(h, 0, GZ_SIGN_MSG_RESULT, 0);
+    const h_sent_t *res = h_sent_to(h, 0, 1, GZ_SIGN_MSG_RESULT, 0);    /* member 1's: its own items of tier 0 */
     gz_sign_msg_t mr;
-    int tier0 = 0;
-    for (int i = 0; i < items; i++) tier0 += r->def.items[i].tier == 0;
-    CHECK(res && gz_sign_decode(res->b, res->len, &mr) && mr.n == tier0 && res->len == 38 + (size_t)tier0 * 68 + 64);
+    int tier0 = items_of(r, 1, 0, NULL);
+    CHECK(res && gz_sign_decode(res->b, res->len, &mr) && mr.n == tier0 && res->len == GZ_RMSG_HEADER + rl(32) + rl(1) + rl((size_t)tier0 * 68) + rl(64));
 }
 
 /* ---- the scenarios; each returns its transcript digest ---- */
@@ -248,7 +294,7 @@ static uint64_t sc_member_restart_nonces(void)
     const gz_sign_round_t *r1 = h_oldest(&h, 2);
     CHECK(r1 && r1->state == GZ_SIGN_ROUND_ABORTED && r1->why == GZ_SIGN_WHY_RESTARTED && !r1->ever_partial);
     for (int i = 0; r1 && i < r1->def.n_items; i++) CHECK(r1->secnonce_serial[i] == 0);
-    CHECK(check_abort(h_sent_kind(&h, 2, GZ_SIGN_MSG_ABORT, 0), GZ_SIGN_WHY_RESTARTED, 0xff, 0, NULL));
+    CHECK(check_abort(h_sent_kind(&h, 2, GZ_SIGN_MSG_ABORT, 0), R(GZ_SIGN_WHY_RESTARTED), WHOLE, 0, NULL));
     CHECK(h.p[2].recs[h.p[2].n_recs - 1].type == GZ_SIGN_REC_M_ABORTED);
     uint8_t id1[32];
     memcpy(id1, r1->id, 32);
@@ -307,12 +353,12 @@ static uint64_t sc_tier_abort(void)
     flush_until(&h, j, GZ_SIGN_MSG_NONCES, 2);
     uint32_t list[GZ_SIGN_MAX_ITEMS];
     int n = items_of(r, j, 1, list);
-    uint8_t ab[200];
-    size_t len = make_abort(ab, r->id, GZ_SIGN_WHY_DEADLINE, 0xff, 0);
+    uint8_t ab[512];
+    size_t len = make_abort(ab, r->id, 4, 0);
     h_inject(&h, 0, j, ab, len);
     const gz_sign_round_t *m = h_newest(&h, j);
     CHECK(m->state == GZ_SIGN_ROUND_UNFINISHED && m->why == GZ_SIGN_WHY_HOST_ABORT && m->tier == 1);
-    CHECK(check_abort(h_sent_kind(&h, j, GZ_SIGN_MSG_ABORT, 0), GZ_SIGN_WHY_HOST_ABORT, 1, n, list));
+    CHECK(check_abort(h_sent_kind(&h, j, GZ_SIGN_MSG_ABORT, 0), R(GZ_SIGN_WHY_HOST_ABORT), 1, n, list));
     for (int i = 0; i < m->def.n_items; i++) CHECK(m->secnonce_serial[i] == 0);
     /* an abort that is not the host's changes nothing */
     uint32_t k = j == 1 ? 2 : 1;
@@ -320,7 +366,7 @@ static uint64_t sc_tier_abort(void)
     h_init(&h2, 4);
     CHECK(h_begin(&h2, 2, 4, 0) == GZ_OK);
     flush_until(&h2, j, GZ_SIGN_MSG_NONCES, 2);
-    len = make_abort(ab, h_newest(&h2, 0)->id, GZ_SIGN_WHY_DEADLINE, 0xff, k);
+    len = make_abort(ab, h_newest(&h2, 0)->id, 4, k);
     h_inject(&h2, 0, j, ab, len);
     CHECK(h_newest(&h2, j)->state == GZ_SIGN_ROUND_ACTIVE);
     h_inject(&h2, k, j, ab, len);
@@ -329,10 +375,10 @@ static uint64_t sc_tier_abort(void)
     CHECK(h_restart(&h2, j) == GZ_OK);
     m = h_newest(&h2, j);
     CHECK(m->state == GZ_SIGN_ROUND_UNFINISHED && m->why == GZ_SIGN_WHY_RESTARTED);
-    CHECK(check_abort(h_sent_kind(&h2, j, GZ_SIGN_MSG_ABORT, 0), GZ_SIGN_WHY_RESTARTED, 1, n, list));
+    CHECK(check_abort(h_sent_kind(&h2, j, GZ_SIGN_MSG_ABORT, 0), R(GZ_SIGN_WHY_RESTARTED), 1, n, list));
     const h_sent_t *prop = h_sent_kind(&h2, 0, GZ_SIGN_MSG_PROPOSE, 0);
     h_inject(&h2, 0, j, prop->b, prop->len);
-    CHECK(check_abort(h_sent_kind(&h2, j, GZ_SIGN_MSG_ABORT, 1), GZ_SIGN_WHY_RESTARTED, 1, n, list));
+    CHECK(check_abort(h_sent_kind(&h2, j, GZ_SIGN_MSG_ABORT, 1), R(GZ_SIGN_WHY_RESTARTED), 1, n, list));
     CHECK(h_count_kind(&h2, j, GZ_SIGN_MSG_NONCES) == 2);
     uint64_t d = h_digest(&h) ^ h_digest(&h2);
     h_free(&h); h_free(&h2);
@@ -360,11 +406,11 @@ static uint64_t sc_host_restarts(void)
     }
     CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
     /* a status request about the failed attempt: its abort and reason */
-    uint8_t st[35];
+    uint8_t st[128];
     size_t before = h_count_kind(&h, 0, GZ_SIGN_MSG_ABORT);
     h_inject(&h, 1, 0, st, make_status(st, id1));
     CHECK(h_count_kind(&h, 0, GZ_SIGN_MSG_ABORT) == before + 1);
-    CHECK(check_abort(&h.sent[h.n_sent - 1], GZ_SIGN_WHY_HOST_RESTART, 0xff, 0, NULL) && h.sent[h.n_sent - 1].peer == 1);
+    CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_HOST_RESTART), WHOLE, 0, NULL) && h.sent[h.n_sent - 1].peer == 1);
     /* about an identifier nobody knows: nothing */
     uint8_t other[32] = {1};
     size_t sent = h.n_sent;
@@ -373,21 +419,21 @@ static uint64_t sc_host_restarts(void)
     uint64_t d = h_digest(&h);
     h_free(&h);
 
-    /* After complete, before any ack: the restarted host sends every result and complete again. */
+    /* After complete, before any ack: the restarted host pushes nothing (contract v2 section 3: members ask). */
     h_init(&h, 3);
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     flush_until(&h, 0, GZ_SIGN_MSG_COMPLETE, 3);
     size_t results = h_count_kind(&h, 0, GZ_SIGN_MSG_RESULT);
     CHECK(h_restart(&h, 0) == GZ_OK);
     CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_COMPLETE && h.p[0].e->attempts == 1);
-    CHECK(h_count_kind(&h, 0, GZ_SIGN_MSG_RESULT) == results + 3 && h_count_kind(&h, 0, GZ_SIGN_MSG_COMPLETE) == 6);
+    CHECK(h_count_kind(&h, 0, GZ_SIGN_MSG_RESULT) == results && h_count_kind(&h, 0, GZ_SIGN_MSG_COMPLETE) == 3);
     h_flush(&h, 100000);
     CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE && h_newest(&h, 0)->acked == 0xe);
     check_restart_keeps(&h);
     CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
     /* a status request now: every result and the complete, to that member only */
     sent = h.n_sent;
-    uint8_t st2[35];
+    uint8_t st2[128];
     h_inject(&h, 2, 0, st2, make_status(st2, h_newest(&h, 0)->id));
     CHECK(h.n_sent == sent + 2 && h.sent[sent].kind == GZ_SIGN_MSG_RESULT && h.sent[sent + 1].kind == GZ_SIGN_MSG_COMPLETE && h.sent[sent].peer == 2);
     d ^= h_digest(&h);
@@ -444,7 +490,7 @@ static uint64_t sc_timers(void)
     for (uint32_t j = 1; j <= 3; j++) {
         const gz_sign_round_t *m = h_newest(&h, j);
         CHECK(m->state == GZ_SIGN_ROUND_ABORTED && m->why == GZ_SIGN_WHY_DEADLINE && m->tail_len > 0);
-        CHECK(check_abort(h_sent_kind(&h, j, GZ_SIGN_MSG_ABORT, 0), GZ_SIGN_WHY_DEADLINE, 0xff, 0, NULL));
+        CHECK(check_abort(h_sent_kind(&h, j, GZ_SIGN_MSG_ABORT, 0), R(GZ_SIGN_WHY_DEADLINE), WHOLE, 0, NULL));
         CHECK(h.p[j].e->counters[GZ_SIGN_COUNT_REJECTED] == 1);
     }
     d ^= h_digest(&h);
@@ -478,7 +524,7 @@ static gz_status_t deliver_edited(harness_t *h, long i, edit_fn edit, int signer
     h_drop_msg(h, (size_t)i);
     if (!gz_sign_decode(b, len, &m)) return GZ_ERR_ARGUMENT;
     edit(b, &len, &m, h_newest(h, 0));
-    if (signer >= 0 && gz_sign_decode(b, len, &m) && m.sig) w_resign(b, m.signed_len, (uint32_t)signer);
+    if (signer >= 0 && gz_sign_decode(b, len, &m) && m.sig) w_resign(b, len, (uint32_t)signer);
     return h_inject(h, from, to, b, len);
 }
 
@@ -494,7 +540,7 @@ static void ed_index(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_s
         if (!has) { e[0] = (uint8_t)(i >> 24); e[1] = (uint8_t)(i >> 16); e[2] = (uint8_t)(i >> 8); e[3] = (uint8_t)i; return; }
     }
 }
-static void ed_tier(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sign_round_t *r) { (void)len; (void)r; b[m->entry[0] - b - 3] = 1; }
+static void ed_tier(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sign_round_t *r) { (void)len; (void)r; (void)m; b[GZ_RMSG_HEADER + 36] = 1; }   /* record 4's value */
 static void ed_breaksig(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sign_round_t *r) { (void)m; (void)r; b[*len - 1] ^= 1; }
 
 /* The host's checks of what members send: who is blamed, and why. */
@@ -525,7 +571,8 @@ static uint64_t sc_host_faults(void)
             CHECK(r->state == GZ_SIGN_ROUND_FAILED && r->why == cases[c].why && r->blamed == 1u << 2);
             CHECK(h.p[0].e->counters[GZ_SIGN_COUNT_BLAME_FAULT] == 1);
             for (uint32_t j = 1; j <= 3; j++) CHECK(h_count_kind(&h, 0, GZ_SIGN_MSG_ABORT) == 3);
-            CHECK(check_abort(h_sent_kind(&h, 0, GZ_SIGN_MSG_ABORT, 0), cases[c].why, 0xff, 0, NULL));
+            CHECK(check_abort(h_sent_to(&h, 0, 2, GZ_SIGN_MSG_ABORT, 0), R(cases[c].why), WHOLE, 0, NULL));   /* the blamed member: the fault */
+            CHECK(check_abort(h_sent_to(&h, 0, 1, GZ_SIGN_MSG_ABORT, 0), 4, WHOLE, 0, NULL));                  /* the others: the attempt ended */
             size_t i = h.p[0].n_recs;
             while (i && h.p[0].recs[i - 1].type != GZ_SIGN_REC_H_FAILED) i--;
             CHECK(i && h.p[0].recs[i - 1].len == 37 && h.p[0].recs[i - 1].b[36] == cases[c].why && be32p(h.p[0].recs[i - 1].b + 32) == 1u << 2);
@@ -554,10 +601,10 @@ static uint64_t sc_host_faults(void)
     /* an ack naming the wrong held set, then a second ack: neither changes anything */
     gz_sign_round_t *r = (gz_sign_round_t *)h_newest(&h, 0);
     const h_sent_t *ack = h_sent_kind(&h, 1, GZ_SIGN_MSG_ACK, 0);
-    static uint8_t bad[200];
+    static uint8_t bad[512];
     memcpy(bad, ack->b, ack->len);
-    bad[40] ^= 1;
-    w_resign(bad, 67, 1);
+    bad[GZ_RMSG_HEADER + 36] ^= 1;                                /* the held digest (record 4) */
+    w_resign(bad, ack->len, 1);
     r->acked &= ~2u; r->state = GZ_SIGN_ROUND_COMPLETE;           /* pretend member 1's ack has not come */
     size_t recs = h.p[0].n_recs;
     h_inject(&h, 1, 0, bad, ack->len);
@@ -576,9 +623,9 @@ static void ea_own(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sig
     (void)b; (void)len;
     uint8_t *e = (uint8_t *)(uintptr_t)m->entry[0];
     uint32_t i = be32p(e);
-    for (int s = 0; s < e[4]; s++)
+    for (int s = 0; s < e[5]; s++)
         if (r->def.items[i].signers[s] == 1) {
-            uint8_t *nonce = e + 5 + 130 * s;
+            uint8_t *nonce = e + 6 + 130 * s;
             secp256k1_musig_secnonce sn;
             secp256k1_musig_pubnonce pn;
             uint8_t sid[32] = {3}, sk[32];
@@ -595,24 +642,27 @@ static void ea_own(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sig
         }
 }
 static void ea_other(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sign_round_t *r)
-{   (void)b; (void)len; (void)r; ((uint8_t *)(uintptr_t)m->entry[0])[5 + 40] ^= 1; }   /* the host's nonce, unsigned by it now */
+{   (void)b; (void)len; (void)r; ((uint8_t *)(uintptr_t)m->entry[0])[6 + 40] ^= 1; }   /* the host's nonce, unsigned by it now */
 static void ea_drop(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sign_round_t *r)
 {   /* the last entry left out */
+    const uint8_t *blocks[GZ_RMSG_MAX_ENTRIES];
+    size_t sizes[GZ_RMSG_MAX_ENTRIES];
+    static uint8_t copy[GZ_SIGN_MAX_MSG];
     (void)r;
-    size_t cut = (size_t)(b + *len - m->entry[m->n - 1]);
-    *len -= cut;
-    b[36] = (uint8_t)((m->n - 1) >> 8); b[37] = (uint8_t)(m->n - 1);
+    memcpy(copy, b, *len);
+    for (int k = 0; k + 1 < m->n; k++) { blocks[k] = copy + (m->entry[k] - b); sizes[k] = entry_size(b, *len, m, k); }
+    *len = rebuild_list(b, GZ_SIGN_MAX_MSG, m, blocks, sizes, (size_t)m->n - 1);
 }
 static void ea_twice(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sign_round_t *r)
 {   /* the first entry twice, in place of the second */
     (void)r; (void)len;
     size_t a = (size_t)(m->entry[1] - m->entry[0]);
-    if ((size_t)(m->entry[1] - b) + a <= *len && m->entry[0][4] == m->entry[1][4])
+    if ((size_t)(m->entry[1] - b) + a <= *len && m->entry[0][5] == m->entry[1][5])
         memcpy((uint8_t *)(uintptr_t)m->entry[1], m->entry[0], a);
     else memcpy((uint8_t *)(uintptr_t)m->entry[1], m->entry[0], 4);
 }
 static void ea_count(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sign_round_t *r)
-{   (void)b; (void)len; (void)r; ((uint8_t *)(uintptr_t)m->entry[0])[4]--; }
+{   (void)b; (void)len; (void)r; ((uint8_t *)(uintptr_t)m->entry[0])[5]--; }
 static void ea_foreign(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_sign_round_t *r)
 {   /* the first entry renamed to an item the recipient does not sign */
     (void)b; (void)len;
@@ -640,7 +690,7 @@ static uint64_t sc_member_faults(void)
         const gz_sign_round_t *m = h_newest(&h, 1);
         if (!(m->state == GZ_SIGN_ROUND_ABORTED && m->why == cases[c].why)) printf("  member fault %zu: state %u why %u\n", c, m->state, m->why);
         CHECK(m->state == GZ_SIGN_ROUND_ABORTED && m->why == cases[c].why && h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == 0);
-        CHECK(check_abort(h_sent_kind(&h, 1, GZ_SIGN_MSG_ABORT, 0), cases[c].why, 0xff, 0, NULL));
+        CHECK(check_abort(h_sent_kind(&h, 1, GZ_SIGN_MSG_ABORT, 0), R(cases[c].why), WHOLE, 0, NULL));
         CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_REJECTED] == 1 && h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == 0);
         for (int i = 0; i < m->def.n_items; i++) CHECK(m->secnonce_serial[i] == 0);
         h_flush(&h, 100000);
@@ -688,13 +738,17 @@ static uint64_t sc_member_faults(void)
     memcpy(good, h.q[i].b, glen);
     h_drop_msg(&h, (size_t)i);
     memcpy(copy, good, glen);
-    copy[38 + 4 + 10] ^= 1;
-    w_resign(copy, glen - 64, 0);
+    {
+        gz_sign_msg_t mm;
+        CHECK(gz_sign_decode(copy, glen, &mm));
+        copy[(size_t)(mm.entry[0] - copy) + 4 + 10] ^= 1;        /* a final signature */
+    }
+    w_resign(copy, glen, 0);
     h_inject(&h, 0, 1, copy, glen);
     const gz_sign_round_t *m = h_newest(&h, 1);
     CHECK(m->state == GZ_SIGN_ROUND_UNFINISHED && m->why == GZ_SIGN_WHY_BAD_RESULT && h.p[1].e->counters[GZ_SIGN_COUNT_REJECTED] == 2);
     memcpy(copy, good, glen);
-    w_resign(copy, glen - 64, 2);
+    w_resign(copy, glen, 2);
     h_inject(&h, 0, 1, copy, glen);
     CHECK(m->state == GZ_SIGN_ROUND_UNFINISHED && h.p[1].e->counters[GZ_SIGN_COUNT_REJECTED] == 3);
     /* complete before the result: ignored */
@@ -712,8 +766,8 @@ static uint64_t sc_member_faults(void)
     h_flush(&h, 100000);
     CHECK(m->state == GZ_SIGN_ROUND_COMPLETE && h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
     /* a host abort now changes nothing */
-    uint8_t ab[200];
-    h_inject(&h, 0, 1, ab, make_abort(ab, m->id, GZ_SIGN_WHY_DEADLINE, 0xff, 0));
+    uint8_t ab[512];
+    h_inject(&h, 0, 1, ab, make_abort(ab, m->id, 4, 0));
     CHECK(m->state == GZ_SIGN_ROUND_COMPLETE);
     d ^= h_digest(&h);
     h_free(&h);
@@ -741,7 +795,7 @@ static uint64_t sc_proposals(void)
     const h_sent_t *p0 = h_sent_kind(&h, 0, GZ_SIGN_MSG_PROPOSE, 0);
     size_t n_nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
     h_inject(&h, 0, 1, p0->b, p0->len);
-    CHECK(check_abort(&h.sent[h.n_sent - 1], GZ_SIGN_WHY_KNOWN_ROUND, 0xff, 0, NULL) && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == n_nonces);
+    CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_KNOWN_ROUND), WHOLE, 0, NULL) && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == n_nonces);
     /* a newer one again: answered with the saved ack */
     const h_sent_t *p5 = h_sent_kind(&h, 0, GZ_SIGN_MSG_PROPOSE, 15);
     h_inject(&h, 0, 1, p5->b, p5->len);
@@ -750,32 +804,44 @@ static uint64_t sc_proposals(void)
     size_t sent = h.n_sent;
     h_inject(&h, 2, 1, p5->b, p5->len);
     CHECK(h.n_sent == sent);
-    /* a status request about a round the host has pushed out: aborted */
-    uint8_t st[35];
+    /* a status request about a round the host has pushed out of memory: ignored, as for any unknown identifier (7.10) */
+    uint8_t st[128];
+    sent = h.n_sent;
     h_inject(&h, 1, 0, st, make_status(st, ids[0]));
-    CHECK(check_abort(&h.sent[h.n_sent - 1], GZ_SIGN_WHY_HOST_ABORT, 0xff, 0, NULL));
+    CHECK(h.n_sent == sent);
     /* restarts keep the refused list and every round held */
     check_restart_keeps(&h);
     h_inject(&h, 0, 1, p0->b, p0->len);
-    CHECK(check_abort(&h.sent[h.n_sent - 1], GZ_SIGN_WHY_KNOWN_ROUND, 0xff, 0, NULL));
-    /* a proposal whose host is not the sender, and one the builder refuses: aborted with the reason, to the sender */
-    static uint8_t bad[300];
+    CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_KNOWN_ROUND), WHOLE, 0, NULL));
+    /* a validly signed proposal from a peer that is not its host, one whose identifier is not the
+     * member's own computation, and one the member's checks refuse: aborted with the reason, to the sender */
+    static uint8_t bad[GZ_SIGN_MAX_PROPOSAL];
     memcpy(bad, p5->b, p5->len);
     h_inject(&h, 2, 1, bad, p5->len);
-    bad[3] ^= 1;                                   /* another identifier, same parameters, host is party 0 */
+    bad[GZ_RMSG_HEADER + 2] ^= 1;                  /* another identifier, re-signed by the host */
+    w_resign(bad, p5->len, 0);
     h_inject(&h, 2, 1, bad, p5->len);
-    CHECK(check_abort(&h.sent[h.n_sent - 1], GZ_SIGN_WHY_BUILD, 0xff, 0, NULL) && h.sent[h.n_sent - 1].peer == 2);
+    CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_INVALID_ROUND), WHOLE, 0, NULL) && h.sent[h.n_sent - 1].peer == 2);
     h_inject(&h, 0, 1, bad, p5->len);              /* from the host, the identifier does not match */
-    CHECK(check_abort(&h.sent[h.n_sent - 1], GZ_SIGN_WHY_ID_MISMATCH, 0xff, 0, NULL));
-    memcpy(bad, p5->b, p5->len);
-    bad[3] ^= 1;
-    bad[3 + 32 + 32 + 2] = 9;                      /* parameters the builder refuses */
+    CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_ID_MISMATCH), WHOLE, 0, NULL));
+    h.builder.refuse = 9;                          /* the member's checks refuse (C8) */
+    bad[GZ_RMSG_HEADER + 3] ^= 1;
+    w_resign(bad, p5->len, 0);
     h_inject(&h, 0, 1, bad, p5->len);
-    CHECK(check_abort(&h.sent[h.n_sent - 1], GZ_SIGN_WHY_BUILD, 0xff, 0, NULL));
-    memcpy(bad, p5->b, p5->len);
-    bad[p5->len - 1] ^= 1;                         /* the host's signature */
+    CHECK(check_abort(&h.sent[h.n_sent - 1], 9, WHOLE, 0, NULL));
+    h.builder.refuse = 0;
+    sent = h.n_sent;
+    bad[GZ_RMSG_HEADER + 3] ^= 1;
+    bad[p5->len - 1] ^= 1;                         /* not signed by the host it names: nothing to answer */
     h_inject(&h, 0, 1, bad, p5->len);
-    CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_DUPLICATES] == 1);         /* a known identifier: the saved answer (counters restarted) */
+    CHECK(h.n_sent == sent);
+    memcpy(bad, p5->b, p5->len);
+    bad[p5->len - 1] ^= 1;                         /* the host's signature, on a known identifier */
+    sent = h.n_sent;
+    uint64_t rejected = h.p[1].e->counters[GZ_SIGN_COUNT_REJECTED];
+    h_inject(&h, 0, 1, bad, p5->len);
+    /* checked before the identifier is looked up (messages.md 7.2's order): nothing answered */
+    CHECK(h.n_sent == sent && h.p[1].e->counters[GZ_SIGN_COUNT_DUPLICATES] == 0 && h.p[1].e->counters[GZ_SIGN_COUNT_REJECTED] == rejected + 1);
     CHECK(h.p[1].e->n_known == 2);
     /* many refused identifiers (review A, F2): the exact list keeps only the newest, the filter
      * keeps all, so an identifier pushed out of the list is still refused, and a new round is
@@ -788,7 +854,7 @@ static uint64_t sc_proposals(void)
     e1->n_known = 3 * GZ_SIGN_MAX_KNOWN + 7;
     n_nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
     h_inject(&h, 0, 1, p0->b, p0->len);
-    CHECK(check_abort(&h.sent[h.n_sent - 1], GZ_SIGN_WHY_KNOWN_ROUND, 0xff, 0, NULL) && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == n_nonces);
+    CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_KNOWN_ROUND), WHOLE, 0, NULL) && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == n_nonces);
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     long pi = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
     CHECK(pi >= 0);
@@ -806,22 +872,24 @@ static uint64_t sc_proposals(void)
     bad[p->len - 1] ^= 1;
     harness_t h2;
     h_init(&h2, 3);
+    sent = h2.n_sent;
     h_inject(&h2, 0, 1, bad, p->len);
-    CHECK(check_abort(&h2.sent[h2.n_sent - 1], GZ_SIGN_WHY_BAD_HOST_SIG, 0xff, 0, NULL) && h_newest(&h2, 1) == NULL);
+    CHECK(h2.n_sent == sent && h_newest(&h2, 1) == NULL);
     CHECK(h2.p[1].e->counters[GZ_SIGN_COUNT_REJECTED] == 1);
     h_free(&h);
     uint8_t q[W_PARAMS];
     gz_action_list_t list;
     gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
     w_params(q, 1, 1, w_mask(2), 0);               /* members 1 and 2 only */
-    CHECK(gz_sign_begin(h2.p[0].e, q, W_PARAMS, &list) == GZ_OK);
+    CHECK(w_begin_params(h2.p[0].e, &h2.builder, q, W_PARAMS, &list) == GZ_OK);
     h_apply(&h2, 0, &list);
     p = h_sent_kind(&h2, 0, GZ_SIGN_MSG_PROPOSE, 0);
     h_inject(&h2, 0, 3, p->b, p->len);
-    CHECK(check_abort(&h2.sent[h2.n_sent - 1], GZ_SIGN_WHY_INVALID_ROUND, 0xff, 0, NULL) && h_newest(&h2, 3) == NULL);
-    /* the host cannot begin while a round runs, or past its attempts */
-    CHECK(gz_sign_begin(h2.p[0].e, q, W_PARAMS, &list) == GZ_ERR_ARGUMENT);
-    CHECK(gz_sign_begin(h2.p[1].e, q, W_PARAMS, &list) == GZ_ERR_ARGUMENT);
+    /* S5: the list lacks this member's current keys: reason 12, nothing held */
+    CHECK(check_abort(&h2.sent[h2.n_sent - 1], 12, WHOLE, 0, NULL) && h_newest(&h2, 3) == NULL);
+    /* the host cannot begin while a round runs; a member cannot begin at all */
+    CHECK(w_begin_params(h2.p[0].e, &h2.builder, q, W_PARAMS, &list) == GZ_ERR_ARGUMENT);
+    CHECK(w_begin_params(h2.p[1].e, &h2.builder, q, W_PARAMS, &list) == GZ_ERR_ARGUMENT);
     d ^= h_digest(&h2);
     h_free(&h2);
     return d;
@@ -910,9 +978,13 @@ static void ea_extra(uint8_t *b, size_t *len, const gz_sign_msg_t *m, const gz_s
 {   /* entry 0 once more at the end, the count raised */
     (void)r;
     size_t a = (size_t)((m->n > 1 ? m->entry[1] : b + *len) - m->entry[0]);
-    memmove(b + *len, m->entry[0], a);
-    *len += a;
-    b[36] = (uint8_t)((m->n + 1) >> 8); b[37] = (uint8_t)(m->n + 1);
+    const uint8_t *blocks[GZ_RMSG_MAX_ENTRIES];
+    size_t sizes[GZ_RMSG_MAX_ENTRIES];
+    static uint8_t copy[GZ_SIGN_MAX_MSG];
+    memcpy(copy, b, *len);
+    for (int k = 0; k < m->n; k++) { blocks[k] = copy + (m->entry[k] - b); sizes[k] = entry_size(b, *len, m, k); }
+    blocks[m->n] = copy + (m->entry[0] - b); sizes[m->n] = a;
+    *len = rebuild_list(b, GZ_SIGN_MAX_MSG, m, blocks, sizes, (size_t)m->n + 1);
 }
 
 /* A result edited: the second entry made a copy of the first; or the last left out; or one from another tier. */
@@ -924,44 +996,30 @@ static size_t edit_result(uint8_t *out, const uint8_t *in, size_t len, int how, 
     uint8_t *e0 = (uint8_t *)(uintptr_t)m.entry[0], *e1 = (uint8_t *)(uintptr_t)m.entry[1];
     if (how == 0) memcpy(e1, e0, 68);
     else if (how == 1) {
-        size_t sig_at = len - 64;
-        memmove(out + sig_at - 68, out + sig_at, 64);
-        len -= 68;
-        out[36] = (uint8_t)((m.n - 1) >> 8); out[37] = (uint8_t)(m.n - 1);
+        const uint8_t *blocks[GZ_RMSG_MAX_ENTRIES];
+        size_t sizes[GZ_RMSG_MAX_ENTRIES];
+        static uint8_t copy[GZ_SIGN_MAX_MSG];
+        memcpy(copy, out, len);
+        for (int k = 0; k + 1 < m.n; k++) { blocks[k] = copy + (m.entry[k] - out); sizes[k] = 68; }
+        len = rebuild_list(out, GZ_SIGN_MAX_MSG, &m, blocks, sizes, (size_t)m.n - 1);
     } else {
         for (uint32_t i = 0; i < r->def.n_items; i++)
             if (r->def.items[i].tier != m.tier) { e0[0] = (uint8_t)(i >> 24); e0[1] = (uint8_t)(i >> 16); e0[2] = (uint8_t)(i >> 8); e0[3] = (uint8_t)i; break; }
     }
-    w_resign(out, len - 64, 0);
+    w_resign(out, len, 0);
     return len;
 }
 
 static uint64_t sc_edges(void)
 {
     uint64_t d = 0;
-    /* A. Members at position 0: a whole two-tier round with the host signing last. */
+    /* A. Signers out of increasing order (messages.md 7.1: positions increasing, the host first),
+     * every spent script made to match: refused before anything is proposed. */
     {
         harness_t h;
         h_init(&h, 4);
         h.builder.mutate = reverse_signers;
-        CHECK(h_begin(&h, 2, 4, 0) == GZ_OK);
-        h_flush(&h, 100000);
-        const gz_sign_round_t *r = h_newest(&h, 0);
-        CHECK(r->state == GZ_SIGN_ROUND_DONE && r->def.items[0].signers[0] != 0);
-        honest_counts(&h, 2);
-        /* a restart there: the member answers per item, at position 0 too */
-        check_restart_keeps(&h);
-        d ^= h_digest(&h);
-        h_free(&h);
-        h_init(&h, 4);
-        h.builder.mutate = reverse_signers;
-        CHECK(h_begin(&h, 1, 4, 0) == GZ_OK);
-        flush_until(&h, 4, GZ_SIGN_MSG_NONCES, 1);
-        CHECK(h_restart(&h, 4) == GZ_OK);
-        CHECK(h_oldest(&h, 4)->state == GZ_SIGN_ROUND_ABORTED);
-        h_flush(&h, 100000);
-        h_ticks(&h, 2);
-        CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
+        CHECK(h_begin(&h, 2, 4, 0) == GZ_ERR_ARGUMENT && h.n_sent == 0 && h_newest(&h, 0) == NULL);
         d ^= h_digest(&h);
         h_free(&h);
     }

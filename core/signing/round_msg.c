@@ -75,18 +75,25 @@ static size_t bigsize_put(uint8_t *p, uint64_t v)
 
 void gz_rmsg_wr_init(gz_rmsg_wr_t *w, uint8_t *out, size_t cap) { w->p = out; w->n = 0; w->cap = cap; w->last = 0; w->bad = 0; }
 
-void gz_rmsg_put(gz_rmsg_wr_t *w, uint64_t type, const void *value, size_t len)
+uint8_t *gz_rmsg_reserve(gz_rmsg_wr_t *w, uint64_t type, size_t len)
 {
     uint8_t h[18];
-    if (w->bad) return;
-    if (w->n && type <= w->last) { w->bad = 1; return; }
+    if (w->bad) return NULL;
+    if (w->n && type <= w->last) { w->bad = 1; return NULL; }
     size_t hn = bigsize_put(h, type);
     hn += bigsize_put(h + hn, len);
-    if (w->cap - w->n < hn || w->cap - w->n - hn < len) { w->bad = 1; return; }
+    if (w->cap - w->n < hn || w->cap - w->n - hn < len) { w->bad = 1; return NULL; }
     memcpy(w->p + w->n, h, hn);
-    if (len) memcpy(w->p + w->n + hn, value, len);
+    uint8_t *v = w->p + w->n + hn;
     w->n += hn + len;
     w->last = type;
+    return v;
+}
+
+void gz_rmsg_put(gz_rmsg_wr_t *w, uint64_t type, const void *value, size_t len)
+{
+    uint8_t *v = gz_rmsg_reserve(w, type, len);
+    if (v && len) memcpy(v, value, len);
 }
 
 int gz_rmsg_wr_ok(const gz_rmsg_wr_t *w) { return !w->bad; }
@@ -232,7 +239,7 @@ size_t gz_rmsg_propose_encode(const gz_rmsg_propose_in_t *in, uint8_t *out, size
     if (p->n_tiers < 1 || p->n_tiers > 8 || p->n_lstock_hashes > 4096 || (p->n_lstock_hashes && !in->lstock_hashes)) return 0;
     if (in->distribution && !distribution_ok(in->distribution, in->distribution_len)) return 0;
     gz_rmsg_wr_t w;
-    uint8_t b[36];
+    uint8_t b[36], tiers[32], *q;
     gz_rmsg_wr_init(&w, out, cap);
     gz_rmsg_put(&w, 2, in->round_id, 32);
     gz_rmsg_put(&w, 4, in->check_id, 32);
@@ -245,27 +252,15 @@ size_t gz_rmsg_propose_encode(const gz_rmsg_propose_in_t *in, uint8_t *out, size
     gz_rmsg_put(&w, 16, p->funding_script, 34);
     gz_rmsg_put(&w, 18, p->funding_tx, p->funding_tx_len);
     /* participants: one record of 194-byte entries, written in place */
-    {
-        uint8_t h[18];
-        size_t len = 194 * p->n_participants, hn = bigsize_put(h, 20);
-        hn += bigsize_put(h + hn, len);
-        if (!w.bad && w.last < 20 && w.cap - w.n >= hn && w.cap - w.n - hn >= len) {
-            memcpy(w.p + w.n, h, hn);
-            uint8_t *q = w.p + w.n + hn;
-            for (size_t i = 0; i < p->n_participants; i++, q += 194) {
-                memcpy(q, p->participants[i].factory_key, 33);
-                memcpy(q + 33, p->participants[i].contribution_key, 33);
-                memcpy(q + 66, p->participants[i].bind_by_factory, 64);
-                memcpy(q + 130, p->participants[i].bind_by_contribution, 64);
-            }
-            w.n += hn + len; w.last = 20;
-        } else w.bad = 1;
+    q = gz_rmsg_reserve(&w, 20, 194 * p->n_participants);
+    for (size_t i = 0; q && i < p->n_participants; i++, q += 194) {
+        memcpy(q, p->participants[i].factory_key, 33);
+        memcpy(q + 33, p->participants[i].contribution_key, 33);
+        memcpy(q + 66, p->participants[i].bind_by_factory, 64);
+        memcpy(q + 130, p->participants[i].bind_by_contribution, 64);
     }
-    {
-        uint8_t t[32];
-        for (size_t i = 0; i < p->n_tiers; i++) wr32(t + 4 * i, p->tier_sizes[i]);
-        gz_rmsg_put(&w, 22, t, 4u * p->n_tiers);
-    }
+    for (size_t i = 0; i < p->n_tiers; i++) wr32(tiers + 4 * i, p->tier_sizes[i]);
+    gz_rmsg_put(&w, 22, tiers, 4u * p->n_tiers);
     wr32(b, p->end_height); gz_rmsg_put(&w, 24, b, 4);
     gz_rmsg_put(&w, 28, &p->tree_anchors, 1);
     wr64(b, p->fee_per_tx); gz_rmsg_put(&w, 30, b, 8);

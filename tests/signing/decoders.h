@@ -140,99 +140,72 @@ static void test_tx_reader(void)
     CHECK(!gz_sign_tx_verify(w_ctx(), t.b, t.n, 1000, script));
 }
 
-/* A message of `kind` with n entries of `each` bytes (index i in the first four), signed if `sig`. */
-static size_t msg_build(uint8_t *b, uint8_t kind, uint16_t n, size_t each, int sig, uint8_t k)
+/* A list message of `kind` with n entries of `each` bytes (index i in the first four), signed if `sig`. */
+static size_t msg_build(uint8_t *b, uint16_t kind, uint16_t n, size_t each, int sig, uint16_t k)
 {
+    static uint8_t v[GZ_SIGN_MAX_MSG];
+    uint8_t id[32], tier = 0;
     size_t at = 0;
-    b[at++] = 'G'; b[at++] = 'S'; b[at++] = kind;
-    memset(b + at, 0x33, 32); at += 32;
-    if (kind == GZ_SIGN_MSG_ABORT) b[at++] = 4;
-    b[at++] = 0; b[at++] = (uint8_t)(n >> 8); b[at++] = (uint8_t)n;
+    memset(id, 0x11, 32);
     for (uint16_t i = 0; i < n; i++) {
-        size_t e = kind == GZ_SIGN_MSG_ALL_NONCES ? 5 + (size_t)k * 130 : each;
-        memset(b + at, 0, e);
-        b[at + 3] = (uint8_t)i;
-        if (kind == GZ_SIGN_MSG_ALL_NONCES) b[at + 4] = k;
+        size_t e = kind == GZ_SIGN_MSG_ALL_NONCES ? 6 + (size_t)k * 130 : each;
+        memset(v + at, 0, e);
+        v[at] = (uint8_t)(i >> 24); v[at + 1] = (uint8_t)(i >> 16); v[at + 2] = (uint8_t)(i >> 8); v[at + 3] = (uint8_t)i;
+        if (kind == GZ_SIGN_MSG_ALL_NONCES) { v[at + 4] = (uint8_t)(k >> 8); v[at + 5] = (uint8_t)k; }
         at += e;
     }
-    if (sig) { memset(b + at, 0x44, 64); at += 64; }
-    return at;
+    w_rec_t recs[3] = {{2, id, 32}, {4, &tier, 1}, {6, v, at}};
+    return w_message(b, GZ_SIGN_MAX_MSG + 64, kind, recs, 3, sig ? 1 : -1);
 }
 
+/* gz_sign_decode: one view of round_msg.h's decoders. The codecs themselves
+ * are tested in test_round_msg (every rule of messages.md 4.2 in turn); here,
+ * that the view points where the decoders say, and refuses what they refuse. */
 static void test_decoder(void)
 {
-    static uint8_t b[GZ_SIGN_MAX_MSG + 200];
+    static uint8_t b[GZ_SIGN_MAX_MSG + 64];
     gz_sign_msg_t m;
-    int bad = 0;
-    /* every kind with entries: at its limit accepted, past it refused, every cut and a byte more refused */
-    static const struct { uint8_t kind; size_t each; int sig; } k[] = {
-        {GZ_SIGN_MSG_NONCES, 134, 0}, {GZ_SIGN_MSG_ALL_NONCES, 0, 0}, {GZ_SIGN_MSG_PARTIALS, 68, 1}, {GZ_SIGN_MSG_RESULT, 68, 1}, {GZ_SIGN_MSG_ABORT, 4, 1}};
-    for (size_t c = 0; c < 5; c++) {
-        uint8_t signers = k[c].kind == GZ_SIGN_MSG_ALL_NONCES ? 3 : 0;
-        size_t len = msg_build(b, k[c].kind, 2, k[c].each, k[c].sig, signers);
-        CHECK(gz_sign_decode(b, len, &m) && m.kind == k[c].kind && m.n == 2 && m.tier == 0);
-        CHECK(m.entry[0] == b + 35 + (k[c].kind == GZ_SIGN_MSG_ABORT) + 3);
-        CHECK(m.signed_len == len - (k[c].sig ? 64u : 0u) && (k[c].sig ? m.sig == b + len - 64 : m.sig == NULL));
-        if (k[c].kind == GZ_SIGN_MSG_ABORT) CHECK(m.reason == 4);
+    static const struct { uint16_t kind; size_t each; int sig; } k[] = {
+        {GZ_SIGN_MSG_NONCES, 134, 0}, {GZ_SIGN_MSG_ALL_NONCES, 0, 0}, {GZ_SIGN_MSG_PARTIALS, 68, 1}, {GZ_SIGN_MSG_RESULT, 68, 1}};
+    for (size_t c = 0; c < sizeof k / sizeof k[0]; c++) {
+        size_t len = msg_build(b, k[c].kind, 2, k[c].each, k[c].sig, 3), bad = 0;
+        CHECK(gz_sign_decode(b, len, &m) && m.kind == k[c].kind && m.n == 2 && m.tier == 0 && m.has_tier);
+        CHECK(m.round_id == b + GZ_RMSG_HEADER + 2 && m.entry[0] == b + GZ_RMSG_HEADER + 34 + 3 + 2 + (2 * (k[c].kind == GZ_SIGN_MSG_ALL_NONCES ? 6 + 3 * 130 : k[c].each) >= 0xfd ? 2 : 0));
+        CHECK(k[c].sig ? m.sig == b + len - 64 && m.signed_len == len - GZ_RMSG_HEADER - 66 : m.sig == NULL && m.signed_len == len - GZ_RMSG_HEADER);
         for (size_t cut = 0; cut < len; cut++) bad += gz_sign_decode(b, cut, &m);
-        b[len] = 0;
-        bad += gz_sign_decode(b, len + 1, &m);
-        len = msg_build(b, k[c].kind, GZ_SIGN_MAX_ITEMS, k[c].each, k[c].sig, signers);
-        CHECK(gz_sign_decode(b, len, &m) && m.n == GZ_SIGN_MAX_ITEMS);
-        len = msg_build(b, k[c].kind, GZ_SIGN_MAX_ITEMS + 1, k[c].each, k[c].sig, signers);
-        CHECK(!gz_sign_decode(b, len, &m));
-        len = msg_build(b, k[c].kind, 1, k[c].each, k[c].sig, signers);
-        b[35 + (k[c].kind == GZ_SIGN_MSG_ABORT) + 3 + 3] = GZ_SIGN_MAX_ITEMS - 1;
-        CHECK(gz_sign_decode(b, len, &m));
-        b[35 + (k[c].kind == GZ_SIGN_MSG_ABORT) + 3 + 3] = GZ_SIGN_MAX_ITEMS;      /* an index past the limit */
-        CHECK(!gz_sign_decode(b, len, &m));
+        CHECK(bad == 0);
+        b[0] ^= 1; CHECK(!gz_sign_decode(b, len, &m)); b[0] ^= 1;           /* another protocol */
+        b[5] = 65; CHECK(!gz_sign_decode(b, len, &m)); b[5] = (uint8_t)k[c].kind;   /* an odd kind this engine does not know */
     }
-    CHECK(bad == 0);
-    /* signers per item in a nonce set: 16 accepted, 17 refused */
-    size_t len = msg_build(b, GZ_SIGN_MSG_ALL_NONCES, 1, 0, 0, GZ_SIGN_MAX_SIGNERS);
-    CHECK(gz_sign_decode(b, len, &m) && m.entry[0][4] == GZ_SIGN_MAX_SIGNERS);
-    len = msg_build(b, GZ_SIGN_MSG_ALL_NONCES, 1, 0, 0, GZ_SIGN_MAX_SIGNERS + 1);
-    CHECK(!gz_sign_decode(b, len, &m));
-    /* the kinds without entries */
-    uint8_t p[35 + 34 + GZ_SIGN_MAX_PARAMS + 1 + 64];
-    static const size_t plens[] = {0, 1, GZ_SIGN_MAX_PARAMS, GZ_SIGN_MAX_PARAMS + 1};
-    for (size_t pi = 0; pi < 4; pi++) {
-        size_t plen = plens[pi];
-        size_t n = 0;
-        p[n++] = 'G'; p[n++] = 'S'; p[n++] = GZ_SIGN_MSG_PROPOSE;
-        memset(p + n, 1, 32 + 32); n += 64;
-        p[n++] = (uint8_t)(plen >> 8); p[n++] = (uint8_t)plen;
-        memset(p + n, 2, plen + 64); n += plen + 64;
-        int ok = gz_sign_decode(p, n, &m);
-        CHECK(ok == (plen <= GZ_SIGN_MAX_PARAMS));
-        if (ok) {
-            CHECK(m.host_random == p + 35 && m.params == p + 69 && m.params_len == plen && m.signed_len == 69 + plen && m.sig == p + 69 + plen);
-            for (size_t cut = 0; cut < n; cut++) bad += gz_sign_decode(p, cut, &m);
-            bad += gz_sign_decode(p, n + 1, &m);
-        }
-    }
-    uint8_t c[35 + 32 + 64 + 1];
-    memset(c, 9, sizeof c);
-    c[0] = 'G'; c[1] = 'S';
-    c[2] = GZ_SIGN_MSG_COMPLETE; CHECK(gz_sign_decode(c, 99, &m) && m.signed_len == 35 && m.sig == c + 35);
-    CHECK(!gz_sign_decode(c, 98, &m) && !gz_sign_decode(c, 100, &m));
-    c[2] = GZ_SIGN_MSG_ACK; CHECK(gz_sign_decode(c, 131, &m) && m.held == c + 35 && m.signed_len == 67);
-    CHECK(!gz_sign_decode(c, 130, &m) && !gz_sign_decode(c, 66, &m) && !gz_sign_decode(c, 132, &m));
-    c[2] = GZ_SIGN_MSG_STATUS; CHECK(gz_sign_decode(c, 35, &m) && !gz_sign_decode(c, 36, &m) && !gz_sign_decode(c, 34, &m));
-    for (int kind = 0; kind < 256; kind++) {                        /* exactly nine kinds */
-        c[2] = (uint8_t)kind;
-        int any = gz_sign_decode(c, 35, &m) || gz_sign_decode(c, 99, &m) || gz_sign_decode(c, 131, &m);
-        bad += any != (kind == GZ_SIGN_MSG_STATUS || kind == GZ_SIGN_MSG_COMPLETE || kind == GZ_SIGN_MSG_ACK);
-    }
-    c[2] = GZ_SIGN_MSG_STATUS; c[0] = 'g'; CHECK(!gz_sign_decode(c, 35, &m));
-    c[0] = 'G'; c[1] = 's'; CHECK(!gz_sign_decode(c, 35, &m));
-    CHECK(bad == 0);
-    /* an abort with no room for its reason, and a message too long for any kind */
-    len = msg_build(b, GZ_SIGN_MSG_ABORT, 0, 4, 1, 0);
-    CHECK(gz_sign_decode(b, len, &m) && !gz_sign_decode(b, 35, &m) && !gz_sign_decode(b, 36, &m));
-    len = msg_build(b, GZ_SIGN_MSG_ALL_NONCES, GZ_SIGN_MAX_ITEMS, 0, 0, GZ_SIGN_MAX_SIGNERS);
-    CHECK(gz_sign_decode(b, len, &m) && len <= GZ_SIGN_MAX_MSG);
-    CHECK(!gz_sign_decode(b, GZ_SIGN_MAX_MSG + 1, &m));
+    /* the largest a member's nonce set may be, and one past the decoder's bound */
+    size_t len = msg_build(b, GZ_SIGN_MSG_ALL_NONCES, GZ_SIGN_MAX_ITEMS, 0, 0, GZ_SIGN_MAX_SIGNERS);
+    CHECK(gz_sign_decode(b, len, &m) && m.n == GZ_SIGN_MAX_ITEMS && len <= GZ_SIGN_MAX_MSG);
+    CHECK(m.entry[0][4] == 0 && m.entry[0][5] == GZ_SIGN_MAX_SIGNERS);
+    /* the small kinds */
+    uint8_t id[32], held[32], r2[2] = {0, 4}, z = 0;
+    memset(id, 0x22, 32); memset(held, 0x33, 32);
+    w_rec_t cr[1] = {{2, id, 32}}, ar[2] = {{2, id, 32}, {4, held, 32}}, br[2] = {{2, id, 32}, {4, r2, 2}};
+    len = w_message(b, sizeof b, GZ_SIGN_MSG_COMPLETE, cr, 1, 0);
+    CHECK(gz_sign_decode(b, len, &m) && m.kind == GZ_SIGN_MSG_COMPLETE && m.round_id == b + 40 && m.sig == b + len - 64 && m.signed_len == 34);
+    len = w_message(b, sizeof b, GZ_SIGN_MSG_ACK, ar, 2, 1);
+    CHECK(gz_sign_decode(b, len, &m) && m.held == b + 40 + 34 && m.signed_len == 68);
+    len = w_message(b, sizeof b, GZ_SIGN_MSG_STATUS, cr, 1, -1);
+    CHECK(gz_sign_decode(b, len, &m) && m.kind == GZ_SIGN_MSG_STATUS && m.sig == NULL);
+    len = w_message(b, sizeof b, GZ_SIGN_MSG_STATUS, cr, 1, 0);
+    CHECK(!gz_sign_decode(b, len, &m));                                    /* 240 in an unsigned kind */
+    len = w_message(b, sizeof b, GZ_SIGN_MSG_ABORT, br, 2, 0);
+    CHECK(gz_sign_decode(b, len, &m) && m.reason == 4 && !m.has_tier && m.n == 0);
+    len = w_message(b, sizeof b, GZ_SIGN_MSG_ABORT, br, 2, -1);
+    CHECK(!gz_sign_decode(b, len, &m));                                    /* a signed kind without 240 */
+    len = w_message(b, sizeof b, GZ_SIGN_MSG_FUNDED, cr, 1, -1);
+    CHECK(gz_sign_decode(b, len, &m) && m.held == b + 40 && m.round_id == NULL);
+    /* a proposal: only its identifier is read here */
+    len = w_message(b, sizeof b, GZ_SIGN_MSG_PROPOSE, cr, 1, -1);
+    CHECK(gz_sign_decode(b, len, &m) && m.round_id == b + 40);
+    w_rec_t pr[1] = {{4, id, 32}};
+    len = w_message(b, sizeof b, GZ_SIGN_MSG_PROPOSE, pr, 1, -1);
+    CHECK(!gz_sign_decode(b, len, &m));                                    /* record 2 is not first */
+    (void)z;
 }
 
 #endif

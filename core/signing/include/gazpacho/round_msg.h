@@ -75,6 +75,10 @@ void gz_rmsg_hash(uint16_t kind, const uint8_t scope[32], const uint8_t *records
 typedef struct { uint8_t *p; size_t n, cap; uint64_t last; int bad; } gz_rmsg_wr_t;
 void gz_rmsg_wr_init(gz_rmsg_wr_t *w, uint8_t *out, size_t cap);
 void gz_rmsg_put(gz_rmsg_wr_t *w, uint64_t type, const void *value, size_t len);
+/* Write a record's type and length and return where its `len` value bytes
+ * go, for the caller to fill; NULL (and the writer marked bad) if it does not
+ * fit or the type does not increase. */
+uint8_t *gz_rmsg_reserve(gz_rmsg_wr_t *w, uint64_t type, size_t len);
 /* 1 if every record fitted and every type increased. */
 int gz_rmsg_wr_ok(const gz_rmsg_wr_t *w);
 

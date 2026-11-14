@@ -15,7 +15,10 @@ typedef struct { uint32_t type; size_t len; uint8_t *b; } h_rec_t;
 typedef struct { uint32_t from, to; size_t len; uint8_t *b; } h_msg_t;
 
 /* What one party did, as an action: for tests that look at one kind. */
-typedef struct { uint32_t party, peer; uint8_t kind; size_t len; uint8_t *b; } h_sent_t;
+typedef struct { uint32_t party, peer; uint8_t kind; size_t len; uint8_t *b; } h_sent_t;   /* kind: the envelope's (all round kinds are below 256) */
+
+/* The kind of an envelope, or 0. */
+static uint8_t h_kind_of(const uint8_t *b, size_t len) { return len >= GZ_RMSG_HEADER && b[4] == 0 ? b[5] : 0; }
 
 typedef struct {
     gz_sign_t *e;
@@ -33,7 +36,7 @@ typedef struct harness {
     gz_sign_sha256_t tr;             /* the transcript */
     uint64_t events, errors;
     uint32_t drop_to;           /* bit g: messages to party g are lost */
-    uint32_t resend_ticks, deadline_ticks, max_attempts;
+    uint32_t resend_ticks, deadline_ticks, max_attempts, status_ticks;
     /* for the model check (test_signing.c): called with every action a party carries out */
     void (*watch)(struct harness *h, uint32_t party, const gz_action_t *a);
     void *watch_ctx;
@@ -77,7 +80,7 @@ static void h_snapshot(harness_t *h)
         const gz_sign_t *e = h->p[g].e;
         if (!e) continue;
         h_fold64(h, e->attempts); h_fold64(h, e->n_known);
-        for (int c = 0; c < 8; c++) h_fold64(h, e->counters[c]);
+        for (int c = 0; c < 9; c++) h_fold64(h, e->counters[c]);
         for (size_t k = 0; k < e->n_known && k < GZ_SIGN_MAX_KNOWN; k++) h_fold(h, e->known[k], 4);
         for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++) {
             const gz_sign_round_t *r = &e->rounds[k];
@@ -123,7 +126,7 @@ static void h_apply(harness_t *h, uint32_t g, const gz_action_list_t *list)
             }
             h_sent_t *s = &h->sent[h->n_sent++];
             s->party = g; s->peer = (uint32_t)a->u.send.peer_id; s->len = a->u.send.bytes.len;
-            s->kind = s->len > 2 ? a->u.send.bytes.data[2] : 0;
+            s->kind = h_kind_of(a->u.send.bytes.data, s->len);
             s->b = malloc(s->len ? s->len : 1);
             if (!s->b) abort();
             memcpy(s->b, a->u.send.bytes.data, s->len);
@@ -146,7 +149,7 @@ static void h_apply(harness_t *h, uint32_t g, const gz_action_list_t *list)
 }
 
 static gz_action_t h_slots[512];
-static uint8_t h_bytes[1u << 21];
+static uint8_t h_bytes[1u << 23];
 
 static gz_status_t h_event(harness_t *h, uint32_t g, const gz_event_t *ev)
 {
@@ -171,6 +174,7 @@ static void h_build(harness_t *h, uint32_t g)
     w_secret("test/contribution", g, c.contribution_secret);
     c.build = w_build; c.retry = w_retry; c.build_ctx = &h->builder;
     c.tick_ms = 1; c.resend_ticks = h->resend_ticks; c.deadline_ticks = h->deadline_ticks; c.max_attempts = h->max_attempts;
+    c.status_ticks = h->status_ticks;
     p->incarnation++;
     p->fill = 0x9e3779b97f4a7c15ull * (g + 1) ^ p->incarnation << 40;
     if (!p->e) p->e = malloc(sizeof *p->e);
@@ -194,7 +198,7 @@ static void h_init(harness_t *h, uint32_t members)
 {
     memset(h, 0, sizeof *h);
     h->n = members + 1;
-    h->resend_ticks = 3; h->deadline_ticks = 12; h->max_attempts = 8;
+    h->resend_ticks = 3; h->deadline_ticks = 12; h->max_attempts = 8; h->status_ticks = 0;
     gz_sign_tagged_init(&h->tr, "test/transcript");
     for (uint32_t g = 0; g < h->n; g++) { h_build(h, g); h_start(h, g); }
 }
@@ -280,7 +284,7 @@ static gz_status_t h_begin(harness_t *h, uint8_t tiers, uint32_t members, uint8_
     gz_action_list_t list;
     w_params(p, tiers, 1, w_mask(members), flags);
     gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
-    gz_status_t st = gz_sign_begin(h->p[0].e, p, W_PARAMS, &list);
+    gz_status_t st = w_begin_params(h->p[0].e, &h->builder, p, W_PARAMS, &list);
     h_fold64(h, 0xb9u); h_fold64(h, (uint64_t)st);
     if (st == GZ_OK) h_apply(h, 0, &list);
     h_snapshot(h);
