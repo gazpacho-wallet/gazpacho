@@ -203,6 +203,7 @@ jobs:
         run: >
           python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0" --args "journal_fuzz=3000 7"
           --args "journal_fuzz_model=200 1" --args "journal_fuzz_open=3000 1"
+          --args "api_http_fuzz=3000" --args "api_json_fuzz=20000"
           --exclude '^storage_vector_e2r$'
       - name: Storage constant-time check (secrets marked undefined, under memcheck)
         # Registered only where valgrind and its headers are installed: here.

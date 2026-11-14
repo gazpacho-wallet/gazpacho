@@ -956,7 +956,8 @@ A failed call answers a non-2xx status with:
 | 411, 413, 415, 421, 431 | `length_required`, `too_large`, `bad_content_type`, `bad_host`, `headers_too_large` | Sections 3, 5 |
 | 429 | `rate_limited` | `params.retry_after_s` |
 | 501 | `not_in_this_release` | `params.release`: `1.1.0` or `later` |
-| 503 | `node_stopped` | The core stopped after a storage failure or a refused step, and is being rebuilt from storage (`DESIGN.md` section 4), or an unlock found the journal corrupt or storage failing (4.7, step 3; the wallet stays locked). `params.reason`: `storage_failed`, `storage_full`, `journal_corrupt`, `rebuilding` |
+| 503 | `node_stopped` | The core stopped after a storage failure or a refused step, and is being rebuilt from storage (`DESIGN.md` section 4), or an unlock found the journal corrupt or storage failing (4.7, step 3; the wallet stays locked). `params.reason`: `storage_failed`, `storage_full`, `journal_corrupt`, `rebuilding`; `stopping` while the program shuts down (contract-v2 section 4) |
+| 503 | `node_busy` | An acting call had no outcome within 30 s: its save is not confirmed yet, and the command may still be alive. Retry with the same `request_id` (7.4): a retry while the first is pending is held for the same outcome (contract-v2 section 11) |
 | 500 | `internal` | A bug. The log has a reference number; `params.ref` gives it |
 
 Call-specific codes are listed with each call.
