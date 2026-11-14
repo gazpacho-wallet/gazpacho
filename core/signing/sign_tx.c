@@ -136,24 +136,41 @@ static void sha(const uint8_t *d, size_t n, uint8_t out[32])
     gz_sign_sha256_done(&s, out);
 }
 
-void gz_sign_tx_sighash(const gz_sign_tx_t *tx, uint64_t amount, const uint8_t script[34], uint8_t out[32])
+void gz_sign_taproot_sighash(const uint8_t version[4], const uint8_t locktime[4], const uint8_t hashes[5][32], uint32_t index,
+                             uint8_t out[32])
 {
-    uint8_t h[32], amt[8], ser[35] = {34}, zero4[4] = {0}, epoch_type[2] = {0, 0}, spend_type = 0;
+    uint8_t epoch_type[2] = {0, 0}, spend_type = 0, idx[4];
     gz_sign_sha256_t s;
     gz_sign_tagged_init(&s, "TapSighash");
     gz_sign_sha256_write(&s, epoch_type, 2);                       /* epoch 0, hash type default */
-    gz_sign_sha256_write(&s, tx->bytes, 4);                        /* version */
-    gz_sign_sha256_write(&s, tx->bytes + tx->len - 4, 4);          /* lock time */
-    sha(tx->outpoint, 36, h); gz_sign_sha256_write(&s, h, 32);     /* sha_prevouts */
-    for (int i = 0; i < 8; i++) amt[i] = (uint8_t)(amount >> (8 * i));
-    sha(amt, 8, h); gz_sign_sha256_write(&s, h, 32);               /* sha_amounts */
-    memcpy(ser + 1, script, 34);
-    sha(ser, 35, h); gz_sign_sha256_write(&s, h, 32);              /* sha_scriptpubkeys */
-    sha(tx->sequence, 4, h); gz_sign_sha256_write(&s, h, 32);      /* sha_sequences */
-    sha(tx->bytes + tx->outputs_at, tx->outputs_end - tx->outputs_at, h);
-    gz_sign_sha256_write(&s, h, 32);                               /* sha_outputs */
+    gz_sign_sha256_write(&s, version, 4);
+    gz_sign_sha256_write(&s, locktime, 4);
+    for (int k = 0; k < 5; k++) gz_sign_sha256_write(&s, hashes[k], 32);   /* prevouts .. outputs */
     gz_sign_sha256_write(&s, &spend_type, 1);                      /* key path, no annex */
-    gz_sign_sha256_write(&s, zero4, 4);                            /* input index 0 */
+    for (int b = 0; b < 4; b++) idx[b] = (uint8_t)(index >> (8 * b));
+    gz_sign_sha256_write(&s, idx, 4);                              /* the input's index */
+    gz_sign_sha256_done(&s, out);
+}
+
+void gz_sign_tx_sighash(const gz_sign_tx_t *tx, uint64_t amount, const uint8_t script[34], uint8_t out[32])
+{
+    uint8_t h[5][32], amt[8], ser[35] = {34};
+    sha(tx->outpoint, 36, h[0]);                                   /* sha_prevouts */
+    for (int i = 0; i < 8; i++) amt[i] = (uint8_t)(amount >> (8 * i));
+    sha(amt, 8, h[1]);                                             /* sha_amounts */
+    memcpy(ser + 1, script, 34);
+    sha(ser, 35, h[2]);                                            /* sha_scriptpubkeys */
+    sha(tx->sequence, 4, h[3]);                                    /* sha_sequences */
+    sha(tx->bytes + tx->outputs_at, tx->outputs_end - tx->outputs_at, h[4]);   /* sha_outputs */
+    gz_sign_taproot_sighash(tx->bytes, tx->bytes + tx->len - 4, (const uint8_t (*)[32])h, 0, out);
+}
+
+void gz_sign_taptweak(const uint8_t internal[32], const uint8_t *merkle_root, uint8_t out[32])
+{
+    gz_sign_sha256_t s;
+    gz_sign_tagged_init(&s, "TapTweak");
+    gz_sign_sha256_write(&s, internal, 32);
+    if (merkle_root) gz_sign_sha256_write(&s, merkle_root, 32);
     gz_sign_sha256_done(&s, out);
 }
 

@@ -473,6 +473,95 @@ static void test_exposure_room(void)
     h_free(&h);
 }
 
+/* Review A, N10 (the secret nonce wiped after a failed nonce_gen) stays
+ * equivalent against the pinned library: secp256k1_musig_nonce_gen zeroes
+ * the secret nonce on entry and invalidates it on failure, and serialising
+ * the public nonce it has just made cannot fail. The engine's wipe is the
+ * line that holds if either ever changes. */
+
+/* Review A, N09: the nonce's secret inputs (the session randomness, the
+ * session id and its preimage) are wiped once the nonce is made, in every
+ * party, whatever round it made them for. */
+static void test_nonce_inputs_wiped(void)
+{
+    harness_t h;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+    for (int step = 0; h.nq && step < 100000; step++) {
+        h_deliver(&h, 0, 0);
+        for (uint32_t g = 0; g < h.n; g++) {
+            const gz_sign_t *e = h.p[g].e;
+            CHECK(all_zero(e->work_rnd, sizeof e->work_rnd) && all_zero(e->work_sid, sizeof e->work_sid) &&
+                  all_zero(e->work_pre, sizeof e->work_pre));
+        }
+    }
+    CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_NONCES_MADE] > 0);
+    h_free(&h);
+}
+
+/* Review A, A06: a round_all_nonces entry that names an item of another tier
+ * (one the member signs, with as many signers) is refused as a bad message,
+ * before any nonce signature is looked at. */
+static void test_all_nonces_other_tier(void)
+{
+    harness_t h;
+    static uint8_t b[GZ_SIGN_MAX_MSG];
+    gz_sign_msg_t m;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+    while (h.nq && q_find(&h, 0, 2, GZ_SIGN_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+    long k = q_find(&h, 0, 2, GZ_SIGN_MSG_ALL_NONCES);
+    gz_sign_round_t *r = round_of(&h, 2);          /* member 2: items as wide in both tiers */
+    CHECK(k >= 0 && r != NULL);
+    if (k < 0 || !r) { h_free(&h); return; }
+    size_t len = h.q[k].len;
+    memcpy(b, h.q[k].b, len);
+    CHECK(gz_sign_decode(b, len, &m) && m.n >= 1 && m.tier == 0);
+    uint8_t *e0 = NULL;
+    uint32_t x = 0xffffffffu;
+    for (int q = 0; q < m.n && x == 0xffffffffu; q++) {                /* an entry, and a tier-1 item of the member's as wide */
+        e0 = (uint8_t *)(uintptr_t)m.entry[q];
+        for (uint32_t i = 0; i < r->def.n_items && x == 0xffffffffu; i++)
+            if (r->def.items[i].tier == 1 && pos_of(&r->def.items[i], r->me) >= 0 && r->def.items[i].n_signers == r->def.items[be32(e0)].n_signers) x = i;
+    }
+    CHECK(x != 0xffffffffu);
+    if (x == 0xffffffffu) { h_free(&h); return; }
+    wr32(e0, x);
+    w_resign(b, len, 0);
+    h_drop_msg(&h, (size_t)k);
+    h_inject(&h, 0, 2, b, len);
+    CHECK(r->state == GZ_SIGN_ROUND_ABORTED && r->why == GZ_SIGN_WHY_BAD_MESSAGE);
+    CHECK(h.p[2].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == 0);
+    h_free(&h);
+}
+
+/* RULE:DECODE_FIRST: a message is decoded whole before anything reads it. A
+ * round_all_nonces with one byte after its signature does not decode (240
+ * is last, messages.md 4.2), even though every record before it would: the
+ * member counts it refused and signs nothing. */
+static void test_decode_first(void)
+{
+    harness_t h;
+    static uint8_t b[GZ_SIGN_MAX_MSG + 1];
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    while (h.nq && q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+    long k = q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES);
+    CHECK(k >= 0);
+    if (k < 0) { h_free(&h); return; }
+    size_t len = h.q[k].len;
+    memcpy(b, h.q[k].b, len);
+    b[len] = 0;
+    uint64_t rejected = h.p[1].e->counters[GZ_SIGN_COUNT_REJECTED];
+    size_t sent = h.n_sent;
+    h_inject(&h, 0, 1, b, len + 1);
+    CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_REJECTED] == rejected + 1 && h.n_sent == sent);
+    CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == 0);
+    h_deliver(&h, (size_t)k, 0);                                    /* the bytes as sent: signed */
+    CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] > 0);
+    h_free(&h);
+}
+
 /* ---- review B ---- */
 
 static size_t live_secrets(const gz_sign_t *e)
@@ -1064,6 +1153,9 @@ int main(void)
     test_resolve_errors();
     test_c10_active_with_partials();
     test_exposures_recover();
+    test_nonce_inputs_wiped();
+    test_all_nonces_other_tier();
+    test_decode_first();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);

@@ -418,6 +418,10 @@ typedef struct {
     uint8_t work_rec2[GZ_SIGN_WORK_REC2];
     gz_sign_msg_t work_msg;
     uint8_t work_keys[GZ_SIGN_MAX_PARTICIPANTS][33];
+    /* A nonce's secret inputs while it is made: here rather than on the
+     * stack, so that their wiping can be checked (review A, N09). Zero
+     * outside make_nonce. */
+    uint8_t work_rnd[32], work_sid[32], work_pre[48];
 } gz_sign_t;
 
 /* What the engine counts, for tests and reports. */
@@ -490,6 +494,16 @@ typedef struct {
 int gz_sign_tx_parse(const uint8_t *bytes, size_t len, gz_sign_tx_t *tx);
 /* BIP 341 key-path signature hash, default type, no annex, input 0. */
 void gz_sign_tx_sighash(const gz_sign_tx_t *tx, uint64_t amount, const uint8_t script[34], uint8_t out[32]);
+/* Its last step, BIP 341's SigMsg for hash type default, key path, no annex:
+ * from the version and lock time (4 bytes each, as serialised), the five
+ * hashes in BIP 341's order (prevouts, amounts, scriptPubKeys, sequences,
+ * outputs) and the input's index. gz_sign_tx_sighash is this over a
+ * one-input transaction; the BIP 341 vectors check it over theirs. */
+void gz_sign_taproot_sighash(const uint8_t version[4], const uint8_t locktime[4], const uint8_t hashes[5][32], uint32_t index,
+                             uint8_t out[32]);
+/* BIP 341's TapTweak of an x-only internal key, with the script tree's
+ * merkle root or none (NULL): the tweak every item's output key is made with. */
+void gz_sign_taptweak(const uint8_t internal[32], const uint8_t *merkle_root, uint8_t out[32]);
 /* The unsigned transaction with a one-item witness `sig64` added. Returns
  * the length, or 0 if it does not parse or `cap` is short. */
 size_t gz_sign_tx_attach(const uint8_t *tx, size_t len, const uint8_t sig64[64], uint8_t *out, size_t cap);

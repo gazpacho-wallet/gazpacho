@@ -71,6 +71,8 @@ RULES = {
     "EXPOSURE_NOT_DROPPED": ("{ e->exposures_lost = 1; return 0; }", "return 0;"),
     "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }", "{ (void)state; }"),
     "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
+    "DECODE_FIRST": ("if (!b || !gz_sign_decode(b, len, &m))", "if (!b || (gz_sign_decode(b, len, &m), 0))"),
+    "WIPE_NONCE_INPUTS": ("wipe(rnd, sizeof e->work_rnd); ", ""),
     "RESOLVE_EVICTED": ("if (!(r = find(e, round_id)) && !(x = evicted(e, round_id))) return GZ_ERR_ARGUMENT;", "if (!(r = find(e, round_id))) return GZ_ERR_ARGUMENT;"),
     # review B: B6 (C6: children before parents), B5 (a start leaves a superseded round Unfinished)
     "C6_CHILDREN_FIRST": ("if (it->tier > d->items[j].tier) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
@@ -152,13 +154,14 @@ def run_variant(build, rel, text, args, timeout):
     orig = open(path).read()
     try:
         open(path, "w").write(text)
-        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg"], capture_output=True, timeout=600)
+        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg", "test_bip341", "test_bip327"],
+                           capture_output=True, timeout=600)
         if b.returncode != 0:
             return "no-compile", ""
         try:
             env = dict(os.environ, GZ_STOP_ON_FAIL="1")
-            # the white-box guards first (seconds), then the whole suite
-            for exe, a in (("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args)):
+            # the standards' vectors and the white-box guards first (seconds), then the whole suite
+            for exe, a in (("test_bip341", []), ("test_bip327", []), ("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args)):
                 t = subprocess.run([os.path.join(build, exe)] + a, capture_output=True, timeout=timeout, env=env)
                 if t.returncode != 0:
                     fails = sorted(set(re.findall(r"FAIL \S+/(\w+\.[ch]:\d+)", t.stdout.decode(errors="replace"))))

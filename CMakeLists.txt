@@ -153,7 +153,8 @@ add_test(NAME core_isolation_refuses_sneaky_object
 set(GZ_SIGNING_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing.c
   ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/sign_tx.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/round_msg.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/round_msg.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing_node.c)
 add_library(gazpacho_signing STATIC ${GZ_SIGNING_SOURCES})
 set_target_properties(gazpacho_signing PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_signing PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
@@ -488,6 +489,60 @@ target_include_directories(test_signing_wb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/c
 target_link_libraries(test_signing_wb PRIVATE gazpacho_core secp256k1 gazpacho_sim gazpacho_superscalar gazpacho_tree)
 target_compile_options(test_signing_wb PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
 add_test(NAME signing_wb COMMAND test_signing_wb)
+
+# The engine behind the node's two calls, for the program's composite node (adapter only, PR 27).
+add_executable(test_signing_node tests/signing/test_signing_node.c)
+target_link_libraries(test_signing_node PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
+target_compile_options(test_signing_node PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
+add_test(NAME signing_node COMMAND test_signing_node)
+
+# BIP 327's vectors (the pinned library's copy, src/modules/musig/vectors.h)
+# through the calls the engine makes.
+add_executable(test_bip327 tests/signing/test_bip327.c)
+target_include_directories(test_bip327 PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include ${secp256k1-zkp_SOURCE_DIR}/src)
+target_link_libraries(test_bip327 PRIVATE secp256k1)
+target_compile_options(test_bip327 PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME signing_bip327 COMMAND test_bip327)
+
+# BIP 341's wallet vectors through the engine's own Taproot code (the tweak
+# check_def makes every output key with, and the signature hash's last step).
+add_executable(test_bip341 tests/signing/test_bip341.c)
+target_link_libraries(test_bip341 PRIVATE gazpacho_signing)
+target_compile_options(test_bip341 PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME signing_bip341 COMMAND test_bip341)
+
+# Constant time of the engine's own code around secrets, under memcheck
+# (tests/signing/test_signing_ctime.c): built where valgrind's headers are,
+# run where valgrind is and nothing is sanitized (as storage_ctime).
+include(CheckIncludeFile)
+check_include_file(valgrind/memcheck.h GZ_SIGN_HAVE_MEMCHECK_H)
+if(GZ_SIGN_HAVE_MEMCHECK_H)
+  add_executable(test_signing_ctime tests/signing/test_signing_ctime.c core/signing/sign_tx.c core/signing/round_msg.c)
+  set_target_properties(test_signing_ctime PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+  target_include_directories(test_signing_ctime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+                             ${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include ${secp256k1-zkp_SOURCE_DIR}/include)
+  target_link_libraries(test_signing_ctime PRIVATE gazpacho_core secp256k1 gazpacho_sim gazpacho_superscalar gazpacho_tree)
+  target_compile_options(test_signing_ctime PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
+  if(GZ_VALGRIND AND NOT GZ_SANITIZE AND NOT CMAKE_C_FLAGS MATCHES "-fsanitize")
+    add_test(NAME signing_ctime COMMAND ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes $<TARGET_FILE:test_signing_ctime>)
+  endif()
+endif()
+
+# The engine's start over any journal, then messages (tests/signing/fuzz_signing_replay.c):
+# libFuzzer in CI's fuzz job, the plain driver and the seeds here.
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_signing_replay tests/signing/fuzz_signing_replay.c)
+  target_link_options(fuzz_signing_replay PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_signing_replay tests/signing/fuzz_signing_replay.c tests/net/fuzz_main.c)
+  add_test(NAME signing_fuzz_replay COMMAND fuzz_signing_replay 20000)
+  file(GLOB GZ_REPLAY_SEEDS ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/signing_replay/*)
+  if(GZ_REPLAY_SEEDS)
+    add_test(NAME signing_fuzz_replay_seeds COMMAND fuzz_signing_replay ${GZ_REPLAY_SEEDS})
+  endif()
+endif()
+target_link_libraries(fuzz_signing_replay PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
+target_compile_options(fuzz_signing_replay PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
 if(TARGET gazpacho_lobby)
   add_library(gazpacho_signing_lobby STATIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/lobby_outcome.c)
   set_target_properties(gazpacho_signing_lobby PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
