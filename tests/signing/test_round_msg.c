@@ -320,6 +320,27 @@ static void test_kinds(void)
     gz_rmsg_wr_init(&w, g_buf, sizeof g_buf);
     gz_rmsg_put(&w, 2, id, 32); gz_rmsg_put(&w, 4, &tier, 1); gz_rmsg_put(&w, 6, blk, b);
     CHECK(gz_rmsg_all_nonces_decode(g_buf, w.n, &ma) == GZ_RMSG_E_VALUE);         /* zero signers */
+    /* Review B, mutant C73: 256 entries (the bound of messages.md and of the view's lists) are read;
+     * a 257th, which fits one envelope (257 entries of one signer are 34,952 bytes), is refused
+     * before it is written past the lists. */
+    {
+        static uint8_t many[257 * 136];
+        static struct { gz_rmsg_all_nonces_t m; uint8_t after[64]; } v;
+        for (size_t i = 0; i < 257; i++) {
+            uint8_t *q = many + 136 * i;
+            q[0] = 0; q[1] = 0; q[2] = (uint8_t)(i >> 8); q[3] = (uint8_t)i; q[4] = 0; q[5] = 1;
+            fill(q + 6, 130, (uint8_t)i);
+        }
+        memset(&v, 0x5a, sizeof v);
+        gz_rmsg_wr_init(&w, g_buf, sizeof g_buf);
+        gz_rmsg_put(&w, 2, id, 32); gz_rmsg_put(&w, 4, &tier, 1); gz_rmsg_put(&w, 6, many, 256 * 136);
+        CHECK(gz_rmsg_wr_ok(&w) && gz_rmsg_all_nonces_decode(g_buf, w.n, &v.m) == GZ_RMSG_OK && v.m.n == 256 && v.m.item[255] != NULL);
+        gz_rmsg_wr_init(&w, g_buf, sizeof g_buf);
+        gz_rmsg_put(&w, 2, id, 32); gz_rmsg_put(&w, 4, &tier, 1); gz_rmsg_put(&w, 6, many, 257 * 136);
+        CHECK(gz_rmsg_wr_ok(&w) && w.n <= GZ_RMSG_MAX_RECORDS_ONE);
+        CHECK(gz_rmsg_all_nonces_decode(g_buf, w.n, &v.m) == GZ_RMSG_E_VALUE && v.m.n == 0);
+        for (size_t i = 0; i < sizeof v.after; i++) CHECK(v.after[i] == 0x5a);
+    }
 
     gz_rmsg_list68_t ml;
     gz_rmsg_wr_init(&w, g_buf, sizeof g_buf);
