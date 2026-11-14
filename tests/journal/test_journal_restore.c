@@ -84,7 +84,7 @@ static void test_marker(void)
     /* A start that saves its answer clears the marker. */
     gz_journal_t *j = jopen(&fs, 0, &st, &info);
     CHECK(info.restored && info.incarnation == 8);
-    CHECK(save1(j, 8, 1, GZ_RECORD_TEST_RESTORED) == GZ_JOURNAL_OK && gz_journal_restored(j));
+    CHECK(save1(j, 8, 1, GZ_RECORD_RESTORED) == GZ_JOURNAL_OK && gz_journal_restored(j));
     CHECK(gz_journal_flush(j) == GZ_JOURNAL_OK && !gz_journal_restored(j) && !has_marker(&fs));
     gz_storage_reader_t rd = gz_journal_reader(j);
     CHECK(rd.restored == 0);
@@ -147,7 +147,7 @@ static void test_marker(void)
     CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0) == GZ_JOURNAL_OK && has_marker(&fs));
     j = jopen(&fs, 0, &st, &info);
     CHECK(st == GZ_JOURNAL_OK && info.created && info.restored && info.incarnation == 1);
-    CHECK(save1(j, 1, 1, GZ_RECORD_TEST_RESTORED) == GZ_JOURNAL_OK && gz_journal_flush(j) == GZ_JOURNAL_OK);
+    CHECK(save1(j, 1, 1, GZ_RECORD_RESTORED) == GZ_JOURNAL_OK && gz_journal_flush(j) == GZ_JOURNAL_OK);
     CHECK(!gz_journal_restored(j) && !has_marker(&fs));
     gz_journal_close(j);
     memfs_free(&fs);
@@ -170,7 +170,7 @@ static void test_marker_crashes(void)
             fs.crash_at = p;
             gz_journal_t *j = jopen(&fs, 0, &st, &info);
             if (j) {
-                save1(j, info.incarnation, 1, GZ_RECORD_TEST_RESTORED);
+                save1(j, info.incarnation, 1, GZ_RECORD_RESTORED);
                 save1(j, info.incarnation, 2, 0x7e570001);
                 gz_journal_flush(j);
                 gz_journal_close(j);
@@ -208,7 +208,7 @@ typedef struct {
     gz_runner_t runner;
     gz_runner_slot_t slots[64];
     uint8_t rbytes[8192];
-    gz_node_t node;
+    gz_node_t *node;                /* the composite with one test engine */
     uint64_t rnd, clock;
     gz_batch_id_t first_id;
     uint32_t first_type;
@@ -229,24 +229,29 @@ static void nd_exec(void *ctx, const gz_action_t *a)
     if (n->saves++ == 0) {
         n->first_id = a->u.save.batch;
         n->first_type = a->u.save.n_records ? a->u.save.records[0].type : 0;
+        /* The restore batch is key_epoch, restored, guard (node.h rule 5). */
+        for (size_t i = 0; i < a->u.save.n_records; i++)
+            if (a->u.save.records[i].type == GZ_RECORD_RESTORED) n->first_type = GZ_RECORD_RESTORED;
     }
     gz_journal_save(n->j, a);
 }
 static void nd_confirmed(void *ctx, gz_batch_id_t id)
 {
     nd_t *n = ctx;
-    gz_action_t slots[16];
-    uint8_t bytes[2048];
+    /* A list of the node's size (node.h), on this call's own stack. */
+    gz_action_t slots[GZ_NODE_LIST_ACTIONS];
+    uint8_t bytes[GZ_NODE_LIST_BYTES];
     gz_action_list_t list;
-    gz_action_list_init(&list, slots, 16, bytes, sizeof bytes);
+    gz_action_list_init(&list, slots, GZ_NODE_LIST_ACTIONS, bytes, sizeof bytes);
     gz_event_t ev = {.kind = GZ_EVENT_STORAGE_CONFIRMED};
     ev.u.storage.batch = id;
-    if (gz_node_handle(&n->node, &ev, &list) == GZ_OK) gz_runner_submit(&n->runner, &list);
+    if (gz_node_handle(n->node, &ev, &list) == GZ_OK) gz_runner_submit(&n->runner, &list);
 }
 
 static int nd_start(nd_t *n, memfs_t *fs)
 {
     gz_journal_status_t st;
+    free(n->node);
     memset(n, 0, sizeof *n);
     n->j = jopen(fs, 0, &st, NULL);
     if (!n->j) return -1;
@@ -254,15 +259,21 @@ static int nd_start(nd_t *n, memfs_t *fs)
                    nd_exec, n);
     gz_journal_attach(n->j, &n->runner, nd_confirmed, n);
     gz_ports_t ports = {{nd_fill, n}, {nd_now, n}};
-    gz_node_init(&n->node, &ports);
+    gz_node_config_t nc;
+    memset(&nc, 0, sizeof nc);
+    nc.host = 1;
+    nc.test_engines = 1;
+    memcpy(nc.chain, gz_journal_chain_signet, 32);
+    n->node = malloc(gz_node_size());
+    if (!n->node || gz_node_init(n->node, &ports, &nc, gz_journal_incarnation(n->j)) != GZ_OK) abort();
     gz_storage_reader_t rd = gz_journal_reader(n->j);
-    gz_action_t slots[64];
-    uint8_t bytes[8192];
+    static gz_action_t slots[GZ_NODE_LIST_ACTIONS];
+    static uint8_t bytes[GZ_NODE_LIST_BYTES];
     gz_action_list_t list;
     int more = 1, steps = 0;
     while (more && steps++ < 1000) {
-        gz_action_list_init(&list, slots, 64, bytes, sizeof bytes);
-        gz_status_t s = gz_node_start(&n->node, &rd, &list, &more);
+        gz_action_list_init(&list, slots, GZ_NODE_LIST_ACTIONS, bytes, sizeof bytes);
+        gz_status_t s = gz_node_start(n->node, &rd, &list, &more);
         if (s == GZ_WAITING) { gz_journal_flush(n->j); continue; }
         if (s != GZ_OK || gz_runner_submit(&n->runner, &list) != GZ_OK) return -2;
     }
@@ -275,16 +286,18 @@ static void test_node(void)
     static nd_t n;
     memfs_t fs;
     memfs_init(&fs);
-    CHECK(nd_start(&n, &fs) == 0 && (n.saves == 0 || n.first_type != GZ_RECORD_TEST_RESTORED));
+    CHECK(nd_start(&n, &fs) == 0 && (n.saves == 0 || n.first_type != GZ_RECORD_RESTORED));
     gz_journal_close(n.j);
     CHECK(gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0) == GZ_JOURNAL_OK);
     CHECK(nd_start(&n, &fs) == 0);
-    CHECK(n.saves >= 1 && n.first_id.sequence == 1 && n.first_type == GZ_RECORD_TEST_RESTORED);
+    CHECK(n.saves >= 1 && n.first_id.sequence == 1 && n.first_type == GZ_RECORD_RESTORED);
     CHECK(!gz_journal_restored(n.j) && !has_marker(&fs) && !gz_journal_failed(n.j));
     gz_journal_close(n.j);
     CHECK(nd_start(&n, &fs) == 0 && !gz_journal_restored(n.j) &&
-          (n.saves == 0 || n.first_type != GZ_RECORD_TEST_RESTORED));
+          (n.saves == 0 || n.first_type != GZ_RECORD_RESTORED));
     gz_journal_close(n.j);
+    free(n.node);
+    n.node = NULL;
     memfs_free(&fs);
 }
 
@@ -500,7 +513,7 @@ static void test_marker_edges(void)
         history(&fs);
         gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0);
         j = jopen(&fs, 1, &st, &info);
-        CHECK(info.restored && save1(j, info.incarnation, 1, GZ_RECORD_TEST_RESTORED) == GZ_JOURNAL_OK);
+        CHECK(info.restored && save1(j, info.incarnation, 1, GZ_RECORD_RESTORED) == GZ_JOURNAL_OK);
         fs.points = 0;
         fs.fail_at = fp; /* sync, mark, sync, unlink (4), folder sync (5) */
         fs.fail_mode = MEMFS_FAIL_ERROR;
@@ -539,7 +552,7 @@ static void test_marker_edges(void)
     j = jopen(&fs, 0, &st, &info);
     CHECK(info.restored);
     fs.os.unlink(fs.os.ctx, H_MARKER);
-    CHECK(save1(j, info.incarnation, 1, GZ_RECORD_TEST_RESTORED) == GZ_JOURNAL_OK);
+    CHECK(save1(j, info.incarnation, 1, GZ_RECORD_RESTORED) == GZ_JOURNAL_OK);
     CHECK(gz_journal_flush(j) == GZ_JOURNAL_OK && !gz_journal_restored(j));
     gz_journal_close(j);
     memfs_free(&fs);
@@ -574,7 +587,7 @@ static void test_marker_edges(void)
     gz_journal_mark_restored(H_DIR, gz_journal_chain_signet, &fs.os, 0);
     j = jopen(&fs, 0, &st, &info);
     fs.points = 0;
-    CHECK(save1(j, info.incarnation, 1, GZ_RECORD_TEST_RESTORED) == GZ_JOURNAL_OK);
+    CHECK(save1(j, info.incarnation, 1, GZ_RECORD_RESTORED) == GZ_JOURNAL_OK);
     gz_journal_flush(j);
     counts[3] = fs.points;
     gz_journal_close(j);

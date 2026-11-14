@@ -15,6 +15,7 @@ of PR 27, B7: mutants B30, B31, B33, B35 and B37).
      process) is followed by a reconnect within 1.5 s.
 """
 import os
+import re
 import shutil
 import sys
 import time
@@ -78,6 +79,14 @@ def main():
             time.sleep(0.1)
         fails = mem.count(r"connect-failed|closed conn=\d+ why=\S+ was_connected=0")
         check(fails >= 6, "with the host down the member keeps trying, its delay growing (%d attempts)" % fails)
+        # Mutant B38 ("backoff never grows"): the gaps between failed attempts
+        # at least double across three failed connects (100, 200, 400 ms).
+        rx = r"connect-failed|closed conn=\d+ why=\S+ was_connected=0"
+        at = [mem.times[i] for i in range(len(mem.lines)) if re.search(rx, mem.lines[i])][:4]
+        gaps = [b - a for a, b in zip(at, at[1:])]
+        check(len(gaps) == 3 and gaps[2] >= 2 * gaps[0] and gaps[1] > gaps[0],
+              "the reconnect delay at least doubles across three failed connects (gaps %s)"
+              % ", ".join("%.2f" % g for g in gaps))
         # The host's node fails on its first event, the member's connected: the
         # host restarts in process (closing the connection, listening again
         # within milliseconds), so the member's next delay is what it shows.

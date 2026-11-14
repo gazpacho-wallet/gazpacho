@@ -14,9 +14,10 @@
  *      find a confirmed batch cut. If it does not, the test fails.
  *   3. Real processes on real files: a child is killed (_exit) before each
  *      point, the parent reopens and checks the same properties.
- *   4. The real placeholder node, runner and journal, crashed at every point:
- *      no reply leaves before its ping is durable, and after a clean start
- *      every durable ping has had its reply sent.
+ *   4. The real node (the composite with its test engine), runner and
+ *      journal, crashed at every point: no reply leaves before its ping is
+ *      durable, and after a clean start and the peer's hello (node.h rule 6:
+ *      the peer asks) every durable ping has had its reply sent.
  *
  * A crash is modelled by memfs: from the crash point on, every write and
  * sync fails and changes nothing, so the program unwinds and frees normally
@@ -31,7 +32,9 @@
 #include <unistd.h>
 
 #include "../check.h"
+#include "gazpacho/envelope.h"
 #include "gazpacho/node.h"
+#include "gazpacho/test_engine.h"
 #include "harness.h"
 
 #define STEPS 15
@@ -234,11 +237,22 @@ typedef struct {
     gz_runner_t runner;
     gz_runner_slot_t slots[64];
     uint8_t rbytes[8192];
-    gz_node_t node;
+    gz_node_t *node;                /* the composite with one test engine */
     uint64_t next_ping, clock, rnd;
+    uint64_t cont;                  /* the test engine's continuation timer, when set */
     uint8_t replied[NODE_PINGS];
     int failed;
 } node_h_t;
+
+/* The link the pings arrive on: this node the host, one member. */
+static void n_link(gz_link_t *l)
+{
+    memset(l, 0, sizeof *l);
+    l->local.key[0] = 0x02;
+    l->local.key[1] = 'H';
+    l->remote.key[0] = 0x02;
+    l->remote.key[1] = 'M';
+}
 
 static void n_fill(void *ctx, gz_random_purpose_t purpose, uint8_t *out, size_t len)
 {
@@ -252,9 +266,15 @@ static void n_execute(void *ctx, const gz_action_t *a)
 {
     node_h_t *n = ctx;
     if (a->kind == GZ_ACTION_SAVE) gz_journal_save(n->j, a);
-    if (a->kind == GZ_ACTION_SEND && a->u.send.bytes.len == 12 && !memcmp(a->u.send.bytes.data, "GZPO", 4)) {
-        uint64_t id = 0;
-        for (int i = 4; i < 12; i++) id = id << 8 | a->u.send.bytes.data[i];
+    /* The engine resends 16 replies a step; the rest wait for its timer 2. */
+    if (a->kind == GZ_ACTION_SET_TIMER && (a->u.set_timer.timer_id >> 48) == GZ_AREA_TEST &&
+        (uint32_t)a->u.set_timer.timer_id == 2)
+        n->cont = a->u.set_timer.timer_id;
+    /* A reply: record 1 is "GZPO", the serial, then the ping's 8-byte payload. */
+    gz_bytes_t v;
+    if (a->kind == GZ_ACTION_SEND && gz_rec_find(a->u.send.records, GZ_TE_REC_TAG, &v) == 1 && v.len == 20 &&
+        !memcmp(v.data, "GZPO", 4)) {
+        uint64_t id = gz_get_u64(v.data + 12);
         if (id < NODE_PINGS) n->replied[id] = 1;
     }
 }
@@ -265,21 +285,44 @@ static void n_submit(node_h_t *n, gz_action_list_t *list)
     if (st != GZ_OK) n->failed = 1;
 }
 
+/* Every call gets a list of the node's size (node.h), on its own stack: a
+ * confirmation can arrive while another call's list is being carried out. */
+#define N_LIST(list)                                    \
+    gz_action_t list##_slots[GZ_NODE_LIST_ACTIONS];     \
+    uint8_t list##_bytes[GZ_NODE_LIST_BYTES];           \
+    gz_action_list_t list;                              \
+    gz_action_list_init(&list, list##_slots, GZ_NODE_LIST_ACTIONS, list##_bytes, sizeof list##_bytes)
+
 static void n_confirmed(void *ctx, gz_batch_id_t id)
 {
     node_h_t *n = ctx;
-    gz_action_t slots[16];
-    uint8_t bytes[2048];
-    gz_action_list_t list;
-    gz_action_list_init(&list, slots, 16, bytes, sizeof bytes);
+    N_LIST(list);
     gz_event_t ev = {.kind = GZ_EVENT_STORAGE_CONFIRMED};
     ev.u.storage.batch = id;
-    if (gz_node_handle(&n->node, &ev, &list) != GZ_OK) n->failed = 1;
+    if (gz_node_handle(n->node, &ev, &list) != GZ_OK) n->failed = 1;
     else n_submit(n, &list);
 }
 
-/* Start the node from its journal and give it `pings` pings. Returns 0, or 1
- * if the open was refused. */
+/* One test message from the member: record 1 is the tag and the body. */
+static void n_message(node_h_t *n, const char tag[4], const uint8_t *body, size_t blen)
+{
+    uint8_t one[4 + 8], rec[32];
+    size_t at = 0;
+    N_LIST(list);
+    gz_event_t ev = {.kind = GZ_EVENT_MESSAGE_RECEIVED};
+    memcpy(one, tag, 4);
+    if (blen) memcpy(one + 4, body, blen);
+    gz_rec_put(rec, sizeof rec, &at, GZ_TE_REC_TAG, one, 4 + blen);
+    n_link(&ev.u.message.link);
+    ev.u.message.kind = GZ_TE_KIND;
+    ev.u.message.records.data = rec;
+    ev.u.message.records.len = at;
+    if (gz_node_handle(n->node, &ev, &list) == GZ_OK) n_submit(n, &list);
+}
+
+/* Start the node from its journal; the member connects and says hello (the
+ * node then sends every reply it still owes); then `pings` pings. Returns 0,
+ * or 1 if the open was refused. */
 static int node_run(node_h_t *n, int pings)
 {
     gz_journal_config_t cfg = {H_DIR, gz_journal_chain_signet, 7, &n->fs.os, 0, 0, 0, 0, 0, NULL, NULL};
@@ -288,30 +331,44 @@ static int node_run(node_h_t *n, int pings)
                    n_execute, n);
     gz_journal_attach(n->j, &n->runner, n_confirmed, n);
     gz_ports_t ports = {{n_fill, n}, {n_now, n}};
-    gz_node_init(&n->node, &ports);
+    gz_node_config_t nc;
+    memset(&nc, 0, sizeof nc);
+    nc.host = 1;
+    nc.test_engines = 1;
+    memcpy(nc.chain, gz_journal_chain_signet, 32);
+    free(n->node);
+    n->node = malloc(gz_node_size());
+    if (!n->node || gz_node_init(n->node, &ports, &nc, gz_journal_incarnation(n->j)) != GZ_OK) abort();
     gz_storage_reader_t rd = gz_journal_reader(n->j);
-    gz_action_t slots[64];
-    uint8_t bytes[8192];
-    gz_action_list_t list;
     int more = 1, guard = 0;
     while (more && !n->failed && guard++ < 10000) {
-        gz_action_list_init(&list, slots, 64, bytes, sizeof bytes);
-        gz_status_t st = gz_node_start(&n->node, &rd, &list, &more);
+        N_LIST(list);
+        gz_status_t st = gz_node_start(n->node, &rd, &list, &more);
         if (st == GZ_WAITING) { gz_journal_flush(n->j); continue; }
         if (st != GZ_OK) { n->failed = 1; break; }
         n_submit(n, &list);
     }
     gz_journal_flush(n->j);
+    if (!n->failed) {
+        N_LIST(list);
+        gz_event_t ev = {.kind = GZ_EVENT_PEER_CONNECTED};
+        n_link(&ev.u.peer.link);
+        if (gz_node_handle(n->node, &ev, &list) == GZ_OK) n_submit(n, &list);
+        n_message(n, "GZPH", NULL, 0);
+        gz_journal_flush(n->j);
+        for (int k = 0; n->cont && !n->failed && k < 1000; k++) {
+            N_LIST(more_list);
+            gz_event_t t = {.kind = GZ_EVENT_TIMER_FIRED};
+            t.u.timer.timer_id = n->cont;
+            n->cont = 0;
+            if (gz_node_handle(n->node, &t, &more_list) == GZ_OK) n_submit(n, &more_list);
+            gz_journal_flush(n->j);
+        }
+    }
     for (int i = 0; i < pings && !n->failed && n->next_ping < NODE_PINGS; i++) {
-        uint8_t msg[12] = {'G', 'Z', 'P', 'I'};
-        uint64_t id = n->next_ping++;
-        for (int k = 0; k < 8; k++) msg[4 + k] = (uint8_t)(id >> (56 - 8 * k));
-        gz_event_t ev = {.kind = GZ_EVENT_MESSAGE_RECEIVED};
-        ev.u.message.peer_id = 7;
-        ev.u.message.bytes.data = msg;
-        ev.u.message.bytes.len = 12;
-        gz_action_list_init(&list, slots, 64, bytes, sizeof bytes);
-        if (gz_node_handle(&n->node, &ev, &list) == GZ_OK) n_submit(n, &list);
+        uint8_t body[8];
+        gz_put_u64(body, n->next_ping++);
+        n_message(n, "GZPI", body, 8);
         if (i % 2) gz_journal_flush(n->j);
     }
     gz_journal_flush(n->j);
@@ -325,9 +382,9 @@ static void durable_pings(node_h_t *n, uint8_t *out)
     gz_stored_batch_t sb;
     while (rd.next(rd.ctx, &sb))
         for (size_t i = 0; i < sb.n_records; i++)
-            if (sb.records[i].type == GZ_RECORD_TEST_PING && sb.records[i].bytes.len == 32) {
-                uint64_t id = 0;
-                for (int k = 24; k < 32; k++) id = id << 8 | sb.records[i].bytes.data[k];
+            if (sb.records[i].type == ((uint32_t)GZ_AREA_TEST << 16 | GZ_TE_PING) &&
+                sb.records[i].bytes.len == GZ_TE_PING_HEADER + 8) {
+                uint64_t id = gz_get_u64(sb.records[i].bytes.data + GZ_TE_PING_HEADER);
                 if (id < NODE_PINGS) out[id] = 1;
             }
 }
@@ -338,7 +395,7 @@ static int node_crash_run(node_h_t *n, uint64_t p)
     n->j = NULL;
     n->fs.points = 0;
     n->fs.crash_at = p;
-    node_run(n, 10);
+    node_run(n, 14);
     return n->fs.crashed;
 }
 
@@ -349,6 +406,7 @@ static int node_sweep(int *runs)
     *runs = 0;
     for (uint64_t p = 1;; p++) {
         for (int mode = 0; mode < 3; mode++) {
+            free(n.node);
             memset(&n, 0, sizeof n);
             memfs_init(&n.fs);
             node_run(&n, 6); /* history */
@@ -356,7 +414,12 @@ static int node_sweep(int *runs)
             int crashed = node_crash_run(&n, p);
             gz_journal_close(n.j);
             n.j = NULL;
-            if (!crashed) { memfs_free(&n.fs); return bad; }
+            if (!crashed) {
+                memfs_free(&n.fs);
+                free(n.node);
+                n.node = NULL;
+                return bad;
+            }
             memfs_settle(&n.fs, mode, p);
             uint8_t sent_before[NODE_PINGS];
             memcpy(sent_before, n.replied, sizeof sent_before);

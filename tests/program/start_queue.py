@@ -127,7 +127,7 @@ check(not any(re.search(r" (connected peer=|disconnected peer=|test-timer fired|
 check(any(" test-timer fired " in l for l in after), "the test timer fires after the start")
 res = [l for l in during if " start-resend " in l]
 drops = [l for l in during if " send-dropped " in l]
-check(len(res) >= 1, "the start resends the unanswered reply (%d)" % len(res))
+check(len(res) == 0, "the start resends nothing: a reply is pulled by the peer's hello, node.h rule 6 (%d)" % len(res))
 check(len(drops) >= len(res), "every resend during the start is dropped (%d resends, %d drops)" % (len(res), len(drops)))
 check(any(re.search(r"start-queue dropped conn=\d+ why=closed-during-start", l) for l in L),
       "a connection that came and went during the start is dropped")

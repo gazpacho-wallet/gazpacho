@@ -84,6 +84,28 @@ typedef struct {
     gz_clock_port_t clock;
 } gz_ports_t;
 
+/* Keys (composite-node.md section 2.5). The node part owns key allocation;
+ * the program supplies the keys themselves. A per-lobby pair is the
+ * contribution key at `index` and the factory key at `index + 1` of an epoch
+ * (contract-v2.md section 13); the host has one long-term key.
+ *
+ *   pub       the 33-byte compressed public key at (epoch, index): 1, or 0
+ *             if there is none (an epoch this wallet cannot derive);
+ *   secret    the 32-byte secret key at (epoch, index): 1, or 0. The caller
+ *             wipes it as soon as it is done;
+ *   host_pub  the host's long-term public key: 1, or 0 on a member.
+ *
+ * A return of 0 is never a node error: the engine answers as its state
+ * requires. Until P8 the program implements this over the stand-in key file
+ * (one transport key for every index), so on a member every per-lobby key is
+ * the same key for now; links and slots do not rely on that. */
+typedef struct {
+    int (*pub)(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33]);
+    int (*secret)(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32]);
+    int (*host_pub)(void *ctx, uint8_t pub33[33]);
+    void *ctx;
+} gz_key_port_t;
+
 /* One batch as read back from storage. */
 typedef struct {
     gz_batch_id_t id;               /* the identifier it was saved under */

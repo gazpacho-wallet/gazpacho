@@ -148,9 +148,9 @@ static inline int no_secret_used_twice(const sim_t *sim, void *ctx, const char *
 static inline void secret_watch_free(secret_watch_t *w) { free(w->seen); memset(w, 0, sizeof *w); }
 
 /* "A node's restore epochs all differ" (safety-rule.md R2), for the
- * placeholder ping node: every restore batch (record type 0x7e570003,
- * GZ_RECORD_TEST_RESTORED in node.h: the 8-byte big-endian incarnation, then
- * the 4-byte big-endian epoch) seen in a node's storage is remembered, since
+ * composite node: every nonzero key_epoch record (type 0x00040002, TLV 2: the
+ * 4-byte big-endian epoch; 0 is the epoch at installation) seen in a node's
+ * storage is remembered with its batch's incarnation, since
  * a later restore cuts storage back; two different incarnations of one node
  * with the same epoch fail the run. Free `seen` after the run. */
 typedef struct { uint32_t node; uint64_t incarnation; uint32_t epoch; } epoch_seen_t;
@@ -170,9 +170,9 @@ static inline int restore_epochs_differ(const sim_t *sim, void *ctx, const char 
             while (at + 8 <= len) {
                 uint32_t type = sn_le32(b + at), rlen = sn_le32(b + at + 4);
                 if (at + 8 + rlen > len) break;
-                if (type == 0x7e570003u && rlen == 12) {
-                    uint64_t inc = sn_be(b + at + 8, 8);
-                    uint32_t epoch = (uint32_t)sn_be(b + at + 16, 4);
+                if (type == 0x00040002u && rlen == 6 && sn_be(b + at + 10, 4) != 0) {
+                    uint64_t inc = sim_storage_batch_id(st, i).incarnation;
+                    uint32_t epoch = (uint32_t)sn_be(b + at + 10, 4);
                     int known = 0;
                     for (size_t k = 0; k < w->n; k++) {
                         if (w->seen[k].node != node) continue;
@@ -253,9 +253,8 @@ static inline gz_status_t multi_add(gz_action_list_t *out, gz_action_kind_t kind
     gz_action_t a = {.kind = kind};
     gz_bytes_t b = {bytes, len};
     switch (kind) {
-    case GZ_ACTION_SEND:      a.u.send.peer_id = number; a.u.send.bytes = b; break;
+    case GZ_ACTION_SEND:      sim_peer_key(number, a.u.send.link.remote.key); a.u.send.kind = 32767; a.u.send.records = b; break;
     case GZ_ACTION_BROADCAST: a.u.broadcast.tx = b; break;
-    case GZ_ACTION_WATCH_SCRIPT:     a.u.watch_script.script = b; break;
     case GZ_ACTION_WATCH_TX:  sim_pretend_txid(bytes, len, a.u.watch_tx.txid); a.u.watch_tx.depth = (uint32_t)number; break;
     case GZ_ACTION_WATCH_OUTPOINT:      /* the outpoint `bytes` names: 32-byte txid, then vout */
         memcpy(a.u.watch_outpoint.outpoint.txid, bytes, 32);
@@ -306,7 +305,7 @@ static inline gz_status_t multi_start(void *node, gz_action_list_t *out, int *mo
         for (int i = 0; i < 8; i++) record[i] = (uint8_t)(m->secrets.incarnation >> (8 * i));
         st = multi_save(out, MULTI_RECORD_RESTORED, record, sizeof record);
     }
-    if (st == GZ_OK) st = multi_add(out, GZ_ACTION_WATCH_SCRIPT, 0, (const uint8_t *)"multi", 5);
+    if (st == GZ_OK) st = multi_add(out, GZ_ACTION_WATCH_TX, 1, (const uint8_t *)"multi", 5);
     if (st == GZ_OK && m->decision_len) st = multi_add(out, GZ_ACTION_WATCH_TX, MULTI_DEPTH, m->decision, m->decision_len);
     if (st == GZ_OK && multi_input(m->decision, m->decision_len, input))
         st = multi_add(out, GZ_ACTION_WATCH_OUTPOINT, MULTI_DEPTH, input, sizeof input);
@@ -318,7 +317,7 @@ static inline gz_status_t multi_start(void *node, gz_action_list_t *out, int *mo
 }
 
 /* For a message or a user command carrying bytes b:
- *   save{decision: tx}  save{message}  notify  watch b  watch tx
+ *   save{decision: tx}  save{message}  notify  watch b (as a transaction)  watch tx
  *   watch its input  broadcast tx  timer  send "M"+b  save{note}  send "C"+b
  * and a one-time secret is used (with, in journal-counter mode, a save of the
  * counter first). The transaction spends output 0 of the pretend transaction
@@ -329,7 +328,7 @@ static inline gz_status_t multi_handle(void *node, const gz_event_t *ev, gz_acti
     uint8_t secret[SECRET_LEN], counter[8];
     gz_bytes_t b;
     uint64_t peer;
-    if (ev->kind == GZ_EVENT_MESSAGE_RECEIVED) { b = ev->u.message.bytes; peer = ev->u.message.peer_id; }
+    if (ev->kind == GZ_EVENT_MESSAGE_RECEIVED) { b = ev->u.message.records; peer = sim_key_peer(ev->u.message.link.remote.key); }
     else if (ev->kind == GZ_EVENT_USER_COMMAND) { b = ev->u.user.bytes; peer = SIM_WORLD_PEER; }
     else return GZ_OK;
     if (b.len == 0 || b.len > MULTI_MAX) return GZ_OK;
@@ -354,7 +353,7 @@ static inline gz_status_t multi_handle(void *node, const gz_event_t *ev, gz_acti
     if (st == GZ_OK) st = multi_save(out, MULTI_RECORD_DECISION, tx, tx_len);
     if (st == GZ_OK) st = multi_save(out, MULTI_RECORD_MESSAGE, record, b.len + 9);
     if (st == GZ_OK) st = multi_add(out, GZ_ACTION_NOTIFY, 1, b.data, b.len);
-    if (st == GZ_OK) st = multi_add(out, GZ_ACTION_WATCH_SCRIPT, 0, b.data, b.len);
+    if (st == GZ_OK) st = multi_add(out, GZ_ACTION_WATCH_TX, 1, b.data, b.len);   /* (once a script watch) */
     if (st == GZ_OK) st = multi_add(out, GZ_ACTION_WATCH_TX, MULTI_DEPTH, tx, tx_len);
     if (st == GZ_OK) st = multi_add(out, GZ_ACTION_WATCH_OUTPOINT, MULTI_DEPTH, input, sizeof input);
     if (st == GZ_OK) st = multi_add(out, GZ_ACTION_BROADCAST, 0, tx, tx_len);
@@ -376,39 +375,53 @@ static inline sim_node_ops_t multi_ops(void)
     return ops;
 }
 
-/* "Saved, so eventually sent", for the placeholder ping node. To be called at
- * the end of a run with a quiet tail (sim_quiesce, then enough steps for
- * every delay to pass). Returns the number of durable ping records, over all
- * nodes, whose reply has not left its node at least once for each time it was
- * saved. Whether a reply left is read from the trace, which records the
- * sender, the peer, the length and a digest of every message handed to the
- * network, delivered or dropped. */
+/* "Saved, so eventually sent, to a peer that comes back", for the default
+ * node's test engine (node.h rule 6: replies are pulled by the pinger's
+ * hello). To be called at the end of a run with a quiet tail (sim_quiesce,
+ * then enough steps for every delay to pass). Returns the number of durable
+ * ping records from another node, over all nodes, whose reply has not left
+ * its node at least once for each time it was saved. The world never comes
+ * back with a hello, so pings from it are not counted. A ping record is the
+ * clock (8), the link (local 33, remote 33), the serial (8), the payload; the
+ * reply is the envelope of kind 32767 with record 1 "GZPO", serial, payload
+ * and record 3 the area. Whether a reply left is read from the trace, which
+ * records the sender, the peer, the length and a digest of every message
+ * handed to the network, delivered or dropped. */
 static inline size_t saved_replies_not_sent(const sim_t *sim, uint32_t n_nodes)
 {
     const char *trace = sim_trace(sim, NULL);
     size_t missing = 0;
     for (uint32_t node = 0; node < n_nodes; node++) {
         const sim_storage_t *st = sim_node_storage(sim, node);
-        static char seen[1024][64];
+        static char seen[1024][80];
         size_t n_seen = 0;
         for (size_t i = 0; i < sim_storage_count(st); i++) {
             size_t len = 0;
             const uint8_t *p = sim_storage_batch_bytes(st, i, &len), *end = p + len;
             for (; p < end; p += 8 + multi_u32(p + 4)) {
                 uint32_t n = multi_u32(p + 4);
-                if (multi_u32(p) != 0x7e570001u || n < 24) continue;    /* a ping record: stamp, peer, serial, payload */
-                uint8_t reply[4 + 64] = {'G', 'Z', 'P', 'O'};
-                uint64_t peer = 0, digest = 0xcbf29ce484222325ull;
-                char needle[64];
-                size_t reply_len = 4 + (n - 24), earlier = 0, left = 0;
-                for (int k = 0; k < 8; k++) peer = peer << 8 | p[8 + 8 + k];
-                memcpy(reply + 4, p + 8 + 24, n - 24);
-                for (size_t k = 0; k < reply_len; k++) digest = (digest ^ reply[k]) * 0x100000001b3ull;
-                snprintf(needle, sizeof needle, " %u->%lld len=%zu digest=%016llx", node, (long long)peer, reply_len,
+                if (multi_u32(p) != 0x7e570001u || n < 82 || n > 82 + 64) continue;
+                uint64_t peer = sim_key_peer(p + 8 + 41), digest = 0xcbf29ce484222325ull;
+                if (peer == SIM_WORLD_PEER) continue;
+                uint8_t env[38 + 2 + 4 + 8 + 64 + 4] = {0x67, 0x7a, 0x66, 0x01, 0x7f, 0xff};
+                size_t at = 38, plen = n - 82, earlier = 0, left = 0;
+                env[at++] = 1;
+                env[at++] = (uint8_t)(4 + 8 + plen);
+                memcpy(env + at, "GZPO", 4);
+                memcpy(env + at + 4, p + 8 + 74, 8);
+                memcpy(env + at + 12, p + 8 + 82, plen);
+                at += 12 + plen;
+                env[at++] = 3;
+                env[at++] = 2;
+                env[at++] = 0x7e;
+                env[at++] = 0x57;
+                char needle[80];
+                for (size_t k = 0; k < at; k++) digest = (digest ^ env[k]) * 0x100000001b3ull;
+                snprintf(needle, sizeof needle, " %u->%lld len=%zu digest=%016llx", node, (long long)peer, at,
                          (unsigned long long)digest);
                 for (size_t k = 0; k < n_seen; k++) earlier += strcmp(seen[k], needle) == 0;
                 if (n_seen < 1024) strcpy(seen[n_seen++], needle);
-                for (const char *at = strstr(trace, needle); at; at = strstr(at + 1, needle)) left++;
+                for (const char *t = strstr(trace, needle); t; t = strstr(t + 1, needle)) left++;
                 missing += left <= earlier;
             }
         }

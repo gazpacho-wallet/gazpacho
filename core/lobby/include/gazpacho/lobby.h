@@ -281,6 +281,16 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_LOBBY_BAD_JOINS      3             /* joins refused as invalid on one connection: closed */
 #define GZ_LOBBY_REFUSED_JOINS  32            /* joins refused for a limit on one connection: closed */
 
+/* A SEND from the lobby, until P4.2 puts it on links (docs/notes/lobby.md,
+ * decision 23). The lobby still names a peer by the number the program gave
+ * it and sends whole Lightning messages. In contract v2's SEND (action.h)
+ * that is: kind GZ_LOBBY_SEND_WHOLE, scope zero, the whole message in
+ * `records`, and the peer's number in bytes 1 to 8 of the link's remote key,
+ * big-endian (byte 0 is zero, so it is no public key). No program carries
+ * these out yet. gz_lobby_sent_peer reads the number back. */
+#define GZ_LOBBY_SEND_WHOLE 0xffffu
+uint64_t gz_lobby_sent_peer(const gz_action_t *send);
+
 /* An input to an engine. The time is read from the clock port, whose epoch
  * must be the Unix epoch (deadlines are Unix seconds). */
 enum { GZ_LIN_CONNECTED = 1, GZ_LIN_DISCONNECTED, GZ_LIN_MESSAGE, GZ_LIN_TIMER };

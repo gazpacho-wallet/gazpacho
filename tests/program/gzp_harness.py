@@ -40,7 +40,7 @@ def peer_id(key_hex):
 class Proc:
     """A process whose output lines are kept, with a timestamp each."""
 
-    def __init__(self, name, args, log_dir):
+    def __init__(self, name, args, log_dir, stdin=False):
         self.name = name
         self.lines = []
         self.times = []
@@ -48,8 +48,13 @@ class Proc:
         self.cv = threading.Condition()
         self.log = open(os.path.join(log_dir, name + ".log"), "a")
         self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, bufsize=1)
+                                  stdin=subprocess.PIPE if stdin else subprocess.DEVNULL, text=True, bufsize=1)
         threading.Thread(target=self._read, daemon=True).start()
+
+    def send(self, line):
+        """A line on standard input (--test-commands)."""
+        self.p.stdin.write(line + "\n")
+        self.p.stdin.flush()
 
     def _read(self):
         for line in self.p.stdout:
@@ -132,7 +137,8 @@ def kill_all(procs):
             p.p.kill()
 
 
-RECORD_TEST_PING = 0x7e570001
+RECORD_TEST_PING = (0x7e570001, 0x7e580001)  # the test engines' ping records (test_engine.h)
+PING_HEADER = 82  # clock 8, link 66, serial 8
 
 
 def parse_journal(path):
@@ -167,7 +173,7 @@ def parse_journal(path):
 
 def ping_payloads(entries):
     """The payloads of every ping record in parsed journal entries."""
-    return [r[1][24:] for e in entries if e[0] == "BTCH" for r in e[3] if r[0] == RECORD_TEST_PING]
+    return [r[1][PING_HEADER:] for e in entries if e[0] == "BTCH" for r in e[3] if r[0] in RECORD_TEST_PING]
 
 
 def free_port():
@@ -188,3 +194,31 @@ def can_connect(port):
         return False
     finally:
         s.close()
+
+def bigsize(v):
+    if v < 0xfd:
+        return bytes([v])
+    if v <= 0xffff:
+        return b"\xfd" + struct.pack(">H", v)
+    if v <= 0xffffffff:
+        return b"\xfe" + struct.pack(">I", v)
+    return b"\xff" + struct.pack(">Q", v)
+
+
+def tlv(*records):
+    """A TLV stream of (type, bytes) pairs, in the order given."""
+    return b"".join(bigsize(t) + bigsize(len(v)) + v for t, v in records)
+
+
+def cmd(code, *records):
+    """A --test-commands line: a USER_COMMAND with `code` and argument records."""
+    return "cmd %04x %s" % (code, tlv(*records).hex())
+
+
+def area(a):
+    return (10, struct.pack(">H", a))
+
+
+def journal_types(path):
+    """Per batch of a stand-in journal, the list of its record types."""
+    return [[r[0] for r in e[3]] for e in parse_journal(path) if e[0] == "BTCH"]

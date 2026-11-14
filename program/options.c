@@ -115,7 +115,8 @@ void gzp_usage(void)
         "  --check-chain                 check the chain server (read-only) and stop\n"
         "  --handshake-ms, --recv-ms, --send-ms, --ping-ms, --pong-ms MS   transport timers\n"
         "  --reconnect-ms MS             member: first reconnect delay, doubling to 60 s (default 1000)\n"
-        "  --max-per-address N           host: accepted connections per address (0: no cap)\n");
+        "  --max-per-address N           host: accepted connections per address (0: no cap)\n"
+        "  --max-queue BYTES             bytes queued for sending per connection (default 4 MiB)\n");
 #ifdef GZP_TEST_BUILD
     fprintf(stderr,
         "tests only (gazpacho-test):\n"
@@ -132,7 +133,15 @@ void gzp_usage(void)
         "  --test-oversize-send BYTES    pad every node send (too big is fatal)\n"
         "  --test-node-error-at K        treat the K-th delivered event as a node error\n"
         "  --test-node-error-always      ... in every incarnation, not only the first\n"
-        "  --test-stop-at-restart        a SIGTERM to itself as an incarnation ends\n");
+        "  --test-stop-at-restart        a SIGTERM to itself as an incarnation ends\n"
+        "  --test-engines N              test engines in the node, 0 to 2 (default 1)\n"
+        "  --test-dump-journal           print the journal's batches and records, then stop\n"
+        "  --test-drop-kind K            drop every received message of kind K\n"
+        "  --test-commands               read test commands from standard input\n"
+        "  --test-big-reply BYTES        pad every test reply with BYTES\n"
+        "  --test-crash-after-save K     exit once the K-th batch is durable\n"
+        "  --test-crash-before-confirm K exit just before the K-th confirmation\n"
+        "  --test-exit-after-send        exit once the first test ping has left\n");
 #endif
 }
 
@@ -192,6 +201,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
     o->reconnect_ms = 1000;
     o->max_per_address = -1;
     o->test_ping_ms = 100;
+    o->test_engines = 1;
     for (i = 1; i < argc; i++) {
         const char *a = argv[i], *val = i + 1 < argc ? argv[i + 1] : NULL;
         int takes = 1, ok = 1;
@@ -213,6 +223,9 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-crash-after-counter")) { o->test_crash_after_counter = 1; takes = 0; }
         else if (!strcmp(a, "--test-node-error-always")) { o->test_node_error_always = 1; takes = 0; }
         else if (!strcmp(a, "--test-stop-at-restart")) { o->test_stop_at_restart = 1; takes = 0; }
+        else if (!strcmp(a, "--test-dump-journal")) { o->test_dump_journal = 1; takes = 0; }
+        else if (!strcmp(a, "--test-commands")) { o->test_commands = 1; takes = 0; }
+        else if (!strcmp(a, "--test-exit-after-send")) { o->test_exit_after_send = 1; takes = 0; }
 #endif
         else if (!val) ok = 0;
         else if (!strcmp(a, "--data-dir")) o->data_dir = val;
@@ -242,6 +255,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--ping-ms")) { ok = num(val, 10, 600000, &v); o->ping_ms = (int)v; }
         else if (!strcmp(a, "--pong-ms")) { ok = num(val, 10, 600000, &v); o->pong_ms = (int)v; }
         else if (!strcmp(a, "--max-per-address")) { ok = num(val, 0, 1000, &v); o->max_per_address = (int)v; }
+        else if (!strcmp(a, "--max-queue")) { ok = num(val, 4096, 64L << 20, &v); o->max_queue = (unsigned)v; }
         else if (!strcmp(a, "--name")) o->name = val;
 #ifdef GZP_TEST_BUILD
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
@@ -267,6 +281,11 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         }
         else if (!strcmp(a, "--test-oversize-send")) { ok = num(val, 1, 2000000, &v); o->test_oversize_send = (int)v; }
         else if (!strcmp(a, "--test-node-error-at")) { ok = num(val, 1, 1000000, &v); o->test_node_error_at = (int)v; }
+        else if (!strcmp(a, "--test-engines")) { ok = num(val, 0, 2, &v); o->test_engines = (int)v; }
+        else if (!strcmp(a, "--test-drop-kind")) { ok = num(val, 1, 65535, &v); o->test_drop_kind = (int)v; }
+        else if (!strcmp(a, "--test-big-reply")) { ok = num(val, 1, 60000, &v); o->test_big_reply = (int)v; }
+        else if (!strcmp(a, "--test-crash-after-save")) { ok = num(val, 1, 1000000, &v); o->test_crash_after_save = (int)v; }
+        else if (!strcmp(a, "--test-crash-before-confirm")) { ok = num(val, 1, 1000000, &v); o->test_crash_before_confirm = (int)v; }
 #endif
         else ok = 0;
         if (!ok) {
@@ -291,7 +310,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         gzp_usage();
         return GZP_EXIT_USAGE;
     }
-    if (o->role == GZP_ROLE_MEMBER && !o->have_connect) {
+    if (o->role == GZP_ROLE_MEMBER && !o->have_connect && !o->test_dump_journal) {
         fprintf(stderr, "gazpacho: a member needs --connect KEY@ADDR:PORT\n");
         return GZP_EXIT_USAGE;
     }

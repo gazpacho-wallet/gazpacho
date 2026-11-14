@@ -74,8 +74,8 @@ def main():
         # The host's own pings went out during the flood: the member's node
         # saved them (their answers wait behind the flood in the connection's
         # order, which is right).
-        got = [r[1][24:] for e in parse_journal(os.path.join(work, "fm", "journal.standin")) if e[0] == "BTCH"
-               for r in e[3] if r[0] == 0x7e570001 and r[1][24:].startswith(b"host/")]
+        got = [r[1][82:] for e in parse_journal(os.path.join(work, "fm", "journal.standin")) if e[0] == "BTCH"
+               for r in e[3] if r[0] == 0x7e570001 and r[1][82:].startswith(b"host/")]
         check(len(got) >= 5, "the host's own pings kept going out during the flood (%d reached the member)" % len(got))
 
         # 2. an idle loop's poll timeout honours timers ----------------------------

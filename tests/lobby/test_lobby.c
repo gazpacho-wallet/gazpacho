@@ -16,8 +16,8 @@ static int kind_of(const gz_action_t *a)
 {
     gz_lobby_msg_t m;
     if (a->kind != GZ_ACTION_SEND) return -1;
-    if (a->u.send.bytes.len >= 2 && a->u.send.bytes.data[0] == 0 && a->u.send.bytes.data[1] == 1) return 1; /* warning */
-    return gz_lobby_decode(a->u.send.bytes.data, a->u.send.bytes.len, &m) == GZ_DEC_OK ? m.kind : -2;
+    if (a->u.send.records.len >= 2 && a->u.send.records.data[0] == 0 && a->u.send.records.data[1] == 1) return 1; /* warning */
+    return gz_lobby_decode(a->u.send.records.data, a->u.send.records.len, &m) == GZ_DEC_OK ? m.kind : -2;
 }
 
 static int sends(int kind)
@@ -74,8 +74,8 @@ static int last_sent(int kind, gz_lobby_msg_t *m, const uint8_t **raw, size_t *n
     int found = 0;
     for (i = 0; i < A.l.count; i++)
         if (kind_of(&A.s[i]) == kind) {
-            gz_lobby_decode(A.s[i].u.send.bytes.data, A.s[i].u.send.bytes.len, m);
-            if (raw) { *raw = A.s[i].u.send.bytes.data; *n = A.s[i].u.send.bytes.len; }
+            gz_lobby_decode(A.s[i].u.send.records.data, A.s[i].u.send.records.len, m);
+            if (raw) { *raw = A.s[i].u.send.records.data; *n = A.s[i].u.send.records.len; }
             found = 1;
         }
     return found;
@@ -793,8 +793,8 @@ static int status_seat(void)
     size_t i;
     int r = -1;
     for (i = 0; i < A.l.count; i++)
-        if (kind_of(&A.s[i]) == GZ_KIND_LOBBY_STATUS && A.s[i].u.send.peer_id == W_PEER(WHO)) {
-            gz_lobby_decode(A.s[i].u.send.bytes.data, A.s[i].u.send.bytes.len, &g);
+        if (kind_of(&A.s[i]) == GZ_KIND_LOBBY_STATUS && gz_lobby_sent_peer(&A.s[i]) == W_PEER(WHO)) {
+            gz_lobby_decode(A.s[i].u.send.records.data, A.s[i].u.send.records.len, &g);
             r = g.seat_state;
         }
     return r;
@@ -806,8 +806,8 @@ static int status_to(int who, gz_lobby_msg_t *g)
     size_t i;
     int found = 0;
     for (i = 0; i < A.l.count; i++)
-        if (kind_of(&A.s[i]) == GZ_KIND_LOBBY_STATUS && A.s[i].u.send.peer_id == W_PEER(who)) {
-            gz_lobby_decode(A.s[i].u.send.bytes.data, A.s[i].u.send.bytes.len, g);
+        if (kind_of(&A.s[i]) == GZ_KIND_LOBBY_STATUS && gz_lobby_sent_peer(&A.s[i]) == W_PEER(who)) {
+            gz_lobby_decode(A.s[i].u.send.records.data, A.s[i].u.send.records.len, g);
             found = 1;
         }
     return found;
@@ -871,7 +871,7 @@ static void test_host_hostile(void)
                 if (A.s[q].kind == GZ_ACTION_NOTIFY && A.s[q].u.notify.code == GZ_NOTE_CLOSE)
                     named = A.s[q].u.notify.bytes.len == 8 && memcmp(A.s[q].u.notify.bytes.data, "\0\0\0\0\0\0\x03\xe9", 8) == 0;
             CHECK(named);
-            CHECK(A.s[0].kind == GZ_ACTION_SEND && A.s[0].u.send.peer_id == W_PEER(1));
+            CHECK(A.s[0].kind == GZ_ACTION_SEND && gz_lobby_sent_peer(&A.s[0]) == W_PEER(1));
         }
         CLOCK += 1000;
         hin(GZ_LIN_MESSAGE, 2, buf, n);
@@ -1364,8 +1364,8 @@ static void test_host_details(void)
         size_t q;
         for (q = 0; q < A.l.count; q++)
             if (kind_of(&A.s[q]) == GZ_KIND_START) {
-                gz_lobby_decode(A.s[q].u.send.bytes.data, A.s[q].u.send.bytes.len, &st);
-                role[A.s[q].u.send.peer_id - 1000] = st.role;
+                gz_lobby_decode(A.s[q].u.send.records.data, A.s[q].u.send.records.len, &st);
+                role[gz_lobby_sent_peer(&A.s[q]) - 1000] = st.role;
                 CHECK(st.signers == 4);
             }
         CHECK(role[1] == 1 && role[2] == 1 && role[3] == 1 && role[4] == 2);
@@ -1563,7 +1563,7 @@ static void test_host_checks(void)
     {
         size_t q;
         for (q = 0; q < A.l.count; q++)
-            CHECK(kind_of(&A.s[q]) != GZ_KIND_START || (A.s[q].u.send.peer_id != W_PEER(2) && A.s[q].u.send.peer_id != W_PEER(3)));
+            CHECK(kind_of(&A.s[q]) != GZ_KIND_START || (gz_lobby_sent_peer(&A.s[q]) != W_PEER(2) && gz_lobby_sent_peer(&A.s[q]) != W_PEER(3)));
         /* start_sent: the check, then each started seat's key and its exact start bytes */
         for (q = 0; q < A.l.count; q++)
             if (A.s[q].kind == GZ_ACTION_SAVE && A.s[q].u.save.records[0].type == GZ_REC_START_SENT) {
@@ -1575,9 +1575,9 @@ static void test_host_checks(void)
                     at += 33;
                     CHECK(gz_la_get_blob(r, rl, &at, &b, &bn));
                     for (j = 0; j < A.l.count; j++)
-                        if (kind_of(&A.s[j]) == GZ_KIND_START && A.s[j].u.send.bytes.len == bn &&
-                            memcmp(A.s[j].u.send.bytes.data, b, bn) == 0 &&
-                            memcmp(r + at - bn - 2 - 33, MEM[A.s[j].u.send.peer_id - 1000].key[2].pub, 33) == 0)
+                        if (kind_of(&A.s[j]) == GZ_KIND_START && A.s[j].u.send.records.len == bn &&
+                            memcmp(A.s[j].u.send.records.data, b, bn) == 0 &&
+                            memcmp(r + at - bn - 2 - 33, MEM[gz_lobby_sent_peer(&A.s[j]) - 1000].key[2].pub, 33) == 0)
                             sent++;
                 }
                 CHECK(sent == 6 && at == rl);
@@ -1937,9 +1937,9 @@ static void test_host_restart_signing(void)
     memset(slen, 0, sizeof slen);
     for (i = 0; i < A.l.count; i++)
         if (kind_of(&A.s[i]) == GZ_KIND_START) {
-            k = (int)(A.s[i].u.send.peer_id - 1000);
-            memcpy(starts[k], A.s[i].u.send.bytes.data, A.s[i].u.send.bytes.len);
-            slen[k] = A.s[i].u.send.bytes.len;
+            k = (int)(gz_lobby_sent_peer(&A.s[i]) - 1000);
+            memcpy(starts[k], A.s[i].u.send.records.data, A.s[i].u.send.records.len);
+            slen[k] = A.s[i].u.send.records.len;
         }
     /* the restart */
     restore_kept(&R);
@@ -2294,7 +2294,7 @@ static void test_api_edges(void)
         acts_reset();
         CHECK(gz_lobby_host_handle(&h2, &in, &A.l) == GZ_OK);
         if (i < GZ_LOBBY_MAX_UNSEATED) CHECK(sends(1) == 0);
-        else CHECK(sends(1) == 1 && A.s[0].u.send.peer_id == 5000 + (uint64_t)(i - GZ_LOBBY_MAX_UNSEATED) &&
+        else CHECK(sends(1) == 1 && gz_lobby_sent_peer(&A.s[0]) == 5000 + (uint64_t)(i - GZ_LOBBY_MAX_UNSEATED) &&
                    note(GZ_NOTE_CLOSE, -1, -1));
     }
     {
@@ -2619,21 +2619,21 @@ static void test_contract_v2(void)
     CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 0 && timers(GZ_LOBBY_TIMER_IDLE) == 1);
     CHECK(A.s[A.l.count - 1].u.set_timer.delay_ms == 1);
     CLOCK += 1;
-    CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && A.s[0].u.send.peer_id == W_PEER(3));
+    CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && gz_lobby_sent_peer(&A.s[0]) == W_PEER(3));
     CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 1 && A.s[A.l.count - 1].u.set_timer.delay_ms == 20000);
     hin(GZ_LIN_CONNECTED, 7, NULL, 0);                               /* armed by the sweep: not again */
     CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 0);
     hin(GZ_LIN_DISCONNECTED, 7, NULL, 0);
     CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 0);  /* 3 is not closed twice */
     CLOCK += 20000;
-    CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && A.s[0].u.send.peer_id == W_PEER(4));
+    CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && gz_lobby_sent_peer(&A.s[0]) == W_PEER(4));
     CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 0);                         /* 5 joined: nobody left to watch */
     /* a seated key's new connection that says nothing is closed too (b04) */
     hin(GZ_LIN_DISCONNECTED, 5, NULL, 0);
     hin(GZ_LIN_CONNECTED, 5, NULL, 0);
     CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 1);
     CLOCK += GZ_LOBBY_IDLE_MS;
-    CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && A.s[0].u.send.peer_id == W_PEER(5));
+    CHECK(timer_in(GZ_LOBBY_TIMER_IDLE) == GZ_OK && sends(1) == 1 && gz_lobby_sent_peer(&A.s[0]) == W_PEER(5));
     CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 0);
     hin(GZ_LIN_CONNECTED, 6, NULL, 0);                               /* and the next connection arms it again */
     CHECK(timers(GZ_LOBBY_TIMER_IDLE) == 1);
