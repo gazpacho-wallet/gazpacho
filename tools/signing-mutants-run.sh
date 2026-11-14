@@ -18,7 +18,7 @@ while [ "$i" -le "$n" ]; do
     if [ ! -f "$w/build/CMakeCache.txt" ]; then
         cmake -S "$w/src" -B "$w/build" -DFETCHCONTENT_SOURCE_DIR_SECP256K1-ZKP="$secp" > "$w/cmake.log" 2>&1
     fi
-    cmake --build "$w/build" --target test_signing test_signing_wb test_round_msg -j2 > "$w/build.log" 2>&1
+    cmake --build "$w/build" --target test_signing test_signing_wb test_round_msg test_bip341 test_bip327 -j2 > "$w/build.log" 2>&1
     builds="$builds $w/build"
     i=$((i + 1))
 done

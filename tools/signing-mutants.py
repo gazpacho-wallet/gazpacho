@@ -154,13 +154,14 @@ def run_variant(build, rel, text, args, timeout):
     orig = open(path).read()
     try:
         open(path, "w").write(text)
-        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg"], capture_output=True, timeout=600)
+        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg", "test_bip341", "test_bip327"],
+                           capture_output=True, timeout=600)
         if b.returncode != 0:
             return "no-compile", ""
         try:
             env = dict(os.environ, GZ_STOP_ON_FAIL="1")
-            # the white-box guards first (seconds), then the whole suite
-            for exe, a in (("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args)):
+            # the standards' vectors and the white-box guards first (seconds), then the whole suite
+            for exe, a in (("test_bip341", []), ("test_bip327", []), ("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args)):
                 t = subprocess.run([os.path.join(build, exe)] + a, capture_output=True, timeout=timeout, env=env)
                 if t.returncode != 0:
                     fails = sorted(set(re.findall(r"FAIL \S+/(\w+\.[ch]:\d+)", t.stdout.decode(errors="replace"))))
