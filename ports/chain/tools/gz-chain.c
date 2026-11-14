@@ -2,7 +2,7 @@
  * gz-chain: ask chain servers by hand and see each server's answer next to
  * the combined verdict. For manual use and for the walkthroughs.
  *
- *   gz-chain [--network NET] [--server URL]... [--confirmations N] COMMAND [ARGS]
+ *   gz-chain [--network NET] [--server URL]... [--confirmations N] [--proxy URL] COMMAND [ARGS]
  *
  * Exit status: 0 the command produced an answer that servers of at least two
  * operators gave alike (for `proof`: and the transaction is confirmed and
@@ -57,7 +57,8 @@ static const server_entry *default_servers(gz_network n) {
 static void usage(FILE *to) {
   fprintf(to,
           "usage: gz-chain [--network signet|testnet4|testnet|mainnet]\n"
-          "                [--server URL [--operator NAME]]... [--confirmations N] COMMAND\n"
+          "                [--server URL [--operator NAME]]... [--confirmations N]\n"
+          "                [--proxy socks5h://HOST:PORT] COMMAND\n"
           "\n"
           "commands:\n"
           "  tip                    best block height and hash\n"
@@ -75,6 +76,10 @@ static void usage(FILE *to) {
           "127.0.0.1, [::1]). --operator names who runs the server given just before it\n"
           "(lowercase letters, digits, '.', '-'); without it the operator is guessed from\n"
           "the host name, and all of this machine's names are one operator.\n"
+          "--proxy sends every request to a server off this machine through a SOCKS5\n"
+          "proxy that resolves names itself (Tor: socks5h://127.0.0.1:9050); only\n"
+          "socks5h is accepted. Without it no proxy is used: the proxy environment\n"
+          "variables (http_proxy, https_proxy, ALL_PROXY) are ignored.\n"
           "\n"
           "What the verdict means: every server is first checked to be on the network\n"
           "named. For tip, tx, script, outspend and proof, an answer is given only when\n"
@@ -87,6 +92,7 @@ static void usage(FILE *to) {
 typedef struct app {
   gz_network network;
   uint32_t want_confirmations;
+  const char *proxy; /* NULL: none */
   size_t n;
   const char *urls[GZ_MULTI_MAX_SERVERS];
   const char *operators[GZ_MULTI_MAX_SERVERS]; /* NULL: from the host name */
@@ -459,6 +465,13 @@ int main(int argc, char **argv) {
         return 2;
       }
       a.urls[a.n++] = argv[i];
+    } else if (strcmp(argv[i], "--proxy") == 0) {
+      if (++i >= argc || a.proxy != NULL || argv[i][0] == '\0' ||
+          !gz_http_proxy_valid(argv[i])) {
+        fprintf(stderr, "gz-chain: --proxy takes socks5h://HOST:PORT, once; no other scheme\n");
+        return 2;
+      }
+      a.proxy = argv[i];
     } else if (strcmp(argv[i], "--operator") == 0) {
       if (++i >= argc || a.n == 0 || a.operators[a.n - 1] != NULL ||
           !gz_operator_name_valid(argv[i])) {
@@ -507,7 +520,8 @@ int main(int argc, char **argv) {
       a.n++;
     }
   }
-  if (!gz_http_curl_create(&a.http, NULL)) {
+  gz_http_curl_config hc = {NULL, a.proxy};
+  if (!gz_http_curl_create(&a.http, &hc)) {
     fprintf(stderr, "gz-chain: cannot start the HTTPS client\n");
     return 1;
   }

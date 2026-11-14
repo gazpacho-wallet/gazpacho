@@ -1,0 +1,12 @@
+{
+  "name": "gazpacho-api-browser-tests",
+  "private": true,
+  "description": "Browser behaviour checks of spec/local-api.md 23.6 against gz-api-fake (TEST ONLY).",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
+  }
+}
