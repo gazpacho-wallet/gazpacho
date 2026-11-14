@@ -21,7 +21,7 @@
 static int g_quick;
 /* The digest of fixed-generator outputs (test_definitions). After an intended
  * change: run "test_signing known", check, update. */
-#define KNOWN_ANSWERS 0xad0154c39ed26b9bull
+#define KNOWN_ANSWERS 0xbcd296e0ce570794ull
 
 typedef struct {
     int done;                   /* the host's newest round has every ack */
@@ -638,7 +638,8 @@ static void damage(gz_sign_def_t *d, int which)
     case 19: it->spent_script[5] ^= 1; break;                                /* not the aggregate */
     case 20: d->items[0].tx[5] ^= 1; break;                                  /* the root does not spend the funding */
     /* at the limits: accepted (21 to 23); one past them: refused (24, 25) */
-    case 21: d->n_tiers = GZ_SIGN_MAX_TIERS;
+    case 21: d->n_tiers = GZ_SIGN_MAX_TIERS;                               /* the items in reverse, so that children come first (C6) */
+        for (int i = 0; i < d->n_items / 2; i++) { gz_sign_item_t t = d->items[i]; d->items[i] = d->items[d->n_items - 1 - i]; d->items[d->n_items - 1 - i] = t; }
         for (int i = 0; i < d->n_items; i++) d->items[i].tier = (uint8_t)(i * GZ_SIGN_MAX_TIERS / d->n_items);
         break;
     case 22: for (int i = d->n_items; i < GZ_SIGN_MAX_ITEMS; i++) d->items[i] = d->items[i % d->n_items];
@@ -651,6 +652,23 @@ static void damage(gz_sign_def_t *d, int which)
     /* review A, F7: refused by one line each */
     case 26: item_without_host(d); break;                                    /* the host does not sign an item */
     case 27: d->items[0].n_signers--; break;     /* the root without the last participant (with proposal damage 27) */
+    /* review B: refused by one line each */
+    case 28: d->n_tiers = 2;                     /* B6: the root (item 0) alone in tier 0, before its children: against C6 */
+        for (int i = 1; i < d->n_items; i++) d->items[i].tier = 1;
+        break;
+    case 29: {                                   /* mutant D48: the last item (a leaf nobody spends) carries a witness */
+        uint8_t t[GZ_SIGN_MAX_TX];
+        size_t n = it->tx_len;
+        gz_sign_tx_t x;
+        if (n + 68 > GZ_SIGN_MAX_TX) abort();
+        memcpy(t, it->tx, 4); t[4] = 0; t[5] = 1;
+        memcpy(t + 6, it->tx + 4, n - 8);
+        t[n - 2] = 1; t[n - 1] = 64; memset(t + n, 0x11, 64);
+        memcpy(t + n + 64, it->tx + n - 4, 4);
+        if (!gz_sign_tx_parse(t, n + 68, &x) || !x.witness_item) abort();
+        memcpy(it->tx, t, n + 68); it->tx_len = (uint16_t)(n + 68);
+        break;
+    }
     default: break;
     }
 }
@@ -676,6 +694,8 @@ static void damage_proposal(gz_tree_proposal_t *p, int which)
     case 114: p->has_distribution = 1; break;
     case 115: p->funding_script[5] ^= 1; break;                                 /* not the aggregate */
     case 116: memcpy(pt[1].contribution_key, pt[1].factory_key, 33); break;    /* one member's two keys the same */
+    case 117: memcpy(pt[2].contribution_key, pt[1].contribution_key, 33);      /* review B, B13: one key twice, told apart */
+        pt[2].contribution_key[0] ^= 1; break;                                  /* only by the parity byte */
     case 27: {                         /* the funding paid to all participants but the last (C1, with damage 27) */
         uint8_t keys[GZ_SIGN_MAX_PARTICIPANTS][33], spk[34];
         uint8_t *tx = (uint8_t *)(uintptr_t)p->funding_tx;
@@ -745,8 +765,9 @@ static void test_definitions(int print)
         CHECK(m > 0 && memcmp(id_of(other), id_of(clean), 32) != 0);
     }
     /* review A, F7: an item the host does not sign (26); a root without every participant, the
-     * funding made to match (27, C1). Each is consistent everywhere else. */
-    for (int which = 26; which <= 27; which++) {
+     * funding made to match (27, C1). Review B: a parent signed before its children (28, C6); an
+     * item with a witness (29). Each is consistent everywhere else. */
+    for (int which = 26; which <= 29; which++) {
         b.which = which;
         b.mutate_proposal = which == 27 ? damage_proposal : NULL;
         size_t m = begin_proposal(&b, 1, other, sizeof other);
@@ -755,7 +776,7 @@ static void test_definitions(int print)
     }
     b.mutate = NULL;
     b.mutate_proposal = damage_proposal;
-    for (int which = 101; which <= 116; which++) {
+    for (int which = 101; which <= 117; which++) {
         b.which = which;
         size_t m = begin_proposal(&b, 1, other, sizeof other);
         if (m) printf("  proposal damage %d was accepted\n", which);
@@ -930,20 +951,20 @@ static void test_definitions(int print)
  * run "test_signing golden-print", check what changed, update. */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
     0x3019f11ce6c6371eull, /* honest-1 */
-    0x7a78b533f85ecff7ull, /* honest-2 */
-    0xc21484d1023cd007ull, /* duplicates */
+    0xaa68b9375ca7f2cbull, /* honest-2 */
+    0xf768fc5df9ae3600ull, /* duplicates */
     0xe83624ff1416866bull, /* member-restart-nonces */
     0x21a11886f51c4816ull, /* member-restart-signed */
-    0x1635a14fd7cdd09eull, /* tier-abort */
+    0x4599dbe2fe79bfaeull, /* tier-abort */
     0x2be676722e9b47f1ull, /* host-restarts */
     0x827ec25cef459ac8ull, /* timers */
     0xed2046bfca206e0bull, /* host-faults */
     0x418e111b10c8cd05ull, /* member-faults */
     0xbca0101572ec4e6bull, /* proposals */
-    0xae05e02a4cf14ec0ull, /* journal */
-    0x7fb24c9747b965cbull, /* edges */
+    0xc464b5651ca52d0dull, /* journal */
+    0x5459a44e70529edeull, /* edges */
     0x9463dda8569004e0ull, /* reconnect */
-    0x586454ffe0af7a41ull, /* records */
+    0x6af204a82983a812ull, /* records */
     0x4e3c836601ddc368ull, /* exposure */
 };
 
@@ -1112,7 +1133,6 @@ static void test_abort_blame(void)
     h_inject(&h, 1, 0, buf, make_abort(buf, id, 6, 1));
     f = h_find(&h, 0, id);
     CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
-    /* and a new lobby (the program's next begin) forgets who restarted */
     h_free(&h);
 }
 
@@ -1175,6 +1195,378 @@ static void test_proposal_scope(void)
     h_free(&h);
 }
 
+/* Review B, B5: a member's rounds with partial signatures out come back from
+ * a restart as they were. Five rounds, each with its partial signatures sent
+ * and its result withheld: a new proposal leaves the one before it
+ * Unfinished, which no record says. After a restart the same rounds are in
+ * memory in the same states: the newest still waits for its result, the
+ * others are Unfinished, not running again. */
+static void test_restart_keeps_unfinished(void)
+{
+    harness_t h;
+    uint8_t ids[5][32];
+    const gz_sign_round_t *r;
+    h_init(&h, 1);
+    for (int k = 0; k < 5; k++) {
+        CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+        memcpy(ids[k], h_newest(&h, 0)->id, 32);
+        while (h.nq) {                              /* the host's result and round_complete never reach the member */
+            long q;
+            while ((q = q_find(&h, 0, 1, GZ_SIGN_MSG_RESULT)) >= 0 || (q = q_find(&h, 0, 1, GZ_SIGN_MSG_COMPLETE)) >= 0) h_drop_msg(&h, (size_t)q);
+            if (h.nq) h_deliver(&h, 0, 0);
+        }
+        r = h_find(&h, 1, ids[k]);
+        CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->ever_partial);
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        CHECK(h_find(&h, 1, ids[0]) == NULL);
+        for (int k = 1; k < 5; k++) {
+            r = h_find(&h, 1, ids[k]);
+            CHECK(r && r->ever_partial && r->state == (k == 4 ? GZ_SIGN_ROUND_ACTIVE : GZ_SIGN_ROUND_UNFINISHED));
+        }
+        if (pass == 0) CHECK(h_restart(&h, 1) == GZ_OK);
+    }
+    h_free(&h);
+}
+
+/* ---- review B ---- */
+
+/* Deliver every queued message but those from party `silent`, which stay queued (drop: are lost). */
+static void flush_but(harness_t *h, uint32_t silent, int drop)
+{
+    size_t i = 0;
+    for (size_t guard = 0; i < h->nq && guard < 200000; guard++) {
+        if (h->q[i].from == silent) { if (drop) h_drop_msg(h, i); else i++; }
+        else h_deliver(h, i, 0);
+    }
+}
+
+/* Review B, B3 (the reviewer's probes P2 and P3): one member cannot fail
+ * attempt after attempt with nobody blamed.
+ *   Reason 3 ("I restarted") is taken once for a member's key, whichever
+ *   attempt it comes in and whoever began that attempt: the engine's retry
+ *   hook, or the program with gz_sign_begin (composite node 9.6).
+ *   Reason 6 ("another round on that output") is excused only when the host's
+ *   own records show a round on that outpoint from which partial signatures
+ *   may have left; an attempt that failed in its nonce step is not one. */
+static void test_blame_across_attempts(void)
+{
+    harness_t h;
+    uint8_t buf[512], id[32];
+    const gz_sign_round_t *r, *f;
+    int unblamed = 0, attempts = 0;
+    /* P2: every attempt on one outpoint (the retry hook); member 1 answers 3, then 6 */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+    for (int k = 0; k < 8; k++) {
+        r = h_newest(&h, 0);
+        if (!r || r->state != GZ_SIGN_ROUND_ACTIVE || r->def.n_participants != 4) break;
+        memcpy(id, r->id, 32);
+        flush_but(&h, 1, 1);
+        h_inject(&h, 1, 0, buf, make_abort(buf, id, k == 0 ? 3 : 6, 1));
+        f = h_find(&h, 0, id);
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_MEMBER_ABORT);
+        attempts++;
+        unblamed += f && f->blamed == 0;
+        if (k == 1) CHECK(f && f->blamed == 2u);                         /* the first reason 6: blamed */
+    }
+    CHECK(attempts == 2 && unblamed == 1);
+    flush_but(&h, 1, 1);                                                 /* the third attempt goes on without member 1 */
+    r = h_newest(&h, 0);
+    CHECK(r && r->state == GZ_SIGN_ROUND_DONE && r->def.n_participants == 3 && h.p[0].e->attempts == 3);
+    h_free(&h);
+    /* P3: every attempt begun by the program (no retry hook), each on its own outpoint; reason 3 every time */
+    h_init(&h, 3);
+    h.p[0].e->cfg.retry = NULL;
+    unblamed = 0;
+    for (int k = 0; k < 7; k++) {
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        r = h_newest(&h, 0);
+        memcpy(id, r->id, 32);
+        flush_but(&h, 1, 1);
+        h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));
+        f = h_find(&h, 0, id);
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == (k == 0 ? 0u : 2u));
+        unblamed += f && f->blamed == 0;
+    }
+    CHECK(unblamed == 1);
+    /* another member's key has its own one restart */
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    h_inject(&h, 2, 0, buf, make_abort(buf, id, 3, 2));
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
+    h_free(&h);
+    /* Reason 6 from an honest member: the host restarts after the nonce sets of attempt 1 went out, which
+     * fails that attempt (H13), and the test's host puts attempt 2 on the same outpoint, against H11.
+     * Member 2 sent partial signatures in attempt 1, so its round there is unresolved and its reason 6
+     * (C10) is honest: not blamed, since the host's own records show that attempt 1 may have released. */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    while (h.nq && h_count_kind(&h, 2, GZ_SIGN_MSG_PARTIALS) == 0) h_deliver(&h, 0, 0);
+    CHECK(h_count_kind(&h, 2, GZ_SIGN_MSG_PARTIALS) == 1 && h_find(&h, 0, id)->state == GZ_SIGN_ROUND_ACTIVE);
+    while (h.nq) h_drop_msg(&h, 0);
+    CHECK(h_restart(&h, 0) == GZ_OK);
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_HOST_RESTART && f->blamed == 0);
+    r = h_newest(&h, 0);                                                 /* the retry: the same outpoint */
+    CHECK(r && f && r->state == GZ_SIGN_ROUND_ACTIVE && r->def.n_participants == 4 && memcmp(r->def.funding_txid, f->def.funding_txid, 32) == 0);
+    if (r && r->state == GZ_SIGN_ROUND_ACTIVE) {
+        memcpy(id, r->id, 32);
+        h_inject(&h, 2, 0, buf, make_abort(buf, id, 6, 2));
+        f = h_find(&h, 0, id);
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
+    }
+    h_free(&h);
+}
+
+/* Review B, B4 (probe P12): a member that gives up at its own step deadline
+ * (reason 4) while another member still owes its nonces is not blamed in its
+ * place, and whose clock runs out first does not decide who is removed. */
+static void test_deadline_abort(void)
+{
+    harness_t h;
+    uint8_t id[32];
+    const gz_sign_round_t *f;
+    /* members' deadline 6 ticks, the host's 30; member 2 is silent */
+    h_init(&h, 3);
+    h.p[0].e->cfg.deadline_ticks = 30;
+    for (uint32_t g = 1; g <= 3; g++) h.p[g].e->cfg.deadline_ticks = 6;
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    int failed_at = 0;
+    for (int t = 1; t <= 60 && !failed_at; t++) {
+        for (uint32_t g = 0; g <= 3; g++) h_tick(&h, g);
+        flush_but(&h, 2, 1);
+        f = h_find(&h, 0, id);
+        if (f && f->state == GZ_SIGN_ROUND_FAILED) failed_at = t;
+        else if (t == 8) CHECK(f && f->state == GZ_SIGN_ROUND_ACTIVE && f->gave_up == 0xau && h_count_kind(&h, 1, GZ_SIGN_MSG_ABORT) == 1);
+    }
+    f = h_find(&h, 0, id);
+    CHECK(failed_at == 30 && f && f->why == GZ_SIGN_WHY_DEADLINE && f->blamed == 4u);   /* the silent one, at the host's deadline */
+    f = h_newest(&h, 0);                                                 /* the retry keeps members 1 and 3 */
+    CHECK(f && f->def.n_participants == 3 && f->def.peer[1] == 1 && f->def.peer[2] == 3);
+    h_free(&h);
+    /* equal deadlines: the host's own fires first, the same member is blamed */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    for (int t = 1; t <= 12; t++) { for (uint32_t g = 0; g <= 3; g++) h_tick(&h, g); flush_but(&h, 2, 1); }
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_DEADLINE && f->blamed == 4u);
+    h_free(&h);
+    /* the slow member's nonces arrive after the others gave up: they are the ones that will not sign */
+    h_init(&h, 3);
+    h.p[0].e->cfg.deadline_ticks = 30;
+    for (uint32_t g = 1; g <= 3; g++) h.p[g].e->cfg.deadline_ticks = 6;
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    for (int t = 1; t <= 8; t++) { for (uint32_t g = 0; g <= 3; g++) if (g != 2) h_tick(&h, g); flush_but(&h, 2, 0); }
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_ACTIVE && f->gave_up == 0xau);
+    size_t sets = h_count_kind(&h, 0, GZ_SIGN_MSG_ALL_NONCES);
+    long q = q_find(&h, 2, 0, GZ_SIGN_MSG_NONCES);
+    CHECK(q >= 0);
+    if (q >= 0) h_deliver(&h, (size_t)q, 0);
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_MEMBER_ABORT && f->blamed == 0xau);
+    CHECK(h_count_kind(&h, 0, GZ_SIGN_MSG_ALL_NONCES) == sets);         /* no nonce set went out for nothing */
+    h_free(&h);
+    /* a deadline abort when nobody else owes anything is the member's own: blamed */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    flush_but(&h, 1, 1);                                                 /* members 2 and 3 delivered; member 1's nonces lost */
+    uint8_t buf[512];
+    h_inject(&h, 1, 0, buf, make_abort(buf, id, 4, 1));
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_MEMBER_ABORT && f->blamed == 2u);
+    h_free(&h);
+}
+
+/* Review B, B2 and mutant M88: a proposal padded by the host (an unknown odd
+ * record under its signature) up to the size the engine keeps is taken,
+ * saved, and read back by the next start; a longer one is refused with
+ * reason 9 before anything is built, made or saved. Never an error. */
+static void test_proposal_too_long(void)
+{
+    static uint8_t b[GZ_SIGN_MAX_PROPOSAL + 1024];
+    for (size_t more = 0; more <= 601; more = more ? more + 600 : 1) {
+        harness_t h;
+        h_init(&h, 3);
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        long i = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
+        CHECK(i >= 0);
+        if (i < 0) { h_free(&h); continue; }
+        size_t len = w_pad(h.q[i].b, h.q[i].len, GZ_SIGN_MAX_PROPOSAL + more - h.q[i].len - 4, 0, b);
+        CHECK(len == GZ_SIGN_MAX_PROPOSAL + more);
+        h_drop_msg(&h, (size_t)i);
+        size_t recs = h.p[1].n_recs;
+        CHECK(h_inject(&h, 0, 1, b, len) == GZ_OK && h.errors == 0);
+        if (more == 0) {
+            CHECK(h_newest(&h, 1) && h_newest(&h, 1)->proposal_len == len && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == 1 && h.p[1].n_recs > recs);
+            h_flush(&h, 100000);
+            CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE && h_newest(&h, 1)->state == GZ_SIGN_ROUND_COMPLETE);
+            CHECK(h_restart(&h, 1) == GZ_OK && h_newest(&h, 1) && h_newest(&h, 1)->state == GZ_SIGN_ROUND_COMPLETE && h.errors == 0);
+        } else {
+            CHECK(check_abort(&h.sent[h.n_sent - 1], 9, WHOLE, 0, NULL) && h.sent[h.n_sent - 1].party == 1);
+            CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == 0 && h_newest(&h, 1) == NULL && h.p[1].n_recs == recs);
+            CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_NONCES_MADE] == 0);
+        }
+        h_free(&h);
+    }
+}
+
+/* Mutant H68: the host takes a round_ack only under its member's own
+ * signature (H1 funds on the acks; they are the host's evidence). */
+static void test_ack_signature(void)
+{
+    harness_t h;
+    static uint8_t ack[GZ_SIGN_MAX_SMALL_MSG], bad[GZ_SIGN_MAX_SMALL_MSG];
+    size_t alen = 0;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    while (h.nq) {
+        if (h.q[0].from == 1 && h_kind_of(h.q[0].b, h.q[0].len) == GZ_SIGN_MSG_ACK) {
+            if (!alen && h.q[0].len <= sizeof ack) { alen = h.q[0].len; memcpy(ack, h.q[0].b, alen); }
+            h_drop_msg(&h, 0);
+        } else h_deliver(&h, 0, 0);
+    }
+    const gz_sign_round_t *r = h_newest(&h, 0);
+    CHECK(alen && r && r->state == GZ_SIGN_ROUND_COMPLETE && r->acked == 0xcu);
+    size_t recs = h.p[0].n_recs;
+    memcpy(bad, ack, alen); bad[alen - 1] ^= 1;                          /* a damaged signature */
+    h_inject(&h, 1, 0, bad, alen);
+    memcpy(bad, ack, alen); w_resign(bad, alen, 2);                      /* another member's signature */
+    h_inject(&h, 1, 0, bad, alen);
+    CHECK(r->state == GZ_SIGN_ROUND_COMPLETE && r->acked == 0xcu && h.p[0].n_recs == recs);
+    h_inject(&h, 1, 0, ack, alen);
+    CHECK(r->state == GZ_SIGN_ROUND_DONE && r->acked == 0xeu && h.p[0].n_recs == recs + 1);
+    h_free(&h);
+}
+
+/* Mutants H78 and H79: what the host tells the next attempt about released
+ * partial signatures (H11: a new funding outpoint after any release). None in
+ * the nonce step; possible once a nonce set went out, though no tier is done;
+ * unknown, so possible, after a host restart. */
+static void test_released(void)
+{
+    harness_t h;
+    uint8_t buf[512], id[32];
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    h_inject(&h, 1, 0, buf, make_abort(buf, id, 5, 1));                 /* in the nonce step */
+    CHECK(h.builder.retries == 1 && h.builder.last_released == 0);
+    h_free(&h);
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    while (h.nq && h_count_kind(&h, 0, GZ_SIGN_MSG_ALL_NONCES) == 0) h_deliver(&h, 0, 0);
+    CHECK(h_newest(&h, 0)->tier_state[0] == GZ_SIGN_TIER_SIGNED && h_count_kind(&h, 0, GZ_SIGN_MSG_RESULT) == 0);
+    h_inject(&h, 1, 0, buf, make_abort(buf, id, 5, 1));                 /* the nonce sets are out */
+    CHECK(h.builder.retries == 1 && h.builder.last_released == 1);
+    h_free(&h);
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    CHECK(h_restart(&h, 0) == GZ_OK);                                   /* the host restarts in the nonce step */
+    CHECK(h_find(&h, 0, id) && h_find(&h, 0, id)->state == GZ_SIGN_ROUND_FAILED && h_find(&h, 0, id)->why == GZ_SIGN_WHY_HOST_RESTART);
+    CHECK(h.builder.retries == 1 && h.builder.last_released == 1);
+    h_free(&h);
+}
+
+/* Mutant D55: a host message for a round the member knows is taken only in
+ * that round's scope (the lobby). */
+static void test_message_scope(void)
+{
+    harness_t h;
+    static uint8_t b[GZ_SIGN_MAX_MSG];
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    while (h.nq && q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+    long k = q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES);
+    CHECK(k >= 0);
+    if (k >= 0) {
+        size_t len = h.q[k].len;
+        memcpy(b, h.q[k].b, len);
+        b[6] ^= 1;                                                       /* the envelope's scope: another lobby */
+        h_inject(&h, 0, 1, b, len);
+        const gz_sign_round_t *r = h_newest(&h, 1);
+        CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->tier_state[0] == GZ_SIGN_TIER_NONCES && !r->have_all_nonces[0]);
+        CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == 0 && h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == 0);
+        h_deliver(&h, (size_t)q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES), 0);
+        CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == 1);
+    }
+    h_free(&h);
+}
+
+/* Mutant H90: partial signatures that reach the host before it sent the
+ * tier's nonce sets are counted and ignored: they blame nobody and end
+ * nothing. */
+static void test_early_partials(void)
+{
+    harness_t h;
+    static uint8_t b[GZ_SIGN_MAX_LIST68_MSG], entries[GZ_SIGN_MAX_ITEMS * 68];
+    uint32_t items[GZ_SIGN_MAX_ITEMS];
+    uint8_t tier = 0;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    const gz_sign_round_t *r = h_newest(&h, 0);
+    int n = items_of(r, 1, 0, items);
+    CHECK(n > 0);
+    memset(entries, 0x11, sizeof entries);
+    for (int i = 0; i < n; i++) { entries[68 * i] = 0; entries[68 * i + 1] = 0; entries[68 * i + 2] = (uint8_t)(items[i] >> 8); entries[68 * i + 3] = (uint8_t)items[i]; }
+    w_rec_t recs[3] = {{2, r->id, 32}, {4, &tier, 1}, {6, entries, (size_t)n * 68}};
+    size_t len = w_message(b, sizeof b, GZ_SIGN_MSG_PARTIALS, recs, 3, 1);
+    gz_sign_msg_t m;
+    CHECK(len && gz_sign_decode(b, len, &m) && m.kind == GZ_SIGN_MSG_PARTIALS && m.n == n);
+    uint64_t dups = h.p[0].e->counters[GZ_SIGN_COUNT_DUPLICATES];
+    h_inject(&h, 1, 0, b, len);
+    CHECK(r->state == GZ_SIGN_ROUND_ACTIVE && r->blamed == 0 && r->tier_state[0] == GZ_SIGN_TIER_NONCES);
+    CHECK(h.p[0].e->counters[GZ_SIGN_COUNT_DUPLICATES] == dups + 1 && h.p[0].e->counters[GZ_SIGN_COUNT_BLAME_FAULT] == 0);
+    h_flush(&h, 100000);                                                 /* and the round completes */
+    CHECK(r->state == GZ_SIGN_ROUND_DONE);
+    h_free(&h);
+}
+
+/* Review B, B9 (probe P5): a member's acks that hold something else make the
+ * host resend its results and round_complete at most once per member in a
+ * tick, like status requests (status_ticks 0 means every tick, not without
+ * limit). */
+static void test_bad_ack_rate(void)
+{
+    harness_t h;
+    static uint8_t ack[GZ_SIGN_MAX_SMALL_MSG];
+    uint8_t st[128];
+    size_t alen = 0;
+    h_init(&h, 1);
+    CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+    while (h.nq) {
+        if (h.q[0].from == 1 && h_kind_of(h.q[0].b, h.q[0].len) == GZ_SIGN_MSG_ACK) {
+            if (!alen && h.q[0].len <= sizeof ack) { alen = h.q[0].len; memcpy(ack, h.q[0].b, alen); }
+            h_drop_msg(&h, 0);
+        } else h_deliver(&h, 0, 0);
+    }
+    CHECK(alen > 0);
+    if (!alen) { h_free(&h); return; }
+    ack[GZ_RMSG_HEADER + 34 + 2] ^= 1;                                   /* another held digest, signed by the member */
+    w_resign(ack, alen, 1);
+    size_t s0 = h.n_sent;
+    uint64_t dups = h.p[0].e->counters[GZ_SIGN_COUNT_DUPLICATES];
+    for (int i = 0; i < 100; i++) CHECK(h_inject(&h, 1, 0, ack, alen) == GZ_OK);
+    CHECK(h.n_sent == s0 + 2 && h.p[0].e->counters[GZ_SIGN_COUNT_DUPLICATES] == dups + 99);   /* one result and one round_complete */
+    h_inject(&h, 1, 0, st, make_status(st, h_newest(&h, 0)->id));       /* a status request in the same tick: the one limit */
+    CHECK(h.n_sent == s0 + 2);
+    while (h.nq) h_drop_msg(&h, 0);
+    h_tick(&h, 0);
+    s0 = h.n_sent;
+    for (int i = 0; i < 100; i++) h_inject(&h, 1, 0, ack, alen);
+    CHECK(h.n_sent == s0 + 2 && h_newest(&h, 0)->acked == 0);          /* the next tick: once more */
+    h_free(&h);
+}
+
 int main(int argc, char **argv)
 {
     const char *only = "";
@@ -1198,7 +1590,9 @@ int main(int argc, char **argv)
     SECTION("t1", test_t1());
     SECTION("crashes", test_crashes());
     SECTION("restores", test_restores());
-    SECTION("errors", (test_errors(), test_eviction_order(), test_abort_blame(), test_result_foreign_item(), test_proposal_scope(), test_many_rounds(g_quick ? 60 : 1000)));
+    SECTION("errors", (test_errors(), test_eviction_order(), test_restart_keeps_unfinished(), test_abort_blame(), test_result_foreign_item(), test_proposal_scope(),
+                       test_blame_across_attempts(), test_deadline_abort(), test_proposal_too_long(), test_ack_signature(), test_released(),
+                       test_message_scope(), test_early_partials(), test_bad_ack_rate(), test_many_rounds(g_quick ? 60 : 1000)));
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);

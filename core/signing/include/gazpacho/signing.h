@@ -77,6 +77,11 @@
  * cap: the set never makes a start fail (review A, F2). */
 #define GZ_SIGN_KNOWN_FILTER_BITS 20
 #define GZ_SIGN_KNOWN_FILTER_K    10
+/* Host: the members that used their one "I restarted" (abort reason 3)
+ * without blame, by contribution key (a member's key is its seat in one
+ * lobby); kept for the engine's life in memory. Full: every reason 3 is
+ * blamed (review B, B3). */
+#define GZ_SIGN_MAX_RESTARTED    128
 /* C7 records (funding outpoint, tree digest) held in memory: one per funding
  * outpoint this party ever released a partial signature for. At the limit a
  * new outpoint is refused (abort reason 9), never dropped; a journal holding
@@ -92,6 +97,27 @@
 #define GZ_SIGN_MAX_LIST68_MSG   (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * 68 + 67)
 #define GZ_SIGN_MAX_SMALL_MSG    (GZ_RMSG_HEADER + 128 + 67)
 #define GZ_SIGN_MAX_MSG          (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * (6 + GZ_SIGN_MAX_SIGNERS * 130))
+
+/* The largest record of each kind the engine saves (review B, B1, B2, B12):
+ * one table for the writer and for the reader at start. A field is its type
+ * (below 253: one byte), its BigSize length and its bytes. Everything a
+ * record holds is bounded before it is saved: a message from a peer longer
+ * than its field is refused or dropped on receipt (the proposal with reason
+ * 9, an ack counted and ignored), and the work areas the records are written
+ * in are sized from these (static assertions in signing.c), so that no
+ * writer overflows and every record saved is one the start accepts. */
+#define GZ_SIGN_FIELD(n)             (1u + ((n) < 253u ? 1u : 3u) + (n))
+#define GZ_SIGN_REC_STARTED_MAX      (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(36u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(2u) + GZ_SIGN_FIELD(1u) +                                       GZ_SIGN_FIELD(4u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(33u))
+#define GZ_SIGN_REC_PROPOSAL_MAX     (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_PROPOSAL))
+#define GZ_SIGN_REC_EXPOSURE_MAX     (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(36u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_FUNDING_TX) +                                       GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(72u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(GZ_SIGN_MAX_LIST68_MSG))
+#define GZ_SIGN_REC_SIGNED_MAX       (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(68u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(GZ_SIGN_MAX_LIST68_MSG))
+#define GZ_SIGN_REC_COMPLETED_MAX    (GZ_SIGN_FIELD(32u) + 2u * GZ_SIGN_FIELD(GZ_SIGN_MAX_SMALL_MSG) + GZ_SIGN_FIELD(4u))
+#define GZ_SIGN_REC_ACK_MAX          (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(33u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_SMALL_MSG))
+#define GZ_SIGN_REC_ENDED_MAX        (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(2u) + GZ_SIGN_FIELD(4u) + GZ_SIGN_FIELD(1u) +                                       GZ_SIGN_FIELD(GZ_SIGN_MAX_SMALL_MSG))
+#define GZ_SIGN_REC_FUNDING_MAX      (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(4u))
+/* The two work areas: the large records, and the small ones that share a batch with a large one. */
+#define GZ_SIGN_WORK_RECORDS         GZ_SIGN_REC_EXPOSURE_MAX
+#define GZ_SIGN_WORK_REC2            512u
 
 /* The one signing mode: key path (messages.md 7.1 mode 0), BIP 341 tweak of
  * the ordered aggregate key with the stated merkle root (or none: BIP 86),
@@ -316,6 +342,7 @@ struct gz_sign_round {
     uint8_t all_nonces_digest[GZ_SIGN_MAX_TIERS][32];
     uint8_t have_all_nonces[GZ_SIGN_MAX_TIERS];
     uint32_t acked;                 /* host: bit j = participant j acked */
+    uint32_t gave_up;               /* host: bit j = participant j sent a deadline abort (reason 4) while others still owed (review B, B4) */
     uint64_t status_tick[GZ_SIGN_MAX_PARTICIPANTS];   /* host: the tick a status request was last answered + 1 */
     /* member: its own saved messages and the host's it verified */
     uint32_t partials_len[GZ_SIGN_MAX_TIERS];
@@ -352,9 +379,9 @@ typedef struct {
     uint32_t attempts, next_seq;
     gz_sign_round_t rounds[GZ_SIGN_MAX_ROUNDS];
     /* Host: the contribution keys of members that answered "restarted"
-     * (reason 3) in this lobby, since the program's last gz_sign_begin; a
-     * second such answer is blamed (review A, F4). */
-    uint8_t restarted[GZ_SIGN_MAX_PARTICIPANTS][33];
+     * (reason 3) once without blame; a second such answer of the same key is
+     * blamed (review A, F4), whoever began the attempt (review B, B3). */
+    uint8_t restarted[GZ_SIGN_MAX_RESTARTED][33];
     size_t n_restarted;
     uint8_t known[GZ_SIGN_MAX_KNOWN][32];   /* the newest, at n % GZ_SIGN_MAX_KNOWN */
     size_t n_known;                         /* refused identifiers in all */
@@ -380,8 +407,8 @@ typedef struct {
      * isolation check refuses. */
     secp256k1_musig_partial_sig work_psig[GZ_SIGN_MAX_SIGNERS];
     uint8_t work_tx[GZ_SIGN_MAX_TX + 80];
-    uint8_t work_records[GZ_SIGN_MAX_PROPOSAL];
-    uint8_t work_rec2[2048];
+    uint8_t work_records[GZ_SIGN_WORK_RECORDS];
+    uint8_t work_rec2[GZ_SIGN_WORK_REC2];
     gz_sign_msg_t work_msg;
     uint8_t work_keys[GZ_SIGN_MAX_PARTICIPANTS][33];
 } gz_sign_t;

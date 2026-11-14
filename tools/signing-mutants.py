@@ -72,6 +72,14 @@ RULES = {
     "KEEP_EVICTED": ("{ e->exposed[i].state = r->state; e->exposed[i].why = r->why; }", "{ }"),
     "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
     "RESOLVE_EVICTED": ("if (!(r = find(e, round_id)) && !(x = evicted(e, round_id))) return GZ_ERR_ARGUMENT;", "if (!(r = find(e, round_id))) return GZ_ERR_ARGUMENT;"),
+    # review B: B6 (C6: children before parents), B5 (a start leaves a superseded round Unfinished)
+    "C6_CHILDREN_FIRST": ("if (it->tier > d->items[j].tier) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
+    "REPLAY_SUPERSEDES": ("{ o->state = GZ_SIGN_ROUND_UNFINISHED; o->why = GZ_SIGN_WHY_SUPERSEDED; }", "{ }"),
+    # review B: B3 and B4 (blame), B9 (resends)
+    "EXCUSE_ONLY_RELEASED": ("may_have_released(o, o->why) &&", ""),
+    "DEADLINE_ABORT_WAITS": ("if (m->reason == 4 &&", "if (0 &&"),
+    "GAVE_UP_BLAMED": ("if (r->gave_up) {", "if (0) {"),
+    "ANSWER_RATE": ("if (r->status_tick[j] &&", "if (0 &&"),
 }
 
 
