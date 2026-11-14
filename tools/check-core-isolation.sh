@@ -72,12 +72,17 @@
 #     there, and only those: the window just before each function start of
 #     the symbol table, when it begins with that magic.
 #
-# usage: check-core-isolation.sh [--sanitized] LIBRARY-OR-OBJECT
+# usage: check-core-isolation.sh [--sanitized] [--allow FILE] LIBRARY-OR-OBJECT
 #            [--sources COMPILER "CFLAGS" FILE...]
+# --allow FILE: further exact symbol names, one per line, that the library may
+# call outside itself (the signing engine's calls into secp256k1-zkp and the
+# core's action list, tools/signing-allowed-calls.txt). Still exact names.
 # Prints one "FOUND" line per problem and exits 1 if there is any.
 set -eu
 sanitized=0
 if [ "$1" = "--sanitized" ]; then sanitized=1; shift; fi
+allow=""
+if [ "${1:-}" = "--allow" ]; then allow="$2"; shift 2; fi
 lib="$1"; shift
 cc=""; cflags=""
 if [ "${1:-}" = "--sources" ]; then shift; cc="$1"; cflags="$2"; shift 2; else set --; fi
@@ -108,6 +113,7 @@ allowed_outside() {
         __memcpy_chk|__memset_chk|__memmove_chk) return 0 ;;
         __stack_chk_fail|_GLOBAL_OFFSET_TABLE_) return 0 ;;
     esac
+    if [ -n "$allow" ] && grep -qxF -- "$1" "$allow"; then return 0; fi
     is_checker "$1"
 }
 
