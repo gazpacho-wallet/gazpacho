@@ -412,6 +412,10 @@ foreach(target journal_model journal_open)
 endforeach()
 if(NOT GZ_LIBFUZZER)
   add_test(NAME journal_fuzz_model COMMAND fuzz_journal_model 2000 1)
+  # The model's saved cases, replayed one run each: inputs on which the model
+  # or the journal was once wrong. The same files start libFuzzer's corpus.
+  file(GLOB GZ_JOURNAL_MODEL_CASES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/journal_model/*)
+  add_test(NAME journal_model_cases COMMAND fuzz_journal_model cases ${GZ_JOURNAL_MODEL_CASES})
   add_test(NAME journal_fuzz_open  COMMAND fuzz_journal_open 20000 1)
 endif()
 # Under valgrind: every journal test runs in the valgrind job
