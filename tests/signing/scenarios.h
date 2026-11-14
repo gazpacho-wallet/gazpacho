@@ -1067,14 +1067,14 @@ static uint64_t sc_edges(void)
         d ^= h_digest(&h);
         h_free(&h);
 
-        /* a member's resends after a result count from that result: one tier, and a tier with nothing of its own */
-        for (int tiers = 1; tiers <= 2; tiers++) {
+        /* a member's resends after a result count from that result. (With children before parents, C6,
+         * the last tier holds the root, which every member signs: no member is without an item there.) */
+        for (int tiers = 1; tiers <= 1; tiers++) {
             h_init(&h, 3);
             CHECK(h_begin(&h, (uint8_t)tiers, 3, 0) == GZ_OK);
             r = h_newest(&h, 0);
             j = 1;
-            if (tiers == 2) while (j <= 3 && items_of(r, j, 1, NULL) != 0) j++;
-            CHECK(j <= 3);
+            CHECK(items_of(r, j, tiers - 1, NULL) > 0);
             flush_until(&h, j, GZ_SIGN_MSG_PARTIALS, 1);
             h_tick(&h, j); h_tick(&h, j);                  /* two ticks after signing */
             while (q_find(&h, 0, j, GZ_SIGN_MSG_RESULT) < 0 && h.nq) h_deliver(&h, 0, 0);

@@ -140,6 +140,15 @@ static void header(wr_t *w, uint8_t kind, const uint8_t id[32])
 
 /* Check a definition and compute each item's key-aggregation cache (tweaked)
  * and signature digest. Every key is parsed here, before any other call. */
+/* The identifier (internal order) of an unsigned transaction: SHA-256 twice over its bytes. */
+static void txid_of(const uint8_t *tx, size_t len, uint8_t out[32])
+{
+    gz_sign_sha256_t s;
+    uint8_t h[32];
+    gz_sign_sha256_init(&s); gz_sign_sha256_write(&s, tx, len); gz_sign_sha256_done(&s, h);
+    gz_sign_sha256_init(&s); gz_sign_sha256_write(&s, h, 32); gz_sign_sha256_done(&s, out);
+}
+
 static int check_def(const gz_sign_t *e, const gz_sign_def_t *d, gz_sign_round_t *r)
 {
     const secp256k1_context *ctx = e->cfg.ctx;
@@ -182,6 +191,20 @@ static int check_def(const gz_sign_t *e, const gz_sign_def_t *d, gz_sign_round_t
         if (!secp256k1_xonly_pubkey_serialize(ctx, ser, &out_x)) return 0;
         if (it->spent_script[0] != 0x51 || it->spent_script[1] != 0x20 || !same(it->spent_script + 2, ser, 32)) return 0;   /* RULE:SCRIPT_MATCH */
         gz_sign_tx_sighash(&tx, it->spent_amount, it->spent_script, r->digest[i]);
+    }
+    /* C6, children before parents (review B, B6): an item that spends another
+     * item's output is signed in that item's tier or in an earlier one, so that
+     * nobody helps make an output before holding the signed transactions that
+     * spend it. */
+    for (int i = 0; i < d->n_items; i++) {
+        gz_sign_tx_t tx;
+        uint8_t id[32];
+        if (!gz_sign_tx_parse(d->items[i].tx, d->items[i].tx_len, &tx)) return 0;
+        for (int j = 0; j < d->n_items; j++) {
+            if (j == i) continue;
+            txid_of(d->items[j].tx, d->items[j].tx_len, id);
+            if (same(id, tx.outpoint, 32) && d->items[i].tier > d->items[j].tier) return 0;   /* RULE:C6_CHILDREN_FIRST */
+        }
     }
     return prev_tier == d->n_tiers - 1;
 }
@@ -237,12 +260,19 @@ static void filter_positions(const gz_sign_t *e, const uint8_t id[32], uint32_t 
         pos[k] = ((uint32_t)h[3 * k] | (uint32_t)h[3 * k + 1] << 8 | (uint32_t)h[3 * k + 2] << 16) & ((1u << GZ_SIGN_KNOWN_FILTER_BITS) - 1u);
 }
 
-static int is_known(const gz_sign_t *e, const uint8_t id[32])
+/* Among the newest refused identifiers, which are held exactly: never a false "yes". */
+static int known_exactly(const gz_sign_t *e, const uint8_t id[32])
 {
-    uint32_t pos[GZ_SIGN_KNOWN_FILTER_K];
     size_t n = e->n_known < GZ_SIGN_MAX_KNOWN ? e->n_known : GZ_SIGN_MAX_KNOWN;
     for (size_t i = 0; i < n; i++)
         if (same(e->known[i], id, 32)) return 1;
+    return 0;
+}
+
+static int is_known(const gz_sign_t *e, const uint8_t id[32])
+{
+    uint32_t pos[GZ_SIGN_KNOWN_FILTER_K];
+    if (known_exactly(e, id)) return 1;
     filter_positions(e, id, pos);
     for (int k = 0; k < GZ_SIGN_KNOWN_FILTER_K; k++)                         /* RULE:KNOWN_FILTER */
         if (!(e->known_filter[pos[k] >> 3] >> (pos[k] & 7) & 1u)) return 0;
@@ -276,13 +306,17 @@ static void wipe_secrets(gz_sign_round_t *r)
  * slot runs a round (refuse). */
 static gz_sign_round_t *take_slot(gz_sign_t *e, int replaying)
 {
-    gz_sign_round_t *best = NULL;
+    gz_sign_round_t *best = NULL, *running = NULL;
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
         gz_sign_round_t *r = &e->rounds[i];
         if (r->state == GZ_SIGN_ROUND_FREE) return r;
-        if (!replaying && r->state == GZ_SIGN_ROUND_ACTIVE) continue;
+        if (r->state == GZ_SIGN_ROUND_ACTIVE) { if (!running || r->seq < running->seq) running = r; continue; }
         if (!best || settled(r) > settled(best) || (settled(r) == settled(best) && r->seq < best->seq)) best = r;   /* RULE:EVICT_SETTLED_FIRST */
     }
+    /* A start pushes out the rounds the running engine pushed out, in the same order (review B, B5). Only
+     * when every slot holds a running round, which no journal of this engine does, the oldest of them
+     * goes, so that a start never fails for room. */
+    if (!best && replaying) best = running;
     if (!best) return NULL;
     add_known(e, best->id);
     wipe_secrets(best);
@@ -1071,8 +1105,21 @@ static int replay(gz_sign_t *e, const gz_record_t *rec)
         if (e->cfg.host || len < 35) return 0;
         size_t n = (size_t)b[33] << 8 | b[34];
         if (len < 35 + 4 * n) return 0;
-        if (!r && is_known(e, b)) return 1;
-        if (!r && !(r = start_round(e, b + 35 + 4 * n, len - 35 - 4 * n, b))) return 0;
+        /* A round that has left memory or is refused is not taken up again. For a round's first tier
+         * only the identifiers held exactly say so: a hit of the filter alone, which may be false,
+         * never drops a saved round (review B, B10). */
+        if (!r && (known_exactly(e, b) || (t > 0 && is_known(e, b)))) return 1;
+        /* a later tier of a round held: its copy of the proposal is the one the round was taken up with */
+        if (r && (len - 35 - 4 * n != r->proposal_len || !same(b + 35 + 4 * n, r->proposal, r->proposal_len))) return 0;
+        if (!r) {
+            if (!(r = start_round(e, b + 35 + 4 * n, len - 35 - 4 * n, b))) return 0;
+            /* As when it ran (member_propose): a new round left a round with partial signatures out
+             * Unfinished, which no record says (review B, B5). */
+            for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
+                gz_sign_round_t *o = &e->rounds[i];
+                if (o != r && o->state == GZ_SIGN_ROUND_ACTIVE && o->ever_partial) { o->state = GZ_SIGN_ROUND_UNFINISHED; o->why = GZ_SIGN_WHY_SUPERSEDED; }   /* RULE:REPLAY_SUPERSEDES */
+            }
+        }
         if (t >= r->def.n_tiers) return 0;
         r->tier = t; r->tier_state[t] = GZ_SIGN_TIER_NONCES;
         return 1;

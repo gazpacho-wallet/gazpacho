@@ -619,7 +619,8 @@ static void damage(gz_sign_def_t *d, int which)
     case 22: case 25: case 29: grow_participants(d, which == 29 ? GZ_SIGN_MAX_PARTICIPANTS + 1 : GZ_SIGN_MAX_PARTICIPANTS);
         if (which == 25) all_sign(d, it, GZ_SIGN_MAX_SIGNERS);
         break;
-    case 23: d->n_tiers = GZ_SIGN_MAX_TIERS;
+    case 23: d->n_tiers = GZ_SIGN_MAX_TIERS;                               /* the items in reverse, so that children come first (C6) */
+        for (int i = 0; i < d->n_items / 2; i++) { gz_sign_item_t t = d->items[i]; d->items[i] = d->items[d->n_items - 1 - i]; d->items[d->n_items - 1 - i] = t; }
         for (int i = 0; i < d->n_items; i++) d->items[i].tier = (uint8_t)(i * GZ_SIGN_MAX_TIERS / d->n_items);
         break;
     case 24: case 28:
@@ -634,6 +635,23 @@ static void damage(gz_sign_def_t *d, int which)
         memcpy(t, d->participants[1].contribution_key, 32);
         memcpy(d->participants[1].contribution_key, d->participants[2].contribution_key, 32);
         memcpy(d->participants[2].contribution_key, t, 32);
+        break;
+    }
+    /* review B: refused by one line each */
+    case 32: d->n_tiers = 2;                     /* B6: the root (item 0) alone in tier 0, before its children: against C6 */
+        for (int i = 1; i < d->n_items; i++) d->items[i].tier = 1;
+        break;
+    case 33: {                                   /* mutant D48: the last item (a leaf nobody spends) carries a witness */
+        uint8_t t[GZ_SIGN_MAX_TX];
+        size_t n = it->tx_len;
+        gz_sign_tx_t x;
+        if (n + 68 > GZ_SIGN_MAX_TX) abort();
+        memcpy(t, it->tx, 4); t[4] = 0; t[5] = 1;
+        memcpy(t + 6, it->tx + 4, n - 8);
+        t[n - 2] = 1; t[n - 1] = 64; memset(t + n, 0x11, 64);
+        memcpy(t + n + 64, it->tx + n - 4, 4);
+        if (!gz_sign_tx_parse(t, n + 68, &x) || !x.witness_item) abort();
+        memcpy(it->tx, t, n + 68); it->tx_len = (uint16_t)(n + 68);
         break;
     }
     default: break;
@@ -685,6 +703,13 @@ static void test_definitions(int print)
         CHECK(m > 0 && memcmp(other + 3, clean + 3, 32) != 0);
     }
     for (int which = 27; which <= 30; which++) {
+        b.which = which;
+        size_t m = begin_proposal(&b, 0, other, sizeof other);
+        if (m) printf("  definition damage %d was accepted\n", which);
+        CHECK(m == 0);
+    }
+    /* review B: a parent signed before its children (32, C6); an item with a witness (33) */
+    for (int which = 32; which <= 33; which++) {
         b.which = which;
         size_t m = begin_proposal(&b, 0, other, sizeof other);
         if (m) printf("  definition damage %d was accepted\n", which);
@@ -764,18 +789,18 @@ static void test_definitions(int print)
  * run "test_signing golden-print", check what changed, update. */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
     0xd03b9f9431dac65eull, /* honest-1 */
-    0x0afa844074bbadb3ull, /* honest-2 */
-    0xb6e35c97f5ccd899ull, /* duplicates */
+    0x2194270548af9ba8ull, /* honest-2 */
+    0x078fe346a984f1b9ull, /* duplicates */
     0x46d6a04cd44d0694ull, /* member-restart-nonces */
     0x21bb37c488cd6e2full, /* member-restart-signed */
-    0x35ef53c29870a0a1ull, /* tier-abort */
+    0x31ad452181598affull, /* tier-abort */
     0xe34be8e9b5657922ull, /* host-restarts */
     0xe63b77395b661278ull, /* timers */
     0x58434ee23b6a9ab3ull, /* host-faults */
     0x757f95def267ca85ull, /* member-faults */
     0x81f5aeecf46474b1ull, /* proposals */
-    0x1337ad5df90ed26cull, /* journal */
-    0xf23402b4a92fc09dull, /* edges */
+    0xb94a1eeef3ddc1b7ull, /* journal */
+    0xab2dc4750a4db095ull, /* edges */
 };
 
 static void test_golden(int print)
@@ -903,6 +928,40 @@ static void test_many_rounds(int rounds)
     h_free(&h);
 }
 
+/* Review B, B5: a member's rounds with partial signatures out come back from
+ * a restart as they were. Five rounds, each with its partial signatures sent
+ * and its result withheld: a new proposal leaves the one before it
+ * Unfinished, which no record says. After a restart the same rounds are in
+ * memory in the same states: the newest still waits for its result, the
+ * others are Unfinished, not running again. */
+static void test_restart_keeps_unfinished(void)
+{
+    harness_t h;
+    uint8_t ids[5][32];
+    const gz_sign_round_t *r;
+    h_init(&h, 1);
+    for (int k = 0; k < 5; k++) {
+        CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+        memcpy(ids[k], h_newest(&h, 0)->id, 32);
+        while (h.nq) {                              /* the host's result and round_complete never reach the member */
+            long q;
+            while ((q = q_find(&h, 0, 1, GZ_SIGN_MSG_RESULT)) >= 0 || (q = q_find(&h, 0, 1, GZ_SIGN_MSG_COMPLETE)) >= 0) h_drop_msg(&h, (size_t)q);
+            if (h.nq) h_deliver(&h, 0, 0);
+        }
+        r = h_find(&h, 1, ids[k]);
+        CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->ever_partial);
+    }
+    for (int pass = 0; pass < 2; pass++) {
+        CHECK(h_find(&h, 1, ids[0]) == NULL);
+        for (int k = 1; k < 5; k++) {
+            r = h_find(&h, 1, ids[k]);
+            CHECK(r && r->ever_partial && r->state == (k == 4 ? GZ_SIGN_ROUND_ACTIVE : GZ_SIGN_ROUND_UNFINISHED));
+        }
+        if (pass == 0) CHECK(h_restart(&h, 1) == GZ_OK);
+    }
+    h_free(&h);
+}
+
 int main(int argc, char **argv)
 {
     const char *only = "";
@@ -926,7 +985,7 @@ int main(int argc, char **argv)
     SECTION("t1", test_t1());
     SECTION("crashes", test_crashes());
     SECTION("restores", test_restores());
-    SECTION("errors", (test_errors(), test_eviction_order(), test_many_rounds(g_quick ? 60 : 1000)));
+    SECTION("errors", (test_errors(), test_eviction_order(), test_restart_keeps_unfinished(), test_many_rounds(g_quick ? 60 : 1000)));
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);
