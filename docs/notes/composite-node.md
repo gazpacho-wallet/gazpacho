@@ -707,6 +707,7 @@ Decided by the coordinator; each is a task of the named step and its pull reques
 | T-P42-6 | **The node part reads `lobby_ended`** (engine interface `reads`), and `max_timers` is checked for every engine, not only slots (review A F15) | P4.2 |
 | T-P42-7 | **Unbound connections' age.** A hard limit on how long a connection without a seat may stay, whatever it sends, and no connection counted as silent in its first two seconds (review A F12) | P4.2 |
 | T-P42-8 | **Rate-limit the drop notices** before the release build prints them (review A F15) | P4.2 |
+| T-P42-9 | **Tests the stand-in cannot make** (surviving mutants of reviews A and B, none a fault): brackets with two engines and no hand-off, two deferrals, the queue and deferral overflows (`a-deferred-lifo`, `a-queue-overflow-unchecked`, `a-adjacent-owner-shift`, `a-nested-bytes`, `a-deferred-overflow-unchecked`); held confirmations released after a resume (`a-held-released-once`, `held-confirmations-not-released`); CONNECT's key index reaching the handshake and the connected event (`p-connect-index-lost`, `adapter-connected-without-key-index`); a SEND on a key that is not ours, with a connection up (`adapter-sends-on-a-foreign-key`); an engine that returns `GZ_WAITING` after appending (`waiting-after-append-ok`). The lobby's tests must kill them | P4.2 |
 | T-P45-1 | **The funding engine's watch budget** in the static assertion of 7.2 | P4.5 |
 
 ### P4.2, `program_lobby`

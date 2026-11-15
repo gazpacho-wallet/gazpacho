@@ -253,6 +253,16 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
         }
 #endif
     }
+    /* The restore batch's guard record: the chain the node was given opens it
+     * (journal.md 8.3). Shown, so a node given no chain is noticed. */
+    for (i = 0; restored && i < a->u.save.n_records; i++) {
+        const gz_record_t *r = &a->u.save.records[i];
+        if (r->type == GZ_RECORD_GUARD && r->bytes.len >= 48) {
+            char hex[17];
+            gzp_hex(r->bytes.data + 8, 8, hex);
+            gzp_log("restore-guard chain=%s counter=%llu", hex, (unsigned long long)gz_get_u64(r->bytes.data + 40));
+        }
+    }
     if (gzp_standin_take_restore_answered(&ex->store)) gzp_log("restore answered: the restore marker is gone");
 #ifdef GZP_TEST_BUILD
     /* Tests: stop once the K-th batch is durable, before the rest of its list
