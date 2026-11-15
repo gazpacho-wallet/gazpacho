@@ -64,8 +64,8 @@ typedef struct {
     uint64_t incarnation;       /* how many times the node has been built */
     uint64_t repeat_stream;     /* after a restore: the incarnation whose random stream to repeat, or 0 */
     gz_runner_t runner;
-    gz_runner_slot_t runner_slots[RUNNER_SLOTS];
-    uint8_t runner_bytes[RUNNER_BYTES];
+    gz_runner_slot_t *runner_slots;   /* sim->runner_slots of them */
+    uint8_t *runner_bytes;            /* sim->runner_bytes */
     struct sim_storage storage;
     node_timer_t *timers; size_t n_timers, cap_timers;
     blob_t *watches; size_t n_watches, cap_watches;
@@ -123,6 +123,11 @@ struct sim {
     sim_stats_t stats;
     struct { sim_invariant_fn check; void *ctx; } invariants[MAX_INVARIANTS];
     size_t n_invariants;
+    /* Buffer sizes in use (the configuration's, or the defaults), and the
+     * buffers for a start step and for an event step. */
+    size_t step_slots, step_bytes, runner_slots, runner_bytes;
+    gz_action_t *start_slot_buf, *step_slot_buf;
+    uint8_t *start_byte_buf, *step_byte_buf;
     const char *violation;          /* set when a built-in invariant is seen broken */
     int failed;
     uint64_t failure_step;
@@ -885,6 +890,7 @@ void sim_execute(sim_t *sim, uint32_t index, const gz_action_t *a)
     case GZ_ACTION_SEND:
         note_left(s, a);
         sim->stats.node_sends++;
+        if (sim->cfg.ops.observe) sim->cfg.ops.observe(sim->ops_ctx, index, a);
         network_send(sim, index, a->u.send.peer_id, a->u.send.bytes.data, a->u.send.bytes.len);
         break;
     case GZ_ACTION_BROADCAST:
@@ -1201,12 +1207,10 @@ static void finish_start(slot_t *s)
 static void continue_start(slot_t *s)
 {
     sim_t *sim = s->sim;
-    gz_action_t slots[STEP_SLOTS];
-    uint8_t bytes[STEP_BYTES];
     gz_action_list_t list;
     while (s->starting && !s->needs_rebuild && !sim->violation) {
         int more = 1;
-        gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
+        gz_action_list_init(&list, sim->start_slot_buf, sim->step_slots, sim->start_byte_buf, sim->step_bytes);
         gz_status_t st = s->start_steps++ == MAX_START_STEPS ? GZ_ERR_NO_SPACE : sim->cfg.ops.start(s->node, &list, &more);
         if (st == GZ_WAITING) {
             trace(sim, "start-waiting node=%u", s->index);
@@ -1234,7 +1238,7 @@ static void build_node(slot_t *s)
     sim_rng_init(&s->rng, sim->cfg.seed,
                  (s->repeat_stream ? s->repeat_stream : s->incarnation) << 32 | ((uint64_t)s->index + 1));
     s->repeat_stream = 0;
-    (void)gz_runner_init(&s->runner, s->runner_slots, RUNNER_SLOTS, s->runner_bytes, RUNNER_BYTES,
+    (void)gz_runner_init(&s->runner, s->runner_slots, sim->runner_slots, s->runner_bytes, sim->runner_bytes,
                          s->incarnation, runner_execute, s);
     s->storage.reader_incarnation = s->incarnation;
     settle_orphans(s);                                  /* the fence: before anything reads storage */
@@ -1341,8 +1345,6 @@ static int outlives_a_crash(gz_event_kind_t kind)
 static int process(sim_t *sim, const queued_t *q)
 {
     slot_t *s = &sim->slots[q->node];
-    gz_action_t slots[STEP_SLOTS];
-    uint8_t bytes[STEP_BYTES];
     gz_action_list_t list;
 
     if (q->ev.kind == GZ_EVENT_STORAGE_CONFIRMED) {
@@ -1361,7 +1363,7 @@ static int process(sim_t *sim, const queued_t *q)
         }
         return 0;
     }
-    gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
+    gz_action_list_init(&list, sim->step_slot_buf, sim->step_slots, sim->step_byte_buf, sim->step_bytes);
     if (sim->cfg.ops.handle(s->node, &q->ev, &list) != GZ_OK) {
         sim->stats.handle_errors++;
         trace(sim, "handle-error node=%u event=%d", s->index, (int)q->ev.kind);
@@ -1590,6 +1592,15 @@ static sim_t *create(const sim_config_t *config, int is_twin)
     sim->slots = calloc(config->n_nodes, sizeof *sim->slots);
     sim->link_down = calloc(((size_t)config->n_nodes + 1) * ((size_t)config->n_nodes + 1), 1);
     if (!sim->slots || !sim->link_down) abort();
+    sim->step_slots = config->step_slots ? config->step_slots : STEP_SLOTS;
+    sim->step_bytes = config->step_bytes ? config->step_bytes : STEP_BYTES;
+    sim->runner_slots = config->runner_slots ? config->runner_slots : RUNNER_SLOTS;
+    sim->runner_bytes = config->runner_bytes ? config->runner_bytes : RUNNER_BYTES;
+    sim->start_slot_buf = calloc(sim->step_slots, sizeof *sim->start_slot_buf);
+    sim->step_slot_buf = calloc(sim->step_slots, sizeof *sim->step_slot_buf);
+    sim->start_byte_buf = malloc(sim->step_bytes);
+    sim->step_byte_buf = malloc(sim->step_bytes);
+    if (!sim->start_slot_buf || !sim->step_slot_buf || !sim->start_byte_buf || !sim->step_byte_buf) abort();
     for (uint32_t n = 0; n < config->n_nodes; n++) {
         slot_t *s = &sim->slots[n];
         s->sim = sim;
@@ -1597,6 +1608,9 @@ static sim_t *create(const sim_config_t *config, int is_twin)
         s->crash_countdown = NOT_ARMED;
         s->ports.random = (gz_random_port_t){random_fill, s};
         s->ports.clock = (gz_clock_port_t){clock_now, s};
+        s->runner_slots = calloc(sim->runner_slots, sizeof *s->runner_slots);
+        s->runner_bytes = malloc(sim->runner_bytes);
+        if (!s->runner_slots || !s->runner_bytes) abort();
     }
     for (uint32_t n = 0; n < config->n_nodes; n++) build_node(&sim->slots[n]);
     service_all(sim);
@@ -1628,7 +1642,9 @@ void sim_destroy(sim_t *sim)
         free(s->deferred); free(s->orphans);
         free(s->tx_watches); free(s->op_watches); free(s->secret_keys);
         free(s->watches); free(s->timers); free(s->draws); free(s->emitted_saves); free(s->expected); free(s->shadow);
+        free(s->runner_slots); free(s->runner_bytes);
     }
+    free(sim->start_slot_buf); free(sim->step_slot_buf); free(sim->start_byte_buf); free(sim->step_byte_buf);
     for (size_t i = sim->q_head; i < sim->q_len; i++) free(sim->queue[i].blob.bytes);
     for (size_t i = 0; i < sim->n_net; i++) free(sim->net[i].blob.bytes);
     for (size_t i = 0; i < sim->n_txs; i++) free(sim->txs[i].blob.bytes);
