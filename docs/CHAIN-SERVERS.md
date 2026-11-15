@@ -40,6 +40,19 @@ Checked from the build server on 2026-11-11 (`docs/notes/chain-port.md` section 
 - **Signet, Electrum protocol:** `electrum.emzy.de:53002` (ElectrumX) answered with the same tip as `mempool.space:60602`. That is a second independent operator.
 - **Testnet4, Electrum protocol:** several community Fulcrum and ElectrumX servers answered, among them `blackie.c3-soft.com:57010`, `fulcrum.theuplink.net:60002`, `bitcoin.stagemole.eu:5010`, `testnet4.qtornado.com:51012` and `testnet.aranguren.org:52002`. Certificates were not checked.
 
+### Package relay (one parent, one child)
+
+Exits of trees built at a very low or zero fee rate need the parent and its fee child sent as one package. Checked on 2026-11-14 without sending anything (`notes/chain-port.md` section 19):
+
+| Network | Server | Package endpoint |
+|---|---|---|
+| Signet | `https://mempool.space/signet/api` | `POST /v1/txs/package` exists |
+| Signet | `https://blockstream.info/signet/api` | none |
+| Testnet4 | `https://mempool.space/testnet4/api` | `POST /v1/txs/package` exists |
+| Testnet4 | `https://blockstream.info/testnet4/api` | none |
+
+So one public operator per network can take a package, and none has been seen to accept one. A node of our own (Bitcoin Core 29.1 or later) is needed before exits can be relied on.
+
 ## What this gives us
 
 - **Signet has two independent operators** on the HTTP interface (mempool.space and Blockstream) and two on the Electrum protocol (mempool.space and emzy.de). Both HTTP servers reported the same tip. That is enough to compare answers, which the design requires on signet.

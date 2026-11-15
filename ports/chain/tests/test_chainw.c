@@ -366,6 +366,33 @@ static void test_full_queue_loses_nothing(test_state *T) {
   wx_close(&x);
 }
 
+/* Tips that wait are replaced by the newer one, so a loop that is slow to
+ * take finds one tip, the latest, not a queue of old ones. */
+static void test_tips_coalesce(test_state *T) {
+  wx x;
+  gz_chainw_stats st;
+  wx_open(&x);
+  wx_start(&x);
+  for (uint32_t tip = 3; tip <= 7; tip += 2) {
+    uint64_t made = 0, end = ms_now() + LONG_MS;
+    gz_chainw_stats_get(x.w, &st);
+    made = st.events;
+    if (tip > 3) views(&x, SIM_A, SIM_H0 + tip);
+    do {
+      nap(5);
+      gz_chainw_stats_get(x.w, &st);
+    } while ((tip > 3 ? st.events == made : st.events == 0) && ms_now() < end);
+  }
+  nap(150);
+  gz_chainw_stats_get(x.w, &st);
+  CHECK(st.events >= 3 && st.queued_events == 1);
+  CHECK(readable(&x));
+  drain(&x);
+  LOG_IS(&x, "tip 1007");
+  CHECK(!readable(&x));
+  wx_close(&x);
+}
+
 /* ---- reset: a new generation never sees the old one ----------------------- */
 
 static void test_reset(test_state *T) {
@@ -671,6 +698,7 @@ int main(void) {
   RUN(test_loop_calls_never_block);
   RUN(test_shutdown_in_flight);
   RUN(test_full_queue_loses_nothing);
+  RUN(test_tips_coalesce);
   RUN(test_reset);
   RUN(test_broadcast_and_release);
   RUN(test_everything_races);

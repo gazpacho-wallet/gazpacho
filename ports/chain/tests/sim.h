@@ -65,6 +65,7 @@ typedef struct sim_world {
   sim_block common[SIM_COMMON];
   sim_block branch[2][SIM_LEN - SIM_COMMON];
   sim_block c[SIM_C_LEN];
+  sim_block weak; /* a6 with another nonce: its hash does not meet the target */
   sim_tx tx[SIM_NTX];
   uint8_t p[GZ_HASH_LEN]; /* the txid of the watched outpoint P:0 */
 } sim_world;
@@ -108,6 +109,7 @@ typedef struct sim_view {
   bool mainnet;       /* says its block 0 is mainnet's */
   uint32_t claim_tip; /* not 0: what /blocks/tip/height says, whatever it holds */
   bool hide[SIM_NTX]; /* says it never saw the transaction */
+  bool weak;          /* at 1006 it serves the block without proof of work */
   uint32_t graft;     /* not 0: from this height up it serves the other branch */
   int lie_height;     /* added to the height it states for a confirmed transaction */
   int post;

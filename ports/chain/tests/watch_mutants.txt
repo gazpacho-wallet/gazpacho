@@ -1,0 +1,86 @@
+# Deliberate faults for tools/mutate-chain-watch.py: NAME ## FILE ## OLD ## NEW [## N]
+w-mainnet ## watch.c ## if (!gz_network_is_test(cfg->network)) return false; ## if (0) return false;
+w-full ## watch.c ## if (e->n_watches == e->cfg.max_watches) return GZ_CHAINW_FULL; ## if (e->n_watches > e->cfg.max_watches) return GZ_CHAINW_FULL;
+w-held-never ## watch.c ## w->held = (flags & GZ_CHAINW_NOT_BEFORE) != 0 && !was_released; ## w->held = false;
+w-held-again ## watch.c ## w->held = (flags & GZ_CHAINW_NOT_BEFORE) != 0 && !was_released; ## w->held = (flags & GZ_CHAINW_NOT_BEFORE) != 0;
+w-release-pushed-back ## watch.c ## if (w->release_set && w->release_at <= at) continue; ## if (0) continue;
+w-release-at-once ## watch.c ## if (w->used && w->held && w->release_set && now >= w->release_at) { ## if (w->used && w->held && w->release_set) {
+w-held-polled ## watch.c ## if (!w->used || w->held) continue; ## if (!w->used) continue;
+w-depth-limit ## watch.c ## if (e == NULL || txid == NULL || depth > GZ_CHAINW_MAX_DEPTH || ## if (e == NULL || txid == NULL ||
+w-depth-default ## watch.c ## if (depth == 0) depth = e->cfg.burial_depth; ## if (depth == 0) depth = 1;
+w-set-again-silent ## watch.c ## memset(w, 0, sizeof *w);\n  w->used = true; ## w->used = true;
+w-link ## watch.c ## if (!hash_eq(hdr + 4, prev)) return GZ_CHAIN_BAD_PROOF; ## if (0) return GZ_CHAIN_BAD_PROOF;
+w-pow ## watch.c ## if (gz_header_check_pow(out, e->cfg.network) != GZ_POW_OK) return GZ_CHAIN_BAD_PROOF; ## if (0) return GZ_CHAIN_BAD_PROOF;
+w-far-behind ## watch.c ## if (tip.height < top && top - tip.height > GZ_MULTI_LAG_MAX_BLOCKS) return GZ_CHAIN_DISAGREE; ## if (0) return GZ_CHAIN_DISAGREE;
+w-base-parent ## watch.c ## if (tip.height + 1 == e->hbase && hash_eq(tip.hash, e->base_prev)) return GZ_CHAIN_OK; ## if (0) return GZ_CHAIN_OK;
+w-catchup ## watch.c ## if (tip.height > top && tip.height - top > e->cfg.max_catchup) return chain_start(e, &tip, 0, 0); ## if (0) return GZ_CHAIN_OK;
+w-restart-recheck ## watch.c ## if (had_chain) recheck_above(e, 0, true); ## ;
+w-restart-reorg ## watch.c ## if (gone != 0) emit_reorg(e, from, gone); ## ;
+w-reorg-told ## watch.c ## emit_reorg(e, common + 1, top - common);\n    recheck_above(e, common, false); ## recheck_above(e, common, false);
+w-reorg-recheck ## watch.c ## emit_reorg(e, common + 1, top - common);\n    recheck_above(e, common, false); ## emit_reorg(e, common + 1, top - common);
+w-recheck-all ## watch.c ## (all || w->height > height)) ## (all || w->height > height + 1))
+w-above-top ## watch.c ## if (height > top) return R_LATER; ## if (height > top + 1) return R_LATER;
+w-wrong-block ## watch.c ## if (!hash_eq(hash_at(e, height), block)) return GZ_CHAIN_DISAGREE; ## if (0) return GZ_CHAIN_DISAGREE;
+w-base-link ## watch.c ## if (!hash_eq(id, e->base_prev)) return GZ_CHAIN_BAD_PROOF; ## if (0) return GZ_CHAIN_BAD_PROOF;
+w-deep-want ## watch.c ## uint32_t want = *deep ? depth : 1; ## uint32_t want = 1;
+w-deep-short ## watch.c ## if (e->conf.checked_confirmations < want) return GZ_CHAIN_BAD_PROOF; ## if (0) return GZ_CHAIN_BAD_PROOF;
+w-past-depth ## watch.c ## if (w->reported != 0 && cut(n, w->depth) == cut(w->reported, w->depth)) { ## if (w->reported != 0 && n == w->reported) {
+w-buried ## watch.c ## ev.buried = n >= w->depth; ## ev.buried = n > w->depth;
+w-depth-down-flag ## watch.c ## ev.reorg = (w->reported != 0 && n < w->reported) || w->undone; ## ev.reorg = w->undone;
+w-spender-input ## watch.c ## !hash_eq(prev, w->txid) || vout != w->vout) ## vout != w->vout)
+w-spender-vout ## watch.c ## !hash_eq(prev, w->txid) || vout != w->vout) ## !hash_eq(prev, w->txid))
+w-spender-unchecked ## watch.c ## r = check_spender(e, w, &sp);\n    if (r != GZ_CHAIN_OK) return r; ## r = GZ_CHAIN_OK;
+w-spender-gone ## watch.c ## if (r == GZ_CHAIN_NOT_FOUND) return R_LATER; /* named and already gone */ ## if (r == GZ_CHAIN_NOT_FOUND) return r;
+w-some-have-it ## watch.c ## bool some_have_it = st.state == GZ_TX_MEMPOOL || st.unconfirmed_differs; ## bool some_have_it = st.state == GZ_TX_MEMPOOL;
+w-differs-tx ## watch.c ## } else if (st.unconfirmed_differs) { ## } else if (0) {
+w-differs-spend ## watch.c ## if (sp.unconfirmed_differs && w->state != ST_CONFIRMED) return GZ_CHAIN_OK; ## if (0) return GZ_CHAIN_OK;
+w-unspent-reorg ## watch.c ## ev.reorg = w->state == ST_CONFIRMED; ## ev.reorg = false;
+w-replaced-mempool ## watch.c ## ev.replaced = had_spender && !same_spender;\n    ev.reorg = was_confirmed; ## ev.replaced = false;\n    ev.reorg = was_confirmed;
+w-spend-back-to-mempool ## watch.c ## ev.replaced = had_spender && !same_spender;\n    ev.reorg = was_confirmed; ## ev.replaced = had_spender && !same_spender;
+w-replaced-confirmed ## watch.c ## w->replaced = had_spender && !same_spender;\n    w->undone = was_confirmed; ## w->replaced = false;\n    w->undone = was_confirmed;
+w-undone ## watch.c ## w->undone = was_confirmed; ## w->undone = false;
+w-same-spender-again ## watch.c ## if (w->state == ST_MEMPOOL && same_spender) return GZ_CHAIN_OK; ## if (0) return GZ_CHAIN_OK;
+w-jobs-full ## watch.c ## } else if (e->n_jobs == GZ_CHAINW_MAX_BROADCASTS) { ## } else if (0) {
+w-final-at-once ## watch.c ## b->final = b->outcome != GZ_CHAINW_UNREACHABLE || j->attempts >= e->cfg.broadcast_attempts; ## b->final = true;
+w-never-gives-up ## watch.c ## b->final = b->outcome != GZ_CHAINW_UNREACHABLE || j->attempts >= e->cfg.broadcast_attempts; ## b->final = b->outcome != GZ_CHAINW_UNREACHABLE;
+w-silent-retry ## watch.c ## bool tell = b->final || (int)b->outcome != j->last; ## bool tell = b->final;
+w-noisy-retry ## watch.c ## bool tell = b->final || (int)b->outcome != j->last; ## bool tell = true;
+w-backoff-flat ## watch.c ## uint64_t wait = (uint64_t)e->cfg.broadcast_backoff_ms << shift; ## uint64_t wait = (uint64_t)e->cfg.broadcast_backoff_ms;
+w-backoff-cap ## watch.c ## if (wait > e->cfg.broadcast_backoff_max_ms) wait = e->cfg.broadcast_backoff_max_ms; ## ;
+w-no-package-relay ## watch.c ## case GZ_CHAIN_UNSUPPORTED: return GZ_CHAINW_NO_PACKAGE_RELAY; ## case GZ_CHAIN_UNSUPPORTED: return GZ_CHAINW_UNREACHABLE;
+w-already-known ## watch.c ## case GZ_CHAIN_OK: return already_known ? GZ_CHAINW_ALREADY_KNOWN : GZ_CHAINW_ACCEPTED; ## case GZ_CHAIN_OK: return GZ_CHAINW_ACCEPTED;
+w-package-reason ## watch.c ## if (r == GZ_CHAIN_UNSUPPORTED) why = "no chain server accepts transaction packages"; ## ;
+w-hold ## watch.c ## if (now < e->hold_until) return e->sources; ## if (0) return e->sources;
+w-retry-grows ## watch.c ## if (worst != GZ_CHAIN_LAG) e->failures++; ## ;
+w-retry-reset ## watch.c ## e->failures = 0;\n    if (later) { ## if (later) {
+w-retry-cap ## watch.c ## return wait > e->cfg.retry_max_ms ? e->cfg.retry_max_ms : wait; ## return wait;
+w-ask-confirmed ## watch.c ## bool ask = w->fresh || w->recheck || (synced && w->state != ST_CONFIRMED); ## bool ask = w->fresh || w->recheck || synced;
+w-no-recheck ## watch.c ## bool ask = w->fresh || w->recheck || (synced && w->state != ST_CONFIRMED); ## bool ask = w->fresh || (synced && w->state != ST_CONFIRMED);
+w-sources-repeat ## watch.c ## if (r == e->sources) return; ## if (0) return;
+w-input-bounds ## watch.c ## if (len - off < 36) return false; ## if (0) return false;
+w-script-bounds ## watch.c ## if (!rd_varint(raw, len, &off, &script_len) || script_len > len - off) return false; ## if (!rd_varint(raw, len, &off, &script_len)) return false;
+w-witness-form ## watch.c ## if (raw[4] == 0x00 && raw[5] == 0x01) off = 6; ## ;
+c-generation-stamp ## chainw.c ## slot->generation = w->generation; ## slot->generation = 0;
+c-coalesce ## chainw.c ## *last = *ev;\n      last->generation = w->generation;\n    } else { ## last->generation = w->generation;\n    } else {
+c-wake-set ## chainw.c ## if (w->ev_count == 0) wake_set(w); ## ;
+c-wake-clear ## chainw.c ## if (w->ev_count == 0) wake_clear(w);\n    pthread_cond_signal(&w->room); ## pthread_cond_signal(&w->room);
+c-room-signal ## chainw.c ## if (w->ev_count == 0) wake_clear(w);\n    pthread_cond_signal(&w->room); ## if (w->ev_count == 0) wake_clear(w);
+c-busy ## chainw.c ## if (w->req_count == w->cfg.max_requests) return GZ_CHAINW_BUSY; ## if (w->req_count == w->cfg.max_requests) return GZ_CHAINW_OK;
+c-watch-limit ## chainw.c ## if (!known && w->set_count == w->cfg.max_watches) { ## if (!known && w->set_count > w->cfg.max_watches) {
+c-unwatch-count ## chainw.c ## if (rc == GZ_CHAINW_OK) *m = w->set[--w->set_count]; ## ;
+c-broadcast-limit ## chainw.c ## int rc = w->broadcasts == GZ_CHAINW_MAX_BROADCASTS ? GZ_CHAINW_FULL : enqueue(w, &r); ## int rc = enqueue(w, &r);
+c-broadcast-room ## chainw.c ## if (ev->kind == GZ_CHAINW_BROADCAST && ev->broadcast.final && w->broadcasts > 0) w->broadcasts--; ## ;
+c-reset-events ## chainw.c ## w->ev_head = w->ev_count = 0;\n  wake_clear(w);\n  w->set_count = 0; ## wake_clear(w);\n  w->set_count = 0;
+c-reset-wake ## chainw.c ## w->ev_head = w->ev_count = 0;\n  wake_clear(w);\n  w->set_count = 0; ## w->ev_head = w->ev_count = 0;\n  w->set_count = 0;
+c-reset-watches ## chainw.c ## w->ev_head = w->ev_count = 0;\n  wake_clear(w);\n  w->set_count = 0; ## w->ev_head = w->ev_count = 0;\n  wake_clear(w);
+c-reset-engine ## chainw.c ## gz_watch_clear(w->engine);\n      w->reset_pending = false; ## w->reset_pending = false;
+c-free-interrupt ## chainw.c ## w->stop = true;\n  if (w->cfg.interrupt != NULL) w->cfg.interrupt(w->cfg.interrupt_ctx, true); ## w->stop = true;
+c-interrupt-lifted ## chainw.c ## w->reset_pending = false;\n      if (w->cfg.interrupt != NULL) w->cfg.interrupt(w->cfg.interrupt_ctx, false); ## w->reset_pending = false;
+c-stop-on-reset ## chainw.c ## bool stop = w->stop || w->reset_pending; ## bool stop = w->stop;
+c-results-min ## chainw.c ## cfg->max_results < 2 || cfg->max_results > 1000000) ## cfg->max_results > 1000000)
+e-package-second-path ## esplora.c ## if (status != 404 && status != 405) break; ## break;
+e-package-listed ## esplora.c ## p.accepted = strcmp(p.message, "success") == 0 && p.parent_listed && !p.parent_failed && ## p.accepted = strcmp(p.message, "success") == 0 && !p.parent_failed &&
+e-package-error ## esplora.c ## p.child_listed && !p.child_failed; ## p.child_listed;
+e-package-accepted ## esplora.c ## out->result = pk.accepted ? GZ_CHAIN_OK : GZ_CHAIN_REJECTED; ## out->result = GZ_CHAIN_OK;
+m-package-unsupported ## multi.c ## } else if (asked > 0 && unsupported == asked) { ## } else if (0) {
+m-package-wrong-chain ## multi.c ## /* a server on another chain is never sent the transactions */\n    if (!ready(m, i)) { ## if (0) {

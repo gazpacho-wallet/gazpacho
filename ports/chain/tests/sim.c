@@ -179,6 +179,12 @@ void sim_world_init(sim_world *w) {
   for (uint32_t j = 0; j < SIM_C_LEN; j++) {
     make_block(w, &w->c[j], j ? &w->c[j - 1] : &w->branch[SIM_A][2], 3, SIM_H0 + 7 + j, -1, k++);
   }
+  /* the same block as a6 with a nonce that does not meet the target */
+  w->weak = w->branch[SIM_A][2];
+  do {
+    w->weak.header[76]++;
+  } while (gz_header_check_pow(w->weak.header, GZ_NET_SIGNET) == GZ_POW_OK);
+  gz_header_hash(w->weak.header, w->weak.id);
   if (grinding) {
     printf("};\n");
     exit(0);
@@ -212,6 +218,7 @@ static uint32_t view_top(const sim_view *v) {
 
 static const sim_block *view_block(const sim_view *v, uint32_t height) {
   if (height > view_top(v)) return NULL;
+  if (v->weak && height == SIM_H0 + 6 && v->branch == SIM_A) return &v->w->weak;
   if (v->graft != 0 && height >= v->graft && v->branch != SIM_C)
     return sim_block_of(v->w, 1 - v->branch, height);
   return sim_block_of(v->w, v->branch, height);

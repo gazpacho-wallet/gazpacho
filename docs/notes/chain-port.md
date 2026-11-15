@@ -1,6 +1,6 @@
 # The chain port
 
-How Gazpacho reads the chain through public chain servers. Written 2026-11-11 with the first version of the code in `ports/chain/`, revised 2026-11-12 after an independent review (pull request 7), and again the same day after the second round of that review (section 15). "Verified" means checked from the project's build server against the live servers on those dates.
+How Gazpacho reads the chain through public chain servers. Written 2026-11-11 with the first version of the code in `ports/chain/`, revised 2026-11-12 after an independent review (pull request 7), and again the same day after the second round of that review (section 15). Sections 16 to 23 (the chain worker and the watch loop, plan items P7 and S8) were added on 2026-11-15. "Verified" means checked from the project's build server against the live servers on those dates.
 
 ## 1. What it is
 
@@ -224,7 +224,7 @@ Every configured server is asked every question. So each one learns:
 - **every transaction the user looks up or broadcasts**, and when;
 - the **User-Agent**, the current Tor Browser string (`GZ_HTTP_USER_AGENT`, Firefox 140 ESR; bump it with each ESR), which keeps the product name out of requests and names neither the user nor the machine. No other identifying header is sent. **It does not hide the client:** libcurl's TLS fingerprint, the header order, the missing `Accept-Language`, and above all the access pattern (the same txids from many addresses) still let a server that wants to tell that this is Gazpacho. (Until Privacy Slice 1 it was `gazpacho-chain/0.0.1`, which marked every request as Gazpacho.)
 
-**Requirement for P7 (the chain worker and the watch loop): do not query the funding txid before it can have been broadcast.** A factory's funding txid is known to its members before the host broadcasts it. A server asked about a txid nobody else knows learns that the asker is a participant, and with several members asking, which addresses belong to one factory. So a member asks for the funding transaction's status only after the host's broadcast could have made it public (at the earliest when the host reports the broadcast, plus a delay), or watches by the funding output's script or by new blocks' transaction ids instead. No code yet; P7 must meet this and test it with a fake transport that records the first request naming the txid.
+**Requirement for P7 (the chain worker and the watch loop): do not query the funding txid before it can have been broadcast.** A factory's funding txid is known to its members before the host broadcasts it. A server asked about a txid nobody else knows learns that the asker is a participant, and with several members asking, which addresses belong to one factory. So a member asks for the funding transaction's status only after the host's broadcast could have made it public (at the earliest when the host reports the broadcast, plus a delay), or watches by the funding output's script or by new blocks' transaction ids instead. Built with the chain worker: the not-before flag of section 20, tested with a transport that records every request naming the txid, and over real HTTP.
 
 **Comparing multiplies who knows.** With two servers, two operators learn the user's watched scripts and address, not one; with three, three. Asking different servers about different scripts would defeat the comparison. This is the price of not trusting one server; the alternatives are the user's own server or node, or Tor.
 
@@ -321,8 +321,8 @@ The second review's 18 surviving mutations and the 6 it could not compile were p
 
 - The Electrum protocol: no backend exists yet.
 - Real proof-of-work attacks: no mainnet or testnet chain of our own; the proof-of-work checks are tested on recorded real headers and on altered copies.
-- A long-running program using the port, reorganisations of more than one block, and the behaviour of the program around the core when disagreement persists: none exists yet.
-- Concurrency: the port is single-threaded by design; nothing tests use from several threads.
+- A long-running program using the port, and what it shows when disagreement persists: the chain worker exists (section 16), but the program is not wired to it yet (section 23). Reorganisations of several blocks are tested against a made-up chain only (section 22), not on a real network.
+- Concurrency below the worker: a backend is still for one thread at a time. The chain worker is its only user, and the worker itself is tested with threads and under ThreadSanitizer (section 22).
 - The transport on anything but Linux.
 - That `curl_easy_setopt` failures are handled: they cannot be provoked in a test (they occur only on out-of-memory or an old libcurl).
 - Some checks are kept as defence in depth although another check already catches every case the tests can build: the per-call raw-transaction size check in `esplora.c` (the fetch is capped at the caller's room; review e27), the address-equality check in `multi.c` (the same-host check catches it first), the comparing backend's own fee limit (the parser's limit catches it first), the transport's own body-size check and its protocol restriction (libcurl's size limit, and the URL check with no redirects; review t4, t8), each of the two refusals of user information in the transport on its own (the other refuses first), and the early return for an item with no height in the lag rule. Removing any one of these makes no test fail. The coinbase steps, the position check, the bytes-against-id check, the summary-names-the-block check, the proof of work of later headers and the depth cap were in this list before the second review; each is now tested on its own (`chain_confirm`, `chain_esplora`).
@@ -331,14 +331,16 @@ The second review's 18 surviving mutations and the 6 it could not compile were p
 
 1. **Terms.** May a released wallet point every user at mempool.space and blockstream.info by default? Owner's decision; see section 10.
 2. **Unanimity or majority** with three operators (section 12, item 1).
-3. **Proving a spend.** When servers disagree about a spend, fetch the claimed spender and check that it really spends the output (and its signature). Then a hidden spend becomes a proven one. Belongs with the watch engine.
+3. **Proving a spend.** When servers disagree about a spend, fetch the claimed spender and check that it really spends the output (and its signature). Then a hidden spend becomes a proven one. The watch engine now fetches the spender a server names and checks that its input is the watched outpoint (section 18); the signature is still not checked.
 4. **Header chains on proof-of-work networks.** Only each header's own target is checked. Mainnet use needs difficulty rules or pinned known blocks.
 5. **Unknown fields.** A server adding a field to an answer makes it malformed here. Deliberately strict; it could take a server out after an upgrade on their side.
 6. **Persistent disagreement**: how long the program waits before telling the user. Persistent lag is now bounded in the library (3 blocks or 30 minutes, then disagreement); what the program shows, and when, is not decided.
 7. **Privacy** (section 9): Tor, or the user's own server. Neither built.
-8. **Blocking calls.** Servers are asked one after another; a slow one delays the others by up to its time limit times its retries. The program around the core needs the calls off its main loop.
+8. **Blocking calls.** Answered by the chain worker (section 16): one thread owns the chain view and the loop never waits. The program is wired to it in the follow-up of section 23.
 9. **Default lists.** `gz-chain` uses `docs/CHAIN-SERVERS.md`, with each server's operator named. Testnet4 now lists both HTTP operators (mempool.space and blockstream.info); testnet3 still has one in the list. The line in `docs/SLICES.md` about testnet4 can be updated by whoever owns that file.
 10. **Signet block signatures.** Not verified, by decision. Verifying them would make signet confirmations checkable against the signet's known signing key, not just compared.
+11. **A node of our own for package relay.** Exits of low-fee trees need one-parent-one-child package relay, and one public operator offers a package endpoint on signet and testnet4 (section 19). Whether the project runs a Bitcoin Core 29.1 node with a package endpoint, and tells hosts to, is for the owner.
+12. **A false block 0 is remembered for good.** A server that once answers with the block 0 of another network is left out until the program starts again (section 5). Right for a server on the wrong chain; harsh for a single bad answer. A long-running worker could ask again after a long wait.
 
 ## 15. Changes after the second review
 
@@ -353,3 +355,261 @@ The second round of the independent review (2026-11-12) returned "merge after fi
 - **G.** Testnet4's second operator is in `docs/CHAIN-SERVERS.md` and the default list. `chain.h` now says that the mainnet refusal lives in the program, not the library. The two Electrum servers known only by numeric address are no longer named in section 11.
 
 Rebased onto `main` after the CI hardening (top-level `CMakeLists.txt`: both the wallet library and this port are added). Two adjustments for the CI jobs there: the tool's mainnet-refusal test now runs through `tests/expect-exit.sh` (it must exit 2, and `tools/valgrind-tests.py` requires exit 0 from the programs it runs, so it is listed there as a script test); and a new option `GZ_CHAIN_TESTS` (default ON) leaves this port's tests out, which `wallet/tests/break-checks.sh` now sets in the copy it builds for each wallet fault (none of this port's tests can notice a wallet fault, and the slow local-server test would run once per fault). No IP address other than 127.0.0.1 and the RFC 5737 ranges is left in the port; the three test lines that must hold `127.0.0.2` to show it refused carry `address-check: allow`.
+
+## 16. The chain worker and the watch loop (P7, S8)
+
+Added 2026-11-15. Everything above describes a chain view whose every call blocks. The program has one loop and must never wait on the network (contract v2, section 5). So `ports/chain` now has two more layers, both in the library `gazpacho_chain`:
+
+- **The watch engine** (`watch.c`, internal header `watch.h`). No thread, no lock. It holds the watch set, a chain of checked block headers and the broadcasts in flight. One call, `gz_watch_step`, makes one pass over the chain view and hands each change to a callback as an event.
+- **The chain worker** (`chainw.c`, public header `gazpacho/chain_watch.h`). One thread that owns the `gz_chain` and the engine and does all chain I/O. The loop talks to it only through two bounded queues and one descriptor.
+
+```
+loop thread                                   worker thread
+-----------                                   -------------
+gz_chainw_watch_tx / _outpoint   --requests-->  engine: watch set
+gz_chainw_unwatch_*, _release                   header chain
+gz_chainw_broadcast, _package                   broadcasts in flight
+                                                   |
+poll(gz_chainw_fd) readable      <---events---  gz_watch_step -> gz_chain (blocking)
+gz_chainw_take
+```
+
+### 16.1 What the loop may call, and what each call costs
+
+Every loop-side call takes one mutex for a few instructions and returns. None waits on a condition variable, on the worker, or on the network. A call that cannot be queued is **refused with a reason, never an error and never a wait**:
+
+| Return | Meaning |
+|---|---|
+| `GZ_CHAINW_OK` | Queued |
+| `GZ_CHAINW_FULL` | The watch set already holds `max_watches` (default 256, at most 1,024), or 16 broadcasts have no final outcome yet. Nothing was queued |
+| `GZ_CHAINW_BUSY` | `max_requests` (default 1,024) requests wait for the worker. Nothing was queued; ask again later |
+| `GZ_CHAINW_INVALID` | A NULL argument, a depth above 144, an unknown flag, or bytes that are not a transaction |
+
+This differs from the sketch in contract v2 section 5 in one point: there a full request queue was fatal for the incarnation. Here it is a refusal the caller can see, because the task for this work asked for "bounded in number with a refusal, never an error". The program may still treat `GZ_CHAINW_BUSY` as fatal if it wants the old rule.
+
+`gz_chainw_fd` is the read end of a pipe. It is readable exactly while events wait: the worker writes one byte when the queue goes from empty to not empty, and `gz_chainw_take` reads it back when it takes the last event. The loop gives the descriptor to `poll()` and never reads or writes it.
+
+### 16.2 Never dropping an event
+
+Watches report only on a change, so a lost report is never repeated. When the event queue (`max_results`, default 4,096) is full, the worker **waits** for `gz_chainw_take` to make room. It asks the servers nothing meanwhile, which only delays reports. Two kinds of event are replaced in place when the newest thing in the queue is of the same kind: a tip and a sources event. That keeps the order and needs no room.
+
+### 16.3 Generations
+
+`gz_chainw_reset` (for a restart from storage inside one process) purges both queues and the wake byte, forgets every watch and broadcast, and returns a new generation number. Every event carries its generation, and events made by a pass that was still running when the reset came are discarded, under the same mutex. The first event of every generation is the tip. The checked headers are kept across a reset: they are facts about the chain, not about the node.
+
+### 16.4 Shutdown and reset with a request in flight
+
+`gz_chainw_free` and `gz_chainw_reset` call the configured `interrupt` hook. With the libcurl transport that is `gz_http_curl_interrupt` (new in `chain_http.h`): the transfer in progress ends at once, a retry wait in progress ends at once, and every later request fails immediately until the interrupt is taken back. To make that possible `http_curl.c` now runs each request on the multi interface (one transfer, `curl_multi_poll`, woken by `curl_multi_wakeup`) and sleeps on a condition variable.
+
+Measured on the build server against a stub that answers after 30 s: `gz_chainw_free` returns in well under 2 s (the test allows 2 s; contract v2 test T5 allows the program 2 s). The bound holds for name lookups only when libcurl resolves names without blocking; `gz_http_curl_async_dns()` says whether it does (true for the libcurl on the build server and on GitHub runners). Without a hook the worker is still joined, after the request in flight runs into its own time limit.
+
+libcurl global state is as contract v2 says: the loop thread creates the `gz_http` and the `gz_chain` before `gz_chainw_new` and destroys them after `gz_chainw_free`.
+
+### 16.5 Limits and defaults
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `tip_poll_ms` | 60,000 | Time between two looks at the tip and at every unconfirmed watch |
+| `retry_ms`, `retry_max_ms` | 5 s, 5 min | Wait after a failed pass, doubled per failure in a row. Lag does not grow the wait |
+| `burial_depth` | 3 | Depth of a watch set with depth 0 (`spec/exit.md` B, `safety-rule.md` value 3) |
+| `max_watches` | 256 | Refused beyond |
+| `max_requests`, `max_results` | 1,024, 4,096 | The two queues |
+| `broadcast_attempts`, backoff | 6 tries, 2 s doubling to 60 s | Only while no server can be reached |
+| `header_window`, `max_catchup` | 288, 144 | Headers kept; most new headers followed in one pass |
+
+Mainnet is refused: `gz_chainw_new` returns NULL for any network that is not signet, testnet3 or testnet4.
+
+## 17. The event contract
+
+Events come out in the order they were made, each at most once per change of state. All txids are in hashing order. `generation` is on every event.
+
+| Event | When | Fields |
+|---|---|---|
+| `GZ_CHAINW_TIP` | The checked best block changed. First event of every generation | `height`, `block_hash` |
+| `GZ_CHAINW_REORG` | Blocks left the checked chain. Sent **before** the new tip and before what the reorganisation did to each watch | `height` (lowest height whose block changed), `disconnected` |
+| `GZ_CHAINW_TX_MEMPOOL` | A watched transaction first seen unconfirmed, by every server | `txid` |
+| `GZ_CHAINW_TX_EVICTED` | A transaction reported in the mempool is known to no server and is not confirmed | `txid` |
+| `GZ_CHAINW_TX_CONFIRMED` | First seen confirmed (with its real count, which may exceed the depth), then at each block that changes its count cut at the watch depth | `txid`, `height`, `block_hash`, `confirmations`, `buried` (count has reached the depth), `reorg` (count lower than the one told before) |
+| `GZ_CHAINW_TX_UNCONFIRMED` | A confirmation told earlier was undone | `txid`, `in_mempool` |
+| `GZ_CHAINW_OUTPOINT_SPENT` | A spender first seen (0 confirmations while unconfirmed), then as for TX_CONFIRMED | `outpoint_txid`, `outpoint_vout`, `txid` (the spender), `vin`, `confirmations`, `height`, `block_hash`, `buried`, `replaced` (a different spender from the one told before), `reorg` (the spender told before was confirmed and is no longer, or its count went down) |
+| `GZ_CHAINW_OUTPOINT_UNSPENT` | A spend told earlier is gone and nothing else spends the outpoint | outpoint, `txid` (the spender that left), `reorg` (it had been confirmed) |
+| `GZ_CHAINW_BROADCAST` | The outcome of a broadcast (section 19) | `txid`, `broadcast` |
+| `GZ_CHAINW_SOURCES` | What the servers are worth changed. Sent at the end of the pass that found it | `sources`: `GZ_CHAIN_OK`, or lag, disagreement, no quorum, unreachable, wrong network, bad proof, malformed |
+
+Rules that follow from the code and are each tested:
+
+- **Within one pass**: broadcasts, then `REORG`, then `TIP`, then the watches in the order they were set, then `SOURCES`.
+- **A confirmation that stands is not asked about again.** It is counted along the checked headers. It is asked about again only when a reorganisation replaced blocks at or above its height, or when the watch is set again. So a server cannot make a confirmation flap by hiding it later.
+- **Setting a watch again** replaces its depth and tells the state found again, as `action.h` WATCHES says.
+- **Burial.** After the count reaches the depth, nothing more is told for that confirmation unless a reorganisation changes it. A reorganisation is told however deep the confirmation was, as long as it is within the header window (288 blocks); below that a confirmation is counted once and not followed.
+- **A jump of several blocks** tells the count once, at its new value. Counts in between are not told.
+- **Unconfirmed data** follows section 5: seen only when every server shows it, gone only when none does. While servers differ, nothing is told.
+- **While `sources` is not OK**, nothing is told that depends on the failing answer. Watches that can still be answered are.
+
+### Reorganisations
+
+The engine compares the servers tip with its own chain, walks down to the highest block both have, fetches and checks every header from there to the tip, and only then replaces its headers. Then every recorded confirmation above the common block is asked about again:
+
+| What the servers now say | Events |
+|---|---|
+| Not confirmed | `TX_UNCONFIRMED` (with `in_mempool`); for an outpoint `OUTPOINT_SPENT` with 0 confirmations and `reorg`, or `OUTPOINT_UNSPENT` with `reorg` |
+| Confirmed in another block | `TX_UNCONFIRMED`, then `TX_CONFIRMED` with the new count |
+| The same block, the chain shorter | `TX_CONFIRMED` with the lower count and `reorg` |
+| Another transaction spends the outpoint | `OUTPOINT_SPENT` naming it, with `replaced` and `reorg` |
+
+A reorganisation that reaches below the headers kept (or a tip more than `max_catchup` ahead) starts the header chain again at the tip and asks about every watch.
+
+## 18. Server rules in the worker
+
+The worker uses the comparing backend over two operators, so sections 4 to 6 apply to every answer. On top of them:
+
+- **Header chain linking.** The engine keeps a window of block hashes. A hash enters it only from a header that (a) the servers agree on, (b) hashes to the block hash the servers gave for that height, (c) meets its proof-of-work target for the network, and (d) names the header before it. Depth is counted along this chain and nowhere else. A server that claims a higher tip adds no depth; it has to produce linked headers that cost work. On signet the work is nominal and the block signature is still not checked (section 6, open question 10), so on signet depth rests on two operators agreeing, exactly as before; on the proof-of-work networks each block of fake depth costs a real header.
+- **A confirmation must be in a block of that chain.** A status naming a height and a block hash that the checked chain does not have at that height is disagreement. Then `gz_chain_confirm_tx` proves the transaction is in the block (bytes, header, Merkle branch, coinbase).
+- **A spender must spend the outpoint.** The spender a server names is fetched (so its bytes hash to its txid) and its input read; if that input is not the watched outpoint the answer is a bad proof. This closes open question 3 of section 14 as far as the input goes; the spender signature is not checked.
+- **A server far behind is refused.** The comparing backend refuses tips more than 3 blocks apart. The engine also refuses a tip more than 3 blocks below what it has already checked, whichever branch it is on.
+- **A server on another chain is refused** by its block 0 (section 5). One consequence is kept and now tested: a server that once answers with another network block 0 stays left out until the program starts again.
+- **Timeouts** are the backend ones (15 s per request by default), and every wait of the worker is interruptible.
+- **Retries** after a failed pass back off from 5 s to 5 min. The servers are never asked faster than `tip_poll_ms` when nothing fails.
+
+## 19. Broadcast, and packages
+
+`gz_chainw_broadcast(w, id, raw, len)` copies the transaction and queues it. **Exactly one final event** follows each accepted call (unless a reset or shutdown comes first), carrying the caller `id`:
+
+| Outcome | Meaning | Final? |
+|---|---|---|
+| `GZ_CHAINW_ACCEPTED` | A server took it | Yes |
+| `GZ_CHAINW_ALREADY_KNOWN` | A server refused it as one it has, and was then seen to have it | Yes |
+| `GZ_CHAINW_REJECTED` | A server answered and refused; `reason` holds its words (at most 127 characters) and `server_status` the HTTP status | Yes. The worker does not argue with a server |
+| `GZ_CHAINW_UNREACHABLE` | No server gave a usable answer | Not at first: it is tried again with growing waits (2 s doubling to 60 s, 6 tries), said once, and final after the last try |
+| `GZ_CHAINW_NO_PACKAGE_RELAY` | A package only: no configured server has a package endpoint | Yes |
+
+A broadcast is never dropped silently: it is refused at the call (`GZ_CHAINW_FULL` with 16 in flight) or it gets its final event. The event also carries the comparing backend per-server results, for the log. As contract v2 section 9 says, the outcome is advice: what a transaction did is learnt from the watches.
+
+### 19.1 Packages are required for exits
+
+SuperScalar main builds TRUC (version 3) tree transactions with a pay-to-anchor output at a tree fee rate that may be 0.1 sat/vB or zero. A parent below the relay fee is refused alone. It enters a mempool only together with the child that pays for it, as a one-parent-one-child package (`submitpackage`, Bitcoin Core 28 and later; 29.1 for the low-fee cases). So an exit cannot be published through a server that has no package endpoint.
+
+New in the chain view: `gz_chain_broadcast_package(c, parent, child, out)` and the result code `GZ_CHAIN_UNSUPPORTED`. The Esplora backend posts `["<parent hex>","<child hex>"]` as JSON to `/txs/package` and, if that answers 404 or 405, to `/v1/txs/package`. The answer is the `submitpackage` result of Bitcoin Core; the pair counts as accepted only when `package_msg` is `success` and both txids are listed without an error. The outcome of each transaction and the server words for it are reported (`gz_package_result.parent`, `.child`; in the worker event `parent_outcome`, `child_outcome`, `parent_txid`). The comparing backend sends the package to every server on the right network; accepted by one is success; a refusal is reported before unreachability; `GZ_CHAIN_UNSUPPORTED` only when every server that could be asked has no endpoint.
+
+**The pair is never sent one after the other instead.** A parent that needs its child would be refused alone and the failure would read as a fee problem. No endpoint is its own, explicit, final outcome with the reason text "no chain server accepts transaction packages".
+
+### 19.2 Which public servers take packages
+
+Checked from the build server on 2026-11-14 with requests that send no transaction (GET and OPTIONS only; nothing was broadcast to any network):
+
+| Server | `/txs/package` | `/v1/txs/package` |
+|---|---|---|
+| mempool.space, signet | 404 | **exists**: OPTIONS answers 200 with `Allow: POST`; GET answers 404 "Cannot GET", as for any POST-only route |
+| mempool.space, testnet4 | 404 | **exists**, the same answers |
+| blockstream.info, signet | 404 "endpoint does not exist" | 404 |
+| blockstream.info, testnet4 | 404 | 404 |
+| mutinynet.com (a separate signet) | 404 on GET, 204 on OPTIONS (not conclusive) | 404 on GET, 204 on OPTIONS (not conclusive) |
+
+The Esplora API description documents `POST /txs/package` ("requires Bitcoin Core 28.0 or later"), but the public blockstream.info signet and testnet4 servers do not serve it.
+
+What is **not** established: that the mempool.space endpoint accepts a real package, which node version is behind it, and whether it relays a zero-fee TRUC parent. That can only be shown by sending one, which this work did not do.
+
+### 19.3 What this means for exits
+
+- On signet and testnet4 today, **one** public operator takes packages. A package therefore reaches the network through a single operator: there is no second, independent relay, and that operator can refuse or silently drop an exit. Confirmation is still checked through both operators, so a dropped package is seen as "not confirmed", not as success.
+- If that operator removes the endpoint, changes its policy or is unreachable, **no exit of a low-fee tree can be published at all** through public servers. The worker then reports `GZ_CHAINW_NO_PACKAGE_RELAY` (no endpoint) or `GZ_CHAINW_UNREACHABLE` (endpoint down); it cannot do more.
+- **A node of our own is needed for exits to be dependable.** That is the plain answer to the question the exit-path audit raised: Bitcoin Core 29.1 or later with `submitpackage`, behind the same package endpoint (an Esplora or mempool backend in front of it, or the small broadcast-only endpoint `spec/exit.md` already asks the chain port for). For Slice 1 on signet the single public endpoint may be enough to demonstrate an exit, once it has been shown to accept one. For anything a person relies on before a deadline (`leave_by`), it is not: the project should run a package-relaying node, and hosts should be told to run theirs. This is for the owner to decide; it is open question 11.
+- The wallet rule on fees is unchanged (section 21): the child pays the lowest rate at which the pair relays.
+
+## 20. Privacy in the worker
+
+- **Proxy.** The worker makes no connection of its own. Every request goes through the one `gz_http` the program built, so the `socks5h://` setting of section 9 covers every request, including broadcasts and packages. Requests to this machine still bypass it.
+- **User agent.** Unchanged: the generic string of section 9.
+- **Not before.** A watch set with `GZ_CHAINW_NOT_BEFORE` is kept and nothing naming its txid is sent to any server, however the chain moves, until `gz_chainw_release(w, txid, delay_ms)` and the delay have passed. Release covers the transaction watch and the watches on its outputs. A later release cannot push an earlier one back; setting the watch again with the flag does not hold it back again. This meets the P7 requirement of section 9: the member sets the funding watches held back and releases them when the host reports the broadcast, plus a delay. Tested with a transport that records every request URL, and over real HTTP against the log of the stub.
+- **What a server still learns.** After release, each operator sees the funding txid and the watched outpoints from this address, as section 9 says. Per-txid polling stays the default until measured.
+
+### 20.1 Block-based watching: designed, not built
+
+The 1.0.0 plan (`THREAT-MODEL.md` 2.8) is to match locally so that a server learns only that a wallet follows blocks. It did not fit this change. The design:
+
+- A setting `watch_mode = blocks`, off by default. In this mode the engine never calls `tx_status` or `outspend` for a watch.
+- Per new checked block: `GET /block/{hash}/txids` (every txid, about 67 bytes each, so the response cap rises to a few megabytes for this one call) and match watched txids locally. Inclusion is proved by recomputing the Merkle root from the full list against the checked header, with no request that names the txid.
+- Spends of watched outpoints cannot be found from txids alone. The engine fetches the raw block (`GET /block/{hash}/raw`, up to 4 MB) and reads every input. That is one large request per block per server instead of a few small ones per watch.
+- The mempool is not visible in this mode: `TX_MEMPOOL`, `TX_EVICTED` and unconfirmed spends are not told. An engine that must see an unconfirmed spend early keeps per-outpoint polling for those outpoints, or accepts one block of delay.
+- To measure before choosing: about 144 blocks a day on signet, each fetched from two operators, against what the operators publish (section 10).
+
+## 21. Fees
+
+The worker has no fee estimator and asks no server for one. The wallet rule is to pay the lowest rate that relays (0.1 sat/vB); section 7 already fixes that rate on test networks. Nothing in `chain_watch.h` takes or returns a fee rate.
+
+## 22. Testing the worker
+
+Written first: nothing a chain server can send, do or fail to do may crash the worker or become a fatal error. Everything below runs in CI except where it says so.
+
+| Test | What it covers |
+|---|---|
+| `chain_watch` (`tests/test_watch.c`) | The engine against a made-up chain told by two simulated servers (`tests/sim.c`: 12 heights, three branches, headers that meet the signet proof-of-work limit, a funding-like transaction, two competing spenders of one outpoint, a child), through the real Esplora and comparing backends, on a clock the test moves. Each scenario asserts the exact event sequence: confirm, reorganise out, confirm in another block; a five-block reorganisation that moves a confirmation and replaces a spender; depth going down; a double spend in the mempool, in a block, and across a reorganisation; a server that lags, and lag that turns into disagreement after 30 minutes; servers six blocks apart; servers on another chain; two servers that disagree; servers that lie about depth (an earlier height, a claimed tip, blocks that do not link, a header without proof of work, another branch below the oldest header kept); a mempool eviction and servers that differ about the mempool; a broadcast rejected then accepted, already known, unreachable with backoff, 16 at once; packages (no endpoint, the second path, refused, endpoint down) and the package parser; not-before; the watch set and its limits; the header window; retry backoff; a false spender |
+| the same file, `test_hostile_servers` | 2,040 cases: each of 68 kinds of bad answer (down, timeout, 500, larger than the cap, 12 garbage bodies including valid JSON that lies, the right body cut at 12 lengths, the right body with one byte changed 40 ways) on each of 10 groups of requests, on one server, the other, and both. In every case: nothing false is told while the fault lasts, and when the servers behave again the truth arrives exactly once. The one remembered answer is counted apart: a false block 0 leaves that server out for good (section 18) |
+| `chain_chainw` (`tests/test_chainw.c`) | The worker thread on the real clock: events through the descriptor and its readable state; **the loop-side calls return at once while every request stalls for 30 s** (each call under 250 ms, a thousand more calls under 2 s, a reset, then shutdown, all before the first request would have ended); shutdown while idle, between passes, in a request, with a full event queue, and without an interrupt hook; a full queue of 2 loses nothing; reset and generations, 20 resets in a row; every refusal; broadcasts and release through the worker; and 40 rounds of everything racing (random loop calls against servers that change, fail and stall every few milliseconds, then shutdown in the middle) |
+| `tools/chain-tsan.sh` | The same `chain_chainw` built with ThreadSanitizer; a step of the `build (OFF)` CI job |
+| `chain_watch_stub` (`tests/test_stub.c`, `tests/watch_stub.py`, `tests/watch-stub.sh`) | The worker over real HTTP: libcurl, two Esplora backends and the comparing backend against a scripted Esplora stub on 127.0.0.1 that plays two servers from scenes the test publishes. The scenarios again with exact sequences (confirm, reorganise, confirm elsewhere; double spend; lag; disagreement; lies about depth; eviction; broadcast rejected then accepted, known, unreachable; the three package outcomes; not-before checked against the request log of the stub), a 30 s stall with shutdown inside 2 s, and broken connections (dropped mid-body, dripped, two megabytes, hung up, 502) on one and both servers |
+| `chain_local_servers` (label `slow`, not in CI) | Now also: a POST as JSON, and `gz_http_curl_interrupt` ending a request and a sleep from another thread |
+| `chain_fuzz_parse` / `fuzz_chain_parse` | Every parser of a server answer (16 entry points) |
+| `chain_fuzz_watch` / `fuzz_chain_watch` | The engine driven by a script from the fuzz input, with servers that answer any request with bytes of the input. Asserted on every event: a block named is a block of the made-up chain, a transaction called confirmed is in it, a spender spends the outpoint |
+| `chain_live_watch` (opt-in, `GZ_LIVE_TESTS`, never in CI) | The worker against the two public signet servers: the tip and a known confirmed transaction. Reads only |
+
+Counts on 2026-11-15 on the build server (gcc 15.2, `-Wall -Wextra -Werror`), the same in the Release and the AddressSanitizer + UBSan builds:
+
+| Test | Test functions | Checks |
+|---|---|---|
+| `chain_watch` | 22 | 2,455 (2,040 of them the hostile-server cases) |
+| `chain_chainw` | 9 | 260 |
+| `chain_watch_stub` | 9 scenarios | exact sequences, see above |
+| `chain_live_watch` (opt-in) | 1 | 10 |
+
+`ctest -R '^chain_'` now runs 15 tests, all passing (the two opt-in live tests apart).
+
+**Sanitizers.** gcc `-Werror` Release; gcc ASan+UBSan (all chain tests, including the local-server and stub tests); clang 18 ASan+UBSan (`chain_watch`, `chain_chainw`); ThreadSanitizer (`tools/chain-tsan.sh`); valgrind memcheck (`chain_watch`, `chain_chainw` at 8 rounds, both fuzz drivers): all clean on the build server. MemorySanitizer was not run on the build server (it needs an instrumented OpenSSL); the CI job runs it.
+
+**Fuzzing.** libFuzzer with ASan and UBSan, 600 s per target on the build server: `fuzz_chain_parse` 51,363,874 runs, `fuzz_chain_watch` 352,112 runs, no finding. CI runs each for 60 s.
+
+**Mutation probes** (`python3 -I tools/mutate-chain-watch.py`, list in `ports/chain/tests/watch_mutants.txt`): 85 deliberate faults in `watch.c`, `chainw.c` and the package code of `esplora.c` and `multi.c`, each applied to a scratch copy and run against `chain_watch` and `chain_chainw`. **83 caught, 2 survived.** The first full run caught 77; tests were added for six of the eight survivors. The two that remain:
+
+- `w-deep-short`: the check that a confirmation older than the header window was followed for as many headers as asked. A block that old always has that many headers above it, so the check cannot fail; it is kept in case the window is ever configured smaller than the depth.
+- `c-stop-on-reset`: after a reset the engine stops its pass between two requests. Without it the pass runs on and its events are discarded all the same, so only time is lost, and with the interrupt hook the requests fail at once. Nothing a test can see changes.
+
+The libcurl changes (`http_curl.c`) are not in the mutation list: their test, `chain_local_servers`, takes 35 s per run.
+
+**Signet check** (`chain_live_watch`, 2026-11-15, read-only, nothing broadcast): against mempool.space and blockstream.info the worker told the tip (height 330999) after 2.4 s, the known transaction of block 329438 confirmed with 6 checked confirmations after 11.4 s, and its output 0 spent by the known spender in block 329439 with 6 checked confirmations after 20.1 s; shutdown took 1 ms.
+
+### Not tested
+
+- The program around the worker: nothing in `program/` uses it yet (section 23).
+- A real reorganisation, a real double spend, or a real package: all against the made-up chain or the stub.
+- That mempool.space accepts a package (section 19.2).
+- Shutdown while libcurl is inside a blocking name lookup (only possible with a libcurl built without asynchronous lookups).
+- The worker on anything but Linux.
+
+
+## 23. The wiring step the program owes: "P7 wiring"
+
+Named follow-up, for after PR 41 (composite node P4.1) and its stack have merged. It was left out here on purpose: PR 41 is changing `program/` and `core/node`, and this change touches neither. It is small because the worker already has the shape contract v2 section 5 asked for.
+
+**What to change, in `program/` only:**
+
+1. **Build the chain view the worker owns** (`pchain.c`, `gzp_chain_open`). Keep the mainnet refusal. Build one `gz_http` (with the proxy setting), one Esplora backend per configured server and the comparing backend over them, on the loop thread, before any thread starts. Today `pchain.c` builds a single Esplora backend; the worker also runs over one, but then nothing is compared.
+2. **Start the worker** with `gz_chainw_new`: `interrupt = gz_http_curl_interrupt_hook`, `interrupt_ctx = &http`, `tip_poll_ms` from `--chain-poll-ms`. Log `gz_http_curl_async_dns()` once.
+3. **Replace the blocking calls.** `gzp_chain_poll` and `gzp_chain_timeout` go: the loop adds `gz_chainw_fd` to its `poll()` set and, when it is readable, calls `gz_chainw_take` until it returns 0 (at most a few per turn, as for the transport). The start-up network check and first tip stop blocking the start: they arrive as `GZ_CHAINW_SOURCES` and `GZ_CHAINW_TIP`. `--check-chain` keeps its own blocking check, since it runs no loop.
+4. **Actions out.** `WATCH_TX` -> `gz_chainw_watch_tx(w, txid, depth, flags)`; `WATCH_OUTPOINT` -> `gz_chainw_watch_outpoint`; `BROADCAST` -> `gz_chainw_broadcast` with an id the program keeps. A `GZ_CHAINW_BUSY` or `GZ_CHAINW_FULL` return is the program decision: contract v2 says fatal for the incarnation.
+5. **Events in**, one core event per worker event (one change per event, as the composite node expects):
+
+| Worker event | Core event |
+|---|---|
+| `GZ_CHAINW_TIP` | `GZ_CHAIN_NEW_TIP` (height) |
+| `GZ_CHAINW_TX_CONFIRMED` | `GZ_CHAIN_TX_CONFIRMED` (txid, confirmations) |
+| `GZ_CHAINW_TX_UNCONFIRMED` | `GZ_CHAIN_TX_UNCONFIRMED` (txid) |
+| `GZ_CHAINW_OUTPOINT_SPENT` | `GZ_CHAIN_OUTPOINT_SPENT` (outpoint, spender txid, confirmations; 0 while unconfirmed or after a confirmed spender left) |
+| `GZ_CHAINW_BROADCAST`, final | `GZ_CHAIN_BROADCAST_RESULT`: accepted and already-known -> `GZ_BROADCAST_ACCEPTED`; rejected and no-package-relay -> `GZ_BROADCAST_REFUSED` with `reason`; unreachable -> `GZ_BROADCAST_UNREACHABLE`. Events that are not final go to the log only |
+| `GZ_CHAINW_SOURCES` | Not to the node: the chain state of the local API (`local-api.md` 11.2) and the log |
+| `GZ_CHAINW_REORG`, `TX_MEMPOOL`, `TX_EVICTED`, `OUTPOINT_UNSPENT` | No core event exists yet. Log them. `spec/exit.md` 3.2 asks for a block-disconnected event and `action.h` says a spender that vanishes "is not reported: no event for it is defined yet"; when the core gains them, these are their sources |
+
+6. **The funding txid.** A member sets the funding `WATCH_TX` (and the watches on the funding outputs) with `GZ_CHAINW_NOT_BEFORE`, and calls `gz_chainw_release(w, txid, delay_ms)` when the host reports the broadcast. The core has no field for this yet: either `WATCH_TX` gains a "not before" flag and a release action, or the program holds the rule (a member never passes a funding watch to the worker before the host message that reports the broadcast). The first is cleaner and belongs with P4.5 (the funding engine). The host, which broadcasts itself, sets its watches without the flag.
+7. **Restart from storage**: `gz_chainw_reset`, then the new node sets its watches again; no event of the old generation is delivered. **Shutdown**: `gz_chainw_free` after the node stops and before the `gz_chain` and `gz_http` are destroyed (contract v2 section 4).
+8. **Packages.** When the exit engine exists, a tree transaction and its fee child go out through `gz_chainw_broadcast_package`; `action.h` needs the "broadcast package" action `spec/exit.md` lists.
+
+**Tests that come with it** (contract v2): T5 `program_chain_stall`, T9 `program_broadcast_result`, T10 `program_watches`. The scripted stub (`tests/watch_stub.py`) and the scenes (`sim_dump`) built here play all three; the worker-level versions of them are already in `chain_watch_stub`.
