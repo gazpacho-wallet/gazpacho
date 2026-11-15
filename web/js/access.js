@@ -11,6 +11,7 @@
   "use strict";
   var gz = window.gz, u = gz.util, h = u.h, W = gz.words, ui = gz.ui, api = gz.api;
   var CEILING_MS = 600000;
+  var MANAGER = "A password manager may keep this passphrase. Set it to match this exact address, port included: one that matches by name alone could offer it to a page on another port of this computer.";
   var ASKED = "Gazpacho asks for your 24 words only when you restore a wallet, or right after showing them to you. It never asks for them anywhere else.";
 
   /* ---- the 24 words, shown ---- */
@@ -163,6 +164,7 @@
       reason && why[reason] ? ui.notice(reason === "check_failed" ? "bad" : "", why[reason]) : null,
       head, form,
       h("p", { class: "small mute" }, "Nobody can recover this passphrase for you. If you have lost it, your 24 words still bring the wallet back."),
+      h("p", { class: "small mute" }, MANAGER),
       h("p", { class: "small mute" }, ASKED)));
     f.input.focus();
   }
@@ -253,7 +255,7 @@
     var other = ui.button("Make six other words", function () { six = sixWords(); box.textContent = six.join(" "); });
     var swap = ui.button("Choose my own", function () { own = !own; draw(); });
     var made = h("div", {}), mine = h("div", {});
-    var form = h("form", { novalidate: true }, made, mine, msg, ui.actions(go, swap));
+    var form = h("form", { novalidate: true }, made, mine, msg, ui.actions(go, swap), h("p", { class: "small mute" }, MANAGER));
     function forget() {
       u.wipe(six);
       box.textContent = "";

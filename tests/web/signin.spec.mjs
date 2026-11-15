@@ -36,13 +36,23 @@ test('a wrong passphrase, then the delay, then the right one', async ({ page }, 
   await go.click();
   await expect(page.locator('[data-code="wrong_passphrase"]')).toHaveText('That passphrase is not right. Nothing was done.');
   await expect(field).toHaveValue(''); // emptied as soon as it was sent
-  // at once again: refused before any check, with the wait said and the button held
+  // Six wrong in a row: from the fifth on the delay doubles (4.3), so the next
+  // try, made at once, is certainly inside it, however slow this machine is.
+  for (let wrong = 1; wrong < 6;) {
+    await expect(go).toBeEnabled({ timeout: 20000 });
+    await field.fill('this is not the passphrase');
+    await go.click();
+    const note = page.locator('[data-code="wrong_passphrase"], [data-code="rate_limited"]');
+    await expect(note).toBeVisible();
+    if ((await note.getAttribute('data-code')) === 'wrong_passphrase') wrong++;
+  }
+  // at once again, even with the right passphrase: refused before any check, the wait said, the button held
   await field.fill(PASS);
   await go.click();
-  await expect(page.locator('[data-code="rate_limited"]')).toContainText(/Too many tries\. Wait \d+ seconds?/);
+  await expect(page.locator('[data-code="rate_limited"]')).toContainText(/Too many tries\. Wait \d+ (seconds?|minutes?)/);
   await expect(go).toBeDisabled();
   await expect(page.getByText(/You can try again in/)).toBeVisible();
-  await expect(go).toBeEnabled({ timeout: 8000 });
+  await expect(go).toBeEnabled({ timeout: 30000 });
   await field.fill(PASS);
   await go.click();
   await expect(page.locator('body')).toHaveAttribute('data-chrome', 'app');
@@ -131,6 +141,33 @@ test('a fresh sign-in is asked for when the program wants one, and the action th
   await expect(page.locator('#pause')).toHaveText('Pause');
   await expect(page.locator('#doing')).not.toContainText('Paused.');
   await passphraseNowhere(page);
+});
+
+test('files older than the wallet: stay locked, or start them as a restore with the passphrase', async ({ page }, info) => {
+  await start(info);
+  await fake.cmd('files-behind'); // the next unlock finds the files behind (4.7)
+  await page.goto(fake.url);
+  await page.getByLabel('Wallet passphrase').fill(PASS);
+  await page.getByRole('button', { name: 'Unlock' }).click();
+  await expect(page.getByRole('heading', { name: 'These files are older than this wallet' })).toBeVisible();
+  await expect(page.locator('main')).toContainText('Gazpacho has not started the wallet.');
+  await expect(page.locator('main')).not.toContainText(/your wallet is fine/i);
+  // stay locked: nothing changes, and the unlock screen says why it is locked
+  await page.getByRole('button', { name: 'Stay locked' }).click();
+  await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
+  await expect(page.locator('#locked-headline')).toContainText("These files are older than this wallet's last saved state.");
+  await page.waitForTimeout(1100);
+  await page.getByLabel('Wallet passphrase').fill(PASS);
+  await page.getByRole('button', { name: 'Unlock' }).click();
+  // start as a restore: the passphrase in the request, after a warning that it cannot be undone
+  await page.getByRole('button', { name: 'Start these files as a restore' }).click();
+  const dlg = page.locator('dialog');
+  await expect(dlg).toContainText('This cannot be undone.');
+  await page.waitForTimeout(1100);
+  await dlg.getByLabel('Wallet passphrase').fill(PASS);
+  await dlg.getByRole('button', { name: 'Start as a restore' }).click();
+  await expect(page.locator('#restoring')).toContainText('Your balance is not confirmed yet.');
+  await expect(page.locator('#doing')).toContainText('Restoring.');
 });
 
 test('a second tab takes the session from the first; signing out in one signs out both', async ({ page, context }, info) => {

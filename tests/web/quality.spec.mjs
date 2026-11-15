@@ -224,9 +224,11 @@ for (const scheme of ['light', 'dark']) {
     const context = await browser.newContext({ colorScheme: scheme });
     const page = await context.newPage();
     await signIn(page, fake);
+    await expect(page.locator('#money-free')).toBeVisible(); // Home is drawn
     const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     expect(bg).toBe(scheme === 'dark' ? 'rgb(23, 18, 15)' : 'rgb(251, 246, 238)');
     for (const sel of ['main h1', '#doing', '.lead, .mute', '.btn.primary', 'nav.side a', '.signet', '.money .k', 'main a']) {
+      await page.locator(sel).first().waitFor();
       expect(await contrast(page, sel), sel + ' in ' + scheme).toBeGreaterThanOrEqual(4.5);
     }
     // the switch overrides the system's choice

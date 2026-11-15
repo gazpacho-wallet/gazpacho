@@ -83,7 +83,7 @@ Not changed, but found while wiring; for the API server's owners:
 | `X-Gazpacho-User` | Sent when the person touched the page in the last two seconds, and never on a request made because an event arrived. The spec's wording is "only from handlers of input events"; this is an approximation of it that needs no flag at every call site |
 | Lists | The first page only (`limit` default). No "more" control for lobbies, activity or coins; cursors are not used yet |
 | Standby seats, invitations, automatic joining, Settings writes, payments, leaving alone | Not in Slice 1 or answered `null`; no screen |
-| Password-manager guidance (12.7) and the "sign-in phrase" idea | Not on the passphrase screens yet. The fields carry the `autocomplete` values 12.7 names |
+| Password-manager guidance (12.7) and the "sign-in phrase" idea | The passphrase screens carry one line of the guidance (match the exact address, port included) and the `autocomplete` values 12.7 names. The per-browser facts of 23.6 item T8 and the sign-in phrase (24.2 item 25, 1.0.0) are not there |
 | About | The dedication line, credits and a licence note, held by the interface (gap 14). The full dedication text and licence texts are not shown |
 | Browsers | Chromium only has been run. `GZ_BROWSERS=chromium,firefox,webkit` is wired in the Playwright config but Firefox and WebKit are not installed on the build server or in the CI job |
 | Accessibility | Checked by test: a label on every field, a name on every control, one `h1` per screen, focus rings, keyboard sign-in and dialogs, no sideways scroll at 360 px, computed contrast of the main text colours in light and dark. Not done: a run with a screen reader, and a full contrast audit of every colour pair |
