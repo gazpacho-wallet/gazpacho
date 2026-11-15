@@ -388,6 +388,77 @@ bool gz_es_parse_block(const char *s, size_t len, gz_es_block *out) {
   return true;
 }
 
+/* Copies a JSON string token's bytes (already printable ASCII) as text. */
+static void tok_text(const char *s, const gz_json_tok *t, char out[GZ_REASON_MAX]) {
+  size_t n = t->end - t->start;
+  if (n > GZ_REASON_MAX - 1) n = GZ_REASON_MAX - 1;
+  memcpy(out, s + t->start, n);
+  out[n] = '\0';
+}
+
+#define ES_PACKAGE_TOKENS 256
+
+bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH_LEN],
+                         const uint8_t child[GZ_HASH_LEN], gz_es_package *out) {
+  gz_json_tok toks[ES_PACKAGE_TOKENS];
+  size_t n = 0;
+  gz_es_package p;
+  bool have_msg = false;
+  memset(&p, 0, sizeof p);
+  if (!gz_json_parse(s, len, toks, ES_PACKAGE_TOKENS, &n) || toks[0].type != GZ_JSON_OBJECT)
+    return false;
+  size_t i = 1;
+  for (uint32_t m = 0; m < toks[0].size; m++) {
+    const gz_json_tok *key = &toks[i], *val = &toks[i + 1];
+    if (gz_json_str_eq(s, key, "package_msg")) {
+      if (val->type != GZ_JSON_STRING) return false;
+      tok_text(s, val, p.message);
+      have_msg = true;
+    } else if (gz_json_str_eq(s, key, "tx-results")) {
+      if (val->type != GZ_JSON_OBJECT) return false;
+      size_t j = i + 2;
+      for (uint32_t r = 0; r < val->size; r++) {
+        const gz_json_tok *entry = &toks[j + 1];
+        uint8_t txid[GZ_HASH_LEN];
+        bool have_txid = false, have_error = false;
+        char error[GZ_REASON_MAX];
+        error[0] = '\0';
+        if (entry->type != GZ_JSON_OBJECT) return false;
+        size_t k = j + 2;
+        for (uint32_t f = 0; f < entry->size; f++) {
+          const gz_json_tok *fk = &toks[k], *fv = &toks[k + 1];
+          if (gz_json_str_eq(s, fk, "txid")) {
+            if (fv->type != GZ_JSON_STRING || !tok_hash(s, fv, txid)) return false;
+            have_txid = true;
+          } else if (gz_json_str_eq(s, fk, "error")) {
+            if (fv->type != GZ_JSON_STRING) return false;
+            tok_text(s, fv, error);
+            have_error = true;
+          }
+          k = fv->next;
+        }
+        if (have_txid && memcmp(txid, parent, GZ_HASH_LEN) == 0) {
+          p.parent_listed = true;
+          p.parent_failed = have_error;
+          memcpy(p.parent_error, error, sizeof error);
+        }
+        if (have_txid && memcmp(txid, child, GZ_HASH_LEN) == 0) {
+          p.child_listed = true;
+          p.child_failed = have_error;
+          memcpy(p.child_error, error, sizeof error);
+        }
+        j = entry->next;
+      }
+    }
+    i = val->next;
+  }
+  if (!have_msg) return false;
+  p.accepted = strcmp(p.message, "success") == 0 && p.parent_listed && !p.parent_failed &&
+               p.child_listed && !p.child_failed;
+  *out = p;
+  return true;
+}
+
 bool gz_es_reason_is_already_known(const char *reason) {
   /* The phrases Bitcoin Core uses when it refuses a transaction it has:
    * RPC error -27, and the mempool's reject reasons. Compared in lower case. */
@@ -456,8 +527,9 @@ static void hex_plain(const uint8_t *in, size_t len, char *out) {
  * 5xx (the caller interprets the status), GZ_CHAIN_TOO_LARGE, or
  * GZ_CHAIN_UNREACHABLE. The body is in es->buf[0..*len).
  */
-static gz_chain_result es_request(esplora *es, bool post, const char *path, const uint8_t *body,
-                                  size_t body_len, size_t cap, long *status, size_t *len) {
+static gz_chain_result es_request_as(esplora *es, bool post, const char *content_type,
+                                     const char *path, const uint8_t *body, size_t body_len,
+                                     size_t cap, long *status, size_t *len) {
   char url[GZ_ESPLORA_URL_MAX + ES_PATH_MAX + 1];
   int w = snprintf(url, sizeof url, "%s%s", es->base, path);
   if (w < 0 || (size_t)w >= sizeof url) return GZ_CHAIN_INVALID_ARG;
@@ -488,6 +560,7 @@ static gz_chain_result es_request(esplora *es, bool post, const char *path, cons
     req.post = post;
     req.body = body;
     req.body_len = body_len;
+    req.content_type = content_type;
     req.timeout_ms = es->cfg.timeout_ms;
     gz_http_result hr = es->http.request(es->http.ctx, &req, es->buf, cap, &resp);
     if (hr == GZ_HTTP_OK) {
@@ -508,6 +581,11 @@ static gz_chain_result es_request(esplora *es, bool post, const char *path, cons
     if (post && hr != GZ_HTTP_E_CONNECT) break;
   }
   return GZ_CHAIN_UNREACHABLE;
+}
+
+static gz_chain_result es_request(esplora *es, bool post, const char *path, const uint8_t *body,
+                                  size_t body_len, size_t cap, long *status, size_t *len) {
+  return es_request_as(es, post, NULL, path, body, body_len, cap, status, len);
 }
 
 static gz_chain_result es_get(esplora *es, const char *path, size_t cap, long *status,
@@ -786,6 +864,104 @@ static gz_chain_result es_broadcast(void *ctx, const uint8_t *raw, size_t raw_le
   return out->result;
 }
 
+/* The server's words, made printable and cut to fit. */
+static void reason_from_body(const esplora *es, size_t len, char out[GZ_REASON_MAX]) {
+  size_t n = len < GZ_REASON_MAX - 1 ? len : GZ_REASON_MAX - 1;
+  for (size_t i = 0; i < n; i++) {
+    uint8_t ch = es->buf[i];
+    out[i] = (ch >= 0x20 && ch <= 0x7e) ? (char)ch : '?';
+  }
+  out[n] = '\0';
+}
+
+/* Where servers keep their package endpoint: Blockstream's Esplora documents
+ * the first, mempool.space serves the second. Tried in this order; a 404 or
+ * 405 means "no such endpoint here". */
+static const char *const es_package_paths[] = {"/txs/package", "/v1/txs/package"};
+#define ES_PACKAGE_PATHS (sizeof es_package_paths / sizeof es_package_paths[0])
+#define ES_CAP_PACKAGE 16384
+
+static void package_set(gz_package_result *out, gz_chain_result r) {
+  out->result = out->parent.result = out->child.result = r;
+}
+
+static gz_chain_result es_broadcast_package(void *ctx, const uint8_t *parent, size_t parent_len,
+                                            const uint8_t *child, size_t child_len,
+                                            gz_package_result *out) {
+  esplora *es = ctx;
+  uint8_t ptx[GZ_HASH_LEN], ctx_id[GZ_HASH_LEN];
+  long status = 0;
+  size_t len = 0;
+  memset(out, 0, sizeof *out);
+  if (!gz_txid_from_raw(parent, parent_len, ptx) || !gz_txid_from_raw(child, child_len, ctx_id)) {
+    package_set(out, GZ_CHAIN_INVALID_ARG);
+    return out->result;
+  }
+  /* ["<parent hex>","<child hex>"], sized by our own transactions */
+  size_t body_len = 2 * parent_len + 2 * child_len + 7;
+  char *body = malloc(body_len + 1);
+  if (body == NULL) {
+    package_set(out, GZ_CHAIN_NO_MEMORY);
+    return out->result;
+  }
+  size_t p = 0;
+  body[p++] = '[';
+  body[p++] = '"';
+  hex_plain(parent, parent_len, body + p);
+  p += 2 * parent_len;
+  body[p++] = '"';
+  body[p++] = ',';
+  body[p++] = '"';
+  hex_plain(child, child_len, body + p);
+  p += 2 * child_len;
+  body[p++] = '"';
+  body[p++] = ']';
+  body[p] = '\0';
+
+  gz_chain_result r = GZ_CHAIN_UNSUPPORTED;
+  for (size_t i = 0; i < ES_PACKAGE_PATHS; i++) {
+    r = es_request_as(es, true, "application/json", es_package_paths[i], (const uint8_t *)body,
+                      body_len, ES_CAP_PACKAGE, &status, &len);
+    if (r != GZ_CHAIN_OK) break;
+    if (status != 404 && status != 405) break;
+    r = GZ_CHAIN_UNSUPPORTED; /* no such endpoint at this path */
+  }
+  free(body);
+  out->server_status = status;
+  out->parent.server_status = out->child.server_status = status;
+  if (r != GZ_CHAIN_OK) {
+    package_set(out, r);
+    return r;
+  }
+  if (status == 200) {
+    gz_es_package pk;
+    if (!gz_es_parse_package(body_of(es), len, ptx, ctx_id, &pk)) {
+      package_set(out, GZ_CHAIN_MALFORMED);
+      return out->result;
+    }
+    memcpy(out->reason, pk.message, sizeof out->reason);
+    /* a transaction is in when the server lists it without an error */
+    bool parent_in = pk.parent_listed && !pk.parent_failed;
+    bool child_in = pk.child_listed && !pk.child_failed;
+    out->parent.result = parent_in ? GZ_CHAIN_OK : GZ_CHAIN_REJECTED;
+    out->child.result = child_in ? GZ_CHAIN_OK : GZ_CHAIN_REJECTED;
+    if (parent_in) memcpy(out->parent.txid, ptx, GZ_HASH_LEN);
+    if (child_in) memcpy(out->child.txid, ctx_id, GZ_HASH_LEN);
+    memcpy(out->parent.reason, pk.parent_error, sizeof out->parent.reason);
+    memcpy(out->child.reason, pk.child_error, sizeof out->child.reason);
+    out->result = pk.accepted ? GZ_CHAIN_OK : GZ_CHAIN_REJECTED;
+    if (pk.accepted) out->reason[0] = '\0';
+    return out->result;
+  }
+  if (status >= 400 && status <= 499) {
+    package_set(out, GZ_CHAIN_REJECTED);
+    reason_from_body(es, len, out->reason);
+    return out->result;
+  }
+  package_set(out, GZ_CHAIN_MALFORMED);
+  return out->result;
+}
+
 static gz_chain_result es_fee_estimates(void *ctx, gz_fee_estimates *out) {
   esplora *es = ctx;
   long status;
@@ -853,6 +1029,7 @@ static const gz_chain_ops es_ops = {
     .merkle_proof = es_merkle_proof,
     .broadcast = es_broadcast,
     .fee_estimates = es_fee_estimates,
+    .broadcast_package = es_broadcast_package,
     .describe = es_describe,
     .destroy = es_destroy,
 };

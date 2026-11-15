@@ -64,6 +64,31 @@ typedef struct gz_es_block {
  * thirteen fields. tx_count must be 1..GZ_MAX_BLOCK_TXS. */
 bool gz_es_parse_block(const char *s, size_t len, gz_es_block *out);
 
+/* What a package endpoint said about a parent and its child. */
+typedef struct gz_es_package {
+  /* The package message was "success" and both transactions are listed
+   * without an error. */
+  bool accepted;
+  /* Each transaction: listed in the results, and listed with an error. */
+  bool parent_listed, parent_failed;
+  bool child_listed, child_failed;
+  /* Zero-terminated, printable ASCII, cut at GZ_REASON_MAX - 1. */
+  char message[GZ_REASON_MAX];
+  char parent_error[GZ_REASON_MAX];
+  char child_error[GZ_REASON_MAX];
+} gz_es_package;
+
+/* The answer of POST /txs/package, which is Bitcoin Core's submitpackage
+ * result: {"package_msg":"..","tx-results":{"<wtxid>":{"txid":"..",
+ * "error":".."?, ...}, ...}, ...}. Unlike the other parsers this one allows
+ * fields it does not know, because the result has grown with each Core
+ * release; it requires an object with a string "package_msg", and, if
+ * "tx-results" is present, an object of objects whose "txid" (if present) is
+ * a hash and whose "error" (if present) is a string. `parent` and `child`
+ * are the txids sent. */
+bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH_LEN],
+                         const uint8_t child[GZ_HASH_LEN], gz_es_package *out);
+
 /* True if a server's refusal text says it already has the transaction
  * (in a block, in its mempool, or its outputs already exist). */
 bool gz_es_reason_is_already_known(const char *reason);

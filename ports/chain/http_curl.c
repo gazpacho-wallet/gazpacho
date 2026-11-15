@@ -1,12 +1,20 @@
 /*
  * The libcurl implementation of gz_http. HTTPS with certificate checking,
  * no redirects, a hard time limit and a hard size limit on every request.
- * POSIX only (clock_gettime, nanosleep).
+ * POSIX only (clock_gettime, pthreads).
+ *
+ * A request runs on libcurl's multi interface with one transfer, so that
+ * another thread can end it at once (gz_http_curl_interrupt): the wait for
+ * the socket is curl_multi_poll, which curl_multi_wakeup interrupts, and the
+ * wait between retries is on a condition variable.
  */
 #define _POSIX_C_SOURCE 200809L
 
 #include "gazpacho/chain_http.h"
 
+#include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -15,9 +23,18 @@
 
 typedef struct curl_ctx {
   CURL *easy;
+  CURLM *multi;
   char *ca_file; /* NULL: the system's certificate authorities */
   char *proxy;   /* NULL: no proxy; else "socks5h://HOST:PORT" */
+  /* set and cleared by gz_http_curl_interrupt, from any thread */
+  atomic_bool interrupted;
+  pthread_mutex_t mu; /* guards the wait in curl_sleep_ms */
+  pthread_cond_t cv;  /* on the monotonic clock */
 } curl_ctx;
+
+/* How long one wait for the transfer's socket may last before the interrupt
+ * flag is looked at again; curl_multi_wakeup normally ends it sooner. */
+#define POLL_SLICE_MS 200
 
 typedef struct sink {
   uint8_t *buf;
@@ -187,6 +204,7 @@ static gz_http_result curl_request(void *ctx, const gz_http_request *req, uint8_
     return GZ_HTTP_E_FAILED;
   resp->status = 0;
   resp->len = 0;
+  if (atomic_load(&c->interrupted)) return GZ_HTTP_E_FAILED;
 
   /* https only; plain http for this machine alone; never user information */
   bool https = false;
@@ -232,7 +250,9 @@ static gz_http_result curl_request(void *ctx, const gz_http_request *req, uint8_
    * enforces the cap regardless of what the server states */
   ok = ok && curl_easy_setopt(e, CURLOPT_MAXFILESIZE_LARGE, (curl_off_t)cap) == CURLE_OK;
   if (ok && req->post) {
-    headers = curl_slist_append(headers, "Content-Type: text/plain");
+    bool json = req->content_type != NULL && strcmp(req->content_type, "application/json") == 0;
+    headers = curl_slist_append(headers, json ? "Content-Type: application/json"
+                                              : "Content-Type: text/plain");
     ok = headers != NULL;
     ok = ok && curl_easy_setopt(e, CURLOPT_HTTPHEADER, headers) == CURLE_OK;
     ok = ok && curl_easy_setopt(e, CURLOPT_POST, 1L) == CURLE_OK;
@@ -248,10 +268,38 @@ static gz_http_result curl_request(void *ctx, const gz_http_request *req, uint8_
     return GZ_HTTP_E_FAILED;
   }
 
-  CURLcode rc = curl_easy_perform(e);
+  /* One transfer on the multi handle, driven here, so that an interrupt from
+   * another thread ends it between two waits. */
+  CURLcode rc = CURLE_FAILED_INIT;
+  bool stopped = false;
+  if (curl_multi_add_handle(c->multi, e) == CURLM_OK) {
+    int running = 1;
+    CURLMcode mc = CURLM_OK;
+    while (running != 0) {
+      mc = curl_multi_perform(c->multi, &running);
+      if (mc != CURLM_OK) break;
+      if (atomic_load(&c->interrupted)) {
+        stopped = true;
+        break;
+      }
+      if (running != 0) {
+        mc = curl_multi_poll(c->multi, NULL, 0, POLL_SLICE_MS, NULL);
+        if (mc != CURLM_OK) break;
+      }
+    }
+    if (!stopped && mc == CURLM_OK) {
+      int left = 0;
+      CURLMsg *m;
+      while ((m = curl_multi_info_read(c->multi, &left)) != NULL) {
+        if (m->msg == CURLMSG_DONE && m->easy_handle == e) rc = m->data.result;
+      }
+    }
+    (void)curl_multi_remove_handle(c->multi, e);
+  }
   curl_slist_free_all(headers);
   (void)curl_easy_setopt(e, CURLOPT_CURLU, NULL); /* not kept past this request */
   curl_url_cleanup(parsed);
+  if (stopped) return GZ_HTTP_E_FAILED;
   if (s.overflow || rc == CURLE_FILESIZE_EXCEEDED) return GZ_HTTP_E_TOO_LARGE;
   switch (rc) {
     case CURLE_OK: break;
@@ -279,14 +327,41 @@ static uint64_t curl_now_ms(void *ctx) {
   return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
+/* Waits `ms`, or until gz_http_curl_interrupt(.., true). */
 static void curl_sleep_ms(void *ctx, uint32_t ms) {
-  struct timespec ts;
-  (void)ctx;
-  ts.tv_sec = (time_t)(ms / 1000u);
-  ts.tv_nsec = (long)(ms % 1000u) * 1000000L;
-  while (nanosleep(&ts, &ts) != 0) {
-    /* interrupted: sleep the remainder */
+  curl_ctx *c = ctx;
+  struct timespec until;
+  if (c == NULL || clock_gettime(CLOCK_MONOTONIC, &until) != 0) return;
+  until.tv_sec += (time_t)(ms / 1000u);
+  until.tv_nsec += (long)(ms % 1000u) * 1000000L;
+  if (until.tv_nsec >= 1000000000L) {
+    until.tv_sec += 1;
+    until.tv_nsec -= 1000000000L;
   }
+  pthread_mutex_lock(&c->mu);
+  while (!atomic_load(&c->interrupted)) {
+    if (pthread_cond_timedwait(&c->cv, &c->mu, &until) == ETIMEDOUT) break;
+  }
+  pthread_mutex_unlock(&c->mu);
+}
+
+void gz_http_curl_interrupt(gz_http *http, bool on) {
+  if (http == NULL || http->ctx == NULL || http->request != curl_request) return;
+  curl_ctx *c = http->ctx;
+  /* the flag changes under the mutex so that a sleeper cannot miss it
+   * between its test and its wait */
+  pthread_mutex_lock(&c->mu);
+  atomic_store(&c->interrupted, on);
+  if (on) pthread_cond_broadcast(&c->cv);
+  pthread_mutex_unlock(&c->mu);
+  if (on) (void)curl_multi_wakeup(c->multi);
+}
+
+void gz_http_curl_interrupt_hook(void *http, bool on) { gz_http_curl_interrupt(http, on); }
+
+bool gz_http_curl_async_dns(void) {
+  const curl_version_info_data *v = curl_version_info(CURLVERSION_NOW);
+  return v != NULL && (v->features & CURL_VERSION_ASYNCHDNS) != 0;
 }
 
 bool gz_http_curl_create(gz_http *out, const gz_http_curl_config *cfg) {
@@ -312,10 +387,29 @@ bool gz_http_curl_create(gz_http *out, const gz_http_curl_config *cfg) {
     if (c->proxy != NULL) memcpy(c->proxy, cfg->proxy, n + 1);
   }
   c->easy = curl_easy_init();
+  c->multi = curl_multi_init();
+  atomic_init(&c->interrupted, false);
+  pthread_condattr_t attr;
+  bool sync_ok = pthread_mutex_init(&c->mu, NULL) == 0;
+  if (sync_ok) {
+    sync_ok = pthread_condattr_init(&attr) == 0;
+    if (sync_ok) {
+      sync_ok = pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) == 0 &&
+                pthread_cond_init(&c->cv, &attr) == 0;
+      pthread_condattr_destroy(&attr);
+    }
+    if (!sync_ok) pthread_mutex_destroy(&c->mu);
+  }
   bool want_proxy = cfg != NULL && cfg->proxy != NULL && cfg->proxy[0] != '\0';
-  if (c->easy == NULL || (cfg != NULL && cfg->ca_file != NULL && c->ca_file == NULL) ||
+  if (c->easy == NULL || c->multi == NULL || !sync_ok ||
+      (cfg != NULL && cfg->ca_file != NULL && c->ca_file == NULL) ||
       (want_proxy && c->proxy == NULL)) {
+    if (sync_ok) {
+      pthread_cond_destroy(&c->cv);
+      pthread_mutex_destroy(&c->mu);
+    }
     if (c->easy != NULL) curl_easy_cleanup(c->easy);
+    if (c->multi != NULL) curl_multi_cleanup(c->multi);
     free(c->ca_file);
     free(c->proxy);
     free(c);
@@ -333,6 +427,9 @@ void gz_http_curl_destroy(gz_http *http) {
   if (http == NULL || http->ctx == NULL) return;
   curl_ctx *c = http->ctx;
   curl_easy_cleanup(c->easy);
+  curl_multi_cleanup(c->multi);
+  pthread_cond_destroy(&c->cv);
+  pthread_mutex_destroy(&c->mu);
   free(c->ca_file);
   free(c->proxy);
   free(c);
