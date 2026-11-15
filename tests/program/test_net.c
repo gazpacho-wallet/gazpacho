@@ -94,7 +94,7 @@ int main(void)
 
     /* SENDs: dropped with no connection, and with a local key not ours. */
     CHECK(gzp_net_send(&n, &l, 16, scope, NULL, 0) == 1);
-    /* Kind 0xffff, the lobby's bridge until P4.2 (action.h): never on the
+    /* Kind 0xffff, reserved (action.h; the lobby's bridge until P4.2): never on the
      * wire. The adapter refuses it whatever the link, and the executor makes
      * that fatal. This fails if the adapter is ever asked to send it and does. */
     CHECK(gzp_net_send(&n, &l, GZ_SEND_KIND_RESERVED, scope, NULL, 0) == -2);

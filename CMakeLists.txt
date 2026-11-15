@@ -338,11 +338,19 @@ endfunction()
 gz_lobby_test(test_lobby_vectors tests/lobby/test_lobby_vectors.c)
 gz_lobby_test(test_lobby         tests/lobby/test_lobby.c)
 gz_lobby_test(test_lobby_sim     tests/lobby/test_lobby_sim.c)
+gz_lobby_test(test_lobby_v2      tests/lobby/test_lobby_v2.c)
+gz_lobby_test(test_lobby_hostile tests/lobby/test_lobby_hostile.c)
 gz_lobby_test(lobby_model_driver tests/lobby/model_driver.c)
 add_test(NAME lobby_vectors COMMAND test_lobby_vectors)
 add_test(NAME lobby COMMAND test_lobby)
 # Real stack frames, so a record byte left unwritten keeps the poison the test puts there.
 set_tests_properties(lobby PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=0")
+# Contract v2: the largest record of every type, the signing gate, the
+# accepted record, a port that will not sign, the node part's helpers.
+add_test(NAME lobby_v2 COMMAND test_lobby_v2)
+# The engine rule under a hostile peer: 200,000 inputs to a host and as many
+# to a member, seed 1; every call GZ_OK, every restore and resume too.
+add_test(NAME lobby_hostile COMMAND test_lobby_hostile 200000 1)
 # One host and 3 to 8 members: mixed faults, crashes only, network only, none.
 # 25 seeds per profile here (about two minutes under the sanitizers); the
 # reports quote runs of 100 seeds per profile, made by hand.
@@ -396,6 +404,8 @@ add_test(NAME lobby_isolation
 if(GZ_VALGRIND AND NOT GZ_SANITIZE)
   add_test(NAME valgrind_lobby_vectors COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby_vectors>)
   add_test(NAME valgrind_lobby COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby>)
+  add_test(NAME valgrind_lobby_v2 COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby_v2>)
+  add_test(NAME valgrind_lobby_hostile COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby_hostile> 3000 2)
   if(NOT GZ_LIBFUZZER)
     add_test(NAME valgrind_lobby_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_lobby> 3000 2)
     add_test(NAME valgrind_lobby_fuzz_seq COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_lobby_seq> 300 2)

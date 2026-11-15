@@ -68,7 +68,12 @@ typedef struct {
      * Host: NULL and 0. */
     const gz_terms_limits_t *limits;
     uint16_t min_members;
-    const uint8_t *start_bytes; size_t start_len; /* member: the signed start */
+    const uint8_t *start_bytes; size_t start_len; /* member: the signed start, an envelope; none: NULL, 0 */
+    /* Host: the Unix ms at which the signing budget ends (terms.md 3: the
+     * lobby's first start plus the budget). From the hand-off on the signing
+     * engine alone owns the budget (composite-node.md 9.4). Member: 0. */
+    uint64_t budget_end_ms;
+    uint32_t attempt;                          /* 1 until understudies (P4.7) */
 } gz_lobby_handoff_t;
 
 /* The signing engine's side. Each function appends its own actions after the
