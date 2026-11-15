@@ -347,9 +347,11 @@ Host:
 
 | Type | Field | Size | Required |
 |---|---|---|---|
-| 1 | `reason` | `u16` | No. 1 conditions no longer met, 2 user's choice |
+| 1 | `reason` | `u16` | No. 1 conditions no longer met, 2 user's choice, 3 locked: the member's app may not sign now (its signing gate is closed, `docs/notes/composite-node.md` 12.2) |
 
 Valid while the seat exists and no round is under way for it. Host: seat becomes Joined; answer `lobby_status`. Duplicate: no change.
+
+A member whose signing gate is closed is not Ready: it sends `unready` with reason 3 at once when the gate closes (unless a check it answered is still in flight, which runs to its end), again when a `ready_check` arrives, and after a restart. So a host never runs a check that locked seats would make fail. Neither that `unready` nor the `ready` that follows it counts against the limit on state changes, once per check window; a further pair in the same window counts as usual. A seat past the limit is ignored when it readies, never removed for it.
 
 During a ready check, an `unready` withdraws the seat from that check. Once the member has received `round_propose`, `unready` is ignored; it uses `round_abort` instead.
 

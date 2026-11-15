@@ -63,6 +63,11 @@ int gz_route_slot_by_scope(const gz_node_t *c, const uint8_t scope[32])
 int gz_route_slot_link(const gz_node_t *c, int slot, gz_link_t *link)
 {
     const slot_t *s = &c->slots[slot];
+    if (s->kind == SLOT_KIND_LOBBY) { /* derived once, when the slot's lobby was made */
+        if (s->host) return 0;
+        *link = s->link;
+        return 1;
+    }
     if (s->host || !c->cfg.keys.pub) return 0;
     if (!c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index, link->local.key)) return 0;
     link->remote = s->host_key;
@@ -129,6 +134,9 @@ static rt_t route_lobby(const gz_node_t *c, int conn, const gz_link_t *link, uin
         int bound = conn >= 0 ? c->np.conns[conn].slot : -1;
         if (bound >= 0) return s == bound ? mk(RT_SLOT, s, -1, 0) : mk(RT_REFUSE, -1, -1, DROP_REBIND);
         if (s >= 0) return mk(RT_BIND, s, -1, 0);
+        /* An ended lobby (a tombstone or the index): a late hello gets its
+         * final state and the saved cancel; anything else is dropped. */
+        if (kind == GZ_MSG_KIND_HELLO && (s = gz_ls_ended_find(c, scope)) >= 0) return mk(RT_ENDED_HELLO, s, -1, 0);
         return kind == GZ_MSG_KIND_HELLO ? mk(RT_UNKNOWN_HELLO, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_NO_SLOT);
     }
     if (zero) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);

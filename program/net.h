@@ -101,6 +101,7 @@ typedef struct {
     unsigned dropped_closing;     /* messages read before the close and dropped after it */
     uint64_t conn, peer_id;
     uint8_t key[33];
+    uint8_t local[33];            /* our key on it: the listener's, or its CONNECT's */
     size_t queued_bytes;
 } gzp_conn_t;
 
@@ -110,6 +111,7 @@ typedef struct {
     char host[80];
     uint16_t port;
     uint32_t epoch, index;
+    uint8_t local[33], sec[32];   /* our key for this CONNECT: (epoch, index) of gzp_net_key */
     uint64_t conn, next_connect_ms;
     int backoff_ms;
 } gzp_target_t;
@@ -127,6 +129,8 @@ typedef struct {
     gz_peers_config_t cfg;
     gz_peers_t *peers;
     uint8_t pub[33];
+    const secp256k1_context *secp;
+    int single_key;                 /* test builds with test engines: every index is the transport key */
     gzp_net_events_t ev;
     /* host */
     int want_listen, listening;
@@ -181,6 +185,20 @@ int gzp_net_connect(gzp_net_t *n, const uint8_t host_key[33], const uint8_t *add
 void gzp_net_disconnect(gzp_net_t *n, const gz_link_t *link, unsigned why);
 void gzp_net_set_seated(gzp_net_t *n, const uint8_t key[33], int seated);
 int gzp_net_connected(const gzp_net_t *n, const uint8_t key[33]);
+
+/* KEYS, until P8 derives them from the seed (contract-v2.md section 13): the
+ * stand-in. Index 0 of any epoch is the transport key of the key file; every
+ * other (epoch, index) is a key derived from it by a hash, so that each
+ * lobby has its own contribution key (its BOLT 8 key: one link per lobby)
+ * and its own factory key. `sec` is the caller's to wipe; either output may
+ * be NULL. 1, or 0 if there is no such key. With `single_key` (a test build
+ * run with test engines, whose CONNECTs and test pings name the transport
+ * key under any index, as before P4.2) every index is the transport key.
+ * The signatures are BIP 340, for the lobbies (node.h, gz_node_crypto_t). */
+int gzp_net_key(const gzp_net_t *n, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33]);
+int gzp_net_sign(const gzp_net_t *n, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64]);
+int gzp_net_verify(const gzp_net_t *n, const uint8_t pub[33], const uint8_t msg[32], const uint8_t sig[64]);
+int gzp_net_point_ok(const gzp_net_t *n, const uint8_t pub[33]);
 
 /* The poll loop. */
 size_t gzp_net_max_fds(const gzp_net_t *n);

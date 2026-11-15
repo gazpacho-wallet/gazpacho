@@ -837,8 +837,10 @@ static void member_script(const uint8_t *d, size_t n)
             else {
                 /* closing: a Ready seat with no answered check in flight leaves the count, saved first */
                 int was_ready = M.ready && M.joined && !M.ended;
-                int in_flight = !M.ended && M.ready && M.has_answered && M.round_state < GZ_LOBBY_FUNDING &&
-                                !(M.start_len && M.role == 2);
+                /* ... and so does a seat whose creation is signed (Funding or
+                 * Active): there is nothing left to withdraw. */
+                int in_flight = (!M.ended && M.ready && M.has_answered && !(M.start_len && M.role == 2)) ||
+                                M.round_state >= GZ_LOBBY_FUNDING;
                 size_t q;
                 int unready3 = 0;
                 st = gz_lobby_member_gate_closed(&M, &L);

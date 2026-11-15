@@ -724,6 +724,26 @@ One host process with two lobbies at once, three members, one of them in both lo
 9. A member that missed the `cancel` (dropped by `--test-drop-kind 34`) reconnects to the host's tombstone and ends Cancelled with the reason.
 10. A storage failure and a reconnect: the member's `hello` gets the full state; nothing is saved twice.
 
+### P4.2 as built
+
+What the code of P4.2 does where this note left room, and where it differs. Each line is a decision to confirm or overrule.
+
+- **Commands.** `node.h` lists them: 0x0101 to 0x0108 for the lobby (open, join, ready, unready, leave, set values, remove, cancel), each naming its lobby by scope; 0x0401 and 0x0402 unlock and lock signing. "Ready" given with the passphrase carries a flag, which opens that lobby's gate (AT_JOIN).
+- **Signatures.** The lobbies sign and verify through `gz_node_crypto_t` in the node's configuration, which the program implements over its key port; the core still calls nothing outside itself. Its `forget(scope)` is the key port's `forget` of 12.2.
+- **The release build hosts and joins nothing until P4.3.** `LOBBY_OPEN` and `LOBBY_JOIN` are answered 503 `signing_unavailable` unless the node is built with the test engines (where the signing stand-in is behind the hand-off). A release node still loads and runs lobbies found in storage; it cannot open one.
+- **The signing stand-in** (test builds, `core/node/lobbyslot.c`): `begin`, `cancel` and `member_left` of `lobby_handoff.h`; it saves a record when a round begins and one when it ends (area 0x7e5a), reports the outcome set by `--test-sign-outcome` after `--test-sign-delay-ms`, ignores a finished check (rule 3), and at a start fails every attempt it finds unfinished before the lobbies resume (H13), on both roles.
+- **`cancel` is called right after the lobby's save**, before the cancel is listed for any seat, so the round's end record joins the batch of `lobby_ended` by adjacency; `slot_closed` is put into that same SAVE by the node part.
+- **Closing.** A slot whose lobby ended after a round was handed over (a start sent, or a check answered) is Closing: the member's CONNECT stands and the host keeps its members' seats. Its end in this step is the lobby's signing budget on the monotonic clock, or the end of the run: the chain's conditions (Live, Dead, the deadlines plus the grace) come with the funding engine in P4.5, as the table of steps says. At a start no slot is Closing, because nothing yet holds a round across a start. A slot without a round is Free at once. At 64 Closing slots the oldest ends early.
+- **The index of ended lobbies** keeps the newest 256, each whole (scope, final state, reason, the signed `cancel`); an older one is answered as unknown. Tombstones are entries of this index.
+- **Connections without a seat** (T-P42-2, T-P42-7): the lobby's own cap and ten-minute rule are gone; the node part's one rule covers a connection bound to a lobby too, and now also closes a connection ten minutes after it came up or lost its seat, whatever it sends, and does not count a connection as silent in its first two seconds. One table size, `GZ_NODE_MAX_CONNS`, for the node part, the lobby, the program and the transport (static assertions).
+- **Drop notices** (T-P42-8): the first 64 of a reason, then one each time the count reaches a power of two.
+- **T-P42-5 is not done as written.** No lobby message is larger than one envelope (a `terms_offer` is about 5 KB), so the 200,000-byte split stays the test engine's kind 28.
+- **The gate.** A member behind a closed gate that is told "not chosen" sends the locked `unready` at once. The host's free locked-then-ready pair is one per check window; a seat past the limit of changes is ignored when it readies and never removed, so a member restarted twenty times in ten minutes keeps its seat and is Ready again once the window has passed. After a Retry to Open the person readies again (the proposal of 12.2).
+- **A member's end without a cancel** (removed, its join refused as invalid, the terms refused before a seat) is saved in `lobby_ended`.
+- **A member whose ready never became durable** (a crash, a failed save) readies when the host's terms come again after its restart, and a member whose host lost its seat sends its join again.
+- **Stand-in keys.** Until P8 the program derives each (epoch, index) from the transport key by a hash; with test engines (`--test-engines` above 0) every index is the transport key, as before.
+- **`program_lobby`** runs cases 1 to 3, 5 to 7, 9 and 10 of the list above. Case 4 (a rejoin with the same contribution key, B1) cannot be made through the composite, which never uses a key pair twice; the engine's own tests keep it. Case 8 (a raw client; seventeen silent connections) is at the node level (`tests/node/test_node_conns.c`, `tests/lobby`). The twenty restarts of case 7 are at the node level (`tests/node/test_node_lobby.c`).
+
 ### P4.3, `program_signing`
 
 A host and three members, two lobbies at once on the host; funding from a test wallet port with fixed fake prevouts; no chain.

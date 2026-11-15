@@ -126,13 +126,18 @@ gz_add_test(runner    tests/core/test_runner.c    gazpacho_core)
 # sizing, poisoning, and a hostile peer that never causes a node error. The
 # tests see the composite's internals (core/node/internal.h), so they are
 # built with the test library's GZ_TEST_KINDS.
-foreach(name node node_route node_conns node_timers node_handoff node_sizing node_hostile)
+foreach(name node node_route node_conns node_timers node_handoff node_sizing node_hostile node_lobby)
   gz_add_test(${name} tests/node/test_${name}.c gazpacho_node_test)
   target_include_directories(test_${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
   target_compile_definitions(test_${name} PRIVATE GZ_TEST_KINDS)
 endforeach()
 # The release node: no test engine, and kind 32767 is just an unknown kind.
 gz_add_test(node_release tests/node/test_node_release.c gazpacho_node)
+# The lobby in the composite (P4.2): whole nodes, a host and its members with
+# real lobbies in their slots and the signing stand-in, wired in one process,
+# with real signatures (secp256k1 through the crypto port).
+target_link_libraries(test_node_lobby PRIVATE secp256k1)
+target_include_directories(test_node_lobby PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include)
 target_include_directories(test_node_release PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
 # Hostile peer events in a fuzz target: never an error from the node.
 if(GZ_LIBFUZZER)
@@ -182,7 +187,8 @@ add_test(NAME core_isolation
 # core/node, release and test builds, each checked with the core in one
 # archive (its calls into the core are calls inside the library).
 string(JOIN " " GZ_NODE_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/node/include
-       -I${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/node -I${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include)
 add_test(NAME node_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
           $<TARGET_FILE:gazpacho_node_isolation_release> --sources ${CMAKE_C_COMPILER} ${GZ_NODE_SCAN_FLAGS}

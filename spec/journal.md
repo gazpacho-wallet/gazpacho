@@ -276,8 +276,14 @@ Record types are `u32`. The high 16 bits name an area, the low 16 bits a kind. E
 | `0x00040006` | `restored` | Clock, the backup's newest incarnation, whether a guard file was found and whether it was ahead | Anything else after a restore (section 8.2) |
 | `0x00040008` | — | Not used (draft 1's `fresh_start`, withdrawn) | — |
 | `0x0004000a` | `guard` | The guard contents of section 8.3, without `check` | Same batch as each `key_index` and `round_started`; the guard file is replaced before the batch is confirmed |
+| `0x0004000c` | `slot_opened` | One lobby this wallet takes part in (`docs/notes/composite-node.md` 2.4): its serial, the lobby's scope, the role, the key epoch and the first index of its key pair; for a member the host's key and address, its conditions and whether it joins by itself; for a host whether the lobby is listed and its standby seats | The slot's first batch, with `key_index` and `guard` (and, on the host, `lobby_opened`). A member's connection to the host waits for it |
+| `0x0004000e` | `slot_closed` | Serial, final state (0 never joined, 4 Funding, 5 Active, 6 Cancelled, 7 Failed), reason | Nothing. In the batch that ends the lobby, with `lobby_ended` |
+
+Fields of the Node records (TLV streams, settled with the code in P4.2; open point 3 for this area): `key_epoch` 2 epoch (`u32`); `key_index` 2 highest index (`u32`); `restored` 2 clock (`u64`), 4 the newest incarnation of the restored journal (`u64`); `slot_opened` 2 serial (`u32`), 4 scope (32), 6 role (`u8`: 1 host, 0 member), 8 host key (33) and 10 host address (member), 12 key epoch (`u32`), 14 key index (`u32`, the pair's first: the contribution key; the factory key is the next), 16 listed (`u8`) and 18 standbys (`u16`) (host), 20 conditions and 22 auto-join (`u8`) (member); `slot_closed` 2 serial, 4 final state (`u8`), 6 reason (`u16`). `guard` is not a TLV stream: it is the guard file's contents (section 8.3). The first `key_index` of a journal is saved with `key_epoch` 0 (section 8.2 step 1) in the same batch. After a restore the node allocates indexes above the highest the guard file lists for the epoch (the union of section 8.3).
 
 **Lobby (0x0001)**
+
+Every Lobby record is a TLV stream whose **field 2 is the lobby's scope** (32 bytes): several lobbies run at once per wallet, and a record belongs to its lobby by that field, never by its position (`docs/notes/composite-node.md` 7.3). The other fields are even types from 4, per record; `docs/notes/lobby.md` section 1 lists them (open point 3, settled for this area in P4.2). At load a record is refused if it has an even field its type does not have, or is larger than its type's largest size (one table, `lobby.h`), and a record whose scope has no open slot is passed over. A saved message is the native envelope.
 
 | Type | Record | Kept by | Contents | Saved before |
 |---|---|---|---|---|
@@ -285,10 +291,10 @@ Record types are `u32`. The high 16 bits name an area, the low 16 bits a kind. E
 | `0x00010004` | `terms_version` | Host | A new current record and signature | The `terms_offer` carrying it |
 | `0x00010006` | `seat` | Host | Contribution key, factory key, both bindings, seat state, the seat's latest signed `ready` bytes | The `lobby_status` that confirms the change. Saved only when the seat's state changes, within the limits of `messages.md` section 6 (review 3, F13) |
 | `0x00010008` | `freeze` | Both | `check_id`, version, current digest, the signed `ready_check` bytes | Host: the first `ready_check`. Member: its `ready` answering it |
-| `0x0001000a` | `lobby_ended` | Both | Final state, reason, the signed `cancel` bytes if any | Nothing; for history |
+| `0x0001000a` | `lobby_ended` | Both | Final state, reason, the signed `cancel` bytes if any. Member: state 0 when no cancel ended it: its own leave, or (field `how`) its removal by the host, its join refused as invalid, or the host's terms refused before any seat | Nothing; for history, for the host's answer to a late `hello` (the node part reads it), and so that a restarted member does not join again |
 | `0x0001000c` | `terms_received` | Member | Host address and key; outer record and signature; a current record and signature | `join` (the first, with the outer record), and `ready` for a version (that version). A version the member does not ready for is not saved (`terms.md` section 7) |
-| `0x0001000e` | `joined` | Member | Lobby id, key epoch and index of its keys, the `join` bytes | `join` |
-| `0x00010010` | `ready_sent` | Member | The signed `ready` bytes | `ready` (resent byte for byte) |
+| `0x0001000e` | `joined` | Member | The `join` bytes (the lobby is the record's scope; the key epoch and index are in the Node record `slot_opened`) | `join` |
+| `0x00010010` | `ready_sent` | Member | The signed `ready` bytes; or, for an `unready`, its reason (1 conditions, 2 the user's choice, 3 locked) | `ready` (resent byte for byte), `unready` |
 | `0x00010012` | `host_fault` | Member | Evidence: two current records under one version, a version after the freeze, or two proposals under one round identifier | `leave`, or nothing (for a proposal) |
 | `0x00010014` | `start_sent` | Host | `check_id`, the time the lobby's signing budget began (its first `start`), the chosen seats, the signed `start` bytes for each seat | The first `start` of the check; resent from it after `hello` (`messages.md` 6.9); the signing budget's timer is set again from it after a restart (`terms.md` 3) |
 | `0x00010016` | `start_received` | Member | The signed `start` bytes | Nothing; consulted when `round_propose` arrives |

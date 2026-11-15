@@ -38,6 +38,8 @@ uint16_t gz_c_area(const gz_node_t *c, int eng)
 {
     (void)c;
     if (eng == ENG_NODE) return (uint16_t)GZ_AREA_NODE;
+    if (eng >= ENG_SLOT0 && eng < ENG_N && c->slots[eng - ENG_SLOT0].kind == SLOT_KIND_LOBBY)
+        return (uint16_t)GZ_AREA_LOBBY;
 #ifdef GZ_TEST_KINDS
     if (eng == ENG_TEST0 || eng == ENG_TEST1) return c->test[eng - ENG_TEST0].area;
     if (eng >= ENG_SLOT0 && eng < ENG_N) return (uint16_t)GZ_AREA_TEST_SLOT;
@@ -57,6 +59,10 @@ static const gz_engine_ops_t *ops_of(const gz_node_t *c, int eng, void **inst)
     (void)c;
     (void)eng;
     *inst = NULL;
+    if (eng >= ENG_SLOT0 && eng < ENG_N && c->slots[eng - ENG_SLOT0].kind == SLOT_KIND_LOBBY) {
+        *inst = (void *)&((gz_node_t *)c)->slots[eng - ENG_SLOT0];
+        return gz_ls_ops();
+    }
 #ifdef GZ_TEST_KINDS
     if (eng == ENG_TEST0 || eng == ENG_TEST1) {
         *inst = (void *)&((gz_node_t *)c)->test[eng - ENG_TEST0];
@@ -167,6 +173,8 @@ gz_status_t gz_c_bracket(gz_node_t *c, int eng, const gz_event_t *ev, gz_action_
     c->bracket_from = out->count;
     c->n_deferred = 0;
     gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
+    /* After a lobby's step: its gates, its log line, its end (lobbyslot.c). */
+    if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);
     if (st != GZ_OK) {
         c->bracket_on = 0;
         return st;
@@ -185,6 +193,7 @@ gz_status_t gz_c_resume(gz_node_t *c, int eng, gz_action_list_t *out, int *more)
     c->bracket_from = out->count;
     c->n_deferred = 0;
     gz_status_t st = call(c, eng, OP_RESUME, NULL, 0, out, more);
+    if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);
     if (st != GZ_OK) {
         c->bracket_on = 0;
         return st;
@@ -244,6 +253,26 @@ gz_status_t gz_c_slot_inline(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t 
         if (c->owner[k] < 0) c->owner[k] = (int8_t)eng;
     }
     return GZ_OK;
+}
+
+/* A call into a slot's engine that no event of its own brings (an outcome
+ * reported to its lobby), in a bracket of its own. */
+gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t *, int, gz_action_list_t *),
+                              gz_action_list_t *out)
+{
+    if (c->bracket_on) return gz_c_bug(c, ENG_NODE);
+    c->bracket_on = 1;
+    c->bracket_handoff = 0;
+    c->bracket_top = eng;
+    c->bracket_from = out->count;
+    c->n_deferred = 0;
+    gz_status_t st = gz_c_slot_inline(c, eng, fn, out);
+    if (st == GZ_OK) st = gz_ls_after(c, eng - ENG_SLOT0, out);
+    if (st != GZ_OK) {
+        c->bracket_on = 0;
+        return st;
+    }
+    return bracket_end(c, out);
 }
 
 /* The hooks given to an engine for a hand-off (9.1: engines never call each

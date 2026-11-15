@@ -163,3 +163,62 @@ address-port-zero	core/gazpacho/action.c	    if (port == 0 || port > 65535) retu
 address-no-port	core/gazpacho/action.c	    if (colon < 2 || colon == n || n - colon > 5 || p[colon] == '0') return 0;	    if (colon < 2 || n - colon > 5) return 0;
 address-names-taken	core/gazpacho/action.c	        if ((p[i] < '0' || p[i] > '9') && p[i] != '.') return 0;	        if (p[i] == ' ') return 0;
 address-list-unchecked	core/gazpacho/action.c	    if (!gz_connect_address_ok(src->u.connect.address)) return GZ_ERR_ARGUMENT;	    if (!src->u.connect.address.len) return GZ_ERR_ARGUMENT;
+# --- P4.2: a slot's lobby (lobbyslot.c), its records, gates, commands, the index, Closing; the node part's additions
+ls-factory-signs-with-contribution	core/node/lobbyslot.c	return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);	return k->sign(k->ctx, 0, s->key_epoch, s->key_index, msg, sig);
+ls-gate-auto-closed	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_AUTO: return 1;	case GZ_MEMBER_SIGNING_AUTO: return 0;
+ls-gate-unlocked-ignored	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return s->node->unlocked;	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return 1;
+ls-gate-at-join-open	core/node/lobbyslot.c	default: return s->gate_open;	default: return 1;
+ls-factory-key-is-contribution	core/node/lobbyslot.c	c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fk) != 1)	c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index, fk) != 1)
+ls-every-hello-a-listing	core/node/lobbyslot.c	if (s->host && ev->u.message.kind == GZ_MSG_KIND_HELLO && all_zero(ev->u.message.scope, 32))	if (s->host && ev->u.message.kind == GZ_MSG_KIND_HELLO)
+ls-index-forgets-newest	core/node/lobbyslot.c	if (c->np.ended[i].seq < c->np.ended[oldest].seq) oldest = i;	if (c->np.ended[i].seq > c->np.ended[oldest].seq) oldest = i;
+ls-index-no-cancel	core/node/lobbyslot.c	if (cancel && cancel_len && cancel_len <= sizeof e->cancel) {	if (0) {
+ls-closing-keeps-connect	core/node/lobbyslot.c	        st = np_disconnect(out, &e->link, GZ_DISCONNECT_DONE);\n    }\n    e->used = 0;	        st = GZ_OK;\n    }\n    e->used = 0;
+ls-closing-keeps-seats	core/node/lobbyslot.c	            a.u.set_seated.member = e->seated[j];\n            a.u.set_seated.seated = 0;	            a.u.set_seated.member = e->seated[j];\n            a.u.set_seated.seated = 1;
+ls-closing-never-ends	core/node/lobbyslot.c	if (c->np.closing[k].used && c->np.closing[k].until_ms <= now) {	if (c->np.closing[k].used && c->np.closing[k].until_ms == 0) {
+ls-closing-cap-unchecked	core/node/lobbyslot.c	    if (k == GZ_NODE_MAX_TOMBSTONES) {\n        if ((st = closing_end(c, oldest, out)) != GZ_OK) return st;\n        k = oldest;\n    }	    if (k == GZ_NODE_MAX_TOMBSTONES) k = oldest;
+ls-load-closed-any-serial	core/node/lobbyslot.c	s->kind != SLOT_KIND_LOBBY || s->serial != gz_get_u32(serial.data)) continue;	s->kind != SLOT_KIND_LOBBY) continue;
+ls-load-record-no-slot-corrupt	core/node/lobbyslot.c	if ((i = lobby_slot_by_scope(c, scope)) < 0) return GZ_OK; /* a closed lobby	if ((i = lobby_slot_by_scope(c, scope)) < 0) return GZ_ERR_CORRUPT; /* a closed lobby
+ls-load-opened-bad-address-kept	core/node/lobbyslot.c	if (!arg(rec->bytes, 10, 0, &v) || !gz_connect_address_ok(v)) return GZ_ERR_CORRUPT;	if (!arg(rec->bytes, 10, 0, &v)) return GZ_ERR_CORRUPT;
+ls-skipped-slot-is-corrupt	core/node/lobbyslot.c	        c->np.skipped_slots++;\n        return GZ_OK;	        c->np.skipped_slots++;\n        return GZ_ERR_CORRUPT;
+ls-slot-closed-own-batch	core/node/lobbyslot.c	    if ((st = merge_into(c, out, c->bracket_from, GZ_REC_LOBBY_ENDED)) != GZ_OK) return st;\n	
+ls-round-ok-never	core/node/lobbyslot.c	    s->round_ok = s->host ? gz_lobby_host_round_ok(&s->lobby.h) : gz_lobby_member_round_ok(&s->lobby.m);	    s->round_ok = 0;
+ls-gate-stays-open-after-round	core/node/lobbyslot.c	        else if (s->gate_flight) {	        else if (0) {
+ls-gate-forget-not-called	core/node/lobbyslot.c	    if (c->cfg.crypto.forget) c->cfg.crypto.forget(c->cfg.crypto.ctx, s->scope);	    (void)c;
+ls-slot-end-never	core/node/lobbyslot.c	                                : s->lobby.m.ended))\n        st = slot_end(c, i, out);	                                : s->lobby.m.ended))\n        st = GZ_OK;
+ls-ended-not-indexed	core/node/lobbyslot.c	        ended_add(c, s->scope, state, reason, h->cancel_msg, h->cancel_len);\n	
+ls-free-keeps-seats	core/node/lobbyslot.c	            sa.u.set_seated.member = s->seated[j];\n            sa.u.set_seated.seated = 0;	            sa.u.set_seated.member = s->seated[j];\n            sa.u.set_seated.seated = 1;
+ls-free-keeps-connect	core/node/lobbyslot.c	    } else {\n        if ((st = np_disconnect(out, &s->link, GZ_DISCONNECT_DONE)) != GZ_OK) return st;\n    }	    }
+ss-resume-fails-nothing	core/node/lobbyslot.c	        if (!r->used || r->ended) continue;\n        if ((i = lobby_slot_by_scope(c, r->scope)) < 0) {\n            r->ended = 1;\n            continue;\n        }\n        c->ss.cur = k;\n        c->ss.force = 1;	        if (1) continue;\n        if ((i = lobby_slot_by_scope(c, r->scope)) < 0) {\n            r->ended = 1;\n            continue;\n        }\n        c->ss.cur = k;\n        c->ss.force = 1;
+ss-finished-check-begun-again	core/node/lobbyslot.c	    if (r && r->ended) /* rule 3: a finished check is ignored */	    if (0) /* rule 3: a finished check is ignored */
+ss-cancel-leaves-round	core/node/lobbyslot.c	        r->ended = 1; /* a cancel never leaves a round running (A9) */\n        st = ss_save(out, SS_REC_ENDED, r);	        r->ended = 1; /* a cancel never leaves a round running (A9) */
+cmd-open-twice	core/node/lobbyslot.c	    if (gz_route_slot_by_scope(c, s->scope) >= 0 || ended_find(c, s->scope) >= 0) {	    if (0) {
+cmd-open-ended-again	core/node/lobbyslot.c	    if (gz_route_slot_by_scope(c, s->scope) >= 0 || ended_find(c, s->scope) >= 0) {	    if (gz_route_slot_by_scope(c, s->scope) >= 0) {
+cmd-open-bad-terms-kept	core/node/lobbyslot.c	        return st == GZ_ERR_ARGUMENT ? np_command_result(out, cmd, 400, "bad_terms") : st;	        return st;
+cmd-join-address-unchecked	core/node/lobbyslot.c	    if (!gz_connect_address_ok(addr)) return np_command_result(out, cmd, 400, "bad_address");\n	
+cmd-join-key-unchecked	core/node/lobbyslot.c	    if (!c->cfg.crypto.point_ok || c->cfg.crypto.point_ok(c->cfg.crypto.ctx, hk.data) != 1)\n        return np_command_result(out, cmd, 400, "bad_host_key");\n	
+cmd-join-conditions-unchecked	core/node/lobbyslot.c	    if (!cond_decode(cond.data, cond.len, &cd)) return np_command_result(out, cmd, 400, "bad_conditions");	    (void)cond_decode(cond.data, cond.len, &cd);
+cmd-join-twice	core/node/lobbyslot.c	    if (gz_route_slot_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 409, "lobby_exists");\n	
+cmd-join-on-host	core/node/lobbyslot.c	    if (c->cfg.host) return np_command_result(out, cmd, 409, "not_a_member");\n	
+cmd-ready-unlock-ignored	core/node/lobbyslot.c	        v.data[0] == 1) {\n        s->gate_open = 1;	        v.data[0] == 1) {\n        s->gate_open = 0;
+cmd-ready-always-unlocks	core/node/lobbyslot.c	    if (code == GZ_CMD_LOBBY_READY && c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN && arg(cmd, 14, 1, &v) &&\n        v.data[0] == 1) {	    if (code == GZ_CMD_LOBBY_READY && c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN) {
+cmd-lock-keeps-lobby-gates	core/node/lobbyslot.c	        if (!opened) gate_close(c, s);\n	
+cmd-wrong-role-taken	core/node/lobbyslot.c	(i = lobby_slot_by_scope(c, scope.data)) < 0 || c->slots[i].host != want_host)	(i = lobby_slot_by_scope(c, scope.data)) < 0)
+np-pair-no-epoch	core/node/nodepart.c	    if (!p->have_epoch) {\n        recs[n].type = GZ_RECORD_KEY_EPOCH;	    if (0) {\n        recs[n].type = GZ_RECORD_KEY_EPOCH;
+np-pair-no-guard	core/node/nodepart.c	    recs[n].bytes.len = guard_record(c, gb);\n    n++;\n    recs[n++] = *extra;	    recs[n].bytes.len = guard_record(c, gb);\n    recs[n++] = *extra;
+np-pair-overlaps	core/node/nodepart.c	    p->highest_index = first + 1;\n    gz_put_u32(v, p->highest_index);	    p->highest_index = first;\n    gz_put_u32(v, p->highest_index);
+np-pair-guard-counter-kept	core/node/nodepart.c	    p->guard_counter++;\n    recs[n].type = GZ_RECORD_GUARD;	    recs[n].type = GZ_RECORD_GUARD;
+np-drop-notices-unlimited	core/node/nodepart.c	    if (c->np.drops[why] > NP_DROP_NOTICES && (c->np.drops[why] & (c->np.drops[why] - 1)) != 0) return GZ_OK;\n	
+np-age-limit-off	core/node/nodepart.c	            if (now < k->since_ms + NP_IDLE_MS && now < k->unseated_ms + NP_UNSEATED_MAX_MS) continue;	            if (now < k->since_ms + NP_IDLE_MS) continue;
+np-age-limit-not-armed	core/node/nodepart.c	        if (k->unseated_ms + NP_UNSEATED_MAX_MS < d) d = k->unseated_ms + NP_UNSEATED_MAX_MS;\n	
+np-silent-at-once	core/node/nodepart.c	    return !k->spoke && now - k->since_ms >= NP_SILENT_GRACE_MS;	    return !k->spoke;
+np-freed-keeps-timers	core/node/nodepart.c	    slot_t *s = &c->slots[i];\n    gz_status_t st;\n    if ((st = gz_timer_cancel_slot(s, out)) != GZ_OK) return st;\n    s->state = SLOT_FREE;\n    gz_c_engine_closed(c, ENG_SLOT0 + i);\n    for (int k = 0; k < NP_MAX_CONNS; k++) {\n        np_conn_t *n = &c->np.conns[k];\n        int was = n->seated;\n        if (!n->used || !n->connected) continue;\n        if (n->slot == i) {\n            n->slot = -1;	    slot_t *s = &c->slots[i];\n    gz_status_t st;\n    s->state = SLOT_FREE;\n    gz_c_engine_closed(c, ENG_SLOT0 + i);\n    for (int k = 0; k < NP_MAX_CONNS; k++) {\n        np_conn_t *n = &c->np.conns[k];\n        int was = n->seated;\n        if (!n->used || !n->connected) continue;\n        if (n->slot == i) {\n            n->slot = -1;
+rt-ended-hello-unknown	core/node/route.c	        if (kind == GZ_MSG_KIND_HELLO && (s = gz_ls_ended_find(c, scope)) >= 0) return mk(RT_ENDED_HELLO, s, -1, 0);\n	
+rt-ended-any-kind-answered	core/node/route.c	        if (kind == GZ_MSG_KIND_HELLO && (s = gz_ls_ended_find(c, scope)) >= 0) return mk(RT_ENDED_HELLO, s, -1, 0);	        if ((s = gz_ls_ended_find(c, scope)) >= 0) return mk(RT_ENDED_HELLO, s, -1, 0);
+rt-lobby-link-from-port	core/node/route.c	        if (s->host) return 0;\n        *link = s->link;\n        return 1;	        if (s->host) return 0;\n        link->remote = s->host_key;\n        return 1;
+c-lobby-record-ignored	core/node/composite.c	    if (area == GZ_AREA_LOBBY) return gz_ls_load_record(c, rec);	    if (area == GZ_AREA_LOBBY) return GZ_OK;
+c-slot-resume-skipped	core/node/composite.c	        if ((st = gz_c_resume(c, e, out, &more)) != GZ_OK) return st;\n        if (c->slots[i].state != SLOT_OPEN) return GZ_OK;	        if (c->slots[i].state != SLOT_OPEN) return GZ_OK;
+c-slot-not-marked-resumed	core/node/composite.c	        c->resumed[e] = 1;\n        return gz_c_release_held(c, e, out);	        return gz_c_release_held(c, e, out);
+c-sign-resume-after-lobbies	core/node/composite.c	        if ((st = gz_ss_resume(c, out, &more)) != GZ_OK) return st;\n        if (more) return GZ_OK;\n	
+h-no-after-step	core/node/handoff.c	    if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);\n    if (st != GZ_OK) {\n        c->bracket_on = 0;\n        return st;\n    }\n    return bracket_end(c, out);\n}\n\n/* An engine's resume step	    if (st != GZ_OK) {\n        c->bracket_on = 0;\n        return st;\n    }\n    return bracket_end(c, out);\n}\n\n/* An engine's resume step
+# untested ls-closing-cap-unchecked: needs 65 lobbies ended during a round within one signing budget; the cap's arithmetic is the index's, which test_index reaches
+# equivalent ss-finished-check-begun-again: the lobbies never hand a finished check over again (their own saved outcome stops it), so the stand-in's second guard is not reached; lobby_handoff.h keeps the rule for the signing engine

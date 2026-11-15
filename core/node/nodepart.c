@@ -89,6 +89,8 @@ gz_status_t np_drop(gz_node_t *c, int why, uint16_t kind, gz_action_list_t *out)
     char text[96];
     size_t at = 0;
     c->np.drops[why]++;
+    /* A peer can cause a drop with every message: the notices are limited. */
+    if (c->np.drops[why] > NP_DROP_NOTICES && (c->np.drops[why] & (c->np.drops[why] - 1)) != 0) return GZ_OK;
     text[0] = 0;
     fmt_s(text, sizeof text, &at, "drop why=");
     fmt_s(text, sizeof text, &at, drop_name(why));
@@ -223,6 +225,10 @@ gz_status_t np_load(gz_node_t *c, const gz_record_t *rec, gz_batch_id_t at)
     }
     case GZ_RECORD_RESTORED:
         return gz_rec_valid(rec->bytes) ? GZ_OK : GZ_ERR_CORRUPT;
+    case GZ_RECORD_SLOT_OPENED:
+        return gz_ls_load_opened(c, rec);
+    case GZ_RECORD_SLOT_CLOSED:
+        return gz_ls_load_closed(c, rec);
     }
     return GZ_ERR_CORRUPT; /* every Slice 1 type is even: an unknown one stops the start */
 }
@@ -451,6 +457,7 @@ static gz_status_t arm_idle(gz_node_t *c, gz_action_list_t *out)
         const np_conn_t *k = &c->np.conns[i];
         if (!conn_live(k) || k->seated) continue;
         uint64_t d = k->since_ms + NP_IDLE_MS;
+        if (k->unseated_ms + NP_UNSEATED_MAX_MS < d) d = k->unseated_ms + NP_UNSEATED_MAX_MS;
         if (!due || d < due) due = d;
     }
     if (!due || due == c->np.idle_due_ms) return GZ_OK;
@@ -478,15 +485,22 @@ static void conn_gone(gz_node_t *c, int i)
     k->slot = -1;
 }
 
+/* Silent: it has sent nothing, and has had NP_SILENT_GRACE_MS to do so. */
+static int silent(const np_conn_t *k, uint64_t now)
+{
+    return !k->spoke && now - k->since_ms >= NP_SILENT_GRACE_MS;
+}
+
 /* Close the oldest silent unseated connection (B7): never a seated one. */
 static gz_status_t push_out_one(gz_node_t *c, gz_action_list_t *out)
 {
     int best = -1;
+    uint64_t now = mono_ms(c);
     for (int i = 0; i < NP_MAX_CONNS; i++) {
         const np_conn_t *k = &c->np.conns[i];
         if (!conn_live(k) || k->seated) continue;
-        if (best < 0 || (k->spoke < c->np.conns[best].spoke) ||
-            (k->spoke == c->np.conns[best].spoke && k->since_ms < c->np.conns[best].since_ms))
+        if (best < 0 || (silent(k, now) > silent(&c->np.conns[best], now)) ||
+            (silent(k, now) == silent(&c->np.conns[best], now) && k->since_ms < c->np.conns[best].since_ms))
             best = i;
     }
     if (best < 0) return GZ_OK;
@@ -563,6 +577,7 @@ static gz_status_t host_connected(gz_node_t *c, const gz_event_t *ev, gz_action_
         k->closing = 0;
         k->link = ev->u.peer.link;
         k->since_ms = mono_ms(c);
+        k->unseated_ms = k->since_ms;
         k->spoke = 0;
         k->slot = s;
         k->seated = s >= 0;
@@ -618,6 +633,7 @@ void np_seat_changed(gz_node_t *c, int slot, const gz_node_id_t *member, int sea
         } else if (k->seated && gz_route_slot_seated(c, member) < 0) {
             k->seated = 0;
             k->since_ms = mono_ms(c);
+            k->unseated_ms = k->since_ms;
             c->np.idle_check = 1;
         }
     }
@@ -692,7 +708,9 @@ static gz_status_t limited_hello(gz_node_t *c, int conn, const gz_event_t *ev, i
     if (!ok) return node_only(c, out, DROP_HELLO_LIMIT, ev->u.message.kind, close ? &ev->u.message.link : NULL);
     if (unknown) {
         if ((st = gz_c_node_bracket_begin(c, out)) != GZ_OK) return st;
-        st = answer_unknown(out, &ev->u.message.link, ev->u.message.scope);
+        /* 1: an unknown scope. 2 + n: ended lobby n of the index. */
+        st = unknown > 1 ? gz_ls_ended_answer(c, unknown - 2, &ev->u.message.link, out)
+                         : answer_unknown(out, &ev->u.message.link, ev->u.message.scope);
         if (st == GZ_OK) return gz_c_node_bracket_end(c, out);
         c->bracket_on = 0;
         return st;
@@ -742,6 +760,7 @@ gz_status_t np_message(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out
     case RT_TEST:   return gz_c_bracket(c, r.eng, ev, out);
     case RT_LISTING: return limited_hello(c, conn, ev, 0, out);
     case RT_UNKNOWN_HELLO: return limited_hello(c, conn, ev, 1, out);
+    case RT_ENDED_HELLO: return limited_hello(c, conn, ev, 2 + r.slot, out);
     }
     return node_only(c, out, DROP_KIND, ev->u.message.kind, NULL);
 }
@@ -750,6 +769,9 @@ gz_status_t np_message(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out
  * for 60 s; the continuation timer (8.3) has no work before P4.2's pause. */
 gz_status_t np_timer(gz_node_t *c, uint32_t id, gz_action_list_t *out)
 {
+#ifdef GZ_TEST_KINDS
+    if (id == NP_TIMER_SIGN) return gz_ss_timer(c, out);
+#endif
     gz_status_t st = gz_c_node_bracket_begin(c, out);
     if (st != GZ_OK) return st;
     if (id == NP_TIMER_IDLE) {
@@ -757,12 +779,14 @@ gz_status_t np_timer(gz_node_t *c, uint32_t id, gz_action_list_t *out)
         c->np.idle_due_ms = 0;
         for (int i = 0; i < NP_MAX_CONNS && st == GZ_OK; i++) {
             np_conn_t *k = &c->np.conns[i];
-            if (!conn_live(k) || k->seated || now < k->since_ms + NP_IDLE_MS) continue;
+            if (!conn_live(k) || k->seated) continue;
+            if (now < k->since_ms + NP_IDLE_MS && now < k->unseated_ms + NP_UNSEATED_MAX_MS) continue;
             st = disconnect(out, &k->link, GZ_DISCONNECT_IDLE);
             k->closing = 1;
         }
         if (st == GZ_OK) st = arm_idle(c, out);
     }
+    if (id == NP_TIMER_CONTINUE) st = gz_ls_closing_timer(c, out);
     if (st == GZ_OK) return gz_c_node_bracket_end(c, out);
     c->bracket_on = 0;
     return st;
@@ -782,6 +806,15 @@ static int free_gen_ok(const gz_node_t *c, uint16_t gen)
     for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
         if (c->slots[i].state != SLOT_FREE && c->slots[i].gen == gen) return 0;
     return 1;
+}
+
+/* The test commands on a slot (close, seat, round, watch, save) are for the
+ * stand-in's slots only: a slot that holds a lobby is opened and closed by
+ * its lobby alone, with its records. For them such a slot is no slot. */
+static int standin_slot(const gz_node_t *c, const uint8_t scope[32])
+{
+    int i = gz_route_slot_by_scope(c, scope);
+    return i >= 0 && c->slots[i].kind == SLOT_KIND_STANDIN ? i : -1;
 }
 
 static gz_status_t open_inline(gz_node_t *c, int eng, gz_action_list_t *out)
@@ -855,7 +888,7 @@ static gz_status_t slot_close(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *ou
     gz_bytes_t scope;
     gz_status_t st;
     int i;
-    if (!arg(cmd, 12, 32, &scope) || (i = gz_route_slot_by_scope(c, scope.data)) < 0)
+    if (!arg(cmd, 12, 32, &scope) || (i = standin_slot(c, scope.data)) < 0)
         return np_command_result(out, cmd, 404, "no_such_lobby");
     slot_t *s = &c->slots[i];
     if ((st = gz_timer_cancel_slot(s, out)) != GZ_OK) return st;
@@ -878,7 +911,7 @@ static gz_status_t slot_close(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *ou
         /* A seat in the closed slot is gone, whichever slot the connection is
          * bound to; a seat in another Open slot stands. */
         n->seated = gz_route_slot_seated(c, &n->link.remote) >= 0;
-        if (was && !n->seated) n->since_ms = mono_ms(c);
+        if (was && !n->seated) n->since_ms = n->unseated_ms = mono_ms(c);
     }
     /* The cap holds at once: the excess is closed now, the silent first. */
     if ((st = keep_cap(c, out)) != GZ_OK) return st;
@@ -891,7 +924,7 @@ static gz_status_t slot_seat(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out
     gz_bytes_t scope, key, v;
     gz_status_t st;
     int i;
-    if (!arg(cmd, 12, 32, &scope) || !arg(cmd, 14, 33, &key) || (i = gz_route_slot_by_scope(c, scope.data)) < 0 ||
+    if (!arg(cmd, 12, 32, &scope) || !arg(cmd, 14, 33, &key) || (i = standin_slot(c, scope.data)) < 0 ||
         !c->slots[i].host)
         return np_command_result(out, cmd, 404, "no_such_lobby");
     memcpy(c->np.seat_key.key, key.data, 33);
@@ -918,7 +951,7 @@ static gz_status_t slot_watch(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *ou
     gz_bytes_t scope, txid, depth;
     gz_status_t st;
     int i, n = 0;
-    if (!arg(cmd, 12, 32, &scope) || (i = gz_route_slot_by_scope(c, scope.data)) < 0)
+    if (!arg(cmd, 12, 32, &scope) || (i = standin_slot(c, scope.data)) < 0)
         return np_command_result(out, cmd, 404, "no_such_lobby");
     if (!arg(cmd, 14, 32, &txid) || !arg(cmd, 16, 4, &depth) || gz_get_u32(depth.data) == 0)
         return np_command_result(out, cmd, 400, "bad_request");
@@ -943,7 +976,7 @@ static gz_status_t slot_save(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out
     gz_bytes_t scope;
     gz_status_t st;
     int i;
-    if (!arg(cmd, 12, 32, &scope) || (i = gz_route_slot_by_scope(c, scope.data)) < 0)
+    if (!arg(cmd, 12, 32, &scope) || (i = standin_slot(c, scope.data)) < 0)
         return np_command_result(out, cmd, 404, "no_such_lobby");
     if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, save_inline, out)) != GZ_OK) return st;
     return np_command_result(out, cmd, 200, NULL);
@@ -963,7 +996,7 @@ gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_li
     case 0x7e83: {
         gz_bytes_t scope;
         int i;
-        if (arg(cmd, 12, 32, &scope) && (i = gz_route_slot_by_scope(c, scope.data)) >= 0) {
+        if (arg(cmd, 12, 32, &scope) && (i = standin_slot(c, scope.data)) >= 0) {
             c->slots[i].round_ok = 1;
             st = np_command_result(out, cmd, 200, NULL);
         } else {
@@ -974,9 +1007,88 @@ gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_li
     case 0x7e84: st = slot_watch(c, cmd, out); break;
     case 0x7e85: st = slot_save(c, cmd, out); break;
 #endif
-    default: st = np_command_result(out, cmd, 404, "unknown_command"); break;
+    default: st = gz_ls_command(c, code, cmd, out); break; /* the lobby's, the gate's, or unknown_command */
     }
     if (st == GZ_OK) return gz_c_node_bracket_end(c, out);
     c->bracket_on = 0;
     return st;
+}
+
+/* ---- for a slot's lobby (lobbyslot.c) ------------------------------------- */
+
+uint64_t np_mono(gz_node_t *c)
+{
+    return mono_ms(c);
+}
+
+gz_status_t np_set_timer(gz_action_list_t *out, uint32_t id, uint64_t delay)
+{
+    return set_timer(out, id, delay);
+}
+
+gz_status_t np_disconnect(gz_action_list_t *out, const gz_link_t *link, uint16_t why)
+{
+    return disconnect(out, link, why);
+}
+
+/* A slot is Free: its timers are cancelled, its engine's watches and
+ * unconfirmed batches are nobody's, and every connection bound to it is
+ * unbound and unseated again, the cap kept in this step (section 3). */
+gz_status_t np_slot_freed(gz_node_t *c, int i, gz_action_list_t *out)
+{
+    slot_t *s = &c->slots[i];
+    gz_status_t st;
+    if ((st = gz_timer_cancel_slot(s, out)) != GZ_OK) return st;
+    s->state = SLOT_FREE;
+    gz_c_engine_closed(c, ENG_SLOT0 + i);
+    for (int k = 0; k < NP_MAX_CONNS; k++) {
+        np_conn_t *n = &c->np.conns[k];
+        int was = n->seated;
+        if (!n->used || !n->connected) continue;
+        if (n->slot == i) {
+            n->slot = -1;
+            n->since_ms = mono_ms(c);
+        }
+        n->seated = gz_route_slot_seated(c, &n->link.remote) >= 0;
+        if (was && !n->seated) n->since_ms = n->unseated_ms = mono_ms(c);
+    }
+    if ((st = keep_cap(c, out)) != GZ_OK) return st;
+    return arm_idle(c, out);
+}
+
+/* A slot's first batch (7.4): key_epoch 0 the first time a key is allocated
+ * (journal.md 8.2 step 1), key_index for the pair `first`, `first` + 1 (the
+ * contribution key and the factory key), the guard (8.3: with every
+ * key_index; its epochs and highest indexes are the union the restore batch
+ * made, T-P42-3), then `extra` (slot_opened). The lobby's own first record
+ * follows it in the list and joins the batch. */
+gz_status_t np_save_pair(gz_node_t *c, uint32_t first, const gz_record_t *extra, gz_action_list_t *out)
+{
+    uint8_t eb[16], kb[16], gb[NP_GUARD_HEAD + 8 * (NP_MAX_OLD_EPOCHS + 1)], v[4];
+    gz_record_t recs[4];
+    size_t n = 0, at = 0;
+    np_t *p = &c->np;
+    if (first <= p->highest_index || first + 1 < first) return gz_c_bug(c, ENG_NODE); /* never an index twice */
+    if (!p->have_epoch) {
+        recs[n].type = GZ_RECORD_KEY_EPOCH;
+        recs[n].bytes.data = eb;
+        recs[n].bytes.len = epoch_record(eb, sizeof eb, 0);
+        n++;
+        p->epoch = 0;
+        p->have_epoch = 1;
+    }
+    p->highest_index = first + 1;
+    gz_put_u32(v, p->highest_index);
+    if (gz_rec_put(kb, sizeof kb, &at, 2, v, 4) != GZ_OK) return gz_c_bug(c, ENG_NODE);
+    recs[n].type = GZ_RECORD_KEY_INDEX;
+    recs[n].bytes.data = kb;
+    recs[n].bytes.len = at;
+    n++;
+    p->guard_counter++;
+    recs[n].type = GZ_RECORD_GUARD;
+    recs[n].bytes.data = gb;
+    recs[n].bytes.len = guard_record(c, gb);
+    n++;
+    recs[n++] = *extra;
+    return save_records(out, recs, n);
 }

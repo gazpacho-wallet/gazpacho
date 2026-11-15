@@ -539,7 +539,7 @@ typedef struct {
     int round_state;                 /* the saved signing outcome: 0, or GZ_LOBBY_FUNDING or _ACTIVE */
     int resends;                     /* state messages resent on lobby_status, this connection */
     int retries;                     /* joins again after a refusal for a limit, this connection */
-    int sent_here;                   /* join or ready already sent on this connection */
+    int sent_here;                   /* the join was already sent on this connection */
 } gz_lobby_member_t;
 
 /* The crypto port signs with the contribution and factory keys `cfg` names.

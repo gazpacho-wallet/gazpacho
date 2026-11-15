@@ -163,7 +163,9 @@ static gz_status_t send_ready(gz_lobby_member_t *m, const uint8_t *check_id, con
     if (check_id) { memcpy(m->answered_check, check_id, 32); m->has_answered = 1; }
     TRY(gz_la_save(out, recs, n));
     if (!m->connected) return GZ_OK;
-    m->sent_here = 1;
+    /* `sent_here` is about the join alone: a ready sent here says nothing of
+     * whether the host still has the seat. A host that lost it (its save
+     * failed, it restarted) shows no seat, and the join is sent again. */
     return gz_la_send(out, &m->link, m->ready_msg, m->ready_len);
 }
 
@@ -208,6 +210,7 @@ int gz_lobby_member_check_in_flight(const gz_lobby_member_t *m) { return m && ch
 static gz_status_t lock_out(gz_lobby_member_t *m, gz_action_list_t *out)
 {
     if (m->ended || !m->joined || !m->ready || check_in_flight(m)) return GZ_OK;
+    if (m->round_state >= GZ_LOBBY_FUNDING) return GZ_OK;   /* its creation is signed: nothing to withdraw */
     TRY(unready(m, 3, out));
     return locked_note(m, out);
 }
@@ -359,7 +362,11 @@ static gz_status_t on_terms(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_ac
     if (rule == GZ_TERMS_V_FROZEN_BREACH && v.version < m->values.version) rule = GZ_TERMS_V_IGNORE_OLDER;
     switch (rule) {
     case GZ_TERMS_V_IGNORE_OLDER: return GZ_OK;
-    case GZ_TERMS_V_DUPLICATE: return m->joined ? GZ_OK : evaluate(m, out);   /* restored terms without a seat */
+    /* The same terms again: nothing new to take. But a member restored from
+     * storage acts on them now: one without a seat joins, and one whose
+     * ready never became durable (a crash, a failed save) readies. For a
+     * member that is where it should be this does nothing. */
+    case GZ_TERMS_V_DUPLICATE: return evaluate(m, out);
     case GZ_TERMS_V_EQUIVOCATION: case GZ_TERMS_V_FROZEN_BREACH:
         memcpy(a, m->current, m->current_len); memcpy(a + m->current_len, m->current_sig, 64);
         memcpy(b, g->current, g->current_len); memcpy(b + g->current_len, g->current_sig, 64);
@@ -549,10 +556,11 @@ static gz_status_t on_cancel(gz_lobby_member_t *m, const uint8_t *env, size_t le
     gz_lr_int(&w, 6, g->reason, 2);
     gz_lr_put(&w, 8, env, len);
     TRY(gz_lr_save(out, GZ_REC_LOBBY_ENDED, &w));
+    /* The signing engine next, before the notice (as on the host). */
+    if (m->signing.cancel) TRY(m->signing.cancel(m->signing.ctx, m->scope, g->reason, out));
     n[0] = (uint8_t)m->lobby_state;
     gz_lw_put(n + 1, g->reason, 2);
-    TRY(gz_la_notify(out, GZ_NOTE_ENDED, n, 3));
-    return m->signing.cancel ? m->signing.cancel(m->signing.ctx, m->scope, g->reason, out) : GZ_OK;
+    return gz_la_notify(out, GZ_NOTE_ENDED, n, 3);
 }
 
 /* Send the saved join and ready again (the host lost them, or refused for a limit). */

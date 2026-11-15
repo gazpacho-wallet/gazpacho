@@ -116,7 +116,8 @@ void gzp_usage(void)
         "  --handshake-ms, --recv-ms, --send-ms, --ping-ms, --pong-ms MS   transport timers\n"
         "  --reconnect-ms MS             member: first reconnect delay, doubling to 60 s (default 1000)\n"
         "  --max-per-address N           host: accepted connections per address (0: no cap)\n"
-        "  --max-queue BYTES             bytes queued for sending per connection (default 4 MiB)\n");
+        "  --max-queue BYTES             bytes queued for sending per connection (default 4 MiB)\n"
+        "  --member-signing at-join|auto|when-unlocked   member: when it may sign (default at-join)\n");
 #ifdef GZP_TEST_BUILD
     fprintf(stderr,
         "tests only (gazpacho-test):\n"
@@ -140,6 +141,9 @@ void gzp_usage(void)
         "  --test-commands               read test commands from standard input\n"
         "  --test-big-reply BYTES        pad every test reply with BYTES\n"
         "  --test-crash-after-save K     exit once the K-th batch is durable\n"
+        "  --test-crash-after-record T   exit once a batch with a record of type T (hex) is durable\n"
+        "  --test-sign-outcome funding|retry|failed|unfinished   what the signing stand-in reports\n"
+        "  --test-sign-delay-ms MS       ... this long after the hand-off\n"
         "  --test-crash-before-confirm K exit just before the K-th confirmation\n"
         "  --test-exit-after-send        exit once the first test ping has left\n");
 #endif
@@ -257,6 +261,12 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--max-per-address")) { ok = num(val, 0, 1000, &v); o->max_per_address = (int)v; }
         else if (!strcmp(a, "--max-queue")) { ok = num(val, 4096, 64L << 20, &v); o->max_queue = (unsigned)v; }
         else if (!strcmp(a, "--name")) o->name = val;
+        else if (!strcmp(a, "--member-signing")) {
+            if (!strcmp(val, "at-join")) o->member_signing = 0;
+            else if (!strcmp(val, "auto")) o->member_signing = 1;
+            else if (!strcmp(val, "when-unlocked")) o->member_signing = 2;
+            else ok = 0;
+        }
 #ifdef GZP_TEST_BUILD
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
@@ -284,6 +294,18 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-engines")) { ok = num(val, 0, 2, &v); o->test_engines = (int)v; }
         else if (!strcmp(a, "--test-max-conns")) { ok = num(val, 1, 64, &v); o->test_max_conns = (int)v; }
         else if (!strcmp(a, "--test-drop-kind")) { ok = num(val, 1, 65535, &v); o->test_drop_kind = (int)v; }
+        else if (!strcmp(a, "--test-sign-outcome")) {
+            if (!strcmp(val, "funding")) o->test_sign_outcome = 1;
+            else if (!strcmp(val, "retry")) o->test_sign_outcome = 2;
+            else if (!strcmp(val, "failed")) o->test_sign_outcome = 3;
+            else if (!strcmp(val, "unfinished")) o->test_sign_outcome = 4;
+            else ok = 0;
+        }
+        else if (!strcmp(a, "--test-crash-after-record")) {
+            o->test_crash_after_record = (unsigned)strtoul(val, NULL, 16);
+            ok = o->test_crash_after_record != 0;
+        }
+        else if (!strcmp(a, "--test-sign-delay-ms")) { ok = num(val, 0, 600000, &v); o->test_sign_delay_ms = (int)v; }
         else if (!strcmp(a, "--test-big-reply")) { ok = num(val, 1, 60000, &v); o->test_big_reply = (int)v; }
         else if (!strcmp(a, "--test-crash-after-save")) { ok = num(val, 1, 1000000, &v); o->test_crash_after_save = (int)v; }
         else if (!strcmp(a, "--test-crash-before-confirm")) { ok = num(val, 1, 1000000, &v); o->test_crash_before_confirm = (int)v; }

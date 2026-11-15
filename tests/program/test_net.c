@@ -57,6 +57,7 @@ int main(void)
     memset(priv, 0x11, sizeof priv);
     memcpy(chain, GZ_LN_CHAIN_SIGNET, 32);
     CHECK(gzp_net_init(&n, secp, priv, rnd, chain, &lim, 100, &ev) == 0);
+    n.single_key = 1; /* as a test build with test engines: every index is the transport key */
 
     CHECK(connect_addr(&n, 1, "127.0.0.1:9736") == 0 && targets(&n) == 1);
     CHECK(!strcmp(n.targets[0].host, "127.0.0.1") && n.targets[0].port == 9736 && n.targets[0].index == 2);
@@ -103,6 +104,49 @@ int main(void)
     CHECK(gzp_net_send(&n, &l, 16, scope, NULL, 0) == 1);
     CHECK(n.dropped_unconnected == 2);
 
+    CHECK(gzp_net_reset(&n) == 0 && targets(&n) == 0);
+
+    /* Per-lobby keys (P4.2): index 0 is the transport key; every other
+     * (epoch, index) is a key of its own. Two CONNECTs to one host with two
+     * keys are two targets and two links; a DISCONNECT ends its own link's. */
+    {
+        uint8_t k0[33], k1[33], k3[33], k1e[33], sec[32], host[33], msg[32], sig[64];
+        gz_link_t a1, a3;
+        n.single_key = 0;
+        memset(host, 7, 33);
+        host[0] = 2;
+        memset(msg, 0x5a, 32);
+        CHECK(gzp_net_key(&n, 0, 0, sec, k0) && !memcmp(k0, n.pub, 33) && !memcmp(sec, priv, 32));
+        CHECK(gzp_net_key(&n, 0, 1, NULL, k1) && gzp_net_key(&n, 0, 3, NULL, k3) && gzp_net_key(&n, 9, 1, NULL, k1e));
+        CHECK(memcmp(k1, k0, 33) && memcmp(k3, k0, 33) && memcmp(k1, k3, 33) && memcmp(k1, k1e, 33));
+        uint8_t notkey[33];
+        memset(notkey, 0xff, 33);
+        notkey[0] = 2;
+        CHECK(gzp_net_point_ok(&n, k1) && gzp_net_point_ok(&n, k3) && !gzp_net_point_ok(&n, notkey));
+        CHECK(gzp_net_sign(&n, 0, 1, msg, sig) && gzp_net_verify(&n, k1, msg, sig) && !gzp_net_verify(&n, k3, msg, sig));
+        CHECK(gzp_net_sign(&n, 0, 0, msg, sig) && gzp_net_verify(&n, n.pub, msg, sig));
+        msg[0] ^= 1;
+        CHECK(!gzp_net_verify(&n, n.pub, msg, sig));
+        CHECK(gzp_net_connect(&n, host, (const uint8_t *)"127.0.0.1:9", 11, 0, 1) == 0 &&
+              gzp_net_connect(&n, host, (const uint8_t *)"127.0.0.1:9", 11, 0, 3) == 0 && targets(&n) == 2);
+        CHECK(gzp_net_connect(&n, host, (const uint8_t *)"127.0.0.1:8", 11, 0, 3) == 0 && targets(&n) == 2);
+        memcpy(a1.local.key, k1, 33);
+        memcpy(a1.remote.key, host, 33);
+        memcpy(a3.local.key, k3, 33);
+        memcpy(a3.remote.key, host, 33);
+        gzp_net_disconnect(&n, &a3, 0);
+        CHECK(targets(&n) == 1 && n.targets[0].used + n.targets[1].used == 1);
+        /* A send on a link whose key is ours but which has no connection is
+         * dropped as not connected; on a key that is not ours, as not ours. */
+        n.dropped_unconnected = 0;
+        CHECK(gzp_net_send(&n, &a1, 16, scope, NULL, 0) == 1 && gzp_net_send(&n, &a3, 16, scope, NULL, 0) == 1 &&
+              n.dropped_unconnected == 2);
+        gzp_net_disconnect(&n, &a1, 0);
+        CHECK(targets(&n) == 0);
+        /* With the single key of a test build with test engines, every index is the transport key. */
+        n.single_key = 1;
+        CHECK(gzp_net_key(&n, 0, 5, NULL, k1) && !memcmp(k1, n.pub, 33));
+    }
     CHECK(gzp_net_reset(&n) == 0 && targets(&n) == 0);
     gzp_net_free(&n);
     secp256k1_context_destroy(secp);

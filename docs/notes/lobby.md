@@ -28,26 +28,28 @@ against sections 9 and 9.1: no clash.
 | `0x00010016` | `start_received` | Member | Listed |
 | `0x00010018` | `lobby_state` | Both | **New**, registered in `journal.md` 9.1. The signing engine's outcome. Host: the lobby moved to Open after a failed signing attempt (a retry), to Funding, or to Active; saved before the `lobby_status` that shows it. Member: its round's outcome, so that a restart never hands the finished check to the signing engine again (decision 29) |
 
-**Layouts.** `spec/journal.md` section 9 says each record is a TLV stream
-whose field numbers are fixed with the code tables (its open point 3). The
-engine uses fixed layouts instead, below; they become TLV fields when those
-numbers are fixed. Integers are big-endian; "blob" is a `u16` length then the
-bytes; saved messages are whole Lightning messages (type 52791 first).
+**Layouts** (contract v2, P4.2; `spec/journal.md` open point 3 is settled
+for this area). Every record is a TLV stream under `messages.md` 4.2 whose
+field 2 is the lobby's scope (32 bytes). The other fields are the even types
+below. Integers are big-endian; a saved message is the native envelope (tag,
+kind, scope, records). Restore refuses a record of another scope, an even
+field its type does not have, and a record over its largest size
+(`GZ_LOBBY_REC_MAX_*` in `lobby.h`, one table with static assertions).
 
-| Record | Layout |
+| Record | Fields |
 |---|---|
-| `lobby_opened` | blob outer record, outer signature (64), blob current record, current signature (64) |
-| `terms_version` | blob current record, its signature (64) |
-| `seat` | contribution key (33), factory key (33), `bind_by_factory` (64), `bind_by_contribution` (64), seat state (`u8`), `min_members` (`u16`), version readied for (`u32`), join sequence (`u64`), blob of the seat's latest `ready` (at most 256 bytes) |
-| `freeze` | `check_id` (32), version (`u32`), current digest (32), blob of the signed `ready_check`; read back only if that check names the same three values and nothing follows it |
-| `lobby_ended` | state (`u8`: 6 Cancelled, 7 Failed; 0 on the member for its own leave), reason (`u16`), blob of the signed `cancel` (empty for a leave) |
+| `lobby_opened` | 4 outer record, 6 outer signature (64), 8 current record, 10 current signature (64) |
+| `terms_version` | 4 current record, 6 its signature (64) |
+| `seat` | 4 contribution key (33), 6 factory key (33), 8 `bind_by_factory` (64), 10 `bind_by_contribution` (64), 12 seat state (`u8`), 14 `min_members` (`u16`), 16 version readied for (`u32`), 18 join sequence (`u64`), 20 the seat's latest `ready` (absent: none) |
+| `freeze` | 4 `check_id` (32), 6 version (`u32`), 8 current digest (32), 10 the signed `ready_check`; read back only if that check names the same three values and the record's scope |
+| `lobby_ended` | 4 state (`u8`: 6 Cancelled, 7 Failed; 0 on the member when no cancel ended it), 6 reason (`u16`), 8 the signed `cancel` (absent: none), 10 how (`u8`, member, with state 0 only: absent its own leave, 1 removed by the host, 2 its join refused as invalid, 3 the terms refused before any seat) |
 | `terms_received` | as `lobby_opened` (the outer record, then the current record the member readies for) |
-| `joined` | the signed `join` bytes. The key epoch and index are the program's (`journal.md` lists them here; the engine is given its keys) |
-| `ready_sent` | the signed `ready` bytes; for an `unready`, one byte: its reason (1 conditions, 2 the user's choice) |
-| `host_fault` | fault (`u8`: 1 two values under one version, 2 a new version or a check at other values after the freeze), blob evidence a, blob evidence b (current records with their signatures, or digest and version) |
-| `start_sent` | `check_id` (32), the time the signing budget began (`u64`, Unix ms: the first start of the lobby, the same in every later attempt), `u16` n ≥ 1, then n × (contribution key (33), blob of that seat's signed `start`); each start names the record's check |
-| `start_received` | the signed `start` bytes |
-| `lobby_state` | state (`u8`: 1 Open, 4 Funding, 5 Active). Host: Funding or Active may follow `lobby_ended` (a creation the signing engine completed stands, decision 26). Member: 1 is a retry, followed by the spent start's `check_id` (32): its saved start is spent, and its answer too if it is to that check (an answer to a later check stands, decision 29); 4 and 5 (alone) the creation's state |
+| `joined` | 4 the signed `join` |
+| `ready_sent` | 4 the signed `ready`; or, for an `unready`, 6 its reason (`u16`: 1 conditions, 2 the user's choice, 3 locked) |
+| `host_fault` | 4 fault (`u8`), 6 evidence a, 8 evidence b |
+| `start_sent` | 4 `check_id` (32), 6 the time the signing budget began (`u64`, Unix ms), 8 one or more of (contribution key (33), `u16` length, that seat's signed `start`) |
+| `start_received` | 4 the signed `start` |
+| `lobby_state` | 4 state (`u8`: 1 Open, 4 Funding, 5 Active); member, with state 1: 6 the spent check's `check_id` (32) |
 
 ## 2. Decisions to confirm or overrule
 
@@ -310,3 +312,39 @@ bytes; saved messages are whole Lightning messages (type 52791 first).
     engine again, and the shown state survives a restart. A crash can still
     lose that save, so the hand-off stays idempotent: `begin` for a finished
     check is ignored by the signing engine (`lobby_handoff.h`).
+
+## 3. Contract v2 (P4.2): what changed, and which decisions it replaces
+
+The lobby now runs in the composite node's slots (`docs/notes/composite-node.md`).
+
+- **Decision 3 is replaced.** Inputs are (kind, scope, records) on a link
+  (local key, remote key). A refusal is a `DISCONNECT` with `why` refused; the
+  transport sends the warning. `GZ_NOTE_CLOSE` is gone.
+- **Decision 4.** The hand-off also carries `budget_end_ms` (host) and the
+  attempt. `gz_lobby_member_accepted` replaces `gz_lobby_member_may_sign`: it
+  fills the whole hand-off for the newest answered check, and says no for a
+  withdrawn check, a role-2 start, a spent check or a higher attempt. `cancel`
+  is called right after the lobby's own save.
+- **Decision 12 is replaced.** 32 seats; the connection table has the node
+  part's size (64), and which connection without a seat is pushed out or
+  closed is the node part's rule alone.
+- **Decision 13.** The engine rule: a signature the port will not make is a
+  notice (`GZ_NOTE_NO_KEY`) and nothing else, never an error.
+- **Decision 16 is changed.** A member removed, or refused as invalid, and one
+  whose host's terms were refused before any seat, save their end
+  (`lobby_ended`, field 10) and do not join again after a restart.
+- **Decision 19 is replaced.** Idle and unseated connections are the node
+  part's (60 s without a message; ten minutes in all).
+- **Decision 20 is replaced.** Seats are `SET_SEATED` actions.
+- **Decision 23 is done.** The bridge kind `GZ_LOBBY_SEND_WHOLE` is deleted.
+- **Decision 26, the budget.** The lobby's budget timer is armed only with no
+  round in flight; it is not set at the first start.
+- **New: the signing gate.** `may_answer`, `gz_lobby_member_gate_opened` and
+  `_closed`, `unready` reason 3, the uncounted locked/ready pair on the host
+  (composite-node.md 12.2).
+- **New.** A member whose ready never became durable readies when the same
+  terms come again after its restart; a member whose host shows no seat for it
+  sends its join again even if it has just sent a ready.
+- **The `part` code is removed** (the transport splits), and the scope-zero
+  `hello` is `gz_lobby_host_listing`, which the node part calls for each
+  listed lobby.

@@ -82,8 +82,10 @@ typedef struct {
  *
  *   begin        a round may begin (above). Called after the lobby's saves.
  *   cancel       the lobby ended by a `cancel` (messages.md 6.10): on the host
- *                after its cancel is saved and listed for every seat, on the
- *                member after the received cancel is saved. `reason` is the
+ *                right after its cancel is saved and before it is listed for
+ *                any seat, on the member right after the received cancel is
+ *                saved: what the signing engine saves for it follows the
+ *                lobby's save directly and joins its batch. `reason` is the
  *                cancel's (1 deadline below the minimum, 2 host's choice, 3
  *                signing failed). Called for every cancel, also one before
  *                any start: the signing engine ignores a lobby it never began.

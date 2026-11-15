@@ -68,10 +68,33 @@ static uint64_t port_mono(void *ctx)
 static int port_pub(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33])
 {
     gzp_exec_t *ex = ctx;
-    (void)epoch;
-    (void)index;
-    memcpy(pub33, ex->net->pub, 33);
-    return 1;
+    return gzp_net_key(ex->net, epoch, index, NULL, pub33);
+}
+
+/* Signatures for the lobbies (node.h, gz_node_crypto_t), over the same keys. */
+static int port_verify(void *ctx, const uint8_t pub[33], const uint8_t msg[32], const uint8_t sig[64])
+{
+    return gzp_net_verify(((gzp_exec_t *)ctx)->net, pub, msg, sig);
+}
+
+static int port_point_ok(void *ctx, const uint8_t pub[33])
+{
+    return gzp_net_point_ok(((gzp_exec_t *)ctx)->net, pub);
+}
+
+static int port_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
+{
+    gzp_exec_t *ex = ctx;
+    if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign(ex->net, 0, 0, msg, sig) : 0;
+    return gzp_net_sign(ex->net, epoch, index, msg, sig);
+}
+
+/* A lobby's signing gate closed (AT_JOIN): its scoped factory secret is
+ * wiped. The stand-in keys hold none apart; the line shows the moment. */
+static void port_forget(void *ctx, const uint8_t scope[32])
+{
+    (void)ctx;
+    gzp_log("key-forget scope=%02x%02x%02x%02x", scope[0], scope[1], scope[2], scope[3]);
 }
 
 static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
@@ -262,6 +285,17 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
         fflush(stdout);
         _exit(GZP_EXIT_TEST);
     }
+    /* Tests: the same, at the batch that holds a record of one type: a crash
+     * after a save and before its sends, picked by what was saved. */
+    if (ex->number == 1 && ex->opt->test_crash_after_record) {
+        for (i = 0; i < a->u.save.n_records; i++)
+            if (a->u.save.records[i].type == ex->opt->test_crash_after_record) {
+                gzp_log("test-crash after-record type=%08x seq=%llu", (unsigned)ex->opt->test_crash_after_record,
+                        (unsigned long long)a->u.save.batch.sequence);
+                fflush(stdout);
+                _exit(GZP_EXIT_TEST);
+            }
+    }
 #endif
 }
 
@@ -296,6 +330,10 @@ static void show_notify(uint32_t code, gz_bytes_t b)
         id[v.len] = 0;
         unsigned long long ver = gz_rec_find(b, GZ_VIEW_REC_VERSION, &w) == 1 && w.len == 8 ? gz_get_u64(w.data) : 0;
         gzp_log("view kind=%u id=%s version=%llu", (unsigned)(code & 0xffffu), id, ver);
+    } else if ((code & 0xffffff00u) == 0x4c00u) {
+        /* A lobby's notice (lobby.h, GZ_NOTE_*): its code and first bytes. */
+        gzp_log("lobby-note code=0x%04x a=%u b=%u c=%u", (unsigned)code, b.len > 0 ? b.data[0] : 0u,
+                b.len > 1 ? b.data[1] : 0u, b.len > 2 ? b.data[2] : 0u);
     }
 }
 #endif
@@ -957,8 +995,15 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.keys.host_pub = port_host_pub;
     cfg.keys.ctx = ex;
     cfg.host_funding = GZ_HOST_FUNDING_AUTO;
-    cfg.member_signing = GZ_MEMBER_SIGNING_AT_JOIN;
+    cfg.member_signing = (gz_member_signing_t)ex->opt->member_signing;
+    cfg.crypto.verify = port_verify;
+    cfg.crypto.point_ok = port_point_ok;
+    cfg.crypto.sign = port_sign;
+    cfg.crypto.forget = port_forget;
+    cfg.crypto.ctx = ex;
 #ifdef GZP_TEST_BUILD
+    cfg.test_sign_outcome = (uint32_t)ex->opt->test_sign_outcome;
+    cfg.test_sign_delay_ms = (uint32_t)ex->opt->test_sign_delay_ms;
     cfg.test_engines = (uint32_t)ex->opt->test_engines;
 #endif
     if (!ex->node && !(ex->node = malloc(gz_node_size()))) abort();

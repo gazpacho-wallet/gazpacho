@@ -25,9 +25,11 @@ gz_status_t gz_c_release_held(gz_node_t *c, int eng, gz_action_list_t *out);
  * composite's cancels of a freed slot's timers, and the record array of a
  * bracket's merge. */
 #define LIST_ACTIONS_NEEDED (NP_MAX_STEP_ACTIONS + GZ_NODE_N_TEST * TE_MAX_STEP_ACTIONS + \
-                             GZ_NODE_MAX_SLOTS * TS_MAX_STEP_ACTIONS + SLOT_MAX_TIMERS)
+                             GZ_NODE_MAX_SLOTS * TS_MAX_STEP_ACTIONS + SLOT_MAX_TIMERS + LS_MAX_STEP_ACTIONS + \
+                             GZ_NODE_MAX_SLOTS * 4)
 #define LIST_BYTES_NEEDED (NP_MAX_STEP_BYTES + GZ_NODE_N_TEST * TE_MAX_STEP_BYTES + \
-                           GZ_NODE_MAX_SLOTS * TS_MAX_STEP_BYTES + GZ_ACTION_MERGE_BYTES(GZ_NODE_LIST_ACTIONS))
+                           GZ_NODE_MAX_SLOTS * TS_MAX_STEP_BYTES + GZ_ACTION_MERGE_BYTES(GZ_NODE_LIST_ACTIONS) + \
+                           LS_MAX_STEP_BYTES + GZ_NODE_MAX_SLOTS * 8192u)
 _Static_assert(NP_MAX_LISTED <= GZ_NODE_MAX_SLOTS, "a listing reaches no more engines than there are slots");
 _Static_assert(LIST_ACTIONS_NEEDED <= GZ_NODE_LIST_ACTIONS, "GZ_NODE_LIST_ACTIONS below the engines' worst steps");
 _Static_assert(LIST_BYTES_NEEDED <= GZ_NODE_LIST_BYTES, "GZ_NODE_LIST_BYTES below the engines' worst steps");
@@ -122,6 +124,11 @@ static gz_status_t load_record(gz_node_t *c, const gz_record_t *rec, gz_batch_id
 {
     uint16_t area = (uint16_t)(rec->type >> 16);
     if (area == GZ_AREA_NODE) return np_load(c, rec, at);
+    /* A Lobby record goes to the slot its scope names (7.3). */
+    if (area == GZ_AREA_LOBBY) return gz_ls_load_record(c, rec);
+#ifdef GZ_TEST_KINDS
+    if (area == 0x7e5au) return gz_ss_load(c, rec); /* the signing stand-in's */
+#endif
 #ifdef GZ_TEST_KINDS
     for (int i = 0; i < c->n_test; i++)
         if (c->test[i].area == area) return gz_te_ops()->load(&c->test[i], rec, at);
@@ -165,13 +172,26 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
 
 /* Phase 2's order (10): the restore batch, the node part, the test engines,
  * then the view (each engine emits its own view objects in its resume). */
-enum { R_RESTORE = 0, R_NODE, R_TEST0, R_TEST1, R_DONE };
+enum { R_RESTORE = 0, R_NODE, R_SIGN, R_SLOT0, R_SLOT_LAST = R_SLOT0 + GZ_NODE_MAX_SLOTS - 1, R_TEST0, R_TEST1, R_DONE };
 
 static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finished)
 {
     gz_status_t st;
     int more = 0;
     *finished = 0;
+    /* The lobbies, one slot a call (10, step 6): SET_SEATED for every seat,
+     * CONNECT, the timers, the hand-off again for a check still in Signing.
+     * A slot loaded at this start takes its confirmations from here on, the
+     * ones held for it first (7.5, T-P42-4). */
+    if (c->resume_at >= R_SLOT0 && c->resume_at <= R_SLOT_LAST) {
+        int i = c->resume_at - R_SLOT0, e = ENG_SLOT0 + i;
+        c->resume_at++;
+        if (c->slots[i].state != SLOT_OPEN || c->slots[i].kind != SLOT_KIND_LOBBY) return GZ_OK;
+        if ((st = gz_c_resume(c, e, out, &more)) != GZ_OK) return st;
+        if (c->slots[i].state != SLOT_OPEN) return GZ_OK; /* its lobby was over: closed in that step */
+        c->resumed[e] = 1;
+        return gz_c_release_held(c, e, out);
+    }
     switch (c->resume_at) {
     case R_RESTORE:
         if (c->restored && !c->resume_restore_done) {
@@ -187,7 +207,17 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
         if ((st = np_resume(c, out)) != GZ_OK) return st;
         if ((st = gz_c_node_bracket_end(c, out)) != GZ_OK) return st;
         c->resumed[ENG_NODE] = 1;
-        c->resume_at = R_TEST0;
+        c->resume_at = R_SIGN;
+        return GZ_OK;
+    case R_SIGN:
+        /* Signing before the lobbies (10): an attempt found unfinished is
+         * failed first, so its lobby hands nothing over again. Until P4.3
+         * that is the stand-in, in test builds. */
+#ifdef GZ_TEST_KINDS
+        if ((st = gz_ss_resume(c, out, &more)) != GZ_OK) return st;
+        if (more) return GZ_OK;
+#endif
+        c->resume_at = R_SLOT0;
         return GZ_OK;
     case R_TEST0:
     case R_TEST1: {
@@ -302,7 +332,9 @@ static gz_status_t on_command(gz_node_t *c, const gz_event_t *ev, gz_action_list
     gz_bytes_t v, cmd = ev->u.user.bytes;
     uint16_t code = 0;
     if (gz_rec_find(cmd, GZ_CMD_REC_COMMAND, &v) == 1 && v.len == 2) code = gz_get_u16(v.data);
-    (void)code;
+    /* The lobby's commands and the signing gate's (lobbyslot.c). */
+    if (code && (GZ_CMD_RANGE(code) == GZ_CMD_RANGE_LOBBY || GZ_CMD_RANGE(code) == GZ_CMD_RANGE_NODE))
+        return np_command(c, code, cmd, out);
 #ifdef GZ_TEST_KINDS
     if (code && GZ_CMD_RANGE(code) == GZ_CMD_RANGE_TEST) {
         if (code >= 0x7e80) return np_command(c, code, cmd, out);

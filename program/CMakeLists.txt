@@ -122,6 +122,12 @@ if(Python3_Interpreter_FOUND)
       COMMAND ${GZP_PY} ${GZP_T}/${t}.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/${t})
     set_tests_properties(program_${t} PROPERTIES TIMEOUT 300)
   endforeach()
+  # The lobby in the composite, P4.2 (docs/notes/composite-node.md 15): a host
+  # with two lobbies and its members as separate processes, the signing
+  # stand-in behind the hand-off; crashes, a storage failure, the gates.
+  add_test(NAME program_lobby
+    COMMAND ${GZP_PY} ${GZP_T}/lobby.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/lobby)
+  set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})

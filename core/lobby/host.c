@@ -260,6 +260,9 @@ static gz_status_t end_lobby(gz_lobby_host_t *h, uint16_t reason, gz_action_list
     gz_lr_int(&w, 6, reason, 2);
     if (h->cancel_len) gz_lr_put(&w, 8, h->cancel_msg, h->cancel_len);
     TRY(gz_lr_save(out, GZ_REC_LOBBY_ENDED, &w));
+    /* The signing engine next, before anything outward: the record that ends
+     * its round joins this batch (a cancel never leaves a round running). */
+    if (h->signing.cancel) TRY(h->signing.cancel(h->signing.ctx, h->scope, reason, out));
     if (!h->cancel_len) TRY(gz_la_no_key(out, GZ_LOBBY_KEY_HOST));
     TRY(release_held(h, out));
     h->state = state;
@@ -268,8 +271,7 @@ static gz_status_t end_lobby(gz_lobby_host_t *h, uint16_t reason, gz_action_list
     for (i = 0; i < GZ_LOBBY_MAX_CONNS && h->cancel_len; i++)
         if (h->conns[i].used && seat_of(h, h->conns[i].key))
             TRY(gz_la_send(out, &h->conns[i].link, h->cancel_msg, h->cancel_len));
-    TRY(broadcast(h, out));
-    return h->signing.cancel ? h->signing.cancel(h->signing.ctx, h->scope, reason, out) : GZ_OK;
+    return broadcast(h, out);
 }
 
 static gz_status_t ready_check(gz_lobby_host_t *h, gz_action_list_t *out)

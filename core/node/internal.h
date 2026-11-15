@@ -14,6 +14,7 @@
 #include "gazpacho/envelope.h"
 #include "gazpacho/node.h"
 #include "engine.h"
+#include "gazpacho/lobby.h"
 
 #ifdef GZ_TEST_KINDS
 #define GZ_NODE_CHECKS 1        /* the test-build checks of 7.4 and 8.3 */
@@ -125,6 +126,36 @@ gz_status_t ts_watch(ts_t *s, const uint8_t txid[32], uint32_t depth, gz_action_
 gz_status_t ts_save(ts_t *s, gz_action_list_t *out);
 const gz_engine_ops_t *gz_ts_ops(void);
 
+/* ---- a slot's lobby (lobbyslot.c) ---------------------------------------- */
+
+/* The lobby's worst step (lobby.h: 256 actions; a new current version to
+ * every seat), with the stand-in's records and notices. */
+#define LS_MAX_STEP_ACTIONS 264
+#define LS_MAX_STEP_BYTES  (320u * 1024u)
+#define LS_MAX_TIMERS      GZ_LOBBY_MAX_TIMERS
+#define SLOT_KIND_STANDIN 0            /* test builds: the stand-in of test_slot.c */
+#define SLOT_KIND_LOBBY   1
+
+typedef union {
+    gz_lobby_host_t h;
+    gz_lobby_member_t m;
+} slot_lobby_t;
+
+const gz_engine_ops_t *gz_ls_ops(void);
+
+/* The signing stand-in (test builds): the rounds handed to it. */
+#define SS_MAX 32
+typedef struct {
+    int used, ended;
+    uint64_t seq, due_ms;              /* due_ms 0: no outcome is coming */
+    uint8_t scope[32], check[32];
+} ss_round_t;
+typedef struct {
+    ss_round_t r[SS_MAX];
+    uint64_t seq;
+    int arm, cur, force;
+} ss_t;
+
 /* ---- engines and slots -------------------------------------------------- */
 
 /* Engine indices: one bit each in a confirmation mask. */
@@ -159,7 +190,27 @@ typedef struct {
 #ifdef GZ_TEST_KINDS
     ts_t ts;
 #endif
+    /* A slot's lobby (SLOT_KIND_LOBBY). */
+    int kind;
+    struct gz_node *node;           /* the lobby's ports reach the node through the slot */
+    gz_link_t link;                 /* member: (its contribution key, the pinned host key) */
+    uint8_t address[GZ_LOBBY_MAX_ADDRESS];
+    uint8_t address_len;
+    uint16_t standbys;
+    int auto_join;
+    gz_lobby_conditions_t cond;
+    int gate_open, gate_flight;     /* the per-lobby signing gate (12.2), and: its check was seen in flight */
+    int told;                       /* the lobby's log line was given, with `last` */
+    uint32_t last[5];
+    int have_end;                   /* at load: the lobby's own end record was seen */
+    uint8_t end_cancel[GZ_LOBBY_MAX_SAVED_MSG];
+    size_t end_cancel_len;
+    slot_lobby_t lobby;
 } slot_t;
+
+_Static_assert(SLOT_MAX_SEATS >= GZ_LOBBY_MAX_SEATS, "a slot notes every seat its lobby can mark (T-P42-2)");
+_Static_assert(GZ_LOBBY_MAX_CONNS == GZ_NODE_MAX_CONNS, "one size for the connection tables (section 3)");
+_Static_assert(LS_MAX_TIMERS <= TS_MAX_TIMERS, "a lobby's timers are within a slot's budget (7.1)");
 
 /* ---- the node part ------------------------------------------------------ */
 
@@ -174,6 +225,17 @@ typedef struct {
 #define NP_MAX_CONNS GZ_NODE_MAX_CONNS
 #define NP_MAX_UNSEATED 16            /* the lobby's numbers, moved up (reviewer B, B7) */
 #define NP_IDLE_MS 60000u
+/* However much it sends, a connection without a seat goes this long after it
+ * came up, or lost its seat (T-P42-7: the lobby's ten-minute rule, kept by
+ * the node part; chatter does not hold a place). And for its first moments a
+ * newcomer is not yet "silent": it is not pushed out before those that have
+ * had the time to speak and did not. */
+#define NP_UNSEATED_MAX_MS 600000u
+#define NP_SILENT_GRACE_MS 2000u
+/* Drop notices are rate-limited (T-P42-8): the first NP_DROP_NOTICES of a
+ * reason are told, then every time the count reaches a power of two. The
+ * counts themselves are exact. */
+#define NP_DROP_NOTICES 64u
 #define NP_HELLO_GAP_MS 1000u          /* one answer a second per link */
 #define NP_HELLO_WINDOW_MS 600000u     /* 20 ignored hellos in 10 minutes close it */
 #define NP_HELLO_IGNORED_MAX 20
@@ -181,11 +243,33 @@ typedef struct {
 /* The node part's worst step: every connection closed at once (the idle
  * timer, or a slot's close putting its connections over the cap), with the
  * step's notices, timer and result. Test builds hold every step to it. */
-#define NP_MAX_STEP_ACTIONS (NP_MAX_CONNS + 8)
+#define NP_MAX_STEP_ACTIONS (NP_MAX_CONNS + SLOT_MAX_SEATS + SLOT_MAX_TIMERS + 16)
 #define NP_MAX_STEP_BYTES (16u * 1024u)
-#define NP_MAX_TIMERS 2                /* the unbound idle timer, the continuation timer */
+#define NP_MAX_TIMERS 3                /* the unbound idle timer, the continuation timer */
 #define NP_TIMER_IDLE 1u
-#define NP_TIMER_CONTINUE 2u
+#define NP_TIMER_CONTINUE 2u           /* the next thing due later: a Closing slot's end */
+#define NP_TIMER_SIGN 3u               /* test builds: the signing stand-in's outcome */
+#define NP_MAX_ENDED 256               /* ended lobbies answered from the index (2.4) */
+
+/* An ended lobby in the index: what a late hello is answered with. */
+typedef struct {
+    int used;
+    uint64_t seq;
+    uint8_t scope[32];
+    uint8_t state;
+    uint16_t reason, cancel_len;
+    uint8_t cancel[GZ_LOBBY_MAX_SAVED_MSG];
+} np_ended_t;
+
+/* A Closing slot (2.4): what it keeps while a round's last news may come. */
+typedef struct {
+    int used, host;
+    uint64_t seq, until_ms;         /* the monotonic clock */
+    uint8_t scope[32];
+    gz_link_t link;                 /* member: its CONNECT stands */
+    gz_node_id_t seated[SLOT_MAX_SEATS]; /* host: its members' seats stay */
+    size_t n_seated;
+} np_closing_t;
 
 typedef struct {
     int used;
@@ -195,6 +279,7 @@ typedef struct {
     int slot;                       /* bound slot, or -1 */
     gz_link_t link;
     uint64_t since_ms;              /* connected, or last message (the monotonic clock) */
+    uint64_t unseated_ms;           /* connected, or lost its seat: the hard limit counts from here */
     int spoke;
     uint64_t hello_last_ms, hello_window_ms; /* the monotonic clock */
     uint32_t hello_ignored;
@@ -241,6 +326,11 @@ typedef struct {
     uint64_t idle_due_ms;           /* 0: the idle timer is not set (the monotonic clock) */
     int idle_check;                 /* a seat was given up in this bracket: look at the idle timer at its end */
     uint64_t drops[DROP_N];
+    np_ended_t ended[NP_MAX_ENDED];
+    uint64_t ended_seq;
+    np_closing_t closing[GZ_NODE_MAX_TOMBSTONES];
+    uint64_t closing_due_ms;        /* 0: the closing timer is not set */
+    uint64_t skipped_slots;         /* slots left out at load: keys the port could not give */
     gz_node_id_t seat_key;          /* test builds: a slot-seat command being carried out */
     int seat_val;
 } np_t;
@@ -298,6 +388,15 @@ struct gz_node {
     uint32_t slot_serial;
     np_t np;
     watch_t watches[MAX_WATCHES];
+    int unlocked;                   /* the node-wide signing gate (12.2): memory only, closed at a start */
+    struct {                        /* a lobby command being carried out */
+        uint16_t code;
+        int refused;
+        gz_bytes_t a, b;
+    } lc;
+#ifdef GZ_TEST_KINDS
+    ss_t ss;
+#endif
 
     /* one call */
     int busy[ENG_N];
@@ -354,7 +453,8 @@ typedef enum {
     RT_SIGNING,          /* to the signing engine */
     RT_TEST,             /* to test engine `eng` */
     RT_LISTING,          /* host: a scope-zero hello, to every listed slot */
-    RT_UNKNOWN_HELLO     /* host: lobby_status state 0 for an unknown scope */
+    RT_UNKNOWN_HELLO,    /* host: lobby_status state 0 for an unknown scope */
+    RT_ENDED_HELLO       /* host: a late hello for ended lobby `slot` of the index: its final state and cancel */
 } rt_kind_t;
 
 typedef struct {
@@ -389,5 +489,29 @@ gz_status_t np_command_result(gz_action_list_t *out, gz_bytes_t cmd, uint16_t st
 int np_conn_find(const gz_node_t *c, const gz_link_t *link);
 int np_same_key(const gz_node_id_t *a, const gz_node_id_t *b);
 int np_same_link(const gz_link_t *a, const gz_link_t *b);
+uint64_t np_mono(gz_node_t *c);
+gz_status_t np_set_timer(gz_action_list_t *out, uint32_t id, uint64_t delay);
+gz_status_t np_disconnect(gz_action_list_t *out, const gz_link_t *link, uint16_t why);
+gz_status_t np_slot_freed(gz_node_t *c, int i, gz_action_list_t *out);
+gz_status_t np_save_pair(gz_node_t *c, uint32_t first, const gz_record_t *extra, gz_action_list_t *out);
+
+/* lobbyslot.c */
+int gz_ls_init(gz_node_t *c, int i);
+gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out);
+gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec);
+gz_status_t gz_ls_load_closed(gz_node_t *c, const gz_record_t *rec);
+gz_status_t gz_ls_load_record(gz_node_t *c, const gz_record_t *rec);
+gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out);
+int gz_ls_ended_find(const gz_node_t *c, const uint8_t scope[32]);
+gz_status_t gz_ls_ended_answer(const gz_node_t *c, int idx, const gz_link_t *link, gz_action_list_t *out);
+gz_status_t gz_ls_closing_timer(gz_node_t *c, gz_action_list_t *out);
+int gz_ls_closing_count(const gz_node_t *c);
+gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t *, int, gz_action_list_t *),
+                              gz_action_list_t *out);
+#ifdef GZ_TEST_KINDS
+gz_status_t gz_ss_load(gz_node_t *c, const gz_record_t *rec);
+gz_status_t gz_ss_timer(gz_node_t *c, gz_action_list_t *out);
+gz_status_t gz_ss_resume(gz_node_t *c, gz_action_list_t *out, int *more);
+#endif
 
 #endif
