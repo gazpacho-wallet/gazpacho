@@ -16,7 +16,10 @@ static int cmp_balance_desc(const void *a, const void *b) {
     uint64_t bb = g_sort_factory->profiles[ib].contribution_sats;
     if (ba > bb) return -1;
     if (ba < bb) return 1;
-    return 0;
+    /* Equal profiles: participant index.  The input is ascending, so this is
+       the order a stable sort gives, and it does not depend on the qsort
+       implementation. */
+    return (ia > ib) - (ia < ib);
 }
 
 /* Timezone cluster: group same-timezone clients, reliable clients first within group */
@@ -32,7 +35,10 @@ static int cmp_timezone_cluster(const void *a, const void *b) {
     float ub = g_sort_factory->profiles[ib].uptime_score;
     if (ua > ub) return -1;
     if (ua < ub) return 1;
-    return 0;
+    /* Equal profiles: participant index.  The input is ascending, so this is
+       the order a stable sort gives, and it does not depend on the qsort
+       implementation. */
+    return (ia > ib) - (ia < ib);
 }
 
 /* Outward: lowest uptime first (ascending), then lowest contribution (ascending) */
@@ -48,7 +54,23 @@ static int cmp_uptime_asc(const void *a, const void *b) {
     uint64_t bb = g_sort_factory->profiles[ib].contribution_sats;
     if (ba < bb) return -1;
     if (ba > bb) return 1;
-    return 0;
+    /* Equal profiles: participant index.  The input is ascending, so this is
+       the order a stable sort gives, and it does not depend on the qsort
+       implementation. */
+    return (ia > ib) - (ia < ib);
+}
+
+/* Order clients[] (participant indices, ascending on entry) by the
+   factory's placement strategy. */
+static void apply_placement(const factory_t *f, uint32_t *clients, size_t n_clients) {
+    int (*cmp)(const void *, const void *) = NULL;
+    if (f->placement_mode == PLACEMENT_INWARD) cmp = cmp_balance_desc;
+    else if (f->placement_mode == PLACEMENT_OUTWARD) cmp = cmp_uptime_asc;
+    else if (f->placement_mode == PLACEMENT_TIMEZONE_CLUSTER) cmp = cmp_timezone_cluster;
+    if (!cmp || n_clients < 2) return;
+    g_sort_factory = f;
+    qsort(clients, n_clients, sizeof(uint32_t), cmp);
+    g_sort_factory = NULL;
 }
 
 #include "superscalar/sha256.h"
@@ -117,9 +139,75 @@ static int build_musig_p2tr_spk(
     return 1;
 }
 
+/* The caller's channel output script for this member, or NULL for the
+   default. */
+static const unsigned char *leaf_channel_spk(const factory_t *f, uint32_t client_idx) {
+    if (!f->chan_spks || client_idx == 0 || client_idx >= f->n_participants ||
+        client_idx >= f->config.max_signers || !f->chan_spks[client_idx].set)
+        return NULL;
+    return f->chan_spks[client_idx].spk;
+}
+
+/* A member's channel output script: the caller's if set, else
+   MuSig(member, LSP) [+ the CLTV recovery leaf chan_merkle_root]. */
+static int build_channel_spk(const factory_t *f, uint32_t client_idx,
+                             const unsigned char *chan_merkle_root,
+                             unsigned char spk_out[34]) {
+    const unsigned char *custom = leaf_channel_spk(f, client_idx);
+    if (custom) {
+        memcpy(spk_out, custom, 34);
+        return 1;
+    }
+    secp256k1_pubkey pks[2] = { f->pubkeys[client_idx], f->pubkeys[0] };
+    musig_keyagg_t ka;
+    secp256k1_xonly_pubkey tw;
+    return build_musig_p2tr_spk(f->ctx, spk_out, &tw, NULL, &ka, pks, 2,
+                                chan_merkle_root);
+}
+
+/* A PS leaf past chain[0] signs the spend of the previous chain TX's channel
+   output; with a caller channel script that is the channel's key (key path
+   only).  Every other node input is signed over the node's own keyagg and
+   taptree. */
+static int node_signs_ps_chan_key(const factory_node_t *node) {
+    return node->is_ps_leaf && node->ps_chain_len > 0 &&
+           node->type != NODE_PS_SUBFACTORY && node->has_ps_chan_key;
+}
+
+static const musig_keyagg_t *node_sign_keyagg(const factory_node_t *node) {
+    return node_signs_ps_chan_key(node) ? &node->ps_chan_keyagg : &node->keyagg;
+}
+
+static const unsigned char *node_sign_merkle(const factory_node_t *node) {
+    if (node_signs_ps_chan_key(node)) return NULL;
+    return node->has_taptree ? node->merkle_root : NULL;
+}
+
+static const secp256k1_xonly_pubkey *node_sign_output_key(const factory_node_t *node) {
+    return node_signs_ps_chan_key(node) ? &node->ps_chan_output_key
+                                        : &node->tweaked_pubkey;
+}
+
 /* (build_single_p2tr_spk removed — was only used by the legacy
    shachain-hashlock L-stock SPK; the canonical or(N-of-N, L&CSV)
    structure does not need it.) */
+
+/* The DW layer a state node's nSequence counts down on, or NULL for a node
+   with no relative lock (kickoffs, static kickoffs, PS leaves).  build_subtree
+   gives every other state node a layer index in [0, counter.n_layers). */
+static const dw_layer_t *node_dw_layer(const factory_t *f,
+                                       const factory_node_t *node) {
+    if (node->is_static_only || node->type == NODE_KICKOFF || node->is_ps_leaf)
+        return NULL;
+    if (f->per_leaf_enabled) {
+        int node_idx = (int)(node - f->nodes);
+        for (int i = 0; i < f->n_leaf_nodes; i++) {
+            if ((int)f->leaf_node_indices[i] == node_idx)
+                return &f->leaf_layers[i];
+        }
+    }
+    return &f->counter.layers[node->dw_layer_index];
+}
 
 /* Get nSequence for a node based on its type and DW layer.
    PS leaf state nodes always use 0xFFFFFFFE (BIP-68 disabled, anti-fee-snipe
@@ -138,14 +226,7 @@ static uint32_t node_nsequence(const factory_t *f, const factory_node_t *node) {
         return NSEQUENCE_DISABLE_BIP68;
     if (node->is_ps_leaf)
         return 0xFFFFFFFEu;
-    if (f->per_leaf_enabled) {
-        int node_idx = (int)(node - f->nodes);
-        for (int i = 0; i < f->n_leaf_nodes; i++) {
-            if ((int)f->leaf_node_indices[i] == node_idx)
-                return dw_current_nsequence(&f->leaf_layers[i]);
-        }
-    }
-    return dw_current_nsequence(&f->counter.layers[node->dw_layer_index]);
+    return dw_current_nsequence(node_dw_layer(f, node));
 }
 
 /* Add a node to the factory. Returns node index or -1 on error.
@@ -390,7 +471,7 @@ static int apply_l_stock_hashlock(factory_t *f, factory_node_t *node) {
        2-leaf L-stock SPK as the LSP (else the leaf-state tx diverges + co-sign fails). */
     if (f->has_node_l_stock_hashes) {
         size_t idx = (size_t)(node - f->nodes);
-        if (idx < FACTORY_MAX_NODES && f->node_l_stock_hash_valid[idx]) {
+        if (idx < f->config.max_nodes && f->node_l_stock_hash_valid[idx]) {
             memcpy(node->l_stock_hash, f->node_l_stock_hashes[idx], 32);
             node->has_l_stock_hash = 1;
         }
@@ -489,21 +570,109 @@ static int update_l_stock_outputs(factory_t *f) {
     return 1;
 }
 
-/* #56 tree CPFP anchor.  FACTORY_ANCHOR_COST is reserved out of a node's
-   output_total (so the node's miner fee is unchanged), and factory_append_tree_anchor
+/* #56 tree CPFP anchor.  The anchor amount is reserved out of a node's
+   output_total on top of its miner fee, and factory_append_tree_anchor
    appends the keyless P2A output LAST (child vout wiring + the count-bounded
    recovery/WT parsers are unaffected).  Gated on f->use_tree_anchor; the channel
    funding_amount tracks the node output (lsp_channels.c:221) so per-channel
    conservation stays balanced automatically. */
-#define FACTORY_ANCHOR_COST(f) ((f)->use_tree_anchor ? (uint64_t)ANCHOR_OUTPUT_AMOUNT : 0)
+
+/* 1 if a node with n_p2tr P2TR outputs gets the P2A anchor appended. */
+static int node_gets_anchor(const factory_t *f, size_t n_p2tr) {
+    return f->use_tree_anchor && n_p2tr < FACTORY_MAX_OUTPUTS;
+}
+
+/* Amount a node reserves out of its input: its miner fee (exact vsize at the
+   tree fee rate) plus the anchor value when it carries one.  Records the fee
+   on the node. */
+static uint64_t node_reserve(const factory_t *f, factory_node_t *node,
+                             size_t n_inputs, size_t n_p2tr, int with_anchor) {
+    uint64_t fee = factory_tree_tx_fee(f, n_inputs, n_p2tr, with_anchor);
+    node->fee_sats = fee;
+    if (fee == FEE_INVALID) return FEE_INVALID;  /* callers: input <= reserve */
+    return fee + (with_anchor ? factory_tree_anchor_sats(f) : 0);
+}
+
+/* factory_build_tree messages, silenced for trial builds (build_quiet) */
+#define BUILD_LOG(f, ...) do { if (!(f)->build_quiet) printf(__VA_ARGS__); } while (0)
+#define BUILD_ERR(f, ...) do { if (!(f)->build_quiet) fprintf(stderr, __VA_ARGS__); } while (0)
+
+uint64_t factory_tree_anchor_sats(const factory_t *f) {
+    return (f && f->tree_fee_rate == 0) ? 0 : (uint64_t)ANCHOR_OUTPUT_AMOUNT;
+}
+
+uint64_t factory_tree_tx_fee(const factory_t *f, size_t n_inputs, size_t n_p2tr,
+                             int with_anchor) {
+    return fee_at_rate(f ? f->tree_fee_rate : 0,
+                       fee_keypath_tx_vsize(n_inputs, n_p2tr, with_anchor ? 1 : 0));
+}
+
+uint64_t factory_ps_chain_fee(const factory_t *f) {
+    return factory_tree_tx_fee(f, 1, 1, node_gets_anchor(f, 1));
+}
+
+uint64_t factory_ps_chain_reserve(const factory_t *f) {
+    uint64_t fee = factory_ps_chain_fee(f);
+    if (fee == FEE_INVALID) return FEE_INVALID;
+    return fee + (node_gets_anchor(f, 1) ? factory_tree_anchor_sats(f) : 0);
+}
+
+size_t factory_distribution_tx_vsize(size_t n_clients) {
+    return fee_keypath_tx_vsize(1, n_clients, 1);
+}
+
+uint64_t factory_distribution_fee(const factory_t *f, size_t n_clients) {
+    return fee_at_rate(f ? f->tree_fee_rate : 0, factory_distribution_tx_vsize(n_clients));
+}
+
 static void factory_append_tree_anchor(const factory_t *f, factory_node_t *node) {
-    if (!f->use_tree_anchor) return;
-    if (node->n_outputs >= FACTORY_MAX_OUTPUTS) return;  /* no room (max-arity) */
+    if (!node_gets_anchor(f, node->n_outputs)) return;  /* off, or no room (max-arity) */
     size_t i = node->n_outputs;
     memcpy(node->outputs[i].script_pubkey, P2A_SPK, P2A_SPK_LEN);
     node->outputs[i].script_pubkey_len = P2A_SPK_LEN;
-    node->outputs[i].amount_sats = ANCHOR_OUTPUT_AMOUNT;
+    node->outputs[i].amount_sats = factory_tree_anchor_sats(f);
     node->n_outputs = i + 1;
+}
+
+static uint64_t capacity_leaf_stock(const factory_t *f) {
+    return f->leaf_stock_sats ? f->leaf_stock_sats : CHANNEL_DUST_LIMIT_SATS;
+}
+
+/* Amounts of a leaf's n_clients channel outputs and its stock output from
+   output_total.  With member capacities each channel is its member's
+   capacity and the stock is the rest (which the bottom-up sizing makes the
+   configured leaf stock); otherwise output_total is split equally over the
+   n_clients + 1 outputs and the stock takes the remainder.  Returns 0 when
+   an output would fall below dust. */
+static int leaf_output_amounts(const factory_t *f, const uint32_t *clients,
+                               size_t n_clients, uint64_t output_total,
+                               uint64_t *chan_out, uint64_t *stock_out,
+                               const char *what) {
+    if (f->member_capacity) {
+        uint64_t sum = 0;
+        for (size_t i = 0; i < n_clients; i++) {
+            chan_out[i] = f->member_capacity[clients[i]];
+            sum += chan_out[i];
+        }
+        if (sum > output_total || output_total - sum < CHANNEL_DUST_LIMIT_SATS) {
+            BUILD_ERR(f, "Factory: %s leaf %llu sats cannot carry capacities "
+                    "of %llu sats and a stock\n", what,
+                    (unsigned long long)output_total, (unsigned long long)sum);
+            return 0;
+        }
+        *stock_out = output_total - sum;
+        return 1;
+    }
+    uint64_t per_output = output_total / (n_clients + 1);
+    uint64_t remainder = output_total - per_output * (n_clients + 1);
+    if (per_output < CHANNEL_DUST_LIMIT_SATS) {
+        BUILD_ERR(f, "Factory: %s leaf output %llu below dust limit\n", what,
+                (unsigned long long)per_output);
+        return 0;
+    }
+    for (size_t i = 0; i < n_clients; i++) chan_out[i] = per_output;
+    *stock_out = per_output + remainder;
+    return 1;
 }
 
 /* Set up leaf outputs for a leaf state node. */
@@ -514,15 +683,14 @@ static int setup_leaf_outputs(
     uint32_t client_b_idx,
     uint64_t input_amount
 ) {
-    uint64_t output_total = input_amount - f->fee_per_tx - FACTORY_ANCHOR_COST(f);
-    uint64_t per_output = output_total / 3;
-    uint64_t remainder = output_total - per_output * 3;
-
-    if (per_output < CHANNEL_DUST_LIMIT_SATS) {
-        fprintf(stderr, "Factory: output %llu below dust limit\n",
-                (unsigned long long)per_output);
+    uint64_t reserve = node_reserve(f, node, 1, 3, node_gets_anchor(f, 3));
+    if (input_amount <= reserve) return 0;
+    uint64_t output_total = input_amount - reserve;
+    uint32_t leaf_clients[2] = { client_a_idx, client_b_idx };
+    uint64_t chan_amt[2], stock_amt;
+    if (!leaf_output_amounts(f, leaf_clients, 2, output_total, chan_amt, &stock_amt,
+                             "2-member"))
         return 0;
-    }
 
     node->n_outputs = 3;
 
@@ -550,33 +718,27 @@ static int setup_leaf_outputs(
 
     /* Channel A: MuSig(client_a, LSP) [+ CLTV recovery leaf] */
     {
-        secp256k1_pubkey pks[2] = { f->pubkeys[client_a_idx], f->pubkeys[0] };
-        musig_keyagg_t ka;
-        secp256k1_xonly_pubkey tw;
-        if (!build_musig_p2tr_spk(f->ctx, node->outputs[0].script_pubkey,
-                                   &tw, NULL, &ka, pks, 2, chan_merkle_root))
+        if (!build_channel_spk(f, client_a_idx, chan_merkle_root,
+                               node->outputs[0].script_pubkey))
             return 0;
         node->outputs[0].script_pubkey_len = 34;
-        node->outputs[0].amount_sats = per_output;
+        node->outputs[0].amount_sats = chan_amt[0];
     }
 
     /* Channel B: MuSig(client_b, LSP) [+ CLTV recovery leaf] */
     {
-        secp256k1_pubkey pks[2] = { f->pubkeys[client_b_idx], f->pubkeys[0] };
-        musig_keyagg_t ka;
-        secp256k1_xonly_pubkey tw;
-        if (!build_musig_p2tr_spk(f->ctx, node->outputs[1].script_pubkey,
-                                   &tw, NULL, &ka, pks, 2, chan_merkle_root))
+        if (!build_channel_spk(f, client_b_idx, chan_merkle_root,
+                               node->outputs[1].script_pubkey))
             return 0;
         node->outputs[1].script_pubkey_len = 34;
-        node->outputs[1].amount_sats = per_output;
+        node->outputs[1].amount_sats = chan_amt[1];
     }
 
     /* L-stock SPK: or(N-of-N keyagg, L&CSV) per ZmnSCPxj's t/1242 */
     if (!set_leaf_l_stock_output(f, node, node->outputs[2].script_pubkey))
         return 0;
     node->outputs[2].script_pubkey_len = 34;
-    node->outputs[2].amount_sats = per_output + remainder;
+    node->outputs[2].amount_sats = stock_amt;
 
     factory_append_tree_anchor(f, node);   /* #56: CPFP anchor for the cascade */
     return 1;
@@ -603,10 +765,11 @@ static int build_all_unsigned_txs(factory_t *f) {
 
         node->nsequence = node_nsequence(f, node);
 
-        if (!build_unsigned_tx(&node->unsigned_tx, display_txid,
-                               input_txid, input_vout,
-                               node->nsequence,
-                               node->outputs, node->n_outputs))
+        if (!build_unsigned_tx_v(&node->unsigned_tx, display_txid,
+                                 input_txid, input_vout,
+                                 node->nsequence,
+                                 node->outputs, node->n_outputs,
+                                 FACTORY_TREE_TX_VERSION))
             return 0;
 
         /* Convert display-order txid to internal byte order */
@@ -700,13 +863,20 @@ static int compute_tree_depth_psk(size_t n_clients, factory_arity_t arity,
 static int compute_leaf_count_psk(size_t n_clients, factory_arity_t arity,
                                     size_t ps_leaf_cap);
 static size_t ps_leaf_capacity(const factory_t *f);
+static uint64_t capacity_subtree_input(const factory_t *f, const uint32_t *clients,
+                                       size_t n_clients, int depth);
 
 /* Compute the DW counter n_layers given a tree depth and the static-near-root
    threshold (Phase 3 of mixed-arity plan).  Depths [0, threshold) are
    kickoff-only and contribute no DW layers; depths [threshold, depth] each
-   get a DW layer.  Caps at DW_MAX_LAYERS.  Always returns >= 1 to keep the
-   counter array valid (a degenerate fully-static tree leaves a single unused
-   layer slot rather than 0). */
+   get a DW layer, up to DW_MAX_LAYERS.  The state nodes of deeper depths count
+   down on the innermost layer together with it (build_subtree clamps the layer
+   index), so no tree needs more than DW_MAX_LAYERS layers: when that layer
+   moves, the newer state at the shallowest depth sharing it wins, and every
+   deeper state hangs off it.  Each sharing depth still adds its own relative
+   lock to the exit (factory_early_warning_time counts it).  Always returns
+   >= 1 to keep the counter array valid (a degenerate fully-static tree keeps
+   a single layer, used only by a leaf inside the static depths). */
 static int dw_n_layers_for(int tree_depth, uint32_t static_threshold) {
     int t = (int)static_threshold;
     if (t < 0) t = 0;
@@ -785,7 +955,7 @@ int factory_init_with_config(factory_t *f, secp256k1_context *ctx,
     f->n_participants = n_participants;
     f->step_blocks = step_blocks;
     f->states_per_layer = states_per_layer;
-    f->fee_per_tx = 200;
+    f->tree_fee_rate = FACTORY_DEFAULT_TREE_FEE_RATE;  /* the LSP's term overrides */
 
     /* Store config, then grow it to fit n_participants (see factory_config_fit).
        Callers that pass an explicit cfg still get at least what they asked for. */
@@ -821,9 +991,10 @@ int factory_init_with_config(factory_t *f, secp256k1_context *ctx,
     f->leaf_arity = FACTORY_ARITY_2;
     size_t nc = (n_participants > 1) ? n_participants - 1 : 1;
     int n_leaves = compute_leaf_count(nc, FACTORY_ARITY_2);
-    int n_layers = compute_tree_depth(nc, FACTORY_ARITY_2) + 1;
+    int n_layers = dw_n_layers_for(compute_tree_depth(nc, FACTORY_ARITY_2), 0);
     f->n_leaf_nodes = n_leaves;
-    dw_counter_init(&f->counter, n_layers, step_blocks, states_per_layer);
+    if (!dw_counter_init(&f->counter, n_layers, step_blocks, states_per_layer))
+        return 0;
 
     for (int i = 0; i < n_leaves; i++)
         dw_layer_init(&f->leaf_layers[i], step_blocks, states_per_layer);
@@ -858,7 +1029,7 @@ void factory_init_from_pubkeys(factory_t *f, secp256k1_context *ctx,
     f->n_participants = n_participants;
     f->step_blocks = step_blocks;
     f->states_per_layer = states_per_layer;
-    f->fee_per_tx = 200;  /* 1 sat/vB floor for ~200 vB tx; overridden by factory_build_tree */
+    f->tree_fee_rate = FACTORY_DEFAULT_TREE_FEE_RATE;  /* the LSP's term overrides */
     factory_config_default(&f->config);
     factory_config_fit(&f->config, n_participants);   /* grow to hold N (see above) */
 
@@ -879,7 +1050,7 @@ void factory_init_from_pubkeys(factory_t *f, secp256k1_context *ctx,
     f->leaf_arity = FACTORY_ARITY_2;
     size_t nc = (n_participants > 1) ? n_participants - 1 : 1;
     int n_leaves = compute_leaf_count(nc, FACTORY_ARITY_2);
-    int n_layers = compute_tree_depth(nc, FACTORY_ARITY_2) + 1;
+    int n_layers = dw_n_layers_for(compute_tree_depth(nc, FACTORY_ARITY_2), 0);
     f->n_leaf_nodes = n_leaves;
     dw_counter_init(&f->counter, n_layers, step_blocks, states_per_layer);
 
@@ -943,16 +1114,31 @@ static size_t ps_leaf_capacity(const factory_t *f) {
     return (size_t)k * (size_t)k;
 }
 
-/* Determine if a subtree of `nc` clients is a leaf at a level whose
-   arity is `a`.  For PS with k²-sub-factories enabled, leaves hold up
-   to k² clients; otherwise PS holds 1 client per leaf (legacy). */
-static int subtree_is_leaf(const factory_t *f, int a, size_t nc) {
-    /* arity-1: 1 client per leaf */
-    if (a == 1) return (nc <= 1);
-    /* PS: 1 client per leaf at k=1, k² clients per leaf at k>1 */
-    if (a == FACTORY_ARITY_PS) return (nc <= ps_leaf_capacity(f));
-    /* arity-A (A >= 2): up to A clients per leaf */
-    return (nc <= (size_t)a);
+/* Clients one leaf of arity `a` holds: a PS leaf ps_cap (1, or k² with
+   sub-factories), arity 1 one, arity A >= 2 up to A. */
+static size_t leaf_capacity_raw(int a, size_t ps_cap) {
+    return (a == FACTORY_ARITY_PS) ? ps_cap : (size_t)a;
+}
+
+/* Leaf rule.  Every leaf is of the kind of the last arity entry `last`:
+   pseudo-Spilman when it is FACTORY_ARITY_PS, DW otherwise.  A level of that
+   kind ends a subtree that fits one of its own leaves (an A-way DW level takes
+   up to A clients, a PS level ps_cap) and builds it with its own arity.  A
+   level of the other kind (a DW fan-out above PS leaves, or a PS binary split
+   above DW leaves) ends a subtree only when it fits one of its own leaves AND
+   one leaf of `last`, and builds that leaf with `last`; otherwise the level
+   keeps splitting.  Returns the arity to build the leaf with, or 0 when the
+   subtree is split. */
+static int leaf_arity_raw(int a, int last, size_t ps_cap, size_t nc) {
+    if (nc > leaf_capacity_raw(a, ps_cap)) return 0;
+    if ((a == FACTORY_ARITY_PS) == (last == FACTORY_ARITY_PS)) return a;
+    return (nc <= leaf_capacity_raw(last, ps_cap)) ? last : 0;
+}
+
+/* Arity a subtree of `nc` clients reaching a level of arity `a` is built with
+   as a leaf, or 0 if it is split (see leaf_arity_raw). */
+static int subtree_leaf_arity(const factory_t *f, int a, size_t nc) {
+    return leaf_arity_raw(a, (int)f->leaf_arity, ps_leaf_capacity(f), nc);
 }
 
 /* Split `nc` clients into N children at a level whose arity is `a`.
@@ -1031,7 +1217,7 @@ static void simulate_tree(const factory_t *f, size_t n_clients,
         if (nc == 0) continue;
         if (d > max_depth) max_depth = d;
         int a = arity_at_depth(f, d);
-        if (subtree_is_leaf(f, a, nc)) {
+        if (subtree_leaf_arity(f, a, nc)) {
             leaves++;
         } else {
             size_t parts[FACTORY_MAX_OUTPUTS];
@@ -1089,87 +1275,162 @@ void factory_set_ps_subfactory_arity(factory_t *f, uint32_t k) {
 
 int factory_client_to_leaf(const factory_t *f, size_t client_idx,
                             size_t *node_idx_out, uint32_t *vout_out) {
-    if (!f || !node_idx_out || !vout_out) return 0;
+    if (!f || !node_idx_out || !vout_out || !f->nodes || !f->leaf_node_indices)
+        return 0;
 
-    if (f->n_level_arity > 0) {
-        /* Mixed-arity factories: walk leaves and match by signer_indices.
-           Leaves can hold up to 8 channels; the legacy formula below
-           computes leaves that may not exist and outputs that are wrong. */
-        uint32_t my_index = (uint32_t)(client_idx + 1);  /* signer_indices is 1-based */
-        for (int li = 0; li < f->n_leaf_nodes; li++) {
-            size_t ni = f->leaf_node_indices[li];
-            const factory_node_t *leaf = &f->nodes[ni];
-            for (size_t s = 1; s < leaf->n_signers; s++) {
-                if (leaf->signer_indices[s] == my_index) {
-                    *node_idx_out = ni;
+    /* The member's channel is on the leaf -- or, for PS leaves with
+       sub-factories, the sub-factory -- whose signers include it, at its slot
+       after the LSP (signer_indices[0]): every leaf builder puts member
+       signer_indices[s] at vout s - 1.  Which leaf that is depends on the
+       placement mode and profiles, so it is looked up, never computed from
+       the participant index. */
+    uint32_t my_index = (uint32_t)(client_idx + 1);
+    for (int li = 0; li < f->n_leaf_nodes; li++) {
+        size_t ni = f->leaf_node_indices[li];
+        if (ni >= f->n_nodes) continue;
+        const factory_node_t *leaf = &f->nodes[ni];
+        size_t n_sub = leaf->n_subfactories > 0 ? (size_t)leaf->n_subfactories : 0;
+        for (size_t si = 0; si < (n_sub ? n_sub : 1); si++) {
+            size_t node = ni;
+            if (n_sub) {
+                int sn = leaf->subfactory_node_indices[si];
+                if (sn < 0 || (size_t)sn >= f->n_nodes) continue;
+                node = (size_t)sn;
+            }
+            const factory_node_t *n = &f->nodes[node];
+            for (size_t s = 1; s < n->n_signers; s++) {
+                if (n->signer_indices[s] == my_index) {
+                    *node_idx_out = node;
                     *vout_out = (uint32_t)(s - 1);
                     return 1;
                 }
             }
         }
-        return 0;
     }
-
-    /* ARITY_PS with k>1 sub-factories (canonical t/1242 k² shape):
-       client i lives on leaf i/k² in sub-factory (i%k²)/k as the
-       (i%k)-th channel output of that sub-factory's chain[0] TX. */
-    if (f->leaf_arity == FACTORY_ARITY_PS && f->ps_subfactory_arity > 1) {
-        size_t k = (size_t)f->ps_subfactory_arity;
-        size_t cap = k * k;
-        size_t leaf_idx = client_idx / cap;
-        size_t sub_idx_in_leaf = (client_idx % cap) / k;
-        size_t channel_in_sub = client_idx % k;
-        if (leaf_idx >= (size_t)f->n_leaf_nodes) return 0;
-        const factory_node_t *leaf =
-            &f->nodes[f->leaf_node_indices[leaf_idx]];
-        if ((int)sub_idx_in_leaf >= leaf->n_subfactories) return 0;
-        int sub_node = leaf->subfactory_node_indices[sub_idx_in_leaf];
-        if (sub_node < 0) return 0;
-        *node_idx_out = (size_t)sub_node;
-        *vout_out = (uint32_t)channel_in_sub;
-        return 1;
-    }
-
-    /* ARITY_1 and ARITY_PS (k=1) both build 1-client-per-leaf: ARITY_1 has a
-       leaf output of [vout 0 = client channel, vout 1 = L-stock]; ARITY_PS
-       uses [vout 0 = factory-consensus channel for the chain, vout 1 =
-       L-stock] with 1 client per leaf via setup_ps_leaf_outputs.  Both are
-       looked up the same way: client i owns leaf i, channel at vout 0.
-
-       Earlier versions of this helper conflated PS with arity-2 (2 clients
-       per leaf via `client_idx/2`), which silently broke ON-CHAIN ops for
-       any client beyond #0 in a PS factory: the channel keyagg got built
-       against the wrong leaf's L-stock SPK (LSP-only), so commitment sigs
-       could never verify on chain.  Off-chain payments still worked because
-       both sides agreed on the wrong keyagg, masking the bug — caught here
-       during the canonical-design audit. */
-    if (f->leaf_arity == FACTORY_ARITY_1 || f->leaf_arity == FACTORY_ARITY_PS) {
-        if (client_idx >= (size_t)f->n_leaf_nodes) return 0;
-        *node_idx_out = f->leaf_node_indices[client_idx];
-        *vout_out = 0;
-        return 1;
-    }
-
-    /* ARITY_2: 2 clients per leaf, layout [vout 0 = client A's channel,
-       vout 1 = client B's channel, vout 2 = L-stock]. */
-    {
-        size_t leaf_idx = client_idx / 2;
-        if (leaf_idx >= (size_t)f->n_leaf_nodes) return 0;
-        *node_idx_out = f->leaf_node_indices[leaf_idx];
-        *vout_out = (uint32_t)(client_idx % 2);
-        return 1;
-    }
+    return 0;
 }
 
-void factory_set_level_arity(factory_t *f, const uint8_t *arities, size_t n) {
-    if (!f) return;
+int factory_set_placement_mode(factory_t *f, placement_mode_t mode) {
+    if (!f) return 0;
+    switch (mode) {
+    case PLACEMENT_SEQUENTIAL:
+    case PLACEMENT_INWARD:
+    case PLACEMENT_OUTWARD:
+    case PLACEMENT_TIMEZONE_CLUSTER:
+        f->placement_mode = mode;
+        return 1;
+    }
+    fprintf(stderr, "factory_set_placement_mode: unknown mode %d\n", (int)mode);
+    return 0;
+}
+
+int factory_set_leaf_channel_spk(factory_t *f, uint32_t participant_idx,
+                                 const unsigned char *spk, size_t spk_len) {
+    if (!f || participant_idx == 0 || participant_idx >= f->n_participants ||
+        f->config.max_signers == 0 || participant_idx >= f->config.max_signers) {
+        fprintf(stderr, "factory_set_leaf_channel_spk: participant %u is not a member\n",
+                participant_idx);
+        return 0;
+    }
+    if (!spk) {
+        if (f->chan_spks) memset(&f->chan_spks[participant_idx], 0,
+                                 sizeof(f->chan_spks[participant_idx]));
+        return 1;
+    }
+    if (spk_len != 34 || spk[0] != 0x51 || spk[1] != 0x20) {
+        fprintf(stderr, "factory_set_leaf_channel_spk: script is not a 34-byte P2TR "
+                "(got %zu bytes)\n", spk_len);
+        return 0;
+    }
+    if (!f->chan_spks) {
+        f->chan_spks = calloc(f->config.max_signers, sizeof(*f->chan_spks));
+        if (!f->chan_spks) return 0;
+    }
+    memcpy(f->chan_spks[participant_idx].spk, spk, 34);
+    f->chan_spks[participant_idx].set = 1;
+    return 1;
+}
+
+int factory_set_member_capacities(factory_t *f, const uint64_t *capacity_sats,
+                                  size_t n_members) {
+    if (!f || f->n_participants < 2 || f->config.max_signers < f->n_participants)
+        return 0;
+    if (!capacity_sats) {
+        free(f->member_capacity);
+        f->member_capacity = NULL;
+        return 1;
+    }
+    if (n_members != f->n_participants - 1) {
+        fprintf(stderr, "factory_set_member_capacities: %zu capacities for %zu members\n",
+                n_members, f->n_participants - 1);
+        return 0;
+    }
+    for (size_t i = 0; i < n_members; i++) {
+        /* Bounded so that sums over the tree cannot overflow. */
+        if (capacity_sats[i] < CHANNEL_DUST_LIMIT_SATS ||
+            capacity_sats[i] > 2100000000000000ULL) {
+            fprintf(stderr, "factory_set_member_capacities: capacity %llu of member %zu "
+                    "out of range\n", (unsigned long long)capacity_sats[i], i + 1);
+            return 0;
+        }
+    }
+    uint64_t *caps = f->member_capacity;
+    if (!caps) {
+        caps = calloc(f->config.max_signers, sizeof(*caps));
+        if (!caps) return 0;
+    }
+    caps[0] = 0;
+    for (size_t i = 0; i < n_members; i++) caps[i + 1] = capacity_sats[i];
+    f->member_capacity = caps;
+    return 1;
+}
+
+int factory_set_leaf_stock(factory_t *f, uint64_t stock_sats) {
+    if (!f) return 0;
+    if ((stock_sats != 0 && stock_sats < CHANNEL_DUST_LIMIT_SATS) ||
+        stock_sats > 2100000000000000ULL) {
+        fprintf(stderr, "factory_set_leaf_stock: %llu sats out of range\n",
+                (unsigned long long)stock_sats);
+        return 0;
+    }
+    f->leaf_stock_sats = stock_sats;
+    return 1;
+}
+
+int factory_capacity_funding_amount(const factory_t *f, uint64_t *amount_out) {
+    if (!f || !amount_out || !f->member_capacity || f->n_participants < 2) return 0;
+    size_t n_clients = f->n_participants - 1;
+    uint32_t *clients = malloc(n_clients * sizeof(uint32_t));
+    if (!clients) return 0;
+    for (size_t i = 0; i < n_clients; i++) clients[i] = (uint32_t)(i + 1);
+    uint64_t need = capacity_subtree_input(f, clients, n_clients, 0);
+    free(clients);
+    if (need == 0) return 0;
+    *amount_out = need;
+    return 1;
+}
+
+int factory_set_level_arity(factory_t *f, const uint8_t *arities, size_t n) {
+    if (!f) return 0;
+    if (!arities || n == 0 || n > FACTORY_MAX_LEVELS) {
+        fprintf(stderr, "factory_set_level_arity: %zu levels (need 1..%d)\n",
+                n, FACTORY_MAX_LEVELS);
+        return 0;
+    }
+    for (size_t i = 0; i < n; i++) {
+        /* A level of arity A fans out to up to A children, one output each. */
+        if (arities[i] < 1 || arities[i] > FACTORY_MAX_OUTPUTS) {
+            fprintf(stderr, "factory_set_level_arity: level %zu arity %u (need 1..%d)\n",
+                    i, (unsigned)arities[i], FACTORY_MAX_OUTPUTS);
+            return 0;
+        }
+    }
     /* The dynamic arrays (leaf_layers here) used to be inline storage, so a
        zeroed factory_t was usable immediately and callers could shape the tree
        BEFORE factory_init.  superscalar_lsp's main() does exactly that on its
        embedded lsp->factory.  Restore that contract: NULL-safe + idempotent. */
     factory_alloc_default_arrays(f);
-    if (!f->leaf_layers) return;
-    if (n > FACTORY_MAX_LEVELS) n = FACTORY_MAX_LEVELS;
+    if (!f->leaf_layers) return 0;
     memcpy(f->level_arity, arities, n);
     f->n_level_arity = n;
     /* Set leaf_arity to the last entry for backward-compat code paths */
@@ -1184,6 +1445,7 @@ void factory_set_level_arity(factory_t *f, const uint8_t *arities, size_t n) {
     for (int i = 0; i < n_leaves; i++)
         dw_layer_init(&f->leaf_layers[i], f->step_blocks, f->states_per_layer);
     f->per_leaf_enabled = 0;
+    return 1;
 }
 
 void factory_set_static_near_root(factory_t *f, uint32_t threshold) {
@@ -1211,20 +1473,48 @@ void factory_set_static_near_root(factory_t *f, uint32_t threshold) {
     f->per_leaf_enabled = 0;
 }
 
-void factory_set_funding(factory_t *f,
-                         const unsigned char *txid, uint32_t vout,
-                         uint64_t amount_sats,
-                         const unsigned char *spk, size_t spk_len) {
-    if (!f) return;
-    if (spk_len > sizeof(f->funding_spk)) {
-        fprintf(stderr, "factory_set_funding: spk_len %zu exceeds buffer\n", spk_len);
-        return;
+int factory_compute_funding_spk(const factory_t *f, unsigned char spk_out[34]) {
+    if (!f || !f->ctx || !f->pubkeys || !f->profiles || f->n_participants == 0 || !spk_out)
+        return 0;
+    /* The root signers in the order build_subtree aggregates them: the LSP,
+       then the clients in placement order. */
+    size_t n = f->n_participants;
+    uint32_t *order = malloc(n * sizeof(uint32_t));
+    secp256k1_pubkey *pks = malloc(n * sizeof(secp256k1_pubkey));
+    int ok = 0;
+    if (order && pks) {
+        for (size_t i = 0; i < n; i++) order[i] = (uint32_t)i;
+        apply_placement(f, order + 1, n - 1);
+        for (size_t i = 0; i < n; i++) pks[i] = f->pubkeys[order[i]];
+        musig_keyagg_t ka;
+        secp256k1_xonly_pubkey tweaked;
+        ok = build_musig_p2tr_spk(f->ctx, spk_out, &tweaked, NULL, &ka, pks, n, NULL);
+    }
+    free(order);
+    free(pks);
+    return ok;
+}
+
+int factory_set_funding(factory_t *f,
+                        const unsigned char *txid, uint32_t vout,
+                        uint64_t amount_sats,
+                        const unsigned char *spk, size_t spk_len) {
+    if (!f) return 0;
+    /* The root kickoff spends this output by key path, so it must be a
+       P2TR (OP_1 <32 bytes>); factory_build_tree checks the key itself
+       against the root's MuSig2 key once the root is built. */
+    if (!txid || !spk || spk_len != sizeof(f->funding_spk) ||
+        spk[0] != 0x51 || spk[1] != 0x20) {
+        fprintf(stderr, "factory_set_funding: funding script is not a %zu-byte P2TR "
+                "(got %zu bytes)\n", sizeof(f->funding_spk), spk ? spk_len : 0);
+        return 0;
     }
     memcpy(f->funding_txid, txid, 32);
     f->funding_vout = vout;
     f->funding_amount_sats = amount_sats;
     memcpy(f->funding_spk, spk, spk_len);
     f->funding_spk_len = spk_len;
+    return 1;
 }
 
 /* Set up single-client leaf outputs: 1 channel + 1 L-stock */
@@ -1234,15 +1524,13 @@ static int setup_single_leaf_outputs(
     uint32_t client_idx,
     uint64_t input_amount
 ) {
-    uint64_t output_total = input_amount - f->fee_per_tx - FACTORY_ANCHOR_COST(f);
-    uint64_t per_output = output_total / 2;
-    uint64_t remainder = output_total - per_output * 2;
-
-    if (per_output < CHANNEL_DUST_LIMIT_SATS) {
-        fprintf(stderr, "Factory: single leaf output %llu below dust limit\n",
-                (unsigned long long)per_output);
+    uint64_t reserve = node_reserve(f, node, 1, 2, node_gets_anchor(f, 2));
+    if (input_amount <= reserve) return 0;
+    uint64_t output_total = input_amount - reserve;
+    uint64_t chan_amt, stock_amt;
+    if (!leaf_output_amounts(f, &client_idx, 1, output_total, &chan_amt, &stock_amt,
+                             "single"))
         return 0;
-    }
 
     node->n_outputs = 2;
 
@@ -1262,24 +1550,49 @@ static int setup_single_leaf_outputs(
 
     /* Channel: MuSig(client, LSP) [+ CLTV recovery leaf] */
     {
-        secp256k1_pubkey pks[2] = { f->pubkeys[client_idx], f->pubkeys[0] };
-        musig_keyagg_t ka;
-        secp256k1_xonly_pubkey tw;
-        if (!build_musig_p2tr_spk(f->ctx, node->outputs[0].script_pubkey,
-                                   &tw, NULL, &ka, pks, 2, chan_merkle_root))
+        if (!build_channel_spk(f, client_idx, chan_merkle_root,
+                               node->outputs[0].script_pubkey))
             return 0;
         node->outputs[0].script_pubkey_len = 34;
-        node->outputs[0].amount_sats = per_output;
+        node->outputs[0].amount_sats = chan_amt;
     }
 
     /* L-stock SPK: or(N-of-N keyagg, L&CSV) per ZmnSCPxj's t/1242 */
     if (!set_leaf_l_stock_output(f, node, node->outputs[1].script_pubkey))
         return 0;
     node->outputs[1].script_pubkey_len = 34;
-    node->outputs[1].amount_sats = per_output + remainder;
+    node->outputs[1].amount_sats = stock_amt;
 
     factory_append_tree_anchor(f, node);   /* #56: CPFP anchor for the cascade */
     return 1;
+}
+
+/* A one-member PS leaf's chain extension spends the channel output, so a
+   caller channel script there must be one the leaf's two signers can spend
+   by key path: the key-path-only P2TR of MuSig2(LSP, member), in either key
+   order.  Records that key on the node for the extension's signing. */
+static int bind_ps_channel_key(const factory_t *f, factory_node_t *node,
+                               uint32_t client_idx, const unsigned char *spk) {
+    secp256k1_pubkey orders[2][2] = {
+        { f->pubkeys[0], f->pubkeys[client_idx] },
+        { f->pubkeys[client_idx], f->pubkeys[0] },
+    };
+    for (int o = 0; o < 2; o++) {
+        unsigned char cand[34];
+        musig_keyagg_t ka;
+        secp256k1_xonly_pubkey tw;
+        if (!build_musig_p2tr_spk(f->ctx, cand, &tw, NULL, &ka, orders[o], 2, NULL))
+            return 0;
+        if (memcmp(cand, spk, 34) == 0) {
+            node->ps_chan_keyagg = ka;
+            node->ps_chan_output_key = tw;
+            node->has_ps_chan_key = 1;
+            return 1;
+        }
+    }
+    fprintf(stderr, "Factory: PS leaf channel script of participant %u is not the "
+            "key-path P2TR of MuSig2(LSP, member)\n", client_idx);
+    return 0;
 }
 
 /* Set up pseudo-Spilman leaf outputs.
@@ -1294,33 +1607,38 @@ static int setup_ps_leaf_outputs(
     uint32_t client_idx,
     uint64_t input_amount
 ) {
-    (void)client_idx;  /* PS leaves use the factory consensus key for vout 0 */
 
-    uint64_t output_total = input_amount > f->fee_per_tx + FACTORY_ANCHOR_COST(f)
-                            ? input_amount - f->fee_per_tx - FACTORY_ANCHOR_COST(f) : 0;
-    uint64_t per_output  = output_total / 2;
-    uint64_t remainder   = output_total - per_output * 2;
-
-    if (per_output < CHANNEL_DUST_LIMIT_SATS) {
-        fprintf(stderr, "Factory: PS leaf output %llu below dust limit\n",
-                (unsigned long long)per_output);
+    uint64_t reserve = node_reserve(f, node, 1, 2, node_gets_anchor(f, 2));
+    uint64_t output_total = input_amount > reserve ? input_amount - reserve : 0;
+    uint64_t chan_amt, stock_amt;
+    if (!leaf_output_amounts(f, &client_idx, 1, output_total, &chan_amt, &stock_amt,
+                             "PS"))
         return 0;
-    }
 
     node->n_outputs = 2;
 
     /* vout 0: channel output — factory-consensus key so chain[1]+ signatures
-       (signed with node->keyagg) verify correctly on-chain. */
-    memcpy(node->outputs[0].script_pubkey, node->spending_spk,
-           node->spending_spk_len);
-    node->outputs[0].script_pubkey_len = node->spending_spk_len;
-    node->outputs[0].amount_sats = per_output;
+       (signed with node->keyagg) verify correctly on-chain.  A caller
+       channel script is used verbatim; the chain extension is then signed
+       over its key (bind_ps_channel_key). */
+    const unsigned char *custom = leaf_channel_spk(f, client_idx);
+    if (custom) {
+        if (!bind_ps_channel_key(f, node, client_idx, custom))
+            return 0;
+        memcpy(node->outputs[0].script_pubkey, custom, 34);
+        node->outputs[0].script_pubkey_len = 34;
+    } else {
+        memcpy(node->outputs[0].script_pubkey, node->spending_spk,
+               node->spending_spk_len);
+        node->outputs[0].script_pubkey_len = node->spending_spk_len;
+    }
+    node->outputs[0].amount_sats = chan_amt;
 
     /* vout 1: L-stock SPK = or(N-of-N keyagg, L&CSV) per t/1242 */
     if (!set_leaf_l_stock_output(f, node, node->outputs[1].script_pubkey))
         return 0;
     node->outputs[1].script_pubkey_len = 34;
-    node->outputs[1].amount_sats = per_output + remainder;
+    node->outputs[1].amount_sats = stock_amt;
 
     factory_append_tree_anchor(f, node);   /* #56: CPFP anchor for the cascade */
     node->is_ps_leaf = 1;
@@ -1373,6 +1691,15 @@ static int setup_ps_leaf_with_subfactories(
     if (k <= 1) return 0;
     if (n_leaf_clients == 0) return 0;
     if (n_leaf_clients > (size_t)k * (size_t)k) return 0;
+    /* A sub-factory chain advance re-spends its channel outputs over keys the
+       factory derives (derive_input_keyagg): no caller channel scripts. */
+    for (size_t i = 0; i < n_leaf_clients; i++) {
+        if (leaf_channel_spk(f, leaf_client_indices[i])) {
+            fprintf(stderr, "Factory: PS k=%u sub-factory leaves take no caller "
+                    "channel script (participant %u)\n", k, leaf_client_indices[i]);
+            return 0;
+        }
+    }
 
     /* Distribute clients into k sub-factories: ceil(n / k) clients each
        (last sub-factory gets the remainder when n_leaf_clients < k²). */
@@ -1387,12 +1714,13 @@ static int setup_ps_leaf_with_subfactories(
                 k, n_outputs, f->config.max_outputs_per_node);
         return 0;
     }
-    if (input_amount <= f->fee_per_tx) return 0;
-    uint64_t output_total = input_amount - f->fee_per_tx;
+    uint64_t reserve = node_reserve(f, leaf, 1, n_outputs, 0);
+    if (input_amount <= reserve) return 0;
+    uint64_t output_total = input_amount - reserve;
     uint64_t per_output = output_total / n_outputs;
     uint64_t remainder = output_total - per_output * n_outputs;
     if (per_output < CHANNEL_DUST_LIMIT_SATS) {
-        fprintf(stderr, "Factory: PS k=%u leaf per-output %llu below dust\n",
+        BUILD_ERR(f, "Factory: PS k=%u leaf per-output %llu below dust\n",
                 k, (unsigned long long)per_output);
         return 0;
     }
@@ -1543,16 +1871,13 @@ static int setup_nway_leaf_outputs(
         return 0;
     }
 
-    if (input_amount <= f->fee_per_tx) return 0;
-    uint64_t output_total = input_amount - f->fee_per_tx;
-    uint64_t per_output = output_total / n_outputs;
-    uint64_t remainder = output_total - per_output * n_outputs;
-
-    if (per_output < CHANNEL_DUST_LIMIT_SATS) {
-        fprintf(stderr, "Factory: n-way leaf output %llu below dust limit\n",
-                (unsigned long long)per_output);
+    uint64_t reserve = node_reserve(f, node, 1, n_outputs, 0);
+    if (input_amount <= reserve) return 0;
+    uint64_t output_total = input_amount - reserve;
+    uint64_t chan_amt[FACTORY_MAX_OUTPUTS], stock_amt;
+    if (!leaf_output_amounts(f, client_indices, n_client, output_total, chan_amt,
+                             &stock_amt, "n-way"))
         return 0;
-    }
 
     node->n_outputs = n_outputs;
 
@@ -1573,23 +1898,124 @@ static int setup_nway_leaf_outputs(
 
     /* One channel per client: vout 0..n_client-1 = MuSig(client_i, LSP). */
     for (size_t i = 0; i < n_client; i++) {
-        secp256k1_pubkey pks[2] = { f->pubkeys[client_indices[i]], f->pubkeys[0] };
-        musig_keyagg_t ka;
-        secp256k1_xonly_pubkey tw;
-        if (!build_musig_p2tr_spk(f->ctx, node->outputs[i].script_pubkey,
-                                   &tw, NULL, &ka, pks, 2, chan_merkle_root))
+        if (!build_channel_spk(f, client_indices[i], chan_merkle_root,
+                               node->outputs[i].script_pubkey))
             return 0;
         node->outputs[i].script_pubkey_len = 34;
-        node->outputs[i].amount_sats = per_output;
+        node->outputs[i].amount_sats = chan_amt[i];
     }
 
     /* L-stock at LAST output: or(N-of-N keyagg, L&CSV) per t/1242 */
     if (!set_leaf_l_stock_output(f, node, node->outputs[n_client].script_pubkey))
         return 0;
     node->outputs[n_client].script_pubkey_len = 34;
-    node->outputs[n_client].amount_sats = per_output + remainder;
+    node->outputs[n_client].amount_sats = stock_amt;
 
     return 1;
+}
+
+/* Children a fan-out node (static kickoff or interior state) can take: one
+   output each, plus the CPFP anchor when anchors are on.  The builders reserve
+   the anchor amount out of the node's input, so a node that cannot hold the
+   anchor is refused rather than built without it. */
+static size_t fanout_room(const factory_t *f) {
+    size_t room = f->config.max_outputs_per_node;
+    if (room > FACTORY_MAX_OUTPUTS) room = FACTORY_MAX_OUTPUTS;
+    if (f->use_tree_anchor && room > 0) room--;
+    return room;
+}
+
+/* The input a subtree's kickoff needs with member capacities: its leaves'
+   channel and stock outputs plus the fee and anchor of every node in it.
+   Mirrors build_subtree's shape decisions.  0 = the shape cannot carry
+   capacities (PS sub-factory leaves) or an invalid split. */
+/* What a node with n_p2tr P2TR outputs reserves out of its input: its fee
+   (exact vsize at the tree fee rate) plus the anchor when it carries one, as
+   node_reserve does while building.  FEE_INVALID when the rate gives no
+   payable fee. */
+static uint64_t capacity_node_cost(const factory_t *f, size_t n_p2tr, int with_anchor) {
+    uint64_t fee = factory_tree_tx_fee(f, 1, n_p2tr, with_anchor);
+    if (fee == FEE_INVALID) return FEE_INVALID;
+    return fee + (with_anchor ? factory_tree_anchor_sats(f) : 0);
+}
+
+static uint64_t capacity_subtree_input(const factory_t *f, const uint32_t *clients,
+                                       size_t n_clients, int depth) {
+    if (n_clients == 0) return 0;
+    int cur_arity = arity_at_depth(f, depth);
+    int leaf_a = subtree_leaf_arity(f, cur_arity, n_clients);
+    int is_leaf = (leaf_a != 0);
+    int is_static = !is_leaf && depth < (int)f->static_threshold_depth;
+    uint64_t ko_cost = capacity_node_cost(f, 1, node_gets_anchor(f, 1));
+    if (ko_cost == FEE_INVALID) return 0;
+
+    if (is_leaf) {
+        uint64_t outs = capacity_leaf_stock(f);
+        for (size_t i = 0; i < n_clients; i++)
+            outs += f->member_capacity[clients[i]];
+        size_t n_p2tr = n_clients + 1;
+        int anchor;
+        if (leaf_a == FACTORY_ARITY_PS) {
+            if (f->ps_subfactory_arity > 1) return 0;
+            anchor = node_gets_anchor(f, n_p2tr);
+        } else if (n_clients == 1 || (leaf_a == 2 && n_clients == 2)) {
+            anchor = node_gets_anchor(f, n_p2tr);
+        } else {
+            anchor = 0;    /* n-way leaf: no anchor */
+        }
+        uint64_t st_cost = capacity_node_cost(f, n_p2tr, anchor);
+        if (st_cost == FEE_INVALID) return 0;
+        return ko_cost + st_cost + outs;
+    }
+
+    size_t parts[FACTORY_MAX_OUTPUTS];
+    size_t n_parts = split_clients_for_arity(cur_arity, n_clients, parts);
+    if (n_parts < 2 || n_parts > fanout_room(f)) return 0;
+    uint64_t children = 0;
+    size_t offset = 0, n_actual = 0;
+    for (size_t k = 0; k < n_parts; k++) {
+        if (parts[k] == 0) continue;
+        uint64_t c = capacity_subtree_input(f, clients + offset, parts[k], depth + 1);
+        if (c == 0) return 0;
+        children += c;
+        offset += parts[k];
+        n_actual++;
+    }
+    uint64_t fan_cost = capacity_node_cost(f, n_actual, node_gets_anchor(f, n_actual));
+    if (fan_cost == FEE_INVALID) return 0;
+    if (is_static) return fan_cost + children;          /* kickoff only */
+    return ko_cost + fan_cost + children;               /* kickoff + state */
+}
+
+/* The budget of each non-empty child of a fan-out node, in child order:
+   with member capacities what each child subtree needs (they must add up
+   to budget exactly), else budget split equally with the remainder on the
+   last child. */
+static int child_budgets_for(const factory_t *f, const uint32_t *clients,
+                             const size_t *parts, size_t n_parts, int child_depth,
+                             uint64_t budget, uint64_t per_child, uint64_t remainder,
+                             size_t n_actual, uint64_t *out) {
+    size_t k_out = 0, offset = 0;
+    uint64_t sum = 0;
+    for (size_t k = 0; k < n_parts; k++) {
+        if (parts[k] == 0) continue;
+        if (f->member_capacity) {
+            out[k_out] = capacity_subtree_input(f, clients + offset, parts[k],
+                                                child_depth);
+            if (out[k_out] == 0) return 0;
+        } else {
+            out[k_out] = per_child + (k_out == n_actual - 1 ? remainder : 0);
+        }
+        sum += out[k_out];
+        k_out++;
+        offset += parts[k];
+    }
+    if (f->member_capacity && sum != budget) {
+        BUILD_ERR(f, "Factory: children need %llu sats, node has %llu\n",
+                (unsigned long long)sum, (unsigned long long)budget);
+        return 0;
+    }
+    return k_out == n_actual;
 }
 
 /* Recursive subtree builder.
@@ -1649,7 +2075,9 @@ static int build_subtree(
        kickoff-only with no paired NODE_STATE — handled below.  This
        remapping ensures that depth=threshold is the FIRST DW layer (index 0). */
     int dw_layer = depth - (int)f->static_threshold_depth;
-    if (dw_layer < 0) dw_layer = -1;
+    /* Only a leaf is a kickoff/state pair inside the static depths (see
+       is_leaf below); its state counts down on the first DW layer. */
+    if (dw_layer < 0) dw_layer = 0;
     if (dw_layer >= (int)f->counter.n_layers)
         dw_layer = (int)f->counter.n_layers - 1;
 
@@ -1663,9 +2091,12 @@ static int build_subtree(
        channels + L-stock; the threshold should never be set to swallow the
        entire tree.  Guard against misconfiguration: if a static node has
        only enough clients to be a leaf, we fall back to the non-static
-       state-paired path. */
+       state-paired path, whose state takes DW layer 0.  leaf_a is the arity
+       the leaf is built with: always of the kind of the last arity entry
+       (subtree_leaf_arity). */
     int cur_arity = arity_at_depth(f, depth);
-    int is_leaf = subtree_is_leaf(f, cur_arity, n_clients);
+    int leaf_a = subtree_leaf_arity(f, cur_arity, n_clients);
+    int is_leaf = (leaf_a != 0);
     if (is_leaf) is_static = 0;
 
     if (is_static) {
@@ -1673,9 +2104,10 @@ static int build_subtree(
         /* Split clients into N children FIRST so we can size kickoff outputs. */
         size_t parts[FACTORY_MAX_OUTPUTS];
         size_t n_parts = split_clients_for_arity(cur_arity, n_clients, parts);
-        if (n_parts < 2 || n_parts > f->config.max_outputs_per_node) {
-            fprintf(stderr, "build_subtree(static): invalid n_parts %zu (max %u) at depth %d arity %d\n",
-                    n_parts, f->config.max_outputs_per_node, depth, cur_arity);
+        if (n_parts < 2 || n_parts > fanout_room(f)) {
+            fprintf(stderr, "build_subtree(static): invalid n_parts %zu (max %zu%s) at depth %d arity %d\n",
+                    n_parts, fanout_room(f), f->use_tree_anchor ? " with the anchor" : "",
+                    depth, cur_arity);
             return 0;
         }
 
@@ -1691,17 +2123,23 @@ static int build_subtree(
            empty slot (it currently never does for shapes that reach this
            branch — interior, non-leaf — but the contract is enforced
            defensively in case it changes). */
-        uint64_t fee = f->fee_per_tx;
-        if (input_amount <= fee + FACTORY_ANCHOR_COST(f)) return 0;
-        uint64_t kickoff_budget = input_amount - fee - FACTORY_ANCHOR_COST(f);
-
         size_t n_actual = 0;
         for (size_t k = 0; k < n_parts; k++)
             if (parts[k] > 0) n_actual++;
         if (n_actual == 0) return 0;
 
+        uint64_t ko_reserve = node_reserve(f, &f->nodes[ko_idx], 1, n_actual,
+                                           node_gets_anchor(f, n_actual));
+        if (input_amount <= ko_reserve) return 0;
+        uint64_t kickoff_budget = input_amount - ko_reserve;
+
         uint64_t per_child_budget = kickoff_budget / n_actual;
         uint64_t budget_remainder = kickoff_budget - per_child_budget * n_actual;
+        uint64_t child_budgets[FACTORY_MAX_OUTPUTS];
+        if (!child_budgets_for(f, client_indices, parts, n_parts, depth + 1,
+                               kickoff_budget, per_child_budget, budget_remainder,
+                               n_actual, child_budgets))
+            return 0;
 
         f->nodes[ko_idx].n_outputs = n_actual;
         /* Outputs will be filled after children are created (need their spk). */
@@ -1714,8 +2152,7 @@ static int build_subtree(
         for (size_t k = 0; k < n_parts; k++) {
             if (parts[k] == 0) continue;
 
-            uint64_t child_budget = per_child_budget;
-            if (n_built == n_actual - 1) child_budget += budget_remainder;
+            uint64_t child_budget = child_budgets[n_built];
 
             size_t saved_n_nodes = f->n_nodes;
             if (!build_subtree(f, client_indices + client_offset, parts[k],
@@ -1732,9 +2169,7 @@ static int build_subtree(
            when it's a regular subtree, its first node is the regular kickoff.
            Either way we point at child_ko_indices[k]->spending_spk. */
         for (size_t k = 0; k < n_actual; k++) {
-            uint64_t child_budget = per_child_budget;
-            if (k == n_actual - 1) child_budget += budget_remainder;
-            f->nodes[ko_idx].outputs[k].amount_sats = child_budget;
+            f->nodes[ko_idx].outputs[k].amount_sats = child_budgets[k];
             memcpy(f->nodes[ko_idx].outputs[k].script_pubkey,
                    f->nodes[child_ko_indices[k]].spending_spk, 34);
             f->nodes[ko_idx].outputs[k].script_pubkey_len = 34;
@@ -1756,9 +2191,10 @@ static int build_subtree(
     if (st_idx < 0) return 0;
 
     /* Wire kickoff → state output */
-    uint64_t fee = f->fee_per_tx;
-    if (input_amount <= fee + FACTORY_ANCHOR_COST(f)) return 0;
-    uint64_t ko_out_amount = input_amount - fee - FACTORY_ANCHOR_COST(f);
+    uint64_t ko_reserve = node_reserve(f, &f->nodes[ko_idx], 1, 1,
+                                       node_gets_anchor(f, 1));
+    if (input_amount <= ko_reserve) return 0;
+    uint64_t ko_out_amount = input_amount - ko_reserve;
 
     f->nodes[ko_idx].n_outputs = 1;
     f->nodes[ko_idx].outputs[0].amount_sats = ko_out_amount;
@@ -1772,7 +2208,7 @@ static int build_subtree(
         /* Leaf node: set up channel outputs */
         f->nodes[st_idx].input_amount = ko_out_amount;
 
-        if (cur_arity == FACTORY_ARITY_PS) {
+        if (leaf_a == FACTORY_ARITY_PS) {
             uint32_t k = f->ps_subfactory_arity;
             if (k > 1) {
                 /* Canonical k² PS leaf (t/1242): k sub-factories of k clients.
@@ -1793,7 +2229,7 @@ static int build_subtree(
             if (!setup_single_leaf_outputs(f, &f->nodes[st_idx],
                                            client_indices[0], ko_out_amount))
                 return 0;
-        } else if (cur_arity == 2 && n_clients == 2) {
+        } else if (leaf_a == 2 && n_clients == 2) {
             /* Arity-2 leaf: keep legacy code path (bit-identical for backwards compat) */
             if (!setup_leaf_outputs(f, &f->nodes[st_idx],
                                     client_indices[0], client_indices[1],
@@ -1818,9 +2254,10 @@ static int build_subtree(
         /* Internal node: split clients into N children per arity */
         size_t parts[FACTORY_MAX_OUTPUTS];
         size_t n_parts = split_clients_for_arity(cur_arity, n_clients, parts);
-        if (n_parts < 2 || n_parts > f->config.max_outputs_per_node) {
-            fprintf(stderr, "build_subtree: invalid n_parts %zu (max %u) at depth %d arity %d\n",
-                    n_parts, f->config.max_outputs_per_node, depth, cur_arity);
+        if (n_parts < 2 || n_parts > fanout_room(f)) {
+            fprintf(stderr, "build_subtree: invalid n_parts %zu (max %zu%s) at depth %d arity %d\n",
+                    n_parts, fanout_room(f), f->use_tree_anchor ? " with the anchor" : "",
+                    depth, cur_arity);
             return 0;
         }
 
@@ -1828,16 +2265,23 @@ static int build_subtree(
            if split_clients_for_arity ever returns an empty slot (it currently
            never does for shapes that reach this branch — interior, non-leaf —
            but the contract is enforced defensively in case it changes). */
-        if (ko_out_amount <= fee + FACTORY_ANCHOR_COST(f)) return 0;
-        uint64_t state_budget = ko_out_amount - fee - FACTORY_ANCHOR_COST(f);
-
         size_t n_actual = 0;
         for (size_t k = 0; k < n_parts; k++)
             if (parts[k] > 0) n_actual++;
         if (n_actual == 0) return 0;
 
+        uint64_t st_reserve = node_reserve(f, &f->nodes[st_idx], 1, n_actual,
+                                           node_gets_anchor(f, n_actual));
+        if (ko_out_amount <= st_reserve) return 0;
+        uint64_t state_budget = ko_out_amount - st_reserve;
+
         uint64_t per_child_budget = state_budget / n_actual;
         uint64_t budget_remainder = state_budget - per_child_budget * n_actual;
+        uint64_t child_budgets[FACTORY_MAX_OUTPUTS];
+        if (!child_budgets_for(f, client_indices, parts, n_parts, depth + 1,
+                               state_budget, per_child_budget, budget_remainder,
+                               n_actual, child_budgets))
+            return 0;
 
         f->nodes[st_idx].input_amount = ko_out_amount;
         f->nodes[st_idx].n_outputs = n_actual;
@@ -1851,8 +2295,7 @@ static int build_subtree(
         for (size_t k = 0; k < n_parts; k++) {
             if (parts[k] == 0) continue;
 
-            uint64_t child_budget = per_child_budget;
-            if (n_built == n_actual - 1) child_budget += budget_remainder;
+            uint64_t child_budget = child_budgets[n_built];
 
             size_t saved_n_nodes = f->n_nodes;
             if (!build_subtree(f, client_indices + client_offset, parts[k],
@@ -1866,9 +2309,7 @@ static int build_subtree(
 
         /* Wire state outputs to each child's kickoff spending_spk */
         for (size_t k = 0; k < n_actual; k++) {
-            uint64_t child_budget = per_child_budget;
-            if (k == n_actual - 1) child_budget += budget_remainder;
-            f->nodes[st_idx].outputs[k].amount_sats = child_budget;
+            f->nodes[st_idx].outputs[k].amount_sats = child_budgets[k];
             memcpy(f->nodes[st_idx].outputs[k].script_pubkey,
                    f->nodes[child_ko_indices[k]].spending_spk, 34);
             f->nodes[st_idx].outputs[k].script_pubkey_len = 34;
@@ -1897,9 +2338,11 @@ int factory_build_tree(factory_t *f) {
         return 0;
     }
 
-    /* Override fee_per_tx from fee estimator if available */
-    if (f->fee) {
-        f->fee_per_tx = fee_for_factory_tx(f->fee, 3);
+    /* A node at rate 0 pays no fee: only a child on its anchor can get it
+       mined, so a tree without anchors cannot be built at rate 0. */
+    if (f->tree_fee_rate == 0 && !f->use_tree_anchor) {
+        BUILD_ERR(f, "factory_build_tree: tree fee rate 0 needs the P2A anchors\n");
+        return 0;
     }
 
     /* Compute tree metrics (variable arity uses simulation) */
@@ -1935,19 +2378,27 @@ int factory_build_tree(factory_t *f) {
         f->config.max_nodes = (uint32_t)nn;
     }
     if (n_leaves > (int)f->config.max_leaves) return 0;
-    if (n_dw_layers > DW_MAX_LAYERS) return 0;
-
     /* Reinitialize DW counter with correct layer count */
-    dw_counter_init(&f->counter, n_dw_layers, f->step_blocks, f->states_per_layer);
+    if (!dw_counter_init(&f->counter, n_dw_layers, f->step_blocks, f->states_per_layer))
+        return 0;
     f->n_leaf_nodes = n_leaves;
     for (int i = 0; i < n_leaves; i++)
         dw_layer_init(&f->leaf_layers[i], f->step_blocks, f->states_per_layer);
 
     /* Minimum funding validation */
-    uint64_t min_funding = (uint64_t)total_nodes_ub * f->fee_per_tx +
+    uint64_t node_min = factory_tree_tx_fee(f, 1, 1, f->use_tree_anchor);
+    if (node_min == FEE_INVALID ||
+        node_min > (FEE_MAX_SATS / (uint64_t)(total_nodes_ub + 1))) {
+        BUILD_ERR(f, "factory_build_tree: tree fee rate %llu sat/kvB gives "
+                "no payable fee\n", (unsigned long long)f->tree_fee_rate);
+        return 0;
+    }
+    uint64_t min_funding = (uint64_t)total_nodes_ub *
+                               (node_min +
+                                (f->use_tree_anchor ? factory_tree_anchor_sats(f) : 0)) +
                            (uint64_t)n_leaves * 1092;
     if (f->funding_amount_sats < min_funding) {
-        fprintf(stderr, "factory_build_tree: funding %lu sats below minimum %lu\n",
+        BUILD_ERR(f, "factory_build_tree: funding %lu sats below minimum %lu\n",
                 (unsigned long)f->funding_amount_sats, (unsigned long)min_funding);
         return 0;
     }
@@ -1959,18 +2410,30 @@ int factory_build_tree(factory_t *f) {
         clients[i] = (uint32_t)(i + 1);
 
     /* Apply placement strategy */
-    if (f->placement_mode == PLACEMENT_INWARD && n_clients > 1) {
-        g_sort_factory = f;
-        qsort(clients, n_clients, sizeof(uint32_t), cmp_balance_desc);
-        g_sort_factory = NULL;
-    } else if (f->placement_mode == PLACEMENT_OUTWARD && n_clients > 1) {
-        g_sort_factory = f;
-        qsort(clients, n_clients, sizeof(uint32_t), cmp_uptime_asc);
-        g_sort_factory = NULL;
-    } else if (f->placement_mode == PLACEMENT_TIMEZONE_CLUSTER && n_clients > 1) {
-        g_sort_factory = f;
-        qsort(clients, n_clients, sizeof(uint32_t), cmp_timezone_cluster);
-        g_sort_factory = NULL;
+    apply_placement(f, clients, n_clients);
+
+    /* The root kickoff's input is the funding output: refuse to build (and so
+       to sign) over a funding script other than the key-path P2TR of the
+       root signers' MuSig2 key.  Checked before any node is built. */
+    unsigned char root_spk[34];
+    if (!factory_compute_funding_spk(f, root_spk) ||
+        f->funding_spk_len != sizeof(root_spk) ||
+        memcmp(f->funding_spk, root_spk, sizeof(root_spk)) != 0) {
+        fprintf(stderr, "factory_build_tree: funding script is not the key-path P2TR "
+                "of the root signers' MuSig2 key\n");
+        return 0;
+    }
+
+    /* With member capacities the tree is sized bottom-up: the funding output
+       must be exactly what the root needs. */
+    if (f->member_capacity) {
+        uint64_t need = capacity_subtree_input(f, clients, n_clients, 0);
+        if (need == 0 || need != f->funding_amount_sats) {
+            fprintf(stderr, "factory_build_tree: member capacities need a funding "
+                    "output of %llu sats, got %llu\n", (unsigned long long)need,
+                    (unsigned long long)f->funding_amount_sats);
+            return 0;
+        }
     }
 
     /* Build the tree recursively */
@@ -1983,6 +2446,152 @@ int factory_build_tree(factory_t *f) {
 
     /* Build all unsigned transactions top-down */
     return build_all_unsigned_txs(f);
+}
+
+/* Total value of the outputs a node's current tx spends. */
+static uint64_t node_input_total(const factory_t *f, const factory_node_t *node) {
+    if (node->is_ps_leaf && node->ps_chain_len > 0) {
+        if (node->type == NODE_PS_SUBFACTORY && node->ps_n_prev_outputs > 1) {
+            uint64_t t = 0;
+            for (size_t i = 0; i < node->ps_n_prev_outputs; i++)
+                t += node->ps_prev_amounts[i];
+            return t;
+        }
+        return node->ps_prev_chan_amount;
+    }
+    if (node->parent_index < 0) return f->funding_amount_sats;
+    const factory_node_t *parent = &f->nodes[node->parent_index];
+    if (node->parent_vout >= parent->n_outputs) return 0;
+    return parent->outputs[node->parent_vout].amount_sats;
+}
+
+/* What factory_check_tree_fees reads from a serialized unsigned tx. */
+typedef struct {
+    uint32_t version;
+    size_t n_inputs;
+    size_t n_outputs;
+    uint64_t out_total;
+    size_t n_p2a;
+    int last_is_p2a;
+    uint64_t last_amount;
+} tree_tx_view_t;
+
+static int rd_vi(const unsigned char *d, size_t len, size_t *pos, uint64_t *v) {
+    if (*pos >= len) return 0;
+    unsigned char b = d[*pos];
+    if (b < 0xfd) { *v = b; *pos += 1; return 1; }
+    if (b == 0xfd && *pos + 3 <= len) {
+        *v = (uint64_t)d[*pos + 1] | ((uint64_t)d[*pos + 2] << 8);
+        *pos += 3;
+        return 1;
+    }
+    return 0;
+}
+
+static int tree_tx_view(const tx_buf_t *t, tree_tx_view_t *v) {
+    memset(v, 0, sizeof(*v));
+    if (!t || t->len < 10) return 0;
+    const unsigned char *d = t->data;
+    size_t len = t->len, pos = 4;
+    v->version = (uint32_t)d[0] | ((uint32_t)d[1] << 8) |
+                 ((uint32_t)d[2] << 16) | ((uint32_t)d[3] << 24);
+    uint64_t n;
+    if (!rd_vi(d, len, &pos, &n) || n == 0) return 0;
+    v->n_inputs = (size_t)n;
+    for (uint64_t i = 0; i < n; i++) {
+        uint64_t sl;
+        pos += 36;
+        if (pos > len || !rd_vi(d, len, &pos, &sl) || pos + sl + 4 > len) return 0;
+        pos += (size_t)sl + 4;
+    }
+    if (!rd_vi(d, len, &pos, &n) || n == 0) return 0;
+    v->n_outputs = (size_t)n;
+    for (uint64_t i = 0; i < n; i++) {
+        if (pos + 8 > len) return 0;
+        uint64_t amt = 0;
+        for (int k = 0; k < 8; k++) amt |= (uint64_t)d[pos + k] << (8 * k);
+        pos += 8;
+        uint64_t sl;
+        if (!rd_vi(d, len, &pos, &sl) || pos + sl > len) return 0;
+        int p2a = sl == P2A_SPK_LEN && memcmp(d + pos, P2A_SPK, P2A_SPK_LEN) == 0;
+        pos += (size_t)sl;
+        if (amt > FEE_MAX_SATS || v->out_total > FEE_MAX_SATS - amt) return 0;
+        v->out_total += amt;
+        if (p2a) v->n_p2a++;
+        v->last_is_p2a = p2a;
+        v->last_amount = amt;
+    }
+    return pos + 4 == len;
+}
+
+/* ceil(rate x vsize / 1000) in 128-bit arithmetic, independent of the fee
+   helpers the check audits. */
+static uint64_t exact_fee(uint64_t sat_per_kvb, size_t vsize) {
+    return (uint64_t)(((unsigned __int128)sat_per_kvb * vsize + 999) / 1000);
+}
+
+/* One transaction against the agreed terms.  what: for the message. */
+static int check_one_tx(const factory_t *f, const tx_buf_t *t, uint64_t in,
+                        int need_anchor, const char *what, size_t idx,
+                        char *why, size_t why_len) {
+    tree_tx_view_t v;
+    if (!tree_tx_view(t, &v)) {
+        snprintf(why, why_len, "%s %zu does not parse", what, idx);
+        return 0;
+    }
+    if (v.version != FACTORY_TREE_TX_VERSION) {
+        snprintf(why, why_len, "%s %zu is nVersion %u, not %u", what, idx,
+                 v.version, FACTORY_TREE_TX_VERSION);
+        return 0;
+    }
+    if (v.n_p2a > 1 || (v.n_p2a == 1 && !v.last_is_p2a)) {
+        snprintf(why, why_len, "%s %zu has %zu P2A outputs (one, last, expected)",
+                 what, idx, v.n_p2a);
+        return 0;
+    }
+    if (v.n_p2a == 0 && (need_anchor || f->tree_fee_rate == 0)) {
+        snprintf(why, why_len, "%s %zu has no P2A anchor%s", what, idx,
+                 f->tree_fee_rate == 0 ? " at tree fee rate 0" : "");
+        return 0;
+    }
+    if (v.n_p2a == 1 && v.last_amount != factory_tree_anchor_sats(f)) {
+        snprintf(why, why_len, "%s %zu anchor is %llu sat, not %llu", what, idx,
+                 (unsigned long long)v.last_amount,
+                 (unsigned long long)factory_tree_anchor_sats(f));
+        return 0;
+    }
+    size_t weight = 4 * t->len + 2 + FEE_KEYPATH_WITNESS_BYTES * v.n_inputs;
+    size_t vsize = (weight + 3) / 4;
+    uint64_t want = exact_fee(f->tree_fee_rate, vsize);
+    if (in < v.out_total || in - v.out_total != want) {
+        snprintf(why, why_len, "%s %zu pays %s%llu sat for %zu vB; the agreed %llu "
+                 "sat/kvB is %llu sat", what, idx, in < v.out_total ? "-" : "",
+                 (unsigned long long)(in < v.out_total ? v.out_total - in
+                                                       : in - v.out_total),
+                 vsize, (unsigned long long)f->tree_fee_rate,
+                 (unsigned long long)want);
+        return 0;
+    }
+    return 1;
+}
+
+int factory_check_tree_fees(const factory_t *f, char *why, size_t why_len) {
+    char dummy[8];
+    if (!why || why_len == 0) { why = dummy; why_len = sizeof(dummy); }
+    why[0] = '\0';
+    if (!f) return 0;
+    for (size_t i = 0; i < f->n_nodes; i++) {
+        const factory_node_t *node = &f->nodes[i];
+        if (!node->is_built) continue;
+        if (!check_one_tx(f, &node->unsigned_tx, node_input_total(f, node), 0,
+                          "tree node", i, why, why_len))
+            return 0;
+    }
+    if (f->dist_tx_ready && f->dist_unsigned_tx.len > 0 &&
+        !check_one_tx(f, &f->dist_unsigned_tx, f->funding_amount_sats, 1,
+                      "distribution TX", 0, why, why_len))
+        return 0;
+    return 1;
 }
 
 /* --- Split-round signing API --- */
@@ -2034,7 +2643,7 @@ int factory_sessions_init(factory_t *f) {
         factory_node_t *node = &f->nodes[i];
         if (!node->is_built) return 0;
         musig_session_free(&node->signing_session);   /* re-init of a live session: release first */
-        musig_session_init(&node->signing_session, &node->keyagg, node->n_signers);
+        musig_session_init(&node->signing_session, node_sign_keyagg(node), node->n_signers);
         node->partial_sigs_received = 0;
     }
     return 1;
@@ -2055,7 +2664,7 @@ int factory_sessions_finalize(factory_t *f) {
         if (!compute_node_sighash(f, node, sighash))
             return 0;
 
-        const unsigned char *mr = node->has_taptree ? node->merkle_root : NULL;
+        const unsigned char *mr = node_sign_merkle(node);
         if (!musig_session_finalize_nonces(f->ctx, &node->signing_session,
                                             sighash, mr, NULL))
             return 0;
@@ -2172,7 +2781,7 @@ int factory_sessions_init_path(factory_t *f, int leaf_node_idx) {
         factory_node_t *node = &f->nodes[path[i]];
         if (!node->is_built) return 0;
         musig_session_free(&node->signing_session);   /* re-init of a live session: release first */
-        musig_session_init(&node->signing_session, &node->keyagg, node->n_signers);
+        musig_session_init(&node->signing_session, node_sign_keyagg(node), node->n_signers);
         node->partial_sigs_received = 0;
     }
     return 1;
@@ -2190,7 +2799,7 @@ int factory_sessions_finalize_path(factory_t *f, int leaf_node_idx) {
         if (!compute_node_sighash(f, node, sighash))
             return 0;
 
-        const unsigned char *mr = node->has_taptree ? node->merkle_root : NULL;
+        const unsigned char *mr = node_sign_merkle(node);
         if (!musig_session_finalize_nonces(f->ctx, &node->signing_session,
                                             sighash, mr, NULL))
             return 0;
@@ -2251,10 +2860,11 @@ int factory_rebuild_path_unsigned(factory_t *f, int leaf_node_idx) {
         unsigned char display_txid[32];
         tx_buf_t utx;
         tx_buf_init(&utx, 256);
-        if (!build_unsigned_tx(&utx, display_txid,
-                                input_txid, input_vout,
-                                node->nsequence,
-                                node->outputs, node->n_outputs)) {
+        if (!build_unsigned_tx_v(&utx, display_txid,
+                                  input_txid, input_vout,
+                                  node->nsequence,
+                                  node->outputs, node->n_outputs,
+                                  FACTORY_TREE_TX_VERSION)) {
             tx_buf_free(&utx);
             return 0;
         }
@@ -2307,7 +2917,7 @@ int factory_verify_all(factory_t *f) {
         memcpy(sig, node->signed_tx.data + node->signed_tx.len - 68, 64);
 
         if (!secp256k1_schnorrsig_verify(f->ctx, sig, sighash, 32,
-                                          &node->tweaked_pubkey)) {
+                                          node_sign_output_key(node))) {
             fprintf(stderr, "factory_verify_all: node %zu sig INVALID\n", i);
             return 0;
         }
@@ -2364,7 +2974,7 @@ int factory_sign_all(factory_t *f) {
 
             secp256k1_musig_pubnonce pubnonce;
             if (!musig_generate_nonce(f->ctx, &secnonces[offset + j], &pubnonce,
-                                       seckey, &pk, &node->keyagg.cache))
+                                       seckey, &pk, &node_sign_keyagg(node)->cache))
                 goto fail;
 
             memset(seckey, 0, 32);
@@ -2434,7 +3044,23 @@ int factory_sign_all_with_retry(factory_t *f, int max_attempts) {
     return 0;
 }
 
+int factory_has_dw_state(const factory_t *f) {
+    if (!f || !f->nodes) return 0;
+    for (size_t i = 0; i < f->n_nodes; i++)
+        if (node_dw_layer(f, &f->nodes[i]))
+            return 1;
+    return 0;
+}
+
+int factory_refuses_refresh_in_place(const factory_t *f, const char *who) {
+    if (factory_has_dw_state(f)) return 0;
+    fprintf(stderr, "%s: %s\n", who ? who : "factory", FACTORY_EXTEND_REFUSED_MSG);
+    return 1;
+}
+
 int factory_advance(factory_t *f) {
+    if (factory_refuses_refresh_in_place(f, "factory_advance"))
+        return 0;
     if (!dw_counter_advance(&f->counter))
         return 0;
 
@@ -2461,7 +3087,7 @@ static int rebuild_node_tx(factory_t *f, size_t node_idx) {
 
     /* Multi-input PS sub-factory chain advance (#207).
        chain[N+1] consumes every chain[N] output, preserving conservation:
-       sum(prev_amounts) ≈ sum(outputs) + fee_per_tx. */
+       sum(prev_amounts) == sum(outputs) + fee_sats. */
     if (node->is_ps_leaf && node->ps_chain_len > 0 &&
         node->type == NODE_PS_SUBFACTORY && node->ps_n_prev_outputs > 1) {
         tx_input_t inputs[FACTORY_MAX_OUTPUTS];
@@ -2473,7 +3099,7 @@ static int rebuild_node_tx(factory_t *f, size_t node_idx) {
         if (!build_unsigned_tx_multi(&node->unsigned_tx, display_txid,
                                        inputs, node->ps_n_prev_outputs,
                                        node->outputs, node->n_outputs,
-                                       /*nVersion=*/2, /*nlocktime=*/0))
+                                       FACTORY_TREE_TX_VERSION, /*nlocktime=*/0))
             return 0;
         memcpy(node->txid, display_txid, 32);
         reverse_bytes(node->txid, 32);
@@ -2503,10 +3129,11 @@ static int rebuild_node_tx(factory_t *f, size_t node_idx) {
         input_vout = node->parent_vout;
     }
 
-    if (!build_unsigned_tx(&node->unsigned_tx, display_txid,
-                           input_txid, input_vout,
-                           node->nsequence,
-                           node->outputs, node->n_outputs))
+    if (!build_unsigned_tx_v(&node->unsigned_tx, display_txid,
+                             input_txid, input_vout,
+                             node->nsequence,
+                             node->outputs, node->n_outputs,
+                             FACTORY_TREE_TX_VERSION))
         return 0;
 
     memcpy(node->txid, display_txid, 32);
@@ -2595,6 +3222,7 @@ int factory_leaf_snapshot(const factory_t *f, int leaf_side,
     snap->ps_chain_len = node->ps_chain_len;
     memcpy(snap->ps_prev_txid, node->ps_prev_txid, 32);
     snap->ps_prev_chan_amount = node->ps_prev_chan_amount;
+    snap->fee_sats = node->fee_sats;
     if (!leaf_snapshot_copy_buf(&snap->unsigned_tx, &node->unsigned_tx) ||
         !leaf_snapshot_copy_buf(&snap->signed_tx, &node->signed_tx)) {
         factory_leaf_snapshot_free(snap);
@@ -2627,6 +3255,7 @@ int factory_leaf_restore(factory_t *f, int leaf_side,
     node->ps_chain_len = snap->ps_chain_len;
     memcpy(node->ps_prev_txid, snap->ps_prev_txid, 32);
     node->ps_prev_chan_amount = snap->ps_prev_chan_amount;
+    node->fee_sats = snap->fee_sats;
     return 1;
 }
 
@@ -2644,7 +3273,8 @@ int factory_sign_node(factory_t *f, size_t node_idx) {
     if (!node->is_built) return 0;
 
     /* Init session */
-    musig_session_init(&node->signing_session, &node->keyagg, node->n_signers);
+    musig_session_free(&node->signing_session);   /* re-init of a live session: release first */
+    musig_session_init(&node->signing_session, node_sign_keyagg(node), node->n_signers);
     node->partial_sigs_received = 0;
 
     /* Allocate secnonces */
@@ -2666,7 +3296,7 @@ int factory_sign_node(factory_t *f, size_t node_idx) {
 
         secp256k1_musig_pubnonce pubnonce;
         if (!musig_generate_nonce(f->ctx, &secnonces[j], &pubnonce,
-                                   seckey, &pk, &node->keyagg.cache))
+                                   seckey, &pk, &node_sign_keyagg(node)->cache))
             goto fail;
 
         memset(seckey, 0, 32);
@@ -2681,7 +3311,7 @@ int factory_sign_node(factory_t *f, size_t node_idx) {
         if (!compute_node_sighash(f, node, sighash))
             goto fail;
 
-        const unsigned char *mr = node->has_taptree ? node->merkle_root : NULL;
+        const unsigned char *mr = node_sign_merkle(node);
         if (!musig_session_finalize_nonces(f->ctx, &node->signing_session,
                                             sighash, mr, NULL))
             goto fail;
@@ -2755,6 +3385,21 @@ static int update_l_stock_for_leaf(factory_t *f, size_t node_idx) {
     }
 }
 
+/* A per-leaf rollover advances counter layer 0 and resets every leaf layer to
+   its first, longest-delay state.  That is safe for a leaf only when a DW
+   state node above it counts down on layer 0: then the leaf's kickoff spends
+   a new output and the reset leaf state cannot race the superseded one.  A
+   leaf with no such ancestor (the root itself, or a leaf at or above the
+   first DW depth) would re-spend the same output with a longer delay than
+   its superseded state, so the superseded state would win; such a leaf
+   cannot advance past its own layer (the factory has to rotate). */
+static int leaf_rollover_moves_parent(const factory_t *f, size_t leaf_idx) {
+    for (int j = f->nodes[leaf_idx].parent_index; j >= 0; j = f->nodes[j].parent_index)
+        if (node_dw_layer(f, &f->nodes[j]) == &f->counter.layers[0])
+            return 1;
+    return 0;
+}
+
 int factory_advance_leaf(factory_t *f, int leaf_side) {
     if (leaf_side < 0 || leaf_side >= f->n_leaf_nodes) return 0;
 
@@ -2770,11 +3415,13 @@ int factory_advance_leaf(factory_t *f, int leaf_side) {
         memcpy(node->ps_prev_txid, node->txid, 32);
         node->ps_prev_chan_amount = node->outputs[0].amount_sats;
         node->ps_chain_len++;
-        if (node->ps_prev_chan_amount <= f->fee_per_tx) return 0;
-        uint64_t out_total = node->ps_prev_chan_amount - f->fee_per_tx;
+        uint64_t reserve = node_reserve(f, node, 1, 1, node_gets_anchor(f, 1));
+        if (node->ps_prev_chan_amount <= reserve) return 0;
+        uint64_t out_total = node->ps_prev_chan_amount - reserve;
         if (out_total < CHANNEL_DUST_LIMIT_SATS) return 0;
         node->n_outputs = 1;
         node->outputs[0].amount_sats = out_total;
+        factory_append_tree_anchor(f, node);   /* CPFP anchor on chain[1] onward */
         /* outputs[0].script_pubkey unchanged — still node->spending_spk */
         if (!rebuild_node_tx(f, node_idx)) return 0;
         return factory_sign_node(f, node_idx);
@@ -2785,6 +3432,13 @@ int factory_advance_leaf(factory_t *f, int leaf_side) {
     /* DW leaf: advance per-leaf counter */
     if (!dw_advance(&f->leaf_layers[leaf_side])) {
         /* Leaf exhausted — advance root layer, reset all leaf layers */
+        if (factory_refuses_refresh_in_place(f, "factory_advance_leaf"))
+            return 0;
+        if (!leaf_rollover_moves_parent(f, node_idx)) {
+            fprintf(stderr, "factory: leaf %d exhausted and no DW state above it "
+                    "moves on rollover; rotate the factory\n", leaf_side);
+            return 0;
+        }
         if (!dw_advance(&f->counter.layers[0]))
             return 0;  /* fully exhausted */
         f->counter.current_epoch++;
@@ -2822,6 +3476,11 @@ int factory_advance_leaf_unsigned(factory_t *f, int leaf_side) {
        feature gap surfaced by TS-TIER-B-PS testnet4 (the regtest test had
        weaker PASS criteria that masked this). */
     if (node->is_ps_leaf) {
+        /* A chain longer than states_per_layer rolls the root over: refuse
+           that before touching the leaf when no state layer would move. */
+        if ((uint32_t)node->ps_chain_len + 1 > f->states_per_layer &&
+            factory_refuses_refresh_in_place(f, "factory_advance_leaf_unsigned"))
+            return 0;
         memcpy(node->ps_prev_txid, node->txid, 32);
         node->ps_prev_chan_amount = node->outputs[0].amount_sats;
         node->ps_chain_len++;
@@ -2842,11 +3501,13 @@ int factory_advance_leaf_unsigned(factory_t *f, int leaf_side) {
             if (!build_all_unsigned_txs(f)) return 0;
             return -1;  /* caller drives Tier B ceremony */
         }
-        if (node->ps_prev_chan_amount <= f->fee_per_tx) return 0;
-        uint64_t out_total = node->ps_prev_chan_amount - f->fee_per_tx;
+        uint64_t reserve = node_reserve(f, node, 1, 1, node_gets_anchor(f, 1));
+        if (node->ps_prev_chan_amount <= reserve) return 0;
+        uint64_t out_total = node->ps_prev_chan_amount - reserve;
         if (out_total < CHANNEL_DUST_LIMIT_SATS) return 0;
         node->n_outputs = 1;
         node->outputs[0].amount_sats = out_total;
+        factory_append_tree_anchor(f, node);   /* CPFP anchor on chain[1] onward */
         if (!rebuild_node_tx(f, node_idx)) return 0;
         return 1;
     }
@@ -2856,6 +3517,13 @@ int factory_advance_leaf_unsigned(factory_t *f, int leaf_side) {
     /* DW leaf: advance per-leaf counter */
     if (!dw_advance(&f->leaf_layers[leaf_side])) {
         /* Leaf exhausted — advance root layer, reset all leaf layers */
+        if (factory_refuses_refresh_in_place(f, "factory_advance_leaf"))
+            return 0;
+        if (!leaf_rollover_moves_parent(f, node_idx)) {
+            fprintf(stderr, "factory: leaf %d exhausted and no DW state above it "
+                    "moves on rollover; rotate the factory\n", leaf_side);
+            return 0;
+        }
         if (!dw_advance(&f->counter.layers[0]))
             return 0;  /* fully exhausted */
         f->counter.current_epoch++;
@@ -2896,6 +3564,11 @@ int factory_advance_leaf_unsigned(factory_t *f, int leaf_side) {
           to distinguish). */
 int factory_tick_root(factory_t *f) {
     if (!f) return 0;
+    /* Nothing in an advanceless tree carries a relative lock: a tick would
+       re-sign byte-identical transactions and wipe the in-memory chain
+       state.  Only rotation extends such a factory. */
+    if (factory_refuses_refresh_in_place(f, "factory_tick_root"))
+        return 0;
     /* F7: invert the trigger semantics.  A "tick" represents one step_blocks
        worth of block-height progression.  Two cases:
 
@@ -2993,9 +3666,13 @@ int factory_subfactory_chain_advance_unsigned(
     size_t sstock_vout = sub->n_outputs - 1;
     uint64_t sstock_amount = sub->outputs[sstock_vout].amount_sats;
 
-    /* Need enough sales-stock to cover delta + fee + remaining dust. */
+    /* Need enough sales-stock to cover delta + fee + remaining dust.  The
+       advance spends every output of the current state and recreates the
+       same output set. */
     if (delta_sats == 0) return 0;
-    if (sstock_amount < delta_sats + f->fee_per_tx + CHANNEL_DUST_LIMIT_SATS)
+    uint64_t adv_fee = factory_tree_tx_fee(f, sub->n_outputs, sub->n_outputs, 0);
+    if (adv_fee == FEE_INVALID || delta_sats > FEE_MAX_SATS ||
+        sstock_amount < delta_sats + adv_fee + CHANNEL_DUST_LIMIT_SATS)
         return 0;
 
     /* Capture prior chain state for the sighash binding. */
@@ -3020,7 +3697,8 @@ int factory_subfactory_chain_advance_unsigned(
        delta + fee.  Other channels untouched. */
     sub->outputs[channel_idx_in_sub].amount_sats += delta_sats;
     sub->outputs[sstock_vout].amount_sats =
-        sstock_amount - delta_sats - f->fee_per_tx;
+        sstock_amount - delta_sats - adv_fee;
+    sub->fee_sats = adv_fee;
 
     /* #53 sub-factory hashlock: each sub state must commit a DISTINCT per-(sub,state)
        L-stock hash, so revealing one superseded state's secret never compromises
@@ -3063,9 +3741,11 @@ int factory_reset_all_subfactory_chains(factory_t *f) {
 }
 
 /* #146: height-aware reset.  Walks PS sub-factories and resets only those
-   whose latest confirmation is now above the safe height (i.e., possibly
-   reorged out).  Legacy entries with confirmed_height == 0 are reset
-   conservatively — better-safe-than-sorry until they're stamped. */
+   whose latest chain entry was observed confirmed above the safe height
+   (its confirming block may have been disconnected).  Entries with
+   confirmed_height == 0 were never observed on chain: sub-factory chains
+   stay off-chain until a force-close, so no reorg can have removed them,
+   and they are left intact. */
 int factory_reset_subfactory_chains_above_height(factory_t *f,
                                                   uint32_t reorg_max_safe_height)
 {
@@ -3076,11 +3756,12 @@ int factory_reset_subfactory_chains_above_height(factory_t *f,
         if (node->type != NODE_PS_SUBFACTORY) continue;
         if (node->ps_chain_len == 0) continue;
 
-        /* Keep state when confirmation is at-or-below the safe height
-           AND we have a real confirmation record.  Reset otherwise:
-             - confirmed_height == 0 → no record → conservative reset
+        /* Keep state unless the entry was observed confirmed above the
+           safe height:
+             - confirmed_height == 0 → never on chain → keep
+             - confirmed_height <= reorg_max_safe_height → still confirmed
              - confirmed_height > reorg_max_safe_height → reorged out */
-        if (node->ps_chain_confirmed_height > 0 &&
+        if (node->ps_chain_confirmed_height == 0 ||
             node->ps_chain_confirmed_height <= reorg_max_safe_height) {
             continue;
         }
@@ -3110,7 +3791,8 @@ int factory_session_init_node(factory_t *f, size_t node_idx) {
     if (node_idx >= f->n_nodes) return 0;
     factory_node_t *node = &f->nodes[node_idx];
     if (!node->is_built) return 0;
-    musig_session_init(&node->signing_session, &node->keyagg, node->n_signers);
+    musig_session_free(&node->signing_session);   /* re-init of a live session: release first */
+    musig_session_init(&node->signing_session, node_sign_keyagg(node), node->n_signers);
     node->partial_sigs_received = 0;
     return 1;
 }
@@ -3125,7 +3807,7 @@ int factory_session_finalize_node(factory_t *f, size_t node_idx) {
         return 0;
     }
 
-    const unsigned char *mr = node->has_taptree ? node->merkle_root : NULL;
+    const unsigned char *mr = node_sign_merkle(node);
     int ok = musig_session_finalize_nonces(f->ctx, &node->signing_session,
                                             sighash, mr, NULL);
     if (!ok)
@@ -3839,8 +4521,8 @@ int factory_build_burn_tx(factory_t *f, tx_buf_t *burn_tx_out,
     (void)epoch;  /* obsolete — N-of-N MuSig replaces per-epoch hashlock */
     if (!f || !burn_tx_out || !leaf_node || !l_stock_txid) return 0;
 
-    /* Fee: small fixed value (1000 sats), matches our N=64 mixed-arity
-       fee_per_tx policy.  Clients can CPFP if mempool fees rise. */
+    /* Fee: 1000 sats, raised to the agreed tree rate for the tx's real size
+       by the poison builder. */
     return factory_sign_l_stock_poison_tx(
         f, leaf_node, l_stock_txid, l_stock_vout, l_stock_amount,
         /* fee_sats */ 1000, burn_tx_out);
@@ -3866,6 +4548,24 @@ int factory_build_burn_tx(factory_t *f, tx_buf_t *burn_tx_out,
    Subtracts the fee from the total L-stock value, then divides equally.
    Any rounding remainder goes to the LAST recipient.
    Returns 1 on success; 0 if the result would be < dust. */
+/* Witness of the Leaf-P script-path poison spend: item count, 64-byte sig,
+   32-byte preimage, the 73-byte Leaf-P script and the 65-byte control block of
+   the 2-leaf L-stock tree, each with its length prefix. */
+#define POISON_SCRIPTPATH_WITNESS_BYTES (1 + 65 + 33 + 74 + 66)
+
+/* Fee a poison tx actually pays: the caller's fee, raised to the agreed tree
+   rate for its real size (one input, one P2TR output per client).  Both sides
+   derive it from the same factory, so the co-signed bytes agree. */
+static uint64_t poison_fee(const factory_t *f, uint64_t fee_sats, size_t n_clients,
+                           int scriptpath) {
+    size_t vsize = scriptpath
+        ? fee_tx_vsize(1, n_clients, FEE_P2TR_OUTPUT_BYTES * n_clients,
+                       POISON_SCRIPTPATH_WITNESS_BYTES)
+        : fee_keypath_tx_vsize(1, n_clients, 0);
+    uint64_t need = fee_at_rate(f->tree_fee_rate, vsize);
+    return fee_sats > need ? fee_sats : need;
+}
+
 static int compute_l_stock_poison_per_client(
     uint64_t l_stock_amount_sats, uint64_t fee_sats, size_t n_clients,
     uint64_t *per_client_out, uint64_t *last_client_extra_out)
@@ -3900,6 +4600,7 @@ int factory_build_l_stock_poison_tx_unsigned(
        poison TX pays each non-LSP signer; n_clients = n_signers - 1. */
     if (leaf_node->n_signers < 2) return 0;
     size_t n_clients = leaf_node->n_signers - 1;
+    fee_sats = poison_fee(f, fee_sats, n_clients, 0);
 
     uint64_t per_client = 0, last_extra = 0;
     if (!compute_l_stock_poison_per_client(l_stock_amount_sats, fee_sats,
@@ -4084,6 +4785,7 @@ int factory_sign_l_stock_poison_tx(
     if (leaf_node->has_l_stock_hash) return 0;
 
     size_t n_clients = leaf_node->n_signers - 1;
+    fee_sats = poison_fee(f, fee_sats, n_clients, 0);
 
     /* Compute per-client equal-split outputs (zmn's "10 to A, 10 to B"). */
     uint64_t per_client = 0, last_extra = 0;
@@ -4142,6 +4844,7 @@ int factory_build_l_stock_poison_scriptpath_unsigned(
     if (leaf_node->n_signers < 2) return 0;
 
     size_t n_clients = leaf_node->n_signers - 1;
+    fee_sats = poison_fee(f, fee_sats, n_clients, 1);
     uint64_t per_client = 0, last_extra = 0;
     if (!compute_l_stock_poison_per_client(l_stock_amount_sats, fee_sats,
                                             n_clients, &per_client, &last_extra))
@@ -4438,6 +5141,12 @@ int factory_build_distribution_tx(
     /* Build augmented output array with P2A anchor appended.
        Anchor cost deducted from first output (LSP's share). */
     if (n_outputs == 0 || n_outputs > f->n_participants) return 0;
+    if (n_outputs > FACTORY_MAX_DIST_CLIENTS) {
+        fprintf(stderr, "factory: distribution TX refused: %zu outputs, more than the "
+                "%d that fit in a %d vB TRUC transaction\n", n_outputs,
+                FACTORY_MAX_DIST_CLIENTS, TRUC_MAX_VSIZE);
+        return 0;
+    }
     tx_output_t *aug_outputs = (tx_output_t *)calloc(n_outputs + 1, sizeof(tx_output_t));
     if (!aug_outputs) return 0;
     size_t aug_n = n_outputs;
@@ -4445,15 +5154,13 @@ int factory_build_distribution_tx(
     for (size_t i = 0; i < n_outputs; i++)
         aug_outputs[i] = outputs[i];
 
-    /* Add P2A anchor output for CPFP fee bumping.
-       Skip at sub-1-sat/vB rates where the 240-sat anchor would cost more
-       than the entire TX fee, making CPFP uneconomical. */
-    if (fee_should_use_anchor(f->fee) &&
-        aug_outputs[0].amount_sats > ANCHOR_OUTPUT_AMOUNT) {
-        aug_outputs[0].amount_sats -= ANCHOR_OUTPUT_AMOUNT;
+    /* P2A anchor output for CPFP fee bumping.  Always present: the LSP and
+       every client build this tx independently and must agree on its bytes. */
+    if (aug_outputs[0].amount_sats > factory_tree_anchor_sats(f)) {
+        aug_outputs[0].amount_sats -= factory_tree_anchor_sats(f);
         memcpy(aug_outputs[aug_n].script_pubkey, P2A_SPK, P2A_SPK_LEN);
         aug_outputs[aug_n].script_pubkey_len = P2A_SPK_LEN;
-        aug_outputs[aug_n].amount_sats = ANCHOR_OUTPUT_AMOUNT;
+        aug_outputs[aug_n].amount_sats = factory_tree_anchor_sats(f);
         aug_n++;
     }
 
@@ -4463,11 +5170,12 @@ int factory_build_distribution_tx(
     tx_buf_init(&unsigned_tx, 256);
     unsigned char display_txid[32] = {0};
 
-    if (!build_unsigned_tx_with_locktime(&unsigned_tx,
+    if (!build_unsigned_tx_with_locktime_v(&unsigned_tx,
                                           txid_out32 ? display_txid : NULL,
                                           f->funding_txid, f->funding_vout,
                                           0xFFFFFFFEu, nlocktime,
-                                          aug_outputs, aug_n)) {
+                                          aug_outputs, aug_n,
+                                          FACTORY_TREE_TX_VERSION)) {
         tx_buf_free(&unsigned_tx);
         free(aug_outputs);
         return 0;
@@ -4521,6 +5229,12 @@ int factory_build_distribution_tx_unsigned(
 {
     if (!f || !outputs || n_outputs == 0 || n_outputs > f->n_participants)
         return 0;
+    if (n_outputs > FACTORY_MAX_DIST_CLIENTS) {
+        fprintf(stderr, "factory: distribution TX refused: %zu outputs, more than the "
+                "%d that fit in a %d vB TRUC transaction\n", n_outputs,
+                FACTORY_MAX_DIST_CLIENTS, TRUC_MAX_VSIZE);
+        return 0;
+    }
 
     /* Build augmented output array with P2A anchor appended */
     tx_output_t *aug_outputs = (tx_output_t *)calloc(n_outputs + 1, sizeof(tx_output_t));
@@ -4529,12 +5243,11 @@ int factory_build_distribution_tx_unsigned(
     for (size_t i = 0; i < n_outputs; i++)
         aug_outputs[i] = outputs[i];
 
-    if (fee_should_use_anchor(f->fee) &&
-        aug_outputs[0].amount_sats > ANCHOR_OUTPUT_AMOUNT) {
-        aug_outputs[0].amount_sats -= ANCHOR_OUTPUT_AMOUNT;
+    if (aug_outputs[0].amount_sats > factory_tree_anchor_sats(f)) {
+        aug_outputs[0].amount_sats -= factory_tree_anchor_sats(f);
         memcpy(aug_outputs[aug_n].script_pubkey, P2A_SPK, P2A_SPK_LEN);
         aug_outputs[aug_n].script_pubkey_len = P2A_SPK_LEN;
-        aug_outputs[aug_n].amount_sats = ANCHOR_OUTPUT_AMOUNT;
+        aug_outputs[aug_n].amount_sats = factory_tree_anchor_sats(f);
         aug_n++;
     }
 
@@ -4542,10 +5255,11 @@ int factory_build_distribution_tx_unsigned(
     tx_buf_free(&f->dist_unsigned_tx);
     tx_buf_init(&f->dist_unsigned_tx, 256);
 
-    if (!build_unsigned_tx_with_locktime(&f->dist_unsigned_tx, NULL,
+    if (!build_unsigned_tx_with_locktime_v(&f->dist_unsigned_tx, NULL,
                                           f->funding_txid, f->funding_vout,
                                           0xFFFFFFFEu, nlocktime,
-                                          aug_outputs, aug_n)) {
+                                          aug_outputs, aug_n,
+                                          FACTORY_TREE_TX_VERSION)) {
         tx_buf_free(&f->dist_unsigned_tx);
         free(aug_outputs);
         return 0;
@@ -4639,6 +5353,18 @@ int factory_session_complete_dist(factory_t *f) {
    Emits exactly (n_participants - 1) client outputs. Output index 0
    corresponds to participant 1 (first client), index 1 → participant 2,
    etc. The LSP (participant 0) is deliberately skipped. */
+/* Channel capacity of client ci (its channel output in its leaf); 0 when the
+   tree is not built. */
+static uint64_t dist_client_capacity(const factory_t *f, size_t ci) {
+    size_t node = 0;
+    uint32_t vout = 0;
+    if (f->n_nodes == 0 || !factory_client_to_leaf(f, ci, &node, &vout) ||
+        node >= f->n_nodes || !f->nodes[node].is_built ||
+        vout >= f->nodes[node].n_outputs)
+        return 0;
+    return f->nodes[node].outputs[vout].amount_sats;
+}
+
 size_t factory_compute_distribution_outputs(
     const factory_t *f,
     tx_output_t *outputs_out,
@@ -4647,10 +5373,27 @@ size_t factory_compute_distribution_outputs(
 {
     if (!f || !outputs_out || f->n_participants < 2) return 0;
     size_t n_clients = f->n_participants - 1;
-    if (max_outputs < n_clients) return 0;
-    if (f->funding_amount_sats <= fee_sats) return 0;
+    if (max_outputs < n_clients || n_clients > FACTORY_MAX_DIST_CLIENTS) return 0;
+    /* With the tree built, every client is paid its channel capacity plus an
+       equal share of the rest: a client in a shallower leaf has a larger
+       channel than an equal split of the funding would pay it. */
+    {
+        uint64_t cap[FACTORY_MAX_SIGNERS];
+        size_t have = 0;
+        for (size_t ci = 0; ci < n_clients && ci < FACTORY_MAX_SIGNERS; ci++) {
+            cap[ci] = dist_client_capacity(f, ci);
+            if (cap[ci] > 0) have++;
+        }
+        if (have == n_clients)
+            return factory_compute_distribution_outputs_balanced(
+                f, outputs_out, max_outputs, fee_sats, cap, n_clients);
+    }
+    /* No tree: an equal split.  The fee and the P2A anchor come out of the
+       whole pool, never out of one client. */
+    if (f->funding_amount_sats <= fee_sats ||
+        f->funding_amount_sats - fee_sats <= factory_tree_anchor_sats(f)) return 0;
 
-    uint64_t budget = f->funding_amount_sats - fee_sats;
+    uint64_t budget = f->funding_amount_sats - fee_sats - factory_tree_anchor_sats(f);
     uint64_t per_client = budget / n_clients;
     uint64_t remainder = budget - per_client * n_clients;
 
@@ -4683,11 +5426,91 @@ size_t factory_compute_distribution_outputs(
 
     /* Fold integer-division remainder into the first client's output so
        the total never underpays — if any sats would be left stranded by
-       the division, the first client eats the surplus. */
-    if (n > 0 && remainder > 0)
-        outputs_out[0].amount_sats += remainder;
+       the division, the first client eats the surplus.  The anchor amount
+       goes on it too: factory_build_distribution_tx takes the anchor from
+       output 0, and it was already reserved from the pool above. */
+    if (n > 0)
+        outputs_out[0].amount_sats += remainder + factory_tree_anchor_sats(f);
 
     return n;
+}
+
+/* Distribution with member capacities: member i gets its full capacity,
+   never less, plus an equal share of its leaf's host stock (remainder to the
+   leaf's first member), as the stock is split in the poison transaction.
+   What is left of the budget (the tree's fees and anchors above the
+   distribution fee) is split equally across members, remainder to the
+   first.  When the budget covers the capacities but not every stock share,
+   the stock shares shrink pro rata.  Returns 0 when it does not cover the
+   capacities. */
+static size_t distribution_outputs_capacity(const factory_t *f,
+                                            tx_output_t *outputs_out,
+                                            size_t max_outputs, uint64_t fee_sats) {
+    if (f->n_participants < 2) return 0;
+    size_t n_clients = f->n_participants - 1;
+    if (max_outputs < n_clients || n_clients > FACTORY_MAX_DIST_CLIENTS ||
+        f->funding_amount_sats <= fee_sats ||
+        f->funding_amount_sats - fee_sats <= factory_tree_anchor_sats(f)) return 0;
+    /* The fee and the P2A anchor (which factory_build_distribution_tx takes
+       from output 0) come out of the budget before anyone is paid. */
+    uint64_t budget = f->funding_amount_sats - fee_sats - factory_tree_anchor_sats(f);
+    uint64_t *share = calloc(f->n_participants, sizeof(uint64_t));
+    if (!share) return 0;
+    uint64_t caps = 0, shares = 0;
+    for (size_t i = 1; i < f->n_participants; i++) caps += f->member_capacity[i];
+    for (int l = 0; l < f->n_leaf_nodes; l++) {
+        const factory_node_t *leaf = &f->nodes[f->leaf_node_indices[l]];
+        if (leaf->n_signers < 2) continue;
+        uint64_t stock = capacity_leaf_stock(f);
+        size_t m = leaf->n_signers - 1;
+        for (size_t j = 1; j < leaf->n_signers; j++) {
+            uint32_t p = leaf->signer_indices[j];
+            if (p == 0 || p >= f->n_participants) continue;
+            share[p] += stock / m + (j == 1 ? stock % m : 0);
+        }
+        shares += stock;
+    }
+    if (caps > budget) {
+        fprintf(stderr, "distribution: budget %llu sats below the capacities (%llu)\n",
+                (unsigned long long)budget, (unsigned long long)caps);
+        free(share);
+        return 0;
+    }
+    uint64_t rest = budget - caps;
+    if (rest < shares) {
+        uint64_t given = 0;
+        for (size_t i = 1; i < f->n_participants; i++) {
+            share[i] = shares ? share[i] * rest / shares : 0;
+            given += share[i];
+        }
+        share[1] += rest - given;
+        rest = 0;
+    } else {
+        rest -= shares;
+    }
+    uint64_t per = rest / n_clients, rem = rest - per * n_clients;
+
+    size_t n = 0;
+    for (size_t i = 1; i < f->n_participants && n < n_clients; i++) {
+        secp256k1_xonly_pubkey xonly;
+        if (!secp256k1_xonly_pubkey_from_pubkey(f->ctx, &xonly, NULL, &f->pubkeys[i]))
+            break;
+        unsigned char ser[32], tweak[32];
+        if (!secp256k1_xonly_pubkey_serialize(f->ctx, ser, &xonly)) break;
+        sha256_tagged("TapTweak", ser, 32, tweak);
+        secp256k1_pubkey tweaked_full;
+        secp256k1_xonly_pubkey tweaked;
+        if (!secp256k1_xonly_pubkey_tweak_add(f->ctx, &tweaked_full, &xonly, tweak) ||
+            !secp256k1_xonly_pubkey_from_pubkey(f->ctx, &tweaked, NULL, &tweaked_full))
+            break;
+        build_p2tr_script_pubkey(outputs_out[n].script_pubkey, &tweaked);
+        outputs_out[n].script_pubkey_len = 34;
+        outputs_out[n].amount_sats = f->member_capacity[i] + share[i] + per +
+                                     (n == 0 ? rem + factory_tree_anchor_sats(f) : 0);
+        n++;
+    }
+    free(share);
+    return n == n_clients ? n : 0;
 }
 
 /* client_amounts are interpreted as per-client account_limits (channel
@@ -4705,25 +5528,39 @@ size_t factory_compute_distribution_outputs_balanced(
     const uint64_t *client_amounts,
     size_t n_client_amounts)
 {
+    /* Member capacities and no per-client amounts → full capacity each. */
+    if ((!client_amounts || n_client_amounts == 0) && f && f->member_capacity)
+        return distribution_outputs_capacity(f, outputs_out, max_outputs, fee_sats);
     /* No per-client amounts → equal-split inversion. */
     if (!client_amounts || n_client_amounts == 0)
         return factory_compute_distribution_outputs(f, outputs_out, max_outputs, fee_sats);
 
     if (!f || !outputs_out || f->n_participants < 2) return 0;
     size_t n_clients = f->n_participants - 1;
-    if (max_outputs < n_clients) return 0;
-    if (f->funding_amount_sats <= fee_sats) return 0;
+    if (max_outputs < n_clients || n_clients > FACTORY_MAX_DIST_CLIENTS) return 0;
+    if (f->funding_amount_sats <= fee_sats ||
+        f->funding_amount_sats - fee_sats <= factory_tree_anchor_sats(f)) return 0;
 
     /* Sum requested client amounts; if they add up to less than the
        budget, split the surplus equally across clients (this absorbs the
        leaf L-stock shares that the account_limits don't account for).
-       If they add up to MORE than the budget (over-commit bug at factory
-       creation), scale proportionally so nothing overflows the funding. */
+       The fee and the anchor come out of what is left above the requested
+       amounts (the LSP's share): amounts that do not leave room for them
+       are refused, never scaled down -- every client gets its full
+       amount. */
     uint64_t requested = 0;
     for (size_t ci = 0; ci < n_client_amounts && ci < n_clients; ci++)
         requested += client_amounts[ci];
 
-    uint64_t budget = f->funding_amount_sats - fee_sats;
+    uint64_t budget = f->funding_amount_sats - fee_sats - factory_tree_anchor_sats(f);
+    if (requested > budget) {
+        fprintf(stderr, "factory: distribution TX refused: client amounts of %llu "
+                "sat leave less than its fee (%llu sat) and anchor out of the "
+                "%llu sat funding\n", (unsigned long long)requested,
+                (unsigned long long)fee_sats,
+                (unsigned long long)f->funding_amount_sats);
+        return 0;
+    }
 
     size_t n = 0;
     for (size_t i = 1; i < f->n_participants && n < n_clients; i++) {
@@ -4750,23 +5587,21 @@ size_t factory_compute_distribution_outputs_balanced(
 
         size_t ci = i - 1;
         uint64_t amt = (ci < n_client_amounts) ? client_amounts[ci] : 0;
-        if (requested > budget && requested > 0) {
-            amt = (amt * budget) / requested;  /* proportional scale-down */
-        }
         outputs_out[n].amount_sats = amt;
         n++;
     }
 
     /* Spread any surplus (budget > Σ client_amounts — the L-stock share)
-       equally across clients. Remainder of that division goes to first. */
-    if (n > 0 && requested <= budget) {
+       equally across clients. Remainder of that division goes to first,
+       with the anchor amount that factory_build_distribution_tx takes from
+       output 0 (already reserved from the surplus above). */
+    if (n > 0) {
         uint64_t surplus = budget - requested;
         uint64_t per = surplus / n;
         uint64_t rem = surplus - per * n;
         for (size_t j = 0; j < n; j++)
             outputs_out[j].amount_sats += per;
-        if (rem > 0)
-            outputs_out[0].amount_sats += rem;
+        outputs_out[0].amount_sats += rem + factory_tree_anchor_sats(f);
     }
 
     return n;
@@ -4897,31 +5732,54 @@ int factory_build_timeout_spend_tx(
     return 1;
 }
 
-uint32_t factory_early_warning_time(const factory_t *f) {
-    /* Worst-case blocks to fully unwind the factory from the oldest DW state.
-       For each DW layer: step_blocks * (max_states - 1).
-       PS leaves contribute 0 blocks — their ordering is enforced by TX chaining
-       (each confirmation is ~10 minutes, negligible vs. DW layer delays). */
-    uint32_t ewt = 0;
-    for (uint32_t i = 0; i < f->counter.n_layers; i++) {
-        const dw_layer_t *layer = &f->counter.layers[i];
-        if (layer->config.max_states > 1)
-            ewt += (uint32_t)layer->config.step_blocks * (layer->config.max_states - 1);
-    }
+static uint32_t shape_timed_levels(const uint8_t *level_arities,
+                                   size_t n_level_arity,
+                                   factory_arity_t leaf_arity, size_t ps_cap,
+                                   size_t n_clients, uint32_t static_threshold);
 
-    /* If any leaf is a PS leaf, subtract one leaf-layer's worth of blocks.
-       The leaf DW layer is the innermost counter layer (index n_layers-1). */
-    int has_ps = 0;
-    for (int i = 0; i < f->n_leaf_nodes; i++) {
-        const factory_node_t *node = &f->nodes[f->leaf_node_indices[i]];
-        if (node->is_ps_leaf) { has_ps = 1; break; }
+/* Relative lock of a DW state at its layer's first, longest-delay state. */
+static uint32_t dw_first_state_delay(uint16_t step_blocks, uint32_t states_per_layer) {
+    if (states_per_layer < 2) return 0;
+    dw_layer_config_t cfg;
+    cfg.step_blocks = step_blocks;
+    cfg.max_states = states_per_layer;
+    return dw_delay_for_state(&cfg, 0);
+}
+
+/* Largest relative lock (blocks) a node's tx carries: its DW layer's first,
+   longest-delay state; 0 for nodes without one. */
+static uint32_t node_max_relative_lock(const factory_t *f,
+                                       const factory_node_t *node) {
+    const dw_layer_t *layer = node_dw_layer(f, node);
+    return layer ? dw_delay_for_state(&layer->config, 0) : 0;
+}
+
+uint32_t factory_early_warning_time(const factory_t *f) {
+    /* Worst-case blocks to fully unwind the factory from its oldest state: the
+       largest sum, over the root-to-node paths of the built tree, of the
+       relative lock each tx on the path carries.  Every DW state node counts,
+       including depths that share the innermost counter layer; kickoffs,
+       static kickoffs and PS leaves carry none (PS ordering is enforced by TX
+       chaining).  Before the tree is built: the same sum for the configured
+       shape. */
+    if (f->n_nodes == 0) {
+        size_t nc = f->n_participants > 1 ? f->n_participants - 1 : 0;
+        uint32_t timed = shape_timed_levels(
+            f->n_level_arity > 0 ? f->level_arity : NULL, f->n_level_arity,
+            f->leaf_arity, ps_leaf_capacity(f), nc, f->static_threshold_depth);
+        if (timed == UINT32_MAX) return UINT32_MAX;
+        return timed * dw_first_state_delay(f->step_blocks, f->states_per_layer);
     }
-    if (has_ps && f->counter.n_layers > 0) {
-        const dw_layer_t *leaf_layer = &f->counter.layers[f->counter.n_layers - 1];
-        uint32_t leaf_cost = (uint32_t)leaf_layer->config.step_blocks *
-                             (leaf_layer->config.max_states > 1
-                              ? leaf_layer->config.max_states - 1 : 0);
-        ewt = (ewt > leaf_cost) ? ewt - leaf_cost : 0;
+    uint32_t ewt = 0;
+    for (size_t i = 0; i < f->n_nodes; i++) {
+        uint32_t sum = 0;
+        size_t hops = 0;
+        for (int j = (int)i; j >= 0 && hops <= f->n_nodes; hops++) {
+            const factory_node_t *node = &f->nodes[j];
+            sum += node_max_relative_lock(f, node);
+            j = node->parent_index;
+        }
+        if (sum > ewt) ewt = sum;
     }
     return ewt;
 }
@@ -4942,103 +5800,102 @@ static int arity_at_depth_raw(const uint8_t *level_arities,
     return (int)level_arities[n_level_arity - 1];
 }
 
+/* Most DW state nodes on any root-to-leaf path of a shape, walking it exactly
+   as build_subtree does (arity_at_depth + leaf_arity_raw +
+   split_clients_for_arity): every non-static interior level counts, and every
+   leaf that is not pseudo-Spilman.  UINT32_MAX if the walk overflows. */
+static uint32_t shape_timed_levels(const uint8_t *level_arities,
+                                   size_t n_level_arity,
+                                   factory_arity_t leaf_arity, size_t ps_cap,
+                                   size_t n_clients, uint32_t static_threshold) {
+    if (n_clients == 0) return 0;
+    int last = (n_level_arity > 0) ? (int)level_arities[n_level_arity - 1]
+                                   : (int)leaf_arity;
+    typedef struct { size_t nc; int depth; uint32_t timed; } frame_t;
+    frame_t stack[FACTORY_MAX_NODES];
+    int sp = 0;
+    uint32_t max_timed = 0;
+    stack[sp].nc = n_clients;
+    stack[sp].depth = 0;
+    stack[sp].timed = 0;
+    sp++;
+    while (sp > 0) {
+        frame_t fr = stack[--sp];
+        if (fr.nc == 0) continue;
+        int a = arity_at_depth_raw(level_arities, n_level_arity, leaf_arity, fr.depth);
+        int leaf_a = leaf_arity_raw(a, last, ps_cap, fr.nc);
+        if (leaf_a) {
+            uint32_t t = fr.timed + (leaf_a == FACTORY_ARITY_PS ? 0u : 1u);
+            if (t > max_timed) max_timed = t;
+            continue;
+        }
+        uint32_t t = fr.timed + (fr.depth < (int)static_threshold ? 0u : 1u);
+        size_t parts[FACTORY_MAX_OUTPUTS];
+        size_t n_parts = split_clients_for_arity(a, fr.nc, parts);
+        for (size_t k = 0; k < n_parts; k++) {
+            if (sp >= FACTORY_MAX_NODES) return UINT32_MAX;
+            stack[sp].nc = parts[k];
+            stack[sp].depth = fr.depth + 1;
+            stack[sp].timed = t;
+            sp++;
+        }
+    }
+    return max_timed;
+}
+
 uint32_t factory_compute_ewt_for_shape(
     const uint8_t *level_arities, size_t n_level_arity,
     factory_arity_t leaf_arity,
+    uint32_t ps_subfactory_arity,
     size_t n_clients,
     uint32_t static_threshold,
     uint16_t step_blocks,
     uint32_t states_per_layer)
 {
-    if (n_clients == 0) return 0;
+    /* PS leaf capacity as ps_leaf_capacity / factory_set_ps_subfactory_arity. */
+    uint32_t k = ps_subfactory_arity;
+    if (k > (uint32_t)(FACTORY_MAX_OUTPUTS - 1)) k = (uint32_t)(FACTORY_MAX_OUTPUTS - 1);
+    size_t ps_cap = (k <= 1) ? 1 : (size_t)k * (size_t)k;
+    uint32_t timed = shape_timed_levels(level_arities, n_level_arity, leaf_arity,
+                                        ps_cap, n_clients, static_threshold);
+    if (timed == UINT32_MAX) return UINT32_MAX;
+    return timed * dw_first_state_delay(step_blocks, states_per_layer);
+}
 
-    /* Walk the tree to find max depth. Same algorithm as simulate_tree
-       but without needing a factory_t. Stack-based DFS. */
-    typedef struct { size_t nc; int depth; } frame_t;
-    frame_t stack[FACTORY_MAX_NODES];
-    int sp = 0;
-    int max_depth = 0;
-    int has_ps_leaf = 0;
-    stack[sp].nc = n_clients;
-    stack[sp].depth = 0;
-    sp++;
-    while (sp > 0) {
-        size_t nc = stack[sp - 1].nc;
-        int d = stack[sp - 1].depth;
-        sp--;
-        if (nc == 0) continue;
-        if (d > max_depth) max_depth = d;
-        int a = arity_at_depth_raw(level_arities, n_level_arity, leaf_arity, d);
-        /* subtree_is_leaf logic */
-        int is_leaf;
-        if (a == 1 || a == FACTORY_ARITY_PS) is_leaf = (nc <= 1);
-        else                                  is_leaf = (nc <= (size_t)a);
-        if (is_leaf) {
-            if (a == FACTORY_ARITY_PS) has_ps_leaf = 1;
-            continue;
-        }
-        /* split_clients_for_arity logic — distribute */
-        size_t parts[FACTORY_MAX_OUTPUTS];
-        size_t n_parts;
-        if (a == 1 || a == FACTORY_ARITY_PS) {
-            parts[0] = nc / 2;
-            parts[1] = nc - parts[0];
-            n_parts = 2;
-        } else if (a == 2) {
-            size_t total_leaves_est = (nc + 1) / 2;
-            size_t left_leaves = total_leaves_est / 2;
-            size_t left_n = left_leaves * 2;
-            if (left_n > nc) left_n = nc;
-            size_t right_n = nc - left_n;
-            parts[0] = left_n;
-            parts[1] = right_n;
-            n_parts = 2;
-        } else {
-            size_t children = 0;
-            size_t remaining = nc;
-            while (remaining > 0 && children < (size_t)a) {
-                size_t children_left = (size_t)a - children;
-                size_t this_child = (remaining + children_left - 1) / children_left;
-                if (this_child > remaining) this_child = remaining;
-                parts[children++] = this_child;
-                remaining -= this_child;
-            }
-            if (remaining > 0 && children > 0)
-                parts[children - 1] += remaining;
-            n_parts = children;
-        }
-        for (size_t k = 0; k < n_parts; k++) {
-            if (sp + 1 > FACTORY_MAX_NODES) break;
-            stack[sp].nc = parts[k];
-            stack[sp].depth = d + 1;
-            sp++;
-        }
+int factory_advanceless_shape(size_t n_clients,
+                              uint8_t arities_out[FACTORY_MAX_LEVELS],
+                              size_t *n_arities_out,
+                              uint32_t *static_near_root_out) {
+    if (!arities_out || !n_arities_out || !static_near_root_out || n_clients == 0)
+        return 0;
+    const size_t max_fanout = FACTORY_MAX_OUTPUTS - 1;   /* one output is the anchor */
+    /* Depth: fewest fan-out levels whose capacity max_fanout^d holds every
+       client in its own leaf. */
+    uint32_t d = 0;
+    for (size_t cap = 1; cap < n_clients; cap *= max_fanout)
+        d++;
+    if (d + 1 > FACTORY_MAX_LEVELS) return 0;
+    /* Fan-out: the narrowest one that still fits n_clients in d levels.
+       At least 4: in an arity list 1 and 2 are DW kinds and 3 is the
+       pseudo-Spilman split, so the narrowest plain fan-out is 4. */
+    size_t a = 4;
+    for (;;) {
+        size_t cap = 1;
+        for (uint32_t i = 0; i < d && cap < n_clients; i++) cap *= a;
+        if (cap >= n_clients || a >= max_fanout) break;
+        a++;
     }
-
-    /* dw_n_layers_for logic */
-    int t = (int)static_threshold;
-    if (t < 0) t = 0;
-    if (t > max_depth + 1) t = max_depth + 1;
-    int n_layers = max_depth - t + 1;
-    if (n_layers < 1) n_layers = 1;
-    if (n_layers > (int)DW_MAX_LAYERS) n_layers = (int)DW_MAX_LAYERS;
-
-    /* factory_early_warning_time logic: each layer contributes
-       step_blocks * (states_per_layer - 1). */
-    uint32_t per_layer = 0;
-    if (states_per_layer > 1)
-        per_layer = (uint32_t)step_blocks * (states_per_layer - 1);
-    uint32_t ewt = (uint32_t)n_layers * per_layer;
-
-    /* PS leaves contribute 0 blocks (TX chaining, not nSequence) — subtract
-       one leaf-layer's worth if any leaf is PS.  When leaf_arity is uniform,
-       check leaf_arity itself; for mixed arity, has_ps_leaf is set during
-       the walk above. */
-    int leaf_is_ps = has_ps_leaf || (n_level_arity == 0 && leaf_arity == FACTORY_ARITY_PS);
-    if (leaf_is_ps && n_layers > 0) {
-        ewt = (ewt > per_layer) ? ewt - per_layer : 0;
-    }
-    return ewt;
+    size_t n = 0;
+    for (uint32_t i = 0; i < d; i++) arities_out[n++] = (uint8_t)a;
+    arities_out[n++] = FACTORY_ARITY_PS;   /* one member per PS leaf */
+    *n_arities_out = n;
+    *static_near_root_out = d;
+    /* Every interior level is static and every leaf pseudo-Spilman: no state
+       on any path carries a DW relative lock. */
+    if (shape_timed_levels(n > 1 ? arities_out : NULL, n > 1 ? n : 0,
+                           FACTORY_ARITY_PS, 1, n_clients, d) != 0)
+        return 0;
+    return 1;
 }
 
 void factory_free(factory_t *f) {
@@ -5094,6 +5951,8 @@ void factory_free(factory_t *f) {
     free(f->keypairs);          f->keypairs = NULL;
     free(f->pubkeys);           f->pubkeys = NULL;
     free(f->profiles);          f->profiles = NULL;
+    free(f->chan_spks);         f->chan_spks = NULL;
+    free(f->member_capacity);   f->member_capacity = NULL;
     free(f->dist_partial_sigs); f->dist_partial_sigs = NULL;
     /* Per-leaf arrays (were fixed [FACTORY_MAX_LEAVES]). */
     free(f->leaf_layers);       f->leaf_layers = NULL;
@@ -5180,6 +6039,16 @@ void factory_detach_txbufs(factory_t *f) {
         participant_profile_t *pr = malloc(ms * sizeof(*pr));
         if (pr && f->profiles) memcpy(pr, f->profiles, ms * sizeof(*pr));
         f->profiles = pr;
+        if (f->chan_spks) {
+            factory_chan_spk_t *cs = malloc(ms * sizeof(*cs));
+            if (cs) memcpy(cs, f->chan_spks, ms * sizeof(*cs));
+            f->chan_spks = cs;
+        }
+        if (f->member_capacity) {
+            uint64_t *mc = malloc(ms * sizeof(*mc));
+            if (mc) memcpy(mc, f->member_capacity, ms * sizeof(*mc));
+            f->member_capacity = mc;
+        }
         secp256k1_musig_partial_sig *dp = malloc(ms * sizeof(*dp));
         if (dp && f->dist_partial_sigs) memcpy(dp, f->dist_partial_sigs, ms * sizeof(*dp));
         f->dist_partial_sigs = dp;
