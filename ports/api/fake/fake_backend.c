@@ -21,6 +21,24 @@
 #define SEAT_ID "a19c3b5e7d2f4c11"
 #define HOST_KEY "02c7e1b2a4d6f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192"
 #define TIP 330437
+#define HOST_FACTORY_ID "fac_h001"
+
+/* the story's stages (member: m_stage; host: h_stage) and the member's outcome */
+enum { MS_OPEN = 0, MS_READY_CHECK, MS_SIGNING, MS_FUNDING, MS_ACTIVE, MS_CANCELLED };
+enum { MO_NONE = 0, MO_REFUSED, MO_UNFINISHED, MO_CANCELLED, MO_STARTED };
+
+static int64_t free_sat(const gz_fake *f)
+{
+    return 42000000 - f->set_aside_sat - f->h_funded_sat;
+}
+
+/* anything to watch (11.2): the fixed picture's factory, or the story's */
+static int watching(const gz_fake *f)
+{
+    if (!f->story) return f->has_factory;
+    return f->m_stage == MS_FUNDING || f->m_stage == MS_ACTIVE || f->m_outcome == MO_UNFINISHED ||
+           f->h_stage == MS_FUNDING || f->h_stage == MS_ACTIVE;
+}
 
 static const char *const TEST_WORDS[24] = {
     "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon", "abandon",
@@ -323,7 +341,8 @@ static void range(gz_jw *w, const char *k, int64_t lo, int64_t hi)
 }
 
 /* 13.3, the host's terms */
-static void terms(gz_jw *w, const char *seed, int64_t fee_lo, int64_t fee_now, int64_t fee_hi, int sealed)
+static void terms(gz_jw *w, const char *seed, int64_t fee_lo, int64_t fee_now, int64_t fee_hi, int sealed,
+                  int64_t target, int64_t minimum, int64_t chan)
 {
     char fp[65], dg[65], shortfp[16];
     hex_of(seed, fp);
@@ -346,8 +365,8 @@ static void terms(gz_jw *w, const char *seed, int64_t fee_lo, int64_t fee_now, i
     gz_jw_obj(w);
     gz_jw_kstr(w, "chain", "signet");
     gz_jw_kstr(w, "profile", "standard");
-    gz_jw_kint(w, "target", 50);
-    gz_jw_kint(w, "minimum", 30);
+    gz_jw_kint(w, "target", target);
+    gz_jw_kint(w, "minimum", minimum);
     gz_jw_kint(w, "deadline_at", 1794441600);
     gz_jw_kstr(w, "on_shortfall", "cancel");
     gz_jw_kint(w, "ready_window_ms", 60000);
@@ -355,7 +374,7 @@ static void terms(gz_jw *w, const char *seed, int64_t fee_lo, int64_t fee_now, i
     gz_jw_kint(w, "step_timeout_ms", 60000);
     gz_jw_kint(w, "lifetime_blocks", 4752);
     gz_jw_kint(w, "winddown_blocks", 432);
-    gz_jw_kint(w, "channel_sat", 500000);
+    gz_jw_kint(w, "channel_sat", chan);
     gz_jw_kint(w, "tree_feerate_sat_per_kvb", 100);
     gz_jw_kraw(w, "switches", "{\"names\":false,\"chat\":false,\"rule_requests\":false}");
     gz_jw_kraw(w, "shape", "[{\"max_members\":4,\"interior\":[],\"leaf\":\"one_member\"},"
@@ -384,8 +403,8 @@ static void terms(gz_jw *w, const char *seed, int64_t fee_lo, int64_t fee_now, i
     gz_jw_obj(w);
     gz_jw_kint(w, "exit_blocks", 864);
     gz_jw_kint(w, "depth", 2);
-    gz_jw_kint(w, "funding_at_minimum_sat", 22500000);
-    gz_jw_kint(w, "funding_at_target_sat", 37500000);
+    gz_jw_kint(w, "funding_at_minimum_sat", minimum * chan * 3 / 2);
+    gz_jw_kint(w, "funding_at_target_sat", target * chan * 3 / 2);
     gz_jw_end_obj(w);
     gz_jw_kraw(w, "reserved", "{\"receiving_room_fee_ppm\":null,\"joining_fee_chain_share\":null,"
                               "\"newcomer_seats_pct\":null,\"invitation_only\":null}");
@@ -444,11 +463,493 @@ static void fit(gz_jw *w, gz_fake *f, int64_t fee_lo, int64_t fee_now, int64_t f
 
 static const char *seat_name(gz_fake *f, const char *id)
 {
-    if (strcmp(id, LOBBY_ID) != 0) return "none";
-    if (f->joining_answer) return "joining";
+    if (strcmp(id, LOBBY_ID) != 0) {
+        if (!f->story || strcmp(id, LOBBY2_ID) != 0) return "none";
+        if (f->joining_answer == 2) return "joining";
+        if (f->left2) return "left";
+        if (!f->joined2) return "none";
+        return f->ready2 ? "ready" : "joined_not_ready";
+    }
+    if (f->joining_answer == 1) return "joining";
     if (f->left) return "left";
     if (!f->joined) return "none";
+    if (f->story && f->m_stage >= MS_SIGNING && f->m_stage <= MS_ACTIVE) return "chosen";
     return f->ready ? "ready" : "joined_not_ready";
+}
+
+/* ---- the interface's story (TEST ONLY; gz-api-fake --story) ----------------------------------
+ * The same shapes as the fixed picture, with the lobbies' stages, the member's
+ * round and outcome, the funding and the factories taken from the story's
+ * state, which gz_fake_cmd moves on. */
+static const char *const M_STAGE[] = {"open", "ready_check", "signing", "funding", "active", "cancelled"};
+#define FUNDING_TXID "9f1c2a7e5d3b4c6a8e0f1d2c3b4a59687766554433221100ffeeddccbbaa9988"
+
+static const char *funding_state(int conf)
+{
+    return conf == 0 ? "broadcast" : conf < 3 ? "confirming" : "buried";
+}
+
+/* 14.1 round: the member's creation round, with the program's own checks */
+static void story_round(gz_jw *w, gz_fake *f)
+{
+    static const char *const RS[] = {"", "checking", "nonces_sent", "signed", "awaiting_funding", "unfinished",
+                                     "aborted", "live"};
+    int refused = f->m_outcome == MO_REFUSED;
+    int sent = f->m_round >= 3 && f->m_round != 6;
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "state", RS[f->m_round]);
+    gz_jw_kint(w, "attempt", 1);
+    gz_jw_key(w, "signatures");
+    gz_jw_obj(w);
+    gz_jw_kint(w, "done", !sent ? 0 : f->m_round == 3 || f->m_round == 5 ? 11 : 17);
+    gz_jw_kint(w, "of", 17);
+    gz_jw_end_obj(w);
+    if (sent) gz_jw_kint(w, "sent_at", 1794434404);
+    else gz_jw_knull(w, "sent_at");
+    if (sent) gz_jw_kint(w, "last_heard_at", 1794434404);
+    else gz_jw_knull(w, "last_heard_at");
+    gz_jw_kint(w, "checked_to_height", TIP);
+    if (f->m_round == 5) {
+        gz_jw_key(w, "unfinished_deadline");
+        date(w, "unfinished_deadline", TIP + 36, "round_abandoned", "worked_out", "signing_budget_from_sent");
+    } else {
+        gz_jw_knull(w, "unfinished_deadline");
+    }
+    gz_jw_key(w, "checks");
+    gz_jw_arr(w);
+    gz_jw_raw(w, "{\"check\":\"fingerprint_same\",\"ok\":true}");
+    gz_jw_raw(w, "{\"check\":\"frozen_values_inside_limits\",\"ok\":true}");
+    gz_jw_raw(w, refused ? "{\"check\":\"tree_inside_conditions\",\"ok\":false,\"params\":{\"members\":18}}"
+                         : "{\"check\":\"tree_inside_conditions\",\"ok\":true,\"params\":{\"members\":30}}");
+    gz_jw_raw(w, "{\"check\":\"safety_checks\",\"ok\":true}");
+    gz_jw_end_arr(w);
+    gz_jw_end_obj(w);
+}
+
+static void story_funding(gz_jw *w, int conf, int64_t amount)
+{
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "txid", FUNDING_TXID);
+    gz_jw_kstr(w, "state", funding_state(conf));
+    gz_jw_kint(w, "confirmations", conf);
+    gz_jw_kint(w, "needed", 3);
+    gz_jw_key(w, "deadline");
+    date(w, "funding_deadline", TIP + 36, "round_abandoned", "worked_out", "ack_height_plus_deadline");
+    gz_jw_kint(w, "amount_sat", amount);
+    gz_jw_end_obj(w);
+}
+
+static void story_lobby(gz_jw *w, gz_fake *f, const char *id, int row)
+{
+    int first = strcmp(id, LOBBY_ID) == 0;
+    int in = first ? f->joined : f->joined2, rdy = in && (first ? f->ready : f->ready2);
+    int gone = first ? f->left : f->left2;
+    int started = first && (f->m_stage == MS_FUNDING || f->m_stage == MS_ACTIVE);
+    int64_t lo = first ? 500 : 3000, now = first ? 1000 : 4000, hi = first ? 1500 : 5000;
+    char fp[65];
+    hex_of(id, fp);
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "id", id);
+    gz_jw_kstr(w, "fingerprint", fp);
+    gz_jw_text(w, "name", first ? "Tomato Garden, daily factory" : "Basil Corner <script>alert(1)</script>", "host", 120);
+    gz_jw_key(w, "host");
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "key", HOST_KEY);
+    gz_jw_text(w, "alias", "Tomato Garden", "host", 64);
+    gz_jw_kstr(w, "address", "tomato.example:9735");
+    gz_jw_knull(w, "record");
+    gz_jw_end_obj(w);
+    gz_jw_kstr(w, "source", "direct_query");
+    gz_jw_kbool(w, "listed", 1);
+    gz_jw_kstr(w, "stage", first ? M_STAGE[f->m_stage] : "open");
+    if (!row) {
+        gz_jw_key(w, "terms");
+        terms(w, id, lo, now, hi, 1, 50, 30, 500000);
+    }
+    gz_jw_key(w, "fit");
+    fit(w, f, lo, now, hi);
+    gz_jw_key(w, "start_rule");
+    gz_jw_obj(w);
+    gz_jw_kint(w, "target", 50);
+    gz_jw_kint(w, "minimum", 30);
+    gz_jw_key(w, "deadline");
+    date(w, "lobby_starts_by", TIP + 12, "lobby_applies_start_rule", "signed_term", "term_start_plus_life");
+    gz_jw_kstr(w, "on_shortfall", "cancel");
+    gz_jw_end_obj(w);
+    gz_jw_key(w, "counts");
+    gz_jw_obj(w);
+    gz_jw_kint(w, "joined", 29 + (in ? 1 : 0));
+    gz_jw_kint(w, "ready", 29 + (rdy ? 1 : 0));
+    gz_jw_end_obj(w);
+    gz_jw_key(w, "you");
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "seat", seat_name(f, id));
+    if (!row) {
+        if (rdy) gz_jw_kint(w, "ready_for_version", 3);
+        else gz_jw_knull(w, "ready_for_version");
+        gz_jw_kbool(w, "counted", rdy);
+        if (in) gz_jw_kint(w, "conditions_copied_at", 1794427320);
+        else gz_jw_knull(w, "conditions_copied_at");
+        gz_jw_text(w, "appear_as", "Lemon-39", "you", 64);
+        gz_jw_knull(w, "standby");
+        if (first && f->m_outcome == MO_REFUSED) {
+            gz_jw_key(w, "outcome");
+            gz_jw_obj(w);
+            gz_jw_kstr(w, "code", "refused_at_check");
+            gz_jw_kstr(w, "which", "conditions");
+            gz_jw_key(w, "failures");
+            gz_jw_arr(w);
+            gz_jw_obj(w);
+            gz_jw_kstr(w, "condition", "min_members");
+            gz_jw_kint(w, "yours", f->cond_min_members);
+            gz_jw_kint(w, "offered", 18);
+            gz_jw_end_obj(w);
+            gz_jw_end_arr(w);
+            gz_jw_end_obj(w);
+        } else if (first && f->m_outcome == MO_UNFINISHED) {
+            gz_jw_kraw(w, "outcome", "{\"code\":\"signing_unfinished\",\"cancel_received\":null}");
+        } else if (first && f->m_outcome == MO_CANCELLED) {
+            gz_jw_kraw(w, "outcome", "{\"code\":\"cancelled\",\"reason\":\"deadline_below_minimum\",\"not_your_doing\":true}");
+        } else if (first && f->m_outcome == MO_STARTED) {
+            gz_jw_kraw(w, "outcome", "{\"code\":\"started\"}");
+        } else if (gone) {
+            gz_jw_kraw(w, "outcome", "{\"code\":\"left\",\"reason\":\"user\"}");
+        } else {
+            gz_jw_knull(w, "outcome");
+        }
+    }
+    gz_jw_end_obj(w);
+    if (!row) {
+        if (first && f->m_round) {
+            gz_jw_key(w, "round");
+            story_round(w, f);
+        } else {
+            gz_jw_knull(w, "round");
+        }
+        if (started) {
+            gz_jw_key(w, "funding");
+            story_funding(w, f->m_conf, 22500000);
+            gz_jw_kstr(w, "factory_id", FACTORY_ID);
+        } else {
+            gz_jw_knull(w, "funding");
+            gz_jw_knull(w, "factory_id");
+        }
+        gz_jw_knull(w, "members");
+        gz_jw_knull(w, "terms_change");
+    } else {
+        gz_jw_kint(w, "channel_sat", 500000);
+        range(w, "joining_fee_sat", lo, hi);
+        gz_jw_kint(w, "exit_blocks", 864);
+    }
+    gz_jw_end_obj(w);
+}
+
+static void story_host_lobby(gz_jw *w, gz_fake *f)
+{
+    static const char *const HR[] = {"", "collecting_nonces", "collecting_signatures", "complete", "funding", "funded"};
+    static const char *const NAMES[] = {"Fig-12", "Plum-3", "Olive-27", "Pear-8", "Lime-41", "Kiwi-5", "Date-19", "Rose-2"};
+    char fp[65], sid[24];
+    int i, shown = f->h_ready > 8 ? 8 : f->h_ready;
+    int open = !f->host_cancelled && f->h_stage == MS_OPEN;
+    int can = open && f->h_ready >= f->h_minimum;
+    hex_of(HOST_LOBBY_ID, fp);
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "id", HOST_LOBBY_ID);
+    gz_jw_kstr(w, "fingerprint", fp);
+    gz_jw_text(w, "name", f->h_name, "you", 120);
+    gz_jw_kstr(w, "stage", f->host_cancelled ? "cancelled" : M_STAGE[f->h_stage]);
+    gz_jw_key(w, "terms");
+    terms(w, HOST_LOBBY_ID, 500, 1000, 1500, 1, f->h_target, f->h_minimum, f->h_channel);
+    gz_jw_key(w, "counts");
+    gz_jw_obj(w);
+    gz_jw_kint(w, "joined", f->h_ready);
+    gz_jw_kint(w, "ready", f->h_ready);
+    gz_jw_end_obj(w);
+    gz_jw_kbool(w, "can_start_now", can);
+    gz_jw_key(w, "start_blocked_by");
+    gz_jw_arr(w);
+    if (open && !can) gz_jw_str(w, "below_minimum");
+    gz_jw_end_arr(w);
+    gz_jw_key(w, "funding");
+    gz_jw_obj(w);
+    gz_jw_kint(w, "needed_at_minimum_sat", f->h_minimum * f->h_channel * 3 / 2);
+    gz_jw_kint(w, "needed_at_target_sat", f->h_target * f->h_channel * 3 / 2);
+    gz_jw_kint(w, "set_aside_sat", f->set_aside_sat);
+    gz_jw_kint(w, "wallet_free_sat", free_sat(f));
+    gz_jw_end_obj(w);
+    gz_jw_key(w, "seats");
+    gz_jw_arr(w);
+    for (i = 0; i < shown; i++) {
+        if (i == 0) snprintf(sid, sizeof sid, "%s", SEAT_ID);
+        else snprintf(sid, sizeof sid, "b%015d", i);
+        gz_jw_obj(w);
+        gz_jw_kstr(w, "seat", sid);
+        gz_jw_text(w, "name", NAMES[i], "member", 64);
+        gz_jw_kstr(w, "state", f->h_stage >= MS_SIGNING ? "chosen" : "ready");
+        gz_jw_kint(w, "joined_at", 1794427000 + i * 60);
+        gz_jw_kbool(w, "can_remove", open);
+        gz_jw_end_obj(w);
+    }
+    if (f->h_left_seen) {                              /* a member that left at its own check, as the host sees it */
+        gz_jw_obj(w);
+        gz_jw_kstr(w, "seat", "c000000000000001");
+        gz_jw_text(w, "name", "Sage-7", "member", 64);
+        gz_jw_kstr(w, "state", "left");
+        gz_jw_kint(w, "joined_at", 1794427900);
+        gz_jw_kbool(w, "can_remove", 0);
+        gz_jw_end_obj(w);
+    }
+    gz_jw_end_arr(w);
+    gz_jw_knull(w, "standby");
+    if (f->h_round) {
+        gz_jw_key(w, "round");
+        gz_jw_obj(w);
+        gz_jw_kstr(w, "state", HR[f->h_round]);
+        gz_jw_kint(w, "attempt", f->h_left_seen ? 2 : 1);
+        gz_jw_kint(w, "answered", f->h_round == 1 ? f->h_ready / 2 : f->h_ready);
+        gz_jw_kint(w, "of", f->h_ready);
+        gz_jw_kint(w, "silent", 0);
+        gz_jw_end_obj(w);
+    } else {
+        gz_jw_knull(w, "round");
+    }
+    gz_jw_kraw(w, "listing", "{\"published\":[\"direct_query\"],\"renew_by\":null}");
+    if (f->h_stage == MS_FUNDING || f->h_stage == MS_ACTIVE) {
+        gz_jw_key(w, "funding_tx");
+        gz_jw_obj(w);
+        gz_jw_kstr(w, "txid", FUNDING_TXID);
+        gz_jw_kstr(w, "state", funding_state(f->h_conf));
+        gz_jw_kint(w, "confirmations", f->h_conf);
+        gz_jw_kint(w, "needed", 3);
+        gz_jw_kint(w, "broadcast_at", 1794434410);
+        gz_jw_end_obj(w);
+        gz_jw_kstr(w, "factory_id", HOST_FACTORY_ID);
+    } else {
+        gz_jw_knull(w, "funding_tx");
+        gz_jw_knull(w, "factory_id");
+    }
+    gz_jw_end_obj(w);
+}
+
+/* 16.1: the member's factory, or (host) the one this program funded */
+static void story_factory(gz_jw *w, gz_fake *f, int row, int host)
+{
+    int live = (host ? f->h_stage : f->m_stage) == MS_ACTIVE, conf = host ? f->h_conf : f->m_conf;
+    int64_t members = host ? f->h_ready : 30, chan = host ? f->h_channel : 500000;
+    const char *fid = host ? HOST_FACTORY_ID : FACTORY_ID;
+    char fp[65];
+    hex_of(fid, fp);
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "id", fid);
+    gz_jw_kstr(w, "fingerprint", fp);
+    gz_jw_kstr(w, "lobby_id", host ? HOST_LOBBY_ID : LOBBY_ID);
+    if (host) gz_jw_text(w, "name", f->h_name, "you", 120);
+    else gz_jw_text(w, "name", "Tomato Garden, factory 12", "host", 120);
+    gz_jw_kstr(w, "role", host ? "host" : "member");
+    gz_jw_kstr(w, "state", live ? "live" : "awaiting_funding");
+    gz_jw_kint(w, "members", members);
+    if (!row) {
+        gz_jw_key(w, "host");
+        gz_jw_obj(w);
+        gz_jw_kstr(w, "key", HOST_KEY);
+        gz_jw_text(w, "alias", host ? f->h_name : "Tomato Garden", host ? "you" : "host", 64);
+        gz_jw_kstr(w, "link", "connected");
+        gz_jw_kint(w, "last_heard_at", 1794434390);
+        gz_jw_end_obj(w);
+        gz_jw_key(w, "terms");
+        terms(w, fid, 1000, 1000, 1000, 1, host ? f->h_target : 50, host ? f->h_minimum : 30, chan);
+        if (host) gz_jw_knull(w, "saved_copy_activity_id");
+        else gz_jw_kstr(w, "saved_copy_activity_id", "act_2002");
+        gz_jw_key(w, "funding");
+        gz_jw_obj(w);
+        gz_jw_kstr(w, "txid", FUNDING_TXID);
+        gz_jw_kint(w, "vout", 0);
+        gz_jw_kint(w, "amount_sat", members * chan * 3 / 2);
+        gz_jw_kstr(w, "state", funding_state(conf));
+        gz_jw_kint(w, "confirmations", conf);
+        gz_jw_kint(w, "needed", 3);
+        gz_jw_kint(w, "height", TIP - 1);
+        gz_jw_end_obj(w);
+        if (host)
+            gz_jw_kraw(w, "tree", "{\"depth\":1,\"levels\":[{\"kind\":\"fixed\",\"width\":4}],\"path\":null,\"leaf\":\"one_member\"}");
+        else
+            gz_jw_kraw(w, "tree", "{\"depth\":2,\"levels\":[{\"kind\":\"fixed\",\"width\":4},{\"kind\":\"fixed\",\"width\":2}],"
+                                  "\"path\":[{\"level\":1,\"index\":1,\"of\":4,\"members_below\":13},"
+                                  "{\"level\":2,\"index\":0,\"of\":2,\"members_below\":1}],\"leaf\":\"one_member\"}");
+        gz_jw_knull(w, "channel");                      /* Slice 1: no channels (16.1) */
+        gz_jw_knull(w, "channels");
+        gz_jw_key(w, "dates");
+        gz_jw_arr(w);
+        if (!live) date(w, "funding_deadline", TIP + 144, "round_abandoned", "worked_out", "ack_height_plus_deadline");
+        date(w, "factory_ends", TIP + 4752, "factory_end_rule_applies", "signed_term", "term_start_plus_life");
+        gz_jw_end_arr(w);
+        gz_jw_knull(w, "exit");
+        gz_jw_knull(w, "exit_progress");
+        gz_jw_knull(w, "move");
+        gz_jw_knull(w, "unfinished_round");
+        gz_jw_kraw(w, "trouble", "[]");
+        if (host) {
+            gz_jw_key(w, "host_view");
+            gz_jw_obj(w);
+            gz_jw_kint(w, "funded_sat", members * chan * 3 / 2);
+            gz_jw_kint(w, "members_online", members);
+            gz_jw_kint(w, "members_moved", 0);
+            gz_jw_kint(w, "fee_funds_ready_sat", 0);
+            gz_jw_kraw(w, "deadlines", "[]");
+            gz_jw_key(w, "tree");
+            gz_jw_obj(w);
+            gz_jw_kint(w, "depth", 1);
+            gz_jw_kraw(w, "levels", "[{\"kind\":\"fixed\",\"width\":4}]");
+            gz_jw_kint(w, "leaves", members);
+            gz_jw_kstr(w, "leaf", "one_member");
+            gz_jw_kint(w, "members", members);
+            gz_jw_end_obj(w);
+            gz_jw_end_obj(w);
+        } else {
+            gz_jw_knull(w, "host_view");
+        }
+    }
+    gz_jw_end_obj(w);
+}
+
+/* 19: what the story has done so far, newest first (before the fixed picture's two entries) */
+static void story_activity(gz_jw *w, gz_fake *f)
+{
+#define ENTRY(id, kind, lob, fac, who, rule, params) \
+    gz_jw_raw(w, "{\"id\":\"" id "\",\"at\":1794434400,\"kind\":\"" kind "\",\"lobby_id\":" lob ",\"factory_id\":" fac \
+                 ",\"who_decided\":\"" who "\",\"rule\":" rule ",\"params\":" params "}")
+    if (f->h_stage == MS_ACTIVE)
+        ENTRY("act_2106", "factory_live", "\"" HOST_LOBBY_ID "\"", "\"" HOST_FACTORY_ID "\"", "the_chain",
+              "{\"code\":\"confirmations_required\",\"params\":{}}", "{}");
+    if (f->h_stage == MS_FUNDING || f->h_stage == MS_ACTIVE)
+        ENTRY("act_2105", "funded", "\"" HOST_LOBBY_ID "\"", "\"" HOST_FACTORY_ID "\"", "the_app",
+              "{\"code\":\"start_rule\",\"params\":{}}", "{}");
+    if (f->host_open)
+        ENTRY("act_2104", "lobby_opened", "\"" HOST_LOBBY_ID "\"", "null", "you", "null", "{}");
+    if (f->m_outcome == MO_STARTED)
+        ENTRY("act_2006", "factory_live", "\"" LOBBY_ID "\"", "\"" FACTORY_ID "\"", "the_chain",
+              "{\"code\":\"confirmations_required\",\"params\":{}}", "{}");
+    if (f->m_stage == MS_FUNDING || f->m_stage == MS_ACTIVE)
+        ENTRY("act_2005", "signed", "\"" LOBBY_ID "\"", "\"" FACTORY_ID "\"", "the_app",
+              "{\"code\":\"joining_was_consent\",\"params\":{}}", "{}");
+    if (f->m_outcome == MO_UNFINISHED)
+        ENTRY("act_2004", "signing_unfinished", "\"" LOBBY_ID "\"", "null", "the_app", "null", "{}");
+    if (f->m_outcome == MO_CANCELLED)
+        ENTRY("act_2003", "lobby_cancelled", "\"" LOBBY_ID "\"", "null", "the_host",
+              "{\"code\":\"start_rule\",\"params\":{}}", "{\"reason\":\"deadline_below_minimum\"}");
+    if (f->m_outcome == MO_REFUSED) {
+        char e[400];
+        snprintf(e, sizeof e,
+                 "{\"id\":\"act_2001\",\"at\":1794434400,\"kind\":\"refused\",\"lobby_id\":\"" LOBBY_ID "\","
+                 "\"factory_id\":null,\"who_decided\":\"the_app\","
+                 "\"rule\":{\"code\":\"my_conditions\",\"params\":{\"conditions_version\":%lld}},"
+                 "\"params\":{\"failures\":[{\"condition\":\"min_members\",\"yours\":%lld,\"offered\":18}],"
+                 "\"nothing_signed\":true}}",
+                 (long long)f->cond_version, (long long)f->cond_min_members);
+        gz_jw_raw(w, e);
+    }
+    if (f->joined || f->m_outcome != MO_NONE || f->m_stage != MS_OPEN)
+        ENTRY("act_2002", "joined", "\"" LOBBY_ID "\"", "null", "you",
+              "{\"code\":\"joining_was_consent\",\"params\":{}}", "{}");
+#undef ENTRY
+}
+
+/* 11: what the story adds to the status facts. The strings live in f->st_buf. */
+static void story_status(gz_fake *f, gz_api_status_facts *s)
+{
+    gz_jw jw;
+    const char *nd = NULL;
+    int64_t nd_height = 0;
+    int m_in = f->m_stage == MS_FUNDING || f->m_stage == MS_ACTIVE, h_in = f->h_stage == MS_FUNDING || f->h_stage == MS_ACTIVE;
+    s->has_something_to_watch = watching(f);
+    s->factories_watched = (m_in ? 1 : 0) + (h_in ? 1 : 0);
+    s->hosted_factories_sat = f->h_funded_sat;
+    s->hosting_json = NULL;
+    if (f->host_open && !f->host_cancelled) {
+        snprintf(f->st_buf[0], sizeof f->st_buf[0], "{\"lobbies_open\":%d,\"factories\":%d,\"next_date\":null}",
+                 h_in ? 0 : 1, h_in ? 1 : 0);
+        s->hosting_json = f->st_buf[0];
+    }
+    s->next_date_json = NULL;
+    if (f->wallet != GZ_API_WALLET_UNLOCKED) return;
+#define DO(c, lob, pj) do { \
+        s->doing[s->ndoing].code = (c); \
+        s->doing[s->ndoing].lobby_id = (lob); \
+        s->doing[s->ndoing].params_json = (pj); \
+        s->ndoing++; \
+    } while (0)
+#define ATT(i_, c, lob, fac, pj) do { \
+        s->attention[s->nattention].id = (i_); \
+        s->attention[s->nattention].code = (c); \
+        s->attention[s->nattention].lobby_id = (lob); \
+        s->attention[s->nattention].factory_id = (fac); \
+        s->attention[s->nattention].params_json = (pj); \
+        s->nattention++; \
+    } while (0)
+    if (f->m_stage == MS_FUNDING) {
+        snprintf(f->st_buf[1], sizeof f->st_buf[1], "{\"factory_id\":\"" FACTORY_ID "\",\"confirmations\":%d,\"needed\":3}", f->m_conf);
+        DO("awaiting_funding", LOBBY_ID, f->st_buf[1]);
+        nd = "funding_deadline";
+        nd_height = TIP + 144;
+    } else if (f->m_stage == MS_ACTIVE) {
+        DO("idle_in_factory", NULL, "{\"factory_id\":\"" FACTORY_ID "\"}");
+        nd = "factory_ends";
+        nd_height = TIP + 4752;
+    } else if (f->m_stage == MS_SIGNING && f->m_outcome == MO_NONE) {
+        snprintf(f->st_buf[1], sizeof f->st_buf[1], "{\"of\":17,\"done\":%d}", f->m_round >= 3 ? 11 : 0);
+        DO("signing", LOBBY_ID, f->st_buf[1]);
+    } else if (f->m_stage == MS_READY_CHECK) {
+        DO("ready_check", LOBBY_ID, "{}");
+    } else if (f->joined && f->m_outcome == MO_NONE) {
+        if (f->ready) DO("in_lobby_waiting", LOBBY_ID, "{\"ready\":30,\"target\":50,\"minimum\":30}");
+        else DO("in_lobby_not_ready", LOBBY_ID, "{\"reasons\":[\"user_choice\"]}");
+        nd = "lobby_starts_by";
+        nd_height = TIP + 12;
+    }
+    if (f->m_outcome == MO_REFUSED) {
+        snprintf(f->st_buf[2], sizeof f->st_buf[2],
+                 "{\"failures\":[{\"condition\":\"min_members\",\"yours\":%lld,\"offered\":18}]}", (long long)f->cond_min_members);
+        DO("refused", LOBBY_ID, f->st_buf[2]);
+        ATT("att_r1", "refused_to_sign", LOBBY_ID, NULL, "{\"lobby_id\":\"" LOBBY_ID "\",\"activity_id\":\"act_2001\"}");
+    }
+    if (f->m_outcome == MO_UNFINISHED) {
+        DO("signing_unfinished", LOBBY_ID, "{\"purpose\":\"start\",\"cancel_received\":null}");
+        ATT("att_s1", "signing_unfinished", LOBBY_ID, NULL,
+            "{\"lobby_id\":\"" LOBBY_ID "\",\"purpose\":\"start\",\"sent_at\":1794434404,\"last_heard_at\":1794434404,"
+            "\"checked_to_height\":330437,\"cancel_received\":null}");
+    }
+    if (f->m_outcome == MO_CANCELLED) DO("lobby_cancelled", LOBBY_ID, "{\"reason\":\"deadline_below_minimum\"}");
+    if (f->joined2) {
+        if (f->ready2) DO("in_lobby_waiting", LOBBY2_ID, "{\"ready\":30,\"target\":50,\"minimum\":30}");
+        else DO("in_lobby_not_ready", LOBBY2_ID, "{\"reasons\":[\"user_choice\"]}");
+    }
+    if (f->h_stage == MS_FUNDING && !m_in) {
+        snprintf(f->st_buf[3], sizeof f->st_buf[3], "{\"factory_id\":\"" HOST_FACTORY_ID "\",\"confirmations\":%d,\"needed\":3}", f->h_conf);
+        DO("awaiting_funding", HOST_LOBBY_ID, f->st_buf[3]);
+    } else if (f->h_stage == MS_ACTIVE && !m_in) {
+        DO("idle_in_factory", NULL, "{\"factory_id\":\"" HOST_FACTORY_ID "\"}");
+    }
+    if (f->chain_state == GZ_API_CHAIN_DISAGREE) ATT("att_c1", "chain_disagree", NULL, NULL, "{\"since_at\":1794431000,\"servers\":2}");
+    if (f->chain_state == GZ_API_CHAIN_ONE_SOURCE) ATT("att_c2", "chain_one_source", NULL, NULL, "{\"since_at\":1794431000}");
+    if (f->chain_state == GZ_API_CHAIN_UNREACHABLE) ATT("att_c3", "chain_unreachable", NULL, NULL, "{\"since_at\":1794431000}");
+    if (f->chain_state == GZ_API_CHAIN_CATCHING_UP) ATT("att_c4", "chain_catching_up", NULL, NULL, "{\"since_at\":1794431000}");
+    if (f->host_open && !f->host_cancelled && f->h_stage == MS_OPEN && f->h_ready >= f->h_minimum)
+        ATT("att_h1", "host_can_start", HOST_LOBBY_ID, NULL, "{\"lobby_id\":\"" HOST_LOBBY_ID "\"}");
+    if (f->restoring) ATT("att_x1", "restored_factories_unknown", NULL, NULL, "{}");
+#undef DO
+#undef ATT
+    if (nd) {
+        gz_jw_init(&jw);
+        date(&jw, nd, nd_height, nd[0] == 'l' ? "lobby_applies_start_rule" : nd[1] == 'u' ? "round_abandoned" : "factory_end_rule_applies",
+             nd[0] == 'l' || nd[1] == 'a' ? "signed_term" : "worked_out",
+             nd[1] == 'u' ? "ack_height_plus_deadline" : "term_start_plus_life");
+        if (!jw.err && jw.len < sizeof f->st_buf[4]) {
+            memcpy(f->st_buf[4], jw.buf, jw.len);
+            f->st_buf[4][jw.len] = 0;
+            s->next_date_json = f->st_buf[4];
+        }
+        gz_jw_free(&jw);
+    }
 }
 
 static void lobby(gz_jw *w, gz_fake *f, const char *id, int row)
@@ -456,6 +957,7 @@ static void lobby(gz_jw *w, gz_fake *f, const char *id, int row)
     int first = strcmp(id, LOBBY_ID) == 0;
     int64_t lo = first ? 500 : 3000, now = first ? 1000 : 4000, hi = first ? 1500 : 5000;
     char fp[65];
+    if (f->story) { story_lobby(w, f, id, row); return; }
     hex_of(id, fp);
     gz_jw_obj(w);
     gz_jw_kstr(w, "id", id);
@@ -473,7 +975,7 @@ static void lobby(gz_jw *w, gz_fake *f, const char *id, int row)
     gz_jw_kstr(w, "stage", "open");
     if (!row) {
         gz_jw_key(w, "terms");
-        terms(w, id, lo, now, hi, 1);
+        terms(w, id, lo, now, hi, 1, 50, 30, 500000);
     }
     gz_jw_key(w, "fit");
     fit(w, f, lo, now, hi);
@@ -518,6 +1020,7 @@ static void lobby(gz_jw *w, gz_fake *f, const char *id, int row)
 static void host_lobby(gz_jw *w, gz_fake *f)
 {
     char fp[65];
+    if (f->story) { story_host_lobby(w, f); return; }
     hex_of(HOST_LOBBY_ID, fp);
     gz_jw_obj(w);
     gz_jw_kstr(w, "id", HOST_LOBBY_ID);
@@ -525,7 +1028,7 @@ static void host_lobby(gz_jw *w, gz_fake *f)
     gz_jw_text(w, "name", "My first lobby", "you", 120);
     gz_jw_kstr(w, "stage", f->host_cancelled ? "cancelled" : "open");
     gz_jw_key(w, "terms");
-    terms(w, HOST_LOBBY_ID, 500, 1000, 1500, 1);
+    terms(w, HOST_LOBBY_ID, 500, 1000, 1500, 1, 50, 30, 500000);
     gz_jw_key(w, "counts");
     gz_jw_obj(w);
     gz_jw_kint(w, "joined", f->host_seat_removed ? 0 : 1);
@@ -538,7 +1041,7 @@ static void host_lobby(gz_jw *w, gz_fake *f)
     gz_jw_kint(w, "needed_at_minimum_sat", 22500000);
     gz_jw_kint(w, "needed_at_target_sat", 37500000);
     gz_jw_kint(w, "set_aside_sat", f->set_aside_sat);
-    gz_jw_kint(w, "wallet_free_sat", 42000000 - f->set_aside_sat);
+    gz_jw_kint(w, "wallet_free_sat", free_sat(f));
     gz_jw_end_obj(w);
     gz_jw_key(w, "seats");
     gz_jw_arr(w);
@@ -584,7 +1087,7 @@ static void factory(gz_jw *w, gz_fake *f, int row)
         gz_jw_kint(w, "last_heard_at", 1794434390);
         gz_jw_end_obj(w);
         gz_jw_key(w, "terms");
-        terms(w, FACTORY_ID, 1000, 1000, 1000, 1);
+        terms(w, FACTORY_ID, 1000, 1000, 1000, 1, 50, 30, 500000);
         gz_jw_kstr(w, "saved_copy_activity_id", "act_1001");
         gz_jw_kraw(w, "funding", "{\"txid\":\"9f1c2a7e5d3b4c6a8e0f1d2c3b4a59687766554433221100ffeeddccbbaa9988\","
                                  "\"vout\":0,\"amount_sat\":37500000,\"state\":\"confirming\",\"confirmations\":1,"
@@ -805,10 +1308,25 @@ static void do_preview(gz_fake *f, const gz_json *d, int64_t now, preview *p)
     p->at_min = minimum * chan * 3 / 2;
     p->at_target = target * chan * 3 / 2;
     if (p->nproblems) p->cannot[p->ncannot++] = "problems";
-    if (p->at_target > 42000000 - f->set_aside_sat) p->cannot[p->ncannot++] = "funds_short";
+    if (p->at_target > free_sat(f)) p->cannot[p->ncannot++] = "funds_short";
     if (f->host_open && !f->host_cancelled) p->cannot[p->ncannot++] = "already_hosting";
     if (f->chain_state != GZ_API_CHAIN_AGREE && f->chain_state != GZ_API_CHAIN_LAGGING)
         p->cannot[p->ncannot++] = "chain_in_doubt";
+}
+
+static void story_host_opened(gz_fake *f, const gz_json *d)
+{
+    const gz_json *n = gz_json_get(d, "name");
+    f->h_stage = MS_OPEN;
+    f->h_round = 0;
+    f->h_ready = 0;
+    f->h_conf = 0;
+    f->h_left_seen = 0;
+    f->h_funded_sat = 0;
+    f->h_target = jint(d, "target", 50);
+    f->h_minimum = jint(d, "minimum", 30);
+    f->h_channel = jint(d, "channel_sat", 500000);
+    snprintf(f->h_name, sizeof f->h_name, "%s", n && n->type == GZ_JSON_STR ? n->s : "My lobby");
 }
 
 /* ---- the calls ------------------------------------------------------------------------------- */
@@ -905,6 +1423,11 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
             gz_jw_end_arr(w);
             gz_jw_kraw(w, "problems", "[]");
             gz_jw_end_obj(w);
+            break;
+        }
+        if (f->story && f->m_stage == MS_SIGNING) {       /* not during the seconds of signing (13.1) */
+            gz_api_err_set(err, "signing_now", NULL, NULL);
+            status = 409;
             break;
         }
         if (jint(b, "based_on_version", -1) != f->cond_version) {
@@ -1042,7 +1565,8 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         int first = strcmp(c->path_id, LOBBY_ID) == 0;
         if (!first && strcmp(c->path_id, LOBBY2_ID) != 0) { status = not_found(err); break; }
         if (f->pause_on) { gz_api_err_set(err, "paused", NULL, NULL); status = 409; break; }
-        if (f->joined) { gz_api_err_set(err, "already_in_lobby", NULL, "{\"lobby_id\":\"" LOBBY_ID "\"}"); status = 409; break; }
+        if (f->story && first && f->m_stage != MS_OPEN) { gz_api_err_set(err, "not_open", NULL, NULL); status = 409; break; }
+        if (f->story ? (first ? f->joined : f->joined2) : f->joined) { gz_api_err_set(err, "already_in_lobby", NULL, "{\"lobby_id\":\"" LOBBY_ID "\"}"); status = 409; break; }
         if (f->chain_state != GZ_API_CHAIN_AGREE && f->chain_state != GZ_API_CHAIN_LAGGING) {
             gz_api_err_set(err, "chain_in_doubt", NULL, NULL);
             status = 409;
@@ -1060,13 +1584,22 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
             status = 409;
             break;
         }
-        f->joined = 1;
-        f->left = 0;
         {
             const gz_json *rd = gz_json_get(b, "ready");
-            f->ready = rd && rd->i;
+            if (f->story && !first) {
+                f->joined2 = 1;
+                f->left2 = 0;
+                f->ready2 = rd && rd->i;
+            } else {
+                f->joined = 1;
+                f->left = 0;
+                f->ready = rd && rd->i;
+                f->m_stage = MS_OPEN;
+                f->m_round = 0;
+                f->m_outcome = MO_NONE;
+            }
         }
-        f->joining_answer = 1;                          /* the answer says "joining"; the host's answer is an event */
+        f->joining_answer = f->story && !first ? 2 : 1;                          /* the answer says "joining"; the host's answer is an event */
         lobby(w, f, c->path_id, 0);
         f->joining_answer = 0;
         status = 202;
@@ -1076,31 +1609,51 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
     }
     case GZ_API_C_READY: {
         char dg[65];
-        if (strcmp(c->path_id, LOBBY_ID) != 0) { status = not_found(err); break; }
-        if (!f->joined) { gz_api_err_set(err, "not_joined", NULL, NULL); status = 409; break; }
+        int second = f->story && strcmp(c->path_id, LOBBY2_ID) == 0;
+        if (!second && strcmp(c->path_id, LOBBY_ID) != 0) { status = not_found(err); break; }
+        if (!(second ? f->joined2 : f->joined)) { gz_api_err_set(err, "not_joined", NULL, NULL); status = 409; break; }
+        if (f->story && !second && f->m_stage >= MS_SIGNING) { gz_api_err_set(err, "too_late", NULL, NULL); status = 409; break; }
         if (f->pause_on && gz_json_get(b, "ready")->i) { gz_api_err_set(err, "paused", NULL, NULL); status = 409; break; }
         if (strcmp(gz_json_get(b, "seen_current_digest")->s, digest_of(c->path_id, dg)) != 0) {
             gz_api_err_set(err, "terms_changed", "/seen_current_digest", "{\"current_version\":3}");
             status = 409;
             break;
         }
-        f->ready = (int)gz_json_get(b, "ready")->i;
+        if (second) f->ready2 = (int)gz_json_get(b, "ready")->i;
+        else f->ready = (int)gz_json_get(b, "ready")->i;
         lobby(w, f, c->path_id, 0);
         status = 202;
         if (f->srv) gz_api_notify(f->srv, "lobby", c->path_id);
+        if (f->story && f->srv) gz_api_notify(f->srv, "status", NULL);
         break;
     }
-    case GZ_API_C_LEAVE:
-        if (strcmp(c->path_id, LOBBY_ID) != 0) { status = not_found(err); break; }
-        if (!f->joined) { gz_api_err_set(err, "not_joined", NULL, NULL); status = 409; break; }
-        if (f->partials_out) { gz_api_err_set(err, "too_late", NULL, "{\"round\":{\"state\":\"signed\"}}"); status = 409; break; }
-        f->joined = 0;
-        f->ready = 0;
-        f->left = 1;
+    case GZ_API_C_LEAVE: {
+        int second = f->story && strcmp(c->path_id, LOBBY2_ID) == 0;
+        if (!second && strcmp(c->path_id, LOBBY_ID) != 0) { status = not_found(err); break; }
+        if (!(second ? f->joined2 : f->joined)) { gz_api_err_set(err, "not_joined", NULL, NULL); status = 409; break; }
+        if (f->partials_out || (f->story && !second && (f->m_round == 3 || f->m_round == 5))) {
+            gz_api_err_set(err, "too_late", NULL, "{\"round\":{\"state\":\"signed\"}}");
+            status = 409;
+            break;
+        }
+        if (second) {
+            f->joined2 = 0;
+            f->ready2 = 0;
+            f->left2 = 1;
+        } else {
+            f->joined = 0;
+            f->ready = 0;
+            f->left = 1;
+            f->m_stage = MS_OPEN;
+            f->m_round = 0;
+            f->m_outcome = MO_NONE;
+        }
         lobby(w, f, c->path_id, 0);
         status = 202;
         if (f->srv) gz_api_notify(f->srv, "lobby", c->path_id);
+        if (f->story && f->srv) gz_api_notify(f->srv, "status", NULL);
         break;
+    }
     case GZ_API_C_HOST_PREVIEW:
     case GZ_API_C_HOST_OPEN: {
         const gz_json *d = c->id == GZ_API_C_HOST_PREVIEW ? b : gz_json_get(b, "draft");
@@ -1131,6 +1684,7 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
             f->host_cancelled = 0;
             f->host_seat_removed = 0;
             f->set_aside_sat = p.at_target;
+            if (f->story) story_host_opened(f, d);
             host_lobby(w, f);
             status = 201;
             if (f->srv) gz_api_notify(f->srv, "host_lobby", HOST_LOBBY_ID);
@@ -1140,16 +1694,17 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         gz_jw_obj(w);
         gz_jw_kstr(w, "draft_digest", dg);
         gz_jw_key(w, "as_members_see_it");
-        terms(w, "draft", 500, 1000, 1500, 0);
+        terms(w, "draft", 500, 1000, 1500, 0, f->story ? jint(d, "target", 50) : 50, f->story ? jint(d, "minimum", 30) : 30,
+              f->story ? jint(d, "channel_sat", 500000) : 500000);
         gz_jw_kint(w, "funding_at_minimum_sat", p.at_min);
         gz_jw_kint(w, "funding_at_target_sat", p.at_target);
         gz_jw_kint(w, "chain_fee_estimate_sat", 1000);
-        gz_jw_kint(w, "wallet_free_sat", 42000000 - f->set_aside_sat);
+        gz_jw_kint(w, "wallet_free_sat", free_sat(f));
         gz_jw_kint(w, "set_aside_elsewhere_sat", f->set_aside_sat);
         gz_jw_key(w, "covers");
         gz_jw_obj(w);
-        gz_jw_kbool(w, "minimum", p.at_min <= 42000000 - f->set_aside_sat);
-        gz_jw_kbool(w, "target", p.at_target <= 42000000 - f->set_aside_sat);
+        gz_jw_kbool(w, "minimum", p.at_min <= free_sat(f));
+        gz_jw_kbool(w, "target", p.at_target <= free_sat(f));
         gz_jw_end_obj(w);
         gz_jw_key(w, "dates");
         gz_jw_arr(w);
@@ -1197,7 +1752,7 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         break;
     case GZ_API_C_HOST_START:
         if (!f->host_open || strcmp(c->path_id, HOST_LOBBY_ID) != 0) { status = not_found(err); break; }
-        if (f->host_cancelled) { gz_api_err_set(err, "not_open", NULL, NULL); status = 409; break; }
+        if (f->host_cancelled || (f->story && f->h_stage != MS_OPEN)) { gz_api_err_set(err, "not_open", NULL, NULL); status = 409; break; }
         if (jint(b, "confirm_funding_max_sat", -1) != f->set_aside_sat) {
             gz_api_err_set(err, "confirm_mismatch", "/confirm_funding_max_sat", "{\"expected\":%lld,\"got\":%lld}",
                            (long long)f->set_aside_sat, (long long)jint(b, "confirm_funding_max_sat", -1));
@@ -1205,19 +1760,48 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
             break;
         }
         if (f->pause_on) { gz_api_err_set(err, "paused", NULL, NULL); status = 409; break; }
-        gz_api_err_set(err, "below_minimum", NULL, "{\"ready\":%d,\"minimum\":30}", f->host_seat_removed ? 0 : 1);
+        if (f->story && f->h_ready >= f->h_minimum) {     /* an early start (15.2) */
+            f->h_stage = MS_READY_CHECK;
+            host_lobby(w, f);
+            status = 202;
+            if (f->srv) gz_api_notify(f->srv, "host_lobby", HOST_LOBBY_ID);
+            if (f->srv) gz_api_notify(f->srv, "status", NULL);
+            break;
+        }
+        if (f->story)
+            gz_api_err_set(err, "below_minimum", NULL, "{\"ready\":%d,\"minimum\":%lld}", f->h_ready, (long long)f->h_minimum);
+        else
+            gz_api_err_set(err, "below_minimum", NULL, "{\"ready\":%d,\"minimum\":30}", f->host_seat_removed ? 0 : 1);
         status = 409;
         break;
     case GZ_API_C_HOST_CANCEL:
         if (!f->host_open || strcmp(c->path_id, HOST_LOBBY_ID) != 0) { status = not_found(err); break; }
-        if (f->partials_out) { gz_api_err_set(err, "too_late", NULL, NULL); status = 409; break; }
+        if (f->partials_out || (f->story && f->h_stage >= MS_SIGNING)) { gz_api_err_set(err, "too_late", NULL, NULL); status = 409; break; }
         f->host_cancelled = 1;
         f->set_aside_sat = 0;
         host_lobby(w, f);
         status = 202;
         if (f->srv) gz_api_notify(f->srv, "host_lobby", HOST_LOBBY_ID);
+        if (f->story && f->srv) gz_api_notify(f->srv, "status", NULL);
         break;
     case GZ_API_C_HOST_SEAT_REMOVE:
+        if (f->story) {
+            if (!f->host_open || f->host_cancelled || strcmp(c->path_id, HOST_LOBBY_ID) != 0 || f->h_ready < 1) {
+                status = not_found(err);
+                break;
+            }
+            if (strcmp(gz_json_get(b, "confirm_seat")->s, c->path_id2) != 0) {
+                gz_api_err_set(err, "confirm_mismatch", "/confirm_seat", "{\"expected\":\"%s\"}", c->path_id2);
+                status = 409;
+                break;
+            }
+            if (f->h_stage != MS_OPEN) { gz_api_err_set(err, "frozen", NULL, NULL); status = 409; break; }
+            f->h_ready--;
+            host_lobby(w, f);
+            status = 202;
+            if (f->srv) gz_api_notify(f->srv, "host_lobby", HOST_LOBBY_ID);
+            break;
+        }
         if (!f->host_open || strcmp(c->path_id, HOST_LOBBY_ID) != 0 || f->host_seat_removed ||
             strcmp(c->path_id2, SEAT_ID) != 0) {
             status = not_found(err);
@@ -1236,27 +1820,41 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         gz_jw_obj(w);
         gz_jw_key(w, "items");
         gz_jw_arr(w);
-        if (f->has_factory) factory(w, f, 1);
+        if (f->story) {
+            if (f->h_stage == MS_FUNDING || f->h_stage == MS_ACTIVE) story_factory(w, f, 1, 1);
+            if (f->m_stage == MS_FUNDING || f->m_stage == MS_ACTIVE) story_factory(w, f, 1, 0);
+        } else if (f->has_factory) {
+            factory(w, f, 1);
+        }
         gz_jw_end_arr(w);
         gz_jw_knull(w, "next_cursor");
         gz_jw_kraw(w, "as_of", "{\"height\":330437,\"at\":1794434400}");
         gz_jw_end_obj(w);
         break;
     case GZ_API_C_FACTORY:
-    case GZ_API_C_FACTORY_DATES:
-        if (!f->has_factory || strcmp(c->path_id, FACTORY_ID) != 0) { status = not_found(err); break; }
-        if (c->id == GZ_API_C_FACTORY) { factory(w, f, 0); break; }
+    case GZ_API_C_FACTORY_DATES: {
+        int host = f->story && strcmp(c->path_id, HOST_FACTORY_ID) == 0 && (f->h_stage == MS_FUNDING || f->h_stage == MS_ACTIVE);
+        int mine = strcmp(c->path_id, FACTORY_ID) == 0 &&
+                   (f->story ? f->m_stage == MS_FUNDING || f->m_stage == MS_ACTIVE : f->has_factory);
+        int live = f->story && (host ? f->h_stage : f->m_stage) == MS_ACTIVE;
+        if (!host && !mine) { status = not_found(err); break; }
+        if (c->id == GZ_API_C_FACTORY) {
+            if (f->story) story_factory(w, f, 0, host);
+            else factory(w, f, 0);
+            break;
+        }
         gz_jw_obj(w);
         gz_jw_key(w, "dates");
         gz_jw_arr(w);
-        date(w, "funding_deadline", TIP + 144, "round_abandoned", "worked_out", "ack_height_plus_deadline");
+        if (!live) date(w, "funding_deadline", TIP + 144, "round_abandoned", "worked_out", "ack_height_plus_deadline");
         date(w, "factory_ends", TIP + 4752, "factory_end_rule_applies", "signed_term", "term_start_plus_life");
         gz_jw_end_arr(w);
         gz_jw_end_obj(w);
         break;
+    }
     case GZ_API_C_WALLET:
         gz_jw_obj(w);
-        gz_jw_kint(w, "free_sat", 42000000 - f->set_aside_sat);
+        gz_jw_kint(w, "free_sat", free_sat(f));
         gz_jw_kint(w, "unconfirmed_sat", 0);
         gz_jw_kint(w, "set_aside_sat", f->set_aside_sat);
         gz_jw_key(w, "set_aside_for");
@@ -1289,6 +1887,7 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         gz_jw_obj(w);
         gz_jw_key(w, "items");
         gz_jw_arr(w);
+        if (f->story) story_activity(w, f);
         gz_jw_raw(w, "{\"id\":\"act_1182\",\"at\":1794426000,\"kind\":\"refused\",\"lobby_id\":\"lob_b19d\","
                      "\"factory_id\":null,\"who_decided\":\"the_app\","
                      "\"rule\":{\"code\":\"my_conditions\",\"params\":{\"conditions_version\":7}},"
@@ -1301,36 +1900,68 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         gz_jw_kraw(w, "as_of", "{\"height\":330437,\"at\":1794434400}");
         gz_jw_end_obj(w);
         break;
-    case GZ_API_C_ACTIVITY_ONE:
-        if (strcmp(c->path_id, "act_1182") != 0) { status = not_found(err); break; }
+    case GZ_API_C_ACTIVITY_ONE: {
+        /* the story adds two entries with saved copies: the refusal at the check, and the join */
+        int at_check = f->story && strcmp(c->path_id, "act_2001") == 0 && f->m_outcome == MO_REFUSED;
+        int join = f->story && strcmp(c->path_id, "act_2002") == 0;
+        int now_lobby = at_check || join;
+        if (!now_lobby && strcmp(c->path_id, "act_1182") != 0) { status = not_found(err); break; }
         gz_jw_obj(w);
-        gz_jw_kstr(w, "id", "act_1182");
-        gz_jw_kint(w, "at", 1794426000);
-        gz_jw_kstr(w, "kind", "refused");
-        gz_jw_kstr(w, "lobby_id", LOBBY2_ID);
+        gz_jw_kstr(w, "id", c->path_id);
+        gz_jw_kint(w, "at", now_lobby ? 1794434400 : 1794426000);
+        gz_jw_kstr(w, "kind", join ? "joined" : "refused");
+        gz_jw_kstr(w, "lobby_id", now_lobby ? LOBBY_ID : LOBBY2_ID);
         gz_jw_knull(w, "factory_id");
-        gz_jw_kstr(w, "who_decided", "the_app");
-        gz_jw_kraw(w, "rule", "{\"code\":\"my_conditions\",\"params\":{\"conditions_version\":7}}");
-        gz_jw_kraw(w, "params", "{\"failures\":[{\"condition\":\"max_joining_fee_sat\",\"yours\":2000,\"offered\":5000}],"
-                                "\"nothing_signed\":true}");
+        gz_jw_kstr(w, "who_decided", join ? "you" : "the_app");
+        if (join) gz_jw_kraw(w, "rule", "{\"code\":\"joining_was_consent\",\"params\":{}}");
+        else gz_jw_kraw(w, "rule", "{\"code\":\"my_conditions\",\"params\":{\"conditions_version\":7}}");
+        if (join) {
+            gz_jw_kraw(w, "params", "{}");
+        } else if (at_check) {
+            gz_jw_key(w, "params");
+            gz_jw_obj(w);
+            gz_jw_key(w, "failures");
+            gz_jw_arr(w);
+            gz_jw_obj(w);
+            gz_jw_kstr(w, "condition", "min_members");
+            gz_jw_kint(w, "yours", f->cond_min_members);
+            gz_jw_kint(w, "offered", 18);
+            gz_jw_end_obj(w);
+            gz_jw_end_arr(w);
+            gz_jw_kbool(w, "nothing_signed", 1);
+            gz_jw_end_obj(w);
+        } else {
+            gz_jw_kraw(w, "params", "{\"failures\":[{\"condition\":\"max_joining_fee_sat\",\"yours\":2000,\"offered\":5000}],"
+                                    "\"nothing_signed\":true}");
+        }
         gz_jw_key(w, "saved_copy");
         gz_jw_obj(w);
-        gz_jw_kint(w, "saved_at", 1794426000);
+        gz_jw_kint(w, "saved_at", now_lobby ? 1794434400 : 1794426000);
         gz_jw_key(w, "terms");
-        terms(w, LOBBY2_ID, 3000, 4000, 5000, 1);
+        if (now_lobby) terms(w, LOBBY_ID, 500, 1000, 1500, 1, 50, 30, 500000);
+        else terms(w, LOBBY2_ID, 3000, 4000, 5000, 1, 50, 30, 500000);
         gz_jw_key(w, "fit");
-        fit(w, f, 3000, 4000, 5000);
+        if (now_lobby) fit(w, f, 500, 1000, 1500);
+        else fit(w, f, 3000, 4000, 5000);
         gz_jw_kraw(w, "conditions", "{\"max_joining_fee_sat\":2000,\"min_members\":20}");
         gz_jw_end_obj(w);
         gz_jw_end_obj(w);
         break;
+    }
     case GZ_API_C_PAUSE: {
         int on = (int)gz_json_get(b, "on")->i;
         int left_lobby = 0;
         if (on && !f->pause_on) {
             f->pause_on = 1;
             f->pause_since = c->now;
-            if (f->joined && !f->partials_out) { f->joined = 0; f->ready = 0; f->left = 1; left_lobby = 1; }
+            if (f->joined && !f->partials_out && !(f->story && f->m_stage >= MS_SIGNING)) {
+                f->joined = 0;
+                f->ready = 0;
+                f->left = 1;
+                left_lobby = 1;
+                f->m_stage = MS_OPEN;
+            }
+            if (f->joined2) { f->joined2 = 0; f->ready2 = 0; f->left2 = 1; }
         } else if (!on) {
             f->pause_on = 0;
             f->pause_since = 0;
@@ -1369,7 +2000,7 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
             status = 409;
             break;
         }
-        if (f->has_factory) {                         /* something needs watching: like going offline */
+        if (watching(f)) {                            /* something needs watching: like going offline */
             if (!c->fresh) { gz_api_err_set(err, "fresh_sign_in_needed", NULL, NULL); status = 403; break; }
             if (!cl || cl->type != GZ_JSON_STR || strcmp(cl->s, "nobody_watching") != 0) {
                 gz_api_err_set(err, "confirm_mismatch", "/confirm_locked", "{\"expected\":\"nobody_watching\"}");
@@ -1544,6 +2175,162 @@ static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int
 
 /* The held saves are confirmed: every held call is answered (and every retry
  * waiting for the same outcome, with "replayed": true). Any thread. */
+/* TEST ONLY: one line of the story's script (gz-api-fake reads them from its
+ * standard input, and --auto-ms sends "step" by itself). It changes the
+ * story's state under the lock and tells the server which areas changed
+ * afterwards, as the program's engine would. Any thread. */
+int gz_fake_cmd(gz_fake *f, const char *line)
+{
+    static const char *const CHAIN[] = {"agree", "lagging", "catching_up", "one_source", "disagree", "unreachable",
+                                        "offline_by_choice"};
+    int rc = 0, n_status = 0, n_lobby = 0, n_host = 0, n_factory = 0, n_chain = 0, n_wallet = 0, release = 0, i;
+    pthread_mutex_lock(&f->mu);
+    if (strcmp(line, "step") == 0) {
+        /* the lobby this wallet joined */
+        if (f->m_outcome == MO_UNFINISHED || f->m_outcome == MO_CANCELLED) {
+            /* stays as it is */
+        } else if (f->m_stage == MS_OPEN && f->joined && f->ready) {
+            f->m_stage = MS_READY_CHECK;                 /* the start rule is met */
+            n_lobby = 1;
+        } else if (f->m_stage == MS_READY_CHECK) {
+            f->m_stage = MS_SIGNING;
+            f->m_round = 1;
+            if (f->m_refuse_next) {                      /* the app's own check fails: it refuses before any nonce */
+                f->m_refuse_next = 0;
+                f->m_outcome = MO_REFUSED;
+                f->m_round = 6;
+                f->m_stage = MS_OPEN;
+                f->joined = 0;
+                f->ready = 0;
+                f->left = 1;
+            }
+            n_lobby = 1;
+        } else if (f->m_stage == MS_SIGNING && f->m_round < 3) {
+            f->m_round++;
+            n_lobby = 1;
+        } else if (f->m_stage == MS_SIGNING) {
+            f->m_stage = MS_FUNDING;                     /* complete: waiting for the host's funding */
+            f->m_round = 4;
+            f->m_conf = 0;
+            n_lobby = n_factory = 1;
+        } else if (f->m_stage == MS_FUNDING) {
+            if (++f->m_conf >= 3) {
+                f->m_stage = MS_ACTIVE;
+                f->m_round = 7;
+                f->m_outcome = MO_STARTED;
+            }
+            n_lobby = n_factory = 1;
+        }
+        /* the lobby this wallet hosts */
+        if (f->host_open && !f->host_cancelled) {
+            if (f->h_stage == MS_OPEN && f->h_ready < f->h_target) {
+                int more = (int)(f->h_target / 3);
+                f->h_ready += more < 1 ? 1 : more;
+                if (f->h_ready >= f->h_target) {         /* the target: the ready check runs at once (15.2) */
+                    f->h_ready = (int)f->h_target;
+                    f->h_stage = MS_READY_CHECK;
+                }
+                n_host = 1;
+            } else if (f->h_stage == MS_READY_CHECK) {
+                f->h_stage = MS_SIGNING;
+                f->h_round = 1;
+                n_host = 1;
+            } else if (f->h_stage == MS_SIGNING && f->h_round < 3) {
+                f->h_round++;
+                n_host = 1;
+            } else if (f->h_stage == MS_SIGNING) {
+                f->h_stage = MS_FUNDING;                 /* funding last, by itself (owner decision 16a) */
+                f->h_round = 4;
+                f->h_conf = 0;
+                f->h_funded_sat = f->h_ready * f->h_channel * 3 / 2;
+                f->set_aside_sat = 0;
+                n_host = n_factory = n_wallet = 1;
+            } else if (f->h_stage == MS_FUNDING) {
+                if (++f->h_conf >= 3) {
+                    f->h_stage = MS_ACTIVE;
+                    f->h_round = 5;
+                }
+                n_host = n_factory = 1;
+            }
+        }
+        n_status = n_lobby || n_host;
+    } else if (strcmp(line, "member-refuse") == 0) {
+        f->m_refuse_next = 1;
+    } else if (strcmp(line, "member-unfinished") == 0) {
+        if (f->m_stage == MS_SIGNING) {
+            f->m_round = 5;
+            f->m_outcome = MO_UNFINISHED;
+            n_lobby = n_status = 1;
+        }
+    } else if (strcmp(line, "member-cancel") == 0) {
+        if (f->joined && f->m_stage <= MS_READY_CHECK) {
+            f->m_stage = MS_CANCELLED;
+            f->m_outcome = MO_CANCELLED;
+            n_lobby = n_status = 1;
+        }
+    } else if (strncmp(line, "host-seats ", 11) == 0) {
+        if (f->host_open && !f->host_cancelled && f->h_stage == MS_OPEN) {
+            int n = atoi(line + 11);
+            f->h_ready = n < 0 ? 0 : n > f->h_target ? (int)f->h_target : n;
+            if (f->h_ready >= f->h_target) f->h_stage = MS_READY_CHECK;
+            n_host = n_status = 1;
+        }
+    } else if (strcmp(line, "host-leave") == 0) {
+        /* a member's own check failed: it left before any signature, and the lobby is Open again */
+        if (f->h_stage == MS_READY_CHECK || f->h_stage == MS_SIGNING) {
+            f->h_left_seen = 1;
+            if (f->h_ready > 0) f->h_ready--;
+            f->h_stage = MS_OPEN;
+            f->h_round = 0;
+            n_host = n_status = 1;
+        }
+    } else if (strncmp(line, "chain ", 6) == 0) {
+        rc = -1;
+        for (i = 0; i < GZ_API_CHAIN_STATES; i++)
+            if (strcmp(line + 6, CHAIN[i]) == 0) {
+                f->chain_state = i;
+                n_chain = n_status = 1;
+                rc = 0;
+            }
+    } else if (strcmp(line, "hold on") == 0) {
+        f->hold = 1;
+        f->hold_forever = 0;
+    } else if (strcmp(line, "hold forever") == 0) {
+        f->hold = 1;
+        f->hold_forever = 1;
+    } else if (strcmp(line, "hold off") == 0) {
+        f->hold = 0;
+        f->hold_forever = 0;
+        release = 1;
+    } else if (strcmp(line, "release") == 0) {
+        f->hold_forever = 0;
+        release = 1;
+    } else if (strcmp(line, "restore-done") == 0) {
+        f->restoring = 0;
+        n_wallet = n_status = 1;
+    } else if (strcmp(line, "files-behind") == 0) {
+        f->files_behind_next = 1;
+    } else if (strncmp(line, "pp-delay ", 9) == 0) {
+        f->pp_delay_ms = atoi(line + 9);
+    } else if (strcmp(line, "fail-derivation") == 0) {
+        f->derivation_fails_next = 1;
+    } else {
+        rc = -1;
+    }
+    pthread_mutex_unlock(&f->mu);
+    if (release) gz_fake_release(f);
+    if (f->srv) {
+        if (n_lobby) gz_api_notify(f->srv, "lobby", LOBBY_ID);
+        if (n_host) gz_api_notify(f->srv, "host_lobby", HOST_LOBBY_ID);
+        if (n_factory) gz_api_notify(f->srv, "factory", NULL);
+        if (n_chain) gz_api_notify(f->srv, "chain", NULL);
+        if (n_wallet) gz_api_notify(f->srv, "wallet", NULL);
+        if (n_lobby || n_host) gz_api_notify(f->srv, "activity", NULL);
+        if (n_status) gz_api_notify(f->srv, "status", NULL);
+    }
+    return rc;
+}
+
 void gz_fake_release(gz_fake *f)
 {
     int i, k, left = 0;
@@ -1611,20 +2398,24 @@ static int status(void *be, gz_api_status_facts *s)
     s->factories_watched = f->has_factory;
     s->open_by_json = NULL;
     s->unlock_by_json = NULL;
-    s->on_chain_free_sat = 42000000 - f->set_aside_sat;
+    s->on_chain_free_sat = free_sat(f);
     s->set_aside_sat = f->set_aside_sat;
     s->as_of_height = TIP;
     s->hosting_json = f->host_open && !f->host_cancelled ? "{\"lobbies_open\":1,\"factories\":0,\"next_date\":null}" : NULL;
-    if (f->has_factory && f->wallet == GZ_API_WALLET_UNLOCKED) {
-        s->doing[s->ndoing].code = "awaiting_funding";
-        s->doing[s->ndoing].params_json = "{\"factory_id\":\"" FACTORY_ID "\"}";
-        s->ndoing++;
-    }
-    if (f->joined && f->wallet == GZ_API_WALLET_UNLOCKED) {
-        s->doing[s->ndoing].code = f->ready ? "in_lobby_not_counted" : "in_lobby_not_ready";
-        s->doing[s->ndoing].lobby_id = LOBBY_ID;
-        s->doing[s->ndoing].params_json = f->ready ? "{}" : "{\"reasons\":[\"user_choice\"]}";
-        s->ndoing++;
+    if (f->story) {
+        story_status(f, s);
+    } else {
+        if (f->has_factory && f->wallet == GZ_API_WALLET_UNLOCKED) {
+            s->doing[s->ndoing].code = "awaiting_funding";
+            s->doing[s->ndoing].params_json = "{\"factory_id\":\"" FACTORY_ID "\"}";
+            s->ndoing++;
+        }
+        if (f->joined && f->wallet == GZ_API_WALLET_UNLOCKED) {
+            s->doing[s->ndoing].code = f->ready ? "in_lobby_not_counted" : "in_lobby_not_ready";
+            s->doing[s->ndoing].lobby_id = LOBBY_ID;
+            s->doing[s->ndoing].params_json = f->ready ? "{}" : "{\"reasons\":[\"user_choice\"]}";
+            s->ndoing++;
+        }
     }
     for (i = 0; i < f->doing_extra_n && s->ndoing < GZ_API_MAX_DOING; i++) s->doing[s->ndoing++] = f->doing_extra[i];
     if (f->wallet == GZ_API_WALLET_UNLOCKED && !f->words_checked_at) {
