@@ -232,6 +232,9 @@ typedef struct {
      * the harness only keeps confirmations of dead incarnations away from the
      * node. */
     gz_status_t (*confirm)(void *ops_ctx, sim_t *sim, uint32_t index, gz_batch_id_t batch);
+    /* Shown every SEND as it is carried out (after the secret check), so a
+     * test can record what left a node. May be NULL. Must not change the run. */
+    void (*observe)(void *ops_ctx, uint32_t index, const gz_action_t *send);
     /* Passed back as `ops_ctx`. With check_same_seed the second simulator is
      * given `twin_ctx` instead, so the two never share state: set it to a
      * separate object prepared the same way. */
@@ -285,6 +288,24 @@ typedef struct {
     /* Run a second simulator with the same configuration in lockstep and check
      * after every step that both traces are identical ("same seed, same run"). */
     int check_same_seed;
+
+    /* Sizes of the action lists a node step may return (slots and bytes) and
+     * of each node's runner. 0: the defaults (16 actions and 4,096 bytes per
+     * step; 64 and 16,384 per runner). The signing engine's messages need
+     * more. */
+    uint32_t step_slots, runner_slots;
+    size_t step_bytes, runner_bytes;
+    /* THE BRIDGE, until P4.3 (composite-node.md, task T-P43-1). 1 for nodes
+     * still written against contract v1 (the signing engine's tests): a SEND
+     * of kind GZ_SEND_KIND_RESERVED carries the peer's number in bytes 1 to 8
+     * of the link's remote key and a whole message in its records; the
+     * network carries those bytes as they are, with no envelope; a received
+     * message and a peer event come with the same link and that kind;
+     * sim_send_message sends its bytes as given; and the network is contract
+     * v1's: a lost message closes no connection, and the quiet tail only
+     * discards what is in flight. 0 (the composite and every node on links):
+     * everything as described above. */
+    int whole_messages;
 
     sim_node_ops_t ops;
 } sim_config_t;
