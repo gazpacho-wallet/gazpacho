@@ -37,14 +37,17 @@
     var p;
     if (btn.disabled) return null;
     btn.disabled = true;
-    if (where) u.clear(where);
+    if (where) { u.clear(where); where.removeAttribute("data-keep"); }
     try { p = fn(); } catch (e) { p = Promise.reject(e); }
     return Promise.resolve(p).then(function (r) {
       btn.disabled = false;
       return r;
     }, function (e) {
       btn.disabled = false;
-      if (where) u.add(where, error(e instanceof gz.api.ApiError || (e && e.code) ? e : { code: "internal" }));
+      if (where) {
+        u.add(where, error(e instanceof gz.api.ApiError || (e && e.code) ? e : { code: "internal" }));
+        where.setAttribute("data-keep", "");     /* a live redraw carries it over (app.js) */
+      }
       return null;
     });
   }

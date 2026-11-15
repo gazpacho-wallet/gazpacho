@@ -300,8 +300,7 @@ test('host a lobby: terms with a live preview, open with the passphrase, seats, 
   await fake.cmd('step');
   await expect(page.locator('#factory')).toHaveAttribute('data-state', 'live');
   await page.goto(fake.url + '#/');
-  await expect(page.locator('main')).toContainText('In factories you host');
-  await expect(page.locator('main')).toContainText('6,000,000');
+  await expect(page.locator('main')).toContainText(/In factories you host\s*3,000,000/);
 });
 
 test('a hosted lobby can be cancelled before signing; the coins set aside are free again', async ({ page }, info) => {

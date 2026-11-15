@@ -20,6 +20,12 @@ Guards: the whole tree builds with gcc 13 and every CTest test passes, once with
 
 The lobby connections' keep-alive runs here as `net_keepalive`: two processes hold one connection for 4 seconds with a ping every 100 ms. The same test at the real values (a ping every 15 s, a 30 s pong timeout, six minutes) is registered only with `-DGZ_LONG_TESTS=ON` and is not run in CI.
 
+### interface in a browser
+
+Guards: the local web interface (`web/`, stream S10) works in a real browser against `gz-api-fake`, the API server with the fake backend and the interface compiled in. Playwright drives Chromium through every Slice 1 flow (`tests/web/`: first run and the 24 words, sign-in and lock, conditions, lobbies, the signing moment and its refusals, hosting, the factory, node busy, the chain view in doubt, the event stream dropping), checks that no page makes a request to any host but the local API and that the words leave the page, and then runs the API server's own browser checks (`tests/api/browser/`), which no job ran before. The job builds only the `gz-api-fake` target. Playwright is installed with `npm ci` from `tests/web/package-lock.json`, which pins every package by hash; the Chromium build is the one that Playwright version names (downloaded by Playwright, not pinned by a hash of ours). The static rules for the interface's files run in every build as the CTest test `web_static_check`.
+
+Locally: `tests/web/README.md`. Run it on a server or in CI, never on a workstation holding a wallet.
+
 ### wallet break-checks (`.github/workflows/wallet-break-checks.yml`)
 
 Guards: `wallet/tests/break-checks.sh` damages one wallet protection at a time (about 110 faults) and requires a wallet test to fail. For each fault it rebuilds only the wallet's directory (`make -C build/wallet`, which builds the wallet tools as well) and runs only the wallet's tests (`ctest -R '^wallet_'`, less `wallet_tx_tool_chain`, which waits on the chain port's retry pauses and runs once in the baseline): nothing else in the tree links the wallet, so no other test could notice a wallet fault. A run takes a few minutes, under a 30-minute limit.

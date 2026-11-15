@@ -166,7 +166,7 @@
   }
 
   function joinBox(l) {
-    var msg = h("div", {}), cls = l.fit.class, r = l.terms.ranges || {};
+    var msg = h("div", { id: "join-msg" }), cls = l.fit.class, r = l.terms.ranges || {};
     var btn = h("button", { type: "button", class: "btn primary", id: "join" }, "Join and be ready");
     var why = failing(l.fit);
     btn.disabled = cls !== "fits" || l.stage !== "open";
@@ -191,7 +191,7 @@
   }
 
   function waiting(l) {
-    var msg = h("div", {}), ready = l.you.seat === "ready", early = l.stage === "open";
+    var msg = h("div", { id: "seat-msg" }), ready = l.you.seat === "ready", early = l.stage === "open";
     var toggle = h("button", { type: "button", class: "btn", id: "ready-toggle" }, ready ? "I am not ready" : "I am ready");
     var leaveBtn = h("button", { type: "button", class: "btn danger", id: "leave" }, "Leave this lobby");
     toggle.addEventListener("click", function () {

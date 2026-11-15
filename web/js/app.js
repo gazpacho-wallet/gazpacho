@@ -21,8 +21,21 @@
   }
   app.onLeave = function (fn) { cleanup = fn; };
 
+  /* A live redraw must not wipe what an action just said: a message box that
+     holds an error (data-keep) is carried into the box of the same id. */
+  function carry(node) {
+    var keep = view.querySelectorAll("[data-keep]"), i, to;
+    for (i = 0; i < keep.length; i++) {
+      to = keep[i].id ? node.querySelector("#" + keep[i].id) : null;
+      if (!to || to.firstChild) continue;
+      while (keep[i].firstChild) to.appendChild(keep[i].firstChild);
+      to.setAttribute("data-keep", "");
+    }
+  }
+
   function show(node, focus) {
     var h1;
+    if (!focus && node.querySelector) carry(node);
     u.clear(view);
     view.appendChild(node);
     if (focus) {
@@ -129,7 +142,7 @@
     app.status = null;
     api.refreshSession().then(function (s) {
       if (s.wallet === "none") gz.access.noWallet(null);
-      else gz.access.signIn(reason);
+      else gz.access.signIn(s.wallet === "locked" && reason !== "check_failed" ? "locked" : reason);
     }, unreachable);
   };
 

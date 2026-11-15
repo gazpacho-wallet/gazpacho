@@ -19,7 +19,7 @@
   var channel = null;
   var pendingAsk = null;
   var tabId = gz.util.requestId();
-  var stream = { state: "stopped", ctrl: null, lastId: null, delay: 2000, timer: null, heard: 0 };
+  var stream = { state: "stopped", ctrl: null, lastId: null, delay: 2000, timer: null, heard: 0, dropped: false };
   var api = { version: null, session: null };
 
   function ApiError(status, body) {
@@ -218,6 +218,7 @@
 
   function retry() {
     if (!token) { setStream("stopped"); return; }
+    stream.dropped = true;
     setStream("reconnecting");
     clearTimeout(stream.timer);
     stream.timer = setTimeout(startEvents, stream.delay);
@@ -246,6 +247,9 @@
       stream.heard = Date.now();
       setStream("open");
       say({ type: "leader", tab: tabId });
+      /* Back after a drop: whatever was missed, the page draws again from nothing.
+         (The program replays what it still holds after Last-Event-ID; this covers the rest.) */
+      if (stream.dropped) { stream.dropped = false; deliver({ topic: "reset" }); }
       reader = res.body.getReader();
       decoder = new TextDecoder();
       function pump() {
@@ -274,6 +278,7 @@
     clearTimeout(stream.timer);
     stream.ctrl = null;
     stream.lastId = null;
+    stream.dropped = false;
     stream.delay = 2000;
     if (ctrl) ctrl.abort();
     if (stream.state !== "stopped") setStream("stopped");

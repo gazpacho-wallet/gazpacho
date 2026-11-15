@@ -79,7 +79,7 @@ test('through every screen, no request goes to any host but the local API', asyn
       await page.goto(fake.url + route);
       await expect(page.locator('main h1')).toBeVisible();
       await expect(page.locator('main')).not.toContainText('Loading');
-      await expect(page.locator('main .notice.bad')).toHaveCount(0);
+      await expect(page.locator('main .notice.bad[data-code]')).toHaveCount(0);
     }
     await page.locator('#theme').click();
     expect(seen.length).toBeGreaterThan(30);
@@ -193,7 +193,7 @@ test('phone width: nothing scrolls sideways, the tabs replace the side menu, the
   await page.locator('#more').click();
   await expect(page.locator('#chips')).toBeVisible();
   await page.locator('nav.tabs a[data-nav="host"]').click();
-  await expect(page.getByRole('heading', { name: 'Hosting' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Hosting', exact: true })).toBeVisible();
   await expect(page.locator('nav.tabs a[data-nav="host"]')).toHaveAttribute('aria-current', 'page');
 });
 

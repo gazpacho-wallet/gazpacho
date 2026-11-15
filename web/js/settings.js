@@ -62,7 +62,7 @@
   }
 
   function chainCoins(w) {
-    var msg = h("div", {}), addr = h("div", { id: "address" });
+    var msg = h("div", { id: "address-msg" }), addr = h("div", { id: "address" });
     var btn = ui.button("Show a new address", function () {
       var b = this;
       ui.run(b, msg, function () {
