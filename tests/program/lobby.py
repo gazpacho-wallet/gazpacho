@@ -31,6 +31,11 @@ hand-off (--test-sign-outcome, test build only).
      (--test-drop-kind 34) ends Cancelled with the reason from the tombstone
      once it is restarted without the drop. A chosen member's leave during a
      round reaches the stand-in.
+  8. A stale restore (review of PR 41, confirmation F1): a member joins one
+     lobby, its journal is copied, it joins a second, and the copy is put
+     back as a restore. The restore batch's guard record keeps what was used
+     since the backup: its counter is above the device's, and it lists the
+     second lobby's key indexes under epoch 0, with a new epoch.
   7. The signing gate. WHEN_UNLOCKED: locked, the member is not counted;
      unlocked it readies; locked again it says unready reason 3 and leaves
      the count. AT_JOIN in two lobbies: ready with the passphrase in one, and
@@ -47,7 +52,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gzp_harness import Checks, Proc, cmd, free_port, journal_types, kill_all, tlv  # noqa: E402
+from gzp_harness import Checks, Proc, cmd, free_port, journal_types, kill_all, parse_journal, tlv  # noqa: E402
 
 check = Checks()
 OPEN, JOIN, READY, UNREADY, LEAVE, SET_VALUES, REMOVE, CANCEL = range(0x0101, 0x0109)
@@ -498,13 +503,77 @@ def gates(exe, work):
         kill_all(w.procs)
 
 
+def guard_records(path):
+    """Every guard record of a journal: (incarnation, sequence, counter, {epoch: highest index})."""
+    out = []
+    for e in parse_journal(path):
+        if e[0] != "BTCH":
+            continue
+        for t, b in e[3]:
+            if t == GUARD and len(b) >= 58 and b[:8] == b"GZGUARD1":
+                counter = struct.unpack(">Q", b[40:48])[0]
+                n = struct.unpack(">H", b[48:50])[0]
+                epochs = {}
+                for k in range(n):
+                    ep, hi = struct.unpack(">II", b[50 + 8 * k:58 + 8 * k])
+                    epochs[ep] = hi
+                out.append((e[1], e[2], counter, epochs))
+    return out
+
+
+def stale_restore(exe, work):
+    """Case 8."""
+    w = World(exe, work, "restore")
+    try:
+        h = w.host("--test-sign-outcome", "unfinished")
+        started(h)
+        a, b = Terms(w.hkey, 600), Terms(w.hkey, 601)
+        w.open(h, a)
+        w.open(h, b)
+        folder = os.path.join(w.work, "m1")
+        journal = os.path.join(folder, "journal.standin")
+        backup = os.path.join(w.work, "m1-backup.standin")
+        m = w.member("m1", "--member-signing", "auto")
+        started(m)
+        w.join(m, a)
+        check(m.wait_for(r"slot-opened scope=%s .*index=1\b" % a.tag, timeout=10) is not None and
+              state(m, a, "member", 1, timeout=20), "8: the member joins one lobby (key pair 1 and 2)")
+        m.stop()
+        shutil.copy(journal, backup)
+        m = w.member("m1", "--member-signing", "auto")
+        started(m)
+        w.join(m, b)
+        check(m.wait_for(r"slot-opened scope=%s .*index=3\b" % b.tag, timeout=10) is not None and
+              state(m, b, "member", 1, timeout=20), "8: after the backup it joins a second (key pair 3 and 4)")
+        m.stop()
+        device = guard_records(journal)
+        check(device and device[-1][2] == 2 and device[-1][3].get(0) == 4,
+              "8: the device's guard: counter 2, epoch 0 up to index 4 (%r)" % (device[-1:],))
+        check(os.path.exists(os.path.join(folder, "guard.standin")), "8: the stand-in keeps a guard file")
+        m = w.member("m1", "--member-signing", "auto", "--test-restore-from", backup)
+        check(started(m), "8: the backup is put back as a restore, and the member starts")
+        gf = m.find(r"restore-guard-file counter=(\d+)")[1]
+        check(gf is not None and gf.group(1) == "2", "8: the restored start is given the guard file (counter 2)")
+        rg = m.wait_for(r"restore-guard chain=\S+ counter=(\d+)", timeout=10)
+        check(rg is not None and rg.group(1) == "3", "8: the restore batch's guard counter is above the device's (3)")
+        m.stop()
+        restored = guard_records(journal)
+        last = restored[-1] if restored else None
+        check(last is not None and last[1] == 1 and last[3].get(0) == 4 and len(last[3]) == 2,
+              "8: it lists epoch 0 up to index 4, the second lobby's keys, and one new epoch (%r)" % (last,))
+        w.clean("8")
+    finally:
+        kill_all(w.procs)
+
+
 def main():
     exe, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     only = sys.argv[3:]
     cases = [("happy-1", lambda: happy(exe, work, "run-1")), ("happy-2", lambda: happy(exe, work, "run-2")),
              ("crashes", lambda: crashes(exe, work)), ("storage", lambda: storage(exe, work)),
              ("retry", lambda: retry_budget(exe, work)), ("deadline", lambda: deadline_restart(exe, work)),
-             ("cancel", lambda: cancel(exe, work)), ("gates", lambda: gates(exe, work))]
+             ("cancel", lambda: cancel(exe, work)), ("gates", lambda: gates(exe, work)),
+             ("restore", lambda: stale_restore(exe, work))]
     os.makedirs(work, exist_ok=True)
     for name, fn in cases:
         if not only or name in only:

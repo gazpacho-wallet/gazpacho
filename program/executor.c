@@ -744,6 +744,11 @@ static void start_node(gzp_exec_t *ex)
     rd.ctx = ex;
     rd.incarnation = ex->incarnation;
     rd.restored = ex->store.ops->restored(ex->store.ctx);
+    rd.guard.data = NULL;
+    rd.guard.len = 0;
+    if (rd.restored && ex->store.ops->guard &&
+        ex->store.ops->guard(ex->store.ctx, &rd.guard.data, &rd.guard.len) == 1)
+        gzp_log("restore-guard-file counter=%llu", (unsigned long long)(rd.guard.len >= 48 ? gz_get_u64(rd.guard.data + 40) : 0));
     ex->store.ops->rewind(ex->store.ctx);
     while (more && !ex->fatal) {
         gz_status_t st;
