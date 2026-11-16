@@ -415,6 +415,22 @@ static uint16_t w_build(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t *
     if (b->refuse && in->scope && !in->replay) return b->refuse;   /* a member's checks refuse (not the host's own build) */
     w_tree_in(p, b->damage, &t);
     if (b->mutate) {
+        if (b->which == 27) {
+            /* Definition damage 27 (with proposal damage 27): the proposal's funding
+             * script leaves out the last participant. The import refuses to build on
+             * a script that is not the root's key (since SuperScalar 50f7fa13), which
+             * would refuse the round before the engine's own C1 line is reached. So
+             * build on the full aggregate, then give the root the proposal's script;
+             * damage 27 drops its last signer. */
+            uint8_t keys[GZ_SIGN_MAX_PARTICIPANTS][33], proposed[34];
+            memcpy(proposed, t.funding_script, 34);
+            for (size_t i = 0; i < t.n; i++) memcpy(keys[i], t.parts[i].factory_key, 33);
+            if (!w_agg_script((const uint8_t (*)[33])keys, t.n, t.funding_script)) return 1;
+            if (!w_build_tree(&t, out, NULL)) return 1;
+            memcpy(out->items[0].spent_script, proposed, 34);
+            b->mutate(out, b->which);
+            return 0;
+        }
         if (!w_build_tree(&t, out, NULL)) return 1;
         b->mutate(out, b->which);
         return 0;
