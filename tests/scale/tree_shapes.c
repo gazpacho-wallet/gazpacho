@@ -354,15 +354,16 @@ static factory_t *start_factory(const shape_case_t *c, secp256k1_context *ctx,
                                 const secp256k1_keypair *kps, size_t n, result_t *r)
 {
     factory_t *f = calloc(1, sizeof *f);
-    if (!f || !factory_init(f, ctx, kps, n, STEP_BLOCKS, STATES_PER_LAYER)) return NULL;
+    if (!f) return NULL;
+    if (!factory_init(f, ctx, kps, n, STEP_BLOCKS, STATES_PER_LAYER)) { factory_free(f); free(f); return NULL; }
     r->layers_after_init = f->counter.n_layers;
     /* The arity must be set straight after factory_init: it is what repairs
      * the counter. */
-    if (c->n_arities) { if (!factory_set_level_arity(f, c->arities, c->n_arities)) return NULL; }
+    if (c->n_arities) { if (!factory_set_level_arity(f, c->arities, c->n_arities)) { factory_free(f); free(f); return NULL; } }
     else              factory_set_arity(f, FACTORY_ARITY_PS);
     if (c->static_levels) factory_set_static_near_root(f, c->static_levels);
     r->counter_sane = counter_is_sane(f);
-    if (!factory_set_placement_mode(f, PLACEMENT_SEQUENTIAL)) return NULL;   /* order never depends on a sort */
+    if (!factory_set_placement_mode(f, PLACEMENT_SEQUENTIAL)) { factory_free(f); free(f); return NULL; }   /* order never depends on a sort */
     f->build_quiet = 1;
     f->cltv_timeout = CLTV_TIMEOUT;
     f->use_tree_anchor = 1;
@@ -484,12 +485,15 @@ static factory_t *build_only(size_t members, const char *shape, secp256k1_contex
     secp256k1_pubkey *pks = calloc(n, sizeof *pks);
     memset(&c, 0, sizeof c); memset(&r, 0, sizeof r); memset(ftxid, 0xaa, 32);
     c.members = members;
-    if (!kps || !pks || !parse_shape(shape, &c) || !make_keys(ctx, n, kps, pks) || !funding_script(ctx, pks, n, spk)) return NULL;
-    factory_t *f = start_factory(&c, ctx, kps, n, &r);
-    if (!f) return NULL;
-    int funded = factory_set_funding(f, ftxid, 0, (uint64_t)n * SATS_PER_MEMBER + 1000000u, spk, 34);
+    factory_t *f = NULL;
+    if (kps && pks && parse_shape(shape, &c) && make_keys(ctx, n, kps, pks) && funding_script(ctx, pks, n, spk))
+        f = start_factory(&c, ctx, kps, n, &r);
     free(kps); free(pks);
-    return funded && factory_build_tree(f) ? f : NULL;
+    if (!f) return NULL;
+    if (factory_set_funding(f, ftxid, 0, (uint64_t)n * SATS_PER_MEMBER + 1000000u, spk, 34) && factory_build_tree(f))
+        return f;
+    factory_free(f); free(f);              /* a refused tree is freed here (the 16,ps case is refused) */
+    return NULL;
 }
 
 static uint64_t outputs_total(const factory_node_t *nd)
