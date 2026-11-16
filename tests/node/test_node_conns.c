@@ -840,6 +840,13 @@ static void test_age_grace_and_notices(void)
         h_timer(&h, IDLE_TIMER);
         CHECK(closed(&h, m, 1) == (i == 12));
         if (i < 12) h_msg(&h, &chat, 128, NULL, NULL, 0);
+        if (i == 11) {
+            /* It has just spoken: 60 s of silence would end at 610 s, but its
+             * ten minutes end at 600 s, and the timer is set for that. */
+            size_t m2 = h_mark(&h);
+            h_timer(&h, IDLE_TIMER);
+            CHECK(idle_set(&h, m2) == 50000);
+        }
     }
     CHECK(n_unseated(&h) == 0);
     /* Sixteen that keep talking, then an honest one, silent so far, and a

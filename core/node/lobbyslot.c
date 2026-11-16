@@ -439,7 +439,7 @@ static int lobby_slot_by_scope(const gz_node_t *c, const uint8_t scope[32])
 gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
 {
     gz_bytes_t serial, scope, role, epoch, index, v;
-    int i;
+    int i, bad_address = 0;
     if (rec->bytes.len > OPENED_MAX || !gz_rec_valid(rec->bytes) || !arg(rec->bytes, 2, 4, &serial) ||
         !arg(rec->bytes, 4, 32, &scope) || !arg(rec->bytes, 6, 1, &role) || role.data[0] > 1 ||
         !arg(rec->bytes, 12, 4, &epoch) || !arg(rec->bytes, 14, 4, &index) || gz_get_u32(serial.data) == 0)
@@ -465,9 +465,15 @@ gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
     } else {
         if (!arg(rec->bytes, 8, 33, &v)) return GZ_ERR_CORRUPT;
         memcpy(s->host_key.key, v.data, 33);
-        if (!arg(rec->bytes, 10, 0, &v) || !gz_connect_address_ok(v)) return GZ_ERR_CORRUPT;
-        memcpy(s->address, v.data, v.len);
-        s->address_len = (uint8_t)v.len;
+        if (!arg(rec->bytes, 10, 0, &v)) return GZ_ERR_CORRUPT;
+        /* An address that is no address is never saved (the join refuses it).
+         * Were one found all the same, the slot is left out below: a CONNECT
+         * for it could not be issued, and a start must not fail on it. */
+        bad_address = !gz_connect_address_ok(v);
+        if (!bad_address) {
+            memcpy(s->address, v.data, v.len);
+            s->address_len = (uint8_t)v.len;
+        }
         v.len = 0;
         if (gz_rec_find(rec->bytes, 20, &v) == 1 && v.len > COND_MAX) return GZ_ERR_CORRUPT;
         if (!cond_decode(v.data, v.len, &s->cond)) return GZ_ERR_CORRUPT;
@@ -477,7 +483,7 @@ gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
     /* A role other than the data folder's, a generation of 0, or keys the
      * port cannot give (an epoch this wallet cannot derive): the slot is
      * left out and counted; its records are then nobody's. */
-    if (s->host != (c->cfg.host != 0) || s->gen == 0 || !gz_ls_init(c, i)) {
+    if (bad_address || s->host != (c->cfg.host != 0) || s->gen == 0 || !gz_ls_init(c, i)) {
         memset(s, 0, sizeof *s);
         c->np.skipped_slots++;
         return GZ_OK;

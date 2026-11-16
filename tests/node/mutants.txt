@@ -184,7 +184,7 @@ ls-closing-never-ends	core/node/lobbyslot.c	if (c->np.closing[k].used && c->np.c
 ls-closing-cap-unchecked	core/node/lobbyslot.c	    if (k == GZ_NODE_MAX_TOMBSTONES) {\n        if ((st = closing_end(c, oldest, out)) != GZ_OK) return st;\n        k = oldest;\n    }	    if (k == GZ_NODE_MAX_TOMBSTONES) k = oldest;
 ls-load-closed-any-serial	core/node/lobbyslot.c	s->kind != SLOT_KIND_LOBBY || s->serial != gz_get_u32(serial.data)) continue;	s->kind != SLOT_KIND_LOBBY) continue;
 ls-load-record-no-slot-corrupt	core/node/lobbyslot.c	if ((i = lobby_slot_by_scope(c, scope)) < 0) return GZ_OK; /* a closed lobby	if ((i = lobby_slot_by_scope(c, scope)) < 0) return GZ_ERR_CORRUPT; /* a closed lobby
-ls-load-opened-bad-address-kept	core/node/lobbyslot.c	if (!arg(rec->bytes, 10, 0, &v) || !gz_connect_address_ok(v)) return GZ_ERR_CORRUPT;	if (!arg(rec->bytes, 10, 0, &v)) return GZ_ERR_CORRUPT;
+ls-load-opened-bad-address-kept	core/node/lobbyslot.c	        bad_address = !gz_connect_address_ok(v);	        bad_address = 0;
 ls-skipped-slot-is-corrupt	core/node/lobbyslot.c	        c->np.skipped_slots++;\n        return GZ_OK;	        c->np.skipped_slots++;\n        return GZ_ERR_CORRUPT;
 ls-slot-closed-own-batch	core/node/lobbyslot.c	    if ((st = merge_into(c, out, c->bracket_from, GZ_REC_LOBBY_ENDED)) != GZ_OK) return st;\n	
 ls-round-ok-never	core/node/lobbyslot.c	    s->round_ok = s->host ? gz_lobby_host_round_ok(&s->lobby.h) : gz_lobby_member_round_ok(&s->lobby.m);	    s->round_ok = 0;

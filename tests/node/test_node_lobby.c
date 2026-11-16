@@ -603,6 +603,10 @@ static void test_two_lobbies(void)
      * the host so far, one per lobby. */
     CHECK(N[0].n_batches == 2 && N[0].batches[0].n == 5 && N[0].batches[1].n == 4);
     CHECK(batch_with(0, first, 5) && batch_with(0, next, 4) && batch_with(1, mfirst, 4));
+    /* The guard rides with every key_index, its counter one higher each time (journal.md 8.3). */
+    CHECK(N[0].batches[0].recs[2].type == GZ_RECORD_GUARD && N[0].batches[1].recs[1].type == GZ_RECORD_GUARD &&
+          gz_get_u64(N[0].batches[1].recs[1].bytes.data + 40) == gz_get_u64(N[0].batches[0].recs[2].bytes.data + 40) + 1 &&
+          gz_get_u64(N[0].batches[0].recs[2].bytes.data + 40) == 1);
     CHECK(h_records_of(&N[0], GZ_RECORD_KEY_EPOCH) == 1 && h_records_of(&N[1], GZ_RECORD_KEY_EPOCH) == 1);
     /* A member in two lobbies has two keys and two links. */
     /* Each lobby has its own pair: the contribution key at an index, the
@@ -720,6 +724,7 @@ static void test_cancel_and_tombstone(void)
     CHECK(last_sent(0, from, GZ_KIND_CANCEL, m1.pub, &g) && g.reason == 2 && lt_verify(NULL, hk.pub, (gz_lobby_msg_hash(&g, other), other), g.sig));
     CHECK(sent_count(0, from, GZ_KIND_LOBBY_STATUS) == 1 && sent_count(0, from, GZ_KIND_CANCEL) == 1);
     /* Anything but a hello for the ended lobby is dropped: no answer. */
+    w_run(1500, 100); /* a hello now would be answered (one a second per link) */
     from = NSENT;
     w_msg(0, &l1, GZ_KIND_UNREADY, TA.scope, NULL, 0);
     w_msg(0, &l1, GZ_KIND_LEAVE, TA.scope, NULL, 0);
@@ -790,6 +795,7 @@ static void test_refusals(void)
     /* The host: eight lobbies open; a ninth is refused, not an error. */
     w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
     for (int i = 0; i < 9; i++) make_terms(&t[i], 3, 3, 100 + (uint32_t)i);
+    CHECK(member_join(0, &t[0]) == 409 && N[0].n_batches == 0 && gz_route_slot_by_scope(N[0].n, t[0].scope) < 0);
     for (int i = 0; i < 8; i++) CHECK(host_open(&t[i], 0) == 200);
     nb = N[0].n_batches;
     CHECK(host_open(&t[8], 0) == 409 && host_open(&t[0], 0) == 409 && N[0].n_batches == nb);
@@ -802,7 +808,8 @@ static void test_refusals(void)
     bad = t[8];
     bad.cn = 3;
     CHECK(host_open(&bad, 0) == 400 && N[0].n_batches == nb);
-    CHECK(host_open(&t[8], 0) == 200 && host_open(&t[7], 0) == 409); /* an ended lobby is not opened again */
+    CHECK(host_open(&t[7], 0) == 409 && N[0].n_batches == nb); /* an ended lobby is not opened again, with room for it */
+    CHECK(host_open(&t[8], 0) == 200);
     CHECK(w_restart(0) == GZ_OK);
     for (int i = 0; i < 7; i++) CHECK(host_state(&t[i]) == GZ_LOBBY_OPEN);
     CHECK(host_state(&t[8]) == GZ_LOBBY_OPEN && slot(0, &t[7]) == NULL);
@@ -844,12 +851,44 @@ static void test_refusals(void)
     /* A key port that cannot give the slots' keys at a start (an epoch this
      * wallet cannot derive): the node starts, the slots are left out. With
      * the keys back, so are the slots. */
+    w_run(2000, 100); /* the joins are made and saved: Lobby records for every slot */
+    CHECK(h_records_of(&N[1], GZ_REC_JOINED) >= 7);
     PUB_FAIL[1] = 1;
     CHECK(w_restart(1) == GZ_OK && slot(1, &t[0]) == NULL && N[1].n->np.skipped_slots == 8);
     PUB_FAIL[1] = 0;
     CHECK(w_restart(1) == GZ_OK && slot(1, &t[0]) != NULL && slot(1, &t[8]) != NULL && N[1].n->np.skipped_slots == 0);
     w_run(3000, 100);
     CHECK(slot(1, &t[0])->lobby.m.joined && h_records_of(&N[1], GZ_REC_JOINED) >= 1);
+    /* A slot_opened whose address is no address cannot be saved by the node
+     * (the join refuses it). Found in storage all the same, it stops no
+     * start: the slot is left out. */
+    {
+        h_t *x = &N[SCRATCH];
+        uint8_t rec[200], v[4];
+        size_t at = 0;
+        w_node(SCRATCH, 5, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+        gz_put_u32(v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 2, v, 4);
+        gz_rec_put(rec, sizeof rec, &at, 4, t[0].scope, 32);
+        v[0] = 0;
+        gz_rec_put(rec, sizeof rec, &at, 6, v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 8, hk.pub, 33);
+        gz_rec_put(rec, sizeof rec, &at, 10, (const uint8_t *)"no-port-here", 12);
+        gz_put_u32(v, 0);
+        gz_rec_put(rec, sizeof rec, &at, 12, v, 4);
+        gz_put_u32(v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 14, v, 4);
+        v[0] = 1;
+        gz_rec_put(rec, sizeof rec, &at, 22, v, 1);
+        h_add_batch(x, 1, 1, GZ_RECORD_SLOT_OPENED, rec, at);
+        x->incarnation = 1;
+        h_new_node(x);
+        CHECK(w_start(SCRATCH) == GZ_OK && x->n->np.skipped_slots == 1 && gz_route_slot_by_scope(x->n, t[0].scope) < 0);
+        CHECK_NO_NODE_ERROR(x);
+        ALIVE[SCRATCH] = 0;
+        h_free(x);
+        memset(x, 0, sizeof *x);
+    }
     /* Unknown commands in the lobby's and the node's ranges. */
     CHECK(w_cmd(1, 0x01ff, NULL, 0) == 404 && w_cmd(1, 0x04ff, NULL, 0) == 404 && w_cmd(0, 0x0109, NULL, 0) == 404);
     /* The test commands for the stand-in's slots do not reach a slot that
@@ -1001,8 +1040,14 @@ static void test_gates(void)
     w_run(20000, 1000);
     {
         static const uint32_t end[] = {GZ_REC_LOBBY_ENDED, GZ_RECORD_SLOT_CLOSED};
+        int up = 0;
         CHECK(slot(0, &t) == NULL && batch_with(0, end, 2) && h_records_of(&N[0], GZ_REC_START_SENT) == 0);
         for (int n = 1; n <= 3; n++) CHECK(slot(n, &t) == NULL && batch_with(n, end, 2));
+        /* No round was ever handed over: the slots are Free at once. The
+         * host's seats are given up, and the members keep no connection. */
+        w_run(2000, 100);
+        for (int i = 0; i < 64; i++) up += C[i].used && (C[i].up == 1 || C[i].wanted);
+        CHECK(UNSEATS[0] == 3 && up == 0 && gz_ls_closing_count(N[0].n) == 0 && gz_ls_closing_count(N[1].n) == 0);
     }
     no_errors(3);
     w_free(3);
