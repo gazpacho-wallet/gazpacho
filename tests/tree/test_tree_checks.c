@@ -10,8 +10,8 @@
 static const gz_exit_consts_t SIG = GZ_EXIT_SIGNET_INIT;
 static const gz_terms_policy_t SLICE1 = {1};
 #define MAXP 300
-#define PIN_TREE_DIGEST "04ea434128f5bd849b918d5e8953e347bd5f17fcafe43ff56b90dbdca5afba83"
-#define PIN_ROUND_ID "75c3144848bfba3cd74ab25041ddd730e79e0e45bdf7ffcfa6eff082c5d32516"
+#define PIN_TREE_DIGEST "3c5302b30ce340eb97edd0029aa56e07bacc81b9c4f28a26ec163736e3397cbd"
+#define PIN_ROUND_ID "56816d059a569223e59a859c9281c1bc9fbdb91d5d0cf3efda45a9799cebd9b1"
 
 typedef struct {
     gz_terms_outer_t outer;
@@ -424,7 +424,7 @@ static void c8_shape_fee_funding(void)
     v = run();
     CHECK(v.check == GZ_CHK_OK);
     S.cond.min_own_channel_sat = TREE.node[TREE.leaf_state[0]].out_amount[0];
-    CHECK(S.cond.min_own_channel_sat == 200385);
+    CHECK(S.cond.min_own_channel_sat == 200383);
     OK();
     S.cond.min_own_channel_sat++; EXPECT(GZ_CHK_C8_CHANNEL_OWN, 9);
     /* The import's minimum funding, from the terms (a lobby of exactly 4, at

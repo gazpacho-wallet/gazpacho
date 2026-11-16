@@ -303,14 +303,17 @@ for max_members, interior, leaf in SHAPE_T1:
         if n in (3, 4, 5, 8, 16):
             print(f"  {n:2d} members: level arity {levels}, {n} one-member pseudo-Spilman leaves, fixed_levels D = {D}")
     prev = max_members
-# Reproduces the build-server run of 2026-11-12 (see terms.md section 4.2).
-assert funding_requirement([3], 3, 100_000, 17, 240) == 802_827
-assert funding_requirement([3], 4, 100_000, 17, 240) == 802_827
-assert funding_requirement([4, 3], 5, 100_000, 26, 240) == 1_605_586
-assert funding_requirement([4, 3], 16, 100_000, 26, 240) == 3_211_970
-print("  funding_amount, channel 100000, anchors on: 3 or 4 members (fee 17) =",
-      funding_requirement([3], 3, 100_000, 17, 240), "; 16 members (fee 26) =",
-      funding_requirement([4, 3], 16, 100_000, 26, 240))
+# Reproduces the build-server run at the re-import of SuperScalar 50f7fa13 (terms.md section 4.2):
+# each tree transaction pays 0.1 sat/vB for its own size, 13, 17 or 26 sat.
+assert [tree_fee(100, k) for k in (1, 2, 4, 15)] == [13, 17, 26, 73]
+assert tree_fee(0, 15) == 0 and tree_anchor(0) == 0 and tree_anchor(1) == 240
+assert funding_requirement([3], 3, 100_000, 100) == 802_811
+assert funding_requirement([3], 4, 100_000, 100) == 802_811
+assert funding_requirement([4, 3], 5, 100_000, 100) == 1_605_374
+assert funding_requirement([4, 3], 16, 100_000, 100) == 3_211_510
+print("  funding_amount, channel 100000, rate 100 sat/kvB, anchors on: 3 or 4 members =",
+      funding_requirement([3], 3, 100_000, 100), "; 5 to 8 members =", funding_requirement([4, 3], 5, 100_000, 100),
+      "; 16 members =", funding_requirement([4, 3], 16, 100_000, 100))
 for bad in ([4], [4, 3]):
     try:
         list(split_walk(bad, 3))
@@ -2671,15 +2674,16 @@ for d in (1, 2, 3):
 print("  so H_leaf = E - 10 d, not E - 5 d: two tree transactions (kickoff and leaf) per leaf depth,"
       " and fixed levels step by 10 too")
 
-print("\n== X2: path shapes and sizes for T1 (fee_per_tx 17 at up to 4 members, 26 above)")
+print("\n== X2: path shapes and sizes for T1 (each transaction pays 0.1 sat/vB for its own size)")
 for n, member in ((3, 0), (3, 1), (4, 0), (5, 0), (5, 4), (8, 0), (16, 0), (16, 15)):
     levels = (SHAPE_T1[0][1] if n <= 4 else SHAPE_T1[1][1]) + [LEAF_PS]
     d, outs = x_path_shape(levels, n, member)
     assert d == [dd for dd, _ in split_walk(levels, n)][member]
     sizes = [x_vsize_tree(k) for k in outs]
-    fee = 17 if n <= 4 else 26
+    fees = [tree_fee(100, k) for k in outs]
+    assert fees == [-(-100 * v // 1000) for v in sizes]
     print(f"  {n:2d} members, member {member + 1:2d}: leaf depth d = {d}, tree transactions {len(outs)} = d + 2,"
-          f" vsizes {sizes}, each pays {fee} sat; with the commitment, n = {x_n_path(d)} transactions")
+          f" vsizes {sizes}, fees {fees} sat; with the commitment, n = {x_n_path(d)} transactions")
 # F11: the depth of every member, by member count (the split rule decides, not a range).
 x_depths = {}
 for n in range(3, 17):
@@ -2843,13 +2847,11 @@ assert X_GRACE_S // X_BLOCK_FAST_S <= X_M_SAFE
 
 print("\n== X6: the anchor-only child, keyless (exit.md 6.2)")
 x_parent = hashlib.sha256(b"gazpacho test exit parent").digest()
-child = x_anchor_child(x_parent, 2, 2)
-print("  parent txid (test value, display order) =", x_parent.hex(), " anchor vout 2, version 2")
+child = x_anchor_child(x_parent, 2, 3)
+print("  parent txid (test value, display order) =", x_parent.hex(), " anchor vout 2, version 3 (TRUC)")
 show("anchor-only child (65 bytes, no witness)", child)
 print("  txid =", x_txid(child))
-child3 = x_anchor_child(x_parent, 2, 3)
-print("  the same for a TRUC parent (version 3): txid =", x_txid(child3))
-for k, fee in ((1, 17), (2, 17), (2, 26), (4, 26)):
+for k, fee in ((1, 13), (2, 17), (4, 26)):
     v = x_vsize_tree(k)
     r = x_package_rate_kvb(fee, v, X_ANCHOR, 65)
     print(f"  parent {v} vB paying {fee} sat ({1000 * fee // v} sat/kvB) + anchor-only child: package {r} sat/kvB")
@@ -2894,11 +2896,11 @@ def x_ladder(fee_parent, v_parent):
     return out
 
 
-for v_p, f_p in ((124, 17), (167, 17), (167, 26), (253, 26)):
+for v_p, f_p in ((124, 13), (167, 17), (253, 26)):
     rungs = x_ladder(f_p, v_p)
     print(f"  parent {v_p} vB paying {f_p} sat: rung fees "
           + ", ".join(f"{r / 1000:g} sat/vB {f}" for r, f in rungs))
-assert x_ladder(17, 167)[0] == (2_000, 623) and x_ladder(17, 124)[0] == (2_000, 565)
+assert x_ladder(17, 167)[0] == (2_000, 623) and x_ladder(13, 124)[0] == (2_000, 565)
 
 print("\n== X8: pinning the anchor-only child (exit.md 6.5, F3): someone spends the anchor first")
 # TRUC parent (BIP 431): the attacker's child is at most 1,000 vB. The member's
@@ -2915,15 +2917,8 @@ x_out_truc = next(f for f in range(0, 100_000)
                   if x_replaces(f, X_V_CHILD_WALLET, x_pin_f, X_TRUC_CHILD_MAX, 17, 167))
 print(f"  a member with a coin replaces that pin with a wallet child of at least {x_out_truc} sat"
       f" (more if the market rate needs it)")
-# Version-2 parent: the attacker's child can be a whole standard transaction,
-# 100,000 vB (MAX_STANDARD_TX_WEIGHT 400,000), at the 100 sat/kvB relay floor.
-X_V2_PIN_V = 100_000
-x_v2_pin_fee = X_V2_PIN_V * 100 // 1000
-x_out_v2 = next(f for f in range(x_v2_pin_fee, 200_000)
-                if x_replaces(f, X_V_CHILD_WALLET, x_v2_pin_fee, X_V2_PIN_V, 17, 167))
-print(f"  version-2 parent: a {X_V2_PIN_V} vB child at 0.1 sat/vB pays {x_v2_pin_fee} sat; replacing it needs"
-      f" at least {x_out_v2} sat; the cluster limit (101 kvB) leaves no room for another child")
-assert x_out_v2 == 10_016
+# Every tree transaction is TRUC since the re-import of SuperScalar 50f7fa13: the version-2 case
+# (a 100,000 vB pin for about 10,000 sat) no longer arises and is no longer computed.
 
 print("\n== X9: move_by and the wind-down a Slice 3 term needs (exit.md 12 point 1, F9; MULTI-FACTORY.md 4.1)")
 
@@ -3144,10 +3139,10 @@ for n, rows in t8_ref.items():
 assert sum(len(v) for v in t8_all.values()) == 85
 print("  all 85 txids equal tests/reference/tree-from-terms-txids.txt")
 assert t8_first == {
-    3: "0f63466fed881f5711b10239812928dcd0a49cf56309ea8e1606d473e407c9e4",
-    4: "999ac375c25398ec6418b687429ca1b59def2a97a33b26ed03418a983f269e7d",
-    8: "9bef61746393ea193f0958cb40d2f906e166d49205da91572422dd16224ac877",
-    16: "45cd706ad210b488ddd779196d2bf20c6790ddd2755c0fe58951645152ef7253"}
+    3: "ccbcd2b12308463508cb3716827a111d2bef5a461bef7f5978f3aa871494d557",
+    4: "3fa6ed62b4a35f535446a1851e9233373a2efd00c0cf52ae73d2c81260dcf834",
+    8: "32144e6d23f9d95f2591411372c9c02dc69958e9fd798e25e2942963574ea7ef",
+    16: "c272932aa36a7be0ea48f1ef97f6a15b9956146f233d2b77ae06625b1e402415"}
 
 print("\n== messages.md 7.12 and 7.1 (no vectors there yet): T1, 4 members, as tests/tree/test_tree_checks.c")
 T8_PHOST = compressed(test_key("host factory"))
@@ -3170,6 +3165,6 @@ round_id = tagged_hash("gazpacho/round_id", MAGIC + chain + compressed(host_sk) 
 print("  funding txid (internal order) =", ftxid.hex())
 print("  tree_digest =", tree_digest.hex())
 print("  round_id (host_random 07 00..00) =", round_id.hex())
-assert tree_digest.hex() == "04ea434128f5bd849b918d5e8953e347bd5f17fcafe43ff56b90dbdca5afba83"
-assert round_id.hex() == "75c3144848bfba3cd74ab25041ddd730e79e0e45bdf7ffcfa6eff082c5d32516"
+assert tree_digest.hex() == "3c5302b30ce340eb97edd0029aa56e07bacc81b9c4f28a26ec163736e3397cbd"
+assert round_id.hex() == "56816d059a569223e59a859c9281c1bc9fbdb91d5d0cf3efda45a9799cebd9b1"
 print("\n== terms.md: T8 done")

@@ -259,7 +259,7 @@ static void every_size(void)
     /* Three members: member 1's channel is about twice channel_sat (terms.md 4.2). */
     t1_inputs(3, &p, &in);
     CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_OK);
-    CHECK(TREE.node[TREE.leaf_state[0]].out_amount[0] == 200385);
+    CHECK(TREE.node[TREE.leaf_state[0]].out_amount[0] == 200383);
     CHECK(TREE.node[TREE.leaf_state[1]].out_amount[0] == 100000);
     CHECK(TREE.node[TREE.leaf_state[2]].out_amount[0] == 100000);
 }
@@ -407,7 +407,12 @@ static void refusals(void)
     CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_OK);
     CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_OK && same_as_import(&TREE, &IMPORT));
     CHECK(TREE.node[TREE.leaf_state[1]].out_amount[0] == 546);
+    /* R - 1 still pays every channel 546: the root's remainder goes to its
+     * last child, the two-member subtree that set R. R - 2 does not. */
     in.funding_amount = R - 1;
+    CHECK(agree(&in));
+    CHECK(TREE.node[TREE.leaf_state[1]].out_amount[0] == 546 && TREE.node[TREE.leaf_state[2]].out_amount[0] == 546);
+    in.funding_amount = R - 2;
     CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_DUST);
     CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
     /* The import's minimum funding at 4 members and rate 100: 14 x (13 + 240)
