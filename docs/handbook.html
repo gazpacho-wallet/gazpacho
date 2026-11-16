@@ -350,7 +350,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c27-rough-totals" title="Rough totals">Rough totals</a>
 <a class="sec" href="#c27-biggest-unknowns" title="Biggest unknowns">Biggest unknowns</a></nav>
 <main>
-<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-15 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
+<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-16 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
 <section class="chapter" id="c1"><h2>Start here</h2><p class="desc">Terms, facts, decisions in force, and how sure we are of each claim.</p><p class="file">Gazpacho knowledge base · <code>docs/KNOWLEDGE-BASE.md</code></p>
 <div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.</p></div>
 <details id="c1-1-where-everything-is"><summary>1. Where everything is</summary><div class="body"><div class="tw"><table>
@@ -4449,6 +4449,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td><strong>Observe</strong>: link every member's IP address, and the host's, to one factory</td>
 <td>Slice 1: the User-Agent no longer names Gazpacho (it does not disguise the client: TLS fingerprint and access pattern still show it); no proxy is taken from the environment, and an optional <code>socks5h://</code> proxy (Tor) can be set (<code>ports/chain</code>, <code>gz-chain --proxy</code>); a member must not ask about the funding txid before it can have been broadcast (<code>docs/notes/chain-port.md</code> section 9)</td>
 <td>Each member polls the same funding txid and tree outputs from its own address, and every query goes to every configured operator, so each operator can group a factory's members and host by address, add each member's wallet scripts, and see the host as the first broadcaster. Not defended without Tor or the user's own server. 1.0.0 plan in 2.8</td>
+</tr>
+<tr>
+<td><strong>Fake depth</strong>: tell a confirmation deeper than it is</td>
+<td>Depth is counted only along a chain of headers linked to each other with no gap, each meeting its own proof-of-work target (<code>docs/notes/chain-port.md</code> section 18), and only what two operators agree on counts</td>
+<td>On the test networks this costs almost nothing: the target is checked only against the network limit (no retargeting rule), testnet4 allows difficulty-1 blocks, and signet block signatures are not checked. Depth there rests on the operators agreeing. Not defended against colluding operators or a single server the user chose. Before mainnet: an expected-difficulty rule</td>
 </tr>
 </tbody>
 </table></div>
@@ -8723,7 +8728,7 @@ docs/      plan, assessment, user guides
 {
  "about": "Not displayed. Sources and conventions for readers working from this file alone. The full text of every document is in the page itself, inside the collapsed sections.",
  "repository": "https://github.com/gazpacho-wallet/gazpacho",
- "built": "2026-11-15",
+ "built": "2026-11-16",
  "wording": "Say host (the papers say LSP) and member (client). Never say staking; say hosting, providing liquidity, fees.",
  "authoritative": "The Markdown files in the repository. This page is generated from them by tools/build-handbook.py.",
  "chapters": [

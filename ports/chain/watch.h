@@ -23,13 +23,19 @@ typedef struct gz_watch_config {
   uint32_t tip_poll_ms, retry_ms, retry_max_ms, burial_depth;
   size_t max_watches;
   uint32_t broadcast_attempts, broadcast_backoff_ms, broadcast_backoff_max_ms;
-  uint32_t header_window, max_catchup;
+  uint32_t header_window, max_catchup, max_link;
   uint64_t (*now_ms)(void *clock_ctx); /* required */
   void *clock_ctx;
   /* Optional. Asked between chain calls; true ends the pass at once, with no
    * event for a call that was cut short. */
   bool (*stop)(void *stop_ctx);
   void *stop_ctx;
+  /* Optional. Called between chain calls, after the stop test: the worker
+   * hands over requests queued meanwhile, so that a broadcast queued during
+   * a long pass is sent within it. It may set, drop and release watches and
+   * queue broadcasts; it must not call gz_watch_step or gz_watch_clear. */
+  void (*between)(void *between_ctx);
+  void *between_ctx;
   /* Required. Receives every event, in order. `generation` is left zero. */
   void (*emit)(void *emit_ctx, const gz_chainw_event *ev);
   void *emit_ctx;

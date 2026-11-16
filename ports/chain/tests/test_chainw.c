@@ -149,6 +149,27 @@ static bool readable(wx *x) {
 
 /* ---- the descriptor, the order, the generation ---------------------------- */
 
+/* A transaction one byte longer than GZ_TX_MAX_BYTES, which parses: one
+ * output with a long script. */
+static uint8_t *big_tx(size_t *len) {
+  size_t script = (size_t)GZ_TX_MAX_BYTES + 1 - 64;
+  size_t n = 64 + script;
+  uint8_t *t = calloc(1, n);
+  if (t == NULL) exit(2);
+  t[0] = 2;                     /* version */
+  t[4] = 1;                     /* one input */
+  memset(t + 5, 0x66, 32);      /* its outpoint, vout 0, no script */
+  memset(t + 42, 0xff, 4);      /* sequence */
+  t[46] = 1;                    /* one output, value 0 */
+  t[55] = 0xfe;                 /* script length in four bytes */
+  t[56] = (uint8_t)script;
+  t[57] = (uint8_t)(script >> 8);
+  t[58] = (uint8_t)(script >> 16);
+  t[59] = (uint8_t)(script >> 24);
+  *len = n;
+  return t;
+}
+
 static void test_events_through_the_descriptor(test_state *T) {
   wx x;
   wx_open(&x);
@@ -466,6 +487,11 @@ static void test_limits(test_state *T) {
   c.max_watches = GZ_CHAINW_WATCHES_LIMIT + 1;
   CHECK(gz_chainw_new(&c) == NULL);
   CHECK(gz_chainw_new(NULL) == NULL);
+  /* room for every watch and every broadcast at least */
+  c = x.cfg;
+  c.max_watches = 8;
+  c.max_requests = 8 + GZ_CHAINW_MAX_BROADCASTS - 1;
+  CHECK(gz_chainw_new(&c) == NULL);
   gz_chainw_config_default(&c, &x.stack.multi, GZ_NET_SIGNET);
   CHECK(c.tip_poll_ms == 60000 && c.burial_depth == 3 && c.max_watches == 256 &&
         c.max_requests == 1024 && c.max_results == 4096 && c.header_window == 288);
@@ -491,6 +517,12 @@ static void test_limits(test_state *T) {
   CHECK(gz_chainw_release(x.w, NULL, 0) == GZ_CHAINW_INVALID);
   CHECK(gz_chainw_broadcast(x.w, 1, id, sizeof id) == GZ_CHAINW_INVALID);
   CHECK(gz_chainw_broadcast(x.w, 1, NULL, 0) == GZ_CHAINW_INVALID);
+  {
+    size_t big_len = 0;
+    uint8_t *big = big_tx(&big_len);
+    CHECK(gz_chainw_broadcast(x.w, 1, big, big_len) == GZ_CHAINW_INVALID);
+    free(big);
+  }
   const sim_tx *t = &x.net.world.tx[SIM_T];
   CHECK(gz_chainw_broadcast_package(x.w, 1, id, sizeof id, t->raw, t->len) == GZ_CHAINW_INVALID);
   CHECK(gz_chainw_take(x.w, NULL) == 0 && gz_chainw_take(NULL, NULL) == 0);
@@ -632,7 +664,7 @@ static void test_everything_races(test_state *T) {
     wx_open(&x);
     sim_request_timeout_ms = 2000;
     x.cfg.max_results = 2 + round % 5;
-    x.cfg.max_requests = 4 + round % 9;
+    x.cfg.max_requests = 24 + round % 9;
     x.cfg.tip_poll_ms = 2;
     x.cfg.retry_ms = 1;
     x.cfg.retry_max_ms = 4;
@@ -678,6 +710,11 @@ static void test_everything_races(test_state *T) {
       }
       if (rc < GZ_CHAINW_OK || rc > GZ_CHAINW_INVALID) T->failed++;
     }
+    {
+      gz_chainw_stats st2;
+      gz_chainw_stats_get(x.w, &st2);
+      CHECK(st2.diverged == 0); /* the loop side and the engine never disagree */
+    }
     /* shut down with all of it in flight; the servers still misbehaving */
     TIMED(gz_chainw_free(x.w), 3000);
     c.stop = 1;
@@ -691,6 +728,260 @@ static void test_everything_races(test_state *T) {
   CHECK(calls > 1000);
 }
 
+/* ---- after the review of PR 43 --------------------------------------------- */
+
+static void wait_stalled(wx *x) {
+  uint64_t end = ms_now() + LONG_MS;
+  for (;;) {
+    sim_lock(&x->net);
+    unsigned s = x->net.stalled;
+    sim_unlock(&x->net);
+    if (s > 0 || ms_now() > end) return;
+    nap(5);
+  }
+}
+
+/* H2. One server stalls on every question about a transaction, and eight
+ * watches keep asking. A broadcast queued meanwhile is told within about one
+ * request time limit, not at the end of a pass over every watch. */
+static void test_broadcast_not_held_by_a_stall(test_state *T) {
+  wx x;
+  uint8_t id[GZ_HASH_LEN];
+  sim_request_timeout_ms = 1500;
+  wx_open(&x);
+  sim_request_timeout_ms = 2000;
+  wx_start(&x);
+  memset(id, 0x55, sizeof id);
+  for (int i = 0; i < SIM_NTX; i++) CHECK(gz_chainw_watch_tx(x.w, TXID(&x, i), 3, 0) == GZ_CHAINW_OK);
+  for (uint8_t i = 0; i < 4; i++) {
+    id[0] = i;
+    CHECK(gz_chainw_watch_outpoint(x.w, id, i, 3, 0) == GZ_CHAINW_OK);
+  }
+  CHECK(await(&x, "tip 1003", LONG_MS));
+  sim_lock(&x.net);
+  x.net.stall_view = 0;
+  x.net.stall_path = "/tx/";
+  x.net.stall = true;
+  sim_unlock(&x.net);
+  wait_stalled(&x);
+  uint64_t t0 = ms_now();
+  const sim_tx *t = &x.net.world.tx[SIM_S1];
+  CHECK(gz_chainw_broadcast(x.w, 1, t->raw, t->len) == GZ_CHAINW_OK);
+  CHECK(await(&x, "broadcast #1 accepted final tries=1", LONG_MS));
+  uint64_t took = ms_now() - t0;
+  T->checks++;
+  if (took >= 3500) {
+    T->failed++;
+    fprintf(stderr, "  the broadcast was told after %llu ms\n", (unsigned long long)took);
+  }
+  stall(&x, false);
+  wx_close(&x);
+}
+
+/* M3. A tip never takes the place of a report waiting in a full queue. */
+static void test_tip_never_replaces_a_report(test_state *T) {
+  wx x;
+  gz_chainw_stats st;
+  wx_open(&x);
+  x.cfg.max_results = 2;
+  wx_start(&x);
+  CHECK(gz_chainw_watch_tx(x.w, TXID(&x, SIM_T), 6, 0) == GZ_CHAINW_OK);
+  CHECK(await(&x, "tip 1003", LONG_MS));
+  views(&x, SIM_A, SIM_H0 + 5);
+  uint64_t end = ms_now() + LONG_MS;
+  do {
+    nap(5);
+    gz_chainw_stats_get(x.w, &st);
+  } while (st.queued_events < 2 && ms_now() < end);
+  CHECK(st.queued_events == 2);
+  uint64_t made = st.events, waits = st.waits;
+  views(&x, SIM_A, SIM_H0 + 6);
+  do {
+    nap(5);
+    gz_chainw_stats_get(x.w, &st);
+  } while (st.waits == waits && st.events == made && ms_now() < end);
+  CHECK(await(&x, "confirmed T n=2 at a5", LONG_MS));
+  LOG_IS(&x, "tip 1003 | tip 1005 | confirmed T n=1 at a5 | tip 1006 | confirmed T n=2 at a5");
+  wx_close(&x);
+}
+
+/* M3. A pass that was running when the reset came tells nothing to the new
+ * generation, even without an interrupt hook to end it early. */
+static void test_reset_drops_a_pass_in_flight(test_state *T) {
+  wx x;
+  wx_open(&x);
+  x.cfg.interrupt = NULL;
+  wx_start(&x);
+  sim_lock(&x.net);
+  x.net.view[0].mempool[SIM_T] = x.net.view[1].mempool[SIM_T] = true;
+  sim_unlock(&x.net);
+  CHECK(gz_chainw_watch_tx(x.w, TXID(&x, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  CHECK(await(&x, "mempool T", LONG_MS));
+  sim_lock(&x.net);
+  x.net.stall_path = "/status";
+  x.net.stall = true;
+  sim_unlock(&x.net);
+  wait_stalled(&x);
+  sim_lock(&x.net);
+  x.net.view[0].mempool[SIM_T] = x.net.view[1].mempool[SIM_T] = false;
+  sim_unlock(&x.net);
+  CHECK(gz_chainw_reset(x.w) == 2);
+  x.log[0] = 0;
+  stall(&x, false); /* the old pass now learns that T is gone */
+  CHECK(await(&x, "tip 1003", LONG_MS));
+  nap(300);
+  drain(&x);
+  LOG_IS(&x, "tip 1003");
+  CHECK(x.last_generation == 2);
+  wx_close(&x);
+}
+
+/* M3. A reset wakes a worker that waits for room, with nothing taken. */
+static void test_reset_wakes_a_waiting_worker(test_state *T) {
+  wx x;
+  gz_chainw_stats st;
+  wx_open(&x);
+  x.cfg.max_results = 2;
+  wx_start(&x);
+  CHECK(gz_chainw_watch_tx(x.w, TXID(&x, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_chainw_watch_tx(x.w, TXID(&x, SIM_S1), 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_chainw_watch_tx(x.w, TXID(&x, SIM_K), 3, 0) == GZ_CHAINW_OK);
+  views(&x, SIM_A, SIM_H0 + 8);
+  uint64_t end = ms_now() + LONG_MS;
+  do {
+    nap(5);
+    gz_chainw_stats_get(x.w, &st);
+  } while (st.waits == 0 && ms_now() < end);
+  CHECK(st.waits >= 1);
+  CHECK(gz_chainw_reset(x.w) == 2);
+  end = ms_now() + 5000;
+  do {
+    nap(5);
+    gz_chainw_stats_get(x.w, &st);
+  } while (st.queued_events == 0 && ms_now() < end);
+  CHECK(st.queued_events >= 1);
+  x.log[0] = 0;
+  drain(&x);
+  LOG_IS(&x, "tip 1008");
+  wx_close(&x);
+}
+
+/* M3. The worker sleeps between passes for as long as tip_poll_ms; a new
+ * request and gz_chainw_free both wake it at once. */
+static void test_requests_and_free_wake_the_worker(test_state *T) {
+  wx x;
+  wx_open(&x);
+  x.cfg.tip_poll_ms = 60000;
+  x.cfg.retry_ms = 60000;
+  x.cfg.retry_max_ms = 60000;
+  wx_start(&x);
+  CHECK(await(&x, "tip 1003", LONG_MS));
+  sim_lock(&x.net);
+  x.net.view[0].mempool[SIM_T] = x.net.view[1].mempool[SIM_T] = true;
+  sim_unlock(&x.net);
+  nap(100);
+  CHECK(gz_chainw_watch_tx(x.w, TXID(&x, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  CHECK(await(&x, "mempool T", 3000));
+  nap(100);
+  TIMED(gz_chainw_free(x.w), 1000);
+  sim_stack_close(&x.stack);
+  sim_net_free(&x.net);
+}
+
+/* M3. A broadcast that is tried again keeps its place among the sixteen. */
+static void test_retries_keep_their_place(test_state *T) {
+  wx x;
+  gz_chainw_event ev;
+  wx_open(&x);
+  x.cfg.broadcast_attempts = 3;
+  x.cfg.broadcast_backoff_ms = 2000;
+  x.cfg.broadcast_backoff_max_ms = 2000;
+  wx_start(&x);
+  CHECK(await(&x, "tip 1003", LONG_MS));
+  sim_lock(&x.net);
+  x.net.view[0].post = x.net.view[1].post = SIM_POST_DOWN;
+  sim_unlock(&x.net);
+  const sim_tx *t = &x.net.world.tx[SIM_T];
+  for (uint64_t i = 0; i < GZ_CHAINW_MAX_BROADCASTS; i++)
+    CHECK(gz_chainw_broadcast(x.w, i, t->raw, t->len) == GZ_CHAINW_OK);
+  unsigned told = 0;
+  uint64_t end = ms_now() + LONG_MS;
+  while (told < GZ_CHAINW_MAX_BROADCASTS && ms_now() < end) {
+    if (!gz_chainw_take(x.w, &ev)) {
+      nap(2);
+    } else if (ev.kind == GZ_CHAINW_BROADCAST) {
+      CHECK(!ev.broadcast.final);
+      told++;
+    }
+  }
+  CHECK(told == GZ_CHAINW_MAX_BROADCASTS);
+  CHECK(gz_chainw_broadcast(x.w, 99, t->raw, t->len) == GZ_CHAINW_FULL);
+  wx_close(&x);
+}
+
+/* M3. A reset ends the request in flight through the interrupt hook. */
+static void test_reset_ends_the_request_in_flight(test_state *T) {
+  wx x;
+  sim_request_timeout_ms = 30000;
+  wx_open(&x);
+  sim_request_timeout_ms = 2000;
+  wx_start(&x);
+  CHECK(await(&x, "tip 1003", LONG_MS));
+  stall(&x, true);
+  wait_stalled(&x);
+  uint64_t t0 = ms_now();
+  CHECK(gz_chainw_reset(x.w) == 2);
+  uint64_t end = t0 + 2000;
+  unsigned aborts = 0;
+  while (ms_now() < end) {
+    sim_lock(&x.net);
+    aborts = x.net.stall_aborts;
+    sim_unlock(&x.net);
+    if (aborts > 0) break;
+    nap(5);
+  }
+  CHECK(aborts >= 1);
+  stall(&x, false);
+  wx_close(&x);
+}
+
+/* H2. A pass that is long because one server answers slowly, not because it
+ * fails: a broadcast queued during it is handed over between two chain calls
+ * and goes out at once, not at the end of the pass. */
+static void test_broadcast_handed_over_mid_pass(test_state *T) {
+  wx x;
+  uint8_t id[GZ_HASH_LEN];
+  wx_open(&x);
+  wx_start(&x);
+  memset(id, 0x57, sizeof id);
+  for (int i = 0; i < SIM_NTX; i++) CHECK(gz_chainw_watch_tx(x.w, TXID(&x, i), 3, 0) == GZ_CHAINW_OK);
+  for (uint8_t i = 0; i < 4; i++) {
+    id[0] = i;
+    CHECK(gz_chainw_watch_outpoint(x.w, id, i, 3, 0) == GZ_CHAINW_OK);
+  }
+  CHECK(await(&x, "tip 1003", LONG_MS));
+  sim_lock(&x.net);
+  x.net.delay_view = 0;
+  x.net.delay_path = "/tx/";
+  x.net.delay_ms = 400;
+  sim_unlock(&x.net);
+  nap(1000); /* well inside a pass of about five seconds */
+  uint64_t t0 = ms_now();
+  const sim_tx *t = &x.net.world.tx[SIM_S1];
+  CHECK(gz_chainw_broadcast(x.w, 1, t->raw, t->len) == GZ_CHAINW_OK);
+  CHECK(await(&x, "broadcast #1 accepted final tries=1", LONG_MS));
+  uint64_t took = ms_now() - t0;
+  T->checks++;
+  if (took >= 2000) {
+    T->failed++;
+    fprintf(stderr, "  the broadcast was told after %llu ms\n", (unsigned long long)took);
+  }
+  sim_lock(&x.net);
+  x.net.delay_ms = 0;
+  sim_unlock(&x.net);
+  wx_close(&x);
+}
+
 int main(void) {
   test_state state = {0, 0, 0}, *T = &state;
   RUN(test_limits);
@@ -701,6 +992,14 @@ int main(void) {
   RUN(test_tips_coalesce);
   RUN(test_reset);
   RUN(test_broadcast_and_release);
+  RUN(test_broadcast_not_held_by_a_stall);
+  RUN(test_broadcast_handed_over_mid_pass);
+  RUN(test_tip_never_replaces_a_report);
+  RUN(test_reset_drops_a_pass_in_flight);
+  RUN(test_reset_wakes_a_waiting_worker);
+  RUN(test_requests_and_free_wake_the_worker);
+  RUN(test_retries_keep_their_place);
+  RUN(test_reset_ends_the_request_in_flight);
   RUN(test_everything_races);
   TEST_MAIN_END("chain_chainw");
 }

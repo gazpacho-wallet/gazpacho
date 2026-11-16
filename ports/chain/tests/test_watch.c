@@ -35,6 +35,7 @@ static void fx_config(fx *f) {
   f->cfg.broadcast_backoff_max_ms = 150;
   f->cfg.header_window = 16;
   f->cfg.max_catchup = 6;
+  f->cfg.max_link = 64;
   f->cfg.now_ms = sim_clock;
   f->cfg.clock_ctx = &f->net;
   f->cfg.emit = st_record;
@@ -155,9 +156,9 @@ static void test_reorg_moves_a_confirmation(test_state *T) {
    * transaction spends the outpoint */
   both(&f, SIM_B, SIM_H0 + 8);
   SEQ(go(&f), "reorg from 1004 gone 5 | tip 1008 | unconfirmed T | confirmed T n=3 at b6 buried | "
-              "spent P:0 by S2 n=2 at b7 replaced reorg");
+              "spent P:0 by S2#1 n=2 at b7 replaced reorg");
   both(&f, SIM_B, SIM_H0 + 9);
-  SEQ(go(&f), "tip 1009 | spent P:0 by S2 n=3 at b7 buried");
+  SEQ(go(&f), "tip 1009 | spent P:0 by S2#1 n=3 at b7 buried");
   fx_close(&f);
 }
 
@@ -172,7 +173,8 @@ static void test_depth_goes_down(test_state *T) {
   /* three blocks replaced by two: the block of T stays, its depth drops; K
    * was in the first block replaced and is asked about again */
   both(&f, SIM_C, SIM_H0 + 8);
-  SEQ(go(&f), "reorg from 1007 gone 3 | tip 1008 | confirmed T n=4 at a5 reorg | unconfirmed K");
+  SEQ(go(&f), "reorg from 1007 gone 3 | tip 1008 | confirmed T n=4 at a5 reorg | unconfirmed K | "
+              "confirmed K n=2 at x7");
   SEQ(go(&f), "");
   /* servers showing an older tip of the same chain change nothing */
   both(&f, SIM_C, SIM_H0 + 7);
@@ -195,7 +197,7 @@ static void test_double_spend(test_state *T) {
   /* a block confirms the other spender */
   pool(&f, SIM_S1, false);
   both(&f, SIM_B, SIM_H0 + 7);
-  SEQ(go(&f), "tip 1007 | spent P:0 by S2 n=1 at b7 replaced");
+  SEQ(go(&f), "tip 1007 | spent P:0 by S2#1 n=1 at b7 replaced");
   fx_close(&f);
   /* replaced while both are unconfirmed, then the replacement confirms */
   fx_open(&f);
@@ -206,14 +208,14 @@ static void test_double_spend(test_state *T) {
   SEQ(go(&f), "tip 1006 | spent P:0 by S1 n=0");
   pool(&f, SIM_S1, false);
   pool(&f, SIM_S2, true);
-  SEQ(go(&f), "spent P:0 by S2 n=0 replaced");
+  SEQ(go(&f), "spent P:0 by S2#1 n=0 replaced");
   SEQ(go(&f), "");
   both(&f, SIM_B, SIM_H0 + 7);
-  SEQ(go(&f), "tip 1007 | spent P:0 by S2 n=1 at b7");
+  SEQ(go(&f), "tip 1007 | spent P:0 by S2#1 n=1 at b7");
   both(&f, SIM_B, SIM_H0 + 8);
-  SEQ(go(&f), "tip 1008 | spent P:0 by S2 n=2 at b7");
+  SEQ(go(&f), "tip 1008 | spent P:0 by S2#1 n=2 at b7");
   both(&f, SIM_B, SIM_H0 + 9);
-  SEQ(go(&f), "tip 1009 | spent P:0 by S2 n=3 at b7 buried");
+  SEQ(go(&f), "tip 1009 | spent P:0 by S2#1 n=3 at b7 buried");
   fx_close(&f);
 
   /* a confirmed spender reorganised out, the outpoint unspent again, then
@@ -227,12 +229,12 @@ static void test_double_spend(test_state *T) {
   both(&f, SIM_B, SIM_H0 + 6);
   SEQ(go(&f), "reorg from 1004 gone 3 | tip 1006 | unspent P:0 was S1 reorg");
   pool(&f, SIM_S2, true);
-  SEQ(go(&f), "spent P:0 by S2 n=0");
+  SEQ(go(&f), "spent P:0 by S2#1 n=0");
   /* and the same spender back to the mempool after being confirmed */
   both(&f, SIM_B, SIM_H0 + 7);
-  SEQ(go(&f), "tip 1007 | spent P:0 by S2 n=1 at b7");
+  SEQ(go(&f), "tip 1007 | spent P:0 by S2#1 n=1 at b7");
   both(&f, SIM_A, SIM_H0 + 5);
-  SEQ(go(&f), "reorg from 1004 gone 4 | tip 1005 | spent P:0 by S2 n=0 reorg");
+  SEQ(go(&f), "reorg from 1004 gone 4 | tip 1005 | spent P:0 by S2#1 n=0 reorg");
   fx_close(&f);
 }
 
@@ -392,7 +394,7 @@ static void test_mempool_eviction(test_state *T) {
   SEQ(go(&f), "");
   pool(&f, SIM_T, true);
   pool(&f, SIM_S2, true);
-  SEQ(go(&f), "mempool T | spent P:0 by S2 n=0");
+  SEQ(go(&f), "mempool T | spent P:0 by S2#1 n=0");
   f.net.view[1].mempool[SIM_T] = false;
   f.net.view[1].mempool[SIM_S2] = false;
   SEQ(go(&f), "");
@@ -416,6 +418,27 @@ static int send_tx(fx *f, uint64_t id, int tx) {
 static int send_pair(fx *f, uint64_t id, int parent, int child) {
   const sim_tx *p = &f->net.world.tx[parent], *c = &f->net.world.tx[child];
   return gz_watch_broadcast(f->e, id, dup_tx(p), p->len, dup_tx(c), c->len);
+}
+
+/* A transaction one byte longer than GZ_TX_MAX_BYTES, which parses: one
+ * output with a long script. */
+static uint8_t *big_tx(size_t *len) {
+  size_t script = (size_t)GZ_TX_MAX_BYTES + 1 - 64;
+  size_t n = 64 + script;
+  uint8_t *t = calloc(1, n);
+  if (t == NULL) exit(2);
+  t[0] = 2;                     /* version */
+  t[4] = 1;                     /* one input */
+  memset(t + 5, 0x66, 32);      /* its outpoint, vout 0, no script */
+  memset(t + 42, 0xff, 4);      /* sequence */
+  t[46] = 1;                    /* one output, value 0 */
+  t[55] = 0xfe;                 /* script length in four bytes */
+  t[56] = (uint8_t)script;
+  t[57] = (uint8_t)(script >> 8);
+  t[58] = (uint8_t)(script >> 16);
+  t[59] = (uint8_t)(script >> 24);
+  *len = n;
+  return t;
 }
 
 static void test_broadcast_rejected_then_accepted(test_state *T) {
@@ -453,6 +476,23 @@ static void test_broadcast_rejected_then_accepted(test_state *T) {
   uint8_t *junk = malloc(10);
   memset(junk, 7, 10);
   CHECK(gz_watch_broadcast(f.e, 5, NULL, 0, junk, 10) == GZ_CHAINW_INVALID);
+  /* larger than any transaction is sent: refused, and freed */
+  size_t big_len = 0;
+  uint8_t *big = big_tx(&big_len);
+  CHECK(gz_watch_broadcast(f.e, 6, NULL, 0, big, big_len) == GZ_CHAINW_INVALID);
+  /* a refusal longer than an event holds is cut, never written past its end */
+  static char long_reason[300];
+  for (int i = 0; i < 299; i++) long_reason[i] = (char)(65 + i % 26);
+  long_reason[299] = 0;
+  f.net.view[0].post = f.net.view[1].post = SIM_POST_REJECT;
+  f.net.view[0].reject_reason = f.net.view[1].reject_reason = long_reason;
+  CHECK(send_tx(&f, 7, SIM_K) == GZ_CHAINW_OK);
+  f.net.now += 1;
+  (void)gz_watch_step(f.e);
+  CHECK(f.rec.n == 1 && strlen(f.rec.ev[0].broadcast.reason) == GZ_CHAINW_REASON_MAX - 1);
+  CHECK(f.rec.n == 1 && f.rec.ev[0].broadcast.server_count == 2 &&
+        f.rec.ev[0].broadcast.servers[0].result == GZ_CHAIN_REJECTED);
+  f.rec.n = 0;
   fx_close(&f);
 }
 
@@ -590,6 +630,16 @@ static void test_package_calls(test_state *T) {
   CHECK_RESULT(gz_chain_broadcast_package(&f.stack.server[0], p->raw, p->len, c->raw, c->len, &pr),
                GZ_CHAIN_MALFORMED);
   f.net.view[0].fault = SIM_FAULT_NONE;
+  /* both already in the mempool of the server: told as such, each */
+  f.net.view[0].package = SIM_PKG_KNOWN;
+  CHECK_RESULT(gz_chain_broadcast_package(&f.stack.server[0], p->raw, p->len, c->raw, c->len, &pr),
+               GZ_CHAIN_OK);
+  CHECK(pr.parent.already_known && pr.child.already_known);
+  /* a first path that keeps answering 429 does not keep the second untried */
+  f.net.view[0].package = SIM_PKG_BUSY_FIRST;
+  CHECK_RESULT(gz_chain_broadcast_package(&f.stack.server[0], p->raw, p->len, c->raw, c->len, &pr),
+               GZ_CHAIN_OK);
+  f.net.view[0].package = SIM_PKG_NONE;
   /* a server on another chain is never sent a package */
   f.net.view[1].mainnet = true;
   f.net.view[1].package = SIM_PKG_OK;
@@ -636,6 +686,11 @@ static void test_package_calls(test_state *T) {
   const char *mixed = "{\"package_msg\":\"success\",\"tx-results\":{\"w1\":{\"txid\":\"" A64
                       "\",\"error\":\"x\"},\"w2\":{\"txid\":\"" B64 "\"}}}";
   CHECK(gz_es_parse_package(mixed, strlen(mixed), a, b, &pk) && !pk.accepted);
+  /* a transaction already in the mempool is listed with "other-wtxid" */
+  const char *known = "{\"package_msg\":\"success\",\"tx-results\":{\"w1\":{\"txid\":\"" A64
+                      "\",\"other-wtxid\":\"" B64 "\"},\"w2\":{\"txid\":\"" B64 "\"}}}";
+  CHECK(gz_es_parse_package(known, strlen(known), a, b, &pk) && pk.accepted && pk.parent_known &&
+        !pk.child_known);
   /* the same for the child, and for a child listed without its parent */
   const char *child_error = "{\"package_msg\":\"success\",\"tx-results\":{\"w1\":{\"txid\":\"" A64
                             "\"},\"w2\":{\"txid\":\"" B64 "\",\"error\":\"x\"}}}";
@@ -700,11 +755,14 @@ static void test_not_before(test_state *T) {
   CHECK(gz_watch_wait_ms(f.e) == 1000);
   for (int i = 0; i < 20; i++) SEQ(go(&f), "");
   CHECK(!sim_log_has(&f.net, hex));
-  /* release with no delay */
+  /* release with no delay: asked at once, not at the next look at the tip */
   gz_watch_release(f.e, TXID(&f, SIM_T), 0);
   CHECK(gz_watch_wait_ms(f.e) == 0);
   pool(&f, SIM_T, true);
-  SEQ(go(&f), "mempool T");
+  f.net.now += 1;
+  (void)gz_watch_step(f.e);
+  st_join(&f.rec, f.line, sizeof f.line);
+  SEQ(f.line, "mempool T");
   fx_close(&f);
 }
 
@@ -810,6 +868,8 @@ static void test_config(test_state *T) {
   BAD(header_window, 3);
   BAD(max_catchup, 0);
   BAD(max_catchup, 17);
+  BAD(max_link, 15);
+  BAD(max_link, 10000001);
 #undef BAD
   c = f.cfg;
   c.burial_depth = GZ_CHAINW_MAX_DEPTH;
@@ -826,35 +886,44 @@ static void test_config(test_state *T) {
 
 /* ---- the header chain ----------------------------------------------------- */
 
+static void log_clear(fx *f) {
+  sim_lock(&f->net);
+  f->net.log_len = 0;
+  if (f->net.log != NULL) f->net.log[0] = 0;
+  sim_unlock(&f->net);
+}
+
+static unsigned log_count(fx *f, const char *needle) {
+  unsigned n = 0;
+  sim_lock(&f->net);
+  for (const char *p = f->net.log; p != NULL && (p = strstr(p, needle)) != NULL; p++) n++;
+  sim_unlock(&f->net);
+  return n;
+}
+
 static void test_headers(test_state *T) {
   fx f;
-  /* a tip further ahead than max_catchup: the headers begin again at the
-   * tip and are followed back to the block of the transaction */
+  /* a tip further ahead than max_catchup is reached over two passes, each
+   * header linked to the one before it */
   fx_open(&f);
   fx_start(&f);
   CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 144, 0) == GZ_CHAINW_OK);
   SEQ(go(&f), "tip 1003");
   both(&f, SIM_A, SIM_H0 + 11);
+  SEQ(go(&f), "tip 1009 | confirmed T n=5 at a5");
   SEQ(go(&f), "tip 1011 | confirmed T n=7 at a5");
   fx_close(&f);
 
-  /* that restart costs one header, not one per block skipped */
+  /* every header in between is fetched: eight, of each of the two servers */
   fx_open(&f);
   fx_start(&f);
   SEQ(go(&f), "tip 1003");
   both(&f, SIM_A, SIM_H0 + 11);
-  sim_lock(&f.net);
-  f.net.log_len = 0;
-  f.net.log[0] = 0;
-  sim_unlock(&f.net);
+  log_clear(&f);
+  SEQ(go(&f), "tip 1009");
   SEQ(go(&f), "tip 1011");
-  {
-    unsigned headers = 0;
-    for (const char *p = f.net.log; (p = strstr(p, "/header")) != NULL; p++) headers++;
-    CHECK(headers == 2); /* one header, asked of each of the two servers */
-  }
-  /* a tip one block below the oldest header kept, on the same chain: the
-   * servers are a block behind, nothing was replaced */
+  CHECK(log_count(&f, "/header") == 16);
+  /* servers a block behind, on the same chain: nothing changes */
   both(&f, SIM_A, SIM_H0 + 10);
   SEQ(go(&f), "");
   both(&f, SIM_A, SIM_H0 + 11);
@@ -884,7 +953,7 @@ static void test_headers(test_state *T) {
   SEQ(go(&f), "tip 1003");
   both(&f, SIM_B, SIM_H0 + 11);
   f.net.view[0].graft = f.net.view[1].graft = SIM_H0 + 8;
-  SEQ(go(&f), "tip 1011 | sources bad-proof");
+  SEQ(go(&f), "sources bad-proof");
   fx_close(&f);
 
   /* a header that does not meet its proof-of-work target is not a block */
@@ -898,8 +967,8 @@ static void test_headers(test_state *T) {
   SEQ(go(&f), "tip 1006 | sources ok");
   fx_close(&f);
 
-  /* a block older than the window can reach: counted once, by the
-   * confirmation check, up to the depth asked for, and not followed */
+  /* blocks below the hashes held: linked to them header by header, at most
+   * four in one pass, before their depth counts */
   fx_open(&f);
   f.cfg.header_window = 4;
   f.cfg.max_catchup = 4;
@@ -907,9 +976,9 @@ static void test_headers(test_state *T) {
   CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
   CHECK(gz_watch_outpoint(f.e, f.net.world.p, 0, 5, 0) == GZ_CHAINW_OK);
   both(&f, SIM_A, SIM_H0 + 10);
-  SEQ(go(&f), "tip 1010 | confirmed T n=3 at a5 buried | spent P:0 by S1 n=5 at a6 buried");
+  SEQ(go(&f), "tip 1010 | spent P:0 by S1 n=5 at a6 buried");
   both(&f, SIM_A, SIM_H0 + 11);
-  SEQ(go(&f), "tip 1011");
+  SEQ(go(&f), "tip 1011 | confirmed T n=7 at a5 buried");
   fx_close(&f);
 
   /* a reorganisation further back than the headers kept */
@@ -1210,6 +1279,351 @@ static void test_false_spender(test_state *T) {
   fx_close(&f);
 }
 
+/* ---- after the review of PR 43 --------------------------------------------- */
+
+/* H1. A tip far ahead with one good header at the top adds no depth: the
+ * chain is followed header by header, and headers that do not link to it
+ * stop it. Before the fix a restart at the claimed tip made T buried. */
+static void test_no_depth_from_one_header(test_state *T) {
+  fx f;
+  fx_open(&f);
+  f.cfg.header_window = 4;
+  f.cfg.max_catchup = 2;
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 5);
+  SEQ(go(&f), "tip 1005 | confirmed T n=1 at a5");
+  /* the servers claim 1011, and above a6 they serve the other branch */
+  both(&f, SIM_A, SIM_H0 + 11);
+  f.net.view[0].graft = f.net.view[1].graft = SIM_H0 + 7;
+  SEQ(go(&f), "sources bad-proof");
+  SEQ(go(&f), "");
+  f.net.view[0].graft = f.net.view[1].graft = 0;
+  SEQ(go(&f), "tip 1007 | confirmed T n=3 at a5 buried | sources ok");
+  SEQ(go(&f), "tip 1009");
+  SEQ(go(&f), "tip 1011");
+  fx_close(&f);
+
+  /* a watch set on a confirmation below the hashes held: the headers down to
+   * it must link. Servers that serve another branch below 1009, where T is
+   * in b6, get no depth for it; honest ones get it after two passes. */
+  fx_open(&f);
+  f.cfg.header_window = 4;
+  f.cfg.max_catchup = 4;
+  fx_start(&f);
+  both(&f, SIM_A, SIM_H0 + 11);
+  SEQ(go(&f), "tip 1011");
+  f.net.view[0].graft_below = f.net.view[1].graft_below = SIM_H0 + 9;
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  SEQ(go(&f), "sources bad-proof");
+  f.net.view[0].graft_below = f.net.view[1].graft_below = 0;
+  SEQ(go(&f), "sources ok");
+  SEQ(go(&f), "confirmed T n=7 at a5 buried");
+  fx_close(&f);
+}
+
+/* H2. A pass ends at the first answer that says the servers cannot be asked,
+ * the next try waits from the end of the pass, the next pass starts with the
+ * next watch, and a broadcast queued meanwhile goes out within the pass. */
+static fx *g_fx;
+static bool g_arm;
+static unsigned g_calls;
+static void queue_when_armed(void *ctx) {
+  (void)ctx;
+  /* the second call of the pass: after the first watch was asked */
+  if (!g_arm || ++g_calls < 2) return;
+  g_arm = false;
+  const sim_tx *t = &g_fx->net.world.tx[SIM_S1];
+  uint8_t *copy = malloc(t->len);
+  if (copy == NULL) exit(2);
+  memcpy(copy, t->raw, t->len);
+  if (gz_watch_broadcast(g_fx->e, 9, NULL, 0, copy, t->len) != GZ_CHAINW_OK) exit(2);
+}
+
+static void test_pass_ends_at_first_failure(test_state *T) {
+  fx f;
+  uint8_t r1[GZ_HASH_LEN];
+  char hex[65];
+  fx_open(&f);
+  g_fx = &f;
+  g_arm = false;
+  f.cfg.between = queue_when_armed;
+  fx_start(&f);
+  memset(r1, 0x44, sizeof r1);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_S1), 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_S2), 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_K), 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_outpoint(f.e, f.net.world.p, 0, 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_outpoint(f.e, f.net.world.q, 0, 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_outpoint(f.e, TXID(&f, SIM_T), 0, 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_outpoint(f.e, r1, 0, 3, 0) == GZ_CHAINW_OK);
+  SEQ(go(&f), "tip 1003");
+  /* one server stops answering about transactions: each such request runs
+   * into its time limit of 2 s */
+  f.net.view[0].fault = SIM_FAULT_TIMEOUT;
+  f.net.view[0].fault_path = "/tx/";
+  g_arm = true;
+  g_calls = 0;
+  log_clear(&f);
+  uint64_t begun = f.net.now + 1000;
+  SEQ(go(&f), "broadcast #9 accepted final tries=1 | sources no-quorum");
+  CHECK(log_count(&f, "a.test/api/tx/") == 1);
+  CHECK(f.net.now - begun == 2000); /* one time limit, not one per watch */
+  CHECK(gz_watch_wait_ms(f.e) == 500); /* counted from the end of the pass */
+  /* the next pass starts with the next watch, S1 */
+  sim_hex(TXID(&f, SIM_S1), hex);
+  log_clear(&f);
+  f.net.now += 500;
+  (void)gz_watch_step(f.e);
+  sim_lock(&f.net);
+  const char *first = f.net.log != NULL ? strstr(f.net.log, "/tx/") : NULL;
+  CHECK(first != NULL && strncmp(first + 4, hex, 64) == 0);
+  sim_unlock(&f.net);
+  f.rec.n = 0;
+  fx_close(&f);
+}
+
+/* M1. A tip several passes ahead on another branch: the replaced blocks are
+ * told, before the new tip and before what it did to T. */
+static void test_reorg_told_after_a_jump(test_state *T) {
+  fx f;
+  fx_open(&f);
+  f.cfg.header_window = 4;
+  f.cfg.max_catchup = 2;
+  fx_start(&f);
+  SEQ(go(&f), "tip 1003");
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 5);
+  SEQ(go(&f), "tip 1005 | confirmed T n=1 at a5");
+  both(&f, SIM_B, SIM_H0 + 11);
+  SEQ(go(&f), "reorg from 1004 gone 2 | tip 1005");
+  SEQ(go(&f), "tip 1007 | unconfirmed T | confirmed T n=2 at b6");
+  SEQ(go(&f), "tip 1009 | confirmed T n=4 at b6 buried");
+  SEQ(go(&f), "tip 1011");
+  fx_close(&f);
+}
+
+/* M3. The engine itself checks the network: with one server, as the API
+ * allows, it is the only check. */
+static void test_one_server_on_another_network(test_state *T) {
+  fx f;
+  fx_open(&f);
+  f.cfg.chain = &f.stack.server[0];
+  fx_start(&f);
+  f.net.view[0].mainnet = true;
+  SEQ(go(&f), "sources wrong-network");
+  SEQ(go(&f), "");
+  fx_close(&f);
+}
+
+/* M3. A confirmation recorded in a block that a reorganisation replaced is
+ * not counted on, even when both servers keep claiming it; a spender that
+ * moved to another block is placed again; and a confirmation that stands
+ * after a reorganisation is not asked about again. */
+static void test_claims_in_replaced_blocks(test_state *T) {
+  fx f;
+  char hex[65];
+  fx_open(&f);
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  SEQ(go(&f), "tip 1003");
+  both(&f, SIM_A, SIM_H0 + 5);
+  SEQ(go(&f), "tip 1005 | confirmed T n=1 at a5");
+  both(&f, SIM_B, SIM_H0 + 5);
+  f.net.view[0].pin_t = f.net.view[1].pin_t = true;
+  SEQ(go(&f), "reorg from 1004 gone 2 | tip 1005 | sources servers-disagree");
+  f.net.view[0].pin_t = f.net.view[1].pin_t = false;
+  SEQ(go(&f), "unconfirmed T | sources ok");
+  fx_close(&f);
+
+  fx_open(&f);
+  fx_start(&f);
+  CHECK(gz_watch_outpoint(f.e, f.net.world.q, 0, 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  SEQ(go(&f), "tip 1003");
+  both(&f, SIM_A, SIM_H0 + 5);
+  SEQ(go(&f), "tip 1005 | spent Q:0 by T n=1 at a5 | confirmed T n=1 at a5");
+  both(&f, SIM_B, SIM_H0 + 6);
+  SEQ(go(&f), "reorg from 1004 gone 2 | tip 1006 | spent Q:0 by T n=1 at b6 reorg | "
+              "unconfirmed T | confirmed T n=1 at b6");
+  sim_hex(f.net.world.q, hex);
+  log_clear(&f);
+  both(&f, SIM_B, SIM_H0 + 7);
+  SEQ(go(&f), "tip 1007 | spent Q:0 by T n=2 at b6 | confirmed T n=2 at b6");
+  CHECK(log_count(&f, hex) == 0);
+  fx_close(&f);
+}
+
+/* M3. The servers change their answer between the status and the proof:
+ * K is in a7 at the first question and in x7, the same height on branch C,
+ * at the second. Nothing is told until they settle. */
+static void test_moved_between_two_questions(test_state *T) {
+  fx f;
+  fx_open(&f);
+  fx_start(&f);
+  both(&f, SIM_A, SIM_H0 + 7);
+  for (int i = 0; i < 2; i++) {
+    f.net.view[i].flip_path = "/status";
+    f.net.view[i].flip_after = 1;
+    f.net.view[i].flip_to = SIM_C;
+  }
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_K), 3, 0) == GZ_CHAINW_OK);
+  SEQ(go(&f), "tip 1007");
+  SEQ(go(&f), "reorg from 1007 gone 1 | tip 1007 | confirmed K n=1 at x7");
+  fx_close(&f);
+}
+
+/* M3. A tip whose header is not the block named at the tip (it moved
+ * between the two questions) is not taken, at the first tip or after one. */
+static void test_tip_that_moved(test_state *T) {
+  fx f;
+  fx_open(&f);
+  fx_start(&f);
+  both(&f, SIM_A, SIM_H0 + 5);
+  for (int i = 0; i < 2; i++) {
+    f.net.view[i].flip_path = "/block-height/1005";
+    f.net.view[i].flip_after = 1;
+    f.net.view[i].flip_to = SIM_B;
+  }
+  SEQ(go(&f), "sources server-lagging");
+  SEQ(go(&f), "tip 1005 | sources ok");
+  fx_close(&f);
+
+  fx_open(&f);
+  fx_start(&f);
+  SEQ(go(&f), "tip 1003");
+  both(&f, SIM_A, SIM_H0 + 5);
+  for (int i = 0; i < 2; i++) {
+    f.net.view[i].flip_path = "/block-height/1005";
+    f.net.view[i].flip_after = 1;
+    f.net.view[i].flip_to = SIM_B;
+  }
+  SEQ(go(&f), "sources server-lagging");
+  SEQ(go(&f), "tip 1005 | sources ok");
+  fx_close(&f);
+}
+
+/* M3. A watch waiting for a block above the checked tip is asked again
+ * after the short wait, not at the next look at the tip. */
+static void test_later_means_soon(test_state *T) {
+  fx f;
+  fx_open(&f);
+  f.cfg.tip_poll_ms = 5000;
+  fx_start(&f);
+  both(&f, SIM_A, SIM_H0 + 4);
+  SEQ(go(&f), "tip 1004");
+  both(&f, SIM_A, SIM_H0 + 5);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  f.net.now += 1;
+  (void)gz_watch_step(f.e);
+  st_join(&f.rec, f.line, sizeof f.line);
+  SEQ(f.line, "");
+  CHECK(gz_watch_wait_ms(f.e) == 1000);
+  fx_close(&f);
+}
+
+/* M3. After clear, the tip is asked for at once, and the state of the
+ * servers starts again from "they agree": a failure before clear is not
+ * reported as mended. */
+static void test_clear_starts_again(test_state *T) {
+  fx f;
+  fx_open(&f);
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 6);
+  f.net.view[1].hide[SIM_T] = true;
+  SEQ(go(&f), "tip 1006 | sources servers-disagree");
+  f.net.view[1].hide[SIM_T] = false;
+  gz_watch_clear(f.e);
+  unsigned before = sim_requests(&f.net);
+  f.net.now += 501;
+  (void)gz_watch_step(f.e);
+  st_join(&f.rec, f.line, sizeof f.line);
+  SEQ(f.line, "tip 1006");
+  CHECK(log_count(&f, "/blocks/tip/height") > 0 && sim_requests(&f.net) > before);
+  fx_close(&f);
+}
+
+/* After clear the tip is asked for at once, not at the next poll. */
+static void test_clear_asks_at_once(test_state *T) {
+  fx f;
+  fx_open(&f);
+  fx_start(&f);
+  SEQ(go(&f), "tip 1003");
+  gz_watch_clear(f.e);
+  log_clear(&f);
+  f.net.now += 1;
+  (void)gz_watch_step(f.e);
+  st_join(&f.rec, f.line, sizeof f.line);
+  SEQ(f.line, "tip 1003");
+  CHECK(log_count(&f, "/blocks/tip/height") == 2);
+  fx_close(&f);
+}
+
+/* A tip one block below the only hash held, on the same chain: the servers
+ * are a block behind, nothing was replaced. */
+static void test_servers_a_block_behind_the_first_tip(test_state *T) {
+  fx f;
+  fx_open(&f);
+  fx_start(&f);
+  both(&f, SIM_A, SIM_H0 + 5);
+  SEQ(go(&f), "tip 1005");
+  both(&f, SIM_A, SIM_H0 + 4);
+  SEQ(go(&f), "");
+  both(&f, SIM_A, SIM_H0 + 5);
+  SEQ(go(&f), "");
+  fx_close(&f);
+}
+
+/* A descent over several passes keeps what it linked: the hashes are not
+ * cut back to the window while it is on its way. */
+static void test_descent_keeps_its_progress(test_state *T) {
+  fx f;
+  fx_open(&f);
+  f.cfg.header_window = 4;
+  f.cfg.max_catchup = 2;
+  fx_start(&f);
+  both(&f, SIM_A, SIM_H0 + 11);
+  SEQ(go(&f), "tip 1011");
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  SEQ(go(&f), "");
+  SEQ(go(&f), "");
+  SEQ(go(&f), "confirmed T n=7 at a5 buried");
+  fx_close(&f);
+}
+
+/* After a restart, a confirmation below the new hashes is linked to them
+ * again before it counts: servers that keep claiming the replaced block
+ * are found out when the headers reach it. */
+static void test_restart_links_again(test_state *T) {
+  fx f;
+  fx_open(&f);
+  f.cfg.header_window = 4;
+  f.cfg.max_catchup = 2;
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 5);
+  SEQ(go(&f), "tip 1005 | confirmed T n=1 at a5");
+  both(&f, SIM_A, SIM_H0 + 11);
+  SEQ(go(&f), "tip 1007 | confirmed T n=3 at a5 buried");
+  SEQ(go(&f), "tip 1009");
+  SEQ(go(&f), "tip 1011");
+  /* every hash held is replaced, and the servers still say T is in a5 */
+  both(&f, SIM_B, SIM_H0 + 11);
+  f.net.view[0].pin_t = f.net.view[1].pin_t = true;
+  char all[1024] = "";
+  for (int i = 0; i < 5; i++) {
+    const char *got = go(&f);
+    if (got[0] != 0 && strlen(all) + strlen(got) + 4 < sizeof all) {
+      if (all[0] != 0) strcat(all, " | ");
+      strcat(all, got);
+    }
+  }
+  SEQ(all, "reorg from 1008 gone 4 | tip 1011 | sources servers-disagree");
+  fx_close(&f);
+}
+
 int main(void) {
   test_state state = {0, 0, 0}, *T = &state;
   if (getenv("GZ_SIM_GRIND") != NULL) {
@@ -1237,6 +1651,19 @@ int main(void) {
   RUN(test_headers);
   RUN(test_retry_backoff);
   RUN(test_false_spender);
+  RUN(test_no_depth_from_one_header);
+  RUN(test_pass_ends_at_first_failure);
+  RUN(test_reorg_told_after_a_jump);
+  RUN(test_one_server_on_another_network);
+  RUN(test_claims_in_replaced_blocks);
+  RUN(test_moved_between_two_questions);
+  RUN(test_tip_that_moved);
+  RUN(test_later_means_soon);
+  RUN(test_clear_starts_again);
+  RUN(test_clear_asks_at_once);
+  RUN(test_servers_a_block_behind_the_first_tip);
+  RUN(test_descent_keeps_its_progress);
+  RUN(test_restart_links_again);
   RUN(test_hostile_servers);
   TEST_MAIN_END("chain_watch");
 }

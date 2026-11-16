@@ -420,7 +420,7 @@ bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH
       for (uint32_t r = 0; r < val->size; r++) {
         const gz_json_tok *entry = &toks[j + 1];
         uint8_t txid[GZ_HASH_LEN];
-        bool have_txid = false, have_error = false;
+        bool have_txid = false, have_error = false, have_other = false;
         char error[GZ_REASON_MAX];
         error[0] = '\0';
         if (entry->type != GZ_JSON_OBJECT) return false;
@@ -434,17 +434,21 @@ bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH
             if (fv->type != GZ_JSON_STRING) return false;
             tok_text(s, fv, error);
             have_error = true;
+          } else if (gz_json_str_eq(s, fk, "other-wtxid")) {
+            have_other = true;
           }
           k = fv->next;
         }
         if (have_txid && memcmp(txid, parent, GZ_HASH_LEN) == 0) {
           p.parent_listed = true;
           p.parent_failed = have_error;
+          p.parent_known = have_other;
           memcpy(p.parent_error, error, sizeof error);
         }
         if (have_txid && memcmp(txid, child, GZ_HASH_LEN) == 0) {
           p.child_listed = true;
           p.child_failed = have_error;
+          p.child_known = have_other;
           memcpy(p.child_error, error, sizeof error);
         }
         j = entry->next;
@@ -919,12 +923,17 @@ static gz_chain_result es_broadcast_package(void *ctx, const uint8_t *parent, si
   body[p] = '\0';
 
   gz_chain_result r = GZ_CHAIN_UNSUPPORTED;
+  /* a path that keeps answering "busy" (429) or cannot be reached does not
+   * keep the other from being tried; only when neither has an endpoint is
+   * the answer GZ_CHAIN_UNSUPPORTED */
+  bool unreachable = false;
   for (size_t i = 0; i < ES_PACKAGE_PATHS; i++) {
     r = es_request_as(es, true, "application/json", es_package_paths[i], (const uint8_t *)body,
                       body_len, ES_CAP_PACKAGE, &status, &len);
-    if (r != GZ_CHAIN_OK) break;
-    if (status != 404 && status != 405) break;
-    r = GZ_CHAIN_UNSUPPORTED; /* no such endpoint at this path */
+    if (r == GZ_CHAIN_OK && status != 404 && status != 405) break;
+    if (r != GZ_CHAIN_OK && r != GZ_CHAIN_UNREACHABLE) break;
+    if (r == GZ_CHAIN_UNREACHABLE) unreachable = true;
+    r = unreachable ? GZ_CHAIN_UNREACHABLE : GZ_CHAIN_UNSUPPORTED;
   }
   free(body);
   out->server_status = status;
@@ -947,6 +956,8 @@ static gz_chain_result es_broadcast_package(void *ctx, const uint8_t *parent, si
     out->child.result = child_in ? GZ_CHAIN_OK : GZ_CHAIN_REJECTED;
     if (parent_in) memcpy(out->parent.txid, ptx, GZ_HASH_LEN);
     if (child_in) memcpy(out->child.txid, ctx_id, GZ_HASH_LEN);
+    out->parent.already_known = parent_in && pk.parent_known;
+    out->child.already_known = child_in && pk.child_known;
     memcpy(out->parent.reason, pk.parent_error, sizeof out->parent.reason);
     memcpy(out->child.reason, pk.child_error, sizeof out->child.reason);
     out->result = pk.accepted ? GZ_CHAIN_OK : GZ_CHAIN_REJECTED;

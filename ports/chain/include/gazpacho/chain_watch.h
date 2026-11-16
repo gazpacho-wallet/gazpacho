@@ -45,8 +45,10 @@ extern "C" {
 /* ---- events ------------------------------------------------------------- */
 
 typedef enum gz_chainw_kind {
-  /* The best block changed. `height`, `block_hash`. The first event of a
-   * worker, and of every generation, is the tip. */
+  /* The best block changed. `height`, `block_hash`. The first event about
+   * the chain in a generation is the tip. A broadcast outcome or a SOURCES
+   * event can come before it: a broadcast waits for nothing, and servers can
+   * be down from the start. */
   GZ_CHAINW_TIP = 1,
   /* A watched transaction is in the best chain. `txid`, `height`,
    * `block_hash`, `confirmations` (1 or more), `buried` (confirmations have
@@ -114,6 +116,8 @@ typedef struct gz_chainw_broadcast_info {
   uint8_t parent_txid[GZ_HASH_LEN];
   gz_chainw_outcome parent_outcome;
   gz_chainw_outcome child_outcome;
+  /* (ALREADY_KNOWN per transaction when the server lists it as already in
+   * its mempool. All of this is advice, as for a single transaction.) */
   /* The chain view's own result code for the last try. */
   gz_chain_result detail;
   long server_status; /* HTTP status of the answer that decided, or 0 */
@@ -190,13 +194,19 @@ typedef struct gz_chainw_config {
   uint32_t broadcast_attempts;
   uint32_t broadcast_backoff_ms;
   uint32_t broadcast_backoff_max_ms;
-  /* Block headers kept and checked to link, counted from the tip. A
-   * confirmation is counted along them. At least 2 * GZ_CHAINW_MAX_DEPTH
-   * unless a test says otherwise (never below 4). */
+  /* Block hashes kept below the tip in the normal course, each from a
+   * header checked to link to the one before it. At least 4. */
   uint32_t header_window;
-  /* Most new headers followed in one pass; a tip further ahead than this
-   * starts the header chain again from the tip. */
+  /* Most headers fetched in one pass, forward toward a tip further ahead or
+   * down toward an older confirmation; the rest follow in the next passes,
+   * so that the checked chain never has a gap. 1..header_window. */
   uint32_t max_catchup;
+  /* Most block hashes ever kept, which bounds how far below the tip a
+   * confirmation can be linked to the checked chain before it counts:
+   * header_window..10,000,000. A confirmation further down is not told, and
+   * the sources say GZ_CHAIN_TOO_LARGE. 32 bytes each, held only while a
+   * confirmation that deep is being linked. */
+  uint32_t max_link;
   /* The clock for every wait above: milliseconds, never going backwards.
    * NULL: the system's monotonic clock. */
   uint64_t (*now_ms)(void *clock_ctx);
@@ -204,8 +214,8 @@ typedef struct gz_chainw_config {
   /* Optional. Called with true to make the chain's transfer or wait in
    * progress end at once and every later one fail at once, and with false to
    * allow them again. Called from the loop thread and from the worker. With
-   * the libcurl transport: gz_http_curl_interrupt (chain_http.h), or
-   * gz_chain_servers_interrupt (chain_servers.h). Without it, a reset or a
+   * the libcurl transport: gz_http_curl_interrupt_hook (chain_http.h), with
+   * the gz_http as its context. Without it, a reset or a
    * shutdown waits for the request in progress, up to the backend's limits. */
   void (*interrupt)(void *interrupt_ctx, bool on);
   void *interrupt_ctx;
@@ -213,19 +223,38 @@ typedef struct gz_chainw_config {
 
 /* tip_poll 60 s, retry 5 s to 5 min, burial depth 3, 256 watches, 1,024
  * requests, 4,096 events, 6 broadcast tries from 2 s to 60 s, 288 headers,
- * 144 per pass, the monotonic clock, no interrupt. */
+ * 144 per pass, links down to 52,560 blocks (a year), the monotonic clock,
+ * no interrupt. */
 void gz_chainw_config_default(gz_chainw_config *cfg, gz_chain *chain, gz_network network);
 
 /* Starts the worker. NULL on a bad configuration (mainnet, no chain, a limit
- * out of range) or if the thread, the queues or the descriptor cannot be
- * made. Sends nothing itself: the worker's first pass does. */
+ * out of range, max_requests below max_watches + GZ_CHAINW_MAX_BROADCASTS)
+ * or if the thread, the queues or the descriptor cannot be made. Sends
+ * nothing itself: the first pass of the worker does. */
 gz_chainw *gz_chainw_new(const gz_chainw_config *cfg);
 
 /* A descriptor that is readable exactly while events wait. Give it to
  * poll(); never read or write it. */
 int gz_chainw_fd(const gz_chainw *w);
 
-/* Return values of the calls below. None of them ever blocks. */
+/*
+ * Return values of the calls below. None of them ever blocks, so any of
+ * them can refuse, and the refusal is a result the caller must look at: the
+ * compiler warns when it is ignored (GZ_CHAINW_MUST_CHECK).
+ *
+ * GZ_CHAINW_BUSY on a watch, an unwatch or a release must be retried, from
+ * a backlog the caller keeps, or treated as fatal for the incarnation (the
+ * rule of contract v2). Some requests are made once only: a release refused
+ * and forgotten keeps its watches held back for ever, and a watch refused
+ * and forgotten never reports. Size max_requests for the worst burst: at
+ * least max_watches + GZ_CHAINW_MAX_BROADCASTS (gz_chainw_new refuses less)
+ * plus the releases that can come at once.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define GZ_CHAINW_MUST_CHECK __attribute__((warn_unused_result))
+#else
+#define GZ_CHAINW_MUST_CHECK
+#endif
 #define GZ_CHAINW_OK 0
 /* Refused: the worker already holds max_watches watches, or
  * GZ_CHAINW_MAX_BROADCASTS broadcasts are waiting. Nothing was queued. */
@@ -243,7 +272,7 @@ int gz_chainw_fd(const gz_chainw *w);
  * TX_UNCONFIRMED. Setting a watch that is already set replaces its depth and
  * reports the state found again. `flags`: 0 or GZ_CHAINW_NOT_BEFORE.
  */
-int gz_chainw_watch_tx(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t depth,
+GZ_CHAINW_MUST_CHECK int gz_chainw_watch_tx(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t depth,
                        unsigned flags);
 /*
  * Watch output `vout` of `txid` for a spend, and the spender to `depth`
@@ -251,16 +280,16 @@ int gz_chainw_watch_tx(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t d
  * GZ_CHAINW_NOT_BEFORE no server is asked about the outpoint until `txid` is
  * released.
  */
-int gz_chainw_watch_outpoint(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t vout,
+GZ_CHAINW_MUST_CHECK int gz_chainw_watch_outpoint(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t vout,
                              uint32_t depth, unsigned flags);
 /* Drop a watch. No event follows for it, except those already queued.
  * Dropping a watch that is not set is not an error. */
-int gz_chainw_unwatch_tx(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN]);
-int gz_chainw_unwatch_outpoint(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t vout);
+GZ_CHAINW_MUST_CHECK int gz_chainw_unwatch_tx(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN]);
+GZ_CHAINW_MUST_CHECK int gz_chainw_unwatch_outpoint(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t vout);
 /* `txid` can have been broadcast: after `delay_ms` more, every watch held
  * back for it (the transaction watch and the watches on its outputs) is
  * looked at like any other. */
-int gz_chainw_release(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t delay_ms);
+GZ_CHAINW_MUST_CHECK int gz_chainw_release(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t delay_ms);
 
 /*
  * Broadcast a transaction (copied). `id` comes back in every
@@ -270,14 +299,14 @@ int gz_chainw_release(gz_chainw *w, const uint8_t txid[GZ_HASH_LEN], uint32_t de
  * growing waits and says so once (an event that is not final). A refusal is
  * final at once: the worker does not argue with a server.
  */
-int gz_chainw_broadcast(gz_chainw *w, uint64_t id, const uint8_t *raw, size_t len);
+GZ_CHAINW_MUST_CHECK int gz_chainw_broadcast(gz_chainw *w, uint64_t id, const uint8_t *raw, size_t len);
 /* The same for a parent and its child, sent together as one package (the
  * only way a parent below the relay fee gets in). The pair goes to every
  * server that has a package endpoint. If none has one the final event says
  * GZ_CHAINW_NO_PACKAGE_RELAY: the worker never falls back to sending the two
  * one after the other, because a parent that needs its child would be
  * refused and the failure would look like something else. */
-int gz_chainw_broadcast_package(gz_chainw *w, uint64_t id, const uint8_t *parent,
+GZ_CHAINW_MUST_CHECK int gz_chainw_broadcast_package(gz_chainw *w, uint64_t id, const uint8_t *parent,
                                 size_t parent_len, const uint8_t *child, size_t child_len);
 
 /* 1 and *out (an event of the current generation), or 0 when none waits.
@@ -287,7 +316,8 @@ int gz_chainw_take(gz_chainw *w, gz_chainw_event *out);
 /* Forgets every watch, queued request, waiting broadcast and waiting event,
  * and ends the request in progress (if the configuration has `interrupt`).
  * Events of earlier generations are never delivered. Returns the new
- * generation. The next generation's first event is the tip. */
+ * generation. The first event about the chain in the next generation is the
+ * tip. */
 uint64_t gz_chainw_reset(gz_chainw *w);
 
 typedef struct gz_chainw_stats {
@@ -295,6 +325,9 @@ typedef struct gz_chainw_stats {
   uint64_t passes;      /* passes over the chain finished (any generation) */
   uint64_t events;      /* events queued */
   uint64_t waits;       /* times the worker waited for room in the event queue */
+  /* requests the engine refused although the loop side had accepted them:
+   * the two counts of watches and broadcasts never differ, so always 0 */
+  uint64_t diverged;
   size_t watches;       /* watches set */
   size_t broadcasts;    /* broadcasts without a final event yet */
   size_t queued_events; /* waiting for gz_chainw_take */

@@ -69,7 +69,7 @@ struct gz_chainw {
   uint64_t generation;
   bool reset_pending; /* the engine still holds the previous generation */
   bool stop;
-  uint64_t passes, n_events, waits;
+  uint64_t passes, n_events, waits, diverged;
   /* worker thread only */
   gz_watch *engine;
 };
@@ -98,6 +98,7 @@ void gz_chainw_config_default(gz_chainw_config *cfg, gz_chain *chain, gz_network
   cfg->broadcast_backoff_max_ms = 60000;
   cfg->header_window = 2 * GZ_CHAINW_MAX_DEPTH;
   cfg->max_catchup = GZ_CHAINW_MAX_DEPTH;
+  cfg->max_link = 52560;
 }
 
 /* ---- the event queue (worker side) --------------------------------------- */
@@ -183,23 +184,36 @@ static void engine_emit(void *ctx, const gz_chainw_event *ev) {
 static void apply_requests(gz_chainw *w) {
   while (w->req_count > 0) {
     request *r = &w->reqs[w->req_head];
+    int rc = GZ_CHAINW_OK;
     switch (r->kind) {
-      case REQ_WATCH_TX: (void)gz_watch_tx(w->engine, r->txid, r->depth, r->flags); break;
+      case REQ_WATCH_TX: rc = gz_watch_tx(w->engine, r->txid, r->depth, r->flags); break;
       case REQ_WATCH_OUTPOINT:
-        (void)gz_watch_outpoint(w->engine, r->txid, r->vout, r->depth, r->flags);
+        rc = gz_watch_outpoint(w->engine, r->txid, r->vout, r->depth, r->flags);
         break;
       case REQ_DROP_TX: gz_watch_drop_tx(w->engine, r->txid); break;
       case REQ_DROP_OUTPOINT: gz_watch_drop_outpoint(w->engine, r->txid, r->vout); break;
       case REQ_RELEASE: gz_watch_release(w->engine, r->txid, r->delay_ms); break;
       case REQ_BROADCAST:
         /* the engine takes the copies; the loop already checked the limit */
-        (void)gz_watch_broadcast(w->engine, r->id, r->parent, r->parent_len, r->tx, r->len);
+        rc = gz_watch_broadcast(w->engine, r->id, r->parent, r->parent_len, r->tx, r->len);
         r->parent = r->tx = NULL;
         break;
     }
+    /* the loop side checked the same limits: a refusal here means the two
+     * counts went apart, which the tests require never to happen */
+    if (rc != GZ_CHAINW_OK) w->diverged++;
     w->req_head = (w->req_head + 1) % w->cfg.max_requests;
     w->req_count--;
   }
+}
+
+/* Called by the engine between chain calls: requests queued meanwhile are
+ * handed over, so that a broadcast does not wait for the end of a long pass. */
+static void engine_between(void *ctx) {
+  gz_chainw *w = ctx;
+  pthread_mutex_lock(&w->mu);
+  if (!w->stop && !w->reset_pending) apply_requests(w);
+  pthread_mutex_unlock(&w->mu);
 }
 
 static void *worker_main(void *arg) {
@@ -248,7 +262,8 @@ static bool set_nonblocking_cloexec(int fd) {
 
 gz_chainw *gz_chainw_new(const gz_chainw_config *cfg) {
   if (cfg == NULL || cfg->max_requests == 0 || cfg->max_requests > 1000000 ||
-      cfg->max_results < 2 || cfg->max_results > 1000000)
+      cfg->max_results < 2 || cfg->max_results > 1000000 ||
+      cfg->max_requests < cfg->max_watches + GZ_CHAINW_MAX_BROADCASTS)
     return NULL;
   gz_chainw *w = calloc(1, sizeof *w);
   if (w == NULL) return NULL;
@@ -272,10 +287,13 @@ gz_chainw *gz_chainw_new(const gz_chainw_config *cfg) {
   ec.broadcast_backoff_max_ms = cfg->broadcast_backoff_max_ms;
   ec.header_window = cfg->header_window;
   ec.max_catchup = cfg->max_catchup;
+  ec.max_link = cfg->max_link;
   ec.now_ms = w->cfg.now_ms;
   ec.clock_ctx = w->cfg.clock_ctx;
   ec.stop = engine_stop;
   ec.stop_ctx = w;
+  ec.between = engine_between;
+  ec.between_ctx = w;
   ec.emit = engine_emit;
   ec.emit_ctx = w;
   w->engine = gz_watch_new(&ec); /* refuses mainnet and limits out of range */
@@ -507,6 +525,7 @@ void gz_chainw_stats_get(gz_chainw *w, gz_chainw_stats *out) {
   out->passes = w->passes;
   out->events = w->n_events;
   out->waits = w->waits;
+  out->diverged = w->diverged;
   out->watches = w->set_count;
   out->broadcasts = w->broadcasts;
   out->queued_events = w->ev_count;

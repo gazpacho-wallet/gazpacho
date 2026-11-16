@@ -12,6 +12,7 @@
 #include "gazpacho/chain_multi.h"
 
 #include "sim_nonces.h"
+#include "../watch.h"
 
 #define SIGNET_BITS 0x1e0377aeu
 #define GENESIS_SIGNET "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6"
@@ -58,6 +59,35 @@ static void make_tx(sim_tx *t, const uint8_t prev[GZ_HASH_LEN], uint32_t vout, u
   o[p++] = 0;
   memset(o + p, 0xff, 4);
   p += 4;
+  o[p++] = 1;
+  memset(o + p, 0, 8);
+  o[p] = tag;
+  p += 8;
+  o[p++] = 1;
+  o[p++] = 0x51;
+  put32(o + p, 0);
+  p += 4;
+  t->len = p;
+  finish_tx(t);
+}
+
+/* Two inputs, prev0:vout0 then prev1:vout1, one output. */
+static void make_tx2(sim_tx *t, const uint8_t prev0[GZ_HASH_LEN], uint32_t vout0,
+                     const uint8_t prev1[GZ_HASH_LEN], uint32_t vout1, uint8_t tag) {
+  uint8_t *o = t->raw;
+  size_t p = 0;
+  put32(o + p, 2);
+  p += 4;
+  o[p++] = 2;
+  for (int k = 0; k < 2; k++) {
+    memcpy(o + p, k ? prev1 : prev0, GZ_HASH_LEN);
+    p += 32;
+    put32(o + p, k ? vout1 : vout0);
+    p += 4;
+    o[p++] = 0;
+    memset(o + p, 0xff, 4);
+    p += 4;
+  }
   o[p++] = 1;
   memset(o + p, 0, 8);
   o[p] = tag;
@@ -144,13 +174,14 @@ static void make_block(sim_world *w, sim_block *b, const sim_block *prev, int br
 }
 
 void sim_world_init(sim_world *w) {
-  uint8_t q[GZ_HASH_LEN];
+  uint8_t r[GZ_HASH_LEN];
   memset(w, 0, sizeof *w);
-  memset(q, 0x11, sizeof q);
+  memset(w->q, 0x11, sizeof w->q);
+  memset(r, 0x33, sizeof r);
   memset(w->p, 0x22, sizeof w->p);
-  make_tx(&w->tx[SIM_T], q, 0, 1);
+  make_tx(&w->tx[SIM_T], w->q, 0, 1);
   make_tx(&w->tx[SIM_S1], w->p, 0, 2);
-  make_tx(&w->tx[SIM_S2], w->p, 0, 3);
+  make_tx2(&w->tx[SIM_S2], r, 5, w->p, 0, 3);
   make_tx(&w->tx[SIM_K], w->tx[SIM_T].id, 0, 4);
 
   grinding = getenv("GZ_SIM_GRIND") != NULL;
@@ -177,7 +208,8 @@ void sim_world_init(sim_world *w) {
     }
   }
   for (uint32_t j = 0; j < SIM_C_LEN; j++) {
-    make_block(w, &w->c[j], j ? &w->c[j - 1] : &w->branch[SIM_A][2], 3, SIM_H0 + 7 + j, -1, k++);
+    make_block(w, &w->c[j], j ? &w->c[j - 1] : &w->branch[SIM_A][2], 3, SIM_H0 + 7 + j,
+               j == 0 ? SIM_K : -1, k++);
   }
   /* the same block as a6 with a nonce that does not meet the target */
   w->weak = w->branch[SIM_A][2];
@@ -219,6 +251,9 @@ static uint32_t view_top(const sim_view *v) {
 static const sim_block *view_block(const sim_view *v, uint32_t height) {
   if (height > view_top(v)) return NULL;
   if (v->weak && height == SIM_H0 + 6 && v->branch == SIM_A) return &v->w->weak;
+  if (v->graft_below != 0 && height < v->graft_below && height >= SIM_H0 + SIM_COMMON &&
+      v->branch != SIM_C)
+    return sim_block_of(v->w, 1 - v->branch, height);
   if (v->graft != 0 && height >= v->graft && v->branch != SIM_C)
     return sim_block_of(v->w, 1 - v->branch, height);
   return sim_block_of(v->w, v->branch, height);
@@ -282,18 +317,19 @@ static void into_mempool(sim_view *v, const uint8_t id[GZ_HASH_LEN]) {
 }
 
 static size_t package_json(const uint8_t parent[GZ_HASH_LEN], const uint8_t child[GZ_HASH_LEN],
-                           bool ok, char *out, size_t cap) {
+                           bool ok, bool parent_known, char *out, size_t cap) {
   char p[65], c[65];
   sim_hex(parent, p);
   sim_hex(child, c);
   if (ok)
     return (size_t)snprintf(
         out, cap,
-        "{\"package_msg\":\"success\",\"tx-results\":{\"%s\":{\"txid\":\"%s\",\"vsize\":61,"
-        "\"fees\":{\"base\":0.00000000}},\"%s\":{\"txid\":\"%s\",\"vsize\":61,\"fees\":{\"base\":"
+        "{\"package_msg\":\"success\",\"tx-results\":{\"%s\":{\"txid\":\"%s\",\"vsize\":61,%s"
+        "\"fees\":{\"base\":0.00000000}},\"%s\":{\"txid\":\"%s\",\"vsize\":61,%s\"fees\":{\"base\":"
         "0.00000100,\"effective-feerate\":0.00000819,\"effective-includes\":[\"%s\",\"%s\"]}}},"
         "\"replaced-transactions\":[]}",
-        p, p, c, c, p, c);
+        p, p, parent_known ? "\"other-wtxid\":\"00\"," : "", c, c,
+        parent_known ? "\"other-wtxid\":\"00\"," : "", p, c);
   return (size_t)snprintf(
       out, cap,
       "{\"package_msg\":\"transaction failed\",\"tx-results\":{\"%s\":{\"txid\":\"%s\",\"error\":"
@@ -340,6 +376,11 @@ static bool honest(sim_view *v, bool post, const char *path, const uint8_t *body
         *len = (size_t)snprintf(out, cap, "sendrawtransaction RPC error: TX decode failed");
         return true;
       }
+      if (v->post == SIM_POST_REJECT && v->reject_reason != NULL) {
+        *status = 400;
+        *len = (size_t)snprintf(out, cap, "%s", v->reject_reason);
+        return true;
+      }
       if (v->post == SIM_POST_REJECT) {
         *status = 400;
         *len = (size_t)snprintf(out, cap,
@@ -366,8 +407,14 @@ static bool honest(sim_view *v, bool post, const char *path, const uint8_t *body
         *failure = GZ_HTTP_E_CONNECT;
         return false;
       }
-      bool here = (first && (v->package == SIM_PKG_OK || v->package == SIM_PKG_FAIL)) ||
-                  (second && v->package == SIM_PKG_OK_V1);
+      if (first && v->package == SIM_PKG_BUSY_FIRST) {
+        *status = 429;
+        *len = (size_t)snprintf(out, cap, "Too Many Requests");
+        return true;
+      }
+      bool here = (first && (v->package == SIM_PKG_OK || v->package == SIM_PKG_FAIL ||
+                             v->package == SIM_PKG_KNOWN)) ||
+                  (second && (v->package == SIM_PKG_OK_V1 || v->package == SIM_PKG_BUSY_FIRST));
       if (!here) {
         *status = 404;
         *len = (size_t)snprintf(out, cap, "endpoint does not exist \"%s\"", path);
@@ -382,7 +429,8 @@ static bool honest(sim_view *v, bool post, const char *path, const uint8_t *body
         into_mempool(v, parent);
         into_mempool(v, child);
       }
-      *len = package_json(parent, child, v->package != SIM_PKG_FAIL, out, cap);
+      *len = package_json(parent, child, v->package != SIM_PKG_FAIL, v->package == SIM_PKG_KNOWN,
+                          out, cap);
       return true;
     }
     *status = 404;
@@ -455,7 +503,10 @@ static bool honest(sim_view *v, bool post, const char *path, const uint8_t *body
     uint32_t pos = 0;
     int known = find_tx(v, id, &b, &t, &pos);
     if (strcmp(rest, "/status") == 0) {
-      *len = status_json(v, known == 2 ? b : NULL, out, cap);
+      if (v->pin_t && memcmp(id, v->w->tx[SIM_T].id, GZ_HASH_LEN) == 0)
+        *len = status_json(v, sim_block_of(v->w, SIM_A, SIM_H0 + 5), out, cap);
+      else
+        *len = status_json(v, known == 2 ? b : NULL, out, cap);
     } else if (strcmp(rest, "/hex") == 0) {
       if (known == 0) {
         *status = 404;
@@ -480,20 +531,27 @@ static bool honest(sim_view *v, bool post, const char *path, const uint8_t *body
       unsigned long n = strtoul(rest + 10, NULL, 10);
       const sim_tx *spender = NULL;
       const sim_block *sb = NULL;
+      uint32_t spender_vin = 0;
       for (int i = 0; i < SIM_NTX && sb == NULL; i++) {
         const sim_tx *c = &v->w->tx[i];
         const sim_block *cb = NULL;
         const sim_tx *ct = NULL;
-        uint32_t cpos = 0;
-        uint32_t cvout = (uint32_t)c->raw[37] | (uint32_t)c->raw[38] << 8 |
-                         (uint32_t)c->raw[39] << 16 | (uint32_t)c->raw[40] << 24;
-        if (memcmp(c->raw + 5, id, GZ_HASH_LEN) != 0 || cvout != n) continue;
+        uint32_t cpos = 0, vin = 0, cvout = 0;
+        uint8_t cprev[GZ_HASH_LEN];
+        bool spends = false;
+        for (vin = 0; vin < 2 && !spends; vin++) {
+          spends = gz_watch_tx_input(c->raw, c->len, vin, cprev, &cvout) &&
+                   memcmp(cprev, id, GZ_HASH_LEN) == 0 && cvout == n;
+        }
+        if (!spends) continue;
         int ck = find_tx(v, c->id, &cb, &ct, &cpos);
         if (ck == 2) {
           spender = c;
           sb = cb;
+          spender_vin = vin - 1;
         } else if (ck == 1 && spender == NULL) {
           spender = c;
+          spender_vin = vin - 1;
         }
       }
       if (spender == NULL) {
@@ -502,8 +560,8 @@ static bool honest(sim_view *v, bool post, const char *path, const uint8_t *body
         char st[256];
         status_json(v, sb, st, sizeof st);
         sim_hex(spender->id, hex);
-        *len = (size_t)snprintf(out, cap, "{\"spent\":true,\"txid\":\"%s\",\"vin\":0,\"status\":%s}",
-                                hex, st);
+        *len = (size_t)snprintf(out, cap, "{\"spent\":true,\"txid\":\"%s\",\"vin\":%u,\"status\":%s}",
+                                hex, spender_vin, st);
       }
     } else {
       *status = 404;
@@ -529,7 +587,11 @@ bool sim_respond(sim_view *v, bool post, const char *path, const uint8_t *body, 
     *failure = GZ_HTTP_E_TIMEOUT;
     return false;
   }
-  if (!honest(v, post, path, body, body_len, full, sizeof full, status, &n, failure)) return false;
+  bool flip_now = v->flip_path != NULL && strstr(path, v->flip_path) != NULL &&
+                  ++v->flip_seen == v->flip_after;
+  bool answered = honest(v, post, path, body, body_len, full, sizeof full, status, &n, failure);
+  if (flip_now) v->branch = v->flip_to;
+  if (!answered) return false;
   if (n >= sizeof full) n = sizeof full - 1;
   if (hit) {
     switch (v->fault) {
@@ -639,6 +701,8 @@ void sim_net_init(sim_net *n, bool real_time) {
   pthread_cond_init(&n->cv, &attr);
   pthread_condattr_destroy(&attr);
   n->real_time = real_time;
+  n->stall_view = -1;
+  n->delay_view = -1;
   n->now = 1000000;
 }
 
@@ -736,16 +800,28 @@ static gz_http_result sim_request(void *net, const gz_http_request *req, uint8_t
     sim_unlock(n);
     return GZ_HTTP_E_FAILED;
   }
-  if (n->real_time && n->stall) {
+  if (n->real_time && n->stall && (n->stall_view < 0 || n->stall_view == which) &&
+      (n->stall_path == NULL || strstr(path, n->stall_path) != NULL)) {
     struct timespec until;
     deadline_in(&until, req->timeout_ms);
+    n->stalled++;
     while (n->stall && !n->interrupted) {
       if (pthread_cond_timedwait(&n->cv, &n->mu, &until) == ETIMEDOUT) break;
     }
+    n->stalled--;
+    if (n->interrupted) n->stall_aborts++;
     if (n->interrupted || n->stall) {
       gz_http_result r = n->interrupted ? GZ_HTTP_E_FAILED : GZ_HTTP_E_TIMEOUT;
       sim_unlock(n);
       return r;
+    }
+  }
+  if (n->real_time && n->delay_ms > 0 && (n->delay_view < 0 || n->delay_view == which) &&
+      (n->delay_path == NULL || strstr(path, n->delay_path) != NULL)) {
+    struct timespec until;
+    deadline_in(&until, n->delay_ms);
+    while (!n->interrupted) {
+      if (pthread_cond_timedwait(&n->cv, &n->mu, &until) == ETIMEDOUT) break;
     }
   }
   long status = 0;

@@ -56,8 +56,8 @@ static void check_event(void *ctx, const gz_chainw_event *ev) {
       int which = -1;
       for (int i = 0; i < SIM_NTX; i++)
         if (memcmp(w->tx[i].id, ev->txid, GZ_HASH_LEN) == 0) which = i;
-      must(which >= 0 && ev->vin == 0);
-      must(gz_watch_tx_input(w->tx[which].raw, w->tx[which].len, 0, prev, &vout));
+      must(which >= 0);
+      must(gz_watch_tx_input(w->tx[which].raw, w->tx[which].len, ev->vin, prev, &vout));
       must(memcmp(prev, ev->outpoint_txid, GZ_HASH_LEN) == 0 && vout == ev->outpoint_vout);
       if (ev->confirmations > 0) {
         b = world_block(w, ev->height, ev->block_hash);
@@ -110,6 +110,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   cfg.broadcast_backoff_max_ms = 200;
   cfg.header_window = 6;
   cfg.max_catchup = 4;
+  cfg.max_link = 32;
   cfg.now_ms = sim_clock;
   cfg.clock_ctx = &f.net;
   cfg.emit = check_event;

@@ -22,7 +22,8 @@
  *   *  holds T, the watched transaction (a funding-like one)
  *   '  holds S1, which spends the watched outpoint P:0
  *   ^  holds S2, which also spends P:0 (the double spend)
- *   "  holds K, a child of T (spends T:0)
+ *   "  holds K, a child of T (spends T:0); branch C holds K at 1007 too
+ *   S2 spends P:0 with its second input (vin 1); T spends Q:0
  */
 #ifndef GZ_CHAIN_SIM_H
 #define GZ_CHAIN_SIM_H
@@ -49,7 +50,7 @@ enum { SIM_T = 0, SIM_S1 = 1, SIM_S2 = 2, SIM_K = 3, SIM_NTX = 4 };
 
 typedef struct sim_tx {
   uint8_t id[GZ_HASH_LEN];
-  uint8_t raw[96];
+  uint8_t raw[160];
   size_t len;
 } sim_tx;
 
@@ -68,6 +69,7 @@ typedef struct sim_world {
   sim_block weak; /* a6 with another nonce: its hash does not meet the target */
   sim_tx tx[SIM_NTX];
   uint8_t p[GZ_HASH_LEN]; /* the txid of the watched outpoint P:0 */
+  uint8_t q[GZ_HASH_LEN]; /* T spends Q:0 */
 } sim_world;
 
 /* Builds the world. Aborts the test program if a nonce in sim_nonces.h does
@@ -92,7 +94,9 @@ enum {
   SIM_PKG_OK,       /* at /txs/package: accepts */
   SIM_PKG_OK_V1,    /* only at /v1/txs/package: accepts */
   SIM_PKG_FAIL,     /* at /txs/package: refuses the parent (and so the child) */
-  SIM_PKG_DOWN
+  SIM_PKG_DOWN,
+  SIM_PKG_BUSY_FIRST, /* /txs/package answers 429; /v1/txs/package accepts */
+  SIM_PKG_KNOWN       /* at /txs/package: accepts, both already in its mempool */
 };
 
 typedef struct sim_view {
@@ -111,6 +115,14 @@ typedef struct sim_view {
   bool hide[SIM_NTX]; /* says it never saw the transaction */
   bool weak;          /* at 1006 it serves the block without proof of work */
   uint32_t graft;     /* not 0: from this height up it serves the other branch */
+  uint32_t graft_below; /* not 0: below this height (from 1004) it serves the other branch */
+  bool pin_t;           /* says T is in a5 whatever it holds */
+  const char *reject_reason; /* not NULL: the words of a refusal of POST /tx */
+  /* after the flip_after-th request whose path contains flip_path, it moves
+   * to branch flip_to (that answer is still from the old branch) */
+  const char *flip_path;
+  unsigned flip_after, flip_seen;
+  int flip_to;
   int lie_height;     /* added to the height it states for a confirmed transaction */
   int post;
   int package;
@@ -149,6 +161,15 @@ typedef struct sim_net {
   unsigned requests;
   /* real_time only: requests wait here until the test lets go */
   bool stall;
+  int stall_view;          /* -1: both servers; else only this one */
+  const char *stall_path;  /* NULL: every request; else those whose path contains it */
+  unsigned stalled;        /* requests waiting in a stall now */
+  unsigned stall_aborts;   /* stalled requests ended by sim_interrupt */
+  /* real_time only: requests to delay_view (-1: both) whose path contains
+   * delay_path are answered after delay_ms */
+  uint32_t delay_ms;
+  int delay_view;
+  const char *delay_path;
   bool interrupted;
 } sim_net;
 

@@ -262,11 +262,11 @@ static void test_double_spend(test_state *T) {
   STEP(&x, "spent P:0 by S1 n=0");
   pool(&x, SIM_S1, false);
   both(&x, SIM_B, SIM_H0 + 7);
-  STEP(&x, "spent P:0 by S2 n=1 at b7 replaced");
+  STEP(&x, "spent P:0 by S2#1 n=1 at b7 replaced");
   both(&x, SIM_B, SIM_H0 + 8);
-  STEP(&x, "spent P:0 by S2 n=2 at b7 buried");
-  LOG_IS(&x, "tip 1006 | spent P:0 by S1 n=0 | tip 1007 | spent P:0 by S2 n=1 at b7 replaced | "
-             "tip 1008 | spent P:0 by S2 n=2 at b7 buried");
+  STEP(&x, "spent P:0 by S2#1 n=2 at b7 buried");
+  LOG_IS(&x, "tip 1006 | spent P:0 by S1 n=0 | tip 1007 | spent P:0 by S2#1 n=1 at b7 replaced | "
+             "tip 1008 | spent P:0 by S2#1 n=2 at b7 buried");
   sx_close(&x);
 }
 

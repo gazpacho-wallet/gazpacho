@@ -341,6 +341,8 @@ The second review's 18 surviving mutations and the 6 it could not compile were p
 10. **Signet block signatures.** Not verified, by decision. Verifying them would make signet confirmations checkable against the signet's known signing key, not just compared.
 11. **A node of our own for package relay.** Exits of low-fee trees need one-parent-one-child package relay, and one public operator offers a package endpoint on signet and testnet4 (section 19). Whether the project runs a Bitcoin Core 29.1 node with a package endpoint, and tells hosts to, is for the owner.
 12. **A false block 0 is remembered for good.** A server that once answers with the block 0 of another network is left out until the program starts again (section 5). Right for a server on the wrong chain; harsh for a single bad answer. A long-running worker could ask again after a long wait.
+13. **Expected difficulty.** Proof of work is checked against the network limit only (section 18). Before mainnet: a retargeting rule, or checkpoints shipped with the program. Review of PR 43, M2.
+14. **The cost of linking old confirmations.** A watch set again at start on a confirmation a year old makes the engine fetch every header down to it, from each server, 144 per pass: tens of thousands of requests once per start. A checked height and hash saved by the program (a checkpoint of its own) would make that unnecessary. For the P7 wiring or later.
 
 ## 15. Changes after the second review
 
@@ -395,7 +397,7 @@ Watches report only on a change, so a lost report is never repeated. When the ev
 
 ### 16.3 Generations
 
-`gz_chainw_reset` (for a restart from storage inside one process) purges both queues and the wake byte, forgets every watch and broadcast, and returns a new generation number. Every event carries its generation, and events made by a pass that was still running when the reset came are discarded, under the same mutex. The first event of every generation is the tip. The checked headers are kept across a reset: they are facts about the chain, not about the node.
+`gz_chainw_reset` (for a restart from storage inside one process) purges both queues and the wake byte, forgets every watch and broadcast, and returns a new generation number. Every event carries its generation, and events made by a pass that was still running when the reset came are discarded, under the same mutex. The first event about the chain in every generation is the tip. The checked headers are kept across a reset: they are facts about the chain, not about the node.
 
 ### 16.4 Shutdown and reset with a request in flight
 
@@ -415,7 +417,7 @@ libcurl global state is as contract v2 says: the loop thread creates the `gz_htt
 | `max_watches` | 256 | Refused beyond |
 | `max_requests`, `max_results` | 1,024, 4,096 | The two queues |
 | `broadcast_attempts`, backoff | 6 tries, 2 s doubling to 60 s | Only while no server can be reached |
-| `header_window`, `max_catchup` | 288, 144 | Headers kept; most new headers followed in one pass |
+| `header_window`, `max_catchup`, `max_link` | 288, 144, 52,560 | Hashes kept in the normal course; most headers fetched in one pass, forward toward the tip or down toward an older confirmation; most hashes ever kept, which bounds how far below the tip a confirmation can be linked (a year of blocks, 1.7 MB at most) |
 
 Mainnet is refused: `gz_chainw_new` returns NULL for any network that is not signet, testnet3 or testnet4.
 
@@ -425,7 +427,7 @@ Events come out in the order they were made, each at most once per change of sta
 
 | Event | When | Fields |
 |---|---|---|
-| `GZ_CHAINW_TIP` | The checked best block changed. First event of every generation | `height`, `block_hash` |
+| `GZ_CHAINW_TIP` | The checked best block changed. The first event about the chain in a generation; a broadcast outcome or `SOURCES` can come before it | `height`, `block_hash` |
 | `GZ_CHAINW_REORG` | Blocks left the checked chain. Sent **before** the new tip and before what the reorganisation did to each watch | `height` (lowest height whose block changed), `disconnected` |
 | `GZ_CHAINW_TX_MEMPOOL` | A watched transaction first seen unconfirmed, by every server | `txid` |
 | `GZ_CHAINW_TX_EVICTED` | A transaction reported in the mempool is known to no server and is not confirmed | `txid` |
@@ -438,11 +440,11 @@ Events come out in the order they were made, each at most once per change of sta
 
 Rules that follow from the code and are each tested:
 
-- **Within one pass**: broadcasts, then `REORG`, then `TIP`, then the watches in the order they were set, then `SOURCES`.
+- **Within one pass**: `REORG`, then `TIP`, then the watches in the order they were set (starting after the watch that ended the previous pass, if one did), then `SOURCES`. Broadcast outcomes come whenever a broadcast is due: at the start of a pass and after every chain call, so they can fall between watch events, and before the first tip.
 - **A confirmation that stands is not asked about again.** It is counted along the checked headers. It is asked about again only when a reorganisation replaced blocks at or above its height, or when the watch is set again. So a server cannot make a confirmation flap by hiding it later.
 - **Setting a watch again** replaces its depth and tells the state found again, as `action.h` WATCHES says.
-- **Burial.** After the count reaches the depth, nothing more is told for that confirmation unless a reorganisation changes it. A reorganisation is told however deep the confirmation was, as long as it is within the header window (288 blocks); below that a confirmation is counted once and not followed.
-- **A jump of several blocks** tells the count once, at its new value. Counts in between are not told.
+- **Burial.** After the count reaches the depth, nothing more is told for that confirmation unless a reorganisation changes it. Every count is a distance along the checked chain (section 18). A confirmation below the hashes held is first linked to them header by header, and keeps its count when its block is later dropped from them, because the chain has only grown since by linked headers. A reorganisation is told however deep it reaches.
+- **A tip several blocks ahead** is followed `max_catchup` headers per pass; each pass tells the tip it reached and the counts that changed. Counts in between are not told.
 - **Unconfirmed data** follows section 5: seen only when every server shows it, gone only when none does. While servers differ, nothing is told.
 - **While `sources` is not OK**, nothing is told that depends on the failing answer. Watches that can still be answered are.
 
@@ -457,13 +459,14 @@ The engine compares the servers tip with its own chain, walks down to the highes
 | The same block, the chain shorter | `TX_CONFIRMED` with the lower count and `reorg` |
 | Another transaction spends the outpoint | `OUTPOINT_SPENT` naming it, with `replaced` and `reorg` |
 
-A reorganisation that reaches below the headers kept (or a tip more than `max_catchup` ahead) starts the header chain again at the tip and asks about every watch.
+A reorganisation that reaches below the hashes held, or servers whose chain shares no block with them, starts the header chain again at their tip. Every hash held is then told as replaced (`REORG` from the oldest one: nothing shows which were not), and every confirmation is placed on the new chain again, header by header, before it counts. A tip further ahead is never a reason to start again: it is followed.
 
 ## 18. Server rules in the worker
 
 The worker uses the comparing backend over two operators, so sections 4 to 6 apply to every answer. On top of them:
 
-- **Header chain linking.** The engine keeps a window of block hashes. A hash enters it only from a header that (a) the servers agree on, (b) hashes to the block hash the servers gave for that height, (c) meets its proof-of-work target for the network, and (d) names the header before it. Depth is counted along this chain and nowhere else. A server that claims a higher tip adds no depth; it has to produce linked headers that cost work. On signet the work is nominal and the block signature is still not checked (section 6, open question 10), so on signet depth rests on two operators agreeing, exactly as before; on the proof-of-work networks each block of fake depth costs a real header.
+- **Header chain linking.** The engine keeps a chain of block hashes with no gap from the first header it checked to the tip. A hash enters it only from a header that (a) the servers agree on, (b) hashes to the block hash the servers gave for that height, (c) meets its own proof-of-work target, which must be no easier than the network limit, and (d) names the header before it (going up), or is named by the header above it (going down, to link an older confirmation). Depth is counted along this chain and nowhere else: a claimed tip adds nothing until linked headers reach it, and a confirmation below the hashes held counts only once the headers down to it are linked.
+- **What that is worth on the test networks: little.** The target of each header is checked only against the easiest one the network allows. There is no retargeting rule, no expected difficulty and no comparison of total work. testnet4 allows difficulty-1 blocks (about 4 billion hashes each: seconds on a GPU, nothing for an ASIC) and keeps the 20-minute minimum-difficulty rule, so real headers at that difficulty exist; on signet the work is nominal and the block signature is not checked. So on signet and testnet4, servers that agree, or the one server a user runs, can make linked fake headers almost for free: **depth on the test networks rests on the operators agreeing**, not on work. What linking does buy there: a single lying server cannot add depth (the other operator contradicts it), and nobody can add depth with one header at a claimed tip. Before mainnet, an expected-difficulty rule (retargeting, or checkpoints shipped with the program) is needed. Checking signet block signatures is a follow-up (open question 10): it needs the signet challenge script evaluated, which is not small.
 - **A confirmation must be in a block of that chain.** A status naming a height and a block hash that the checked chain does not have at that height is disagreement. Then `gz_chain_confirm_tx` proves the transaction is in the block (bytes, header, Merkle branch, coinbase).
 - **A spender must spend the outpoint.** The spender a server names is fetched (so its bytes hash to its txid) and its input read; if that input is not the watched outpoint the answer is a bad proof. This closes open question 3 of section 14 as far as the input goes; the spender signature is not checked.
 - **A server far behind is refused.** The comparing backend refuses tips more than 3 blocks apart. The engine also refuses a tip more than 3 blocks below what it has already checked, whichever branch it is on.
@@ -492,6 +495,8 @@ SuperScalar main builds TRUC (version 3) tree transactions with a pay-to-anchor 
 New in the chain view: `gz_chain_broadcast_package(c, parent, child, out)` and the result code `GZ_CHAIN_UNSUPPORTED`. The Esplora backend posts `["<parent hex>","<child hex>"]` as JSON to `/txs/package` and, if that answers 404 or 405, to `/v1/txs/package`. The answer is the `submitpackage` result of Bitcoin Core; the pair counts as accepted only when `package_msg` is `success` and both txids are listed without an error. The outcome of each transaction and the server words for it are reported (`gz_package_result.parent`, `.child`; in the worker event `parent_outcome`, `child_outcome`, `parent_txid`). The comparing backend sends the package to every server on the right network; accepted by one is success; a refusal is reported before unreachability; `GZ_CHAIN_UNSUPPORTED` only when every server that could be asked has no endpoint.
 
 **The pair is never sent one after the other instead.** A parent that needs its child would be refused alone and the failure would read as a fee problem. No endpoint is its own, explicit, final outcome with the reason text "no chain server accepts transaction packages".
+
+A transaction already in the mempool of a server is reported, per transaction, as `ALREADY_KNOWN` when the server says so (`other-wtxid` in its answer). If the first package path keeps answering 429, the second is still tried, and the outcome is `UNREACHABLE` only when neither answered. Package outcomes are advice, as for single transactions.
 
 ### 19.2 Which public servers take packages
 
@@ -595,7 +600,7 @@ Named follow-up, for after PR 41 (composite node P4.1) and its stack have merged
 1. **Build the chain view the worker owns** (`pchain.c`, `gzp_chain_open`). Keep the mainnet refusal. Build one `gz_http` (with the proxy setting), one Esplora backend per configured server and the comparing backend over them, on the loop thread, before any thread starts. Today `pchain.c` builds a single Esplora backend; the worker also runs over one, but then nothing is compared.
 2. **Start the worker** with `gz_chainw_new`: `interrupt = gz_http_curl_interrupt_hook`, `interrupt_ctx = &http`, `tip_poll_ms` from `--chain-poll-ms`. Log `gz_http_curl_async_dns()` once.
 3. **Replace the blocking calls.** `gzp_chain_poll` and `gzp_chain_timeout` go: the loop adds `gz_chainw_fd` to its `poll()` set and, when it is readable, calls `gz_chainw_take` until it returns 0 (at most a few per turn, as for the transport). The start-up network check and first tip stop blocking the start: they arrive as `GZ_CHAINW_SOURCES` and `GZ_CHAINW_TIP`. `--check-chain` keeps its own blocking check, since it runs no loop.
-4. **Actions out.** `WATCH_TX` -> `gz_chainw_watch_tx(w, txid, depth, flags)`; `WATCH_OUTPOINT` -> `gz_chainw_watch_outpoint`; `BROADCAST` -> `gz_chainw_broadcast` with an id the program keeps. A `GZ_CHAINW_BUSY` or `GZ_CHAINW_FULL` return is the program decision: contract v2 says fatal for the incarnation.
+4. **Actions out.** `WATCH_TX` -> `gz_chainw_watch_tx(w, txid, depth, flags)`; `WATCH_OUTPOINT` -> `gz_chainw_watch_outpoint`; `BROADCAST` -> `gz_chainw_broadcast` with an id the program keeps. Every return must be looked at: the header marks these calls `warn_unused_result`, so ignoring one does not compile under `-Werror`. `GZ_CHAINW_BUSY` on a watch, an unwatch or a release must be retried from a backlog the program keeps, or treated as fatal for the incarnation (contract v2): some requests are made once only, and a release refused and forgotten keeps the funding watches held back for ever. `GZ_CHAINW_FULL` on a watch is fatal (the watch set is sized for the node); on a broadcast it is retried after the next final broadcast event. Size `max_requests` at least `max_watches + GZ_CHAINW_MAX_BROADCASTS` plus the releases that can come at once; `gz_chainw_new` refuses less than the first two.
 5. **Events in**, one core event per worker event (one change per event, as the composite node expects):
 
 | Worker event | Core event |
@@ -613,3 +618,22 @@ Named follow-up, for after PR 41 (composite node P4.1) and its stack have merged
 8. **Packages.** When the exit engine exists, a tree transaction and its fee child go out through `gz_chainw_broadcast_package`; `action.h` needs the "broadcast package" action `spec/exit.md` lists.
 
 **Tests that come with it** (contract v2): T5 `program_chain_stall`, T9 `program_broadcast_result`, T10 `program_watches`. The scripted stub (`tests/watch_stub.py`) and the scenes (`sim_dump`) built here play all three; the worker-level versions of them are already in `chain_watch_stub`.
+
+## 24. Changes after the review of PR 43
+
+An independent review of head `da3d354` (2026-11-16) returned "merge after the listed fixes". What changed, each with a test that fails on the code before the fix (shown by the mutation probes of the same names, `ports/chain/tests/watch_mutants.txt`, which put the old behaviour back):
+
+- **H1. Depth from one header.** The header chain is never started again because the tip is far ahead: it is followed `max_catchup` headers per pass. A confirmation below the hashes held is linked to them header by header (down to `max_link` blocks) before it counts, for a new watch and after a restart alike; the "deep" shortcut that took a count from `gz_chain_confirm_tx` above an unlinked block is gone. Tests: `test_no_depth_from_one_header` (the reviewer's scenario, and a new watch whose lower headers belong to another branch), the updated `test_headers`; mutants `h1-*`.
+- **H2. One stalling server.** A pass ends at the first answer that says the servers cannot be asked (`UNREACHABLE`, `NO_QUORUM`), and the next pass starts with the next watch. Due broadcasts run after every chain call, and the worker hands over requests queued meanwhile between chain calls, so a broadcast does not wait for the end of a pass. Retry waits are counted from the end of the pass. Tests: `test_pass_ends_at_first_failure` (one time limit instead of eight, the wait from the end, the next watch first, a broadcast queued mid-pass sent within it) and `test_broadcast_not_held_by_a_stall` in `chain_chainw` (one server stalls on every transaction question with eight watches: the broadcast is told within 3.5 s, where it took a whole pass before); mutants `h2-*`.
+- **M1. No REORG after a jump.** Follows from H1: a jump is followed, so the common block is found and the replaced blocks are told; a restart tells every hash held as replaced. Test: `test_reorg_told_after_a_jump`.
+- **M2. Proof of work on the test networks.** Section 18 and `THREAT-MODEL.md` now say plainly that depth on signet and testnet4 rests on the operators agreeing. Signet block signatures and an expected-difficulty rule are open questions 10 and 13.
+- **M3. Survivors.** Tests were added for the reviewer's survivors that guard a promise: the tip never takes the place of a waiting report (`k-coalesce-any`), a pass running at a reset tells nothing to the new generation (`k-emit-during-reset`), a claim in a replaced block is placed again (`r-still-placed`, `r-same-conf-*`), a confirmation that moved between the two questions is not taken (`r-conf-block`; `r-conf-height` is equivalent: a block hash fixes its height), a tip whose header is not the block named is not taken (`r-start-tip-hash`, `r-tip-moved`), the engine checks the network itself (`r-network-check`), the spender input is in the event (`r-vin-*`: S2 now spends with its second input), and twelve more (`r-release-fresh`, `r-recheck-clear`, `r-later`, `r-clear-*`, `r-reason-cut`, `r-tx-len`, `k-reset-room`, `k-free-work`, `k-enqueue-signal`, `k-child-len`, `k-count-nonfinal`, `k-reset-interrupt`). All are in `watch_mutants.txt`.
+- **M4. BUSY.** The calls that can refuse are marked `warn_unused_result`; `chain_watch.h` and section 23 say that BUSY on a watch or a release must be retried or treated as fatal, and why; `gz_chainw_new` refuses `max_requests` below `max_watches + GZ_CHAINW_MAX_BROADCASTS`.
+- **L2.** The header now says the first event about the chain is the tip, and that a broadcast or `SOURCES` can come first.
+- **L3.** Per-transaction `ALREADY_KNOWN` from `other-wtxid`; a busy first package path no longer keeps the second untried.
+- **L4.** The worker counts requests the engine refuses after the loop side accepted them (`gz_chainw_stats.diverged`); the racing test requires 0.
+- **L1, follow-up.** The transport break checks that survived are equivalent with this libcurl (it enforces its size limit during the transfer, also without a stated length) or timing hidden by the 200 ms poll slice; they are listed in the pull request as follow-ups.
+
+Counts after these changes, on the build server (gcc 15.2, `-Werror`): `chain_watch` 35 test functions, 2,547 checks; `chain_chainw` 17 test functions, 386 checks; all 15 `chain_` tests pass in the Release and the ASan+UBSan builds; `tools/chain-tsan.sh` is clean. Mutation probes: 119, 118 caught. The survivor is `c-stop-on-reset` (section 22: only time is lost). Two of the reviewer survivors were not added because they are equivalent here: `r-release-fresh` (a held watch was never asked, so it is still marked new when released) and an unlinked confirmation counted without being asked (one is always asked: whatever unlinks it also marks it to be asked again).
+
+Follow-ups, not done here: the transport break checks of L1 (a chunked oversized body without a stated length, and the interrupt with a long poll slice) in `chain_local_servers`; signet block signatures (open question 10); an expected-difficulty rule (13); a checkpoint saved by the program to avoid linking a year of headers at start (14).

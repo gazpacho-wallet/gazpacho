@@ -13,7 +13,6 @@ w-link ## watch.c ## if (!hash_eq(hdr + 4, prev)) return GZ_CHAIN_BAD_PROOF; ## 
 w-pow ## watch.c ## if (gz_header_check_pow(out, e->cfg.network) != GZ_POW_OK) return GZ_CHAIN_BAD_PROOF; ## if (0) return GZ_CHAIN_BAD_PROOF;
 w-far-behind ## watch.c ## if (tip.height < top && top - tip.height > GZ_MULTI_LAG_MAX_BLOCKS) return GZ_CHAIN_DISAGREE; ## if (0) return GZ_CHAIN_DISAGREE;
 w-base-parent ## watch.c ## if (tip.height + 1 == e->hbase && hash_eq(tip.hash, e->base_prev)) return GZ_CHAIN_OK; ## if (0) return GZ_CHAIN_OK;
-w-catchup ## watch.c ## if (tip.height > top && tip.height - top > e->cfg.max_catchup) return chain_start(e, &tip, 0, 0); ## if (0) return GZ_CHAIN_OK;
 w-restart-recheck ## watch.c ## if (had_chain) recheck_above(e, 0, true); ## ;
 w-restart-reorg ## watch.c ## if (gone != 0) emit_reorg(e, from, gone); ## ;
 w-reorg-told ## watch.c ## emit_reorg(e, common + 1, top - common);\n    recheck_above(e, common, false); ## recheck_above(e, common, false);
@@ -21,9 +20,6 @@ w-reorg-recheck ## watch.c ## emit_reorg(e, common + 1, top - common);\n    rech
 w-recheck-all ## watch.c ## (all || w->height > height)) ## (all || w->height > height + 1))
 w-above-top ## watch.c ## if (height > top) return R_LATER; ## if (height > top + 1) return R_LATER;
 w-wrong-block ## watch.c ## if (!hash_eq(hash_at(e, height), block)) return GZ_CHAIN_DISAGREE; ## if (0) return GZ_CHAIN_DISAGREE;
-w-base-link ## watch.c ## if (!hash_eq(id, e->base_prev)) return GZ_CHAIN_BAD_PROOF; ## if (0) return GZ_CHAIN_BAD_PROOF;
-w-deep-want ## watch.c ## uint32_t want = *deep ? depth : 1; ## uint32_t want = 1;
-w-deep-short ## watch.c ## if (e->conf.checked_confirmations < want) return GZ_CHAIN_BAD_PROOF; ## if (0) return GZ_CHAIN_BAD_PROOF;
 w-past-depth ## watch.c ## if (w->reported != 0 && cut(n, w->depth) == cut(w->reported, w->depth)) { ## if (w->reported != 0 && n == w->reported) {
 w-buried ## watch.c ## ev.buried = n >= w->depth; ## ev.buried = n > w->depth;
 w-depth-down-flag ## watch.c ## ev.reorg = (w->reported != 0 && n < w->reported) || w->undone; ## ev.reorg = w->undone;
@@ -77,10 +73,49 @@ c-reset-engine ## chainw.c ## gz_watch_clear(w->engine);\n      w->reset_pending
 c-free-interrupt ## chainw.c ## w->stop = true;\n  if (w->cfg.interrupt != NULL) w->cfg.interrupt(w->cfg.interrupt_ctx, true); ## w->stop = true;
 c-interrupt-lifted ## chainw.c ## w->reset_pending = false;\n      if (w->cfg.interrupt != NULL) w->cfg.interrupt(w->cfg.interrupt_ctx, false); ## w->reset_pending = false;
 c-stop-on-reset ## chainw.c ## bool stop = w->stop || w->reset_pending; ## bool stop = w->stop;
-c-results-min ## chainw.c ## cfg->max_results < 2 || cfg->max_results > 1000000) ## cfg->max_results > 1000000)
-e-package-second-path ## esplora.c ## if (status != 404 && status != 405) break; ## break;
+c-results-min ## chainw.c ## cfg->max_results < 2 || cfg->max_results > 1000000 || ## cfg->max_results > 1000000 ||
+e-package-second-path ## esplora.c ## if (r == GZ_CHAIN_OK && status != 404 && status != 405) break; ## if (r == GZ_CHAIN_OK) break;
 e-package-listed ## esplora.c ## p.accepted = strcmp(p.message, "success") == 0 && p.parent_listed && !p.parent_failed && ## p.accepted = strcmp(p.message, "success") == 0 && !p.parent_failed &&
 e-package-error ## esplora.c ## p.child_listed && !p.child_failed; ## p.child_listed;
 e-package-accepted ## esplora.c ## out->result = pk.accepted ? GZ_CHAIN_OK : GZ_CHAIN_REJECTED; ## out->result = GZ_CHAIN_OK;
 m-package-unsupported ## multi.c ## } else if (asked > 0 && unsupported == asked) { ## } else if (0) {
 m-package-wrong-chain ## multi.c ## /* a server on another chain is never sent the transactions */\n    if (!ready(m, i)) { ## if (0) {
+# After the review of PR 43 (notes/review-pr43.md): the reviewer's survivors that matter, and the H1, H2 and M1 fixes
+r-start-tip-hash ## watch.c ## if (!hash_eq(id, tip->hash)) return GZ_CHAIN_LAG; ## if (0) return GZ_CHAIN_LAG;
+r-tip-moved ## watch.c ## if (take == count && !hash_eq(prev, tip.hash)) return GZ_CHAIN_LAG; ## if (0) return GZ_CHAIN_LAG;
+r-still-placed ## watch.c ## gz_chain_result r = place(e, w->height, w->block);\n  if (r == GZ_CHAIN_OK) w->linked = true; ## gz_chain_result r = GZ_CHAIN_OK;\n  if (r == GZ_CHAIN_OK) w->linked = true;
+r-same-conf-spend ## watch.c ## bool same = was_confirmed && same_spender && w->height == sp.height && hash_eq(w->block, sp.block_hash); ## bool same = was_confirmed && same_spender;
+r-same-conf-tx ## watch.c ## bool same = w->state == ST_CONFIRMED && w->height == st.height && hash_eq(w->block, st.block_hash); ## bool same = w->state == ST_CONFIRMED;
+r-conf-block ## watch.c ## !hash_eq(e->conf.status.block_hash, block)) ## 0)
+r-network-check ## watch.c ## if (!e->network_ok) { ## if (0) {
+r-vin-mempool ## watch.c ## w->vin = sp.spender_vin; ## ; ## 1
+r-vin-confirmed ## watch.c ## w->vin = sp.spender_vin; ## ; ## 2
+r-recheck-clear ## watch.c ## w->fresh = false;\n        w->recheck = false; ## w->fresh = false;
+r-later ## watch.c ## } else if (r == R_LATER) {\n        later = true; ## } else if (r == R_LATER) {\n        later = false;
+r-clear-sources ## watch.c ## e->sources = GZ_CHAIN_OK;\n  e->tell_tip = true;\n  e->next_sync = 0; ## e->tell_tip = true;\n  e->next_sync = 0;
+r-clear-sync ## watch.c ## e->sources = GZ_CHAIN_OK;\n  e->tell_tip = true;\n  e->next_sync = 0; ## e->sources = GZ_CHAIN_OK;\n  e->tell_tip = true;
+r-reason-cut ## watch.c ## if (n > GZ_CHAINW_REASON_MAX - 1) n = GZ_CHAINW_REASON_MAX - 1; ## ;
+r-tx-len ## watch.c ## if (e == NULL || tx == NULL || len > GZ_TX_MAX_BYTES || !gz_txid_from_raw(tx, len, job.txid)) { ## if (e == NULL || tx == NULL || !gz_txid_from_raw(tx, len, job.txid)) {
+h1-link-down ## watch.c ## if (!hash_eq(down[i], expect)) return GZ_CHAIN_BAD_PROOF; /* not the parent above */ ## ;
+h1-whole-jump ## watch.c ## uint32_t take = count < e->cfg.max_catchup ? count : e->cfg.max_catchup; ## uint32_t take = count;
+h1-no-descent ## watch.c ## if (height < e->hbase) {\n    uint32_t n = e->hbase - height; ## if (0) {\n    uint32_t n = e->hbase - height;
+h1-restart-on-jump ## watch.c ## /* the highest block we and the servers have in common */ ## if (tip.height > top && tip.height - top > e->cfg.max_catchup) return chain_start(e, &tip, 0, 0);
+h1-descent-trimmed ## watch.c ## if (!needs_low(e)) trim(e, e->cfg.header_window); ## trim(e, e->cfg.header_window);
+h1-recheck-keeps-link ## watch.c ## w->recheck = true;\n      w->linked = false; ## w->recheck = true;
+h2-no-end ## watch.c ## return r == GZ_CHAIN_UNREACHABLE || r == GZ_CHAIN_NO_QUORUM; ## return false;
+h2-hold-from-start ## watch.c ## e->hold_until = end + wait; ## e->hold_until = now + wait;
+h2-no-rotation ## watch.c ## e->next_watch = (i + 1) % e->cfg.max_watches; ## e->next_watch = 0;
+h2-no-between ## watch.c ## if (e->cfg.between != NULL) e->cfg.between(e->cfg.between_ctx); ## ;
+h2-due-only-first ## watch.c ## if (ask) {\n        between(e);\n        run_due(e); ## if (ask) {\n        between(e);
+h2-between-ignored ## chainw.c ## if (!w->stop && !w->reset_pending) apply_requests(w);\n  pthread_mutex_unlock(&w->mu);\n}\n\nstatic void *worker_main ## pthread_mutex_unlock(&w->mu);\n}\n\nstatic void *worker_main
+k-emit-during-reset ## chainw.c ## if (!w->stop && !w->reset_pending) {\n    gz_chainw_event *last = ## if (!w->stop) {\n    gz_chainw_event *last =
+k-coalesce-any ## chainw.c ## (ev->kind == GZ_CHAINW_TIP || ev->kind == GZ_CHAINW_SOURCES) &&\n        last->kind == ev->kind) { ## (ev->kind == GZ_CHAINW_TIP || ev->kind == GZ_CHAINW_SOURCES)) {
+k-reset-room ## chainw.c ## pthread_cond_broadcast(&w->work);\n  pthread_cond_broadcast(&w->room);\n  pthread_mutex_unlock(&w->mu);\n  return g; ## pthread_cond_broadcast(&w->work);\n  pthread_mutex_unlock(&w->mu);\n  return g;
+k-free-work ## chainw.c ## pthread_cond_broadcast(&w->work);\n  pthread_cond_broadcast(&w->room);\n  pthread_mutex_unlock(&w->mu);\n  pthread_join(w->thread, NULL); ## pthread_cond_broadcast(&w->room);\n  pthread_mutex_unlock(&w->mu);\n  pthread_join(w->thread, NULL);
+k-enqueue-signal ## chainw.c ## w->req_count++;\n  pthread_cond_signal(&w->work); ## w->req_count++;
+k-child-len ## chainw.c ## if (w == NULL || child == NULL || child_len > GZ_TX_MAX_BYTES || ## if (w == NULL || child == NULL ||
+k-count-nonfinal ## chainw.c ## if (ev->kind == GZ_CHAINW_BROADCAST && ev->broadcast.final && w->broadcasts > 0) w->broadcasts--; ## if (ev->kind == GZ_CHAINW_BROADCAST && w->broadcasts > 0) w->broadcasts--;
+k-reset-interrupt ## chainw.c ## if (w->cfg.interrupt != NULL) w->cfg.interrupt(w->cfg.interrupt_ctx, true);\n  pthread_cond_broadcast(&w->work);\n  pthread_cond_broadcast(&w->room);\n  pthread_mutex_unlock(&w->mu);\n  return g; ## pthread_cond_broadcast(&w->work);\n  pthread_cond_broadcast(&w->room);\n  pthread_mutex_unlock(&w->mu);\n  return g;
+k-requests-sized ## chainw.c ## cfg->max_requests < cfg->max_watches + GZ_CHAINW_MAX_BROADCASTS) ## 0)
+e-package-known ## esplora.c ## out->child.already_known = child_in && pk.child_known; ## ;
+e-package-busy-path ## esplora.c ## if (r != GZ_CHAIN_OK && r != GZ_CHAIN_UNREACHABLE) break; ## if (r != GZ_CHAIN_OK) break;

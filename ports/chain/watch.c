@@ -4,8 +4,12 @@
  *
  * Three things are kept:
  *  - a chain of block hashes, each taken from a header that met its proof of
- *    work and named the one before it. Confirmations are counted along this
- *    chain and nowhere else, so a server cannot add depth by claiming a tip;
+ *    work and named the one before it, without a gap from the first header
+ *    checked to the tip. Confirmations are counted along this chain and
+ *    nowhere else, so a server cannot add depth by claiming a tip: a tip far
+ *    ahead is followed header by header over several passes, and a block
+ *    below the hashes held is linked to them header by header before its
+ *    depth counts;
  *  - the watches, each with the last state told to the caller, so that an
  *    event is sent only when that state changes;
  *  - the broadcasts that have no final outcome yet.
@@ -49,10 +53,11 @@ typedef struct watch {
   uint32_t vin;
   uint32_t height;
   uint8_t block[GZ_HASH_LEN];
-  /* confirmed below the checked headers: buried for good, counted once by
-   * gz_chain_confirm_tx, not followed further */
-  bool deep;
-  uint32_t deep_count;
+  /* The block of the confirmation was found on the checked chain, and that
+   * chain has only grown since by linked headers, so its count is the
+   * distance to the checked tip even once the block is below the hashes
+   * held. Cleared by anything that may have undone it. */
+  bool linked;
   uint32_t reported; /* confirmations in the last report of this confirmation; 0: none */
   bool replaced;     /* the next spend report names a different spender */
   bool undone;       /* the next spend report follows a confirmed spender that left the chain */
@@ -78,11 +83,16 @@ struct gz_watch {
   size_t n_watches;
   bjob jobs[GZ_CHAINW_MAX_BROADCASTS];
   size_t n_jobs;
-  /* the checked header chain: hash[i] is the block at height hbase + i */
+  /* the checked header chain: hash[i] is the block at height hbase + i. It
+   * holds header_window hashes, more while a confirmation further down is
+   * being linked to it, never more than max_link. */
   uint8_t (*hash)[GZ_HASH_LEN];
-  uint32_t hn, hbase;
+  uint32_t hn, hbase, hcap;
   uint8_t base_prev[GZ_HASH_LEN]; /* what the block at hbase names as its parent */
-  uint8_t *incoming;              /* header_window headers, before they are accepted */
+  uint8_t *incoming;              /* max_catchup headers, before they are accepted */
+  bool catching_up;  /* the servers are further ahead than one pass follows */
+  bool descending;   /* a confirmation below the hashes held is being linked */
+  size_t next_watch; /* where the next pass starts, after one that ended early */
   bool network_ok;
   bool tell_tip;
   uint64_t next_sync;  /* when the tip is next due */
@@ -147,6 +157,7 @@ bool gz_watch_config_valid(const gz_watch_config *cfg) {
     return false;
   if (cfg->header_window < 4 || cfg->header_window > 100000) return false;
   if (cfg->max_catchup == 0 || cfg->max_catchup > cfg->header_window) return false;
+  if (cfg->max_link < cfg->header_window || cfg->max_link > 10000000) return false;
   return true;
 }
 
@@ -156,8 +167,9 @@ gz_watch *gz_watch_new(const gz_watch_config *cfg) {
   if (e == NULL) return NULL;
   e->cfg = *cfg;
   e->w = calloc(cfg->max_watches, sizeof *e->w);
-  e->hash = calloc(cfg->header_window, GZ_HASH_LEN);
-  e->incoming = calloc(cfg->header_window, GZ_HEADER_LEN);
+  e->hcap = cfg->header_window;
+  e->hash = calloc(e->hcap, GZ_HASH_LEN);
+  e->incoming = calloc(cfg->max_catchup, GZ_HEADER_LEN);
   if (e->w == NULL || e->hash == NULL || e->incoming == NULL) {
     gz_watch_free(e);
     return NULL;
@@ -278,6 +290,7 @@ void gz_watch_clear(gz_watch *e) {
   e->sources = GZ_CHAIN_OK;
   e->tell_tip = true;
   e->next_sync = 0;
+  e->next_watch = 0;
 }
 
 /* ---- transactions -------------------------------------------------------- */
@@ -348,12 +361,15 @@ static void emit_reorg(gz_watch *e, uint32_t first_changed, uint32_t disconnecte
   emit(e, &ev);
 }
 
-/* Every confirmation recorded above `height` must be looked at again. */
+/* Every confirmation recorded above `height` (every one: `all`) may have
+ * been undone: it is asked about again and placed on the chain again. */
 static void recheck_above(gz_watch *e, uint32_t height, bool all) {
   for (size_t i = 0; i < e->cfg.max_watches; i++) {
     watch *w = &e->w[i];
-    if (w->used && w->state == ST_CONFIRMED && !w->deep && (all || w->height > height))
+    if (w->used && w->state == ST_CONFIRMED && (all || w->height > height)) {
       w->recheck = true;
+      w->linked = false;
+    }
   }
 }
 
@@ -367,19 +383,41 @@ static gz_chain_result get_header(gz_watch *e, uint32_t height, uint8_t out[GZ_H
   return GZ_CHAIN_OK;
 }
 
+/* Room for `need` hashes; never more than max_link. */
+static bool ensure_cap(gz_watch *e, uint32_t need) {
+  if (need <= e->hcap) return true;
+  if (need > e->cfg.max_link) return false;
+  uint32_t cap = e->hcap;
+  while (cap < need) cap = cap > e->cfg.max_link / 2 ? e->cfg.max_link : cap * 2;
+  void *grown = realloc(e->hash, (size_t)cap * GZ_HASH_LEN);
+  if (grown == NULL) return false;
+  e->hash = grown;
+  e->hcap = cap;
+  return true;
+}
+
+/* Drops hashes from the bottom until `keep` are left. A confirmation already
+ * linked keeps its count when its block is dropped. */
+static void trim(gz_watch *e, uint32_t keep) {
+  if (keep == 0 || e->hn <= keep) return;
+  uint32_t drop = e->hn - keep;
+  memcpy(e->base_prev, e->hash[drop - 1], GZ_HASH_LEN);
+  memmove(e->hash, e->hash + drop, (size_t)(e->hn - drop) * GZ_HASH_LEN);
+  e->hn -= drop;
+  e->hbase += drop;
+}
+
 static void push_hash(gz_watch *e, const uint8_t hash[GZ_HASH_LEN]) {
-  if (e->hn == e->cfg.header_window) {
-    memcpy(e->base_prev, e->hash[0], GZ_HASH_LEN);
-    memmove(e->hash, e->hash + 1, (size_t)(e->hn - 1) * GZ_HASH_LEN);
-    e->hn--;
-    e->hbase++;
-  }
+  if (e->hn == e->hcap && !ensure_cap(e, e->hn + 1)) trim(e, e->hn - 1);
   memcpy(e->hash[e->hn++], hash, GZ_HASH_LEN);
 }
 
 /* Starts the chain at the tip: one header, nothing below it known. Changes
  * nothing unless it succeeds. `gone` blocks from height `from` are told as
- * replaced first, if any. */
+ * replaced first. Used for the first tip, and for servers whose chain shares
+ * no block with the hashes held: then all of those are told as replaced,
+ * since nothing shows which were not, and every confirmation is placed on
+ * the new chain again before it counts. */
 static gz_chain_result chain_start(gz_watch *e, const gz_chain_tip *tip, uint32_t from,
                                    uint32_t gone) {
   uint8_t hdr[GZ_HEADER_LEN], id[GZ_HASH_LEN];
@@ -392,19 +430,21 @@ static gz_chain_result chain_start(gz_watch *e, const gz_chain_tip *tip, uint32_
   e->hbase = tip->height;
   memcpy(e->hash[0], id, GZ_HASH_LEN);
   memcpy(e->base_prev, hdr + 4, GZ_HASH_LEN);
+  e->catching_up = false;
+  e->descending = false;
   if (gone != 0) emit_reorg(e, from, gone);
-  /* every confirmation recorded on the old headers is looked at again */
   if (had_chain) recheck_above(e, 0, true);
   emit_tip(e);
   return GZ_CHAIN_OK;
 }
 
 /*
- * Brings the header chain to the servers' tip. Every header added names the
- * one before it and meets its proof of work; nothing is changed unless the
- * whole run from the common block to the tip checks out. A tip below ours on
- * our own chain changes nothing: the checked tip never goes back without
- * blocks actually being replaced.
+ * Brings the header chain toward the tip of the servers. Every header added
+ * names the one before it and meets its proof of work; nothing is changed
+ * unless every header fetched checks out. At most max_catchup headers are
+ * added in one pass: a tip further ahead is reached over several passes
+ * (catching_up), so the chain never has a gap that a claim could fill. A tip
+ * below ours on our own chain changes nothing.
  */
 static gz_chain_result sync_headers(gz_watch *e) {
   gz_chain_tip tip;
@@ -420,18 +460,17 @@ static gz_chain_result sync_headers(gz_watch *e) {
   if (e->hn == 0) return chain_start(e, &tip, 0, 0);
 
   uint32_t top = top_height(e);
+  e->catching_up = false;
   if (tip.height == top && hash_eq(tip.hash, hash_at(e, top))) return GZ_CHAIN_OK;
   /* Servers far behind what has been checked already are not believed: a
    * chain does not get shorter by more than a reorganisation can explain. */
   if (tip.height < top && top - tip.height > GZ_MULTI_LAG_MAX_BLOCKS) return GZ_CHAIN_DISAGREE;
   if (tip.height < e->hbase) {
-    /* below the oldest header kept: the parent of that header is our own
-     * chain, one block back; anything else replaced every header held */
+    /* below the oldest hash held: the parent of that block is our own
+     * chain, one block back; anything else replaced every hash held */
     if (tip.height + 1 == e->hbase && hash_eq(tip.hash, e->base_prev)) return GZ_CHAIN_OK;
     return chain_start(e, &tip, e->hbase, e->hn);
   }
-  /* too far ahead to follow header by header: begin again at the tip */
-  if (tip.height > top && tip.height - top > e->cfg.max_catchup) return chain_start(e, &tip, 0, 0);
 
   /* the highest block we and the servers have in common */
   uint32_t common = tip.height < top ? tip.height : top;
@@ -443,21 +482,20 @@ static gz_chain_result sync_headers(gz_watch *e) {
   }
   while (!hash_eq(id, hash_at(e, common))) {
     if (stopped(e)) return GZ_CHAIN_OK;
-    /* replaced further back than the headers kept: begin again */
+    /* replaced further back than the hashes held: begin again */
     if (common == e->hbase) return chain_start(e, &tip, e->hbase, e->hn);
     common--;
     r = gz_chain_block_hash(e->cfg.chain, common, id);
     if (r != GZ_CHAIN_OK) return r == GZ_CHAIN_NOT_FOUND ? GZ_CHAIN_LAG : r;
   }
-  if (common == tip.height) return GZ_CHAIN_OK; /* the servers' tip is a block we already hold */
+  if (common == tip.height) return GZ_CHAIN_OK; /* their tip is a block we already hold */
 
-  /* fetch and check common + 1 .. tip before believing any of it */
+  /* fetch and check common + 1 .. common + take before believing any of it */
   uint32_t count = tip.height - common;
-  /* more than the window holds: begin again, telling what was replaced */
-  if (count > e->cfg.header_window) return chain_start(e, &tip, common + 1, top - common);
+  uint32_t take = count < e->cfg.max_catchup ? count : e->cfg.max_catchup;
   const uint8_t *prev = hash_at(e, common);
   uint8_t prev_id[GZ_HASH_LEN];
-  for (uint32_t i = 0; i < count; i++) {
+  for (uint32_t i = 0; i < take; i++) {
     uint8_t *hdr = e->incoming + (size_t)i * GZ_HEADER_LEN;
     r = get_header(e, common + 1 + i, hdr);
     if (stopped(e)) return GZ_CHAIN_OK;
@@ -466,7 +504,7 @@ static gz_chain_result sync_headers(gz_watch *e) {
     gz_header_hash(hdr, prev_id);
     prev = prev_id;
   }
-  if (!hash_eq(prev, tip.hash)) return GZ_CHAIN_LAG; /* the tip moved while we read */
+  if (take == count && !hash_eq(prev, tip.hash)) return GZ_CHAIN_LAG; /* the tip moved */
 
   /* accept */
   if (common < top) {
@@ -474,40 +512,51 @@ static gz_chain_result sync_headers(gz_watch *e) {
     recheck_above(e, common, false);
     e->hn = common - e->hbase + 1;
   }
-  for (uint32_t i = 0; i < count; i++) {
+  for (uint32_t i = 0; i < take; i++) {
     gz_header_hash(e->incoming + (size_t)i * GZ_HEADER_LEN, id);
     push_hash(e, id);
   }
+  e->catching_up = take < count;
   emit_tip(e);
   return GZ_CHAIN_OK;
 }
 
 /*
- * Is block `block` at `height` on the checked chain? Extends the chain
- * downwards when the block is older than its base but within the window.
- * *deep: the block is older than the window can reach.
+ * Is block `block` at `height` on the checked chain? A block below the
+ * hashes held is first linked to them: the headers in between are fetched
+ * from the top down, each the parent of the one above it, at most
+ * max_catchup in one pass (R_LATER until the block is reached). A block more
+ * than max_link below the tip is not followed (GZ_CHAIN_TOO_LARGE).
  */
-static gz_chain_result place(gz_watch *e, uint32_t height, const uint8_t block[GZ_HASH_LEN],
-                             bool *deep) {
+static gz_chain_result place(gz_watch *e, uint32_t height, const uint8_t block[GZ_HASH_LEN]) {
   uint32_t top = top_height(e);
-  *deep = false;
   if (height > top) return R_LATER;
-  if (top - height + 1 > e->cfg.header_window) {
-    *deep = true;
-    return GZ_CHAIN_OK;
-  }
-  while (e->hbase > height) {
-    uint8_t hdr[GZ_HEADER_LEN], id[GZ_HASH_LEN];
-    gz_chain_result r = get_header(e, e->hbase - 1, hdr);
-    if (r != GZ_CHAIN_OK) return r;
-    gz_header_hash(hdr, id);
-    if (!hash_eq(id, e->base_prev)) return GZ_CHAIN_BAD_PROOF; /* not our base's parent */
-    memmove(e->hash + 1, e->hash, (size_t)e->hn * GZ_HASH_LEN);
-    memcpy(e->hash[0], id, GZ_HASH_LEN);
-    memcpy(e->base_prev, hdr + 4, GZ_HASH_LEN);
-    e->hbase--;
-    e->hn++;
-    if (stopped(e)) return R_LATER;
+  if (top - height + 1 > e->cfg.max_link) return GZ_CHAIN_TOO_LARGE;
+  if (height < e->hbase) {
+    uint32_t n = e->hbase - height;
+    if (n > e->cfg.max_catchup) n = e->cfg.max_catchup;
+    uint8_t (*down)[GZ_HASH_LEN] = (uint8_t (*)[GZ_HASH_LEN])(void *)e->incoming;
+    uint8_t expect[GZ_HASH_LEN];
+    memcpy(expect, e->base_prev, GZ_HASH_LEN);
+    for (uint32_t i = 0; i < n; i++) {
+      uint8_t hdr[GZ_HEADER_LEN];
+      gz_chain_result r = get_header(e, e->hbase - 1 - i, hdr);
+      if (stopped(e)) return R_LATER;
+      if (r != GZ_CHAIN_OK) return r;
+      gz_header_hash(hdr, down[i]);
+      if (!hash_eq(down[i], expect)) return GZ_CHAIN_BAD_PROOF; /* not the parent above */
+      memcpy(expect, hdr + 4, GZ_HASH_LEN);
+    }
+    if (!ensure_cap(e, e->hn + n)) return GZ_CHAIN_NO_MEMORY;
+    memmove(e->hash + n, e->hash, (size_t)e->hn * GZ_HASH_LEN);
+    for (uint32_t i = 0; i < n; i++) memcpy(e->hash[n - 1 - i], down[i], GZ_HASH_LEN);
+    memcpy(e->base_prev, expect, GZ_HASH_LEN);
+    e->hbase -= n;
+    e->hn += n;
+    if (height < e->hbase) {
+      e->descending = true;
+      return R_LATER;
+    }
   }
   if (!hash_eq(hash_at(e, height), block)) return GZ_CHAIN_DISAGREE;
   return GZ_CHAIN_OK;
@@ -517,21 +566,17 @@ static gz_chain_result place(gz_watch *e, uint32_t height, const uint8_t block[G
  * A server says `subject` is confirmed in `block` at `height`. Believed only
  * if that block is on the checked chain and gz_chain_confirm_tx proves the
  * transaction is in it (the bytes, the header, the Merkle branch, the
- * coinbase). Returns the count for a block below the window in *deep_count.
+ * coinbase). Its depth is then counted along the checked chain.
  */
 static gz_chain_result confirm(gz_watch *e, const uint8_t subject[GZ_HASH_LEN], uint32_t height,
-                               const uint8_t block[GZ_HASH_LEN], uint32_t depth, bool *deep,
-                               uint32_t *deep_count) {
-  gz_chain_result r = place(e, height, block, deep);
+                               const uint8_t block[GZ_HASH_LEN]) {
+  gz_chain_result r = place(e, height, block);
   if (r != GZ_CHAIN_OK) return r;
-  uint32_t want = *deep ? depth : 1;
-  r = gz_chain_confirm_tx(e->cfg.chain, e->cfg.network, subject, want, &e->conf);
+  r = gz_chain_confirm_tx(e->cfg.chain, e->cfg.network, subject, 1, &e->conf);
   if (r != GZ_CHAIN_OK) return r;
   if (e->conf.status.state != GZ_TX_CONFIRMED || e->conf.status.height != height ||
       !hash_eq(e->conf.status.block_hash, block))
     return R_LATER; /* it moved between the two questions */
-  if (e->conf.checked_confirmations < want) return GZ_CHAIN_BAD_PROOF;
-  *deep_count = e->conf.checked_confirmations;
   return GZ_CHAIN_OK;
 }
 
@@ -551,7 +596,7 @@ static void watch_event(const watch *w, gz_chainw_event *ev, gz_chainw_kind kind
   }
 }
 
-/* Tells the confirmation count if, cut at the watch's depth, it differs from
+/* Tells the confirmation count if, cut at the watch depth, it differs from
  * the last one told. The first report of a confirmation gives the real count. */
 static void tell_count(gz_watch *e, watch *w, uint32_t n) {
   if (w->reported != 0 && cut(n, w->depth) == cut(w->reported, w->depth)) {
@@ -571,42 +616,34 @@ static void tell_count(gz_watch *e, watch *w, uint32_t n) {
   emit(e, &ev);
 }
 
+/* Linked confirmations only: the distance to the checked tip. */
 static uint32_t count_of(const gz_watch *e, const watch *w) {
-  return w->deep ? w->deep_count : top_height(e) - w->height + 1;
+  return top_height(e) - w->height + 1;
 }
 
 static void set_none(watch *w) {
   w->state = ST_NONE;
   w->reported = 0;
-  w->deep = false;
+  w->linked = false;
   w->replaced = false;
   w->undone = false;
 }
 
-static void set_confirmed(watch *w, uint32_t height, const uint8_t block[GZ_HASH_LEN], bool deep,
-                          uint32_t deep_count) {
+static void set_confirmed(watch *w, uint32_t height, const uint8_t block[GZ_HASH_LEN]) {
   w->state = ST_CONFIRMED;
   w->height = height;
   memcpy(w->block, block, GZ_HASH_LEN);
-  w->deep = deep;
-  w->deep_count = deep_count;
+  w->linked = true;
   w->reported = 0;
 }
 
 /* A confirmation already recorded, asked about again and still claimed: is
  * its block still on the checked chain? */
 static gz_chain_result still_placed(gz_watch *e, watch *w) {
-  bool deep = false;
-  if (w->deep) return GZ_CHAIN_OK;
-  gz_chain_result r = place(e, w->height, w->block, &deep);
-  if (r != GZ_CHAIN_OK) return r;
-  if (deep) {
-    /* the headers were begun again above it: it is older than the window,
-     * so further down than any depth a watch can ask for */
-    w->deep = true;
-    w->deep_count = w->reported > w->depth ? w->reported : w->depth;
-  }
-  return GZ_CHAIN_OK;
+  if (w->linked && w->height < e->hbase) return GZ_CHAIN_OK;
+  gz_chain_result r = place(e, w->height, w->block);
+  if (r == GZ_CHAIN_OK) w->linked = true;
+  return r;
 }
 
 /* ---- one watch ----------------------------------------------------------- */
@@ -626,9 +663,7 @@ static gz_chain_result poll_tx(gz_watch *e, watch *w, bool ask) {
       r = still_placed(e, w);
       if (r != GZ_CHAIN_OK) return r;
     } else {
-      bool deep = false;
-      uint32_t deep_count = 0;
-      r = confirm(e, w->txid, st.height, st.block_hash, w->depth, &deep, &deep_count);
+      r = confirm(e, w->txid, st.height, st.block_hash);
       if (r != GZ_CHAIN_OK) return r;
       if (w->state == ST_CONFIRMED) {
         /* confirmed in another block than the one told: that one is undone */
@@ -636,7 +671,7 @@ static gz_chain_result poll_tx(gz_watch *e, watch *w, bool ask) {
         ev.reorg = true;
         emit(e, &ev);
       }
-      set_confirmed(w, st.height, st.block_hash, deep, deep_count);
+      set_confirmed(w, st.height, st.block_hash);
     }
     tell_count(e, w, count_of(e, w));
     return GZ_CHAIN_OK;
@@ -728,13 +763,11 @@ static gz_chain_result poll_outpoint(gz_watch *e, watch *w, bool ask) {
     r = still_placed(e, w);
     if (r != GZ_CHAIN_OK) return r;
   } else {
-    bool deep = false;
-    uint32_t deep_count = 0;
-    r = confirm(e, sp.spender_txid, sp.height, sp.block_hash, w->depth, &deep, &deep_count);
+    r = confirm(e, sp.spender_txid, sp.height, sp.block_hash);
     if (r != GZ_CHAIN_OK) return r;
     memcpy(w->subject, sp.spender_txid, GZ_HASH_LEN);
     w->vin = sp.spender_vin;
-    set_confirmed(w, sp.height, sp.block_hash, deep, deep_count);
+    set_confirmed(w, sp.height, sp.block_hash);
     w->replaced = had_spender && !same_spender;
     w->undone = was_confirmed;
   }
@@ -867,10 +900,40 @@ static void tell_sources(gz_watch *e, gz_chain_result r) {
   emit(e, &ev);
 }
 
+/* A failure that says the servers cannot be asked now: the rest of a pass
+ * would only wait out the same time limits again. */
+static bool ends_pass(gz_chain_result r) {
+  return r == GZ_CHAIN_UNREACHABLE || r == GZ_CHAIN_NO_QUORUM;
+}
+
+/* The hashes below the window are kept while a confirmation is being linked
+ * to them, or still has to be linked again after a reorganisation. */
+static bool needs_low(const gz_watch *e) {
+  if (e->descending) return true;
+  for (size_t i = 0; i < e->cfg.max_watches; i++) {
+    const watch *w = &e->w[i];
+    if (w->used && w->state == ST_CONFIRMED && !w->linked) return true;
+  }
+  return false;
+}
+
+static void between(gz_watch *e) {
+  if (e->cfg.between != NULL) e->cfg.between(e->cfg.between_ctx);
+}
+
+/* Broadcasts that are due, at any point of a pass: they wait for nothing. */
+static void run_due(gz_watch *e) {
+  for (size_t i = 0; i < GZ_CHAINW_MAX_BROADCASTS; i++) {
+    if (stopped(e)) return;
+    uint64_t now = now_ms(e);
+    if (e->jobs[i].used && now >= e->jobs[i].next_at) run_job(e, &e->jobs[i], now);
+  }
+}
+
 gz_chain_result gz_watch_step(gz_watch *e) {
   uint64_t now = now_ms(e);
   gz_chain_result worst = GZ_CHAIN_OK;
-  bool synced = false, asked = false, later = false;
+  bool synced = false, asked = false, later = false, ended_early = false;
 
   /* releases that have come due */
   for (size_t i = 0; i < e->cfg.max_watches; i++) {
@@ -881,11 +944,9 @@ gz_chain_result gz_watch_step(gz_watch *e) {
     }
   }
 
-  /* broadcasts first: they wait for nothing else */
-  for (size_t i = 0; i < GZ_CHAINW_MAX_BROADCASTS; i++) {
-    if (e->jobs[i].used && now >= e->jobs[i].next_at) run_job(e, &e->jobs[i], now);
-    if (stopped(e)) return GZ_CHAIN_OK;
-  }
+  /* broadcasts first, and again after every chain call below */
+  run_due(e);
+  if (stopped(e)) return GZ_CHAIN_OK;
 
   if (now < e->hold_until) return e->sources;
 
@@ -895,21 +956,30 @@ gz_chain_result gz_watch_step(gz_watch *e) {
     asked = true;
     if (r == GZ_CHAIN_OK) {
       synced = true;
-      e->next_sync = now + e->cfg.tip_poll_ms;
+      e->next_sync = e->catching_up ? now : now + e->cfg.tip_poll_ms;
+      if (!needs_low(e)) trim(e, e->cfg.header_window);
     } else {
       worst = r;
     }
+    between(e);
+    run_due(e);
+    if (stopped(e)) return GZ_CHAIN_OK;
   }
   if (worst == GZ_CHAIN_OK && e->hn != 0) {
     if (e->tell_tip) emit_tip(e);
-    for (size_t i = 0; i < e->cfg.max_watches; i++) {
+    bool was_descending = e->descending;
+    size_t start = e->next_watch < e->cfg.max_watches ? e->next_watch : 0;
+    e->descending = false;
+    e->next_watch = 0;
+    for (size_t k = 0; k < e->cfg.max_watches && !ended_early; k++) {
+      size_t i = (start + k) % e->cfg.max_watches;
       watch *w = &e->w[i];
       if (!w->used || w->held) continue;
       /* asked: when new, when a reorganisation touched it, and at every look
        * at the tip while it is not confirmed. A confirmation that stands is
        * only counted, along the headers. */
       bool ask = w->fresh || w->recheck || (synced && w->state != ST_CONFIRMED);
-      if (!ask && !(synced && w->state == ST_CONFIRMED && !w->deep)) continue;
+      if (!ask && !(synced && w->state == ST_CONFIRMED && w->linked)) continue;
       gz_chain_result r = w->kind == KIND_TX ? poll_tx(e, w, ask) : poll_outpoint(e, w, ask);
       if (stopped(e)) return GZ_CHAIN_OK;
       if (ask) asked = true;
@@ -921,19 +991,34 @@ gz_chain_result gz_watch_step(gz_watch *e) {
       } else if (worst == GZ_CHAIN_OK) {
         worst = r;
       }
+      if (ends_pass(r)) {
+        /* the servers cannot be asked: end the pass here, and start the next
+         * one with the next watch, so that one watch they cannot answer does
+         * not starve the others */
+        e->next_watch = (i + 1) % e->cfg.max_watches;
+        ended_early = true;
+      }
+      if (ask) {
+        between(e);
+        run_due(e);
+        if (stopped(e)) return GZ_CHAIN_OK;
+      }
     }
+    if (ended_early && was_descending) e->descending = true;
   }
   if (!asked) return e->sources;
+  /* waits are counted from the end of the pass, which can be long */
+  uint64_t end = now_ms(e);
   if (worst != GZ_CHAIN_OK) {
     /* lag clears by itself: ask again at the first wait, without growing it */
     uint64_t wait = worst == GZ_CHAIN_LAG ? e->cfg.retry_ms : retry_wait(e);
     if (worst != GZ_CHAIN_LAG) e->failures++;
-    e->hold_until = now + wait;
+    e->hold_until = end + wait;
     if (e->next_sync > e->hold_until || !synced) e->next_sync = e->hold_until;
   } else {
     e->failures = 0;
     if (later) {
-      e->hold_until = now + SETTLE_MS;
+      e->hold_until = end + SETTLE_MS;
       if (e->next_sync > e->hold_until) e->next_sync = e->hold_until;
     }
   }

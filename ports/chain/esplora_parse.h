@@ -72,6 +72,9 @@ typedef struct gz_es_package {
   /* Each transaction: listed in the results, and listed with an error. */
   bool parent_listed, parent_failed;
   bool child_listed, child_failed;
+  /* listed as already in the mempool of the server ("other-wtxid": the
+   * same transaction, perhaps with another witness) */
+  bool parent_known, child_known;
   /* Zero-terminated, printable ASCII, cut at GZ_REASON_MAX - 1. */
   char message[GZ_REASON_MAX];
   char parent_error[GZ_REASON_MAX];

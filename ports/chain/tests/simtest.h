@@ -7,7 +7,7 @@
  *   mempool T                              evicted T
  *   confirmed T n=1 at a5 [buried] [reorg] unconfirmed T [mempool]
  *   spent P:0 by S1 n=0 [replaced] [reorg]
- *   spent P:0 by S2 n=1 at b7 [buried] [replaced] [reorg]
+ *   spent P:0 by S2#1 n=1 at b7 [buried] [replaced] [reorg]   (#1: its input 1)
  *   unspent P:0 was S1 [reorg]
  *   reorg from 1004 gone 2
  *   sources servers-disagree
@@ -30,6 +30,7 @@ static inline const char *st_tx_name(const sim_world *w, const uint8_t id[GZ_HAS
     if (memcmp(w->tx[i].id, id, GZ_HASH_LEN) == 0) return names[i];
   }
   if (memcmp(w->p, id, GZ_HASH_LEN) == 0) return "P";
+  if (memcmp(w->q, id, GZ_HASH_LEN) == 0) return "Q";
   return "?";
 }
 
@@ -66,8 +67,11 @@ static inline void st_format(const sim_world *w, const gz_chainw_event *ev, char
                ev->in_mempool ? " mempool" : "");
       break;
     case GZ_CHAINW_OUTPOINT_SPENT:
-      n = (size_t)snprintf(out, cap, "spent %s:%u by %s n=%u", st_tx_name(w, ev->outpoint_txid),
-                           ev->outpoint_vout, st_tx_name(w, ev->txid), ev->confirmations);
+      /* a spender that spends with another input than its first says which */
+      n = (size_t)snprintf(out, cap, "spent %s:%u by %s", st_tx_name(w, ev->outpoint_txid),
+                           ev->outpoint_vout, st_tx_name(w, ev->txid));
+      if (ev->vin != 0 && n < cap) n += (size_t)snprintf(out + n, cap - n, "#%u", ev->vin);
+      if (n < cap) n += (size_t)snprintf(out + n, cap - n, " n=%u", ev->confirmations);
       if (ev->confirmations > 0 && n < cap) {
         st_block_name(w, ev->height, ev->block_hash, blk);
         n += (size_t)snprintf(out + n, cap - n, " at %s", blk);
