@@ -65,6 +65,8 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -I tools/check-no-addresses.py
+      - name: The check itself refuses link targets, server paths and commit messages
+        run: python3 -I tests/tools/test_check_no_addresses.py
 
   spec-vectors:
     name: specification vectors

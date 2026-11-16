@@ -143,7 +143,7 @@ l8_chunk_len_damaged	sc_export.c	            e = GZ_SC_DAMAGED; /* no writer mak
 l8_setup_info	sc_files.c	    memcpy(u->info.salt, salt, 16);\n
 l8_stale_tmp	sc_files.c	    drop_stale_tmp(s);\n
 #
-# --- review A's own 57 mutants (/root/gz/review-pr25a, PR 25 head 7d90df1),
+# --- review A's own 57 mutants (<build server>/review-pr25a, PR 25 head 7d90df1),
 # kept here so every later run repeats them. Four are rewritten for the new
 # code with the same intent, marked "adapted"; A_unlock_short_journal_restore
 # was invalid there (its text occurs twice) and now names its occurrence.
