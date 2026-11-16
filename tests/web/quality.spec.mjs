@@ -4,7 +4,7 @@
 // refused, unknown states never shown as success, keyboard, labels, phone
 // width, light and dark. TEST ONLY.
 import { createServer } from 'node:http';
-import { test, expect, startFake, allow, signIn, FAKE, PASS } from './helpers.mjs';
+import { test, expect, startFake, startTunnel, allow, signIn, FAKE, PASS } from './helpers.mjs';
 
 test.skip(!FAKE, 'GZ_API_FAKE is not set');
 
@@ -238,3 +238,51 @@ for (const scheme of ['light', 'dark']) {
     await context.close();
   });
 }
+
+// ---- review of PR 45 ----------------------------------------------------------------
+
+test('L5b: a restore value this page does not know is shown as unknown, never as restored', async ({ page }, info) => {
+  await start(info);
+  await signIn(page, fake);
+  await page.route('**/api/v1/status', async (r) => {
+    const res = await r.fetch();
+    const j = await res.json();
+    j.wallet = 'restoring';
+    await r.fulfill({ response: res, json: j });
+  });
+  await page.route('**/api/v1/wallet/restore', (r) => r.fulfill({ json: { state: 'scanning_chain', on_chain_found_sat: 0, factories: 'brand_new', lost_seats: [] } }));
+  await page.goto(fake.url + '#/settings');
+  await page.goto(fake.url + '#/');
+  await expect(page.locator('#restoring')).toContainText('unknown state (brand_new)');
+  await expect(page.locator('#restoring')).not.toContainText('Restored');
+});
+
+test('M10, L1: with the tunnel port set no session is handed over, and no channel message is trusted', async ({ page, context }, info) => {
+  const tunnel = await startTunnel();
+  try {
+    await start(info, ['--tunnel-port', String(tunnel.port)]);
+    await signIn(page, fake);
+    const second = await context.newPage();
+    await second.goto(fake.url);
+    await expect(second.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+    // a page of this origin asks for a session: nobody offers one
+    const offered = await second.evaluate((p) => new Promise((ok) => {
+      const c = new BroadcastChannel('gazpacho-session-' + p);
+      c.onmessage = (e) => { if (e.data && e.data.type === 'offer') ok(true); };
+      c.postMessage({ type: 'ask', nonce: 'ab' });
+      setTimeout(() => ok(false), 1000);
+    }), String(fake.port));
+    expect(offered).toBe(false);
+    // and it cannot sign the first tab out
+    await second.evaluate((p) => {
+      const c = new BroadcastChannel('gazpacho-session-' + p);
+      c.postMessage({ type: 'signed_out' });
+      c.postMessage({ type: 'event', topic: 'session' });
+    }, String(fake.port));
+    await page.waitForTimeout(1000);
+    await expect(page.locator('body')).toHaveAttribute('data-chrome', 'app');
+    expect(await page.evaluate(() => sessionStorage.getItem('gz-session'))).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  } finally {
+    tunnel.stop();
+  }
+});

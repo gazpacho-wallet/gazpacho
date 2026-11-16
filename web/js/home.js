@@ -91,7 +91,7 @@
       ui.facts([
         ["Stage", r.state === "scanning_chain" ? "Reading the chain" : r.state === "waiting_for_host" ? "Waiting for the host" : r.state === "done" ? "Done" : "unknown state (" + r.state + ")"],
         ["Coins found so far", u.sats(r.on_chain_found_sat)],
-        ["Factories", r.factories === "need_backup" ? "Not known and not watched. They come back only from a backup, which a later release adds." : r.factories === "none" ? "None" : "Restored"]
+        ["Factories", W.known({ need_backup: "Not known and not watched. They come back only from a backup, which a later release adds.", none: "None", restored: "Restored" }, r.factories)]
       ]));
   }
 

@@ -12,7 +12,7 @@
 | Serving it | `ports/api/embed.cmake`, `ports/api/static.c`, the file list in `ports/api/CMakeLists.txt` | The listed files become `static_files.c` at build time (plain CMake, no other tool); `static.c` serves exactly those paths from memory |
 | The fake's story | `ports/api/fake/fake_backend.c` (`story_*`, `gz_fake_cmd`), `tools/gz-api-fake/main.c` (`--story`, `--auto-ms`, `--held-ms`, `--fresh-ms`, `--idle-ms`) | TEST ONLY. Without `--story` the fake answers exactly as before, and the server's own tests are unchanged |
 | Screens and their calls | `docs/ux/slice1-screens.md` | Redone against draft 4: every screen, its calls, the event topics that redraw it, and 15 gaps |
-| Browser tests | `tests/web/*.spec.mjs` (32 tests), `tests/web/check_static.py` | Against `gz-api-fake` through the real HTTP server |
+| Browser tests | `tests/web/*.spec.mjs` (43 tests), `tests/web/check_static.py` | Against `gz-api-fake` through the real HTTP server |
 | CI | job "interface in a browser" in `.github/workflows/ci.yml`; CTest `web_static_check` | The job also runs `tests/api/browser/`, which no job ran before |
 
 How the interface is put together (`web/js`):
@@ -78,9 +78,9 @@ Not changed, but found while wiring; for the API server's owners:
 | Item | State |
 |---|---|
 | The backend | The fake. Its story is linear and its numbers are invented (`fake_backend.c` says where). Everything "works end to end" only as far as the fake is like the program |
-| One stream per browser | Not the `SharedWorker` (it cannot be created, gap 8). Each tab opens the stream; a tab answered `429 too_many_streams` follows events relayed by another tab over the `BroadcastChannel`, and opens its own on `leader_gone`. There is no election beyond that, so two tabs of one session may both hold a stream (the cap is two per session) |
+| One stream per browser | Not the `SharedWorker` (it cannot be created, gap 8). Each tab opens the stream; a tab answered `429 too_many_streams` follows the events the streaming tabs relay over the `BroadcastChannel` (and their keep-alives, as `tick`), and takes the stream over on `leader_gone` or after 30 s with nothing relayed (a tab that died without `pagehide`), trying a `429` again with a growing delay (2 s doubling to 60 s). There is no election beyond that: two tabs of one session may both hold a stream (the cap is two per session). Tested with three tabs, a closed one and two crashed ones (`tests/web/tabs.spec.mjs`). With no hand-over (the tunnel port set) the channel is not listened to at all |
 | Member signing modes A, B, C | Not on any screen: the API has no place for them (gap 2). What is built is the API's behaviour: joining is the consent, then the app signs by itself |
-| `X-Gazpacho-User` | Sent when the person touched the page in the last two seconds, and never on a request made because an event arrived. The spec's wording is "only from handlers of input events"; this is an approximation of it that needs no flag at every call site |
+| `X-Gazpacho-User` | Sent when the person touched the page in the last two seconds, and never on a request made because an event arrived (a live redraw runs its requests without it). The spec's wording is "only from handlers of input events"; this is an approximation of it that needs no flag at every call site |
 | Lists | The first page only (`limit` default). No "more" control for lobbies, activity or coins; cursors are not used yet |
 | Standby seats, invitations, automatic joining, Settings writes, payments, leaving alone | Not in Slice 1 or answered `null`; no screen |
 | Password-manager guidance (12.7) and the "sign-in phrase" idea | The passphrase screens carry one line of the guidance (match the exact address, port included) and the `autocomplete` values 12.7 names. The per-browser facts of 23.6 item T8 and the sign-in phrase (24.2 item 25, 1.0.0) are not there |
@@ -114,6 +114,28 @@ The interface reads only the API, so this is a list of what the backend behind `
 - **Restore**: `GET /wallet/restore`, a `wallet` event when it finishes, and then `GET /wallet/setup` saying `created_not_finished` (the interface asks for a preset) or `ready` (gap 9).
 - **Text by other people** already passed through the server's filter (5.6); the interface adds `<bdi>` and never makes a link.
 - **Nothing extra for the interface's own state**: it keeps none on the program's side.
+
+## After the review of PR 45
+
+The review (`notes/review-pr45.md`, not in the repository) asked for these; each has a test that failed before its fix, except where said.
+
+| Finding | Fix | Test |
+|---|---|---|
+| M1: a refusal on a list or a range showed "?" for both values | `failuresText` formats both sides with `ui.value`; "Payment sizes" has its name. The fake sends a `profiles` and a `payment_sizes_sat` failure, at join (`join-refuse-list`) and at the check (`member-refuse-list`) | `flows.spec.mjs` "M1": the join error, the lobby's notice, the strip, the activity list and the saved record |
+| M3: no take-over for a tab over the stream cap | 30 s take-over, keep-alives relayed as `tick`, a `429` tried again with a growing delay, `leader_gone` also from a tab that was reconnecting, a closing tab aborts its stream first | `tabs.spec.mjs`: three tabs, one closed; two crashed (`Page.crash`, no `pagehide`) during the signing moment |
+| L1: channel messages trusted with no hand-over | Ignored entirely when `handover` is false | `quality.spec.mjs` "M10, L1" (also covers the review's surviving mutation M10) |
+| L2: the words screen redrawn by a reset | A screen with no topics is never redrawn live; the old view's cleanup runs before any redraw | `flows.spec.mjs` "L2" (the stream dropped and resumed through a tunnel) |
+| L2b: a new address lost on the next event | Kept in the screen's module state | `flows.spec.mjs` "L2b" |
+| L3: one cleanup only | A list | none of its own (no screen registers two yet) |
+| L4: idle refreshed by a live redraw | The redraw's requests run without `X-Gazpacho-User` | none (not observable from the page without a server counter) |
+| L4b: a kept request id sent with a different body | The kept id is keyed by the body too | `flows.spec.mjs` "L4b" |
+| L5: `which` ignored | Named in the refusal notice | `flows.spec.mjs` "L5" (`member-refuse-safety`) |
+| L5b: an unknown restore value read as "Restored" | `W.known`, with `restored` explicit | `quality.spec.mjs` "L5b" |
+| L6: no test of the `held_ms` default | | `flows.spec.mjs` "L6": a held call under the default limits is not answered at once (it fails with the default removed) |
+| M17: the retry's request id unchecked | | `flows.spec.mjs` "M17" (passes: the code was right; the test keeps it so) |
+| L7: the address check missed the committed link | `tools/check-no-addresses.py` reads link targets from git and refuses Unix server paths; `--rev` checks a commit's whole tree and its message | `tests/tools/test_check_no_addresses.py`, in the CI job "no addresses or local paths" |
+
+M2 (a build-server path in the first commits of the old branch) is answered by moving to a fresh branch, `web-slice1-clean`, whose every commit passes the improved check.
 
 ## Checks before this is called done for Slice 1
 

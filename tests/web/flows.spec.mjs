@@ -393,3 +393,128 @@ test('the program stops answering: plain words, and a way to try again', async (
   await expect(page.locator('main')).toContainText('Gazpacho is not answering.');
   await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
 });
+
+// ---- review of PR 45: each of these failed before its fix -----------------------------
+
+const LIST_WANT = 'Lobby types I accept: your limit is safety, standard, the lobby offers starter. ' +
+  'Payment sizes: your limit is 100 to 200,000, the lobby offers 1,000 to 500,000.';
+
+test('M1: a refusal on a list and a range shows both values: at join, at the check, in the strip and the record', async ({ page }, info) => {
+  await start(info);
+  await signIn(page, fake);
+  await fake.cmd('join-refuse-list');
+  await page.goto(fake.url + '#/lobby/lob_7k2q');
+  await page.locator('#join').click();
+  await expect(page.locator('#join-msg [data-code="conditions_not_met"]')).toContainText(LIST_WANT);
+  await page.locator('#join').click();
+  await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
+  await fake.cmd('member-refuse-list');
+  await fake.cmd('step');
+  await fake.cmd('step');
+  await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'left');
+  await expect(page.locator('#lobby .notice.bad').first()).toContainText(LIST_WANT);
+  await expect(page.locator('#doing')).toContainText(LIST_WANT);
+  await page.goto(fake.url + '#/activity');
+  await expect(page.locator('#activity li[data-kind="refused"]').first()).toContainText(LIST_WANT);
+  await page.goto(fake.url + '#/activity/act_2001');
+  await expect(page.locator('main')).toContainText(LIST_WANT);
+});
+
+test('L5: a refusal at a fixed safety check says which check', async ({ page }, info) => {
+  await start(info);
+  await signIn(page, fake);
+  await join(page);
+  await fake.cmd('member-refuse-safety');
+  await fake.cmd('step');
+  await fake.cmd('step');
+  await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'left');
+  await expect(page.locator('#lobby .notice.bad').first()).toContainText('A fixed safety check failed.');
+  await expect(page.locator('#lobby .notice.bad').first()).toContainText('Nothing was signed. Nothing moved.');
+  await expect(page.locator('#checks li[data-check="safety_checks"]')).toHaveAttribute('data-ok', 'no');
+});
+
+test('L4b: a request kept after node busy is never sent again with a different body', async ({ page }, info) => {
+  await start(info, ['--held-ms', '1500']);
+  await signIn(page, fake);
+  await join(page);
+  await fake.cmd('hold forever');
+  await page.locator('#ready-toggle').click(); // "I am not ready"
+  await expect(page.locator('#seat-msg [data-code="node_busy"]')).toBeVisible();
+  await fake.cmd('release');
+  await fake.cmd('hold off');
+  await fake.cmd('chain lagging'); // an event: the screen is drawn again, now "not ready"
+  await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'joined_not_ready');
+  await page.locator('#ready-toggle').click(); // "I am ready": a request of its own
+  await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
+  await expect(page.locator('[data-code="request_id_reused"]')).toHaveCount(0);
+});
+
+test('L6: a held call waits for its save under the default limits (held_ms is 30 s, not 0)', async ({ page }, info) => {
+  await start(info); // no --held-ms: the server's own default
+  await signIn(page, fake);
+  await page.goto(fake.url + '#/lobby/lob_7k2q');
+  await fake.cmd('hold on');
+  await page.locator('#join').click();
+  await page.waitForTimeout(4000);
+  await expect(page.locator('#join-msg [data-code]')).toHaveCount(0);
+  await expect(page.locator('#join')).toBeDisabled();
+  await fake.cmd('hold off');
+  await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
+});
+
+test('L2b: a new receiving address stays on screen when the screen is drawn again', async ({ page }, info) => {
+  await start(info);
+  await signIn(page, fake);
+  await page.goto(fake.url + '#/settings');
+  await page.getByRole('button', { name: 'Show a new address' }).click();
+  const addr = await page.locator('#address pre').innerText();
+  expect(addr).toMatch(/^tb1p/);
+  await page.locator('#onchain').evaluate((e) => e.setAttribute('data-old', '1'));
+  await fake.cmd('chain lagging');
+  await expect(page.locator('#onchain[data-old]')).toHaveCount(0); // drawn again
+  await expect(page.locator('#address pre')).toHaveText(addr);
+});
+
+test('L2: the 24 words shown from Settings stay through a dropped and resumed stream', async ({ page }, info) => {
+  const tunnel = await startTunnel();
+  try {
+    await start(info, ['--tunnel-port', String(tunnel.port)]);
+    tunnel.setTarget(fake.port);
+    const base = `http://127.0.0.1:${tunnel.port}`;
+    allow(info, fake, base);
+    await signIn(page, fake, PASS, base + '/');
+    await page.goto(base + '/#/settings/words');
+    await page.getByRole('button', { name: 'Show the 24 words' }).click();
+    await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
+    await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+    await page.locator('dialog').getByRole('button', { name: 'Show the words' }).click();
+    await page.getByRole('button', { name: 'Show the words' }).click();
+    await expect(page.locator('ol.words li')).toHaveCount(24);
+    tunnel.pause(true);
+    tunnel.drop();
+    await expect(page.locator('#live-chip')).toHaveAttribute('data-state', 'reconnecting');
+    tunnel.pause(false);
+    await expect(page.locator('#live-chip')).toHaveAttribute('data-state', 'open', { timeout: 20000 });
+    await page.waitForTimeout(800); // the reset that follows a reconnect
+    await expect(page.locator('ol.words li')).toHaveCount(24);
+  } finally {
+    tunnel.stop();
+  }
+});
+
+test('M17: the retry after node busy carries the same request id, and acts once', async ({ page }, info) => {
+  await start(info, ['--held-ms', '1500']);
+  await signIn(page, fake);
+  const ids = [];
+  page.on('request', (r) => { if (r.url().endsWith('/join')) ids.push(JSON.parse(r.postData()).request_id); });
+  await page.goto(fake.url + '#/lobby/lob_7k2q');
+  await fake.cmd('hold forever');
+  await page.locator('#join').click();
+  await expect(page.locator('#join-msg [data-code="node_busy"]')).toBeVisible();
+  await fake.cmd('release');
+  await fake.cmd('hold off');
+  await page.locator('#join').click();
+  await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
+  expect(ids).toHaveLength(2);
+  expect(ids[1]).toBe(ids[0]);
+});

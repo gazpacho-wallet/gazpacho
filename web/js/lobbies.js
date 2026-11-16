@@ -10,7 +10,9 @@
   var rids = {};               /* request ids, kept until their call has an outcome (7.4) */
 
   /* The same request id is sent again after "node busy" or a lost connection,
-     so a retry can never act twice; any other outcome ends the id. */
+     so a retry can never act twice; any other outcome ends the id. The key
+     names the body too (the digest, ready or not), so a kept id is never sent
+     with a different body, which the program refuses (7.4). */
   function acting(key, send) {
     if (!rids[key]) rids[key] = u.requestId();
     gz.app.busy++;            /* no live redraw under a call in flight: its outcome must stay on screen */
@@ -116,7 +118,8 @@
     if (!o) return null;
     switch (o.code) {
     case "refused_at_check":
-      return ui.notice("bad", "Did not sign.", (Array.isArray(o.failures) ? W.failuresText(o.failures) + " " : "") +
+      return ui.notice("bad", "Did not sign.", (Array.isArray(o.failures) && o.failures.length ? W.failuresText(o.failures) + " " : "") +
+        (o.which && o.which !== "conditions" ? W.known(W.refusedWhich, o.which) + " " : "") +
         "The app refused at its own check, before sending anything. Nothing was signed. Nothing moved.");
     case "aborted_before_signatures": return ui.notice("warn", "Signing stopped before any signature.", "Nothing was signed. Nothing moved.");
     case "refused_by_host": return ui.notice("warn", "The host refused your seat.", "Nothing was signed. Nothing moved.");
@@ -172,7 +175,7 @@
     btn.disabled = cls !== "fits" || l.stage !== "open";
     btn.addEventListener("click", function () {
       ui.run(btn, msg, function () {
-        return acting("join:" + l.id, function (rid) {
+        return acting("join:" + l.id + ":" + l.terms.current.digest, function (rid) {
           return api.act("POST", "/lobbies/" + l.id + "/join", { request_id: rid, seen_current_digest: l.terms.current.digest, ready: true });
         }).then(function () { ui.toast("Joined. You are ready."); gz.app.refreshStatus(false); gz.app.redraw(); });
       });
@@ -196,7 +199,7 @@
     var leaveBtn = h("button", { type: "button", class: "btn danger", id: "leave" }, "Leave this lobby");
     toggle.addEventListener("click", function () {
       ui.run(toggle, msg, function () {
-        return acting("ready:" + l.id, function (rid) {
+        return acting("ready:" + l.id + ":" + !ready + ":" + l.terms.current.digest, function (rid) {
           return api.act("PUT", "/lobbies/" + l.id + "/ready", { request_id: rid, ready: !ready, seen_current_digest: l.terms.current.digest });
         }).then(function () { gz.app.refreshStatus(false); gz.app.redraw(); });
       });

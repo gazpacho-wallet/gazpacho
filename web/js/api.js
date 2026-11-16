@@ -19,7 +19,10 @@
   var channel = null;
   var pendingAsk = null;
   var tabId = gz.util.requestId();
-  var stream = { state: "stopped", ctrl: null, lastId: null, delay: 2000, timer: null, heard: 0, dropped: false };
+  var stream = { state: "stopped", ctrl: null, lastId: null, delay: 2000, timer: null, heard: 0, dropped: false,
+    relayHeard: 0, takeover: false, tryAt: 0, busyDelay: 2000 };
+  var TAKEOVER_MS = 30000;   /* 4.4: another tab takes over after 30 s without a relayed event or keep-alive */
+  var quiet = 0;             /* requests made while > 0 are caused by events, never by the person */
   var api = { version: null, session: null };
 
   function ApiError(status, body) {
@@ -60,7 +63,7 @@
     var sent = token;
     if (body !== undefined && body !== null) headers["Content-Type"] = "application/json";
     if (sent && !opts.noSession) headers["X-Gazpacho-Session"] = sent;
-    if (!opts.background && Date.now() - lastInput < 2000) headers["X-Gazpacho-User"] = "1";
+    if (!opts.background && !quiet && Date.now() - lastInput < 2000) headers["X-Gazpacho-User"] = "1";
     return fetch("/api/v1" + path, {
       method: method,
       headers: headers,
@@ -155,6 +158,9 @@
     channel.onmessage = function (e) {
       var m = e.data;
       if (!m || typeof m.type !== "string") return;
+      /* With no hand-over (the tunnel port set, 3.3), a page of this origin may be another
+         service's: no message on the channel is trusted at all (review R7). */
+      if (api.session && api.session.handover === false) return;
       if (m.type === "ask") {
         if (token && api.session && api.session.signed_in && api.session.kind === "normal" && api.session.handover &&
             typeof m.nonce === "string") {
@@ -165,13 +171,23 @@
       } else if (m.type === "signed_out") {
         signedOut("signed_out", true);
       } else if (m.type === "event") {
-        if (stream.state === "too_many" && typeof m.topic === "string") deliver({ topic: m.topic, id: m.id || null, seq: m.seq });
+        if (stream.state === "too_many" && typeof m.topic === "string") {
+          stream.relayHeard = Date.now();
+          deliver({ topic: m.topic, id: m.id || null, seq: m.seq });
+        }
+      } else if (m.type === "tick" || m.type === "leader") {
+        if (stream.state === "too_many") stream.relayHeard = Date.now();
       } else if (m.type === "leader_gone") {
-        if (stream.state === "too_many") startEvents();
+        /* take over at once; a 429 (the old stream not closed yet) is tried again with a growing delay */
+        if (stream.state === "too_many") { stream.takeover = true; stream.tryAt = Date.now(); }
       }
     };
     window.addEventListener("pagehide", function () {
-      if (stream.state === "open") say({ type: "leader_gone", tab: tabId });
+      var ctrl = stream.ctrl;
+      if (stream.state !== "open" && stream.state !== "reconnecting") return;
+      stream.ctrl = null;
+      if (ctrl) ctrl.abort();         /* free this tab's slot before the others try for it */
+      say({ type: "leader_gone", tab: tabId });
     });
   }
 
@@ -208,7 +224,11 @@
       else if (line.slice(0, 6) === "event:") name = line.slice(6).trim();
       else if (line.slice(0, 5) === "data:") data += line.slice(5).trim();
     }
-    if (name !== "change" || !data) return;
+    if (name !== "change" || !data) {
+      /* a keep-alive: tell the tabs that follow through this one that it is alive */
+      if (text.charAt(0) === ":") say({ type: "tick", tab: tabId });
+      return;
+    }
     try { ev = JSON.parse(data); } catch (e) { return; }
     if (!ev || typeof ev.topic !== "string") return;
     if (id) stream.lastId = id;
@@ -236,7 +256,16 @@
       var reader, decoder, buf = "";
       if (res.status !== 200) {
         stream.ctrl = null;
-        if (res.status === 429) { setStream("too_many"); return null; }       /* never retried by itself (10.3) */
+        if (res.status === 429) {
+          /* Over the cap (10.3): follow the events other tabs relay. Tried again only to take
+             over from a tab that is gone (leader_gone, or 30 s with nothing relayed), with a
+             growing delay, so two tabs never push each other out in a loop. */
+          if (stream.state !== "too_many") stream.relayHeard = Date.now();
+          stream.tryAt = Date.now() + stream.busyDelay;
+          stream.busyDelay = Math.min(stream.busyDelay * 2, 60000);
+          setStream("too_many");
+          return null;
+        }
         if (res.status === 401) { signedOut("signed_out"); return null; }
         if (res.status === 423) { signedOut("locked"); return null; }
         if (res.status >= 400 && res.status < 500) { setStream("stopped"); return null; }
@@ -244,6 +273,8 @@
         return null;
       }
       stream.delay = 2000;
+      stream.busyDelay = 2000;
+      stream.takeover = false;
       stream.heard = Date.now();
       setStream("open");
       say({ type: "leader", tab: tabId });
@@ -280,6 +311,9 @@
     stream.lastId = null;
     stream.dropped = false;
     stream.delay = 2000;
+    stream.busyDelay = 2000;
+    stream.takeover = false;
+    stream.tryAt = 0;
     if (ctrl) ctrl.abort();
     if (stream.state !== "stopped") setStream("stopped");
   }
@@ -294,7 +328,25 @@
     }
   }, 10000);
 
+  /* A tab over the cap whose relaying tabs are gone takes the stream over (4.4). */
+  setInterval(function () {
+    var now = Date.now();
+    if (stream.state !== "too_many" || !token || stream.ctrl || now < stream.tryAt) return;
+    if (!stream.takeover && now - stream.relayHeard < TAKEOVER_MS) return;
+    stream.dropped = true;            /* events may have been missed: draw again from nothing when it opens */
+    startEvents();
+  }, 1000);
+
+  /* Run fn with requests that never refresh the idle timer (a redraw caused by an event). */
+  function quietly(fn) {
+    var p;
+    quiet++;
+    try { p = Promise.resolve(fn()); } catch (e) { p = Promise.reject(e); }
+    return p.then(function (r) { quiet--; return r; }, function (e) { quiet--; throw e; });
+  }
+
   api.ApiError = ApiError;
+  api.quietly = quietly;
   api.boot = boot;
   api.call = call;
   api.act = act;

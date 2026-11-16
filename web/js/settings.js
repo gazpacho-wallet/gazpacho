@@ -8,6 +8,13 @@
   "use strict";
   var gz = window.gz, u = gz.util, h = u.h, W = gz.words, ui = gz.ui, api = gz.api;
 
+  /* The last address shown, kept across live redraws: a new one is made only when asked for. */
+  var lastAddress = null;
+  function showAddress(box, a) {
+    u.clear(box);
+    u.add(box, [h("pre", { class: "addr" }, a), h("p", { class: "small mute" }, "A new address each time you ask. Send only Signet test coins to it.")]);
+  }
+
   function lockBox(status) {
     var msg = h("div", { id: "lock-msg" }), watch = status && status.watching && status.watching.state !== "nothing_to_watch";
     var out = ui.button("Sign out", function () { api.signOut(); });
@@ -63,12 +70,13 @@
 
   function chainCoins(w) {
     var msg = h("div", { id: "address-msg" }), addr = h("div", { id: "address" });
+    if (lastAddress) showAddress(addr, lastAddress);
     var btn = ui.button("Show a new address", function () {
       var b = this;
       ui.run(b, msg, function () {
         return api.call("POST", "/wallet/address", {}).then(function (r) {
-          u.clear(addr);
-          u.add(addr, [h("pre", { class: "addr" }, r.address), h("p", { class: "small mute" }, "A new address each time. Send only Signet test coins to it.")]);
+          lastAddress = r.address;
+          showAddress(addr, r.address);
         });
       });
     });

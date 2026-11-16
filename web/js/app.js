@@ -8,18 +8,18 @@
   var view = document.getElementById("view");
   var main = document.getElementById("main");
   var app = { status: null, busy: 0 };
-  var cleanup = null;       /* clears secrets of the view on screen (12.7) */
+  var cleanup = [];         /* each clears secrets of the view on screen (12.7) */
   var current = null;       /* { screen, params, hash } */
   var drawNo = 0;
   var inApp = false;
 
   /* ---- views ---- */
   function leave() {
-    var fn = cleanup;
-    cleanup = null;
-    if (fn) { try { fn(); } catch (e) { /* the view is gone either way */ } }
+    var fns = cleanup;
+    cleanup = [];
+    fns.forEach(function (fn) { try { fn(); } catch (e) { /* the view is gone either way */ } });
   }
-  app.onLeave = function (fn) { cleanup = fn; };
+  app.onLeave = function (fn) { cleanup.push(fn); };
 
   /* A live redraw must not wipe what an action just said: a message box that
      holds an error (data-keep) is carried into the box of the same id. */
@@ -262,7 +262,8 @@
     if (!inApp) return;
     r = parse();
     screen = gz.screens[r.name];
-    if (fresh || !current || current.hash !== r.hash) { leave(); fresh = true; }
+    if (fresh || !current || current.hash !== r.hash) fresh = true;
+    leave();                  /* the old view's secrets go before any redraw replaces it */
     current = { screen: screen, hash: r.hash };
     no = ++drawNo;
     markNav(screen.nav);
@@ -270,7 +271,9 @@
     focusId = !fresh && document.activeElement ? document.activeElement.id : null;
     scroll = window.scrollY;
     if (fresh) show(h("p", { role: "status" }, "Loading…"), false);
-    Promise.resolve().then(function () { return screen.render(r.params); }).then(function (node) {
+    /* a live redraw is caused by an event: its requests never refresh the idle timer (10.2) */
+    (fresh ? Promise.resolve().then(function () { return screen.render(r.params); })
+      : api.quietly(function () { return screen.render(r.params); })).then(function (node) {
       var el;
       if (no !== drawNo || !inApp) return;
       show(node, fresh);
@@ -312,7 +315,8 @@
       flush = null;
       if (topics.status || topics.chain || topics.reset || topics.wallet) refreshStatus(true);
       if (current && current.screen.topics) {
-        for (t in topics) if (topics.reset || current.screen.topics.indexOf(t) >= 0) redraw = true;
+        /* a screen with no topics (the words, a form) is never drawn again under the person, not even on a reset */
+        for (t in topics) if (current.screen.topics.length && (topics.reset || current.screen.topics.indexOf(t) >= 0)) redraw = true;
       }
       if (topics.wallet && app.status && app.status.wallet === "restoring") {
         api.get("/wallet/setup", { background: true }).then(function (setup) {

@@ -489,6 +489,17 @@ static const char *funding_state(int conf)
     return conf == 0 ? "broadcast" : conf < 3 ? "confirming" : "buried";
 }
 
+/* The failures of the story's refusal: a number; a list and a range (profiles,
+ * payment_sizes_sat, 13.1); or none (a safety check). */
+#define LIST_FAILURES "[{\"condition\":\"profiles\",\"yours\":[\"safety\",\"standard\"],\"offered\":\"starter\"}," \
+                      "{\"condition\":\"payment_sizes_sat\",\"yours\":{\"min\":100,\"max\":200000},\"offered\":{\"min\":1000,\"max\":500000}}]"
+static void refusal_failures(const gz_fake *f, char *buf, size_t n)
+{
+    if (f->m_refuse_kind == 1) snprintf(buf, n, "%s", LIST_FAILURES);
+    else if (f->m_refuse_kind == 2) snprintf(buf, n, "[]");
+    else snprintf(buf, n, "[{\"condition\":\"min_members\",\"yours\":%lld,\"offered\":18}]", (long long)f->cond_min_members);
+}
+
 /* 14.1 round: the member's creation round, with the program's own checks */
 static void story_round(gz_jw *w, gz_fake *f)
 {
@@ -519,9 +530,9 @@ static void story_round(gz_jw *w, gz_fake *f)
     gz_jw_arr(w);
     gz_jw_raw(w, "{\"check\":\"fingerprint_same\",\"ok\":true}");
     gz_jw_raw(w, "{\"check\":\"frozen_values_inside_limits\",\"ok\":true}");
-    gz_jw_raw(w, refused ? "{\"check\":\"tree_inside_conditions\",\"ok\":false,\"params\":{\"members\":18}}"
-                         : "{\"check\":\"tree_inside_conditions\",\"ok\":true,\"params\":{\"members\":30}}");
-    gz_jw_raw(w, "{\"check\":\"safety_checks\",\"ok\":true}");
+    gz_jw_raw(w, refused && f->m_refuse_kind != 2 ? "{\"check\":\"tree_inside_conditions\",\"ok\":false,\"params\":{\"members\":18}}"
+                                                   : "{\"check\":\"tree_inside_conditions\",\"ok\":true,\"params\":{\"members\":30}}");
+    gz_jw_raw(w, refused && f->m_refuse_kind == 2 ? "{\"check\":\"safety_checks\",\"ok\":false}" : "{\"check\":\"safety_checks\",\"ok\":true}");
     gz_jw_end_arr(w);
     gz_jw_end_obj(w);
 }
@@ -596,15 +607,10 @@ static void story_lobby(gz_jw *w, gz_fake *f, const char *id, int row)
             gz_jw_key(w, "outcome");
             gz_jw_obj(w);
             gz_jw_kstr(w, "code", "refused_at_check");
-            gz_jw_kstr(w, "which", "conditions");
-            gz_jw_key(w, "failures");
-            gz_jw_arr(w);
-            gz_jw_obj(w);
-            gz_jw_kstr(w, "condition", "min_members");
-            gz_jw_kint(w, "yours", f->cond_min_members);
-            gz_jw_kint(w, "offered", 18);
-            gz_jw_end_obj(w);
-            gz_jw_end_arr(w);
+            char fl[400];
+            gz_jw_kstr(w, "which", f->m_refuse_kind == 2 ? "safety_check" : "conditions");
+            refusal_failures(f, fl, sizeof fl);
+            gz_jw_kraw(w, "failures", fl);
             gz_jw_end_obj(w);
         } else if (first && f->m_outcome == MO_UNFINISHED) {
             gz_jw_kraw(w, "outcome", "{\"code\":\"signing_unfinished\",\"cancel_received\":null}");
@@ -838,14 +844,15 @@ static void story_activity(gz_jw *w, gz_fake *f)
         ENTRY("act_2003", "lobby_cancelled", "\"" LOBBY_ID "\"", "null", "the_host",
               "{\"code\":\"start_rule\",\"params\":{}}", "{\"reason\":\"deadline_below_minimum\"}");
     if (f->m_outcome == MO_REFUSED) {
-        char e[400];
+        char e[900], fl[400];
+        refusal_failures(f, fl, sizeof fl);
         snprintf(e, sizeof e,
                  "{\"id\":\"act_2001\",\"at\":1794434400,\"kind\":\"refused\",\"lobby_id\":\"" LOBBY_ID "\","
                  "\"factory_id\":null,\"who_decided\":\"the_app\","
                  "\"rule\":{\"code\":\"my_conditions\",\"params\":{\"conditions_version\":%lld}},"
-                 "\"params\":{\"failures\":[{\"condition\":\"min_members\",\"yours\":%lld,\"offered\":18}],"
+                 "\"params\":{\"failures\":%s,"
                  "\"nothing_signed\":true}}",
-                 (long long)f->cond_version, (long long)f->cond_min_members);
+                 (long long)f->cond_version, fl);
         gz_jw_raw(w, e);
     }
     if (f->joined || f->m_outcome != MO_NONE || f->m_stage != MS_OPEN)
@@ -907,8 +914,9 @@ static void story_status(gz_fake *f, gz_api_status_facts *s)
         nd_height = TIP + 12;
     }
     if (f->m_outcome == MO_REFUSED) {
-        snprintf(f->st_buf[2], sizeof f->st_buf[2],
-                 "{\"failures\":[{\"condition\":\"min_members\",\"yours\":%lld,\"offered\":18}]}", (long long)f->cond_min_members);
+        char fl[300];
+        refusal_failures(f, fl, sizeof fl);
+        snprintf(f->st_buf[2], sizeof f->st_buf[2], "{\"failures\":%s}", fl);
         DO("refused", LOBBY_ID, f->st_buf[2]);
         ATT("att_r1", "refused_to_sign", LOBBY_ID, NULL, "{\"lobby_id\":\"" LOBBY_ID "\",\"activity_id\":\"act_2001\"}");
     }
@@ -1572,6 +1580,12 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
             status = 409;
             break;
         }
+        if (f->story && f->join_list_fail) {             /* a refusal on a list and a range, with both values */
+            f->join_list_fail = 0;
+            gz_api_err_set(err, "conditions_not_met", NULL, "{\"failures\":%s}", LIST_FAILURES);
+            status = 409;
+            break;
+        }
         if (!fits(f, first ? 1500 : 5000)) {           /* a refusal carries both numbers (8) */
             gz_api_err_set(err, "conditions_not_met", NULL,
                            "{\"failures\":[{\"condition\":\"max_joining_fee_sat\",\"yours\":%lld,\"offered\":%d}]}",
@@ -1920,14 +1934,9 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         } else if (at_check) {
             gz_jw_key(w, "params");
             gz_jw_obj(w);
-            gz_jw_key(w, "failures");
-            gz_jw_arr(w);
-            gz_jw_obj(w);
-            gz_jw_kstr(w, "condition", "min_members");
-            gz_jw_kint(w, "yours", f->cond_min_members);
-            gz_jw_kint(w, "offered", 18);
-            gz_jw_end_obj(w);
-            gz_jw_end_arr(w);
+            char fl[400];
+            refusal_failures(f, fl, sizeof fl);
+            gz_jw_kraw(w, "failures", fl);
             gz_jw_kbool(w, "nothing_signed", 1);
             gz_jw_end_obj(w);
         } else {
@@ -2256,6 +2265,15 @@ int gz_fake_cmd(gz_fake *f, const char *line)
         n_status = n_lobby || n_host;
     } else if (strcmp(line, "member-refuse") == 0) {
         f->m_refuse_next = 1;
+        f->m_refuse_kind = 0;
+    } else if (strcmp(line, "member-refuse-list") == 0) {
+        f->m_refuse_next = 1;
+        f->m_refuse_kind = 1;
+    } else if (strcmp(line, "member-refuse-safety") == 0) {
+        f->m_refuse_next = 1;
+        f->m_refuse_kind = 2;
+    } else if (strcmp(line, "join-refuse-list") == 0) {
+        f->join_list_fail = 1;
     } else if (strcmp(line, "member-unfinished") == 0) {
         if (f->m_stage == MS_SIGNING) {
             f->m_round = 5;

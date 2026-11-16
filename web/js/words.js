@@ -111,6 +111,7 @@
     max_life_blocks: "Factory life, at most",
     max_exit_blocks: "Leaving alone takes, at most",
     min_confirmations: "Confirmations before live",
+    payment_sizes_sat: "Payment sizes",
     compare_with: "Compare with"
   };
   var conditionUnits = {
@@ -122,8 +123,9 @@
   /* A refusal always carries both numbers (8). */
   function failuresText(failures) {
     return failures.map(function (f) {
-      var name = conditionNames[f.condition] || f.condition;
-      return name + ": your limit is " + u.number(f.yours) + ", the lobby offers " + u.number(f.offered) + ".";
+      /* a condition may be a list (profiles) or a range (payment_sizes_sat): ui.value shows each kind */
+      var name = conditionNames[f.condition] || f.condition, v = gz.ui.value;
+      return name + ": your limit is " + v(f.yours) + ", the lobby offers " + v(f.offered) + ".";
     }).join(" ");
   }
 
@@ -136,6 +138,12 @@
   var fitResults = { fits: "Fits", fits_now_only: "Fits only now", fails: "Does not fit", not_compared: "Not compared" };
   var fitClass = { fits: "Fits your conditions", fits_only_now: "Fits only now", does_not_fit: "Does not fit your conditions" };
 
+  /* refused_at_check: which check refused (14.1) */
+  var refusedWhich = {
+    conditions: "", safety_check: "A fixed safety check failed.",
+    fingerprint_differs: "The lobby is not the one you joined: its fingerprint differs.",
+    values_differ_from_frozen: "The host's final values differ from the ones frozen at the ready check."
+  };
   var stages = {
     open: "Open", ready_check: "Ready check", signing: "Signing", funding: "Waiting for funding", active: "Live",
     cancelled: "Cancelled", failed: "Failed", unknown: "Unknown"
@@ -331,7 +339,7 @@
   gz.words = {
     errorText: errorText, waitText: waitText, failuresText: failuresText, known: known, lookup: lookup,
     conditionNames: conditionNames, conditionUnits: conditionUnits, fitTerms: fitTerms, fitResults: fitResults,
-    fitClass: fitClass, stages: stages, seats: seats, rounds: rounds, hostRounds: hostRounds, checks: checks,
+    fitClass: fitClass, refusedWhich: refusedWhich, stages: stages, seats: seats, rounds: rounds, hostRounds: hostRounds, checks: checks,
     funding: funding, factoryStates: factoryStates, chain: chain, watching: watching, dateKinds: dateKinds,
     atZero: atZero, provenance: provenance, attention: attention, tiers: tiers, activityKinds: activityKinds,
     who: who, rules: rules, problems: problems, cannotOpen: cannotOpen, headline: headline, dateText: dateText,
