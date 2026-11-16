@@ -84,6 +84,12 @@ merge-drops-past-range	core/gazpacho/action.c	        if (i < to && list->slots[
 merge-one-save	core/gazpacho/action.c	    if (n_saves < 2) return GZ_OK;\n    gz_record_t *merged = NULL;	    if (n_saves < 1) return GZ_OK;\n    gz_record_t *merged = NULL;
 merge-range-unchecked	core/gazpacho/action.c	    if (!list || from > to || to > list->count) return GZ_ERR_ARGUMENT;	    if (!list || from > to) return GZ_ERR_ARGUMENT;
 merge-count-wrong	core/gazpacho/action.c	    list->slots[first].u.save.n_records = n_records;	    list->slots[first].u.save.n_records = n_records - 1;
+# equivalent a-restore-not-alone: the loop above it already stops once a step has appended (out->count != m.count), so the break decides nothing; test_restore_batch_alone holds the rule itself
+# equivalent watch-budget-off: a second guard: every engine of this build refuses at its own cap first (te-watch-cap-off and the slot stand-in are killed), so no test can reach it
+# equivalent confirm-to-closed-slot: a second guard: a closed slot's bit has left every queued mask (slot-mask-kept-at-close is killed)
+# equivalent node-part-step-unchecked: a test-build check that no step of this build can trip: the worst step is every connection closed, within the declaration
+# equivalent address-port-zero: a port of 0 is refused before it as a leading zero
+# equivalent waiting-after-append-ok: no engine of this build returns GZ_WAITING, so the branch cannot be reached (task T-P42-9 names it for the engines that will)
 # equivalent member-slot-of-host: gz_route_slot_link itself answers 0 for a host slot, so the test the mutant removes decides nothing
 # --- the start (reviews of PR 41: A F4, B group A)
 a-order-unchecked	core/node/composite.c	if (!id_after(previous, batch.id) || batch.id.sequence == 0 ||	if (batch.id.sequence == 0 ||
@@ -123,7 +129,7 @@ idle-at-30-s	core/node/nodepart.c	now < k->since_ms + NP_IDLE_MS) continue;	now 
 idle-not-armed-again	core/node/nodepart.c	        if (st == GZ_OK) st = arm_idle(c, out);\n    }\n    if (st == GZ_OK) return gz_c_node_bracket_end(c, out);	    }\n    if (st == GZ_OK) return gz_c_node_bracket_end(c, out);
 idle-due-not-reset	core/node/nodepart.c	        c->np.idle_due_ms = 0;\n	
 idle-on-wall-clock	core/node/nodepart.c	    return c->ports.clock.mono_ms(c->ports.clock.ctx);	    return c->ports.clock.now_ms(c->ports.clock.ctx);
-full-table-not-refused	core/node/nodepart.c	        st = disconnect(out, &ev->u.peer.link, GZ_DISCONNECT_REFUSED);\n        if (st == GZ_OK) st = gz_c_node_bracket_end(c, out);	        st = gz_c_node_bracket_end(c, out);
+full-table-not-refused	core/node/nodepart.c	        st = disconnect(out, &ev->u.peer.link, GZ_DISCONNECT_REFUSED);\n        if (st == GZ_OK) st = gz_c_node_bracket_end(c, out);	        st = GZ_OK;\n        if (st == GZ_OK) st = gz_c_node_bracket_end(c, out);
 seat-given-up-stays-seated	core/node/nodepart.c	        } else if (k->seated && gz_route_slot_seated(c, member) < 0) {	        } else if (0) {
 seat-binds-no-connection	core/node/nodepart.c	            k->seated = 1;\n            if (k->slot < 0) k->slot = slot;	            (void)slot;
 seat-change-no-idle-check	core/node/handoff.c	            if ((st = np_idle_check(c, out)) != GZ_OK) return st;\n	

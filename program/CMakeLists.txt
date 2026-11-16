@@ -55,8 +55,12 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
 gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
-# The lobby's SEND bridge (kind 0xffff, until P4.2) is deleted and stays so
-# (composite-node.md, task T-P42-1).
+# Kind 0xffff (the signing engine's SEND bridge until P4.3) never reaches a
+# program, and the lobby's bridge, deleted in P4.2, stays deleted
+# (composite-node.md, tasks T-P42-1, T-P43-1).
+add_test(NAME program_send_whole_unlinked
+  COMMAND sh ${CMAKE_SOURCE_DIR}/tools/check-send-whole.sh ${CMAKE_SOURCE_DIR} $<TARGET_FILE:gazpacho>
+          $<TARGET_FILE:gazpacho-test>)
 add_test(NAME lobby_send_whole_gone
   COMMAND sh ${CMAKE_SOURCE_DIR}/tools/check-send-whole.sh ${CMAKE_SOURCE_DIR})
 

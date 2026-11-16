@@ -22,7 +22,7 @@
 #define FNV_PRIME      0x100000001b3ull
 
 typedef struct { uint8_t *bytes; size_t len; } blob_t;
-typedef struct { uint64_t from, to; blob_t blob; uint64_t due, seq; } message_t;
+typedef struct { uint64_t from, to; blob_t blob; uint64_t due, seq; int whole; } message_t;   /* whole: sim.h, whole_messages */
 typedef struct { uint64_t id, due; } node_timer_t;
 typedef struct { blob_t blob; uint32_t origin; uint32_t height; int never; uint8_t txid[32]; } chain_tx_t;   /* height 0: in the mempool */
 typedef struct { uint8_t txid[32]; uint32_t depth; int reported; } tx_watch_t;          /* reported: told confirmed, still in the chain */
@@ -66,8 +66,8 @@ typedef struct {
     uint64_t incarnation;       /* how many times the node has been built */
     uint64_t repeat_stream;     /* after a restore: the incarnation whose random stream to repeat, or 0 */
     gz_runner_t runner;
-    gz_runner_slot_t runner_slots[RUNNER_SLOTS];
-    uint8_t runner_bytes[RUNNER_BYTES];
+    gz_runner_slot_t *runner_slots;   /* sim->runner_slots of them */
+    uint8_t *runner_bytes;            /* sim->runner_bytes */
     struct sim_storage storage;
     node_timer_t *timers; size_t n_timers, cap_timers;
     tx_watch_t *tx_watches; size_t n_tx_watches, cap_tx_watches;
@@ -131,6 +131,11 @@ struct sim {
     sim_stats_t stats;
     struct { sim_invariant_fn check; void *ctx; } invariants[MAX_INVARIANTS];
     size_t n_invariants;
+    /* Buffer sizes in use (the configuration's, or the defaults), and the
+     * buffers for a start step and for an event step. */
+    size_t step_slots, step_bytes, runner_slots, runner_bytes;
+    gz_action_t *start_slot_buf, *step_slot_buf;
+    uint8_t *start_byte_buf, *step_byte_buf;
     const char *violation;          /* set when a built-in invariant is seen broken */
     int failed;
     uint64_t failure_step;
@@ -558,10 +563,19 @@ static int link_is_up(const sim_t *sim, uint64_t a, uint64_t b)
  * rule 6: each node is a member of the other for the test engine). The
  * connections that exist when the run begins are reported as accepted:
  * nothing has been lost yet, so nobody asks. The world never asks. */
+/* The bridge's link (sim.h, whole_messages): the peer's number in bytes 1 to
+ * 8 of the remote key, big-endian, everything else zero. */
+static void whole_link(uint64_t peer, gz_link_t *link)
+{
+    memset(link, 0, sizeof *link);
+    for (int k = 0; k < 8; k++) link->remote.key[1 + k] = (uint8_t)(peer >> (56 - 8 * k));
+}
+
 static void tell_peer(slot_t *s, uint64_t peer, int up)
 {
     gz_event_t ev = {.kind = up ? GZ_EVENT_PEER_CONNECTED : GZ_EVENT_PEER_DISCONNECTED};
-    sim_peer_link(s->index, peer, &ev.u.peer.link);
+    if (s->sim->cfg.whole_messages) whole_link(peer, &ev.u.peer.link);
+    else sim_peer_link(s->index, peer, &ev.u.peer.link);
     ev.u.peer.outbound = peer != SIM_WORLD_PEER && s->sim->created;
     post(s, &ev);
 }
@@ -604,7 +618,9 @@ static void set_link(sim_t *sim, uint64_t a, uint64_t b, int up)
 static void close_on_loss(sim_t *sim, uint64_t from, uint64_t to)
 {
     long a = peer_index(sim, from), b = peer_index(sim, to);
-    if (a < 0 || b < 0 || a == b) return;
+    /* Not for nodes on the bridge: they keep contract v1's network, where a
+     * loss closes nothing, until they move to links (sim.h). */
+    if (sim->cfg.whole_messages || a < 0 || b < 0 || a == b) return;
     *(sim->link_lost + (size_t)a * (sim->cfg.n_nodes + 1) + (size_t)b) = 1;
 }
 
@@ -628,7 +644,7 @@ static void bounce_lost_links(sim_t *sim)
         }
 }
 
-static void network_send(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len)
+static void network_send(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len, int whole)
 {
     int drop = sim_rng_chance(&sim->rng, sim->cfg.drop_pm);
     int twice = sim_rng_chance(&sim->rng, sim->cfg.duplicate_pm);
@@ -645,7 +661,7 @@ static void network_send(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *
     for (int copy = 0; copy <= twice; copy++) {
         int late = sim_rng_chance(&sim->rng, sim->cfg.delay_pm);
         uint64_t extra = 1 + sim_rng_below(&sim->rng, sim->cfg.max_delay_steps ? sim->cfg.max_delay_steps : 1);
-        message_t m = {from, to, blob_copy(bytes, len), sim->step + 1 + (late ? extra : 0), sim->next_seq++};
+        message_t m = {from, to, blob_copy(bytes, len), sim->step + 1 + (late ? extra : 0), sim->next_seq++, whole};
         if (late) sim->stats.messages_delayed++;
         sim->net = grow(sim->net, &sim->cap_net, sim->n_net + 1, sizeof *sim->net);
         sim->net[sim->n_net++] = m;
@@ -662,7 +678,7 @@ static void network_send_message(sim_t *sim, uint64_t from, uint64_t to, uint16_
     uint8_t *env = malloc(GZ_ENVELOPE_HDR_LEN + len + 1);
     if (!env) abort();
     if (gz_env_join(kind, scope, (gz_bytes_t){records, len}, env, GZ_ENVELOPE_HDR_LEN + len, &n) == GZ_OK)
-        network_send(sim, from, to, env, n);
+        network_send(sim, from, to, env, n, 0);
     free(env);
 }
 
@@ -706,6 +722,15 @@ static void deliver_one_message(sim_t *sim)
         } else if (m.to < sim->cfg.n_nodes) {
             sim->stats.messages_delivered++;
             gz_event_t ev = {.kind = GZ_EVENT_MESSAGE_RECEIVED};
+            if (m.whole) {
+                /* The bridge: the bytes as they were sent, under the reserved kind. */
+                whole_link(m.from, &ev.u.message.link);
+                ev.u.message.kind = GZ_SEND_KIND_RESERVED;
+                ev.u.message.records = (gz_bytes_t){m.blob.bytes, m.blob.len};
+                post(&sim->slots[m.to], &ev);
+                free(m.blob.bytes);
+                return;
+            }
             sim_peer_link((uint32_t)m.to, m.from, &ev.u.message.link);
             /* The network carries envelopes (envelope.h): kind, scope, records. */
             if (gz_env_split((gz_bytes_t){m.blob.bytes, m.blob.len}, &ev.u.message.kind, ev.u.message.scope,
@@ -1010,6 +1035,15 @@ void sim_execute(sim_t *sim, uint32_t index, const gz_action_t *a)
          * (every key of a simulated node is its own). */
         note_left(s, a);
         sim->stats.node_sends++;
+        if (sim->cfg.ops.observe) sim->cfg.ops.observe(sim->ops_ctx, index, a);
+        if (a->u.send.kind == GZ_SEND_KIND_RESERVED) {
+            /* The bridge (sim.h, whole_messages): the peer's number in bytes
+             * 1 to 8 of the remote key, the whole message in the records. */
+            uint64_t to = 0;
+            for (int k = 1; k <= 8; k++) to = to << 8 | a->u.send.link.remote.key[k];
+            network_send(sim, index, to, a->u.send.records.data, a->u.send.records.len, 1);
+            break;
+        }
         network_send_message(sim, index, sim_key_peer(a->u.send.link.remote.key), a->u.send.kind, a->u.send.scope,
                              a->u.send.records.data, a->u.send.records.len);
         break;
@@ -1359,12 +1393,10 @@ static void finish_start(slot_t *s)
 static void continue_start(slot_t *s)
 {
     sim_t *sim = s->sim;
-    gz_action_t slots[STEP_SLOTS];
-    uint8_t bytes[STEP_BYTES];
     gz_action_list_t list;
     while (s->starting && !s->needs_rebuild && !sim->violation) {
         int more = 1;
-        gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
+        gz_action_list_init(&list, sim->start_slot_buf, sim->step_slots, sim->start_byte_buf, sim->step_bytes);
         gz_status_t st = s->start_steps++ == MAX_START_STEPS ? GZ_ERR_NO_SPACE : sim->cfg.ops.start(s->node, &list, &more);
         if (st == GZ_WAITING) {
             trace(sim, "start-waiting node=%u", s->index);
@@ -1392,7 +1424,7 @@ static void build_node(slot_t *s)
     sim_rng_init(&s->rng, sim->cfg.seed,
                  (s->repeat_stream ? s->repeat_stream : s->incarnation) << 32 | ((uint64_t)s->index + 1));
     s->repeat_stream = 0;
-    (void)gz_runner_init(&s->runner, s->runner_slots, RUNNER_SLOTS, s->runner_bytes, RUNNER_BYTES,
+    (void)gz_runner_init(&s->runner, s->runner_slots, sim->runner_slots, s->runner_bytes, sim->runner_bytes,
                          s->incarnation, runner_execute, s);
     s->storage.reader_incarnation = s->incarnation;
     settle_orphans(s);                                  /* the fence: before anything reads storage */
@@ -1501,8 +1533,6 @@ static int outlives_a_crash(gz_event_kind_t kind)
 static int process(sim_t *sim, const queued_t *q)
 {
     slot_t *s = &sim->slots[q->node];
-    gz_action_t slots[STEP_SLOTS];
-    uint8_t bytes[STEP_BYTES];
     gz_action_list_t list;
 
     if (q->ev.kind == GZ_EVENT_STORAGE_CONFIRMED) {
@@ -1521,7 +1551,7 @@ static int process(sim_t *sim, const queued_t *q)
         }
         return 0;
     }
-    gz_action_list_init(&list, slots, STEP_SLOTS, bytes, STEP_BYTES);
+    gz_action_list_init(&list, sim->step_slot_buf, sim->step_slots, sim->step_byte_buf, sim->step_bytes);
     if (sim->cfg.ops.handle(s->node, &q->ev, &list) != GZ_OK) {
         sim->stats.handle_errors++;
         trace(sim, "handle-error node=%u event=%d", s->index, (int)q->ev.kind);
@@ -1781,6 +1811,15 @@ static sim_t *create(const sim_config_t *config, int is_twin)
     sim->link_down = calloc(((size_t)config->n_nodes + 1) * ((size_t)config->n_nodes + 1), 1);
     sim->link_lost = calloc(((size_t)config->n_nodes + 1) * ((size_t)config->n_nodes + 1), 1);
     if (!sim->slots || !sim->link_down || !sim->link_lost) abort();
+    sim->step_slots = config->step_slots ? config->step_slots : STEP_SLOTS;
+    sim->step_bytes = config->step_bytes ? config->step_bytes : STEP_BYTES;
+    sim->runner_slots = config->runner_slots ? config->runner_slots : RUNNER_SLOTS;
+    sim->runner_bytes = config->runner_bytes ? config->runner_bytes : RUNNER_BYTES;
+    sim->start_slot_buf = calloc(sim->step_slots, sizeof *sim->start_slot_buf);
+    sim->step_slot_buf = calloc(sim->step_slots, sizeof *sim->step_slot_buf);
+    sim->start_byte_buf = malloc(sim->step_bytes);
+    sim->step_byte_buf = malloc(sim->step_bytes);
+    if (!sim->start_slot_buf || !sim->step_slot_buf || !sim->start_byte_buf || !sim->step_byte_buf) abort();
     for (uint32_t n = 0; n < config->n_nodes; n++) {
         slot_t *s = &sim->slots[n];
         s->sim = sim;
@@ -1788,6 +1827,9 @@ static sim_t *create(const sim_config_t *config, int is_twin)
         s->crash_countdown = NOT_ARMED;
         s->ports.random = (gz_random_port_t){random_fill, s};
         s->ports.clock = (gz_clock_port_t){clock_now, clock_mono, s};
+        s->runner_slots = calloc(sim->runner_slots, sizeof *s->runner_slots);
+        s->runner_bytes = malloc(sim->runner_bytes);
+        if (!s->runner_slots || !s->runner_bytes) abort();
     }
     for (uint32_t n = 0; n < config->n_nodes; n++) build_node(&sim->slots[n]);
     sim->created = 1;
@@ -1819,7 +1861,9 @@ void sim_destroy(sim_t *sim)
         free(s->deferred); free(s->orphans);
         free(s->tx_watches); free(s->op_watches); free(s->secret_keys);
         free(s->timers); free(s->draws); free(s->emitted_saves); free(s->expected); free(s->shadow);
+        free(s->runner_slots); free(s->runner_bytes);
     }
+    free(sim->start_slot_buf); free(sim->step_slot_buf); free(sim->start_byte_buf); free(sim->step_byte_buf);
     for (size_t i = sim->q_head; i < sim->q_len; i++) free(sim->queue[i].blob.bytes);
     for (size_t i = 0; i < sim->n_net; i++) free(sim->net[i].blob.bytes);
     for (size_t i = 0; i < sim->n_txs; i++) free(sim->txs[i].blob.bytes);
@@ -2002,6 +2046,7 @@ static void quiesce(sim_t *sim)
         free(sim->net[i].blob.bytes);
     }
     sim->n_net = 0;
+    if (c->whole_messages) return; /* the bridge: contract v1's quiet tail, nothing more */
     bounce_lost_links(sim); /* now: the world's hellos it queues are kept */
     /* The network recovers: every link that is down comes up again (a peer
      * that comes back), and the reconnect step runs on each. Nodes are not
@@ -2041,6 +2086,14 @@ void sim_quiesce(sim_t *sim)
 void sim_send_message(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *bytes, size_t len)
 {
     static const uint8_t zero[32] = {0};
+    if (sim->cfg.whole_messages) {
+        /* The bridge: the bytes as given, no envelope around them. */
+        if (sim->failed) return;
+        network_send(sim, from, to, bytes, len, 1);
+        if (sim->twin) network_send(sim->twin, from, to, bytes, len, 1);
+        check_invariants(sim);
+        return;
+    }
     sim_send_kind(sim, from, to, GZ_MSG_KIND_TEST, zero, bytes, len);
 }
 

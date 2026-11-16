@@ -703,6 +703,46 @@ static void test_ack_from_another_link(void)
     h_free(&h);
 }
 
+/* A hello inside the engine's one answer a second is not dropped: it is
+ * answered, once, when the second is over (the pinger asks only once per
+ * connection). A link that goes away meanwhile is not answered. */
+static void test_hello_inside_the_second_is_deferred(void)
+{
+    h_t h;
+    gz_link_t l = h_host_link(7);
+    const uint64_t t4 = (uint64_t)GZ_AREA_TEST << 48 | 4;
+    h_init(&h, 1, 1);
+    h_start(&h);
+    h_test_msg(&h, &l, "GZPI", (const uint8_t *)"a", 1, GZ_AREA_TEST);
+    size_t m = h_mark(&h);
+    h_test_msg(&h, &l, "GZPH", NULL, 0, GZ_AREA_TEST);
+    CHECK(h_count(&h, m, GZ_ACTION_SEND) == 1);
+    h.clock += 300;
+    m = h_mark(&h);
+    h_test_msg(&h, &l, "GZPH", NULL, 0, GZ_AREA_TEST);
+    CHECK(h_count(&h, m, GZ_ACTION_SEND) == 0 && h_count(&h, m, GZ_ACTION_SET_TIMER) == 1);
+    CHECK(h.log[m].a.kind == GZ_ACTION_SET_TIMER && h.log[m].timer == t4 && h.log[m].a.u.set_timer.delay_ms == 700);
+    m = h_mark(&h);
+    h_test_msg(&h, &l, "GZPH", NULL, 0, GZ_AREA_TEST); /* a third: one deferred answer is enough */
+    CHECK(h_count(&h, m, GZ_ACTION_SEND) == 0 && h_count(&h, m, GZ_ACTION_SET_TIMER) == 0);
+    h.clock += 700;
+    m = h_mark(&h);
+    CHECK(h_timer(&h, t4) == GZ_OK && h_count(&h, m, GZ_ACTION_SEND) == 1);
+    m = h_mark(&h);
+    h_timer(&h, t4); /* once */
+    CHECK(h_count(&h, m, GZ_ACTION_SEND) == 0);
+    /* Deferred again, and the link goes: nothing is sent to it. */
+    h.clock += 100;
+    h_test_msg(&h, &l, "GZPH", NULL, 0, GZ_AREA_TEST);
+    h_peer(&h, &l, 0, 0);
+    h.clock += 1000;
+    m = h_mark(&h);
+    h_timer(&h, t4);
+    CHECK(h_count(&h, m, GZ_ACTION_SEND) == 0);
+    CHECK_NO_NODE_ERROR(&h);
+    h_free(&h);
+}
+
 /* The reserved kind 0xffff (action.h): an engine that sends it broke a rule
  * the composite checks; the person's `send` command is refused. */
 static void test_reserved_kind(void)
@@ -867,7 +907,9 @@ static void test_restore_epoch_redraw(void)
      * each further draw moves it on. */
     h.force_draw = draw_for_epoch(first, 4);
     h.force_n = 1000;
+    draws = h.draws;
     CHECK(h_restart(&h) == GZ_OK);
+    CHECK(h.draws == draws + 2); /* the same bytes again, and a new epoch all the same */
     g = last_guard(&h, &len);
     CHECK(gz_get_u16(g + 48) == 4 && guard_epoch(g, 3) != first && guard_epoch(g, 3) != 0 &&
           guard_epoch(g, 3) != guard_epoch(g, 2));
@@ -1049,6 +1091,7 @@ int main(void)
     test_saved_bad_target_does_not_stop_a_start();
     test_ping_table();
     test_ack_from_another_link();
+    test_hello_inside_the_second_is_deferred();
     test_chain_routing();
     test_restore_epoch_redraw();
     test_guard_forgets_the_oldest_epoch();
