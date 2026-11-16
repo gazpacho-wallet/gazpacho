@@ -440,6 +440,15 @@ static void refusals(void)
     CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
     CHECK(!gz_tree_requirement(L3, 1, 4, 546, UINT64_MAX / 2, &R));
     CHECK(gz_tree_fee(UINT64_MAX / 2, 1) == GZ_TREE_FEE_INVALID && gz_tree_fee(0, 15) == 0);
+    /* A payable fee the import still refuses: a one-output transaction's fee
+     * above the money supply / (2 (2 n - 1) + 1) (factory_build_tree's bound),
+     * with a funding amount that covers its own minimum and every node. */
+    t1_inputs(4, &p, &in);
+    in.tree_feerate = 1137100000000000ull;
+    in.funding_amount = 2000000000000000ull;
+    CHECK(gz_tree_fee(in.tree_feerate, 1) == 141000400000000ull);
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_IMPORT_MINIMUM);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
     CHECK(gz_tree_fee(100, 1) == 13 && gz_tree_fee(100, 2) == 17 && gz_tree_fee(100, 4) == 26 && gz_tree_fee(100, 15) == 73);
     CHECK(gz_tree_anchor(0) == 0 && gz_tree_anchor(1) == 240);
     /* A funding script that is not the root's aggregate: the rules derive the

@@ -98,7 +98,7 @@ leaf-no-kickoff-cost	core/tree/shape.c	mul_ok(channel, 2, &r) && cost_ok(rate, 1
 leaf-tx-sized-as-kickoff	core/tree/shape.c	            && cost_ok(rate, 2, &x) && add_ok(r, x, out);	            && cost_ok(rate, 1, &x) && add_ok(r, x, out);
 node-no-anchor	core/tree/shape.c	return mul_ok(best, n, &r) && cost_ok(rate, n, &x) && add_ok(r, x, out);	return mul_ok(best, n, &r) && add_ok(r, gz_tree_fee(rate, n), out);
 node-fee-fixed-width	core/tree/shape.c	return mul_ok(best, n, &r) && cost_ok(rate, n, &x)	return mul_ok(best, n, &r) && cost_ok(rate, 4, &x)
-anchor-at-rate-0	core/tree/shape.c	return feerate == 0 ? 0 : GZ_TREE_ANCHOR_SAT;	return GZ_TREE_ANCHOR_SAT;
+anchor-at-rate-0	core/tree/shape.c	return feerate == 0 ? 0 : GZ_TREE_ANCHOR_SAT;	(void)feerate; return GZ_TREE_ANCHOR_SAT;
 fee-rate-0-not-free	core/tree/shape.c	    if (feerate == 0) return 0;\n	
 fee-no-bound	core/tree/shape.c	    if (feerate > GZ_TREE_FEE_MAX_SAT * 1000 / v) return GZ_TREE_FEE_INVALID;\n	
 fee-no-supply-cap	core/tree/shape.c	return fee > GZ_TREE_FEE_MAX_SAT ? GZ_TREE_FEE_INVALID : fee;	return fee;
@@ -337,3 +337,5 @@ tx-scriptsig-bound	core/tree/model.c	|| l > len - i) return 0;\n        i += (si
 
 # equivalent glue-fee-audit: the import's own fee audit holds on every tree it builds; C1's byte comparison already refuses any other bytes. Kept as defence in depth (re-import, 2026-11)
 # equivalent glue-funding-refusal: factory_build_tree refuses the same funding script again (the root's key)
+# equivalent fee-rate-0-not-free: at rate 0 the next lines give (0 + 999) / 1000 = 0 anyway; the early return mirrors fee.c's compute_fee
+# equivalent fee-no-supply-cap: the bound before it keeps rate x vsize at most 1,000 x the money supply, so the rounded fee never passes it; the cap mirrors fee.c's compute_fee
