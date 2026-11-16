@@ -657,12 +657,12 @@ int gz_route_head(gz_api_server *srv, gz_conn *c)
     }
     /* static files (5.4): compiled in, exact paths only */
     if (!is_api) {
-        const char *body;
+        const char *body, *ctype;
         size_t len;
         int page;
         if (r->method != M_GET && r->method != M_HEAD) return answer(srv, c, 405, "method_not_allowed", NULL);
         if (r->nq) return answer(srv, c, 404, "not_found", NULL);
-        if (!gz_static_lookup(r->path, &body, &len, &page)) return answer(srv, c, 404, "not_found", NULL);
+        if (!gz_static_lookup(r->path, &body, &len, &page, &ctype)) return answer(srv, c, 404, "not_found", NULL);
         r->route = NULL;
         c->state = CS_BODY;
         return 0;
@@ -1412,11 +1412,12 @@ void gz_route_dispatch(gz_api_server *srv, gz_conn *c)
     gz_req *r = &c->req;
     gz_session *s;
     if (!r->route) {                                     /* a static file: checked at the head */
-        const char *body;
+        const char *body, *ctype;
         size_t len;
         int page;
-        gz_static_lookup(r->path, &body, &len, &page);
-        gz_respond(srv, c, 200, page ? BK_PAGE : BK_STATIC, NULL, body, len);
+        gz_static_lookup(r->path, &body, &len, &page, &ctype);
+        /* a script or a stylesheet needs its type: every answer says nosniff (5.4) */
+        gz_respond(srv, c, 200, page ? BK_PAGE : BK_STATIC, ctype, body, len);
         return;
     }
     if (r->body_len) {

@@ -7,7 +7,8 @@
  * file, the socket token) in the data folder given.
  *
  *   gz-api-fake --data-dir DIR [--port N] [--locked] [--fresh-attempts] [--no-ipv6]
- *               [--tunnel-port N] [--quiet]
+ *               [--tunnel-port N] [--quiet] [--story] [--auto-ms N]
+ *               [--held-ms N] [--fresh-ms N] [--idle-ms N]
  *
  * As the program does (contract-v2 11), it makes the data folder (0700) and
  * refuses one that others can read; the server is given it. --fresh-attempts
@@ -18,16 +19,27 @@
  * --locked starts with a wallet whose passphrase is the fixture in
  * ports/api/fake/fake_backend.h; without it the program starts at first run
  * and prints the path of the redirect file to open. --port 0 picks a free
- * port. The first line printed is always "listening http://127.0.0.1:PORT/". */
+ * port. The first line printed is always "listening http://127.0.0.1:PORT/".
+ *
+ * --story (TEST ONLY, for the interface, stream S10): the fake starts with no
+ * factory and its lobbies move on, one step per line "step" read from standard
+ * input, through a whole start (ready check, signing, funding, live); the
+ * other lines are listed at gz_fake_cmd (fake_backend.h). Each line is
+ * answered "ok LINE" or "unknown LINE" on standard output. --auto-ms N sends
+ * "step" every N milliseconds, for a person clicking through the screens.
+ * --held-ms, --fresh-ms and --idle-ms shorten the server's 30 s held answer,
+ * 5 min fresh sign-in and 15 min idle sign-out, so a test need not wait. */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "fake_backend.h"
 
@@ -69,6 +81,38 @@ static void log_line(void *ctx, const char *line)
     fprintf(stderr, "%s\n", line);
 }
 
+static gz_fake *g_fake;
+static volatile sig_atomic_t g_ticking;
+
+/* --story: the script, one line at a time from standard input */
+static void *script_thread(void *arg)
+{
+    char line[128];
+    (void)arg;
+    while (fgets(line, sizeof line, stdin)) {
+        size_t n = strlen(line);
+        while (n && (line[n - 1] == '\n' || line[n - 1] == '\r')) line[--n] = 0;
+        if (!n) continue;
+        printf("%s %s\n", gz_fake_cmd(g_fake, line) == 0 ? "ok" : "unknown", line);
+        fflush(stdout);
+    }
+    return NULL;
+}
+
+/* --auto-ms: the story moves on by itself */
+static void *auto_thread(void *arg)
+{
+    int ms = *(int *)arg;
+    struct timespec ts;
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (long)(ms % 1000) * 1000000L;
+    while (g_ticking) {
+        nanosleep(&ts, NULL);
+        if (g_ticking) gz_fake_cmd(g_fake, "step");
+    }
+    return NULL;
+}
+
 static char g_first_run[700];
 
 static void first_run(void *ctx, const char *path)
@@ -83,7 +127,8 @@ int main(int argc, char **argv)
     gz_api_config cfg;
     gz_fake fake;
     const char *err = NULL;
-    int i, locked = 0, quiet = 0, fresh = 0, rc;
+    int i, locked = 0, quiet = 0, fresh = 0, story = 0, auto_ms = 0, rc;
+    pthread_t script, ticker;
     struct sigaction sa;
     memset(&cfg, 0, sizeof cfg);
     cfg.port = 39735;
@@ -95,8 +140,14 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "--fresh-attempts") == 0) fresh = 1;
         else if (strcmp(argv[i], "--no-ipv6") == 0) cfg.no_ipv6 = 1;
         else if (strcmp(argv[i], "--quiet") == 0) quiet = 1;
+        else if (strcmp(argv[i], "--story") == 0) story = 1;
+        else if (strcmp(argv[i], "--auto-ms") == 0 && i + 1 < argc) auto_ms = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--held-ms") == 0 && i + 1 < argc) cfg.limits.held_ms = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--fresh-ms") == 0 && i + 1 < argc) cfg.limits.fresh_ms = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--idle-ms") == 0 && i + 1 < argc) cfg.limits.idle_sign_out_ms = atoi(argv[++i]);
         else {
-            fprintf(stderr, "usage: gz-api-fake --data-dir DIR [--port N] [--locked] [--fresh-attempts] [--no-ipv6] [--tunnel-port N] [--quiet]\n");
+            fprintf(stderr, "usage: gz-api-fake --data-dir DIR [--port N] [--locked] [--fresh-attempts] [--no-ipv6] [--tunnel-port N] [--quiet]\n"
+                            "                   [--story] [--auto-ms N] [--held-ms N] [--fresh-ms N] [--idle-ms N]\n");
             return 2;
         }
     }
@@ -114,6 +165,11 @@ int main(int argc, char **argv)
         return 1;
     }
     gz_fake_init(&fake, locked ? GZ_FAKE_LOCKED : GZ_FAKE_FIRST_RUN);
+    if (story) {
+        fake.story = 1;
+        fake.has_factory = 0;                           /* the story makes its own */
+    }
+    g_fake = &fake;
     cfg.backend = &gz_fake_backend;
     cfg.backend_ctx = &fake;
     cfg.log = log_line;
@@ -134,7 +190,17 @@ int main(int argc, char **argv)
     printf("local socket %s\n", gz_api_server_socket_path(g_srv));
     if (g_first_run[0]) printf("first run: open file://%s in a browser\n", g_first_run);
     fflush(stdout);
+    if (story && pthread_create(&script, NULL, script_thread, NULL) != 0) story = 0;
+    g_ticking = 1;
+    if (story && auto_ms > 0 && pthread_create(&ticker, NULL, auto_thread, &auto_ms) != 0) auto_ms = 0;
     rc = gz_api_server_run(g_srv);
+    g_ticking = 0;
+    if (story && auto_ms > 0) pthread_join(ticker, NULL);
+    if (story) {
+        pthread_cancel(script);
+        pthread_join(script, NULL);
+    }
+    fake.srv = NULL;
     gz_api_server_free(g_srv);
     g_srv = NULL;
     gz_fake_free(&fake);
