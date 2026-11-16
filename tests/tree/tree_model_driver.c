@@ -2,9 +2,10 @@
  * standard input, answers one line each. Uses the pure library only.
  *
  *   split L N              -> "ok d1,d2,..." | "refuse"       (L: levels, comma-separated)
- *   req L N CHANNEL FEE    -> R | "refuse"
+ *   req L N CHANNEL RATE   -> R | "refuse"                 (RATE: satoshis per 1,000 vbytes)
+ *   fee RATE K             -> the fee of a tree transaction with K outputs | "invalid"
  *   path L N MEMBER        -> "d o1,o2,..." | "refuse"
- *   params HEX N           -> "D V FEE R" | error name        (decoded outer record, any chain)
+ *   params HEX N           -> "D V RATE R" | error name       (decoded outer record, any chain)
  *   exit E D N I LATE      -> "h_leaf lsc leave_by step_due unlock_by t0,t1,..."  ("-" for none)
  *   vsize K                -> vsize
  *   outer HEX              -> "<err> <digest> <re-encoded hex or ->"
@@ -63,6 +64,10 @@ int main(void)
             uint64_t r;
             if (gz_tree_requirement(levels, nl, (uint32_t)x1, x2, x3, &r)) printf("%llu\n", (unsigned long long)r);
             else printf("refuse\n");
+        } else if (sscanf(line, "fee %llu %llu", &x1, &x2) == 2) {
+            uint64_t fee = x2 >= 1 && x2 <= 15 ? gz_tree_fee(x1, (uint32_t)x2) : GZ_TREE_FEE_INVALID;
+            if (fee == GZ_TREE_FEE_INVALID) printf("invalid\n");
+            else printf("%llu\n", (unsigned long long)fee);
         } else if (sscanf(line, "path %s %llu %llu", a, &x1, &x2) == 3) {
             size_t nl = parse_levels(a, levels), k, i;
             uint8_t outs[GZ_TREE_MAX_DEPTH + 2], d;
@@ -79,7 +84,7 @@ int main(void)
             if (e != GZ_TERMS_OK) { printf("%s\n", gz_terms_err_name(e)); continue; }
             pe = gz_tree_params(&O, (uint32_t)x1, &p);
             if (pe != GZ_TREE_P_OK) { printf("params_%d\n", (int)pe); continue; }
-            printf("%u %u %llu %llu\n", (unsigned)p.D, (unsigned)p.V, (unsigned long long)p.fee_per_tx, (unsigned long long)p.funding_amount);
+            printf("%u %u %llu %llu\n", (unsigned)p.D, (unsigned)p.V, (unsigned long long)p.tree_feerate, (unsigned long long)p.funding_amount);
         } else if (sscanf(line, "exit %llu %llu %llu %llu %llu", &x1, &x2, &x3, &x4, &x5) == 5) {
             const gz_exit_consts_t sig = GZ_EXIT_SIGNET_INIT, *c = &sig;
             uint32_t i;

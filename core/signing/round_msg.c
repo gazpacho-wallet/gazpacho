@@ -221,7 +221,7 @@ gz_rmsg_err_t gz_rmsg_propose_decode(const uint8_t *records, size_t len, gz_rmsg
     for (size_t t = 0; t < p->n_tiers; t++) p->tier_sizes[t] = be32(g[P_TIERS].v + 4 * t);
     p->end_height = be32(g[P_END].v);
     p->tree_anchors = g[P_ANCHORS].v[0];
-    p->fee_per_tx = be64(g[P_FEE].v);
+    p->tree_feerate = be64(g[P_FEE].v);
     p->lstock_delay = be32(g[P_DELAY].v);
     p->n_lstock_hashes = g[P_HASHES].len / 36;
     m->lstock_hashes = g[P_HASHES].len ? g[P_HASHES].v : NULL;
@@ -271,7 +271,7 @@ size_t gz_rmsg_propose_encode(const gz_rmsg_propose_in_t *in, uint8_t *out, size
     gz_rmsg_put(&w, 22, tiers, 4u * p->n_tiers);
     wr32(b, p->end_height); gz_rmsg_put(&w, 24, b, 4);
     gz_rmsg_put(&w, 28, &p->tree_anchors, 1);
-    wr64(b, p->fee_per_tx); gz_rmsg_put(&w, 30, b, 8);
+    wr64(b, p->tree_feerate); gz_rmsg_put(&w, 30, b, 8);
     wr32(b, p->lstock_delay); gz_rmsg_put(&w, 32, b, 4);
     gz_rmsg_put(&w, 34, in->lstock_hashes, 36 * p->n_lstock_hashes);
     gz_rmsg_put(&w, 36, &p->fixed_levels, 1);

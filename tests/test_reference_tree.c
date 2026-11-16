@@ -7,11 +7,16 @@
  *   participant i (0 = LSP, 1..N = clients, slot order) has secret key = integer (i+1)
  *   funding outpoint aaaa...aa:0, 1,000,000 sats, cltv 1000, step_blocks 10,
  *   states_per_layer 4, leaf arity FACTORY_ARITY_PS, use_tree_anchor = 1,
+ *   tree_fee_rate = the import's default (100 sat/kvB),
  *   placement = factory_init_from_pubkeys default.
- * A third case replays the cross-check against a real regtest run
- * (4 clients, secret keys 1,2,3,5,4, funding 3039...ce2f:0, cltv 247).
+ * The first import also replayed a real regtest run (4 clients, secret keys
+ * 1,2,3,5,4, funding 3039...ce2f:0, cltv 247). That run was made with the
+ * import of the time (version-2 transactions, a flat fee); its txids cannot
+ * be rebuilt by this import and are kept in the reference file as history
+ * only. A new real run is owed; Slice 1.5 runs real daemons.
  *
- * usage: test_reference_tree [reference-file]
+ * usage: test_reference_tree [reference-file] [--print]
+ *   --print  also print the built lines (to regenerate the reference file)
  * exit 0 = all match, 1 = mismatch (names the node), 2 = setup/IO error. */
 #include "superscalar/factory.h"
 #include "superscalar/musig.h"
@@ -76,11 +81,15 @@ static int gen_tree(size_t nc, const unsigned char *keys, const char *ftxid_hex,
     factory_set_arity(f, FACTORY_ARITY_PS);
     f->cltv_timeout = cltv;
     f->use_tree_anchor = 1;
-    factory_set_funding(f, ftxid, fvout, famt, spk, 34);
+    if (!factory_set_funding(f, ftxid, fvout, famt, spk, 34)) { fprintf(stderr, "factory_set_funding failed\n"); return 0; }
     if (!factory_build_tree(f)) { fprintf(stderr, "factory_build_tree failed\n"); return 0; }
+    {   /* the import's own audit of what it built: version 3, anchors, the rate for each size */
+        char why[160];
+        if (!factory_check_tree_fees(f, why, sizeof why)) { fprintf(stderr, "factory_check_tree_fees: %s\n", why); return 0; }
+    }
     snprintf(out->l[out->n++], LINELEN,
-             "n_clients %zu n_nodes %zu fee_per_tx %llu cltv %u step %u states_per_layer %u",
-             nc, f->n_nodes, (unsigned long long)f->fee_per_tx, cltv, step, spl);
+             "n_clients %zu n_nodes %zu tree_fee_rate %llu cltv %u step %u states_per_layer %u",
+             nc, f->n_nodes, (unsigned long long)f->tree_fee_rate, cltv, step, spl);
     for (size_t i = 0; i < f->n_nodes && out->n < MAXLINES; i++) {
         factory_node_t *nd = &f->nodes[i];
         unsigned char t[32]; memcpy(t, nd->txid, 32); reverse_bytes(t, 32);
@@ -125,7 +134,7 @@ static void compare(const char *label, const lines_t *got, const lines_t *ref)
 }
 
 /* Read the reference section whose header line contains `marker` (stop at blank line). */
-static int read_section(FILE *fp, const char *marker, lines_t *out, int crosscheck)
+static int read_section(FILE *fp, const char *marker, lines_t *out, int crosscheck)   /* crosscheck: unused since the re-import */
 {
     char buf[LINELEN];
     rewind(fp);
@@ -147,6 +156,7 @@ static int read_section(FILE *fp, const char *marker, lines_t *out, int crossche
 int main(int argc, char **argv)
 {
     const char *path = argc > 1 ? argv[1] : GZ_REFERENCE_FILE;
+    int print = argc > 2 && strcmp(argv[2], "--print") == 0;
     const char *FT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     FILE *fp = fopen(path, "r");
     if (!fp) { fprintf(stderr, "cannot open reference file %s\n", path); return 2; }
@@ -163,28 +173,12 @@ int main(int argc, char **argv)
         memset(&ref, 0, sizeof ref); memset(&got, 0, sizeof got);
         if (!read_section(fp, marker, &ref, 0)) { fprintf(stderr, "reference section '%s' not found\n", marker); return 2; }
         if (!gen_tree((size_t)sizes[s], keys, FT, 0, 1000000, 1000, &got)) { fprintf(stderr, "tree build failed (%s)\n", label); return 2; }
+        if (print) for (size_t i = 0; i < got.n; i++) printf("%s\n", got.l[i]);
         compare(label, &got, &ref);
     }
 
-    /* Cross-check against the real regtest run: only the 14 txids are recorded. */
-    {
-        unsigned char k2[5] = {1, 2, 3, 5, 4};
-        memset(&ref, 0, sizeof ref); memset(&got, 0, sizeof got);
-        if (!read_section(fp, "Cross-check against a real regtest run", &ref, 1)) { fprintf(stderr, "cross-check section not found\n"); return 2; }
-        if (!gen_tree(4, k2, "303946d2e446b1ff7141f96c1d9b44e08fa40ca424362a6f457a59347f93ce2f", 0, 1000000, 247, &got)) return 2;
-        size_t bad = 0, cnt = 0;
-        for (size_t i = 2; i < got.n; i++) {          /* skip funding_spk, n_clients */
-            size_t idx = i - 2; cnt++;
-            char want[LINELEN];
-            if (idx >= ref.n) { bad++; printf("FAIL real-run: node %zu missing in reference\n", idx); continue; }
-            snprintf(want, sizeof want, "%s", strrchr(ref.l[idx], ' ') + 1);
-            if (strcmp(want, txid_of(got.l[i])) != 0) {
-                bad++; printf("FAIL real-run: node %zu txid differs\n  reference %s\n  built     %s\n", idx, want, txid_of(got.l[i]));
-            }
-        }
-        if (cnt != ref.n) { bad++; printf("FAIL real-run: node count differs (reference %zu, built %zu)\n", ref.n, cnt); }
-        if (bad) g_fail = 1; else printf("ok   real-run cross-check: %zu txids match\n", cnt);
-    }
+    /* The real regtest run of the first import is history (see the top of
+     * this file): this import cannot rebuild its version-2 transactions. */
     fclose(fp);
     printf(g_fail ? "RESULT: FAIL\n" : "RESULT: PASS\n");
     return g_fail ? 1 : 0;

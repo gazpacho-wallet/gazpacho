@@ -570,10 +570,11 @@ static void test_bounds(void)
         u64be(b8, 2100000000000000ull); t1_with(&r2, 30, b8, 8, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_UNFUNDABLE);
     }
     bound_u32(32, 1, 0, GZ_TERMS_E_FEERATE);
-    {   /* the fee rate's ceiling passes its bound; T1's tree is then below the import's minimum. */
+    {   /* the fee rate's ceiling passes its bound, and T1's tree can still be funded at it
+         * (each transaction pays for its own size, and R(root) carries every fee). */
         rec_t r2; uint8_t b4[4];
         u32be(b4, 1000001); t1_with(&r2, 32, b4, 4, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_FEERATE);
-        u32be(b4, 1000000); t1_with(&r2, 32, b4, 4, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_UNFUNDABLE);
+        u32be(b4, 1000000); t1_with(&r2, 32, b4, 4, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_OK);
     }
     /* Step timeout above 600,000 (with the budget raised to keep it valid). */
     {
@@ -663,7 +664,8 @@ static void test_shapes(void)
         CHECK(gz_tree_params(&t, n, &p) == GZ_TREE_P_OK);
         CHECK(p.D == want_D);
         CHECK(p.n_levels == (n <= 4 ? 1u : 2u));
-        CHECK(p.fee_per_tx == (n <= 4 ? 17u : 26u));
+        CHECK(p.tree_feerate == 100u);
+        CHECK(p.max_children == (n <= 4 ? 2u : 4u));
         CHECK(p.V == (n <= 4 ? 167u : 253u));
     }
     /* Test 19: the build-server table. */
@@ -826,14 +828,22 @@ static void test_fundable(void)
     gz_terms_outer_t t, d;
     uint8_t b[GZ_TERMS_OUTER_MAX];
     size_t n;
-    /* The import's minimum: 4 members, channel 546; fee rate 5,269 (fee 880,
-     * R = minimum = 16,688) passes; 5,270 (fee 881, R 16,699 < 16,702) does not. */
+    /* The import's minimum: 4 members at T1's rate 100, where it is
+     * 14 x (13 + 240) + 4 x 1,092 = 7,910. Channel 638 (R = 7,915) passes;
+     * 637 (R = 7,907) does not. */
     t1_terms(&t);
-    t.minimum = 4; t.target = 4; t.channel_sat = 546;
-    t.tree_feerate = 5269;
+    t.minimum = 4; t.target = 4; t.channel_sat = 638;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
-    t.tree_feerate = 5270;
+    t.channel_sat = 637;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+    /* All of T1's member counts (3 to 8): 8 members need the most, 685. */
+    t1_terms(&t);
+    t.channel_sat = 685;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
+    t.channel_sat = 684;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
     /* Review A's probe P11: T1 with channel 546 and fee rate 1,000,000. */
@@ -854,7 +864,7 @@ static void test_fundable(void)
     /* Only member counts the lobby can start with count: with minimum 5, the
      * 4-member tree's minimum does not matter. */
     t1_terms(&t);
-    t.channel_sat = 546; t.tree_feerate = 5270; t.minimum = 5; t.target = 5;
+    t.channel_sat = 637; t.minimum = 5; t.target = 5;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
     t.minimum = 4;

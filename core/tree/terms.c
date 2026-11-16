@@ -228,8 +228,8 @@ gz_terms_err_t gz_terms_check_shapes(const gz_shape_entry_t *es, size_t n_entrie
 
 /* Every member count a lobby can start with (minimum to target, at most the
  * 256 a factory may have) gives a tree that can be funded: R(root) fits the
- * money supply, and is at least the import's minimum (factory_build_tree),
- * which terms.md 4.2 does not state. Otherwise every member would refuse at
+ * money supply, and is at least the import's minimum (factory_build_tree:
+ * terms.md 4.2, "The import's minimum"). Otherwise every member would refuse at
  * signing; refusing on receipt saves the lobby (review A, S3). A minimum
  * above 256 leaves no count to build at all (review B, B4); a target above
  * 256 is accepted, and a round of more than 256 members is refused at
@@ -242,7 +242,8 @@ static gz_terms_err_t check_fundable(const gz_terms_outer_t *t)
     for (n = t->minimum; n <= top; n++) {
         if (gz_tree_params(t, n, &p) != GZ_TREE_P_OK) return GZ_TERMS_E_UNFUNDABLE;
         if (p.funding_amount > SUPPLY_SAT
-            || p.funding_amount < 2 * (2 * (uint64_t)n - 1) * p.fee_per_tx + 1092 * (uint64_t)n)
+            || p.funding_amount < 2 * (2 * (uint64_t)n - 1) * (gz_tree_fee(t->tree_feerate, 1) + gz_tree_anchor(t->tree_feerate))
+                                      + 1092 * (uint64_t)n)
             return GZ_TERMS_E_UNFUNDABLE;
     }
     return GZ_TERMS_OK;

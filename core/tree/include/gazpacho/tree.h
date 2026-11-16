@@ -1,6 +1,6 @@
 /* The factory tree from signed lobby terms, and the creation checks.
  *
- *   spec/terms.md section 4        the split rule, D, the fee per transaction,
+ *   spec/terms.md section 4        the split rule, D, each transaction's fee,
  *                                  the funding amount R(root)
  *   spec/signing-round.md 4.1, 13  the builder's inputs and order (advanceless:
  *                                  every interior level fixed, one member per
@@ -38,10 +38,13 @@
 #define GZ_TREE_MAX_TX        720      /* 64 + 43 x 15 = 709 bytes at most (15 children and the anchor) */
 #define GZ_TREE_MAX_DEPTH     32       /* deeper than any valid tree of 256 members */
 #define GZ_TREE_MAX_LEVELS    8        /* the import reads at most 8 arity entries */
-#define GZ_TREE_ANCHOR_SAT    240      /* ANCHOR_OUTPUT_AMOUNT, channel.h:16 */
-#define GZ_TREE_DUST_SAT      546      /* CHANNEL_DUST_LIMIT_SATS, channel.h:14 */
-#define GZ_TREE_TIMEOUT_STEP  5        /* TIMEOUT_STEP_BLOCKS, factory.c:1475 */
-#define GZ_TREE_LSTOCK_DEFAULT 144     /* L_STOCK_CSV_DEFAULT_BLOCKS, factory.h:50 */
+#define GZ_TREE_ANCHOR_SAT    240      /* ANCHOR_OUTPUT_AMOUNT, channel.h:19 */
+#define GZ_TREE_DUST_SAT      546      /* CHANNEL_DUST_LIMIT_SATS, channel.h:17 */
+#define GZ_TREE_TIMEOUT_STEP  5        /* TIMEOUT_STEP_BLOCKS, factory.c:1803 */
+#define GZ_TREE_LSTOCK_DEFAULT 144     /* L_STOCK_CSV_DEFAULT_BLOCKS, factory.h:59 */
+#define GZ_TREE_TX_VERSION    3        /* FACTORY_TREE_TX_VERSION, factory.h:48: TRUC (BIP 431) */
+#define GZ_TREE_FEE_MAX_SAT   2100000000000000ull   /* FEE_MAX_SATS, fee.h:33 */
+#define GZ_TREE_FEE_INVALID   UINT64_MAX            /* FEE_INVALID, fee.h:35 */
 #define GZ_TREE_SLICE1_STEP   144      /* signing-round.md 4.1: layer step, fixed in Slice 1 */
 #define GZ_TREE_SLICE1_STATES 4        /* and states per layer */
 
@@ -79,6 +82,14 @@ int gz_tree_split(const uint8_t *levels, size_t n_levels, uint32_t n_members, ui
 /* Signed virtual size of a tree transaction with k P2TR outputs and the
  * anchor (BIP 141): ceil((4 (64 + 43 k) + 2 + 66) / 4). */
 uint32_t gz_tree_vsize(uint32_t k);
+/* The fee such a transaction pays at `feerate` satoshis per 1,000 vbytes:
+ * ceil(feerate x gz_tree_vsize(k) / 1000), every transaction for its own
+ * exact size (the import's factory_tree_tx_fee and fee_at_rate). 0 at rate
+ * 0; GZ_TREE_FEE_INVALID when the fee would pass GZ_TREE_FEE_MAX_SAT. */
+uint64_t gz_tree_fee(uint64_t feerate, uint32_t k);
+/* The value of the anchor on every tree transaction: 240, or 0 at fee rate 0
+ * (the import's factory_tree_anchor_sats; the terms do not allow rate 0). */
+uint64_t gz_tree_anchor(uint64_t feerate);
 
 /* Everything terms.md section 4.2 derives for n members. */
 typedef struct {
@@ -88,7 +99,7 @@ typedef struct {
     uint8_t D;                  /* fixed_levels: the depth of the deepest leaf */
     uint32_t max_children;      /* of any tree transaction (2 at least: the leaf's state) */
     uint32_t V;                 /* largest signed vsize */
-    uint64_t fee_per_tx;        /* ceil(tree_feerate x V / 1000) */
+    uint32_t tree_feerate;      /* the terms' rate, satoshis per 1,000 vbytes */
     uint64_t funding_amount;    /* R(root) */
     uint8_t depth[GZ_TREE_MAX_MEMBERS];   /* each member's leaf depth */
 } gz_tree_params_t;
@@ -101,10 +112,11 @@ typedef enum {
     GZ_TREE_P_OVERFLOW          /* R(root) does not fit 64 bits */
 } gz_tree_p_err_t;
 gz_tree_p_err_t gz_tree_params(const gz_terms_outer_t *t, uint32_t n_members, gz_tree_params_t *p);
-/* R(root) for given levels, member count, channel, fee (anchors on). Returns
- * 0 on overflow or an invalid split, else 1. */
+/* R(root) for given levels, member count, channel and fee rate in satoshis
+ * per 1,000 vbytes (anchors on). Returns 0 on overflow, a fee that cannot be
+ * paid or an invalid split, else 1. */
 int gz_tree_requirement(const uint8_t *levels, size_t n_levels, uint32_t n_members,
-                        uint64_t channel_sat, uint64_t fee, uint64_t *out);
+                        uint64_t channel_sat, uint64_t feerate, uint64_t *out);
 
 /* exit.md 4.2 vector X2: the member's leaf depth and the number of P2TR
  * outputs of each tree transaction on its path, root first (d fixed
@@ -196,7 +208,7 @@ typedef struct {
     const uint8_t *host_key;                    /* participant 0's factory key, 33 bytes */
     const uint8_t (*member_keys)[33];           /* members in tree order */
     uint32_t end_height;                        /* cltv_timeout */
-    uint64_t fee_per_tx;
+    uint64_t tree_feerate;                      /* tree_fee_rate: satoshis per 1,000 vbytes */
     uint32_t lstock_csv;                        /* 0 means the import's default, 144 */
     uint8_t funding_txid[32];                   /* internal order */
     uint32_t funding_vout;
@@ -213,7 +225,7 @@ typedef enum {
     GZ_TREE_B_FIXED_LEVELS,   /* fixed_levels is not D */
     GZ_TREE_B_UNDERFUNDED,    /* a node's input does not cover its fee and anchor */
     GZ_TREE_B_DUST,           /* a leaf's channel below 546 */
-    GZ_TREE_B_IMPORT_MINIMUM, /* below factory_build_tree's minimum funding check */
+    GZ_TREE_B_IMPORT_MINIMUM, /* below factory_build_tree's minimum funding check, or a fee rate it cannot pay */
     GZ_TREE_B_CRYPTO          /* a key the provider refuses */
 } gz_tree_b_err_t;
 /* Rebuild every transaction from the rules. Mirrors factory.c's
@@ -288,7 +300,7 @@ typedef struct {
     uint32_t tier_sizes[8];
     uint32_t end_height;                /* 24 */
     uint8_t tree_anchors;               /* 28 */
-    uint64_t fee_per_tx;                /* 30 */
+    uint64_t tree_feerate;              /* 30: satoshis per 1,000 vbytes */
     uint32_t lstock_delay;              /* 32 */
     size_t n_lstock_hashes;             /* 34: Slice 1, none */
     uint8_t fixed_levels;               /* 36 */
@@ -351,7 +363,7 @@ typedef enum {
     GZ_CHK_C8_NO_SHAPE,           /* no shape entry covers this many members */
     GZ_CHK_C8_SHAPE,              /* the entry makes a multi-member leaf */
     GZ_CHK_C8_FIXED_LEVELS,       /* not D */
-    GZ_CHK_C8_FEE_RULE,           /* fee_per_tx is not the terms' rule */
+    GZ_CHK_C8_FEE_RULE,           /* tree_feerate is not the terms' */
     GZ_CHK_C8_FEE_CEILING,        /* above the member's ceiling */
     GZ_CHK_C8_FUNDING_RULE,       /* funding_amount is not R(root) */
     GZ_CHK_C8_LSTOCK_DELAY,       /* outside the member's range, or 0, or above 65,535 */
@@ -381,7 +393,7 @@ const char *gz_chk_name(gz_chk_t c);
  * lobby-level ones). */
 typedef struct {
     uint64_t min_own_channel_sat;       /* its own channel at least this */
-    uint64_t max_fee_per_tx_sat;        /* the fee ceiling */
+    uint64_t max_tree_feerate;          /* the fee-rate ceiling, satoshis per 1,000 vbytes */
     uint32_t min_lstock_delay, max_lstock_delay;
     uint32_t min_members, max_members;  /* the tree's member count */
     gz_exit_consts_t exit;              /* A, B, M (exit.md 4.3) */
@@ -474,7 +486,7 @@ typedef struct {
  *   must decode to exactly `outer`, `frozen` and the two digests); C1 participants
  *   (count, valid keys, every key distinct, the host's contribution key);
  *   bindings; C7 fresh key (reason 12); C10 (reason 6); C8 fixed fields and
- *   the member's ranges; C8 shape, fixed levels, fee and funding rules; C8
+ *   the member's ranges; C8 shape, fixed levels, fee rate and funding rules; C8
  *   end height and the exit-time check; C1 funding transaction and script;
  *   the rebuild (gz_tree_build) and C1's comparison with the import; C8 leaf
  *   kind, own leaf, channels; C5 every output on the path recognised; C6

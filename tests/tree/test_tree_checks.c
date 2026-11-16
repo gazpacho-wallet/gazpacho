@@ -164,7 +164,7 @@ static void scenario(uint32_t n, uint32_t me)
     s->p.n_tiers = 1;
     s->p.end_height = TIP + 180;
     s->p.tree_anchors = 1;
-    s->p.fee_per_tx = s->prm.fee_per_tx;
+    s->p.tree_feerate = s->prm.tree_feerate;
     s->p.lstock_delay = 144;
     s->p.fixed_levels = s->prm.D;
     s->p.k = 1;
@@ -173,7 +173,7 @@ static void scenario(uint32_t n, uint32_t me)
     s->p.nonces_due_ms = 30000;
     s->p.sigs_due_ms = 30000;
     s->cond.min_own_channel_sat = 100000;
-    s->cond.max_fee_per_tx_sat = 1000;
+    s->cond.max_tree_feerate = 1000;
     s->cond.min_lstock_delay = 1;
     s->cond.max_lstock_delay = 1000;
     s->cond.min_members = 3;
@@ -205,7 +205,7 @@ static void scenario(uint32_t n, uint32_t me)
         for (i = 0; i < n; i++) memcpy(keys[i], s->parts[i + 1].factory_key, 33);
         bi.levels = s->prm.levels; bi.n_levels = s->prm.n_levels; bi.fixed_levels = s->prm.D; bi.n_members = n;
         bi.host_key = s->parts[0].factory_key; bi.member_keys = (const uint8_t(*)[33])keys;
-        bi.end_height = s->p.end_height; bi.fee_per_tx = s->p.fee_per_tx; bi.lstock_csv = 144;
+        bi.end_height = s->p.end_height; bi.tree_feerate = s->p.tree_feerate; bi.lstock_csv = 144;
         bi.funding_amount = s->p.funding_amount;
         if (n >= 3 && n <= 16 && gz_tree_build(&bi, &CR, &TREE) == GZ_TREE_B_OK) s->p.tier_sizes[0] = TREE.n_nodes;
     }
@@ -395,11 +395,14 @@ static void c8_shape_fee_funding(void)
     S.p.fixed_levels = S.prm.D - 1; EXPECT(GZ_CHK_C8_FIXED_LEVELS, 9);
     S.p.fixed_levels = S.prm.D + 1; EXPECT(GZ_CHK_C8_FIXED_LEVELS, 9);
     S.p.fixed_levels = S.prm.D; OK();
-    S.p.fee_per_tx = S.prm.fee_per_tx - 1; EXPECT(GZ_CHK_C8_FEE_RULE, 9);
-    S.p.fee_per_tx = S.prm.fee_per_tx + 1; EXPECT(GZ_CHK_C8_FEE_RULE, 9);
-    S.p.fee_per_tx = S.prm.fee_per_tx;
-    S.cond.max_fee_per_tx_sat = S.prm.fee_per_tx - 1; EXPECT(GZ_CHK_C8_FEE_CEILING, 9);
-    S.cond.max_fee_per_tx_sat = S.prm.fee_per_tx; OK();
+    CHECK(S.prm.tree_feerate == 100);
+    S.p.tree_feerate = S.prm.tree_feerate - 1; EXPECT(GZ_CHK_C8_FEE_RULE, 9);
+    S.p.tree_feerate = S.prm.tree_feerate + 1; EXPECT(GZ_CHK_C8_FEE_RULE, 9);
+    S.p.tree_feerate = 0; EXPECT(GZ_CHK_C8_FEE_RULE, 9);
+    S.p.tree_feerate = 1250; EXPECT(GZ_CHK_C8_FEE_RULE, 9);      /* no rate but the terms' own */
+    S.p.tree_feerate = S.prm.tree_feerate;
+    S.cond.max_tree_feerate = S.prm.tree_feerate - 1; EXPECT(GZ_CHK_C8_FEE_CEILING, 9);
+    S.cond.max_tree_feerate = S.prm.tree_feerate; OK();
     S.p.funding_amount = S.prm.funding_amount - 1; refund(); EXPECT(GZ_CHK_C8_FUNDING_RULE, 9);
     S.p.funding_amount = S.prm.funding_amount + 1; refund(); EXPECT(GZ_CHK_C8_FUNDING_RULE, 9);
     S.p.funding_amount = S.prm.funding_amount; refund(); OK();
@@ -424,22 +427,22 @@ static void c8_shape_fee_funding(void)
     CHECK(S.cond.min_own_channel_sat == 200385);
     OK();
     S.cond.min_own_channel_sat++; EXPECT(GZ_CHK_C8_CHANNEL_OWN, 9);
-    /* The import's minimum funding, from the terms (a lobby of exactly 4):
-     * fee 880 builds, 881 does not. Terms that cannot be funded are refused
-     * on receipt (review A, S3), and so by the member's re-check of the
-     * terms before the build's own mirror of the import's minimum. */
+    /* The import's minimum funding, from the terms (a lobby of exactly 4, at
+     * T1's rate): channel_sat 638 builds (R = 7,915 against the import's
+     * 7,910), 637 does not (R = 7,907). Terms that cannot be funded are
+     * refused on receipt (review A, S3), and so by the member's re-check of
+     * the terms before the build's own mirror of the import's minimum. */
     scenario(4, 2);
     S.outer.minimum = 4; S.outer.target = 4;
-    S.outer.channel_sat = 546; S.cond.min_own_channel_sat = 546; S.cond.max_fee_per_tx_sat = 100000;
-    S.outer.tree_feerate = 5269;
+    S.outer.channel_sat = 638; S.cond.min_own_channel_sat = 546;
     reseal();
-    CHECK(gz_tree_params(&S.outer, 4, &S.prm) == GZ_TREE_P_OK && S.prm.fee_per_tx == 880);
-    S.p.fee_per_tx = 880; S.p.funding_amount = S.prm.funding_amount; refund();
+    CHECK(gz_tree_params(&S.outer, 4, &S.prm) == GZ_TREE_P_OK && S.prm.funding_amount == 7915);
+    S.p.funding_amount = S.prm.funding_amount; refund();
     OK();
-    S.outer.tree_feerate = 5270;
+    S.outer.channel_sat = 637;
     reseal();
-    CHECK(gz_tree_params(&S.outer, 4, &S.prm) == GZ_TREE_P_OK && S.prm.fee_per_tx == 881);
-    S.p.fee_per_tx = 881; S.p.funding_amount = S.prm.funding_amount; refund();
+    CHECK(gz_tree_params(&S.outer, 4, &S.prm) == GZ_TREE_P_OK && S.prm.funding_amount == 7907);
+    S.p.funding_amount = S.prm.funding_amount; refund();
     v = run(); CHECK(v.check == GZ_CHK_C8A_TERMS_BOUNDS && v.reason == 9 && v.at == GZ_TERMS_E_UNFUNDABLE);
 }
 

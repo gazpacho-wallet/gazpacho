@@ -9,6 +9,9 @@
 #
 # Re-running with the already-pinned commit is a no-op (IMPORT.md keeps its "Imported on"
 # date when the commit is unchanged).
+#
+# IMPORT.md's hand-written part, from the line "## Notes on this pin" to the end, is kept
+# as it is. After a re-import to another commit it describes the OLD pin: rewrite it.
 set -euo pipefail
 
 [ $# -eq 2 ] || { echo "usage: $0 <superscalar-checkout> <commit-ish>" >&2; exit 2; }
@@ -52,8 +55,14 @@ OUR_TAG=$(sed -n 's/^[[:space:]]*GIT_TAG[[:space:]]*\([0-9a-f]\{40\}\).*/\1/p' "
 
 # ---- copy ----
 OLD_DATE=""
-if [ -f "$DEST/IMPORT.md" ] && grep -q "^Pinned commit: $COMMIT\$" "$DEST/IMPORT.md"; then
-  OLD_DATE=$(sed -n 's/^Imported on: //p' "$DEST/IMPORT.md")
+NOTES=""
+if [ -f "$DEST/IMPORT.md" ]; then
+  NOTES=$(sed -n '/^## Notes on this pin/,$p' "$DEST/IMPORT.md")
+  if grep -q "^Pinned commit: $COMMIT\$" "$DEST/IMPORT.md"; then
+    OLD_DATE=$(sed -n 's/^Imported on: //p' "$DEST/IMPORT.md")
+  elif [ -n "$NOTES" ]; then
+    echo "note: IMPORT.md's \"Notes on this pin\" were written for another commit; rewrite them" >&2
+  fi
 fi
 rm -rf "$DEST/src" "$DEST/include"
 for p in "${FILES[@]}"; do
@@ -89,6 +98,7 @@ IMPORT_DATE=${OLD_DATE:-$(date -u +%Y-%m-%d)}
     echo "| $p | $p | $(sha256sum "$DEST/$p" | cut -d' ' -f1) |"
   done
   echo "| LICENSE | LICENSE | $(sha256sum "$DEST/LICENSE" | cut -d' ' -f1) |"
+  if [ -n "$NOTES" ]; then echo; printf '%s\n' "$NOTES"; fi
 } > "$DEST/IMPORT.md"
 
 # verify identity against git object content

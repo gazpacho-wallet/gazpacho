@@ -19,8 +19,9 @@
  *   tree_shapes                       run the built-in list of cases, one child
  *                                     process per case, print a Markdown table
  *   tree_shapes MEMBERS SHAPE STATIC  run one case in this process
- *   tree_shapes defects               reproduce two defects of the imported
- *                                     tree builder directly (see the note)
+ *   tree_shapes defects               check that two former defects of the
+ *                                     imported tree builder are gone (see the
+ *                                     note): exit 0 if neither is reproduced
  *
  *   MEMBERS  number of members (the host is added as participant 0)
  *   SHAPE    "ps" for pseudo-Spilman leaves under two-way levels all the way,
@@ -357,11 +358,12 @@ static factory_t *start_factory(const shape_case_t *c, secp256k1_context *ctx,
     r->layers_after_init = f->counter.n_layers;
     /* The arity must be set straight after factory_init: it is what repairs
      * the counter. */
-    if (c->n_arities) factory_set_level_arity(f, c->arities, c->n_arities);
+    if (c->n_arities) { if (!factory_set_level_arity(f, c->arities, c->n_arities)) return NULL; }
     else              factory_set_arity(f, FACTORY_ARITY_PS);
     if (c->static_levels) factory_set_static_near_root(f, c->static_levels);
     r->counter_sane = counter_is_sane(f);
-    f->placement_mode = PLACEMENT_SEQUENTIAL;   /* order never depends on a sort */
+    if (!factory_set_placement_mode(f, PLACEMENT_SEQUENTIAL)) return NULL;   /* order never depends on a sort */
+    f->build_quiet = 1;
     f->cltv_timeout = CLTV_TIMEOUT;
     f->use_tree_anchor = 1;
     return f;
@@ -382,13 +384,13 @@ static int run_case(const shape_case_t *c, result_t *r)
     if (!make_keys(ctx, n, kps, pks) || !funding_script(ctx, pks, n, spk)) return 0;
 
     r->ewt_shape = factory_compute_ewt_for_shape(c->n_arities ? c->arities : NULL, c->n_arities,
-                                                 FACTORY_ARITY_PS, c->members, c->static_levels,
+                                                 FACTORY_ARITY_PS, 1, c->members, c->static_levels,
                                                  STEP_BLOCKS, STATES_PER_LAYER);
     double t0 = now_secs();
     factory_t *f = start_factory(c, ctx, kps, n, r);
     if (!f) return 0;
-    factory_set_funding(f, ftxid, 0, (uint64_t)n * SATS_PER_MEMBER + 1000000u, spk, 34);
-    r->built = r->counter_sane && factory_build_tree(f) && f->n_nodes > 0 &&
+    r->built = factory_set_funding(f, ftxid, 0, (uint64_t)n * SATS_PER_MEMBER + 1000000u, spk, 34) &&
+               r->counter_sane && factory_build_tree(f) && factory_check_tree_fees(f, NULL, 0) && f->n_nodes > 0 &&
                memcmp(f->nodes[0].spending_spk, spk, 34) == 0;
     double t1 = now_secs();
     r->secs_build = t1 - t0;
@@ -485,9 +487,9 @@ static factory_t *build_only(size_t members, const char *shape, secp256k1_contex
     if (!kps || !pks || !parse_shape(shape, &c) || !make_keys(ctx, n, kps, pks) || !funding_script(ctx, pks, n, spk)) return NULL;
     factory_t *f = start_factory(&c, ctx, kps, n, &r);
     if (!f) return NULL;
-    factory_set_funding(f, ftxid, 0, (uint64_t)n * SATS_PER_MEMBER + 1000000u, spk, 34);
+    int funded = factory_set_funding(f, ftxid, 0, (uint64_t)n * SATS_PER_MEMBER + 1000000u, spk, 34);
     free(kps); free(pks);
-    return factory_build_tree(f) ? f : NULL;
+    return funded && factory_build_tree(f) ? f : NULL;
 }
 
 static uint64_t outputs_total(const factory_node_t *nd)
@@ -497,65 +499,73 @@ static uint64_t outputs_total(const factory_node_t *nd)
     return total;
 }
 
-/* A node with 16 child outputs gets no anchor, yet the anchor's 240 sats are
- * still taken out of what it passes on. Returns 1 if reproduced. */
+/* FORMER DEFECT 1 (import of 2026-11-11, pin e657395). A node with 16 child
+ * outputs got no anchor, yet the anchor's 240 sats were still taken out of
+ * what it passed on. The import now refuses a fan-out that leaves no room for
+ * the anchor (fanout_room, factory.c). Returns 1 if the defect is reproduced:
+ * such a tree builds, or a 15-wide tree lacks an anchor or the exact fee
+ * anywhere. */
 static int defect_anchor_dropped(secp256k1_context *ctx)
 {
     factory_t *f = build_only(32, "16,ps", ctx);
-    size_t wide = 0, wide_without_anchor = 0, wide_overpaying = 0, others_with_anchor = 0, others_exact = 0, others = 0;
-    if (!f) { printf("anchor: the 32-member 16,ps tree did not build\n"); return 0; }
+    size_t with_anchor = 0, exact = 0, widest = 0;
+    if (f) {
+        size_t wide = 0, wide_without_anchor = 0;
+        for (size_t i = 0; i < f->n_nodes; i++)
+            if (f->nodes[i].n_outputs == FACTORY_MAX_OUTPUTS) { wide++; wide_without_anchor += (size_t)!has_anchor(&f->nodes[i]); }
+        printf("anchor: the 32-member 16,ps tree built; nodes with %d outputs: %zu, of those without an anchor: %zu\n",
+               FACTORY_MAX_OUTPUTS, wide, wide_without_anchor);
+        factory_free(f); free(f);
+        return 1;
+    }
+    printf("anchor: 32 members, shape 16,ps, anchors on: refused (no room for 16 children and the anchor)\n");
+    f = build_only(30, "15,ps", ctx);
+    if (!f) { printf("anchor: the 30-member 15,ps tree did not build\n"); return 1; }
     for (size_t i = 0; i < f->n_nodes; i++) {
         const factory_node_t *nd = &f->nodes[i];
-        uint64_t left_as_fee = nd->input_amount - outputs_total(nd);
-        if (nd->n_outputs == FACTORY_MAX_OUTPUTS) {
-            wide++;
-            wide_without_anchor += (size_t)!has_anchor(nd);
-            wide_overpaying += left_as_fee == f->fee_per_tx + ANCHOR_SATS;
-        } else {
-            others++;
-            others_with_anchor += (size_t)has_anchor(nd);
-            others_exact += left_as_fee == f->fee_per_tx;
-        }
+        with_anchor += (size_t)has_anchor(nd);
+        exact += nd->input_amount - outputs_total(nd) == nd->fee_sats;
+        if (nd->n_outputs > widest) widest = nd->n_outputs;
     }
-    printf("anchor: 32 members, shape 16,ps, anchors on, fee %llu sats per transaction\n", (unsigned long long)f->fee_per_tx);
-    printf("  nodes with %d outputs: %zu; of those without an anchor output: %zu; of those leaving fee + %u sats unspent: %zu\n",
-           FACTORY_MAX_OUTPUTS, wide, wide_without_anchor, ANCHOR_SATS, wide_overpaying);
-    printf("  all other nodes: %zu; with an anchor output: %zu; leaving exactly the fee: %zu\n", others, others_with_anchor, others_exact);
-    int reproduced = wide > 0 && wide_without_anchor == wide && wide_overpaying == wide &&
-                     others_with_anchor == others && others_exact == others;
+    printf("  30 members, shape 15,ps: %zu nodes, widest %zu outputs; with an anchor output: %zu; leaving exactly the fee: %zu\n",
+           f->n_nodes, widest, with_anchor, exact);
+    int gone = widest == FACTORY_MAX_OUTPUTS && with_anchor == f->n_nodes && exact == f->n_nodes;
     factory_free(f); free(f);
-    return reproduced;
+    return !gone;
 }
 
-/* A wide level given no more members than its width makes one leaf of all of
- * them instead of pseudo-Spilman leaves, without reporting anything.
- * Returns 1 if reproduced. */
+/* FORMER DEFECT 2 (same pin). A wide level given no more members than its
+ * width made one leaf of all of them instead of pseudo-Spilman leaves,
+ * without reporting anything. The import now keeps splitting until each leaf
+ * is of the kind the last entry names (leaf_arity_raw, factory.c). Returns 1
+ * if the defect is reproduced. */
 static int defect_leaf_type_changed(secp256k1_context *ctx)
 {
     factory_t *wanted = build_only(16, "4,ps", ctx), *got = build_only(16, "8,8,ps", ctx);
     result_t a, b;
-    if (!wanted || !got) { printf("leaves: a 16-member tree did not build\n"); return 0; }
+    if (!wanted || !got) { printf("leaves: a 16-member tree did not build\n"); return 1; }
     memset(&a, 0, sizeof a); memset(&b, 0, sizeof b);
     measure(wanted, &a); measure(got, &b);
     size_t members_per_leaf = got->nodes[got->leaf_node_indices[0]].n_signers - 1;
     printf("leaves: 16 members; a shape ending in ps asks for 16 one-member pseudo-Spilman leaves\n");
     printf("  shape 4,ps:   %zu leaves, %zu of them one-member pseudo-Spilman\n", a.leaves, a.ps_single_leaves);
-    printf("  shape 8,8,ps: %zu leaves, %zu of them one-member pseudo-Spilman; members in the first leaf: %zu; "
-           "factory_build_tree returned success\n", b.leaves, b.ps_single_leaves, members_per_leaf);
-    int reproduced = a.leaves == 16 && a.ps_single_leaves == 16 && b.leaves == 8 && b.ps_single_leaves == 0 &&
-                     members_per_leaf == 2;
+    printf("  shape 8,8,ps: %zu leaves, %zu of them one-member pseudo-Spilman; members in the first leaf: %zu\n",
+           b.leaves, b.ps_single_leaves, members_per_leaf);
+    int gone = a.leaves == 16 && a.ps_single_leaves == 16 && b.leaves == 16 && b.ps_single_leaves == 16 &&
+               members_per_leaf == 1;
     factory_free(wanted); free(wanted); factory_free(got); free(got);
-    return reproduced;
+    return !gone;
 }
 
+/* Exit 0 only if neither former defect is reproduced. */
 static int run_defects(void)
 {
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
     int anchor = defect_anchor_dropped(ctx), leaves = defect_leaf_type_changed(ctx);
-    printf("anchor silently dropped at %d outputs: %s\n", FACTORY_MAX_OUTPUTS, anchor ? "REPRODUCED" : "not reproduced");
-    printf("leaf type silently changed: %s\n", leaves ? "REPRODUCED" : "not reproduced");
+    printf("anchor silently dropped at %d outputs: %s\n", FACTORY_MAX_OUTPUTS, anchor ? "REPRODUCED" : "not reproduced (refused upstream)");
+    printf("leaf type silently changed: %s\n", leaves ? "REPRODUCED" : "not reproduced (fixed upstream)");
     secp256k1_context_destroy(ctx);
-    return anchor && leaves ? 0 : 1;
+    return anchor || leaves ? 1 : 0;
 }
 
 int main(int argc, char **argv)

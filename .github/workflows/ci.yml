@@ -43,7 +43,7 @@ jobs:
         # sanitizers, the same tests again under valgrind. The wallet
         # break-checks (label slow) run in wallet-break-checks.yml.
         run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow
-      - name: Scale check, one small case and the two defect reproductions
+      - name: Scale check, one small case; the two former builder defects stay gone
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
 
   import-check:
