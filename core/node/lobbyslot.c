@@ -874,13 +874,15 @@ static gz_status_t deliver_inline(gz_node_t *c, int eng, gz_action_list_t *out)
     ss_round_t *r = &c->ss.r[c->ss.cur];
     int outcome = (int)(c->ss.force ? GZ_TEST_SIGN_RETRY : c->cfg.test_sign_outcome);
     gz_status_t st;
+    /* At function scope: gcc's AddressSanitizer guards a large local whose
+     * scope ends early with calls the isolation check refuses. */
+    uint8_t failed[GZ_LOBBY_MAX_SEATS * 33];
     r->ended = 1;
     /* Its save, then the lobby's at once: adjacent saves are one batch. The
      * line that tells of it comes after both. */
     if ((st = ss_save(out, SS_REC_ENDED, r)) != GZ_OK) return st;
     if (s->host) {
         gz_lobby_host_t *h = &s->lobby.h;
-        uint8_t failed[GZ_LOBBY_MAX_SEATS * 33];
         size_t n = 0;
         if (outcome == GZ_TEST_SIGN_FUNDING) st = gz_lobby_host_round_result(h, GZ_LOBBY_ROUND_FUNDING, NULL, 0, out);
         else if (outcome == GZ_TEST_SIGN_FAILED) st = gz_lobby_host_round_result(h, GZ_LOBBY_ROUND_FAILED, NULL, 0, out);

@@ -1142,8 +1142,11 @@ static void test_hostile(unsigned long events, uint64_t seed)
             uint16_t code = codes[rnd(sizeof codes / sizeof codes[0])];
             for (size_t i = 0; i < na; i++) {
                 a[i].type = 12 + 2 * i;
-                a[i].v = i == 0 && rnd(4) ? scope : rec + rnd(64);
-                a[i].len = i == 0 && rnd(4) ? 32 : rnd(3) == 0 ? rnd(200) : (size_t[]){1, 2, 8, 33, 16}[rnd(5)];
+                /* One draw decides scope or record bytes, so a length never
+                 * runs past the 32-byte scope. */
+                int use_scope = i == 0 && rnd(4);
+                a[i].v = use_scope ? scope : rec + rnd(64);
+                a[i].len = use_scope ? 32 : rnd(3) == 0 ? rnd(200) : (size_t[]){1, 2, 8, 33, 16}[rnd(5)];
             }
             if (code == GZ_CMD_LOBBY_JOIN && rnd(2)) { /* a join that could be real */
                 a[0].v = scope; a[0].len = 32;
