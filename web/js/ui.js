@@ -44,6 +44,8 @@
       return r;
     }, function (e) {
       btn.disabled = false;
+      /* a live redraw may have replaced the box while the call ran: write to the one on screen */
+      if (where && !where.isConnected && where.id && document.getElementById(where.id)) where = document.getElementById(where.id);
       if (where) {
         u.add(where, error(e instanceof gz.api.ApiError || (e && e.code) ? e : { code: "internal" }));
         where.setAttribute("data-keep", "");     /* a live redraw carries it over (app.js) */

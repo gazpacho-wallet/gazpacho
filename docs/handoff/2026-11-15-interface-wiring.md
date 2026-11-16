@@ -12,7 +12,7 @@
 | Serving it | `ports/api/embed.cmake`, `ports/api/static.c`, the file list in `ports/api/CMakeLists.txt` | The listed files become `static_files.c` at build time (plain CMake, no other tool); `static.c` serves exactly those paths from memory |
 | The fake's story | `ports/api/fake/fake_backend.c` (`story_*`, `gz_fake_cmd`), `tools/gz-api-fake/main.c` (`--story`, `--auto-ms`, `--held-ms`, `--fresh-ms`, `--idle-ms`) | TEST ONLY. Without `--story` the fake answers exactly as before, and the server's own tests are unchanged |
 | Screens and their calls | `docs/ux/slice1-screens.md` | Redone against draft 4: every screen, its calls, the event topics that redraw it, and 15 gaps |
-| Browser tests | `tests/web/*.spec.mjs` (31 tests), `tests/web/check_static.py` | Against `gz-api-fake` through the real HTTP server |
+| Browser tests | `tests/web/*.spec.mjs` (32 tests), `tests/web/check_static.py` | Against `gz-api-fake` through the real HTTP server |
 | CI | job "interface in a browser" in `.github/workflows/ci.yml`; CTest `web_static_check` | The job also runs `tests/api/browser/`, which no job ran before |
 
 How the interface is put together (`web/js`):
