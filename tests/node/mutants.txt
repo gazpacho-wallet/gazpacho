@@ -1,0 +1,171 @@
+# Mutants for tools/mutate-node.py: NAME, FILE, OLD, NEW, [OCCURRENCE], tab-separated.
+# In OLD and NEW, \n stands for a newline and \\ for a backslash.
+# --- route.c: by kind
+kind-lobby-first	core/node/route.c	kind >= GZ_MSG_KIND_LOBBY_FIRST &&	kind > GZ_MSG_KIND_LOBBY_FIRST &&
+kind-lobby-last	core/node/route.c	kind <= GZ_MSG_KIND_LOBBY_LAST)	kind < GZ_MSG_KIND_LOBBY_LAST)
+kind-round-first	core/node/route.c	kind >= GZ_MSG_KIND_ROUND_FIRST &&	kind > GZ_MSG_KIND_ROUND_FIRST &&
+kind-round-last	core/node/route.c	kind <= GZ_MSG_KIND_ROUND_LAST)	kind < GZ_MSG_KIND_ROUND_LAST)
+kind-funded-gone	core/node/route.c	    if (kind == GZ_MSG_KIND_FACTORY_FUNDED) return FAM_FUNDED;\n	
+kind-test-in-release	core/node/route.c	if (kind == GZ_MSG_KIND_TEST && test_build) return FAM_TEST;	if (kind == GZ_MSG_KIND_TEST) return FAM_TEST;
+kind-discovery-first	core/node/route.c	kind >= GZ_MSG_KIND_DISCOVERY_FIRST &&	kind > GZ_MSG_KIND_DISCOVERY_FIRST &&
+kind-discovery-last	core/node/route.c	kind <= GZ_MSG_KIND_DISCOVERY_LAST)	kind < GZ_MSG_KIND_DISCOVERY_LAST)
+# --- route.c: by scope
+scope-any-state	core/node/route.c	if (c->slots[i].state == SLOT_OPEN && memcmp(c->slots[i].scope, scope, 32) == 0) return i;	if (memcmp(c->slots[i].scope, scope, 32) == 0) return i;
+scope-any-slot	core/node/route.c	if (c->slots[i].state == SLOT_OPEN && memcmp(c->slots[i].scope, scope, 32) == 0) return i;	if (c->slots[i].state == SLOT_OPEN) return i;
+zero-scope-partial	core/node/route.c	    for (size_t i = 0; i < n; i++) acc |= p[i];	    for (size_t i = 1; i < n; i++) acc |= p[i];
+host-zero-any-kind	core/node/route.c	if (zero) return kind == GZ_MSG_KIND_HELLO ? mk(RT_LISTING, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);	if (zero) return mk(RT_LISTING, -1, -1, 0);
+host-unknown-any-kind	core/node/route.c	return kind == GZ_MSG_KIND_HELLO ? mk(RT_UNKNOWN_HELLO, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_NO_SLOT);	return mk(RT_UNKNOWN_HELLO, -1, -1, 0);
+host-unknown-never	core/node/route.c	return kind == GZ_MSG_KIND_HELLO ? mk(RT_UNKNOWN_HELLO, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_NO_SLOT);	return mk(RT_DROP, -1, -1, DROP_NO_SLOT);
+member-zero-scope-taken	core/node/route.c	    if (zero) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);\n    s = gz_route_slot_by_scope(c, scope);\n    if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);	    s = gz_route_slot_by_scope(c, scope);\n    if (s < 0) return mk(RT_DROP, -1, -1, zero ? DROP_NO_SLOT : DROP_NO_SLOT);
+member-no-slot-refused	core/node/route.c	    if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);\n    gz_link_t l;	    if (s < 0) return mk(RT_REFUSE, -1, -1, DROP_NO_SLOT);\n    gz_link_t l;
+round-without-check	core/node/route.c	if (s < 0 || !c->slots[s].round_ok) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);	if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);
+round-zero-scope	core/node/route.c	    if (all_zero(scope, 32)) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);\n    /* (P4.3	    /* (P4.3
+# --- route.c: the link
+member-link-unchecked	core/node/route.c	    if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_REFUSE, -1, -1, DROP_LINK);\n    return mk(RT_SLOT, s, -1, 0);	    return mk(RT_SLOT, s, -1, 0);
+member-link-dropped-only	core/node/route.c	    if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_REFUSE, -1, -1, DROP_LINK);\n    return mk(RT_SLOT, s, -1, 0);	    if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_DROP, -1, -1, DROP_LINK);\n    return mk(RT_SLOT, s, -1, 0);
+member-round-link-unchecked	core/node/route.c	        if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_REFUSE, -1, -1, DROP_LINK);\n    }\n    return mk(RT_SIGNING, s, -1, 0);	    }\n    return mk(RT_SIGNING, s, -1, 0);
+link-local-ignored	core/node/route.c	    return np_same_key(&a->local, &b->local) && np_same_key(&a->remote, &b->remote);	    return np_same_key(&a->remote, &b->remote);
+link-remote-ignored	core/node/route.c	    return np_same_key(&a->local, &b->local) && np_same_key(&a->remote, &b->remote);	    return np_same_key(&a->local, &b->local);
+key-compare-short	core/node/route.c	    return memcmp(a->key, b->key, GZ_NODE_ID_LEN) == 0;	    return memcmp(a->key, b->key, GZ_NODE_ID_LEN - 1) == 0;
+slot-link-host-key	core/node/route.c	    link->remote = s->host_key;\n    return 1;	    link->remote = link->local;\n    return 1;
+host-bound-other-slot	core/node/route.c	if (bound >= 0) return s == bound ? mk(RT_SLOT, s, -1, 0) : mk(RT_REFUSE, -1, -1, DROP_REBIND);	if (bound >= 0) return s >= 0 ? mk(RT_SLOT, s, -1, 0) : mk(RT_REFUSE, -1, -1, DROP_REBIND);
+host-rebind-dropped-only	core/node/route.c	if (bound >= 0) return s == bound ? mk(RT_SLOT, s, -1, 0) : mk(RT_REFUSE, -1, -1, DROP_REBIND);	if (bound >= 0) return s == bound ? mk(RT_SLOT, s, -1, 0) : mk(RT_DROP, -1, -1, DROP_REBIND);
+host-no-bind	core/node/route.c	        if (s >= 0) return mk(RT_BIND, s, -1, 0);	        if (s >= 0) return mk(RT_SLOT, s, -1, 0);
+seated-any-slot	core/node/route.c	        if (s->state != SLOT_OPEN || !s->host) continue;\n        for (size_t j = 0; j < s->n_seated; j++)	        if (!s->host) continue;\n        for (size_t j = 0; j < s->n_seated; j++)
+seated-first-only	core/node/route.c	        for (size_t j = 0; j < s->n_seated; j++)\n            if (np_same_key(&s->seated[j], key)) return i;	        for (size_t j = 0; j < s->n_seated && j < 1; j++)\n            if (np_same_key(&s->seated[j], key)) return i;
+member-slot-of-host	core/node/route.c	if (c->slots[i].state == SLOT_OPEN && !c->slots[i].host && gz_route_slot_link(c, i, &l) &&	if (c->slots[i].state == SLOT_OPEN && gz_route_slot_link(c, i, &l) &&
+# --- route.c: the test family
+test-area-ignored	core/node/route.c	        if (c->test[i].area == area) return mk(RT_TEST, -1, ENG_TEST0 + i, 0);	        return mk(RT_TEST, -1, ENG_TEST0 + i, 0);
+test-area-length	core/node/route.c	        if (v.len != 2) return mk(RT_DROP, -1, -1, DROP_KIND);	        if (v.len < 2) return mk(RT_DROP, -1, -1, DROP_KIND);
+test-malformed-taken	core/node/route.c	    if (f < 0) return mk(RT_DROP, -1, -1, DROP_KIND);	    if (f < -1) return mk(RT_DROP, -1, -1, DROP_KIND);
+# --- handoff.c: calls and brackets
+reentry-unchecked	core/node/handoff.c	    if (c->busy[eng]) return gz_c_bug(c, eng); /* U1: entered while its own call runs */	
+busy-never-set	core/node/handoff.c	    c->busy[eng] = 1;\n    c->nested_bytes = 0;	    c->nested_bytes = 0;
+busy-never-cleared	core/node/handoff.c	    (void)tag;\n    c->busy[eng] = 0;	    (void)tag;
+claim-all	core/node/handoff.c	        if (c->owner[k] < 0) {\n            c->owner[k] = (int8_t)eng;\n            own++;\n        }	        {\n            c->owner[k] = (int8_t)eng;\n            own++;\n        }
+step-actions-unchecked	core/node/handoff.c	    if (own > ops->max_step_actions || own_bytes > ops->max_step_bytes) return gz_c_bug(c, eng);	    if (own_bytes > ops->max_step_bytes) return gz_c_bug(c, eng);
+error-area-lost	core/node/handoff.c	    if (st != GZ_OK && st != GZ_WAITING) {\n        if (!c->err_area) c->err_area = gz_c_area(c, eng);\n        return st;\n    }	    if (st != GZ_OK && st != GZ_WAITING) {\n        return st;\n    }
+error-swallowed	core/node/handoff.c	    if (st != GZ_OK && st != GZ_WAITING) {\n        if (!c->err_area) c->err_area = gz_c_area(c, eng);\n        return st;\n    }	    if (st != GZ_OK && st != GZ_WAITING) {\n        if (!c->err_area) c->err_area = gz_c_area(c, eng);\n        return GZ_OK;\n    }
+deferred-never-run	core/node/handoff.c	    gz_status_t st = run_deferred(c, out);\n    if (st == GZ_OK) st = gz_c_postprocess	    gz_status_t st = GZ_OK;\n    if (st == GZ_OK) st = gz_c_postprocess
+no-defer	core/node/handoff.c	    if (may_defer && c->busy[target]) {	    if (0 && may_defer && c->busy[target]) {
+defer-always	core/node/handoff.c	    if (may_defer && c->busy[target]) {	    if (may_defer) {
+handoff-flag-lost	core/node/handoff.c	    c->bracket_handoff = 1;\n    if (may_defer	    if (may_defer
+handoff-outside-bracket	core/node/handoff.c	if (target < 0 || source < 0 || !c->bracket_on) return	if (target < 0 || source < 0) return
+handoff-no-target	core/node/handoff.c	if (target < 0 || source < 0 || !c->bracket_on) return	if (source < 0 || !c->bracket_on) return
+bracket-nested	core/node/handoff.c	    if (c->bracket_on) return gz_c_bug(c, ENG_NODE);\n    c->bracket_on = 1;\n    c->bracket_handoff = 0;\n    c->bracket_top = eng;\n    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);	    c->bracket_on = 1;\n    c->bracket_handoff = 0;\n    c->bracket_top = eng;\n    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
+bracket-from-zero	core/node/handoff.c	    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);	    c->bracket_from = 0;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
+# --- handoff.c: after a bracket
+timer-big-allowed	core/node/handoff.c	                if (eng != ENG_NODE) return gz_c_bug(c, eng);	                if (eng == ENG_NODE) return gz_c_bug(c, eng);
+timer-not-packed	core/node/handoff.c	                *id = gz_timer_pack(gz_c_area(c, eng), gen_of(c, eng), (uint32_t)*id);	                *id = gz_timer_pack(gz_c_area(c, eng), 0, (uint32_t)*id);
+timer-no-area	core/node/handoff.c	                *id = gz_timer_pack(gz_c_area(c, eng), gen_of(c, eng), (uint32_t)*id);	                *id = gz_timer_pack(0, gen_of(c, eng), (uint32_t)*id);
+timer-untracked	core/node/handoff.c	                if (eng >= ENG_SLOT0 && !gz_timer_track(&c->slots[eng - ENG_SLOT0], *id,\n                                                         a->kind == GZ_ACTION_SET_TIMER))\n                    return gz_c_bug(c, eng); /* over its timer budget (7.1) */	
+broadcast-any-engine	core/node/handoff.c	            if (gz_c_area(c, eng) != GZ_AREA_FUNDING) return gz_c_bug(c, eng); /* 14.2, A11 */	
+watch-never-dropped	core/node/handoff.c	            if (!keep) {\n                drop_action(c, out, i);\n                continue;\n            }	
+seat-not-noted	core/node/handoff.c	        } else if (a->kind == GZ_ACTION_SET_SEATED && eng >= ENG_SLOT0) {	        } else if (a->kind == GZ_ACTION_SET_SEATED && eng > ENG_N) {
+adjacency-unchecked	core/node/handoff.c	            if (gz_action_is_outward(&out->slots[i])) return gz_c_bug(c, c->owner[i - c->base]);	            if (0) return gz_c_bug(c, c->owner[i - c->base]);
+adjacency-off-by-one	core/node/handoff.c	        for (i = first + 1; n > 1 && i < last; i++)	        for (i = first + 2; n > 1 && i < last; i++)
+merge-all-skipped	core/node/handoff.c	        if (n > 1) {\n            size_t before = out->count;	        if (n > 99) {\n            size_t before = out->count;
+merge-mask-first-only	core/node/handoff.c	            last = i;\n            mask |= (uint16_t)(1u << c->owner[i - c->base]);	            last = i;\n            if (n == 1) mask |= (uint16_t)(1u << c->owner[i - c->base]);
+merge-all-no-mask	core/node/handoff.c	        if (n > 0 && (st = push_mask(c, mask)) != GZ_OK) return st;	
+adjacent-not-merged	core/node/handoff.c	        if (j - i > 1) {	        if (j - i > 99) {
+adjacent-no-mask	core/node/handoff.c	        if ((st = push_mask(c, mask)) != GZ_OK) return st;\n    }\n    return GZ_OK;	    }\n    return GZ_OK;
+handoff-merges-adjacent-only	core/node/handoff.c	    if (st == GZ_OK) st = gz_c_postprocess(c, c->bracket_from, c->bracket_handoff, out);	    if (st == GZ_OK) st = gz_c_postprocess(c, c->bracket_from, 0, out);
+always-merge-all	core/node/handoff.c	    if (st == GZ_OK) st = gz_c_postprocess(c, c->bracket_from, c->bracket_handoff, out);	    if (st == GZ_OK) st = gz_c_postprocess(c, c->bracket_from, 1, out);
+# --- handoff.c: confirmations
+confirm-queue-lifo	core/node/handoff.c	    mask = c->cq[c->cq_head];\n    c->cq_head = (c->cq_head + 1) % CQ_MAX;	    mask = c->cq[(c->cq_head + c->cq_n - 1) % CQ_MAX];
+confirm-not-held	core/node/handoff.c	        if (!c->resumed[e]) {\n            c->held[e]++;\n            continue;\n        }	
+confirm-held-lost	core/node/handoff.c	        if (!c->resumed[e]) {\n            c->held[e]++;\n            continue;\n        }	        if (!c->resumed[e]) {\n            continue;\n        }
+confirm-to-all	core/node/handoff.c	        if (!(mask & (1u << e)) || !ops_of(c, e, &inst)) continue;	        if (!ops_of(c, e, &inst)) continue;
+confirm-empty-error	core/node/handoff.c	        *result = np_drop(c, DROP_CONFIRM, 0, out);\n        return;	        *result = GZ_ERR_BUG;\n        return;
+# --- action.c: the merge primitive
+merge-order-reversed	core/gazpacho/action.c	        for (size_t r = 0; r < a->u.save.n_records; r++) merged[k++] = a->u.save.records[r];	        for (size_t r = a->u.save.n_records; r > 0; r--) merged[k++] = a->u.save.records[r - 1];
+merge-keeps-later-saves	core/gazpacho/action.c	        if (i < to && list->slots[i].kind == GZ_ACTION_SAVE) continue;\n        list->slots[at++] = list->slots[i];	        list->slots[at++] = list->slots[i];
+merge-drops-past-range	core/gazpacho/action.c	        if (i < to && list->slots[i].kind == GZ_ACTION_SAVE) continue;\n        list->slots[at++] = list->slots[i];	        if (list->slots[i].kind == GZ_ACTION_SAVE) continue;\n        list->slots[at++] = list->slots[i];
+merge-one-save	core/gazpacho/action.c	    if (n_saves < 2) return GZ_OK;\n    gz_record_t *merged = NULL;	    if (n_saves < 1) return GZ_OK;\n    gz_record_t *merged = NULL;
+merge-range-unchecked	core/gazpacho/action.c	    if (!list || from > to || to > list->count) return GZ_ERR_ARGUMENT;	    if (!list || from > to) return GZ_ERR_ARGUMENT;
+merge-count-wrong	core/gazpacho/action.c	    list->slots[first].u.save.n_records = n_records;	    list->slots[first].u.save.n_records = n_records - 1;
+# equivalent a-restore-not-alone: the loop above it already stops once a step has appended (out->count != m.count), so the break decides nothing; test_restore_batch_alone holds the rule itself
+# equivalent watch-budget-off: a second guard: every engine of this build refuses at its own cap first (te-watch-cap-off and the slot stand-in are killed), so no test can reach it
+# equivalent confirm-to-closed-slot: a second guard: a closed slot's bit has left every queued mask (slot-mask-kept-at-close is killed)
+# equivalent node-part-step-unchecked: a test-build check that no step of this build can trip: the worst step is every connection closed, within the declaration
+# equivalent address-port-zero: a port of 0 is refused before it as a leading zero
+# equivalent waiting-after-append-ok: no engine of this build returns GZ_WAITING, so the branch cannot be reached (task T-P42-9 names it for the engines that will)
+# equivalent member-slot-of-host: gz_route_slot_link itself answers 0 for a host slot, so the test the mutant removes decides nothing
+# --- the start (reviews of PR 41: A F4, B group A)
+a-order-unchecked	core/node/composite.c	if (!id_after(previous, batch.id) || batch.id.sequence == 0 ||	if (batch.id.sequence == 0 ||
+a-future-incarnation	core/node/composite.c	batch.id.sequence == 0 || batch.id.incarnation > storage->incarnation)	batch.id.sequence == 0)
+a-fence-load-unchecked	core/node/composite.c	        if (batch.id.incarnation < storage->incarnation && id_after(c->fence, batch.id)) return GZ_ERR_CORRUPT;\n	
+a-fence-later-unchecked	core/node/composite.c	if (batch.id.incarnation < storage->incarnation && id_after(c->fence, batch.id)) st = GZ_ERR_CORRUPT;	{}
+a-restore-not-alone	core/node/composite.c	        if (st == GZ_OK && c->resume_at == R_NODE && out->count > m.count) break;\n	
+restored-incarnation-node-only	core/node/composite.c	        c->np.newest_incarnation = batch.id.incarnation;\n	
+waiting-after-append-ok	core/node/composite.c	    if (st == GZ_WAITING) st = gz_c_bug(c, ENG_NODE);\n	
+# --- the guard and the epochs (A F7, B 4)
+guard-file-ignored	core/node/nodepart.c	    merge_guard_file(c);\n	
+guard-file-counter-not-taken	core/node/nodepart.c	    if (p->file_counter > p->guard_counter) p->guard_counter = p->file_counter;\n	
+guard-file-rounds-not-taken	core/node/nodepart.c	    if (p->file_rounds > p->rounds_started) p->rounds_started = p->file_rounds;\n	
+guard-file-epochs-newest-dropped	core/node/nodepart.c	    for (i = 0; i < n_newer; i++, n++) {	    for (i = 0; i + 1 < n_newer; i++, n++) {
+guard-file-older-index-dropped	core/node/nodepart.c	all[n][1] = k >= 0 && older[k][1] > newer[i][1] ? older[k][1] : newer[i][1];	all[n][1] = newer[i][1];
+guard-file-other-chain-taken	core/node/nodepart.c	|| memcmp(b, GUARD_MAGIC, 8) != 0 || memcmp(b + 8, c->cfg.chain, 32) != 0)\n        return;	|| memcmp(b, GUARD_MAGIC, 8) != 0)\n        return;
+guard-epochs-not-read-back	core/node/nodepart.c	            guard_epochs(c, b + 50, n);\n	
+epoch-redraw-known-off	core/node/nodepart.c	    } while (epoch == 0 || epoch_known(c, epoch));	    } while (epoch == 0);
+epoch-redraw-same-draw	core/node/nodepart.c	epoch = restore_epoch(gz_get_u64(drawn) + again++, c->incarnation);	epoch = restore_epoch(gz_get_u64(drawn) + 0 * again++, c->incarnation);
+a-old-epoch-forgets-none	core/node/nodepart.c	        if (p->n_old_epochs == NP_MAX_OLD_EPOCHS) {	        if (0) {
+# --- connections (A F5, F9, F12; B 1, 2, 7, group C)
+unconnected-taken	core/node/nodepart.c	        if (conn < 0 || !conn_live(&c->np.conns[conn]))\n            return node_only(c, out, DROP_UNCONNECTED, ev->u.message.kind, NULL);	        if (conn < 0) return node_only(c, out, DROP_UNCONNECTED, ev->u.message.kind, NULL);
+closing-still-taken	core/node/nodepart.c	    return k->used && k->connected && !k->closing;	    return k->used && k->connected;
+refusal-not-closing	core/node/nodepart.c	    if (st == GZ_OK && refuse) conn_closing(c, refuse); /* nothing more is taken from it */\n	
+slot-close-no-cap	core/node/nodepart.c	    /* The cap holds at once: the excess is closed now, the silent first. */\n    if ((st = keep_cap(c, out)) != GZ_OK) return st;\n	
+slot-close-keeps-bindings	core/node/nodepart.c	        n->slot = -1; /* unbound again, and unseated: the cap and the idle rule apply */\n	
+slot-close-keeps-seats	core/node/nodepart.c	        n->seated = gz_route_slot_seated(c, &n->link.remote) >= 0;\n	
+bound-unseated-exempt-from-idle	core/node/nodepart.c	            if (!conn_live(k) || k->seated || now < k->since_ms + NP_IDLE_MS) continue;	            if (!conn_live(k) || k->seated || k->slot >= 0 || now < k->since_ms + NP_IDLE_MS) continue;
+bound-unseated-exempt-from-cap	core/node/nodepart.c	        if (conn_live(&c->np.conns[i]) && !c->np.conns[i].seated) n++;	        if (conn_live(&c->np.conns[i]) && !c->np.conns[i].seated && c->np.conns[i].slot < 0) n++;
+push-out-ignores-silence	core/node/nodepart.c	        if (best < 0 || (k->spoke < c->np.conns[best].spoke) ||\n            (k->spoke == c->np.conns[best].spoke && k->since_ms < c->np.conns[best].since_ms))	        if (best < 0 || k->since_ms < c->np.conns[best].since_ms)
+push-out-newest	core/node/nodepart.c	(k->spoke == c->np.conns[best].spoke && k->since_ms < c->np.conns[best].since_ms))	(k->spoke == c->np.conns[best].spoke && k->since_ms > c->np.conns[best].since_ms))
+push-out-seated	core/node/nodepart.c	        if (!conn_live(k) || k->seated) continue;\n        if (best < 0	        if (!conn_live(k)) continue;\n        if (best < 0
+push-out-the-newcomer	core/node/nodepart.c	    if (i < 0 || (s < 0 && unseated(c) >= NP_MAX_UNSEATED)) {	    if (i < 0 || (s < 0 && unseated(c) > NP_MAX_UNSEATED)) {
+speaking-not-noted	core/node/nodepart.c	        c->np.conns[conn].spoke = 1;\n	
+message-does-not-refresh-idle	core/node/nodepart.c	        c->np.conns[conn].since_ms = mono_ms(c);\n    }	    }
+idle-at-30-s	core/node/nodepart.c	now < k->since_ms + NP_IDLE_MS) continue;	now < k->since_ms + NP_IDLE_MS / 2) continue;
+idle-not-armed-again	core/node/nodepart.c	        if (st == GZ_OK) st = arm_idle(c, out);\n    }\n    if (st == GZ_OK) return gz_c_node_bracket_end(c, out);	    }\n    if (st == GZ_OK) return gz_c_node_bracket_end(c, out);
+idle-due-not-reset	core/node/nodepart.c	        c->np.idle_due_ms = 0;\n	
+idle-on-wall-clock	core/node/nodepart.c	    return c->ports.clock.mono_ms(c->ports.clock.ctx);	    return c->ports.clock.now_ms(c->ports.clock.ctx);
+full-table-not-refused	core/node/nodepart.c	        st = disconnect(out, &ev->u.peer.link, GZ_DISCONNECT_REFUSED);\n        if (st == GZ_OK) st = gz_c_node_bracket_end(c, out);	        st = GZ_OK;\n        if (st == GZ_OK) st = gz_c_node_bracket_end(c, out);
+seat-given-up-stays-seated	core/node/nodepart.c	        } else if (k->seated && gz_route_slot_seated(c, member) < 0) {	        } else if (0) {
+seat-binds-no-connection	core/node/nodepart.c	            k->seated = 1;\n            if (k->slot < 0) k->slot = slot;	            (void)slot;
+seat-change-no-idle-check	core/node/handoff.c	            if ((st = np_idle_check(c, out)) != GZ_OK) return st;\n	
+# --- the hello limits (B group D)
+hello-gap-halved	core/node/nodepart.c	now - k->hello_last_ms >= NP_HELLO_GAP_MS) {	now - k->hello_last_ms >= NP_HELLO_GAP_MS / 2) {
+ignored-hellos-21	core/node/nodepart.c	    if (++k->hello_ignored >= NP_HELLO_IGNORED_MAX) *close = 1;	    if (++k->hello_ignored > NP_HELLO_IGNORED_MAX) *close = 1;
+hello-window-never-ends	core/node/nodepart.c	now - k->hello_window_ms >= NP_HELLO_WINDOW_MS) {	0) {
+listing-past-4-slots	core/node/nodepart.c	for (int s = 0; s < GZ_NODE_MAX_SLOTS && n < NP_MAX_LISTED; s++) {	for (int s = 0; s < GZ_NODE_MAX_SLOTS; s++) {
+unknown-hello-state-1	core/node/nodepart.c	uint8_t rec[32], z4[4] = {0, 0, 0, 0};	uint8_t rec[32], z4[4] = {1, 0, 0, 0};
+unknown-hello-under-scope-zero	core/node/nodepart.c	    memcpy(a.u.send.scope, scope, 32);\n    a.u.send.records.data = rec;	    memset(a.u.send.scope, 0, 32);\n    a.u.send.records.data = rec;
+# --- watches, seats and slots (A F2, F8, F15; B 5, 8)
+watch-budget-off	core/node/watches.c	    if ((i < 0 || !(c->watches[i].mask & (1u << eng))) && held_by(c, eng) >= budget(eng)) return -1;\n	
+watch-not-forgotten	core/node/handoff.c	    gz_watch_forget(c, eng);\n	
+watch-entry-kept-when-unasked	core/node/watches.c	        if (!c->watches[i].mask) c->watches[i].used = 0;\n	
+watch-outpoint-vout-ignored	core/node/watches.c	        gz_put_u32(key + 32, a->u.watch_outpoint.outpoint.vout);\n	
+te-watch-cap-off	core/node/test_engine.c	    if (t->n_watches == TE_MAX_WATCHES) return 0;\n	
+seat-cap-not-refused	core/node/nodepart.c	        if (k == c->slots[i].n_seated) return np_command_result(out, cmd, 409, "too_many_seats");\n	
+slot-engine-not-opened	core/node/nodepart.c	    gz_c_engine_opened(c, ENG_SLOT0 + free_i);\n	
+slot-mask-kept-at-close	core/node/handoff.c	    for (size_t k = 0; k < c->cq_n; k++) c->cq[(c->cq_head + k) % CQ_MAX] &= (uint16_t)~(1u << eng);\n	
+confirm-to-closed-slot	core/node/handoff.c	        if (e >= ENG_SLOT0 && c->slots[e - ENG_SLOT0].state != SLOT_OPEN) continue;\n        /* During the start	        /* During the start
+confirm-queue-wraps-early	core/node/handoff.c	    c->cq[(c->cq_head + c->cq_n++) % CQ_MAX] = mask;	    c->cq[(c->cq_head + c->cq_n++) % (CQ_MAX - 1)] = mask;
+timer-to-a-closed-slot	core/node/timers.c	        if (s->state != SLOT_OPEN || s->gen != gen || gz_c_area(c, ENG_SLOT0 + i) != area) continue;	        if (s->gen != gen || gz_c_area(c, ENG_SLOT0 + i) != area) continue;
+tip-to-first-engine-only	core/node/composite.c	for (int e = ENG_TEST0; e < ENG_TEST0 + c->n_test && st == GZ_OK; e++) st = gz_c_bracket(c, e, ev, out);	for (int e = ENG_TEST0; e < ENG_TEST0 + (c->n_test > 1 ? 1 : c->n_test) && st == GZ_OK; e++) st = gz_c_bracket(c, e, ev, out);
+reserved-kind-passes	core/node/handoff.c	        } else if (a->kind == GZ_ACTION_SEND && a->u.send.kind == GZ_SEND_KIND_RESERVED) {\n            return gz_c_bug(c, eng); /* never on the wire (action.h) */\n        }	        }
+node-part-step-unchecked	core/node/handoff.c	    if (own > NP_MAX_STEP_ACTIONS) {	    if (0) {
+# --- the test engine (B group B; review fixes)
+ping-share-off	core/node/test_engine.c	        if (t->n_pending == TE_MAX_PENDING || pending_on(t, link) >= TE_MAX_PENDING_LINK) {	        if (t->n_pending == TE_MAX_PENDING) {
+full-table-is-an-error	core/node/test_engine.c	            return log_text(out, &x);\n        }\n        /* The serial	            return GZ_ERR_NO_SPACE;\n        }\n        /* The serial
+ack-from-any-link	core/node/test_engine.c	        te_pending_t *q = find_pending(t, serial, link);	        te_pending_t *q = find_pending(t, serial, NULL);
+hello-not-deferred	core/node/test_engine.c	            if (l->deferred) return GZ_OK;\n            l->deferred = 1;\n            return arm_deferred(t, now, out);	            return GZ_OK;
+engine-hello-limit-gone	core/node/test_engine.c	        if (!fresh && now >= l->last_ms && now - l->last_ms < 1000) {	        if (0) {
+te-connect-rule-off	core/node/test_engine.c	        if (!gz_connect_address_ok(w)) return result(out, cmd, 400, "bad_address");\n	
+te-saved-bad-target-issued	core/node/test_engine.c	        if (gz_connect_address_ok(addr)) {	        if (1) {
+slot-open-rule-off	core/node/nodepart.c	    if (!s->host && !gz_connect_address_ok(addr)) return np_command_result(out, cmd, 400, "bad_address");\n	
+# --- the address rule (action.c)
+address-port-zero	core/gazpacho/action.c	    if (port == 0 || port > 65535) return 0;	    if (port > 65535) return 0;
+address-no-port	core/gazpacho/action.c	    if (colon < 2 || colon == n || n - colon > 5 || p[colon] == '0') return 0;	    if (colon < 2 || n - colon > 5) return 0;
+address-names-taken	core/gazpacho/action.c	        if ((p[i] < '0' || p[i] > '9') && p[i] != '.') return 0;	        if (p[i] == ' ') return 0;
+address-list-unchecked	core/gazpacho/action.c	    if (!gz_connect_address_ok(src->u.connect.address)) return GZ_ERR_ARGUMENT;	    if (!src->u.connect.address.len) return GZ_ERR_ARGUMENT;

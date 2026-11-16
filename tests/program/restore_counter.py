@@ -86,6 +86,10 @@ def main():
                   "%s: the start sees the restore marker and the counter %s" %
                   (variant, "found" if variant == "counter" else "missing"))
             i_rb, rb = p.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")
+            _, gd = p.find(r"restore-guard chain=([0-9a-f]{16}) counter=(\d+)")
+            check(gd is not None and gd.group(1) != "0" * 16 and int(gd.group(2)) >= 1,
+                  "the restore batch's guard record opens with the chain the node was given (%s)"
+                  % (gd.group(1) if gd else None))
             i_ping, _ = p.find(r"pong peer=")
             check(rb is not None and rb.group(1) != "00000000" and (i_ping is None or i_rb < i_ping),
                   "%s: the first batch is the restore batch, epoch %s (the original's is 0)" %

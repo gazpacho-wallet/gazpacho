@@ -74,6 +74,12 @@ target_compile_options(tree_shapes PRIVATE -Wall -Wextra -Werror)
 # --- Gazpacho core: new code, portable C with no system calls -----------------
 # -Werror applies to new code only; the imported files above keep their own flags.
 set(GZ_NEW_CODE_WARNINGS -Wall -Wextra -Werror)
+# A mutation run (tools/mutate-node.py) builds deliberate faults: a variable
+# a fault leaves unused must not stop the build.
+option(GZ_MUTATION_BUILD "Warnings do not stop the build (mutation runs only)" OFF)
+if(GZ_MUTATION_BUILD)
+  list(APPEND GZ_NEW_CODE_WARNINGS -Wno-error)
+endif()
 
 # The core is strict C11 (no GNU extensions), freestanding, with no
 # variable-length arrays and no floating point or vector registers.
@@ -89,16 +95,22 @@ endif()
 set(GZ_CORE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/action.c
   ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/runner.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/node.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/envelope.c)
 add_library(gazpacho_core STATIC ${GZ_CORE_SOURCES})
 set_target_properties(gazpacho_core PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/gazpacho/include)
 target_compile_options(gazpacho_core PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
 
+# --- The composite node (core/node): the node behind gz_node_start and
+# gz_node_handle, with its engines. Two builds: gazpacho_node (release, the
+# node part alone until P4.2) and gazpacho_node_test (GZ_TEST_KINDS: the test
+# engine and the slot stand-in). docs/notes/composite-node.md.
+add_subdirectory(core/node)
+
 # --- Simulator: deterministic harness around the core. Never linked into it. ---
 add_library(gazpacho_sim STATIC sim/rng.c sim/sim.c)
 target_include_directories(gazpacho_sim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/sim)
-target_link_libraries(gazpacho_sim PUBLIC gazpacho_core)
+target_link_libraries(gazpacho_sim PUBLIC gazpacho_node_test)
 target_compile_options(gazpacho_sim PRIVATE ${GZ_NEW_CODE_WARNINGS})
 
 function(gz_add_test name source library)
@@ -110,7 +122,30 @@ endfunction()
 
 gz_add_test(action    tests/core/test_action.c    gazpacho_core)
 gz_add_test(runner    tests/core/test_runner.c    gazpacho_core)
-gz_add_test(node      tests/core/test_node.c      gazpacho_core)
+# The composite node (core/node), P4.1: the frame, routing, timers, brackets,
+# sizing, poisoning, and a hostile peer that never causes a node error. The
+# tests see the composite's internals (core/node/internal.h), so they are
+# built with the test library's GZ_TEST_KINDS.
+foreach(name node node_route node_conns node_timers node_handoff node_sizing node_hostile)
+  gz_add_test(${name} tests/node/test_${name}.c gazpacho_node_test)
+  target_include_directories(test_${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+  target_compile_definitions(test_${name} PRIVATE GZ_TEST_KINDS)
+endforeach()
+# The release node: no test engine, and kind 32767 is just an unknown kind.
+gz_add_test(node_release tests/node/test_node_release.c gazpacho_node)
+target_include_directories(test_node_release PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+# Hostile peer events in a fuzz target: never an error from the node.
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_node tests/node/fuzz_node.c)
+  target_link_options(fuzz_node PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_node tests/node/fuzz_node.c tests/net/fuzz_main.c)
+  add_test(NAME node_fuzz COMMAND fuzz_node 20000)
+endif()
+target_link_libraries(fuzz_node PRIVATE gazpacho_node_test)
+target_include_directories(fuzz_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+target_compile_definitions(fuzz_node PRIVATE GZ_TEST_KINDS)
+target_compile_options(fuzz_node PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(rng       tests/sim/test_rng.c        gazpacho_sim)
 gz_add_test(sim       tests/sim/test_sim.c        gazpacho_sim)
 # One fixed seed must give the trace digest written in the test: compares
@@ -118,10 +153,17 @@ gz_add_test(sim       tests/sim/test_sim.c        gazpacho_sim)
 # in one process.
 gz_add_test(sim_known_trace tests/sim/test_sim_known.c gazpacho_sim)
 # 1,000 seeds with every fault at a moderate rate, then the extreme profiles
-# (see tests/sim/test_sim_seeds.c): 100 seeds of 300 steps each.
+# (see tests/sim/test_sim_seeds.c): 100 seeds of 300 steps each. Profile 6
+# (64 nodes, a crash in three steps of ten) runs 100 seeds in a plain build
+# and 25 under the sanitizers (and under valgrind: ci.yml): since the
+# composite, every crash is followed by 63 hellos and their answers.
 gz_add_test(sim_seeds tests/sim/test_sim_seeds.c  gazpacho_sim 1000 400 1 0)
 foreach(profile RANGE 1 10)
-  add_test(NAME sim_profile_${profile} COMMAND test_sim_seeds 100 300 1 ${profile})
+  set(profile_seeds 100)
+  if(profile EQUAL 6 AND (GZ_SANITIZE OR CMAKE_C_FLAGS MATCHES "-fsanitize="))
+    set(profile_seeds 25)
+  endif()
+  add_test(NAME sim_profile_${profile} COMMAND test_sim_seeds ${profile_seeds} 300 1 ${profile})
 endforeach()
 
 # What the compiled core can reach and remember, and proof that the check
@@ -137,6 +179,18 @@ string(JOIN " " GZ_CORE_SCAN_FLAGS ${CMAKE_C_FLAGS} ${CMAKE_C_FLAGS_${GZ_BUILD_T
 add_test(NAME core_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
           $<TARGET_FILE:gazpacho_core> --sources ${CMAKE_C_COMPILER} ${GZ_CORE_SCAN_FLAGS} ${GZ_CORE_SOURCES})
+# core/node, release and test builds, each checked with the core in one
+# archive (its calls into the core are calls inside the library).
+string(JOIN " " GZ_NODE_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/node/include
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+add_test(NAME node_isolation
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          $<TARGET_FILE:gazpacho_node_isolation_release> --sources ${CMAKE_C_COMPILER} ${GZ_NODE_SCAN_FLAGS}
+          ${GZ_NODE_SOURCES})
+add_test(NAME node_test_isolation
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          $<TARGET_FILE:gazpacho_node_isolation_test> --sources ${CMAKE_C_COMPILER}
+          "${GZ_NODE_SCAN_FLAGS} -DGZ_TEST_KINDS" ${GZ_NODE_SOURCES})
 add_library(isolation_sneaky OBJECT tests/isolation/sneaky.c)
 string(JOIN " " GZ_CORE_FLAGS_TEXT -std=c11 ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
 add_test(NAME core_isolation_refuses_sneaky_object
@@ -147,6 +201,60 @@ add_test(NAME core_isolation_refuses_sneaky_object
           ${CMAKE_CURRENT_SOURCE_DIR}/tests/isolation
           ${CMAKE_CURRENT_BINARY_DIR}
           ${GZ_CORE_FLAGS_TEXT})
+
+# --- Signing round engine (core/signing): portable C11 like the core, sans-I/O,
+# calling only secp256k1-zkp (an exact allow-list) and the core's action list.
+set(GZ_SIGNING_SOURCES
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/sign_tx.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/round_msg.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing_node.c)
+add_library(gazpacho_signing STATIC ${GZ_SIGNING_SOURCES})
+set_target_properties(gazpacho_signing PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(gazpacho_signing PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include)
+target_link_libraries(gazpacho_signing PUBLIC gazpacho_core secp256k1)
+target_compile_options(gazpacho_signing PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+
+add_executable(test_signing tests/signing/test_signing.c)
+target_link_libraries(test_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
+target_compile_options(test_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
+# One CTest test per section, so they run in parallel and each stays inside
+# CI's per-test limit.
+foreach(section blocks decoders golden model faults honest t1 crashes restores errors)
+  add_test(NAME signing_${section} COMMAND test_signing ${section})
+endforeach()
+gz_add_test(round_msg tests/signing/test_round_msg.c gazpacho_signing)
+# fuzz_signing drives whole engines from generated journals and messages with
+# its own main; it is not a libFuzzer target (tools/run-fuzz.sh runs every
+# fuzz_* there is), so it is built only with the plain drivers.
+if(NOT GZ_LIBFUZZER)
+  add_executable(fuzz_signing tests/signing/fuzz_signing.c)
+  target_link_libraries(fuzz_signing PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
+  target_compile_options(fuzz_signing PRIVATE ${GZ_NEW_CODE_WARNINGS})
+  add_test(NAME signing_fuzz COMMAND fuzz_signing 20000 20)
+endif()
+# Every round message decoder (messages.md 7), with libFuzzer or the plain driver.
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_round_msg tests/signing/fuzz_round_msg.c)
+  target_link_options(fuzz_round_msg PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_round_msg tests/signing/fuzz_round_msg.c tests/net/fuzz_main.c)
+  add_test(NAME signing_fuzz_round_msg COMMAND fuzz_round_msg 200000)
+  add_test(NAME signing_fuzz_round_msg_seed COMMAND fuzz_round_msg ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/round_msg/propose-4)
+endif()
+target_link_libraries(fuzz_round_msg PRIVATE gazpacho_signing)
+target_compile_options(fuzz_round_msg PRIVATE ${GZ_NEW_CODE_WARNINGS})
+# No call in the library hands out a secret nonce (review A, F5): the
+# simulator's inspection reads the engine's structure in the test world.
+add_test(NAME signing_no_secret_export
+  COMMAND sh -c "nm -g \"$1\" > /dev/null && ! nm -g \"$1\" | grep -i -e inspect -e secnonce" sh $<TARGET_FILE:gazpacho_signing>)
+add_test(NAME signing_isolation
+  COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          --allow ${CMAKE_CURRENT_SOURCE_DIR}/tools/signing-allowed-calls.txt
+          $<TARGET_FILE:gazpacho_signing> --sources ${CMAKE_C_COMPILER}
+          "${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include -I${secp256k1-zkp_SOURCE_DIR}/include"
+          ${GZ_SIGNING_SOURCES})
 
 # The same tests under valgrind's memcheck with origin tracking, which sees
 # what the compiler-based checkers cannot: uninitialised bytes, padding
@@ -159,11 +267,14 @@ option(GZ_VALGRIND_TESTS "Register the core tests again under valgrind, where it
 find_program(GZ_VALGRIND valgrind)
 if(GZ_VALGRIND AND GZ_VALGRIND_TESTS AND NOT GZ_SANITIZE)
   set(GZ_MEMCHECK ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes --leak-check=full)
-  foreach(name action runner node rng sim sim_known_trace)
+  foreach(name action runner rng sim sim_known_trace node node_route node_conns node_timers node_handoff node_sizing
+               node_hostile node_release)
     add_test(NAME valgrind_${name} COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_${name}>)
   endforeach()
   add_test(NAME valgrind_sim_seeds COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 20 300 1 0)
   add_test(NAME valgrind_sim_profile_3 COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 10 200 1 3)
+  add_test(NAME valgrind_signing COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_signing> tiny)
+  add_test(NAME valgrind_round_msg COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_round_msg>)
 endif()
 
 # --- Transport (ports/net): BOLT 8 and BOLT 1, outside the core ----------------
@@ -370,6 +481,7 @@ gz_add_test(journal_edges tests/journal/test_journal_edges.c gazpacho_journal_te
 # Crash before every write and sync point, power-loss settles, process kills,
 # the real node; and the "rule removed" run that must find a loss.
 gz_add_test(journal_crash tests/journal/test_journal_crash.c gazpacho_journal_testfs)
+target_link_libraries(test_journal_crash PRIVATE gazpacho_node_test) # the composite with its test engine
 gz_add_test(journal_fuzz  tests/journal/test_journal_fuzz.c  gazpacho_journal_testfs 100000 1)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
@@ -384,6 +496,7 @@ if(Python3_Interpreter_FOUND)
 endif()
 # The restore marker, pull mode (program/store.h's complete()) and the fence.
 gz_add_test(journal_restore tests/journal/test_journal_restore.c gazpacho_journal_testfs)
+target_link_libraries(test_journal_restore PRIVATE gazpacho_node_test)
 # Review A's findings: a failed sync the way Linux fails one, the import's
 # order, the folder lock, the start counter, the hard limit with two marks,
 # a kept guard batch, 2^63, flushes with no runner or from on_confirmed.
@@ -429,6 +542,82 @@ add_subdirectory(core/tree)
 
 # --- storage encryption (ports/storage/crypto): libsodium, outside the core ---
 add_subdirectory(ports/storage/crypto)
+
+# --- Signing engine: white-box tests of the guards no public input reaches ---
+# (tests/signing/test_signing_wb.c compiles core/signing/signing.c into itself),
+# and the engine's outcome into the lobby host, built only with the lobby engine.
+add_executable(test_signing_wb tests/signing/test_signing_wb.c core/signing/sign_tx.c core/signing/round_msg.c)
+set_target_properties(test_signing_wb PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(test_signing_wb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+                           ${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include ${secp256k1-zkp_SOURCE_DIR}/include)
+target_link_libraries(test_signing_wb PRIVATE gazpacho_core secp256k1 gazpacho_sim gazpacho_superscalar gazpacho_tree)
+target_compile_options(test_signing_wb PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
+add_test(NAME signing_wb COMMAND test_signing_wb)
+
+# The engine behind the node's two calls, for the program's composite node (adapter only, PR 27).
+add_executable(test_signing_node tests/signing/test_signing_node.c)
+target_link_libraries(test_signing_node PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
+target_compile_options(test_signing_node PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
+add_test(NAME signing_node COMMAND test_signing_node)
+
+# BIP 327's vectors (the pinned library's copy, src/modules/musig/vectors.h)
+# through the calls the engine makes.
+add_executable(test_bip327 tests/signing/test_bip327.c)
+target_include_directories(test_bip327 PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include ${secp256k1-zkp_SOURCE_DIR}/src)
+target_link_libraries(test_bip327 PRIVATE secp256k1)
+target_compile_options(test_bip327 PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME signing_bip327 COMMAND test_bip327)
+
+# BIP 341's wallet vectors through the engine's own Taproot code (the tweak
+# check_def makes every output key with, and the signature hash's last step).
+add_executable(test_bip341 tests/signing/test_bip341.c)
+target_link_libraries(test_bip341 PRIVATE gazpacho_signing)
+target_compile_options(test_bip341 PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME signing_bip341 COMMAND test_bip341)
+
+# Constant time of the engine's own code around secrets, under memcheck
+# (tests/signing/test_signing_ctime.c): built where valgrind's headers are,
+# run where valgrind is and nothing is sanitized (as storage_ctime).
+include(CheckIncludeFile)
+check_include_file(valgrind/memcheck.h GZ_SIGN_HAVE_MEMCHECK_H)
+if(GZ_SIGN_HAVE_MEMCHECK_H)
+  add_executable(test_signing_ctime tests/signing/test_signing_ctime.c core/signing/sign_tx.c core/signing/round_msg.c)
+  set_target_properties(test_signing_ctime PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+  target_include_directories(test_signing_ctime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+                             ${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include ${secp256k1-zkp_SOURCE_DIR}/include)
+  target_link_libraries(test_signing_ctime PRIVATE gazpacho_core secp256k1 gazpacho_sim gazpacho_superscalar gazpacho_tree)
+  target_compile_options(test_signing_ctime PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
+  if(GZ_VALGRIND AND NOT GZ_SANITIZE AND NOT CMAKE_C_FLAGS MATCHES "-fsanitize")
+    add_test(NAME signing_ctime COMMAND ${GZ_VALGRIND} --quiet --error-exitcode=9 --track-origins=yes $<TARGET_FILE:test_signing_ctime>)
+  endif()
+endif()
+
+# The engine's start over any journal, then messages (tests/signing/fuzz_signing_replay.c):
+# libFuzzer in CI's fuzz job, the plain driver and the seeds here.
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_signing_replay tests/signing/fuzz_signing_replay.c)
+  target_link_options(fuzz_signing_replay PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_signing_replay tests/signing/fuzz_signing_replay.c tests/net/fuzz_main.c)
+  add_test(NAME signing_fuzz_replay COMMAND fuzz_signing_replay 20000)
+  file(GLOB GZ_REPLAY_SEEDS ${CMAKE_CURRENT_SOURCE_DIR}/fuzz/corpus/signing_replay/*)
+  if(GZ_REPLAY_SEEDS)
+    add_test(NAME signing_fuzz_replay_seeds COMMAND fuzz_signing_replay ${GZ_REPLAY_SEEDS})
+  endif()
+endif()
+target_link_libraries(fuzz_signing_replay PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
+target_compile_options(fuzz_signing_replay PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
+if(TARGET gazpacho_lobby)
+  add_library(gazpacho_signing_lobby STATIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/lobby_outcome.c)
+  set_target_properties(gazpacho_signing_lobby PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+  target_include_directories(gazpacho_signing_lobby PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include)
+  target_link_libraries(gazpacho_signing_lobby PUBLIC gazpacho_lobby gazpacho_core)
+  target_compile_options(gazpacho_signing_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
+  add_executable(test_signing_lobby tests/signing/test_signing_lobby.c)
+  target_link_libraries(test_signing_lobby PRIVATE gazpacho_signing_lobby)
+  target_compile_options(test_signing_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS})
+  add_test(NAME signing_lobby COMMAND test_signing_lobby)
+endif()
 
 # --- the local API server (spec/local-api.md), its fake backend and tests ------
 add_subdirectory(ports/api)

@@ -15,13 +15,15 @@ foreach(variant release test)
   if(variant STREQUAL "release")
     set(lib gazpacho_program)
     set(net gazpacho_net)
+    set(node gazpacho_node)
   else()
     set(lib gazpacho_program_test)
     set(net gazpacho_net_testkinds)
+    set(node gazpacho_node_test)
   endif()
   add_library(${lib} STATIC ${GZP_SOURCES})
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC gazpacho_core ${net} gazpacho_wallet_keys gazpacho_chain OpenSSL::Crypto)
+  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain OpenSSL::Crypto)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PUBLIC GZP_TEST_BUILD=1)
@@ -53,6 +55,11 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
 gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
+# Kind 0xffff (the lobby's SEND bridge until P4.2, the signing engine's until
+# P4.3) never reaches a program (composite-node.md, tasks T-P42-1, T-P43-1).
+add_test(NAME program_send_whole_unlinked
+  COMMAND sh ${CMAKE_SOURCE_DIR}/tools/check-send-whole.sh ${CMAKE_SOURCE_DIR} $<TARGET_FILE:gazpacho>
+          $<TARGET_FILE:gazpacho-test>)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
@@ -108,6 +115,14 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_refusals
     COMMAND ${GZP_PY} ${GZP_T}/refusals.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/refusals)
   set_tests_properties(program_restart_policy program_queue_peers program_refusals PROPERTIES TIMEOUT 300)
+  # The composite node, P4.1 (docs/notes/composite-node.md 15): two test
+  # engines, hand-off batches, node errors, routing gates, slot generations,
+  # the watch registry; contract v2's T1, T2 (steps 1 and 2) and T7.
+  foreach(t composite resend_on_connect links envelope)
+    add_test(NAME program_${t}
+      COMMAND ${GZP_PY} ${GZP_T}/${t}.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/${t})
+    set_tests_properties(program_${t} PROPERTIES TIMEOUT 300)
+  endforeach()
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})

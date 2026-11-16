@@ -685,6 +685,10 @@ struct gz_journal {
     uint8_t *guard;
     size_t guard_len;
     int guard_due;
+    /* On a restored start: the guard file as it was at the open, without its
+     * check, for the node (the reader's `guard`, ports.h). */
+    uint8_t *file_guard;
+    size_t file_guard_len;
     gz_runner_t *runner;
     gz_journal_confirmed_fn on_confirmed;
     void *confirmed_ctx;
@@ -721,7 +725,7 @@ static void free_journal(gz_journal_t *j)
     if (!j) return;
     free(j->dir); free(j->path); free(j->tmp_path); free(j->guard_path); free(j->guard_tmp);
     free(j->marker_path); free(j->lock_path);
-    free(j->idx_off); free(j->idx_size); free(j->guard); free(j->rbuf); free(j->recs);
+    free(j->idx_off); free(j->idx_size); free(j->guard); free(j->file_guard); free(j->rbuf); free(j->recs);
     free(j);
 }
 
@@ -971,6 +975,34 @@ static gz_journal_status_t create_file(gz_journal_t *j)
 static int guard_valid(const gz_journal_t *j, const gz_record_t *r);
 static int write_guard(gz_journal_t *j);
 
+/* On a restored start (spec 8.3): read guard.gzg for the node. The file is
+ * outside the backup set and may be newer than the backup, listing epochs
+ * used since; the node's restore batch must write back no less (ports.h).
+ * A file that is missing, damaged or for another chain gives nothing: the
+ * start rule (storage 6.3) judges it. GZ_JOURNAL_OK, ERR_NO_MEMORY or
+ * ERR_IO. */
+static gz_journal_status_t load_file_guard(gz_journal_t *j)
+{
+    size_t cap = GZ_GUARD_MIN_LEN + 8u * 65535u + 8u, flen = 0;
+    uint8_t *buf = malloc(cap);
+    if (!buf) return GZ_JOURNAL_ERR_NO_MEMORY;
+    int fr = read_small(&j->os, j->guard_path, buf, cap, &flen);
+    if (fr < 0) {
+        free(buf);
+        return GZ_JOURNAL_ERR_IO;
+    }
+    gz_record_t r = {GZ_RECORD_GUARD, {buf, flen >= 8 ? flen - 8 : 0}};
+    if (fr > 0 && flen <= cap && flen >= GZ_GUARD_MIN_LEN + 8 && guard_valid(j, &r) &&
+        check8_ok(buf, flen - 8, buf + flen - 8)) {
+        free(j->file_guard);
+        j->file_guard = buf;
+        j->file_guard_len = flen - 8;
+        return GZ_JOURNAL_OK;
+    }
+    free(buf);
+    return GZ_JOURNAL_OK;
+}
+
 /* At open: if the newest kept guard record `rec` is newer than guard.gzg (a
  * higher counter), or the file is missing, replace the file with it. A
  * damaged file is left for the start rule (storage 6.3) to judge.
@@ -1111,6 +1143,10 @@ gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_
      * storage 6.3; the node's restore batch writes it. */
     if (!j->restored) {
         st = settle_guard(j, c.guard, c.guard_len);
+        if (st != GZ_JOURNAL_OK) goto out;
+    } else {
+        /* Given to the node, which writes back the union (spec 8.3). */
+        st = load_file_guard(j);
         if (st != GZ_JOURNAL_OK) goto out;
     }
 
@@ -1356,6 +1392,8 @@ gz_storage_reader_t gz_journal_reader(gz_journal_t *j)
     r.ctx = j;
     r.incarnation = j->incarnation;
     r.restored = j->restored;
+    r.guard.data = j->restored ? j->file_guard : NULL;
+    r.guard.len = j->restored && j->file_guard ? j->file_guard_len : 0;
     j->cursor = 0;
     return r;
 }
