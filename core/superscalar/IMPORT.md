@@ -50,3 +50,33 @@ secp256k1-zkp pin (from upstream CMakeLists.txt, mirrored in ../../CMakeLists.tx
 | src/tx_builder.c | src/tx_builder.c | e716e11ec3c377ddb9780e5b71ab8cb347077c9eb00d17314b2594a5d712530f |
 | src/util.c | src/util.c | e3dd642fd4a5b19fca9976aafd1e35a9e178100d38e3c8b6ea1ad2f66acf64db |
 | LICENSE | LICENSE | 0e9630e6a0a088e988aff20eed0bce3dba695e716ca5390e861ca748947c282b |
+
+## Notes on this pin
+
+Written by hand for the pin above (`50f7fa13`, the merge of SuperScalar pull request 505, 2026-11-13). `tools/update-import.sh` keeps this section as it is; after a re-import to another commit it must be rewritten.
+
+### What is taken, and why
+
+The same file set as the first import: the 17 translation units the tree builder and the signing code need (`factory`, `musig`, `dw_state`, `ladder`, `tx_builder`, `tapscript`, `adaptor`, `shachain`, `util`, `hd_key`, `bip39`, `bech32m`, `crypto_aead`, `fee`, `htlc_fee_bump`, `bolt11`, `fee_estimator_static`) and the headers they include, 38 files with the licence. The script finds the headers by following `#include` lines, so the set did not grow: none of the 14 changed files includes a header that was not already taken.
+
+Not taken, as before: the daemons, the channel engine (`channel.c`; only `channel.h` is included), recovery, CPFP, the watchtower, persistence, the wire code and the payout broadcaster. Gazpacho writes those parts itself.
+
+### Upstream changes since `e6573950` that affect Gazpacho
+
+Changed files: `factory.c`, `factory.h`, `fee.c`, `fee.h`, `tx_builder.c`, `tx_builder.h`, `ladder.c`, `ladder.h`, `dw_state.c`, `dw_state.h`, `bolt11.c`, `channel.h`, `types.h`, `fee_estimator.h`.
+
+| Upstream change | Pull request | Effect on Gazpacho |
+|---|---|---|
+| Every tree transaction is version 3, TRUC (`FACTORY_TREE_TX_VERSION`) | #476 | Every txid changes. `core/tree/model.c` writes version 3. Exits need Bitcoin Core 29.1 or later, and package submission when a transaction pays less than a server's floor (`spec/exit.md`) |
+| The fee per transaction (`fee_per_tx`) and the fee estimator hook are gone. Each tree transaction pays `tree_fee_rate` (sat/kvB) for its own exact signed size; no floor; rate 0 allowed, with a zero-value anchor | #476 | `round_propose` record 30 carries the tree fee rate, which must equal the terms' rate (C8). `core/tree` computes each node's fee from its size (`gz_tree_fee`), and the funding rule R(root) changes (`spec/terms.md` 4.2) |
+| `factory_check_tree_fees`: an audit of every built transaction from its bytes (version, one anchor, last, the exact fee) | #476 | Called by the glue after every build; a failure is a refusal (C1) |
+| A level wider than its member count no longer makes one multi-member leaf; a node that cannot hold its anchor is refused; the layer counter refuses more than 8 layers | #486 | Former hazards of `signing-round.md` 12. Our own checks stay. `tests/scale/tree_shapes.c defects` now checks they stay fixed |
+| `factory_set_level_arity`, `factory_set_funding` and the new `factory_set_placement_mode` return a result; `factory_build_tree` refuses a funding script that is not the root's aggregate | #486, #495 | The glue checks every result. C1's own funding-script check stays |
+| The advanceless shape is upstream's default (`factory_advanceless_shape`: fan-out of at least 4 per level) | #494 | Not used: Gazpacho's shape comes from the terms (interior widths, then binary splits under leaf kind 3). Both are inputs to the same builder |
+| Per-member channel capacities (`factory_set_member_capacities`) and a caller's channel script (`factory_set_leaf_channel_spk`) | #495 | **Not used yet.** Per-member capacities are a follow-up (`spec/terms.md` open point 6) |
+| The distribution transaction: TRUC, paid at the tree rate, at most 230 clients (`FACTORY_MAX_DIST_CLIENTS`), capacities never scaled down | #476, #487 | Not used: a member still refuses a proposal that carries a payout (C8) |
+| `channel.h`: the 228-output cap per commitment, on-chain HTLC claims, revocation results that must be checked (`SS_MUST_CHECK`) | #504, #505, #462 | Header only; no Gazpacho code uses it yet |
+| Rotation off by default; `ladder.c` checks `factory_set_funding` | #488 | None |
+
+Unchanged for Gazpacho: transaction sizes, every timeout height (`TIMEOUT_STEP_BLOCKS` 5; kickoff at E − 5·(2d − 1), leaf at E − 10·d, `src/factory.c:2053-2070`), the pseudo-Spilman channel output copying the leaf's script (`:1630-1633`), so H_leaf = E − 10·d; the 240-sat anchor at any rate above 0; the secp256k1-zkp pin.
+

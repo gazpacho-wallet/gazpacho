@@ -2,7 +2,9 @@
 
 Specification draft 2, 2026-11-12. Status: draft 1 reworked after the third review (`docs/reviews/spec-review-3.md`), which found section 4 unable to express the tree Slice 1 needs. Draft 2 has not itself been reviewed. It specifies owner decision 1 of 2026-11-11 (`docs/ux/decisions.md`): a lobby's outer rules are fixed when it opens; adjustable values move only inside signed ranges and freeze at the ready check; the outer rules have a fingerprint that is the lobby's identity; the current values have a version and their own digest that includes the outer one; a member's ready names both. Items marked **(open)** are listed at the end. Values marked **proposed, owner to confirm** are Slice 1 choices the owner has not objected to and has not yet confirmed.
 
-Conventions (integers, `point`, `sig`, `TH`) are those of `messages.md` section 1.
+Conventions (integers, `point`, `sig`, `TH`) are those of `messages.md` section 1. Line citations into the import are at the pin `e6573950` unless they name `50f7fa13`, the pin of the re-import of 2026-11-16 (`core/superscalar/IMPORT.md`); passages that re-import changed cite the new pin.
+
+**Re-import of SuperScalar `50f7fa13` (2026-11-16).** Tree transactions are version 3 (TRUC), and each pays the tree fee rate for its own exact signed size instead of one fee for every transaction. Section 4.2's fee and funding rules, its build table and T7 changed with it; T1 to T6 did not.
 
 ## Changes after review 3
 
@@ -77,7 +79,7 @@ Required unless marked. "Slice 1" says which values a Slice 1 app accepts; other
 | 26 | `lifetime_blocks` | `u32` | 1 to 52,560 | | How long the factory is active. 52,560 blocks is about a year, far above the 30 days the design expects (4,320 blocks) |
 | 28 | `winddown_blocks` | `u32` | 1 to 52,560 | | The winding-down period after the lifetime (design: about 3 days, 432 blocks) |
 | 30 | `channel_sat` | `u64` | 546 to 2,100,000,000,000,000 | | **The smallest channel a member gets**: every member's leaf pays at least this to its channel output (section 4.2). The leaf holds the same again as spare liquidity, plus fees. 546 is the import's dust limit [C: `channel.h:14`]; the maximum is the supply in satoshis. Draft 1 called this `leaf_amount_sat` and gave it two meanings (review 3, F4) |
-| 32 | `tree_feerate` | `u32` | 1 to 1,000,000 satoshis per 1,000 vbytes | | Fee rate of the tree transactions (section 4.2). Thousandths of a satoshi per vbyte are needed: the owner's test rate is 0.1 sat/vB, which is 100 here. The ceiling, 1,000 sat/vB, is far above any fee seen |
+| 32 | `tree_feerate` | `u32` | 1 to 1,000,000 satoshis per 1,000 vbytes | | Fee rate of the tree transactions: each pays it for its own signed size (section 4.2), and `round_propose` carries it in record 30. The import also allows 0 (no fee and a zero-value anchor); draft 2 does not. Thousandths of a satoshi per vbyte are needed: the owner's test rate is 0.1 sat/vB, which is 100 here. The ceiling, 1,000 sat/vB, is far above any fee seen |
 | 34 | `switches` | `u8` | Bit 0 names, bit 1 chat, bit 2 rule-change requests; other bits 0 | 0 | `LOBBY.md`: three host switches. A set unknown bit is refused, since this is an even record |
 | 64 | `joining_fee_sat` | 16 | Range, `min` ≤ `max` ≤ 2,100,000,000,000,000 | | A flat joining fee, taken from the first payment the member receives (decision 2). Not collected in Slice 1 |
 | 66 | `fee_base_msat` | 16 | Range, `max` ≤ 4,294,967,295 | | The per-payment base fee. The ceiling is BOLT 7's `fee_base_msat` width (`u32`) |
@@ -112,7 +114,8 @@ For n members the first entry with `max_members` ≥ n applies. The last entry's
 - At a depth whose entry is a width a ≥ 4, a node with **at most a members is itself one leaf**, with several members (`setup_nway_leaf_outputs`) or, for one member, the non-pseudo-Spilman `setup_single_leaf_outputs` [C: `src/factory.c:948-955`, `:1774-1808`]. That is what made draft 1's T1 unusable (review 3, F1). A node with more than a members is split into a children (below).
 - Widths 1, 2 and 3 have special meanings at interior depths (1 and 2 are other leaf types, 2 splits by a different rule, 3 splits in two) [C: `src/factory.c:948-955`, `:971-986`]; draft 2 allows none of them as an interior width. Binary splitting is what the leaf kind 3 already does below the interior levels.
 - At most 8 entries are read [C: `factory.h:415`, `src/factory.c:1172`], so `n_interior` is at most 7; draft 2 allows 6, leaving one entry spare.
-- Interior widths stop at 15 because tree anchors are always on in 1.0.0 (`signing-round.md` section 4.1, owner decision 6) and the import silently leaves out the anchor of a node with 16 outputs [C: `src/factory.c:501`; `factory.h:21`].
+- Interior widths stop at 15 because tree anchors are always on in 1.0.0 (`signing-round.md` section 4.1, owner decision 6) and a node has at most 16 outputs [C: `factory.h:21`]. The first import silently left out the anchor of a node with 16 children; at `50f7fa13` it refuses such a node [C: `src/factory.c:1921-1926`, `:2107`].
+- **At `50f7fa13` a width level holding at most its width in members no longer makes one multi-member leaf**: it keeps splitting until every leaf is of the leaf kind, so it builds one-member leaves [C: `src/factory.c:1132-1142`] (SuperScalar #486). The split rule below still refuses such a node (m ≤ a), which is stricter than the import and refuses only shapes that would also have built under the first import's rule. Allowing them is possible later; nothing in 1.0.0 needs it.
 
 ### 4.2 The tree an entry builds
 
@@ -125,35 +128,39 @@ Every reader must be able to compute, from the terms alone, the tree's leaves, i
 
 **D**, the number of fixed levels: the depth of the deepest leaf. The proposal's `fixed_levels` must equal D (`messages.md` 7.2), and the engine passes D to `factory_set_static_near_root`, so every interior node is a fixed (kickoff-only) node and every leaf is a kickoff and state pair [C: `src/factory.c:1659-1669`]. A smaller value builds a different tree; a larger one builds the same bytes (build server, 2026-11-12); only D is accepted, so that one tree has one encoding.
 
-**The fee per tree transaction.** The import pays one fee, `fee_per_tx`, on every tree transaction [C: `src/factory.c:1694-1696`, `:1759-1761`, `:1299-1300`]. It is
+**The fee of each tree transaction.** Every tree transaction pays the terms' `tree_feerate` for its own exact signed size [C at `50f7fa13`: `src/factory.c:588-608` `node_reserve` and `factory_tree_tx_fee`; `src/fee.c:92-114`]. A tree transaction with k P2TR outputs and the anchor has 64 + 43·k unsigned bytes and
 
 ```
-fee_per_tx_sat = ⌈ tree_feerate × V / 1000 ⌉
+vsize(k)  = ⌈(4 × (64 + 43·k) + 2 + 66) / 4⌉ = 81 + 43·k vbytes
+fee(k)    = ⌈ tree_feerate × vsize(k) / 1000 ⌉
+anchor    = 240 satoshis (0 at rate 0, which draft 2 does not allow)
 ```
 
-where V is the largest virtual size (BIP 141) of any tree transaction in its signed form: ⌈(4 × unsigned bytes + 2 + 66) / 4⌉ vbytes, the 2 for the segwit marker and flag and the 66 for a witness of one 64-byte signature. Sizes do not depend on amounts, so V can be read from a tree built with any fee. The proposal must carry exactly this value.
+the 2 for the segwit marker and flag and the 66 for a witness of one 64-byte signature. In T1 at 100 sat/kvB: the leaf's kickoff (k = 1, 124 vbytes) pays 13 sat, a two-output transaction (167 vbytes) 17 sat, a four-output one (253 vbytes) 26 sat. The proposal carries the rate itself (`round_propose` record 30), which must equal the frozen terms' rate. The first import paid one fee on every transaction, the rate for the largest one, V; V is still computed (`gz_tree_params`) and is now only a size bound.
 
-**The funding amount.** With every interior node fixed, the import gives a node's coins less `fee_per_tx` and the anchor (240 satoshis, `ANCHOR_OUTPUT_AMOUNT` [C: `channel.h:16`]) to its children in equal shares, the remainder to the last child, and splits a leaf's coins, less two fees and two anchors (its kickoff and its state transaction), into a channel and an equal spare-liquidity output [C: `src/factory.c:1694-1720`, `:1759-1761`, `:1299-1323`]. So define, for a node, its requirement R:
+**The funding amount.** With every interior node fixed, the import gives a node's coins less its fee and the anchor (240 satoshis, `ANCHOR_OUTPUT_AMOUNT` [C: `channel.h:19`]) to its children in equal shares, the remainder to the last child, and splits a leaf's coins, less its kickoff's fee and anchor and its state transaction's fee and anchor, into a channel and an equal spare-liquidity output [C at `50f7fa13`: `src/factory.c:2131-2142`, `:2194-2205`, `:1604-1649`]. So define, for a node, its requirement R:
 
 ```
-R(leaf)                 = 2 × channel_sat + 2 × fee_per_tx + 2 × 240
-R(node with k children) = k × max R(child) + fee_per_tx + 240
+R(leaf)                 = 2 × channel_sat + fee(1) + fee(2) + 2 × 240
+R(node with k children) = k × max R(child) + fee(k) + 240
 funding_amount          = R(root)
 ```
 
+**The import's minimum.** `factory_build_tree` also refuses a funding amount below 2 × (2 × leaves − 1) × (fee(1) + 240) + 1,092 × leaves [C at `50f7fa13`: `src/factory.c:2388-2404`], whatever the shape. At 0.1 sat/vB that is 253 sat per assumed transaction, so terms whose `channel_sat` is small can make a member count unfundable: T1's shapes need `channel_sat` of at least 685 at 8 members (638 at 4). A reader refuses such terms on receipt (section 7, step 5).
+
 The proposal's `funding_amount` must equal R(root). With it every leaf's channel output is at least `channel_sat`, and the leaf with the largest requirement gets exactly `channel_sat`. Leaves under smaller subtrees get more, because the import splits equally between children, not by their sizes: with 3 members, member 1's channel is about twice `channel_sat` (build server, below). Requesting a split by subtree size is listed for SuperScalar **(open)**.
 
-**Confirmed by building**, 2026-11-12, on the build server with the imported code at pin `e6573950…` (`factory.c` SHA-256 `f1928bb0…`), using `signing-round.md` section 13's order and section 4.1's Slice 1 settings and T1's values (`channel_sat` 100,000, fee rate 100):
+**Confirmed by building**, 2026-11-16, on the build server with the imported code at pin `50f7fa13…`, using `signing-round.md` section 13's order and section 4.1's Slice 1 settings and T1's values (`channel_sat` 100,000, fee rate 100). The first import (`e6573950`, one fee of 17 or 26 sat on every transaction) gave 802,827, 1,605,586 and 3,211,970.
 
-| Members | Level arity | fee_per_tx | funding_amount | Leaves | Channels |
+| Members | Level arity | Fees (sat) | funding_amount | Leaves | Channels |
 |---|---|---|---|---|---|
-| 3 | [3] | 17 (V = 167) | 802,827 | 3, each pseudo-Spilman with 1 member | 200,385; 100,000; 100,000 |
-| 4 | [3] | 17 (V = 167) | 802,827 | 4, each pseudo-Spilman with 1 member | 100,000 each |
-| 5 | [4, 3] | 26 (V = 253) | 1,605,586 | 5, each pseudo-Spilman with 1 member | 100,000 (2); 200,399 (3) |
-| 8 | [4, 3] | 26 | 1,605,586 | 8, each pseudo-Spilman with 1 member | 100,000 each |
-| 16 | [4, 3] | 26 | 3,211,970 | 16, each pseudo-Spilman with 1 member | 100,000 each |
+| 3 | [3] | 13, 17 | 802,811 | 3, each pseudo-Spilman with 1 member | 200,383; 100,000; 100,000 |
+| 4 | [3] | 13, 17 | 802,811 | 4, each pseudo-Spilman with 1 member | 100,000 each |
+| 5 | [4, 3] | 13, 17, 26 | 1,605,374 | 5, each pseudo-Spilman with 1 member | 100,000 (2); 200,383 (3) |
+| 8 | [4, 3] | 13, 17, 26 | 1,605,374 | 8, each pseudo-Spilman with 1 member | 100,000 each |
+| 16 | [4, 3] | 13, 17, 26 | 3,211,510 | 16, each pseudo-Spilman with 1 member | 100,000 each |
 
-In every row every interior node was fixed, and the layer step and states (144 and 4, or 1 and 2) left every txid unchanged. Draft 1's T1 shape (level arity [4]) at 3 and 4 members, and review 3's suggestion [4, 3] at 3 members, each built **one N-way leaf holding every member**. `tools/spec-vectors.py` applies the same rules and reproduces the funding amounts.
+In every row every interior node was fixed, every transaction was version 3 and paid exactly the rate for its size (the import's own audit, `factory_check_tree_fees`, agrees), and the layer step and states (144 and 4, or 1 and 2) left every txid unchanged. Draft 1's T1 shape (level arity [4]) at 3 and 4 members, and review 3's suggestion [4, 3] at 3 members, each built **one N-way leaf holding every member** under the first import (at `50f7fa13` they would build one-member leaves; section 4.1). `tools/spec-vectors.py` applies the same rules and reproduces the funding amounts.
 
 ### 4.3 What a reader checks
 
@@ -301,7 +308,7 @@ current_sig    = 7a692794d41ad38a845e6533b2499b197a3d63d86f196d274a14d4aa33478bf
 
 **T6. Comparison.** A member with limits joining fee ≤ 1,000, base ≤ 1,000, proportional ≤ 2,500, against T1 and T2: joining fee "fits only now" (range up to 2,000; current 500); base fits the whole range; proportional fits the whole range. So the lobby is "fits only now". After T3 (joining fee 1,500), it does not fit, and a member on the looser option sends `unready`.
 
-**T7. The tree T1 builds** (section 4.2, the generator's split and funding rules, and the build server): for 3 and 4 members, level arity [3], D = 2; for 5 to 8, [4, 3], D = 2; for 9 to 16, [4, 3], D = 3 (corrected after the confirmation review); every leaf a one-member pseudo-Spilman leaf. With fee 17, the funding amount is 802,827 satoshis for 3 or 4 members. Draft 1's shape entry `0004 01 04` (level arity [4]) is refused by section 4.3 at n = 3.
+**T7. The tree T1 builds** (section 4.2, the generator's split and funding rules, and the build server): for 3 and 4 members, level arity [3], D = 2; for 5 to 8, [4, 3], D = 2; for 9 to 16, [4, 3], D = 3 (corrected after the confirmation review); every leaf a one-member pseudo-Spilman leaf. At 100 sat/kvB (fees 13 and 17) the funding amount is 802,811 satoshis for 3 or 4 members (802,827 under the first import's flat fee). Draft 1's shape entry `0004 01 04` (level arity [4]) is refused by section 4.3 at n = 3.
 
 ## 12. Tests
 
@@ -316,7 +323,7 @@ current_sig    = 7a692794d41ad38a845e6533b2499b197a3d63d86f196d274a14d4aa33478bf
 **Shape (section 4)**
 17. For T1 and for every n from 3 to 16, the split rule gives n one-member leaves and the depth D stated in T7; the imported builder, given `interior ‖ 3` and `fixed_levels` = D, builds exactly those leaves, each a pseudo-Spilman leaf with one member, every interior node fixed (`signing-round.md` test 12).
 18. An entry whose split puts m ≤ a members at an interior depth for some n in its range (for example draft 1's {4: width 4}): refused on receipt, before joining.
-19. `fee_per_tx` and `funding_amount` computed by section 4.2 for T1 at 3, 4, 5, 8 and 16 members equal the build-server table; every channel output is at least `channel_sat`; with `funding_amount` − 1 at 4 members some channel output is below it.
+19. Each transaction's fee and `funding_amount` computed by section 4.2 for T1 at 3, 4, 5, 8 and 16 members equal the build-server table; every channel output is at least `channel_sat`; with `funding_amount` − 1 at 4 members some channel output is below it.
 
 **Signatures and identity**
 7. A record signed by another key; a valid record whose `host_key` is not the pinned key; a signature over the wrong digest (the outer digest under the current tag and the other way round): refused.
@@ -342,7 +349,7 @@ current_sig    = 7a692794d41ad38a845e6533b2499b197a3d63d86f196d274a14d4aa33478bf
 3. **Freeze for ever after the first ready check**, including when the lobby returns to Open. Decision 1 says "after it nothing moves"; this draft reads that strictly. The alternative is unfreezing when a check fails before the deadline.
 4. **Timed layers and channel terms** in the record, when those slices come. Timed layers will need a new even leaf or level description, and C8's bound on step × (states − 1) (review 3, F23).
 5. **Whether `host_key` should be a separate signing key** bound to the BOLT 8 key, rather than the BOLT 8 key itself (`messages.md` open point 9).
-6. **Unequal channels.** The import splits a node's coins equally between its children, so members under smaller subtrees get larger channels (section 4.2). We asked SuperScalar to split by subtree size (request 7, `docs/handoff/README.md`). **Pending change:** their reply (2026-11-12) confirms the bug but chooses a **per-member capacity carried in the proposal** instead of equal channels, and Gazpacho agreed. Section 4.2 and `messages.md` 7.2 must then carry a capacity per member, each member checking its own. Not written yet; to do when their change lands.
+6. **Unequal channels.** The import splits a node's coins equally between its children, so members under smaller subtrees get larger channels (section 4.2). We asked SuperScalar to split by subtree size (request 7, `docs/handoff/README.md`). **Pending change:** their reply (2026-11-12) confirms the bug but chooses a **per-member capacity carried in the proposal** instead of equal channels, and Gazpacho agreed. Section 4.2 and `messages.md` 7.2 must then carry a capacity per member, each member checking its own. **Their change has landed** (`factory_set_member_capacities`, SuperScalar #495, in the import since `50f7fa13`); taking it is a follow-up to the re-import (owner, 2026-11-16), not yet written.
 7. Closed: a listing carries exactly the outer record, the same bytes on every carrier (Lightning query, store node, Nostr); see `discovery.md`.
 8. **Slice 1 lifetime**: 144 blocks plus 36 of wind-down in T1, so the host recovers its signet coins within about a day and a half (`safety-rule.md` section 12) — **proposed, owner to confirm**.
 
