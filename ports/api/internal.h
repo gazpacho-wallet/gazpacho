@@ -354,7 +354,16 @@ int gz_peer_same_user(gz_api_server *srv, int fd);       /* 1 same user, 0 refus
 int gz_peer_check_available(gz_api_server *srv);
 
 /* static.c */
-int gz_static_lookup(const char *path, const char **body, size_t *len, int *is_page);
+typedef struct gz_static_file {
+    const char *path;            /* exact request path */
+    const char *ctype_header;    /* "Content-Type: ...\r\n", or NULL for a page (text/html) */
+    const unsigned char *body;
+    size_t len;
+    int is_page;                 /* one of the interface's pages: the page headers of 5.4 */
+} gz_static_file;
+extern const gz_static_file gz_static_files[];   /* generated from web/ by embed.cmake */
+extern const size_t gz_static_nfiles;
+int gz_static_lookup(const char *path, const char **body, size_t *len, int *is_page, const char **ctype_header);
 const char *gz_page_headers(void);
 
 #endif

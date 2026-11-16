@@ -260,3 +260,31 @@ jobs:
       - name: Run each target for 60 seconds
         if: steps.find.outputs.found == 'true'
         run: sh tools/run-fuzz.sh build 60
+
+  interface:
+    name: interface in a browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
+      - name: Build gz-api-fake (the API server, the fake backend, the interface compiled in)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_WERROR=ON -DGZW_BREAK_CHECKS=OFF
+          cmake --build build --target gz-api-fake -j
+      - name: Install Playwright (pinned by tests/web/package-lock.json) and Chromium
+        working-directory: tests/web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: The interface, every Slice 1 flow, against the fake backend
+        working-directory: tests/web
+        run: GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test
+      - name: The API server's own browser checks (spec/local-api.md 23.6)
+        working-directory: tests/api/browser
+        run: |
+          ln -s ../../web/node_modules node_modules
+          GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test

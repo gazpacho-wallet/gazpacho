@@ -13,8 +13,29 @@ set_target_properties(gazpacho_llhttp PROPERTIES C_STANDARD 11 C_STANDARD_REQUIR
 
 # --- the server -------------------------------------------------------------------
 # Strict C11 like the transport, POSIX and Linux calls named per file.
+# The interface (web/, stream S10) is compiled in: embed.cmake turns the files
+# listed here into static_files.c, and static.c serves exactly those paths.
+set(GZ_WEB_DIR ${PROJECT_SOURCE_DIR}/web)
+set(GZ_INTERFACE_FILES
+  index.html app.css
+  js/util.js js/words.js js/api.js js/ui.js js/access.js js/home.js js/conditions.js js/lobbies.js
+  js/host.js js/factory.js js/settings.js js/app.js js/bip39.js js/eff.js)
+set(GZ_INTERFACE_DEPS)
+foreach(f ${GZ_INTERFACE_FILES})
+  list(APPEND GZ_INTERFACE_DEPS ${GZ_WEB_DIR}/${f})
+endforeach()
+string(REPLACE ";" "|" GZ_INTERFACE_ARG "${GZ_INTERFACE_FILES}")
+add_custom_command(
+  OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/static_files.c
+  COMMAND ${CMAKE_COMMAND} -DWEB_DIR=${GZ_WEB_DIR} -DFILES=${GZ_INTERFACE_ARG}
+          -DOUT=${CMAKE_CURRENT_BINARY_DIR}/static_files.c -P ${CMAKE_CURRENT_SOURCE_DIR}/embed.cmake
+  DEPENDS ${GZ_INTERFACE_DEPS} ${CMAKE_CURRENT_SOURCE_DIR}/embed.cmake
+  COMMENT "Embedding the interface (web/)"
+  VERBATIM)
+
 add_library(gazpacho_api STATIC
-  json.c util.c http.c route.c session.c derive.c events.c status.c peer.c static.c server.c)
+  json.c util.c http.c route.c session.c derive.c events.c status.c peer.c static.c server.c
+  ${CMAKE_CURRENT_BINARY_DIR}/static_files.c)
 set_target_properties(gazpacho_api PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_api
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -77,6 +98,13 @@ foreach(target api_http api_json)
   target_include_directories(fuzz_${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_compile_options(fuzz_${target} PRIVATE ${GZ_NEW_CODE_WARNINGS})
 endforeach()
+
+# The interface's files: no inline script or style, no HTML sinks, nothing from
+# another host, the word lists equal to the program's (tests/web/check_static.py).
+if(Python3_FOUND)
+  add_test(NAME web_static_check COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tests/web/check_static.py)
+  set_tests_properties(web_static_check PROPERTIES LABELS api)
+endif()
 
 # The vendored parser has not changed.
 add_test(NAME api_llhttp_pinned

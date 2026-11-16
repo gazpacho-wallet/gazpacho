@@ -40,6 +40,7 @@ static void defaults(gz_api_limits *l)
     if (!l->keepalive_ms) l->keepalive_ms = 15000;
     if (!l->merge_ms) l->merge_ms = 250;
     if (!l->stream_unsent_max) l->stream_unsent_max = 64 * 1024;
+    if (!l->held_ms) l->held_ms = 30 * 1000;             /* contract-v2 11: without it a held call answered node_busy at once */
 }
 
 static int listen_tcp(gz_api_server *srv, int v6, uint16_t port, const char **err)

@@ -1,0 +1,12 @@
+{
+  "name": "gazpacho-interface-tests",
+  "private": true,
+  "description": "The interface (web/) driven in a real browser against gz-api-fake (TEST ONLY).",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
+  }
+}
