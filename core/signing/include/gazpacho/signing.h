@@ -57,6 +57,37 @@
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_musig.h>
 
+/* THE BRIDGE, until P4.3 puts the signing engine on links
+ * (docs/notes/composite-node.md, task T-P43-1). The engine still names a peer
+ * by the number the program gave it and sends and takes whole messages. In
+ * contract v2's types that is, exactly as for the lobby (lobby.h): a SEND of
+ * kind GZ_SIGN_SEND_WHOLE, scope zero, the whole message in `records`, and
+ * the peer's number in bytes 1 to 8 of the link's remote key, big-endian
+ * (byte 0 is zero, so it is no public key); a received message's bytes are
+ * its `records` and its sender the number in its link, and a peer event's
+ * peer the number in its link. Nothing else of the engine changed.
+ *
+ * The kind is the one reserved kind there is, GZ_SEND_KIND_RESERVED (0xffff,
+ * action.h), the lobby's too: the composite already refuses it from any
+ * engine and the program never puts it on the wire, so one rule guards both
+ * bridges, and a second reserved kind would need a second of each guard. No
+ * program links the signing engine; tools/check-send-whole.sh fails if one
+ * does while this exists. */
+#define GZ_SIGN_SEND_WHOLE GZ_SEND_KIND_RESERVED
+
+static inline void gz_sign_link_set_peer(gz_link_t *link, uint64_t peer)
+{
+    for (int i = 0; i < GZ_NODE_ID_LEN; i++) link->local.key[i] = link->remote.key[i] = 0;
+    for (int i = 0; i < 8; i++) link->remote.key[1 + i] = (uint8_t)(peer >> (56 - 8 * i));
+}
+
+static inline uint64_t gz_sign_link_peer(const gz_link_t *link)
+{
+    uint64_t peer = 0;
+    for (int i = 1; i <= 8; i++) peer = peer << 8 | link->remote.key[i];
+    return peer;
+}
+
 /* Limits. Participant and signer sets are uint32_t bit masks, so 32 is the
  * ceiling; Slice 1's T1 at 16 members needs 17 participants and 45 items
  * (docs/notes/slice1-attempt.md, mismatch 7). */

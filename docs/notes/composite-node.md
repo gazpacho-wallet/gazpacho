@@ -179,14 +179,17 @@ int (*keys)(void *ctx, const uint8_t scope[32], secp256k1_keypair *factory,
 
 **Binding connections to slots on the host.** Several lobbies share the host's key, so a new connection does not say which lobby it is for. The node part binds it:
 
-- A connection whose remote key holds a seat in a slot (the composite saw that slot's SET_SEATED) is bound to that slot at once.
-- Any other connection is **unbound**. The node part keeps it: at most 16 unbound connections, the oldest silent one pushed out first (reviewer B, B7), closed after 60 s without a message. These are the lobby's own numbers, moved up to the node part.
-- An unbound connection's first message with a nonzero scope binds it to that scope's slot. The composite then gives that slot's lobby a PEER_CONNECTED for the link, then the message.
+- A connection whose remote key holds a seat in a slot (the composite saw that slot's SET_SEATED) is **seated**, and bound to that slot at once.
+- Any other connection is **unseated**. An unseated connection's first message with a nonzero scope binds it to that scope's slot. The composite then gives that slot's lobby a PEER_CONNECTED for the link, then the message.
+- **The one rule for unseated connections, bound or not** (reviews of PR 41: A F9, B 7). The node part keeps at most **16** of them; a newcomer without a seat, when 16 are held, pushes out the **oldest silent** one first (one that has sent nothing since it connected), then the one silent longest; the newcomer itself is never the one to go. Each is closed after **60 s** without a message. A seated connection is never pushed out and never closed as idle. A seat given up (SET_SEATED 0) makes its connection unseated at once, and a slot that closes makes every connection bound to it unbound and unseated: the cap holds **in that step**, the excess closed at once, silent first (review B 2). These are the lobby's own numbers, moved up to the node part; the lobby's own caps for connections without a seat (`GZ_LOBBY_MAX_UNSEATED`, the ten-minute rule) go in P4.2 (task T-P42-2 below).
+- **One size for the three connection tables**: `GZ_NODE_MAX_CONNS` (64, `node.h`) sizes the node part's table, the program adapter's and the transport's `max_conns`, held together by the program (`net.h`). The transport evicts connections without a seat at that limit; the node part's 16 is within it, so a seated member is never refused.
+- **Intervals are measured on the monotonic clock** (`ports.h`, `mono_ms`): the 60 s and the `hello` limits. A wall clock stepped back never keeps a silent connection open.
+- **A link the node part does not hold as connected** (never reported, already reported gone, or one whose close the node part has asked for) is dropped and counted (`drop why=unconnected`), whatever the kind: it binds nothing, no engine hears of it, no `hello` is answered (review A F5, B 1). The program drops what the transport had already read on a connection after the node's DISCONNECT for it (`program/net.h`).
 - A bound link that sends another nonzero scope is refused (DISCONNECT `refused`).
 - A scope-zero `hello` on any connection is answered by every listed host slot (at most 4 offers, 6.1), with the node part's per-link limits (one answer a second, closed after 20 ignored `hello`s in 10 minutes). With no listed lobby, nothing is answered.
 - PEER_DISCONNECTED goes to the bound slot's lobby, if any.
 
-The lobby's connection table then sees only its own links, and its caps stay as they are.
+The lobby's connection table then sees only its own links.
 
 ## 4. Routing messages
 
@@ -278,6 +281,7 @@ What goes:
 - The first request issues the action. A later request with a larger depth issues it again with that depth. Other repeats issue nothing.
 - Reports go to every engine in the set. Each engine ignores what it no longer needs.
 - The registry is memory only. Rule 4 makes every engine set its watches again at start.
+- **Budgets** (review A F2). An engine cannot see how full the registry is, so the registry is never full: each engine has a budget of distinct watches (the test engines 16 each, a slot's engine 4), their sum is held to the registry's size by a static assertion, and an engine keeps its own cap and refuses a request past it (a command result 409). An engine that asks for more anyway broke that cap: `GZ_ERR_BUG`. When a slot closes, its engine's bit leaves every entry and an entry nobody asks for any more is free; reports for it then reach nobody. The funding engine's budget is set with P4.5 (task T-P45-1).
 - In Slice 1 only the funding engine watches. The registry is kept, small, because channels and exits will share outpoints with funding; P4.1 tests it with the two test engines.
 
 ### 7.3 Storage
@@ -344,6 +348,7 @@ The host's `start` hand-off is two batches, and need not be one. The lobby saves
 - The composite keeps a queue, in submission order, of a bit mask per SAVE it returned: the engines whose records are in it. Confirmations arrive in order (`runner.h`), so the head of the queue says who gets each STORAGE_CONFIRMED.
 - **Confirmations are per merged batch.** No engine may assume one confirmation per SAVE it emitted. The test engine counts batches, not saves.
 - During the start, a batch made in signing's resume or a repair can hold a lobby's records while that lobby is loaded but not yet resumed. Its confirmation for that lobby is held by the composite and given after the lobby's resume, in order. The lobby uses no confirmations today, so this only keeps the rule simple for later engines (R4).
+- **A slot's engine** takes its confirmations from the moment its slot opens (review A F8). When the slot closes, its bit leaves every batch still awaiting confirmation and every watch, and reports and confirmations are given to a slot's engine only while its slot is Open, so the next slot at that index inherits nothing. A slot loaded at a start is marked when its lobby's resume is done (task T-P42-4).
 
 ## 8. Errors
 
@@ -687,6 +692,24 @@ Plus contract v2's T1 `program_resend_on_connect`, T2 steps 1 and 2 `program_lin
 5. Slot generations: a test command opens a slot whose engine sets a 10 s timer, closes it, opens another; the first timer never fires into the second.
 6. Both test engines watch the same txid at depths 1 and 3: one watch, both get the reports.
 7. A storage failure in the middle: one in-process restart; timers fire only after the new start.
+
+### Named tasks from the reviews of PR 41
+
+Decided by the coordinator; each is a task of the named step and its pull request must show it done.
+
+| Task | What | Step |
+|---|---|---|
+| T-P42-1 | **Remove the lobby's SEND bridge, kind 0xffff (`GZ_LOBBY_SEND_WHOLE`).** Until then the kind is reserved (`GZ_SEND_KIND_RESERVED`, `action.h`): the composite refuses it from any engine (`GZ_ERR_BUG`), the program never puts it on the wire (fatal, `send-reserved-kind`), and `tests/program/test_net.c` fails if the adapter is asked to send it. P4.2 deletes the constant and its use in `core/lobby/act.c`; `tools/check-send-whole.sh` (a test) fails once the lobby is linked into a program while the constant exists | P4.2 |
+| T-P42-2 | **The lobby's own caps** for connections without a seat (its 16 and its ten-minute rule) on top of the node part's one rule (section 3), with the 96-link case of review A probe P3 in its test; a static assertion that `SLOT_MAX_SEATS` is at least `GZ_LOBBY_MAX_SEATS` | P4.2 |
+| T-P42-3 | **Node records registered** (`journal.md` 9) with the guard's union rule (journal.md 8.3) carried over to the first `key_index`: the node part allocates indexes above the highest the guard file lists for the current epoch | P4.2, before the first `key_index` |
+| T-P42-4 | **A slot loaded at a start takes its confirmations** after its lobby's resume (`gz_c_engine_opened`), and the held ones are released to it (7.5) | P4.2 |
+| T-P42-5 | **A real host-to-member kind for T1 step 7** (the 200 KB reply over `max_queue`): P4.1 sends 200,010 bytes of kind 28 from the test engine (`program_envelope`, `program_composite` case 11); P4.2 makes it the lobby's own message | P4.2 |
+| T-P42-6 | **The node part reads `lobby_ended`** (engine interface `reads`), and `max_timers` is checked for every engine, not only slots (review A F15) | P4.2 |
+| T-P42-7 | **Unbound connections' age.** A hard limit on how long a connection without a seat may stay, whatever it sends, and no connection counted as silent in its first two seconds (review A F12) | P4.2 |
+| T-P42-8 | **Rate-limit the drop notices** before the release build prints them (review A F15) | P4.2 |
+| T-P42-9 | **Tests the stand-in cannot make** (surviving mutants of reviews A and B, none a fault): brackets with two engines and no hand-off, two deferrals, the queue and deferral overflows (`a-deferred-lifo`, `a-queue-overflow-unchecked`, `a-adjacent-owner-shift`, `a-nested-bytes`, `a-deferred-overflow-unchecked`); held confirmations released after a resume (`a-held-released-once`, `held-confirmations-not-released`); CONNECT's key index reaching the handshake and the connected event (`p-connect-index-lost`, `adapter-connected-without-key-index`); a SEND on a key that is not ours, with a connection up (`adapter-sends-on-a-foreign-key`); an engine that returns `GZ_WAITING` after appending (`waiting-after-append-ok`). The lobby's tests must kill them | P4.2 |
+| T-P43-1 | **Remove the signing engine's bridge (`GZ_SIGN_SEND_WHOLE`, `gz_sign_link_peer`, `gz_sign_link_set_peer` in `signing.h`) and the simulator's `whole_messages`.** `main` gained the signing engine written against contract v1 while P4.1 was in review; to build on contract v2's types it carries, exactly as the lobby does, the peer's number in the link and the whole message in `records` under the one reserved kind 0xffff (the lobby's kind is reused: the composite's refusal and the adapter's cover both, and a second kind would need a second of each guard). Nine lines of the engine changed and none of its behaviour: its scenarios' pinned digests, the BIP vectors and its rule removals are unchanged. P4.3 puts the engine on links, with its crypto review, deletes the bridge and the simulator's contract-v1 network for it; `tools/check-send-whole.sh` fails once a program links the engine while the bridge exists | P4.3 |
+| T-P45-1 | **The funding engine's watch budget** in the static assertion of 7.2 | P4.5 |
 
 ### P4.2, `program_lobby`
 

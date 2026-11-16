@@ -124,26 +124,26 @@ static void h_apply(harness_t *h, uint32_t g, const gz_action_list_t *list)
                 h_fold64(h, rec->type); h_fold(h, rec->b, rec->len);
             }
         } else if (a->kind == GZ_ACTION_SEND) {
-            h_fold64(h, a->u.send.peer_id); h_fold(h, a->u.send.bytes.data, a->u.send.bytes.len);
+            h_fold64(h, gz_sign_link_peer(&a->u.send.link)); h_fold(h, a->u.send.records.data, a->u.send.records.len);
             if (h->n_sent == h->cap_sent) {
                 h->cap_sent = h->cap_sent ? 2 * h->cap_sent : 256;
                 h->sent = realloc(h->sent, h->cap_sent * sizeof *h->sent);
                 if (!h->sent) abort();
             }
             h_sent_t *s = &h->sent[h->n_sent++];
-            s->party = g; s->peer = (uint32_t)a->u.send.peer_id; s->len = a->u.send.bytes.len;
-            s->kind = h_kind_of(a->u.send.bytes.data, s->len);
+            s->party = g; s->peer = (uint32_t)gz_sign_link_peer(&a->u.send.link); s->len = a->u.send.records.len;
+            s->kind = h_kind_of(a->u.send.records.data, s->len);
             s->b = malloc(s->len ? s->len : 1);
             if (!s->b) abort();
-            memcpy(s->b, a->u.send.bytes.data, s->len);
-            if (a->u.send.peer_id < h->n && !(h->drop_to >> a->u.send.peer_id & 1u)) {
+            memcpy(s->b, a->u.send.records.data, s->len);
+            if (gz_sign_link_peer(&a->u.send.link) < h->n && !(h->drop_to >> gz_sign_link_peer(&a->u.send.link) & 1u)) {
                 if (h->nq == h->capq) {
                     h->capq = h->capq ? 2 * h->capq : 256;
                     h->q = realloc(h->q, h->capq * sizeof *h->q);
                     if (!h->q) abort();
                 }
                 h_msg_t *m = &h->q[h->nq++];
-                m->from = g; m->to = (uint32_t)a->u.send.peer_id; m->len = s->len;
+                m->from = g; m->to = (uint32_t)gz_sign_link_peer(&a->u.send.link); m->len = s->len;
                 m->b = malloc(m->len ? m->len : 1);
                 if (!m->b) abort();
                 memcpy(m->b, s->b, m->len);
@@ -173,7 +173,7 @@ static void h_build(harness_t *h, uint32_t g)
 {
     h_party_t *p = &h->p[g];
     gz_sign_config_t c;
-    gz_ports_t ports = {{h_fill, p}, {h_now, NULL}};
+    gz_ports_t ports = {{h_fill, p}, {h_now, h_now, NULL}};
     memset(&c, 0, sizeof c);
     c.host = g == 0; c.ctx = w_ctx();
     w_secret("test/factory", g, c.factory_secret);
@@ -192,7 +192,7 @@ static gz_status_t h_start(harness_t *h, uint32_t g)
 {
     gz_action_list_t list;
     int more = 1;
-    gz_storage_reader_t r = {h_next, h_rewind, &h->p[g], h->p[g].incarnation, 0};
+    gz_storage_reader_t r = {h_next, h_rewind, &h->p[g], h->p[g].incarnation, 0, {NULL, 0}};
     gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
     gz_status_t st = gz_sign_start(h->p[g].e, &r, &list, &more);
     h_fold64(h, 0x5747u); h_fold64(h, g); h_fold64(h, (uint64_t)st);
@@ -245,8 +245,8 @@ static gz_status_t h_deliver(harness_t *h, size_t i, int keep)
     h_msg_t m = h->q[i];
     gz_event_t ev;
     memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = m.from;
-    ev.u.message.bytes.data = m.b; ev.u.message.bytes.len = m.len;
+    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, m.from);
+    ev.u.message.records.data = m.b; ev.u.message.records.len = m.len;
     if (!keep) memmove(h->q + i, h->q + i + 1, (h->nq-- - i - 1) * sizeof *h->q);
     gz_status_t st = h_event(h, m.to, &ev);
     if (!keep) free(m.b);
@@ -258,8 +258,8 @@ static gz_status_t h_inject(harness_t *h, uint32_t from, uint32_t to, const uint
 {
     gz_event_t ev;
     memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = from;
-    ev.u.message.bytes.data = b; ev.u.message.bytes.len = len;
+    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, from);
+    ev.u.message.records.data = b; ev.u.message.records.len = len;
     return h_event(h, to, &ev);
 }
 
@@ -268,7 +268,7 @@ static gz_status_t h_connect(harness_t *h, uint32_t g, uint32_t peer)
 {
     gz_event_t ev;
     memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_PEER_CONNECTED; ev.u.peer.peer_id = peer;
+    ev.kind = GZ_EVENT_PEER_CONNECTED; gz_sign_link_set_peer(&ev.u.peer.link, peer);
     return h_event(h, g, &ev);
 }
 

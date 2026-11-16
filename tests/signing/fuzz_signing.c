@@ -16,10 +16,10 @@ static uint64_t rnd(void) { g_lcg = g_lcg * 6364136223846793005ull + 14426950408
 static void keep_sample(void *ctx, uint32_t index, const gz_action_t *a)
 {
     w_observe(ctx, index, a);
-    if (g_n_samples < 512 && a->u.send.bytes.len) {
-        g_samples[g_n_samples].b = malloc(a->u.send.bytes.len);
-        memcpy(g_samples[g_n_samples].b, a->u.send.bytes.data, a->u.send.bytes.len);
-        g_samples[g_n_samples++].len = a->u.send.bytes.len;
+    if (g_n_samples < 512 && a->u.send.records.len) {
+        g_samples[g_n_samples].b = malloc(a->u.send.records.len);
+        memcpy(g_samples[g_n_samples].b, a->u.send.records.data, a->u.send.records.len);
+        g_samples[g_n_samples++].len = a->u.send.records.len;
     }
 }
 
@@ -140,9 +140,9 @@ int main(int argc, char **argv)
             w_secret("test/contribution", node, cfg.contribution_secret);
             cfg.build = w_build; cfg.retry = w_retry; cfg.build_ctx = &w.builder;
             cfg.tick_ms = 1; cfg.resend_ticks = 4; cfg.deadline_ticks = 80; cfg.max_attempts = 4;
-            gz_ports_t ports = {{fz_fill, NULL}, {fz_now, NULL}};
+            gz_ports_t ports = {{fz_fill, NULL}, {fz_now, fz_now, NULL}};
             CHECK(gz_sign_init(&eng, &cfg, &ports, 2) == GZ_OK);
-            gz_storage_reader_t reader = {fz_next, fz_rewind, &store, 2, 0};
+            gz_storage_reader_t reader = {fz_next, fz_rewind, &store, 2, 0, {NULL, 0}};
             static gz_action_t slots[256];
             static uint8_t bytes[1u << 20];
             gz_action_list_t list;

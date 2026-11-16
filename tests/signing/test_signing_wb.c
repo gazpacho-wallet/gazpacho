@@ -333,8 +333,8 @@ static void test_nospace_exposure(void)
     memcpy(id, r->id, 32);
     gz_action_list_init(&small, slots, 8, bytes, sizeof bytes);
     memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = 0;
-    ev.u.message.bytes.data = h.q[k].b; ev.u.message.bytes.len = h.q[k].len;
+    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, 0);
+    ev.u.message.records.data = h.q[k].b; ev.u.message.records.len = h.q[k].len;
     CHECK(gz_sign_handle(h.p[1].e, &ev, &small) == GZ_ERR_NO_SPACE && small.count == 0 && small.used == 0);
     CHECK(h.p[1].e->failed && h.p[1].e->n_exposures == 0);
     /* retry: the same event with room */
@@ -371,8 +371,8 @@ static void test_short_lists(void)
             h_msg_t m = h.q[0];
             gz_event_t ev;
             memset(&ev, 0, sizeof ev);
-            ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = m.from;
-            ev.u.message.bytes.data = m.b; ev.u.message.bytes.len = m.len;
+            ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, m.from);
+            ev.u.message.records.data = m.b; ev.u.message.records.len = m.len;
             gz_action_list_init(&small, slots, 1, bytes, sizeof bytes);
             gz_status_t st = gz_sign_handle(h.p[m.to].e, &ev, &small);
             steps++;
@@ -967,7 +967,7 @@ static void test_start_begins_next_tier(void)
             h_flush(&h, 100000);                                    /* and the round completes */
             CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE && h_newest(&h, 1)->state == GZ_SIGN_ROUND_COMPLETE);
         } else {
-            gz_storage_reader_t rd = {h_next, h_rewind, p, p->incarnation, 0};
+            gz_storage_reader_t rd = {h_next, h_rewind, p, p->incarnation, 0, {NULL, 0}};
             gz_action_list_init(&list, slots, 1, bytes, sizeof bytes);
             CHECK(gz_sign_start(p->e, &rd, &list, &more) == GZ_ERR_NO_SPACE && list.count == 0 && p->e->failed);
             CHECK(p->e->counters[GZ_SIGN_COUNT_NONCES_MADE] > made);              /* it did make them */
@@ -995,8 +995,8 @@ static void test_failed_engine_holds_no_secret(void)
     if (k >= 0) {
         uint64_t made = h.p[1].e->counters[GZ_SIGN_COUNT_NONCES_MADE];
         memset(&ev, 0, sizeof ev);
-        ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = 0;
-        ev.u.message.bytes.data = h.q[k].b; ev.u.message.bytes.len = h.q[k].len;
+        ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, 0);
+        ev.u.message.records.data = h.q[k].b; ev.u.message.records.len = h.q[k].len;
         gz_action_list_init(&small, slots, 1, bytes, sizeof bytes);
         CHECK(gz_sign_handle(h.p[1].e, &ev, &small) == GZ_ERR_NO_SPACE && h.p[1].e->failed);
         CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_NONCES_MADE] > made && live_secrets(h.p[1].e) == 0);

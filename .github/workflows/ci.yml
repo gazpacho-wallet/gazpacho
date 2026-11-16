@@ -209,6 +209,7 @@ jobs:
           --args "lobby_sim_profile_2=3 2" --args "lobby_sim_profile_3=3 3"
           --args "lobby_fuzz=3000 2" --args "lobby_fuzz_seq=300 2"
           --args "api_http_fuzz=3000" --args "api_json_fuzz=20000"
+          --args "node_fuzz=300" --args "node_hostile=6 400" --args "sim_profile_6=25 300 1 6"
           --exclude '^storage_vector_e2r$'
           --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
           --args "signing_golden=golden tiny" --args "signing_model=model tiny"

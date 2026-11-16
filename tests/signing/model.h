@@ -101,8 +101,8 @@ static void model_watch(harness_t *h, uint32_t g, const gz_action_t *a)
     }
     if (a->kind != GZ_ACTION_SEND) return;
     gz_sign_msg_t msg;
-    const uint8_t *b = a->u.send.bytes.data;
-    size_t len = a->u.send.bytes.len;
+    const uint8_t *b = a->u.send.records.data;
+    size_t len = a->u.send.records.len;
     if (!gz_sign_decode(b, len, &msg)) return;
     m->checks++;
     switch (msg.kind) {
@@ -110,8 +110,8 @@ static void model_watch(harness_t *h, uint32_t g, const gz_action_t *a)
         mfact_t *f = m_find(m, MF_PROPOSAL, g, msg.round_id, 0);
         if (!f) m_add(m, MF_PROPOSAL, g, msg.round_id, 0, b, len, inc);
         else if (f->len != len || memcmp(f->val, b, len) != 0) m_violate(m, "S4: two different proposals under one identifier");
-        if (!m_find(m, MF_PROPOSED_TO, g, msg.round_id, (uint32_t)a->u.send.peer_id))
-            m_add(m, MF_PROPOSED_TO, g, msg.round_id, (uint32_t)a->u.send.peer_id, NULL, 0, inc);
+        if (!m_find(m, MF_PROPOSED_TO, g, msg.round_id, (uint32_t)gz_sign_link_peer(&a->u.send.link)))
+            m_add(m, MF_PROPOSED_TO, g, msg.round_id, (uint32_t)gz_sign_link_peer(&a->u.send.link), NULL, 0, inc);
         break;
     }
     case GZ_SIGN_MSG_NONCES:

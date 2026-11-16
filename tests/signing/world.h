@@ -590,12 +590,12 @@ static void w_fuzz(world_t *w, gz_action_list_t *list)
 {
     for (size_t k = 0; k < list->count; k++) {
         gz_action_t *a = &list->slots[k];
-        if (a->kind != GZ_ACTION_SEND || w_rand(w) % 1000 >= w->fuzz_pm || !a->u.send.bytes.len) continue;
-        uint8_t *b = (uint8_t *)(uintptr_t)a->u.send.bytes.data;
-        size_t len = a->u.send.bytes.len;
+        if (a->kind != GZ_ACTION_SEND || w_rand(w) % 1000 >= w->fuzz_pm || !a->u.send.records.len) continue;
+        uint8_t *b = (uint8_t *)(uintptr_t)a->u.send.records.data;
+        size_t len = a->u.send.records.len;
         switch (w_rand(w) % 4) {
         case 0: for (int f = 0; f < 1 + (int)(w_rand(w) % 4); f++) b[w_rand(w) % len] ^= (uint8_t)(1u << (w_rand(w) % 8)); break;
-        case 1: a->u.send.bytes.len = (size_t)(w_rand(w) % len); break;
+        case 1: a->u.send.records.len = (size_t)(w_rand(w) % len); break;
         case 2: if (len > 41) b[38 + w_rand(w) % 4] = (uint8_t)w_rand(w); break;
         default: b[w_rand(w) % len] = (uint8_t)w_rand(w); break;
         }
@@ -614,9 +614,9 @@ static void w_apply_fault(w_node_t *n, gz_action_list_t *list)
     for (size_t k = 0; k < count; k++) {
         gz_action_t *a = &list->slots[k];
         gz_sign_msg_t m;
-        if (a->kind != GZ_ACTION_SEND || !gz_sign_decode(a->u.send.bytes.data, a->u.send.bytes.len, &m)) continue;
-        uint8_t *b = (uint8_t *)(uintptr_t)a->u.send.bytes.data;
-        size_t len = a->u.send.bytes.len;
+        if (a->kind != GZ_ACTION_SEND || !gz_sign_decode(a->u.send.records.data, a->u.send.records.len, &m)) continue;
+        uint8_t *b = (uint8_t *)(uintptr_t)a->u.send.records.data;
+        size_t len = a->u.send.records.len;
         if (w->fault == WX_BAD_PARTIAL && m.kind == GZ_SIGN_MSG_PARTIALS && m.n) {
             uint8_t *ps = (uint8_t *)(uintptr_t)m.entry[0] + 4;
             ps[31] ^= 1; ps[0] &= 0x7f;
@@ -630,7 +630,7 @@ static void w_apply_fault(w_node_t *n, gz_action_list_t *list)
             w_copy[(size_t)(m.entry[0] - b) + 4 + 31] ^= 1;
             w_resign(w_copy, len, n->index);
             gz_action_t extra = *a;
-            extra.u.send.bytes.data = w_copy;
+            extra.u.send.records.data = w_copy;
             gz_action_list_add(list, &extra);
         } else if (w->fault == WX_BAD_RESULT && m.kind == GZ_SIGN_MSG_RESULT && m.n) {
             ((uint8_t *)(uintptr_t)m.entry[0])[4 + 10] ^= 1;
@@ -643,7 +643,7 @@ static void w_apply_fault(w_node_t *n, gz_action_list_t *list)
                 uint32_t i = w_be32(e);
                 for (int s = 0; s < e[5]; s++) {
                     uint8_t q = r->def.items[i].signers[s];
-                    if (q == 0 || r->def.peer[q] == a->u.send.peer_id) continue;
+                    if (q == 0 || r->def.peer[q] == gz_sign_link_peer(&a->u.send.link)) continue;
                     if (w->fault == WX_ALTER_NONCE) { e[6 + 130 * s + 40] ^= 1; k2 = m.n; break; }
                     /* move q's signed nonce for item i into another item of q in this message */
                     for (int k3 = k2 + 1; k3 < m.n; k3++) {
@@ -674,8 +674,8 @@ static void w_apply_fault(w_node_t *n, gz_action_list_t *list)
             w_sign_nonce(e, m.round_id, m.tier, n->index);
             if (w->fault == WX_BAD_POINT) { memcpy(b, w_copy, len); continue; }
             gz_action_t extra = {.kind = GZ_ACTION_SEND};
-            extra.u.send.peer_id = a->u.send.peer_id;
-            extra.u.send.bytes.data = w_copy; extra.u.send.bytes.len = len;
+            extra.u.send.link = a->u.send.link; extra.u.send.kind = a->u.send.kind;
+            extra.u.send.records.data = w_copy; extra.u.send.records.len = len;
             gz_action_list_add(list, &extra);
         } else if (w->fault == WX_REPEAT_ALL) {
             gz_action_t again = *a;
@@ -771,7 +771,7 @@ static gz_status_t w_start(void *node, gz_action_list_t *out, int *more)
 {
     w_node_t *n = node;
     int restored = sim_storage_restored(n->storage);
-    gz_storage_reader_t r = {w_next, w_rewind, n, sim_storage_incarnation(n->storage), restored};
+    gz_storage_reader_t r = {w_next, w_rewind, n, sim_storage_incarnation(n->storage), restored, {NULL, 0}};
     if (restored) {
         /* The node around the engine answers the restore marker first with its
          * restore batch (journal.md 8.2; here a stand-in `restored` record of
@@ -836,10 +836,10 @@ static void w_observe(void *ops_ctx, uint32_t index, const gz_action_t *a)
 {
     world_t *w = ops_ctx;
     gz_sign_msg_t m;
-    if (!gz_sign_decode(a->u.send.bytes.data, a->u.send.bytes.len, &m)) return;
-    if (m.kind == GZ_SIGN_MSG_PROPOSE && !w->first_proposal_len && a->u.send.bytes.len <= sizeof w->first_proposal) {
-        memcpy(w->first_proposal, a->u.send.bytes.data, a->u.send.bytes.len);
-        w->first_proposal_len = a->u.send.bytes.len;
+    if (!gz_sign_decode(a->u.send.records.data, a->u.send.records.len, &m)) return;
+    if (m.kind == GZ_SIGN_MSG_PROPOSE && !w->first_proposal_len && a->u.send.records.len <= sizeof w->first_proposal) {
+        memcpy(w->first_proposal, a->u.send.records.data, a->u.send.records.len);
+        w->first_proposal_len = a->u.send.records.len;
     }
     if (m.kind != GZ_SIGN_MSG_NONCES && m.kind != GZ_SIGN_MSG_PARTIALS) return;
     if (m.kind == GZ_SIGN_MSG_NONCES) w->sends_nonces++; else w->sends_partials++;
@@ -929,6 +929,7 @@ static sim_config_t w_config(world_t *w, uint64_t seed, uint32_t members)
     c.step_slots = 128; c.step_bytes = 4u << 20; c.runner_slots = 512; c.runner_bytes = 8u << 20;
     c.ops.create = w_create; c.ops.destroy = w_destroy; c.ops.start = w_start; c.ops.handle = w_handle;
     c.ops.inspect = w_inspect; c.ops.observe = w_observe; c.ops.ctx = w;
+    c.whole_messages = 1;   /* the bridge until P4.3 (sim.h) */
     return c;
 }
 

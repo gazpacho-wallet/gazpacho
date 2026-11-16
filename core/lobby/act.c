@@ -5,11 +5,21 @@
 gz_status_t gz_la_send(gz_action_list_t *o, uint64_t peer, const uint8_t *b, size_t n)
 {
     gz_action_t a;
+    memset(&a, 0, sizeof a);
     a.kind = GZ_ACTION_SEND;
-    a.u.send.peer_id = peer;
-    a.u.send.bytes.data = b;
-    a.u.send.bytes.len = n;
+    /* Until P4.2 (lobby.h): the peer's number and the whole message. */
+    gz_lw_put(a.u.send.link.remote.key + 1, peer, 8);
+    a.u.send.kind = GZ_LOBBY_SEND_WHOLE;
+    a.u.send.records.data = b;
+    a.u.send.records.len = n;
     return gz_action_list_add(o, &a);
+}
+
+uint64_t gz_lobby_sent_peer(const gz_action_t *send)
+{
+    uint64_t p = 0;
+    for (int i = 1; i <= 8; i++) p = p << 8 | send->u.send.link.remote.key[i];
+    return p;
 }
 
 gz_status_t gz_la_save(gz_action_list_t *o, const gz_record_t *r, size_t n)

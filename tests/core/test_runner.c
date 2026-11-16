@@ -47,10 +47,14 @@ static uint64_t action_id(const gz_action_t *a)
 {
     switch (a->kind) {
     case GZ_ACTION_SAVE:         return a->u.save.n_records ? bytes_id(a->u.save.records[0].bytes) : 0;
-    case GZ_ACTION_SEND:         if (a->u.send.peer_id != bytes_id(a->u.send.bytes)) g_payloads_ok = 0;
-                                 return a->u.send.peer_id;
+    case GZ_ACTION_SEND:         if (bytes_id((gz_bytes_t){a->u.send.link.remote.key, 8}) != bytes_id(a->u.send.records))
+                                     g_payloads_ok = 0;
+                                 return bytes_id(a->u.send.records);
     case GZ_ACTION_BROADCAST:    return bytes_id(a->u.broadcast.tx);
-    case GZ_ACTION_WATCH_SCRIPT: return bytes_id(a->u.watch_script.script);
+    case GZ_ACTION_WATCH_SCRIPT: return 0; /* retired: never released */
+    case GZ_ACTION_CONNECT:      return bytes_id(a->u.connect.address);
+    case GZ_ACTION_DISCONNECT:   return bytes_id((gz_bytes_t){a->u.disconnect.link.remote.key, 8});
+    case GZ_ACTION_SET_SEATED:   return bytes_id((gz_bytes_t){a->u.set_seated.member.key, 8});
     case GZ_ACTION_WATCH_TX:     return bytes_id((gz_bytes_t){a->u.watch_tx.txid, 8});
     case GZ_ACTION_WATCH_OUTPOINT: return bytes_id((gz_bytes_t){a->u.watch_outpoint.outpoint.txid, 8});
     case GZ_ACTION_NOTIFY:       if (a->u.notify.code != (uint32_t)bytes_id(a->u.notify.bytes)) g_payloads_ok = 0;
@@ -182,9 +186,9 @@ static void add_kind(gz_action_kind_t kind, uint64_t id)
     gz_action_t a = {.kind = kind};
     id_bytes(id, b);
     switch (kind) {
-    case GZ_ACTION_SEND:      a.u.send.peer_id = id; a.u.send.bytes = (gz_bytes_t){b, 8}; break;
+    case GZ_ACTION_SEND:      memcpy(a.u.send.link.remote.key, b, 8); a.u.send.kind = 16; a.u.send.records = (gz_bytes_t){b, 8}; break;
     case GZ_ACTION_BROADCAST: a.u.broadcast.tx = (gz_bytes_t){b, 8}; break;
-    case GZ_ACTION_WATCH_SCRIPT:     a.u.watch_script.script = (gz_bytes_t){b, 8}; break;
+    case GZ_ACTION_DISCONNECT: memcpy(a.u.disconnect.link.remote.key, b, 8); break;
     case GZ_ACTION_WATCH_TX:  memcpy(a.u.watch_tx.txid, b, 8); a.u.watch_tx.depth = 1; break;
     case GZ_ACTION_WATCH_OUTPOINT: memcpy(a.u.watch_outpoint.outpoint.txid, b, 8); a.u.watch_outpoint.depth = 1; break;
     case GZ_ACTION_NOTIFY:    a.u.notify.code = (uint32_t)id; a.u.notify.bytes = (gz_bytes_t){b, 8}; break;
@@ -197,7 +201,8 @@ static void add_kind(gz_action_kind_t kind, uint64_t id)
 static void add_send(uint64_t id)      { add_kind(GZ_ACTION_SEND, id); }
 static void add_notify(uint64_t id)    { add_kind(GZ_ACTION_NOTIFY, id); }
 static void add_broadcast(uint64_t id) { add_kind(GZ_ACTION_BROADCAST, id); }
-static void add_watch(uint64_t id)     { add_kind(GZ_ACTION_WATCH_SCRIPT, id); }
+/* A non-outward action that carries the identifier (once WATCH_SCRIPT, retired). */
+static void add_watch(uint64_t id)     { add_kind(GZ_ACTION_DISCONNECT, id); }
 static void add_watch_tx(uint64_t id)  { add_kind(GZ_ACTION_WATCH_TX, id); }
 static void add_watch_outpoint(uint64_t id) { add_kind(GZ_ACTION_WATCH_OUTPOINT, id); }
 static void add_timer(uint64_t id)     { add_kind(GZ_ACTION_SET_TIMER, id); }
@@ -827,13 +832,14 @@ static void count_execute(void *ctx, const gz_action_t *a)
 {
     (void)ctx;
     g_counted++;
-    if (a->kind == GZ_ACTION_SEND) { g_counted_bytes += a->u.send.bytes.len; g_last_data = a->u.send.bytes.data; }
+    if (a->kind == GZ_ACTION_SEND) { g_counted_bytes += a->u.send.records.len; g_last_data = a->u.send.records.data; }
 }
 
 static gz_action_t plain_send(const uint8_t *data, size_t len)
 {
     gz_action_t a = {.kind = GZ_ACTION_SEND};
-    a.u.send.bytes = (gz_bytes_t){data, len};
+    a.u.send.kind = 16;
+    a.u.send.records = (gz_bytes_t){data, len};
     return a;
 }
 
@@ -923,6 +929,8 @@ static void test_unknown_kinds_are_refused(void)
     CHECK(gz_runner_submit(&d->runner, &list) == GZ_ERR_ARGUMENT);
     CHECK(g_log_n == 0 && !gz_runner_failed(&d->runner) && gz_runner_unconfirmed(&d->runner) == 0);
     raw[1].kind = (gz_action_kind_t)0;
+    CHECK(gz_runner_submit(&d->runner, &list) == GZ_ERR_ARGUMENT && g_log_n == 0);
+    raw[1].kind = GZ_ACTION_WATCH_SCRIPT;          /* retired in contract v2: refused like an unknown kind */
     CHECK(gz_runner_submit(&d->runner, &list) == GZ_ERR_ARGUMENT && g_log_n == 0);
     raw[1].kind = GZ_ACTION_CANCEL_TIMER;
     CHECK(gz_runner_submit(&d->runner, &list) == GZ_OK && g_log_n == 3);
@@ -1069,7 +1077,7 @@ static size_t g_edge_len[3], g_edge_n;
 static void edge_execute(void *ctx, const gz_action_t *a)
 {
     (void)ctx;
-    const gz_bytes_t *b = a->kind == GZ_ACTION_SEND ? &a->u.send.bytes : a->kind == GZ_ACTION_WATCH_SCRIPT ? &a->u.watch_script.script : NULL;
+    const gz_bytes_t *b = a->kind == GZ_ACTION_SEND ? &a->u.send.records : NULL;
     if (!b || g_edge_n >= 3) return;
     memcpy(g_edge_seen[g_edge_n], b->data, b->len);
     g_edge_len[g_edge_n++] = b->len;
@@ -1088,8 +1096,7 @@ static void test_compaction_at_the_edge_of_the_block(void)
         if (guarded) block[BLOCK] = 0xa5;
         g_edge_n = 0;
         CHECK(gz_runner_init(&r, slots, 4, block, BLOCK, INCARNATION, edge_execute, NULL) == GZ_OK);
-        gz_action_t first = plain_send(eight, 8), second = plain_send(two, 2), watch = {.kind = GZ_ACTION_WATCH_SCRIPT};
-        watch.u.watch_script.script = (gz_bytes_t){fourteen, sizeof fourteen};
+        gz_action_t first = plain_send(eight, 8), second = plain_send(two, 2), watch = plain_send(fourteen, sizeof fourteen);
         list_begin(); add_save(100);
         CHECK(gz_action_list_add(&l, &first) == GZ_OK);
         add_save(101);

@@ -74,9 +74,9 @@ static uint8_t g_bytes[1u << 22];
 int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
 {
     gz_sign_config_t c;
-    gz_ports_t ports = {{fr_fill, NULL}, {fr_now, NULL}};
+    gz_ports_t ports = {{fr_fill, NULL}, {fr_now, fr_now, NULL}};
     gz_action_list_t list;
-    gz_storage_reader_t reader = {fr_next, fr_rewind, &g_store, 2, 0};
+    gz_storage_reader_t reader = {fr_next, fr_rewind, &g_store, 2, 0, {NULL, 0}};
     const uint8_t *msgs = NULL;
     size_t at = 2, msgs_len = 0;
     uint8_t batch = 0;
@@ -120,7 +120,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
         for (size_t k = 0; k < list.count; k++) {
             const gz_action_t *a = &list.slots[k];
             gz_sign_msg_t m;
-            if (a->kind != GZ_ACTION_SEND || !gz_sign_decode(a->u.send.bytes.data, a->u.send.bytes.len, &m)) continue;
+            if (a->kind != GZ_ACTION_SEND || !gz_sign_decode(a->u.send.records.data, a->u.send.records.len, &m)) continue;
             if (m.kind == GZ_SIGN_MSG_NONCES) {               /* S1: saved first, in this list */
                 int saved = 0;
                 for (size_t q = 0; q < k && !saved; q++) {
@@ -140,7 +140,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
                     size_t pl;
                     const uint8_t *pm;
                     if (g_store.recs[r].type != GZ_SIGN_REC_EXPOSURE || !(pm = field(&g_store.recs[r], 14, &pl))) continue;
-                    found = pl == a->u.send.bytes.len && memcmp(pm, a->u.send.bytes.data, pl) == 0;
+                    found = pl == a->u.send.records.len && memcmp(pm, a->u.send.records.data, pl) == 0;
                 }
                 REQUIRE(found);
             }
@@ -161,8 +161,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
             else if (msgs[at] == 0x02 && msgs_len - at >= 4) {
                 size_t len = (size_t)msgs[at + 2] | (size_t)msgs[at + 3] << 8;
                 if (msgs_len - at - 4 < len) break;
-                ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = msgs[at + 1] % W_MAX_NODES;
-                ev.u.message.bytes.data = msgs + at + 4; ev.u.message.bytes.len = len;
+                ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, msgs[at + 1] % W_MAX_NODES);
+                ev.u.message.records.data = msgs + at + 4; ev.u.message.records.len = len;
                 at += 4 + len;
             } else break;
             gz_action_list_init(&list, g_slots, 512, g_bytes, sizeof g_bytes);

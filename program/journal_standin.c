@@ -94,6 +94,7 @@ typedef struct {
     int poisoned;         /* a failed append could not be cut back: stop the process */
     char failed_path[4200];
     unsigned sync_fail_at, cut_fail; /* tests */
+    int sync_fail_ping, sync_fail_now; /* tests: armed for the next batch with a ping record; this batch */
     int crash_after_counter;         /* tests */
     const char *log_name;            /* tests */
 } standin_t;
@@ -461,6 +462,11 @@ static int append_entry(standin_t *s, uint32_t tag, const uint8_t *body, size_t 
     /* --test-sync-fail-at: the entry is written, then its sync reports
      * failure, as a disk returning EIO would. */
     if (tag == TAG_BTCH && s->sync_fail_at && --s->sync_fail_at == 0) synced = 0;
+    /* "sync-fail-ping": the same for the batch st_append marked. */
+    if (tag == TAG_BTCH && s->sync_fail_now) {
+        s->sync_fail_now = 0;
+        synced = 0;
+    }
 #endif
     if (!synced) {
         cut_back(s);
@@ -570,6 +576,13 @@ static int st_append(void *ctx, gz_batch_id_t id, const gz_record_t *records, si
         return s->failed = 1, -1;
 #ifdef GZP_TEST_BUILD
     if (s->fail_at && --s->fail_at == 0) return s->failed = 1, -1;
+    /* Armed by a test for a batch it picks by content: one that holds a ping
+     * record of a test engine (types 0x7e570001 and 0x7e580001). */
+    for (i = 0; s->sync_fail_ping && i < n; i++)
+        if (records[i].type == 0x7e570001u || records[i].type == 0x7e580001u) {
+            s->sync_fail_ping = 0;
+            s->sync_fail_now = 1;
+        }
 #endif
     for (i = 0; i < n; i++) {
         if (records[i].bytes.len > MAX_BODY) return s->failed = 1, -1;
@@ -681,6 +694,11 @@ int gzp_standin_poisoned(const gzp_store_t *st)
 void gzp_standin_fail_at(gzp_store_t *st, unsigned k)
 {
     ((standin_t *)st->ctx)->fail_at = k;
+}
+
+void gzp_standin_fail_next_ping(gzp_store_t *st)
+{
+    ((standin_t *)st->ctx)->sync_fail_ping = 1;
 }
 
 void gzp_standin_test_hooks(gzp_store_t *st, unsigned sync_fail_at, int cut_fail, int crash_after_counter,

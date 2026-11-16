@@ -13,7 +13,7 @@ static gz_status_t n_start(void *node, gz_action_list_t *out, int *more)
 {
     w_node_t *n = node;
     int restored = sim_storage_restored(n->storage);
-    gz_storage_reader_t r = {w_next, w_rewind, n, sim_storage_incarnation(n->storage), restored};
+    gz_storage_reader_t r = {w_next, w_rewind, n, sim_storage_incarnation(n->storage), restored, {NULL, 0}};
     g_nodes[n->index].engine = &n->eng;
     g_nodes[n->index].started = 0;
     if (restored) {
@@ -43,15 +43,15 @@ static void test_routing(void)
     gz_event_t ev;
     uint8_t env[GZ_RMSG_HEADER] = {0x67, 0x7a, 0x66, 0x01, 0, 64};
     memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.bytes.data = env; ev.u.message.bytes.len = sizeof env;
+    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.records.data = env; ev.u.message.records.len = sizeof env;
     for (unsigned k = 0; k < 0x200; k++) {             /* the round kinds, 64 to 81, and nothing else */
         env[4] = (uint8_t)(k >> 8); env[5] = (uint8_t)k;
         CHECK(gz_sign_node_wants(&ev) == (k >= 64 && k <= 81));
     }
     env[4] = 0; env[5] = 64;
     env[3] = 2; CHECK(!gz_sign_node_wants(&ev)); env[3] = 1;   /* another protocol */
-    ev.u.message.bytes.len = GZ_RMSG_HEADER - 1; CHECK(!gz_sign_node_wants(&ev));
-    ev.u.message.bytes.data = NULL; ev.u.message.bytes.len = 0; CHECK(!gz_sign_node_wants(&ev));
+    ev.u.message.records.len = GZ_RMSG_HEADER - 1; CHECK(!gz_sign_node_wants(&ev));
+    ev.u.message.records.data = NULL; ev.u.message.records.len = 0; CHECK(!gz_sign_node_wants(&ev));
     memset(&ev, 0, sizeof ev);
     ev.kind = GZ_EVENT_TIMER_FIRED; ev.u.timer.timer_id = 0x5347u; CHECK(gz_sign_node_wants(&ev));
     ev.u.timer.timer_id = 1; CHECK(!gz_sign_node_wants(&ev));
@@ -75,8 +75,8 @@ static void test_seam(void)
     static uint8_t bytes[4096];
     gz_sign_node_t n;
     gz_sign_config_t c;
-    gz_ports_t ports = {{fill, NULL}, {now, NULL}};
-    gz_storage_reader_t r = {nothing, norewind, NULL, 3, 1};
+    gz_ports_t ports = {{fill, NULL}, {now, now, NULL}};
+    gz_storage_reader_t r = {nothing, norewind, NULL, 3, 1, {NULL, 0}};
     gz_action_list_t l;
     gz_event_t ev;
     int more = 1;

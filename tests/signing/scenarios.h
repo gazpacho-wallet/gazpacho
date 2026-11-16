@@ -965,7 +965,7 @@ static uint64_t sc_journal(void)
                 p->fill = fill; p->incarnation = inc;
                 gz_action_list_t list;
                 int more = 1;
-                gz_storage_reader_t rd = {h_next, h_rewind, p, 1, 0};
+                gz_storage_reader_t rd = {h_next, h_rewind, p, 1, 0, {NULL, 0}};
                 gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
                 gz_status_t st = gz_sign_start(p->e, &rd, &list, &more);
                 /* every damage is refused, except in the two records that carry no signature */

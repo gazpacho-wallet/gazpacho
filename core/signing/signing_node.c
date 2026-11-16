@@ -9,8 +9,8 @@ int gz_sign_node_wants(const gz_event_t *ev)
     switch (ev->kind) {
     case GZ_EVENT_MESSAGE_RECEIVED: {
         /* the envelope: protocol (4), kind (u16), scope (32), records */
-        const uint8_t *b = ev->u.message.bytes.data;
-        size_t len = ev->u.message.bytes.len;
+        const uint8_t *b = ev->u.message.records.data;
+        size_t len = ev->u.message.records.len;
         uint16_t kind;
         if (!b || len < GZ_RMSG_HEADER || b[0] != GZ_RMSG_PROTOCOL_0 || b[1] != GZ_RMSG_PROTOCOL_1 ||
             b[2] != GZ_RMSG_PROTOCOL_2 || b[3] != GZ_RMSG_PROTOCOL_3) return 0;
