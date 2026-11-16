@@ -320,8 +320,8 @@ static gz_status_t on_timer(gz_node_t *c, const gz_event_t *ev, gz_action_list_t
         if ((st = np_drop(c, DROP_TIMER, 0, out)) != GZ_OK) return st;
         return gz_c_node_bracket_end(c, out);
     }
+    gz_timer_note(c, eng, ev->u.timer.timer_id, 0); /* fired: no longer set */
     if (eng == ENG_NODE) return np_timer(c, id, out);
-    if (eng >= ENG_SLOT0) gz_timer_track(&c->slots[eng - ENG_SLOT0], ev->u.timer.timer_id, 0);
     gz_event_t own = *ev;
     own.u.timer.timer_id = id; /* the engine gets its own id back */
     return gz_c_bracket(c, eng, &own, out);

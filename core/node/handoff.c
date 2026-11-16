@@ -362,7 +362,7 @@ gz_status_t gz_c_postprocess(gz_node_t *c, size_t from, int merge_all, gz_action
                 if (eng != ENG_NODE) return gz_c_bug(c, eng);
             } else {
                 *id = gz_timer_pack(gz_c_area(c, eng), gen_of(c, eng), (uint32_t)*id);
-                if (eng >= ENG_SLOT0 && !gz_timer_track(&c->slots[eng - ENG_SLOT0], *id,
+                if (!gz_timer_note(c, eng, *id,
                                                          a->kind == GZ_ACTION_SET_TIMER))
                     return gz_c_bug(c, eng); /* over its timer budget (7.1) */
             }

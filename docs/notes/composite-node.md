@@ -730,6 +730,7 @@ One host process with two lobbies at once, three members, one of them in both lo
 
 What the code of P4.2 does where this note left room, and where it differs. Each line is a decision to confirm or overrule.
 
+- **Timer budgets** (T-P42-6). Every engine is held to its own budget of timers set at once, as a slot's engine was: the node part 3 (the idle timer, the continuation timer, and in test builds the signing stand-in's), a test engine 4, a slot's lobby 6, the stand-in 6. An engine that sets one more broke its own cap: `GZ_ERR_BUG`. The node part reads `lobby_ended` (for the index of ended lobbies).
 - **Commands.** `node.h` lists them: 0x0101 to 0x0108 for the lobby (open, join, ready, unready, leave, set values, remove, cancel), each naming its lobby by scope; 0x0401 and 0x0402 unlock and lock signing. "Ready" given with the passphrase carries a flag, which opens that lobby's gate (AT_JOIN).
 - **Signatures.** The lobbies sign and verify through `gz_node_crypto_t` in the node's configuration, which the program implements over its key port; the core still calls nothing outside itself. Its `forget(scope)` is the key port's `forget` of 12.2.
 - **The release build hosts and joins nothing until P4.3.** `LOBBY_OPEN` and `LOBBY_JOIN` are answered 503 `signing_unavailable` unless the node is built with the test engines (where the signing stand-in is behind the hand-off). A release node still loads and runs lobbies found in storage; it cannot open one.

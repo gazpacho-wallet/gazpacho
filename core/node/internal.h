@@ -364,6 +364,10 @@ typedef struct {
 
 /* ---- the composite ------------------------------------------------------ */
 
+/* Timers a node-wide engine may have set at once, at most (the table that
+ * holds them; each engine's own budget is below it). */
+#define NW_MAX_TIMERS 4
+
 struct gz_node {
     gz_ports_t ports;
     gz_node_config_t cfg;
@@ -388,6 +392,8 @@ struct gz_node {
     uint32_t slot_serial;
     np_t np;
     watch_t watches[MAX_WATCHES];
+    uint64_t nw_timers[ENG_SLOT0][NW_MAX_TIMERS]; /* node-wide engines: packed ids set, not yet fired or cancelled */
+    size_t n_nw_timers[ENG_SLOT0];
     int unlocked;                   /* the node-wide signing gate (12.2): memory only, closed at a start */
     struct {                        /* a lobby command being carried out */
         uint16_t code;
@@ -438,6 +444,11 @@ void gz_timer_unpack(uint64_t packed, uint16_t *area, uint16_t *gen, uint32_t *i
 int gz_timer_track(slot_t *s, uint64_t packed, int set);
 gz_status_t gz_timer_cancel_slot(slot_t *s, gz_action_list_t *out);
 int gz_timer_route(const gz_node_t *c, uint64_t packed, int *eng, uint32_t *id);
+/* Every engine is held to its own timer budget (7.1, T-P42-6): note a timer of
+ * engine `eng` set (1) or cancelled or fired (0). 0 if a set would pass the
+ * engine's budget: the engine broke its own cap, a bug. */
+int gz_timer_note(gz_node_t *c, int eng, uint64_t packed, int set);
+size_t gz_timer_budget(const gz_node_t *c, int eng);
 
 /* watches.c */
 int gz_watch_note(gz_node_t *c, const gz_action_t *a, int eng); /* 1 keep, 0 drop, -1 over the engine's budget */

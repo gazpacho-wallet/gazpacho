@@ -228,3 +228,8 @@ c-sign-resume-after-lobbies	core/node/composite.c	        if ((st = gz_ss_resume
 h-no-after-step	core/node/handoff.c	    if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);\n    if (st != GZ_OK) {\n        c->bracket_on = 0;\n        return st;\n    }\n    return bracket_end(c, out);\n}\n\n/* An engine's resume step	    if (st != GZ_OK) {\n        c->bracket_on = 0;\n        return st;\n    }\n    return bracket_end(c, out);\n}\n\n/* An engine's resume step
 # untested ls-closing-cap-unchecked: needs 65 lobbies ended during a round within one signing budget; the cap's arithmetic is the index's, which test_index reaches
 # equivalent ss-finished-check-begun-again: the lobbies never hand a finished check over again (their own saved outcome stops it), so the stand-in's second guard is not reached; lobby_handoff.h keeps the rule for the signing engine
+# --- T-P42-6: every engine held to its timer budget
+tm-budget-unchecked	core/node/timers.c	        if (*n >= max) return 0;\n	
+tm-budget-one-more	core/node/timers.c	        if (*n >= max) return 0;	        if (*n > max) return 0;
+tm-fired-not-freed	core/node/composite.c	    gz_timer_note(c, eng, ev->u.timer.timer_id, 0); /* fired: no longer set */\n	
+tm-lobby-gets-standin-budget	core/node/timers.c	? LS_MAX_TIMERS : TS_MAX_TIMERS;	? TS_MAX_TIMERS + 2 : TS_MAX_TIMERS;
