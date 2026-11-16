@@ -1139,6 +1139,7 @@ static void test_hostile(unsigned long events, uint64_t seed)
         } else if (what < 90) { /* the person, with good and bad arguments */
             h_arg_t a[4];
             size_t na = rnd(5);
+            memset(a, 0, sizeof a);
             uint16_t code = codes[rnd(sizeof codes / sizeof codes[0])];
             for (size_t i = 0; i < na; i++) {
                 a[i].type = 12 + 2 * i;
@@ -1149,13 +1150,13 @@ static void test_hostile(unsigned long events, uint64_t seed)
                 a[i].len = use_scope ? 32 : rnd(3) == 0 ? rnd(200) : (size_t[]){1, 2, 8, 33, 16}[rnd(5)];
             }
             if (code == GZ_CMD_LOBBY_JOIN && rnd(2)) { /* a join that could be real */
-                a[0].v = scope; a[0].len = 32;
+                a[0].type = 12; a[0].v = scope; a[0].len = 32;
                 a[1].type = 14; a[1].v = hk.pub; a[1].len = 33;
                 a[2].type = 16; a[2].v = ADDR; a[2].len = sizeof ADDR - 1;
                 na = 3;
             }
             if (code == GZ_CMD_LOBBY_OPEN && rnd(2)) {
-                a[0].v = t[3].outer; a[0].len = t[3].on;
+                a[0].type = 12; a[0].v = t[3].outer; a[0].len = t[3].on;
                 a[1].type = 14; a[1].v = t[3].current; a[1].len = t[3].cn;
                 na = 2;
             }
