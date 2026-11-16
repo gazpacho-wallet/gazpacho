@@ -4,6 +4,12 @@
 // over the BroadcastChannel. It takes the stream over when a streaming tab
 // closes (leader_gone, a 429 meanwhile tried again with a growing delay) or
 // when nothing has been relayed for 30 s (a tab that died without pagehide).
+//
+// A tab that dies is played by closing it without its unload handlers
+// (Playwright's default close): no pagehide runs, and its connections end, as
+// with a renderer crash. A CDP Page.crash was used first; whether the browser
+// then closes the dead tab's stream at once is not something this test can
+// rely on (it passed on the build server and failed in CI), so it is not used.
 // TEST ONLY.
 import { test, expect, startFake, signIn, FAKE } from './helpers.mjs';
 
@@ -42,22 +48,29 @@ test('the third tab follows relayed events, and takes over when a streaming tab 
   await expect(a.locator('#lobby')).toHaveAttribute('data-stage', 'ready_check');
 });
 
-test('streaming tabs that crash during the signing moment: the third takes over after 30 s of silence and shows it', async ({ context }) => {
+test('streaming tabs that die without pagehide during the signing moment: the third takes over after 30 s of silence and shows it', async ({ context }) => {
   fake = await startFake({ locked: true });
   const [a, b, c] = await threeTabs(context);
+  const streams = [];
+  c.on('response', (r) => { if (r.url().endsWith('/api/v1/events')) streams.push(r.status()); });
   await a.goto(fake.url + '#/lobby/lob_7k2q');
   await a.locator('#join').click();
   await expect(c.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
   await fake.cmd('step'); // the ready check, relayed
   await expect(c.locator('#lobby')).toHaveAttribute('data-stage', 'ready_check');
-  // both streaming tabs die without pagehide (a renderer crash)
-  for (const p of [a, b]) {
-    const s = await context.newCDPSession(p);
-    s.send('Page.crash').catch(() => {});
-  }
+  // both streaming tabs die without pagehide: nothing tells the third, and it hears nothing more
+  await c.evaluate((port) => {
+    window.heard = [];
+    new BroadcastChannel('gazpacho-session-' + port).onmessage = (e) => window.heard.push(e.data.type);
+  }, String(fake.port));
+  await a.close();
+  await b.close();
+  expect(a.isClosed() && b.isClosed()).toBe(true);
   await fake.cmd('step'); // signing: nobody relays it now
   await fake.cmd('step');
-  await expect(c.locator('#live-chip')).toHaveAttribute('data-state', 'open', { timeout: 75000 });
+  await expect(c.locator('#live-chip'), 'the stream answers seen by the third tab: ' + JSON.stringify(streams))
+    .toHaveAttribute('data-state', 'open', { timeout: 60000 });
+  expect(await c.evaluate(() => window.heard)).not.toContain('leader_gone'); // it took over on silence, not on a message
   await expect(c.locator('#lobby')).toHaveAttribute('data-stage', 'signing');
   await expect(c.locator('#doing')).toContainText('Signing. Keep the app open.');
   // and it now follows live itself
