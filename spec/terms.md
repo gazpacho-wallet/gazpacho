@@ -6,6 +6,27 @@ Conventions (integers, `point`, `sig`, `TH`) are those of `messages.md` section 
 
 **Re-import of SuperScalar `50f7fa13` (2026-11-16).** Tree transactions are version 3 (TRUC), and each pays the tree fee rate for its own exact signed size instead of one fee for every transaction. Section 4.2's fee and funding rules, its build table and T7 changed with it; T1 to T6 did not.
 
+## Changes, 2026-11-16: the host-paid tree fee rate
+
+Not itself reviewed. Specifies `exit.md` 5.9 (draft 3).
+
+| Change | Where |
+|---|---|
+| Term 32's floor raised from 1 to 100 (0.1 sat/vB). The rate is chosen and paid by the host, from the funding, on every tree transaction and payout | Section 3, term 32 |
+| New section 4.4: who pays, the payout reserve P(r), the spare-liquidity floor, and why there is no "fee payer" term | Section 4.4 |
+
+## Changes, 2026-11-17: review of PR #48
+
+Not itself reviewed. From `docs/reviews/review-pr48.md` (accept after fixes).
+
+| Finding | Change | Where |
+|---|---|---|
+| M1 | The design-2 channel check is against the promise: channel output ≥ max(`channel_sat`, the member's minimum) + P(r); capacity is defined as output − P(r) only after it | 4.4 |
+| M2 | R(leaf) has a design-2 form with P(r) on the channel and the spare liquidity; the builder receives `channel_sat` + P(r) | 4.2, 4.4 |
+| M7 | One fee rule: each tree transaction pays the rate for its own signed size (the builder of #46 and later); the pin `e6573950`'s single `fee_per_tx` is INTERIM | 4.2 |
+| L2 | P(r) uses 125 vbytes (a 65-byte signature fits) | 4.4 |
+| H2 | The end height under design 2 is placed `host_spare_by` after the wind-down: 190 blocks at D ≤ 3 on signet (with the confirmation round's N4: the sweep's allowance and the proposal's spare-liquidity delay) | 4.5 |
+
 ## Changes after review 3
 
 | Finding | How it was handled | Where |
@@ -79,7 +100,7 @@ Required unless marked. "Slice 1" says which values a Slice 1 app accepts; other
 | 26 | `lifetime_blocks` | `u32` | 1 to 52,560 | | How long the factory is active. 52,560 blocks is about a year, far above the 30 days the design expects (4,320 blocks) |
 | 28 | `winddown_blocks` | `u32` | 1 to 52,560 | | The winding-down period after the lifetime (design: about 3 days, 432 blocks) |
 | 30 | `channel_sat` | `u64` | 546 to 2,100,000,000,000,000 | | **The smallest channel a member gets**: every member's leaf pays at least this to its channel output (section 4.2). The leaf holds the same again as spare liquidity, plus fees. 546 is the import's dust limit [C: `channel.h:14`]; the maximum is the supply in satoshis. Draft 1 called this `leaf_amount_sat` and gave it two meanings (review 3, F4) |
-| 32 | `tree_feerate` | `u32` | 1 to 1,000,000 satoshis per 1,000 vbytes | | Fee rate of the tree transactions: each pays it for its own signed size (section 4.2), and `round_propose` carries it in record 30. The import also allows 0 (no fee and a zero-value anchor); draft 2 does not. Thousandths of a satoshi per vbyte are needed: the owner's test rate is 0.1 sat/vB, which is 100 here. The ceiling, 1,000 sat/vB, is far above any fee seen |
+| 32 | `tree_feerate` | `u32` | 100 to 1,000,000 satoshis per 1,000 vbytes | | Fee rate of the tree transactions and payouts (section 4.2), **chosen and paid by the host** from the funding (section 4.4); each tree transaction pays it for its own signed size, and `round_propose` carries it in record 30. The import also allows 0 (no fee and a zero-value anchor); these terms do not. Thousandths of a satoshi per vbyte are needed: the owner's test rate is 0.1 sat/vB, which is 100 here and the floor (Bitcoin Core's relay floor from 29.1). The ceiling, 1,000 sat/vB, is far above any fee seen |
 | 34 | `switches` | `u8` | Bit 0 names, bit 1 chat, bit 2 rule-change requests; other bits 0 | 0 | `LOBBY.md`: three host switches. A set unknown bit is refused, since this is an even record |
 | 64 | `joining_fee_sat` | 16 | Range, `min` ≤ `max` ≤ 2,100,000,000,000,000 | | A flat joining fee, taken from the first payment the member receives (decision 2). Not collected in Slice 1 |
 | 66 | `fee_base_msat` | 16 | Range, `max` ≤ 4,294,967,295 | | The per-payment base fee. The ceiling is BOLT 7's `fee_base_msat` width (`u32`) |
@@ -128,7 +149,7 @@ Every reader must be able to compute, from the terms alone, the tree's leaves, i
 
 **D**, the number of fixed levels: the depth of the deepest leaf. The proposal's `fixed_levels` must equal D (`messages.md` 7.2), and the engine passes D to `factory_set_static_near_root`, so every interior node is a fixed (kickoff-only) node and every leaf is a kickoff and state pair [C: `src/factory.c:1659-1669`]. A smaller value builds a different tree; a larger one builds the same bytes (build server, 2026-11-12); only D is accepted, so that one tree has one encoding.
 
-**The fee of each tree transaction.** Every tree transaction pays the terms' `tree_feerate` for its own exact signed size [C at `50f7fa13`: `src/factory.c:588-608` `node_reserve` and `factory_tree_tx_fee`; `src/fee.c:92-114`]. A tree transaction with k P2TR outputs and the anchor has 64 + 43·k unsigned bytes and
+**The fee of each tree transaction.** **The rule** (from the re-import of #46 on, and so for every design-2 slice): each tree transaction pays exactly ⌈`tree_feerate` × its own signed virtual size / 1000⌉ [C at `50f7fa13`: `src/factory.c:588-608` `node_reserve` and `factory_tree_tx_fee`; `src/fee.c:92-114`]. The first import (pin `e6573950`) paid one fee, `fee_per_tx`, on every tree transaction instead [C at `e6573950`: `src/factory.c:1694-1696`, `:1759-1761`, `:1299-1300`]. A tree transaction with k P2TR outputs and the anchor has 64 + 43·k unsigned bytes and
 
 ```
 vsize(k)  = ⌈(4 × (64 + 43·k) + 2 + 66) / 4⌉ = 81 + 43·k vbytes
@@ -138,13 +159,18 @@ anchor    = 240 satoshis (0 at rate 0, which draft 2 does not allow)
 
 the 2 for the segwit marker and flag and the 66 for a witness of one 64-byte signature. In T1 at 100 sat/kvB: the leaf's kickoff (k = 1, 124 vbytes) pays 13 sat, a two-output transaction (167 vbytes) 17 sat, a four-output one (253 vbytes) 26 sat. The proposal carries the rate itself (`round_propose` record 30), which must equal the frozen terms' rate. The first import paid one fee on every transaction, the rate for the largest one, V; V is still computed (`gz_tree_params`) and is now only a size bound.
 
-**The funding amount.** With every interior node fixed, the import gives a node's coins less its fee and the anchor (240 satoshis, `ANCHOR_OUTPUT_AMOUNT` [C: `channel.h:19`]) to its children in equal shares, the remainder to the last child, and splits a leaf's coins, less its kickoff's fee and anchor and its state transaction's fee and anchor, into a channel and an equal spare-liquidity output [C at `50f7fa13`: `src/factory.c:2131-2142`, `:2194-2205`, `:1604-1649`]. So define, for a node, its requirement R:
+**The funding amount.** With every interior node fixed, the import gives a node's coins less its fee and the anchor (240 satoshis, `ANCHOR_OUTPUT_AMOUNT` [C: `channel.h:19`]) to its children in equal shares, the remainder to the last child, and splits a leaf's coins, less its kickoff's fee and anchor and its state transaction's fee and anchor, into a channel and an equal spare-liquidity output [C at `50f7fa13`: `src/factory.c:2131-2142`, `:2194-2205`, `:1604-1649`]. So define, for a node, its requirement R, as follows.
+
+With the rule above (own-size fees) and, **under design 2**, the payout reserve P(r) of section 4.4 on the channel (and so, by the equal split, on the spare liquidity):
 
 ```
-R(leaf)                 = 2 × channel_sat + fee(1) + fee(2) + 2 × 240
-R(node with k children) = k × max R(child) + fee(k) + 240
+c                       = channel_sat + P(r)                    the capacity the builder receives for every member
+R(leaf)                 = 2 × c + fee(leaf kickoff) + fee(leaf transaction) + 2 × 240
+R(node with k children) = k × max R(child) + fee(node) + 240
 funding_amount          = R(root)
 ```
+
+where fee(x) = ⌈`tree_feerate` × vsize(x) / 1000⌉. Without payouts (Slices 1 to 2 on #46), P(r) is 0 in these lines. In T1 at 4 members and 100 sat/kvB: 802,811 without the reserve, 804,835 with it (P(100) = 253) [R; vector owed, `exit.md` open point 24].
 
 **The import's minimum.** `factory_build_tree` also refuses a funding amount below 2 × (2 × leaves − 1) × (fee(1) + 240) + 1,092 × leaves [C at `50f7fa13`: `src/factory.c:2388-2404`], whatever the shape. At 0.1 sat/vB that is 253 sat per assumed transaction, so terms whose `channel_sat` is small can make a member count unfundable: T1's shapes need `channel_sat` of at least 685 at 8 members (638 at 4). A reader refuses such terms on receipt (section 7, step 5).
 
@@ -167,6 +193,38 @@ In every row every interior node was fixed, every transaction was version 3 and 
 On receipt of the outer record (section 7, step 5), for every entry and every n from the previous entry's `max_members` + 1 (or 3, for the first entry) to its own `max_members`: the split rule never meets a node at an interior depth with m ≤ a. So every leaf comes from the leaf kind, with one member. A shape that fails for any n in its range is refused before the member joins. That is at most 1,000 small simulations per record.
 
 The member's app still builds the real tree at signing and checks every leaf (`safety-rule.md` C8): this section lets it refuse a bad lobby early; C8 is what protects.
+
+### 4.4 Who pays the tree fee
+
+**The host pays every pre-signed fee and anchor.** The tree's fees and anchors are inside the funding amount, which is the host's own coins: under section 4.2's rule R(root) grows with the fee while every channel stays at least `channel_sat`, and at the re-import of #46 the builder sizes the tree bottom-up so that each node's input is its outputs plus its own fee and anchor (`exit.md` 5.9). No member output is reduced by any tree fee, at any rate. A term naming the payer (`tree_fee_payer`) is therefore not added: it would have one valid value.
+
+**The rate.** Term 32, `tree_feerate`, is the host's choice, from 100 (0.1 sat/vB, Bitcoin Core's relay floor from 29.1) to 1,000,000. At or above a server's floor, a tree transaction is accepted alone, without a fee package (`exit.md` 5.9).
+
+**The payout reserve (design 2).** Each payout pays its own fee at the tree rate and a 240-sat anchor from the output it spends. For a rate r in sat/kvB:
+
+```
+P(r) = ⌈ r × 125 / 1000 ⌉ + 240        (125: a one-member payout, vbytes, with room for a 65-byte signature;
+                                         124 with a 64-byte one; exact size owed by #508)
+channel output         ≥ max(channel_sat, the member's own minimum) + P(r)
+spare-liquidity output ≥ P(r) + 330
+```
+
+The writer (the host) MUST build every leaf so, passing `channel_sat` + P(r) to the builder as every member's capacity (section 4.2's design-2 R(leaf)); the reader (the member) MUST refuse a tree that does not satisfy both lines (`safety-rule.md` C8). Only after that check is the member's **capacity**, for decision 5 and `exit.md` CH-14, defined as the channel output less P(r). The tree payouts and the distribution transaction pay each member "its capacity as carried in the proposal" [PR #508], that is `channel_sat` + P(r); the reader checks that. The spare-liquidity payout pays the spare output less P(r), at least 330 sat, and is not bound to the capacity. P(r) assumes a key-path input, one P2TR member output and one P2A; a member-named payout script (`exit.md` open point 5) MUST be at most 34 bytes.
+
+**After 1.0.0.** A fee ladder, several pre-signed copies at rising rates, is not part of 1.0.0.
+
+**Rationale.** The fee is already the host's; this section only says so, sets the floor, and closes the one gap, the channel payout, where a fee would otherwise come out of the member's capacity. P(r) is in T1 253 sat at 0.1 sat/vB, 365 at 1 and 1,490 at 10; with T1's spare liquidity of 100,000 sat the second line holds up to about 795 sat/vB. Term 32's floor of 100 sat/kvB rules out a later zero-fee tree with ephemeral anchors without a new term version; and servers on Bitcoin Core 28.x and 29.0 still need a package at 0.1 sat/vB (`exit.md` 5.9).
+
+### 4.5 The end height under design 2
+
+Under design 2 (`exit.md` 4.4) the proposal's end height E is placed so that the host can force every silent member out after the wind-down and still sweep each forced member's spare liquidity before any payout is valid:
+
+```
+E − E_wd ≥ (B − 1) + S_spare + (D + 3) × A + M_host          E_wd: funding confirmation + lifetime + wind-down;
+                                                              S_spare: the proposal's spare-liquidity delay
+```
+
+With the signet constants (B 3, A 6, M_host 8) and S_spare = 144 that is 178, 184 and 190 blocks at D = 1, 2, 3 (the + 3 counts the spare sweep's own allowance). **Decision taken 2026-11-17, pending the owner's confirmation** (`exit.md` 4.4, open point 22). A member checks it with its own B and A and M_safe + M_lag in place of M_host. The INTERIM slices (1, 1.5, 2) keep T1's E = tip + lifetime + wind-down.
 
 ## 5. The current values
 
