@@ -386,14 +386,6 @@ static void reveal_or_check(gzp_wallet_t *w, gzp_unlock_job_t *job)
         set_result(&job->result, GZP_UNLOCK_NOT_CHECKED, NULL);
         goto out;
     }
-    if (job->op == GZP_UNLOCK_OP_WORDS_CHECK) {
-        for (int i = 0; i < 3; i++)
-            if (job->positions[i] < 1 || job->positions[i] > GZP_UNLOCK_WORDS) {
-                set_result(&job->result, GZP_UNLOCK_BAD_WORDS, "position");
-                job->result.position = (uint32_t)i + 1;
-                goto out;
-            }
-    }
     e = gz_sc_words(&w->sc, job->passphrase, job->passphrase_len, entropy);
     if (e != GZ_SC_OK) {
         map_err(&job->result, e);
@@ -414,7 +406,8 @@ static void reveal_or_check(gzp_wallet_t *w, gzp_unlock_job_t *job)
     } else {
         int same = 1;
         for (int i = 0; i < 3; i++)
-            same &= strncmp(job->words[i], mine + (size_t)(job->positions[i] - 1) * GZP_UNLOCK_WORD_MAX,
+            same &= job->positions[i] >= 1 && job->positions[i] <= GZP_UNLOCK_WORDS &&
+                    strncmp(job->words[i], mine + (size_t)(job->positions[i] - 1) * GZP_UNLOCK_WORD_MAX,
                             GZP_UNLOCK_WORD_MAX) == 0;
         set_result(&job->result, same ? GZP_UNLOCK_OK : GZP_UNLOCK_WORDS_DIFFER, NULL);
     }
