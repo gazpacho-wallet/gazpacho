@@ -539,6 +539,8 @@ static gz_status_t host_connected(gz_node_t *c, const gz_event_t *ev, gz_action_
 {
     gz_status_t st;
     int i = conn_slot(c, &ev->u.peer.link), s = gz_route_slot_seated(c, &ev->u.peer.link.remote);
+    /* A key a Closing entry keeps is seated too, bound to no slot (M2). */
+    int seat = s >= 0 || gz_route_closing_seated(c, &ev->u.peer.link.remote);
     /* The link's last connection was never reported gone (the program reports
      * it first, contract-v2.md section 2; this is the second guard): its
      * slot's lobby hears of the end before the new beginning. */
@@ -555,7 +557,7 @@ static gz_status_t host_connected(gz_node_t *c, const gz_event_t *ev, gz_action_
     /* A newcomer without a seat when the unseated places are taken, or any
      * newcomer when the table is full, pushes one out first; the newcomer
      * itself is never the one to go. */
-    if (i < 0 || (s < 0 && unseated(c) >= NP_MAX_UNSEATED)) {
+    if (i < 0 || (!seat && unseated(c) >= NP_MAX_UNSEATED)) {
         st = push_out_one(c, out);
         if (st == GZ_OK && i < 0) i = conn_slot(c, &ev->u.peer.link);
     }
@@ -580,8 +582,8 @@ static gz_status_t host_connected(gz_node_t *c, const gz_event_t *ev, gz_action_
         k->unseated_ms = k->since_ms;
         k->spoke = 0;
         k->slot = s;
-        k->seated = s >= 0;
-        if (s < 0) st = arm_idle(c, out);
+        k->seated = seat;
+        if (!seat) st = arm_idle(c, out);
     }
     if (st == GZ_OK) st = gz_c_node_bracket_end(c, out);
     else c->bracket_on = 0;
@@ -630,7 +632,7 @@ void np_seat_changed(gz_node_t *c, int slot, const gz_node_id_t *member, int sea
         if (seated) {
             k->seated = 1;
             if (k->slot < 0) k->slot = slot;
-        } else if (k->seated && gz_route_slot_seated(c, member) < 0) {
+        } else if (k->seated && !gz_route_key_seated(c, member)) {
             k->seated = 0;
             k->since_ms = mono_ms(c);
             k->unseated_ms = k->since_ms;
@@ -910,7 +912,7 @@ static gz_status_t slot_close(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *ou
         }
         /* A seat in the closed slot is gone, whichever slot the connection is
          * bound to; a seat in another Open slot stands. */
-        n->seated = gz_route_slot_seated(c, &n->link.remote) >= 0;
+        n->seated = gz_route_key_seated(c, &n->link.remote);
         if (was && !n->seated) n->since_ms = n->unseated_ms = mono_ms(c);
     }
     /* The cap holds at once: the excess is closed now, the silent first. */
@@ -1049,7 +1051,7 @@ gz_status_t np_slot_freed(gz_node_t *c, int i, gz_action_list_t *out)
             n->slot = -1;
             n->since_ms = mono_ms(c);
         }
-        n->seated = gz_route_slot_seated(c, &n->link.remote) >= 0;
+        n->seated = gz_route_key_seated(c, &n->link.remote);
         if (was && !n->seated) n->since_ms = n->unseated_ms = mono_ms(c);
     }
     if ((st = keep_cap(c, out)) != GZ_OK) return st;

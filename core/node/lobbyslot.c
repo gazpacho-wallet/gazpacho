@@ -141,6 +141,17 @@ static int cond_decode(const uint8_t *p, size_t n, gz_lobby_conditions_t *c)
     return 1;
 }
 
+/* The node's connection table holds every seat of its lobbies (review A of
+ * PR 44, M1): a key that holds no seat yet takes one only while fewer than
+ * NP_MAX_SEATED keys hold seats, Open and Closing together. */
+static int ls_seat_room(void *ctx, const uint8_t key[33])
+{
+    const slot_t *s = ctx;
+    gz_node_id_t id;
+    memcpy(id.key, key, 33);
+    return gz_route_key_seated(s->node, &id) || gz_route_seats_held(s->node) < NP_MAX_SEATED;
+}
+
 /* Make the slot's lobby engine from the slot's fields. 0 if the key port or
  * the crypto port cannot serve it: nothing a start may fail on. */
 int gz_ls_init(gz_node_t *c, int i)
@@ -171,6 +182,8 @@ int gz_ls_init(gz_node_t *c, int i)
         memcpy(hc.factory_key, fk, 33);
         hc.standbys = s->standbys;
         hc.listed = s->listed;
+        hc.seat_room = ls_seat_room;
+        hc.seat_ctx = s;
         return gz_lobby_host_init(&s->lobby.h, &c->ports, &cr, &sg, &hc) == GZ_OK;
     }
     gz_lobby_member_config_t mc;
@@ -323,6 +336,12 @@ static gz_status_t closing_end(gz_node_t *c, int k, gz_action_list_t *out)
         st = np_disconnect(out, &e->link, GZ_DISCONNECT_DONE);
     }
     e->used = 0;
+    /* The node part's own table: a key no Open lobby holds is unseated from
+     * now, and the cap and the idle rule apply to it (M2). */
+    if (e->host && st == GZ_OK) {
+        for (size_t j = 0; j < e->n_seated; j++) np_seat_changed(c, -1, &e->seated[j], 0);
+        st = np_idle_check(c, out);
+    }
     return st;
 }
 
@@ -1220,8 +1239,10 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
         return np_command_result(out, cmd, 400, "bad_request");
     /* "Ready" given with the passphrase opens that lobby's gate (AT_JOIN): the
      * program has handed the key port the scoped secret before the command. */
+    int opened = 0;
     if (code == GZ_CMD_LOBBY_READY && c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN && arg(cmd, 14, 1, &v) &&
         v.data[0] == 1) {
+        opened = !s->gate_open;
         s->gate_open = 1;
         s->gate_flight = 0;
     }
@@ -1229,6 +1250,9 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
     if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, command_inline, out)) != GZ_OK) return st;
     int refused = c->lc.refused || was_refused(out, from);
     if ((st = gz_ls_after(c, i, out)) != GZ_OK) return st;
+    /* A refused ready leaves the gate as it found it: the person's own
+     * ready opens it, and there was none (review A of PR 44, L3). */
+    if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);
     return refused ? np_command_result(out, cmd, 409, c->lc.refused ? "bad_values" : "refused_now")
                    : np_command_result(out, cmd, 200, NULL);
 }

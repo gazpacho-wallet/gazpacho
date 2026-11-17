@@ -224,6 +224,11 @@ _Static_assert(LS_MAX_TIMERS <= TS_MAX_TIMERS, "a lobby's timers are within a sl
  * never pushed out and never closed as idle. */
 #define NP_MAX_CONNS GZ_NODE_MAX_CONNS
 #define NP_MAX_UNSEATED 16            /* the lobby's numbers, moved up (reviewer B, B7) */
+/* The keys the host's lobbies hold seated together, Open and Closing: the
+ * entries the table keeps beside the unseated places, so that a seated
+ * member always finds one (review A of PR 44, M1). A join for a key that
+ * holds no seat yet is refused while this many are held. */
+#define NP_MAX_SEATED (NP_MAX_CONNS - NP_MAX_UNSEATED)
 #define NP_IDLE_MS 60000u
 /* However much it sends, a connection without a seat goes this long after it
  * came up, or lost its seat (T-P42-7: the lobby's ten-minute rule, kept by
@@ -482,6 +487,9 @@ int gz_route_slot_by_scope(const gz_node_t *c, const uint8_t scope[32]);
 int gz_route_slot_link(const gz_node_t *c, int slot, gz_link_t *link);
 int gz_route_member_slot_of_link(const gz_node_t *c, const gz_link_t *link);
 int gz_route_slot_seated(const gz_node_t *c, const gz_node_id_t *key);
+int gz_route_closing_seated(const gz_node_t *c, const gz_node_id_t *key);
+int gz_route_key_seated(const gz_node_t *c, const gz_node_id_t *key);
+size_t gz_route_seats_held(const gz_node_t *c);
 
 /* nodepart.c */
 gz_status_t np_load(gz_node_t *c, const gz_record_t *rec, gz_batch_id_t at);

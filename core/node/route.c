@@ -95,6 +95,64 @@ int gz_route_slot_seated(const gz_node_t *c, const gz_node_id_t *key)
     return -1;
 }
 
+/* A key one of the host's Closing entries keeps seated (2.4): the round's last
+ * news may still come from it (review A of PR 44, M2). */
+int gz_route_closing_seated(const gz_node_t *c, const gz_node_id_t *key)
+{
+    for (int k = 0; k < GZ_NODE_MAX_TOMBSTONES; k++) {
+        const np_closing_t *e = &c->np.closing[k];
+        if (!e->used || !e->host) continue;
+        for (size_t j = 0; j < e->n_seated; j++)
+            if (np_same_key(&e->seated[j], key)) return 1;
+    }
+    return 0;
+}
+
+/* Seated for the node part: in an Open lobby of the host, or kept by a
+ * Closing entry. */
+int gz_route_key_seated(const gz_node_t *c, const gz_node_id_t *key)
+{
+    return gz_route_slot_seated(c, key) >= 0 || gz_route_closing_seated(c, key);
+}
+
+/* 1 if `key`, seat j of Open slot i (or, with i == GZ_NODE_MAX_SLOTS, of
+ * Closing entry k), has no earlier place: slots first, then the entries. */
+static int first_place(const gz_node_t *c, const gz_node_id_t *key, int i, int k, size_t j)
+{
+    for (int a = 0; a <= i && a < GZ_NODE_MAX_SLOTS; a++) {
+        const slot_t *s = &c->slots[a];
+        if (s->state != SLOT_OPEN || !s->host) continue;
+        for (size_t b = 0; b < (a == i ? j : s->n_seated); b++)
+            if (np_same_key(&s->seated[b], key)) return 0;
+    }
+    if (i < GZ_NODE_MAX_SLOTS) return 1;
+    for (int a = 0; a <= k; a++) {
+        const np_closing_t *e = &c->np.closing[a];
+        if (!e->used || !e->host) continue;
+        for (size_t b = 0; b < (a == k ? j : e->n_seated); b++)
+            if (np_same_key(&e->seated[b], key)) return 0;
+    }
+    return 1;
+}
+
+/* The keys that hold a seat, Open and Closing, each once: the table entries
+ * the seats can take (M1). */
+size_t gz_route_seats_held(const gz_node_t *c)
+{
+    size_t n = 0;
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++) {
+        const slot_t *s = &c->slots[i];
+        if (s->state != SLOT_OPEN || !s->host) continue;
+        for (size_t j = 0; j < s->n_seated; j++) n += (size_t)first_place(c, &s->seated[j], i, -1, j);
+    }
+    for (int k = 0; k < GZ_NODE_MAX_TOMBSTONES; k++) {
+        const np_closing_t *e = &c->np.closing[k];
+        if (!e->used || !e->host) continue;
+        for (size_t j = 0; j < e->n_seated; j++) n += (size_t)first_place(c, &e->seated[j], GZ_NODE_MAX_SLOTS, k, j);
+    }
+    return n;
+}
+
 static rt_t mk(rt_kind_t kind, int slot, int eng, int drop)
 {
     rt_t r;

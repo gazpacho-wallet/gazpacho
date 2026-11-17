@@ -390,6 +390,11 @@ typedef struct {
     uint8_t factory_key[33];         /* the host's own factory key */
     uint16_t standbys;               /* seats beyond the target */
     int listed;                      /* named in answers to scope-zero hello */
+    /* Room for a seat for `key` beyond the lobby's own limits: the node's
+     * connection table, which all its lobbies share. NULL: no such limit.
+     * A join that finds no room is refused like one to a full lobby. */
+    int (*seat_room)(void *ctx, const uint8_t key[33]);
+    void *seat_ctx;
 } gz_lobby_host_config_t;
 
 typedef struct {

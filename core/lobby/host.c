@@ -586,7 +586,8 @@ static gz_status_t on_join(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lobb
     if ((h->state != GZ_LOBBY_OPEN &&
          !(h->cfg.standbys && (h->state == GZ_LOBBY_READY_CHECK || h->state == GZ_LOBBY_SIGNING))) ||
         taken >= h->terms.target + h->cfg.standbys || c->joins >= 1 || h->created >= 4u * h->terms.target ||
-        !creation_due(h, now) || (!s && h->n_seats >= GZ_LOBBY_MAX_SEATS))
+        !creation_due(h, now) || (!s && h->n_seats >= GZ_LOBBY_MAX_SEATS) ||
+        (h->cfg.seat_room && !h->cfg.seat_room(h->cfg.seat_ctx, c->key)))
         return join_refused(h, c, 0, out);
     gz_lobby_binding(h->scope, m->factory_key, c->key, b);
     bad = !h->crypto.point_ok(h->crypto.ctx, m->factory_key) ||

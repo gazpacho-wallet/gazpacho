@@ -574,6 +574,70 @@ static int sent_count(int n, size_t from, uint16_t kind)
     return c;
 }
 
+/* ---- the host's table ------------------------------------------------------------ */
+
+/* The host's entry for link `l`: 1 live and seated, 0 live and unseated, -1 none or closing. */
+static int host_entry(const gz_link_t *l)
+{
+    for (int i = 0; i < NP_MAX_CONNS; i++) {
+        const np_conn_t *k = &N[0].n->np.conns[i];
+        if (k->used && k->connected && !memcmp(&k->link, l, sizeof *l)) return k->closing ? -1 : k->seated;
+    }
+    return -1;
+}
+
+/* The seats the host's Open lobbies hold. */
+static size_t host_seated(void)
+{
+    size_t n = 0;
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
+        if (N[0].n->slots[i].state == SLOT_OPEN && N[0].n->slots[i].host) n += N[0].n->slots[i].n_seated;
+    return n;
+}
+
+/* A stranger `who` connects to the host; with `hello`, it asks about a lobby nobody has. */
+static void stranger(int who, int hello, gz_link_t *l)
+{
+    lt_key_t hk, sk;
+    char name[40];
+    uint8_t scope[32];
+    whost(&hk);
+    snprintf(name, sizeof name, "stranger %d", who);
+    lt_key(&sk, name);
+    *l = h_link(hk.pub, sk.pub);
+    w_peer(0, l, 1, 0, 0, 0);
+    memset(scope, 0x40 + (who & 0x3f), 32);
+    if (hello) w_msg(0, l, GZ_MSG_KIND_HELLO, scope, NULL, 0);
+}
+
+/* An outsider `who` joins lobby `t` on fresh keys of its own: the connection, then the join. */
+static void outsider_join(int who, const terms_t *t, gz_link_t *l)
+{
+    lt_key_t hk, ck, fk;
+    char name[48];
+    uint8_t b[32], sf[64], sc[64], aux[32], buf[400];
+    gz_lobby_enc_t e;
+    size_t n;
+    whost(&hk);
+    snprintf(name, sizeof name, "outsider %d contribution", who);
+    lt_key(&ck, name);
+    snprintf(name, sizeof name, "outsider %d factory", who);
+    lt_key(&fk, name);
+    *l = h_link(hk.pub, ck.pub);
+    memset(aux, 0, sizeof aux);
+    gz_lobby_binding(t->scope, fk.pub, ck.pub, b);
+    CHECK(secp256k1_schnorrsig_sign32(lt_ctx(), sf, b, &fk.kp, aux) == 1);
+    CHECK(secp256k1_schnorrsig_sign32(lt_ctx(), sc, b, &ck.kp, aux) == 1);
+    gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, t->scope);
+    gz_lobby_enc_record(&e, 2, fk.pub, 33);
+    gz_lobby_enc_record(&e, 4, sf, 64);
+    gz_lobby_enc_record(&e, 6, sc, 64);
+    n = gz_lobby_enc_done(&e);
+    CHECK(n > 38);
+    w_peer(0, l, 1, 0, 0, 0);
+    w_msg(0, l, GZ_KIND_JOIN, t->scope, buf + 38, n - 38);
+}
+
 /* ---- 1. two lobbies at once, to Funding; restarts; a crash at every save -------- */
 
 static terms_t TA, TB;
@@ -716,6 +780,15 @@ static void test_cancel_and_tombstone(void)
     w_run(1000, 100);
     for (int n = 1; n <= 3; n++) CHECK(slot(n, &TA) == NULL && batch_with(n, mend, 3));
     CHECK(slot(1, &TB) != NULL && slot(4, &TB) != NULL); /* the other lobby goes on */
+    /* Closing keeps the round's members seated in the node part's table too
+     * (review A of PR 44, M2): twenty strangers who each say hello, a few
+     * seconds' work far inside the ten-minute limit, push out none of them. */
+    {
+        gz_link_t sl;
+        CHECK(host_entry(&l1) == 1);
+        for (int k = 0; k < 20; k++) stranger(k, 1, &sl);
+        CHECK(host_entry(&l1) == 1);
+    }
     /* A late hello for the ended lobby: its final state, the reason, then the saved cancel. */
     from = NSENT;
     w_msg(0, &l1, GZ_MSG_KIND_HELLO, TA.scope, NULL, 0);
@@ -1200,6 +1273,77 @@ static void test_hostile(unsigned long events, uint64_t seed)
     w_free(4);
 }
 
+/* ---- 6. seats and the connection table (review A of PR 44, M1) --------------------- */
+
+/* The entries the table keeps for seats beside the unseated places. */
+#define NP_CONNS_FOR_SEATS (NP_MAX_CONNS - NP_MAX_UNSEATED)
+
+/* The host offers more seats than its table can hold beside the unseated
+ * places. An outsider takes seat after seat on fresh keys: the joins past
+ * NP_MAX_SEATED are refused like joins to a full lobby, never a node error,
+ * and an honest member that holds a seat still gets an entry when it comes
+ * back while strangers crowd the table. */
+static void test_seat_capacity(void)
+{
+    terms_t t[8];
+    gz_link_t l, honest, sl;
+    gz_lobby_msg_t g;
+    lt_key_t hk, m1;
+    int who = 0, refused = 0;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int i = 0; i < 8; i++) {
+        make_terms(&t[i], 7, 3, 200 + (uint32_t)i);
+        CHECK(host_open(&t[i], 1) == 200);
+    }
+    CHECK(member_join(1, &t[0]) == 200);
+    w_run(2000, 100);
+    CHECK(host_seated() == 1 && slot(1, &t[0]) != NULL);
+    wkey(1, 0, slot(1, &t[0])->key_index, &m1);
+    honest = h_link(hk.pub, m1.pub);
+    CHECK(host_entry(&honest) == 1);
+    /* 8 lobbies of 7 seats: 56 offered, 48 kept for seats. */
+    for (int round = 0; round < 7; round++)
+        for (int i = 0; i < 8; i++) {
+            size_t before = host_seated(), from = NSENT;
+            outsider_join(++who, &t[i], &l);
+            if (host_seated() == before) {
+                refused++;
+                CHECK(last_sent(0, from, GZ_KIND_LOBBY_STATUS, l.remote.key, &g) && g.seat_state == GZ_SEAT_REFUSED);
+            }
+        }
+    CHECK(host_seated() == NP_CONNS_FOR_SEATS && refused == 56 - 47);
+    no_errors(1);
+    /* The honest member's connection drops; strangers crowd in; it comes back. */
+    w_peer(0, &honest, 0, 0, 0, 0);
+    for (int k = 0; k < 24; k++) stranger(100 + k, k & 1, &sl);
+    w_peer(0, &honest, 1, 0, 0, 0);
+    CHECK(host_entry(&honest) == 1);
+    no_errors(1);
+    w_free(1);
+}
+
+/* "Ready" with the passphrase that the lobby refuses leaves the gate as it
+ * was: closed, its scoped secret forgotten (review A of PR 44, L3). */
+static void test_gate_refused_ready(void)
+{
+    terms_t t;
+    int forgets;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_FUNDING);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 3, 3, 4000);
+    CHECK(host_open(&t, 0) == 200);
+    CHECK(member_join(1, &t) == 200 && slot(1, &t) != NULL && !slot(1, &t)->gate_open);
+    forgets = FORGETS[1];
+    /* Not connected yet, so no terms and no seat to ready: refused. */
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 1) == 409);
+    CHECK(!slot(1, &t)->gate_open && FORGETS[1] == forgets + 1);
+    no_errors(1);
+    w_free(1);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1210,6 +1354,8 @@ int main(int argc, char **argv)
     test_refusals();
     test_gates();
     test_index();
+    test_seat_capacity();
+    test_gate_refused_ready();
     test_hostile(events, seed);
     return check_done();
 }
