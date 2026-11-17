@@ -713,6 +713,65 @@ static gz_chain_result multi_broadcast(void *ctx, const uint8_t *raw, size_t len
   return finish(m, out->result);
 }
 
+/*
+ * A package goes to every server on the right network. Accepted by any one
+ * is success, as for a single transaction. If no server took it, a refusal
+ * is reported before anything else; GZ_CHAIN_UNSUPPORTED only when every
+ * server that could be asked has no package endpoint, so that "nobody here
+ * relays packages" is never mistaken for a server being down. The report
+ * holds, per server, the child's result under the pair's result code.
+ */
+static gz_chain_result multi_broadcast_package(void *ctx, const uint8_t *parent, size_t parent_len,
+                                               const uint8_t *child, size_t child_len,
+                                               gz_package_result *out) {
+  multi *m = ctx;
+  gz_package_result one, accepted, refused, other;
+  bool have_accepted = false, have_refused = false, have_other = false;
+  size_t asked = 0, unsupported = 0;
+  memset(&accepted, 0, sizeof accepted);
+  memset(&refused, 0, sizeof refused);
+  memset(&other, 0, sizeof other);
+  begin(m, GZ_CALL_BROADCAST);
+  memset(out, 0, sizeof *out);
+  for (size_t i = 0; i < m->n; i++) {
+    gz_multi_answer *a = &m->report.answers[i];
+    /* a server on another chain is never sent the transactions */
+    if (!ready(m, i)) {
+      a->u.broadcast.result = a->result;
+      continue;
+    }
+    asked++;
+    a->result = gz_chain_broadcast_package(&m->servers[i], parent, parent_len, child, child_len, &one);
+    a->u.broadcast = one.child;
+    a->u.broadcast.result = a->result;
+    a->u.broadcast.server_status = one.server_status;
+    if (a->result == GZ_CHAIN_UNSUPPORTED) unsupported++;
+    if (a->result == GZ_CHAIN_OK && !have_accepted) {
+      accepted = one;
+      have_accepted = true;
+    } else if (a->result == GZ_CHAIN_REJECTED && !have_refused) {
+      refused = one;
+      have_refused = true;
+    } else if (a->result != GZ_CHAIN_OK && a->result != GZ_CHAIN_REJECTED &&
+               a->result != GZ_CHAIN_UNSUPPORTED && !have_other) {
+      other = one;
+      have_other = true;
+    }
+  }
+  if (have_accepted) {
+    *out = accepted;
+  } else if (have_refused) {
+    *out = refused;
+  } else if (have_other) {
+    *out = other;
+  } else if (asked > 0 && unsupported == asked) {
+    out->result = out->parent.result = out->child.result = GZ_CHAIN_UNSUPPORTED;
+  } else {
+    out->result = out->parent.result = out->child.result = m->report.answers[0].result;
+  }
+  return finish(m, out->result);
+}
+
 /* ---- fee estimates ------------------------------------------------------- */
 
 /* What a server's answer says for `target`: its estimate for the highest
@@ -806,6 +865,7 @@ static const gz_chain_ops multi_ops = {
     .merkle_proof = multi_merkle_proof,
     .broadcast = multi_broadcast,
     .fee_estimates = multi_fee_estimates,
+    .broadcast_package = multi_broadcast_package,
     .describe = NULL,
     .destroy = multi_destroy,
 };

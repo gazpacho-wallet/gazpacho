@@ -43,6 +43,15 @@ jobs:
         # sanitizers, the same tests again under valgrind. The wallet
         # break-checks (label slow) run in wallet-break-checks.yml.
         run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow
+      - name: Chain worker under ThreadSanitizer
+        # Watches, requests, events, resets and shutdown racing
+        # (ports/chain/tests/test_chainw.c). Its own small build: TSan does
+        # not mix with the other sanitizers. Fewer address-randomisation bits,
+        # which this kernel's default exceeds what TSan can map.
+        if: matrix.sanitize == 'OFF'
+        run: |
+          sudo sysctl -w vm.mmap_rnd_bits=28
+          sh tools/chain-tsan.sh "$RUNNER_TEMP/chain-tsan"
       - name: Scale check, one small case and the two defect reproductions
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
 
@@ -212,6 +221,7 @@ jobs:
           --args "lobby_fuzz=3000 2" --args "lobby_fuzz_seq=300 2"
           --args "api_http_fuzz=3000" --args "api_json_fuzz=20000"
           --args "node_fuzz=300" --args "node_hostile=6 400" --args "sim_profile_6=25 300 1 6"
+          --args "chain_fuzz_parse=20000" --args "chain_fuzz_watch=1500"
           --exclude '^storage_vector_e2r$'
           --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
           --args "signing_golden=golden tiny" --args "signing_model=model tiny"

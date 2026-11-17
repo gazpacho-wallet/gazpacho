@@ -8,6 +8,7 @@
 #define _POSIX_C_SOURCE 200809L /* setenv */
 
 #include <ctype.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +59,16 @@ static result get(gz_http *h, const char *url, size_t cap, uint32_t timeout_ms) 
   out.status = resp.status;
   out.len = resp.len;
   return out;
+}
+
+/* Interrupts the transport from a second thread after 300 ms. */
+static void *interrupt_soon(void *http) {
+  gz_http *h = http;
+  h->sleep_ms(h->ctx, 0);
+  struct timespec ts = {0, 300000000L};
+  nanosleep(&ts, NULL);
+  gz_http_curl_interrupt(h, true);
+  return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -292,6 +303,54 @@ int main(int argc, char **argv) {
   snprintf(url, sizeof url, "https://localhost:%s/ok", argv[1]);
   r = get(&trusting, url, 100, 5000);
   CHECK(r.r != GZ_HTTP_OK);
+
+  /* a POST can say it carries JSON (a package); anything else is text/plain */
+  snprintf(url, sizeof url, "%s/post", base);
+  req.url = url;
+  req.content_type = "application/json";
+  CHECK(h.request(h.ctx, &req, buf, sizeof buf, &resp) == GZ_HTTP_OK && resp.status == 200);
+  CHECK(resp.len == 25 && memcmp(buf, "application/json|0200beef", 25) == 0);
+  req.content_type = "text/html";
+  CHECK(h.request(h.ctx, &req, buf, sizeof buf, &resp) == GZ_HTTP_OK && resp.status == 200);
+  CHECK(resp.len == 19 && memcmp(buf, "text/plain|0200beef", 19) == 0);
+
+  /* gz_http_curl_interrupt from another thread ends a request in flight
+   * (the server answers after 5 s) well before its time limit */
+  pthread_t th;
+  (void)gz_http_curl_async_dns();
+  CHECK(pthread_create(&th, NULL, interrupt_soon, &h) == 0);
+  snprintf(url, sizeof url, "%s/slow", base);
+  r = get(&h, url, 100, 8000);
+  pthread_join(th, NULL);
+  CHECK(r.r == GZ_HTTP_E_FAILED && r.elapsed_ms >= 250 && r.elapsed_ms < 2000);
+  /* while interrupted every request fails and every sleep returns at once */
+  snprintf(url, sizeof url, "%s/ok", base);
+  r = get(&h, url, 100, 3000);
+  CHECK(r.r == GZ_HTTP_E_FAILED && r.elapsed_ms < 200);
+  uint64_t t0 = h.now_ms(h.ctx);
+  h.sleep_ms(h.ctx, 3000);
+  CHECK(h.now_ms(h.ctx) - t0 < 500);
+  /* and works again when the interrupt is taken back */
+  gz_http_curl_interrupt(&h, false);
+  r = get(&h, url, 100, 3000);
+  CHECK(r.r == GZ_HTTP_OK && r.status == 200 && r.len == 6);
+  t0 = h.now_ms(h.ctx);
+  h.sleep_ms(h.ctx, 300);
+  CHECK(h.now_ms(h.ctx) - t0 >= 290);
+  /* a sleep in progress is ended too */
+  CHECK(pthread_create(&th, NULL, interrupt_soon, &h) == 0);
+  t0 = h.now_ms(h.ctx);
+  h.sleep_ms(h.ctx, 8000);
+  pthread_join(th, NULL);
+  CHECK(h.now_ms(h.ctx) - t0 >= 250 && h.now_ms(h.ctx) - t0 < 2000);
+  gz_http_curl_interrupt(&h, false);
+  /* a transport that is not the libcurl one is left alone */
+  gz_http other = h;
+  other.request = NULL;
+  gz_http_curl_interrupt(&other, true);
+  gz_http_curl_interrupt(NULL, true);
+  r = get(&h, url, 100, 3000);
+  CHECK(r.r == GZ_HTTP_OK);
 
   gz_http_curl_destroy(&h);
   gz_http_curl_destroy(&trusting);
