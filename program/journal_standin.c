@@ -640,8 +640,44 @@ static void st_close(void *ctx)
     free(s);
 }
 
+static int st_poisoned(void *ctx) { return ((const standin_t *)ctx)->poisoned; }
+static int st_counter_state(void *ctx, uint64_t *value)
+{
+    const standin_t *s = ctx;
+    if (value) *value = s->counter_value;
+    return s->counter_state;
+}
+static int st_take_answered(void *ctx)
+{
+    standin_t *s = ctx;
+    int r = s->restore_answered;
+    s->restore_answered = 0;
+    return r;
+}
+static uint64_t st_cut_bytes(void *ctx) { return ((const standin_t *)ctx)->cut; }
+/* The stand-in keeps no guard file (review of PR 41, F1): the real store does. */
+static gz_bytes_t st_guard(void *ctx)
+{
+    gz_bytes_t b = {NULL, 0};
+    (void)ctx;
+    return b;
+}
+static void st_fail_at(void *ctx, unsigned k) { ((standin_t *)ctx)->fail_at = k; }
+static void st_fail_next_ping(void *ctx) { ((standin_t *)ctx)->sync_fail_ping = 1; }
+static void st_test_hooks(void *ctx, unsigned sync_fail_at, int cut_fail, int crash_after_counter,
+                          const char *log_name)
+{
+    standin_t *s = ctx;
+    s->sync_fail_at = sync_fail_at;
+    s->cut_fail = (unsigned)cut_fail;
+    s->crash_after_counter = crash_after_counter;
+    s->log_name = log_name;
+}
+
 static const gzp_store_ops_t STANDIN_OPS = {
-    st_begin, st_next, st_rewind, st_append, st_complete, st_restored, st_close
+    st_begin, st_next, st_rewind, st_append, st_complete, st_restored, st_close,
+    st_poisoned, st_counter_state, st_take_answered, st_cut_bytes, st_guard,
+    st_fail_at, st_fail_next_ping, st_test_hooks
 };
 
 int gzp_standin_open(gzp_store_t *out, const char *dir, char *err, size_t errlen)
@@ -685,57 +721,28 @@ int gzp_standin_open(gzp_store_t *out, const char *dir, char *err, size_t errlen
     return 0;
 }
 
-int gzp_standin_poisoned(const gzp_store_t *st)
-{
-    return ((const standin_t *)st->ctx)->poisoned;
-}
+int gzp_standin_poisoned(const gzp_store_t *st) { return st_poisoned(st->ctx); }
 
-#ifdef GZP_TEST_BUILD
-void gzp_standin_fail_at(gzp_store_t *st, unsigned k)
-{
-    ((standin_t *)st->ctx)->fail_at = k;
-}
+void gzp_standin_fail_at(gzp_store_t *st, unsigned k) { st_fail_at(st->ctx, k); }
 
-void gzp_standin_fail_next_ping(gzp_store_t *st)
-{
-    ((standin_t *)st->ctx)->sync_fail_ping = 1;
-}
+void gzp_standin_fail_next_ping(gzp_store_t *st) { st_fail_next_ping(st->ctx); }
 
 void gzp_standin_test_hooks(gzp_store_t *st, unsigned sync_fail_at, int cut_fail, int crash_after_counter,
                             const char *log_name)
 {
-    standin_t *s = st->ctx;
-    s->sync_fail_at = sync_fail_at;
-    s->cut_fail = (unsigned)cut_fail;
-    s->crash_after_counter = crash_after_counter;
-    s->log_name = log_name;
+    st_test_hooks(st->ctx, sync_fail_at, cut_fail, crash_after_counter, log_name);
 }
-#endif
 
-uint64_t gzp_standin_cut_bytes(const gzp_store_t *st)
-{
-    return ((const standin_t *)st->ctx)->cut;
-}
+uint64_t gzp_standin_cut_bytes(const gzp_store_t *st) { return st_cut_bytes(st->ctx); }
 
 unsigned gzp_standin_cut_kept(const gzp_store_t *st)
 {
     return ((const standin_t *)st->ctx)->cut_kept;
 }
 
-int gzp_standin_counter_state(const gzp_store_t *st, uint64_t *value)
-{
-    const standin_t *s = st->ctx;
-    if (value) *value = s->counter_value;
-    return s->counter_state;
-}
+int gzp_standin_counter_state(const gzp_store_t *st, uint64_t *value) { return st_counter_state(st->ctx, value); }
 
-int gzp_standin_take_restore_answered(gzp_store_t *st)
-{
-    standin_t *s = st->ctx;
-    int r = s->restore_answered;
-    s->restore_answered = 0;
-    return r;
-}
+int gzp_standin_take_restore_answered(gzp_store_t *st) { return st_take_answered(st->ctx); }
 
 #ifdef GZP_TEST_BUILD
 int gzp_standin_put_restore(const char *dir, const char *backup, char *err, size_t errlen)

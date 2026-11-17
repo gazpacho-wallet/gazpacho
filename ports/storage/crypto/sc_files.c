@@ -246,11 +246,19 @@ static gz_sc_err_t folder_free(const gz_sc_store_t *s, int restore)
  * order. Once the key file's rename has happened the wallet exists: a later
  * failure is DONE_WITH_FAULT, never a failure (review B, L1), with every key
  * dropped; the next unlock makes what is missing as a restore (6.3 step 0). */
-static gz_sc_err_t make_wallet(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
-                               const gz_sc_kdf_params_t *params, const uint8_t entropy[32], const uint8_t seed[64],
-                               int restore, gz_sc_unlocked_t *u)
+void gz_sc_prepared_clear(gz_sc_prepared_t *p)
 {
-    memset(u, 0, sizeof *u);
+    gz_sc_vault_free(p->vault);
+    sodium_memzero(p, sizeof *p);
+}
+
+/* The first half of set-up and of the restore from the words: the checks,
+ * the derivation and the key file's bytes, in memory. Writes nothing. */
+gz_sc_err_t gz_sc_setup_prepare(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
+                                const gz_sc_kdf_params_t *params, const uint8_t entropy[32], const uint8_t seed[64],
+                                int restore, gz_sc_prepared_t *p)
+{
+    memset(p, 0, sizeof *p);
     gz_sc_err_t e = new_pass_ok(pw_nfc, pw_len);
     if (e != GZ_SC_OK)
         return e;
@@ -259,21 +267,51 @@ static gz_sc_err_t make_wallet(const gz_sc_store_t *s, const uint8_t *pw_nfc, si
     if ((e = gz_sc_params_check(params)) != GZ_SC_OK)
         return e;
     uint8_t *msk = sodium_malloc(32), *pk = NULL;
-    uint8_t vault_id[16], salt[16], kf[GZ_SC_KEYFILE_LEN];
-    int committed = 0, fault = 0;
+    uint8_t vault_id[16], salt[16];
     if (!msk)
         return GZ_SC_NOMEM;
     if ((e = gz_sc_random(msk, 32)) != GZ_SC_OK || (e = gz_sc_random(vault_id, 16)) != GZ_SC_OK ||
         (e = gz_sc_random(salt, 16)) != GZ_SC_OK)
         goto done;
-    if ((e = derive_pk(s, pw_nfc, pw_len, salt, params, &pk, &u->mem_locked)) != GZ_SC_OK)
+    if ((e = derive_pk(s, pw_nfc, pw_len, salt, params, &pk, &p->mem_locked)) != GZ_SC_OK)
         goto done;
-    if ((e = gz_sc_keyfile_build(s->chain, vault_id, params, salt, pk, msk, entropy, seed, kf)) != GZ_SC_OK)
+    if ((e = gz_sc_keyfile_build(s->chain, vault_id, params, salt, pk, msk, entropy, seed, p->keyfile)) !=
+        GZ_SC_OK)
         goto done;
-    if ((e = gz_sc_vault_new(s->chain, vault_id, msk, seed, &u->vault)) != GZ_SC_OK)
+    if ((e = gz_sc_vault_new(s->chain, vault_id, msk, seed, &p->vault)) != GZ_SC_OK)
         goto done;
-    sc_vault_set_kdf(u->vault, params);
-    e = gz_sc_fs_replace(s, GZ_SC_FILE_KEYS, kf, sizeof kf);
+    sc_vault_set_kdf(p->vault, params);
+    p->restore = restore;
+    /* The same info gz_sc_unlock gives (review A, L8). */
+    memcpy(p->info.chain, s->chain, 32);
+    memcpy(p->info.vault_id, vault_id, 16);
+    p->info.kdf = *params;
+    memcpy(p->info.salt, salt, 16);
+done:
+    gz_sc_sfree(msk);
+    gz_sc_sfree(pk);
+    if (e != GZ_SC_OK)
+        gz_sc_prepared_clear(p);
+    return e;
+}
+
+/* The second half: 7.4's writes, in order. The vault moves into u; p is
+ * cleared whatever happens. Once the key file's rename has happened the
+ * wallet exists: a later failure is DONE_WITH_FAULT, never a failure (review
+ * B, L1), with every key dropped; the next unlock makes what is missing as a
+ * restore (6.3 step 0). */
+gz_sc_err_t gz_sc_setup_commit(const gz_sc_store_t *s, gz_sc_prepared_t *p, gz_sc_unlocked_t *u)
+{
+    memset(u, 0, sizeof *u);
+    int restore = p->restore, committed = 0, fault = 0;
+    gz_sc_err_t e = p->vault ? folder_free(s, restore) : GZ_SC_ARG; /* again: nothing written meanwhile */
+    if (e != GZ_SC_OK)
+        goto done;
+    u->vault = p->vault;
+    p->vault = NULL;
+    u->mem_locked = p->mem_locked;
+    u->info = p->info;
+    e = gz_sc_fs_replace(s, GZ_SC_FILE_KEYS, p->keyfile, sizeof p->keyfile);
     if (e != GZ_SC_OK && e != GZ_SC_DONE_WITH_FAULT)
         goto done;
     committed = 1;
@@ -290,18 +328,16 @@ static gz_sc_err_t make_wallet(const gz_sc_store_t *s, const uint8_t *pw_nfc, si
         if ((e = gz_sc_guard_seal(u->vault, &g, gbuf, sizeof gbuf, &gl)) != GZ_SC_OK ||
             (e = gz_sc_fs_replace(s, GZ_SC_FILE_GUARD, gbuf, gl)) != GZ_SC_OK)
             goto done;
+        /* The start counter (contract-v2.md section 8, storage 10.3), created
+         * at set-up beside the guard. A restore keeps the folder's: a counter
+         * that is missing there is told to the person at the first start. */
+        if ((e = gz_sc_counter_write(s, u->vault, 0)) != GZ_SC_OK)
+            goto done;
     }
     e = new_journal(s, u, restore);
     u->restore = restore;
-    /* The same info gz_sc_unlock gives (review A, L8). */
-    memcpy(u->info.chain, s->chain, 32);
-    memcpy(u->info.vault_id, vault_id, 16);
-    u->info.kdf = *params;
-    memcpy(u->info.salt, salt, 16);
 done:
-    gz_sc_sfree(msk);
-    gz_sc_sfree(pk);
-    sodium_memzero(kf, sizeof kf);
+    gz_sc_prepared_clear(p);
     if (e == GZ_SC_OK && fault)
         e = GZ_SC_DONE_WITH_FAULT;
     if (e != GZ_SC_OK) {
@@ -310,6 +346,18 @@ done:
             e = GZ_SC_DONE_WITH_FAULT;
     }
     return e;
+}
+
+static gz_sc_err_t make_wallet(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
+                               const gz_sc_kdf_params_t *params, const uint8_t entropy[32], const uint8_t seed[64],
+                               int restore, gz_sc_unlocked_t *u)
+{
+    gz_sc_prepared_t p;
+    memset(u, 0, sizeof *u);
+    gz_sc_err_t e = gz_sc_setup_prepare(s, pw_nfc, pw_len, params, entropy, seed, restore, &p);
+    if (e != GZ_SC_OK)
+        return e;
+    return gz_sc_setup_commit(s, &p, u);
 }
 
 gz_sc_err_t gz_sc_setup(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
@@ -332,19 +380,19 @@ gz_sc_err_t gz_sc_setup_restore(const gz_sc_store_t *s, const uint8_t *pw_nfc, s
 static void drop_stale_tmp(const gz_sc_store_t *s)
 {
     static const char *const names[] = {GZ_SC_FILE_KEYS, GZ_SC_FILE_JOURNAL, GZ_SC_FILE_GUARD, GZ_SC_FILE_MARK,
-                                        GZ_SC_FILE_ATTEMPTS};
+                                        GZ_SC_FILE_ATTEMPTS, GZ_SC_FILE_STARTS};
     char p[PATH_CAP];
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
         if (path_of(s, names[i], ".tmp", p) == GZ_SC_OK)
             (void)OS(s)->unlink(OS(s)->ctx, p);
 }
 
-gz_sc_err_t gz_sc_unlock(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
-                         const gz_sc_kdf_params_t *def, gz_sc_unlocked_t *u)
+gz_sc_err_t gz_sc_unlock_derive(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
+                                const gz_sc_kdf_params_t *def, gz_sc_unlocked_t *u)
 {
     memset(u, 0, sizeof *u);
-    uint8_t *kf = NULL, *hdr = NULL, *pk = NULL;
-    size_t kl = 0, hl = 0;
+    uint8_t *kf = NULL, *pk = NULL;
+    size_t kl = 0;
     gz_sc_err_t e = old_pass_ok(pw_nfc, pw_len);
     if (e != GZ_SC_OK)
         return e;
@@ -356,12 +404,34 @@ gz_sc_err_t gz_sc_unlock(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t p
         goto done;
     if ((e = gz_sc_keyfile_unlock(kf, pk, &u->vault)) != GZ_SC_OK)
         goto done;
-    drop_stale_tmp(s);
     if (def) {
         gz_sc_kdf_params_t want;
         gz_sc_params_for_new_wrap(&u->info.kdf, def, &want);
         u->upgrade_due = want.t > u->info.kdf.t || want.m_kib > u->info.kdf.m_kib;
     }
+done:
+    free(kf);
+    gz_sc_sfree(pk);
+    if (e != GZ_SC_OK)
+        gz_sc_unlocked_clear(u); /* keys dropped on every failure (8.2) */
+    return e;
+}
+
+gz_sc_err_t gz_sc_unlock(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
+                         const gz_sc_kdf_params_t *def, gz_sc_unlocked_t *u)
+{
+    gz_sc_err_t e = gz_sc_unlock_derive(s, pw_nfc, pw_len, def, u);
+    return e == GZ_SC_OK ? gz_sc_unlock_open(s, u) : e;
+}
+
+gz_sc_err_t gz_sc_unlock_open(const gz_sc_store_t *s, gz_sc_unlocked_t *u)
+{
+    uint8_t *hdr = NULL;
+    size_t hl = 0;
+    gz_sc_err_t e;
+    if (!u->vault)
+        return GZ_SC_ARG;
+    drop_stale_tmp(s);
     e = gz_sc_fs_read(s, GZ_SC_FILE_JOURNAL, GZ_SC_JHEADER_LEN, &hdr, &hl);
     if (e == GZ_SC_MISSING) {
         /* 6.3 step 0 (review R2-2): a key file with no journal starts as a
@@ -381,9 +451,7 @@ gz_sc_err_t gz_sc_unlock(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t p
         goto done;
     e = gz_sc_mark_key(u->vault, u->file_id, &u->kh);
 done:
-    free(kf);
     free(hdr);
-    gz_sc_sfree(pk);
     if (e != GZ_SC_OK)
         gz_sc_unlocked_clear(u); /* keys dropped on every failure (8.2) */
     return e;

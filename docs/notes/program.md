@@ -11,12 +11,13 @@ One process, one thread, one data folder, one node. `gazpacho --data-dir DIR --r
 | Piece | File | Replaced or extended by |
 |---|---|---|
 | Executor loop, timers, start, restart | `program/executor.c` | stays; engines add nothing here |
-| Storage interface | `program/store.h` | the journal (S5) and its encryption (S6) implement it |
-| Journal stand-in, start counter stand-in, restore marker | `program/journal_standin.c` | S5; the sealed counter `starts.gzs` in P9 |
+| Storage interface | `program/store.h` | implemented by `program/store_journal.c`: the journal (S5) sealed by its encryption (S6) |
+| Journal stand-in, start counter stand-in, restore marker | `program/journal_standin.c` | `gazpacho-test` only (`--test-standin-store`): replaced by the sealed journal, `starts.gzs` (P9) and `restore.gzr` |
+| Passphrase layer, keys in memory | `program/store_unlock.c` behind `program/unlock.h` | the local API (P5, P6) drives it |
 | Network adapter | `program/net.c` over `ports/net/peers.h` | links, kinds and `CONNECT` in P4; derived keys in P8 |
 | Chain adapter | `program/pchain.c` over `ports/chain` (blocking) | the chain worker (P7) |
 | User adapter | `program/notify.c` (output lines) | the view and the API server (P5, P6) |
-| Data folder, lock, key files | `program/datadir.c` | key file of S6; derived keys (P8) |
+| Data folder, lock | `program/datadir.c` | the key file of S6 (`keys.gzk`) is `store_unlock.c`'s; derived keys (P8) |
 | Command line | `program/options.c` | |
 | Test traffic | `program/testping.c` (test build only) | removed with the placeholder ping |
 
@@ -66,7 +67,11 @@ Per incarnation (`gzp_exec_incarnation`), in this order:
 
 ## 4. Storage
 
-`program/store.h` is the interface the real journal (S5) and storage encryption (S6) will provide: `begin` (fence, start counter, durable incarnation), `next`/`rewind` (the shape of `gz_storage_reader_t`), `append`, `complete`, `restored` (the restore marker), `close`. Today: `journal.standin` (a header, then `INCN` and `BTCH` entries, each with a SHA-256; no encryption, no compaction, everything in memory), `starts.standin` (the start counter, `GZSTART0 <n>`, unsealed; the sealed `starts.gzs` of `storage-encryption.md` 10.3 is P9) and `restore.pending` (the restore marker: present from the moment a backup is put in place until batch 1 of an incarnation begun with it is durable). A missing counter falls back to the journal alone and is reported (on a restore: `counter_found` 0, "the person is told"). The counter covers a restore of the journal alone, not a snapshot of the whole folder (contract v2 section 8).
+`program/store.h` is implemented by `program/store_journal.c`: the journal of `ports/storage/journal.h` (S5) in its sealed format (S6), opened with `gz_journal_open_sealed` in pull mode, under the keys of the unlocked wallet (`program/store_unlock.c`). The sealed table gives the journal the header and entries (storage 5.3 to 5.5), the start rule (6.3), the mark file's entry for every anchored batch before it is confirmed (7 step 2), the sealed guard file (10.1); the start counter `starts.gzs` (contract v2 section 8, storage 10.3, P9: sealed under KC from the seed, made at set-up) is read before the open and written before the incarnation entry; `restore.gzr` is the restore marker. `append` is synchronous: sync, mark, sync, anchor, guard, then it returns. A failed append fails the journal, which writes nothing more; the next start reads what the device holds (`journal.md` 4), so the store is never "poisoned". A start refused by the rule (behind, possibly old) is `files_behind`: every key is dropped and the wallet stays locked.
+
+The stand-in (`journal.standin`, `starts.standin`, `restore.pending`) stays in `gazpacho-test` only, behind `--test-standin-store`, for the tests that read its files or rely on its cut back of a failed sync (`program_store`, `program_storage_failure`, `program_restore_counter`).
+
+**Start order** (section 2): take the folder lock; come up locked (nothing of the journal is read, nothing listens or connects); on unlock (`unlock.h`: the local API, or `--test-passphrase-file` in `gazpacho-test`) open storage (fence, start rule, counter, incarnation); start the node; only then connect. The release program, until the local API is in it (P5), stays locked until it is stopped.
 
 ## 5. Data folder, roles, network, options
 
@@ -74,7 +79,7 @@ Per incarnation (`gzp_exec_incarnation`), in this order:
 - **Identity.** `DIR/identity` holds the role and network written at the first start; another is refused (exit 4).
 - **Networks.** signet (default) or testnet4, one per folder; `init` names exactly that chain (`messages.md` 2), so a signet member and a testnet4 host both close over init. Mainnet is refused (exit 2) before any folder is made; a chain server whose block 0 is another network's is refused at start (exit 5).
 - **Options.** `--data-dir`, `--role`, `--network`, `--listen ADDR:PORT` (host), `--connect KEY@ADDR:PORT` (member), `--interface-port`, `--no-interface`, `--chain-url`, `--no-chain`, `--chain-poll-ms`, `--check-chain` (read-only check, then stop), transport timers (`--handshake-ms`, `--recv-ms`, `--send-ms`, `--ping-ms`, `--pong-ms`, `--reconnect-ms`, `--max-per-address`). `gazpacho-test` adds `--test-pings`, `--test-ping-ms`, `--test-crash-at-ping`, `--test-storage-fail-at`, `--test-sync-fail-at`, `--test-cut-fail`, `--test-crash-after-counter`, `--test-start-delay-ms`, `--test-listen-during-start`, `--test-restore-from`, `--test-timer-ms`, `--test-burst`, `--test-oversize-send`, `--test-node-error-at`, `--test-node-error-always`, `--test-stop-at-restart`; the release build refuses any `--test-*` without knowing their names, and neither the names, their usage lines, the test timer nor the store's test hooks are compiled into it (review B, B4). Release output lines never carry message bytes: a start's resend shows its length only (B6).
-- **Key files (stand-ins).** `transport.key` and `wallet-seed.standin`, 64 hex, mode 0600, unencrypted; derived keys replace them in P8, the key file in S6.
+- **Keys.** The key file `keys.gzk` (storage 4.5) and the attempts file `attempts.gza` (12.3); a key file open to others is refused. The BIP 39 seed is the unlocked storage layer's copy; the transport's static key is derived from it (`derive(seed, "transport stand-in N", chain)`), so it lives behind the key file and survives a restore from the words. `transport.key` and `wallet-seed.standin` are gone. Per-member keys from the seed are P8; the key port is unchanged.
 
 ## 6. The core contract
 
@@ -93,7 +98,7 @@ Draft 1 found fifteen; contract v2 decided each. Where they stand after P3:
 | 5 | The chain view blocks the loop | Still true (`pchain.c` is blocking); P7 |
 | 6 | The transport blocks | Done: the program uses only `peers.h`; `conn.h` only in a test client |
 | 7 | Kind and scope | Carried by the adapter as test kind 32767 until P4 |
-| 8 | A restore rewinds the incarnation | Stand-in counter done here; sealed in P9 |
+| 8 | A restore rewinds the incarnation | Done: `starts.gzs`, sealed under KC from the seed, made at set-up (branch s5-s6-program) |
 | 9, 10 | Broadcast outcome, `WATCH_SCRIPT` | P4 / P7 |
 | 11 | What the interface reads | P5, P6 |
 | 12 | Transport's random type | Merged (P2): `gz_net_random_t` |

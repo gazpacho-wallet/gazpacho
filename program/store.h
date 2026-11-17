@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: MIT */
-/* Storage as the executor sees it: the interface the real journal
- * (spec/journal.md, stream S5) and storage encryption (stream S6) will
- * provide. Today it is implemented by a plain append-only stand-in
- * (journal_standin.c), which is NOT the journal of the specification: no
- * encryption, no key_epoch, no compaction; its start counter and restore
- * marker are plain files.
+/* Storage as the executor sees it. Implemented by the real journal
+ * (spec/journal.md, stream S5) sealed by storage encryption (stream S6):
+ * store_journal.c, the program's store. The plain append-only stand-in
+ * (journal_standin.c) stays for the tests that read its files
+ * (--test-standin-store, gazpacho-test only); it is NOT the journal of the
+ * specification: no encryption, no compaction; its start counter and
+ * restore marker are plain files.
  *
  * The contract, from core/gazpacho/include/gazpacho/runner.h and ports.h:
  *   - begin() settles whatever an earlier program left pending (THE FENCE:
@@ -84,12 +85,74 @@ typedef struct {
      * been answered by a durable batch 1 of an incarnation begun with it. */
     int (*restored)(void *ctx);
     void (*close)(void *ctx);
+    /* What the executor reports and hands to the node, for either store. */
+    int (*poisoned)(void *ctx);                        /* below */
+    int (*counter_state)(void *ctx, uint64_t *value);  /* GZP_COUNTER_*, after begin */
+    int (*take_restore_answered)(void *ctx);           /* 1 once, below */
+    uint64_t (*cut_bytes)(void *ctx);                  /* torn bytes cut by the last begin/open */
+    /* On a restored start, after begin: the guard file as a guard record,
+     * for the node to merge (ports.h, the reader's `guard`); empty if none. */
+    gz_bytes_t (*guard)(void *ctx);
+    /* Tests (gazpacho-test; NULL in the release program): the k-th append
+     * from now fails before writing anything; the next batch holding a test
+     * ping record has its sync fail; the k-th batch's sync fails (cut_fail:
+     * the undo fails too, where the store has one), crash_after_counter exits
+     * between the counter and the incarnation entry. */
+    void (*test_fail_at)(void *ctx, unsigned k);
+    void (*test_fail_next_ping)(void *ctx);
+    void (*test_hooks)(void *ctx, unsigned sync_fail_at, int cut_fail, int crash_after_counter, const char *log_name);
 } gzp_store_ops_t;
 
 typedef struct {
     const gzp_store_ops_t *ops;
     void *ctx;
 } gzp_store_t;
+
+/* The calls above, safe where a store leaves one NULL. */
+int gzp_store_poisoned(const gzp_store_t *s);
+int gzp_store_counter_state(const gzp_store_t *s, uint64_t *value);
+int gzp_store_take_restore_answered(gzp_store_t *s);
+uint64_t gzp_store_cut_bytes(const gzp_store_t *s);
+gz_bytes_t gzp_store_guard(const gzp_store_t *s);
+
+/* THE REAL STORE (store_journal.c): the journal of ports/storage/journal.h
+ * (S5) in its sealed format, under the keys of an unlocked wallet
+ * (store_unlock.h; S6). journal.gzj, the mark file, the sealed guard file,
+ * the sealed start counter starts.gzs (P9) and restore.gzr, in `dir`.
+ * begin() is gz_journal_open (pull mode): the fence, the start rule (a
+ * journal behind its mark file or guard, or possibly old, refuses with
+ * GZP_STORE_BEHIND), the counter written first, the incarnation durable.
+ * append() appends and makes durable (sync, mark, sync, the mark file's
+ * entry for an anchored batch, the guard file) before it returns: a failed
+ * one is a failed journal, which writes nothing more, and the next begin
+ * reads what the device holds (journal.md 4), so it is never "poisoned". */
+struct gzp_wallet;
+int gzp_journal_store_open(gzp_store_t *out, const char *dir, struct gzp_wallet *w, char *err, size_t errlen);
+/* The incarnation begin() made durable (0 before begin). */
+uint64_t gzp_journal_store_incarnation(const gzp_store_t *s);
+/* begin() refused by the start rule: 1 if behind or possibly old. */
+int gzp_journal_store_behind(const gzp_store_t *s);
+/* Every batch and record of the journal, read only, as output lines
+ * (journal-batch, journal-record with the record's bytes in hex in the test
+ * build). 0, or -1 with a reason in err. Takes the journal's lock. */
+int gzp_journal_dump(const char *dir, struct gzp_wallet *w, char *err, size_t errlen);
+/* Import a backup of the journal as a restore (journal.h, gz_journal_import):
+ * staged first as journal.gzj.import in dir. Tests (--test-restore-from) and,
+ * later, the API's import. */
+int gzp_journal_store_import(const char *dir, struct gzp_wallet *w, const char *backup, char *err, size_t errlen);
+/* Mark the journal in place as a restore (gz_journal_mark_restored, floor
+ * the start counter): storage 6.3 step 4, "start as restore". */
+int gzp_journal_store_mark_restored(const char *dir, struct gzp_wallet *w, uint64_t floor, char *err, size_t errlen);
+
+#define GZP_STORE_BEHIND (-2)  /* begin(): the start rule refused (files behind) */
+
+#ifdef GZP_TEST_BUILD
+/* --test-kill-at N (gazpacho-test): SIGKILL just before the N-th write, sync,
+ * truncate, rename or removal of storage this process makes, the journal's
+ * and the storage layer's alike (store_unlock.c wraps the latter). */
+void gzp_store_test_kill_at(unsigned n);
+void gzp_store_test_tick(const char *what);
+#endif
 
 /* The stand-in: `dir`/journal.standin, created if missing, with the start
  * counter `dir`/starts.standin (written first at set-up) and the restore

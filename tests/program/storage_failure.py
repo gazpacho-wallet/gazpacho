@@ -40,7 +40,7 @@ def main():
     shutil.rmtree(work, ignore_errors=True)
     logs = os.path.join(work, "logs")
     os.makedirs(logs)
-    common = ["--no-chain", "--no-interface", "--reconnect-ms", "100", "--test-pings", "10", "--test-ping-ms", "60"]
+    common = ["--test-standin-store", "--no-chain", "--no-interface", "--reconnect-ms", "100", "--test-pings", "10", "--test-ping-ms", "60"]
     procs = []
     try:
         # The host pings 40 times, so that ping records still arrive however
@@ -132,7 +132,7 @@ def main():
         # A host that pings fast, so several events wait in one turn when the
         # error comes: none of them may reach the dead incarnation's node.
         fast = Proc("fast-host", [exe, "--data-dir", os.path.join(work, "fast"), "--role", "host", "--listen",
-                                  "127.0.0.1:0", "--name", "fast", "--no-chain", "--no-interface",
+                                  "127.0.0.1:0", "--name", "fast", "--test-standin-store", "--no-chain", "--no-interface",
                                   "--test-pings", "300", "--test-ping-ms", "2"], logs)
         procs.append(fast)
         fk = fast.wait_for(r"host key=([0-9a-f]{66})")

@@ -18,6 +18,8 @@
 #define GZ_SC_FILE_GUARD "guard.gzg"
 #define GZ_SC_FILE_MARK "mark.gzm"
 #define GZ_SC_FILE_ATTEMPTS "attempts.gza"
+#define GZ_SC_FILE_STARTS "starts.gzs"
+#define GZ_SC_STARTS_LEN 89
 
 /* The operating-system calls the storage layer makes. Each returns -1 (or a
  * negative count) on failure, like POSIX. */
@@ -178,6 +180,50 @@ gz_sc_err_t gz_sc_words(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw
  * DONE_WITH_FAULT as for gz_sc_rewrap: the new key file is in place. */
 gz_sc_err_t gz_sc_recover_keyfile(const gz_sc_store_t *s, const uint8_t entropy[32], const uint8_t seed[64],
                                   const uint8_t *pw_nfc, size_t pw_len, const gz_sc_kdf_params_t *params);
+
+/* ---- set-up and unlock in two halves (contract-v2.md section 4) -------------
+ * The program derives on one thread and installs on another: the first half
+ * reads and derives and writes NOTHING; the second writes. gz_sc_setup,
+ * gz_sc_setup_restore and gz_sc_unlock are the two halves in a row. */
+typedef struct {
+    gz_sc_vault_t *vault;
+    uint8_t keyfile[GZ_SC_KEYFILE_LEN];
+    gz_sc_keyfile_info_t info;
+    int mem_locked;
+    int restore;
+} gz_sc_prepared_t;
+void gz_sc_prepared_clear(gz_sc_prepared_t *p); /* wipes and frees */
+/* Set-up's checks (the passphrase's form, a folder free of any wallet, the
+ * parameters), the derivation and the key file's bytes. restore 1: the
+ * restore from the words (gz_sc_setup_restore's rules). */
+gz_sc_err_t gz_sc_setup_prepare(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
+                                const gz_sc_kdf_params_t *params, const uint8_t entropy[32], const uint8_t seed[64],
+                                int restore, gz_sc_prepared_t *p);
+/* 7.4's writes (the folder is checked again first); p is cleared. Results as
+ * gz_sc_setup's. A new wallet also gets its start counter (10.3) after the
+ * guard. */
+gz_sc_err_t gz_sc_setup_commit(const gz_sc_store_t *s, gz_sc_prepared_t *p, gz_sc_unlocked_t *u);
+/* The unlock's derivation: the key file read, parsed and opened (4.5); u has
+ * the vault and info, no journal keys. Writes nothing. */
+gz_sc_err_t gz_sc_unlock_derive(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t pw_len,
+                                const gz_sc_kdf_params_t *def, gz_sc_unlocked_t *u);
+/* The rest of gz_sc_unlock on a u from gz_sc_unlock_derive: stale .tmp files
+ * removed, the journal header opened, or 6.3 step 0. u is cleared on failure. */
+gz_sc_err_t gz_sc_unlock_open(const gz_sc_store_t *s, gz_sc_unlocked_t *u);
+
+/* ---- the start counter starts.gzs (contract-v2.md section 8; 10.3) ---------- */
+gz_sc_err_t gz_sc_counter_seal(const gz_sc_vault_t *v, uint64_t counter, uint8_t out[GZ_SC_STARTS_LEN]);
+/* NOT_THIS_FORMAT, OTHER_NETWORK, DAMAGED (the tag) or OK. */
+gz_sc_err_t gz_sc_counter_open(const gz_sc_vault_t *v, const uint8_t *data, size_t len, uint64_t *counter);
+/* OK with the value; MISSING if absent or it does not open (10.3: treated
+ * as missing); STORAGE_FAILED if it cannot be read. */
+gz_sc_err_t gz_sc_counter_read(const gz_sc_store_t *s, const gz_sc_vault_t *v, uint64_t *counter);
+/* Replace it (tmp, sync, rename, folder sync); an unsynced folder is STORAGE_FAILED. */
+gz_sc_err_t gz_sc_counter_write(const gz_sc_store_t *s, const gz_sc_vault_t *v, uint64_t counter);
+
+/* A 32-byte key from the seed: derive(seed, label, chain) (4.4's style). The
+ * program's transport key until P8 derives per-member keys. */
+gz_sc_err_t gz_sc_vault_derive(const gz_sc_vault_t *v, const char *label, uint8_t out[32]);
 
 /* 12.3: attempts.gza (mode 1). load gives the strictest state for a missing
  * or damaged file and returns its decode result. */

@@ -67,7 +67,7 @@ static void test_constants(void)
                                         "incarnation"};
     for (int s = 0; s <= GZ_JOURNAL_ERR_INCARNATION; s++)
         CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)s), names[s]) == 0);
-    CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)(GZ_JOURNAL_ERR_INCARNATION + 1)), "?") == 0);
+    CHECK(strcmp(gz_journal_status_name((gz_journal_status_t)(GZ_JOURNAL_ERR_NOT_THIS_WALLET + 1)), "?") == 0);
     /* Every type of spec section 9, and none of its odd neighbours. */
     static const uint32_t known[] = {
         0x00040002, 0x00040004, 0x00040006, 0x0004000a, 0x00010002, 0x00010004, 0x00010006,

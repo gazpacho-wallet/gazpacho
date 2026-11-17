@@ -20,6 +20,7 @@
 #define GZP_EXIT_DATA      4  /* the data folder or a file in it is unusable */
 #define GZP_EXIT_CHAIN     5  /* a chain server is on another network, or unreachable at start */
 #define GZP_EXIT_STORAGE   6  /* a failed journal write could not be undone: not restarted (store.h) */
+#define GZP_EXIT_LOCKED_OUT 8  /* gazpacho-test: the unlock from the passphrase file did not open the wallet */
 #define GZP_EXIT_TEST      70 /* a --test-crash-* hook fired (tests only) */
 
 #define GZP_ROLE_HOST   1
@@ -80,6 +81,11 @@ typedef struct {
     int test_crash_before_confirm; /* exit just before the K-th confirmation reaches the runner */
     int test_exit_after_send;      /* exit once the first test ping has been handed to the transport */
     int test_max_conns;            /* the transport's max_conns (0: the default, GZ_NODE_MAX_CONNS) */
+    const char *test_passphrase_file; /* unlock (or set up) from this file: the passphrase's bytes */
+    int test_kdf_floor;            /* set-up at the Argon2id floor (64 MiB, 3 passes) */
+    int test_standin_store;        /* the journal stand-in instead of the sealed journal (its files are read) */
+    const char *test_append_batch; /* save this batch (hex: type, len, bytes ...) and stop */
+    int test_kill_at;              /* SIGKILL before the K-th storage write, sync or rename (store.h) */
 } gzp_options_t;
 
 /* Parses argv into `o` (defaults first). Returns 0, or GZP_EXIT_USAGE after

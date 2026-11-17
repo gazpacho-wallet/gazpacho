@@ -8,15 +8,9 @@
  *   lock                   the holder's pid, for the refusal message only
  *   identity               "role network", written at first start; a later
  *                          start with another role or network is refused
- *   journal.standin        the journal stand-in (journal_standin.c)
- *   transport.key          STAND-IN: the BOLT 8 static key, 64 hex, mode 0600.
- *                          messages.md section 2 derives a member's key from
- *                          the seed, the restore epoch and a key index; that
- *                          derivation path is still open, and the key file of
- *                          storage-encryption.md (S6) is not built.
- *   wallet-seed.standin    STAND-IN: 32 bytes of entropy, 64 hex, mode 0600,
- *                          from which the wallet's 24 words and keys come.
- *                          Unencrypted, so for test networks only, until S6.
+ *   keys.gzk, journal.gzj, guard.gzg, mark.gzm, starts.gzs, attempts.gza,
+ *   restore.gzr            the wallet's encrypted storage (store_unlock.c,
+ *                          store_journal.c; spec/storage-encryption.md 3.1)
  */
 #ifndef GZP_DATADIR_H
 #define GZP_DATADIR_H

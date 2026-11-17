@@ -9,7 +9,7 @@
 #                  the placeholder's bytes until P4), and the --test-* hooks
 # The release binary's symbols are checked (program_release_build, T12).
 
-set(GZP_SOURCES options.c datadir.c journal_standin.c net.c pchain.c notify.c executor.c testping.c)
+set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c net.c pchain.c notify.c executor.c testping.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -21,9 +21,17 @@ foreach(variant release test)
     set(net gazpacho_net_testkinds)
     set(node gazpacho_node_test)
   endif()
-  add_library(${lib} STATIC ${GZP_SOURCES})
+  if(variant STREQUAL "release")
+    set(sc gazpacho_storage_crypto)
+    add_library(${lib} STATIC ${GZP_SOURCES})
+  else()
+    # The journal stand-in stays for the tests that read its files
+    # (--test-standin-store); the release program has only the real store.
+    set(sc gazpacho_storage_crypto)
+    add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c)
+  endif()
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain OpenSSL::Crypto)
+  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_journal ${sc} OpenSSL::Crypto)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PUBLIC GZP_TEST_BUILD=1)
@@ -123,6 +131,23 @@ if(Python3_Interpreter_FOUND)
       COMMAND ${GZP_PY} ${GZP_T}/${t}.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/${t})
     set_tests_properties(program_${t} PROPERTIES TIMEOUT 300)
   endforeach()
+  # S5 and S6 in the program: the start order (locked until unlocked), the
+  # passphrase layer's attempts, a damaged key file, the release program
+  # staying locked without the local interface; kill -9 before every storage
+  # write, sync or rename from set-up to an anchored batch, then a restart;
+  # damaged files refused and never half-applied; a restore from an older
+  # backup never reusing an epoch or a key index.
+  add_test(NAME program_unlock
+    COMMAND ${GZP_PY} ${GZP_T}/unlock.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/unlock
+            $<TARGET_FILE:gazpacho>)
+  add_test(NAME program_journal_kill
+    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_kill)
+  add_test(NAME program_storage_damage
+    COMMAND ${GZP_PY} ${GZP_T}/storage_damage.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/storage_damage)
+  add_test(NAME program_journal_restore
+    COMMAND ${GZP_PY} ${GZP_T}/journal_restore.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_restore)
+  set_tests_properties(program_unlock program_storage_damage program_journal_restore PROPERTIES TIMEOUT 600)
+  set_tests_properties(program_journal_kill PROPERTIES TIMEOUT 2400)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})
