@@ -875,7 +875,12 @@ static void test_refusals(void)
     /* Terms that are not terms: refused, nothing saved, no key index used. */
     bad = t[8];
     bad.outer[5] ^= 0x40;
-    CHECK(scope_cmd(0, GZ_CMD_LOBBY_CANCEL, &t[7], 0) == 200); /* room again */
+    {   /* room again; the ended lobby leaves no timer of its own set (review B of PR 44, L7) */
+        uint16_t g7 = slot(0, &t[7])->gen;
+        CHECK(scope_cmd(0, GZ_CMD_LOBBY_CANCEL, &t[7], 0) == 200);
+        for (int k = 0; k < NT[0]; k++)
+            CHECK(!((T[0][k].id >> 48) == GZ_AREA_LOBBY && ((T[0][k].id >> 32) & 0xffff) == g7));
+    }
     nb = N[0].n_batches;
     CHECK(host_open(&bad, 0) == 400 && N[0].n_batches == nb);
     bad = t[8];
@@ -1344,6 +1349,63 @@ static void test_gate_refused_ready(void)
     w_free(1);
 }
 
+/* ---- 7. a slot left out at a start keeps its place (review B of PR 44, H1) ---------- */
+
+/* The key port cannot give a slot's keys at a start, and gives them again
+ * right after it: the slot is a placeholder that keeps its scope and its
+ * place, the person is told, and the same lobby joined or opened again, or
+ * eight others, is refused. So the next start, with the keys, loads the same
+ * journal the same way: P1 (rejoin), P2 (eight others) and P3 (reopen) of
+ * the review, each followed by that start. */
+static void test_left_out(void)
+{
+    terms_t t[9];
+    size_t mark;
+    int ok = 0;
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int i = 0; i < 9; i++) make_terms(&t[i], 3, 3, 600 + (uint32_t)i);
+    for (int i = 0; i < 8; i++) CHECK(host_open(&t[i], 0) == 200);
+    CHECK(member_join(1, &t[0]) == 200);
+    w_run(2000, 100);
+    CHECK(slot(1, &t[0]) && slot(1, &t[0])->lobby.m.joined);
+    /* P1: the member. */
+    PUB_FAIL[1] = 1;
+    mark = N[1].n_log;
+    CHECK(w_restart(1) == GZ_OK && slot(1, &t[0]) == NULL && N[1].n->np.skipped_slots == 1);
+    PUB_FAIL[1] = 0;
+    CHECK(said(1, mark, "attention lobby-left-out scope=") == 1);
+    CHECK(member_join(1, &t[0]) == 503 && scope_cmd(1, GZ_CMD_LOBBY_READY, &t[0], 0) == 503);
+    CHECK(w_restart(1) == GZ_OK && slot(1, &t[0]) != NULL && N[1].n->np.skipped_slots == 0);
+    w_run(3000, 100);
+    CHECK(slot(1, &t[0]) && slot(1, &t[0])->lobby.m.joined);
+    /* P2: the member again; eight other lobbies: seven places are free. */
+    PUB_FAIL[1] = 1;
+    CHECK(w_restart(1) == GZ_OK && slot(1, &t[0]) == NULL);
+    PUB_FAIL[1] = 0;
+    for (int i = 1; i < 9; i++) ok += member_join(1, &t[i]) == 200;
+    CHECK(ok == 7);
+    CHECK(w_restart(1) == GZ_OK && slot(1, &t[0]) != NULL && N[1].n->np.skipped_slots == 0);
+    /* P3: the host. */
+    PUB_FAIL[0] = 1;
+    mark = N[0].n_log;
+    CHECK(w_restart(0) == GZ_OK && host_state(&t[0]) == -1 && N[0].n->np.skipped_slots == 8);
+    PUB_FAIL[0] = 0;
+    CHECK(said(0, mark, "attention lobby-left-out scope=") == 8);
+    CHECK(host_open(&t[0], 0) == 409 && host_open(&t[8], 0) == 409); /* no place: the placeholders hold all eight */
+    CHECK(scope_cmd(0, GZ_CMD_LOBBY_CANCEL, &t[1], 0) == 503);
+    CHECK(w_restart(0) == GZ_OK && host_state(&t[0]) == GZ_LOBBY_OPEN && N[0].n->np.skipped_slots == 0);
+    /* A placeholder whose lobby ended before the start is Free at it. */
+    CHECK(scope_cmd(0, GZ_CMD_LOBBY_CANCEL, &t[2], 0) == 200);
+    PUB_FAIL[0] = 1;
+    CHECK(w_restart(0) == GZ_OK);
+    PUB_FAIL[0] = 0;
+    CHECK(host_open(&t[8], 0) == 200);
+    CHECK(w_restart(0) == GZ_OK && N[0].n->np.skipped_slots == 0 && host_state(&t[8]) == GZ_LOBBY_OPEN &&
+          host_state(&t[2]) == -1);
+    no_errors(1);
+    w_free(1);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1355,6 +1417,7 @@ int main(int argc, char **argv)
     test_gates();
     test_index();
     test_seat_capacity();
+    test_left_out();
     test_gate_refused_ready();
     test_hostile(events, seed);
     return check_done();

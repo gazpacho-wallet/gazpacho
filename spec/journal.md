@@ -202,7 +202,7 @@ A crash anywhere in steps 4 and 5 is safe. Cutting a torn tail twice cuts nothin
 
 The **reader** walks the valid entries in file order and yields, for each batch entry, its records in the order they were written. Incarnation entries yield nothing. The result is the list `gz_node_start` takes: "the records found in storage, oldest first".
 
-- A record's type follows the odd/even rule of `messages.md` section 4.1 (bit 0 of the 32-bit type): **an unknown even type stops the start**, because a newer program wrote something this one cannot interpret; **an unknown odd type is skipped**. The placeholder test types (`0x7e57xxxx`, `node.h`) are outside this rule and disappear with the placeholder.
+- A record's type follows the odd/even rule of `messages.md` section 4.1 (bit 0 of the 32-bit type): **an unknown even type stops the start**, because a newer program wrote something this one cannot interpret; **an unknown odd type is skipped**. The placeholder test types (`0x7e57xxxx`, `node.h`) and the signing stand-in's records (`0x7e5axxxx`, test builds only, `core/node/lobbyslot.c`) are outside this rule and disappear with the placeholder and the stand-in: a journal a test build wrote is a test build's.
 - Batch boundaries are not passed to `gz_node_start` today; the records of one batch arrive together and in order, which is all a node needs to rebuild. If a later engine needs the boundaries, the reader can give them without a format change.
 - Slice 1 loads every record into memory before `gz_node_start`. At slice 1's sizes (a host and a few members) that is kilobytes to a few megabytes. Snapshots, which bound start-up time and memory, come later (`DESIGN.md` section 9) **(open)**.
 

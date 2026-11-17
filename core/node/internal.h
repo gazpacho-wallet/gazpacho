@@ -170,6 +170,11 @@ enum {
 #define SLOT_FREE    0
 #define SLOT_OPEN    1
 #define SLOT_CLOSING 2
+/* Left out at this start: the key port could not give its keys. It keeps
+ * its place and its scope and does nothing else, so that no command opens
+ * a second slot for the scope or one place too many, and the next start
+ * loads the same journal the same way (review B of PR 44, H1). */
+#define SLOT_LEFT_OUT 3
 #define SLOT_MAX_SEATS 32
 #define SLOT_MAX_TIMERS 8
 
@@ -525,6 +530,7 @@ int gz_ls_ended_find(const gz_node_t *c, const uint8_t scope[32]);
 gz_status_t gz_ls_ended_answer(const gz_node_t *c, int idx, const gz_link_t *link, gz_action_list_t *out);
 gz_status_t gz_ls_closing_timer(gz_node_t *c, gz_action_list_t *out);
 int gz_ls_closing_count(const gz_node_t *c);
+gz_status_t gz_ls_left_out_note(gz_node_t *c, int i, gz_action_list_t *out);
 gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t *, int, gz_action_list_t *),
                               gz_action_list_t *out);
 #ifdef GZ_TEST_KINDS

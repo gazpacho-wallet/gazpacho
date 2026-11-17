@@ -902,6 +902,7 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
         /* The keys of a seat chosen in the running attempt never change (B1). */
         if (h->state == GZ_LOBBY_SIGNING && s->chosen && memcmp(s->fkey, f.v[3], 33) != 0) return GZ_ERR_CORRUPT;
         memcpy(s->fkey, f.v[3], 33); memcpy(s->bind_f, f.v[4], 64); memcpy(s->bind_c, f.v[5], 64);
+        if (f.v[6][0] > GZ_SEAT_REFUSED) return GZ_ERR_CORRUPT; /* damaged storage (review B, L4) */
         s->state = f.v[6][0];
         s->min_members = (uint16_t)gz_lw_get(f.v[7], 2);
         s->ready_version = (uint32_t)gz_lw_get(f.v[8], 4);

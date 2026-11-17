@@ -70,8 +70,11 @@
 #define GZP_MAX_CONNS GZ_NODE_MAX_CONNS
 /* CONNECT targets: one per slot (Open, or Closing with a round held), and in
  * the test build four per test engine. */
-#define GZP_MAX_TARGETS 16
-_Static_assert(GZP_MAX_TARGETS >= GZ_NODE_MAX_SLOTS + 2 * 4, "a CONNECT target for every slot and test-engine host");
+/* A member's Closing entries keep their CONNECTs standing (2.4), up to
+ * GZ_NODE_MAX_TOMBSTONES of them beside the eight slots (review B of PR 44, L2). */
+#define GZP_MAX_TARGETS (GZ_NODE_MAX_SLOTS + GZ_NODE_MAX_TOMBSTONES + 2 * 4)
+_Static_assert(GZP_MAX_TARGETS >= GZ_NODE_MAX_SLOTS + GZ_NODE_MAX_TOMBSTONES + 2 * 4,
+               "a CONNECT target for every slot, Closing entry and test-engine host");
 #define GZP_QUEUE_PER_CONN (1u << 20)
 #define GZP_QUEUE_OVERHEAD 64u     /* counted per queued message, so empty ones count too */
 #define GZP_QUEUE_TOTAL (4u << 20) /* the whole start queue, every connection together */

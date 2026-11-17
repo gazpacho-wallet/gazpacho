@@ -424,7 +424,7 @@ static gz_status_t on_check(gz_lobby_member_t *m, const uint8_t *env, size_t len
      * keeps its answer; this one gets none. */
     if (locked(m)) {
         if (m->ready && !check_in_flight(m)) return lock_out(m, out);
-        if (!m->ready) TRY(send_reason(m, GZ_KIND_UNREADY, 3, out));
+        if (!m->ready) TRY(unready(m, 3 /* locked */, out)); /* ready_sent, then the unready (review B, L1) */
         return locked_note(m, out);
     }
     return send_ready(m, g->check_id, env, len, out);

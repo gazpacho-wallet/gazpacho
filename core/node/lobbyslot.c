@@ -453,20 +453,51 @@ static int lobby_slot_by_scope(const gz_node_t *c, const uint8_t scope[32])
     return i >= 0 && c->slots[i].kind == SLOT_KIND_LOBBY ? i : -1;
 }
 
+/* A slot left out at this start, by its scope (H1). */
+static int left_out_by_scope(const gz_node_t *c, const uint8_t scope[32])
+{
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
+        if (c->slots[i].state == SLOT_LEFT_OUT && memcmp(c->slots[i].scope, scope, 32) == 0) return i;
+    return -1;
+}
+
+/* 1 if every even field of a Node record is one of `known` (bit t / 2): a
+ * field a newer program requires stops the start, as for the Lobby records
+ * (review B of PR 44, L3). The stream is well formed already. */
+static int node_rec_known(gz_bytes_t b, uint32_t known)
+{
+    size_t at = 0;
+    while (at < b.len) {
+        uint64_t t, l;
+        size_t n = gz_bigsize_get(b.data + at, b.len - at, &t);
+        if (!n) return 0;
+        at += n;
+        n = gz_bigsize_get(b.data + at, b.len - at, &l);
+        if (!n || l > b.len - at - n) return 0;
+        at += n + (size_t)l;
+        if (!(t & 1) && (t >= 64 || !(known & (1u << (t / 2))))) return 0;
+    }
+    return 1;
+}
+
 /* A slot_opened record at load: the slot is Open again, with its lobby
  * engine made anew for the Lobby records that follow. */
 gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
 {
     gz_bytes_t serial, scope, role, epoch, index, v;
     int i, bad_address = 0;
-    if (rec->bytes.len > OPENED_MAX || !gz_rec_valid(rec->bytes) || !arg(rec->bytes, 2, 4, &serial) ||
+    if (rec->bytes.len > OPENED_MAX || !gz_rec_valid(rec->bytes) || !node_rec_known(rec->bytes, 0xffeu) ||
+        !arg(rec->bytes, 2, 4, &serial) ||
         !arg(rec->bytes, 4, 32, &scope) || !arg(rec->bytes, 6, 1, &role) || role.data[0] > 1 ||
-        !arg(rec->bytes, 12, 4, &epoch) || !arg(rec->bytes, 14, 4, &index) || gz_get_u32(serial.data) == 0)
+        !arg(rec->bytes, 12, 4, &epoch) || !arg(rec->bytes, 14, 4, &index) || gz_get_u32(serial.data) == 0 ||
+        gz_get_u32(index.data) == 0xffffffffu) /* the pair's second index would wrap (L4) */
         return GZ_ERR_CORRUPT;
     if (gz_get_u32(serial.data) > c->slot_serial) c->slot_serial = gz_get_u32(serial.data);
     if (gz_get_u32(index.data) + 1 > c->np.highest_index && gz_get_u32(epoch.data) == (c->np.have_epoch ? c->np.epoch : 0))
         c->np.highest_index = gz_get_u32(index.data) + 1;
-    if (gz_route_slot_by_scope(c, scope.data) >= 0 || (i = free_slot(c)) < 0) return GZ_ERR_CORRUPT;
+    if (gz_route_slot_by_scope(c, scope.data) >= 0 || left_out_by_scope(c, scope.data) >= 0 ||
+        (i = free_slot(c)) < 0)
+        return GZ_ERR_CORRUPT;
     slot_t *s = &c->slots[i];
     memset(s, 0, sizeof *s);
     s->kind = SLOT_KIND_LOBBY;
@@ -499,11 +530,20 @@ gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
         if (!arg(rec->bytes, 22, 1, &v)) return GZ_ERR_CORRUPT;
         s->auto_join = v.data[0] != 0;
     }
-    /* A role other than the data folder's, a generation of 0, or keys the
-     * port cannot give (an epoch this wallet cannot derive): the slot is
-     * left out and counted; its records are then nobody's. */
-    if (bad_address || s->host != (c->cfg.host != 0) || s->gen == 0 || !gz_ls_init(c, i)) {
+    /* A role other than the data folder's, or a generation of 0: the slot is
+     * left out and counted, at every start alike; its records are nobody's. */
+    if (bad_address || s->host != (c->cfg.host != 0) || s->gen == 0) {
         memset(s, 0, sizeof *s);
+        c->np.skipped_slots++;
+        return GZ_OK;
+    }
+    /* Keys the port cannot give now (a locked seed, a signer away, an epoch
+     * this wallet cannot derive): a placeholder that keeps the slot's place
+     * and scope. Its Lobby records are nobody's this run; the person is told
+     * at its resume step (H1). */
+    if (!gz_ls_init(c, i)) {
+        memset(&s->lobby, 0, sizeof s->lobby);
+        s->state = SLOT_LEFT_OUT;
         c->np.skipped_slots++;
         return GZ_OK;
     }
@@ -516,12 +556,15 @@ gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
 gz_status_t gz_ls_load_closed(gz_node_t *c, const gz_record_t *rec)
 {
     gz_bytes_t serial, state, reason;
-    if (rec->bytes.len > 32 || !gz_rec_valid(rec->bytes) || !arg(rec->bytes, 2, 4, &serial) ||
+    if (rec->bytes.len > 32 || !gz_rec_valid(rec->bytes) || !node_rec_known(rec->bytes, 0xeu) ||
+        !arg(rec->bytes, 2, 4, &serial) ||
         !arg(rec->bytes, 4, 1, &state) || !arg(rec->bytes, 6, 2, &reason))
         return GZ_ERR_CORRUPT;
     for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++) {
         slot_t *s = &c->slots[i];
-        if (s->state != SLOT_OPEN || s->kind != SLOT_KIND_LOBBY || s->serial != gz_get_u32(serial.data)) continue;
+        if ((s->state != SLOT_OPEN && s->state != SLOT_LEFT_OUT) || s->kind != SLOT_KIND_LOBBY ||
+            s->serial != gz_get_u32(serial.data))
+            continue;
         /* The tombstone's contents: the lobby's own end record if it had one. */
         if (s->host)
             ended_add(c, s->scope, state.data[0], gz_get_u16(reason.data), s->end_cancel, s->have_end ? s->end_cancel_len : 0);
@@ -713,6 +756,24 @@ static gz_status_t slot_end(gz_node_t *c, int i, gz_action_list_t *out)
         if ((st = np_disconnect(out, &s->link, GZ_DISCONNECT_DONE)) != GZ_OK) return st;
     }
     return np_slot_freed(c, i, out);
+}
+
+/* A slot left out at this start: the person is told at its resume step,
+ * which lobby and why (H1). */
+gz_status_t gz_ls_left_out_note(gz_node_t *c, int i, gz_action_list_t *out)
+{
+    const slot_t *s = &c->slots[i];
+    char text[192];
+    size_t at = 0;
+    gz_status_t st;
+    text[0] = 0;
+    put_s(text, sizeof text, &at, "attention lobby-left-out scope=");
+    put_h(text, sizeof text, &at, s->scope);
+    put_s(text, sizeof text, &at, s->host ? " role=host" : " role=member");
+    put_s(text, sizeof text, &at, " why=keys_unavailable");
+    if ((st = gz_c_node_bracket_begin(c, out)) != GZ_OK) return st;
+    if ((st = np_log(c, out, text)) != GZ_OK) return st;
+    return gz_c_node_bracket_end(c, out);
 }
 
 static gz_status_t sign_arm(gz_node_t *c, gz_action_list_t *out);
@@ -1123,6 +1184,10 @@ static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         return st == GZ_ERR_ARGUMENT ? np_command_result(out, cmd, 400, "bad_terms") : st;
     }
     memcpy(s->scope, s->lobby.h.scope, 32);
+    if (left_out_by_scope(c, s->scope) >= 0) {   /* its slot waits for its keys (H1) */
+        memset(s, 0, sizeof *s);
+        return np_command_result(out, cmd, 503, "no_key");
+    }
     if (gz_route_slot_by_scope(c, s->scope) >= 0 || ended_find(c, s->scope) >= 0) {
         memset(s, 0, sizeof *s);
         return np_command_result(out, cmd, 409, "lobby_exists");
@@ -1151,6 +1216,7 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         return np_command_result(out, cmd, 400, "bad_host_key");
     if (gz_rec_find(cmd, 18, &cond) == 1 && cond.len > COND_MAX) return np_command_result(out, cmd, 400, "bad_conditions");
     if (!cond_decode(cond.data, cond.len, &cd)) return np_command_result(out, cmd, 400, "bad_conditions");
+    if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */
     if (gz_route_slot_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 409, "lobby_exists");
     if ((i = free_slot(c)) < 0) return np_command_result(out, cmd, 409, "too_many_lobbies");
     if (c->np.highest_index > 0xfffffff0u) return np_command_result(out, cmd, 503, "no_key");
@@ -1226,6 +1292,9 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
     case GZ_CMD_LOBBY_CANCEL: want_host = 1; break;
     default: return np_command_result(out, cmd, 404, "unknown_command");
     }
+    /* A lobby left out at this start: its keys are not given (H1). */
+    if (arg(cmd, 12, 32, &scope) && lobby_slot_by_scope(c, scope.data) < 0 && left_out_by_scope(c, scope.data) >= 0)
+        return np_command_result(out, cmd, 503, "no_key");
     if (!arg(cmd, 12, 32, &scope) || (i = lobby_slot_by_scope(c, scope.data)) < 0 || c->slots[i].host != want_host)
         return np_command_result(out, cmd, 404, "no_such_lobby");
     slot_t *s = &c->slots[i];

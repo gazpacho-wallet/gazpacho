@@ -355,6 +355,13 @@ gz_status_t gz_c_postprocess(gz_node_t *c, size_t from, int merge_all, gz_action
     for (i = from; i < out->count;) {
         gz_action_t *a = &out->slots[i];
         int eng = c->owner[i - c->base];
+        /* A timer its lobby set in the step that ended its slot: the slot is
+         * gone, so is the timer (review B of PR 44, L7). */
+        if (a->kind == GZ_ACTION_SET_TIMER && eng >= ENG_SLOT0 && eng < ENG_N &&
+            c->slots[eng - ENG_SLOT0].state != SLOT_OPEN && a->u.set_timer.timer_id <= TIMER_ID_MAX) {
+            drop_action(c, out, i);
+            continue;
+        }
         if (a->kind == GZ_ACTION_SET_TIMER || a->kind == GZ_ACTION_CANCEL_TIMER) {
             uint64_t *id = a->kind == GZ_ACTION_SET_TIMER ? &a->u.set_timer.timer_id : &a->u.cancel_timer.timer_id;
             if (*id > TIMER_ID_MAX) {

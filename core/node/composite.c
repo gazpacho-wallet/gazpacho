@@ -186,6 +186,7 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
     if (c->resume_at >= R_SLOT0 && c->resume_at <= R_SLOT_LAST) {
         int i = c->resume_at - R_SLOT0, e = ENG_SLOT0 + i;
         c->resume_at++;
+        if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);
         if (c->slots[i].state != SLOT_OPEN || c->slots[i].kind != SLOT_KIND_LOBBY) return GZ_OK;
         if ((st = gz_c_resume(c, e, out, &more)) != GZ_OK) return st;
         if (c->slots[i].state != SLOT_OPEN) return GZ_OK; /* its lobby was over: closed in that step */
