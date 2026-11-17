@@ -364,6 +364,7 @@ static int epoch_known(const gz_node_t *c, uint32_t epoch)
  * epoch is drawn with the ordinary tag: it is saved and backed up. It is
  * never 0 and never one the node knows; each further draw is mixed with a
  * count, so a port that repeats itself cannot hold the loop. */
+#define NP_EPOCH_TRIES 64
 gz_status_t np_restore_batch(gz_node_t *c, gz_action_list_t *out)
 {
     uint8_t eb[16], rb[32], gb[NP_GUARD_HEAD + 8 * (NP_MAX_OLD_EPOCHS + 1)], drawn[8], v[8];
@@ -375,7 +376,11 @@ gz_status_t np_restore_batch(gz_node_t *c, gz_action_list_t *out)
     do {
         c->ports.random.fill(c->ports.random.ctx, GZ_RANDOM_ORDINARY, drawn, sizeof drawn);
         epoch = restore_epoch(gz_get_u64(drawn) + again++, c->incarnation);
-    } while (epoch == 0 || epoch_known(c, epoch));
+        /* Checked when drawn, so that no epoch the wallet cannot derive is
+         * ever saved (review R2-8). A port that refuses NP_EPOCH_TRIES draws
+         * in a row is not a key port: the epoch is taken as drawn. */
+    } while (epoch == 0 || epoch_known(c, epoch) ||
+             (again < NP_EPOCH_TRIES && c->cfg.keys.epoch_ok && c->cfg.keys.epoch_ok(c->cfg.keys.ctx, epoch) != 1));
     recs[0].type = GZ_RECORD_KEY_EPOCH;
     recs[0].bytes.data = eb;
     recs[0].bytes.len = epoch_record(eb, sizeof eb, epoch);

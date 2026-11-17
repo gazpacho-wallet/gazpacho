@@ -423,6 +423,7 @@ static gz_status_t w_start(int n)
     rd.rewind = h_rewind;
     rd.ctx = h;
     rd.incarnation = h->incarnation;
+    rd.restored = h->restored;
     h->clock = NOW;
     ALIVE[n] = 1;
     while (more && steps++ < 1000) {
@@ -1889,6 +1890,32 @@ static void test_key_skip(void)
     w_free(1);
 }
 
+/* A restore draws its new epoch until the key port says the wallet can
+ * derive it, before key_epoch is saved (review R2-8): here the first draw
+ * is refused. */
+static uint32_t EPOCH_SEEN[4];
+static int EPOCH_CALLS;
+static int w_epoch_ok(void *ctx, uint32_t epoch)
+{
+    (void)ctx;
+    if (EPOCH_CALLS < 4) EPOCH_SEEN[EPOCH_CALLS] = epoch;
+    return EPOCH_CALLS++ > 0;
+}
+
+static void test_epoch_ok(void)
+{
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    N[0].cfg.keys.epoch_ok = w_epoch_ok;
+    h_new_node(&N[0]);
+    N[0].restored = 1;
+    EPOCH_CALLS = 0;
+    CHECK(w_start(0) == GZ_OK && h_records_of(&N[0], GZ_RECORD_KEY_EPOCH) == 1);
+    CHECK(EPOCH_CALLS == 2 && N[0].n->np.epoch == EPOCH_SEEN[1] && N[0].n->np.epoch != EPOCH_SEEN[0]);
+    no_errors(0);
+    w_free(0);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1900,6 +1927,7 @@ int main(int argc, char **argv)
     test_gates();
     test_index();
     test_key_skip();
+    test_epoch_ok();
     test_views();
     test_view_refusal();
     test_view_seats();
