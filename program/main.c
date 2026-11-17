@@ -56,6 +56,11 @@ static void on_signal(int sig)
 static gzp_exec_t ex;          /* large: kept off the stack */
 static gzp_net_t net;
 static gzp_chain_t chain;
+#ifdef GZP_TEST_BUILD
+#define CHAIN_SMALL (opt.test_chain_small)
+#else
+#define CHAIN_SMALL 0
+#endif
 static gzp_testping_t tp;
 static gzp_datadir_t dir;
 
@@ -196,7 +201,8 @@ int main(int argc, char **argv)
     if (opt.no_chain) {
         gzp_chain_none(&chain, network);
         gzp_log("chain off");
-    } else if ((rc = gzp_chain_open(&chain, opt.chain_urls[0], network, opt.chain_poll_ms)) != 0) {
+    } else if ((rc = gzp_chain_open(&chain, (const char *const *)opt.chain_urls, (size_t)opt.n_chain_urls, network,
+                                     opt.chain_poll_ms, CHAIN_SMALL)) != 0) {
         OPENSSL_cleanse(priv, sizeof priv);
         goto out;
     }
@@ -319,10 +325,10 @@ out:
      * from them, so a reordering shows (review of PR 27, M5). */
     if (stopped) gzp_log("shutdown node-stopped transport=%d storage=%d lock=%d", net.peers != NULL, ex.store_open,
                          dir.lock_fd >= 0);
+    gzp_chain_close(&chain); /* the worker joined: no event after this */
     if (have_net) gzp_net_free(&net);
     if (stopped) gzp_log("shutdown connections-closed transport=%d storage=%d lock=%d", net.peers != NULL,
                          ex.store_open, dir.lock_fd >= 0);
-    gzp_chain_close(&chain);
     gzp_exec_close_storage(&ex);
     if (stopped) gzp_log("shutdown storage-closed transport=%d storage=%d lock=%d", net.peers != NULL,
                          ex.store_open, dir.lock_fd >= 0);

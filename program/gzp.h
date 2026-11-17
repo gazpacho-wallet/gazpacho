@@ -69,6 +69,7 @@ typedef struct {
     int test_burst_n, test_burst_bytes; /* at each connection, send N messages of BYTES (test kind) */
     int test_oversize_send;        /* pad every node SEND to this many bytes (too big: fatal) */
     int test_node_error_at;        /* the K-th event delivered is treated as a node error */
+    int test_chain_small;          /* small chain worker queues (BUSY tests) */
     int test_node_error_always;    /* ... in every incarnation (restart policy tests) */
     int test_stop_at_restart;      /* SIGTERM to itself as an incarnation ends (a stop during a restart) */
     int test_engines;              /* test engines in the node, 0 to 2 (default 1) */

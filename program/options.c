@@ -133,6 +133,7 @@ void gzp_usage(void)
         "  --test-oversize-send BYTES    pad every node send (too big is fatal)\n"
         "  --test-node-error-at K        treat the K-th delivered event as a node error\n"
         "  --test-node-error-always      ... in every incarnation, not only the first\n"
+        "  --test-chain-small            small chain worker queues (16 watches, 32 requests)\n"
         "  --test-stop-at-restart        a SIGTERM to itself as an incarnation ends\n"
         "  --test-engines N              test engines in the node, 0 to 2 (default 1)\n"
         "  --test-dump-journal           print the journal's batches and records, then stop\n"
@@ -222,6 +223,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-cut-fail")) { o->test_cut_fail = 1; takes = 0; }
         else if (!strcmp(a, "--test-crash-after-counter")) { o->test_crash_after_counter = 1; takes = 0; }
         else if (!strcmp(a, "--test-node-error-always")) { o->test_node_error_always = 1; takes = 0; }
+        else if (!strcmp(a, "--test-chain-small")) { o->test_chain_small = 1; takes = 0; }
         else if (!strcmp(a, "--test-stop-at-restart")) { o->test_stop_at_restart = 1; takes = 0; }
         else if (!strcmp(a, "--test-dump-journal")) { o->test_dump_journal = 1; takes = 0; }
         else if (!strcmp(a, "--test-commands")) { o->test_commands = 1; takes = 0; }
@@ -329,10 +331,6 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
     }
     if (!o->no_chain && o->n_chain_urls == 0) {
         fprintf(stderr, "gazpacho: give --chain-url (an Esplora server for %s) or --no-chain\n", o->network);
-        return GZP_EXIT_USAGE;
-    }
-    if (o->n_chain_urls > 1) {
-        fprintf(stderr, "gazpacho: one --chain-url for now (the comparing backend is not wired yet)\n");
         return GZP_EXIT_USAGE;
     }
     if (o->no_interface && o->interface_port) {
