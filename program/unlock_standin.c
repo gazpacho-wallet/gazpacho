@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 #include <openssl/crypto.h>
@@ -230,6 +231,47 @@ static void st_discard(void *ctx, gzp_unlock_job_t *job, int64_t now_ms)
     OPENSSL_cleanse(job->words, sizeof job->words);
 }
 
+/* The stand-in seed file, read without a word on any output, even when it
+ * is broken (gzp_datadir_secret names the file on stderr; seed must not). */
+static int seed_file_quiet(standin_t *s, uint8_t entropy[32])
+{
+    char path[GZP_PATH_MAX], buf[80];
+    ssize_t n;
+    int fd, ok;
+    if (gzp_datadir_path(s->dir, "wallet-seed.standin", path) != 0) return -1;
+    fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return -1;
+    n = read(fd, buf, sizeof buf);
+    close(fd);
+    if (n > 64 && buf[n - 1] == '\n') n--;
+    ok = n == 64 && gzp_unhex(buf, (size_t)n, entropy, 32);
+    OPENSSL_cleanse(buf, sizeof buf);
+    if (!ok) OPENSSL_cleanse(entropy, 32);
+    return ok ? 0 : -1;
+}
+
+/* TEST ONLY: the seed of the stand-in seed file's words, while unlocked. */
+static int st_seed(void *ctx, uint8_t out64[64])
+{
+    standin_t *s = ctx;
+    uint8_t entropy[32];
+    char phrase[GZW_PHRASE_MAX];
+    int ok;
+    if (st_state(ctx) != GZP_WALLET_UNLOCKED) return -1;
+    if (seed_file_quiet(s, entropy) != 0) {
+        gzw_wipe(out64, 64);
+        return -2;
+    }
+    ok = gzw_phrase_from_entropy(entropy, phrase) == 1 && gzw_phrase_to_seed(phrase, NULL, out64) == 1;
+    gzw_wipe(entropy, sizeof entropy);
+    gzw_wipe(phrase, sizeof phrase);
+    if (!ok) {
+        gzw_wipe(out64, 64);
+        return -2;
+    }
+    return 0;
+}
+
 static void st_lock(void *ctx)
 {
     standin_t *s = ctx;
@@ -246,6 +288,7 @@ void gzp_unlock_impl(gzp_unlock_t *u, gzp_datadir_t *dir)
     u->finish = st_finish;
     u->discard = st_discard;
     u->lock = st_lock;
+    u->seed = st_seed;
     u->ctx = &g_standin;
     gzp_log("unlock stand-in: TEST ONLY, not key protection (unlock.standin)");
 }

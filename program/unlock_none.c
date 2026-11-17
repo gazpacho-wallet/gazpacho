@@ -39,6 +39,13 @@ static void none_finish(void *ctx, gzp_unlock_job_t *job, int64_t now_ms)
     (void)now_ms;
 }
 
+static int none_seed(void *ctx, uint8_t out64[64])
+{
+    (void)ctx;
+    (void)out64;
+    return -1;                                /* never unlocked */
+}
+
 static void none_lock(void *ctx)
 {
     (void)ctx;
@@ -53,6 +60,7 @@ void gzp_unlock_impl(gzp_unlock_t *u, gzp_datadir_t *dir)
     u->finish = none_finish;
     u->discard = none_finish;
     u->lock = none_lock;
+    u->seed = none_seed;
     u->ctx = NULL;
     gzp_log("unlock not-built: encrypted storage is not in this program yet");
 }

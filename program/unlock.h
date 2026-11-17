@@ -116,6 +116,14 @@ typedef struct {
     /* Loop thread: drop the storage key from memory (local-api.md 4.7). The
      * program stops the node first; after lock, state is LOCKED. */
     void (*lock)(void *ctx);
+    /* Loop thread, and only while the state is UNLOCKED: the wallet's 64-byte
+     * BIP 39 seed (its 24 words, no BIP 39 passphrase), for the key port (P8).
+     *   0   out64 holds the seed;
+     *   -1  the wallet is not unlocked: out64 is not touched;
+     *   -2  storage could not give it: out64 is wiped.
+     * The caller wipes out64 as soon as it is done with it. The call never
+     * logs anything: no seed, no word, no length, no file name. */
+    int (*seed)(void *ctx, uint8_t out64[64]);
     void *ctx;
 } gzp_unlock_t;
 
