@@ -13,6 +13,18 @@ Not itself reviewed. Specifies `exit.md` 5.9 (draft 3).
 | Term 32's floor raised from 1 to 100 (0.1 sat/vB). The rate is chosen and paid by the host, from the funding, on every tree transaction and payout | Section 3, term 32 |
 | New section 4.4: who pays, the payout reserve P(r), the spare-liquidity floor, and why there is no "fee payer" term | Section 4.4 |
 
+## Changes, 2026-11-17: review of PR #48
+
+Not itself reviewed. From `docs/reviews/review-pr48.md` (accept after fixes).
+
+| Finding | Change | Where |
+|---|---|---|
+| M1 | The design-2 channel check is against the promise: channel output ≥ max(`channel_sat`, the member's minimum) + P(r); capacity is defined as output − P(r) only after it | 4.4 |
+| M2 | R(leaf) has a design-2 form with P(r) on the channel and the spare liquidity; the builder receives `channel_sat` + P(r) | 4.2, 4.4 |
+| M7 | One fee rule: each tree transaction pays the rate for its own signed size (the builder of #46 and later); the pin `e6573950`'s single `fee_per_tx` is INTERIM | 4.2 |
+| L2 | P(r) uses 125 vbytes (a 65-byte signature fits) | 4.4 |
+| H2 | The end height under design 2 is placed `host_spare_by` after the wind-down: 184 blocks at D ≤ 3 on signet | 4.5 |
+
 ## Changes after review 3
 
 | Finding | How it was handled | Where |
@@ -134,7 +146,7 @@ Every reader must be able to compute, from the terms alone, the tree's leaves, i
 
 **D**, the number of fixed levels: the depth of the deepest leaf. The proposal's `fixed_levels` must equal D (`messages.md` 7.2), and the engine passes D to `factory_set_static_near_root`, so every interior node is a fixed (kickoff-only) node and every leaf is a kickoff and state pair [C: `src/factory.c:1659-1669`]. A smaller value builds a different tree; a larger one builds the same bytes (build server, 2026-11-12); only D is accepted, so that one tree has one encoding.
 
-**The fee per tree transaction.** The import pays one fee, `fee_per_tx`, on every tree transaction [C: `src/factory.c:1694-1696`, `:1759-1761`, `:1299-1300`]. It is
+**The fee per tree transaction.** **The rule** (from the re-import of #46 on, and so for every design-2 slice): each tree transaction pays exactly ⌈`tree_feerate` × its own signed virtual size / 1000⌉, the builder's behaviour at upstream `50f7fa13` (13, 17 and 26 sat on 124, 167 and 253 vbytes at 100 sat/kvB). **INTERIM** (the pin `e6573950` only, until #46 merges): the import pays one fee, `fee_per_tx`, on every tree transaction [C: `src/factory.c:1694-1696`, `:1759-1761`, `:1299-1300`]. It is
 
 ```
 fee_per_tx_sat = ⌈ tree_feerate × V / 1000 ⌉
@@ -149,6 +161,17 @@ R(leaf)                 = 2 × channel_sat + 2 × fee_per_tx + 2 × 240
 R(node with k children) = k × max R(child) + fee_per_tx + 240
 funding_amount          = R(root)
 ```
+
+That is the INTERIM form (one `fee_per_tx`, no payouts). With the rule above (own-size fees) and, **under design 2**, the payout reserve P(r) of section 4.4 on the channel (and so, by the equal split, on the spare liquidity):
+
+```
+c                       = channel_sat + P(r)                    the capacity the builder receives for every member
+R(leaf)                 = 2 × c + fee(leaf kickoff) + fee(leaf transaction) + 2 × 240
+R(node with k children) = k × max R(child) + fee(node) + 240
+funding_amount          = R(root)
+```
+
+where fee(x) = ⌈`tree_feerate` × vsize(x) / 1000⌉. Without payouts (Slices 1 to 2 on #46), P(r) is 0 in these lines. In T1 at 4 members and 100 sat/kvB: 802,811 without the reserve, 804,835 with it (P(100) = 253) [R; vector owed, `exit.md` open point 24].
 
 The proposal's `funding_amount` must equal R(root). With it every leaf's channel output is at least `channel_sat`, and the leaf with the largest requirement gets exactly `channel_sat`. Leaves under smaller subtrees get more, because the import splits equally between children, not by their sizes: with 3 members, member 1's channel is about twice `channel_sat` (build server, below). Requesting a split by subtree size is listed for SuperScalar **(open)**.
 
@@ -179,16 +202,27 @@ The member's app still builds the real tree at signing and checks every leaf (`s
 **The payout reserve (design 2).** Each payout pays its own fee at the tree rate and a 240-sat anchor from the output it spends. For a rate r in sat/kvB:
 
 ```
-P(r) = ⌈ r × 124 / 1000 ⌉ + 240        (124: a one-member payout, vbytes; exact size owed by #508)
-channel output        ≥ the member's capacity + P(r)
+P(r) = ⌈ r × 125 / 1000 ⌉ + 240        (125: a one-member payout, vbytes, with room for a 65-byte signature;
+                                         124 with a 64-byte one; exact size owed by #508)
+channel output         ≥ max(channel_sat, the member's own minimum) + P(r)
 spare-liquidity output ≥ P(r) + 330
 ```
 
-The writer (the host) MUST build every leaf so; the reader (the member) MUST refuse a tree that does not satisfy both lines (`safety-rule.md` C8). The member's capacity, for decision 5, is the channel output less P(r).
+The writer (the host) MUST build every leaf so, passing `channel_sat` + P(r) to the builder as every member's capacity (section 4.2's design-2 R(leaf)); the reader (the member) MUST refuse a tree that does not satisfy both lines (`safety-rule.md` C8). Only after that check is the member's **capacity**, for decision 5 and `exit.md` CH-14, defined as the channel output less P(r). The tree payouts and the distribution transaction pay each member "its capacity as carried in the proposal" [PR #508], that is `channel_sat` + P(r); the reader checks that. The spare-liquidity payout pays the spare output less P(r), at least 330 sat, and is not bound to the capacity. P(r) assumes a key-path input, one P2TR member output and one P2A; a member-named payout script (`exit.md` open point 5) MUST be at most 34 bytes.
 
 **After 1.0.0.** A fee ladder, several pre-signed copies at rising rates, is not part of 1.0.0.
 
-**Rationale.** The fee is already the host's; this section only says so, sets the floor, and closes the one gap, the channel payout, where a fee would otherwise come out of the member's capacity. P(r) is in T1 253 sat at 0.1 sat/vB, 364 at 1 and 1,480 at 10; with T1's spare liquidity of 100,000 sat the second line holds up to about 800 sat/vB.
+**Rationale.** The fee is already the host's; this section only says so, sets the floor, and closes the one gap, the channel payout, where a fee would otherwise come out of the member's capacity. P(r) is in T1 253 sat at 0.1 sat/vB, 365 at 1 and 1,490 at 10; with T1's spare liquidity of 100,000 sat the second line holds up to about 795 sat/vB. Term 32's floor of 100 sat/kvB rules out a later zero-fee tree with ephemeral anchors without a new term version; and servers on Bitcoin Core 28.x and 29.0 still need a package at 0.1 sat/vB (`exit.md` 5.9).
+
+### 4.5 The end height under design 2
+
+Under design 2 (`exit.md` 4.4) the proposal's end height E is placed so that the host can force every silent member out after the wind-down and still sweep each forced member's spare liquidity before any payout is valid:
+
+```
+E − E_wd ≥ (B − 1) + CSV_SPARE + (D + 2) × A + M_host        E_wd: funding confirmation + lifetime + wind-down
+```
+
+With the signet constants (B 3, A 6, M_host 8, CSV_SPARE 144) that is 172, 178 and 184 blocks at D = 1, 2, 3. **Decision taken 2026-11-17, pending the owner's confirmation** (`exit.md` 4.4, open point 22). A member checks it with its own B and A and M_safe + M_lag in place of M_host. The INTERIM slices (1, 1.5, 2) keep T1's E = tip + lifetime + wind-down.
 
 ## 5. The current values
 
