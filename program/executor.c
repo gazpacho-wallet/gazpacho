@@ -160,8 +160,12 @@ static void fail_stop(gzp_exec_t *ex, const char *why)
  * asks for, and the saved watches come back at every start) stops. */
 static void chain_answer(gzp_exec_t *ex, int rc, const char *why)
 {
+    /* The adapter's own reason, when it gave one, belongs to this answer
+     * only: it is cleared here, so an older reason is never printed. */
+    const char *own = ex->chain->why;
+    ex->chain->why = NULL;
     if (rc == GZP_CHAIN_STOP) fail_stop(ex, "chain-watch-set-full");
-    else if (rc < 0) fail(ex, ex->chain->why ? ex->chain->why : why); /* the adapter's own reason when it gave one */
+    else if (rc < 0) fail(ex, own ? own : why);
 }
 
 #ifdef GZP_TEST_BUILD

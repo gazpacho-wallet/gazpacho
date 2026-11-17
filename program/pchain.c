@@ -457,6 +457,7 @@ void gzp_chain_restart(gzp_chain_t *c)
             gzp_log("chain-broadcast-dropped id=%llu why=restart", (unsigned long long)c->backlog[i].id);
     backlog_clear(c);
     c->n_refused = 0;
+    c->why = NULL;
     if (c->active && c->w) {
         uint64_t g = gz_chainw_reset(c->w);
         gzp_log("chain-restart generation=%llu", (unsigned long long)g);
