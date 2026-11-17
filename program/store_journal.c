@@ -417,6 +417,10 @@ static int js_begin(void *ctx, uint64_t *incarnation, char *err, size_t errlen)
     }
     s->rd = gz_journal_reader(s->j);
     s->restored_at_begin = gz_journal_restored(s->j);
+    /* Set-up made the counter with 0 (storage 7.4); this is the folder's
+     * first start: report it as the stand-in does (GZP_COUNTER_CREATED). */
+    if (s->counter_state == GZP_COUNTER_FOUND && counter == 0 && s->info.scan.highest_incarnation == 0)
+        s->counter_state = GZP_COUNTER_CREATED;
     *incarnation = gz_journal_incarnation(s->j);
     return 0;
 }
