@@ -157,6 +157,13 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_lobby
     COMMAND ${GZP_PY} ${GZP_T}/lobby.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
+  # Every program test may start gazpacho-test with a launcher of its own:
+  # the passphrase file's path and the Argon2id floor come through the
+  # environment (gazpacho-test only; the harness passes the options itself).
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/test-passphrase "gazpacho test wallet passphrase, signet only")
+  if(NOT CMAKE_VERSION VERSION_LESS 3.19)
+    file(CHMOD ${CMAKE_CURRENT_BINARY_DIR}/test-passphrase PERMISSIONS OWNER_READ OWNER_WRITE)
+  endif()
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})
@@ -170,3 +177,12 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(program_signet_check PROPERTIES TIMEOUT 300 LABELS "live")
   endif()
 endif()
+
+# The unlock for every program test (see test-passphrase above).
+get_property(_gzp_tests DIRECTORY PROPERTY TESTS)
+foreach(_t ${_gzp_tests})
+  if(_t MATCHES "^program_")
+    set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+      "GZP_TEST_PASSPHRASE_FILE=${CMAKE_CURRENT_BINARY_DIR}/test-passphrase" "GZP_TEST_KDF_FLOOR=1")
+  endif()
+endforeach()

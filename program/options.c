@@ -343,6 +343,14 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         gzp_usage();
         return GZP_EXIT_USAGE;
     }
+#ifdef GZP_TEST_BUILD
+    /* Tests whose launcher passes no unlock option (review B's tests, copied
+     * as written): the passphrase file's path from the environment. */
+    if (!o->test_passphrase_file && getenv("GZP_TEST_PASSPHRASE_FILE") && *getenv("GZP_TEST_PASSPHRASE_FILE")) {
+        o->test_passphrase_file = getenv("GZP_TEST_PASSPHRASE_FILE");
+        if (getenv("GZP_TEST_KDF_FLOOR")) o->test_kdf_floor = 1;
+    }
+#endif
     if (o->role == GZP_ROLE_MEMBER && !o->have_connect && !o->test_dump_journal && !o->test_append_batch) {
         fprintf(stderr, "gazpacho: a member needs --connect KEY@ADDR:PORT\n");
         return GZP_EXIT_USAGE;
