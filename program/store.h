@@ -132,7 +132,7 @@ struct gzp_wallet;
 int gzp_journal_store_open(gzp_store_t *out, const char *dir, struct gzp_wallet *w, char *err, size_t errlen);
 /* The incarnation begin() made durable (0 before begin). */
 uint64_t gzp_journal_store_incarnation(const gzp_store_t *s);
-/* begin() refused by the start rule: 1 if behind or possibly old. */
+/* begin() refused by the start rule: 1 behind, 2 possibly old, else 0. */
 int gzp_journal_store_behind(const gzp_store_t *s);
 /* Every batch and record of the journal, read only, as output lines
  * (journal-batch, journal-record with the record's bytes in hex in the test

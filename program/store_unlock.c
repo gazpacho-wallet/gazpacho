@@ -510,7 +510,8 @@ static int open_storage(gzp_wallet_t *w, gzp_unlock_result_t *r)
         int behind = gzp_journal_store_behind(&w->opened);
         w->opened.ops->close(w->opened.ctx);
         if (behind) {
-            set_result(r, GZP_UNLOCK_FILES_BEHIND, "files_behind");
+            /* local-api.md's cause: behind, or possibly old (storage 6.3). */
+            set_result(r, GZP_UNLOCK_FILES_BEHIND, behind == 1 ? "behind" : "possibly_old");
         } else {
             fprintf(stderr, "gazpacho: cannot start storage: %s\n", err);
             set_result(r, GZP_UNLOCK_STORAGE_FAILED, "journal");

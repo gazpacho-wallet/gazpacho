@@ -411,7 +411,7 @@ static int js_begin(void *ctx, uint64_t *incarnation, char *err, size_t errlen)
     st = gz_journal_open_sealed(&s->j, &cfg, &s->seal, &s->info);
     if (st != GZ_JOURNAL_OK) {
         s->j = NULL;
-        s->behind = st == GZ_JOURNAL_ERR_BEHIND || st == GZ_JOURNAL_ERR_POSSIBLY_OLD;
+        s->behind = st == GZ_JOURNAL_ERR_BEHIND ? 1 : st == GZ_JOURNAL_ERR_POSSIBLY_OLD ? 2 : 0;
         if (err && errlen) snprintf(err, errlen, "journal: %s", gz_journal_status_name(st));
         return s->behind ? GZP_STORE_BEHIND : -1;
     }
