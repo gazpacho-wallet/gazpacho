@@ -1749,7 +1749,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </table></div></div></details>
 <details id="c4-3-the-checks"><summary>3. The checks</summary><div class="body"><p>A request is safe to sign only if all of these hold. Each is evaluated on data the member's software built or stored itself.</p>
 <p><strong>C1. Rebuilt, not received.</strong> The member's software constructs every transaction in the request itself, from its own stored state, the host's terms and the proposal's parameters, and signs only digests it computed. Every setting that changes the transactions' bytes is set explicitly, never left to a default of the imported code (<code>signing-round.md</code> section 4.1). Every item is signed in one fixed way: a 64-byte signature, the default hash type, no annex, and a stated mode (key path with a stated tweak, or script path with a stated leaf). No item uses a hash type that lets inputs be added. A participant list containing the same key twice is refused. <strong>The funding output's script is checked:</strong> it must be the BIP 86 key of the MuSig2 aggregate of the participant keys in order, read from the output of the funding transaction that the outpoint names. The first import's <code>factory_set_funding</code> took the script on trust [C: <code>src/factory.c:1214-1228</code>]; at <code>50f7fa13</code> the import refuses one that is not the root's key [C: <code>src/factory.c:2415-2425</code>], and this check stays the member's own.</p>
-<p><strong>C2. Own outputs are recognised by own keys.</strong> The member's software identifies its outputs by deriving the scripts from its own keys, never from labels, indexes or positions in the request. This includes any output of the distribution transaction, which the import pays to the member's factory key [C: <code>factory.h:1258-1261</code>].</p>
+<p><strong>C2. Own outputs are recognised by own keys.</strong> The member's software identifies its outputs by deriving the scripts from its own keys, never from labels, indexes or positions in the request. This includes any output of the distribution transaction, which the import pays to the member's factory key [C at <code>50f7fa13</code>: <code>factory.h:1456-1465</code>].</p>
 <p><strong>C3. Value.</strong> The exit value after the request is at least the amount owed after the request. The adversary draws from the exposed set; the member draws from the held set, and may rely only on responses it can make within its maximum safe absence and with fee funds it actually has. In 1.0.0 a member is not expected to hold on-chain coins (owner decision 6, <code>docs/ux/decisions.md</code>), so a response that needs a fee beyond what is built into the transaction counts as unavailable unless the member has the coins. Two import facts bear on this: the leaf chain transactions after the first carry no anchor output [C: <code>src/factory.c:2776-2779</code>], so they confirm only at their built-in fee; and the distribution transaction gets no anchor when the fee estimator reports below 1 sat/vB [C: <code>src/fee.c:90-97</code>, <code>src/factory.c:4532-4539</code>].</p>
 <p><strong>C4. Every exposed transaction is accounted for.</strong> For every transaction in the exposed set after the request, the module names which of these applies, and refuses if none does:
 - <strong>(a) Harmless:</strong> if it is published, the member still reaches at least what it is owed from its held set.
@@ -1775,7 +1775,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Host alone after a relative delay</td>
-<td>The spare-liquidity output (default 144 blocks) [C: <code>factory.h:50</code>, <code>:429-432</code>]</td>
+<td>The spare-liquidity output (default 144 blocks) [C at <code>50f7fa13</code>: <code>factory.h:59</code>, <code>:464</code>]</td>
 </tr>
 <tr>
 <td>Member alone</td>
@@ -2964,7 +2964,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>A standard signature check on each signed transaction, from its bytes (section 13, last row)</td>
 </tr>
 <tr>
-<td>The default placement sorts by time zone over profiles that are all zero, so the order is whatever the C library's sort does [C: <code>src/factory.c:831</code>, <code>:889</code>, <code>:1970-1973</code>]. A setter exists since <code>50f7fa13</code></td>
+<td>The default placement sorts by time zone over profiles that are all zero, so the order is whatever the C library's sort does [C at <code>50f7fa13</code>: <code>src/factory.c:1002</code>, <code>:1060</code> the default; <code>:26-43</code> <code>cmp_timezone_cluster</code>; <code>:65-81</code> <code>apply_placement</code>]. A setter exists since <code>50f7fa13</code></td>
 <td>Call <code>factory_set_placement_mode(PLACEMENT_SEQUENTIAL)</code> after initialising and before building, and check its result</td>
 </tr>
 <tr>
@@ -2978,6 +2978,10 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tr>
 <td>Re-initialising a node session does not free a live large session first [C: <code>src/factory.c:3109-3116</code>; contrast <code>:2036</code>]</td>
 <td>A fresh tree object per attempt. Each attempt has a new funding outpoint or participant set anyway, hence new transactions</td>
+</tr>
+<tr>
+<td><code>factory_compute_ewt_for_shape</code> with a level wider than 16 writes past a 16-entry stack array (<code>split_clients_for_arity</code> into <code>parts[]</code>) [C at <code>50f7fa13</code>: <code>src/factory.c:1184-1190</code>, <code>:5833-5834</code>]: unlike the build, it does not go through <code>factory_set_level_arity</code>'s bound (review B of the re-import, L1)</td>
+<td>Never call it with a width above 16. Only <code>tests/scale/tree_shapes.c</code> calls it, and refuses such widths</td>
 </tr>
 <tr>
 <td><code>factory_set_level_arity</code> with an empty list read <code>arities[-1]</code> [C: <code>src/factory.c:1176</code>]. <strong>Fixed at <code>50f7fa13</code></strong>: it refuses an empty or too long list, or a width outside 1 to 16, and returns 0 [C: <code>src/factory.c:1413-1427</code>]</td>
