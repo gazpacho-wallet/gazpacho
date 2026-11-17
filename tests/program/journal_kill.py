@@ -141,7 +141,7 @@ def main():
                     q.stop()
                 procs[:] = []
             totals[life] = (kills, restored_after)
-        check(totals.get("set-up", (0,))[0] >= 20 and totals.get("restore", (0,))[0] >= 20,
+        check(totals.get("set-up", (0,))[0] >= 20 // step and totals.get("restore", (0,))[0] >= 20 // step,
               "killed at every storage call: %s (kills, starts that repeated the restore)" % totals)
     finally:
         kill_all(procs)

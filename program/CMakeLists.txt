@@ -144,7 +144,10 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${GZP_PY} ${GZP_T}/unlock.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/unlock
             $<TARGET_FILE:gazpacho>)
   add_test(NAME program_journal_kill
-    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_kill)
+    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_kill 3)
+  add_test(NAME program_journal_kill_full
+    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_kill_full)
+  set_tests_properties(program_journal_kill_full PROPERTIES TIMEOUT 3600 LABELS "slow")
   add_test(NAME program_storage_damage
     COMMAND ${GZP_PY} ${GZP_T}/storage_damage.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/storage_damage)
   add_test(NAME program_journal_restore
