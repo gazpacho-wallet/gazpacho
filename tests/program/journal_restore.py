@@ -103,7 +103,7 @@ def main():
                 continue
             for t, b in e[3]:
                 if t == KEY_EPOCH:
-                    eps.append(b)
+                    eps.append(tlv_find(b, 2) or b)  # the epoch, record 2 (u32)
                 elif t == KEY_INDEX:
                     pairs.append(b)
                 elif t == GUARD:
