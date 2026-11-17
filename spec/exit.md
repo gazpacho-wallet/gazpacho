@@ -8,7 +8,7 @@ Design 1 (topic 1143, first post, 2024-09-16: the host alone takes every output 
 
 **INTERIM.** A rule marked INTERIM holds only while the imported SuperScalar code still carries host-only timeout leaves on tree and channel outputs (Gazpacho's pin `e6573950`, and `50f7fa13` of the re-import in draft pull request #46). Each INTERIM rule names what replaces it. An INTERIM rule MUST NOT be relied on with real funds. Section 1.2 says which slices run under which rules.
 
-Companion documents: `safety-rule.md`, `signing-round.md`, `terms.md`, `messages.md`, `journal.md`, `storage-encryption.md`, `local-api.md`, `docs/MULTI-FACTORY.md`, `docs/THREAT-MODEL.md`, `docs/handoff/2026-11-12-tree-fees.md`, `docs/handoff/2026-11-11-end-date-payout.md`, `docs/handoff/2026-11-11-review-of-end-date-payout-draft.md`. The channel specification (`channel.md`) does not exist; section 10.1 lists what it must give this one. Section 10 lists every change this draft needs elsewhere; none of those documents is changed by this draft.
+Companion documents: `safety-rule.md`, `signing-round.md`, `terms.md`, `messages.md`, `journal.md`, `storage-encryption.md`, `local-api.md`, `docs/MULTI-FACTORY.md`, `docs/THREAT-MODEL.md`, `docs/handoff/2026-11-12-tree-fees.md`, `docs/handoff/2026-11-11-end-date-payout.md`, `docs/handoff/2026-11-11-review-of-end-date-payout-draft.md`. The channel specification (`channel.md`) does not exist; section 10.1 lists what it must give this one. Section 10 lists every change this draft needs elsewhere; none of those documents is changed by this draft, except by the host-paid tree fee rate of 5.9 (2026-11-16), which changes `terms.md`, `safety-rule.md` and `signing-round.md` in the same commit.
 
 **Marks.** **[C]** read in the imported code (file and line at the named pin); **[PR]** taken from a pull request's own text, not checked in code; **[S]** checked in a primary source (a design post, Bitcoin Core, a BIP); **[R]** reasoning, not checked by a source or a test; **[M]** a value to measure; **[X]** computed by `tools/spec-vectors.py` section X. A formula marked [R] has no vector yet (open point 15).
 
@@ -27,6 +27,7 @@ Companion documents: `safety-rule.md`, `signing-round.md`, `terms.md`, `messages
 | The locked watcher holds the payouts (fully signed, never revoked), so under design 2 a locked or switched-off wallet is paid at E without an unlock | 6.6 |
 | New host rules H19 (a commitment the member co-signed) and H20 (no end-date gain); H6 replaces H17 | 9 |
 | Requirements written BOLT style, with writer and reader and a rationale per section; open points with owners | Throughout, 12 |
+| 2026-11-16: **host-paid tree fee rate.** The host may choose a tree rate at or above 0.1 sat/vB and pays every pre-signed fee and anchor from the funding (the import already does this at any rate); under design 2 every channel output carries the channel payout's fee and anchor, P(r), above the capacity. Open point 4 closed; new open points 18 to 20. Not itself reviewed | 0, 3.1, 3.3, 5.1, 5.8, **5.9**, 7, 10.1, 12, 13 |
 
 Draft 2's long change tables (draft 1 findings F1 to F15, cross-specification review 1) are in `docs/specs-history/exit-d2.md`; every change they record is still in force unless this table says otherwise.
 
@@ -53,9 +54,9 @@ Draft 2's long change tables (draft 1 findings F1 to F15, cross-specification re
 
 - **At the end height E, members are paid; the host is not.** Every shared output of the tree has a pre-signed transaction with lock time E (the distribution transaction on the funding output; one payout on each other shared output). Each is signed by everyone in the creation round, pays every member under it at least its channel capacity on a key it controls, pays the host nothing, and carries a keyless pay-to-anchor (P2A) output. No shared output has a path the host can use alone at an absolute height [PR #508; S: topic 1242 post 1].
 - **The host carries the end date.** Before E it moves each member to another factory (rotation), closes cooperatively, or forces a silent member out by publishing that member's path and **its own latest commitment, which the member co-signed** (H19). That pays the member its real balance. If the host is late, the member is paid its capacity at E and the host loses the difference and its spare liquidity under that member. This is the host's risk, not the member's.
-- **A member that does nothing is safe.** From E its wallet, or anything holding the payouts (a locked watcher, the host itself), publishes the payouts on its path. With one member per leaf and no sales, a member's balance never exceeds its capacity, so the payout covers it (less the channel payout's own fee and anchor, about 253 sat in T1 [R]; open point 4).
+- **A member that does nothing is safe.** From E its wallet, or anything holding the payouts (a locked watcher, the host itself), publishes the payouts on its path. With one member per leaf and no sales, a member's balance never exceeds its capacity, so the payout covers it (the channel output carries the channel payout's own fee and anchor above the capacity, funded by the host: 5.9).
 - **What still needs a running wallet before E**: answering a revoked host commitment (penalty), claiming an incoming payment whose secret was released before its expiry, and finishing what the host started. None of these is about the end date.
-- **Fees.** Every tree transaction and payout is pre-signed at the agreed minimum tree fee rate (a term, default 0.1 sat/vB, never a constant in code) and carries a 240-sat P2A anchor. Whoever benefits from a transaction confirming pays the real fee at exit, by a child on that anchor (or, for a payout, on its own output), sent as a TRUC one-parent-one-child package (`submitpackage`) where a server refuses the parent alone. There is no fee reserve.
+- **Fees.** Every tree transaction and payout is pre-signed at the agreed minimum tree fee rate (a term, default 0.1 sat/vB, never a constant in code) and carries a 240-sat P2A anchor. Whoever benefits from a transaction confirming pays the real fee at exit, by a child on that anchor (or, for a payout, on its own output), sent as a TRUC one-parent-one-child package (`submitpackage`) where a server refuses the parent alone. There is no fee reserve on the member's side. The rate is the host's choice, at or above 0.1 sat/vB, and the host pays every pre-signed fee and anchor from the funding, at any rate (5.9); at a rate at or above a server's relay floor a step is accepted alone, with no package.
 - **Enforced versus assumed.** Who can spend what, and from when, is enforced by script and lock time. That a transaction **confirms in time** is assumed: it depends on fees, on pinning (bounded, not removed, by TRUC), on package relay being available (today only mempool.space offers a public package endpoint; Gazpacho runs its own signet node), and on the chain view. Section 5.8 lists both.
 - **Today's import is half-way** (INTERIM). It has one payout from the funding output, which Slice 1 refuses, and design 1's host-only timeouts on every output below the root: a tree output at depth j times out at E − 5·(2j − 1), the leaf transaction's input and the channel output at **H_leaf = E − 10·d** [C]. Until the re-import of #508, a member with a balance must leave before H_leaf (draft 2's rules, section 4.5), and an honest host follows H17. Slices 1 and 1.5 owe nobody anything, so these rules cost nothing there.
 - **The tree.** Advanceless (every interior level fixed), one member per pseudo-Spilman leaf (K = 1), TRUC transactions, P2A anchors, path-only exits: a member publishes only its own path, d + 3 transactions at depth d, one level per block.
@@ -116,8 +117,8 @@ Amounts below use T1 (channel 100,000 sat, tree rate 0.1 sat/vB). Every tree tra
 | Funding output 0 | The root kickoff; a friendly close (E-1); a rotation close (E-3) | **The distribution transaction**: each member its capacity plus an equal share of the rest, never less than its capacity [C at `50f7fa13`: `factory.h:1466-1480`]; at most 230 members [C at `50f7fa13`: `factory.h:858-864`] | — |
 | A kickoff output into a child kickoff | The child kickoff | **Its payout** to the members under it, each at least its capacity [PR] | — |
 | The leaf kickoff's output into the leaf transaction | The leaf transaction | Its payout, **if** #508 gives this output one (open point 3: #508 gives none to "a kickoff's output into its own state transaction" [PR]); otherwise a member publishes the leaf transaction first | — |
-| Leaf output 0, the channel | Either side's commitment, both co-signed; a cooperative close of the channel | **Its payout** to the one member: the output's value less the payout's fee and anchor [PR] | — |
-| Leaf output 1, spare liquidity | Everyone in the leaf (host and member) | **Its payout** to the leaf's member (K = 1) [PR] | The host, 144 blocks after the leaf transaction confirms (relative delay, unchanged) [C] |
+| Leaf output 0, the channel | Either side's commitment, both co-signed; a cooperative close of the channel | **Its payout** to the one member: the output's value less the payout's fee and anchor [PR], at least the capacity because the output carries the payout reserve P(r) above it (5.9) | — |
+| Leaf output 1, spare liquidity | Everyone in the leaf (host and member) | **Its payout** to the leaf's member (K = 1) [PR], its fee and anchor from the host's stock (5.9) | The host, 144 blocks after the leaf transaction confirms (relative delay, unchanged) [C] |
 | Every P2A anchor (240 sat) | — | — | Anyone, no key, empty witness |
 
 So, under design 2, the host can take an output alone only through the spare liquidity's relative delay, and only after the leaf transaction is on chain. Everything else needs the member's co-signature or pays the member.
@@ -139,11 +140,12 @@ A host timeout spend has lock time h and can first be mined in block h + 1. **Re
 
 The writer (the host, building a proposal):
 - MUST, under design 2, include in the creation round the distribution transaction and a payout for every shared output of 3.1, each with lock time E, built from the proposal's own values, and MUST NOT include any host output in them.
+- MUST, under design 2, fund every payout's fee and anchor as 5.9 requires: each channel output at least its member's capacity plus P(r), each spare-liquidity output at least P(r) + 330 sat.
 - MUST NOT release the aggregated payout signatures before every member's channel is open with the host's commitment 0 co-signed (as #508's `FACTORY_PAYOUTS` [PR]); if any member does not co-sign, the opening MUST be aborted and no payout released.
 - MUST NOT create a factory with E = 0, or while it cannot read the chain tip.
 
 The reader (the member's wallet, at signing):
-- MUST, under design 2, rebuild the distribution transaction and every payout on its payout path from the proposal and its own keys, and MUST refuse unless each verifies, has lock time exactly E, pays the member's own derived key (C2) at least its capacity (tree and distribution) or the channel output less the payout's fee and anchor (channel), and pays the host nothing.
+- MUST, under design 2, rebuild the distribution transaction and every payout on its payout path from the proposal and its own keys, and MUST refuse unless each verifies, has lock time exactly E, pays the member's own derived key (C2) at least its capacity (tree, distribution and channel: the channel output carries the payout reserve of 5.9), and pays the host nothing.
 - MUST refuse a proposal whose E is earlier than section 4.3's placement rule allows.
 - MUST, while INTERIM rules apply to its slice (1.2), refuse a proposal that carries a payout (`safety-rule.md` 12 value 1); from the design-2 slices on, MUST refuse one that lacks any payout on its payout path.
 - MUST keep every payout on its payout path, fully signed, in its journal and in the bundle (6.6), and MUST NOT treat a payout as owed to the host.
@@ -280,10 +282,10 @@ Under design 2 the estimate matters less for the member: its only hard dates are
 
 ### 5.1 The principle
 
-- Every tree transaction and every payout is **pre-signed at the agreed minimum tree fee rate** for its own exact size. The rate is a term (`round_propose` record 30, sat/kvB; default 100, that is 0.1 sat/vB; a member refuses unless it equals the frozen terms' rate and is under its own ceiling) [PR #46]. **No fee rate is a constant in code.**
+- Every tree transaction and every payout is **pre-signed at the agreed tree fee rate** for its own exact size: at least 0.1 sat/vB, chosen by the host and paid by the host from the funding (5.9). The rate is a term (`round_propose` record 30, sat/kvB; default 100, that is 0.1 sat/vB; a member refuses unless it equals the frozen terms' rate and is under its own ceiling) [PR #46]. **No fee rate is a constant in code.**
 - Every such transaction carries a **keyless 240-sat P2A anchor** as its last output.
 - **The beneficiary pays the real fee at exit**, by a child on the anchor (or, for a payout, a child spending its own output), sent as a TRUC one-parent-one-child package with `submitpackage` where a server refuses the parent alone.
-- **No reserve.** A member holds no coins for fees (owner decision 6). The 240-sat anchor of each step is funded by the host at funding, inside R(root).
+- **No reserve.** A member holds no coins for fees (owner decision 6). The 240-sat anchor of each step is funded by the host at funding, inside R(root), and so is every pre-signed fee, at whatever rate the host chose (5.9).
 
 Who benefits, and so pays:
 
@@ -350,6 +352,7 @@ The funding's txid is fixed before the round (H1). Replacing it by fee kills the
 | A revoked host commitment loses the channel to the member | The penalty, if the member answers within W (watching is assumed, below) |
 | The host's spare liquidity is the host's only after 144 blocks of the leaf transaction | The relative delay |
 | A fee child needs no key on an anchor | P2A [S: Core, from 28.0] |
+| Every pre-signed fee and anchor is the host's; no member output pays one, and every payout pays its member at least its capacity | The amounts, fixed at signing and checked by every member (5.9; `safety-rule.md` C8) |
 
 **Assumed** (not enforced; each is a risk the member or host carries):
 
@@ -360,12 +363,58 @@ The funding's txid is fixed before the round (H1). Replacing it by fee kills the
 | A transaction confirms in time: INTERIM, the member's commitment before H_leaf | The member | `leave_by`; H17 (policy, not protection) |
 | Fee spikes last no longer than M_spike | Whoever has a date | Anchors let the beneficiary pay; a coinless member is limited to the 240-sat child and, for a payout, a child on its own output |
 | Pinning through a keyless anchor | The member without a coin | TRUC caps the attacker's child at 1,000 vB (about 234 sat to defeat the anchor-only child); member-keyed anchor on commitments; own-output bump on payouts |
-| Package relay is available: a server accepts `submitpackage` (one parent, one child) for a parent below its floor | Every party | Today **only mempool.space offers a public package endpoint**; public Electrum servers offer none (`THREAT-MODEL.md` 2.4). Gazpacho runs its own signet node. The chain port needs `gz_chain_broadcast_package` (10.5). Bitcoin Core 29.1 or later relays 0.1 sat/vB alone [S: F1, F2], so in calm conditions a step needs no package |
+| Package relay is available: a server accepts `submitpackage` (one parent, one child) for a parent below its floor | Every party | Today **only mempool.space offers a public package endpoint**; public Electrum servers offer none (`THREAT-MODEL.md` 2.4). Gazpacho runs its own signet node. The chain port needs `gz_chain_broadcast_package` (10.5). Bitcoin Core 29.1 or later relays 0.1 sat/vB alone [S: F1, F2], so in calm conditions a step needs no package; at a host-paid rate at or above a server's floor (1 sat/vB on Core 28.x and 29.0) neither does it there (5.9) |
 | Miners do not censor; reorganisations are shallower than B | Every party | B; `safety-rule.md` 11 excludes both |
 | The chain view is not a full eclipse | The member | 4.6's estimate; one broadcast-only route |
 | The wallet or a watcher runs at some time after E, or before a payment or penalty date | The member | Under design 2 any time after E is enough for the balance |
 
 **Rationale.** The owner's fee position (`docs/handoff/2026-11-12-tree-fees.md` 4.4, 4.5) and design 2 fit together: pre-signed transactions carry only the minimum, so nobody overpays in calm times, and the party that gains pays the rest when it needs it. Saying plainly which properties are enforced and which are assumed is what lets a member and a reviewer judge the remaining risk; draft 2's "never a stall" was stronger than its sources.
+
+### 5.9 The host-paid tree fee rate
+
+Added 2026-11-16 from the owner's proposal: the host may pre-pay a higher fee on the pre-signed transactions, from its own coins, so that a step can be sent alone, without a fee package. Checked against the re-import of draft pull request #46 (branch `reimport-superscalar`, upstream `50f7fa13`) on the build server. **Not itself reviewed.**
+
+**What the import does today.** No output of a tree transaction pays that transaction's fee. With member capacities the builder sizes the tree bottom-up: a leaf's outputs are the member's capacity and the host's spare liquidity, and every node's input is its outputs plus its own fee (the rate for its exact size) plus its anchor [C at `50f7fa13`: `src/factory.c:586-594`, `:1928-1984`]. The funding output must be exactly the root's requirement, or the builder refuses [C: `src/factory.c:2427-2437`], and the funding is the host's own coins (`safety-rule.md` C11). So **every pre-signed tree fee and anchor is already the host's, at any rate**: a higher rate makes the funding larger and no member output smaller. The rate is one field, `tree_fee_rate`, which Gazpacho's engine sets from record 30 [C at `50f7fa13`: `factory.h:379-386`, `:833-837`; Gazpacho glue on #46: `core/tree/include/gazpacho/tree.h:211`, `core/tree/include/gazpacho/tree_import.h:14`]; a rate whose fee cannot be paid is refused by the builder [C: `src/factory.c:2389-2394`]. Choosing a higher rate needs **no change to the imported code** and no adaptation beyond the term's value. Under the pin `e6573950` (top-down, one `fee_per_tx` on every transaction) the result is the same through `terms.md` 4.2: the host funds R(root), which grows with the fee, and every channel stays at least `channel_sat`.
+
+**Where a fee could fall on a member: the payouts.** A design-2 payout (#508, not imported yet) pays its own fee at the tree rate and a 240-sat anchor out of the one output it spends [PR]. On the funding output and on tree outputs that output already holds the host's spare liquidity and every fee and anchor of the subtree below, far more than the payout needs (in T1 at 10 sat/vB, the 16-member distribution transaction is 769 vbytes and pays 7,690 sat out of a surplus above the capacities of more than 1,600,000 sat) [R]. On the leaf kickoff's output into the leaf transaction it holds the leaf transaction's fee and anchor, more than a one-member payout's (167 against 124 vbytes) [R]. On the **channel output** it holds only the capacity, so without a rule the payout pays the member its capacity less the payout's fee and anchor: 253 sat at 0.1 sat/vB, 364 at 1, 488 at 2, 860 at 5 and 1,480 at 10 sat/vB (124 vbytes [R]). A higher host-chosen rate alone would make open point 4 worse. On the **spare-liquidity output** the fee comes from the host's stock, which must leave the member an output above dust.
+
+The host's prepaid tree fees in T1 (sizes as measured on regtest with #46: 167 vbytes for a two-output kickoff, 124 for the leaf kickoff, 167 for the leaf transaction; 81 + 43·k for a kickoff with k outputs, so 253 for the four-output root; each fee rounded up per transaction) [R; vectors owed, open point 15]:
+
+| Members | Tree transactions | Total vbytes | D | Deepest path, tree transactions | Prepaid by the host at 0.1 / 1 / 2 / 5 / 10 sat/vB | Of it, on the deepest path |
+|---|---|---|---|---|---|---|
+| 3 | 8 | 1,207 | 2 | 625 vB | 124 / 1,207 / 2,414 / 6,035 / 12,070 | 63 / 625 / 1,250 / 3,125 / 6,250 |
+| 4 | 11 | 1,665 | 2 | 625 vB | 171 / 1,665 / 3,330 / 8,325 / 16,650 | 63 / 625 / 1,250 / 3,125 / 6,250 |
+| 8 | 21 | 3,249 | 2 | 711 vB | 334 / 3,249 / 6,498 / 16,245 / 32,490 | 72 / 711 / 1,422 / 3,555 / 7,110 |
+| 16 | 45 | 6,913 | 3 | 878 vB | 710 / 6,913 / 13,826 / 34,565 / 69,130 | 88 / 878 / 1,756 / 4,390 / 8,780 |
+
+The anchors (240 sat on each of those transactions) are on top and do not change with the rate.
+
+**The payout reserve.** For a rate r in sat/kvB, `P(r) = ⌈r × 124 / 1000⌉ + 240` sat: the fee and anchor of a one-member payout (124 vbytes [R]; the exact size is owed by #508). In T1: 253, 364, 488, 860 and 1,480 sat at 0.1, 1, 2, 5 and 10 sat/vB.
+
+The writer (the host):
+- MUST propose a tree fee rate (`terms.md` term 32, record 30) of at least 100 sat/kvB (0.1 sat/vB) and at most the term's ceiling; it MAY choose any value in between.
+- MUST pay every pre-signed fee and anchor from the funding: the funding output equals the root's requirement at that rate, and no fee reduces any member output.
+- MUST, under design 2, make every channel output at least its member's capacity plus P(r), and every spare-liquidity output at least P(r) + 330 sat, so that every payout pays its member at least its capacity and no payout output is below the P2TR dust limit (330 sat).
+- MUST keep the P2A anchor on every tree transaction and payout, and version 3.
+- SHOULD choose a rate at or above the relay floor of the servers it and its members broadcast to: 0.1 sat/vB on Bitcoin Core 29.1 or later, 1 sat/vB on 28.x and 29.0.
+- SHOULD weigh, before raising the rate, that a member leaving alone now spends the host's prepaid fees on its path (the last column above) instead of its own.
+
+The reader (the member's wallet, at signing):
+- MUST refuse unless the rate equals the frozen terms' rate (C8a) and is at least 100 sat/kvB, every tree transaction pays exactly that rate for its own signed size (unchanged), and, under design 2, every channel output is at least its member's capacity plus P(r) and every payout pays the member at least its capacity, with no output below 330 sat (`safety-rule.md` C8).
+- SHOULD treat its own fee-rate ceiling as a sanity bound only, by default the term's ceiling (1,000 sat/vB): the rate costs the member nothing. A chain-cost joining fee (term 70, reserved) is where a higher rate would reach the member, and it has its own ceiling.
+- MUST NOT rely on a step being accepted alone: when every server refuses it alone, it sends the package of 5.2 and 5.3 as before.
+
+**Sent alone.** A version-3 transaction whose own rate meets a server's relay floor and its current mempool minimum is accepted alone. The regtest run of #46 (Bitcoin Core 29.1 binaries, T1 at 4 members, rate 0.1 sat/vB) showed both sides of that rule: with the node's floor at 1 sat/vB each of the 11 tree transactions was refused alone and accepted in a package with its anchor-only child; with the floor at 0.1 sat/vB each was accepted alone [M: `reimport/regtest-run1.log`, 2026-11-17]. It was not repeated at higher rates for this change: the regtest node was stopped, and this review did not start it. That a rate at or above the floor is accepted alone at any rate follows from the same rule [R]. When mempools are full the mempool minimum rises above any fixed rate, so the anchor stays the backstop; and being accepted is not confirming in time, so 5.8's assumptions are unchanged. A higher rate also raises the anchor-only child's package rate: over a 167-vbyte step about 1.1, 1.8, 2.5, 4.6 and 8.2 sat/vB at 0.1, 1, 2, 5 and 10 sat/vB [R].
+
+**Bitcoin Core 28 or later, whatever the fee.** Every tree transaction and payout is version 3. Releases before 28.0 do not relay version-3 transactions or spends of P2A outputs [S: BIP 431; Core 28.0 release notes], so every server a party broadcasts to MUST run Bitcoin Core 28.0 or later (or another implementation with TRUC and P2A policy). No rate changes this.
+
+**TRUC limits and dust are unaffected.** Sizes do not depend on amounts. Tree transactions are 124 to 253 vbytes and the largest T1 payout 769, under the 10,000-vbyte limit; the children (65-vbyte anchor-only, 153-vbyte wallet) stay under 1,000. Output values (channels, spare liquidity, anchors) do not change with the rate; only inputs grow, so no output moves toward dust [R]. With prepaid fees a tree transaction could be sent as the one TRUC child of its unconfirmed parent, two levels at once [R]; nothing here relies on it, since it uses the parent's only child slot and a sibling may evict it (BIP 431).
+
+**Abuse by the host.** (a) A rate so high that some node cannot pay its fee: not possible, because each node's fee is reserved in its parent's output by the builder and the funding must match; a host that under-funds is refused by the builder and by every member's rebuild (C1). The payout reserve and the dust rule catch the payouts: with T1's 100,000-sat spare liquidity they hold up to about 800 sat/vB, and a host asking more is refused. (b) A rate that makes a member's exit depend on the host: not possible; every fee is in the signed bytes, no output pays it, and no output becomes the host's alone. (c) A real trade-off, not an abuse: a member can push its own path on chain at the host's prepaid cost (up to 8,780 sat at 10 sat/vB in a 16-member tree), where today it pays its own children; and under design 2 any prepaid fee of an unpublished transaction goes to the members at E. Both are the host's cost of its choice.
+
+**Not in 1.0.0.** A fee ladder (several pre-signed copies of each tree transaction at rising rates) is left for after 1.0.0; it multiplies signatures and stored transactions.
+
+**Rationale.** The import already makes the host pay every tree fee from the funding, so letting the host choose a higher rate changes no member output and no check's shape, only the value checked. The one place a fee would fall on a member is the channel payout; funding its fee and anchor above the capacity, from the host, is what lets C8's "at least its capacity" hold on every payout, and closes open point 4. Prepaying at or above the servers' floor removes the dependence on package relay (5.8, open point 14) in calm conditions; it removes neither the anchor nor the need for Core 28.
 
 ## 6. The member's wallet: automatic actions
 
@@ -480,7 +529,7 @@ A restored wallet never publishes its own commitment automatically (`DESIGN.md` 
 
 ## 7. Every path: 35 paths, step by step
 
-Each path: **status** (S specified, G specified with gaps, N not yet specified), the rule set it runs under, then numbered steps. Every step says who acts, which transaction, its lock time or deadline, who pays the fee and how. **Watches** says what the member's wallet watches for (by outpoint and txid, section 8). **If a step fails** says what follows. Transactions are those of section 3; T1 numbers at the signet constants.
+Each path: **status** (S specified, G specified with gaps, N not yet specified), the rule set it runs under, then numbered steps. Every step says who acts, which transaction, its lock time or deadline, who pays the fee and how. **Watches** says what the member's wallet watches for (by outpoint and txid, section 8). **If a step fails** says what follows. Transactions are those of section 3; T1 numbers at the signet constants. "Pre-signed at the tree rate" means the host has already paid that rate and the anchor (5.9); "who pays" names who pays any fee beyond it.
 
 ### 7.1 Creation
 
@@ -610,7 +659,7 @@ Each path: **status** (S specified, G specified with gaps, N not yet specified),
 **E-6. End-date payout, with the host.** S · design 2 · Slice 3; test S34
 1. The host has moved or forced out everyone it could; for any member still in the factory at E it has lost capacity minus balance and the spare liquidity under that member (H20).
 2. At tip E, the host MAY broadcast the distribution transaction (funding unspent) or the payouts it holds; it pays nothing for them and gains nothing.
-3. Each member's wallet (or watcher) runs 6.4 from tip E: distribution transaction if the funding is unspent, else the payouts down its path, each with an anchor-only child; the member pays any further fee (5.3).
+3. Each member's wallet (or watcher) runs 6.4 from tip E: distribution transaction if the funding is unspent, else the payouts down its path, each with an anchor-only child; the host prepaid each payout's fee at the tree rate and its anchor (5.9); the member pays any further fee (5.3).
 4. Payouts confirm from block E + 1; the wallet records `paid_at_end_date` with the amounts.
 - Watches: every shared output on the payout path, the payouts' txids, their anchors (S9).
 - If a step fails: a payout not confirming is rebroadcast and bumped; no one else can take the output alone, so the only cost is waiting. A competing mempool spend (the host's late tree transaction or commitment) is replaced by a package (6.4 step 2) or, if it confirms, followed (it pays the balance, or leads to further payouts).
@@ -619,14 +668,14 @@ Each path: **status** (S specified, G specified with gaps, N not yet specified),
 1. The host is gone (or hostile and silent). Nothing it can do changes any member's payout after signing.
 2. Same as E-6 steps 3 and 4, with no host action. Shared payouts deduplicate: the same bytes for every member under the output, the same anchor-only child.
 3. If the host published the root kickoff (voiding the distribution transaction) and left, members publish the payouts of the root's outputs and below [PR #508 test "kickoff"].
-- Fee: the members, through anchors or their own payout outputs.
+- Fee: the tree rate and the anchors, prepaid by the host (5.9); anything above them, the members, through anchors or their own payout outputs.
 - If a step fails: as E-6. A member whose wallet never runs again is paid when anyone publishes its payouts (a sibling's payout above it pays it too).
 
 ### 7.3 Leaving alone
 
 **U-1. One member leaves alone.** G · both · tree half in 1.5 (S2); with a balance in Slice 3
 1. A trigger of 6.1 fires (design 2: a payment date, a host fault, an unfinished round, the person; INTERIM also `deadline`, `host_silent`, `left_behind`, `host_forcing`).
-2. The member runs 6.3: freeze, choose the commitment, then for each missing step: the root kickoff (if not on chain), each fixed kickoff to depth d − 1, the leaf kickoff, the leaf transaction, one level per block, each pre-signed at the tree rate with its anchor-only child (or a wallet child). The member pays every child.
+2. The member runs 6.3: freeze, choose the commitment, then for each missing step: the root kickoff (if not on chain), each fixed kickoff to depth d − 1, the leaf kickoff, the leaf transaction, one level per block, each pre-signed at the tree rate, which the host prepaid (5.9), sent alone or, where every server refuses it alone, with its anchor-only child (or a wallet child). The member pays every child.
 3. The member completes its signature on its latest commitment and broadcasts it (unlocked). Design 2: not after E unless a payment needs it (6.3 step 5).
 4. At B confirmations: claim incoming payments before h; later sweep its outputs. No deadline for the sweep.
 - Deadlines: design 2: only payment dates; INTERIM: `leave_by`, `step_due(i)`, commitment buried by `last_safe_confirm`.
@@ -642,7 +691,7 @@ Each path: **status** (S specified, G specified with gaps, N not yet specified),
 - Watches: S1 on path outputs; S9 on shared anchors.
 
 **U-3. Every member leaves (the host vanished after funding).** S · both · Slice 3; 128 and 512 members on regtest later
-- **Design 2**: 1. each wallet shows `host_not_answering` and, after `HOST_SILENT_OFFER`, offers leaving now (6.1); 2. by default every member waits for E; 3. from tip E each runs 6.4; the distribution transaction (or the root's payouts) pays everyone at once. Fees: one shared payout per output, bumped by whichever member needs it first.
+- **Design 2**: 1. each wallet shows `host_not_answering` and, after `HOST_SILENT_OFFER`, offers leaving now (6.1); 2. by default every member waits for E; 3. from tip E each runs 6.4; the distribution transaction (or the root's payouts) pays everyone at once. Fees: one shared payout per output, its tree-rate fee and anchor prepaid by the host (5.9), bumped further by whichever member needs it first.
 - **INTERIM**: each member leaves alone on `host_silent` (1,008 blocks) or `leave_by`. With the host gone nobody holds the timeout key; a host that returns can still sweep what is left after its timeouts.
 - If a step fails: design 2, a member that waits and never comes back is still paid when any sibling publishes a payout above it.
 
@@ -659,7 +708,7 @@ Each path: **status** (S specified, G specified with gaps, N not yet specified),
 - Gaps: the host's commitment needs `channel.md` (CH-11); until then this path exists only as H17, a policy.
 
 **H-2. The end-date race.** S · both
-- **Design 2 (who wins at E)**: the competing spends of the channel output after E are the host's co-signed commitment (pays m its balance) and the channel payout (pays m its output less fee and anchor). Whichever confirms, m gets at least its balance (the payout's shortfall of about 253 sat aside, open point 4). For tree outputs the competitors are the next pre-signed tree transaction and the payout; both lead to m being paid. Nobody can take m's balance [R].
+- **Design 2 (who wins at E)**: the competing spends of the channel output after E are the host's co-signed commitment (pays m its balance) and the channel payout (pays m its output less fee and anchor, at least its capacity: 5.9). Whichever confirms, m gets at least its balance. For tree outputs the competitors are the next pre-signed tree transaction and the payout; both lead to m being paid. Nobody can take m's balance [R].
   1. The host's commitment confirmed and buried by block E − (B − 1): the host has won its own balance back.
   2. Otherwise, from block E + 1, whichever of the two the miners take. The host bumps its commitment's anchor; the member bumps its payout; the member is indifferent.
 - **INTERIM (H_leaf)**: 1. the member wins if its commitment is confirmed by block H_leaf − (B − 1); 2. the host wins if the channel output (or an output above it at its own later height) is unspent at block H_leaf + 1: one host signature, lock time h; 3. published early, the host's spend is not final; 4. both in one mempool at H_leaf + 1: a miner's choice. The host's win takes m's balance (`host_timeout`, `exit_missed`, amount recorded); honest host software never does this to an owed member (H17). **Replaced by** the design-2 race at the re-import of #508.
@@ -828,6 +877,7 @@ CH-1 to CH-10 of draft 2 (section 10.1 there) stand: the member completes its ow
 | CH-11 | The member co-signs the host's commitment at channel open and in every update; an update without it is refused; the member revokes nothing and the host takes no revocation without it (H19) | The host's forced exit (H-1) |
 | CH-12 | The member releases no payment secret while any host commitment below the current number is unrevoked [PR #508] | Otherwise the host could close with an older commitment that lacks the payment |
 | CH-13 | The host's commitment 0 is co-signed before the payouts are released (3.3) | A member never holds a payout for a channel the host cannot close |
+| CH-14 | Under design 2 the member's capacity is the channel output less the payout reserve P(r) (5.9); the member's balance never exceeds it (decision 5), so the reserve stays on the host's side and is never paid to the member over the channel | The channel payout then pays at least the member's balance (5.9; open point 4, closed) |
 
 ### 10.2 `local-api.md`
 
@@ -905,7 +955,7 @@ Section X of `tools/spec-vectors.py` (X1 to X9) is unchanged and still checks th
 | 1 | Terms for the design-2 slices: E placed after the wind-down (4.4), and T1-long recomputed now that a member's `leave_by` is gone (draft 2's 252-block wind-down was sized for INTERIM `move_by`) | Owner; `terms.md` | Place E = E_wd + 46 at D ≤ 3 on signet; recompute T1-long with X10 |
 | 2 | `move_by` under design 2 depends on the host's `host_force_by`, which the member cannot check | Owner; `MULTI-FACTORY.md` | Publish the host's A, B and M_host in the terms, so the member can compute it |
 | 3 | Whether #508 gives the leaf kickoff's output into the leaf transaction a payout (it gives none to "a kickoff's output into its own state transaction") | Upstream (#508); this spec | Ask; 6.4 handles both |
-| 4 | The channel payout pays the output less its fee and anchor (about 253 sat in T1), which can be below a full balance; `safety-rule.md` C8 says "at least the capacity" | Owner; `safety-rule.md` | Accept and state it, or ask upstream to fund the channel payout's fee and anchor above the channel amount |
+| 4 | **Closed 2026-11-16 by 5.9**, owner to confirm. Was: the channel payout pays the output less its fee and anchor (253 sat in T1 at 0.1 sat/vB, 1,480 at 10), below a full balance. Now the host funds that fee and anchor as the reserve P(r) above the capacity, so every payout pays at least the capacity (C8) | Owner; `safety-rule.md`; upstream (#508) | Adopt 5.9; ask upstream (#508) only for the one-member payout's exact size, and to size the channel output as capacity plus P(r) when it builds payouts |
 | 5 | The payout's destination: the member's factory key today, or an address the member names | Upstream; owner | Ask (our earlier request E2) |
 | 6 | `host_silent` under design 2: an offer, not an automatic exit | Owner | Adopt: an exit costs fees the payouts avoid |
 | 7 | Free seats: a silent member owed nothing still costs the host a forced exit or its capacity at E | Owner; upstream | Land the proof-of-coin step with the payouts (`safety-rule.md` 14) |
@@ -919,13 +969,16 @@ Section X of `tools/spec-vectors.py` (X1 to X9) is unchanged and still checks th
 | 15 | Vectors X10 to X12 for the design-2 formulas | This spec | Add with the review round's fixes |
 | 16 | When #508 lands, and the commit to import; whether the 230-member limit stays | Upstream | Ask by hand-off; re-import once it merges |
 | 17 | Mainnet constants (B, A, M_spike, `WARN_LEAD`, `OPEN_MARGIN`, M_host) | Owner | From signet and regtest measurements, before any mainnet build |
+| 18 | The member's default fee-rate ceiling now that the host pays (5.9) | Owner; `safety-rule.md` C8 | The term's ceiling, 1,000 sat/vB, as a sanity bound; the member's real fee limit belongs on the chain-cost joining fee (term 70) |
+| 19 | Which rate a host should choose, given that a member leaving alone spends the host's prepaid path fees | Owner | 1 sat/vB (sent alone on Core 28 and later; 625 to 878 sat of prepaid path per member in T1); measure on regtest at that rate with the #46 helper before adopting |
+| 20 | A fee ladder of pre-signed tree transactions | Owner | After 1.0.0 |
 
 ## 13. Review checklist
 
 1. Section 3.1: does every shared output of a 1.0.0 tree have a payout with lock time E, and no host-alone absolute-height path, in the code being imported? Which outputs have none (open point 3)?
 2. Section 4.1: is a payout with lock time E final in block E + 1 and accepted into a mempool at tip E?
 3. Section 4.4: is `host_force_by` enough for the host to bury its commitment before E + 1? Is the placement rule enough for every member of a factory, forced in parallel?
-4. Is it true that after E every spend of a shared output on a member's payout path pays the member at least its balance (less the channel payout's own fee and anchor)? List every competing spend.
+4. Is it true that after E every spend of a shared output on a member's payout path pays the member at least its balance (the channel payout paying at least the capacity, 5.9)? List every competing spend.
 5. Can any INTERIM rule be mistaken for a design-2 rule, or be relied on with real funds?
 6. Section 5.8: is any property listed as enforced actually assumed?
 7. Section 6.6: can a payout in the bundle, in any old copy, move value away from its rightful owner?

@@ -4,6 +4,15 @@ Specification draft 2, 2026-11-12. Status: draft 1 reworked after the third revi
 
 Conventions (integers, `point`, `sig`, `TH`) are those of `messages.md` section 1.
 
+## Changes, 2026-11-16: the host-paid tree fee rate
+
+Not itself reviewed. Specifies `exit.md` 5.9 (draft 3).
+
+| Change | Where |
+|---|---|
+| Term 32's floor raised from 1 to 100 (0.1 sat/vB). The rate is chosen and paid by the host, from the funding, on every tree transaction and payout | Section 3, term 32 |
+| New section 4.4: who pays, the payout reserve P(r), the spare-liquidity floor, and why there is no "fee payer" term | Section 4.4 |
+
 ## Changes after review 3
 
 | Finding | How it was handled | Where |
@@ -77,7 +86,7 @@ Required unless marked. "Slice 1" says which values a Slice 1 app accepts; other
 | 26 | `lifetime_blocks` | `u32` | 1 to 52,560 | | How long the factory is active. 52,560 blocks is about a year, far above the 30 days the design expects (4,320 blocks) |
 | 28 | `winddown_blocks` | `u32` | 1 to 52,560 | | The winding-down period after the lifetime (design: about 3 days, 432 blocks) |
 | 30 | `channel_sat` | `u64` | 546 to 2,100,000,000,000,000 | | **The smallest channel a member gets**: every member's leaf pays at least this to its channel output (section 4.2). The leaf holds the same again as spare liquidity, plus fees. 546 is the import's dust limit [C: `channel.h:14`]; the maximum is the supply in satoshis. Draft 1 called this `leaf_amount_sat` and gave it two meanings (review 3, F4) |
-| 32 | `tree_feerate` | `u32` | 1 to 1,000,000 satoshis per 1,000 vbytes | | Fee rate of the tree transactions (section 4.2). Thousandths of a satoshi per vbyte are needed: the owner's test rate is 0.1 sat/vB, which is 100 here. The ceiling, 1,000 sat/vB, is far above any fee seen |
+| 32 | `tree_feerate` | `u32` | 100 to 1,000,000 satoshis per 1,000 vbytes | | Fee rate of the tree transactions and payouts (section 4.2), **chosen and paid by the host** from the funding (section 4.4). Thousandths of a satoshi per vbyte are needed: the owner's test rate is 0.1 sat/vB, which is 100 here and the floor (Bitcoin Core's relay floor from 29.1). The ceiling, 1,000 sat/vB, is far above any fee seen |
 | 34 | `switches` | `u8` | Bit 0 names, bit 1 chat, bit 2 rule-change requests; other bits 0 | 0 | `LOBBY.md`: three host switches. A set unknown bit is refused, since this is an even record |
 | 64 | `joining_fee_sat` | 16 | Range, `min` ≤ `max` ≤ 2,100,000,000,000,000 | | A flat joining fee, taken from the first payment the member receives (decision 2). Not collected in Slice 1 |
 | 66 | `fee_base_msat` | 16 | Range, `max` ≤ 4,294,967,295 | | The per-payment base fee. The ceiling is BOLT 7's `fee_base_msat` width (`u32`) |
@@ -160,6 +169,26 @@ In every row every interior node was fixed, and the layer step and states (144 a
 On receipt of the outer record (section 7, step 5), for every entry and every n from the previous entry's `max_members` + 1 (or 3, for the first entry) to its own `max_members`: the split rule never meets a node at an interior depth with m ≤ a. So every leaf comes from the leaf kind, with one member. A shape that fails for any n in its range is refused before the member joins. That is at most 1,000 small simulations per record.
 
 The member's app still builds the real tree at signing and checks every leaf (`safety-rule.md` C8): this section lets it refuse a bad lobby early; C8 is what protects.
+
+### 4.4 Who pays the tree fee
+
+**The host pays every pre-signed fee and anchor.** The tree's fees and anchors are inside the funding amount, which is the host's own coins: under section 4.2's rule R(root) grows with the fee while every channel stays at least `channel_sat`, and at the re-import of #46 the builder sizes the tree bottom-up so that each node's input is its outputs plus its own fee and anchor (`exit.md` 5.9). No member output is reduced by any tree fee, at any rate. A term naming the payer (`tree_fee_payer`) is therefore not added: it would have one valid value.
+
+**The rate.** Term 32, `tree_feerate`, is the host's choice, from 100 (0.1 sat/vB, Bitcoin Core's relay floor from 29.1) to 1,000,000. At or above a server's floor, a tree transaction is accepted alone, without a fee package (`exit.md` 5.9).
+
+**The payout reserve (design 2).** Each payout pays its own fee at the tree rate and a 240-sat anchor from the output it spends. For a rate r in sat/kvB:
+
+```
+P(r) = ⌈ r × 124 / 1000 ⌉ + 240        (124: a one-member payout, vbytes; exact size owed by #508)
+channel output        ≥ the member's capacity + P(r)
+spare-liquidity output ≥ P(r) + 330
+```
+
+The writer (the host) MUST build every leaf so; the reader (the member) MUST refuse a tree that does not satisfy both lines (`safety-rule.md` C8). The member's capacity, for decision 5, is the channel output less P(r).
+
+**After 1.0.0.** A fee ladder, several pre-signed copies at rising rates, is not part of 1.0.0.
+
+**Rationale.** The fee is already the host's; this section only says so, sets the floor, and closes the one gap, the channel payout, where a fee would otherwise come out of the member's capacity. P(r) is in T1 253 sat at 0.1 sat/vB, 364 at 1 and 1,480 at 10; with T1's spare liquidity of 100,000 sat the second line holds up to about 800 sat/vB.
 
 ## 5. The current values
 

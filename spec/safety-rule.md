@@ -6,6 +6,15 @@ This document defines the check a member's software runs before it contributes t
 
 Companion documents: `signing-round.md` (draft 4), `messages.md` (draft 2), `terms.md` (draft 2) and `journal.md` (draft 3), all brought in line with this draft; `exit.md` (draft 2), `storage-encryption.md` (draft 3) and `local-api.md` (draft 4), which the alignment section below uses; `THREAT-MODEL.md` (`docs/`).
 
+## Changes, 2026-11-16: the host-paid tree fee rate
+
+Not itself reviewed. C8 is brought in line with `exit.md` 5.9 and `terms.md` 4.4. C1 (byte-for-byte rebuild) and C8a (rate equal to the frozen terms) are unchanged; no H-rule changes, since the host's duty is a C8 check every member runs.
+
+| Change | Where |
+|---|---|
+| Tree fee rate at least 100 sat/kvB; the member's ceiling is a sanity bound, by default the term's maximum, because the host pays the fee | C8, fee row |
+| Under design 2, every channel output at least its member's capacity plus the payout reserve P(r), and every spare-liquidity output at least P(r) + 330 sat, so every payout pays at least the capacity | C8, channel row |
+
 ## Changes after cross-spec review 1
 
 Alignment fixes from `docs/reviews/review-cross-spec-1.md`, made in one pass with `exit.md`, `storage-encryption.md`, `local-api.md` and `journal.md`. No new draft number: no check changes.
@@ -166,10 +175,10 @@ Former open point 4 (which way the timeouts are staggered) is settled by the fir
 | Number of fixed levels | Exactly D, the depth of the deepest leaf (`terms.md` section 4.2), so every interior node is fixed. All levels are fixed in 1.0.0 |
 | Members per sub-factory, K | **1** in 1.0.0 (owner decision 5). K = 1 alone does not give one member per leaf; the leaf kind row does |
 | Member count | Inside its conditions (its own minimum, at least) |
-| Fee per tree transaction | Exactly the terms' rule, ⌈fee rate × largest signed size / 1000⌉ (`terms.md` section 4.2); at most the member's ceiling |
+| Fee per tree transaction | Exactly the terms' rule, ⌈fee rate × largest signed size / 1000⌉ (`terms.md` section 4.2); the rate at least 100 sat/kvB; at most the member's ceiling, which is a sanity bound only and by default the term's maximum, because the host pays every tree fee from the funding (`terms.md` 4.4; `exit.md` 5.9) |
 | Tree anchors | On, always, in 1.0.0 (owner decision 6: pay-to-anchor outputs so anyone can raise a fee) |
 | Split of the leaf between channel and spare liquidity | Fixed at half each by the import [C: `src/factory.c:1299-1323`]; checked by rebuilding |
-| Channel amount | **Every** leaf's channel output at least the terms' `channel_sat` (a host that pays one member less than its terms promise is refused by all); the member's own channel at least its own minimum |
+| Channel amount | **Every** leaf's channel output at least the terms' `channel_sat` (a host that pays one member less than its terms promise is refused by all); the member's own channel at least its own minimum. Under design 2, every channel output at least its member's capacity plus the payout reserve P(r), and every spare-liquidity output at least P(r) + 330 sat (`terms.md` 4.4), so every payout pays its member at least its capacity |
 | Placement | Sequential only |
 | Hash path on spare-liquidity outputs, and one hash per node | Each hash used for one state only; the same hash for two states is refused. A tree in which any node with index 512 or more carries such a hash is refused, because the import's member copy ignores it there [C: `src/factory.c:393`]. Slice 1 carries no hashes (no penalties in Slice 1, `signing-round.md` section 15) |
 | Distribution transaction, if signed | Lock time no earlier than the end height; the member's share at least its channel capacity; outputs and lock time are proposal parameters. Not signed in Slice 1 (**proposed, owner to confirm**, section 12) |

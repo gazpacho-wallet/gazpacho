@@ -94,6 +94,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c3-16-milestones" title="16. Milestones">16. Milestones</a>
 <a class="sec" href="#c3-17-not-designed-yet" title="17. Not designed yet">17. Not designed yet</a>
 <a class="ch" href="#c4">Safe-to-sign rule</a>
+<a class="sec" href="#c4-changes-2026-11-16-the-host-paid-tree-fe" title="Changes, 2026-11-16: the host-paid tree fee rate">Changes, 2026-11-16: the host-paid tree fee rate</a>
 <a class="sec" href="#c4-changes-after-cross-spec-review-1" title="Changes after cross-spec review 1">Changes after cross-spec review 1</a>
 <a class="sec" href="#c4-alignment-with-exit-md-draft-2-2026-11-1" title="Alignment with `exit.md` draft 2 (2026-11-12)">Alignment with `exit.md` draft 2 (2026-11-12)</a>
 <a class="sec" href="#c4-changes-after-review-3" title="Changes after review 3">Changes after review 3</a>
@@ -113,6 +114,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c4-13-how-it-is-tested" title="13. How it is tested">13. How it is tested</a>
 <a class="sec" href="#c4-14-open-points" title="14. Open points">14. Open points</a>
 <a class="ch" href="#c5">Signing round</a>
+<a class="sec" href="#c5-changes-2026-11-16-the-host-paid-tree-fe" title="Changes, 2026-11-16: the host-paid tree fee rate">Changes, 2026-11-16: the host-paid tree fee rate</a>
 <a class="sec" href="#c5-changes-after-review-3" title="Changes after review 3">Changes after review 3</a>
 <a class="sec" href="#c5-changes-from-draft-2" title="Changes from draft 2">Changes from draft 2</a>
 <a class="sec" href="#c5-1-parties-and-scope" title="1. Parties and scope">1. Parties and scope</a>
@@ -350,7 +352,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c27-rough-totals" title="Rough totals">Rough totals</a>
 <a class="sec" href="#c27-biggest-unknowns" title="Biggest unknowns">Biggest unknowns</a></nav>
 <main>
-<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-16 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
+<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-17 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
 <section class="chapter" id="c1"><h2>Start here</h2><p class="desc">Terms, facts, decisions in force, and how sure we are of each claim.</p><p class="file">Gazpacho knowledge base · <code>docs/KNOWLEDGE-BASE.md</code></p>
 <div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.</p></div>
 <details id="c1-1-where-everything-is"><summary>1. Where everything is</summary><div class="body"><div class="tw"><table>
@@ -1375,6 +1377,25 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <div class="intro"><p>Specification draft 4, 2026-11-12. Status: draft 3 brought in line with the four companion specifications after a third, joint review (<code>docs/reviews/spec-review-3.md</code>, findings F1 to F28), which judged draft 3 "ready after listed changes" and found that no finding needs a different cryptographic design. Draft 4 has not itself been reviewed. Nothing here has been reviewed outside this project. Values marked <strong>proposed, owner to confirm</strong> are Slice 1 choices the owner has not objected to and has not yet confirmed.</p>
 <p>This document defines the check a member's software runs before it contributes to any signature, the matching rules for the host, and what the rule cannot protect against. The code that implements it is one module, the only place where "is this safe to sign?" is decided.</p>
 <p>Companion documents: <code>signing-round.md</code> (draft 4), <code>messages.md</code> (draft 2), <code>terms.md</code> (draft 2) and <code>journal.md</code> (draft 3), all brought in line with this draft; <code>exit.md</code> (draft 2), <code>storage-encryption.md</code> (draft 3) and <code>local-api.md</code> (draft 4), which the alignment section below uses; <code>THREAT-MODEL.md</code> (<code>docs/</code>).</p></div>
+<details id="c4-changes-2026-11-16-the-host-paid-tree-fe"><summary>Changes, 2026-11-16: the host-paid tree fee rate</summary><div class="body"><p>Not itself reviewed. C8 is brought in line with <code>exit.md</code> 5.9 and <code>terms.md</code> 4.4. C1 (byte-for-byte rebuild) and C8a (rate equal to the frozen terms) are unchanged; no H-rule changes, since the host's duty is a C8 check every member runs.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tree fee rate at least 100 sat/kvB; the member's ceiling is a sanity bound, by default the term's maximum, because the host pays the fee</td>
+<td>C8, fee row</td>
+</tr>
+<tr>
+<td>Under design 2, every channel output at least its member's capacity plus the payout reserve P(r), and every spare-liquidity output at least P(r) + 330 sat, so every payout pays at least the capacity</td>
+<td>C8, channel row</td>
+</tr>
+</tbody>
+</table></div></div></details>
 <details id="c4-changes-after-cross-spec-review-1"><summary>Changes after cross-spec review 1</summary><div class="body"><p>Alignment fixes from <code>docs/reviews/review-cross-spec-1.md</code>, made in one pass with <code>exit.md</code>, <code>storage-encryption.md</code>, <code>local-api.md</code> and <code>journal.md</code>. No new draft number: no check changes.</p>
 <div class="tw"><table>
 <thead>
@@ -1848,7 +1869,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Fee per tree transaction</td>
-<td>Exactly the terms' rule, ⌈fee rate × largest signed size / 1000⌉ (<code>terms.md</code> section 4.2); at most the member's ceiling</td>
+<td>Exactly the terms' rule, ⌈fee rate × largest signed size / 1000⌉ (<code>terms.md</code> section 4.2); the rate at least 100 sat/kvB; at most the member's ceiling, which is a sanity bound only and by default the term's maximum, because the host pays every tree fee from the funding (<code>terms.md</code> 4.4; <code>exit.md</code> 5.9)</td>
 </tr>
 <tr>
 <td>Tree anchors</td>
@@ -1860,7 +1881,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Channel amount</td>
-<td><strong>Every</strong> leaf's channel output at least the terms' <code>channel_sat</code> (a host that pays one member less than its terms promise is refused by all); the member's own channel at least its own minimum</td>
+<td><strong>Every</strong> leaf's channel output at least the terms' <code>channel_sat</code> (a host that pays one member less than its terms promise is refused by all); the member's own channel at least its own minimum. Under design 2, every channel output at least its member's capacity plus the payout reserve P(r), and every spare-liquidity output at least P(r) + 330 sat (<code>terms.md</code> 4.4), so every payout pays its member at least its capacity</td>
 </tr>
 <tr>
 <td>Placement</td>
@@ -2231,6 +2252,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p>A signing round produces group signatures for a set of transactions. One engine runs every round in Gazpacho: creating a factory, updating a layer, rotating, closing. It follows the MuSig2 standard (BIP 327) and uses the imported signing code, with the exceptions in section 13.</p>
 <p>Companion documents: <code>safety-rule.md</code> (draft 4), <code>messages.md</code>, <code>terms.md</code> and <code>journal.md</code> (draft 2, brought in line with this draft).</p>
 <p>Marks used where it matters: <strong>[C]</strong> read in the imported code (file and line); <strong>[S]</strong> checked in a primary source (the secp256k1-zkp headers at the pinned commit were read for this draft; statements about BIP 327 rely on the passages review 2 fetched and quoted); <strong>[R]</strong> reasoning, not yet checked by a source or a test.</p></div>
+<details id="c5-changes-2026-11-16-the-host-paid-tree-fe"><summary>Changes, 2026-11-16: the host-paid tree fee rate</summary><div class="body"><p>Not itself reviewed. The fee row of section 4.1 follows <code>terms.md</code> 4.4: the rate is at least 100 sat/kvB, the fee is the host's, and the member's ceiling is a sanity bound. The meaning of the fee record does not change: on this pin it carries <code>fee_per_tx_sat</code>; at the re-import of #46 record 30 carries the rate itself, equal to <code>tree_feerate</code>, and this rule keeps that.</p></div></details>
 <details id="c5-changes-after-review-3"><summary>Changes after review 3</summary><div class="body"><div class="tw"><table>
 <thead>
 <tr>
@@ -2618,7 +2640,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>Fee per tree transaction</td>
 <td>Field <code>fee_per_tx</code> (default 200) [C: <code>src/factory.c:861</code>]; overridden by a fee estimator if one is set [C: <code>:1900-1903</code>]</td>
 <td>Derived from the terms: ⌈<code>tree_feerate</code> × largest signed size / 1000⌉ (<code>terms.md</code> section 4.2); the proposal's <code>fee_per_tx_sat</code> must equal it</td>
-<td>At most the member's ceiling. The engine sets no estimator, so no estimator state enters the bytes</td>
+<td>At most the member's ceiling, a sanity bound by default the term's maximum; the rate at least 100 sat/kvB; the fee is the host's, from the funding (<code>terms.md</code> 4.4). The engine sets no estimator, so no estimator state enters the bytes</td>
 </tr>
 <tr>
 <td>Spare-liquidity delay</td>
@@ -8689,7 +8711,7 @@ docs/      plan, assessment, user guides
 {
  "about": "Not displayed. Sources and conventions for readers working from this file alone. The full text of every document is in the page itself, inside the collapsed sections.",
  "repository": "https://github.com/gazpacho-wallet/gazpacho",
- "built": "2026-11-16",
+ "built": "2026-11-17",
  "wording": "Say host (the papers say LSP) and member (client). Never say staking; say hosting, providing liquidity, fees.",
  "authoritative": "The Markdown files in the repository. This page is generated from them by tools/build-handbook.py.",
  "chapters": [
