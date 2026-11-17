@@ -114,9 +114,10 @@ typedef struct { gz_action_list_t *out; gz_status_t st; } emit_t;
 static void emit_send(emit_t *em, uint64_t peer, const uint8_t *bytes, size_t len)
 {
     gz_action_t a = {.kind = GZ_ACTION_SEND};
-    a.u.send.peer_id = peer;
-    a.u.send.bytes.data = bytes;
-    a.u.send.bytes.len = len;
+    gz_sign_link_set_peer(&a.u.send.link, peer);   /* the bridge until P4.3 (signing.h) */
+    a.u.send.kind = GZ_SIGN_SEND_WHOLE;
+    a.u.send.records.data = bytes;
+    a.u.send.records.len = len;
     if (em->st == GZ_OK) em->st = len ? gz_action_list_add(em->out, &a) : GZ_ERR_NO_SPACE;
 }
 
@@ -2086,11 +2087,11 @@ gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *ev, gz_action_list_t 
     count = out->count; used = out->used;
     em.out = out; em.st = GZ_OK;
     if (ev->kind == GZ_EVENT_MESSAGE_RECEIVED) {
-        const uint8_t *b = ev->u.message.bytes.data;
-        size_t len = ev->u.message.bytes.len;
+        const uint8_t *b = ev->u.message.records.data;
+        size_t len = ev->u.message.records.len;
         if (!b || !gz_sign_decode(b, len, &m)) e->counters[GZ_SIGN_COUNT_REJECTED]++;   /* RULE:DECODE_FIRST */
-        else if (e->cfg.host) host_message(e, ev->u.message.peer_id, &m, &em);
-        else member_message(e, ev->u.message.peer_id, &m, b, len, &em);
+        else if (e->cfg.host) host_message(e, gz_sign_link_peer(&ev->u.message.link), &m, &em);
+        else member_message(e, gz_sign_link_peer(&ev->u.message.link), &m, b, len, &em);
     } else if (ev->kind == GZ_EVENT_TIMER_FIRED && ev->u.timer.timer_id == TIMER_ID) {
         e->tick++;
         for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
@@ -2128,7 +2129,7 @@ gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *ev, gz_action_list_t 
         emit_timer(e, &em);
     } else if (ev->kind == GZ_EVENT_PEER_CONNECTED && !e->cfg.host) {
         for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++)
-            if (e->rounds[i].state != GZ_SIGN_ROUND_FREE && host_peer(&e->rounds[i]) == ev->u.peer.peer_id)
+            if (e->rounds[i].state != GZ_SIGN_ROUND_FREE && host_peer(&e->rounds[i]) == gz_sign_link_peer(&ev->u.peer.link))
                 member_resend(e, &e->rounds[i], &em);
     }
     if (em.st != GZ_OK) { out->count = count; out->used = used; return fail_engine(e, em.st); }

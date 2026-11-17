@@ -521,7 +521,7 @@ static uint64_t det_now(void *ctx) { (void)ctx; return 0; }
 static void eng_init(gz_sign_t *e, w_builder_t *b, uint32_t g)
 {
     gz_sign_config_t c;
-    gz_ports_t ports = {{det_fill, NULL}, {det_now, NULL}};
+    gz_ports_t ports = {{det_fill, NULL}, {det_now, det_now, NULL}};
     memset(&c, 0, sizeof c);
     c.host = g == 0; c.ctx = w_ctx();
     w_secret("test/factory", g, c.factory_secret);
@@ -733,9 +733,9 @@ static size_t begin_proposal(w_builder_t *b, uint32_t attempt, uint8_t *out, siz
     w_params(p, 1, attempt, w_mask(3), 0);
     if (w_begin_params(&e, b, p, W_PARAMS, &list) == GZ_OK)
         for (size_t k = 0; k < list.count; k++)
-            if (list.slots[k].kind == GZ_ACTION_SEND && list.slots[k].u.send.bytes.len <= cap) {
-                n = list.slots[k].u.send.bytes.len;
-                memcpy(out, list.slots[k].u.send.bytes.data, n);
+            if (list.slots[k].kind == GZ_ACTION_SEND && list.slots[k].u.send.records.len <= cap) {
+                n = list.slots[k].u.send.records.len;
+                memcpy(out, list.slots[k].u.send.records.data, n);
                 break;
             }
     CHECK(gz_sign_latest(&e) == NULL || n > 0);
@@ -807,9 +807,9 @@ static void test_definitions(int print)
         eng_init(&mem, &b, 1);
         gz_action_list_init(&ml, ms, 16, mb, sizeof mb);
         memset(&ev, 0, sizeof ev);
-        ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.bytes.data = other; ev.u.message.bytes.len = m;
+        ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.records.data = other; ev.u.message.records.len = m;
         CHECK(gz_sign_handle(&mem, &ev, &ml) == GZ_OK && ml.count == 1 && ml.slots[0].kind == GZ_ACTION_SEND);
-        CHECK(ml.count == 1 && gz_sign_decode(ml.slots[0].u.send.bytes.data, ml.slots[0].u.send.bytes.len, &msg) &&
+        CHECK(ml.count == 1 && gz_sign_decode(ml.slots[0].u.send.records.data, ml.slots[0].u.send.records.len, &msg) &&
               msg.kind == GZ_SIGN_MSG_ABORT && msg.reason == 12 && gz_sign_latest(&mem) == NULL);
         gz_sign_wipe(&mem);
     }
@@ -934,12 +934,12 @@ static void test_definitions(int print)
     eng_init(&mem, &b, 1);
     gz_action_list_init(&list, slots, 64, bytes, sizeof bytes);
     memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = 0; ev.u.message.bytes.data = clean; ev.u.message.bytes.len = n;
+    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, 0); ev.u.message.records.data = clean; ev.u.message.records.len = n;
     CHECK(gz_sign_handle(&mem, &ev, &list) == GZ_OK && list.count == 2);
     gz_sign_sha256_init(&s);
     gz_sign_sha256_write(&s, clean, n);
     for (size_t k = 0; k < list.count; k++)
-        if (list.slots[k].kind == GZ_ACTION_SEND) gz_sign_sha256_write(&s, list.slots[k].u.send.bytes.data, list.slots[k].u.send.bytes.len);
+        if (list.slots[k].kind == GZ_ACTION_SEND) gz_sign_sha256_write(&s, list.slots[k].u.send.records.data, list.slots[k].u.send.records.len);
     gz_sign_sha256_done(&s, d);
     uint64_t got = 0;
     for (int i = 0; i < 8; i++) got = got << 8 | d[i];
@@ -1084,8 +1084,8 @@ static void test_errors(void)
     CHECK(k >= 0);
     gz_event_t ev;
     memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.peer_id = 0;
-    ev.u.message.bytes.data = h.q[k].b; ev.u.message.bytes.len = h.q[k].len;
+    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, 0);
+    ev.u.message.records.data = h.q[k].b; ev.u.message.records.len = h.q[k].len;
     gz_action_list_init(&small, slots, 1, bytes, sizeof bytes);
     CHECK(gz_sign_handle(h.p[1].e, &ev, &small) == GZ_ERR_NO_SPACE && small.count == 0);
     size_t nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
@@ -1095,7 +1095,7 @@ static void test_errors(void)
     CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
     for (uint32_t j = 1; j <= 3; j++) CHECK(h_newest(&h, j) && h_newest(&h, j)->state == GZ_SIGN_ROUND_COMPLETE);
     /* the same with a start that cannot emit: still failed, and a later start recovers */
-    gz_storage_reader_t rd = {h_next, h_rewind, &h.p[2], h.p[2].incarnation, 0};
+    gz_storage_reader_t rd = {h_next, h_rewind, &h.p[2], h.p[2].incarnation, 0, {NULL, 0}};
     int more = 1;
     gz_action_list_init(&small, slots, 0, bytes, 0);
     CHECK(gz_sign_start(h.p[2].e, &rd, &small, &more) != GZ_OK && small.count == 0);

@@ -111,7 +111,7 @@ static int sends_kind(uint16_t kind)
     gz_lobby_msg_t m;
     for (i = 0; i < L.count; i++)
         if (L.slots[i].kind == GZ_ACTION_SEND &&
-            gz_lobby_decode(L.slots[i].u.send.bytes.data, L.slots[i].u.send.bytes.len, &m) == GZ_DEC_OK && m.kind == kind)
+            gz_lobby_decode(L.slots[i].u.send.records.data, L.slots[i].u.send.records.len, &m) == GZ_DEC_OK && m.kind == kind)
             c++;
     return c;
 }
@@ -160,9 +160,9 @@ static void keep(void)
                 NREC++;
             }
             x->r1 = NREC;
-        } else if (a->kind == GZ_ACTION_SEND && a->u.send.bytes.len <= sizeof x->b) {
-            x->n = a->u.send.bytes.len;
-            memcpy(x->b, a->u.send.bytes.data, x->n);
+        } else if (a->kind == GZ_ACTION_SEND && a->u.send.records.len <= sizeof x->b) {
+            x->n = a->u.send.records.len;
+            memcpy(x->b, a->u.send.records.data, x->n);
         } else if (a->kind == GZ_ACTION_NOTIFY) {
             x->code = a->u.notify.code;
             x->n = a->u.notify.bytes.len < sizeof x->b ? a->u.notify.bytes.len : sizeof x->b;

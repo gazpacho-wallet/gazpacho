@@ -864,10 +864,10 @@ static void token_dir(void)
     char p[512], dir[] = "/tmp/gz-sc-token-XXXXXX";
     CHECK(mkdtemp(dir) != NULL);
     setenv("XDG_RUNTIME_DIR", dir, 1);
-    CHECK_ERR(gz_sc_token_dir("/home/a/.local/share/gazpacho", p, sizeof p), GZ_SC_OK);
+    CHECK_ERR(gz_sc_token_dir("/home/a/.local/share/gazpacho", p, sizeof p), GZ_SC_OK);  /* address-check: allow (a test input) */
     uint8_t h[32];
     char hex[17], want[512];
-    crypto_hash_sha256(h, (const uint8_t *)"/home/a/.local/share/gazpacho", 29);
+    crypto_hash_sha256(h, (const uint8_t *)"/home/a/.local/share/gazpacho", 29);  /* address-check: allow (a test input) */
     sodium_bin2hex(hex, sizeof hex, h, 8);
     snprintf(want, sizeof want, "%s/gazpacho-%s", dir, hex);
     CHECK(strcmp(p, want) == 0);
@@ -884,11 +884,11 @@ static void token_dir(void)
     CHECK_ERR(gz_sc_token_dir("relative/path", p, sizeof p), GZ_SC_ARG);
     CHECK_ERR(gz_sc_token_dir("/x", p, 10), GZ_SC_BUFFER);
     setenv("XDG_RUNTIME_DIR", "relative", 1);
-    CHECK_ERR(gz_sc_token_dir("/home/a/.local/share/gazpacho", p, sizeof p), GZ_SC_OK);
+    CHECK_ERR(gz_sc_token_dir("/home/a/.local/share/gazpacho", p, sizeof p), GZ_SC_OK);  /* address-check: allow (a test input) */
     snprintf(want, sizeof want, "/tmp/gazpacho-%lu-%s", (unsigned long)getuid(), hex);
     CHECK(strcmp(p, want) == 0);
     unsetenv("XDG_RUNTIME_DIR");
-    CHECK_ERR(gz_sc_token_dir("/home/a/.local/share/gazpacho", p, sizeof p), GZ_SC_OK);
+    CHECK_ERR(gz_sc_token_dir("/home/a/.local/share/gazpacho", p, sizeof p), GZ_SC_OK);  /* address-check: allow (a test input) */
     CHECK(strcmp(p, want) == 0);
     rmdir(dir);
 }

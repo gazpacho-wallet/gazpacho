@@ -125,6 +125,10 @@ unsigned gzp_standin_cut_kept(const gzp_store_t *s);
 int gzp_standin_put_restore(const char *dir, const char *backup, char *err, size_t errlen);
 /* The k-th append from now fails before writing anything (0: never). */
 void gzp_standin_fail_at(gzp_store_t *s, unsigned k);
+/* Tests ("sync-fail-ping" on standard input): the next batch that holds a
+ * test engine ping record is written and its sync reports failure, as
+ * --test-sync-fail-at does for a batch picked by number. */
+void gzp_standin_fail_next_ping(gzp_store_t *s);
 /* The k-th batch append writes and then has its sync report failure; with
  * cut_fail the cut back fails too (poisoned); crash_after_counter exits
  * between the start counter and the incarnation entry. */

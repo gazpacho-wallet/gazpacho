@@ -12,7 +12,7 @@ interface (stream S10) exists:
 | no image and no frame from another origin | items 11, 14 |
 | EventSource cannot authenticate | item 12 |
 | the page's own `fetch()` passes the Origin check; Clear-Site-Data recorded | item 36, T4 |
-| first run from the redirect file: served while no wallet exists, the token once | T5, item 37 |
+| first run from the redirect file: served while no wallet exists; the interface presents the token, and it works once | T5, item 37 |
 
 Not here, because they need the interface or a desktop: T3 (SharedWorker
 under `require-corp`), T6 (snap and Flatpak browsers, `/proc/*/cmdline`

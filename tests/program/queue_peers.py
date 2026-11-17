@@ -45,7 +45,7 @@ def main():
         hd = os.path.join(work, "host")
         port = free_port()  # the "listening" line comes only after the start
         host = Proc("host", [exe, "--data-dir", hd, "--role", "host", "--listen", "127.0.0.1:%d" % port, "--name", "host",
-                             "--max-per-address", "0", "--test-start-delay-ms", ms(3000),
+                             "--max-per-address", "0", "--test-start-delay-ms", ms(10000),
                              "--test-listen-during-start"] + base, logs)
         procs.append(host)
         k = host.wait_for(r"host key=([0-9a-f]{66})")
@@ -65,10 +65,16 @@ def main():
             keys[n] = mk.group(1) if mk else ""
             check(p.wait_for(r"connected peer=%s" % hp, timeout=10) is not None,
                   "member %s connects during the host's start" % n)
-        i_ready = host.index_of(r"ready incarnation=1", timeout=30)
-        sent_during = all(any(t < host.times[i_ready] for i, t in enumerate(p.times) if " connected peer=" in p.lines[i])
-                          for p in mem.values()) if i_ready is not None else False
-        check(i_ready is not None and sent_during, "both members were up, queued, before the host's ready")
+        # Both members are connected (checked above) and the host has not
+        # finished its start: they are queued. The start is held 10 s, so a
+        # loaded machine that starts two members slowly is still inside it
+        # (3 s was not always enough: the one failure seen in CI). The times
+        # at which this harness read the two processes' lines are not
+        # compared; that the members' events reached the node only after the
+        # start is checked below, from the host's own output.
+        queued = host.find(r"ready incarnation=1")[0] is None
+        i_ready = host.index_of(r"ready incarnation=1", timeout=40)
+        check(i_ready is not None and queued, "both members were up, queued, before the host's ready")
         for n, p in mem.items():
             check(p.wait_for(r"pings-done peer=%s n=5" % hp, timeout=30) is not None,
                   "member %s gets every pong" % n)
@@ -76,14 +82,14 @@ def main():
         for p in mem.values():
             p.stop()
         recs = [r[1] for e in parse_journal(os.path.join(hd, "journal.standin")) if e[0] == "BTCH"
-                for r in e[3] if r[0] == RECORD_TEST_PING and len(r[1]) >= 24]
+                for r in e[3] if r[0] in RECORD_TEST_PING and len(r[1]) >= 82]
         wrong, per = [], {"a": 0, "b": 0}
         for r in recs:
-            who = r[24:].split(b"/")[0].decode(errors="replace")
+            who = r[82:].split(b"/")[0].decode(errors="replace")
             if who in keys:
                 per[who] += 1
-                if r[8:16].hex() != peer_id(keys[who]):
-                    wrong.append((r[24:].decode(errors="replace"), r[8:16].hex()))
+                if r[41:74].hex() != keys[who]:    # the link's remote key (test_engine.h)
+                    wrong.append((r[82:].decode(errors="replace"), r[41:74].hex()))
         check(per["a"] >= 5 and per["b"] >= 5 and not wrong,
               "every ping record names the member that sent it (a %d, b %d, wrong %s)" % (per["a"], per["b"], wrong[:4]))
         check(host.count(r"test-order message-from-unreported-peer") == 0,

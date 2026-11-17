@@ -6,7 +6,10 @@
  * deliberately faulty program (sim_nodes.h) must be caught by "nothing is
  * sent before it is saved" whenever that program saved anything. Runs of the
  * placeholder ping node then get a quiet tail, after which every reply that
- * was saved must have left its node ("saved, so eventually sent").
+ * was saved must have left its node ("saved, so eventually sent"), with no
+ * node restarted for it: the network loses messages only by closing their
+ * connection (contract v2 section 1), so every peer, the world included,
+ * asks again with its hello, and the node answers by itself.
  *
  * Odd seeds use the placeholder ping node, even seeds the multi node.
  *
@@ -162,6 +165,7 @@ int main(int argc, char **argv)
         t.txs_conflicting += s->txs_conflicting; t.secret_leaks += s->secret_leaks;
         secret_draw_total += secret_draws(sim, c.n_nodes); secrets_judged += watch.checked;
         t.messages_sent += s->messages_sent; t.messages_dropped += s->messages_dropped;
+        t.closed_on_loss += s->closed_on_loss;
         t.messages_duplicated += s->messages_duplicated; t.messages_delayed += s->messages_delayed;
         t.messages_delivered += s->messages_delivered; t.deliveries_reordered += s->deliveries_reordered;
         t.world_replies += s->world_replies; t.saves_durable += s->saves_durable; t.saves_lost += s->saves_lost;
@@ -180,10 +184,17 @@ int main(int argc, char **argv)
             sim_destroy(again);
         }
         if (!c.ops.create && !sim_failed(sim)) {        /* the ping node: a quiet tail, then the check */
+            /* A quiet tail long enough for every delay, every deferred hello
+             * (one answer a second per link) and every continuation chunk. */
             sim_quiesce(sim);
-            sim_run(sim, 120);
+            sim_run(sim, 1200 + 6ull * c.n_nodes * c.n_nodes);
             tail_runs++;
-            never_sent += saved_replies_not_sent(sim, c.n_nodes);
+            size_t missing = saved_replies_not_sent(sim, c.n_nodes);
+            if (missing && never_sent < 5) {
+                printf("seed %llu: %zu saved replies never sent\n", (unsigned long long)c.seed, missing);
+                if (getenv("GZ_SIM_TRACE")) fputs(sim_trace(sim, NULL), stdout);
+            }
+            never_sent += missing;
             failed += (uint64_t)sim_failed(sim);
         }
         sim_destroy(sim);
@@ -213,7 +224,9 @@ int main(int argc, char **argv)
     printf("  separate re-runs compared byte for byte: %llu, differing: %llu\n", N(replays), N(replay_mismatch));
     printf("  faulty-program runs caught: %llu of the %llu in which it saved anything (and %llu flagged without a save)\n",
            N(faulty_caught), N(faulty_saved), N(faulty_wrongly));
-    printf("  saved replies never sent after a quiet tail: %llu (over %llu ping-node runs)\n", N(never_sent), N(tail_runs));
+    printf("  saved replies never sent after a quiet tail: %llu (over %llu ping-node runs, no node restarted for it)\n",
+           N(never_sent), N(tail_runs));
+    printf("  connections closed and opened again on a lost message: %llu\n", N(t.closed_on_loss));
     printf("  totals: sent %llu, dropped %llu, duplicated %llu, delayed %llu, delivered %llu, reordered %llu,\n"
            "          replies to the world %llu, saves stored %llu, saves lost %llu, confirmations %llu, stale %llu,\n"
            "          storage failures %llu, crashes %llu (inside a release %llu), blocks %llu, lists refused %llu,\n"
@@ -251,6 +264,7 @@ int main(int argc, char **argv)
     CHECK(replay_mismatch == 0);
     CHECK(faulty_caught == faulty_saved && faulty_wrongly == 0);
     CHECK(t.handle_errors == 0);
+    if (profile == 0 || profile == 3) CHECK(t.closed_on_loss > 0);
     if (profile == 0) {
         CHECK(distinct == seeds);
         CHECK(faulty_saved == seeds);

@@ -36,6 +36,21 @@ static inline uint64_t h_mix(uint64_t x)
     return x ^ (x >> 31);
 }
 
+/* The workload's send X_g carries its step g in the first 8 bytes of the
+ * scope (contract v2's SEND has no peer number). */
+static inline void h_send_mark(gz_action_t *send, uint64_t g)
+{
+    send->u.send.kind = 32767;
+    for (int i = 0; i < 8; i++) send->u.send.scope[i] = (uint8_t)(g >> (56 - 8 * i));
+}
+
+static inline uint64_t h_send_step(const gz_action_t *send)
+{
+    uint64_t g = 0;
+    for (int i = 0; i < 8; i++) g = g << 8 | send->u.send.scope[i];
+    return g;
+}
+
 /* A guard record's bytes (spec 8.3, without the check), counter `counter`. */
 static inline size_t h_guard_bytes(uint8_t *out, uint64_t counter)
 {
@@ -148,7 +163,7 @@ static inline void h_execute(void *ctx, const gz_action_t *a)
             h->max_issued_incarnation = h->id[g].incarnation;
         if (gz_journal_save(h->j, a) == GZ_JOURNAL_OK) h->end_after[g] = gz_journal_size(h->j);
     } else if (a->kind == GZ_ACTION_SEND) {
-        h->released[a->u.send.peer_id] = 1;
+        h->released[h_send_step(a)] = 1;
     }
 }
 
@@ -188,7 +203,7 @@ static inline gz_status_t h_step(h_t *h)
     save.u.save.records = b.rec;
     save.u.save.n_records = h_records(g, &b, h->guards);
     gz_action_t send = {.kind = GZ_ACTION_SEND};
-    send.u.send.peer_id = g;
+    h_send_mark(&send, g);
     gz_action_list_add(&list, &save);
     gz_action_list_add(&list, &send);
     h->pending_step[(h->runner.issued + 1) % 64] = g;
