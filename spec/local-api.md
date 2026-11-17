@@ -1,6 +1,6 @@
 # The local API: program to interface
 
-Specification draft 4, 2026-11-12. Draft 3 (`8e4f9cb`) was reviewed independently (`docs/reviews/review-local-api-d3.md`, verdict "ready after listed changes, and a short list"); this draft answers its findings R1 to R12, aligns section 4.7 and the locked state with `spec/storage-encryption.md` draft 3 and with `spec/exit.md` 5.6 (draft 2), and fixes the contradictions the review of `spec/exit.md` draft 1 listed against this document (`docs/reviews/review-exit-d1.md`, section 4 item 6). Draft 4 has not itself been reviewed on its own; it was read with its companions by the cross-specification review 1 (`docs/reviews/review-cross-spec-1.md`), whose fixes are applied below ("Changes after cross-spec review 1"). Draft 3 is kept unchanged at `docs/specs-history/local-api-d3.md`, draft 2 at `docs/specs-history/local-api-d2.md`, draft 1 at `docs/specs-history/local-api-d1.md`. The table "Changes from draft 3", below, maps each finding to its change; the tables for drafts 2 and 1 are kept as those drafts had them.
+Specification draft 5, 2026-11-16. **Draft 5 has not itself been reviewed.** It closes the fifteen gaps the Slice 1 interface found when it was wired to draft 4 (`docs/ux/slice1-screens.md`, "Gaps"; `docs/handoff/2026-11-15-interface-wiring.md`), and applies the owner's decisions of 13 November (`docs/ux/decisions.md` 16a to 16e: automatic host funding, several lobbies at once, host accountability, member signing modes, understudies). The table "Changes from draft 4", below, maps each gap to its change. Draft 4 (2026-11-12) answered the independent review of draft 3 (`docs/reviews/review-local-api-d3.md`) and was read with its companions by the cross-specification review 1 (`docs/reviews/review-cross-spec-1.md`), whose fixes it carries ("Changes after cross-spec review 1"); it is kept unchanged at `docs/specs-history/local-api-d4.md`, draft 3 (`8e4f9cb`) at `docs/specs-history/local-api-d3.md`, draft 2 at `docs/specs-history/local-api-d2.md`, draft 1 at `docs/specs-history/local-api-d1.md`. The tables of changes from drafts 3, 2 and 1 are kept as those drafts had them.
 
 It replaces the prototype's proposal (`web/API.md` on branch `ui-prototype`), which was written from the screens' side and left the start-up token, paging and the restored wallet undesigned.
 
@@ -8,7 +8,7 @@ This is the interface between the `gazpacho` program (C; host and member in one,
 
 Items marked **(open)** are listed in section 24. Values marked **proposed** are first choices the owner has not confirmed. Items marked **default, owner to confirm** are conservative choices Slice 1 builds against now; each is listed in section 24.1 with what changes if the owner chooses otherwise.
 
-**Sources.** `web/API.md` and `web/README.md` (`ui-prototype`); `docs/ux/options-map.html` and `docs/ux/concept-h-recommended.html` (`ux-concepts`); `docs/ux/decisions.md`, `docs/SLICE1-WORK.md`, `docs/SLICES.md`, `docs/DESIGN.md`, `docs/THREAT-MODEL.md`, `docs/reviews/ux-critique.md`, `docs/reviews/review-local-api-d1.md`, `docs/reviews/review-local-api-d2.md`, `spec/storage-encryption.md` (draft 3), `spec/exit.md` (draft 2, and the review of draft 1), `docs/reviews/review-local-api-d3.md`, `docs/reviews/review-cross-spec-1.md`, `spec/messages.md`, `spec/terms.md`, `spec/journal.md`, `spec/signing-round.md`, `spec/safety-rule.md`, `spec/discovery.md` (`specs-slice1`).
+**Sources.** `web/API.md` and `web/README.md` (`ui-prototype`); `docs/ux/options-map.html` and `docs/ux/concept-h-recommended.html` (`ux-concepts`); `docs/ux/decisions.md`, `docs/SLICE1-WORK.md`, `docs/SLICES.md`, `docs/DESIGN.md`, `docs/THREAT-MODEL.md`, `docs/reviews/ux-critique.md`, `docs/reviews/review-local-api-d1.md`, `docs/reviews/review-local-api-d2.md`, `spec/storage-encryption.md` (draft 3), `spec/exit.md` (draft 2, and the review of draft 1), `docs/reviews/review-local-api-d3.md`, `docs/reviews/review-cross-spec-1.md`, `spec/messages.md`, `spec/terms.md`, `spec/journal.md`, `spec/signing-round.md`, `spec/safety-rule.md`, `spec/discovery.md` (`specs-slice1`). For draft 5: `docs/ux/slice1-screens.md`, `docs/handoff/2026-11-15-interface-wiring.md`, `docs/ux/decisions.md` 16, `docs/OPEN-QUESTIONS.md`, and the interface of PR 47 (`web/js/api.js`, `tests/web/`).
 
 **Web standards cited** (checked 2026-11-12 against the documents themselves, not from memory):
 
@@ -44,6 +44,36 @@ Added in draft 3 (each checked 2026-11-12 against the document itself):
 | HTML autofill | HTML Living Standard, "Autofill", https://html.spec.whatwg.org/multipage/form-control-infrastructure.html | For `autocomplete="off"`: "the user agent should not remember the control's data, and should not offer past values to the user", and "values are reset when reactivating a document". Crash and session restore are not addressed (12.7, test T7) |
 | Clear Site Data | W3C Clear Site Data, https://w3c.github.io/webappsec-clear-site-data/ | Acted on only for a response with the credentials flag whose URL is "a priori authenticated" (a term from Mixed Content); `"storage"` clears every session storage area of the origin in the user agent, every tab included. A second wall only (4.4) |
 | Bitwarden matching | Bitwarden, "URI match detection", https://bitwarden.com/help/uri-match-detection/ | Its "Host" option matches "the hostname and (if specified) port"; "Android Password Manager clients cannot currently match URIs based on port or path" (12.7) |
+
+Added in draft 5 (checked 2026-11-16 against the document itself):
+
+| Short name | Document | What this specification relies on |
+|---|---|---|
+| HTML workers | HTML Living Standard, "Shared workers and the `SharedWorker` interface", https://html.spec.whatwg.org/multipage/workers.html | The constructor is `constructor((TrustedScriptURL or USVString) scriptURL, …)`, and its first step gets a Trusted Type compliant string for `TrustedScriptURL` with the sink name "SharedWorker constructor". Under the pages' `require-trusted-types-for 'script'; trusted-types 'none'` (5.4) no policy can make a `TrustedScriptURL`, so a page cannot create a shared worker; hence 10.3 has none |
+
+## Changes from draft 4
+
+From the Slice 1 interface's wiring to draft 4 (`docs/ux/slice1-screens.md`, "Gaps", numbered as there; `docs/handoff/2026-11-15-interface-wiring.md`) and from the owner's decisions of 13 November (`docs/ux/decisions.md` 16). Gazpacho has not been released and the interface is compiled into the program, so nothing is kept for an older client: a field that named one lobby now names a list, and the two one-lobby errors are withdrawn. Each change below is written as requirements on the program (the server) and on the interface (the client), with a rationale, its error codes and an example, in the section named. **Draft 5 has not itself been reviewed.**
+
+| Gap | Change | Where |
+|---|---|---|
+| 1. Several lobbies at once (owner decision 16b) | `already_in_lobby` and `already_hosting` withdrawn. Up to `max_joined` and `max_hosted` lobbies at once (8 and 4, **proposed**, D22), then `409 lobby_limit_reached`; joining a lobby this program hosts is `409 own_lobby`. Status gains `lobbies[]` (each lobby with a seat or hosted, its `role` `joined` or `hosted`, stage and own code) and `doing.role`; every attention item with a `lobby_id` carries `lobby_role`. Single-lobby fields become lists: `pause.lobby_ids`, `lock.lobby_ids`, `held_lobbies`, `hosting_lobby_open.params.lobby_ids`. `GET /lobbies?show=mine` | 2.1, 4.5, 4.7, 7.5, 8.1, 11.1, 11.2, 11.3, 11.4, 14.2, 14.4, 15.1, 22, 24 |
+| 2. Member signing modes (owner decision 16d) | `sign_mode`: `automatic` (A), `ask_when_full` (B), `unlock_at_join` (C, **the default**). `join` takes `sign_mode` and, for C, the passphrase (kind A). `you.sign_auth` says whether the program may sign the lobby now. `PUT …/sign-mode` and `POST …/unlock`, for members and for a host's own signing. `doing.code = passphrase_needed`, attention `passphrase_needed`; outcome `not_unlocked_in_time` ("not unlocked counts as not answering the ready check"). The member's default mode is saved in the conditions (`sign_mode_default`); the host's own mode is in the draft (`host_sign_mode`). C after a fully failed attempt keeps the lobby's authorisation 10 minutes, then asks (**proposed**: recommended, not re-confirmed by the owner, D21) | 4.8, 7.5, 11.2, 11.4, 13.1, 14.1, 14.2, 14.3, 15.1, 15.2, 15.3, 22, 23.1, 24 |
+| 3. The suggested passphrase | `POST /api/v1/wallet/passphrase/suggest`: six words drawn by the program from its EFF list with the system's random source, checked against storage 4.1 before they are sent. The page no longer makes one | 2.1, 4.3, 12.2, 12.9 |
+| 4. The host cannot see why a member left at signing | Host seat state `refused`, with `refusal` (`at_stage`, `which`, `condition`, `yours`, `offered`, `signed`), never `left`; `round.params.refused`; attention `member_refused` and an activity entry. The condition and the two values need a protocol record (24.2 item 33) | 11.4, 15.3, 22, 23.1, 24 |
+| Accountability (owner decision 16c) | `accountability` on the lobby object, for every member: the host's signed lobby-wide counts in 1.0.0 (removed by the host, with reasons, among them); in Slice 1, only what this member's own program saw, said to be unsigned | 14.1, 14.6, 22 |
+| 5. No `doing.code` for "removed by the host" | `removed_by_host`, sticky, priority 24a, with the host's reason | 11.2, 22 |
+| 6. "Your lobby starts soon" | Attention `lobby_starts_soon` (S1, `heads_up`; `important` for a mode B seat or one that needs the passphrase), 15 minutes before the deadline or one seat short of the target (**proposed**, D23) | 11.4 |
+| 7. Standby seats | Understudies are **1.0.0** (owner decision 16e): swap rules, `doing.code = standing_by`, `you.standby` and the host's `standby` filled in 1.0.0, `null` in Slice 1 until the protocol has their messages | 2.1, 11.2, 14.1, 14.5, 15.3, 24.2 item 21 |
+| 8. The `SharedWorker` against the pages' policy | No worker. Each tab opens its own stream; a tab answered `429 too_many_streams` follows the events another tab relays (`event`, `tick`), and takes over on `leader_gone` or after 30 s with nothing relayed, retrying a `429` after 2 s doubling to 60 s, as built in PR 47. `worker-src 'none'`; the worker's messages are withdrawn | 4.4, 5.4, 8.1, 10.1, 10.3, 23.2 items 32 and 49, 23.6 T3 |
+| 9. After a restore, what `GET /wallet/setup` says | `restoring`, then `created_not_finished` until `finish-setup`, or `ready` if it was made; `finish-setup` is accepted while `restoring` | 12.1 |
+| 10. Lobby rows | A row's `fit` is `{ class, counted_from, rows }`, `rows` holding only rows that fail or fit only now, in 13.4's shape | 14.2 |
+| 11. Why a session ended | The `session` event carries `reason`; a request with an ended token answers `401 not_signed_in` with `params.ended`; `GET /session` answers `ended`; a failed words check answers `session_ended: true` | 4.5, 8.1, 10.2, 12.3 |
+| 12. The delay after a wrong passphrase | `wrong_passphrase` carries `params.retry_after_s` and `params.wrong_in_row` | 4.3, 8.1 |
+| 13. Copying an address | `clipboard-write=(self)`; one copy control, for an on-chain receiving address, never for a secret | 5.4 |
+| 14. About | No change to the API: `GET /about` stays 1.0.0 and the interface holds the Slice 1 texts (decision 7), now said in 2.1 | 2.1 |
+| 15. The hijack warning after `wallet_exists` | `first_run_launched_at` is answered for 10 minutes from the launch, in that run, whether or not a wallet exists by then | 4.3, 4.5, 23.1 |
+| Owner decision 16a | Host funding is broadcast by the program itself once H1 passes, on by default; before real money it becomes a setting whose default stays on | 15.2 |
 
 ## Changes after cross-spec review 1
 
@@ -243,19 +273,20 @@ Every call and every reserved field carries one mark.
 | Version | `GET /api/v1/version` | The interface checks it matches |
 | Events | `GET /api/v1/events` | Signing takes seconds; the screen must follow it live |
 | Status | `GET /api/v1/status`, `PUT /api/v1/pause` | The strip is on every screen. Pause must work from the first build |
-| Keys | `GET /api/v1/wallet/setup`, `POST /api/v1/wallet/create`, `POST /api/v1/wallet/phrase/reveal`, `POST /api/v1/wallet/phrase/check-start`, `POST /api/v1/wallet/phrase/check`, `POST /api/v1/wallet/restore`, `GET /api/v1/wallet/restore`, `POST /api/v1/wallet/finish-setup` | A member needs keys to join; a host to sign terms and fund. Creating, checking and restoring are done in the interface (owner decision 11) |
+| Keys | `GET /api/v1/wallet/setup`, `POST /api/v1/wallet/create`, `POST /api/v1/wallet/phrase/reveal`, `POST /api/v1/wallet/phrase/check-start`, `POST /api/v1/wallet/phrase/check`, `POST /api/v1/wallet/restore`, `GET /api/v1/wallet/restore`, `POST /api/v1/wallet/finish-setup`, `POST /api/v1/wallet/passphrase/suggest` (12.9) | A member needs keys to join; a host to sign terms and fund. Creating, checking and restoring are done in the interface (owner decision 11) |
 | Backup state | `GET /api/v1/backup`, the `words` part only | The `words_not_checked` item needs `words.checked_at` |
 | Conditions | `GET /api/v1/conditions`, `POST /api/v1/conditions/preview`, `PUT /api/v1/conditions` | "A member whose conditions are not met is seen to refuse" |
 | Finding the host | `POST /api/v1/discovery/query`, `GET /api/v1/discovery/queries/{id}`, `GET /api/v1/settings/connections` (read only: chain servers and known hosts) | Slice 1 has no Nostr: "the member is given the host's address directly". A query by address also adds the host to the known list |
-| Lobbies | `GET /api/v1/lobbies`, `GET /api/v1/lobbies/{id}`, `POST /api/v1/lobbies/{id}/join`, `PUT /api/v1/lobbies/{id}/ready`, `POST /api/v1/lobbies/{id}/leave`; `you.standby` (**provisional**, below) | Join and ready |
-| Hosting | `POST /api/v1/host/preview`, `POST /api/v1/host/lobbies`, `GET /api/v1/host/lobbies`, `GET /api/v1/host/lobbies/{id}`, `POST /api/v1/host/lobbies/{id}/start`, `POST /api/v1/host/lobbies/{id}/cancel`; `DELETE /api/v1/host/lobbies/{id}/seats/{seat}` and the standby seats of the host's view (**provisional**, below) | Open and start; removing a seat before the start |
+| Lobbies | `GET /api/v1/lobbies`, `GET /api/v1/lobbies/{id}`, `POST /api/v1/lobbies/{id}/join`, `PUT /api/v1/lobbies/{id}/ready`, `POST /api/v1/lobbies/{id}/leave`, `PUT /api/v1/lobbies/{id}/sign-mode`, `POST /api/v1/lobbies/{id}/unlock` (signing modes, 14.3); `you.standby` (1.0.0, answered `null`, below) | Join and ready, in the signing mode chosen (owner decision 16d) |
+| Hosting | `POST /api/v1/host/preview`, `POST /api/v1/host/lobbies`, `GET /api/v1/host/lobbies`, `GET /api/v1/host/lobbies/{id}`, `POST /api/v1/host/lobbies/{id}/start`, `POST /api/v1/host/lobbies/{id}/cancel`; `POST /api/v1/host/lobbies/{id}/unlock`, `PUT /api/v1/host/lobbies/{id}/sign-mode` (14.3); `DELETE /api/v1/host/lobbies/{id}/seats/{seat}` (**provisional**, below); the standby seats of the host's view (1.0.0, answered `null`) | Open and start; removing a seat before the start; seeing a member's refusal (15.3) |
 | Factories | `GET /api/v1/factories`, `GET /api/v1/factories/{id}`, `GET /api/v1/factories/{id}/dates` (S1: `factory_ends` and `funding_deadline` only) | "The screen shows the lobby, the tree and the confirmation" |
 | Funding | `GET /api/v1/wallet`, `POST /api/v1/wallet/address` | The host receives signet coins and funds last; the funding's confirmations show in the factory |
 | Record | `GET /api/v1/activity`, `GET /api/v1/activity/{id}` | The refusal, with its two numbers, is seen afterwards |
+| About | None: `GET /api/v1/about` stays 1.0.0. In Slice 1 the interface holds the dedication line, the credits and a licence note itself (decision 7; draft 5, gap 14) | The About screen |
 
 Everything else is 1.0.0 or reserved. A call marked "1.0.0" elsewhere in this document is not in Slice 1 even where it says what a partial answer would hold; this table is the whole Slice 1 list.
 
-**Provisional for Slice 1** (owner decision 10, applied to Slice 1 on 2026-11-12 with the owner's yes pending): host removal of a seat before the ready check, and standby seats. Removal uses an existing seat state (`messages.md` seat state 6, "removed"), so it can be built now. Standby seats have no protocol messages yet (`messages.md` section 9), so Slice 1 builds the API shape (14.1 `you.standby`, 15.3 `standby`) and the program answers every standby value as `null` until those messages exist. If the owner says no, both move back to 1.0.0 and nothing else changes. Every **status value** of section 22 exists from Slice 1 on, even where Slice 1 cannot reach it, so the interface's tables are written once.
+**Provisional for Slice 1** (owner decision 10, applied to Slice 1 on 2026-11-12 with the owner's yes pending): host removal of a seat before the ready check. Removal uses an existing seat state (`messages.md` seat state 6, "removed"), so it can be built now. **Standby seats are understudies in 1.0.0** (owner decision 16e, 2026-11-13; 14.5): they have no protocol messages yet (`messages.md` section 9), so Slice 1 carries the API shape (14.1 `you.standby`, 15.3 `standby`) and the program answers every standby value as `null`. If the owner says no to removal in Slice 1, it moves back to 1.0.0 and nothing else changes. Every **status value** of section 22 exists from Slice 1 on, even where Slice 1 cannot reach it, so the interface's tables are written once.
 
 ---
 
@@ -370,12 +401,27 @@ Nothing about sessions is saved to disk. A restart locks the wallet and signs ev
 
 and the program prints to its terminal when the token was used, and whether that request came from this account (3.4). Where the same-user check runs, another account cannot connect at all, so this guards against a program of the person's own account, or a system without the check.
 
+**Draft 5, gap 15: the 10 minutes after `wallet_exists`.**
+- The program MUST answer `first_run_launched_at` in `GET /api/v1/session` from the moment it opened the browser on the redirect file, or printed or notified the first-run code, until 600 s later, in the same program run, **whether or not a wallet exists by then**. Outside that window, and in any later run, it MUST answer `null`.
+- The interface MUST show the warning above when, holding no session, it presents a start token and gets `409 token_used`, or gets `409 wallet_exists` from `POST /api/v1/session/start`, and `GET /api/v1/session`, read again on that error, answers a `first_run_launched_at` less than 600 s before now by the machine's clock (the program and the browser share it).
+- Rationale: draft 4's server answered the field only while no wallet existed, so at the one moment the `wallet_exists` half of the rule needed it, it was `null`, and the interface showed the ordinary sign-in screen. The field is a time, not a secret: it says no more than the redirect file's own modification time.
+- Errors: none new.
+- Example, a page opened from the start link three minutes after someone else created the wallet:
+
+```
+POST /api/v1/session/start        { "start_token": "…43 characters…" }
+409 { "code": "wallet_exists", "message": "A wallet already exists.", "field": null, "params": {} }
+GET /api/v1/session
+200 { "wallet": "unlocked", "signed_in": false, "handover": true, "first_run_launched_at": 1794434100, "ended": null }
+```
+
+
 **Fallback for headless use.** When the program cannot open a browser (no display, a server viewed through a tunnel, a service), it prints a first-run code to its terminal if standard output is a terminal, and `gazpacho first-run-code` prints a new one over the local socket. The person types it in the page; `POST /api/v1/session/start` with `{ "code": "ABCDE-FGHJK" }` gives the same setup session. No redirect file is written in this case.
 
 **Why a token in a URL is allowed here, and only here.** Draft 1 had "no secret in any URL" (5.5). The owner's design needs one: only the start token, only in the fragment, spent at first use, 10 minutes, valid only while no wallet exists, and removed from the address bar at load. What remains is that the browser may have recorded the address with its fragment in history (or synced history) before the interface replaced it, and that an extension with access to tabs or history sees it; by then the token is spent, and once a wallet exists no start token is accepted at all. A test (23.3 item 3) checks that no other URL ever carries a secret.
 
 **The setup session** (review N6). `POST /api/v1/session/start` answers a session of kind `setup`.
-- It can call only: `GET /api/v1/wallet/setup`, `POST /api/v1/wallet/create`, `POST /api/v1/wallet/restore`, `GET /api/v1/wallet/restore`, `POST /api/v1/wallet/finish-setup`, the words calls of 12.3, `GET /api/v1/status`, `GET /api/v1/events`, `GET` and `DELETE /api/v1/session`. Anything else: `403 not_setup_call`.
+- It can call only: `GET /api/v1/wallet/setup`, `POST /api/v1/wallet/create`, `POST /api/v1/wallet/restore`, `GET /api/v1/wallet/restore`, `POST /api/v1/wallet/finish-setup`, `POST /api/v1/wallet/passphrase/suggest` (12.9), the words calls of 12.3, `GET /api/v1/status`, `GET /api/v1/events`, `GET` and `DELETE /api/v1/session`. Anything else: `403 not_setup_call`.
 - It needs **no fresh sign-in** for `create`, `restore` and `finish-setup`: no passphrase exists before them, and `create` and `restore` carry the passphrase being set.
 - When `create` or `restore` succeeds, the session becomes `kind: normal`, and its fresh-sign-in window (4.8) starts at that moment, as if the passphrase had just been typed, because it just was.
 - The **words calls are never covered by any window**: they carry the passphrase in their own body (12.3; storage 9.1, the words are sealed under a key from the passphrase). So the backup check right after creation asks for the passphrase once more, with the three words.
@@ -386,6 +432,7 @@ and the program prints to its terminal when the token was used, and whether that
 - **Which calls.** `POST /api/v1/session`, `POST /api/v1/session/fresh`, `POST /api/v1/wallet/unlock`, the words calls (12.3), every call that carries the passphrase in its request (4.8), and `create`, `restore` and the passphrase change (which set one).
 - **Order.** `Host` (5.1), `Origin` and fetch metadata (5.2), content type (5.3) and the session or setup checks run first; a request refused by any of them touches no counter, so a page on any other origin, another loopback port included, cannot. Then, **before any derivation is started**: the attempts file's delay, then the slot. **One derivation runs at a time and at most one waits** (storage 8.2): a request that finds both taken answers `429 rate_limited`, `params.retry_after_s = 1`, without counting as wrong. So 32 connections sending passphrases at once start one derivation, not 32.
 - **One counter for all of them**, kept in `attempts.gza` outside the encrypted store (storage 12.3: a count of wrong passphrases in a row, the last wrong time, and the time until which attempts are refused). One attempt per second; after 5 wrong in a row the delay doubles with each further wrong attempt, up to 15 minutes (**proposed**, D15). A right passphrase resets it. `create` and `restore` take the slot but cannot be wrong.
+- **The delay is told** (draft 5, gap 12). Every `401 wrong_passphrase` MUST carry `params.retry_after_s`, the seconds until the counter takes the next attempt (at least 1), and `params.wrong_in_row`. The interface MUST hold the button for `retry_after_s` and SHOULD say when the delay starts to grow (after 5 wrong in a row). Both are learnt anyway by trying again; telling them saves the person guessing, and gives a local program sending passphrases nothing it did not have. Example: `401 { "code": "wrong_passphrase", "message": "Wrong passphrase.", "field": "/passphrase", "params": { "retry_after_s": 4, "wrong_in_row": 7 } }`.
 - **A missing or damaged attempts file is the strictest state** (storage 12.3): attempts are refused for 15 minutes from the moment it was found missing. Deleting it therefore never resets the limit; only the person's own account can delete it anyway (5.7).
 - **Start token**: no counter at all (review R5). A cross-site navigation to `GET /` is allowed while no wallet exists (5.2), so any web page could make the interface present junk five times; with a counter that would cancel the codes. The token cannot be guessed (256 bits), so a wrong one is refused with `bad_code` and changes nothing, and only the real token's first presentation spends it. The interface presents a fragment only if it has the token's exact form (43 base64url characters), and otherwise ignores it.
 - **First-run codes**, which arrive only as typed input: one attempt per second; 5 wrong in a row cancel every code that existed then. They run no derivation and have their own counter.
@@ -402,25 +449,23 @@ and the program prints to its terminal when the token was used, and whether that
 - Every API call except `GET /api/v1/session`, `GET /api/v1/version`, `POST /api/v1/session` and `POST /api/v1/session/start` carries `X-Gazpacho-Session`. (`GET /api/v1/status` also answers without one while the wallet is locked, with the locked shape of 4.7 only.) A non-safelisted header forces a cross-origin preflight (Fetch), which is refused (5.3).
 - A session is valid only under the `Host` value it was created under (4.2), so a token taken from the `127.0.0.1` origin is refused under `localhost` or under the tunnel port.
 - Script inside the interface's own origin can read the token; the defence is the content-security policy and the no-HTML-sinks rule (5.4).
-- Sign-out and lock: the interface removes the token from storage, memory and its shared worker, and tells the other tabs (below). The answer also carries `Clear-Site-Data: "cache", "storage"`, as a **second wall only**: the specification it comes from acts only on responses it calls "a priori authenticated", and whether each browser honours it on `http://127.0.0.1` is a test (23.6 item T4). Nothing depends on it (review N10).
+- Sign-out and lock: the interface removes the token from storage and memory, and tells the other tabs (below). The answer also carries `Clear-Site-Data: "cache", "storage"`, as a **second wall only**: the specification it comes from acts only on responses it calls "a priori authenticated", and whether each browser honours it on `http://127.0.0.1` is a test (23.6 item T4). Nothing depends on it (review N10).
 - Another server on loopback that the person visits receives no Gazpacho credential, and a replayed request without the header reaches only the four calls above and static files (tests 23.2 items 33, 34).
 
-**The hand-over and worker messages** (review section 5, gap 5). Interface-internal, fixed here so that the tabs and the worker are built to one protocol. The channel is named `gazpacho-session-<port>`; every message is an object with a `type`.
+**The hand-over and relay messages** (review section 5, gap 5; draft 5 drops the worker, 10.3). Interface-internal, fixed here so that every tab is built to one protocol. The channel is named `gazpacho-session-<port>`; every message is an object with a `type`.
 
 | Message | From, to | Fields | Meaning |
 |---|---|---|---|
 | `ask` | New tab, channel | `nonce` (16 random bytes, hex) | "Does any tab hold a session?" Never sent while `handover` is `false` |
 | `offer` | A tab with a session, channel | `nonce` (the asker's), `session` | Sent only in answer to an `ask` received within the last second, and only while that tab's session is `normal` (never a setup session). The asker takes the first `offer` whose nonce is its own and checks it with `GET /api/v1/session` before showing anything |
 | `signed_out` | Any tab, channel | | The session ended (sign-out, idle, lock, a `session` event, any `401`). Every tab drops its copy and shows the passphrase field |
-| `leader`, `leader_gone` | The tab holding the stream, channel | `tab` (random id) | Only where there is no `SharedWorker` (10.3): which tab holds the event stream; another tab takes over on `leader_gone` or after 30 s without a relayed event or keep-alive |
-| `event` | The stream holder, channel or worker port | `topic`, `id`, `seq` | One relayed event (10.2), never content |
-| `token` | Tab, worker port | `session` | A worker has no `sessionStorage`; each tab posts its token as the first message on its port. The worker checks it with `GET /api/v1/session` (`signed_in: true`) before it serves that port, and keeps the newest **checked** token in memory while any checked port is connected |
-| `sign_out` | Tab, worker port | | From a checked port only: the worker drops the token and closes the stream |
-| `stream_state` | Worker, every port | `state`: `open`, `reconnecting`, `stopped`, `too_many` | So every tab can show "following the app" or not (10.3) |
+| `leader`, `leader_gone` | A tab whose own stream opened or closed, channel | `tab` (random id) | `leader` when its stream opens; `leader_gone` when it closes the stream, on `pagehide` (after aborting the stream), and when its stream fails and it starts reconnecting. A tab following relays takes over on `leader_gone` or after 30 s with nothing relayed (10.3) |
+| `event` | A tab holding a stream, channel | `topic`, `id`, `seq` | One relayed event (10.2), never content. A hint to ask again under the receiving tab's own session, never trusted as data |
+| `tick` | A tab holding a stream, channel | `tab` | One relayed keep-alive (10.3), so a tab following relays knows the stream still lives (draft 5) |
 
-The worker's script is served with the same `Cross-Origin-Embedder-Policy` and `Cross-Origin-Resource-Policy` headers as the pages (5.4), so a page under `require-corp` can create it in whichever way each browser requires (review N11; test 23.6 item T3). A browser without `SharedWorker` uses the elected tab.
+**No worker** (draft 5, gap 8). Draft 4 held the stream in a `SharedWorker`. The pages' policy (5.4) has `require-trusted-types-for 'script'; trusted-types 'none'`, and the `SharedWorker` constructor passes its script address through Trusted Types (HTML workers: it takes `(TrustedScriptURL or USVString) scriptURL` and first gets a Trusted Type compliant string for the sink "SharedWorker constructor"), so with no policy allowed the page cannot create the worker at all; `tests/web/quality.spec.mjs` records the `TypeError` in Chromium. Naming a policy would add the one thing the policy exists to forbid, a place where page script turns a string into code to load. So draft 5 drops the worker and its messages (`token`, `sign_out`, `stream_state`), and every tab follows 10.3.
 
-**The worker trusts no port by default** (review R7). Any page of the same origin can attach to the running worker with `new SharedWorker(<its URL>)`, because a worker instance is matched by origin, script URL and name, and with the tunnel port set and the tunnel down such a page may be another service's. So the worker relays `event` and `stream_state` only to ports that presented a token it checked, and ignores every message, `token` and `sign_out` included, from a port that has not. A port that presents a token the program refuses is dropped. And **while the tunnel port is set no SharedWorker is used at all**: each tab holds its own stream for its own session (10.3), as it already signs in on its own (no hand-over).
+**Relays are hints only.** A relayed `event` or `tick` carries a topic, an id and a number and nothing else, and makes a tab ask again under its own session (10.2). A same-origin page that forges one can make a tab redraw, and nothing more; the session token is never on the channel except in `offer`, under the rules above. While `handover` is `false` no tab listens to or sends on the channel at all, which also answers review R7's concern now that there is no worker to attach to.
 
 ### 4.5 Session calls
 
@@ -428,12 +473,12 @@ All **S1**.
 
 | Call | Request | Answer | Errors |
 |---|---|---|---|
-| `GET /api/v1/session` | | `{ "wallet": "none"\|"locked"\|"files_behind"\|"unlocked", "signed_in": false, "handover": true\|false, "first_run_launched_at": null\|… }`, or with a valid session `{ "wallet": "unlocked"\|"files_behind", "signed_in": true, "kind": "setup"\|"files_behind"\|"normal", "session_no": 3, "fresh_until_at", "idle_sign_out_at", "started_at", "handover", "lock": null\|{ "state": "held_for_signing"\|"held_for_payment", "lobby_id", "since_at" } }`. `handover` is `false` while the tunnel port is set (4.4). `first_run_launched_at` is when the program opened the browser at first run, so the interface can word a hijack (4.3). Never returns a secret | |
+| `GET /api/v1/session` | | `{ "wallet": "none"\|"locked"\|"files_behind"\|"unlocked", "signed_in": false, "handover": true\|false, "first_run_launched_at": null\|… }`, or with a valid session `{ "wallet": "unlocked"\|"files_behind", "signed_in": true, "kind": "setup"\|"files_behind"\|"normal", "session_no": 3, "fresh_until_at", "idle_sign_out_at", "started_at", "handover", "lock": null\|{ "state": "held_for_signing"\|"held_for_payment", "lobby_ids", "since_at" } }`. `handover` is `false` while the tunnel port is set (4.4). `first_run_launched_at` is when the program opened the browser, or printed the first-run code, at first run, so the interface can word a hijack (4.3); it is answered **whether or not a wallet exists by then**, in the same run and until 600 s after that moment, and is `null` otherwise (draft 5, gap 15). `ended` (draft 5, gap 11): `null`, or `{ "reason", "at" }` when the request carried a session token that ended during this run (10.2). `lock.lobby_ids`: every lobby whose round holds the lock (several lobbies, 14.4). Never returns a secret | |
 | `POST /api/v1/session/start` | `{ "start_token": "…" }` or `{ "code": "ABCDE-FGHJK" }` | `200`, `{ "session": "<token>", "kind": "setup" }` | `wallet_exists` (no start token is accepted once a wallet exists), `token_used` (`params.used_at`), `bad_code`, `code_expired`, `too_many_attempts`, `rate_limited` |
 | `POST /api/v1/session` | `{ "passphrase": "…" }` | `200`, `{ "session": "<token>", … the fields of GET }`. Unlocks the wallet if it was locked (the unlock order of 4.7); otherwise runs storage's **check**. When the unlock finds the files older than the wallet's last saved state (storage 6.3 step 4), the answer is still `200`, with a session of **kind `files_behind`**, `wallet: "files_behind"` and `params.cause`: `behind` or `possibly_old` (4.7). The wallet stays locked (the keys are dropped again, and the watcher runs, 1.0.0) | `wrong_passphrase`, `rate_limited` (`params.retry_after_s`), `no_wallet`, `passphrase_not_checked` (the derivation failed, for example out of memory; not counted as wrong, storage 8.4), `node_stopped` (`journal_corrupt` or `storage_failed` found at unlock; the wallet stays locked, 4.7) |
 | `POST /api/v1/session/fresh` | `{ "passphrase": "…" }` | `{ "fresh_until_at": … }` | `wrong_passphrase`, `rate_limited` |
 | `DELETE /api/v1/session` | | `204`, `Clear-Site-Data`. Signs this browser out; the wallet stays unlocked and keeps working | |
-| `POST /api/v1/wallet/lock` | `{ "confirm": "lock_wallet" }`, and while anything needs watching also `"confirm_locked"`: `"watcher_only"` while a watcher will run, or `"nobody_watching"` when none will (the watcher off, no key store, and every Slice 1 build); and, **only when `watching.unlock_by` is not `null`** (something to take out, 1.0.0), `"confirm_unlock_by_height"`: the `watching.unlock_by.due_height` the warning showed (4.7). Slice 1 never sends it. Fresh sign-in while anything needs watching | `202`, `{ "wallet": "locked" }`, or `{ "lock": { "state": "held_for_signing", "lobby_id" } }` while partial signatures are out, or (1.0.0) `{ "lock": { "state": "held_for_payment" } }` while an incoming payment's secret is released and the payment is not settled (4.7). Sessions end when the key is actually dropped, not before | `fresh_sign_in_needed`, `confirm_mismatch`, `hosting_lobby_open` (`params.lobby_id`: cancel it first, 4.7) |
+| `POST /api/v1/wallet/lock` | `{ "confirm": "lock_wallet" }`, and while anything needs watching also `"confirm_locked"`: `"watcher_only"` while a watcher will run, or `"nobody_watching"` when none will (the watcher off, no key store, and every Slice 1 build); and, **only when `watching.unlock_by` is not `null`** (something to take out, 1.0.0), `"confirm_unlock_by_height"`: the `watching.unlock_by.due_height` the warning showed (4.7). Slice 1 never sends it. Fresh sign-in while anything needs watching | `202`, `{ "wallet": "locked" }`, or `{ "lock": { "state": "held_for_signing", "lobby_ids": [ … ] } }` while partial signatures are out, or (1.0.0) `{ "lock": { "state": "held_for_payment" } }` while an incoming payment's secret is released and the payment is not settled (4.7). Sessions end when the key is actually dropped, not before | `fresh_sign_in_needed`, `confirm_mismatch`, `hosting_lobby_open` (`params.lobby_ids`: every Open hosted lobby; cancel them first, 4.7) |
 | `POST /api/v1/session/revoke-all` | `{ "confirm": "revoke_all" }` | `204`. Every session ends, every code and start token is cancelled, the socket token is rotated. **The wallet stays unlocked and the storage key is kept.** Fresh sign-in | `fresh_sign_in_needed` |
 | `POST /api/v1/wallet/start-as-restore` (S1) | `{ "confirm": "restore_new_keys", "passphrase": "…" }` (4.8, kind A), from a `files_behind` session or on the local socket | `202`, `{ "wallet": "restoring" }`. Storage's **start as restore** (storage 6.3 step 4, 8.2): the program starts on these files with a restore marker and a new epoch (`journal.md` 8.2), keeps the guard's epochs and any `.newer` watcher files, and goes on with the unlock order of 4.7 from step 4. The session becomes `normal`. Factories from the files are `restoring_unconfirmed` until their hosts or the chain show current data (12.6), and lost seats are listed (`restored_seats_lost`) | `wrong_passphrase`, `rate_limited`, `confirm_mismatch`, `not_files_behind` (the wallet is not in that state) |
 
@@ -475,7 +520,7 @@ What goes into the bundle and the penalty file is storage 8.7.2's list (items B1
 - partial signatures are out in an unresolved round: `lock.state = held_for_signing` in `GET /session` and in status, until the round ends;
 - (1.0.0) an incoming payment's secret has been released and the host has not yet removed the payment by an irrevocable update: `lock.state = held_for_payment`, after new payments are stopped and incoming payments not yet fulfilled are failed back (`spec/exit.md` 5.6; storage 8.1). Outgoing payments do not hold it.
 
-A lock while this program hosts an **Open** lobby answers `409 hosting_lobby_open`: a locked host cannot answer its members or cancel at the deadline, so the person cancels the lobby first (**proposed**).
+A lock while this program hosts an **Open** lobby answers `409 hosting_lobby_open` with every such lobby in `params.lobby_ids`: a locked host cannot answer its members or cancel at the deadline, so the person cancels the lobby first (**proposed**).
 
 **Locking while anything needs watching** (`watching.state` other than `nothing_to_watch`) is treated like going offline (4.8, 20.2; review N2): it needs a fresh sign-in and `confirm_locked`. **Only when something is to take out**, that is when `watching.unlock_by` is not `null`, it also needs `confirm_unlock_by_height`, echoing `watching.unlock_by` (a date, 7.2, kind `unlock_by`) as the warning showed it (cross-spec review D4, D5). `unlock_by` is `spec/exit.md` 5.6's: the last height at which an unlock still lets the node finish leaving with every margin, the minimum over the factories that have something to take out and over incoming payments whose secret is released. Where nothing is to take out (every Slice 1 wallet, whose members are owed nothing) it is `null`, and the lock takes `confirm_locked` alone. The warning says exactly what locked still does (review R1):
 
@@ -583,6 +628,8 @@ Draft 2 had one kind: a 5-minute window, opened by any passphrase entry includin
 | `POST /api/v1/wallet/lock` while anything needs watching | S1 | B | `confirm_locked`; and `confirm_unlock_by_height` only when `watching.unlock_by` is not `null` (1.0.0; never in Slice 1; 4.7) | Like going offline: the program then signs, moves and answers the host no more, and cannot finish an exit |
 | `POST /api/v1/wallet/start-as-restore` | S1 | A | `confirm: "restore_new_keys"` | Starts files older than the wallet's last saved state as a restore, under a new epoch; cannot be undone (4.7) |
 | `DELETE /api/v1/host/lobbies/{id}/seats/{seat}` | S1 (provisional) | B | `confirm_seat`: the seat id | Removes a member before the start (15.2) |
+| `POST /api/v1/lobbies/{id}/join` with `sign_mode: "unlock_at_join"`; `POST /api/v1/lobbies/{id}/unlock`; `POST /api/v1/host/lobbies/{id}/unlock`; `PUT …/sign-mode` to `unlock_at_join` | S1 | A | `seen_current_digest` (join); the lobby in the path (unlock) | Each gives the program the authority to sign one lobby's round (14.3) |
+| `PUT /api/v1/lobbies/{id}/sign-mode` and `PUT /api/v1/host/lobbies/{id}/sign-mode` to `automatic`; `PUT /api/v1/conditions` moving `sign_mode_default` to `automatic` | S1 | B | `confirm_sign_mode: "automatic"`; for the conditions, `confirm_loosens` | Widens what the program signs without asking (14.3, 13.1) |
 | `POST /api/v1/wallet/passphrase` (change it) | 1.0.0 | A (the old passphrase) | The new passphrase twice | It is the key to every file |
 | `POST /api/v1/wallet/send` | 1.0.0 | A | `confirm_amount_sat`, `confirm_address`, and the `review_id` | Spends coins |
 | `POST /api/v1/wallet/transactions/{txid}/speed-up` | 1.0.0 | A | `confirm_fee_sat`, `review_id` | Spends coins |
@@ -602,7 +649,7 @@ Draft 2 had one kind: a 5-minute window, opened by any passphrase entry includin
 
 **The passphrase in a request is never kept.** It is removed before the request digest is computed (7.4), wiped after its one derivation (storage 8.4), and a replay of a kind A request by its `request_id` returns the saved answer without running the derivation, because a replay does nothing new and its answer shows only what a `GET` would (7.4).
 
-**Not in the table, on purpose.** `join` and `ready` (S1) need no fresh sign-in: they spend none of the member's coins in 1.0.0, and their echo is `seen_current_digest`, the exact terms the person reviewed (14.2). Whether a stolen session's ability to join is acceptable is **default, owner to confirm** (24.1 D4). Pausing, tightening conditions, leaving a lobby, cancelling one's own hosted lobby and signing out also need none: each only reduces what the program does.
+**Not in the table, on purpose.** `join` and `ready` (S1) need no fresh sign-in: they spend none of the member's coins in 1.0.0, and their echo is `seen_current_digest`, the exact terms the person reviewed (14.2). Whether a stolen session's ability to join is acceptable is **default, owner to confirm** (24.1 D4). Pausing, tightening conditions, leaving a lobby, cancelling one's own hosted lobby and signing out also need none: each only reduces what the program does. With signing modes (14.3), a join in mode A or B still needs nothing; a join in mode C carries the passphrase because it is the unlock, and a change to mode B needs nothing because it only narrows.
 
 ### 4.9 Rotation and revocation
 
@@ -691,23 +738,23 @@ CORP on static files also stops a cross-origin `<img>` or `<script>` from readin
 
 ```
 Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
-  img-src 'self'; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self';
+  img-src 'self'; font-src 'self'; connect-src 'self'; worker-src 'none'; manifest-src 'self';
   form-action 'none'; frame-ancestors 'none'; base-uri 'none';
   require-trusted-types-for 'script'; trusted-types 'none'
 Cross-Origin-Opener-Policy: same-origin
 Cross-Origin-Embedder-Policy: require-corp
 X-Frame-Options: DENY
-Permissions-Policy: camera=(), microphone=(), geolocation=(), usb=(), serial=(), bluetooth=(), payment=(), clipboard-write=()
+Permissions-Policy: camera=(), microphone=(), geolocation=(), usb=(), serial=(), bluetooth=(), payment=(), clipboard-write=(self)
 Cache-Control: no-store
 ```
 
 - `Cache-Control: no-store` on the pages (draft 2 had `no-cache`; review N9), so that a page that showed the words is not kept for back and forward navigation in browsers that refuse such pages. Chrome may now keep a `no-store` page, but evicts it when a `fetch` from it returned `no-store`, which every API answer here does (Chrome bfcache no-store). The interface clears the words on `pagehide` regardless (12.7); neither is relied on alone.
-- The shared worker's script (10.3) is served with the pages' `Cross-Origin-Embedder-Policy`, `Cross-Origin-Resource-Policy`, `Cache-Control` and content-security policy (review N11).
+- Draft 5 serves no worker script: the interface creates no worker (10.3, 4.4), and the policy says `worker-src 'none'`.
 
 - `Referrer-Policy: same-origin` (draft 1 had `no-referrer`): no referrer leaves the origin, and same-origin requests keep their real `Origin` header (5.2).
-- **No inline script and no inline style**, as the prototype already requires (`web/README.md`). No `unsafe-inline`, no `unsafe-eval`, no `data:` or `blob:` sources. QR codes are drawn as SVG elements built through the DOM. `worker-src 'self'` allows the interface's own shared worker (10.3).
+- **No inline script and no inline style**, as the prototype already requires (`web/README.md`). No `unsafe-inline`, no `unsafe-eval`, no `data:` or `blob:` sources. QR codes are drawn as SVG elements built through the DOM. `worker-src 'none'`: no worker is created (10.3; draft 5, gap 8).
 - **Trusted Types with no policy** makes `innerHTML` and similar sinks throw in browsers that support it. The prototype already inserts all text as text (`gz.util.h`). The interface must not depend on it.
-- `camera=()` until QR scanning arrives (later reserved). `clipboard-write=()` limits only Chromium's asynchronous Clipboard API: Firefox and Safari do not act on the `Permissions-Policy` header and have no `clipboard-write` permission (MDN Clipboard), and no browser lets it govern the person's own selection and copy. What keeps the words off the clipboard is that the interface has no copy control for anything secret and marks the words `user-select: none` (12.7). Copying an address or an invoice, when those screens arrive, is a change to this spec. Turning either on is a change to this spec.
+- `camera=()` until QR scanning arrives (later reserved); turning it on is a change to this spec. **`clipboard-write=(self)`** (draft 5, gap 13; draft 4 had `clipboard-write=()`): the interface MAY offer one copy control, for an on-chain receiving address it got from `POST /api/v1/wallet/address` or `GET /api/v1/wallet`, and for nothing else in Slice 1; an invoice (1.0.0) is a further change to this spec. It MUST write with `navigator.clipboard.writeText` from that control's click handler only, MUST show the copied address in full beside the control so the person can compare it where they paste it, and MUST NOT offer a copy of the 24 words, any passphrase (the suggested one included, 12.9), a session token, a start token or a first-run code. Rationale: a Slice 1 host must receive coins, and an address typed by hand is easy to get wrong; selecting the text copies it anyway, so the control adds nothing the page could not already do. `clipboard-write` limits only Chromium's asynchronous Clipboard API (MDN Clipboard); Firefox and Safari need a click, which the rule asks for anyway. What keeps the words off the clipboard is unchanged: no copy control for anything secret, and the words marked `user-select: none` with their `copy` event cancelled (12.7). Errors: none; the program serves only the header.
 - Every API response also: `Content-Type: application/json; charset=utf-8`, `Cache-Control: no-store`.
 - **Static files** are compiled into the program. No file is read from disk at request time, so there is no path to traverse. Unknown paths answer `404`. A test build may serve from a folder (`--interface-dir`), refused in release builds.
 
@@ -879,6 +926,7 @@ The API needs state that is not protocol bytes. Draft 1 left it without a home (
 | Review and preview ids spent (1.0.0) | `0x000d001c` `review_id_spent` |
 | Host-node setting (1.0.0) | `0x000d001e` `host_node` |
 | User-added chain servers (1.0.0) | `0x000d0020` `chain_server_added` |
+| Signing mode per lobby (draft 5) | `0x000d0024` `sign_mode` |
 | While-closed reports (1.0.0) | `0x000d0022` `while_closed_report` | Nothing here is a key: the 24 words and the seed stay in the key file (`journal.md` section 10).
 
 | What | Contents | Saved with, and before | Release |
@@ -888,12 +936,13 @@ The API needs state that is not protocol bytes. Draft 1 left it without a home (
 | **Words-check attempts** | The time of each check made in the last 24 hours (12.3) | Before `check` compares the words, once the passphrase has opened them, so a restart never resets the limit | S1 |
 | **Conditions** | The member's full conditions, `preset`, `version` | Before `PUT /conditions` answers; in the same batch as any `leave` it causes | S1 |
 | **Conditions copied at joining** | For each joined lobby: the conditions, their `version` and `compare_with`, as they were at joining | **In the same batch as the lobby's `joined` record** (`journal.md` section 9). The fit check at the ready check and at signing uses this copy, never today's conditions (13.2; test 23.1 item 2) | S1 |
-| **Pause** | `on` or `off`, `since_at`, and the lobby a pause is held for (`held_for_signing`) | Before `PUT /pause` answers, and before any `leave` or `round_abort` the pause sends. A locked program cannot read it, and joins and signs nothing anyway (4.7); **at unlock**, a saved `on` is applied **before the node connects to any host** (4.7, step 7), so a restart never resumes joining or signing (11.3) | S1 |
+| **Pause** | `on` or `off`, `since_at`, and the lobbies a pause is held for (`held_for_signing`; several since draft 5) | Before `PUT /pause` answers, and before any `leave` or `round_abort` the pause sends. A locked program cannot read it, and joins and signs nothing anyway (4.7); **at unlock**, a saved `on` is applied **before the node connects to any host** (4.7, step 7), so a restart never resumes joining or signing (11.3) | S1 |
 | **Local ids** | For each lobby joined or hosted and each factory: local id, fingerprint | With the lobby's first record (`terms_received` or `lobby_opened`), and with the factory's first round record | S1 |
 | **Known hosts** | Key, address, source (`built_in`, `added`, `invitation`), `added_at` | Before `discovery/query` answers, when the query adds a host | S1 |
 | **Activity entries** | Id, time, kind, who decided, rule, params, and the **saved copy** (terms object, fit check, conditions as copied), never changed afterwards (section 19) | In the same batch as the record of the event it describes, where there is one (for a refusal, with the round's `round_ended` or the lobby's `leave`); otherwise alone, before the event is shown | S1 |
 | **Request ids** | `request_id`, method, path, body digest, answer status, the local id of the object it acted on, `created_at` | In the same batch as the action's first save (7.4) | S1 |
 | **Set-aside funds** | For each hosted lobby: the amount set aside and the echoed `confirm_funding_sat` | Before `POST /host/lobbies` answers; replaced by `funding_plan` when the attempt starts | S1 |
+| **Signing mode** | For each joined or hosted lobby: `sign_mode` (14.3). Never the authorisation itself, which lives in memory only and ends at stop | In the same batch as the lobby's `joined` or `lobby_opened` record; before `PUT …/sign-mode` answers | S1 |
 | **Sign-out setting** | `sign_out_after_idle_s` (idle signs the browser out and never locks, 4.7; draft 4 called it `lock_after_idle_s`) | Before the settings call answers (1.0.0; Slice 1 uses the fixed default and saves nothing) | 1.0.0 |
 | **Settings** | Every field of section 20 that is not computed | Before the `PATCH` answers | 1.0.0 |
 | **Review and preview ids spent** | Id, spent or expired | In the same batch as the action that uses it | 1.0.0 |
@@ -927,8 +976,8 @@ A failed call answers a non-2xx status with:
 | 400 | `missing_field` | |
 | 400 | `secret_in_url` | Section 5.5 |
 | 400 | `two_credentials`, `bearer_not_on_tcp`, `no_upgrade` | Sections 4.6, 3.1 |
-| 401 | `not_signed_in` | No session header or token, or an unknown one |
-| 401 | `wrong_passphrase` | Section 4.3 |
+| 401 | `not_signed_in` | No session header or token, or an unknown one. `params.ended`: `{ "reason", "at" }` when the token ended during this run, else `null` (10.2; draft 5, gap 11) |
+| 401 | `wrong_passphrase` | Section 4.3. `params.retry_after_s` (at least 1) and `params.wrong_in_row` (draft 5, gap 12) |
 | 423 | `wallet_locked` | The wallet is locked (4.7) |
 | 403 | `other_user` | The connection belongs to another operating-system account (3.4). Fixed text; the connection is closed |
 | 403 | `not_setup_call` | A setup session called something outside the first-run calls (4.3) |
@@ -938,14 +987,14 @@ A failed call answers a non-2xx status with:
 | 503 | `passphrase_not_checked` | The key derivation failed (the helper crashed or ran out of memory, storage 8.4). Not counted as a wrong passphrase; try again |
 | 409 | `something_to_take_out` | "Maximum privacy" without `confirm_leave_by_height` while a factory has something to take out (20.2; `spec/exit.md` W5) |
 | 409 | `token_used` | The start token was already presented (4.3); `params.used_at` |
-| 409 | `hosting_lobby_open` | Lock refused while this program hosts an Open lobby (4.7); `params.lobby_id` |
+| 409 | `hosting_lobby_open` | Lock refused while this program hosts an Open lobby (4.7); `params.lobby_ids`, every such lobby |
 | 400 | `weak_passphrase`, `passphrases_differ` | Storage 4.1's rules; `params.reason`: `too_short` (with `params.length` and `params.minimum`), `too_long`, `too_common`, `names_the_wallet`, `uses_the_words` |
 | 403 | `forbidden_origin` | Section 5 |
 | 403 | `fresh_sign_in_needed` | Section 4.8 |
 | 409 | `confirm_mismatch` | An echo field (4.8) differs from what the program would do; `params` holds both values |
 | 409 | `request_id_reused` | Section 7.4 |
 | 409 | `review_expired`, `preview_expired` | Section 7.4 |
-| 429 | `too_many_streams` | Section 10.3. The interface does not retry it |
+| 429 | `too_many_streams` | Section 10.3. The interface follows the events other tabs relay, and tries again only to take over (10.3) |
 | 404 | `not_found` | Unknown path or identifier |
 | 405 | `method_not_allowed`, `no_cors` | |
 | 409 | `changed_elsewhere` | `based_on_version` is old |
@@ -988,7 +1037,7 @@ Long lists (lobbies, activity, payments, on-chain transactions, auto-join histor
 | Security | An ordinary `GET` under every rule of section 5: session header, `Host`, `Origin`, fetch metadata | Not covered by the same-origin policy: any page can open one and must be refused by a separate `Origin` check (cross-site WebSocket hijacking) |
 | Code in the C program | A response that stays open and writes lines | An upgrade handshake, frame parser, masking, ping and close: more parsing of untrusted input in C |
 | Reconnects | Written in the interface, with the `Last-Event-ID` request header set by the interface; no automatic reconnect that could loop | Written by hand |
-| Cost | One HTTP/1.1 connection for the whole browser (10.3) | One connection |
+| Cost | One HTTP/1.1 connection per tab that holds a stream, at most two per session (10.3) | One connection |
 
 WebSocket is not offered (3.1 refuses upgrades).
 
@@ -1008,7 +1057,7 @@ data: {"topic":"lobby","id":"lob_7k2q","seq":1532}
 | Topic | `id` | Something changed in |
 |---|---|---|
 | `status` | | `GET /status`: the strip, attention, money |
-| `session` | | This session was locked, revoked or ended. The stream closes after it |
+| `session` | | This session was locked, revoked or ended; the event carries `reason` (below). The stream closes after it |
 | `chain` | | The chain tip or the state of the chain servers |
 | `lobby` | lobby | A lobby: members, readiness, stage, terms version, the member's own seat or round |
 | `host_lobby` | lobby | A lobby this program hosts |
@@ -1022,6 +1071,26 @@ data: {"topic":"lobby","id":"lob_7k2q","seq":1532}
 | `hosting` | | Hosting overview, ladder, earnings, setup |
 | `reset` | | Everything: draw again from nothing (after a restore, after the core was rebuilt from storage, or when the client is too far behind) |
 
+**Why a session ended** (draft 5, gap 11). The `session` event alone carries one field more, `reason`, because after it the tab can ask nothing under that session:
+
+```
+event: change
+data: {"topic":"session","seq":1540,"reason":"idle"}
+```
+
+`reason`: `signed_out` (`DELETE /session`, from this tab or another of the session), `revoked` (`revoke-all`), `idle` (4.7), `locked` (the wallet was locked), `words_check_failed` (12.3), `replaced` (a ninth sign-in ended the session unused longest, D19), `stopping` (the program is shutting down).
+- The program MUST send the event, with `reason`, before it closes the stream.
+- The program MUST keep, for the rest of the run, the SHA-256 of each ended session token with its `reason` and time (the last 64 at most; never the token). A request presenting such a token answers `401 not_signed_in` with `params.ended = { "reason", "at" }`, and `GET /api/v1/session` with it answers `signed_in: false` and the same `ended`. A token unknown to this run (after a restart, or never valid) gets `ended: null`.
+- A failed words check answers `{ "ok": false, "session_ended": true }` (12.3).
+- The interface MUST word the sign-in screen by `reason` where it has one ("Signed out after 15 minutes without use", "Signed out everywhere", "The backup check did not match, so you were signed out") and say only "This session ended" when it has none.
+- Rationale: a reason is not a secret and the person can act only on what they understand. The digest of a dead 256-bit token reveals nothing and lets no one in.
+- Example:
+
+```
+GET /api/v1/status                (X-Gazpacho-Session: <a token ended by idle>)
+401 { "code": "not_signed_in", "message": "Not signed in.", "field": null, "params": { "ended": { "reason": "idle", "at": 1794435300 } } }
+```
+
 A request the interface makes **because an event arrived** never carries `X-Gazpacho-User` (4.7), so events never keep a session awake.
 
 ### 10.3 Order, reconnects, limits
@@ -1030,8 +1099,27 @@ A request the interface makes **because an event arrived** never carries `X-Gazp
 - The program keeps the last 256 events. On reconnect with `Last-Event-ID`: if the run is the same and the events are still held, it replays them; otherwise it sends one `reset`.
 - A comment line (`: keep-alive`) every 15 s, so a dead connection is noticed.
 - Events of one topic and id are merged: at most one per 250 ms, the latest wins (a busy lobby changes counts many times a second).
-- **One stream for the whole browser.** The interface holds the stream in a `SharedWorker` where the browser has one, and otherwise in one tab chosen over the `BroadcastChannel` of 4.4, which relays each event to the other tabs; when that tab closes, another takes over. The messages are 4.4's. A worker has no `sessionStorage`, so each tab posts its token to it, the worker holds it in memory while any tab is connected, and sign-out in any tab tells it (`sign_out`). **With the tunnel port set no SharedWorker is used**: each tab holds its own stream for its own session (4.4, review R7), within the caps below. Without it, the worker serves only ports that presented a token it checked (4.4). Browsers limit connections per host (six for HTTP/1.1 in common browsers; the HTML SSE note warns of exactly this and suggests a shared worker), so a stream per tab would leave too few for the calls.
-- **Caps:** at most 2 streams per session and 8 in all. A stream over the cap is answered `429`, code `too_many_streams`, before any event; the interface shows "Too many windows are following this app" and does not retry it by itself. Nothing is closed to make room, so no two streams can push each other out in a loop (review F10).
+- **A stream per tab, relayed beyond the cap** (draft 5, gap 8). Draft 4's shared worker cannot be created under 5.4's policy (4.4, "No worker"). This is the interface of PR 47, tested by `tests/web/tabs.spec.mjs` with three tabs, one closed and two crashed.
+  - The interface MUST open the stream from each tab that holds a session, with `fetch()` (10.1).
+  - A tab whose stream is open MUST, while `handover` is `true`, send `leader` on the channel of 4.4 when the stream opens, relay each event as `event` (`topic`, `id`, `seq`, nothing else) and each keep-alive comment as `tick`, and send `leader_gone` when it closes the stream, on `pagehide` (aborting the stream first), and when the stream fails and it starts reconnecting.
+  - A tab answered `429 too_many_streams` MUST NOT reconnect on the usual schedule. It MUST follow the relayed `event` messages as if they were its own and show "following the app"; it MUST try to open its own stream (take over) when it receives `leader_gone`, or when 30 s pass with no relayed `event`, `tick` or `leader` (a tab that died without `pagehide`). A take-over answered `429` again is tried after 2 s, doubling up to 60 s, and only while one of those two conditions holds.
+  - While `handover` is `false` (the tunnel port set, 3.3), tabs MUST NOT listen to or send on the channel. Each holds its own stream for its own session; a tab over the cap shows "Too many windows are following this app" and does not retry by itself.
+  - There is no election: the program's caps (below) bound the streams, so two tabs of one session may both hold one.
+  - The program's side is unchanged: the caps below, `429` before any event, nothing closed to make room.
+  - Rationale: browsers allow about six HTTP/1.1 connections per host (the HTML SSE note), and with at most two streams per session four remain for the calls; the relay gives every further tab live updates without another connection. A tab gone without `pagehide` (a crash) stops sending `tick`, which the 30 s take-over catches; 30 s is twice the keep-alive interval.
+  - Errors: `429 too_many_streams` (8.1).
+  - Example, a third tab of one session:
+
+```
+GET /api/v1/events                (X-Gazpacho-Session: …)
+429 { "code": "too_many_streams", "message": "Too many streams.", "field": null, "params": {} }
+channel: { "type": "event", "topic": "lobby", "id": "lob_7k2q", "seq": 1533 }    relayed by another tab
+channel: { "type": "tick", "tab": "9f2c41d0" }
+channel: { "type": "leader_gone", "tab": "9f2c41d0" }                           that tab closed
+GET /api/v1/events                (Last-Event-ID: 7c1e9a04-1533)
+200 text/event-stream
+```
+- **Caps:** at most 2 streams per session and 8 in all. A stream over the cap is answered `429`, code `too_many_streams`, before any event; the interface follows the events another tab relays, and otherwise (no hand-over, or nothing relayed) shows "Too many windows are following this app" (above). Nothing is closed to make room, so no two streams can push each other out in a loop (review F10).
 - **Reconnects** by the interface: after a network error or the end of the stream, again after 2 s, then 4, 8, up to 60 s; never after a `4xx` answer; after `401` it shows the sign-in field.
 - Signing never waits for a slow stream. A stream whose unsent data passes 64 KiB is closed; its reconnect gets `reset`.
 
@@ -1048,10 +1136,11 @@ One call gives everything that is on every screen: the strip, the attention list
   "version": 412,
   "network": { "id": "signet", "test_coins": true },
   "wallet": "ready",
-  "pause": { "state": "off", "since_at": null, "lobby_id": null },
+  "pause": { "state": "off", "since_at": null, "lobby_ids": [] },
   "lock": null,
   "interface": { "peer_check": "same_user_only", "memory_locked": true },
-  "doing": { "code": "in_lobby_waiting", "lobby_id": "lob_7k2q", "params": { "ready": 38, "target": 50, "minimum": 30 }, "since_at": 1794434000 },
+  "doing": { "code": "in_lobby_waiting", "lobby_id": "lob_7k2q", "role": "joined", "params": { "ready": 38, "target": 50, "minimum": 30 }, "since_at": 1794434000 },
+  "lobbies": [ { "lobby_id": "lob_7k2q", "role": "joined", "stage": "open", "code": "in_lobby_waiting", "since_at": 1794434000 }, { "lobby_id": "lob_4c08", "role": "hosted", "stage": "open", "code": null, "since_at": 1794431000 } ],
   "connection": {
     "chain": { "state": "agree", "height": 330437, "servers_agreeing": 2, "operators": 2, "since_at": 1794431000 },
     "host_links": [ { "host_key": "02…", "state": "connected", "last_heard_at": 1794434390 } ],
@@ -1090,7 +1179,9 @@ One call gives everything that is on every screen: the strip, the attention list
 
 The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has no channels: `can_send_sat` and `can_receive_sat` are `0`, `take_out_alone` is `null`, `inside_factories_sat` is `0` for a member (members bring no coins in 1.0.0), and `while_closed` is `null` (11.5 is 1.0.0).
 
-- `lock`: `null`, or `{ "state": "held_for_signing", "lobby_id", "since_at" }` while a lock waits for a round to end, or (1.0.0) `{ "state": "held_for_payment", "since_at" }` while it waits for an incoming payment whose secret was released (4.7). While the wallet is locked or `files_behind`, status has the locked shape of 4.7 instead of this one.
+- `lock`: `null`, or `{ "state": "held_for_signing", "lobby_ids", "since_at" }` while a lock waits for rounds to end (every lobby whose round holds it, 14.4), or (1.0.0) `{ "state": "held_for_payment", "since_at" }` while it waits for an incoming payment whose secret was released (4.7). While the wallet is locked or `files_behind`, status has the locked shape of 4.7 instead of this one.
+- `doing.role` (draft 5, gap 1): `joined` or `hosted` when `doing.lobby_id` is not `null`, else `null`. The interface reads `GET /lobbies/{id}` or `GET /host/lobbies/{id}` by it and never tries both.
+- `lobbies` (draft 5, gap 1; **S1**): every lobby where this member has a seat that has not ended, every standby place (1.0.0), and every hosted lobby that has not ended. Each entry: `lobby_id`, `role`, `stage` (14.1), `since_at`, and `code`, the value `doing.code` would take if this lobby were the only one, among the lobby values only (`passphrase_needed`, `signing`, `signing_unfinished`, `awaiting_funding`, `ready_check`, `in_lobby_not_ready`, `in_lobby_not_counted`, `in_lobby_waiting`, `standing_by`, and the sticky outcome codes while they show), or `null` when none applies (a hosted Open lobby with nothing to do). Ordered as `doing.code`'s priority, then by the earliest date due, then oldest `since_at`. When a lobby value wins `doing`, `doing` names the first entry. Never `null`: an empty list is `[]`. The program MUST send a `status` event whenever an entry is added, removed or changes `code`.
 - `watching.unlock_by`: the date the lock warning names and the lock echoes (4.7): `spec/exit.md` 5.6's `unlock_by` where something is to take out (1.0.0); otherwise `null`, and then the lock needs no `confirm_unlock_by_height` (cross-spec review D4). Always `null` in Slice 1.
 - `interface.peer_check`: `same_user_only` or `unavailable` (3.4). `interface.memory_locked`: `false` when the system refused to keep keys out of swap (storage 8.3); the interface then shows storage 14's "Weak memory protection" line.
 
@@ -1114,7 +1205,7 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 |---|---|
 | `off` | |
 | `on` | Signs nothing new and joins nothing until resumed. It left the lobbies where it had sent nothing in a round (11.3). Dates still apply and watching goes on |
-| `held_for_signing` | The person pressed Pause while this member's partial signatures were out in a round that had not ended. It takes effect when that round ends. `lobby_id` names it |
+| `held_for_signing` | The person pressed Pause while this member's partial signatures were out in rounds that had not ended. It takes effect when the last of those rounds ends. `lobby_ids` names them (several lobbies, 14.4) |
 
 **The chain view, normatively.** Every other part of the status follows from `connection.chain.state` by this table, and by nothing else. The values are mutually exclusive: exactly one holds at any time.
 
@@ -1143,6 +1234,7 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 | 3 | `restoring` | Waiting for current data after a restore | S1 |
 | 4 | `answering_old_state` | An old state was published and the app sent the answer; it is not confirmed yet | 1.0.0 |
 | 5 | `signing` | Keep the app open; seconds. `params.of`, `params.done` (signatures). Also shown while `pause.state` is `held_for_signing` | S1 |
+| 5a | `passphrase_needed` | A ready check waits for this program's passphrase: mode B, or C after a restart, a lock or the failed-attempt rule (14.3). `lobby_id`, `role`, `params.sign_mode`, `params.needed_by` (a date, kind `ready_check_answer_by`). Without a waiting check, a seat that needs the passphrase shows as `in_lobby_not_ready` with reason `not_unlocked` (draft 5) | S1 |
 | 6 | `moving` | A move try is being signed | 1.0.0 |
 | 7 | `signing_unfinished` | The app sent its signatures and no result came back. It treats both outcomes as possible and keeps watching until settled. `params.purpose`: `start` or `move`; `params.cancel_received` if the host sent `cancel` (14.1) | S1 (start) |
 | 8 | `move_unfinished` | Same as `signing_unfinished`, for a move. Payments in the old factory are paused until it settles | 1.0.0 |
@@ -1152,9 +1244,10 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 | 12 | `awaiting_funding` | Signed; waiting for the host's funding to reach its confirmations. Not live yet | S1 |
 | 13 | `paused` | | S1 |
 | 14 | `ready_check` | The start rule was met; the ready check is under way | S1 |
-| 15 | `in_lobby_not_ready` | Joined but not ready. `params.reasons`: `conditions_fail`, `blocked_member_present`, `user_choice`, `terms_moved_outside` | S1 |
+| 15 | `in_lobby_not_ready` | Joined but not ready. `params.reasons`: `conditions_fail`, `blocked_member_present`, `user_choice`, `terms_moved_outside`, `not_unlocked` (draft 5: mode B or C, the passphrase not yet given, 14.3) | S1 |
 | 16 | `in_lobby_not_counted` | Ready, but fewer than `counted_from` are ready, so this member will not be chosen yet | S1 |
 | 17 | `in_lobby_waiting` | Ready, waiting for the start | S1 |
+| 17a | `standing_by` | Waiting as an understudy (14.5): `params.position`, `params.of`, `params.answered_ready_check` | 1.0.0 |
 | 18 | `looking_tell`, `looking_join` | Automatic joining is looking | 1.0.0 |
 | 19 | `looking_nothing_fits` | Nothing listed fits; `params.excluded_most_by` with both numbers | 1.0.0 |
 | 20 | `budget_used` | Automatic joining's budget is used up; waiting | 1.0.0 |
@@ -1162,12 +1255,15 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 | 22 | `creation_abandoned` | Signatures went out, but the factory was not funded in time or the result never came. Records kept; nothing is owed. **Still watched**: `params.still_watched` (16.1); the interface never says it is over while that is `true`. **Sticky only once `still_watched` is `false`**; while it is `true` the code holds at this priority until the creation is `dead` or `live` (review N8) | S1 |
 | 23 | `refused` | Sticky. Did not sign. Refused at the check, before any nonce or signature. Nothing was signed; nothing moved. `params.failures` with both numbers | S1 |
 | 24 | `refused_by_host` | Sticky. The host refused this member's seat (seat state 7). Nothing was signed | S1 |
+| 24a | `removed_by_host` | Sticky. The host removed this member's seat before the ready check (seat state 6; outcome `removed`). `params.reason`: the host's reason, as the host's words (`{ text, by: "host" }`; signed in 1.0.0, decision 16c; in Slice 1 the unsigned `lobby_status` reason, `params.signed: false`). Nothing was signed (draft 5, gap 5) | S1 |
 | 25 | `lobby_cancelled` | Sticky. The lobby was cancelled **and this member had sent no partial signature in any attempt of it** (14.1). `params.reason`: `deadline_below_minimum`, `host_choice`, `signing_budget_spent`. With a partial signature out, the code is `signing_unfinished` (7) or `creation_abandoned` instead, never this | S1 |
-| 26 | `not_chosen` | Sticky. The lobby started without this member (its minimum, or the target cut) | S1 |
+| 26 | `not_chosen` | Sticky. The lobby started without this member (its minimum, or the target cut). `params.reason`: `cut`, or `not_unlocked_in_time` (mode B or C, the outcome of that name, 14.3), or `standby_not_needed` (1.0.0) | S1 |
 | 27 | `idle_in_factory` | Live; nothing to do now | S1 |
 | 28 | `idle_no_factory` | Not in a factory. "You cannot pay or receive until you are in a live one" | S1 |
 
-**Sticky codes** (21 to 26) report an outcome. Each is shown for **24 hours** from its activity entry, or until the member joins another lobby, whichever comes first (**proposed**), and only when nothing above it holds; then the next applicable value shows. **Exception:** `creation_abandoned` does not expire, and is not displaced by joining another lobby, while its `still_watched` is `true`, because the next value would otherwise be `idle_no_factory` ("Not in a factory") for a creation that can still go live (`safety-rule.md` C11; review N8). How long `still_watched` lasts when the funding never appears is 24.2 item 19. Their lifetime is computed from the saved activity entry, so it survives a restart. The outcome itself stays in the lobby object and in Activity for good.
+**Several lobbies** (draft 5, gap 1). When two lobbies would give the same value, `doing` names the one with the earliest date due, then the oldest `since_at`; `doing.role` says whether it is joined or hosted, and `status.lobbies` gives every lobby's own value (11.1). The values above that concern a lobby apply to a hosted lobby too where its meaning fits (`signing`, `ready_check`, `passphrase_needed`, `awaiting_funding`).
+
+**Sticky codes** (21 to 26, and 24a) report an outcome. Each is shown for **24 hours** from its activity entry, or until the member joins another lobby, whichever comes first (**proposed**), and only when nothing above it holds; then the next applicable value shows. **Exception:** `creation_abandoned` does not expire, and is not displaced by joining another lobby, while its `still_watched` is `true`, because the next value would otherwise be `idle_no_factory` ("Not in a factory") for a creation that can still go live (`safety-rule.md` C11; review N8). How long `still_watched` lasts when the funding never appears is 24.2 item 19. Their lifetime is computed from the saved activity entry, so it survives a restart. The outcome itself stays in the lobby object and in Activity for good.
 
 **`connection.host_links[].state`**: `connected`, `connecting`, `not_answering` (with `last_heard_at`), `offline_by_choice`.
 
@@ -1231,7 +1327,7 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 - **While on:** the app signs nothing new, joins nothing, readies for nothing; `join` and `ready` answer `409 paused`. Watching, answering an old state, moves already agreed, and leaving alone before an end date go on: those protect the member.
 - **A hosted lobby while paused:** the host's program runs no ready check, by the start rule or by `start`; the lobby stays Open, and at its deadline it is cancelled (`cancel` reason 2, host's choice) if the pause is still on. A hosted round already under way runs to its end, like a member's held round.
 - **Pause survives a restart.** It is saved before the answer and before any `leave` or `round_abort` it sends (7.5); **at unlock** (every restart starts locked) a saved `on` is applied before the node connects to any host (4.7, step 7).
-- Answer: `{ "pause": {…}, "left_lobbies": ["lob_7k2q"], "aborted_lobbies": [], "held_lobby": null }`.
+- Answer: `{ "pause": {…}, "left_lobbies": ["lob_7k2q"], "aborted_lobbies": [], "held_lobbies": [] }`. `held_lobbies` (draft 4's `held_lobby`) lists every lobby whose round holds the pause; `pause.lobby_ids` the same while `pause.state` is `held_for_signing` (several lobbies, 14.4).
 
 ### 11.4 Attention
 
@@ -1280,6 +1376,9 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 | `terms_changed` | heads_up | `lobby_id`, `from_version`, `to_version` | S1 |
 | `date_near` | heads_up | `due` | 1.0.0 |
 | `refused_to_sign` | record | `lobby_id`, `activity_id` | S1 |
+| `passphrase_needed` | `act_now` while a ready check waits (`due`: its `ready_check_answer_by`); otherwise `important` | `lobby_id`, `lobby_role`, `sign_mode`, `reason`: `ready_check`, `restarted`, `locked`, `kept_time_ended` (14.3), `starts_soon` | S1 |
+| `lobby_starts_soon` | `heads_up`; `important` for a seat in mode B or one whose `sign_auth.state` is `needs_passphrase` | `lobby_id`, `lobby_role`, `due` (a date, kind `lobby_starts_by`) | S1 |
+| `member_refused` | important (host) | `lobby_id`, `seat`, `activity_id`, `which`, `condition` (15.3) | S1 |
 | `use_own_chain_server`, `choose_watching` | recommended | | 1.0.0 |
 | `host_can_start` | important | `lobby_id` (host) | S1 |
 | `host_funds_short` | important | `lobby_id`, `need_sat`, `have_sat` (host) | S1 |
@@ -1295,6 +1394,12 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 | `funding_double_spent` | at_risk until seen | `factory_id`, `amount_lost_sat`: a funding input of a live factory spent by another buried transaction; the tree is void (`ended_how = void_funding`) | 1.0.0 |
 | `restored_commitment_choice` | at_risk | `factory_id`, `due` (`host_force_by`): a restored member whose host has not closed (`spec/exit.md` 5.7) | 1.0.0 |
 | `unexplained_spend` | at_risk | `factory_id`, `txid`: a watched output spent in a way only the member's key allows (`spec/exit.md` class S8); payments stopped | 1.0.0 |
+
+**Draft 5 rules for these items.**
+- Every item with a `lobby_id` MUST also carry `lobby_role`, `joined` or `hosted` (gap 1).
+- **`lobby_starts_soon`** (gap 6). The program MUST raise it once per lobby with a seat or hosted, when the lobby's `start_rule.deadline` is less than `STARTS_SOON` away (15 minutes, **proposed**, D23) with at least the minimum ready, or when the ready seats are one short of the target; and MUST clear it when the ready check starts or the lobby ends. Rationale: in mode B the person must be at the screen when the lobby fills, and the next-date chip alone announces nothing. Example: `{ "id": "att_91", "tier": "important", "code": "lobby_starts_soon", "due": { "kind": "lobby_starts_by", "due_at_estimate": 1794435000, "...": "7.2" }, "lobby_id": "lob_7k2q", "lobby_role": "joined", "params": {} }`.
+- **`passphrase_needed`** (gap 2). Raised by 14.3's rules; cleared by `POST …/unlock`, by a change to mode A, or when the seat or the lobby ends. `act_now` only with its `due` (11.4's tier rule).
+- **`member_refused`** (gap 4). Raised on the host's side for each seat that becomes `refused` (15.3), with the activity entry that holds both values; cleared when the lobby ends.
 
 `DELETE /api/v1/attention/{id}` (1.0.0) dismisses a `heads_up` or `recommended` item. Other tiers clear only when their cause does; dismissing them answers `409`, code `cannot_dismiss`.
 
@@ -1350,9 +1455,24 @@ The 24 words may appear in the interface (owner decision 12, 2026-11-12, "follow
 
 `state`: `none`, `created_not_finished`, `ready`, `restoring`. There is no role question (decision 4): setup never asks "member or host?". The state is saved (7.5).
 
+**The state's course** (draft 5, gap 9). `none`, then `created_not_finished` after `create`, then `ready` after `finish-setup`. After `restore`: `restoring` while `GET /api/v1/wallet/restore` says `scanning_chain` or `waiting_for_host`; then `created_not_finished` if `finish-setup` has not been made, or `ready` if it has.
+- The program MUST accept `finish-setup` while `restoring` (choosing a preset needs no chain view), save it (7.5) and answer `{ "state": "restoring" }`; it MUST NOT answer `no_wallet` there. A restore never skips the preset: the conditions are not in the words.
+- The program MUST send a `wallet` event at each change of `state`.
+- The interface MUST lead `created_not_finished` to the preset step and `ready` to Home, whichever way the wallet was made.
+- Rationale: draft 4 listed `restoring` and said nothing of what follows, so the interface had to handle every order.
+- Errors: none new.
+- Example, a restore whose scan has ended before the person chose a preset:
+
+```
+GET /api/v1/wallet/restore    200 { "state": "done", "on_chain_found_sat": 48000, "factories": "need_backup", "lost_seats": [] }
+GET /api/v1/wallet/setup      200 { "state": "created_not_finished", "network": "signet", "networks": [ … ], "words": 24 }
+POST /api/v1/wallet/finish-setup   { "preset": "everyday", "find": "browse" }
+200 { "state": "ready" }
+```
+
 ### 12.2 Making keys
 
-`POST /api/v1/wallet/create` (**S1**), `{ "confirm": "create_wallet", "passphrase": "…", "confirm_passphrase": "…" }`, with the setup session of 4.3. The passphrase becomes the wallet passphrase: the program sets up the encrypted storage with it (storage **set up**, 8.2), so every file is encrypted from the first write (owner decision 13). Its rules are storage 4.1's (4.2 above: NFC, at least 15 code points, at most 1,024 bytes, the blocklist, not the wallet's name or "gazpacho", not three or more of the wallet's own words in order; no composition rules). The interface normalises to NFC before sending and the program normalises again. A refusal answers `weak_passphrase` with `params.reason` and the counts (8.1), or `passphrases_differ`; the interface uses storage 14's wording ("This passphrase is too short (12 of 15 characters).") and offers "Suggest one" (storage 14). The words check of storage 4.1 runs against the words just made, before they are shown. The answer comes when the derivation and both files are written (about a second, 4).
+`POST /api/v1/wallet/create` (**S1**), `{ "confirm": "create_wallet", "passphrase": "…", "confirm_passphrase": "…" }`, with the setup session of 4.3. The passphrase becomes the wallet passphrase: the program sets up the encrypted storage with it (storage **set up**, 8.2), so every file is encrypted from the first write (owner decision 13). Its rules are storage 4.1's (4.2 above: NFC, at least 15 code points, at most 1,024 bytes, the blocklist, not the wallet's name or "gazpacho", not three or more of the wallet's own words in order; no composition rules). The interface normalises to NFC before sending and the program normalises again. A refusal answers `weak_passphrase` with `params.reason` and the counts (8.1), or `passphrases_differ`; the interface uses storage 14's wording ("This passphrase is too short (12 of 15 characters).") and offers "Suggest one" (storage 14), whose six words come from `POST /api/v1/wallet/passphrase/suggest` (12.9), never from the page. The words check of storage 4.1 runs against the words just made, before they are shown. The answer comes when the derivation and both files are written (about a second, 4).
 
 ```json
 { "words": ["…", "… 24 words"], "shown_until": "this_answer" }
@@ -1370,7 +1490,7 @@ The 24 words may appear in the interface (owner decision 12, 2026-11-12, "follow
 |---|---|---|---|---|
 | `POST /api/v1/wallet/phrase/reveal` | S1 | `{ "confirm": "show_words", "passphrase": "…" }` | `{ "words": [ … ] }` | **The passphrase in the request** (4.8, kind A). It runs storage's **words** operation: one derivation opens the words, which are sent and wiped (storage 9.2). No window covers it, the sign-in included |
 | `POST /api/v1/wallet/phrase/check-start` | S1 | `{}` | `{ "check_id": "…", "positions": [3, 14, 22], "checks_left_today": 2, "expires_at" }` | A session only. The program chooses 3 positions at random and opens nothing: the positions are not secret, and starting a check costs nothing. A `check_id` lasts 10 minutes; a new `check-start` replaces any unused one |
-| `POST /api/v1/wallet/phrase/check` | S1 | `{ "check_id", "passphrase": "…", "words": ["…", "…", "…"] }` | `{ "ok": true, "checked_at": … }` or `{ "ok": false }` | **The passphrase in the request** (kind A), carried by the call that compares, so the words are open only for the length of this one call (storage 9.2 step 3). **One answer per `check_id`**, which is then spent |
+| `POST /api/v1/wallet/phrase/check` | S1 | `{ "check_id", "passphrase": "…", "words": ["…", "…", "…"] }` | `{ "ok": true, "checked_at": … }` or `{ "ok": false, "session_ended": true }` (draft 5, gap 11) | **The passphrase in the request** (kind A), carried by the call that compares, so the words are open only for the length of this one call (storage 9.2 step 3). **One answer per `check_id`**, which is then spent |
 | `POST /api/v1/wallet/finish-setup` | S1 | `{ "preset": "everyday", "find": "browse" }` | `{ "state": "ready" }` | `preset`: `cautious`, `everyday`, `wide` (section 13.2). `find`: `browse`, `tell_me`, `join_for_me` (the last two set automatic joining, 1.0.0, with a fresh sign-in, 4.8; S1 accepts `browse` only). Errors: `no_wallet` |
 
 **The backup check is not an oracle** (review F2). Draft 1 answered which positions were wrong, without a fresh sign-in and without a limit, which recovered the words in a few thousand guesses. Now:
@@ -1378,7 +1498,7 @@ The 24 words may appear in the interface (owner decision 12, 2026-11-12, "follow
 - A check carries the passphrase, so a session left open cannot make one (draft 2 asked for a fresh sign-in at `check-start`; storage 9.1 makes the passphrase a property of the cryptography instead).
 - **The order inside `check`**: the passphrase limits of 4.3; then the daily limit below (refused before any derivation); then the derivation. A wrong passphrase answers `401 wrong_passphrase`, counts against the passphrase, **not** against the daily checks, and leaves the `check_id` usable. A right one saves the attempt (7.5) before the words are compared.
 - **At most 3 checks in any 24 hours per wallet**, saved in the journal (7.5) so a restart does not reset them; a fourth answers `429 rate_limited` with `params.retry_after_s`.
-- A failed check **ends the session** (4.9): the next check needs the passphrase again.
+- A failed check **ends the session** (4.9), and its answer says so (`session_ended: true`; the `session` event's `reason` is `words_check_failed`, 10.2): the next check needs the passphrase again.
 - The positions are new for every check, so answers from different checks cannot be combined about one position.
 - With these limits a guesser learns one bit per check about three random positions, three times a day: nothing usable against 2,048 choices per word.
 
@@ -1442,7 +1562,7 @@ These hold for every call and screen that carries the words: `create`, `reveal`,
 **How the interface handles them**
 - **Never kept in page storage**: not in `sessionStorage`, `localStorage`, IndexedDB, the cache API, a cookie, the history state, the page title or a URL. Only in text nodes while shown and in one variable of the screen that shows or collects them.
 - **Cleared from the page after use**, at the moments above: the text nodes are removed, input fields emptied, and the variable's array overwritten and released. JavaScript cannot guarantee that a string is erased from memory; the interface drops every reference so it can be collected, and does nothing that would copy it further. The same clearing applies to the typed words of the check and restore screens on `pagehide` and `freeze`.
-- **No clipboard copy**: no copy control of any kind, and `user-select: none` on the shown words. Those two are what keep the words off the clipboard. `clipboard-write=()` in the permissions policy (5.4) stays, but it limits only Chromium's asynchronous Clipboard API; Firefox and Safari do not act on the header (MDN Clipboard), and no browser lets it govern the person's own selection and copy (review N9). A person who selects the words with the keyboard or the developer tools can still copy them; the screen says to write them by hand. Writing them down by hand is the backup.
+- **No clipboard copy of the words**: no copy control for the words or anything secret (draft 5 allows one, for an on-chain receiving address only, 5.4), and `user-select: none` on the shown words. Those two are what keep the words off the clipboard. `clipboard-write` in the permissions policy (5.4; `(self)` since draft 5, for that address control) limits only Chromium's asynchronous Clipboard API; Firefox and Safari do not act on the header (MDN Clipboard), and no browser lets it govern the person's own selection and copy (review N9). A person who selects the words with the keyboard or the developer tools can still copy them; the screen says to write them by hand. Writing them down by hand is the backup.
 - **Word fields** (check and restore): one field per word, `autocomplete="off"`, `autocorrect="off"`, `autocapitalize="off"`, `spellcheck="false"` (a browser's enhanced spell-check service can send field text to a server), no browser password-manager hints, and an in-page list of matching words from the BIP 39 list instead of the browser's suggestions.
 - **Asked for in two places only**: the restore screen, when no wallet exists, and the backup check, right after the words were shown or from the backup screen. Every screen that shows or asks for them says so (the defence against a fake interface on the port, 5.7).
 - No word ever appears in an error the interface reports to anyone or anything, in a crash report, or in the console.
@@ -1468,6 +1588,38 @@ These hold for every call and screen that carries the words: `create`, `reveal`,
 ### 12.8 Removing the wallet
 
 `POST /api/v1/wallet/remove` (1.0.0), `{ "confirm": "remove_wallet", "passphrase" }` (4.8, kind A). Refused with `409`, code `funds_inside`, while any factory holds a balance or a creation round is unresolved, unless `{ "confirm": "remove_wallet_with_funds_inside" }`; the answer then lists what would be lost without the words and a backup.
+
+### 12.9 A suggested passphrase (draft 5, gap 3)
+
+Storage 14 has the interface say "Gazpacho has made a passphrase for you", and the owner wants six generated words offered first. Draft 4 had no call, so the interface made the words itself from its own copy of the list. Draft 5 has the program make them.
+
+| Call | Release | Request | Answer | Errors |
+|---|---|---|---|---|
+| `POST /api/v1/wallet/passphrase/suggest` | S1 | `{}`, from a setup session (4.3) or a normal session | `200`, `{ "words": ["…", "… 6 words"], "separator": " ", "list": "eff_large", "bits": 77 }` | `rate_limited` (`params.retry_after_s`), `not_signed_in`, `wallet_locked` |
+
+**The program MUST:**
+1. Draw each of the six words independently and uniformly from the EFF large word list of 7,776 words that it holds (`ports/storage/crypto/sc_wordlist.c`), with the operating system's random source, the one storage uses for salts and keys; never a seeded or time-based generator. Six words give 6 × log2(7,776) ≈ 77.5 bits; `bits` is the whole number below it.
+2. Check the passphrase the words make (joined by one space, U+0020, lowercase) against storage 4.1's rules (length, the blocklist, the wallet's name, "gazpacho") and draw again until it passes, so that `create`, `restore` and the passphrase change never refuse a suggestion. The one rule it cannot check is "not three or more of the wallet's own words in order", before `create` has made the words; if that ever fires, `create` answers `weak_passphrase` with `reason: "uses_the_words"` and the interface asks for another suggestion.
+3. Never save, log or put in an event the words or any digest of them, and wipe its copy once the answer is written (12.7's rules for the 24 words apply). It keeps no record of what it suggested, so it cannot tell later whether the person used a suggestion.
+4. Run no key derivation and touch no attempt counter (4.3). It SHOULD answer at most 20 calls a minute per session (**proposed**), then `429 rate_limited`.
+5. Take no `request_id`: the call sends nothing outward, and a stored answer would be a stored passphrase (7.4).
+
+**The interface MUST:**
+1. Take a suggested passphrase only from this call, and never make one in the page (draft 4's interface did, from `web/js/eff.js`; that is withdrawn).
+2. Show the six words, ask the person to type them once to confirm they wrote them down, and send what was typed as `passphrase` and `confirm_passphrase` of `create` or `restore` (or the passphrase change, 1.0.0); "Suggest another" calls again.
+3. Treat the words as a passphrase: no copy control (5.4), never in page storage, the title or a URL, cleared on `pagehide` and after the request (12.7).
+
+It MAY go on offering the person's own passphrase (at least 15 characters, typed twice), as draft 4's screens do.
+
+**Rationale.** One random source and one list, both the program's, and storage 4.1's checks run where the rules live ("the program decides; the screens show", section 1). The page's random source would do; what the page cannot do without a second copy of the blocklist is check what it made. The words cross loopback once, as the passphrase does anyway in `create`.
+
+**Example.**
+
+```
+POST /api/v1/wallet/passphrase/suggest      (X-Gazpacho-Session: <setup session>)
+{}
+200 { "words": ["…", "…", "…", "…", "…", "…"], "separator": " ", "list": "eff_large", "bits": 77 }
+```
 
 ---
 
@@ -1519,6 +1671,8 @@ Two sides of one comparison (options map, scopes 1 and 2). They are never editab
 - Fields marked 1.1.0 (`max_receiving_room_fee_ppm`) or open (`max_move_fee_sat`, `seat_cost`, `host_proof_required`) are present and `null` or default. S1 compares `profiles`, `min_members`, `min_channel_sat`, `max_joining_fee_sat`, `max_fee_base_msat`, `max_fee_ppm`, `min_life_blocks`, `max_life_blocks`, `max_exit_blocks` and `min_confirmations`: the terms Slice 1's record carries (`terms.md` section 3).
 - `people_blocked`, `hosts_trusted`, `hosts_avoided`, `appear_as`: 1.0.0. `appear_as`: `temporary_name`, `nostr_key` (later reserved), `free_text` (later reserved).
 - The routing limit is **not** here; it is in Settings, Wallet (critique question 12).
+
+**`sign_mode_default`** (draft 5, owner decision 16d). The conditions carry the member's signing mode for new joins: `automatic`, `ask_when_full` or `unlock_at_join` (14.3). Every preset sets `unlock_at_join`, the owner's default. It is saved and versioned with the conditions (7.5). A change towards `automatic` loosens (B is the strictest, then C, then A), so `PUT /conditions` then needs the fresh sign-in of 4.8 and lists `sign_mode_default` in `confirm_loosens`. The copying rule (13.2) does not apply to it: a lobby already joined keeps the mode it was joined with until `PUT …/sign-mode` changes it.
 
 ### 13.2 Preview and save
 
@@ -1630,13 +1784,16 @@ Returned with every lobby and every saved copy.
     "conditions_copied_at": 1794427320,
     "appear_as": { "text": "Lemon-39", "by": "you", "checked": false },
     "standby": null,
+    "sign_mode": "unlock_at_join",
+    "sign_auth": { "state": "unlocked", "since_at": 1794427320, "wipe_at": null, "needed_by": null },
     "outcome": null
   },
   "round": null,
   "funding": null,
   "factory_id": null,
   "members": null,
-  "terms_change": null
+  "terms_change": null,
+  "accountability": { "...": "14.6" }
 }
 ```
 
@@ -1648,7 +1805,10 @@ Returned with every lobby and every saved copy.
 | `stage` | `open`, `ready_check`, `signing`, `funding`, `active`, `cancelled`, `failed`, `unknown` (`messages.md` section 6, lobby states 0 to 7) |
 | `you.seat` | `none`, `joining` (sent, no answer yet), `joined_not_ready`, `ready`, `chosen`, `not_chosen`, `left`, `removed`, `refused_by_host` (`messages.md` seat states 0 to 7, plus `joining`) |
 | `you.counted` | `false` while fewer than `fit.counted_from` are ready |
-| `you.standby` | Standby seats (owner decision 10; **S1, provisional**, 2.1): `null`, or `{ "position": 2, "of": 4, "since_at" }` while this member waits as a standby for a seat that becomes free before the ready check. `you.seat` is then `joined_not_ready` or `ready` as for any seat, and `you.counted` is `false`. The program answers `null` until the protocol has standby messages (`messages.md` section 9) |
+| `you.standby` | Understudies (owner decision 16e: **1.0.0**; 14.5): `null`, or `{ "position": 2, "of": 4, "since_at", "answered_ready_check": false, "swapped_in_at": null }` while this member waits as an understudy. `you.seat` is then `joined_not_ready` or `ready` as for any seat, and `you.counted` is `false`. The program answers `null` in Slice 1 and until the protocol has standby messages (`messages.md` section 9) |
+| `you.sign_mode` | `automatic`, `ask_when_full`, `unlock_at_join` (14.3); `null` when `you.seat` is `none` |
+| `you.sign_auth` | Whether the program may sign this lobby's round now (14.3): `{ "state", "since_at", "wipe_at", "needed_by" }`. `state`: `unlocked`; `needs_passphrase`; `waiting_for_passphrase` (a ready check waits, `needed_by` a date of kind `ready_check_answer_by`); `wiped` (the round ended; nothing more is signed in this lobby). `wipe_at`: Unix seconds at which a kept authorisation is wiped (the failed-attempt rule), else `null`. `null` when `you.seat` is `none` |
+| `accountability` | What this member can know of the host's choices in this lobby (14.6). `null` for a lobby only seen in a list |
 | `you.outcome` | `null`, or an object below |
 | `round` | `null`, or the member's creation round below |
 | `funding` | `null`, or `{ "txid", "state", "confirmations", "needed", "deadline": { a date, kind funding_deadline }, "amount_sat" }` |
@@ -1660,7 +1820,7 @@ Returned with every lobby and every saved copy.
 **How the outcome is decided** (review F3). From the member's **own saved round state** (`journal.md` records `round_started`, `exposure`, `round_ended`; `signing-round.md` section 7), never from a host's message:
 
 1. If the member saved an `exposure` record, that is sent a partial signature, **in any attempt of this lobby**, the outcome is the state of that round: `signing_unfinished` while it is Unfinished, then `abandoned`, `dead` or `started`. A `cancel` or `round_abort` from the host changes nothing (`messages.md` 6.10: "A `cancel` does not undo partial signatures already sent"; `signing-round.md` section 7: a `round_abort` to a member in Signed or Unfinished "changes nothing"). It is shown only as `cancel_received: { "reason" }` on the outcome, for information.
-2. Otherwise, the first that applies of: `refused_at_check`, `aborted_before_signatures`, `refused_by_host`, `removed`, `left`, `cancelled`, `not_chosen`.
+2. Otherwise, the first that applies of: `refused_at_check`, `aborted_before_signatures`, `refused_by_host`, `removed`, `left`, `cancelled`, `not_unlocked_in_time`, `not_chosen`.
 
 So `cancelled` (and `doing.code = lobby_cancelled`) can only be reached by a member that never sent a partial signature in the lobby. Test 23.1 item 12.
 
@@ -1670,6 +1830,7 @@ So `cancelled` (and `doing.code = lobby_cancelled`) can only be reached by a mem
 | `aborted_before_signatures` | The round stopped after nonces but before any partial signature (`signing-round.md`: Aborted). `reason` from `messages.md` 7.9 | Yes |
 | `refused_by_host` | The host refused this member's seat (seat state 7). `reason` from `lobby_status` | Yes |
 | `not_chosen` | Ready, but the start went ahead without this member | Yes |
+| `not_unlocked_in_time` | Mode B or C (14.3): the passphrase was not given before a ready check closed, so this seat did not answer it, and the lobby started without it. `sign_mode`, `missed_check_at`. Decided from the member's own record that it sent no `ready` for lack of the authorisation (draft 5, gap 2) | Yes |
 | `cancelled` | The lobby was cancelled **and no partial signature was ever sent in it**. `reason`: `deadline_below_minimum`, `host_choice`, `signing_budget_spent`. `not_your_doing: true` unless the member's own leave caused it | Yes |
 | `left` | The member left before sending anything in a round. `reason`: `user`, `paused`, `conditions_tightened`, `host_fault_seen` (with `activity_id` for the evidence) | Yes |
 | `removed` | The host removed this seat before the ready check | Yes |
@@ -1692,18 +1853,148 @@ A member who leaves (or pauses) after sending partial signatures keeps the round
 
 | Call | Release | Request | Answer | Errors |
 |---|---|---|---|---|
-| `GET /api/v1/lobbies` | S1 | `?show=fits\|all&sort=fit\|start\|joining_fee\|channel&cursor&limit` | Page of rows: `id`, `fingerprint`, `name`, `host`, `source`, `stage`, `fit.class`, the failing rows' terms, `counts`, `start_rule`, `terms.outer.channel_sat`, `terms.ranges.joining_fee_sat`, `derived.exit_blocks`, `you.seat`. Includes every lobby the program knows and every lobby the member is in; not the program's own hosted lobbies (section 15) | |
+| `GET /api/v1/lobbies` | S1 | `?show=fits\|all\|mine&sort=fit\|start\|joining_fee\|channel&cursor&limit`. `mine` (draft 5): the lobbies where this member has a seat that has not ended, or an understudy's place | Page of rows: `id`, `fingerprint`, `name`, `host`, `source`, `stage`, `fit` (below), `counts`, `start_rule`, `terms.outer.channel_sat`, `terms.ranges.joining_fee_sat`, `derived.exit_blocks`, `you.seat`, `you.sign_mode`, `you.sign_auth.state`. Includes every lobby the program knows and every lobby the member is in; not the program's own hosted lobbies (section 15) | |
 | `GET /api/v1/lobbies/{id}` | S1 | | The lobby object | `not_found` |
-| `POST /api/v1/lobbies/{id}/join` | S1 | `{ "request_id", "seen_current_digest": "…", "ready": true }` | `202`, the lobby object with `you.seat = "joining"` | `not_open`, `conditions_not_met` (with failures), `fits_only_now` (the member did not choose the looser comparison), `terms_changed` (the digest the person reviewed is no longer current: show the change, then ask again), `already_in_lobby` (S1 allows one joined lobby at a time, owner 2026-11-12), `paused`, `chain_in_doubt`, `needs_invitation`, `host_unreachable`, `lobby_full`, `host_avoided`, `wallet_restoring` |
+| `POST /api/v1/lobbies/{id}/join` | S1 | `{ "request_id", "seen_current_digest": "…", "ready": true, "sign_mode": "unlock_at_join", "passphrase": "…" }`. `sign_mode` optional, `conditions.sign_mode_default` when absent (13.1); `passphrase` required for `unlock_at_join` and refused with any other mode (kind A, 4.8; 14.3) | `202`, the lobby object with `you.seat = "joining"`, `you.sign_mode`, `you.sign_auth` | `not_open`, `conditions_not_met` (with failures), `fits_only_now` (the member did not choose the looser comparison), `terms_changed` (the digest the person reviewed is no longer current: show the change, then ask again), `lobby_limit_reached` (`params.role`, `params.limit`, `params.lobby_ids`; 14.4), `own_lobby` (this program hosts it; 14.4), `paused`, `chain_in_doubt`, `needs_invitation`, `host_unreachable`, `lobby_full`, `host_avoided`, `wallet_restoring`, `wrong_passphrase` (`params.retry_after_s`, `params.wrong_in_row`), `rate_limited`, `missing_field` (`/passphrase`), `bad_value` (`/passphrase` with a mode other than C). Draft 4's `already_in_lobby` is withdrawn (owner decision 16b) |
 | `PUT /api/v1/lobbies/{id}/ready` | S1 | `{ "request_id", "ready": true\|false, "seen_current_digest" }` | `202`, the lobby object | `not_joined`, `conditions_not_met`, `terms_changed`, `too_late` (a round is under way), `paused` (for `true`) |
 | `POST /api/v1/lobbies/{id}/leave` | S1 | `{ "request_id" }` | `202`, the lobby object | `not_joined`, `too_late` (partial signatures are out: the member may stop looking, but the round stays Unfinished; the answer carries `round`) |
+| `PUT /api/v1/lobbies/{id}/sign-mode` | S1 | `{ "request_id", "sign_mode", "passphrase" }` with `passphrase` only to `unlock_at_join` (kind A), or `{ "request_id", "sign_mode": "automatic", "confirm_sign_mode": "automatic" }` (kind B); to `ask_when_full` neither (14.3) | `200`, the lobby object | `not_joined`, `signing_now` (a round is under way for this seat), `fresh_sign_in_needed`, `confirm_mismatch`, `wrong_passphrase`, `rate_limited`, `missing_field`, `bad_value` |
+| `POST /api/v1/lobbies/{id}/unlock` | S1 | `{ "request_id", "passphrase": "…" }` (kind A; 14.3) | `200`, the lobby object with `you.sign_auth.state = "unlocked"`; a ready check that waits is answered now | `not_joined`, `no_unlock_needed` (mode `automatic`, or already `unlocked`), `too_late` (the ready check closed, or the round ended: `you.sign_auth.state` says which), `wrong_passphrase`, `rate_limited` |
 | `PUT /api/v1/lobbies/{id}/members/{seat}/blocked` | 1.0.0 | `{ "blocked": true }` | The member row | `names_off`, `not_joined` |
 | `POST /api/v1/invitations` | 1.0.0 | `{ "text": "<the link or QR text>" }` | `{ "lobby_id" }`; the lobby is fetched and appears in the list | `bad_invitation`, `wrong_network` |
 | `GET /api/v1/lobbies/{id}/terms/sealed` | 1.0.0 | | 13.3 | |
 | `POST /api/v1/lobbies/{id}/rule-request` | later reserved | | | |
 | `GET /api/v1/lobbies/{id}/chat` | later reserved | | | |
 
-**Joining is consent.** `seen_current_digest` must be the `terms.current.digest` the person reviewed. When the lobby starts, the app signs without asking (options map, "never a setting"). If anything differs at signing from what was reviewed (fingerprint, values outside the frozen ones, the tree against the conditions, any safety check), it refuses before sending anything. `seen_current_digest` is the join's echo (4.8); joining needs no fresh sign-in, because it spends none of the member's coins in 1.0.0 (default D4, 24.1).
+**Joining is consent; the mode says when the program may act on it** (draft 5). `seen_current_digest` must be the `terms.current.digest` the person reviewed. In mode A the app signs without asking when the lobby starts; in mode C it signs with the authorisation the join's passphrase gave, for this lobby only; in mode B it asks for the passphrase when the lobby fills (14.3). In every mode, if anything differs at signing from what was reviewed (fingerprint, values outside the frozen ones, the tree against the conditions, any safety check), it refuses before sending anything. `seen_current_digest` is the join's echo (4.8). A join in mode A or B needs no fresh sign-in, because it spends none of the member's coins in 1.0.0 (default D4, 24.1); a join in mode C carries the passphrase because it is the unlock.
+
+**A lobby row's `fit`** (draft 5, gap 10). In `GET /api/v1/lobbies` a row's `fit` is `{ "class", "counted_from", "rows" }`, where `rows` holds only the rows of 13.4 whose `result` is `fails` or `fits_now_only`, in 13.4's row shape, so a list can say which limit excludes a lobby with both numbers without fetching each lobby. The program MUST send `rows: []` for a lobby that fits; the full fit check stays in `GET /api/v1/lobbies/{id}`. Example row fragment: `"fit": { "class": "does_not_fit", "counted_from": 30, "rows": [ { "term": "joining_fee_sat", "offered": { "min": 500, "max": 5000, "now": 5000 }, "yours": 2000, "result": "fails" } ] }`.
+
+### 14.3 Signing modes (draft 5, gap 2; owner decision 16d)
+
+A member, and a host for its own signatures, chooses when its program may sign a lobby's round. C is the default (owner, 2026-11-13); A and B are options. Mode D (watchtower services) comes after 1.2.0 and has no value here.
+
+| `sign_mode` | Owner's letter | What the person does | What the program does | When it cannot sign |
+|---|---|---|---|---|
+| `automatic` | A | Joins | Signs the lobby's round by itself from the unlocked wallet, within the terms reviewed and the conditions copied at joining (13.2). Draft 4's only behaviour | While the wallet is locked |
+| `ask_when_full` | B | Joins; gives the passphrase when the lobby fills | Answers the host's ready check only once the passphrase was given for this lobby (`POST …/unlock`); then holds this lobby's authorisation as in C | The passphrase was not given before the check closed |
+| `unlock_at_join` (**default**) | C | Types the passphrase in the join request | Holds an authorisation for this lobby alone, in memory, from the join; signs this lobby's round with it, within the terms reviewed; wipes it when the round ends | After a restart, a lock, or the failed-attempt rule below, until the passphrase is given again |
+
+**The program MUST:**
+1. Take `sign_mode` from `join` (14.2), and when it is absent use `conditions.sign_mode_default` (13.1). Save the mode with the lobby (7.5), never the authorisation.
+2. For `unlock_at_join`, take the passphrase in the join request (kind A, 4.8), check it under 4.3's counter and slot **before** anything is sent to the host, and on a wrong one answer `401 wrong_passphrase` with no seat made and nothing sent.
+3. Send no `ready` in answer to a ready check (`messages.md` 6.8), and no `round_nonces`, for a seat whose `sign_auth.state` is not `unlocked`. In modes B and C, "not unlocked" counts as not answering the ready check (decision 16d). A mode A seat is `unlocked` whenever the wallet is.
+4. In mode B, when the host's `ready_check` arrives for a seat that is not unlocked, set `sign_auth.state = waiting_for_passphrase` with `needed_by` the check's answer date, give `doing.code = passphrase_needed` and raise attention `passphrase_needed` (`act_now`, reason `ready_check`); and raise it as `important` (reason `starts_soon`) with `lobby_starts_soon` (11.4). It MUST accept `POST …/unlock` at any time while the seat exists; given early, the seat is `unlocked` from then on, as in C.
+5. Use a lobby's authorisation for that lobby only: refuse to sign with it any round whose `outer_digest` is not this lobby's or whose values lie outside the frozen values the person reviewed (`safety-rule.md`), and wipe it (a) when the member's round reaches Awaiting funding, Live, Abandoned or Dead, (b) when the seat ends (left, removed, refused, not chosen, the lobby cancelled), (c) at lock and at stop, and (d) under the next rule. After a restart a B or C seat is `needs_passphrase`.
+6. **After a fully failed attempt** (the attempt ended without a complete tree and the lobby went back to Open, `messages.md` 6.9), keep a C seat's authorisation for `C_RETRY_KEEP` = 10 minutes (**proposed**: recommended to the owner, recorded as recommended, not re-confirmed; 24.1 D21), with `sign_auth.wipe_at` set, so that an attempt started again soon signs without asking; then wipe it, set `needs_passphrase` and raise `passphrase_needed` (`important`, reason `kept_time_ended`). A ready check that comes later finds the seat not unlocked, as in mode B. The same holds for a B seat that had been unlocked.
+7. When the lobby starts without a seat that was left out of a ready check for lack of the authorisation, give `you.outcome.code = not_unlocked_in_time` (14.1), never `not_chosen`'s plain wording, and `doing.code = not_chosen` with `params.reason = not_unlocked_in_time`.
+8. Accept `PUT …/sign-mode` while the seat exists and no round is under way for it (`409 signing_now` otherwise). To `automatic`: kind B, echo `confirm_sign_mode: "automatic"` (it widens what the program signs without asking). To `unlock_at_join`: the passphrase, which is the unlock. To `ask_when_full`: nothing, and any held authorisation is wiped.
+9. Keep pause and lock as they are: `unlock` is accepted while paused, and a paused program still sends no `ready` (11.3); a lock wipes every authorisation (4.7).
+
+**The interface MUST:**
+1. Offer the three modes on the join screen, with the member's default (13.1, C unless changed) chosen, each said in plain words: A "sign by itself when the lobby starts"; B "ask me for my passphrase when the lobby fills; if I am not here in time, I am left out"; C "unlock this lobby now; it signs this lobby only, then forgets".
+2. Show the passphrase field in the join form only for C, and clear it after sending (12.7).
+3. Show `you.sign_auth.state` on the lobby and Home, with "Give the passphrase" when it is `needs_passphrase` or `waiting_for_passphrase`, and the time left from `needed_by` or `wipe_at`.
+4. Word `not_unlocked_in_time` apart from `not_chosen`: "Not unlocked in time: the lobby started without you. Nothing was signed."
+
+**The host's mode.** `host_sign_mode` in the draft (15.1) is the hosting program's own mode, for its signatures in the round and for the funding (default `unlock_at_join`, which the opening request's passphrase satisfies). In mode B the host's program, when the start rule is met, gives `passphrase_needed` with `role: "hosted"` and runs no ready check until `POST /api/v1/host/lobbies/{id}/unlock`; with no unlock by the lobby's deadline it cancels the lobby (`cancel` reason 2, host's choice). In mode C, a restart leaves the hosted lobby `needs_passphrase` and the start rule waits the same way. The host's authorisation is wiped once the funding is broadcast or the lobby ends. Whether a host may restrict its members' modes is 24.2 item 35.
+
+**What the modes do not do.** While the wallet is unlocked, storage keeps the seed in memory (storage 8.2), so B and C restrict the program by its own rule, not by the cryptography: they guard against a session someone else picked up (D4) and against a signature the person did not mean at that moment, not against a thief of the unlocked process (24.2 item 32).
+
+**Rationale.** The owner chose C as the default because a signature then needs both the person's consent to these terms and their passphrase once, without asking again at the moment of signing, which may be at night. A is for an always-on machine; B for a person who wants to be asked each time and accepts being left out when away.
+
+**Errors.** On `join`: `wrong_passphrase`, `rate_limited`, `missing_field`, `bad_value`. On `unlock`: `no_unlock_needed`, `too_late`, `not_joined`. On `sign-mode`: `signing_now`, `fresh_sign_in_needed`, `confirm_mismatch`.
+
+**Example.** A mode B member, at the ready check:
+
+```
+GET /api/v1/status → "doing": { "code": "passphrase_needed", "lobby_id": "lob_7k2q", "role": "joined",
+                     "params": { "sign_mode": "ask_when_full", "needed_by": { "kind": "ready_check_answer_by", "...": "7.2" } } }
+POST /api/v1/lobbies/lob_7k2q/unlock   { "request_id": "u7QwZk3p0sR2bY8vX1tL", "passphrase": "…" }
+200 { "id": "lob_7k2q", "stage": "ready_check", "you": { "seat": "ready", "sign_mode": "ask_when_full",
+      "sign_auth": { "state": "unlocked", "since_at": 1794434402, "wipe_at": null, "needed_by": null }, "...": "14.1" }, "...": "14.1" }
+```
+
+A mode C join:
+
+```
+POST /api/v1/lobbies/lob_7k2q/join
+{ "request_id": "Jq4mT9cV2xE7nR0aW5zK", "seen_current_digest": "…", "ready": true, "sign_mode": "unlock_at_join", "passphrase": "…" }
+202 { "id": "lob_7k2q", "you": { "seat": "joining", "sign_mode": "unlock_at_join",
+      "sign_auth": { "state": "unlocked", "since_at": 1794427320, "wipe_at": null, "needed_by": null }, "...": "14.1" }, "...": "14.1" }
+```
+
+### 14.4 Several lobbies at once (draft 5, gap 1; owner decision 16b)
+
+A wallet may hold seats in several lobbies and host several lobbies at the same time, from Slice 1. This replaces the one joined and one hosted lobby of 2026-11-12.
+
+**The program MUST:**
+1. Accept seats in up to `max_joined` lobbies and host up to `max_hosted` lobbies that have not ended (8 and 4, **proposed**, 24.1 D22). A join beyond answers `409 lobby_limit_reached` with `params.role: "joined"`, `params.limit` and `params.lobby_ids`; an opening beyond gives `cannot_open_because: ["lobby_limit_reached"]` (15.1). A seat counts from `joining` until it ends; a hosted lobby from opening until it is cancelled, failed or active.
+2. Refuse a join of a lobby this program hosts: `409 own_lobby`. A host taking a member seat in its own lobby would sign both sides of every check that lobby makes.
+3. Keep everything per lobby: the conditions copied at joining, the request ids, the signing mode and authorisation, the set-aside amount, the outcome. Nothing about one lobby changes because of another, except what is the person's across all of them: pause (11.3) acts on every lobby; a change of conditions applies the copying rule to each joined lobby; a lock is held while any lobby has signatures out and refused while any hosted lobby is Open.
+4. Add up hosted lobbies' set-aside amounts: an opening is checked against what the wallet has free after every other set-aside (`set_aside_elsewhere_sat`, 15.1), or `funds_short`.
+5. Report every lobby in `status.lobbies` with its `role` (11.1), give `doing.role`, and carry `lobby_role` on every attention item with a `lobby_id` (11.4). Where draft 4 named one lobby, name a list: `pause.lobby_ids`, `lock.lobby_ids`, `held_lobbies` (11.3), `hosting_lobby_open.params.lobby_ids` (4.5, 8.1).
+6. Never send `already_in_lobby` or `already_hosting`. Both codes are withdrawn.
+
+**The interface MUST** never assume one lobby: lists everywhere, no "the lobby"; it reads a lobby by `role` (`GET /lobbies/{id}` or `GET /host/lobbies/{id}`), and shows every entry of `status.lobbies` on Home.
+
+**Rationale.** Owner decision 16b. Several lobbies raise no new double-effect risk, because request ids are bound to their lobby and body (7.4), and no new signing risk, because each round's safety checks are per lobby and per output (`safety-rule.md` C10). Contribution keys are per lobby (`messages.md` 6.3), so two seats with one host are not linked by key; they may be by network address, which is the transport's to hide (Tor, 1.0.0).
+
+**Errors.** `lobby_limit_reached`, `own_lobby`; `funds_short` as before.
+
+**Example.**
+
+```
+POST /api/v1/lobbies/lob_9x1r/join   { "request_id": "…", "seen_current_digest": "…", "ready": true, "sign_mode": "unlock_at_join", "passphrase": "…" }
+409 { "code": "lobby_limit_reached", "message": "Too many lobbies at once.", "field": null,
+      "params": { "role": "joined", "limit": 8, "lobby_ids": ["lob_7k2q", "lob_2b6f", "…"] } }
+```
+
+### 14.5 Standby seats: understudies (draft 5, gap 7; owner decision 16e; 1.0.0)
+
+Understudies are in 1.0.0. They need protocol messages that do not exist yet (`messages.md` section 9), so in Slice 1 every value below is `null` and no screen shows them.
+
+**The program MUST (1.0.0):**
+1. Fill `you.standby` (14.1) while this member waits as an understudy, and give `doing.code = standing_by` (11.2).
+2. Answer the ready check from an understudy's seat like any seat, under its signing mode (14.3: a B or C understudy must be unlocked); `answered_ready_check` records it. Only understudies that answered can be swapped in.
+3. On a swap, at the ready check for a no-show or mid-signing for a member who drops, set `swapped_in_at`, move `you.seat` to `chosen`, and treat a mid-signing swap as a new attempt with fresh nonces from everyone (`signing-round.md`); before sending nonces, re-check the conditions copied at joining against the new set (the member count among them), refusing as `refused_at_check` when they fail.
+4. When the lobby starts without needing the understudy: `you.outcome.code = not_chosen`, `doing.code = not_chosen` with `params.reason = standby_not_needed`.
+5. On the host's side, fill `standby` (15.3) with each understudy and every swap, shown as the host's action and covered by its signed receipts (16c).
+
+**The interface MUST** show the position ("2nd of 4 understudies") and never say "you are in" before `swapped_in_at`.
+
+**Example (1.0.0).** `"standby": { "position": 2, "of": 4, "since_at": 1794430000, "answered_ready_check": true, "swapped_in_at": null }`.
+
+### 14.6 Accountability: what every member sees (draft 5; owner decision 16c)
+
+The owner wants every member's software to show what the host did, in particular whether the host removed anyone. Decision 16c gives the means in 1.0.0: signed seat receipts, removals always signed with a reason, and signed lobby-wide counts without identities. None has protocol messages yet (24.2 item 34).
+
+```json
+"accountability": {
+  "source": "signed_counts",
+  "as_of_at": 1794434400,
+  "signed": true,
+  "counts": { "seats_ever": 41, "left": 3, "removed_by_host": 1, "refused_at_check": 1, "not_answering": 0, "swapped_in": 0 },
+  "removal_reasons": [ { "reason": { "text": "did not answer for an hour", "by": "host", "checked": false }, "count": 1 } ],
+  "your_receipt": { "checked": true },
+  "contradictions": []
+}
+```
+
+| Field | Values |
+|---|---|
+| `source` | `signed_counts` (1.0.0: the host's signed lobby-wide counts, checked); `own_view` (Slice 1: only what this member's own program saw) |
+| `signed` | `true` only when the counts' signature verified. The interface presents signed counts as the host's signed statement ("The host signed that it removed 1 seat"), never as the app's finding |
+| `counts` | The host's counts; in Slice 1 `null` except what `lobby_status` gives (`joined` and `ready` in `14.1 counts`, unsigned) |
+| `removal_reasons` | The reasons of removals, as the host's words; `[]` in Slice 1 except this member's own removal |
+| `your_receipt` | 1.0.0: this member's signed seat receipt, checked; `null` in Slice 1 |
+| `contradictions` | What this member's own program saw that the signed counts deny, for example its own removal while `removed_by_host` is `0`: `[ { "code": "own_removal_not_counted" } ]`. The interface MUST show each |
+
+**The program MUST** record every removal of this member, with the host's reason, as an activity entry (who decided: the host), signed or not as it came; MUST NOT present an unsigned count as the host's commitment; and in Slice 1 MUST answer `source: "own_view"` and `signed: false`. A removal of this member from a running attempt (`round_abort` reason 7) is the host's claim and is shown as one.
+
+**The interface MUST** show `accountability` to every member of the lobby, joined or not, and say plainly what Slice 1 cannot show: "Your app sees only what happened to your own seat."
+
+**Rationale.** The host's choices are the main unchecked power in a lobby (`docs/ux/decisions.md` 16c). Signed counts let a member show what the host did without revealing who else was there.
 
 ---
 
@@ -1731,6 +2022,7 @@ Draft:
   "fee_base_msat": { "now": 1000, "min": 1000, "max": 1000 },
   "fee_ppm": { "now": 500, "min": 300, "max": 800 },
   "listed": true,
+  "host_sign_mode": "unlock_at_join",
   "switches": { "names": false, "chat": false, "rule_requests": false },
   "reserved": { "spare_liquidity_sat": null, "receiving_room_fee_ppm": null, "admission": null, "newcomer_seats_pct": null, "invitation_only": null, "move_window": null }
 }
@@ -1767,7 +2059,9 @@ Answer:
 | `on_shortfall_not_in_slice` | Slice 1 accepts `cancel` only |
 | `reserved_term_set` | A `reserved` field is not `null` |
 
-`cannot_open_because`: `problems`, `funds_short`, `no_wallet`, `chain_in_doubt`, `already_hosting` (S1 allows one hosted lobby at a time, owner 2026-11-12), `host_node_missing` (1.0.0, once payments need the host's Lightning node; not in Slice 1).
+`cannot_open_because`: `problems`, `funds_short` (counting what other hosted lobbies have set aside, `set_aside_elsewhere_sat`), `no_wallet`, `chain_in_doubt`, `lobby_limit_reached` (`max_hosted`, 14.4), `host_node_missing` (1.0.0, once payments need the host's Lightning node; not in Slice 1). Draft 4's `already_hosting` is withdrawn (owner decision 16b).
+
+`host_sign_mode` (draft 5): the hosting program's own signing mode for this lobby (14.3, "The host's mode"): `automatic`, `ask_when_full` or `unlock_at_join` (the default).
 
 `shape`: `default` lets the program choose shapes by `terms.md` section 4 and the scale-check rules (`DESIGN.md` section 7); an explicit table is accepted in the same form as `outer.shape`.
 
@@ -1780,6 +2074,8 @@ Answer:
 | `GET /api/v1/host/lobbies/{id}` | S1 | | 15.3 | `not_found`, `not_host` |
 | `POST /api/v1/host/lobbies/{id}/start` | S1 | `{ "request_id", "confirm_funding_max_sat": 37500000 }`. **Fresh sign-in** (4.8). An **early** start only (below) | `202`, `stage: "ready_check"` | `below_minimum` (`params.ready`, `params.minimum`), `not_open`, `funds_short`, `chain_in_doubt`, `paused`, `confirm_mismatch`, `fresh_sign_in_needed` |
 | `POST /api/v1/host/lobbies/{id}/cancel` | S1 | `{ "request_id" }` | `202`, `stage: "cancelled"`; set-aside funds are free again | `too_late` (signing has begun: a round runs to its end within its budget; the host cannot take back what members signed) |
+| `POST /api/v1/host/lobbies/{id}/unlock` | S1 | `{ "request_id", "passphrase": "…" }` (kind A; 14.3, "The host's mode") | `200`, the host's lobby object with `sign_auth.state = "unlocked"`; a start rule already met proceeds now | `not_host`, `no_unlock_needed`, `too_late`, `wrong_passphrase`, `rate_limited` |
+| `PUT /api/v1/host/lobbies/{id}/sign-mode` | S1 | As `PUT /api/v1/lobbies/{id}/sign-mode` (14.2) | The host's lobby object | As there, and `not_host` |
 | `POST /api/v1/host/lobbies/{id}/values` | 1.0.0 | `{ "request_id", "based_on_version": 3, "values": { "joining_fee_sat": 1200 } }` | The lobby, with the new current version, signed and sent to every seat | `frozen`, `outside_range`, `changed_elsewhere` |
 | `DELETE /api/v1/host/lobbies/{id}/seats/{seat}` | S1 (**provisional**, 2.1) | `{ "request_id", "confirm_seat": "<the seat>", "reason": "…" }` in body. Fresh sign-in (4.8, kind B) | `202`; the seat goes to state 6, "removed" (`messages.md`), the member is told through `lobby_status`, and, once standby seats have their messages, the first standby takes the place | `frozen` (no removal after the ready check, critique H.3), `not_host`, `confirm_mismatch`, `fresh_sign_in_needed` |
 | `POST /api/v1/host/lobbies/{id}/invitations` | 1.0.0 | `{ "expires_at": … }` | `{ "text": "…", "qr_svg_data": "…" }`: the link and the QR's contents. Their exact form and expiry are **(open)** | `not_host` |
@@ -1804,6 +2100,8 @@ Join requests need admission by approval, which has no protocol messages yet (`m
 
 The automatic start needs no fresh sign-in: the person consented to the spend, with its amount echoed, when opening. After a ready check that does not lead to a start, the lobby returns to Open and the same rule applies again (`messages.md` 6.9). A host never signs funding before every member's signed tree is complete and verified (H1). The ready check is followed by signing and funding by themselves, shown in `stage`, `round` and `funding`.
 
+**Funding is automatic** (owner decision 16a). Once the host's H1 check passes, the program broadcasts the funding transaction itself, with no call and no question: the consent was given at opening (the amount echoed) and at the start. This is the default, and on test networks the only behaviour; before real money it becomes a setting (1.0.0, section 20) whose default stays automatic. With `host_sign_mode` B or C the funding signature uses the lobby's authorisation (14.3), which is wiped once the funding is broadcast.
+
 ### 15.3 The host's lobby object
 
 ```json
@@ -1816,18 +2114,42 @@ The automatic start needs no fresh sign-in: the person consented to the spend, w
   "counts": { "joined": 22, "ready": 22 },
   "can_start_now": false,
   "start_blocked_by": ["below_minimum"],
+  "sign_mode": "unlock_at_join",
+  "sign_auth": { "state": "unlocked", "since_at": 1794427000, "wipe_at": null, "needed_by": null },
   "funding": { "needed_at_minimum_sat": 22500000, "needed_at_target_sat": 37500000, "set_aside_sat": 37500000, "wallet_free_sat": 4500000 },
   "seats": [ { "seat": "a19c…", "name": { "text": "Fig-12", "by": "member", "checked": false }, "state": "ready", "joined_at": … } ],
   "round": { "state": "collecting_nonces", "attempt": 1, "answered": 20, "of": 22, "silent": 2 },
   "listing": { "published": ["direct_query"], "renew_by": null },
+  "accountability": { "...": "14.6" },
   "funding_tx": null,
   "factory_id": null
 }
 ```
 
-- `round.state` (host, `signing-round.md` section 7): `collecting_nonces`, `collecting_signatures`, `tier_result`, `complete`, `collecting_acks`, `funding`, `funded`, `failed` (with `params.silent` and `params.invalid` counts; the host's claim that a member was silent is shown as a claim only, threat model 2.1).
-- `seats[].state` uses the seat values of 14.1 from the host's side. `seats[].can_remove` is `true` before the ready check (15.2, provisional S1).
-- `standby` (**S1, provisional**, 2.1): `null`, or `{ "waiting": 3, "seats": [ { "seat", "name", "since_at" } ] }`. `null` until the protocol has standby messages.
+- `round.state` (host, `signing-round.md` section 7): `collecting_nonces`, `collecting_signatures`, `tier_result`, `complete`, `collecting_acks`, `funding`, `funded`, `failed` (with `params.silent`, `params.invalid` and, from draft 5, `params.refused` counts; the host's claim that a member was silent is shown as a claim only, threat model 2.1).
+- `seats[].state` uses the seat values of 14.1 from the host's side, plus **`refused`** (draft 5): the member refused at its own check. `seats[].can_remove` is `true` before the ready check (15.2, provisional S1).
+- **A refusal is shown as a refusal, with its condition and both values** (draft 5, gap 4; owner: the host must see that a member refused, and on which condition, not only that it left). A refused seat carries `refusal`:
+
+```json
+{ "seat": "c03e…", "name": { "text": "Kiwi-7", "by": "member", "checked": false }, "state": "refused",
+  "refusal": { "at_stage": "signing", "which": "conditions", "condition": "members", "yours": 30, "offered": 22,
+               "protocol_reason": 9, "signed": true, "at": 1794434410, "activity_id": "act_1190" } }
+```
+
+| Field | Values |
+|---|---|
+| `at_stage` | `open` (`leave` reason 1 while Open), `ready_check` (`unready` or `leave` reason 1 during a check), `signing` (`round_abort`) |
+| `which` | `conditions` (`round_abort` reason 9; `unready` or `leave` reason 1), `safety_check` (reason 1), `fingerprint_differs` (reason 2), `output_in_use` (reasons 6 and 11), `not_my_current_key` (reason 12) |
+| `condition`, `yours`, `offered` | The term, in 13.4's `rows[].term` names, and both values, from the member's refusal record when its message carries one (24.2 item 33); `offered` is filled from the host's own terms when the member names the term without the value. All three `null` when the member's program sent no record |
+| `protocol_reason` | The code received (`messages.md` 6.5, 6.6, 7.9) |
+| `signed` | `true` when the carrying message is signed by the member's contribution key (`round_abort` is; `leave` and `unready` are not) |
+| `activity_id` | The host's activity entry for it |
+
+  **The host's program MUST** give a seat `refused`, never `left`, for a `round_abort` with reason 1, 2, 6, 9, 11 or 12 and for an `unready` or `leave` with reason 1; save an activity entry for it (who decided: the member; the rule: its own conditions or safety check; the saved copy holds the values received); raise attention `member_refused` (11.4); and count it in `round.params.refused` when it ends an attempt. Reasons 3, 4, 5 and 10 are not refusals and keep draft 4's counts (`silent`, `invalid`). **The member's program SHOULD** send the refusal record for a `conditions` refusal once the protocol has it, for the failing condition only, and its join screen SHOULD say so ("If your app refuses, your host is told which limit and your value"). **The interface MUST** present the values as the member's statement ("A member refused: it wants at least 30 members; your lobby has 22"), never as a finding of the host's program.
+
+  Rationale: a host learns which of its terms keeps members away, which is what makes lobbies form; the cost, one limit of one member reaching its host, is sent only for the condition that failed. Errors: none new. Example, after a failed attempt: `GET /api/v1/host/lobbies/lob_4c08` → `"round": { "state": "failed", "attempt": 1, "params": { "silent": 0, "invalid": 0, "refused": 1 } }` and the seat above.
+- `standby` (understudies, **1.0.0**, owner decision 16e; 14.5): `null`, or `{ "waiting": 3, "seats": [ { "seat", "name", "since_at", "answered_ready_check" } ], "swaps": [ { "attempt", "out_seat", "in_seat", "why", "at" } ] }`, `why` being `no_show` or `dropped`. `null` in Slice 1 and until the protocol has standby messages.
+- `sign_mode`, `sign_auth`: the hosting program's own (14.3, "The host's mode"), in 14.1's shapes. `accountability`: 14.6, as members see it.
 - `funding_tx`: `{ "txid", "state", "confirmations", "needed", "broadcast_at" }`.
 
 ### 15.4 Host factories, setup and earnings
@@ -2186,11 +2508,17 @@ The critique (`docs/reviews/ux-critique.md` sections 4 and H.3 to H.7) lists sen
 | Pause is held while signatures are out | `pause.state = held_for_signing`; `doing.code = signing` | `off`, `on`; `doing.code = paused` |
 | Paused, with something at risk | `doing.code` priority (11.2): every at-risk value outranks `paused` | `paused` hiding an unfinished round |
 | Signed out, the app still signs and watches | `GET /session` `signed_in: false` with `wallet: unlocked`; `watching.state` as unlocked (review N8: draft 2's row "A locked app still signs" stated the opposite of 4.7) | `wallet = locked` |
-| A lock waits for a round to end, or for a received payment to settle | `lock.state = held_for_signing` with `lobby_id`, or `held_for_payment` (1.0.0), in `GET /session` and status; sessions still valid | `wallet = locked` |
+| A lock waits for a round to end, or for a received payment to settle | `lock.state = held_for_signing` with `lobby_ids`, or `held_for_payment` (1.0.0), in `GET /session` and status; sessions still valid | `wallet = locked` |
 | A host's claim that a member was silent | `round.state = failed` with counts, shown as the host's claim | A finding by the app |
 | Host-written text in the app's voice | `{ text, by: "host", checked: false }` on every such string | Plain strings |
 | Required only with a date | Attention tier `act_now` always has `due` | `important` |
 | The core stopped | `wallet = node_stopped`, `doing.code = node_stopped`, `503 node_stopped` | A blank screen |
+| The app did not sign because the passphrase was not given in time (mode B or C) | `you.outcome.code = not_unlocked_in_time`; `doing.code = not_chosen` with `params.reason = not_unlocked_in_time` | `not_chosen` for a full lobby; `refused_at_check` |
+| The app waits for the passphrase to sign | `doing.code = passphrase_needed`; `you.sign_auth.state = waiting_for_passphrase`; attention `passphrase_needed` | `in_lobby_waiting`, which promises signing without the person |
+| A host sees a member refuse, not leave | Host `seats[].state = refused` with `refusal` (both values when sent); attention `member_refused` | `left` |
+| Removed by the host | `doing.code = removed_by_host`; `you.outcome.code = removed` | `left`; `refused_by_host` |
+| What the host signed about its lobby, against what the app saw | `accountability.signed`, `accountability.source`, `accountability.contradictions` | A finding of the app; unsigned counts as proof |
+| Several lobbies: which one the strip names | `doing.role`, `status.lobbies[]` | One "the lobby" |
 
 A contract test (23.4) checks that every value in this table can be produced by the simulator and is rendered by the interface with its own wording.
 
@@ -2224,6 +2552,20 @@ No browser or operating-system test was run for drafts 3 and 4 either: the behav
 20. **Unlock order** (4.7): a wrong passphrase leaves the watcher running throughout (1.0.0); with a saved pause on, a restart and unlock: no host connection is opened before the pause is applied; with the watcher having published a tree step, the commitment is broadcast before any host connection, also with the pause on; a forged log entry ("broadcast", "spent") that the chain does not confirm makes no record and no activity entry; a hosted lobby whose deadline passed while locked is cancelled once its members can be reached; a funding deadline that passed while locked gives `abandoned` once the chain view is trusted; the watcher's confirmed broadcasts appear in Activity.
 21. **`creation_abandoned` while still watched** (11.2): 25 hours after an abandoned creation with `still_watched: true`, with nothing above it holding, `doing.code` is still `creation_abandoned`, never `idle_no_factory`; after joining another lobby and leaving it, again `creation_abandoned`. Once `still_watched` turns `false`, the 24-hour rule applies.
 22. **Files behind** (4.7, review R3): with the mark file or guard deleted, and separately with the journal cut back after an anchored batch, `POST /session` with the right passphrase answers a `files_behind` session; status has the locked shape with `wallet = files_behind` and `doing.code = files_behind`; every call but the five of 4.7 answers `not_files_behind_call`; `start-as-restore` without the passphrase or with the wrong confirm is refused; with both it answers `restoring` and the next key derived is of a new epoch; signing out instead leaves every file byte for byte as it was. On the socket, `POST /wallet/unlock` answers `409 files_behind`. A key file with no journal starts as a restore without asking.
+23. **Several lobbies** (14.4): join three lobbies and host two at once; each keeps its own conditions copy, mode and request ids; `status.lobbies` lists five with the right `role`, and `doing.role` matches `doing.lobby_id`; a ninth joined lobby answers `lobby_limit_reached`; joining a lobby this program hosts answers `own_lobby`; pause with two lobbies holding signatures answers both in `held_lobbies`; lock with two Open hosted lobbies answers `hosting_lobby_open` with both ids. No `already_in_lobby` or `already_hosting` is ever sent.
+24. **Mode C** (14.3): a join with a wrong passphrase answers `wrong_passphrase` and no `join` reaches the host; with the right one the round signs without a call, and after Live `sign_auth.state = wiped`; a restart before the ready check gives `needs_passphrase` and the next check gets no `ready` from this member; `POST …/unlock` before it closes answers it.
+25. **Mode C after a failed attempt**: an attempt fails and the lobby returns to Open; a new attempt within 10 minutes signs without asking; 10 minutes and 1 s after the failure `sign_auth.state = needs_passphrase` and attention `passphrase_needed` with reason `kept_time_ended`.
+26. **Mode B**: the ready check gives `doing.code = passphrase_needed` and attention `act_now` with `due` the check's answer date; unlocking in time answers `ready`; not unlocking leaves the seat out of the check, and a start without it gives `you.outcome.code = not_unlocked_in_time`.
+27. **Mode A and mode changes**: A behaves as draft 4; `PUT …/sign-mode` to `automatic` without a fresh sign-in answers `fresh_sign_in_needed`, with a wrong echo `confirm_mismatch`; any mode change during a round answers `signing_now`.
+28. **The host's mode B**: a met start rule gives `passphrase_needed` with `role: hosted` and no ready check until `POST /host/lobbies/{id}/unlock`; with none by the deadline the lobby is cancelled (reason 2). Funding is broadcast without a call once H1 passes (16a).
+29. **A refusal seen by the host** (15.3): a member whose copied conditions fail at signing sends `round_abort` reason 9; the host's seat is `refused`, never `left`, with `at_stage: signing`, `which: conditions`, `signed: true`, the condition and both values when the record is present and `null` without it; attention `member_refused`, an activity entry, `round.params.refused = 1`. A `leave` reason 2 still gives `left`.
+30. **Suggested passphrase** (12.9): 10,000 suggestions, six listed words each, each passing storage 4.1's rules; word counts within a chi-square test of a uniform draw; no suggestion in the log, an event, the journal or the request-id store; the 21st call in a minute answers `rate_limited`; the interface makes no passphrase of its own (no generation code in `web/`).
+31. **Setup after a restore** (12.1): `finish-setup` while `restoring` answers `{ "state": "restoring" }`, and the scan's end gives `ready`; without it the scan's end gives `created_not_finished`; a `wallet` event at each change.
+32. **Why a session ended** (10.2): for each `reason`, the `session` event carries it, and a request with the ended token answers `not_signed_in` with `params.ended`; after a restart the same token gets `ended: null`; a failed words check answers `session_ended: true`. `wrong_passphrase` carries `retry_after_s` and `wrong_in_row`.
+33. **First run, 10 minutes** (4.3): a wallet created from one tab; another page presenting the start token within 10 minutes gets `wallet_exists`, `GET /session` still gives `first_run_launched_at`, and the interface shows the hijack warning; after 10 minutes and 1 s the field is `null` and the ordinary sign-in shows.
+34. **Removed by the host** (11.2, 14.6): a seat removed before the ready check gives `doing.code = removed_by_host` with the reason, sticky as 21 to 26; `accountability` has `source: own_view`, `signed: false`, and this member's removal in `removal_reasons`.
+35. **Starts soon** (11.4): a lobby 15 minutes from its deadline with the minimum ready raises `lobby_starts_soon` once, `important` for a mode B seat, and clears at the ready check.
+36. **A lobby row's `fit`** (14.2): a row that does not fit lists only its failing and fits-only-now rows with both values; a row that fits has `rows: []`.
 
 ### 23.2 Hostile browser and network
 
@@ -2260,7 +2602,7 @@ Run with Playwright and a raw HTTP client. Each expects the stated refusal, and 
 29. Static content cannot be fetched with `Sec-Fetch-Site: cross-site`; `GET /` with `none` works.
 30. A `same-site` API request (another port on `127.0.0.1`): `403`.
 31. A second operating-system user connects to the port: on Linux, `403 other_user` before any byte is read, for every path, `GET /` and the API alike, also during first run; with the check made unavailable (a test switch that hides `/proc/net` and the netlink family), status says `peer_check: unavailable` and that user gets the sign-in page and `401` everywhere else. In both cases that user cannot read the token file, the redirect file or the local socket.
-32. **Streams** (review F10): five tabs open; one stream in all (shared worker or elected tab), every tab updated; a third stream for one session answers `429 too_many_streams` and is not retried; no connection is closed to make room; closing the stream's tab moves it to another tab.
+32. **Streams** (review F10; draft 5): five tabs of one session open; two hold streams, three answer `429 too_many_streams` and follow relayed events, and every tab is updated; no connection is closed to make room; closing a streaming tab (with `pagehide`) lets a follower take over at `leader_gone`; crashing both streaming tabs (no `pagehide`) lets followers take over within 30 s plus the retry delay; a ninth stream in all answers `429`.
 33. **Another loopback server** (review F1): a test server on another port of `127.0.0.1` records every request header it receives while the person, signed in to Gazpacho, browses pages it serves, in the same browser: no Gazpacho credential appears (no cookie, no session secret).
 34. **Replay** (review F1, F19): every request header the browser sends to Gazpacho, replayed by a raw client without `X-Gazpacho-Session`: nothing but `{ "signed_in": false }`, the version and static files. A `Set-Cookie` from another port for `127.0.0.1` changes nothing.
 35. **Words check** (review F2, N5): a script with a session, a fresh sign-in, but no passphrase tries `check-start`, `check` and `reveal` in every order: positions only, no answer about any word, no words. With the passphrase: answers carry only `ok`; a wrong passphrase leaves the daily count unchanged; the fourth check in 24 hours is `rate_limited` before any derivation, also after a restart; a failed check ends the session.
@@ -2277,7 +2619,7 @@ Run with Playwright and a raw HTTP client. Each expects the stated refusal, and 
 46. **Derivation flood** (4.3): 32 connections send `POST /session` with passphrases at once; at most one derivation runs and one waits (a test build counts them); the others answer `rate_limited` without being counted as wrong; memory stays below one derivation's use plus a fixed margin.
 47. **Ninth session**: eight sessions open; a ninth sign-in succeeds and the session unused longest answers `401`.
 48. **Start token without a counter** (review R5): a page on another site navigates a window to the plain address with five junk fragments, of the token's form and not: nothing is counted, no code is cancelled, no hijack warning appears, and the real token then works; a fragment not of the token's form is never presented. Five wrong typed codes still cancel the codes.
-49. **The worker trusts no port** (review R7): a same-origin test page attaches to the running `SharedWorker` and posts `token` with junk and `sign_out`: it receives no `event` or `stream_state`, and the stream and the held token are unchanged; with the tunnel port set no `SharedWorker` is created.
+49. **Relays are only hints** (draft 5, replacing draft 4's worker test): a same-origin test page posts forged `event`, `tick` and `leader_gone` messages on the channel; the tabs at most ask again under their own sessions, show nothing they did not get from the program, and open no stream beyond the caps; with the tunnel port set no tab listens to the channel. No page creates a worker (`worker-src 'none'`).
 50. **Setup session ended before `create`** (review R9): idle sign-out of a setup session, then the plain address shows "Start Gazpacho again, or type the code it prints"; `gazpacho first-run-code` gives a code that works.
 51. **Confined browser** (review R4): on Ubuntu with snap Firefox as the default browser, the redirect file is written in the download folder's owner-only first-run folder and opens; with that folder made impossible, the code flow is used and the code reaches a desktop notification; at no time does any process's command line hold the code or the token.
 
@@ -2287,7 +2629,7 @@ Run with Playwright and a raw HTTP client. Each expects the stated refusal, and 
 2. The socket token file and the redirect file have mode 0600 (POSIX) or an owner-only access list set at creation (Windows); the token file exists only while the wallet is unlocked, and the redirect file is gone after the first presentation of its token, its expiry, or a stop. No command line of any process the program starts (the browser launcher included) holds a token, a code or a passphrase.
 3. Every URL the interface ever requests (recorded by Playwright) has no fragment, no query parameter outside the allowed list, and no 64-hex segment. The only address carrying a secret is the one in the first-run redirect file, and only in its fragment.
 4. `Cache-Control: no-store` on every API answer; the browser's disk cache holds no API answer after a run.
-5. **The words in the browser** (12.7): the words stay shown past 2 minutes until Done; after the tab is hidden the DOM holds no word and "Show again" brings them back; after Done, `pagehide`, the 10-minute ceiling, sign-out or lock, the DOM holds no word and the screen's variable is gone, and `sessionStorage`, `localStorage`, IndexedDB, the cache API and the history state hold none; the word fields carry `autocomplete="off"`, `autocorrect="off"`, `autocapitalize="off"` and `spellcheck="false"`; no copy control exists and the shown words are `user-select: none`; the page is served `Cache-Control: no-store`. The permissions policy names `clipboard-write=()`, and the test records, per browser, whether `navigator.clipboard.writeText` is refused (23.6 item T9) without counting it as the defence.
+5. **The words in the browser** (12.7): the words stay shown past 2 minutes until Done; after the tab is hidden the DOM holds no word and "Show again" brings them back; after Done, `pagehide`, the 10-minute ceiling, sign-out or lock, the DOM holds no word and the screen's variable is gone, and `sessionStorage`, `localStorage`, IndexedDB, the cache API and the history state hold none; the word fields carry `autocomplete="off"`, `autocorrect="off"`, `autocapitalize="off"` and `spellcheck="false"`; no copy control exists and the shown words are `user-select: none`; the page is served `Cache-Control: no-store`. The permissions policy names `clipboard-write=(self)` (draft 5, for the address control of 5.4); the test checks that no handler on the words screen calls `navigator.clipboard.writeText` (23.6 item T9), without counting the header as the defence.
 6. **The words in the program** (12.7): in a test build, the buffers that held the words, the entropy and the seed are zero after `create`, `reveal`, `check` and `restore` answer (checked by a hook in the test build, and by a memory search of a core dump taken right after the call).
 
 ### 23.4 Contract
@@ -2310,13 +2652,13 @@ The second review's list (its section 4), kept under its names T1 to T11 and ext
 
 - **T1** `sessionStorage` isolation between `127.0.0.1:39735` and `127.0.0.1:8080`, and between `127.0.0.1`, `localhost` and `[::1]` at one port (three origins, three sign-ins expected). Duplicate-tab copy; `window.open` with and without `noopener`.
 - **T2** `BroadcastChannel`: a page on another port gets nothing. With the tunnel port set and the tunnel down, a test server on the viewing machine at that port posts `ask` on the channel: no `offer` comes (4.4).
-- **T3** The `fetch()` stream in a `SharedWorker` created from a page under `require-corp`, with the worker script served as 5.4 says, in Chrome, Firefox and Safari; the elected-tab fallback; `429` not retried; tab freezing and the `reset` after it; a same-origin page attaching to the running worker gets nothing (4.4, review R7).
+- **T3** The per-tab `fetch()` stream and its relay (10.3) in Chrome, Firefox and Safari: a `429` followed by relayed events; the 30 s take-over after a crashed tab; tab freezing and the `reset` after it. Draft 4's `SharedWorker` item is withdrawn: under 5.4's Trusted Types the worker cannot be created (4.4).
 - **T4** `Clear-Site-Data` on an `http://127.0.0.1` answer in each browser: is `sessionStorage` emptied in every tab? (Nothing depends on it, 4.4.)
 - **T5** First run: the `Sec-Fetch-Site`, `Sec-Fetch-Mode` and `Sec-Fetch-Dest` each browser sends for the navigation started by the redirect file (expected `cross-site`, `navigate`, `document`; 5.2); then, after `replaceState`, the history database, session-restore files, synced open tabs and the `Referer` of every request, searched for the token. Repeat with the page failing to load (program not yet listening): the token must not be usable later.
 - **T6** First run on Linux with a second user polling `/proc/*/cmdline`, with the browser already running and not running: the token must never appear (it would without the redirect file). Also, by name: **snap Firefox and snap Chromium** (Ubuntu's defaults), a Flatpak Firefox, and a distribution-packaged Firefox: which can open the redirect file from the data folder, which from the download folder's first-run folder, and that the code flow works for the rest; record each result (review R4).
 - **T7** Restore screen: type words, then kill the browser and restore tabs; check the field values and search the profile folder's session files for the words. Repeat for back and forward navigation.
 - **T8** Password managers: Chrome, Firefox and Safari built-ins, and Bitwarden with default matching. Does each offer the Gazpacho passphrase on another loopback port?
-- **T9** `Permissions-Policy: clipboard-write=()` in each browser: is `navigator.clipboard.writeText` refused? Can the shown words be selected and copied by keyboard despite `user-select: none`?
+- **T9** `Permissions-Policy: clipboard-write=(self)` in each browser (draft 5): does the address control's `navigator.clipboard.writeText` work from a click, and is it refused without one? Can the shown words be selected and copied by keyboard despite `user-select: none`?
 - **T10** Fetch metadata sent by current Safari on every call (5.2 relies on CORP where it is absent).
 - **T11** The interface's own page on loopback reaching its own API raises no Local Network Access prompt in Chrome.
 - **T12** The same-user check (3.4) on Linux kernels the build server and CI run, with the netlink family available and, separately, only `/proc/net/tcp`; the OpenSSH forwarding process's account for a tunnel (3.3).
@@ -2350,6 +2692,11 @@ The second review's list (its section 4), kept under its names T1 to T11 and ext
 | D18 | **Kind A (the passphrase in the request) covers opening a hosted lobby in Slice 1**, besides the words; the early start stays kind B (4.8) | Opening by window (kind B), which is draft 2's rule |
 | D19 | **The ninth sign-in ends the session unused longest** (4.2) | Refuse the ninth, which a few tabs closed without signing out would turn into a lock-out until idle sign-out |
 | D20 | **Lock refused while hosting an Open lobby** (4.7) | Lock cancels the hosted lobby first, which acts on the person's behalf without asking |
+| D21 | **Mode C keeps a lobby's authorisation 10 minutes after a fully failed attempt, then asks** (14.3). Recommended to the owner and recorded as recommended; **not re-confirmed** | Ask at once (more passphrase prompts in a lobby that fails often), or keep it until the lobby ends (the authorisation outlives the attempt it was given for) |
+| D22 | **At most 8 joined and 4 hosted lobbies at once** (14.4): numbers for decision 16b | Other numbers; no limit leaves memory, connections and set-aside funds unbounded |
+| D23 | **"Starts soon" 15 minutes before the deadline, or one seat short of the target** (11.4) | Another lead; a mode B member needs enough of one to come back to the screen |
+| D24 | **The member's default signing mode lives in the conditions** (13.1), saved, versioned and loosened like them | A separate setting (1.0.0 Settings) |
+| D25 | **At most 20 passphrase suggestions a minute per session** (12.9) | Any number; the call is cheap and leaks nothing |
 
 ### 24.2 Other open points
 
@@ -2361,7 +2708,7 @@ The second review's list (its section 4), kept under its names T1 to T11 and ext
 6. Closed: the words in the browser (owner decision 12; D1).
 7. Closed: the wallet passphrase is the sign-in and decrypts the files from the start (owner decisions 13, 14). The cryptography is `spec/storage-encryption.md` draft 3 (not yet reviewed; draft 2 was confirmed by its review's second round); the API uses its six operations (4), its unlock order (4.7), its passphrase rules (4.1), its attempts file (12.3) and, in 1.0.0, its watcher (8.7). Its own open points bear on this document: the owner's yes to libsodium, Argon2id at 256 MiB and the 15-character minimum (its point 1); **two owner amendments still pending** on which this API now depends, decision 13's export format and decision 14's "after lock only the watcher runs" (its point 1); NFC in C (point 2); the blocklist and suggestion word list (point 3); the plain socket token (point 11). If storage changes under review, this document follows.
 8. **Join requests, admission by approval and invitation-only lobbies** have no protocol messages yet. Invitation-only lobbies are 1.0.0 by owner decision 10, and need `terms.md` type 38 made valid; invitations' form and expiry are not designed.
-9. Closed for Slice 1: one joined lobby and one hosted lobby at a time (owner, 2026-11-12). 1.0.0 allows several (options map, "several factories"); request ids already guard against the double effects several lobbies would allow (7.4).
+9. Closed in draft 5: several joined and hosted lobbies at once from Slice 1 (owner decision 16b, 2026-11-13), replacing the one-of-each rule of 2026-11-12 (14.4). The limits are D22.
 10. **The unfinished round**: what the app does with payments, and what it says, if a creation is never funded or a move try never settles (critique question 9, H.5). The API reports the state; the behaviour is the signing round's to decide.
 11. **Fee cover**: `fee_cover`'s rule, given no reserve in 1.0.0 (decision 6) and `safety-rule.md` C3 (critique H.7).
 12. **"Open the app by" margin**: how much below the safe absence (critique H.3).
@@ -2373,7 +2720,7 @@ The second review's list (its section 4), kept under its names T1 to T11 and ext
 18. **The threat model** (`docs/THREAT-MODEL.md`) has no row for the local interface. Section 5.7 is the draft of that row; it now includes the same-user check (3.4) and the locked watcher (4.7). Its section 2.7 now says the files are encrypted from Slice 1 on.
 19. **How long an abandoned creation stays `still_watched`** when its funding never appears and no input is ever spent: until the user removes it, or a cut-off (16.1).
 20. **The 10-second limit on person-started discovery queries** is this API's own (21); to be recorded in `discovery.md`.
-21. **Seat removal and standby seats in Slice 1** (owner decision 10, applied to Slice 1 provisionally, the owner's yes pending; 2.1). Removal is buildable now (seat state 6). Standby seats need protocol messages (`messages.md` section 9); until then the API's shape exists and answers `null`. Recommendation: confirm removal for Slice 1 now; keep standby's shape in Slice 1 but its behaviour with the 1.0.0 lobby work, unless the messages are written for Slice 1 too.
+21. **Seat removal in Slice 1** (owner decision 10, applied provisionally, the owner's yes pending; 2.1): buildable now (seat state 6). **Standby seats are understudies in 1.0.0** (owner decision 16e; 14.5): their shape exists from Slice 1 and answers `null` until `messages.md` has their messages.
 22. Closed: the documents that said Slice 1 is unencrypted (`journal.md` sections 2 and 13, `docs/notes/wallet-keys.md` section 8, `docs/THREAT-MODEL.md` 2.7) were updated with storage draft 3.
 23. **What the locked watcher does not cover** (1.0.0): the commitment step of leaving (it needs the passphrase by `unlock_by`), moves to the next factory (new signatures), the host's duties (answering members, a ready check, cancelling at a deadline), and rebroadcasting a host's own signed funding. Whether that funding belongs in the bundle is `spec/exit.md` 9.4's (review R12); the recommendation stays to put it in (it is fully signed and pays only the factory). Payments in flight are settled: a lock is **held** while an incoming payment's secret is released and unsettled (4.7), never refused; moves stay out (they need signing by nature).
 24. **A host service after a reboot** must sign and route, which the watcher cannot; it needs an unattended unlock. Storage proposes `--passphrase-fd` from a service manager's protected store (storage 8.6 item 8, its open point 10), owner decision. Recommendation: accept for hosts in 1.0.0 with the interface saying "This computer unlocks Gazpacho by itself". Slice 1's members have no watcher (4.7): a restarted Slice 1 member watches nothing until the passphrase is typed, which the locked page says (`nobody_locked`, reason `no_bundle`). Slice 1 needs no OS key store at all (4.7; storage 8.7.3, 12.3).
@@ -2384,3 +2731,13 @@ The second review's list (its section 4), kept under its names T1 to T11 and ext
 29. **Confined browsers** (4.3, review R4): whether the download folder is readable by every common snap and Flatpak browser package (test 23.6 item T6), and what to do on Linux desktops where it is not (the code flow then, always).
 30. **Headline wording** (4.7): the table's strings are proposed; the owner's yes to them, as to every string of section 22.
 31. Closed after cross-spec review 1 (D1): a short, damaged or unrecognised penalty file is used for what it holds, the watcher keeps going, and status reports `watcher_locked` with `penalty_file_short` (`at_risk`), in storage 8.7.4 rule 7, `spec/exit.md` 5.6 and here alike. Only a refused bundle gives `nobody_locked`.
+32. **Modes B and C are a rule of the program, not of the cryptography** (14.3). While the wallet is unlocked, storage keeps the seed in memory (`spec/storage-encryption.md` 8.2), so the program could sign any lobby; B and C stop it by its own check. They guard against a picked-up session and an unmeant signature, not against a thief of the unlocked process. Making them cryptographic would need storage not to open the seed at unlock, and per-lobby keys derived on demand with the passphrase. For the owner and the storage specification.
+33. **The refusal record in the protocol** (15.3). `messages.md` carries no condition and no values: `round_abort`'s `detail` is "for logs only; never shown as fact", and `leave` and `unready` carry a reason code only. Proposed: an odd record `refusal` (the term as a `u16`, the member's limit, the offered value) in `round_abort`, `unready` and `leave`, sent only for the condition that failed. Until it exists the host sees the refusal and its kind, with `condition`, `yours` and `offered` `null`. It tells the host one limit of one member; the owner's decision implies that, and the join screen should say so.
+34. **Signed seat receipts and lobby-wide counts** (owner decision 16c, 1.0.0; 14.6) have no protocol messages yet. Which counts they hold (left, removed with reasons, refused, not answering, swapped in) is to be fixed with the messages; `accountability.counts` follows them.
+35. **May a host restrict its members' modes?** "Chosen by both hosts and members" is read here as each party choosing for its own signatures (14.3). A host cannot see a member's mode, only whether it answers in time, so a restriction could at most be a stated preference, perhaps a term in `terms.md`. Not decided.
+36. **The release of the modes.** The owner's decisions put modes and understudies in 1.0.0, while the Slice 1 interface could not offer the default (C) without a passphrase in the join. This draft marks the modes' calls **S1** and understudies 1.0.0. If the owner means Slice 1 to sign in mode A only, the program answers any other `sign_mode` with `501 not_in_this_release` and the interface offers A alone; nothing else changes.
+37. **Record type `0x000d0024` `sign_mode`** (7.5) is to be assigned in `journal.md` 9.1, with its fields.
+38. **Does a restore from the 24 words count as a words check?** The person typed all 24. Not decided: draft 5 leaves `words_not_checked` raised after a restore, as draft 4 did.
+39. **Mode B's time to answer.** The ready window is at most 10 minutes and proposed at 60 s (owner decision 16d), so a person away from the screen misses most B checks; `lobby_starts_soon` warns them. Whether a B seat should stay out of ready checks until unlocked, and the host be told why, is not decided.
+40. **Wording** of every value added in draft 5 (`passphrase_needed`, `not_unlocked_in_time`, `removed_by_host`, `standing_by`, `lobby_starts_soon`, `member_refused`, the session-end reasons, the modes' explanations, the accountability lines) is proposed with the interface, like every string of section 22, and needs the owner's yes.
+41. **Draft 5 is not reviewed.** Its changes to 4.4, 5.4 (`worker-src 'none'`, `clipboard-write=(self)`) and 10.3 touch the browser-security surface and should go with the browser-security review the interface hand-off asks for.
