@@ -1461,7 +1461,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 </tbody>
 </table></div>
-<p>Marks used where it matters: <strong>[C]</strong> read in the imported code (file and line); <strong>[S]</strong> checked in a primary source; <strong>[R]</strong> reasoning, not yet checked by a source or a test.</p></div></details>
+<p>Marks used where it matters: <strong>[C]</strong> read in the imported code (file and line); <strong>[S]</strong> checked in a primary source; <strong>[R]</strong> reasoning, not yet checked by a source or a test. Line citations into the import are at the pin <code>e6573950</code> unless they name <code>50f7fa13</code>, the pin of the re-import of 2026-11-16 (<code>core/superscalar/IMPORT.md</code>); passages that re-import changed cite the new pin.</p></div></details>
 <details id="c4-alignment-with-exit-md-draft-2-2026-11-1"><summary>Alignment with `exit.md` draft 2 (2026-11-12)</summary><div class="body"><p>Draft 4 is brought in line with <code>spec/exit.md</code> draft 2 and its review (<code>docs/reviews/review-exit-d1.md</code>, section 4 items 1 to 3, finding F15). The checks keep their shape, but C8's end-height test becomes stricter: it is judged against the leaf's timeout, not the end height, with <code>exit.md</code>'s margins. The timeouts, the exit time and its margins now say exactly what the import builds and what the exit engine computes; a Slice 1 build that coded draft 4's numbers must change them.</p>
 <div class="tw"><table>
 <thead>
@@ -1807,8 +1807,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tbody>
 </table></div></div></details>
 <details id="c4-3-the-checks"><summary>3. The checks</summary><div class="body"><p>A request is safe to sign only if all of these hold. Each is evaluated on data the member's software built or stored itself.</p>
-<p><strong>C1. Rebuilt, not received.</strong> The member's software constructs every transaction in the request itself, from its own stored state, the host's terms and the proposal's parameters, and signs only digests it computed. Every setting that changes the transactions' bytes is set explicitly, never left to a default of the imported code (<code>signing-round.md</code> section 4.1). Every item is signed in one fixed way: a 64-byte signature, the default hash type, no annex, and a stated mode (key path with a stated tweak, or script path with a stated leaf). No item uses a hash type that lets inputs be added. A participant list containing the same key twice is refused. <strong>The funding output's script is checked:</strong> it must be the BIP 86 key of the MuSig2 aggregate of the participant keys in order, read from the output of the funding transaction that the outpoint names. The imported <code>factory_set_funding</code> takes the script on trust [C: <code>src/factory.c:1214-1228</code>].</p>
-<p><strong>C2. Own outputs are recognised by own keys.</strong> The member's software identifies its outputs by deriving the scripts from its own keys, never from labels, indexes or positions in the request. This includes any output of the distribution transaction, which the import pays to the member's factory key [C: <code>factory.h:1258-1261</code>]; under design 2 every payout and the distribution transaction pay instead the member's own payout script, a 34-byte P2TR script from its BIP 86 receive chain at an index given to that factory only (<code>exit.md</code> 3.4), and the member refuses a proposal carrying any other script for itself.</p>
+<p><strong>C1. Rebuilt, not received.</strong> The member's software constructs every transaction in the request itself, from its own stored state, the host's terms and the proposal's parameters, and signs only digests it computed. Every setting that changes the transactions' bytes is set explicitly, never left to a default of the imported code (<code>signing-round.md</code> section 4.1). Every item is signed in one fixed way: a 64-byte signature, the default hash type, no annex, and a stated mode (key path with a stated tweak, or script path with a stated leaf). No item uses a hash type that lets inputs be added. A participant list containing the same key twice is refused. <strong>The funding output's script is checked:</strong> it must be the BIP 86 key of the MuSig2 aggregate of the participant keys in order, read from the output of the funding transaction that the outpoint names. The first import's <code>factory_set_funding</code> took the script on trust [C: <code>src/factory.c:1214-1228</code>]; at <code>50f7fa13</code> the import refuses one that is not the root's key [C: <code>src/factory.c:2415-2425</code>], and this check stays the member's own.</p>
+<p><strong>C2. Own outputs are recognised by own keys.</strong> The member's software identifies its outputs by deriving the scripts from its own keys, never from labels, indexes or positions in the request. This includes any output of the distribution transaction, which the import pays to the member's factory key [C at <code>50f7fa13</code>: <code>factory.h:1456-1465</code>]; under design 2 every payout and the distribution transaction pay instead the member's own payout script, a 34-byte P2TR script from its BIP 86 receive chain at an index given to that factory only (<code>exit.md</code> 3.4), and the member refuses a proposal carrying any other script for itself.</p>
 <p><strong>C3. Value.</strong> The exit value after the request is at least the amount owed after the request. The adversary draws from the exposed set; the member draws from the held set, and may rely only on responses it can make within its maximum safe absence and with fee funds it actually has. In 1.0.0 a member is not expected to hold on-chain coins (owner decision 6, <code>docs/ux/decisions.md</code>), so a response that needs a fee beyond what is built into the transaction counts as unavailable unless the member has the coins. Two import facts bear on this: the leaf chain transactions after the first carry no anchor output [C: <code>src/factory.c:2776-2779</code>], so they confirm only at their built-in fee; and the distribution transaction gets no anchor when the fee estimator reports below 1 sat/vB [C: <code>src/fee.c:90-97</code>, <code>src/factory.c:4532-4539</code>].</p>
 <p><strong>C4. Every exposed transaction is accounted for.</strong> For every transaction in the exposed set after the request, the module names which of these applies, and refuses if none does:
 - <strong>(a) Harmless:</strong> if it is published, the member still reaches at least what it is owed from its held set.
@@ -1834,7 +1834,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Host alone after a relative delay</td>
-<td>The spare-liquidity output (default 144 blocks) [C: <code>factory.h:50</code>, <code>:429-432</code>]</td>
+<td>The spare-liquidity output (default 144 blocks) [C at <code>50f7fa13</code>: <code>factory.h:59</code>, <code>:464</code>]</td>
 </tr>
 <tr>
 <td>Member alone</td>
@@ -1846,7 +1846,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td><strong>Anyone, for the anchor value only</strong></td>
-<td>The keyless pay-to-anchor output on tree transactions and on the distribution transaction, 240 satoshis [C: <code>src/factory.c:498-507</code>, appended at <code>:1325</code>, <code>:1742</code>, <code>:1768</code>, <code>:1876</code>; <code>:4451-4458</code>; <code>channel.h:16</code>]</td>
+<td>The keyless pay-to-anchor output on tree transactions and on the distribution transaction, last, 240 satoshis at any fee rate above 0 [C at <code>50f7fa13</code>: <code>src/factory.c:581-635</code>, <code>:600</code>; <code>channel.h:19-23</code>]</td>
 </tr>
 </tbody>
 </table></div>
@@ -1906,8 +1906,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>Inside its conditions (its own minimum, at least)</td>
 </tr>
 <tr>
-<td>Fee per tree transaction</td>
-<td>Exactly ⌈fee rate × its own signed size / 1000⌉ on each tree transaction (<code>terms.md</code> 4.2, the builder of #46 and later); INTERIM, on the pin <code>e6573950</code> only, one <code>fee_per_tx</code> = ⌈fee rate × largest signed size / 1000⌉ on every transaction. The rate at least 100 sat/kvB and at most ⌊175,000 / V_occ⌋ sat/kvB, rounded down, with V_occ from the tree the member built (1,047 in T1; <code>exit.md</code> 5.5, 5.9; owner to confirm, open point 26), else refuse; at most the member's ceiling, a sanity bound only and by default the term's maximum, because the host pays every tree fee from the funding (<code>terms.md</code> 4.4; <code>exit.md</code> 5.9)</td>
+<td>Tree fee rate</td>
+<td>The proposal's rate (record 30) is exactly the frozen terms' <code>tree_feerate</code>; every tree transaction pays exactly ⌈rate × its own signed size / 1000⌉ (<code>terms.md</code> 4.2, the builder of #46 and later), which the rebuild and the import's own audit (<code>factory_check_tree_fees</code>) check. The rate at least 100 sat/kvB and at most ⌊175,000 / V_occ⌋ sat/kvB, rounded down, with V_occ from the tree the member built (1,047 in T1; <code>exit.md</code> 5.5, 5.9; owner to confirm, open point 26), else refuse; at most the member's ceiling, a sanity bound only and by default the term's maximum, because the host pays every tree fee from the funding (<code>terms.md</code> 4.4; <code>exit.md</code> 5.9)</td>
 </tr>
 <tr>
 <td>Tree anchors</td>
@@ -2043,7 +2043,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li>A penalty the member could collect from the host's liquidity is a deterrent. It is not counted in exit value.</li>
 <li><strong>Pre-signed payouts</strong> are members of both sets. The distribution transaction exists in the import today (C5); later end-date payouts will add more. From its lock time any party holding one can publish it, and it pays the member a fixed share. If that share is below the member's balance, the member must have exited first; C5 enforces this. In 1.0.0 a member's balance never exceeds its channel capacity (decision 5), so C8's bound, share at least capacity, makes the distribution transaction harmless for the member.</li>
 </ol></div></details>
-<details id="c4-7-exit-time-and-maximum-safe-absence"><summary>7. Exit time and maximum safe absence</summary><div class="body"><p><strong>Exit time.</strong> Sum, from the transactions themselves, every relative timelock on the path plus a confirmation allowance per transaction set by the member's conditions. <strong>In 1.0.0</strong> the path has no relative timelock [C: <code>src/factory.c:129-140</code>, <code>tx_builder.c:77</code>, <code>:103-114</code>], so the exit time is n·A for the n = d + 3 transactions still missing (d fixed kickoffs, the leaf's kickoff, the leaf transaction, the commitment), plus B − 1 blocks of burial, and it is judged against the leaf's timeout H_leaf = E − 10·d, with the margin M = M_safe + M_lag + M_spike of <code>spec/exit.md</code> 4.3 (14 blocks on signet). The resulting date is <code>spec/exit.md</code> 4.4's <code>leave_by</code>, the date <code>docs/MULTI-FACTORY.md</code> 4.1 calls <code>start_leaving_by</code>. Where a timed layer has more than one live state, use the <strong>slowest</strong> live state (the oldest), since the adversary chooses which state is published (section 8). The imported delay functions are not used: <code>factory_early_warning_time</code> sums step × (states − 1) per layer, then subtracts one layer whenever any leaf is pseudo-Spilman, although such leaves have no layer of their own, and it has no confirmation allowance [C: <code>src/factory.c:4900-4927</code>]. An output on the path is safe once the member's transaction spending it is buried. The exit is complete, for C5, when the member's channel transaction is buried and every payment in flight has met its own deadline. The member's own delayed output is outside C5: nobody else has a claim on it.</p>
+<details id="c4-7-exit-time-and-maximum-safe-absence"><summary>7. Exit time and maximum safe absence</summary><div class="body"><p><strong>Exit time.</strong> Sum, from the transactions themselves, every relative timelock on the path plus a confirmation allowance per transaction set by the member's conditions. <strong>In 1.0.0</strong> the path has no relative timelock [C at <code>50f7fa13</code>: <code>src/factory.c:217-230</code>, <code>tx_builder.c:80-110</code>], so the exit time is n·A for the n = d + 3 transactions still missing (d fixed kickoffs, the leaf's kickoff, the leaf transaction, the commitment), plus B − 1 blocks of burial, and it is judged against the leaf's timeout H_leaf = E − 10·d, with the margin M = M_safe + M_lag + M_spike of <code>spec/exit.md</code> 4.3 (14 blocks on signet). The resulting date is <code>spec/exit.md</code> 4.4's <code>leave_by</code>, the date <code>docs/MULTI-FACTORY.md</code> 4.1 calls <code>start_leaving_by</code>. Where a timed layer has more than one live state, use the <strong>slowest</strong> live state (the oldest), since the adversary chooses which state is published (section 8). The imported delay functions are not used: <code>factory_early_warning_time</code> sums step × (states − 1) per layer, then subtracts one layer whenever any leaf is pseudo-Spilman, although such leaves have no layer of their own, and it has no confirmation allowance [C: <code>src/factory.c:4900-4927</code>]. An output on the path is safe once the member's transaction spending it is buried. The exit is complete, for C5, when the member's channel transaction is buried and every payment in flight has met its own deadline. The member's own delayed output is outside C5: nobody else has a claim on it.</p>
 <p><strong>Accepting a payment.</strong> Only if its deadline is later than now plus exit time plus the time to claim it on chain, plus margin. The schedule must also state the largest exit time at which ordinary senders can still pay the member, since senders limit total timelock.</p>
 <p><strong>Maximum safe absence.</strong> The smallest of all W and R values named under C4 on the member's path, less a margin, and never later than the moment the member must start leaving to meet C5. The schedule engine shows it to the user.</p>
 <ul>
@@ -2111,7 +2111,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Losing a race in a timed layer,</strong> for a member whose balance exceeds its capacity in an older state (1.1.0), through absence, fees or a hidden transaction. And, for every member below a timed layer, a channel engine that fails to keep an old anchor current (section 8).</li>
 <li><strong>A false view of the chain</strong> for longer than the maximum safe absence. The exit's tip estimate never freezes (<code>spec/exit.md</code> 4.5: it advances with the clock), so a hidden chain makes the exit start early, not late; but a member whose every server is hostile (an eclipse) cannot broadcast through them either. A broadcast-only route independent of the view's servers is recommended, not guaranteed.</li>
 <li><strong>Fees far above what the member can fund</strong>, including fees above what the tree's anchors pay when the member holds no on-chain coin (<code>spec/exit.md</code> 6.5).</li>
-<li><strong>Pinning of a keyless anchor.</strong> Anyone, the host in particular, can spend a tree transaction's pay-to-anchor output first with a large low-rate child: for about 10,000 sat on a version-2 tree and about 234 sat on a TRUC tree. A member without on-chain coins then cannot replace it, and its step can be held back while blocks clear above about 0.2 sat/vB. A member without coins confirms in calm conditions unless someone pays to stop it (<code>spec/exit.md</code> 6.5).</li>
+<li><strong>Pinning of a keyless anchor.</strong> Anyone, the host in particular, can spend a tree transaction's pay-to-anchor output first with a large low-rate child, for about 234 sat a step: tree transactions are TRUC since the re-import of <code>50f7fa13</code>, which caps the child at 1,000 vbytes (a version-2 tree allowed a pin of about 10,000 sat). A member without on-chain coins then cannot replace it, and its step can be held back while blocks clear above about 0.2 sat/vB. A member without coins confirms in calm conditions unless someone pays to stop it (<code>spec/exit.md</code> 6.5).</li>
 <li><strong>A wallet switched off, with no locked watcher or tower holding its penalty file, for longer than the watch interval</strong> (W − B − A − M blocks, <code>exit.md</code> 4.4), before or after the end height: a revoked host commitment published in that time and not penalised within W takes the host's share of that older state, up to the whole channel. Design 2's payouts do not cover this.</li>
 <li><strong>The free pin by a pre-signed next level</strong> at a tree rate above ⌊175,000 / V_occ⌋ sat/kvB (1,047 in T1), which a member refuses at signing (C8): anyone holding the tree can occupy a step's only child slot at no cost; a member without a spare coin cannot evict it (<code>exit.md</code> 5.5).</li>
 <li><strong>INTERIM: a wallet left locked past <code>unlock_by</code></strong> with a factory balance: the locked watcher publishes the tree path but cannot publish the member's own commitment (<code>spec/exit.md</code> 5.6). After H_leaf a dishonest host takes the balance. An honest host closes with its own commitment by <code>host_force_by</code> (H17), and the balance then waits in the member's output, with no deadline, until the unlock.</li>
@@ -2291,7 +2291,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <div class="intro"><p>Specification draft 4, 2026-11-12. Status: draft 3 corrected after a third, joint review of the five Slice 1 specifications (<code>docs/reviews/spec-review-3.md</code>), which judged draft 3 "ready after listed changes" and found that no finding needs a different cryptographic design. Draft 4 has not itself been reviewed. The parts on proving fault are this project's own design and have had no outside review. Values marked <strong>proposed, owner to confirm</strong> are Slice 1 choices the owner has not objected to and has not yet confirmed.</p>
 <p>A signing round produces group signatures for a set of transactions. One engine runs every round in Gazpacho: creating a factory, updating a layer, rotating, closing. It follows the MuSig2 standard (BIP 327) and uses the imported signing code, with the exceptions in section 13.</p>
 <p>Companion documents: <code>safety-rule.md</code> (draft 4), <code>messages.md</code>, <code>terms.md</code> and <code>journal.md</code> (draft 2, brought in line with this draft).</p>
-<p>Marks used where it matters: <strong>[C]</strong> read in the imported code (file and line); <strong>[S]</strong> checked in a primary source (the secp256k1-zkp headers at the pinned commit were read for this draft; statements about BIP 327 rely on the passages review 2 fetched and quoted); <strong>[R]</strong> reasoning, not yet checked by a source or a test.</p></div>
+<p>Marks used where it matters: <strong>[C]</strong> read in the imported code (file and line); <strong>[S]</strong> checked in a primary source (the secp256k1-zkp headers at the pinned commit were read for this draft; statements about BIP 327 rely on the passages review 2 fetched and quoted); <strong>[R]</strong> reasoning, not yet checked by a source or a test. Line citations into the import are at the pin <code>e6573950</code> unless they name <code>50f7fa13</code>, the pin of the re-import of 2026-11-16 (<code>core/superscalar/IMPORT.md</code>); passages that re-import changed cite the new pin.</p></div>
 <details id="c5-changes-2026-11-16-the-host-paid-tree-fe"><summary>Changes, 2026-11-16: the host-paid tree fee rate</summary><div class="body"><p>Not itself reviewed. The fee row of section 4.1 follows <code>terms.md</code> 4.4: the rate is at least 100 sat/kvB, the fee is the host's, and the member's ceiling is a sanity bound. The meaning of the fee record does not change: on this pin it carries <code>fee_per_tx_sat</code>; at the re-import of #46 record 30 carries the rate itself, equal to <code>tree_feerate</code>, and this rule keeps that.</p></div></details>
 <details id="c5-changes-after-review-3"><summary>Changes after review 3</summary><div class="body"><div class="tw"><table>
 <thead>
@@ -2660,7 +2660,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Placement</td>
-<td>Field <code>placement_mode</code>; no setter; the default sorts [C: <code>src/factory.c:831</code>, <code>:889</code>, <code>:1961-1974</code>]</td>
+<td><code>factory_set_placement_mode</code> [C at <code>50f7fa13</code>: <code>src/factory.c:1313-1325</code>]; the default sorts by time zone [<code>:1002</code>, <code>:1060</code>]</td>
 <td><strong>Fixed by this specification; not a proposal field</strong> (<code>messages.md</code> has no placement record)</td>
 <td>Sequential (<code>PLACEMENT_SEQUENTIAL</code>, value 0, <code>factory.h:60</code>), written by the engine</td>
 </tr>
@@ -2672,15 +2672,15 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Tree anchors</td>
-<td>Field <code>use_tree_anchor</code> [C: <code>factory.h:434-440</code>; <code>src/factory.c:498-507</code>]</td>
+<td>Field <code>use_tree_anchor</code> [C at <code>50f7fa13</code>: <code>factory.h:472</code>; <code>src/factory.c:581-635</code>]; 240 sat, or 0 at fee rate 0 [<code>:600</code>]</td>
 <td>Proposal (<code>tree_anchors</code>), which must be 1</td>
 <td><strong>Always on in 1.0.0</strong> (owner decision 6, pay-to-anchor outputs; review 3, F24). Hence interior widths of at most 15 (<code>terms.md</code> 4.1)</td>
 </tr>
 <tr>
-<td>Fee per tree transaction</td>
-<td>Field <code>fee_per_tx</code> (default 200) [C: <code>src/factory.c:861</code>]; overridden by a fee estimator if one is set [C: <code>:1900-1903</code>]</td>
-<td>INTERIM on this pin: derived from the terms, ⌈<code>tree_feerate</code> × largest signed size / 1000⌉ (<code>terms.md</code> section 4.2), and the proposal's <code>fee_per_tx_sat</code> must equal it. From the re-import of #46: record 30 carries the rate, and each transaction pays ⌈rate × its own signed size / 1000⌉, the one rule of <code>terms.md</code> 4.2</td>
-<td>At most the member's ceiling, a sanity bound by default the term's maximum; the rate at least 100 sat/kvB; the fee is the host's, from the funding (<code>terms.md</code> 4.4). The engine sets no estimator, so no estimator state enters the bytes</td>
+<td>Tree fee rate</td>
+<td>Field <code>tree_fee_rate</code>, sat/kvB, default 100 [C at <code>50f7fa13</code>: <code>factory.h:386</code>, <code>:837</code>]; each tree transaction pays it for its own exact signed size [<code>src/factory.c:588-608</code>]. The import has no fee estimator hook any more</td>
+<td>The terms' <code>tree_feerate</code> (<code>terms.md</code> section 4.2); record 30 carries the rate and must equal it, and each transaction pays ⌈rate × its own signed size / 1000⌉, the one rule of <code>terms.md</code> 4.2</td>
+<td>At most the member's ceiling, a sanity bound by default the term's maximum; the rate at least 100 sat/kvB; the fee is the host's, from the funding (<code>terms.md</code> 4.4). Set explicitly, never left to the import's default (C1), although T1's rate equals that default</td>
 </tr>
 <tr>
 <td>Spare-liquidity delay</td>
@@ -2696,7 +2696,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Funding txid, output index, amount and script</td>
-<td><code>factory_set_funding</code>, taken on trust, and silently ignoring a script longer than its buffer [C: <code>src/factory.c:1214-1228</code>]</td>
+<td><code>factory_set_funding</code>, which refuses a script that is not a 34-byte P2TR; <code>factory_build_tree</code> refuses one that is not the root's aggregate [C at <code>50f7fa13</code>: <code>src/factory.c:1498-1518</code>, <code>:2415-2425</code>]</td>
 <td>Proposal: outpoint, amount, script, and the funding transaction itself</td>
 <td>Txid equals the funding transaction's; amount equals its output and the terms' funding rule R(root) (<code>terms.md</code> section 4.2); script equals its output, is exactly 34 bytes, and is the aggregate (C1)</td>
 </tr>
@@ -2714,15 +2714,15 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Distribution transaction outputs and lock time, if signed</td>
-<td>Arguments of <code>factory_build_distribution_tx_unsigned</code> [C: <code>src/factory.c:4516-4568</code>]; its anchor depends on the fee estimator [C: <code>:4532-4539</code>; <code>src/fee.c:90-97</code>]</td>
+<td>Arguments of <code>factory_build_distribution_tx_unsigned</code> [C at <code>50f7fa13</code>: <code>src/factory.c:5224-5289</code>]; TRUC, paying the tree rate for its size, at most 230 members [<code>factory.h:858-871</code>]</td>
 <td>Proposal (<code>distribution</code>)</td>
-<td>Lock time at least the end height; member's share at least its capacity. With no estimator set, the anchor is present. <strong>Not in Slice 1</strong> (<strong>proposed, owner to confirm</strong>)</td>
+<td>Lock time at least the end height; member's share at least its capacity. <strong>Not in Slice 1</strong> (<strong>proposed, owner to confirm</strong>)</td>
 </tr>
 <tr>
 <td>Transaction version, lock time and sequence of tree transactions</td>
-<td>Fixed by the builder, sequence from the layer state [C: <code>src/factory.c:124-149</code>, <code>:604</code>]</td>
+<td>Fixed by the builder: <strong>version 3 (TRUC)</strong>, lock time 0, sequence from the node kind [C at <code>50f7fa13</code>: <code>factory.h:48</code>; <code>src/factory.c:217-230</code>, <code>:748-783</code>]</td>
 <td>Import constant</td>
-<td>Rebuilt</td>
+<td>Rebuilt; the import's own audit (<code>factory_check_tree_fees</code>) also checks the version, the anchor and each fee</td>
 </tr>
 </tbody>
 </table></div>
@@ -3026,12 +3026,12 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>A standard signature check on each signed transaction, from its bytes (section 13, last row)</td>
 </tr>
 <tr>
-<td>Placement has no setter; the default sorts by time zone over profiles that are all zero, so the order is whatever the C library's sort does [C: <code>src/factory.c:831</code>, <code>:889</code>, <code>:1970-1973</code>]</td>
-<td>Write <code>placement_mode = PLACEMENT_SEQUENTIAL</code> after initialising and before building</td>
+<td>The default placement sorts by time zone over profiles that are all zero, so the order is whatever the C library's sort does [C at <code>50f7fa13</code>: <code>src/factory.c:1002</code>, <code>:1060</code> the default; <code>:26-43</code> <code>cmp_timezone_cluster</code>; <code>:65-81</code> <code>apply_placement</code>]. A setter exists since <code>50f7fa13</code></td>
+<td>Call <code>factory_set_placement_mode(PLACEMENT_SEQUENTIAL)</code> after initialising and before building, and check its result</td>
 </tr>
 <tr>
 <td><strong>The layer counter is written out of bounds inside initialisation</strong> from 257 members: <code>factory_init_from_pubkeys</code> computes the layer count for a two-way tree and <code>dw_counter_init</code> writes <code>layers[i]</code> for every i with no bound, into an array of 8 [C: <code>src/factory.c:880-884</code>; <code>src/dw_state.c:36-46</code>; <code>dw_state.h:38-41</code>]. Draft 2's guard ("set the shape immediately after initialising") only overwrites the damage afterwards</td>
-<td>No factory of more than 256 members until SuperScalar bounds the write (to be requested). It is undefined behaviour, which the build with undefined-behaviour checks may report. The next row's limit is lower in any case</td>
+<td>No factory of more than 256 members. <strong>Fixed upstream at <code>50f7fa13</code></strong>: <code>dw_counter_init</code> refuses more than 8 layers and leaves the counter unchanged [C: <code>src/dw_state.c:36-40</code>]; the 256-member limit stays until a larger tree is specified</td>
 </tr>
 <tr>
 <td>The member's copy ignores the host's spare-liquidity hash for a node index of 512 or more: the check uses the compile-time <code>FACTORY_MAX_NODES</code>, not the grown array [C: <code>src/factory.c:391-397</code>]. The member then builds a different script from the host's, so the trees diverge. Reported in review 1 (F11); still in the import</td>
@@ -3042,20 +3042,24 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td>A fresh tree object per attempt. Each attempt has a new funding outpoint or participant set anyway, hence new transactions</td>
 </tr>
 <tr>
-<td><code>factory_set_level_arity</code> with an empty list reads <code>arities[-1]</code> [C: <code>src/factory.c:1176</code>]</td>
-<td>Never call it with an empty list</td>
+<td><code>factory_compute_ewt_for_shape</code> with a level wider than 16 writes past a 16-entry stack array (<code>split_clients_for_arity</code> into <code>parts[]</code>) [C at <code>50f7fa13</code>: <code>src/factory.c:1184-1190</code>, <code>:5833-5834</code>]: unlike the build, it does not go through <code>factory_set_level_arity</code>'s bound (review B of the re-import, L1)</td>
+<td>Never call it with a width above 16. Only <code>tests/scale/tree_shapes.c</code> calls it, and refuses such widths</td>
 </tr>
 <tr>
-<td>A fee estimator, if set, overrides the fee per transaction and decides whether the distribution transaction has an anchor [C: <code>src/factory.c:1900-1903</code>; <code>src/fee.c:90-97</code>]</td>
-<td>Set no estimator; set the fee per transaction from the proposal</td>
+<td><code>factory_set_level_arity</code> with an empty list read <code>arities[-1]</code> [C: <code>src/factory.c:1176</code>]. <strong>Fixed at <code>50f7fa13</code></strong>: it refuses an empty or too long list, or a width outside 1 to 16, and returns 0 [C: <code>src/factory.c:1413-1427</code>]</td>
+<td>Never call it with an empty list; check its result</td>
 </tr>
 <tr>
-<td>The level-arity list's last entry silently sets the leaf type, and a node at most as wide as its level becomes one multi-member leaf [C: <code>src/factory.c:1175-1176</code>, <code>:948-955</code>] (review 3, F1)</td>
-<td>Write <code>interior ‖ 3</code> only; after <code>factory_build_tree</code>, check every leaf's <code>is_ps_leaf</code> and signer count, and refuse otherwise</td>
+<td>A fee estimator, if set, overrode the fee per transaction and decided whether the distribution transaction had an anchor [C: <code>src/factory.c:1900-1903</code>; <code>src/fee.c:90-97</code>]. <strong>Gone at <code>50f7fa13</code></strong>: the tree has one rate, <code>tree_fee_rate</code>, and no estimator</td>
+<td>Set <code>tree_fee_rate</code> from the terms</td>
 </tr>
 <tr>
-<td><code>factory_set_funding</code> returns nothing and silently ignores a script longer than its 34-byte buffer [C: <code>src/factory.c:1219-1222</code>]</td>
-<td>Check the script is exactly 34 bytes before the call (review 3, F27)</td>
+<td>The level-arity list's last entry sets the leaf type, and a node at most as wide as its level became one multi-member leaf [C: <code>src/factory.c:1175-1176</code>, <code>:948-955</code>] (review 3, F1). <strong>At <code>50f7fa13</code></strong> such a node keeps splitting to leaves of the last entry's kind [C: <code>src/factory.c:1132-1142</code>]</td>
+<td>Write <code>interior ‖ 3</code> only; after <code>factory_build_tree</code>, check every leaf's <code>is_ps_leaf</code> and signer count, and refuse otherwise (kept)</td>
+</tr>
+<tr>
+<td><code>factory_set_funding</code> returned nothing and silently ignored a script longer than its 34-byte buffer [C: <code>src/factory.c:1219-1222</code>]. <strong>At <code>50f7fa13</code></strong> it refuses any script but a 34-byte P2TR, and <code>factory_build_tree</code> refuses one that is not the root's key [C: <code>src/factory.c:1498-1518</code>, <code>:2415-2425</code>]</td>
+<td>Check the script is exactly 34 bytes before the call (review 3, F27), and check the call's result</td>
 </tr>
 <tr>
 <td><code>factory_set_node_l_stock_hash</code> drops an index at or above the <strong>current</strong> <code>max_nodes</code> [C: <code>src/factory.c:411</code>], and <code>factory_build_tree</code> grows the arrays and zeroes the new tail only later [C: <code>:1919-1936</code>]. So even after the upstream fix of the 512 check, mirror hashes for high indexes set in section 13's order would be lost</td>
@@ -3131,7 +3135,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tbody>
 <tr>
 <td>Build the tree</td>
-<td><code>factory_init_from_pubkeys</code> [C: <code>src/factory.c:853</code>], then at once, in one fixed order on every party: <code>factory_set_level_arity</code> [<code>:1164</code>] with <code>interior ‖ 3</code> (never <code>factory_set_arity</code> in 1.0.0), <code>factory_set_static_near_root</code> [<code>:1189</code>] with D, <code>factory_set_ps_subfactory_arity</code> [<code>:1059</code>] with 1, <code>factory_set_l_stock_csv</code> [<code>:1054</code>]; write the fields <code>placement_mode</code> (0), <code>use_tree_anchor</code> (1), <code>use_hashlock_poison</code> (0 in Slice 1), <code>fee_per_tx</code>, <code>cltv_timeout</code>; set the member's mirror hashes with <code>factory_set_node_l_stock_hash</code> [<code>:409</code>] (none in Slice 1); check the funding script is 34 bytes; <code>factory_set_funding</code> [<code>:1214</code>]; <code>factory_build_tree</code> [<code>:1882</code>], which recomputes the layer counter from scratch [<code>:1940-1944</code>]; then check every leaf (section 12). This order was run on the build server on 2026-11-12 for T1 at 3, 4, 5, 8 and 16 members (<code>terms.md</code> section 4.2)</td>
+<td>At <code>50f7fa13</code>: <code>factory_init_from_pubkeys</code> [C: <code>src/factory.c:1024</code>], then at once, in one fixed order on every party: <code>factory_set_level_arity</code> [<code>:1413</code>] with <code>interior ‖ 3</code> (never <code>factory_set_arity</code> in 1.0.0), <code>factory_set_static_near_root</code> [<code>:1451</code>] with D, <code>factory_set_ps_subfactory_arity</code> [<code>:1245</code>] with 1, <code>factory_set_l_stock_csv</code> [<code>:1240</code>], <code>factory_set_placement_mode</code> [<code>:1313</code>] with 0; write the fields <code>use_tree_anchor</code> (1), <code>use_hashlock_poison</code> (0 in Slice 1), <code>tree_fee_rate</code> (the terms' rate), <code>build_quiet</code> (1: no printing; changes no byte), <code>cltv_timeout</code>; set the member's mirror hashes with <code>factory_set_node_l_stock_hash</code> [<code>:490</code>] (none in Slice 1); <code>factory_set_funding</code> [<code>:1498</code>] with the 34-byte script; <code>factory_build_tree</code> [<code>:2323</code>], which recomputes the layer counter from scratch [<code>:2382</code>]; <code>factory_check_tree_fees</code> [<code>:2578</code>]; then check every leaf (section 12). Every setter's result is checked; any 0 is a refusal. This order was run on the build server on 2026-11-16 for T1 at 3 to 16 members (<code>terms.md</code> section 4.2)</td>
 </tr>
 <tr>
 <td>Build the distribution transaction, if signed</td>

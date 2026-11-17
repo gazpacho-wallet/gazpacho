@@ -25,9 +25,9 @@ import subprocess
 import sys
 
 FUNCS = {"tagged_hash", "bigsize", "tlv", "u8", "u16", "u32", "u64", "rng", "shape_bytes", "split_walk",
-         "funding_requirement", "x_cltv_feeding", "x_path_timeouts", "x_h_leaf", "x_n_path",
+         "funding_requirement", "tree_fee", "tree_anchor", "x_cltv_feeding", "x_path_timeouts", "x_h_leaf", "x_n_path",
          "x_last_safe_confirm", "x_leave_by", "x_step_due", "x_unlock_by", "x_vsize_tree", "x_path_shape"}
-CONSTS = {"LEAF_PS", "X_STEP", "X_BURY", "X_ALLOW", "X_M_SAFE", "X_M_LAG", "X_M_SPIKE", "X_M", "X_M_HOST"}
+CONSTS = {"LEAF_PS", "TREE_FEE_MAX", "X_STEP", "X_BURY", "X_ALLOW", "X_M_SAFE", "X_M_LAG", "X_M_SPIKE", "X_M", "X_M_HOST"}
 
 
 def load_reference(path):
@@ -134,15 +134,14 @@ def main():
     def unfundable(recs, shapes):
         # Review A, S3: every member count from minimum to target (at most 256)
         # must give R(root) within the money supply and at least the import's
-        # minimum 2 (2n - 1) fee + 1,092 n.
+        # minimum 2 (2n - 1) (fee of a one-output transaction + anchor) + 1,092 n.
         d = dict(recs)
         mn, tg = int.from_bytes(d[12], "big"), int.from_bytes(d[10], "big")
         rate, ch = int.from_bytes(d[32], "big"), int.from_bytes(d[30], "big")
         for n in range(mn, min(tg, 256) + 1):
             levels = levels_of(next(e for e in shapes if e[0] >= n)[1])
-            fee = -(-rate * R["x_vsize_tree"](max_children(levels, n)) // 1000)
-            r = R["funding_requirement"](levels, n, ch, fee, 240)
-            if r > SUPPLY or r < 2 * (2 * n - 1) * fee + 1092 * n:
+            r = R["funding_requirement"](levels, n, ch, rate)
+            if r is None or r > SUPPLY or r < 2 * (2 * n - 1) * (R["tree_fee"](rate, 1) + R["tree_anchor"](rate)) + 1092 * n:
                 return True
         return False
 
@@ -209,9 +208,12 @@ def main():
             if d is None:
                 continue
             ch = rnd.choice([546, rnd.randint(546, 10**6), rnd.randint(546, 2_100_000_000_000_000)])
-            fee = rnd.choice([0, 17, 26, rnd.randint(0, 731_000)])
-            r = R["funding_requirement"](levels, n, ch, fee, 240)
-            ask(f"req {L(levels)} {n} {ch} {fee}", "refuse" if r >= 2**64 else str(r), "req")
+            rate = rnd.choice([0, 1, 100, 1250, rnd.randint(0, 1_000_000), rnd.randint(0, 2**63)])
+            r = R["funding_requirement"](levels, n, ch, rate)
+            ask(f"req {L(levels)} {n} {ch} {rate}", "refuse" if r is None or r >= 2**64 else str(r), "req")
+            k = rnd.randint(1, 15)
+            f = R["tree_fee"](rate, k)
+            ask(f"fee {rate} {k}", "invalid" if f is None else str(f), "fee")
             m = rnd.randrange(n)
             pd, outs = R["x_path_shape"](levels, n, m)
             ask(f"path {L(levels)} {n} {m}", f"{pd} " + ",".join(map(str, outs)), "path")
@@ -247,9 +249,8 @@ def main():
             V = R["x_vsize_tree"](max(outs))
             rate = int.from_bytes(dict(recs)[32], "big")
             ch = int.from_bytes(dict(recs)[30], "big")
-            fee = -(-rate * V // 1000)
-            Rr = R["funding_requirement"](levels, n, ch, fee, 240)
-            want = f"{max(depths)} {V} {fee} {Rr}" if Rr < 2**64 else "params_4"
+            Rr = R["funding_requirement"](levels, n, ch, rate)
+            want = f"{max(depths)} {V} {rate} {Rr}" if Rr is not None and Rr < 2**64 else "params_4"
             ask(f"params {outer.hex()} {n}", want, "params")
             # A current record for it.
             vals = {t: rnd.randint(lo, hi) for t, (lo, hi) in ranges.items()}

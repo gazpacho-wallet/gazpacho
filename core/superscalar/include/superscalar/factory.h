@@ -38,6 +38,15 @@
 
 #define NSEQUENCE_DISABLE_BIP68 0xFFFFFFFFu
 
+/* nVersion of every factory tree transaction.  TRUC (BIP 431, nVersion 3):
+   a TRUC parent may sit below the node's minimum relay feerate when it is
+   relayed as a package with a child that pays for it, and its keyless P2A
+   anchor can only be spent by a single child of at most 1000 vB that a
+   higher-paying sibling may evict, so the anchor cannot be used to pin the
+   exit.  Bitcoin Core relays non-TRUC parents in a package only if they meet
+   the minimum relay feerate on their own. */
+#define FACTORY_TREE_TX_VERSION 3u
+
 /* Default CSV (BIP-68 relative locktime) on the L-stock SPK's L&CSV
    script-path leaf, in blocks.  Spec source: ZmnSCPxj's t/1242 doesn't
    pin a value; the rationale is "long enough that watchtowers / clients
@@ -77,6 +86,13 @@ typedef struct {
     float    uptime_score;        /* 0.0-1.0 historical uptime */
     uint8_t  timezone_bucket;     /* 0-23 hour of peak activity */
 } participant_profile_t;
+
+/* A caller-supplied channel output script for one member
+   (factory_set_leaf_channel_spk). */
+typedef struct {
+    unsigned char spk[34];   /* P2TR: OP_1 <32-byte output key> */
+    uint8_t set;             /* 0 = the default channel script */
+} factory_chan_spk_t;
 
 /* Runtime-configurable limits (Mainnet Gap #6).
    Pass to factory_init_with_config(). NULL = defaults (same as #define values). */
@@ -159,6 +175,10 @@ typedef struct {
 
     /* Input amount from parent output */
     uint64_t input_amount;
+
+    /* Miner fee this node's tx pays (input_amount - sum(outputs)): the
+       factory's tree_fee_rate for its exact vsize. */
+    uint64_t fee_sats;
 
     /* Timeout script path (staggered per-node CLTV) */
     int has_taptree;
@@ -252,6 +272,13 @@ typedef struct {
     uint64_t ps_prev_chan_amount;      /* amount_sats of the channel output spent by current TX
                                           (legacy 1-input shape; for multi-input PS sub-factory
                                           chain advances see ps_prev_amounts[] below) */
+    /* One-member PS leaf with a caller channel script: the chain extension
+       (ps_chain_len > 0) spends that output by key path, so it is signed over
+       this MuSig2 key (no script tree) and verified against its output key,
+       not over the node's own keyagg / merkle root. */
+    int has_ps_chan_key;
+    musig_keyagg_t ps_chan_keyagg;
+    secp256k1_xonly_pubkey ps_chan_output_key;
     /* #146: height-aware reset.  Block height at which the latest chain
        entry was observed confirmed (0 = unset / legacy).  Used by
        factory_reset_subfactory_chains_above_height to leave chain state
@@ -351,9 +378,14 @@ typedef struct {
     uint16_t step_blocks;
     uint32_t states_per_layer;
 
-    /* Fee per transaction */
-    uint64_t fee_per_tx;
-    fee_estimator_t *fee;  /* if set, overrides fee_per_tx with computed fees */
+    /* Rate (sat/kvB) every pre-signed tree transaction pays, for its exact
+       vsize: a factory term, carried in FACTORY_PROPOSE (the LSP and every
+       member build the tree at it).  factory_init* set
+       FACTORY_DEFAULT_TREE_FEE_RATE; 0 is allowed.  The fee the network asks
+       for beyond it is paid at broadcast time by a child on the anchor. */
+    uint64_t tree_fee_rate;
+    /* 1: factory_build_tree logs nothing (trial builds while planning). */
+    int build_quiet;
 
     /* CLTV timeout (absolute block height) */
     uint32_t cltv_timeout;
@@ -464,6 +496,13 @@ typedef struct {
     placement_mode_t placement_mode;  /* client ordering strategy */
     economic_mode_t  economic_mode;   /* fee distribution model */
     participant_profile_t *profiles;  /* dynamic, sized to config.max_signers */
+    /* Caller channel output scripts by participant index; NULL until
+       factory_set_leaf_channel_spk sets one (sized to config.max_signers). */
+    factory_chan_spk_t *chan_spks;
+    /* Per-member channel capacity in sats by participant index; NULL = the
+       budget is split by tree shape (factory_set_member_capacities). */
+    uint64_t *member_capacity;
+    uint64_t leaf_stock_sats;   /* host stock per leaf with capacities (0 = default) */
 
     /* Runtime config (Mainnet Gap #6) — stored limits for this factory */
     factory_config_t config;
@@ -515,9 +554,13 @@ void factory_init_from_pubkeys(factory_t *f, secp256k1_context *ctx,
 void factory_set_arity(factory_t *f, factory_arity_t arity);
 
 /* Set variable arity per tree level (4A). arities[0]=root level, etc.
-   Last entry applies to all deeper levels. Clears uniform leaf_arity.
-   Must be called after init, before build_tree. */
-void factory_set_level_arity(factory_t *f, const uint8_t *arities, size_t n);
+   Last entry applies to all deeper levels and sets the leaf kind (3 = PS,
+   else DW): a level of the other kind ends a subtree only when it fits one
+   leaf of the last entry, built with the last entry's arity.
+   Must be called after init, before build_tree.  Returns 0, changing
+   nothing, unless 1 <= n <= FACTORY_MAX_LEVELS and every entry is
+   1..FACTORY_MAX_OUTPUTS. */
+int factory_set_level_arity(factory_t *f, const uint8_t *arities, size_t n);
 
 /* Override the default L-stock CSV (BIP-68) blocks.  Must be called
    before factory_build_tree() — otherwise the L-stock SPK is already
@@ -695,22 +738,12 @@ int factory_sign_l_stock_cooperative_spend(
    built tree.  Returns 1 on success, 0 if the client_idx is out of range
    or doesn't appear in any leaf's signer_indices.
 
-   Behavior is arity-aware:
-
-   - Mixed-arity factories (n_level_arity > 0): walks
-     factory->leaf_node_indices[] and matches my_index = client_idx + 1
-     against each leaf's signer_indices[].  vout = position in
-     signer_indices minus 1 (signer_indices[0] == 0 is the LSP).  This
-     is the only correct mapping when leaves can hold > 2 channels.
-
-   - Uniform ARITY_1 and ARITY_PS: each client owns its own leaf at
-     vout 0.  PS leaves are built 1-client-per-leaf (n_signers=2 = LSP +
-     1 client) with chained TXs replacing the per-state DW machine; the
-     mapping is identical to arity-1 here.
-
-   - Uniform ARITY_2: 2 clients per leaf, layout [vout 0 = client A's
-     channel, vout 1 = client B's channel, vout 2 = L-stock]; client_idx
-     i maps to (leaf i/2, vout i%2).
+   The channel is on the leaf whose signer_indices[] include participant
+   client_idx + 1 -- for PS leaves with sub-factories (k > 1), on that
+   sub-factory node -- at vout = its position in signer_indices minus 1
+   (signer_indices[0] == 0 is the LSP).  The leaf is looked up rather than
+   computed from the index because the placement mode and profiles decide
+   which leaf a member lands on.
 
    Use this from any code that previously open-coded the mapping
    (src/client.c::client_init_channel, src/lsp_channels.c::client_to_leaf,
@@ -729,13 +762,131 @@ int factory_client_to_leaf(const factory_t *f, size_t client_idx,
    depths, capped at DW_MAX_LAYERS. */
 void factory_set_static_near_root(factory_t *f, uint32_t threshold);
 
-void factory_set_funding(factory_t *f,
-                         const unsigned char *txid, uint32_t vout,
-                         uint64_t amount_sats,
-                         const unsigned char *spk, size_t spk_len);
+/* Record the funding outpoint.  Returns 0, changing nothing, unless spk is a
+   34-byte P2TR (OP_1 <32 bytes>).  factory_build_tree then refuses to build
+   unless spk is exactly the key-path P2TR of the root signers' MuSig2 key
+   (factory_compute_funding_spk). */
+int factory_set_funding(factory_t *f,
+                        const unsigned char *txid, uint32_t vout,
+                        uint64_t amount_sats,
+                        const unsigned char *spk, size_t spk_len);
+
+/* The funding script factory_build_tree accepts: the key-path P2TR of the
+   MuSig2 aggregate of the root signers (the LSP, then the clients in the
+   order the configured placement mode and profiles put them).  Call after
+   setting placement and profiles.  Returns 0 on failure. */
+int factory_compute_funding_spk(const factory_t *f, unsigned char spk_out[34]);
+
+/* Use spk (a 34-byte P2TR, OP_1 <32 bytes>) verbatim as the channel output
+   of member participant_idx (1..n_participants-1) in its leaf, in place of
+   the default MuSig2(member, LSP) output with the LSP-only CLTV recovery
+   leaf.  spk == NULL restores the default.  Returns 0, changing nothing, for
+   any other script or index.  Call after factory_init*, before
+   factory_build_tree; members without a script keep the default, so a
+   factory with none set builds exactly as before.
+
+   For callers whose channel engine holds two-sided commitments over the
+   channel output (e.g. a standard taproot channel funding output, MuSig2 key
+   path only).  The reference LSP and client keep the default: they hold no
+   commitment for the LSP's side, which then relies on the CLTV recovery
+   leaf.
+
+   One-member pseudo-Spilman leaf (k = 1): the chain extension spends the
+   channel output, so spk must be the key-path-only P2TR (BIP-86 tweak, no
+   script tree) of the MuSig2 key of the LSP and the member, in either key
+   order; the extension is then signed and verified over that key.
+   factory_build_tree refuses any other script there, and refuses a script
+   for a member of a PS sub-factory leaf (k > 1). */
+int factory_set_leaf_channel_spk(factory_t *f, uint32_t participant_idx,
+                                 const unsigned char *spk, size_t spk_len);
+
+/* Give every member its own channel capacity: capacity_sats[i] is the
+   channel output of participant i + 1, n_members == n_participants - 1, each
+   at least CHANNEL_DUST_LIMIT_SATS.  factory_build_tree then sizes the tree
+   bottom-up: each leaf's channel outputs are its members' capacities and its
+   host stock output is factory_set_leaf_stock's amount, and every node's
+   value is the sum of its outputs plus its fee and anchor.  The funding
+   amount must be exactly factory_capacity_funding_amount.  capacity_sats ==
+   NULL restores the default (the funding split equally by tree shape, the
+   same transactions as before).  Returns 0, changing nothing, on a wrong
+   count or a capacity below dust.  Not available for PS sub-factory leaves
+   (k > 1): factory_build_tree refuses that combination. */
+int factory_set_member_capacities(factory_t *f, const uint64_t *capacity_sats,
+                                  size_t n_members);
+
+/* Host stock (L-stock) output of every leaf when member capacities are set;
+   0 = CHANNEL_DUST_LIMIT_SATS.  Returns 0 for a nonzero amount below dust. */
+int factory_set_leaf_stock(factory_t *f, uint64_t stock_sats);
+
+/* The funding amount factory_build_tree needs for the configured member
+   capacities, leaf stock, shape, fee and anchors.  Returns 0 when no
+   capacities are set or the shape cannot carry them. */
+int factory_capacity_funding_amount(const factory_t *f, uint64_t *amount_out);
+
+/* Set the client placement strategy for factory_build_tree.  Returns 0,
+   changing nothing, for a mode that is not a placement_mode_t value.  The
+   default is PLACEMENT_TIMEZONE_CLUSTER. */
+int factory_set_placement_mode(factory_t *f, placement_mode_t mode);
 
 int factory_build_tree(factory_t *f);
+
+/* Default pre-signed tree rate (sat/kvB): 0.1 sat/vB, Bitcoin Core's
+   default -minrelaytxfee since 29.1.  The rate is a factory term the LSP
+   proposes (FACTORY_PROPOSE tree_fee_rate, --tree-fee-rate) and every member
+   checks; 0 is allowed.  Nothing derives it from a fee estimate. */
+#define FACTORY_DEFAULT_TREE_FEE_RATE 100
+
+/* Value of the P2A anchor on every tree transaction and the distribution TX:
+   0 (ephemeral dust, Bitcoin Core 29+) when the factory's rate is 0, so that
+   transaction pays no fee at all, else ANCHOR_OUTPUT_AMOUNT. */
+uint64_t factory_tree_anchor_sats(const factory_t *f);
+
+/* Fee paid by a tree transaction with n_inputs taproot key-path inputs and
+   n_p2tr P2TR outputs, plus the P2A anchor when with_anchor is set: exactly
+   the factory's tree_fee_rate for that exact vsize. */
+uint64_t factory_tree_tx_fee(const factory_t *f, size_t n_inputs, size_t n_p2tr,
+                             int with_anchor);
+
+/* Fee paid by one pseudo-Spilman leaf chain advance (chain[1] onward). */
+uint64_t factory_ps_chain_fee(const factory_t *f);
+
+/* Amount one PS leaf chain advance takes out of the channel output: its fee
+   plus the P2A anchor it carries when tree anchors are on. */
+uint64_t factory_ps_chain_reserve(const factory_t *f);
+
+/* Largest transaction TRUC policy accepts (BIP 431). */
+#define TRUC_MAX_VSIZE 10000
+
+/* Most clients a factory with a distribution TX can have: that TX (nVersion
+   3, one P2TR output per client plus the anchor) must stay within
+   TRUC_MAX_VSIZE, the only way a transaction below the relay floor is
+   relayed with a child.  230 clients take 9971 vB, 231 take 10014. */
+#define FACTORY_MAX_DIST_CLIENTS 230
+
+/* Virtual size of the signed distribution TX of a factory with n_clients
+   clients. */
+size_t factory_distribution_tx_vsize(size_t n_clients);
+
+/* Fee paid by that distribution TX: the tree rate for its exact vsize. */
+uint64_t factory_distribution_fee(const factory_t *f, size_t n_clients);
+
+/* Check every built node, and the distribution TX when one is built, from
+   the transaction bytes and the parent outputs, independently of the code
+   that sized them: nVersion 3, a P2A anchor (last) worth
+   factory_tree_anchor_sats, a fee of exactly the agreed tree_fee_rate for
+   the exact signed vsize.  At rate 0 every node must carry the anchor (it
+   has no other way to get a fee).  The LSP and every member run this before
+   signing anything.  Returns 1 if all hold; otherwise 0 with the reason in
+   why (optional). */
+int factory_check_tree_fees(const factory_t *f, char *why, size_t why_len);
+
 int factory_sign_all(factory_t *f);
+
+/* nLockTime of the factory's distribution transaction: the factory's CLTV
+   timeout.  The LSP announces this value and every client requires it. */
+static inline uint32_t factory_distribution_locktime(const factory_t *f) {
+    return f ? f->cltv_timeout : 0;
+}
 int factory_verify_all(factory_t *f);
 
 /* Bounded fresh-nonce retry (#48): max sign+verify attempts per ceremony before
@@ -748,6 +899,44 @@ int factory_verify_close_sig(const factory_t *f, const unsigned char sig64[64],
                              const unsigned char sighash[32]);
 extern int g_factory_test_force_verify_fail;   /* TEST-ONLY seam; always 0 in production */
 
+/* 1 if some built state transaction counts down on a Decker-Wattenhofer
+   layer (a relative lock that a refresh in place can shorten).  0 for an
+   advanceless tree (every interior level static, pseudo-Spilman leaves),
+   where an advance or a rollover changes no transaction. */
+int factory_has_dw_state(const factory_t *f);
+
+/* The advanceless shape for n_clients: every interior level static
+   (kickoff only, no DW state), one member per pseudo-Spilman leaf.
+     depth d    = fewest fan-out levels such that 15^d >= n_clients (15
+                  children per node: FACTORY_MAX_OUTPUTS less the anchor);
+     fan-out a  = the smallest a >= 4 with a^d >= n_clients (the narrowest
+                  fan-out that reaches every client in d levels, so no node
+                  carries more outputs than it needs);
+     arities    = d entries of a, then 3 (PS leaves);
+     static     = d (--static-near-root: every level above the leaves).
+   e.g. 4 -> "4,3" static 1, 64 -> "8,8,3" static 2, 255 -> "7,7,7,3" static 3.
+   A single client gets "3" static 0 (the root is its leaf).  Writes
+   d + 1 entries to arities_out; returns 1, or 0 for n_clients == 0 or a
+   shape that would not fit FACTORY_MAX_LEVELS. */
+int factory_advanceless_shape(size_t n_clients,
+                              uint8_t arities_out[FACTORY_MAX_LEVELS],
+                              size_t *n_arities_out,
+                              uint32_t *static_near_root_out);
+
+/* The one refusal for extending a factory's life in place. */
+#define FACTORY_EXTEND_REFUSED_MSG \
+    "refused: this factory has no Decker-Wattenhofer state layer, so its " \
+    "root cannot advance or roll over; its life is extended only by " \
+    "rotating to a new factory (a new funding output)"
+
+/* Logs FACTORY_EXTEND_REFUSED_MSG prefixed with `who` and returns 1 when
+   factory_has_dw_state(f) is 0; returns 0 (nothing logged) otherwise.
+   Every refresh-in-place entry point (root tick, whole-counter advance,
+   leaf rollover) checks it first. */
+int factory_refuses_refresh_in_place(const factory_t *f, const char *who);
+
+/* Advance the whole DW counter and re-sign every node.  Refused (returns 0)
+   for a factory without DW state (factory_refuses_refresh_in_place). */
 int factory_advance(factory_t *f);
 
 /* Advance only one leaf subtree. leaf_side: 0..n_leaf_nodes-1.
@@ -767,7 +956,8 @@ int factory_advance_leaf_unsigned(factory_t *f, int leaf_side);
    by block-height progression instead.  Caller (LSP) wires this into a
    block-polling loop and runs Tier B on rc=-1.
    Returns -1 on epoch rollover (trees rebuilt; run Tier B);
-   0 otherwise (no rollover or fully exhausted). */
+   0 otherwise (no rollover or fully exhausted).  A factory without DW state
+   is refused: 0, nothing changed (factory_refuses_refresh_in_place). */
 int factory_tick_root(factory_t *f);
 
 /* Sub-factory chain extension (Gap E followup Phase 2, t/1242 k² PS).
@@ -815,9 +1005,10 @@ int factory_reset_all_subfactory_chains(factory_t *f);
 /* #146: height-aware variant.  Only resets sub-factory chain state for
    nodes whose ps_chain_confirmed_height > reorg_max_safe_height (i.e.,
    their latest confirmation is no longer on the active chain).  Nodes
-   with ps_chain_confirmed_height == 0 (legacy / unset) are reset
-   conservatively (matches pre-#146 behavior) so a missing confirmation
-   record never silently leaves stale state.  Returns the count reset.
+   with ps_chain_confirmed_height == 0 were never observed on chain (chains
+   are off-chain until a force-close) and are left intact.  Like the
+   reset-all variant it clears the chain length and prev-txid but not the
+   node's signed_tx.  Returns the count reset.
 
    reorg_max_safe_height is the highest block height that's still
    confirmed on the new tip — typically the new tip height itself minus
@@ -836,9 +1027,12 @@ void factory_set_subfactory_chain_confirmed_height(factory_t *f,
                                                     size_t node_idx,
                                                     uint32_t confirmed_height);
 
-/* Compute the factory_early_warning_time (blocks) per BLIP-56.
-   This is the worst-case blocks needed for full unilateral close from
-   the current state. PS leaves contribute 0 blocks (no nSequence at leaf level). */
+/* Compute the factory_early_warning_time (blocks) per BLIP-56: the
+   worst-case blocks a full unilateral close needs, i.e. the largest sum of
+   the relative locks (each DW state's longest delay) on any root-to-leaf
+   path of the built tree.  PS leaves contribute 0 blocks (no nSequence at
+   leaf level).  Before factory_build_tree, the same sum for the configured
+   shape. */
 uint32_t factory_early_warning_time(const factory_t *f);
 
 /* Compute the worst-case factory_early_warning_time (blocks) for a given
@@ -851,14 +1045,17 @@ uint32_t factory_early_warning_time(const factory_t *f);
    - level_arities: per-level arity array; NULL or n_level_arity==0 means
      uniform leaf_arity
    - leaf_arity: used when level_arities is NULL/empty (3 = PS, 1/2 = DW)
+   - ps_subfactory_arity: k of factory_set_ps_subfactory_arity (0 or 1 =
+     one client per PS leaf, k > 1 = k² clients per PS leaf)
    - n_clients: client count (excludes LSP, so factory_clients_only)
    - static_threshold: top N tree depths are kickoff-only (Phase 3)
    - step_blocks / states_per_layer: per-DW-layer config (mainnet 144 / 4)
-   Returns ewt in blocks.  Treats PS leaves as 0-cost at the leaf layer
-   when leaf arity == FACTORY_ARITY_PS. */
+   Returns ewt in blocks: what factory_early_warning_time returns once the
+   shape is built (PS leaves cost 0). */
 uint32_t factory_compute_ewt_for_shape(
     const uint8_t *level_arities, size_t n_level_arity,
     factory_arity_t leaf_arity,
+    uint32_t ps_subfactory_arity,
     size_t n_clients,
     uint32_t static_threshold,
     uint16_t step_blocks,
@@ -1010,6 +1207,7 @@ typedef struct {
     int ps_chain_len;
     unsigned char ps_prev_txid[32];
     uint64_t ps_prev_chan_amount;
+    uint64_t fee_sats;
 } factory_leaf_snapshot_t;
 
 /* Capture the state of leaf leaf_side.  Returns 1 on success; the snapshot
@@ -1269,6 +1467,10 @@ size_t factory_compute_distribution_outputs(
    balance (client_amounts[0..n_clients-1]) instead of equal split.
    LSP gets funding - sum(client_amounts) - fee.
    client_amounts may be NULL to fall back to equal split. */
+/* (With member capacities and no client_amounts, each member receives its
+   full capacity plus an equal share of its leaf's host stock, and any rest
+   of the budget is split equally; capacities are never scaled down -- 0 is
+   returned when the budget cannot cover them.) */
 size_t factory_compute_distribution_outputs_balanced(
     const factory_t *f,
     tx_output_t *outputs_out,

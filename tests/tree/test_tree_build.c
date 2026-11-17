@@ -7,13 +7,15 @@
  * tests/reference/tree-from-terms-txids.txt. The model's BIP 341 digests are
  * checked against signatures the import itself makes (factory_sign_all), so
  * the digest the signing engine will sign is the one the import's
- * transactions need. Then terms.md test 19, and the import's own refusals
- * (dust, its minimum funding) at their boundaries, in both builders.
+ * transactions need. Then terms.md test 19, other fee rates (0 included),
+ * and the import's own refusals (dust, its minimum funding, a funding script
+ * that is not the root's) at their boundaries, in both builders.
  *
  * usage: test_tree_build REFERENCE-FILE [--print] */
 #include "tree_test.h"
 #include "gazpacho/tree_import.h"
 #include "superscalar/factory.h"
+#include "superscalar/fee.h"
 
 #define FUND_LABEL "gazpacho test funding"
 #define TIP 290000u
@@ -34,7 +36,7 @@ static void keys(uint32_t n)
     }
 }
 
-/* T1's inputs for n members: levels, D, fee and funding from terms.md 4.2. */
+/* T1's inputs for n members: levels, D, fee rate and funding from terms.md 4.2. */
 static void t1_inputs(uint32_t n, gz_tree_params_t *p, gz_tree_build_in_t *in)
 {
     gz_terms_outer_t t;
@@ -50,7 +52,7 @@ static void t1_inputs(uint32_t n, gz_tree_params_t *p, gz_tree_build_in_t *in)
     in->host_key = HOST;
     in->member_keys = (const uint8_t(*)[33])MEMBERS;
     in->end_height = END;
-    in->fee_per_tx = p->fee_per_tx;
+    in->tree_feerate = p->tree_feerate;
     in->lstock_csv = 144;
     tr_sha256((const uint8_t *)FUND_LABEL, strlen(FUND_LABEL), in->funding_txid);
     in->funding_vout = 0;
@@ -83,17 +85,21 @@ static factory_t *raw_import(const gz_tree_build_in_t *in, int sign)
     } else {
         factory_init_from_pubkeys(f, test_ctx(), pks, n, 144, 4);
     }
-    factory_set_level_arity(f, in->levels, in->n_levels);
+    if (!factory_set_level_arity(f, in->levels, in->n_levels)) abort();
     factory_set_static_near_root(f, in->fixed_levels);
     factory_set_ps_subfactory_arity(f, 1);
     factory_set_l_stock_csv(f, in->lstock_csv);
-    f->placement_mode = PLACEMENT_SEQUENTIAL;
+    if (!factory_set_placement_mode(f, PLACEMENT_SEQUENTIAL)) abort();
     f->use_tree_anchor = 1;
     f->use_hashlock_poison = 0;
-    f->fee_per_tx = in->fee_per_tx;
+    f->tree_fee_rate = in->tree_feerate;
+    f->build_quiet = 1;
     f->cltv_timeout = in->end_height;
-    factory_set_funding(f, in->funding_txid, in->funding_vout, in->funding_amount, in->funding_script, 34);
-    if (!factory_build_tree(f)) { factory_free(f); free(f); return NULL; }
+    if (!factory_set_funding(f, in->funding_txid, in->funding_vout, in->funding_amount, in->funding_script, 34)
+        || !factory_build_tree(f)) {
+        factory_free(f); free(f);
+        return NULL;
+    }
     return f;
 }
 
@@ -216,12 +222,19 @@ static void every_size(void)
                 if (nd->kind == GZ_NODE_FIXED) CHECK(nd->nsequence == 0xfffffffeu && nd->depth < p.D);
                 else CHECK(nd->nsequence == 0xffffffffu);
             }
-            /* Every transaction pays exactly fee_per_tx. */
+            /* Every transaction is version 3 (TRUC), small enough to be a
+             * TRUC child (at most 1,000 vbytes), and pays exactly the terms'
+             * rate for its own signed size: 13, 17 or 26 sat in T1. */
             {
                 uint64_t out = 0;
                 size_t o;
+                uint32_t v = (4 * (uint32_t)nd->tx_len + 2 + 66 + 3) / 4;
                 for (o = 0; o < nd->n_out; o++) out += nd->out_amount[o];
-                CHECK(nd->spent_amount - out == p.fee_per_tx);
+                CHECK(nd->tx[0] == 3 && nd->tx[1] == 0 && nd->tx[2] == 0 && nd->tx[3] == 0);
+                CHECK(v == gz_tree_vsize((uint32_t)nd->n_out - 1) && v <= 1000);
+                CHECK(nd->spent_amount - out == (100ull * v + 999) / 1000);
+                CHECK(nd->spent_amount - out == gz_tree_fee(p.tree_feerate, (uint32_t)nd->n_out - 1));
+                CHECK(nd->spent_amount - out == (nd->n_out == 2 ? 13u : nd->n_out == 3 ? 17u : 26u));
             }
         }
         CHECK(leaves == n);
@@ -247,7 +260,7 @@ static void every_size(void)
     /* Three members: member 1's channel is about twice channel_sat (terms.md 4.2). */
     t1_inputs(3, &p, &in);
     CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_OK);
-    CHECK(TREE.node[TREE.leaf_state[0]].out_amount[0] == 200385);
+    CHECK(TREE.node[TREE.leaf_state[0]].out_amount[0] == 200383);
     CHECK(TREE.node[TREE.leaf_state[1]].out_amount[0] == 100000);
     CHECK(TREE.node[TREE.leaf_state[2]].out_amount[0] == 100000);
 }
@@ -331,13 +344,102 @@ static void corners(void)
         memset(&in, 0, sizeof in);
         in.levels = L3; in.n_levels = 1; in.fixed_levels = (uint8_t)(n - 1); in.n_members = n;
         in.host_key = HOST; in.member_keys = (const uint8_t(*)[33])MEMBERS;
-        in.end_height = END; in.fee_per_tx = 17; in.lstock_csv = 144;
-        CHECK(gz_tree_requirement(L3, 1, n, 100000, 17, &in.funding_amount));
+        in.end_height = END; in.tree_feerate = 100; in.lstock_csv = 144;
+        CHECK(gz_tree_requirement(L3, 1, n, 100000, 100, &in.funding_amount));
         tr_sha256((const uint8_t *)FUND_LABEL, strlen(FUND_LABEL), in.funding_txid);
         CHECK(CR.agg_tweak(CR.ctx, HOST, (const uint8_t(*)[33])MEMBERS, n, NULL, internal, q));
         in.funding_script[0] = 0x51; in.funding_script[1] = 0x20; memcpy(in.funding_script + 2, q, 32);
         CHECK(agree(&in));
         CHECK(TREE.n_nodes == (n == 1 ? 2 : 5));
+    }
+}
+
+/* Other fee rates than T1's 100 (the import's default, which a glue that
+ * forgot the rate would also build at): 0, where every transaction pays
+ * nothing and its anchor is worth nothing; 1; and up to the terms' ceiling.
+ * Each transaction pays exactly its rate for its own size, and the anchor is
+ * the last output. */
+static void rates(void)
+{
+    static const uint64_t RATES[9] = {0, 1, 99, 101, 250, 1000, 1250, 12345, 1000000};
+    static const uint32_t SIZES[3] = {3, 5, 16};
+    size_t r, s;
+    for (r = 0; r < 9; r++)
+        for (s = 0; s < 3; s++) {
+            gz_tree_params_t p;
+            gz_tree_build_in_t in;
+            uint32_t i;
+            t1_inputs(SIZES[s], &p, &in);
+            in.tree_feerate = RATES[r];
+            CHECK(gz_tree_requirement(p.levels, p.n_levels, SIZES[s], 100000, RATES[r], &in.funding_amount));
+            CHECK(agree(&in));
+            for (i = 0; i < TREE.n_nodes; i++) {
+                const gz_tree_node_t *nd = &TREE.node[i];
+                uint64_t out = 0;
+                size_t o;
+                uint32_t v = (4 * (uint32_t)nd->tx_len + 2 + 66 + 3) / 4;
+                for (o = 0; o < nd->n_out; o++) out += nd->out_amount[o];
+                CHECK(nd->spent_amount - out == (RATES[r] * v + 999) / 1000);
+                CHECK(nd->out_kind[nd->n_out - 1] == GZ_OUT_ANCHOR);
+                CHECK(nd->out_amount[nd->n_out - 1] == (RATES[r] ? 240u : 0u));
+                if (nd->kind == GZ_NODE_LEAF_STATE) CHECK(nd->out_amount[0] >= 100000);
+            }
+            /* One satoshi less and three more: the two builders still agree. */
+            in.funding_amount -= 1;
+            CHECK(agree(&in));
+            in.funding_amount += 4;
+            CHECK(agree(&in));
+        }
+}
+
+/* Inputs for a tree of n members under `levels`, at `rate`, with funding F:
+ * the test keys, D from the split rule, the funding script the aggregate. */
+static void custom_inputs(const uint8_t *levels, size_t nl, uint32_t n, uint64_t rate, uint64_t F, gz_tree_build_in_t *in)
+{
+    uint8_t depths[GZ_TREE_MAX_MEMBERS], D = 0, internal[32], q[32];
+    uint32_t i;
+    keys(n);
+    if (!gz_tree_split(levels, nl, n, depths)) abort();
+    for (i = 0; i < n; i++) if (depths[i] > D) D = depths[i];
+    memset(in, 0, sizeof *in);
+    in->levels = levels; in->n_levels = nl; in->fixed_levels = D; in->n_members = n;
+    in->host_key = HOST; in->member_keys = (const uint8_t(*)[33])MEMBERS;
+    in->end_height = END; in->tree_feerate = rate; in->lstock_csv = 144; in->funding_amount = F;
+    tr_sha256((const uint8_t *)FUND_LABEL, strlen(FUND_LABEL), in->funding_txid);
+    if (!CR.agg_tweak(CR.ctx, HOST, (const uint8_t(*)[33])MEMBERS, n, NULL, internal, q)) abort();
+    in->funding_script[0] = 0x51; in->funding_script[1] = 0x20; memcpy(in->funding_script + 2, q, 32);
+}
+
+/* Review B, L2: boundaries inside the model that the funding rule never
+ * reaches, found by searching funding amounts above the import's minimum
+ * (each is the first refusal of its tree, and both builders refuse):
+ *   a leaf whose kickoff output is above zero but below the leaf
+ *   transaction's own cost (the guard ko_out > leaf_cost: DUST, never a
+ *   wrapped amount);
+ *   a leaf kickoff whose input is exactly its cost (UNDERFUNDED, not DUST);
+ *   gz_tree_fee at the rate where fee.c's bound begins, for every width. */
+static void boundaries(void)
+{
+    static const uint8_t L3[1] = {3};
+    gz_tree_build_in_t in;
+    uint32_t k;
+    /* 2 members, rate 1,000,000: each leaf kickoff gets 291,447 sat; its cost is
+     * 124,240, so its output, 167,207, is below the leaf transaction's 167,240. */
+    custom_inputs(L3, 1, 2, 1000000, 750134, &in);
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_DUST);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
+    /* 9 members, binary, rate 100,000: the leaf kickoff at path 1,1,1,0 gets
+     * exactly its cost, 12,640. */
+    custom_inputs(L3, 1, 9, 100000, 456333, &in);
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_UNDERFUNDED);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
+    /* fee.c's bound, compute_fee: the fee is invalid only ABOVE money supply x 1000 / vsize. */
+    for (k = 1; k <= 15; k++) {
+        uint64_t v = gz_tree_vsize(k), edge = GZ_TREE_FEE_MAX_SAT * 1000 / v;
+        CHECK(gz_tree_fee(edge, k) == fee_at_rate(edge, v) && gz_tree_fee(edge, k) != GZ_TREE_FEE_INVALID);
+        CHECK(gz_tree_fee(edge + 1, k) == GZ_TREE_FEE_INVALID && fee_at_rate(edge + 1, v) == FEE_INVALID);
+        CHECK(gz_tree_fee(edge - 1, k) == fee_at_rate(edge - 1, v));
+        CHECK(gz_tree_fee(100, k) == fee_at_rate(100, v) && gz_tree_fee(0, k) == fee_at_rate(0, v));
     }
 }
 
@@ -349,35 +451,67 @@ static void refusals(void)
     static const uint8_t L3[1] = {3};
     uint64_t R;
     factory_t *f;
-    /* Dust: channel_sat 546 at 4 members; R builds, R - 1 leaves a 545 channel. */
-    t1_inputs(4, &p, &in);
-    CHECK(gz_tree_requirement(L3, 1, 4, 546, 17, &R));
+    /* Dust: channel_sat 546 at 3 members; R builds, R - 1 leaves a 545 channel. */
+    t1_inputs(3, &p, &in);
+    CHECK(gz_tree_requirement(L3, 1, 3, 546, 100, &R));
+    CHECK(R == 7179);
     in.funding_amount = R;
     CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_OK);
     CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_OK && same_as_import(&TREE, &IMPORT));
+    CHECK(TREE.node[TREE.leaf_state[1]].out_amount[0] == 546);
+    /* R - 1 still pays every channel 546: the root's remainder goes to its
+     * last child, the two-member subtree that set R. R - 2 does not. */
     in.funding_amount = R - 1;
+    CHECK(agree(&in));
+    CHECK(TREE.node[TREE.leaf_state[1]].out_amount[0] == 546 && TREE.node[TREE.leaf_state[2]].out_amount[0] == 546);
+    in.funding_amount = R - 2;
     CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_DUST);
     CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
-    /* The import's minimum funding: fee 880 builds at R; fee 881 is refused
-     * although R(881) pays every channel 546. */
-    in.fee_per_tx = 880;
-    CHECK(gz_tree_requirement(L3, 1, 4, 546, 880, &R));
-    in.funding_amount = R;
-    CHECK(R == 16688);
-    in.funding_amount = R - 1;                         /* the import's minimum - 1 (review A, M43) */
-    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_IMPORT_MINIMUM);
-    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
-    in.funding_amount = R;
+    /* The import's minimum funding at 4 members and rate 100: 14 x (13 + 240)
+     * + 4 x 1,092 = 7,910 builds; 7,909 is refused (review A, M43). */
+    t1_inputs(4, &p, &in);
+    in.funding_amount = 7910;
     CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_OK);
     CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_OK && same_as_import(&TREE, &IMPORT));
-    in.fee_per_tx = 881;
-    CHECK(gz_tree_requirement(L3, 1, 4, 546, 881, &R));
+    in.funding_amount = 7909;
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_IMPORT_MINIMUM);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
+    /* R for channel_sat 546 at 4 members is 7,179: it would pay every channel
+     * 546, and is refused all the same, being below that minimum. */
+    CHECK(gz_tree_requirement(L3, 1, 4, 546, 100, &R) && R == 7179);
     in.funding_amount = R;
     CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_IMPORT_MINIMUM);
     CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
     f = raw_import(&in, 0);
     CHECK(f == NULL);
     free_raw(f);
+    /* A rate whose fee no transaction can pay: refused by both, and R(root) has no value. */
+    t1_inputs(4, &p, &in);
+    in.tree_feerate = UINT64_MAX / 2;
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_IMPORT_MINIMUM);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
+    CHECK(!gz_tree_requirement(L3, 1, 4, 546, UINT64_MAX / 2, &R));
+    CHECK(gz_tree_fee(UINT64_MAX / 2, 1) == GZ_TREE_FEE_INVALID && gz_tree_fee(0, 15) == 0);
+    /* A payable fee the import still refuses: a one-output transaction's fee
+     * above the money supply / (2 (2 n - 1) + 1) (factory_build_tree's bound),
+     * with a funding amount that covers its own minimum and every node. */
+    t1_inputs(4, &p, &in);
+    in.tree_feerate = 1137100000000000ull;
+    in.funding_amount = 2000000000000000ull;
+    CHECK(gz_tree_fee(in.tree_feerate, 1) == 141000400000000ull);
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_IMPORT_MINIMUM);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
+    CHECK(gz_tree_fee(100, 1) == 13 && gz_tree_fee(100, 2) == 17 && gz_tree_fee(100, 4) == 26 && gz_tree_fee(100, 15) == 73);
+    CHECK(gz_tree_anchor(0) == 0 && gz_tree_anchor(1) == 240);
+    /* A funding script that is not the root's aggregate: the rules derive the
+     * script and ignore the field; the import now refuses to build on it. */
+    t1_inputs(4, &p, &in);
+    in.funding_script[5] ^= 1;
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_OK);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
+    in.funding_script[5] ^= 1;
+    in.funding_script[0] = 0x00;                       /* not a P2TR at all: factory_set_funding refuses */
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
     /* fixed_levels other than D: the model refuses; the import builds a
      * different tree (state nodes appear) or the same bytes (above D). */
     t1_inputs(4, &p, &in);
@@ -418,8 +552,8 @@ static void refusals(void)
         for (i = 0; i < 256; i++) if (depths[i] > D) D = depths[i];
         CHECK(D == 8);
         in.levels = L3; in.n_levels = 1; in.fixed_levels = D; in.n_members = 256; in.member_keys = (const uint8_t(*)[33])many;
-        CHECK(gz_tree_requirement(L3, 1, 256, 1000, 30, &in.funding_amount));
-        in.fee_per_tx = 30;
+        CHECK(gz_tree_requirement(L3, 1, 256, 1000, 100, &in.funding_amount));
+        in.tree_feerate = 100;
         CHECK(CR.agg_tweak(CR.ctx, HOST, (const uint8_t(*)[33])many, 256, NULL, internal, ok));
         memcpy(in.funding_script + 2, ok, 32);
         CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_OK);
@@ -439,6 +573,8 @@ int main(int argc, char **argv)
     every_size();
     sighashes();
     corners();
+    rates();
+    boundaries();
     refusals();
     return check_done();
 }

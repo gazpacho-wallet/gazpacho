@@ -166,6 +166,7 @@ typedef struct {
     uint32_t funding_vout;
     uint64_t funding_amount;
     uint8_t funding_script[34];
+    uint64_t tree_feerate;                      /* the proposal's: satoshis per 1,000 vbytes */
     uint8_t damage;                             /* WF_BAD_MODE, WF_DUP_SIGNER, WF_BAD_SCRIPT */
 } w_tree_in_t;
 
@@ -202,11 +203,13 @@ static int w_build_tree(const w_tree_in_t *in, gz_sign_def_t *d, factory_t **kee
     } else {
         factory_set_arity(f, FACTORY_ARITY_PS);
     }
-    f->placement_mode = PLACEMENT_SEQUENTIAL;
+    if (!factory_set_placement_mode(f, PLACEMENT_SEQUENTIAL)) { factory_free(f); free(f); return 0; }
     f->cltv_timeout = 100000;
     f->use_tree_anchor = 1;
-    factory_set_funding(f, in->funding_txid, in->funding_vout, in->funding_amount, in->funding_script, 34);
-    if (!factory_build_tree(f) || f->n_nodes == 0 || f->n_nodes > GZ_SIGN_MAX_ITEMS) { factory_free(f); free(f); return 0; }
+    f->tree_fee_rate = in->tree_feerate;        /* the rate is the proposal's, never a default */
+    f->build_quiet = 1;
+    if (!factory_set_funding(f, in->funding_txid, in->funding_vout, in->funding_amount, in->funding_script, 34)
+        || !factory_build_tree(f) || f->n_nodes == 0 || f->n_nodes > GZ_SIGN_MAX_ITEMS) { factory_free(f); free(f); return 0; }
     d->n_items = (uint16_t)f->n_nodes;
     /* Two tiers: children before parents (safety-rule.md C6). The imported tree lists the root first
      * (node 0, which spends the funding output and which every participant signs): it alone is tier
@@ -249,6 +252,7 @@ static void w_tree_in(const gz_tree_proposal_t *p, uint8_t damage, w_tree_in_t *
     t->tiers = p->n_tiers > 2 ? 1 : p->n_tiers;   /* more tiers only in tests that spread the items themselves */
     t->t1 = p->fixed_levels != 0;
     memcpy(t->funding_txid, p->funding_txid, 32);
+    t->tree_feerate = p->tree_feerate;
     t->funding_vout = p->funding_vout; t->funding_amount = p->funding_amount;
     memcpy(t->funding_script, p->funding_script, 34);
     t->damage = damage;
@@ -370,7 +374,7 @@ static int w_make_begin(w_builder_t *b, const uint8_t *p, size_t len, w_begin_t 
     q->funding_vout = 0;
     q->participants = out->parts; q->n_participants = n;
     q->n_tiers = p[1];
-    q->end_height = 100000; q->tree_anchors = 1; q->fee_per_tx = 200; q->lstock_delay = 144;
+    q->end_height = 100000; q->tree_anchors = 1; q->tree_feerate = 100; q->lstock_delay = 144;
     q->fixed_levels = (flags & WF_T1) ? (n - 1 <= 8 ? 2 : 3) : 0;
     q->k = 1; q->layer_step = 144; q->layer_states = 4;
     q->nonces_due_ms = b && b->nonces_due_ms ? b->nonces_due_ms : 30000; q->sigs_due_ms = 30000;
@@ -411,6 +415,22 @@ static uint16_t w_build(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t *
     if (b->refuse && in->scope && !in->replay) return b->refuse;   /* a member's checks refuse (not the host's own build) */
     w_tree_in(p, b->damage, &t);
     if (b->mutate) {
+        if (b->which == 27) {
+            /* Definition damage 27 (with proposal damage 27): the proposal's funding
+             * script leaves out the last participant. The import refuses to build on
+             * a script that is not the root's key (since SuperScalar 50f7fa13), which
+             * would refuse the round before the engine's own C1 line is reached. So
+             * build on the full aggregate, then give the root the proposal's script;
+             * damage 27 drops its last signer. */
+            uint8_t keys[GZ_SIGN_MAX_PARTICIPANTS][33], proposed[34];
+            memcpy(proposed, t.funding_script, 34);
+            for (size_t i = 0; i < t.n; i++) memcpy(keys[i], t.parts[i].factory_key, 33);
+            if (!w_agg_script((const uint8_t (*)[33])keys, t.n, t.funding_script)) return 1;
+            if (!w_build_tree(&t, out, NULL)) return 1;
+            memcpy(out->items[0].spent_script, proposed, 34);
+            b->mutate(out, b->which);
+            return 0;
+        }
         if (!w_build_tree(&t, out, NULL)) return 1;
         b->mutate(out, b->which);
         return 0;
