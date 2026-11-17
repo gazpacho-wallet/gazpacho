@@ -19,8 +19,26 @@ the interface does (Host, Origin, fetch metadata, the session header):
   6. lock: the wallet reads locked without a session;
   7. the release program serves the API too, without the stand-in: sign-in is
      refused honestly (503, not_built), and its output has no NOTIFY lines;
-  8. no passphrase and no word in any output line; a stop is clean.
+  8. no passphrase and no word of the phrase in any output line; a stop is clean.
+
+The wallet phrase is fixed (review of P5): the data folder gets the stand-in
+seed file before the start, so the 24 words are known. A BIP-39 word that is
+also an ordinary word the program prints or the API answers ("open", "start")
+would make a single-word check fail by chance, so the seed was chosen to give
+24 words outside that vocabulary:
+
+  1. python3 -I tests/program/api_program.py BUILD --dump-vocab FILE
+     runs every step below with a random phrase and writes every lower-case
+     word found in the output of both programs and in every API answer
+     (tests/program/api_program_vocab.txt is that file);
+  2. python3 -I tests/program/api_program.py --choose-seed FILE
+     tries SHA-256("gazpacho program_api test seed " + n) for n = 0, 1, ...
+     and prints the first n whose 24 words are all outside FILE.
+
+SEED_N below is that n. Every word of the phrase is then checked as a whole
+word in all output, and so is every pair of neighbouring words.
 Standard library only."""
+import hashlib
 import http.client
 import json
 import os
@@ -36,7 +54,42 @@ import time
 
 BUILD = sys.argv[1] if len(sys.argv) > 1 else "build"
 PASS = "a long enough passphrase, test only"
+SEED_TAG = "gazpacho program_api test seed "
+SEED_N = 1   # chosen by --choose-seed (docstring)
 fails = []
+DUMP = []       # --dump-vocab: every output line and API answer
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def wordlist():
+    """The BIP-39 English list, read from the interface's copy (web/js/bip39.js)."""
+    text = open(os.path.join(HERE, "..", "..", "web", "js", "bip39.js"), encoding="utf-8").read()
+    words = " ".join(re.findall(r'"([a-z ]+)"', text)).split()
+    words = words[words.index("abandon"):][:2048]
+    assert len(words) == 2048 and words[-1] == "zoo" and len(set(words)) == 2048, len(words)
+    return words
+
+
+def phrase_of(entropy):
+    """BIP-39: 256 bits of entropy and 8 bits of SHA-256 checksum, 24 words of 11 bits."""
+    wl = wordlist()
+    bits = int.from_bytes(entropy, "big") << 8 | hashlib.sha256(entropy).digest()[0]
+    return [wl[(bits >> (11 * (23 - i))) & 2047] for i in range(24)]
+
+
+def seed_of(n):
+    return hashlib.sha256((SEED_TAG + str(n)).encode()).digest()
+
+
+def choose_seed(vocab_file):
+    vocab = set(open(vocab_file, encoding="utf-8").read().split())
+    for n in range(1000000):
+        w = phrase_of(seed_of(n))
+        if not vocab.intersection(w):
+            print("SEED_N = %d" % n)
+            print(" ".join(w))
+            return 0
+    return 1
 
 
 def check(cond, what, extra=""):
@@ -56,9 +109,14 @@ def free_port():
 
 
 class Prog:
-    def __init__(self, exe, extra=()):
+    def __init__(self, exe, extra=(), seed=None):
         self.dir = tempfile.mkdtemp(prefix="gzapi-")
         self.data = os.path.join(self.dir, "d")
+        if seed is not None:              # the stand-in seed file, as the program writes it (datadir.c)
+            os.mkdir(self.data, 0o700)
+            fd = os.open(os.path.join(self.data, "wallet-seed.standin"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.write(fd, (seed.hex() + "\n").encode())
+            os.close(fd)
         self.port = free_port()
         args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % free_port(), "--no-chain",
                 "--interface-port", str(self.port), "--name", "h1"] + list(extra)
@@ -100,6 +158,7 @@ class Prog:
         r = c.getresponse()
         raw = r.read()
         c.close()
+        DUMP.append(raw.decode("utf-8", "replace"))
         try:
             j = json.loads(raw) if raw else None
         except ValueError:
@@ -141,7 +200,8 @@ def main():
     check(not os.path.exists(os.path.join(d, "x")), "nothing opened for mainnet")
     shutil.rmtree(d, ignore_errors=True)
 
-    p = Prog(exe_t)
+    fixed = None if DUMP_FILE or SEED_N is None else phrase_of(seed_of(SEED_N))
+    p = Prog(exe_t, seed=None if fixed is None else seed_of(SEED_N))
     try:
         m = p.wait_line(r"interface listening http://127\.0\.0\.1:(\d+)/")
         check(m is not None and int(m.group(1)) == p.port, "the program's API server listens", p.lines[-5:])
@@ -160,6 +220,8 @@ def main():
         st, c = p.call("POST", "/wallet/create", {"confirm": "create_wallet", "passphrase": PASS, "confirm_passphrase": PASS})
         words = c.get("words", []) if c else []
         check(st == 200 and len(words) == 24, "create gives the 24 words", st)
+        if fixed is not None:
+            check(words == fixed, "the words are the fixed test phrase's")
         st, s = p.call("GET", "/status")
         check(st == 200 and s and s.get("wallet") == "created_not_finished", "status: created, not finished", s and s.get("wallet"))
         check(s and s.get("connection", {}).get("chain", {}).get("state") == "unreachable",
@@ -217,14 +279,17 @@ def main():
     check(rc == 0, "a clean stop", rc)
     out = "\n".join(p.lines)
     check(PASS not in out, "the passphrase is in no output line")
-    # A single BIP-39 word is often an ordinary English word ("open", "start")
-    # that the log uses by itself, so the check is on the phrase: no two of
-    # its words side by side, in order, in any output line (a leak of any
-    # stretch of the phrase), and every word at least checked once.
+    # Every word of the phrase as a whole word, and every pair of neighbours.
+    # The phrase is fixed and outside the program's vocabulary (docstring), so
+    # a single word found here is a leak, not chance.
     flat = " " + re.sub(r"[^a-z]+", " ", out.lower()) + " "
+    if fixed is not None:
+        single = sorted(w for w in set(words) if " %s " % w in flat)
+        check(len(words) == 24 and not single, "no word of the 24 is in the output", single)
     pairs = [" %s %s " % (words[i], words[i + 1]) for i in range(len(words) - 1)]
     leaked = [x.strip() for x in pairs if x in flat]
-    check(len(words) == 24 and not leaked, "no stretch of the 24 words is in the output", leaked)
+    check(len(words) == 24 and not leaked, "no two neighbouring words of the 24 are in the output", leaked)
+    DUMP.extend(p.lines)
     check(re.search(r"shutdown node-stopped .*\n(.*\n)*.*shutdown lock-released", out) is not None, "the shutdown order holds")
     shutil.rmtree(p.dir, ignore_errors=True)
 
@@ -243,6 +308,13 @@ def main():
     check(not any(l.find("notify code=") >= 0 for l in q.lines), "release: no NOTIFY output lines (N1)")
     check(not any("TEST ONLY" in l for l in q.lines), "release: no stand-in")
     shutil.rmtree(q.dir, ignore_errors=True)
+    DUMP.extend(q.lines)
+
+    if DUMP_FILE:
+        vocab = set(re.findall(r"[a-z]+", "\n".join(DUMP).lower())) - set(words)
+        with open(DUMP_FILE, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(sorted(vocab)) + "\n")
+        print("wrote %d words to %s" % (len(vocab), DUMP_FILE))
 
     if fails:
         print("FAIL: %d of the checks" % len(fails))
@@ -251,5 +323,10 @@ def main():
     return 0
 
 
+DUMP_FILE = None
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--choose-seed":
+        sys.exit(choose_seed(sys.argv[2]))
+    if len(sys.argv) == 4 and sys.argv[2] == "--dump-vocab":
+        DUMP_FILE = sys.argv[3]
     sys.exit(main())
