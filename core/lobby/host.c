@@ -327,9 +327,20 @@ static gz_status_t apply_rule(gz_lobby_host_t *h, int at_deadline, gz_action_lis
     if (!at_deadline && h->check_failed && h->seat_epoch == h->failed_epoch) return GZ_OK;
     counts(h, &j, &r, &rc);
     rule = gz_lobby_start_rule(h->terms.target, h->terms.minimum, h->terms.deadline, now_ms(h) / 1000, rc);
+    /* Paused (local-api.md 11.3): no ready check; at the deadline the lobby
+     * is cancelled, the host's choice. */
+    if (h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx))
+        return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;
     if (rule == GZ_RULE_CHECK) return ready_check(h, out);
     if (rule == GZ_RULE_CANCEL) return end_lobby(h, 1, out);
     return GZ_OK;
+}
+
+gz_status_t gz_lobby_host_pause_changed(gz_lobby_host_t *h, gz_action_list_t *out)
+{
+    if (!h || !out) return GZ_ERR_ARGUMENT;
+    h->rule_dirty = 1;
+    return apply_rule(h, 0, out);
 }
 
 /* The chosen seats, in order of joining, to the signing engine. */
@@ -617,6 +628,7 @@ static gz_status_t on_join(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lobb
     s->start_len = 0;
     s->chosen = 0;
     s->locked = 0;
+    s->refused = 0;
     s->join_seq = ++h->next_seq;
     c->joins++;
     h->created++;
@@ -656,6 +668,7 @@ static gz_status_t on_ready(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lob
             else {
                 if (free_pair) s->free_window = h->window_no + 1;
                 s->locked = 0;
+                s->refused = 0;
             }
             TRY(st);
         }
@@ -688,6 +701,10 @@ static gz_status_t on_unready_leave(gz_lobby_host_t *h, gz_lobby_conn_t *c, cons
             TRY(h->signing.member_left(h->signing.ctx, h->scope, s->ckey, out));
     }
     if (s && locked) s->locked = 1;
+    if (s && m->has_reason && m->reason == 1) {   /* its own conditions: a refusal (15.3) */
+        s->refused = m->reason;
+        s->refused_stage = h->state == GZ_LOBBY_OPEN ? 1 : 2;
+    }
     TRY(status(h, c, out));
     return broadcast(h, out);
 }

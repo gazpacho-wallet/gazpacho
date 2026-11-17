@@ -46,6 +46,88 @@ static uint64_t NOW;
 static int ERRORS;
 static int UNSEATS[NN];         /* SET_SEATED 0 actions of each node */
 
+/* ---- the view (P6a): the newest object of each (kind, id), as the program
+ * keeps it; a restart forgets it, and what the next start emits must be no
+ * older than what was released before (contract-v2.md 11). */
+typedef struct {
+    int used, stale, gone;
+    uint16_t kind;
+    char id[65];
+    uint8_t b[6144];
+    size_t len;
+    uint64_t version, old;
+} wview_t;
+#define NV 320
+static wview_t VW[NN][NV];
+static int VIEW_ERRORS;
+
+static void view_keep(int n, uint16_t kind, gz_bytes_t b)
+{
+    gz_bytes_t v;
+    wview_t *w = NULL;
+    char id[65];
+    uint64_t ver;
+    if (gz_rec_find(b, GZ_VIEW_REC_ID, &v) != 1 || v.len < 1 || v.len > 64 || b.len > sizeof VW[0][0].b) {
+        VIEW_ERRORS++;
+        return;
+    }
+    memcpy(id, v.data, v.len);
+    id[v.len] = 0;
+    for (int k = 0; k < NV && !w; k++)
+        if (VW[n][k].used && VW[n][k].kind == kind && !strcmp(VW[n][k].id, id)) w = &VW[n][k];
+    for (int k = 0; k < NV && !w; k++)
+        if (!VW[n][k].used) w = &VW[n][k];
+    if (!w || gz_rec_find(b, GZ_VIEW_REC_VERSION, &v) != 1 || v.len != 8) {
+        VIEW_ERRORS++;
+        return;
+    }
+    ver = gz_get_u64(v.data);
+    if (w->used && ver <= (w->stale ? w->old : w->version)) {
+        printf("view %d kind %u %s: version %llu not above %llu\n", n, (unsigned)kind, id, (unsigned long long)ver,
+               (unsigned long long)(w->stale ? w->old : w->version));
+        VIEW_ERRORS++;
+    }
+    w->used = 1;
+    w->kind = kind;
+    memcpy(w->id, id, sizeof id);
+    w->stale = 0;
+    w->version = ver;
+    w->gone = gz_rec_find(b, GZ_VIEW_REC_GONE, &v) == 1;
+    memcpy(w->b, b.data, b.len);
+    w->len = b.len;
+}
+
+static void view_restart(int n)
+{
+    for (int k = 0; k < NV; k++)
+        if (VW[n][k].used) {
+            VW[n][k].stale = 1;
+            VW[n][k].old = VW[n][k].version;
+        }
+}
+
+static wview_t *view_of(int n, uint16_t kind, const char *id)
+{
+    for (int k = 0; k < NV; k++)
+        if (VW[n][k].used && !VW[n][k].stale && VW[n][k].kind == kind && !strcmp(VW[n][k].id, id)) return &VW[n][k];
+    return NULL;
+}
+
+static int vf(const wview_t *w, uint64_t type, gz_bytes_t *v)
+{
+    gz_bytes_t b;
+    if (!w) return 0;
+    b.data = w->b;
+    b.len = w->len;
+    return gz_rec_find(b, type, v) == 1;
+}
+
+static int vf8(const wview_t *w, uint64_t type)
+{
+    gz_bytes_t v;
+    return vf(w, type, &v) && v.len >= 1 ? v.data[0] : -1;
+}
+
 /* ---- keys ------------------------------------------------------------------ */
 
 static int node_of(void *ctx) { return (int)((h_t *)ctx - N); }
@@ -175,6 +257,8 @@ static void post(int n, size_t from)
             if (!c) continue;
             if (n != 0) c->wanted = 0; /* the member's CONNECT stands no longer */
             if (c->up) c->up = -1;     /* reported down to both sides at the next turn */
+        } else if (a->kind == GZ_ACTION_NOTIFY && (a->u.notify.code >> 16) == 1) {
+            view_keep(n, (uint16_t)(a->u.notify.code & 0xffff), a->u.notify.bytes);
         } else if (a->kind == GZ_ACTION_SET_SEATED) {
             if (!a->u.set_seated.seated) UNSEATS[n]++;
         } else if (a->kind == GZ_ACTION_SET_TIMER) {
@@ -360,6 +444,7 @@ static gz_status_t w_start(int n)
 static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outcome)
 {
     h_t *h = &N[n];
+    memset(VW[n], 0, sizeof VW[n]); /* a new program: its view starts empty */
     h_init(h, ident == 0, 0);
     IDENT[n] = ident;
     h->confirm_auto = 0;
@@ -392,6 +477,8 @@ static void w_reset(void)
     memset(FORGETS, 0, sizeof FORGETS);
     memset(UNSEATS, 0, sizeof UNSEATS);
     NOW = W_NOW0;
+    memset(VW, 0, sizeof VW);
+    VIEW_ERRORS = 0;
 }
 
 /* A world of a host and `members` members, each started on empty storage. */
@@ -435,6 +522,7 @@ static gz_status_t w_restart(int n)
     }
     NQ = 0;
     NT[n] = 0;
+    view_restart(n);
     h_new_node(&N[n]);
     return w_start(n);
 }
@@ -551,7 +639,7 @@ static int batch_with(int n, const uint32_t *types, size_t nt)
 
 static void no_errors(int upto)
 {
-    CHECK(ERRORS == 0);
+    CHECK(ERRORS == 0 && VIEW_ERRORS == 0);
     for (int n = 0; n <= upto; n++)
         if (ALIVE[n]) CHECK_NO_NODE_ERROR(&N[n]);
 }
@@ -657,16 +745,18 @@ static void two_lobbies(gz_member_signing_t signing, uint32_t outcome)
 static void test_two_lobbies(void)
 {
     static const uint32_t first[] = {GZ_RECORD_KEY_EPOCH, GZ_RECORD_KEY_INDEX, GZ_RECORD_GUARD, GZ_RECORD_SLOT_OPENED,
-                                     GZ_REC_LOBBY_OPENED};
-    static const uint32_t next[] = {GZ_RECORD_KEY_INDEX, GZ_RECORD_GUARD, GZ_RECORD_SLOT_OPENED, GZ_REC_LOBBY_OPENED};
-    static const uint32_t mfirst[] = {GZ_RECORD_KEY_EPOCH, GZ_RECORD_KEY_INDEX, GZ_RECORD_GUARD, GZ_RECORD_SLOT_OPENED};
+                                     GZ_RECORD_LOCAL_IDS, GZ_REC_LOBBY_OPENED};
+    static const uint32_t next[] = {GZ_RECORD_KEY_INDEX, GZ_RECORD_GUARD, GZ_RECORD_SLOT_OPENED, GZ_RECORD_LOCAL_IDS,
+                                    GZ_REC_LOBBY_OPENED};
+    static const uint32_t mfirst[] = {GZ_RECORD_KEY_EPOCH, GZ_RECORD_KEY_INDEX, GZ_RECORD_GUARD, GZ_RECORD_SLOT_OPENED,
+                                      GZ_RECORD_LOCAL_IDS};
     size_t batches[5], marks[5];
     two_lobbies(GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
     /* The slot's first batch: the key's index and the guard before the key
      * is used, the slot and its lobby together (7.4). Exactly two batches on
      * the host so far, one per lobby. */
-    CHECK(N[0].n_batches == 2 && N[0].batches[0].n == 5 && N[0].batches[1].n == 4);
-    CHECK(batch_with(0, first, 5) && batch_with(0, next, 4) && batch_with(1, mfirst, 4));
+    CHECK(N[0].n_batches == 2 && N[0].batches[0].n == 6 && N[0].batches[1].n == 5);
+    CHECK(batch_with(0, first, 6) && batch_with(0, next, 5) && batch_with(1, mfirst, 5));
     /* The guard rides with every key_index, its counter one higher each time (journal.md 8.3). */
     CHECK(N[0].batches[0].recs[2].type == GZ_RECORD_GUARD && N[0].batches[1].recs[1].type == GZ_RECORD_GUARD &&
           gz_get_u64(N[0].batches[1].recs[1].bytes.data + 40) == gz_get_u64(N[0].batches[0].recs[2].bytes.data + 40) + 1 &&
@@ -1151,7 +1241,8 @@ static void test_hostile(unsigned long events, uint64_t seed)
 {
     static const uint16_t kinds[] = {16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 63, 64, 70, 78, 80, 81, 130,
                                      32767, 0, 2, 0xffff, 15, 17};
-    static const uint16_t codes[] = {GZ_CMD_LOBBY_OPEN, GZ_CMD_LOBBY_JOIN, GZ_CMD_LOBBY_READY, GZ_CMD_LOBBY_UNREADY,
+    static const uint16_t codes[] = {GZ_CMD_API_PAUSE, GZ_CMD_API_SET_SIGNING, 0x0d7f,
+                                     GZ_CMD_LOBBY_OPEN, GZ_CMD_LOBBY_JOIN, GZ_CMD_LOBBY_READY, GZ_CMD_LOBBY_UNREADY,
                                      GZ_CMD_LOBBY_LEAVE, GZ_CMD_LOBBY_SET_VALUES, GZ_CMD_LOBBY_REMOVE,
                                      GZ_CMD_LOBBY_CANCEL, GZ_CMD_SIGNING_UNLOCK, GZ_CMD_SIGNING_LOCK, 0x7e86, 0x0109,
                                      0x0400, 0x7e80, 0x7e81};
@@ -1483,6 +1574,294 @@ static void test_timer_of_ended_lobby(void)
     w_free(1);
 }
 
+/* ---- 10. the view and the API engine (P6a) ------------------------------------------ */
+
+static const char *lid(int n, const terms_t *t)
+{
+    slot_t *s = slot(n, t);
+    return s ? s->view.local_id : "";
+}
+
+/* An API request, as the API server sends it: an id, a method, a path, a
+ * digest (here 32 bytes of `dig`), the command and its arguments. */
+static int w_req(int n, uint16_t code, const char *rid, const char *path, uint8_t dig, const h_arg_t *args, size_t na)
+{
+    static uint8_t buf[8192];
+    uint8_t c2[2], d[32];
+    size_t at = 0, mark = N[n].n_log;
+    int status = 0;
+    gz_event_t ev;
+    memset(d, dig, 32);
+    gz_put_u16(c2, code);
+    gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_REQUEST_ID, (const uint8_t *)rid, strlen(rid));
+    gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_METHOD, (const uint8_t *)"POST", 4);
+    gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_PATH, (const uint8_t *)path, strlen(path));
+    gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_DIGEST, d, 32);
+    gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_COMMAND, c2, 2);
+    for (size_t i = 0; i < na; i++) gz_rec_put(buf, sizeof buf, &at, args[i].type, args[i].v, args[i].len);
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_USER_COMMAND;
+    ev.u.user.bytes.data = buf;
+    ev.u.user.bytes.len = at;
+    if (w_event(n, &ev) != GZ_OK) return -1;
+    for (size_t i = mark; i < N[n].n_log; i++)
+        if (N[n].log[i].a.kind == GZ_ACTION_NOTIFY && !strncmp(N[n].log[i].text, "result ", 7)) status = atoi(N[n].log[i].text + 7);
+    return status;
+}
+
+/* Kinds 2, 3 and 1: a member's lobby, a hosted lobby, the status; through
+ * Funding; then every node restarted, and every object emitted again, no
+ * older than before (rule 7). */
+static void test_views(void)
+{
+    wview_t *w;
+    gz_bytes_t v;
+    two_lobbies(GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_run(3000, 100);
+    /* Every lobby has a local id, saved in its slot's first batch (7.3, 7.5). */
+    CHECK(strncmp(lid(0, &TA), "lob_", 4) == 0 && strlen(lid(0, &TA)) == 20 && strcmp(lid(0, &TA), lid(0, &TB)) != 0);
+    CHECK(strncmp(lid(1, &TA), "lob_", 4) == 0 && h_records_of(&N[1], GZ_RECORD_LOCAL_IDS) == 2);
+    /* The member's lobby. */
+    w = view_of(1, GZ_VIEW_LOBBY, lid(1, &TA));
+    CHECK(w && vf(w, GZ_VLB_FINGERPRINT, &v) && v.len == 32 && !memcmp(v.data, TA.scope, 32));
+    CHECK(vf(w, GZ_VLB_HOST_KEY, &v) && v.len == 33 && vf(w, GZ_VLB_HOST_ADDRESS, &v) && v.len == sizeof ADDR - 1);
+    CHECK(vf8(w, GZ_VLB_SEAT) == GZ_VSEAT_READY && vf(w, GZ_VLB_READY_VERSION, &v) && v.len == 4);
+    CHECK(vf(w, GZ_VLB_GATE, &v) && v.len == 10 && v.data[0] == GZ_GATE_NONE && v.data[1] == 1);
+    CHECK(vf(w, GZ_VLB_OUTER, &v) && v.len == TA.on && !memcmp(v.data, TA.outer, TA.on));
+    CHECK(vf(w, GZ_VLB_FIT, &v) && v.len == 18 && v.data[0] == GZ_VFIT_FITS && v.data[1] == 0);
+    CHECK(!vf(w, GZ_VLB_OUTCOME, &v) && !vf(w, GZ_VLB_LOCKED_SINCE, &v) && vf(w, GZ_VLB_SINCE, &v));
+    CHECK(vf8(w, GZ_VLB_DOING) == GZ_DOING_READY_CHECK || vf8(w, GZ_VLB_DOING) == GZ_DOING_IN_LOBBY_WAITING);
+    /* The hosted lobby: three seats, each Ready, in order of joining. */
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &TA));
+    CHECK(w && vf(w, GZ_VHL_COUNTS, &v) && v.len == 8 && gz_get_u16(v.data) == 3 && gz_get_u16(v.data + 2) == 3 &&
+          gz_get_u16(v.data + 4) == 0 && gz_get_u16(v.data + 6) == 0);
+    CHECK(vf(w, GZ_VHL_SEATS, &v) && v.len == 3 * GZ_VHL_SEAT_LEN);
+    for (int k = 0; k < 3 && v.len == 3 * GZ_VHL_SEAT_LEN; k++) {
+        lt_key_t mk;
+        wkey(k + 1, 0, slot(k + 1, &TA)->key_index, &mk);
+        CHECK(!memcmp(v.data + k * GZ_VHL_SEAT_LEN, mk.pub, 33) && v.data[k * GZ_VHL_SEAT_LEN + 33] == GZ_VSEAT_READY &&
+              (v.data[k * GZ_VHL_SEAT_LEN + 34] & GZ_VHL_F_CONNECTED));
+    }
+    CHECK(vf8(w, GZ_VHL_LISTED) == 1 && vf8(view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &TB)), GZ_VHL_LISTED) == 0);
+    /* The status: the role, both lobbies, the signing setting in force. */
+    w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
+    CHECK(w && vf8(w, GZ_VST_ROLE) == 0 && vf(w, GZ_VST_SIGNING, &v) && v.len == 7 && v.data[0] == GZ_MEMBER_SIGNING_AUTO &&
+          v.data[1] == 0xff && vf(w, GZ_VST_PAUSE, &v) && v.data[0] == GZ_PAUSE_OFF);
+    CHECK(vf(w, GZ_VST_LOBBIES, &v) && v.len == 2 * (12 + 20) && vf(w, GZ_VST_DOING, &v) && v.len == 30);
+    CHECK(vf8(view_of(0, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID), GZ_VST_ROLE) == 1);
+    /* Funding: the round and the outcome. */
+    w_run(32000, 500);
+    w = view_of(1, GZ_VIEW_LOBBY, lid(1, &TA));
+    CHECK(vf8(w, GZ_VLB_ROUND) == GZ_LOBBY_FUNDING && vf(w, GZ_VLB_OUTCOME, &v) && v.data[0] == GZ_OUTCOME_STARTED &&
+          vf8(w, GZ_VLB_DOING) == GZ_DOING_AWAITING_FUNDING);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &TB));
+    CHECK(vf8(w, GZ_VHL_STAGE) == GZ_LOBBY_FUNDING && vf(w, GZ_VHL_ROUND, &v) && v.len == 9 && v.data[0] == 1);
+    no_errors(4);
+    /* A crash of every node (kill -9): the program forgets the view; each
+     * start emits every object again, newer than before (rule 7). */
+    for (int n = 0; n <= 4; n++) CHECK(w_restart(n) == GZ_OK);
+    CHECK(view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &TA)) && view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &TB)));
+    CHECK(view_of(1, GZ_VIEW_LOBBY, lid(1, &TA)) && view_of(1, GZ_VIEW_LOBBY, lid(1, &TB)) &&
+          view_of(4, GZ_VIEW_LOBBY, lid(4, &TB)) && view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID));
+    CHECK(vf8(view_of(1, GZ_VIEW_LOBBY, lid(1, &TA)), GZ_VLB_ROUND) == GZ_LOBBY_FUNDING);
+    no_errors(4);
+    w_free(4);
+}
+
+/* A member whose conditions refuse the terms: its lobby's last object says
+ * so, with the failing condition and both values (14.1, refused_at_check). */
+static void test_view_refusal(void)
+{
+    terms_t t;
+    uint8_t cond[27];
+    lt_key_t hk;
+    gz_bytes_t v;
+    const char *id;
+    wview_t *w;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 900);
+    CHECK(host_open(&t, 0) == 200);
+    memset(cond, 0, sizeof cond);
+    gz_put_u16(cond + 23, 50);   /* the terms' minimum must be at least 50 */
+    h_arg_t a[4] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {18, cond, sizeof cond}};
+    CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, a, 4) == 200);
+    id = gz_api_local_id(N[1].n, t.scope);
+    CHECK(id != NULL);
+    w_run(3000, 100);
+    /* It does not join terms its conditions refuse; the object says which term, with both values. */
+    w = view_of(1, GZ_VIEW_LOBBY, id ? id : "");
+    CHECK(w && vf8(w, GZ_VLB_SEAT) != GZ_VSEAT_JOINED && vf8(w, GZ_VLB_SEAT) != GZ_VSEAT_READY);
+    CHECK(vf(w, GZ_VLB_FIT, &v) && v.len == 18 && v.data[0] == GZ_VFIT_DOES_NOT_FIT && v.data[1] == GZ_TT_MINIMUM &&
+          gz_get_u64(v.data + 2) == 50 && gz_get_u64(v.data + 10) == 3);
+    no_errors(1);
+    w_free(1);
+}
+
+/* The host's side: a seat that refused (unready reason 1, 15.3), counted and
+ * raised as attention; the member's side behind a closed gate: locked, with
+ * its attention item, which goes once the person readies with the passphrase. */
+static void test_view_seats(void)
+{
+    terms_t t;
+    lt_key_t hk, m1;
+    gz_link_t l1;
+    gz_bytes_t v;
+    wview_t *w;
+    char aid[80];
+    uint8_t rec[4] = {0x01, 0x02, 0x00, 0x01};
+    whost(&hk);
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(1, 1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_FUNDING);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int n = 0; n <= 2; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 3, 3, 950);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200 && member_join(2, &t) == 200);
+    w_run(3000, 100);
+    /* Member 1 is locked (AT_JOIN, no passphrase yet). */
+    w = view_of(1, GZ_VIEW_LOBBY, lid(1, &t));
+    CHECK(w && vf8(w, GZ_VLB_SEAT) == GZ_VSEAT_JOINED && vf(w, GZ_VLB_LOCKED_SINCE, &v) && vf(w, GZ_VLB_GATE, &v) &&
+          v.data[0] == GZ_GATE_PER_LOBBY && v.data[1] == 0 && vf8(w, GZ_VLB_DOING) == GZ_DOING_IN_LOBBY_NOT_COUNTED);
+    snprintf(aid, sizeof aid, "att_%s", lid(1, &t));
+    w = view_of(1, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_UNLOCK_TO_TAKE_PART);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(w && vf(w, GZ_VHL_COUNTS, &v) && gz_get_u16(v.data) == 2 && gz_get_u16(v.data + 2) == 1);
+    /* The passphrase: the gate opens for the readied values; the item goes. */
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 1) == 200);
+    w_run(1000, 100);
+    w = view_of(1, GZ_VIEW_LOBBY, lid(1, &t));
+    CHECK(w && vf8(w, GZ_VLB_SEAT) == GZ_VSEAT_READY && vf(w, GZ_VLB_GATE, &v) && v.len == 42 && v.data[1] == 1 &&
+          !vf(w, GZ_VLB_LOCKED_SINCE, &v));
+    w = view_of(1, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && w->gone);
+    /* Member 2 refuses at Open (unready reason 1): the host shows it. */
+    wkey(2, 0, slot(2, &t)->key_index, &m1);
+    l1 = h_link(hk.pub, m1.pub);
+    w_msg(0, &l1, GZ_KIND_UNREADY, t.scope, rec, sizeof rec);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(w && vf(w, GZ_VHL_COUNTS, &v) && gz_get_u16(v.data + 6) == 1 && vf(w, GZ_VHL_SEATS, &v) && v.len == 2 * GZ_VHL_SEAT_LEN);
+    CHECK(v.len == 2 * GZ_VHL_SEAT_LEN && v.data[GZ_VHL_SEAT_LEN + 33] == GZ_VSEAT_REFUSED &&
+          (v.data[GZ_VHL_SEAT_LEN + 34] & GZ_VHL_F_REFUSED) && gz_get_u16(v.data + GZ_VHL_SEAT_LEN + 35) == 1 &&
+          v.data[GZ_VHL_SEAT_LEN + 37] == GZ_STAGE_OPEN);
+    snprintf(aid, sizeof aid, "att_%s", lid(0, &t));
+    w = view_of(0, GZ_VIEW_ATTENTION, aid);
+    CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_MEMBER_REFUSED);
+    no_errors(2);
+    w_free(2);
+}
+
+/* Request ids (7.4): saved in the batch of the action's first save, before
+ * the result; a replay answers the saved status and does nothing; the same
+ * id for another request is refused; a restart keeps them. */
+static void test_api_requests(void)
+{
+    terms_t t;
+    size_t nb;
+    uint8_t l = 0;
+    static const uint32_t with[] = {GZ_RECORD_SLOT_OPENED, GZ_RECORD_REQUEST_ID, GZ_RECORD_LOCAL_IDS};
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 1000);
+    h_arg_t a[3] = {{12, t.outer, t.on}, {14, t.current, t.cn}, {16, &l, 1}};
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "Jq4mT9cV2xE7nR0aW5zK", "/api/v1/host/lobbies", 1, a, 3) == 200);
+    CHECK(h_records_of(&N[0], GZ_RECORD_REQUEST_ID) == 1 && batch_with(0, with, 3));
+    nb = N[0].n_batches;
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "Jq4mT9cV2xE7nR0aW5zK", "/api/v1/host/lobbies", 1, a, 3) == 200 && N[0].n_batches == nb);
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "Jq4mT9cV2xE7nR0aW5zK", "/api/v1/host/lobbies", 2, a, 3) == 409 && N[0].n_batches == nb);
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "short", "/api/v1/host/lobbies", 1, a, 3) == 400 && N[0].n_batches == nb);
+    CHECK(w_restart(0) == GZ_OK);
+    nb = N[0].n_batches;
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "Jq4mT9cV2xE7nR0aW5zK", "/api/v1/host/lobbies", 1, a, 3) == 200 && N[0].n_batches == nb);
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "Jq4mT9cV2xE7nR0aW5zK", "/api/v1/host/lobbies", 3, a, 3) == 409);
+    /* A refused call saves nothing, so it keeps no id: the same id acts later. */
+    CHECK(w_req(0, GZ_CMD_LOBBY_CANCEL, "Kq4mT9cV2xE7nR0aW5zK", "/api/v1/host/lobbies/x/cancel", 1, a, 1) == 404 &&
+          N[0].n_batches == nb);
+    {
+        h_arg_t c1[1] = {{12, t.scope, 32}};
+        CHECK(w_req(0, GZ_CMD_LOBBY_CANCEL, "Kq4mT9cV2xE7nR0aW5zK", "/api/v1/host/lobbies/x/cancel", 1, c1, 1) == 200 &&
+              N[0].n_batches > nb && h_records_of(&N[0], GZ_RECORD_REQUEST_ID) == 2);
+    }
+    no_errors(1);
+    w_free(1);
+}
+
+/* Pause (11.3) and the signing setting (14.3). */
+static void test_api_pause_and_signing(void)
+{
+    terms_t t, u, d;
+    uint8_t on = 1, off = 0, sv[4], ms = GZ_MEMBER_SIGNING_AT_JOIN;
+    gz_bytes_t v;
+    wview_t *w;
+    const char *did;
+    w_world(3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 1100);
+    make_terms(&u, 3, 3, 1200);
+    make_terms(&d, 3, 3, 0);    /* its deadline is ten minutes away */
+    CHECK(host_open(&t, 0) == 200 && host_open(&u, 0) == 200 && host_open(&d, 0) == 200);
+    CHECK(member_join(1, &t) == 200);
+    w_run(2000, 100);
+    CHECK(slot(1, &t) && slot(1, &t)->lobby.m.joined);
+    /* The member pauses: saved first, then its lobby is left; joins refused. */
+    {
+        h_arg_t p1[1] = {{12, &on, 1}};
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "Pq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p1, 1) == 200);
+    }
+    w_run(2000, 100);
+    CHECK(slot(1, &t) == NULL && h_records_of(&N[1], GZ_RECORD_PAUSE) == 1 && h_records_of(&N[1], GZ_RECORD_REQUEST_ID) == 1);
+    CHECK(member_join(1, &u) == 409 && slot(1, &u) == NULL);
+    w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
+    CHECK(vf(w, GZ_VST_PAUSE, &v) && v.data[0] == GZ_PAUSE_ON);
+    /* It survives a restart. */
+    CHECK(w_restart(1) == GZ_OK && member_join(1, &u) == 409);
+    CHECK(vf(view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID), GZ_VST_PAUSE, &v) && v.data[0] == GZ_PAUSE_ON);
+    {
+        h_arg_t p0[1] = {{12, &off, 1}};
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "Rq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0, 1) == 200);
+    }
+    CHECK(member_join(1, &u) == 200);
+    /* A paused host runs no ready check, even with its target ready. */
+    {
+        h_arg_t p1[1] = {{12, &on, 1}};
+        CHECK(w_req(0, GZ_CMD_API_PAUSE, "Sq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p1, 1) == 200);
+    }
+    CHECK(member_join(2, &u) == 200 && member_join(3, &u) == 200);
+    w_run(5000, 100);
+    CHECK(host_ready(&u) == 3 && host_state(&u) == GZ_LOBBY_OPEN);
+    CHECK(vf8(view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &u)), GZ_VHL_PAUSED) == 1);
+    /* Its deadline comes while paused: cancelled, the host's choice (reason 2). */
+    did = lid(0, &d);
+    {
+        char id[GZ_LOCAL_ID_MAX + 1];
+        snprintf(id, sizeof id, "%s", did);
+        w_run(610000, 5000);
+        CHECK(host_state(&d) == -1);
+        w = view_of(0, GZ_VIEW_HOST_LOBBY, id);
+        CHECK(vf8(w, GZ_VHL_STAGE) == GZ_LOBBY_CANCELLED && vf(w, GZ_VHL_END_REASON, &v) && gz_get_u16(v.data) == 2);
+    }
+    {
+        h_arg_t p0[1] = {{12, &off, 1}};
+        CHECK(w_req(0, GZ_CMD_API_PAUSE, "Tq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0, 1) == 200);
+    }
+    w_run(3000, 100);
+    CHECK(host_state(&u) >= GZ_LOBBY_READY_CHECK || host_state(&u) == -1);
+    /* The signing setting: saved, pending until the next start. */
+    gz_put_u32(sv, 0);
+    {
+        h_arg_t s1[2] = {{12, &ms, 1}, {14, sv, 4}};
+        CHECK(w_req(1, GZ_CMD_API_SET_SIGNING, "Uq4mT9cV2xE7nR0aW5zK", "/api/v1/signing", 1, s1, 2) == 200);
+        CHECK(w_req(1, GZ_CMD_API_SET_SIGNING, "Vq4mT9cV2xE7nR0aW5zK", "/api/v1/signing", 1, s1, 2) == 409);
+    }
+    w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
+    CHECK(vf(w, GZ_VST_SIGNING, &v) && v.data[0] == GZ_MEMBER_SIGNING_AUTO && v.data[1] == GZ_MEMBER_SIGNING_AT_JOIN &&
+          gz_get_u32(v.data + 2) == 1 && N[1].n->cfg.member_signing == GZ_MEMBER_SIGNING_AUTO);
+    CHECK(w_restart(1) == GZ_OK && N[1].n->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN);
+    w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
+    CHECK(vf(w, GZ_VST_SIGNING, &v) && v.data[0] == GZ_MEMBER_SIGNING_AT_JOIN && v.data[1] == 0xff);
+    no_errors(3);
+    w_free(3);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1493,6 +1872,11 @@ int main(int argc, char **argv)
     test_refusals();
     test_gates();
     test_index();
+    test_views();
+    test_view_refusal();
+    test_view_seats();
+    test_api_requests();
+    test_api_pause_and_signing();
     test_seat_capacity();
     test_left_out();
     test_node_record_fields();

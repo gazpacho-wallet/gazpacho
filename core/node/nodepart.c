@@ -989,7 +989,9 @@ static gz_status_t slot_save(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out
 gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out)
 {
     gz_status_t st = gz_c_node_bracket_begin(c, out);
+    size_t from = out->count;
     if (st != GZ_OK) return st;
+    c->api.opened = 0;
     switch (code) {
 #ifdef GZ_TEST_KINDS
     case 0x7e80: st = slot_open(c, cmd, out); break;
@@ -1011,6 +1013,7 @@ gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_li
 #endif
     default: st = gz_ls_command(c, code, cmd, out); break; /* the lobby's, the gate's, or unknown_command */
     }
+    if (st == GZ_OK) st = gz_api_after(c, cmd, from, out); /* its request id (api.c) */
     if (st == GZ_OK) return gz_c_node_bracket_end(c, out);
     c->bracket_on = 0;
     return st;

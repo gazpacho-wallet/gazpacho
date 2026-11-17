@@ -364,6 +364,11 @@ typedef struct {
     uint64_t free_window;
     uint8_t ready_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t ready_len;
     uint8_t start_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t start_len;
+    /* The member refused (an unready or leave with reason 1, its own
+     * conditions): the reason, and the stage (1 Open, 2 a ready check), until
+     * it readies or joins again (local-api.md 15.3). Memory only. */
+    uint16_t refused;
+    uint8_t refused_stage;
 } gz_lobby_seat_t;
 
 typedef struct {
@@ -394,6 +399,10 @@ typedef struct {
      * connection table, which all its lobbies share. NULL: no such limit.
      * A join that finds no room is refused like one to a full lobby. */
     int (*seat_room)(void *ctx, const uint8_t key[33]);
+    /* 1 while the person's pause is on (local-api.md 11.3): no ready check
+     * by the start rule; at the deadline the lobby is cancelled, reason 2.
+     * NULL: never paused. Called with seat_ctx. */
+    int (*paused)(void *ctx);
     void *seat_ctx;
 } gz_lobby_host_config_t;
 
@@ -456,6 +465,8 @@ gz_status_t gz_lobby_host_listing(gz_lobby_host_t *h, const gz_link_t *link, gz_
 /* 1 once the lobby has sent a `start`: round kinds under its scope may reach
  * the signing engine (composite-node.md section 4). */
 int gz_lobby_host_round_ok(const gz_lobby_host_t *h);
+/* The pause changed (cfg.paused): the start rule is applied again. */
+gz_status_t gz_lobby_host_pause_changed(gz_lobby_host_t *h, gz_action_list_t *out);
 /* Host commands. A command refused now gives GZ_NOTE_COMMAND_REFUSED.
  * gz_lobby_host_set_values returns GZ_ERR_ARGUMENT, with nothing appended
  * or changed, for values outside the terms' ranges. */
