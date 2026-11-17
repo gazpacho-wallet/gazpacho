@@ -20,6 +20,7 @@
 #define GZP_EXIT_DATA      4  /* the data folder or a file in it is unusable */
 #define GZP_EXIT_CHAIN     5  /* a chain server is on another network, or unreachable at start */
 #define GZP_EXIT_STORAGE   6  /* a failed journal write could not be undone: not restarted (store.h) */
+#define GZP_EXIT_LIMIT     7  /* the node needs more than a part of the program holds (watches): no restart can fix it */
 #define GZP_EXIT_TEST      70 /* a --test-crash-* hook fired (tests only) */
 
 #define GZP_ROLE_HOST   1
@@ -46,6 +47,7 @@ typedef struct {
     /* chain */
     int no_chain;
     const char *chain_urls[GZP_MAX_CHAIN_URLS];
+    const char *chain_operators[GZP_MAX_CHAIN_URLS]; /* --chain-operator, per URL; NULL: from the host name */
     int n_chain_urls;
     uint32_t chain_poll_ms;
     int check_chain;               /* --check-chain: the start-up chain check, read-only, then stop */
@@ -69,6 +71,8 @@ typedef struct {
     int test_burst_n, test_burst_bytes; /* at each connection, send N messages of BYTES (test kind) */
     int test_oversize_send;        /* pad every node SEND to this many bytes (too big: fatal) */
     int test_node_error_at;        /* the K-th event delivered is treated as a node error */
+    int test_chain_watches;        /* the chain worker's watch set, if not 0 (FULL tests) */
+    int test_chain_backlog;        /* the chain backlog, if not 0 (full-backlog tests) */
     int test_chain_small;          /* small chain worker queues (BUSY tests) */
     int test_node_error_always;    /* ... in every incarnation (restart policy tests) */
     int test_stop_at_restart;      /* SIGTERM to itself as an incarnation ends (a stop during a restart) */

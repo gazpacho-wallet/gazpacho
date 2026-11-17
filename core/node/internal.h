@@ -248,7 +248,7 @@ typedef struct {
 
 /* ---- the watch registry ------------------------------------------------- */
 
-#define MAX_WATCHES 64
+#define MAX_WATCHES GZ_NODE_MAX_WATCHES
 
 typedef struct {
     int used, is_tx;

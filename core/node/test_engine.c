@@ -489,9 +489,9 @@ static gz_status_t on_message(te_t *t, const gz_event_t *ev, gz_action_list_t *o
 }
 
 /* The engine's own cap on watches (7.2): it keeps the ones it asked for and
- * answers a request for one more than TE_MAX_WATCHES with a refusal. 1 if
- * the watch is one it has or may add (and is then noted, with the largest
- * depth asked); 0 at the cap. */
+ * answers a request for one more than TE_MAX_WATCHES with a refusal. 2 if
+ * the watch is new or its depth larger (it is then noted, and saved by the
+ * caller); 1 if it is held already as deep; 0 at the cap. */
 static int own_watch(te_t *t, int is_tx, const uint8_t txid[32], uint32_t vout, uint32_t depth)
 {
     uint8_t key[37];
@@ -506,8 +506,9 @@ static int own_watch(te_t *t, int is_tx, const uint8_t txid[32], uint32_t vout, 
         memcpy(t->watches[t->n_watches++], key, sizeof key);
         t->watch_depth[i] = 0;
     }
-    if (depth > t->watch_depth[i]) t->watch_depth[i] = depth;
-    return 1;
+    if (depth <= t->watch_depth[i]) return 1;
+    t->watch_depth[i] = depth;
+    return 2;
 }
 
 /* A watch saved, so a later start sets it again (rule 4): the 37-byte key
@@ -603,8 +604,11 @@ static gz_status_t on_command(te_t *t, gz_bytes_t cmd, gz_action_list_t *out)
         memcpy(a.u.watch_tx.txid, v.data, 32);
         a.u.watch_tx.depth = gz_get_u32(w.data);
         if (!a.u.watch_tx.depth) return result(out, cmd, 400, "bad_request");
-        if (!own_watch(t, 1, v.data, 0, a.u.watch_tx.depth)) return result(out, cmd, 409, "too_many_watches");
-        if ((st = save_watch(t, 1, v.data, 0, a.u.watch_tx.depth, out)) != GZ_OK) return st;
+        int fresh = own_watch(t, 1, v.data, 0, a.u.watch_tx.depth);
+        if (!fresh) return result(out, cmd, 409, "too_many_watches");
+        /* Saved only when it changes what a start sets again: a repeated
+         * command does not grow the journal (review of PR 50, L4). */
+        if (fresh == 2 && (st = save_watch(t, 1, v.data, 0, a.u.watch_tx.depth, out)) != GZ_OK) return st;
         if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
         return result(out, cmd, 200, NULL);
     }
@@ -616,9 +620,9 @@ static gz_status_t on_command(te_t *t, gz_bytes_t cmd, gz_action_list_t *out)
         a.u.watch_outpoint.outpoint.vout = gz_get_u32(w.data);
         a.u.watch_outpoint.depth = gz_get_u32(x.data);
         if (!a.u.watch_outpoint.depth) return result(out, cmd, 400, "bad_request");
-        if (!own_watch(t, 0, v.data, a.u.watch_outpoint.outpoint.vout, a.u.watch_outpoint.depth))
-            return result(out, cmd, 409, "too_many_watches");
-        if ((st = save_watch(t, 0, v.data, a.u.watch_outpoint.outpoint.vout, a.u.watch_outpoint.depth, out)) != GZ_OK)
+        int fresh = own_watch(t, 0, v.data, a.u.watch_outpoint.outpoint.vout, a.u.watch_outpoint.depth);
+        if (!fresh) return result(out, cmd, 409, "too_many_watches");
+        if (fresh == 2 && (st = save_watch(t, 0, v.data, a.u.watch_outpoint.outpoint.vout, a.u.watch_outpoint.depth, out)) != GZ_OK)
             return st;
         if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
         return result(out, cmd, 200, NULL);

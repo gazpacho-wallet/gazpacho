@@ -10,8 +10,13 @@
 #include "gazpacho/chain_multi.h"
 #endif
 
+#include "gazpacho/node.h"
 #include "gzp.h"
 #include "pchain.h"
+
+/* The worker holds every watch the node can ask for at once; else a FULL
+ * answer would come back at every start (review of PR 50, M2). */
+_Static_assert(GZ_NODE_MAX_WATCHES <= GZP_MAX_WATCHES, "the chain worker holds fewer watches than the node asks for");
 
 enum { REQ_WATCH_TX = 1, REQ_WATCH_OUTPOINT, REQ_BROADCAST };
 
@@ -64,13 +69,20 @@ static int ask(gzp_chain_t *c, const gzp_chain_req_t *r)
     }
 }
 
-/* What a refusal means. 1: keep it and ask again; -1: fatal. */
+/* What a refusal means. 1: keep it and ask again; -1: fatal;
+ * GZP_CHAIN_STOP: the watch set is full. */
 static int refused(gzp_chain_t *c, const gzp_chain_req_t *r, int rc)
 {
     if (rc == GZ_CHAINW_BUSY || (rc == GZ_CHAINW_FULL && r->kind == REQ_BROADCAST)) {
         c->refusals++;
         return 1;
     }
+    if (rc == GZ_CHAINW_FULL) {
+        c->why = "chain-watch-set-full";
+        gzp_log("chain-watch-set-full kind=%d watches=%u", r->kind, (unsigned)c->max_watches);
+        return GZP_CHAIN_STOP;
+    }
+    c->why = "chain-request-refused";
     gzp_log("chain-request-refused kind=%d answer=%s", r->kind,
             rc == GZ_CHAINW_FULL ? "full" : rc == GZ_CHAINW_INVALID ? "invalid" : "other");
     return -1;
@@ -85,7 +97,8 @@ int gzp_chain_retry(gzp_chain_t *c)
     while (done < c->n_backlog) {
         int rc = ask(c, &c->backlog[done]);
         if (rc != GZ_CHAINW_OK) {
-            if (refused(c, &c->backlog[done], rc) < 0) return -1;
+            int k = refused(c, &c->backlog[done], rc);
+            if (k < 0) return k;
             break;
         }
         req_free(&c->backlog[done]);
@@ -110,12 +123,14 @@ static int submit(gzp_chain_t *c, gzp_chain_req_t *r)
             req_free(r);
             return 0;
         }
-        if (refused(c, r, rc) < 0) {
+        int k = refused(c, r, rc);
+        if (k < 0) {
             req_free(r);
-            return -1;
+            return k;
         }
     }
-    if (c->n_backlog == GZP_CHAIN_BACKLOG) {
+    if (c->n_backlog == c->backlog_cap) {
+        c->why = "chain-backlog-full";
         gzp_log("chain-backlog-full held=%zu", c->n_backlog);
         req_free(r);
         return -1;
@@ -290,8 +305,8 @@ int gzp_chain_take(gzp_chain_t *c, gz_event_t *ev)
     return 0;
 }
 
-int gzp_chain_open(gzp_chain_t *c, const char *const *urls, size_t n, gz_network network, uint32_t poll_ms,
-                   int small)
+int gzp_chain_open(gzp_chain_t *c, const char *const *urls, const char *const *operators, size_t n,
+                   gz_network network, uint32_t poll_ms, const gzp_chain_limits_t *lim)
 {
 #ifdef GZP_HAVE_CURL
     gz_esplora_config cfg;
@@ -323,6 +338,17 @@ int gzp_chain_open(gzp_chain_t *c, const char *const *urls, size_t n, gz_network
         gz_network seen = GZ_NET_INVALID;
         gz_esplora_config_default(&cfg);
         cfg.base_url = urls[i];
+        if (operators && operators[i]) {
+            /* Named by the user: two servers on one machine (or two names
+             * of one provider) can be told apart, or put together. */
+            if (!gz_operator_name_valid(operators[i])) {
+                fprintf(stderr, "gazpacho: --chain-operator %s: lowercase letters, digits, '.' and '-'\n",
+                        operators[i]);
+                gzp_chain_close(c);
+                return GZP_EXIT_USAGE;
+            }
+            cfg.operator_id = operators[i];
+        }
         if ((r = gz_esplora_create(&cfg, &c->http, &c->servers[i])) != GZ_CHAIN_OK) {
             fprintf(stderr, "gazpacho: chain server %s refused: %s\n", urls[i], gz_chain_result_name(r));
             gzp_chain_close(c);
@@ -362,17 +388,24 @@ int gzp_chain_open(gzp_chain_t *c, const char *const *urls, size_t n, gz_network
         return GZP_EXIT_CHAIN;
     }
     c->have_tip = 1;
-    if (!(c->backlog = calloc(GZP_CHAIN_BACKLOG, sizeof *c->backlog))) {
+    c->backlog_cap = lim && lim->backlog ? lim->backlog : GZP_CHAIN_BACKLOG;
+    if (!(c->backlog = calloc(c->backlog_cap, sizeof *c->backlog))) {
         gzp_chain_close(c);
         return GZP_EXIT_FAILED;
     }
     gz_chainw_config_default(&wc, c->view, network);
     wc.tip_poll_ms = poll_ms;
     wc.max_watches = GZP_MAX_WATCHES;
-    if (small) {
+    if (lim && lim->small) {
         wc.max_watches = 16;
         wc.max_requests = 16 + GZ_CHAINW_MAX_BROADCASTS;
     }
+    if (lim && lim->watches) {
+        wc.max_watches = lim->watches;
+        if (wc.max_requests < lim->watches + GZ_CHAINW_MAX_BROADCASTS)
+            wc.max_requests = lim->watches + GZ_CHAINW_MAX_BROADCASTS;
+    }
+    c->max_watches = (uint32_t)wc.max_watches;
     wc.interrupt = gz_http_curl_interrupt_hook;
     wc.interrupt_ctx = &c->http;
     if (!(c->w = gz_chainw_new(&wc))) {
@@ -386,9 +419,10 @@ int gzp_chain_open(gzp_chain_t *c, const char *const *urls, size_t n, gz_network
     return 0;
 #else
     (void)urls;
+    (void)operators;
     (void)n;
     (void)poll_ms;
-    (void)small;
+    (void)lim;
     gzp_chain_none(c, network);
     fprintf(stderr, "gazpacho: built without libcurl: only --no-chain is available\n");
     return GZP_EXIT_USAGE;
@@ -414,6 +448,13 @@ int gzp_chain_show_outputs(gzp_chain_t *c, const uint8_t *script, size_t len)
 
 void gzp_chain_restart(gzp_chain_t *c)
 {
+    size_t i;
+    /* Broadcasts still held are not sent and get no result: the new
+     * incarnation sends again what it needs. Written, so a missing result
+     * can be explained (review of PR 50, L3). */
+    for (i = 0; i < c->n_backlog; i++)
+        if (c->backlog[i].kind == REQ_BROADCAST)
+            gzp_log("chain-broadcast-dropped id=%llu why=restart", (unsigned long long)c->backlog[i].id);
     backlog_clear(c);
     c->n_refused = 0;
     if (c->active && c->w) {

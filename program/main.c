@@ -57,9 +57,9 @@ static gzp_exec_t ex;          /* large: kept off the stack */
 static gzp_net_t net;
 static gzp_chain_t chain;
 #ifdef GZP_TEST_BUILD
-#define CHAIN_SMALL (opt.test_chain_small)
+#define DUMPING (opt.test_dump_journal)
 #else
-#define CHAIN_SMALL 0
+#define DUMPING 0
 #endif
 static gzp_testping_t tp;
 static gzp_datadir_t dir;
@@ -174,8 +174,31 @@ int main(int argc, char **argv)
      * program carries on (review of PR 27, M4). Sockets use MSG_NOSIGNAL. */
     signal(SIGPIPE, SIG_IGN);
 
+    /* The chain first: a server on another network, or one that cannot be
+     * reached, stops the start before anything is written to the data folder
+     * (review of PR 50, L1). Not for --test-dump-journal, which reads only. */
+    if (opt.no_chain || DUMPING) {
+        gzp_chain_none(&chain, network);
+        gzp_log("chain off");
+    } else {
+        gzp_chain_limits_t lim;
+        memset(&lim, 0, sizeof lim);
+#ifdef GZP_TEST_BUILD
+        lim.small = opt.test_chain_small;
+        lim.watches = (uint32_t)opt.test_chain_watches;
+        lim.backlog = (size_t)opt.test_chain_backlog;
+#endif
+        if ((rc = gzp_chain_open(&chain, (const char *const *)opt.chain_urls,
+                                 (const char *const *)opt.chain_operators, (size_t)opt.n_chain_urls, network,
+                                 opt.chain_poll_ms, &lim)) != 0)
+            return rc;
+    }
+
     rc = gzp_datadir_open(&dir, opt.data_dir, opt.role == GZP_ROLE_HOST ? "host" : "member", opt.network);
-    if (rc) return rc;
+    if (rc) {
+        gzp_chain_close(&chain);
+        return rc;
+    }
     have_dir = 1;
 #ifdef GZP_TEST_BUILD
     if (opt.test_dump_journal) {
@@ -197,15 +220,6 @@ int main(int argc, char **argv)
     if ((rc = wallet_open(secp, wnet, &first)) != 0) goto out;
     gzp_log("wallet network=%s first-address=%s", opt.network, first.address);
 
-    /* The chain (before the transport: --check-chain needs nothing else). */
-    if (opt.no_chain) {
-        gzp_chain_none(&chain, network);
-        gzp_log("chain off");
-    } else if ((rc = gzp_chain_open(&chain, (const char *const *)opt.chain_urls, (size_t)opt.n_chain_urls, network,
-                                     opt.chain_poll_ms, CHAIN_SMALL)) != 0) {
-        OPENSSL_cleanse(priv, sizeof priv);
-        goto out;
-    }
     if (opt.check_chain) {
         OPENSSL_cleanse(priv, sizeof priv);
         if (chain.active) gzp_chain_show_outputs(&chain, first.script_pubkey, sizeof first.script_pubkey);
@@ -273,6 +287,10 @@ int main(int argc, char **argv)
         }
         if (r == GZP_RUN_FAILED) {
             rc = GZP_EXIT_DATA;
+            break;
+        }
+        if (r == GZP_RUN_LIMIT) {
+            rc = GZP_EXIT_LIMIT;
             break;
         }
         if (r == GZP_RUN_POISONED) {

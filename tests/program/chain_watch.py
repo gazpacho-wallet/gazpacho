@@ -27,6 +27,22 @@ logs ("node-log test-chain area=0x7e57 kind=K conf=C height=H").
   6. a slow chain server does not hold the loop: a 50 ms timer keeps firing,
      and SIGTERM stops the program within 2 s.
 
+After the review of PR 50:
+  7. (M1) two servers on this machine, named as two operators
+     (--chain-operator): one hides a confirmation. Nothing is reported while
+     they disagree; the truth once they agree. Without the names the two
+     loopback servers are one operator and the start is refused.
+  8. (M2) a worker that holds fewer watches than the node asks for
+     (--test-chain-watches 2): one explained stop (exit 7), no restart, and
+     the same again at the next start (the saved watches come back).
+  9. (L2, L3) a full backlog (--test-chain-backlog 16, small queues, a slow
+     server), a broadcast held behind watches in it: fatal, one restart from
+     storage, the held broadcast written as dropped, the saved watch set
+     again and reported.
+ 10. (L4) a watch command repeated: one watch record in the journal.
+ (5, L1) the mainnet server is refused before anything is written to the
+     data folder.
+
 usage: chain_watch.py GAZPACHO_TEST WORKDIR
 """
 import http.server
@@ -126,6 +142,14 @@ class H(http.server.BaseHTTPRequestHandler):
                 state["requests"].append(self.path)
             if state["delay"] and state["delay_path"] in self.path:
                 time.sleep(state["delay"])
+            if getattr(self.server, "hide", False) and TX_A in self.path:
+                # The lying server: TX_A was never confirmed, its output 0 unspent.
+                if self.path.endswith("/status"):
+                    return self.reply(200, b'{"confirmed":false}')
+                if "/outspend/" in self.path:
+                    return self.reply(200, b'{"spent":false}')
+                if self.path.endswith("/merkle-proof"):
+                    return self.reply(404, b"Transaction not found")
             self.reply(*answer(self.path))
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -151,6 +175,10 @@ class Quiet(http.server.ThreadingHTTPServer):
 srv = Quiet(("127.0.0.1", 0), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 URL = "http://127.0.0.1:%d" % srv.server_address[1]
+liar = Quiet(("127.0.0.1", 0), H)   # a second server, for step 7, named by another spelling (the comparing backend refuses one host name twice; plain HTTP only on loopback names)
+liar.hide = False
+threading.Thread(target=liar.serve_forever, daemon=True).start()
+URL2 = "http://localhost:%d" % liar.server_address[1]
 check = Checks()
 procs = []
 
@@ -165,12 +193,13 @@ def mark_requests():
         return len(state["requests"])
 
 
-def start(name, role, *extra):
+def start(name, role, *extra, urls=None):
     d = os.path.join(WORK, name)
     os.makedirs(d, mode=0o700, exist_ok=True)
     os.chmod(d, 0o700)
-    args = [EXE, "--data-dir", d, "--role", role, "--name", name, "--no-interface", "--chain-url", URL,
-            "--chain-poll-ms", "200", "--test-engines", "1", "--test-commands"]
+    args = [EXE, "--data-dir", d, "--role", role, "--name", name, "--no-interface"]
+    args += urls if urls is not None else ["--chain-url", URL]
+    args += ["--chain-poll-ms", "200", "--test-engines", "1", "--test-commands"]
     if role == "host":
         args += ["--listen", "127.0.0.1:0"]
     p = Proc(name, args + list(extra), LOGS, stdin=True)
@@ -286,6 +315,8 @@ try:
     state["genesis"] = GEN["mainnet"]
     w = start("mainnet", "host")
     check(w.exit_code(30) == 5, "5: a mainnet chain server refused at start (exit 5)")
+    left = sorted(os.listdir(os.path.join(WORK, "mainnet")))
+    check(left == [], "5: nothing written to the data folder before the check (%s)" % ", ".join(left))
     state["genesis"] = GEN["signet"]
 
     # 6. a slow server does not hold the loop ----------------------------------
@@ -303,6 +334,93 @@ try:
     took = time.time() - t0
     check(code == 0 and took < 2.0, "6: SIGTERM stopped it in %.2f s (exit %s)" % (took, code))
     state["delay"] = 0.0
+
+    # 7. (M1) two servers named as two operators, one hiding a confirmation ---
+    two = ["--chain-url", URL, "--chain-operator", "honest.test", "--chain-url", URL2, "--chain-operator", "liar.test"]
+    u = start("unnamed", "host", urls=["--chain-url", URL, "--chain-url", URL2])
+    # Accepted as two servers, but both count as one operator ("this-machine"),
+    # so the comparing backend never has a quorum: the first tip read fails.
+    check(u.exit_code(30) == 5 and u.wait_for(r"cannot read the chain tip: no-quorum", timeout=5) is not None,
+          "7: two loopback servers without names are one operator: no quorum, refused at start (exit 5)")
+    liar.hide = True
+    before = mark_requests()
+    o = start("operators", "host", urls=two)
+    check(o.wait_for(r"chain network=signet servers=2 ") is not None and o.wait_for(r" ready incarnation=") is not None,
+          "7: up over the comparing backend, two servers")
+    watch(o)
+    check(o.wait_for(r"chain-sources servers-disagree", timeout=30) is not None,
+          "7: the worker reports that the servers disagree")
+    time.sleep(3.0)
+    check(o.count(r"node-log test-chain area=0x7e57 kind=(2|5) ") == 0,
+          "7: nothing about the hidden transaction reported while they disagree")
+    check(requests_for(TX_A, before) > 0, "7: both were asked")
+    mk = o.mark()
+    liar.hide = False
+    check(saw(o, KIND_CONFIRMED, 2, 329438, start=mk, timeout=60) and saw(o, KIND_SPENT, 1, 329439, start=mk, timeout=60),
+          "7: the truth reported once they agree")
+    no_trouble(o, "7")
+    o.stop()
+
+    # 8. (M2) a worker that holds fewer watches than the node asks for -------
+    f = start("fullset", "host", "--test-chain-watches", "2")
+    check(f.wait_for(r" ready incarnation=") is not None, "8: up, a worker of 2 watches")
+    watch(f)
+    f.send(cmd(TE_WATCH, area(A), (12, bytes.fromhex(TX_SP)[::-1]), (14, struct.pack(">I", 1))))
+    check(f.exit_code(30) == 7, "8: the third watch: one stop, exit 7")
+    check(f.find(r"chain-watch-set-full kind=1 watches=2")[0] is not None and
+          f.find(r"stopping why=chain-watch-set-full")[0] is not None, "8: the stop is explained")
+    check(f.count(r"restart-from-storage") == 0, "8: no restart into it")
+    f2 = start("fullset", "host", "--test-chain-watches", "2")
+    check(f2.exit_code(30) == 7 and f2.count(r"restart-from-storage") == 0 and f2.count(r" ready incarnation=") == 0,
+          "8: started again: the saved watches come back at the start, one stop again, no loop")
+
+    # 9. (L2, L3) a full backlog, with a broadcast held in it -----------------
+    k = start("backlog", "host", "--test-chain-small", "--test-chain-backlog", "16")
+    check(k.wait_for(r" ready incarnation=") is not None, "9: up, small queues, a backlog of 16")
+    time.sleep(0.5)
+    state["delay"], state["delay_path"] = 0.5, "/tx/"
+    sp_hex = data("tx_spender_hex.txt").decode()
+    lines = []
+    for d in range(1, 45):
+        lines.append(cmd(TE_WATCH, area(A), (12, bytes.fromhex(TX_A)[::-1]), (14, struct.pack(">I", d))))
+    lines.append("chain-broadcast %s" % sp_hex)
+    for d in range(45, 90):
+        lines.append(cmd(TE_WATCH, area(A), (12, bytes.fromhex(TX_A)[::-1]), (14, struct.pack(">I", d))))
+    k.p.stdin.write("\n".join(lines) + "\n")
+    k.p.stdin.flush()
+    check(k.wait_for(r"chain-busy kind=3 held=", timeout=30) is not None, "9: the broadcast held behind watches")
+    check(k.wait_for(r"chain-backlog-full held=16", timeout=30) is not None and
+          k.wait_for(r"fatal why=chain-backlog-full", timeout=10) is not None, "9: a full backlog is fatal")
+    r = k.index_of(r"restart-from-storage", timeout=30)
+    check(r is not None, "9: one restart from storage")
+    if r is not None:
+        check(k.wait_for(r"chain-broadcast-dropped id=\d+ why=restart", start=r) is not None,
+              "9: the held broadcast written as dropped")
+        check(k.wait_for(r"watch-tx txid=%s depth=\d+" % bytes.fromhex(TX_A)[::-1].hex(), start=r) is not None,
+              "9: the saved watch set again after the restart")
+        state["delay"] = 0.0
+        check(saw(k, KIND_CONFIRMED, None, 329438, start=r, timeout=60), "9: and reported")
+    state["delay"] = 0.0
+    time.sleep(1.0)
+    check(k.count(r"restart-from-storage") == 1 and k.count(r"fatal why=") == 1, "9: one fatal error only")
+    k.stop()
+
+    # 10. (L4) a repeated watch command: one record ---------------------------
+    j = start("repeat", "host")
+    check(j.wait_for(r" ready incarnation=") is not None, "10: up")
+    for _ in range(5):
+        j.send(cmd(TE_WATCH, area(A), (12, bytes.fromhex(TX_A)[::-1]), (14, struct.pack(">I", 2))))
+    j.send(cmd(TE_WATCH, area(A), (12, bytes.fromhex(TX_A)[::-1]), (14, struct.pack(">I", 3))))
+    check(j.wait_for(r"watch-tx txid=\w+ depth=3") is not None, "10: the deeper one asked")
+    time.sleep(0.5)
+    j.stop()
+    dump = Proc("repeat-dump", [EXE, "--data-dir", os.path.join(WORK, "repeat"), "--role", "host", "--name", "repeat",
+                                "--no-interface", "--no-chain", "--test-dump-journal"], LOGS)
+    procs.append(dump)
+    check(dump.exit_code(30) == 0, "10: the journal read")
+    n8 = dump.count(r"journal-record .*type=0x7e570008 ")
+    check(n8 == 2, "10: six watch commands, two depths: %d watch records (2)" % n8)
+
 finally:
     for p in procs:
         if p.p.poll() is None:

@@ -124,6 +124,23 @@ static void fail(gzp_exec_t *ex, const char *why)
     }
 }
 
+/* A fatal error that no restart from storage can fix: the incarnation ends
+ * and the program stops (GZP_RUN_LIMIT), instead of restarting into it. */
+static void fail_stop(gzp_exec_t *ex, const char *why)
+{
+    fail(ex, why);
+    ex->fatal_stop = 1;
+}
+
+/* What the chain adapter answered a request (pchain.h): -1 is fatal for the
+ * incarnation; GZP_CHAIN_STOP (the worker holds fewer watches than the node
+ * asks for, and the saved watches come back at every start) stops. */
+static void chain_answer(gzp_exec_t *ex, int rc, const char *why)
+{
+    if (rc == GZP_CHAIN_STOP) fail_stop(ex, "chain-watch-set-full");
+    else if (rc < 0) fail(ex, ex->chain->why ? ex->chain->why : why); /* the adapter's own reason when it gave one */
+}
+
 #ifdef GZP_TEST_BUILD
 /* A timer of the test build's own (--test-timer-ms), kept in the same table
  * as the node's and fired by the same code, but logged instead of given to
@@ -361,8 +378,8 @@ static void execute(void *ctx, const gz_action_t *a)
                 a->u.set_seated.seated);
         break;
     case GZ_ACTION_BROADCAST:
-        if (gzp_chain_broadcast(ex->chain, a->u.broadcast.tx.data, a->u.broadcast.tx.len) < 0)
-            fail(ex, "chain-backlog-full");
+        chain_answer(ex, gzp_chain_broadcast(ex->chain, a->u.broadcast.tx.data, a->u.broadcast.tx.len),
+                     "chain-backlog-full");
         break;
     case GZ_ACTION_WATCH_TX: {
         char hex[65];
@@ -370,8 +387,8 @@ static void execute(void *ctx, const gz_action_t *a)
         gzp_log("watch-tx txid=%s depth=%u", hex, (unsigned)a->u.watch_tx.depth);
         /* BUSY is held and asked again (gzp_chain_retry); -1 is a refusal
          * that cannot be retried, or a full backlog: fatal, never ignored. */
-        if (gzp_chain_watch_tx(ex->chain, a->u.watch_tx.txid, a->u.watch_tx.depth) < 0)
-            fail(ex, "chain-watch-refused");
+        chain_answer(ex, gzp_chain_watch_tx(ex->chain, a->u.watch_tx.txid, a->u.watch_tx.depth),
+                     "chain-watch-refused");
         break;
     }
     case GZ_ACTION_WATCH_OUTPOINT: {
@@ -379,9 +396,9 @@ static void execute(void *ctx, const gz_action_t *a)
         gzp_hex(a->u.watch_outpoint.outpoint.txid, 32, hex);
         gzp_log("watch-outpoint txid=%s vout=%u depth=%u", hex,
                 (unsigned)a->u.watch_outpoint.outpoint.vout, (unsigned)a->u.watch_outpoint.depth);
-        if (gzp_chain_watch_outpoint(ex->chain, a->u.watch_outpoint.outpoint.txid,
-                                     a->u.watch_outpoint.outpoint.vout, a->u.watch_outpoint.depth) < 0)
-            fail(ex, "chain-watch-refused");
+        chain_answer(ex, gzp_chain_watch_outpoint(ex->chain, a->u.watch_outpoint.outpoint.txid,
+                                                  a->u.watch_outpoint.outpoint.vout, a->u.watch_outpoint.depth),
+                     "chain-watch-refused");
         break;
     }
     case GZ_ACTION_SET_TIMER:
@@ -652,7 +669,7 @@ static void test_line(gzp_exec_t *ex, char *line)
         if (!tx) abort();
         if (gzp_unhex(a1, strlen(a1), tx, n)) {
             gzp_log("test-chain-broadcast len=%zu", n);
-            if (gzp_chain_broadcast(ex->chain, tx, n) < 0) fail(ex, "chain-backlog-full");
+            chain_answer(ex, gzp_chain_broadcast(ex->chain, tx, n), "chain-backlog-full");
         } else {
             gzp_log("test-command bad line");
         }
@@ -855,7 +872,7 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     gzp_testping_tick(ex->tp, ex->net, now);
 #endif
     /* Requests the worker answered BUSY: asked again, in order. */
-    if (!ex->fatal && gzp_chain_retry(ex->chain) < 0) fail(ex, "chain-request-refused");
+    if (!ex->fatal) chain_answer(ex, gzp_chain_retry(ex->chain), "chain-request-refused");
     /* What the worker found, a bounded number per turn. */
     for (i = 0; i < 64 && !ex->fatal; i++) {
         gz_event_t ev;
@@ -926,6 +943,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     ex->number = number;
     ex->incarnation = 0;
     ex->fatal = 0;
+    ex->fatal_stop = 0;
     ex->fatal_why = NULL;
     ex->storage_broken = 0;
     ex->starting = 0;
@@ -1062,6 +1080,10 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     }
     while (rc < 0) rc = turn(ex, fds, cap, 0);
     free(fds);
+    if (rc == GZP_RUN_RESTART && ex->fatal_stop && !gzp_standin_poisoned(&ex->store)) {
+        gzp_log("stopping why=%s: a restart from storage cannot fix it", ex->fatal_why);
+        rc = GZP_RUN_LIMIT;
+    }
     if (rc != GZP_RUN_STOP && gzp_standin_poisoned(&ex->store)) {
         gzp_log("storage poisoned: a failed write could not be undone; not restarting (storage.failed)");
         rc = GZP_RUN_POISONED;
