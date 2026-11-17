@@ -28,6 +28,7 @@ restore epoch other than 0; and stop cleanly.
 import os
 import shutil
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gzp_harness import Checks, Proc, dump_journal, free_port, kill_all  # noqa: E402
@@ -102,6 +103,15 @@ def main():
                 if m is None:
                     check(False, "%s K=%d: the run neither died nor started" % (life, k))
                     break
+                if m.group(0).startswith("ready"):
+                    # Started: its storage calls go on after the start (the
+                    # CONNECT target's batch); the kill may still come.
+                    m2 = p.wait_for(r"connect-kept|test-kill before=\S+", timeout=30)
+                    if m2 is None or not m2.group(0).startswith("test-kill"):
+                        time.sleep(0.5)
+                        m2 = p.find(r"test-kill before=\S+")[1] or m2
+                    if m2 is not None and m2.group(0).startswith("test-kill"):
+                        m = m2
                 if not m.group(0).startswith("test-kill"):
                     # This run passed every storage call: the life is covered.
                     ok = m.group(0).startswith("ready")
