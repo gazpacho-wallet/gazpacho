@@ -7,6 +7,8 @@
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
+#include <secp256k1_extrakeys.h>
+#include <secp256k1_schnorrsig.h>
 
 #include "envelope.h"
 #include "frame.h"
@@ -33,6 +35,7 @@ int gzp_net_init(gzp_net_t *n, const secp256k1_context *secp, const uint8_t priv
     memset(n, 0, sizeof *n);
     gz_peers_default_config(&n->cfg);
     n->cfg.secp = secp;
+    n->secp = secp;
     memcpy(n->cfg.static_key, priv, 32);
     n->cfg.random = random;
     memcpy(n->cfg.chain, chain, 32);
@@ -111,14 +114,94 @@ int gzp_net_connected(const gzp_net_t *n, const uint8_t key[33])
 
 static void link_of(const gzp_net_t *n, const gzp_conn_t *c, gz_link_t *l)
 {
-    memcpy(l->local.key, n->pub, 33);
+    (void)n;
+    memcpy(l->local.key, c->local, 33);
     memcpy(l->remote.key, c->key, 33);
+}
+
+/* The connection of a link: a member in two lobbies of one host has two
+ * connections to it, each with its own key. */
+static gzp_conn_t *by_link(const gzp_net_t *n, const gz_link_t *link)
+{
+    int i;
+    for (i = 0; i < GZP_MAX_CONNS; i++)
+        if (n->conns[i].used && !memcmp(n->conns[i].key, link->remote.key, 33) &&
+            !memcmp(n->conns[i].local, link->local.key, 33))
+            return (gzp_conn_t *)&n->conns[i];
+    return NULL;
+}
+
+/* 1 if `key` is one of ours: the listener's, or a CONNECT's. */
+static int ours(const gzp_net_t *n, const uint8_t key[33])
+{
+    int i;
+    if (!memcmp(key, n->pub, 33)) return 1;
+    for (i = 0; i < GZP_MAX_TARGETS; i++)
+        if (n->targets[i].used && !memcmp(n->targets[i].local, key, 33)) return 1;
+    return 0;
+}
+
+int gzp_net_key(const gzp_net_t *n, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33])
+{
+    static const char tag[] = "gazpacho stand-in lobby key";
+    uint8_t buf[sizeof tag + 40], s[32];
+    unsigned int dn = 0;
+    secp256k1_pubkey pk;
+    size_t len = 33;
+    int ok;
+    if (index == 0 || n->single_key) {
+        memcpy(s, n->cfg.static_key, 32);
+    } else {
+        memcpy(buf, tag, sizeof tag);
+        memcpy(buf + sizeof tag, n->cfg.static_key, 32);
+        buf[sizeof tag + 32] = (uint8_t)(epoch >> 24);
+        buf[sizeof tag + 33] = (uint8_t)(epoch >> 16);
+        buf[sizeof tag + 34] = (uint8_t)(epoch >> 8);
+        buf[sizeof tag + 35] = (uint8_t)epoch;
+        buf[sizeof tag + 36] = (uint8_t)(index >> 24);
+        buf[sizeof tag + 37] = (uint8_t)(index >> 16);
+        buf[sizeof tag + 38] = (uint8_t)(index >> 8);
+        buf[sizeof tag + 39] = (uint8_t)index;
+        ok = EVP_Digest(buf, sizeof buf, s, &dn, EVP_sha256(), NULL) && dn == 32;
+        OPENSSL_cleanse(buf, sizeof buf);
+        if (!ok) return 0;
+    }
+    ok = secp256k1_ec_seckey_verify(n->secp, s) && secp256k1_ec_pubkey_create(n->secp, &pk, s);
+    if (ok && pub) ok = secp256k1_ec_pubkey_serialize(n->secp, pub, &len, &pk, SECP256K1_EC_COMPRESSED) && len == 33;
+    if (ok && sec) memcpy(sec, s, 32);
+    OPENSSL_cleanse(s, sizeof s);
+    return ok;
+}
+
+int gzp_net_sign(const gzp_net_t *n, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
+{
+    uint8_t s[32];
+    secp256k1_keypair kp;
+    int ok = gzp_net_key(n, epoch, index, s, NULL) && secp256k1_keypair_create(n->secp, &kp, s) &&
+             secp256k1_schnorrsig_sign32(n->secp, sig, msg, &kp, NULL);
+    OPENSSL_cleanse(s, sizeof s);
+    OPENSSL_cleanse(&kp, sizeof kp);
+    return ok;
+}
+
+int gzp_net_verify(const gzp_net_t *n, const uint8_t pub[33], const uint8_t msg[32], const uint8_t sig[64])
+{
+    secp256k1_pubkey pk;
+    secp256k1_xonly_pubkey x;
+    return secp256k1_ec_pubkey_parse(n->secp, &pk, pub, 33) && secp256k1_xonly_pubkey_from_pubkey(n->secp, &x, NULL, &pk) &&
+           secp256k1_schnorrsig_verify(n->secp, sig, msg, 32, &x);
+}
+
+int gzp_net_point_ok(const gzp_net_t *n, const uint8_t pub[33])
+{
+    secp256k1_pubkey pk;
+    return secp256k1_ec_pubkey_parse(n->secp, &pk, pub, 33);
 }
 
 int gzp_net_send(gzp_net_t *n, const gz_link_t *link, uint16_t kind, const uint8_t scope[32],
                  const uint8_t *records, size_t len)
 {
-    gzp_conn_t *c = by_key(n, link->remote.key);
+    gzp_conn_t *c = by_link(n, link);
     gz_peers_err_t e;
     unsigned long long pid = (unsigned long long)gzp_peer_id(link->remote.key);
     if (kind == GZ_SEND_KIND_RESERVED) {
@@ -126,7 +209,7 @@ int gzp_net_send(gzp_net_t *n, const gz_link_t *link, uint16_t kind, const uint8
         gzp_log("send-refused peer=%016llx why=reserved-kind", pid);
         return -2;
     }
-    if (memcmp(link->local.key, n->pub, 33) != 0) {
+    if (!ours(n, link->local.key)) {
         n->dropped_unconnected++;
         gzp_log("send-dropped peer=%016llx why=not-our-key", pid);
         return 1;
@@ -183,7 +266,9 @@ int gzp_net_connect(gzp_net_t *n, const uint8_t host_key[33], const uint8_t *add
         host++;
     }
     for (i = 0; i < GZP_MAX_TARGETS; i++) {
-        if (n->targets[i].used && !memcmp(n->targets[i].key, host_key, 33)) break;
+        if (n->targets[i].used && !memcmp(n->targets[i].key, host_key, 33) && n->targets[i].epoch == key_epoch &&
+            n->targets[i].index == key_index)
+            break;
         if (!n->targets[i].used && free_i < 0) free_i = i;
     }
     if (i == GZP_MAX_TARGETS) {
@@ -194,6 +279,10 @@ int gzp_net_connect(gzp_net_t *n, const uint8_t host_key[33], const uint8_t *add
     }
     t = &n->targets[i];
     /* A second CONNECT with the same host and key replaces the address. */
+    if (!gzp_net_key(n, key_epoch, key_index, t->sec, t->local)) {
+        t->used = 0;
+        return connect_failed(n, host_key, "no-key");
+    }
     t->used = 1;
     memcpy(t->key, host_key, 33);
     snprintf(t->host, sizeof t->host, "%s", host);
@@ -206,10 +295,11 @@ int gzp_net_connect(gzp_net_t *n, const uint8_t host_key[33], const uint8_t *add
 
 void gzp_net_disconnect(gzp_net_t *n, const gz_link_t *link, unsigned why)
 {
-    gzp_conn_t *c = by_key(n, link->remote.key);
+    gzp_conn_t *c = by_link(n, link);
     int i;
     for (i = 0; i < GZP_MAX_TARGETS; i++)
-        if (n->targets[i].used && !memcmp(n->targets[i].key, link->remote.key, 33)) {
+        if (n->targets[i].used && !memcmp(n->targets[i].key, link->remote.key, 33) &&
+            !memcmp(n->targets[i].local, link->local.key, 33)) {
             n->targets[i].used = 0; /* no longer kept */
             if (c && c->target == i) c->target = -1;
         }
@@ -351,6 +441,7 @@ static void handle(gzp_net_t *n, const gz_peer_event_t *ev, uint64_t now)
         memcpy(c->key, ev->node_id, 33);
         c->peer_id = gzp_peer_id(ev->node_id);
         c->target = ev->outbound ? target_of_conn(n, ev->conn) : -1;
+        memcpy(c->local, c->target >= 0 ? n->targets[c->target].local : n->pub, 33);
         if (c->target >= 0) n->targets[c->target].backoff_ms = n->first_backoff_ms;
         if (n->queueing) enqueue(n, GZ_PEER_EV_CONNECTED, ev->conn, 0, NULL, NULL, 0);
         else report_connected(n, c);
@@ -506,7 +597,7 @@ void gzp_net_dispatch(gzp_net_t *n, const struct pollfd *fds, size_t count, uint
         uint64_t conn = 0;
         gz_peers_err_t e;
         if (!t->used || t->conn || now < t->next_connect_ms) continue;
-        e = gz_peers_connect(n->peers, t->host, t->port, t->key, NULL, &conn);
+        e = gz_peers_connect(n->peers, t->host, t->port, t->key, t->sec, &conn);
         if (e) {
             /* An address the resolver refuses, or no socket: a failed
              * attempt, tried again with the backoff. */
@@ -528,7 +619,7 @@ int gzp_net_reset(gzp_net_t *n)
     n->nq = n->capq = 0;
     n->queueing = 0;
     memset(n->conns, 0, sizeof n->conns);
-    memset(n->targets, 0, sizeof n->targets);
+    OPENSSL_cleanse(n->targets, sizeof n->targets);
     n->listening = 0;
     n->open = 0;
     n->queued_total = 0;
@@ -543,5 +634,6 @@ void gzp_net_free(gzp_net_t *n)
     for (i = 0; i < n->nq; i++) free(n->q[i].bytes);
     free(n->q);
     OPENSSL_cleanse(n->cfg.static_key, sizeof n->cfg.static_key);
+    OPENSSL_cleanse(n->targets, sizeof n->targets);
     memset(n, 0, sizeof *n);
 }

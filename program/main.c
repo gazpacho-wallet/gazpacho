@@ -245,6 +245,7 @@ int main(int argc, char **argv)
     gzp_testping_burst(&tp, opt.test_burst_n, opt.test_burst_bytes);
     tp.exit_after_send = opt.test_exit_after_send;
     net.drop_kind = (unsigned)opt.test_drop_kind;
+    net.single_key = opt.test_engines > 0;
     if (opt.test_commands) fcntl(0, F_SETFL, fcntl(0, F_GETFL) | O_NONBLOCK);
 #endif
     gzp_notify_lines(&ex.notify);

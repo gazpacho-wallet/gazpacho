@@ -1,18 +1,24 @@
-/* Sequence fuzz target (review A of PR 30, S9; strengthened after review B):
- * each input is a script. Its first byte picks a host fed signed messages,
- * connections, timers, clock steps, commands and restarts from up to 64
- * member keys (enough to reach the caps: 16 unseated connections, 48
+/* Sequence fuzz target (review A of PR 30, S9; strengthened after review B;
+ * contract v2): each input is a script. Its first byte picks a host fed
+ * signed messages, connections, timers, clock steps, commands, listings and
+ * restarts from up to 66 member keys (enough to reach the caps: 64
  * connections, target + standbys seats taken, 4 x target creations), or a
- * member fed the same from its host. With the vectors' terms (target 8),
- * 4 x target is 32: the creation cap stops a 33rd seat first, so the
- * 32-seat table's own refusal is not reached here (test_lobby restores a
- * full table). A join from a key without a seat, while the lobby is Open and
- * 4 x target seats were created, must create none: the plain driver counts
- * those refusals, and the budget timers that fire in Signing (the B3 check
- * below). The engines live across the whole script, so the stateful
- * rules are reached: a refused ready (F5), strangers and failed checks (F6),
- * joins that are refused (F8), restarts in Signing (F3), commands at the
- * wrong moment (F10), a chosen seat that leaves and comes back (B1).
+ * member fed the same from its host, with or without a signing gate. With
+ * the vectors' terms (target 8), 4 x target is 32: the creation cap stops a
+ * 33rd seat first, so the 32-seat table's own refusal is not reached here
+ * (test_lobby restores a full table). A join from a key without a seat, while
+ * the lobby is Open and 4 x target seats were created, must create none: the
+ * plain driver counts those refusals, the budget timers that fire in Signing
+ * (the B3 check below) and the connections refused by a full table. The
+ * engines live across the whole script, so the stateful rules are reached: a
+ * refused ready (F5), strangers and failed checks (F6), joins that are
+ * refused (F8), restarts in Signing (F3), commands at the wrong moment
+ * (F10), a chosen seat that leaves and comes back (B1).
+ *
+ * A message is (kind, scope, records) on a link: the host's inputs are on
+ * (host key, a member's key), the member's on (its key, the host key). A
+ * refusal is a DISCONNECT `refused`: the script then holds that connection
+ * as closed, as the transport would.
  *
  * Both engines are given a model of the signing engine (review B's), which
  * remembers the checks it began, with their participants, and the checks it
@@ -25,32 +31,38 @@
  * confirmed. What the runner had sent by then (a send is held until every
  * save listed before it is confirmed) must be justified by what survived:
  *   host    a `start` by its check's `start_sent`, a `ready_check` by the
- *           `freeze`, a `cancel` by `lobby_ended`, a seat notice by the
+ *           `freeze`, a `cancel` by `lobby_ended`, a SET_SEATED by the
  *           seat's record, a status showing Funding or Active by `lobby_state`;
  *   member  a `join` by `joined` and a `ready` by `ready_sent` (the same
  *           bytes), a `leave` by its `lobby_ended`.
  * So moving a save after the send it justifies fails here.
  *
  * Also, after every step:
- *   - every engine call returns GZ_OK (a duplicate CONNECTED is not made);
+ *   - every engine call returns GZ_OK (the engine rule), whatever the peer,
+ *     the clock or the user did; set_values alone may refuse values a person
+ *     composed wrongly;
+ *   - no record saved is larger than its row of the table of largest records;
  *   - host: each seat in memory equals its last saved `seat` record (state,
  *     min_members, version), so nothing is changed without its save;
  *   - host: one input verifies at most two signatures;
  *   - host: a connection from a key without a seat starts no ready check;
- *   - member: the signing engine is begun only for a check the member may
- *     still sign for (gz_lobby_member_may_sign);
+ *   - host: a 65th connection is refused, and only then; the lobby's budget
+ *     timer is never set while a round is in flight (Signing);
+ *   - member: the signing engine is begun only for a check the member has
+ *     accepted (gz_lobby_member_accepted), and no ready is signed while its
+ *     gate is closed;
  *   - a restart from the saved records succeeds, and so does its resume.
  * A failed check aborts, so libFuzzer and the plain driver both report it. */
 #include "lobby_test.h"
-#include "../../core/lobby/lobby_internal.h"
 #include <stdlib.h>
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
-unsigned long lobby_seq_stats[10];  /* steps, seats, checks, starts, begins, restarts, refused, cancels,
-                                       joins refused at the creation cap, budget timers in Signing */
+unsigned long lobby_seq_stats[12];  /* steps, seats, checks, starts, begins, restarts, refused, cancels,
+                                       joins refused at the creation cap, budget timers in Signing,
+                                       connections refused by a full table, unreadies for a closed gate */
 
 #define MUST(c) do { if (!(c)) { fprintf(stderr, "fuzz_lobby_seq: %s (step %lu)\n", #c, lobby_seq_stats[0]); abort(); } } while (0)
-#define NK 64                        /* member keys; any may stay a stranger */
+#define NK 66                        /* member keys, two more than the host has connections; any may stay a stranger */
 #define NONE ((size_t)-1)
 
 static int ready_;
@@ -110,10 +122,42 @@ static int sends_kind(uint16_t kind)
     int c = 0;
     gz_lobby_msg_t m;
     for (i = 0; i < L.count; i++)
-        if (L.slots[i].kind == GZ_ACTION_SEND &&
-            gz_lobby_decode(L.slots[i].u.send.records.data, L.slots[i].u.send.records.len, &m) == GZ_DEC_OK && m.kind == kind)
-            c++;
+        if (lt_send_decode(&L.slots[i], &m) == GZ_DEC_OK && m.kind == kind) c++;
     return c;
+}
+
+/* 1 if the last list refuses the peer whose key is `key` (NULL: anyone). */
+static int refuses(const uint8_t *key)
+{
+    size_t i;
+    for (i = 0; i < L.count; i++) if (lt_is_refusal(&L.slots[i], key)) return 1;
+    return 0;
+}
+
+static int sets_timer(uint64_t id)
+{
+    size_t i;
+    for (i = 0; i < L.count; i++)
+        if (L.slots[i].kind == GZ_ACTION_SET_TIMER && L.slots[i].u.set_timer.timer_id == id) return 1;
+    return 0;
+}
+
+/* The last list in itself: no action the lobby never issues, every SEND one
+ * that decodes, every link named by one of its ends (`local`). */
+static void list_ok(const uint8_t *local)
+{
+    size_t i;
+    gz_lobby_msg_t m;
+    for (i = 0; i < L.count; i++) {
+        const gz_action_t *a = &L.slots[i];
+        MUST(a->kind == GZ_ACTION_SAVE || a->kind == GZ_ACTION_SEND || a->kind == GZ_ACTION_SET_TIMER ||
+             a->kind == GZ_ACTION_NOTIFY || a->kind == GZ_ACTION_CONNECT || a->kind == GZ_ACTION_DISCONNECT ||
+             a->kind == GZ_ACTION_SET_SEATED);
+        if (a->kind == GZ_ACTION_SEND)
+            MUST(lt_send_decode(a, &m) == GZ_DEC_OK && memcmp(a->u.send.link.local.key, local, 33) == 0);
+        if (a->kind == GZ_ACTION_DISCONNECT)
+            MUST(a->u.disconnect.why == GZ_DISCONNECT_REFUSED && memcmp(a->u.disconnect.link.local.key, local, 33) == 0);
+    }
 }
 
 static int refused_now(void)
@@ -131,8 +175,8 @@ static int refused_now(void)
 typedef struct {
     int kind;                        /* GZ_ACTION_* */
     size_t r0, r1;                   /* SAVE: RECS[r0..r1) */
-    uint8_t b[320]; size_t n;        /* SEND (whole message, if it fits) or NOTIFY bytes */
-    uint32_t code;
+    uint8_t b[320]; size_t n;        /* SEND (the envelope, if it fits), NOTIFY bytes, or SET_SEATED's key */
+    uint32_t code;                   /* NOTIFY: the code; SET_SEATED: 0 or 1 */
 } la_t;
 static la_t LA[256];
 static size_t NLA;
@@ -152,6 +196,7 @@ static void keep(void)
             x->r0 = NREC;
             for (j = 0; j < a->u.save.n_records && NREC < 1024; j++) {
                 const gz_record_t *r = &a->u.save.records[j];
+                MUST(lt_rec_fits(r->type, r->bytes.len));         /* never over its row of the table */
                 RECS[NREC].type = r->type;
                 RECS[NREC].n = r->bytes.len;
                 RECS[NREC].b = malloc(r->bytes.len + 1);
@@ -160,13 +205,16 @@ static void keep(void)
                 NREC++;
             }
             x->r1 = NREC;
-        } else if (a->kind == GZ_ACTION_SEND && a->u.send.records.len <= sizeof x->b) {
-            x->n = a->u.send.records.len;
-            memcpy(x->b, a->u.send.records.data, x->n);
+        } else if (a->kind == GZ_ACTION_SEND) {
+            x->n = lt_send_env(a, x->b, sizeof x->b);                 /* 0 if it does not fit */
+        } else if (a->kind == GZ_ACTION_SET_SEATED) {
+            memcpy(x->b, a->u.set_seated.member.key, 33);
+            x->n = 33;
+            x->code = (uint32_t)a->u.set_seated.seated;
         } else if (a->kind == GZ_ACTION_NOTIFY) {
             x->code = a->u.notify.code;
             x->n = a->u.notify.bytes.len < sizeof x->b ? a->u.notify.bytes.len : sizeof x->b;
-            memcpy(x->b, a->u.notify.bytes.data, x->n);
+            if (x->n) memcpy(x->b, a->u.notify.bytes.data, x->n);   /* a notice may carry no bytes (GZ_NOTE_LOCKED) */
         }
     }
 }
@@ -210,20 +258,17 @@ static void finish(const uint8_t *check, size_t from, uint32_t type1, uint32_t t
 
 static void model_reset(void) { NBEG = NEND = 0; }
 
-/* A durable record of `type` whose bytes start with `pre` (n bytes). */
-static int durable(uint32_t type, const uint8_t *pre, size_t n)
+/* A durable record of `type` whose field `field` is exactly (v, n); with v
+ * NULL, any durable record of `type`. */
+static int durable(uint32_t type, unsigned field, const uint8_t *v, size_t n)
 {
-    size_t i;
-    for (i = 0; i < NREC; i++)
-        if (RECS[i].type == type && RECS[i].n >= n && (n == 0 || memcmp(RECS[i].b, pre, n) == 0)) return 1;
-    return 0;
-}
-
-static int durable_exact(uint32_t type, const uint8_t *b, size_t n)
-{
-    size_t i;
-    for (i = 0; i < NREC; i++)
-        if (RECS[i].type == type && RECS[i].n == n && memcmp(RECS[i].b, b, n) == 0) return 1;
+    size_t i, fn;
+    const uint8_t *f;
+    for (i = 0; i < NREC; i++) {
+        if (RECS[i].type != type) continue;
+        if (!v) return 1;
+        if (lt_rec_field(RECS[i].b, RECS[i].n, field, &f, &fn) && fn == n && memcmp(f, v, n) == 0) return 1;
+    }
     return 0;
 }
 
@@ -245,19 +290,19 @@ static void crash(uint8_t arg, int host)
     for (i = 0; i < p; i++) {                         /* sent before the crash */
         gz_lobby_msg_t m;
         const la_t *x = &LA[i];
-        if (x->kind == GZ_ACTION_NOTIFY && x->code == GZ_NOTE_SEATED && x->n == 34) MUST(durable(GZ_REC_SEAT, x->b, 33));
-        if (x->kind != GZ_ACTION_SEND || !x->n || gz_lobby_decode(x->b, x->n, &m) != GZ_DEC_OK) continue;
+        if (x->kind == GZ_ACTION_SET_SEATED) MUST(host && durable(GZ_REC_SEAT, 4, x->b, 33));   /* the seat's record, field 4 its key */
+        if (x->kind != GZ_ACTION_SEND || !x->n || gz_lobby_decode_env(x->b, x->n, &m) != GZ_DEC_OK) continue;
         if (host) {
-            if (m.kind == GZ_KIND_START) MUST(durable(GZ_REC_START_SENT, m.check_id, 32));
-            if (m.kind == GZ_KIND_READY_CHECK) MUST(durable(GZ_REC_FREEZE, NULL, 0));
-            if (m.kind == GZ_KIND_CANCEL) MUST(durable(GZ_REC_LOBBY_ENDED, NULL, 0));
+            if (m.kind == GZ_KIND_START) MUST(durable(GZ_REC_START_SENT, 4, m.check_id, 32));
+            if (m.kind == GZ_KIND_READY_CHECK) MUST(durable(GZ_REC_FREEZE, 0, NULL, 0));
+            if (m.kind == GZ_KIND_CANCEL) MUST(durable(GZ_REC_LOBBY_ENDED, 0, NULL, 0));
             if (m.kind == GZ_KIND_LOBBY_STATUS && (m.lobby_state == GZ_LOBBY_FUNDING || m.lobby_state == GZ_LOBBY_ACTIVE))
-                MUST(durable(GZ_REC_LOBBY_STATE, &m.lobby_state, 1));
+                MUST(durable(GZ_REC_LOBBY_STATE, 4, &m.lobby_state, 1));
         } else {
             static const uint8_t left0 = 0;
-            if (m.kind == GZ_KIND_JOIN) MUST(durable_exact(GZ_REC_JOINED, x->b, x->n));
-            if (m.kind == GZ_KIND_READY) MUST(durable_exact(GZ_REC_READY_SENT, x->b, x->n));
-            if (m.kind == GZ_KIND_LEAVE) MUST(durable(GZ_REC_LOBBY_ENDED, &left0, 1));
+            if (m.kind == GZ_KIND_JOIN) MUST(durable(GZ_REC_JOINED, 4, x->b, x->n));
+            if (m.kind == GZ_KIND_READY) MUST(durable(GZ_REC_READY_SENT, 4, x->b, x->n));
+            if (m.kind == GZ_KIND_LEAVE) MUST(durable(GZ_REC_LOBBY_ENDED, 4, &left0, 1));
         }
     }
     NLA = 0;
@@ -274,6 +319,8 @@ static gz_status_t h_begin(void *ctx, const gz_lobby_handoff_t *ho, gz_action_li
     int i, k;
     (void)ctx;
     MUST(ho->participants && ho->n_participants == ho->signers && ho->n_participants >= 2 && ho->role == 1);
+    /* the budget is handed over: its end is the first start plus the terms' budget; one attempt */
+    MUST(H.budget_ms != 0 && ho->budget_end_ms == H.budget_ms + H.terms.signing_budget_ms && ho->attempt == 1);
     if ((e = ended(ho->check_id)) != NULL) {          /* V1; otherwise ignored, as the header says */
         MUST(e->rec == NONE);
         return GZ_OK;
@@ -321,14 +368,33 @@ static gz_status_t h_left(void *ctx, const uint8_t scope[32], const uint8_t ckey
     return GZ_OK;
 }
 
+/* An input to the host on its link to key `who`; a MESSAGE is the envelope
+ * `b`. Bytes that are no envelope never reach an engine (the transport's):
+ * GZ_OK and nothing. */
 static gz_status_t h_in(int kind, int who, const uint8_t *b, size_t n, uint64_t timer)
 {
     gz_lobby_input_t in;
-    memset(&in, 0, sizeof in);
-    in.kind = kind; in.peer_id = 100 + (uint64_t)who; in.peer_key = K[who].key[2].pub;
-    in.bytes = b; in.len = n; in.timer_id = timer;
+    gz_link_t l = lt_link(HOST.key[1].pub, K[who].key[2].pub);
     lreset();
+    if (kind != GZ_LIN_MESSAGE) lt_in(&in, kind, &l);
+    else if (!lt_in_env(&in, &l, b, n)) return GZ_OK;
+    in.timer_id = timer;
     return gz_lobby_host_handle(&H, &in, &L);
+}
+
+static int conns_used(void)
+{
+    int i, c = 0;
+    for (i = 0; i < GZ_LOBBY_MAX_CONNS; i++) c += H.conns[i].used;
+    return c;
+}
+
+static int has_conn(int who)
+{
+    int i;
+    for (i = 0; i < GZ_LOBBY_MAX_CONNS; i++)
+        if (H.conns[i].used && memcmp(H.conns[i].key, K[who].key[2].pub, 33) == 0) return 1;
+    return 0;
 }
 
 static void host_boot(int restore, uint16_t standbys)
@@ -368,11 +434,16 @@ static void seats_saved(void)
     for (s = 0; s < H.n_seats; s++) {
         const gz_lobby_seat_t *t = &H.seats[s];
         const rec_t *last = NULL;
+        gz_lf_t f;
         for (i = 0; i < NREC; i++)
-            if (RECS[i].type == GZ_REC_SEAT && RECS[i].n >= 209 && memcmp(RECS[i].b, t->ckey, 33) == 0) last = &RECS[i];
-        MUST(last != NULL);
-        MUST(last->b[194] == t->state && gz_lw_get(last->b + 195, 2) == t->min_members &&
-             gz_lw_get(last->b + 197, 4) == t->ready_version && memcmp(last->b + 33, t->fkey, 33) == 0);
+            if (RECS[i].type == GZ_REC_SEAT && gz_lf_read(RECS[i].b, RECS[i].n, SCOPE, &f) && gz_lf_fixed(&f, 4, 33) &&
+                memcmp(gz_lf_fixed(&f, 4, 33), t->ckey, 33) == 0)
+                last = &RECS[i];
+        MUST(last != NULL && gz_lf_read(last->b, last->n, SCOPE, &f));
+        /* seat: 6 fkey, 12 state, 14 min_members, 16 ready_version */
+        MUST(gz_lf_fixed(&f, 6, 33) && gz_lf_fixed(&f, 12, 1) && gz_lf_fixed(&f, 14, 2) && gz_lf_fixed(&f, 16, 4));
+        MUST(gz_lf_fixed(&f, 12, 1)[0] == t->state && gz_lw_get(gz_lf_fixed(&f, 14, 2), 2) == t->min_members &&
+             gz_lw_get(gz_lf_fixed(&f, 16, 4), 4) == t->ready_version && memcmp(gz_lf_fixed(&f, 6, 33), t->fkey, 33) == 0);
     }
 }
 
@@ -418,18 +489,32 @@ static void host_script(const uint8_t *d, size_t n)
             no_seat = s == NULL;
         }
         switch (op) {
-        case 0:                                                       /* connect */
+        case 0: {                                                     /* connect */
+            int full = conns_used() == GZ_LOBBY_MAX_CONNS && !has_conn(who);
             if (CONN[who]) { st = h_in(GZ_LIN_DISCONNECTED, who, NULL, 0, 0); CONN[who] = 0; break; }
             st = h_in(GZ_LIN_CONNECTED, who, NULL, 0, 0);
             CONN[who] = 1;
             if (!seated_key) MUST(sends_kind(GZ_KIND_READY_CHECK) == 0);   /* F6 */
+            /* the table holds 64: a 65th key is refused, and only then */
+            MUST(refuses(K[who].key[2].pub) == full && has_conn(who) == !full);
+            if (full) lobby_seq_stats[10]++;
             break;
+        }
         case 1:
             st = h_in(GZ_LIN_DISCONNECTED, who, NULL, 0, 0);
             CONN[who] = 0;
             break;
         case 2:
-            gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, arg & 1 ? SCOPE : (const uint8_t *)"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
+            if (!(arg & 1)) {                                         /* a scope-zero hello: the listing, the node part's call */
+                gz_link_t l = lt_link(HOST.key[1].pub, K[who].key[2].pub);
+                H.cfg.listed = (arg >> 1) & 1;
+                lreset();
+                st = gz_lobby_host_listing(&H, &l, &L);
+                MUST(L.count <= 1 && (L.count == 0 || sends_kind(GZ_KIND_TERMS_OFFER) == 1));
+                if (!H.cfg.listed || H.state < GZ_LOBBY_OPEN || H.state > GZ_LOBBY_SIGNING) MUST(L.count == 0);
+                break;
+            }
+            gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, SCOPE);
             bn = gz_lobby_enc_done(&e);
             st = h_in(GZ_LIN_MESSAGE, who, buf, bn, 0);
             break;
@@ -465,13 +550,15 @@ static void host_script(const uint8_t *d, size_t n)
             st = h_in(GZ_LIN_MESSAGE, who, buf, bn, 0);
             break;
         case 8: {                                                     /* a timer */
-            static const uint64_t T[5] = {GZ_LOBBY_TIMER_WINDOW, GZ_LOBBY_TIMER_IDLE, GZ_LOBBY_TIMER_STATUS,
+            /* 0x4c000005 was the idle timer: not the lobby's any more, nothing happens */
+            static const uint64_t T[5] = {GZ_LOBBY_TIMER_WINDOW, 0x4c000005u, GZ_LOBBY_TIMER_STATUS,
                                           GZ_LOBBY_TIMER_DEADLINE, GZ_LOBBY_TIMER_BUDGET};
             int signing = H.state == GZ_LOBBY_SIGNING;
             if (arg % 5 == 4 && signing) lobby_seq_stats[9]++;
             st = h_in(GZ_LIN_TIMER, who, NULL, 0, T[arg % 5]);
             if (arg % 5 == 0 && sends_kind(GZ_KIND_START)) lobby_seq_stats[3]++;
             if (arg % 5 == 4 && signing) MUST(L.count == 0 && H.state == GZ_LOBBY_SIGNING);   /* B3 */
+            if (arg % 5 == 1) MUST(L.count == 0);
             break;
         }
         case 9:                                                       /* the clock */
@@ -498,6 +585,10 @@ static void host_script(const uint8_t *d, size_t n)
             if (st == GZ_OK && outcome && !refused_now()) {
                 MUST(was >= GZ_LOBBY_SIGNING);
                 if (outcome == GZ_LOBBY_ROUND_FUNDING || outcome == GZ_LOBBY_ROUND_ACTIVE) MUST(H.state != was);   /* B3: taken */
+                /* a Retry gives the budget back to the lobby: its timer, unless the lobby ended or a round began at once */
+                if (outcome == GZ_LOBBY_ROUND_RETRY && H.state != GZ_LOBBY_SIGNING && H.state < GZ_LOBBY_CANCELLED)
+                    MUST(sets_timer(GZ_LOBBY_TIMER_BUDGET));
+                list_ok(HOST.key[1].pub);
                 keep();
                 finish(chk, from, GZ_REC_LOBBY_STATE, GZ_REC_LOBBY_ENDED);
                 MUST(HOST.verifies - v0 <= 2);
@@ -511,6 +602,9 @@ static void host_script(const uint8_t *d, size_t n)
             host_boot(1, (uint16_t)(d[0] % 3));
             lobby_seq_stats[5]++;
             seats_saved();
+            /* resumed in Signing: the budget is the signing engine's, the lobby sets no timer for it;
+             * resumed Open with a budget begun: it does */
+            MUST(sets_timer(GZ_LOBBY_TIMER_BUDGET) == (H.state == GZ_LOBBY_OPEN && H.budget_ms != 0));
             continue;
         default:                                                      /* a garbled message */
             bn = join_msg(buf, sizeof buf, who, who, 0);
@@ -520,6 +614,14 @@ static void host_script(const uint8_t *d, size_t n)
             break;
         }
         MUST(st == GZ_OK);
+        list_ok(HOST.key[1].pub);
+        /* a refusal closes that connection: the transport does it */
+        if (refuses(NULL)) {
+            int k2;
+            for (k2 = 0; k2 < NK; k2++) if (CONN[k2] && refuses(K[k2].key[2].pub)) CONN[k2] = 0;
+        }
+        /* with a round in flight the budget is the signing engine's: no timer of the lobby's */
+        if (H.state == GZ_LOBBY_SIGNING) MUST(!sets_timer(GZ_LOBBY_TIMER_BUDGET));
         keep();
         lobby_seq_stats[2] += (unsigned long)(sends_kind(GZ_KIND_READY_CHECK) > 0);
         MUST(HOST.verifies - v0 <= 2);                                /* F8: never a flood of verifications */
@@ -533,12 +635,28 @@ static void host_script(const uint8_t *d, size_t n)
 
 static gz_lobby_member_t M;
 static int MCONN;
+static int GATE_USED, GATE_OPEN;     /* the member's signing gate: in use for this script; open */
+static gz_link_t MLINK;
+
+static int m_may_answer(void *ctx, const uint8_t scope[32])
+{
+    (void)ctx;
+    MUST(memcmp(scope, SCOPE, 32) == 0);
+    return GATE_OPEN;
+}
 
 static gz_status_t m_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_list_t *out)
 {
     end_t *e;
+    gz_lobby_handoff_t acc;
     (void)ctx; (void)out;
-    MUST(gz_lobby_member_may_sign(&M, h->check_id));
+    /* only a check the member accepted, and the hand-off is the accepted record */
+    MUST(gz_lobby_member_accepted(&M, h->check_id, 1, &acc) && gz_lobby_member_accepted(&M, h->check_id, 0, NULL));
+    MUST(!gz_lobby_member_accepted(&M, h->check_id, 2, NULL));
+    MUST(acc.role == 1 && h->role == 1 && acc.signers == h->signers && acc.start_len == h->start_len && h->start_len != 0 &&
+         acc.start_bytes == h->start_bytes && acc.version == h->version && acc.limits == h->limits &&
+         acc.n_levels == h->n_levels && memcmp(acc.check_id, h->check_id, 32) == 0 && h->attempt == 1 &&
+         h->budget_end_ms == 0 && h->participants == NULL);
     MUST(h->limits && h->outer_sig && h->current_sig && h->pinned_key && h->values);
     if ((e = ended(h->check_id)) != NULL) MUST(e->rec == NONE);   /* V1 */
     lobby_seq_stats[4]++;
@@ -551,12 +669,17 @@ static void member_boot(int restore)
     gz_lobby_crypto_t cr = lt_crypto(&K[0]);
     gz_lobby_conditions_t cond = lt_cond_fits();
     gz_lobby_signing_t sg;
+    gz_lobby_gate_t gate;
     size_t i;
     memset(&sg, 0, sizeof sg);
     sg.begin = m_begin;
-    MUST(gz_lobby_member_init(&M, &p, &cr, &sg, &cond, SCOPE, HOST.key[1].pub, K[0].key[2].pub, K[0].key[3].pub, 1) == GZ_OK);
+    gate.may_answer = m_may_answer; gate.ctx = NULL;
+    MLINK = lt_link(K[0].key[2].pub, HOST.key[1].pub);
+    MUST(lt_member_init(&M, &p, &cr, &sg, GATE_USED ? &gate : NULL, &cond, SCOPE, HOST.key[1].pub, K[0].key[2].pub,
+                        K[0].key[3].pub, 1) == GZ_OK);
     MCONN = 0;
     if (!restore) return;
+    if (GATE_USED) GATE_OPEN = 0;                     /* every gate is closed at a start */
     for (i = 0; i < NREC; i++) {
         gz_record_t r;
         r.type = RECS[i].type; r.bytes.data = RECS[i].b; r.bytes.len = RECS[i].n;
@@ -564,29 +687,47 @@ static void member_boot(int restore)
     }
     lreset();
     MUST(gz_lobby_member_resume(&M, &L) == GZ_OK);
+    MUST(L.count >= 1 && lt_is_connect(&L.slots[0], HOST.key[1].pub));   /* its CONNECT, at every start */
+    list_ok(K[0].key[2].pub);
     keep();
 }
 
 static gz_status_t m_in(int kind, const uint8_t *b, size_t n, uint64_t timer)
 {
     gz_lobby_input_t in;
-    memset(&in, 0, sizeof in);
-    in.kind = kind; in.peer_id = 1; in.peer_key = HOST.key[1].pub;
-    in.bytes = b; in.len = n; in.timer_id = timer;
     lreset();
+    if (kind != GZ_LIN_MESSAGE) lt_in(&in, kind, &MLINK);
+    else if (!lt_in_env(&in, &MLINK, b, n)) return GZ_OK;         /* no envelope: the transport's */
+    in.timer_id = timer;
     return gz_lobby_member_handle(&M, &in, &L);
+}
+
+/* A `ready` the last list saved (a new signature), and an unready for the lock. */
+static int saved_ready(size_t from, int *locked)
+{
+    size_t i, n;
+    const uint8_t *v;
+    int c = 0;
+    *locked = 0;
+    for (i = from; i < NREC; i++) {
+        if (RECS[i].type != GZ_REC_READY_SENT) continue;
+        if (lt_rec_field(RECS[i].b, RECS[i].n, 4, &v, &n)) c++;
+        if (lt_rec_field(RECS[i].b, RECS[i].n, 6, &v, &n) && n == 2 && v[1] == 3) (*locked)++;
+    }
+    return c;
 }
 
 /* A check the member answers anew is a new round in this script (the
  * script reuses three check ids; a real host's are random). */
 static void answered_anew(size_t from)
 {
-    size_t i;
+    size_t i, vn;
+    const uint8_t *v;
     int k;
     gz_lobby_msg_t g;
     for (i = from; i < NREC; i++)
-        if (RECS[i].type == GZ_REC_READY_SENT && RECS[i].n > 1 && gz_lobby_decode(RECS[i].b, RECS[i].n, &g) == GZ_DEC_OK &&
-            g.has_check_id)
+        if (RECS[i].type == GZ_REC_READY_SENT && lt_rec_field(RECS[i].b, RECS[i].n, 4, &v, &vn) &&
+            gz_lobby_decode_env(v, vn, &g) == GZ_DEC_OK && g.has_check_id)
             for (k = 0; k < NEND; k++)
                 if (memcmp(ENDS[k].check, g.check_id, 32) == 0) { ENDS[k] = ENDS[--NEND]; k--; }
 }
@@ -601,10 +742,12 @@ static void member_script(const uint8_t *d, size_t n)
     gz_status_t st;
     drop_recs();
     model_reset();
+    GATE_USED = (d[0] >> 2) & 1;
+    GATE_OPEN = 1;
     member_boot(0);
     memset(big, 0x61, sizeof big);
     for (at = 1; at + 3 <= n; at += 3) {
-        int op = d[at] % 11;
+        int op = d[at] % 12, closed0 = GATE_USED && !GATE_OPEN, toggled = 0, locked_rec = 0;
         uint8_t a1 = d[at + 1], arg = d[at + 2];
         STEP++;
         lobby_seq_stats[0]++;
@@ -685,11 +828,35 @@ static void member_script(const uint8_t *d, size_t n)
             member_boot(1);
             lobby_seq_stats[5]++;
             continue;
+        case 11:                                                      /* the gate, and the person's own ready */
+            lreset();
+            if (arg % 3 == 1 || !GATE_USED) { st = gz_lobby_member_ready(&M, &L); break; }
+            toggled = 1;
+            GATE_OPEN = !GATE_OPEN;
+            if (GATE_OPEN) st = gz_lobby_member_gate_opened(&M, &L);
+            else {
+                /* closing: a Ready seat with no answered check in flight leaves the count, saved first */
+                int was_ready = M.ready && M.joined && !M.ended;
+                /* ... and so does a seat whose creation is signed (Funding or
+                 * Active): there is nothing left to withdraw. */
+                int in_flight = (!M.ended && M.ready && M.has_answered && !(M.start_len && M.role == 2)) ||
+                                M.round_state >= GZ_LOBBY_FUNDING;
+                size_t q;
+                int unready3 = 0;
+                st = gz_lobby_member_gate_closed(&M, &L);
+                for (q = 0; q < L.count; q++)
+                    if (L.slots[q].kind == GZ_ACTION_SAVE && L.slots[q].u.save.n_records == 1 &&
+                        L.slots[q].u.save.records[0].type == GZ_REC_READY_SENT)
+                        unready3++;
+                MUST(unready3 == (was_ready && !in_flight) && M.ready == (was_ready && in_flight));
+                if (unready3) MUST(L.slots[0].kind == GZ_ACTION_SAVE && sends_kind(GZ_KIND_UNREADY) == (M.connected ? 1 : 0));
+            }
+            break;
         default: {                                                    /* the signing engine's outcome */
             gz_lobby_msg_t g;
             uint8_t sc[32];
             int outcome = 1 + arg % 4, began = M.start_len && M.role == 1 &&
-                          gz_lobby_decode(M.start_msg, M.start_len, &g) == GZ_DEC_OK;
+                          gz_lobby_decode_env(M.start_msg, M.start_len, &g) == GZ_DEC_OK;
             int other = outcome == GZ_LOBBY_ROUND_RETRY && (arg & 64);   /* a Retry naming another check */
             size_t q;
             memset(sc, 0, sizeof sc);
@@ -703,6 +870,7 @@ static void member_script(const uint8_t *d, size_t n)
             }
             st = gz_lobby_member_round_result(&M, outcome, sc, &L);
             if (st == GZ_OK && began && outcome != GZ_LOBBY_ROUND_FAILED && !refused_now()) {
+                list_ok(K[0].key[2].pub);
                 keep();
                 finish(sc, from, GZ_REC_LOBBY_STATE, GZ_REC_LOBBY_STATE);
                 continue;
@@ -711,7 +879,14 @@ static void member_script(const uint8_t *d, size_t n)
         }
         }
         MUST(st == GZ_OK);
+        list_ok(K[0].key[2].pub);
+        if (refuses(NULL)) MCONN = 0;                                 /* it refused its host: the transport closed the link */
+        MUST(MCONN || !M.connected);
         keep();
+        /* no ready is signed while the gate is closed (a step that moves the gate aside) */
+        if (closed0 && !toggled) MUST(saved_ready(from, &locked_rec) == 0);
+        else (void)saved_ready(from, &locked_rec);
+        lobby_seq_stats[11] += (unsigned long)locked_rec;
         answered_anew(from);
     }
     lobby_seq_stats[6] += (unsigned long)M.ended;

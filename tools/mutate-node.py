@@ -12,7 +12,9 @@ WORK/build (Release). For each mutant the one file is changed, the node's
 unit tests are rebuilt incrementally and run, and the file is restored. A
 mutant that no test notices is a survivor; one that does not compile is
 reported apart. The source tree is never written. A survivor the list names
-in a line "# equivalent NAME: why" has been triaged; the run exits 1 if any
+in a line "# equivalent NAME: why" (the fault changes nothing a caller can
+see) or "# untested NAME: why" (a real fault these tests do not reach, with
+where it is covered or why not) has been triaged; the run exits 1 if any
 survivor is not triaged, or any mutant does not apply or compile.
 
 usage: tools/mutate-node.py SOURCE-DIR WORK-DIR [-j N] [NAME...]
@@ -23,7 +25,8 @@ import subprocess
 import sys
 import time
 
-TESTS = ["node", "node_route", "node_conns", "node_timers", "node_handoff", "node_sizing", "node_hostile", "node_release", "action"]
+TESTS = ["node", "node_route", "node_conns", "node_timers", "node_handoff", "node_sizing", "node_hostile", "node_release", "action",
+         "node_lobby"]
 TARGETS = ["test_" + t for t in TESTS]
 
 
@@ -47,6 +50,11 @@ def load(path):
             if line.startswith("# equivalent ") and ":" in line:
                 name, why = line[len("# equivalent "):].split(":", 1)
                 triaged[name.strip()] = why.strip()
+                continue
+            if line.startswith("# untested ") and ":" in line:
+                # A real fault no test of this list reaches: named, with where it is tested or why not.
+                name, why = line[len("# untested "):].split(":", 1)
+                triaged[name.strip()] = "untested: " + why.strip()
                 continue
             if not line or line.startswith("#"):
                 continue

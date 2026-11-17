@@ -55,11 +55,14 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
 gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
-# Kind 0xffff (the lobby's SEND bridge until P4.2, the signing engine's until
-# P4.3) never reaches a program (composite-node.md, tasks T-P42-1, T-P43-1).
+# Kind 0xffff (the signing engine's SEND bridge until P4.3) never reaches a
+# program, and the lobby's bridge, deleted in P4.2, stays deleted
+# (composite-node.md, tasks T-P42-1, T-P43-1).
 add_test(NAME program_send_whole_unlinked
   COMMAND sh ${CMAKE_SOURCE_DIR}/tools/check-send-whole.sh ${CMAKE_SOURCE_DIR} $<TARGET_FILE:gazpacho>
           $<TARGET_FILE:gazpacho-test>)
+add_test(NAME lobby_send_whole_gone
+  COMMAND sh ${CMAKE_SOURCE_DIR}/tools/check-send-whole.sh ${CMAKE_SOURCE_DIR})
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
@@ -123,6 +126,12 @@ if(Python3_Interpreter_FOUND)
       COMMAND ${GZP_PY} ${GZP_T}/${t}.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/${t})
     set_tests_properties(program_${t} PROPERTIES TIMEOUT 300)
   endforeach()
+  # The lobby in the composite, P4.2 (docs/notes/composite-node.md 15): a host
+  # with two lobbies and its members as separate processes, the signing
+  # stand-in behind the hand-off; crashes, a storage failure, the gates.
+  add_test(NAME program_lobby
+    COMMAND ${GZP_PY} ${GZP_T}/lobby.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/lobby)
+  set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})

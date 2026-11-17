@@ -23,6 +23,8 @@ _Static_assert(GZ_NODE_MAX_SLOTS * TS_MAX_TIMERS + NP_MAX_TIMERS + BUDGET_SIGNIN
                        BUDGET_API + 2 * TE_MAX_TIMERS <= GZ_NODE_MAX_TIMERS,
                "the engines' timers must fit the program's table (7.1, R8)");
 _Static_assert(SLOT_MAX_TIMERS >= TS_MAX_TIMERS, "a slot tracks every timer its engine may set");
+_Static_assert(NW_MAX_TIMERS >= NP_MAX_TIMERS && NW_MAX_TIMERS >= TE_MAX_TIMERS,
+               "a node-wide engine's table holds its whole budget");
 
 uint64_t gz_timer_pack(uint16_t area, uint16_t gen, uint32_t id)
 {
@@ -50,6 +52,40 @@ int gz_timer_track(slot_t *s, uint64_t packed, int set)
         return 1;
     }
     if (i < s->n_timers) s->timers[i] = s->timers[--s->n_timers];
+    return 1;
+}
+
+/* An engine's declared budget (its ops' max_timers; the node part's own). */
+size_t gz_timer_budget(const gz_node_t *c, int eng)
+{
+    if (eng == ENG_NODE) return NP_MAX_TIMERS;
+    if (eng >= ENG_SLOT0) return c->slots[eng - ENG_SLOT0].kind == SLOT_KIND_LOBBY ? LS_MAX_TIMERS : TS_MAX_TIMERS;
+    return TE_MAX_TIMERS;
+}
+
+int gz_timer_note(gz_node_t *c, int eng, uint64_t packed, int set)
+{
+    uint64_t *t;
+    size_t *n, i, max;
+    if (eng < 0 || eng >= ENG_N) return 0;
+    max = gz_timer_budget(c, eng);
+    if (eng >= ENG_SLOT0) {
+        slot_t *s = &c->slots[eng - ENG_SLOT0];
+        t = s->timers;
+        n = &s->n_timers;
+    } else {
+        t = c->nw_timers[eng];
+        n = &c->n_nw_timers[eng];
+    }
+    for (i = 0; i < *n; i++)
+        if (t[i] == packed) break;
+    if (set) {
+        if (i < *n) return 1; /* setting a set timer replaces it */
+        if (*n >= max) return 0;
+        t[(*n)++] = packed;
+        return 1;
+    }
+    if (i < *n) t[i] = t[--*n];
     return 1;
 }
 

@@ -84,6 +84,12 @@ typedef struct {
      * been answered by a durable batch 1 of an incarnation begun with it. */
     int (*restored)(void *ctx);
     void (*close)(void *ctx);
+    /* THE GUARD FILE (journal.md 8.3; ports.h, the reader's `guard`): the
+     * bytes of the newest guard record storage keeps outside the journal, so
+     * that a restore of the journal alone does not take it back. 1 with
+     * *data and *len (valid until the next append or close), 0 if there is
+     * none. May be NULL: no guard file. */
+    int (*guard)(void *ctx, const uint8_t **data, size_t *len);
 } gzp_store_ops_t;
 
 typedef struct {
@@ -92,8 +98,13 @@ typedef struct {
 } gzp_store_t;
 
 /* The stand-in: `dir`/journal.standin, created if missing, with the start
- * counter `dir`/starts.standin (written first at set-up) and the restore
- * marker `dir`/restore.pending (journal_standin.c). Refuses to open while
+ * counter `dir`/starts.standin (written first at set-up), the restore
+ * marker `dir`/restore.pending and the guard file `dir`/guard.standin
+ * (journal_standin.c). The guard file is outside what a restore replaces:
+ * every durable batch that holds a guard record replaces it (write, sync,
+ * rename, sync the folder), never with a lower counter, and a restored
+ * start is given it, so the node's restore batch keeps what was used since
+ * the backup (review of PR 41, confirmation F1). Refuses to open while
  * `dir`/storage.failed exists. Takes no lock: the data folder's lock
  * (datadir.c) is held around it. Reads the whole journal at open. */
 int gzp_standin_open(gzp_store_t *out, const char *dir, char *err, size_t errlen);

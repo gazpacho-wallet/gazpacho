@@ -110,6 +110,7 @@ static void test_push_out_order(void)
     h.clock += 10;
     h_msg(&h, &l9, 128, NULL, NULL, 0);
     CHECK(n_unseated(&h) == 16);
+    h.clock += NP_SILENT_GRACE_MS; /* those that said nothing have had their time: they are silent */
     /* Fourteen newcomers, one push-out each: the silent ones in the order
      * they connected, 0 1 2 4 5 6 7 8 10 ... and never 3 or 9 while a silent
      * one is left. */
@@ -142,6 +143,7 @@ static void test_push_out_order(void)
     h_peer(&h, &quiet, 1, 0);
     CHECK(h_count(&h, m, GZ_ACTION_DISCONNECT) == 1 && closed_member(&h, m, 0, NULL) != 400);
     m = h_mark(&h);
+    h.clock += NP_SILENT_GRACE_MS;
     h_peer(&h, &next, 1, 0);
     CHECK(closed_member(&h, m, 0, NULL) == 400);
     /* The seated one, the oldest and silent throughout, was never touched. */
@@ -638,8 +640,9 @@ static void test_hello_limits_exact(void)
             offers++;
     CHECK(offers == NP_MAX_LISTED && NP_MAX_LISTED == 4);
     m = h_mark(&h);
+    uint64_t limited = h.n->np.drops[DROP_HELLO_LIMIT];
     h_msg(&h, &d, GZ_MSG_KIND_HELLO, zero, NULL, 0);
-    CHECK(!h_said(&h, m, "slot-msg") && h_said(&h, m, "drop why=hello-limit"));
+    CHECK(!h_said(&h, m, "slot-msg") && h.n->np.drops[DROP_HELLO_LIMIT] == limited + 1);
     CHECK_NO_NODE_ERROR(&h);
     h_free(&h);
 }
@@ -819,8 +822,73 @@ static void test_timer_of_a_closed_slot(void)
     h_free(&h);
 }
 
+/* T-P42-7: chatter does not hold a place without a seat for ever, and a
+ * newcomer is not "silent" before it has had two seconds to speak.
+ * T-P42-8: the drop notices are rate-limited, the counts exact. */
+static void test_age_grace_and_notices(void)
+{
+    h_t h;
+    h_init(&h, 1, 1);
+    h_start(&h);
+    /* One connection without a seat that says something every 50 s: never
+     * idle, and closed ten minutes after it came up, not before. */
+    gz_link_t chat = h_host_link(1);
+    size_t m = h_mark(&h);
+    h_peer(&h, &chat, 1, 0);
+    for (int i = 1; i <= 12; i++) {
+        h.clock += 50000;
+        h_timer(&h, IDLE_TIMER);
+        CHECK(closed(&h, m, 1) == (i == 12));
+        if (i < 12) h_msg(&h, &chat, 128, NULL, NULL, 0);
+        if (i == 11) {
+            /* It has just spoken: 60 s of silence would end at 610 s, but its
+             * ten minutes end at 600 s, and the timer is set for that. */
+            size_t m2 = h_mark(&h);
+            h_timer(&h, IDLE_TIMER);
+            CHECK(idle_set(&h, m2) == 50000);
+        }
+    }
+    CHECK(n_unseated(&h) == 0);
+    /* Sixteen that keep talking, then an honest one, silent so far, and a
+     * millisecond later one more: the honest one is not pushed out for
+     * having had no time to speak; the one quiet longest among the talkers
+     * goes. */
+    for (uint32_t i = 0; i < 16; i++) {
+        gz_link_t l = h_host_link(100 + i);
+        h.clock += 10;
+        h_msg(&h, &l, 128, NULL, NULL, 0);
+    }
+    gz_link_t honest = h_host_link(200), late = h_host_link(201), later = h_host_link(202);
+    h.clock += 10;
+    m = h_mark(&h);
+    h_peer(&h, &honest, 1, 0);
+    CHECK(h_count(&h, m, GZ_ACTION_DISCONNECT) == 1 && closed_member(&h, m, 0, NULL) == 100);
+    h.clock += 1;
+    m = h_mark(&h);
+    h_peer(&h, &late, 1, 0);
+    CHECK(h_count(&h, m, GZ_ACTION_DISCONNECT) == 1 && closed_member(&h, m, 0, NULL) == 101 && !closed(&h, m, 200));
+    /* Two seconds on, still silent, they are the first to go: the older first. */
+    h.clock += NP_SILENT_GRACE_MS;
+    m = h_mark(&h);
+    h_peer(&h, &later, 1, 0);
+    CHECK(h_count(&h, m, GZ_ACTION_DISCONNECT) == 1 && closed_member(&h, m, 0, NULL) == 200);
+    /* Two hundred dropped messages: 64 notices, then one at the 128th; the
+     * count is 200. */
+    gz_link_t f = h_host_link(102);
+    uint64_t before = h.n->np.drops[DROP_FUNDED];
+    size_t lines = 0;
+    m = h_mark(&h);
+    for (int i = 0; i < 200; i++) h_msg(&h, &f, 81, NULL, NULL, 0);
+    for (size_t i = m; i < h.n_log; i++)
+        if (h.log[i].a.kind == GZ_ACTION_NOTIFY && strstr(h.log[i].text, "drop why=factory-funded")) lines++;
+    CHECK(h.n->np.drops[DROP_FUNDED] == before + 200 && before == 0 && lines == NP_DROP_NOTICES + 1);
+    CHECK_NO_NODE_ERROR(&h);
+    h_free(&h);
+}
+
 int main(void)
 {
+    test_age_grace_and_notices();
     test_push_out_order();
     test_idle_clock();
     test_bound_without_a_seat();

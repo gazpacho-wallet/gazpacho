@@ -3,12 +3,16 @@
  * checking safety invariants on every message that leaves a node, and, once
  * the faults stop, that the lobby starts with every member.
  *
+ * Contract v2: the wire carries envelopes (world.h); records are read by
+ * field (gz_lf_*), not by offset; the world's executor checks every saved
+ * record against the table of largest records; and at the end the seats the
+ * transport was told (SET_SEATED) are the seats the host holds.
+ *
  * usage: test_lobby_sim SEEDS [PROFILE]   profile 0 mixed, 1 crashes, 2 network, 3 none */
 #include "../check.h"
 #include "world.h"
-#include "../../core/lobby/lobby_internal.h"
 
-static unsigned long inv_fail, n_checks, n_starts, n_readies, n_budget, n_resumed;
+static unsigned long inv_fail, n_checks, n_starts, n_readies, n_budget, n_resumed, n_seat_actions, n_connects, n_refusals;
 
 static void inv(int ok, const char *what, world_t *w)
 {
@@ -24,18 +28,22 @@ static int seen_version[16], n_seen;
 static int frozen; static uint32_t frozen_v; static uint8_t frozen_d[32];
 static uint8_t outer_digest[32];
 
-static const w_rec_t *find_rec(const w_node_t *d, uint32_t type, const uint8_t *bytes, size_t n, size_t at)
+/* A record of `type` in the node's journal: any (env NULL); one whose field 4
+ * is exactly the envelope `env` (joined, ready_sent); or, for start_sent, one
+ * whose list (field 8) holds the envelope. */
+static const w_rec_t *find_rec(const w_node_t *d, uint32_t type, const uint8_t *env, size_t n)
 {
     size_t k;
     for (k = 0; k < d->n_recs; k++) {
         const w_rec_t *r = &d->recs[k];
+        const uint8_t *v;
+        size_t vn, j;
         if (r->type != type) continue;
-        if (!bytes) return r;
-        if (at + n <= r->n && memcmp(r->b + at, bytes, n) == 0) return r;
-        if (type == GZ_REC_START_SENT) {           /* bytes anywhere in the record */
-            size_t j;
-            for (j = 0; j + n <= r->n; j++) if (memcmp(r->b + j, bytes, n) == 0) return r;
-        }
+        if (!env) return r;
+        if (type == GZ_REC_START_SENT) {
+            if (!lt_rec_field(r->b, r->n, 8, &v, &vn)) continue;
+            for (j = 0; j + n <= vn; j++) if (memcmp(v + j, env, n) == 0) return r;
+        } else if (lt_rec_field(r->b, r->n, 4, &v, &vn) && vn == n && memcmp(v, env, n) == 0) return r;
     }
     return NULL;
 }
@@ -44,7 +52,8 @@ static void on_wire(world_t *w, int from, int to, const uint8_t *b, size_t n)
 {
     gz_lobby_msg_t m;
     w_node_t *d = &w->node[from];
-    if (gz_lobby_decode(b, n, &m) != GZ_DEC_OK) return;
+    if (gz_lobby_decode_env(b, n, &m) != GZ_DEC_OK) { inv(0, "a message on the wire that does not decode", w); return; }
+    inv(memcmp(m.scope, outer_digest, 32) == 0, "a message for another scope", w);
     n_checks++;
     switch (m.kind) {
     case GZ_KIND_TERMS_OFFER: {
@@ -60,43 +69,45 @@ static void on_wire(world_t *w, int from, int to, const uint8_t *b, size_t n)
         if (k == n_seen && n_seen < 16) { seen_version[n_seen] = (int)c.version; memcpy(seen_digest[n_seen++], cd, 32); }
         if (frozen) inv(c.version == frozen_v && memcmp(cd, frozen_d, 32) == 0, "a version after the freeze", w);
         /* the host holds what it offers: lobby_opened or current_signed */
-        inv(find_rec(d, GZ_REC_LOBBY_OPENED, NULL, 0, 0) != NULL, "offer before lobby_opened", w);
+        inv(find_rec(d, GZ_REC_LOBBY_OPENED, NULL, 0) != NULL, "offer before lobby_opened", w);
         break;
     }
     case GZ_KIND_READY_CHECK:
         if (!frozen) { frozen = 1; frozen_v = m.version; memcpy(frozen_d, m.current_digest, 32); }
         inv(m.version == frozen_v && memcmp(m.current_digest, frozen_d, 32) == 0, "check at other values", w);
         {
-            const w_rec_t *r = find_rec(d, GZ_REC_FREEZE, NULL, 0, 0);
-            inv(r && gz_lw_get(r->b + 32, 4) == m.version && memcmp(r->b + 36, m.current_digest, 32) == 0,
+            const w_rec_t *r = find_rec(d, GZ_REC_FREEZE, NULL, 0);
+            const uint8_t *ver = NULL, *dig = NULL;
+            size_t vl = 0, dl = 0;
+            inv(r && lt_rec_field(r->b, r->n, 6, &ver, &vl) && vl == 4 && gz_lw_get(ver, 4) == m.version &&
+                lt_rec_field(r->b, r->n, 8, &dig, &dl) && dl == 32 && memcmp(dig, m.current_digest, 32) == 0,
                 "check sent before the freeze was saved", w);
         }
         break;
     case GZ_KIND_START:
         n_starts++;
-        inv(find_rec(d, GZ_REC_START_SENT, b, n, 0) != NULL, "start sent before start_sent was saved", w);
+        inv(find_rec(d, GZ_REC_START_SENT, b, n) != NULL, "start sent before start_sent was saved", w);
         inv(m.signers <= w->node[0].host->terms.target + 1 && m.signers >= 4, "signers out of bounds", w);
         break;
     case GZ_KIND_READY: {
         /* saved before it left, names values the member's conditions accept */
-        const w_rec_t *r = find_rec(d, GZ_REC_READY_SENT, b, n, 0);
+        const w_rec_t *r = find_rec(d, GZ_REC_READY_SENT, b, n);
         size_t k;
         int ok = 0;
         n_readies++;
-        inv(r != NULL && r->n == n, "ready sent before it was saved", w);
+        inv(r != NULL, "ready sent before it was saved", w);
         inv(!d->mem->ended, "ready after the end", w);
         for (k = 0; k < d->n_recs; k++) {
             const w_rec_t *t = &d->recs[k];
             gz_terms_outer_t o;
             gz_terms_current_t c;
             const uint8_t *ob, *cb;
-            size_t at = 0, on, cn;
+            size_t on, cn;
             uint8_t term;
             int cls;
             if (t->type != GZ_REC_TERMS_RECEIVED) continue;
-            gz_la_get_blob(t->b, t->n, &at, &ob, &on);
-            at += 64;
-            gz_la_get_blob(t->b, t->n, &at, &cb, &cn);
+            /* terms_received: 4 the outer record, 8 the current one */
+            if (!lt_rec_field(t->b, t->n, 4, &ob, &on) || !lt_rec_field(t->b, t->n, 8, &cb, &cn)) continue;
             if (!lt_outer(ob, on, &o) || !lt_current(cb, cn, &o, outer_digest, &c)) continue;
             if (c.version != m.version) continue;
             cls = gz_lobby_classify(&o, &c, &d->cond, &term);
@@ -106,7 +117,7 @@ static void on_wire(world_t *w, int from, int to, const uint8_t *b, size_t n)
         break;
     }
     case GZ_KIND_JOIN:
-        inv(find_rec(d, GZ_REC_JOINED, b, n, 0) != NULL, "join sent before it was saved", w);
+        inv(find_rec(d, GZ_REC_JOINED, b, n) != NULL, "join sent before it was saved", w);
         break;
     case GZ_KIND_LEAVE:
         inv(0, "an honest host made a member leave", w);
@@ -132,7 +143,29 @@ static int run(uint64_t seed, int profile, unsigned long *tot)
     w_run(&w, 9000, 1);                               /* faults for 450 s */
     for (i = 1; i <= n; i++) w_link(&w, i, 0);         /* then every connection is made again */
     w_run(&w, 4500, 0);                               /* past the deadline and the window */
-    for (i = 0; i <= n; i++) n_resumed += (unsigned long)w.node[i].n_resumes;
+    for (i = 0; i <= n; i++) {
+        n_resumed += (unsigned long)w.node[i].n_resumes;
+        n_seat_actions += (unsigned long)w.node[i].n_seat_actions;
+        n_connects += (unsigned long)w.node[i].n_connects;
+        n_refusals += (unsigned long)w.node[i].n_refusals;
+    }
+    if (w.oversize) { printf("seed %llu: %lu records over their largest size\n", (unsigned long long)seed, w.oversize); ok = 0; }
+    /* The seats the transport was told (SET_SEATED, after each seat's save and
+     * again at every start of the host) are the seats the host holds: a seat
+     * that is in, or a chosen one held for the round in Signing. */
+    for (i = 1; i <= n; i++) {
+        const gz_lobby_host_t *hh0 = w.node[0].host;
+        int k, in = 0;
+        for (k = 0; k < hh0->n_seats; k++)
+            if (memcmp(hh0->seats[k].ckey, w.node[i].keys.key[2].pub, 33) == 0)
+                in = hh0->seats[k].state == GZ_SEAT_JOINED || hh0->seats[k].state == GZ_SEAT_READY ||
+                     (hh0->state == GZ_LOBBY_SIGNING && hh0->seats[k].chosen);
+        if (w.node[0].alive && w.node[0].seated[i] != in) {
+            printf("seed %llu: member %d: the transport's seat is %d, the host's %d\n", (unsigned long long)seed, i,
+                   w.node[0].seated[i], in);
+            ok = 0;
+        }
+    }
     tot[0] += w.drops; tot[1] += w.dups; tot[2] += w.reorders; tot[3] += w.crashes; tot[4] += w.cuts;
     if (w.failures) { printf("seed %llu: %lu engine failures\n", (unsigned long long)seed, w.failures); ok = 0; }
     /* Liveness. Below the target (n < 8) the start comes at the deadline, after
@@ -141,8 +174,11 @@ static int run(uint64_t seed, int profile, unsigned long *tot)
      * the minimum. Either way every member in the host's set, and only those,
      * is handed over for that check, with the frozen digest. */
     /* A start made early (at the target, during the faults) may have spent
-     * T1's 10-minute signing budget by the end: the lobby then ends Failed,
-     * cancel reason 3 (terms.md 3), which is right with no signing engine. */
+     * T1's 10-minute signing budget by the end. From the hand-off on the
+     * budget is the signing engine's (contract v2, 9.4), and this world's
+     * signing engine reports nothing, so the lobby stays in Signing; it ends
+     * Failed, cancel reason 3 (terms.md 3), only where its own timer still
+     * runs, with no round in flight. Either is right here. */
     budget_spent = w.node[0].host->state == GZ_LOBBY_FAILED && w.node[0].host->end_reason == 3 &&
                    w.node[0].host->budget_ms && w.now >= w.node[0].host->budget_ms + 600000;
     if (budget_spent) n_budget++;
@@ -213,9 +249,10 @@ int main(int argc, char **argv)
     for (s = 1; s <= seeds; s++) if (!run(s * 7919u + (unsigned long)profile, profile, tot)) failed++;
     printf("sim: profile %d, %lu seeds, %lu failed; %lu messages checked, %lu starts, %lu readies; "
            "faults: %lu drops, %lu duplicates, %lu reorders, %lu crashes, %lu cuts; %lu invariant failures; "
-           "%lu ended by the signing budget, %lu hand-offs resumed\n",
+           "%lu ended by the signing budget, %lu hand-offs resumed; %lu SET_SEATED, %lu CONNECT, %lu DISCONNECT\n",
            profile, seeds, failed, n_checks, n_starts, n_readies, tot[0], tot[1], tot[2], tot[3], tot[4], inv_fail,
-           n_budget, n_resumed);
+           n_budget, n_resumed, n_seat_actions, n_connects, n_refusals);
+    CHECK(n_seat_actions > 0 && n_connects > 0);
     CHECK(failed == 0);
     CHECK(inv_fail == 0);
     CHECK(n_starts > 0 && n_readies > 0);

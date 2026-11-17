@@ -133,8 +133,35 @@ static void test_tracking(void)
     CHECK(gz_timer_cancel_slot(&s, &l) == GZ_OK && l.count == SLOT_MAX_TIMERS - 1 && s.n_timers == 0);
 }
 
+/* T-P42-6: every engine is held to its own budget of timers, not only a
+ * slot's engine to the table's size: the node part to NP_MAX_TIMERS, a test
+ * engine to TE_MAX_TIMERS, a lobby to the lobby's six, the stand-in to its
+ * own. Setting a set timer replaces it; a fired or cancelled one frees its
+ * place. */
+static void test_budgets(void)
+{
+    static gz_node_t c;
+    struct { int eng; size_t max; } e[] = {
+        {ENG_NODE, NP_MAX_TIMERS}, {ENG_TEST0, TE_MAX_TIMERS}, {ENG_TEST1, TE_MAX_TIMERS},
+        {ENG_SLOT0, LS_MAX_TIMERS}, {ENG_SLOT0 + 1, TS_MAX_TIMERS}};
+    memset(&c, 0, sizeof c);
+    c.slots[0].kind = SLOT_KIND_LOBBY;
+    c.slots[1].kind = SLOT_KIND_STANDIN;
+    for (size_t k = 0; k < sizeof e / sizeof e[0]; k++) {
+        CHECK(gz_timer_budget(&c, e[k].eng) == e[k].max);
+        for (uint32_t i = 0; i < e[k].max; i++) CHECK(gz_timer_note(&c, e[k].eng, gz_timer_pack(7, 1, i), 1));
+        CHECK(gz_timer_note(&c, e[k].eng, gz_timer_pack(7, 1, 0), 1));       /* set again: replaces */
+        CHECK(!gz_timer_note(&c, e[k].eng, gz_timer_pack(7, 1, 99), 1));     /* one more: over its budget */
+        CHECK(gz_timer_note(&c, e[k].eng, gz_timer_pack(7, 1, 1), 0));       /* one fires */
+        CHECK(gz_timer_note(&c, e[k].eng, gz_timer_pack(7, 1, 99), 1));      /* and its place is free */
+        CHECK(!gz_timer_note(&c, e[k].eng, gz_timer_pack(7, 1, 98), 1));
+    }
+    CHECK(LS_MAX_TIMERS == 6 && NP_MAX_TIMERS == 3 && TE_MAX_TIMERS == 4);
+}
+
 int main(void)
 {
+    test_budgets();
     test_pack();
     test_generations();
     test_generation_reuse();

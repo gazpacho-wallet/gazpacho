@@ -119,13 +119,14 @@ typedef enum {
 #define GZ_SEND_MAX_RECORDS 1048576u
 /* Longest CONNECT address: "host:port", numeric. */
 #define GZ_CONNECT_MAX_ADDRESS 64u
-/* A kind no engine may SEND and no peer's message carries to an engine: until
- * P4.2 the lobby, which no program links yet, marks with it a SEND that still
- * holds a whole message (lobby.h, GZ_LOBBY_SEND_WHOLE), and until P4.3 the
- * signing engine does the same (signing.h, GZ_SIGN_SEND_WHOLE). The composite refuses
- * it from an engine and the program never puts it on the wire. P4.2 removes
- * the lobby's use (composite-node.md, task T-P42-1; tools/check-send-whole.sh
- * fails if a program links the lobby while the bridge exists). */
+/* A kind no engine may SEND and no peer's message carries to an engine. The
+ * composite refuses it from an engine (GZ_ERR_BUG) and the program never puts
+ * it on the wire. An engine not yet on links marks with it a SEND that still
+ * holds a whole message: the signing engine does until P4.3 (signing.h,
+ * GZ_SIGN_SEND_WHOLE; composite-node.md, task T-P43-1). The lobby did until
+ * P4.2; its bridge is deleted (task T-P42-1). tools/check-send-whole.sh fails
+ * if the lobby's bridge comes back, and if a program links the signing
+ * engine while its bridge exists. The number stays reserved. */
 #define GZ_SEND_KIND_RESERVED 0xffffu
 
 /* One stored record: an opaque byte string with a type tag. */
