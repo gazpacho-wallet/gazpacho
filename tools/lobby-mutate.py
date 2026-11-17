@@ -184,7 +184,7 @@ NAMED = [
      "TRY(unready(m, 3, out));",
      "TRY(unready(m, 2, out));"),
     ("member.c", "gate: a locked member says nothing to a check",
-     "if (!m->ready) TRY(send_reason(m, GZ_KIND_UNREADY, 3, out));",
+     "if (!m->ready) TRY(unready(m, 3 /* locked */, out));",
      ""),
     # refusals, connections, the engine rule
     ("member.c", "refusal: no CONNECT after it",

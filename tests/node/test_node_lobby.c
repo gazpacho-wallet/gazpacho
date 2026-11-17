@@ -1406,6 +1406,56 @@ static void test_left_out(void)
     w_free(1);
 }
 
+/* ---- 8. a Node record with a field this program does not know ------------------------ */
+
+/* slot_opened with an even field this program does not know (a newer
+ * program requires it), or a key index whose pair would wrap: damage, so the
+ * start refuses it. An odd unknown field is skipped (review B of PR 44, L3,
+ * L4). */
+static void test_node_record_fields(void)
+{
+    lt_key_t hk;
+    terms_t t;
+    whost(&hk);
+    w_reset();
+    make_terms(&t, 3, 3, 700);
+    for (int k = 0; k < 4; k++) {
+        h_t *x = &N[SCRATCH];
+        uint8_t rec[300], v[4];
+        size_t at = 0;
+        gz_status_t st;
+        w_node(SCRATCH, 5, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+        gz_put_u32(v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 2, v, 4);
+        gz_rec_put(rec, sizeof rec, &at, 4, t.scope, 32);
+        v[0] = 0;
+        gz_rec_put(rec, sizeof rec, &at, 6, v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 8, hk.pub, 33);
+        gz_rec_put(rec, sizeof rec, &at, 10, (const uint8_t *)ADDR, sizeof ADDR - 1);
+        gz_put_u32(v, 0);
+        gz_rec_put(rec, sizeof rec, &at, 12, v, 4);
+        gz_put_u32(v, k == 1 ? 0xffffffffu : 1);
+        gz_rec_put(rec, sizeof rec, &at, 14, v, 4);
+        v[0] = 1;
+        gz_rec_put(rec, sizeof rec, &at, 22, v, 1);
+        if (k == 2) gz_rec_put(rec, sizeof rec, &at, 24, v, 1); /* unknown, even */
+        if (k == 3) gz_rec_put(rec, sizeof rec, &at, 25, v, 1); /* unknown, odd */
+        h_add_batch(x, 1, 1, GZ_RECORD_SLOT_OPENED, rec, at);
+        x->incarnation = 1;
+        h_new_node(x);
+        st = w_start(SCRATCH);
+        CHECK(k == 1 || k == 2 ? st == GZ_ERR_CORRUPT : st == GZ_OK);
+        if (k == 0 || k == 3) CHECK(gz_route_slot_by_scope(x->n, t.scope) >= 0);
+        ALIVE[SCRATCH] = 0;
+        NT[SCRATCH] = 0;
+        for (int i = 0; i < 64; i++)
+            if (C[i].used && C[i].node == SCRATCH) C[i].used = 0;
+        h_free(x);
+        memset(x, 0, sizeof *x);
+    }
+    CHECK(ERRORS == 0);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1418,6 +1468,7 @@ int main(int argc, char **argv)
     test_index();
     test_seat_capacity();
     test_left_out();
+    test_node_record_fields();
     test_gate_refused_ready();
     test_hostile(events, seed);
     return check_done();
