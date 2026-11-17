@@ -705,7 +705,7 @@ static gz_status_t on_command(te_t *t, gz_bytes_t cmd, gz_action_list_t *out)
     }
     case GZ_TE_CMD_SEND_RESERVED: {
         /* A bug: a SEND of the reserved kind, written past the list's check
-         * (as the lobby's bridge is until P4.2). The composite refuses it. */
+         * (as the lobby's bridge was until P4.2). The composite refuses it. */
         gz_action_t a = {.kind = GZ_ACTION_SEND};
         if (!t->keys.pub || !t->keys.pub(t->keys.ctx, 0, 0, a.u.send.link.local.key)) return result(out, cmd, 404, "no_key");
         memset(a.u.send.link.remote.key, 2, 33);

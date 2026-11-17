@@ -387,7 +387,7 @@ void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_
         fail(v, GZ_CHK_C8_LSTOCK_DELAY, -1);
         return;
     }
-    /* C8: shape, fixed levels, fee and funding, all derived from the terms. */
+    /* C8: shape, fixed levels, fee rate and funding, all derived from the terms. */
     switch (gz_tree_params(o, n, &prm)) {
     case GZ_TREE_P_OK: break;
     case GZ_TREE_P_COUNT: fail(v, GZ_CHK_C8_MEMBERS_TERMS, (int32_t)n); return;
@@ -396,8 +396,8 @@ void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_
     case GZ_TREE_P_OVERFLOW: fail(v, GZ_CHK_C8_FUNDING_RULE, -1); return;
     }
     if (p->fixed_levels != prm.D) { fail(v, GZ_CHK_C8_FIXED_LEVELS, -1); return; }
-    if (p->fee_per_tx != prm.fee_per_tx) { fail(v, GZ_CHK_C8_FEE_RULE, -1); return; }
-    if (p->fee_per_tx > cond->max_fee_per_tx_sat) { fail(v, GZ_CHK_C8_FEE_CEILING, -1); return; }
+    if (p->tree_feerate != prm.tree_feerate) { fail(v, GZ_CHK_C8_FEE_RULE, -1); return; }
+    if (cond->max_tree_feerate && p->tree_feerate > cond->max_tree_feerate) { fail(v, GZ_CHK_C8_FEE_CEILING, -1); return; }
     if (p->funding_amount != prm.funding_amount) { fail(v, GZ_CHK_C8_FUNDING_RULE, -1); return; }
     /* C8: the end height, then the exit-time check for the member's own leaf. */
     E = p->end_height;
@@ -422,7 +422,7 @@ void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_
     bi.host_key = p->participants[0].factory_key;
     bi.member_keys = (const uint8_t(*)[33])keys;
     bi.end_height = p->end_height;
-    bi.fee_per_tx = p->fee_per_tx;
+    bi.tree_feerate = p->tree_feerate;
     bi.lstock_csv = p->lstock_delay;
     memcpy(bi.funding_txid, p->funding_txid, 32);
     bi.funding_vout = p->funding_vout;

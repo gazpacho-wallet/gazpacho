@@ -68,7 +68,12 @@ typedef struct {
      * Host: NULL and 0. */
     const gz_terms_limits_t *limits;
     uint16_t min_members;
-    const uint8_t *start_bytes; size_t start_len; /* member: the signed start */
+    const uint8_t *start_bytes; size_t start_len; /* member: the signed start, an envelope; none: NULL, 0 */
+    /* Host: the Unix ms at which the signing budget ends (terms.md 3: the
+     * lobby's first start plus the budget). From the hand-off on the signing
+     * engine alone owns the budget (composite-node.md 9.4). Member: 0. */
+    uint64_t budget_end_ms;
+    uint32_t attempt;                          /* 1 until understudies (P4.7) */
 } gz_lobby_handoff_t;
 
 /* The signing engine's side. Each function appends its own actions after the
@@ -77,8 +82,10 @@ typedef struct {
  *
  *   begin        a round may begin (above). Called after the lobby's saves.
  *   cancel       the lobby ended by a `cancel` (messages.md 6.10): on the host
- *                after its cancel is saved and listed for every seat, on the
- *                member after the received cancel is saved. `reason` is the
+ *                right after its cancel is saved and before it is listed for
+ *                any seat, on the member right after the received cancel is
+ *                saved: what the signing engine saves for it follows the
+ *                lobby's save directly and joins its batch. `reason` is the
  *                cancel's (1 deadline below the minimum, 2 host's choice, 3
  *                signing failed). Called for every cancel, also one before
  *                any start: the signing engine ignores a lobby it never began.

@@ -52,7 +52,7 @@ jobs:
         run: |
           sudo sysctl -w vm.mmap_rnd_bits=28
           sh tools/chain-tsan.sh "$RUNNER_TEMP/chain-tsan"
-      - name: Scale check, one small case and the two defect reproductions
+      - name: Scale check, one small case; the two former builder defects stay gone
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
 
   import-check:
@@ -221,6 +221,7 @@ jobs:
           --args "lobby_fuzz=3000 2" --args "lobby_fuzz_seq=300 2"
           --args "api_http_fuzz=3000" --args "api_json_fuzz=20000"
           --args "node_fuzz=300" --args "node_hostile=6 400" --args "sim_profile_6=25 300 1 6"
+          --args "node_lobby=1500 1" --args "lobby_hostile=3000 2"
           --args "chain_fuzz_parse=20000" --args "chain_fuzz_watch=1500"
           --exclude '^storage_vector_e2r$'
           --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
@@ -230,6 +231,7 @@ jobs:
           --args "signing_restores=restores tiny" --args "signing_errors=errors tiny"
           --args "signing_fuzz=1000 2"
           --args "signing_node=tiny" --args "signing_fuzz_replay=1000"
+          --args "fuzz_tree_agree=40"
       - name: Storage and signing constant-time checks (secrets marked undefined, under memcheck)
         # Registered only where valgrind and its headers are installed: here.
         run: ctest --test-dir build -R '^(storage|signing)_ctime$' --output-on-failure --no-tests=error

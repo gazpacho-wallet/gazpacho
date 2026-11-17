@@ -347,9 +347,11 @@ Host:
 
 | Type | Field | Size | Required |
 |---|---|---|---|
-| 1 | `reason` | `u16` | No. 1 conditions no longer met, 2 user's choice |
+| 1 | `reason` | `u16` | No. 1 conditions no longer met, 2 user's choice, 3 locked: the member's app may not sign now (its signing gate is closed, `docs/notes/composite-node.md` 12.2) |
 
 Valid while the seat exists and no round is under way for it. Host: seat becomes Joined; answer `lobby_status`. Duplicate: no change.
+
+A member whose signing gate is closed is not Ready: it sends `unready` with reason 3 at once when the gate closes (unless a check it answered is still in flight, which runs to its end), again when a `ready_check` arrives, and after a restart. So a host never runs a check that locked seats would make fail. Neither that `unready` nor the `ready` that follows it counts against the limit on state changes, once per check window; a further pair in the same window counts as usual. A seat past the limit is ignored when it readies, never removed for it.
 
 During a ready check, an `unready` withdraws the seat from that check. Once the member has received `round_propose`, `unready` is ignored; it uses `round_abort` instead.
 
@@ -497,7 +499,7 @@ The proposal carries every parameter the member rebuilds the tree from, as `sign
 | 22 | `tier_sizes` | `u32` each, 1 to 8 | Yes | Equals its own rebuild |
 | 24 | `end_height` | `u32` | Yes | The tree's absolute end height (the import's `cltv_timeout`, from which every host-only timeout is derived). Within 6 blocks of its own tip + `lifetime_blocks` + `winddown_blocks` from the terms. 6 blocks (about an hour) allows for chain views a little apart. C8: the leaf's timeout leaves the exit time plus margin |
 | 28 | `tree_anchors` | `u8` | Yes | **1**: anchors are always on in 1.0.0 (`signing-round.md` 4.1, owner decision 6) |
-| 30 | `fee_per_tx_sat` | `u64` | Yes | Exactly ⌈`tree_feerate` × V / 1000⌉, V the largest signed virtual size of any tree transaction (`terms.md` section 4.2); at most its own ceiling |
+| 30 | `tree_feerate` | `u64` | Yes | The tree fee rate, satoshis per 1,000 vbytes: exactly the frozen terms' `tree_feerate` (term 32); at most its own rate ceiling. Every tree transaction pays it for its own signed size (`terms.md` section 4.2). Until the re-import of SuperScalar `50f7fa13` this record carried a derived fee per transaction (`fee_per_tx_sat`); the type and width are unchanged, the meaning is not (owner, 2026-11-16) |
 | 32 | `lstock_delay` | `u32` | Yes | The spare-liquidity delay, in blocks. Inside its conditions |
 | 34 | `lstock_hashes` | 36 each, 0 to 4,096 | Yes | Per tree node: node index (`u32`), the host's spare-liquidity hash (32). Each hash used once (C8). A tree in which any node with index 512 or more carries a hash is refused, because the import ignores the hash there (`safety-rule.md` C8, same wording). **Slice 1: empty** (no penalties) |
 | 36 | `fixed_levels` | `u8` | Yes | The import's `static_threshold_depth`: tree depths 0 to `fixed_levels` − 1 are fixed (kickoff-only, no relative timelock; they keep the host-only absolute timeout). Must equal **D**, the depth of the deepest leaf by `terms.md` section 4.2's split rule, so that every interior node is fixed (1.0.0) |
@@ -732,7 +734,7 @@ Vectors: **(open)**, like 7.1's, until the tree builder runs in the engine.
 - Records: `display_name` (6.3); `evidence` (7.9); `all_partials` (7.6); `payouts` and `penalties` (7.7); `distribution` (7.2) unless the owner decides the creation round signs it.
 - Parameters that are fixed at one value in slice 1 but still carried, so the format does not change later: `k` = 1, `tree_anchors` = 1, `lstock_hashes` empty, `layer_step` = 144 and `layer_states` = 4 (no byte depends on them while every level is fixed). Placement is not carried at all (7.2).
 - Purposes other than creation; tiers other than 0.
-- Invitations, identities, chat, rule-change requests, standby seats, carry-over: no messages yet.
+- Invitations, identities, chat, rule-change requests, carry-over: no messages yet. Standby seats: joins during a ready check or Signing exist (6.3, 6.8). No messages exist yet for the swap of an understudy into an attempt, its notice to the member, or the signed receipts that cover standby order (owner decision 16c; `spec/local-api.md` 14.5).
 - Peer storage (`peer_storage`, `peer_storage_retrieval`) for member backups: standard BOLT messages, not factory messages, and not in slice 1.
 
 ## 10. bLIP-56 adapter (not used in slice 1)

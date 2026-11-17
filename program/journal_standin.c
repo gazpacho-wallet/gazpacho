@@ -59,6 +59,9 @@
 #define MAX_BODY (16u << 20)        /* one entry */
 #define MAX_TOTAL (256ull << 20)    /* the whole stand-in, held in memory */
 
+#include "gazpacho/node.h"   /* GZ_RECORD_GUARD */
+#define GUARD_MAX 1024       /* a guard record: 58 bytes and 8 per epoch (the node keeps at most 16) */
+
 typedef struct {
     gz_batch_id_t id;
     size_t first, n;
@@ -82,7 +85,9 @@ typedef struct {
     unsigned fail_at;     /* tests */
     uint64_t cut;
     unsigned cut_kept;    /* N of journal.standin.cut-N holding the cut bytes */
-    char dir[4096], journal_path[4200], counter_path[4200], marker_path[4200];
+    char dir[4096], journal_path[4200], counter_path[4200], marker_path[4200], guard_path[4200];
+    uint8_t guard[GUARD_MAX];    /* the guard file's bytes (guard_len 0: none) */
+    size_t guard_len;
     int journal_was_new;
     int restored;         /* the marker file exists */
     int restored_at_begin;
@@ -105,6 +110,7 @@ static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t
 static uint64_t rd64(const uint8_t *p) { return (uint64_t)rd32(p) << 32 | rd32(p + 4); }
 
 static int push_inc(standin_t *s, uint64_t inc);
+static int guard_write(standin_t *s, const gz_record_t *r);
 static int inc_begun(const standin_t *s, uint64_t inc);
 static int later_valid_entry(standin_t *s, uint64_t off);
 static int keep_tail(standin_t *s, uint64_t off);
@@ -604,6 +610,10 @@ static int st_append(void *ctx, gz_batch_id_t id, const gz_record_t *records, si
     rc = append_entry(s, TAG_BTCH, body, len);
     free(body);
     if (rc != 0 || add_batch(s, id, records, n) != 0) return s->failed = 1, -1;
+    /* The batch is durable: its guard record, if any, replaces the guard
+     * file before the batch is confirmed (journal.md 8.3). */
+    for (i = 0; i < n; i++)
+        if (records[i].type == GZ_RECORD_GUARD && guard_write(s, &records[i]) != 0) return s->failed = 1, -1;
     if (s->restored_at_begin && s->restored && id.sequence == 1) {
         /* The restore is answered: batch 1 of an incarnation begun with the
          * marker is durable. */
@@ -612,6 +622,53 @@ static int st_append(void *ctx, gz_batch_id_t id, const gz_record_t *records, si
         s->restore_answered = 1;
     }
     return 0;
+}
+
+/* A guard record is the guard file's contents (node.h): "GZGUARD1", the
+ * chain (32), the counter (u64) at 40, ... */
+static uint64_t guard_counter(const uint8_t *g, size_t n)
+{
+    return n >= 48 ? rd64(g + 40) : 0;
+}
+
+static int guard_write(standin_t *s, const gz_record_t *r)
+{
+    char tmp[4300];
+    int fd;
+    if (r->bytes.len < 48 || r->bytes.len > GUARD_MAX || memcmp(r->bytes.data, "GZGUARD1", 8) != 0) return -1;
+    /* Never over a newer one: the file only goes forward. */
+    if (s->guard_len && guard_counter(r->bytes.data, r->bytes.len) < guard_counter(s->guard, s->guard_len)) return 0;
+    snprintf(tmp, sizeof tmp, "%s.tmp", s->guard_path);
+    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return -1;
+    if (write_all(fd, r->bytes.data, r->bytes.len) != 0 || fsync(fd) != 0) {
+        close(fd);
+        return -1;
+    }
+    if (close(fd) != 0 || rename(tmp, s->guard_path) != 0 || sync_dir(s->dir) != 0) return -1;
+    memcpy(s->guard, r->bytes.data, r->bytes.len);
+    s->guard_len = r->bytes.len;
+    return 0;
+}
+
+static void guard_read(standin_t *s)
+{
+    int fd = open(s->guard_path, O_RDONLY);
+    ssize_t k;
+    s->guard_len = 0;
+    if (fd < 0) return;
+    k = read(fd, s->guard, sizeof s->guard);
+    if (k >= 48 && (size_t)k < sizeof s->guard && memcmp(s->guard, "GZGUARD1", 8) == 0) s->guard_len = (size_t)k;
+    close(fd);
+}
+
+static int st_guard(void *ctx, const uint8_t **data, size_t *len)
+{
+    standin_t *s = ctx;
+    if (!s->guard_len) return 0;
+    *data = s->guard;
+    *len = s->guard_len;
+    return 1;
 }
 
 static int st_complete(void *ctx, gz_batch_id_t *id)
@@ -641,7 +698,7 @@ static void st_close(void *ctx)
 }
 
 static const gzp_store_ops_t STANDIN_OPS = {
-    st_begin, st_next, st_rewind, st_append, st_complete, st_restored, st_close
+    st_begin, st_next, st_rewind, st_append, st_complete, st_restored, st_close, st_guard
 };
 
 int gzp_standin_open(gzp_store_t *out, const char *dir, char *err, size_t errlen)
@@ -657,6 +714,8 @@ int gzp_standin_open(gzp_store_t *out, const char *dir, char *err, size_t errlen
     snprintf(s->journal_path, sizeof s->journal_path, "%s/journal.standin", dir);
     snprintf(s->counter_path, sizeof s->counter_path, "%s/starts.standin", dir);
     snprintf(s->marker_path, sizeof s->marker_path, "%s/restore.pending", dir);
+    snprintf(s->guard_path, sizeof s->guard_path, "%s/guard.standin", dir);
+    guard_read(s);
     snprintf(s->failed_path, sizeof s->failed_path, "%s/storage.failed", dir);
     if (stat(s->failed_path, &st) == 0) {
         free(s);

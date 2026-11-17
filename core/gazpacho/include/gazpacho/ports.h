@@ -105,9 +105,9 @@ typedef struct {
  *   host_pub  the host's long-term public key: 1, or 0 on a member.
  *
  * A return of 0 is never a node error: the engine answers as its state
- * requires. Until P8 the program implements this over the stand-in key file
- * (one transport key for every index), so on a member every per-lobby key is
- * the same key for now; links and slots do not rely on that. */
+ * requires. Until P8 the program implements this over the stand-in key file:
+ * index 0 is the transport key, and every other (epoch, index) a key derived
+ * from it, so each lobby has its own pair (program/net.h, gzp_net_key). */
 typedef struct {
     int (*pub)(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33]);
     int (*secret)(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32]);

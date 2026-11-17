@@ -1,12 +1,22 @@
-/* Vectors T1 to T7 (terms.md 11) and M1, M2 (messages.md 11), byte for byte,
- * and the encoding tests of messages.md 12 (1 to 11). The terms records are
+/* Vectors T1 to T7 (terms.md 11) and M1 (messages.md 11), byte for byte, and
+ * the encoding tests of messages.md 12 (1 to 11). The terms records are
  * core/tree's (gazpacho/terms.h): their bounds, UTF-8, shape and size tests
  * are in tests/tree; here T1 to T7 are read through it as the lobby reads
  * them, under the lobby's policy, and the lobby's own comparison (the
- * deciding term) is checked. */
+ * deciding term) is checked.
+ *
+ * Contract v2. The lobby decodes (kind, scope, records) and, for what it
+ * saved, an envelope (tag 67 7a 66 01, kind, scope, records: 38 bytes of
+ * header). The published vectors are whole Lightning messages, type 52791
+ * (ce 37) first: lobby_env() strips those two bytes, which are the
+ * transport's, and the rest must be exactly the envelope the encoder builds.
+ *
+ * Not here any more: M2 and every `part` test (kind 2, gz_part_*). Splitting
+ * and reassembly are the transport's: tests/net covers them. The BOLT 1
+ * warning is the transport's too (a refusal is a DISCONNECT), and so are the
+ * Lightning type and the inputs shorter than a type. */
 #include "../check.h"
 #include "lobby_test.h"
-#include "../../core/lobby/lobby_internal.h"
 #include <stdlib.h>
 
 static uint8_t t1[512], t2[128], t3[128];
@@ -20,6 +30,17 @@ static int hexeq(const uint8_t *b, size_t n, const char *hex)
     uint8_t want[70000];
     size_t wn = lt_unhex(hex, want, sizeof want);
     return wn == n && memcmp(b, want, n) == 0;
+}
+
+/* A published vector (a whole Lightning message) without its 2-byte type
+ * 52791: the envelope. NULL if the hex is not such a message. */
+static const uint8_t *lobby_env(const char *hex, size_t *n)
+{
+    static uint8_t msg[70000];
+    size_t mn = lt_unhex(hex, msg, sizeof msg);
+    if (mn < 2 || msg[0] != 0xce || msg[1] != 0x37) return NULL;
+    *n = mn - 2;
+    return msg + 2;
 }
 
 static int outer_ok(const uint8_t *b, size_t n)
@@ -206,97 +227,38 @@ static void test_m1(lt_signer_t *member)
     gz_lobby_enc_u32(&e, 4, 1);
     gz_lobby_enc_record(&e, 6, cd, 32);
     n = gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
-    CHECK(n == 180);
-    CHECK(hexeq(buf, n, "ce37677a6601001675e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"
-                        "022075e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"
-                        "040400000001"
-                        "0620d1db6ddfd5a2c12ae197036f285457ae6ceaf468c2a47fb71691dde4b1153942"
-                        "f0407eb07e7116d893db0aa57ca3c88fd1b7c67aeb5a0772923c08a4f10350197cbc"
-                        "08c19ce8d566df618ab0df88d9773f5089c63b83d4fc99636a5ba7f433762627"));
-    CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_READY && m.version == 1);
-    CHECK(!m.has_check_id && !m.has_min_members && m.sig == buf + n - 64);
-    gz_lobby_msg_hash(buf, &m, h);
+    CHECK(n == 178);
+    {   /* M1 as published: the Lightning type, then exactly the envelope */
+        static const char M1[] =
+            "ce37677a6601001675e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"
+            "022075e970b6d95c7de97bf35f67033e2c9f55de1ea54beecb8431419659f0a424f2"
+            "040400000001"
+            "0620d1db6ddfd5a2c12ae197036f285457ae6ceaf468c2a47fb71691dde4b1153942"
+            "f0407eb07e7116d893db0aa57ca3c88fd1b7c67aeb5a0772923c08a4f10350197cbc"
+            "08c19ce8d566df618ab0df88d9773f5089c63b83d4fc99636a5ba7f433762627";
+        size_t vn = 0;
+        const uint8_t *v = lobby_env(M1, &vn);
+        gz_lobby_msg_t mv, mt;
+        CHECK(v != NULL && vn == n && memcmp(v, buf, n) == 0);
+        /* the vector's bytes decode as an envelope, and as (kind, scope, records) */
+        CHECK(v && gz_lobby_decode_env(v, vn, &mv) == GZ_DEC_OK && mv.kind == GZ_KIND_READY && mv.version == 1 &&
+              memcmp(mv.scope, od, 32) == 0 && mv.records == v + GZ_LOBBY_ENV_HDR && mv.records_len == vn - GZ_LOBBY_ENV_HDR);
+        CHECK(v && gz_lobby_decode(GZ_KIND_READY, v + 6, v + GZ_LOBBY_ENV_HDR, vn - GZ_LOBBY_ENV_HDR, &mt) == GZ_DEC_OK &&
+              mt.version == 1 && mt.signed_len == mv.signed_len && mt.sig == mv.sig);
+        if (v) {
+            gz_lobby_msg_hash(&mv, h);
+            CHECK(hexeq(h, 32, "683a9673360b942f37224c92dfeb58765fc9085e14bae4c6120b46c5be42f8d0"));
+        }
+    }
+    CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_READY && m.version == 1);
+    CHECK(!m.has_check_id && !m.has_min_members && m.sig == buf + n - 64 && m.signed_len == n - GZ_LOBBY_ENV_HDR - 66);
+    gz_lobby_msg_hash(&m, h);
     CHECK(hexeq(h, 32, "683a9673360b942f37224c92dfeb58765fc9085e14bae4c6120b46c5be42f8d0"));
     CHECK(lt_verify(NULL, member->key[2].pub, h, m.sig));
 }
 
-static void test_m2(void)
-{
-    static uint8_t body[76800], p0[65200], p1[12000], reasm[GZ_PART_MAX_BODY];
-    static gz_part_reasm_t r;
-    gz_lobby_msg_t m0, m1;
-    uint8_t scope[32], sc[32];
-    const uint8_t *out;
-    size_t n0, n1, ol, i;
-    uint16_t k;
-    for (i = 0; i < sizeof body; i++) body[i] = (uint8_t)i;
-    memset(scope, 0x11, 32);
-    CHECK(gz_part_count(sizeof body) == 2);
-    CHECK(gz_part_count(65495) == 0 && gz_part_count(65496) == 2);
-    CHECK(gz_part_count(GZ_PART_MAX_BODY) == 17 && gz_part_count(GZ_PART_MAX_BODY + 1) == 0);
-    n0 = gz_part_build(68, scope, body, sizeof body, 0, p0, sizeof p0);
-    n1 = gz_part_build(68, scope, body, sizeof body, 1, p1, sizeof p1);
-    CHECK(n0 == 65096 && n1 == 11896);
-    CHECK(gz_lobby_decode(p0, n0, &m0) == GZ_DEC_OK && gz_lobby_decode(p1, n1, &m1) == GZ_DEC_OK);
-    CHECK(hexeq(m0.transfer_id, 32, "fcb2c91358d5559e25feace2ed8a1562324ec95032f4c514435b5bd2f152a668"));
-    CHECK(m0.count == 2 && m1.index == 1 && m1.data_len == 11800);
-    /* reverse order, a duplicate, then completion */
-    gz_part_reasm_init(&r, reasm, sizeof reasm);
-    CHECK(gz_part_feed(&r, &m1, &k, sc, &out, &ol) == 0);
-    CHECK(gz_part_feed(&r, &m1, &k, sc, &out, &ol) == 0);
-    CHECK(gz_part_feed(&r, &m0, &k, sc, &out, &ol) == 1);
-    CHECK(k == 68 && ol == sizeof body && memcmp(out, body, ol) == 0 && memcmp(sc, scope, 32) == 0);
-    /* same index, other data: refused */
-    CHECK(gz_part_feed(&r, &m1, &k, sc, &out, &ol) == 0);
-    p1[n1 - 1] ^= 1;
-    gz_lobby_decode(p1, n1, &m1);
-    CHECK(gz_part_feed(&r, &m1, &k, sc, &out, &ol) == -1);
-    /* wrong transfer id at completion: refused */
-    gz_part_reasm_init(&r, reasm, sizeof reasm);
-    CHECK(gz_part_feed(&r, &m1, &k, sc, &out, &ol) == 0);
-    CHECK(gz_part_feed(&r, &m0, &k, sc, &out, &ol) == -1);
-    /* inconsistent count, index >= count, short middle part, inner kind 2 */
-    gz_lobby_decode(p0, n0, &m0);
-    p0[40 + 34 + 4 + 6 + 4 + 3] = 3;                    /* count = 3 */
-    CHECK(gz_lobby_decode(p0, n0, &m0) == GZ_DEC_REFUSE);
-    p0[40 + 34 + 4 + 6 + 4 + 3] = 2;
-    p0[40 + 34 + 4 + 6 + 3] = 2;                        /* index = 2 */
-    CHECK(gz_lobby_decode(p0, n0, &m0) == GZ_DEC_REFUSE);
-    p0[40 + 34 + 4 + 6 + 3] = 0;
-    p0[40 + 34 + 3] = 2;                                /* inner kind 2 */
-    CHECK(gz_lobby_decode(p0, n0, &m0) == GZ_DEC_REFUSE);
-    p0[40 + 34 + 3] = 68;
-    CHECK(gz_lobby_decode(p0, n0 - 1, &m0) == GZ_DEC_REFUSE);   /* short data, length past end */
-    CHECK(gz_lobby_decode(p0, n0, &m0) == GZ_DEC_OK);
-    CHECK(gz_part_build(68, scope, body, 65495, 0, p0, sizeof p0) == 0);   /* fits: never split */
-    {   /* rule 4: another transfer replaces the open one; a part of another scope is another transfer */
-        static uint8_t body2[76800], q0[65200], q1[12000], small[70000];
-        static gz_part_reasm_t r2;
-        gz_lobby_msg_t a0, b0, b1;
-        uint8_t sc2[32];
-        size_t qn0, qn1;
-        for (i = 0; i < sizeof body2; i++) body2[i] = (uint8_t)(i * 3);
-        n0 = gz_part_build(68, scope, body, sizeof body, 0, p0, sizeof p0);
-        qn0 = gz_part_build(68, scope, body2, sizeof body2, 0, q0, sizeof q0);
-        qn1 = gz_part_build(68, scope, body2, sizeof body2, 1, q1, sizeof q1);
-        gz_lobby_decode(p0, n0, &a0); gz_lobby_decode(q0, qn0, &b0); gz_lobby_decode(q1, qn1, &b1);
-        gz_part_reasm_init(&r2, reasm, sizeof reasm);
-        CHECK(gz_part_feed(&r2, &a0, &k, sc, &out, &ol) == 0);
-        CHECK(gz_part_feed(&r2, &b1, &k, sc, &out, &ol) == 0);       /* A dropped */
-        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == 1 && ol == sizeof body2 && memcmp(out, body2, ol) == 0);
-        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == 0);       /* a new transfer after completion */
-        memset(sc2, 0x22, 32);
-        qn1 = gz_part_build(68, sc2, body2, sizeof body2, 1, q1, sizeof q1);
-        gz_lobby_decode(q1, qn1, &b1);
-        CHECK(gz_part_feed(&r2, &b1, &k, sc, &out, &ol) == 0);       /* another scope: the open one dropped */
-        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == 0);       /* so this one starts again, not completes */
-        gz_part_reasm_init(&r2, small, sizeof small);
-        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == -1);      /* more than the buffer holds */
-        b0.kind = GZ_KIND_READY;
-        gz_part_reasm_init(&r2, reasm, sizeof reasm);
-        CHECK(gz_part_feed(&r2, &b0, &k, sc, &out, &ol) == -1);      /* not a part */
-    }
-}
+/* (test_m2, the `part` vector M2 and the reassembler, was here: splitting is
+ * the transport's, tests/net.) */
 
 /* messages.md test 3 to 8 on M1-shaped messages. */
 static void test_envelope(lt_signer_t *member)
@@ -313,60 +275,75 @@ static void test_envelope(lt_signer_t *member)
     gz_lobby_enc_record(&e, 2, od, 32); gz_lobby_enc_u32(&e, 4, 1); \
     gz_lobby_enc_record(&e, 6, cd, 32); extra; n = gz_lobby_enc_sign(&e, &cr, 2); } while (0)
     BUILD(gz_lobby_enc_record(&e, 9, (const uint8_t *)"x", 1));
-    CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK);          /* unknown odd: skipped */
+    CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK);          /* unknown odd: skipped */
     {
         uint8_t h[32];
-        gz_lobby_msg_hash(buf, &m, h);
+        gz_lobby_msg_hash(&m, h);
         CHECK(lt_verify(NULL, member->key[2].pub, h, m.sig));
         buf[n - 64 - 2 - 1] ^= 1;                               /* the odd record changed */
-        gz_lobby_decode(buf, n, &m);
-        gz_lobby_msg_hash(buf, &m, h);
+        gz_lobby_decode_env(buf, n, &m);
+        gz_lobby_msg_hash(&m, h);
         CHECK(!lt_verify(NULL, member->key[2].pub, h, m.sig));
     }
     BUILD(gz_lobby_enc_record(&e, 10, (const uint8_t *)"x", 1));
-    CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_REFUSE);      /* unknown even */
+    CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_REFUSE);      /* unknown even */
     BUILD(gz_lobby_enc_u16(&e, 11, 5));
-    CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.has_min_members && m.min_members == 5);
+    CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.has_min_members && m.min_members == 5);
     BUILD((void)0);
     memcpy(x, buf, n);
     x[n] = 0xf1; x[n + 1] = 0;                                  /* a record after 240 */
-    CHECK(gz_lobby_decode(x, n + 2, &m) == GZ_DEC_REFUSE);
-    CHECK(gz_lobby_decode(buf, n - 66, &m) == GZ_DEC_REFUSE);   /* 240 missing */
-    memcpy(x, buf, n); x[40 + 34 + 1] = 5;                       /* version one byte long */
-    CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_REFUSE);
-    memcpy(x, buf, n); x[41] = 0x21;                             /* outer digest 33 */
-    CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_REFUSE);
-    memcpy(x, buf, n); x[40] = 4; x[74] = 2;                     /* types out of order */
-    CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_REFUSE);
-    memcpy(x, buf, n); x[45] ^= 1;                               /* outer digest != scope */
-    CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_REFUSE);
+    CHECK(gz_lobby_decode_env(x, n + 2, &m) == GZ_DEC_REFUSE);
+    CHECK(gz_lobby_decode_env(buf, n - 66, &m) == GZ_DEC_REFUSE);   /* 240 missing */
+    /* offsets: the envelope's header is 38 bytes (tag 4, kind 2, scope 32) */
+    memcpy(x, buf, n); x[38 + 34 + 1] = 5;                       /* version one byte long */
+    CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_REFUSE);
+    memcpy(x, buf, n); x[39] = 0x21;                             /* outer digest 33 */
+    CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_REFUSE);
+    memcpy(x, buf, n); x[38] = 4; x[72] = 2;                     /* types out of order */
+    CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_REFUSE);
+    memcpy(x, buf, n); x[43] ^= 1;                               /* outer digest != scope */
+    CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_REFUSE);
     {   /* non-minimal BigSize length */
         size_t k = 0;
-        memcpy(x, buf, 40); k = 40;
+        memcpy(x, buf, 38); k = 38;
         x[k++] = 2; x[k++] = 0xfd; x[k++] = 0; x[k++] = 32; memcpy(x + k, od, 32); k += 32;
-        memcpy(x + k, buf + 74, n - 74); k += n - 74;
-        CHECK(gz_lobby_decode(x, k, &m) == GZ_DEC_REFUSE);
+        memcpy(x + k, buf + 72, n - 72); k += n - 72;
+        CHECK(gz_lobby_decode_env(x, k, &m) == GZ_DEC_REFUSE);
     }
-    /* kinds and protocol */
-    memcpy(x, buf, n); x[7] = 23;  CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_IGNORE);
-    memcpy(x, buf, n); x[7] = 36;  CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_REFUSE);
-    memcpy(x, buf, n); x[7] = 0;   CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_REFUSE);
-    memcpy(x, buf, n); x[7] = 130; CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_IGNORE);
-    memcpy(x, buf, n); x[7] = 64;  CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_OTHER);
-    memcpy(x, buf, n); x[7] = 81;  CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_OTHER);
-    memcpy(x, buf, n); x[5] = 2;   CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_BADTAG);
-    memcpy(x, buf, n); x[1] = 0x39; CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_IGNORE);
-    memcpy(x, buf, n); memset(x + 8, 0, 32); CHECK(gz_lobby_decode(x, n, &m) == GZ_DEC_REFUSE);
-    CHECK(gz_lobby_decode(buf, 39, &m) == GZ_DEC_REFUSE);
-    /* exactly 65,535 bytes accepted; the encoder never builds more */
+    /* kinds (bytes 4 and 5) and the protocol tag (bytes 0 to 3) */
+    memcpy(x, buf, n); x[5] = 23;  CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_IGNORE);
+    memcpy(x, buf, n); x[5] = 36;  CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_REFUSE);
+    memcpy(x, buf, n); x[5] = 0;   CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_REFUSE);
+    memcpy(x, buf, n); x[5] = 2;   CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_REFUSE);   /* `part`: not the lobby's any more */
+    memcpy(x, buf, n); x[5] = 130; CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_IGNORE);
+    memcpy(x, buf, n); x[5] = 64;  CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_OTHER);
+    memcpy(x, buf, n); x[5] = 81;  CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_OTHER);
+    memcpy(x, buf, n); x[4] = 1;   CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_REFUSE);   /* kind 278: unknown, even */
+    {
+        size_t k;
+        for (k = 0; k < 4; k++) {                                /* every byte of the tag */
+            memcpy(x, buf, n); x[k] ^= 3;
+            CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_BADTAG);
+        }
+    }
+    memcpy(x, buf, n); memset(x + 6, 0, 32); CHECK(gz_lobby_decode_env(x, n, &m) == GZ_DEC_REFUSE);
+    CHECK(gz_lobby_decode_env(buf, 37, &m) == GZ_DEC_REFUSE && gz_lobby_decode_env(NULL, n, &m) == GZ_DEC_REFUSE);
+    /* the same message as (kind, scope, records): what a live message is */
+    CHECK(gz_lobby_decode(GZ_KIND_READY, buf + 6, buf + 38, n - 38, &m) == GZ_DEC_OK && m.version == 1);
+    CHECK(gz_lobby_decode(GZ_KIND_READY, NULL, buf + 38, n - 38, &m) == GZ_DEC_REFUSE);          /* no scope */
+    CHECK(gz_lobby_decode(GZ_KIND_READY, buf + 6, NULL, n - 38, &m) == GZ_DEC_REFUSE);           /* no records, but a length */
+    CHECK(gz_lobby_decode(GZ_KIND_HELLO, buf + 6, NULL, 0, &m) == GZ_DEC_OK && m.kind == GZ_KIND_HELLO && m.records_len == 0);
+    CHECK(gz_lobby_decode(GZ_KIND_READY, buf + 6, buf + 38, GZ_LOBBY_MAX_RECORDS + 1, &m) == GZ_DEC_REFUSE);
+    /* records of exactly 65,495 bytes (an envelope of 65,533) accepted; the encoder never builds more */
+    CHECK(GZ_LOBBY_MAX_RECORDS == 65495 && GZ_LOBBY_MAX_ENV == 65533 && GZ_LOBBY_ENV_HDR == 38);
     gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, od);
-    gz_lobby_enc_record(&e, 1, pad, 65535 - 40 - 4);
+    gz_lobby_enc_record(&e, 1, pad, GZ_LOBBY_MAX_RECORDS - 4);
     n = gz_lobby_enc_done(&e);
-    CHECK(n == 65535 && gz_lobby_decode(buf, n, &m) == GZ_DEC_OK);
+    CHECK(n == GZ_LOBBY_MAX_ENV && gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.records_len == GZ_LOBBY_MAX_RECORDS);
     gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, od);
-    gz_lobby_enc_record(&e, 1, pad, 65535 - 40 - 3);
+    gz_lobby_enc_record(&e, 1, pad, GZ_LOBBY_MAX_RECORDS - 3);
     CHECK(gz_lobby_enc_done(&e) == 0);
-    CHECK(gz_lobby_decode(buf, 65536, &m) == GZ_DEC_REFUSE);
+    CHECK(gz_lobby_decode_env(buf, GZ_LOBBY_MAX_ENV + 1, &m) == GZ_DEC_REFUSE);
 }
 
 static void test_bigsize(void)
@@ -409,58 +386,56 @@ static void test_kinds(lt_signer_t *member)
         gz_lobby_enc_record(&e, 6, a, 64);
         if (opt) gz_lobby_enc_record(&e, 7, (const uint8_t *)"Ana", 3);
         n = gz_lobby_enc_done(&e);
-        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_JOIN && memcmp(m.factory_key, member->key[3].pub, 33) == 0);
-        CHECK(m.bind_by_factory == buf + 40 + 35 + 2 && (opt ? m.display_name_len == 3 && memcmp(m.display_name, "Ana", 3) == 0 : m.display_name == NULL));
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_JOIN && memcmp(m.factory_key, member->key[3].pub, 33) == 0);
+        CHECK(m.bind_by_factory == buf + 38 + 35 + 2 && (opt ? m.display_name_len == 3 && memcmp(m.display_name, "Ana", 3) == 0 : m.display_name == NULL));
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_UNREADY, od);
         if (opt) gz_lobby_enc_u16(&e, 1, 2);
         n = gz_lobby_enc_done(&e);
-        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.has_reason == opt && m.reason == (opt ? 2 : 0));
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.has_reason == opt && m.reason == (opt ? 2 : 0));
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_LEAVE, od);
         if (opt) gz_lobby_enc_u16(&e, 1, 3);
         n = gz_lobby_enc_done(&e);
-        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_LEAVE && m.has_reason == opt && m.reason == (opt ? 3 : 0));
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_LEAVE && m.has_reason == opt && m.reason == (opt ? 3 : 0));
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_LOBBY_STATUS, od);
         gz_lobby_enc_u8(&e, 2, 3); gz_lobby_enc_u8(&e, 4, 4); gz_lobby_enc_u32(&e, 6, 77);
         gz_lobby_enc_u16(&e, 8, 300); gz_lobby_enc_u16(&e, 10, 299);
         if (opt) gz_lobby_enc_u16(&e, 13, 12);
         n = gz_lobby_enc_done(&e);
-        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.lobby_state == 3 && m.seat_state == 4 && m.version == 77);
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.lobby_state == 3 && m.seat_state == 4 && m.version == 77);
         CHECK(m.joined == 300 && m.ready == 299 && m.has_reason == opt && m.reason == (opt ? 12 : 0) && !m.sig);
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_READY, od);
         gz_lobby_enc_record(&e, 2, od, 32); gz_lobby_enc_u32(&e, 4, 9); gz_lobby_enc_record(&e, 6, k32, 32);
         if (opt) { gz_lobby_enc_record(&e, 8, a, 32); gz_lobby_enc_u16(&e, 11, 40); }
         n = gz_lobby_enc_sign(&e, &cr, 2);
-        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.version == 9 && memcmp(m.current_digest, k32, 32) == 0);
-        CHECK(m.has_check_id == opt && m.has_min_members == opt && m.min_members == (opt ? 40 : 0) && m.signed_len == n - 2 - 66);
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.version == 9 && memcmp(m.current_digest, k32, 32) == 0);
+        CHECK(m.has_check_id == opt && m.has_min_members == opt && m.min_members == (opt ? 40 : 0) && m.signed_len == n - 38 - 66);
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_READY_CHECK, od);
         gz_lobby_enc_record(&e, 2, a, 32); gz_lobby_enc_u32(&e, 4, 5); gz_lobby_enc_record(&e, 6, k32, 32);
         gz_lobby_enc_u32(&e, 8, 123456);
         if (opt) gz_lobby_enc_record(&e, 9, a, 5);
         n = gz_lobby_enc_sign(&e, &cr, 2);
-        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.version == 5 && m.answer_within_ms == 123456 && memcmp(m.check_id, a, 32) == 0);
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.version == 5 && m.answer_within_ms == 123456 && memcmp(m.check_id, a, 32) == 0);
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_START, od);
         gz_lobby_enc_record(&e, 2, a, 32); gz_lobby_enc_u8(&e, 4, 2); gz_lobby_enc_u16(&e, 6, 513);
         n = gz_lobby_enc_sign(&e, &cr, 2);
-        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.role == 2 && m.signers == 513 && m.has_check_id);
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.role == 2 && m.signers == 513 && m.has_check_id);
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_CANCEL, od);
         gz_lobby_enc_u16(&e, 2, 3);
         n = gz_lobby_enc_sign(&e, &cr, 2);
-        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.reason == 3 && m.sig == buf + n - 64);
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.reason == 3 && m.sig == buf + n - 64);
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, opt ? od : (const uint8_t *)"\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
         n = gz_lobby_enc_done(&e);
-        CHECK(n == 40 && gz_lobby_decode(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_HELLO);
+        CHECK(n == 38 && gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_HELLO);
     }
-    /* the shortest inputs: not ours, a broken tag, too short for an envelope */
+    /* the shortest inputs: anything shorter than an envelope's header is none */
     {
-        static const struct { const char *hex; int code; } s[] = {
-            {"", GZ_DEC_IGNORE}, {"ce", GZ_DEC_IGNORE}, {"ce37", GZ_DEC_BADTAG}, {"ce37677a66", GZ_DEC_BADTAG},
-            {"ce37677a6601", GZ_DEC_REFUSE}, {"ce36677a6601", GZ_DEC_IGNORE},
-        };
         size_t k;
-        for (k = 0; k < sizeof s / sizeof s[0]; k++) {
-            uint8_t *h = malloc(8);
-            size_t hn = lt_unhex(s[k].hex, h, 8);
-            CHECK(gz_lobby_decode(h, hn, &m) == s[k].code);
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_HELLO, od);
+        n = gz_lobby_enc_done(&e);
+        for (k = 0; k < 38; k++) {
+            uint8_t *h = malloc(k ? k : 1);                      /* exactly k bytes: an over-read is caught */
+            memcpy(h, buf, k);
+            CHECK(gz_lobby_decode_env(h, k, &m) == GZ_DEC_REFUSE);
             free(h);
         }
     }
@@ -474,38 +449,32 @@ static void test_kinds(lt_signer_t *member)
         for (k = 0; k < sizeof d / sizeof d[0]; k++) {
             gz_lobby_enc_start(&e, buf, sizeof buf, d[k].kind, od);
             n = gz_lobby_enc_done(&e);
-            CHECK(gz_lobby_decode(buf, n, &m) == d[k].code);
+            CHECK(gz_lobby_decode_env(buf, n, &m) == d[k].code);
         }
     }
-    /* a part without its transfer id, or without any one required record */
-    {
-        static uint8_t body[70000], p0[66000];
-        size_t k, pn;
-        for (k = 0; k < sizeof body; k++) body[k] = (uint8_t)k;
-        pn = gz_part_build(68, od, body, sizeof body, 1, p0, sizeof p0);
-        CHECK(gz_lobby_decode(p0, pn, &m) == GZ_DEC_OK);
-        memmove(p0 + 40, p0 + 40 + 34, pn - 40 - 34);                /* drop record 2 */
-        CHECK(gz_lobby_decode(p0, pn - 34, &m) == GZ_DEC_REFUSE);
-    }
+    /* kind 2 (`part`) is the transport's: to the lobby an unknown even kind */
+    gz_lobby_enc_start(&e, buf, sizeof buf, 2, od);
+    n = gz_lobby_enc_done(&e);
+    CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_REFUSE);
     /* the encoder at exactly its buffer's size, and one byte short; a signature it cannot make */
     {
         uint8_t small[200];
         lt_signer_t ns = *member;
         gz_lobby_crypto_t cn = lt_crypto(&ns);
-        gz_lobby_enc_start(&e, small, 40, GZ_KIND_HELLO, od);
-        CHECK(gz_lobby_enc_done(&e) == 40);
-        gz_lobby_enc_start(&e, small, 39, GZ_KIND_HELLO, od);
+        gz_lobby_enc_start(&e, small, 38, GZ_KIND_HELLO, od);
+        CHECK(gz_lobby_enc_done(&e) == 38);
+        gz_lobby_enc_start(&e, small, 37, GZ_KIND_HELLO, od);
         CHECK(gz_lobby_enc_done(&e) == 0);
-        gz_lobby_enc_start(&e, small, 44, GZ_KIND_UNREADY, od);
+        gz_lobby_enc_start(&e, small, 42, GZ_KIND_UNREADY, od);
         gz_lobby_enc_u16(&e, 1, 2);
-        CHECK(gz_lobby_enc_done(&e) == 44);
-        gz_lobby_enc_start(&e, small, 43, GZ_KIND_UNREADY, od);
+        CHECK(gz_lobby_enc_done(&e) == 42);
+        gz_lobby_enc_start(&e, small, 41, GZ_KIND_UNREADY, od);
         gz_lobby_enc_u16(&e, 1, 2);
         CHECK(gz_lobby_enc_done(&e) == 0 && gz_lobby_enc_sign(&e, &cr, 2) == 0);   /* nothing signed after an overflow */
-        gz_lobby_enc_start(&e, small, 110, GZ_KIND_CANCEL, od);
+        gz_lobby_enc_start(&e, small, 108, GZ_KIND_CANCEL, od);
         gz_lobby_enc_u16(&e, 2, 1);
-        CHECK(gz_lobby_enc_sign(&e, &cr, 2) == 110);
-        gz_lobby_enc_start(&e, small, 109, GZ_KIND_CANCEL, od);
+        CHECK(gz_lobby_enc_sign(&e, &cr, 2) == 108);
+        gz_lobby_enc_start(&e, small, 107, GZ_KIND_CANCEL, od);
         gz_lobby_enc_u16(&e, 2, 1);
         CHECK(gz_lobby_enc_sign(&e, &cr, 2) == 0);
         ns.fail_sign = 1;
@@ -513,28 +482,7 @@ static void test_kinds(lt_signer_t *member)
         gz_lobby_enc_u16(&e, 2, 1);
         CHECK(gz_lobby_enc_sign(&e, &cn, 2) == 0);
     }
-    /* the BOLT 1 warning, byte for byte */
-    {
-        uint8_t w[64];
-        size_t wn = gz_lobby_warning("abc", w, sizeof w);
-        CHECK(wn == 39 && w[0] == 0 && w[1] == 1 && w[34] == 0 && w[35] == 3 && memcmp(w + 36, "abc", 3) == 0);
-        for (wn = 2; wn < 34; wn++) CHECK(w[wn] == 0);
-        CHECK(gz_lobby_warning("abc", w, 39) == 39 && gz_lobby_warning("abc", w, 38) == 0);
-        CHECK(gz_lobby_warning("", w, 36) == 36);
-    }
-    /* parts: a total one byte past a whole part, and the largest body */
-    {
-        static uint8_t body[GZ_PART_MAX_BODY], pp[66000];
-        size_t pn;
-        uint16_t cnt = gz_part_count(130001);
-        CHECK(cnt == 3);
-        pn = gz_part_build(68, od, body, 130001, 2, pp, sizeof pp);
-        CHECK(pn > 0 && gz_lobby_decode(pp, pn, &m) == GZ_DEC_OK && m.count == 3 && m.data_len == 1);
-        pn = gz_part_build(68, od, body, GZ_PART_MAX_BODY, 16, pp, sizeof pp);
-        CHECK(pn > 0 && gz_lobby_decode(pp, pn, &m) == GZ_DEC_OK && m.count == 17 && m.index == 16);
-        CHECK(gz_part_build(68, od, body, GZ_PART_MAX_BODY, 17, pp, sizeof pp) == 0);
-        CHECK(gz_part_build(GZ_KIND_PART, od, body, 130001, 0, pp, sizeof pp) == 0);
-    }
+    /* (the BOLT 1 warning and the part sizes were here: the transport's, tests/net) */
     /* a scope of zeros only in hello; one nonzero byte anywhere makes a scope */
     {
         uint8_t sc[32];
@@ -542,13 +490,13 @@ static void test_kinds(lt_signer_t *member)
         memset(sc, 0, 32);
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_UNREADY, sc);
         n = gz_lobby_enc_done(&e);
-        CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_REFUSE);
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_REFUSE);
         for (k = 0; k < 32; k += 31) {
             memset(sc, 0, 32);
             sc[k] = 1;
             gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_UNREADY, sc);
             n = gz_lobby_enc_done(&e);
-            CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_OK);
+            CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK);
         }
     }
     /* the display name: 1 to 32 bytes */
@@ -563,7 +511,7 @@ static void test_kinds(lt_signer_t *member)
             gz_lobby_enc_record(&e, 6, a, 64);
             gz_lobby_enc_record(&e, 7, nm, L);
             n = gz_lobby_enc_done(&e);
-            CHECK((gz_lobby_decode(buf, n, &m) == GZ_DEC_OK) == (L >= 1 && L <= 32));
+            CHECK((gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK) == (L >= 1 && L <= 32));
         }
     }
     /* required records, each missing in turn, from a signed kind */
@@ -575,7 +523,7 @@ static void test_kinds(lt_signer_t *member)
             if (miss != 1) gz_lobby_enc_u8(&e, 4, 1);
             if (miss != 2) gz_lobby_enc_u16(&e, 6, 4);
             n = gz_lobby_enc_sign(&e, &cr, 2);
-            CHECK(gz_lobby_decode(buf, n, &m) == GZ_DEC_REFUSE);
+            CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_REFUSE);
         }
     }
 }
@@ -591,7 +539,6 @@ int main(void)
     lt_key(&member.key[3], "member 1 factory");
     test_terms(&host);
     test_m1(&member);
-    test_m2();
     test_envelope(&member);
     test_bigsize();
     test_kinds(&member);

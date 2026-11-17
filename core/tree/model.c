@@ -1,26 +1,35 @@
 /* The tree, rebuilt from the rules (tree.h, "Two builds, one tree").
  *
- * What the import does for an advanceless tree, written out (pin e657395,
+ * What the import does for an advanceless tree, written out (pin 50f7fa13,
  * src/factory.c):
- *   add_node :153-230        a node's spending script: P2TR of the MuSig2
+ *   add_node :234-312        a node's spending script: P2TR of the MuSig2
  *                            aggregate of host + its members, tweaked with
  *                            the one-leaf tree <h> CLTV DROP <host> CHECKSIG
  *                            when h > 0, else BIP 86
- *   build_subtree :1604-1880 ko height E - 5 (2d - 1), state E - 10 d, root
+ *   node_reserve :588-594    what a node takes out of its input: its fee,
+ *                            the agreed rate for its exact signed size
+ *                            (factory_tree_tx_fee :604, fee.c:92-114), and
+ *                            its anchor
+ *   build_subtree :2030-2321 ko height E - 5 (2d - 1), state E - 10 d, root
  *                            kickoff none (saturating at 0); a fixed kickoff
  *                            pays (input - fee - anchor) to its children in
  *                            equal shares, the remainder to the last; a leaf
  *                            kickoff pays input - fee - anchor to its state
- *   setup_ps_leaf_outputs :1291-1330  channel (the state's own spending
- *                            script) and spare liquidity, half each, the
- *                            remainder to the spare liquidity; dust 546
- *   build_l_stock_spk :315   spare liquidity: the state's aggregate tweaked
+ *   setup_ps_leaf_outputs :1604-1649  channel (the state's own spending
+ *                            script) and spare liquidity, half each of
+ *                            input - fee - anchor, the remainder to the
+ *                            spare liquidity; dust 546
+ *   build_l_stock_spk :396   spare liquidity: the state's aggregate tweaked
  *                            with the one-leaf tree <csv> CSV DROP <host> CHECKSIG
- *   node_nsequence :129-150  fixed kickoff and pseudo-Spilman leaf 0xFFFFFFFE,
+ *   node_nsequence :217-230  fixed kickoff and pseudo-Spilman leaf 0xFFFFFFFE,
  *                            leaf kickoff 0xFFFFFFFF
- *   factory_append_tree_anchor :499  the 240-sat P2A output, last
- *   tx_builder.c:65-110      version 2, one input, empty scriptSig, lock time 0
- *   factory_build_tree :1882 its minimum funding check
+ *   factory_append_tree_anchor :628  the P2A output, last: 240 sat, or 0 at
+ *                            fee rate 0 (factory_tree_anchor_sats :600)
+ *   build_all_unsigned_txs :748, tx_builder.c:80-110  version 3 (TRUC,
+ *                            FACTORY_TREE_TX_VERSION), one input, empty
+ *                            scriptSig, lock time 0
+ *   factory_build_tree :2323 its minimum funding check (:2388-2404); the
+ *                            funding script must be the root's (:2415-2425)
  */
 #include "gazpacho/tree.h"
 #include "internal.h"
@@ -91,6 +100,14 @@ typedef struct {
 
 static uint32_t height_less(uint32_t E, uint32_t off) { return E > off ? E - off : 0; }
 
+/* node_reserve: the fee of a transaction with k P2TR outputs and its anchor;
+ * UINT64_MAX when the rate gives no payable fee (then no input covers it). */
+static uint64_t node_cost(uint64_t rate, uint32_t k)
+{
+    uint64_t fee = gz_tree_fee(rate, k);
+    return fee == GZ_TREE_FEE_INVALID ? UINT64_MAX : fee + gz_tree_anchor(rate);
+}
+
 /* add_node: kind, signers, parent link, the node's own spending script. */
 static int add_node(bld_t *b, uint8_t kind, uint32_t depth, uint32_t first, uint32_t count, int parent,
                     uint32_t parent_vout, uint32_t cltv, uint64_t input)
@@ -138,14 +155,12 @@ static int subtree(bld_t *b, uint32_t first, uint32_t count, int parent, uint32_
 {
     const gz_tree_build_in_t *in = b->in;
     gz_tree_t *t = b->t;
-    uint64_t fee = in->fee_per_tx, cost;
+    uint64_t rate = in->tree_feerate, anchor = gz_tree_anchor(rate), cost;
     uint32_t a = tr_level(in->levels, in->n_levels, depth);
     uint32_t ko = depth == 0 ? 0 : height_less(in->end_height, (2 * depth - 1) * GZ_TREE_TIMEOUT_STEP);
     uint32_t st = depth == 0 ? in->end_height : height_less(in->end_height, 2 * depth * GZ_TREE_TIMEOUT_STEP);
     int leaf = a == GZ_TERMS_LEAF_PS && count == 1;
     if (depth >= GZ_TREE_MAX_DEPTH) { b->err = GZ_TREE_B_ARGUMENT; return 0; }
-    if (fee > UINT64_MAX - GZ_TREE_ANCHOR_SAT) { b->err = GZ_TREE_B_UNDERFUNDED; return 0; }
-    cost = fee + GZ_TREE_ANCHOR_SAT;
     if (!leaf) {
         uint32_t sizes[16], k, j, off = first;
         int ko_idx, child_first[16];
@@ -154,6 +169,7 @@ static int subtree(bld_t *b, uint32_t first, uint32_t count, int parent, uint32_
         if (k == 0) { b->err = GZ_TREE_B_SPLIT; return 0; }
         /* Every interior node must be fixed (kickoff-only): fixed_levels = D. */
         if (depth >= in->fixed_levels) { b->err = GZ_TREE_B_FIXED_LEVELS; return 0; }
+        cost = node_cost(rate, k);                     /* k children and the anchor */
         ko_idx = add_node(b, GZ_NODE_FIXED, depth, first, count, parent, parent_vout, ko, input);
         if (ko_idx < 0) return 0;
         if (input <= cost) { b->err = GZ_TREE_B_UNDERFUNDED; return 0; }
@@ -168,14 +184,16 @@ static int subtree(bld_t *b, uint32_t first, uint32_t count, int parent, uint32_
         for (j = 0; j < k; j++)
             add_output(&t->node[ko_idx], GZ_OUT_CHILD, per + (j == k - 1 ? rem : 0),
                        t->node[child_first[j]].spent_script, 34);
-        add_output(&t->node[ko_idx], GZ_OUT_ANCHOR, GZ_TREE_ANCHOR_SAT, P2A, 4);
+        add_output(&t->node[ko_idx], GZ_OUT_ANCHOR, anchor, P2A, 4);
         return 1;
     } else {
         int ko_idx, st_idx;
-        uint64_t ko_out, total, per;
+        uint64_t ko_out, total, per, leaf_cost;
         gz_tree_node_t *s;
         uint8_t lmerkle[32], linternal[32], lkey[32], lscript[34];
         uint32_t csv = in->lstock_csv ? in->lstock_csv : GZ_TREE_LSTOCK_DEFAULT;
+        cost = node_cost(rate, 1);                     /* the kickoff: the leaf transaction's output and the anchor */
+        leaf_cost = node_cost(rate, 2);                /* the leaf transaction: channel, spare liquidity, anchor */
         ko_idx = add_node(b, GZ_NODE_LEAF_KICKOFF, depth, first, 1, parent, parent_vout, ko, input);
         if (ko_idx < 0) return 0;
         st_idx = add_node(b, GZ_NODE_LEAF_STATE, depth, first, 1, ko_idx, 0, st, 0);
@@ -183,10 +201,10 @@ static int subtree(bld_t *b, uint32_t first, uint32_t count, int parent, uint32_
         if (input <= cost) { b->err = GZ_TREE_B_UNDERFUNDED; return 0; }
         ko_out = input - cost;
         add_output(&t->node[ko_idx], GZ_OUT_STATE, ko_out, t->node[st_idx].spent_script, 34);
-        add_output(&t->node[ko_idx], GZ_OUT_ANCHOR, GZ_TREE_ANCHOR_SAT, P2A, 4);
+        add_output(&t->node[ko_idx], GZ_OUT_ANCHOR, anchor, P2A, 4);
         s = &t->node[st_idx];
         s->spent_amount = ko_out;
-        total = ko_out > cost ? ko_out - cost : 0;
+        total = ko_out > leaf_cost ? ko_out - leaf_cost : 0;
         per = total / 2;
         if (per < GZ_TREE_DUST_SAT) { b->err = GZ_TREE_B_DUST; return 0; }
         timelock_leaf(csv, 0xb2, in->host_key, lmerkle);
@@ -199,7 +217,7 @@ static int subtree(bld_t *b, uint32_t first, uint32_t count, int parent, uint32_
         s->lstock_csv = csv;
         add_output(s, GZ_OUT_CHANNEL, per, s->spent_script, 34);
         add_output(s, GZ_OUT_LSTOCK, per + (total - per * 2), lscript, 34);
-        add_output(s, GZ_OUT_ANCHOR, GZ_TREE_ANCHOR_SAT, P2A, 4);
+        add_output(s, GZ_OUT_ANCHOR, anchor, P2A, 4);
         t->leaf_state[first] = (uint16_t)st_idx;
         return 1;
     }
@@ -216,7 +234,7 @@ static void serialise(gz_tree_node_t *n)
 {
     uint8_t *p = n->tx;
     size_t i = 0, o;
-    tr_le32(p, 2); i = 4;                       /* version */
+    tr_le32(p, GZ_TREE_TX_VERSION); i = 4;      /* version 3: TRUC */
     p[i++] = 1;                                 /* one input */
     memcpy(p + i, n->spent_txid, 32); i += 32;
     tr_le32(p + i, n->spent_vout); i += 4;
@@ -239,7 +257,7 @@ gz_tree_b_err_t gz_tree_build(const gz_tree_build_in_t *in, const gz_tree_crypto
     bld_t b;
     uint8_t depths[GZ_TREE_MAX_MEMBERS], D = 0, out_key[32];
     uint32_t i;
-    uint64_t ub, min_funding;
+    uint64_t ub, fee1, min_funding;
     if (!in || !cr || !cr->agg_tweak || !t || !in->host_key || !in->member_keys || !in->levels
         || in->n_levels < 1 || in->n_levels > GZ_TREE_MAX_LEVELS || in->n_members < 1
         || in->n_members > GZ_TREE_MAX_MEMBERS)
@@ -250,10 +268,13 @@ gz_tree_b_err_t gz_tree_build(const gz_tree_build_in_t *in, const gz_tree_crypto
     for (i = 0; i < in->n_members; i++)
         if (depths[i] > D) D = depths[i];
     if (in->fixed_levels != D) return GZ_TREE_B_FIXED_LEVELS;
-    /* factory_build_tree's minimum: 2 (2 leaves - 1) fee + 1,092 per leaf. */
+    /* factory_build_tree's minimum: 2 (2 leaves - 1) times the fee and anchor
+     * of a one-output transaction, + 1,092 per leaf; and a rate whose fees
+     * could pass the money supply is refused. */
     ub = 2 * (2 * (uint64_t)in->n_members - 1);
-    if (in->fee_per_tx > (UINT64_MAX - 1092 * (uint64_t)in->n_members) / ub) return GZ_TREE_B_IMPORT_MINIMUM;
-    min_funding = ub * in->fee_per_tx + 1092 * (uint64_t)in->n_members;
+    fee1 = gz_tree_fee(in->tree_feerate, 1);
+    if (fee1 == GZ_TREE_FEE_INVALID || fee1 > GZ_TREE_FEE_MAX_SAT / (ub + 1)) return GZ_TREE_B_IMPORT_MINIMUM;
+    min_funding = ub * (fee1 + gz_tree_anchor(in->tree_feerate)) + 1092 * (uint64_t)in->n_members;
     if (in->funding_amount < min_funding) return GZ_TREE_B_IMPORT_MINIMUM;
     if (!cr->agg_tweak(cr->ctx, in->host_key, in->member_keys, in->n_members, NULL, t->funding_internal, out_key))
         return GZ_TREE_B_CRYPTO;

@@ -1,7 +1,8 @@
-/* terms.md section 4: the split rule, D, the fee per transaction and the
- * funding amount, written out from the import's behaviour
- * (src/factory.c:948-1010 split_clients_for_arity, :1694-1720 and :1299-1323
- * amounts). */
+/* terms.md section 4: the split rule, D, each transaction's fee and the
+ * funding amount, written out from the import's behaviour (pin 50f7fa13,
+ * src/factory.c:1132-1197 the leaf rule and split_clients_for_arity,
+ * :588-608 a node's fee and anchor, :2131-2142 and :1611-1616 amounts;
+ * src/fee.c:39-47 and :92-114 the fee and the size). */
 #include "gazpacho/tree.h"
 #include "internal.h"
 
@@ -79,6 +80,21 @@ uint32_t gz_tree_vsize(uint32_t k)
     return (4 * (64 + 43 * k) + 2 + 66 + 3) / 4;
 }
 
+uint64_t gz_tree_fee(uint64_t feerate, uint32_t k)
+{
+    uint64_t v = gz_tree_vsize(k), fee;
+    if (feerate == 0) return 0;
+    /* fee_at_rate: bounded before the product is formed, so it never overflows. */
+    if (feerate > GZ_TREE_FEE_MAX_SAT * 1000 / v) return GZ_TREE_FEE_INVALID;
+    fee = (feerate * v + 999) / 1000;
+    return fee > GZ_TREE_FEE_MAX_SAT ? GZ_TREE_FEE_INVALID : fee;
+}
+
+uint64_t gz_tree_anchor(uint64_t feerate)
+{
+    return feerate == 0 ? 0 : GZ_TREE_ANCHOR_SAT;
+}
+
 static int add_ok(uint64_t a, uint64_t b, uint64_t *out)
 {
     if (a > UINT64_MAX - b) return 0;
@@ -93,32 +109,40 @@ static int mul_ok(uint64_t a, uint64_t b, uint64_t *out)
     return 1;
 }
 
-static int requirement(const uint8_t *levels, size_t nl, uint32_t m, uint32_t d, uint64_t channel, uint64_t fee,
+/* What a transaction with k P2TR outputs takes out of its input: its fee and
+ * its anchor (the import's node_reserve). 0 if the rate gives no payable fee. */
+static int cost_ok(uint64_t rate, uint32_t k, uint64_t *out)
+{
+    uint64_t fee = gz_tree_fee(rate, k);
+    return fee != GZ_TREE_FEE_INVALID && add_ok(fee, gz_tree_anchor(rate), out);
+}
+
+static int requirement(const uint8_t *levels, size_t nl, uint32_t m, uint32_t d, uint64_t channel, uint64_t rate,
                        uint64_t *out)
 {
     uint32_t sizes[16], n, i;
     uint64_t best = 0, r, x;
     if (d > GZ_TREE_MAX_DEPTH || m == 0) return 0;
     if (tr_level(levels, nl, d) == GZ_TERMS_LEAF_PS && m == 1) {
-        /* R(leaf) = 2 channel + 2 fee + 2 x 240 */
-        return mul_ok(channel, 2, &r) && mul_ok(fee, 2, &x) && add_ok(r, x, &r)
-            && add_ok(r, 2 * GZ_TREE_ANCHOR_SAT, out);
+        /* R(leaf) = 2 channel + fee(1) + anchor (its kickoff) + fee(2) + anchor (the leaf transaction) */
+        return mul_ok(channel, 2, &r) && cost_ok(rate, 1, &x) && add_ok(r, x, &r)
+            && cost_ok(rate, 2, &x) && add_ok(r, x, out);
     }
     n = tr_children(levels, nl, m, d, sizes);
     if (n == 0) return 0;
     for (i = 0; i < n; i++) {
-        if (!requirement(levels, nl, sizes[i], d + 1, channel, fee, &r)) return 0;
+        if (!requirement(levels, nl, sizes[i], d + 1, channel, rate, &r)) return 0;
         if (r > best) best = r;
     }
-    /* R(node with k children) = k max R(child) + fee + 240 */
-    return mul_ok(best, n, &r) && add_ok(r, fee, &r) && add_ok(r, GZ_TREE_ANCHOR_SAT, out);
+    /* R(node with k children) = k max R(child) + fee(k) + anchor */
+    return mul_ok(best, n, &r) && cost_ok(rate, n, &x) && add_ok(r, x, out);
 }
 
 int gz_tree_requirement(const uint8_t *levels, size_t n_levels, uint32_t n_members, uint64_t channel_sat,
-                        uint64_t fee, uint64_t *out)
+                        uint64_t feerate, uint64_t *out)
 {
     if (!levels_ok(levels, n_levels) || !out) return 0;
-    return requirement(levels, n_levels, n_members, 0, channel_sat, fee, out);
+    return requirement(levels, n_levels, n_members, 0, channel_sat, feerate, out);
 }
 
 static uint32_t max_children(const uint8_t *levels, size_t nl, uint32_t m, uint32_t d)
@@ -150,8 +174,8 @@ gz_tree_p_err_t gz_tree_params(const gz_terms_outer_t *t, uint32_t n, gz_tree_pa
         if (p->depth[i] > p->D) p->D = p->depth[i];
     p->max_children = max_children(p->levels, p->n_levels, n, 0);
     p->V = gz_tree_vsize(p->max_children);
-    p->fee_per_tx = ((uint64_t)t->tree_feerate * p->V + 999) / 1000;
-    if (!gz_tree_requirement(p->levels, p->n_levels, n, t->channel_sat, p->fee_per_tx, &p->funding_amount))
+    p->tree_feerate = t->tree_feerate;
+    if (!gz_tree_requirement(p->levels, p->n_levels, n, t->channel_sat, p->tree_feerate, &p->funding_amount))
         return GZ_TREE_P_OVERFLOW;
     return GZ_TREE_P_OK;
 }

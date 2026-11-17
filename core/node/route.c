@@ -63,6 +63,11 @@ int gz_route_slot_by_scope(const gz_node_t *c, const uint8_t scope[32])
 int gz_route_slot_link(const gz_node_t *c, int slot, gz_link_t *link)
 {
     const slot_t *s = &c->slots[slot];
+    if (s->kind == SLOT_KIND_LOBBY) { /* derived once, when the slot's lobby was made */
+        if (s->host) return 0;
+        *link = s->link;
+        return 1;
+    }
     if (s->host || !c->cfg.keys.pub) return 0;
     if (!c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index, link->local.key)) return 0;
     link->remote = s->host_key;
@@ -88,6 +93,64 @@ int gz_route_slot_seated(const gz_node_t *c, const gz_node_id_t *key)
             if (np_same_key(&s->seated[j], key)) return i;
     }
     return -1;
+}
+
+/* A key one of the host's Closing entries keeps seated (2.4): the round's last
+ * news may still come from it (review A of PR 44, M2). */
+int gz_route_closing_seated(const gz_node_t *c, const gz_node_id_t *key)
+{
+    for (int k = 0; k < GZ_NODE_MAX_TOMBSTONES; k++) {
+        const np_closing_t *e = &c->np.closing[k];
+        if (!e->used || !e->host) continue;
+        for (size_t j = 0; j < e->n_seated; j++)
+            if (np_same_key(&e->seated[j], key)) return 1;
+    }
+    return 0;
+}
+
+/* Seated for the node part: in an Open lobby of the host, or kept by a
+ * Closing entry. */
+int gz_route_key_seated(const gz_node_t *c, const gz_node_id_t *key)
+{
+    return gz_route_slot_seated(c, key) >= 0 || gz_route_closing_seated(c, key);
+}
+
+/* 1 if `key`, seat j of Open slot i (or, with i == GZ_NODE_MAX_SLOTS, of
+ * Closing entry k), has no earlier place: slots first, then the entries. */
+static int first_place(const gz_node_t *c, const gz_node_id_t *key, int i, int k, size_t j)
+{
+    for (int a = 0; a <= i && a < GZ_NODE_MAX_SLOTS; a++) {
+        const slot_t *s = &c->slots[a];
+        if (s->state != SLOT_OPEN || !s->host) continue;
+        for (size_t b = 0; b < (a == i ? j : s->n_seated); b++)
+            if (np_same_key(&s->seated[b], key)) return 0;
+    }
+    if (i < GZ_NODE_MAX_SLOTS) return 1;
+    for (int a = 0; a <= k; a++) {
+        const np_closing_t *e = &c->np.closing[a];
+        if (!e->used || !e->host) continue;
+        for (size_t b = 0; b < (a == k ? j : e->n_seated); b++)
+            if (np_same_key(&e->seated[b], key)) return 0;
+    }
+    return 1;
+}
+
+/* The keys that hold a seat, Open and Closing, each once: the table entries
+ * the seats can take (M1). */
+size_t gz_route_seats_held(const gz_node_t *c)
+{
+    size_t n = 0;
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++) {
+        const slot_t *s = &c->slots[i];
+        if (s->state != SLOT_OPEN || !s->host) continue;
+        for (size_t j = 0; j < s->n_seated; j++) n += (size_t)first_place(c, &s->seated[j], i, -1, j);
+    }
+    for (int k = 0; k < GZ_NODE_MAX_TOMBSTONES; k++) {
+        const np_closing_t *e = &c->np.closing[k];
+        if (!e->used || !e->host) continue;
+        for (size_t j = 0; j < e->n_seated; j++) n += (size_t)first_place(c, &e->seated[j], GZ_NODE_MAX_SLOTS, k, j);
+    }
+    return n;
 }
 
 static rt_t mk(rt_kind_t kind, int slot, int eng, int drop)
@@ -129,6 +192,9 @@ static rt_t route_lobby(const gz_node_t *c, int conn, const gz_link_t *link, uin
         int bound = conn >= 0 ? c->np.conns[conn].slot : -1;
         if (bound >= 0) return s == bound ? mk(RT_SLOT, s, -1, 0) : mk(RT_REFUSE, -1, -1, DROP_REBIND);
         if (s >= 0) return mk(RT_BIND, s, -1, 0);
+        /* An ended lobby (a tombstone or the index): a late hello gets its
+         * final state and the saved cancel; anything else is dropped. */
+        if (kind == GZ_MSG_KIND_HELLO && (s = gz_ls_ended_find(c, scope)) >= 0) return mk(RT_ENDED_HELLO, s, -1, 0);
         return kind == GZ_MSG_KIND_HELLO ? mk(RT_UNKNOWN_HELLO, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_NO_SLOT);
     }
     if (zero) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);

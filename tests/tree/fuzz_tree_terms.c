@@ -48,7 +48,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
         for (k = 3; k <= o.target && k <= GZ_TREE_MAX_MEMBERS; k++) {
             gz_tree_p_err_t e = gz_tree_params(&o, k, &p);
             if (e != GZ_TREE_P_OK && e != GZ_TREE_P_OVERFLOW) abort();   /* 4.3 promised a valid split */
-            if (e == GZ_TREE_P_OK && (p.D == 0 || p.fee_per_tx == 0 || p.funding_amount == 0)) abort();
+            if (e == GZ_TREE_P_OK && (p.D == 0 || p.tree_feerate == 0 || p.funding_amount == 0)) abort();
         }
         if (gz_terms_decode_current(cb, cn, &o, &c) == GZ_TERMS_OK) {
             gz_terms_limits_t l;

@@ -1,7 +1,16 @@
 /* A small world for the lobby tests: one host and up to 8 members, each a
  * whole program around its engine (the real runner, a journal that survives a
  * crash, timers), and a network between them with drops, duplicates,
- * reordering and broken connections. Deterministic for a seed (sim/rng.h). */
+ * reordering and broken connections. Deterministic for a seed (sim/rng.h).
+ *
+ * Contract v2. A message on the wire is an envelope (tag, kind, scope,
+ * records) built from a SEND action; the link of a SEND, a DISCONNECT and an
+ * input is (our key, the peer's key). The world plays the transport: a
+ * member's CONNECT makes its link wanted (only a wanted link is brought up),
+ * a DISCONNECT cuts the link it names (and, from the member, ends its
+ * CONNECT), SET_SEATED is kept per member key as the transport keeps it. The
+ * executor also checks every saved record against the table of largest
+ * records (lobby.h). */
 #ifndef GAZPACHO_LOBBY_WORLD_H
 #define GAZPACHO_LOBBY_WORLD_H
 
@@ -11,8 +20,6 @@
 #include <stdlib.h>
 
 #define W_MAX 9                      /* node 0 is the host */
-#define W_HOST_PEER 1u
-#define W_PEER(i) (1000u + (uint64_t)(i))
 #define W_T0 1794441000000ull        /* 10 minutes before T1's deadline */
 
 typedef struct { uint32_t type; uint8_t *b; size_t n; uint64_t batch; } w_rec_t;
@@ -27,6 +34,7 @@ typedef struct {
     uint16_t layer_step, layer_states, min_members;
     uint32_t version;
     size_t start_len;
+    uint64_t budget_end_ms; uint32_t attempt;  /* host: first start + the terms' budget; 1 */
 } w_handoff_t;
 
 typedef struct world world_t;
@@ -35,6 +43,7 @@ typedef struct {
     lt_signer_t keys;
     gz_lobby_host_t *host; gz_lobby_member_t *mem;
     gz_lobby_conditions_t cond;
+    gz_lobby_gate_t gate; int gate_on;         /* member: its signing gate (none: always open) */
     gz_runner_t runner; gz_runner_slot_t slots[512]; uint8_t *rbytes;
     uint64_t incarnation, unconfirmed[64]; size_t n_unconf;
     w_rec_t *recs; size_t n_recs, cap_recs;    /* the journal, durable and pending */
@@ -51,6 +60,10 @@ typedef struct {
     int n_cancels; uint16_t cancel_reason; uint8_t cancel_scope[32];
     uint32_t notes[64]; uint8_t note_a[64], note_b[64]; int n_notes;
     int close_requested;
+    /* The transport's side (host): the seats it was told, per member; and
+     * counts of the connection actions (both). */
+    int seated[W_MAX];
+    int n_seat_actions, n_connects, n_refusals;
     int dead;                                  /* never restarts */
 } w_node_t;
 
@@ -60,13 +73,15 @@ struct world {
     uint64_t now;
     w_msg_t *msgs; size_t n_msgs, cap_msgs;
     int link_up[W_MAX]; uint32_t conn_no[W_MAX]; int cut_req[W_MAX];
+    int want[W_MAX];                           /* member i's CONNECT stands */
+    unsigned long oversize;                    /* saved records over their row of the table */
     sim_rng_t rng;
     uint32_t drop_pm, dup_pm, reorder_pm, crash_pm, cut_pm;
     int faults_on;                             /* set by w_step */
     unsigned long drops, dups, reorders, crashes, cuts, sent, delivered, failures;
     uint8_t outer[512], current[128]; size_t outer_len, current_len;
     uint16_t standbys;
-    /* the wire log, for invariants */
+    /* the wire log, for invariants: `b` is the envelope */
     void (*on_wire)(world_t *w, int from, int to, const uint8_t *b, size_t n);
 };
 
@@ -146,6 +161,7 @@ static inline gz_status_t w_begin(void *ctx, const gz_lobby_handoff_t *h, gz_act
     x->n_levels = h->n_levels; x->fixed_levels = h->fixed_levels; x->k = h->k; x->anchors = h->tree_anchors;
     x->layer_step = h->layer_step; x->layer_states = h->layer_states; x->min_members = h->min_members;
     x->version = h->version; x->start_len = h->start_len;
+    x->budget_end_ms = h->budget_end_ms; x->attempt = h->attempt;
     return GZ_OK;
 }
 
@@ -179,7 +195,8 @@ static inline int w_params_ok(const w_handoff_t *x, int members)
                              : x->n_levels == 2 && x->levels[0] == 4 && x->levels[1] == 3 &&
                                    x->fixed_levels == (members <= 8 ? 2 : 3);
     return lv_ok && x->k == 1 && x->anchors == 1 && x->layer_step == 144 && x->layer_states == 4 &&
-           x->records_ok && x->terms_ok && x->bindings_ok && x->sigs_ok && x->limits_ok && x->version >= 1;
+           x->records_ok && x->terms_ok && x->bindings_ok && x->sigs_ok && x->limits_ok && x->version >= 1 &&
+           x->attempt == 1 && (x->n_participants ? x->budget_end_ms != 0 : x->budget_end_ms == 0);
 }
 
 static inline void w_send(world_t *w, int from, int to, const uint8_t *b, size_t n)
@@ -204,6 +221,33 @@ static inline void w_send(world_t *w, int from, int to, const uint8_t *b, size_t
     }
 }
 
+/* The link between member i and the host, as each side names it. */
+static inline gz_link_t w_host_link(const world_t *w, int i)
+{
+    return lt_link(w->node[0].keys.key[1].pub, w->node[i].keys.key[2].pub);
+}
+static inline gz_link_t w_member_link(const world_t *w, int i)
+{
+    return lt_link(w->node[i].keys.key[2].pub, w->node[0].keys.key[1].pub);
+}
+
+/* The member a link of the host's names by its remote key; 0 if none. */
+static inline int w_member_of(const world_t *w, const gz_link_t *l)
+{
+    int i;
+    if (memcmp(l->local.key, w->node[0].keys.key[1].pub, 33) != 0) return 0;
+    for (i = 1; i <= w->n; i++)
+        if (memcmp(l->remote.key, w->node[i].keys.key[2].pub, 33) == 0) return i;
+    return 0;
+}
+
+/* 1 if `l` is member `d`'s own link to the host. */
+static inline int w_own_link(const w_node_t *d, const gz_link_t *l)
+{
+    return memcmp(l->local.key, d->keys.key[2].pub, 33) == 0 &&
+           memcmp(l->remote.key, d->w->node[0].keys.key[1].pub, 33) == 0;
+}
+
 static inline void w_execute(void *ctx, const gz_action_t *a)
 {
     w_node_t *d = ctx;
@@ -214,6 +258,13 @@ static inline void w_execute(void *ctx, const gz_action_t *a)
     case GZ_ACTION_SAVE:
         for (i = 0; i < a->u.save.n_records; i++) {
             w_rec_t *r;
+            /* no record the engine saves is larger than its row of the table */
+            if (!lt_rec_fits(a->u.save.records[i].type, a->u.save.records[i].bytes.len)) {
+                w->oversize++;
+                w->failures++;
+                printf("node %d: record %x of %zu bytes is over its largest size\n", d->idx,
+                       (unsigned)a->u.save.records[i].type, a->u.save.records[i].bytes.len);
+            }
             if (d->n_recs == d->cap_recs) {
                 d->cap_recs = d->cap_recs ? 2 * d->cap_recs : 64;
                 d->recs = realloc(d->recs, d->cap_recs * sizeof *d->recs);
@@ -228,11 +279,59 @@ static inline void w_execute(void *ctx, const gz_action_t *a)
         d->unconfirmed[d->n_unconf++] = a->u.save.batch.sequence;
         break;
     case GZ_ACTION_SEND: {
-        int to = d->idx == 0 ? (int)(gz_lobby_sent_peer(a) - 1000) : 0;
-        if (to < 0 || to > w->n || !w->link_up[d->idx ? d->idx : to]) break;
-        w_send(w, d->idx, to, a->u.send.records.data, a->u.send.records.len);
+        static uint8_t env[GZ_LOBBY_MAX_ENV];
+        int to = d->idx == 0 ? w_member_of(w, &a->u.send.link) : 0;
+        size_t n;
+        /* a link the engine made up is a bug: the host's are (host key, a
+         * member's key), a member's is its own */
+        if (d->idx == 0 ? memcmp(a->u.send.link.local.key, d->keys.key[1].pub, 33) != 0
+                        : !w_own_link(d, &a->u.send.link)) {
+            w->failures++;
+            printf("node %d: a send on a link that is not its own\n", d->idx);
+            break;
+        }
+        if (d->idx == 0 && to == 0) break;             /* a key that is no member of this world */
+        if (!w->link_up[d->idx ? d->idx : to]) break;
+        n = lt_send_env(a, env, sizeof env);
+        if (!n) { w->failures++; printf("node %d: a send that is no envelope\n", d->idx); break; }
+        w_send(w, d->idx, to, env, n);
         break;
     }
+    case GZ_ACTION_CONNECT:                            /* member: keep a connection to the host */
+        d->n_connects++;
+        if (d->idx == 0 || !lt_is_connect(a, w->node[0].keys.key[1].pub)) {
+            w->failures++;
+            printf("node %d: a CONNECT that is not its slot's\n", d->idx);
+            break;
+        }
+        w->want[d->idx] = 1;
+        break;
+    case GZ_ACTION_DISCONNECT:
+        /* The lobby only ever refuses (the transport sends the warning). The
+         * host's cuts that member's link; the member's cuts its own and ends
+         * its CONNECT, until the engine asks again. */
+        d->n_refusals++;
+        if (a->u.disconnect.why != GZ_DISCONNECT_REFUSED) {
+            w->failures++;
+            printf("node %d: a DISCONNECT that is no refusal\n", d->idx);
+        }
+        if (d->idx == 0) {
+            int to = w_member_of(w, &a->u.disconnect.link);
+            if (to) w->cut_req[to] = 1;
+        } else if (w_own_link(d, &a->u.disconnect.link)) {
+            w->want[d->idx] = 0;
+            d->close_requested = 1;
+        } else {
+            w->failures++;
+            printf("node %d: a DISCONNECT on a link that is not its own\n", d->idx);
+        }
+        break;
+    case GZ_ACTION_SET_SEATED:                         /* host: a property of the member's key */
+        d->n_seat_actions++;
+        if (d->idx != 0) { w->failures++; printf("node %d: a member set a seat\n", d->idx); break; }
+        for (k = 1; k <= w->n; k++)
+            if (memcmp(a->u.set_seated.member.key, w->node[k].keys.key[2].pub, 33) == 0) d->seated[k] = a->u.set_seated.seated;
+        break;
     case GZ_ACTION_SET_TIMER:
         for (k = 0; k < d->n_timers && d->timers[k].id != a->u.set_timer.timer_id; k++) {}
         if (k == d->n_timers) d->n_timers++;
@@ -240,13 +339,6 @@ static inline void w_execute(void *ctx, const gz_action_t *a)
         d->timers[k].at = w->now + a->u.set_timer.delay_ms;
         break;
     case GZ_ACTION_NOTIFY:
-        if (a->u.notify.code == GZ_NOTE_CLOSE) {
-            uint64_t peer = 0;
-            for (i = 0; i < 8 && i < a->u.notify.bytes.len; i++) peer = peer << 8 | a->u.notify.bytes.data[i];
-            if (d->idx == 0 && peer >= 1001 && peer <= 1000 + (uint64_t)w->n) w->cut_req[peer - 1000] = 1;
-            else d->close_requested = 1;
-            break;
-        }
         if (d->n_notes < 64) {
             d->notes[d->n_notes] = a->u.notify.code;
             d->note_a[d->n_notes] = a->u.notify.bytes.len > 0 ? a->u.notify.bytes.data[0] : 0;
@@ -314,6 +406,11 @@ static inline void w_boot(w_node_t *d)
     d->n_unconf = 0;
     d->n_timers = 0;
     d->alive = 1;
+    /* Connections and seats are not kept across a restart (action.h): the
+     * engine issues CONNECT and SET_SEATED again in its resume. */
+    memset(d->seated, 0, sizeof d->seated);
+    d->close_requested = 0;
+    if (d->idx) w->want[d->idx] = 0;
     gz_action_list_init(&l, w_slots, 512, w_bytes, sizeof w_bytes);
     if (d->idx == 0) {
         gz_lobby_host_config_t cfg;
@@ -336,8 +433,9 @@ static inline void w_boot(w_node_t *d)
     } else {
         uint8_t scope[32];
         gz_terms_outer_digest(w->outer, w->outer_len, scope);
-        gz_lobby_member_init(d->mem, &p, &cr, &sg, &d->cond, scope, w->node[0].keys.key[1].pub,
-                             d->keys.key[2].pub, d->keys.key[3].pub, 1);
+        if (lt_member_init(d->mem, &p, &cr, &sg, d->gate_on ? &d->gate : NULL, &d->cond, scope,
+                           w->node[0].keys.key[1].pub, d->keys.key[2].pub, d->keys.key[3].pub, 1) != GZ_OK)
+            { w->failures++; printf("member init failed\n"); }
         for (i = 0; i < d->n_recs; i++) {
             gz_record_t r;
             r.type = d->recs[i].type; r.bytes.data = d->recs[i].b; r.bytes.len = d->recs[i].n;
@@ -388,20 +486,19 @@ static inline void w_start(world_t *w)
 static inline void w_link(world_t *w, int i, int up)
 {
     gz_lobby_input_t in;
+    gz_link_t hl, ml;
     size_t k;
     if (w->link_up[i] == up) return;
-    if (up && (!w->node[0].alive || !w->node[i].alive)) return;
+    if (up && (!w->node[0].alive || !w->node[i].alive || !w->want[i])) return;
     w->link_up[i] = up;
     w->conn_no[i]++;
     for (k = 0; k < w->n_msgs; k++)                 /* a connection's messages die with it */
         if ((w->msgs[k].to == i || w->msgs[k].from == i) && w->msgs[k].conn != w->conn_no[i]) w->msgs[k].at = 0;
-    memset(&in, 0, sizeof in);
-    in.kind = up ? GZ_LIN_CONNECTED : GZ_LIN_DISCONNECTED;
-    in.peer_id = W_PEER(i);
-    in.peer_key = w->node[i].keys.key[2].pub;
+    hl = w_host_link(w, i);
+    ml = w_member_link(w, i);
+    lt_in(&in, up ? GZ_LIN_CONNECTED : GZ_LIN_DISCONNECTED, &hl);
     w_input(&w->node[0], &in);
-    in.peer_id = W_HOST_PEER;
-    in.peer_key = w->node[0].keys.key[1].pub;
+    lt_in(&in, up ? GZ_LIN_CONNECTED : GZ_LIN_DISCONNECTED, &ml);
     w_input(&w->node[i], &in);
 }
 
@@ -439,7 +536,7 @@ static inline void w_step(world_t *w, int faults)
         if (d->alive) w_confirm(d);
         if (i > 0) {
             if (faults && w->link_up[i] && sim_rng_chance(&w->rng, w->cut_pm)) { w->cuts++; w_link(w, i, 0); }
-            else if (!w->link_up[i] && sim_rng_chance(&w->rng, 200)) w_link(w, i, 1);
+            else if (!w->link_up[i] && w->want[i] && sim_rng_chance(&w->rng, 200)) w_link(w, i, 1);
             if (w->node[i].close_requested || w->cut_req[i]) {
                 w->node[i].close_requested = 0; w->cut_req[i] = 0; w_link(w, i, 0);
             }
@@ -454,12 +551,11 @@ static inline void w_step(world_t *w, int faults)
         w->n_msgs--;
         k--;
         if (m.conn == w->conn_no[link] && w->link_up[link] && w->node[m.to].alive) {
-            memset(&in, 0, sizeof in);
-            in.kind = GZ_LIN_MESSAGE;
-            in.peer_id = m.to ? W_HOST_PEER : W_PEER(m.from);
-            in.bytes = m.b; in.len = m.n;
-            w->delivered++;
-            w_input(&w->node[m.to], &in);
+            gz_link_t l = m.to ? w_member_link(w, m.to) : w_host_link(w, m.from);
+            if (lt_in_env(&in, &l, m.b, m.n)) {
+                w->delivered++;
+                w_input(&w->node[m.to], &in);
+            } else { w->failures++; printf("a message on the wire that is no envelope\n"); }
         }
         free(m.b);
     }

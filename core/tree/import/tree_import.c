@@ -98,20 +98,33 @@ gz_tree_i_err_t gz_tree_import_build(secp256k1_context *ctx, const gz_tree_build
 
     /* signing-round.md section 13, in this order. */
     factory_init_from_pubkeys(f, ctx, pks, n, GZ_TREE_SLICE1_STEP, GZ_TREE_SLICE1_STATES);
-    factory_set_level_arity(f, in->levels, in->n_levels);          /* never empty: n_levels >= 1 */
+    /* It returns nothing: check each of the nine arrays it allocates. */
+    if (!f->keypairs || !f->pubkeys || !f->profiles || !f->dist_partial_sigs || !f->leaf_layers
+        || !f->leaf_node_indices || !f->nodes || !f->node_l_stock_hashes || !f->node_l_stock_hash_valid) {
+        err = GZ_TREE_I_NO_MEMORY;
+        goto done;
+    }
+    /* Never empty: n_levels >= 1. It refuses a list it cannot hold. */
+    if (!factory_set_level_arity(f, in->levels, in->n_levels)) { err = GZ_TREE_I_REFUSED; goto done; }
     factory_set_static_near_root(f, in->fixed_levels);
     factory_set_ps_subfactory_arity(f, 1);
     factory_set_l_stock_csv(f, in->lstock_csv);
-    f->placement_mode = PLACEMENT_SEQUENTIAL;
+    if (!factory_set_placement_mode(f, PLACEMENT_SEQUENTIAL)) { err = GZ_TREE_I_REFUSED; goto done; }
     f->use_tree_anchor = 1;
     f->use_hashlock_poison = 0;
-    f->fee = NULL;
-    f->fee_per_tx = in->fee_per_tx;
+    f->tree_fee_rate = in->tree_feerate;
+    f->build_quiet = 1;                                            /* no printing; changes no byte */
     f->cltv_timeout = in->end_height;
-    /* The script is a fixed 34-byte field here; factory_set_funding would
-     * silently drop a longer one (signing-round.md 12). */
-    factory_set_funding(f, in->funding_txid, in->funding_vout, in->funding_amount, in->funding_script, 34);
+    /* A script that is not a 34-byte P2TR is refused here, and one that is
+     * not the root's aggregate by factory_build_tree. */
+    if (!factory_set_funding(f, in->funding_txid, in->funding_vout, in->funding_amount, in->funding_script, 34)) {
+        err = GZ_TREE_I_REFUSED;
+        goto done;
+    }
     if (!factory_build_tree(f)) { err = GZ_TREE_I_REFUSED; goto done; }
+    /* The import's own audit, from the bytes: version 3, one anchor, last,
+     * and exactly the agreed rate for each transaction's signed size. */
+    if (!factory_check_tree_fees(f, NULL, 0)) { err = GZ_TREE_I_REFUSED; goto done; }
 
     if (f->n_nodes > GZ_TREE_MAX_NODES) { err = GZ_TREE_I_TOO_BIG; goto done; }
     out->n_nodes = (uint16_t)f->n_nodes;
@@ -137,7 +150,7 @@ gz_tree_i_err_t gz_tree_import_build(secp256k1_context *ctx, const gz_tree_build
 done:
     if (err != GZ_TREE_I_OK) out->n_nodes = 0;
     if (f) {
-        if (f->nodes) factory_free(f);
+        factory_free(f);                                           /* frees whatever was allocated */
         free(f);
     }
     free(pks);

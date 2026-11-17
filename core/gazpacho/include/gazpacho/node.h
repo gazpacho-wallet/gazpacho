@@ -5,10 +5,11 @@
  * the contract; the library core/node (gazpacho_node) implements it. The
  * engines are named by their journal area (Lobby 0x0001, Round 0x0002,
  * Funding 0x0003, Node 0x0004, Local API 0x000d, Test 0x7e57 and 0x7e58);
- * the same number tags an engine's records, timers and commands. In this
- * step (P4.1) the only engine is the test engine, the old placeholder ping,
- * built only into test builds (gazpacho_node_test); the release library has
- * the node part alone.
+ * the same number tags an engine's records, timers and commands. Since
+ * P4.2 each slot holds a lobby engine (core/lobby); the test engine, the old
+ * placeholder ping, and the stand-in for the signing engine are built only
+ * into test builds (gazpacho_node_test). Until the signing engine lands
+ * (P4.3) the release library opens no lobby: it refuses to host or join.
  *
  * WHAT EVERY ENGINE'S START STEP MUST DO
  *
@@ -100,8 +101,8 @@
 #include "gazpacho/ports.h"
 
 /* The list one node call may fill, at most (see SIZING). */
-#define GZ_NODE_LIST_ACTIONS 192
-#define GZ_NODE_LIST_BYTES   (512u * 1024u)
+#define GZ_NODE_LIST_ACTIONS 640
+#define GZ_NODE_LIST_BYTES   (1536u * 1024u)
 
 /* Timers the node may have set at once: the program's table holds this many.
  * core/node keeps the engines' budgets within it by a static assertion. */
@@ -144,6 +145,69 @@
 #define GZ_RECORD_KEY_INDEX 0x00040004u
 #define GZ_RECORD_RESTORED  0x00040006u
 #define GZ_RECORD_GUARD     0x0004000au
+/* A slot's two records (composite-node.md 7.3; layouts in core/node/lobbyslot.c):
+ *   slot_opened  in the slot's first batch, with key_index and guard
+ *   slot_closed  in the batch that ends its lobby */
+#define GZ_RECORD_SLOT_OPENED 0x0004000cu
+#define GZ_RECORD_SLOT_CLOSED 0x0004000eu
+
+/* USER COMMANDS the node takes (command.h: records 0 to 8, then the
+ * arguments from 12). The lobby's (0x01xx) name their lobby by its scope:
+ *   LOBBY_OPEN        host: 12 the outer record, 14 the current record (both
+ *                     as the person composed them), 16 listed (u8), 18
+ *                     standbys (u16)
+ *   LOBBY_JOIN        member: 12 scope, 14 the host's key (33), 16 its
+ *                     address ("host:port"), 18 the member's conditions
+ *                     (lobbyslot.c; absent: none), 20 auto-join (u8, default 1)
+ *   LOBBY_READY       member: 12 scope, 14 unlock (u8: 1 when given with the
+ *                     passphrase, which opens that lobby's signing gate)
+ *   LOBBY_UNREADY, LOBBY_LEAVE   member: 12 scope
+ *   LOBBY_SET_VALUES  host: 12 scope, 14 the values (u64 each)
+ *   LOBBY_REMOVE      host: 12 scope, 14 the seat's contribution key (33)
+ *   LOBBY_CANCEL      host: 12 scope
+ * The signing gate's (0x04xx, composite-node.md 12.2): SIGNING_UNLOCK and
+ * SIGNING_LOCK, no arguments.
+ * Results: 200; 400 bad_request, bad_terms, bad_address, bad_host_key,
+ * bad_conditions; 404 no_such_lobby; 409 too_many_lobbies, lobby_exists,
+ * refused_now, bad_values, not_a_host, not_a_member; 503 no_key,
+ * signing_unavailable. Never a node error.
+ * UNTIL THE SIGNING ENGINE LANDS (P4.3) a release build answers LOBBY_OPEN
+ * and LOBBY_JOIN with 503 signing_unavailable: it hosts and joins nothing. */
+#define GZ_CMD_LOBBY_OPEN       0x0101u
+#define GZ_CMD_LOBBY_JOIN       0x0102u
+#define GZ_CMD_LOBBY_READY      0x0103u
+#define GZ_CMD_LOBBY_UNREADY    0x0104u
+#define GZ_CMD_LOBBY_LEAVE      0x0105u
+#define GZ_CMD_LOBBY_SET_VALUES 0x0106u
+#define GZ_CMD_LOBBY_REMOVE     0x0107u
+#define GZ_CMD_LOBBY_CANCEL     0x0108u
+#define GZ_CMD_SIGNING_UNLOCK   0x0401u
+#define GZ_CMD_SIGNING_LOCK     0x0402u
+
+/* Test builds: what the signing stand-in reports for a round handed to it. */
+#define GZ_TEST_SIGN_FUNDING    1u
+#define GZ_TEST_SIGN_RETRY      2u
+#define GZ_TEST_SIGN_FAILED     3u
+#define GZ_TEST_SIGN_UNFINISHED 4u   /* nothing, ever */
+
+/* Signatures for the lobbies (lobby.h: the engines hold no secret key). The
+ * program supplies them over the keys of its key port.
+ *   verify    1 if `sig` is a valid BIP 340 signature of `msg` under the x
+ *             coordinate of the 33-byte point `pub`;
+ *   point_ok  1 if `pub` is a valid compressed point;
+ *   sign      BIP 340 signature of `msg`: with `host` 1 by the host's
+ *             long-term key, else by the key at (epoch, index); 1, or 0 if
+ *             the port does not hold that key now. Never an error: the lobby
+ *             gives a notice and does nothing;
+ *   forget    AT_JOIN: wipe the scoped factory secret of the lobby `scope`
+ *             (its signing gate closed). May be NULL. */
+typedef struct {
+    int (*verify)(void *ctx, const uint8_t pub[33], const uint8_t msg[32], const uint8_t sig[64]);
+    int (*point_ok)(void *ctx, const uint8_t pub[33]);
+    int (*sign)(void *ctx, int host, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64]);
+    void (*forget)(void *ctx, const uint8_t scope[32]);
+    void *ctx;
+} gz_node_crypto_t;
 
 typedef enum { GZ_HOST_FUNDING_AUTO = 0, GZ_HOST_FUNDING_CONFIRM } gz_host_funding_t;
 typedef enum {
@@ -161,6 +225,9 @@ typedef struct {
     gz_key_port_t keys;                /* per-lobby keys and the host key */
     gz_host_funding_t host_funding;    /* composite-node.md 12.1; AUTO by default */
     gz_member_signing_t member_signing;/* composite-node.md 12.2; AT_JOIN by default */
+    gz_node_crypto_t crypto;           /* signatures for the lobbies; all NULL: no lobby opens */
+    uint32_t test_sign_outcome;        /* test builds only: GZ_TEST_SIGN_* (0: funding) */
+    uint32_t test_sign_delay_ms;       /* test builds only: how long after begin */
     uint32_t test_engines;             /* test builds only: 0, 1 or 2 test engines */
 } gz_node_config_t;
 

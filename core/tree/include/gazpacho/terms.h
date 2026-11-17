@@ -222,7 +222,7 @@ gz_terms_version_t gz_terms_version_rule(int have, uint32_t have_version, const 
  * (documented per field) does not constrain. */
 typedef struct {
     uint64_t min_channel_sat;          /* fixed term 30 must be at least this (0: none) */
-    uint32_t max_tree_feerate;         /* fixed term 32 at most (0: none) */
+    uint32_t max_tree_feerate;         /* fixed term 32 at most, sat per 1,000 vB (0: none, as gz_tree_conditions_t's) */
     uint32_t min_lifetime, max_lifetime; /* fixed term 26 (0: none) */
     uint16_t min_members;              /* the terms' `minimum` at least this (0: none) */
     uint8_t profiles;                  /* bit p = profile p accepted (0: any) */
