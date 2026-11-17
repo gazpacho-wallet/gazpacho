@@ -61,19 +61,19 @@ def main():
     runs = [0]
     base = os.path.join(work, "base")
 
-    def start(folder):
+    def start(folder, *extra):
         runs[0] += 1
         p = Proc("run-%d" % runs[0], [exe, "--data-dir", folder, "--role", "member", "--name", "m", "--no-chain",
                                       "--no-interface", "--reconnect-ms", "200",
-                                      "--connect", "%s@127.0.0.1:%d" % (HOST_KEY, port)], logs)
+                                      "--connect", "%s@127.0.0.1:%d" % (HOST_KEY, port)] + list(extra), logs)
         procs.append(p)
         return p
 
-    def outcome(folder):
+    def outcome(folder, *extra):
         """Start once: ("ready", incarnation, proc) or ("refused", why, proc)."""
-        p = start(folder)
-        m = p.wait_for(r"ready incarnation=(\d+)|unlock op=\w+ status=(\w+) .*reason=(\S+)|start-refused why=(\S+)",
-                       timeout=60)
+        p = start(folder, *extra)
+        m = p.wait_for(r"ready incarnation=(\d+)|unlock op=\w+ status=(?!ok\b)(\w+) .*reason=(\S+)|"
+                       r"start-refused why=(\S+)", timeout=60)
         if m and m.group(0).startswith("ready"):
             p.wait_for(r"connect-kept", timeout=30)
             p.stop()
@@ -83,10 +83,17 @@ def main():
         return "refused", "%s exit=%s" % (why, code), p
 
     try:
-        # The base: three starts, the target saved (anchored) at the first.
-        for _ in range(3):
-            st, inc, _ = outcome(base)
-        check(st == "ready" and inc >= 3, "base: three starts (incarnation %s)" % inc)
+        # The base: a start (its target saved), a backup, a start, the backup
+        # imported (the restore batch is anchored: the mark file names it),
+        # and a start after it.
+        st, inc, _ = outcome(base)
+        backup = os.path.join(work, "base-backup.gzj")
+        shutil.copyfile(os.path.join(base, "journal.gzj"), backup)
+        st, inc, _ = outcome(base)
+        st, inc, p = outcome(base, "--test-restore-from", backup)
+        check(st == "ready" and p.find(r"restore-batch seq=1 ")[0] is not None, "base: a restore, its batch anchored")
+        st, inc, _ = outcome(base)
+        check(st == "ready" and inc >= 4, "base: four starts (incarnation %s)" % inc)
         entries = dump_journal(base, exe)
         incs = [e[1] for e in entries if e[0] == "INCN"]
         jsize = os.path.getsize(os.path.join(base, "journal.gzj"))
