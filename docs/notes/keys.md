@@ -44,7 +44,7 @@ m                                     BIP 32 master: HMAC-SHA512("Bitcoin seed",
 
 254315617 is the first four bytes of `SHA256("gazpacho keys")`, `8f 28 8c 61`, with the top bit cleared (rechecked here). It is not one of BIP 43's purposes in use (44, 45, 48, 49, 84, 86, 87), nor LND's 1017 or Eclair's 46 and 47.
 
-**SLIP-0043 (review of PR 28, deferred to P8).** Checked on 2026-11-17: the SLIP repository (`satoshilabs/slips`, default branch at commit `7a2abdd1e8`) has no `slip-0043.md`, its index lists no SLIP-0043, and its history as served has no commit naming the file. So the number **could not be checked against a registry**, because there was none to read. Registering a purpose is a public step; the owner decides whether and when (contract v2 section 18 item 1). Nothing in the program depends on it.
+**SLIP-0043 (review of PR 28, deferred to P8).** Checked on 2026-11-17: the SLIP repository (`satoshilabs/slips`, default branch at commit `7a2abdd1e8`) has no `slip-0043.md`, its index lists no SLIP-0043, and its history as served has no commit naming the file. So the number **could not be checked against a registry**: the file is gone from `satoshilabs/slips`. The number stays **proposed**. Registering a purpose is a public step; the owner decides whether and when (contract v2 section 18 item 1). Nothing in the program depends on it.
 
 ## 3. Factory and contribution keys per (epoch, index)
 
@@ -54,8 +54,8 @@ m                                     BIP 32 master: HMAC-SHA512("Bitcoin seed",
 - **A restore start derives nothing until the new epoch is saved.** With the restore marker, the node loads the backup's slots (under the old epoch) before it saves the restore batch. Until the program carries out the SAVE that holds the new `key_epoch`, the port refuses every per-lobby key, so the old slots load as left out and their seats are lost, as R3 says ("a member restored while in an open lobby loses its seat there and must join again with a new key").
 - **How the port learns the epoch.** The program sees every `key_epoch` record twice: when the node reads it back at a start (the executor wraps the storage reader it hands to `gz_node_start`) and when it carries out a SAVE holding one. The record's layout is `node.h`'s (`GZ_RECORD_KEY_EPOCH`, field 2, `u32`). No new action or port is needed.
 - **Invalid children.** About 1 in 2^127 per step, so the rule only has to be total and safe:
-  - at `i'` or `(i+1)'`: the port returns 0 for that key. Today the node part answers `503 no_key` and saves nothing, and the next try allocates the same pair again, so that one lobby can never be opened. Contract v2 asks the node part to skip the pair and allocate the next; **that is a core change (node part), reported, not made here**.
-  - at `epoch'`: review R2-8 asks the epoch to be checked when it is drawn, before `key_epoch` is saved. The draw is in the node part (`np_restore_batch`), which cannot see the key port's derivation; **a core change, reported**: the key port gains `epoch_ok(epoch)` and the draw retries on 0 as it does for epoch 0. Until then an invalid epoch makes every per-lobby key of that installation return 0 (safe: no key is ever used twice; the wallet cannot open lobbies until a new restore).
+  - at `i'` or `(i+1)'`: the port returns 0 for that key. Today the node part answers `503 no_key` and saves nothing, and the next try allocates the same pair again, so that one lobby can never be opened. Contract v2 asks the node part to skip the pair and allocate the next; **a core change (node part), which the P6a step makes**.
+  - at `epoch'`: review R2-8 asks the epoch to be checked when it is drawn, before `key_epoch` is saved. The draw is in the node part (`np_restore_batch`), which cannot see the key port's derivation; **a core change, which the P6a step makes**: the key port gains `epoch_ok(epoch)` and the draw retries on 0 as it does for epoch 0. Until then an invalid epoch makes every per-lobby key of that installation return 0 (safe: no key is ever used twice; the wallet cannot open lobbies until a new restore).
   - at `net'` or `0'` (or `1'`, `86'`, `coin'`, `0'`): the seed cannot be used. The program refuses to start with it ("these words cannot be used with Gazpacho: make a new wallet"); set-up should refuse such words before they are shown (storage side).
   - the host key: k is the first valid of 0, 1, 2, ..., found at every start, so nothing is stored.
 
@@ -90,7 +90,11 @@ The seed source is the storage layer while storage is unlocked (`storage-encrypt
 | Unlocked | AT_JOIN | as AUTO, and the scoped table: per open per-lobby gate, the lobby's factory and contribution secrets, bound to (scope, values digest) | `secret()` returns 0 for every index: factory keys come only from the scoped table, filled when the person readies with the passphrase and wiped at `forget(scope)`, at every start (the table starts empty) and at lock |
 
 - **What AT_JOIN protects, exactly.** The key port holds no lobby's factory key before the person readies, and none after its check's last attempt ends (12.2, F2). It does not protect against a same-user attacker while storage is unlocked: the seed is in the storage layer's memory then (`local-api.md` 14.3 rule 4's words say so).
-- **A finding: the join binding.** The member's `join` carries a binding signed with the factory key (`core/lobby/member.c`, `evaluate`), and under AT_JOIN a join without `ready: true` carries no passphrase. So at such a join the program derives the factory key, signs the binding and wipes the key at once. The key port never holds it; but "the factory key is derived only at ready" (`local-api.md` 14.3 rule 1) is not what happens. Either 14.3's words change to "held only from the ready", or a join under AT_JOIN always carries the passphrase. **Reported for the owner.**
+- **Open point K1: the join binding (owner to decide).** The member's `join` carries a binding signed with the factory key (`core/lobby/member.c`, `evaluate`), and under AT_JOIN a join without `ready: true` carries no passphrase. So at such a join the program derives the factory key, signs the binding and wipes the key at once. The key port never holds it, but "the factory key is derived only at ready" (`local-api.md` 14.3 rule 1) is not what happens. The two options:
+  - (a) sign `join` with the per-lobby contribution key, and send the factory public key (with its proof) with `ready`. This needs a `messages.md` change.
+  - (b) keep it as it is, and correct `local-api.md` 14.3 to say that the passphrase is needed at join under AT_JOIN.
+
+  Until the owner decides, the lobby is unchanged and P8 implements today's behaviour: a transient derivation for the binding, wiped at once, never held.
 - **The scoped table.** At most `GZ_NODE_MAX_SLOTS` (8) entries; opening a gate for a scope that has one replaces it (the old secrets wiped first); the values digest is compared in constant time; a lookup for another digest gets nothing.
 - **Protecting keys at rest for WHEN_UNLOCKED** (composite 12.2). The key port writes nothing to disk. At rest the seed is sealed in `keys.gzk` (storage 4.5); in memory while unlocked it is the storage layer's.
 
@@ -123,7 +127,7 @@ The seed source is the storage layer while storage is unlocked (`storage-encrypt
 
 ## 11. What P8 does not do
 
-- The core changes of section 3 (skip a pair with an invalid child; `epoch_ok` at the draw) and section 5 (the receive allocator, its record, `payout_script` in `ready`): reported.
+- The core changes of section 3 (skip a pair with an invalid child; `epoch_ok` at the draw): the P6a step makes both. Section 5's receive allocator, its record and `payout_script` in `ready`: reported.
 - The key hook and `scoped_secret` in `gz_key_port_t` (P4.3, `core/node` signing): P8 provides `gzp_keys_scope_open`, `gzp_keys_scoped` and `gzp_keys_forget` in `program/keys.h` for P4.3 to call, and wires the existing `forget` to them.
 - `keys.gzk`, the storage layer's seed and the unlock flow: S6 and P5.
 - Registering the purpose number: the owner.

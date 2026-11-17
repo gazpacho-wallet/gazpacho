@@ -143,33 +143,36 @@ static int ours(const gzp_net_t *n, const uint8_t key[33])
 
 int gzp_net_key(const gzp_net_t *n, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33])
 {
-    static const char tag[] = "gazpacho stand-in lobby key";
-    uint8_t buf[sizeof tag + 40], s[32];
-    unsigned int dn = 0;
+    uint8_t s[32];
     secp256k1_pubkey pk;
     size_t len = 33;
     int ok;
-    if (index == 0 || n->single_key) {
+    if (sec) OPENSSL_cleanse(sec, 32);
+    if (pub) memset(pub, 0, 33);
+    if (n->single_key) {
         memcpy(s, n->cfg.static_key, 32);
     } else {
-        memcpy(buf, tag, sizeof tag);
-        memcpy(buf + sizeof tag, n->cfg.static_key, 32);
-        buf[sizeof tag + 32] = (uint8_t)(epoch >> 24);
-        buf[sizeof tag + 33] = (uint8_t)(epoch >> 16);
-        buf[sizeof tag + 34] = (uint8_t)(epoch >> 8);
-        buf[sizeof tag + 35] = (uint8_t)epoch;
-        buf[sizeof tag + 36] = (uint8_t)(index >> 24);
-        buf[sizeof tag + 37] = (uint8_t)(index >> 16);
-        buf[sizeof tag + 38] = (uint8_t)(index >> 8);
-        buf[sizeof tag + 39] = (uint8_t)index;
-        ok = EVP_Digest(buf, sizeof buf, s, &dn, EVP_sha256(), NULL) && dn == 32;
-        OPENSSL_cleanse(buf, sizeof buf);
-        if (!ok) return 0;
+        /* The key port derives it (keys.md 3: the current epoch only). */
+        ok = n->key_fn && n->key_fn(n->key_ctx, epoch, index, s, NULL) == 1;
+        if (!ok) {
+            OPENSSL_cleanse(s, sizeof s);
+            return 0;
+        }
     }
     ok = secp256k1_ec_seckey_verify(n->secp, s) && secp256k1_ec_pubkey_create(n->secp, &pk, s);
     if (ok && pub) ok = secp256k1_ec_pubkey_serialize(n->secp, pub, &len, &pk, SECP256K1_EC_COMPRESSED) && len == 33;
     if (ok && sec) memcpy(sec, s, 32);
+    if (!ok && pub) memset(pub, 0, 33);
     OPENSSL_cleanse(s, sizeof s);
+    return ok;
+}
+
+int gzp_net_sign_host(const gzp_net_t *n, const uint8_t msg[32], uint8_t sig[64])
+{
+    secp256k1_keypair kp;
+    int ok = secp256k1_keypair_create(n->secp, &kp, n->cfg.static_key) &&
+             secp256k1_schnorrsig_sign32(n->secp, sig, msg, &kp, NULL);
+    OPENSSL_cleanse(&kp, sizeof kp);
     return ok;
 }
 
