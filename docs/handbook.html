@@ -94,6 +94,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c3-16-milestones" title="16. Milestones">16. Milestones</a>
 <a class="sec" href="#c3-17-not-designed-yet" title="17. Not designed yet">17. Not designed yet</a>
 <a class="ch" href="#c4">Safe-to-sign rule</a>
+<a class="sec" href="#c4-changes-2026-11-17-review-of-pr-48" title="Changes, 2026-11-17: review of PR #48">Changes, 2026-11-17: review of PR #48</a>
+<a class="sec" href="#c4-changes-2026-11-16-the-host-paid-tree-fe" title="Changes, 2026-11-16: the host-paid tree fee rate">Changes, 2026-11-16: the host-paid tree fee rate</a>
 <a class="sec" href="#c4-changes-after-cross-spec-review-1" title="Changes after cross-spec review 1">Changes after cross-spec review 1</a>
 <a class="sec" href="#c4-alignment-with-exit-md-draft-2-2026-11-1" title="Alignment with `exit.md` draft 2 (2026-11-12)">Alignment with `exit.md` draft 2 (2026-11-12)</a>
 <a class="sec" href="#c4-changes-after-review-3" title="Changes after review 3">Changes after review 3</a>
@@ -113,6 +115,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c4-13-how-it-is-tested" title="13. How it is tested">13. How it is tested</a>
 <a class="sec" href="#c4-14-open-points" title="14. Open points">14. Open points</a>
 <a class="ch" href="#c5">Signing round</a>
+<a class="sec" href="#c5-changes-2026-11-16-the-host-paid-tree-fe" title="Changes, 2026-11-16: the host-paid tree fee rate">Changes, 2026-11-16: the host-paid tree fee rate</a>
 <a class="sec" href="#c5-changes-after-review-3" title="Changes after review 3">Changes after review 3</a>
 <a class="sec" href="#c5-changes-from-draft-2" title="Changes from draft 2">Changes from draft 2</a>
 <a class="sec" href="#c5-1-parties-and-scope" title="1. Parties and scope">1. Parties and scope</a>
@@ -350,7 +353,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c27-rough-totals" title="Rough totals">Rough totals</a>
 <a class="sec" href="#c27-biggest-unknowns" title="Biggest unknowns">Biggest unknowns</a></nav>
 <main>
-<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-16 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
+<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-17 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
 <section class="chapter" id="c1"><h2>Start here</h2><p class="desc">Terms, facts, decisions in force, and how sure we are of each claim.</p><p class="file">Gazpacho knowledge base · <code>docs/KNOWLEDGE-BASE.md</code></p>
 <div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.</p></div>
 <details id="c1-1-where-everything-is"><summary>1. Where everything is</summary><div class="body"><div class="tw"><table>
@@ -1374,7 +1377,63 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <section class="chapter" id="c4"><h2>Safe-to-sign rule</h2><p class="desc">Specification: the checks run before every signature.</p><p class="file">The safe-to-sign rule · <code>spec/safety-rule.md</code></p>
 <div class="intro"><p>Specification draft 4, 2026-11-12. Status: draft 3 brought in line with the four companion specifications after a third, joint review (<code>docs/reviews/spec-review-3.md</code>, findings F1 to F28), which judged draft 3 "ready after listed changes" and found that no finding needs a different cryptographic design. Draft 4 has not itself been reviewed. Nothing here has been reviewed outside this project. Values marked <strong>proposed, owner to confirm</strong> are Slice 1 choices the owner has not objected to and has not yet confirmed.</p>
 <p>This document defines the check a member's software runs before it contributes to any signature, the matching rules for the host, and what the rule cannot protect against. The code that implements it is one module, the only place where "is this safe to sign?" is decided.</p>
-<p>Companion documents: <code>signing-round.md</code> (draft 4), <code>messages.md</code> (draft 2), <code>terms.md</code> (draft 2) and <code>journal.md</code> (draft 3), all brought in line with this draft; <code>exit.md</code> (draft 2), <code>storage-encryption.md</code> (draft 3) and <code>local-api.md</code> (draft 4), which the alignment section below uses; <code>THREAT-MODEL.md</code> (<code>docs/</code>).</p></div>
+<p>Companion documents: <code>signing-round.md</code> (draft 4), <code>messages.md</code> (draft 2), <code>terms.md</code> (draft 2) and <code>journal.md</code> (draft 3), all brought in line with this draft; <code>exit.md</code> (draft 3, which replaces draft 2's "no end-date payout in 1.0.0" with design 2's payouts on every shared output; draft 2 rules this document still cites are INTERIM there), <code>storage-encryption.md</code> (draft 3) and <code>local-api.md</code> (draft 4), which the alignment section below uses; <code>THREAT-MODEL.md</code> (<code>docs/</code>).</p></div>
+<details id="c4-changes-2026-11-17-review-of-pr-48"><summary>Changes, 2026-11-17: review of PR #48</summary><div class="body"><p>Not itself reviewed. From <code>docs/reviews/review-pr48.md</code>.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Change</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>M8</td>
+<td>H17 and section 12 values 1 and 2 marked INTERIM, replaced under design 2 by H6 and the payouts (<code>exit.md</code> draft 3)</td>
+<td>Section 10, 12</td>
+</tr>
+<tr>
+<td>M1, L3</td>
+<td>Channel row against <code>channel_sat</code> + P(r); tree payouts and the distribution transaction at least <code>channel_sat</code> + P(r); the spare-liquidity payout excluded from the capacity bound</td>
+<td>C8</td>
+</tr>
+<tr>
+<td>M7</td>
+<td>One fee rule: own signed size; one <code>fee_per_tx</code> only on the pin <code>e6573950</code>, INTERIM</td>
+<td>C8</td>
+</tr>
+<tr>
+<td>H1, M5</td>
+<td>New exclusions: switched off longer than the watch interval; the free pin above the rate bound</td>
+<td>Section 11</td>
+</tr>
+<tr>
+<td>M6 (as confirmed, N1)</td>
+<td>Payouts pay a script the member names from its BIP 86 receive chain (<code>exit.md</code> 3.4), found after a restore by the gap-limit scan; C12 and R3 unchanged</td>
+<td>C2</td>
+</tr>
+</tbody>
+</table></div></div></details>
+<details id="c4-changes-2026-11-16-the-host-paid-tree-fe"><summary>Changes, 2026-11-16: the host-paid tree fee rate</summary><div class="body"><p>Not itself reviewed. C8 is brought in line with <code>exit.md</code> 5.9 and <code>terms.md</code> 4.4. C1 (byte-for-byte rebuild) and C8a (rate equal to the frozen terms) are unchanged; no H-rule changes, since the host's duty is a C8 check every member runs.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tree fee rate at least 100 sat/kvB; the member's ceiling is a sanity bound, by default the term's maximum, because the host pays the fee</td>
+<td>C8, fee row</td>
+</tr>
+<tr>
+<td>Under design 2, every channel output at least its member's capacity plus the payout reserve P(r), and every spare-liquidity output at least P(r) + 330 sat, so every payout pays at least the capacity</td>
+<td>C8, channel row</td>
+</tr>
+</tbody>
+</table></div></div></details>
 <details id="c4-changes-after-cross-spec-review-1"><summary>Changes after cross-spec review 1</summary><div class="body"><p>Alignment fixes from <code>docs/reviews/review-cross-spec-1.md</code>, made in one pass with <code>exit.md</code>, <code>storage-encryption.md</code>, <code>local-api.md</code> and <code>journal.md</code>. No new draft number: no check changes.</p>
 <div class="tw"><table>
 <thead>
@@ -1749,7 +1808,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </table></div></div></details>
 <details id="c4-3-the-checks"><summary>3. The checks</summary><div class="body"><p>A request is safe to sign only if all of these hold. Each is evaluated on data the member's software built or stored itself.</p>
 <p><strong>C1. Rebuilt, not received.</strong> The member's software constructs every transaction in the request itself, from its own stored state, the host's terms and the proposal's parameters, and signs only digests it computed. Every setting that changes the transactions' bytes is set explicitly, never left to a default of the imported code (<code>signing-round.md</code> section 4.1). Every item is signed in one fixed way: a 64-byte signature, the default hash type, no annex, and a stated mode (key path with a stated tweak, or script path with a stated leaf). No item uses a hash type that lets inputs be added. A participant list containing the same key twice is refused. <strong>The funding output's script is checked:</strong> it must be the BIP 86 key of the MuSig2 aggregate of the participant keys in order, read from the output of the funding transaction that the outpoint names. The imported <code>factory_set_funding</code> takes the script on trust [C: <code>src/factory.c:1214-1228</code>].</p>
-<p><strong>C2. Own outputs are recognised by own keys.</strong> The member's software identifies its outputs by deriving the scripts from its own keys, never from labels, indexes or positions in the request. This includes any output of the distribution transaction, which the import pays to the member's factory key [C: <code>factory.h:1258-1261</code>].</p>
+<p><strong>C2. Own outputs are recognised by own keys.</strong> The member's software identifies its outputs by deriving the scripts from its own keys, never from labels, indexes or positions in the request. This includes any output of the distribution transaction, which the import pays to the member's factory key [C: <code>factory.h:1258-1261</code>]; under design 2 every payout and the distribution transaction pay instead the member's own payout script, a 34-byte P2TR script from its BIP 86 receive chain at an index given to that factory only (<code>exit.md</code> 3.4), and the member refuses a proposal carrying any other script for itself.</p>
 <p><strong>C3. Value.</strong> The exit value after the request is at least the amount owed after the request. The adversary draws from the exposed set; the member draws from the held set, and may rely only on responses it can make within its maximum safe absence and with fee funds it actually has. In 1.0.0 a member is not expected to hold on-chain coins (owner decision 6, <code>docs/ux/decisions.md</code>), so a response that needs a fee beyond what is built into the transaction counts as unavailable unless the member has the coins. Two import facts bear on this: the leaf chain transactions after the first carry no anchor output [C: <code>src/factory.c:2776-2779</code>], so they confirm only at their built-in fee; and the distribution transaction gets no anchor when the fee estimator reports below 1 sat/vB [C: <code>src/fee.c:90-97</code>, <code>src/factory.c:4532-4539</code>].</p>
 <p><strong>C4. Every exposed transaction is accounted for.</strong> For every transaction in the exposed set after the request, the module names which of these applies, and refuses if none does:
 - <strong>(a) Harmless:</strong> if it is published, the member still reaches at least what it is owed from its held set.
@@ -1816,7 +1875,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tbody>
 <tr>
 <td>End height (every host-only timeout derives from it)</td>
-<td>Not past; not 0; the member's <code>leave_by</code> with every step of its path missing, H_leaf − (B − 1) − n·A − M (<code>spec/exit.md</code> 4.4, with H_leaf = E − 10·d and n = d + 3), is at least the funding deadline plus B plus one block of being live (C5, section 7)</td>
+<td>Not past; not 0; the member's <code>leave_by</code> with every step of its path missing, H_leaf − (B − 1) − n·A − M (<code>spec/exit.md</code> 4.4, with H_leaf = E − 10·d and n = d + 3), is at least the funding deadline plus B plus one block of being live (C5, section 7) (INTERIM). Under design 2: not past, not 0, and E − E_wd at least the placement of <code>terms.md</code> 4.5 at the member's own B and A (<code>exit.md</code> 4.4)</td>
 </tr>
 <tr>
 <td>Spare-liquidity delay</td>
@@ -1848,7 +1907,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Fee per tree transaction</td>
-<td>Exactly the terms' rule, ⌈fee rate × largest signed size / 1000⌉ (<code>terms.md</code> section 4.2); at most the member's ceiling</td>
+<td>Exactly ⌈fee rate × its own signed size / 1000⌉ on each tree transaction (<code>terms.md</code> 4.2, the builder of #46 and later); INTERIM, on the pin <code>e6573950</code> only, one <code>fee_per_tx</code> = ⌈fee rate × largest signed size / 1000⌉ on every transaction. The rate at least 100 sat/kvB and at most ⌊175,000 / V_occ⌋ sat/kvB, rounded down, with V_occ from the tree the member built (1,047 in T1; <code>exit.md</code> 5.5, 5.9; owner to confirm, open point 26), else refuse; at most the member's ceiling, a sanity bound only and by default the term's maximum, because the host pays every tree fee from the funding (<code>terms.md</code> 4.4; <code>exit.md</code> 5.9)</td>
 </tr>
 <tr>
 <td>Tree anchors</td>
@@ -1860,7 +1919,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>Channel amount</td>
-<td><strong>Every</strong> leaf's channel output at least the terms' <code>channel_sat</code> (a host that pays one member less than its terms promise is refused by all); the member's own channel at least its own minimum</td>
+<td><strong>Every</strong> leaf's channel output at least the terms' <code>channel_sat</code> (a host that pays one member less than its terms promise is refused by all); the member's own channel at least its own minimum. Under design 2, every channel output at least max(<code>channel_sat</code>, that member's minimum where it is the member's own) + P(r), and every spare-liquidity output at least P(r) + 330 sat (<code>terms.md</code> 4.4); the member's capacity is defined as output − P(r) only after this check. Every channel and tree payout and the distribution transaction pays the member at least its capacity (tree payouts and the distribution transaction: <code>channel_sat</code> + P(r)); the spare-liquidity payout is excluded from that bound and pays at least 330 sat</td>
 </tr>
 <tr>
 <td>Placement</td>
@@ -2029,7 +2088,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>H3. No credit before it is covered.</strong> The host does not act on an operation for a member until the transactions protecting the host in the new state are fully signed. It gives no channel credit before funding is buried.</p>
 <p><strong>H4. The host always holds its own signed channel state</strong> for every channel on every live anchor, kept current through every update.</p>
 <p><strong>H5. Secrets after, not before.</strong> The host does not reveal an old state's liquidity secret, or revoke its own old channel state, until it holds the new state fully signed.</p>
-<p><strong>H6. A deadline for forcing out.</strong> For every member, the host knows the date by which it must start publishing that member's path so that it resolves by real balances before any pre-signed payout becomes valid: the payout's lock time, less the full exit time, less a margin. It stops extending credit to a non-cooperating member before that date. H6 applies only once an end-date payout exists; 1.0.0 has none, and H17 below takes its place.</p>
+<p><strong>H6. A deadline for forcing out.</strong> For every member, the host knows the date by which it must start publishing that member's path so that it resolves by real balances before any pre-signed payout becomes valid: under design 2, from <code>host_spare_by</code> and at the latest <code>host_force_by</code> (<code>exit.md</code> 4.4, section 9). It stops extending credit to a non-cooperating member before that date. H6 applies once the end-date payouts exist, which 1.0.0 requires from Slice 3 (<code>exit.md</code> draft 3); while the INTERIM import has none, H17 below takes its place.</p>
 <p><strong>H7. A fee reserve.</strong> The host holds on-chain coins sufficient to add fees to every path it may have to publish.</p>
 <p><strong>H8. Rounds one at a time per subtree.</strong></p>
 <p><strong>H9. A member who never completes the first channel exchange</strong> is treated as absent from the start: its seat gets no credit and is forced out under H6.</p>
@@ -2042,7 +2101,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>H14.</strong> The host watches every member's channel output and answers a member's revoked commitment with the penalty by <code>penalty_send_by</code>, at its own constants.</li>
 <li><strong>H15.</strong> The host's sweeps of outputs it may take alone follow a schedule; it never sweeps an unpublished tree output with an owed member below it.</li>
 <li><strong>H16.</strong> The host never replaces the funding transaction by fee; it bumps it only by a child on its own change output (or a P2A of the funding's own), which the funding must therefore have.</li>
-<li><strong>H17.</strong> With no end-date payout (1.0.0), the host's software never takes a member's balance through a timeout: it forces a silent owed member out with its own latest commitment by <code>host_force_by</code>.</li>
+<li><strong>H17.</strong> <strong>INTERIM</strong> (while the import has host-only timeouts and no payouts: Slices 1, 1.5 and 2; replaced by H6 under design 2). The host's software never takes a member's balance through a timeout: it forces a silent owed member out with its own latest commitment by <code>host_force_by</code> (<code>exit.md</code> 4.5). A policy of honest host software, not a protection.</li>
 <li><strong>H18.</strong> The host's expiry delta toward a factory member, and its go-on-chain height for each payment it offers that member, cover that member's whole path, its own commitment and its HTLC-timeout transaction: (n + 1)·A + (B − 1) + M_host with n = d + 3.</li>
 </ul></div></details>
 <details id="c4-11-what-this-rule-does-not-protect-again"><summary>11. What this rule does not protect against</summary><div class="body"><ul>
@@ -2053,7 +2112,9 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>A false view of the chain</strong> for longer than the maximum safe absence. The exit's tip estimate never freezes (<code>spec/exit.md</code> 4.5: it advances with the clock), so a hidden chain makes the exit start early, not late; but a member whose every server is hostile (an eclipse) cannot broadcast through them either. A broadcast-only route independent of the view's servers is recommended, not guaranteed.</li>
 <li><strong>Fees far above what the member can fund</strong>, including fees above what the tree's anchors pay when the member holds no on-chain coin (<code>spec/exit.md</code> 6.5).</li>
 <li><strong>Pinning of a keyless anchor.</strong> Anyone, the host in particular, can spend a tree transaction's pay-to-anchor output first with a large low-rate child: for about 10,000 sat on a version-2 tree and about 234 sat on a TRUC tree. A member without on-chain coins then cannot replace it, and its step can be held back while blocks clear above about 0.2 sat/vB. A member without coins confirms in calm conditions unless someone pays to stop it (<code>spec/exit.md</code> 6.5).</li>
-<li><strong>A wallet left locked past <code>unlock_by</code></strong> with a factory balance: the locked watcher publishes the tree path but cannot publish the member's own commitment (<code>spec/exit.md</code> 5.6). After H_leaf a dishonest host takes the balance. An honest host closes with its own commitment by <code>host_force_by</code> (H17), and the balance then waits in the member's output, with no deadline, until the unlock.</li>
+<li><strong>A wallet switched off, with no locked watcher or tower holding its penalty file, for longer than the watch interval</strong> (W − B − A − M blocks, <code>exit.md</code> 4.4), before or after the end height: a revoked host commitment published in that time and not penalised within W takes the host's share of that older state, up to the whole channel. Design 2's payouts do not cover this.</li>
+<li><strong>The free pin by a pre-signed next level</strong> at a tree rate above ⌊175,000 / V_occ⌋ sat/kvB (1,047 in T1), which a member refuses at signing (C8): anyone holding the tree can occupy a step's only child slot at no cost; a member without a spare coin cannot evict it (<code>exit.md</code> 5.5).</li>
+<li><strong>INTERIM: a wallet left locked past <code>unlock_by</code></strong> with a factory balance: the locked watcher publishes the tree path but cannot publish the member's own commitment (<code>spec/exit.md</code> 5.6). After H_leaf a dishonest host takes the balance. An honest host closes with its own commitment by <code>host_force_by</code> (H17), and the balance then waits in the member's output, with no deadline, until the unlock.</li>
 <li><strong>A penalty file cut while locked</strong> (or replaced by an older copy) by anyone who can write the data folder, which needs no key: the locked watcher detects it, reports it (<code>penalty_file_short</code>, <code>at_risk</code>) and keeps answering with the penalties it still holds, but a host that publishes one of the newest revoked states while the person stays locked past that state's revocation window takes that channel's balance (<code>storage-encryption.md</code> 8.7.4 rule 7, 8.7.5). Not detected at all if the OS key store is rolled back with it.</li>
 <li><strong>A locked wallet with no watch-and-exit bundle</strong> ("maximum privacy", no OS key store, or Slice 1): nothing is published while locked.</li>
 <li><strong>A breach while locked, for the payment outputs.</strong> Penalties against the host's second-stage payment transactions cannot be pre-signed; a member that stays locked for the revocation window after such a transaction confirms loses those payment outputs, at most the sum of the payment outputs of the revoked state (<code>spec/exit.md</code> 4.4).</li>
@@ -2168,8 +2229,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </table></div>
 <p><strong>Slice 1 values</strong> (each <strong>proposed, owner to confirm</strong>; the owner has not objected to any):</p>
 <ol>
-<li><strong>No distribution transaction in Slice 1.</strong> The creation round signs tree transactions only. A Slice 1 member refuses a proposal that carries one (<code>messages.md</code> record 44). So nothing pre-signed can overtake the host's timeout recovery (point 2), and C2 and C5 have no payout to cover.</li>
-<li><strong>The host recovers its signet coins through a short factory life and the existing host timeout.</strong> The terms give a short life (T1: 144 blocks plus 36 of wind-down, about a day and a half on signet), so the end height is near. Every tree output carries the host-only timeout leaf [C: <code>src/factory.c:1632-1644</code>, <code>:199-214</code>]: an output feeding a kickoff at depth j times out at E − 5·(2j − 1), and a leaf transaction's input and channel output at E − 10·d (C5); the root kickoff, which spends the funding output on its key path, has none. The root's own outputs feed depth 1, so they time out at E − 5. After a factory, the host publishes the root kickoff from its held tree and, once the end height less 5 blocks has passed, sweeps each of the root's outputs alone through its timeout leaf: for up to 4 members that is the root plus one sweep of two outputs, a few hundred vbytes at 0.1 sat/vB. Members, owed zero, lose nothing. No cooperative close is added to Slice 1. An end height of 0 is still not an option: the import then builds no timeouts (C5).</li>
+<li><strong>INTERIM. No distribution transaction in Slice 1</strong> (and Slices 1.5 and 2; from Slice 3 a member refuses a proposal that <strong>lacks</strong> the payouts, <code>exit.md</code> 1.2). The creation round signs tree transactions only. A Slice 1 member refuses a proposal that carries one (<code>messages.md</code> record 44). So nothing pre-signed can overtake the host's timeout recovery (point 2), and C2 and C5 have no payout to cover.</li>
+<li><strong>INTERIM. The host recovers its signet coins through a short factory life and the existing host timeout</strong> (replaced under design 2 by closes all members sign and forced exits, <code>exit.md</code> E-5). The terms give a short life (T1: 144 blocks plus 36 of wind-down, about a day and a half on signet), so the end height is near. Every tree output carries the host-only timeout leaf [C: <code>src/factory.c:1632-1644</code>, <code>:199-214</code>]: an output feeding a kickoff at depth j times out at E − 5·(2j − 1), and a leaf transaction's input and channel output at E − 10·d (C5); the root kickoff, which spends the funding output on its key path, has none. The root's own outputs feed depth 1, so they time out at E − 5. After a factory, the host publishes the root kickoff from its held tree and, once the end height less 5 blocks has passed, sweeps each of the root's outputs alone through its timeout leaf: for up to 4 members that is the root plus one sweep of two outputs, a few hundred vbytes at 0.1 sat/vB. Members, owed zero, lose nothing. No cooperative close is added to Slice 1. An end height of 0 is still not an option: the import then builds no timeouts (C5).</li>
 <li><strong>Burial depth: 3 blocks on signet</strong> for C11, as seen by both chain servers of the chain view (<code>docs/CHAIN-SERVERS.md</code>). Signet is mined by a fixed signer set, so a reorganisation deeper than a block or two is not expected, and 3 keeps a Slice 1 run to about half an hour after broadcast.</li>
 <li><strong>Funding deadline: 36 blocks</strong> after the block that was the member's chain tip when it sent <code>round_ack</code>. The host broadcasts as soon as it holds every ack; at 0.1 sat/vB, on signet, the funding may wait several blocks, and 36 (about six hours) leaves room for that and for a host restart and rebroadcast, while staying far inside T1's life: funding buried at the deadline still leaves over 100 blocks before the leaves' timeouts, so the C11 re-check passes.</li>
 <li><strong>Unfinished deadline: one signing budget</strong> (the terms' <code>signing_budget_ms</code>, 10 minutes in T1) on the member's own clock, counted from when the member sent its partial signatures. Within the budget the host may legitimately still be collecting, combining or resending results (<code>round_status_request</code>); past it the host's own terms say the round is over. A creation round still Unfinished then becomes <strong>Abandoned</strong> (there is nothing to exit, since nothing is owed until funding is buried); its records stay, and it becomes Dead if a funding input is spent elsewhere.</li>
@@ -2231,6 +2292,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p>A signing round produces group signatures for a set of transactions. One engine runs every round in Gazpacho: creating a factory, updating a layer, rotating, closing. It follows the MuSig2 standard (BIP 327) and uses the imported signing code, with the exceptions in section 13.</p>
 <p>Companion documents: <code>safety-rule.md</code> (draft 4), <code>messages.md</code>, <code>terms.md</code> and <code>journal.md</code> (draft 2, brought in line with this draft).</p>
 <p>Marks used where it matters: <strong>[C]</strong> read in the imported code (file and line); <strong>[S]</strong> checked in a primary source (the secp256k1-zkp headers at the pinned commit were read for this draft; statements about BIP 327 rely on the passages review 2 fetched and quoted); <strong>[R]</strong> reasoning, not yet checked by a source or a test.</p></div>
+<details id="c5-changes-2026-11-16-the-host-paid-tree-fe"><summary>Changes, 2026-11-16: the host-paid tree fee rate</summary><div class="body"><p>Not itself reviewed. The fee row of section 4.1 follows <code>terms.md</code> 4.4: the rate is at least 100 sat/kvB, the fee is the host's, and the member's ceiling is a sanity bound. The meaning of the fee record does not change: on this pin it carries <code>fee_per_tx_sat</code>; at the re-import of #46 record 30 carries the rate itself, equal to <code>tree_feerate</code>, and this rule keeps that.</p></div></details>
 <details id="c5-changes-after-review-3"><summary>Changes after review 3</summary><div class="body"><div class="tw"><table>
 <thead>
 <tr>
@@ -2617,8 +2679,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <tr>
 <td>Fee per tree transaction</td>
 <td>Field <code>fee_per_tx</code> (default 200) [C: <code>src/factory.c:861</code>]; overridden by a fee estimator if one is set [C: <code>:1900-1903</code>]</td>
-<td>Derived from the terms: ⌈<code>tree_feerate</code> × largest signed size / 1000⌉ (<code>terms.md</code> section 4.2); the proposal's <code>fee_per_tx_sat</code> must equal it</td>
-<td>At most the member's ceiling. The engine sets no estimator, so no estimator state enters the bytes</td>
+<td>INTERIM on this pin: derived from the terms, ⌈<code>tree_feerate</code> × largest signed size / 1000⌉ (<code>terms.md</code> section 4.2), and the proposal's <code>fee_per_tx_sat</code> must equal it. From the re-import of #46: record 30 carries the rate, and each transaction pays ⌈rate × its own signed size / 1000⌉, the one rule of <code>terms.md</code> 4.2</td>
+<td>At most the member's ceiling, a sanity bound by default the term's maximum; the rate at least 100 sat/kvB; the fee is the host's, from the funding (<code>terms.md</code> 4.4). The engine sets no estimator, so no estimator state enters the bytes</td>
 </tr>
 <tr>
 <td>Spare-liquidity delay</td>
@@ -8728,7 +8790,7 @@ docs/      plan, assessment, user guides
 {
  "about": "Not displayed. Sources and conventions for readers working from this file alone. The full text of every document is in the page itself, inside the collapsed sections.",
  "repository": "https://github.com/gazpacho-wallet/gazpacho",
- "built": "2026-11-16",
+ "built": "2026-11-17",
  "wording": "Say host (the papers say LSP) and member (client). Never say staking; say hosting, providing liquidity, fees.",
  "authoritative": "The Markdown files in the repository. This page is generated from them by tools/build-handbook.py.",
  "chapters": [
