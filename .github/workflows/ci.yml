@@ -43,6 +43,15 @@ jobs:
         # sanitizers, the same tests again under valgrind. The wallet
         # break-checks (label slow) run in wallet-break-checks.yml.
         run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow
+      - name: Chain worker under ThreadSanitizer
+        # Watches, requests, events, resets and shutdown racing
+        # (ports/chain/tests/test_chainw.c). Its own small build: TSan does
+        # not mix with the other sanitizers. Fewer address-randomisation bits,
+        # which this kernel's default exceeds what TSan can map.
+        if: matrix.sanitize == 'OFF'
+        run: |
+          sudo sysctl -w vm.mmap_rnd_bits=28
+          sh tools/chain-tsan.sh "$RUNNER_TEMP/chain-tsan"
       - name: Scale check, one small case and the two defect reproductions
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
 
@@ -65,6 +74,8 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -I tools/check-no-addresses.py
+      - name: The check itself refuses link targets, server paths and commit messages
+        run: python3 -I tests/tools/test_check_no_addresses.py
 
   spec-vectors:
     name: specification vectors
@@ -210,6 +221,7 @@ jobs:
           --args "lobby_fuzz=3000 2" --args "lobby_fuzz_seq=300 2"
           --args "api_http_fuzz=3000" --args "api_json_fuzz=20000"
           --args "node_fuzz=300" --args "node_hostile=6 400" --args "sim_profile_6=25 300 1 6"
+          --args "chain_fuzz_parse=20000" --args "chain_fuzz_watch=1500"
           --exclude '^storage_vector_e2r$'
           --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
           --args "signing_golden=golden tiny" --args "signing_model=model tiny"
@@ -258,3 +270,31 @@ jobs:
       - name: Run each target for 60 seconds
         if: steps.find.outputs.found == 'true'
         run: sh tools/run-fuzz.sh build 60
+
+  interface:
+    name: interface in a browser
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
+      - name: Build gz-api-fake (the API server, the fake backend, the interface compiled in)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_WERROR=ON -DGZW_BREAK_CHECKS=OFF
+          cmake --build build --target gz-api-fake -j
+      - name: Install Playwright (pinned by tests/web/package-lock.json) and Chromium
+        working-directory: tests/web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: The interface, every Slice 1 flow, against the fake backend
+        working-directory: tests/web
+        run: GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test
+      - name: The API server's own browser checks (spec/local-api.md 23.6)
+        working-directory: tests/api/browser
+        run: |
+          ln -s ../../web/node_modules node_modules
+          GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test

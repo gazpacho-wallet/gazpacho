@@ -107,6 +107,10 @@ typedef enum gz_chain_result {
   /* The server's block 0 is not the genesis block of the network asked for.
    * Nothing else it says is used. */
   GZ_CHAIN_WRONG_NETWORK = 14,
+  /* The server does not offer this call at all (today: it has no package
+   * endpoint). Nothing was sent that it could have acted on. From the
+   * comparing backend: no server that could be asked offers it. */
+  GZ_CHAIN_UNSUPPORTED = 15,
 
   /* Comparing backend only: servers gave answers that contradict each other
    * about confirmed data. Treat as not confirmed. gz_multi_last_report holds
@@ -238,6 +242,25 @@ typedef struct gz_broadcast_result {
   char reason[GZ_REASON_MAX];
 } gz_broadcast_result;
 
+/* The outcome of sending a parent and its child as one package. */
+typedef struct gz_package_result {
+  /* For the pair. GZ_CHAIN_OK only when both transactions are in (accepted
+   * or already there). GZ_CHAIN_REJECTED: the server answered and at least
+   * one is not in. GZ_CHAIN_UNSUPPORTED: no package endpoint. */
+  gz_chain_result result;
+  /* Each transaction's own outcome, as for gz_chain_broadcast: `result`
+   * GZ_CHAIN_OK with its txid, or GZ_CHAIN_REJECTED with the server's words
+   * for that transaction in `reason` (empty if it gave none). When the
+   * server did not answer about the transactions at all, both carry the
+   * pair's result. */
+  gz_broadcast_result parent;
+  gz_broadcast_result child;
+  /* The server's message about the package as a whole when it is refused,
+   * printable ASCII, zero-terminated. */
+  char reason[GZ_REASON_MAX];
+  long server_status; /* HTTP status of the answer, or 0 if not reached */
+} gz_package_result;
+
 typedef struct gz_fee_estimate {
   uint16_t target;      /* confirmation target in blocks */
   uint64_t sat_per_kvb; /* fee rate, satoshi per 1000 virtual bytes, rounded up */
@@ -276,6 +299,10 @@ typedef struct gz_chain_ops {
   gz_chain_result (*broadcast)(void *ctx, const uint8_t *raw, size_t len,
                                gz_broadcast_result *out);
   gz_chain_result (*fee_estimates)(void *ctx, gz_fee_estimates *out);
+  /* Optional (may be NULL: the backend has no package call). */
+  gz_chain_result (*broadcast_package)(void *ctx, const uint8_t *parent, size_t parent_len,
+                                       const uint8_t *child, size_t child_len,
+                                       gz_package_result *out);
   /* Optional (may be NULL): who this backend talks to. */
   bool (*describe)(void *ctx, gz_chain_info *out);
   void (*destroy)(void *ctx);
@@ -362,6 +389,25 @@ gz_chain_result gz_chain_merkle_proof(const gz_chain *c, const uint8_t txid[GZ_H
  * (gz-chain refuses it, by flag and by each server's block 0). */
 gz_chain_result gz_chain_broadcast(const gz_chain *c, const uint8_t *raw, size_t len,
                                    gz_broadcast_result *out);
+
+/*
+ * Sends a parent transaction and one child that spends it as one package
+ * (Bitcoin Core's submitpackage, through the server). This is the only way
+ * to publish a parent that pays less than the relay fee on its own: a tree
+ * transaction at a zero or very low rate with the child that pays for it.
+ * `out` is filled whatever the result and out->result equals the return
+ * value. GZ_CHAIN_OK: both transactions are in the server's mempool (or
+ * already were). GZ_CHAIN_REJECTED: the server answered and refused;
+ * out->parent and out->child say which and why. GZ_CHAIN_UNSUPPORTED: the
+ * server has no package endpoint, and nothing was sent. The two are never
+ * sent one after the other instead: a parent that needs its child would be
+ * refused alone. Either transaction not parsing or over GZ_TX_MAX_BYTES is
+ * GZ_CHAIN_INVALID_ARG and nothing is sent. As for gz_chain_broadcast, the
+ * refusal to do this on mainnet lives in the program.
+ */
+gz_chain_result gz_chain_broadcast_package(const gz_chain *c, const uint8_t *parent,
+                                           size_t parent_len, const uint8_t *child,
+                                           size_t child_len, gz_package_result *out);
 
 /* Fee rate estimates by confirmation target. These are a server's opinion.
  * Nothing can check them and they are never an "agreed fact", even from the

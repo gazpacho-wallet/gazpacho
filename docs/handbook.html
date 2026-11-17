@@ -3658,7 +3658,41 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <li><strong>Testnet4, HTTP:</strong> <code>https://blockstream.info/testnet4/api</code> answered with the same tip as mempool.space. That is a second independent operator.</li>
 <li><strong>Signet, Electrum protocol:</strong> <code>electrum.emzy.de:53002</code> (ElectrumX) answered with the same tip as <code>mempool.space:60602</code>. That is a second independent operator.</li>
 <li><strong>Testnet4, Electrum protocol:</strong> several community Fulcrum and ElectrumX servers answered, among them <code>blackie.c3-soft.com:57010</code>, <code>fulcrum.theuplink.net:60002</code>, <code>bitcoin.stagemole.eu:5010</code>, <code>testnet4.qtornado.com:51012</code> and <code>testnet.aranguren.org:52002</code>. Certificates were not checked.</li>
-</ul></div></details>
+</ul>
+<h4>Package relay (one parent, one child)</h4>
+<p>Exits of trees built at a very low or zero fee rate need the parent and its fee child sent as one package. Checked on 2026-11-14 without sending anything (<code>notes/chain-port.md</code> section 19):</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>Network</th>
+<th>Server</th>
+<th>Package endpoint</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Signet</td>
+<td><code>https://mempool.space/signet/api</code></td>
+<td><code>POST /v1/txs/package</code> exists</td>
+</tr>
+<tr>
+<td>Signet</td>
+<td><code>https://blockstream.info/signet/api</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td>Testnet4</td>
+<td><code>https://mempool.space/testnet4/api</code></td>
+<td><code>POST /v1/txs/package</code> exists</td>
+</tr>
+<tr>
+<td>Testnet4</td>
+<td><code>https://blockstream.info/testnet4/api</code></td>
+<td>none</td>
+</tr>
+</tbody>
+</table></div>
+<p>So one public operator per network can take a package, and none has been seen to accept one. A node of our own (Bitcoin Core 29.1 or later) is needed before exits can be relied on.</p></div></details>
 <details id="c8-what-this-gives-us"><summary>What this gives us</summary><div class="body"><ul>
 <li><strong>Signet has two independent operators</strong> on the HTTP interface (mempool.space and Blockstream) and two on the Electrum protocol (mempool.space and emzy.de). Both HTTP servers reported the same tip. That is enough to compare answers, which the design requires on signet.</li>
 <li><strong>Testnet4</strong> has two independent operators on HTTP (mempool.space and Blockstream) and several on the Electrum protocol, so answers can be compared there too.</li>
@@ -4477,6 +4511,11 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td><strong>Observe</strong>: link every member's IP address, and the host's, to one factory</td>
 <td>Slice 1: the User-Agent no longer names Gazpacho (it does not disguise the client: TLS fingerprint and access pattern still show it); no proxy is taken from the environment, and an optional <code>socks5h://</code> proxy (Tor) can be set (<code>ports/chain</code>, <code>gz-chain --proxy</code>); a member must not ask about the funding txid before it can have been broadcast (<code>docs/notes/chain-port.md</code> section 9)</td>
 <td>Each member polls the same funding txid and tree outputs from its own address, and every query goes to every configured operator, so each operator can group a factory's members and host by address, add each member's wallet scripts, and see the host as the first broadcaster. Not defended without Tor or the user's own server. 1.0.0 plan in 2.8</td>
+</tr>
+<tr>
+<td><strong>Fake depth</strong>: tell a confirmation deeper than it is</td>
+<td>Depth is counted only along a chain of headers linked to each other with no gap, each meeting its own proof-of-work target (<code>docs/notes/chain-port.md</code> section 18), and only what two operators agree on counts</td>
+<td>On the test networks this costs almost nothing: the target is checked only against the network limit (no retargeting rule), testnet4 allows difficulty-1 blocks, and signet block signatures are not checked. Depth there rests on the operators agreeing. Not defended against colluding operators or a single server the user chose. Before mainnet: an expected-difficulty rule</td>
 </tr>
 </tbody>
 </table></div>

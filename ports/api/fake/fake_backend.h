@@ -81,12 +81,32 @@ typedef struct gz_fake {
     int64_t installs;                 /* how many results were installed (pp_done) */
     int max_inside;                   /* the most that ran at once (23.2 item 46) */
     int inside;
+    /* The interface's story (gz-api-fake --story, stream S10): the lobbies move
+     * on, one step per gz_fake_cmd("step"), through a whole start. Off (0), the
+     * fake answers the one fixed picture the server's tests expect. */
+    int story;
+    int m_stage, m_round, m_outcome;  /* the member in lob_7k2q (fake_backend.c: MS_, MO_) */
+    int m_refuse_next;                /* the app's own check fails at the next signing */
+    int m_refuse_kind;                /* 0 on min_members, 1 on a list and a range, 2 at a safety check */
+    int join_list_fail;               /* the next join is refused on a list and a range */
+    int m_conf;                       /* funding confirmations seen */
+    int joined2, ready2, left2;       /* lob_b19d: several lobbies at once (owner decision 16b) */
+    int h_stage, h_round, h_ready, h_conf, h_left_seen;   /* the hosted lobby */
+    int64_t h_target, h_minimum, h_channel, h_funded_sat;
+    char h_name[121];
+    char st_buf[5][400];              /* status params, stable until the next status call */
 } gz_fake;
 
 void gz_fake_init(gz_fake *f, int scenario);
 void gz_fake_free(gz_fake *f);
 /* Confirm every held save: held calls (f->hold) are answered. Any thread. */
 void gz_fake_release(gz_fake *f);
+/* One line of the story's script: step, member-refuse, member-refuse-list,
+ * member-refuse-safety, join-refuse-list, member-unfinished,
+ * member-cancel, host-seats N, host-leave, chain STATE, hold on|off|forever,
+ * release, restore-done, files-behind, pp-delay MS, fail-derivation.
+ * Any thread. 0, or -1 for a line it does not know. */
+int gz_fake_cmd(gz_fake *f, const char *line);
 extern const gz_api_backend gz_fake_backend;
 
 #endif

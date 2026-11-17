@@ -28,6 +28,9 @@ typedef struct gz_http_request {
   const uint8_t *body;  /* POST body, sent as text/plain; NULL for GET */
   size_t body_len;
   uint32_t timeout_ms;  /* whole-request limit; never zero */
+  /* POST only: the Content-Type to send, a fixed string of the backend's
+   * own; NULL: text/plain. */
+  const char *content_type;
 } gz_http_request;
 
 typedef struct gz_http_response {
@@ -116,6 +119,27 @@ bool gz_http_proxy_valid(const char *proxy);
  * be initialised or the proxy setting is refused.
  */
 bool gz_http_curl_create(gz_http *out, const gz_http_curl_config *cfg);
+
+/*
+ * Stops the libcurl transport from another thread. With `on` true the
+ * request in progress ends at once with GZ_HTTP_E_FAILED, a sleep in
+ * progress returns at once, and every later request fails and every later
+ * sleep returns immediately, until it is called with `on` false. This is the
+ * one function of the transport that may be called from a second thread
+ * while the first is inside request or sleep_ms; it must not race with
+ * gz_http_curl_destroy. The chain worker uses it to shut down and to reset
+ * without waiting out a request's time limit (chain_watch.h, `interrupt`).
+ * `http` is the gz_http made by gz_http_curl_create; anything else is
+ * ignored. The bound holds for name lookups too only when libcurl resolves
+ * names without blocking (gz_http_curl_async_dns).
+ */
+void gz_http_curl_interrupt(gz_http *http, bool on);
+/* The same with the gz_http passed as a void pointer, in the shape
+ * gz_chainw_config.interrupt takes. */
+void gz_http_curl_interrupt_hook(void *http, bool on);
+/* True if this libcurl resolves names in a thread or with c-ares, so that a
+ * lookup in progress does not hold up gz_http_curl_interrupt. */
+bool gz_http_curl_async_dns(void);
 void gz_http_curl_destroy(gz_http *http);
 
 #ifdef __cplusplus

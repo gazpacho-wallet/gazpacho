@@ -10,7 +10,7 @@ Findings 1 to 5 should be fixed before merge. Findings 6 to 9 need at least an h
 
 ## What I ran
 
-All on the build server, in a copy at `/root/gz/review-chain/gazpacho` (the original was not touched).
+All on the build server, in a copy at `<build server>/review-chain/gazpacho` (the original was not touched).
 
 | Check | Result |
 |---|---|
@@ -199,4 +199,4 @@ Tests do fail when the fault is absent: each lying-server test asserts `DISAGREE
 
 ## Left behind
 
-The review copy is at `/root/gz/review-chain` on the build server (source copy, two build folders, my test programs in `extra/`). The copy's source is restored to the branch state. Nothing was pushed, committed or posted.
+The review copy is at `<build server>/review-chain` on the build server (source copy, two build folders, my test programs in `extra/`). The copy's source is restored to the branch state. Nothing was pushed, committed or posted.

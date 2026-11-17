@@ -86,7 +86,9 @@ test.describe('the walls of section 5 in a real browser', () => {
     await c.goto(`http://127.0.0.1:${other.port}/`);
     await c.evaluate((p) => new BroadcastChannel('gazpacho-session-' + p).postMessage({ type: 'ask', nonce: '00' }), fake.port);
     await a.waitForTimeout(500);
-    expect(await a.evaluate(() => window.got.length)).toBe(0);
+    // the interface on this page talks on the channel itself (its own 'ask'); what must
+    // not arrive is the other port's message
+    expect(await a.evaluate(() => window.got.filter((m) => m && m.nonce === '00').length)).toBe(0);
     await ctx.close();
   });
 
@@ -227,15 +229,16 @@ test.describe('first run from the redirect file (T5, item 37)', () => {
     const tok = readFileSync(file, 'utf8').match(/#start=([A-Za-z0-9_-]{43})/)[1];
     await page.goto('file://' + file);
     await page.waitForURL(/127\.0\.0\.1/);
-    expect(page.url()).toContain(`127.0.0.1:${fake.port}/#start=`);
+    // The interface (stream S10) is what the navigation loads now: it presents
+    // the token itself, once, and takes it out of the address.
+    await expect(page.getByRole('heading', { name: 'Welcome to Gazpacho' })).toBeVisible();
+    expect(page.url()).toBe(`http://127.0.0.1:${fake.port}/`);
     const r = await page.evaluate(async (t) => {
-      const post = (body) => fetch('/api/v1/session/start', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      const b = await fetch('/api/v1/session/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start_token: t }),
       });
-      const a = await post({ start_token: t });
-      const b = await post({ start_token: t });
-      return [a.status, b.status, (await b.json()).code];
+      return [b.status, (await b.json()).code];
     }, tok);
-    expect(r).toEqual([200, 409, 'token_used']);
+    expect(r).toEqual([409, 'token_used']);
   });
 });
