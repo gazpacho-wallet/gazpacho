@@ -66,7 +66,8 @@ node 28 type kickoff parent 25 vout 1 n_outputs 2 unsigned_len 107 txid 310c6d9c
 node 29 type state parent 28 vout 0 n_outputs 3 unsigned_len 150 txid fb7ffa9630412bed347ab516321ec3c83f3267b6533c50d41c1dc7ec6aff944e
 
 HISTORY ONLY, NOT COMPARED: the cross-check below was made with the first import (version-2 transactions, flat fee)
-and cannot be rebuilt by the current import. A new real run is owed (Slice 1.5 runs real daemons).
+and cannot be rebuilt by the current import. The real-node check of the current trees is tools/regtest-tree.py
+(Bitcoin Core 29.1 on regtest; run by hand, its output recorded in pull request 46).
 Cross-check against a real regtest run (runA2_force, 4 clients): all 14 txids produced by gz_tree equal the 14 on-chain tree txids
   command: GZ_KEYS=1,2,3,5,4 ./gz_tree 4 303946d2e446b1ff7141f96c1d9b44e08fa40ca424362a6f457a59347f93ce2f 0 1000000 247
   (GZ_KEYS=1,2,3,5,4 because the real LSP assigned slot 3 to the client with seckey 5 and slot 4 to seckey 4: slot order is TCP accept order, not key order;

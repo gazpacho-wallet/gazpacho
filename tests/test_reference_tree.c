@@ -13,7 +13,10 @@
  * 1,2,3,5,4, funding 3039...ce2f:0, cltv 247). That run was made with the
  * import of the time (version-2 transactions, a flat fee); its txids cannot
  * be rebuilt by this import and are kept in the reference file as history
- * only. A new real run is owed; Slice 1.5 runs real daemons.
+ * only. The real-node check of the current trees is tools/regtest-tree.py
+ * (a regtest Bitcoin Core 29.1 accepts and mines every T1 tree transaction,
+ * level by level, with its anchor-only child); it needs a bitcoind, so it is
+ * run by hand and its output recorded (pull request 46).
  *
  * usage: test_reference_tree [reference-file] [--print]
  *   --print  also print the built lines (to regenerate the reference file)
