@@ -118,6 +118,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME program_chain_stub
       COMMAND ${GZP_PY} ${GZP_T}/chain_stub.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/chain_stub)
     set_tests_properties(program_chain_stub PROPERTIES TIMEOUT 300)
+    # P7: the chain worker in two processes (watches, restarts, BUSY, mainnet).
+    add_test(NAME program_chain_watch
+      COMMAND ${GZP_PY} ${GZP_T}/chain_watch.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/chain_watch)
+    set_tests_properties(program_chain_watch PROPERTIES TIMEOUT 300)
   endif()
   # The restart window and a stop during a restart (M6); the start queue's
   # messages under the right connection, after its connected, and the queue's
