@@ -2007,6 +2007,83 @@ static void test_host_order(void)
     for (i = 0; i < 4; i++) CHECK(memcmp(ORDER[i + 1], MEM[joined[i]].key[2].pub, 33) == 0);
 }
 
+/* The cut takes the answered seats in order of joining (messages.md 6.9),
+ * which is not the order of the seat table once a seat has left and joined
+ * again with its key: it keeps the first place in the table but joined last.
+ * With one seat more than the target answering, it is the one left out, not
+ * a seat that joined before it (review A of PR 44, S15). */
+static void test_host_cut_order(void)
+{
+    uint8_t buf[600], cd2[32], lv[64], chk[32];
+    size_t n, lvn;
+    int i, t, got;
+    gz_lobby_enc_t e;
+    gz_lobby_msg_t g;
+    gz_lobby_input_t in;
+    gz_ports_t p = ports();
+    gz_lobby_crypto_t cr = lt_crypto(&HOST);
+    gz_lobby_signing_t sg;
+    gz_lobby_host_config_t cfg;
+    gz_terms_current_digest(T2, T2N, cd2);
+    gz_lobby_enc_start(&e, lv, sizeof lv, GZ_KIND_LEAVE, SCOPE);
+    lvn = gz_lobby_enc_done(&e);
+    memset(&cfg, 0, sizeof cfg);
+    memcpy(cfg.factory_key, HOST.key[3].pub, 33);
+    cfg.standbys = 1;
+    memset(&sg, 0, sizeof sg);
+    sg.begin = order_begin;
+    CLOCK = W_T0 - 3600000;
+    gz_lobby_host_init(&H, &p, &cr, &sg, &cfg);
+    acts_reset();
+    gz_lobby_host_open(&H, T1, T1N, T2, T2N, &A.l);
+    t = H.terms.target;
+    CHECK(t >= 2 && t + 1 < 40);
+    for (i = 1; i <= t + 1; i++) hin(GZ_LIN_CONNECTED, i, NULL, 0);
+    CLOCK += 1000;
+    n = join_msg(buf, sizeof buf, 1, MEM[1].key[3].pub, 1, 1);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
+    hin(GZ_LIN_MESSAGE, 1, lv, lvn);                                 /* member 1 leaves: its seat stays first */
+    for (i = 2; i <= t + 1; i++) {
+        CLOCK += 1000;
+        n = join_msg(buf, sizeof buf, i, MEM[i].key[3].pub, i, i);
+        CHECK(hin(GZ_LIN_MESSAGE, i, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
+    }
+    CLOCK += 1000;
+    hin(GZ_LIN_DISCONNECTED, 1, NULL, 0);
+    hin(GZ_LIN_CONNECTED, 1, NULL, 0);
+    n = join_msg(buf, sizeof buf, 1, MEM[1].key[3].pub, 1, 1);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);   /* and joins again, last */
+    CHECK(memcmp(H.seats[0].ckey, MEM[1].key[2].pub, 33) == 0 && H.seats[0].join_seq > H.seats[1].join_seq);
+    got = 0;
+    for (i = 1; i <= t + 1; i++) {                                   /* a full lobby checks at its last ready */
+        n = ready_msg(buf, sizeof buf, i, 1, cd2, NULL, 0);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+        if (last_sent(GZ_KIND_READY_CHECK, &g, NULL, NULL)) {
+            memcpy(chk, g.check_id, 32);
+            got = 1;
+        }
+    }
+    memset(&in, 0, sizeof in);
+    in.kind = GZ_LIN_TIMER;
+    if (!got) {
+        CLOCK = 1794441600000ull;
+        in.timer_id = GZ_LOBBY_TIMER_DEADLINE;
+        acts_reset();
+        CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && last_sent(GZ_KIND_READY_CHECK, &g, NULL, NULL));
+        memcpy(chk, g.check_id, 32);
+    }
+    for (i = 1; i <= t + 1; i++) {                                   /* every seat answers */
+        n = ready_msg(buf, sizeof buf, i, 1, cd2, chk, 0);
+        hin(GZ_LIN_MESSAGE, i, buf, n);
+    }
+    in.timer_id = GZ_LOBBY_TIMER_WINDOW;
+    acts_reset();
+    N_ORDER = 0;
+    CHECK(gz_lobby_host_handle(&H, &in, &A.l) == GZ_OK && N_ORDER == t + 1);
+    CHECK(!H.seats[0].chosen);                                       /* the late rejoiner is the one left out */
+    for (i = 0; i < t; i++) CHECK(memcmp(ORDER[i + 1], MEM[i + 2].key[2].pub, 33) == 0);
+}
+
 /* A join on the connection of `who`, the binding signed by any two keys. */
 static size_t join_by(uint8_t *buf, size_t cap, int who, const uint8_t *fkey, lt_signer_t *fs, uint32_t fw,
                       lt_signer_t *cs, uint32_t cw)
@@ -4478,6 +4555,7 @@ int main(void)
     test_reconnect_joined();
     test_host_creations();
     test_host_order();
+    test_host_cut_order();
     test_host_join_keys();
     test_api_edges();
     test_host_restart_signing();
