@@ -33,6 +33,9 @@
 #include "pchain.h"
 #include "store_unlock.h"
 #include "testping.h"
+#ifdef GZP_TEST_BUILD
+#include "gz_storage_crypto_test.h"
+#endif
 
 /* More than RESTART_LIMIT restarts from storage within RESTART_WINDOW_MS
  * stops the program (review of PR 27, M6): a fault that keeps coming back is
@@ -266,7 +269,13 @@ int main(int argc, char **argv)
 
     /* The KDF helper (storage 8.4): this program, started by itself with a
      * socket on its standard input; it derives one key and exits. */
-    if (argc == 2 && !strcmp(argv[1], "--gz-kdf-helper")) return gz_sc_helper_main(0);
+    if (argc == 2 && !strcmp(argv[1], "--gz-kdf-helper")) {
+#ifdef GZP_TEST_BUILD
+        /* gazpacho-test's helper takes its parent's test floor (--test-kdf-floor). */
+        if (getenv("GZP_TEST_KDF_FLOOR")) gz_sc_test_set_floor(1, 8);
+#endif
+        return gz_sc_helper_main(0);
+    }
     if (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
         gzp_usage();
         return 0;

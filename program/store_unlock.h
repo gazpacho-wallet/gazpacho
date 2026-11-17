@@ -86,8 +86,9 @@ const gz_sc_store_t *gzp_wallet_sc_store(gzp_wallet_t *w);
 gz_sc_unlocked_t *gzp_wallet_sc_unlocked(gzp_wallet_t *w);
 
 #ifdef GZP_TEST_BUILD
-/* gazpacho-test: set-up at the parameter floor (64 MiB, 3 passes) instead of
- * the default, so the tests can start many wallets. */
+/* gazpacho-test: set-up at the storage library's test floor (1 pass,
+ * 8 KiB, the vectors' parameters) instead of the default, so the tests can
+ * start many wallets, also under the slow sanitizers. */
 void gzp_wallet_test_kdf_floor(gzp_wallet_t *w);
 /* gazpacho-test (--test-restore-from): the next finish that opens storage
  * imports this backup of the journal first, as a restore. */

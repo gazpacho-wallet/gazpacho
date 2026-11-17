@@ -138,7 +138,7 @@ void gzp_usage(void)
         "  --test-engines N              test engines in the node, 0 to 2 (default 1)\n"
         "  --test-dump-journal           print the journal's batches and records, then stop\n"
         "  --test-passphrase-file PATH   unlock with the passphrase in PATH (set up a wallet if none)\n"
-        "  --test-kdf-floor              set up at the Argon2id floor (64 MiB, 3 passes)\n"
+        "  --test-kdf-floor              set up at the storage library's test floor (1 pass, 8 KiB)\n"
         "  --test-standin-store          the journal stand-in instead of the sealed journal\n"
         "  --test-kill-at K              SIGKILL before the K-th storage write, sync or rename\n"
         "  --test-append-batch HEX       save one batch of records (type, length, bytes ...), then stop\n"

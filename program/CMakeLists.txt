@@ -27,7 +27,9 @@ foreach(variant release test)
   else()
     # The journal stand-in stays for the tests that read its files
     # (--test-standin-store); the release program has only the real store.
-    set(sc gazpacho_storage_crypto)
+    # The test build links the storage library's test entry point (the
+    # parameter floor of --test-kdf-floor); the release build never does.
+    set(sc gazpacho_storage_crypto_test)
     add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c)
   endif()
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

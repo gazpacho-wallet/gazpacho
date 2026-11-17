@@ -20,6 +20,9 @@
 #include "datadir.h"
 #include "gzp.h"
 #include "store_unlock.h"
+#ifdef GZP_TEST_BUILD
+#include "gz_storage_crypto_test.h"
+#endif
 
 struct gzp_wallet {
     gz_sc_store_t sc;
@@ -694,9 +697,13 @@ gz_sc_unlocked_t *gzp_wallet_sc_unlocked(gzp_wallet_t *w) { return w->unlocked ?
 #ifdef GZP_TEST_BUILD
 void gzp_wallet_test_kdf_floor(gzp_wallet_t *w)
 {
+    /* The storage library's test floor (the vectors' parameters), here and
+     * in the helper this process starts (it reads GZP_TEST_KDF_FLOOR). */
+    gz_sc_test_set_floor(1, 8);
+    setenv("GZP_TEST_KDF_FLOOR", "1", 1);
     w->params.kdf = 1;
-    w->params.t = 3;
-    w->params.m_kib = 65536;
+    w->params.t = 1;
+    w->params.m_kib = 8;
     w->params.p = 1;
 }
 
