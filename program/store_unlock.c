@@ -586,6 +586,12 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
     case GZP_UNLOCK_OP_CREATE:
     case GZP_UNLOCK_OP_RESTORE:
         if (w->unlocked) gzp_wallet_lock(w);
+        /* The attempts file first, clean: once the key file is in place a
+         * missing one would refuse every unlock for 15 minutes (12.3). */
+        if (count_attempt(w, 0, now_ms, NULL) != 0) {
+            set_result(r, GZP_UNLOCK_STORAGE_FAILED, "attempts");
+            goto out;
+        }
         e = gz_sc_setup_commit(&w->sc, &k->prep, &w->u);
         k->have_prep = 0;
         if (e == GZ_SC_DONE_WITH_FAULT) {
@@ -596,11 +602,6 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
         }
         if (e != GZ_SC_OK) {
             map_err(r, e);
-            gzp_wallet_lock(w);
-            goto out;
-        }
-        if (count_attempt(w, 0, now_ms, NULL) != 0) {
-            set_result(r, GZP_UNLOCK_STORAGE_FAILED, "attempts");
             gzp_wallet_lock(w);
             goto out;
         }
