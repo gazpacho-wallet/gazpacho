@@ -4,7 +4,7 @@ Independent, adversarial review. I did not write this code. Date 2026-11-12.
 
 Scope: `ports/net/noise.c`, `frame.c`, `conn.c` and their headers, `tools/gz-net/gz-net.c`, `spec/transport.md`, the tests in `tests/net/`, `tools/mutate-net.py` and `tests/net/mutants.txt`, the CMake changes. Read against `docs/ENGINEERING-CHECKLIST.md` (all 26 items), BOLT 8 (`08-transport.md`, all 16 named vectors) and BOLT 1 (`01-messaging.md`, Appendices A, B and C).
 
-Work location: a copy of the builder's tree at `/root/gz/review-transport/gazpacho` on the build server (HEAD 5d850c2, identical to the branch). Nothing pushed, committed or posted. My test files are kept on the server in `/root/gz/review-transport/extra/` (`review_extra.c`, `bolt8_peer.py`, `review_py.sh`, `gen_mutants.py`, `run1.sh`, `run2.sh`), with logs in `/root/gz/review-transport/logs/`.
+Work location: a copy of the builder's tree at `<build server>/review-transport/gazpacho` on the build server (HEAD 5d850c2, identical to the branch). Nothing pushed, committed or posted. My test files are kept on the server in `<build server>/review-transport/extra/` (`review_extra.c`, `bolt8_peer.py`, `review_py.sh`, `gen_mutants.py`, `run1.sh`, `run2.sh`), with logs in `<build server>/review-transport/logs/`.
 
 ## Verdict
 
@@ -233,7 +233,7 @@ Decisions the builder made without listing them (checklist 25), to confirm or ov
 
 ## 6. Mutation testing
 
-Method: the builder's own runner (`tools/mutate-net.py`), copied as `/root/gz/review-transport/mutate-review.py` with two changes: the mutant file comes from an environment variable, and optionally my tests are added (`review_extra.c`, and the Python interop through `review_py.sh`). Each mutant is applied to a scratch copy, the library and every test are rebuilt, and every test is run. Baseline passed in every run.
+Method: the builder's own runner (`tools/mutate-net.py`), copied as `<build server>/review-transport/mutate-review.py` with two changes: the mutant file comes from an environment variable, and optionally my tests are added (`review_extra.c`, and the Python interop through `review_py.sh`). Each mutant is applied to a scratch copy, the library and every test are rebuilt, and every test is run. Baseline passed in every run.
 
 **The builder's list** (`tests/net/mutants.txt`, 87 mutants): 85 killed, 2 survived, `pin-compare-gone` and `mix-key-keeps-ss`. This reproduces what the builder reports. Both survivors are explained in sections 1 and 2 (a check that cannot fail; a wipe that cannot be observed from outside).
 
@@ -273,7 +273,7 @@ The 24 that survive everything (22 of mine, 2 of the builder's):
 | `g-unknown-even-ignored` | real gap, **my test misses it too** | my Python peer treats a 20 s silence as a close. On the unmodified code `gz-net` does close (it then reports `done 1200` and exits); a test must tell a close from a timeout |
 | `g-pong-seq-unchecked` | real gap, tool only | no test sends a wrong sequence number |
 
-So, of 157 mutants in all, 133 are killed by the builder's tests plus mine, 9 survivors are equivalent, 6 need wipe observation or fault injection, and 9 are real gaps (3 of them EINTR). Two of my frame mutants that drop the `started` flag (`r-tlv-started-1`, `r-writer-started-ignored`) were killed by the builder's tests. I could not fetch the log line naming the killing test (the server stopped accepting connections at the end; the line is in `/root/gz/review-transport/logs/mut-review-*.log`), but the TLV fuzz target is the only builder test whose known set includes type 0, so it is almost certainly that.
+So, of 157 mutants in all, 133 are killed by the builder's tests plus mine, 9 survivors are equivalent, 6 need wipe observation or fault injection, and 9 are real gaps (3 of them EINTR). Two of my frame mutants that drop the `started` flag (`r-tlv-started-1`, `r-writer-started-ignored`) were killed by the builder's tests. I could not fetch the log line naming the killing test (the server stopped accepting connections at the end; the line is in `<build server>/review-transport/logs/mut-review-*.log`), but the TLV fuzz target is the only builder test whose known set includes type 0, so it is almost certainly that.
 
 ## 7. Build hygiene, portability, size
 

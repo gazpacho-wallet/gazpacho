@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gazpacho</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body data-chrome="gate">
+<a class="skip" href="#main">Skip to the content</a>
+<noscript><h1>Gazpacho</h1><p class="notice bad">Gazpacho's screens need JavaScript, which is switched off in this browser.</p></noscript>
+
+<div class="fixedtop" id="top">
+  <div class="apphead">
+    <a class="brand" href="#/" aria-label="Gazpacho, home">Gaz<span>pacho</span></a>
+    <span class="signet" id="network" hidden></span>
+    <span class="sp"></span>
+    <button type="button" class="gear" id="theme" aria-pressed="false">Dark</button>
+    <a class="gear chrome" href="#/settings" data-nav="settings">Settings</a>
+  </div>
+  <div class="strip chrome" id="strip" aria-label="Status strip">
+    <div class="say">
+      <button type="button" class="pp" id="pause">Pause</button>
+      <p id="doing" role="status" aria-live="polite"></p>
+      <button type="button" class="more" id="more" aria-expanded="false" aria-controls="chips">Status details</button>
+    </div>
+    <div class="chips" id="chips"></div>
+  </div>
+  <div id="alerts" class="chrome"></div>
+</div>
+
+<div class="shell">
+  <nav class="side chrome" aria-label="Main">
+    <ul>
+      <li><a href="#/" data-nav="home">Home</a></li>
+      <li><a href="#/lobbies" data-nav="lobbies">Lobbies</a></li>
+      <li><a href="#/conditions" data-nav="conditions">Conditions</a></li>
+      <li><a href="#/activity" data-nav="activity">Activity</a></li>
+    </ul>
+    <ul class="apart">
+      <li><a href="#/host" data-nav="host">Hosting</a></li>
+      <li><a href="#/settings" data-nav="settings">Settings</a></li>
+    </ul>
+  </nav>
+  <main id="main" tabindex="-1">
+    <div id="view"><p>Loading&hellip;</p></div>
+  </main>
+</div>
+
+<nav class="tabs chrome" aria-label="Main, phone">
+  <a href="#/" data-nav="home">Home</a>
+  <a href="#/lobbies" data-nav="lobbies">Lobbies</a>
+  <a href="#/conditions" data-nav="conditions">Conditions</a>
+  <a href="#/host" data-nav="host">Hosting</a>
+  <a href="#/activity" data-nav="activity">Activity</a>
+</nav>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+<script src="/js/util.js"></script>
+<script src="/js/words.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/ui.js"></script>
+<script src="/js/bip39.js"></script>
+<script src="/js/eff.js"></script>
+<script src="/js/access.js"></script>
+<script src="/js/home.js"></script>
+<script src="/js/conditions.js"></script>
+<script src="/js/lobbies.js"></script>
+<script src="/js/host.js"></script>
+<script src="/js/factory.js"></script>
+<script src="/js/settings.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
