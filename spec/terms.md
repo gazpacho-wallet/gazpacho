@@ -23,7 +23,7 @@ Not itself reviewed. From `docs/reviews/review-pr48.md` (accept after fixes).
 | M2 | R(leaf) has a design-2 form with P(r) on the channel and the spare liquidity; the builder receives `channel_sat` + P(r) | 4.2, 4.4 |
 | M7 | One fee rule: each tree transaction pays the rate for its own signed size (the builder of #46 and later); the pin `e6573950`'s single `fee_per_tx` is INTERIM | 4.2 |
 | L2 | P(r) uses 125 vbytes (a 65-byte signature fits) | 4.4 |
-| H2 | The end height under design 2 is placed `host_spare_by` after the wind-down: 184 blocks at D ≤ 3 on signet | 4.5 |
+| H2 | The end height under design 2 is placed `host_spare_by` after the wind-down: 190 blocks at D ≤ 3 on signet (with the confirmation round's N4: the sweep's allowance and the proposal's spare-liquidity delay) | 4.5 |
 
 ## Changes after review 3
 
@@ -219,10 +219,11 @@ The writer (the host) MUST build every leaf so, passing `channel_sat` + P(r) to 
 Under design 2 (`exit.md` 4.4) the proposal's end height E is placed so that the host can force every silent member out after the wind-down and still sweep each forced member's spare liquidity before any payout is valid:
 
 ```
-E − E_wd ≥ (B − 1) + CSV_SPARE + (D + 2) × A + M_host        E_wd: funding confirmation + lifetime + wind-down
+E − E_wd ≥ (B − 1) + S_spare + (D + 3) × A + M_host          E_wd: funding confirmation + lifetime + wind-down;
+                                                              S_spare: the proposal's spare-liquidity delay
 ```
 
-With the signet constants (B 3, A 6, M_host 8, CSV_SPARE 144) that is 172, 178 and 184 blocks at D = 1, 2, 3. **Decision taken 2026-11-17, pending the owner's confirmation** (`exit.md` 4.4, open point 22). A member checks it with its own B and A and M_safe + M_lag in place of M_host. The INTERIM slices (1, 1.5, 2) keep T1's E = tip + lifetime + wind-down.
+With the signet constants (B 3, A 6, M_host 8) and S_spare = 144 that is 178, 184 and 190 blocks at D = 1, 2, 3 (the + 3 counts the spare sweep's own allowance). **Decision taken 2026-11-17, pending the owner's confirmation** (`exit.md` 4.4, open point 22). A member checks it with its own B and A and M_safe + M_lag in place of M_host. The INTERIM slices (1, 1.5, 2) keep T1's E = tip + lifetime + wind-down.
 
 ## 5. The current values
 
