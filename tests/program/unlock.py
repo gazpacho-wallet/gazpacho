@@ -89,19 +89,30 @@ def main():
             check(os.stat(os.path.join(folder, f)).st_mode & 0o077 == 0, "1: %s closed to others" % f)
 
         # 2. Wrong passphrases: counted, then delayed; one inside the delay is not counted.
-        seen = []
-        for n in range(1, 7):
+        # Each try at once after the last: one that comes inside the delay is
+        # busy and leaves the count alone; one after it (a slow start, under
+        # a sanitizer, can outlast a 1 s delay) is counted. Until seven are
+        # counted, so that a 4 s delay certainly catches a try inside it.
+        seen, prev, busy, steps = [], 0, 0, 0
+        while prev < 7 and steps < 40:
+            steps += 1
             code, m = attempt(wrong)
-            check(code == 8 and m and m.group(1) == "wrong" and int(m.group(2)) == n,
-                  "2: wrong passphrase %d counted (%s)" % (n, m.group(0) if m else None))
-            if m:
+            if not check(code == 8 and m is not None, "2: try %d refused (%s)" % (steps, m.group(0) if m else None)):
+                break
+            st, n = m.group(1), int(m.group(2))
+            if st == "busy":
+                busy += 1
+                check(n == prev, "2: a try inside the delay is refused and not counted (%s)" % m.group(0))
+                time.sleep(int(m.group(4)) + 0.2)
+            else:
+                check(st == "wrong" and n == prev + 1, "2: wrong passphrase %d counted (%s)" % (prev + 1, m.group(0)))
                 seen.append((int(m.group(3)), int(m.group(4))))
-            code, b = attempt(wrong)
-            check(code == 8 and b and b.group(1) == "busy" and int(b.group(2)) == n,
-                  "2: a try inside the delay is refused and not counted (%s)" % (b.group(0) if b else None))
-            time.sleep((int(m.group(4)) if m else 1) + 0.2)
-        check([a for a, _ in seen] == [4, 3, 2, 1, 0, 0], "2: attempts left 4, 3, 2, 1, 0, 0: %s" % seen)
-        check(seen[4][1] >= 1 and seen[5][1] >= 2 * seen[4][1], "2: past five the delay doubles: %s" % seen)
+                prev = n
+        check(busy >= 1, "2: %d tries inside the delay, each refused and not counted" % busy)
+        check([a for a, _ in seen] == [4, 3, 2, 1, 0, 0, 0], "2: attempts left 4, 3, 2, 1, 0, 0, 0: %s" % seen)
+        check(len(seen) == 7 and seen[4][1] >= 1 and seen[5][1] >= 2 * seen[4][1] and seen[6][1] >= 2 * seen[5][1],
+              "2: past five the delay doubles: %s" % seen)
+        time.sleep((seen[-1][1] if seen else 1) + 0.2)
         code, m = attempt(_pass_file())
         check(code is None and m and m.group(1) == "ok", "2: the right passphrase opens the wallet after the delay")
         code, m = attempt(wrong)
