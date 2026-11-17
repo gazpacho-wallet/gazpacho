@@ -99,7 +99,12 @@ static int parse_shape(const char *text, shape_case_t *c)
             continue;
         }
         long v = strtol(tok, NULL, 10);
-        if (v < 4 || v > 255) return 0;   /* 1, 2 and 3 have special meanings upstream */
+        /* 1, 2 and 3 have special meanings upstream. Above FACTORY_MAX_OUTPUTS
+         * (16), the import's factory_compute_ewt_for_shape writes past a 16-entry
+         * stack array (split_clients_for_arity into shape_timed_levels' parts[],
+         * src/factory.c:1184-1190 and :5833-5834 at 50f7fa13; review B, L1), and
+         * factory_set_level_arity would refuse the width anyway. */
+        if (v < 4 || v > FACTORY_MAX_OUTPUTS) return 0;
         c->arities[c->n_arities++] = (uint8_t)v;
     }
     return c->n_arities > 0 && c->arities[c->n_arities - 1] == FACTORY_ARITY_PS;
@@ -381,15 +386,22 @@ static int run_case(const shape_case_t *c, result_t *r)
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
     secp256k1_keypair *kps = calloc(n, sizeof *kps);
     secp256k1_pubkey *pks = calloc(n, sizeof *pks);
-    if (!ctx || !kps || !pks) return 0;
-    if (!make_keys(ctx, n, kps, pks) || !funding_script(ctx, pks, n, spk)) return 0;
+    if (!ctx || !kps || !pks || !make_keys(ctx, n, kps, pks) || !funding_script(ctx, pks, n, spk)) {
+        free(kps); free(pks);
+        if (ctx) secp256k1_context_destroy(ctx);
+        return 0;
+    }
 
     r->ewt_shape = factory_compute_ewt_for_shape(c->n_arities ? c->arities : NULL, c->n_arities,
                                                  FACTORY_ARITY_PS, 1, c->members, c->static_levels,
                                                  STEP_BLOCKS, STATES_PER_LAYER);
     double t0 = now_secs();
     factory_t *f = start_factory(c, ctx, kps, n, r);
-    if (!f) return 0;
+    if (!f) {
+        free(kps); free(pks);
+        secp256k1_context_destroy(ctx);
+        return 0;
+    }
     r->built = factory_set_funding(f, ftxid, 0, (uint64_t)n * SATS_PER_MEMBER + 1000000u, spk, 34) &&
                r->counter_sane && factory_build_tree(f) && factory_check_tree_fees(f, NULL, 0) && f->n_nodes > 0 &&
                memcmp(f->nodes[0].spending_spk, spk, 34) == 0;
@@ -561,11 +573,18 @@ static int defect_leaf_type_changed(secp256k1_context *ctx)
     return !gone;
 }
 
-/* Exit 0 only if neither former defect is reproduced. */
+/* Exit 0 only if neither former defect is reproduced, and a width the import
+ * cannot take (above 16) never reaches it from this program. */
 static int run_defects(void)
 {
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
     int anchor = defect_anchor_dropped(ctx), leaves = defect_leaf_type_changed(ctx);
+    shape_case_t wide;
+    memset(&wide, 0, sizeof wide);
+    int width_guard = parse_shape("16,ps", &wide) && !parse_shape("17,ps", &wide) && !parse_shape("20,ps", &wide)
+                      && !parse_shape("255,ps", &wide);
+    printf("widths above %d refused before the import sees them: %s\n", FACTORY_MAX_OUTPUTS, width_guard ? "yes" : "NO");
+    if (!width_guard) anchor = 1;
     printf("anchor silently dropped at %d outputs: %s\n", FACTORY_MAX_OUTPUTS, anchor ? "REPRODUCED" : "not reproduced (refused upstream)");
     printf("leaf type silently changed: %s\n", leaves ? "REPRODUCED" : "not reproduced (fixed upstream)");
     secp256k1_context_destroy(ctx);

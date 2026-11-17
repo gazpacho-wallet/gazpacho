@@ -98,8 +98,10 @@ gz_tree_i_err_t gz_tree_import_build(secp256k1_context *ctx, const gz_tree_build
 
     /* signing-round.md section 13, in this order. */
     factory_init_from_pubkeys(f, ctx, pks, n, GZ_TREE_SLICE1_STEP, GZ_TREE_SLICE1_STATES);
-    if (!f->nodes || !f->pubkeys || !f->profiles || !f->leaf_layers || !f->leaf_node_indices) {
-        err = GZ_TREE_I_NO_MEMORY;                                 /* it returns nothing: check its arrays */
+    /* It returns nothing: check each of the nine arrays it allocates. */
+    if (!f->keypairs || !f->pubkeys || !f->profiles || !f->dist_partial_sigs || !f->leaf_layers
+        || !f->leaf_node_indices || !f->nodes || !f->node_l_stock_hashes || !f->node_l_stock_hash_valid) {
+        err = GZ_TREE_I_NO_MEMORY;
         goto done;
     }
     /* Never empty: n_levels >= 1. It refuses a list it cannot hold. */

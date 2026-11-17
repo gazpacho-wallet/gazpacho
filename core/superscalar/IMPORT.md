@@ -80,3 +80,6 @@ Changed files: `factory.c`, `factory.h`, `fee.c`, `fee.h`, `tx_builder.c`, `tx_b
 
 Unchanged for Gazpacho: transaction sizes, every timeout height (`TIMEOUT_STEP_BLOCKS` 5; kickoff at E − 5·(2d − 1), leaf at E − 10·d, `src/factory.c:2053-2070`), the pseudo-Spilman channel output copying the leaf's script (`:1630-1633`), so H_leaf = E − 10·d; the 240-sat anchor at any rate above 0; the secp256k1-zkp pin.
 
+### Upstream defects found at this pin (local notes; nothing posted)
+
+- `factory_compute_ewt_for_shape` with a level wider than 16 writes past a 16-entry stack array: `split_clients_for_arity` (`src/factory.c:1184-1190`) fills `parts[]` in `shape_timed_levels` (`:5833-5834`). The build path is safe, because `factory_set_level_arity` refuses widths above 16 first; this public function has no such check. Found by review B of the re-import (ASan, `tree_shapes 40 20,ps 0`). Gazpacho calls the function only from `tests/scale/tree_shapes.c`, which now refuses widths above 16; `spec/signing-round.md` section 12 lists the hazard. The vendored code is not edited.

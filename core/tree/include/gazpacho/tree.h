@@ -393,7 +393,10 @@ const char *gz_chk_name(gz_chk_t c);
  * lobby-level ones). */
 typedef struct {
     uint64_t min_own_channel_sat;       /* its own channel at least this */
-    uint64_t max_tree_feerate;          /* the fee-rate ceiling, satoshis per 1,000 vbytes */
+    uint64_t max_tree_feerate;          /* the fee-rate ceiling, satoshis per 1,000 vbytes; 0: none of
+                                           the member's own (the terms' bound, at most 1,000,000, still
+                                           applies), as gz_terms_limits_t.max_tree_feerate. Not a fee per
+                                           transaction: that was its meaning before the re-import */
     uint32_t min_lstock_delay, max_lstock_delay;
     uint32_t min_members, max_members;  /* the tree's member count */
     gz_exit_consts_t exit;              /* A, B, M (exit.md 4.3) */

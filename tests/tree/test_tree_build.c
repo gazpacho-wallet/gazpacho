@@ -15,6 +15,7 @@
 #include "tree_test.h"
 #include "gazpacho/tree_import.h"
 #include "superscalar/factory.h"
+#include "superscalar/fee.h"
 
 #define FUND_LABEL "gazpacho test funding"
 #define TIP 290000u
@@ -391,6 +392,57 @@ static void rates(void)
         }
 }
 
+/* Inputs for a tree of n members under `levels`, at `rate`, with funding F:
+ * the test keys, D from the split rule, the funding script the aggregate. */
+static void custom_inputs(const uint8_t *levels, size_t nl, uint32_t n, uint64_t rate, uint64_t F, gz_tree_build_in_t *in)
+{
+    uint8_t depths[GZ_TREE_MAX_MEMBERS], D = 0, internal[32], q[32];
+    uint32_t i;
+    keys(n);
+    if (!gz_tree_split(levels, nl, n, depths)) abort();
+    for (i = 0; i < n; i++) if (depths[i] > D) D = depths[i];
+    memset(in, 0, sizeof *in);
+    in->levels = levels; in->n_levels = nl; in->fixed_levels = D; in->n_members = n;
+    in->host_key = HOST; in->member_keys = (const uint8_t(*)[33])MEMBERS;
+    in->end_height = END; in->tree_feerate = rate; in->lstock_csv = 144; in->funding_amount = F;
+    tr_sha256((const uint8_t *)FUND_LABEL, strlen(FUND_LABEL), in->funding_txid);
+    if (!CR.agg_tweak(CR.ctx, HOST, (const uint8_t(*)[33])MEMBERS, n, NULL, internal, q)) abort();
+    in->funding_script[0] = 0x51; in->funding_script[1] = 0x20; memcpy(in->funding_script + 2, q, 32);
+}
+
+/* Review B, L2: boundaries inside the model that the funding rule never
+ * reaches, found by searching funding amounts above the import's minimum
+ * (each is the first refusal of its tree, and both builders refuse):
+ *   a leaf whose kickoff output is above zero but below the leaf
+ *   transaction's own cost (the guard ko_out > leaf_cost: DUST, never a
+ *   wrapped amount);
+ *   a leaf kickoff whose input is exactly its cost (UNDERFUNDED, not DUST);
+ *   gz_tree_fee at the rate where fee.c's bound begins, for every width. */
+static void boundaries(void)
+{
+    static const uint8_t L3[1] = {3};
+    gz_tree_build_in_t in;
+    uint32_t k;
+    /* 2 members, rate 1,000,000: each leaf kickoff gets 291,447 sat; its cost is
+     * 124,240, so its output, 167,207, is below the leaf transaction's 167,240. */
+    custom_inputs(L3, 1, 2, 1000000, 750134, &in);
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_DUST);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
+    /* 9 members, binary, rate 100,000: the leaf kickoff at path 1,1,1,0 gets
+     * exactly its cost, 12,640. */
+    custom_inputs(L3, 1, 9, 100000, 456333, &in);
+    CHECK(gz_tree_build(&in, &CR, &TREE) == GZ_TREE_B_UNDERFUNDED);
+    CHECK(gz_tree_import_build(test_ctx(), &in, &IMPORT) == GZ_TREE_I_REFUSED);
+    /* fee.c's bound, compute_fee: the fee is invalid only ABOVE money supply x 1000 / vsize. */
+    for (k = 1; k <= 15; k++) {
+        uint64_t v = gz_tree_vsize(k), edge = GZ_TREE_FEE_MAX_SAT * 1000 / v;
+        CHECK(gz_tree_fee(edge, k) == fee_at_rate(edge, v) && gz_tree_fee(edge, k) != GZ_TREE_FEE_INVALID);
+        CHECK(gz_tree_fee(edge + 1, k) == GZ_TREE_FEE_INVALID && fee_at_rate(edge + 1, v) == FEE_INVALID);
+        CHECK(gz_tree_fee(edge - 1, k) == fee_at_rate(edge - 1, v));
+        CHECK(gz_tree_fee(100, k) == fee_at_rate(100, v) && gz_tree_fee(0, k) == fee_at_rate(0, v));
+    }
+}
+
 /* The import's own refusals, at their boundaries, in both builders. */
 static void refusals(void)
 {
@@ -522,6 +574,7 @@ int main(int argc, char **argv)
     sighashes();
     corners();
     rates();
+    boundaries();
     refusals();
     return check_done();
 }

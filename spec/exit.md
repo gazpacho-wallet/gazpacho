@@ -833,6 +833,7 @@ S1 to S13 of `notes/factory-paths.md` 4.1 are adopted as written, with these add
 - **S2** also records, for every step, the blocks from first broadcast to confirmation (measuring A) and that every step relays alone at 0.1 sat/vB with its anchor-only child; at D = 2 and D = 3 and, at 3 members, d = 1.
 - **S3** checks that the second member's `leave_by` moved later by A per step already on chain.
 - **S12** establishes which signet servers accept a package, and whether a parent refused alone confirms through a wallet-funded child.
+- **Release blocker for Slice 1.5** (review A of the re-import, M1): tree transactions are version 3, which Bitcoin Core before 28.0 refuses as non-standard, and at 0.1 sat/vB a server whose floor is higher refuses each step alone. Slice 1.5 is not done until (1) the chain port has `gz_chain_broadcast_package`; (2) the program checks that each configured server accepts a version-3 tree step, alone or as a package; and (3) the strip warns when none does. A regtest run against Bitcoin Core 29.1 (`tools/regtest-tree.py`) shows the node's side: every T1 step accepted as a one-parent-one-child package and mined one level per block, refused alone at a 1 sat/vB floor and accepted alone at 0.1 sat/vB.
 - **S13** adds: the exit's tip estimate under disagreement follows 4.5.
 
 ### 11.3 Signet, Slice 3 (exit with a balance; needs `channel.md`)

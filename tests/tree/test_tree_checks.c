@@ -402,6 +402,8 @@ static void c8_shape_fee_funding(void)
     S.p.tree_feerate = 1250; EXPECT(GZ_CHK_C8_FEE_RULE, 9);      /* no rate but the terms' own */
     S.p.tree_feerate = S.prm.tree_feerate;
     S.cond.max_tree_feerate = S.prm.tree_feerate - 1; EXPECT(GZ_CHK_C8_FEE_CEILING, 9);
+    S.cond.max_tree_feerate = 1; EXPECT(GZ_CHK_C8_FEE_CEILING, 9);
+    S.cond.max_tree_feerate = 0; OK();                              /* 0: no ceiling of the member's own */
     S.cond.max_tree_feerate = S.prm.tree_feerate; OK();
     S.p.funding_amount = S.prm.funding_amount - 1; refund(); EXPECT(GZ_CHK_C8_FUNDING_RULE, 9);
     S.p.funding_amount = S.prm.funding_amount + 1; refund(); EXPECT(GZ_CHK_C8_FUNDING_RULE, 9);

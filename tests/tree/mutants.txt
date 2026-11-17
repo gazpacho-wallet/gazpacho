@@ -185,7 +185,8 @@ c8-lstock-min	core/tree/checks.c	p->lstock_delay < cond->min_lstock_delay	p->lst
 c8-lstock-max	core/tree/checks.c	|| p->lstock_delay > cond->max_lstock_delay) {	|| p->lstock_delay > cond->max_lstock_delay + 1) {
 c8-fixed-levels	core/tree/checks.c	if (p->fixed_levels != prm.D) { fail(v, GZ_CHK_C8_FIXED_LEVELS, -1); return; }	
 c8-fee-rule	core/tree/checks.c	if (p->tree_feerate != prm.tree_feerate) { fail(v, GZ_CHK_C8_FEE_RULE, -1); return; }	if (p->tree_feerate < prm.tree_feerate) { fail(v, GZ_CHK_C8_FEE_RULE, -1); return; }
-c8-fee-ceiling	core/tree/checks.c	if (p->tree_feerate > cond->max_tree_feerate)	if (p->tree_feerate > cond->max_tree_feerate + 1)
+c8-fee-ceiling	core/tree/checks.c	&& p->tree_feerate > cond->max_tree_feerate)	&& p->tree_feerate > cond->max_tree_feerate + 1)
+c8-fee-ceiling-zero	core/tree/checks.c	if (cond->max_tree_feerate && p->tree_feerate	if (p->tree_feerate
 c8-funding-rule	core/tree/checks.c	if (p->funding_amount != prm.funding_amount) { fail(v, GZ_CHK_C8_FUNDING_RULE, -1); return; }	if (p->funding_amount < prm.funding_amount) { fail(v, GZ_CHK_C8_FUNDING_RULE, -1); return; }
 c8-end-zero	core/tree/checks.c	if (E == 0) { fail(v, GZ_CHK_C8_END_ZERO, -1); return; }	
 c8-end-window-high	core/tree/checks.c	if (E > expect + cond->end_window ||	if (E > expect + cond->end_window + 1 ||
@@ -339,3 +340,9 @@ tx-scriptsig-bound	core/tree/model.c	|| l > len - i) return 0;\n        i += (si
 # equivalent glue-funding-refusal: factory_build_tree refuses the same funding script again (the root's key)
 # equivalent fee-rate-0-not-free: at rate 0 the next lines give (0 + 999) / 1000 = 0 anyway; the early return mirrors fee.c's compute_fee
 # equivalent fee-no-supply-cap: the bound before it keeps rate x vsize at most 1,000 x the money supply, so the rounded fee never passes it; the cap mirrors fee.c's compute_fee
+# --- review B, L2: boundaries of the model (re-import)
+leaf-total-wraps	core/tree/model.c	total = ko_out > leaf_cost ? ko_out - leaf_cost : 0;	total = ko_out - leaf_cost;
+leaf-input-boundary	core/tree/model.c	if (input <= cost) { b->err = GZ_TREE_B_UNDERFUNDED; return 0; }	if (input < cost) { b->err = GZ_TREE_B_UNDERFUNDED; return 0; }	2
+fixed-input-boundary	core/tree/model.c	if (input <= cost) { b->err = GZ_TREE_B_UNDERFUNDED; return 0; }	if (input < cost) { b->err = GZ_TREE_B_UNDERFUNDED; return 0; }	1
+fee-bound-geq	core/tree/shape.c	if (feerate > GZ_TREE_FEE_MAX_SAT * 1000 / v) return GZ_TREE_FEE_INVALID;	if (feerate >= GZ_TREE_FEE_MAX_SAT * 1000 / v) return GZ_TREE_FEE_INVALID;
+# equivalent fixed-input-boundary: a fixed node whose input is exactly its cost then pays 0 to every child, and the first child (a fixed node or a leaf kickoff) gets an input of 0, at most its own cost at any rate, and refuses with the same UNDERFUNDED; the outcome cannot differ

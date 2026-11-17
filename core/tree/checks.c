@@ -397,7 +397,7 @@ void gz_tree_member_check(const gz_tree_member_in_t *in, const gz_tree_proposal_
     }
     if (p->fixed_levels != prm.D) { fail(v, GZ_CHK_C8_FIXED_LEVELS, -1); return; }
     if (p->tree_feerate != prm.tree_feerate) { fail(v, GZ_CHK_C8_FEE_RULE, -1); return; }
-    if (p->tree_feerate > cond->max_tree_feerate) { fail(v, GZ_CHK_C8_FEE_CEILING, -1); return; }
+    if (cond->max_tree_feerate && p->tree_feerate > cond->max_tree_feerate) { fail(v, GZ_CHK_C8_FEE_CEILING, -1); return; }
     if (p->funding_amount != prm.funding_amount) { fail(v, GZ_CHK_C8_FUNDING_RULE, -1); return; }
     /* C8: the end height, then the exit-time check for the member's own leaf. */
     E = p->end_height;
