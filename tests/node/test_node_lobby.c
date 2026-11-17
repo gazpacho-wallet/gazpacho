@@ -1916,6 +1916,24 @@ static void test_epoch_ok(void)
     w_free(0);
 }
 
+/* A record of the API's area that this program does not know: even, a newer
+ * program's, stops the start; odd is skipped (journal.md 9.1). */
+static void test_api_unknown_record(void)
+{
+    for (int k = 0; k < 2; k++) {
+        h_t *x = &N[SCRATCH];
+        w_node(SCRATCH, 5, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+        h_add_batch(x, 1, 1, k ? 0x000d0041u : 0x000d0040u, (const uint8_t *)"x", 3);
+        x->incarnation = 1;
+        h_new_node(x);
+        CHECK(w_start(SCRATCH) == (k ? GZ_OK : GZ_ERR_CORRUPT));
+        ALIVE[SCRATCH] = 0;
+        NT[SCRATCH] = 0;
+        h_free(x);
+        memset(x, 0, sizeof *x);
+    }
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1928,6 +1946,7 @@ int main(int argc, char **argv)
     test_index();
     test_key_skip();
     test_epoch_ok();
+    test_api_unknown_record();
     test_views();
     test_view_refusal();
     test_view_seats();
