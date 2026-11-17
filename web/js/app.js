@@ -198,7 +198,8 @@
     chips.appendChild(h("span", { class: "chip", id: "live-chip", "data-state": st },
       h("span", { class: "dot " + (st === "open" ? "" : st === "too_many" ? "warn" : "bad") }), h("b", {}, "Live updates:"), " ",
       st === "open" ? "following the app" : st === "reconnecting" ? "reconnecting… what you see may be old" :
-      st === "too_many" ? "too many windows are following this app; this one updates through another window" : "stopped"));
+      st === "too_many" ? "too many windows are following this app; this one updates through another window" :
+      st === "not_following" ? "Not following the app: what you see may be old" : "stopped"));
 
     u.clear(alerts);
     (s.attention || []).forEach(function (a) {
@@ -326,6 +327,18 @@
       if (redraw && !app.busy) route(false);
     }, 150);
   });
+
+  /* Not following (10.3, review M5): while this tab has a lobby, it reads the
+     status every 5 s until a stream or a relay returns, so a ready check is not
+     missed. Background requests: they never refresh the idle timer (4.7). */
+  setInterval(function () {
+    var s = app.status;
+    if (!inApp || !s || api.streamState() !== "not_following") return;
+    if (!((s.lobbies && s.lobbies.length) || (s.doing && s.doing.lobby_id))) return;
+    refreshStatus(true).then(function () {
+      if (!app.busy && current && current.screen.topics && current.screen.topics.length && api.streamState() === "not_following") route(false);
+    });
+  }, 5000);
 
   /* ---- always-present controls ---- */
   document.querySelector("a.skip").addEventListener("click", function (ev) {

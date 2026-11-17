@@ -14,9 +14,24 @@ async function start(info, args) {
   allow(info, fake);
 }
 
+// Under at_join (14.3), the default, joining ready carries the passphrase.
+async function joinClick(page) {
+  await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
+  await page.locator('#review').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('#join').click(); // the same button the person presses
+}
+
+// "I am ready" asks for the passphrase in a dialog (14.3 interface rule 2).
+async function readyAgain(page) {
+  await page.locator('#ready-toggle').click();
+  await page.waitForTimeout(1100);
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Mark ready' }).click();
+}
+
 async function join(page) {
   await page.goto(fake.url + '#/lobby/lob_7k2q');
-  await page.locator('#join').click();
+  await joinClick(page);
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
 }
 
@@ -59,7 +74,7 @@ test('find a host by its address, read the terms and the fit, join, wait, sign, 
   await expect(page.locator('.sealed input, .sealed button')).toHaveCount(0);
   await expect(page.locator('table.fit caption')).toContainText('Fits your conditions');
   await expect(page.locator('#review')).toContainText('Joining is your consent.');
-  await page.locator('#join').click();
+  await joinClick(page);
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
   await expect(page.locator('#seat-line')).toContainText('You are counted.');
   await expect(page.locator('#counts')).toContainText('30 ready of 50');
@@ -70,7 +85,7 @@ test('find a host by its address, read the terms and the fit, join, wait, sign, 
   await page.locator('#ready-toggle').click();
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'joined_not_ready');
   await expect(page.locator('#doing')).toContainText('In a lobby, not ready.');
-  await page.locator('#ready-toggle').click();
+  await readyAgain(page);
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
 
   // the start, live, with no click: ready check, the signing moment, funding, live
@@ -198,7 +213,7 @@ test('conditions: the live fit line, tightening leaves a lobby, loosening asks f
 
   // both lobbies fit now: join both
   await page.goto(fake.url + '#/lobby/lob_b19d');
-  await page.locator('#join').click();
+  await joinClick(page);
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
   await join(page);
   await page.goto(fake.url + '#/');
@@ -211,7 +226,7 @@ test('conditions: the live fit line, tightening leaves a lobby, loosening asks f
   await expect(page.locator('#toasts')).toContainText('Paused. Gazpacho left');
   await expect(page.locator('#doing')).toContainText('Paused.');
   await page.goto(fake.url + '#/lobby/lob_7k2q');
-  await page.locator('#join').click();
+  await joinClick(page);
   await expect(page.locator('#review [data-code="paused"]')).toBeVisible();
 });
 
@@ -326,11 +341,11 @@ test('node busy: the page says so, and the retry is the same request, done once'
   await signIn(page, fake);
   await page.goto(fake.url + '#/lobby/lob_7k2q');
   await fake.cmd('hold forever'); // the save is never confirmed: the server answers 503 node_busy
-  await page.locator('#join').click();
+  await joinClick(page);
   await expect(page.locator('#review [data-code="node_busy"]')).toContainText('still saving your last request');
   const first = page.gzRequests.length;
   await fake.cmd('release');
-  await page.locator('#join').click();
+  await page.locator('#join').click(); // the same request id, no passphrase: a replay may omit it (7.4)
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
   expect(page.gzRequests.length).toBeGreaterThan(first);
 });
@@ -348,7 +363,7 @@ test('the chain view in doubt: at risk on every screen, figures marked old, join
   await expect(page.locator('#chips')).toContainText('Watching: nothing to watch');
   await page.goto(fake.url + '#/lobby/lob_7k2q');
   await expect(page.locator('#alerts .alertbar[data-code="chain_disagree"]')).toBeVisible();
-  await page.locator('#join').click();
+  await joinClick(page);
   await expect(page.locator('#review [data-code="chain_in_doubt"]')).toBeVisible();
   await fake.cmd('chain one_source');
   await expect(page.locator('#alerts .alertbar[data-code="chain_one_source"]')).toContainText('Only one chain server answers.');
@@ -404,9 +419,9 @@ test('M1: a refusal on a list and a range shows both values: at join, at the che
   await signIn(page, fake);
   await fake.cmd('join-refuse-list');
   await page.goto(fake.url + '#/lobby/lob_7k2q');
-  await page.locator('#join').click();
+  await joinClick(page);
   await expect(page.locator('#join-msg [data-code="conditions_not_met"]')).toContainText(LIST_WANT);
-  await page.locator('#join').click();
+  await joinClick(page);
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
   await fake.cmd('member-refuse-list');
   await fake.cmd('step');
@@ -444,7 +459,7 @@ test('L4b: a request kept after node busy is never sent again with a different b
   await fake.cmd('hold off');
   await fake.cmd('chain lagging'); // an event: the screen is drawn again, now "not ready"
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'joined_not_ready');
-  await page.locator('#ready-toggle').click(); // "I am ready": a request of its own
+  await readyAgain(page); // "I am ready": a request of its own
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
   await expect(page.locator('[data-code="request_id_reused"]')).toHaveCount(0);
 });
@@ -454,7 +469,7 @@ test('L6: a held call waits for its save under the default limits (held_ms is 30
   await signIn(page, fake);
   await page.goto(fake.url + '#/lobby/lob_7k2q');
   await fake.cmd('hold on');
-  await page.locator('#join').click();
+  await joinClick(page);
   await page.waitForTimeout(4000);
   await expect(page.locator('#join-msg [data-code]')).toHaveCount(0);
   await expect(page.locator('#join')).toBeDisabled();
@@ -509,11 +524,11 @@ test('M17: the retry after node busy carries the same request id, and acts once'
   page.on('request', (r) => { if (r.url().endsWith('/join')) ids.push(JSON.parse(r.postData()).request_id); });
   await page.goto(fake.url + '#/lobby/lob_7k2q');
   await fake.cmd('hold forever');
-  await page.locator('#join').click();
+  await joinClick(page);
   await expect(page.locator('#join-msg [data-code="node_busy"]')).toBeVisible();
   await fake.cmd('release');
   await fake.cmd('hold off');
-  await page.locator('#join').click();
+  await page.locator('#join').click(); // the same request id, no passphrase: a replay may omit it (7.4)
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
   expect(ids).toHaveLength(2);
   expect(ids[1]).toBe(ids[0]);

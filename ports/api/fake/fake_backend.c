@@ -64,6 +64,8 @@ void gz_fake_init(gz_fake *f, int scenario)
     f->cond_max_fee_ppm = 1000;
     snprintf(f->cond_preset, sizeof f->cond_preset, "everyday");
     f->has_factory = 1;
+    f->signing_pending = -1;
+    f->signing_version = 2;
     if (scenario == GZ_FAKE_LOCKED) {
         f->wallet = GZ_API_WALLET_LOCKED;
         f->setup_ready = 1;
@@ -461,6 +463,55 @@ static void fit(gz_jw *w, gz_fake *f, int64_t fee_lo, int64_t fee_now, int64_t f
     gz_jw_end_obj(w);
 }
 
+/* member_signing as the engine holds it: the story's, or auto in the fixed picture */
+static int ms_auto(const gz_fake *f)
+{
+    return !f->story || f->member_signing == 1;
+}
+
+static const char *seat_name(gz_fake *f, const char *id);
+
+/* 14.1 you.gate: the gate this seat uses (14.3) */
+static void gate_json(gz_jw *w, gz_fake *f, const char *id)
+{
+    int first = strcmp(id, LOBBY_ID) == 0, open = first ? f->gate1 : f->gate2;
+    int64_t at = first ? f->gate1_at : f->gate2_at;
+    char dg[65];
+    if (strcmp(seat_name(f, id), "none") == 0) { gz_jw_knull(w, "gate"); return; }
+    gz_jw_key(w, "gate");
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "kind", ms_auto(f) ? "none" : "per_lobby");
+    gz_jw_kstr(w, "state", ms_auto(f) || open ? "open" : "closed");
+    if (!ms_auto(f) && open) gz_jw_kstr(w, "opened_for_digest", digest_of(id, dg));
+    else gz_jw_knull(w, "opened_for_digest");
+    if (at) gz_jw_kint(w, "since_at", at);
+    else gz_jw_knull(w, "since_at");
+    gz_jw_end_obj(w);
+}
+
+/* 14.6 in Slice 1: only what this member's own program saw, unsigned */
+static void accountability(gz_jw *w, gz_fake *f, const char *id)
+{
+    gz_jw_key(w, "accountability");
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "source", "own_view");
+    gz_jw_kint(w, "as_of_at", now_s(f));
+    gz_jw_kbool(w, "signed", 0);
+    gz_jw_knull(w, "counts");
+    gz_jw_key(w, "removal_reasons");
+    gz_jw_arr(w);
+    if (strcmp(id, LOBBY_ID) == 0 && f->m_removed) {
+        gz_jw_obj(w);
+        gz_jw_text(w, "reason", "did not answer for an hour", "host", 200);
+        gz_jw_kint(w, "count", 1);
+        gz_jw_end_obj(w);
+    }
+    gz_jw_end_arr(w);
+    gz_jw_knull(w, "your_receipt");
+    gz_jw_kraw(w, "contradictions", "[]");
+    gz_jw_end_obj(w);
+}
+
 static const char *seat_name(gz_fake *f, const char *id)
 {
     if (strcmp(id, LOBBY_ID) != 0) {
@@ -471,6 +522,7 @@ static const char *seat_name(gz_fake *f, const char *id)
         return f->ready2 ? "ready" : "joined_not_ready";
     }
     if (f->joining_answer == 1) return "joining";
+    if (f->m_removed) return "removed";
     if (f->left) return "left";
     if (!f->joined) return "none";
     if (f->story && f->m_stage >= MS_SIGNING && f->m_stage <= MS_ACTIVE) return "chosen";
@@ -595,6 +647,7 @@ static void story_lobby(gz_jw *w, gz_fake *f, const char *id, int row)
     gz_jw_key(w, "you");
     gz_jw_obj(w);
     gz_jw_kstr(w, "seat", seat_name(f, id));
+    gate_json(w, f, id);
     if (!row) {
         if (rdy) gz_jw_kint(w, "ready_for_version", 3);
         else gz_jw_knull(w, "ready_for_version");
@@ -618,6 +671,8 @@ static void story_lobby(gz_jw *w, gz_fake *f, const char *id, int row)
             gz_jw_kraw(w, "outcome", "{\"code\":\"cancelled\",\"reason\":\"deadline_below_minimum\",\"not_your_doing\":true}");
         } else if (first && f->m_outcome == MO_STARTED) {
             gz_jw_kraw(w, "outcome", "{\"code\":\"started\"}");
+        } else if (first && f->m_removed) {
+            gz_jw_kraw(w, "outcome", "{\"code\":\"removed\"}");
         } else if (gone) {
             gz_jw_kraw(w, "outcome", "{\"code\":\"left\",\"reason\":\"user\"}");
         } else {
@@ -642,6 +697,7 @@ static void story_lobby(gz_jw *w, gz_fake *f, const char *id, int row)
         }
         gz_jw_knull(w, "members");
         gz_jw_knull(w, "terms_change");
+        accountability(w, f, id);
     } else {
         gz_jw_kint(w, "channel_sat", 500000);
         range(w, "joining_fee_sat", lo, hi);
@@ -669,7 +725,8 @@ static void story_host_lobby(gz_jw *w, gz_fake *f)
     gz_jw_key(w, "counts");
     gz_jw_obj(w);
     gz_jw_kint(w, "joined", f->h_ready);
-    gz_jw_kint(w, "ready", f->h_ready);
+    gz_jw_kint(w, "ready", f->h_ready - (open ? f->h_locked : 0));
+    gz_jw_kint(w, "locked", open ? f->h_locked : 0);
     gz_jw_end_obj(w);
     gz_jw_kbool(w, "can_start_now", can);
     gz_jw_key(w, "start_blocked_by");
@@ -691,7 +748,7 @@ static void story_host_lobby(gz_jw *w, gz_fake *f)
         gz_jw_obj(w);
         gz_jw_kstr(w, "seat", sid);
         gz_jw_text(w, "name", NAMES[i], "member", 64);
-        gz_jw_kstr(w, "state", f->h_stage >= MS_SIGNING ? "chosen" : "ready");
+        gz_jw_kstr(w, "state", f->h_stage >= MS_SIGNING ? "chosen" : open && i < f->h_locked ? "locked" : "ready");
         gz_jw_kint(w, "joined_at", 1794427000 + i * 60);
         gz_jw_kbool(w, "can_remove", open);
         gz_jw_end_obj(w);
@@ -909,7 +966,7 @@ static void story_status(gz_fake *f, gz_api_status_facts *s)
         DO("ready_check", LOBBY_ID, "{}");
     } else if (f->joined && f->m_outcome == MO_NONE) {
         if (f->ready) DO("in_lobby_waiting", LOBBY_ID, "{\"ready\":30,\"target\":50,\"minimum\":30}");
-        else DO("in_lobby_not_ready", LOBBY_ID, "{\"reasons\":[\"user_choice\"]}");
+        else DO("in_lobby_not_ready", LOBBY_ID, f->locked1 ? "{\"reasons\":[\"not_unlocked\"]}" : "{\"reasons\":[\"user_choice\"]}");
         nd = "lobby_starts_by";
         nd_height = TIP + 12;
     }
@@ -929,8 +986,14 @@ static void story_status(gz_fake *f, gz_api_status_facts *s)
     if (f->m_outcome == MO_CANCELLED) DO("lobby_cancelled", LOBBY_ID, "{\"reason\":\"deadline_below_minimum\"}");
     if (f->joined2) {
         if (f->ready2) DO("in_lobby_waiting", LOBBY2_ID, "{\"ready\":30,\"target\":50,\"minimum\":30}");
-        else DO("in_lobby_not_ready", LOBBY2_ID, "{\"reasons\":[\"user_choice\"]}");
+        else DO("in_lobby_not_ready", LOBBY2_ID, f->locked2 ? "{\"reasons\":[\"not_unlocked\"]}" : "{\"reasons\":[\"user_choice\"]}");
     }
+    if (f->locked1 && f->joined && f->m_outcome == MO_NONE)
+        ATT("att_u1", "unlock_to_take_part", LOBBY_ID, NULL,
+            "{\"lobby_id\":\"" LOBBY_ID "\",\"lobby_role\":\"joined\",\"reason\":\"restarted\"}");
+    if (f->locked2 && f->joined2)
+        ATT("att_u2", "unlock_to_take_part", LOBBY2_ID, NULL,
+            "{\"lobby_id\":\"" LOBBY2_ID "\",\"lobby_role\":\"joined\",\"reason\":\"restarted\"}");
     if (f->h_stage == MS_FUNDING && !m_in) {
         snprintf(f->st_buf[3], sizeof f->st_buf[3], "{\"factory_id\":\"" HOST_FACTORY_ID "\",\"confirmations\":%d,\"needed\":3}", f->h_conf);
         DO("awaiting_funding", HOST_LOBBY_ID, f->st_buf[3]);
@@ -999,6 +1062,7 @@ static void lobby(gz_jw *w, gz_fake *f, const char *id, int row)
     gz_jw_key(w, "you");
     gz_jw_obj(w);
     gz_jw_kstr(w, "seat", seat_name(f, id));
+    gate_json(w, f, id);
     if (!row) {
         if (first && f->ready) gz_jw_kint(w, "ready_for_version", 3);
         else gz_jw_knull(w, "ready_for_version");
@@ -1017,6 +1081,7 @@ static void lobby(gz_jw *w, gz_fake *f, const char *id, int row)
         gz_jw_knull(w, "factory_id");
         gz_jw_knull(w, "members");
         gz_jw_knull(w, "terms_change");
+        accountability(w, f, id);
     } else {
         gz_jw_kint(w, "channel_sat", 500000);
         range(w, "joining_fee_sat", lo, hi);
@@ -1340,6 +1405,50 @@ static void story_host_opened(gz_fake *f, const gz_json *d)
 /* ---- the calls ------------------------------------------------------------------------------- */
 static int not_found(gz_api_error *err) { gz_api_err_set(err, "not_found", NULL, NULL); return 404; }
 
+/* 14.3 program rule 2: the passphrase with every ready under at_join, and
+ * none otherwise; checked after every other check (14.2). -1: go on (the
+ * check phase answers 0: on to the derivation); else the status to answer. */
+static int pass_rule(gz_fake *f, const gz_api_call *c, int ready, gz_api_error *err)
+{
+    int want = ready && !ms_auto(f), has = gz_json_get(c->body, "passphrase") != NULL;
+    if (want && !has) { gz_api_err_set(err, "missing_field", "/passphrase", NULL); return 400; }
+    if (!want && has) { gz_api_err_set(err, "bad_value", "/passphrase", NULL); return 400; }
+    if (c->phase == GZ_API_PHASE_CHECK) return 0;
+    return -1;
+}
+
+/* The checks of PUT .../ready that need no passphrase (14.2), changing nothing. */
+static int ready_refusal(gz_fake *f, const char *id, const char *seen, int ready, gz_api_error *err)
+{
+    char dg[65];
+    int second = f->story && strcmp(id, LOBBY2_ID) == 0;
+    if (!second && strcmp(id, LOBBY_ID) != 0) return not_found(err);
+    if (!(second ? f->joined2 : f->joined)) { gz_api_err_set(err, "not_joined", NULL, NULL); return 409; }
+    if (f->story && !second && f->m_stage >= MS_SIGNING) { gz_api_err_set(err, "too_late", NULL, NULL); return 409; }
+    if (f->pause_on && ready) { gz_api_err_set(err, "paused", NULL, NULL); return 409; }
+    if (strcmp(seen, digest_of(id, dg)) != 0) {
+        gz_api_err_set(err, "terms_changed", "/seen_current_digest", "{\"current_version\":3}");
+        return 409;
+    }
+    return 0;
+}
+
+/* A ready with the passphrase opens that lobby's gate for its values (14.3 rule 1). */
+static void gate_open(gz_fake *f, const char *id, int64_t now)
+{
+    if (ms_auto(f)) return;
+    if (f->story && strcmp(id, LOBBY2_ID) == 0) { f->gate2 = 1; f->gate2_at = now; f->locked2 = 0; }
+    else { f->gate1 = 1; f->gate1_at = now; f->locked1 = 0; }
+}
+
+static void ready_apply(gz_fake *f, const char *id, int ready, int64_t now)
+{
+    int second = f->story && strcmp(id, LOBBY2_ID) == 0;
+    if (second) { f->ready2 = ready; f->locked2 = 0; }
+    else { f->ready = ready; f->locked1 = 0; }
+    if (ready) gate_open(f, id, now);
+}
+
 static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int *effect)
 {
     gz_fake *f = be;
@@ -1600,11 +1709,14 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         }
         {
             const gz_json *rd = gz_json_get(b, "ready");
+            int st = pass_rule(f, c, rd && rd->i, err);
+            if (st >= 0) { status = st; break; }
             if (f->story && !first) {
                 f->joined2 = 1;
                 f->left2 = 0;
                 f->ready2 = rd && rd->i;
             } else {
+                f->m_removed = 0;
                 f->joined = 1;
                 f->left = 0;
                 f->ready = rd && rd->i;
@@ -1613,6 +1725,7 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
                 f->m_outcome = MO_NONE;
             }
         }
+        if (gz_json_get(b, "ready") && gz_json_get(b, "ready")->i) gate_open(f, c->path_id, c->now);
         f->joining_answer = f->story && !first ? 2 : 1;                          /* the answer says "joining"; the host's answer is an event */
         lobby(w, f, c->path_id, 0);
         f->joining_answer = 0;
@@ -1622,23 +1735,101 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         break;
     }
     case GZ_API_C_READY: {
-        char dg[65];
-        int second = f->story && strcmp(c->path_id, LOBBY2_ID) == 0;
-        if (!second && strcmp(c->path_id, LOBBY_ID) != 0) { status = not_found(err); break; }
-        if (!(second ? f->joined2 : f->joined)) { gz_api_err_set(err, "not_joined", NULL, NULL); status = 409; break; }
-        if (f->story && !second && f->m_stage >= MS_SIGNING) { gz_api_err_set(err, "too_late", NULL, NULL); status = 409; break; }
-        if (f->pause_on && gz_json_get(b, "ready")->i) { gz_api_err_set(err, "paused", NULL, NULL); status = 409; break; }
-        if (strcmp(gz_json_get(b, "seen_current_digest")->s, digest_of(c->path_id, dg)) != 0) {
-            gz_api_err_set(err, "terms_changed", "/seen_current_digest", "{\"current_version\":3}");
-            status = 409;
-            break;
-        }
-        if (second) f->ready2 = (int)gz_json_get(b, "ready")->i;
-        else f->ready = (int)gz_json_get(b, "ready")->i;
+        int rdy = (int)gz_json_get(b, "ready")->i;
+        if ((status = ready_refusal(f, c->path_id, gz_json_get(b, "seen_current_digest")->s, rdy, err)) != 0) break;
+        if ((status = pass_rule(f, c, rdy, err)) >= 0) break;
+        ready_apply(f, c->path_id, rdy, c->now);
         lobby(w, f, c->path_id, 0);
         status = 202;
         if (f->srv) gz_api_notify(f->srv, "lobby", c->path_id);
         if (f->story && f->srv) gz_api_notify(f->srv, "status", NULL);
+        break;
+    }
+    case GZ_API_C_LOBBIES_READY: {
+        /* 14.2: the per-lobby checks first, then one passphrase check, then each ready */
+        const gz_json *ls = gz_json_get(b, "lobbies"), *e;
+        const char *ids[8];
+        int st[8], n = 0, passed = 0, bad = 0;
+        gz_api_error es[8];
+        memset(es, 0, sizeof es);
+        if (!ls || ls->len < 1 || ls->len > 8) { gz_api_err_set(err, "bad_value", "/lobbies", "{\"max\":8}"); status = 400; break; }
+        for (e = ls->child; e && n < 8; e = e->next, n++) {
+            const gz_json *li = gz_json_get(e, "lobby_id"), *sd = gz_json_get(e, "seen_current_digest");
+            if (!li || li->type != GZ_JSON_STR || !sd || sd->type != GZ_JSON_STR) { bad = 1; break; }
+            ids[n] = li->s;
+            st[n] = ready_refusal(f, li->s, sd->s, 1, &es[n]);
+            if (!st[n]) passed++;
+        }
+        if (bad) { gz_api_err_set(err, "bad_value", "/lobbies", NULL); status = 400; break; }
+        if (passed) {
+            if ((status = pass_rule(f, c, 1, err)) >= 0) break;
+            for (i = 0; i < n; i++)
+                if (!st[i]) ready_apply(f, ids[i], 1, c->now);
+        }
+        gz_jw_obj(w);
+        gz_jw_key(w, "results");
+        gz_jw_arr(w);
+        for (i = 0; i < n; i++) {
+            gz_jw_obj(w);
+            gz_jw_kstr(w, "lobby_id", ids[i]);
+            if (!st[i]) {
+                gz_jw_kint(w, "status", 202);
+                gz_jw_key(w, "lobby");
+                lobby(w, f, ids[i], 0);
+            } else {
+                gz_jw_kint(w, "status", st[i]);
+                gz_jw_key(w, "error");
+                gz_jw_obj(w);
+                gz_jw_kstr(w, "code", es[i].code ? es[i].code : "internal");
+                gz_jw_kraw(w, "params", es[i].params[0] ? es[i].params : "{}");
+                gz_jw_end_obj(w);
+            }
+            gz_jw_end_obj(w);
+        }
+        gz_jw_end_arr(w);
+        gz_jw_end_obj(w);
+        status = 200;
+        if (passed && f->srv) {
+            for (i = 0; i < n; i++)
+                if (!st[i]) gz_api_notify(f->srv, "lobby", ids[i]);
+            gz_api_notify(f->srv, "status", NULL);
+        }
+        break;
+    }
+    case GZ_API_C_SIGNING_GET:
+    case GZ_API_C_SIGNING_PUT: {
+        static const char *const MSV[] = {"at_join", "auto"};
+        int put = c->id == GZ_API_C_SIGNING_PUT;
+        if (put) {
+            const char *v = gz_json_get(b, "member_signing")->s;
+            const gz_json *hf = gz_json_get(b, "host_funding");
+            int to = strcmp(v, "at_join") == 0 ? 0 : strcmp(v, "auto") == 0 ? 1 : -1;
+            if (strcmp(v, "when_unlocked") == 0 || (hf && hf->type == GZ_JSON_STR && strcmp(hf->s, "confirm") == 0)) {
+                gz_api_err_set(err, "not_in_this_release", strcmp(v, "when_unlocked") == 0 ? "/member_signing" : "/host_funding",
+                               "{\"release\":\"1.0.0\"}");
+                status = 501;
+                break;
+            }
+            if (to < 0) { gz_api_err_set(err, "bad_value", "/member_signing", "{\"allowed\":[\"at_join\",\"auto\"]}"); status = 400; break; }
+            if (hf && (hf->type != GZ_JSON_STR || strcmp(hf->s, "auto") != 0)) { gz_api_err_set(err, "bad_value", "/host_funding", NULL); status = 400; break; }
+            if (jint(b, "based_on_version", -1) != f->signing_version) {
+                gz_api_err_set(err, "changed_elsewhere", "/based_on_version", "{\"version\":%lld}", (long long)f->signing_version);
+                status = 409;
+                break;
+            }
+            f->signing_pending = to == f->member_signing ? -1 : to;   /* the core reads it at the next start (C1) */
+            f->signing_version++;
+        }
+        gz_jw_obj(w);
+        gz_jw_kstr(w, "member_signing", MSV[ms_auto(f)]);
+        if (f->signing_pending >= 0) gz_jw_kstr(w, "pending", MSV[f->signing_pending]);
+        else gz_jw_knull(w, "pending");
+        if (put) gz_jw_kstr(w, "takes_effect", "next_start");
+        gz_jw_kraw(w, "available", "[\"at_join\",\"auto\"]");
+        gz_jw_knull(w, "node_gate");
+        gz_jw_kstr(w, "host_funding", "auto");
+        gz_jw_kint(w, "version", f->signing_version);
+        gz_jw_end_obj(w);
         break;
     }
     case GZ_API_C_LEAVE: {
@@ -2192,7 +2383,7 @@ int gz_fake_cmd(gz_fake *f, const char *line)
 {
     static const char *const CHAIN[] = {"agree", "lagging", "catching_up", "one_source", "disagree", "unreachable",
                                         "offline_by_choice"};
-    int rc = 0, n_status = 0, n_lobby = 0, n_host = 0, n_factory = 0, n_chain = 0, n_wallet = 0, release = 0, i;
+    int rc = 0, n_status = 0, n_lobby = 0, n_lobby2 = 0, n_host = 0, n_factory = 0, n_chain = 0, n_wallet = 0, release = 0, i;
     pthread_mutex_lock(&f->mu);
     if (strcmp(line, "step") == 0) {
         /* the lobby this wallet joined */
@@ -2332,6 +2523,29 @@ int gz_fake_cmd(gz_fake *f, const char *line)
         f->pp_delay_ms = atoi(line + 9);
     } else if (strcmp(line, "fail-derivation") == 0) {
         f->derivation_fails_next = 1;
+    } else if (strcmp(line, "restart") == 0) {
+        /* a restart as the lobby sees it (14.3 rules 3 and 6): a saved setting takes
+         * effect, every gate is closed, and a Ready seat under at_join is locked */
+        if (f->signing_pending >= 0) { f->member_signing = f->signing_pending; f->signing_pending = -1; }
+        f->gate1 = f->gate2 = 0;
+        f->gate1_at = f->gate2_at = now_s(f);
+        if (!ms_auto(f)) {
+            if (f->joined && f->ready && f->m_stage == MS_OPEN) { f->ready = 0; f->locked1 = 1; }
+            if (f->joined2 && f->ready2) { f->ready2 = 0; f->locked2 = 1; }
+        }
+        n_lobby = n_lobby2 = n_status = 1;
+    } else if (strncmp(line, "host-locked ", 12) == 0) {
+        int n = atoi(line + 12);
+        f->h_locked = n < 0 ? 0 : n > f->h_ready ? f->h_ready : n;
+        n_host = n_status = 1;
+    } else if (strcmp(line, "member-removed") == 0) {
+        if (f->joined && f->m_stage == MS_OPEN) {
+            f->joined = 0;
+            f->ready = 0;
+            f->locked1 = 0;
+            f->m_removed = 1;
+            n_lobby = n_status = 1;
+        }
     } else {
         rc = -1;
     }
@@ -2339,6 +2553,7 @@ int gz_fake_cmd(gz_fake *f, const char *line)
     if (release) gz_fake_release(f);
     if (f->srv) {
         if (n_lobby) gz_api_notify(f->srv, "lobby", LOBBY_ID);
+        if (n_lobby2) gz_api_notify(f->srv, "lobby", LOBBY2_ID);
         if (n_host) gz_api_notify(f->srv, "host_lobby", HOST_LOBBY_ID);
         if (n_factory) gz_api_notify(f->srv, "factory", NULL);
         if (n_chain) gz_api_notify(f->srv, "chain", NULL);
