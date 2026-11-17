@@ -148,6 +148,27 @@ static void fail(gzp_exec_t *ex, const char *why)
     }
 }
 
+/* A fatal error that no restart from storage can fix: the incarnation ends
+ * and the program stops (GZP_RUN_LIMIT), instead of restarting into it. */
+static void fail_stop(gzp_exec_t *ex, const char *why)
+{
+    fail(ex, why);
+    ex->fatal_stop = 1;
+}
+
+/* What the chain adapter answered a request (pchain.h): -1 is fatal for the
+ * incarnation; GZP_CHAIN_STOP (the worker holds fewer watches than the node
+ * asks for, and the saved watches come back at every start) stops. */
+static void chain_answer(gzp_exec_t *ex, int rc, const char *why)
+{
+    /* The adapter's own reason, when it gave one, belongs to this answer
+     * only: it is cleared here, so an older reason is never printed. */
+    const char *own = ex->chain->why;
+    ex->chain->why = NULL;
+    if (rc == GZP_CHAIN_STOP) fail_stop(ex, "chain-watch-set-full");
+    else if (rc < 0) fail(ex, own ? own : why);
+}
+
 #ifdef GZP_TEST_BUILD
 /* A timer of the test build's own (--test-timer-ms), kept in the same table
  * as the node's and fired by the same code, but logged instead of given to
@@ -400,18 +421,29 @@ static void execute(void *ctx, const gz_action_t *a)
                 a->u.set_seated.seated);
         break;
     case GZ_ACTION_BROADCAST:
-        gzp_chain_broadcast(ex->chain, a->u.broadcast.tx.data, a->u.broadcast.tx.len);
+        chain_answer(ex, gzp_chain_broadcast(ex->chain, a->u.broadcast.tx.data, a->u.broadcast.tx.len),
+                     "chain-backlog-full");
         break;
     case GZ_ACTION_WATCH_TX: {
         char hex[65];
         gzp_hex(a->u.watch_tx.txid, 32, hex);
-        gzp_log("watch-tx txid=%s depth=%u (no watch loop yet: P7)", hex, (unsigned)a->u.watch_tx.depth);
+        gzp_log("watch-tx txid=%s depth=%u", hex, (unsigned)a->u.watch_tx.depth);
+        /* BUSY is held and asked again (gzp_chain_retry); -1 is a refusal
+         * that cannot be retried, or a full backlog: fatal, never ignored. */
+        chain_answer(ex, gzp_chain_watch_tx(ex->chain, a->u.watch_tx.txid, a->u.watch_tx.depth),
+                     "chain-watch-refused");
         break;
     }
-    case GZ_ACTION_WATCH_OUTPOINT:
-        gzp_log("watch-outpoint vout=%u depth=%u (no watch loop yet: P7)",
+    case GZ_ACTION_WATCH_OUTPOINT: {
+        char hex[65];
+        gzp_hex(a->u.watch_outpoint.outpoint.txid, 32, hex);
+        gzp_log("watch-outpoint txid=%s vout=%u depth=%u", hex,
                 (unsigned)a->u.watch_outpoint.outpoint.vout, (unsigned)a->u.watch_outpoint.depth);
+        chain_answer(ex, gzp_chain_watch_outpoint(ex->chain, a->u.watch_outpoint.outpoint.txid,
+                                                  a->u.watch_outpoint.outpoint.vout, a->u.watch_outpoint.depth),
+                     "chain-watch-refused");
         break;
+    }
     case GZ_ACTION_SET_TIMER:
         timer_set(ex, a->u.set_timer.timer_id, a->u.set_timer.delay_ms);
         break;
@@ -635,6 +667,8 @@ static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, 
  *   cmd CODE [ARGS-HEX]   a USER_COMMAND (CODE hex, ARGS a TLV stream of records 10 and up)
  *   chain-tx TXID-HEX CONF        a GZ_CHAIN_TX_CONFIRMED report
  *   tip HEIGHT                    a GZ_CHAIN_NEW_TIP
+ *   chain-broadcast TX-HEX        bytes straight to the chain adapter's broadcast (pchain.c), as a
+ *                                 BROADCAST action would; the result comes back as an event
  *   raw-kind KIND [zero]          a raw factory message of KIND on every connection
  *   sync-fail-ping                the next batch that holds a ping record is written and its sync fails
  * During a start a command is answered 503 node_stopped (contract-v2.md 1),
@@ -672,6 +706,17 @@ static void test_line(gzp_exec_t *ex, char *line)
         ev.u.chain.height = (uint32_t)strtoul(a1, NULL, 10);
         deliver(ex, &ev);
         drain(ex);
+    } else if (!strcmp(w, "chain-broadcast") && a1 && strlen(a1) % 2 == 0) {
+        size_t n = strlen(a1) / 2;
+        uint8_t *tx = malloc(n + 1);
+        if (!tx) abort();
+        if (gzp_unhex(a1, strlen(a1), tx, n)) {
+            gzp_log("test-chain-broadcast len=%zu", n);
+            chain_answer(ex, gzp_chain_broadcast(ex->chain, tx, n), "chain-backlog-full");
+        } else {
+            gzp_log("test-command bad line");
+        }
+        free(tx);
     } else if (!strcmp(w, "raw-kind") && a1) {
         gzp_net_test_raw(ex->net, (uint16_t)strtoul(a1, NULL, 10), a2 && !strcmp(a2, "zero"));
     } else if (!strcmp(w, "sync-fail-ping")) {
@@ -790,9 +835,8 @@ static int min_timeout(int a, int b)
 static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_ms)
 {
     uint64_t now = gzp_mono_ms();
-    size_t nfds;
+    size_t nfds, nnet;
     int timeout = -1, t, i;
-    uint32_t height;
     if (*ex->stop) return GZP_RUN_STOP;
     if (ex->fatal) return GZP_RUN_RESTART;
     /* Back-pressure. With the synchronous store every batch is confirmed by
@@ -814,7 +858,16 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
 #ifdef GZP_TEST_BUILD
     if (ex->opt->test_commands && !ex->in_eof) fds[1].fd = 0;
 #endif
-    nfds = 2 + gzp_net_pollfds(ex->net, fds + 2, cap - 2, &t, now);
+    nnet = gzp_net_pollfds(ex->net, fds + 2, cap - 3, &t, now);
+    nfds = 2 + nnet;
+    /* The chain worker's wake fd: readable when it has events. Not while
+     * waiting for a batch to be stored (until_ms): events wait in its queue. */
+    if (!until_ms && gzp_chain_fd(ex->chain) >= 0) {
+        fds[nfds].fd = gzp_chain_fd(ex->chain);
+        fds[nfds].events = POLLIN;
+        fds[nfds].revents = 0;
+        nfds++;
+    }
     timeout = min_timeout(timeout, t);
     if (until_ms) {
         timeout = min_timeout(timeout, until_ms > now ? (int)(until_ms - now) : 0);
@@ -831,7 +884,7 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     }
     if (fds[0].revents || *ex->stop) return GZP_RUN_STOP;
     now = gzp_mono_ms();
-    gzp_net_dispatch(ex->net, fds + 2, nfds - 2, now);
+    gzp_net_dispatch(ex->net, fds + 2, nnet, now);
 #ifdef GZP_TEST_BUILD
     if (fds[1].revents && !ex->fatal) read_commands(ex);
 #endif
@@ -866,12 +919,12 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
 #ifdef GZP_TEST_BUILD
     gzp_testping_tick(ex->tp, ex->net, now);
 #endif
-    if (!ex->fatal && gzp_chain_poll(ex->chain, now, &height)) {
+    /* Requests the worker answered BUSY: asked again, in order. */
+    if (!ex->fatal) chain_answer(ex, gzp_chain_retry(ex->chain), "chain-request-refused");
+    /* What the worker found, a bounded number per turn. */
+    for (i = 0; i < 64 && !ex->fatal; i++) {
         gz_event_t ev;
-        memset(&ev, 0, sizeof ev);
-        ev.kind = GZ_EVENT_CHAIN;
-        ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
-        ev.u.chain.height = height;
+        if (!gzp_chain_take(ex->chain, &ev)) break;
         deliver(ex, &ev);
         drain(ex);
     }
@@ -938,12 +991,13 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     ex->number = number;
     ex->incarnation = 0;
     ex->fatal = 0;
+    ex->fatal_stop = 0;
     ex->fatal_why = NULL;
     ex->storage_broken = 0;
     ex->starting = 0;
     ex->resent = 0;
     memset(ex->timers, 0, sizeof ex->timers); /* the old incarnation's timers never fire */
-    gzp_chain_forget_watches(ex->chain);      /* the start sets watches again */
+    gzp_chain_restart(ex->chain);             /* the start sets watches again */
 #ifdef GZP_TEST_BUILD
     memset(seen, 0, sizeof seen); /* the new node has seen no connection */
 #endif
@@ -1060,7 +1114,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     }
     gz_action_list_init(&ex->list, ex->lslots, GZP_LIST_SLOTS, ex->lbytes, GZP_LIST_BYTES);
 
-    cap = 2 + gzp_net_max_fds(ex->net);
+    cap = 3 + gzp_net_max_fds(ex->net);
     fds = calloc(cap, sizeof *fds);
     if (!fds) abort();
 
@@ -1110,6 +1164,10 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     }
     while (rc < 0) rc = turn(ex, fds, cap, 0);
     free(fds);
+    if (rc == GZP_RUN_RESTART && ex->fatal_stop && !gzp_store_poisoned(&ex->store)) {
+        gzp_log("stopping why=%s: a restart from storage cannot fix it", ex->fatal_why);
+        rc = GZP_RUN_LIMIT;
+    }
     if (rc != GZP_RUN_STOP && gzp_store_poisoned(&ex->store)) {
         gzp_log("storage poisoned: a failed write could not be undone; not restarting (storage.failed)");
         rc = GZP_RUN_POISONED;

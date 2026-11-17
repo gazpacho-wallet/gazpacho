@@ -97,6 +97,7 @@
 #define GZ_TE_CONNECT     0x0005u
 #define GZ_TE_HANDOFF_A   0x0006u
 #define GZ_TE_HANDOFF_B   0x0007u
+#define GZ_TE_WATCH       0x0008u /* a watch asked for: kind, txid, vout, depth (41 bytes) */
 #define GZ_TE_PING_HEADER 82u   /* clock 8, link 66, serial 8 */
 
 #define GZ_TE_CMD_CONNECT        0x7e01u
