@@ -600,7 +600,7 @@ static gz_status_t on_status(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_a
     if (g->seat_state == GZ_SEAT_READY && !m->ready &&
         (g->lobby_state == GZ_LOBBY_OPEN || g->lobby_state == GZ_LOBBY_READY_CHECK)) {
         m->resends++;
-        return send_reason(m, GZ_KIND_UNREADY, m->unready_reason ? m->unready_reason : 2, out);
+        return unready(m, m->unready_reason ? m->unready_reason : 2, out); /* saved first (review B, L1) */
     }
     if (g->lobby_state != GZ_LOBBY_OPEN) return GZ_OK;
     /* The host has no seat for us, though we did not just send our join on this

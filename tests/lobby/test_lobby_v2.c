@@ -1256,7 +1256,7 @@ static void test_gate(void)
     /* a ready check while locked and not ready: `unready` reason 3 at once, never a ready; nothing frozen or saved */
     memset(chk, 0x71, 32);
     n = host_env(buf, sizeof buf, SCOPE, GZ_KIND_READY_CHECK, chk, 1, CD2, 0, 0, 0, 0, &HOST);
-    CHECK(feed(&m, 1, buf, n) == GZ_OK && sends(GZ_KIND_UNREADY) == 1 && sends(GZ_KIND_READY) == 0 && !any_save() &&
+    CHECK(feed(&m, 1, buf, n) == GZ_OK && sends(GZ_KIND_UNREADY) == 1 && sends(GZ_KIND_READY) == 0 && saves(GZ_REC_READY_SENT) == 1 &&
           !m.frozen && !m.has_answered && last_sent(GZ_KIND_UNREADY, &g) && g.has_reason && g.reason == 3);
     CHECK(notes(GZ_NOTE_LOCKED) == 0 && !gz_lobby_member_accepted(&m, chk, 1, NULL));   /* told already for this closing */
 
@@ -1431,7 +1431,7 @@ static void test_gate(void)
     keep(&J);
     /* the next check, still locked: unready reason 3 again, no ready, nothing saved */
     n = host_env(buf, sizeof buf, SCOPE, GZ_KIND_READY_CHECK, chk2, 1, CD2, 0, 0, 0, 0, &HOST);
-    CHECK(feed(&m, 1, buf, n) == GZ_OK && sends(GZ_KIND_UNREADY) == 1 && sends(GZ_KIND_READY) == 0 && !any_save() &&
+    CHECK(feed(&m, 1, buf, n) == GZ_OK && sends(GZ_KIND_UNREADY) == 1 && sends(GZ_KIND_READY) == 0 && saves(GZ_REC_READY_SENT) == 1 &&
           !gz_lobby_member_accepted(&m, chk2, 1, NULL));
     /* after the freeze, opening the gate readies for the frozen version, plainly (no check named) */
     GATE = 1;
@@ -1469,7 +1469,7 @@ static void test_gate(void)
     /* the next check finds the seat locked: "locked" again, nothing saved, no ready */
     memset(chk, 0x74, 32);
     n = host_env(buf, sizeof buf, SCOPE, GZ_KIND_READY_CHECK, chk, 1, CD2, 0, 0, 0, 0, &HOST);
-    CHECK(feed(&m, 1, buf, n) == GZ_OK && sends(GZ_KIND_READY) == 0 && sends(GZ_KIND_UNREADY) == 1 && !any_save() &&
+    CHECK(feed(&m, 1, buf, n) == GZ_OK && sends(GZ_KIND_READY) == 0 && sends(GZ_KIND_UNREADY) == 1 && saves(GZ_REC_READY_SENT) == 1 &&
           !m.ready && last_sent(GZ_KIND_UNREADY, &g) && g.reason == 3);
 
     /* 7. A restart of a Ready member with no check in flight: its gate is
