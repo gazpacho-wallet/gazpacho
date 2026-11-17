@@ -191,12 +191,13 @@ static int wait_unlocked(const gzp_options_t *o)
     if (o->test_passphrase_file) {
         gzp_unlock_job_t job;
         gzp_unlock_result_t pre;
-        uint8_t pw[GZ_SC_PASS_IN_MAX + 1];
+        uint8_t *pw = gz_sc_salloc(GZ_SC_PASS_IN_MAX + 1); /* guarded, wiped when freed (8.4) */
         size_t n = 0;
-        int fd = open(o->test_passphrase_file, O_RDONLY | O_CLOEXEC);
-        ssize_t r = fd >= 0 ? read(fd, pw, sizeof pw) : -1;
+        int fd = pw ? open(o->test_passphrase_file, O_RDONLY | O_CLOEXEC) : -1;
+        ssize_t r = fd >= 0 ? read(fd, pw, GZ_SC_PASS_IN_MAX + 1) : -1;
         if (fd >= 0) close(fd);
         if (r < 0 || (size_t)r > GZ_SC_PASS_IN_MAX) {
+            gz_sc_sfree(pw);
             fprintf(stderr, "gazpacho: cannot read the passphrase file\n");
             return GZP_EXIT_DATA;
         }
@@ -221,7 +222,7 @@ static int wait_unlocked(const gzp_options_t *o)
             gzp_wallet_begin(wallet, &job);
             gzp_wallet_finish(wallet, &job, wall_ms());
         }
-        OPENSSL_cleanse(pw, sizeof pw);
+        gz_sc_sfree(pw);
         OPENSSL_cleanse(job.words, sizeof job.words);
         gzp_log("unlock op=%s status=%s wrong_in_row=%u attempts_left=%u retry_after_s=%u reason=%s",
                 job.op == GZP_UNLOCK_OP_CREATE ? "create" : "unlock", gzp_unlock_status_name(job.result.status),
