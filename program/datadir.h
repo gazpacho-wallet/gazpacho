@@ -30,6 +30,10 @@ typedef struct {
 int gzp_datadir_open(gzp_datadir_t *d, const char *dir, const char *role, const char *network);
 void gzp_datadir_close(gzp_datadir_t *d);
 
+/* Tests (--test-dump-journal): an existing folder of this role and network,
+ * read only: no lock taken, nothing written. 0, or a GZP_EXIT_* status. */
+int gzp_datadir_open_readonly(gzp_datadir_t *d, const char *dir, const char *role, const char *network);
+
 /* Path of a file in the folder. 0, or -1 if too long. */
 int gzp_datadir_path(const gzp_datadir_t *d, const char *name, char out[GZP_PATH_MAX]);
 

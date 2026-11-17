@@ -92,6 +92,9 @@ void gzp_wallet_test_kdf_floor(gzp_wallet_t *w);
 /* gazpacho-test (--test-restore-from): the next finish that opens storage
  * imports this backup of the journal first, as a restore. */
 void gzp_wallet_test_restore_from(gzp_wallet_t *w, const char *backup);
+/* gazpacho-test (--test-dump-journal): an unlock that only derives the keys:
+ * no attempts file, no journal open, no clean-up; nothing is written. */
+void gzp_wallet_test_keys_only(gzp_wallet_t *w);
 #endif
 
 #endif

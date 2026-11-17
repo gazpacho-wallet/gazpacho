@@ -299,6 +299,11 @@ int main(int argc, char **argv)
      * program carries on (review of PR 27, M4). Sockets use MSG_NOSIGNAL. */
     signal(SIGPIPE, SIG_IGN);
 
+#ifdef GZP_TEST_BUILD
+    if (opt.test_dump_journal)
+        rc = gzp_datadir_open_readonly(&dir, opt.data_dir, opt.role == GZP_ROLE_HOST ? "host" : "member", opt.network);
+    else
+#endif
     rc = gzp_datadir_open(&dir, opt.data_dir, opt.role == GZP_ROLE_HOST ? "host" : "member", opt.network);
     if (rc) return rc;
     have_dir = 1;
@@ -318,6 +323,7 @@ int main(int argc, char **argv)
     }
 #ifdef GZP_TEST_BUILD
     if (opt.test_kdf_floor) gzp_wallet_test_kdf_floor(wallet);
+    if (opt.test_dump_journal) gzp_wallet_test_keys_only(wallet);
     if (opt.test_kill_at) gzp_store_test_kill_at((unsigned)opt.test_kill_at);
     if (opt.test_restore_from && !opt.test_standin_store) gzp_wallet_test_restore_from(wallet, opt.test_restore_from);
 #endif

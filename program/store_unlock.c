@@ -34,6 +34,7 @@ struct gzp_wallet {
     atomic_int deriving;         /* a begin is under way (one derivation at a time, 8.2) */
 #ifdef GZP_TEST_BUILD
     char restore_from[GZP_PATH_MAX];
+    int keys_only;
 #endif
 };
 
@@ -559,6 +560,14 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
     case GZP_UNLOCK_OP_UNLOCK:
     case GZP_UNLOCK_OP_START_AS_RESTORE:
         if (w->unlocked) gzp_wallet_lock(w);
+#ifdef GZP_TEST_BUILD
+        if (w->keys_only) { /* read only: the vault, nothing written */
+            w->u = k->u;
+            memset(&k->u, 0, sizeof k->u);
+            w->unlocked = 1;
+            goto out;
+        }
+#endif
         (void)count_attempt(w, 0, now_ms, NULL); /* the passphrase was right, whatever follows */
         w->u = k->u;
         memset(&k->u, 0, sizeof k->u);
@@ -690,6 +699,8 @@ void gzp_wallet_test_kdf_floor(gzp_wallet_t *w)
     w->params.m_kib = 65536;
     w->params.p = 1;
 }
+
+void gzp_wallet_test_keys_only(gzp_wallet_t *w) { w->keys_only = 1; }
 
 void gzp_wallet_test_restore_from(gzp_wallet_t *w, const char *backup)
 {
