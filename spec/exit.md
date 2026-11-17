@@ -443,7 +443,7 @@ The writer (the host):
 - MUST pay every pre-signed fee and anchor from the funding: the funding output equals the root's requirement at that rate, and no fee reduces any member output.
 - MUST, under design 2, make every channel output at least max(`channel_sat`, the member's minimum) + P(r), and every spare-liquidity output at least P(r) + 330 sat, so that every channel and tree payout pays its member at least its capacity and no payout output is below the P2TR dust limit (330 sat).
 - MUST keep, under design 2, its own side of every channel at or above P(r) plus its commitment anchors, so it never offers an HTLC that would take the member's balance above its capacity (CH-14).
-- SHOULD keep the default rate of 0.1 sat/vB, and MUST NOT choose a rate above ⌊175,000 / V_occ⌋ sat/kvB, rounded down, where V_occ is the largest tree transaction that can be the child of an unconfirmed tree transaction (1,047 sat/kvB in T1; 920 at V_occ = 253, where 921 already fails), so that the anchor-only child can always evict a pre-signed next level on Bitcoin Core 28.x and 29.0 (5.5). Core 29.1's lower incremental fee would allow ⌊233,000 / V_occ⌋ (1,395 in T1); the bound does not use it while members may meet older servers. Decision pending the owner (open point 26).
+- SHOULD keep the default rate of 0.1 sat/vB, and MUST NOT choose a rate above ⌊175,000 / V_occ⌋ sat/kvB, rounded down, where V_occ is the largest tree transaction that can be the child of an unconfirmed tree transaction (1,047 sat/kvB in T1; 691 at V_occ = 253, where 692 already fails), so that the anchor-only child can always evict a pre-signed next level on Bitcoin Core 28.x and 29.0 (5.5). Core 29.1's lower incremental fee would allow ⌊233,000 / V_occ⌋ (1,395 in T1); the bound does not use it while members may meet older servers. Decision pending the owner (open point 26).
 - MUST keep the P2A anchor on every tree transaction and payout, and version 3.
 - SHOULD choose a rate at or above the relay floor of the servers it and its members broadcast to: 0.1 sat/vB on Bitcoin Core 29.1 or later, 1 sat/vB on 28.x and 29.0.
 - SHOULD weigh, before raising the rate, that a member leaving alone now spends the host's prepaid fees on its path (the last column above) instead of its own.
@@ -1043,6 +1043,10 @@ Section X of `tools/spec-vectors.py` (X1 to X9) is unchanged and still checks th
 | 29 | The payout's sighash and output-size assumptions behind P(r) (125 vbytes) | Upstream (#508) | Ask with open point 4's remainder |
 | 30 | Detecting servers that refuse version 3 or P2A (5.9) | Chain port | `chain_no_truc_server`; keep one known TRUC endpoint |
 | 31 | Mass forcing at E_wd in a 230-member factory: block space and H7's coin count when every member is forced in one window | Owner (host side) | Measure on regtest; host terms state how many it can force per block |
+| 32 | Receive indexes burned by aborted creations (3.4) can leave a run of unused indexes longer than a restored wallet's gap limit | Owner; this spec | Count burned indexes in the gap limit (the wallet never burns more than the limit allows without warning), or give one index per lobby, reused across its attempts |
+| 33 | CH-16: `to_remote` on the host's commitment has a CSV-1 script, not a plain key path, so the restore scan must know the script form to find it | `channel.md` | Specify the script and the key's derivation from the receive chain, and the scan that recognises it |
+| 34 | Penalty outputs still pay the factory key, which R3 makes unspendable after a restore | `channel.md`; this spec | Extend the payout-script approach: every penalty pays a script from the member's receive chain |
+| 35 | The `payout_script` record (3.4) is not yet in `messages.md` | `messages.md` | Add it with the next messages pass (10.3) |
 
 ## 13. Review checklist
 
