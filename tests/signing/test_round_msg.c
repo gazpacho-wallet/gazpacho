@@ -90,7 +90,7 @@ static void prop_make(prop_t *x, size_t n_participants)
     p->funding_tx = x->funding_tx; p->funding_tx_len = 154;
     p->participants = x->parts; p->n_participants = n_participants;
     p->n_tiers = 1; p->tier_sizes[0] = 45;
-    p->end_height = 330796; p->tree_anchors = 1; p->fee_per_tx = 17; p->lstock_delay = 144;
+    p->end_height = 330796; p->tree_anchors = 1; p->tree_feerate = 100; p->lstock_delay = 144;
     p->fixed_levels = 3; p->k = 1; p->layer_step = 144; p->layer_states = 4;
     p->nonces_due_ms = 60000; p->sigs_due_ms = 59999;
     x->in.round_id = x->round_id; x->in.check_id = x->check_id; x->in.host_random = x->host_random;
@@ -121,7 +121,7 @@ static int prop_same(const gz_rmsg_propose_t *m, const prop_t *x)
              a->funding_script_len == 34 && a->funding_tx_len == b->funding_tx_len &&
              !memcmp(a->funding_tx, b->funding_tx, b->funding_tx_len) && a->n_participants == b->n_participants &&
              a->n_tiers == b->n_tiers && a->end_height == b->end_height && a->tree_anchors == b->tree_anchors &&
-             a->fee_per_tx == b->fee_per_tx && a->lstock_delay == b->lstock_delay && a->n_lstock_hashes == b->n_lstock_hashes &&
+             a->tree_feerate == b->tree_feerate && a->lstock_delay == b->lstock_delay && a->n_lstock_hashes == b->n_lstock_hashes &&
              a->fixed_levels == b->fixed_levels && a->k == b->k && a->layer_step == b->layer_step &&
              a->layer_states == b->layer_states && a->has_distribution == (x->in.distribution != NULL) && a->placement == 0 &&
              a->nonces_due_ms == b->nonces_due_ms && a->sigs_due_ms == b->sigs_due_ms &&

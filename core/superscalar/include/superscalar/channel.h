@@ -10,6 +10,9 @@
 
 #define CHANNEL_DEFAULT_CSV_DELAY 144  /* ~1 day */
 #define MAX_HTLCS 483              /* BOLT #2 maximum */
+/* Largest commitment transaction nodes relay: commitments are TRUC
+   (nVersion 3), and BIP 431 limits a TRUC transaction to 10000 vB. */
+#define CHANNEL_MAX_COMMIT_VSIZE 10000
 #define DEFAULT_HTLCS_CAP 64      /* initial allocation for dynamic htlc arrays */
 #define CHANNEL_DUST_LIMIT_SATS  546   /* P2TR dust limit */
 #define CHANNEL_RESERVE_SATS     5000  /* min balance to keep for fees */
@@ -121,6 +124,11 @@ typedef struct {
     /* Config */
     uint32_t to_self_delay;
     uint64_t fee_rate_sat_per_kvb;  /* sat/kvB for penalty/HTLC txs (default 1000) */
+    /* sat/kvB the commitment pays (fee_commitment_tx_at): both co-signers
+       use it for the base fee reserved out of the funding and for each
+       HTLC/PTLC output.  A factory channel takes the factory's agreed tree
+       rate; channel_init sets 1000. */
+    uint64_t commit_fee_rate_sat_per_kvb;
     int funder_is_local;  /* 1 if local side is the channel funder (pays commit fee) */
     int use_revocation_leaf;  /* 1 = 2-leaf taptree with revocation checksig script-path */
     int use_cpfp_anchor;  /* 1 = append a keyless P2A CPFP anchor to commitments (#56);
@@ -200,7 +208,34 @@ typedef struct {
        without the LSP's cooperation. */
     unsigned char latest_commitment_sig[64];
     int           has_latest_commitment_sig;
+
+    /* Nonzero when the channel can no longer safely advance: the peer
+       answered a commitment update with a revocation that did not verify (or
+       with none we could parse), or the commitment it revoked could not be
+       registered with the watchtower.  The peer may still hold an unrevoked
+       older commitment, so while this is set channel_add_htlc() and
+       channel_create_commitment_partial_sig() refuse.  CHANNEL_FAILED_DURABLE
+       is persisted (channels.state = 'failed', jit_channels.revocation_failed)
+       and survives a restart; CHANNEL_FAILED_SESSION lives in memory only
+       (see lsp_channels_fail_channel).
+
+       The way out is a force-close.  Factory-level ceremonies are not gated
+       on this flag: a leaf advance or a cooperative factory close needs this
+       client's signature, which the LSP cannot get while the client is
+       disconnected and refused, and a cooperative close the client did sign
+       would retire the unrevoked commitment, which is the safe outcome.
+       Rotation leaves the client out of the new factory (lsp_rotation.c). */
+    int           revocation_failed;
+    /* The HTLC this side offered last, for as long as no commitment that
+       contains it has been accepted from the peer.  Only such an HTLC can be
+       taken back by channel_rollback_htlc. */
+    int           has_unsigned_offer;
+    uint64_t      unsigned_offer_id;
 } channel_t;
+
+/* Values of channel_t.revocation_failed (0 = not failed). */
+#define CHANNEL_FAILED_DURABLE 1  /* persisted; survives an LSP restart */
+#define CHANNEL_FAILED_SESSION 2  /* memory only: failed on a reconnect session */
 
 /* --- Key derivation (BOLT #3) --- */
 
@@ -230,6 +265,8 @@ int channel_derive_revocation_privkey(const secp256k1_context *ctx,
 
 /* --- Channel lifecycle --- */
 
+/* On failure ch owns nothing (its arrays are freed and NULL): calling
+   channel_cleanup on it is safe and not needed. */
 int channel_init(channel_t *ch, secp256k1_context *ctx,
                   const unsigned char *local_funding_secret32,
                   const secp256k1_pubkey *local_funding_pubkey,
@@ -294,9 +331,16 @@ int channel_get_remote_pcp(const channel_t *ch, uint64_t commitment_num,
 int channel_verify_revocation_secret(const channel_t *ch, uint64_t commitment_num,
                                      const unsigned char *secret32);
 
-/* Store a received revocation secret at flat index. */
-int channel_receive_revocation_flat(channel_t *ch, uint64_t commitment_num,
-                                      const unsigned char *secret32);
+/* Store a received revocation secret at flat index.  The secret is first
+   verified against the peer's committed point (fail-closed); returns 0 if it
+   does not verify or cannot be stored.  The result must be checked: a caller
+   that carries on after a 0 lets the peer keep an unrevoked older commitment
+   while the channel advances.  See SS_MUST_CHECK for the wrapper macro. */
+SS_MUST_CHECK int (channel_receive_revocation_flat)(channel_t *ch,
+                                                   uint64_t commitment_num,
+                                                   const unsigned char *secret32);
+#define channel_receive_revocation_flat(...) \
+    ((channel_receive_revocation_flat)(__VA_ARGS__) != 0)
 
 /* Retrieve a received revocation secret. Returns 1 if valid. */
 int channel_get_received_revocation(const channel_t *ch, uint64_t commitment_num,
@@ -358,8 +402,15 @@ int channel_verify_and_aggregate_commitment_sig(
 int channel_get_revocation_secret(const channel_t *ch, uint64_t old_commitment_num,
                                     unsigned char *secret_out32);
 
-int channel_receive_revocation(channel_t *ch, uint64_t commitment_num,
-                                 const unsigned char *secret32);
+/* Same contract as channel_receive_revocation_flat(): returns 0 when the
+   secret does not verify or cannot be stored, and the result must be
+   checked (a peer that answers with a garbage secret keeps an unrevoked,
+   unpenalisable older commitment otherwise). */
+SS_MUST_CHECK int (channel_receive_revocation)(channel_t *ch,
+                                              uint64_t commitment_num,
+                                              const unsigned char *secret32);
+#define channel_receive_revocation(...) \
+    ((channel_receive_revocation)(__VA_ARGS__) != 0)
 
 int channel_build_penalty_tx(const channel_t *ch,
                                tx_buf_t *penalty_tx_out,
@@ -388,6 +439,9 @@ int channel_build_penalty_tx_script_path(const channel_t *ch,
 /* Set the fee rate (sat/kvB) used for penalty/HTLC transactions.
    Default is 1000 sat/kvB (1 sat/vB). */
 void channel_set_fee_rate(channel_t *ch, uint64_t fee_rate_sat_per_kvb);
+
+/* Set the rate the commitment pays (commit_fee_rate_sat_per_kvb). */
+void channel_set_commit_fee_rate(channel_t *ch, uint64_t sat_per_kvb);
 
 /* Attach a persistence target for revocation secrets.  After this is set,
    channel_receive_revocation_flat() writes each received secret to the
@@ -458,9 +512,27 @@ void channel_set_remote_htlc_basepoint(channel_t *ch,
 
 /* --- HTLC operations --- */
 
+/* Most HTLC and PTLC outputs one commitment can carry within
+   CHANNEL_MAX_COMMIT_VSIZE: the largest n for which a commitment with one
+   key-path input, to_local, to_remote, n P2TR HTLC/PTLC outputs and the P2A
+   anchor fits (228).  Below MAX_HTLCS, so it is the binding limit. */
+size_t channel_max_commit_htlc_outputs(void);
+
+/* Outputs ch's commitment carries for HTLCs and PTLCs: the active ones at
+   or above the dust limit. */
+size_t channel_commit_htlc_outputs(const channel_t *ch);
+
+/* Refuses (returns 0, nothing changed) an HTLC that would take the
+   commitment past channel_max_commit_htlc_outputs(). */
 int channel_add_htlc(channel_t *ch, htlc_direction_t direction,
                       uint64_t amount_sats, const unsigned char *payment_hash32,
                       uint32_t cltv_expiry, uint64_t *htlc_id_out);
+
+/* Grow ch->htlcs so it holds at least n entries; contents are kept.
+   Returns 0 (array unchanged) if n > MAX_HTLCS or the allocation fails.
+   For code that fills the array directly instead of via channel_add_htlc
+   (restoring HTLCs from the DB). */
+int channel_reserve_htlcs(channel_t *ch, size_t n);
 
 int channel_fulfill_htlc(channel_t *ch, uint64_t htlc_id,
                            const unsigned char *preimage32);
@@ -469,6 +541,13 @@ int channel_fail_htlc(channel_t *ch, uint64_t htlc_id);
 
 /* Fail all HTLCs whose cltv_expiry <= current_height. Returns count failed. */
 int channel_check_htlc_timeouts(channel_t *ch, uint32_t current_height);
+
+/* Undo channel_add_htlc for an HTLC the peer refused before taking it: the
+   amount and fee go back, the HTLC is removed and the commitment number and
+   HTLC id counter return to what they were, as if it had never been added.
+   Only the most recently added HTLC can be rolled back, and only while it
+   is the latest change to the channel.  Returns 1 on success. */
+int channel_rollback_htlc(channel_t *ch, uint64_t htlc_id);
 
 /* --- HTLC resolution transactions --- */
 
@@ -487,6 +566,53 @@ int channel_build_htlc_penalty_tx(const channel_t *ch, tx_buf_t *penalty_tx_out,
     uint64_t htlc_amount, const unsigned char *htlc_spk, size_t htlc_spk_len,
     uint64_t old_commitment_num, size_t htlc_index,
     const unsigned char *anchor_spk, size_t anchor_spk_len);
+
+/* --- On-chain HTLC-success claim (BOLT #5) ---
+   Claims an HTLC that pays us, using its preimage, from whichever
+   commitment reached the chain.  The HTLC outputs are single-key tapscript
+   leaves, so there is no pre-signed second-stage transaction: the claim
+   spends the HTLC output directly via its success leaf.
+     HTLC_CLAIM_LOCAL_COMMIT:  our commitment; the HTLC is "received", the
+                               success leaf carries our to_self_delay CSV.
+     HTLC_CLAIM_REMOTE_COMMIT: the counterparty's commitment; the HTLC is
+                               "offered" there, the success leaf has no CSV.
+   pcp is the per-commitment point of the commitment holding the HTLC
+   (ours for LOCAL, theirs for REMOTE).  The claim pays to the same
+   key-path P2TR(local_payment_basepoint) as the HTLC-timeout path, so its
+   output is swept with channel_build_htlc_output_sweep. */
+#define HTLC_CLAIM_LOCAL_COMMIT  0
+#define HTLC_CLAIM_REMOTE_COMMIT 1
+
+/* Rebuild the scriptPubKey of the HTLC output we can claim.  Returns 1. */
+int channel_htlc_claim_spk(const channel_t *ch, int side,
+    const secp256k1_pubkey *pcp, const unsigned char *payment_hash32,
+    uint32_t cltv_expiry, unsigned char *spk_out34);
+
+/* 1 if latest_commitment_sig is a valid signature of the commitment ch
+   describes now, i.e. we hold that commitment signed and can broadcast
+   it.  After a local update the counterparty has not signed yet, the
+   current state is not that commitment. */
+int channel_holds_signed_commitment(const channel_t *ch);
+
+/* Virtual size of a claim, for its fee. */
+#define HTLC_CLAIM_VSIZE 180
+
+/* Fee of a claim at the channel fee rate (the HTLC-timeout fee rule). */
+uint64_t channel_htlc_claim_fee(const channel_t *ch);
+
+/* Build and sign the claim.  fee_sats is the fee to pay; 0 means
+   channel_htlc_claim_fee(ch).  Fails closed (returns 0) if the preimage
+   does not hash to payment_hash32, if the rebuilt script does not match
+   htlc_spk34, or if the output would be dust.  Signing is deterministic,
+   so rebuilding with the same fee yields the same transaction.
+   out_amount and txid_out32 (display byte order) are optional. */
+int channel_build_htlc_claim_tx(const channel_t *ch, tx_buf_t *signed_tx_out,
+    int side, const secp256k1_pubkey *pcp,
+    const unsigned char *commitment_txid, uint32_t htlc_vout,
+    uint64_t htlc_amount, const unsigned char *htlc_spk34,
+    const unsigned char *payment_hash32, const unsigned char *preimage32,
+    uint32_t cltv_expiry, uint64_t fee_sats, uint64_t *out_amount,
+    unsigned char *txid_out32);
 
 /* --- PTLC resolution transactions (Phase 5: production wiring) --- */
 

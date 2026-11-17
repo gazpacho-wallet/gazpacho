@@ -57,6 +57,13 @@ if(GZ_PYTHON3)
             ${PROJECT_SOURCE_DIR}/tools/spec-vectors.py 1500 1)
 endif()
 
+# The T1 tree with the test keys, signed, for a real Bitcoin Core node
+# (tools/regtest-tree.py, spec/exit.md 6.8). Built always; not a CTest test,
+# because it needs a regtest bitcoind.
+add_executable(tree_regtest ${PROJECT_SOURCE_DIR}/tests/regtest/tree_regtest.c)
+target_link_libraries(tree_regtest PRIVATE gazpacho_tree_import)
+target_compile_options(tree_regtest PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
 # Fuzz targets: the terms decoder (both records, with the canonical round
 # trip as the property) and the transaction reader. Plain driver by default,
 # libFuzzer with -DGZ_LIBFUZZER=ON (docs/notes/ci.md).
@@ -71,3 +78,15 @@ foreach(target tree_terms tree_tx)
   target_link_libraries(fuzz_${target} PRIVATE gazpacho_tree)
   target_compile_options(fuzz_${target} PRIVATE ${GZ_NEW_CODE_WARNINGS})
 endforeach()
+
+# The three ways a member meets a tree (the rules, the import, the member's
+# checks), on the same fuzzed terms (review B of the re-import, M2).
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_tree_agree ${GZ_TREE_TESTS}/fuzz_tree_agree.c)
+  target_link_options(fuzz_tree_agree PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_tree_agree ${GZ_TREE_TESTS}/fuzz_tree_agree.c ${PROJECT_SOURCE_DIR}/tests/net/fuzz_main.c)
+  add_test(NAME fuzz_tree_agree COMMAND fuzz_tree_agree 400)
+endif()
+target_link_libraries(fuzz_tree_agree PRIVATE gazpacho_tree_import)
+target_compile_options(fuzz_tree_agree PRIVATE ${GZ_NEW_CODE_WARNINGS})

@@ -245,14 +245,38 @@ def split_walk(levels, m, d=0):
         rem -= c
 
 
-def funding_requirement(levels, m, channel, fee, anchor, d=0):
+TREE_FEE_MAX = 2_100_000_000_000_000     # FEE_MAX_SATS, fee.h: no transaction can pay more
+
+
+def tree_fee(rate, k):
+    """terms.md section 4.2: the fee of a tree transaction with k P2TR outputs
+    and the anchor, at `rate` satoshis per 1000 vbytes, for its exact signed
+    size 64 + 43 k + 17 vbytes (one key-path input). None if no transaction
+    could pay it (the import's FEE_INVALID)."""
+    v = 64 + 43 * k + 17
+    if rate == 0:
+        return 0
+    if rate > TREE_FEE_MAX * 1000 // v:
+        return None
+    fee = -(-rate * v // 1000)
+    return None if fee > TREE_FEE_MAX else fee
+
+
+def tree_anchor(rate):
+    """The anchor's value: 240 (ANCHOR_OUTPUT_AMOUNT), or 0 at rate 0."""
+    return 240 if rate else 0
+
+
+def funding_requirement(levels, m, channel, rate, d=0):
     """terms.md section 4.2: the funding amount of a tree whose interior nodes are
-    all fixed: R(leaf) = 2 channel + 2 fee + 2 anchor; R(node with k children)
-    = k * max R(child) + fee + anchor."""
+    all fixed: R(leaf) = 2 channel + fee(1) + fee(2) + 2 anchor; R(node with k
+    children) = k * max R(child) + fee(k) + anchor. None if a fee cannot be paid."""
     a = levels[d] if d < len(levels) else levels[-1]
+    anchor = tree_anchor(rate)
     if a == LEAF_PS:
         if m == 1:
-            return 2 * channel + 2 * fee + 2 * anchor
+            f1, f2 = tree_fee(rate, 1), tree_fee(rate, 2)
+            return None if f1 is None or f2 is None else 2 * channel + f1 + f2 + 2 * anchor
         left = m // 2
         kids = [left, m - left]
     else:
@@ -263,7 +287,9 @@ def funding_requirement(levels, m, channel, fee, anchor, d=0):
             c = min(rem, -(-rem // (a - j)))
             kids.append(c)
             rem -= c
-    return len(kids) * max(funding_requirement(levels, k, channel, fee, anchor, d + 1) for k in kids) + fee + anchor
+    below = [funding_requirement(levels, k, channel, rate, d + 1) for k in kids]
+    fk = tree_fee(rate, len(kids))
+    return None if fk is None or None in below else len(kids) * max(below) + fk + anchor
 
 
 print("\n== terms.md: shape table of T1, checked by the split rule")
@@ -277,14 +303,17 @@ for max_members, interior, leaf in SHAPE_T1:
         if n in (3, 4, 5, 8, 16):
             print(f"  {n:2d} members: level arity {levels}, {n} one-member pseudo-Spilman leaves, fixed_levels D = {D}")
     prev = max_members
-# Reproduces the build-server run of 2026-11-12 (see terms.md section 4.2).
-assert funding_requirement([3], 3, 100_000, 17, 240) == 802_827
-assert funding_requirement([3], 4, 100_000, 17, 240) == 802_827
-assert funding_requirement([4, 3], 5, 100_000, 26, 240) == 1_605_586
-assert funding_requirement([4, 3], 16, 100_000, 26, 240) == 3_211_970
-print("  funding_amount, channel 100000, anchors on: 3 or 4 members (fee 17) =",
-      funding_requirement([3], 3, 100_000, 17, 240), "; 16 members (fee 26) =",
-      funding_requirement([4, 3], 16, 100_000, 26, 240))
+# Reproduces the build-server run at the re-import of SuperScalar 50f7fa13 (terms.md section 4.2):
+# each tree transaction pays 0.1 sat/vB for its own size, 13, 17 or 26 sat.
+assert [tree_fee(100, k) for k in (1, 2, 4, 15)] == [13, 17, 26, 73]
+assert tree_fee(0, 15) == 0 and tree_anchor(0) == 0 and tree_anchor(1) == 240
+assert funding_requirement([3], 3, 100_000, 100) == 802_811
+assert funding_requirement([3], 4, 100_000, 100) == 802_811
+assert funding_requirement([4, 3], 5, 100_000, 100) == 1_605_374
+assert funding_requirement([4, 3], 16, 100_000, 100) == 3_211_510
+print("  funding_amount, channel 100000, rate 100 sat/kvB, anchors on: 3 or 4 members =",
+      funding_requirement([3], 3, 100_000, 100), "; 5 to 8 members =", funding_requirement([4, 3], 5, 100_000, 100),
+      "; 16 members =", funding_requirement([4, 3], 16, 100_000, 100))
 for bad in ([4], [4, 3]):
     try:
         list(split_walk(bad, 3))
@@ -2645,15 +2674,16 @@ for d in (1, 2, 3):
 print("  so H_leaf = E - 10 d, not E - 5 d: two tree transactions (kickoff and leaf) per leaf depth,"
       " and fixed levels step by 10 too")
 
-print("\n== X2: path shapes and sizes for T1 (fee_per_tx 17 at up to 4 members, 26 above)")
+print("\n== X2: path shapes and sizes for T1 (each transaction pays 0.1 sat/vB for its own size)")
 for n, member in ((3, 0), (3, 1), (4, 0), (5, 0), (5, 4), (8, 0), (16, 0), (16, 15)):
     levels = (SHAPE_T1[0][1] if n <= 4 else SHAPE_T1[1][1]) + [LEAF_PS]
     d, outs = x_path_shape(levels, n, member)
     assert d == [dd for dd, _ in split_walk(levels, n)][member]
     sizes = [x_vsize_tree(k) for k in outs]
-    fee = 17 if n <= 4 else 26
+    fees = [tree_fee(100, k) for k in outs]
+    assert fees == [-(-100 * v // 1000) for v in sizes]
     print(f"  {n:2d} members, member {member + 1:2d}: leaf depth d = {d}, tree transactions {len(outs)} = d + 2,"
-          f" vsizes {sizes}, each pays {fee} sat; with the commitment, n = {x_n_path(d)} transactions")
+          f" vsizes {sizes}, fees {fees} sat; with the commitment, n = {x_n_path(d)} transactions")
 # F11: the depth of every member, by member count (the split rule decides, not a range).
 x_depths = {}
 for n in range(3, 17):
@@ -2817,13 +2847,11 @@ assert X_GRACE_S // X_BLOCK_FAST_S <= X_M_SAFE
 
 print("\n== X6: the anchor-only child, keyless (exit.md 6.2)")
 x_parent = hashlib.sha256(b"gazpacho test exit parent").digest()
-child = x_anchor_child(x_parent, 2, 2)
-print("  parent txid (test value, display order) =", x_parent.hex(), " anchor vout 2, version 2")
+child = x_anchor_child(x_parent, 2, 3)
+print("  parent txid (test value, display order) =", x_parent.hex(), " anchor vout 2, version 3 (TRUC)")
 show("anchor-only child (65 bytes, no witness)", child)
 print("  txid =", x_txid(child))
-child3 = x_anchor_child(x_parent, 2, 3)
-print("  the same for a TRUC parent (version 3): txid =", x_txid(child3))
-for k, fee in ((1, 17), (2, 17), (2, 26), (4, 26)):
+for k, fee in ((1, 13), (2, 17), (4, 26)):
     v = x_vsize_tree(k)
     r = x_package_rate_kvb(fee, v, X_ANCHOR, 65)
     print(f"  parent {v} vB paying {fee} sat ({1000 * fee // v} sat/kvB) + anchor-only child: package {r} sat/kvB")
@@ -2868,11 +2896,11 @@ def x_ladder(fee_parent, v_parent):
     return out
 
 
-for v_p, f_p in ((124, 17), (167, 17), (167, 26), (253, 26)):
+for v_p, f_p in ((124, 13), (167, 17), (253, 26)):
     rungs = x_ladder(f_p, v_p)
     print(f"  parent {v_p} vB paying {f_p} sat: rung fees "
           + ", ".join(f"{r / 1000:g} sat/vB {f}" for r, f in rungs))
-assert x_ladder(17, 167)[0] == (2_000, 623) and x_ladder(17, 124)[0] == (2_000, 565)
+assert x_ladder(17, 167)[0] == (2_000, 623) and x_ladder(13, 124)[0] == (2_000, 565)
 
 print("\n== X8: pinning the anchor-only child (exit.md 6.5, F3): someone spends the anchor first")
 # TRUC parent (BIP 431): the attacker's child is at most 1,000 vB. The member's
@@ -2889,15 +2917,8 @@ x_out_truc = next(f for f in range(0, 100_000)
                   if x_replaces(f, X_V_CHILD_WALLET, x_pin_f, X_TRUC_CHILD_MAX, 17, 167))
 print(f"  a member with a coin replaces that pin with a wallet child of at least {x_out_truc} sat"
       f" (more if the market rate needs it)")
-# Version-2 parent: the attacker's child can be a whole standard transaction,
-# 100,000 vB (MAX_STANDARD_TX_WEIGHT 400,000), at the 100 sat/kvB relay floor.
-X_V2_PIN_V = 100_000
-x_v2_pin_fee = X_V2_PIN_V * 100 // 1000
-x_out_v2 = next(f for f in range(x_v2_pin_fee, 200_000)
-                if x_replaces(f, X_V_CHILD_WALLET, x_v2_pin_fee, X_V2_PIN_V, 17, 167))
-print(f"  version-2 parent: a {X_V2_PIN_V} vB child at 0.1 sat/vB pays {x_v2_pin_fee} sat; replacing it needs"
-      f" at least {x_out_v2} sat; the cluster limit (101 kvB) leaves no room for another child")
-assert x_out_v2 == 10_016
+# Every tree transaction is TRUC since the re-import of SuperScalar 50f7fa13: the version-2 case
+# (a 100,000 vB pin for about 10,000 sat) no longer arises and is no longer computed.
 
 print("\n== X9: move_by and the wind-down a Slice 3 term needs (exit.md 12 point 1, F9; MULTI-FACTORY.md 4.1)")
 
@@ -3006,10 +3027,12 @@ def t8_children(levels, m, d):
     return out
 
 
-def t8_build(levels, host, members, E, fee, amount, ftxid, fvout, csv=144):
+def t8_build(levels, host, members, E, rate, amount, ftxid, fvout, csv=144):
     """Nodes in the import's order: dicts with kind, keys (signers), cltv,
-    sequence, spent (txid, vout, amount, script), outputs, tx, txid, sighash."""
+    sequence, spent (txid, vout, amount, script), outputs, tx, txid, sighash.
+    Every transaction is version 3 (TRUC) and pays `rate` for its own size."""
     P2A = bytes.fromhex("51024e73")
+    ANCHOR = tree_anchor(rate)
     nodes = []
 
     def spk(keys, cltv):
@@ -3031,23 +3054,24 @@ def t8_build(levels, host, members, E, fee, amount, ftxid, fvout, csv=144):
         kids = t8_children(levels, count, d)
         if not kids:                                   # a one-member pseudo-Spilman leaf
             k = add("leaf_kickoff", keys, ko, parent, vout, amt)
-            s = add("leaf", keys, st, k, 0, amt - fee - 240)
-            nodes[k]["outs"] = [(amt - fee - 240, nodes[s]["script"]), (240, P2A)]
-            total = amt - fee - 240 - fee - 240
+            into_leaf = amt - tree_fee(rate, 1) - ANCHOR
+            s = add("leaf", keys, st, k, 0, into_leaf)
+            nodes[k]["outs"] = [(into_leaf, nodes[s]["script"]), (ANCHOR, P2A)]
+            total = into_leaf - tree_fee(rate, 2) - ANCHOR
             half = total // 2
             assert half >= 546
             lout = t8_taproot(keys, t8_leaf(csv, 0xb2, host))[0]
-            nodes[s]["outs"] = [(half, nodes[s]["script"]), (total - half, b"\x51\x20" + lout), (240, P2A)]
+            nodes[s]["outs"] = [(half, nodes[s]["script"]), (total - half, b"\x51\x20" + lout), (ANCHOR, P2A)]
             return
         k = add("fixed", keys, ko, parent, vout, amt)
-        budget = amt - fee - 240
+        budget = amt - tree_fee(rate, len(kids)) - ANCHOR
         per = budget // len(kids)
         firsts, off = [], first
         for j, c in enumerate(kids):
             firsts.append(len(nodes))
             sub(off, c, d + 1, k, j, per + (budget - per * len(kids) if j == len(kids) - 1 else 0))
             off += c
-        nodes[k]["outs"] = [(nodes[f]["amount"], nodes[f]["script"]) for f in firsts] + [(240, P2A)]
+        nodes[k]["outs"] = [(nodes[f]["amount"], nodes[f]["script"]) for f in firsts] + [(ANCHOR, P2A)]
 
     sub(0, len(members), 0, -1, 0, amount)
     for nd in nodes:
@@ -3056,11 +3080,11 @@ def t8_build(levels, host, members, E, fee, amount, ftxid, fvout, csv=144):
         else:
             prev, vout = nodes[nd["parent"]]["txid"], nd["vout"]
         outs = b"".join(a.to_bytes(8, "little") + bytes([len(s)]) + s for a, s in nd["outs"])
-        nd["tx"] = (u32(2)[::-1] + b"\x01" + prev + vout.to_bytes(4, "little") + b"\x00"
+        nd["tx"] = (u32(3)[::-1] + b"\x01" + prev + vout.to_bytes(4, "little") + b"\x00"
                     + nd["seq"].to_bytes(4, "little") + bytes([len(nd["outs"])]) + outs + bytes(4))
         nd["txid"] = hashlib.sha256(hashlib.sha256(nd["tx"]).digest()).digest()
         sha = lambda b: hashlib.sha256(b).digest()
-        msg = (b"\x00" + b"\x00" + u32(2)[::-1] + bytes(4) + sha(prev + vout.to_bytes(4, "little"))
+        msg = (b"\x00" + b"\x00" + u32(3)[::-1] + bytes(4) + sha(prev + vout.to_bytes(4, "little"))
                + sha(nd["amount"].to_bytes(8, "little")) + sha(bytes([34]) + nd["script"])
                + sha(nd["seq"].to_bytes(4, "little")) + sha(outs) + b"\x00" + bytes(4))
         nd["sighash"] = tagged_hash("TapSighash", msg)
@@ -3085,12 +3109,15 @@ T8_E = 290_000 + 144 + 36
 t8_first, t8_all = {}, {}
 for n in (3, 4, 8, 16):
     levels = (SHAPE_T1[0][1] if n <= 4 else SHAPE_T1[1][1]) + [LEAF_PS]
-    fee = 17 if n <= 4 else 26
-    amount = funding_requirement(levels, n, 100_000, fee, 240)
+    amount = funding_requirement(levels, n, 100_000, 100)
     fs = b"\x51\x20" + t8_taproot([T8_HOST] + T8_MEMBERS[:n], None)[0]
-    nodes = t8_build(levels, T8_HOST, T8_MEMBERS[:n], T8_E, fee, amount, T8_FUND, 0)
+    nodes = t8_build(levels, T8_HOST, T8_MEMBERS[:n], T8_E, 100, amount, T8_FUND, 0)
     assert nodes[0]["script"] == fs                       # the root spends the BIP 86 aggregate
-    assert all(n_["amount"] - sum(a for a, _ in n_["outs"]) == fee for n_ in nodes)
+    # every transaction pays 100 sat/kvB for its own signed size, and is small enough for a TRUC child
+    for n_ in nodes:
+        v_ = -(-(4 * len(n_["tx"]) + 2 + 66) // 4)
+        assert n_["amount"] - sum(a for a, _ in n_["outs"]) == -(-100 * v_ // 1000) and v_ <= 1000
+        assert n_["tx"][:4] == bytes([3, 0, 0, 0])
     t8_first[n] = nodes[0]["txid"][::-1].hex()
     t8_all[n] = [nd["txid"][::-1].hex() for nd in nodes]
     print(f"  {n:2d} members: funding {amount}, {len(nodes)} transactions, root txid {t8_first[n]}")
@@ -3112,16 +3139,16 @@ for n, rows in t8_ref.items():
 assert sum(len(v) for v in t8_all.values()) == 85
 print("  all 85 txids equal tests/reference/tree-from-terms-txids.txt")
 assert t8_first == {
-    3: "0f63466fed881f5711b10239812928dcd0a49cf56309ea8e1606d473e407c9e4",
-    4: "999ac375c25398ec6418b687429ca1b59def2a97a33b26ed03418a983f269e7d",
-    8: "9bef61746393ea193f0958cb40d2f906e166d49205da91572422dd16224ac877",
-    16: "45cd706ad210b488ddd779196d2bf20c6790ddd2755c0fe58951645152ef7253"}
+    3: "ccbcd2b12308463508cb3716827a111d2bef5a461bef7f5978f3aa871494d557",
+    4: "3fa6ed62b4a35f535446a1851e9233373a2efd00c0cf52ae73d2c81260dcf834",
+    8: "32144e6d23f9d95f2591411372c9c02dc69958e9fd798e25e2942963574ea7ef",
+    16: "c272932aa36a7be0ea48f1ef97f6a15b9956146f233d2b77ae06625b1e402415"}
 
 print("\n== messages.md 7.12 and 7.1 (no vectors there yet): T1, 4 members, as tests/tree/test_tree_checks.c")
 T8_PHOST = compressed(test_key("host factory"))
 T8_PMEM = [compressed(test_key(f"member {i} factory")) for i in range(1, 5)]
 T8_PCON = [compressed(host_sk)] + [compressed(test_key(f"member {i} contribution")) for i in range(1, 5)]
-amount = funding_requirement([LEAF_PS], 4, 100_000, 17, 240)
+amount = funding_requirement([LEAF_PS], 4, 100_000, 100)
 fs = b"\x51\x20" + t8_taproot([T8_PHOST] + T8_PMEM, None)[0]
 change = compressed(test_key("change 0"))
 change_script = b"\x51\x20" + change[2:33] + b"\x00"
@@ -3129,7 +3156,7 @@ ftx = (u32(2)[::-1] + b"\x01" + hashlib.sha256(b"gazpacho test funding input").d
        + (0xFFFFFFFD).to_bytes(4, "little") + b"\x02" + amount.to_bytes(8, "little") + b"\x22" + fs
        + (5000).to_bytes(8, "little") + b"\x22" + change_script + bytes(4))
 ftxid = hashlib.sha256(hashlib.sha256(ftx).digest()).digest()
-nodes = t8_build([LEAF_PS], T8_PHOST, T8_PMEM, T8_E, 17, amount, ftxid, 0)
+nodes = t8_build([LEAF_PS], T8_PHOST, T8_PMEM, T8_E, 100, amount, ftxid, 0)
 items = t8_items(nodes, T8_PMEM)
 tree_digest = tagged_hash("gazpacho/tree", chain + ftxid + u32(0) + u64(amount) + u16(5) + T8_PHOST + b"".join(T8_PMEM) + items)
 round_id = tagged_hash("gazpacho/round_id", MAGIC + chain + compressed(host_sk) + outer_digest + cur1_digest + ftxid + u32(0)
@@ -3138,6 +3165,6 @@ round_id = tagged_hash("gazpacho/round_id", MAGIC + chain + compressed(host_sk) 
 print("  funding txid (internal order) =", ftxid.hex())
 print("  tree_digest =", tree_digest.hex())
 print("  round_id (host_random 07 00..00) =", round_id.hex())
-assert tree_digest.hex() == "04ea434128f5bd849b918d5e8953e347bd5f17fcafe43ff56b90dbdca5afba83"
-assert round_id.hex() == "75c3144848bfba3cd74ab25041ddd730e79e0e45bdf7ffcfa6eff082c5d32516"
+assert tree_digest.hex() == "3c5302b30ce340eb97edd0029aa56e07bacc81b9c4f28a26ec163736e3397cbd"
+assert round_id.hex() == "56816d059a569223e59a859c9281c1bc9fbdb91d5d0cf3efda45a9799cebd9b1"
 print("\n== terms.md: T8 done")

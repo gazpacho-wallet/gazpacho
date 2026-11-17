@@ -10,11 +10,12 @@
  *   factory_set_static_near_root(D)
  *   factory_set_ps_subfactory_arity(1)
  *   factory_set_l_stock_csv(delay)
- *   placement_mode = PLACEMENT_SEQUENTIAL, use_tree_anchor = 1,
- *   use_hashlock_poison = 0, fee_per_tx, cltv_timeout; no mirror hashes;
- *   no fee estimator
- *   the funding script checked to be 34 bytes, then factory_set_funding
- *   factory_build_tree
+ *   factory_set_placement_mode(PLACEMENT_SEQUENTIAL), use_tree_anchor = 1,
+ *   use_hashlock_poison = 0, tree_fee_rate, build_quiet = 1, cltv_timeout;
+ *   no mirror hashes; no member capacities; no channel scripts
+ *   factory_set_funding (a 34-byte P2TR, or it refuses)
+ *   factory_build_tree (the funding script must be the root's aggregate)
+ *   factory_check_tree_fees (version 3, the anchor, the agreed rate)
  *   every node read back: kind, is_ps_leaf, signers (host, then a run of
  *   members in order), parent, unsigned bytes.
  *
@@ -41,7 +42,7 @@ typedef enum {
     GZ_TREE_I_OK = 0,
     GZ_TREE_I_ARGUMENT,     /* a NULL, a count out of bounds, or a key that does not parse */
     GZ_TREE_I_NO_MEMORY,
-    GZ_TREE_I_REFUSED,      /* factory_build_tree returned 0 */
+    GZ_TREE_I_REFUSED,      /* a setter, factory_build_tree or factory_check_tree_fees returned 0 */
     GZ_TREE_I_TOO_BIG,      /* more nodes or bytes than gz_tree_import_t holds */
     GZ_TREE_I_SIGNERS       /* a node's signers are not the host then a run of members */
 } gz_tree_i_err_t;

@@ -563,17 +563,32 @@ static void test_bounds(void)
     bound_u32(26, 52560, 52561, GZ_TERMS_E_LIFETIME);
     bound_u32(28, 1, 0, GZ_TERMS_E_WINDDOWN);
     bound_u32(28, 52560, 52561, GZ_TERMS_E_WINDDOWN);
-    bound_u64(30, 546, 545, GZ_TERMS_E_CHANNEL);
+    /* channel_sat's floor, 546: T1 cannot be funded there at its rate (8 members need 685,
+     * test_fundable), so the bound is checked on a lobby of 3. */
+    bound_u64(30, 685, 545, GZ_TERMS_E_CHANNEL);
+    {
+        gz_terms_outer_t t3, d3;
+        uint8_t b3[GZ_TERMS_OUTER_MAX];
+        size_t n3;
+        t1_terms(&t3);
+        t3.minimum = 3; t3.target = 3; t3.channel_sat = 546;
+        n3 = gz_terms_encode_outer(&t3, b3, sizeof b3);
+        CHECK(gz_terms_decode_outer(b3, n3, &SLICE1, &d3) == GZ_TERMS_OK);
+        t3.channel_sat = 545;
+        n3 = gz_terms_encode_outer(&t3, b3, sizeof b3);
+        CHECK(gz_terms_decode_outer(b3, n3, &SLICE1, &d3) == GZ_TERMS_E_CHANNEL);
+    }
     {   /* channel_sat's ceiling passes its bound; T1's tree then exceeds the money supply. */
         rec_t r2; uint8_t b8[8];
         u64be(b8, 2100000000000001ull); t1_with(&r2, 30, b8, 8, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_CHANNEL);
         u64be(b8, 2100000000000000ull); t1_with(&r2, 30, b8, 8, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_UNFUNDABLE);
     }
     bound_u32(32, 1, 0, GZ_TERMS_E_FEERATE);
-    {   /* the fee rate's ceiling passes its bound; T1's tree is then below the import's minimum. */
+    {   /* the fee rate's ceiling passes its bound, and T1's tree can still be funded at it
+         * (each transaction pays for its own size, and R(root) carries every fee). */
         rec_t r2; uint8_t b4[4];
         u32be(b4, 1000001); t1_with(&r2, 32, b4, 4, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_FEERATE);
-        u32be(b4, 1000000); t1_with(&r2, 32, b4, 4, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_E_UNFUNDABLE);
+        u32be(b4, 1000000); t1_with(&r2, 32, b4, 4, 0, NULL, 0); CHECK(dec(&r2, &SLICE1) == GZ_TERMS_OK);
     }
     /* Step timeout above 600,000 (with the budget raised to keep it valid). */
     {
@@ -663,15 +678,16 @@ static void test_shapes(void)
         CHECK(gz_tree_params(&t, n, &p) == GZ_TREE_P_OK);
         CHECK(p.D == want_D);
         CHECK(p.n_levels == (n <= 4 ? 1u : 2u));
-        CHECK(p.fee_per_tx == (n <= 4 ? 17u : 26u));
+        CHECK(p.tree_feerate == 100u);
+        CHECK(p.max_children == (n <= 4 ? 2u : 4u));
         CHECK(p.V == (n <= 4 ? 167u : 253u));
     }
     /* Test 19: the build-server table. */
-    CHECK(gz_tree_params(&t, 3, &p) == GZ_TREE_P_OK && p.funding_amount == 802827);
-    CHECK(gz_tree_params(&t, 4, &p) == GZ_TREE_P_OK && p.funding_amount == 802827);
-    CHECK(gz_tree_params(&t, 5, &p) == GZ_TREE_P_OK && p.funding_amount == 1605586);
-    CHECK(gz_tree_params(&t, 8, &p) == GZ_TREE_P_OK && p.funding_amount == 1605586);
-    CHECK(gz_tree_params(&t, 16, &p) == GZ_TREE_P_OK && p.funding_amount == 3211970);
+    CHECK(gz_tree_params(&t, 3, &p) == GZ_TREE_P_OK && p.funding_amount == 802811);
+    CHECK(gz_tree_params(&t, 4, &p) == GZ_TREE_P_OK && p.funding_amount == 802811);
+    CHECK(gz_tree_params(&t, 5, &p) == GZ_TREE_P_OK && p.funding_amount == 1605374);
+    CHECK(gz_tree_params(&t, 8, &p) == GZ_TREE_P_OK && p.funding_amount == 1605374);
+    CHECK(gz_tree_params(&t, 16, &p) == GZ_TREE_P_OK && p.funding_amount == 3211510);
     CHECK(gz_tree_params(&t, 2, &p) == GZ_TREE_P_COUNT);
     CHECK(gz_tree_params(&t, 17, &p) == GZ_TREE_P_NO_SHAPE);
     /* R(root) overflow: in the addition, in the multiplication, and just below. */
@@ -682,16 +698,19 @@ static void test_shapes(void)
         uint8_t dd[40];
         CHECK(!gz_tree_requirement(L3, 1, 1, 0x8000000000000000ull, 0, &R));     /* 2 x channel */
         CHECK(!gz_tree_requirement(L3, 1, 1, 0, 0x8000000000000000ull, &R));     /* 2 x fee */
-        CHECK(!gz_tree_requirement(L3, 1, 1, 0x7fffffffffffffffull, 0, &R));
+        CHECK(!gz_tree_requirement(L3, 1, 1, 0x7fffffffffffffffull, 1, &R));      /* + two fees and two anchors */
+        CHECK(gz_tree_requirement(L3, 1, 1, 0x7fffffffffffffffull, 0, &R) && R == 0xfffffffffffffffeull);  /* rate 0: no fee, no anchor */
         /* Widths 16 and 3 are not widths (the anchor would be the 17th output). */
         CHECK(!gz_tree_split(W16, 2, 32, dd) && gz_tree_split(W15, 2, 32, dd));
         CHECK(!gz_tree_requirement(W16, 2, 32, 1000, 1, &R) && gz_tree_requirement(W15, 2, 32, 1000, 1, &R));
-        CHECK(gz_tree_requirement(L3, 1, 1, 0x7fffffffffffff00ull, 0, &R) && R == 0xffffffffffffffe0ull);
-        CHECK(!gz_tree_requirement(L3, 1, 1, 0x7fffffffffffff00ull, 16, &R));
+        /* The leaf's two fees and two anchors fill the last 0x1ff exactly at rate 104 (13 + 18 + 480 = 511). */
+        CHECK(gz_tree_requirement(L3, 1, 1, 0x7fffffffffffff00ull, 1, &R) && R == 0xffffffffffffffe2ull);
+        CHECK(gz_tree_requirement(L3, 1, 1, 0x7fffffffffffff00ull, 104, &R) && R == 0xffffffffffffffffull);
+        CHECK(!gz_tree_requirement(L3, 1, 1, 0x7fffffffffffff00ull, 105, &R));
         CHECK(!gz_tree_requirement(L3, 1, 2, 0x7fffffffffffff00ull, 0, &R));
         CHECK(!gz_tree_requirement(L3, 1, 2, 0x3fffffffffffff00ull, 0xffffffffull, &R));
-        CHECK(!gz_tree_requirement(L3, 1, 2, 0x3fffffffffffff00ull, 0, &R));   /* the node's + 240 overflows */
-        CHECK(gz_tree_requirement(L3, 1, 2, 0x3ffffffffffffe00ull, 0, &R) && R == 0xfffffffffffffcb0ull);
+        CHECK(!gz_tree_requirement(L3, 1, 2, 0x3fffffffffffff00ull, 1, &R));   /* the node's fee + 240 overflows */
+        CHECK(gz_tree_requirement(L3, 1, 2, 0x3ffffffffffffe00ull, 1, &R) && R == 0xfffffffffffffcb5ull);
     }
     /* X2's depths. */
     CHECK(gz_tree_params(&t, 3, &p) == GZ_TREE_P_OK && p.depth[0] == 1 && p.depth[1] == 2 && p.depth[2] == 2);
@@ -826,14 +845,22 @@ static void test_fundable(void)
     gz_terms_outer_t t, d;
     uint8_t b[GZ_TERMS_OUTER_MAX];
     size_t n;
-    /* The import's minimum: 4 members, channel 546; fee rate 5,269 (fee 880,
-     * R = minimum = 16,688) passes; 5,270 (fee 881, R 16,699 < 16,702) does not. */
+    /* The import's minimum: 4 members at T1's rate 100, where it is
+     * 14 x (13 + 240) + 4 x 1,092 = 7,910. Channel 638 (R = 7,915) passes;
+     * 637 (R = 7,907) does not. */
     t1_terms(&t);
-    t.minimum = 4; t.target = 4; t.channel_sat = 546;
-    t.tree_feerate = 5269;
+    t.minimum = 4; t.target = 4; t.channel_sat = 638;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
-    t.tree_feerate = 5270;
+    t.channel_sat = 637;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
+    /* All of T1's member counts (3 to 8): 8 members need the most, 685. */
+    t1_terms(&t);
+    t.channel_sat = 685;
+    n = gz_terms_encode_outer(&t, b, sizeof b);
+    CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
+    t.channel_sat = 684;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
     /* Review A's probe P11: T1 with channel 546 and fee rate 1,000,000. */
@@ -841,20 +868,20 @@ static void test_fundable(void)
     t.channel_sat = 546; t.tree_feerate = 1000000;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
-    /* The money supply: 3 members (R = 8 channel + 2,827 at fee 17).
-     * 262,499,999,999,646 gives 2,099,999,999,999,995; one more, 2,100,000,000,000,003. */
+    /* The money supply: 3 members (R = 8 channel + 2,811 at rate 100).
+     * 262,499,999,999,648 gives 2,099,999,999,999,995; one more, 2,100,000,000,000,003. */
     t1_terms(&t);
     t.minimum = 3; t.target = 3;
-    t.channel_sat = 262499999999646ull;
+    t.channel_sat = 262499999999648ull;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
-    t.channel_sat = 262499999999647ull;
+    t.channel_sat = 262499999999649ull;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_E_UNFUNDABLE);
     /* Only member counts the lobby can start with count: with minimum 5, the
      * 4-member tree's minimum does not matter. */
     t1_terms(&t);
-    t.channel_sat = 546; t.tree_feerate = 5270; t.minimum = 5; t.target = 5;
+    t.channel_sat = 637; t.minimum = 5; t.target = 5;
     n = gz_terms_encode_outer(&t, b, sizeof b);
     CHECK(gz_terms_decode_outer(b, n, &SLICE1, &d) == GZ_TERMS_OK);
     t.minimum = 4;
