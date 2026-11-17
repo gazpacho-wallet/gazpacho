@@ -1480,12 +1480,13 @@ static int write_guard(gz_journal_t *j)
     return replace_file(&j->os, j->dir, j->guard_tmp, j->guard_path, j->guard, j->guard_len, check, 8);
 }
 
-/* The restore is answered: the marker goes, durably. 1 on success. */
+/* The restore is answered: the marker goes, durably. 1 on success. The
+ * caller ends the restored state: at an open, a marker found answered must
+ * not undo a restore the start rule found (the mark file's marker). */
 static int clear_marker(gz_journal_t *j)
 {
     if (j->os.unlink(j->os.ctx, j->marker_path) != 0 && errno != ENOENT) return 0;
     if (j->os.sync_dir(j->os.ctx, j->dir) != 0) return 0;
-    j->restored = 0;
     return 1;
 }
 
@@ -1607,7 +1608,10 @@ static gz_journal_status_t flush_once(gz_journal_t *j)
     /* The answer to a restore is durable: the marker goes before the answer
      * is confirmed (ports.h, the restore marker). Sequence 1 is always the
      * first batch of an incarnation, so it is pend[0] when present. */
-    if (j->restored && j->pend[0].id.sequence == 1 && !clear_marker(j)) return fail(j, GZ_JOURNAL_ERR_IO);
+    if (j->restored && j->pend[0].id.sequence == 1) {
+        if (!clear_marker(j)) return fail(j, GZ_JOURNAL_ERR_IO);
+        j->restored = 0;
+    }
     /* Confirming can lead to new saves through the node and the runner, so
      * take the list first. */
     pending_t done[GZ_RUNNER_MAX_UNCONFIRMED];
