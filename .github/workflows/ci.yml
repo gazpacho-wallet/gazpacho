@@ -223,6 +223,7 @@ jobs:
           --args "node_fuzz=300" --args "node_hostile=6 400" --args "sim_profile_6=25 300 1 6"
           --args "node_lobby=1500 1" --args "lobby_hostile=3000 2"
           --args "chain_fuzz_parse=20000" --args "chain_fuzz_watch=1500"
+          --args "journal_fuzz_sealed=300" --args "storage_fuzz_sc_counter=2000"
           --exclude '^storage_vector_e2r$'
           --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
           --args "signing_golden=golden tiny" --args "signing_model=model tiny"
