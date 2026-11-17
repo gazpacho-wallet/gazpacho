@@ -418,12 +418,15 @@ size_t gz_journal_encode_batch(uint8_t *out, const uint8_t salt[GZ_JOURNAL_SALT_
 int gz_journal_type_known(uint32_t type)
 {
     static const uint32_t known[] = {
-        0x00040002, 0x00040004, 0x00040006, 0x0004000a,
+        0x00040002, 0x00040004, 0x00040006, 0x0004000a, 0x0004000c, 0x0004000e,
+        0x00010018,
         0x00010002, 0x00010004, 0x00010006, 0x00010008, 0x0001000a, 0x0001000c, 0x0001000e,
         0x00010010, 0x00010012, 0x00010014, 0x00010016,
         0x00020002, 0x00020004, 0x00020006, 0x00020008, 0x0002000a, 0x0002000c, 0x0002000e,
         0x00030002, 0x00030004, 0x00030006};
-    if ((type >> 16) == 0x7e57) return 1; /* the placeholder's test types (node.h) */
+    /* The test builds' areas (node.h, journal.md 6): the test engines
+     * (0x7e57, 0x7e58), a test slot (0x7e59), the signing stand-in (0x7e5a). */
+    if ((type >> 16) >= 0x7e57 && (type >> 16) <= 0x7e5a) return 1;
     for (size_t i = 0; i < sizeof known / sizeof known[0]; i++)
         if (known[i] == type) return 1;
     return 0;
