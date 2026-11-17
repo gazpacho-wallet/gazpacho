@@ -117,7 +117,8 @@ void gzp_usage(void)
         "  --reconnect-ms MS             member: first reconnect delay, doubling to 60 s (default 1000)\n"
         "  --max-per-address N           host: accepted connections per address (0: no cap)\n"
         "  --max-queue BYTES             bytes queued for sending per connection (default 4 MiB)\n"
-        "  --member-signing at-join|auto|when-unlocked   member: when it may sign (default at-join)\n");
+        "  --member-signing at-join|auto|when-unlocked   member: when it may sign (default at-join)\n"
+        "  --tip N                    the chain tip to judge rounds from until the chain reports one\n");
 #ifdef GZP_TEST_BUILD
     fprintf(stderr,
         "tests only (gazpacho-test):\n"
@@ -267,7 +268,10 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
             else if (!strcmp(val, "when-unlocked")) o->member_signing = 2;
             else ok = 0;
         }
+        /* The tip to judge rounds from until the chain reports one (the builders' end height, may_ack). */
+        else if (!strcmp(a, "--tip")) { ok = num(val, 1, 499999999, &v); o->tip = (int)v; }
 #ifdef GZP_TEST_BUILD
+        else if (!strcmp(a, "--test-sign-tick-ms")) { ok = num(val, 1, 60000, &v); o->test_sign_tick_ms = (int)v; }
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
         else if (!strcmp(a, "--test-crash-at-ping")) { ok = num(val, 1, 1000000, &v); o->test_crash_at_ping = (int)v; }

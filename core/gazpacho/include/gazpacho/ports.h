@@ -103,6 +103,9 @@ typedef struct {
  *   secret    the 32-byte secret key at (epoch, index): 1, or 0. The caller
  *             wipes it as soon as it is done;
  *   host_pub  the host's long-term public key: 1, or 0 on a member.
+ *   host_secret  the host's long-term secret key (the signing engine signs
+ *             the host's round messages with it): 1, or 0 on a member or if
+ *             the port does not hold it now. The caller wipes it.
  *
  * A return of 0 is never a node error: the engine answers as its state
  * requires. Until P8 the program implements this over the stand-in key file:
@@ -112,6 +115,7 @@ typedef struct {
     int (*pub)(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33]);
     int (*secret)(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32]);
     int (*host_pub)(void *ctx, uint8_t pub33[33]);
+    int (*host_secret)(void *ctx, uint8_t sec32[32]);
     void *ctx;
 } gz_key_port_t;
 

@@ -1,7 +1,9 @@
 /* The release node (gazpacho_node, no GZ_TEST_KINDS): no test engine, so a
  * test-engine count is refused, kind 32767 is just a kind no engine takes,
- * and test commands are unknown. The node part works as in the test build. */
+ * and test commands are unknown. The node part works as in the test build.
+ * A lobby is refused without the signing engine and taken with it (P4.3). */
 #include "node_test.h"
+#include <secp256k1.h>
 
 int main(void)
 {
@@ -35,7 +37,28 @@ int main(void)
     h.restored = 1;
     m = h_mark(&h);
     CHECK(h_restart(&h) == GZ_OK && h.log[m].n_records == 3);
+    /* Without a secp256k1 context there is no signing engine: a lobby is
+     * refused for want of one (RULE-NODE:NO_ENGINE_NO_LOBBY). */
+    m = h_mark(&h);
+    h_cmd(&h, GZ_CMD_LOBBY_OPEN, NULL, 0);
+    h_cmd(&h, GZ_CMD_LOBBY_JOIN, NULL, 0);
+    CHECK(h_said(&h, m, "result 503 signing_unavailable"));
     CHECK_NO_NODE_ERROR(&h);
     h_free(&h);
+
+    /* P4.3: with a context the engine is behind the hand-off, and the release
+     * node takes the commands (here refused only for their missing fields). */
+    secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    h_init(&h, 1, 0);
+    h.cfg.secp = ctx;
+    h_new_node(&h);
+    CHECK(h_start(&h) == GZ_OK);
+    m = h_mark(&h);
+    h_cmd(&h, GZ_CMD_LOBBY_OPEN, NULL, 0);
+    h_cmd(&h, GZ_CMD_LOBBY_JOIN, NULL, 0);
+    CHECK(!h_said(&h, m, "signing_unavailable") && h_said(&h, m, "result 400"));
+    CHECK_NO_NODE_ERROR(&h);
+    h_free(&h);
+    secp256k1_context_destroy(ctx);
     return check_done();
 }

@@ -101,8 +101,8 @@
 #include "gazpacho/ports.h"
 
 /* The list one node call may fill, at most (see SIZING). */
-#define GZ_NODE_LIST_ACTIONS 640
-#define GZ_NODE_LIST_BYTES   (1536u * 1024u)
+#define GZ_NODE_LIST_ACTIONS 768   /* with the signing engine's worst step (P4.3) */
+#define GZ_NODE_LIST_BYTES   (4096u * 1024u)   /* with the signing engine's worst step (P4.3) */
 
 /* Timers the node may have set at once: the program's table holds this many.
  * core/node keeps the engines' budgets within it by a static assertion. */
@@ -171,8 +171,14 @@
  * bad_conditions; 404 no_such_lobby; 409 too_many_lobbies, lobby_exists,
  * refused_now, bad_values, not_a_host, not_a_member; 503 no_key,
  * signing_unavailable. Never a node error.
- * UNTIL THE SIGNING ENGINE LANDS (P4.3) a release build answers LOBBY_OPEN
- * and LOBBY_JOIN with 503 signing_unavailable: it hosts and joins nothing. */
+ * A node built without a secp256k1 context (gz_node_config_t.secp NULL) has
+ * no signing engine: its release build answers LOBBY_OPEN and LOBBY_JOIN
+ * with 503 signing_unavailable, since a lobby that could start a round
+ * nobody signs must not open.
+ * SIGNING_SET (local-api.md 14.3, open point 46) sets member_signing at run
+ * time: 12 the setting (u8: 0 AT_JOIN, 1 AUTO, 2 WHEN_UNLOCKED); every gate
+ * is closed (the node-wide one locked, each lobby's scoped secret wiped), and
+ * a member that is Ready with no check in flight says unready reason 3. */
 #define GZ_CMD_LOBBY_OPEN       0x0101u
 #define GZ_CMD_LOBBY_JOIN       0x0102u
 #define GZ_CMD_LOBBY_READY      0x0103u
@@ -183,6 +189,7 @@
 #define GZ_CMD_LOBBY_CANCEL     0x0108u
 #define GZ_CMD_SIGNING_UNLOCK   0x0401u
 #define GZ_CMD_SIGNING_LOCK     0x0402u
+#define GZ_CMD_SIGNING_SET      0x0403u
 
 /* Test builds: what the signing stand-in reports for a round handed to it. */
 #define GZ_TEST_SIGN_FUNDING    1u
@@ -221,7 +228,17 @@ typedef struct {
     uint8_t chain[32];                 /* the chain's genesis hash, as storage names it: it
                                           opens every guard record (journal.md 8.3) */
     const void *secp;                  /* a secp256k1_context with a non-aborting illegal
-                                          callback; unused until the signing engine (P4.3) */
+                                          callback: the signing engine's (NULL: no engine) */
+    /* What the signing engine's builders need beyond the core (core/node,
+     * signslot.c): the tree library's crypto provider (a gz_tree_crypto_t,
+     * tree.h) and the imported builder a member's checks compare with
+     * (gz_tree_import_build, tree_import.h: `in` a gz_tree_build_in_t, `out`
+     * a gz_tree_import_t), both the program's. */
+    const void *tree_crypto;
+    int (*tree_import)(void *ctx, const void *in, void *out);
+    void *tree_import_ctx;
+    uint32_t tip;                      /* the tip to start from, until the chain reports one (0: none) */
+    uint32_t sign_tick_ms;             /* the signing engine's tick (0: 1,000 ms; tests shorten it) */
     gz_key_port_t keys;                /* per-lobby keys and the host key */
     gz_host_funding_t host_funding;    /* composite-node.md 12.1; AUTO by default */
     gz_member_signing_t member_signing;/* composite-node.md 12.2; AT_JOIN by default */

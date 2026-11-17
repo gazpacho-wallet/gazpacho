@@ -32,6 +32,7 @@
 
 #include "gazpacho/command.h"
 #include "gazpacho/envelope.h"
+#include "gazpacho/tree_import.h"
 #include "executor.h"
 #ifdef GZP_TEST_BUILD
 #include "gazpacho/test_engine.h"
@@ -97,13 +98,13 @@ static void port_forget(void *ctx, const uint8_t scope[32])
     gzp_log("key-forget scope=%02x%02x%02x%02x", scope[0], scope[1], scope[2], scope[3]);
 }
 
+/* The secret at (epoch, index), for the signing engine's key hook (core/node
+ * signslot.c), which wipes it when it has made its keypair. */
 static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
 {
-    (void)ctx;
-    (void)epoch;
-    (void)index;
-    (void)sec32;
-    return 0;
+    gzp_exec_t *ex = ctx;
+    uint8_t pub[33];
+    return gzp_net_key(ex->net, epoch, index, sec32, pub);
 }
 
 static int port_host_pub(void *ctx, uint8_t pub33[33])
@@ -112,6 +113,23 @@ static int port_host_pub(void *ctx, uint8_t pub33[33])
     if (ex->opt->role != GZP_ROLE_HOST) return 0;
     memcpy(pub33, ex->net->pub, 33);
     return 1;
+}
+
+/* The host's long-term secret: the transport key (index 0 of epoch 0), as
+ * port_sign signs with it, until P8. */
+static int port_host_secret(void *ctx, uint8_t sec32[32])
+{
+    gzp_exec_t *ex = ctx;
+    uint8_t pub[33];
+    if (ex->opt->role != GZP_ROLE_HOST) return 0;
+    return gzp_net_key(ex->net, 0, 0, sec32, pub);
+}
+
+/* The imported builder, for a member's checks (tree_import.h). */
+static int port_tree_import(void *ctx, const void *in, void *out)
+{
+    return gz_tree_import_build((secp256k1_context *)ctx, (const gz_tree_build_in_t *)in, (gz_tree_import_t *)out) ==
+           GZ_TREE_I_OK;
 }
 
 /* ---- helpers ------------------------------------------------------------ */
@@ -1008,7 +1026,16 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.keys.pub = port_pub;
     cfg.keys.secret = port_secret;
     cfg.keys.host_pub = port_host_pub;
+    cfg.keys.host_secret = port_host_secret;
     cfg.keys.ctx = ex;
+    /* The signing engine: the transport's secp256k1 context (its illegal-argument callback reports, never
+     * aborts: main.c), the tree library's crypto provider over it, and the imported builder. */
+    gz_tree_secp_crypto((secp256k1_context *)ex->net->secp, &ex->tree_crypto);
+    cfg.secp = ex->net->secp;
+    cfg.tree_crypto = &ex->tree_crypto;
+    cfg.tree_import = port_tree_import;
+    cfg.tree_import_ctx = (void *)ex->net->secp;
+    cfg.tip = (uint32_t)ex->opt->tip;
     cfg.host_funding = GZ_HOST_FUNDING_AUTO;
     cfg.member_signing = (gz_member_signing_t)ex->opt->member_signing;
     cfg.crypto.verify = port_verify;
@@ -1019,6 +1046,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
 #ifdef GZP_TEST_BUILD
     cfg.test_sign_outcome = (uint32_t)ex->opt->test_sign_outcome;
     cfg.test_sign_delay_ms = (uint32_t)ex->opt->test_sign_delay_ms;
+    cfg.sign_tick_ms = (uint32_t)ex->opt->test_sign_tick_ms;
     cfg.test_engines = (uint32_t)ex->opt->test_engines;
 #endif
     if (!ex->node && !(ex->node = malloc(gz_node_size()))) abort();

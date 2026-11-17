@@ -1136,6 +1136,45 @@ static void test_gates(void)
     w_free(3);
 }
 
+/* The setting at run time (open point 46, command 0x0403, P4.3): a locked
+ * member set to AUTO readies; set back to WHEN_UNLOCKED it says unready and
+ * leaves the count; a value out of range is refused and changes nothing. */
+static void test_signing_set(void)
+{
+    terms_t t;
+    uint8_t v;
+    h_arg_t a[1] = {{12, &v, 1}};
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(1, 1, GZ_MEMBER_SIGNING_WHEN_UNLOCKED, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(member_ready(1, &t) == 0 && host_ready(&t) == 2);
+    v = 3;
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_SET, a, 1) == 400 && N[1].n->cfg.member_signing == GZ_MEMBER_SIGNING_WHEN_UNLOCKED);
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_SET, NULL, 0) == 400);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 0 && host_ready(&t) == 2);
+    v = GZ_MEMBER_SIGNING_AUTO;
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_SET, a, 1) == 200 && N[1].n->cfg.member_signing == GZ_MEMBER_SIGNING_AUTO);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 3);
+    v = GZ_MEMBER_SIGNING_WHEN_UNLOCKED;
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_SET, a, 1) == 200);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 0 && host_ready(&t) == 2);
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_UNLOCK, NULL, 0) == 200);
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 3);
+    no_errors(3);
+    w_free(3);
+}
+
 /* ---- 5. the engine rule: a hostile peer, the chain and the person, at random --------- */
 
 static uint64_t RNG = 0x9e3779b97f4a7c15ull;
@@ -1492,6 +1531,7 @@ int main(int argc, char **argv)
     test_cancel_and_tombstone();
     test_refusals();
     test_gates();
+    test_signing_set();
     test_index();
     test_seat_capacity();
     test_left_out();

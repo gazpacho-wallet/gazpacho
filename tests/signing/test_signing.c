@@ -21,7 +21,7 @@
 static int g_quick;
 /* The digest of fixed-generator outputs (test_definitions). After an intended
  * change: run "test_signing known", check, update. */
-#define KNOWN_ANSWERS 0x671cd81e2969bae5ull
+#define KNOWN_ANSWERS 0x454b827cf3174a74ull   /* re-pinned in P4.3: messages as envelopes on links, record 7 */
 
 typedef struct {
     int done;                   /* the host's newest round has every ack */
@@ -110,7 +110,8 @@ static outcome_t drive(world_t *w, sim_t *sim, uint32_t members, uint8_t tiers, 
     }
     o.members_in_round = r->def.n_participants - 1;
     for (int j = 1; j < r->def.n_participants; j++) {
-        w_node_t *n = r->def.peer[j] < W_MAX_NODES ? w->nodes[r->def.peer[j]] : NULL;
+        int pj = w_party_of(r->def.participants[j].contribution_key);
+        w_node_t *n = pj >= 0 && pj < W_MAX_NODES ? w->nodes[pj] : NULL;
         if (!n) continue;
         for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++) {
             const gz_sign_round_t *mr = &n->eng.rounds[k];
@@ -133,6 +134,7 @@ static void world_reset(world_t *w)
     w->builder = keep;
     memset(w->builder.epoch, 0, sizeof w->builder.epoch);      /* a new world: every party in its first epoch */
     w->builder.n_outcomes = 0;
+    w->builder.attempts_begun = 0;                             /* the retry hook's count is per world */
     w->max_attempts = attempts;
 }
 
@@ -326,18 +328,29 @@ static void test_crashes(void)
             sim_user_command(sim, 0, p, sizeof p);
             for (int s = 0; s < 40; s++) sim_step(sim);
             if (node && w.first_proposal_len) {                    /* the proposal again, after the restart */
-                sim_send_message(sim, 0, node, w.first_proposal, w.first_proposal_len);
+                w_sim_send(sim, 0, node, w.first_proposal, w.first_proposal_len);
                 replays++;
             }
             outcome_t o = drive(&w, sim, 3, 2, 0, 300);
             for (uint32_t m = 1; m <= 3 && w.first_proposal_len; m++)   /* and once more to everyone at the end */
-                sim_send_message(sim, 0, m, w.first_proposal, w.first_proposal_len);
+                w_sim_send(sim, 0, m, w.first_proposal, w.first_proposal_len);
             for (int s = 0; s < 30; s++) sim_step(sim);
             crashed += sim_stats(sim)->crashes_in_release;
             runs++;
-            if (!o.done || o.members_complete != 3) printf("  crash node %u at release %u: done %d complete %d attempts %u\n", node, k, o.done, o.members_complete, o.attempts);
+            /* Every member of the round that completed holds it. A member that crashed with its nonces
+             * saved but not yet at the host answers reason 3 after its restart; the host holds none of its
+             * nonces, so it is left out of the next attempt (P4.3 item 12), and the round completes with
+             * the other two. Any other crash ends with all three. */
+            int left_out = 0;
+            const gz_sign_round_t *fr = w.nodes[0] ? gz_sign_latest(&w.nodes[0]->eng) : NULL;
+            if (fr && node && o.members_in_round == 2 && o.first_failed && o.first_failed->why == GZ_SIGN_WHY_MEMBER_ABORT) {
+                left_out = 1;
+                for (int j = 1; j < fr->def.n_participants; j++)
+                    if (w_party_of(fr->def.participants[j].contribution_key) == (int)node) left_out = 0;
+            }
+            if (!o.done || o.members_complete != 3) printf("  crash node %u at release %u: done %d complete %d attempts %u%s\n", node, k, o.done, o.members_complete, o.attempts, left_out ? " (the crashed member left out)" : "");
             CHECK(!sim_failed(sim));
-            CHECK(o.done && o.members_complete == 3);
+            CHECK(o.done && (o.members_complete == 3 || (left_out && o.members_complete == 2)));
             CHECK(o.blame_fault == 0);
             sim_destroy(sim);
         }
@@ -369,7 +382,7 @@ static void test_restores(void)
                 size_t have = sim_storage_count(sim_node_storage(sim, node));
                 sim_restore_backup(sim, node, keep < have ? keep : have ? have - 1 : 0);
                 restores++;
-                if (w.first_proposal_len && node) sim_send_message(sim, 0, node, w.first_proposal, w.first_proposal_len);
+                if (w.first_proposal_len && node) w_sim_send(sim, 0, node, w.first_proposal, w.first_proposal_len);
                 outcome_t o = drive(&w, sim, 3, 1, 0, 300);
                 /* Did the port really repeat? Two secret draws with the same bytes. */
                 size_t nd = sim_node_draw_count(sim, node);
@@ -488,7 +501,10 @@ static void test_faults(void)
         static uint8_t bytes[1u << 17];
         gz_action_list_t list;
         gz_action_list_init(&list, slots, 64, bytes, sizeof bytes);
-        CHECK(w_begin_params(&w.nodes[0]->eng, &w.builder, p, W_PARAMS, &list) == GZ_ERR_ARGUMENT && list.count == 0);
+        size_t outcomes = w.builder.n_outcomes;
+        /* refused: nothing appended, and the outcome Failed (a begin refusal is an outcome: composite-node.md 8.1) */
+        CHECK(w_begin_params(&w.nodes[0]->eng, &w.builder, p, W_PARAMS, &list) == GZ_OK && list.count == 0 &&
+              w.builder.n_outcomes == outcomes + 1 && w.builder.outcomes[outcomes] == GZ_SIGN_OUTCOME_FAILED);
         w.builder.damage = 0;
         w_params(p, 1, 1, w_mask(3), 0);
         CHECK(w_begin_params(&w.nodes[0]->eng, &w.builder, p, W_PARAMS, &list) == GZ_OK);   /* the control: the clean tree is accepted */
@@ -523,11 +539,13 @@ static void eng_init(gz_sign_t *e, w_builder_t *b, uint32_t g)
     gz_sign_config_t c;
     gz_ports_t ports = {{det_fill, NULL}, {det_now, det_now, NULL}};
     memset(&c, 0, sizeof c);
+    static w_hctx_t hc[W_MAX_NODES];
     c.host = g == 0; c.ctx = w_ctx();
-    w_secret("test/factory", g, c.factory_secret);
-    w_secret("test/contribution", g, c.contribution_secret);
+    hc[g].b = b; hc[g].g = g;
+    c.keys = w_key_hook; c.hook_ctx = &hc[g];
     c.build = w_build; c.retry = w_retry; c.build_ctx = b;
-    c.tick_ms = 1; c.resend_ticks = 4; c.deadline_ticks = 80; c.max_attempts = 4;
+    b->max_attempts = 4;
+    c.tick_ms = 1; c.resend_ticks = 4; c.deadline_ticks = 80;
     CHECK(gz_sign_init(e, &c, &ports, 7) == GZ_OK);
 }
 
@@ -632,7 +650,7 @@ static void damage(gz_sign_def_t *d, int which)
     case 10: it->tx_len = GZ_SIGN_MAX_TX + 1; break;
     case 11: it->tx_len--; break;                                            /* truncated */
     case 12: it->has_merkle_root = 2; break;
-    case 13: d->peer[2] = d->peer[1]; break;                                 /* two members, one peer */
+    case 13: it->spent_script[1] = 0x21; break;                              /* not a P2TR output (two members on one peer is gone: links come from keys, P4.3) */
     case 14: it->spent_amount++; break;                                      /* not what its parent pays */
     case 15: { uint8_t s = it->signers[0]; it->signers[0] = it->signers[1]; it->signers[1] = s; break; }   /* host not first */
     case 16: d->host_key[1] ^= 1; break;                                     /* not participant 0's key */
@@ -733,11 +751,7 @@ static size_t begin_proposal(w_builder_t *b, uint32_t attempt, uint8_t *out, siz
     w_params(p, 1, attempt, w_mask(3), 0);
     if (w_begin_params(&e, b, p, W_PARAMS, &list) == GZ_OK)
         for (size_t k = 0; k < list.count; k++)
-            if (list.slots[k].kind == GZ_ACTION_SEND && list.slots[k].u.send.records.len <= cap) {
-                n = list.slots[k].u.send.records.len;
-                memcpy(out, list.slots[k].u.send.records.data, n);
-                break;
-            }
+            if (list.slots[k].kind == GZ_ACTION_SEND && (n = w_send_env(&list.slots[k], out, cap)) > 0) break;
     CHECK(gz_sign_latest(&e) == NULL || n > 0);
     gz_sign_wipe(&e);
     return n;
@@ -806,10 +820,11 @@ static void test_definitions(int print)
         b.mutate_proposal = NULL;
         eng_init(&mem, &b, 1);
         gz_action_list_init(&ml, ms, 16, mb, sizeof mb);
-        memset(&ev, 0, sizeof ev);
-        ev.kind = GZ_EVENT_MESSAGE_RECEIVED; ev.u.message.records.data = other; ev.u.message.records.len = m;
+        static uint8_t env[4096];
+        size_t el;
+        CHECK(w_msg_event(&b, 0, 1, other, m, &ev));
         CHECK(gz_sign_handle(&mem, &ev, &ml) == GZ_OK && ml.count == 1 && ml.slots[0].kind == GZ_ACTION_SEND);
-        CHECK(ml.count == 1 && gz_sign_decode(ml.slots[0].u.send.records.data, ml.slots[0].u.send.records.len, &msg) &&
+        CHECK(ml.count == 1 && (el = w_send_env(&ml.slots[0], env, sizeof env)) > 0 && gz_sign_decode(env, el, &msg) &&
               msg.kind == GZ_SIGN_MSG_ABORT && msg.reason == 12 && gz_sign_latest(&mem) == NULL);
         gz_sign_wipe(&mem);
     }
@@ -933,13 +948,16 @@ static void test_definitions(int print)
     gz_sign_sha256_t s;
     eng_init(&mem, &b, 1);
     gz_action_list_init(&list, slots, 64, bytes, sizeof bytes);
-    memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, 0); ev.u.message.records.data = clean; ev.u.message.records.len = n;
+    CHECK(w_msg_event(&b, 0, 1, clean, n, &ev));
     CHECK(gz_sign_handle(&mem, &ev, &list) == GZ_OK && list.count == 2);
     gz_sign_sha256_init(&s);
     gz_sign_sha256_write(&s, clean, n);
-    for (size_t k = 0; k < list.count; k++)
-        if (list.slots[k].kind == GZ_ACTION_SEND) gz_sign_sha256_write(&s, list.slots[k].u.send.records.data, list.slots[k].u.send.records.len);
+    for (size_t k = 0; k < list.count; k++)              /* each message as its whole envelope, as before contract v2 */
+        if (list.slots[k].kind == GZ_ACTION_SEND) {
+            static uint8_t env[1u << 15];
+            size_t el = w_send_env(&list.slots[k], env, sizeof env);
+            gz_sign_sha256_write(&s, env, el);
+        }
     gz_sign_sha256_done(&s, d);
     uint64_t got = 0;
     for (int i = 0; i < 8; i++) got = got << 8 | d[i];
@@ -951,24 +969,27 @@ static void test_definitions(int print)
 /* ---- 7. scripted scenarios, pinned ---- */
 
 /* Transcript digests of the scenarios (scenarios.h). After an intended change:
- * run "test_signing golden-print", check what changed, update. */
+ * run "test_signing golden-print", check what changed, update. Re-pinned in
+ * P4.3: messages are envelopes on links from keys, proposals carry the check
+ * and attempt, keys come per round from the hook, and the saved round state
+ * changed (composite-node.md, P4.3 as built). */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
-    0x12eb4decd3975df7ull, /* honest-1 */
-    0xc6793ba3675bd718ull, /* honest-2 */
-    0xaac115c2c4321ea6ull, /* duplicates */
-    0x232a237a8bed387cull, /* member-restart-nonces */
-    0x5aba521818acdcbbull, /* member-restart-signed */
-    0x9a154823001e739full, /* tier-abort */
-    0x39f49d1b3ac44777ull, /* host-restarts */
-    0x9d1b272bfa8bc5d2ull, /* timers */
-    0x24adabf73fe03273ull, /* host-faults */
-    0xd8b7a80063b3e926ull, /* member-faults */
-    0x8db197b0d914c837ull, /* proposals */
-    0x0648268c9c9a8eeaull, /* journal */
-    0x239c2636f395ba87ull, /* edges */
-    0x763fc3edad7b0615ull, /* reconnect */
-    0xb12aa72c11d46449ull, /* records */
-    0xcbc8d8d42e8f7b8dull, /* exposure */
+    0x654cd0587f1157eaull, /* honest-1 */
+    0x99a02f4f209fd0deull, /* honest-2 */
+    0xf29a9992870370bfull, /* duplicates */
+    0xc1c09fb54cb21f59ull, /* member-restart-nonces */
+    0xa01de1b5607b23a4ull, /* member-restart-signed */
+    0x4683211610ab76f0ull, /* tier-abort */
+    0xfaa3628d9f5979ffull, /* host-restarts */
+    0xd67d236799262976ull, /* timers */
+    0xb0ddc30490994d73ull, /* host-faults */
+    0xfd57b4e7cd85ceb8ull, /* member-faults */
+    0xc4fe67010a2aa738ull, /* proposals */
+    0xe399715c1785b4dfull, /* journal */
+    0x88bce38613b20027ull, /* edges */
+    0x4d49f8cfc1710bafull, /* reconnect */
+    0x20afc88891f12f5eull, /* records */
+    0x020391c0966840f8ull, /* exposure */
 };
 
 static void test_golden(int print)
@@ -1083,9 +1104,7 @@ static void test_errors(void)
     long k = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
     CHECK(k >= 0);
     gz_event_t ev;
-    memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, 0);
-    ev.u.message.records.data = h.q[k].b; ev.u.message.records.len = h.q[k].len;
+    CHECK(w_msg_event(&h.builder, 0, 1, h.q[k].b, h.q[k].len, &ev));
     gz_action_list_init(&small, slots, 1, bytes, sizeof bytes);
     CHECK(gz_sign_handle(h.p[1].e, &ev, &small) == GZ_ERR_NO_SPACE && small.count == 0);
     size_t nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
@@ -1156,29 +1175,38 @@ static void test_many_rounds(int rounds)
     h_free(&h);
 }
 
-/* Review A, F4: a member's signed abort. Reason 3 (it restarted) is honest
- * once in a lobby, the second is blamed; reason 6 (another round on its
- * outputs) is blamed unless the host holds another round on that outpoint. */
+static void flush_but(harness_t *h, uint32_t silent, int drop);
+
+/* Review A, F4, and P4.3 item 12: a member's signed abort. Reason 3 (it
+ * restarted) is honest only if the host already holds that member's nonces
+ * for the round: then it is excused every time; a member that never sent a
+ * nonce is blamed. Reason 6 (another round on its outputs) is blamed unless
+ * the host holds another round on that outpoint. */
 static void test_abort_blame(void)
 {
     harness_t h;
     uint8_t buf[512], id[32];
     const gz_sign_round_t *r, *f;
     h_init(&h, 3);
-    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
-    r = h_newest(&h, 0);
-    memcpy(id, r->id, 32);
-    h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));                 /* party 1 is participant 1 */
-    f = h_find(&h, 0, id);
-    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
+    for (int k = 0; k < 3; k++) {
+        /* member 3 is silent, so the round waits; members 1 and 2 have sent their nonces */
+        if (k == 0) CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        r = h_newest(&h, 0);
+        CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->def.n_participants == 4);
+        memcpy(id, r->id, 32);
+        flush_but(&h, 3, 1);
+        h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));             /* party 1 is participant 1 */
+        f = h_find(&h, 0, id);
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);  /* excused, each time: no allowance list */
+    }
     r = h_newest(&h, 0);                                                /* the retry, everyone kept */
     CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && memcmp(r->id, id, 32) != 0 && r->def.n_participants == 4);
     memcpy(id, r->id, 32);
-    h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));                 /* a second restart in the lobby */
+    h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));                 /* a restart before any nonce of it was held */
     f = h_find(&h, 0, id);
     CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 2u);
     r = h_newest(&h, 0);                                                /* the retry leaves party 1 out */
-    CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->def.n_participants == 3 && r->def.peer[1] == 2);
+    CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->def.n_participants == 3 && w_party_of(r->def.participants[1].contribution_key) == 2);
     memcpy(id, r->id, 32);
     h_inject(&h, 2, 0, buf, make_abort(buf, id, 6, 2));                 /* no other round on its outpoint */
     f = h_find(&h, 0, id);
@@ -1196,6 +1224,33 @@ static void test_abort_blame(void)
     f = h_find(&h, 0, id);
     CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
     h_free(&h);
+    /* ... and once that finished round has left the slots, kept compactly (P4.3 item 8, RULE:EXCUSE_KEPT):
+     * still not blamed */
+    {
+        gz_action_list_t list;
+        uint8_t done[32];
+        h_init(&h, 3);
+        h.p[0].e->cfg.retry = NULL;
+        CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+        h_flush(&h, 100000);
+        CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
+        memcpy(done, h_newest(&h, 0)->id, 32);
+        for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++) {                   /* rounds on other outpoints, each cancelled */
+            CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+            gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+            CHECK(gz_sign_cancel(h.p[0].e, h_newest(&h, 0)->def.outer_digest, &list) == GZ_OK);
+            h_apply(&h, 0, &list);
+            while (h.nq) h_drop_msg(&h, 0);
+        }
+        CHECK(h_find(&h, 0, done) == NULL);                               /* it has left the slots */
+        CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
+        r = h_newest(&h, 0);
+        memcpy(id, r->id, 32);
+        h_inject(&h, 1, 0, buf, make_abort(buf, id, 6, 1));
+        f = h_find(&h, 0, id);
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
+        h_free(&h);
+    }
 }
 
 /* Review A, F6: a tier result that names an item of the tier the member does
@@ -1239,7 +1294,7 @@ static void test_result_foreign_item(void)
 static void test_proposal_scope(void)
 {
     harness_t h;
-    static uint8_t bad[GZ_SIGN_MAX_PROPOSAL];
+    static uint8_t bad[GZ_SIGN_MAX_PROPOSAL], good[GZ_SIGN_MAX_PROPOSAL];
     h_init(&h, 3);
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     long i = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
@@ -1255,21 +1310,159 @@ static void test_proposal_scope(void)
     CHECK(check_abort(&h.sent[h.n_sent - 1], R(GZ_SIGN_WHY_INVALID_ROUND), WHOLE, 0, NULL) && h.sent[h.n_sent - 1].party == 1);
     CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == nonces && h_newest(&h, 1) == NULL);
     h_free(&h);
+    /* The host's own proposal, unchanged, on another member's link: a member takes a proposal only on
+     * its link with the host (P4.3, RULE:PROPOSAL_LINK); on that link it is taken. */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    i = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
+    CHECK(i >= 0);
+    if (i < 0) { h_free(&h); return; }
+    len = h.q[i].len;
+    memcpy(good, h.q[i].b, len);
+    h_drop_msg(&h, (size_t)i);
+    nonces = h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES);
+    h_inject(&h, 2, 1, good, len);
+    CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == nonces && h_newest(&h, 1) == NULL);
+    h_inject(&h, 0, 1, good, len);
+    CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == nonces + 1 && h_newest(&h, 1) != NULL);
+    h_free(&h);
+}
+
+/* A funding transaction longer than members hold (P4.3 item 13); its bytes are never read. */
+static void long_funding_tx(gz_tree_proposal_t *q, int which)
+{
+    (void)which;
+    q->funding_tx_len = GZ_SIGN_MAX_FUNDING_TX + 1;
+}
+
+/* P4.3: the lobby's calls into the engine (lobby_handoff.h, composite-node.md
+ * 9.2). A second begin while the scope has an Active round is ignored, and so
+ * is a begin of a (check, attempt) already begun; a begin the host cannot
+ * propose (nonces due in less than one tick, a funding transaction over
+ * 8,192 bytes) is the outcome Failed, nothing sent; member_left fails the round, blaming the member, only while it owes
+ * the step under way; cancel fails the host's round with no outcome and sends
+ * the aborts; a member's cancel wipes its secret nonces under the scope. */
+static void test_handoff_calls(void)
+{
+    harness_t h;
+    gz_action_list_t list;
+    uint8_t p[W_PARAMS], scope[32], ckey1[33], ckey3[33];
+    static w_begin_t wb;
+    h_init(&h, 3);
+    h.p[0].e->cfg.retry = NULL;
+    h.drop_to = 1u << 3;                                   /* member 3 hears nothing: it owes its nonces */
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    h_flush(&h, 100000);
+    const gz_sign_round_t *r = h_newest(&h, 0);
+    CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE);
+    if (!r) { h_free(&h); return; }
+    memcpy(scope, r->def.outer_digest, 32);
+    memcpy(ckey1, r->def.participants[1].contribution_key, 33);
+    memcpy(ckey3, r->def.participants[3].contribution_key, 33);
+    /* one Active round per scope: another attempt now is ignored */
+    uint64_t ignored = h.p[0].e->counters[GZ_SIGN_COUNT_IGNORED];
+    size_t proposals = h_count_kind(&h, 0, GZ_SIGN_MSG_PROPOSE);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    CHECK(h.p[0].e->counters[GZ_SIGN_COUNT_IGNORED] == ignored + 1 && h_count_kind(&h, 0, GZ_SIGN_MSG_PROPOSE) == proposals);
+    /* member 1 has sent its nonces: its leaving changes nothing yet (R7) */
+    gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_member_left(h.p[0].e, scope, ckey1, &list) == GZ_OK && list.count == 0);
+    CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_ACTIVE && h.builder.n_outcomes == 0);
+    /* member 3 still owes them: the round fails at once, Retry, member 3 blamed */
+    gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_member_left(h.p[0].e, scope, ckey3, &list) == GZ_OK);
+    h_apply(&h, 0, &list);
+    w_keys_wiped(h.p[0].e);
+    CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_FAILED && h_newest(&h, 0)->why == GZ_SIGN_WHY_MEMBER_LEFT);
+    CHECK(h.builder.n_outcomes == 1 && h.builder.outcomes[0] == GZ_SIGN_OUTCOME_RETRY && h.builder.outcome_blamed[0] == 1);
+    /* the same (check, attempt) again (attempt 1; the ignored begin was never taken): ignored, its round
+     * has ended */
+    w_params(p, 1, 1, w_mask(3), 0);
+    CHECK(w_make_begin(&h.builder, p, W_PARAMS, &wb));
+    ignored = h.p[0].e->counters[GZ_SIGN_COUNT_IGNORED];
+    gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_begin(h.p[0].e, &wb.b, &list) == GZ_OK && list.count == 0);
+    CHECK(h.p[0].e->counters[GZ_SIGN_COUNT_IGNORED] == ignored + 1 && h.builder.n_outcomes == 1);
+    /* nonces due in less than one tick: Failed, nothing sent, nothing saved */
+    uint32_t due = h.builder.nonces_due_ms;
+    h.p[0].e->cfg.tick_ms = 5; h.builder.nonces_due_ms = 4;
+    w_params(p, 1, ++h.begun, w_mask(3), 0);
+    CHECK(w_make_begin(&h.builder, p, W_PARAMS, &wb));
+    gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_begin(h.p[0].e, &wb.b, &list) == GZ_OK && list.count == 0);
+    CHECK(h.builder.n_outcomes == 2 && h.builder.outcomes[1] == GZ_SIGN_OUTCOME_FAILED);
+    h.p[0].e->cfg.tick_ms = 1; h.builder.nonces_due_ms = due;
+    /* a funding transaction over 8,192 bytes (item 13): Failed, nothing sent */
+    h.builder.mutate_proposal = long_funding_tx;
+    w_params(p, 1, ++h.begun, w_mask(3), 0);
+    CHECK(w_make_begin(&h.builder, p, W_PARAMS, &wb));
+    h.builder.mutate_proposal = NULL;
+    gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_begin(h.p[0].e, &wb.b, &list) == GZ_OK && list.count == 0);
+    CHECK(h.builder.n_outcomes == 3 && h.builder.outcomes[2] == GZ_SIGN_OUTCOME_FAILED);
+    /* cancel: the host's Active round fails, no outcome (the lobby has ended), the aborts go out */
+    h.drop_to = 0;
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_ACTIVE);
+    /* the proposal reaches the members, who make their nonces; the host hears none of them */
+    h.drop_to = 1u;
+    h_flush(&h, 100000);
+    int with_nonces = 0;
+    for (uint32_t g = 1; g <= 3; g++) {
+        const gz_sign_round_t *m = h_newest(&h, g);
+        for (int i = 0; m && i < GZ_SIGN_MAX_ITEMS; i++) with_nonces |= m->secnonce_serial[i] != 0;
+    }
+    CHECK(with_nonces);
+    size_t aborts = h_count_kind(&h, 0, GZ_SIGN_MSG_ABORT);
+    gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_cancel(h.p[0].e, scope, &list) == GZ_OK);
+    h_apply(&h, 0, &list);
+    CHECK(h_newest(&h, 0)->state == GZ_SIGN_ROUND_FAILED && h_newest(&h, 0)->why == GZ_SIGN_WHY_CANCELLED);
+    CHECK(h.builder.n_outcomes == 3 && h_count_kind(&h, 0, GZ_SIGN_MSG_ABORT) > aborts);
+    /* a member whose key hook gives nothing for the scope (no lobby, AT_JOIN's gate closed) ignores a
+     * proposal, unanswered: no abort, no nonces (RULE:KEYS_FOR_PROPOSAL) */
+    {
+        h.drop_to = 0;
+        h.builder.no_keys = 1u << 3;
+        uint64_t ign = h.p[3].e->counters[GZ_SIGN_COUNT_IGNORED];
+        size_t sent3 = 0, after3 = 0;
+        for (size_t k = 0; k < h.n_sent; k++) sent3 += h.sent[k].party == 3;
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        long pi = q_find(&h, 0, 3, GZ_SIGN_MSG_PROPOSE);
+        CHECK(pi >= 0);
+        if (pi >= 0) h_deliver(&h, (size_t)pi, 0);
+        for (size_t k = 0; k < h.n_sent; k++) after3 += h.sent[k].party == 3;
+        CHECK(after3 == sent3 && h.p[3].e->counters[GZ_SIGN_COUNT_IGNORED] == ign + 1);
+        h.builder.no_keys = 0;
+        h.drop_to = 1u;
+    }
+    /* a member's cancel: its secret nonces under the scope are wiped */
+    gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+    CHECK(gz_sign_cancel(h.p[1].e, scope, &list) == GZ_OK);
+    h_apply(&h, 1, &list);
+    w_keys_wiped(h.p[1].e);
+    int left = 0;
+    for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++)
+        for (int i = 0; i < GZ_SIGN_MAX_ITEMS; i++) left |= h.p[1].e->rounds[k].secnonce_serial[i] != 0;
+    CHECK(!left);
+    h_free(&h);
 }
 
 /* Review B, B5: a member's rounds with partial signatures out come back from
- * a restart as they were. Five rounds, each with its partial signatures sent
- * and its result withheld: a new proposal leaves the one before it
- * Unfinished, which no record says. After a restart the same rounds are in
- * memory in the same states: the newest still waits for its result, the
- * others are Unfinished, not running again. */
+ * a restart as they were. One round more than the engine holds in full, each
+ * with its partial signatures sent and its result withheld: a new proposal
+ * (a later attempt of the same check) leaves the one before it Unfinished,
+ * which no record says. After a restart the same rounds are in memory in the
+ * same states: the newest still waits for its result, the others are
+ * Unfinished, not running again. */
+#define RK_N (GZ_SIGN_MAX_ROUNDS + 1)
 static void test_restart_keeps_unfinished(void)
 {
     harness_t h;
-    uint8_t ids[5][32];
+    uint8_t ids[RK_N][32];
     const gz_sign_round_t *r;
     h_init(&h, 1);
-    for (int k = 0; k < 5; k++) {
+    for (int k = 0; k < RK_N; k++) {
         CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
         memcpy(ids[k], h_newest(&h, 0)->id, 32);
         while (h.nq) {                              /* the host's result and round_complete never reach the member */
@@ -1279,12 +1472,13 @@ static void test_restart_keeps_unfinished(void)
         }
         r = h_find(&h, 1, ids[k]);
         CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->ever_partial);
+        if (k < RK_N - 1) h_host_settle(&h);       /* the host's Complete round ends, so the host has room */
     }
     for (int pass = 0; pass < 2; pass++) {
         CHECK(h_find(&h, 1, ids[0]) == NULL);
-        for (int k = 1; k < 5; k++) {
+        for (int k = 1; k < RK_N; k++) {
             r = h_find(&h, 1, ids[k]);
-            CHECK(r && r->ever_partial && r->state == (k == 4 ? GZ_SIGN_ROUND_ACTIVE : GZ_SIGN_ROUND_UNFINISHED));
+            CHECK(r && r->ever_partial && r->state == (k == RK_N - 1 ? GZ_SIGN_ROUND_ACTIVE : GZ_SIGN_ROUND_UNFINISHED));
         }
         if (pass == 0) CHECK(h_restart(&h, 1) == GZ_OK);
     }
@@ -1303,11 +1497,12 @@ static void flush_but(harness_t *h, uint32_t silent, int drop)
     }
 }
 
-/* Review B, B3 (the reviewer's probes P2 and P3): one member cannot fail
- * attempt after attempt with nobody blamed.
- *   Reason 3 ("I restarted") is taken once for a member's key, whichever
- *   attempt it comes in and whoever began that attempt: the engine's retry
- *   hook, or the program with gz_sign_begin (composite node 9.6).
+/* Review B, B3 (the reviewer's probes P2 and P3), with P4.3 item 12: one
+ * member cannot fail attempt after attempt with nobody blamed.
+ *   Reason 3 ("I restarted") is excused only if the host holds that member's
+ *   nonces for the round: a member that never sent one is blamed at once,
+ *   whichever attempt it comes in and whoever began that attempt (the
+ *   engine's retry hook, or the program with gz_sign_begin).
  *   Reason 6 ("another round on that output") is excused only when the host's
  *   own records show a round on that outpoint from which partial signatures
  *   may have left; an attempt that failed in its nonce step is not one. */
@@ -1317,7 +1512,7 @@ static void test_blame_across_attempts(void)
     uint8_t buf[512], id[32];
     const gz_sign_round_t *r, *f;
     int unblamed = 0, attempts = 0;
-    /* P2: every attempt on one outpoint (the retry hook); member 1 answers 3, then 6 */
+    /* P2: every attempt on one outpoint (the retry hook); member 1, silent, answers 3: blamed at once */
     h_init(&h, 3);
     CHECK(h_begin(&h, 1, 3, WF_SAME_TREE) == GZ_OK);
     for (int k = 0; k < 8; k++) {
@@ -1330,17 +1525,17 @@ static void test_blame_across_attempts(void)
         CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->why == GZ_SIGN_WHY_MEMBER_ABORT);
         attempts++;
         unblamed += f && f->blamed == 0;
-        if (k == 1) CHECK(f && f->blamed == 2u);                         /* the first reason 6: blamed */
+        if (k == 0) CHECK(f && f->blamed == 2u);                         /* reason 3 with no nonce of it held: blamed */
     }
-    CHECK(attempts == 2 && unblamed == 1);
-    flush_but(&h, 1, 1);                                                 /* the third attempt goes on without member 1 */
+    CHECK(attempts == 1 && unblamed == 0);
+    flush_but(&h, 1, 1);                                                 /* the second attempt goes on without member 1 */
     r = h_newest(&h, 0);
-    CHECK(r && r->state == GZ_SIGN_ROUND_DONE && r->def.n_participants == 3 && h.p[0].e->attempts == 3);
+    CHECK(r && r->state == GZ_SIGN_ROUND_DONE && r->def.n_participants == 3 && h.p[0].e->attempts == 2);
     h_free(&h);
-    /* P3: every attempt begun by the program (no retry hook), each on its own outpoint; reason 3 every time */
+    /* P3: every attempt begun by the program (no retry hook), each on its own outpoint; reason 3 every time
+     * from a member that sends nothing: blamed every time */
     h_init(&h, 3);
     h.p[0].e->cfg.retry = NULL;
-    h.p[0].e->cfg.max_attempts = 16;
     unblamed = 0;
     for (int k = 0; k < 7; k++) {
         CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
@@ -1349,23 +1544,19 @@ static void test_blame_across_attempts(void)
         flush_but(&h, 1, 1);
         h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));
         f = h_find(&h, 0, id);
-        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == (k == 0 ? 0u : 2u));
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 2u);
         unblamed += f && f->blamed == 0;
     }
-    CHECK(unblamed == 1);
-    /* another member's key has its own one restart */
-    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
-    memcpy(id, h_newest(&h, 0)->id, 32);
-    h_inject(&h, 2, 0, buf, make_abort(buf, id, 3, 2));
-    f = h_find(&h, 0, id);
-    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
-    /* and when the list of those who used theirs is full, nobody new is excused (mutant H64) */
-    h.p[0].e->n_restarted = GZ_SIGN_MAX_RESTARTED;
-    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
-    memcpy(id, h_newest(&h, 0)->id, 32);
-    h_inject(&h, 3, 0, buf, make_abort(buf, id, 3, 3));
-    f = h_find(&h, 0, id);
-    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 8u && h.p[0].e->n_restarted == GZ_SIGN_MAX_RESTARTED);
+    CHECK(unblamed == 0);
+    /* a member whose nonces the host holds is excused every time: the rule needs no list (mutant H64's list is gone) */
+    for (int k = 0; k < 3; k++) {
+        CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+        memcpy(id, h_newest(&h, 0)->id, 32);
+        flush_but(&h, 3, 1);
+        h_inject(&h, 2, 0, buf, make_abort(buf, id, 3, 2));
+        f = h_find(&h, 0, id);
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
+    }
     h_free(&h);
     /* Reason 6 from an honest member: the host restarts after the nonce sets of attempt 1 went out, which
      * fails that attempt (H13), and the test's host puts attempt 2 on the same outpoint, against H11.
@@ -1427,9 +1618,10 @@ static void test_deadline_abort(void)
     }
     f = h_find(&h, 0, id);
     CHECK(failed_at == 12 && f && f->why == GZ_SIGN_WHY_DEADLINE && f->blamed == 4u);   /* the silent one, at the host's deadline */
-    CHECK(h_find(&h, 1, id) && h_find(&h, 1, id)->nonce_ticks == 12 + GZ_SIGN_NONCE_MARGIN_TICKS);
+    CHECK(h_find(&h, 1, id) && h_find(&h, 1, id)->nonce_ticks == 12 + h.p[1].e->cfg.deadline_ticks);   /* a whole step timeout of its own (R1) */
     f = h_newest(&h, 0);                                                 /* the retry keeps members 1 and 3 */
-    CHECK(f && f->def.n_participants == 3 && f->def.peer[1] == 1 && f->def.peer[2] == 3);
+    CHECK(f && f->def.n_participants == 3 && w_party_of(f->def.participants[1].contribution_key) == 1 &&
+          w_party_of(f->def.participants[2].contribution_key) == 3);
     h_free(&h);
     /* A slow member inside the deadline: member 2's nonces arrive at tick 11. Nobody gave up, the round
      * completes, nobody is blamed. */
@@ -1447,8 +1639,8 @@ static void test_deadline_abort(void)
     for (uint32_t g = 1; g <= 3; g++) CHECK(h_count_kind(&h, g, GZ_SIGN_MSG_ABORT) == 0);
     CHECK(h.p[0].e->counters[GZ_SIGN_COUNT_BLAME_SILENT] == 0 && h.p[0].e->counters[GZ_SIGN_COUNT_BLAME_FAULT] == 0);
     h_free(&h);
-    /* The margin itself: a member waits the proposal's deadline and two ticks more for the nonce set,
-     * then gives up. By then the host's attempt has ended, and the abort changes nothing there. */
+    /* The margin itself: a member waits the proposal's deadline and a whole step timeout more for the nonce
+     * set (R1), then gives up. By then the host's attempt has ended, and the abort changes nothing there. */
     h_init(&h, 3);
     CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
     memcpy(id, h_newest(&h, 0)->id, 32);
@@ -1457,7 +1649,7 @@ static void test_deadline_abort(void)
         CHECK(q >= 0);
         if (q >= 0) h_deliver(&h, (size_t)q, 0);
         while (h.nq) h_drop_msg(&h, 0);                                  /* everything else is lost: the host hears nobody */
-        for (uint32_t t = 0; t < 12 + GZ_SIGN_NONCE_MARGIN_TICKS - 1; t++) { h_tick(&h, 0); h_tick(&h, 1); while (h.nq) h_drop_msg(&h, 0); }
+        for (uint32_t t = 0; t < 12 + h.deadline_ticks - 1; t++) { h_tick(&h, 0); h_tick(&h, 1); while (h.nq) h_drop_msg(&h, 0); }
         f = h_find(&h, 1, id);
         CHECK(f && f->state == GZ_SIGN_ROUND_ACTIVE && h_count_kind(&h, 1, GZ_SIGN_MSG_ABORT) == 0);
         CHECK(h_find(&h, 0, id)->state == GZ_SIGN_ROUND_FAILED && h_find(&h, 0, id)->blamed == 0xeu);   /* the host's deadline came first */
@@ -1498,7 +1690,8 @@ static void test_deadline_abort(void)
     CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 2u);
     h_flush(&h, 100000);
     f = h_newest(&h, 0);
-    CHECK(f && f->state == GZ_SIGN_ROUND_DONE && f->def.n_participants == 3 && f->def.peer[1] == 2 && f->def.peer[2] == 3 && h.p[0].e->attempts == 2);
+    CHECK(f && f->state == GZ_SIGN_ROUND_DONE && f->def.n_participants == 3 && w_party_of(f->def.participants[1].contribution_key) == 2 &&
+          w_party_of(f->def.participants[2].contribution_key) == 3 && h.p[0].e->attempts == 2);
     h_free(&h);
     /* a reason 4 once the nonce sets are out: its sender owes its partial signatures, and is blamed */
     h_init(&h, 3);
@@ -1718,7 +1911,7 @@ int main(int argc, char **argv)
     SECTION("t1", test_t1());
     SECTION("crashes", test_crashes());
     SECTION("restores", test_restores());
-    SECTION("errors", (test_errors(), test_eviction_order(), test_restart_keeps_unfinished(), test_abort_blame(), test_result_foreign_item(), test_proposal_scope(),
+    SECTION("errors", (test_errors(), test_eviction_order(), test_restart_keeps_unfinished(), test_handoff_calls(), test_abort_blame(), test_result_foreign_item(), test_proposal_scope(),
                        test_blame_across_attempts(), test_deadline_abort(), test_proposal_too_long(), test_ack_signature(), test_released(),
                        test_message_scope(), test_early_partials(), test_bad_ack_rate(), test_many_rounds(g_quick ? 60 : 1000)));
     printf("  illegal-argument callbacks: %d\n", g_illegal);

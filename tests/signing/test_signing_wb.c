@@ -240,6 +240,7 @@ static void test_definition_lines(void)
     gz_sign_t *e = h.p[0].e;
     CHECK(r && r->def.items[0].n_signers == 4);
     if (r && r->def.items[0].n_signers == 4) {
+        CHECK(take_keys(e, r->def.outer_digest, r->def.terms_digest, 1));            /* the host's own keys, as at begin */
         d = r->def;
         CHECK(check_def(e, &d, &scratch) == GZ_SIGN_WHY_NONE);                     /* the control */
         /* FUNDING_MATCH: the root spends the funding with another amount (nothing else looks) */
@@ -258,6 +259,7 @@ static void test_definition_lines(void)
         d.items[0].signers[2] = d.items[0].signers[1];
         script_for(&d, &d.items[0], d.items[0].spent_script); memcpy(d.funding_script, d.items[0].spent_script, 34);
         CHECK(check_def(e, &d, &scratch) == GZ_SIGN_WHY_INVALID_ROUND);
+        drop_keys(e);
     }
     wipe_secrets(&scratch);
     h_free(&h);
@@ -332,9 +334,7 @@ static void test_nospace_exposure(void)
     if (k < 0 || !r) { h_free(&h); return; }
     memcpy(id, r->id, 32);
     gz_action_list_init(&small, slots, 8, bytes, sizeof bytes);
-    memset(&ev, 0, sizeof ev);
-    ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, 0);
-    ev.u.message.records.data = h.q[k].b; ev.u.message.records.len = h.q[k].len;
+    CHECK(w_msg_event(&h.builder, 0, 1, h.q[k].b, h.q[k].len, &ev));
     CHECK(gz_sign_handle(h.p[1].e, &ev, &small) == GZ_ERR_NO_SPACE && small.count == 0 && small.used == 0);
     CHECK(h.p[1].e->failed && h.p[1].e->n_exposures == 0);
     /* retry: the same event with room */
@@ -370,9 +370,7 @@ static void test_short_lists(void)
         if (h.nq) {
             h_msg_t m = h.q[0];
             gz_event_t ev;
-            memset(&ev, 0, sizeof ev);
-            ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, m.from);
-            ev.u.message.records.data = m.b; ev.u.message.records.len = m.len;
+            if (!w_msg_event(&h.builder, m.from, m.to, m.b, m.len, &ev)) abort();
             gz_action_list_init(&small, slots, 1, bytes, sizeof bytes);
             gz_status_t st = gz_sign_handle(h.p[m.to].e, &ev, &small);
             steps++;
@@ -423,7 +421,8 @@ static void test_evicted_unresolved(void)
     h_apply(&h, 1, &list);
     CHECK(evicted(h.p[1].e, a)->state == GZ_SIGN_ROUND_LIVE);
     gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
-    CHECK(gz_sign_resolve(h.p[1].e, a, GZ_SIGN_END_DEAD, &list) == GZ_ERR_ARGUMENT);   /* Live is final */
+    CHECK(gz_sign_resolve(h.p[1].e, a, GZ_SIGN_END_DEAD, &list) == GZ_OK && list.count == 0);   /* Live is final: a counted no-op (8.1) */
+    CHECK(evicted(h.p[1].e, a)->state == GZ_SIGN_ROUND_LIVE);
     CHECK(h_restart(&h, 1) == GZ_OK && evicted(h.p[1].e, a) && evicted(h.p[1].e, a)->state == GZ_SIGN_ROUND_LIVE);
     h_free(&h);
     /* the control: without the eviction the second round on the outpoint is refused the same way */
@@ -707,7 +706,7 @@ static void test_record_bounds(void)
         started_record(e, &r, 0, &w, e->work_rec2, sizeof e->work_rec2);
         CHECK(fields_ok(&w, T_STARTED, NFIELDS(T_STARTED)) && w.n == GZ_SIGN_REC_STARTED_MAX);
         gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
-        em.out = &list; em.st = GZ_OK;
+        em.out = &list; em.st = GZ_OK; em.e = e;
         save_started(e, &r, 0, &em);
         CHECK(em.st == GZ_OK && list.count == 1 && list.slots[0].u.save.n_records >= 2);
         if (em.st == GZ_OK && list.count == 1) {
@@ -723,7 +722,7 @@ static void test_record_bounds(void)
         CHECK(exposure_record(e, &r, 0, funding, GZ_SIGN_MAX_FUNDING_TX + 1, &w) && !gz_rmsg_wr_ok(&w));   /* one byte more: no room */
         /* round_signed: a member's carries its result, the host's every item */
         gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
-        em.out = &list; em.st = GZ_OK;
+        em.out = &list; em.st = GZ_OK; em.e = e;
         save_signed(e, &r, 0, &em);
         CHECK(em.st == GZ_OK && list.count == 1);
         if (em.st == GZ_OK && list.count == 1) {
@@ -744,7 +743,7 @@ static void test_record_bounds(void)
         CHECK(!fields_ok(&w, T_ACK, NFIELDS(T_ACK)));                               /* the reader's bound is the writer's */
         /* round_ended: a member's Aborted with its abort; the host's with whom it blames */
         gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
-        em.out = &list; em.st = GZ_OK;
+        em.out = &list; em.st = GZ_OK; em.e = e;
         save_ended_of(e, r.id, 0xffffffffu, 1, msg, GZ_SIGN_MAX_SMALL_MSG, GZ_SIGN_END_ABORTED, 9, &em);
         CHECK(em.st == GZ_OK && list.count == 1);
         if (em.st == GZ_OK && list.count == 1) {
@@ -816,6 +815,7 @@ static void flush_without(harness_t *h, uint32_t to, uint8_t k1, uint8_t k2)
  * reachable by gz_sign_resolve, and C10 lets go of its outpoint when it is
  * resolved; the unfinished deadline ends the others, also the one that has
  * left memory in the second run. */
+#define UN (GZ_SIGN_MAX_ROUNDS + 1)   /* one round more than the engine holds in full */
 static void test_unfinished_across_restart(void)
 {
     for (int restart = 0; restart < 2; restart++)
@@ -824,23 +824,24 @@ static void test_unfinished_across_restart(void)
             uint8_t id1[32], id5[32];
             gz_action_list_t list;
             h_init(&h, 1);
-            for (int k = 0; k < 5; k++) {
+            for (int k = 0; k < UN; k++) {
                 CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
                 flush_without(&h, 1, GZ_SIGN_MSG_RESULT, GZ_SIGN_MSG_COMPLETE);
                 const gz_sign_round_t *r = h_newest(&h, 1);
                 CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->ever_partial);
                 if (r && k == 0) memcpy(id1, r->id, 32);
-                if (r && k == 4) memcpy(id5, r->id, 32);
+                if (r && k == UN - 1) memcpy(id5, r->id, 32);
+                if (k < UN - 1) h_host_settle(&h);     /* the host's Complete round ends, so the host has room */
             }
             gz_sign_t *e = h.p[1].e;
             CHECK(!find(e, id1) && evicted(e, id1) && evicted(e, id1)->state == GZ_SIGN_ROUND_UNFINISHED);
-            CHECK(unresolved(e) == 5 && e->n_exposures == 5);
+            CHECK(unresolved(e) == UN && e->n_exposures == UN);
             if (restart) {
                 CHECK(h_restart(&h, 1) == GZ_OK);
                 e = h.p[1].e;
                 /* its true state again: Unfinished, not Active; and the same rounds in memory as before */
                 CHECK(!find(e, id1) && evicted(e, id1) && evicted(e, id1)->state == GZ_SIGN_ROUND_UNFINISHED);
-                CHECK(unresolved(e) == 5 && e->n_exposures == 5);
+                CHECK(unresolved(e) == UN && e->n_exposures == UN);
                 CHECK(find(e, id5) && find(e, id5)->state == GZ_SIGN_ROUND_ACTIVE && find(e, id5)->ever_partial);
                 for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++)
                     CHECK(e->rounds[k].state == (same(e->rounds[k].id, id5, 32) ? GZ_SIGN_ROUND_ACTIVE : GZ_SIGN_ROUND_UNFINISHED));
@@ -851,18 +852,18 @@ static void test_unfinished_across_restart(void)
                 gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
                 CHECK(gz_sign_resolve(e, id1, GZ_SIGN_END_ABANDONED, &list) == GZ_OK && list.count == 1);
                 h_apply(&h, 1, &list);
-                CHECK(h.p[1].n_recs == recs + 1 && evicted(e, id1)->state == GZ_SIGN_ROUND_ABANDONED && unresolved(e) == 4);   /* C10 lets go */
+                CHECK(h.p[1].n_recs == recs + 1 && evicted(e, id1)->state == GZ_SIGN_ROUND_ABANDONED && unresolved(e) == UN - 1);   /* C10 lets go */
             }
             for (int i = 0; i < 80; i++) h_tick(&h, 1);
             CHECK(unresolved(e) == 0 && evicted(e, id1) && evicted(e, id1)->state == GZ_SIGN_ROUND_ABANDONED);
-            CHECK(count_recs(&h, 1, GZ_SIGN_REC_ROUND_ENDED) == 5);                /* one each, no more */
+            CHECK(count_recs(&h, 1, GZ_SIGN_REC_ROUND_ENDED) == UN);               /* one each, no more */
             CHECK(h_restart(&h, 1) == GZ_OK && unresolved(h.p[1].e) == 0);
             CHECK(evicted(h.p[1].e, id1) && evicted(h.p[1].e, id1)->state == GZ_SIGN_ROUND_ABANDONED);
             /* Abandoned moves on to Dead, also for the round that left memory: then its record leaves C7 (B8) */
             gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
-            CHECK(gz_sign_resolve(h.p[1].e, id1, GZ_SIGN_END_DEAD, &list) == GZ_OK && h.p[1].e->n_exposures == 4);
+            CHECK(gz_sign_resolve(h.p[1].e, id1, GZ_SIGN_END_DEAD, &list) == GZ_OK && h.p[1].e->n_exposures == UN - 1);
             h_apply(&h, 1, &list);
-            CHECK(h_restart(&h, 1) == GZ_OK && h.p[1].e->n_exposures == 4 && !evicted(h.p[1].e, id1) && h.errors == 0);
+            CHECK(h_restart(&h, 1) == GZ_OK && h.p[1].e->n_exposures == UN - 1 && !evicted(h.p[1].e, id1) && h.errors == 0);
             h_free(&h);
         }
 }
@@ -994,9 +995,7 @@ static void test_failed_engine_holds_no_secret(void)
     CHECK(k >= 0);
     if (k >= 0) {
         uint64_t made = h.p[1].e->counters[GZ_SIGN_COUNT_NONCES_MADE];
-        memset(&ev, 0, sizeof ev);
-        ev.kind = GZ_EVENT_MESSAGE_RECEIVED; gz_sign_link_set_peer(&ev.u.message.link, 0);
-        ev.u.message.records.data = h.q[k].b; ev.u.message.records.len = h.q[k].len;
+        CHECK(w_msg_event(&h.builder, 0, 1, h.q[k].b, h.q[k].len, &ev));
         gz_action_list_init(&small, slots, 1, bytes, sizeof bytes);
         CHECK(gz_sign_handle(h.p[1].e, &ev, &small) == GZ_ERR_NO_SPACE && h.p[1].e->failed);
         CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_NONCES_MADE] > made && live_secrets(h.p[1].e) == 0);

@@ -8,10 +8,11 @@
  * (runner.h) gives "save before send".
  *
  * WHAT THIS ENGINE DOES (spec section in brackets)
- *   - The messages of messages.md 7, inside the envelope of section 4. Until
- *     contract v2's P4 gives SEND and MESSAGE_RECEIVED a kind and a scope,
- *     the bytes of a SEND are the whole envelope (protocol, kind, scope,
- *     records) and a received message is read the same way.
+ *   - The messages of messages.md 7 in contract v2's terms: a SEND and a
+ *     received message carry a kind, a scope and the records. Inside, the
+ *     engine still builds, checks and saves each message as its whole
+ *     envelope (protocol, kind, scope, records: journal.md 9), so saved
+ *     bytes and resends stay byte for byte.
  *   - The round identifier of messages.md 7.1 and the tree digest of 7.12,
  *     computed by the engine from the items it holds, which each party built
  *     itself.
@@ -30,16 +31,26 @@
  *   - Verifying each partial signature as it arrives [6.6], combining, and
  *     verifying each final signature from the signed transaction's bytes
  *     with this engine's own BIP 341 signature hash [6.7, 6.8].
- *   - Members address only the host (participant 0); the host addresses each
- *     member by the peer its builder names (contract v2 section 2: a link,
- *     once P4 lands; a peer id until then).
+ *   - LINKS FROM KEYS (composite-node.md section 3), never a table: the host
+ *     reaches participant j on (participant 0's contribution key,
+ *     participant j's contribution key); a member reaches only the host, on
+ *     (its own contribution key in the round, participant 0's contribution
+ *     key). A message counts only on the round's own link.
+ *   - KEYS PER ROUND (2.5): the engine holds no key. It asks the embedding's
+ *     key hook for this party's keypairs under a round's scope each time it
+ *     signs, and wipes them when the operation is done. A hook that gives no
+ *     key is not an error: a new proposal is ignored, and a running round
+ *     answers with what it saved.
  *
  * WHAT THE EMBEDDING SUPPLIES
  *   - A builder (gz_sign_build_fn) that turns a decoded round_propose into
  *     the items to sign. A member's builder runs the safe-to-sign checks
- *     (gz_tree_member_check) and refuses with their reason; the engine
- *     checks what the builder returns again (keys, signers, scripts, the
- *     funding output, its own current keys).
+ *     (gz_tree_member_check) against what its lobby accepted and refuses
+ *     with their reason, or tells the engine to ignore the proposal; the
+ *     engine checks what the builder returns again (keys, signers, scripts,
+ *     the funding output, its own current keys).
+ *   - The key hook, and the outcome hook through which every outcome of a
+ *     round reaches the lobby (both roles), with its check and attempt.
  *
  * THE CALLER MUST install on `ctx` an illegal-argument callback that does not
  * abort (secp256k1_context_set_illegal_callback). The engine validates every
@@ -57,37 +68,6 @@
 #include <secp256k1_extrakeys.h>
 #include <secp256k1_musig.h>
 
-/* THE BRIDGE, until P4.3 puts the signing engine on links
- * (docs/notes/composite-node.md, task T-P43-1). The engine still names a peer
- * by the number the program gave it and sends and takes whole messages. In
- * contract v2's types that is, exactly as for the lobby (lobby.h): a SEND of
- * kind GZ_SIGN_SEND_WHOLE, scope zero, the whole message in `records`, and
- * the peer's number in bytes 1 to 8 of the link's remote key, big-endian
- * (byte 0 is zero, so it is no public key); a received message's bytes are
- * its `records` and its sender the number in its link, and a peer event's
- * peer the number in its link. Nothing else of the engine changed.
- *
- * The kind is the one reserved kind there is, GZ_SEND_KIND_RESERVED (0xffff,
- * action.h), the lobby's too: the composite already refuses it from any
- * engine and the program never puts it on the wire, so one rule guards both
- * bridges, and a second reserved kind would need a second of each guard. No
- * program links the signing engine; tools/check-send-whole.sh fails if one
- * does while this exists. */
-#define GZ_SIGN_SEND_WHOLE GZ_SEND_KIND_RESERVED
-
-static inline void gz_sign_link_set_peer(gz_link_t *link, uint64_t peer)
-{
-    for (int i = 0; i < GZ_NODE_ID_LEN; i++) link->local.key[i] = link->remote.key[i] = 0;
-    for (int i = 0; i < 8; i++) link->remote.key[1 + i] = (uint8_t)(peer >> (56 - 8 * i));
-}
-
-static inline uint64_t gz_sign_link_peer(const gz_link_t *link)
-{
-    uint64_t peer = 0;
-    for (int i = 1; i <= 8; i++) peer = peer << 8 | link->remote.key[i];
-    return peer;
-}
-
 /* Limits. Participant and signer sets are uint32_t bit masks, so 32 is the
  * ceiling; Slice 1's T1 at 16 members needs 17 participants and 45 items
  * (docs/notes/slice1-attempt.md, mismatch 7). */
@@ -97,7 +77,16 @@ static inline uint64_t gz_sign_link_peer(const gz_link_t *link)
 #define GZ_SIGN_MAX_TIERS        4
 #define GZ_SIGN_MAX_TX           720     /* bytes of one unsigned transaction: core/tree's GZ_TREE_MAX_TX */
 #define GZ_SIGN_MAX_FUNDING_TX   8192    /* the funding transaction this engine holds (messages.md allows 100,000) */
-#define GZ_SIGN_MAX_ROUNDS       4       /* rounds a party keeps in full */
+/* Rounds a party keeps in full: one Active round per scope (composite-node.md
+ * 8.1, H8) for each of the node's 8 lobbies (core/node holds the two
+ * constants together with a static assertion). */
+#define GZ_SIGN_MAX_ROUNDS       8
+/* Host: rounds that left the full slots Complete, Done or Failed, kept
+ * compactly (their finals, their complete, who signs what, the outcome) so
+ * that a member's status request is still answered (H12) and the reason-6
+ * excuse still sees them, until the embedding forgets their scope at its
+ * Closing end (gz_sign_forget_scope). Full: the oldest goes. */
+#define GZ_SIGN_MAX_KEPT         64
 #define GZ_SIGN_MAX_KNOWN        256     /* the newest refused identifiers, kept exactly (a ring) */
 /* Every refused identifier, however many: a Bloom filter of 2^20 bits with 10
  * positions per identifier. It has no false negatives, so a refused
@@ -108,11 +97,6 @@ static inline uint64_t gz_sign_link_peer(const gz_link_t *link)
  * cap: the set never makes a start fail (review A, F2). */
 #define GZ_SIGN_KNOWN_FILTER_BITS 20
 #define GZ_SIGN_KNOWN_FILTER_K    10
-/* Host: the members that used their one "I restarted" (abort reason 3)
- * without blame, by contribution key (a member's key is its seat in one
- * lobby); kept for the engine's life in memory. Full: every reason 3 is
- * blamed (review B, B3). */
-#define GZ_SIGN_MAX_RESTARTED    128
 /* C7 records (funding outpoint, tree digest) held in memory: one per funding
  * outpoint this party released a partial signature for whose creation is not
  * Dead (safety-rule.md C4(d): a Dead record stays in the journal and is no
@@ -120,20 +104,28 @@ static inline uint64_t gz_sign_link_peer(const gz_link_t *link)
  * review B, B8). While the set is full a new outpoint is refused (abort
  * reason 9), never dropped, and signing comes back as entries are resolved
  * Dead; a journal holding more live ones still starts, with every new round
- * refused until a start finds room (review A, F2). */
+ * refused until a start finds room (review A, F2).
+ *
+ * One entry per (funding outpoint, tree, round): two attempts of one tree on
+ * one outpoint each keep their own state, ticks and resolution (P4.3 item 6).
+ * Accepted limit (item 14): 4,096 rounds against one member could fill the
+ * set with Abandoned entries; the remedy is outside the engine (the lobby's
+ * limits now, a set kept on storage later). */
 #define GZ_SIGN_MAX_EXPOSURES    4096
 /* The nonce step's deadline is the proposal's nonces_due_ms (messages.md 7.2)
  * for both sides, read from the same signed bytes, so that two configurations
- * cannot drift apart. The host counts it in whole ticks, rounded down; a
- * member rounds up and waits this many ticks more before it gives up (abort
- * reason 4). Each party counts its own ticks, a member from when it sent its
- * nonces, which is after the host's step began, and the timers are not in
- * step: the host's deadline passes after at most nonces_due_ms, a member's
- * after at least nonces_due_ms and one of its own tick periods. So the
- * host's deadline always comes first, an honest member never gives up before
- * the host does, and a reason 4 that reaches the host while its attempt still
- * runs is not an honest one (review B's confirmations, N1 and N1b). */
-#define GZ_SIGN_NONCE_MARGIN_TICKS 2
+ * cannot drift apart. The host counts it in whole ticks, rounded down, and
+ * refuses to begin a round whose nonces_due_ms is under one of its ticks. A
+ * member rounds up and then waits a whole step timeout (deadline_ticks) more
+ * before it gives up (abort reason 4), counted from when it sent its nonces.
+ * A member loses nothing by waiting (nothing is exposed in the nonce step,
+ * and the host's own deadline ends the attempt and tells it so), so the
+ * margin is made too large for a late host timer, a slow link or a Tor
+ * circuit to reach (review B's final check, R1): the host's deadline always
+ * comes first, an honest member never gives up before the host does, and a
+ * reason 4 that reaches the host while its attempt still runs is not an
+ * honest one (N1 and N1b). The terms' step timeout bounds nonces_due_ms on
+ * the member (gz_tree_member_check, GZ_CHK_C8_DEADLINES). */
 
 /* Message sizes (envelope included). A record's type and length take at
  * most 8 bytes here; 240, the signature, is 67. */
@@ -183,8 +175,10 @@ static inline uint64_t gz_sign_link_peer(const gz_link_t *link)
 #define GZ_SIGN_REC_ROUND_COMPLETED 0x0002000au  /* member: complete, ack and its tip; host: complete */
 #define GZ_SIGN_REC_ACK_RECEIVED    0x0002000cu  /* host: a member's ack */
 #define GZ_SIGN_REC_ROUND_ENDED     0x0002000eu  /* the outcome */
-#define GZ_SIGN_REC_FUNDING_STATUS  0x00030006u  /* member: the height at which it acked (with round_completed) */
 #define GZ_SIGN_REC_GUARD           0x0004000au  /* the node's guard record (the guard hook) */
+/* The engine no longer writes funding_status (composite-node.md 7.3): the
+ * member's ack tip is field 8 of its round_completed, and the funding engine
+ * (P4.5) writes the first funding_status from it. */
 
 /* Field numbers inside the records (all even: a reader that does not know one refuses).
  *   round_started:   2 round_id 32, 4 funding 36 (txid, u32 vout big-endian), 6 purpose u8,
@@ -197,7 +191,6 @@ static inline uint64_t gz_sign_link_peer(const gz_link_t *link)
  *   ack_received:    2 round_id, 4 the member's contribution key 33, 6 the round_ack
  *   round_ended:     2 round_id, 4 outcome u8 (GZ_SIGN_END_*), 6 reason u16 (messages.md 7.9),
  *                    8 blamed u32 (host: participant bits), 10 why u8, 12 member: the round_abort it sent
- *   funding_status:  2 txid 32, 4 state u8 (0: acked, nothing seen yet), 6 ack height u32
  * The host keeps no per-member round_tier_result bytes: it signs them
  * deterministically (BIP 340 with zero aux_rand) from the finals it saves, so
  * a resend is the same bytes. */
@@ -219,7 +212,11 @@ enum {
     GZ_SIGN_WHY_KNOWN_ROUND, GZ_SIGN_WHY_BUSY, GZ_SIGN_WHY_BAD_NONCE, GZ_SIGN_WHY_OWN_NONCE_CHANGED, GZ_SIGN_WHY_RESTARTED,
     GZ_SIGN_WHY_DEADLINE, GZ_SIGN_WHY_HOST_ABORT, GZ_SIGN_WHY_BAD_PARTIAL, GZ_SIGN_WHY_EQUIVOCATION, GZ_SIGN_WHY_BAD_RESULT,
     GZ_SIGN_WHY_HOST_RESTART, GZ_SIGN_WHY_MEMBER_ABORT, GZ_SIGN_WHY_BAD_MESSAGE, GZ_SIGN_WHY_SUPERSEDED,
-    GZ_SIGN_WHY_NOT_MY_KEY, GZ_SIGN_WHY_CAPACITY, GZ_SIGN_WHY_OTHER_TREE, GZ_SIGN_WHY_ACK_REFUSED
+    GZ_SIGN_WHY_NOT_MY_KEY, GZ_SIGN_WHY_CAPACITY, GZ_SIGN_WHY_OTHER_TREE, GZ_SIGN_WHY_ACK_REFUSED,
+    GZ_SIGN_WHY_IGNORE,             /* a proposal the builder said to ignore: never answered */
+    GZ_SIGN_WHY_BUDGET,             /* host: the signing budget ended with the round in flight */
+    GZ_SIGN_WHY_CANCELLED,          /* host: the lobby was cancelled with the round in flight */
+    GZ_SIGN_WHY_MEMBER_LEFT         /* host: a chosen member left while it still owed its part */
 };
 /* The messages.md 7.9 reason a party sends for `why` (`built` is the
  * builder's own reason, used for GZ_SIGN_WHY_BUILD). */
@@ -275,7 +272,6 @@ typedef struct {
     uint8_t chain[32];              /* the outer terms' chain hash (7.1) */
     uint8_t host_key[33];           /* the outer terms' host key: must be participant 0's contribution key */
     uint8_t outer_digest[32];       /* the lobby identifier: the scope of every round message */
-    uint64_t peer[GZ_SIGN_MAX_PARTICIPANTS];  /* host: where participant j is reached; member: peer[0] the host, the rest 0 */
     uint8_t n_tiers;
     uint16_t n_items;
     gz_sign_item_t items[GZ_SIGN_MAX_ITEMS];
@@ -286,9 +282,13 @@ typedef struct {
 /* What a builder is given. */
 typedef struct {
     const gz_rmsg_propose_t *msg;   /* the decoded round_propose; msg->p is the gz_tree_proposal_t */
-    const uint8_t *scope;           /* its envelope's scope (32) */
-    uint64_t peer;                  /* member: the peer it came from; host: 0 */
+    const uint8_t *scope;           /* its envelope's scope (32); the host's own build: NULL */
+    const gz_link_t *link;          /* member: the link it came on; host, or a replay: NULL */
     int replay;                     /* 1: a saved round rebuilt at start: rebuild only, no checks of time or tip */
+    /* This party's own keys under the scope, as the key hook gave them (a
+     * member's for C7's fresh-key row, gz_tree_member_check); a replay: the
+     * contribution key saved with the round, and no factory key. */
+    const uint8_t *own_factory_key, *own_contribution_key;
     /* What a member's checks need from the engine's records (C7, C10:
      * gz_tree_member_check): every exposure record held, and the funding
      * outpoints of its unresolved rounds. */
@@ -296,23 +296,35 @@ typedef struct {
     const gz_tree_outpoint_t *unresolved; size_t n_unresolved;
 } gz_sign_build_in_t;
 /* Build the round from a proposal. Returns 0 and fills `out`, or the
- * messages.md 7.9 reason to refuse with (1, 5, 6, 9, 11 or 12). Must be a
- * deterministic function of the proposal and the lobby when `replay` is 1. */
+ * messages.md 7.9 reason to refuse with (1, 5, 6, 9, 11 or 12), or
+ * GZ_SIGN_BUILD_IGNORE: a member's proposal for a check its lobby did not
+ * accept (composite-node.md 13: not answered, withdrawn, not chosen, spent),
+ * which is ignored without an answer, so that a hostile host gets no signed
+ * refusal for nothing. Must be a deterministic function of the proposal and
+ * the lobby when `replay` is 1. */
 typedef uint16_t (*gz_sign_build_fn)(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t *out);
+#define GZ_SIGN_BUILD_IGNORE 0xffffu
 
 /* What the host proposes. round_id and host_random are the engine's. */
 typedef struct {
     const gz_tree_proposal_t *p;    /* every field of messages.md 7.2; participants host first */
+    const uint8_t *scope;           /* 32: the lobby (the outer digest the builder will name) */
     const uint8_t *check_id;        /* 32: the check this attempt follows */
-    int has_attempt;
+    int has_attempt;                /* required (messages.md 7.2 record 7) */
     uint16_t attempt;
+    /* The Unix ms at which the lobby's signing budget ends (composite-node.md
+     * 9.4): from the hand-off on, the engine alone owns the budget; at expiry
+     * it fails the attempt and reports Failed. 0: no budget. Memory only: a
+     * restarted host fails every attempt in flight anyway (H13). */
+    uint64_t budget_end_ms;
 } gz_sign_begin_t;
 
 typedef struct gz_sign_round gz_sign_round_t;
 
-/* The newest round that made an exposure record, and its state when it left
- * memory (GZ_SIGN_ROUND_FREE while it is held): C10 and gz_sign_resolve reach
- * a round through it after the round has left the slots (review A, F3). */
+/* The round that made an exposure record, and its state when it left memory
+ * (GZ_SIGN_ROUND_FREE while it is held): C10 and gz_sign_resolve reach a
+ * round through it after the round has left the slots (review A, F3). One
+ * per round: two attempts with one tree on one outpoint have two. */
 typedef struct {
     uint8_t round_id[32];
     uint8_t state, why;
@@ -331,19 +343,31 @@ typedef int (*gz_sign_retry_fn)(void *ctx, const gz_sign_retry_in_t *in, gz_sign
 typedef struct {
     int host;                       /* 1: this party is participant 0 */
     const secp256k1_context *ctx;
-    uint8_t factory_secret[32];
-    uint8_t contribution_secret[32];
     gz_sign_build_fn build;
+    /* Host: the next attempt after a failed one (above). NULL, or a hook that
+     * returns 0: no further attempt, the outcome Retry goes to the lobby,
+     * which decides what follows (composite-node.md 9.2: the composite's
+     * hook is always "no further attempt"). */
     gz_sign_retry_fn retry;
     void *build_ctx;
     uint64_t tick_ms;               /* period of the engine's one timer */
     uint32_t resend_ticks;          /* resend what is unanswered every this many ticks */
     uint32_t deadline_ticks;        /* a step not finished after this many ticks fails (but the nonce step: the proposal's nonces_due_ms) */
     uint32_t status_ticks;          /* host: at most one status answer per round and member in this many ticks */
-    uint32_t max_attempts;          /* host: attempts in all, over restarts */
     uint32_t unfinished_ticks;      /* member: an Unfinished creation round is Abandoned after this many more ticks (0: never) */
+    /* THE KEY HOOK (composite-node.md 2.5): this party's keypairs under
+     * `scope`, the lobby the round belongs to. `factory` and `contribution`
+     * are filled when not NULL; `terms_digest` (32, the round's frozen terms
+     * digest, record 10) names what the factory key is for and may be NULL
+     * when only the contribution key is asked for. Returns 1 if every one
+     * asked for was filled, else 0: no key (no lobby for the scope, a key of
+     * another epoch, or, with AT_JOIN, no scoped secret for that scope and
+     * digest). The hook never looks at a gate. The engine wipes the keypairs
+     * as soon as the operation is done. */
+    int (*keys)(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, secp256k1_keypair *factory,
+                secp256k1_keypair *contribution);
     /* Member, before every round_ack it would make (gz_tree_may_ack): 1 to
-     * ack, with its tip in *ack_tip (saved with the ack, funding_status);
+     * ack, with its tip in *ack_tip (saved with the ack, in round_completed);
      * 0 not to ack (the round is then Abandoned at its unfinished deadline).
      * NULL: always ack, tip 0. */
     int (*may_ack)(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip);
@@ -351,10 +375,13 @@ typedef struct {
      * round_started: 1 and *rec filled (type GZ_SIGN_REC_GUARD, bytes valid
      * until the call returns), or 0 for none. NULL: none (tests). */
     int (*guard)(void *ctx, gz_record_t *rec);
-    /* Host: the outcome of a round or an attempt, with the action list it may
-     * append to (the lobby's answer). NULL: none. */
+    /* Both roles: the outcome of a round or an attempt, with the action list
+     * it may append to (the lobby's answer). It is called right after the
+     * engine's own save of that outcome, if it has one, and before anything
+     * the engine sends for it, so that the lobby's save joins the engine's
+     * batch (rule 2) and nothing outward sits between them. NULL: none. */
     gz_status_t (*outcome)(void *ctx, const gz_sign_outcome_t *o, gz_action_list_t *out);
-    void *hook_ctx;                 /* given to may_ack, guard and outcome */
+    void *hook_ctx;                 /* given to keys, may_ack, guard and outcome */
 } gz_sign_config_t;
 
 /* Tier and round states (spec section 7). */
@@ -410,8 +437,29 @@ struct gz_sign_round {
     uint8_t proposal_saved;         /* round_proposal is in the journal */
     uint16_t attempt;               /* record 7, for round_started */
     uint8_t old_epoch;              /* member: started with a key of an earlier epoch (S5): kept refused, never resumed */
-    uint32_t ack_tip;               /* member: its tip when it acked (funding_status) */
+    uint32_t ack_tip;               /* member: its tip when it acked (round_completed field 8) */
+    uint8_t check_id[32];           /* record 4: the check this attempt follows */
+    uint64_t budget_end_ms;         /* host: the signing budget's end (Unix ms; 0 none); memory only */
+    uint8_t reported;               /* its outcome has gone to the lobby */
 };
+
+/* Host: a round that left the full slots, compactly (GZ_SIGN_MAX_KEPT): what
+ * a status request, a resent ack and the reason-6 excuse need of it. */
+typedef struct {
+    uint8_t used, state, why, released, n_participants, n_tiers, tiers_done;
+    uint16_t n_items;
+    uint32_t blamed, acked, seq;
+    uint64_t answered;              /* the tick (+ 1) of its last status answer */
+    uint8_t id[32], scope[32], check_id[32], funding_txid[32];
+    uint32_t funding_vout;
+    uint16_t attempt;
+    uint8_t ckeys[GZ_SIGN_MAX_PARTICIPANTS][33];
+    uint8_t item_tier[GZ_SIGN_MAX_ITEMS];
+    uint32_t item_signers[GZ_SIGN_MAX_ITEMS];   /* bit j: participant j signs item i */
+    uint8_t final_sig[GZ_SIGN_MAX_ITEMS][64];
+    uint32_t complete_len;
+    uint8_t complete_msg[GZ_SIGN_MAX_SMALL_MSG];
+} gz_sign_kept_t;
 
 /* Caller-allocated (it is large: allocate it, do not put it on the stack);
  * treat the fields as private. */
@@ -423,16 +471,11 @@ typedef struct {
     uint64_t attempt_counter;       /* host: attempts proposed in this incarnation (S4) */
     uint64_t next_serial;           /* secret nonces made in this incarnation */
     uint64_t tick;                  /* timer ticks in this incarnation */
-    secp256k1_keypair factory_kp, contribution_kp;
-    secp256k1_pubkey factory_pk;
-    uint8_t factory_key[33], contribution_key[33];   /* this party's current keys, compressed */
-    uint32_t attempts, next_seq;
+    uint32_t next_seq;
+    uint32_t attempts;              /* host: attempts begun, or found at a start: a statistic, no limit (the budget is time) */
+    uint32_t rr;                   /* the tick's round-robin over the rounds (composite-node.md 8.3, R3) */
     gz_sign_round_t rounds[GZ_SIGN_MAX_ROUNDS];
-    /* Host: the contribution keys of members that answered "restarted"
-     * (reason 3) once without blame; a second such answer of the same key is
-     * blamed (review A, F4), whoever began the attempt (review B, B3). */
-    uint8_t restarted[GZ_SIGN_MAX_RESTARTED][33];
-    size_t n_restarted;
+    gz_sign_kept_t kept[GZ_SIGN_MAX_KEPT];   /* host: rounds that left the slots, compactly */
     uint8_t known[GZ_SIGN_MAX_KNOWN][32];   /* the newest, at n % GZ_SIGN_MAX_KNOWN */
     size_t n_known;                         /* refused identifiers in all */
     uint8_t known_filter[1u << (GZ_SIGN_KNOWN_FILTER_BITS - 3)];
@@ -441,7 +484,7 @@ typedef struct {
      * GZ_ERR_FAILED until gz_sign_start rebuilds the engine from storage
      * (review A, F1; node.h: on any error the node is as it was). */
     int failed;
-    uint64_t counters[9];           /* see GZ_SIGN_COUNT_* */
+    uint64_t counters[16];          /* see GZ_SIGN_COUNT_* */
     uint8_t scratch[GZ_SIGN_MAX_MSG];
     gz_sign_def_t scratch_def;
     gz_sign_round_t pending;        /* a round is checked here before it takes a slot */
@@ -464,30 +507,62 @@ typedef struct {
     /* A nonce's secret inputs while it is made: here rather than on the
      * stack, so that their wiping can be checked (review A, N09). Zero
      * outside make_nonce. */
-    uint8_t work_rnd[32], work_sid[32], work_pre[48];
+    uint8_t work_rnd[32], work_sid[32], work_pre[48], work_sk[32];
+    /* The keypairs the key hook gave for the operation under way: here, so
+     * that their wiping can be checked. Zero outside an operation. */
+    secp256k1_keypair work_fkp, work_ckp;
+    secp256k1_pubkey work_fpk;
+    uint8_t work_fkey[33], work_ckey[33];
+    int keys_held;                  /* what the work area holds now (signing.c) */
+    int no_key;                     /* the last message could not be signed: it is not sent */
+    /* A received message as its whole envelope (header, then the records). */
+    uint8_t work_env[GZ_SIGN_MAX_MSG];
+    /* The load (gz_sign_load): a round_proposal waits here for the
+     * round_started of its batch. */
+    uint8_t load_prop[GZ_SIGN_MAX_PROPOSAL];
+    size_t load_prop_len;
+    int load_have_prop;
+    gz_batch_id_t load_batch;
+    int resume_at;                  /* gz_sign_resume: the next round to look at */
+    uint32_t resume_seq;            /* ... among those the load found (seq up to this) */
 } gz_sign_t;
 
 /* What the engine counts, for tests and reports. */
 enum {
     GZ_SIGN_COUNT_NONCES_MADE = 0, GZ_SIGN_COUNT_PARTIALS_MADE, GZ_SIGN_COUNT_PSIGS_VERIFIED,
     GZ_SIGN_COUNT_FINALS_VERIFIED, GZ_SIGN_COUNT_BLAME_FAULT, GZ_SIGN_COUNT_BLAME_SILENT,
-    GZ_SIGN_COUNT_REJECTED, GZ_SIGN_COUNT_DUPLICATES, GZ_SIGN_COUNT_EVIDENCE
+    GZ_SIGN_COUNT_REJECTED, GZ_SIGN_COUNT_DUPLICATES, GZ_SIGN_COUNT_EVIDENCE,
+    GZ_SIGN_COUNT_IGNORED,          /* proposals, begins and resolves ignored (no lobby, no key, a finished check) */
+    GZ_SIGN_COUNT_N
 };
 
 /* Prepare an engine. `incarnation` is the runner's (runner.h): it never
  * repeats, also across restores, and is mixed into every session_id32.
- * Returns GZ_ERR_ARGUMENT for a missing argument or a bad secret key. */
+ * Returns GZ_ERR_ARGUMENT for a missing argument (the key hook among them). */
 gz_status_t gz_sign_init(gz_sign_t *e, const gz_sign_config_t *cfg, const gz_ports_t *ports, uint64_t incarnation);
 
-/* Start or restart from storage, in one step (`*more` is set to 0). Same
- * contract as gz_node_start. Every round held in memory is dropped first and
- * rebuilt from storage, so it also recovers an engine that failed
- * (GZ_ERR_FAILED); the counters that make session ids and host random values
- * unique within the incarnation are kept. A member answers per item (S2): a round whose
- * nonce was sent and whose partial signature was not becomes Aborted (no
- * partial signature ever sent) or Unfinished, and is answered with an abort;
- * saved partial signatures are resent (S3). A host fails an unfinished
- * attempt (spec H13) and begins the next one. */
+/* THE START, in the composite's two phases (composite-node.md 10).
+ *   gz_sign_load_begin  drop every round held in memory (a start rebuilds
+ *                       them), so that it also recovers an engine that
+ *                       failed; the counters that make session ids and host
+ *                       random values unique within the incarnation are kept.
+ *   gz_sign_load        one record of the Round area, in journal order, with
+ *                       its batch: memory only. GZ_ERR_CORRUPT for a record
+ *                       this engine did not write or that does not fit what
+ *                       came before it.
+ *   gz_sign_resume      the start's actions, one round a call (`*more`), then
+ *                       the timer: a member answers per item (S2), so a round
+ *                       whose nonce was sent and whose partial signature was
+ *                       not becomes Aborted (no partial signature ever sent)
+ *                       or Unfinished and is answered with an abort; saved
+ *                       partial signatures are resent (S3). A host fails each
+ *                       unfinished attempt (spec H13). Each outcome goes
+ *                       through the outcome hook.
+ * gz_sign_start does all three over a storage reader, in one step (`*more`
+ * is set to 0), for embeddings without a composite. */
+gz_status_t gz_sign_load_begin(gz_sign_t *e);
+gz_status_t gz_sign_load(gz_sign_t *e, const gz_record_t *rec, gz_batch_id_t at);
+gz_status_t gz_sign_resume(gz_sign_t *e, gz_action_list_t *out, int *more);
 gz_status_t gz_sign_start(gz_sign_t *e, const gz_storage_reader_t *storage, gz_action_list_t *out, int *more);
 
 /* Handle one event; same contract as gz_node_handle. Messages that do not
@@ -496,15 +571,47 @@ gz_status_t gz_sign_start(gz_sign_t *e, const gz_storage_reader_t *storage, gz_a
  * every later call return GZ_ERR_FAILED until gz_sign_start. */
 gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *event, gz_action_list_t *out);
 
-/* Host: begin a round. GZ_ERR_ARGUMENT if not a host, a round is still
- * running, the attempts are spent, or the proposal or the builder refuses. */
+/* Host: begin a round (the lobby's hand-off). Never an error for what the
+ * hand-off says (composite-node.md 8.1):
+ *   - a (check, attempt) this engine has begun already, running or ended, is
+ *     ignored: nothing is appended (rule 3; lobby_handoff.h);
+ *   - while a round of the same scope is Active, ignored too (one Active
+ *     round per scope, H8);
+ *   - refused, with the outcome Failed through the hook and nothing saved:
+ *     no attempt number, a proposal that does not encode, a builder that
+ *     refuses, a nonces_due_ms under one tick, a budget already spent.
+ * GZ_ERR_ARGUMENT only for a missing argument or a member engine. */
 gz_status_t gz_sign_begin(gz_sign_t *e, const gz_sign_begin_t *b, gz_action_list_t *out);
+
+/* The lobby ended by a cancel (lobby_handoff.h, composite-node.md 9.2, A9).
+ * Host: the scope's Active round fails (round_ended, then the aborts), with
+ * no outcome and no further attempt: the lobby is over. Member: the secret
+ * nonces of the scope's rounds are erased; their records are kept, and a
+ * round with partial signatures out stays unresolved (Unfinished). */
+gz_status_t gz_sign_cancel(gz_sign_t *e, const uint8_t scope[32], gz_action_list_t *out);
+
+/* Host: a chosen member left while Signing (composite-node.md 9.2, R7). While
+ * it still owes nonces or partial signatures in the scope's Active round, the
+ * attempt fails at once with it blamed (outcome Retry); once it has sent all
+ * of them, the round goes on. */
+gz_status_t gz_sign_member_left(gz_sign_t *e, const uint8_t scope[32], const uint8_t ckey[33], gz_action_list_t *out);
+
+/* Host: the scope's Closing end: its compact rounds are forgotten (H12 is
+ * answered while a member can still need it, composite-node.md 2.4). */
+void gz_sign_forget_scope(gz_sign_t *e, const uint8_t scope[32]);
+
+/* 1 if this engine holds any round under `scope` (in full or compactly, or
+ * an exposure entry's round): round kinds under it route here
+ * (composite-node.md section 4). */
+int gz_sign_holds_scope(const gz_sign_t *e, const uint8_t scope[32]);
 
 /* Member: the round's end as the embedding judged it from the chain
  * (safety-rule.md C11, C4(d)): GZ_SIGN_END_LIVE, _DEAD or _ABANDONED, saved as
- * round_ended. Rounds that are Complete, Unfinished or Abandoned only.
- * GZ_ERR_ARGUMENT otherwise. A round resolved Dead leaves the C7 set: its
- * funding output can never exist (C4(d)). */
+ * round_ended. Rounds that are Complete, Unfinished or Abandoned only; for a
+ * round not found or in another state, a counted no-op (composite-node.md
+ * 8.1). GZ_ERR_ARGUMENT only for a missing argument, a host engine or an
+ * outcome that is none of the three. A round resolved Dead leaves the C7 set:
+ * its funding output can never exist (C4(d)). */
 gz_status_t gz_sign_resolve(gz_sign_t *e, const uint8_t round_id[32], uint8_t outcome, gz_action_list_t *out);
 
 /* The exposure records held (C7), for the embedding's checks. */
