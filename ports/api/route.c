@@ -896,7 +896,10 @@ static void session_fields(gz_api_server *srv, gz_jw *w, const gz_session *s)
         }
     } else {
         gz_jw_key(w, "first_run_launched_at");
-        if (srv->first_run_launched_at && ws == GZ_API_WALLET_NONE) gz_jw_int(w, srv->first_run_launched_at);
+        /* for 10 minutes from the launch, in this run, whether or not a wallet exists by then
+         * (draft 5, gap 15): the interface words a hijack from it (4.3) */
+        if (srv->first_run_launched_at && gz_now_ms(srv) / 1000 - srv->first_run_launched_at < 600)
+            gz_jw_int(w, srv->first_run_launched_at);
         else gz_jw_null(w);
     }
 }
@@ -1039,7 +1042,15 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
     if (pp->result == GZ_API_PPR_OK || pp->result == GZ_API_PPR_WORDS_DIFFER || pp->result == GZ_API_PPR_FILES_BEHIND)
         verified = 1;
     if (pp->result == GZ_API_PPR_WRONG) {
-        if (c) gz_respond_error(srv, c, 401, "wrong_passphrase", NULL, NULL);
+        if (c) {
+            /* when the next attempt is taken, and how many wrong in a row (local-api.md 4.3, 8.1;
+             * open point 42): the interface holds the button for that long */
+            char params[96];
+            int64_t left = (srv->att_blocked_until_ms - mono + 999) / 1000;
+            snprintf(params, sizeof params, "{\"retry_after_s\":%lld,\"wrong_in_row\":%lu}",
+                     (long long)(left < 1 ? 1 : left), (unsigned long)srv->att_wrong);
+            gz_respond_error(srv, c, 401, "wrong_passphrase", NULL, params);
+        }
         goto out;
     }
     if (pp->result == GZ_API_PPR_NOT_CHECKED) {
@@ -1515,6 +1526,13 @@ static void handle(gz_api_server *srv, gz_conn *c)
             break;
         }
         if (ws != GZ_API_WALLET_NONE || srv->first_run_closed) {
+            /* The token is checked first (review L1 of draft 5): a junk token is bad_code, so a
+             * page that presents junk never raises the hijack warning (4.3). */
+            const char *te = tok ? gz_start_token_present(srv, tok, &used_at) : NULL;
+            if (te && strcmp(te, "bad_code") == 0) {
+                gz_respond_error(srv, c, 401, "bad_code", NULL, NULL);
+                break;
+            }
             gz_respond_error(srv, c, 409, "wallet_exists", NULL, NULL);
             break;
         }
