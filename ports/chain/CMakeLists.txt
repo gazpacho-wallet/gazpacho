@@ -15,9 +15,12 @@ if(GZ_WERROR)
   list(APPEND GZ_CHAIN_WARNINGS -Werror)
 endif()
 
-add_library(gazpacho_chain STATIC chain.c headers.c verify.c json.c esplora.c multi.c)
+# watch.c is the watch engine; chainw.c runs it on the chain worker thread
+# (POSIX threads and a pipe).
+find_package(Threads REQUIRED)
+add_library(gazpacho_chain STATIC chain.c headers.c verify.c json.c esplora.c multi.c watch.c chainw.c)
 target_include_directories(gazpacho_chain PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(gazpacho_chain PUBLIC OpenSSL::Crypto)
+target_link_libraries(gazpacho_chain PUBLIC OpenSSL::Crypto Threads::Threads)
 target_compile_options(gazpacho_chain PRIVATE ${GZ_CHAIN_WARNINGS})
 
 # The HTTPS transport and the tool need libcurl. The library and its unit
@@ -56,6 +59,46 @@ foreach(t json headers esplora multi confirm model fuzz)
   add_test(NAME chain_${t} COMMAND chain_test_${t})
 endforeach()
 
+# Fuzz targets are further down (docs/notes/ci.md): with the plain driver as
+# CTest tests; with -DGZ_LIBFUZZER=ON (clang) linked with libFuzzer and run by
+# tools/run-fuzz.sh.
+
+# The watch engine against a made-up chain told by two simulated servers
+# (tests/sim.c), through the real Esplora and comparing backends.
+add_library(gazpacho_chain_sim STATIC tests/sim.c)
+target_link_libraries(gazpacho_chain_sim PUBLIC gazpacho_chain_test_support)
+target_compile_options(gazpacho_chain_sim PRIVATE ${GZ_CHAIN_WARNINGS})
+add_executable(chain_test_watch tests/test_watch.c)
+target_link_libraries(chain_test_watch PRIVATE gazpacho_chain_sim)
+target_compile_options(chain_test_watch PRIVATE ${GZ_CHAIN_WARNINGS})
+add_test(NAME chain_watch COMMAND chain_test_watch)
+# The worker thread, its queues and its descriptor, on the real clock.
+add_executable(chain_test_chainw tests/test_chainw.c)
+target_link_libraries(chain_test_chainw PRIVATE gazpacho_chain_sim)
+target_compile_options(chain_test_chainw PRIVATE ${GZ_CHAIN_WARNINGS})
+add_test(NAME chain_chainw COMMAND chain_test_chainw)
+set_tests_properties(chain_chainw PROPERTIES TIMEOUT 600)
+
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_chain_parse tests/fuzz_chain_parse.c)
+  target_link_options(fuzz_chain_parse PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_chain_parse tests/fuzz_chain_parse.c tests/fuzz_main.c)
+  add_test(NAME chain_fuzz_parse COMMAND fuzz_chain_parse 200000)
+endif()
+target_link_libraries(fuzz_chain_parse PRIVATE gazpacho_chain)
+target_compile_options(fuzz_chain_parse PRIVATE ${GZ_CHAIN_WARNINGS})
+#   chain_watch  the watch engine against servers that say anything
+if(GZ_LIBFUZZER)
+  add_executable(fuzz_chain_watch tests/fuzz_chain_watch.c)
+  target_link_options(fuzz_chain_watch PRIVATE -fsanitize=fuzzer)
+else()
+  add_executable(fuzz_chain_watch tests/fuzz_chain_watch.c tests/fuzz_main.c)
+  add_test(NAME chain_fuzz_watch COMMAND fuzz_chain_watch 20000)
+endif()
+target_link_libraries(fuzz_chain_watch PRIVATE gazpacho_chain_sim)
+target_compile_options(fuzz_chain_watch PRIVATE ${GZ_CHAIN_WARNINGS})
+
 if(CURL_FOUND)
   # The tool must refuse to broadcast on mainnet, before touching the network.
   # The refusal exits 2; the wrapper checks that exit status and the text.
@@ -79,6 +122,18 @@ if(CURL_FOUND)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_BINARY_DIR}/local-servers)
   set_tests_properties(chain_local_servers PROPERTIES LABELS "slow" TIMEOUT 240 SKIP_RETURN_CODE 77)
 
+  # The worker over real HTTP against a scripted Esplora stub on 127.0.0.1
+  # (tests/watch_stub.py), playing reorganisations, double spends, lagging,
+  # disagreeing and lying servers, evictions, broadcasts, a 30 s stall and
+  # broken connections. Needs python3; skipped (not failed) without it.
+  add_executable(chain_test_stub tests/test_stub.c)
+  target_link_libraries(chain_test_stub PRIVATE gazpacho_chain_sim gazpacho_chain_curl)
+  target_compile_options(chain_test_stub PRIVATE ${GZ_CHAIN_WARNINGS})
+  add_test(NAME chain_watch_stub
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/tests/watch-stub.sh $<TARGET_FILE:chain_test_stub>
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_BINARY_DIR}/watch-stub)
+  set_tests_properties(chain_watch_stub PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77)
+
   # Opt-in only: talks to mempool.space and blockstream.info on signet.
   # Never part of the default ctest run or of CI.
   if(GZ_LIVE_TESTS)
@@ -87,6 +142,11 @@ if(CURL_FOUND)
     target_compile_options(chain_test_live PRIVATE ${GZ_CHAIN_WARNINGS})
     add_test(NAME chain_live COMMAND chain_test_live)
     set_tests_properties(chain_live PROPERTIES TIMEOUT 600)
+    add_executable(chain_test_live_watch tests/test_live_watch.c)
+    target_link_libraries(chain_test_live_watch PRIVATE gazpacho_chain_test_support gazpacho_chain_curl)
+    target_compile_options(chain_test_live_watch PRIVATE ${GZ_CHAIN_WARNINGS})
+    add_test(NAME chain_live_watch COMMAND chain_test_live_watch)
+    set_tests_properties(chain_live_watch PROPERTIES TIMEOUT 600)
   endif()
 endif()
 endif() # GZ_CHAIN_TESTS
