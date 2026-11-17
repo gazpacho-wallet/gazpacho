@@ -111,7 +111,8 @@ setup_exists	sc_files.c	    gz_sc_err_t e = present(s, GZ_SC_FILE_KEYS);\n    if
 anchor_backwards	sc_files.c	if (st != GZ_SC_MARK_OK || incarnation < i || (incarnation == i && mark_offset < o))	if (st != GZ_SC_MARK_OK)
 bc_no_anchor	sc_files.c	return gz_sc_fs_append(s, GZ_SC_FILE_MARK, (uint64_t)end, entry, sizeof entry);	return GZ_SC_OK;
 check_start_guard	sc_files.c	gs = GZ_SC_DAMAGED; /* another format, network or a failed tag */	gs = GZ_SC_OK;
-unlock_drop_keys	sc_files.c	if (e != GZ_SC_OK)\n        gz_sc_unlocked_clear(u); /* keys dropped on every failure (8.2) */
+unlock_drop_keys	sc_files.c	if (e != GZ_SC_OK)\n        gz_sc_unlocked_clear(u); /* keys dropped on every failure (8.2) */		1
+unlock_open_drop_keys	sc_files.c	if (e != GZ_SC_OK)\n        gz_sc_unlocked_clear(u); /* keys dropped on every failure (8.2) */		2
 mark_before_journal	sc_files.c	if ((e = gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk)) != GZ_SC_OK ||\n        (e = gz_sc_fs_replace(s, GZ_SC_FILE_JOURNAL, hdr, sizeof hdr)) != GZ_SC_OK)	if ((e = gz_sc_fs_replace(s, GZ_SC_FILE_JOURNAL, hdr, sizeof hdr)) != GZ_SC_OK ||\n        (e = gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk)) != GZ_SC_OK)
 name_wallet	sc_pass.c	equal_ignoring_digits(f, fl, n, nl))	0)
 name_spaces	sc_pass.c	return (c >= '0' \&\& c <= '9') || c == ' ';	return c >= '0' \&\& c <= '9';
@@ -140,7 +141,7 @@ l3_no_exit_deadline	sc_kdf.c	        if (w == 0 && now_ms() >= deadline) {	     
 l5_generate_spaces	sc_pass.c	                byte |= ' ' & ct_eq(qb, start[w] - 1);	                (void)0;
 l6_check_msk	sc_keyfile.c	        if (!gz_sc_vault_same_msk(v, msk) || !ids)	        if (!ids)
 l8_chunk_len_damaged	sc_export.c	            e = GZ_SC_DAMAGED; /* no writer makes such a length (review A, L8) */	            e = GZ_SC_TRUNCATED;
-l8_setup_info	sc_files.c	    memcpy(u->info.salt, salt, 16);\n
+l8_setup_info	sc_files.c	    memcpy(p->info.salt, salt, 16);\n
 l8_stale_tmp	sc_files.c	    drop_stale_tmp(s);\n
 #
 # --- review A's own 57 mutants (<build server>/review-pr25a, PR 25 head 7d90df1),

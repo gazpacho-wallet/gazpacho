@@ -21,9 +21,8 @@ import sys
 
 SRC, BUILD, WORK = (os.path.abspath(a) for a in sys.argv[1:4])
 ONLY = set(sys.argv[4:])
-TESTS = ("journal_fuzz_sealed|storage_fuzz_sc_counter|^journal$|journal_restore|journal_crash|storage_files|"
-         "storage_formats|program_unlock|program_storage_damage|program_journal_restore|program_two_process|"
-         "program_composite")
+TESTS = ("journal_fuzz_sealed|storage_fuzz_sc_counter|^journal$|^journal_restore$|storage_files|"
+         "program_unlock|program_storage_damage|program_journal_restore")
 
 
 def unescape(t):
