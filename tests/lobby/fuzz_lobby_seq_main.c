@@ -10,7 +10,7 @@
 #include <string.h>
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size);
-extern unsigned long lobby_seq_stats[10];
+extern unsigned long lobby_seq_stats[12];
 
 int main(int argc, char **argv)
 {
@@ -48,8 +48,15 @@ int main(int argc, char **argv)
         } else if (style == 3) {
             /* a crowd of keys: the connection, seat and creation caps are reached */
             static const uint8_t ops[] = {0, 0, 0, 2, 3, 3, 5, 7, 8, 9, 10, 11};
+            int crowd = (int)sim_rng_below(&R, 4);
             buf[0] = (uint8_t)(2 * sim_rng_below(&R, 4));
-            if (sim_rng_below(&R, 2)) {
+            if (crowd == 3) {
+                /* a quarter of them: all 66 keys connect in turn. The host holds
+                 * 64 connections: the last two are refused (contract v2) */
+                n = 1 + 3 * 153;
+                for (w = 1; w < n; w++) buf[w] = (uint8_t)sim_rng_below(&R, 256);
+                for (w = 0; w < 66 && k + 3 <= n; w++, k += 3) { buf[k] = 0; buf[k + 1] = (uint8_t)w; }
+            } else if (crowd < 2) {
                 /* half of them: 36 keys in turn connect, join and leave, a second
                  * apart, so the 4 x target creation cap is reached and the last
                  * four joins are refused by it (N3) */
@@ -64,15 +71,16 @@ int main(int argc, char **argv)
             }
             for (; k + 3 <= n; k += 3) {
                 buf[k] = ops[sim_rng_below(&R, sizeof ops)];
-                buf[k + 1] = (uint8_t)sim_rng_below(&R, 64);
-                if (buf[k] == 2) buf[k + 2] = 1;                                   /* a hello for the lobby */
+                buf[k + 1] = (uint8_t)sim_rng_below(&R, 66);
+                if (buf[k] == 2) buf[k + 2] = (uint8_t)(sim_rng_below(&R, 4) ? 1 : 2);   /* a hello for the lobby; sometimes the listing */
                 if (buf[k] == 5) buf[k + 2] = sim_rng_below(&R, 2) ? 11 : 3;
                 if (buf[k] == 9) buf[k + 2] = (uint8_t)sim_rng_below(&R, 30);      /* up to 3 s */
             }
         } else if (style == 1) {
-            /* a member taken through terms, a check and a start, with noise */
-            static const uint8_t ops[] = {3, 4, 4, 6, 1, 9, 10, 0, 2, 5, 7};
-            buf[0] = 1;
+            /* a member taken through terms, a check and a start, with noise;
+             * half of them with a signing gate, which the script opens and closes */
+            static const uint8_t ops[] = {3, 4, 4, 6, 1, 9, 10, 0, 2, 5, 7, 11, 11};
+            buf[0] = (uint8_t)(sim_rng_below(&R, 2) ? 5 : 1);
             if (k + 12 <= n) {
                 buf[1] = 0; buf[4] = 2; buf[6] = 0; buf[7] = 3; buf[8] = 0; buf[9] = 0; buf[10] = 4; buf[11] = 0; buf[12] = 0;
                 k = 13;
@@ -86,11 +94,14 @@ int main(int argc, char **argv)
         LLVMFuzzerTestOneInput(buf, n);
     }
     printf("fuzz_seq: %lu scripts, %lu steps; %lu seats, %lu inputs with a check, %lu starts, %lu begins, "
-           "%lu restarts, %lu members ended, %lu lobbies ended; %lu joins refused at the creation cap, %lu budget timers in Signing\n",
+           "%lu restarts, %lu members ended, %lu lobbies ended; %lu joins refused at the creation cap, %lu budget timers in Signing, "
+           "%lu connections refused by a full table, %lu unreadies for a closed gate\n",
            iters, lobby_seq_stats[0], lobby_seq_stats[1], lobby_seq_stats[2], lobby_seq_stats[3], lobby_seq_stats[4],
-           lobby_seq_stats[5], lobby_seq_stats[6], lobby_seq_stats[7], lobby_seq_stats[8], lobby_seq_stats[9]);
+           lobby_seq_stats[5], lobby_seq_stats[6], lobby_seq_stats[7], lobby_seq_stats[8], lobby_seq_stats[9],
+           lobby_seq_stats[10], lobby_seq_stats[11]);
     CHECK(lobby_seq_stats[1] > 0 && lobby_seq_stats[2] > 0 && lobby_seq_stats[3] > 0 && lobby_seq_stats[4] > 0 &&
           lobby_seq_stats[5] > 0);
     if (iters >= 2000) CHECK(lobby_seq_stats[8] > 0 && lobby_seq_stats[9] > 0);   /* N3: the long run reaches both */
+    if (iters >= 2000) CHECK(lobby_seq_stats[10] > 0 && lobby_seq_stats[11] > 0);  /* and the full table, and the gate */
     return check_done();
 }

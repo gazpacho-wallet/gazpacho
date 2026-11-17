@@ -78,9 +78,9 @@ int main(int argc, char **argv)
         size_t n = mutate(&corpus[sim_rng_below(&R, (uint64_t)n_corpus)], buf);
         LLVMFuzzerTestOneInput(buf, n);
     }
-    printf("fuzz: %lu inputs; accepted %lu messages, %lu outer, %lu current, %lu reassembled\n",
+    printf("fuzz: %lu inputs; accepted %lu messages, %lu outer, %lu current, %lu records\n",
            iters, lobby_fuzz_stats[0], lobby_fuzz_stats[1], lobby_fuzz_stats[2], lobby_fuzz_stats[3]);
-    CHECK(n_corpus == 13);
-    CHECK(lobby_fuzz_stats[0] > 0 && lobby_fuzz_stats[1] > 0 && lobby_fuzz_stats[2] > 0);   /* the accepting paths are reached */
+    CHECK(n_corpus == 27);
+    CHECK(lobby_fuzz_stats[0] > 0 && lobby_fuzz_stats[1] > 0 && lobby_fuzz_stats[2] > 0 && lobby_fuzz_stats[3] > 0);   /* the accepting paths are reached */
     return check_done();
 }

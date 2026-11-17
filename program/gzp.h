@@ -86,6 +86,11 @@ typedef struct {
     int test_standin_store;        /* the journal stand-in instead of the sealed journal (its files are read) */
     const char *test_append_batch; /* save this batch (hex: type, len, bytes ...) and stop */
     int test_kill_at;              /* SIGKILL before the K-th storage write, sync or rename (store.h) */
+    unsigned test_crash_after_record; /* exit once a batch holding a record of this type is durable */
+    int test_sign_outcome;         /* the signing stand-in's outcome: 1 funding, 2 retry, 3 failed, 4 unfinished */
+    int test_sign_delay_ms;        /* ... reported this long after the hand-off */
+    /* a setting, both builds */
+    int member_signing;            /* 0 at-join (the default), 1 auto, 2 when-unlocked (composite-node.md 12.2) */
 } gzp_options_t;
 
 /* Parses argv into `o` (defaults first). Returns 0, or GZP_EXIT_USAGE after

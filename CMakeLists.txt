@@ -126,13 +126,18 @@ gz_add_test(runner    tests/core/test_runner.c    gazpacho_core)
 # sizing, poisoning, and a hostile peer that never causes a node error. The
 # tests see the composite's internals (core/node/internal.h), so they are
 # built with the test library's GZ_TEST_KINDS.
-foreach(name node node_route node_conns node_timers node_handoff node_sizing node_hostile)
+foreach(name node node_route node_conns node_timers node_handoff node_sizing node_hostile node_lobby)
   gz_add_test(${name} tests/node/test_${name}.c gazpacho_node_test)
   target_include_directories(test_${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
   target_compile_definitions(test_${name} PRIVATE GZ_TEST_KINDS)
 endforeach()
 # The release node: no test engine, and kind 32767 is just an unknown kind.
 gz_add_test(node_release tests/node/test_node_release.c gazpacho_node)
+# The lobby in the composite (P4.2): whole nodes, a host and its members with
+# real lobbies in their slots and the signing stand-in, wired in one process,
+# with real signatures (secp256k1 through the crypto port).
+target_link_libraries(test_node_lobby PRIVATE secp256k1)
+target_include_directories(test_node_lobby PRIVATE ${secp256k1-zkp_SOURCE_DIR}/include)
 target_include_directories(test_node_release PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
 # Hostile peer events in a fuzz target: never an error from the node.
 if(GZ_LIBFUZZER)
@@ -182,7 +187,8 @@ add_test(NAME core_isolation
 # core/node, release and test builds, each checked with the core in one
 # archive (its calls into the core are calls inside the library).
 string(JOIN " " GZ_NODE_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/node/include
-       -I${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/node -I${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include)
 add_test(NAME node_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
           $<TARGET_FILE:gazpacho_node_isolation_release> --sources ${CMAKE_C_COMPILER} ${GZ_NODE_SCAN_FLAGS}
@@ -394,11 +400,19 @@ endfunction()
 gz_lobby_test(test_lobby_vectors tests/lobby/test_lobby_vectors.c)
 gz_lobby_test(test_lobby         tests/lobby/test_lobby.c)
 gz_lobby_test(test_lobby_sim     tests/lobby/test_lobby_sim.c)
+gz_lobby_test(test_lobby_v2      tests/lobby/test_lobby_v2.c)
+gz_lobby_test(test_lobby_hostile tests/lobby/test_lobby_hostile.c)
 gz_lobby_test(lobby_model_driver tests/lobby/model_driver.c)
 add_test(NAME lobby_vectors COMMAND test_lobby_vectors)
 add_test(NAME lobby COMMAND test_lobby)
 # Real stack frames, so a record byte left unwritten keeps the poison the test puts there.
 set_tests_properties(lobby PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_stack_use_after_return=0")
+# Contract v2: the largest record of every type, the signing gate, the
+# accepted record, a port that will not sign, the node part's helpers.
+add_test(NAME lobby_v2 COMMAND test_lobby_v2)
+# The engine rule under a hostile peer: 200,000 inputs to a host and as many
+# to a member, seed 1; every call GZ_OK, every restore and resume too.
+add_test(NAME lobby_hostile COMMAND test_lobby_hostile 200000 1)
 # One host and 3 to 8 members: mixed faults, crashes only, network only, none.
 # 25 seeds per profile here (about two minutes under the sanitizers); the
 # reports quote runs of 100 seeds per profile, made by hand.
@@ -452,6 +466,8 @@ add_test(NAME lobby_isolation
 if(GZ_VALGRIND AND NOT GZ_SANITIZE)
   add_test(NAME valgrind_lobby_vectors COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby_vectors>)
   add_test(NAME valgrind_lobby COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby>)
+  add_test(NAME valgrind_lobby_v2 COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby_v2>)
+  add_test(NAME valgrind_lobby_hostile COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_lobby_hostile> 3000 2)
   if(NOT GZ_LIBFUZZER)
     add_test(NAME valgrind_lobby_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_lobby> 3000 2)
     add_test(NAME valgrind_lobby_fuzz_seq COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_lobby_seq> 300 2)

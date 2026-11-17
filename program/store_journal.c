@@ -40,11 +40,6 @@ int gzp_store_take_restore_answered(gzp_store_t *s)
     return s->ops->take_restore_answered ? s->ops->take_restore_answered(s->ctx) : 0;
 }
 uint64_t gzp_store_cut_bytes(const gzp_store_t *s) { return s->ops->cut_bytes ? s->ops->cut_bytes(s->ctx) : 0; }
-gz_bytes_t gzp_store_guard(const gzp_store_t *s)
-{
-    gz_bytes_t none = {NULL, 0};
-    return s->ops->guard ? s->ops->guard(s->ctx) : none;
-}
 
 /* ---- test hooks (gazpacho-test only) ------------------------------------------ */
 
@@ -510,11 +505,15 @@ static int js_take_answered(void *ctx)
     return 1;
 }
 static uint64_t js_cut_bytes(void *ctx) { return ((jstore_t *)ctx)->info.cut_bytes; }
-static gz_bytes_t js_guard(void *ctx)
+/* On a restored start: the sealed guard file as a guard record (the
+ * journal read it at the open, before anything was written). */
+static int js_guard(void *ctx, const uint8_t **data, size_t *len)
 {
     jstore_t *s = ctx;
-    gz_bytes_t none = {NULL, 0};
-    return s->j && s->restored_at_begin ? s->rd.guard : none;
+    if (!s->j || !s->restored_at_begin || !s->rd.guard.data || !s->rd.guard.len) return 0;
+    *data = s->rd.guard.data;
+    *len = s->rd.guard.len;
+    return 1;
 }
 #ifdef GZP_TEST_BUILD
 static void js_fail_at(void *ctx, unsigned k) { ((jstore_t *)ctx)->fail_at = k; }
@@ -531,8 +530,8 @@ static void js_test_hooks(void *ctx, unsigned sync_fail_at, int cut_fail, int cr
 #endif
 
 static const gzp_store_ops_t JOURNAL_OPS = {
-    js_begin, js_next, js_rewind, js_append, js_complete, js_restored, js_close,
-    js_poisoned, js_counter_state, js_take_answered, js_cut_bytes, js_guard,
+    js_begin, js_next, js_rewind, js_append, js_complete, js_restored, js_close, js_guard,
+    js_poisoned, js_counter_state, js_take_answered, js_cut_bytes,
 #ifdef GZP_TEST_BUILD
     js_fail_at, js_fail_next_ping, js_test_hooks
 #else
