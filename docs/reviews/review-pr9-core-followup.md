@@ -1,8 +1,8 @@
 # Review of PR 9 (`m1a-followup`, b3d9312 on 0d6c191): core frame follow-up
 
 Reviewer: independent agent, did not write the code. Date: 2026-11-12.
-Work done in `/root/gz/review-m1a/rv3` on the build server (a `git archive` copy of
-`/root/gz/gazpacho` at b3d9312, gcc 15.2, valgrind 3.26). Nothing pushed, committed
+Work done in `<build server>/review-m1a/rv3` on the build server (a `git archive` copy of
+`<build server>/gazpacho` at b3d9312, gcc 15.2, valgrind 3.26). Nothing pushed, committed
 or posted. Reviewer programs: `rv3/rfuzz.c` (runner against my own model),
 `rv3/ntest.c` (stepped start), `rv3/sectest.c` (secret invariant), `rv3/iso.c`,
 `rv3/iso.sh` (isolation probes), `rv3/mut.py` (99 mutations), logs `stepA.log`,
@@ -28,7 +28,7 @@ deny-list and can be fooled in at least 14 ways.
 | 27/27 tests in Release (19 + 8 valgrind) | **Confirmed**, 49.5 s. 3 warnings in the build are all in imported/secp code. |
 | 19/19 under ASan+UBSan | **Confirmed**, 75.8 s. |
 | 20,000 seeds x 400 steps, 0 failures | **Confirmed** (profile 0, seeds 1001..21000, 168 s). Every total matches the builder's `seeds-followup.txt` to the digit (sent 8869961, stale 485471, restores 39950, ...), which also shows the run is the same across separate builds and runs. |
-| 55 break-checks, 54 caught, s55 judged equivalent | I read `/root/gz/scratch/mut5.log`: every listed entry is killed except s55. I did **not** re-run `mutate5.py`, because it writes to `/root/gz/mut5`, which is outside my allowed area. I tested s55 myself (see F9). |
+| 55 break-checks, 54 caught, s55 judged equivalent | I read `<build server>/scratch/mut5.log`: every listed entry is killed except s55. I did **not** re-run `mutate5.py`, because it writes to `<build server>/mut5`, which is outside my allowed area. I tested s55 myself (see F9). |
 | New faults happen in seed runs | Restores, link changes, reorganisations, clock jumps and dropped stale events all have non-zero counts, and profile 0 `CHECK`s that each one is non-zero. **But** `restore_repeats_random` never has an observable effect in a seed run (F4, S37). |
 | Same seed, same run across builds | **Confirmed** for gcc at -O0, -O1, -O2, -O3 -funroll-loops, -Os, ASan/UBSan, -fwrapv -fno-strict-aliasing -fstack-protector-all, and -O3 -march=native. Both known-trace digests match, and the digests combined over all seeds match for profiles 0, 3 and 7. I could not test -m32 (no 32-bit libc on the server) or clang (not installed). |
 | Isolation check hardened, 3 documented not-caught cases | The 3 documented cases do pass, as stated. 14 of my 20 probes also pass, and none of them are documented (F6). |
