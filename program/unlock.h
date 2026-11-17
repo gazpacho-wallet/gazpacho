@@ -62,7 +62,8 @@ typedef enum {
     GZP_UNLOCK_WEAK,          /* create or restore: storage 4.1's rules; reason, length, minimum */
     GZP_UNLOCK_BAD_WORDS,     /* restore: reason "position" (position set) or "checksum" */
     GZP_UNLOCK_FILES_BEHIND,  /* unlock: the files are older than the last saved state (4.7) */
-    GZP_UNLOCK_STORAGE_FAILED /* the key file or the journal cannot be read or written */
+    GZP_UNLOCK_STORAGE_FAILED,/* the key file or the journal cannot be read or written */
+    GZP_UNLOCK_WORDS_DIFFER   /* words check: the passphrase was right, the words were not */
 } gzp_unlock_status_t;
 
 typedef struct {
@@ -83,7 +84,8 @@ typedef struct {
     int op;                                   /* GZP_UNLOCK_OP_* */
     const uint8_t *passphrase;                /* UTF-8, NFC, not NUL-terminated; caller's */
     size_t passphrase_len;
-    char words[GZP_UNLOCK_WORDS][GZP_UNLOCK_WORD_MAX]; /* restore: in; create: out */
+    char words[GZP_UNLOCK_WORDS][GZP_UNLOCK_WORD_MAX]; /* restore, words check: in; create, reveal: out */
+    int positions[3];                         /* words check: 1-based positions of words[0..2] */
     gzp_unlock_result_t result;               /* set by begin, final after finish */
     void *keys;                               /* the implementation's derived keys, from begin
                                                  to finish or discard; wiped by them */
@@ -93,7 +95,9 @@ enum {
     GZP_UNLOCK_OP_UNLOCK = 1, /* open the existing wallet */
     GZP_UNLOCK_OP_CHECK,      /* while unlocked: is this the passphrase? (sign-in, fresh sign-in) */
     GZP_UNLOCK_OP_CREATE,     /* set up a new wallet; the 24 new words come out in words */
-    GZP_UNLOCK_OP_RESTORE     /* set up from the 24 words in words */
+    GZP_UNLOCK_OP_RESTORE,    /* set up from the 24 words in words */
+    GZP_UNLOCK_OP_REVEAL,     /* the 24 words out, for one showing (local-api.md 12.3; storage 9.2) */
+    GZP_UNLOCK_OP_WORDS_CHECK /* compare words[0..2] with the words at positions: OK, or WORDS_DIFFER */
 };
 
 typedef struct {

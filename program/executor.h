@@ -19,6 +19,7 @@
 #include "gazpacho/node.h"
 #include "gazpacho/runner.h"
 
+#include "api.h"
 #include "datadir.h"
 #include "gzp.h"
 #include "net.h"
@@ -54,6 +55,7 @@ typedef struct {
     const uint8_t *chain_hash;     /* the network's genesis hash (32 bytes): the node writes it in guard records */
     gzp_chain_t *chain;
     gzp_notify_sink_t notify;
+    gzp_api_t *api;              /* the local API server (P5); outlives incarnations */
     gzp_testping_t *tp;
     int stop_fd;                 /* read end of the self-pipe the signal handler writes */
     volatile sig_atomic_t *stop;

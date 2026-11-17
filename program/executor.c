@@ -598,6 +598,23 @@ static void on_message(void *ctx, const gz_link_t *link, uint16_t kind, const ui
     drain(ex);
 }
 
+/* A command for a call the API holds (contract-v2.md 11): given to the node
+ * as a USER_COMMAND, at once; its outcome comes back as a command-result
+ * NOTIFY. -1 while the node starts or after a fatal error. */
+static int api_command(void *ctx, const uint8_t *tlv, size_t len)
+{
+    gzp_exec_t *ex = ctx;
+    gz_event_t ev;
+    if (ex->starting || ex->fatal || !ex->node) return -1;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_USER_COMMAND;
+    ev.u.user.bytes.data = tlv;
+    ev.u.user.bytes.len = len;
+    deliver(ex, &ev);
+    drain(ex);
+    return 0;
+}
+
 /* ---- user commands ------------------------------------------------------ */
 
 #ifdef GZP_TEST_BUILD
@@ -789,7 +806,7 @@ static int min_timeout(int a, int b)
 static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_ms)
 {
     uint64_t now = gzp_mono_ms();
-    size_t nfds;
+    size_t nfds, n_net, n_api;
     int timeout = -1, t, i;
     uint32_t height;
     if (*ex->stop) return GZP_RUN_STOP;
@@ -813,8 +830,13 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
 #ifdef GZP_TEST_BUILD
     if (ex->opt->test_commands && !ex->in_eof) fds[1].fd = 0;
 #endif
-    nfds = 2 + gzp_net_pollfds(ex->net, fds + 2, cap - 2, &t, now);
+    n_net = gzp_net_pollfds(ex->net, fds + 2, cap - 2, &t, now);
+    nfds = 2 + n_net;
     timeout = min_timeout(timeout, t);
+    /* The local API server's descriptors and deadline (contract-v2.md 4; P5). */
+    n_api = ex->api ? gzp_api_pollfds(ex->api, fds + nfds, cap - nfds, &t) : 0;
+    if (n_api || t >= 0) timeout = min_timeout(timeout, t);
+    nfds += n_api;
     if (until_ms) {
         timeout = min_timeout(timeout, until_ms > now ? (int)(until_ms - now) : 0);
     } else {
@@ -830,7 +852,8 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     }
     if (fds[0].revents || *ex->stop) return GZP_RUN_STOP;
     now = gzp_mono_ms();
-    gzp_net_dispatch(ex->net, fds + 2, nfds - 2, now);
+    gzp_net_dispatch(ex->net, fds + 2, n_net, now);
+    if (ex->api) gzp_api_dispatch(ex->api, fds + 2 + n_net, n_api);
 #ifdef GZP_TEST_BUILD
     if (fds[1].revents && !ex->fatal) read_commands(ex);
 #endif
@@ -1030,12 +1053,18 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     }
     gz_action_list_init(&ex->list, ex->lslots, GZP_LIST_SLOTS, ex->lbytes, GZP_LIST_BYTES);
 
-    cap = 2 + gzp_net_max_fds(ex->net);
+    cap = 2 + gzp_net_max_fds(ex->net) + (ex->api ? gzp_api_max_fds(ex->api) : 0);
     fds = calloc(cap, sizeof *fds);
     if (!fds) abort();
 
     ex->starting = 1;
     ex->delivered = 0;
+    if (ex->api) {
+        /* The view is rebuilt by this start's notices (node rule 7); held calls are answered 503 rebuilding. */
+        gzp_api_node_starting(ex->api);
+        ex->api->command = api_command;
+        ex->api->command_ctx = ex;
+    }
 #ifdef GZP_TEST_BUILD
     /* Set before the start, so that with a held start it comes due during it. */
     if (ex->opt->test_timer_ms)
@@ -1054,6 +1083,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
 #endif
     if (rc < 0) start_node(ex);
     ex->starting = 0;
+    if (ex->api) gzp_api_node_started(ex->api);
     if (ex->fatal && gzp_standin_poisoned(&ex->store)) rc = GZP_RUN_RESTART; /* turned into POISONED below */
     if (rc < 0 && !ex->fatal) {
         gzp_log("ready incarnation=%llu resent=%u", (unsigned long long)ex->incarnation, ex->resent);
