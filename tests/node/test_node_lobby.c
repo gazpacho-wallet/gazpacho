@@ -788,6 +788,11 @@ static void test_cancel_and_tombstone(void)
         CHECK(host_entry(&l1) == 1);
         for (int k = 0; k < 20; k++) stranger(k, 1, &sl);
         CHECK(host_entry(&l1) == 1);
+        /* Its connection drops and comes back during Closing: still seated. */
+        w_peer(0, &l1, 0, 0, 0, 0);
+        w_peer(0, &l1, 1, 0, 0, 0);
+        for (int k = 20; k < 40; k++) stranger(k, 1, &sl);
+        CHECK(host_entry(&l1) == 1);
     }
     /* A late hello for the ended lobby: its final state, the reason, then the saved cancel. */
     from = NSENT;
@@ -1456,6 +1461,28 @@ static void test_node_record_fields(void)
     CHECK(ERRORS == 0);
 }
 
+/* ---- 9. a timer set in the step that ends a lobby (review B of PR 44, L7) ------------- */
+
+/* A cancel within a second of a seat's last lobby_status: the lobby wants
+ * to send the final status a second later and sets a timer in the very step
+ * that ends its slot. The slot is Free, and the timer is not set. */
+static void test_timer_of_ended_lobby(void)
+{
+    terms_t t;
+    uint16_t g;
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 800);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(400, 100);
+    CHECK(slot(0, &t) != NULL && slot(1, &t) && slot(1, &t)->lobby.m.joined);
+    g = slot(0, &t)->gen;
+    CHECK(scope_cmd(0, GZ_CMD_LOBBY_CANCEL, &t, 0) == 200 && slot(0, &t) == NULL);
+    for (int k = 0; k < NT[0]; k++) CHECK(!((T[0][k].id >> 48) == GZ_AREA_LOBBY && ((T[0][k].id >> 32) & 0xffff) == g));
+    w_run(3000, 100);
+    no_errors(1);
+    w_free(1);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1469,6 +1496,7 @@ int main(int argc, char **argv)
     test_seat_capacity();
     test_left_out();
     test_node_record_fields();
+    test_timer_of_ended_lobby();
     test_gate_refused_ready();
     test_hostile(events, seed);
     return check_done();

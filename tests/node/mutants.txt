@@ -234,6 +234,7 @@ tm-budget-one-more	core/node/timers.c	        if (*n >= max) return 0;	        i
 tm-fired-not-freed	core/node/composite.c	    gz_timer_note(c, eng, ev->u.timer.timer_id, 0); /* fired: no longer set */\n	
 tm-lobby-gets-standin-budget	core/node/timers.c	? LS_MAX_TIMERS : TS_MAX_TIMERS;	? TS_MAX_TIMERS + 2 : TS_MAX_TIMERS;
 # --- the reviews of PR 44 (A: M1, M2, L3; B: H1, L3, L4, L7)
+# equivalent slot-freed-keeps-seats: a second guard: a lobby's slot that is freed gives up its seats with SET_SEATED 0 in the same step, and the bracket's post-processing unseats each key (np_seat_changed); a Closing slot's keys stay seated by design
 slot-freed-keeps-seats	core/node/nodepart.c	        n->seated = gz_route_key_seated(c, &n->link.remote);\n		2
 seat-room-unlimited	core/node/lobbyslot.c	|| gz_route_seats_held(s->node) < NP_MAX_SEATED;	|| 1;
 seat-room-not-asked	core/lobby/host.c	 ||\n        (h->cfg.seat_room && !h->cfg.seat_room(h->cfg.seat_ctx, c->key)))	)
