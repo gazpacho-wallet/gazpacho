@@ -141,6 +141,7 @@ void gzp_usage(void)
         "  --test-kdf-floor              set up at the storage library's test floor (1 pass, 8 KiB)\n"
         "  --test-standin-store          the journal stand-in instead of the sealed journal\n"
         "  --test-reveal-check           after the unlock: reveal and words check (statuses only)\n"
+        "  --test-seed-check             seed() locked, unlocked and with a storage fault (results only)\n"
         "  --test-kill-at K              SIGKILL before the K-th storage write, sync or rename\n"
         "  --test-append-batch HEX       save one batch of records (type, length, bytes ...), then stop\n"
         "  --test-drop-kind K            drop every received message of kind K\n"
@@ -237,6 +238,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-kdf-floor")) { o->test_kdf_floor = 1; takes = 0; }
         else if (!strcmp(a, "--test-standin-store")) { o->test_standin_store = 1; takes = 0; }
         else if (!strcmp(a, "--test-reveal-check")) { o->test_reveal_check = 1; takes = 0; }
+        else if (!strcmp(a, "--test-seed-check")) { o->test_seed_check = 1; takes = 0; }
         else if (!strcmp(a, "--test-commands")) { o->test_commands = 1; takes = 0; }
         else if (!strcmp(a, "--test-exit-after-send")) { o->test_exit_after_send = 1; takes = 0; }
 #endif

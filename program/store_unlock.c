@@ -38,6 +38,7 @@ struct gzp_wallet {
 #ifdef GZP_TEST_BUILD
     char restore_from[GZP_PATH_MAX];
     int keys_only;
+    int seed_fault; /* tests: seed() answers as if storage failed */
 #endif
 };
 
@@ -706,10 +707,11 @@ static void t_begin(void *c, gzp_unlock_job_t *j) { gzp_wallet_begin(c, j); }
 static void t_finish(void *c, gzp_unlock_job_t *j, int64_t now) { gzp_wallet_finish(c, j, now); }
 static void t_discard(void *c, gzp_unlock_job_t *j, int64_t now) { gzp_wallet_discard(c, j, now); }
 static void t_lock(void *c) { gzp_wallet_lock(c); }
+static int t_seed(void *c, uint8_t out64[64]) { return gzp_wallet_seed(c, out64); }
 
 gzp_unlock_t gzp_wallet_unlock_api(gzp_wallet_t *w)
 {
-    gzp_unlock_t t = {t_state, t_attempts, t_begin, t_finish, t_discard, t_lock, w};
+    gzp_unlock_t t = {t_state, t_attempts, t_begin, t_finish, t_discard, t_lock, t_seed, w};
     return t;
 }
 
@@ -734,8 +736,18 @@ int gzp_wallet_open_store(gzp_wallet_t *w, gzp_store_t *out, char *err, size_t e
 
 int gzp_wallet_seed(gzp_wallet_t *w, uint8_t seed[64])
 {
-    if (!w->unlocked || !w->u.vault) return -1;
-    return gz_sc_vault_seed(w->u.vault, seed) == GZ_SC_OK ? 0 : -1;
+    if (!w->unlocked) return -1; /* out64 untouched */
+#ifdef GZP_TEST_BUILD
+    if (w->seed_fault) {
+        OPENSSL_cleanse(seed, 64);
+        return -2;
+    }
+#endif
+    if (!w->u.vault || gz_sc_vault_seed(w->u.vault, seed) != GZ_SC_OK) {
+        OPENSSL_cleanse(seed, 64);
+        return -2;
+    }
+    return 0;
 }
 
 int gzp_wallet_transport_key(gzp_wallet_t *w, int (*valid)(const uint8_t key[32], void *ctx), void *ctx,
@@ -769,6 +781,7 @@ void gzp_wallet_test_kdf_floor(gzp_wallet_t *w)
 }
 
 void gzp_wallet_test_keys_only(gzp_wallet_t *w) { w->keys_only = 1; }
+void gzp_wallet_test_seed_fault(gzp_wallet_t *w, int on) { w->seed_fault = on; }
 
 void gzp_wallet_test_restore_from(gzp_wallet_t *w, const char *backup)
 {

@@ -74,7 +74,9 @@ const char *gzp_unlock_status_name(int status);
 int gzp_wallet_take_store(gzp_wallet_t *w, gzp_store_t *out);
 /* A new store over the unlocked wallet, not begun (gzp_journal_store_open). */
 int gzp_wallet_open_store(gzp_wallet_t *w, gzp_store_t *out, char *err, size_t errlen);
-/* The 64-byte BIP 39 seed, for the wallet library (the caller wipes it). */
+/* unlock.h's seed(): the 64-byte BIP 39 seed (the caller wipes it). 0; -1
+ * not unlocked (seed untouched); -2 storage could not give it (seed wiped).
+ * Never logs. */
 int gzp_wallet_seed(gzp_wallet_t *w, uint8_t seed[64]);
 /* The transport's static key (stand-in until P8 derives per-member keys):
  * derived from the seed and this network, so it lives behind the key file
@@ -99,6 +101,8 @@ void gzp_wallet_test_restore_from(gzp_wallet_t *w, const char *backup);
 /* gazpacho-test (--test-dump-journal): an unlock that only derives the keys:
  * no attempts file, no journal open, no clean-up; nothing is written. */
 void gzp_wallet_test_keys_only(gzp_wallet_t *w);
+/* gazpacho-test: seed() answers -2 (storage failed) while on. */
+void gzp_wallet_test_seed_fault(gzp_wallet_t *w, int on);
 #endif
 
 #endif

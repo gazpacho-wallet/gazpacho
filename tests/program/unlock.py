@@ -154,6 +154,21 @@ def main():
               "6: a wrong passphrase reveals nothing and is counted wrong")
         p.stop()
 
+        # 7. seed() (unlock.h, for P8): -1 while locked with the buffer untouched,
+        #    0 and the seed once unlocked, -2 with the buffer wiped on a storage
+        #    fault; and no line holds a seed's 128 hex digits.
+        time.sleep(1.2)
+        p, _ = start("--test-passphrase-file", _pass_file(), "--test-kdf-floor", "--test-seed-check")
+        f = p.wait_for(r"test-seed fault rc=(-?\d+) wiped=(\d)", timeout=60)
+        lk = p.find(r"test-seed locked rc=(-?\d+) untouched=(\d)")[1]
+        ul = p.find(r"test-seed unlocked rc=(-?\d+) filled=(\d)")[1]
+        check(lk is not None and lk.group(1) == "-1" and lk.group(2) == "1", "7: locked: -1, the buffer untouched")
+        check(ul is not None and ul.group(1) == "0" and ul.group(2) == "1", "7: unlocked: 0 and the seed")
+        check(f is not None and f.group(1) == "-2" and f.group(2) == "1", "7: a storage fault: -2, the buffer wiped")
+        p.stop()
+        out = "".join(open(os.path.join(logs, n)).read() for n in os.listdir(logs))
+        check(re.search(r"[0-9a-f]{128}", out) is None, "7: no output line holds 64 bytes in hex")
+
         # 5. The release program stays locked without the local interface.
         if release:
             rfolder = os.path.join(work, "release")

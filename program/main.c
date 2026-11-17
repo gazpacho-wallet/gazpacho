@@ -249,9 +249,42 @@ static const char *state_name(gzp_wallet_state_t s)
  * program/unlock.h); gazpacho-test may unlock from --test-passphrase-file.
  * 0 once unlocked (storage open), -1 on a stop, or an exit status.
  * The passphrase is never logged: the output line gives the result only. */
+#ifdef GZP_TEST_BUILD
+/* --test-seed-check: seed() through the unlock.h table; results only, never
+ * a byte of the seed. */
+static void seed_check(int unlocked)
+{
+    gzp_unlock_t t = gzp_wallet_unlock_api(wallet);
+    uint8_t s[64];
+    int r, all_aa = 1, all_zero = 1;
+    memset(s, 0xaa, sizeof s);
+    r = t.seed(t.ctx, s);
+    for (size_t i = 0; i < sizeof s; i++) {
+        all_aa &= s[i] == 0xaa;
+        all_zero &= s[i] == 0;
+    }
+    if (!unlocked) {
+        gzp_log("test-seed locked rc=%d untouched=%d", r, all_aa);
+        return;
+    }
+    gzp_log("test-seed unlocked rc=%d filled=%d", r, !all_aa && !all_zero);
+    gzp_wallet_test_seed_fault(wallet, 1);
+    memset(s, 0xaa, sizeof s);
+    r = t.seed(t.ctx, s);
+    all_zero = 1;
+    for (size_t i = 0; i < sizeof s; i++) all_zero &= s[i] == 0;
+    gzp_wallet_test_seed_fault(wallet, 0);
+    gzp_log("test-seed fault rc=%d wiped=%d", r, all_zero);
+    OPENSSL_cleanse(s, sizeof s);
+}
+#endif
+
 static int wait_unlocked(const gzp_options_t *o)
 {
     gzp_log("wallet state=%s", state_name(gzp_wallet_state(wallet)));
+#ifdef GZP_TEST_BUILD
+    if (o->test_seed_check) seed_check(0);
+#endif
 #ifdef GZP_TEST_BUILD
     if (o->test_passphrase_file) {
         gzp_unlock_job_t job;
@@ -296,6 +329,7 @@ static int wait_unlocked(const gzp_options_t *o)
         if (job.result.status != GZP_UNLOCK_OK) return GZP_EXIT_LOCKED_OUT;
         gzp_log("wallet state=%s", state_name(gzp_wallet_state(wallet)));
         if (o->test_reveal_check) reveal_check(o);
+        if (o->test_seed_check) seed_check(1);
         return 0;
     }
 #else
