@@ -131,6 +131,18 @@ def main():
               "4: a damaged key file is refused (%s)" % (m.group(0) if m else None))
         check(not os.path.exists(os.path.join(folder, "restore.gzr")), "4: nothing written by the refusal")
 
+        # 6. Reveal and the words check (storage 9.2): statuses only, never a word.
+        shutil.rmtree(folder)
+        p, _ = start("--test-passphrase-file", _pass_file(), "--test-kdf-floor", "--test-reveal-check")
+        ok = p.wait_for(r"test-reveal wrong status=(\w+) words=(\d+)", timeout=60)
+        check(p.find(r"test-reveal status=ok words=24")[0] is not None, "6: the 24 words are revealed")
+        check(p.find(r"test-words-check right status=ok")[0] is not None, "6: three right words at their positions: ok")
+        check(p.find(r"test-words-check changed status=words_differ")[0] is not None,
+              "6: one word changed: words_differ")
+        check(ok is not None and ok.group(1) == "wrong" and ok.group(2) == "0",
+              "6: a wrong passphrase reveals nothing and is counted wrong")
+        p.stop()
+
         # 5. The release program stays locked without the local interface.
         if release:
             rfolder = os.path.join(work, "release")

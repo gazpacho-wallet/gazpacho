@@ -51,7 +51,8 @@ typedef struct {
 } job_keys_t;
 
 static const char *const STATUS_NAMES[] = {"ok", "wrong", "busy", "not_checked", "no_wallet", "exists",
-                                           "weak", "bad_words", "files_behind", "storage_failed"};
+                                           "weak", "bad_words", "files_behind", "storage_failed",
+                                           "words_differ"};
 
 const char *gzp_unlock_status_name(int status)
 {
@@ -370,6 +371,59 @@ static int words_entropy(const char words[GZP_UNLOCK_WORDS][GZP_UNLOCK_WORD_MAX]
 
 /* ---- begin: the derivation thread; writes nothing -------------------------------- */
 
+/* REVEAL and WORDS_CHECK (storage 9.2): the passphrase opens the words'
+ * entropy (the helper derives, gz_sc_words); the wallet library makes the
+ * 24 words. Reveal: into job->words, the caller's to show once and wipe.
+ * Check: words[0..2] against the words at positions[0..2] (1-based), then
+ * every copy wiped. Nothing is logged or written here. */
+static void reveal_or_check(gzp_wallet_t *w, gzp_unlock_job_t *job)
+{
+    uint8_t *entropy = gz_sc_salloc(32);
+    char *phrase = gz_sc_salloc(GZW_PHRASE_MAX);
+    char *mine = gz_sc_salloc(GZP_UNLOCK_WORDS * GZP_UNLOCK_WORD_MAX);
+    gz_sc_err_t e;
+    if (!entropy || !phrase || !mine) {
+        set_result(&job->result, GZP_UNLOCK_NOT_CHECKED, NULL);
+        goto out;
+    }
+    if (job->op == GZP_UNLOCK_OP_WORDS_CHECK) {
+        for (int i = 0; i < 3; i++)
+            if (job->positions[i] < 1 || job->positions[i] > GZP_UNLOCK_WORDS) {
+                set_result(&job->result, GZP_UNLOCK_BAD_WORDS, "position");
+                job->result.position = (uint32_t)i + 1;
+                goto out;
+            }
+    }
+    e = gz_sc_words(&w->sc, job->passphrase, job->passphrase_len, entropy);
+    if (e != GZ_SC_OK) {
+        map_err(&job->result, e);
+        goto out;
+    }
+    if (gzw_phrase_from_entropy(entropy, phrase) != 1) {
+        set_result(&job->result, GZP_UNLOCK_STORAGE_FAILED, "words");
+        goto out;
+    }
+    {
+        char *save = NULL, *t = strtok_r(phrase, " ", &save);
+        for (size_t i = 0; i < GZP_UNLOCK_WORDS; i++, t = strtok_r(NULL, " ", &save))
+            snprintf(mine + i * GZP_UNLOCK_WORD_MAX, GZP_UNLOCK_WORD_MAX, "%s", t ? t : "");
+    }
+    if (job->op == GZP_UNLOCK_OP_REVEAL) {
+        memcpy(job->words, mine, GZP_UNLOCK_WORDS * GZP_UNLOCK_WORD_MAX);
+        set_result(&job->result, GZP_UNLOCK_OK, NULL);
+    } else {
+        int same = 1;
+        for (int i = 0; i < 3; i++)
+            same &= strncmp(job->words[i], mine + (size_t)(job->positions[i] - 1) * GZP_UNLOCK_WORD_MAX,
+                            GZP_UNLOCK_WORD_MAX) == 0;
+        set_result(&job->result, same ? GZP_UNLOCK_OK : GZP_UNLOCK_WORDS_DIFFER, NULL);
+    }
+out:
+    gz_sc_sfree(entropy);
+    gz_sc_sfree(phrase);
+    gz_sc_sfree(mine);
+}
+
 void gzp_wallet_begin(gzp_wallet_t *w, gzp_unlock_job_t *job)
 {
     job_keys_t *k = calloc(1, sizeof *k);
@@ -389,6 +443,10 @@ void gzp_wallet_begin(gzp_wallet_t *w, gzp_unlock_job_t *job)
     case GZP_UNLOCK_OP_CHECK:
         k->err = gz_sc_unlock_derive(&w->sc, job->passphrase, job->passphrase_len, &w->params, &k->u);
         map_err(&job->result, k->err);
+        return;
+    case GZP_UNLOCK_OP_REVEAL:
+    case GZP_UNLOCK_OP_WORDS_CHECK:
+        reveal_or_check(w, job);
         return;
     case GZP_UNLOCK_OP_CREATE:
     case GZP_UNLOCK_OP_RESTORE:
@@ -540,6 +598,10 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
         else r->status = GZP_UNLOCK_WRONG;
         goto out;
     }
+    if (r->status == GZP_UNLOCK_WORDS_DIFFER) {
+        (void)count_attempt(w, 0, now_ms, NULL);
+        goto out;
+    }
     if (r->status != GZP_UNLOCK_OK) goto out;
     switch (k->op) {
     case GZP_UNLOCK_OP_CHECK: {
@@ -595,6 +657,12 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
         }
         w->unlocked = 1;
         if (open_storage(w, r) != GZP_UNLOCK_OK) gzp_wallet_lock(w);
+        goto out;
+    case GZP_UNLOCK_OP_REVEAL:
+    case GZP_UNLOCK_OP_WORDS_CHECK:
+        /* The passphrase was right (a WRONG went above): counted as such;
+         * WORDS_DIFFER is the words' answer, not the passphrase's. */
+        (void)count_attempt(w, 0, now_ms, NULL);
         goto out;
     case GZP_UNLOCK_OP_CREATE:
     case GZP_UNLOCK_OP_RESTORE:

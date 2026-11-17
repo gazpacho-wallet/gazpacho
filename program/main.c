@@ -177,6 +177,68 @@ static int64_t wall_ms(void)
 }
 #endif
 
+#ifdef GZP_TEST_BUILD
+/* One job through the table, as the API's derivation thread and loop would. */
+static int run_job(gzp_unlock_job_t *job)
+{
+    struct timespec d = {1, 100000000L}; /* one attempt a second */
+    nanosleep(&d, NULL);
+    gzp_wallet_begin(wallet, job);
+    gzp_wallet_finish(wallet, job, wall_ms());
+    return job->result.status;
+}
+
+/* --test-reveal-check: statuses only; every word is wiped here. */
+static void reveal_check(const gzp_options_t *o)
+{
+    static gzp_unlock_job_t job, chk;
+    uint8_t *pw = gz_sc_salloc(GZ_SC_PASS_IN_MAX + 1);
+    static const int pos[3] = {1, 12, 24};
+    int fd = pw ? open(o->test_passphrase_file, O_RDONLY | O_CLOEXEC) : -1;
+    ssize_t r = fd >= 0 ? read(fd, pw, GZ_SC_PASS_IN_MAX + 1) : -1;
+    size_t n;
+    if (fd >= 0) close(fd);
+    if (r < 0) {
+        gz_sc_sfree(pw);
+        return;
+    }
+    n = (size_t)r;
+    if (n && pw[n - 1] == 10) n--;
+    memset(&job, 0, sizeof job);
+    job.op = GZP_UNLOCK_OP_REVEAL;
+    job.passphrase = pw;
+    job.passphrase_len = n;
+    int st = run_job(&job);
+    int full = 1;
+    for (int i = 0; i < GZP_UNLOCK_WORDS; i++) full &= job.words[i][0] != 0;
+    gzp_log("test-reveal status=%s words=%d", gzp_unlock_status_name(st), full ? GZP_UNLOCK_WORDS : 0);
+    memset(&chk, 0, sizeof chk);
+    chk.op = GZP_UNLOCK_OP_WORDS_CHECK;
+    chk.passphrase = pw;
+    chk.passphrase_len = n;
+    for (int i = 0; i < 3; i++) {
+        chk.positions[i] = pos[i];
+        memcpy(chk.words[i], job.words[pos[i] - 1], GZP_UNLOCK_WORD_MAX);
+    }
+    gzp_log("test-words-check right status=%s", gzp_unlock_status_name(run_job(&chk)));
+    chk.result.status = 0;
+    memcpy(chk.words[1], job.words[pos[0] - 1], GZP_UNLOCK_WORD_MAX); /* position 12 given word 1 */
+    if (!strcmp(job.words[pos[0] - 1], job.words[pos[1] - 1])) snprintf(chk.words[1], GZP_UNLOCK_WORD_MAX, "zoo");
+    gzp_log("test-words-check changed status=%s", gzp_unlock_status_name(run_job(&chk)));
+    OPENSSL_cleanse(&job, sizeof job);
+    OPENSSL_cleanse(&chk, sizeof chk);
+    memset(&job, 0, sizeof job);
+    job.op = GZP_UNLOCK_OP_REVEAL;
+    job.passphrase = (const uint8_t *)"not this wallet's passphrase at all";
+    job.passphrase_len = strlen("not this wallet's passphrase at all");
+    st = run_job(&job);
+    full = job.words[0][0] != 0;
+    gzp_log("test-reveal wrong status=%s words=%d", gzp_unlock_status_name(st), full ? 1 : 0);
+    OPENSSL_cleanse(&job, sizeof job);
+    gz_sc_sfree(pw);
+}
+#endif
+
 static const char *state_name(gzp_wallet_state_t s)
 {
     return s == GZP_WALLET_NONE ? "none" : s == GZP_WALLET_LOCKED ? "locked" : "unlocked";
@@ -233,6 +295,7 @@ static int wait_unlocked(const gzp_options_t *o)
                 job.result.reason ? job.result.reason : "-");
         if (job.result.status != GZP_UNLOCK_OK) return GZP_EXIT_LOCKED_OUT;
         gzp_log("wallet state=%s", state_name(gzp_wallet_state(wallet)));
+        if (o->test_reveal_check) reveal_check(o);
         return 0;
     }
 #else

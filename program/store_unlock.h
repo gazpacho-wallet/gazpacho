@@ -38,6 +38,9 @@
  * counter), starts the mark file again with the restore marker at the open,
  * and opens storage: the node starts as a restore under a new epoch. */
 #define GZP_UNLOCK_OP_START_AS_RESTORE 100
+/* REVEAL and WORDS_CHECK (unlock.h) derive the words' entropy from the key
+ * file with the passphrase (storage 9.2): they need no unlocked wallet, write
+ * nothing but the attempts file, and never log or store the words. */
 
 typedef struct gzp_wallet gzp_wallet_t;
 
