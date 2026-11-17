@@ -732,7 +732,7 @@ Vectors: **(open)**, like 7.1's, until the tree builder runs in the engine.
 - Records: `display_name` (6.3); `evidence` (7.9); `all_partials` (7.6); `payouts` and `penalties` (7.7); `distribution` (7.2) unless the owner decides the creation round signs it.
 - Parameters that are fixed at one value in slice 1 but still carried, so the format does not change later: `k` = 1, `tree_anchors` = 1, `lstock_hashes` empty, `layer_step` = 144 and `layer_states` = 4 (no byte depends on them while every level is fixed). Placement is not carried at all (7.2).
 - Purposes other than creation; tiers other than 0.
-- Invitations, identities, chat, rule-change requests, standby seats, carry-over: no messages yet.
+- Invitations, identities, chat, rule-change requests, carry-over: no messages yet. Standby seats: joins during a ready check or Signing exist (6.3, 6.8). No messages exist yet for the swap of an understudy into an attempt, its notice to the member, or the signed receipts that cover standby order (owner decision 16c; `spec/local-api.md` 14.5).
 - Peer storage (`peer_storage`, `peer_storage_retrieval`) for member backups: standard BOLT messages, not factory messages, and not in slice 1.
 
 ## 10. bLIP-56 adapter (not used in slice 1)
