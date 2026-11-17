@@ -17,7 +17,8 @@ DISCONNECT and CONNECT, a port that will not sign. Each is an exact piece of
 core/lobby's text and its replacement: the tool stops at once if one no longer
 applies exactly once, so the list cannot rot silently when the code moves.
 
-Each test runs in its own process group and the whole group is killed on a
+A line mutant's name gives the column it changed (@N), and the results
+give the mutated line after `now:`. Each test runs in its own process group and the whole group is killed on a
 timeout (item 29).
 
 usage: lobby-mutate.py REPO SECP_SRC SECP_LIB OUTDIR [WORKERS] [FILE,FILE...]
@@ -267,14 +268,14 @@ def mutants(name, text):
                 if at < 0:
                     break
                 if not ((a == " < " or a == " > ") and body[at:at + 4] in (" << ", " >> ")):
-                    yield (name, i, f"{a.strip()} -> {b.strip()}", line[:at] + b + line[at + len(a):])
+                    yield (name, i, f"{a.strip()} -> {b.strip()} @{at + 1}", line[:at] + b + line[at + len(a):])
                 start = at + len(a)
         for mt in re.finditer(r"!(?!=)", body):
-            yield (name, i, "drop !", line[:mt.start()] + line[mt.start() + 1:])
+            yield (name, i, f"drop ! @{mt.start() + 1}", line[:mt.start()] + line[mt.start() + 1:])
         if '"' not in body and "[" not in body.split("=")[0]:
             for mt in re.finditer(r"(?<![\w.])(\d+)(u|ull|ul)?(?![\w.x])", body):
                 v = int(mt.group(1))
-                yield (name, i, f"{v} -> {v + 1}", line[:mt.start(1)] + str(v + 1) + line[mt.end(1):])
+                yield (name, i, f"{v} -> {v + 1} @{mt.start(1) + 1}", line[:mt.start(1)] + str(v + 1) + line[mt.end(1):])
         if DELETE.match(line) and line.rstrip().endswith(";") and line.count("(") == line.count(")"):
             yield (name, i, "delete statement", "")
 
@@ -424,7 +425,11 @@ def main():
             if t is not None:
                 by_test[t] += 1
             where = src[name][i].strip() if i >= 0 else "(named)"
-            log.write(f"{res} {name}:{i + 1} {what} | {where}" + (f" | test {t}" if t is not None else "") + "\n")
+            # The line as the mutant has it, so that one of several matches on a
+            # line is known without running it again (review A of PR 44, L6).
+            now = (jobs[k][3].strip() or "(deleted)") if i >= 0 else "(named)"
+            log.write(f"{res} {name}:{i + 1} {what} | {where} | now: {now}" +
+                      (f" | test {t}" if t is not None else "") + "\n")
             log.flush()
     summary = (f"total {len(jobs)}: killed {counts['killed']}, survived {counts['SURVIVED']}, "
                f"invalid {counts['invalid']}; first kill by test: {by_test}")
