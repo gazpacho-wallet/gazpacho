@@ -1185,6 +1185,22 @@ static gz_status_t slot_begin(gz_node_t *c, int i, gz_bytes_t cond, gz_action_li
     return gz_ls_after(c, i, out);
 }
 
+/* The slot's pair: the next one the key port gives. A pair with an invalid
+ * child (BIP 32: the port gives no key at that index) is skipped and the next
+ * pair tried, never an index already used; a port that gives none of
+ * LS_KEY_TRIES pairs has no keys now (503 no_key). */
+#define LS_KEY_TRIES 8
+static int ls_init_next(gz_node_t *c, int i)
+{
+    for (uint32_t k = 0; k < LS_KEY_TRIES; k++) {
+        uint32_t first = c->np.highest_index + 1 + 2 * k;
+        if (first > 0xfffffff0u) return 0;
+        c->slots[i].key_index = first;
+        if (gz_ls_init(c, i)) return 1;
+    }
+    return 0;
+}
+
 static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
 {
     gz_bytes_t outer, current, v, none = {NULL, 0};
@@ -1202,8 +1218,7 @@ static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     s->listed = arg(cmd, 16, 1, &v) && v.data[0] != 0;
     s->standbys = arg(cmd, 18, 2, &v) ? gz_get_u16(v.data) : 0;
     s->key_epoch = c->np.have_epoch ? c->np.epoch : 0;
-    s->key_index = c->np.highest_index + 1;
-    if (!gz_ls_init(c, i)) {
+    if (!ls_init_next(c, i)) {
         memset(s, 0, sizeof *s);
         return np_command_result(out, cmd, 503, "no_key");
     }
@@ -1264,8 +1279,7 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     s->cond = cd;
     s->auto_join = !(arg(cmd, 20, 1, &v) && v.data[0] == 0);
     s->key_epoch = c->np.have_epoch ? c->np.epoch : 0;
-    s->key_index = c->np.highest_index + 1;
-    if (!gz_ls_init(c, i)) {
+    if (!ls_init_next(c, i)) {
         memset(s, 0, sizeof *s);
         return np_command_result(out, cmd, 503, "no_key");
     }

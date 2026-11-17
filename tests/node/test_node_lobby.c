@@ -35,6 +35,7 @@ typedef struct { int node; uint16_t kind; uint8_t to[33], scope[32]; uint8_t rec
 
 static h_t N[NN];
 static int IDENT[NN], ALIVE[NN], PUB_FAIL[NN], SIGN_FAIL[NN], FORGETS[NN];
+static uint32_t BAD_INDEX[NN];  /* an index whose key the port cannot give (an invalid child) */
 static wmsg_t Q[8192];
 static size_t NQ;
 static wtimer_t T[NN][64];
@@ -145,7 +146,7 @@ static int w_pub(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub[33])
 {
     lt_key_t k;
     int n = node_of(ctx);
-    if (PUB_FAIL[n]) return 0;
+    if (PUB_FAIL[n] || (BAD_INDEX[n] && index == BAD_INDEX[n])) return 0;
     wkey(IDENT[n], epoch, index, &k);
     memcpy(pub, k.pub, 33);
     return 1;
@@ -473,6 +474,7 @@ static void w_reset(void)
     memset(NT, 0, sizeof NT);
     memset(ALIVE, 0, sizeof ALIVE);
     memset(PUB_FAIL, 0, sizeof PUB_FAIL);
+    memset(BAD_INDEX, 0, sizeof BAD_INDEX);
     memset(SIGN_FAIL, 0, sizeof SIGN_FAIL);
     memset(FORGETS, 0, sizeof FORGETS);
     memset(UNSEATS, 0, sizeof UNSEATS);
@@ -1862,6 +1864,31 @@ static void test_api_pause_and_signing(void)
     w_free(3);
 }
 
+/* A pair with an invalid child (the key port gives no key at one index):
+ * the next pair is used, never the same index twice, for a host and a
+ * member, at either key of the pair. */
+static void test_key_skip(void)
+{
+    terms_t t, u;
+    uint32_t h0, h1;
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 1300);
+    make_terms(&u, 3, 3, 1310);
+    h0 = N[0].n->np.highest_index;
+    BAD_INDEX[0] = h0 + 1;               /* the contribution key */
+    CHECK(host_open(&t, 0) == 200 && slot(0, &t) && slot(0, &t)->key_index == h0 + 3);
+    h1 = N[1].n->np.highest_index;
+    BAD_INDEX[1] = h1 + 2;               /* the factory key */
+    CHECK(member_join(1, &t) == 200 && slot(1, &t) && slot(1, &t)->key_index == h1 + 3);
+    w_run(2000, 100);
+    CHECK(slot(1, &t)->lobby.m.joined && host_state(&t) == GZ_LOBBY_OPEN);
+    /* The skipped indexes are never used later. */
+    BAD_INDEX[0] = 0;
+    CHECK(host_open(&u, 0) == 200 && slot(0, &u)->key_index > slot(0, &t)->key_index + 1);
+    no_errors(1);
+    w_free(1);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -1872,6 +1899,7 @@ int main(int argc, char **argv)
     test_refusals();
     test_gates();
     test_index();
+    test_key_skip();
     test_views();
     test_view_refusal();
     test_view_seats();
