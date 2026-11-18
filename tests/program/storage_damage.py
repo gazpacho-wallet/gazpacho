@@ -16,6 +16,7 @@ says:
   - guard.gzg removed, or damaged: possibly old, files_behind;
   - an older mark file put back... (a journal cut back to an older copy):
     behind, files_behind;
+  (files_behind names which, behind or possibly_old: local-api.md's cause);
   - starts.gzs damaged or removed: treated as missing, the person told, the
     incarnation still above the journal's;
   - restore.gzr damaged: refused.
@@ -120,10 +121,10 @@ def main():
         case("journal-middle", lambda f: flip(os.path.join(f, J), 185 + 69 + 69 + 50), "refused", "storage_failed")
         case("journal-header", lambda f: flip(os.path.join(f, J), 100), "refused")
         case("journal-torn", lambda f: os.truncate(os.path.join(f, J), jsize - 30), "ready")
-        case("mark-removed", lambda f: os.unlink(os.path.join(f, "mark.gzm")), "refused", "files_behind")
-        case("mark-flipped", lambda f: flip(os.path.join(f, "mark.gzm"), 60), "refused", "files_behind")
-        case("guard-removed", lambda f: os.unlink(os.path.join(f, "guard.gzg")), "refused", "files_behind")
-        case("guard-flipped", lambda f: flip(os.path.join(f, "guard.gzg"), -5), "refused", "files_behind")
+        case("mark-removed", lambda f: os.unlink(os.path.join(f, "mark.gzm")), "refused", "files_behind:possibly_old")
+        case("mark-flipped", lambda f: flip(os.path.join(f, "mark.gzm"), 60), "refused", "files_behind:possibly_old")
+        case("guard-removed", lambda f: os.unlink(os.path.join(f, "guard.gzg")), "refused", "files_behind:possibly_old")
+        case("guard-flipped", lambda f: flip(os.path.join(f, "guard.gzg"), -5), "refused", "files_behind:possibly_old")
 
         def older_journal(f):
             # The journal of the first start, put back by hand: behind its mark file.
@@ -140,7 +141,7 @@ def main():
             # anchored batch's mark: the mark file names a mark it lacks.
             data = open(os.path.join(f, J), "rb").read()
             open(os.path.join(f, J), "wb").write(data[:185 + 69 + 69])
-        case("journal-cut-back", cut_back, "refused", "files_behind")
+        case("journal-cut-back", cut_back, "refused", "files_behind:behind")
 
         f = case("counter-flipped", lambda f: flip(os.path.join(f, "starts.gzs"), -3), "ready")
         p = procs[-1]

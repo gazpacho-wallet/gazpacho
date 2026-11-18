@@ -571,7 +571,7 @@ uint64_t gzp_journal_store_incarnation(const gzp_store_t *st)
 
 int gzp_journal_store_behind(const gzp_store_t *st)
 {
-    return st->ops == &JOURNAL_OPS && ((const jstore_t *)st->ctx)->behind;
+    return st->ops == &JOURNAL_OPS ? ((const jstore_t *)st->ctx)->behind : 0; /* 1 or 2, not a truth value */
 }
 
 /* ---- dump, import, mark ------------------------------------------------------------ */
