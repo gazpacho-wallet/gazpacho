@@ -110,7 +110,9 @@ if(Python3_Interpreter_FOUND)
     # P7: the chain worker in two processes (watches, restarts, BUSY, mainnet).
     add_test(NAME program_chain_watch
       COMMAND ${GZP_PY} ${GZP_T}/chain_watch.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/chain_watch)
-    set_tests_properties(program_chain_watch PROPERTIES TIMEOUT 300)
+    # RUN_SERIAL: its step that waits for the worker's BUSY answer flaked under
+    # load (review of PR 58, L1); running it alone keeps the wait as it is.
+    set_tests_properties(program_chain_watch PROPERTIES TIMEOUT 300 RUN_SERIAL TRUE)
   endif()
   # The restart window and a stop during a restart (M6); the start queue's
   # messages under the right connection, after its connected, and the queue's
@@ -154,9 +156,6 @@ if(Python3_Interpreter_FOUND)
                        program_refusals program_resend_on_connect program_restart_slots program_start_queue
                        program_two_process
                        PROPERTIES RESOURCE_LOCK gzp_free_port)
-  # Alone: its step that waits for the worker's BUSY answer flaked under load
-  # (review of PR 58, L1); running it alone keeps the wait as it is.
-  set_tests_properties(program_chain_watch PROPERTIES RUN_SERIAL TRUE)
   if(GZ_LIVE_TESTS AND TARGET gazpacho_chain_curl)
     # Read-only: the public signet servers' block 0 and tip, the wallet's
     # first address, and a refusal of a mainnet server. Needs the network.
