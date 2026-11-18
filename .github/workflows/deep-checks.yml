@@ -44,8 +44,6 @@ on:
         type: string
   schedule:
     - cron: "41 1 * * *"
-  push:
-    branches: [deep-checks]   # TEMPORARY: registers the workflow for the first test; removed before review
   pull_request:
     paths:
       - .github/workflows/deep-checks.yml
@@ -82,13 +80,13 @@ jobs:
         id: inputs
         env:
           EVENT: ${{ github.event_name }}
-          REF: ${{ github.event.pull_request.head.sha || inputs.ref || (github.event_name == 'push' && github.sha) || 'main' }}
+          REF: ${{ github.event.pull_request.head.sha || inputs.ref || 'main' }}
           SUITE: ${{ inputs.suite || 'all' }}
           TOOLS: ${{ inputs.tools || 'all' }}
           SHARDS: ${{ inputs.shards || '0' }}
           FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '600' }}
         run: |
-          if [ "$EVENT" = pull_request ] || [ "$EVENT" = push ]; then SUITE=smoke; TOOLS=chain-watch; SHARDS=2; FUZZ_SECONDS=30; fi
+          if [ "$EVENT" = pull_request ]; then SUITE=smoke; TOOLS=chain-watch; SHARDS=2; FUZZ_SECONDS=30; fi
           echo "$REF" | grep -Eqx '[A-Za-z0-9][A-Za-z0-9._/-]{0,199}' || { echo "::error::bad ref: $REF"; exit 1; }
           echo "$SUITE" | grep -Eqx 'all|smoke|fuzz|mutation|valgrind|msan|sanitizers|regtest' || { echo "::error::bad suite: $SUITE"; exit 1; }
           echo "$TOOLS" | grep -Eqx '[a-z0-9,-]{1,200}' || { echo "::error::bad tools: $TOOLS"; exit 1; }
@@ -189,6 +187,7 @@ jobs:
     timeout-minutes: 330
     strategy:
       fail-fast: false
+      max-parallel: 4   # the 20 runners are shared with CI
       matrix:
         target: ${{ fromJSON(needs.fuzz-build.outputs.targets) }}
     steps:
@@ -239,6 +238,7 @@ jobs:
     timeout-minutes: 355
     strategy:
       fail-fast: false
+      max-parallel: 6   # the 20 runners are shared with CI
       matrix: ${{ fromJSON(needs.plan.outputs.mutation) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -280,6 +280,7 @@ jobs:
     timeout-minutes: 355
     strategy:
       fail-fast: false
+      max-parallel: 3   # the 20 runners are shared with CI
       matrix:
         shard: [0, 1, 2, 3, 4, 5]
     env:
@@ -330,6 +331,7 @@ jobs:
     timeout-minutes: 300
     strategy:
       fail-fast: false
+      max-parallel: 2   # the 20 runners are shared with CI
       matrix:
         shard: [0, 1, 2, 3]
     env:
@@ -404,6 +406,7 @@ jobs:
     timeout-minutes: 300
     strategy:
       fail-fast: false
+      max-parallel: 3   # the 20 runners are shared with CI
       matrix:
         compiler: [gcc, clang]
         shard: [0, 1, 2]

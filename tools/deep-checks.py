@@ -294,7 +294,25 @@ def survivors_of(style, text):
 
 def cmd_mutate(args):
     pos, o = parse_opts(args, {"budget": 330, "jobs": os.cpu_count() or 2})
-    src, tool, shard, of, out = os.path.abspath(pos[0]), pos[1], int(pos[2]), int(pos[3]), os.path.abspath(pos[4])
+    tool, shard, of, out = pos[1], int(pos[2]), int(pos[3]), os.path.abspath(pos[4])
+    start = time.time()
+    try:
+        return mutate(os.path.abspath(pos[0]), tool, shard, of, out, o)
+    except SystemExit as e:   # the tool's preparation failed: still leave a result for the summary
+        if e.code in (None, 0):
+            raise
+        print("FAILED before the run: %s" % e.code)
+        os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, "log.txt"), "a") as log:
+            log.write("\nFAILED before the run: %s\n" % e.code)
+        open(os.path.join(out, "survivors.txt"), "a").close()
+        write_result(out, name="%s %d/%d" % (tool, shard + 1, of), kind="mutation", tool=tool, shard=shard, of=of,
+                     status="failed", exit=None, mutants=None, survivors=0, seconds=round(time.time() - start),
+                     note=str(e.code))
+        return 1
+
+
+def mutate(src, tool, shard, of, out, o):
     jobs = o["jobs"]
     os.makedirs(out, exist_ok=True)
     start = time.time()
