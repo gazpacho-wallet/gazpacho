@@ -271,6 +271,12 @@ typedef struct {
      * abandoned with no spend-back. Memory only: the watch fails again after
      * a start. */
     unsigned failed;
+    /* Watches whose answer is put off (GZ_CHAIN_WATCH_PENDING; review B of PR
+     * 56, third confirmation), the same bits, until their WATCH_SYNCED (or
+     * WATCH_FAILED). This factory alone waits meanwhile: no deadline
+     * decision, for at most GZ_FUND_PENDING_GRACE blocks past its deadline,
+     * after which it fails closed as for a failed watch. Memory only. */
+    unsigned pending;
 } gz_fund_factory_t;
 
 typedef struct {
@@ -349,6 +355,10 @@ gz_status_t gz_fund_host_plan(gz_fund_t *f, const gz_fund_plan_in_t *in, gz_acti
 #define GZ_FUND_H1_NO_PLAN   100   /* no plan for the scope */
 #define GZ_FUND_H1_SIGN      101   /* the wallet did not sign */
 #define GZ_FUND_H1_SIGNED    102   /* the signed bytes are not the plan */
+/* Blocks past a factory's deadline that it waits for a watch told pending
+ * before it fails closed (a day of blocks: linking the deepest confirmation
+ * the chain view follows takes far less). */
+#define GZ_FUND_PENDING_GRACE 144u
 #define GZ_FUND_H1_TOO_LATE  103   /* tip + B - 1 past the deadline: a burial by it is no longer
                                       possible; the lobby's outcome Failed with cancel reason 4
                                       (review B of PR 56, N-1) */

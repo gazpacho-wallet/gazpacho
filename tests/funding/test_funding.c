@@ -1803,6 +1803,90 @@ static void test_restart_two(void)
     free(u);
 }
 
+/* Review B's third confirmation: a watch told pending (its answer put off)
+ * makes its own factory wait, never another; Live still comes from the
+ * report; its WATCH_SYNCED ends the wait; and a factory never answered
+ * fails closed GZ_FUND_PENDING_GRACE blocks past its deadline. */
+static void test_watch_pending(void)
+{
+    for (int end = 0; end < 3; end++) {
+        /* members A (input 0 pending) and B (honest), both past their deadline */
+        ft_t *t = ft_new(0, GZ_HOST_FUNDING_AUTO);
+        uint8_t txa[400], txb[400], op[36];
+        size_t la, lb;
+        gz_fund_acked_in_t a = acked_in(t, SCOPE_A, 0x40, 1000, &txa, &la);
+        gz_fund_acked_in_t b = acked_in(t, SCOPE_B, 0x50, 1000, &txb, &lb);
+        gz_event_t e;
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &a, &t->out) == GZ_OK);
+        ft_after(t);
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &b, &t->out) == GZ_OK);
+        ft_after(t);
+        e = ev_tip(1001);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        ft_op(op, 0x40, 0);
+        e = ev_pending_op(op);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 0);   /* put off is not failed */
+        e = ev_tip(1045);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[0].scope, SCOPE_B, 32) == 0);
+        if (end == 0) {
+            /* the answer comes: nothing found, so A is decided */
+            e = ev_synced_op(op);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[1].scope, SCOPE_A, 32) == 0);
+        } else if (end == 1) {
+            /* a report still decides: Live */
+            e = ev_conf(a.funding.txid, 43, 1003);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_LIVE && memcmp(t->h.r[1].scope, SCOPE_A, 32) == 0);
+        } else {
+            /* never answered: waits to the grace, then fails closed */
+            e = ev_tip(1036 + GZ_FUND_PENDING_GRACE);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 1);
+            e = ev_tip(1036 + GZ_FUND_PENDING_GRACE + 1);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[1].scope, SCOPE_A, 32) == 0);
+        }
+        free(t);
+    }
+    {
+        /* a host: A's funding put off, B fine; past the deadline B is abandoned
+         * with its spend-back, A waits; past the grace A is abandoned with no
+         * spend-back, as for a failed watch */
+        ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+        gz_event_t e = ev_tip(1000);
+        gz_fund_plan_out_t p;
+        int sb0;
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        p = host_fund(t, SCOPE_A, 0);
+        (void)host_fund(t, SCOPE_B, 0);
+        sb0 = t->w.sb_n;
+        e = ev_pending_tx(p.funding.txid);   /* its funding's answer put off */
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        e = ev_tip(1040);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[0].scope, SCOPE_B, 32) == 0);
+        CHECK(t->w.sb_n == sb0 + 1);
+        e = ev_tip(1036 + GZ_FUND_PENDING_GRACE + 1);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[1].scope, SCOPE_A, 32) == 0);
+        CHECK(t->w.sb_n == sb0 + 1);
+        free(t);
+    }
+}
+
 static void test_corrupt(void)
 {
     ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
@@ -2000,6 +2084,7 @@ int main(void)
     test_watch_failed();
     test_tip_hash();
     test_restart_two();
+    test_watch_pending();
     test_corrupt();
     test_journal_replay_steps();
     test_ignored_events();

@@ -127,3 +127,12 @@ g1-member-waits ## funding.c ## if ((v == GZ_C11_ABANDONED || x->failed) && x->s
 g1-host-waits ## funding.c ## if (x->failed && f->tip_known && facts_back(f, x)) return host_abandon(f, x, out);   /* fails closed (G-1) */\n        if (x->rebroadcast) { ## if (x->rebroadcast) {
 g2-hash-ignored ## funding.c ## c->height == f->tip &&\n        memcmp(c->block_hash, f->tip_hash, 32) == 0) ## c->height == f->tip)
 g2-hash-not-kept ## funding.c ## memcpy(f->tip_hash, ev->u.chain.block_hash, 32);   /* G-2 */ ## (void)0;
+# --- follow-ups (review B's third confirmation): a watch told pending
+p-pending-ignored ## funding.c ## if (x->pending) {\n        /* A watch of this factory ## if (0) {\n        /* A watch of this factory
+p-pending-not-set ## funding.c ## if (c->kind == GZ_CHAIN_WATCH_PENDING) x->pending |= which; ## if (c->kind == GZ_CHAIN_WATCH_PENDING) (void)which;
+p-pending-not-cleared ## funding.c ## else x->pending &= ~which; ## else (void)which;
+p-pending-other-tx ## funding.c ## if (c->is_tx && memcmp(c->txid, x->funding.txid, 32) == 0) which |= 1u; ## if (c->is_tx) which |= 1u;
+p-pending-other-op ## funding.c ## if (memcmp(q.txid, c->outpoint.txid, 32) == 0 && q.vout == c->outpoint.vout) which |= 2u << j; ## if (q.vout == c->outpoint.vout) which |= 2u << j;
+p-grace-none ## funding.c ## f->tip > x->deadline + GZ_FUND_PENDING_GRACE ## f->tip > x->deadline
+p-grace-early ## funding.c ## f->tip > x->deadline + GZ_FUND_PENDING_GRACE ## f->tip >= x->deadline + GZ_FUND_PENDING_GRACE
+p-grace-not-failed ## funding.c ## x->failed |= x->pending;\n        x->reported |= x->pending; ## x->reported |= x->pending;

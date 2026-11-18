@@ -1276,6 +1276,15 @@ static int facts_back(const gz_fund_t *f, gz_fund_factory_t *x)
 {
     unsigned all;
     if (!f->tip_synced) return 0;   /* the answers for this tip are not all in (integration B12) */
+    if (x->pending) {
+        /* A watch of this factory has its answer put off: it alone waits,
+         * up to GZ_FUND_PENDING_GRACE blocks past its deadline, then fails
+         * closed as for a failed watch (review B, third confirmation). */
+        if (!(f->tip_known && !x->deadline_pending && f->tip > x->deadline + GZ_FUND_PENDING_GRACE)) return 0;
+        x->failed |= x->pending;
+        x->reported |= x->pending;
+        x->pending = 0;
+    }
     if (!x->resyncing) return 1;
     all = (2u << (n_watch(f, x) - 1)) - 1u;
     if ((x->reported & all) == all) x->resyncing = 0;
@@ -1520,6 +1529,19 @@ static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
                 x->reported |= bad;
                 x->due = 1;
             }
+        }
+        if (c->kind == GZ_CHAIN_WATCH_PENDING || c->kind == GZ_CHAIN_WATCH_SYNCED || c->kind == GZ_CHAIN_WATCH_FAILED) {
+            /* a watch's answer put off, or come at last (review B, third confirmation) */
+            unsigned which = 0;
+            if (c->is_tx && memcmp(c->txid, x->funding.txid, 32) == 0) which |= 1u;
+            for (size_t j = 0; !c->is_tx && j < GZ_FUND_WATCH_INPUTS && j < x->n_in; j++) {
+                gz_outpoint_t q;
+                outpoint_of(x->ins[j], &q);
+                if (memcmp(q.txid, c->outpoint.txid, 32) == 0 && q.vout == c->outpoint.vout) which |= 2u << j;
+            }
+            if (c->kind == GZ_CHAIN_WATCH_PENDING) x->pending |= which;
+            else x->pending &= ~which;
+            if (which) x->due = 1;
         }
         if (c->kind == GZ_CHAIN_OUTPOINT_SPENT) {
             for (size_t k = 0; k < GZ_FUND_WATCH_INPUTS && k < x->n_in; k++) {
