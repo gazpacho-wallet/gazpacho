@@ -21,6 +21,11 @@ Exits 77 (skipped) when BITCOIN_BIN_DIR holds no bitcoind.
      (its highest tree fee rate is below the terms'): it refuses, is never
      seated and never funded: no round, no funding watched; the other three
      and the host go Live as in 1.
+  3. Two lobbies of one host, funded from two coins: m1 in both, m2 and m3
+     in A, m4 and m5 in B. Both factories go Live. Then every process is
+     stopped and started again once on its folder: each comes back with its
+     lobbies Active, nothing judged again (no abandoned, dead or late
+     report), and no node-error.
 Every process is checked for no node-error, repair or fatal line.
 """
 import hashlib
@@ -264,6 +269,69 @@ def run_case(exe, work, rt, name, refusing):
         kill_all(w.procs)
 
 
+def two_lobbies(exe, work, rt, name="3 two lobbies, restarts"):
+    w = ChainWorld(exe, work, "case3", rt)
+    tick = ("--test-sign-tick-ms", "100")
+    try:
+        addr = w.host_address()
+        if not check(addr is not None, "%s: the host's first receive address" % name):
+            return
+        rt.pay(addr, FUNDED_SAT)
+        rt.pay(addr, FUNDED_SAT)
+        h = w.host(*tick)
+        if not check(started(h) and w.hkey is not None, "%s: the host starts" % name):
+            return
+        check(h.wait_for(r"wallet-coins count=2 total_sat=%d" % (2 * FUNDED_SAT), timeout=30) is not None,
+              "%s: its wallet port finds its two coins" % name)
+        a, b = Terms(w.hkey, 900), Terms(w.hkey, 901)
+        w.open(h, a)
+        w.open(h, b)
+        check(all(h.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=10) is not None for t in (a, b)),
+              "%s: both lobbies open" % name)
+        names = ("m1", "m2", "m3", "m4", "m5")
+        ms = {n: w.member(n, "--member-signing", "auto", *tick) for n in names}
+        check(all(started(m) for m in ms.values()), "%s: five members start" % name)
+        lobbies = {"m1": (a, b), "m2": (a,), "m3": (a,), "m4": (b,), "m5": (b,)}
+        for n in names:
+            for t in lobbies[n]:
+                w.join(ms[n], t)
+        check(all(state(h, t, "host", FUNDING, timeout=300) for t in (a, b)), "%s: both rounds signed: Funding" % name)
+        check(h.count(r"broadcast-queued id=\d+ txid=") >= 2 or h.wait_for(r"broadcast-queued id=2 ", timeout=60),
+              "%s: two fundings broadcast" % name)
+        procs = [h] + list(ms.values())
+        end = time.time() + 90
+        while time.time() < end and not all(
+                has(p, r"lobby scope=%s role=\w+ state=%d\b" % (t.tag, ACTIVE)) for t in (a, b)
+                for p in [h] + [ms[n] for n in names if t in lobbies[n]]):
+            rt.mine(1)
+            time.sleep(2)
+        check(all(has(p, r"fund-report scope=%s kind=1" % t.tag) for t in (a, b)
+                  for p in [h] + [ms[n] for n in names if t in lobbies[n]]),
+              "%s: both factories Live on the host and on each of their members" % name)
+        check(not any(has(p, r"fund-report scope=\S+ kind=[234]") for p in procs),
+              "%s: nobody judged either abandoned, dead or live late" % name)
+        w.clean(name + ", first run")
+        # Every process stopped and started again once on its folder.
+        w.stop()
+        h2 = w.host(*tick)
+        ms2 = {n: w.member(n, "--member-signing", "auto", *tick) for n in names}
+        check(started(h2) and all(started(m) for m in ms2.values()), "%s: every process starts again" % name)
+        for _ in range(3):   # a few blocks, so that every chain view moves on after the restart
+            rt.mine(1)
+            time.sleep(2)
+        check(all(state(h2, t, "host", ACTIVE, timeout=30) for t in (a, b)),
+              "%s: after the restart the host shows both lobbies Active" % name)
+        check(all(state(ms2[n], t, "member", ACTIVE, timeout=30) for n in names for t in lobbies[n]),
+              "%s: and every member its lobbies Active (m1 both)" % name)
+        check(not any(has(p, r"fund-report scope=\S+ kind=[234]|sign-begin|funding-adopt-refused")
+                      for p in [h2] + list(ms2.values())),
+              "%s: nothing judged, begun or refused again after the restart" % name)
+        w.clean(name)
+    finally:
+        w.stop()
+        kill_all(w.procs)
+
+
 def main():
     exe, work, bindir = sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else os.environ.get("GZ_BITCOIN_BIN", "")
     if not bindir or not os.path.exists(os.path.join(bindir, "bitcoind")):
@@ -274,6 +342,7 @@ def main():
     try:
         run_case(exe, work, rt, "1 three members", refusing=False)
         run_case(exe, work, rt, "2 one member refusing", refusing=True)
+        two_lobbies(exe, work, rt)
     finally:
         rt.stop()
     return check.result("program_slice1", work)
