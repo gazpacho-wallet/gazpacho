@@ -23,7 +23,7 @@ foreach(variant release test)
   endif()
   add_library(${lib} STATIC ${GZP_SOURCES})
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain OpenSSL::Crypto)
+  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_tree_import OpenSSL::Crypto)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PUBLIC GZP_TEST_BUILD=1)
@@ -138,6 +138,12 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_lobby
     COMMAND ${GZP_PY} ${GZP_T}/lobby.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
+  # The signing engine in the composite, P4.3: a host and four members sign
+  # a real tree from the terms (one member's chain view makes it refuse);
+  # every process restarted.
+  add_test(NAME program_signing
+    COMMAND ${GZP_PY} ${GZP_T}/signing.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/signing)
+  set_tests_properties(program_signing PROPERTIES TIMEOUT 900)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})

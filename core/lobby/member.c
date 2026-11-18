@@ -347,8 +347,10 @@ static gz_status_t on_terms(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_ac
     gz_la_tree_crypto(&m->crypto, &tc);
     /* terms.md 7 steps 1 to 6 under core/tree's policy: the scope, the pinned
      * key, both signatures, the bounds, the current record against the outer. */
-    if (gz_terms_receive(g->outer, g->outer_len, g->outer_sig, g->current, g->current_len, g->current_sig, m->scope,
-                         m->host_key, gz_lobby_policy(), &tc, &t, od, &v, cd) != GZ_TERMS_OK) {
+    gz_terms_err_t te = gz_terms_receive(g->outer, g->outer_len, g->outer_sig, g->current, g->current_len, g->current_sig,
+                                         m->scope, m->host_key, gz_lobby_policy(), &tc, &t, od, &v, cd);
+    if (te == GZ_TERMS_OK && m->max_tree_nodes) te = gz_terms_check_tree_size(&t, m->max_tree_nodes);   /* M2 */
+    if (te != GZ_TERMS_OK) {
         /* Terms refused before any seat: the member never got in, and the
          * slot is given up (composite-node.md 2.4, slot_closed state 0). */
         if (!m->joined) TRY(end_self(m, GZ_LOBBY_END_BAD_TERMS, 5, out));
@@ -706,6 +708,7 @@ gz_status_t gz_lobby_member_init(gz_lobby_member_t *m, const gz_ports_t *ports, 
     m->address_len = cfg->address_len;
     m->key_epoch = cfg->key_epoch;
     m->key_index = cfg->key_index;
+    m->max_tree_nodes = cfg->max_tree_nodes;
     memcpy(m->link.local.key, cfg->ckey, 33);
     memcpy(m->link.remote.key, cfg->host_key, 33);
     m->auto_join = cfg->auto_join;

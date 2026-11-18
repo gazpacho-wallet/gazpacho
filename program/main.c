@@ -91,6 +91,12 @@ static int dump_journal(gzp_datadir_t *d)
 }
 #endif
 
+static void on_illegal(const char *msg, void *data)
+{
+    (void)data;
+    gzp_log("secp-illegal-argument %s", msg ? msg : "");
+}
+
 static int key_ok(const uint8_t key[32], void *ctx)
 {
     return secp256k1_ec_seckey_verify((const secp256k1_context *)ctx, key);
@@ -210,6 +216,9 @@ int main(int argc, char **argv)
 
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     gzp_os_random(rseed, sizeof rseed);
+    /* The signing engine validates every value before the library sees it:
+     * an illegal argument is reported, never an abort (signing.h). */
+    if (secp) secp256k1_context_set_illegal_callback(secp, on_illegal, NULL);
     if (!secp || !secp256k1_context_randomize(secp, rseed)) {
         fprintf(stderr, "gazpacho: cannot set up secp256k1\n");
         rc = GZP_EXIT_FAILED;
