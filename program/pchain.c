@@ -316,6 +316,20 @@ int gzp_chain_take(gzp_chain_t *c, gz_event_t *ev)
             ev->u.chain.height = w.height;
             memcpy(ev->u.chain.block_hash, w.block_hash, 32);
             return 1;
+        case GZ_CHAINW_WATCH_PENDING:
+            ev->u.chain.kind = GZ_CHAIN_WATCH_PENDING;
+            if (w.outpoint_watch) {
+                gz_hash_to_hex(w.outpoint_txid, hex2);
+                gzp_log("chain-watch-pending outpoint=%s:%u result=%s", hex2, w.outpoint_vout,
+                        gz_chain_result_name(w.sources));
+                memcpy(ev->u.chain.outpoint.txid, w.outpoint_txid, 32);
+                ev->u.chain.outpoint.vout = w.outpoint_vout;
+            } else {
+                gzp_log("chain-watch-pending tx=%s result=%s", hex, gz_chain_result_name(w.sources));
+                ev->u.chain.is_tx = 1;
+                memcpy(ev->u.chain.txid, w.txid, 32);
+            }
+            return 1;
         case GZ_CHAINW_WATCH_FAILED:
             ev->u.chain.kind = GZ_CHAIN_WATCH_FAILED;
             if (w.outpoint_watch) {
