@@ -13,13 +13,13 @@ plan-must-ignored ## funding.c ## return have_must; ## return 1;
 plan-reuse-after-release ## funding.c ## if (old && !in->released && ## if (old &&
 h11-no-must ## funding.c ## use_must = 1; ## use_must = 0;
 deadline-no-burial ## funding.c ## x->deadline = (x->plan_tip_known ? x->plan_tip : f->tip) + f->cfg.funding_deadline_blocks; ## x->deadline = (x->plan_tip_known ? x->plan_tip : f->tip) + f->cfg.funding_deadline_blocks + f->cfg.burial;
-deadline-early ## funding.c ## if (!x->deadline_pending && f->tip_known && f->tip > x->deadline && facts_back(f, x)) return host_abandon(f, x, out);\n        if (x->rebroadcast) { ## if (!x->deadline_pending && f->tip_known && f->tip >= x->deadline && facts_back(f, x)) return host_abandon(f, x, out);\n        if (x->rebroadcast) {
+deadline-early ## funding.c ## f->tip > x->deadline && facts_back(f, x)) return host_abandon(f, x, out);\n        if (x->failed && f->tip_known && facts_back(f, x)) return host_abandon(f, x, out);   /* fails closed (G-1) */\n        if (x->rebroadcast) { ## f->tip >= x->deadline && facts_back(f, x)) return host_abandon(f, x, out);\n        if (x->failed && f->tip_known && facts_back(f, x)) return host_abandon(f, x, out);   /* fails closed (G-1) */\n        if (x->rebroadcast) {
 buried-one-short ## funding.c ## return x->conf >= depth_of(f, x); ## return x->conf + 1 >= depth_of(f, x);
 dead-unburied ## funding.c ## if (!x->spender_known[k] || x->spender_conf[k] < depth_of(f, x)) continue; ## if (!x->spender_known[k]) continue;
 dead-by-funding ## funding.c ## if (gz_tree_c4d_dead(x->tx, x->tx_len, x->ins[k], x->spender[k])) { ## if (1) {
 reorg-ignored ## funding.c ## x->conf = 0;   /* reorganised away: counting starts again */ ## (void)0;
-sb-no-replace ## funding.c ## int ok = late ? 0 : make_spend_back(f, x, was_signed && x->seen ? 1 : 0); ## int ok = late ? 0 : make_spend_back(f, x, 0);
-sb-always-replace ## funding.c ## int ok = late ? 0 : make_spend_back(f, x, was_signed && x->seen ? 1 : 0); ## int ok = late ? 0 : make_spend_back(f, x, 1);
+sb-no-replace ## funding.c ## int ok = late || no_sb ? 0 : make_spend_back(f, x, was_signed && x->seen ? 1 : 0); ## int ok = late || no_sb ? 0 : make_spend_back(f, x, 0);
+sb-always-replace ## funding.c ## int ok = late || no_sb ? 0 : make_spend_back(f, x, was_signed && x->seen ? 1 : 0); ## int ok = late || no_sb ? 0 : make_spend_back(f, x, 1);
 sb-inc-high-first ## funding.c ## uint64_t inc = level == 2 ? f->cfg.incremental_high : f->cfg.incremental; ## uint64_t inc = f->cfg.incremental_high;
 sb-no-escalate ## funding.c ## x->escalate = 1; ## (void)0;
 sb-escalate-forever ## funding.c ## if ((x->sb_len && !x->signed_len) || level > 2) break; ## if (x->sb_len && !x->signed_len) break;
@@ -33,7 +33,7 @@ vsize-weight ## txsize.c ## if (vsize) *vsize = ((uint64_t)b * 3 + (uint64_t)len
 strip-witness-kept ## txsize.c ## memcpy(out + 4 + (w.outs_end - 6), tx + w.wit_end, 4); ## memcpy(out + 4 + (w.outs_end - 6), tx + w.outs_end, 4);
 all-witness-empty ## txsize.c ## if (items == 0) return 0; ## (void)0;
 member-live-mismatch ## funding.c ## if (v == GZ_C11_LIVE) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out); ## if (v == GZ_C11_LIVE || x->conf > 0) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out);
-member-no-abandon ## funding.c ## if (v == GZ_C11_ABANDONED && x->state == GZ_FUND_ST_ACKED && facts_back(f, x)) { ## if (0) {
+member-no-abandon ## funding.c ## if ((v == GZ_C11_ABANDONED || x->failed) && x->state == GZ_FUND_ST_ACKED && facts_back(f, x)) { ## if (0) {
 member-whole-tree ## funding.c ## c.holds_whole_tree = x->whole_tree; ## c.holds_whole_tree = 1;
 member-dead-first ## funding.c ## if (input_dead(f, x, NULL)) return end_with(f, x, GZ_FUND_ST_DEAD, GZ_FUND_R_DEAD, out); ## (void)0;
 member-acked-twice ## funding.c ## if ((x = find_txid(f, in->scope, in->funding.txid)) != NULL) return GZ_OK; ## (void)x;
@@ -68,7 +68,7 @@ must-forgotten ## funding.c ## if (old && released && (st = keep_released(f, old
 reuse-after-mark ## funding.c ## if (old && !in->released && !old->released && ## if (old && !in->released &&
 old-not-readopted ## funding.c ## if (old) (void)f->cfg.wallet.adopt(f->cfg.wallet.ctx, old->tx, old->tx_len, old->script, old->amount); ## (void)0; ## 1
 late-taken-live ## funding.c ## return x->deadline_pending || x->conf_height + depth_of(f, x) - 1 <= x->deadline; ## return 1;
-late-spends-back ## funding.c ## int ok = late ? 0 : make_spend_back( ## int ok = make_spend_back(
+late-spends-back ## funding.c ## int ok = late || no_sb ? 0 : make_spend_back( ## int ok = no_sb ? 0 : make_spend_back(
 deadline-from-outcome ## funding.c ## x->deadline = (x->plan_tip_known ? x->plan_tip : f->tip) + f->cfg.funding_deadline_blocks; ## x->deadline = f->tip + f->cfg.funding_deadline_blocks;
 plan-tip-not-saved ## funding.c ## if (x->plan_tip_known) put_u32(&e, P_TIP, x->plan_tip); ## (void)0;
 released-not-saved ## funding.c ## if (x->released) put_u8(&e, P_RELEASED, 1); ## (void)0;
@@ -113,4 +113,17 @@ synced-other-watch ## funding.c ## if (c->is_tx && memcmp(c->txid, x->funding.tx
 # --- integration B12: the gate at every tip (TIP_SYNCED)
 tip-sync-ignored ## funding.c ## if (!f->tip_synced) return 0;   /* the answers for this tip are not all in (integration B12) */ ## (void)0;
 tip-sync-kept ## funding.c ## f->tip_synced = 0;   /* its reports may still be coming */ ## (void)0;
-tip-sync-any-height ## funding.c ## if (c->kind == GZ_CHAIN_TIP_SYNCED && f->tip_known && c->height == f->tip) f->tip_synced = 1; ## if (c->kind == GZ_CHAIN_TIP_SYNCED) f->tip_synced = 1;
+tip-sync-any-height ## funding.c ## if (c->kind == GZ_CHAIN_TIP_SYNCED && f->tip_known && c->height == f->tip &&\n        memcmp(c->block_hash, f->tip_hash, 32) == 0) ## if (c->kind == GZ_CHAIN_TIP_SYNCED && memcmp(c->block_hash, f->tip_hash, 32) == 0)
+# --- review B's second confirmation: G-1, G-2 and the reviewer's two gaps
+d-synced-tx-any ## funding.c ## if (c->is_tx && memcmp(c->txid, x->funding.txid, 32) == 0) x->reported |= 1u; ## if (c->is_tx) x->reported |= 1u;
+d-tipsynced-no-tick ## funding.c ## return any && !f->tick_armed ? arm_tick(f, out, f->cfg.tick_ms) : GZ_OK; ## return GZ_OK;
+g1-failed-ignored ## funding.c ## x->failed |= bad;\n                x->reported |= bad; ## x->reported |= bad;
+g1-failed-not-answer ## funding.c ## x->failed |= bad;\n                x->reported |= bad; ## x->failed |= bad;
+g1-failed-other-tx ## funding.c ## if (c->is_tx && memcmp(c->txid, x->funding.txid, 32) == 0) bad |= 1u; ## if (c->is_tx) bad |= 1u;
+g1-failed-other-op ## funding.c ## if (memcmp(q.txid, c->outpoint.txid, 32) == 0 && q.vout == c->outpoint.vout) bad |= 2u << j; ## if (q.vout == c->outpoint.vout) bad |= 2u << j;
+g1-failed-spend-back ## funding.c ## int ok = late || no_sb ? 0 : make_spend_back ## int ok = late ? 0 : make_spend_back
+g1-failed-escalates ## funding.c ## if (x->failed) break;       /* a watch never answered: no spend-back, ever (G-1) */ ## (void)0;
+g1-member-waits ## funding.c ## if ((v == GZ_C11_ABANDONED || x->failed) && x->state ## if (v == GZ_C11_ABANDONED && x->state
+g1-host-waits ## funding.c ## if (x->failed && f->tip_known && facts_back(f, x)) return host_abandon(f, x, out);   /* fails closed (G-1) */\n        if (x->rebroadcast) { ## if (x->rebroadcast) {
+g2-hash-ignored ## funding.c ## c->height == f->tip &&\n        memcmp(c->block_hash, f->tip_hash, 32) == 0) ## c->height == f->tip)
+g2-hash-not-kept ## funding.c ## memcpy(f->tip_hash, ev->u.chain.block_hash, 32);   /* G-2 */ ## (void)0;

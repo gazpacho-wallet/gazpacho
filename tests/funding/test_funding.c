@@ -1618,6 +1618,191 @@ static void test_tip_jump(void)
     }
 }
 
+/* Review B's second confirmation, G-1: a watch the chain view can never
+ * answer (GZ_CHAIN_WATCH_FAILED: say a funding input spent deeper than it
+ * follows, which a host can name) is that watch's answer, for its factory
+ * only, and that factory fails closed. Members: A's input (or funding) is
+ * such a watch, B is honest; A is Abandoned at once, B still reaches Live,
+ * or Abandoned at its deadline. After a start, the failure answers the watch
+ * too. A host: abandoned with no spend-back, and none made at later blocks,
+ * while its other factory is abandoned with its spend-back. */
+static void test_watch_failed(void)
+{
+    for (int how = 0; how < 4; how++) {
+        int by_tx = how & 1, b_mined = how >> 1;
+        ft_t *t = ft_new(0, GZ_HOST_FUNDING_AUTO);
+        uint8_t txa[400], txb[400], opa[36];
+        size_t la, lb;
+        gz_fund_acked_in_t a = acked_in(t, SCOPE_A, 0x40, 1000, &txa, &la);
+        gz_fund_acked_in_t b = acked_in(t, SCOPE_B, 0x50, 1000, &txb, &lb);
+        gz_event_t e;
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &a, &t->out) == GZ_OK);
+        ft_after(t);
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &b, &t->out) == GZ_OK);
+        ft_after(t);
+        e = ev_tip(1001);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 0);
+        ft_op(opa, 0x40, 0);
+        e = by_tx ? ev_failed_tx(a.funding.txid) : ev_failed_op(opa);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[0].scope, SCOPE_A, 32) == 0);
+        if (b_mined) {
+            e = ev_tip(1010);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            e = ev_conf(b.funding.txid, 8, 1003);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_LIVE && memcmp(t->h.r[1].scope, SCOPE_B, 32) == 0);
+        } else {
+            e = ev_tip(1030);   /* before B's deadline: nothing */
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 1);
+            e = ev_tip(1045);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[1].scope, SCOPE_B, 32) == 0);
+        }
+        free(t);
+    }
+    {
+        /* after a start: the failure is the watch's answer, so the factory
+         * is not left waiting for a SYNCED that never comes */
+        ft_t *t = ft_new(0, GZ_HOST_FUNDING_AUTO), *u;
+        uint8_t tx[400], op[36];
+        size_t len;
+        gz_fund_acked_in_t a = acked_in(t, SCOPE_A, 0x40, 1000, &tx, &len);
+        gz_event_t e;
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &a, &t->out) == GZ_OK);
+        ft_after(t);
+        u = ft_restart(t);
+        free(t);
+        e = ev_tip(1001);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        e = ev_synced_tx(a.funding.txid);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        ft_op(op, 0x41, 1);
+        e = ev_synced_op(op);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        drain(u);
+        CHECK(u->h.n == 0);
+        ft_op(op, 0x40, 0);
+        e = ev_failed_op(op);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        drain(u);
+        CHECK(u->h.n == 1 && u->h.r[0].kind == GZ_FUND_R_ABANDONED);
+        free(u);
+    }
+    {
+        /* a host: A's input can never be answered, B is fine */
+        ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+        gz_event_t e = ev_tip(1000);
+        gz_fund_plan_out_t p;
+        uint8_t in0[36];
+        int sb0;
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        p = host_fund(t, SCOPE_A, 0);
+        memcpy(in0, p.tx + 5, 36);
+        (void)host_fund(t, SCOPE_B, 0);
+        sb0 = t->w.sb_n;
+        e = ev_failed_op(in0);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[0].scope, SCOPE_A, 32) == 0);
+        CHECK(t->w.sb_n == sb0);   /* no spend-back of what was never answered */
+        e = ev_tip(1001);   /* the next blocks: still none */
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 1 && t->w.sb_n == sb0);
+        e = ev_tip(1040);   /* B at its deadline (1036): abandoned with its spend-back */
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[1].scope, SCOPE_B, 32) == 0);
+        CHECK(t->w.sb_n == sb0 + 1);
+        free(t);
+    }
+}
+
+/* Review B's second confirmation, G-2: TIP_SYNCED names its block; one for a
+ * block replaced at the same height is not this tip's. Also: TIP_SYNCED arms
+ * the tick (d-tipsynced-no-tick), so the decision does not wait for the next
+ * event. */
+static void test_tip_hash(void)
+{
+    ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+    gz_event_t e = ev_tip(1000);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    (void)host_fund(t, SCOPE_A, 0);
+    t->lag = 1;
+    e = ev_tip(1037);   /* past the deadline, 1036 */
+    e.u.chain.block_hash[0] = 1;
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    drain(t);
+    e = ev_tip(1037);   /* that block replaced by another at the same height */
+    e.u.chain.block_hash[0] = 2;
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    drain(t);
+    CHECK(t->h.n == 0);
+    e = ev_tip_synced(1037);   /* for the block replaced */
+    e.u.chain.block_hash[0] = 1;
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    drain(t);
+    CHECK(t->h.n == 0 && t->w.sb_n == 0);
+    e = ev_tip_synced(1037);
+    e.u.chain.block_hash[0] = 2;
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    CHECK(ft_count(t, GZ_ACTION_SET_TIMER) == 1);   /* the tick, armed by TIP_SYNCED itself */
+    drain(t);
+    CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_ABANDONED && t->w.sb_n == 1);
+    free(t);
+}
+
+/* d-synced-tx-any: a WATCH_SYNCED for one restored factory's funding does not
+ * answer another's. Members A and B restored at 1050, past both deadlines:
+ * A's funding and B's two inputs answered, B's funding not: nothing for B. */
+static void test_restart_two(void)
+{
+    ft_t *t = ft_new(0, GZ_HOST_FUNDING_AUTO), *u;
+    uint8_t txa[400], txb[400], op[36];
+    size_t la, lb;
+    gz_fund_acked_in_t a = acked_in(t, SCOPE_A, 0x40, 1000, &txa, &la);
+    gz_fund_acked_in_t b = acked_in(t, SCOPE_B, 0x50, 1000, &txb, &lb);
+    gz_event_t e;
+    ft_reset(t);
+    CHECK(gz_fund_member_acked(&t->f, &a, &t->out) == GZ_OK);
+    ft_after(t);
+    ft_reset(t);
+    CHECK(gz_fund_member_acked(&t->f, &b, &t->out) == GZ_OK);
+    ft_after(t);
+    u = ft_restart(t);
+    free(t);
+    e = ev_tip(1050);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    drain(u);
+    CHECK(u->h.n == 0);
+    e = ev_synced_tx(a.funding.txid);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    ft_op(op, 0x50, 0);
+    e = ev_synced_op(op);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    ft_op(op, 0x51, 1);
+    e = ev_synced_op(op);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    drain(u);
+    CHECK(u->h.n == 0);   /* A waits for its inputs, B for its funding */
+    e = ev_synced_tx(b.funding.txid);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    drain(u);
+    CHECK(u->h.n == 1 && u->h.r[0].kind == GZ_FUND_R_ABANDONED && memcmp(u->h.r[0].scope, SCOPE_B, 32) == 0);
+    free(u);
+}
+
 static void test_corrupt(void)
 {
     ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
@@ -1812,6 +1997,9 @@ int main(void)
     test_member_restart_resync();
     test_member_mismatch();
     test_tip_jump();
+    test_watch_failed();
+    test_tip_hash();
+    test_restart_two();
     test_corrupt();
     test_journal_replay_steps();
     test_ignored_events();

@@ -176,8 +176,15 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
                     memset(op, 0, 36);
                     memcpy(op, txid, 32);
                     e = ev_spent(op, len > 33 ? p + 1 : txid, len > 34 ? p[34] % 6 : 3);
-                } else
+                } else if (kind < 0xf0) {
                     e = ev_bres(txid, (gz_broadcast_outcome_t)(1 + len % 3));
+                } else {
+                    /* a watch the chain view can never answer (G-1) */
+                    uint8_t op[36];
+                    memset(op, 0, 36);
+                    memcpy(op, txid, 32);
+                    e = len & 1 ? ev_failed_tx(txid) : ev_failed_op(op);
+                }
             }
             ft_reset(t);
             if (gz_fund_handle(&t->f, &e, &t->out) != GZ_OK) abort();
