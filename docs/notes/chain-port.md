@@ -593,7 +593,7 @@ The libcurl changes (`http_curl.c`) are not in the mutation list: their test, `c
 
 ## 23. The wiring step the program owes: "P7 wiring"
 
-Named follow-up, for after PR 41 (composite node P4.1) and its stack have merged. It was left out here on purpose: PR 41 is changing `program/` and `core/node`, and this change touches neither. It is small because the worker already has the shape contract v2 section 5 asked for.
+**Status: done** in the P7 wiring pull request, except item 6 (the core has no "not before" field yet), item 8 (no package action yet) and the non-blocking start of item 3 (see the end of this section). Named follow-up, for after PR 41 (composite node P4.1) and its stack have merged. It was left out here on purpose: PR 41 is changing `program/` and `core/node`, and this change touches neither. It is small because the worker already has the shape contract v2 section 5 asked for.
 
 **What to change, in `program/` only:**
 
@@ -616,6 +616,15 @@ Named follow-up, for after PR 41 (composite node P4.1) and its stack have merged
 6. **The funding txid.** A member sets the funding `WATCH_TX` (and the watches on the funding outputs) with `GZ_CHAINW_NOT_BEFORE`, and calls `gz_chainw_release(w, txid, delay_ms)` when the host reports the broadcast. The core has no field for this yet: either `WATCH_TX` gains a "not before" flag and a release action, or the program holds the rule (a member never passes a funding watch to the worker before the host message that reports the broadcast). The first is cleaner and belongs with P4.5 (the funding engine). The host, which broadcasts itself, sets its watches without the flag.
 7. **Restart from storage**: `gz_chainw_reset`, then the new node sets its watches again; no event of the old generation is delivered. **Shutdown**: `gz_chainw_free` after the node stops and before the `gz_chain` and `gz_http` are destroyed (contract v2 section 4).
 8. **Packages.** When the exit engine exists, a tree transaction and its fee child go out through `gz_chainw_broadcast_package`; `action.h` needs the "broadcast package" action `spec/exit.md` lists.
+
+**As built.**
+
+- The start-up check stays blocking: block 0 of every server is compared with the network before the loop starts, so a server on another network still stops the program at start (exit 5), and the node is told the tip at every start. The worker starts right after it, on the same view.
+- With one `--chain-url` the worker runs over that Esplora backend; with two to four, over the comparing backend.
+- `program/pchain.c` keeps a backlog of up to 1,024 requests answered BUSY (and broadcasts answered FULL), asks them again in order every turn (and every 50 ms while it is not empty), and keeps the order: a new request waits behind held ones. A full backlog, FULL on a watch or INVALID is a node error for the incarnation (`chain-backlog-full`, `chain-watch-refused`, `chain-request-refused`).
+- A restart from storage resets the worker (a new generation) and clears the backlog; the test engine saves its watches (record `0x0008`) and sets them again at every start (rule 4), so a crash or a restart restores them.
+- The tip goes to the node once per new tip; a broadcast of bytes that are not a transaction is answered REFUSED without asking a server.
+- `--test-chain-small` builds a worker with 16 watches and 32 requests, so tests can make it answer BUSY.
 
 **Tests that come with it** (contract v2): T5 `program_chain_stall`, T9 `program_broadcast_result`, T10 `program_watches`. The scripted stub (`tests/watch_stub.py`) and the scenes (`sim_dump`) built here play all three; the worker-level versions of them are already in `chain_watch_stub`.
 

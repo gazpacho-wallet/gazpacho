@@ -99,6 +99,7 @@ typedef struct {
     uint64_t dropped;                      /* pings not saved: the table, or the link's share, was full */
     uint64_t skipped_targets;              /* saved CONNECT targets not issued: a bad address */
     uint8_t watches[TE_MAX_WATCHES][37];   /* the watches asked for: kind (1 tx, 0 outpoint), txid, vout */
+    uint32_t watch_depth[TE_MAX_WATCHES]; /* the largest depth asked for each */
     size_t n_watches;
 } te_t;
 
@@ -408,7 +409,7 @@ typedef struct {
 
 /* ---- the watch registry ------------------------------------------------- */
 
-#define MAX_WATCHES 64
+#define MAX_WATCHES GZ_NODE_MAX_WATCHES
 
 typedef struct {
     int used, is_tx;
