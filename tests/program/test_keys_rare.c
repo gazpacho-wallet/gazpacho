@@ -26,6 +26,7 @@ void __real_gzw_wipe(void *p, size_t len);
 void __wrap_gzw_wipe(void *p, size_t len);
 
 static int force_at = 0; /* replace the HMAC result of this call (1-based); 0: none */
+static uint32_t force_index = 0; /* or: replace the first call whose BIP 32 index is this one */
 static int calls = 0;
 static const unsigned char ORDER[32] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
                                         0xFF, 0xFF, 0xFF, 0xFF, 0xFE, 0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48,
@@ -34,7 +35,10 @@ static const unsigned char ORDER[32] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
 unsigned char *__wrap_HMAC(const EVP_MD *md, const void *key, int key_len, const unsigned char *data, size_t data_len,
                            unsigned char *out, unsigned int *out_len)
 {
-    if (++calls == force_at) {
+    int by_index = force_index && data_len == 37 &&
+                   ((uint32_t)data[33] << 24 | (uint32_t)data[34] << 16 | (uint32_t)data[35] << 8 | data[36]) == force_index;
+    if (by_index) force_index = 0;
+    if (++calls == force_at || by_index) {
         memcpy(out, ORDER, 32); /* left half not below the order: invalid */
         memset(out + 32, 0x5c, 32);
         if (out_len) *out_len = 64;
@@ -169,6 +173,12 @@ int main(void)
         arm(lvl);
         CHECK(!gzp_keys_init(&k, secp, GZW_NET_SIGNET, &src, &e) && e.why == GZP_KEYS_UNUSABLE && all0(&k, sizeof k));
     }
+    /* Set-up checks the lobby branch itself: the first hardened 0' it derives
+     * is the lobby branch (call 4), and it stops there. */
+    arm(0);
+    force_index = 0x80000000u;
+    CHECK(!gzp_keys_init(&k, secp, GZW_NET_SIGNET, &src, &e) && e.why == GZP_KEYS_UNUSABLE && calls == 4);
+    force_index = 0;
     arm(13);
     CHECK(gzp_keys_init(&k, secp, GZW_NET_SIGNET, &src, &e)); /* past set-up's calls: nothing forced */
 
@@ -205,7 +215,7 @@ int main(void)
     n_wipes = 0;
     {
         uint8_t scope[32] = {7}, digest[32] = {8};
-        CHECK(gzp_keys_scope_open(&k, scope, digest, 0, 1, &e) && wiped(32) >= 2);
+        CHECK(gzp_keys_scope_open(&k, scope, digest, 0, 1, &e) && wiped(32) >= 4); /* two outputs zeroed first, two locals after */
         n_wipes = 0;
         gzp_keys_forget(&k, scope);
         CHECK(wiped(sizeof(gzp_keys_scope_t)) == 1);

@@ -763,7 +763,7 @@ static void keys_from_storage(gzp_exec_t *ex, int restored)
     gzp_keys_forget_all(ex->keys);
     gzp_keys_set_epoch(ex->keys, epoch);
     gzp_keys_freeze(ex->keys, restored);
-    gzp_log("keys epoch=%08x frozen=%d", (unsigned)epoch, restored != 0);
+    gzp_log("keys epoch=%08x frozen=%d", (unsigned)ex->keys->epoch, ex->keys->frozen);
 }
 
 /* node.h's stepped start. Between steps, storage confirmations (and only

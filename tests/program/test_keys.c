@@ -251,6 +251,28 @@ static void scoped(const secp256k1_context *secp)
     CHECK(!gzp_keys_scope_open(&k, scope, digest, 0, 0x7fffffffu, &e) && e.why == GZP_KEYS_BAD_ARGUMENT);
     CHECK(!gzp_keys_scope_open(NULL, scope, digest, 0, 1, &e) && !gzp_keys_scope_open(&k, NULL, digest, 0, 1, &e) &&
           !gzp_keys_scope_open(&k, scope, NULL, 0, 1, &e));
+    /* Scopes that differ in their last byte only are two scopes. */
+    {
+        uint8_t s2[32];
+        memset(s2, 1, 32); /* the scope held above, but for its last byte */
+        s2[31] ^= 1;
+        CHECK(gzp_keys_scope_open(&k, s2, digest, 0, 1, &e) && gzp_keys_scopes_held(&k) == 2);
+        CHECK(!gzp_keys_scoped(&k, s2, other, f, c) && gzp_keys_scoped(&k, s2, digest, f, c));
+        CHECK(gzp_keys_lobby_raw(&k, 0, 2, wf, NULL, &e) && !memcmp(f, wf, 32));
+        gzp_keys_forget(&k, s2);
+        CHECK(gzp_keys_scopes_held(&k) == 1 && !gzp_keys_scoped(&k, s2, digest, f, c));
+    }
+    /* Opening a held scope again and failing (another epoch) leaves nothing
+     * held for it: the old secrets are wiped first. */
+    {
+        uint8_t s3[32];
+        memset(s3, 0x33, 32);
+        CHECK(gzp_keys_scope_open(&k, s3, digest, 0, 1, &e) && gzp_keys_scopes_held(&k) == 2);
+        CHECK(!gzp_keys_scope_open(&k, s3, digest, 6, 1, &e) && e.why == GZP_KEYS_POLICY);
+        CHECK(gzp_keys_scopes_held(&k) == 1 && !gzp_keys_scoped(&k, s3, digest, f, c));
+        for (i = 0; i < GZP_KEYS_MAX_SCOPES; i++)
+            if (!k.scopes[i].used) CHECK(all(&k.scopes[i], 0, sizeof k.scopes[i]));
+    }
     /* Eight at most (GZ_NODE_MAX_SLOTS). */
     for (i = 0; i < 7; i++) {
         scope[0] = (uint8_t)(10 + i);

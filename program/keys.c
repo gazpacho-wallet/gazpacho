@@ -46,6 +46,16 @@ static int master(const gzp_keys_t *k, gzw_xprv *m, gzp_keys_err_t *err)
     return ok;
 }
 
+/* The path of a Gazpacho branch: m/254315617'/net'/branch'. One place for
+ * the purpose and the network level, so that set-up checks exactly the
+ * nodes the keys are derived from. */
+static void branch_path(const gzp_keys_t *k, uint32_t branch, uint32_t path[3])
+{
+    path[0] = GZP_KEYS_PURPOSE | H;
+    path[1] = k->net_level | H;
+    path[2] = branch | H;
+}
+
 /* Walk path[0..n-1] from the master, step by step so that the failing level
  * is known (level 1 is path[0]). Everything but *out is wiped. */
 static int walk(const gzp_keys_t *k, const uint32_t *path, size_t n, gzw_xprv *out, gzp_keys_err_t *err)
@@ -95,9 +105,7 @@ int gzp_keys_lobby_raw(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint
         set_err(err, GZP_KEYS_BAD_ARGUMENT, 0);
         return 0;
     }
-    path[0] = GZP_KEYS_PURPOSE | H;
-    path[1] = k->net_level | H;
-    path[2] = GZP_KEYS_BRANCH_LOBBY | H;
+    branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);
     path[3] = epoch | H;
     path[4] = index | H;
     ok = walk(k, path, 5, &x, err) && keypair_out(k, &x, sec, pub, err);
@@ -129,9 +137,7 @@ int gzp_keys_host(const gzp_keys_t *k, uint8_t sec[32], uint8_t pub[33], uint32_
         set_err(err, GZP_KEYS_BAD_ARGUMENT, 0);
         return 0;
     }
-    path[0] = GZP_KEYS_PURPOSE | H;
-    path[1] = k->net_level | H;
-    path[2] = GZP_KEYS_BRANCH_HOST | H;
+    branch_path(k, GZP_KEYS_BRANCH_HOST, path);
     if (!walk(k, path, 3, &parent, err)) {
         gzw_wipe(&parent, sizeof parent);
         return 0;
@@ -177,11 +183,9 @@ int gzp_keys_init(gzp_keys_t *k, const secp256k1_context *secp, gzw_network net,
     k->src = *src;
     /* Both Gazpacho branches down to the level above the epoch (or k): an
      * invalid step there means the seed cannot be used (keys.md 3). */
-    path[0] = GZP_KEYS_PURPOSE | H;
-    path[1] = k->net_level | H;
-    path[2] = GZP_KEYS_BRANCH_LOBBY | H;
+    branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);
     if (!walk(k, path, 3, &x, err)) goto out;
-    path[2] = GZP_KEYS_BRANCH_HOST | H;
+    branch_path(k, GZP_KEYS_BRANCH_HOST, path);
     gzw_wipe(&x, sizeof x);
     if (!walk(k, path, 3, &x, err)) goto out;
     /* The BIP 86 account's public key, kept for payout scripts. */
