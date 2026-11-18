@@ -1278,9 +1278,12 @@ static int facts_back(const gz_fund_t *f, gz_fund_factory_t *x)
     if (!f->tip_synced) return 0;   /* the answers for this tip are not all in (integration B12) */
     if (x->pending) {
         /* A watch of this factory has its answer put off: it alone waits,
-         * up to GZ_FUND_PENDING_GRACE blocks past its deadline, then fails
-         * closed as for a failed watch (review B, third confirmation). */
-        if (!(f->tip_known && !x->deadline_pending && f->tip > x->deadline + GZ_FUND_PENDING_GRACE)) return 0;
+         * up to GZ_FUND_PENDING_GRACE blocks past its deadline or past the
+         * tip at which the watch went pending, whichever is later (a node
+         * back after a long absence gets the whole grace: review of PR 72,
+         * P-1), then fails closed as for a failed watch. */
+        uint32_t from = x->pending_tip > x->deadline ? x->pending_tip : x->deadline;   /* P-1 */
+        if (!(f->tip_known && !x->deadline_pending && f->tip > from + GZ_FUND_PENDING_GRACE)) return 0;
         x->failed |= x->pending;
         x->reported |= x->pending;
         x->pending = 0;
@@ -1539,7 +1542,10 @@ static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
                 outpoint_of(x->ins[j], &q);
                 if (memcmp(q.txid, c->outpoint.txid, 32) == 0 && q.vout == c->outpoint.vout) which |= 2u << j;
             }
-            if (c->kind == GZ_CHAIN_WATCH_PENDING) x->pending |= which;
+            if (c->kind == GZ_CHAIN_WATCH_PENDING) {
+                if (!x->pending && which) x->pending_tip = f->tip;   /* the grace counts from here (P-1) */
+                x->pending |= which;
+            }
             else x->pending &= ~which;
             if (which) x->due = 1;
         }

@@ -277,6 +277,9 @@ typedef struct {
      * decision, for at most GZ_FUND_PENDING_GRACE blocks past its deadline,
      * after which it fails closed as for a failed watch. Memory only. */
     unsigned pending;
+    uint32_t pending_tip;               /* the tip when `pending` last became non-empty: the
+                                           grace counts from it, or from the deadline if later
+                                           (review of PR 72, P-1) */
 } gz_fund_factory_t;
 
 typedef struct {
