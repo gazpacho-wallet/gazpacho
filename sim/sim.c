@@ -1083,6 +1083,12 @@ void sim_execute(sim_t *sim, uint32_t index, const gz_action_t *a)
               a->u.watch_outpoint.depth);
         answer_op_watch(sim, index, add_op_watch(s, &a->u.watch_outpoint.outpoint, a->u.watch_outpoint.depth), 1);
         break;
+    case GZ_ACTION_UNWATCH:
+        /* The simulated chain goes on answering: engines ignore what they
+         * no longer need (action.h). */
+        trace(sim, "unwatch node=%u txid=%016llx tx=%d", index, (unsigned long long)first8(a->u.unwatch.what.txid),
+              a->u.unwatch.is_tx);
+        break;
     case GZ_ACTION_SET_TIMER:
         set_timer(s, a->u.set_timer.timer_id, a->u.set_timer.delay_ms);
         trace(sim, "set-timer node=%u id=%llu delay=%llu", index,
@@ -1288,6 +1294,7 @@ static int action_holds_secret(const slot_t *s, const gz_action_t *a)
     case GZ_ACTION_WATCH_SCRIPT:   return 0; /* retired */
     case GZ_ACTION_WATCH_TX:       return holds_secret(s, a->u.watch_tx.txid, 32);
     case GZ_ACTION_WATCH_OUTPOINT: return holds_secret(s, a->u.watch_outpoint.outpoint.txid, 32);
+    case GZ_ACTION_UNWATCH:        return holds_secret(s, a->u.unwatch.what.txid, 32);
     case GZ_ACTION_SET_TIMER:      return holds_secret_u64(s, a->u.set_timer.timer_id);
     case GZ_ACTION_CANCEL_TIMER:   return holds_secret_u64(s, a->u.cancel_timer.timer_id);
     }

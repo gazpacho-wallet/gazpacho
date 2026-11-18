@@ -119,6 +119,9 @@ int gzp_chain_timeout(const gzp_chain_t *c, uint64_t now_ms);
 #define GZP_CHAIN_STOP (-2)
 int gzp_chain_watch_tx(gzp_chain_t *c, const uint8_t txid[32], uint32_t depth);
 int gzp_chain_watch_outpoint(gzp_chain_t *c, const uint8_t txid[32], uint32_t vout, uint32_t depth);
+/* Drop a watch (UNWATCH, action.h): its place in the worker is freed. BUSY is
+ * held and asked again like a watch; 0, or -1: fatal. */
+int gzp_chain_unwatch(gzp_chain_t *c, int is_tx, const uint8_t txid[32], uint32_t vout);
 int gzp_chain_broadcast(gzp_chain_t *c, const uint8_t *tx, size_t len);
 /* Asks the worker again for what it refused. 0, -1 or GZP_CHAIN_STOP, as above. */
 int gzp_chain_retry(gzp_chain_t *c);
