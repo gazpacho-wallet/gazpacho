@@ -87,6 +87,10 @@ static void test_one_nonce(void)
     if (r && i >= 0) {
         uint8_t nonce[66], sn[132];
         uint64_t made = h.p[1].e->counters[GZ_SIGN_COUNT_NONCES_MADE], serial = r->secnonce_serial[i];
+        /* The engine gives its keys back after each step (P4.3); hand them over again, so that the only
+         * line left between a second call and a second nonce is this rule's. */
+        int took = 0;
+        CHECK(hold_keys(h.p[1].e, r, 1, &took) && h.p[1].e->keys_held == KEYS_BOTH);
         memcpy(nonce, r->nonce[i][s], 66); memcpy(sn, r->secnonce[i].data, 132);
         CHECK(make_nonce(h.p[1].e, r, i) == 0);                          /* secret held, slot filled */
         CHECK(memcmp(nonce, r->nonce[i][s], 66) == 0 && memcmp(sn, r->secnonce[i].data, 132) == 0);
@@ -98,6 +102,7 @@ static void test_one_nonce(void)
         CHECK(make_nonce(h.p[1].e, r, i) == 0 && memcmp(sn, r->secnonce[i].data, 132) == 0);
         r->have_nonce[i] |= bit((unsigned)s);
         CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_NONCES_MADE] == made);
+        put_keys(h.p[1].e, took);
     }
     h_free(&h);
 }
@@ -118,13 +123,17 @@ static void test_one_partial(void)
         uint8_t out[32], psig[32];
         int illegal = g_illegal;
         uint64_t made = h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE];
+        int took = 0;
         memcpy(psig, r->psig[i][s], 32);
+        /* As in test_one_nonce: the keys held, so that only this rule stands in the way. */
+        CHECK(hold_keys(h.p[1].e, r, 1, &took) && h.p[1].e->keys_held == KEYS_BOTH);
         CHECK(sign_item(h.p[1].e, r, i, out) == 0);                      /* no secret nonce */
         r->secnonce_serial[i] = 77;                                       /* a serial, the slot filled */
         CHECK(sign_item(h.p[1].e, r, i, out) == 0);
         CHECK(g_illegal == illegal && memcmp(psig, r->psig[i][s], 32) == 0);
         CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == made);
         r->secnonce_serial[i] = 0;
+        put_keys(h.p[1].e, took);
     }
     h_free(&h);
 }
@@ -1203,6 +1212,246 @@ static void test_c7_at_signing(void)
     h_free(&h);
 }
 
+/* MEMBER_REPORTS_FUNDING, MEMBER_REPORTS, REPORT_ONCE: a member's lobby hears of each round once:
+ * Funding (released) when its ack is saved; Retry (nothing released) when the round ends for it before
+ * any partial signature; and never a second time for the same round. */
+static void test_member_outcomes(void)
+{
+    harness_t h;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    h_flush(&h, 100000);
+    for (uint32_t g = 1; g <= 3; g++)
+        CHECK(h.builder.m_n_outcomes[g] == 1 && h.builder.m_outcomes[g][0] == GZ_SIGN_OUTCOME_FUNDING &&
+              h.builder.m_released[g][0] == 1);
+    gz_sign_round_t *r = round_of(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_COMPLETE && r->reported);
+    if (r) {
+        gz_action_list_t list;
+        emit_t em;
+        gz_action_list_init(&list, h_slots, 512, h_bytes, sizeof h_bytes);
+        em.out = &list; em.st = GZ_OK; em.e = h.p[1].e;
+        report(h.p[1].e, GZ_SIGN_OUTCOME_RETRY, r, 0, &em);          /* reported already: nothing more */
+        CHECK(em.st == GZ_OK && h.builder.m_n_outcomes[1] == 1 && list.count == 0);
+    }
+    h_free(&h);
+
+    /* member 1's nonce sets never come (what is sent to it is lost): its round ends at its deadline */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    deliver_until_sent(&h, 1, GZ_SIGN_MSG_NONCES);
+    CHECK(h.builder.m_n_outcomes[1] == 0);
+    h.drop_to |= 1u << 1;
+    h_ticks(&h, 40);
+    r = round_of(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_ABORTED && !r->ever_partial);
+    CHECK(h.builder.m_n_outcomes[1] == 1 && h.builder.m_outcomes[1][0] == GZ_SIGN_OUTCOME_RETRY && h.builder.m_released[1][0] == 0);
+    h_free(&h);
+}
+
+/* IGNORE_UNACCEPTED: a proposal for a check the member's lobby did not accept (its builder answers
+ * GZ_SIGN_BUILD_IGNORE) is ignored: counted, no answer at all (no abort a hostile host could collect,
+ * 13, A8), no round, and the keys taken for it given back. */
+static void test_ignore_unaccepted(void)
+{
+    harness_t h;
+    h_init(&h, 1);
+    CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+    h.builder.refuse = GZ_SIGN_BUILD_IGNORE;          /* the member's builder, from here on */
+    long k = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
+    CHECK(k >= 0);
+    if (k >= 0) {
+        gz_sign_t *e = h.p[1].e;
+        uint64_t ign = e->counters[GZ_SIGN_COUNT_IGNORED], rej = e->counters[GZ_SIGN_COUNT_REJECTED];
+        size_t sent = h.n_sent;
+        h_deliver(&h, (size_t)k, 0);
+        CHECK(e->counters[GZ_SIGN_COUNT_IGNORED] == ign + 1 && e->counters[GZ_SIGN_COUNT_REJECTED] == rej);
+        CHECK(h.n_sent == sent && h_newest(&h, 1) == NULL && e->keys_held == KEYS_NONE);
+    }
+    h.builder.refuse = 0;
+    h_free(&h);
+}
+
+/* A signed round message without record `type`, signed again by party g (one-byte record types, lengths
+ * as w_pad writes them). Returns the new length, 0 if the message does not parse that way. */
+static size_t strip_record(const uint8_t *in, size_t len, uint8_t type, uint32_t g, uint8_t *out)
+{
+    size_t at = GZ_RMSG_HEADER, n = GZ_RMSG_HEADER;
+    memcpy(out, in, GZ_RMSG_HEADER);
+    while (at < len) {
+        size_t start = at, rl;
+        uint8_t t = in[at++];
+        if (t >= 253 || at >= len) return 0;
+        if (in[at] < 253) rl = in[at++];
+        else if (in[at] == 0xfd && at + 2 < len) { rl = (size_t)in[at + 1] << 8 | in[at + 2]; at += 3; }
+        else return 0;
+        if (at + rl > len) return 0;
+        at += rl;
+        if (t != type) { memcpy(out + n, in + start, at - start); n += at - start; }
+    }
+    w_resign(out, n, g);
+    return n;
+}
+
+/* ATTEMPT_REQUIRED: a proposal without record 7 (the attempt), signed by its host, is refused as an
+ * invalid round (messages.md 7.2): no round, no nonces. */
+static void test_attempt_required(void)
+{
+    harness_t h;
+    static uint8_t b[GZ_SIGN_MAX_PROPOSAL];
+    h_init(&h, 1);
+    CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+    long k = q_find(&h, 0, 1, GZ_SIGN_MSG_PROPOSE);
+    CHECK(k >= 0);
+    if (k >= 0) {
+        size_t len = strip_record(h.q[k].b, h.q[k].len, 7, 0, b), sent;
+        gz_sign_msg_t m;
+        CHECK(len > 0 && len < h.q[k].len);
+        h_drop_msg(&h, (size_t)k);
+        sent = h.n_sent;
+        CHECK(h_inject(&h, 0, 1, b, len) == GZ_OK && !h.p[1].e->failed);
+        CHECK(h.n_sent == sent + 1 && gz_sign_decode(h.sent[sent].b, h.sent[sent].len, &m) && m.kind == GZ_SIGN_MSG_ABORT &&
+              m.reason == gz_sign_reason(GZ_SIGN_WHY_INVALID_ROUND, 0));
+        CHECK(h_newest(&h, 1) == NULL && h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == 0);
+    }
+    h_free(&h);
+}
+
+/* KEYS_STILL_ROUNDS: keys taken again for a round must still be the round's own. Member 1's key hook
+ * gives another factory key once its nonces have left (the contribution key, and so its links, stay);
+ * when the nonce sets arrive it signs nothing with it: the round fails NOT_MY_KEY and no key stays held. */
+static void keys_still_rounds(int contribution)
+{
+    harness_t h;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    deliver_until_sent(&h, 1, GZ_SIGN_MSG_NONCES);
+    gz_sign_round_t *r = round_of(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && h.p[1].e->keys_held == KEYS_NONE);
+    while (h.nq && q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+    long k = q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES);
+    CHECK(k >= 0);
+    /* member 1's hook now gives another factory key, or another contribution key */
+    if (contribution) h.builder.other_contribution = 1u << 1;
+    else h.builder.other_factory = 1u << 1;
+    if (k >= 0 && r) {
+        uint64_t made = h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE];
+        h_deliver(&h, (size_t)k, 0);
+        CHECK(r->state == GZ_SIGN_ROUND_ABORTED && r->why == GZ_SIGN_WHY_NOT_MY_KEY);
+        CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == made && h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == 0);
+        CHECK(h.p[1].e->keys_held == KEYS_NONE);
+    }
+    if (r && r->why != GZ_SIGN_WHY_NOT_MY_KEY) printf("  keys_still_rounds: round state %d, why %d\n", (int)r->state, (int)r->why);
+    h.builder.other_factory = h.builder.other_contribution = 0;
+    h_free(&h);
+}
+
+static void test_keys_still_rounds(void)
+{
+    keys_still_rounds(0);   /* the factory key */
+    keys_still_rounds(1);   /* the contribution key */
+}
+
+/* SUPERSEDE_OWN_CHECK: a proposal supersedes only an older attempt of its own check in its own lobby;
+ * the same attempt, a later one, another check or another lobby runs on. */
+static void test_older_attempt(void)
+{
+    harness_t h;
+    static gz_sign_round_t a, b;
+    h_init(&h, 1);
+    CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+    h_flush(&h, 100000);
+    const gz_sign_round_t *r0 = h_newest(&h, 1);
+    CHECK(r0 != NULL);
+    if (r0) {
+        a = *r0; b = *r0;
+        b.id[0] ^= 1;
+        a.attempt = 2; b.attempt = 3;
+        CHECK(older_attempt(&a, &b) == 1 && older_attempt(&b, &a) == 0);
+        b.attempt = 2;
+        CHECK(older_attempt(&a, &b) == 0 && older_attempt(&b, &a) == 0);
+        b.attempt = 3; b.check_id[0] ^= 1;
+        CHECK(older_attempt(&a, &b) == 0);
+        b.check_id[0] ^= 1; b.def.outer_digest[0] ^= 1;
+        CHECK(older_attempt(&a, &b) == 0);
+    }
+    h_free(&h);
+}
+
+/* EXPOSURE_PER_ROUND: two rounds of one tree on one outpoint each have their exposure entry (each is
+ * resolved on its own); a round's own exposure again is the same entry. */
+static void test_exposure_per_round(void)
+{
+    harness_t h;
+    uint8_t txid[32], dig[32], a[32], b[32];
+    h_init(&h, 1);
+    gz_sign_t *e = h.p[1].e;
+    memset(txid, 0x11, 32); memset(dig, 0x22, 32); memset(a, 0xa1, 32); memset(b, 0xb2, 32);
+    size_t n0 = e->n_exposures;
+    CHECK(add_exposure(e, txid, 3, dig, a) && e->n_exposures == n0 + 1);
+    CHECK(add_exposure(e, txid, 3, dig, a) && e->n_exposures == n0 + 1);
+    CHECK(add_exposure(e, txid, 3, dig, b) && e->n_exposures == n0 + 2);
+    CHECK(!memcmp(e->exposed[n0].round_id, a, 32) && !memcmp(e->exposed[n0 + 1].round_id, b, 32));
+    h_free(&h);
+}
+
+/* EXCUSE_ONLY_RELEASED: a member's reason-6 abort (another round of the outpoint) is excused only if a
+ * round on that outpoint may have released partial signatures; one that never did excuses nothing. */
+static void test_excuse_only_released(void)
+{
+    harness_t h;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    deliver_until_sent(&h, 1, GZ_SIGN_MSG_NONCES);
+    gz_sign_t *e = h.p[0].e;
+    gz_sign_round_t *r = round_of(&h, 0);
+    int fs = -1;
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS && r && fs < 0; i++) if (e->rounds[i].state == GZ_SIGN_ROUND_FREE) fs = i;
+    CHECK(r && fs >= 0);
+    if (r && fs >= 0) {
+        gz_sign_round_t *o = &e->rounds[fs];
+        for (int k = 0; k < GZ_SIGN_MAX_KEPT; k++) CHECK(!e->kept[k].used);
+        *o = *r;
+        o->id[0] ^= 1; o->why = 0;
+        for (int t = 0; t < o->def.n_tiers; t++) o->tier_state[t] = GZ_SIGN_TIER_NONCES;
+        CHECK(abort_blame(e, r, 1, 6) == bit(1));
+        o->tier_state[0] = GZ_SIGN_TIER_SIGNED;
+        CHECK(abort_blame(e, r, 1, 6) == 0);
+        memset(o, 0, sizeof *o);
+    }
+    h_free(&h);
+}
+
+/* EARLY_NONCES: nonces for a later tier are early (kept) only from a member with no item in any tier from
+ * the one under way up to theirs. A round of three tiers: the first item alone in tier 0, the items
+ * without member 3 in tier 1, the rest in tier 2; tier 1 under way. */
+static void test_early_nonces(void)
+{
+    harness_t h;
+    static gz_sign_round_t r;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+    deliver_until_sent(&h, 1, GZ_SIGN_MSG_NONCES);
+    const gz_sign_round_t *r0 = round_of(&h, 0);
+    CHECK(r0 != NULL);
+    if (r0) {
+        uint8_t other = 0;
+        r = *r0;
+        r.def.n_tiers = 3;
+        for (int i = 0; i < r.def.n_items; i++) r.def.items[i].tier = (uint8_t)(i == 0 ? 0 : pos_of(&r.def.items[i], 3) < 0 ? 1 : 2);
+        r.tier = 1; r.tier_state[0] = GZ_SIGN_TIER_SIGNED; r.tier_state[1] = GZ_SIGN_TIER_NONCES;
+        CHECK(count_items(&r, 3, 1) == 0 && count_items(&r, 3, 2) > 0);
+        for (uint8_t j = 1; j <= 3 && !other; j++) if (count_items(&r, j, 1) > 0) other = j;
+        CHECK(other != 0);
+        CHECK(early_nonces(&r, 3, 2) == 1);
+        CHECK(early_nonces(&r, 3, 1) == 0);
+        if (other) CHECK(early_nonces(&r, other, 2) == 0);
+        r.tier_state[1] = GZ_SIGN_TIER_NONE;
+        CHECK(early_nonces(&r, 3, 2) == 0);
+    }
+    h_free(&h);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -1233,6 +1482,14 @@ int main(void)
     test_decode_first();
     test_revived_round_across_restart();
     test_c7_at_signing();
+    test_member_outcomes();
+    test_ignore_unaccepted();
+    test_attempt_required();
+    test_keys_still_rounds();
+    test_older_attempt();
+    test_exposure_per_round();
+    test_excuse_only_released();
+    test_early_nonces();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);

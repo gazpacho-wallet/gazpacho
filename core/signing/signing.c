@@ -1014,8 +1014,8 @@ static int hold_keys(gz_sign_t *e, const gz_sign_round_t *r, int factory, int *t
     if (e->keys_held == KEYS_BOTH || (!factory && e->keys_held == KEYS_CONTRIBUTION)) return 1;
     if (!take_keys(e, r->def.outer_digest, r->def.terms_digest, factory)) return 0;
     /* The keys under the scope must still be the round's own: a hook that now gives others is no key. */
-    if (!same(e->work_ckey, r->def.participants[r->me].contribution_key, 33) ||
-        (factory && !same(e->work_fkey, r->def.participants[r->me].factory_key, 33))) { drop_keys(e); return 0; }   /* RULE:KEYS_STILL_ROUNDS */
+    if (!same(e->work_ckey, r->def.participants[r->me].contribution_key, 33) ||                     /* RULE:KEYS_SAME_CONTRIBUTION */
+        (factory && !same(e->work_fkey, r->def.participants[r->me].factory_key, 33))) { drop_keys(e); return 0; }   /* RULE:KEYS_STILL_ROUNDS RULE:KEYS_SAME_FACTORY */
     *took = 1;
     return 1;
 }
@@ -1739,15 +1739,23 @@ static int exact_items(const gz_sign_round_t *r, uint8_t j, const gz_sign_msg_t 
     return k == m->n;
 }
 
+/* 1 if member j's nonces for `tier` come early: a later tier than the one under way, from a member with
+ * no item in any tier from the current one up to theirs. Such a member makes them as soon as it holds the
+ * tier before it, and would not send them again (P4.3 item 9). */
+static int early_nonces(const gz_sign_round_t *r, uint8_t j, uint8_t tier)
+{
+    int early = tier > r->tier && tier < r->def.n_tiers && r->tier_state[r->tier] >= GZ_SIGN_TIER_NONCES;
+    for (int t = r->tier; early && t < tier; t++) early = !count_items(r, j, t);   /* RULE:EARLY_NONCES */
+    return early;
+}
+
 static void host_nonces(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, const gz_sign_msg_t *m, emit_t *em)
 {
     uint8_t d[32];
     secp256k1_musig_pubnonce pn;
-    /* Nonces for the tier under way, or, from a member with no item in any tier from the current one up to
-     * theirs, for a later tier: such a member makes them as soon as it holds the tier before it, and
-     * would not send them again (P4.3 item 9). They are checked and kept the same way. */
-    int early = m->tier > r->tier && m->tier < r->def.n_tiers && r->tier_state[r->tier] >= GZ_SIGN_TIER_NONCES;
-    for (int t = r->tier; early && t < m->tier; t++) early = !count_items(r, j, t);   /* RULE:EARLY_NONCES */
+    /* Nonces for the tier under way, or early ones for a later tier (early_nonces). They are checked and
+     * kept the same way. */
+    int early = early_nonces(r, j, m->tier);
     if (!early && (m->tier != r->tier || r->tier_state[r->tier] != GZ_SIGN_TIER_NONCES)) {
         e->counters[GZ_SIGN_COUNT_DUPLICATES]++;
         return;
