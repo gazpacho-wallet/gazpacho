@@ -303,6 +303,8 @@ typedef struct {
     gz_action_t slots[64];
     uint8_t bytes[GZ_FUND_MAX_STEP_BYTES + 4096];
     gz_action_list_t out;
+    int lag;                  /* 0: the chain view answers every tip at once (TIP_SYNCED after each
+                                 NEW_TIP); 1: a test sends TIP_SYNCED itself */
     /* every saved record, for a restart */
     uint8_t jbuf[1 << 22];
     size_t jat;
@@ -377,6 +379,14 @@ static inline gz_status_t ft_ev(ft_t *t, const gz_event_t *ev)
     gz_status_t st;
     ft_reset(t);
     st = gz_fund_handle(&t->f, ev, &t->out);
+    if (st == GZ_OK && !t->lag && ev->kind == GZ_EVENT_CHAIN && ev->u.chain.kind == GZ_CHAIN_NEW_TIP) {
+        gz_event_t s;
+        memset(&s, 0, sizeof s);
+        s.kind = GZ_EVENT_CHAIN;
+        s.u.chain.kind = GZ_CHAIN_TIP_SYNCED;
+        s.u.chain.height = ev->u.chain.height;
+        st = gz_fund_handle(&t->f, &s, &t->out);
+    }
     ft_after(t);
     return st;
 }
@@ -419,6 +429,36 @@ static inline gz_event_t ev_spent(const uint8_t op[36], const uint8_t spender[32
     e.u.chain.outpoint.vout = (uint32_t)op[32] | (uint32_t)op[33] << 8;
     memcpy(e.u.chain.txid, spender, 32);
     e.u.chain.confirmations = c;
+    return e;
+}
+/* The chain view has answered a watch (GZ_CHAIN_WATCH_SYNCED). */
+static inline gz_event_t ev_synced_tx(const uint8_t txid[32])
+{
+    gz_event_t e;
+    memset(&e, 0, sizeof e);
+    e.kind = GZ_EVENT_CHAIN;
+    e.u.chain.kind = GZ_CHAIN_WATCH_SYNCED;
+    e.u.chain.is_tx = 1;
+    memcpy(e.u.chain.txid, txid, 32);
+    return e;
+}
+static inline gz_event_t ev_synced_op(const uint8_t op[36])
+{
+    gz_event_t e;
+    memset(&e, 0, sizeof e);
+    e.kind = GZ_EVENT_CHAIN;
+    e.u.chain.kind = GZ_CHAIN_WATCH_SYNCED;
+    memcpy(e.u.chain.outpoint.txid, op, 32);
+    e.u.chain.outpoint.vout = (uint32_t)op[32] | (uint32_t)op[33] << 8;
+    return e;
+}
+static inline gz_event_t ev_tip_synced(uint32_t h)
+{
+    gz_event_t e;
+    memset(&e, 0, sizeof e);
+    e.kind = GZ_EVENT_CHAIN;
+    e.u.chain.kind = GZ_CHAIN_TIP_SYNCED;
+    e.u.chain.height = h;
     return e;
 }
 static inline gz_event_t ev_bres(const uint8_t txid[32], gz_broadcast_outcome_t o)

@@ -156,8 +156,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
                 e.kind = GZ_EVENT_USER_COMMAND;
                 e.u.user.bytes.data = p;
                 e.u.user.bytes.len = len;
-            } else if (kind < 0x80) {
+            } else if (kind < 0x78) {
                 e = ev_tip(len >= 4 ? gz_get_u32(p) : (uint32_t)len);
+            } else if (kind < 0x80) {
+                /* the chain view's answers for a tip: mostly the current one (B12) */
+                e = ev_tip_synced(len & 1 ? (len >= 4 ? gz_get_u32(p) : (uint32_t)len) : t->f.tip);
             } else if (kind < 0xa0) {
                 e = ev_tick();
             } else {

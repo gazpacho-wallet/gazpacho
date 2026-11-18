@@ -663,6 +663,13 @@ int gz_fund_host_h1(gz_fund_t *f, const gz_fund_h1_in_t *in)
     h.n_prev = x->n_in;
     r = (int)gz_tree_h1(&h, &at);
     if (r != GZ_H1_OK) return r;
+    {
+        /* Too late for a burial by the deadline this outcome would set: the
+         * lobby is told now, before it saves Funding (review B, N-1). */
+        int known = x->plan_tip_known || f->tip_known;
+        uint32_t dl = (x->plan_tip_known ? x->plan_tip : f->tip) + f->cfg.funding_deadline_blocks;
+        if (known && f->tip_known && f->tip + f->cfg.burial - 1 > dl) return GZ_FUND_H1_TOO_LATE;
+    }
     if (x->mode == GZ_HOST_FUNDING_AUTO) {
         n = 0;
         if (!f->cfg.wallet.sign_plan(f->cfg.wallet.ctx, x->funding.txid, x->signed_tx, sizeof x->signed_tx, &n) ||
@@ -734,16 +741,6 @@ static gz_status_t gz_fund_host_apply_in(gz_fund_t *f, const uint8_t scope[32], 
     }
     x->h1_ok = 0;
     set_deadline(f, x);
-    if (x->mode == GZ_HOST_FUNDING_AUTO && !x->deadline_pending && f->tip_known &&
-        f->tip + f->cfg.burial - 1 > x->deadline) {
-        /* A burial by the deadline is no longer possible: nothing is
-         * broadcast, the coins go back (review B, M-1). */
-        f->cfg.wallet.release(f->cfg.wallet.ctx, x->tx, x->tx_len);
-        if ((st = save_status(f, x, GZ_FUND_ST_FAILED, 0, out)) != GZ_OK) return st;
-        if ((st = log_note(f, out, "funding-too-late", x->scope)) != GZ_OK) return st;
-        finish(f, x, GZ_FUND_ST_FAILED);
-        return GZ_OK;
-    }
     if (x->mode == GZ_HOST_FUNDING_CONFIRM) {
         if ((st = save_status(f, x, GZ_FUND_ST_AWAITING, 0, out)) != GZ_OK) return st;
         x->state = GZ_FUND_ST_AWAITING;
@@ -1153,7 +1150,6 @@ gz_status_t gz_fund_resume(void *e, gz_action_list_t *out, int *more)
             /* The chain facts come back through these watches (H-1). */
             x->resyncing = 1;
             x->reported = 0;
-            x->resync_tip_seen = 0;
             if ((st = set_watches(f, x, out)) != GZ_OK) return st;
         }
         x->due = 1;
@@ -1273,12 +1269,13 @@ static int buried_in_time(const gz_fund_t *f, const gz_fund_factory_t *x)
 }
 
 /* After a start, have the chain facts come back (review B of PR 56, H-1)?
- * Every watch reported since the start, or a block passed since its first
- * tip. The contract gives no report for a watched transaction that is not
- * in the chain, so the block is the bound. */
+ * Only when the chain view has answered every watch of the factory set at
+ * this start (GZ_CHAIN_WATCH_SYNCED): what it found came just before. No
+ * count of tips stands in for it: a block can come before the answers. */
 static int facts_back(const gz_fund_t *f, gz_fund_factory_t *x)
 {
     unsigned all;
+    if (!f->tip_synced) return 0;   /* the answers for this tip are not all in (integration B12) */
     if (!x->resyncing) return 1;
     all = (2u << (n_watch(f, x) - 1)) - 1u;
     if ((x->reported & all) == all) x->resyncing = 0;
@@ -1363,7 +1360,10 @@ static gz_status_t step_host(gz_fund_t *f, gz_fund_factory_t *x, gz_action_list_
         if (buried(f, x)) return end_with(f, x, GZ_FUND_ST_LIVE_LATE, GZ_FUND_R_FUNDED_LATE, out);
         if (input_dead(f, x, &k)) return end_with(f, x, GZ_FUND_ST_DEAD, 0, out);
         if (sb_settled(x)) break;   /* mined: no new level, no re-broadcast */
-        if (!facts_back(f, x)) break;   /* after a start: the facts first (H-1) */
+        if (!facts_back(f, x)) {   /* after a start: the facts first (H-1); what is pending waits */
+            *did = 0;
+            return GZ_OK;
+        }
         if (x->escalate || (x->rebroadcast && !x->sb_len)) {
             /* Refused, or not made at the deadline: one level up, at most
              * the higher increment. A funding never signed has nothing to
@@ -1472,8 +1472,10 @@ static gz_status_t tick(gz_fund_t *f, gz_action_list_t *out)
 
 static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
 {
+    if (c->kind == GZ_CHAIN_TIP_SYNCED && f->tip_known && c->height == f->tip) f->tip_synced = 1;
     for (size_t i = 0; i < GZ_FUND_MAX_FACTORIES; i++) {
         gz_fund_factory_t *x = &f->fac[i];
+        if (x->used && c->kind == GZ_CHAIN_TIP_SYNCED) x->due = 1;
         if (!x->used || !x->watching) continue;
         if ((c->kind == GZ_CHAIN_TX_CONFIRMED || c->kind == GZ_CHAIN_TX_UNCONFIRMED) &&
             memcmp(c->txid, x->funding.txid, 32) == 0) {
@@ -1485,7 +1487,15 @@ static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
                 x->conf = 0;   /* reorganised away: counting starts again */
                 x->conf_height = 0;
             }
-            x->reported |= 1u;
+            x->due = 1;
+        }
+        if (c->kind == GZ_CHAIN_WATCH_SYNCED && x->resyncing) {
+            if (c->is_tx && memcmp(c->txid, x->funding.txid, 32) == 0) x->reported |= 1u;
+            for (size_t k = 0; !c->is_tx && k < GZ_FUND_WATCH_INPUTS && k < x->n_in; k++) {
+                gz_outpoint_t o;
+                outpoint_of(x->ins[k], &o);
+                if (memcmp(o.txid, c->outpoint.txid, 32) == 0 && o.vout == c->outpoint.vout) x->reported |= 2u << k;
+            }
             x->due = 1;
         }
         if (c->kind == GZ_CHAIN_OUTPOINT_SPENT) {
@@ -1496,7 +1506,6 @@ static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
                 memcpy(x->spender[k], c->txid, 32);
                 x->spender_conf[k] = c->confirmations;
                 x->spender_known[k] = 1;
-                x->reported |= 2u << k;
                 if (memcmp(c->txid, x->funding.txid, 32) == 0) x->seen = 1;
                 x->due = 1;
             }
@@ -1585,24 +1594,24 @@ static gz_status_t gz_fund_handle_in(void *e, const gz_event_t *ev, gz_action_li
             int any = 0;
             f->tip = ev->u.chain.height;
             f->tip_known = 1;
+            f->tip_synced = 0;   /* its reports may still be coming */
             for (size_t i = 0; i < GZ_FUND_MAX_FACTORIES; i++)
                 if (f->fac[i].used) {
                     gz_fund_factory_t *y = &f->fac[i];
                     y->due = 1;
                     y->rebroadcast = 1;
                     any = 1;
-                    if (y->resyncing) {
-                        if (!y->resync_tip_seen) {
-                            y->resync_tip_seen = 1;
-                            y->resync_tip = f->tip;
-                        } else if (f->tip > y->resync_tip) {
-                            y->resyncing = 0;   /* a block since: the reports had their chance */
-                        }
-                    }
                 }
             for (size_t i = 0; i < GZ_FUND_MAX_ENDED; i++)
                 if (f->pending[i].used) any = 1;
             return any ? arm_tick(f, out, f->cfg.tick_ms) : GZ_OK;
+        }
+        if (ev->u.chain.kind == GZ_CHAIN_TIP_SYNCED) {
+            int any = 0;
+            chain_event(f, &ev->u.chain);
+            for (size_t i = 0; i < GZ_FUND_MAX_FACTORIES; i++)
+                if (f->fac[i].used) any = 1;
+            return any && !f->tick_armed ? arm_tick(f, out, f->cfg.tick_ms) : GZ_OK;
         }
         chain_event(f, &ev->u.chain);
         return f->tick_armed ? GZ_OK : arm_tick(f, out, f->cfg.tick_ms);

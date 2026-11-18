@@ -95,15 +95,22 @@ b-load-sb-index ## funding.c ## if (x->sb_index >= x->n_in || !gz_fund_tx_vsize(
 b-csize-nonminimal ## txsize.c ## return *v < 0xfd ? 0 : 3; ## return 3;
 b-walk-no-wit-ok ## txsize.c ## if (!any) return 0; /* a segwit form with no witness is not canonical */ ## (void)any;
 resync-ignored ## funding.c ## x->resyncing = 1; ## x->resyncing = 0;
-resync-first-tip ## funding.c ## y->resync_tip_seen = 1;\n                            y->resync_tip = f->tip; ## y->resyncing = 0;
+resync-ended-by-tip ## funding.c ## y->rebroadcast = 1; ## y->rebroadcast = 1; y->resyncing = 0;
 resync-one-report ## funding.c ## if ((x->reported & all) == all) x->resyncing = 0; ## if (x->reported) x->resyncing = 0;
 resync-tx-bit ## funding.c ## x->reported |= 1u; ## (void)0;
 resync-member-ungated ## funding.c ## x->state == GZ_FUND_ST_ACKED && facts_back(f, x)) { ## x->state == GZ_FUND_ST_ACKED) {
-resync-escalate-ungated ## funding.c ## if (!facts_back(f, x)) break;   /* after a start: the facts first (H-1) */ ## (void)0;
-too-late-auto ## funding.c ## if (x->mode == GZ_HOST_FUNDING_AUTO && !x->deadline_pending && f->tip_known && ## if (0 &&
+resync-escalate-ungated ## funding.c ## if (!facts_back(f, x)) {   /* after a start: the facts first (H-1); what is pending waits */ ## if (0) {
+too-late-h1 ## funding.c ## if (known && f->tip_known && f->tip + f->cfg.burial - 1 > dl) return GZ_FUND_H1_TOO_LATE; ## (void)known;
 too-late-confirm ## funding.c ## } else if (!x->deadline_pending && f->tip_known && f->tip + f->cfg.burial - 1 > x->deadline) { ## } else if (0) {
 reuse-keeps-basis ## funding.c ## if (f->tip_known && (!old->plan_tip_known || old->plan_tip != f->tip)) { ## if (0) {
 reuse-keeps-pass ## funding.c ## old->h1_ok = 0;\n        old->signed_len = 0; ## (void)0;
 factory-not-output-0 ## funding.c ## if (i != 0) return 0;   /* output 0, as the signer's adopt checks (review B, M-3) */ ## (void)0;
 refused-plan-not-readopted ## funding.c ## if (old) (void)f->cfg.wallet.adopt(f->cfg.wallet.ctx, old->tx, old->tx_len, old->script, old->amount); ## (void)0; ## 2
 # survivor: plan-output-twice equivalent since review B's M-3: the factory's output must be output 0, so a second one (output 1 or later) is refused by that check
+# --- review B's confirmation of PR 56: WATCH_SYNCED (the block bound replaced)
+synced-op-bit ## funding.c ## x->reported |= 2u << k; ## (void)0;
+synced-other-watch ## funding.c ## if (c->is_tx && memcmp(c->txid, x->funding.txid, 32) == 0) x->reported |= 1u; ## x->reported |= 1u;
+# --- integration B12: the gate at every tip (TIP_SYNCED)
+tip-sync-ignored ## funding.c ## if (!f->tip_synced) return 0;   /* the answers for this tip are not all in (integration B12) */ ## (void)0;
+tip-sync-kept ## funding.c ## f->tip_synced = 0;   /* its reports may still be coming */ ## (void)0;
+tip-sync-any-height ## funding.c ## if (c->kind == GZ_CHAIN_TIP_SYNCED && f->tip_known && c->height == f->tip) f->tip_synced = 1; ## if (c->kind == GZ_CHAIN_TIP_SYNCED) f->tip_synced = 1;

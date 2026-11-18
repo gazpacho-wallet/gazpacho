@@ -163,6 +163,27 @@ static void late_reports(ft_t *t, model_t *m, uint32_t *tip, int host)
     if (host) CHECK(m[j].live && !m[j].abandoned);
 }
 
+/* The chain view answers every watch set at the start (WATCH_SYNCED). */
+static void sync_all(ft_t *t, model_t *m)
+{
+    for (size_t k = 0; k < GZ_FUND_MAX_FACTORIES; k++) {
+        gz_fund_factory_t *x = &t->f.fac[k];
+        uint8_t id[32], ins[GZ_FUND_WATCH_INPUTS][36];
+        size_t n;
+        gz_event_t e;
+        if (!x->used || !x->resyncing) continue;
+        memcpy(id, x->funding.txid, 32);
+        memcpy(ins, x->ins, sizeof ins);
+        n = t->cfg.host ? 1 : (x->n_in < GZ_FUND_WATCH_INPUTS ? x->n_in : GZ_FUND_WATCH_INPUTS);
+        e = ev_synced_tx(id);
+        step(t, &e, m);
+        for (size_t i = 0; i < n; i++) {
+            e = ev_synced_op(ins[i]);
+            step(t, &e, m);
+        }
+    }
+}
+
 static ft_t *run_host(ft_t *t, model_t *m, uint32_t *tip, int steps)
 {
     for (int i = 0; i < steps; i++) {
@@ -244,6 +265,7 @@ static ft_t *run_host(ft_t *t, model_t *m, uint32_t *tip, int steps)
             free(t);
             t = u;
             if (rnd() % 2) late_reports(t, m, tip, 1);
+            if (rnd() % 4) sync_all(t, m);
         } else {
             e = ev_tick();
             step(t, &e, m);
@@ -308,6 +330,7 @@ static ft_t *run_member(ft_t *t, model_t *m, uint32_t *tip, int steps)
             free(t);
             t = u;
             if (rnd() % 2) late_reports(t, m, tip, 0);
+            if (rnd() % 4) sync_all(t, m);
         } else {
             e = ev_tick();
             step(t, &e, m);
