@@ -284,6 +284,15 @@ static size_t guard_record(const gz_node_t *c, uint8_t *buf)
     return at + 16;
 }
 
+/* The guard record for the batch of a round_started (journal.md 8.3; the
+ * signing engine's guard hook): one more round started, a new counter. */
+size_t np_guard_for_round(gz_node_t *c, uint8_t *buf)
+{
+    c->np.guard_counter++;
+    c->np.rounds_started++;
+    return guard_record(c, buf);
+}
+
 static int find_epoch(uint32_t (*list)[2], uint32_t n, uint32_t epoch)
 {
     for (uint32_t i = 0; i < n; i++)
@@ -616,6 +625,9 @@ gz_status_t np_peer(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out)
     } else {
         int s = gz_route_member_slot_of_link(c, &ev->u.peer.link);
         if (s >= 0) st = gz_c_bracket(c, ENG_SLOT0 + s, ev, out);
+        /* Then the signing engine: the reconnect step of its rounds on this link (hello first, then saved
+         * round_partial_sigs and round_status_request: contract v2 rule 6). It matches the link itself. */
+        if (st == GZ_OK && c->sign_on && ev->kind == GZ_EVENT_PEER_CONNECTED) st = gz_c_bracket(c, ENG_SIGN, ev, out);
     }
     return st == GZ_OK ? to_tests(c, ev, out) : st;
 }
@@ -758,7 +770,8 @@ gz_status_t np_message(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out
         return gz_c_bracket(c, ENG_SLOT0 + r.slot, ev, out);
     }
     case RT_SIGNING:
-        return node_only(c, out, DROP_NO_ENGINE, ev->u.message.kind, NULL); /* P4.3 */
+        if (!c->sign_on) return node_only(c, out, DROP_NO_ENGINE, ev->u.message.kind, NULL);
+        return gz_c_bracket(c, ENG_SIGN, ev, out);
     case RT_TEST:   return gz_c_bracket(c, r.eng, ev, out);
     case RT_LISTING: return limited_hello(c, conn, ev, 0, out);
     case RT_UNKNOWN_HELLO: return limited_hello(c, conn, ev, 1, out);

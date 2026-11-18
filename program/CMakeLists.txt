@@ -23,7 +23,7 @@ foreach(variant release test)
   endif()
   add_library(${lib} STATIC ${GZP_SOURCES})
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_api OpenSSL::Crypto)
+  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_api gazpacho_tree_import OpenSSL::Crypto)
   # The passphrase layer (unlock.h): the TEST-ONLY stand-in in gazpacho-test,
   # none in the release program until encrypted storage is wired in.
   if(variant STREQUAL "test")
@@ -160,6 +160,12 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_p6a_views
     COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tests/web/check_p6a_fixme.py ${CMAKE_SOURCE_DIR} --views ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_p6a_views PROPERTIES FIXTURES_REQUIRED lobby_run)
+  # The signing engine in the composite, P4.3: a host and four members sign
+  # a real tree from the terms (one member's chain view makes it refuse);
+  # every process restarted.
+  add_test(NAME program_signing
+    COMMAND ${GZP_PY} ${GZP_T}/signing.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/signing)
+  set_tests_properties(program_signing PROPERTIES TIMEOUT 900)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})

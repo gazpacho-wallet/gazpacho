@@ -395,6 +395,9 @@ typedef struct {
      * A join that finds no room is refused like one to a full lobby. */
     int (*seat_room)(void *ctx, const uint8_t key[33]);
     void *seat_ctx;
+    /* The most tree transactions its signer signs (0: no limit): terms whose target needs more do not
+     * open (terms.md 7, gz_terms_policy_t.max_tree_nodes). */
+    uint32_t max_tree_nodes;
 } gz_lobby_host_config_t;
 
 typedef struct {
@@ -418,6 +421,10 @@ typedef struct {
      * that ended without a start, the next needs a seat event since (decision
      * 8), so that nothing loops. */
     uint64_t seat_epoch, failed_epoch; int check_failed;
+    /* Members blamed by a failed attempt (a refusal, silence, an abort), by contribution key, whatever
+     * they send or however they leave and join again: left out of the next check that starts, then
+     * free again, so a member one block behind once is not locked out (review A of PR 52, M1). */
+    struct { uint8_t key[33]; uint8_t left; } skip[GZ_LOBBY_MAX_SEATS];
     uint16_t n_seats; uint64_t next_seq, created;
     uint64_t create_credit_ms, credit_at_ms;   /* creations: a bucket of `target`, one a second */
     gz_lobby_seat_t seats[GZ_LOBBY_MAX_SEATS];
@@ -504,6 +511,7 @@ typedef struct {
     uint8_t address[GZ_LOBBY_MAX_ADDRESS]; uint8_t address_len;   /* "host:port", numeric */
     uint32_t key_epoch, key_index;   /* of the contribution key: CONNECT names them */
     int auto_join;
+    uint32_t max_tree_nodes;         /* as the host's: terms past it are refused before any seat */
 } gz_lobby_member_config_t;
 
 typedef struct {
@@ -545,6 +553,7 @@ typedef struct {
     int resends;                     /* state messages resent on lobby_status, this connection */
     int retries;                     /* joins again after a refusal for a limit, this connection */
     int sent_here;                   /* the join was already sent on this connection */
+    uint32_t max_tree_nodes;         /* the config's (M2) */
 } gz_lobby_member_t;
 
 /* The crypto port signs with the contribution and factory keys `cfg` names.

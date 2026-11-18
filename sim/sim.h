@@ -295,18 +295,6 @@ typedef struct {
      * more. */
     uint32_t step_slots, runner_slots;
     size_t step_bytes, runner_bytes;
-    /* THE BRIDGE, until P4.3 (composite-node.md, task T-P43-1). 1 for nodes
-     * still written against contract v1 (the signing engine's tests): a SEND
-     * of kind GZ_SEND_KIND_RESERVED carries the peer's number in bytes 1 to 8
-     * of the link's remote key and a whole message in its records; the
-     * network carries those bytes as they are, with no envelope; a received
-     * message and a peer event come with the same link and that kind;
-     * sim_send_message sends its bytes as given; and the network is contract
-     * v1's: a lost message closes no connection, and the quiet tail only
-     * discards what is in flight. 0 (the composite and every node on links):
-     * everything as described above. */
-    int whole_messages;
-
     sim_node_ops_t ops;
 } sim_config_t;
 
