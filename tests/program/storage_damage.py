@@ -19,7 +19,11 @@ says:
   (files_behind names which, behind or possibly_old: local-api.md's cause);
   - starts.gzs damaged or removed: treated as missing, the person told, the
     incarnation still above the journal's;
-  - restore.gzr damaged: refused.
+  - restore.gzr damaged: refused;
+  - an older journal put back with a forged restore.gzr (review A of PR 54,
+    M1: the marker is not authenticated): files_behind, every file unchanged
+    (the mark file, the evidence, is not rewritten); restore.gzr is trusted
+    only where the sealed mark file's newest entry is the restore marker.
 """
 import hashlib
 import os
@@ -142,6 +146,15 @@ def main():
             data = open(os.path.join(f, J), "rb").read()
             open(os.path.join(f, J), "wb").write(data[:185 + 69 + 69])
         case("journal-cut-back", cut_back, "refused", "files_behind:behind")
+
+        def forged_marker(f):
+            import hashlib
+            import struct
+            shutil.copyfile(backup, os.path.join(f, J))
+            chain = open(os.path.join(f, J), "rb").read(41)[9:41]
+            body = b"GZRESTO1" + chain + struct.pack(">QQ", 1000, 0)
+            open(os.path.join(f, "restore.gzr"), "wb").write(body + hashlib.sha256(body).digest()[:8])
+        case("old-journal-forged-marker", forged_marker, "refused", "files_behind")
 
         f = case("counter-flipped", lambda f: flip(os.path.join(f, "starts.gzs"), -3), "ready")
         p = procs[-1]

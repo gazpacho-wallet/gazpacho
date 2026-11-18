@@ -1350,12 +1350,16 @@ gz_journal_status_t gz_journal_open_sealed(gz_journal_t **out, const gz_journal_
     j->end = info->scan.valid_end;
     /* The restore marker: answered if the kept journal holds the answer (a
      * crash came between it becoming durable and the marker's removal). */
-    j->restored = c.marker && !c.answered;
     /* The start rule (storage 6.3), sealed only, on what the scan kept and
-     * before anything is written. A restore marked by restore.gzr (an
-     * import, a start as a restore) is a restore whatever the rule says: its
-     * mark file is started again below, before anything else is written. */
-    if (j->codec.seal && j->codec.seal->start_rule && !j->restored) {
+     * before anything is written. In the sealed format restore.gzr is not
+     * trusted (review A of PR 54, M1: it is not authenticated): the start is
+     * a restore only where the rule says so, where the sealed mark file's
+     * newest entry is the restore marker, which the import and the start as
+     * a restore write first. Only then does restore.gzr give its floor; an
+     * unanswered restore.gzr otherwise changes nothing. */
+    int sealed_rule = j->codec.seal && j->codec.seal->start_rule;
+    j->restored = !sealed_rule && c.marker && !c.answered;
+    if (sealed_rule) {
         gz_journal_start_t rule = GZ_JOURNAL_START_OK;
         view_ctx_t vc = {data, info->scan.valid_end, j};
         gz_journal_view_t view;
@@ -1369,6 +1373,8 @@ gz_journal_status_t gz_journal_open_sealed(gz_journal_t **out, const gz_journal_
         if (rule == GZ_JOURNAL_START_POSSIBLY_OLD) { st = GZ_JOURNAL_ERR_POSSIBLY_OLD; goto out; }
         if (rule == GZ_JOURNAL_START_RESTORE) j->restored = 1;
     }
+
+    if (sealed_rule && !(j->restored && c.marker && !c.answered)) floor = 0;
 
     /* 5, decided before anything is written, so that a refusal leaves the
      * file untouched. The new incarnation is above the journal's highest,
@@ -1393,7 +1399,7 @@ gz_journal_status_t gz_journal_open_sealed(gz_journal_t **out, const gz_journal_
     /* A sealed restore marked by restore.gzr: the mark file starts again with
      * the restore marker (storage 6.3 step 4, 10.2), so the start stays a
      * restore until the restore's first batch is anchored. */
-    if (j->codec.seal && c.marker && !c.answered &&
+    if (j->codec.seal && !sealed_rule && c.marker && !c.answered &&
         (!j->codec.seal->mark_restart || j->codec.seal->mark_restart(j->codec.seal->ctx) != 0)) {
         st = GZ_JOURNAL_ERR_IO;
         goto out;

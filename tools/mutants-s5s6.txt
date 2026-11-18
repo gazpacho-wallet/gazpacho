@@ -41,20 +41,12 @@ right_not_counted	program/store_unlock.c	        (void)count_attempt(w, 0, now_m
 #                       mark and guard files). The test found a bug:
 #                       gzp_journal_store_behind returned a truth value, so
 #                       possibly_old was never said; fixed.
-# Decided since (pending the storage reviewers, storage 7.4): an interrupted
-# set-up is finished, not restored (setup.gzp, gz_sc_setup_finish); with it,
-# setup_no_counter is killed by program_journal_kill's check. Before:
-#   setup_no_counter    set-up writes the key file first (storage 7.4) and
-#                       starts.gzs after the guard, so a kill between them
-#                       gives a restore (6.3 step 0) that finds no counter and
-#                       tells the person of a loss that did not happen (a check
-#                       "no start after a kill says the counter is missing" in
-#                       program_journal_kill fails at kill points 12 to 21).
-#                       Making the counter before the key file fixes it but
-#                       changes 7.4's order, and storage_files' done_with_fault
-#                       (review B, L1: a folder-sync failure after the key file
-#                       is done with a fault) then fails before the key file.
-#                       Left as it is, with neither change, for a decision.
+# Decided since (pending the storage reviewers, storage 7.4), corrected
+# after review A of PR 54 (H1): the set-up marker setup.gzp changes only what
+# is told; the start is still 6.3 step 0's restore. setup_no_counter is
+# killed by program_journal_kill's check (no start says the counter is
+# missing). The earlier finish_with_counter mutant went with
+# gz_sc_setup_finish; its "harmless" triage was wrong (review A, L5).
 # Kept, with the reason; none weakens what a test asserts:
 #   append_no_flush     complete() flushes before it reports any batch, and the
 #                       executor confirms only through complete(), so nothing
@@ -87,6 +79,11 @@ right_not_counted	program/store_unlock.c	        (void)count_attempt(w, 0, now_m
 #                       happen under the folder lock. Follow-up: a library
 #                       test (prepare, a key file made, commit refused).
 # --- the interrupted set-up (storage 7.4, pending the storage reviewers)
-setup_finish_skipped	program/store_unlock.c	if (k->op == GZP_UNLOCK_OP_UNLOCK && file_exists(w, SETUP_MARKER)) {	if (k->op == GZP_UNLOCK_OP_UNLOCK && !file_exists(w, SETUP_MARKER)) {
 marker_kept	program/store_unlock.c	    if (setup_marker_clear(w) != 0) {\n        w->opened.ops->close	    if (0) {\n        w->opened.ops->close
-finish_with_counter	ports/storage/crypto/sc_files.c	    if ((e = gz_sc_counter_read(s, u->vault, &c)) != GZ_SC_MISSING)\n        return e == GZ_SC_OK ? GZ_SC_EXISTS : e;	    (void)gz_sc_counter_read(s, u->vault, &c);
+# --- review A of PR 54
+setup_told_always	program/store_unlock.c	w->setup_interrupted = k->op == GZP_UNLOCK_OP_UNLOCK && marker_present(w) &&	w->setup_interrupted = k->op == GZP_UNLOCK_OP_UNLOCK &&
+restore_gzr_trusted	ports/storage/journal.c	    j->restored = !sealed_rule && c.marker && !c.answered;\n    if (sealed_rule) {	    j->restored = c.marker && !c.answered;\n    if (sealed_rule && !j->restored) {
+dumps_left_on	program/main.c	    no_dumps();\n\n	\n
+journal_mark_unsynced	ports/storage/journal.c	    j->end += ms;\n    if (j->os.sync(j->os.ctx, j->fd) != 0) return 0;\n    j->durable_end = j->end;	    j->end += ms;\n    j->durable_end = j->end;
+replace_dir_unsynced	ports/storage/crypto/sc_files.c	    return sync_dir(s) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DONE_WITH_FAULT;	    return GZ_SC_OK;
+soft_warning_dropped	program/executor.c	        gzp_log("start-counter was not found; set-up may have been interrupted: a restore with a new epoch; "\n                "the person is told");	        (void)0;

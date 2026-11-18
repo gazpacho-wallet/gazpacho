@@ -29,6 +29,15 @@ section 9's R2 and R7):
    start rule cannot tell from a folder that never moved on: the start
    counter keeps the next incarnation above every one used, or the start is
    refused; never an incarnation used before.
+7. A planted set-up marker (setup.gzp) on a used wallet (review A of PR 54,
+   H1): the journal, mark file and start counter removed (a) with the guard
+   kept, (b) with the guard removed too, (c) with the counter kept and the
+   guard removed. Every one is a restore (storage 6.3 step 0) with a new
+   epoch, never 0 and never one used before; with the counter kept its
+   incarnation is above every one used (with it gone the incarnation can
+   start again and the restore rests on the new epoch, as in case 5); with
+   the guard kept, its epochs are kept. The marker changes only
+   the words: where the counter is gone the person is still told.
 """
 import os
 import re
@@ -233,6 +242,54 @@ def main():
         check(inc is None or inc > used,
               "6: an older copy of the storage files: incarnation %s is above every one used (%d), or refused" %
               (inc, used))
+        used = max(used, inc or 0)
+
+        # 7. A planted set-up marker on a used wallet: still a restore.
+        for e in dump_journal(folder, exe):
+            if e[0] == "INCN":
+                used = max(used, e[1])
+        note(dump_journal(folder, exe), "before-7")
+        for tag, gone in (("a", ("journal.gzj", "mark.gzm", "starts.gzs")),
+                          ("b", ("journal.gzj", "mark.gzm", "starts.gzs", "guard.gzg")),
+                          ("c", ("journal.gzj", "mark.gzm", "guard.gzg"))):
+            f7 = os.path.join(work, "planted-" + tag)
+            shutil.copytree(folder, f7)
+            kept_guard = open(os.path.join(f7, "guard.gzg"), "rb").read() if "guard.gzg" not in gone else None
+            for n in gone:
+                if os.path.exists(os.path.join(f7, n)):
+                    os.unlink(os.path.join(f7, n))
+            open(os.path.join(f7, "setup.gzp"), "wb").close()
+            before_epochs = set(seen_epochs)
+            runs[0] += 1
+            p = Proc("run-%d" % runs[0], [exe, "--data-dir", f7, "--role", "member", "--name", "m", "--no-chain",
+                                          "--no-interface", "--reconnect-ms", "200",
+                                          "--connect", "%s@127.0.0.1:%d" % (HOST_KEY, port)], logs)
+            procs.append(p)
+            m = p.wait_for(r"ready incarnation=(\d+)|unlock op=\w+ status=(?!ok)\w+.*|start-refused.*", timeout=60)
+            ok = m is not None and m.group(0).startswith("ready")
+            if ok:
+                p.wait_for(r"connect-kept", timeout=30)
+            p.stop()
+            inc7 = int(m.group(1)) if ok else None
+            check(ok and p.find(r"start steps=\d+ restored=1")[0] is not None,
+                  "7%s: a planted marker on a used wallet is still a restore (%s)" % (tag, m.group(0) if m else None))
+            check(p.find(r"setup-finished")[0] is None, "7%s: never finished as a new wallet" % tag)
+            e7 = p.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]
+            check(e7 is not None and e7.group(1) != "00000000" and bytes.fromhex(e7.group(1)) not in before_epochs,
+                  "7%s: a new epoch, not 0 and not used before (%s)" % (tag, e7.group(1) if e7 else None))
+            if "starts.gzs" in gone:
+                check(p.find(r"start-counter was not found.*the person is told")[0] is not None,
+                      "7%s: the person is still told: a marker never hides the warning" % tag)
+            if "starts.gzs" not in gone:
+                check(inc7 is not None and inc7 > used,
+                      "7%s: incarnation %s above every one used (%d)" % (tag, inc7, used))
+            if ok:
+                eps7, _, guards7 = take(dump_journal(f7, exe))
+                check(b"\0\0\0\0" not in eps7, "7%s: epoch 0 is not saved again" % tag)
+                if kept_guard is not None:
+                    old = [struct.unpack(">I", e)[0] for e in before_epochs]
+                    ge = guard_epochs(guards7[-1]) if guards7 else []
+                    check(all(e in ge for e in old[-15:]), "7%s: the kept guard's epochs are kept: %s" % (tag, ge))
     finally:
         kill_all(procs)
     return check.result("program_journal_restore", logs)

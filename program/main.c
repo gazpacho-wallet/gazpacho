@@ -16,7 +16,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/resource.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 #include <openssl/crypto.h>
 #include <secp256k1.h>
@@ -353,6 +357,22 @@ static int wait_unlocked(const gzp_options_t *o)
     return -1; /* stopped while locked */
 }
 
+/* Storage 8.3 (review A of PR 54, M2): no core dumps and no same-user
+ * ptrace, before any file is read; locked pages up to the hard limit. The
+ * main process holds MSK, the seed and keys derived from them. */
+static void no_dumps(void)
+{
+    struct rlimit rl = {0, 0};
+    (void)setrlimit(RLIMIT_CORE, &rl);
+#ifdef __linux__
+    (void)prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+#endif
+    if (getrlimit(RLIMIT_MEMLOCK, &rl) == 0 && rl.rlim_cur < rl.rlim_max) {
+        rl.rlim_cur = rl.rlim_max;
+        (void)setrlimit(RLIMIT_MEMLOCK, &rl);
+    }
+}
+
 int main(int argc, char **argv)
 {
     gzp_options_t opt;
@@ -369,6 +389,8 @@ int main(int argc, char **argv)
     const uint8_t *chain_hash;
     int rc, i, restarts = 0, have_net = 0, have_dir = 0, stopped = 0;
 
+    no_dumps();
+
     /* The KDF helper (storage 8.4): this program, started by itself with a
      * socket on its standard input; it derives one key and exits. */
     if (argc == 2 && !strcmp(argv[1], "--gz-kdf-helper")) {
@@ -384,6 +406,17 @@ int main(int argc, char **argv)
     }
     if ((rc = gzp_options_parse(&opt, argc, argv)) != 0) return rc;
     gzp_log_set_name(opt.name);
+#ifdef GZP_TEST_BUILD
+    {
+        struct rlimit cl;
+        int d = -1;
+#ifdef __linux__
+        d = prctl(PR_GET_DUMPABLE, 0, 0, 0, 0);
+#endif
+        if (getrlimit(RLIMIT_CORE, &cl) != 0) cl.rlim_cur = (rlim_t)-1;
+        gzp_log("process dumpable=%d core=%llu", d, (unsigned long long)cl.rlim_cur);
+    }
+#endif
     if (!gz_network_from_name(opt.network, &network) || !gz_network_is_test(network) ||
         !gzw_network_from_name(opt.network, &wnet) || wnet == GZW_NET_MAINNET) {
         fprintf(stderr, "gazpacho: refusing network %s\n", opt.network);
@@ -460,6 +493,10 @@ int main(int argc, char **argv)
     if (opt.test_kdf_floor) gzp_wallet_test_kdf_floor(wallet);
     if (opt.test_dump_journal) gzp_wallet_test_keys_only(wallet);
     if (opt.test_kill_at) gzp_store_test_kill_at((unsigned)opt.test_kill_at);
+    if (opt.test_power_cut_at) {
+        gzp_store_test_power_cut();
+        gzp_store_test_kill_at((unsigned)opt.test_power_cut_at);
+    }
     if (opt.test_restore_from && !opt.test_standin_store) gzp_wallet_test_restore_from(wallet, opt.test_restore_from);
 #endif
     rc = wait_unlocked(&opt);

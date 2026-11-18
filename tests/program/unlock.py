@@ -17,6 +17,10 @@
 4. A damaged key file reads as a wrong passphrase (4.5) and opens nothing.
 5. The release program, without the local interface, stays locked: no
    journal is made, nothing listens, it stops on SIGTERM.
+8. No core dumps and no same-user ptrace (storage 8.3; review A of PR 54,
+   M2): the running program's core limit is 0 (both builds) and it is not
+   dumpable (gazpacho-test reports PR_GET_DUMPABLE; the release program's
+   /proc files belong to root when the test does not run as root).
 """
 import os
 import re
@@ -74,6 +78,8 @@ def main():
               "1: no wallet, then set-up, then the node, then listening")
         check(can_connect(port), "1: the host listens once unlocked")
         cmdline = open("/proc/%d/cmdline" % p.p.pid, "rb").read()
+        check(_core_limit(p.p.pid) == ("0", "0"), "8: the core limit is 0 (%s)" % (_core_limit(p.p.pid),))
+        check(p.find(r"process dumpable=0 core=0")[0] is not None, "8: the program is not dumpable")
         check(TEST_PASSPHRASE.encode() not in cmdline, "1: the passphrase is not on the command line")
         p.stop()
         files = sorted(os.listdir(folder))
@@ -180,11 +186,23 @@ def main():
             time.sleep(0.5)
             check(not can_connect(rport), "5: nothing listens while locked")
             check(not os.path.exists(os.path.join(rfolder, "journal.gzj")), "5: no journal while locked")
+            check(_core_limit(r.p.pid) == ("0", "0"), "8: release: the core limit is 0")
+            if os.getuid() != 0:
+                check(os.stat("/proc/%d/status" % r.p.pid).st_uid == 0, "8: release: not dumpable")
             r.stop()
             check(r.exit_code() == 0, "5: SIGTERM stops a locked program")
     finally:
         kill_all(procs)
     return check.result("program_unlock", logs)
+
+
+def _core_limit(pid):
+    """The soft and hard core file size limits of a running process."""
+    for line in open("/proc/%d/limits" % pid):
+        if line.startswith("Max core file size"):
+            f = line.split()
+            return f[4], f[5]
+    return None
 
 
 def _pass_file():

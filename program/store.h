@@ -154,6 +154,20 @@ int gzp_journal_store_mark_restored(const char *dir, struct gzp_wallet *w, uint6
  * and the storage layer's alike (store_unlock.c wraps the latter). */
 void gzp_store_test_kill_at(unsigned n);
 void gzp_store_test_tick(const char *what);
+/* --test-power-cut-at K (program/store_powercut.c): the kill at K first puts
+ * the folder back to what a disk keeps: each file's data as of its last
+ * fsync, the folder's names as of its last folder sync. The hooks are called
+ * by the storage layer's and the journal's OS tables; no-ops while off. */
+void gzp_store_test_power_cut(void);
+int gzp_pc_pre(const char *path);
+void gzp_pc_opened(const char *path, int fd, int existed);
+void gzp_pc_closed(int fd);
+void gzp_pc_synced(int fd);
+void gzp_pc_dir_synced(const char *dir);
+void gzp_pc_renamed(const char *from, const char *to);
+void gzp_pc_linked(const char *from, const char *to);
+void gzp_pc_unlinked(const char *path);
+void gzp_pc_cut(void);
 #endif
 
 /* The stand-in: `dir`/journal.standin, created if missing, with the start
@@ -174,6 +188,8 @@ int gzp_standin_poisoned(const gzp_store_t *s);
 /* What begin() found of the start counter, and the value it wrote. */
 #define GZP_COUNTER_FOUND   0
 #define GZP_COUNTER_CREATED 1   /* first start of the folder (set-up) */
+#define GZP_COUNTER_SETUP_INTERRUPTED 3 /* missing beside the set-up marker, no journal: told in softer
+                                          * words, never hidden; the start is still a restore (6.3 step 0) */
 #define GZP_COUNTER_MISSING 2   /* missing or unreadable: the journal alone gave the number */
 int gzp_standin_counter_state(const gzp_store_t *s, uint64_t *value);
 

@@ -160,6 +160,11 @@ gz_sc_err_t gz_sc_guard_write(const gz_sc_store_t *s, const gz_sc_vault_t *v, co
 /* 6.3 step 4, start as a restore: the mark file is started again with the
  * restore marker, so the start rule then gives GZ_SC_START_RESTORE until the
  * restore's first batch is anchored (review B, M2). */
+/* mark.gzm started again with the restore marker for the journal whose clear
+ * header is hdr (an import's staged copy), under that journal's KH; refused
+ * (NOT_THIS_WALLET) for another wallet's header. */
+gz_sc_err_t gz_sc_mark_restart_for(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, const uint8_t *hdr,
+                                   size_t len);
 gz_sc_err_t gz_sc_mark_restart(const gz_sc_store_t *s, const gz_sc_unlocked_t *u);
 
 /* 4.7: a new key file under new_pw (NULL: the same passphrase, for the
@@ -210,11 +215,6 @@ gz_sc_err_t gz_sc_unlock_derive(const gz_sc_store_t *s, const uint8_t *pw_nfc, s
 /* The rest of gz_sc_unlock on a u from gz_sc_unlock_derive: stale .tmp files
  * removed, the journal header opened, or 6.3 step 0. u is cleared on failure. */
 gz_sc_err_t gz_sc_unlock_open(const gz_sc_store_t *s, gz_sc_unlocked_t *u);
-/* In place of gz_sc_unlock_open, where the caller knows set-up was
- * interrupted before any start (7.4, pending the storage reviewers): with no
- * journal, mark file or start counter, the missing files are made as a new
- * wallet (u->restore 0). EXISTS (nothing written, u kept) where any is there. */
-gz_sc_err_t gz_sc_setup_finish(const gz_sc_store_t *s, gz_sc_unlocked_t *u);
 
 /* ---- the start counter starts.gzs (contract-v2.md section 8; 10.3) ---------- */
 gz_sc_err_t gz_sc_counter_seal(const gz_sc_vault_t *v, uint64_t counter, uint8_t out[GZ_SC_STARTS_LEN]);

@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """program_journal_kill: kill -9 at every storage write, then restart (S5, S6).
 
-    python3 -I journal_kill.py PATH_TO_GAZPACHO_TEST WORK_DIR [STEP]
+    python3 -I journal_kill.py PATH_TO_GAZPACHO_TEST WORK_DIR [STEP [power]]
+
+With "power" (program_journal_powercut), each kill is a power cut instead
+(--test-power-cut-at K, review A of PR 54, M3): before the SIGKILL the
+folder is put back to what a disk keeps, every file's data as of its last
+fsync and the folder's names as of its last folder sync, so a missing fsync
+or folder sync loses its write.
 
 Two lives of a member, each run again and again with --test-kill-at K for
 K = 1, 2, ... (every STEP-th, default 1) until a run passes all its storage
@@ -22,10 +28,13 @@ After each kill the same folder is started with no hook (twice), and must:
 start (a kill never makes a journal corrupt, behind or possibly old, nor a
 wallet that cannot be opened); hold a journal whose incarnations rise and
 whose batches are 1, 2, 3 ... within each; never say the start counter is
-missing (a kill during set-up between the key file and the counter is a
-set-up that never started: finished as a new wallet, not a restore, nothing
-told; storage 7.4, pending the storage reviewers), and hold no set-up marker
-(setup.gzp) once started; in the restore life, be a restore
+missing (a kill during set-up between the key file and the counter is told
+in softer words, never hidden: storage 7.4, pending the storage reviewers),
+and say "set-up may have been interrupted" only where no start was ever
+made, still telling the person, the start still a restore with a new epoch (6.3 step 0;
+review A of PR 54, H1); hold no set-up marker (setup.gzp) once started;
+never save one key epoch under two incarnations across the folder's whole
+history; in the restore life, be a restore
 until the restore batch is durable and an ordinary start after it, with a
 restore epoch other than 0; and stop cleanly.
 """
@@ -60,6 +69,9 @@ def journal_ok(entries):
 def main():
     exe, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     step = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+    power = len(sys.argv) > 4 and sys.argv[4] == "power"
+    name = "program_journal_powercut" if power else "program_journal_kill"
+    hook = "--test-power-cut-at" if power else "--test-kill-at"
     shutil.rmtree(work, ignore_errors=True)
     logs = os.path.join(work, "logs")
     os.makedirs(logs)
@@ -103,7 +115,7 @@ def main():
                 if life == "restore":
                     shutil.copytree(base, folder)
                     extra = ["--test-restore-from", backup]
-                m, p = run(folder, *(extra + ["--test-kill-at", str(k)]), name="kill-" + life)
+                m, p = run(folder, *(extra + [hook, str(k)]), name="kill-" + life)
                 if m is None:
                     check(False, "%s K=%d: the run neither died nor started" % (life, k))
                     break
@@ -128,6 +140,8 @@ def main():
                 kills += 1
                 if not check(code == -9, "%s K=%d: killed %s (exit %s)" % (life, k, m.group(0), code)):
                     continue
+                started_before = life == "restore" or p.find(r"ready incarnation=")[0] is not None
+                history = {}  # key epoch -> the incarnations that saved it, across the folder's journals
                 for again in (0, 1):
                     m2, q = run(folder, name="after-" + life)
                     ok = m2 is not None and m2.group(0).startswith("ready")
@@ -139,8 +153,17 @@ def main():
                               % (life, k, again + 1))
                         check(not os.path.exists(os.path.join(folder, "setup.gzp")),
                               "%s K=%d start %d: no set-up marker once started" % (life, k, again + 1))
-                        if q.find(r"setup-finished")[0] is not None:
-                            check(not restored, "%s K=%d: a finished set-up is not a restore" % (life, k))
+                        if q.find(r"set-up may have been interrupted")[0] is not None:
+                            check(q.find(r"set-up may have been interrupted.*the person is told")[0] is not None,
+                                  "%s K=%d: the softer words still tell the person" % (life, k))
+                            e0 = q.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]
+                            check(restored and e0 is not None and e0.group(1) != "00000000",
+                                  "%s K=%d: an interrupted set-up is still a restore with a new epoch" % (life, k))
+                            check(not started_before,
+                                  "%s K=%d: 'set-up may have been interrupted' follows no earlier start" % (life, k))
+                        check(q.find(r"setup-finished")[0] is None,
+                              "%s K=%d start %d: never finished as a new wallet" % (life, k, again + 1))
+                        started_before = True
                     if life == "restore" and again == 0 and restored:
                         restored_after += 1
                         e = q.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]
@@ -158,6 +181,14 @@ def main():
                           "%s K=%d start %d: incarnations rise, sequences 1, 2, 3 ..." % (life, k, again + 1))
                     eps = [b for e in entries if e[0] == "BTCH" for t, b in e[3] if t == KEY_EPOCH]
                     check(len(eps) == len(set(eps)), "%s K=%d: no key epoch saved twice" % (life, k))
+                    for e in entries:
+                        if e[0] == "BTCH":
+                            for t, b in e[3]:
+                                if t == KEY_EPOCH:
+                                    history.setdefault(b, set()).add(e[1])
+                    twice = {b.hex(): sorted(v) for b, v in history.items() if len(v) > 1}
+                    check(not twice, "%s K=%d start %d: no key epoch saved under two incarnations across the "
+                          "folder's history %s" % (life, k, again + 1, twice))
                 shutil.rmtree(folder, ignore_errors=True)
                 for q in procs:
                     q.stop()
@@ -167,7 +198,7 @@ def main():
               "killed at every storage call: %s (kills, starts that repeated the restore)" % totals)
     finally:
         kill_all(procs)
-    return check.result("program_journal_kill", logs)
+    return check.result(name, logs)
 
 
 if __name__ == "__main__":

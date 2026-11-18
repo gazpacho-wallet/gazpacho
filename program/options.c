@@ -148,6 +148,7 @@ void gzp_usage(void)
         "  --test-reveal-check           after the unlock: reveal and words check (statuses only)\n"
         "  --test-seed-check             seed() locked, unlocked and with a storage fault (results only)\n"
         "  --test-kill-at K              SIGKILL before the K-th storage write, sync or rename\n"
+        "  --test-power-cut-at K         the same, what a power cut loses dropped first\n"
         "  --test-append-batch HEX       save one batch of records (type, length, bytes ...), then stop\n"
         "  --test-drop-kind K            drop every received message of kind K\n"
         "  --test-commands               read test commands from standard input\n"
@@ -302,6 +303,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-passphrase-file")) o->test_passphrase_file = val;
         else if (!strcmp(a, "--test-append-batch")) o->test_append_batch = val;
         else if (!strcmp(a, "--test-kill-at")) { ok = num(val, 1, 100000000, &v); o->test_kill_at = (int)v; }
+        else if (!strcmp(a, "--test-power-cut-at")) { ok = num(val, 1, 100000000, &v); o->test_power_cut_at = (int)v; }
         else if (!strcmp(a, "--test-sync-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_sync_fail_at = (int)v; }
         else if (!strcmp(a, "--test-timer-ms")) { ok = num(val, 1, 600000, &v); o->test_timer_ms = (int)v; }
         else if (!strcmp(a, "--test-burst")) {

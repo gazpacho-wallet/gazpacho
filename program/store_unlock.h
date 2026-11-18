@@ -78,6 +78,10 @@ int gzp_wallet_open_store(gzp_wallet_t *w, gzp_store_t *out, char *err, size_t e
  * not unlocked (seed untouched); -2 storage could not give it (seed wiped).
  * Never logs. */
 int gzp_wallet_seed(gzp_wallet_t *w, uint8_t seed[64]);
+/* 1 if this unlock found the set-up marker (setup.gzp) and no journal: a
+ * missing start counter is then told in softer words, never hidden. It changes
+ * nothing that is done: the start is 6.3 step 0's restore (storage 7.4). */
+int gzp_wallet_setup_interrupted(const gzp_wallet_t *w);
 /* The transport's static key (stand-in until P8 derives per-member keys):
  * derived from the seed and this network, so it lives behind the key file
  * and survives a restore from the words. A secp256k1 secret (the caller

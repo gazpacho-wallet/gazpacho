@@ -424,48 +424,6 @@ gz_sc_err_t gz_sc_unlock(const gz_sc_store_t *s, const uint8_t *pw_nfc, size_t p
     return e == GZ_SC_OK ? gz_sc_unlock_open(s, u) : e;
 }
 
-/* 7.4, a set-up interrupted before the start counter (pending the storage
- * reviewers): finished as a new wallet, not a restore. The caller knows no
- * start was ever made (the program's set-up marker). Only where there is no
- * journal, no mark file and no start counter that opens; otherwise EXISTS,
- * nothing written, u untouched. Then the guard (counter 0, no epochs) if it
- * is missing, the counter 0, and the mark file and journal (new_journal), in
- * 7.4's order. u is cleared on any other failure. */
-gz_sc_err_t gz_sc_setup_finish(const gz_sc_store_t *s, gz_sc_unlocked_t *u)
-{
-    uint64_t c = 0;
-    gz_sc_err_t e;
-    if (!u->vault)
-        return GZ_SC_ARG;
-    drop_stale_tmp(s);
-    if ((e = present(s, GZ_SC_FILE_JOURNAL)) != GZ_SC_MISSING)
-        return e == GZ_SC_OK ? GZ_SC_EXISTS : e;
-    if ((e = present(s, GZ_SC_FILE_MARK)) != GZ_SC_MISSING)
-        return e == GZ_SC_OK ? GZ_SC_EXISTS : e;
-    if ((e = gz_sc_counter_read(s, u->vault, &c)) != GZ_SC_MISSING)
-        return e == GZ_SC_OK ? GZ_SC_EXISTS : e;
-    if ((e = present(s, GZ_SC_FILE_GUARD)) == GZ_SC_MISSING) {
-        gz_sc_guard_t g;
-        memset(&g, 0, sizeof g);
-        uint8_t gbuf[GZ_SC_GUARD_HEAD + 40 + 18];
-        size_t gl;
-        if ((e = gz_sc_guard_seal(u->vault, &g, gbuf, sizeof gbuf, &gl)) == GZ_SC_OK)
-            e = gz_sc_fs_replace(s, GZ_SC_FILE_GUARD, gbuf, gl);
-    }
-    if (e == GZ_SC_OK)
-        e = gz_sc_counter_write(s, u->vault, 0);
-    if (e == GZ_SC_OK) {
-        u->restore = 0;
-        e = new_journal(s, u, 0);
-    }
-    if (e != GZ_SC_OK) {
-        if (e == GZ_SC_DONE_WITH_FAULT)
-            e = GZ_SC_STORAGE_FAILED; /* not a key file: an unsynced folder is a failure */
-        gz_sc_unlocked_clear(u);
-    }
-    return e;
-}
-
 gz_sc_err_t gz_sc_unlock_open(const gz_sc_store_t *s, gz_sc_unlocked_t *u)
 {
     uint8_t *hdr = NULL;
@@ -577,6 +535,34 @@ gz_sc_err_t gz_sc_guard_write(const gz_sc_store_t *s, const gz_sc_vault_t *v, co
         e = gz_sc_fs_replace(s, GZ_SC_FILE_GUARD, b, n);
     free(b);
     /* A batch is confirmed only after a durable guard (7 step 2). */
+    return e == GZ_SC_DONE_WITH_FAULT ? GZ_SC_STORAGE_FAILED : e;
+}
+
+/* The restore marker for the journal whose clear header is hdr (an import's
+ * staged copy, before it is put in place): mark.gzm replaced with the restore
+ * marker under that journal's KH (review A of PR 54, M1: the open trusts
+ * restore.gzr only where the sealed mark file says restore). The header must
+ * be this wallet's. */
+gz_sc_err_t gz_sc_mark_restart_for(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, const uint8_t *hdr,
+                                   size_t len)
+{
+    uint8_t vid[16], fid[16], c[32], v[16];
+    uint8_t mk[GZ_SC_MARK_HEADER_LEN + GZ_SC_MARK_ENTRY_LEN];
+    gz_sc_framekey_t *kh = NULL;
+    if (!u->vault)
+        return GZ_SC_ARG;
+    gz_sc_err_t e = gz_sc_header_clear(hdr, len, s->chain, vid, fid);
+    if (e != GZ_SC_OK)
+        return e;
+    gz_sc_vault_ids(u->vault, c, v);
+    if (memcmp(v, vid, 16) != 0)
+        return GZ_SC_NOT_THIS_WALLET;
+    if ((e = gz_sc_mark_key(u->vault, fid, &kh)) != GZ_SC_OK)
+        return e;
+    e = gz_sc_mark_new_restore(kh, s->chain, mk);
+    gz_sc_framekey_free(kh);
+    if (e == GZ_SC_OK)
+        e = gz_sc_fs_replace(s, GZ_SC_FILE_MARK, mk, sizeof mk);
     return e == GZ_SC_DONE_WITH_FAULT ? GZ_SC_STORAGE_FAILED : e;
 }
 

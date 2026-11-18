@@ -36,6 +36,7 @@ struct gzp_wallet {
     gzp_store_t opened;          /* the store finish opened, until taken */
     int have_opened;
     atomic_int deriving;         /* a begin is under way (one derivation at a time, 8.2) */
+    int setup_interrupted;       /* this unlock found the set-up marker and no journal (told only) */
 #ifdef GZP_TEST_BUILD
     char restore_from[GZP_PATH_MAX];
     int keys_only;
@@ -87,15 +88,29 @@ static int setup_marker_write(gzp_wallet_t *w)
     return gz_sc_fs_replace(&w->sc, SETUP_MARKER, body, sizeof body - 1) == GZ_SC_OK ? 0 : -1;
 }
 
-static int setup_marker_clear(gzp_wallet_t *w)
+/* A regular file only (review A of PR 54, L7: a directory of that name is
+ * not the marker). */
+static int marker_present(const gzp_wallet_t *w)
 {
     char p[GZP_PATH_MAX + 64];
-    int fd, rc;
+    struct stat st;
     snprintf(p, sizeof p, "%s/%s", w->dir, SETUP_MARKER);
-    if (unlink(p) != 0) return errno == ENOENT ? 0 : -1;
-    if ((fd = open(w->dir, O_RDONLY | O_DIRECTORY)) < 0) return -1;
-    rc = fsync(fd);
-    close(fd);
+    return lstat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/* Through the storage layer's OS table, so the tests' kill and power-cut
+ * points see the removal and its folder sync (review A of PR 54, L1). */
+static int setup_marker_clear(gzp_wallet_t *w)
+{
+    const gz_sc_os_t *os = w->sc.os;
+    char p[GZP_PATH_MAX + 64];
+    int fd, rc;
+    if (!marker_present(w)) return 0;
+    snprintf(p, sizeof p, "%s/%s", w->dir, SETUP_MARKER);
+    if (os->unlink(os->ctx, p) != 0) return errno == ENOENT ? 0 : -1;
+    if ((fd = os->open(os->ctx, w->dir, O_RDONLY | O_DIRECTORY, 0)) < 0) return -1;
+    rc = os->fsync(os->ctx, fd);
+    os->close(os->ctx, fd);
     return rc;
 }
 
@@ -105,7 +120,9 @@ static int t_open(void *c, const char *p, int f, int m)
 {
     (void)c;
     if (f & (O_WRONLY | O_RDWR | O_CREAT)) gzp_store_test_tick("storage-open-write");
-    return gz_sc_os_posix.open(gz_sc_os_posix.ctx, p, f, m);
+    int existed = gzp_pc_pre(p), fd = gz_sc_os_posix.open(gz_sc_os_posix.ctx, p, f, m);
+    gzp_pc_opened(p, fd, existed);
+    return fd;
 }
 static long t_write(void *c, int fd, const void *p, size_t n)
 {
@@ -118,7 +135,9 @@ static int t_fsync(void *c, int fd)
 {
     (void)c;
     gzp_store_test_tick("storage-sync");
-    return gz_sc_os_posix.fsync(gz_sc_os_posix.ctx, fd);
+    if (gz_sc_os_posix.fsync(gz_sc_os_posix.ctx, fd) != 0) return -1;
+    gzp_pc_synced(fd);
+    return 0;
 }
 static int t_ftruncate(void *c, int fd, uint64_t l)
 {
@@ -126,18 +145,30 @@ static int t_ftruncate(void *c, int fd, uint64_t l)
     gzp_store_test_tick("storage-truncate");
     return gz_sc_os_posix.ftruncate(gz_sc_os_posix.ctx, fd, l);
 }
-static int t_close(void *c, int fd) { (void)c; return gz_sc_os_posix.close(gz_sc_os_posix.ctx, fd); }
+static int t_close(void *c, int fd)
+{
+    (void)c;
+    gzp_pc_closed(fd);
+    return gz_sc_os_posix.close(gz_sc_os_posix.ctx, fd);
+}
 static int t_rename(void *c, const char *a, const char *b)
 {
     (void)c;
     gzp_store_test_tick("storage-rename");
-    return gz_sc_os_posix.rename(gz_sc_os_posix.ctx, a, b);
+    gzp_pc_pre(a);
+    gzp_pc_pre(b);
+    if (gz_sc_os_posix.rename(gz_sc_os_posix.ctx, a, b) != 0) return -1;
+    gzp_pc_renamed(a, b);
+    return 0;
 }
 static int t_unlink(void *c, const char *p)
 {
     (void)c;
     gzp_store_test_tick("storage-unlink");
-    return gz_sc_os_posix.unlink(gz_sc_os_posix.ctx, p);
+    gzp_pc_pre(p);
+    if (gz_sc_os_posix.unlink(gz_sc_os_posix.ctx, p) != 0) return -1;
+    gzp_pc_unlinked(p);
+    return 0;
 }
 static const gz_sc_os_t TEST_OS = {NULL, t_open, t_write, t_read, t_fsync, t_ftruncate, t_close, t_rename, t_unlink};
 #endif
@@ -667,13 +698,13 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
         (void)count_attempt(w, 0, now_ms, NULL); /* the passphrase was right, whatever follows */
         w->u = k->u;
         memset(&k->u, 0, sizeof k->u);
-        e = GZ_SC_EXISTS;
-        if (k->op == GZP_UNLOCK_OP_UNLOCK && file_exists(w, SETUP_MARKER)) {
-            e = gz_sc_setup_finish(&w->sc, &w->u);
-            if (e == GZ_SC_OK)
-                gzp_log("setup-finished: set-up was interrupted before any start; completed as a new wallet");
-        }
-        if (e == GZ_SC_EXISTS) e = gz_sc_unlock_open(&w->sc, &w->u);
+        /* The set-up marker changes only what is told, never what is done
+         * (review A of PR 54, H1: it is not authenticated). A key file with no
+         * journal is 6.3 step 0's restore, with a new epoch, whatever it says;
+         * beside it a missing start counter is told as an interrupted set-up. */
+        w->setup_interrupted = k->op == GZP_UNLOCK_OP_UNLOCK && marker_present(w) &&
+                               !file_exists(w, GZ_SC_FILE_JOURNAL) && !file_exists(w, GZ_SC_FILE_MARK);
+        e = gz_sc_unlock_open(&w->sc, &w->u);
         if (e != GZ_SC_OK) {
             map_err(r, e);
             if (r->status == GZP_UNLOCK_OK || r->status == GZP_UNLOCK_WRONG)
@@ -718,6 +749,10 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
         }
         e = gz_sc_setup_commit(&w->sc, &k->prep, &w->u);
         k->have_prep = 0;
+        /* Refused before the key file (a file appeared meanwhile, L7): no
+         * set-up of ours is here, so no marker either. */
+        if (k->op == GZP_UNLOCK_OP_CREATE && (e == GZ_SC_EXISTS || e == GZ_SC_JOURNAL_HERE))
+            (void)setup_marker_clear(w);
         if (e == GZ_SC_DONE_WITH_FAULT) {
             /* The wallet exists; the next unlock completes it (review B, L1). */
             set_result(r, GZP_UNLOCK_STORAGE_FAILED, "done_with_fault");
@@ -782,6 +817,8 @@ int gzp_wallet_open_store(gzp_wallet_t *w, gzp_store_t *out, char *err, size_t e
     }
     return gzp_journal_store_open(out, w->dir, w, err, errlen);
 }
+
+int gzp_wallet_setup_interrupted(const gzp_wallet_t *w) { return w && w->setup_interrupted; }
 
 int gzp_wallet_seed(gzp_wallet_t *w, uint8_t seed[64])
 {

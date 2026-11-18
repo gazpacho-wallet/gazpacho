@@ -935,7 +935,10 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
 
 static const char *counter_name(int s)
 {
-    return s == GZP_COUNTER_FOUND ? "found" : s == GZP_COUNTER_CREATED ? "created" : "missing";
+    return s == GZP_COUNTER_FOUND             ? "found"
+         : s == GZP_COUNTER_CREATED           ? "created"
+         : s == GZP_COUNTER_SETUP_INTERRUPTED ? "setup_interrupted"
+                                              : "missing";
 }
 
 /* After the start: what the options ask of the node. A member's --connect
@@ -1075,6 +1078,12 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cstate = gzp_store_counter_state(&ex->store, &counter);
     gzp_log("start-counter state=%s incarnation=%llu restored=%d", counter_name(cstate),
             (unsigned long long)ex->incarnation, restored);
+    /* Beside the set-up marker the words are softer, but the person is still
+     * told: the marker is not authenticated, so a planted one could hide a
+     * real removal of a used wallet's records. */
+    if (cstate == GZP_COUNTER_SETUP_INTERRUPTED)
+        gzp_log("start-counter was not found; set-up may have been interrupted: a restore with a new epoch; "
+                "the person is told");
     if (cstate == GZP_COUNTER_MISSING) {
         if (restored)
             gzp_log("restore counter_found=0: the person is told (the restore rests on the epoch's random draw)");

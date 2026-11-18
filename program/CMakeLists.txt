@@ -30,7 +30,7 @@ foreach(variant release test)
     # The test build links the storage library's test entry point (the
     # parameter floor of --test-kdf-floor); the release build never does.
     set(sc gazpacho_storage_crypto_test)
-    add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c)
+    add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c store_powercut.c)
   endif()
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_journal ${sc} OpenSSL::Crypto)
@@ -154,6 +154,14 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_journal_kill_full
     COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_kill_full)
   set_tests_properties(program_journal_kill_full PROPERTIES TIMEOUT 3600 LABELS "slow")
+  # The same with power cuts (review A of PR 54, M3): every sixth call in CI,
+  # every call on the build server (slow).
+  add_test(NAME program_journal_powercut
+    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_powercut 6 power)
+  add_test(NAME program_journal_powercut_full
+    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_powercut_full 1 power)
+  set_tests_properties(program_journal_powercut PROPERTIES TIMEOUT 2400)
+  set_tests_properties(program_journal_powercut_full PROPERTIES TIMEOUT 3600 LABELS "slow")
   add_test(NAME program_storage_damage
     COMMAND ${GZP_PY} ${GZP_T}/storage_damage.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/storage_damage)
   add_test(NAME program_journal_restore

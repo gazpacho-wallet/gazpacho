@@ -53,6 +53,7 @@ void gzp_store_test_tick(const char *what)
 {
     if (kill_at && --kill_at == 0) {
         printf("test-kill before=%s\n", what);
+        gzp_pc_cut();
         fflush(stdout);
         kill(getpid(), SIGKILL);
     }
@@ -241,8 +242,24 @@ typedef struct {
 
 static const gz_journal_os_t *POSIX;
 
+#ifdef GZP_TEST_BUILD
+static int o_open(void *c, const char *p, int how)
+{
+    (void)c;
+    int existed = gzp_pc_pre(p), fd = POSIX->open(POSIX->ctx, p, how);
+    gzp_pc_opened(p, fd, existed);
+    return fd;
+}
+static int o_close(void *c, int fd)
+{
+    (void)c;
+    gzp_pc_closed(fd);
+    return POSIX->close(POSIX->ctx, fd);
+}
+#else
 static int o_open(void *c, const char *p, int how) { (void)c; return POSIX->open(POSIX->ctx, p, how); }
 static int o_close(void *c, int fd) { (void)c; return POSIX->close(POSIX->ctx, fd); }
+#endif
 static long o_pread(void *c, int fd, void *b, size_t n, uint64_t off) { (void)c; return POSIX->pread(POSIX->ctx, fd, b, n, off); }
 static long o_pwrite(void *c, int fd, const void *b, size_t n, uint64_t off)
 {
@@ -265,15 +282,25 @@ static int o_sync(void *c, int fd)
         errno = EIO;
         return -1;
     }
+#ifdef GZP_TEST_BUILD
+    if (POSIX->sync(POSIX->ctx, fd) != 0) return -1;
+    gzp_pc_synced(fd);
+    return 0;
+#else
     return POSIX->sync(POSIX->ctx, fd);
+#endif
 }
 static int o_sync_dir(void *c, const char *d)
 {
     (void)c;
 #ifdef GZP_TEST_BUILD
     gzp_store_test_tick("journal-sync-dir");
-#endif
+    if (POSIX->sync_dir(POSIX->ctx, d) != 0) return -1;
+    gzp_pc_dir_synced(d);
+    return 0;
+#else
     return POSIX->sync_dir(POSIX->ctx, d);
+#endif
 }
 static int o_truncate(void *c, int fd, uint64_t l)
 {
@@ -285,22 +312,45 @@ static int o_truncate(void *c, int fd, uint64_t l)
 }
 static int o_size(void *c, int fd, uint64_t *s) { (void)c; return POSIX->size(POSIX->ctx, fd, s); }
 static int o_lock(void *c, int fd) { (void)c; return POSIX->lock(POSIX->ctx, fd); }
-static int o_link(void *c, const char *a, const char *b) { (void)c; return POSIX->link(POSIX->ctx, a, b); }
+static int o_link(void *c, const char *a, const char *b)
+{
+    (void)c;
+#ifdef GZP_TEST_BUILD
+    gzp_pc_pre(a);
+    gzp_pc_pre(b);
+    if (POSIX->link(POSIX->ctx, a, b) != 0) return -1;
+    gzp_pc_linked(a, b);
+    return 0;
+#else
+    return POSIX->link(POSIX->ctx, a, b);
+#endif
+}
 static int o_rename(void *c, const char *a, const char *b)
 {
     (void)c;
 #ifdef GZP_TEST_BUILD
     gzp_store_test_tick("journal-rename");
-#endif
+    gzp_pc_pre(a);
+    gzp_pc_pre(b);
+    if (POSIX->rename(POSIX->ctx, a, b) != 0) return -1;
+    gzp_pc_renamed(a, b);
+    return 0;
+#else
     return POSIX->rename(POSIX->ctx, a, b);
+#endif
 }
 static int o_unlink(void *c, const char *p)
 {
     (void)c;
 #ifdef GZP_TEST_BUILD
     gzp_store_test_tick("journal-unlink");
-#endif
+    gzp_pc_pre(p);
+    if (POSIX->unlink(POSIX->ctx, p) != 0) return -1;
+    gzp_pc_unlinked(p);
+    return 0;
+#else
     return POSIX->unlink(POSIX->ctx, p);
+#endif
 }
 static long o_pread_device(void *c, int fd, void *b, size_t n, uint64_t off)
 {
@@ -393,7 +443,8 @@ static int js_begin(void *ctx, uint64_t *incarnation, char *err, size_t errlen)
     if (ce == GZ_SC_OK) {
         s->counter_state = GZP_COUNTER_FOUND;
     } else if (ce == GZ_SC_MISSING) {
-        s->counter_state = GZP_COUNTER_MISSING;
+        s->counter_state = gzp_wallet_setup_interrupted(s->sc.w) ? GZP_COUNTER_SETUP_INTERRUPTED
+                                                                  : GZP_COUNTER_MISSING;
         counter = 0;
     } else {
         return set_err(err, errlen, "cannot read the start counter");
@@ -691,6 +742,18 @@ int gzp_journal_store_import(const char *dir, gzp_wallet_t *w, const char *backu
     snprintf(staged, sizeof staged, "%s/%s.import", dir, GZ_JOURNAL_FILE);
     if (copy_file(backup, staged) != 0) return set_err(err, errlen, "cannot stage the backup");
     (void)gz_sc_counter_read(c.sc, c.u->vault, &floor);
+    {
+        /* The sealed restore marker first, for the staged journal's file_id
+         * (review A of PR 54, M1): restore.gzr is trusted only beside it. */
+        uint8_t hdr[GZ_SC_JHEADER_LEN];
+        FILE *f = fopen(staged, "rb");
+        size_t got = f ? fread(hdr, 1, sizeof hdr, f) : 0;
+        if (f) fclose(f);
+        if (got != sizeof hdr || gz_sc_mark_restart_for(c.sc, c.u, hdr, sizeof hdr) != GZ_SC_OK) {
+            unlink(staged);
+            return set_err(err, errlen, "cannot mark the restore");
+        }
+    }
     st = gz_journal_import_sealed(dir, c.sc->chain, NULL, &t, staged, floor);
     if (st != GZ_JOURNAL_OK) {
         unlink(staged);
@@ -707,6 +770,8 @@ int gzp_journal_store_mark_restored(const char *dir, gzp_wallet_t *w, uint64_t f
     gz_journal_status_t st;
     if (seal_ctx(&c, w) != 0) return set_err(err, errlen, "the wallet is locked");
     seal_table(&t, &c);
+    /* The sealed restore marker first (M1, as for the import). */
+    if (gz_sc_mark_restart(c.sc, c.u) != GZ_SC_OK) return set_err(err, errlen, "cannot mark the restore");
     st = gz_journal_mark_restored_sealed(dir, c.sc->chain, NULL, &t, floor);
     if (st != GZ_JOURNAL_OK) {
         if (err && errlen) snprintf(err, errlen, "the restore mark was refused: %s", gz_journal_status_name(st));
