@@ -249,6 +249,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_ack_depth
     COMMAND ${GZP_PY} ${GZP_T}/ack_depth.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/ack_depth)
   set_tests_properties(program_ack_depth PROPERTIES TIMEOUT 600)
+  # Slice 1 on signet, against public servers: opt in (GZ_LIVE_TESTS=1 and GZ_SIGNET_DIR, a folder
+  # kept between runs); skipped otherwise, and when the host's address holds no coin.
+  add_test(NAME program_slice1_signet
+    COMMAND ${GZP_PY} ${GZP_T}/slice1_signet.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/slice1_signet)
+  set_tests_properties(program_slice1_signet PROPERTIES TIMEOUT 14400 SKIP_RETURN_CODE 77)
   # Every program test may start gazpacho-test with a launcher of its own:
   # the passphrase file's path and the Argon2id floor come through the
   # environment (gazpacho-test only; the harness passes the options itself).
