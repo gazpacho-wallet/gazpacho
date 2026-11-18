@@ -21,8 +21,9 @@ logs ("node-log test-chain area=0x7e57 kind=K conf=C height=H").
      come back from its journal and are reported again, with no command;
   3. a node error in the middle (restart from storage in the same process):
      the watches come back, and nothing of the old incarnation is reported;
-  4. BUSY (small queues, a slow server, forty watch requests): kept and asked
-     again, never fatal, the backlog drained;
+  4. BUSY (small queues, forty watch requests while the server holds the
+     worker's request): kept and asked again, never fatal, the backlog
+     drained;
   5. a chain server on mainnet: refused at start;
   6. a slow chain server does not hold the loop: a 50 ms timer keeps firing,
      and SIGTERM stops the program within 2 s.
@@ -35,8 +36,9 @@ After the review of PR 50:
   8. (M2) a worker that holds fewer watches than the node asks for
      (--test-chain-watches 2): one explained stop (exit 7), no restart, and
      the same again at the next start (the saved watches come back).
-  9. (L2, L3) a full backlog (--test-chain-backlog 16, small queues, a slow
-     server), a broadcast held behind watches in it: fatal, one restart from
+  9. (L2, L3) a full backlog (--test-chain-backlog 16, small queues, the
+     server holding the worker's request), a broadcast held behind watches in
+     it: fatal, one restart from
      storage, the held broadcast written as dropped, the saved watch set
      again and reported.
  10. (L4) a watch command repeated: one watch record in the journal.
@@ -80,7 +82,8 @@ def data(name):
 
 
 HASH = {h: data("block_hash_%d.txt" % h).decode() for h in (329437, 329438, 329439)}
-state = {"tip": 329438, "genesis": GEN["signet"], "delay": 0.0, "delay_path": "", "requests": [], "posts": []}
+state = {"tip": 329438, "genesis": GEN["signet"], "delay": 0.0, "delay_path": "", "requests": [], "posts": [],
+         "gate": None, "gate_path": "", "held": None}
 lock = threading.Lock()
 
 
@@ -140,6 +143,13 @@ class H(http.server.BaseHTTPRequestHandler):
         try:
             with lock:
                 state["requests"].append(self.path)
+            gate = state["gate"]
+            if gate is not None and state["gate_path"] in self.path:
+                # Held until the test opens the gate: the worker is inside one
+                # chain call and takes no request until it returns. At most
+                # 10 s, under the client's 15 s time limit.
+                state["held"].set()
+                gate.wait(10)
             if state["delay"] and state["delay_path"] in self.path:
                 time.sleep(state["delay"])
             if getattr(self.server, "hide", False) and TX_A in self.path:
@@ -297,16 +307,24 @@ try:
               "3: the watches came back and were reported after the restart")
     n.stop()
 
-    # 4. BUSY: small queues, a slow server, forty watch requests ---------------
+    # 4. BUSY: small queues, forty watch requests while the server holds the worker
     b = start("busy", "host", "--test-chain-small")
     check(b.wait_for(r" ready incarnation=") is not None, "4: up")
-    time.sleep(0.5)
-    state["delay"], state["delay_path"] = 0.5, "/tx/"
-    for d in range(1, 41):
+    # The first watch sends the worker to the server, which holds that request.
+    # The other 39 then come while the worker is inside one chain call, so its
+    # request queue (32 with small queues) fills and the rest are BUSY, on any
+    # machine: no time has to be guessed (before, a 0.5 s delay and the
+    # loop's pace decided whether 33 requests met inside one call).
+    state["held"], state["gate_path"] = threading.Event(), "/tx/"
+    state["gate"] = threading.Event()
+    b.send(cmd(TE_WATCH, area(A), (12, bytes.fromhex(TX_A)[::-1]), (14, struct.pack(">I", 1))))
+    check(state["held"].wait(20), "4: the worker's request about the watch is held at the server")
+    for d in range(2, 41):
         b.send(cmd(TE_WATCH, area(A), (12, bytes.fromhex(TX_A)[::-1]), (14, struct.pack(">I", d))))
     check(b.wait_for(r"chain-busy kind=1 held=", timeout=20) is not None, "4: the worker answered BUSY")
+    gate, state["gate"] = state["gate"], None
+    gate.set()
     check(b.wait_for(r"chain-backlog asked=\d+ left=0", timeout=60) is not None, "4: every refused request asked again")
-    state["delay"] = 0.0
     no_trouble(b, "4")
     check(b.count(r"restart-from-storage") == 0, "4: no restart")
     b.stop()
@@ -377,11 +395,16 @@ try:
     # 9. (L2, L3) a full backlog, with a broadcast held in it -----------------
     k = start("backlog", "host", "--test-chain-small", "--test-chain-backlog", "16")
     check(k.wait_for(r" ready incarnation=") is not None, "9: up, small queues, a backlog of 16")
-    time.sleep(0.5)
-    state["delay"], state["delay_path"] = 0.5, "/tx/"
+    # As in case 4: the first watch's request is held at the server, and all
+    # the rest arrive while the worker is inside that one call (before, a
+    # 0.5 s delay and the loop's pace decided whether the queue filled).
+    state["held"], state["gate_path"] = threading.Event(), "/tx/"
+    state["gate"] = threading.Event()
+    k.send(cmd(TE_WATCH, area(A), (12, bytes.fromhex(TX_A)[::-1]), (14, struct.pack(">I", 1))))
+    check(state["held"].wait(20), "9: the worker's request about the watch is held at the server")
     sp_hex = data("tx_spender_hex.txt").decode()
     lines = []
-    for d in range(1, 45):
+    for d in range(2, 45):
         lines.append(cmd(TE_WATCH, area(A), (12, bytes.fromhex(TX_A)[::-1]), (14, struct.pack(">I", d))))
     lines.append("chain-broadcast %s" % sp_hex)
     for d in range(45, 90):
@@ -391,6 +414,8 @@ try:
     check(k.wait_for(r"chain-busy kind=3 held=", timeout=30) is not None, "9: the broadcast held behind watches")
     check(k.wait_for(r"chain-backlog-full held=16", timeout=30) is not None and
           k.wait_for(r"fatal why=chain-backlog-full", timeout=10) is not None, "9: a full backlog is fatal")
+    gate, state["gate"] = state["gate"], None
+    gate.set()
     r = k.index_of(r"restart-from-storage", timeout=30)
     check(r is not None, "9: one restart from storage")
     if r is not None:
@@ -398,9 +423,10 @@ try:
               "9: the held broadcast written as dropped")
         check(k.wait_for(r"watch-tx txid=%s depth=\d+" % bytes.fromhex(TX_A)[::-1].hex(), start=r) is not None,
               "9: the saved watch set again after the restart")
-        state["delay"] = 0.0
         check(saw(k, KIND_CONFIRMED, None, 329438, start=r, timeout=60), "9: and reported")
-    state["delay"] = 0.0
+    if state["gate"] is not None:  # the fatal never came: never leave the server holding
+        state["gate"].set()
+        state["gate"] = None
     time.sleep(1.0)
     check(k.count(r"restart-from-storage") == 1 and k.count(r"fatal why=") == 1, "9: one fatal error only")
     k.stop()
