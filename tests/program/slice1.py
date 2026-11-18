@@ -190,14 +190,23 @@ def chain_tx(rt, txid):
 
 
 def bury(rt, procs, t, timeout=60):
-    """Mine a block every two seconds until every process shows Active, or the time is up."""
+    """Mine a block every two seconds until every process shows Active and its own funding
+    engine has judged the factory Live, or the time is up. A member shows Active from the
+    host's status too, before its own chain view has the burial; and a chain worker proving
+    new confirmations tells no tip for that pass (docs/notes/integration.md, B15)."""
     end = time.time() + timeout
     while time.time() < end:
-        if all(has(p, r"lobby scope=%s role=\w+ state=%d\b" % (t.tag, ACTIVE)) for p in procs):
+        if all(live(p, t) for p in procs):
             return True
         rt.mine(1)
-        time.sleep(2)   # every process sees each block and its watches before the next (tip poll 250 ms)
+        time.sleep(2)
     return False
+
+
+def live(p, t):
+    """Active, and Live by its own funding engine."""
+    return (has(p, r"lobby scope=%s role=\w+ state=%d\b" % (t.tag, ACTIVE)) and
+            has(p, r"fund-report scope=%s kind=1" % t.tag))
 
 
 def run_case(exe, work, rt, name, refusing):
@@ -301,8 +310,7 @@ def two_lobbies(exe, work, rt, name="3 two lobbies, restarts"):
         procs = [h] + list(ms.values())
         end = time.time() + 90
         while time.time() < end and not all(
-                has(p, r"lobby scope=%s role=\w+ state=%d\b" % (t.tag, ACTIVE)) for t in (a, b)
-                for p in [h] + [ms[n] for n in names if t in lobbies[n]]):
+                live(p, t) for t in (a, b) for p in [h] + [ms[n] for n in names if t in lobbies[n]]):
             rt.mine(1)
             time.sleep(2)
         check(all(has(p, r"fund-report scope=%s kind=1" % t.tag) for t in (a, b)
