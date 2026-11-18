@@ -1,0 +1,640 @@
+name: Deep checks
+# The long checks that do not fit in a pull request's CI: long fuzz runs, the
+# mutation runs split into shards, valgrind and MemorySanitizer on the full
+# test sets, the sanitizer builds with the long tests, and a regtest run
+# against Bitcoin Core 29.1. Started by hand on any branch or commit, and
+# nightly on main. Never required for a merge. How to start it and read the
+# results: docs/notes/ci.md, "Deep checks".
+#
+# A pull request that changes this file or its helper runs a small smoke set
+# (a short fuzz run, one small mutation tool, the regtest run), so the deep
+# checks are themselves tested before they merge.
+#
+# The branch under test is checked out as it is; the helper
+# (tools/deep-checks.py) comes from this workflow's own commit, so an old
+# branch can be checked too. That holds against an honest ref only: a job that
+# builds the ref runs its CMake code and tests in the same workspace before the
+# helper reports, so a hostile ref could rewrite the report (with a read-only
+# token, and a ref decides its own tests anyway). On pull_request, github.sha
+# is the merge commit, so the helper is the pull request's own copy.
+#
+# Runners: the repository's 20 runners are shared with CI, whose 13 required
+# jobs must always find one. So the suites run one after another (needs:
+# sanitizers, valgrind, msan, fuzz, mutation), each within its max-parallel,
+# and at most 7 deep-check jobs run at once.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch, tag or commit to check
+        required: true
+        default: main
+        type: string
+      suite:
+        description: Which checks
+        required: true
+        default: all
+        type: choice
+        options: [all, fuzz, mutation, valgrind, msan, sanitizers, regtest]
+      tools:
+        description: "Mutation tools, separated by commas (all, or: tree,node,api,chain-watch,net,storage,keys,s5s6,lobby,signing)"
+        required: false
+        default: all
+        type: string
+      shards:
+        description: Shards per mutation tool (0 = each tool's default)
+        required: false
+        default: "0"
+        type: string
+      fuzz_seconds:
+        description: Seconds per fuzz target
+        required: false
+        default: "600"
+        type: string
+  schedule:
+    - cron: "41 1 * * *"
+  pull_request:
+    paths:
+      - .github/workflows/deep-checks.yml
+      - tools/deep-checks.py
+
+# Read-only token; no job uses a secret.
+permissions:
+  contents: read
+
+concurrency:
+  group: deep-checks-${{ github.event.pull_request.number || inputs.ref || 'main' }}-${{ inputs.suite || 'all' }}-${{ inputs.tools || 'all' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every third-party action is pinned to a full commit SHA; the comment names
+# the release. Update both together (docs/notes/ci.md).
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+      suite: ${{ steps.inputs.outputs.suite }}
+      run_fuzz: ${{ steps.inputs.outputs.run_fuzz }}
+      run_valgrind: ${{ steps.inputs.outputs.run_valgrind }}
+      run_msan: ${{ steps.inputs.outputs.run_msan }}
+      run_sanitizers: ${{ steps.inputs.outputs.run_sanitizers }}
+      run_regtest: ${{ steps.inputs.outputs.run_regtest }}
+      fuzz_seconds: ${{ steps.inputs.outputs.fuzz_seconds }}
+      mutation: ${{ steps.plan.outputs.mutation }}
+      mutation_count: ${{ steps.plan.outputs.mutation_count }}
+    steps:
+      - name: Check the inputs
+        id: inputs
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.event.pull_request.head.sha || inputs.ref || 'main' }}
+          SUITE: ${{ inputs.suite || 'all' }}
+          TOOLS: ${{ inputs.tools || 'all' }}
+          SHARDS: ${{ inputs.shards || '0' }}
+          FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '600' }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then SUITE=smoke; TOOLS=chain-watch; SHARDS=2; FUZZ_SECONDS=30; fi
+          echo "$REF" | grep -Eqx '[A-Za-z0-9][A-Za-z0-9._/-]{0,199}' || { echo "::error::bad ref: $REF"; exit 1; }
+          echo "$SUITE" | grep -Eqx 'all|smoke|fuzz|mutation|valgrind|msan|sanitizers|regtest' || { echo "::error::bad suite: $SUITE"; exit 1; }
+          echo "$TOOLS" | grep -Eqx '[a-z0-9,-]{1,200}' || { echo "::error::bad tools: $TOOLS"; exit 1; }
+          echo "$SHARDS" | grep -Eqx '[0-9]{1,2}' || { echo "::error::shards must be 0 to 99"; exit 1; }
+          echo "$FUZZ_SECONDS" | grep -Eqx '[0-9]{1,5}' && [ "$FUZZ_SECONDS" -ge 10 ] && [ "$FUZZ_SECONDS" -le 18000 ] \
+            || { echo "::error::fuzz_seconds must be 10 to 18000"; exit 1; }
+          for x in fuzz mutation valgrind msan sanitizers regtest; do
+            case "$SUITE:$x" in
+              all:*|"$x:$x"|smoke:fuzz|smoke:mutation|smoke:regtest) echo "run_$x=true" ;;
+              *) echo "run_$x=false" ;;
+            esac
+          done >> "$GITHUB_OUTPUT"
+          {
+            echo "ref=$REF"; echo "suite=$SUITE"; echo "tools=$TOOLS"; echo "shards=$SHARDS"; echo "fuzz_seconds=$FUZZ_SECONDS"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.inputs.outputs.ref }}
+          path: src
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ci
+          sparse-checkout: tools/deep-checks.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: The commit every job checks
+        id: sha
+        env:
+          REF: ${{ steps.inputs.outputs.ref }}
+          SUITE: ${{ steps.inputs.outputs.suite }}
+        run: |
+          sha=$(git -C src rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Checking $REF at $sha, suite $SUITE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Mutation shards
+        id: plan
+        env:
+          RUN: ${{ steps.inputs.outputs.run_mutation }}
+          TOOLS: ${{ steps.inputs.outputs.tools }}
+          SHARDS: ${{ steps.inputs.outputs.shards }}
+        run: |
+          if [ "$RUN" = true ]; then
+            python3 -I ci/tools/deep-checks.py plan src --tools "$TOOLS" --shards "$SHARDS"
+          else
+            echo 'mutation={"include":[]}' >> "$GITHUB_OUTPUT"
+            echo "mutation_count=0" >> "$GITHUB_OUTPUT"
+          fi
+
+  # --- fuzz: one build, then every target for fuzz_seconds under ASan+UBSan ---
+  fuzz-build:
+    name: fuzz (build)
+    needs: [plan, msan]
+    if: ${{ !cancelled() && needs.plan.outputs.run_fuzz == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CC: clang-18
+    outputs:
+      targets: ${{ steps.list.outputs.targets }}
+      count: ${{ steps.list.outputs.count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake clang-18 libclang-rt-18-dev libssl-dev libcurl4-openssl-dev
+      - name: Configure (as CI's fuzz job)
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF -DGZ_LIBFUZZER=ON
+          -DCMAKE_C_FLAGS="-fsanitize=fuzzer-no-link,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build -j
+      - name: List the fuzz targets
+        id: list
+        run: |
+          find build -type f -perm -u+x -name 'fuzz_*' | sort > fuzz-targets.txt
+          cat fuzz-targets.txt
+          targets=$(sed 's|.*/||' fuzz-targets.txt | python3 -I -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))')
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "count=$(wc -l < fuzz-targets.txt)" >> "$GITHUB_OUTPUT"
+          tar -cf fuzz-binaries.tar -T fuzz-targets.txt fuzz-targets.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-binaries
+          path: fuzz-binaries.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    needs: [plan, fuzz-build]
+    if: ${{ !cancelled() && needs.fuzz-build.result == 'success' && needs.fuzz-build.outputs.count != '0' && needs.fuzz-build.outputs.count != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 4   # the 20 runners are shared with CI
+      matrix:
+        target: ${{ fromJSON(needs.fuzz-build.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .deep-ci
+          sparse-checkout: tools/deep-checks.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fuzz-binaries
+      - name: Fuzz for ${{ needs.plan.outputs.fuzz_seconds }} seconds
+        env:
+          TARGET: ${{ matrix.target }}
+          SECONDS_EACH: ${{ needs.plan.outputs.fuzz_seconds }}
+        run: |
+          tar -xf fuzz-binaries.tar
+          bin=$(grep "/$TARGET\$" fuzz-targets.txt | head -n 1)
+          name=${TARGET#fuzz_}
+          out="$RUNNER_TEMP/out"; corpus="$RUNNER_TEMP/corpus"
+          mkdir -p "$out" "$corpus"
+          if [ -d "fuzz/corpus/$name" ]; then cp -R "fuzz/corpus/$name/." "$corpus/"; fi
+          [ -x /usr/lib/llvm-18/bin/llvm-symbolizer ] && export ASAN_SYMBOLIZER_PATH=/usr/lib/llvm-18/bin/llvm-symbolizer
+          cd "$RUNNER_TEMP"
+          python3 -I "$GITHUB_WORKSPACE/.deep-ci/tools/deep-checks.py" run "$TARGET" "$out" --budget 320 -- \
+            "$GITHUB_WORKSPACE/$bin" -max_total_time="$SECONDS_EACH" -timeout=10 -rss_limit_mb=2048 \
+            -print_final_stats=1 -artifact_prefix="$out/" "$corpus"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: deep-fuzz-${{ matrix.target }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: warn
+
+  # --- mutation: every tool's list split into shards -----------------------------
+  mutation:
+    name: mutation (${{ matrix.tool }} ${{ matrix.shard }})
+    needs: [plan, fuzz]
+    if: ${{ !cancelled() && needs.plan.outputs.mutation_count != '0' && needs.plan.outputs.mutation_count != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: 6   # the 20 runners are shared with CI
+      matrix: ${{ fromJSON(needs.plan.outputs.mutation) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          path: src
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ci
+          sparse-checkout: tools/deep-checks.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Install dependencies
+        run: >
+          sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
+          valgrind python3-cryptography clang-18 libclang-rt-18-dev
+      - name: Run the shard
+        # Exit 3: surviving mutants and nothing else wrong. On a pull request's
+        # smoke set only the plumbing is under test, so that one code passes
+        # there (the survivors are in the summary); a failed preparation, a
+        # failed baseline or a timeout stays red.
+        env:
+          EVENT: ${{ github.event_name }}
+          TOOL: ${{ matrix.tool }}
+          SHARD: ${{ matrix.shard }}
+          OF: ${{ matrix.of }}
+        run: |
+          rc=0
+          python3 -I ci/tools/deep-checks.py mutate src "$TOOL" "$SHARD" "$OF" "$RUNNER_TEMP/out" --budget 335 --jobs "$(nproc)" || rc=$?
+          if [ "$rc" -eq 3 ] && [ "$EVENT" = pull_request ]; then
+            echo "::notice::$TOOL shard $SHARD: surviving mutants only (listed in the summary)"
+            exit 0
+          fi
+          exit "$rc"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: deep-mutation-${{ matrix.tool }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: warn
+
+  # --- valgrind: every compiled test with its full arguments ---------------------
+  valgrind:
+    name: valgrind (${{ matrix.shard }})
+    needs: [plan, sanitizers, tsan]
+    if: ${{ !cancelled() && needs.plan.outputs.run_valgrind == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: 3   # the 20 runners are shared with CI
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    env:
+      OF: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .deep-ci
+          sparse-checkout: tools/deep-checks.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF
+      - name: Build
+        run: cmake --build build -j
+      - name: This shard's tests under memcheck, full arguments (CI runs reduced ones)
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          re=$(python3 -I .deep-ci/tools/deep-checks.py tests build "$SHARD" "$OF" --compiled)
+          if [ -z "$re" ]; then echo "no compiled tests in this shard"; exit 0; fi
+          python3 -I .deep-ci/tools/deep-checks.py run "valgrind $((SHARD + 1))/$OF" "$RUNNER_TEMP/out" --budget 320 -- \
+            python3 -I tools/valgrind-tests.py build --include "$re"
+      - name: Storage and signing constant-time checks
+        if: matrix.shard == 0
+        run: ctest --test-dir build -R '^(storage|signing)_ctime$' --output-on-failure --no-tests=error --timeout 7200
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: deep-valgrind-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: warn
+
+  # --- MemorySanitizer: every test, the long ones too ----------------------------
+  # OpenSSL built with MSan, in a job that never checks out the ref under test,
+  # so untrusted code never runs where the cache entry is written; the msan
+  # shards only restore it.
+  openssl-msan:
+    name: msan (OpenSSL)
+    needs: plan
+    if: needs.plan.outputs.run_msan == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      OPENSSL_VERSION: 3.0.22
+      OPENSSL_SHA256: 67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
+    steps:
+      - name: Cache OpenSSL built with MemorySanitizer
+        id: openssl-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/openssl-msan
+          key: openssl-${{ env.OPENSSL_VERSION }}-msan-clang18-ubuntu24.04-deep-v1
+      - name: Install dependencies
+        if: steps.openssl-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y clang-18 libclang-rt-18-dev
+      - name: Build OpenSSL with MemorySanitizer
+        if: steps.openssl-cache.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o openssl.tar.gz "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
+          echo "$OPENSSL_SHA256  openssl.tar.gz" | sha256sum --check --strict
+          tar xzf openssl.tar.gz
+          cd "openssl-$OPENSSL_VERSION"
+          ./Configure linux-x86_64-clang enable-msan no-asm no-shared no-tests no-module \
+            --prefix="$HOME/openssl-msan" --libdir=lib CC=clang-18 \
+            CFLAGS="-fsanitize-memory-track-origins -fno-omit-frame-pointer -g -O1" > /dev/null
+          make -j"$(nproc)" build_libs > /dev/null
+          make install_dev > /dev/null
+
+  msan:
+    name: msan (${{ matrix.shard }})
+    needs: [plan, valgrind, openssl-msan]
+    if: ${{ !cancelled() && needs.plan.outputs.run_msan == 'true' && needs.openssl-msan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 2   # the 20 runners are shared with CI
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      CC: clang-18
+      OF: 4
+      OPENSSL_VERSION: 3.0.22
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .deep-ci
+          sparse-checkout: tools/deep-checks.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake clang-18 libclang-rt-18-dev
+      - name: OpenSSL built with MemorySanitizer (restored only, never saved here)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/openssl-msan
+          key: openssl-${{ env.OPENSSL_VERSION }}-msan-clang18-ubuntu24.04-deep-v1
+          fail-on-cache-miss: true
+      - name: Configure (as CI's msan job, with the long tests)
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF -DGZ_LONG_TESTS=ON
+          -DCMAKE_C_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins -fno-omit-frame-pointer"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=memory"
+          -DSECP256K1_ASM=OFF
+          -DOPENSSL_ROOT_DIR="$HOME/openssl-msan" -DOPENSSL_USE_STATIC_LIBS=TRUE
+      - name: Build
+        run: cmake --build build -j
+      - name: This shard's tests
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          re=$(python3 -I .deep-ci/tools/deep-checks.py tests build "$SHARD" "$OF")
+          if [ -z "$re" ]; then echo "no tests in this shard"; exit 0; fi
+          python3 -I .deep-ci/tools/deep-checks.py run "msan $((SHARD + 1))/$OF" "$RUNNER_TEMP/out" --budget 260 -- \
+            ctest --test-dir build --output-on-failure --timeout 7200 -j "$(nproc)" -R "$re"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: deep-msan-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: warn
+
+  # --- ASan+UBSan with gcc and clang, the long and slow tests included -------------
+  sanitizers:
+    name: sanitizers (${{ matrix.compiler }} ${{ matrix.shard }})
+    needs: plan
+    if: needs.plan.outputs.run_sanitizers == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 3   # the 20 runners are shared with CI
+      matrix:
+        compiler: [gcc, clang]
+        shard: [0, 1, 2]
+    env:
+      OF: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .deep-ci
+          sparse-checkout: tools/deep-checks.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Install dependencies
+        run: >
+          sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
+          valgrind python3-cryptography clang-18 libclang-rt-18-dev
+      - name: Configure
+        env:
+          COMPILER: ${{ matrix.compiler }}
+        run: |
+          if [ "$COMPILER" = clang ]; then
+            CC=clang-18 cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=ON -DGZW_BREAK_CHECKS=OFF -DGZ_LONG_TESTS=ON
+          else
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=ON -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON -DGZ_LONG_TESTS=ON
+          fi
+      - name: Build
+        run: cmake --build build -j
+      - name: This shard's tests (slow and long ones included)
+        env:
+          SHARD: ${{ matrix.shard }}
+          COMPILER: ${{ matrix.compiler }}
+        run: |
+          re=$(python3 -I .deep-ci/tools/deep-checks.py tests build "$SHARD" "$OF")
+          if [ -z "$re" ]; then echo "no tests in this shard"; exit 0; fi
+          python3 -I .deep-ci/tools/deep-checks.py run "$COMPILER ASan+UBSan $((SHARD + 1))/$OF" "$RUNNER_TEMP/out" --budget 260 -- \
+            ctest --test-dir build --output-on-failure --timeout 7200 -j "$(nproc)" -R "$re"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: deep-sanitizers-${{ matrix.compiler }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: warn
+
+  tsan:
+    name: sanitizers (chain worker under TSan)
+    needs: plan
+    if: needs.plan.outputs.run_sanitizers == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential libssl-dev
+      - name: Chain worker under ThreadSanitizer
+        run: |
+          if [ ! -f tools/chain-tsan.sh ]; then echo "::notice::tools/chain-tsan.sh is not on this ref"; exit 0; fi
+          sudo sysctl -w vm.mmap_rnd_bits=28
+          sh tools/chain-tsan.sh "$RUNNER_TEMP/chain-tsan"
+
+  # --- regtest: a real Bitcoin Core 29.1 node, verified before it is run ------------
+  regtest:
+    name: regtest (Bitcoin Core 29.1)
+    needs: plan
+    if: needs.plan.outputs.run_regtest == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CORE_VERSION: "29.1"
+      CORE_TARBALL: bitcoin-29.1-x86_64-linux-gnu.tar.gz
+      # From the release's SHA256SUMS; checked again against the signed file below.
+      CORE_SHA256: 2dddeaa8c0626ec446b6f21b64c0f3565a1e7e67ff0b586d25043cbd686c9455
+      # Signatures from at least this many distinct builder keys of guix.sigs.
+      CORE_MIN_SIGNERS: 3
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          path: src
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: ci
+          sparse-checkout: tools/deep-checks.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: The builders' keys (bitcoin-core/guix.sigs, pinned commit of 2026-10-30)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bitcoin-core/guix.sigs
+          ref: fdc0f9635ca5bee7dd46c51f3bcf3afca83b2d5d
+          path: guix.sigs
+          sparse-checkout: builder-keys
+          persist-credentials: false
+      - name: Is there a regtest run on this ref?
+        id: has
+        run: |
+          if [ -f src/tools/regtest-tree.py ]; then echo "run=true" >> "$GITHUB_OUTPUT"
+          else echo "::notice::tools/regtest-tree.py is not on this ref; nothing to run."; echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Install dependencies
+        if: steps.has.outputs.run == 'true'
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev gnupg
+      - name: Download Bitcoin Core and verify it
+        if: steps.has.outputs.run == 'true'
+        run: |
+          set -eu
+          d="$RUNNER_TEMP/core"; mkdir -p "$d"; cd "$d"
+          base="https://bitcoincore.org/bin/bitcoin-core-$CORE_VERSION"
+          curl -fsSL --proto '=https' -o SHA256SUMS "$base/SHA256SUMS"
+          curl -fsSL --proto '=https' -o SHA256SUMS.asc "$base/SHA256SUMS.asc"
+          curl -fsSL --proto '=https' -o "$CORE_TARBALL" "$base/$CORE_TARBALL"
+          # 1. The signatures: a fresh keyring holding only the builders' keys.
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"; mkdir -m 700 "$GNUPGHOME"
+          for k in "$GITHUB_WORKSPACE"/guix.sigs/builder-keys/*.gpg; do gpg --batch --quiet --import "$k" 2>/dev/null || echo "could not import $(basename "$k")"; done
+          gpg --batch --status-fd 1 --verify SHA256SUMS.asc SHA256SUMS > gpg-status.txt 2> gpg-log.txt || true
+          cat gpg-log.txt
+          if grep -q '^\[GNUPG:\] BADSIG' gpg-status.txt; then echo "::error::a bad signature on SHA256SUMS"; exit 1; fi
+          # A good signature (GOODSIG, not an expired or revoked key) followed by its VALIDSIG; count primary keys.
+          awk '/^\[GNUPG:\] GOODSIG /{g=1; next} /^\[GNUPG:\] VALIDSIG /{if (g) print $NF; g=0; next} /^\[GNUPG:\] (EXPKEYSIG|REVKEYSIG|ERRSIG|NO_PUBKEY) /{g=0}' \
+            gpg-status.txt | sort -u > signers.txt
+          n=$(wc -l < signers.txt)
+          echo "good signatures from $n distinct builder keys:"; cat signers.txt
+          if [ "$n" -lt "$CORE_MIN_SIGNERS" ]; then echo "::error::only $n good builder signatures, $CORE_MIN_SIGNERS needed"; exit 1; fi
+          # 2. The signed file names the hash pinned above, and the tarball has it.
+          line=$(grep -E "^[0-9a-f]{64}  $CORE_TARBALL\$" SHA256SUMS)
+          [ "${line%% *}" = "$CORE_SHA256" ] || { echo "::error::SHA256SUMS does not hold the pinned hash"; exit 1; }
+          echo "$CORE_SHA256  $CORE_TARBALL" | sha256sum --check --strict
+          tar xzf "$CORE_TARBALL"
+          "bitcoin-$CORE_VERSION/bin/bitcoind" -version | head -n 1
+      - name: Build tree_regtest
+        if: steps.has.outputs.run == 'true'
+        run: |
+          cmake -S src -B build -DCMAKE_BUILD_TYPE=Release -DGZW_BREAK_CHECKS=OFF
+          cmake --build build -j --target tree_regtest
+      - name: A T1 tree on regtest (tools/regtest-tree.py)
+        if: steps.has.outputs.run == 'true'
+        run: |
+          tool=$(find build -type f -name tree_regtest -perm -u+x | head -n 1)
+          python3 -I ci/tools/deep-checks.py run "regtest tree (Core $CORE_VERSION)" "$RUNNER_TEMP/out" --budget 40 -- \
+            python3 -I src/tools/regtest-tree.py "$RUNNER_TEMP/core/bitcoin-$CORE_VERSION/bin" "$RUNNER_TEMP/regtest-data" "$tool"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: deep-regtest
+          path: ${{ runner.temp }}/out
+          retention-days: 14
+          if-no-files-found: warn
+
+  # --- every shard's result in one table ---------------------------------------------
+  summary:
+    name: summary
+    needs: [plan, fuzz-build, fuzz, mutation, valgrind, openssl-msan, msan, sanitizers, tsan, regtest]
+    if: always() && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: tools/deep-checks.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: deep-*
+          path: results
+      - name: Merge
+        env:
+          JOBS: ${{ toJSON(needs) }}
+        run: |
+          mkdir -p results
+          echo "$JOBS" > "$RUNNER_TEMP/needs.json"
+          python3 -I tools/deep-checks.py summary results summary --needs "$RUNNER_TEMP/needs.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: summary
+          path: summary
+          retention-days: 30
