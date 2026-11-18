@@ -20,6 +20,8 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 const EXE = process.env.GZ_PROGRAM;
+// In CI it is never skipped for want of the program (review of PR 51, M3).
+if (!EXE && process.env.CI) throw new Error('GZ_PROGRAM is not set in CI: the multi-process test may not be skipped there');
 test.skip(!EXE, 'GZ_PROGRAM is not set');
 test.fixme(!process.env.GZ_P6A, 'waits for P6a: the core emits no lobby view objects yet');
 test.setTimeout(240000);
@@ -126,8 +128,9 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
     await expect(p1.locator('#query-note')).toContainText('The host answered.');
     await p1.locator('#lobbies-fit li a').first().click();
     await p1.waitForTimeout(1100);
-    await p1.locator('#review').getByLabel('Wallet passphrase').fill(PASS.m1);
     await p1.locator('#join').click();
+    await p1.locator('dialog').getByLabel('Wallet passphrase').fill(PASS.m1);
+    await p1.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
     await expect(p1.locator('#lobby')).toHaveAttribute('data-seat', 'ready', { timeout: 20000 });
     await expect(hp.locator('#host-counts')).toContainText('1 ready of 3', { timeout: 20000 });
 
@@ -141,8 +144,9 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
       await expect(p2.locator('#query-note')).toContainText('The host answered.');
       await p2.locator('#lobbies-fit li a').first().click();
       await p2.waitForTimeout(1100);
-      await p2.locator('#review').getByLabel('Wallet passphrase').fill(PASS.m2);
       await p2.locator('#join').click();
+      await p2.locator('dialog').getByLabel('Wallet passphrase').fill(PASS.m2);
+      await p2.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
       await expect(p2.locator('#lobby')).toHaveAttribute('data-seat', 'ready', { timeout: 20000 });
     };
     await join2();
