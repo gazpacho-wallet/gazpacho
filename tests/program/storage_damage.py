@@ -156,6 +156,39 @@ def main():
             open(os.path.join(f, "restore.gzr"), "wb").write(body + hashlib.sha256(body).digest()[:8])
         case("old-journal-forged-marker", forged_marker, "refused", "files_behind")
 
+        import struct
+
+        def forged(f, base_inc, floor):
+            chain = open(os.path.join(f, J), "rb").read(41)[9:41]
+            body = b"GZRESTO1" + chain + struct.pack(">QQ", base_inc, floor)
+            open(os.path.join(f, "restore.gzr"), "wb").write(body + hashlib.sha256(body).digest()[:8])
+
+        # A refused import leaves the mark file as it was (confirmation review
+        # of PR 54, N1; review B, L3): the backup is checked whole first.
+        fi = os.path.join(work, "refused-import")
+        shutil.copytree(base, fi)
+        bad = os.path.join(work, "damaged-backup.gzj")
+        shutil.copyfile(backup, bad)
+        flip(bad, 185 + 69 + 69 + 50)
+        mark_before = open(os.path.join(fi, "mark.gzm"), "rb").read()
+        st, info, _ = outcome(fi, "--test-restore-from", bad)
+        check(st == "refused", "refused-import: a damaged backup is refused (%s)" % (info,))
+        check(open(os.path.join(fi, "mark.gzm"), "rb").read() == mark_before,
+              "refused-import: mark.gzm unchanged by the refused import")
+
+        # A forged restore.gzr floor is never used, and the file goes
+        # (confirmation review, N3; review B, L1).
+        ff = os.path.join(work, "forged-floor")
+        shutil.copytree(base, ff)
+        forged(ff, 0, (1 << 63) - 2)
+        st, inc, _ = outcome(ff)
+        check(st == "ready" and inc < 1 << 32, "forged-floor: an ordinary start (%s %s)" % (st, inc))
+        check(not os.path.exists(os.path.join(ff, "restore.gzr")), "forged-floor: the forged marker is removed")
+        st, inc, _ = outcome(ff, "--test-restore-from", backup)
+        check(st == "ready" and inc < 1 << 32, "forged-floor: a later import does not take the forged floor (%s)" % (inc,))
+        st, inc, _ = outcome(ff)
+        check(st == "ready", "forged-floor: and the next start goes on (%s)" % (st,))
+
         f = case("counter-flipped", lambda f: flip(os.path.join(f, "starts.gzs"), -3), "ready")
         p = procs[-1]
         check(p.find(r"start-counter state=missing")[0] is not None and

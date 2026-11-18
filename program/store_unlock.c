@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include <openssl/crypto.h>
+#include <openssl/rand.h>
 
 #include "gazpacho/wallet_keys.h"
 
@@ -667,14 +668,15 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
     if (r->status != GZP_UNLOCK_OK) goto out;
     switch (k->op) {
     case GZP_UNLOCK_OP_CHECK: {
-        /* The same wallet's passphrase: the key file it opened is the one
-         * whose wallet is in memory (the same vault and network). */
+        /* The same wallet's passphrase: the key file it opened holds the
+         * storage key in memory (storage 4.6: MSK compared in constant time;
+         * the public ids alone can be forged, review B of PR 54, M1). */
         uint8_t c1[32], c2[32], v1[16], v2[16];
         int same = 0;
         if (w->unlocked && w->u.vault && k->u.vault) {
             gz_sc_vault_ids(w->u.vault, c1, v1);
             gz_sc_vault_ids(k->u.vault, c2, v2);
-            same = !memcmp(c1, c2, 32) && !memcmp(v1, v2, 16);
+            same = !memcmp(c1, c2, 32) && !memcmp(v1, v2, 16) && gz_sc_vault_same(w->u.vault, k->u.vault);
         }
         if (!same) {
             set_result(r, GZP_UNLOCK_WRONG, NULL);
@@ -868,6 +870,27 @@ void gzp_wallet_test_kdf_floor(gzp_wallet_t *w)
 
 void gzp_wallet_test_keys_only(gzp_wallet_t *w) { w->keys_only = 1; }
 void gzp_wallet_test_seed_fault(gzp_wallet_t *w, int on) { w->seed_fault = on; }
+
+/* gazpacho-test (review B of PR 54, M1): keys.gzk replaced by a key file with
+ * this wallet's chain and vault_id over another passphrase, MSK and seed, as
+ * anyone who can write the folder can make one. */
+int gzp_wallet_test_forge_keyfile(gzp_wallet_t *w, const uint8_t *pw, size_t len)
+{
+    uint8_t chain[32], vid[16], salt[16], pk[32], msk[32], ent[32], seed[64], kf[GZ_SC_KEYFILE_LEN];
+    int ml = 0, rc = -1;
+    if (!w->unlocked || !w->u.vault) return -1;
+    gz_sc_vault_ids(w->u.vault, chain, vid);
+    if (RAND_bytes(salt, 16) == 1 && RAND_bytes(msk, 32) == 1 && RAND_bytes(ent, 32) == 1 &&
+        RAND_bytes(seed, 64) == 1 && w->sc.kdf(w->sc.kdf_ctx, pw, len, salt, &w->params, pk, &ml) == GZ_SC_OK &&
+        gz_sc_keyfile_build(chain, vid, &w->params, salt, pk, msk, ent, seed, kf) == GZ_SC_OK)
+        rc = gz_sc_fs_replace(&w->sc, GZ_SC_FILE_KEYS, kf, sizeof kf) == GZ_SC_OK ? 0 : -1;
+    OPENSSL_cleanse(pk, sizeof pk);
+    OPENSSL_cleanse(msk, sizeof msk);
+    OPENSSL_cleanse(ent, sizeof ent);
+    OPENSSL_cleanse(seed, sizeof seed);
+    OPENSSL_cleanse(kf, sizeof kf);
+    return rc;
+}
 
 void gzp_wallet_test_restore_from(gzp_wallet_t *w, const char *backup)
 {

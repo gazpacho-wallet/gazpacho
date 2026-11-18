@@ -71,17 +71,26 @@ def main():
             print(out[-3000:])
             return 2
     results = []
+
+    def save():
+        with open(os.path.join(WORK, "results.txt"), "w") as f:
+            for n, r in results:
+                f.write("%s\t%s\n" % (n, r))
+        print(results[-1][0], results[-1][1], flush=True)
+
     for name, path, old, new in mutants:
         target = os.path.join(src, path)
         text = open(target).read()
         if text.count(old) != 1:
             results.append((name, "BAD-MUTANT (%d matches)" % text.count(old)))
+            save()
             continue
         open(target, "w").write(text.replace(old, new))
         try:
             code, out = run(["nice", "-n", "15", "cmake", "--build", bld, "-j3"], WORK, 3600)
             if code:
                 results.append((name, "does-not-compile"))
+                save()
                 continue
             code, out = run(["nice", "-n", "15", "ctest", "-j2", "-R", TESTS, "--timeout", "900",
                              "--stop-on-failure"], bld, 7200)
@@ -93,14 +102,16 @@ def main():
             results.append((name, ("killed by " + killer) if code else "SURVIVED"))
         finally:
             open(target, "w").write(text)
-        with open(os.path.join(WORK, "results.txt"), "w") as f:
-            for n, r in results:
-                f.write("%s\t%s\n" % (n, r))
-        print(name, results[-1][1], flush=True)
+        save()
     # Back to the unmutated build.
     run(["nice", "-n", "15", "cmake", "--build", bld, "-j3"], WORK, 3600)
     surv = [n for n, r in results if r == "SURVIVED"]
+    bad = [n for n, r in results if r.startswith("BAD-MUTANT") or r == "does-not-compile"]
     print("%d mutants, %d survived: %s" % (len(results), len(surv), " ".join(surv)))
+    if bad:
+        # A mutant that does not apply or compile tests nothing: the run fails.
+        print("%d did not apply or compile: %s" % (len(bad), " ".join(bad)))
+        return 1
     return 0
 
 

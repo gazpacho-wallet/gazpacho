@@ -66,6 +66,8 @@ typedef struct {
     gzp_wallet_t *w;
     const gz_sc_store_t *sc;
     gz_sc_unlocked_t *u;
+    const uint8_t *import_hdr; /* an import's staged header: its restore marker is for that file_id */
+    size_t import_len;
 } seal_ctx_t;
 
 static gz_journal_status_t sl_header_open(void *ctx, const uint8_t *d, size_t len, const uint8_t chain[32])
@@ -151,7 +153,9 @@ static gz_journal_status_t sl_start_rule(void *ctx, const gz_journal_view_t *vie
 static int sl_mark_restart(void *ctx)
 {
     seal_ctx_t *c = ctx;
-    return gz_sc_mark_restart(c->sc, c->u) == GZ_SC_OK ? 0 : -1;
+    gz_sc_err_t e = c->import_hdr ? gz_sc_mark_restart_for(c->sc, c->u, c->import_hdr, c->import_len)
+                                  : gz_sc_mark_restart(c->sc, c->u);
+    return e == GZ_SC_OK ? 0 : -1;
 }
 
 static int sl_anchor(void *ctx, uint64_t inc, uint64_t off)
@@ -229,6 +233,8 @@ static void seal_table(gz_journal_seal_t *t, seal_ctx_t *c)
 static int seal_ctx(seal_ctx_t *c, gzp_wallet_t *w)
 {
     c->w = w;
+    c->import_hdr = NULL;
+    c->import_len = 0;
     c->sc = gzp_wallet_sc_store(w);
     c->u = gzp_wallet_sc_unlocked(w);
     return c->u && c->u->vault ? 0 : -1;
@@ -743,18 +749,23 @@ int gzp_journal_store_import(const char *dir, gzp_wallet_t *w, const char *backu
     if (copy_file(backup, staged) != 0) return set_err(err, errlen, "cannot stage the backup");
     (void)gz_sc_counter_read(c.sc, c.u->vault, &floor);
     {
-        /* The sealed restore marker first, for the staged journal's file_id
-         * (review A of PR 54, M1): restore.gzr is trusted only beside it. */
+        /* The sealed restore marker is for the staged journal's file_id
+         * (review A of PR 54, M1: restore.gzr is trusted only beside it). The
+         * import writes it through mark_restart once the backup and the
+         * journal it replaces have been read (N1). */
         uint8_t hdr[GZ_SC_JHEADER_LEN];
         FILE *f = fopen(staged, "rb");
         size_t got = f ? fread(hdr, 1, sizeof hdr, f) : 0;
         if (f) fclose(f);
-        if (got != sizeof hdr || gz_sc_mark_restart_for(c.sc, c.u, hdr, sizeof hdr) != GZ_SC_OK) {
+        if (got != sizeof hdr) {
             unlink(staged);
-            return set_err(err, errlen, "cannot mark the restore");
+            return set_err(err, errlen, "cannot read the backup's header");
         }
+        c.import_hdr = hdr;
+        c.import_len = sizeof hdr;
+        st = gz_journal_import_sealed(dir, c.sc->chain, NULL, &t, staged, floor);
+        c.import_hdr = NULL;
     }
-    st = gz_journal_import_sealed(dir, c.sc->chain, NULL, &t, staged, floor);
     if (st != GZ_JOURNAL_OK) {
         unlink(staged);
         if (err && errlen) snprintf(err, errlen, "the import was refused: %s", gz_journal_status_name(st));
@@ -770,8 +781,8 @@ int gzp_journal_store_mark_restored(const char *dir, gzp_wallet_t *w, uint64_t f
     gz_journal_status_t st;
     if (seal_ctx(&c, w) != 0) return set_err(err, errlen, "the wallet is locked");
     seal_table(&t, &c);
-    /* The sealed restore marker first (M1, as for the import). */
-    if (gz_sc_mark_restart(c.sc, c.u) != GZ_SC_OK) return set_err(err, errlen, "cannot mark the restore");
+    /* The sealed restore marker: the journal's mark_restart call, after the
+     * journal is read (M1, N1). */
     st = gz_journal_mark_restored_sealed(dir, c.sc->chain, NULL, &t, floor);
     if (st != GZ_JOURNAL_OK) {
         if (err && errlen) snprintf(err, errlen, "the restore mark was refused: %s", gz_journal_status_name(st));

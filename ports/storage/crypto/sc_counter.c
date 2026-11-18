@@ -94,10 +94,17 @@ gz_sc_err_t gz_sc_counter_write(const gz_sc_store_t *s, const gz_sc_vault_t *v, 
 
 gz_sc_err_t gz_sc_vault_derive(const gz_sc_vault_t *v, const char *label, uint8_t out[32])
 {
+    uint8_t kp[32];
     if (!v || !label || !out)
         return GZ_SC_ARG;
+    /* KP = derive(seed, "program keys", chain), then derive(KP, label, chain)
+     * (4.4): no label gives a storage key such as KG, KC or BK (review B of
+     * PR 54, M2). */
     sodium_mprotect_readonly(v->seed);
-    gz_sc_err_t e = sc_derive(v->seed, 64, label, v->chain, 32, out);
+    gz_sc_err_t e = sc_derive(v->seed, 64, "program keys", v->chain, 32, kp);
     sodium_mprotect_noaccess(v->seed);
+    if (e == GZ_SC_OK)
+        e = sc_derive(kp, 32, label, v->chain, 32, out);
+    sodium_memzero(kp, sizeof kp);
     return e;
 }

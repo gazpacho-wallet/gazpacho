@@ -148,6 +148,7 @@ void gzp_usage(void)
         "  --test-standin-store          the journal stand-in instead of the sealed journal\n"
         "  --test-reveal-check           after the unlock: reveal and words check (statuses only)\n"
         "  --test-seed-check             seed() locked, unlocked and with a storage fault (results only)\n"
+        "  --test-check-forged           CHECK against a key file forged with this wallet's ids\n"
         "  --test-kill-at K              SIGKILL before the K-th storage write, sync or rename\n"
         "  --test-power-cut-at K         the same, what a power cut loses dropped first\n"
         "  --test-append-batch HEX       save one batch of records (type, length, bytes ...), then stop\n"
@@ -250,6 +251,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-standin-store")) { o->test_standin_store = 1; takes = 0; }
         else if (!strcmp(a, "--test-reveal-check")) { o->test_reveal_check = 1; takes = 0; }
         else if (!strcmp(a, "--test-seed-check")) { o->test_seed_check = 1; takes = 0; }
+        else if (!strcmp(a, "--test-check-forged")) { o->test_check_forged = 1; takes = 0; }
         else if (!strcmp(a, "--test-commands")) { o->test_commands = 1; takes = 0; }
         else if (!strcmp(a, "--test-exit-after-send")) { o->test_exit_after_send = 1; takes = 0; }
 #endif
