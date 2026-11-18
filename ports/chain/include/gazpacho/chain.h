@@ -142,7 +142,9 @@ typedef enum gz_network {
   GZ_NET_MAINNET = 1,
   GZ_NET_TESTNET3 = 2,
   GZ_NET_TESTNET4 = 3,
-  GZ_NET_SIGNET = 4
+  GZ_NET_SIGNET = 4,
+  /* The local test chain (Bitcoin Core regtest): tests only (P4.6). */
+  GZ_NET_REGTEST = 5
 } gz_network;
 
 /* "mainnet", "testnet", "testnet4", "signet"; "invalid" for anything else. */

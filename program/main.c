@@ -466,6 +466,9 @@ int main(int argc, char **argv)
     }
     chain_hash = network == GZ_NET_SIGNET ? GZ_LN_CHAIN_SIGNET
                : network == GZ_NET_TESTNET4 ? GZ_LN_CHAIN_TESTNET4 : NULL;
+#ifdef GZP_TEST_BUILD
+    if (network == GZ_NET_REGTEST) chain_hash = GZ_LN_CHAIN_REGTEST; /* the local test chain (P4.6) */
+#endif
     if (!chain_hash) {
         fprintf(stderr, "gazpacho: refusing network %s (signet or testnet4)\n", opt.network);
         return GZP_EXIT_USAGE;

@@ -358,7 +358,11 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         fprintf(stderr, "gazpacho: refusing to run on mainnet: this build runs on test networks only\n");
         return GZP_EXIT_USAGE;
     }
-    if (strcmp(o->network, "signet") && strcmp(o->network, "testnet4")) {
+    if (strcmp(o->network, "signet") && strcmp(o->network, "testnet4")
+#ifdef GZP_TEST_BUILD
+        && strcmp(o->network, "regtest") /* the local test chain: gazpacho-test only (P4.6) */
+#endif
+    ) {
         fprintf(stderr, "gazpacho: unknown network %s (signet or testnet4)\n", o->network);
         return GZP_EXIT_USAGE;
     }

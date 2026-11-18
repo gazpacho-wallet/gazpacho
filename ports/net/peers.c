@@ -848,7 +848,12 @@ gz_peers_t *gz_peers_new(const gz_peers_config_t *config)
     if (!p) return NULL;
     /* Signet or testnet4 only, as an allow-list: the main network and every
      * other chain are refused here (SLICES.md rule 3; review of PR 23, round 2, R2). */
-    if (memcmp(config->chain, GZ_LN_CHAIN_SIGNET, 32) != 0 && memcmp(config->chain, GZ_LN_CHAIN_TESTNET4, 32) != 0) {
+    if (memcmp(config->chain, GZ_LN_CHAIN_SIGNET, 32) != 0 && memcmp(config->chain, GZ_LN_CHAIN_TESTNET4, 32) != 0
+#ifdef GZ_TEST_KINDS
+        /* the local test chain (regtest), in the test build only (P4.6) */
+        && memcmp(config->chain, GZ_LN_CHAIN_REGTEST, 32) != 0
+#endif
+    ) {
         free(p);
         return NULL;
     }
