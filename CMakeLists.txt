@@ -151,6 +151,14 @@ target_link_libraries(fuzz_node PRIVATE gazpacho_node_test)
 target_include_directories(fuzz_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
 target_compile_definitions(fuzz_node PRIVATE GZ_TEST_KINDS)
 target_compile_options(fuzz_node PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+# The registry's release (UNWATCH, step P4.5).
+add_executable(test_watch_release tests/node/test_watch_release.c)
+target_link_libraries(test_watch_release PRIVATE gazpacho_node_test)
+target_include_directories(test_watch_release PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+target_compile_definitions(test_watch_release PRIVATE GZ_TEST_KINDS)
+target_compile_options(test_watch_release PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME node_watch_release COMMAND test_watch_release)
 gz_add_test(rng       tests/sim/test_rng.c        gazpacho_sim)
 gz_add_test(sim       tests/sim/test_sim.c        gazpacho_sim)
 # One fixed seed must give the trace digest written in the test: compares
@@ -559,6 +567,7 @@ endif()
 
 # --- trees from terms and the creation checks (core/tree) ---
 add_subdirectory(core/tree)
+add_subdirectory(core/funding)
 
 # --- storage encryption (ports/storage/crypto): libsodium, outside the core ---
 add_subdirectory(ports/storage/crypto)

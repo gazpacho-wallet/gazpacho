@@ -1,0 +1,75 @@
+# Mutants of the funding engine (tools/mutate-funding.py).
+# NAME ## FILE ## OLD ## NEW [## N]
+# A survivor that is not a fault is triaged with "# survivor: NAME why".
+h1-skipped ## funding.c ## if (r != GZ_H1_OK) return r; ## (void)r;
+h1-signed-unchecked ## funding.c ## if (!signed_ok(f, x, x->signed_tx, n)) return GZ_FUND_H1_SIGNED; ## (void)0;
+apply-ignores-h1 ## funding.c ## if (!x->h1_ok) { ## if (0) {
+apply-no-release ## funding.c ## f->cfg.wallet.release(f->cfg.wallet.ctx, x->tx, x->tx_len);\n        if ((st = save_status(f, x, GZ_FUND_ST_FAILED, 0, out)) != GZ_OK) return st;\n        if ((st = log_note ## if ((st = save_status(f, x, GZ_FUND_ST_FAILED, 0, out)) != GZ_OK) return st;\n        if ((st = log_note
+confirm-broadcasts ## funding.c ## if (x->mode == GZ_HOST_FUNDING_CONFIRM) { ## if (0) {
+cap-tx ## funding.c ## if (x->tx_len > GZ_FUND_MAX_TX || !gz_tx_parse(x->tx, x->tx_len, &info)) return 0;\n    if (info.n_in == 0 || info.n_in > GZ_FUND_MAX_INPUTS || info.n_in != x->n_in) return 0; ## if (!gz_tx_parse(x->tx, x->tx_len, &info)) return 0;
+plan-output-twice ## funding.c ## if (found) return 0; ## (void)0;
+plan-legacy-prev ## funding.c ## if (p->script_len < 4 || ## if (0 &&
+plan-must-ignored ## funding.c ## return have_must; ## return 1;
+plan-reuse-after-release ## funding.c ## if (old && !in->released && ## if (old &&
+h11-no-must ## funding.c ## use_must = 1; ## use_must = 0;
+deadline-no-burial ## funding.c ## x->deadline = (x->plan_tip_known ? x->plan_tip : f->tip) + f->cfg.funding_deadline_blocks; ## x->deadline = (x->plan_tip_known ? x->plan_tip : f->tip) + f->cfg.funding_deadline_blocks + f->cfg.burial;
+deadline-early ## funding.c ## if (!x->deadline_pending && f->tip_known && f->tip > x->deadline) return host_abandon(f, x, out);\n        if (x->rebroadcast) { ## if (!x->deadline_pending && f->tip_known && f->tip >= x->deadline) return host_abandon(f, x, out);\n        if (x->rebroadcast) {
+buried-one-short ## funding.c ## return x->conf >= depth_of(f, x); ## return x->conf + 1 >= depth_of(f, x);
+dead-unburied ## funding.c ## if (!x->spender_known[k] || x->spender_conf[k] < depth_of(f, x)) continue; ## if (!x->spender_known[k]) continue;
+dead-by-funding ## funding.c ## if (gz_tree_c4d_dead(x->tx, x->tx_len, x->ins[k], x->spender[k])) { ## if (1) {
+reorg-ignored ## funding.c ## x->conf = 0;   /* reorganised away: counting starts again */ ## (void)0;
+sb-no-replace ## funding.c ## int ok = late ? 0 : make_spend_back(f, x, was_signed && x->seen ? 1 : 0); ## int ok = late ? 0 : make_spend_back(f, x, 0);
+sb-always-replace ## funding.c ## int ok = late ? 0 : make_spend_back(f, x, was_signed && x->seen ? 1 : 0); ## int ok = late ? 0 : make_spend_back(f, x, 1);
+sb-inc-high-first ## funding.c ## uint64_t inc = level == 2 ? f->cfg.incremental_high : f->cfg.incremental; ## uint64_t inc = f->cfg.incremental_high;
+sb-no-escalate ## funding.c ## x->escalate = 1; ## (void)0;
+sb-escalate-forever ## funding.c ## if ((x->sb_len && !x->signed_len) || level > 2) break; ## if (x->sb_len && !x->signed_len) break;
+sb-fee-unchecked ## funding.c ## if (amt + fee != x->prev[idx].amount) return 0; ## (void)amt;
+sb-pays-factory ## funding.c ## if (sl == 34 && memcmp(scr, x->script, 34) == 0) return 0; ## (void)scr;
+sb-other-input ## funding.c ## memcmp(op, fop, 36) != 0) ## 0)
+replace-no-inc ## txsize.c ## fee = package_fee + inc; ## fee = package_fee;
+replace-no-rule6 ## txsize.c ## if (fee < floor_fee) fee = floor_fee; ## (void)floor_fee;
+fee-floor ## txsize.c ## return (rate * vsize + 999) / 1000; ## return rate * vsize / 1000;
+vsize-weight ## txsize.c ## if (vsize) *vsize = ((uint64_t)b * 3 + (uint64_t)len + 3) / 4; ## if (vsize) *vsize = ((uint64_t)b * 3 + (uint64_t)len) / 4;
+strip-witness-kept ## txsize.c ## memcpy(out + 4 + (w.outs_end - 6), tx + w.wit_end, 4); ## memcpy(out + 4 + (w.outs_end - 6), tx + w.outs_end, 4);
+all-witness-empty ## txsize.c ## if (items == 0) return 0; ## (void)0;
+member-live-mismatch ## funding.c ## if (v == GZ_C11_LIVE) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out); ## if (v == GZ_C11_LIVE || x->conf > 0) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out);
+member-no-abandon ## funding.c ## if (v == GZ_C11_ABANDONED && x->state == GZ_FUND_ST_ACKED) { ## if (0) {
+member-whole-tree ## funding.c ## c.holds_whole_tree = x->whole_tree; ## c.holds_whole_tree = 1;
+member-dead-first ## funding.c ## if (input_dead(f, x, NULL)) return end_with(f, x, GZ_FUND_ST_DEAD, GZ_FUND_R_DEAD, out); ## (void)0;
+member-acked-twice ## funding.c ## if ((x = find_txid(f, in->scope, in->funding.txid)) != NULL) return GZ_OK; ## (void)x;
+watch-double-count ## funding.c ## if (!held_elsewhere(f, x, 0, x->ins[k])) extra++; ## extra++;
+unwatch-shared ## funding.c ## if (!held_elsewhere(f, x, 0, x->ins[k])) {\n            outpoint_of ## {\n            outpoint_of
+one-change-per-tick ## funding.c ## if (did) { ## if (did && 0) {
+resume-no-hold ## funding.c ## if (!f->cfg.wallet.adopt(f->cfg.wallet.ctx, x->tx, x->tx_len, x->funding.vout) && ## if (0 &&
+resume-no-rebroadcast ## funding.c ## if (x->state == GZ_FUND_ST_BROADCAST && (st = broadcast(out, x->signed_tx, x->signed_len)) != GZ_OK) ## if (0 && (st = broadcast(out, x->signed_tx, x->signed_len)) != GZ_OK)
+load-unknown-even ## funding.c ## if (i == n_allowed) return 0; ## (void)0;
+load-illegal-step ## funding.c ## if (!legal_step(f->cfg.host, x->state, state)) return GZ_ERR_CORRUPT; ## (void)0;
+load-unknown-type ## funding.c ## default: return GZ_ERR_CORRUPT;   /* every type ## default: return GZ_OK;   /* every type
+load-bad-state ## funding.c ## if (state < GZ_FUND_ST_ACKED || state > GZ_FUND_ST_LIVE_LATE) return GZ_ERR_CORRUPT; ## (void)0;
+cmd-not-awaiting ## funding.c ## } else if (x->state != GZ_FUND_ST_AWAITING) { ## } else if (0) {
+cmd-sign-unchecked ## funding.c ## n > sizeof x->signed_tx || !signed_ok(f, x, x->signed_tx, n)) { ## n > sizeof x->signed_tx) {
+report-reason ## funding.c ## r.cancel_reason = (kind == GZ_FUND_R_DEAD || kind == GZ_FUND_R_ABANDONED) ? GZ_FUND_CANCEL_FUNDING : 0; ## r.cancel_reason = GZ_FUND_CANCEL_SIGNING;
+late-not-live ## funding.c ## if (buried(f, x)) return end_with(f, x, GZ_FUND_ST_LIVE_LATE, GZ_FUND_R_FUNDED_LATE, out); ## (void)0;
+host-dead-report ## funding.c ## if (input_dead(f, x, &k)) return end_with(f, x, GZ_FUND_ST_DEAD, GZ_FUND_R_DEAD, out); ## if (input_dead(f, x, &k)) return end_with(f, x, GZ_FUND_ST_DEAD, 0, out);
+pending-never-ends ## funding.c ## if (!f->pending[i].used || !f->tip_known || f->tip <= f->pending[i].deadline) continue; ## continue;
+scope-until ## funding.c ## if (until) *until = best->deadline + f->cfg.burial;   /* the deadline, and a burial after it */ ## if (until) *until = best->deadline;
+# --- review A of PR 56: its seven surviving mutants, and the fixes' own lines
+sb-input-largest ## funding.c ## if (x->prev[0].amount > 1000) return 0; ## (void)0;
+escalate-any-refusal ## funding.c ## x->state == GZ_FUND_ST_ABANDONED && x->sb_len && memcmp(c->txid, x->sb_txid, 32) == 0) { ## x->state == GZ_FUND_ST_ABANDONED && x->sb_len) {
+member-evict-keeps-watch ## funding.c ## drop_watches(f, old);\n    memset(old, 0, sizeof *old);\n    return alloc(f); ## memset(old, 0, sizeof *old);\n    return alloc(f);
+deadline-pending-ignored ## funding.c ## if (x->deadline_pending && f->tip_known && (x->state == GZ_FUND_ST_AWAITING || x->state == GZ_FUND_ST_BROADCAST)) { ## if (0) {
+load-signed-unchecked ## funding.c ## if (!signed_ok(f, x, tx.data, tx.len)) return GZ_ERR_CORRUPT; ## (void)0;
+member-depth-host ## funding.c ## return f->cfg.host || x->exit.B == 0 ? f->cfg.burial : x->exit.B; ## return f->cfg.burial;
+reuse-ignores-amount ## funding.c ## !old->released && old->amount == in->amount && ## !old->released &&
+plan-change-optional ## funding.c ## if (!found || info.n_out != 2) return 0; ## if (!found) return 0;
+plan-must-any-input ## funding.c ## if (must && i == 0) { ## if (must) {
+must-not-kept ## funding.c ## if (old && (in->released || old->released)) { ## if (old && in->released) {
+must-forgotten ## funding.c ## if (old && released && (st = keep_released(f, old, out)) != GZ_OK) return st; ## (void)released;
+reuse-after-mark ## funding.c ## if (old && !in->released && !old->released && ## if (old && !in->released &&
+old-not-readopted ## funding.c ## if (old) (void)f->cfg.wallet.adopt(f->cfg.wallet.ctx, old->tx, old->tx_len, old->funding.vout); ## (void)0; ## 1
+late-taken-live ## funding.c ## return x->deadline_pending || x->conf_height + depth_of(f, x) - 1 <= x->deadline; ## return 1;
+late-spends-back ## funding.c ## int ok = late ? 0 : make_spend_back( ## int ok = make_spend_back(
+deadline-from-outcome ## funding.c ## x->deadline = (x->plan_tip_known ? x->plan_tip : f->tip) + f->cfg.funding_deadline_blocks; ## x->deadline = f->tip + f->cfg.funding_deadline_blocks;
+plan-tip-not-saved ## funding.c ## if (x->plan_tip_known) put_u32(&e, P_TIP, x->plan_tip); ## (void)0;
+released-not-saved ## funding.c ## if (x->released) put_u8(&e, P_RELEASED, 1); ## (void)0;
+sb-settled-ignored ## funding.c ## if (sb_settled(x)) break; ## (void)0;
