@@ -85,5 +85,9 @@ setup_told_always	program/store_unlock.c	w->setup_interrupted = k->op == GZP_UNL
 restore_gzr_trusted	ports/storage/journal.c	    j->restored = !sealed_rule && c.marker && !c.answered;\n    if (sealed_rule) {	    j->restored = c.marker && !c.answered;\n    if (sealed_rule && !j->restored) {
 dumps_left_on	program/main.c	    no_dumps();\n	    (void)no_dumps;\n
 journal_mark_unsynced	ports/storage/journal.c	    j->end += ms;\n    if (j->os.sync(j->os.ctx, j->fd) != 0) return 0;\n    j->durable_end = j->end;	    j->end += ms;\n    j->durable_end = j->end;
-replace_dir_unsynced	ports/storage/crypto/sc_files.c	    return sync_dir(s) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DONE_WITH_FAULT;	    return GZ_SC_OK;
+replace_dir_unsynced	ports/storage/crypto/sc_files.c	    return sync_dir(s) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DONE_WITH_FAULT;	    (void)sync_dir;\n    return GZ_SC_OK;
 soft_warning_dropped	program/executor.c	        gzp_log("start-counter was not found; set-up may have been interrupted: a restore with a new epoch; "\n                "the person is told");	        (void)0;
+# --- review B of PR 54 and the confirmation review
+check_ids_only	program/store_unlock.c	 && gz_sc_vault_same(w->u.vault, k->u.vault);	;
+forged_marker_kept	ports/storage/journal.c	(c.answered || (sealed_rule && !j->restored))	c.answered
+foreign_marker_ignored	ports/storage/crypto/sc_files.c	        if (r > 0) {\n            if ((e = gz_sc_mark_restart(s, u)) != GZ_SC_OK)	        if (0) {\n            if ((e = gz_sc_mark_restart(s, u)) != GZ_SC_OK)

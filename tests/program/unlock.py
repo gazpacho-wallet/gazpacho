@@ -21,6 +21,11 @@
    M2): the running program's core limit is 0 (both builds) and it is not
    dumpable (gazpacho-test reports PR_GET_DUMPABLE; the release program's
    /proc files belong to root when the test does not run as root).
+9. The passphrase check (CHECK, the fresh sign-in of local-api.md) compares
+   the storage key, not the key file's public ids (storage 4.6; review B of
+   PR 54, M1): a key file forged with this wallet's vault_id and another
+   passphrase answers wrong, and is counted (two wrong in a row after one
+   wrong check), never resetting the count.
 """
 import os
 import re
@@ -174,6 +179,17 @@ def main():
         p.stop()
         out = "".join(open(os.path.join(logs, n)).read() for n in os.listdir(logs))
         check(re.search(r"[0-9a-f]{128}", out) is None, "7: no output line holds 64 bytes in hex")
+
+        # 9. A forged key file with this wallet's vault_id: CHECK says wrong.
+        time.sleep(1.2)
+        p, _ = start("--test-passphrase-file", _pass_file(), "--test-kdf-floor", "--test-check-forged")
+        fg = p.wait_for(r"test-check forged status=(\S+) wrong_in_row=(\d+)", timeout=90)
+        wr = p.find(r"test-check wrong status=(\S+)")[1]
+        check(wr is not None and wr.group(1) == "wrong", "9: a wrong passphrase: CHECK says wrong")
+        check(fg is not None and fg.group(1) == "wrong",
+              "9: a forged key file with this wallet's vault_id: CHECK says wrong (%s)" % (fg.group(0) if fg else None))
+        check(fg is not None and fg.group(2) == "2", "9: and it is counted, not reset (%s)" % (fg.group(0) if fg else None))
+        p.stop()
 
         # 5. The release program stays locked without the local interface.
         if release:

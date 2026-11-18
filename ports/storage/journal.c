@@ -1374,7 +1374,10 @@ gz_journal_status_t gz_journal_open_sealed(gz_journal_t **out, const gz_journal_
         if (rule == GZ_JOURNAL_START_RESTORE) j->restored = 1;
     }
 
-    if (sealed_rule && !(j->restored && c.marker && !c.answered)) floor = 0;
+    /* restore.gzr's floor is not authenticated: never used in the sealed
+     * format, where the start counter gives it (confirmation review of PR 54,
+     * N3; review B, L1). */
+    if (sealed_rule) floor = 0;
 
     /* 5, decided before anything is written, so that a refusal leaves the
      * file untouched. The new incarnation is above the journal's highest,
@@ -1395,7 +1398,12 @@ gz_journal_status_t gz_journal_open_sealed(gz_journal_t **out, const gz_journal_
         }
         info->cut_bytes = size - info->scan.valid_end;
     }
-    if (c.marker && c.answered && !clear_marker(j)) { st = GZ_JOURNAL_ERR_IO; goto out; }
+    /* An answered marker goes; in the sealed format so does an unanswered one
+     * the rule did not take (forged or stale, N3). */
+    if (c.marker && (c.answered || (sealed_rule && !j->restored)) && !clear_marker(j)) {
+        st = GZ_JOURNAL_ERR_IO;
+        goto out;
+    }
     /* A sealed restore marked by restore.gzr: the mark file starts again with
      * the restore marker (storage 6.3 step 4, 10.2), so the start stays a
      * restore until the restore's first batch is anchored. */
@@ -1822,6 +1830,8 @@ gz_journal_status_t gz_journal_mark_restored_sealed(const char *dir, const uint8
         gz_journal_scan_t sc;
         int missing, scanned;
         st = load_scan(os, f.jpath, chain, seal, &sc, &missing, &scanned);
+        if (st == GZ_JOURNAL_OK && seal && seal->mark_restart && seal->mark_restart(seal->ctx) != 0)
+            st = GZ_JOURNAL_ERR_IO; /* the sealed restore marker, after the journal was read (N1) */
         if (st == GZ_JOURNAL_OK) st = write_marker(os, dir, &f, chain, missing ? 0 : sc.highest_incarnation, floor);
     }
     folder_close(os, &f);
@@ -1851,6 +1861,11 @@ gz_journal_status_t gz_journal_import_sealed(const char *dir, const uint8_t chai
         if (js != GZ_JOURNAL_OK && !scanned) st = js;
         else if (!missing && sj.highest_incarnation > floor) floor = sj.highest_incarnation;
     }
+    /* The sealed restore marker (the mark file), only now that the backup and
+     * the journal it replaces have been read (confirmation review of PR 54,
+     * N1): a refused import leaves the mark file as it was. */
+    if (st == GZ_JOURNAL_OK && seal && seal->mark_restart && seal->mark_restart(seal->ctx) != 0)
+        st = GZ_JOURNAL_ERR_IO;
     /* The marker first, then the file (review A, R2). */
     if (st == GZ_JOURNAL_OK) st = write_marker(os, dir, &f, chain, sb.highest_incarnation, floor);
     if (st == GZ_JOURNAL_OK &&

@@ -226,8 +226,10 @@ gz_sc_err_t gz_sc_counter_read(const gz_sc_store_t *s, const gz_sc_vault_t *v, u
 /* Replace it (tmp, sync, rename, folder sync); an unsynced folder is STORAGE_FAILED. */
 gz_sc_err_t gz_sc_counter_write(const gz_sc_store_t *s, const gz_sc_vault_t *v, uint64_t counter);
 
-/* A 32-byte key from the seed: derive(seed, label, chain) (4.4's style). The
- * program's transport key until P8 derives per-member keys. */
+/* A 32-byte key of the program's own from the seed: derive(KP, label,
+ * chain), KP = derive(seed, "program keys", chain) (4.4), so no label gives a
+ * storage key (review B of PR 54, M2). The program's transport key until P8
+ * derives per-member keys. */
 gz_sc_err_t gz_sc_vault_derive(const gz_sc_vault_t *v, const char *label, uint8_t out[32]);
 
 /* 12.3: attempts.gza (mode 1). load gives the strictest state for a missing

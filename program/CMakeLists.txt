@@ -170,6 +170,10 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${GZP_PY} ${GZP_T}/journal_restore.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_restore)
   set_tests_properties(program_unlock program_storage_damage program_journal_restore PROPERTIES TIMEOUT 600)
   set_tests_properties(program_journal_kill PROPERTIES TIMEOUT 2400)
+  # They pick ports with free_port() (see the lock above): one at a time.
+  set_tests_properties(program_unlock program_journal_kill program_journal_kill_full program_journal_powercut
+                       program_journal_powercut_full program_storage_damage program_journal_restore
+                       PROPERTIES RESOURCE_LOCK gzp_free_port)
   # The lobby in the composite, P4.2 (docs/notes/composite-node.md 15): a host
   # with two lobbies and its members as separate processes, the signing
   # stand-in behind the hand-off; crashes, a storage failure, the gates.

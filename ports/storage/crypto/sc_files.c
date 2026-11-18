@@ -474,6 +474,29 @@ static gz_sc_err_t read_mark(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, 
     return GZ_SC_OK;
 }
 
+/* An import interrupted between its restore marker, made for the staged
+ * journal's file_id, and its rename (confirmation review of PR 54, N2): the
+ * mark file opens under its own journal's KH and its newest entry is the
+ * restore marker. 1 if so, 0 if not, -1 on a read error. */
+static int foreign_restore_marker(const gz_sc_store_t *s, const gz_sc_unlocked_t *u)
+{
+    uint8_t *m = NULL;
+    size_t ml = 0, end = 0;
+    uint64_t inc = 0, off = 0;
+    gz_sc_framekey_t *kh = NULL;
+    int yes = 0;
+    gz_sc_err_t e = gz_sc_fs_read(s, GZ_SC_FILE_MARK, (size_t)1 << 30, &m, &ml);
+    if (e != GZ_SC_OK)
+        return e == GZ_SC_MISSING ? 0 : -1;
+    if (ml >= GZ_SC_MARK_HEADER_LEN && gz_sc_mark_key(u->vault, m + 41, &kh) == GZ_SC_OK) {
+        yes = gz_sc_mark_read(kh, m, ml, s->chain, m + 41, &inc, &off, &end) == GZ_SC_MARK_OK &&
+              inc == GZ_SC_MARK_RESTORE_INC && off == GZ_SC_MARK_RESTORE_OFF;
+        gz_sc_framekey_free(kh);
+    }
+    free(m);
+    return yes;
+}
+
 gz_sc_err_t gz_sc_check_start(const gz_sc_store_t *s, const gz_sc_unlocked_t *u, const gz_sc_journal_view_t *j,
                               gz_sc_start_t *start)
 {
@@ -483,6 +506,19 @@ gz_sc_err_t gz_sc_check_start(const gz_sc_store_t *s, const gz_sc_unlocked_t *u,
     gz_sc_err_t e = read_mark(s, u, &ms, &inc, &off, &end);
     if (e != GZ_SC_OK)
         return e; /* a read error is a storage failure, never "possibly old" (M1) */
+    if (ms == GZ_SC_MARK_OTHER_JOURNAL) {
+        /* An interrupted import (N2): a restore of the journal here, its mark
+         * file started again for it; a restore takes a new epoch. */
+        int r = foreign_restore_marker(s, u);
+        if (r < 0)
+            return GZ_SC_STORAGE_FAILED;
+        if (r > 0) {
+            if ((e = gz_sc_mark_restart(s, u)) != GZ_SC_OK)
+                return e;
+            *start = GZ_SC_START_RESTORE;
+            return GZ_SC_OK;
+        }
+    }
     uint8_t *g = NULL;
     size_t gl = 0;
     gz_sc_guard_t guard;

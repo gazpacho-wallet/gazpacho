@@ -248,6 +248,38 @@ static void reveal_check(const gzp_options_t *o)
 }
 #endif
 
+#ifdef GZP_TEST_BUILD
+/* --test-check-forged (review B of PR 54, M1): a wrong CHECK, then keys.gzk
+ * forged with this wallet's ids over another passphrase and a CHECK with
+ * that passphrase. Statuses and the count only. */
+static void check_forged(void)
+{
+    static gzp_unlock_job_t job;
+    static const char wrong[] = "not this wallet's passphrase at all";
+    static const char forged[] = "the passphrase of a forged key file";
+    gzp_unlock_result_t a;
+    int st;
+    memset(&job, 0, sizeof job);
+    job.op = GZP_UNLOCK_OP_CHECK;
+    job.passphrase = (const uint8_t *)wrong;
+    job.passphrase_len = sizeof wrong - 1;
+    gzp_log("test-check wrong status=%s", gzp_unlock_status_name(run_job(&job)));
+    if (gzp_wallet_test_forge_keyfile(wallet, (const uint8_t *)forged, sizeof forged - 1) != 0) {
+        gzp_log("test-check forged status=not-made wrong_in_row=0");
+        return;
+    }
+    memset(&job, 0, sizeof job);
+    job.op = GZP_UNLOCK_OP_CHECK;
+    job.passphrase = (const uint8_t *)forged;
+    job.passphrase_len = sizeof forged - 1;
+    st = run_job(&job);
+    memset(&a, 0, sizeof a);
+    gzp_wallet_attempts(wallet, wall_ms(), &a);
+    gzp_log("test-check forged status=%s wrong_in_row=%u", gzp_unlock_status_name(st), a.wrong_in_row);
+    OPENSSL_cleanse(&job, sizeof job);
+}
+#endif
+
 static const char *state_name(gzp_wallet_state_t s)
 {
     return s == GZP_WALLET_NONE ? "none" : s == GZP_WALLET_LOCKED ? "locked" : "unlocked";
@@ -339,6 +371,7 @@ static int wait_unlocked(const gzp_options_t *o)
         gzp_log("wallet state=%s", state_name(gzp_wallet_state(wallet)));
         if (o->test_reveal_check) reveal_check(o);
         if (o->test_seed_check) seed_check(1);
+        if (o->test_check_forged) check_forged();
         return 0;
     }
 #else

@@ -18,6 +18,9 @@ of any storage file of the process (the journal's and the storage layer's).
             journal (storage 7.4), the attempts file, the first start (the
             counter, the incarnation entry and its sync mark), the CONNECT
             target saved;
+  restore-other  the same import on a folder whose journal a restore (6.3
+            step 0) has made again, so the backup has another file_id (the
+            confirmation review of PR 54, N2);
   restore   on a wallet with a few starts, an older backup imported
             (--test-restore-from): the staged copy, restore.gzr, the rename,
             the mark file started again with the restore marker, the
@@ -102,18 +105,29 @@ def main():
         if i == 0:
             shutil.copyfile(os.path.join(base, "journal.gzj"), backup)
     check(m is not None and m.group(0).startswith("ready"), "the restore life's base starts three times")
+    # The other life's base: the journal and mark file removed, so the next
+    # start is a restore with a new journal (another file_id), then a start.
+    base_other = os.path.join(work, "base-other")
+    shutil.copytree(base, base_other)
+    for gone in ("journal.gzj", "mark.gzm"):
+        os.unlink(os.path.join(base_other, gone))
+    for i in range(2):
+        m, p = run(base_other, name="base-other")
+        p.wait_for(r"connect-kept")
+        p.stop()
+    check(m is not None and m.group(0).startswith("ready"), "the other restore life's base starts")
 
     totals = {}
     try:
-        for life in ("set-up", "restore"):
+        for life in ("set-up", "restore", "restore-other"):
             kills = restored_after = 0
             k = 0
             while True:
                 k += step
                 folder = os.path.join(work, "%s-%d" % (life, k))
                 extra = []
-                if life == "restore":
-                    shutil.copytree(base, folder)
+                if life.startswith("restore"):
+                    shutil.copytree(base if life == "restore" else base_other, folder)
                     extra = ["--test-restore-from", backup]
                 m, p = run(folder, *(extra + [hook, str(k)]), name="kill-" + life)
                 if m is None:
@@ -140,7 +154,7 @@ def main():
                 kills += 1
                 if not check(code == -9, "%s K=%d: killed %s (exit %s)" % (life, k, m.group(0), code)):
                     continue
-                started_before = life == "restore" or p.find(r"ready incarnation=")[0] is not None
+                started_before = life.startswith("restore") or p.find(r"ready incarnation=")[0] is not None
                 history = {}  # key epoch -> the incarnations that saved it, across the folder's journals
                 for again in (0, 1):
                     m2, q = run(folder, name="after-" + life)
@@ -164,7 +178,7 @@ def main():
                         check(q.find(r"setup-finished")[0] is None,
                               "%s K=%d start %d: never finished as a new wallet" % (life, k, again + 1))
                         started_before = True
-                    if life == "restore" and again == 0 and restored:
+                    if life.startswith("restore") and again == 0 and restored:
                         restored_after += 1
                         e = q.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]
                         check(e is not None and e.group(1) != "00000000",
