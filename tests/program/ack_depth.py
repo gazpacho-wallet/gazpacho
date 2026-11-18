@@ -6,7 +6,7 @@ host's round_complete judges its ack at its real depth in the tree.
     python3 -I ack_depth.py PATH_TO_GAZPACHO_TEST WORK_DIR
 
 One host and three AUTO members with a fixed tip (--tip, no chain), the
-terms of program_signing. Member m1 stops once the batch holding its
+terms of program_signing with three seats. Member m1 stops once the batch holding its
 partial signatures (round_signed) is durable (--test-crash-after-record),
 and starts again on its folder with another tip. The ack check
 (gz_tree_may_ack, safety-rule.md C8) is then
@@ -52,7 +52,7 @@ def restart(exe, work, name, tip_after, acks):
         h = w.host("--tip", str(TIP), *tick)
         if not check(started(h) and w.hkey is not None, "%s: the host starts" % name):
             return
-        t = signing.Terms(w.hkey, 900)
+        t = signing.Terms(w.hkey, 900, target=3)   # three seats: the round begins once the three are ready
         w.open(h, t)
         check(h.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=10) is not None, "%s: the lobby opens" % name)
         ms = {"m1": w.member("m1", "--member-signing", "auto", "--tip", str(TIP),
