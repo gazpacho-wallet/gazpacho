@@ -221,7 +221,11 @@ It signs every input, verifies each signature, and returns the signed bytes.
 
 1. A plan is held under `txid`.
 2. `input` is one of its inputs.
-3. `fee` ≤ the fee policy's ceiling × the spend-back's virtual size (`gzt_keypath_vsize`).
+3. `fee` ≤ the spend-back's fee cap, which admits the whole fee ladder of the funding engine (`funding.md` 2; PR #56) and nothing above it. With the spend-back's own virtual size `v` (`gzt_keypath_vsize`), the held plan's fee `F` and size `V` (computed by the signer from the plan it built or adopted, inputs minus outputs, never taken from the caller), the policy's ceiling rate `c` and `I` = 1,000 sat/kvB (the incremental relay fee of Core 28.x and 29.0, a signer constant), the cap is the larger of:
+   - `ceil(c × v / 1000)`, the ceiling on the spend-back's own size (level 0: the funding was never seen, so the spend-back pays the ordinary rate);
+   - `F + ceil(I × v / 1000)`, raised if needed to `F × v / V + 1` (Core's rule 6: a higher rate than the transaction it replaces), which is the top of the ladder (level 2; level 1 is the same with Core 29.1's 100 sat/kvB and is always below it).
+
+   `F` was itself checked against the ceiling when the plan was made (`fund_plan` check 3, `fund_adopt` check 5), so the cap is bounded by the policy alone. When a fee child of the funding exists (H16; none in Slice 1), `F` and `V` are the evicted package's, counting only a child this signer signed. "Ceiling × `v`" alone, as draft 1 had it, refuses level 2: a 16 sat funding of 154 vB and a 111 vB spend-back give 127 sat against a cap of 111 at 1 sat/vB (review B of #56, M-3). The formula is `gz_sg_spend_back_fee_cap` in `signer/` (stage 1, PR #71), with its vectors.
 4. What is left is above the dust limit.
 
 The destination is the next unused receive script of this wallet, chosen here and never taken from the caller (`composite-node.md` 14.3).
@@ -256,7 +260,7 @@ Later typed wallet operations (sends the person confirmed, exits, timeout sweeps
 | `GZ_SG_E_ROUND` | A round check of 2.3 failed: the round id, a script, an amount, C6, C10, or this party missing or present twice |
 | `GZ_SG_E_NONCE` | No secret nonce, already used, or our own nonce missing from the set |
 | `GZ_SG_E_PLAN` | No plan under that txid, or the plan check failed |
-| `GZ_SG_E_FEE` | Above the ceiling |
+| `GZ_SG_E_FEE` | Above the ceiling, or above the spend-back's fee cap (2.3) |
 | `GZ_SG_E_INTERNAL` | A self-check failed |
 
 ## 3. Keys and what each may sign
@@ -505,7 +509,7 @@ These are in the style of `tests/*/mutants.txt` and `tools/mutate-*.py`. Each mu
 | `ecdh-factory` | ECDH never with the factory key | `signer_ecdh_refuses_factory` |
 | `fund-txid` | `fund_sign` only for a held txid | `signer_fund_refuses_unknown_txid` |
 | `fund-spend-back-dest` | The destination is chosen inside the signer | `signer_spend_back_pays_own_script` |
-| `fund-spend-back-fee` | Fee within the ceiling | `signer_spend_back_refuses_high_fee` |
+| `fund-spend-back-fee` | Fee within the spend-back's cap (2.3): level 2 admitted, one satoshi more refused | `signer_spend_back_refuses_high_fee`, `signer_spend_back_admits_level_2` |
 | `fund-adopt-outputs` | `adopt` checks every output | `signer_adopt_refuses_foreign_output` |
 | `fund-adopt-inputs` | `adopt` checks every input is ours | `signer_adopt_refuses_foreign_input` |
 | `sighash-default` | Only `SIGHASH_DEFAULT` | `signer_never_other_sighash` (scans every signature the suite makes: 64 bytes, never 65) |
@@ -587,3 +591,4 @@ The question is whether the host should use one key for its MuSig2 partials and 
 ## 12. Changes
 
 - Draft 1 (2026-11-18): first draft, from the approved research recommendation.
+- Draft 1, correction (2026-11-18): the spend-back's fee cap (2.3, `fund_spend_back` check 3) admits the whole fee ladder; "ceiling × vsize" refused level 2 (review B of #56, M-3).
