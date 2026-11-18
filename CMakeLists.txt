@@ -280,6 +280,11 @@ if(GZ_VALGRIND AND GZ_VALGRIND_TESTS AND NOT GZ_SANITIZE)
   add_test(NAME valgrind_sim_seeds COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 20 300 1 0)
   add_test(NAME valgrind_sim_profile_3 COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 10 200 1 3)
   add_test(NAME valgrind_signing COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_signing> tiny)
+  # Alone: about 450 s on a CI runner by itself, and over its 600 s limit when
+  # ctest -j runs three other tests beside it (docs/notes/ci.md, tests in
+  # parallel). The other valgrind_ tests take under a minute each and run
+  # beside the rest.
+  set_tests_properties(valgrind_signing PROPERTIES RUN_SERIAL TRUE)
   add_test(NAME valgrind_round_msg COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_round_msg>)
 endif()
 
