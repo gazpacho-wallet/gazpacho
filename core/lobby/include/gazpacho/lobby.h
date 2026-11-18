@@ -323,7 +323,13 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_LOBBY_TIMER_DEADLINE 0x4c000001u
 #define GZ_LOBBY_TIMER_WINDOW   0x4c000002u
 #define GZ_LOBBY_TIMER_STATUS   0x4c000003u
-#define GZ_LOBBY_TIMER_RETRY    0x4c000004u   /* member: join again after a refusal for a limit */
+#define GZ_LOBBY_TIMER_RETRY    0x4c000004u   /* member: join again after a refusal for a limit, or
+                                                 * hello again when a hello got no answer */
+/* A member asks again when its hello got no answer on that connection: the
+ * host answers one hello a second per member key, across its connections
+ * (messages.md 6.1), so a reconnect within that second gets none. */
+#define GZ_LOBBY_HELLO_AGAIN_MS  1500
+#define GZ_LOBBY_HELLO_AGAIN_MAX 5
 /* 0x4c000005 was the host's idle timer: idle and unseated connections are
  * the node part's now (composite-node.md section 3). Not reused. */
 #define GZ_LOBBY_TIMER_BUDGET   0x4c000006u   /* host: the signing budget (terms.md 3) is spent, with no round in flight */
@@ -554,6 +560,9 @@ typedef struct {
     int retries;                     /* joins again after a refusal for a limit, this connection */
     int sent_here;                   /* the join was already sent on this connection */
     uint32_t max_tree_nodes;         /* the config's (M2) */
+    int heard_here;                  /* the host sent this lobby a message on this connection */
+    int hello_tries;                 /* hellos asked again on this connection, unanswered */
+    int retry_join;                  /* the retry timer is for a join refused for a limit */
 } gz_lobby_member_t;
 
 /* The crypto port signs with the contribution and factory keys `cfg` names.

@@ -365,7 +365,7 @@ The host's software runs the same module with the roles exchanged, plus:
 
 **H11. A new funding outpoint after any release.** An attempt that follows one in which any partial signature was released uses a new funding transaction. The new one spends at least one input of the previous one, so that once it is buried the previous outpoint can never exist and every member's records for it end under C4(d).
 
-**H12. Results are kept and answered.** The host keeps, for each member and round, the bytes of every `round_tier_result` and `round_complete` it sent, until the factory's funding output is spent or the creation is dead under C4(d). It answers `round_status_request` with them.
+**H12. Results are kept and answered.** The host keeps, for each member and round, the bytes of every `round_tier_result` and `round_complete` it sent, while a member can still need them: until the creation is live (its funding buried), dead under C4(d), or, after a failed or cancelled lobby, past the latest member deadline (the unfinished deadline, and the funding deadline plus the burial depth) and a grace (`docs/notes/composite-node.md` 2.4, F1). It answers `round_status_request` with them. After that a status request for the round is ignored, as for an unknown round (`messages.md` 7.10). (Rewritten in step P4.5: "until the funding output is spent" kept results for a factory's whole life, which no member needs once its creation is resolved.)
 
 **H13. A restored host never resumes a round.** A host loaded from a backup starts new attempts only, with new random values; it never contributes again to a round identifier found in its records.
 
@@ -373,7 +373,7 @@ The host's software runs the same module with the roles exchanged, plus:
 
 - **H14.** The host watches every member's channel output and answers a member's revoked commitment with the penalty by `penalty_send_by`, at its own constants.
 - **H15.** The host's sweeps of outputs it may take alone follow a schedule; it never sweeps an unpublished tree output with an owed member below it.
-- **H16.** The host never replaces the funding transaction by fee; it bumps it only by a child on its own change output (or a P2A of the funding's own), which the funding must therefore have.
+- **H16.** The host never replaces the funding transaction by fee; it bumps it only by a child on its own change output (or a P2A of the funding's own), which the funding must therefore have. **The one exception is abandoning** (`docs/notes/composite-node.md` 14.3; `exit.md` C-5): at the host's funding deadline, a funding not yet buried is replaced on purpose by the **spend-back**, which spends one funding input back to the host's own wallet, pays nothing to the factory, and pays the smallest fee that replaces the funding and any child of it (the evicted package's fee plus the incremental relay fee on its own size). Once it is buried every member's records for the factory end under C4(d).
 - **H17.** **INTERIM** (while the import has host-only timeouts and no payouts: Slices 1, 1.5 and 2; replaced by H6 under design 2). The host's software never takes a member's balance through a timeout: it forces a silent owed member out with its own latest commitment by `host_force_by` (`exit.md` 4.5). A policy of honest host software, not a protection.
 - **H18.** The host's expiry delta toward a factory member, and its go-on-chain height for each payment it offers that member, cover that member's whole path, its own commitment and its HTLC-timeout transaction: (n + 1)·A + (B − 1) + M_host with n = d + 3.
 
