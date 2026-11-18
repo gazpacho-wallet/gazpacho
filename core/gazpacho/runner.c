@@ -23,7 +23,7 @@ gz_status_t gz_runner_init(gz_runner_t *runner, gz_runner_slot_t *slots, size_t 
 static int is_known_kind(gz_action_kind_t kind)
 {
     /* WATCH_SCRIPT is retired (contract v2, section 10): refused like an unknown kind. */
-    return kind >= GZ_ACTION_SAVE && kind <= GZ_ACTION_SET_SEATED && kind != GZ_ACTION_WATCH_SCRIPT;
+    return kind >= GZ_ACTION_SAVE && kind <= GZ_ACTION_UNWATCH && kind != GZ_ACTION_WATCH_SCRIPT;
 }
 
 /* The one byte string a queued action carries, or NULL for the timer kinds. */

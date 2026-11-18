@@ -18,6 +18,12 @@ foreach(t test_tx_vectors test_tx)
 endforeach()
 add_test(NAME wallet_tx_vectors COMMAND test_tx_vectors)
 add_test(NAME wallet_tx COMMAND test_tx)
+# The funding engine's needs (step P4.5): unsigned bytes, spent outputs, the
+# spend-back, H11's coin that must be spent.
+add_executable(test_tx_funding_port tests/test_tx_funding_port.c)
+target_link_libraries(test_tx_funding_port PRIVATE gazpacho_wallet_tx)
+target_compile_options(test_tx_funding_port PRIVATE ${GZW_WARNINGS})
+add_test(NAME wallet_tx_funding_port COMMAND test_tx_funding_port)
 
 # The parser's fuzz target (docs/notes/ci.md): with GZ_LIBFUZZER the target
 # alone, linked with libFuzzer and run by tools/run-fuzz.sh; otherwise with

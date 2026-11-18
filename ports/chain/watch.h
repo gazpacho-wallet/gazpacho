@@ -24,6 +24,7 @@ typedef struct gz_watch_config {
   size_t max_watches;
   uint32_t broadcast_attempts, broadcast_backoff_ms, broadcast_backoff_max_ms;
   uint32_t header_window, max_catchup, max_link;
+  bool report_synced; /* as in gz_chainw_config */
   uint64_t (*now_ms)(void *clock_ctx); /* required */
   void *clock_ctx;
   /* Optional. Asked between chain calls; true ends the pass at once, with no

@@ -18,7 +18,7 @@
  * answer would come back at every start (review of PR 50, M2). */
 _Static_assert(GZ_NODE_MAX_WATCHES <= GZP_MAX_WATCHES, "the chain worker holds fewer watches than the node asks for");
 
-enum { REQ_WATCH_TX = 1, REQ_WATCH_OUTPOINT, REQ_BROADCAST };
+enum { REQ_WATCH_TX = 1, REQ_WATCH_OUTPOINT, REQ_BROADCAST, REQ_UNWATCH_TX, REQ_UNWATCH_OUTPOINT };
 
 struct gzp_chain_req {
     int kind;
@@ -65,6 +65,8 @@ static int ask(gzp_chain_t *c, const gzp_chain_req_t *r)
     switch (r->kind) {
     case REQ_WATCH_TX: return gz_chainw_watch_tx(c->w, r->txid, r->depth, 0);
     case REQ_WATCH_OUTPOINT: return gz_chainw_watch_outpoint(c->w, r->txid, r->vout, r->depth, 0);
+    case REQ_UNWATCH_TX: return gz_chainw_unwatch_tx(c->w, r->txid);
+    case REQ_UNWATCH_OUTPOINT: return gz_chainw_unwatch_outpoint(c->w, r->txid, r->vout);
     default: return gz_chainw_broadcast(c->w, r->id, r->tx, r->len);
     }
 }
@@ -163,6 +165,17 @@ int gzp_chain_watch_outpoint(gzp_chain_t *c, const uint8_t txid[32], uint32_t vo
     return submit(c, &r);
 }
 
+int gzp_chain_unwatch(gzp_chain_t *c, int is_tx, const uint8_t txid[32], uint32_t vout)
+{
+    gzp_chain_req_t r;
+    if (!c->active) return 0;
+    memset(&r, 0, sizeof r);
+    r.kind = is_tx ? REQ_UNWATCH_TX : REQ_UNWATCH_OUTPOINT;
+    memcpy(r.txid, txid, 32);
+    r.vout = vout;
+    return submit(c, &r);
+}
+
 int gzp_chain_broadcast(gzp_chain_t *c, const uint8_t *tx, size_t len)
 {
     gzp_chain_req_t r;
@@ -236,6 +249,7 @@ int gzp_chain_take(gzp_chain_t *c, gz_event_t *ev)
             gzp_log("chain-tip height=%u", w.height);
             ev->u.chain.kind = GZ_CHAIN_NEW_TIP;
             ev->u.chain.height = w.height;
+            memcpy(ev->u.chain.block_hash, w.block_hash, 32);
             return 1;
         case GZ_CHAINW_TX_CONFIRMED:
             gzp_log("chain-tx-confirmed txid=%s conf=%u height=%u%s", hex, w.confirmations, w.height,
@@ -296,6 +310,39 @@ int gzp_chain_take(gzp_chain_t *c, gz_event_t *ev)
         case GZ_CHAINW_TX_EVICTED:
             gzp_log("chain-tx-evicted txid=%s", hex);
             continue;
+        case GZ_CHAINW_TIP_SYNCED:
+            gzp_log("chain-tip-synced height=%u", w.height);
+            ev->u.chain.kind = GZ_CHAIN_TIP_SYNCED;
+            ev->u.chain.height = w.height;
+            memcpy(ev->u.chain.block_hash, w.block_hash, 32);
+            return 1;
+        case GZ_CHAINW_WATCH_FAILED:
+            ev->u.chain.kind = GZ_CHAIN_WATCH_FAILED;
+            if (w.outpoint_watch) {
+                gz_hash_to_hex(w.outpoint_txid, hex2);
+                gzp_log("chain-watch-failed outpoint=%s:%u result=%s", hex2, w.outpoint_vout,
+                        gz_chain_result_name(w.sources));
+                memcpy(ev->u.chain.outpoint.txid, w.outpoint_txid, 32);
+                ev->u.chain.outpoint.vout = w.outpoint_vout;
+            } else {
+                gzp_log("chain-watch-failed tx=%s result=%s", hex, gz_chain_result_name(w.sources));
+                ev->u.chain.is_tx = 1;
+                memcpy(ev->u.chain.txid, w.txid, 32);
+            }
+            return 1;
+        case GZ_CHAINW_SYNCED:
+            ev->u.chain.kind = GZ_CHAIN_WATCH_SYNCED;
+            if (w.outpoint_watch) {
+                gz_hash_to_hex(w.outpoint_txid, hex2);
+                gzp_log("chain-synced outpoint=%s:%u", hex2, w.outpoint_vout);
+                memcpy(ev->u.chain.outpoint.txid, w.outpoint_txid, 32);
+                ev->u.chain.outpoint.vout = w.outpoint_vout;
+            } else {
+                gzp_log("chain-synced tx=%s", hex);
+                ev->u.chain.is_tx = 1;
+                memcpy(ev->u.chain.txid, w.txid, 32);
+            }
+            return 1;
         case GZ_CHAINW_OUTPOINT_UNSPENT:
             gz_hash_to_hex(w.outpoint_txid, hex2);
             gzp_log("chain-unspent outpoint=%s:%u was=%s", hex2, w.outpoint_vout, hex);
@@ -443,6 +490,7 @@ int gzp_chain_open(gzp_chain_t *c, const char *const *urls, const char *const *o
             wc.max_requests = lim->watches + GZ_CHAINW_MAX_BROADCASTS;
     }
     c->max_watches = (uint32_t)wc.max_watches;
+    wc.report_synced = true;   /* GZ_CHAIN_WATCH_SYNCED (action.h, WATCHES) */
     wc.interrupt = gz_http_curl_interrupt_hook;
     wc.interrupt_ctx = &c->worker.http;
     if (!(c->w = gz_chainw_new(&wc))) {
