@@ -7,7 +7,7 @@
 Serves a local Esplora stub (plain HTTP on 127.0.0.1, which ports/chain
 allows) with the recorded signet blocks 329437 to 329439, runs the program
 against it, and requires: exit 0, no ThreadSanitizer report, every lookup
-answered, and the worker's tip polls and the lookups interleaved (else the
+answered, and the worker's requests and the lookups interleaved (else the
 run proved nothing). Standard library only."""
 import http.server
 import os
@@ -30,7 +30,7 @@ HASH = {h: data("block_hash_%d.txt" % h) for h in (329437, 329438, 329439)}
 HEADER = {HASH[h]: data("header_%d.txt" % h) for h in HASH}
 TIP = 329438
 lock = threading.Lock()
-order = []  # "t" for a tip poll, "u" for a lookup, in the order they came
+order = []  # "w" for any request of the worker's, "u" for a lookup, in the order they came
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -40,10 +40,13 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path
         body = None
+        # Every request but a lookup is the worker's once the lookups begin
+        # (those before them are gzp_chain_open's own checks).
+        if not (p.startswith("/scripthash/") and p.endswith("/utxo")):
+            with lock:
+                order.append("w")
         if p == "/blocks/tip/height":
             body = str(TIP)
-            with lock:
-                order.append("t")
         elif p == "/block-height/0":
             body = GENESIS_SIGNET
         elif p.startswith("/block-height/") and p.rsplit("/", 1)[1].isdigit() \
@@ -83,13 +86,12 @@ if "ThreadSanitizer" in out:
 if "lookups=%d" % ROUNDS not in out:
     fails.append("not every lookup was answered")
 seq = "".join(order)
-# a tip poll between two lookups, at least a few times: the threads overlapped
-overlaps = sum(1 for i in range(1, len(seq) - 1) if seq[i] == "t" and "u" in seq[:i] and "u" in seq[i + 1:])
+# a request of the worker's between two lookups, at least a few times: the threads overlapped
+overlaps = sum(1 for i in range(1, len(seq) - 1) if seq[i] == "w" and "u" in seq[:i] and "u" in seq[i + 1:])
 if overlaps < 3:
-    fails.append("the worker polled the tip only %d times during the lookups" % overlaps)
+    fails.append("the worker asked the server only %d times during the lookups" % overlaps)
 if fails:
     sys.stdout.write(out[-20000:])
     print("FAIL: " + "; ".join(fails))
     sys.exit(1)
-print("PASS: %d lookups beside %d tip polls of the worker (%d during the lookups), no data race"
-      % (ROUNDS, seq.count("t"), overlaps))
+print("PASS: %d lookups, %d requests of the worker's during them, no data race" % (ROUNDS, overlaps))
