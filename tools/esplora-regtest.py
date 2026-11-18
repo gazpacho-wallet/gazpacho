@@ -10,6 +10,9 @@ its watches, its broadcasts and the wallet's coins then meet a real chain.
 
 Listens on 127.0.0.1 only, on a port the system picks, written to
 LISTEN_PORT_FILE. Reads the RPC cookie of the regtest node in BITCOIN_DATADIR.
+With GZ_ESPLORA_LOG set to a file name, one line per GET is appended to it:
+the time, the client's port, the wait for the lock, the time taken, the
+status and the path (what a chain worker asked, and when).
 Refuses to serve anything but regtest (getblockchaininfo.chain). Standard
 library only. Test tool: never used against signet or any public network.
 
@@ -26,6 +29,7 @@ import json
 import os
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 DATADIR, RPC_PORT, PORT_FILE = sys.argv[1], int(sys.argv[2]), sys.argv[3]
@@ -210,11 +214,20 @@ class H(BaseHTTPRequestHandler):
             pass   # the client went away (a timeout of its own)
 
     def do_GET(self):
+        t0 = time.time()
         with LOCK:
+            t1 = time.time()
             try:
-                self.send(*answer(self.path))
+                r = answer(self.path)
+                self.send(*r)
             except Exception as e:  # a test tool: say what failed
-                self.send(500, "text/plain", str(e).encode())
+                r = (500, "text/plain", str(e).encode())
+                self.send(*r)
+        log = os.environ.get("GZ_ESPLORA_LOG")
+        if log:
+            with open(log, "a") as f:
+                f.write("%.3f port=%d wait=%.3f took=%.3f code=%d %s%s" % (
+                    t0, self.client_address[1], t1 - t0, time.time() - t1, r[0], self.path, chr(10)))
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
