@@ -289,6 +289,8 @@ typedef struct {
     uint64_t may_ack_calls, may_ack_refused, guards;
     uint8_t guard_bytes[8];
     int outcomes[64]; size_t n_outcomes, outcome_blamed[64];
+    /* each member's outcomes (the lobby's side), with their `released` */
+    int m_outcomes[W_MAX_NODES][8], m_released[W_MAX_NODES][8]; size_t m_n_outcomes[W_MAX_NODES];
     /* The host's attempts in all, the retry hook's limit (the engine has no
      * limit of its own: the budget is time, composite-node.md 9.4). 0: 16. */
     uint32_t max_attempts, attempts_begun;
@@ -296,6 +298,7 @@ typedef struct {
     uint32_t check_salt;                        /* names the check the host's next begin follows (0: the world's one check) */
     uint32_t no_keys;                           /* bit g: the key hook gives party g no keys (no lobby for the scope) */
     uint32_t no_factory;                        /* bit g: no factory key, the contribution key still (AT_JOIN's gate closed) */
+    uint32_t other_factory;                     /* bit g: another factory key than the round's (a hook gone wrong) */
 } w_builder_t;
 
 /* The hooks' context of one party: the shared builder, and who the party is
@@ -322,7 +325,11 @@ static inline int w_key_hook(void *ctx, const uint8_t scope[32], const uint8_t *
     (void)terms_digest; (void)scope;
     if (h->g < 32 && (h->b->no_keys >> h->g & 1u)) return 0;
     if (f && h->g < 32 && (h->b->no_factory >> h->g & 1u)) return 0;
-    if (f) { w_secret("test/factory", w_secret_index(h->g, ep), sk); ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), f, sk); }
+    if (f) {
+        uint32_t fe = ep + (h->g < 32 && (h->b->other_factory >> h->g & 1u) ? 1u : 0u);
+        w_secret("test/factory", w_secret_index(h->g, fe), sk);
+        ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), f, sk);
+    }
     if (c) { w_secret("test/contribution", w_secret_index(h->g, ep), sk); ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), c, sk); }
     memset(sk, 0, sizeof sk);
     return (int)ok;
@@ -364,8 +371,13 @@ static gz_status_t w_outcome(void *ctx, const gz_sign_outcome_t *o, gz_action_li
 {
     w_builder_t *b = ((w_hctx_t *)ctx)->b;
     (void)out;
-    /* the host's outcomes (the members' are the lobby's, tested in the composite) */
-    if (((w_hctx_t *)ctx)->g == 0 && b->n_outcomes < 64) { b->outcome_blamed[b->n_outcomes] = o->n_blamed; b->outcomes[b->n_outcomes++] = (int)o->kind; }
+    uint32_t g = ((w_hctx_t *)ctx)->g;
+    /* the host's outcomes, and each member's (what its lobby hears; the lobby's handling is tested in the composite) */
+    if (g == 0 && b->n_outcomes < 64) { b->outcome_blamed[b->n_outcomes] = o->n_blamed; b->outcomes[b->n_outcomes++] = (int)o->kind; }
+    if (g > 0 && g < W_MAX_NODES) {
+        size_t k = b->m_n_outcomes[g]++;
+        if (k < 8) { b->m_outcomes[g][k] = (int)o->kind; b->m_released[g][k] = o->released; }
+    }
     return GZ_OK;
 }
 

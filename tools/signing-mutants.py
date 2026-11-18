@@ -98,7 +98,7 @@ RULES = {
     "KEYS_STILL_ROUNDS": ("{ drop_keys(e); return 0; }", "{ }"),
     "IGNORE_UNACCEPTED": ("if (why == GZ_SIGN_WHY_IGNORE) {", "if (0) {"),
     "ATTEMPT_REQUIRED": ("if (!pr->has_attempt || !pr->check_id) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
-    "PROPOSAL_LINK": ("return GZ_SIGN_WHY_INVALID_ROUND;", ";"),
+    "PROPOSAL_LINK": ("return GZ_SIGN_WHY_INVALID_ROUND;", "{}"),
     "MEMBER_LINK": ("if (!r || !is_link_of(r, 0, link) || !same(m->scope, r->def.outer_digest, 32)) return;", "if (!r) return;"),
     "HOST_LINK": ("if (is_link_of(r, q, link)) j = q;", "if (q == 1) j = q;"),
     "MEMBER_REPORTS": ("if (why != GZ_SIGN_WHY_SUPERSEDED) report(", "if (0) report("),
@@ -109,16 +109,16 @@ RULES = {
     "ONE_ACTIVE_PER_SCOPE": ("(o->state == GZ_SIGN_ROUND_ACTIVE && same(o->def.outer_digest, b->scope, 32))) {", "0) {"),
     "NONCES_DUE_ONE_TICK": ("b->p->nonces_due_ms < e->cfg.tick_ms ||", ""),
     "BEGIN_REFUSAL_OUTCOME": ("report_of(e, GZ_SIGN_OUTCOME_FAILED, b->scope, b->check_id, b->attempt, NULL, 0, &em);", "(void)0;"),
-    "BUDGET_FAILS": ("if (r->budget_end_ms && now_ms >= r->budget_end_ms) {", "if (0) {"),
-    "FAIL_SAVE_REPORT_ABORTS": ("else if (outcome) host_retry(e, r, released, em);", "else (void)0;"),
-    "EARLY_NONCES": ("early = !count_items(r, j, t);", "early = 0;"),
-    "BLAME_RESTART_WITHOUT_NONCES": ("if (!holds_nonces_of(r, j)) return bit(j);", "if (0) return bit(j);"),
-    "EXCUSE_RESTART_ONCE": ("if (excused_before(e, r, j)) return bit(j);", "if (0) return bit(j);"),
+    "BUDGET_FAILS": ("if (r->budget_end_ms && now_ms >= r->budget_end_ms) {", "if (0 && now_ms) {"),
+    "FAIL_SAVE_REPORT_ABORTS": ("else if (outcome) host_retry(e, r, released, em);", "else if (0 && outcome) host_retry(e, r, released, em);"),
+    "EARLY_NONCES": ("early = !count_items(r, j, t);", "early = !count_items(r, j, t) && 0;"),
+    "BLAME_RESTART_WITHOUT_NONCES": ("if (!holds_nonces_of(r, j)) return bit(j);", "if (0 && !holds_nonces_of(r, j)) return bit(j);"),
+    "EXCUSE_RESTART_ONCE": ("if (excused_before(e, r, j)) return bit(j);", "if (0 && excused_before(e, r, j)) return bit(j);"),
     # audit e2e, H1: C7 for rounds in their nonce step, and again at signing (signing-round.md 6 step 5)
     "C7_NONCE_STEP": ("return GZ_SIGN_WHY_OTHER_TREE;", "continue;"),
     "C7_AT_SIGNING": ("member_fail(e, r, GZ_SIGN_WHY_OTHER_TREE, em); return;", ";"),
     "EXCUSE_KEPT": ("if (o->used && o->released &&", "if (0 &&"),
-    "KEEP_HOST_RESULTS": (")) keep_round(e, best);", ")) (void)0;"),
+    "KEEP_HOST_RESULTS": (")) keep_round(e, best);", ") && 0) keep_round(e, best);"),
     "EXPOSURE_PER_ROUND": (" && same(e->exposed[i].round_id, round_id, 32)) break;", ") break;"),
     "RESUME_LOADED_ONLY": (" || r->seq > e->resume_seq) continue;", ") continue;"),
     "CANCEL_FAILS_ROUND": ("host_fail_as(e, r, 0, GZ_SIGN_WHY_CANCELLED, 0, &em);", "(void)0;"),
@@ -189,14 +189,14 @@ def run_variant(build, rel, text, args, timeout):
     orig = open(path).read()
     try:
         open(path, "w").write(text)
-        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg", "test_bip341", "test_bip327"],
+        b = subprocess.run(["cmake", "--build", build, "--target", "test_signing", "test_signing_wb", "test_round_msg", "test_bip341", "test_bip327", "test_c7_audit"],
                            capture_output=True, timeout=600)
         if b.returncode != 0:
             return "no-compile", ""
         try:
             env = dict(os.environ, GZ_STOP_ON_FAIL="1")
             # the standards' vectors and the white-box guards first (seconds), then the whole suite
-            for exe, a in (("test_bip341", []), ("test_bip327", []), ("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args)):
+            for exe, a in (("test_bip341", []), ("test_bip327", []), ("test_round_msg", []), ("test_signing_wb", []), ("test_signing", args), ("test_c7_audit", [])):
                 t = subprocess.run([os.path.join(build, exe)] + a, capture_output=True, timeout=timeout, env=env)
                 if t.returncode != 0:
                     fails = sorted(set(re.findall(r"FAIL \S+/(\w+\.[ch]:\d+)", t.stdout.decode(errors="replace"))))
