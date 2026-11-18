@@ -66,7 +66,7 @@ The full definition is `spec/safety-rule.md`. In brief:
 - **Sign before fund:** the host signs funding only after the whole tree is signed and verified.
 - **Every partial signature is verified** as it arrives.
 - **Signing secrets are never stored.** An interrupted round is abandoned.
-- **A restored backup never publishes its own channel state automatically.** It asks the host to prove the latest and waits for the host to close. If the host has not closed by its forcing date, publishing is offered as the person's own choice, with the risk stated (`spec/exit.md` 5.7). *Proposed change, under audit (`notes/deviation-audit.md`): after a restore the wallet assumes every channel stale and asks for a close without revealing that it is behind; it does not ask the host to prove the latest, which would tell the host it is behind (`spec/exit.md` 6.7, CH-21).*
+- **A restored backup never publishes its own channel state automatically.** It asks the host to prove the latest and waits for the host to close. If the host has not closed by its forcing date, publishing is offered as the person's own choice, with the risk stated (`spec/exit.md` 5.7). *Proposed change, under audit (`docs/reviews/deviation-audit-2026-11-18.md`): after a restore the wallet assumes every channel stale and asks for a close with a message that alone does not say it is behind; it does not ask the host to prove the latest, which would tell the host it is behind (`spec/exit.md` 6.7, CH-21).*
 - **The exit deadline is the leaf's timeout.** Every tree output carries a host-only timeout; the binding one is the member's leaf's, at **E − 10·d** (E the end height, d the leaf's depth), and the member's commitment must be buried before it. The member starts leaving alone by that height less burial, one confirmation allowance per missing transaction (d + 3 of them) and margins: 50 to 82 blocks before E at Slice 1's signet constants (`spec/exit.md` 4, `spec/safety-rule.md` C5).
 - **A locked wallet keeps watching** (from Slice 3): a watcher publishes the member's tree path and answers old host states from already-signed transactions, but the last step, the member's own commitment, needs the passphrase by a stated `unlock_by` (`spec/exit.md` 5.6). Its files never hold a commitment of the member's own.
 - **Exit fees** are built in from the host's side, with pay-to-anchor outputs so anyone can raise a fee. No on-chain reserve is required or recommended in 1.0.0 (owner decision 6); in 1.1.0 a member above its coverage keeps a small on-chain coin (decision 5).
@@ -103,7 +103,7 @@ The full definition is `spec/safety-rule.md`. In brief:
 ## 9. Storage and backup
 
 - An append-only journal of typed records with periodic snapshots, encrypted at rest.
-- The encrypted journal is also the backup: one copy with the host, one the user can export. *Proposed, under audit (`notes/deviation-audit.md`): the host's copy is never the only copy of the channel penalty data (`spec/safety-rule.md` R8; `spec/exit.md` CH-19, CH-20, options A and B).*
+- The encrypted journal is also the backup: one copy with the host, one the user can export. *Proposed, under audit (`docs/reviews/deviation-audit-2026-11-18.md`): the host's copy is never the only copy of the channel penalty data (`spec/safety-rule.md` R8; `spec/exit.md` CH-19, CH-20, options A, B and C, pending the owner).*
 - A restored copy is never used to publish a channel state.
 
 ## 10. Chain view

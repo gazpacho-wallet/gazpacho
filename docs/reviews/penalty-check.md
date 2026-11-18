@@ -1,6 +1,6 @@
 # Penalty check: SuperScalar's design and code against `exit.md` draft 3
 
-**Status.** An independent check, not itself reviewed. Its recommendations are proposed, under audit (`notes/deviation-audit.md`); nothing in it is decided. Section 8.6's option A (require an independent copy) is one of two options the owner has not chosen between.
+**Status.** An independent check, not itself reviewed. Its recommendations are proposed, under audit (`docs/reviews/deviation-audit-2026-11-18.md`); nothing in it is decided. Section 8.6's option A (require an independent copy) is one of two options the owner has not chosen between.
 
 Independent check, 2026-11-17. Sources read: Delving topics 1143 (36 posts), 1242 (3 posts) and 2705 (the implementation report, 3 posts) as raw text; the import on `origin/main` (`core/superscalar/`, pin `50f7fa13`); upstream `src/channel.c` and `src/client.c` at the same pin (not imported; fetched read-only); `spec/exit.md` and `spec/safety-rule.md` on `origin/main`. Our notes and the earlier check were not used as evidence.
 
