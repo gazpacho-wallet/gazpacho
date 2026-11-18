@@ -16,7 +16,8 @@ static size_t cstrlen(const char *s)
 
 /* Record fields (journal.md 9, Funding area; every type even). */
 enum {
-    P_SCOPE = 2, P_CHECK = 4, P_ATTEMPT = 6, P_MODE = 8, P_FEERATE = 10, P_TX = 12, P_PREV = 14, P_VOUT = 16
+    P_SCOPE = 2, P_CHECK = 4, P_ATTEMPT = 6, P_MODE = 8, P_FEERATE = 10, P_TX = 12, P_PREV = 14, P_VOUT = 16,
+    P_TIP = 18, P_RELEASED = 20
 };
 enum { S1_SCOPE = 2, S1_TXID = 4, S1_TX = 6 };
 enum {
@@ -42,7 +43,7 @@ void gz_fund_config_default(gz_fund_config_t *cfg, int host)
 gz_status_t gz_fund_init(gz_fund_t *f, const gz_fund_config_t *cfg, const gz_ports_t *ports)
 {
     if (!f || !cfg || !ports || !cfg->hooks.report) return GZ_ERR_ARGUMENT;
-    if (cfg->host && (!cfg->wallet.plan || !cfg->wallet.sign || !cfg->wallet.hold || !cfg->wallet.release ||
+    if (cfg->host && (!cfg->wallet.plan || !cfg->wallet.sign_plan || !cfg->wallet.adopt || !cfg->wallet.release ||
                       !cfg->wallet.spend_back))
         return GZ_ERR_ARGUMENT;
     if (cfg->burial == 0 || cfg->burial > 1000 || cfg->funding_deadline_blocks > 100000 || cfg->feerate == 0 ||
@@ -368,6 +369,8 @@ static size_t enc_plan(gz_fund_t *f, const gz_fund_factory_t *x, uint8_t *buf, s
     put(&e, P_TX, x->tx, x->tx_len);
     put(&e, P_PREV, p, at);
     put_u32(&e, P_VOUT, x->funding.vout);
+    if (x->plan_tip_known) put_u32(&e, P_TIP, x->plan_tip);
+    if (x->released) put_u8(&e, P_RELEASED, 1);
     *st = e.st;
     return e.at;
 }
@@ -454,7 +457,9 @@ static int plan_ok(gz_fund_factory_t *x, const gz_outpoint_t *must)
             x->funding.vout = (uint32_t)i;
         }
     }
-    if (!found) return 0;
+    /* Exactly two outputs: the factory's and the wallet's change, which H16's
+     * child spends; nothing unknown (review A of PR 56, M2). */
+    if (!found || info.n_out != 2) return 0;
     for (size_t i = 0; i < info.n_in; i++) {
         const uint8_t *op;
         size_t sl;
@@ -468,7 +473,7 @@ static int plan_ok(gz_fund_factory_t *x, const gz_outpoint_t *must)
         if (p->amount == 0 || p->amount > UINT64_C(2100000000000000)) return 0;
         if (i < GZ_FUND_WATCH_INPUTS) memcpy(x->ins[i], op, 36);
         if (i == 0) memcpy(x->in0, op, 36);
-        if (must) {
+        if (must && i == 0) {   /* input 0: members watch it, the next plan takes it */
             gz_outpoint_t o;
             outpoint_of(op, &o);
             if (memcmp(o.txid, must->txid, 32) == 0 && o.vout == must->vout) have_must = 1;
@@ -511,6 +516,33 @@ static gz_status_t plan_failed(gz_fund_t *f, const uint8_t scope[32], const char
     return log_note(f, out, why, scope);
 }
 
+/* H11 (review A of PR 56, M1): the attempt of `old` released a partial
+ * signature and no plan spending its input 0 was accepted. It is marked and
+ * saved again, so neither a later attempt nor a restart reuses its outpoint
+ * or forgets the input that must be spent. */
+static gz_status_t keep_released(gz_fund_t *f, gz_fund_factory_t *old, gz_action_list_t *out)
+{
+    gz_record_t r;
+    gz_status_t st;
+    size_t n;
+    if (old->released) return GZ_OK;
+    old->released = 1;
+    n = enc_plan(f, old, f->scratch, sizeof f->scratch, &st);
+    if (st != GZ_OK) return st;
+    r.type = GZ_FUND_REC_PLAN;
+    r.bytes.data = f->scratch;
+    r.bytes.len = n;
+    return save(out, &r, 1);
+}
+
+static gz_status_t plan_refused(gz_fund_t *f, gz_fund_factory_t *old, int released, const uint8_t scope[32],
+                                const char *why, gz_action_list_t *out, gz_fund_plan_out_t *res)
+{
+    gz_status_t st;
+    if (old && released && (st = keep_released(f, old, out)) != GZ_OK) return st;
+    return plan_failed(f, scope, why, out, res);
+}
+
 gz_status_t gz_fund_host_plan(gz_fund_t *f, const gz_fund_plan_in_t *in, gz_action_list_t *out,
                               gz_fund_plan_out_t *res)
 {
@@ -524,7 +556,7 @@ gz_status_t gz_fund_host_plan(gz_fund_t *f, const gz_fund_plan_in_t *in, gz_acti
     CLEAR(res);
     old = find_scope(f, in->scope);
     if (old && old->state != 0) return plan_failed(f, in->scope, "funding-plan-refused already-funded", out, res);
-    if (old && !in->released && old->amount == in->amount && memcmp(old->script, in->script, 34) == 0) {
+    if (old && !in->released && !old->released && old->amount == in->amount && memcmp(old->script, in->script, 34) == 0) {
         /* Nothing was released: the same funding outpoint may serve the next
          * attempt (safety-rule.md C7: no record yet). */
         res->ok = 1;
@@ -533,17 +565,14 @@ gz_status_t gz_fund_host_plan(gz_fund_t *f, const gz_fund_plan_in_t *in, gz_acti
         res->funding = old->funding;
         return GZ_OK;
     }
-    if (old) {
-        /* H11: the new plan spends input 0 of the previous one. */
-        if (in->released) {
-            outpoint_of(old->in0, &must);
-            use_must = 1;
-        }
-        f->cfg.wallet.release(f->cfg.wallet.ctx, old->tx, old->tx_len);
-        memset(old, 0, sizeof *old);
+    if (old && (in->released || old->released)) {
+        /* H11: the new plan spends input 0 of the released one, which is
+         * kept until a plan that does is accepted. */
+        outpoint_of(old->in0, &must);
+        use_must = 1;
     }
     x = alloc(f);
-    if (!x) return plan_failed(f, in->scope, "funding-plan-failed table-full", out, res);
+    if (!x) return plan_refused(f, old, in->released, in->scope, "funding-plan-failed table-full", out, res);
     memcpy(x->scope, in->scope, 32);
     memcpy(x->check, in->check, 32);
     x->attempt = in->attempt;
@@ -553,21 +582,29 @@ gz_status_t gz_fund_host_plan(gz_fund_t *f, const gz_fund_plan_in_t *in, gz_acti
     memcpy(x->script, in->script, 34);
     if (in->script[0] != 0x51 || in->script[1] != 0x20 || in->amount == 0) {
         memset(x, 0, sizeof *x);
-        return plan_failed(f, in->scope, "funding-plan-failed bad-output", out, res);
+        return plan_refused(f, old, in->released, in->scope, "funding-plan-failed bad-output", out, res);
     }
+    /* The previous plan's coins (H11's among them) are offered again; if no
+     * new plan is accepted, the wallet adopts the previous one again. */
+    if (old) f->cfg.wallet.release(f->cfg.wallet.ctx, old->tx, old->tx_len);
     n = 0;
     if (!f->cfg.wallet.plan(f->cfg.wallet.ctx, x->amount, x->script, x->feerate, use_must ? &must : NULL, x->tx,
                             sizeof x->tx, &x->tx_len, x->prev, GZ_FUND_MAX_INPUTS, &n) ||
         x->tx_len > sizeof x->tx || n > GZ_FUND_MAX_INPUTS) {
         memset(x, 0, sizeof *x);
-        return plan_failed(f, in->scope, "funding-plan-failed wallet", out, res);
+        if (old) (void)f->cfg.wallet.adopt(f->cfg.wallet.ctx, old->tx, old->tx_len, old->funding.vout);
+        return plan_refused(f, old, in->released, in->scope, "funding-plan-failed wallet", out, res);
     }
     x->n_in = n;
     if (!plan_ok(x, use_must ? &must : NULL)) {
         f->cfg.wallet.release(f->cfg.wallet.ctx, x->tx, x->tx_len);
         memset(x, 0, sizeof *x);
-        return plan_failed(f, in->scope, "funding-plan-failed refused-plan", out, res);
+        if (old) (void)f->cfg.wallet.adopt(f->cfg.wallet.ctx, old->tx, old->tx_len, old->funding.vout);
+        return plan_refused(f, old, in->released, in->scope, "funding-plan-failed refused-plan", out, res);
     }
+    x->plan_tip = f->tip;
+    x->plan_tip_known = f->tip_known;
+    if (old) memset(old, 0, sizeof *old);
     n = enc_plan(f, x, f->scratch, sizeof f->scratch, &st);
     if (st != GZ_OK) return st;
     r.type = GZ_FUND_REC_PLAN;
@@ -613,7 +650,7 @@ int gz_fund_host_h1(gz_fund_t *f, const gz_fund_h1_in_t *in)
     if (r != GZ_H1_OK) return r;
     if (x->mode == GZ_HOST_FUNDING_AUTO) {
         n = 0;
-        if (!f->cfg.wallet.sign(f->cfg.wallet.ctx, x->tx, x->tx_len, x->signed_tx, sizeof x->signed_tx, &n) ||
+        if (!f->cfg.wallet.sign_plan(f->cfg.wallet.ctx, x->funding.txid, x->signed_tx, sizeof x->signed_tx, &n) ||
             n > sizeof x->signed_tx)
             return GZ_FUND_H1_SIGN;
         if (!signed_ok(f, x, x->signed_tx, n)) return GZ_FUND_H1_SIGNED;
@@ -625,8 +662,13 @@ int gz_fund_host_h1(gz_fund_t *f, const gz_fund_h1_in_t *in)
 
 static void set_deadline(gz_fund_t *f, gz_fund_factory_t *x)
 {
-    if (f->tip_known) {
-        x->deadline = f->tip + f->cfg.funding_deadline_blocks + f->cfg.burial;
+    /* A member's deadline is its ack tip + 36, and its ack comes after the
+     * plan: from the host's tip at the plan, with no burial added, the
+     * host's deadline is not later than a member's whose chain view is not
+     * behind the host's (review A of PR 56, M3; funding.md 5, decision 3,
+     * pending the owner). Without a tip at the plan, the first one known. */
+    if (x->plan_tip_known || f->tip_known) {
+        x->deadline = (x->plan_tip_known ? x->plan_tip : f->tip) + f->cfg.funding_deadline_blocks;
         x->deadline_pending = 0;
     } else {
         x->deadline = 0;
@@ -806,7 +848,7 @@ gz_fund_scope_t gz_fund_scope_state(const gz_fund_t *f, const uint8_t scope[32],
         if (f->fac[i].used && memcmp(f->fac[i].scope, scope, 32) == 0 && (!best || f->fac[i].seq > best->seq))
             best = &f->fac[i];
     if (best) {
-        if (until) *until = f->cfg.host ? best->deadline : best->deadline + f->cfg.burial;
+        if (until) *until = best->deadline + f->cfg.burial;   /* the deadline, and a burial after it */
         return best->state == GZ_FUND_ST_ABANDONED ? GZ_FUND_SCOPE_ABANDONED : GZ_FUND_SCOPE_OPEN;
     }
     for (size_t i = 0; i < GZ_FUND_MAX_ENDED; i++)
@@ -831,7 +873,8 @@ gz_fund_scope_t gz_fund_scope_state(const gz_fund_t *f, const uint8_t scope[32],
 
 /* ---- load --------------------------------------------------------------- */
 
-static const uint8_t plan_fields[] = { P_SCOPE, P_CHECK, P_ATTEMPT, P_MODE, P_FEERATE, P_TX, P_PREV, P_VOUT };
+static const uint8_t plan_fields[] = { P_SCOPE, P_CHECK, P_ATTEMPT, P_MODE, P_FEERATE, P_TX, P_PREV, P_VOUT, P_TIP,
+                                       P_RELEASED };
 static const uint8_t signed_fields[] = { S1_SCOPE, S1_TXID, S1_TX };
 static const uint8_t status_fields[] = { T_SCOPE, T_TXID, T_STATE, T_HEIGHT, T_DEADLINE, T_FTX, T_VOUT,
                                          T_AMOUNT, T_SCRIPT, T_ACK_TIP, T_END, T_DEPTH, T_WHOLE, T_EXIT,
@@ -839,9 +882,10 @@ static const uint8_t status_fields[] = { T_SCOPE, T_TXID, T_STATE, T_HEIGHT, T_D
 
 static gz_status_t load_plan(gz_fund_t *f, gz_bytes_t s)
 {
-    gz_bytes_t v[8];
+    gz_bytes_t v[8], tipv, relv;
     gz_fund_factory_t *x, *old;
     size_t at = 0, n = 0;
+    int has_tip, has_rel;
     if (!f->cfg.host || !fields_ok(s, plan_fields, sizeof plan_fields)) return GZ_ERR_CORRUPT;
     if (!field(s, P_SCOPE, 32, 0, &v[0]) || !field(s, P_CHECK, 32, 0, &v[1]) || !field(s, P_ATTEMPT, 2, 0, &v[2]) ||
         !field(s, P_MODE, 1, 0, &v[3]) || !field(s, P_FEERATE, 8, 0, &v[4]) ||
@@ -849,6 +893,9 @@ static gz_status_t load_plan(gz_fund_t *f, gz_bytes_t s)
         !field(s, P_VOUT, 4, 0, &v[7]))
         return GZ_ERR_CORRUPT;
     if (v[3].data[0] > 1) return GZ_ERR_CORRUPT;
+    if (!opt_field(s, P_TIP, 4, &tipv, &has_tip) || !opt_field(s, P_RELEASED, 1, &relv, &has_rel) ||
+        (has_rel && relv.data[0] != 1))
+        return GZ_ERR_CORRUPT;
     old = find_scope(f, v[0].data);
     if (old && old->state != 0) return GZ_ERR_CORRUPT;   /* a plan after the scope's funding: not ours */
     if (old) memset(old, 0, sizeof *old);                /* superseded (H11), its coins released */
@@ -859,6 +906,11 @@ static gz_status_t load_plan(gz_fund_t *f, gz_bytes_t s)
     x->attempt = gz_get_u16(v[2].data);
     x->mode = v[3].data[0];
     x->feerate = gz_get_u64(v[4].data);
+    if (has_tip) {
+        x->plan_tip = gz_get_u32(tipv.data);
+        x->plan_tip_known = 1;
+    }
+    x->released = has_rel;
     memcpy(x->tx, v[5].data, v[5].len);
     x->tx_len = v[5].len;
     while (at < v[6].len) {
@@ -1062,7 +1114,9 @@ gz_status_t gz_fund_resume(void *e, gz_action_list_t *out, int *more)
         if (!x->used) continue;
         if (f->cfg.host) {
             /* The wallet's hold is in its memory only (A11). */
-            f->cfg.wallet.hold(f->cfg.wallet.ctx, x->tx, x->tx_len);
+            if (!f->cfg.wallet.adopt(f->cfg.wallet.ctx, x->tx, x->tx_len, x->funding.vout) &&
+                (st = log_note(f, out, "funding-adopt-refused", x->scope)) != GZ_OK)
+                return st;
             if (x->state == GZ_FUND_ST_AWAITING && (st = attention(f, out, x->scope, 0)) != GZ_OK) return st;
             if (x->state == GZ_FUND_ST_BROADCAST && (st = broadcast(out, x->signed_tx, x->signed_len)) != GZ_OK)
                 return st;
@@ -1176,6 +1230,23 @@ static int buried(const gz_fund_t *f, const gz_fund_factory_t *x)
     return x->conf >= depth_of(f, x);
 }
 
+/* Host: buried by its deadline (a burial after it is funded late, M3). */
+static int buried_in_time(const gz_fund_t *f, const gz_fund_factory_t *x)
+{
+    if (!buried(f, x)) return 0;
+    return x->deadline_pending || x->conf_height + depth_of(f, x) - 1 <= x->deadline;
+}
+
+/* The funding or a spend of a watched input has a confirmation: no new fee
+ * level, nothing sent again (review A of PR 56, L10). */
+static int sb_settled(const gz_fund_factory_t *x)
+{
+    if (x->conf > 0) return 1;
+    for (size_t k = 0; k < GZ_FUND_WATCH_INPUTS && k < x->n_in; k++)
+        if (x->spender_known[k] && x->spender_conf[k] > 0) return 1;
+    return 0;
+}
+
 /* Watched input k spent by another transaction, buried. */
 static int input_dead(const gz_fund_t *f, const gz_fund_factory_t *x, size_t *which)
 {
@@ -1204,12 +1275,14 @@ static gz_status_t host_abandon(gz_fund_t *f, gz_fund_factory_t *x, gz_action_li
 {
     gz_status_t st;
     int was_signed = x->state == GZ_FUND_ST_BROADCAST;
-    int ok = make_spend_back(f, x, was_signed && x->seen ? 1 : 0);
+    int late = buried(f, x);   /* buried after the deadline: funded late, nothing to spend back */
+    int ok = late ? 0 : make_spend_back(f, x, was_signed && x->seen ? 1 : 0);
     if (!ok) x->sb_len = 0;
     if ((st = save_status(f, x, GZ_FUND_ST_ABANDONED, 0, out)) != GZ_OK) return st;
     x->state = GZ_FUND_ST_ABANDONED;
     if ((st = report(f, x, GZ_FUND_R_ABANDONED, out)) != GZ_OK) return st;
     if (!was_signed && (st = attention(f, out, x->scope, 1)) != GZ_OK) return st;
+    if (late) return GZ_OK;   /* the next tick: funded late */
     if (!ok) return log_note(f, out, "funding-spend-back-failed", x->scope);
     if ((st = broadcast(out, x->sb, x->sb_len)) != GZ_OK) return st;
     return set_watches(f, x, out);
@@ -1227,20 +1300,21 @@ static gz_status_t step_host(gz_fund_t *f, gz_fund_factory_t *x, gz_action_list_
     }
     switch (x->state) {
     case GZ_FUND_ST_BROADCAST:
-        if (buried(f, x)) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out);
+        if (buried_in_time(f, x)) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out);
         if (input_dead(f, x, &k)) return end_with(f, x, GZ_FUND_ST_DEAD, GZ_FUND_R_DEAD, out);
-        if (!x->deadline_pending && f->tip_known && f->tip >= x->deadline) return host_abandon(f, x, out);
+        if (!x->deadline_pending && f->tip_known && f->tip > x->deadline) return host_abandon(f, x, out);
         if (x->rebroadcast) {
             x->rebroadcast = 0;
             return broadcast(out, x->signed_tx, x->signed_len);
         }
         break;
     case GZ_FUND_ST_AWAITING:
-        if (!x->deadline_pending && f->tip_known && f->tip >= x->deadline) return host_abandon(f, x, out);
+        if (!x->deadline_pending && f->tip_known && f->tip > x->deadline) return host_abandon(f, x, out);
         break;
     case GZ_FUND_ST_ABANDONED:
         if (buried(f, x)) return end_with(f, x, GZ_FUND_ST_LIVE_LATE, GZ_FUND_R_FUNDED_LATE, out);
         if (input_dead(f, x, &k)) return end_with(f, x, GZ_FUND_ST_DEAD, 0, out);
+        if (sb_settled(x)) break;   /* mined: no new level, no re-broadcast */
         if (x->escalate || (x->rebroadcast && !x->sb_len)) {
             /* Refused, or not made at the deadline: one level up, at most
              * the higher increment. A funding never signed has nothing to
@@ -1417,7 +1491,7 @@ static gz_status_t command(gz_fund_t *f, gz_bytes_t cmd, gz_action_list_t *out)
     } else if (x->state != GZ_FUND_ST_AWAITING) {
         status = 409;
         err = "refused_now";
-    } else if (!f->cfg.wallet.sign(f->cfg.wallet.ctx, x->tx, x->tx_len, x->signed_tx, sizeof x->signed_tx, &n) ||
+    } else if (!f->cfg.wallet.sign_plan(f->cfg.wallet.ctx, x->funding.txid, x->signed_tx, sizeof x->signed_tx, &n) ||
                n > sizeof x->signed_tx || !signed_ok(f, x, x->signed_tx, n)) {
         status = 503;
         err = "wallet_failed";

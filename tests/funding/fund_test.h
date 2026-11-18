@@ -61,6 +61,15 @@ static inline void ft_op(uint8_t op[36], uint8_t tag, uint32_t vout) { memset(op
 
 /* ---- the fake wallet ---------------------------------------------------- */
 
+/* A plan the fake wallet holds, by txid (it signs only these). */
+#define FT_PLANS 24
+typedef struct {
+    int used;
+    size_t len;
+    uint8_t txid[32];
+    uint8_t tx[GZ_FUND_MAX_TX];
+} ft_plan_t;
+
 typedef struct {
     int fail_plan, fail_sign, fail_sb, ignore_must, bad_signed, extra_output, legacy_prev, n_in;
     uint64_t in_amount;
@@ -69,7 +78,28 @@ typedef struct {
     uint64_t last_sb_fee;
     size_t oversize;          /* plan this many inputs regardless (the 8,192-byte cap) */
     int sb_other_input, sb_to_factory, sb_fee_off, extra_prev, empty_wit, tiny_prev;   /* faults the engine must refuse */
+    int no_change, third_output, must_at_1, in1_bigger, adopt_refuse, factory_twice;
+    uint32_t last_sb_index;
+    unsigned next_plan;
+    ft_plan_t plans[FT_PLANS];   /* memory only: a restart forgets them */
 } ft_wallet_t;
+
+static inline void ftw_keep(ft_wallet_t *w, const uint8_t *tx, size_t len)
+{
+    ft_plan_t *p = &w->plans[w->next_plan++ % FT_PLANS];
+    if (len > sizeof p->tx) return;
+    memcpy(p->tx, tx, len);
+    p->len = len;
+    gz_tx_txid(tx, len, p->txid);
+    p->used = 1;
+}
+
+static inline ft_plan_t *ftw_find(ft_wallet_t *w, const uint8_t txid[32])
+{
+    for (size_t i = 0; i < FT_PLANS; i++)
+        if (w->plans[i].used && memcmp(w->plans[i].txid, txid, 32) == 0) return &w->plans[i];
+    return NULL;
+}
 
 static inline int ftw_plan(void *ctx, uint64_t amount, const uint8_t script[34], uint64_t feerate, const gz_outpoint_t *must,
                     uint8_t *tx, size_t cap, size_t *tx_len, gz_fund_prevout_t *prev, size_t max_prev, size_t *n_prev)
@@ -79,19 +109,28 @@ static inline int ftw_plan(void *ctx, uint64_t amount, const uint8_t script[34],
     uint64_t amts[3];
     uint8_t scr[3][34];
     size_t n = w->oversize ? w->oversize : (size_t)(w->n_in ? w->n_in : 2), nout = 2;
+    uint64_t sum = 0;
     (void)feerate;
     if (w->fail_plan || n > 300 || n > max_prev) return 0;
     for (size_t i = 0; i < n; i++) {
         ft_op(ins[i].op, (uint8_t)(0x10 + w->next_tag), (uint32_t)i);
-        ins[i].amount = w->in_amount ? w->in_amount : 600000;
+        ins[i].amount = (w->in_amount ? w->in_amount : 600000) + (w->in1_bigger && i == 1 ? 100000 : 0);
+        sum += ins[i].amount;
     }
     w->next_tag++;
-    if (must && !w->ignore_must) { memcpy(ins[0].op, must->txid, 32); ft_le32(ins[0].op + 32, must->vout); }
+    if (must && !w->ignore_must) {
+        size_t k = w->must_at_1 && n > 1 ? 1 : 0;   /* must_at_1: the coin not at input 0 */
+        memcpy(ins[k].op, must->txid, 32);
+        ft_le32(ins[k].op + 32, must->vout);
+    }
     amts[0] = amount;
     memcpy(scr[0], script, 34);
-    amts[1] = ins[0].amount * n - amount - 200;
-    ft_script(scr[1], 0xcc);
+    amts[1] = sum - amount - 200;
+    ft_script(scr[1], 0xcc);   /* the wallet's change */
+    if (w->third_output) { amts[1] -= 1000; amts[2] = 1000; ft_script(scr[2], 0xcd); nout = 3; }
     if (w->extra_output) { amts[2] = amount; memcpy(scr[2], script, 34); nout = 3; }
+    if (w->no_change) nout = 1;
+    if (w->factory_twice) { amts[1] = amount; memcpy(scr[1], script, 34); }   /* two outputs, both the factory's */
     if (cap < 10 + n * 41 + nout * 43 + 8) return 0;
     *tx_len = ft_tx(tx, ins, n, amts, (const uint8_t(*)[34])scr, nout, 0);
     for (size_t i = 0; i < n; i++) {
@@ -111,6 +150,7 @@ static inline int ftw_plan(void *ctx, uint64_t amount, const uint8_t script[34],
     }
     *n_prev = n;
     w->planned++;
+    ftw_keep(w, tx, *tx_len);
     return 1;
 }
 
@@ -144,17 +184,43 @@ static inline size_t ft_sign_empty0(const uint8_t *tx, size_t len, uint8_t *out)
     return at + 4;
 }
 
-static inline int ftw_sign(void *ctx, const uint8_t *tx, size_t tx_len, uint8_t *out, size_t cap, size_t *out_len)
+static inline int ftw_sign_plan(void *ctx, const uint8_t txid[32], uint8_t *out, size_t cap, size_t *out_len)
 {
     ft_wallet_t *w = (ft_wallet_t *)ctx;
-    if (w->fail_sign || cap < tx_len + 2 + 66 * 200 || tx[4] >= 0xfd) return 0;
-    *out_len = w->empty_wit ? ft_sign_empty0(tx, tx_len, out) : ft_sign_bytes(tx, tx_len, out);
+    ft_plan_t *p = ftw_find(w, txid);
+    if (w->fail_sign || !p || cap < p->len + 2 + 66 * 200 || p->tx[4] >= 0xfd) return 0;
+    *out_len = w->empty_wit ? ft_sign_empty0(p->tx, p->len, out) : ft_sign_bytes(p->tx, p->len, out);
     if (w->bad_signed) out[10] ^= 1;
     w->signed_n++;
     return 1;
 }
-static inline void ftw_hold(void *ctx, const uint8_t *tx, size_t len) { (void)tx; (void)len; ((ft_wallet_t *)ctx)->held++; }
-static inline void ftw_release(void *ctx, const uint8_t *tx, size_t len) { (void)tx; (void)len; ((ft_wallet_t *)ctx)->released++; }
+
+/* Holds a plan again after a restart, if its outputs are the factory's and
+ * this wallet's change (script 0xcc) only. */
+static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, uint32_t vout)
+{
+    ft_wallet_t *w = (ft_wallet_t *)ctx;
+    gz_tx_info_t info;
+    uint64_t amt;
+    const uint8_t *scr;
+    size_t sl;
+    w->held++;
+    if (w->adopt_refuse || len > GZ_FUND_MAX_TX || !gz_tx_parse(tx, len, &info) || info.n_out != 2 || vout > 1) return 0;
+    if (!gz_tx_output(tx, len, &info, 1 - vout, &amt, &scr, &sl) || sl != 34 || scr[2] != 0xcc) return 0;
+    ftw_keep(w, tx, len);
+    return 1;
+}
+
+static inline void ftw_release(void *ctx, const uint8_t *tx, size_t len)
+{
+    ft_wallet_t *w = (ft_wallet_t *)ctx;
+    uint8_t id[32];
+    ft_plan_t *p;
+    w->released++;
+    if (len > GZ_FUND_MAX_TX) return;
+    gz_tx_txid(tx, len, id);
+    if ((p = ftw_find(w, id)) != NULL) p->used = 0;
+}
 
 static inline int ftw_sb(void *ctx, const uint8_t *tx, size_t tx_len, uint32_t index, uint64_t fee, uint8_t *out, size_t cap,
                   size_t *out_len)
@@ -166,6 +232,7 @@ static inline int ftw_sb(void *ctx, const uint8_t *tx, size_t tx_len, uint32_t i
     size_t at = 5 + 41 * (size_t)index;   /* inputs are 41 bytes: 36 + 1 + 4 */
     (void)tx_len;
     if (w->fail_sb || cap < 200) return 0;
+    w->last_sb_index = index;
     memcpy(in.op, tx + at, 36);
     if (w->sb_other_input) in.op[35] ^= 0x40;            /* another outpoint */
     amt = (w->in_amount ? w->in_amount : 600000) - fee - (w->sb_fee_off ? 1 : 0);
@@ -221,8 +288,8 @@ static inline void ft_cfg(ft_t *t, int host, gz_host_funding_t mode)
     if (host) {
         t->cfg.wallet.ctx = &t->w;
         t->cfg.wallet.plan = ftw_plan;
-        t->cfg.wallet.sign = ftw_sign;
-        t->cfg.wallet.hold = ftw_hold;
+        t->cfg.wallet.sign_plan = ftw_sign_plan;
+        t->cfg.wallet.adopt = ftw_adopt;
         t->cfg.wallet.release = ftw_release;
         t->cfg.wallet.spend_back = ftw_sb;
     }
@@ -381,6 +448,7 @@ static inline ft_t *ft_restart(ft_t *t)
     int more = 1;
     u->w = t->w;
     u->w.held = 0;
+    memset(u->w.plans, 0, sizeof u->w.plans);   /* the wallet's holds are memory only */
     for (size_t i = 0; i < t->jn; i++) {
         gz_status_t st = gz_fund_load(&u->f, &t->jrec[i], b);
         if (st != GZ_OK) {

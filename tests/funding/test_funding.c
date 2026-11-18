@@ -175,7 +175,8 @@ static void test_plans(void)
     t->w.ignore_must = 1;
     ft_reset(t);
     CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r2) == GZ_OK && !r2.ok);
-    CHECK(ft_count(t, GZ_ACTION_NOTIFY) == 1 && ft_count(t, GZ_ACTION_SAVE) == 0);
+    /* The plan whose attempt released is saved again, marked released (M1). */
+    CHECK(ft_count(t, GZ_ACTION_NOTIFY) == 1 && ft_count(t, GZ_ACTION_SAVE) == 1);
     t->w.ignore_must = 0;
     /* No coins. */
     t->w.fail_plan = 1;
@@ -368,11 +369,11 @@ static void test_confirm_deadline(void)
     const gz_action_t *b;
     CHECK(ft_ev(t, &e) == GZ_OK);
     host_fund(t, SCOPE_A, 0);
-    e = ev_tip(300 + 38);
+    e = ev_tip(300 + 36);   /* the deadline: the tip at the plan + 36 */
     CHECK(ft_ev(t, &e) == GZ_OK);
     drain(t);
     CHECK(t->h.n == 0);
-    e = ev_tip(300 + 39);
+    e = ev_tip(300 + 37);
     CHECK(ft_ev(t, &e) == GZ_OK);
     e = ev_tick();
     CHECK(ft_ev(t, &e) == GZ_OK);
@@ -541,6 +542,268 @@ static void test_wallet_checked(void)
         CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r) == GZ_OK && !r.ok && t->w.released == 1);
         free(t);
     }
+    /* No change for H16's child, an output nobody agreed (M2), or the
+     * factory's output twice in two outputs: refused. */
+    for (int k = 0; k < 3; k++) {
+        ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+        gz_fund_plan_in_t in = plan_in(SCOPE_A, 0);
+        gz_fund_plan_out_t r;
+        t->w.no_change = k == 0;
+        t->w.third_output = k == 1;
+        t->w.factory_twice = k == 2;
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r) == GZ_OK && !r.ok && t->w.released == 1);
+        free(t);
+    }
+}
+
+/* H11 across a refused plan (review A of PR 56, M1): the released plan is
+ * kept, held again and saved marked; every later plan of the scope spends its
+ * input 0, with and without a restart, and its outpoint is never reused. */
+static void test_must_kept(void)
+{
+    for (int restart = 0; restart <= 1; restart++) {
+        ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+        gz_fund_plan_in_t in = plan_in(SCOPE_A, 0);
+        gz_fund_plan_out_t r1, r2, r3;
+        uint8_t in0[36], txid1[32];
+        gz_event_t e = ev_tip(50);
+        int held;
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        ft_reset(t);
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r1) == GZ_OK && r1.ok);
+        ft_after(t);
+        memcpy(in0, r1.tx + 5, 36);
+        memcpy(txid1, r1.funding.txid, 32);
+        /* Released, and the next plan fails: the old plan is adopted again
+         * and saved, marked released. */
+        in.released = 1;
+        t->w.fail_plan = 1;
+        held = t->w.held;
+        ft_reset(t);
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r2) == GZ_OK && !r2.ok);
+        ft_after(t);
+        CHECK(t->w.held == held + 1 && ft_count(t, GZ_ACTION_SAVE) == 1);
+        t->w.fail_plan = 0;
+        if (restart) {
+            ft_t *u = ft_restart(t);
+            free(t);
+            t = u;
+        }
+        /* The next attempt released nothing itself: still a new plan, on
+         * input 0 of the released one. */
+        in.released = 0;
+        ft_reset(t);
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r2) == GZ_OK && r2.ok);
+        ft_after(t);
+        CHECK(memcmp(r2.funding.txid, txid1, 32) != 0 && memcmp(r2.tx + 5, in0, 36) == 0);
+        /* That plan, not released, serves again as it is. */
+        ft_reset(t);
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r3) == GZ_OK && r3.ok &&
+              memcmp(r3.funding.txid, r2.funding.txid, 32) == 0 && t->out.count == 0);
+        free(t);
+    }
+    {
+        /* The coin that must be spent is input 0, not another input (L2). */
+        ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+        gz_fund_plan_in_t in = plan_in(SCOPE_A, 0);
+        gz_fund_plan_out_t r;
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r) == GZ_OK && r.ok);
+        in.released = 1;
+        t->w.must_at_1 = 1;
+        ft_reset(t);
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r) == GZ_OK && !r.ok);
+        free(t);
+    }
+    {
+        /* The amount changed, nothing released: a new plan, not the old one. */
+        ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+        gz_fund_plan_in_t in = plan_in(SCOPE_B, 0);
+        gz_fund_plan_out_t a1, a2;
+        uint8_t id1[32];
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &a1) == GZ_OK && a1.ok);
+        memcpy(id1, a1.funding.txid, 32);
+        in.amount += 1;
+        ft_reset(t);
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &a2) == GZ_OK && a2.ok);
+        CHECK(memcmp(a2.funding.txid, id1, 32) != 0 && t->w.planned == 2);
+        free(t);
+    }
+}
+
+/* The host's deadline is its tip at the plan + 36 (review A of PR 56, M3):
+ * a burial by it is Live; a later one is Abandoned, with no spend-back, then
+ * funded late. */
+static void test_deadline_basis(void)
+{
+    for (int late = 0; late <= 1; late++) {
+        ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+        gz_event_t e = ev_tip(1000);
+        gz_fund_plan_in_t in = plan_in(SCOPE_A, 0);
+        gz_fund_plan_out_t p;
+        gz_fund_h1_in_t h;
+        uint8_t acked[3] = { 1, 1, 1 }, sig[5] = { 1, 1, 1, 1, 1 }, prop[GZ_FUND_MAX_TX];
+        uint32_t until;
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        ft_reset(t);
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &p) == GZ_OK && p.ok);
+        ft_after(t);
+        memcpy(prop, p.tx, p.tx_len);
+        e = ev_tip(1005);   /* the round takes five blocks */
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        memset(&h, 0, sizeof h);
+        memcpy(h.scope, SCOPE_A, 32);
+        h.n_members = 3; h.acked = acked; h.n_nodes = 5; h.signed_ok = sig;
+        h.proposed_tx = prop; h.proposed_len = p.tx_len;
+        CHECK(gz_fund_host_h1(&t->f, &h) == 0);
+        ft_reset(t);
+        CHECK(gz_fund_host_apply(&t->f, SCOPE_A, &t->out) == GZ_OK);
+        ft_after(t);
+        CHECK(t->f.fac[0].deadline == 1036);
+        CHECK(gz_fund_scope_state(&t->f, SCOPE_A, &until) == GZ_FUND_SCOPE_OPEN && until == 1039);
+        /* Buried at 1036 (on time) or at 1037 (late). */
+        e = ev_conf(p.funding.txid, 3, (uint32_t)(1034 + late));
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        e = ev_tip((uint32_t)(1036 + late));
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        e = ev_tick();
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        if (!late) {
+            CHECK(ft_saved_state(t) == GZ_FUND_ST_LIVE && t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_LIVE);
+        } else {
+            CHECK(ft_saved_state(t) == GZ_FUND_ST_ABANDONED && ft_count(t, GZ_ACTION_BROADCAST) == 0);
+            CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_ABANDONED && t->w.sb_n == 0);
+            drain(t);
+            CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_FUNDED_LATE);
+            CHECK(gz_fund_scope_state(&t->f, SCOPE_A, NULL) == GZ_FUND_SCOPE_LIVE);
+        }
+        free(t);
+    }
+}
+
+/* A restart between the plan and the outcome keeps the plan's tip as the
+ * deadline's basis. */
+static void test_deadline_after_restart(void)
+{
+    ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO), *u;
+    gz_event_t e = ev_tip(1000);
+    gz_fund_plan_in_t in = plan_in(SCOPE_A, 0);
+    gz_fund_plan_out_t p;
+    gz_fund_h1_in_t h;
+    uint8_t acked[3] = { 1, 1, 1 }, sig[5] = { 1, 1, 1, 1, 1 }, prop[GZ_FUND_MAX_TX];
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    ft_reset(t);
+    CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &p) == GZ_OK && p.ok);
+    ft_after(t);
+    memcpy(prop, p.tx, p.tx_len);
+    u = ft_restart(t);
+    free(t);
+    e = ev_tip(1005);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    memset(&h, 0, sizeof h);
+    memcpy(h.scope, SCOPE_A, 32);
+    h.n_members = 3; h.acked = acked; h.n_nodes = 5; h.signed_ok = sig;
+    h.proposed_tx = prop; h.proposed_len = p.tx_len;
+    CHECK(gz_fund_host_h1(&u->f, &h) == 0);
+    ft_reset(u);
+    CHECK(gz_fund_host_apply(&u->f, SCOPE_A, &u->out) == GZ_OK);
+    ft_after(u);
+    CHECK(u->f.fac[0].used && u->f.fac[0].deadline == 1036);
+    free(u);
+}
+
+/* No tip known at the plan or at the outcome: the deadline comes from the
+ * first tip, is saved and is kept to. */
+static void test_deadline_pending(void)
+{
+    ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+    gz_event_t e;
+    host_fund(t, SCOPE_A, 0);
+    CHECK(t->f.fac[0].deadline_pending == 1);
+    e = ev_tip(2000);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    e = ev_tick();
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    CHECK(ft_saved_state(t) == GZ_FUND_ST_BROADCAST && t->f.fac[0].deadline == 2036 && !t->f.fac[0].deadline_pending);
+    drain(t);
+    CHECK(t->h.n == 0);
+    e = ev_tip(2036);   /* at the deadline, unburied: not yet */
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    drain(t);
+    CHECK(t->h.n == 0 && t->f.fac[0].state == GZ_FUND_ST_BROADCAST);
+    e = ev_tip(2037);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    drain(t);
+    CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_ABANDONED);
+    free(t);
+}
+
+/* The spend-back spends input 0, the input members watch, though input 1 is
+ * larger; a refusal of another transaction changes nothing; once the
+ * spend-back is mined, no new level and nothing sent again (L10). */
+static void test_spend_back_settled(void)
+{
+    ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+    gz_event_t e = ev_tip(3000);
+    gz_fund_plan_out_t p;
+    gz_fund_factory_t *x;
+    uint8_t in0[36], other[32];
+    int esc;
+    memset(other, 0x97, 32);
+    t->w.in1_bigger = 1;
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    p = host_fund(t, SCOPE_A, 0);
+    memcpy(in0, p.tx + 5, 36);
+    x = &t->f.fac[0];
+    e = ev_spent(in0, p.funding.txid, 0);   /* seen in the mempool */
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    e = ev_tip(3037);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    e = ev_tick();
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    CHECK(ft_saved_state(t) == GZ_FUND_ST_ABANDONED && ft_count(t, GZ_ACTION_BROADCAST) == 1);
+    CHECK(x->sb_index == 0 && t->w.last_sb_index == 0 && t->w.sb_n == 1);
+    esc = x->sb_escalated;
+    e = ev_bres(other, GZ_BROADCAST_REFUSED);   /* another transaction refused */
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    drain(t);
+    CHECK(x->sb_escalated == esc && t->w.sb_n == 1);
+    /* The spend-back mined, one confirmation: refused when sent again (its
+     * input is spent), then a new tip: nothing. */
+    e = ev_spent(in0, x->sb_txid, 1);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    e = ev_bres(x->sb_txid, GZ_BROADCAST_REFUSED);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    e = ev_tip(3038);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    for (int i = 0; i < 5; i++) {
+        e = ev_tick();
+        CHECK(ft_ev(t, &e) == GZ_OK && ft_count(t, GZ_ACTION_BROADCAST) == 0 && ft_count(t, GZ_ACTION_SAVE) == 0);
+    }
+    CHECK(x->sb_escalated == esc && t->w.sb_n == 1 && x->used);
+    free(t);
+}
+
+/* The wallet signs only a plan it holds, by txid (M4): after a restart it
+ * must adopt the plan again; one it refuses is never signed. */
+static void test_adopt(void)
+{
+    ft_t *t = ft_new(1, GZ_HOST_FUNDING_CONFIRM), *u;
+    gz_event_t e = ev_tip(4000);
+    uint8_t buf[256];
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    host_fund(t, SCOPE_A, 0);
+    t->w.adopt_refuse = 1;
+    u = ft_restart(t);
+    CHECK(u->w.held == 1);
+    e = cmd_confirm(SCOPE_A, GZ_CMD_FUNDING_CONFIRM, buf, 1);
+    CHECK(ft_ev(u, &e) == GZ_OK && result_status(u) == 503 && ft_count(u, GZ_ACTION_BROADCAST) == 0);
+    free(u);
+    t->w.adopt_refuse = 0;
+    u = ft_restart(t);
+    e = cmd_confirm(SCOPE_A, GZ_CMD_FUNDING_CONFIRM, buf, 1);
+    CHECK(ft_ev(u, &e) == GZ_OK && result_status(u) == 200 && ft_count(u, GZ_ACTION_BROADCAST) == 1);
+    free(u);
+    free(t);
 }
 
 static void test_restart_broadcast(void)
@@ -757,6 +1020,66 @@ static void test_member_table_full(void)
     free(t);
 }
 
+/* A full table: a new creation takes the place of the oldest Abandoned one,
+ * whose watches are given back first. */
+static void test_member_evict(void)
+{
+    ft_t *t = ft_new(0, GZ_HOST_FUNDING_AUTO);
+    uint8_t tx[400];
+    size_t len;
+    gz_event_t e;
+    for (int i = 0; i < 16; i++) {
+        gz_fund_acked_in_t a = acked_in(t, SCOPE_A, (uint8_t)(2 * i + 1), 1000, &tx, &len);
+        a.scope[1] = (uint8_t)i;
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &a, &t->out) == GZ_OK);
+        ft_after(t);
+    }
+    CHECK(t->f.n_watches == GZ_FUND_MAX_WATCHES);
+    e = ev_tip(1037);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    drain(t);
+    CHECK(t->h.n == 16 && t->f.n_watches == GZ_FUND_MAX_WATCHES);   /* all Abandoned, still watched */
+    {
+        gz_fund_acked_in_t a = acked_in(t, SCOPE_A, 0x61, 1037, &tx, &len);
+        a.scope[1] = 99;
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &a, &t->out) == GZ_OK);
+        ft_after(t);
+        CHECK(ft_count(t, GZ_ACTION_UNWATCH) == 3 && ft_count(t, GZ_ACTION_WATCH_TX) == 1);
+        CHECK(t->f.n_watches == GZ_FUND_MAX_WATCHES && t->f.untracked == 0);
+    }
+    free(t);
+}
+
+/* A member's own burial depth B, not the host's. */
+static void test_member_own_depth(void)
+{
+    ft_t *t = ft_new(0, GZ_HOST_FUNDING_AUTO);
+    uint8_t tx[400];
+    size_t len;
+    gz_fund_acked_in_t a = acked_in(t, SCOPE_A, 0x40, 1000, &tx, &len);
+    const gz_action_t *w;
+    gz_event_t e;
+    a.exit.B = 6;
+    ft_reset(t);
+    CHECK(gz_fund_member_acked(&t->f, &a, &t->out) == GZ_OK);
+    ft_after(t);
+    w = ft_find(t, GZ_ACTION_WATCH_TX);
+    CHECK(w && w->u.watch_tx.depth == 6);
+    e = ev_tip(1010);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    e = ev_conf(a.funding.txid, 3, 1004);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    drain(t);
+    CHECK(t->h.n == 0);   /* three is not six */
+    e = ev_conf(a.funding.txid, 6, 1004);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    drain(t);
+    CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_LIVE);
+    free(t);
+}
+
 static void test_corrupt(void)
 {
     ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
@@ -843,6 +1166,22 @@ static void test_journal_replay_steps(void)
         copy[(size_t)(v.data - copy)] = GZ_FUND_ST_LIVE;     /* the legal next step loads */
         CHECK(gz_fund_load(&u->f, &r2, b) == GZ_OK);
     }
+    {
+        /* funding_signed whose bytes are not the plan: refused at load. */
+        ft_t *v = ft_new(1, GZ_HOST_FUNDING_AUTO);
+        static uint8_t copy[GZ_FUND_MAX_SIGNED + 256];
+        gz_record_t r2 = t->jrec[1];
+        gz_bytes_t w;
+        CHECK(r2.type == GZ_FUND_REC_SIGNED && r2.bytes.len <= sizeof copy);
+        memcpy(copy, r2.bytes.data, r2.bytes.len);
+        r2.bytes.data = copy;
+        CHECK(gz_rec_find(r2.bytes, 6, &w) == 1 && w.len > 60);
+        copy[(size_t)(w.data - copy) + 50] ^= 1;   /* a byte of an input's outpoint */
+        CHECK(gz_fund_load(&v->f, &t->jrec[0], b) == GZ_OK);
+        CHECK(gz_fund_load(&v->f, &r2, b) == GZ_ERR_CORRUPT);
+        CHECK(gz_fund_load(&v->f, &t->jrec[1], b) == GZ_OK);   /* the real one loads */
+        free(v);
+    }
     free(u);
     free(t);
 }
@@ -877,11 +1216,19 @@ int main(void)
     test_abandon_unseen_then_late();
     test_host_dead_and_reorg();
     test_wallet_checked();
+    test_must_kept();
+    test_deadline_basis();
+    test_deadline_after_restart();
+    test_deadline_pending();
+    test_spend_back_settled();
+    test_adopt();
     test_restart_broadcast();
     test_member();
     test_member_late_too_late();
     test_member_shared_input();
     test_member_table_full();
+    test_member_evict();
+    test_member_own_depth();
     test_corrupt();
     test_journal_replay_steps();
     test_ignored_events();

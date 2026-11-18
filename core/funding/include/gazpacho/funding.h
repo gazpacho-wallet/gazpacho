@@ -120,13 +120,21 @@ typedef struct {
  * failure returns 0 and is an outcome, never an error. Byte buffers are the
  * engine's; `cap` is their size.
  *   plan        a new funding paying exactly `amount` to `script` (34 bytes,
- *               OP_1 <32>) at `feerate` sat/kvB; with `must_spend` set, one
- *               of its inputs spends that outpoint (H11). Fills the unsigned
+ *               OP_1 <32>) at `feerate` sat/kvB, with exactly one other
+ *               output, the wallet's own change (H16 bumps a funding only by
+ *               a child on it); with `must_spend` set, input 0 spends that
+ *               outpoint (H11). The wallet offers only confirmed coins, never
+ *               the change of a funding not yet buried. Fills the unsigned
  *               transaction and every input's spent output, in input order.
- *               The wallet holds the coins back from then on.
- *   sign        the signed bytes of the plan whose unsigned bytes are given.
- *   hold        hold the plan's coins again (after a restart; the wallet's
- *               hold is in its memory only).
+ *               The wallet holds the plan, and its coins, from then on.
+ *   sign_plan   the signed bytes of the plan the wallet holds under `txid`:
+ *               never bytes handed in (docs/notes/signer.md). 0 if it holds
+ *               no such plan.
+ *   adopt       after a restart (the wallet's holds are in its memory
+ *               only): hold again a plan from the engine's journal, only if
+ *               the wallet finds it its own: every input one of its coins,
+ *               the outputs exactly the factory's at `funding_vout` and its
+ *               own change. 0 if refused; such a plan is then never signed.
  *   release     free the coins of a plan that will never be funded.
  *   spend_back  a transaction spending input `index` of the plan to the
  *               wallet's own script, paying exactly `fee`, signed. */
@@ -134,8 +142,8 @@ typedef struct {
     int (*plan)(void *ctx, uint64_t amount, const uint8_t script[34], uint64_t feerate,
                 const gz_outpoint_t *must_spend, uint8_t *tx, size_t cap, size_t *tx_len,
                 gz_fund_prevout_t *prev, size_t max_prev, size_t *n_prev);
-    int (*sign)(void *ctx, const uint8_t *tx, size_t tx_len, uint8_t *out, size_t cap, size_t *out_len);
-    void (*hold)(void *ctx, const uint8_t *tx, size_t tx_len);
+    int (*sign_plan)(void *ctx, const uint8_t txid[32], uint8_t *out, size_t cap, size_t *out_len);
+    int (*adopt)(void *ctx, const uint8_t *tx, size_t tx_len, uint32_t funding_vout);
     void (*release)(void *ctx, const uint8_t *tx, size_t tx_len);
     int (*spend_back)(void *ctx, const uint8_t *tx, size_t tx_len, uint32_t index, uint64_t fee,
                       uint8_t *out, size_t cap, size_t *out_len);
@@ -217,6 +225,12 @@ typedef struct {
                                            gz_fund_host_h1 and gz_fund_host_apply) */
     uint32_t deadline;                  /* host: abandon at this tip; member: ack tip + deadline */
     int deadline_pending;               /* host: no tip known yet when it was set */
+    uint32_t plan_tip;                  /* host: the tip when the plan was made, the deadline's basis */
+    int plan_tip_known;
+    int released;                       /* host: a partial signature of this plan's attempt was
+                                           released (H11) and no plan spending its input 0 was
+                                           accepted yet: never reused, and the next plan spends
+                                           its input 0 */
     /* member: C11's inputs */
     uint32_t ack_tip, end_height;
     uint8_t own_depth, whole_tree;

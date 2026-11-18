@@ -63,6 +63,7 @@ static int w_plan(void *c, uint64_t amount, const uint8_t script[34], uint64_t f
     req.funding_script_len = 34;
     req.amount = amount;
     req.change_index = next_change++;
+    req.require_change = 1;   /* H16: change for a child */
     if (must) {
         req.must_spend = 1;   /* H11: the previous plan's input 0 */
         memcpy(req.must_txid, must->txid, 32);
@@ -84,15 +85,29 @@ static int w_plan(void *c, uint64_t amount, const uint8_t script[34], uint64_t f
     return 1;
 }
 
-static int w_sign(void *c, const uint8_t *tx, size_t len, uint8_t *out, size_t cap, size_t *out_len)
+/* Signs only a plan this wallet built, found by its txid. */
+static int w_sign_plan(void *c, const uint8_t txid[32], uint8_t *out, size_t cap, size_t *out_len)
 {
-    gzt_funding *f = by_tx(tx, len);
-    uint8_t aux[32];
+    uint8_t buf[GZ_FUND_MAX_TX], id[32], aux[32];
+    size_t n;
     (void)c;
     memset(aux, 0x22, 32);
-    return f && gzt_funding_release(ctx, &master, f, f->info.txid, aux, out, cap, out_len) == GZT_OK;
+    for (size_t i = 0; i < n_fundings; i++) {
+        gzt_funding *f = &fundings[i];
+        if (gzt_funding_unsigned(f, buf, sizeof buf, &n) != GZT_OK) continue;
+        gz_tx_txid(buf, n, id);
+        if (memcmp(id, txid, 32) == 0)
+            return gzt_funding_release(ctx, &master, f, f->info.txid, aux, out, cap, out_len) == GZT_OK;
+    }
+    return 0;
 }
-static void w_hold(void *c, const uint8_t *tx, size_t len) { (void)c; (void)tx; (void)len; }
+/* The harness never restarts: it adopts only a plan it built, with change. */
+static int w_adopt(void *c, const uint8_t *tx, size_t len, uint32_t vout)
+{
+    gzt_funding *f = by_tx(tx, len);
+    (void)c;
+    return f && f->info.has_change && vout == 0;
+}
 static void w_release(void *c, const uint8_t *tx, size_t len) { (void)c; (void)tx; (void)len; }
 static int w_sb(void *c, const uint8_t *tx, size_t len, uint32_t index, uint64_t fee, uint8_t *out, size_t cap,
                 size_t *out_len)
@@ -156,7 +171,7 @@ int main(void)
     ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
     if (!gzw_bip32_master(ctx, seed, 32, &master, NULL)) return 2;
     gz_fund_config_default(&cfg, 1);
-    cfg.wallet.plan = w_plan; cfg.wallet.sign = w_sign; cfg.wallet.hold = w_hold;
+    cfg.wallet.plan = w_plan; cfg.wallet.sign_plan = w_sign_plan; cfg.wallet.adopt = w_adopt;
     cfg.wallet.release = w_release; cfg.wallet.spend_back = w_sb;
     cfg.hooks.report = h_report;
     memset(&ports, 0, sizeof ports);

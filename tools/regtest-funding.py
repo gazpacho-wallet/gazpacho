@@ -249,9 +249,9 @@ def spend_backs(node, r, fund_txid):
 def b_spend_back(node, h, r):
     fund_txid = plan_and_fund(node, h, r)
     r.facts()
-    r.mine(38, empty=True)   # the funding left in the mempool
+    r.mine(36, empty=True)   # the funding left in the mempool, to the deadline (tip at the plan + 36)
     assert not spend_backs(node, r, fund_txid), "spend-back before the deadline"
-    r.mine(2, empty=True)    # past tip + 36 + 3
+    r.mine(2, empty=True)    # past it
     assert 3 in r.reports, "no Abandoned report: %s" % r.reports
     sbs = spend_backs(node, r, fund_txid)
     assert len(sbs) == 1, "spend-backs: %d" % len(sbs)
