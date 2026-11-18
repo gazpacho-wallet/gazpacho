@@ -105,11 +105,19 @@ static int w_sign_plan(void *ctx, const uint8_t txid[32], uint8_t *out, size_t c
 }
 
 /* Holds again only a plan this run made, with its change (the stand-in of wport.h). */
-static int w_adopt(void *ctx, const uint8_t *tx, size_t len, uint32_t vout)
+static int w_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount)
 {
     gzp_wport_t *w = ctx;
     gzt_funding *f = by_tx(w, tx, len, NULL);
-    return f && f->info.has_change && vout == f->info.vout;
+    return f && f->info.has_change && f->info.vout == 0 && f->info.amount == amount &&
+           memcmp(f->priv_tx.out[0].script, script, 34) == 0;
+}
+
+static gzt_funding *by_txid(gzp_wport_t *w, const uint8_t txid[32])
+{
+    for (int k = 0; k < GZP_WPORT_PLANS; k++)
+        if (w->used[k] && memcmp(w->plans[k].info.txid, txid, 32) == 0) return &w->plans[k];
+    return NULL;
 }
 
 static void w_release(void *ctx, const uint8_t *tx, size_t len)
@@ -122,11 +130,11 @@ static void w_release(void *ctx, const uint8_t *tx, size_t len)
     w->used[k] = 0;
 }
 
-static int w_spend_back(void *ctx, const uint8_t *tx, size_t len, uint32_t index, uint64_t fee, uint8_t *out,
-                        size_t cap, size_t *out_len)
+static int w_spend_back(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee, uint8_t *out, size_t cap,
+                        size_t *out_len)
 {
     gzp_wport_t *w = ctx;
-    gzt_funding *f = by_tx(w, tx, len, NULL);
+    gzt_funding *f = by_txid(w, txid);
     gzw_bip86_output dest;
     uint8_t aux[32];
     if (!f || !out_of(w, 1, w->next_change++, &dest)) return 0;

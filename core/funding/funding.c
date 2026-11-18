@@ -455,6 +455,7 @@ static int plan_ok(gz_fund_factory_t *x, const gz_outpoint_t *must)
             if (found) return 0; /* the factory's output twice: which one would the tree spend? */
             found = 1;
             x->funding.vout = (uint32_t)i;
+            if (i != 0) return 0;   /* output 0, as the signer's adopt checks (review B, M-3) */
         }
     }
     /* Exactly two outputs: the factory's and the wallet's change, which H16's
@@ -558,7 +559,21 @@ gz_status_t gz_fund_host_plan(gz_fund_t *f, const gz_fund_plan_in_t *in, gz_acti
     if (old && old->state != 0) return plan_failed(f, in->scope, "funding-plan-refused already-funded", out, res);
     if (old && !in->released && !old->released && old->amount == in->amount && memcmp(old->script, in->script, 34) == 0) {
         /* Nothing was released: the same funding outpoint may serve the next
-         * attempt (safety-rule.md C7: no record yet). */
+         * attempt (safety-rule.md C7: no record yet). Its deadline's basis is
+         * the tip at this attempt, saved again (review B, M-1); no pass of an
+         * earlier attempt's H1 counts for this one (L-3). */
+        old->h1_ok = 0;
+        old->signed_len = 0;
+        if (f->tip_known && (!old->plan_tip_known || old->plan_tip != f->tip)) {
+            old->plan_tip = f->tip;
+            old->plan_tip_known = 1;
+            n = enc_plan(f, old, f->scratch, sizeof f->scratch, &st);
+            if (st != GZ_OK) return st;
+            r.type = GZ_FUND_REC_PLAN;
+            r.bytes.data = f->scratch;
+            r.bytes.len = n;
+            if ((st = save(out, &r, 1)) != GZ_OK) return st;
+        }
         res->ok = 1;
         res->tx = old->tx;
         res->tx_len = old->tx_len;
@@ -592,14 +607,14 @@ gz_status_t gz_fund_host_plan(gz_fund_t *f, const gz_fund_plan_in_t *in, gz_acti
                             sizeof x->tx, &x->tx_len, x->prev, GZ_FUND_MAX_INPUTS, &n) ||
         x->tx_len > sizeof x->tx || n > GZ_FUND_MAX_INPUTS) {
         memset(x, 0, sizeof *x);
-        if (old) (void)f->cfg.wallet.adopt(f->cfg.wallet.ctx, old->tx, old->tx_len, old->funding.vout);
+        if (old) (void)f->cfg.wallet.adopt(f->cfg.wallet.ctx, old->tx, old->tx_len, old->script, old->amount);
         return plan_refused(f, old, in->released, in->scope, "funding-plan-failed wallet", out, res);
     }
     x->n_in = n;
     if (!plan_ok(x, use_must ? &must : NULL)) {
         f->cfg.wallet.release(f->cfg.wallet.ctx, x->tx, x->tx_len);
         memset(x, 0, sizeof *x);
-        if (old) (void)f->cfg.wallet.adopt(f->cfg.wallet.ctx, old->tx, old->tx_len, old->funding.vout);
+        if (old) (void)f->cfg.wallet.adopt(f->cfg.wallet.ctx, old->tx, old->tx_len, old->script, old->amount);
         return plan_refused(f, old, in->released, in->scope, "funding-plan-failed refused-plan", out, res);
     }
     x->plan_tip = f->tip;
@@ -719,6 +734,16 @@ static gz_status_t gz_fund_host_apply_in(gz_fund_t *f, const uint8_t scope[32], 
     }
     x->h1_ok = 0;
     set_deadline(f, x);
+    if (x->mode == GZ_HOST_FUNDING_AUTO && !x->deadline_pending && f->tip_known &&
+        f->tip + f->cfg.burial - 1 > x->deadline) {
+        /* A burial by the deadline is no longer possible: nothing is
+         * broadcast, the coins go back (review B, M-1). */
+        f->cfg.wallet.release(f->cfg.wallet.ctx, x->tx, x->tx_len);
+        if ((st = save_status(f, x, GZ_FUND_ST_FAILED, 0, out)) != GZ_OK) return st;
+        if ((st = log_note(f, out, "funding-too-late", x->scope)) != GZ_OK) return st;
+        finish(f, x, GZ_FUND_ST_FAILED);
+        return GZ_OK;
+    }
     if (x->mode == GZ_HOST_FUNDING_CONFIRM) {
         if ((st = save_status(f, x, GZ_FUND_ST_AWAITING, 0, out)) != GZ_OK) return st;
         x->state = GZ_FUND_ST_AWAITING;
@@ -782,13 +807,13 @@ static gz_fund_factory_t *member_room(gz_fund_t *f)
 
 static gz_status_t gz_fund_member_acked_in(gz_fund_t *f, const gz_fund_acked_in_t *in, gz_action_list_t *out)
 {
-    gz_fund_factory_t *x, tmp;
+    gz_fund_factory_t *x, *const tmpp = &f->tmp;
     gz_status_t st;
     if (!f || !in || !out || f->cfg.host || !in->funding_tx) return GZ_ERR_ARGUMENT;
     if (in->funding_tx_len > GZ_FUND_MAX_TX) return GZ_ERR_ARGUMENT;  /* the signing engine holds at most this */
     if ((x = find_txid(f, in->scope, in->funding.txid)) != NULL) return GZ_OK;   /* given twice: rule 3 */
-    memset(&tmp, 0, sizeof tmp);
-    x = &tmp;
+    memset(tmpp, 0, sizeof *tmpp);
+    x = tmpp;
     memcpy(x->scope, in->scope, 32);
     memcpy(x->tx, in->funding_tx, in->funding_tx_len);
     x->tx_len = in->funding_tx_len;
@@ -830,7 +855,7 @@ static gz_status_t gz_fund_member_acked_in(gz_fund_t *f, const gz_fund_acked_in_
         return arm_tick(f, out, f->cfg.tick_ms);
     }
     uint64_t seq = slot->seq;
-    *slot = tmp;
+    *slot = *tmpp;
     slot->used = 1;
     slot->seq = seq;
     slot->state = GZ_FUND_ST_ACKED;
@@ -991,32 +1016,32 @@ static gz_status_t load_status(gz_fund_t *f, gz_bytes_t s)
     if (gz_rec_find(s, T_FTX, &v) == 1) {
         /* A member's first status: everything C11 and C4(d) need. */
         gz_bytes_t vo, am, scr, at, en, dp, wh, ex, db;
-        gz_fund_factory_t tmp;
+        gz_fund_factory_t *const tmpp = &f->tmp;
         if (f->cfg.host || state != GZ_FUND_ST_ACKED || v.len > GZ_FUND_MAX_TX) return GZ_ERR_CORRUPT;
         if (!field(s, T_VOUT, 4, 0, &vo) || !field(s, T_AMOUNT, 8, 0, &am) || !field(s, T_SCRIPT, 34, 0, &scr) ||
             !field(s, T_ACK_TIP, 4, 0, &at) || !field(s, T_END, 4, 0, &en) || !field(s, T_DEPTH, 1, 0, &dp) ||
             !field(s, T_WHOLE, 1, 0, &wh) || !field(s, T_EXIT, 16, 0, &ex) || !field(s, T_DBLOCKS, 4, 0, &db))
             return GZ_ERR_CORRUPT;
         if (find_txid(f, sc.data, id.data)) return GZ_ERR_CORRUPT;   /* acked twice */
-        memset(&tmp, 0, sizeof tmp);
-        memcpy(tmp.scope, sc.data, 32);
-        memcpy(tmp.funding.txid, id.data, 32);
-        memcpy(tmp.tx, v.data, v.len);
-        tmp.tx_len = v.len;
-        tmp.funding.vout = gz_get_u32(vo.data);
-        tmp.amount = gz_get_u64(am.data);
-        memcpy(tmp.script, scr.data, 34);
-        tmp.ack_tip = gz_get_u32(at.data);
-        tmp.end_height = gz_get_u32(en.data);
-        tmp.own_depth = dp.data[0];
-        tmp.whole_tree = wh.data[0] ? 1 : 0;
-        tmp.exit.A = gz_get_u32(ex.data);
-        tmp.exit.B = gz_get_u32(ex.data + 4);
-        tmp.exit.M = gz_get_u32(ex.data + 8);
-        tmp.exit.M_host = gz_get_u32(ex.data + 12);
-        tmp.deadline_blocks = gz_get_u32(db.data);
-        tmp.deadline = gz_get_u32(dl.data);
-        if (wh.data[0] > 1 || tmp.deadline != tmp.ack_tip + tmp.deadline_blocks || !member_tx_ok(&tmp))
+        memset(tmpp, 0, sizeof *tmpp);
+        memcpy(tmpp->scope, sc.data, 32);
+        memcpy(tmpp->funding.txid, id.data, 32);
+        memcpy(tmpp->tx, v.data, v.len);
+        tmpp->tx_len = v.len;
+        tmpp->funding.vout = gz_get_u32(vo.data);
+        tmpp->amount = gz_get_u64(am.data);
+        memcpy(tmpp->script, scr.data, 34);
+        tmpp->ack_tip = gz_get_u32(at.data);
+        tmpp->end_height = gz_get_u32(en.data);
+        tmpp->own_depth = dp.data[0];
+        tmpp->whole_tree = wh.data[0] ? 1 : 0;
+        tmpp->exit.A = gz_get_u32(ex.data);
+        tmpp->exit.B = gz_get_u32(ex.data + 4);
+        tmpp->exit.M = gz_get_u32(ex.data + 8);
+        tmpp->exit.M_host = gz_get_u32(ex.data + 12);
+        tmpp->deadline_blocks = gz_get_u32(db.data);
+        tmpp->deadline = gz_get_u32(dl.data);
+        if (wh.data[0] > 1 || tmpp->deadline != tmpp->ack_tip + tmpp->deadline_blocks || !member_tx_ok(tmpp))
             return GZ_ERR_CORRUPT;
         x = member_room(f);
         if (!x) {
@@ -1025,16 +1050,16 @@ static gz_status_t load_status(gz_fund_t *f, gz_bytes_t s)
             for (size_t i = 0; i < GZ_FUND_MAX_ENDED; i++)
                 if (!f->pending[i].used) {
                     f->pending[i].used = 1;
-                    memcpy(f->pending[i].scope, tmp.scope, 32);
-                    f->pending[i].funding = tmp.funding;
-                    f->pending[i].deadline = tmp.deadline;
+                    memcpy(f->pending[i].scope, tmpp->scope, 32);
+                    f->pending[i].funding = tmpp->funding;
+                    f->pending[i].deadline = tmpp->deadline;
                     return GZ_OK;
                 }
             f->dropped++;
             return GZ_OK;
         }
         uint64_t seq = x->seq;
-        *x = tmp;
+        *x = *tmpp;
         x->used = 1;
         x->seq = seq;
         x->state = GZ_FUND_ST_ACKED;
@@ -1114,7 +1139,7 @@ gz_status_t gz_fund_resume(void *e, gz_action_list_t *out, int *more)
         if (!x->used) continue;
         if (f->cfg.host) {
             /* The wallet's hold is in its memory only (A11). */
-            if (!f->cfg.wallet.adopt(f->cfg.wallet.ctx, x->tx, x->tx_len, x->funding.vout) &&
+            if (!f->cfg.wallet.adopt(f->cfg.wallet.ctx, x->tx, x->tx_len, x->script, x->amount) &&
                 (st = log_note(f, out, "funding-adopt-refused", x->scope)) != GZ_OK)
                 return st;
             if (x->state == GZ_FUND_ST_AWAITING && (st = attention(f, out, x->scope, 0)) != GZ_OK) return st;
@@ -1124,7 +1149,13 @@ gz_status_t gz_fund_resume(void *e, gz_action_list_t *out, int *more)
                 return st;
             if ((x->state == GZ_FUND_ST_AWAITING || x->state == GZ_FUND_ST_BROADCAST) && !x->deadline) x->deadline_pending = 1;
         }
-        if (x->state != 0 && x->state != GZ_FUND_ST_AWAITING && (st = set_watches(f, x, out)) != GZ_OK) return st;
+        if (x->state != 0 && x->state != GZ_FUND_ST_AWAITING) {
+            /* The chain facts come back through these watches (H-1). */
+            x->resyncing = 1;
+            x->reported = 0;
+            x->resync_tip_seen = 0;
+            if ((st = set_watches(f, x, out)) != GZ_OK) return st;
+        }
         x->due = 1;
         if (out->count != before) {
             *more = 1;
@@ -1172,7 +1203,7 @@ static int make_spend_back(gz_fund_t *f, gz_fund_factory_t *x, int level)
     fee = replace ? gz_fund_replace_fee(pf, pv, 111, inc) : gz_fund_fee(x->feerate, 111);
     for (int round = 0; round < 3; round++) {
         if (fee == UINT64_MAX || fee >= x->prev[idx].amount) return 0;
-        if (!f->cfg.wallet.spend_back(f->cfg.wallet.ctx, x->tx, x->tx_len, idx, fee, tx, GZ_FUND_MAX_SPEND_BACK, &len) ||
+        if (!f->cfg.wallet.spend_back(f->cfg.wallet.ctx, x->funding.txid, idx, fee, tx, GZ_FUND_MAX_SPEND_BACK, &len) ||
             len > GZ_FUND_MAX_SPEND_BACK || !gz_fund_tx_vsize(tx, len, &vsize, &base))
             return 0;
         need = replace ? gz_fund_replace_fee(pf, pv, vsize, inc) : gz_fund_fee(x->feerate, vsize);
@@ -1180,6 +1211,10 @@ static int make_spend_back(gz_fund_t *f, gz_fund_factory_t *x, int level)
         fee = need;
         if (round == 2) return 0;
     }
+    /* The ceiling: never above the top of the ladder, level 2 on this size
+     * (signer.md's "ceiling x vsize" would refuse level 2; review B, M-3). */
+    if (fee > (replace ? gz_fund_replace_fee(pf, pv, vsize, f->cfg.incremental_high) : gz_fund_fee(x->feerate, vsize)))
+        return 0;
     /* What the wallet made: one input, the chosen outpoint, one output that
      * does not pay the factory, and exactly the fee asked. */
     {
@@ -1235,6 +1270,19 @@ static int buried_in_time(const gz_fund_t *f, const gz_fund_factory_t *x)
 {
     if (!buried(f, x)) return 0;
     return x->deadline_pending || x->conf_height + depth_of(f, x) - 1 <= x->deadline;
+}
+
+/* After a start, have the chain facts come back (review B of PR 56, H-1)?
+ * Every watch reported since the start, or a block passed since its first
+ * tip. The contract gives no report for a watched transaction that is not
+ * in the chain, so the block is the bound. */
+static int facts_back(const gz_fund_t *f, gz_fund_factory_t *x)
+{
+    unsigned all;
+    if (!x->resyncing) return 1;
+    all = (2u << (n_watch(f, x) - 1)) - 1u;
+    if ((x->reported & all) == all) x->resyncing = 0;
+    return !x->resyncing;
 }
 
 /* The funding or a spend of a watched input has a confirmation: no new fee
@@ -1302,19 +1350,20 @@ static gz_status_t step_host(gz_fund_t *f, gz_fund_factory_t *x, gz_action_list_
     case GZ_FUND_ST_BROADCAST:
         if (buried_in_time(f, x)) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out);
         if (input_dead(f, x, &k)) return end_with(f, x, GZ_FUND_ST_DEAD, GZ_FUND_R_DEAD, out);
-        if (!x->deadline_pending && f->tip_known && f->tip > x->deadline) return host_abandon(f, x, out);
+        if (!x->deadline_pending && f->tip_known && f->tip > x->deadline && facts_back(f, x)) return host_abandon(f, x, out);
         if (x->rebroadcast) {
             x->rebroadcast = 0;
             return broadcast(out, x->signed_tx, x->signed_len);
         }
         break;
     case GZ_FUND_ST_AWAITING:
-        if (!x->deadline_pending && f->tip_known && f->tip > x->deadline) return host_abandon(f, x, out);
+        if (!x->deadline_pending && f->tip_known && f->tip > x->deadline && facts_back(f, x)) return host_abandon(f, x, out);
         break;
     case GZ_FUND_ST_ABANDONED:
         if (buried(f, x)) return end_with(f, x, GZ_FUND_ST_LIVE_LATE, GZ_FUND_R_FUNDED_LATE, out);
         if (input_dead(f, x, &k)) return end_with(f, x, GZ_FUND_ST_DEAD, 0, out);
         if (sb_settled(x)) break;   /* mined: no new level, no re-broadcast */
+        if (!facts_back(f, x)) break;   /* after a start: the facts first (H-1) */
         if (x->escalate || (x->rebroadcast && !x->sb_len)) {
             /* Refused, or not made at the deadline: one level up, at most
              * the higher increment. A funding never signed has nothing to
@@ -1374,7 +1423,7 @@ static gz_status_t step_member(gz_fund_t *f, gz_fund_factory_t *x, gz_action_lis
     c.own_depth = x->own_depth;
     v = gz_tree_c11(&c);
     if (v == GZ_C11_LIVE) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out);
-    if (v == GZ_C11_ABANDONED && x->state == GZ_FUND_ST_ACKED) {
+    if (v == GZ_C11_ABANDONED && x->state == GZ_FUND_ST_ACKED && facts_back(f, x)) {
         gz_status_t st;
         if ((st = save_status(f, x, GZ_FUND_ST_ABANDONED, 0, out)) != GZ_OK) return st;
         x->state = GZ_FUND_ST_ABANDONED;
@@ -1391,15 +1440,15 @@ static gz_status_t tick(gz_fund_t *f, gz_action_list_t *out)
     /* Creations past the table: their deadline only. */
     for (size_t i = 0; i < GZ_FUND_MAX_ENDED; i++) {
         if (!f->pending[i].used || !f->tip_known || f->tip <= f->pending[i].deadline) continue;
-        gz_fund_factory_t tmp;
-        memset(&tmp, 0, sizeof tmp);
-        memcpy(tmp.scope, f->pending[i].scope, 32);
-        tmp.funding = f->pending[i].funding;
-        tmp.deadline = f->pending[i].deadline;
+        gz_fund_factory_t *const tmpp = &f->tmp;
+        memset(tmpp, 0, sizeof *tmpp);
+        memcpy(tmpp->scope, f->pending[i].scope, 32);
+        tmpp->funding = f->pending[i].funding;
+        tmpp->deadline = f->pending[i].deadline;
         f->pending[i].used = 0;
-        if ((st = save_status(f, &tmp, GZ_FUND_ST_ABANDONED, 0, out)) != GZ_OK) return st;
-        if ((st = report(f, &tmp, GZ_FUND_R_ABANDONED, out)) != GZ_OK) return st;
-        remember_end(f, tmp.scope, GZ_FUND_ST_ABANDONED, f->tip);
+        if ((st = save_status(f, tmpp, GZ_FUND_ST_ABANDONED, 0, out)) != GZ_OK) return st;
+        if ((st = report(f, tmpp, GZ_FUND_R_ABANDONED, out)) != GZ_OK) return st;
+        remember_end(f, tmpp->scope, GZ_FUND_ST_ABANDONED, f->tip);
         return arm_tick(f, out, f->cfg.tick_ms);
     }
     for (size_t n = 0; n < GZ_FUND_MAX_FACTORIES; n++) {
@@ -1436,6 +1485,7 @@ static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
                 x->conf = 0;   /* reorganised away: counting starts again */
                 x->conf_height = 0;
             }
+            x->reported |= 1u;
             x->due = 1;
         }
         if (c->kind == GZ_CHAIN_OUTPOINT_SPENT) {
@@ -1446,6 +1496,7 @@ static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
                 memcpy(x->spender[k], c->txid, 32);
                 x->spender_conf[k] = c->confirmations;
                 x->spender_known[k] = 1;
+                x->reported |= 2u << k;
                 if (memcmp(c->txid, x->funding.txid, 32) == 0) x->seen = 1;
                 x->due = 1;
             }
@@ -1491,6 +1542,9 @@ static gz_status_t command(gz_fund_t *f, gz_bytes_t cmd, gz_action_list_t *out)
     } else if (x->state != GZ_FUND_ST_AWAITING) {
         status = 409;
         err = "refused_now";
+    } else if (!x->deadline_pending && f->tip_known && f->tip + f->cfg.burial - 1 > x->deadline) {
+        status = 409;   /* a burial by the deadline is no longer possible (review B, M-1) */
+        err = "too_late";
     } else if (!f->cfg.wallet.sign_plan(f->cfg.wallet.ctx, x->funding.txid, x->signed_tx, sizeof x->signed_tx, &n) ||
                n > sizeof x->signed_tx || !signed_ok(f, x, x->signed_tx, n)) {
         status = 503;
@@ -1533,9 +1587,18 @@ static gz_status_t gz_fund_handle_in(void *e, const gz_event_t *ev, gz_action_li
             f->tip_known = 1;
             for (size_t i = 0; i < GZ_FUND_MAX_FACTORIES; i++)
                 if (f->fac[i].used) {
-                    f->fac[i].due = 1;
-                    f->fac[i].rebroadcast = 1;
+                    gz_fund_factory_t *y = &f->fac[i];
+                    y->due = 1;
+                    y->rebroadcast = 1;
                     any = 1;
+                    if (y->resyncing) {
+                        if (!y->resync_tip_seen) {
+                            y->resync_tip_seen = 1;
+                            y->resync_tip = f->tip;
+                        } else if (f->tip > y->resync_tip) {
+                            y->resyncing = 0;   /* a block since: the reports had their chance */
+                        }
+                    }
                 }
             for (size_t i = 0; i < GZ_FUND_MAX_ENDED; i++)
                 if (f->pending[i].used) any = 1;

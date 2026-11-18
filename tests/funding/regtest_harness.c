@@ -102,23 +102,32 @@ static int w_sign_plan(void *c, const uint8_t txid[32], uint8_t *out, size_t cap
     return 0;
 }
 /* The harness never restarts: it adopts only a plan it built, with change. */
-static int w_adopt(void *c, const uint8_t *tx, size_t len, uint32_t vout)
+static int w_adopt(void *c, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount)
 {
     gzt_funding *f = by_tx(tx, len);
     (void)c;
-    return f && f->info.has_change && vout == 0;
+    return f && f->info.has_change && f->info.amount == amount &&
+           memcmp(f->priv_tx.out[0].script, script, 34) == 0;
 }
 static void w_release(void *c, const uint8_t *tx, size_t len) { (void)c; (void)tx; (void)len; }
-static int w_sb(void *c, const uint8_t *tx, size_t len, uint32_t index, uint64_t fee, uint8_t *out, size_t cap,
-                size_t *out_len)
+/* The spend-back of a plan this wallet built, found by its txid. */
+static int w_sb(void *c, const uint8_t txid[32], uint32_t index, uint64_t fee, uint8_t *out, size_t cap, size_t *out_len)
 {
-    gzt_funding *f = by_tx(tx, len);
+    uint8_t buf[GZ_FUND_MAX_TX], id[32], aux[32];
     gzw_bip86_output dest;
-    uint8_t aux[32];
+    size_t n;
     (void)c;
     memset(aux, 0x33, 32);
-    if (!f || !gzw_bip86_output_from_master(ctx, &master, GZW_NET_REGTEST, 0, 1, 2000, &dest, NULL)) return 0;
-    return gzt_funding_spend_back(ctx, &master, f, index, dest.script_pubkey, 34, fee, aux, out, cap, out_len) == GZT_OK;
+    if (!gzw_bip86_output_from_master(ctx, &master, GZW_NET_REGTEST, 0, 1, 2000, &dest, NULL)) return 0;
+    for (size_t i = 0; i < n_fundings; i++) {
+        gzt_funding *f = &fundings[i];
+        if (gzt_funding_unsigned(f, buf, sizeof buf, &n) != GZT_OK) continue;
+        gz_tx_txid(buf, n, id);
+        if (memcmp(id, txid, 32) == 0)
+            return gzt_funding_spend_back(ctx, &master, f, index, dest.script_pubkey, 34, fee, aux, out, cap, out_len) ==
+                   GZT_OK;
+    }
+    return 0;
 }
 
 static gz_status_t h_report(void *c, const gz_fund_report_t *r, gz_action_list_t *out)

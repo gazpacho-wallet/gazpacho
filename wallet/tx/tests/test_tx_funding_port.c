@@ -134,6 +134,15 @@ static void test_spend_back(void)
           GZT_ERR_DUST);
     CHECK(gzt_funding_spend_back(ctx, &master, &f, 1, dest.script_pubkey, 34, 12, aux, out, sizeof out, &n) == GZT_ERR_ARG);
     CHECK(gzt_funding_spend_back(ctx, &master, &f, 0, dest.script_pubkey, 34, 12, aux, out, 20, &n) == GZT_ERR_BUFFER);
+    /* A fee above the input, and a destination that is not a witness program. */
+    CHECK(gzt_funding_spend_back(ctx, &master, &f, 0, dest.script_pubkey, 34, 300001, aux, out, sizeof out, &n) ==
+          GZT_ERR_DUST);
+    {
+        uint8_t p2pkh[25] = {0x76, 0xa9, 0x14};
+        p2pkh[23] = 0x88;
+        p2pkh[24] = 0xac;
+        CHECK(gzt_funding_spend_back(ctx, &master, &f, 0, p2pkh, 25, 12, aux, out, sizeof out, &n) == GZT_ERR_SCRIPT);
+    }
     gzt_funding_wipe(&f);
 }
 
@@ -193,6 +202,21 @@ static void test_must_reach(void)
     CHECK(parsed.n_in >= 2 && memcmp(parsed.in[0].prev_txid, many[69].txid, 32) == 0 && parsed.in[0].prev_vout == 69);
     for (uint32_t i = 1; i < parsed.n_in; i++) CHECK(parsed.in[i].prev_vout != 69);
     gzt_funding_wipe(&g);
+    {
+        /* Two coins with the same vout: the one named by txid and vout. */
+        static gzt_coin two[3];
+        static gzt_funding h;
+        memcpy(two, coins, sizeof two);
+        two[1].vout = 0;   /* coins 0 and 1 now share vout 0 */
+        r = request(50000);
+        r.must_spend = 1;
+        memcpy(r.must_txid, two[0].txid, 32);
+        r.must_vout = 0;
+        CHECK(gzt_funding_build(ctx, &master, &r, two, 3, aux, &h) == GZT_OK);
+        CHECK(gzt_funding_unsigned(&h, tx, sizeof tx, &len) == GZT_OK && gzt_tx_parse(tx, len, &parsed) == GZT_OK);
+        CHECK(memcmp(parsed.in[0].prev_txid, two[0].txid, 32) == 0 && parsed.in[0].prev_vout == 0);
+        gzt_funding_wipe(&h);
+    }
 }
 
 int main(void)
