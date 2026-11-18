@@ -142,6 +142,27 @@ static void emit_timer(gz_sign_t *e, emit_t *em)
     if (em->st == GZ_OK) em->st = gz_action_list_add(em->out, &a);
 }
 
+/* The tick is needed while the engine holds anything that ticks: a round in a slot, a host's kept round
+ * (its answers' rate), a member's round that left memory Unfinished. An engine that holds nothing sets
+ * no timer, so that a node with no round in flight is not woken every tick. */
+static int needs_tick(const gz_sign_t *e)
+{
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++)
+        if (e->rounds[i].state != GZ_SIGN_ROUND_FREE) return 1;
+    for (int k = 0; k < GZ_SIGN_MAX_KEPT; k++)
+        if (e->kept[k].used) return 1;
+    for (size_t i = 0; !e->cfg.host && i < e->n_exposures; i++)
+        if (e->exposed[i].state == GZ_SIGN_ROUND_UNFINISHED) return 1;
+    return 0;
+}
+
+static void arm_timer(gz_sign_t *e, emit_t *em)
+{
+    if (em->st != GZ_OK || e->timer_on || !needs_tick(e)) return;
+    emit_timer(e, em);
+    if (em->st == GZ_OK) e->timer_on = 1;
+}
+
 /* ---- records (journal.md 9): TLV streams, saved in batches ---- */
 
 static void emit_batch(emit_t *em, const gz_record_t *recs, size_t n)
@@ -2195,6 +2216,7 @@ static gz_status_t fail_engine(gz_sign_t *e, gz_status_t st)
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) wipe_secrets(&e->rounds[i]);
     wipe_secrets(&e->pending);
     drop_keys(e);
+    e->timer_on = 0;                                /* what this call appended is not handed out */
     return st;
 }
 
@@ -2463,7 +2485,7 @@ gz_status_t gz_sign_resume(gz_sign_t *e, gz_action_list_t *out, int *more)
         if (em.st != GZ_OK) break;
         if (out->count != before) { *more = 1; break; }   /* one round's actions a call */
     }
-    if (em.st == GZ_OK && !*more) emit_timer(e, &em);
+    if (em.st == GZ_OK && !*more) { e->timer_on = 0; arm_timer(e, &em); }   /* a start: no timer is set yet */
     /* A start that fails leaves no secret behind: it may have begun a member's next tier, with new
      * secret nonces, before the list ran out (review B, B11). */
     if (em.st != GZ_OK) { out->count = count; out->used = used; *more = 0; return fail_engine(e, em.st); }   /* RULE:FAILED_START_WIPES */
@@ -2515,6 +2537,7 @@ static void tick(gz_sign_t *e, emit_t *em)
     int acted = 0, resent = 0;
     uint32_t start = e->rr % GZ_SIGN_MAX_ROUNDS;
     e->tick++;
+    e->timer_on = 0;                                /* it has fired */
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
         gz_sign_round_t *r = &e->rounds[i];
         if (r->state != GZ_SIGN_ROUND_FREE) r->ticks++;
@@ -2563,7 +2586,7 @@ static void tick(gz_sign_t *e, emit_t *em)
         save_ended_of(e, x->round_id, 0, x->why, NULL, 0, GZ_SIGN_END_ABANDONED, gz_sign_reason(x->why, 0), em);
         ended++;
     }
-    emit_timer(e, em);
+    arm_timer(e, em);
 }
 
 /* A received message as its whole envelope in the work area: its header (protocol, kind, scope), then
@@ -2601,6 +2624,7 @@ gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *ev, gz_action_list_t 
             if (e->rounds[i].state != GZ_SIGN_ROUND_FREE && is_link_of(&e->rounds[i], 0, &ev->u.peer.link))
                 member_resend(e, &e->rounds[i], &em);
     }
+    arm_timer(e, &em);                                 /* a member's first round */
     drop_keys(e);
     if (em.st != GZ_OK) { out->count = count; out->used = used; return fail_engine(e, em.st); }
     return GZ_OK;
@@ -2625,6 +2649,8 @@ gz_status_t gz_sign_begin(gz_sign_t *e, const gz_sign_begin_t *b, gz_action_list
         e->counters[GZ_SIGN_COUNT_REJECTED]++;
         report_of(e, GZ_SIGN_OUTCOME_FAILED, b->scope, b->check_id, b->attempt, NULL, 0, &em);   /* RULE:BEGIN_REFUSAL_OUTCOME */
         st = GZ_OK;
+    } else if (st == GZ_OK) {
+        arm_timer(e, &em);                             /* the host's first round */
     }
     if (st != GZ_OK || em.st != GZ_OK) { out->count = count; out->used = used; return fail_engine(e, st != GZ_OK ? st : em.st); }
     return GZ_OK;

@@ -474,6 +474,7 @@ typedef struct {
     uint32_t next_seq;
     uint32_t attempts;              /* host: attempts begun, or found at a start: a statistic, no limit (the budget is time) */
     uint32_t rr;                   /* the tick's round-robin over the rounds (composite-node.md 8.3, R3) */
+    int timer_on;                   /* the tick timer is set: only while the engine holds a round (an idle engine sets none) */
     gz_sign_round_t rounds[GZ_SIGN_MAX_ROUNDS];
     gz_sign_kept_t kept[GZ_SIGN_MAX_KEPT];   /* host: rounds that left the slots, compactly */
     uint8_t known[GZ_SIGN_MAX_KNOWN][32];   /* the newest, at n % GZ_SIGN_MAX_KNOWN */

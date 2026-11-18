@@ -839,7 +839,8 @@ static void test_definitions(int print)
         eng_init(&host, &b, 0);
         gz_action_list_init(&hl, hs, 16, hb, sizeof hb);
         w_params(p, 1, 1, w_mask(1), 0);
-        CHECK(w_begin_params(&host, &b, p, W_PARAMS, &hl) == GZ_OK && hl.count == 2);
+        /* its save and its proposal, and the tick timer its first round needs (an idle engine sets none) */
+        CHECK(w_begin_params(&host, &b, p, W_PARAMS, &hl) == GZ_OK && hl.count == 3 && hl.slots[2].kind == GZ_ACTION_SET_TIMER);
         gz_sign_wipe(&host);
     }
     size_t m;
@@ -949,7 +950,8 @@ static void test_definitions(int print)
     eng_init(&mem, &b, 1);
     gz_action_list_init(&list, slots, 64, bytes, sizeof bytes);
     CHECK(w_msg_event(&b, 0, 1, clean, n, &ev));
-    CHECK(gz_sign_handle(&mem, &ev, &list) == GZ_OK && list.count == 2);
+    /* its save and its nonces, and the tick timer its first round needs (an idle engine sets none) */
+    CHECK(gz_sign_handle(&mem, &ev, &list) == GZ_OK && list.count == 3 && list.slots[2].kind == GZ_ACTION_SET_TIMER);
     gz_sign_sha256_init(&s);
     gz_sign_sha256_write(&s, clean, n);
     for (size_t k = 0; k < list.count; k++)              /* each message as its whole envelope, as before contract v2 */
@@ -974,22 +976,22 @@ static void test_definitions(int print)
  * and attempt, keys come per round from the hook, and the saved round state
  * changed (composite-node.md, P4.3 as built). */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
-    0x654cd0587f1157eaull, /* honest-1 */
-    0x99a02f4f209fd0deull, /* honest-2 */
-    0xf29a9992870370bfull, /* duplicates */
-    0xc1c09fb54cb21f59ull, /* member-restart-nonces */
-    0xa01de1b5607b23a4ull, /* member-restart-signed */
-    0x4683211610ab76f0ull, /* tier-abort */
-    0xfaa3628d9f5979ffull, /* host-restarts */
-    0xd67d236799262976ull, /* timers */
-    0xb0ddc30490994d73ull, /* host-faults */
-    0xfd57b4e7cd85ceb8ull, /* member-faults */
-    0xc4fe67010a2aa738ull, /* proposals */
-    0xe399715c1785b4dfull, /* journal */
-    0x88bce38613b20027ull, /* edges */
-    0x4d49f8cfc1710bafull, /* reconnect */
-    0x20afc88891f12f5eull, /* records */
-    0x020391c0966840f8ull, /* exposure */
+    0x36c444acf31e3b91ull, /* honest-1 */
+    0xcbbe74ddbded89bbull, /* honest-2 */
+    0x0782ee5fc8dbe844ull, /* duplicates */
+    0x93aed5765621f44dull, /* member-restart-nonces */
+    0x6183551b3e0bab48ull, /* member-restart-signed */
+    0x83926ec0e6a8b580ull, /* tier-abort */
+    0x3652358b9b99b558ull, /* host-restarts */
+    0x48b858dd662a87c3ull, /* timers */
+    0xcb1af652bb620495ull, /* host-faults */
+    0xbb4d87a2e72ab4cbull, /* member-faults */
+    0xe8074e25ac6874eaull, /* proposals */
+    0x7a4ad947129fab60ull, /* journal */
+    0xf605a899dc4dc4daull, /* edges */
+    0xfb515f71f3c56ecbull, /* reconnect */
+    0xc2a1b812722ffaecull, /* records */
+    0x5cb190a761e8a6dfull, /* exposure */
 };
 
 static void test_golden(int print)
