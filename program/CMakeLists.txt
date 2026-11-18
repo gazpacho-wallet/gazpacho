@@ -227,6 +227,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_signing
     COMMAND ${GZP_PY} ${GZP_T}/signing.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/signing)
   set_tests_properties(program_signing PROPERTIES TIMEOUT 900)
+  # P4.6: Slice 1 end to end on the local test chain, a real Bitcoin Core regtest node
+  # (GZ_BITCOIN_BIN: the folder holding bitcoind and bitcoin-cli; skipped without it).
+  add_test(NAME program_slice1
+    COMMAND ${GZP_PY} ${GZP_T}/slice1.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/slice1)
+  set_tests_properties(program_slice1 PROPERTIES TIMEOUT 1500 SKIP_RETURN_CODE 77)
   # Every program test may start gazpacho-test with a launcher of its own:
   # the passphrase file's path and the Argon2id floor come through the
   # environment (gazpacho-test only; the harness passes the options itself).
