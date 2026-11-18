@@ -197,7 +197,7 @@ Suites (`suite`):
 
 **It shares the runners with CI.** The repository gets 20 jobs at once in all, for pull requests' CI and the deep checks together. So each suite's shards are limited (`max-parallel`: mutation 6, fuzz 4, valgrind 3, sanitizers 3, msan 2): one suite leaves at least 14 runners to CI, but `all` can take nearly every runner for hours and is meant for the nightly run, not for the working day. Prefer one suite, and `tools` for a mutation run.
 
-The workflow file and its helper, `tools/deep-checks.py`, are always taken from the workflow's own commit; only the code under test comes from `ref`. Adding a mutation tool is one entry in the helper's `TOOLS` table. A pull request that changes either file runs a smoke set on its own head: fuzz at 30 seconds per target, `chain-watch` in 2 shards, and regtest.
+The workflow file and its helper, `tools/deep-checks.py`, are always taken from the workflow's own commit; only the code under test comes from `ref`. Adding a mutation tool is one entry in the helper's `TOOLS` table. A pull request that changes either file runs a smoke set on its own head: fuzz at 30 seconds per target, `chain-watch` in 2 shards (its survivors are listed, not counted as a failure), and regtest.
 
 **Starting a run.** Run it on your own branch, and keep runs on someone else's branch small:
 

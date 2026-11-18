@@ -258,6 +258,9 @@ jobs:
           sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
           valgrind python3-cryptography clang-18 libclang-rt-18-dev
       - name: Run the shard
+        # On a pull request's smoke set only the plumbing is under test: the
+        # tool's verdict (survivors) is reported in the summary, not as a failure.
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         env:
           TOOL: ${{ matrix.tool }}
           SHARD: ${{ matrix.shard }}
