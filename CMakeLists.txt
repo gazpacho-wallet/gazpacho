@@ -627,3 +627,8 @@ add_subdirectory(ports/api)
 
 # --- the gazpacho program (stream S11): executor, port adapters, executables ----
 add_subdirectory(program)
+
+# Audit e2e, H1: the auditor's two-trees-on-one-outpoint scenario (tests/signing/test_c7_audit.c).
+add_executable(test_c7_audit tests/signing/test_c7_audit.c)
+target_link_libraries(test_c7_audit PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
+add_test(NAME signing_c7_audit COMMAND test_c7_audit)
