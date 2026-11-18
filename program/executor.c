@@ -62,9 +62,9 @@ static uint64_t port_mono(void *ctx)
     return gzp_mono_ms();
 }
 
-/* The key port (ports.h) over the stand-in transport key, until P8 derives
- * per-lobby keys: every (epoch, index) is the transport's key, and the host
- * key is it too. No secret is handed out before the signing engine needs one. */
+/* The key port (ports.h; docs/notes/keys.md): per-lobby keys derived from
+ * the seed under the current epoch only (keys.h's policy, through
+ * gzp_net_key), the host key the transport's own. */
 static int port_pub(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33])
 {
     gzp_exec_t *ex = ctx;
@@ -85,25 +85,28 @@ static int port_point_ok(void *ctx, const uint8_t pub[33])
 static int port_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
 {
     gzp_exec_t *ex = ctx;
-    if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign(ex->net, 0, 0, msg, sig) : 0;
+    if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign_host(ex->net, msg, sig) : 0;
     return gzp_net_sign(ex->net, epoch, index, msg, sig);
 }
 
-/* A lobby's signing gate closed (AT_JOIN): its scoped factory secret is
- * wiped. The stand-in keys hold none apart; the line shows the moment. */
+/* A lobby's signing gate closed (AT_JOIN): its scoped secrets are wiped
+ * (keys.md 7); the line shows the moment. */
 static void port_forget(void *ctx, const uint8_t scope[32])
 {
-    (void)ctx;
-    gzp_log("key-forget scope=%02x%02x%02x%02x", scope[0], scope[1], scope[2], scope[3]);
+    gzp_exec_t *ex = ctx;
+    gzp_keys_forget(ex->keys, scope);
+    gzp_log("key-forget scope=%02x%02x%02x%02x held=%zu", scope[0], scope[1], scope[2], scope[3],
+            gzp_keys_scopes_held(ex->keys));
 }
 
+/* A secret for a round (the key hook, P4.3). Under AT_JOIN, only from the
+ * scoped table, by position: the pair of a scope the person readied for
+ * (keys.md 7, audit M2). Otherwise derived now, under the current epoch only. */
 static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
 {
-    (void)ctx;
-    (void)epoch;
-    (void)index;
-    (void)sec32;
-    return 0;
+    gzp_exec_t *ex = ctx;
+    if (ex->keys->scoped_only) return gzp_keys_scoped_at(ex->keys, epoch, index, sec32);
+    return gzp_net_key(ex->net, epoch, index, sec32, NULL);
 }
 
 static int port_host_pub(void *ctx, uint8_t pub33[33])
@@ -243,6 +246,24 @@ static int is_ping_record(const gz_record_t *r)
     return (r->type == 0x7e570001u || r->type == 0x7e580001u) && r->bytes.len >= PING_HEADER;
 }
 
+/* The key port's member slots (keys.md 7), from the records the node saves
+ * or reads back; and a line for each key_index saved, for the tests (T13). */
+static void keys_note_record(gzp_exec_t *ex, const gz_record_t *r, int saved)
+{
+    gz_bytes_t v, scope, role, ep, ix;
+    if (r->type == GZ_RECORD_SLOT_OPENED && gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4 &&
+        gz_rec_find(r->bytes, 4, &scope) == 1 && scope.len == 32 && gz_rec_find(r->bytes, 6, &role) == 1 &&
+        role.len == 1 && role.data[0] == 0 && gz_rec_find(r->bytes, 12, &ep) == 1 && ep.len == 4 &&
+        gz_rec_find(r->bytes, 14, &ix) == 1 && ix.len == 4) {
+        if (!gzp_keys_note_slot(ex->keys, gz_get_u32(v.data), scope.data, gz_get_u32(ep.data), gz_get_u32(ix.data)))
+            gzp_log("key-slots full");
+    } else if (r->type == GZ_RECORD_SLOT_CLOSED && gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
+        gzp_keys_drop_slot(ex->keys, gz_get_u32(v.data));
+    } else if (saved && r->type == GZ_RECORD_KEY_INDEX && gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
+        gzp_log("key-index value=%u", (unsigned)gz_get_u32(v.data));
+    }
+}
+
 static void do_save(gzp_exec_t *ex, const gz_action_t *a)
 {
     size_t i;
@@ -279,11 +300,17 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
         const gz_record_t *r = &a->u.save.records[i];
         if (r->type == GZ_RECORD_KEY_EPOCH) {
             gz_bytes_t v;
-            if (gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4)
+            if (gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
                 gzp_log("%s seq=%llu epoch=%02x%02x%02x%02x", restored ? "restore-batch" : "key-epoch",
                         (unsigned long long)a->u.save.batch.sequence, v.data[0], v.data[1], v.data[2], v.data[3]);
+                /* Durable: the key port derives under it from now on, and a
+                 * restore batch ends the restore start's freeze (keys.md 3). */
+                gzp_keys_set_epoch(ex->keys, gz_get_u32(v.data));
+                if (restored) gzp_keys_freeze(ex->keys, 0);
+            }
             continue;
         }
+        keys_note_record(ex, r, 1);
         if (!is_ping_record(r)) continue;
         ex->pings_saved++;
 #ifdef GZP_TEST_BUILD
@@ -636,6 +663,27 @@ static void on_message(void *ctx, const gz_link_t *link, uint16_t kind, const ui
 
 /* A USER_COMMAND: request_id, command code, then the arguments (already a
  * TLV stream of records 10 and up). */
+/* A ready given with the passphrase (record 14 = 1) on a member under
+ * AT_JOIN. The passphrase was checked before the command came here (the
+ * local API checks it), so the key port opens that lobby's scope now, before
+ * the node gets the command (node.h, LOBBY_READY; keys.md 7, integration W4).
+ * Without it the node's gate would open on the flag alone with no key behind
+ * it (audit M4): it fails safe, signing nothing. */
+static void keys_ready_gate(gzp_exec_t *ex, const uint8_t *args, size_t len)
+{
+    gz_bytes_t all, scope, flag;
+    gzp_keys_err_t e;
+    int ok;
+    all.data = args;
+    all.len = len;
+    if (!ex->keys->scoped_only || gz_rec_find(all, 12, &scope) != 1 || scope.len != 32 ||
+        gz_rec_find(all, 14, &flag) != 1 || flag.len != 1 || flag.data[0] != 1)
+        return;
+    ok = gzp_keys_open_ready(ex->keys, scope.data, &e);
+    gzp_log("key-scope-open scope=%02x%02x%02x%02x ok=%d held=%zu", scope.data[0], scope.data[1], scope.data[2],
+            scope.data[3], ok, gzp_keys_scopes_held(ex->keys));
+}
+
 static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, size_t args_len)
 {
     uint8_t *buf = malloc(args_len + 64), c2[2];
@@ -643,6 +691,7 @@ static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, 
     size_t at = 0;
     gz_event_t ev;
     if (!buf) abort();
+    if (code == GZ_CMD_LOBBY_READY) keys_ready_gate(ex, args, args_len);
     snprintf(rid, sizeof rid, "p-%llu-%llu", (unsigned long long)ex->incarnation,
              (unsigned long long)++ex->next_request);
     gz_put_u16(c2, code);
@@ -776,6 +825,33 @@ static void rd_rewind(void *ctx)
     ex->store.ops->rewind(ex->store.ctx);
 }
 
+/* The key port's epoch at a start (keys.md 3): that of the newest key_epoch
+ * record in storage, 0 if there is none; with the restore marker, nothing
+ * at all until the restore batch's new epoch is saved (do_save), so the
+ * backup's slots load without their old keys (safety-rule.md C12, R3).
+ * Every scoped secret is gone at a start (composite-node.md 12.2). */
+static void keys_from_storage(gzp_exec_t *ex, int restored)
+{
+    gzp_batch_t sb;
+    uint32_t epoch = 0;
+    size_t i;
+    memset(ex->keys->slots, 0, sizeof ex->keys->slots);
+    ex->store.ops->rewind(ex->store.ctx);
+    while (ex->store.ops->next(ex->store.ctx, &sb))
+        for (i = 0; i < sb.n_records; i++) {
+            gz_bytes_t v;
+            keys_note_record(ex, &sb.records[i], 0);
+            if (sb.records[i].type == GZ_RECORD_KEY_EPOCH && gz_rec_find(sb.records[i].bytes, 2, &v) == 1 &&
+                v.len == 4)
+                epoch = gz_get_u32(v.data);
+        }
+    ex->store.ops->rewind(ex->store.ctx);
+    gzp_keys_forget_all(ex->keys);
+    gzp_keys_set_epoch(ex->keys, epoch);
+    gzp_keys_freeze(ex->keys, restored);
+    gzp_log("keys epoch=%08x frozen=%d", (unsigned)ex->keys->epoch, ex->keys->frozen);
+}
+
 /* node.h's stepped start. Between steps, storage confirmations (and only
  * those) are given to the node; GZ_WAITING waits for the next one. */
 static void start_node(gzp_exec_t *ex)
@@ -794,6 +870,7 @@ static void start_node(gzp_exec_t *ex)
     if (rd.restored && ex->store.ops->guard &&
         ex->store.ops->guard(ex->store.ctx, &rd.guard.data, &rd.guard.len) == 1)
         gzp_log("restore-guard-file counter=%llu", (unsigned long long)(rd.guard.len >= 48 ? gz_get_u64(rd.guard.data + 40) : 0));
+    keys_from_storage(ex, rd.restored);
     ex->store.ops->rewind(ex->store.ctx);
     while (more && !ex->fatal) {
         gz_status_t st;

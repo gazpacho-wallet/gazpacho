@@ -21,6 +21,7 @@
 
 #include "datadir.h"
 #include "gzp.h"
+#include "keys.h"
 #include "net.h"
 #include "notify.h"
 #include "pchain.h"
@@ -52,6 +53,7 @@ typedef struct {
     const gzp_options_t *opt;
     gzp_datadir_t *dir;
     gzp_net_t *net;
+    gzp_keys_t *keys;              /* the key port's keys (keys.h): epoch, freeze, scoped secrets */
     const uint8_t *chain_hash;     /* the network's genesis hash (32 bytes): the node writes it in guard records */
     gzp_chain_t *chain;
     gzp_notify_sink_t notify;
