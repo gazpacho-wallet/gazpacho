@@ -145,7 +145,7 @@ class ChainWorld(World):
 
     def args(self, who, role):
         a = [self.exe, "--data-dir", os.path.join(self.work, who), "--role", role, "--name", who,
-             "--network", "regtest", "--chain-url", self.rt.url, "--chain-poll-ms", "250",
+             "--test-regtest", "--chain-url", self.rt.url, "--chain-poll-ms", "250",
              "--no-interface", "--test-engines", "0",
              "--test-commands"]
         if role == "host":

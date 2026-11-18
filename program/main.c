@@ -461,6 +461,9 @@ int main(int argc, char **argv)
         gzp_log("process dumpable=%d core=%llu", d, (unsigned long long)cl.rlim_cur);
     }
 #endif
+#ifdef GZP_TEST_BUILD
+    if (opt.test_regtest) gz_network_allow_regtest(true); /* the local test chain (P4.6) */
+#endif
     if (!gz_network_from_name(opt.network, &network) || !gz_network_is_test(network) ||
         !gzw_network_from_name(opt.network, &wnet) || wnet == GZW_NET_MAINNET) {
         fprintf(stderr, "gazpacho: refusing network %s\n", opt.network);

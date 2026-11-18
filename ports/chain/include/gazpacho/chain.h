@@ -147,6 +147,11 @@ typedef enum gz_network {
   GZ_NET_REGTEST = 5
 } gz_network;
 
+/* GZ_NET_REGTEST is no network until a test program allows it, once, at its
+ * start (gazpacho-test --test-regtest, P4.6): until then every function
+ * below treats it as any invalid value, and "regtest" names nothing. */
+void gz_network_allow_regtest(bool on);
+
 /* "mainnet", "testnet", "testnet4", "signet"; "invalid" for anything else. */
 const char *gz_network_name(gz_network n);
 /* Parses the four names above. Returns false otherwise. */

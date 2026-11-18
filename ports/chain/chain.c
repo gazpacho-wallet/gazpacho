@@ -29,13 +29,17 @@ const char *gz_chain_result_name(gz_chain_result r) {
 
 /* ---- networks ----------------------------------------------------------- */
 
+static bool regtest_allowed; /* gz_network_allow_regtest: tests only */
+
+void gz_network_allow_regtest(bool on) { regtest_allowed = on; }
+
 const char *gz_network_name(gz_network n) {
   switch (n) {
     case GZ_NET_MAINNET: return "mainnet";
     case GZ_NET_TESTNET3: return "testnet";
     case GZ_NET_TESTNET4: return "testnet4";
     case GZ_NET_SIGNET: return "signet";
-    case GZ_NET_REGTEST: return "regtest";
+    case GZ_NET_REGTEST: return regtest_allowed ? "regtest" : "invalid";
     case GZ_NET_INVALID: break;
   }
   return "invalid";
@@ -43,11 +47,12 @@ const char *gz_network_name(gz_network n) {
 
 bool gz_network_valid(gz_network n) {
   return n == GZ_NET_MAINNET || n == GZ_NET_TESTNET3 || n == GZ_NET_TESTNET4 || n == GZ_NET_SIGNET ||
-         n == GZ_NET_REGTEST;
+         (n == GZ_NET_REGTEST && regtest_allowed);
 }
 
 bool gz_network_is_test(gz_network n) {
-  return n == GZ_NET_TESTNET3 || n == GZ_NET_TESTNET4 || n == GZ_NET_SIGNET || n == GZ_NET_REGTEST;
+  return n == GZ_NET_TESTNET3 || n == GZ_NET_TESTNET4 || n == GZ_NET_SIGNET ||
+         (n == GZ_NET_REGTEST && regtest_allowed);
 }
 
 bool gz_network_from_name(const char *name, gz_network *out) {
@@ -55,6 +60,7 @@ bool gz_network_from_name(const char *name, gz_network *out) {
                                    GZ_NET_REGTEST};
   if (name == NULL || out == NULL) return false;
   for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+    if (all[i] == GZ_NET_REGTEST && !regtest_allowed) continue; /* its name is "invalid" then */
     if (strcmp(name, gz_network_name(all[i])) == 0) {
       *out = all[i];
       return true;
@@ -79,7 +85,7 @@ bool gz_network_genesis(gz_network n, uint8_t out[GZ_HASH_LEN]) {
       hex = "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6";
       break;
     case GZ_NET_REGTEST:
-      hex = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206";
+      if (regtest_allowed) hex = "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206";
       break;
     case GZ_NET_INVALID: break;
   }

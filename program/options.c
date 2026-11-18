@@ -246,6 +246,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-stop-at-restart")) { o->test_stop_at_restart = 1; takes = 0; }
         else if (!strcmp(a, "--test-dump-journal")) { o->test_dump_journal = 1; takes = 0; }
         else if (!strcmp(a, "--test-kdf-floor")) { o->test_kdf_floor = 1; takes = 0; }
+        else if (!strcmp(a, "--test-regtest")) { o->test_regtest = 1; o->network = "regtest"; takes = 0; }
         else if (!strcmp(a, "--test-standin-store")) { o->test_standin_store = 1; takes = 0; }
         else if (!strcmp(a, "--test-reveal-check")) { o->test_reveal_check = 1; takes = 0; }
         else if (!strcmp(a, "--test-seed-check")) { o->test_seed_check = 1; takes = 0; }
@@ -360,7 +361,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
     }
     if (strcmp(o->network, "signet") && strcmp(o->network, "testnet4")
 #ifdef GZP_TEST_BUILD
-        && strcmp(o->network, "regtest") /* the local test chain: gazpacho-test only (P4.6) */
+        && !(o->test_regtest && !strcmp(o->network, "regtest")) /* --test-regtest only (P4.6) */
 #endif
     ) {
         fprintf(stderr, "gazpacho: unknown network %s (signet or testnet4)\n", o->network);

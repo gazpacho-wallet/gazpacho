@@ -88,6 +88,7 @@ typedef struct {
     int test_max_conns;            /* the transport's max_conns (0: the default, GZ_NODE_MAX_CONNS) */
     const char *test_passphrase_file; /* unlock (or set up) from this file: the passphrase's bytes */
     int test_kdf_floor;            /* set-up at the storage library's test floor (1 pass, 8 KiB) */
+    int test_regtest;              /* --test-regtest: the local test chain (P4.6) */
     int test_standin_store;        /* the journal stand-in instead of the sealed journal (its files are read) */
     const char *test_append_batch; /* save this batch (hex: type, len, bytes ...) and stop */
     int test_kill_at;
