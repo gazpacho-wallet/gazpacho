@@ -1035,6 +1035,11 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.tree_crypto = &ex->tree_crypto;
     cfg.tree_import = port_tree_import;
     cfg.tree_import_ctx = (void *)ex->net->secp;
+    /* The engine's memory, the program's for its whole run (node.h): one block, kept across in-process
+     * restarts like the node itself. */
+    if (!ex->sign_mem && !(ex->sign_mem = malloc(gz_node_sign_size()))) abort();
+    cfg.sign_mem = ex->sign_mem;
+    cfg.sign_mem_size = gz_node_sign_size();
     cfg.tip = (uint32_t)ex->opt->tip;
     cfg.host_funding = GZ_HOST_FUNDING_AUTO;
     cfg.member_signing = (gz_member_signing_t)ex->opt->member_signing;

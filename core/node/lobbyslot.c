@@ -353,7 +353,7 @@ static gz_status_t closing_end(gz_node_t *c, int k, gz_action_list_t *out)
         st = np_disconnect(out, &e->link, GZ_DISCONNECT_DONE);
     }
     /* The host's compact rounds of the scope are answered no longer (H12: while a member can need them). */
-    if (e->host && c->sign_on) gz_sign_forget_scope(&c->sign, e->scope);
+    if (e->host && c->sign_on) gz_sign_forget_scope(c->sign, e->scope);
     e->used = 0;
     /* The node part's own table: a key no Open lobby holds is unseated from
      * now, and the cap and the idle rule apply to it (M2). */

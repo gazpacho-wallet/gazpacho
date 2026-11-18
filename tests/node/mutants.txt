@@ -262,4 +262,4 @@ sg-outcome-to-member-failed	core/node/signslot.c	if (kind == GZ_SIGN_OUTCOME_FAI
 sg-outcome-not-queued	core/node/signslot.c	if (c->busy[eng] || c->sg_defer) return sg_queue(c, o) ? GZ_OK : gz_c_bug(c, ENG_SIGN);	(void)sg_queue;
 sg-begin-no-tip	core/node/signslot.c	if (!c->tip) return sg_refuse_begin(c, h, "sign-begin-refused-no-tip", out);	
 sg-timer-budget	core/node/timers.c	if (eng == ENG_SIGN) return 1;      /* the engine's one tick timer */	if (eng == ENG_SIGN) return 2;
-sg-init-without-secp	core/node/signslot.c	if (!c->cfg.secp) return GZ_OK;	if (!c->cfg.secp && 0) return GZ_OK;
+sg-init-without-secp	core/node/signslot.c	if (!c->cfg.secp || !c->cfg.sign_mem	if (!c->cfg.sign_mem

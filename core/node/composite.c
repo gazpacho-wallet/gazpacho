@@ -43,6 +43,11 @@ size_t gz_node_size(void)
     return sizeof(gz_node_t);
 }
 
+size_t gz_node_sign_size(void)
+{
+    return sizeof(gz_sign_t);
+}
+
 gz_status_t gz_node_init(gz_node_t *c, const gz_ports_t *ports, const gz_node_config_t *cfg, uint64_t incarnation)
 {
     if (!c || !ports || !cfg || !ports->random.fill || !ports->clock.now_ms || !ports->clock.mono_ms)
@@ -135,7 +140,7 @@ static gz_status_t load_record(gz_node_t *c, const gz_record_t *rec, gz_batch_id
     /* A Lobby record goes to the slot its scope names (7.3). */
     if (area == GZ_AREA_LOBBY) return gz_ls_load_record(c, rec);
     /* A Round record to the signing engine, which finds its lobby by scope. */
-    if (area == GZ_AREA_ROUND && c->sign_on) return gz_sign_load(&c->sign, rec, at);
+    if (area == GZ_AREA_ROUND && c->sign_on) return gz_sign_load(c->sign, rec, at);
 #ifdef GZ_TEST_KINDS
     if (area == 0x7e5au) return gz_ss_load(c, rec); /* the signing stand-in's */
 #endif
@@ -161,7 +166,7 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
         c->fenced = 1;
     }
     storage->rewind(storage->ctx);
-    if (c->sign_on) gz_sign_load_begin(&c->sign);
+    if (c->sign_on) gz_sign_load_begin(c->sign);
     while (storage->next(storage->ctx, &batch)) {
         if (!id_after(previous, batch.id) || batch.id.sequence == 0 || batch.id.incarnation > storage->incarnation)
             return GZ_ERR_CORRUPT;

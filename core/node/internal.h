@@ -469,7 +469,7 @@ struct gz_node {
 
     /* the signing engine (signslot.c) */
     int sign_on;                    /* built with a secp256k1 context: the engine runs */
-    gz_sign_t sign;
+    gz_sign_t *sign;                /* the engine, in the caller's memory (node.h sign_mem), or NULL */
     uint32_t tip;                   /* the newest tip the chain (or the configuration) gave */
     sg_queued_t sq[SG_MAX_QUEUED];
     size_t n_sq, sq_cur;

@@ -49,8 +49,11 @@ int main(void)
     /* P4.3: with a context the engine is behind the hand-off, and the release
      * node takes the commands (here refused only for their missing fields). */
     secp256k1_context *ctx = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
+    void *mem = malloc(gz_node_sign_size());
     h_init(&h, 1, 0);
     h.cfg.secp = ctx;
+    h.cfg.sign_mem = mem;
+    h.cfg.sign_mem_size = gz_node_sign_size();
     h_new_node(&h);
     CHECK(h_start(&h) == GZ_OK);
     m = h_mark(&h);
@@ -60,5 +63,6 @@ int main(void)
     CHECK_NO_NODE_ERROR(&h);
     h_free(&h);
     secp256k1_context_destroy(ctx);
+    free(mem);
     return check_done();
 }

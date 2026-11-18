@@ -213,9 +213,9 @@ static rt_t route_round(const gz_node_t *c, const gz_link_t *link, const uint8_t
     /* First, any round the signing engine holds under the scope, resolved
      * rounds included (H12, 2.4): the engine takes a message only on the
      * round's own link, from the saved round (section 4, 13). */
-    if (c->sign_on && gz_sign_holds_scope(&c->sign, scope) && (s < 0 || c->cfg.host)) return mk(RT_SIGNING, s, -1, 0);   /* RULE-NODE:ROUTE_HELD */
+    if (c->sign_on && gz_sign_holds_scope(c->sign, scope) && (s < 0 || c->cfg.host)) return mk(RT_SIGNING, s, -1, 0);   /* RULE-NODE:ROUTE_HELD */
     if (s < 0 || !c->slots[s].round_ok) {
-        if (c->sign_on && gz_sign_holds_scope(&c->sign, scope)) return mk(RT_SIGNING, s, -1, 0);
+        if (c->sign_on && gz_sign_holds_scope(c->sign, scope)) return mk(RT_SIGNING, s, -1, 0);
         return mk(RT_DROP, -1, -1, DROP_NO_SLOT);
     }
     if (!c->cfg.host) {

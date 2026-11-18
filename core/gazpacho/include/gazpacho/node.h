@@ -239,6 +239,12 @@ typedef struct {
     void *tree_import_ctx;
     uint32_t tip;                      /* the tip to start from, until the chain reports one (0: none) */
     uint32_t sign_tick_ms;             /* the signing engine's tick (0: 1,000 ms; tests shorten it) */
+    /* The signing engine's memory (several MB: its rounds in full), the
+     * caller's, at least gz_node_sign_size() bytes, suitably aligned, for
+     * the node's whole life. NULL: no engine, as without `secp`, so a node
+     * that never signs (the simulator's, most unit tests') does not carry it. */
+    void *sign_mem;
+    size_t sign_mem_size;
     gz_key_port_t keys;                /* per-lobby keys and the host key */
     gz_host_funding_t host_funding;    /* composite-node.md 12.1; AUTO by default */
     gz_member_signing_t member_signing;/* composite-node.md 12.2; AT_JOIN by default */
@@ -254,6 +260,8 @@ typedef struct {
  * destroy call. */
 typedef struct gz_node gz_node_t;
 size_t gz_node_size(void);
+/* The signing engine's memory a node with the engine needs (gz_node_config_t.sign_mem). */
+size_t gz_node_sign_size(void);
 
 /* Prepare a node. `ports` and `cfg` are copied. `incarnation` is the one its
  * runner was given (runner.h).

@@ -459,9 +459,9 @@ static gz_status_t sg_enter(gz_node_t *c, int what, const void *arg, const uint8
     c->sg_defer = 1;
     c->sg_out = out; c->sg_line_st = GZ_OK;
     switch (what) {
-    case 0: st = gz_sign_begin(&c->sign, (const gz_sign_begin_t *)arg, out); break;
-    case 1: st = gz_sign_cancel(&c->sign, scope, out); break;
-    default: st = gz_sign_member_left(&c->sign, scope, key, out); break;
+    case 0: st = gz_sign_begin(c->sign, (const gz_sign_begin_t *)arg, out); break;
+    case 1: st = gz_sign_cancel(c->sign, scope, out); break;
+    default: st = gz_sign_member_left(c->sign, scope, key, out); break;
     }
     if (st == GZ_OK) st = c->sg_line_st;
     c->sg_out = NULL;
@@ -630,7 +630,7 @@ void gz_sg_signing(slot_t *s, gz_lobby_signing_t *sg)
 
 static gz_status_t sg_ops_load(void *e, const gz_record_t *rec, gz_batch_id_t at)
 {
-    return gz_sign_load(&((gz_node_t *)e)->sign, rec, at);
+    return gz_sign_load(((gz_node_t *)e)->sign, rec, at);
 }
 
 /* Each call of the engine with the list its builder's notices go to. */
@@ -638,7 +638,7 @@ static gz_status_t sg_ops_resume(void *e, gz_action_list_t *out, int *more)
 {
     gz_node_t *c = e;
     c->sg_out = out; c->sg_line_st = GZ_OK;
-    gz_status_t st = gz_sign_resume(&c->sign, out, more);
+    gz_status_t st = gz_sign_resume(c->sign, out, more);
     c->sg_out = NULL;
     return st == GZ_OK ? c->sg_line_st : st;
 }
@@ -647,7 +647,7 @@ static gz_status_t sg_ops_handle(void *e, const gz_event_t *ev, gz_action_list_t
 {
     gz_node_t *c = e;
     c->sg_out = out; c->sg_line_st = GZ_OK;
-    gz_status_t st = gz_sign_handle(&c->sign, ev, out);
+    gz_status_t st = gz_sign_handle(c->sign, ev, out);
     c->sg_out = NULL;
     return st == GZ_OK ? c->sg_line_st : st;
 }
@@ -667,7 +667,9 @@ gz_status_t gz_sg_init(gz_node_t *c)
     gz_sign_config_t sc;
     uint64_t tick = c->cfg.sign_tick_ms ? c->cfg.sign_tick_ms : SG_TICK_MS;
     c->sign_on = 0;
-    if (!c->cfg.secp) return GZ_OK;
+    c->sign = NULL;
+    if (!c->cfg.secp || !c->cfg.sign_mem || c->cfg.sign_mem_size < sizeof(gz_sign_t)) return GZ_OK;
+    c->sign = (gz_sign_t *)c->cfg.sign_mem;
     memset(&sc, 0, sizeof sc);
     sc.host = c->cfg.host;
     sc.ctx = c->cfg.secp;
@@ -684,7 +686,7 @@ gz_status_t gz_sg_init(gz_node_t *c)
     sc.guard = sg_guard;
     sc.outcome = sg_outcome;
     sc.hook_ctx = c;
-    if (gz_sign_init(&c->sign, &sc, &c->ports, c->incarnation) != GZ_OK) return GZ_ERR_ARGUMENT;
+    if (gz_sign_init(c->sign, &sc, &c->ports, c->incarnation) != GZ_OK) return GZ_ERR_ARGUMENT;
     c->sign_on = 1;
     return GZ_OK;
 }
