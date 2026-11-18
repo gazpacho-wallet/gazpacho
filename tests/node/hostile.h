@@ -105,7 +105,7 @@ static inline gz_status_t hostile_step(h_t *h, src_t *s)
         /* A user command: a code from the ranges, random arguments. */
         static const uint16_t codes[] = {0x7e01, 0x7e02, 0x7e05, 0x7e06, 0x7e07, 0x7e09, 0x7e0c, 0x7e80, 0x7e81,
                                          0x7e82, 0x7e83, 0x7e84, 0x7e85, 0x7e05, 0x7e0c, 0x7e84, 0x0101, 0x0301,
-                                         0x0401, 0x0d01, 0x7e7f, 0};
+                                         0x0401, 0x0d01, 0x0d02, 0x0d7f, 0x7e7f, 0};
         /* Addresses a person or an invitation could give: good, and bad in
          * every way the address rule and the program's own parsing refuse. */
         static const char *addrs[] = {"127.0.0.1:1", "not-an-address", "no-port-here", "127.0.0.1", "127.0.0.1:",
@@ -118,7 +118,19 @@ static inline gz_status_t hostile_step(h_t *h, src_t *s)
         uint8_t c2[2], a[64], role = src_byte(s) & 1, mk[33];
         if (bug_command(code)) return GZ_OK;
         gz_put_u16(c2, code);
-        gz_rec_put(rec, sizeof rec, &at, 0, (const uint8_t *)"r", 1);
+        /* Now and then an API request (P6a): an id, a method, a path and a
+         * digest, from a few, so that replays and reused ids come too. */
+        static const char *rids[] = {"Aq4mT9cV2xE7nR0aW5zK", "Bq4mT9cV2xE7nR0aW5zK", "short"};
+        int api = (src_byte(s) & 3) == 0;
+        const char *rid = api ? rids[src_byte(s) % 3] : "r";
+        uint8_t dg[32];
+        gz_rec_put(rec, sizeof rec, &at, 0, (const uint8_t *)rid, strlen(rid));
+        if (api) {
+            memset(dg, src_byte(s) % 3, sizeof dg);
+            gz_rec_put(rec, sizeof rec, &at, 2, (const uint8_t *)"POST", 4);
+            gz_rec_put(rec, sizeof rec, &at, 4, (const uint8_t *)"/api/v1/x", 9);
+            gz_rec_put(rec, sizeof rec, &at, 6, dg, 32);
+        }
         if (code) gz_rec_put(rec, sizeof rec, &at, 8, c2, 2);
         if (src_byte(s) & 1) {
             uint8_t area[2];

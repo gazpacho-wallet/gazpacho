@@ -59,6 +59,7 @@ check = Checks()
 OPEN, JOIN, READY, UNREADY, LEAVE, SET_VALUES, REMOVE, CANCEL = range(0x0101, 0x0109)
 UNLOCK, LOCK = 0x0401, 0x0402
 KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED, SLOT_CLOSED = 0x00040002, 0x00040004, 0x0004000a, 0x0004000c, 0x0004000e
+LOCAL_IDS = 0x000D000E  # local-api.md 7.5: the slot's local id, in its first batch (P6a)
 LOBBY_OPENED, LOBBY_ENDED, START_SENT, START_RECEIVED, LOBBY_STATE = (0x00010002, 0x0001000a, 0x00010014,
                                                                     0x00010016, 0x00010018)
 SIGN_BEGUN, SIGN_ENDED = 0x7e5a0002, 0x7e5a0004
@@ -257,11 +258,11 @@ def happy(exe, work, name):
         w.clean("1 (%s)" % name)
         w.stop()
         hj, mj = w.journal("host"), w.journal("m1")
-        check(len(hj) > 2 and hj[0] == [KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED, LOBBY_OPENED] and
-              hj[1] == [KEY_INDEX, GUARD, SLOT_OPENED, LOBBY_OPENED],
-              "1 (%s): a slot's first batch on the host: key_index, guard, slot_opened, lobby_opened" % name)
-        check(len(mj) > 2 and mj[0] == [KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED] and
-              mj[1] == [KEY_INDEX, GUARD, SLOT_OPENED], "1 (%s): and on a member: key_index, guard, slot_opened" % name)
+        check(len(hj) > 2 and hj[0] == [KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED, LOCAL_IDS, LOBBY_OPENED] and
+              hj[1] == [KEY_INDEX, GUARD, SLOT_OPENED, LOCAL_IDS, LOBBY_OPENED],
+              "1 (%s): a slot's first batch on the host: key_index, guard, slot_opened, local_ids, lobby_opened" % name)
+        check(len(mj) > 2 and mj[0] == [KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED, LOCAL_IDS] and
+              mj[1] == [KEY_INDEX, GUARD, SLOT_OPENED, LOCAL_IDS], "1 (%s): and on a member: key_index, guard, slot_opened, local_ids" % name)
         check(has_batch(hj, [SIGN_ENDED, LOBBY_STATE]) and has_batch(mj, [SIGN_ENDED, LOBBY_STATE]),
               "1 (%s): the round's end and the lobby's Funding are one batch" % name)
         check(count_records(hj, START_SENT) == 2 and count_records(mj, START_RECEIVED) == 2 and

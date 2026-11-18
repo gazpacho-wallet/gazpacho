@@ -749,6 +749,21 @@ What the code of P4.2 does where this note left room, and where it differs. Each
 - **Stand-in keys.** Until P8 the program derives each (epoch, index) from the transport key by a hash; with test engines (`--test-engines` above 0) every index is the transport key, as before.
 - **`program_lobby`** runs cases 1 to 3, 5 to 7, 9 and 10 of the list above. Case 4 (a rejoin with the same contribution key, B1) cannot be made through the composite, which never uses a key pair twice; the engine's own tests keep it. Case 8 (a raw client; seventeen silent connections) is at the node level (`tests/node/test_node_conns.c`, `tests/lobby`). The twenty restarts of case 7 are at the node level (`tests/node/test_node_lobby.c`).
 
+### P6a as built (the view objects and the API engine)
+
+- **The view** (`core/node/view.c`).
+  - Kinds 1 `status`, 2 `lobby`, 3 `host_lobby` and 7 `attention`. Their fields are in `core/gazpacho/include/gazpacho/view.h`, and `docs/notes/view-objects.md` maps each to `local-api.md`.
+  - **When an object is emitted.** After every step of a slot, its object is emitted if its fields changed, behind the step's saves (rule 8). Every object is emitted at each start (resume step 9, rule 7), over several calls: the host's ended lobbies 64 at a time, then one slot a call, then the status.
+  - **Versions.** The incarnation in the high 32 bits, so that a start's objects are newer than anything released before.
+  - **Ended lobbies.** A lobby's last object is emitted before its slot is freed. A host's ended lobbies come back at a start from the index; a member's do not (no index).
+- **Local ids.** `lob_` and 16 hex digits, random and mixed with the slot serial. Record `local_ids` goes in the slot's first batch.
+- **The API engine** (`core/node/api.c`, area 0x000d).
+  - **Request ids.** A command with a digest is an API request. Before it runs, a replay is answered from the saved status, and an id bound to another request answers `409 request_id_reused`. After it runs, its `request_id` record goes right after its first save (one batch), before its result notice. A request that saved nothing keeps no id.
+  - **Pause.** Saved first. A member's lobbies are left, except one whose round was handed over (held for signing). `join` and `ready` answer `409 paused`. A host runs no check while paused and cancels at the deadline with reason 2, through a new host port `paused`.
+  - **`member_signing`.** Saved with a version, and in force from the next start.
+- **In the lobby engine.** A host seat keeps a refusal (an `unready` or `leave` with reason 1) and its stage, until it readies or joins again. It is memory only: activity entries are P6b.
+- **What P6a does not give.** The member's counts, the round states (P4.3), funding (P4.5), activity entries (P6b), and the values of a host-side refusal (24.2 item 33). Their numbers are reserved in `view.h`.
+
 ### P4.3, `program_signing`
 
 A host and three members, two lobbies at once on the host; funding from a test wallet port with fixed fake prevouts; no chain.

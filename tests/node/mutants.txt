@@ -107,7 +107,7 @@ guard-file-epochs-newest-dropped	core/node/nodepart.c	    for (i = 0; i < n_newe
 guard-file-older-index-dropped	core/node/nodepart.c	all[n][1] = k >= 0 && older[k][1] > newer[i][1] ? older[k][1] : newer[i][1];	all[n][1] = newer[i][1];
 guard-file-other-chain-taken	core/node/nodepart.c	|| memcmp(b, GUARD_MAGIC, 8) != 0 || memcmp(b + 8, c->cfg.chain, 32) != 0)\n        return;	|| memcmp(b, GUARD_MAGIC, 8) != 0)\n        return;
 guard-epochs-not-read-back	core/node/nodepart.c	            guard_epochs(c, b + 50, n);\n	
-epoch-redraw-known-off	core/node/nodepart.c	    } while (epoch == 0 || epoch_known(c, epoch));	    } while (epoch == 0);
+epoch-redraw-known-off	core/node/nodepart.c	    } while (epoch == 0 || epoch_known(c, epoch) ||\n	    } while (epoch == 0 ||\n
 epoch-redraw-same-draw	core/node/nodepart.c	epoch = restore_epoch(gz_get_u64(drawn) + again++, c->incarnation);	epoch = restore_epoch(gz_get_u64(drawn) + 0 * again++, c->incarnation);
 a-old-epoch-forgets-none	core/node/nodepart.c	        if (p->n_old_epochs == NP_MAX_OLD_EPOCHS) {	        if (0) {
 # --- connections (A F5, F9, F12; B 1, 2, 7, group C)
@@ -265,3 +265,38 @@ sg-timer-budget	core/node/timers.c	if (eng == ENG_SIGN) return 1;      /* the en
 sg-init-without-secp	core/node/signslot.c	if (!c->cfg.secp || !c->cfg.sign_mem	if (!c->cfg.sign_mem
 sg-ready-any-digest	core/node/lobbyslot.c	if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0)	if (0)
 sg-refused-ready-rebinds	core/node/lobbyslot.c	        memcpy(s->gate_digest, old_digest, 32);	
+# --- P6a: the view, the API engine; the key changes asked by P8
+# equivalent api-local-id-repeats: a second guard: the slot serial mixed into every id makes two slots' ids differ even where the random source repeats, so the check against the table never finds one taken
+view-never-updated	core/node/view.c	    if (!force && *last == h) return GZ_OK;	    if (!force) return GZ_OK;
+view-version-repeats	core/node/view.c	(++c->view.counter & 0xffffffffu)	(c->view.counter & 0xffffffffu)
+view-version-no-incarnation	core/node/view.c	(c->incarnation << 32) | (++c->view.counter	(++c->view.counter
+view-start-no-slots	core/node/view.c	    } else if (step < chunks + GZ_NODE_MAX_SLOTS) {	    } else if (0) {
+view-start-no-status	core/node/view.c	        st = gz_view_status(c, 1, out);\n        *done = 1;	        *done = 1;
+view-seat-never-ready	core/node/view.c	    return m->ready ? GZ_VSEAT_READY : GZ_VSEAT_JOINED;	    return GZ_VSEAT_JOINED;
+view-locked-ignores-gate	core/node/view.c	(!gate_state(c, s) || m->unready_reason == 3)	(m->unready_reason == 3)
+view-fit-values-swapped	core/node/view.c	    case GZ_TT_MINIMUM: *yours = l->min_members; *offered = o->minimum; return;	    case GZ_TT_MINIMUM: *yours = o->minimum; *offered = l->min_members; return;
+view-refused-not-shown	core/node/view.c	        if (q->refused) {	        if (0) {
+view-attention-never-gone	core/node/view.c	c->view.body, w.at, !code, &last, 1, out);	c->view.body, w.at, 0, &last, 1, out);
+view-gate-digest-never	core/node/view.c	            n = 42;\n	
+view-outcome-none	core/node/view.c	    if (outcome != GZ_OUTCOME_NONE) {	    if (0) {
+view-before-slot-end-gone	core/node/lobbyslot.c	    if (st == GZ_OK) st = gz_view_slot(c, i, 0, out); /* its view, after the step's saves (rule 8) */\n	
+api-replay-refused	core/node/api.c	memcmp(r->digest, digest.data, 32) == 0) {	memcmp(r->digest, digest.data, 32) == 0 && 0) {
+api-ids-forgotten	core/node/api.c	    } else if (kind == 1 && (r = req_find(c, rid)) != NULL) {	    } else if (0) {
+api-id-not-saved	core/node/api.c	    if (first == out->count || !status) return GZ_OK; /* nothing saved: no id (7.4) */	    return GZ_OK;
+api-id-own-batch	core/node/api.c	    move_after(c, out, first);\n	
+api-id-format-unchecked	core/node/api.c	rid->len < 16 ||	rid->len < 1 ||
+api-pause-not-saved	core/node/api.c	        if ((st = save_pause(c, out)) != GZ_OK) return st;\n        if ((st = gz_ls_pause_changed(c, out)) != GZ_OK) return st;\n        return result(c, cmd, c->api.n_held	        if ((st = gz_ls_pause_changed(c, out)) != GZ_OK) return st;\n        return result(c, cmd, c->api.n_held
+api-pause-not-loaded	core/node/api.c	        c->api.pause = v.data[0];\n	
+api-paused-join-allowed	core/node/api.c	    } else if (gz_api_paused(c) && (code == GZ_CMD_LOBBY_JOIN || code == GZ_CMD_LOBBY_READY)) {	    } else if (0) {
+api-pause-no-leave	core/node/lobbyslot.c	        return gz_lobby_member_leave(&s->lobby.m, out);\n    return GZ_OK;\n}	        return GZ_OK;\n    return GZ_OK;\n}
+api-signing-not-applied	core/node/api.c	        c->cfg.member_signing = (gz_member_signing_t)c->api.signing_saved;\n	
+api-signing-version-unchecked	core/node/api.c	    if (gz_get_u32(b.data) != c->api.signing_version) return result(c, cmd, 409, "changed_elsewhere", NULL, NULL, out);\n	
+api-local-id-not-loaded	core/node/api.c	                memcpy(s->view.local_id, w.data, w.len);\n	
+api-local-id-repeats	core/node/api.c	        if (!taken) break;	        break;
+api-unknown-even-taken	core/node/api.c	        return rec->type & 1 ? GZ_OK : GZ_ERR_CORRUPT;	        return GZ_OK;
+host-pause-ignored	core/lobby/host.c	    if (h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx))\n	    if (0)\n
+host-pause-no-cancel	core/lobby/host.c	        return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;	        return GZ_OK;
+host-refusal-not-kept	core/lobby/host.c	        s->refused = m->reason;\n	
+key-skip-none	core/node/lobbyslot.c	    for (uint32_t k = 0; k < LS_KEY_TRIES; k++) {	    for (uint32_t k = 0; k < 1; k++) {
+key-skip-overlaps	core/node/lobbyslot.c	c->np.highest_index + 1 + 2 * k;	c->np.highest_index + 1 + k;
+epoch-ok-unchecked	core/node/nodepart.c	 ||\n             (again < NP_EPOCH_TRIES && c->cfg.keys.epoch_ok	 ||\n             (0 && c->cfg.keys.epoch_ok

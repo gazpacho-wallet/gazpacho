@@ -1213,6 +1213,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.host = ex->opt->role == GZP_ROLE_HOST;
     if (ex->chain_hash) memcpy(cfg.chain, ex->chain_hash, 32);
     cfg.keys.pub = port_pub;
+    cfg.keys.epoch_ok = NULL; /* every epoch of the stand-in key file is (P8 sets it) */
     cfg.keys.secret = port_secret;
     cfg.keys.host_pub = port_host_pub;
     cfg.keys.host_secret = port_host_secret;

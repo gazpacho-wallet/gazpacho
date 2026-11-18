@@ -370,6 +370,16 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 | `0x000d001e` | `host_node` | Host-node setting | 1.0.0 |
 | `0x000d0020` | `chain_server_added` | User-added chain servers | 1.0.0 |
 | `0x000d0022` | `while_closed_report` | While-closed reports | 1.0.0 |
+| `0x000d0024` | `signing_setting` | Signing setting (draft 5) | S1 |
+
+The fields of the records the API engine writes in P6a (`core/gazpacho/include/gazpacho/view.h`; `docs/notes/view-objects.md`). Each refuses an even field it does not know, as every record does:
+
+| Record | Fields |
+|---|---|
+| `pause` | 2 state (`u8`: 0 off, 1 on, 2 held for signing), 4 since (`u64` ms), 6 the held lobbies' scopes (32 bytes each) |
+| `local_ids` | 2 scope (32), 4 local id (ASCII, `[A-Za-z0-9_-]`, 5 to 64 bytes); saved with the slot's `slot_opened`, in one batch |
+| `request_id` | 2 request id, 4 method, 6 path (ASCII), 8 body digest (32), 10 answer status (`u16`), 12 the acted-on lobby's local id, 14 created (`u64` ms); saved right after the action's first save, in one batch |
+| `signing_setting` | 2 `member_signing` (`u8`: 0 at_join, 1 auto, 2 when_unlocked), 4 `host_funding` (`u8`), 6 version (`u32`); in force from the next start |
 
 **Lobby (0x0001)** (the lobby engine, `core/lobby/`; layouts in `docs/notes/lobby.md` section 1. The other Lobby records are in section 9; the host's new current versions use `terms_version` there)
 

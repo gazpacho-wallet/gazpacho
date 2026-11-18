@@ -152,6 +152,13 @@ static int cond_decode(const uint8_t *p, size_t n, gz_lobby_conditions_t *c)
     return 1;
 }
 
+/* The pause holds a host's start rule (local-api.md 11.3; api.c). */
+static int ls_paused(void *ctx)
+{
+    const slot_t *s = ctx;
+    return gz_api_paused(s->node);
+}
+
 /* The node's connection table holds every seat of its lobbies (review A of
  * PR 44, M1): a key that holds no seat yet takes one only while fewer than
  * NP_MAX_SEATED keys hold seats, Open and Closing together. */
@@ -201,6 +208,7 @@ int gz_ls_init(gz_node_t *c, int i)
         hc.max_tree_nodes = c->sign_on ? GZ_SIGN_MAX_ITEMS : 0;   /* the engine signs at most so many (M2) */
         hc.listed = s->listed;
         hc.seat_room = ls_seat_room;
+        hc.paused = ls_paused;
         hc.seat_ctx = s;
         return gz_lobby_host_init(&s->lobby.h, &c->ports, &cr, &sg, &hc) == GZ_OK;
     }
@@ -615,6 +623,29 @@ gz_status_t gz_ls_load_record(gz_node_t *c, const gz_record_t *rec)
     return s->host ? gz_lobby_host_restore(&s->lobby.h, rec) : gz_lobby_member_restore(&s->lobby.m, rec);
 }
 
+/* The pause changed (api.c): a member's lobby not held for its round is
+ * left; a host applies its start rule again. Each slot in a step of its own
+ * inside the API's bracket, its view after it. */
+static gz_status_t pause_inline(gz_node_t *c, int eng, gz_action_list_t *out)
+{
+    slot_t *s = &c->slots[eng - ENG_SLOT0];
+    if (s->host) return gz_lobby_host_pause_changed(&s->lobby.h, out);
+    if (gz_api_paused(c) && gz_api_held(c, s->scope) < 0 && !s->lobby.m.ended && s->lobby.m.joined)
+        return gz_lobby_member_leave(&s->lobby.m, out);
+    return GZ_OK;
+}
+
+gz_status_t gz_ls_pause_changed(gz_node_t *c, gz_action_list_t *out)
+{
+    gz_status_t st = GZ_OK;
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS && st == GZ_OK; i++) {
+        if (c->slots[i].state != SLOT_OPEN || c->slots[i].kind != SLOT_KIND_LOBBY) continue;
+        st = gz_c_slot_inline(c, ENG_SLOT0 + i, pause_inline, out);
+        if (st == GZ_OK) st = gz_ls_after(c, i, out);
+    }
+    return st;
+}
+
 /* ---- after a lobby's step ----------------------------------------------------- */
 
 static gz_status_t gate_closed_inline(gz_node_t *c, int eng, gz_action_list_t *out)
@@ -792,7 +823,8 @@ static gz_status_t slot_end(gz_node_t *c, int i, gz_action_list_t *out)
     } else {
         if ((st = np_disconnect(out, &s->link, GZ_DISCONNECT_DONE)) != GZ_OK) return st;
     }
-    return np_slot_freed(c, i, out);
+    if ((st = np_slot_freed(c, i, out)) != GZ_OK) return st;
+    return gz_view_status(c, 0, out);
 }
 
 /* A slot left out at this start: the person is told at its resume step,
@@ -837,6 +869,7 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
         }
     }
     if (st == GZ_OK) st = state_line(c, s, out);
+    if (st == GZ_OK) st = gz_view_slot(c, i, 0, out); /* its view, after the step's saves (rule 8) */
     if (st == GZ_OK && (s->host ? s->lobby.h.state == GZ_LOBBY_CANCELLED || s->lobby.h.state == GZ_LOBBY_FAILED
                                 : s->lobby.m.ended))
         st = slot_end(c, i, out);
@@ -1182,10 +1215,27 @@ static gz_status_t slot_begin(gz_node_t *c, int i, gz_bytes_t cond, gz_action_li
     r.bytes.len = opened_record(s, cond.data, cond.len, ob, sizeof ob);
     if (!r.bytes.len) return gz_c_bug(c, ENG_NODE);
     if ((st = np_save_pair(c, s->key_index, &r, out)) != GZ_OK) return st;
+    if ((st = gz_api_slot_opened(c, i, out)) != GZ_OK) return st; /* its local id, the same batch */
     gz_c_engine_opened(c, ENG_SLOT0 + i);
     if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, open_inline, out)) != GZ_OK) return st;
     if ((st = opened_line(c, s, out)) != GZ_OK) return st;
     return gz_ls_after(c, i, out);
+}
+
+/* The slot's pair: the next one the key port gives. A pair with an invalid
+ * child (BIP 32: the port gives no key at that index) is skipped and the next
+ * pair tried, never an index already used; a port that gives none of
+ * LS_KEY_TRIES pairs has no keys now (503 no_key). */
+#define LS_KEY_TRIES 8
+static int ls_init_next(gz_node_t *c, int i)
+{
+    for (uint32_t k = 0; k < LS_KEY_TRIES; k++) {
+        uint32_t first = c->np.highest_index + 1 + 2 * k;
+        if (first > 0xfffffff0u) return 0;
+        c->slots[i].key_index = first;
+        if (gz_ls_init(c, i)) return 1;
+    }
+    return 0;
 }
 
 static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
@@ -1205,8 +1255,7 @@ static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     s->listed = arg(cmd, 16, 1, &v) && v.data[0] != 0;
     s->standbys = arg(cmd, 18, 2, &v) ? gz_get_u16(v.data) : 0;
     s->key_epoch = c->np.have_epoch ? c->np.epoch : 0;
-    s->key_index = c->np.highest_index + 1;
-    if (!gz_ls_init(c, i)) {
+    if (!ls_init_next(c, i)) {
         memset(s, 0, sizeof *s);
         return np_command_result(out, cmd, 503, "no_key");
     }
@@ -1267,8 +1316,7 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     s->cond = cd;
     s->auto_join = !(arg(cmd, 20, 1, &v) && v.data[0] == 0);
     s->key_epoch = c->np.have_epoch ? c->np.epoch : 0;
-    s->key_index = c->np.highest_index + 1;
-    if (!gz_ls_init(c, i)) {
+    if (!ls_init_next(c, i)) {
         memset(s, 0, sizeof *s);
         return np_command_result(out, cmd, 503, "no_key");
     }

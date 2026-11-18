@@ -16,9 +16,11 @@ set(GZ_NODE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/test_slot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/lobbyslot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/signslot.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/view.c ${CMAKE_CURRENT_SOURCE_DIR}/api.c
   PARENT_SCOPE)
 set(GZ_NODE_SOURCES_HERE
-  composite.c handoff.c route.c timers.c watches.c nodepart.c test_engine.c test_slot.c lobbyslot.c signslot.c)
+  composite.c handoff.c route.c timers.c watches.c nodepart.c test_engine.c test_slot.c lobbyslot.c signslot.c view.c
+  api.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
