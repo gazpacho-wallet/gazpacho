@@ -6,7 +6,7 @@
 static bool parses(const char *s) {
   gz_json_tok toks[64];
   size_t n;
-  return gz_json_parse(s, strlen(s), toks, 64, &n);
+  return gz_chain_json_parse(s, strlen(s), toks, 64, &n);
 }
 
 static void test_accepts_valid(test_state *T) {
@@ -24,7 +24,7 @@ static void test_token_layout(test_state *T) {
   const char *s = "{\"a\":[1,{\"x\":true}],\"b\":\"hi\"}";
   gz_json_tok t[32];
   size_t n = 0;
-  CHECK(gz_json_parse(s, strlen(s), t, 32, &n));
+  CHECK(gz_chain_json_parse(s, strlen(s), t, 32, &n));
   CHECK(n == 9);
   CHECK(t[0].type == GZ_JSON_OBJECT && t[0].size == 2 && t[0].next == 9);
   CHECK(gz_json_str_eq(s, &t[1], "a"));
@@ -58,8 +58,8 @@ static void test_rejects_malformed(test_state *T) {
   /* a zero byte inside the input */
   gz_json_tok toks[8];
   size_t n;
-  CHECK(!gz_json_parse("{\"a\":1}\0", 8, toks, 8, &n));
-  CHECK(!gz_json_parse("\"a\0b\"", 5, toks, 8, &n));
+  CHECK(!gz_chain_json_parse("{\"a\":1}\0", 8, toks, 8, &n));
+  CHECK(!gz_chain_json_parse("\"a\0b\"", 5, toks, 8, &n));
 }
 
 static void test_duplicate_keys_rejected(test_state *T) {
@@ -84,8 +84,8 @@ static void test_depth_limit(test_state *T) {
 static void test_token_and_member_limits(test_state *T) {
   gz_json_tok toks[4];
   size_t n;
-  CHECK(gz_json_parse("[1,2,3]", 7, toks, 4, &n) && n == 4);
-  CHECK(!gz_json_parse("[1,2,3,4]", 9, toks, 4, &n));
+  CHECK(gz_chain_json_parse("[1,2,3]", 7, toks, 4, &n) && n == 4);
+  CHECK(!gz_chain_json_parse("[1,2,3,4]", 9, toks, 4, &n));
   /* an object with more members than the limit */
   static char big[8192];
   static gz_json_tok many[600];
@@ -95,13 +95,13 @@ static void test_token_and_member_limits(test_state *T) {
     pos += (size_t)snprintf(big + pos, sizeof big - pos, "%s\"k%d\":1", i ? "," : "", i);
   }
   big[pos++] = '}';
-  CHECK(!gz_json_parse(big, pos, many, 600, &n));
+  CHECK(!gz_chain_json_parse(big, pos, many, 600, &n));
 }
 
 static bool u64(const char *s, uint64_t *out) {
   gz_json_tok t[2];
   size_t n;
-  if (!gz_json_parse(s, strlen(s), t, 2, &n)) return false;
+  if (!gz_chain_json_parse(s, strlen(s), t, 2, &n)) return false;
   return gz_json_u64(s, &t[0], out);
 }
 
@@ -126,7 +126,7 @@ static void test_exact_integers(test_state *T) {
 static bool dec(const char *s, uint64_t *out) {
   gz_json_tok t[2];
   size_t n;
-  if (!gz_json_parse(s, strlen(s), t, 2, &n)) return false;
+  if (!gz_chain_json_parse(s, strlen(s), t, 2, &n)) return false;
   return gz_json_decimal_scaled(s, &t[0], 3, out);
 }
 

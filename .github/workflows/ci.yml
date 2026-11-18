@@ -313,10 +313,10 @@ jobs:
           persist-credentials: false
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
-      - name: Build gz-api-fake (the API server, the fake backend, the interface compiled in)
+      - name: Build gz-api-fake (the API server, the fake backend, the interface compiled in) and gazpacho-test
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_WERROR=ON -DGZW_BREAK_CHECKS=OFF
-          cmake --build build --target gz-api-fake -j
+          cmake --build build --target gz-api-fake gazpacho-test -j
       - name: Install Playwright (pinned by tests/web/package-lock.json) and Chromium
         working-directory: tests/web
         run: |
@@ -324,7 +324,8 @@ jobs:
           npx playwright install --with-deps chromium
       - name: The interface, every Slice 1 flow, against the fake backend
         working-directory: tests/web
-        run: GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test
+        # GZ_PROGRAM: tests/web/multiprocess.spec.mjs drives real gazpacho-test processes
+        run: GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" GZ_PROGRAM="$GITHUB_WORKSPACE/build/program/gazpacho-test" npx playwright test
       - name: The API server's own browser checks (spec/local-api.md 23.6)
         working-directory: tests/api/browser
         run: |

@@ -107,7 +107,7 @@ void gzp_usage(void)
         "  --network signet|testnet4     test networks only; mainnet is refused (default signet)\n"
         "  --listen ADDR:PORT            host: where members connect (default 127.0.0.1:9736)\n"
         "  --connect KEY@ADDR:PORT       member: the host's key (66 hex) and numeric address\n"
-        "  --interface-port PORT         the local interface's port (served once the API server is merged)\n"
+        "  --interface-port PORT         the local interface's port\n"
         "  --no-interface                no local interface\n"
         "  --chain-url URL               an Esplora chain server (https); --no-chain for none. Up to 4,\n"
         "                                compared with each other (servers of different operators)\n"

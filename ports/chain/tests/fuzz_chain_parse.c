@@ -38,7 +38,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     case 0: {
       gz_json_tok toks[64];
       size_t n = 0;
-      if (gz_json_parse(s, len, toks, 64, &n)) {
+      if (gz_chain_json_parse(s, len, toks, 64, &n)) {
         must(n >= 1 && n <= 64);
         for (size_t i = 0; i < n; i++) {
           must(toks[i].start <= toks[i].end && toks[i].end <= len);
