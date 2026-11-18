@@ -29,6 +29,19 @@
 
 static uint64_t wall(gz_node_t *c) { return c->ports.clock.now_ms(c->ports.clock.ctx); }
 
+/* The clock request ids age on (7.4's 30 days). It never goes back: a wall
+ * clock set back cannot stretch the keep; the monotonic clock's progress
+ * moves it on meanwhile, and the wall time once it is ahead again. */
+static uint64_t keep_clock(gz_node_t *c)
+{
+    uint64_t m = c->ports.clock.mono_ms(c->ports.clock.ctx), w = wall(c);
+    if (c->api.keep_mono_set && m > c->api.keep_mono) c->api.keep_now += m - c->api.keep_mono;
+    c->api.keep_mono = m;
+    c->api.keep_mono_set = 1;
+    if (w > c->api.keep_now) c->api.keep_now = w;
+    return c->api.keep_now;
+}
+
 static size_t slen(const char *s)
 {
     size_t n = 0;
@@ -143,7 +156,7 @@ const char *gz_api_local_id(gz_node_t *c, const uint8_t scope[32])
 void gz_api_slot_ended(gz_node_t *c, const uint8_t scope[32])
 {
     api_lid_t *e = lid_find(c, scope);
-    if (e && !e->ended_ms) e->ended_ms = wall(c);
+    if (e && !e->ended_ms) e->ended_ms = keep_clock(c);
 }
 
 /* A fresh local id for slot i, saved alone in a SAVE appended to `out`:
@@ -237,11 +250,21 @@ static int only_fields(gz_bytes_t b, uint32_t known)
 
 static api_req_t *req_find(gz_node_t *c, gz_bytes_t rid)
 {
-    for (int k = 0; k < GZ_API_MAX_REQUESTS; k++) {
-        api_req_t *r = &c->api.reqs[k];
+    for (int k = 0; k < GZ_API_MAX_REQUESTS + GZ_API_RING; k++) {
+        api_req_t *r = k < GZ_API_MAX_REQUESTS ? &c->api.reqs[k] : &c->api.ring[k - GZ_API_MAX_REQUESTS];
         if (r->used && slen(r->rid) == rid.len && memcmp(r->rid, rid.data, rid.len) == 0) return r;
     }
     return NULL;
+}
+
+/* The kept ids that name the lobby `id` (its share). */
+static int lobby_count(const gz_node_t *c, const char *id)
+{
+    size_t n = slen(id);
+    int count = 0;
+    for (int k = 0; k < GZ_API_MAX_REQUESTS; k++)
+        count += c->api.reqs[k].used && slen(c->api.reqs[k].object) == n && memcmp(c->api.reqs[k].object, id, n) == 0;
+    return count;
 }
 
 /* 1 if request id r may be dropped (7.4): the object it acted on has ended
@@ -252,7 +275,7 @@ static api_req_t *req_find(gz_node_t *c, gz_bytes_t rid)
  * longer, never dropped early. */
 static int req_droppable(gz_node_t *c, const api_req_t *r)
 {
-    uint64_t end = r->created_ms, now = wall(c);
+    uint64_t end = r->created_ms, now = keep_clock(c);
     if (!r->used) return 1;
     if (r->object[0]) {
         const api_lid_t *e = lid_by_id(c, r->object, slen(r->object));
@@ -264,17 +287,43 @@ static int req_droppable(gz_node_t *c, const api_req_t *r)
     return now >= end && now - end >= API_KEEP_MS;
 }
 
-/* A place for a new request id: a free one, else the oldest that may be
- * dropped; NULL if every kept id must stay (the caller answers 503). */
+/* 1 if request id r names a lobby that has ended (or left the index). */
+static int req_ended(gz_node_t *c, const api_req_t *r)
+{
+    const api_lid_t *e = lid_by_id(c, r->object, slen(r->object));
+    return !e || (!slot_holds(c, e->scope) && e->ended_ms);
+}
+
+/* A place for a new lobby request id: a free one, else the oldest that may
+ * be dropped, else the oldest of a lobby that has ended. Never a live
+ * lobby's: the table holds every slot's share and reserve, so with the
+ * shares kept (gz_api_precheck) a place is always found; NULL otherwise. */
 static api_req_t *req_slot(gz_node_t *c)
 {
-    api_req_t *best = NULL;
+    api_req_t *best = NULL, *ended = NULL;
     for (int k = 0; k < GZ_API_MAX_REQUESTS; k++) {
         api_req_t *r = &c->api.reqs[k];
         if (!r->used) return r;
         if ((!best || r->seq < best->seq) && req_droppable(c, r)) best = r;
+        if ((!ended || r->seq < ended->seq) && req_ended(c, r)) ended = r;
     }
-    return best;
+    return best ? best : ended;
+}
+
+/* A place for an id with no object: the ring's next. */
+static api_req_t *ring_slot(gz_node_t *c)
+{
+    api_req_t *r = &c->api.ring[c->api.ring_next];
+    c->api.ring_next = (c->api.ring_next + 1) % GZ_API_RING;
+    return r;
+}
+
+/* Tests: 0 no such id, 1 kept, 2 kept but past its 30 days (may go). */
+int gz_api_req_kept(gz_node_t *c, const char *rid)
+{
+    gz_bytes_t b = {(const uint8_t *)rid, slen(rid)};
+    api_req_t *r = req_find(c, b);
+    return !r ? 0 : req_droppable(c, r) ? 2 : 1;
 }
 
 static int req_fill(api_req_t *r, gz_bytes_t rid, gz_bytes_t method, gz_bytes_t path, gz_bytes_t digest)
@@ -348,8 +397,13 @@ gz_status_t gz_api_load(gz_node_t *c, const gz_record_t *rec)
         }
         tmp.used = 1;
         tmp.seq = ++c->api.req_seq;
+        if (tmp.created_ms > c->api.keep_now) c->api.keep_now = tmp.created_ms; /* the keep clock never goes back */
         r = req_find(c, v);
-        if (!r) r = req_slot(c);
+        if (r && (r->object[0] != 0) != (tmp.object[0] != 0)) {
+            r->used = 0; /* the same id saved again with or without an object: kept where it belongs */
+            r = NULL;
+        }
+        if (!r) r = tmp.object[0] ? req_slot(c) : ring_slot(c);
         if (!r) {
             /* More ids than the table: a running node refuses a request it
              * cannot keep, so these are ids it had dropped under the rule;
@@ -386,7 +440,7 @@ void gz_api_loaded(gz_node_t *c)
     }
     for (int k = 0; k < API_MAX_IDS; k++)
         if (c->api.ids[k].used && !c->api.ids[k].ended_ms && !slot_holds(c, c->api.ids[k].scope))
-            c->api.ids[k].ended_ms = wall(c);
+            c->api.ids[k].ended_ms = keep_clock(c);
 }
 
 int gz_api_held(const gz_node_t *c, const uint8_t scope[32])
@@ -441,6 +495,20 @@ static int request_parts(gz_bytes_t cmd, gz_bytes_t *rid, gz_bytes_t *method, gz
     return parts_ok(*rid, *method, *path) ? 1 : -1;
 }
 
+/* Room for a new lobby request's id: its lobby's kept ids under the share
+ * (a leave, which protects the member's funds, has the reserve too), and a
+ * place in the table. A request that names no lobby yet (an open, a join
+ * of a new scope) starts its lobby's share. */
+static int lobby_room(gz_node_t *c, uint16_t code, gz_bytes_t cmd)
+{
+    gz_bytes_t scope;
+    const char *id;
+    int limit = GZ_API_LOBBY_SHARE + (code == GZ_CMD_LOBBY_LEAVE ? GZ_API_LOBBY_RESERVE : 0);
+    if (arg(cmd, 12, 32, &scope) && (id = gz_api_local_id(c, scope.data)) != NULL && lobby_count(c, id) >= limit)
+        return 0;
+    return req_slot(c) != NULL;
+}
+
 /* The checks every lobby, node and API command passes first: a replayed or
  * reused request id, the pause for a join or a ready, and room for a new
  * id. 1 in *done when the answer is given here, in a bracket of its own. */
@@ -480,9 +548,10 @@ gz_status_t gz_api_precheck(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_acti
         }
     } else if (gz_api_paused(c) && (code == GZ_CMD_LOBBY_JOIN || code == GZ_CMD_LOBBY_READY)) {
         st = result(c, cmd, 409, "paused", NULL, NULL, out);   /* local-api.md 11.3 */
-    } else if (!req_slot(c)) {
-        /* Every kept id must stay (7.4): the request is refused before it
-         * acts, so that a retry can never act twice. */
+    } else if (GZ_CMD_RANGE(code) != GZ_CMD_RANGE_API && !lobby_room(c, code, cmd)) {
+        /* The lobby's share is full of kept ids (7.4): this call is refused
+         * before it acts, so that a retry can never act twice. Other
+         * lobbies' calls, and calls with no object, are not touched. */
         st = result(c, cmd, 503, "node_busy", NULL, NULL, out);
     } else {
         *done = 0; /* an API request seen for the first time: the command runs */
@@ -543,7 +612,7 @@ gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_li
     if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 8, digest.data, 32);
     if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 10, v, 2);
     if (st == GZ_OK && object[0]) st = gz_rec_put(rec, sizeof c->api.rec, &at, 12, (const uint8_t *)object, slen(object));
-    gz_put_u64(v, wall(c));
+    gz_put_u64(v, keep_clock(c));
     if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 14, v, 8);
     if (st == GZ_OK && eb.len) st = gz_rec_put(rec, sizeof c->api.rec, &at, 15, eb.data, eb.len);
     if (st != GZ_OK) return gz_c_bug(c, ENG_NODE);
@@ -553,7 +622,7 @@ gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_li
     a.u.save.n_records = 1;
     /* The place, before anything is appended: precheck found one, and the
      * command between took none. */
-    if (!(r = req_find(c, rid))) r = req_slot(c);
+    if (!(r = req_find(c, rid))) r = object[0] ? req_slot(c) : ring_slot(c);
     if (!r) return gz_c_bug(c, ENG_NODE);
     if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
     c->owner[out->count - 1 - c->base] = (int8_t)ENG_NODE;
@@ -562,7 +631,7 @@ gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_li
     r->used = 1;
     r->status = status;
     r->seq = ++c->api.req_seq;
-    r->created_ms = wall(c);
+    r->created_ms = keep_clock(c);
     memcpy(r->object, object, slen(object) < GZ_LOCAL_ID_MAX ? slen(object) : GZ_LOCAL_ID_MAX);
     if (eb.len) memcpy(r->error, eb.data, eb.len);
     return GZ_OK;

@@ -332,9 +332,16 @@ pause-held-empty-taken	core/node/api.c	        if ((c->api.pause == GZ_PAUSE_HEL
 signing-auto-no-request	core/node/api.c	if (gz_rec_find(cmd, GZ_CMD_REC_DIGEST, &e) != 1) return result(c, cmd, 403	if (0) return result(c, cmd, 403
 signing-auto-no-echo	core/node/api.c	        if (!arg(cmd, 16, 1, &e) || e.data[0] != GZ_MEMBER_SIGNING_AUTO)	        if (0)
 signing-when-unlocked-taken	core/node/api.c	    if (v.data[0] == GZ_MEMBER_SIGNING_WHEN_UNLOCKED)\n        return result(c, cmd, 501	    if (0)\n        return result(c, cmd, 501
-req-full-acts	core/node/api.c	    } else if (!req_slot(c)) {	    } else if (0) {
+req-full-acts	core/node/api.c	    } else if (GZ_CMD_RANGE(code) != GZ_CMD_RANGE_API && !lobby_room(c, code, cmd)) {	    } else if (0) {
 req-kept-dropped	core/node/api.c	    return now >= end && now - end >= API_KEEP_MS;	    return 1;
 lid-duplicate-taken	core/node/api.c	        if ((have = lid_by_id(c, (const char *)w.data, w.len)) != NULL && memcmp(have->scope, v.data, 32) != 0)\n            return GZ_ERR_CORRUPT;\n	
 lid-prefix-unchecked	core/node/api.c	memcmp(w.data, "lob_", 4) == 0 && 	
 req-load-parts-unchecked	core/node/api.c	    if (!parts_ok(rid, method, path) || digest.len != 32) return 0;	    if (digest.len != 32) return 0;
 member-signing-from-option	core/node/api.c	    return c ? c->cfg.member_signing : GZ_MEMBER_SIGNING_AT_JOIN;	    return c ? GZ_MEMBER_SIGNING_AT_JOIN : GZ_MEMBER_SIGNING_AT_JOIN;
+# --- review A of PR 55, N1 and N2: the request-id shares, the ring, the keep clock; attention ids
+n1-share-unenforced	core/node/api.c	&& lobby_count(c, id) >= limit)	&& 0)
+n1-no-reserve	core/node/api.c	(code == GZ_CMD_LOBBY_LEAVE ? GZ_API_LOBBY_RESERVE : 0)	0
+n1-ring-unused	core/node/api.c	r = object[0] ? req_slot(c) : ring_slot(c);	r = req_slot(c);
+n1-keep-clock-wall-only	core/node/api.c	    if (c->api.keep_mono_set && m > c->api.keep_mono) c->api.keep_now += m - c->api.keep_mono;\n	
+n1-keep-clock-wall-back	core/node/api.c	    if (w > c->api.keep_now) c->api.keep_now = w;	    c->api.keep_now = w;
+n2-attention-id-cut	core/node/view.c	for (size_t j = memcmp(s->view.local_id, "lob_", 4) == 0 ? 4 : 0; s->view.local_id[j]; j++)	for (size_t j = 0; s->view.local_id[j] && k < GZ_LOCAL_ID_MAX; j++)

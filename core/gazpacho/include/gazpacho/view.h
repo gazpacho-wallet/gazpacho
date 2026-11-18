@@ -176,9 +176,19 @@
 #define GZ_RECORD_SIGNING_SETTING  0x000d0024u /* 2 member_signing (u8), 4 host_funding (u8), 6 version (u32) */
 
 #define GZ_LOCAL_ID_MAX            64
-/* Request ids kept (7.4: until the object ended and 30 days passed): 64
- * calls for each of GZ_NODE_MAX_SLOTS lobbies. A new request that finds
- * every one still kept answers 503 node_busy. */
-#define GZ_API_MAX_REQUESTS        512
+/* Request ids kept (7.4: until the object ended and 30 days passed).
+ * - A lobby's: each lobby keeps at most GZ_API_LOBBY_SHARE, and a call that
+ *   protects funds (leave) has GZ_API_LOBBY_RESERVE more. A call over its
+ *   lobby's share answers 503 node_busy and does nothing; no other lobby's
+ *   calls are touched. The table holds every slot's share and reserve, so a
+ *   live lobby's id is never dropped; an ended lobby's go oldest first when
+ *   room is needed, after those past their 30 days.
+ * - With no object (pause, the signing setting): the newest GZ_API_RING, in
+ *   a ring. A replay of an older one acts again, and is answered by the
+ *   current state: the pause already in that state, or based_on_version. */
+#define GZ_API_LOBBY_SHARE         64
+#define GZ_API_LOBBY_RESERVE       4
+#define GZ_API_MAX_REQUESTS        544 /* GZ_NODE_MAX_SLOTS x (share + reserve) */
+#define GZ_API_RING                32
 
 #endif
