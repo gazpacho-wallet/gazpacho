@@ -48,6 +48,7 @@
 #define GZP_KEYS_BRANCH_HOST_LOBBY 2u /* a host's own per-lobby pairs (keys.md 3, K2) */
 #define GZP_KEYS_MAX_SCOPES 8     /* GZ_NODE_MAX_SLOTS */
 #define GZP_KEYS_INDEX_LIMIT 0x80000000u
+#define GZP_KEYS_MAX_SLOTS 32     /* member slots the key port knows (open and closing) */
 
 /* Where the seed comes from: the storage layer while it is unlocked, or the
  * stand-in seed file until storage lands (keys.md 9). seed() fills out with
@@ -91,6 +92,14 @@ typedef struct {
     uint8_t contribution[32];    /* SECRET */
 } gzp_keys_scope_t;
 
+/* A member slot as its slot_opened record names it: public, kept so that a
+ * ready with the passphrase can open that slot's scope (keys.md 7). */
+typedef struct {
+    int used;
+    uint32_t serial, epoch, index;
+    uint8_t scope[32];
+} gzp_keys_slot_t;
+
 typedef struct {
     const secp256k1_context *secp;
     gzw_network wnet;
@@ -102,6 +111,7 @@ typedef struct {
     int scoped_only;             /* AT_JOIN: secrets for rounds only from the scoped table */
     uint32_t lobby_branch;       /* 0' on a member, 2' on a host (gzp_keys_set_role) */
     gzp_keys_scope_t scopes[GZP_KEYS_MAX_SCOPES];
+    gzp_keys_slot_t slots[GZP_KEYS_MAX_SLOTS];
 } gzp_keys_t;
 
 /* The network level below the purpose: testnet4 1, signet 2, testnet3 3,
@@ -147,8 +157,31 @@ void gzp_keys_freeze(gzp_keys_t *k, int frozen);
 /* The data folder's role (fixed at its first start, program.md 5): a host's
  * per-lobby pairs are on m/254315617'/net'/2'/..., a member's on .../0'/...,
  * so one set of words can run a host and a member without sharing a key
- * (keys.md 3, open point K2, resolved). A member until set. */
-void gzp_keys_set_role(gzp_keys_t *k, int host);
+ * (keys.md 3, open point K2, resolved). A member until set. `at_join` is the
+ * member-signing setting: a member under AT_JOIN gets round secrets only from
+ * the scoped table (scoped_only). A host never: it derives its own pairs for
+ * every round it proposes (integration F4). */
+void gzp_keys_set_role(gzp_keys_t *k, int host, int at_join);
+
+/* Is `epoch` usable under this role's branch (contract-v2.md 13, review R2-8):
+ * m/254315617'/net'/branch'/epoch' is a valid BIP 32 child. 1, or 0 for an
+ * invalid child, an epoch at or above 2^31 or no seed. The node asks it when
+ * it draws a restore epoch, before key_epoch is saved (the port's epoch_ok,
+ * #55; integration W14). */
+int gzp_keys_epoch_ok(const gzp_keys_t *k, uint32_t epoch);
+
+/* Member slots, from the slot_opened and slot_closed records the node saves
+ * or reads back (keys.md 7). note: a member slot (serial, scope, epoch,
+ * index), replacing one of the same serial; 0 when the table is full. drop: the
+ * slot with that serial. open_ready: the person readied with the passphrase in
+ * the lobby `scope` (the passphrase already checked): open its scope with the
+ * slot's pair, before the node gets the ready command (node.h, LOBBY_READY);
+ * 1, or 0 with *err (no such slot: GZP_KEYS_BAD_ARGUMENT). The digest is the
+ * node's to bind (#52's gate); the table is opened with a zero digest and the
+ * key hook reads it by position (gzp_keys_scoped_at). */
+int gzp_keys_note_slot(gzp_keys_t *k, uint32_t serial, const uint8_t scope[32], uint32_t epoch, uint32_t index);
+void gzp_keys_drop_slot(gzp_keys_t *k, uint32_t serial);
+int gzp_keys_open_ready(gzp_keys_t *k, const uint8_t scope[32], gzp_keys_err_t *err);
 
 /* AT_JOIN's scoped secrets (composite-node.md 12.2; keys.md 7). Open: derive
  * the pair (contribution at index, factory at index + 1) under the policy and

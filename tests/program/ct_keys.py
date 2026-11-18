@@ -19,7 +19,14 @@ Triaged (2026-11-17):
   seckey_to_pubkey33 bip32.c:88         the result of making the parent's PUBLIC key (for the
                                         fingerprint) or the public key handed out
   secp256k1_pubkey_load,                serialising that public key: the point is public
-  secp256k1_fe_impl_normalize_var       (reached only through seckey_to_pubkey33)
+  secp256k1_fe_impl_normalize_var,      (reached only through seckey_to_pubkey33). In a Release
+  secp256k1_ec_pubkey_serialize         build libsecp256k1 has no line information and its
+                                        helpers are inlined, so the report names
+                                        secp256k1_ec_pubkey_serialize itself (integration B10)
+
+ct_keys is built with its own line-numbered copy of keys.c and the wallet's key
+code in every build type (program/CMakeLists.txt), so the bip32.c lines above
+hold in Release as in RelWithDebInfo.
 """
 import re
 import subprocess
@@ -27,7 +34,7 @@ import sys
 
 ALLOWED_TOP = {("gzw_bip32_master", "bip32.c:114"), ("gzw_bip32_child_priv", "bip32.c:149"),
                ("gzw_bip32_child_priv", "bip32.c:171"), ("seckey_to_pubkey33", "bip32.c:88")}
-PUBLIC_POINT = {"secp256k1_pubkey_load", "secp256k1_fe_impl_normalize_var"}
+PUBLIC_POINT = {"secp256k1_pubkey_load", "secp256k1_fe_impl_normalize_var", "secp256k1_ec_pubkey_serialize"}
 
 
 def frames(block):

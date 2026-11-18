@@ -87,7 +87,7 @@ static void vectors(const secp256k1_context *secp)
     size_t i;
     for (i = 0; i < sizeof KV_LOBBY / sizeof KV_LOBBY[0]; i++) {
         CHECK(keys_over(&k, &r, secp, KV_LOBBY[i].seed, KV_LOBBY[i].net));
-        gzp_keys_set_role(&k, KV_LOBBY[i].host);
+        gzp_keys_set_role(&k, KV_LOBBY[i].host, 0);
         CHECK(gzp_keys_lobby_raw(&k, KV_LOBBY[i].epoch, KV_LOBBY[i].index, sec, pub, &e) && e.why == GZP_KEYS_OK);
         CHECK(hexeq(sec, KV_LOBBY[i].sec, 32) && hexeq(pub, KV_LOBBY[i].pub, 33));
         /* Under the policy: only with the vector's epoch current. */
@@ -204,16 +204,76 @@ static void roles(const secp256k1_context *secp)
     CHECK(keys_over(&k, &r, secp, 1, GZW_NET_SIGNET));
     CHECK(k.lobby_branch == GZP_KEYS_BRANCH_LOBBY && gzp_keys_host(&k, NULL, hk1, NULL, &e));
     for (i = 1; i <= 4; i++) {
-        gzp_keys_set_role(&k, 0);
+        gzp_keys_set_role(&k, 0, 0);
         CHECK(gzp_keys_lobby(&k, 0, i, NULL, m, &e));
-        gzp_keys_set_role(&k, 1);
+        gzp_keys_set_role(&k, 1, 0);
         CHECK(k.lobby_branch == GZP_KEYS_BRANCH_HOST_LOBBY && gzp_keys_lobby(&k, 0, i, NULL, h, &e) &&
               memcmp(m, h, 33) != 0 && memcmp(h, hk1, 33) != 0);
     }
     CHECK(gzp_keys_host(&k, NULL, hk2, NULL, &e) && !memcmp(hk1, hk2, 33));
-    gzp_keys_set_role(&k, 7);
+    gzp_keys_set_role(&k, 7, 0);
     CHECK(k.lobby_branch == GZP_KEYS_BRANCH_HOST_LOBBY);
+    /* AT_JOIN's scoped-only routing is a member's, never a host's (integration F4). */
+    gzp_keys_set_role(&k, 0, 1);
+    CHECK(k.scoped_only && k.lobby_branch == GZP_KEYS_BRANCH_LOBBY);
+    gzp_keys_set_role(&k, 0, 0);
+    CHECK(!k.scoped_only);
+    gzp_keys_set_role(&k, 1, 1);
+    CHECK(!k.scoped_only && k.lobby_branch == GZP_KEYS_BRANCH_HOST_LOBBY);
     gzp_keys_free(&k);
+}
+
+/* epoch_ok (integration W14): a valid hardened child under the role's branch. */
+static void epochs(const secp256k1_context *secp)
+{
+    gzp_keys_t k;
+    raw_t r;
+    CHECK(keys_over(&k, &r, secp, 0, GZW_NET_SIGNET));
+    CHECK(gzp_keys_epoch_ok(&k, 0) && gzp_keys_epoch_ok(&k, 1) && gzp_keys_epoch_ok(&k, 0x7fffffffu));
+    CHECK(!gzp_keys_epoch_ok(&k, 0x80000000u) && !gzp_keys_epoch_ok(&k, 0xffffffffu) && !gzp_keys_epoch_ok(NULL, 1));
+    gzp_keys_set_role(&k, 1, 0);
+    CHECK(gzp_keys_epoch_ok(&k, 0x2a5f3c11u));
+    r.have = 0; /* locked: no answer but 0 */
+    CHECK(!gzp_keys_epoch_ok(&k, 1));
+    gzp_keys_free(&k);
+}
+
+/* The member slots and a ready with the passphrase (keys.md 7, integration W4). */
+static void ready_gate(const secp256k1_context *secp)
+{
+    gzp_keys_t k;
+    raw_t r;
+    gzp_keys_err_t e;
+    uint8_t a[32], b[32], got[32], want[32];
+    uint32_t i;
+    CHECK(keys_over(&k, &r, secp, 0, GZW_NET_SIGNET));
+    gzp_keys_set_role(&k, 0, 1);
+    memset(a, 0xa1, 32);
+    memset(b, 0xb2, 32);
+    CHECK(!gzp_keys_open_ready(&k, a, &e) && e.why == GZP_KEYS_BAD_ARGUMENT && gzp_keys_scopes_held(&k) == 0);
+    CHECK(gzp_keys_note_slot(&k, 1, a, 0, 1) && gzp_keys_note_slot(&k, 2, b, 0, 3));
+    CHECK(!gzp_keys_scoped_at(&k, 0, 2, got)); /* nothing before the ready */
+    CHECK(gzp_keys_open_ready(&k, a, &e) && gzp_keys_scopes_held(&k) == 1);
+    CHECK(gzp_keys_scoped_at(&k, 0, 2, got) && gzp_keys_lobby_raw(&k, 0, 2, want, NULL, &e) && !memcmp(got, want, 32));
+    CHECK(gzp_keys_scoped_at(&k, 0, 1, got) && gzp_keys_lobby_raw(&k, 0, 1, want, NULL, &e) && !memcmp(got, want, 32));
+    CHECK(!gzp_keys_scoped_at(&k, 0, 3, got) && !gzp_keys_scoped_at(&k, 0, 4, got)); /* the other lobby: not readied */
+    /* A note for the same serial replaces it; drop removes it. */
+    CHECK(gzp_keys_note_slot(&k, 2, b, 0, 5));
+    CHECK(gzp_keys_open_ready(&k, b, &e) && gzp_keys_scoped_at(&k, 0, 6, got) && !gzp_keys_scoped_at(&k, 0, 4, got));
+    gzp_keys_drop_slot(&k, 2);
+    gzp_keys_forget(&k, b);
+    CHECK(!gzp_keys_open_ready(&k, b, &e) && gzp_keys_scopes_held(&k) == 1);
+    gzp_keys_drop_slot(&k, 99);
+    gzp_keys_drop_slot(NULL, 1);
+    /* A slot of an old epoch opens nothing (the policy). */
+    CHECK(gzp_keys_note_slot(&k, 3, b, 7, 1) && !gzp_keys_open_ready(&k, b, &e) && e.why == GZP_KEYS_POLICY);
+    /* The table holds 32; a 33rd is refused; NULL arguments refused. */
+    for (i = 4; i < 4 + GZP_KEYS_MAX_SLOTS - 2; i++) CHECK(gzp_keys_note_slot(&k, i, b, 0, 1));
+    CHECK(!gzp_keys_note_slot(&k, 1000, b, 0, 1) && gzp_keys_note_slot(&k, 1, a, 0, 1));
+    CHECK(!gzp_keys_note_slot(NULL, 1, a, 0, 1) && !gzp_keys_note_slot(&k, 1, NULL, 0, 1));
+    CHECK(!gzp_keys_open_ready(NULL, a, &e) && !gzp_keys_open_ready(&k, NULL, &e));
+    gzp_keys_free(&k);
+    CHECK(all(&k, 0, sizeof k));
 }
 
 static void policy(const secp256k1_context *secp)
@@ -420,6 +480,8 @@ int main(void)
     vectors(secp);
     networks_and_arguments(secp);
     roles(secp);
+    epochs(secp);
+    ready_gate(secp);
     policy(secp);
     scoped(secp);
     standin(secp);

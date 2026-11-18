@@ -7,14 +7,14 @@ net-testnet4	program/keys.c	case GZW_NET_TESTNET4: v = 1;	case GZW_NET_TESTNET4:
 net-testnet3	program/keys.c	case GZW_NET_TESTNET: v = 3;	case GZW_NET_TESTNET: v = 4;
 net-regtest	program/keys.c	case GZW_NET_REGTEST: v = 4;	case GZW_NET_REGTEST: v = 3;
 net-mainnet-allowed	program/keys.c	default: return 0;	default: v = 0; break;
-lobby-branch-fixed	program/keys.c	branch_path(k, k->lobby_branch, path);	branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);
+lobby-branch-fixed	program/keys.c	branch_path(k, k->lobby_branch, path);	branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);	1
 role-ignored	program/keys.c	k->lobby_branch = host ? GZP_KEYS_BRANCH_HOST_LOBBY : GZP_KEYS_BRANCH_LOBBY;	k->lobby_branch = GZP_KEYS_BRANCH_LOBBY;
 role-host-on-1	program/keys.c	k->lobby_branch = host ? GZP_KEYS_BRANCH_HOST_LOBBY : GZP_KEYS_BRANCH_LOBBY;	k->lobby_branch = host ? GZP_KEYS_BRANCH_HOST : GZP_KEYS_BRANCH_LOBBY;
 init-skip-host-lobby-branch	program/keys.c	    gzw_wipe(&x, sizeof x);\n    if (!walk(k, path, 3, &x, err)) goto out;	    gzw_wipe(&x, sizeof x);\n    (void)walk(k, path, 3, &x, err);	2
-main-role	program/main.c	gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST);	gzp_keys_set_role(&keys, 0);
+main-role	program/main.c	gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST, opt.member_signing == 0);	gzp_keys_set_role(&keys, 0, opt.member_signing == 0);
 host-branch	program/keys.c	branch_path(k, GZP_KEYS_BRANCH_HOST, path);\n    if (!walk(k, path, 3, &parent	branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);\n    if (!walk(k, path, 3, &parent
 init-checks-host-branch-twice	program/keys.c	branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);\n    if (!walk(k, path, 3, &x, err)) goto out;	branch_path(k, GZP_KEYS_BRANCH_HOST, path);\n    if (!walk(k, path, 3, &x, err)) goto out;
-epoch-unhardened	program/keys.c	path[3] = epoch | H;	path[3] = epoch;
+epoch-unhardened	program/keys.c	path[3] = epoch | H;	path[3] = epoch;	1
 index-unhardened	program/keys.c	path[4] = index | H;	path[4] = index;
 epoch-range	program/keys.c	epoch >= GZP_KEYS_INDEX_LIMIT ||	epoch > GZP_KEYS_INDEX_LIMIT ||
 index-range	program/keys.c	index >= GZP_KEYS_INDEX_LIMIT) {	index > GZP_KEYS_INDEX_LIMIT) {
@@ -76,19 +76,30 @@ scoped-at-entry-epoch	program/keys.c	        if (!s->used || s->epoch != epoch) 
 scoped-at-no-zero	program/keys.c	    if (sec) gzw_wipe(sec, 32);\n    if (!k || !sec || k->frozen	    if (!k || !sec || k->frozen
 exec-forget	program/executor.c	    gzp_keys_forget(ex->keys, scope);\n	
 main-host-key	program/main.c	if (gzp_keys_host(&keys, priv, NULL, NULL, &e)) return 0;	if (gzp_keys_lobby_raw(&keys, 0, 1, priv, NULL, &e)) return 0;
-main-scoped-only	program/main.c	keys.scoped_only = opt.member_signing == 0;	keys.scoped_only = 0;
+main-scoped-only	program/main.c	gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST, opt.member_signing == 0);	gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST, 0);
+role-scoped-host	program/keys.c	k->scoped_only = !host && at_join;	k->scoped_only = at_join;
+role-scoped-never	program/keys.c	k->scoped_only = !host && at_join;	k->scoped_only = 0;
+epoch-ok-range	program/keys.c	if (!k || epoch >= GZP_KEYS_INDEX_LIMIT) return 0;	if (!k || epoch > GZP_KEYS_INDEX_LIMIT) return 0;
+epoch-ok-unhardened	program/keys.c	    path[3] = epoch | H;\n    ok = walk(k, path, 4, &x, NULL);	    path[3] = epoch;\n    ok = walk(k, path, 4, &x, NULL);
+note-no-replace	program/keys.c	if (k->slots[i].used && k->slots[i].serial == serial) break;	if (0) break;
+drop-nothing	program/keys.c	if (k->slots[i].used && k->slots[i].serial == serial) memset(&k->slots[i], 0, sizeof k->slots[i]);	(void)serial;
+open-ready-any-slot	program/keys.c	if (k->slots[i].used && !memcmp(k->slots[i].scope, scope, 32))	if (k->slots[i].used)
+exec-ready-gate-never	program/executor.c	    if (code == GZ_CMD_LOBBY_READY) keys_ready_gate(ex, args, args_len);\n	
+exec-ready-flag-ignored	program/executor.c	flag.len != 1 || flag.data[0] != 1)	flag.len != 1)
+exec-slots-not-read-back	program/executor.c	            keys_note_record(ex, &sb.records[i], 0);\n	
 main-payout-check	program/main.c	memcmp(spk, first->script_pubkey, sizeof spk) != 0	0
 net-key-fn-ignored	program/net.c	ok = n->key_fn && n->key_fn(n->key_ctx, epoch, index, s, NULL) == 1;	ok = n->key_fn != NULL; memset(s, 1, 32);
 #
-# Triage of the run on 2026-11-18 (80 mutants; see the PR for the counts):
+# Triage, 2026-11-18 (90 mutants; after the tests of the second pass: 82 killed, 8 survived):
 #   equivalent: raw-no-zero-fail, host-no-zero-fail (the outputs are zeroed on
 #     entry, and keypair_out writes them only on success); pub-wipe (the wiped
 #     value is a public key); scope-index-range (the factory step then refuses
 #     index + 1 = 2^31 with the same BAD_ARGUMENT); scope-raw (the factory key
 #     is derived next under the same policy, so the pair fails together).
-#   not reachable before P4.3: exec-forget-all, exec-forget, exec-secret-scoped,
-#     main-scoped-only. Nothing fills the scoped table and nothing calls
-#     secret() yet. The merge after #52 must kill all four (keys.md 7, M2).
+#   not reachable before #52 (P4.3): exec-secret-scoped (nothing calls
+#     secret() on main) and exec-forget-all (the table emptied at a start,
+#     seen only through an in-process restart with an open gate). The merge
+#     after #52 must kill both (keys.md 7).
 #   self-check: main-payout-check (the payout script from the public route
 #     against the wallet output from the private route; both routes are
 #     covered by the vectors and by the embit cross-check).

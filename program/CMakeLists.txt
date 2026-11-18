@@ -73,9 +73,17 @@ if(GZ_MEMCHECK)
   add_test(NAME valgrind_program_keys_fuzz COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:fuzz_keys> 1500)
   find_path(GZP_VALGRIND_INCLUDE valgrind/memcheck.h)
   if(GZP_VALGRIND_INCLUDE)
-    add_executable(ct_keys ${CMAKE_SOURCE_DIR}/tests/program/ct_keys.c)
-    target_include_directories(ct_keys PRIVATE ${GZP_VALGRIND_INCLUDE})
-    target_link_libraries(ct_keys PRIVATE gazpacho_program_test)
+    # Its own build of the code under test (keys.c and the wallet's key code),
+    # with line information whatever the build type, so that ct_keys.py
+    # triages every report by function and line in every build (integration
+    # B10: a Release build had no lines, and nothing could be triaged).
+    add_executable(ct_keys ${CMAKE_SOURCE_DIR}/tests/program/ct_keys.c ${CMAKE_CURRENT_SOURCE_DIR}/keys.c
+                   ${CMAKE_SOURCE_DIR}/wallet/src/address.c ${CMAKE_SOURCE_DIR}/wallet/src/bip32.c
+                   ${CMAKE_SOURCE_DIR}/wallet/src/phrase.c ${CMAKE_SOURCE_DIR}/wallet/src/taproot.c)
+    target_include_directories(ct_keys PRIVATE ${GZP_VALGRIND_INCLUDE} ${CMAKE_CURRENT_SOURCE_DIR}
+                               ${CMAKE_SOURCE_DIR}/wallet/include ${CMAKE_SOURCE_DIR}/core/superscalar/src)
+    target_compile_options(ct_keys PRIVATE -g)
+    target_link_libraries(ct_keys PRIVATE gazpacho_superscalar secp256k1 OpenSSL::Crypto)
   endif()
 endif()
 # Kind 0xffff (the signing engine's SEND bridge until P4.3) never reaches a
