@@ -16,10 +16,11 @@ set(GZ_NODE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/test_slot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/lobbyslot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/signslot.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/fundslot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/view.c ${CMAKE_CURRENT_SOURCE_DIR}/api.c
   PARENT_SCOPE)
 set(GZ_NODE_SOURCES_HERE
-  composite.c handoff.c route.c timers.c watches.c nodepart.c test_engine.c test_slot.c lobbyslot.c signslot.c view.c
+  composite.c handoff.c route.c timers.c watches.c nodepart.c test_engine.c test_slot.c lobbyslot.c signslot.c fundslot.c view.c
   api.c)
 
 foreach(variant release test)
@@ -32,7 +33,7 @@ foreach(variant release test)
   set_target_properties(${lib} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
                                     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC gazpacho_core gazpacho_lobby gazpacho_signing gazpacho_tree)
+  target_link_libraries(${lib} PUBLIC gazpacho_core gazpacho_lobby gazpacho_signing gazpacho_funding gazpacho_tree)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PRIVATE GZ_TEST_KINDS)

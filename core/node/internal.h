@@ -17,6 +17,7 @@
 #include "engine.h"
 #include "gazpacho/lobby.h"
 #include "gazpacho/signing.h"
+#include "gazpacho/funding.h"
 #include "gazpacho/tree.h"
 
 #ifdef GZ_TEST_KINDS
@@ -168,7 +169,8 @@ enum {
     ENG_TEST0 = 1,
     ENG_TEST1 = 2,
     ENG_SIGN = 3,        /* the signing engine (signslot.c), node-wide */
-    ENG_SLOT0 = 4,
+    ENG_FUNDING = 4,     /* the funding engine (fundslot.c), node-wide */
+    ENG_SLOT0 = 5,
     ENG_N = ENG_SLOT0 + GZ_NODE_MAX_SLOTS
 };
 
@@ -202,6 +204,7 @@ typedef struct {
     gz_sign_t sign;
     gz_tree_t tree;
     gz_tree_import_t imp;
+    gz_fund_t fund;                 /* the funding engine (fundslot.c) */
 } sg_mem_t;
 
 typedef struct {
@@ -537,6 +540,10 @@ struct gz_node {
     uint32_t tip;                   /* the newest tip the chain (or the configuration) gave */
     sg_queued_t sq[SG_MAX_QUEUED];
     size_t n_sq, sq_cur;
+    gz_fund_t *fund;                /* the funding engine, in sign_mem, or NULL */
+    int fund_on;                    /* it runs (fundslot.c, gz_fd_init) */
+    int fd_released[GZ_NODE_MAX_SLOTS]; /* host: the slot's last attempt released a partial signature (H11) */
+    gz_rmsg_propose_t fd_prop;      /* a saved proposal read again (record 18) */
     uint32_t sg_touched;            /* slots an outcome reached in the signing call under way */
     int sg_defer;                   /* a lobby called the engine: its outcomes wait (U1) */
     uint64_t sg_lost, sg_refused;   /* outcomes for a lobby that has ended; proposals the checks refused */
@@ -704,6 +711,14 @@ gz_status_t gz_sg_after(gz_node_t *c, gz_action_list_t *out);
 gz_status_t gz_sg_drain(gz_node_t *c, gz_action_list_t *out);
 void gz_sg_keyed_add(gz_node_t *c, const slot_t *s);
 void gz_sg_signing(slot_t *s, gz_lobby_signing_t *sg);
+/* The funding engine (fundslot.c). */
+gz_status_t gz_fd_init(gz_node_t *c);
+const gz_engine_ops_t *gz_fd_ops(void);
+gz_status_t gz_fd_plan(gz_node_t *c, const gz_fund_plan_in_t *in, gz_action_list_t *out, gz_fund_plan_out_t *res);
+int gz_fd_h1(gz_node_t *c, const gz_sign_outcome_t *o);
+gz_status_t gz_fd_apply(gz_node_t *c, const uint8_t scope[32], gz_action_list_t *out);
+gz_status_t gz_fd_member_acked(gz_node_t *c, const gz_sign_outcome_t *o, uint8_t own_depth, gz_action_list_t *out);
+const gz_sign_round_t *gz_fd_round(const gz_node_t *c, const uint8_t *round_id, const uint8_t scope[32]);
 size_t np_guard_for_round(gz_node_t *c, uint8_t *buf);
 
 #ifdef GZ_TEST_KINDS

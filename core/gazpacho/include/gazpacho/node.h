@@ -256,6 +256,11 @@ typedef struct {
     size_t sign_mem_size;
     gz_key_port_t keys;                /* per-lobby keys and the host key */
     gz_host_funding_t host_funding;    /* composite-node.md 12.1; AUTO by default */
+    /* Host: the funding engine's wallet port (a gz_wallet_port_t, funding.h), the program's, for
+     * the node's whole life. NULL: no funding engine on a host (a test build keeps a stand-in plan;
+     * a release build begins no round). Members need none. */
+    const void *wallet;
+    uint32_t funding_burial;           /* the burial depth B (0: Slice 1's 3) */
     gz_member_signing_t member_signing;/* composite-node.md 12.2; AT_JOIN by default */
     gz_node_crypto_t crypto;           /* signatures for the lobbies; all NULL: no lobby opens */
     uint32_t test_sign_outcome;        /* test builds only: GZ_TEST_SIGN_* (0: funding) */

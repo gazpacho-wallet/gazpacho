@@ -60,6 +60,7 @@ size_t gz_timer_budget(const gz_node_t *c, int eng)
 {
     if (eng == ENG_NODE) return NP_MAX_TIMERS;
     if (eng == ENG_SIGN) return 1;      /* the engine's one tick timer */
+    if (eng == ENG_FUNDING) return GZ_FUND_MAX_TIMERS;
     if (eng >= ENG_SLOT0) return c->slots[eng - ENG_SLOT0].kind == SLOT_KIND_LOBBY ? LS_MAX_TIMERS : TS_MAX_TIMERS;
     return TE_MAX_TIMERS;
 }
@@ -117,6 +118,10 @@ int gz_timer_route(const gz_node_t *c, uint64_t packed, int *eng, uint32_t *id)
         }
         if (area == GZ_AREA_ROUND && c->sign_on) {
             *eng = ENG_SIGN;
+            return 1;
+        }
+        if (area == GZ_AREA_FUNDING && c->fund_on) {
+            *eng = ENG_FUNDING;
             return 1;
         }
 #ifdef GZ_TEST_KINDS

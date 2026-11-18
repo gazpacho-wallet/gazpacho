@@ -29,10 +29,11 @@
  *   call has returned (gz_sg_drain): no engine is entered from its own hook
  *   (U1).
  *
- *   THE TEST FUNDING PLAN. Until the funding engine (P4.5), the host's
- *   funding transaction is a stand-in: one made-up input named by the scope,
- *   the check and the attempt, one output paying the factory. Nothing is
- *   broadcast before P4.5, so no coin is at stake.
+ *   THE FUNDING PLAN (P4.6). The host's funding transaction is the funding
+ *   engine's plan of the attempt (fundslot.c, 9.2 step 1), through the
+ *   program's wallet port. Only a test-build node with no wallet port keeps
+ *   the old stand-in: one made-up input named by the scope, the check and
+ *   the attempt, never broadcast.
  *
  * THE ENGINE RULE. Nothing here returns an error for what a peer, the key
  * port, the person or the chain can cause: a builder refusal is a refusal, a
@@ -260,8 +261,19 @@ static gz_status_t sg_outcome(void *ctx, const gz_sign_outcome_t *o, gz_action_l
     eng = ENG_SLOT0 + i;
     if (c->busy[eng] || c->sg_defer) return sg_queue(c, o) ? GZ_OK : gz_c_bug(c, ENG_SIGN);
     for (size_t k = 0; k < o->n_blamed && k < GZ_SIGN_MAX_PARTICIPANTS; k++) memcpy(c->sg_blamed + 33 * k, o->blamed[k], 33);
+    int kind = (int)o->kind;
+    /* H1 before the lobby saves Funding (14.2); a failed H1 gives the lobby Failed. */
+    if (c->cfg.host && c->fund_on && kind == GZ_SIGN_OUTCOME_FUNDING) {
+        int h1 = gz_fd_h1(c, o);
+        if (h1 != 0) {
+            kind = GZ_SIGN_OUTCOME_FAILED;
+            if ((st = sg_line(c, out, "fund-h1-refused", o->scope, o->check_id, " verdict=", (uint64_t)h1, NULL, 0)) != GZ_OK)
+                return st;
+        }
+    }
+    if (c->cfg.host && kind != GZ_SIGN_OUTCOME_FUNDING && o->released) c->fd_released[i] = 1;   /* H11 */
     c->busy[eng] = 1;
-    st = sg_deliver(c, i, (int)o->kind, o->check_id, c->sg_blamed, o->n_blamed, out);
+    st = sg_deliver(c, i, kind, o->check_id, c->sg_blamed, o->n_blamed, out);
     c->busy[eng] = 0;
     if (st != GZ_OK) {
         if (!c->err_area) c->err_area = gz_c_area(c, eng);
@@ -274,6 +286,10 @@ static gz_status_t sg_outcome(void *ctx, const gz_sign_outcome_t *o, gz_action_l
     }
     c->nested_bytes += out->used - used;
     c->sg_touched |= 1u << i;
+    /* Funding, after the lobby's save and in the same bracket: the host applies H1's verdict (AUTO signs,
+     * saves, broadcasts); a member starts to watch the funding from its ack (P4.6). */
+    if (c->fund_on && o->kind == GZ_SIGN_OUTCOME_FUNDING)
+        return c->cfg.host ? gz_fd_apply(c, o->scope, out) : gz_fd_member_acked(c, o, c->slots[i].own_depth, out);
     return GZ_OK;
 }
 
@@ -479,7 +495,8 @@ static gz_status_t sg_enter(gz_node_t *c, int what, const void *arg, const uint8
     return GZ_OK;
 }
 
-/* The test funding plan (until P4.5): one made-up input named by the scope, check and attempt, and one
+#ifdef GZ_TEST_KINDS
+/* The test funding plan (a host node without a wallet port, in tests only): one made-up input named by the scope, check and attempt, and one
  * output of `amount` to `script`. Returns its length. */
 static size_t sg_test_funding(const uint8_t scope[32], const uint8_t check[32], uint32_t attempt, uint64_t amount,
                               const uint8_t script[34], uint8_t *out)
@@ -505,6 +522,7 @@ static size_t sg_test_funding(const uint8_t scope[32], const uint8_t check[32], 
     memset(out + n, 0, 4); n += 4;                              /* lock time */
     return n;
 }
+#endif
 
 /* The host's largest step for a tree (internal.h, SG_MAX_STEP_BYTES): the nonce sets of a tier to every
  * member at once, each member's message holding, for each of its items, every signer's nonce and its
@@ -569,10 +587,39 @@ static gz_status_t sg_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_li
     memcpy(p->terms_digest, h->current_digest, 32);
     p->funding_amount = prm.funding_amount;
     p->funding_script_len = 34;
-    p->funding_tx_len = sg_test_funding(h->scope, h->check_id, h->attempt, prm.funding_amount, p->funding_script, c->sg_ftx);
-    p->funding_tx = c->sg_ftx;
-    gz_tx_txid(c->sg_ftx, p->funding_tx_len, p->funding_txid);
-    p->funding_vout = 0;
+    if (c->fund_on) {
+        /* The attempt's plan, first in the bracket (9.2 step 1): H11's `released` from the last
+         * attempt's outcome. */
+        gz_fund_plan_in_t pi;
+        gz_fund_plan_out_t po;
+        gz_status_t fst;
+        int si = sg_slot(c, h->scope);
+        memset(&pi, 0, sizeof pi);
+        memcpy(pi.scope, h->scope, 32);
+        memcpy(pi.check, h->check_id, 32);
+        pi.attempt = (uint16_t)h->attempt;
+        pi.amount = prm.funding_amount;
+        memcpy(pi.script, p->funding_script, 34);
+        pi.released = si >= 0 && c->fd_released[si];
+        if ((fst = gz_fd_plan(c, &pi, out, &po)) != GZ_OK) return fst;
+        if (!po.ok || !po.tx || po.tx_len == 0 || po.tx_len > sizeof c->sg_ftx)
+            return sg_refuse_begin(c, h, "sign-begin-refused-funding", out);
+        if (si >= 0) c->fd_released[si] = 0;
+        memcpy(c->sg_ftx, po.tx, po.tx_len);
+        p->funding_tx_len = po.tx_len;
+        p->funding_tx = c->sg_ftx;
+        memcpy(p->funding_txid, po.funding.txid, 32);
+        p->funding_vout = po.funding.vout;
+    } else {
+#ifdef GZ_TEST_KINDS
+        p->funding_tx_len = sg_test_funding(h->scope, h->check_id, h->attempt, prm.funding_amount, p->funding_script, c->sg_ftx);
+        p->funding_tx = c->sg_ftx;
+        gz_tx_txid(c->sg_ftx, p->funding_tx_len, p->funding_txid);
+        p->funding_vout = 0;
+#else
+        return sg_refuse_begin(c, h, "sign-begin-refused-no-wallet", out);
+#endif
+    }
     p->participants = c->sg_parts;
     p->n_participants = h->n_participants;
     p->n_tiers = 1;

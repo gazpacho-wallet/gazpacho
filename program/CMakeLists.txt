@@ -10,7 +10,7 @@
 # The release binary's symbols are checked (program_release_build, T12).
 
 set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c keys.c net.c pchain.c notify.c executor.c testping.c
-                view.c api.c)
+                view.c api.c wport.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -34,7 +34,7 @@ foreach(variant release test)
     add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c store_powercut.c keys_standin.c)
   endif()
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_api gazpacho_tree_import gazpacho_journal ${sc} OpenSSL::Crypto)
+  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_api gazpacho_tree_import gazpacho_journal ${sc} gazpacho_wallet_tx gazpacho_funding OpenSSL::Crypto)
   # The passphrase layer (unlock.h): the TEST-ONLY stand-in in gazpacho-test,
   # none in the release program until encrypted storage is wired in.
   if(variant STREQUAL "test")

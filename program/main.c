@@ -40,6 +40,7 @@
 #include "pchain.h"
 #include "store_unlock.h"
 #include "testping.h"
+#include "wport.h"
 #ifdef GZP_TEST_BUILD
 #include "gz_storage_crypto_test.h"
 #endif
@@ -81,6 +82,7 @@ static gzp_api_t api;          /* the local API server (P5): one per process */
 static gzp_wallet_t *wallet;
 static gzp_keys_t keys;        /* the key port's keys (keys.h) */
 static gzp_unlock_t unlock_tab; /* the unlocked storage's unlock.h table: the key port's seed source */
+static gzp_wport_t wport;     /* host: the funding engine's wallet port (wport.h) */
 
 #ifdef GZP_TEST_BUILD
 /* --test-dump-journal: every batch and record of the journal, read only (the
@@ -588,6 +590,21 @@ int main(int argc, char **argv)
         goto out;
     }
 
+    /* The host's coins, for the funding engine (wport.h; P4.6): read once, at the start. */
+    if (opt.role == GZP_ROLE_HOST) {
+        if (gzp_wport_open(&wport, secp, &unlock_tab, wnet) != 0) {
+            OPENSSL_cleanse(priv, sizeof priv);
+            fprintf(stderr, "gazpacho: cannot open the wallet's coins\n");
+            rc = GZP_EXIT_DATA;
+            goto out;
+        }
+        if (chain.active) gzp_wport_scan(&wport, opt.chain_urls[0], 20);
+#ifdef GZP_TEST_BUILD
+        else gzp_wport_invent(&wport);
+#endif
+        ex.wallet_port = &wport.port;
+    }
+
     /* The transport (peers.h). Nothing listens or connects until the start. */
     lim.handshake_ms = opt.handshake_ms;
     lim.recv_ms = opt.recv_ms;
@@ -747,6 +764,7 @@ out:
     if (stopped) gzp_log("shutdown storage-closed transport=%d storage=%d lock=%d", net.peers != NULL,
                          ex.store_open, dir.lock_fd >= 0);
     gzp_keys_free(&keys);
+    gzp_wport_close(&wport);
     if (secp) secp256k1_context_destroy(secp);
     if (have_dir) gzp_datadir_close(&dir);
     if (stopped) gzp_log("shutdown lock-released transport=%d storage=%d lock=%d", net.peers != NULL,
