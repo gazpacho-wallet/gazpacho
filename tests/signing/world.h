@@ -177,11 +177,8 @@ static int w_build_tree(const w_tree_in_t *in, gz_sign_def_t *d, factory_t **kee
     size_t n = in->n;
     if (n < 2 || n > W_MAX_NODES || in->tiers < 1 || in->tiers > 2) return 0;
     memset(d, 0, sizeof *d);
-    for (size_t i = 0; i < n; i++) {
-        int g = w_party_of(in->parts[i].contribution_key);
+    for (size_t i = 0; i < n; i++)
         if (!secp256k1_ec_pubkey_parse(ctx, &pks[i], in->parts[i].factory_key, 33)) return 0;
-        d->peer[i] = g >= 0 ? (uint64_t)g : 1000u + i;
-    }
     /* The participants as the engine will set them (tests that change the items read them). */
     d->n_participants = (uint8_t)n;
     for (size_t i = 0; i < n; i++) d->participants[i] = in->parts[i];
@@ -264,7 +261,7 @@ typedef struct {
     gz_tree_proposal_t p;
     gz_tree_participant_t parts[GZ_SIGN_MAX_PARTICIPANTS];
     uint8_t funding_tx[100];
-    uint8_t check_id[32];
+    uint8_t check_id[32], scope[32];
     gz_sign_begin_t b;
 } w_begin_t;
 
@@ -292,7 +289,56 @@ typedef struct {
     uint64_t may_ack_calls, may_ack_refused, guards;
     uint8_t guard_bytes[8];
     int outcomes[64]; size_t n_outcomes, outcome_blamed[64];
+    /* each member's outcomes (the lobby's side), with their `released` */
+    int m_outcomes[W_MAX_NODES][8], m_released[W_MAX_NODES][8]; size_t m_n_outcomes[W_MAX_NODES];
+    /* The host's attempts in all, the retry hook's limit (the engine has no
+     * limit of its own: the budget is time, composite-node.md 9.4). 0: 16. */
+    uint32_t max_attempts, attempts_begun;
+    uint64_t budget_end_ms;                     /* the signing budget the host's next begin carries (0: none) */
+    uint32_t check_salt;                        /* names the check the host's next begin follows (0: the world's one check) */
+    uint32_t no_keys;                           /* bit g: the key hook gives party g no keys (no lobby for the scope) */
+    uint32_t no_factory;                        /* bit g: no factory key, the contribution key still (AT_JOIN's gate closed) */
+    uint32_t other_factory;                     /* bit g: another factory key than the round's (a hook gone wrong) */
+    uint32_t other_contribution;                /* bit g: another contribution key, the links unchanged (likewise) */
 } w_builder_t;
+
+/* The hooks' context of one party: the shared builder, and who the party is
+ * (the key hook gives party g's keys in its current epoch). */
+typedef struct { w_builder_t *b; uint32_t g; } w_hctx_t;
+
+/* Party g's current contribution key (the host's has no epoch). */
+static inline const uint8_t *w_ckey(const w_builder_t *b, uint32_t g)
+{
+    return w_keys_e(g, g && b ? b->epoch[g < W_MAX_NODES ? g : 0] : 0)->c;
+}
+
+/* The key hook (signing.h): party g's keypairs in its current epoch. The
+ * test world has one pair per party whatever the scope, so that a proposal
+ * under another scope reaches the engine's own check of the scope against
+ * the lobby its builder names (review A, F7); the composite's hook gives
+ * keys by scope (core/node). */
+static inline int w_key_hook(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, secp256k1_keypair *f,
+                             secp256k1_keypair *c)
+{
+    const w_hctx_t *h = ctx;
+    uint8_t sk[32];
+    uint32_t ep = h->g && h->g < W_MAX_NODES ? h->b->epoch[h->g] : 0, ok = 1;
+    (void)terms_digest; (void)scope;
+    if (h->g < 32 && (h->b->no_keys >> h->g & 1u)) return 0;
+    if (f && h->g < 32 && (h->b->no_factory >> h->g & 1u)) return 0;
+    if (f) {
+        uint32_t fe = ep + (h->g < 32 && (h->b->other_factory >> h->g & 1u) ? 1u : 0u);
+        w_secret("test/factory", w_secret_index(h->g, fe), sk);
+        ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), f, sk);
+    }
+    if (c) {
+        uint32_t ce = ep + (h->g < 32 && (h->b->other_contribution >> h->g & 1u) ? 1u : 0u);
+        w_secret("test/contribution", w_secret_index(h->g, ce), sk);
+        ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), c, sk);
+    }
+    memset(sk, 0, sizeof sk);
+    return (int)ok;
+}
 
 /* may_ack: the signing-time check again at the member's tip (gz_tree_may_ack),
  * with Slice 1's conditions: signet's exit constants, a 36-block funding
@@ -300,7 +346,7 @@ typedef struct {
  * stand-in for the verdict's own_depth). */
 static int w_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip)
 {
-    w_builder_t *b = ctx;
+    w_builder_t *b = ((w_hctx_t *)ctx)->b;
     gz_tree_conditions_t cond;
     int items = 0, ok;
     memset(&cond, 0, sizeof cond);
@@ -318,7 +364,7 @@ static int w_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip)
 /* guard: a stand-in for the node's guard record (journal.md 8.3): its counter. */
 static int w_guard(void *ctx, gz_record_t *rec)
 {
-    w_builder_t *b = ctx;
+    w_builder_t *b = ((w_hctx_t *)ctx)->b;
     uint64_t c = ++b->guards;
     for (int i = 0; i < 8; i++) b->guard_bytes[i] = (uint8_t)(c >> (56 - 8 * i));
     rec->type = GZ_SIGN_REC_GUARD; rec->bytes.data = b->guard_bytes; rec->bytes.len = 8;
@@ -328,15 +374,22 @@ static int w_guard(void *ctx, gz_record_t *rec)
 /* outcome: kept for the tests (the lobby adapter is tested apart). */
 static gz_status_t w_outcome(void *ctx, const gz_sign_outcome_t *o, gz_action_list_t *out)
 {
-    w_builder_t *b = ctx;
+    w_builder_t *b = ((w_hctx_t *)ctx)->b;
     (void)out;
-    if (b->n_outcomes < 64) { b->outcome_blamed[b->n_outcomes] = o->n_blamed; b->outcomes[b->n_outcomes++] = (int)o->kind; }
+    uint32_t g = ((w_hctx_t *)ctx)->g;
+    /* the host's outcomes, and each member's (what its lobby hears; the lobby's handling is tested in the composite) */
+    if (g == 0 && b->n_outcomes < 64) { b->outcome_blamed[b->n_outcomes] = o->n_blamed; b->outcomes[b->n_outcomes++] = (int)o->kind; }
+    if (g > 0 && g < W_MAX_NODES) {
+        size_t k = b->m_n_outcomes[g]++;
+        if (k < 8) { b->m_outcomes[g][k] = (int)o->kind; b->m_released[g][k] = o->released; }
+    }
     return GZ_OK;
 }
 
-static void w_hooks(w_builder_t *b, gz_sign_config_t *c)
+/* The hooks of party h->g. `h` must outlive the engine. */
+static void w_hooks(w_hctx_t *h, gz_sign_config_t *c)
 {
-    c->may_ack = w_may_ack; c->guard = w_guard; c->outcome = w_outcome; c->hook_ctx = b;
+    c->may_ack = w_may_ack; c->guard = w_guard; c->outcome = w_outcome; c->keys = w_key_hook; c->hook_ctx = h;
 }
 
 /* Test parameters into a proposal. 0 if they are not valid parameters. */
@@ -390,9 +443,14 @@ static int w_make_begin(w_builder_t *b, const uint8_t *p, size_t len, w_begin_t 
         if (d->items[i].tier < 8) q->tier_sizes[d->items[i].tier]++;
     free(d);
     if (b && b->mutate_proposal) b->mutate_proposal(q, b->which);
-    w_wr32(t, attempt); memset(t + 4, 0, 28);
+    /* One check for every attempt of the world's lobby (attempts under one check: composite-node.md
+     * 9.6), unless a test names another with check_salt: a newer attempt supersedes an older one of its
+     * own check only (P4.3 item 2). */
+    w_wr32(t, b ? b->check_salt : 0); memset(t + 4, 0, 28);
     sha256_tagged("test/check", t, 32, out->check_id);
-    out->b.p = q; out->b.check_id = out->check_id; out->b.has_attempt = 1; out->b.attempt = (uint16_t)attempt;
+    w_outer(out->scope);
+    out->b.p = q; out->b.scope = out->scope; out->b.check_id = out->check_id; out->b.has_attempt = 1; out->b.attempt = (uint16_t)attempt;
+    out->b.budget_end_ms = b ? b->budget_end_ms : 0;
     if (b) b->flags = flags;
     return 1;
 }
@@ -479,11 +537,78 @@ static int w_retry(void *ctx, const gz_sign_retry_in_t *in, gz_sign_begin_t *nex
     }
     (void)mask;
     if (!next_mask) return 0;
+    if (b->attempts_begun >= (b->max_attempts ? b->max_attempts : 16u)) return 0;   /* the test's own limit */
     w_params(p, p[1], w_be32(p + 2) + 1, next_mask, b->flags);
     if (!w_make_begin(b, p, W_PARAMS, &b->next)) return 0;
     *next = b->next.b;
+    b->attempts_begun++;
     return 1;
 }
+
+/* ---- contract v2's messages and the envelopes the tests read ----
+ * The engine sends and takes (kind, scope, records) on links made of keys.
+ * The tests look at, damage and keep whole envelopes (header, then records),
+ * as the engine saves them: these turn one into the other. */
+
+static uint8_t w_env_arena[8u << 20];
+static size_t w_env_used;
+
+/* The envelope of a SEND, in `buf`. Its length, or 0 if it does not fit. */
+static inline size_t w_send_env(const gz_action_t *a, uint8_t *buf, size_t cap)
+{
+    size_t len = a->u.send.records.len;
+    if (cap < GZ_RMSG_HEADER || len > cap - GZ_RMSG_HEADER || !gz_rmsg_header(buf, cap, a->u.send.kind, a->u.send.scope)) return 0;
+    if (len) memcpy(buf + GZ_RMSG_HEADER, a->u.send.records.data, len);
+    return GZ_RMSG_HEADER + len;
+}
+
+/* Every SEND of the list from `from` on: its records become its whole envelope (in the arena). */
+static void w_list_to_env(gz_action_list_t *list, size_t from)
+{
+    w_env_used = 0;
+    for (size_t k = from; k < list->count; k++) {
+        gz_action_t *a = &list->slots[k];
+        size_t n;
+        if (a->kind != GZ_ACTION_SEND) continue;
+        n = w_send_env(a, w_env_arena + w_env_used, sizeof w_env_arena - w_env_used);
+        if (!n) abort();
+        a->u.send.records.data = w_env_arena + w_env_used; a->u.send.records.len = n;
+        w_env_used += n;
+    }
+}
+
+/* And back: kind and scope from the envelope's header, the records after it. */
+static void w_list_from_env(gz_action_list_t *list, size_t from)
+{
+    for (size_t k = from; k < list->count; k++) {
+        gz_action_t *a = &list->slots[k];
+        const uint8_t *b = a->u.send.records.data;
+        if (a->kind != GZ_ACTION_SEND) continue;
+        if (a->u.send.records.len < GZ_RMSG_HEADER) { a->u.send.records.len = 0; continue; }   /* cut by the fuzzing: nothing */
+        a->u.send.kind = (uint16_t)((uint16_t)b[4] << 8 | b[5]);
+        memcpy(a->u.send.scope, b + 6, 32);
+        a->u.send.records.data = b + GZ_RMSG_HEADER; a->u.send.records.len -= GZ_RMSG_HEADER;
+    }
+}
+
+/* A received message from an envelope: kind and scope from its header, on
+ * the link (party `to`'s current key, party `from`'s). 0 if it is shorter
+ * than a header (it is then not delivered). */
+static inline int w_msg_event(const w_builder_t *b, uint32_t from, uint32_t to, const uint8_t *env, size_t len, gz_event_t *ev)
+{
+    memset(ev, 0, sizeof *ev);
+    if (len < GZ_RMSG_HEADER) return 0;
+    ev->kind = GZ_EVENT_MESSAGE_RECEIVED;
+    memcpy(ev->u.message.link.local.key, w_ckey(b, to), 33);
+    memcpy(ev->u.message.link.remote.key, w_ckey(b, from), 33);
+    ev->u.message.kind = (uint16_t)((uint16_t)env[4] << 8 | env[5]);
+    memcpy(ev->u.message.scope, env + 6, 32);
+    ev->u.message.records.data = env + GZ_RMSG_HEADER; ev->u.message.records.len = len - GZ_RMSG_HEADER;
+    return 1;
+}
+
+/* The party a SEND goes to (the owner of its link's remote key), or -1. */
+static inline int w_send_to(const gz_action_t *a) { return w_party_of(a->u.send.link.remote.key); }
 
 /* ---- messages, as a program at fault would change them ---- */
 
@@ -567,6 +692,7 @@ enum {
 typedef struct world world_t;
 typedef struct {
     gz_sign_t eng;
+    w_hctx_t hctx;
     world_t *w;
     uint32_t index;
     const sim_storage_t *storage;
@@ -663,7 +789,7 @@ static void w_apply_fault(w_node_t *n, gz_action_list_t *list)
                 uint32_t i = w_be32(e);
                 for (int s = 0; s < e[5]; s++) {
                     uint8_t q = r->def.items[i].signers[s];
-                    if (q == 0 || r->def.peer[q] == gz_sign_link_peer(&a->u.send.link)) continue;
+                    if (q == 0 || w_party_of(r->def.participants[q].contribution_key) == w_send_to(a)) continue;
                     if (w->fault == WX_ALTER_NONCE) { e[6 + 130 * s + 40] ^= 1; k2 = m.n; break; }
                     /* move q's signed nonce for item i into another item of q in this message */
                     for (int k3 = k2 + 1; k3 < m.n; k3++) {
@@ -706,6 +832,23 @@ static void w_apply_fault(w_node_t *n, gz_action_list_t *list)
 
 /* ---- the simulated node ---- */
 
+/* After an engine call: the faults on whole envelopes, then contract v2's
+ * SENDs on the simulator's links (a node's number for a party's key). */
+static void w_keys_wiped(const gz_sign_t *e);
+
+static void w_after(w_node_t *n, gz_action_list_t *out, size_t from)
+{
+    w_list_to_env(out, from);
+    w_apply_fault(n, out);
+    w_list_from_env(out, from);
+    for (size_t k = from; k < out->count; k++) {
+        gz_action_t *a = &out->slots[k];
+        int p;
+        if (a->kind != GZ_ACTION_SEND || (p = w_send_to(a)) < 0) continue;
+        sim_peer_link(n->index, (uint64_t)p, &a->u.send.link);
+    }
+}
+
 static int w_next(void *ctx, gz_stored_batch_t *batch)
 {
     w_node_t *n = ctx;
@@ -743,18 +886,16 @@ static uint32_t w_stored_epoch(const sim_storage_t *storage)
     return ep;
 }
 
-static void w_engine_config(world_t *w, uint32_t index, gz_sign_config_t *c)
+static void w_engine_config(world_t *w, w_hctx_t *h, uint32_t index, gz_sign_config_t *c)
 {
-    uint32_t ep = index ? w->builder.epoch[index] : 0;
     memset(c, 0, sizeof *c);
     c->host = index == 0; c->ctx = w_ctx();
-    w_secret("test/factory", w_secret_index(index, ep), c->factory_secret);
-    w_secret("test/contribution", w_secret_index(index, ep), c->contribution_secret);
-    w_hooks(&w->builder, c);
+    h->b = &w->builder; h->g = index;
+    w_hooks(h, c);
     c->build = w_build; c->retry = w_retry; c->build_ctx = &w->builder;
     c->tick_ms = 1; c->resend_ticks = 40; c->deadline_ticks = 400; c->status_ticks = 10;
     w->builder.nonces_due_ms = 400;             /* the nonce step's deadline, as the other steps' */
-    c->max_attempts = w->max_attempts ? w->max_attempts : 16;
+    w->builder.max_attempts = w->max_attempts ? w->max_attempts : 16;
 }
 
 static void *w_create(void *ops_ctx, uint32_t index, const gz_ports_t *ports, const sim_storage_t *storage)
@@ -771,7 +912,7 @@ static void *w_create(void *ops_ctx, uint32_t index, const gz_ports_t *ports, co
         if (ep >= W_EPOCHS) ep = W_EPOCHS - 1;
         w->builder.epoch[index] = ep;
     }
-    w_engine_config(w, index, &c);
+    w_engine_config(w, &n->hctx, index, &c);
     if (gz_sign_init(&n->eng, &c, ports, sim_storage_incarnation(storage)) != GZ_OK) abort();
     n->w = w; n->index = index; n->storage = storage;
     w->nodes[index] = n;
@@ -806,9 +947,27 @@ static gz_status_t w_start(void *node, gz_action_list_t *out, int *more)
         gz_status_t s0 = gz_action_list_add(out, &a);
         if (s0 != GZ_OK) return s0;
     }
+    size_t from = out->count;
     gz_status_t st = gz_sign_start(&n->eng, &r, out, more);
-    if (st == GZ_OK) w_apply_fault(n, out);
+    w_keys_wiped(&n->eng);
+    if (st == GZ_OK) w_after(n, out, from);
     return st;
+}
+
+/* The engine holds no secret key between calls (P4.3 item 5): after every
+ * call its key work area is wiped. A key left behind is a bug the world stops
+ * on at once (RULE:WIPE_KEYS). */
+static void w_keys_wiped(const gz_sign_t *e)
+{
+    const uint8_t *f = (const uint8_t *)&e->work_fkp, *c = (const uint8_t *)&e->work_ckp;
+    int left = e->keys_held != 0;
+    for (size_t i = 0; i < sizeof e->work_fkp; i++) left |= f[i];
+    for (size_t i = 0; i < sizeof e->work_ckp; i++) left |= c[i];
+    for (size_t i = 0; i < sizeof e->work_sk; i++) left |= e->work_sk[i];      /* the factory secret's copy (review A, L1) */
+    if (left) {
+        fputs("world: the engine kept a key after its call\n", stderr);
+        abort();
+    }
 }
 
 /* The host's user command: test parameters, turned into a proposal. */
@@ -816,6 +975,7 @@ static gz_status_t w_begin_params(gz_sign_t *e, w_builder_t *b, const uint8_t *p
 {
     static w_begin_t wb;
     if (!w_make_begin(b, p, len, &wb)) return GZ_ERR_ARGUMENT;
+    b->attempts_begun++;
     return gz_sign_begin(e, &wb.b, out);
 }
 
@@ -823,11 +983,27 @@ static gz_status_t w_handle(void *node, const gz_event_t *ev, gz_action_list_t *
 {
     w_node_t *n = node;
     gz_status_t st;
+    size_t from = out->count;
+    gz_event_t own;
     if (ev->kind == GZ_EVENT_USER_COMMAND) {
         st = w_begin_params(&n->eng, &n->w->builder, ev->u.user.bytes.data, ev->u.user.bytes.len, out);
         if (st == GZ_ERR_ARGUMENT) st = GZ_OK;      /* refused: nothing to do */
-    } else st = gz_sign_handle(&n->eng, ev, out);
-    if (st == GZ_OK) w_apply_fault(n, out);
+    } else {
+        /* The simulator's links name nodes; the engine's are keys: a node's link to party p is (its own
+         * current contribution key, p's). A peer that is no party (the world) keeps its key. */
+        own = *ev;
+        if (ev->kind == GZ_EVENT_MESSAGE_RECEIVED || ev->kind == GZ_EVENT_PEER_CONNECTED || ev->kind == GZ_EVENT_PEER_DISCONNECTED) {
+            gz_link_t *l = ev->kind == GZ_EVENT_MESSAGE_RECEIVED ? &own.u.message.link : &own.u.peer.link;
+            uint64_t p = sim_key_peer(l->remote.key);
+            if (p < W_MAX_NODES) {
+                memcpy(l->local.key, w_ckey(&n->w->builder, n->index), 33);
+                memcpy(l->remote.key, w_ckey(&n->w->builder, (uint32_t)p), 33);
+            }
+        }
+        st = gz_sign_handle(&n->eng, &own, out);
+    }
+    w_keys_wiped(&n->eng);
+    if (st == GZ_OK) w_after(n, out, from);
     return st;
 }
 
@@ -856,10 +1032,12 @@ static void w_observe(void *ops_ctx, uint32_t index, const gz_action_t *a)
 {
     world_t *w = ops_ctx;
     gz_sign_msg_t m;
-    if (!gz_sign_decode(a->u.send.records.data, a->u.send.records.len, &m)) return;
-    if (m.kind == GZ_SIGN_MSG_PROPOSE && !w->first_proposal_len && a->u.send.records.len <= sizeof w->first_proposal) {
-        memcpy(w->first_proposal, a->u.send.records.data, a->u.send.records.len);
-        w->first_proposal_len = a->u.send.records.len;
+    static uint8_t env[GZ_SIGN_MAX_MSG];
+    size_t len = w_send_env(a, env, sizeof env);
+    if (!len || !gz_sign_decode(env, len, &m)) return;
+    if (m.kind == GZ_SIGN_MSG_PROPOSE && !w->first_proposal_len && len <= sizeof w->first_proposal) {
+        memcpy(w->first_proposal, env, len);
+        w->first_proposal_len = len;
     }
     if (m.kind != GZ_SIGN_MSG_NONCES && m.kind != GZ_SIGN_MSG_PARTIALS) return;
     if (m.kind == GZ_SIGN_MSG_NONCES) w->sends_nonces++; else w->sends_partials++;
@@ -949,8 +1127,14 @@ static sim_config_t w_config(world_t *w, uint64_t seed, uint32_t members)
     c.step_slots = 128; c.step_bytes = 4u << 20; c.runner_slots = 512; c.runner_bytes = 8u << 20;
     c.ops.create = w_create; c.ops.destroy = w_destroy; c.ops.start = w_start; c.ops.handle = w_handle;
     c.ops.inspect = w_inspect; c.ops.observe = w_observe; c.ops.ctx = w;
-    c.whole_messages = 1;   /* the bridge until P4.3 (sim.h) */
     return c;
+}
+
+/* A message the test sends as party `from` to node `to`: an envelope, on contract v2's network. */
+static inline void w_sim_send(sim_t *sim, uint64_t from, uint64_t to, const uint8_t *env, size_t len)
+{
+    if (len < GZ_RMSG_HEADER) return;
+    sim_send_kind(sim, from, to, (uint16_t)((uint16_t)env[4] << 8 | env[5]), env + 6, env + GZ_RMSG_HEADER, len - GZ_RMSG_HEADER);
 }
 
 static uint32_t w_mask(uint32_t members) { return (((uint32_t)1u << (members + 1)) - 1u) & ~1u; }

@@ -284,6 +284,15 @@ static size_t guard_record(const gz_node_t *c, uint8_t *buf)
     return at + 16;
 }
 
+/* The guard record for the batch of a round_started (journal.md 8.3; the
+ * signing engine's guard hook): one more round started, a new counter. */
+size_t np_guard_for_round(gz_node_t *c, uint8_t *buf)
+{
+    c->np.guard_counter++;
+    c->np.rounds_started++;
+    return guard_record(c, buf);
+}
+
 static int find_epoch(uint32_t (*list)[2], uint32_t n, uint32_t epoch)
 {
     for (uint32_t i = 0; i < n; i++)
@@ -364,6 +373,7 @@ static int epoch_known(const gz_node_t *c, uint32_t epoch)
  * epoch is drawn with the ordinary tag: it is saved and backed up. It is
  * never 0 and never one the node knows; each further draw is mixed with a
  * count, so a port that repeats itself cannot hold the loop. */
+#define NP_EPOCH_TRIES 64
 gz_status_t np_restore_batch(gz_node_t *c, gz_action_list_t *out)
 {
     uint8_t eb[16], rb[32], gb[NP_GUARD_HEAD + 8 * (NP_MAX_OLD_EPOCHS + 1)], drawn[8], v[8];
@@ -375,7 +385,11 @@ gz_status_t np_restore_batch(gz_node_t *c, gz_action_list_t *out)
     do {
         c->ports.random.fill(c->ports.random.ctx, GZ_RANDOM_ORDINARY, drawn, sizeof drawn);
         epoch = restore_epoch(gz_get_u64(drawn) + again++, c->incarnation);
-    } while (epoch == 0 || epoch_known(c, epoch));
+        /* Checked when drawn, so that no epoch the wallet cannot derive is
+         * ever saved (review R2-8). A port that refuses NP_EPOCH_TRIES draws
+         * in a row is not a key port: the epoch is taken as drawn. */
+    } while (epoch == 0 || epoch_known(c, epoch) ||
+             (again < NP_EPOCH_TRIES && c->cfg.keys.epoch_ok && c->cfg.keys.epoch_ok(c->cfg.keys.ctx, epoch) != 1));
     recs[0].type = GZ_RECORD_KEY_EPOCH;
     recs[0].bytes.data = eb;
     recs[0].bytes.len = epoch_record(eb, sizeof eb, epoch);
@@ -616,6 +630,9 @@ gz_status_t np_peer(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out)
     } else {
         int s = gz_route_member_slot_of_link(c, &ev->u.peer.link);
         if (s >= 0) st = gz_c_bracket(c, ENG_SLOT0 + s, ev, out);
+        /* Then the signing engine: the reconnect step of its rounds on this link (hello first, then saved
+         * round_partial_sigs and round_status_request: contract v2 rule 6). It matches the link itself. */
+        if (st == GZ_OK && c->sign_on && ev->kind == GZ_EVENT_PEER_CONNECTED) st = gz_c_bracket(c, ENG_SIGN, ev, out);
     }
     return st == GZ_OK ? to_tests(c, ev, out) : st;
 }
@@ -758,7 +775,8 @@ gz_status_t np_message(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out
         return gz_c_bracket(c, ENG_SLOT0 + r.slot, ev, out);
     }
     case RT_SIGNING:
-        return node_only(c, out, DROP_NO_ENGINE, ev->u.message.kind, NULL); /* P4.3 */
+        if (!c->sign_on) return node_only(c, out, DROP_NO_ENGINE, ev->u.message.kind, NULL);
+        return gz_c_bracket(c, ENG_SIGN, ev, out);
     case RT_TEST:   return gz_c_bracket(c, r.eng, ev, out);
     case RT_LISTING: return limited_hello(c, conn, ev, 0, out);
     case RT_UNKNOWN_HELLO: return limited_hello(c, conn, ev, 1, out);
@@ -989,7 +1007,9 @@ static gz_status_t slot_save(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out
 gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out)
 {
     gz_status_t st = gz_c_node_bracket_begin(c, out);
+    size_t from = out->count;
     if (st != GZ_OK) return st;
+    c->api.opened = 0;
     switch (code) {
 #ifdef GZ_TEST_KINDS
     case 0x7e80: st = slot_open(c, cmd, out); break;
@@ -1011,6 +1031,7 @@ gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_li
 #endif
     default: st = gz_ls_command(c, code, cmd, out); break; /* the lobby's, the gate's, or unknown_command */
     }
+    if (st == GZ_OK) st = gz_api_after(c, cmd, from, out); /* its request id (api.c) */
     if (st == GZ_OK) return gz_c_node_bracket_end(c, out);
     c->bracket_on = 0;
     return st;

@@ -1,0 +1,181 @@
+# Integration: Slice 1 end to end (P4.6)
+
+Draft 8, 2026-11-18. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
+open pull requests of Slice 1 onto `main`, in this order: #51 (`p5-p6-api`), #52 (`composite-p4-3`), #54
+(`s5-s6-program`), #53 (`keys-p8`), #56 (`funding-p45`), #55 (`composite-p6a`). Then it wires them together so
+that one host and three members, each a separate `gazpacho` process, form a factory on the local test chain
+(Bitcoin Core regtest): from a clean start to a buried funding and a Live factory. This is step P4.6 of
+`docs/notes/composite-node.md` 15. The audit that started it found that the funding engine (#56) is never called
+and that the composite (#52) proposes a stand-in funding (its finding M1).
+
+How the branch is kept:
+- each owner keeps fixing their own pull request, and the new heads are merged in again as they land;
+- fixes made here are small and self-contained, each listed in section 3 with the pull request that should fold
+  it in;
+- nothing here weakens a check, and no test is loosened or removed. A test that the merged tree breaks is listed
+  in section 4 with its owner, not changed.
+
+## 1. Merges and their conflicts
+
+Base: `main` at `4aab237` (#64). Heads merged: #51 `cd98aed`, #52 `91aa062`, #54 `7752258`, #53 `f53d1e6`, #56
+`bf739c0`, #55 `e3b7268`.
+
+| Merge | Conflicts | Resolution |
+|---|---|---|
+| #51 | none | |
+| #52 | `program/CMakeLists.txt`: both edited the library's link line and added a test after `program_lobby` | Union. The link line names `gazpacho_api` (#51) and `gazpacho_tree_import` (#52) and keeps #51's unlock sources. `program_p6a_views` (#51) and `program_signing` (#52) are both registered |
+| #54 | `program/CMakeLists.txt` (sources, link line, tests), `program/executor.c` (after the start), `program/main.c` (statics, functions) | Sources: #51 adds `view.c` and `api.c`; #54 replaces `journal_standin.c` with `store_journal.c` and `store_unlock.c` (the stand-in moves to the test build only). Link line: the union. Tests: #51's and #52's kept, #54's test passphrase file after them. `executor.c`: #51's `gzp_api_node_started` kept, #54's rename of `gzp_standin_poisoned` to `gzp_store_poisoned` taken. `main.c`: #51's `api` and `on_illegal` and #54's `wallet` and `append_batch` all kept |
+| #53 | `program/CMakeLists.txt` (sources, tests), `program/executor.c` (`port_secret`), `program/main.c` (statics, the key opening, its call), `tests/program/refusals.py` | Sources: `keys.c` added to the union; `keys_standin.c` in the test build only. Tests: all four sides kept (an `endif()` restored between two blocks). `port_secret`: #53's (under AT_JOIN, from the scoped table only: audit M2). `main.c`: **the key port's seed is the unlocked storage's** (`gzp_keys_seed_from_unlock` over #54's `gzp_wallet_unlock_api`), not `wallet-seed.standin`, which #54 removed: this is #53's own merge blocker 1. #54's stand-in transport key gives way to #53's `transport_key` (the host key, `keys.md` 4); #53's `keys_open` replaces #54's `wallet_open` and makes the same first-address check, and more. `refusals.py`: #53's check that no `transport.key` is written is kept; the key file made world-readable is #54's `keys.gzk` |
+| #56 | none | |
+| #55 | `CMakeLists.txt`, `core/gazpacho/include/gazpacho/ports.h`, `core/node/CMakeLists.txt`, `core/node/internal.h`, `tests/node/mutants.txt` | All unions: #56's `node_watch_release` and #55's `fuzz_api`; #52's `host_secret` and #55's `epoch_ok` in the key port, with both comments; `signslot.c`, `view.c` and `api.c` in both source lists; #52's signing block and #55's view and API block; both sets of mutants |
+| #52 again, `0626b54` (the C7 fix for audit H1; F5 ported as `gz_sg_set_funding`) | `core/node/internal.h` (`sg_ftx`), `core/node/signslot.c` (`sg_begin`) | `sg_ftx`: #52's own 8,192-byte buffer, so F5's line here goes. `sg_begin`: the funding engine's plan (F3) kept, and set through #52's `gz_sg_set_funding`; the stand-in plan of a test-build host with no wallet port is set the same way, as #52 has it |
+| #56 again, `03dacca` (review B) | none textually | Review B changed the wallet port: `adopt` takes the factory's script and amount at output 0, `spend_back` names the plan by txid. `program/wport.c` follows it in the merge commit itself, so that the merge builds |
+| #56 again, `8fe2004` (review B confirmation: WATCH_SYNCED and TIP_SYNCED in the chain contract; the engine waits for the chain's answers) | `core/node/composite.c` `on_chain` | #56 adds TIP_SYNCED to the tip case and WATCH_SYNCED to the report case; this branch's tip case sets the node's tip and brackets the funding engine (F3). Both kept: TIP_SYNCED shares that case. This is #56's answer to B12, now on this branch |
+| #54 again, `a88b2da` | none | |
+| #53 again, `ce68327` (its integration findings: W4, W14, F1, F4, B1, B10) | `program/main.c`, after `keys_open` | #53 now carries F4 itself: `gzp_keys_set_role` takes the scoped-only setting as its third argument and never sets it on a host. #53's version taken; this branch's F4 line (`keys.scoped_only = ...`) and its two-argument call go. F1 (`port_host_secret`) merged without a conflict, #53 having the same change |
+| #56 again, `07ba866` (review B second confirmation: WATCH_FAILED and the tip's block hash in the chain contract; a failed watch fails its factory closed) | none | #56 adds WATCH_FAILED to `on_chain`'s report case, next to this branch's tip case; it merges as it is |
+| #56 again, `cf43d35` (`main` merged in: #65, valgrind in three shards) | none | |
+| `main` at `5e23043` (#65, valgrind in three shards; #67, hello again) | `core/lobby/include/gazpacho/lobby.h`, the member state | This branch (#52) adds `max_tree_nodes` after `sent_here`; #67 adds `heard_here`, `hello_tries` and `retry_join` there. Union: all four kept |
+| #51 again, `d0414c2` (`main` merged in: the lobby member's hello again) | none | |
+| #52 again, `bb4cdfe` (tests for thirteen signing-rule removals, KEYS_STILL_ROUNDS) | none | |
+| #56 again, `2b9905a` (`main` merged in: #67, #68) | none | |
+| `main` at `ca2eb2f` (#68: the chain adapter's loop lookups on a client of their own, B11) | nothing to merge: already in #56's `2b9905a` | F9 stays: #68 gives the adapter's loop lookups their own client, which ends B11's race. The host's wallet scan at its start, which held `program_chain_stub` (B14), is the wallet port's (`program/wport.c`), not the adapter's: #68 does not touch it, and it keeps its own thread and client |
+
+## 2. The wiring list: every stand-in still used between components
+
+| # | Stand-in or gap | Where | The real fix | Owner | State here |
+|---|---|---|---|---|---|
+| W1 | **The stand-in funding**: `sg_test_funding` made a funding transaction with one made-up input (a hash of scope, check and attempt), never broadcast; a new attempt spent another made-up input (audit L3) | `core/node/signslot.c`, `sg_begin` | The host's attempt asks the funding engine for its plan first and proposes its unsigned bytes and outpoint, with `released` from the previous attempt's signing outcome (H11) | #56 (its `funding.md` 7); #52 gives the outcome's fields | **Done** (section 3, F3). The stand-in remains only for a test-build host node with no wallet port (unit tests) |
+| W2 | **No funding engine in the node**: no `ENG_FUNDING`; NEW_TIP, TX and OUTPOINT reports, BROADCAST_RESULT and command 0x0301 reached no funding engine; H1 never ran; no member called `gz_fund_member_acked`; the `report` hook reached no lobby | `core/node` | As `funding.md` 7 lists | #56 | **Done** (F3), except W13 and W16 |
+| W3 | **No wallet port in the program** | `program/` | A port over `wallet/tx`: the host's confirmed BIP 86 coins from the chain port, the master key from the unlocked seed | #56, with #53's keys | **Done** (F3: `program/wport.c`), with the stand-ins of W15 |
+| W4 | **Key routing under AT_JOIN** (audit M2, D3): #53's `port_secret` answers only from the scoped table, and nothing fills it: no call of `gzp_keys_scope_open` anywhere. An AT_JOIN member can neither ready with the passphrase nor sign | `program/executor.c` (#53), the READY route of `ports/api` (#51) | The READY-with-passphrase path calls `gzp_keys_scope_open` once the passphrase is checked, before the node gets its ready command; the node's gate then requires the scoped secret (audit M4) | #53 (the call), #51 (the route) | Open. `program_slice1` uses AUTO members |
+| W5 | **`host_secret`**: #52's port gave the key at (epoch 0, index 0); #53 sets no `host_secret` | `program/executor.c` | Over `gzp_keys_host` | #53 | **Done** (F1) |
+| W6 | **The unlock call between #51 and #54**: #51's API server unlocks through `unlock_standin.c` (test build) or `unlock_none.c` (release: `not_built`); #54's `store_unlock.c` implements `unlock.h` over the sealed storage, but #54's program waits for the unlock *before* the loop in which #51's API server runs. So the merged release program never unlocks; only `gazpacho-test --test-passphrase-file` does | `program/main.c`, `program/api.c`, `program/store_unlock.c` | The API server runs while locked (before storage opens), with `gzp_wallet_unlock_api(wallet)` as its unlock table; `unlock_standin.c` and `unlock_none.c` go | #54 (after #51, as its body plans), #51 for the locked phase of its server | Open |
+| W7 | **The key port's seed**: #53 read `wallet-seed.standin` | `program/main.c` | `gzp_keys_seed_from_unlock` over #54's table | #53 (its merge blocker 1) | **Done** at the #53 merge |
+| W8 | **Chain watches feeding burial**: the chain worker's reports reached the test engines and the lobby slots only; `composite.c` dropped `GZ_CHAIN_BROADCAST_RESULT` | `core/node/composite.c` | Routed to the funding engine | #56 | **Done** (F3) |
+| W9 | **No regtest in the program**: `--network` took signet or testnet4; the chain port had no regtest network; the transport accepts only the signet and testnet4 chain hashes | `program/`, `ports/chain`, `ports/net` | Regtest as a test network | P4.6 | **Done** (F2, made opt-in by F8): regtest exists only in `gazpacho-test --test-regtest`, which allows it in the chain port at the start (`gz_network_allow_regtest`); `--network regtest` stays refused and the chain port treats regtest as invalid unless allowed. On regtest the lobby's terms still name signet: Slice 1's terms policy (`core/lobby/fit.c`, `core/tree/terms.c`) is unchanged |
+| W10 | **No Esplora on regtest**: the chain port speaks Esplora only | test tool | `tools/esplora-regtest.py` | P4.6 | **Done** (F2) |
+| W11 | **Two commands set the member-signing mode, with opposite timing** (audit L4): #52's `GZ_CMD_SIGNING_SET` and #55's `GZ_CMD_API_SET_SIGNING` | `core/node/lobbyslot.c`, `core/node/api.c` | One command, which `PUT /settings/signing` uses | #52 and #55 to agree | Open |
+| W12 | **The API does not reach the node's API engine**: #51 answers every lobby call with `not_yet core-view`; #55's API engine exists but #51's server does not forward to it | `program/api.c` (#51), `core/node/api.c` (#55) | The server forwards lobby calls to the node's API engine and reads its views | #51, after #55 | Open |
+| W13 | **No lobby result for cancel reason 4**: the lobby's round results are Funding, Active, Retry and Failed (reason 3); the funding engine's Dead and abandoned ends need Failed with cancel reason 4 to every seat (`messages.md` 6.10). Here a Dead or abandoned report resolves the member's round and tells the lobby nothing | `core/lobby` `lobby_handoff.h` | A Failed result that names its reason | #56 (it added reason 4), in the lobby | Open |
+| W14 | **`epoch_ok` is not set**: #55 added the key port's `epoch_ok` for P8 to set ("P8 sets it"); #53 does not, so a restore's new epoch is drawn without the check | `program/executor.c` | #53's port answers `epoch_ok` (the epoch's hardened child is valid) | #53 | Open |
+| W15 | **The wallet port's stand-ins** (`program/wport.h`): coins are read once, at the start (a coin received later is seen at the next start); `adopt` holds again only a plan this run made, so after a process restart a journal's plan is refused and never signed; in the test build with no chain, one invented coin, so that the tests without a chain still reach Funding through the real engine (nothing is broadcast without a chain) | `program/wport.c` | Coins followed by the chain worker; `adopt` rebuilt from the journal's plan (a `wallet/tx` function that holds a funding from its bytes) | #56, with `wallet/` | Open |
+| W16 | **No slot end from the funding engine**: `gz_fund_scope_state` is not yet asked when a slot's Closing ends, and `gz_fund_host_drop` is not called when a lobby ends without Funding | `core/node/lobbyslot.c`, `nodepart.c` | As `funding.md` 7 lists | #56 | Open |
+
+## 3. Fixes made on this branch, for the owners to fold in
+
+| Fix | What | Test that fails without it | Owner |
+|---|---|---|---|
+| F1 | `port_host_secret` is `gzp_keys_host`, not `gzp_net_key(net, 0, 0)`: with #53's key function behind the transport, (0, 0) is a member-path lobby key, derived only under the current epoch and never the key the terms name, so the host could sign no proposal | `program_signing` and `program_slice1` | #53 (its merge blocker 2): **folded in** (`ce68327`) |
+| F2 | Regtest as a test network (chain port; program and transport in the test build), and `tools/esplora-regtest.py` | `program_slice1` | P4.6 |
+| F3 | The funding engine in the composite (`core/node/fundslot.c`, `ENG_FUNDING`) and the host's wallet port (`program/wport.c`), wired as `funding.md` 7 lists | `program_slice1` (no funding was ever broadcast before) | #56 |
+| F4 | `scoped_only` (AT_JOIN's key routing) only on a member: a host derives its own pairs for every round it proposes (B6) | `program_slice1`; CI's `program_signing` | #53: **folded in** (`ce68327`, the third argument of `gzp_keys_set_role`); this branch now uses #53's |
+| F5 | `sg_ftx` holds `GZ_SIGN_MAX_FUNDING_TX` bytes (B7) | `program_slice1` (`sign-begin-refused-funding` before) | #52: **folded in** (`0626b54`, `gz_sg_set_funding`, with `test_node_sizing`); this branch now uses #52's |
+| F7 | The node's isolation archives (`gazpacho_node_isolation_*`) hold `core/funding`'s sources and include folder, and the node's isolation scan its include folder. Without it every CI job failed to build on `9717cd7` (`gazpacho/funding.h` not found): F3 was built on the build server for the two programs only | Every CI build job on `9717cd7` | #56, with F3 |
+| F6 | The sealed journal's table of known record types holds `journal.md` 9's area 0x000d, Slice 1 rows (B9) | `program_lobby` (every restart refused before; with F6 on the build server only case 7, AT_JOIN with the passphrase, still fails: B2) | #54 |
+| F8 | Regtest made opt-in: `gz_network_allow_regtest` in the chain port (off by default: regtest has no name, no genesis and is no valid or test network), set only by `gazpacho-test --test-regtest`; `--network regtest` refused again. F2 had made regtest a network in every build, against `chain_headers` and `program_options`, which check that it is none | `chain_headers`, `program_options` (CI on `ea8136d`) | P4.6 (mine, F2's) |
+| F9 | The host's wallet scan runs in a thread of its own (its own HTTP client, published under a mutex, interrupted at a stop); the loop and a stop never wait on it (B14) | `program_chain_stub` (gcc job on `ea8136d`; on the build server before and after) | #56, with F3 (mine) |
+| F10 | Not a fix: the look-alike (`tools/esplora-regtest.py`) writes one line per request to the file named by `GZ_ESPLORA_LOG`, when set (time, client port, lock wait, time taken, status, path). It decided B15 | None (a test tool's log; off unless set) | P4.6 |
+| F11 | `program_slice1` mines until every process shows Active and its own funding engine has judged the factory Live (`bury` and case 3), within the same time limits; it stopped at Active, which a member shows from the host's status, and checked Live at once (B15). No check changed | `program_slice1` case 3 (two of four runs before) | P4.6 |
+
+## 4. Cross-PR bugs found
+
+| # | Bug | Seen how | Owner |
+|---|---|---|---|
+| B1 | #53's `tests/program/derived_keys.py` writes `wallet-seed.standin` and reads `journal.standin`; on the merged tree the seed is the sealed storage's and the journal is sealed (#54), so the test cannot set its seed or read its journal | Reading; CI on this branch | #53, once #54 is on `main` (restore from the test words through `unlock.h`, dump with `--test-dump-journal`) |
+| B2 | Under AT_JOIN (the default) no member can ready with the passphrase or sign once #53 is merged (W4) | Reading, audit M2; `program_signing`'s AT_JOIN member on this branch | #53 and #51 |
+| B3 | The merged release program cannot unlock (W6) | Reading | #54 and #51 |
+| B4 | The host's round secret was the lobby key at (0, 0) after #53 (F1) | Reading; fixed here | #53 |
+| B5 | `epoch_ok` left unset (W14) | Reading | #53 |
+| B6 | #53 sets `scoped_only` from `--member-signing`, whose default is AT_JOIN, on the host as well: the host's `port_secret` then answers only from the (empty) scoped table, so the host cannot make its own factory key for any round it proposes. Seen as CI's `program_signing` failure on this branch (no proposal is ever answered) | CI, reading; fixed here (F4) | #53 |
+| B7 | #52's composite holds the proposal's funding transaction in `sg_ftx[128]`, room for its stand-in only: a real funding (154 bytes with one input, up to 8,192) does not fit, so every real plan was refused (`sign-begin-refused-funding`). The 8,192-byte limits of #52 and #56 agree; this buffer did not | `program_slice1` on the build server; fixed here (F5) | #52 |
+| B8 | CI on this branch: `web_p6a_fixme` fails by design once #55's `core/node/view.c` is in: #51 must switch `tests/web/multiprocess.spec.mjs` on | CI | #51 |
+| B9 | Every restart of a folder that opened a lobby is refused: `cannot start storage: journal: unknown_record`. #54's sealed journal keeps a table of known record types (`gz_journal_type_known`) with none of `journal.md` 9's area 0x000d (Local API), and #55 writes `local_ids` (0x000d000e) in a slot's first batch. CI's `program_lobby` cases 2 to 7 ("the host starts again on the same folder", "the member restarts"); `program_two_process` and `program_journal_kill` write no such record and restart fine | CI; reproduced on the build server (the restarted host's log); fixed here (F6) | #54 |
+| B10 | `program_keys_ct` (valgrind constant-time check of the key derivation) fails in the gcc build: an untriaged secret-dependent branch in `gzw_bip32_master` through libcrypto. It fails on #53's own CI too, so it is #53's, not the merge's | CI | #53 |
+| B11 | Two threads on one chain client: the chain worker (P7) runs in its own thread on the program's `gz_chain`, and a synchronous lookup from the loop's thread on the same client (`--check-chain`'s `gzp_chain_show_outputs`, and this branch's first wallet scan) races it: the first wallet scan here crashed the host with a heap corruption. The wallet scan now uses a client of its own (`program/wport.c`); `--check-chain` keeps the race, short-lived since it exits at once | `program_slice1` on the build server | main (P7, `program/pchain.c`) |
+| B12 | A tip that jumps past the funding deadline in one report (here: regtest blocks every second against the default 60 s tip poll; in life: a host or member asleep for six hours) makes the funding engine judge the factory abandoned on the tip alone, before the watch reports that it was buried on time arrive: the host then broadcast a spend-back (refused, its input spent) and took the factory as funded late; the members went abandoned, then live late. #56's review B resync gate covers a start only | `program_slice1` on the build server (first runs) | #56: answered by `8fe2004` (synced reports), merged here; to be confirmed by a run of `program_slice1` with fast blocks |
+| B13 | **An expectation that changes with the wiring.** `tests/program/signing.py` line 138 checks that each acking member "writes no funding_status (the funding engine's, P4.5)": true on #52 alone, where no funding engine runs. With the funding engine wired (F3), a member's engine writes its first `funding_status` (0x00030006, state 1 acked, with the funding transaction, its output, the ack tip and the exit constants) at its ack, as `funding.md` (its member row and record table) says. The new expectation: each acking member writes `funding_status`, its first with state 1 (acked), from its ack on, and the refusing member (m4) writes none. Not changed here (no test is changed on this branch); hidden today because the test stops earlier (B2), so it will fail on a correct tree once W4 is done. The line should change with the wiring, by its owner | Reading (`program_slice1` does not read the journals, which are sealed) | #52 (its test), with #56 |
+| B14 | This branch's own: the host's wallet scan (F3) made 40 synchronous lookups before the loop, so a slow chain server held the start and a stop (`program_chain_stub`: "a slow chain server does not hold the loop", "SIGTERM stops it") | CI gcc job on `ea8136d`; fixed here (F9) | P4.6 (mine), for #56 to take with F3 |
+| B15 | **Neither is broken: the test's pace, against the chain worker's.** Intermittent in `program_slice1` case 3 (two of five runs on `e14468c`, two of four on `7ae4b23`): the member in both lobbies (m1) had not judged its factories Live when the check ran. F10's request log rules the look-alike out: all 3,808 requests of the four runs were answered in at most 0.12 s, after at most 0.06 s waiting for its lock, all with 200 but 19 early 404s (the fundings' bytes before their broadcast). The worker is slow, not stuck: when a watched transaction confirms, one pass proves it (`gz_chain_confirm_tx`: status, tip, bytes, block hash, header, block summary, coinbase, its bytes, both Merkle branches: about ten requests) at the client's pace of one request per 250 ms, watch after watch, and looks at the tip only at the start of the next pass. The host and m1 watch both fundings and both spent inputs (four watches, and each funding proved twice, once as a watched transaction and once as a watched input's spender), so that pass lasts about 13 s; a member with one funding and one input, about half that. Both fundings always confirm in one block; with a block every 2 s the two workers then tell no tip for 7 to 9 blocks (their counts go from 1 to 8 or 10 with nothing between, or, when they first see the fundings at 2, from 2 to the end of the case). The case stopped mining once every lobby showed Active, which m1 shows from the host's status, and then checked each process's own Live judgment at once: whether m1 had told its third block by then depended on when its slow pass began. **Fix, F11 (the test, P4.6):** mine until every process shows Active **and** its own funding engine has judged Live, within the same time limit; the checks are unchanged. **To the chain port (`main`), not a correctness bug:** the tip waits for a whole pass of proofs, and a transaction that is both a watched one and a watched input's spender is proved twice. On signet (a block per 10 minutes) the delay is seconds; with many watches it grows with their number | `program_slice1` on the build server, with F10's request log | P4.6 (the test, F11); the pacing to the chain port on `main`, with #56 told (its funding engine judges Live from these tips) |
+| B16 | **Review B of PR 52's M1, reproduced with separate processes.** A member that restarts between saving its partial signatures and the host's round_complete judges its ack with its slot's `own_depth`, which the replayed round never sets (0 after a restart): `gz_tree_may_ack` then allows a tip up to E - 74 instead of E - 16·d - 74. `program_ack_depth` (section 5): restarted at TIP + 5, m1 acks (case 1 passes); restarted at E - 80, past its limit at any real depth, m1 **acks** and saves round_completed (case 2 fails its three checks), so the host would fund a factory whose exit m1 cannot finish in time (C8). `gz_fd_member_acked` takes the same field | `program_ack_depth` on the build server | #52 (its M1 fix: the depth from the round itself, or kept in it); the case is red until it lands, then merged here and run again |
+
+Status on `0405752` (CI, every build job): B2 and B10 are gone with #53 `ce68327` (`program_lobby` and `program_keys_ct` pass, and `program_signing` no longer stops early); `program_signing` now fails on exactly B13's three checks ("m1/m2/m3 writes no funding_status"), as predicted; `program_p6a_views` runs (it waited for `program_lobby`) and fails on B8's check; B1 and B3 are as before.
+
+## 5. The multi-process regtest test
+
+`tests/program/slice1.py`, CTest `program_slice1` (skipped, exit 77, without `GZ_BITCOIN_BIN`, the folder holding
+`bitcoind` and `bitcoin-cli`). It starts its own regtest node (its own data folder under the test's work folder, RPC
+on 127.0.0.1 at a free port, `-listen=0`, stopped at the end) and `tools/esplora-regtest.py` over it.
+
+1. One host and three AUTO members from clean folders: the host's coin is a real regtest coin paid to its first
+   receive address, found by its wallet port at its start. The round is signed; the funding engine plans the funding
+   from that coin, H1 passes, the funding is broadcast at 0.1 sat/vB, confirms and is buried (3 blocks); the host
+   and every member go Active, each member by its own chain view (C11).
+2. The same with a fourth member whose conditions the terms do not meet (its highest tree fee rate, 1 sat/kvB, is
+   below the terms' 100): it refuses, is never seated, signs nothing and follows no funding; the host and the three
+   others go Live.
+3. Two lobbies of one host, funded from two coins: m1 in both, m2 and m3 in A, m4 and m5 in B. Both factories go Live
+   on time on the host and on each of their members. Then every process is stopped and started again once on its
+   folder: each comes back with its lobbies Active (m1 both), nothing is judged, begun or refused again, and no
+   node-error.
+
+Not yet in it, from `composite-node.md` P4.6: `program_slice1_signet` (opt in, `GZ_LIVE_TESTS`, the test coins), and
+an AT_JOIN member (it waits for W4). Results on the build server (Core 29.1): section 6.
+
+Two more program tests from this branch:
+- `tests/program/ack_depth.py`, CTest `program_ack_depth` (no chain, a fixed tip): one host and three AUTO members
+  on `program_signing`'s terms. m1 stops once the batch holding its partial signatures is durable
+  (`--test-crash-after-record` round_signed) and starts again on its folder with another tip. Case 1 at TIP + 5:
+  it acks. Case 2 at E - 80, with E the proposed end height: the ack check `gz_tree_may_ack` allows a tip up to
+  E - 16·d - 74 for a leaf at depth d (STEP 5, Slice 1's A 6, B 3, M 14, a 36-block funding deadline), so a member
+  at depth 1 or more must refuse, and only a depth of 0 lets it ack. B16.
+- `tests/program/slice1_signet.py`, CTest `program_slice1_signet`: section 8's plan, built. Skipped (77) and touching
+  no network unless `GZ_LIVE_TESTS=1` and `GZ_SIGNET_DIR` (the host's folder, kept between runs); it moves no coin,
+  and skips again, printing the host's first address, while that address holds none. Not run against signet.
+
+## 6. Results on the build server
+
+Bitcoin Core 29.1 regtest, its own data folder, `-listen=0`, RPC on loopback; every process `gazpacho-test` from the
+branch's tree with F1 to F6 and the wiring, its chain worker polling the tip every 250 ms.
+
+| Run | What happened |
+|---|---|
+| First runs | The real plan was refused (`sign-begin-refused-funding`): B7, then F5. The host could make no factory key: B6, then F4. The first wallet scan crashed the host (heap corruption): B11, then the scan's own client |
+| With the default 60 s tip poll and a block a second | Funding broadcast at 0.1 sat/vB (16 sat, 154 vB), confirmed and buried; every member judged it Live (C11), but the host's tip jumped past its funding deadline before the burial was reported: abandoned, a spend-back refused, funded late (B12) |
+| `program_slice1` as committed | **PASS**, both cases, 0 failed checks: in each, the real coin found, the round signed with the three members, the plan from that coin, H1 passed, the funding broadcast (16 sat for 154 vB), buried, Live on time on the host and by each member's own chain view (C11), Active everywhere, no node-error. In case 2 the refusing member was never seated, signed nothing and followed no funding |
+| After the re-merge of #52 `0626b54` and #56 `03dacca`, with F7 (head `81f9ebf`, every target built) | `program_slice1` with case 3: **PASS**, 60 checks, 0 failed: both lobbies Live on time, every process restarted once with both lobbies Active again and nothing judged again. CTest on the build server, node, funding, wallet, isolation and program subset: 33 of 35 pass; `program_lobby` (case 7, B2) and `program_signing` (its AT_JOIN member, B2) fail as section 4 says |
+| With F8, F9 and #56 `8fe2004` (head `e14468c`), one test at a time | 40 of 42 in the chain, funding, node, isolation, options, lobby and `program_slice1` subset pass, `program_slice1` all three cases included; `program_lobby` fails case 7 only (B2). `program_chain_stub` passes (it failed before F9, on the build server and in the gcc CI job). `program_chain_watch` fails its BUSY and held-broadcast cases (4 and 9) on the build server in most runs, in parallel or alone, with or without the wallet scan, and passed once alone: timing on a shared server (`main`'s CI runs it alone, #58; it passed in CI on `ea8136d`). `program_slice1` case 3 failed one check in two of five runs: B15 |
+| After the re-merges of #54 `a88b2da`, #53 `ce68327` and #56 `07ba866` (head `7ae4b23`, every target built) | Case 3 alone, four times in a row with F10's request log: two pass every check; two fail one, the Live check on m1 (B15). Every other check of the four runs passes, restarts included. The CTest subset, one test at a time: 53 passed and none failed before its 50-minute cap; `valgrind_signing` reached its 1,500 s limit under valgrind on the build server (the regex took in the valgrind tests; CI's valgrind shards pass it) |
+| With F11 (head `0405752`) | Case 3 four times in a row: **all four pass every check**. Then `program_slice1`, all three cases, from CTest: **PASS** (126 s) |
+| After the merge of `main` `5e23043` (head `dbef63e`), one test at a time, valgrind and fuzz tests left out | 116 of 123 pass, `program_lobby` (every case, #67's hello again in) and `program_slice1` among them. Red: the expected `program_api`, `program_release_build` (B3), `program_p6a_views` (B8), `program_signing` (B13), `program_derived_keys` (B1); and the two constant-time checks `program_keys_ct` and `signing_ctime`, which pass in CI's gcc job on `0405752` (the build server's debug build under its valgrind: not triaged here) |
+
+## 7. CI on this branch
+
+| Head | Result |
+|---|---|
+| `7cabf79` (the six merges, F1) | Builds. Red, all as section 4 says: `web_p6a_fixme` (B8), `program_api` and `program_release_build` (B3), `program_lobby` (B9; B2 for case 7), `program_signing` (B6; B2), `program_derived_keys` (B1), `program_keys_ct` (B10, gcc job); `program_p6a_views` not run (it needs `program_lobby`). Valgrind, libFuzzer, vectors, addresses and the interface pass; the ASan and gcc ON jobs were cancelled |
+| `9717cd7` (F2 to F6, the funding wiring, `program_slice1`) | No job built: `core/node/internal.h` includes `gazpacho/funding.h`, which the node's isolation archives did not have on their include path (F3 had been built on the build server for the two programs only). Fixed by F7 |
+| `81f9ebf` (F7, #52 `0626b54`, #56 `03dacca`) | Cancelled by the next push before it finished (the jobs that finished passed: addresses, vectors, handbook, the interface, wallet break-checks, which builds) |
+| `ea8136d` (case 3, notes draft 3) | **Every job builds** (F7 works). Red: the expected B1, B2, B3, B8, B10 tests, and three new ones that this branch caused: `chain_headers` and `program_options` (F2 made regtest a network, against their checks that it is none: fixed by F8) and, in the gcc job, `program_chain_stub` (the host's wallet scan held its start against a slow server: B14, fixed by F9). `program_slice1` skipped (no Core on the runners). The ASan job was cancelled at its time limit |
+| `f2049b4` (F8, F9, #56 `8fe2004`, notes draft 5) | Builds in every job that ran to the end. Red only on the expected tests: `web_p6a_fixme` (B8), `program_api` and `program_release_build` (B3), `program_lobby` (B2), `program_signing` (B2), `program_derived_keys` (B1), and `program_keys_ct` (B10, gcc OFF job); `program_p6a_views` not run. **`chain_headers`, `program_options` and `program_chain_stub` pass again** (F8, F9). Valgrind, vectors, addresses, the interface, the handbook and the wallet break-checks pass. The ASan (20 minutes) and gcc ON (30 minutes) jobs were cancelled at their time limits, as on the earlier heads, and this time libFuzzer too (30 minutes); on `main` all three finish |
+| `0405752` (#53 `ce68327`, #54 `a88b2da`, #56 `07ba866` and `cf43d35`, F10, F11, notes draft 6) | Every job builds; the ASan job now finishes. Red only as expected: `web_p6a_fixme` and `program_p6a_views` (B8), `program_api` and `program_release_build` (B3), `program_derived_keys` (B1), `program_signing` (B13's three checks only). `program_lobby` and `program_keys_ct` pass (B2, B10 gone). The three valgrind shards and their summary job, vectors, addresses, the interface, the handbook and the wallet break-checks pass; libFuzzer and MemorySanitizer had not finished when this draft was written |
+| `dbef63e` (`main` `5e23043`, notes draft 7) | The CI run waited in GitHub's queue for over an hour (only the wallet break-checks ran, and passed); superseded by the next push |
+| This draft's head | Running when this draft was pushed; recorded in the next draft |
+
+## 8. Next: the signet run (test built, not run)
+
+`program_slice1_signet` (opt in, `GZ_LIVE_TESTS`), case 1's shape first: one host and three AUTO members on the build
+server, each a `gazpacho-test` process with `--network signet`.
+
+- **Chain:** the public Esplora servers of two operators (mempool.space and blockstream.info), both given with
+  `--chain-url`, so the chain port compares them; no local node. The tip poll stays at its 60 s default.
+- **Coins:** the funds record lists the host-side test wallet with one coin of 0.10177141 signet BTC, unspent on
+  both operators at signet height 331418 (checked 2026-11-18), and a second wallet with 0.1102 by the record (its 0.0002 coin checked unspent too). The program's
+  wallet is its own sealed storage, not that wallet, so the run starts with one transfer from it to the program
+  host's first receive address (`gz-wallet-tx fund --broadcast`, 0.1 sat/vB, about 0.001), recorded in the funds
+  record. Moving the coin needs the owner's go-ahead.
+- **Timing:** a block about every 10 minutes, so burial at depth 3 takes 30 minutes or more; the terms' funding
+  deadline must allow hours, not regtest's minutes. B15's pacing costs seconds here.
+- **Getting the coins back:** a short end height (for example 150 blocks), then the host timeout path, as for the
+  2026-11-13 attempt factory, whose 0.00802827 is still unspent and past its end height (a sweep to schedule).
+- **Not needed for it:** the release unlock (B3, #51 and #54): the test build's stand-in unlock serves.

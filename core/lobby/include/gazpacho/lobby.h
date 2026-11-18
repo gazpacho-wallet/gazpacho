@@ -370,6 +370,11 @@ typedef struct {
     uint64_t free_window;
     uint8_t ready_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t ready_len;
     uint8_t start_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t start_len;
+    /* The member refused (an unready or leave with reason 1, its own
+     * conditions): the reason, and the stage (1 Open, 2 a ready check), until
+     * it readies or joins again (local-api.md 15.3). Memory only. */
+    uint16_t refused;
+    uint8_t refused_stage;
 } gz_lobby_seat_t;
 
 typedef struct {
@@ -400,7 +405,14 @@ typedef struct {
      * connection table, which all its lobbies share. NULL: no such limit.
      * A join that finds no room is refused like one to a full lobby. */
     int (*seat_room)(void *ctx, const uint8_t key[33]);
+    /* 1 while the person's pause is on (local-api.md 11.3): no ready check
+     * by the start rule; at the deadline the lobby is cancelled, reason 2.
+     * NULL: never paused. Called with seat_ctx. */
+    int (*paused)(void *ctx);
     void *seat_ctx;
+    /* The most tree transactions its signer signs (0: no limit): terms whose target needs more do not
+     * open (terms.md 7, gz_terms_policy_t.max_tree_nodes). */
+    uint32_t max_tree_nodes;
 } gz_lobby_host_config_t;
 
 typedef struct {
@@ -424,6 +436,10 @@ typedef struct {
      * that ended without a start, the next needs a seat event since (decision
      * 8), so that nothing loops. */
     uint64_t seat_epoch, failed_epoch; int check_failed;
+    /* Members blamed by a failed attempt (a refusal, silence, an abort), by contribution key, whatever
+     * they send or however they leave and join again: left out of the next check that starts, then
+     * free again, so a member one block behind once is not locked out (review A of PR 52, M1). */
+    struct { uint8_t key[33]; uint8_t left; } skip[GZ_LOBBY_MAX_SEATS];
     uint16_t n_seats; uint64_t next_seq, created;
     uint64_t create_credit_ms, credit_at_ms;   /* creations: a bucket of `target`, one a second */
     gz_lobby_seat_t seats[GZ_LOBBY_MAX_SEATS];
@@ -462,6 +478,8 @@ gz_status_t gz_lobby_host_listing(gz_lobby_host_t *h, const gz_link_t *link, gz_
 /* 1 once the lobby has sent a `start`: round kinds under its scope may reach
  * the signing engine (composite-node.md section 4). */
 int gz_lobby_host_round_ok(const gz_lobby_host_t *h);
+/* The pause changed (cfg.paused): the start rule is applied again. */
+gz_status_t gz_lobby_host_pause_changed(gz_lobby_host_t *h, gz_action_list_t *out);
 /* Host commands. A command refused now gives GZ_NOTE_COMMAND_REFUSED.
  * gz_lobby_host_set_values returns GZ_ERR_ARGUMENT, with nothing appended
  * or changed, for values outside the terms' ranges. */
@@ -510,6 +528,7 @@ typedef struct {
     uint8_t address[GZ_LOBBY_MAX_ADDRESS]; uint8_t address_len;   /* "host:port", numeric */
     uint32_t key_epoch, key_index;   /* of the contribution key: CONNECT names them */
     int auto_join;
+    uint32_t max_tree_nodes;         /* as the host's: terms past it are refused before any seat */
 } gz_lobby_member_config_t;
 
 typedef struct {
@@ -551,6 +570,7 @@ typedef struct {
     int resends;                     /* state messages resent on lobby_status, this connection */
     int retries;                     /* joins again after a refusal for a limit, this connection */
     int sent_here;                   /* the join was already sent on this connection */
+    uint32_t max_tree_nodes;         /* the config's (M2) */
     int heard_here;                  /* the host sent this lobby a message on this connection */
     int hello_tries;                 /* hellos asked again on this connection, unanswered */
     int retry_join;                  /* the retry timer is for a join refused for a limit */

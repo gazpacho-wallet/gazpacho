@@ -320,7 +320,9 @@ Every Lobby record is a TLV stream whose **field 2 is the lobby's scope** (32 by
 | `0x00030004` | `funding_signed` | Host | The signed funding transaction | Its broadcast; rebroadcast from it after a restart |
 | `0x00030006` | `funding_status` | Both | Txid, state (broadcast, seen, confirmed at height h with n confirmations, buried, reorganised away, input spent elsewhere), height; for the member also the height at which it sent its ack (the start of the funding deadline) | Telling the user; C11's "live" decision is taken from it |
 
-The host keeps the per-member results until the factory's funding output is spent or the creation is dead (`messages.md` 7.6, `safety-rule.md` H12).
+The host keeps the per-member results while a member can still need them: until the creation is live, dead, or past the members' deadlines and a grace after a failed lobby (`messages.md` 7.6, `safety-rule.md` H12 as rewritten in P4.5).
+
+`funding_status` is written by the **funding engine only** (on both roles; the signing engine no longer writes it). **The member's first `funding_status`**, saved in its outcome batch with `round_completed`, is the anchored batch that starts its watches: it carries the funding transaction and every input C11 and C4(d) need, so the funding engine reads its own area only. A status is saved at each decision (acked, awaiting confirmation, broadcast, live, abandoned with the spend-back, dead, failed, live late), not at each confirmation; the chain facts are reported again by the watches at every start. Fields (TLV, every type even; open point 3 settled for this area): `funding_plan` 2 scope, 4 check, 6 attempt (`u16`), 8 mode (`u8`), 10 fee rate (`u64`, sat/kvB), 12 the unsigned transaction, 14 the spent outputs (per input: amount `u64`, script length `u8`, script), 16 the factory output's index (`u32`), 18 the tip when it was planned (`u32`, when known), 20 released (`u8`, H11); `funding_signed` 2 scope, 4 txid, 6 the signed transaction; `funding_status` 2 scope, 4 txid, 6 state (`u8`: 1 acked, 2 awaiting confirmation, 3 broadcast, 4 live, 5 abandoned, 6 dead, 7 failed, 8 live late), 8 tip (`u32`), 10 deadline (`u32`), the member's first write 12 to 30 (funding transaction, vout, amount, script, ack tip, end height, own depth, whole tree, exit constants, funding deadline), a host's abandoned status 32 to 38 (the spend-back, its fee, its level, its input). `docs/notes/funding.md` 3 has the table.
 
 ### 9.1 Records numbered now for the exit engine and the local API
 
@@ -368,6 +370,16 @@ Numbered after cross-spec review 1, under the same rules: `u32`, the high 16 bit
 | `0x000d001e` | `host_node` | Host-node setting | 1.0.0 |
 | `0x000d0020` | `chain_server_added` | User-added chain servers | 1.0.0 |
 | `0x000d0022` | `while_closed_report` | While-closed reports | 1.0.0 |
+| `0x000d0024` | `signing_setting` | Signing setting (draft 5) | S1 |
+
+The fields of the records the API engine writes in P6a (`core/gazpacho/include/gazpacho/view.h`; `docs/notes/view-objects.md`). Each refuses an even field it does not know, as every record does:
+
+| Record | Fields |
+|---|---|
+| `pause` | 2 state (`u8`: 0 off, 1 on, 2 held for signing), 4 since (`u64` ms), 6 the held lobbies' scopes (32 bytes each) |
+| `local_ids` | 2 scope (32), 4 local id (ASCII, `[A-Za-z0-9_-]`, 5 to 64 bytes); saved with the slot's `slot_opened`, in one batch |
+| `request_id` | 2 request id, 4 method, 6 path (ASCII), 8 body digest (32), 10 answer status (`u16`), 12 the acted-on lobby's local id, 14 created (`u64` ms); saved right after the action's first save, in one batch |
+| `signing_setting` | 2 `member_signing` (`u8`: 0 at_join, 1 auto, 2 when_unlocked), 4 `host_funding` (`u8`), 6 version (`u32`); in force from the next start |
 
 **Lobby (0x0001)** (the lobby engine, `core/lobby/`; layouts in `docs/notes/lobby.md` section 1. The other Lobby records are in section 9; the host's new current versions use `terms_version` there)
 

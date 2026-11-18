@@ -52,12 +52,14 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gzp_harness import Checks, Proc, cmd, free_port, journal_types, kill_all, parse_journal, tlv  # noqa: E402
+from gzp_harness import (Checks, Proc, cmd, dump_journal, free_port, journal_types, kill_all,  # noqa: E402
+                         parse_journal, tlv)
 
 check = Checks()
 OPEN, JOIN, READY, UNREADY, LEAVE, SET_VALUES, REMOVE, CANCEL = range(0x0101, 0x0109)
 UNLOCK, LOCK = 0x0401, 0x0402
 KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED, SLOT_CLOSED = 0x00040002, 0x00040004, 0x0004000a, 0x0004000c, 0x0004000e
+LOCAL_IDS = 0x000D000E  # local-api.md 7.5: the slot's local id, in its first batch (P6a)
 LOBBY_OPENED, LOBBY_ENDED, START_SENT, START_RECEIVED, LOBBY_STATE = (0x00010002, 0x0001000a, 0x00010014,
                                                                     0x00010016, 0x00010018)
 SIGN_BEGUN, SIGN_ENDED = 0x7e5a0002, 0x7e5a0004
@@ -173,6 +175,10 @@ class World:
                 with open(path, "rb") as fh:
                     if fh.read(8) == b"GZJSTAND":
                         return journal_types(path)
+        folder = os.path.join(self.work, who)
+        if os.path.exists(os.path.join(folder, "journal.gzj")):
+            # The sealed journal: read through the program.
+            return [[r[0] for r in e[3]] for e in dump_journal(folder, self.exe) if e[0] == "BTCH"]
         return []
 
     def stop(self):
@@ -252,11 +258,11 @@ def happy(exe, work, name):
         w.clean("1 (%s)" % name)
         w.stop()
         hj, mj = w.journal("host"), w.journal("m1")
-        check(len(hj) > 2 and hj[0] == [KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED, LOBBY_OPENED] and
-              hj[1] == [KEY_INDEX, GUARD, SLOT_OPENED, LOBBY_OPENED],
-              "1 (%s): a slot's first batch on the host: key_index, guard, slot_opened, lobby_opened" % name)
-        check(len(mj) > 2 and mj[0] == [KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED] and
-              mj[1] == [KEY_INDEX, GUARD, SLOT_OPENED], "1 (%s): and on a member: key_index, guard, slot_opened" % name)
+        check(len(hj) > 2 and hj[0] == [KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED, LOCAL_IDS, LOBBY_OPENED] and
+              hj[1] == [KEY_INDEX, GUARD, SLOT_OPENED, LOCAL_IDS, LOBBY_OPENED],
+              "1 (%s): a slot's first batch on the host: key_index, guard, slot_opened, local_ids, lobby_opened" % name)
+        check(len(mj) > 2 and mj[0] == [KEY_EPOCH, KEY_INDEX, GUARD, SLOT_OPENED, LOCAL_IDS] and
+              mj[1] == [KEY_INDEX, GUARD, SLOT_OPENED, LOCAL_IDS], "1 (%s): and on a member: key_index, guard, slot_opened, local_ids" % name)
         check(has_batch(hj, [SIGN_ENDED, LOBBY_STATE]) and has_batch(mj, [SIGN_ENDED, LOBBY_STATE]),
               "1 (%s): the round's end and the lobby's Funding are one batch" % name)
         check(count_records(hj, START_SENT) == 2 and count_records(mj, START_RECEIVED) == 2 and
@@ -481,7 +487,7 @@ def gates(exe, work):
         check(h.wait_for(r"scope=%s role=host state=1 joined=3 ready=2\b" % a.tag, timeout=10, start=mk) is not None,
               "7: unlocked, it readies again")
         # AT_JOIN: ready with the passphrase, in lobby A only.
-        m1.send(cmd(READY, (12, a.scope), (14, b"\x01")))
+        m1.send(cmd(READY, (12, a.scope), (14, b"\x01"), (16, th("gazpacho/terms/current", a.current))))
         check(state(h, a, "host", 4) and state(m1, a, "member", 4), "7: ready with the passphrase in one lobby: its check runs, to Funding")
         check(m1.wait_for(r"key-forget scope=%s" % a.tag, timeout=10) is not None,
               "7: after its round the scoped secret is forgotten")
@@ -493,7 +499,7 @@ def gates(exe, work):
         check(started(m1), "7: the member restarts")
         time.sleep(2.5)
         check(h.count(r"scope=%s role=host state=2" % b.tag) == 0, "7: after a restart the lobby waits for the person")
-        m1.send(cmd(READY, (12, b.scope), (14, b"\x01")))
+        m1.send(cmd(READY, (12, b.scope), (14, b"\x01"), (16, th("gazpacho/terms/current", b.current))))
         check(state(h, b, "host", 4) and state(m1, b, "member", 4) and
               m1.wait_for(r"key-forget scope=%s" % b.tag, timeout=10) is not None,
               "7: readied with the passphrase, that lobby runs its check too, and its secret is forgotten after")
@@ -531,15 +537,17 @@ def stale_restore(exe, work):
         w.open(h, a)
         w.open(h, b)
         folder = os.path.join(w.work, "m1")
+        # The program's store is the sealed journal: the backup is a copy of
+        # journal.gzj; its records are read through the program (parse_journal).
         journal = os.path.join(folder, "journal.standin")
-        backup = os.path.join(w.work, "m1-backup.standin")
+        backup = os.path.join(w.work, "m1-backup.gzj")
         m = w.member("m1", "--member-signing", "auto")
         started(m)
         w.join(m, a)
         check(m.wait_for(r"slot-opened scope=%s .*index=1\b" % a.tag, timeout=10) is not None and
               state(m, a, "member", 1, timeout=20), "8: the member joins one lobby (key pair 1 and 2)")
         m.stop()
-        shutil.copy(journal, backup)
+        shutil.copy(os.path.join(folder, "journal.gzj"), backup)
         m = w.member("m1", "--member-signing", "auto")
         started(m)
         w.join(m, b)
@@ -549,7 +557,7 @@ def stale_restore(exe, work):
         device = guard_records(journal)
         check(device and device[-1][2] == 2 and device[-1][3].get(0) == 4,
               "8: the device's guard: counter 2, epoch 0 up to index 4 (%r)" % (device[-1:],))
-        check(os.path.exists(os.path.join(folder, "guard.standin")), "8: the stand-in keeps a guard file")
+        check(os.path.exists(os.path.join(folder, "guard.gzg")), "8: storage keeps a guard file (sealed, guard.gzg)")
         m = w.member("m1", "--member-signing", "auto", "--test-restore-from", backup)
         check(started(m), "8: the backup is put back as a restore, and the member starts")
         gf = m.find(r"restore-guard-file counter=(\d+)")[1]

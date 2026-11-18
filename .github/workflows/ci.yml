@@ -268,6 +268,7 @@ jobs:
           --args "node_fuzz=300" --args "node_hostile=6 400" --args "sim_profile_6=25 300 1 6"
           --args "node_lobby=1500 1" --args "lobby_hostile=3000 2"
           --args "chain_fuzz_parse=20000" --args "chain_fuzz_watch=1500"
+          --args "journal_fuzz_sealed=300" --args "storage_fuzz_sc_counter=2000"
           --exclude '^storage_vector_e2r$'
           --args "signing_blocks=blocks tiny" --args "signing_decoders=decoders tiny"
           --args "signing_golden=golden tiny" --args "signing_model=model tiny"
@@ -275,7 +276,7 @@ jobs:
           --args "signing_t1=t1 tiny" --args "signing_crashes=crashes tiny"
           --args "signing_restores=restores tiny" --args "signing_errors=errors tiny"
           --args "signing_fuzz=1000 2"
-          --args "signing_node=tiny" --args "signing_fuzz_replay=1000"
+          --args "signing_fuzz_replay=1000"
           --args "fuzz_tree_agree=40"
       - name: Storage and signing constant-time checks (secrets marked undefined, under memcheck)
         # Registered only where valgrind and its headers are installed: here.
@@ -354,10 +355,10 @@ jobs:
           persist-credentials: false
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
-      - name: Build gz-api-fake (the API server, the fake backend, the interface compiled in)
+      - name: Build gz-api-fake (the API server, the fake backend, the interface compiled in) and gazpacho-test
         run: |
           cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_WERROR=ON -DGZW_BREAK_CHECKS=OFF
-          cmake --build build --target gz-api-fake -j
+          cmake --build build --target gz-api-fake gazpacho-test -j
       - name: Install Playwright (pinned by tests/web/package-lock.json) and Chromium
         working-directory: tests/web
         run: |
@@ -365,7 +366,8 @@ jobs:
           npx playwright install --with-deps chromium
       - name: The interface, every Slice 1 flow, against the fake backend
         working-directory: tests/web
-        run: GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test
+        # GZ_PROGRAM: tests/web/multiprocess.spec.mjs drives real gazpacho-test processes
+        run: GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" GZ_PROGRAM="$GITHUB_WORKSPACE/build/program/gazpacho-test" npx playwright test
       - name: The API server's own browser checks (spec/local-api.md 23.6)
         working-directory: tests/api/browser
         run: |

@@ -146,7 +146,11 @@ typedef enum {
     GZ_JOURNAL_ERR_NO_MEMORY,
     GZ_JOURNAL_ERR_FAILED,         /* the journal has failed and does nothing more */
     GZ_JOURNAL_ERR_MARKER,         /* restore.gzr is damaged or for another network */
-    GZ_JOURNAL_ERR_INCARNATION     /* the next incarnation would reach 2^63 */
+    GZ_JOURNAL_ERR_INCARNATION,    /* the next incarnation would reach 2^63 */
+    /* Sealed format only (gz_journal_seal_t): the start rule (storage 6.3). */
+    GZ_JOURNAL_ERR_BEHIND,         /* the journal is behind its mark file or guard */
+    GZ_JOURNAL_ERR_POSSIBLY_OLD,   /* the guard or the mark file is missing or damaged */
+    GZ_JOURNAL_ERR_NOT_THIS_WALLET /* the header's tag fails under this wallet's key */
 } gz_journal_status_t;
 
 const char *gz_journal_status_name(gz_journal_status_t status);
@@ -264,6 +268,78 @@ size_t gz_journal_encode_batch(uint8_t *out, const uint8_t salt[GZ_JOURNAL_SALT_
 void gz_journal_entry_check(const uint8_t salt[GZ_JOURNAL_SALT_LEN], uint64_t offset, const uint8_t *frame,
                             size_t len, uint8_t out[GZ_JOURNAL_CHECK_LEN]);
 
+/* --- The sealed format (spec/storage-encryption.md 5 to 7, 10) --------------
+ * The journal stays free of any cryptographic library: a program that has
+ * unlocked the wallet hands it this table, and every byte of the header's and
+ * the entries' protection, and every side file of storage 7 step 2 and 6.3,
+ * goes through it. The crash logic (scan, torn tail, corruption, order rules,
+ * sync marks, fence, incarnation, restore marker) is the clear format's,
+ * unchanged. NULL in the configuration: the clear stand-in format. */
+
+/* A frame the table opened. */
+typedef struct {
+    uint8_t kind;
+    uint64_t incarnation, sequence;
+    uint64_t size;          /* bytes the entry takes in the file */
+    size_t payload_len;
+} gz_journal_frame_t;
+
+/* What the start rule (storage 6.3 steps 1 and 2) needs of the scanned
+ * journal, after any torn-tail cut is decided and before anything is written. */
+typedef struct {
+    uint64_t highest_incarnation;
+    uint64_t newest_guard_counter;  /* 0 if the kept journal holds no guard record */
+    /* 1 if a valid sync mark of `incarnation` starts at `offset` in the kept journal. */
+    int (*has_sync_mark)(void *ctx, uint64_t incarnation, uint64_t offset);
+    void *ctx;
+} gz_journal_view_t;
+
+typedef enum {
+    GZ_JOURNAL_START_OK = 0,
+    GZ_JOURNAL_START_RESTORE,       /* the mark file holds the restore marker (6.3 steps 0, 4) */
+    GZ_JOURNAL_START_BEHIND,
+    GZ_JOURNAL_START_POSSIBLY_OLD
+} gz_journal_start_t;
+
+typedef struct {
+    size_t header_len;      /* bytes of the header */
+    size_t overhead;        /* bytes an entry adds to its payload in the file */
+    size_t mark_size;       /* bytes of an incarnation entry or a sync mark (overhead + 8) */
+    uint32_t mark_length;   /* the `length` field of one */
+    /* GZ_JOURNAL_OK, ERR_HEADER (short, magic, format), ERR_NETWORK or
+     * ERR_NOT_THIS_WALLET. The table's frame keys follow the header's file. */
+    gz_journal_status_t (*header_open)(void *ctx, const uint8_t *d, size_t len, const uint8_t chain[32]);
+    /* Seal one entry for file offset `offset` into out (overhead + len bytes). 0 on success. */
+    int (*frame_seal)(void *ctx, uint64_t offset, uint8_t kind, uint64_t incarnation, uint64_t sequence,
+                      const uint8_t *payload, size_t len, uint8_t *out);
+    /* 1 if a valid entry starts at q (avail bytes left, at file offset
+     * `offset`); its payload is opened into payload[0..cap). A sync mark that
+     * does not name its own offset is invalid. */
+    int (*frame_open)(void *ctx, const uint8_t *q, uint64_t avail, uint64_t offset, gz_journal_frame_t *f,
+                      uint8_t *payload, size_t cap);
+    /* The start rule; GZ_JOURNAL_OK with *out, or ERR_IO / ERR_NO_MEMORY. */
+    gz_journal_status_t (*start_rule)(void *ctx, const gz_journal_view_t *view, gz_journal_start_t *out);
+    /* Start the mark file again with the restore marker (6.3 step 4). 0 on success. */
+    int (*mark_restart)(void *ctx);
+    /* Append and sync the mark file's entry for an anchored batch. 0 on success. */
+    int (*anchor)(void *ctx, uint64_t incarnation, uint64_t mark_offset);
+    /* Replace the guard file with a guard record's contents. 0 on success. */
+    int (*guard_write)(void *ctx, const uint8_t *record, size_t len);
+    /* The guard file as a guard record (malloc'd): 1, 0 if missing or it does
+     * not open, -1 on a read failure. */
+    int (*guard_read)(void *ctx, uint8_t **record, size_t *len);
+    void *ctx;
+} gz_journal_seal_t;
+
+/* 1 if a batch holding a record of this type is anchored (storage 6.2):
+ * guard, exposure, round_signed, funding_signed, start_sent. */
+int gz_journal_type_anchored(uint32_t type);
+
+/* gz_journal_scan for the sealed format. */
+gz_journal_status_t gz_journal_scan_sealed(const uint8_t *data, size_t len, const uint8_t chain[32],
+                                           const gz_journal_seal_t *seal, gz_journal_scan_t *out,
+                                           gz_journal_batch_fn on_batch, void *ctx);
+
 /* --- The writer ------------------------------------------------------------ */
 
 typedef struct gz_journal gz_journal_t;
@@ -318,6 +394,18 @@ typedef struct {
  * (the open that created it may have failed before its own folder sync). */
 gz_journal_status_t gz_journal_open(gz_journal_t **out, const gz_journal_config_t *config,
                                     gz_journal_open_info_t *info);
+
+/* gz_journal_open in the sealed format, with its side files (`seal`; NULL:
+ * the clear stand-in, as gz_journal_open). A sealed journal is never created
+ * here: set-up and the unlock make it (storage 7.4, 6.3 step 0), so a
+ * missing one is ERR_HEADER. The start rule runs after the scan and before
+ * anything is written: BEHIND and POSSIBLY_OLD refuse with every file
+ * untouched; a restore (restore.gzr unanswered, or the rule's RESTORE) is a
+ * restored start, and one marked by restore.gzr starts the mark file again
+ * with the restore marker. Every anchored batch is anchored before it is
+ * confirmed (spec 4 step 4). */
+gz_journal_status_t gz_journal_open_sealed(gz_journal_t **out, const gz_journal_config_t *config,
+                                           const gz_journal_seal_t *seal, gz_journal_open_info_t *info);
 
 typedef void (*gz_journal_confirmed_fn)(void *ctx, gz_batch_id_t batch);
 
@@ -402,6 +490,15 @@ gz_journal_status_t gz_journal_import(const char *dir, const uint8_t chain[32],
  * `os` NULL: POSIX. */
 gz_journal_status_t gz_journal_mark_restored(const char *dir, const uint8_t chain[32],
                                              const gz_journal_os_t *os, uint64_t floor);
+
+/* The import and the restore mark for a sealed journal: the scans go through
+ * `seal` (its frame keys follow each file's header). The open that follows
+ * restarts the mark file with the restore marker. */
+gz_journal_status_t gz_journal_import_sealed(const char *dir, const uint8_t chain[32], const gz_journal_os_t *os,
+                                             const gz_journal_seal_t *seal, const char *staged, uint64_t floor);
+gz_journal_status_t gz_journal_mark_restored_sealed(const char *dir, const uint8_t chain[32],
+                                                    const gz_journal_os_t *os, const gz_journal_seal_t *seal,
+                                                    uint64_t floor);
 
 /* Number of batches appended and not yet confirmed. */
 size_t gz_journal_pending(const gz_journal_t *journal);

@@ -112,6 +112,8 @@ typedef enum {
     GZ_TREE_P_OVERFLOW          /* R(root) does not fit 64 bits */
 } gz_tree_p_err_t;
 gz_tree_p_err_t gz_tree_params(const gz_terms_outer_t *t, uint32_t n_members, gz_tree_params_t *p);
+/* The number of tree transactions the rules build for the parameters' members (gz_tree_build's n_nodes). */
+uint32_t gz_tree_node_count(const gz_tree_params_t *p);
 /* R(root) for given levels, member count, channel and fee rate in satoshis
  * per 1,000 vbytes (anchors on). Returns 0 on overflow, a fee that cannot be
  * paid or an invalid split, else 1. */

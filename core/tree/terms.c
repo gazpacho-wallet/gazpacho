@@ -249,6 +249,15 @@ static gz_terms_err_t check_fundable(const gz_terms_outer_t *t)
     return GZ_TERMS_OK;
 }
 
+gz_terms_err_t gz_terms_check_tree_size(const gz_terms_outer_t *t, uint32_t max_nodes)
+{
+    gz_tree_params_t p;
+    if (!t) return GZ_TERMS_E_ARGUMENT;
+    /* the tree grows with the members: the target's is the largest */
+    if (gz_tree_params(t, t->target, &p) != GZ_TREE_P_OK) return GZ_TERMS_E_UNFUNDABLE;
+    return gz_tree_node_count(&p) > max_nodes ? GZ_TERMS_E_TREE_SIZE : GZ_TERMS_OK;
+}
+
 gz_terms_err_t gz_terms_check_outer(const gz_terms_outer_t *t, const gz_terms_policy_t *pol)
 {
     size_t i;
@@ -635,13 +644,14 @@ static const char ERR_NAMES[] =
     "current_sig\0"
     "outer_digest\0"
     "argument\0"
+    "tree_size\0"
     ;
 
 const char *gz_terms_err_name(gz_terms_err_t e)
 {
     const char *p = ERR_NAMES;
     int i;
-    if ((int)e < (int)GZ_TERMS_OK || (int)e > (int)GZ_TERMS_E_ARGUMENT) return "unknown";
+    if ((int)e < (int)GZ_TERMS_OK || (int)e > (int)GZ_TERMS_E_TREE_SIZE) return "unknown";
     for (i = 0; i < (int)e; i++) {
         while (*p) p++;
         p++;

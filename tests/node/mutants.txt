@@ -18,8 +18,8 @@ host-unknown-any-kind	core/node/route.c	return kind == GZ_MSG_KIND_HELLO ? mk(RT
 host-unknown-never	core/node/route.c	return kind == GZ_MSG_KIND_HELLO ? mk(RT_UNKNOWN_HELLO, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_NO_SLOT);	return mk(RT_DROP, -1, -1, DROP_NO_SLOT);
 member-zero-scope-taken	core/node/route.c	    if (zero) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);\n    s = gz_route_slot_by_scope(c, scope);\n    if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);	    s = gz_route_slot_by_scope(c, scope);\n    if (s < 0) return mk(RT_DROP, -1, -1, zero ? DROP_NO_SLOT : DROP_NO_SLOT);
 member-no-slot-refused	core/node/route.c	    if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);\n    gz_link_t l;	    if (s < 0) return mk(RT_REFUSE, -1, -1, DROP_NO_SLOT);\n    gz_link_t l;
-round-without-check	core/node/route.c	if (s < 0 || !c->slots[s].round_ok) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);	if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);
-round-zero-scope	core/node/route.c	    if (all_zero(scope, 32)) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);\n    /* (P4.3	    /* (P4.3
+round-without-check	core/node/route.c	    if (s < 0 || !c->slots[s].round_ok) {\n	    if (s < 0) {\n
+round-zero-scope	core/node/route.c	    if (all_zero(scope, 32)) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);\n    s = gz_route_slot_by_scope(c, scope);\n    /* First, any round	    s = gz_route_slot_by_scope(c, scope);\n    /* First, any round
 # --- route.c: the link
 member-link-unchecked	core/node/route.c	    if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_REFUSE, -1, -1, DROP_LINK);\n    return mk(RT_SLOT, s, -1, 0);	    return mk(RT_SLOT, s, -1, 0);
 member-link-dropped-only	core/node/route.c	    if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_REFUSE, -1, -1, DROP_LINK);\n    return mk(RT_SLOT, s, -1, 0);	    if (!gz_route_slot_link(c, s, &l) || !np_same_link(&l, link)) return mk(RT_DROP, -1, -1, DROP_LINK);\n    return mk(RT_SLOT, s, -1, 0);
@@ -52,8 +52,8 @@ defer-always	core/node/handoff.c	    if (may_defer && c->busy[target]) {	    if 
 handoff-flag-lost	core/node/handoff.c	    c->bracket_handoff = 1;\n    if (may_defer	    if (may_defer
 handoff-outside-bracket	core/node/handoff.c	if (target < 0 || source < 0 || !c->bracket_on) return	if (target < 0 || source < 0) return
 handoff-no-target	core/node/handoff.c	if (target < 0 || source < 0 || !c->bracket_on) return	if (source < 0 || !c->bracket_on) return
-bracket-nested	core/node/handoff.c	    if (c->bracket_on) return gz_c_bug(c, ENG_NODE);\n    c->bracket_on = 1;\n    c->bracket_handoff = 0;\n    c->bracket_top = eng;\n    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);	    c->bracket_on = 1;\n    c->bracket_handoff = 0;\n    c->bracket_top = eng;\n    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
-bracket-from-zero	core/node/handoff.c	    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);	    c->bracket_from = 0;\n    c->n_deferred = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
+bracket-nested	core/node/handoff.c	    if (c->bracket_on) return gz_c_bug(c, ENG_NODE);\n    c->bracket_on = 1;\n    c->bracket_handoff = 0;\n    c->bracket_top = eng;\n    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    c->sg_touched = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);	    c->bracket_on = 1;\n    c->bracket_handoff = 0;\n    c->bracket_top = eng;\n    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    c->sg_touched = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
+bracket-from-zero	core/node/handoff.c	    c->bracket_from = out->count;\n    c->n_deferred = 0;\n    c->sg_touched = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);	    c->bracket_from = 0;\n    c->n_deferred = 0;\n    c->sg_touched = 0;\n    gz_status_t st = call(c, eng, OP_HANDLE, ev, 0, out, NULL);
 # --- handoff.c: after a bracket
 timer-big-allowed	core/node/handoff.c	                if (eng != ENG_NODE) return gz_c_bug(c, eng);	                if (eng == ENG_NODE) return gz_c_bug(c, eng);
 timer-not-packed	core/node/handoff.c	                *id = gz_timer_pack(gz_c_area(c, eng), gen_of(c, eng), (uint32_t)*id);	                *id = gz_timer_pack(gz_c_area(c, eng), 0, (uint32_t)*id);
@@ -107,7 +107,7 @@ guard-file-epochs-newest-dropped	core/node/nodepart.c	    for (i = 0; i < n_newe
 guard-file-older-index-dropped	core/node/nodepart.c	all[n][1] = k >= 0 && older[k][1] > newer[i][1] ? older[k][1] : newer[i][1];	all[n][1] = newer[i][1];
 guard-file-other-chain-taken	core/node/nodepart.c	|| memcmp(b, GUARD_MAGIC, 8) != 0 || memcmp(b + 8, c->cfg.chain, 32) != 0)\n        return;	|| memcmp(b, GUARD_MAGIC, 8) != 0)\n        return;
 guard-epochs-not-read-back	core/node/nodepart.c	            guard_epochs(c, b + 50, n);\n	
-epoch-redraw-known-off	core/node/nodepart.c	    } while (epoch == 0 || epoch_known(c, epoch));	    } while (epoch == 0);
+epoch-redraw-known-off	core/node/nodepart.c	    } while (epoch == 0 || epoch_known(c, epoch) ||\n	    } while (epoch == 0 ||\n
 epoch-redraw-same-draw	core/node/nodepart.c	epoch = restore_epoch(gz_get_u64(drawn) + again++, c->incarnation);	epoch = restore_epoch(gz_get_u64(drawn) + 0 * again++, c->incarnation);
 a-old-epoch-forgets-none	core/node/nodepart.c	        if (p->n_old_epochs == NP_MAX_OLD_EPOCHS) {	        if (0) {
 # --- connections (A F5, F9, F12; B 1, 2, 7, group C)
@@ -173,12 +173,12 @@ address-list-unchecked	core/gazpacho/action.c	    if (!gz_connect_address_ok(src
 ls-factory-signs-with-contribution	core/node/lobbyslot.c	return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);	return k->sign(k->ctx, 0, s->key_epoch, s->key_index, msg, sig);
 ls-gate-auto-closed	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_AUTO: return 1;	case GZ_MEMBER_SIGNING_AUTO: return 0;
 ls-gate-unlocked-ignored	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return s->node->unlocked;	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return 1;
-ls-gate-at-join-open	core/node/lobbyslot.c	default: return s->gate_open;	default: return 1;
+ls-gate-at-join-open	core/node/lobbyslot.c	        if (!s->gate_open) return 0;\n        if (!s->gate_have) return !s->node->sign_on;	        if (!s->gate_have) return !s->node->sign_on;
 ls-factory-key-is-contribution	core/node/lobbyslot.c	c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fk) != 1)	c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index, fk) != 1)
 ls-every-hello-a-listing	core/node/lobbyslot.c	if (s->host && ev->u.message.kind == GZ_MSG_KIND_HELLO && all_zero(ev->u.message.scope, 32))	if (s->host && ev->u.message.kind == GZ_MSG_KIND_HELLO)
 ls-index-forgets-newest	core/node/lobbyslot.c	if (c->np.ended[i].seq < c->np.ended[oldest].seq) oldest = i;	if (c->np.ended[i].seq > c->np.ended[oldest].seq) oldest = i;
 ls-index-no-cancel	core/node/lobbyslot.c	if (cancel && cancel_len && cancel_len <= sizeof e->cancel) {	if (0) {
-ls-closing-keeps-connect	core/node/lobbyslot.c	        st = np_disconnect(out, &e->link, GZ_DISCONNECT_DONE);\n    }\n    e->used = 0;	        st = GZ_OK;\n    }\n    e->used = 0;
+ls-closing-keeps-connect	core/node/lobbyslot.c	        st = np_disconnect(out, &e->link, GZ_DISCONNECT_DONE);\n    }\n    /* The host's compact rounds	        st = GZ_OK;\n    }\n    /* The host's compact rounds
 ls-closing-keeps-seats	core/node/lobbyslot.c	            a.u.set_seated.member = e->seated[j];\n            a.u.set_seated.seated = 0;	            a.u.set_seated.member = e->seated[j];\n            a.u.set_seated.seated = 1;
 ls-closing-never-ends	core/node/lobbyslot.c	if (c->np.closing[k].used && c->np.closing[k].until_ms <= now) {	if (c->np.closing[k].used && c->np.closing[k].until_ms == 0) {
 ls-closing-cap-unchecked	core/node/lobbyslot.c	    if (k == GZ_NODE_MAX_TOMBSTONES) {\n        if ((st = closing_end(c, oldest, out)) != GZ_OK) return st;\n        k = oldest;\n    }	    if (k == GZ_NODE_MAX_TOMBSTONES) k = oldest;
@@ -225,7 +225,7 @@ c-lobby-record-ignored	core/node/composite.c	    if (area == GZ_AREA_LOBBY) retu
 c-slot-resume-skipped	core/node/composite.c	        if ((st = gz_c_resume(c, e, out, &more)) != GZ_OK) return st;\n        if (c->slots[i].state != SLOT_OPEN) return GZ_OK;	        if (c->slots[i].state != SLOT_OPEN) return GZ_OK;
 c-slot-not-marked-resumed	core/node/composite.c	        c->resumed[e] = 1;\n        return gz_c_release_held(c, e, out);	        return gz_c_release_held(c, e, out);
 c-sign-resume-after-lobbies	core/node/composite.c	        if ((st = gz_ss_resume(c, out, &more)) != GZ_OK) return st;\n        if (more) return GZ_OK;\n	
-h-no-after-step	core/node/handoff.c	    if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);\n    if (st != GZ_OK) {\n        c->bracket_on = 0;\n        return st;\n    }\n    return bracket_end(c, out);\n}\n\n/* An engine's resume step	    if (st != GZ_OK) {\n        c->bracket_on = 0;\n        return st;\n    }\n    return bracket_end(c, out);\n}\n\n/* An engine's resume step
+h-no-after-step	core/node/handoff.c	    if (st == GZ_OK && eng >= ENG_SLOT0) st = gz_ls_after(c, eng - ENG_SLOT0, out);\n    if (st == GZ_OK && eng == ENG_SIGN) st = gz_sg_after(c, out);\n    if (st != GZ_OK) {\n        c->bracket_on = 0;\n        return st;\n    }\n    return bracket_end(c, out);\n}\n\n/* An engine's resume step	    if (st == GZ_OK && eng == ENG_SIGN) st = gz_sg_after(c, out);\n    if (st != GZ_OK) {\n        c->bracket_on = 0;\n        return st;\n    }\n    return bracket_end(c, out);\n}\n\n/* An engine's resume step
 # untested ls-closing-cap-unchecked: needs 65 lobbies ended during a round within one signing budget; the cap's arithmetic is the index's, which test_index reaches
 # equivalent ss-finished-check-begun-again: the lobbies never hand a finished check over again (their own saved outcome stops it), so the stand-in's second guard is not reached; lobby_handoff.h keeps the rule for the signing engine
 # --- T-P42-6: every engine held to its timer budget
@@ -248,3 +248,55 @@ ls-left-out-not-told	core/node/composite.c	        if (c->slots[i].state == SLOT
 ls-unknown-field-taken	core/node/lobbyslot.c	        if (!(t & 1) && (t >= 64 || !(known & (1u << (t / 2))))) return 0;\n	
 ls-index-wraps	core/node/lobbyslot.c	 ||\n        gz_get_u32(index.data) == 0xffffffffu)	)
 timer-of-ended-slot-kept	core/node/handoff.c	            drop_action(c, out, i);\n            continue;\n        }\n        if (a->kind == GZ_ACTION_SET_TIMER || a->kind == GZ_ACTION_CANCEL_TIMER) {	        }\n        if (a->kind == GZ_ACTION_SET_TIMER || a->kind == GZ_ACTION_CANCEL_TIMER) {
+# --- P4.3: the signing engine in the composite (signslot.c and its hooks)
+sg-gate-digest-off	core/node/lobbyslot.c	return m->have_terms && memcmp(now, s->gate_digest, 32) == 0;	return m->have_terms;
+sg-gate-not-wiped	core/node/lobbyslot.c	gate_wipe(s);                                                             /* RULE-NODE:GATE_WIPES */	/* RULE-NODE:GATE_WIPES */
+sg-set-keeps-gates	core/node/lobbyslot.c	if ((st = gates_changed(c, 0, out)) != GZ_OK) return st;   /* RULE-NODE:SET_CLOSES_GATES */	/* RULE-NODE:SET_CLOSES_GATES */
+sg-release-without-engine	core/node/lobbyslot.c	if (!c->sign_on) return np_command_result(out, cmd, 503, "signing_unavailable");	if (0) return np_command_result(out, cmd, 503, "signing_unavailable");
+sg-route-held-off	core/node/route.c	if (c->sign_on && gz_sign_holds_scope(&c->sign, scope) && (s < 0 || c->cfg.host)) return mk(RT_SIGNING, s, -1, 0);	if (0) return mk(RT_SIGNING, s, -1, 0);
+sg-at-join-any-digest	core/node/signslot.c	ok = s && s->gate_have && terms_digest && sg_same(terms_digest, s->gate_digest, 32) &&	ok = s && s->gate_have &&
+sg-accepted-only-off	core/node/signslot.c	if (!gz_lobby_member_accepted(&s->lobby.m, in->msg->check_id, in->msg->attempt, &h)) return GZ_SIGN_BUILD_IGNORE;	(void)gz_lobby_member_accepted(&s->lobby.m, in->msg->check_id, in->msg->attempt, &h);
+sg-keys-any-role	core/node/signslot.c	if (host != (c->cfg.host != 0)) return 0;	(void)host;
+sg-may-ack-without-tip	core/node/signslot.c	if (i < 0 || !c->tip) return 0;	if (i < 0) return 0;
+sg-outcome-to-member-failed	core/node/signslot.c	if (kind == GZ_SIGN_OUTCOME_FAILED) return GZ_OK;   /* a member waits for the host's cancel */	/* a member waits for the host's cancel */
+sg-outcome-not-queued	core/node/signslot.c	if (c->busy[eng] || c->sg_defer) return sg_queue(c, o) ? GZ_OK : gz_c_bug(c, ENG_SIGN);	(void)sg_queue;
+sg-begin-no-tip	core/node/signslot.c	if (!c->tip) return sg_refuse_begin(c, h, "sign-begin-refused-no-tip", out);	
+sg-timer-budget	core/node/timers.c	if (eng == ENG_SIGN) return 1;      /* the engine's one tick timer */	if (eng == ENG_SIGN) return 2;
+sg-init-without-secp	core/node/signslot.c	if (!c->cfg.secp || !c->cfg.sign_mem	if (!c->cfg.sign_mem
+sg-ready-any-digest	core/node/lobbyslot.c	if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0)	if (0)
+sg-refused-ready-rebinds	core/node/lobbyslot.c	        memcpy(s->gate_digest, old_digest, 32);	
+# --- P6a: the view, the API engine; the key changes asked by P8
+# equivalent api-local-id-repeats: a second guard: the slot serial mixed into every id makes two slots' ids differ even where the random source repeats, so the check against the table never finds one taken
+view-never-updated	core/node/view.c	    if (!force && *last == h) return GZ_OK;	    if (!force) return GZ_OK;
+view-version-repeats	core/node/view.c	(++c->view.counter & 0xffffffffu)	(c->view.counter & 0xffffffffu)
+view-version-no-incarnation	core/node/view.c	(c->incarnation << 32) | (++c->view.counter	(++c->view.counter
+view-start-no-slots	core/node/view.c	    } else if (step < chunks + GZ_NODE_MAX_SLOTS) {	    } else if (0) {
+view-start-no-status	core/node/view.c	        st = gz_view_status(c, 1, out);\n        *done = 1;	        *done = 1;
+view-seat-never-ready	core/node/view.c	    return m->ready ? GZ_VSEAT_READY : GZ_VSEAT_JOINED;	    return GZ_VSEAT_JOINED;
+view-locked-ignores-gate	core/node/view.c	(!gate_state(c, s) || m->unready_reason == 3)	(m->unready_reason == 3)
+view-fit-values-swapped	core/node/view.c	    case GZ_TT_MINIMUM: *yours = l->min_members; *offered = o->minimum; return;	    case GZ_TT_MINIMUM: *yours = o->minimum; *offered = l->min_members; return;
+view-refused-not-shown	core/node/view.c	        if (q->refused) {	        if (0) {
+view-attention-never-gone	core/node/view.c	c->view.body, w.at, !code, &last, 1, out);	c->view.body, w.at, 0, &last, 1, out);
+view-gate-digest-never	core/node/view.c	            n = 42;\n	
+view-outcome-none	core/node/view.c	    if (outcome != GZ_OUTCOME_NONE) {	    if (0) {
+view-before-slot-end-gone	core/node/lobbyslot.c	    if (st == GZ_OK) st = gz_view_slot(c, i, 0, out); /* its view, after the step's saves (rule 8) */\n	
+api-replay-refused	core/node/api.c	memcmp(r->digest, digest.data, 32) == 0) {	memcmp(r->digest, digest.data, 32) == 0 && 0) {
+api-ids-forgotten	core/node/api.c	    } else if (kind == 1 && (r = req_find(c, rid)) != NULL) {	    } else if (0) {
+api-id-not-saved	core/node/api.c	    if (first == out->count || !status) return GZ_OK; /* nothing saved: no id (7.4) */	    return GZ_OK;
+api-id-own-batch	core/node/api.c	    move_after(c, out, first);\n	
+api-id-format-unchecked	core/node/api.c	rid->len < 16 ||	rid->len < 1 ||
+api-pause-not-saved	core/node/api.c	        if ((st = save_pause(c, out)) != GZ_OK) return st;\n        if ((st = gz_ls_pause_changed(c, out)) != GZ_OK) return st;\n        return result(c, cmd, c->api.n_held	        if ((st = gz_ls_pause_changed(c, out)) != GZ_OK) return st;\n        return result(c, cmd, c->api.n_held
+api-pause-not-loaded	core/node/api.c	        c->api.pause = v.data[0];\n	
+api-paused-join-allowed	core/node/api.c	    } else if (gz_api_paused(c) && (code == GZ_CMD_LOBBY_JOIN || code == GZ_CMD_LOBBY_READY)) {	    } else if (0) {
+api-pause-no-leave	core/node/lobbyslot.c	        return gz_lobby_member_leave(&s->lobby.m, out);\n    return GZ_OK;\n}	        return GZ_OK;\n    return GZ_OK;\n}
+api-signing-not-applied	core/node/api.c	        c->cfg.member_signing = (gz_member_signing_t)c->api.signing_saved;\n	
+api-signing-version-unchecked	core/node/api.c	    if (gz_get_u32(b.data) != c->api.signing_version) return result(c, cmd, 409, "changed_elsewhere", NULL, NULL, out);\n	
+api-local-id-not-loaded	core/node/api.c	                memcpy(s->view.local_id, w.data, w.len);\n	
+api-local-id-repeats	core/node/api.c	        if (!taken) break;	        break;
+api-unknown-even-taken	core/node/api.c	        return rec->type & 1 ? GZ_OK : GZ_ERR_CORRUPT;	        return GZ_OK;
+host-pause-ignored	core/lobby/host.c	    if (h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx))\n	    if (0)\n
+host-pause-no-cancel	core/lobby/host.c	        return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;	        return GZ_OK;
+host-refusal-not-kept	core/lobby/host.c	        s->refused = m->reason;\n	
+key-skip-none	core/node/lobbyslot.c	    for (uint32_t k = 0; k < LS_KEY_TRIES; k++) {	    for (uint32_t k = 0; k < 1; k++) {
+key-skip-overlaps	core/node/lobbyslot.c	c->np.highest_index + 1 + 2 * k;	c->np.highest_index + 1 + k;
+epoch-ok-unchecked	core/node/nodepart.c	 ||\n             (again < NP_EPOCH_TRIES && c->cfg.keys.epoch_ok	 ||\n             (0 && c->cfg.keys.epoch_ok
