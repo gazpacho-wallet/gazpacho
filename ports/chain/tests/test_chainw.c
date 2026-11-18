@@ -128,6 +128,25 @@ static bool await(wx *x, const char *want, unsigned limit_ms) {
   }
 }
 
+static bool readable(wx *x) {
+  struct pollfd p = {gz_chainw_fd(x->w), POLLIN, 0};
+  return poll(&p, 1, 0) == 1 && (p.revents & POLLIN) != 0;
+}
+
+#define LOG_IS(x, want)                                                                \
+  do {                                                                                 \
+    T->checks++;                                                                       \
+    if (strcmp((x)->log, (want)) != 0) {                                               \
+      T->failed++;                                                                     \
+      fprintf(stderr, "  %s:%d: events\n     got: %s\n  wanted: %s\n", __FILE__, __LINE__, \
+              (x)->log, (want));                                                       \
+    }                                                                                  \
+  } while (0)
+
+#define TXID(x, i) ((x)->net.world.tx[i].id)
+/* Generous: the machine is shared and the test also runs under valgrind. */
+#define LONG_MS 60000u
+
 /* Waits until the worker has finished a pass after `after` passes; returns the
  * time it saw that, or 0 at LONG_MS. */
 static uint64_t pass_done(wx *x, uint64_t after, uint64_t *passes) {
@@ -154,25 +173,6 @@ static uint64_t pass_length(wx *x) {
   uint64_t t2 = t1 ? pass_done(x, p, &p) : 0;
   return t1 && t2 > t1 ? t2 - t1 : 0;
 }
-
-static bool readable(wx *x) {
-  struct pollfd p = {gz_chainw_fd(x->w), POLLIN, 0};
-  return poll(&p, 1, 0) == 1 && (p.revents & POLLIN) != 0;
-}
-
-#define LOG_IS(x, want)                                                                \
-  do {                                                                                 \
-    T->checks++;                                                                       \
-    if (strcmp((x)->log, (want)) != 0) {                                               \
-      T->failed++;                                                                     \
-      fprintf(stderr, "  %s:%d: events\n     got: %s\n  wanted: %s\n", __FILE__, __LINE__, \
-              (x)->log, (want));                                                       \
-    }                                                                                  \
-  } while (0)
-
-#define TXID(x, i) ((x)->net.world.tx[i].id)
-/* Generous: the machine is shared and the test also runs under valgrind. */
-#define LONG_MS 60000u
 
 /* ---- the descriptor, the order, the generation ---------------------------- */
 
