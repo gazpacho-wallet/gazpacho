@@ -62,6 +62,12 @@ jobs:
         run: |
           sudo sysctl -w vm.mmap_rnd_bits=28
           sh tools/chain-tsan.sh "$RUNNER_TEMP/chain-tsan"
+      - name: Chain adapter's lookups beside its worker, under ThreadSanitizer
+        # program/pchain.c: the loop's lookups (--check-chain) while the chain
+        # worker polls, against a local Esplora stub. One chain client used by
+        # both threads corrupted the heap (docs/notes/integration.md B11).
+        if: matrix.sanitize == 'OFF'
+        run: sh tools/pchain-tsan.sh "$RUNNER_TEMP/pchain-tsan"
       - name: Scale check, one small case; the two former builder defects stay gone
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
 
