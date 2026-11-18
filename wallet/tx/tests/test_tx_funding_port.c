@@ -137,12 +137,72 @@ static void test_spend_back(void)
     gzt_funding_wipe(&f);
 }
 
+/* require_change: a selection that would leave no change takes another
+ * coin; with none to take, GZT_ERR_FUNDS. */
+static void test_require_change(void)
+{
+    static gzt_funding f, g, h;
+    gzt_funding_request r = request(300000 - 62);
+    uint8_t aux[32];
+    memset(aux, 1, 32);
+    CHECK(gzt_funding_build(ctx, &master, &r, coins, 3, aux, &f) == GZT_OK);
+    CHECK(f.info.selection.n_selected == 1 && !f.info.has_change);   /* without it: no change */
+    r.require_change = 1;
+    CHECK(gzt_funding_build(ctx, &master, &r, coins, 3, aux, &g) == GZT_OK);
+    CHECK(g.info.selection.n_selected == 2 && g.info.has_change);
+    CHECK(gzt_funding_build(ctx, &master, &r, coins, 1, aux, &h) == GZT_ERR_FUNDS);
+    gzt_funding_wipe(&f);
+    gzt_funding_wipe(&g);
+}
+
+/* must_spend: the coin is not selected a second time when the selection
+ * reaches its own place; and with more than 64 coins offered. */
+static void test_must_reach(void)
+{
+    static gzt_funding f, g;
+    static gzt_coin many[70];
+    static gzt_tx parsed;
+    gzt_funding_request r = request(400000);
+    uint8_t aux[32], tx[GZT_MAX_TX_BYTES];
+    size_t len;
+    memset(aux, 1, 32);
+    r.must_spend = 1;
+    memcpy(r.must_txid, coins[0].txid, 32);   /* the largest, and two coins needed */
+    r.must_vout = coins[0].vout;
+    CHECK(gzt_funding_build(ctx, &master, &r, coins, 3, aux, &f) == GZT_OK);
+    CHECK(gzt_funding_unsigned(&f, tx, sizeof tx, &len) == GZT_OK && gzt_tx_parse(tx, len, &parsed) == GZT_OK);
+    CHECK(parsed.n_in == 2 && memcmp(parsed.in[0].prev_txid, coins[0].txid, 32) == 0 &&
+          memcmp(parsed.in[1].prev_txid, coins[1].txid, 32) == 0);
+    gzt_funding_wipe(&f);
+    for (int i = 0; i < 70; i++) {
+        gzw_bip86_output o;
+        CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 0, 0, (uint32_t)(10 + i), &o, NULL));
+        memset(many[i].txid, 0x70, 32);
+        many[i].txid[0] = (uint8_t)i;
+        many[i].vout = (uint32_t)i;
+        many[i].amount = i == 69 ? 1000 : 10000;   /* the must coin the smallest, past the best 64 */
+        many[i].index = (uint32_t)(10 + i);
+        memcpy(many[i].script, o.script_pubkey, 34);
+    }
+    r = request(50000);
+    r.must_spend = 1;
+    memcpy(r.must_txid, many[69].txid, 32);
+    r.must_vout = 69;
+    CHECK(gzt_funding_build(ctx, &master, &r, many, 70, aux, &g) == GZT_OK);
+    CHECK(gzt_funding_unsigned(&g, tx, sizeof tx, &len) == GZT_OK && gzt_tx_parse(tx, len, &parsed) == GZT_OK);
+    CHECK(parsed.n_in >= 2 && memcmp(parsed.in[0].prev_txid, many[69].txid, 32) == 0 && parsed.in[0].prev_vout == 69);
+    for (uint32_t i = 1; i < parsed.n_in; i++) CHECK(parsed.in[i].prev_vout != 69);
+    gzt_funding_wipe(&g);
+}
+
 int main(void)
 {
     setup();
     test_unsigned_and_prevouts();
     test_must_spend();
     test_spend_back();
+    test_require_change();
+    test_must_reach();
     secp256k1_context_destroy(ctx);
     if (fails) return 1;
     printf("wallet funding port: all passed\n");

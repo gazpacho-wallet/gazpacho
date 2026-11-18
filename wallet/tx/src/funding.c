@@ -18,7 +18,7 @@ static int coin_before(const gzt_coin *a, const gzt_coin *b) {
    -1 for none. */
 static gzt_err select_coins(const gzt_coin *coins, size_t n_coins, const uint8_t *dest,
                             size_t dest_len, uint64_t amount, gzt_fee_policy fee, long must,
-                            gzt_selection *out) {
+                            int need_change, gzt_selection *out) {
     uint32_t order[GZT_MAX_INPUTS];
     if (!out) return GZT_ERR_ARG;
     memset(out, 0, sizeof *out);
@@ -79,6 +79,7 @@ static gzt_err select_coins(const gzt_coin *coins, size_t n_coins, const uint8_t
             out->fee = fee_c;
             out->vsize = vs_c;
         } else {
+            if (need_change) continue;   /* H16: the funding keeps change for a child */
             uint64_t paid = total - amount;
             if (paid > gzt_fee_for_vsize(fee.ceiling, vs_nc)) {
                 overpaid = 1;
@@ -104,7 +105,7 @@ static gzt_err select_coins(const gzt_coin *coins, size_t n_coins, const uint8_t
 gzt_err gzt_select_coins(const gzt_coin *coins, size_t n_coins, const uint8_t *dest,
                          size_t dest_len, uint64_t amount, gzt_fee_policy fee,
                          gzt_selection *out) {
-    return select_coins(coins, n_coins, dest, dest_len, amount, fee, -1, out);
+    return select_coins(coins, n_coins, dest, dest_len, amount, fee, -1, 0, out);
 }
 
 void gzt_funding_wipe(gzt_funding *f) {
@@ -168,7 +169,7 @@ static gzt_err build(const secp256k1_context *ctx, const gzw_xprv *master,
             if (coins[i].vout == req->must_vout && memcmp(coins[i].txid, req->must_txid, 32) == 0) must = (long)i;
         if (must < 0) return GZT_ERR_ARG;
     }
-    e = select_coins(coins, n_coins, fs, P2TR_LEN, req->amount, req->fee, must, sel);
+    e = select_coins(coins, n_coins, fs, P2TR_LEN, req->amount, req->fee, must, req->require_change, sel);
     if (e) return e;
 
     f->priv_net = req->net;

@@ -284,6 +284,10 @@ typedef struct {
     int must_spend;
     uint8_t must_txid[32];
     uint32_t must_vout;
+    /* 1: the funding always has a change output (safety-rule.md H16 bumps a
+       funding only by a child on it): a selection that would leave change
+       below dust takes another coin, or GZT_ERR_FUNDS.  0: as before. */
+    int require_change;
 } gzt_funding_request;
 
 typedef struct {

@@ -59,7 +59,7 @@ int main(void) {
     CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 0, 0, 0, &o, NULL));
     memcpy(coin.script, o.script_pubkey, 34);
     coin.amount = 100000;
-    gzt_funding_request req = {GZT_NET_SIGNET, 0, factory, 34, 50000, 1, {{100}, {1000}}, NULL, 0, 0, {0}, 0};
+    gzt_funding_request req = {GZT_NET_SIGNET, 0, factory, 34, 50000, 1, {{100}, {1000}}, NULL, 0, 0, {0}, 0, 0};
     for (fault = 0; fault <= 2; fault++) {
         int before = calls;
         gzt_err e = gzt_funding_build(ctx, &master, &req, &coin, 1, aux, &f);
