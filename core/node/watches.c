@@ -95,10 +95,29 @@ uint16_t gz_watch_mask(const gz_node_t *c, const gz_chain_event_t *ev)
         memcpy(key, ev->outpoint.txid, 32);
         gz_put_u32(key + 32, ev->outpoint.vout);
         i = find(c, 0, key);
+    } else if (ev->kind == GZ_CHAIN_WATCH_SYNCED || ev->kind == GZ_CHAIN_WATCH_FAILED) {
+        memcpy(key, ev->is_tx ? ev->txid : ev->outpoint.txid, 32);
+        if (!ev->is_tx) gz_put_u32(key + 32, ev->outpoint.vout);
+        i = find(c, ev->is_tx ? 1 : 0, key);
     } else {
         return 0;
     }
     return i < 0 ? 0 : c->watches[i].mask;
+}
+
+int gz_watch_unnote(gz_node_t *c, const gz_action_t *a, int eng)
+{
+    uint8_t key[36];
+    int i;
+    memset(key, 0, sizeof key);
+    memcpy(key, a->u.unwatch.what.txid, 32);
+    if (!a->u.unwatch.is_tx) gz_put_u32(key + 32, a->u.unwatch.what.vout);
+    i = find(c, a->u.unwatch.is_tx, key);
+    if (i < 0 || !(c->watches[i].mask & (1u << eng))) return 0;
+    c->watches[i].mask &= (uint16_t)~(1u << eng);
+    if (c->watches[i].mask) return 0;
+    c->watches[i].used = 0;
+    return 1;
 }
 
 /* An engine has ended (its slot closed): nothing is reported to it again,

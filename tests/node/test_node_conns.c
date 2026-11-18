@@ -774,16 +774,17 @@ static void test_watch_budgets(void)
             CHECK(h_said(&h, h.n_log - 1, i < TS_MAX_WATCHES ? "result 200" : "result 409 too_many_watches"));
         }
     }
-    /* The registry holds exactly what the budgets allow: 64, all in use. */
+    /* The registry holds exactly what the budgets allow: 64 in use, and the
+     * funding engine's 48 (T-P45-1) the only places left. */
     size_t used = 0;
     for (int i = 0; i < MAX_WATCHES; i++) used += h.n->watches[i].used ? 1 : 0;
-    CHECK(used == MAX_WATCHES && used == 2 * TE_MAX_WATCHES + GZ_NODE_MAX_SLOTS * TS_MAX_WATCHES);
+    CHECK(used == 2 * TE_MAX_WATCHES + GZ_NODE_MAX_SLOTS * TS_MAX_WATCHES && used + GZ_NODE_FUNDING_WATCHES == MAX_WATCHES);
     /* A slot closes: its four are free, and the slot opened in its place can
      * watch four of its own. */
     close_slot(&h, 0x80);
     used = 0;
     for (int i = 0; i < MAX_WATCHES; i++) used += h.n->watches[i].used ? 1 : 0;
-    CHECK(used == MAX_WATCHES - TS_MAX_WATCHES);
+    CHECK(used == MAX_WATCHES - GZ_NODE_FUNDING_WATCHES - TS_MAX_WATCHES);
     open_host_slot(&h, 0x90, 0);
     for (int i = 0; i < TS_MAX_WATCHES + 1; i++) {
         uint8_t s[32];

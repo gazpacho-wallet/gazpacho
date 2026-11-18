@@ -288,12 +288,15 @@ static gz_status_t on_chain(gz_node_t *c, const gz_event_t *ev, gz_action_list_t
     uint16_t mask;
     switch (ev->u.chain.kind) {
     case GZ_CHAIN_NEW_TIP:
+    case GZ_CHAIN_TIP_SYNCED:   /* to whoever takes tips */
         /* Signing, funding (P4.3, P4.5) and test. Lobbies take no tips. */
         for (int e = ENG_TEST0; e < ENG_TEST0 + c->n_test && st == GZ_OK; e++) st = gz_c_bracket(c, e, ev, out);
         return st;
     case GZ_CHAIN_TX_CONFIRMED:
     case GZ_CHAIN_TX_UNCONFIRMED:
     case GZ_CHAIN_OUTPOINT_SPENT:
+    case GZ_CHAIN_WATCH_SYNCED:   /* routed by its watch, like a report */
+    case GZ_CHAIN_WATCH_FAILED:
         mask = gz_watch_mask(c, &ev->u.chain);
         for (int e = ENG_TEST0; e < ENG_N && st == GZ_OK; e++) {
             /* A slot's engine only while its slot is Open (its bit left the
