@@ -596,7 +596,11 @@ static gz_status_t on_status(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_a
         return end_self(m, g->seat_state == GZ_SEAT_REMOVED ? GZ_LOBBY_END_REMOVED : GZ_LOBBY_END_REFUSED,
                         g->has_reason ? g->reason : 0, out);   /* final, and saved */
     if (g->seat_state == GZ_SEAT_REFUSED)            /* full, closed, or a rate limit: try later */
-        return m->retries++ < 30 ? gz_la_timer(out, GZ_LOBBY_TIMER_RETRY, 1500) : GZ_OK;
+    {
+        if (m->retries++ >= 30) return GZ_OK;
+        m->retry_join = 1;
+        return gz_la_timer(out, GZ_LOBBY_TIMER_RETRY, 1500);
+    }
     if (m->resends >= 3) return GZ_OK;
     /* The host shows Ready, but the member is not: its unready was lost. */
     if (g->seat_state == GZ_SEAT_READY && !m->ready &&
@@ -623,7 +627,19 @@ gz_status_t gz_lobby_member_handle(gz_lobby_member_t *m, const gz_lobby_input_t 
     size_t en = 0;
     int code;
     if (!m || !in || !out) return GZ_ERR_ARGUMENT;
-    if (in->kind == GZ_LIN_TIMER) return in->timer_id == GZ_LOBBY_TIMER_RETRY ? resend(m, out) : GZ_OK;
+    if (in->kind == GZ_LIN_TIMER) {
+        if (in->timer_id != GZ_LOBBY_TIMER_RETRY) return GZ_OK;
+        if (m->retry_join) {
+            m->retry_join = 0;
+            return resend(m, out);
+        }
+        /* The hello of this connection got no answer: ask again, a few times. */
+        if (!m->connected || m->heard_here || (m->ended && !m->left) || m->hello_tries >= GZ_LOBBY_HELLO_AGAIN_MAX)
+            return GZ_OK;
+        m->hello_tries++;
+        TRY(send_hello(m, out));
+        return gz_la_timer(out, GZ_LOBBY_TIMER_RETRY, GZ_LOBBY_HELLO_AGAIN_MS);
+    }
     if (in->kind != GZ_LIN_CONNECTED && in->kind != GZ_LIN_DISCONNECTED && in->kind != GZ_LIN_MESSAGE)
         return GZ_ERR_ARGUMENT;
     /* Only the slot's own link (the composite's gate, checked again here):
@@ -635,8 +651,16 @@ gz_status_t gz_lobby_member_handle(gz_lobby_member_t *m, const gz_lobby_input_t 
         m->resends = 0;
         m->retries = 0;
         m->sent_here = 0;
+        m->heard_here = 0;
+        m->hello_tries = 0;
+        m->retry_join = 0;
         /* A member that left still asks, so that a lost leave is repaired. */
-        return m->ended && !m->left ? GZ_OK : send_hello(m, out);
+        if (m->ended && !m->left) return GZ_OK;
+        TRY(send_hello(m, out));
+        /* The host answers one hello a second per member key (messages.md
+         * 6.1): a reconnect within that second, as after a restart in process,
+         * is not answered, and nothing else would make this member ask again. */
+        return gz_la_timer(out, GZ_LOBBY_TIMER_RETRY, GZ_LOBBY_HELLO_AGAIN_MS);
     }
     if (in->kind == GZ_LIN_DISCONNECTED) {
         m->connected = 0;
@@ -650,6 +674,7 @@ gz_status_t gz_lobby_member_handle(gz_lobby_member_t *m, const gz_lobby_input_t 
         g.kind == GZ_KIND_UNREADY || g.kind == GZ_KIND_LEAVE)
         return refuse_host(m, out);                   /* the wrong direction */
     if (memcmp(g.scope, m->scope, 32) != 0) return GZ_OK;
+    m->heard_here = 1;
     if (m->ended && !(m->left && g.kind == GZ_KIND_LOBBY_STATUS)) return GZ_OK;
     if (g.kind == GZ_KIND_READY_CHECK || g.kind == GZ_KIND_START || g.kind == GZ_KIND_CANCEL)
         en = gz_la_env(g.kind, g.scope, in->records, in->len, env, sizeof env);
