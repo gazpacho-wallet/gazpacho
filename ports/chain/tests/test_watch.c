@@ -986,6 +986,116 @@ static unsigned log_count(fx *f, const char *needle) {
   return n;
 }
 
+/* Answers put off (review B of PR 56, third confirmation). A deep but
+ * linkable confirmation, or an answer too large to fetch, is not the watch's
+ * answer and not a failure: after GZ_CHAINW_DEFER_PASSES passes put off the
+ * watch is told pending, once, and TIP_SYNCED no longer waits for it; it is
+ * still asked, and its report and SYNCED follow when the answer comes. */
+static void test_watch_deferred(test_state *T) {
+  fx f;
+  const char *s;
+  /* (b) deep but linkable: one header a pass, T three headers below the
+   * hashes held (window 4 at 1011, T in a5) */
+  fx_open(&f);
+  f.cfg.report_synced = true;
+  f.cfg.header_window = 4;
+  f.cfg.max_catchup = 1;
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 11);
+  SEQ(go(&f), "tip 1011");
+  SEQ(go(&f), "pending T | tip-synced 1011");
+  {
+    /* still asked at every pass, one header further down each time, until
+     * linked: then its report and its SYNCED, and nothing told again */
+    char all[2048] = "";
+    for (int i = 0; i < 8 && strstr(all, "confirmed") == NULL; i++) {
+      s = go(&f);
+      if (strlen(all) + strlen(s) + 4 < sizeof all) {
+        strcat(all, s);
+        strcat(all, " / ");
+      }
+    }
+    CHECK(strstr(all, "confirmed T n=7 at a5 buried | synced T") != NULL && strstr(all, "pending") == NULL &&
+          strstr(all, "tip-synced") == NULL);
+    if (strstr(all, "confirmed T n=7 at a5 buried | synced T") == NULL) fprintf(stderr, "  linking told: %s\n", all);
+  }
+  SEQ(go(&f), "");
+  fx_close(&f);
+  /* (a) too large to fetch is a size, not a depth: T in both mempools, its
+   * bytes larger than the room for them */
+  fx_open(&f);
+  f.cfg.report_synced = true;
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 3);
+  pool(&f, SIM_T, true);
+  f.net.view[0].fault = f.net.view[1].fault = SIM_FAULT_HUGE;
+  f.net.view[0].fault_path = f.net.view[1].fault_path = "/hex";
+  s = go(&f);
+  CHECK(strstr(s, "tip 1003") != NULL && strstr(s, "failed") == NULL && strstr(s, "tip-synced") == NULL &&
+        strstr(s, "sources") == NULL);
+  s = go(&f);
+  CHECK(strstr(s, "pending T") != NULL && strstr(s, "tip-synced 1003") != NULL && strstr(s, "failed") == NULL);
+  s = go(&f);   /* still too large: asked again, nothing told again */
+  CHECK(strstr(s, "pending") == NULL && strstr(s, "failed") == NULL && strstr(s, "synced") == NULL);
+  f.net.view[0].fault = f.net.view[1].fault = SIM_FAULT_NONE;
+  s = go(&f);
+  CHECK(strstr(s, "mempool T") != NULL && strstr(s, "synced T") != NULL && strstr(s, "pending") == NULL);
+  fx_close(&f);
+}
+
+/* A transaction that two watches follow (a funding watched itself and as
+ * the spender of a watched input) is proved once (integration B15). */
+static void test_proof_once(test_state *T) {
+  fx f;
+  const char *s;
+  unsigned one, two;
+  fx_open(&f);
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 9);
+  s = go(&f);
+  CHECK(strstr(s, "confirmed T n=5 at a5") != NULL);
+  one = log_count(&f, "/merkle-proof");
+  fx_close(&f);
+  fx_open(&f);
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_outpoint(f.e, f.net.world.q, 0, 3, 0) == GZ_CHAINW_OK);   /* T spends Q:0 */
+  both(&f, SIM_A, SIM_H0 + 9);
+  s = go(&f);
+  CHECK(strstr(s, "confirmed T n=5 at a5") != NULL && strstr(s, "spent Q:0 by T n=5 at a5") != NULL);
+  two = log_count(&f, "/merkle-proof");
+  CHECK(one > 0 && two == one);
+  fx_close(&f);
+}
+
+/* Review of PR 72, P-4: the kept proofs across a reorganisation and back.
+ * T in a5, then branch B (T in b6), then A again: each move is told as
+ * ever, and on the way back a5's proof is the one kept (a5 is on the
+ * checked chain again), so no proof is asked for it again. */
+static void test_proof_kept_across_reorg(test_state *T) {
+  fx f;
+  const char *s;
+  unsigned before;
+  fx_open(&f);
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 6);
+  s = go(&f);
+  CHECK(strstr(s, "confirmed T n=2 at a5") != NULL);
+  both(&f, SIM_B, SIM_H0 + 7);
+  s = go(&f);
+  CHECK(strstr(s, "unconfirmed T") != NULL && strstr(s, "confirmed T n=2 at b6") != NULL);
+  before = log_count(&f, "/merkle-proof");
+  both(&f, SIM_A, SIM_H0 + 8);
+  s = go(&f);
+  CHECK(strstr(s, "unconfirmed T") != NULL && strstr(s, "confirmed T n=4 at a5 buried") != NULL);
+  CHECK(log_count(&f, "/merkle-proof") == before);
+  fx_close(&f);
+}
+
 static void test_headers(test_state *T) {
   fx f;
   /* a tip further ahead than max_catchup is reached over two passes, each
@@ -1735,6 +1845,9 @@ int main(void) {
   RUN(test_watch_set);
   RUN(test_synced);
   RUN(test_watch_failed);
+  RUN(test_watch_deferred);
+  RUN(test_proof_once);
+  RUN(test_proof_kept_across_reorg);
   RUN(test_headers);
   RUN(test_retry_backoff);
   RUN(test_false_spender);
