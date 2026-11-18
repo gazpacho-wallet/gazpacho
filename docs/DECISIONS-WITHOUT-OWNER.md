@@ -8,7 +8,7 @@ Every choice the coordinator or a builder made on the owner's behalf that the ow
 
 ## 1. Made by the coordinator
 
-**Numbering.** The K numbers of this table name only these entries. The binding rules of the owner's decision of 2026-11-17 (PR #59), called "K1" and "K1-1 to K1-6" in the binding check, are renamed J1 to J6 so that they do not clash with K1 here (the chain lag limits).
+**Numbering.** The K numbers of this table name only these entries. The binding rules of the owner's decision of 2026-11-17 (PR #59), called "K1" and "K1-1 to K1-6" in the binding check, are renamed BD1 to BD6 (BD: the binding decision) so that they do not clash with K1 here (the chain lag limits). J1 to J6 was not used, because it already names the journal's vectors (`spec/journal.md` 11).
 
 | # | Decision | Where it is written | What it affects | What overruling would change |
 |---|---|---|---|---|
