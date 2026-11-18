@@ -122,7 +122,7 @@ The signer computes `msg_hash = TH("gazpacho/msg", protocol ‖ kind ‖ scope �
 4. `records` ends before record 240, and no record 240 is present (the signature record is the signer's to append).
 5. `len ≤ GZ_LOBBY_MAX_ENV`.
 
-`fresh` = 1 draws `aux_rand` from the random port. `fresh` = 0 uses 32 zero bytes, BIP 340's deterministic variant, which only the messages the engine rebuilds may ask for (`signing.c`, `sign_digest`, today). The signer checks the kind is one of those: `round_tier_result` and `round_abort` from the host.
+`fresh` must be 1: every signature draws `aux_rand` from the random port. There is no deterministic exception (decision K20, 2026-11-18). The messages the engine rebuilds today, the host's `round_tier_result` and `round_abort` (`signing.c`, `sign_digest`, which signs them with 32 zero bytes so that a rebuilt message has the same bytes), are instead signed once: the engine saves the signed bytes when it first sends them and resends those bytes, never a new signature, in the same way as PR #59 keeps the saved binding with `seat_key` (field 10). `fresh` = 0 exists only in the test library `gazpacho_signer_vectors` (`GZ_SG_VECTORS`), so that test vectors compare byte for byte; the production signer refuses it for every kind (`GZ_SG_E_KIND`). `signing.c` changes in S4, after PR #52 merges.
 
 The signer does not decode the records of every kind in Slice 1. These signatures move no coins. What they could be misused for is a cross-context signature, and the tag, the kind check and the key check close that. Decoding moves into the signer process at 1.0.0 for the kinds that commit a party (section 10).
 
@@ -296,11 +296,11 @@ The envelope signature is record 240 of `messages.md` 4.3. A kind marked "— (u
 | 24 `unready`, 26 `leave` | — | — (unsigned: no record 240, `messages.md` 6.5, 6.6) |
 | 28 `lobby_status` | — (unsigned, `messages.md` 6.7) | — |
 | 30 `ready_check`, 32 `start`, 34 `cancel` | yes | — |
-| 64 `round_propose`, 72 `round_tier_result` (deterministic allowed), 74 `round_complete` | yes | — |
+| 64 `round_propose`, 72 `round_tier_result` (saved and resent, never re-signed), 74 `round_complete` | yes | — |
 | 66 `round_nonces` | — | — (no record 240; each entry's `nonce_sig` is made by the round operation under `gazpacho/nonce`, `messages.md` 7.3) |
 | 68 `round_all_nonces` | — (unsigned: "No signature record", `messages.md` 7.4; `signing-round.md` 4, "Carried signatures only") | — |
 | 70 `round_partial_sigs`, 76 `round_ack` | — | yes |
-| 78 `round_abort` | yes (deterministic allowed) | yes |
+| 78 `round_abort` | yes (the host's: saved and resent, never re-signed) | yes |
 | 80 `round_status_request` | — | — (unsigned: no record 240, `messages.md` 7.10) |
 | 81 `factory_funded` | — (odd and unsigned, `messages.md` 7.11) | — |
 | 32767 `test` | — (test builds only; never signed by a real key) | — |
@@ -502,7 +502,7 @@ These are in the style of `tests/*/mutants.txt` and `tools/mutate-*.py`. Each mu
 | `env-kind` | Kind in the key's row | `signer_env_refuses_member_kind_on_host`, `..._host_kind_on_member` |
 | `env-factory` | The factory key signs no message | `signer_env_refuses_factory` |
 | `env-240` | No record 240 in the input | `signer_env_refuses_sig_record` |
-| `env-determ` | Deterministic only for the rebuilt kinds | `signer_env_deterministic_only_rebuilt` |
+| `env-determ` | Fresh `aux_rand` always: `fresh` = 0 refused in production (K20) | `signer_env_never_fixed_aux` (all kinds, both roles) |
 | `terms-hostkey` | `host_key` is ours | `signer_terms_refuses_other_host_key` |
 | `terms-chain` | Chain is ours | `signer_terms_refuses_other_chain` |
 | `bind-own-keys` | The binding uses the slot's own keys | `signer_bind_uses_own_keys` (vector) |
@@ -542,7 +542,7 @@ Each step is one PR, and each ends with the existing multi-process tests green (
 | S1 | New, small | `PROTOCOL.md` 8.2 brought up to date (3.3); `tools/check-tags.py` failing the build; `tools/check-signer-boundary.sh` in **report** mode; `no_dumps()` at program start, with its test | Independent of every open PR; makes the starting point measurable |
 | S2 | #53 merges first, unchanged in shape | Its `gzp_keys_*` is the derivation layer the signer will wrap. Before merge, one change: `gzp_net_sign_host` is not added (the host signs through the existing `port_sign` until S4), so no new generic hook lands | #53 is program-only and carries the scoped table that resolves the AT_JOIN conflict |
 | S3 | #52 rebased on #53 | The AT_JOIN gate calls the key port's new `gate_open(scope, digest, epoch, index)`, which PR #53's `gzp_keys_scope_open` implements, in place of `secret()` into `gate_secret`. `gate_secret` is deleted. `host_secret` is not added: the key hook reads the host key through PR #53's `gzp_keys_host` inside the program's hook implementation. The `keys` hook stays for now | Merges the composite signing without the second copy of the scoped secret (5.1). The keypair hook is an interim shape removed in S4 |
-| S4 | New: `signer/` | The library (section 2) built from PR #53's `keys.c`, the secret-key parts of `signing.c` (nonce, partial, `sign_digest`) and `program/net.c`'s ECDH key. The ports change as in section 4. `signing-allowed-calls.txt` shrinks. `check-signer-boundary.sh` switches to **fail**. The mutants of section 8 land | The big move, done once, after the code it moves has merged |
+| S4 | New: `signer/` | The library (section 2) built from PR #53's `keys.c`, the secret-key parts of `signing.c` (nonce, partial, `sign_digest`, whose deterministic signing of the rebuilt `round_tier_result` and `round_abort` becomes "save the signed bytes once and resend them", K20) and `program/net.c`'s ECDH key. The ports change as in section 4. `signing-allowed-calls.txt` shrinks. `check-signer-boundary.sh` switches to **fail**. The mutants of section 8 land | The big move, done once, after the code it moves has merged |
 | S5 | #56, rebased on S4 | The wallet port as in 6.2, implemented over `gz_sg_fund_*` | #56 is a draft with no program implementation of its port yet. If #56 must merge before S4, it merges with the 6.2 port shape (txid, not bytes) implemented over `gzt_funding_*` directly in the program, and S4 moves that implementation into the signer. Either order works; the port shape is fixed now |
 | S6 | #59's code step | Binding at the first ready (BD). `sign_binding` loses its factory-key form; `gate_open` gains the `seat_key` compare (BD5); the factory key's rows in 3.1 shrink to partials only; the mutant `env-factory` widens to cover bindings | #59's note already says its code follows #52. On top of S4 it is smaller: the BD checks land in one place |
 
@@ -605,3 +605,4 @@ The question is whether the host should use one key for its MuSig2 partials and 
 - Draft 1 (2026-11-18): first draft, from the approved research recommendation.
 - Draft 1, correction (2026-11-18): the spend-back's fee cap (2.3, `fund_spend_back` check 3) admits the whole fee ladder; "ceiling × vsize" refused level 2 (review B of #56, M-3).
 - Draft 1, review fixes (2026-11-18, review of #59 to #63): kind table matches the specification's signed kinds (M1); the tag check skips `#include` paths and an allow list, and accepts states beginning "Specified" or "Reserved" (M2); BD1 is the host engine extended to every seat ever held (M3); the factory key's "Never" rests on K10 and CH-OP-1 and excepts O2's timeout sweep (M4); D9, the C1 rebuild at 1.0.0, pending the owner (M5); `sign_binding` once per seat, its bytes saved in `seat_key` field 10 (#59 H1); the parity check dropped (L1); key paths cited from `docs/notes/keys.md` (L2); `GZ_SG_E_SEAT_KEY` at a ready (L3); no local file cited (L4); `gazpacho/test-funding` from #52 (L5); the penalty operation's epoch exception (L6). The binding rules are named BD1 to BD6 (formerly K1-1 to K1-6), as in #59.
+- Draft 1, decision K20 (2026-11-18): no deterministic signing. `sign_envelope` always draws fresh `aux_rand`; the host's rebuilt `round_tier_result` and `round_abort` are saved once signed and resent (2.3, 3.2, 8, 9 S4).
