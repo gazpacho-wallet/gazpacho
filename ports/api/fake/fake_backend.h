@@ -102,6 +102,8 @@ typedef struct gz_fake {
     int locked1, locked2;             /* Ready, then the gate closed: unready reason 3 sent */
     int h_locked;                     /* the hosted lobby's seats shown locked (15.3) */
     int m_removed;                    /* the host removed this member's seat (14.6) */
+    int m_terms_bump;                 /* lob_7k2q's host moved its joining fee: version 4, a new digest */
+    int acc_counts;                   /* 14.6 counts: 0 none (Slice 1), 1 unsigned, 2 signed (1.0.0) */
     int h_stage, h_round, h_ready, h_conf, h_left_seen;   /* the hosted lobby */
     int64_t h_target, h_minimum, h_channel, h_funded_sat;
     char h_name[121];
@@ -116,7 +118,8 @@ void gz_fake_release(gz_fake *f);
  * member-refuse-safety, join-refuse-list, member-unfinished,
  * member-cancel, host-seats N, host-leave, chain STATE, hold on|off|forever,
  * release, restore-done, files-behind, pp-delay MS, fail-derivation,
- * restart, host-locked N, member-removed.
+ * restart, host-locked N, member-removed, host-moves-fee, join-second,
+ * host-counts-unsigned, host-counts-signed.
  * Any thread. 0, or -1 for a line it does not know. */
 int gz_fake_cmd(gz_fake *f, const char *line);
 extern const gz_api_backend gz_fake_backend;

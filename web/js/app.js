@@ -314,7 +314,9 @@
       var topics = pending, redraw = false, t;
       pending = {};
       flush = null;
-      if (topics.status || topics.chain || topics.reset || topics.wallet) refreshStatus(true);
+      /* The status is read before the screen is drawn again: a screen may read
+         it (a locked seat, 14.3), and must not draw from the one before. */
+      var fresh = topics.status || topics.chain || topics.reset || topics.wallet ? refreshStatus(true) : Promise.resolve(null);
       if (current && current.screen.topics) {
         /* a screen with no topics (the words, a form) is never drawn again under the person, not even on a reset */
         for (t in topics) if (current.screen.topics.length && (topics.reset || current.screen.topics.indexOf(t) >= 0)) redraw = true;
@@ -324,7 +326,7 @@
           if (setup.state === "created_not_finished") gz.access.setup(setup, true);
         }, function () { return null; });
       }
-      if (redraw && !app.busy) route(false);
+      fresh.then(function () { if (redraw && !app.busy) route(false); });
     }, 150);
   });
 

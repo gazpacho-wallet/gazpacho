@@ -91,8 +91,9 @@ test('lock during a call: the page ends on the unlock screen, not on a broken on
   await expect(page.locator('#join')).toBeEnabled();
   await fake.cmd('hold on'); // the join's save is not confirmed: the call stays open
   await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
-  await page.locator('#review').getByLabel('Wallet passphrase').fill(PASS); // at_join (14.3)
   await page.locator('#join').click();
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
   await expect(page.locator('#join')).toBeDisabled();
   // meanwhile the wallet is locked from another session
   await page.waitForTimeout(1100);

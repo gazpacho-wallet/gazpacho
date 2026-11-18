@@ -471,6 +471,20 @@ static int ms_auto(const gz_fake *f)
 
 static const char *seat_name(gz_fake *f, const char *id);
 
+/* The terms' seed of a lobby: a moved fee gives lob_7k2q a new digest (version 4). */
+static const char *terms_seed(const gz_fake *f, const char *id)
+{
+    return f->story && f->m_terms_bump && strcmp(id, LOBBY_ID) == 0 ? LOBBY_ID "~v4" : id;
+}
+
+/* 14.1 terms_change: the host moved a value while Open */
+static void terms_change(gz_jw *w, gz_fake *f, const char *id)
+{
+    if (!(f->story && f->m_terms_bump && strcmp(id, LOBBY_ID) == 0)) { gz_jw_knull(w, "terms_change"); return; }
+    gz_jw_kraw(w, "terms_change", "{\"from_version\":3,\"to_version\":4,\"at\":1794434500,"
+                                  "\"changes\":[{\"term\":\"joining_fee_sat\",\"from\":1000,\"to\":1400}],\"effect\":\"unreadied\"}");
+}
+
 /* 14.1 you.gate: the gate this seat uses (14.3) */
 static void gate_json(gz_jw *w, gz_fake *f, const char *id)
 {
@@ -482,7 +496,7 @@ static void gate_json(gz_jw *w, gz_fake *f, const char *id)
     gz_jw_obj(w);
     gz_jw_kstr(w, "kind", ms_auto(f) ? "none" : "per_lobby");
     gz_jw_kstr(w, "state", ms_auto(f) || open ? "open" : "closed");
-    if (!ms_auto(f) && open) gz_jw_kstr(w, "opened_for_digest", digest_of(id, dg));
+    if (!ms_auto(f) && open) gz_jw_kstr(w, "opened_for_digest", digest_of(terms_seed(f, id), dg));
     else gz_jw_knull(w, "opened_for_digest");
     if (at) gz_jw_kint(w, "since_at", at);
     else gz_jw_knull(w, "since_at");
@@ -496,8 +510,12 @@ static void accountability(gz_jw *w, gz_fake *f, const char *id)
     gz_jw_obj(w);
     gz_jw_kstr(w, "source", "own_view");
     gz_jw_kint(w, "as_of_at", now_s(f));
-    gz_jw_kbool(w, "signed", 0);
-    gz_jw_knull(w, "counts");
+    gz_jw_kbool(w, "signed", f->acc_counts == 2);
+    if (f->acc_counts)                                 /* the test cases of 14.6: unsigned (never shown) and signed */
+        gz_jw_kraw(w, "counts", "{\"seats_ever\":41,\"left\":3,\"removed_by_host\":1,\"refused_at_check\":1,"
+                                "\"not_answering\":0,\"swapped_in\":0}");
+    else
+        gz_jw_knull(w, "counts");
     gz_jw_key(w, "removal_reasons");
     gz_jw_arr(w);
     if (strcmp(id, LOBBY_ID) == 0 && f->m_removed) {
@@ -627,7 +645,7 @@ static void story_lobby(gz_jw *w, gz_fake *f, const char *id, int row)
     gz_jw_kstr(w, "stage", first ? M_STAGE[f->m_stage] : "open");
     if (!row) {
         gz_jw_key(w, "terms");
-        terms(w, id, lo, now, hi, 1, 50, 30, 500000);
+        terms(w, terms_seed(f, id), lo, first && f->m_terms_bump ? 1400 : now, hi, 1, 50, 30, 500000);
     }
     gz_jw_key(w, "fit");
     fit(w, f, lo, now, hi);
@@ -696,7 +714,7 @@ static void story_lobby(gz_jw *w, gz_fake *f, const char *id, int row)
             gz_jw_knull(w, "factory_id");
         }
         gz_jw_knull(w, "members");
-        gz_jw_knull(w, "terms_change");
+        terms_change(w, f, id);
         accountability(w, f, id);
     } else {
         gz_jw_kint(w, "channel_sat", 500000);
@@ -1080,7 +1098,7 @@ static void lobby(gz_jw *w, gz_fake *f, const char *id, int row)
         gz_jw_knull(w, "funding");
         gz_jw_knull(w, "factory_id");
         gz_jw_knull(w, "members");
-        gz_jw_knull(w, "terms_change");
+        terms_change(w, f, id);
         accountability(w, f, id);
     } else {
         gz_jw_kint(w, "channel_sat", 500000);
@@ -1426,7 +1444,7 @@ static int ready_refusal(gz_fake *f, const char *id, const char *seen, int ready
     if (!(second ? f->joined2 : f->joined)) { gz_api_err_set(err, "not_joined", NULL, NULL); return 409; }
     if (f->story && !second && f->m_stage >= MS_SIGNING) { gz_api_err_set(err, "too_late", NULL, NULL); return 409; }
     if (f->pause_on && ready) { gz_api_err_set(err, "paused", NULL, NULL); return 409; }
-    if (strcmp(seen, digest_of(id, dg)) != 0) {
+    if (strcmp(seen, digest_of(terms_seed(f, id), dg)) != 0) {
         gz_api_err_set(err, "terms_changed", "/seen_current_digest", "{\"current_version\":3}");
         return 409;
     }
@@ -1702,7 +1720,7 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
             status = 409;
             break;
         }
-        if (strcmp(gz_json_get(b, "seen_current_digest")->s, digest_of(c->path_id, dg)) != 0) {
+        if (strcmp(gz_json_get(b, "seen_current_digest")->s, digest_of(terms_seed(f, c->path_id), dg)) != 0) {
             gz_api_err_set(err, "terms_changed", "/seen_current_digest", "{\"current_version\":3}");
             status = 409;
             break;
@@ -2538,6 +2556,29 @@ int gz_fake_cmd(gz_fake *f, const char *line)
         int n = atoi(line + 12);
         f->h_locked = n < 0 ? 0 : n > f->h_ready ? f->h_ready : n;
         n_host = n_status = 1;
+    } else if (strcmp(line, "host-moves-fee") == 0) {
+        /* the host moves its joining fee inside its range while Open: a new
+         * digest; the gate was bound to the old one, so the seat is not ready */
+        if (f->joined && f->m_stage == MS_OPEN) {
+            f->m_terms_bump = 1;
+            f->ready = 0;
+            f->gate1 = 0;
+            n_lobby = n_status = 1;
+        }
+    } else if (strcmp(line, "join-second") == 0) {
+        /* lob_b19d joined and Ready earlier, under looser conditions */
+        f->joined2 = 1;
+        f->ready2 = 1;
+        f->left2 = 0;
+        f->gate2 = !ms_auto(f);
+        f->gate2_at = now_s(f);
+        n_lobby2 = n_status = 1;
+    } else if (strcmp(line, "host-counts-unsigned") == 0) {
+        f->acc_counts = 1;
+        n_lobby = 1;
+    } else if (strcmp(line, "host-counts-signed") == 0) {
+        f->acc_counts = 2;
+        n_lobby = 1;
     } else if (strcmp(line, "member-removed") == 0) {
         if (f->joined && f->m_stage == MS_OPEN) {
             f->joined = 0;

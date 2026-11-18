@@ -17,8 +17,9 @@ async function start(info, args) {
 // Under at_join (14.3), the default, joining ready carries the passphrase.
 async function joinClick(page) {
   await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
-  await page.locator('#review').getByLabel('Wallet passphrase').fill(PASS);
-  await page.locator('#join').click(); // the same button the person presses
+  await page.locator('#join').click();
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
 }
 
 // "I am ready" asks for the passphrase in a dialog (14.3 interface rule 2).

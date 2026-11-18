@@ -24,8 +24,9 @@ const SAVED = 'Saved. This takes effect the next time Gazpacho starts; until the
 async function joinReady(page) {
   await page.goto(fake.url + '#/lobby/lob_7k2q');
   await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
-  await page.locator('#review').getByLabel('Wallet passphrase').fill(PASS);
   await page.locator('#join').click();
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
 }
 
@@ -35,7 +36,7 @@ async function nowhere(page) {
   expect(all, 'the passphrase is kept nowhere on the page').not.toContain(PASS);
 }
 
-test('at_join: the passphrase comes with every ready, is emptied at once, and the words say what it protects', async ({ page }, info) => {
+test('at_join: the passphrase comes with every ready, in a dialog emptied at once, and the words say what it protects', async ({ page }, info) => {
   await start(info);
   await signIn(page, fake);
   const bodies = [];
@@ -43,20 +44,33 @@ test('at_join: the passphrase comes with every ready, is emptied at once, and th
   await page.goto(fake.url + '#/lobby/lob_7k2q');
   await expect(page.locator('#review')).toContainText(AT_JOIN);
   await expect(page.locator('#review')).toContainText(SEED_LINE);
+  await expect(page.locator('#review input[type="password"]')).toHaveCount(0); // never on the redrawn screen (review M2)
   // nothing is sent without it
   await page.locator('#join').click();
-  await expect(page.locator('#join-msg')).toContainText('Type your passphrase first.');
-  // a wrong one: refused, the field emptied, nothing joined
+  const dlg = page.locator('dialog');
+  await expect(dlg).toContainText(SEED_LINE);
+  await dlg.getByRole('button', { name: 'Join', exact: true }).click();
+  await expect(dlg).toContainText('Type your passphrase first.');
+  expect(bodies).toHaveLength(0);
+  // a wrong one: refused in the dialog, the field emptied, nothing joined
   await page.waitForTimeout(1100);
-  await page.locator('#review').getByLabel('Wallet passphrase').fill('not the passphrase at all');
-  await page.locator('#join').click();
-  await expect(page.locator('#join-msg [data-code="wrong_passphrase"]')).toBeVisible();
-  await expect(page.locator('#review').getByLabel('Wallet passphrase')).toHaveValue('');
+  await dlg.getByLabel('Wallet passphrase').fill('not the passphrase at all');
+  await dlg.getByRole('button', { name: 'Join', exact: true }).click();
+  await expect(dlg.locator('[data-code="wrong_passphrase"]')).toBeVisible();
+  await expect(dlg.getByLabel('Wallet passphrase')).toHaveValue('');
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'none');
+  // live events redraw the lobby screen under the dialog: what is typed stays, with the focus (review M2)
   await page.waitForTimeout(1100);
-  await page.locator('#review').getByLabel('Wallet passphrase').fill(PASS);
-  await page.locator('#join').click();
+  await dlg.getByLabel('Wallet passphrase').fill('half typed');
+  await page.locator('#lobby').evaluate((e) => e.setAttribute('data-old', '1'));
+  await fake.cmd('chain lagging');
+  await expect(page.locator('#lobby[data-old]')).toHaveCount(0); // drawn again
+  await expect(dlg.getByLabel('Wallet passphrase')).toHaveValue('half typed');
+  await expect(dlg.getByLabel('Wallet passphrase')).toBeFocused();
+  await dlg.getByLabel('Wallet passphrase').fill(PASS);
+  await dlg.getByRole('button', { name: 'Join', exact: true }).click();
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
+  await expect(page.locator('dialog')).toHaveCount(0);
   expect(bodies.map((b) => typeof b.passphrase)).toEqual(['string', 'string']);
   // not ready: no passphrase; ready again: asked for in a dialog, with the same words
   await page.locator('#ready-toggle').click();
@@ -64,7 +78,6 @@ test('at_join: the passphrase comes with every ready, is emptied at once, and th
   expect('passphrase' in bodies[2]).toBe(false);
   await expect(page.locator('#gate-words')).toContainText(AT_JOIN);
   await page.locator('#ready-toggle').click();
-  const dlg = page.locator('dialog');
   await expect(dlg).toContainText(SEED_LINE);
   await page.waitForTimeout(1100);
   await dlg.getByLabel('Wallet passphrase').fill(PASS);
@@ -118,6 +131,8 @@ test('a locked seat is readied from its lobby with the passphrase', async ({ pag
   await joinReady(page);
   await fake.cmd('restart');
   await expect(page.locator('#ready-toggle')).toHaveText('Mark ready');
+  await expect(page.locator('#seat-line')).toContainText(LOCKED);
+  await expect(page.locator('#doing')).toContainText(LOCKED);
   await page.locator('#ready-toggle').click();
   const dlg = page.locator('dialog');
   await expect(dlg.getByRole('heading')).toHaveText('Mark ready again');
@@ -148,14 +163,14 @@ test('the signing setting: auto only behind a fresh sign-in, saved for the next 
   await expect(page.locator('#signing-pending')).toHaveText('From the next start: Sign by itself in every lobby I am ready in.');
   // until the next start, joining still asks for the passphrase
   await page.goto(fake.url + '#/lobby/lob_7k2q');
-  await expect(page.locator('#review').getByLabel('Wallet passphrase')).toBeVisible();
+  await expect(page.locator('#join-gate-words')).toContainText(AT_JOIN); // joining ready asks for it
   await fake.cmd('restart');
   await page.goto(fake.url + '#/settings');
   await expect(page.locator('#signing-now')).toHaveText('In force now: Sign by itself in every lobby I am ready in.');
   await expect(page.locator('#signing-pending')).toHaveCount(0);
   await expect(page.locator('#signing-box')).toContainText('Gazpacho signs in every lobby you are ready in, by itself, whenever it is unlocked.');
   await page.goto(fake.url + '#/lobby/lob_7k2q');
-  await expect(page.locator('#review').getByLabel('Wallet passphrase')).toHaveCount(0);
+  await expect(page.locator('#join-gate-words')).toHaveCount(0);
   await expect(page.locator('#review')).toContainText('the app signs by itself');
   await page.locator('#join').click();
   await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
@@ -204,4 +219,115 @@ test('a junk start token with a wallet: the plain unlock screen, never the hijac
   await page.goto(fake.url + '#start=' + 'A'.repeat(43));
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Unlock Gazpacho');
   await expect(page.getByRole('heading', { name: 'Do not use this wallet' })).toHaveCount(0);
+});
+
+// ---- review of PR 51 ----
+
+test('M1/W03: "Mark ready in all" readies every locked seat, each with the digest drawn beside its terms', async ({ page }, info) => {
+  await start(info);
+  await signIn(page, fake);
+  await joinReady(page);
+  await fake.cmd('join-second');
+  await fake.cmd('restart');
+  const posts = [];
+  page.on('request', (r) => { if (r.url().endsWith('/api/v1/lobbies/ready')) posts.push(JSON.parse(r.postData())); });
+  await page.goto(fake.url + '#/lobbies');
+  const drawn = {};
+  for (const id of ['lob_7k2q', 'lob_b19d']) {
+    await expect(page.locator(`#locked-list li[data-lobby="${id}"]`)).toContainText('Joining fee');
+    drawn[id] = await page.evaluate(async (lid) => (await (await fetch('/api/v1/lobbies/' + lid,
+      { headers: { 'X-Gazpacho-Session': sessionStorage.getItem('gz-session') } })).json()).terms.current.digest, id);
+  }
+  await page.locator('#ready-all').click();
+  await page.waitForTimeout(1100);
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Mark ready' }).click();
+  await expect(page.locator('#toasts')).toContainText('Ready again in 2 lobbies.');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].lobbies).toEqual([{ lobby_id: 'lob_7k2q', seen_current_digest: drawn.lob_7k2q }, { lobby_id: 'lob_b19d', seen_current_digest: drawn.lob_b19d }]);
+  for (const id of ['lob_7k2q', 'lob_b19d']) {
+    await page.goto(fake.url + '#/lobby/' + id);
+    await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'ready');
+  }
+});
+
+test('M1: a locked lobby whose terms moved is left out of "Mark ready in all", with the change, never readied under the new values', async ({ page }, info) => {
+  await start(info);
+  await signIn(page, fake);
+  await joinReady(page);
+  await fake.cmd('join-second');
+  await fake.cmd('restart');
+  await fake.cmd('host-moves-fee'); // while locked, the host moves lob_7k2q's fee inside its range
+  const posts = [];
+  page.on('request', (r) => { if (r.url().endsWith('/api/v1/lobbies/ready')) posts.push(JSON.parse(r.postData())); });
+  await page.goto(fake.url + '#/lobbies');
+  const moved = page.locator('#locked-list li[data-lobby="lob_7k2q"]');
+  await expect(moved).toHaveAttribute('data-moved', 'yes');
+  await expect(moved).toContainText('the terms changed since you readied');
+  await expect(moved).toContainText('Joining fee from 1,000 to 1,400');
+  await page.locator('#ready-all').click();
+  await page.waitForTimeout(1100);
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Mark ready' }).click();
+  await expect(page.locator('#toasts')).toContainText('Ready again in 1 lobby.');
+  expect(posts.map((p) => p.lobbies.map((l) => l.lobby_id))).toEqual([['lob_b19d']]);
+  await page.goto(fake.url + '#/lobby/lob_7k2q');
+  await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'joined_not_ready');
+});
+
+test('M1: terms that move after the page was drawn are refused for that lobby, and the page says to review them', async ({ page }, info) => {
+  await start(info);
+  await signIn(page, fake);
+  await joinReady(page);
+  await fake.cmd('restart');
+  await page.goto(fake.url + '#/lobbies');
+  await page.locator('#ready-all').click(); // the dialog is open over the page drawn before the move
+  await fake.cmd('host-moves-fee');
+  await page.waitForTimeout(1100);
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Mark ready' }).click();
+  await expect(page.locator('#ready-all-left li[data-lobby="lob_7k2q"]')).toContainText('the terms changed since this page was drawn');
+  await page.goto(fake.url + '#/lobby/lob_7k2q');
+  await expect(page.locator('#lobby')).toHaveAttribute('data-seat', 'joined_not_ready');
+});
+
+test('M1: a retry of "Mark ready in all" after node busy is the same request, done once', async ({ page }, info) => {
+  await start(info, ['--held-ms', '1500']);
+  await signIn(page, fake);
+  await joinReady(page);
+  await fake.cmd('restart');
+  const ids = [];
+  page.on('request', (r) => { if (r.url().endsWith('/api/v1/lobbies/ready')) ids.push(JSON.parse(r.postData()).request_id); });
+  await page.goto(fake.url + '#/lobbies');
+  await fake.cmd('hold forever');
+  await page.locator('#ready-all').click();
+  await page.waitForTimeout(1100);
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Mark ready' }).click();
+  await expect(page.locator('#ready-all-msg [data-code="node_busy"]')).toBeVisible();
+  await fake.cmd('release');
+  await fake.cmd('hold off');
+  await page.locator('#ready-all').click();
+  await page.waitForTimeout(1100);
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Mark ready' }).click();
+  await expect(page.locator('#toasts')).toContainText('Ready again in 1 lobby.');
+  expect(ids).toHaveLength(2);
+  expect(ids[1]).toBe(ids[0]);
+});
+
+test('W07: counts the host did not sign are never shown; signed ones are the host\'s statement', async ({ page }, info) => {
+  await start(info);
+  await signIn(page, fake);
+  await page.goto(fake.url + '#/lobby/lob_7k2q');
+  const acc = page.locator('#accountability');
+  await fake.cmd('host-counts-unsigned');
+  await page.goto(fake.url + '#/lobby/lob_7k2q');
+  await expect(acc).toContainText('Your app sees only what happened to your own seat.');
+  await expect(acc.locator('[data-count]')).toHaveCount(0);
+  await expect(acc).not.toContainText(/\d/);
+  await fake.cmd('host-counts-signed');
+  await page.goto(fake.url + '#/lobby/lob_7k2q');
+  await expect(acc.locator('[data-count="removed_by_host"]')).toHaveText('The host signed that it removed 1 seat.');
+  await expect(acc).not.toContainText('Your app sees only what happened to your own seat.');
 });
