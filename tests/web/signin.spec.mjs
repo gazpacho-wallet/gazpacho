@@ -105,6 +105,7 @@ test('lock during a call: the page ends on the unlock screen, not on a broken on
   expect(l.status()).toBe(202);
   await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
   await fake.cmd('hold off');
+  await expect(page.locator('dialog')).toHaveCount(0); // the join's passphrase dialog went with the session
   await expect(page.getByLabel('Wallet passphrase')).toBeVisible();
   await page.waitForTimeout(1100);
   await page.getByLabel('Wallet passphrase').fill(PASS);

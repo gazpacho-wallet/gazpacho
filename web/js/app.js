@@ -136,6 +136,7 @@
   app.enter = enter;
 
   app.signedOut = function (reason) {
+    gz.ui.dropDialogs();      /* a passphrase dialog goes with the session, emptied */
     leave();
     app.busy = 0;
     inApp = false;
