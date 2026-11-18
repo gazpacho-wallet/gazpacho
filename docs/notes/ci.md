@@ -179,4 +179,37 @@ The negative tests of both checks (the sneaky object, the five bad libraries) st
 - **It does not require a review.** Since 2026-11-12, branch protection on `main` requires all 11 jobs above to pass on a branch that is up to date with `main`, applies to administrators too, and refuses force pushes and deletions. It does not require an approving GitHub review: reviews are kept as files in `docs/reviews/`, and their rule is checked by people, not by GitHub.
 - **A pull request with merge conflicts gets no run.** GitHub runs `pull_request` workflows on the merge of the branch into its base; while the pull request conflicts there is no merge to test, and no run starts, however many commits are pushed. Rebase on `main` to get a result.
 - **Pushes to other branches do not run CI** on their own (the `push` trigger is `main` only); a branch is tested through its pull request.
-- **No Windows or macOS build**, no 32-bit build, no regtest node, no reproducible-build check, no mutation testing (the storage layer's runner, `tools/mutate-storage.py`, runs on the build server; its results are in `docs/notes/storage-crypto.md`).
+- **No Windows or macOS build**, no 32-bit build, no reproducible-build check. Mutation runs, long fuzz runs and the regtest node are not part of a pull request's CI; they run in the deep checks below, by hand or nightly, and never block a merge.
+
+## Deep checks (`.github/workflows/deep-checks.yml`)
+
+The long checks, on GitHub's runners instead of the build server: the repository is public, so standard runners cost nothing (4 CPUs, 16 GB, up to 20 jobs at once, 6 hours per job). It runs nightly on `main` and by hand on any branch or commit. It is not a required check and changes nothing in `ci.yml`. Read-only token, no secrets, every action pinned by commit, as above.
+
+Suites (`suite`):
+
+- `fuzz`: one libFuzzer build (as the CI job), then one job per `fuzz_*` target, 600 seconds each by default (`fuzz_seconds`), under ASan and UBSan. A finding is saved as a `crash-*` or `leak-*` file in the target's artifact.
+- `mutation`: every mutation tool present on the ref (`tree`, `node`, `api`, `chain-watch`, `net`, `storage`, `lobby`, `signing` and the signing rule-removed run, and on their branches `keys` and `s5s6`), each list split into shards that run in parallel. `tools` picks some (`-f tools=tree,net`), `shards` overrides the number of shards per tool. Each shard runs the tool's own script on its share of the mutants, so the verdict is the tool's: a shard fails when the tool exits non-zero.
+- `valgrind`: every compiled test under memcheck with its full arguments (CI runs reduced ones), in 6 shards, and the constant-time checks.
+- `msan`: the MemorySanitizer build of CI with `-DGZ_LONG_TESTS=ON`, every test, in 4 shards.
+- `sanitizers`: gcc and clang with ASan and UBSan and the long tests (gcc with the wallet break-checks too), 3 shards each, and the chain worker under ThreadSanitizer.
+- `regtest`: `tools/regtest-tree.py` against Bitcoin Core 29.1. The tarball comes from bitcoincore.org; the job requires good signatures on `SHA256SUMS` from at least 3 builder keys of `bitcoin-core/guix.sigs` (pinned by commit), requires `SHA256SUMS` to name the hash pinned in the workflow, and checks the tarball against it.
+- `all` (the default, and the nightly run): everything above.
+
+The workflow file and its helper, `tools/deep-checks.py`, are always taken from the workflow's own commit; only the code under test comes from `ref`. Adding a mutation tool is one entry in the helper's `TOOLS` table.
+
+**Starting a run.** Run it on your own branch, and keep runs on someone else's branch small:
+
+    gh workflow run deep-checks.yml -f ref=<branch> -f suite=mutation
+    gh workflow run deep-checks.yml -f ref=<branch> -f suite=mutation -f tools=net -f shards=4
+    gh workflow run deep-checks.yml -f ref=<sha> -f suite=fuzz -f fuzz_seconds=1800
+
+**Reading the results.**
+
+    gh run list --workflow deep-checks.yml --limit 5      # the run's number
+    gh run watch <run-id>                                 # wait for it
+    gh run view <run-id>                                  # each job's result; the summary job's table
+    gh run view <run-id> --log-failed                     # the failing steps' output
+    gh run download <run-id> -n summary                   # summary.md, survivors.txt, results.json
+    gh run download <run-id> -p 'deep-mutation-net-*'     # each shard's log.txt, survivors.txt, result.json
+
+The `summary` job merges every shard's `result.json` and `survivors.txt` into one table (also shown on the run's page) and one list of surviving mutants, one `TOOL<tab>MUTANT` per line. A shard stopped by its time budget says `timeout`; its log and the survivors found so far are still kept. Artifacts are kept 14 days, the summary 30.
