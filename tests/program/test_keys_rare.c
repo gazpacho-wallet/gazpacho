@@ -157,6 +157,18 @@ int main(void)
         CHECK(gzw_bip32_master(secp, SEED, 64, &m, &r) && gzw_bip32_derive_priv(secp, &m, path, 4, &x, &r) &&
               gzw_bip32_neuter(secp, &x, &p) && !memcmp(p.pubkey, pub_next, 33) && !memcmp(x.key, sec, 32));
     }
+    /* epoch_ok: an invalid child at the epoch (call 5) is not usable; above it neither. */
+    for (lvl = 1; lvl <= 5; lvl++) {
+        arm(lvl);
+        CHECK(!gzp_keys_epoch_ok(&k, 9));
+    }
+    arm(6);
+    CHECK(gzp_keys_epoch_ok(&k, 9) && calls == 5);
+    /* It checks the hardened epoch node 9': forced by index, 9 | 2^31 is invalid. */
+    arm(0);
+    force_index = 0x80000009u;
+    CHECK(!gzp_keys_epoch_ok(&k, 9));
+    force_index = 0;
     /* Above k: no host key at all. */
     for (lvl = 1; lvl <= 4; lvl++) {
         arm(lvl);

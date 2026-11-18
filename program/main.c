@@ -612,10 +612,9 @@ int main(int argc, char **argv)
     }
     OPENSSL_cleanse(rseed, sizeof rseed);
     if ((rc = keys_open(secp, wnet, &first)) != 0) goto out;
-    /* AT_JOIN (gzp.h): a member's round secrets only from the scoped table. A member's setting:
-     * a host derives its own pairs for every round it proposes (audit M2). */
-    keys.scoped_only = opt.role != GZP_ROLE_HOST && opt.member_signing == 0;
-    gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST); /* a host's own pairs on 2' (keys.md K2) */
+    /* A host's own pairs on 2' (keys.md K2). AT_JOIN (gzp.h, 0): a member's round secrets only from the
+     * scoped table; a host derives its own pairs for every round it proposes (integration F4). */
+    gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST, opt.member_signing == 0);
     if ((rc = transport_key(secp, &opt, priv)) != 0) goto out;
     gzp_log("wallet network=%s first-address=%s", opt.network, first.address);
 

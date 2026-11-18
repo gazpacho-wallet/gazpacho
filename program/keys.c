@@ -256,9 +256,63 @@ void gzp_keys_set_epoch(gzp_keys_t *k, uint32_t epoch)
     k->epoch = epoch;
 }
 
-void gzp_keys_set_role(gzp_keys_t *k, int host)
+void gzp_keys_set_role(gzp_keys_t *k, int host, int at_join)
 {
     k->lobby_branch = host ? GZP_KEYS_BRANCH_HOST_LOBBY : GZP_KEYS_BRANCH_LOBBY;
+    k->scoped_only = !host && at_join;
+}
+
+int gzp_keys_epoch_ok(const gzp_keys_t *k, uint32_t epoch)
+{
+    uint32_t path[4];
+    gzw_xprv x;
+    int ok;
+    if (!k || epoch >= GZP_KEYS_INDEX_LIMIT) return 0;
+    branch_path(k, k->lobby_branch, path);
+    path[3] = epoch | H;
+    ok = walk(k, path, 4, &x, NULL);
+    gzw_wipe(&x, sizeof x);
+    return ok;
+}
+
+int gzp_keys_note_slot(gzp_keys_t *k, uint32_t serial, const uint8_t scope[32], uint32_t epoch, uint32_t index)
+{
+    size_t i, free_i = GZP_KEYS_MAX_SLOTS;
+    if (!k || !scope) return 0;
+    for (i = 0; i < GZP_KEYS_MAX_SLOTS; i++) {
+        if (k->slots[i].used && k->slots[i].serial == serial) break;
+        if (!k->slots[i].used && free_i == GZP_KEYS_MAX_SLOTS) free_i = i;
+    }
+    if (i == GZP_KEYS_MAX_SLOTS) i = free_i;
+    if (i == GZP_KEYS_MAX_SLOTS) return 0;
+    k->slots[i].used = 1;
+    k->slots[i].serial = serial;
+    k->slots[i].epoch = epoch;
+    k->slots[i].index = index;
+    memcpy(k->slots[i].scope, scope, 32);
+    return 1;
+}
+
+void gzp_keys_drop_slot(gzp_keys_t *k, uint32_t serial)
+{
+    size_t i;
+    for (i = 0; k && i < GZP_KEYS_MAX_SLOTS; i++)
+        if (k->slots[i].used && k->slots[i].serial == serial) memset(&k->slots[i], 0, sizeof k->slots[i]);
+}
+
+int gzp_keys_open_ready(gzp_keys_t *k, const uint8_t scope[32], gzp_keys_err_t *err)
+{
+    static const uint8_t zero[32];
+    size_t i;
+    if (!k || !scope) {
+        set_err(err, GZP_KEYS_BAD_ARGUMENT, 0);
+        return 0;
+    }
+    for (i = 0; i < GZP_KEYS_MAX_SLOTS; i++)
+        if (k->slots[i].used && !memcmp(k->slots[i].scope, scope, 32))
+            return gzp_keys_scope_open(k, scope, zero, k->slots[i].epoch, k->slots[i].index, err);
+    set_err(err, GZP_KEYS_BAD_ARGUMENT, 0);
+    return 0;
 }
 
 void gzp_keys_freeze(gzp_keys_t *k, int frozen)

@@ -26,6 +26,10 @@ with tools/keys_ref.py, which shares no code with the program.
      uses a key under E, the vector at (E, index), which no seat holds.
   5. Restarted after the restore: the epoch comes back from the journal and
      the member reconnects with the (E, index) key only.
+  7. AT_JOIN, the default (keys.md 7, integration W4): a member readies with
+     the passphrase flag; the key port opens that lobby's scope before the
+     node gets the ready (one scope held), and wipes it when the seat ends
+     (none held).
   6. One set of words as host and as member (keys.md 3, K2): a member made
      from the host's own words joins the host's lobby with two others; every
      seat is accepted and the lobby reaches Funding on the host and on that
@@ -42,7 +46,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "..", "..", "tools"))
-from gzp_harness import Checks, Proc, kill_all, parse_journal  # noqa: E402
+from gzp_harness import Checks, Proc, kill_all  # noqa: E402
 import keys_ref as R  # noqa: E402
 import lobby as L  # noqa: E402
 
@@ -75,13 +79,11 @@ def peer(key_hex):
     return hashlib.sha256(bytes.fromhex(key_hex)).digest()[:8].hex()
 
 
-def key_index_values(folder):
-    """Every key_index record's value (field 2, u32) in the member's journal, oldest first."""
-    out = []
-    for e in parse_journal(os.path.join(folder, "journal.standin")):
-        if e[0] == "BTCH":
-            out += [int.from_bytes(b[2:6], "big") for t, b in e[3] if t == L.KEY_INDEX and len(b) >= 6]
-    return out
+def key_index_values(proc):
+    """The key_index values the member saved, oldest first, from its own
+    "key-index" lines (the executor logs each durable key_index record), so the
+    test reads no journal file: it holds for any journal format (integration B1)."""
+    return [int(x) for ln in proc.lines for x in re.findall(r"key-index value=(\d+)", ln)]
 
 
 def main():
@@ -146,7 +148,7 @@ def main():
         check(m.count(r"lobby-note code=0x4c06 a=\d+ b=7") == 0 and m.count(r"slot-closed") == 0,
               "2: neither seat is refused and both slots stay open (no key shared with the host)")
         m.stop()
-        ki = key_index_values(os.path.join(w.work, "m"))
+        ki = key_index_values(m)
         check(ki[:2] == [2, 4], "2: the member's key_index records say 2, then 4 (%r)" % ki[:4])
         backup = os.path.join(w.work, "m-backup.journal")
         for f in os.listdir(os.path.join(w.work, "m")):
@@ -227,6 +229,30 @@ def main():
         check(L.state(h6, d, "host", 4) and L.state(ms[0], d, "member", 4),
               "6: every seat is accepted and the lobby reaches Funding, on the host and on that member")
         check(ms[0].count(r"lobby-note code=0x4c06 a=\d+ b=7") == 0, "6: no seat is refused (no factory key shared)")
+        # 7. AT_JOIN: the ready with the passphrase opens the scope ------------
+        e7 = L.Terms(w6.hkey, 604)
+        w6.open(h6, e7)
+        check(h6.wait_for(r"slot-opened scope=%s .*role=host" % e7.tag, timeout=10) is not None, "7: a lobby for AT_JOIN")
+        aj = w6.member("aj")  # AT_JOIN, the default
+        procs.append(aj)
+        check(L.started(aj), "7: an AT_JOIN member starts")
+        w6.join(aj, e7)
+        check(aj.wait_for(r"lobby scope=%s role=member .*joined=1" % e7.tag, timeout=20) is not None, "7: it joins")
+        check(aj.count(r"key-scope-open") == 0, "7: no scope is open before the person readies")
+        aj.send(L.cmd(L.READY, (12, e7.scope), (14, b"\x00")))
+        time.sleep(1)
+        check(aj.count(r"key-scope-open") == 0, "7: a ready without the passphrase opens no scope")
+        aj.stop()
+        aj = w6.member("aj")
+        procs.append(aj)
+        check(L.started(aj) and aj.wait_for(r"lobby scope=%s role=member .*joined=1" % e7.tag, timeout=20) is not None,
+              "7: restarted, the member is still in the lobby (its slot read back)")
+        aj.send(L.cmd(L.READY, (12, e7.scope), (14, b"\x01")))
+        check(aj.wait_for(r"key-scope-open scope=%s ok=1 held=1" % e7.tag, timeout=10) is not None,
+              "7: the ready with the passphrase opens that lobby's scope in the key port, before the node gets it")
+        aj.send(L.cmd(L.LEAVE, (12, e7.scope)))
+        check(aj.wait_for(r"key-forget scope=%s held=0" % e7.tag, timeout=15) is not None,
+              "7: leaving closes the gate, and the key port wipes the scope (none held)")
         bad = [(p.name, ln) for p in procs for ln in p.lines if "node-error" in ln or " fatal" in ln]
         check(not bad, "no node-error or fatal line in any process %r" % bad[:2])
         for p in procs:
