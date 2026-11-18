@@ -102,3 +102,8 @@ const char *gzp_view_topic(uint32_t kind)
     default: return "status";      /* status, attention, doing, connection */
     }
 }
+
+int gzp_view_lobby_class(uint32_t kind)
+{
+    return kind == GZ_VIEW_LOBBY ? 1 : kind == GZ_VIEW_HOST_LOBBY ? 2 : 0;
+}

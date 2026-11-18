@@ -35,4 +35,7 @@ void gzp_view_clear(gzp_view_t *v);
 /* The API event topic (local-api.md 10.2) for a view kind. */
 const char *gzp_view_topic(uint32_t kind);
 
+/* 1 for a member's lobby view, 2 for a hosted lobby's, 0 for any other kind. */
+int gzp_view_lobby_class(uint32_t kind);
+
 #endif

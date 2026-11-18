@@ -141,7 +141,7 @@ int main(int argc, char **argv)
     struct sigaction sa;
     char hex[67];
     const uint8_t *chain_hash;
-    int rc, i, restarts = 0, have_net = 0, have_dir = 0, stopped = 0, have_api = 0;
+    int rc, i, restarts = 0, have_net = 0, have_dir = 0, stopped = 0, have_api = 0, chain_open = 1;
 
     if (argc == 2 && (!strcmp(argv[1], "--help") || !strcmp(argv[1], "-h"))) {
         gzp_usage();
@@ -300,6 +300,21 @@ int main(int argc, char **argv)
             rc = GZP_EXIT_LIMIT;
             break;
         }
+        if (r == GZP_RUN_LOCKED) {
+            /* unlock.h: the node stops on lock and starts again on unlock, in a new
+             * incarnation. A locked program answers no host (4.7): every
+             * connection and the listener close meanwhile. Not a restart. */
+            if (gzp_net_reset(&net) != 0) {
+                rc = GZP_EXIT_FAILED;
+                break;
+            }
+            if (gzp_exec_wait_unlocked(&ex) == GZP_RUN_STOP) {
+                rc = 0;
+                stopped = 1;
+                break;
+            }
+            continue;
+        }
         if (r == GZP_RUN_POISONED) {
             /* Never start again in this process: it would read back what the
              * failed sync left in the page cache (store.h). */
@@ -352,8 +367,14 @@ out:
                          dir.lock_fd >= 0);
     /* The API server goes first (contract-v2.md 4): its listeners close and its
      * derivation thread is joined, so nothing reads the chain worker after. */
-    if (have_api) gzp_api_close(&api);
+    if (have_api) {
+        gzp_api_close(&api);
+        have_api = 0;
+    }
+    if (stopped) gzp_log("shutdown api-closed api=%d chain=%d", have_api, chain_open);
     gzp_chain_close(&chain); /* the worker joined: no event after this */
+    chain_open = 0;
+    if (stopped) gzp_log("shutdown chain-closed api=%d chain=%d", have_api, chain_open);
     if (have_net) gzp_net_free(&net);
     if (stopped) gzp_log("shutdown connections-closed transport=%d storage=%d lock=%d", net.peers != NULL,
                          ex.store_open, dir.lock_fd >= 0);

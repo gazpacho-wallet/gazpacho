@@ -907,6 +907,8 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     now = gzp_mono_ms();
     gzp_net_dispatch(ex->net, fds + 2, n_net, now);
     if (ex->api) gzp_api_dispatch(ex->api, fds + api_at, n_api);
+    /* A lock stops the node (unlock.h; local-api.md 4.7): this incarnation ends. */
+    if (ex->api && gzp_api_lock_pending(ex->api)) return GZP_RUN_LOCKED;
 #ifdef GZP_TEST_BUILD
     if (fds[1].revents && !ex->fatal) read_commands(ex);
 #endif
@@ -991,6 +993,33 @@ static void after_start(gzp_exec_t *ex)
     if (ex->number == 1 && ex->opt->have_connect)
         gzp_log("connect: no engine in this build makes the connection yet (the lobby, P4.2)");
 #endif
+}
+
+int gzp_exec_wait_unlocked(gzp_exec_t *ex)
+{
+    size_t cap = 1 + (ex->api ? gzp_api_max_fds(ex->api) : 0), n;
+    struct pollfd *fds = calloc(cap, sizeof *fds);
+    int t, rc = GZP_RUN_STOP;
+    if (!fds) abort();
+    if (ex->api) gzp_api_node_starting(ex->api);   /* no node: held calls answered, the view emptied */
+    gzp_log("node-stopped-locked incarnation=%llu", (unsigned long long)ex->incarnation);
+    for (;;) {
+        if (*ex->stop) break;
+        if (!ex->api || gzp_api_unlocked(ex->api)) { rc = ex->api ? GZP_RUN_RESTART : GZP_RUN_STOP; break; }
+        fds[0].fd = ex->stop_fd;
+        fds[0].events = POLLIN;
+        fds[0].revents = 0;
+        n = gzp_api_pollfds(ex->api, fds + 1, cap - 1, &t);
+        if (poll(fds, (nfds_t)(1 + n), t) < 0 && errno != EINTR) {
+            gzp_log("poll-failed errno=%d", errno);
+            break;
+        }
+        if (fds[0].revents) break;
+        gzp_api_dispatch(ex->api, fds + 1, n);
+    }
+    free(fds);
+    if (rc == GZP_RUN_RESTART) gzp_log("node-starting-unlocked");
+    return rc;
 }
 
 void gzp_exec_close_storage(gzp_exec_t *ex)
@@ -1111,6 +1140,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cap = 3 + gzp_net_max_fds(ex->net) + (ex->api ? gzp_api_max_fds(ex->api) : 0);
     fds = calloc(cap, sizeof *fds);
     if (!fds) abort();
+    gzp_log("poll-set cap=%zu net=%zu api=%zu", cap, gzp_net_max_fds(ex->net), ex->api ? gzp_api_max_fds(ex->api) : 0);
 
     ex->starting = 1;
     ex->delivered = 0;

@@ -40,6 +40,8 @@ typedef struct gzp_api {
     gzp_unlock_t unlock;
     gzp_view_t view;
     int node_running;                 /* the node has finished its start (the view is rebuilt) */
+    int lock_pending;                 /* locked: the loop stops the node, then waits for an unlock */
+    uint64_t views_received[8];       /* view NOTIFYs by kind (kinds 0-6, 7 = any other), said at close in the test build */
     int setup_done;                   /* finish-setup in this run, or a wallet that existed at start */
     const char *network;              /* "signet" or "testnet4" */
     struct {                          /* calls held until the node's command result (contract-v2.md 11) */
@@ -69,6 +71,10 @@ void gzp_api_notify(void *ctx, uint32_t code, const uint8_t *bytes, size_t len);
 /* The node starts from storage: the view is cleared and every held call is
  * answered 503 node_stopped (rebuilding); then the start's notices rebuild it. */
 void gzp_api_node_starting(gzp_api_t *a);
+/* The executor's side of a lock (unlock.h: the program stops the node). */
+int gzp_api_lock_pending(const gzp_api_t *a);
+/* While the node is stopped for a lock: unlocked again? (Clears the lock.) */
+int gzp_api_unlocked(gzp_api_t *a);
 void gzp_api_node_started(gzp_api_t *a);
 
 /* Give the node a command for a held call: request_id, method, path, digest,

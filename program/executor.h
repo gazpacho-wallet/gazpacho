@@ -33,6 +33,7 @@
 #define GZP_RUN_FAILED  2   /* storage cannot even be opened or begun: no restart */
 #define GZP_RUN_POISONED 3  /* a failed append could not be undone (store.h): exit, never restart */
 #define GZP_RUN_LIMIT   4   /* a fatal error no restart can fix (the chain worker's watch set): exit */
+#define GZP_RUN_LOCKED  5   /* the wallet was locked: the node stops until it is unlocked (unlock.h) */
 
 /* The node fills at most one list of GZ_NODE_LIST_ACTIONS actions and
  * GZ_NODE_LIST_BYTES bytes per call (node.h, SIZING); the runner holds two
@@ -91,6 +92,11 @@ typedef struct {
 } gzp_exec_t;
 
 int gzp_exec_incarnation(gzp_exec_t *ex, int number);
+/* After GZP_RUN_LOCKED, with the connections closed: only the stop pipe and
+ * the API server are served (no node, no peer, no timer) until the wallet is
+ * unlocked (GZP_RUN_RESTART: start a new incarnation) or a stop is asked for
+ * (GZP_RUN_STOP). */
+int gzp_exec_wait_unlocked(gzp_exec_t *ex);
 /* After GZP_RUN_STOP, once the connections are closed. */
 void gzp_exec_close_storage(gzp_exec_t *ex);
 

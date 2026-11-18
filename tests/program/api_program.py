@@ -38,6 +38,7 @@ would make a single-word check fail by chance, so the seed was chosen to give
 SEED_N below is that n. Every word of the phrase is then checked as a whole
 word in all output, and so is every pair of neighbouring words.
 Standard library only."""
+import base64
 import hashlib
 import http.client
 import json
@@ -59,6 +60,14 @@ SEED_N = 1   # chosen by --choose-seed (docstring)
 fails = []
 DUMP = []       # --dump-vocab: every output line and API answer
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def can_connect(port):
+    try:
+        socket.create_connection(("127.0.0.1", port), timeout=2).close()
+        return True
+    except OSError:
+        return False
 
 
 def wordlist():
@@ -118,7 +127,8 @@ class Prog:
             os.write(fd, (seed.hex() + "\n").encode())
             os.close(fd)
         self.port = free_port()
-        args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % free_port(), "--no-chain",
+        self.listen = free_port()
+        args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % self.listen, "--no-chain",
                 "--interface-port", str(self.port), "--name", "h1"] + list(extra)
         env = dict(os.environ, XDG_RUNTIME_DIR=self.dir)
         self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
@@ -220,6 +230,7 @@ def main():
         st, c = p.call("POST", "/wallet/create", {"confirm": "create_wallet", "passphrase": PASS, "confirm_passphrase": PASS})
         words = c.get("words", []) if c else []
         check(st == 200 and len(words) == 24, "create gives the 24 words", st)
+        create_answer = len(DUMP) - 1
         if fixed is not None:
             check(words == fixed, "the words are the fixed test phrase's")
         st, s = p.call("GET", "/status")
@@ -245,6 +256,7 @@ def main():
             except socket.timeout:
                 break
         check(b'"topic":"status"' in buf, "the stream carries the status change", buf[-200:])
+        stream_bytes = buf
         sock.close()
         st, s = p.call("GET", "/status")
         check(st == 200 and s.get("wallet") == "ready", "status: ready", s.get("wallet"))
@@ -274,6 +286,24 @@ def main():
         p.session = None
         st, s = p.call("GET", "/status")
         check(st == 200 and s and s.get("wallet") == "locked", "the locked status without a session", s)
+
+        # 6b. lock stops the node (unlock.h; local-api.md 4.7): a locked program
+        # answers no host, and an unlock starts the node again (review M5)
+        check(p.wait_line(r"node-stopped-locked") is not None, "lock stops the node", p.lines[-6:])
+        check(p.wait_line(r"ready incarnation=1 ") is not None and not can_connect(p.listen),
+              "a locked program answers no host: its listener is closed")
+        time.sleep(1.2)
+        st, s = p.call("POST", "/session", {"passphrase": PASS})
+        check(st == 200 and s and s.get("session"), "unlock", (st, s))
+        p.session = s.get("session") if s else None
+        check(p.wait_line(r"node-starting-unlocked") is not None, "an unlock starts the node again")
+        end = time.time() + 15
+        while time.time() < end and not can_connect(p.listen):
+            time.sleep(0.2)
+        check(can_connect(p.listen), "the listener is open again after the unlock")
+        check(p.wait_line(r"ready incarnation=2 ") is not None, "the node started as a new incarnation")
+        st, s = p.call("GET", "/status")
+        check(st == 200 and s and s.get("wallet") == "ready", "status after the unlock: ready", s and s.get("wallet"))
     finally:
         rc = p.stop()
     check(rc == 0, "a clean stop", rc)
@@ -291,6 +321,31 @@ def main():
     check(len(words) == 24 and not leaked, "no two neighbouring words of the 24 are in the output", leaked)
     DUMP.extend(p.lines)
     check(re.search(r"shutdown node-stopped .*\n(.*\n)*.*shutdown lock-released", out) is not None, "the shutdown order holds")
+    # the API server closes before the chain worker is joined, and both before
+    # the connections (contract-v2.md 4); each line reads the others' state (review L2)
+    order = [m.group(1) for m in (re.search(r"\bshutdown (\S+)", l) for l in p.lines) if m]
+    check(order[:6] == ["node-stopped", "api-closed", "chain-closed", "connections-closed", "storage-closed", "lock-released"],
+          "the shutdown order includes the API server and the chain worker", order)
+    check(any(re.search(r"shutdown api-closed api=0 chain=1\b", l) for l in p.lines), "the API closes while the chain worker still runs")
+    check(any(re.search(r"shutdown chain-closed api=0 chain=0\b", l) for l in p.lines), "the chain worker is joined after the API")
+
+    # the entropy and the seed in hex (either case) or base64, and the words, in
+    # the output, the event stream and every API answer but create's (review L3)
+    if fixed is not None:
+        ent = seed_of(SEED_N)
+        seed = hashlib.pbkdf2_hmac("sha512", " ".join(fixed).encode(), b"mnemonic", 2048)
+        forms = []
+        for b in (ent, seed):
+            forms += [b.hex(), b.hex().upper(), base64.b64encode(b).decode(), base64.urlsafe_b64encode(b).decode().rstrip("=")]
+        texts = {"output": out, "event stream": stream_bytes.decode("utf-8", "replace")}
+        for i, a in enumerate(DUMP):
+            if i != create_answer:
+                texts["answer %d" % i] = a
+        found = [(k, f[:12]) for k, t in texts.items() for f in forms if f in t]
+        check(not found, "neither the entropy nor the seed, in hex or base64, anywhere", found)
+        wflat = {k: " " + re.sub(r"[^a-z]+", " ", t.lower()) + " " for k, t in texts.items() if k != "output"}
+        found = sorted({(k, w) for k, t in wflat.items() for w in set(fixed) if " %s " % w in t})
+        check(not found, "no word of the 24 in the event stream or in any answer but create's", found)
     shutil.rmtree(p.dir, ignore_errors=True)
 
     # 7. the release program

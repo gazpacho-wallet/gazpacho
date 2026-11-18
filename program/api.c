@@ -299,6 +299,7 @@ static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int
             return 409;
         }
         a->unlock.lock(a->unlock.ctx);
+        a->lock_pending = 1;                           /* the loop stops the node next (unlock.h) */
         *effect = GZ_API_EFFECT_LOCKED;
         gz_jw_obj(w);
         gz_jw_kstr(w, "wallet", "locked");
@@ -406,6 +407,7 @@ void gzp_api_notify(void *ctx, uint32_t code, const uint8_t *bytes, size_t len)
     char id[GZP_VIEW_ID_MAX + 1];
     if ((code >> 16) == 1) {
         uint32_t kind = code & 0xffffu;
+        a->views_received[kind < 7 ? kind : 7]++;
         if (gzp_view_apply(&a->view, kind, bytes, len, id) && a->srv && a->node_running)
             gz_api_notify(a->srv, gzp_view_topic(kind), kind == GZ_VIEW_STATUS ? NULL : id);
     } else if (code == GZ_NOTIFY_COMMAND_RESULT) {
@@ -422,6 +424,18 @@ void gzp_api_node_starting(gzp_api_t *a)
     gzp_view_clear(&a->view);
     for (i = 0; i < GZP_API_HELD; i++) a->held[i].used = 0;
     if (a->srv) gz_api_server_node_stopped(a->srv, "rebuilding");
+}
+
+int gzp_api_lock_pending(const gzp_api_t *a)
+{
+    return a->lock_pending;
+}
+
+int gzp_api_unlocked(gzp_api_t *a)
+{
+    if (a->unlock.state(a->unlock.ctx) != GZP_WALLET_UNLOCKED) return 0;
+    a->lock_pending = 0;
+    return 1;
 }
 
 void gzp_api_node_started(gzp_api_t *a)
@@ -479,6 +493,19 @@ int gzp_api_open(gzp_api_t *a, const gzp_options_t *opt, gzp_datadir_t *dir, con
 
 void gzp_api_close(gzp_api_t *a)
 {
+#ifdef GZP_TEST_BUILD
+    /* Every view the core sent this process, by kind: tests read it to know
+     * when the core emits lobby views (tests/web/check_p6a_fixme.py). */
+    {
+        unsigned long long n[3] = {0, 0, 0};
+        uint32_t k;
+        for (k = 0; k < 8; k++) {
+            n[gzp_view_lobby_class(k)] += a->views_received[k];
+            if (gzp_view_lobby_class(k)) n[0] += a->views_received[k];
+        }
+        gzp_log("views received lobby=%llu host_lobby=%llu all=%llu", n[1], n[2], n[0]);
+    }
+#endif
     if (a->srv) {
         gz_api_server_stop_listening(a->srv);
         gz_api_server_free(a->srv);
