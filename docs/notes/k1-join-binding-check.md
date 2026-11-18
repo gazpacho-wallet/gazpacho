@@ -1,8 +1,8 @@
-# K1: should `join` stop being signed by the factory key? (option c)
+# BD (formerly K1): should `join` stop being signed by the factory key? (option c)
 
 Independent check, 2026-11-17. Read-only. Specs read from `origin/main` after `git fetch`. External sources fetched as raw files. Nothing posted anywhere.
 
-**Status: the owner approved option (c) with the five additions on 2026-11-17.** They are specified, as rules K1-1 to K1-6, in `spec/messages.md` 6.3 and 6.4, `spec/signing-round.md` section 2, `spec/safety-rule.md` C7 and C12, and `spec/journal.md` 9.1. Section 6 lists the code changes. Mapping: addition 1 is `ready` records 12 and 14; addition 2 is K1-1 (host) and K1-4 (member); addition 3 is K1-2; addition 4 is K1-3 and K1-5; addition 5 is K1-6 and open point 8 of `messages.md`.
+**Status: the owner approved option (c) with the five additions on 2026-11-17.** They are specified, as rules BD1 to BD6 (called K1-1 to K1-6 in earlier copies of this check; renamed so as not to clash with K1 of `docs/DECISIONS-WITHOUT-OWNER.md`), in `spec/messages.md` 6.3 and 6.4, `spec/signing-round.md` section 2, `spec/safety-rule.md` C7 and C12, and `spec/journal.md` 9.1. Section 6 lists the code changes. Mapping: addition 1 is `ready` records 12 and 14; addition 2 is BD1 (host) and BD4 (member); addition 3 is BD2; addition 4 is BD3 and BD5; addition 5 is BD6 and open point 8 of `messages.md`.
 
 Verdict in one line: **(c) is safe with named additions.** The factory key's half of the binding protects nothing that the member's own C7 check, the contribution key's signature and the duplicate rule do not already protect. Keep the contribution key's half as it is (same tag, same hash, same 64-byte signature), move it from `join` to the seat's first `ready`, and add the five rules in section 5.
 
@@ -96,18 +96,18 @@ Not done in this pull request, which changes documents only. Paths and lines are
 
 | # | Where | Change |
 |---|---|---|
-| 1 | `core/node/lobbyslot.c:176-177` | Stop deriving the factory public key (`key_index + 1`) when the slot starts. Derive it only when the seat's first `ready` is built, under the epoch saved in `slot_opened`. Refuse (no `ready`, seat lost) when that epoch is not the current `key_epoch` (K1-2). `ls_sign` (`:93`) must refuse `GZ_LOBBY_KEY_FACTORY` for anything but the signing engine's partial signatures |
+| 1 | `core/node/lobbyslot.c:176-177` | Stop deriving the factory public key (`key_index + 1`) when the slot starts. Derive it only when the seat's first `ready` is built, under the epoch saved in `slot_opened`. Refuse (no `ready`, seat lost) when that epoch is not the current `key_epoch` (BD2). `ls_sign` (`:93`) must refuse `GZ_LOBBY_KEY_FACTORY` for anything but the signing engine's partial signatures |
 | 2 | `core/lobby/member.c:286-293` | `join` is built with no records 2, 4, 6 and no signatures. Drop `sf`, `sc` and the `GZ_LOBBY_KEY_FACTORY` call |
-| 3 | `core/lobby/member.c:~122` (ready builder) | Add record 12 `factory_key` and record 14 `bind_by_contribution` (contribution key over `gz_lobby_binding`) to every `ready`. The first `ready` saves `seat_key` in the same batch as `ready_sent` and before the action that sends it (K1-3). Later `ready`s copy the saved bytes |
+| 3 | `core/lobby/member.c:~122` (ready builder) | Add record 12 `factory_key` and record 14 `bind_by_contribution` (contribution key over `gz_lobby_binding`) to every `ready`. The first `ready` saves `seat_key` in the same batch as `ready_sent` and before the action that sends it (BD3). Later `ready`s copy the saved bytes |
 | 4 | `core/lobby/member.c:712-722` | `stale_seat` is today detected by comparing the `join`'s factory key with the derived one. Detect it by the slot's saved epoch against `key_epoch`, and by `seat_key` |
 | 5 | `core/lobby/wire.c:114-116` | Records 2, 4, 6 of `join` become unknown even records, so the message is refused. Decode records 12 and 14 of `ready`, both required |
-| 6 | `core/lobby/host.c:571-613` | Move the binding check from `join` to `ready`. Verify only `bind_by_contribution`. Fix the factory key at the first `ready`. Apply K1-1 against every seat record ever held in the lobby, not only `is_in` seats (`:599`) |
+| 6 | `core/lobby/host.c:571-613` | Move the binding check from `join` to `ready`. Verify only `bind_by_contribution`. Fix the factory key at the first `ready`. Apply BD1 against every seat record ever held in the lobby, not only `is_in` seats (`:599`) |
 | 7 | `core/lobby/host.c:346`, `:793-797` | `self_bind` signs the host's binding with `GZ_LOBBY_KEY_HOST` only. Drop the `GZ_LOBBY_KEY_FACTORY` signature |
 | 8 | `core/lobby/host.c:356-359` | Participant entries carry `bind_c` only |
 | 9 | `core/lobby/include/gazpacho/lobby.h:199`, `lobby_handoff.h:25` | Remove `bind_by_factory` from the join view and the hand-off. Add `factory_key` and `bind_by_contribution` to the ready view. Register record `seat_key` (`0x0001001c`) and its largest size in the record table |
 | 10 | `core/signing/round_msg.c:214-217`, `:265-268` | Participant entry of `round_propose` record 20: 130 bytes (factory key, contribution key, `bind_by_contribution`) |
 | 11 | `core/tree/checks.c:162-177`, `core/tree/include/gazpacho/tree.h:264-265` | Verify the contribution key's signature only. Drop `bind_by_factory` |
-| 12 | `core/signing/signing.c:252-264` | The own-entry check becomes K1-4: the pair exactly once, and neither key paired with another. Add K1-5: derive the factory key again before the first nonce and compare it with `seat_key` and with the entry. On a difference, `round_abort` reason 12 and no nonce |
+| 12 | `core/signing/signing.c:252-264` | The own-entry check becomes BD4: the pair exactly once, and neither key paired with another. Add BD5: derive the factory key again before the first nonce and compare it with `seat_key` and with the entry. On a difference, `round_abort` reason 12 and no nonce |
 | 13 | `core/journal` (`gz_journal_type_known`), `docs/notes/lobby.md` section 1 | Type `0x0001001c` `seat_key`: fields 2 scope, 4 factory key (33), 6 epoch (`u32`), 8 index (`u32`). The host's `seat` record drops field 8 (`bind_by_factory`), and its field 6 is absent while the seat has only joined. Update the layouts table |
 | 14 | `tools/spec-vectors.py` | Done in this pull request (M1, M3) |
 | 15 | Tests | `tests/lobby/test_lobby_vectors.c` (M1, M3 bytes), `tests/lobby/test_lobby.c`, `tests/lobby/world.h`, `tests/lobby/fuzz_lobby.c`, `tests/signing/test_round_msg.c`, `tests/tree/test_tree_checks.c`, `tests/tree/fuzz_tree_agree.c`. New tests: `messages.md` 12, tests 22, 30, 43 and 57 to 62 |

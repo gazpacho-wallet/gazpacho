@@ -1,8 +1,10 @@
 # Factory messages
 
-Specification draft 2, 2026-11-12, amended 2026-11-17 (K1: the binding moves to `ready`; the amendment is not itself reviewed). Status: draft 1 brought fully in line with `signing-round.md` and `safety-rule.md` draft 4 after the third, joint review (`docs/reviews/spec-review-3.md`). Draft 2 has not itself been reviewed. Written for slice 1 (form a factory on signet). It gives the exact encoding of every message of `signing-round.md` section 4 for the creation round, and the lobby's messages. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: every one is now settled by `signing-round.md` draft 4. Values marked **proposed, owner to confirm** are Slice 1 choices the owner has not objected to and has not yet confirmed.
+Specification draft 2, 2026-11-12, amended 2026-11-17 (BD: the binding moves to `ready`; the amendment is not itself reviewed). Status: draft 1 brought fully in line with `signing-round.md` and `safety-rule.md` draft 4 after the third, joint review (`docs/reviews/spec-review-3.md`). Draft 2 has not itself been reviewed. Written for slice 1 (form a factory on signet). It gives the exact encoding of every message of `signing-round.md` section 4 for the creation round, and the lobby's messages. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: every one is now settled by `signing-round.md` draft 4. Values marked **proposed, owner to confirm** are Slice 1 choices the owner has not objected to and has not yet confirmed.
 
-## Changes, 2026-11-17: K1, the binding moves from `join` to `ready`
+## Changes, 2026-11-17: BD, the binding moves from `join` to `ready`
+
+**Naming.** BD is the binding decision of 2026-11-17, and BD1 to BD6 are its rules. The binding check called them K1 and K1-1 to K1-6; they were renamed so as not to clash with K1 of `docs/DECISIONS-WITHOUT-OWNER.md` (the chain lag limits) or with the journal's vectors J1 to J6.
 
 **Not itself reviewed.** Owner decision of 2026-11-17 on the check `docs/notes/k1-join-binding-check.md` (option c with its five additions). No new draft number. Only the lobby's `join` and `ready` and the participant entry of `round_propose` change. The round identifier, the binding hash and the contribution key's binding signature are unchanged byte for byte.
 
@@ -11,14 +13,20 @@ Specification draft 2, 2026-11-12, amended 2026-11-17 (K1: the binding moves to 
 | `join` carries no keys and no signatures. Records 2, 4, 6 are retired; they are even, so a `join` carrying them is refused | 6.3 |
 | `ready` carries `factory_key` (12) and `bind_by_contribution` (14) in every copy. The first `ready` fixes the seat's factory key | 6.4 |
 | `bind_by_factory` dropped: the factory key signs only group-signature items | 4.3, 6.4, 7.2 |
-| K1-1: one (contribution key, factory key) pair per seat for the lobby's whole life. A key any other seat ever used is refused | 6.3, 6.4 |
-| K1-2: the factory key is derived at the first `ready`, under the seat's saved epoch. No `ready` is sent for a seat of an older epoch | 6.4 |
-| K1-3: the factory public key is saved (`seat_key`) before the first `ready` is sent | 6.4, `journal.md` 9 |
-| K1-6: a seat with no factory key is never chosen | 6.4 |
+| BD1: one (contribution key, factory key) pair per seat for the lobby's whole life. A key any other seat ever used is refused | 6.3, 6.4 |
+| BD2: the factory key is derived at the first `ready`, under the seat's saved epoch. No `ready` is sent for a seat of an older epoch | 6.4 |
+| BD3: the factory public key is saved (`seat_key`) before the first `ready` is sent | 6.4, `journal.md` 9 |
+| BD6: a seat with no factory key is never chosen | 6.4 |
 | Participant entry 194 → 130 bytes | 5, 7.2 |
 | Vectors M1 and M3 regenerated; M1 is now 281 bytes. `binding` and `bind_by_contribution` are unchanged | 11 |
 | Tests 22, 30 and 43 restated; tests 57 to 62 added; open point 8 restated | 12, 13 |
 | What the code must change, after PR #52: `docs/notes/k1-join-binding-check.md` section 6 | — |
+| Review of 2026-11-18, H1: `seat_key` keeps the first `bind_by_contribution` (field 10); every later `ready` sends those bytes; the host accepts any valid signature over the same `binding` and keeps the first it saved | 6.4, `journal.md` 9.1, test 60 |
+| Review M1: a stale seat sends nothing, `leave` included; the member may join again with a fresh key pair of the current epoch | 6.4 BD2, test 64 |
+| Review M2: the factory key's rule is "within the protocol"; outputs the import pays to it are outside it until `exit.md` 3.4 and `channel.md` remove them | 4.3, 6.4 |
+| Review M3: BD5a, compare with `seat_key` at every derivation; at a `ready` a difference sends no `ready` | 6.4, test 63 |
+| Review M4: rules renamed BD1 to BD6 (formerly K1-1 to K1-6) | All |
+| Review L1, L2, L4, L6: standbys and understudies named in BD6; the host's entry key equals the terms' `host_key`; host-binding vector owed; a refused later `ready` is answered with reason 5 and the seat keeps its state | 6.4, 7.2 |
 
 ## Changes after review 3
 
@@ -191,9 +199,9 @@ Which key signs:
 |---|---|
 | Host | The host's long-term key (= its BOLT 8 key). Also the host's contribution key: it signs the host's own nonces (section 7.4). It is never a factory key |
 | Member | The member's contribution key (= its BOLT 8 key for this lobby) |
-| Factory key | Signs group-signature items only (`signing-round.md`). It signs no protocol message and no binding (K1, 6.4) |
+| Factory key | Within the protocol, signs group-signature items only (`signing-round.md`). It signs no protocol message and no binding (BD, 6.4). Outputs the import still pays to it are outside this rule (`signing-round.md` section 2) |
 
-The contribution key signs the binding statement under the tag `gazpacho/bind` (6.4), which keeps it apart from every other signed message and from every transaction digest. Draft 2 also had the factory key sign it; K1 removed that (`signing-round.md` section 2).
+The contribution key signs the binding statement under the tag `gazpacho/bind` (6.4), which keeps it apart from every other signed message and from every transaction digest. Draft 2 also had the factory key sign it; BD removed that (`signing-round.md` section 2).
 
 **The 4-byte tag is a fixed alias of the protocol identifier.** `protocol` (`67 7a 66 01`) stands for exactly one protocol and major version, the one section 10.3 names `factory_protocol_id`; the mapping is one to one (section 10.2). It is **not a security parameter**: domain separation comes from the tags of `TH`, and a short field in a preimage gives a forger nothing. Slice 1 signs the 4-byte tag, here and in the round identifier (7.1). Signing the 32-byte `factory_protocol_id` instead is deferred: it will be done in one change together with renaming every `gazpacho/…` tag to the agreed namespace, with new vectors, once the shared tag namespace is agreed with SuperScalar (review 3, F28). The protocol id itself is decided (owner, 2026-11-12; 10.3). Until the rename, nothing about the protocol name enters any signature.
 
@@ -323,7 +331,7 @@ Receiver:
 |---|---|---|---|
 | 7 | `display_name` | 1 to 32 bytes UTF-8 | No. Not used in slice 1; the host drops it if names are switched off |
 
-Records 2, 4 and 6 (draft 2's `factory_key`, `bind_by_factory`, `bind_by_contribution`) are **retired** (K1, 2026-11-17). A `join` that carries any of them is refused: they are even, and this draft does not know them. They are never reused for another meaning. The factory key and the contribution key's binding signature now travel in the seat's first `ready` (6.4). Nothing is signed at `join`: the seat is named by the BOLT 8 key of the connection, whose possession the handshake proved to the host. The member's wallet derives no factory key and needs no seed to join (`docs/notes/composite-node.md` 12.2, AT_JOIN: the money key is unlocked only at Ready).
+Records 2, 4 and 6 (draft 2's `factory_key`, `bind_by_factory`, `bind_by_contribution`) are **retired** (BD, 2026-11-17). A `join` that carries any of them is refused: they are even, and this draft does not know them. They are never reused for another meaning. The factory key and the contribution key's binding signature now travel in the seat's first `ready` (6.4). Nothing is signed at `join`: the seat is named by the BOLT 8 key of the connection, whose possession the handshake proved to the host. The member's wallet derives no factory key and needs no seed to join (`docs/notes/composite-node.md` 12.2, AT_JOIN: the money key is unlocked only at Ready).
 
 Requirements (MUST, MUST NOT, SHOULD and MAY as in BOLT 0; the writer sends, the reader receives):
 
@@ -332,11 +340,11 @@ The writer (member):
 - MUST NOT derive its factory key, or ask for the seed, to send a `join`.
 
 The reader (host):
-- MUST refuse a `join` (seat state 7) whose contribution key (the connection's BOLT 8 key) is the host's long-term key, or is a factory key or contribution key of **any seat this lobby has ever had**, other than a seat with this same contribution key (rule K1-1 in 6.4).
+- MUST refuse a `join` (seat state 7) whose contribution key (the connection's BOLT 8 key) is the host's long-term key, or is a factory key or contribution key of **any seat this lobby has ever had**, other than a seat with this same contribution key (rule BD1 in 6.4).
 - MUST accept a `join` only when the lobby is Open, or, for a host that keeps **standby seats**, in a ready check or Signing; only when seats taken are fewer than the target plus the host's standby seats; and not for a seat chosen in the running attempt (a chosen seat keeps the keys it was chosen with until the round is resolved, also after its `leave`). A standby seat joined during a check or an attempt can fill a gap in the next attempt (owner decision 10, `LOBBY.md` "standbys"); without standby seats a join is accepted only while Open. From Funding on, no join is accepted.
 - MUST create the seat in state Joined with **no factory key**, save it before it answers (within the limits of "Seats and reconnects"), and send `lobby_status`. If the join is invalid it sends `lobby_status` with seat state 7 and a reason, and keeps the connection.
 
-Duplicates: a `join` from a contribution key that already has a seat changes nothing and is answered with `lobby_status`. A member that wants a new factory key needs a new seat: it leaves, and joins on a new connection with a fresh key pair (`signing-round.md` section 2). The same contribution key always comes back with the same factory key (rule K1-1).
+Duplicates: a `join` from a contribution key that already has a seat changes nothing and is answered with `lobby_status`. A member that wants a new factory key needs a new seat: it leaves, and joins on a new connection with a fresh key pair (`signing-round.md` section 2). The same contribution key always comes back with the same factory key (rule BD1).
 
 ### 6.4 `ready` (22), member → host
 
@@ -353,27 +361,28 @@ Duplicates: a `join` from a contribution key that already has a seat changes not
 
 The member names both digests (owner decision 1): the outer rules it accepted and the exact values it is ready for. Its signature lets the host, and anyone the host shows it to, see what this seat agreed to.
 
-**The binding is one way** (K1, 2026-11-17; `docs/notes/k1-join-binding-check.md`). The seat's contribution key vouches for its factory key; the factory key signs no binding and no protocol message. It signs only the group-signature items of `signing-round.md` and is wiped after them. Record 14 is a separate signature, not only the envelope's record 240, so that `round_propose` can carry 64 bytes per participant and a third party can check it without the whole `ready` (7.2).
+**The binding is one way** (BD, 2026-11-17; `docs/notes/k1-join-binding-check.md`). The seat's contribution key vouches for its factory key; the factory key signs no binding and no protocol message. Within the protocol it signs only the group-signature items of `signing-round.md`. Outputs the import still pays to it (`signing-round.md` section 2) are outside this rule until `exit.md` 3.4 (payout scripts) and `channel.md` (penalty destination) remove them. Record 14 is a separate signature, not only the envelope's record 240, so that `round_propose` can carry 64 bytes per participant and a third party can check it without the whole `ready` (7.2).
 
 `min_members` is odd: a host that ignores it loses nothing safety-wise, because the member's app checks the real member count at signing and refuses there. A slice 1 host honours it when it chooses the signers (`LOBBY.md`: "each member's own minimum is respected").
 
 Requirements:
 
 The writer (member):
-- **K1-2. Epoch and index.** At the seat's first `ready` the member MUST derive the factory key at the seat's saved key index plus one (the pair's second key, section 2 "Member key"), under the **restore epoch saved with the seat** (`journal.md` record `slot_opened`). If the saved epoch is not the node's current epoch (`key_epoch`), the seat is stale: the member MUST NOT send `ready` for it and MUST NOT derive a key under the saved epoch (`safety-rule.md` R3, C12); it tells the user that the seat was lost and may `leave`.
-- **K1-3. Save before sending.** The member MUST save the factory public key with the seat (record `seat_key`, `journal.md` section 9) in the same batch as, or before, the `ready_sent` record of its first `ready`, and MUST NOT send that `ready` until the batch is confirmed. The record is never replaced.
-- Every later `ready` of the seat MUST carry the saved factory key and the saved `bind_by_contribution`, byte for byte. Neither the seed nor the factory secret is needed for it.
+- **BD2. Epoch and index.** At the seat's first `ready` the member MUST derive the factory key at the seat's saved key index plus one (the pair's second key, section 2 "Member key"), under the **restore epoch saved with the seat** (`journal.md` record `slot_opened`). If the saved epoch is not the node's current epoch (`key_epoch`), the seat is stale: the member MUST NOT send `ready` for it and MUST NOT derive a key under the saved epoch (`safety-rule.md` R3, C12); it MUST NOT connect, sign or send anything for that seat, `leave` included. It tells the user that the seat was lost, and may join the lobby again with a fresh key pair of the current epoch. The host sees a seat that never readies.
+- **BD3. Save before sending.** The member MUST save the factory public key with the seat (record `seat_key`, `journal.md` section 9) together with its `bind_by_contribution` in the same batch as, or before, the `ready_sent` record of its first `ready`, and MUST NOT send that `ready` until the batch is confirmed. The record is never replaced.
+- **BD5a. Compare at every derivation.** Whenever the member derives the seat's factory key again (at a later `ready` under AT_JOIN, or at signing), it MUST compare it with `seat_key`. On a difference at a `ready`, it MUST NOT send that `ready`, MUST keep `seat_key` unchanged, and tells the user that the passphrase differs from the one used at the seat's first `ready`.
+- Every later `ready` of the seat MUST carry the saved factory key and the saved `bind_by_contribution` (`seat_key` fields 4 and 10), byte for byte. Neither the seed nor the factory secret is needed for it.
 - MUST sign record 14 with the contribution key over the `binding` above, and record 240 as section 4.3 says.
 
 The reader (host):
 - MUST verify record 14 under the connection's contribution key and record 240 as section 4.3 says, and MUST check that `factory_key` is a valid point.
-- **K1-1. One pair per lobby, for good.** For the whole life of the lobby, including seats that left or were removed, the host MUST keep every (contribution key, factory key) pair it accepted, and MUST refuse a `ready` (seat state 7) whose factory key is: different from the factory key this seat already has; the host's own factory key or long-term key; the seat's own contribution key; or a factory key or contribution key of any other seat, past or present. So a contribution key is bound to at most one factory key, and a factory key to at most one contribution key, in each lobby. The host MUST NOT delete a seat record while its lobby exists (the 4 × `target` limit on seats ever created bounds them).
-- **The first `ready` fixes the seat's factory key.** The host saves it with the seat before it answers. A later `ready` with another factory key or another `bind_by_contribution` is refused (state 7) and changes nothing.
-- **K1-6. No factory key, never chosen.** A seat that has no factory key (one that has only joined) is never counted Ready, never sent a `start`, and never placed in a participant list. In this draft that follows from the rules above, because a seat becomes Ready only by a valid `ready`; it is stated so that an implementation never relies on a default.
+- **BD1. One pair per lobby, for good.** For the whole life of the lobby, including seats that left or were removed, the host MUST keep every (contribution key, factory key) pair it accepted, and MUST refuse a `ready` whose factory key is (answered with `lobby_status` reason 5, invalid; the seat keeps its state): different from the factory key this seat already has; the host's own factory key or long-term key; the seat's own contribution key; or a factory key or contribution key of any other seat, past or present. So a contribution key is bound to at most one factory key, and a factory key to at most one contribution key, in each lobby. The host MUST NOT delete a seat record while its lobby exists (the 4 × `target` limit on seats ever created bounds them).
+- **The first `ready` fixes the seat's factory key.** The host saves it with the seat before it answers. A later `ready` with another factory key is refused (answered with `lobby_status` reason 5, invalid, section 7.9's codes; the seat keeps its state) and changes nothing. A later `ready` whose `bind_by_contribution` differs in bytes but verifies over the same `binding` is accepted, and the host keeps the first one it saved. A writer MUST still send the saved bytes.
+- **BD6. No factory key, never chosen.** A seat that has no factory key (one that has only joined) is never counted Ready, never sent a `start`, and never placed in a participant list. In this draft that follows from the rules above, because a seat becomes Ready only by a valid `ready`; it is stated so that an implementation never relies on a default. This holds for standby seats and understudies too.
 
-Valid when: the seat is Joined or Ready; `current_version` and `current_digest` are the host's latest (after a freeze, the frozen ones); both signatures verify; rule K1-1 holds.
+Valid when: the seat is Joined or Ready; `current_version` and `current_digest` are the host's latest (after a freeze, the frozen ones); both signatures verify; rule BD1 holds.
 
-Rationale. The check in `docs/notes/k1-join-binding-check.md` found that the factory key's half of draft 2's two-way binding protected nothing the other rules do not: BIP 327 key aggregation needs no proof of possession; Lightning itself binds a `funding_pubkey` only through the authenticated connection (BOLT 2, simple taproot channels) and asks a funding key to sign only for gossip (BOLT 7); and every fault of `signing-round.md` section 9 is proven by the accused's contribution-key signatures. What draft 2 gained from the factory key's signature (no seat can claim another's factory key) is kept by K1-1, by the duplicate rules and by the member's own check in `safety-rule.md` C7, which refuses any list without its own pair exactly once. What it cost was the seed at Join, which broke AT_JOIN. K1-2 stops a factory key of the current epoch from being bound to a contribution key of an older one. K1-3 lets the wallet notice, at signing, a factory key derived with a mistyped passphrase (`signing-round.md` section 2) before it sends a nonce, instead of being blamed for partial signatures it could never make.
+Rationale. The check in `docs/notes/k1-join-binding-check.md` found that the factory key's half of draft 2's two-way binding protected nothing the other rules do not: BIP 327 key aggregation needs no proof of possession; Lightning itself binds a `funding_pubkey` only through the authenticated connection (BOLT 2, simple taproot channels) and asks a funding key to sign only for gossip (BOLT 7); and every fault of `signing-round.md` section 9 is proven by the accused's contribution-key signatures. What draft 2 gained from the factory key's signature (no seat can claim another's factory key) is kept by BD1, by the duplicate rules and by the member's own check in `safety-rule.md` C7, which refuses any list without its own pair exactly once. What it cost was the seed at Join, which broke AT_JOIN. BD2 stops a factory key of the current epoch from being bound to a contribution key of an older one. BD3 lets the wallet notice, at signing, a factory key derived with a mistyped passphrase (`signing-round.md` section 2) before it sends a nonce, instead of being blamed for partial signatures it could never make.
 
 Host:
 
@@ -537,7 +546,7 @@ The proposal carries every parameter the member rebuilds the tree from, as `sign
 | 14 | `funding_amount` | `u64` | Yes | Equals that output's amount in `funding_tx`, and the terms' funding rule R(root) for this tree (`terms.md` section 4.2) |
 | 16 | `funding_script` | 34 | Yes | `OP_1 0x20 <32 bytes>`: the BIP 86 key of the MuSig2 aggregate of the participant keys in order. The imported `factory_set_funding` takes it on trust, so the member checks it |
 | 18 | `funding_tx` | 60 to 100,000 | Yes | The host's unsigned funding transaction, no witnesses. It fixes the txid before signing and lets the member see its inputs spent elsewhere (N16). 100,000 bytes: a standard transaction is at most 400,000 weight units, and a witness-free transaction weighs 4 units per byte |
-| 20 | `participants` | 130 each, 2 to 1,001 | Yes | Per participant: factory key (33), contribution key (33), `bind_by_contribution` (64). Host first. The host's entry is its factory key, its long-term key and a binding signed by the long-term key. Every key distinct. Its own pair present exactly once, and neither of its keys beside another key (`safety-rule.md` C7, K1-4). Every binding verifies (6.4) |
+| 20 | `participants` | 130 each, 2 to 1,001 | Yes | Per participant: factory key (33), contribution key (33), `bind_by_contribution` (64). Host first. The host's entry is its factory key, its long-term key and a binding signed by the long-term key; that key MUST equal the outer terms' `host_key`. Every key distinct. Its own pair present exactly once, and neither of its keys beside another key (`safety-rule.md` C7, BD4). Every binding verifies (6.4) |
 | 22 | `tier_sizes` | `u32` each, 1 to 8 | Yes | Equals its own rebuild |
 | 24 | `end_height` | `u32` | Yes | The tree's absolute end height (the import's `cltv_timeout`, from which every host-only timeout is derived). Within 6 blocks of its own tip + `lifetime_blocks` + `winddown_blocks` from the terms. 6 blocks (about an hour) allows for chain views a little apart. C8: the leaf's timeout leaves the exit time plus margin |
 | 28 | `tree_anchors` | `u8` | Yes | **1**: anchors are always on in 1.0.0 (`signing-round.md` 4.1, owner decision 6) |
@@ -559,6 +568,8 @@ Record 26 (`placement` in draft 1) is not used: placement is fixed by `signing-r
 The tree's shape is not repeated: the member takes the shape table's entry for the number of members from the outer rules (`terms.md` section 4). The split of each leaf between channel and spare liquidity is fixed by the import (half each) and is checked by rebuilding. After building, the member checks that every leaf is a one-member pseudo-Spilman leaf (`safety-rule.md` C8).
 
 Size: 130 bytes × 1,001 participants is 130,130 bytes; with 2,000 node hashes (72,000 bytes) and a large funding transaction the proposal stays under 400 KB, inside the 1 MiB bound of section 5. A proposal is a single envelope up to roughly 300 participants.
+
+Vectors: **(open)**, like 7.1's. Owed with them: the host's own binding by its long-term key, and one 130-byte participant entry.
 
 Member, in this order: verify the host's signature; look up `round_id` (the table below, first row that applies); verify everything above; compute `round_id`; run the safe-to-sign checks; **save the round identifier with the proposal's bytes** (`journal.md`); then generate nonces and send `round_nonces`. If `round_id` differs: `round_abort` reason 2, nothing saved that allows a contribution. If a check fails: reason 1, 9, 11 or 12.
 
@@ -753,7 +764,7 @@ Vectors: **(open)**, like 7.1's, until the tree builder runs in the engine.
 | `hello` | Answered, rate-limited | Not possible: always first |
 | `terms_offer` | Ignore | Older version ignored; same version with other bytes is a fault |
 | `join` | Answered with status | Before the terms are known: host refuses an unknown scope |
-| `ready` | Answered with status | Names an older version: seat Joined. A factory key other than the seat's first: refused (K1-1) |
+| `ready` | Answered with status | Names an older version: seat Joined. A factory key other than the seat's first: refused (BD1) |
 | `unready`, `leave` | No change | Applied whenever the seat exists |
 | `lobby_status` | Newest wins | Not possible within a connection |
 | `ready_check` | Same saved `ready` bytes resent | A new `check_id` is a new attempt |
@@ -863,7 +874,7 @@ The adapter costs 44 bytes around the inner bytes: type (2), submessage id (2), 
 
 Computed by `tools/spec-vectors.py`. **All keys are test keys** derived from public strings (`terms.md` section 11). Never use them for coins. M1 and M3 changed after review 3, because they depend on T1's digest; M0 and M2 did not.
 
-**M1. A `ready` for the lobby of vector T1 at the values of T2, without a ready check.** Member 1's contribution key `024322bd904fa9770421b0b48f08e961d473f3ee9a36a5bc85fa3cac30fa2e15ae`, factory key `0223a26c411e719d542783e3bb05fa00a467fb73227d495ab89734fef0ecec3974`, auxiliary randomness 32 zero bytes. Regenerated 2026-11-17 for K1: the `ready` now carries records 12 and 14. `binding` and `bind_by_contribution` are the values draft 2 printed; draft 2's `bind_by_factory` no longer exists.
+**M1. A `ready` for the lobby of vector T1 at the values of T2, without a ready check.** Member 1's contribution key `024322bd904fa9770421b0b48f08e961d473f3ee9a36a5bc85fa3cac30fa2e15ae`, factory key `0223a26c411e719d542783e3bb05fa00a467fb73227d495ab89734fef0ecec3974`, auxiliary randomness 32 zero bytes. Regenerated 2026-11-17 for BD: the `ready` now carries records 12 and 14. `binding` and `bind_by_contribution` are the values draft 2 printed; draft 2's `bind_by_factory` no longer exists.
 
 ```
 binding               = 47cc4207f628d147d528abc4dfab2c393e208dfcfa550789540bddd09259007e
@@ -938,7 +949,7 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 19. Two different current records with the same version: the member leaves with both as evidence.
 20. A new version after the first ready check: the member leaves with evidence.
 21. `ready_check` with values other than the latest accepted: the member fetches terms and does not answer with the unchecked values.
-22. A first `ready` with another seat's factory key (present or past, K1-1), the host's factory key, or a bad `bind_by_contribution`: refused. A `join` carrying record 2, 4 or 6: refused.
+22. A first `ready` with another seat's factory key (present or past, BD1), the host's factory key, or a bad `bind_by_contribution`: refused. A `join` carrying record 2, 4 or 6: refused.
 23. A `ready` naming an old version during a version change: seat stays Joined; never counted ready for the new version.
 24. A stale `check_id`: not counted in the current check.
 25. `hello` flood: answered at most once a second; closed after 20 ignored.
@@ -948,7 +959,7 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 27. Every message of section 7 dropped, delayed, duplicated and reordered at each step (`signing-round.md` section 16, test 2).
 28. Host's `round_id` differs from the member's rebuild: member sends reason 2 and saves nothing that lets it contribute.
 29. A proposal whose frozen digest differs from the member's: refused before saving.
-30. Duplicate participant keys; a participant without a valid binding; the member's pair missing or twice; its factory key beside another contribution key, or its contribution key beside another factory key: refused (K1-4).
+30. Duplicate participant keys; a participant without a valid binding; the member's pair missing or twice; its factory key beside another contribution key, or its contribution key beside another factory key: refused (BD4).
 31. A second `round_all_nonces` with one nonce changed: rejected, kept as evidence. The member's own nonce changed: abort reason 5.
 32. A member sends two validly signed different nonces for one item: the host removes it and the evidence verifies with a separate checker.
 33. A bad partial signature: the host names that member; the evidence verifies; an honest member cannot be framed.
@@ -979,12 +990,14 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 54. The connection drops between `start` and `round_propose`, and the member restarts: after `hello` the host resends the saved `start`, the member takes part. With `start` withheld, a signed proposal for the answered check is still accepted (F9).
 55. A member reconnects while the host still collects partial signatures: it resends its saved `round_partial_sigs`, and the round completes (F26).
 56. A seat loops `ready`/`unready` and `leave`/`join` as fast as it can: the host's journal grows by at most the stated limits (F13).
-57. K1: a member joins with its signing gate closed and no access to the seed. The wallet derives no factory key until the first `ready`, and the `join` carries no key and no signature.
-58. K1-1: a second `ready` of a seat with another factory key is refused, and the seat keeps its first. A seat that left and joins again with the same contribution key keeps its factory key. A new seat that claims the factory key of a seat that left is refused.
-59. K1-2: a restore between `join` and the first `ready`. The old seat sends no `ready`; the member joins again with a key of the new epoch.
-60. K1-3: a crash after `seat_key` is saved and before `ready` is sent. After the restart the same factory key and the same `bind_by_contribution` are sent. A crash before the save: nothing was sent, and the restart derives the same key.
-61. K1-5: the factory key derived at signing differs from `seat_key` (for example, a different passphrase at Ready): `round_abort` reason 12, and no nonce is sent.
-62. K1-6: a lobby with Joined seats that never sent `ready`. None of them is sent a `start` or placed in a participant list.
+57. BD: a member joins with its signing gate closed and no access to the seed. The wallet derives no factory key until the first `ready`, and the `join` carries no key and no signature.
+58. BD1: a second `ready` of a seat with another factory key is refused, and the seat keeps its first. A seat that left and joins again with the same contribution key keeps its factory key. A new seat that claims the factory key of a seat that left is refused.
+59. BD2: a restore between `join` and the first `ready`. The old seat sends no `ready`; the member joins again with a key of the new epoch.
+60. BD3: a crash after `seat_key` is saved and before `ready` is sent. After the restart the same factory key and the saved `bind_by_contribution` (`seat_key` field 10) are sent, byte for byte. Also: `ready`, `unready`, then `ready` for a new version sends the saved bytes with no seed and no new signature; a host given a different valid signature over the same `binding` accepts it and keeps the first it saved, and one over another `binding` is refused. A crash before the save: nothing was sent, and the restart derives the same key.
+61. BD5: the factory key derived at signing differs from `seat_key` (for example, a different passphrase at Ready): `round_abort` reason 12, and no nonce is sent.
+62. BD6: a lobby with Joined seats that never sent `ready`. None of them is sent a `start` or placed in a participant list. The same for standby seats and understudies.
+63. BD5a: under AT_JOIN, a later `ready` with a passphrase that derives another factory key: no `ready` is sent, `seat_key` is unchanged, and the user is told.
+64. BD2 (stale seat): a restored member holding a seat of an older epoch connects to nothing and sends nothing for it, `leave` included.
 
 ## 13. Open points
 
@@ -995,7 +1008,7 @@ Decoders are generated from the tables in this document (`DESIGN.md` section 8),
 5. Closed: `round_ack` and `round_status_request` match `signing-round.md` draft 4.
 6. **Evidence encoding** in `round_abort`, and parts from members once evidence exists.
 7. **`all_partials`, `payouts`, `penalties`**: encodings, and making them even when defined.
-8. **The host's own binding**: the host is a participant with its own factory key. This document makes the host's long-term key (its contribution key) sign a binding to it, like any member's contribution key; the factory key signs nothing else (K1). Confirm.
+8. **The host's own binding**: the host is a participant with its own factory key. This document makes the host's long-term key (its contribution key) sign a binding to it, like any member's contribution key; the factory key signs nothing else (BD). Confirm.
 9. **Using the BOLT 8 key for BIP 340 signatures.** Lightning already signs with node keys (BOLT 7 with ECDSA, BOLT 12 with BIP 340). No proof was looked for that ECDH in Noise and Schnorr signatures under one key are safe together. A separate host signing key bound by a statement is the alternative.
 10. **Signers chosen in order of joining** (6.9) is a simple fair rule, not decided.
 11. **Rate and size limits** (one status a second, 4 lobbies, 20 hellos, 4 scope-zero answers a second, 10 seat changes per 10 minutes, 4 × target seats) are first guesses to be measured. Known weakness (confirmation review): seats cost nothing and a member key is fresh per connection, so one peer can use up the lobby-wide seat cap (32 creations for T1) in about half a minute and block joining. Money is not at risk; liveness is. It ties to the open owner question of a seat cost or deposit; until then a host may run invitation-only lobbies. Known weakness of the creation limit (review A of PR 30, S4): keys cost nothing, so one outsider joining and leaving with new keys can spend the 4 × `target` creations in about as many seconds, after which the lobby seats nobody; counting creations per address or per connection age, or exempting keys that readied, would close it.

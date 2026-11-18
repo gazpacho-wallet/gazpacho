@@ -385,7 +385,7 @@ show("current v3", cur_out)
 # --------------------------------------------- the ready message --------------
 KIND_READY = 22
 binding = tagged_hash("gazpacho/bind", outer_digest + compressed(mem_factory_sk) + compressed(mem_contrib_sk))
-# messages.md 6.4 (K1, option c): the factory key signs no binding; the
+# messages.md 6.4 (BD, option c): the factory key signs no binding; the
 # contribution key's binding signature and the factory key travel in `ready`.
 binding_sig_c = schnorr_sign(binding, mem_contrib_sk, AUX)
 ready_body = tlv([(2, outer_digest), (4, u32(1)), (6, cur1_digest),
