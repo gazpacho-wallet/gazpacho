@@ -152,7 +152,8 @@
 #define GZ_VAT_CODE                6   /* u8: GZ_ATT_* */
 #define GZ_VAT_LOBBY               8   /* the lobby's local id */
 #define GZ_VAT_SINCE               10  /* u64 ms */
-#define GZ_VAT_FINGERPRINT         12  /* 32: the lobby (lobby_left_out may have no local id) */
+/* 12 is not used: an item never carries the fingerprint, which 7.3 keeps
+ * out of every event (review A of PR 55, M5); every lobby slot has a local id. */
 #define GZ_VAT_COUNT               14  /* u16: member_refused, the refused seats */
 
 #define GZ_ATT_UNLOCK_TO_TAKE_PART 1
@@ -162,17 +163,22 @@
 /* ---- the local-API engine (area 0x000d) --------------------------------- */
 /* Commands (command.h; arguments from type 10). */
 #define GZ_CMD_API_PAUSE           0x0d01  /* 12 on (u8 1 on, 0 off) */
-#define GZ_CMD_API_SET_SIGNING     0x0d02  /* 12 member_signing (u8), 14 based_on_version (u32) */
+#define GZ_CMD_API_SET_SIGNING     0x0d02  /* 12 member_signing (u8), 14 based_on_version (u32),
+                                              16 confirm_member_signing (u8; required, equal to 12, for auto).
+                                              The one command that sets the signing mode (W11) */
 
 /* Records (journal.md 9.1; local-api.md 7.5). */
 #define GZ_RECORD_PAUSE            0x000d000cu /* 2 state (u8), 4 since ms (u64), 6 held scopes (n x 32) */
 #define GZ_RECORD_LOCAL_IDS        0x000d000eu /* 2 scope (32), 4 local id (ASCII) */
 #define GZ_RECORD_REQUEST_ID       0x000d0014u /* 2 request_id, 4 method, 6 path, 8 digest (32),
-                                                  10 status (u16), 12 object kind (u8) and local id,
-                                                  14 created ms (u64) */
+                                                  10 status (u16), 12 the acted-on lobby's local id,
+                                                  14 created ms (u64), 15 the answer's error code */
 #define GZ_RECORD_SIGNING_SETTING  0x000d0024u /* 2 member_signing (u8), 4 host_funding (u8), 6 version (u32) */
 
 #define GZ_LOCAL_ID_MAX            64
-#define GZ_API_MAX_REQUESTS        128 /* request ids kept in memory, the newest */
+/* Request ids kept (7.4: until the object ended and 30 days passed): 64
+ * calls for each of GZ_NODE_MAX_SLOTS lobbies. A new request that finds
+ * every one still kept answers 503 node_busy. */
+#define GZ_API_MAX_REQUESTS        512
 
 #endif

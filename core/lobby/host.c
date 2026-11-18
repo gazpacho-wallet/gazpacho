@@ -703,7 +703,7 @@ static gz_status_t on_unready_leave(gz_lobby_host_t *h, gz_lobby_conn_t *c, cons
     if (s && locked) s->locked = 1;
     if (s && m->has_reason && m->reason == 1) {   /* its own conditions: a refusal (15.3) */
         s->refused = m->reason;
-        s->refused_stage = h->state == GZ_LOBBY_OPEN ? 1 : 2;
+        s->refused_stage = h->state == GZ_LOBBY_OPEN ? 1 : h->state == GZ_LOBBY_READY_CHECK ? 2 : 3; /* 15.3's stage */
     }
     TRY(status(h, c, out));
     return broadcast(h, out);

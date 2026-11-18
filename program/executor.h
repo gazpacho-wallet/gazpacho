@@ -84,6 +84,11 @@ typedef struct {
     size_t in_len;
     int in_eof;
     uint64_t next_request;
+    /* The member_signing in force for this incarnation (gz_node_member_signing,
+     * after the start's first call): the saved setting over --member-signing
+     * (local-api.md 14.3). The key routing follows it (AT_JOIN: scoped only;
+     * docs/notes/view-objects.md section 6). -1 before the walk. */
+    int member_signing;
 } gzp_exec_t;
 
 int gzp_exec_incarnation(gzp_exec_t *ex, int number);

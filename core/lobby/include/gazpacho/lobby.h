@@ -365,7 +365,7 @@ typedef struct {
     uint8_t ready_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t ready_len;
     uint8_t start_msg[GZ_LOBBY_MAX_SAVED_MSG]; size_t start_len;
     /* The member refused (an unready or leave with reason 1, its own
-     * conditions): the reason, and the stage (1 Open, 2 a ready check), until
+     * conditions): the reason, and the stage (1 Open, 2 a ready check, 3 Signing), until
      * it readies or joins again (local-api.md 15.3). Memory only. */
     uint16_t refused;
     uint8_t refused_stage;

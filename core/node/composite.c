@@ -190,6 +190,9 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
         c->resume_at++;
         if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);
         if (c->slots[i].state != SLOT_OPEN || c->slots[i].kind != SLOT_KIND_LOBBY) return GZ_OK;
+        /* From its resume on, a saved pause acts on it (lobbyslot.c, pause_apply):
+         * after its CONNECT, before it can join, ready or sign anything. */
+        c->slots[i].awake = 1;
         if ((st = gz_c_resume(c, e, out, &more)) != GZ_OK) return st;
         if (c->slots[i].state != SLOT_OPEN) return GZ_OK; /* its lobby was over: closed in that step */
         c->resumed[e] = 1;
@@ -208,6 +211,7 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
     case R_NODE:
         if ((st = gz_c_node_bracket_begin(c, out)) != GZ_OK) return st;
         if ((st = np_resume(c, out)) != GZ_OK) return st;
+        if ((st = gz_api_resume(c, out)) != GZ_OK) return st; /* local ids for slots without one; held lobbies gone */
         if ((st = gz_c_node_bracket_end(c, out)) != GZ_OK) return st;
         c->resumed[ENG_NODE] = 1;
         c->resume_at = R_SIGN;
