@@ -443,6 +443,15 @@ static void execute(void *ctx, const gz_action_t *a)
                      "chain-watch-refused");
         break;
     }
+    case GZ_ACTION_UNWATCH: {
+        char hex[65];
+        gzp_hex(a->u.unwatch.what.txid, 32, hex);
+        gzp_log("unwatch txid=%s vout=%u tx=%d", hex, (unsigned)a->u.unwatch.what.vout, a->u.unwatch.is_tx);
+        chain_answer(ex, gzp_chain_unwatch(ex->chain, a->u.unwatch.is_tx, a->u.unwatch.what.txid,
+                                           a->u.unwatch.what.vout),
+                     "chain-watch-refused");
+        break;
+    }
     case GZ_ACTION_SET_TIMER:
         timer_set(ex, a->u.set_timer.timer_id, a->u.set_timer.delay_ms);
         break;
