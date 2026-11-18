@@ -6,6 +6,10 @@ name: Deep checks
 # nightly on main. Never required for a merge. How to start it and read the
 # results: docs/notes/ci.md, "Deep checks".
 #
+# A pull request that changes this file or its helper runs a small smoke set
+# (a short fuzz run, one small mutation tool, the regtest run), so the deep
+# checks are themselves tested before they merge.
+#
 # The branch under test is checked out as it is; the helper
 # (tools/deep-checks.py) always comes from this workflow's own commit, so an
 # old branch can be checked too.
@@ -40,14 +44,20 @@ on:
         type: string
   schedule:
     - cron: "41 1 * * *"
+  push:
+    branches: [deep-checks]   # TEMPORARY: registers the workflow for the first test; removed before review
+  pull_request:
+    paths:
+      - .github/workflows/deep-checks.yml
+      - tools/deep-checks.py
 
 # Read-only token; no job uses a secret.
 permissions:
   contents: read
 
 concurrency:
-  group: deep-checks-${{ inputs.ref || 'main' }}-${{ inputs.suite || 'all' }}-${{ inputs.tools || 'all' }}
-  cancel-in-progress: false
+  group: deep-checks-${{ github.event.pull_request.number || inputs.ref || 'main' }}-${{ inputs.suite || 'all' }}-${{ inputs.tools || 'all' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Every third-party action is pinned to a full commit SHA; the comment names
 # the release. Update both together (docs/notes/ci.md).
@@ -59,6 +69,11 @@ jobs:
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
       suite: ${{ steps.inputs.outputs.suite }}
+      run_fuzz: ${{ steps.inputs.outputs.run_fuzz }}
+      run_valgrind: ${{ steps.inputs.outputs.run_valgrind }}
+      run_msan: ${{ steps.inputs.outputs.run_msan }}
+      run_sanitizers: ${{ steps.inputs.outputs.run_sanitizers }}
+      run_regtest: ${{ steps.inputs.outputs.run_regtest }}
       fuzz_seconds: ${{ steps.inputs.outputs.fuzz_seconds }}
       mutation: ${{ steps.plan.outputs.mutation }}
       mutation_count: ${{ steps.plan.outputs.mutation_count }}
@@ -66,18 +81,26 @@ jobs:
       - name: Check the inputs
         id: inputs
         env:
-          REF: ${{ inputs.ref || 'main' }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.event.pull_request.head.sha || inputs.ref || (github.event_name == 'push' && github.sha) || 'main' }}
           SUITE: ${{ inputs.suite || 'all' }}
           TOOLS: ${{ inputs.tools || 'all' }}
           SHARDS: ${{ inputs.shards || '0' }}
           FUZZ_SECONDS: ${{ inputs.fuzz_seconds || '600' }}
         run: |
+          if [ "$EVENT" = pull_request ] || [ "$EVENT" = push ]; then SUITE=smoke; TOOLS=chain-watch; SHARDS=2; FUZZ_SECONDS=30; fi
           echo "$REF" | grep -Eqx '[A-Za-z0-9][A-Za-z0-9._/-]{0,199}' || { echo "::error::bad ref: $REF"; exit 1; }
-          echo "$SUITE" | grep -Eqx 'all|fuzz|mutation|valgrind|msan|sanitizers|regtest' || { echo "::error::bad suite: $SUITE"; exit 1; }
+          echo "$SUITE" | grep -Eqx 'all|smoke|fuzz|mutation|valgrind|msan|sanitizers|regtest' || { echo "::error::bad suite: $SUITE"; exit 1; }
           echo "$TOOLS" | grep -Eqx '[a-z0-9,-]{1,200}' || { echo "::error::bad tools: $TOOLS"; exit 1; }
           echo "$SHARDS" | grep -Eqx '[0-9]{1,2}' || { echo "::error::shards must be 0 to 99"; exit 1; }
           echo "$FUZZ_SECONDS" | grep -Eqx '[0-9]{1,5}' && [ "$FUZZ_SECONDS" -ge 10 ] && [ "$FUZZ_SECONDS" -le 18000 ] \
             || { echo "::error::fuzz_seconds must be 10 to 18000"; exit 1; }
+          for x in fuzz mutation valgrind msan sanitizers regtest; do
+            case "$SUITE:$x" in
+              all:*|"$x:$x"|smoke:fuzz|smoke:mutation|smoke:regtest) echo "run_$x=true" ;;
+              *) echo "run_$x=false" ;;
+            esac
+          done >> "$GITHUB_OUTPUT"
           {
             echo "ref=$REF"; echo "suite=$SUITE"; echo "tools=$TOOLS"; echo "shards=$SHARDS"; echo "fuzz_seconds=$FUZZ_SECONDS"
           } >> "$GITHUB_OUTPUT"
@@ -105,11 +128,11 @@ jobs:
       - name: Mutation shards
         id: plan
         env:
-          SUITE: ${{ steps.inputs.outputs.suite }}
+          RUN: ${{ steps.inputs.outputs.run_mutation }}
           TOOLS: ${{ steps.inputs.outputs.tools }}
           SHARDS: ${{ steps.inputs.outputs.shards }}
         run: |
-          if [ "$SUITE" = all ] || [ "$SUITE" = mutation ]; then
+          if [ "$RUN" = true ]; then
             python3 -I ci/tools/deep-checks.py plan src --tools "$TOOLS" --shards "$SHARDS"
           else
             echo 'mutation={"include":[]}' >> "$GITHUB_OUTPUT"
@@ -120,7 +143,7 @@ jobs:
   fuzz-build:
     name: fuzz (build)
     needs: plan
-    if: needs.plan.outputs.suite == 'all' || needs.plan.outputs.suite == 'fuzz'
+    if: needs.plan.outputs.run_fuzz == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -252,7 +275,7 @@ jobs:
   valgrind:
     name: valgrind (${{ matrix.shard }})
     needs: plan
-    if: needs.plan.outputs.suite == 'all' || needs.plan.outputs.suite == 'valgrind'
+    if: needs.plan.outputs.run_valgrind == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     strategy:
@@ -302,7 +325,7 @@ jobs:
   msan:
     name: msan (${{ matrix.shard }})
     needs: plan
-    if: needs.plan.outputs.suite == 'all' || needs.plan.outputs.suite == 'msan'
+    if: needs.plan.outputs.run_msan == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
@@ -376,7 +399,7 @@ jobs:
   sanitizers:
     name: sanitizers (${{ matrix.compiler }} ${{ matrix.shard }})
     needs: plan
-    if: needs.plan.outputs.suite == 'all' || needs.plan.outputs.suite == 'sanitizers'
+    if: needs.plan.outputs.run_sanitizers == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
@@ -433,7 +456,7 @@ jobs:
   tsan:
     name: sanitizers (chain worker under TSan)
     needs: plan
-    if: needs.plan.outputs.suite == 'all' || needs.plan.outputs.suite == 'sanitizers'
+    if: needs.plan.outputs.run_sanitizers == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -453,7 +476,7 @@ jobs:
   regtest:
     name: regtest (Bitcoin Core 29.1)
     needs: plan
-    if: needs.plan.outputs.suite == 'all' || needs.plan.outputs.suite == 'regtest'
+    if: needs.plan.outputs.run_regtest == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:

@@ -195,7 +195,7 @@ Suites (`suite`):
 - `regtest`: `tools/regtest-tree.py` against Bitcoin Core 29.1. The tarball comes from bitcoincore.org; the job requires good signatures on `SHA256SUMS` from at least 3 builder keys of `bitcoin-core/guix.sigs` (pinned by commit), requires `SHA256SUMS` to name the hash pinned in the workflow, and checks the tarball against it.
 - `all` (the default, and the nightly run): everything above.
 
-The workflow file and its helper, `tools/deep-checks.py`, are always taken from the workflow's own commit; only the code under test comes from `ref`. Adding a mutation tool is one entry in the helper's `TOOLS` table.
+The workflow file and its helper, `tools/deep-checks.py`, are always taken from the workflow's own commit; only the code under test comes from `ref`. Adding a mutation tool is one entry in the helper's `TOOLS` table. A pull request that changes either file runs a smoke set on its own head: fuzz at 30 seconds per target, `chain-watch` in 2 shards, and regtest.
 
 **Starting a run.** Run it on your own branch, and keep runs on someone else's branch small:
 
