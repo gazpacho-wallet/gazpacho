@@ -105,7 +105,7 @@ int gzp_keys_lobby_raw(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint
         set_err(err, GZP_KEYS_BAD_ARGUMENT, 0);
         return 0;
     }
-    branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);
+    branch_path(k, k->lobby_branch, path);
     path[3] = epoch | H;
     path[4] = index | H;
     ok = walk(k, path, 5, &x, err) && keypair_out(k, &x, sec, pub, err);
@@ -181,11 +181,15 @@ int gzp_keys_init(gzp_keys_t *k, const secp256k1_context *secp, gzw_network net,
     k->secp = secp;
     k->wnet = net;
     k->src = *src;
-    /* Both Gazpacho branches down to the level above the epoch (or k): an
-     * invalid step there means the seed cannot be used (keys.md 3). */
+    /* The three Gazpacho branches down to the level above the epoch (or k):
+     * an invalid step there means the seed cannot be used (keys.md 3), for
+     * either role, so the same words work as host and as member. */
     branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);
     if (!walk(k, path, 3, &x, err)) goto out;
     branch_path(k, GZP_KEYS_BRANCH_HOST, path);
+    gzw_wipe(&x, sizeof x);
+    if (!walk(k, path, 3, &x, err)) goto out;
+    branch_path(k, GZP_KEYS_BRANCH_HOST_LOBBY, path);
     gzw_wipe(&x, sizeof x);
     if (!walk(k, path, 3, &x, err)) goto out;
     /* The BIP 86 account's public key, kept for payout scripts. */
@@ -250,6 +254,11 @@ int gzp_keys_wallet_output(const gzp_keys_t *k, uint32_t change, uint32_t j, gzw
 void gzp_keys_set_epoch(gzp_keys_t *k, uint32_t epoch)
 {
     k->epoch = epoch;
+}
+
+void gzp_keys_set_role(gzp_keys_t *k, int host)
+{
+    k->lobby_branch = host ? GZP_KEYS_BRANCH_HOST_LOBBY : GZP_KEYS_BRANCH_LOBBY;
 }
 
 void gzp_keys_freeze(gzp_keys_t *k, int frozen)

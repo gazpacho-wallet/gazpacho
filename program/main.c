@@ -221,6 +221,7 @@ int main(int argc, char **argv)
     OPENSSL_cleanse(rseed, sizeof rseed);
     if ((rc = keys_open(secp, wnet, &first)) != 0) goto out;
     keys.scoped_only = opt.member_signing == 0; /* AT_JOIN (gzp.h): round secrets only from the scoped table */
+    gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST); /* a host's own pairs on 2' (keys.md K2) */
     if ((rc = transport_key(secp, &opt, priv)) != 0) goto out;
     gzp_log("wallet network=%s first-address=%s", opt.network, first.address);
 

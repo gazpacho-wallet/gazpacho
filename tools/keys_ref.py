@@ -97,9 +97,10 @@ def derive(seed, path):
     return k
 
 
-def lobby(seed, net, epoch, index):
-    """The secret at m/254315617'/net'/0'/epoch'/index'."""
-    return derive(seed, [PURPOSE | HARD, NET_LEVEL[net] | HARD, 0 | HARD, epoch | HARD, index | HARD])
+def lobby(seed, net, epoch, index, host=False):
+    """The secret at m/254315617'/net'/0'/epoch'/index', or on a host at
+    m/254315617'/net'/2'/epoch'/index' (its own pairs, docs/notes/keys.md K2)."""
+    return derive(seed, [PURPOSE | HARD, NET_LEVEL[net] | HARD, (2 if host else 0) | HARD, epoch | HARD, index | HARD])
 
 
 def host(seed, net):

@@ -37,7 +37,11 @@ def vectors():
                     if net == "testnet4" and (e, i) not in ((0, 1), (0, 2)):
                         continue
                     sec = R.lobby(seed, net, e, i)
-                    lob.append((si, net, e, i, sec.to_bytes(32, "big"), R.ser33(R.mul(sec))))
+                    lob.append((si, net, 0, e, i, sec.to_bytes(32, "big"), R.ser33(R.mul(sec))))
+        for e in (0, 0x2A5F3C11):  # a host's own pairs (branch 2')
+            for i in (1, 2, 3):
+                sec = R.lobby(seed, "signet", e, i, host=True)
+                lob.append((si, "signet", 1, e, i, sec.to_bytes(32, "big"), R.ser33(R.mul(sec))))
         for net in ("signet", "regtest"):
             for change, j in ((0, 0), (0, 1), (0, 0x7FFFFFFF), (1, 0)):
                 wal.append((si, net, change, j, R.bip86(seed, net, change, j)[2]))
@@ -53,9 +57,9 @@ def header():
            "static const char *const KV_SEED[] = {"]
     for name, phrase in SEEDS:
         out.append('    "%s", /* %s: "%s" */' % (R.bip39_seed(phrase).hex(), name, " ".join(phrase.split()[-2:])))
-    out += ["};", "", "static const struct { int seed; gzw_network net; uint32_t epoch, index; const char *sec, *pub; } KV_LOBBY[] = {"]
-    for si, net, e, i, sec, pub in lob:
-        out.append('    {%d, %s, 0x%08xu, 0x%08xu, "%s", "%s"},' % (si, C_NET[net], e, i, sec.hex(), pub.hex()))
+    out += ["};", "", "static const struct { int seed; gzw_network net; int host; uint32_t epoch, index; const char *sec, *pub; } KV_LOBBY[] = {"]
+    for si, net, host, e, i, sec, pub in lob:
+        out.append('    {%d, %s, %d, 0x%08xu, 0x%08xu, "%s", "%s"},' % (si, C_NET[net], host, e, i, sec.hex(), pub.hex()))
     out += ["};", "", "static const struct { int seed; gzw_network net; uint32_t k; const char *sec, *pub; } KV_HOST[] = {"]
     for si, net, k, sec, pub in hosts:
         out.append('    {%d, %s, %du, "%s", "%s"},' % (si, C_NET[net], k, sec.hex(), pub.hex()))
@@ -80,10 +84,11 @@ def embit_check():
             print("DIFFER %s" % what)
 
     roots = [bip32.HDKey.from_seed(bip39.mnemonic_to_seed(p)) for _, p in SEEDS]
-    for si, net, e, i, sec, pub in lob:
-        k = roots[si].derive([R.PURPOSE | R.HARD, R.NET_LEVEL[net] | R.HARD, R.HARD, e | R.HARD, i | R.HARD])
-        same("lobby %d %s %x %x secret" % (si, net, e, i), k.key.secret, sec)
-        same("lobby %d %s %x %x pub" % (si, net, e, i), k.key.sec(), pub)
+    for si, net, host, e, i, sec, pub in lob:
+        k = roots[si].derive([R.PURPOSE | R.HARD, R.NET_LEVEL[net] | R.HARD, (2 if host else 0) | R.HARD, e | R.HARD,
+                              i | R.HARD])
+        same("lobby %d %s host=%d %x %x secret" % (si, net, host, e, i), k.key.secret, sec)
+        same("lobby %d %s host=%d %x %x pub" % (si, net, host, e, i), k.key.sec(), pub)
     for si, net, kk, sec, pub in hosts:
         k = roots[si].derive([R.PURPOSE | R.HARD, R.NET_LEVEL[net] | R.HARD, 1 | R.HARD, kk | R.HARD])
         same("host %d %s" % (si, net), (k.key.secret, k.key.sec()), (sec, pub))

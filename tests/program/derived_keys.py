@@ -26,6 +26,11 @@ with tools/keys_ref.py, which shares no code with the program.
      uses a key under E, the vector at (E, index), which no seat holds.
   5. Restarted after the restore: the epoch comes back from the journal and
      the member reconnects with the (E, index) key only.
+  6. One set of words as host and as member (keys.md 3, K2): a member made
+     from the host's own words joins the host's lobby with two others; every
+     seat is accepted and the lobby reaches Funding on the host and on that
+     member, through the signing stand-in. The host's own pairs are on 2',
+     the member's on 0'.
 THE KEYS HERE ARE TEST KEYS."""
 import hashlib
 import os
@@ -43,8 +48,7 @@ import lobby as L  # noqa: E402
 
 check = Checks()
 SEED = R.bip39_seed(R.ART)      # the host's words
-SEED_M = R.bip39_seed(R.VOTE)   # the member's: one seed in both roles would give the host's
-                                # factory key at (0, 2) to the member too (keys.md, open point K2)
+SEED_M = R.bip39_seed(R.VOTE)   # the member's in steps 2 to 5; step 6 shares the host's
 
 
 def seed_folder(path, byte="00"):
@@ -59,8 +63,8 @@ def pub(sec):
     return R.ser33(R.mul(sec)).hex()
 
 
-def lobby_key(epoch, index, net="signet"):
-    return pub(R.lobby(SEED_M, net, epoch, index))
+def lobby_key(epoch, index, net="signet", seed=None):
+    return pub(R.lobby(SEED_M if seed is None else seed, net, epoch, index))
 
 
 def host_key(net):
@@ -190,6 +194,33 @@ def main():
         check(h.wait_for(r"connected peer=%s key=%s" % (peer(ke), ke), timeout=15, start=mark) is not None and
               h.count(r"connected peer=%s" % peer(k01), start=mark) == 0,
               "5: it reconnects with the (E, %d) key, never an old one" % idx)
+        # 6. one seed, both roles (K2) ------------------------------------------
+        # Fresh folders, so the host's first lobby pair and the member's are
+        # both (1, 2): with both on one branch they would be the same keys.
+        for p in procs:
+            p.stop()
+        w6 = L.World(exe, work, "k2")
+        seed_folder(os.path.join(w6.work, "host"))
+        seed_folder(os.path.join(w6.work, "ms"))  # the host's own words
+        h6 = w6.host("--test-sign-outcome", "funding", "--test-sign-delay-ms", "200")
+        procs += w6.procs
+        check(L.started(h6) and w6.hkey == host_key("signet"), "6: a fresh host from the same words")
+        d = L.Terms(w6.hkey, 603)
+        w6.open(h6, d)
+        check(h6.wait_for(r"slot-opened scope=%s .*role=host index=1$" % d.tag, timeout=10) is not None,
+              "6: its first lobby, the host's pair (1, 2)")
+        ms = [w6.member(n, "--member-signing", "auto", "--test-sign-outcome", "funding") for n in ("ms", "x2", "x3")]
+        procs += [p for p in ms if p not in procs]
+        check(all(L.started(p) for p in ms), "6: three members start, one from the host's words")
+        for p in ms:
+            w6.join(p, d)
+        kd = lobby_key(0, 1, seed=SEED)
+        check(ms[0].wait_for(r"slot-opened scope=%s .*role=member index=1$" % d.tag, timeout=15) is not None and
+              h6.wait_for(r"connected peer=%s key=%s" % (peer(kd), kd), timeout=15) is not None,
+              "6: the member with the host's words uses its pair (1, 2) on 0', key %s" % kd[:16])
+        check(L.state(h6, d, "host", 4) and L.state(ms[0], d, "member", 4),
+              "6: every seat is accepted and the lobby reaches Funding, on the host and on that member")
+        check(ms[0].count(r"lobby-note code=0x4c06 a=\d+ b=7") == 0, "6: no seat is refused (no factory key shared)")
         bad = [(p.name, ln) for p in procs for ln in p.lines if "node-error" in ln or " fatal" in ln]
         check(not bad, "no node-error or fatal line in any process %r" % bad[:2])
         for p in procs:

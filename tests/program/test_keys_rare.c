@@ -168,8 +168,9 @@ int main(void)
     /* Set-up: an invalid master, purpose, net or branch on either Gazpacho
      * branch, or on the BIP 86 account, means the seed cannot be used, and
      * nothing is left in the key port. Calls: 1-4 the lobby branch, 5-8 the
-     * host branch, 9 the master again, 10-12 m/86'/coin'/0'. */
-    for (lvl = 1; lvl <= 12; lvl++) {
+     * host branch, 9-12 the host's own lobby branch (2'), 13 the master
+     * again, 14-16 m/86'/coin'/0'. */
+    for (lvl = 1; lvl <= 16; lvl++) {
         arm(lvl);
         CHECK(!gzp_keys_init(&k, secp, GZW_NET_SIGNET, &src, &e) && e.why == GZP_KEYS_UNUSABLE && all0(&k, sizeof k));
     }
@@ -179,7 +180,7 @@ int main(void)
     force_index = 0x80000000u;
     CHECK(!gzp_keys_init(&k, secp, GZW_NET_SIGNET, &src, &e) && e.why == GZP_KEYS_UNUSABLE && calls == 4);
     force_index = 0;
-    arm(13);
+    arm(17);
     CHECK(gzp_keys_init(&k, secp, GZW_NET_SIGNET, &src, &e)); /* past set-up's calls: nothing forced */
 
     /* A scoped pair whose factory key is invalid holds nothing. */

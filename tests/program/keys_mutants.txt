@@ -7,7 +7,11 @@ net-testnet4	program/keys.c	case GZW_NET_TESTNET4: v = 1;	case GZW_NET_TESTNET4:
 net-testnet3	program/keys.c	case GZW_NET_TESTNET: v = 3;	case GZW_NET_TESTNET: v = 4;
 net-regtest	program/keys.c	case GZW_NET_REGTEST: v = 4;	case GZW_NET_REGTEST: v = 3;
 net-mainnet-allowed	program/keys.c	default: return 0;	default: v = 0; break;
-lobby-branch	program/keys.c	branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);\n    path[3]	branch_path(k, GZP_KEYS_BRANCH_HOST, path);\n    path[3]
+lobby-branch-fixed	program/keys.c	branch_path(k, k->lobby_branch, path);	branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);
+role-ignored	program/keys.c	k->lobby_branch = host ? GZP_KEYS_BRANCH_HOST_LOBBY : GZP_KEYS_BRANCH_LOBBY;	k->lobby_branch = GZP_KEYS_BRANCH_LOBBY;
+role-host-on-1	program/keys.c	k->lobby_branch = host ? GZP_KEYS_BRANCH_HOST_LOBBY : GZP_KEYS_BRANCH_LOBBY;	k->lobby_branch = host ? GZP_KEYS_BRANCH_HOST : GZP_KEYS_BRANCH_LOBBY;
+init-skip-host-lobby-branch	program/keys.c	    gzw_wipe(&x, sizeof x);\n    if (!walk(k, path, 3, &x, err)) goto out;	    gzw_wipe(&x, sizeof x);\n    (void)walk(k, path, 3, &x, err);	2
+main-role	program/main.c	gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST);	gzp_keys_set_role(&keys, 0);
 host-branch	program/keys.c	branch_path(k, GZP_KEYS_BRANCH_HOST, path);\n    if (!walk(k, path, 3, &parent	branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);\n    if (!walk(k, path, 3, &parent
 init-checks-host-branch-twice	program/keys.c	branch_path(k, GZP_KEYS_BRANCH_LOBBY, path);\n    if (!walk(k, path, 3, &x, err)) goto out;	branch_path(k, GZP_KEYS_BRANCH_HOST, path);\n    if (!walk(k, path, 3, &x, err)) goto out;
 epoch-unhardened	program/keys.c	path[3] = epoch | H;	path[3] = epoch;
@@ -28,8 +32,8 @@ host-skip-two	program/keys.c	for (i = 0; i < GZP_KEYS_INDEX_LIMIT; i++) {	for (i
 host-k-out	program/keys.c	if (ok && k_out) *k_out = i;	if (ok && k_out) *k_out = 0;
 host-no-wipe-parent	program/keys.c	    gzw_wipe(&parent, sizeof parent);\n    gzw_wipe(&x, sizeof x);\n    if (!ok) zero_out	    gzw_wipe(&x, sizeof x);\n    if (!ok) zero_out
 host-no-zero-fail	program/keys.c	    gzw_wipe(&x, sizeof x);\n    if (!ok) zero_out(sec, pub);\n    return ok;\n}\n\nint gzp_keys_init(	    gzw_wipe(&x, sizeof x);\n    return ok;\n}\n\nint gzp_keys_init(
-init-skip-lobby-branch	program/keys.c	    if (!walk(k, path, 3, &x, err)) goto out;\n    branch_path(k, GZP_KEYS_BRANCH_HOST	    (void)walk(k, path, 3, &x, err);\n    branch_path(k, GZP_KEYS_BRANCH_HOST
-init-skip-host-branch	program/keys.c	    gzw_wipe(&x, sizeof x);\n    if (!walk(k, path, 3, &x, err)) goto out;	    gzw_wipe(&x, sizeof x);\n    (void)walk(k, path, 3, &x, err);
+init-skip-lobby-branch	program/keys.c	    if (!walk(k, path, 3, &x, err)) goto out;\n    branch_path(k, GZP_KEYS_BRANCH_HOST	    (void)walk(k, path, 3, &x, err);\n    branch_path(k, GZP_KEYS_BRANCH_HOST	1
+init-skip-host-branch	program/keys.c	    gzw_wipe(&x, sizeof x);\n    if (!walk(k, path, 3, &x, err)) goto out;	    gzw_wipe(&x, sizeof x);\n    (void)walk(k, path, 3, &x, err);	1
 init-unusable	program/keys.c	if (err && err->why == GZP_KEYS_INVALID_CHILD) err->why = GZP_KEYS_UNUSABLE;	(void)0;
 init-no-free	program/keys.c	        gzp_keys_free(k);\n    }\n    return ok;	    }\n    return ok;
 init-mainnet	program/keys.c	!gzp_keys_net_level(net, &k->net_level)) {	(!gzp_keys_net_level(net, &k->net_level) && net != GZW_NET_MAINNET)) {
@@ -71,7 +75,7 @@ main-scoped-only	program/main.c	keys.scoped_only = opt.member_signing == 0;	keys
 main-payout-check	program/main.c	memcmp(spk, first->script_pubkey, sizeof spk) != 0	0
 net-key-fn-ignored	program/net.c	ok = n->key_fn && n->key_fn(n->key_ctx, epoch, index, s, NULL) == 1;	ok = n->key_fn != NULL; memset(s, 1, 32);
 #
-# Triage of the run on 2026-11-18 (71 mutants: 61 killed, 10 survived):
+# Triage of the run on 2026-11-18 (75 mutants: 65 killed, 10 survived; main-role, the host on the member branch, is killed by T13 step 6):
 #   equivalent: raw-no-zero-fail, host-no-zero-fail (the outputs are zeroed on
 #     entry, and keypair_out writes them only on success); pub-wipe (the wiped
 #     value is a public key); scope-index-range (the factory step then refuses

@@ -5,6 +5,8 @@
  *   m/254315617'/net'/0'/epoch'/index'   per-lobby keys: the contribution
  *                                        (BOLT 8) key at i, the factory key
  *                                        at i + 1 (contract-v2.md 13)
+ *   m/254315617'/net'/2'/epoch'/index'   the same on a host: its own pairs,
+ *                                        apart from any member's (K2)
  *   m/254315617'/net'/1'/k'              the host's long-term key, k the
  *                                        first valid of 0, 1, 2, ...
  *   m/86'/coin'/0'/{0,1}/j               the on-chain wallet (BIP 86); a
@@ -43,6 +45,7 @@
 #define GZP_KEYS_PURPOSE 254315617u
 #define GZP_KEYS_BRANCH_LOBBY 0u
 #define GZP_KEYS_BRANCH_HOST 1u
+#define GZP_KEYS_BRANCH_HOST_LOBBY 2u /* a host's own per-lobby pairs (keys.md 3, K2) */
 #define GZP_KEYS_MAX_SCOPES 8     /* GZ_NODE_MAX_SLOTS */
 #define GZP_KEYS_INDEX_LIMIT 0x80000000u
 
@@ -96,6 +99,7 @@ typedef struct {
     uint32_t epoch;              /* the current restore epoch */
     int frozen;                  /* a restore start: no per-lobby key until the new epoch is saved */
     int scoped_only;             /* AT_JOIN: secrets for rounds only from the scoped table */
+    uint32_t lobby_branch;       /* 0' on a member, 2' on a host (gzp_keys_set_role) */
     gzp_keys_scope_t scopes[GZP_KEYS_MAX_SCOPES];
 } gzp_keys_t;
 
@@ -138,6 +142,12 @@ int gzp_keys_wallet_output(const gzp_keys_t *k, uint32_t change, uint32_t j, gzw
 /* The current epoch, and the restore freeze (keys.md 3). */
 void gzp_keys_set_epoch(gzp_keys_t *k, uint32_t epoch);
 void gzp_keys_freeze(gzp_keys_t *k, int frozen);
+
+/* The data folder's role (fixed at its first start, program.md 5): a host's
+ * per-lobby pairs are on m/254315617'/net'/2'/..., a member's on .../0'/...,
+ * so one set of words can run a host and a member without sharing a key
+ * (keys.md 3, open point K2, resolved). A member until set. */
+void gzp_keys_set_role(gzp_keys_t *k, int host);
 
 /* AT_JOIN's scoped secrets (composite-node.md 12.2; keys.md 7). Open: derive
  * the pair (contribution at index, factory at index + 1) under the policy and

@@ -2,7 +2,7 @@
 
 Draft 1, 2026-11-17, contract v2 step P8 (`docs/notes/contract-v2.md` sections 13 and 17). **This note is not itself reviewed.** It proposes the whole derivation tree for the owner's open item (the key path, all hardened, and a check that on-chain coins follow BIP 86), says what the program holds in memory in each state, and how the key port replaces the stand-in keys. Code: `program/keys.h`, `program/keys.c`, the key port in `program/executor.c` and the transport keys in `program/net.c`; tests in `tests/program/`.
 
-Everything here marked **proposed** waits for the owner. Nothing in it changes a message, a record or the core.
+Everything here marked **proposed** waits for the owner. Draft 2 (2026-11-18): a host's own pairs move to `2'` (K2). Nothing in it changes a message, a record or the core.
 
 ## 1. The tree
 
@@ -13,12 +13,14 @@ m                                     BIP 32 master: HMAC-SHA512("Bitcoin seed",
 ├── 254315617'                        Gazpacho's purpose P (section 2)
 │   └── net'                          network level: 1 testnet4, 2 signet, 3 testnet3, 4 regtest;
 │       │                             0 mainnet, reserved, never derived while mainnet is refused
-│       ├── 0'                        per-lobby keys
+│       ├── 0'                        a member's per-lobby keys
 │       │   └── epoch'                restore epoch: 0 for the installation, else 31 random bits (R2)
 │       │       ├── i'                contribution key = the member's BOLT 8 static key for that lobby
 │       │       └── (i + 1)'          factory key (the MuSig2 key that signs the tree)
-│       └── 1'                        the host's long-term key
-│           └── k'                    k the first valid of 0, 1, 2, ...
+│       ├── 1'                        the host's long-term key
+│       │   └── k'                    k the first valid of 0, 1, 2, ...
+│       └── 2'                        a host's own per-lobby pairs: the same shape as 0' (K2)
+│           └── epoch' / i', (i + 1)'
 └── 86'                               BIP 86: the on-chain wallet
     └── coin'                         0 mainnet, 1 every test network (BIP 44 coin type)
         └── 0'                        account 0
@@ -29,7 +31,8 @@ m                                     BIP 32 master: HMAC-SHA512("Bitcoin seed",
 | Key | Path | Hardened | Who holds the secret, and when (section 7) |
 |---|---|---|---|
 | Contribution and BOLT 8 key of a member's lobby | `m/254315617'/net'/0'/epoch'/i'` | every step | the transport, for one `CONNECT`'s life |
-| Factory key of that lobby (member and host) | `m/254315617'/net'/0'/epoch'/(i+1)'` | every step | nobody between uses; per round (AUTO, WHEN_UNLOCKED) or scoped to one check (AT_JOIN) |
+| Factory key of that lobby (member) | `m/254315617'/net'/0'/epoch'/(i+1)'` | every step | nobody between uses; per round (AUTO, WHEN_UNLOCKED) or scoped to one check (AT_JOIN) |
+| A host's own factory key in a lobby | `m/254315617'/net'/2'/epoch'/(i+1)'` | every step | nobody between uses; per round |
 | Host's long-term key | `m/254315617'/net'/1'/k'` | every step | the host's transport, for the node's life |
 | Receive address and payout script | `m/86'/coin'/0'/0/j` | three hardened, then BIP 86's two public steps | nobody; derived per spend |
 | Change address | `m/86'/coin'/0'/1/j` | as above | as above |
@@ -49,12 +52,8 @@ m                                     BIP 32 master: HMAC-SHA512("Bitcoin seed",
 ## 3. Factory and contribution keys per (epoch, index)
 
 - **Pairs.** The node part allocates indexes in pairs (contract v2 section 13): the contribution key at i, the factory key at i + 1, and `key_index` records i + 1. Its first pair is (1, 2), not (0, 1): `np_save_pair` allocates above `highest_index`, which starts at 0, so index 0 is never used. Contract v2's test T13 says "(epoch 0, index 0)"; this note's T13 (section 10) uses the core as built: the first link at index 1, `key_index` 2, the second `CONNECT` at index 3.
-- **The host's pair.** A host allocates a pair per lobby as a member does and signs with its factory key at i + 1. Its i is never used (the host's BOLT 8 key is its long-term key), so it is burned, which costs nothing.
-- **Open point K2: one seed as host and as member (owner to decide).** Found by test T13. The host's lobby pairs are on the same branch as a member's, `0'/epoch'/index'`, and both start at (1, 2). So the same words used for a host folder and for a member folder give the host's first factory key (0, 2) to the member's first lobby too. Joining one's own host then fails: the host refuses the join, seat state 7, because the factory key is already in the lobby. Across two hosts it would put one key in two factories. Options:
-  - (a) move the host's own lobby pairs to a branch of their own, `m/254315617'/net'/2'/epoch'/index'`;
-  - (b) refuse one set of words in both roles (the program cannot see the other folder);
-  - (c) document it.
-  Proposed: (a), a change of path before any release. Until the owner decides, the tests use different words for host and member (T13: "abandon ... art" for the host, "zoo ... vote" for the member).
+- **The host's pair, on its own branch.** A host allocates a pair per lobby as a member does, and signs with its factory key at i + 1. Its i is never used (the host's BOLT 8 key is its long-term key), so it is burned, which costs nothing. The host's pairs are on `2'`, not `0'`. The key port chooses the branch by the data folder's role, which is fixed at the folder's first start (`gzp_keys_set_role`), so the core allocates indexes as before.
+- **K2, resolved (2026-11-18).** Found by test T13: with host pairs on `0'`, one set of words used for a host folder and for a member folder gave the host's factory key (0, 2) to the member's first lobby too. The host then refused the member's join (seat state 7); across two hosts it would have put one key in two factories. With the host's pairs on `2'`, the same words can run a host and a member: T13 step 6 has a member made from the host's own words join that host's lobby with two others, and the lobby reaches Funding. Set-up checks all three branches, so a seed works in either role.
 - **Only the current epoch.** The key port derives a per-lobby key only for the **current** epoch: the epoch of the newest `key_epoch` record the node has read or saved, 0 before there is one. For any other epoch `pub` and `secret` return 0, which the node already treats as "an epoch this wallet cannot derive" (`lobbyslot.c`: the slot is kept as a placeholder and left out). This is C12 and R3 enforced at the port as well as by the core: a restored node never derives a key of an earlier epoch, whatever a saved slot or a request names.
 - **A restore start derives nothing until the new epoch is saved.** With the restore marker, the node loads the backup's slots (under the old epoch) before it saves the restore batch. Until the program carries out the SAVE that holds the new `key_epoch`, the port refuses every per-lobby key, so the old slots load as left out and their seats are lost, as R3 says ("a member restored while in an open lobby loses its seat there and must join again with a new key").
 - **How the port learns the epoch.** The program sees every `key_epoch` record twice: when the node reads it back at a start (the executor wraps the storage reader it hands to `gz_node_start`) and when it carries out a SAVE holding one. The record's layout is `node.h`'s (`GZ_RECORD_KEY_EPOCH`, field 2, `u32`). No new action or port is needed.

@@ -87,6 +87,7 @@ static void vectors(const secp256k1_context *secp)
     size_t i;
     for (i = 0; i < sizeof KV_LOBBY / sizeof KV_LOBBY[0]; i++) {
         CHECK(keys_over(&k, &r, secp, KV_LOBBY[i].seed, KV_LOBBY[i].net));
+        gzp_keys_set_role(&k, KV_LOBBY[i].host);
         CHECK(gzp_keys_lobby_raw(&k, KV_LOBBY[i].epoch, KV_LOBBY[i].index, sec, pub, &e) && e.why == GZP_KEYS_OK);
         CHECK(hexeq(sec, KV_LOBBY[i].sec, 32) && hexeq(pub, KV_LOBBY[i].pub, 33));
         /* Under the policy: only with the vector's epoch current. */
@@ -189,6 +190,30 @@ static void networks_and_arguments(const secp256k1_context *secp)
     /* A scoped secret already held survives a lock of the seed; a new one cannot be made. */
     gzp_keys_free(&k);
     CHECK(all(&k, 0, sizeof k));
+}
+
+/* K2: one seed as host and as member shares no per-lobby key: a host's own
+ * pairs are on 2', a member's on 0'; the host key is the same either way. */
+static void roles(const secp256k1_context *secp)
+{
+    gzp_keys_t k;
+    raw_t r;
+    gzp_keys_err_t e;
+    uint8_t m[33], h[33], hk1[33], hk2[33];
+    uint32_t i;
+    CHECK(keys_over(&k, &r, secp, 1, GZW_NET_SIGNET));
+    CHECK(k.lobby_branch == GZP_KEYS_BRANCH_LOBBY && gzp_keys_host(&k, NULL, hk1, NULL, &e));
+    for (i = 1; i <= 4; i++) {
+        gzp_keys_set_role(&k, 0);
+        CHECK(gzp_keys_lobby(&k, 0, i, NULL, m, &e));
+        gzp_keys_set_role(&k, 1);
+        CHECK(k.lobby_branch == GZP_KEYS_BRANCH_HOST_LOBBY && gzp_keys_lobby(&k, 0, i, NULL, h, &e) &&
+              memcmp(m, h, 33) != 0 && memcmp(h, hk1, 33) != 0);
+    }
+    CHECK(gzp_keys_host(&k, NULL, hk2, NULL, &e) && !memcmp(hk1, hk2, 33));
+    gzp_keys_set_role(&k, 7);
+    CHECK(k.lobby_branch == GZP_KEYS_BRANCH_HOST_LOBBY);
+    gzp_keys_free(&k);
 }
 
 static void policy(const secp256k1_context *secp)
@@ -373,6 +398,7 @@ int main(void)
     if (!secp) return 2;
     vectors(secp);
     networks_and_arguments(secp);
+    roles(secp);
     policy(secp);
     scoped(secp);
     standin(secp);
