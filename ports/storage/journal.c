@@ -423,7 +423,11 @@ int gz_journal_type_known(uint32_t type)
         0x00010002, 0x00010004, 0x00010006, 0x00010008, 0x0001000a, 0x0001000c, 0x0001000e,
         0x00010010, 0x00010012, 0x00010014, 0x00010016,
         0x00020002, 0x00020004, 0x00020006, 0x00020008, 0x0002000a, 0x0002000c, 0x0002000e,
-        0x00030002, 0x00030004, 0x00030006};
+        0x00030002, 0x00030004, 0x00030006,
+        /* Local API (journal.md 9, area 0x000d): the Slice 1 rows (#55 writes local_ids, pause and the
+         * signing setting; #51's API the rest). */
+        0x000d0002, 0x000d0004, 0x000d0006, 0x000d0008, 0x000d000a, 0x000d000c, 0x000d000e, 0x000d0010,
+        0x000d0012, 0x000d0014, 0x000d0016, 0x000d0024};
     /* The test builds' areas (node.h, journal.md 6): the test engines
      * (0x7e57, 0x7e58), a test slot (0x7e59), the signing stand-in (0x7e5a). */
     if ((type >> 16) >= 0x7e57 && (type >> 16) <= 0x7e5a) return 1;
