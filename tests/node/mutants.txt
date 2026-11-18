@@ -107,7 +107,7 @@ guard-file-epochs-newest-dropped	core/node/nodepart.c	    for (i = 0; i < n_newe
 guard-file-older-index-dropped	core/node/nodepart.c	all[n][1] = k >= 0 && older[k][1] > newer[i][1] ? older[k][1] : newer[i][1];	all[n][1] = newer[i][1];
 guard-file-other-chain-taken	core/node/nodepart.c	|| memcmp(b, GUARD_MAGIC, 8) != 0 || memcmp(b + 8, c->cfg.chain, 32) != 0)\n        return;	|| memcmp(b, GUARD_MAGIC, 8) != 0)\n        return;
 guard-epochs-not-read-back	core/node/nodepart.c	            guard_epochs(c, b + 50, n);\n	
-epoch-redraw-known-off	core/node/nodepart.c	    } while (epoch == 0 || epoch_known(c, epoch));	    } while (epoch == 0);
+epoch-redraw-known-off	core/node/nodepart.c	    } while (epoch == 0 || epoch_known(c, epoch) ||\n	    } while (epoch == 0 ||\n
 epoch-redraw-same-draw	core/node/nodepart.c	epoch = restore_epoch(gz_get_u64(drawn) + again++, c->incarnation);	epoch = restore_epoch(gz_get_u64(drawn) + 0 * again++, c->incarnation);
 a-old-epoch-forgets-none	core/node/nodepart.c	        if (p->n_old_epochs == NP_MAX_OLD_EPOCHS) {	        if (0) {
 # --- connections (A F5, F9, F12; B 1, 2, 7, group C)
@@ -249,6 +249,7 @@ ls-unknown-field-taken	core/node/lobbyslot.c	        if (!(t & 1) && (t >= 64 ||
 ls-index-wraps	core/node/lobbyslot.c	 ||\n        gz_get_u32(index.data) == 0xffffffffu)	)
 timer-of-ended-slot-kept	core/node/handoff.c	            drop_action(c, out, i);\n            continue;\n        }\n        if (a->kind == GZ_ACTION_SET_TIMER || a->kind == GZ_ACTION_CANCEL_TIMER) {	        }\n        if (a->kind == GZ_ACTION_SET_TIMER || a->kind == GZ_ACTION_CANCEL_TIMER) {
 # --- P6a: the view, the API engine; the key changes asked by P8
+# equivalent api-local-id-repeats: a second guard: the slot serial mixed into every id makes two slots' ids differ even where the random source repeats, so the check against the table never finds one taken
 view-never-updated	core/node/view.c	    if (!force && *last == h) return GZ_OK;	    if (!force) return GZ_OK;
 view-version-repeats	core/node/view.c	(++c->view.counter & 0xffffffffu)	(c->view.counter & 0xffffffffu)
 view-version-no-incarnation	core/node/view.c	(c->incarnation << 32) | (++c->view.counter	(++c->view.counter

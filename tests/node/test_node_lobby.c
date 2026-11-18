@@ -1473,6 +1473,12 @@ static void test_left_out(void)
     CHECK(w_restart(1) == GZ_OK && slot(1, &t[0]) == NULL && N[1].n->np.skipped_slots == 1);
     PUB_FAIL[1] = 0;
     CHECK(said(1, mark, "attention lobby-left-out scope=") == 1);
+    {   /* and its attention item, emitted at the start (P6a) */
+        char aid[80];
+        const char *id = gz_api_local_id(N[1].n, t[0].scope);
+        snprintf(aid, sizeof aid, "att_%s", id ? id : "");
+        CHECK(id && vf8(view_of(1, GZ_VIEW_ATTENTION, aid), GZ_VAT_CODE) == GZ_ATT_LOBBY_LEFT_OUT);
+    }
     CHECK(member_join(1, &t[0]) == 503 && scope_cmd(1, GZ_CMD_LOBBY_READY, &t[0], 0) == 503);
     CHECK(w_restart(1) == GZ_OK && slot(1, &t[0]) != NULL && N[1].n->np.skipped_slots == 0);
     w_run(3000, 100);
