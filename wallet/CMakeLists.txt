@@ -99,7 +99,10 @@ if(GZW_BREAK_CHECKS AND NOT GZ_SANITIZE)
   add_test(NAME wallet_break_checks
     COMMAND sh ${GZW_TESTS}/break-checks.sh ${GZ_ROOT}
             ${CMAKE_CURRENT_BINARY_DIR}/break-checks ${secp256k1-zkp_SOURCE_DIR})
-  set_tests_properties(wallet_break_checks PROPERTIES LABELS slow TIMEOUT 3600)
+  # RUN_SERIAL: it builds its own copy with -j4 and runs the wallet tests with
+  # -j4 for each of about 110 faults; beside other tests it would only slow
+  # them all and press their timeouts.
+  set_tests_properties(wallet_break_checks PROPERTIES LABELS slow TIMEOUT 3600 RUN_SERIAL TRUE)
 endif()
 
 # Wallet transactions (wallet/tx).

@@ -42,7 +42,7 @@ jobs:
         # 1,000 seeds, nine extreme fault profiles); and, in the build without
         # sanitizers, the same tests again under valgrind. The wallet
         # break-checks (label slow) run in wallet-break-checks.yml.
-        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow
+        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)"
       - name: Chain worker under ThreadSanitizer
         # Watches, requests, events, resets and shutdown racing
         # (ports/chain/tests/test_chainw.c). Its own small build: TSan does
@@ -143,7 +143,7 @@ jobs:
         run: cmake --build build -j
       - name: Test
         # The slow wallet break-checks run in the gcc build only.
-        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow
+        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)"
 
   msan:
     name: clang MemorySanitizer
@@ -191,7 +191,7 @@ jobs:
       - name: Build
         run: cmake --build build -j
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 900 -LE slow
+        run: ctest --test-dir build --output-on-failure --timeout 900 -LE slow -j "$(nproc)"
 
   valgrind:
     name: valgrind
