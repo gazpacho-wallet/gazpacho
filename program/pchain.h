@@ -6,7 +6,9 @@
  * At open, before the loop runs: check that each chain server's block 0 is
  * the configured network's (a mainnet server, or any other network's, is
  * refused) and read the tip, both blocking and bounded by the backends' time
- * limits. Then one worker thread owns every chain call. The loop gives
+ * limits. Then one worker thread owns every chain call on its client; the
+ * loop's own lookups (gzp_chain_show_outputs) use a second client of their
+ * own, so no backend or transport is ever called from two threads. The loop gives
  * gzp_chain_fd to poll(), and takes the worker's events with gzp_chain_take,
  * which turns them into the core's GZ_CHAIN_* events. Nothing the loop calls
  * here waits on the network.
@@ -44,13 +46,31 @@
 
 typedef struct gzp_chain_req gzp_chain_req_t;
 
+/* One chain client: the backends of every server and the comparing one,
+ * over one transport. A client is used by one thread only: neither the
+ * backends (their buffers, their pacing) nor the transport (one libcurl
+ * handle) may be called from two threads at once. */
 typedef struct {
-    int active;
-    gz_network network;
     gz_chain servers[GZP_CHAIN_SERVERS];
     size_t n_servers;
     gz_chain multi;     /* the comparing backend, with two servers or more */
-    gz_chain *view;     /* what the worker asks: multi, or the one server */
+    gz_chain *view;     /* what is asked: multi, or the one server */
+#ifdef GZP_HAVE_CURL
+    int have_http;
+    gz_http http;
+#endif
+} gzp_chain_client_t;
+
+typedef struct {
+    int active;
+    gz_network network;
+    /* The worker thread's client: from gzp_chain_open on, only the worker
+     * calls it (the tip read at open comes before the worker starts). */
+    gzp_chain_client_t worker;
+    /* The loop thread's client, for its own lookups (gzp_chain_show_outputs):
+     * the same servers, its own backends and transport, made at open before
+     * the worker starts. Never handed to the worker. */
+    gzp_chain_client_t lookup;
     gz_chainw *w;
     int have_tip;       /* the last tip told to the node */
     gz_chain_tip tip;
@@ -66,10 +86,6 @@ typedef struct {
     uint8_t refused_txids[16][32];
     size_t n_refused;
     char reason[128];   /* the reason bytes of the event last taken */
-#ifdef GZP_HAVE_CURL
-    int have_http;
-    gz_http http;
-#endif
 } gzp_chain_t;
 
 /* No chain (--no-chain): every action is written to the output and dropped. */
@@ -112,8 +128,9 @@ int gzp_chain_retry(gzp_chain_t *c);
  * the output and skipped. */
 int gzp_chain_take(gzp_chain_t *c, gz_event_t *ev);
 
-/* Read-only, before the loop: the unspent outputs paying `script`, written
- * to the output (--check-chain). */
+/* Read-only: the unspent outputs paying `script`, written to the output
+ * (--check-chain). Through the lookup client, so it may run while the worker
+ * runs; call it from the loop's thread only. */
 int gzp_chain_show_outputs(gzp_chain_t *c, const uint8_t *script, size_t len);
 
 /* A restart from storage: the worker forgets the old incarnation (its

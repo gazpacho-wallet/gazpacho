@@ -305,16 +305,98 @@ int gzp_chain_take(gzp_chain_t *c, gz_event_t *ev)
     return 0;
 }
 
+#ifdef GZP_HAVE_CURL
+/* Makes one client: its transport, a backend per server, and the comparing
+ * backend with two servers or more. check: ask each server for block 0 and
+ * refuse one on another network (done once, for the worker's client; the
+ * lookup client is made right after it for the same servers). Returns 0, or
+ * a GZP_EXIT_* status after printing why; what was made is freed by
+ * client_close. */
+static int client_open(gzp_chain_client_t *k, const char *const *urls, const char *const *operators, size_t n,
+                       gz_network network, int check)
+{
+    gz_esplora_config cfg;
+    gz_http_curl_config hc;
+    gz_chain_result r;
+    size_t i;
+    memset(&hc, 0, sizeof hc);
+    if (!gz_http_curl_create(&k->http, &hc)) {
+        fprintf(stderr, "gazpacho: cannot set up HTTPS\n");
+        return GZP_EXIT_CHAIN;
+    }
+    k->have_http = 1;
+    for (i = 0; i < n; i++) {
+        gz_network seen = GZ_NET_INVALID;
+        gz_esplora_config_default(&cfg);
+        cfg.base_url = urls[i];
+        if (operators && operators[i]) {
+            /* Named by the user: two servers on one machine (or two names
+             * of one provider) can be told apart, or put together. */
+            if (!gz_operator_name_valid(operators[i])) {
+                fprintf(stderr, "gazpacho: --chain-operator %s: lowercase letters, digits, '.' and '-'\n",
+                        operators[i]);
+                return GZP_EXIT_USAGE;
+            }
+            cfg.operator_id = operators[i];
+        }
+        if ((r = gz_esplora_create(&cfg, &k->http, &k->servers[i])) != GZ_CHAIN_OK) {
+            fprintf(stderr, "gazpacho: chain server %s refused: %s\n", urls[i], gz_chain_result_name(r));
+            return GZP_EXIT_CHAIN;
+        }
+        k->n_servers = i + 1;
+        if (!check) continue;
+        r = gz_chain_identify_network(&k->servers[i], &seen);
+        if (r == GZ_CHAIN_OK && seen != network) r = GZ_CHAIN_WRONG_NETWORK;
+        if (r != GZ_CHAIN_OK) {
+            if (r == GZ_CHAIN_WRONG_NETWORK)
+                fprintf(stderr, "gazpacho: the chain server %s is on %s, not %s: refused\n", urls[i],
+                        seen == GZ_NET_INVALID ? "an unknown network" : gz_network_name(seen),
+                        gz_network_name(network));
+            else
+                fprintf(stderr, "gazpacho: cannot check the chain server %s: %s\n", urls[i], gz_chain_result_name(r));
+            return GZP_EXIT_CHAIN;
+        }
+    }
+    k->view = &k->servers[0];
+    if (n > 1) {
+        gz_multi_config mc;
+        gz_multi_config_default(&mc, network);
+        mc.now_ms = k->http.now_ms;
+        mc.clock_ctx = k->http.ctx;
+        if ((r = gz_multi_create(&mc, k->servers, n, &k->multi)) != GZ_CHAIN_OK) {
+            fprintf(stderr, "gazpacho: the chain servers cannot be compared (%s): give servers of different "
+                            "operators\n", gz_chain_result_name(r));
+            return GZP_EXIT_CHAIN;
+        }
+        k->view = &k->multi;
+    }
+    return 0;
+}
+#endif
+
+/* Frees one client: the backends, then the transport they use. */
+static void client_close(gzp_chain_client_t *k)
+{
+    size_t i;
+    if (k->multi.ops) gz_chain_destroy(&k->multi);
+    for (i = 0; i < k->n_servers; i++)
+        if (k->servers[i].ops) gz_chain_destroy(&k->servers[i]);
+    k->n_servers = 0;
+    k->view = NULL;
+#ifdef GZP_HAVE_CURL
+    if (k->have_http) gz_http_curl_destroy(&k->http);
+    k->have_http = 0;
+#endif
+}
+
 int gzp_chain_open(gzp_chain_t *c, const char *const *urls, const char *const *operators, size_t n,
                    gz_network network, uint32_t poll_ms, const gzp_chain_limits_t *lim)
 {
 #ifdef GZP_HAVE_CURL
-    gz_esplora_config cfg;
-    gz_http_curl_config hc;
     gz_chainw_config wc;
     gz_chain_result r;
     char hex[65];
-    size_t i;
+    int rc;
     gzp_chain_none(c, network);
     /* Refuse mainnet whatever the caller asked: the program only ever runs
      * on a test network (options.c refuses --network mainnet already), and
@@ -327,62 +409,17 @@ int gzp_chain_open(gzp_chain_t *c, const char *const *urls, const char *const *o
         fprintf(stderr, "gazpacho: from one to %d chain servers\n", GZP_CHAIN_SERVERS);
         return GZP_EXIT_USAGE;
     }
-    memset(&hc, 0, sizeof hc);
-    if (!gz_http_curl_create(&c->http, &hc)) {
-        fprintf(stderr, "gazpacho: cannot set up HTTPS\n");
-        return GZP_EXIT_CHAIN;
-    }
-    c->have_http = 1;
     gzp_log("chain lookups-without-blocking=%d", gz_http_curl_async_dns() ? 1 : 0);
-    for (i = 0; i < n; i++) {
-        gz_network seen = GZ_NET_INVALID;
-        gz_esplora_config_default(&cfg);
-        cfg.base_url = urls[i];
-        if (operators && operators[i]) {
-            /* Named by the user: two servers on one machine (or two names
-             * of one provider) can be told apart, or put together. */
-            if (!gz_operator_name_valid(operators[i])) {
-                fprintf(stderr, "gazpacho: --chain-operator %s: lowercase letters, digits, '.' and '-'\n",
-                        operators[i]);
-                gzp_chain_close(c);
-                return GZP_EXIT_USAGE;
-            }
-            cfg.operator_id = operators[i];
-        }
-        if ((r = gz_esplora_create(&cfg, &c->http, &c->servers[i])) != GZ_CHAIN_OK) {
-            fprintf(stderr, "gazpacho: chain server %s refused: %s\n", urls[i], gz_chain_result_name(r));
-            gzp_chain_close(c);
-            return GZP_EXIT_CHAIN;
-        }
-        c->n_servers = i + 1;
-        r = gz_chain_identify_network(&c->servers[i], &seen);
-        if (r == GZ_CHAIN_OK && seen != network) r = GZ_CHAIN_WRONG_NETWORK;
-        if (r != GZ_CHAIN_OK) {
-            if (r == GZ_CHAIN_WRONG_NETWORK)
-                fprintf(stderr, "gazpacho: the chain server %s is on %s, not %s: refused\n", urls[i],
-                        seen == GZ_NET_INVALID ? "an unknown network" : gz_network_name(seen),
-                        gz_network_name(network));
-            else
-                fprintf(stderr, "gazpacho: cannot check the chain server %s: %s\n", urls[i], gz_chain_result_name(r));
-            gzp_chain_close(c);
-            return GZP_EXIT_CHAIN;
-        }
+    /* Two clients, both made here, on this thread, before the worker starts:
+     * the worker's, which only the worker calls once it runs, and the loop's
+     * own for its lookups. One client shared by two threads corrupted the
+     * heap (docs/notes/integration.md B11). */
+    if ((rc = client_open(&c->worker, urls, operators, n, network, 1)) != 0 ||
+        (rc = client_open(&c->lookup, urls, operators, n, network, 0)) != 0) {
+        gzp_chain_close(c);
+        return rc;
     }
-    c->view = &c->servers[0];
-    if (n > 1) {
-        gz_multi_config mc;
-        gz_multi_config_default(&mc, network);
-        mc.now_ms = c->http.now_ms;
-        mc.clock_ctx = c->http.ctx;
-        if ((r = gz_multi_create(&mc, c->servers, n, &c->multi)) != GZ_CHAIN_OK) {
-            fprintf(stderr, "gazpacho: the chain servers cannot be compared (%s): give servers of different "
-                            "operators\n", gz_chain_result_name(r));
-            gzp_chain_close(c);
-            return GZP_EXIT_CHAIN;
-        }
-        c->view = &c->multi;
-    }
-    if ((r = gz_chain_tip_get(c->view, &c->tip)) != GZ_CHAIN_OK) {
+    if ((r = gz_chain_tip_get(c->worker.view, &c->tip)) != GZ_CHAIN_OK) {
         fprintf(stderr, "gazpacho: cannot read the chain tip: %s\n", gz_chain_result_name(r));
         gzp_chain_close(c);
         return GZP_EXIT_CHAIN;
@@ -393,7 +430,7 @@ int gzp_chain_open(gzp_chain_t *c, const char *const *urls, const char *const *o
         gzp_chain_close(c);
         return GZP_EXIT_FAILED;
     }
-    gz_chainw_config_default(&wc, c->view, network);
+    gz_chainw_config_default(&wc, c->worker.view, network);
     wc.tip_poll_ms = poll_ms;
     wc.max_watches = GZP_MAX_WATCHES;
     if (lim && lim->small) {
@@ -407,7 +444,7 @@ int gzp_chain_open(gzp_chain_t *c, const char *const *urls, const char *const *o
     }
     c->max_watches = (uint32_t)wc.max_watches;
     wc.interrupt = gz_http_curl_interrupt_hook;
-    wc.interrupt_ctx = &c->http;
+    wc.interrupt_ctx = &c->worker.http;
     if (!(c->w = gz_chainw_new(&wc))) {
         fprintf(stderr, "gazpacho: cannot start the chain worker\n");
         gzp_chain_close(c);
@@ -435,8 +472,9 @@ int gzp_chain_show_outputs(gzp_chain_t *c, const uint8_t *script, size_t len)
     size_t n = 0, i;
     uint64_t total = 0;
     gz_chain_result r;
-    if (!c->view) return -1;
-    r = gz_chain_script_outputs(c->view, script, len, outs, 32, &n, NULL);
+    /* the loop's own client: never the worker's, which the worker is using */
+    if (!c->lookup.view) return -1;
+    r = gz_chain_script_outputs(c->lookup.view, script, len, outs, 32, &n, NULL);
     if (r != GZ_CHAIN_OK) {
         gzp_log("wallet-outputs-failed why=%s", gz_chain_result_name(r));
         return -1;
@@ -466,21 +504,13 @@ void gzp_chain_restart(gzp_chain_t *c)
 
 void gzp_chain_close(gzp_chain_t *c)
 {
-    size_t i;
-    /* the worker first: it is the only user of the backends and the transport */
+    /* the worker first: it is the only user of its client's backends and transport */
     if (c->w) gz_chainw_free(c->w);
     c->w = NULL;
     if (c->backlog) backlog_clear(c);
     free(c->backlog);
     c->backlog = NULL;
-    if (c->multi.ops) gz_chain_destroy(&c->multi);
-    for (i = 0; i < c->n_servers; i++)
-        if (c->servers[i].ops) gz_chain_destroy(&c->servers[i]);
-    c->n_servers = 0;
-    c->view = NULL;
-#ifdef GZP_HAVE_CURL
-    if (c->have_http) gz_http_curl_destroy(&c->http);
-    c->have_http = 0;
-#endif
+    client_close(&c->worker);
+    client_close(&c->lookup);
     c->active = 0;
 }

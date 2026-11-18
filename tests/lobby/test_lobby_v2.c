@@ -1800,6 +1800,123 @@ static void test_ended_saved(void)
     CHECK(feed(&m2, 2, ob, on) == GZ_OK && A.l.count == 0 && !m2.joined);
 }
 
+#ifndef GZ_LOBBY_HELLO_AGAIN_MS             /* lobby.h has them; here so that the test runs (and fails) without */
+#define GZ_LOBBY_HELLO_AGAIN_MS  1500
+#define GZ_LOBBY_HELLO_AGAIN_MAX 5
+#endif
+
+/* What the host's last list sends, delivered to member `who` (in order). The
+ * member's actions of the last delivery are left in A; its sends of every
+ * delivery are kept in TOHOST for to_host_all, and its saves in KEPT. */
+static uint8_t TOHOST[8][GZ_LOBBY_MAX_SAVED_MSG + 64];
+static size_t TOHOST_N[8], N_TOHOST;
+static void to_member(gz_lobby_member_t *m, int who)
+{
+    static uint8_t env[8][8192];
+    size_t n[8], k = 0, i, j;
+    for (i = 0; i < A.l.count && k < 8; i++)
+        if (A.s[i].kind == GZ_ACTION_SEND && (n[k] = lt_send_env(&A.s[i], env[k], sizeof env[k])) != 0) k++;
+    N_TOHOST = 0;
+    for (i = 0; i < k; i++) {
+        CHECK(feed(m, who, env[i], n[i]) == GZ_OK);
+        keep_last();                                  /* what this delivery saved is durable */
+        for (j = 0; j < A.l.count && N_TOHOST < 8; j++)
+            if (A.s[j].kind == GZ_ACTION_SEND &&
+                (TOHOST_N[N_TOHOST] = lt_send_env(&A.s[j], TOHOST[N_TOHOST], sizeof TOHOST[0])) != 0)
+                N_TOHOST++;
+    }
+}
+
+static void to_host_all(gz_lobby_host_t *h, int who)
+{
+    size_t i;
+    for (i = 0; i < N_TOHOST; i++) CHECK(hin(h, GZ_LIN_MESSAGE, who, TOHOST[i], TOHOST_N[i]) == GZ_OK);
+}
+
+static gz_status_t mtimer(gz_lobby_member_t *m, uint64_t id)
+{
+    gz_lobby_input_t in;
+    lt_in(&in, GZ_LIN_TIMER, NULL);
+    in.timer_id = id;
+    acts_reset();
+    return gz_lobby_member_handle(m, &in, &A.l);
+}
+
+static int kept(uint32_t type)
+{
+    size_t i;
+    int n = 0;
+    for (i = 0; i < N_KEPT; i++) n += KEPT[i].type == type;
+    return n;
+}
+
+/* A member that restarts in process right after its join is saved, and
+ * reconnects within a second of its first hello (program_lobby case 3, which
+ * failed now and then: the CI runs of 2026-11-18). The host answers one hello
+ * a second per member key, across its connections (messages.md 6.1), so the
+ * restarted member's hello is ignored. It must ask again, and then joins: the
+ * host never saw its join, which was saved but never sent. */
+static void test_hello_again(void)
+{
+    static gz_lobby_host_t h;
+    static gz_lobby_member_t m, m2, m3;
+    gz_lobby_conditions_t cond = lt_cond_fits();
+    gz_lobby_seat_t *s;
+    int i;
+
+    CLOCK = W_T0 - 3600000;
+    GATE = 1;
+    N_KEPT = 0;
+    host_new(&h, &HOST, NULL, 0);
+    acts_reset();
+    CHECK(gz_lobby_host_open(&h, T1, T1N, T2, T2N, &A.l) == GZ_OK);
+    /* the first connection: hello, the host's answer, the join saved (and the
+     * restart comes before its batch is confirmed, so the join never leaves) */
+    hin(&h, GZ_LIN_CONNECTED, 4, NULL, 0);
+    member_new(&m, 4, &MEM[4], SCOPE, 0, &cond);
+    CHECK(m_in(&m, 4, GZ_LIN_CONNECTED) == GZ_OK && sends(GZ_KIND_HELLO) == 1);
+    to_host(&h, 4);
+    CHECK(sends(GZ_KIND_TERMS_OFFER) == 1);
+    to_member(&m, 4);
+    CHECK(m.joined && kept(GZ_REC_JOINED) == 1);
+    CHECK(seat(&h, 4) == NULL);                                  /* the host never got the join */
+    /* the restart, 100 ms later: a new connection, a hello inside the host's second */
+    CLOCK += 100;
+    hin(&h, GZ_LIN_DISCONNECTED, 4, NULL, 0);
+    hin(&h, GZ_LIN_CONNECTED, 4, NULL, 0);
+    member_new(&m2, 4, &MEM[4], SCOPE, 0, &cond);
+    CHECK(restore_kept(&m2) && m2.joined && seat(&h, 4) == NULL);
+    CHECK(m_in(&m2, 4, GZ_LIN_CONNECTED) == GZ_OK && sends(GZ_KIND_HELLO) == 1);
+    CHECK(timers(GZ_LOBBY_TIMER_RETRY) == 1);                    /* asked again if unanswered */
+    to_host(&h, 4);
+    CHECK(A.l.count == 0);                                       /* the host's limit: no answer */
+    /* the member asks again after the limit's second: answered, it joins again */
+    CLOCK += GZ_LOBBY_HELLO_AGAIN_MS;
+    CHECK(mtimer(&m2, GZ_LOBBY_TIMER_RETRY) == GZ_OK && sends(GZ_KIND_HELLO) == 1 && timers(GZ_LOBBY_TIMER_RETRY) == 1);
+    to_host(&h, 4);
+    CHECK(sends(GZ_KIND_TERMS_OFFER) == 1 && sends(GZ_KIND_LOBBY_STATUS) == 1);
+    to_member(&m2, 4);
+    to_host_all(&h, 4);
+    s = seat(&h, 4);
+    CHECK(s && (s->state == GZ_SEAT_JOINED || s->state == GZ_SEAT_READY));
+    /* answered: the timer does nothing more */
+    CLOCK += GZ_LOBBY_HELLO_AGAIN_MS;
+    CHECK(mtimer(&m2, GZ_LOBBY_TIMER_RETRY) == GZ_OK && A.l.count == 0);
+
+    /* a host that never answers: asked again a bounded number of times on one connection */
+    member_new(&m3, 5, &MEM[5], SCOPE, 0, &cond);
+    CHECK(m_in(&m3, 5, GZ_LIN_CONNECTED) == GZ_OK && sends(GZ_KIND_HELLO) == 1);
+    for (i = 0; i < GZ_LOBBY_HELLO_AGAIN_MAX; i++) {
+        CLOCK += GZ_LOBBY_HELLO_AGAIN_MS;
+        CHECK(mtimer(&m3, GZ_LOBBY_TIMER_RETRY) == GZ_OK && sends(GZ_KIND_HELLO) == 1);
+    }
+    CLOCK += GZ_LOBBY_HELLO_AGAIN_MS;
+    CHECK(mtimer(&m3, GZ_LOBBY_TIMER_RETRY) == GZ_OK && A.l.count == 0);
+    /* a new connection starts again */
+    CHECK(m_in(&m3, 5, GZ_LIN_DISCONNECTED) == GZ_OK && m_in(&m3, 5, GZ_LIN_CONNECTED) == GZ_OK &&
+          sends(GZ_KIND_HELLO) == 1 && timers(GZ_LOBBY_TIMER_RETRY) == 1);
+}
+
 int main(void)
 {
     int i;
@@ -1826,6 +1943,7 @@ int main(void)
     test_gate();
     test_accepted();
     test_ended_saved();
+    test_hello_again();
     CHECK(OVERSIZE == 0);
     return check_done();
 }

@@ -43,6 +43,16 @@ jobs:
         # sanitizers, the same tests again under valgrind. The wallet
         # break-checks (label slow) run in wallet-break-checks.yml.
         run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)"
+      - name: Keep the program tests' logs when a test fails
+        # Each process of a tests/program run writes NAME.log in its folder
+        # under build/program (gzp_harness.py); they stay on the runner otherwise.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-logs-build-${{ matrix.sanitize }}
+          path: build/program/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Chain worker under ThreadSanitizer
         # Watches, requests, events, resets and shutdown racing
         # (ports/chain/tests/test_chainw.c). Its own small build: TSan does
@@ -52,6 +62,12 @@ jobs:
         run: |
           sudo sysctl -w vm.mmap_rnd_bits=28
           sh tools/chain-tsan.sh "$RUNNER_TEMP/chain-tsan"
+      - name: Chain adapter's lookups beside its worker, under ThreadSanitizer
+        # program/pchain.c: the loop's lookups (--check-chain) while the chain
+        # worker polls, against a local Esplora stub. One chain client used by
+        # both threads corrupted the heap (docs/notes/integration.md B11).
+        if: matrix.sanitize == 'OFF'
+        run: sh tools/pchain-tsan.sh "$RUNNER_TEMP/pchain-tsan"
       - name: Scale check, one small case; the two former builder defects stay gone
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
 
@@ -144,6 +160,16 @@ jobs:
       - name: Test
         # The slow wallet break-checks run in the gcc build only.
         run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)"
+      - name: Keep the program tests' logs when a test fails
+        # Each process of a tests/program run writes NAME.log in its folder
+        # under build/program (gzp_harness.py); they stay on the runner otherwise.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-logs-clang-${{ matrix.name }}
+          path: build/program/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   msan:
     name: clang MemorySanitizer
@@ -192,11 +218,29 @@ jobs:
         run: cmake --build build -j
       - name: Test
         run: ctest --test-dir build --output-on-failure --timeout 900 -LE slow -j "$(nproc)"
+      - name: Keep the program tests' logs when a test fails
+        # Each process of a tests/program run writes NAME.log in its folder
+        # under build/program (gzp_harness.py); they stay on the runner otherwise.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-logs-msan
+          path: build/program/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
 
-  valgrind:
-    name: valgrind
+  # Every compiled test under memcheck, in three shards over the same list
+  # (tools/valgrind-tests.py --shard I/3: by name order, every third test), so
+  # each test runs under valgrind exactly once. The job "valgrind" below is the
+  # required check: it passes only if all three shards did.
+  valgrind-shard:
+    name: valgrind (shard ${{ matrix.shard }} of 3)
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -214,7 +258,8 @@ jobs:
         # The signing sections run their "tiny" sets (every path, fewer seeds)
         # and the engine fuzzer a short run: the full sets take hours here.
         run: >
-          python3 -I tools/valgrind-tests.py build --args "sim_seeds=200 400 1 0" --args "journal_fuzz=3000 7"
+          python3 -I tools/valgrind-tests.py build --shard ${{ matrix.shard }}/3
+          --args "sim_seeds=200 400 1 0" --args "journal_fuzz=3000 7"
           --args "journal_fuzz_model=200 1" --args "journal_fuzz_open=3000 1"
           --args "lobby_sim_profile_0=3 0" --args "lobby_sim_profile_1=3 1"
           --args "lobby_sim_profile_2=3 2" --args "lobby_sim_profile_3=3 3"
@@ -234,7 +279,33 @@ jobs:
           --args "fuzz_tree_agree=40"
       - name: Storage and signing constant-time checks (secrets marked undefined, under memcheck)
         # Registered only where valgrind and its headers are installed: here.
+        # Once, in the first shard.
+        if: matrix.shard == 0
         run: ctest --test-dir build -R '^(storage|signing)_ctime$' --output-on-failure --no-tests=error
+      - name: Keep the program tests' logs when a test fails
+        # As in the build jobs (#64); the program tests are scripts, which
+        # memcheck does not run, so this is usually empty.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-logs-valgrind-${{ matrix.shard }}
+          path: build/program/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  valgrind:
+    name: valgrind
+    needs: valgrind-shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: All three shards passed
+        env:
+          RESULT: ${{ needs.valgrind-shard.result }}
+        run: |
+          echo "valgrind shards: $RESULT"
+          [ "$RESULT" = success ] || { echo "::error::a valgrind shard failed or was cancelled ($RESULT)"; exit 1; }
 
   fuzz:
     name: libFuzzer, 60 s per target
