@@ -42,7 +42,17 @@ jobs:
         # 1,000 seeds, nine extreme fault profiles); and, in the build without
         # sanitizers, the same tests again under valgrind. The wallet
         # break-checks (label slow) run in wallet-break-checks.yml.
-        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow
+        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)"
+      - name: Keep the program tests' logs when a test fails
+        # Each process of a tests/program run writes NAME.log in its folder
+        # under build/program (gzp_harness.py); they stay on the runner otherwise.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-logs-build-${{ matrix.sanitize }}
+          path: build/program/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Chain worker under ThreadSanitizer
         # Watches, requests, events, resets and shutdown racing
         # (ports/chain/tests/test_chainw.c). Its own small build: TSan does
@@ -143,7 +153,17 @@ jobs:
         run: cmake --build build -j
       - name: Test
         # The slow wallet break-checks run in the gcc build only.
-        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow
+        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)"
+      - name: Keep the program tests' logs when a test fails
+        # Each process of a tests/program run writes NAME.log in its folder
+        # under build/program (gzp_harness.py); they stay on the runner otherwise.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-logs-clang-${{ matrix.name }}
+          path: build/program/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   msan:
     name: clang MemorySanitizer
@@ -191,7 +211,17 @@ jobs:
       - name: Build
         run: cmake --build build -j
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 900 -LE slow
+        run: ctest --test-dir build --output-on-failure --timeout 900 -LE slow -j "$(nproc)"
+      - name: Keep the program tests' logs when a test fails
+        # Each process of a tests/program run writes NAME.log in its folder
+        # under build/program (gzp_harness.py); they stay on the runner otherwise.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-logs-msan
+          path: build/program/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   valgrind:
     name: valgrind
