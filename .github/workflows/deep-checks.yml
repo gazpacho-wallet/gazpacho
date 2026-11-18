@@ -11,8 +11,17 @@ name: Deep checks
 # checks are themselves tested before they merge.
 #
 # The branch under test is checked out as it is; the helper
-# (tools/deep-checks.py) always comes from this workflow's own commit, so an
-# old branch can be checked too.
+# (tools/deep-checks.py) comes from this workflow's own commit, so an old
+# branch can be checked too. That holds against an honest ref only: a job that
+# builds the ref runs its CMake code and tests in the same workspace before the
+# helper reports, so a hostile ref could rewrite the report (with a read-only
+# token, and a ref decides its own tests anyway). On pull_request, github.sha
+# is the merge commit, so the helper is the pull request's own copy.
+#
+# Runners: the repository's 20 runners are shared with CI, whose 13 required
+# jobs must always find one. So the suites run one after another (needs:
+# sanitizers, valgrind, msan, fuzz, mutation), each within its max-parallel,
+# and at most 7 deep-check jobs run at once.
 on:
   workflow_dispatch:
     inputs:
@@ -140,8 +149,8 @@ jobs:
   # --- fuzz: one build, then every target for fuzz_seconds under ASan+UBSan ---
   fuzz-build:
     name: fuzz (build)
-    needs: plan
-    if: needs.plan.outputs.run_fuzz == 'true'
+    needs: [plan, msan]
+    if: ${{ !cancelled() && needs.plan.outputs.run_fuzz == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -182,7 +191,7 @@ jobs:
   fuzz:
     name: fuzz (${{ matrix.target }})
     needs: [plan, fuzz-build]
-    if: needs.fuzz-build.outputs.count != '0' && needs.fuzz-build.outputs.count != ''
+    if: ${{ !cancelled() && needs.fuzz-build.result == 'success' && needs.fuzz-build.outputs.count != '0' && needs.fuzz-build.outputs.count != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 330
     strategy:
@@ -232,8 +241,8 @@ jobs:
   # --- mutation: every tool's list split into shards -----------------------------
   mutation:
     name: mutation (${{ matrix.tool }} ${{ matrix.shard }})
-    needs: plan
-    if: needs.plan.outputs.mutation_count != '0' && needs.plan.outputs.mutation_count != ''
+    needs: [plan, fuzz]
+    if: ${{ !cancelled() && needs.plan.outputs.mutation_count != '0' && needs.plan.outputs.mutation_count != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     strategy:
@@ -258,14 +267,23 @@ jobs:
           sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
           valgrind python3-cryptography clang-18 libclang-rt-18-dev
       - name: Run the shard
-        # On a pull request's smoke set only the plumbing is under test: the
-        # tool's verdict (survivors) is reported in the summary, not as a failure.
-        continue-on-error: ${{ github.event_name == 'pull_request' }}
+        # Exit 3: surviving mutants and nothing else wrong. On a pull request's
+        # smoke set only the plumbing is under test, so that one code passes
+        # there (the survivors are in the summary); a failed preparation, a
+        # failed baseline or a timeout stays red.
         env:
+          EVENT: ${{ github.event_name }}
           TOOL: ${{ matrix.tool }}
           SHARD: ${{ matrix.shard }}
           OF: ${{ matrix.of }}
-        run: python3 -I ci/tools/deep-checks.py mutate src "$TOOL" "$SHARD" "$OF" "$RUNNER_TEMP/out" --budget 335 --jobs "$(nproc)"
+        run: |
+          rc=0
+          python3 -I ci/tools/deep-checks.py mutate src "$TOOL" "$SHARD" "$OF" "$RUNNER_TEMP/out" --budget 335 --jobs "$(nproc)" || rc=$?
+          if [ "$rc" -eq 3 ] && [ "$EVENT" = pull_request ]; then
+            echo "::notice::$TOOL shard $SHARD: surviving mutants only (listed in the summary)"
+            exit 0
+          fi
+          exit "$rc"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -277,8 +295,8 @@ jobs:
   # --- valgrind: every compiled test with its full arguments ---------------------
   valgrind:
     name: valgrind (${{ matrix.shard }})
-    needs: plan
-    if: needs.plan.outputs.run_valgrind == 'true'
+    needs: [plan, sanitizers, tsan]
+    if: ${{ !cancelled() && needs.plan.outputs.run_valgrind == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 355
     strategy:
@@ -326,10 +344,46 @@ jobs:
           if-no-files-found: warn
 
   # --- MemorySanitizer: every test, the long ones too ----------------------------
-  msan:
-    name: msan (${{ matrix.shard }})
+  # OpenSSL built with MSan, in a job that never checks out the ref under test,
+  # so untrusted code never runs where the cache entry is written; the msan
+  # shards only restore it.
+  openssl-msan:
+    name: msan (OpenSSL)
     needs: plan
     if: needs.plan.outputs.run_msan == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      OPENSSL_VERSION: 3.0.22
+      OPENSSL_SHA256: 67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
+    steps:
+      - name: Cache OpenSSL built with MemorySanitizer
+        id: openssl-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/openssl-msan
+          key: openssl-${{ env.OPENSSL_VERSION }}-msan-clang18-ubuntu24.04-deep-v1
+      - name: Install dependencies
+        if: steps.openssl-cache.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y clang-18 libclang-rt-18-dev
+      - name: Build OpenSSL with MemorySanitizer
+        if: steps.openssl-cache.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o openssl.tar.gz "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
+          echo "$OPENSSL_SHA256  openssl.tar.gz" | sha256sum --check --strict
+          tar xzf openssl.tar.gz
+          cd "openssl-$OPENSSL_VERSION"
+          ./Configure linux-x86_64-clang enable-msan no-asm no-shared no-tests no-module \
+            --prefix="$HOME/openssl-msan" --libdir=lib CC=clang-18 \
+            CFLAGS="-fsanitize-memory-track-origins -fno-omit-frame-pointer -g -O1" > /dev/null
+          make -j"$(nproc)" build_libs > /dev/null
+          make install_dev > /dev/null
+
+  msan:
+    name: msan (${{ matrix.shard }})
+    needs: [plan, valgrind, openssl-msan]
+    if: ${{ !cancelled() && needs.plan.outputs.run_msan == 'true' && needs.openssl-msan.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     strategy:
@@ -341,7 +395,6 @@ jobs:
       CC: clang-18
       OF: 4
       OPENSSL_VERSION: 3.0.22
-      OPENSSL_SHA256: 67ebca7e50d17383028045486653492195b83db95f8558709701bb47b5c1ef81
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -356,25 +409,12 @@ jobs:
           persist-credentials: false
       - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake clang-18 libclang-rt-18-dev
-      - name: Cache OpenSSL built with MemorySanitizer
-        id: openssl-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: OpenSSL built with MemorySanitizer (restored only, never saved here)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/openssl-msan
-          key: openssl-${{ env.OPENSSL_VERSION }}-msan-clang18-ubuntu24.04-v1
-      - name: Build OpenSSL with MemorySanitizer
-        if: steps.openssl-cache.outputs.cache-hit != 'true'
-        run: |
-          cd "$RUNNER_TEMP"
-          curl -fsSL -o openssl.tar.gz "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
-          echo "$OPENSSL_SHA256  openssl.tar.gz" | sha256sum --check --strict
-          tar xzf openssl.tar.gz
-          cd "openssl-$OPENSSL_VERSION"
-          ./Configure linux-x86_64-clang enable-msan no-asm no-shared no-tests no-module \
-            --prefix="$HOME/openssl-msan" --libdir=lib CC=clang-18 \
-            CFLAGS="-fsanitize-memory-track-origins -fno-omit-frame-pointer -g -O1" > /dev/null
-          make -j"$(nproc)" build_libs > /dev/null
-          make install_dev > /dev/null
+          key: openssl-${{ env.OPENSSL_VERSION }}-msan-clang18-ubuntu24.04-deep-v1
+          fail-on-cache-miss: true
       - name: Configure (as CI's msan job, with the long tests)
         run: >
           cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo -DGZW_BREAK_CHECKS=OFF -DGZ_LONG_TESTS=ON
@@ -570,7 +610,7 @@ jobs:
   # --- every shard's result in one table ---------------------------------------------
   summary:
     name: summary
-    needs: [plan, fuzz-build, fuzz, mutation, valgrind, msan, sanitizers, tsan, regtest]
+    needs: [plan, fuzz-build, fuzz, mutation, valgrind, openssl-msan, msan, sanitizers, tsan, regtest]
     if: always() && needs.plan.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -591,9 +631,8 @@ jobs:
           JOBS: ${{ toJSON(needs) }}
         run: |
           mkdir -p results
-          python3 -I tools/deep-checks.py summary results summary
-          echo "$JOBS" | python3 -I -c 'import json,sys; [print("%-12s %s" % (k, v["result"])) for k, v in json.load(sys.stdin).items()]' \
-            | tee -a summary/summary.md
+          echo "$JOBS" > "$RUNNER_TEMP/needs.json"
+          python3 -I tools/deep-checks.py summary results summary --needs "$RUNNER_TEMP/needs.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: summary

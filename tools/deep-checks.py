@@ -12,16 +12,21 @@ result.json, which the summary job merges.
       (mutation=<json>, mutation_count=<n>). LIST: "all" or names separated by
       commas. K: shards per tool, 0 for each tool's default.
   deep-checks.py mutate SRC TOOL SHARD OF OUT [--budget MIN] [--jobs N]
-      Prepare and run one shard of one mutation tool.
+      Prepare and run one shard of one mutation tool. Exits 0 when the tool
+      passes, 3 when its only complaint is surviving mutants, 1 otherwise (a
+      failed preparation or baseline, a mutant that did not apply or build, a
+      crash, a timeout).
   deep-checks.py tests BUILD SHARD OF [--compiled]
       The regular expression that selects this shard's CTest tests (empty if
       none). --compiled: only tests whose program is built in BUILD (the ones
       tools/valgrind-tests.py runs).
   deep-checks.py run NAME OUT [--budget MIN] -- COMMAND...
       Run any command with a log and a result.json.
-  deep-checks.py summary DIR OUT
+  deep-checks.py summary DIR OUT [--needs JSON]
       Merge every result.json and survivors.txt under DIR into OUT/summary.md
-      and OUT/survivors.txt.
+      and OUT/survivors.txt. --needs: the workflow's needs context as a file;
+      a job that did not succeed counts in the headline, even if it wrote no
+      result.json.
 
 Standard library only. Builds nothing on its own except what a mutation tool
 needs before it starts.
@@ -377,11 +382,33 @@ def mutate(src, tool, shard, of, out, o):
     surv = survivors_of(t["style"], text)
     with open(os.path.join(out, "survivors.txt"), "w") as f:
         f.write("".join("%s\t%s\n" % (tool, s) for s in surv))
-    status = "timeout" if rc is None else ("ok" if rc == 0 else "failed")
+    log_text = open(os.path.join(out, "log.txt"), errors="replace").read()
+    only_survivors = rc not in (None, 0) and surv and not other_problems(log_text + "\n" + text)
+    status = "timeout" if rc is None else ("ok" if rc == 0 else ("survivors" if only_survivors else "failed"))
     write_result(out, name="%s %d/%d" % (tool, shard + 1, of), kind="mutation", tool=tool, shard=shard, of=of,
                  status=status, exit=rc, mutants=len(names) if tool != "signing-rules" else None,
                  survivors=len(surv), seconds=round(time.time() - start))
-    return 0 if rc == 0 else 1
+    return 0 if rc == 0 else (SURVIVORS_ONLY if only_survivors else 1)
+
+
+# A mutation tool's lines that report something other than a survivor: a
+# mutant that did not apply or build, a failing baseline, a crash. The
+# patterns are the tools' own verdict words (see each tool's prints).
+PROBLEMS = re.compile(
+    r"^\s*(BAD\b|BROKEN\b|NOBUILD\b|NO BUILD\b|NO-COMPILE\b|BAD-LIST\b|INVALID\b|NOT APPLIED\b|not applicable:|"
+    r"MISSING\b|BASELINE FAILS|baseline:|Traceback|FAIL:|configure failed|the unmutated|STOPPED:|invalid )"
+    r"|\b(BAD MUTANT|no build|BAD-MUTANT|does-not-compile|no-compile|marker-missing)\b|\b[1-9][0-9]* not applied\b",
+    re.M)
+SURVIVORS_ONLY = 3
+
+
+def other_problems(text):
+    for m in PROBLEMS.finditer(text):
+        line = text[text.rfind("\n", 0, m.start()) + 1:text.find("\n", m.start())]
+        if line.startswith("baseline: every test passes"):
+            continue
+        return True
+    return False
 
 
 # --- CTest shards -------------------------------------------------------------------
@@ -404,8 +431,13 @@ def cmd_tests(args):
 # --- summary ----------------------------------------------------------------------------
 
 def cmd_summary(args):
-    src, out = args[0], args[1]
+    pos, o = parse_opts(args, {"needs": ""})
+    src, out = pos[0], pos[1]
     os.makedirs(out, exist_ok=True)
+    needs = {}
+    if o["needs"]:
+        with open(o["needs"]) as f:
+            needs = json.load(f)
     results, survivors = [], []
     for root, _, files in os.walk(src):
         if "result.json" in files:
@@ -418,9 +450,16 @@ def cmd_summary(args):
                 survivors.extend(l.rstrip("\n") for l in f if l.strip())
     results.sort(key=lambda r: (r.get("kind", ""), r.get("tool", ""), r.get("name", "")))
     bad = [r for r in results if r.get("status") != "ok"]
+    jobs_bad = sorted(k for k, v in needs.items() if v.get("result") not in ("success", "skipped"))
     lines = ["# Deep checks", ""]
-    lines.append("%d shards: %d ok, %d failed or stopped; %d surviving mutants." % (
-        len(results), len(results) - len(bad), len(bad), len(survivors)))
+    only = [r for r in bad if r.get("status") == "survivors"]
+    lines.append("%d shards: %d ok, %d with surviving mutants only, %d failed or stopped; %d surviving mutants." % (
+        len(results), len(results) - len(bad), len(only), len(bad) - len(only), len(survivors)))
+    if jobs_bad:
+        lines.append("")
+        lines.append("**Not successful: %s.** A job that fails before it writes a result (in Configure or Build, "
+                     "say) is counted here, not in the table." % ", ".join(
+                         "%s (%s)" % (k, needs[k].get("result")) for k in jobs_bad))
     lines += ["", "| Shard | Status | Exit | Mutants | Survivors | Minutes |", "|---|---|---|---|---|---|"]
     for r in results:
         lines.append("| %s | %s | %s | %s | %s | %.0f |" % (
@@ -428,6 +467,8 @@ def cmd_summary(args):
             "" if r.get("kind") != "mutation" else r.get("survivors"), (r.get("seconds") or 0) / 60.0))
     if survivors:
         lines += ["", "## Surviving mutants", "", "```"] + sorted(survivors) + ["```"]
+    if needs:
+        lines += ["", "## Jobs", ""] + ["- %s: %s" % (k, v.get("result")) for k, v in needs.items()]
     text = "\n".join(lines) + "\n"
     with open(os.path.join(out, "summary.md"), "w") as f:
         f.write(text)

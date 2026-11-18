@@ -836,6 +836,73 @@ static void test_reset_drops_a_pass_in_flight(test_state *T) {
   wx_close(&x);
 }
 
+/* Waits until the worker has finished a pass after `after` passes; returns the
+ * time it saw that, or 0 at LONG_MS. */
+static uint64_t pass_done(wx *x, uint64_t after, uint64_t *passes) {
+  gz_chainw_stats st;
+  uint64_t end = ms_now() + LONG_MS;
+  do {
+    gz_chainw_stats_get(x->w, &st);
+    if (st.passes > after) {
+      *passes = st.passes;
+      return ms_now();
+    }
+    nap(5);
+  } while (ms_now() < end);
+  return 0;
+}
+
+/* A reset stops a long pass between two requests, also without an interrupt
+ * hook (engine_stop in chainw.c): the new generation's first tip comes about
+ * one request after the reset, not after the rest of the old pass. One server
+ * answers every transaction question 400 ms late, and eight watches make a
+ * pass of seconds; the reset comes a quarter of the way into one. */
+static void test_reset_stops_a_long_pass(test_state *T) {
+  wx x;
+  uint8_t id[GZ_HASH_LEN];
+  uint64_t p = 0;
+  wx_open(&x);
+  x.cfg.interrupt = NULL;
+  wx_start(&x);
+  memset(id, 0x58, sizeof id);
+  for (int i = 0; i < SIM_NTX; i++) CHECK(gz_chainw_watch_tx(x.w, TXID(&x, i), 3, 0) == GZ_CHAINW_OK);
+  for (uint8_t i = 0; i < 4; i++) {
+    id[0] = i;
+    CHECK(gz_chainw_watch_outpoint(x.w, id, i, 3, 0) == GZ_CHAINW_OK);
+  }
+  CHECK(await(&x, "tip 1003", LONG_MS));
+  sim_lock(&x.net);
+  x.net.delay_view = 0;
+  x.net.delay_path = "/tx/";
+  x.net.delay_ms = 400;
+  sim_unlock(&x.net);
+  /* one whole pass at this pace: from the end of one pass to the end of the next */
+  gz_chainw_stats st;
+  gz_chainw_stats_get(x.w, &st);
+  uint64_t t1 = pass_done(&x, st.passes, &p);
+  uint64_t t2 = t1 ? pass_done(&x, p, &p) : 0;
+  CHECK(t1 != 0 && t2 != 0);
+  uint64_t pass_ms = t2 > t1 ? t2 - t1 : 0;
+  CHECK(pass_ms >= 2000); /* else the pass is too short for the test to tell anything */
+  nap((unsigned)(pass_ms / 4));
+  uint64_t t0 = ms_now();
+  CHECK(gz_chainw_reset(x.w) == 2);
+  x.log[0] = 0;
+  CHECK(await(&x, "tip 1003", LONG_MS));
+  uint64_t took = ms_now() - t0;
+  CHECK(x.last_generation == 2);
+  T->checks++;
+  if (took * 2 > pass_ms) {
+    T->failed++;
+    fprintf(stderr, "  the new generation's tip came %llu ms after the reset; a pass takes %llu ms\n",
+            (unsigned long long)took, (unsigned long long)pass_ms);
+  }
+  sim_lock(&x.net);
+  x.net.delay_ms = 0;
+  sim_unlock(&x.net);
+  wx_close(&x);
+}
+
 /* M3. A reset wakes a worker that waits for room, with nothing taken. */
 static void test_reset_wakes_a_waiting_worker(test_state *T) {
   wx x;
@@ -996,6 +1063,7 @@ int main(void) {
   RUN(test_broadcast_handed_over_mid_pass);
   RUN(test_tip_never_replaces_a_report);
   RUN(test_reset_drops_a_pass_in_flight);
+  RUN(test_reset_stops_a_long_pass);
   RUN(test_reset_wakes_a_waiting_worker);
   RUN(test_requests_and_free_wake_the_worker);
   RUN(test_retries_keep_their_place);
