@@ -296,6 +296,7 @@ static gz_status_t on_chain(gz_node_t *c, const gz_event_t *ev, gz_action_list_t
     case GZ_CHAIN_TX_UNCONFIRMED:
     case GZ_CHAIN_OUTPOINT_SPENT:
     case GZ_CHAIN_WATCH_SYNCED:   /* routed by its watch, like a report */
+    case GZ_CHAIN_WATCH_FAILED:
         mask = gz_watch_mask(c, &ev->u.chain);
         for (int e = ENG_TEST0; e < ENG_N && st == GZ_OK; e++) {
             /* A slot's engine only while its slot is Open (its bit left the

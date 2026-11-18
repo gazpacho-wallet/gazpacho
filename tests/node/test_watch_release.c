@@ -62,6 +62,12 @@ int main(void)
     CHECK(gz_watch_mask(c, &e) == (1u << ENG_TEST0));
     e.is_tx = 0;   /* no outpoint watch on that txid */
     CHECK(gz_watch_mask(c, &e) == 0);
+    /* WATCH_FAILED too: only the engine of that watch hears it (G-1). */
+    e.kind = GZ_CHAIN_WATCH_FAILED;
+    e.is_tx = 1;
+    CHECK(gz_watch_mask(c, &e) == (1u << ENG_TEST0));
+    e.is_tx = 0;
+    CHECK(gz_watch_mask(c, &e) == 0);
     /* Released twice, or never held: dropped. */
     a = unwatch_tx(1);
     CHECK(gz_watch_unnote(c, &a, ENG_TEST0) == 0);
