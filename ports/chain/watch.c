@@ -95,6 +95,7 @@ struct gz_watch {
   size_t next_watch; /* where the next pass starts, after one that ended early */
   bool network_ok;
   bool tell_tip;
+  bool tip_synced_told; /* GZ_CHAINW_TIP_SYNCED told for the tip last told */
   uint64_t next_sync;  /* when the tip is next due */
   uint64_t hold_until; /* nothing is asked before this, after a failed pass */
   uint32_t failures;   /* failed passes in a row */
@@ -115,6 +116,8 @@ const char *gz_chainw_kind_name(gz_chainw_kind k) {
     case GZ_CHAINW_TX_EVICTED: return "tx-evicted";
     case GZ_CHAINW_OUTPOINT_UNSPENT: return "outpoint-unspent";
     case GZ_CHAINW_REORG: return "reorg";
+    case GZ_CHAINW_SYNCED: return "synced";
+    case GZ_CHAINW_TIP_SYNCED: return "tip-synced";
   }
   return "unknown";
 }
@@ -349,6 +352,7 @@ static void emit_tip(gz_watch *e) {
   ev.height = top_height(e);
   memcpy(ev.block_hash, hash_at(e, ev.height), GZ_HASH_LEN);
   e->tell_tip = false;
+  e->tip_synced_told = false;
   emit(e, &ev);
 }
 
@@ -980,10 +984,18 @@ gz_chain_result gz_watch_step(gz_watch *e) {
        * only counted, along the headers. */
       bool ask = w->fresh || w->recheck || (synced && w->state != ST_CONFIRMED);
       if (!ask && !(synced && w->state == ST_CONFIRMED && w->linked)) continue;
+      bool was_fresh = w->fresh;
       gz_chain_result r = w->kind == KIND_TX ? poll_tx(e, w, ask) : poll_outpoint(e, w, ask);
       if (stopped(e)) return GZ_CHAIN_OK;
       if (ask) asked = true;
       if (r == GZ_CHAIN_OK) {
+        if (was_fresh && e->cfg.report_synced) {
+          /* its first answer since it was set: what it found was told above */
+          gz_chainw_event ev;
+          watch_event(w, &ev, GZ_CHAINW_SYNCED);
+          ev.outpoint_watch = w->kind != KIND_TX;
+          emit(e, &ev);
+        }
         w->fresh = false;
         w->recheck = false;
       } else if (r == R_LATER) {
@@ -1005,6 +1017,16 @@ gz_chain_result gz_watch_step(gz_watch *e) {
       }
     }
     if (ended_early && was_descending) e->descending = true;
+    if (e->cfg.report_synced && synced && worst == GZ_CHAIN_OK && !ended_early && !later &&
+        !e->tip_synced_told && !e->tell_tip) {
+      /* every watch held has had its answer for this tip, told above */
+      gz_chainw_event ev;
+      event_init(&ev, GZ_CHAINW_TIP_SYNCED);
+      ev.height = top_height(e);
+      memcpy(ev.block_hash, hash_at(e, ev.height), GZ_HASH_LEN);
+      e->tip_synced_told = true;
+      emit(e, &ev);
+    }
   }
   if (!asked) return e->sources;
   /* waits are counted from the end of the pass, which can be long */

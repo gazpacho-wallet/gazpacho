@@ -297,6 +297,10 @@ try:
     check(h.wait_for(r" ready incarnation=") is not None, "2b: started again")
     check(h.wait_for(r"watch-tx txid=%s depth=2" % bytes.fromhex(TX_A)[::-1].hex()) is not None,
           "2b: the watch still wanted is set again")
+    check(h.wait_for(r"chain-synced tx=%s" % TX_A) is not None,
+          "2b: the worker reports the watch synced once it has answered it (WATCH_SYNCED, H-1)")
+    check(h.wait_for(r"chain-tip-synced height=\d+") is not None,
+          "2b: and the tip synced once every watch has its answer for it (TIP_SYNCED, B12)")
     time.sleep(2.0)
     check(h.count(r"watch-tx txid=%s" % sp_le.hex()) == 0, "2b: the released watch is not set again")
     no_trouble(h, "2b")

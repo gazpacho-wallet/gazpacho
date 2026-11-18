@@ -75,7 +75,9 @@ static void check_event(void *ctx, const gz_chainw_event *ev) {
     case GZ_CHAINW_TX_MEMPOOL:
     case GZ_CHAINW_TX_EVICTED:
     case GZ_CHAINW_TX_UNCONFIRMED:
-    case GZ_CHAINW_OUTPOINT_UNSPENT: break;
+    case GZ_CHAINW_OUTPOINT_UNSPENT:
+    case GZ_CHAINW_SYNCED:
+    case GZ_CHAINW_TIP_SYNCED: break;
     default: must(0);
   }
 }
@@ -98,6 +100,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   sim_net_init(&f.net, false);
   must(sim_stack_open(&f.stack, &f.net));
   memset(&cfg, 0, sizeof cfg);
+  cfg.report_synced = true;   /* the SYNCED reports too (step P4.5) */
   cfg.chain = &f.stack.multi;
   cfg.network = GZ_NET_SIGNET;
   cfg.tip_poll_ms = 1000;

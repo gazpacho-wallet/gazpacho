@@ -309,6 +309,24 @@ int gzp_chain_take(gzp_chain_t *c, gz_event_t *ev)
         case GZ_CHAINW_TX_EVICTED:
             gzp_log("chain-tx-evicted txid=%s", hex);
             continue;
+        case GZ_CHAINW_TIP_SYNCED:
+            gzp_log("chain-tip-synced height=%u", w.height);
+            ev->u.chain.kind = GZ_CHAIN_TIP_SYNCED;
+            ev->u.chain.height = w.height;
+            return 1;
+        case GZ_CHAINW_SYNCED:
+            ev->u.chain.kind = GZ_CHAIN_WATCH_SYNCED;
+            if (w.outpoint_watch) {
+                gz_hash_to_hex(w.outpoint_txid, hex2);
+                gzp_log("chain-synced outpoint=%s:%u", hex2, w.outpoint_vout);
+                memcpy(ev->u.chain.outpoint.txid, w.outpoint_txid, 32);
+                ev->u.chain.outpoint.vout = w.outpoint_vout;
+            } else {
+                gzp_log("chain-synced tx=%s", hex);
+                ev->u.chain.is_tx = 1;
+                memcpy(ev->u.chain.txid, w.txid, 32);
+            }
+            return 1;
         case GZ_CHAINW_OUTPOINT_UNSPENT:
             gz_hash_to_hex(w.outpoint_txid, hex2);
             gzp_log("chain-unspent outpoint=%s:%u was=%s", hex2, w.outpoint_vout, hex);
@@ -419,6 +437,7 @@ int gzp_chain_open(gzp_chain_t *c, const char *const *urls, const char *const *o
             wc.max_requests = lim->watches + GZ_CHAINW_MAX_BROADCASTS;
     }
     c->max_watches = (uint32_t)wc.max_watches;
+    wc.report_synced = true;   /* GZ_CHAIN_WATCH_SYNCED (action.h, WATCHES) */
     wc.interrupt = gz_http_curl_interrupt_hook;
     wc.interrupt_ctx = &c->http;
     if (!(c->w = gz_chainw_new(&wc))) {
