@@ -1,6 +1,6 @@
 # Integration: Slice 1 end to end (P4.6)
 
-Draft 7, 2026-11-18. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
+Draft 8, 2026-11-18. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
 open pull requests of Slice 1 onto `main`, in this order: #51 (`p5-p6-api`), #52 (`composite-p4-3`), #54
 (`s5-s6-program`), #53 (`keys-p8`), #56 (`funding-p45`), #55 (`composite-p6a`). Then it wires them together so
 that one host and three members, each a separate `gazpacho` process, form a factory on the local test chain
@@ -36,6 +36,10 @@ Base: `main` at `4aab237` (#64). Heads merged: #51 `cd98aed`, #52 `91aa062`, #54
 | #56 again, `07ba866` (review B second confirmation: WATCH_FAILED and the tip's block hash in the chain contract; a failed watch fails its factory closed) | none | #56 adds WATCH_FAILED to `on_chain`'s report case, next to this branch's tip case; it merges as it is |
 | #56 again, `cf43d35` (`main` merged in: #65, valgrind in three shards) | none | |
 | `main` at `5e23043` (#65, valgrind in three shards; #67, hello again) | `core/lobby/include/gazpacho/lobby.h`, the member state | This branch (#52) adds `max_tree_nodes` after `sent_here`; #67 adds `heard_here`, `hello_tries` and `retry_join` there. Union: all four kept |
+| #51 again, `d0414c2` (`main` merged in: the lobby member's hello again) | none | |
+| #52 again, `bb4cdfe` (tests for thirteen signing-rule removals, KEYS_STILL_ROUNDS) | none | |
+| #56 again, `2b9905a` (`main` merged in: #67, #68) | none | |
+| `main` at `ca2eb2f` (#68: the chain adapter's loop lookups on a client of their own, B11) | nothing to merge: already in #56's `2b9905a` | F9 stays: #68 gives the adapter's loop lookups their own client, which ends B11's race. The host's wallet scan at its start, which held `program_chain_stub` (B14), is the wallet port's (`program/wport.c`), not the adapter's: #68 does not touch it, and it keeps its own thread and client |
 
 ## 2. The wiring list: every stand-in still used between components
 
@@ -93,6 +97,7 @@ Base: `main` at `4aab237` (#64). Heads merged: #51 `cd98aed`, #52 `91aa062`, #54
 | B13 | **An expectation that changes with the wiring.** `tests/program/signing.py` line 138 checks that each acking member "writes no funding_status (the funding engine's, P4.5)": true on #52 alone, where no funding engine runs. With the funding engine wired (F3), a member's engine writes its first `funding_status` (0x00030006, state 1 acked, with the funding transaction, its output, the ack tip and the exit constants) at its ack, as `funding.md` (its member row and record table) says. The new expectation: each acking member writes `funding_status`, its first with state 1 (acked), from its ack on, and the refusing member (m4) writes none. Not changed here (no test is changed on this branch); hidden today because the test stops earlier (B2), so it will fail on a correct tree once W4 is done. The line should change with the wiring, by its owner | Reading (`program_slice1` does not read the journals, which are sealed) | #52 (its test), with #56 |
 | B14 | This branch's own: the host's wallet scan (F3) made 40 synchronous lookups before the loop, so a slow chain server held the start and a stop (`program_chain_stub`: "a slow chain server does not hold the loop", "SIGTERM stops it") | CI gcc job on `ea8136d`; fixed here (F9) | P4.6 (mine), for #56 to take with F3 |
 | B15 | **Neither is broken: the test's pace, against the chain worker's.** Intermittent in `program_slice1` case 3 (two of five runs on `e14468c`, two of four on `7ae4b23`): the member in both lobbies (m1) had not judged its factories Live when the check ran. F10's request log rules the look-alike out: all 3,808 requests of the four runs were answered in at most 0.12 s, after at most 0.06 s waiting for its lock, all with 200 but 19 early 404s (the fundings' bytes before their broadcast). The worker is slow, not stuck: when a watched transaction confirms, one pass proves it (`gz_chain_confirm_tx`: status, tip, bytes, block hash, header, block summary, coinbase, its bytes, both Merkle branches: about ten requests) at the client's pace of one request per 250 ms, watch after watch, and looks at the tip only at the start of the next pass. The host and m1 watch both fundings and both spent inputs (four watches, and each funding proved twice, once as a watched transaction and once as a watched input's spender), so that pass lasts about 13 s; a member with one funding and one input, about half that. Both fundings always confirm in one block; with a block every 2 s the two workers then tell no tip for 7 to 9 blocks (their counts go from 1 to 8 or 10 with nothing between, or, when they first see the fundings at 2, from 2 to the end of the case). The case stopped mining once every lobby showed Active, which m1 shows from the host's status, and then checked each process's own Live judgment at once: whether m1 had told its third block by then depended on when its slow pass began. **Fix, F11 (the test, P4.6):** mine until every process shows Active **and** its own funding engine has judged Live, within the same time limit; the checks are unchanged. **To the chain port (`main`), not a correctness bug:** the tip waits for a whole pass of proofs, and a transaction that is both a watched one and a watched input's spender is proved twice. On signet (a block per 10 minutes) the delay is seconds; with many watches it grows with their number | `program_slice1` on the build server, with F10's request log | P4.6 (the test, F11); the pacing to the chain port on `main`, with #56 told (its funding engine judges Live from these tips) |
+| B16 | **Review B of PR 52's M1, reproduced with separate processes.** A member that restarts between saving its partial signatures and the host's round_complete judges its ack with its slot's `own_depth`, which the replayed round never sets (0 after a restart): `gz_tree_may_ack` then allows a tip up to E - 74 instead of E - 16·d - 74. `program_ack_depth` (section 5): restarted at TIP + 5, m1 acks (case 1 passes); restarted at E - 80, past its limit at any real depth, m1 **acks** and saves round_completed (case 2 fails its three checks), so the host would fund a factory whose exit m1 cannot finish in time (C8). `gz_fd_member_acked` takes the same field | `program_ack_depth` on the build server | #52 (its M1 fix: the depth from the round itself, or kept in it); the case is red until it lands, then merged here and run again |
 
 Status on `0405752` (CI, every build job): B2 and B10 are gone with #53 `ce68327` (`program_lobby` and `program_keys_ct` pass, and `program_signing` no longer stops early); `program_signing` now fails on exactly B13's three checks ("m1/m2/m3 writes no funding_status"), as predicted; `program_p6a_views` runs (it waited for `program_lobby`) and fails on B8's check; B1 and B3 are as before.
 
@@ -117,6 +122,17 @@ on 127.0.0.1 at a free port, `-listen=0`, stopped at the end) and `tools/esplora
 Not yet in it, from `composite-node.md` P4.6: `program_slice1_signet` (opt in, `GZ_LIVE_TESTS`, the test coins), and
 an AT_JOIN member (it waits for W4). Results on the build server (Core 29.1): section 6.
 
+Two more program tests from this branch:
+- `tests/program/ack_depth.py`, CTest `program_ack_depth` (no chain, a fixed tip): one host and three AUTO members
+  on `program_signing`'s terms. m1 stops once the batch holding its partial signatures is durable
+  (`--test-crash-after-record` round_signed) and starts again on its folder with another tip. Case 1 at TIP + 5:
+  it acks. Case 2 at E - 80, with E the proposed end height: the ack check `gz_tree_may_ack` allows a tip up to
+  E - 16·d - 74 for a leaf at depth d (STEP 5, Slice 1's A 6, B 3, M 14, a 36-block funding deadline), so a member
+  at depth 1 or more must refuse, and only a depth of 0 lets it ack. B16.
+- `tests/program/slice1_signet.py`, CTest `program_slice1_signet`: section 8's plan, built. Skipped (77) and touching
+  no network unless `GZ_LIVE_TESTS=1` and `GZ_SIGNET_DIR` (the host's folder, kept between runs); it moves no coin,
+  and skips again, printing the host's first address, while that address holds none. Not run against signet.
+
 ## 6. Results on the build server
 
 Bitcoin Core 29.1 regtest, its own data folder, `-listen=0`, RPC on loopback; every process `gazpacho-test` from the
@@ -131,6 +147,7 @@ branch's tree with F1 to F6 and the wiring, its chain worker polling the tip eve
 | With F8, F9 and #56 `8fe2004` (head `e14468c`), one test at a time | 40 of 42 in the chain, funding, node, isolation, options, lobby and `program_slice1` subset pass, `program_slice1` all three cases included; `program_lobby` fails case 7 only (B2). `program_chain_stub` passes (it failed before F9, on the build server and in the gcc CI job). `program_chain_watch` fails its BUSY and held-broadcast cases (4 and 9) on the build server in most runs, in parallel or alone, with or without the wallet scan, and passed once alone: timing on a shared server (`main`'s CI runs it alone, #58; it passed in CI on `ea8136d`). `program_slice1` case 3 failed one check in two of five runs: B15 |
 | After the re-merges of #54 `a88b2da`, #53 `ce68327` and #56 `07ba866` (head `7ae4b23`, every target built) | Case 3 alone, four times in a row with F10's request log: two pass every check; two fail one, the Live check on m1 (B15). Every other check of the four runs passes, restarts included. The CTest subset, one test at a time: 53 passed and none failed before its 50-minute cap; `valgrind_signing` reached its 1,500 s limit under valgrind on the build server (the regex took in the valgrind tests; CI's valgrind shards pass it) |
 | With F11 (head `0405752`) | Case 3 four times in a row: **all four pass every check**. Then `program_slice1`, all three cases, from CTest: **PASS** (126 s) |
+| After the merge of `main` `5e23043` (head `dbef63e`), one test at a time, valgrind and fuzz tests left out | 116 of 123 pass, `program_lobby` (every case, #67's hello again in) and `program_slice1` among them. Red: the expected `program_api`, `program_release_build` (B3), `program_p6a_views` (B8), `program_signing` (B13), `program_derived_keys` (B1); and the two constant-time checks `program_keys_ct` and `signing_ctime`, which pass in CI's gcc job on `0405752` (the build server's debug build under its valgrind: not triaged here) |
 
 ## 7. CI on this branch
 
@@ -142,9 +159,10 @@ branch's tree with F1 to F6 and the wiring, its chain worker polling the tip eve
 | `ea8136d` (case 3, notes draft 3) | **Every job builds** (F7 works). Red: the expected B1, B2, B3, B8, B10 tests, and three new ones that this branch caused: `chain_headers` and `program_options` (F2 made regtest a network, against their checks that it is none: fixed by F8) and, in the gcc job, `program_chain_stub` (the host's wallet scan held its start against a slow server: B14, fixed by F9). `program_slice1` skipped (no Core on the runners). The ASan job was cancelled at its time limit |
 | `f2049b4` (F8, F9, #56 `8fe2004`, notes draft 5) | Builds in every job that ran to the end. Red only on the expected tests: `web_p6a_fixme` (B8), `program_api` and `program_release_build` (B3), `program_lobby` (B2), `program_signing` (B2), `program_derived_keys` (B1), and `program_keys_ct` (B10, gcc OFF job); `program_p6a_views` not run. **`chain_headers`, `program_options` and `program_chain_stub` pass again** (F8, F9). Valgrind, vectors, addresses, the interface, the handbook and the wallet break-checks pass. The ASan (20 minutes) and gcc ON (30 minutes) jobs were cancelled at their time limits, as on the earlier heads, and this time libFuzzer too (30 minutes); on `main` all three finish |
 | `0405752` (#53 `ce68327`, #54 `a88b2da`, #56 `07ba866` and `cf43d35`, F10, F11, notes draft 6) | Every job builds; the ASan job now finishes. Red only as expected: `web_p6a_fixme` and `program_p6a_views` (B8), `program_api` and `program_release_build` (B3), `program_derived_keys` (B1), `program_signing` (B13's three checks only). `program_lobby` and `program_keys_ct` pass (B2, B10 gone). The three valgrind shards and their summary job, vectors, addresses, the interface, the handbook and the wallet break-checks pass; libFuzzer and MemorySanitizer had not finished when this draft was written |
+| `dbef63e` (`main` `5e23043`, notes draft 7) | The CI run waited in GitHub's queue for over an hour (only the wallet break-checks ran, and passed); superseded by the next push |
 | This draft's head | Running when this draft was pushed; recorded in the next draft |
 
-## 8. Next: the signet run (plan, not started)
+## 8. Next: the signet run (test built, not run)
 
 `program_slice1_signet` (opt in, `GZ_LIVE_TESTS`), case 1's shape first: one host and three AUTO members on the build
 server, each a `gazpacho-test` process with `--network signet`.
