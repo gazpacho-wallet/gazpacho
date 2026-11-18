@@ -549,7 +549,7 @@ struct gz_node {
     uint8_t sg_keys[GZ_SIGN_MAX_PARTICIPANTS][33];
     gz_tree_participant_t sg_parts[GZ_SIGN_MAX_PARTICIPANTS];
     gz_tree_proposal_t sg_prop;
-    uint8_t sg_ftx[128];
+    uint8_t sg_ftx[GZ_SIGN_MAX_FUNDING_TX]; /* the proposal's funding transaction: the plan's bytes (P4.6) */
     gz_tree_t *sg_tree;             /* the builder's work space (large), in the engine's memory */
     gz_tree_import_t *sg_imp;
 
