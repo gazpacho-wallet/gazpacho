@@ -3,7 +3,8 @@
  * fold in.
  *
  * The coins are the wallet's own BIP 86 outputs (account 0, receive and
- * change chains), read from the chain port at the program's start,
+ * change chains), read from the chain port by a thread of its own started
+ * at the program's start (a slow server never holds the loop or a stop),
  * confirmed ones only (review A of PR 56, M5). A plan holds its coins until
  * it is released; the holds are in memory, kept across the in-process
  * restarts of one run. The master key is derived from the unlocked seed
@@ -19,6 +20,7 @@
 #ifndef GZP_WPORT_H
 #define GZP_WPORT_H
 
+#include <pthread.h>
 #include <secp256k1.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -45,14 +47,23 @@ typedef struct {
     uint8_t used[GZP_WPORT_PLANS];
     uint32_t next_change;
     gz_wallet_port_t port;
+    /* the scan thread (gzp_wport_scan_start) */
+    pthread_mutex_t mu;           /* coins, n_coins, held and next_change, between the scan and the port */
+    pthread_t th;
+    int th_on;
+    volatile int stop;
+    const char *url;
+    uint32_t gap;
+    void *http_live;              /* the scan's HTTP client while it runs, to interrupt it */
 } gzp_wport_t;
 
 /* The master key from the unlocked seed. 0, or -1. */
 int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlock_t *unlock, gzw_network wnet);
 /* The confirmed coins of the first `gap` receive and change addresses, asked of the Esplora server
  * at `url` through a client of its own: the chain worker's, which runs in its own thread, is never
- * used from the loop's. The number found, or -1. */
-int gzp_wport_scan(gzp_wport_t *w, const char *url, uint32_t gap);
+ * used from the loop's. Starts a thread for it and returns: 0, or -1. A plan made
+ * before the scan has published finds no coin (outcome Failed, as with an empty wallet). */
+int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap);
 /* Test build, no chain: one invented coin paying the first receive address. */
 int gzp_wport_invent(gzp_wport_t *w);
 void gzp_wport_close(gzp_wport_t *w);

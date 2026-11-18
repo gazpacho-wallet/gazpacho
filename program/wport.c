@@ -38,7 +38,7 @@ static void unhold(gzp_wport_t *w, int k)
         if (w->held[i] == k + 1) w->held[i] = 0;
 }
 
-static int w_plan(void *ctx, uint64_t amount, const uint8_t script[34], uint64_t feerate, const gz_outpoint_t *must,
+static int plan_locked(void *ctx, uint64_t amount, const uint8_t script[34], uint64_t feerate, const gz_outpoint_t *must,
                   uint8_t *tx, size_t cap, size_t *tx_len, gz_fund_prevout_t *prev, size_t max_prev, size_t *n_prev)
 {
     gzp_wport_t *w = ctx;
@@ -120,7 +120,7 @@ static gzt_funding *by_txid(gzp_wport_t *w, const uint8_t txid[32])
     return NULL;
 }
 
-static void w_release(void *ctx, const uint8_t *tx, size_t len)
+static void release_locked(void *ctx, const uint8_t *tx, size_t len)
 {
     gzp_wport_t *w = ctx;
     int k;
@@ -128,6 +128,26 @@ static void w_release(void *ctx, const uint8_t *tx, size_t len)
     unhold(w, k);
     gzt_funding_wipe(&w->plans[k]);
     w->used[k] = 0;
+}
+
+/* The coins and their holds, under the mutex the scan publishes with. */
+static int w_plan(void *ctx, uint64_t amount, const uint8_t script[34], uint64_t feerate, const gz_outpoint_t *must,
+                  uint8_t *tx, size_t cap, size_t *tx_len, gz_fund_prevout_t *prev, size_t max_prev, size_t *n_prev)
+{
+    gzp_wport_t *w = ctx;
+    int r;
+    pthread_mutex_lock(&w->mu);
+    r = plan_locked(ctx, amount, script, feerate, must, tx, cap, tx_len, prev, max_prev, n_prev);
+    pthread_mutex_unlock(&w->mu);
+    return r;
+}
+
+static void w_release(void *ctx, const uint8_t *tx, size_t len)
+{
+    gzp_wport_t *w = ctx;
+    pthread_mutex_lock(&w->mu);
+    release_locked(ctx, tx, len);
+    pthread_mutex_unlock(&w->mu);
 }
 
 static int w_spend_back(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee, uint8_t *out, size_t cap,
@@ -160,6 +180,7 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     w->have_master = gzw_bip32_master(secp, seed, sizeof seed, &w->master, &why) == 1;
     OPENSSL_cleanse(seed, sizeof seed);
     if (!w->have_master) return -1;
+    pthread_mutex_init(&w->mu, NULL);
     w->next_change = 100;
     w->port.plan = w_plan;
     w->port.sign_plan = w_sign_plan;
@@ -170,27 +191,35 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     return 0;
 }
 
-int gzp_wport_scan(gzp_wport_t *w, const char *url, uint32_t gap)
-{
 #ifdef GZP_HAVE_CURL
+/* The scan, in a thread of its own (it may wait on a slow server; the loop never does): the coins found
+ * are published at the end, under the mutex. */
+static void *scan_thread(void *arg)
+{
+    gzp_wport_t *w = arg;
     static gz_chain_output outs[32];
+    static gzt_coin found[GZP_WPORT_COINS];
     gz_http http;
     gz_http_curl_config hc;
     gz_esplora_config cfg;
     gz_chain view;
     uint64_t total = 0;
+    size_t nf = 0;
+    uint32_t next_change = 100;
     int failed = 0;
-    if (!w->have_master || !url) return -1;
     memset(&hc, 0, sizeof hc);
-    if (!gz_http_curl_create(&http, &hc)) return -1;
+    if (!gz_http_curl_create(&http, &hc)) return NULL;
     gz_esplora_config_default(&cfg);
-    cfg.base_url = url;
+    cfg.base_url = w->url;
     if (gz_esplora_create(&cfg, &http, &view) != GZ_CHAIN_OK) {
         gz_http_curl_destroy(&http);
-        return -1;
+        return NULL;
     }
-    for (uint32_t change = 0; change < 2; change++)
-        for (uint32_t j = 0; j < gap; j++) {
+    pthread_mutex_lock(&w->mu);
+    w->http_live = &http;
+    pthread_mutex_unlock(&w->mu);
+    for (uint32_t change = 0; change < 2 && !w->stop; change++)
+        for (uint32_t j = 0; j < w->gap && !w->stop; j++) {
             gzw_bip86_output o;
             size_t n = 0;
             if (!out_of(w, change, j, &o)) {
@@ -202,8 +231,8 @@ int gzp_wport_scan(gzp_wport_t *w, const char *url, uint32_t gap)
                 failed = 1;
                 continue;
             }
-            for (size_t i = 0; i < n && w->n_coins < GZP_WPORT_COINS; i++) {
-                gzt_coin *c = &w->coins[w->n_coins];
+            for (size_t i = 0; i < n && nf < GZP_WPORT_COINS; i++) {
+                gzt_coin *c = &found[nf];
                 if (!outs[i].confirmed) continue;   /* confirmed coins only (review A of PR 56, M5) */
                 memcpy(c->txid, outs[i].txid, 32);
                 c->vout = outs[i].vout;
@@ -212,14 +241,38 @@ int gzp_wport_scan(gzp_wport_t *w, const char *url, uint32_t gap)
                 c->index = j;
                 memcpy(c->script, o.script_pubkey, 34);
                 total += c->amount;
-                w->n_coins++;
-                if (change == 1 && j + 100 > w->next_change) w->next_change = j + 100;
+                nf++;
+                if (change == 1 && j + 100 > next_change) next_change = j + 100;
             }
         }
+    pthread_mutex_lock(&w->mu);
+    w->http_live = NULL;
+    if (!w->stop) {
+        memcpy(w->coins, found, nf * sizeof found[0]);
+        memset(w->held, 0, sizeof w->held);
+        w->n_coins = nf;
+        if (next_change > w->next_change) w->next_change = next_change;
+    }
+    pthread_mutex_unlock(&w->mu);
     gz_chain_destroy(&view);
     gz_http_curl_destroy(&http);
-    gzp_log("wallet-coins count=%zu total_sat=%llu lookups-failed=%d", w->n_coins, (unsigned long long)total, failed);
-    return (int)w->n_coins;
+    if (!w->stop)
+        gzp_log("wallet-coins count=%zu total_sat=%llu lookups-failed=%d", nf, (unsigned long long)total, failed);
+    OPENSSL_cleanse(found, sizeof found);
+    return NULL;
+}
+#endif
+
+int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap)
+{
+#ifdef GZP_HAVE_CURL
+    if (!w->have_master || !url || w->th_on) return -1;
+    w->url = url;
+    w->gap = gap;
+    w->stop = 0;
+    if (pthread_create(&w->th, NULL, scan_thread, w) != 0) return -1;
+    w->th_on = 1;
+    return 0;
 #else
     (void)w;
     (void)url;
@@ -246,6 +299,18 @@ int gzp_wport_invent(gzp_wport_t *w)
 
 void gzp_wport_close(gzp_wport_t *w)
 {
+    if (w->th_on) {
+        /* The scan ends at once: no further lookup, the one under way interrupted. */
+        pthread_mutex_lock(&w->mu);
+        w->stop = 1;
+#ifdef GZP_HAVE_CURL
+        if (w->http_live) gz_http_curl_interrupt((gz_http *)w->http_live, true);
+#endif
+        pthread_mutex_unlock(&w->mu);
+        pthread_join(w->th, NULL);
+        w->th_on = 0;
+    }
+    if (w->have_master) pthread_mutex_destroy(&w->mu);
     for (int k = 0; k < GZP_WPORT_PLANS; k++)
         if (w->used[k]) gzt_funding_wipe(&w->plans[k]);
     OPENSSL_cleanse(w, sizeof *w);

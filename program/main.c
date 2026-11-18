@@ -601,7 +601,7 @@ int main(int argc, char **argv)
             rc = GZP_EXIT_DATA;
             goto out;
         }
-        if (chain.active) gzp_wport_scan(&wport, opt.chain_urls[0], 20);
+        if (chain.active) gzp_wport_scan_start(&wport, opt.chain_urls[0], 20);
 #ifdef GZP_TEST_BUILD
         else gzp_wport_invent(&wport);
 #endif
