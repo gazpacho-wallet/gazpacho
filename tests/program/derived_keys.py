@@ -4,8 +4,9 @@ T2 step 3: keys derived from the seed, end to end, as separate processes.
 
     python3 -I derived_keys.py PATH_TO_GAZPACHO_TEST WORK_DIR
 
-Every folder is made from the test words "abandon ... art" (entropy all
-zero, the stand-in seed file), and every key the processes show is compared
+The host's folders are made from the test words "abandon ... art" (entropy
+all zero) and the member's from "zoo ... vote" (entropy all 0xff), through
+the stand-in seed file, and every key the processes show is compared
 with tools/keys_ref.py, which shares no code with the program.
 
   1. The host's key at start is m/254315617'/2'/1'/0' (signet), the same after
@@ -41,14 +42,16 @@ import keys_ref as R  # noqa: E402
 import lobby as L  # noqa: E402
 
 check = Checks()
-SEED = R.bip39_seed(R.ART)
+SEED = R.bip39_seed(R.ART)      # the host's words
+SEED_M = R.bip39_seed(R.VOTE)   # the member's: one seed in both roles would give the host's
+                                # factory key at (0, 2) to the member too (keys.md, open point K2)
 
 
-def seed_folder(path):
+def seed_folder(path, byte="00"):
     os.makedirs(path, mode=0o700, exist_ok=True)
     os.chmod(path, 0o700)
     fd = os.open(os.path.join(path, "wallet-seed.standin"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    os.write(fd, b"00" * 32 + b"\n")
+    os.write(fd, byte.encode() * 32 + b"\n")
     os.close(fd)
 
 
@@ -57,7 +60,7 @@ def pub(sec):
 
 
 def lobby_key(epoch, index, net="signet"):
-    return pub(R.lobby(SEED, net, epoch, index))
+    return pub(R.lobby(SEED_M, net, epoch, index))
 
 
 def host_key(net):
@@ -86,7 +89,7 @@ def main():
         # 1. the host's key ---------------------------------------------------
         w = L.World(exe, work, "t13")
         seed_folder(os.path.join(w.work, "host"))
-        seed_folder(os.path.join(w.work, "m"))
+        seed_folder(os.path.join(w.work, "m"), "ff")
         h = w.host()
         procs = w.procs
         check(L.started(h) and w.hkey == host_key("signet"),
@@ -132,6 +135,9 @@ def main():
               m.wait_for(r"lobby scope=%s role=member .*joined=1" % b.tag, timeout=20) is not None,
               "2 (T2 step 3): both lobbies join, each over its own link")
         check(m.count(r" connected peer=") == 2, "2: the member holds exactly two links")
+        time.sleep(1)
+        check(m.count(r"lobby-note code=0x4c06 a=\d+ b=7") == 0 and m.count(r"slot-closed") == 0,
+              "2: neither seat is refused and both slots stay open (no key shared with the host)")
         m.stop()
         ki = key_index_values(os.path.join(w.work, "m"))
         check(ki[:2] == [2, 4], "2: the member's key_index records say 2, then 4 (%r)" % ki[:4])

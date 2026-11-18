@@ -132,6 +132,7 @@ def bip39_seed(phrase, passphrase=""):
 
 ABOUT = " ".join(["abandon"] * 11 + ["about"])   # BIP 86's test phrase
 ART = " ".join(["abandon"] * 23 + ["art"])        # 32 zero bytes of entropy
+VOTE = " ".join(["zoo"] * 23 + ["vote"])          # 32 bytes of 0xff (BIP 39's own vector)
 
 
 def selftest():
