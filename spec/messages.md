@@ -2,6 +2,12 @@
 
 Specification draft 2, 2026-11-12. Status: draft 1 brought fully in line with `signing-round.md` and `safety-rule.md` draft 4 after the third, joint review (`docs/reviews/spec-review-3.md`). Draft 2 has not itself been reviewed. Written for slice 1 (form a factory on signet). It gives the exact encoding of every message of `signing-round.md` section 4 for the creation round, and the lobby's messages. Items marked **(open)** are listed at the end. Draft 1's "(prov.)" marks are gone: every one is now settled by `signing-round.md` draft 4. Values marked **proposed, owner to confirm** are Slice 1 choices the owner has not objected to and has not yet confirmed.
 
+## Changes after draft 2
+
+| Change | Why | Where |
+|---|---|---|
+| A member sends `hello` again when it gets no answer: after 1.5 s, every 1.5 s, at most 5 times per connection | 2026-11-18: `program_lobby` case 3 failed now and then. A member restarted in process reconnected within a second of its first `hello`; the host's one-a-second limit ignored the second, and the member, which sends `hello` only on connect, never asked again, so the join it had saved but not sent never reached the host. Test: `test_hello_again` in `tests/lobby/test_lobby_v2.c` | 6.1 |
+
 ## Changes after review 3
 
 | Finding | How it was handled | Where |
@@ -270,7 +276,7 @@ Sent first after `init`, and after every reconnect.
 
 - `scope` all zero: the host answers with one `terms_offer` for each **listed** lobby it has open, at most 4 (the same cap as a host's live listings in `discovery.md`). An unlisted lobby is never named in this answer; a member reaches it only with its identifier, from an invitation. A slice 1 host has one. Finding lobbies without connecting first is specified in `discovery.md` (beacons, store nodes, the pool request, the Nostr annex); this answer serves a member already connected to the host.
 - `scope` a lobby identifier: the host answers with that lobby's `terms_offer`, then `lobby_status` for this key's seat. For an unknown lobby, `lobby_status` with lobby state 0 alone.
-- Duplicates: answered again, at most once per second **per link (per member key)**, counted across that key's connections, so reconnecting does not reset the limit; more are ignored. A member key that sends more than 20 ignored `hello`s within 10 minutes, across its connections, has its connection closed. One `hello` per connection is normal; the limits stop a peer from making the host send terms in a loop. **A `hello` with no answer is sent again** (2026-11-18, program_lobby case 3): a member whose `hello` gets no message of that lobby on that connection within 1.5 s sends it again, every 1.5 s, at most 5 times on that connection. A reconnect within a second of the last answered `hello`, as after a restart in process, falls inside the limit above and is ignored; without the second `hello` the member would wait for an answer that never comes, and a join it saved but never sent would never reach the host. Answers to scope-zero `hello`s are also limited across all connections to 4 per second (review 3, F13: up to 16 offers of about 5 KB each per small request).
+- Duplicates: answered again, at most once per second **per link (per member key)**, counted across that key's connections, so reconnecting does not reset the limit; more are ignored. A member key that sends more than 20 ignored `hello`s within 10 minutes, across its connections, has its connection closed. One `hello` per connection is normal; the limits stop a peer from making the host send terms in a loop. **A `hello` with no answer is sent again**: a member whose `hello` gets no message of that lobby on that connection within 1.5 s sends it again, every 1.5 s, at most 5 times on that connection; the count starts again on each new connection. A reconnect within a second of the last answered `hello`, as after a restart in process, falls inside the limit above and is ignored; without the second `hello` the member would wait for an answer that never comes, and a join it saved but never sent would never reach the host. Answers to scope-zero `hello`s are also limited across all connections to 4 per second (review 3, F13: up to 16 offers of about 5 KB each per small request).
 
 ### 6.2 `terms_offer` (18), host → member
 
