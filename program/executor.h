@@ -60,6 +60,7 @@ typedef struct {
     volatile sig_atomic_t *stop;
 
     /* one incarnation */
+    struct gzp_wallet *wallet;   /* the unlocked wallet: storage keys (store_unlock.h) */
     gzp_store_t store;
     int store_open;
     uint64_t incarnation;

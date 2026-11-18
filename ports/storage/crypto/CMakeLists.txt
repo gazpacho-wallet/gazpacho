@@ -109,7 +109,7 @@ FetchContent_Declare(utf8proc URL ${_u8_url} URL_HASH SHA256=${GZ_UTF8PROC_SHA25
 FetchContent_MakeAvailable(utf8proc)
 
 set(GZ_SC_SOURCES sc_core.c sc_keyfile.c sc_journal.c sc_export.c sc_misc.c sc_pass.c sc_wordlist.c sc_blocklist.c
-                  sc_kdf.c sc_files.c)
+                  sc_kdf.c sc_files.c sc_counter.c)
 set(GZ_SC_WARNINGS -Wall -Wextra -Werror -Wvla -Wshadow -Wconversion -Wno-sign-conversion)
 
 function(gz_sc_library name)
@@ -167,7 +167,7 @@ if(GZ_SC_TESTS)
 
   # Fuzz targets (one per parser): plain driver as CTest tests, or libFuzzer
   # with -DGZ_LIBFUZZER=ON (tools/run-fuzz.sh runs every fuzz_*).
-  foreach(f sc_keyfile sc_frame sc_mark sc_export)
+  foreach(f sc_keyfile sc_frame sc_mark sc_export sc_counter)
     if(GZ_LIBFUZZER)
       add_executable(fuzz_${f} ${T}/fuzz_${f}.c)
       target_link_options(fuzz_${f} PRIVATE -fsanitize=fuzzer)
@@ -178,6 +178,17 @@ if(GZ_SC_TESTS)
     target_link_libraries(fuzz_${f} PRIVATE gazpacho_storage_crypto_test)
     target_compile_options(fuzz_${f} PRIVATE ${GZ_SC_WARNINGS})
   endforeach()
+  # The journal's scan of the sealed format (journal.h's seal table over this
+  # library's frames): torn tail against corruption, exactly.
+  if(GZ_LIBFUZZER)
+    add_executable(fuzz_journal_sealed ${CMAKE_SOURCE_DIR}/tests/journal/fuzz_journal_sealed.c)
+    target_link_options(fuzz_journal_sealed PRIVATE -fsanitize=fuzzer)
+  else()
+    add_executable(fuzz_journal_sealed ${CMAKE_SOURCE_DIR}/tests/journal/fuzz_journal_sealed.c ${T}/fuzz_main.c)
+    add_test(NAME journal_fuzz_sealed COMMAND fuzz_journal_sealed 5000)
+  endif()
+  target_link_libraries(fuzz_journal_sealed PRIVATE gazpacho_storage_crypto_test gazpacho_journal)
+  target_compile_options(fuzz_journal_sealed PRIVATE ${GZ_SC_WARNINGS})
 
   # Constant time where secrets meet branches (valgrind, as libsecp256k1's
   # ctime tests): a library copy with SC_DECLASSIFY, run under memcheck with

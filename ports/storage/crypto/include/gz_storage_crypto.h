@@ -191,6 +191,8 @@ void gz_sc_vault_ids(const gz_sc_vault_t *v, uint8_t chain[32], uint8_t vault_id
 /* 1 if msk equals the vault's MSK (constant time). 4.6's "check" on the
  * public API is gz_sc_check (gz_storage_files.h) or gz_sc_keyfile_check. */
 int gz_sc_vault_same_msk(const gz_sc_vault_t *v, const uint8_t msk[32]);
+/* 1 if a and b hold the same MSK (sodium_memcmp), chain and vault_id. */
+int gz_sc_vault_same(const gz_sc_vault_t *a, const gz_sc_vault_t *b);
 /* Copies the seed out (into guarded memory the caller owns), for the node. */
 gz_sc_err_t gz_sc_vault_seed(const gz_sc_vault_t *v, uint8_t seed[64]);
 

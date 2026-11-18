@@ -187,6 +187,7 @@ In the data folder unless stated.
 | `keys.gzk`, the key file | The wrapped storage key, the 24 words, the BIP 39 seed | Sealed (4.5). The only file whose opening needs the passphrase |
 | `journal.gzj` | Every record of `journal.md` 9 and the API's records | Header authenticated, every entry sealed (5) |
 | `guard.gzg` | Epochs, key indexes, rounds started | Sealed under a key from the seed (10.1) |
+| `starts.gzs`, the start counter | The highest incarnation this device has used for this wallet; outside the journal's backup set | Sealed under a key from the seed (10.3) |
 | `mark.gzm`, the mark file | The journal's high-water mark, one entry per anchored batch, appended | Sealed entries under a key from MSK (10.2) |
 | `watch.gzw`, the watch-and-exit bundle | Tree paths, dates, fee children, known txids (8.7.2) | Sealed under a subkey of KB (8.7.3) |
 | `watch.gzp`, the penalty file | Fully signed penalties against the host's revoked states, each with the journal position that recorded it, appended | Sealed entries under another subkey of KB (8.7.6) |
@@ -289,6 +290,8 @@ Implemented with libsodium's `crypto_kdf_hkdf_sha256_extract` and `_expand` (13)
 | KH | MSK | `high water` | chain, file_id of the journal | Mark file entries (10.2) |
 | KR | seed | `journal recovery` | chain, file_id | MSK in the journal header |
 | KG | seed | `guard` | chain | The guard file |
+| KC | seed | `start counter` | chain | The start counter (10.3) |
+| KP | seed | `program keys` | chain | Not a sealing key: the root of the program's own keys from the seed, derive(KP, label, chain), so that none is a storage key (review B of PR 54, M2) |
 | BK | seed | `backup` | chain | Root of every export (not a sealing key) |
 | XR | BK | `export key` | chain, export_id | A profile 1 export's own key (not a sealing key; storage-crypto review B, L4) |
 | EK | BK (profile 2) or XR (profile 1) | `export` | chain, export_id | One export's chunks |
@@ -494,7 +497,8 @@ Encryption is a step inside `journal.md` 4's step 1; its order rules hold.
 1. **Append**: the entry is sealed whole in memory, then written; a torn write fails its tag.
 2. **Sync, mark, sync, confirm** as in `journal.md` 4. For an anchored batch, after the mark's sync and before the confirmation, in this order: append and sync the mark file's entry (10.2); replace the guard file if the batch holds a `guard` record; replace the bundle if the batch changes it; append and sync the penalty entry if the batch holds a host revocation, then update the penalty count in the store record (8.7.3). **A batch that changes the bundle or appends a penalty is always an anchored batch** (6.2), so the bundle is never rewritten without a mark-file entry. A failure at any of them is a storage failure (5). Nothing outward is released before the confirmation.
 3. **Atomic replaces**: `name.tmp` created exclusively, owner-only from creation, synced, renamed over the name, folder synced (POSIX). Windows: `FlushFileBuffers`, then `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH`. macOS: `F_FULLFSYNC`. **Appends** (journal, mark file, penalty file) cut any torn tail first, then append and sync. **The rename is the commit point** (storage-crypto review B, L1): a failure after it, the folder sync, does not mean nothing happened. For the key file (set-up, passphrase change, upgrade, recovery) it is reported as **done with a fault**: the new key file is in force, and only a power cut before the folder reached the disk could bring the old one back, so the interface says the change was made (and, for a change, that the old passphrase opens if the new one is ever refused after a power cut), never that it failed. For every other file it is a storage failure, and nothing is confirmed on it.
-4. **Creation order**: entropy, seed, MSK, `vault_id`, KB; store KB and a fresh store record in the OS store (1.0.0 only: **Slice 1 makes no KB and no store record**, 8.7.3); write `keys.gzk`; write `guard.gzg` (counter 0, no epochs); choose the journal's `file_id` and create `mark.gzm` for it with its set-up entry (0, 0) (temporary name, sync, rename, folder sync); create the journal the same way. A crash anywhere after the key file and before the journal's rename: the next unlock finds a key file with no journal and starts **as a restore** (6.3 step 0; review R2-2), which loses nothing, because no key was used and the words were not yet shown; a stale mark file naming no existing journal is replaced. A journal without a key file: "the key file is missing", and the words reopen it (9.3). The words are shown only after all exist. **Set-up writes over nothing of a wallet** (storage-crypto review B, M1): it is refused where a key file, a journal, a guard file or a mark file exists, since set-up over a journal would destroy what the old words could reopen (9.3) and set-up over a guard would forget the epochs `safety-rule.md` R2 relies on. A journal without a key file is reopened by the words (9.3, second bullet); a folder with no journal is restored from the words by the restore operation (9.3, first bullet), which keeps the guard. Once the key file is renamed into place the wallet exists: a later failure of set-up is "done with a fault" (7.3), answered by an unlock with the same passphrase, which makes the missing files as a restore (6.3 step 0); only a power cut before the folder sync can undo the key file, and that unlock then finds none and set-up is offered again.
+4. **Creation order**: entropy, seed, MSK, `vault_id`, KB; store KB and a fresh store record in the OS store (1.0.0 only: **Slice 1 makes no KB and no store record**, 8.7.3); write `keys.gzk`; write `guard.gzg` (counter 0, no epochs); write `starts.gzs` (counter 0, 10.3); choose the journal's `file_id` and create `mark.gzm` for it with its set-up entry (0, 0) (temporary name, sync, rename, folder sync); create the journal the same way. A crash anywhere after the key file and before the journal's rename: the next unlock finds a key file with no journal and starts **as a restore** (6.3 step 0; review R2-2), which loses nothing, because no key was used and the words were not yet shown; a stale mark file naming no existing journal is replaced. A journal without a key file: "the key file is missing", and the words reopen it (9.3). The words are shown only after all exist. **Set-up writes over nothing of a wallet** (storage-crypto review B, M1): it is refused where a key file, a journal, a guard file or a mark file exists, since set-up over a journal would destroy what the old words could reopen (9.3) and set-up over a guard would forget the epochs `safety-rule.md` R2 relies on. A journal without a key file is reopened by the words (9.3, second bullet); a folder with no journal is restored from the words by the restore operation (9.3, first bullet), which keeps the guard. Once the key file is renamed into place the wallet exists: a later failure of set-up is "done with a fault" (7.3), answered by an unlock with the same passphrase, which makes the missing files as a restore (6.3 step 0); only a power cut before the folder sync can undo the key file, and that unlock then finds none and set-up is offered again.
+   **A set-up interrupted before any start** (decided, **pending the storage reviewers**; corrected after review A of PR 54, H1): the program writes a set-up marker `setup.gzp` before the key file at set-up (not at the restore from the words, which removes any stale one) and removes it, with a folder sync, once the first start's incarnation entry is durable, before the node starts. **The marker changes only what is told, never what is done**: it is a plain file outside every key, which anyone who can write the folder can plant. A key file with no journal is always 6.3 step 0's restore, with a new random epoch and the guard carried, marker or not. Where the marker is there and the journal and the mark file are not, a missing start counter (`starts.gzs`, contract-v2 section 8) is told in softer words ("set-up may have been interrupted"), **but always told**: a planted marker could otherwise hide a real removal of a used wallet's records. Anywhere else a missing counter is told as lost (10.3). The order of set-up's writes is unchanged.
 5. **Random-source failure** is a storage failure (`gz_runner_storage_failed`); no fallback.
 6. **A failed tag is never repaired**: torn tail (cut) or corruption (refused).
 7. **No retry** of a failed seal or sync.
@@ -739,6 +743,19 @@ Contents: `counter` (`u64`), `n_epochs` (`u16`), per epoch `epoch` and `highest_
 
 Vector E9m.
 
+### 10.3 The start counter
+
+`starts.gzs`, beside the guard, outside the journal's backup set, created at set-up (7.4): the highest incarnation this device has used for this wallet (`docs/notes/contract-v2.md` section 8; `journal.md` section 5).
+
+| Offset | Field | Size |
+|---|---|---|
+| 0 | `magic`, ASCII `GZSTART1` | 8 |
+| 8 | `format`, 1 | 1 |
+| 9 | `chain` | 32 |
+| 41 | `seal(KC, u64 counter, ad = bytes 0..40)` | 24 + 8 + 16 |
+
+KC = keys(seed, `start counter`, chain) (4.4), so a restore from the words can read it. Replaced (write `starts.gzs.tmp`, sync, rename, sync the folder) at every start, before the incarnation entry. A file that is short, of another format or network, or fails its tag is treated as missing, and the person is told. Vector E9c.
+
 ## 11. Exports and the host's copy
 
 `DESIGN.md` 9: the journal is the backup; the person may export it and the host keeps a copy. Two profiles of one format, `.gzb`. (Owner decision 13 says "a backup export is the file as encrypted on disk"; this separate format needs the owner's amendment, open point 1.)
@@ -958,6 +975,14 @@ f1e6f884492e105492457783c508d39ef1b552c3da94ab3a6b0ecc6483a01edf
 ```
 
 Against E7g and E7h, offset 400 is not a sync mark of the journal: refused as rolled back (6.3). Against E6 it passes. A torn last entry is ignored; a damaged entry before a valid one, or no valid entry: possibly old; another journal's `file_id`: behind. Cut back to its set-up entry it reads as "no mark yet", an older copy this file cannot detect (6.4).
+
+**E9c. Start counter** (89 bytes): counter 6. KC `d8e60802380ea8acdcfaea75caab9965c38a21b287b27d6977758ad310ef194f` (nonce key `6c1e5dd7aa1dc01d419117400a70d7bcc0ecb294b1ec4e78a5e3287130ef2741`); nonce input label `start counter`:
+
+```
+475a53544152543101f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c42
+25e9739881080000003e1548311c3b6d3514c42130359d6d276e7ec4f8cab128
+9bd7436585cc222346a83020831e7b5eed7bda6cf75aaca1a1
+```
 
 **E10. Exports**, `export_id` `eba594bd30df323ee7faf88bd4e4bf81`, slot salt `sha256("gazpacho test export kdf salt")[0:16]`, E2's test parameters, created 1,794,000,100,000 ms, flags 0 (no words), body the entries of E6 and the guard of E9. BK `9a4617d2c2e8fb4163ddbe6b6b1968302c0a65114f261b444605aef8cf4e1b00`, EK (profile 2) `e172f2dabc7650d0a79495a05dc2736ae37151ef116fcc2f10dd9d590244ac1f`; profile 1's own key XR `5ce2ebd98c1cff355685984c9d5b8e2769eeead5132d21569cddbc78d83c894b` and its EK `d7f9ef583afd0bef0bc891b87dc820597def130f0964f0238c26191a16e9fcb3` (11; changed after the storage-crypto review B, L4: the slot wraps XR, not BK). E10a (profile 1, slot with commitment, 396 bytes) is printed by the tool. E10b, profile 2, 266 bytes (both changed in draft 3 because E9's guard is shorter):
 

@@ -9,7 +9,7 @@
 #                  the placeholder's bytes until P4), and the --test-* hooks
 # The release binary's symbols are checked (program_release_build, T12).
 
-set(GZP_SOURCES options.c datadir.c journal_standin.c net.c pchain.c notify.c executor.c testping.c)
+set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c net.c pchain.c notify.c executor.c testping.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -21,9 +21,19 @@ foreach(variant release test)
     set(net gazpacho_net_testkinds)
     set(node gazpacho_node_test)
   endif()
-  add_library(${lib} STATIC ${GZP_SOURCES})
+  if(variant STREQUAL "release")
+    set(sc gazpacho_storage_crypto)
+    add_library(${lib} STATIC ${GZP_SOURCES})
+  else()
+    # The journal stand-in stays for the tests that read its files
+    # (--test-standin-store); the release program has only the real store.
+    # The test build links the storage library's test entry point (the
+    # parameter floor of --test-kdf-floor); the release build never does.
+    set(sc gazpacho_storage_crypto_test)
+    add_library(${lib} STATIC ${GZP_SOURCES} journal_standin.c store_powercut.c)
+  endif()
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain OpenSSL::Crypto)
+  target_link_libraries(${lib} PUBLIC ${node} ${net} gazpacho_wallet_keys gazpacho_chain gazpacho_journal ${sc} OpenSSL::Crypto)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PUBLIC GZP_TEST_BUILD=1)
@@ -132,12 +142,51 @@ if(Python3_Interpreter_FOUND)
       COMMAND ${GZP_PY} ${GZP_T}/${t}.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/${t})
     set_tests_properties(program_${t} PROPERTIES TIMEOUT 300)
   endforeach()
+  # S5 and S6 in the program: the start order (locked until unlocked), the
+  # passphrase layer's attempts, a damaged key file, the release program
+  # staying locked without the local interface; kill -9 before every storage
+  # write, sync or rename from set-up to an anchored batch, then a restart;
+  # damaged files refused and never half-applied; a restore from an older
+  # backup never reusing an epoch or a key index.
+  add_test(NAME program_unlock
+    COMMAND ${GZP_PY} ${GZP_T}/unlock.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/unlock
+            $<TARGET_FILE:gazpacho>)
+  add_test(NAME program_journal_kill
+    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_kill 3)
+  add_test(NAME program_journal_kill_full
+    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_kill_full)
+  set_tests_properties(program_journal_kill_full PROPERTIES TIMEOUT 3600 LABELS "slow")
+  # The same with power cuts (review A of PR 54, M3): every sixth call in CI,
+  # every call on the build server (slow).
+  add_test(NAME program_journal_powercut
+    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_powercut 6 power)
+  add_test(NAME program_journal_powercut_full
+    COMMAND ${GZP_PY} ${GZP_T}/journal_kill.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_powercut_full 1 power)
+  set_tests_properties(program_journal_powercut PROPERTIES TIMEOUT 2400)
+  set_tests_properties(program_journal_powercut_full PROPERTIES TIMEOUT 3600 LABELS "slow")
+  add_test(NAME program_storage_damage
+    COMMAND ${GZP_PY} ${GZP_T}/storage_damage.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/storage_damage)
+  add_test(NAME program_journal_restore
+    COMMAND ${GZP_PY} ${GZP_T}/journal_restore.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/journal_restore)
+  set_tests_properties(program_unlock program_storage_damage program_journal_restore PROPERTIES TIMEOUT 600)
+  set_tests_properties(program_journal_kill PROPERTIES TIMEOUT 2400)
+  # They pick ports with free_port() (see the lock above): one at a time.
+  set_tests_properties(program_unlock program_journal_kill program_journal_kill_full program_journal_powercut
+                       program_journal_powercut_full program_storage_damage program_journal_restore
+                       PROPERTIES RESOURCE_LOCK gzp_free_port)
   # The lobby in the composite, P4.2 (docs/notes/composite-node.md 15): a host
   # with two lobbies and its members as separate processes, the signing
   # stand-in behind the hand-off; crashes, a storage failure, the gates.
   add_test(NAME program_lobby
     COMMAND ${GZP_PY} ${GZP_T}/lobby.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
+  # Every program test may start gazpacho-test with a launcher of its own:
+  # the passphrase file's path and the Argon2id floor come through the
+  # environment (gazpacho-test only; the harness passes the options itself).
+  file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/test-passphrase "gazpacho test wallet passphrase, signet only")
+  if(NOT CMAKE_VERSION VERSION_LESS 3.19)
+    file(CHMOD ${CMAKE_CURRENT_BINARY_DIR}/test-passphrase PERMISSIONS OWNER_READ OWNER_WRITE)
+  endif()
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})
@@ -164,3 +213,12 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(program_signet_check PROPERTIES TIMEOUT 300 LABELS "live")
   endif()
 endif()
+
+# The unlock for every program test (see test-passphrase above).
+get_property(_gzp_tests DIRECTORY PROPERTY TESTS)
+foreach(_t ${_gzp_tests})
+  if(_t MATCHES "^program_")
+    set_property(TEST ${_t} APPEND PROPERTY ENVIRONMENT
+      "GZP_TEST_PASSPHRASE_FILE=${CMAKE_CURRENT_BINARY_DIR}/test-passphrase" "GZP_TEST_KDF_FLOOR=1")
+  endif()
+endforeach()

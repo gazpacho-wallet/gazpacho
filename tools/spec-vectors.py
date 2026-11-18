@@ -2075,6 +2075,18 @@ show("guard file", e_guard)
 _gp = unseal(KG, e_guard[41:], e_guard[:41])
 assert _gp == GUARD_PLAIN
 
+# ---------------------------------------------------- the start counter --------
+# Section 10.3 (contract-v2.md section 8, P9): starts.gzs, counter 6.
+KC = keys(SEED64, "start counter", chain)
+_sh = b"GZSTART1" + u8(1) + chain
+e_starts = _sh + sealed(KC, "start counter", u64(6), _sh)
+assert len(e_starts) == 89
+assert unseal(KC, e_starts[41:], _sh) == u64(6)
+print("\n== vector E9c, start counter starts.gzs: counter 6")
+print("  KC =", KC[0].hex(), "nonce key", KC[1].hex())
+print("  E9c starts.gzs =", e_starts.hex())
+show("start counter", e_starts)
+
 # ---------------------------------------------------- the mark file -------------
 # Section 10.2, draft 3: append-only, one sealed 56-byte entry per anchored batch:
 # seal(KH, u64 incarnation || u64 mark_offset, ad = the 57-byte header || u64 entry

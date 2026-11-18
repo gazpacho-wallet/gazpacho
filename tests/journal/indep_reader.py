@@ -20,7 +20,7 @@ KIND_INC, KIND_BATCH, KIND_MARK = 1, 2, 3
 
 # Section 9: every type named with a record name. 0x00040008 ("not used") is absent on purpose.
 KNOWN_TYPES = {
-    0x00040002, 0x00040004, 0x00040006, 0x0004000A,
+    0x00040002, 0x00040004, 0x00040006, 0x0004000A, 0x0004000C, 0x0004000E, 0x00010018,
     0x00010002, 0x00010004, 0x00010006, 0x00010008, 0x0001000A, 0x0001000C,
     0x0001000E, 0x00010010, 0x00010012, 0x00010014, 0x00010016,
     0x00020002, 0x00020004, 0x00020006, 0x00020008, 0x0002000A, 0x0002000C,
@@ -35,7 +35,7 @@ def check(salt, off, frame):
 
 
 def is_placeholder(t):
-    return (t >> 16) == 0x7E57
+    return 0x7E57 <= (t >> 16) <= 0x7E5A
 
 
 def parse_records(payload):
