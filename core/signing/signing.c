@@ -1014,8 +1014,8 @@ static int hold_keys(gz_sign_t *e, const gz_sign_round_t *r, int factory, int *t
     if (e->keys_held == KEYS_BOTH || (!factory && e->keys_held == KEYS_CONTRIBUTION)) return 1;
     if (!take_keys(e, r->def.outer_digest, r->def.terms_digest, factory)) return 0;
     /* The keys under the scope must still be the round's own: a hook that now gives others is no key. */
-    if (!same(e->work_ckey, r->def.participants[r->me].contribution_key, 33) ||
-        (factory && !same(e->work_fkey, r->def.participants[r->me].factory_key, 33))) { drop_keys(e); return 0; }   /* RULE:KEYS_STILL_ROUNDS */
+    if (!same(e->work_ckey, r->def.participants[r->me].contribution_key, 33) ||                     /* RULE:KEYS_SAME_CONTRIBUTION */
+        (factory && !same(e->work_fkey, r->def.participants[r->me].factory_key, 33))) { drop_keys(e); return 0; }   /* RULE:KEYS_STILL_ROUNDS RULE:KEYS_SAME_FACTORY */
     *took = 1;
     return 1;
 }

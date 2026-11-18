@@ -299,6 +299,7 @@ typedef struct {
     uint32_t no_keys;                           /* bit g: the key hook gives party g no keys (no lobby for the scope) */
     uint32_t no_factory;                        /* bit g: no factory key, the contribution key still (AT_JOIN's gate closed) */
     uint32_t other_factory;                     /* bit g: another factory key than the round's (a hook gone wrong) */
+    uint32_t other_contribution;                /* bit g: another contribution key, the links unchanged (likewise) */
 } w_builder_t;
 
 /* The hooks' context of one party: the shared builder, and who the party is
@@ -330,7 +331,11 @@ static inline int w_key_hook(void *ctx, const uint8_t scope[32], const uint8_t *
         w_secret("test/factory", w_secret_index(h->g, fe), sk);
         ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), f, sk);
     }
-    if (c) { w_secret("test/contribution", w_secret_index(h->g, ep), sk); ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), c, sk); }
+    if (c) {
+        uint32_t ce = ep + (h->g < 32 && (h->b->other_contribution >> h->g & 1u) ? 1u : 0u);
+        w_secret("test/contribution", w_secret_index(h->g, ce), sk);
+        ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), c, sk);
+    }
     memset(sk, 0, sizeof sk);
     return (int)ok;
 }

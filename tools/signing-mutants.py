@@ -96,6 +96,9 @@ RULES = {
     "WIPE_KEYS": ("wipe(&e->work_fkp, sizeof e->work_fkp);", ""),
     "KEYS_FOR_PROPOSAL": ("!take_keys(e, m->scope, e->prop.p.terms_digest, 1)) {", "0) {"),
     "KEYS_STILL_ROUNDS": ("{ drop_keys(e); return 0; }", "{ }"),
+    # each half of the comparison alone (test_keys_still_rounds: the factory key, the contribution key)
+    "KEYS_SAME_CONTRIBUTION": ("if (!same(e->work_ckey, r->def.participants[r->me].contribution_key, 33) ||", "if (0 ||"),
+    "KEYS_SAME_FACTORY": ("(factory && !same(e->work_fkey, r->def.participants[r->me].factory_key, 33))", "(factory && 0)"),
     "IGNORE_UNACCEPTED": ("if (why == GZ_SIGN_WHY_IGNORE) {", "if (0) {"),
     "ATTEMPT_REQUIRED": ("if (!pr->has_attempt || !pr->check_id) return GZ_SIGN_WHY_INVALID_ROUND;", ""),
     "PROPOSAL_LINK": ("return GZ_SIGN_WHY_INVALID_ROUND;", "{}"),

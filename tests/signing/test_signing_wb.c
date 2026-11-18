@@ -1320,7 +1320,7 @@ static void test_attempt_required(void)
 /* KEYS_STILL_ROUNDS: keys taken again for a round must still be the round's own. Member 1's key hook
  * gives another factory key once its nonces have left (the contribution key, and so its links, stay);
  * when the nonce sets arrive it signs nothing with it: the round fails NOT_MY_KEY and no key stays held. */
-static void test_keys_still_rounds(void)
+static void keys_still_rounds(int contribution)
 {
     harness_t h;
     h_init(&h, 3);
@@ -1331,7 +1331,9 @@ static void test_keys_still_rounds(void)
     while (h.nq && q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
     long k = q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES);
     CHECK(k >= 0);
-    h.builder.other_factory = 1u << 1;                /* member 1's hook now gives another factory key */
+    /* member 1's hook now gives another factory key, or another contribution key */
+    if (contribution) h.builder.other_contribution = 1u << 1;
+    else h.builder.other_factory = 1u << 1;
     if (k >= 0 && r) {
         uint64_t made = h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE];
         h_deliver(&h, (size_t)k, 0);
@@ -1340,8 +1342,14 @@ static void test_keys_still_rounds(void)
         CHECK(h.p[1].e->keys_held == KEYS_NONE);
     }
     if (r && r->why != GZ_SIGN_WHY_NOT_MY_KEY) printf("  keys_still_rounds: round state %d, why %d\n", (int)r->state, (int)r->why);
-    h.builder.other_factory = 0;
+    h.builder.other_factory = h.builder.other_contribution = 0;
     h_free(&h);
+}
+
+static void test_keys_still_rounds(void)
+{
+    keys_still_rounds(0);   /* the factory key */
+    keys_still_rounds(1);   /* the contribution key */
 }
 
 /* SUPERSEDE_OWN_CHECK: a proposal supersedes only an older attempt of its own check in its own lobby;
