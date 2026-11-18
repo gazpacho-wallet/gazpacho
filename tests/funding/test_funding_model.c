@@ -111,6 +111,58 @@ static void step(ft_t *t, const gz_event_t *e, model_t *m)
     CHECK(t->f.n_watches <= GZ_FUND_MAX_WATCHES);   /* I6 */
 }
 
+/* H-1 (review B of PR 56): just after a start, the node was down across a
+ * factory's deadline while its funding was buried in time. The first tip
+ * comes before the watches' reports. Oracle: nothing reports Abandoned
+ * before the reports; then a host's factory is Live, never Abandoned. */
+static void late_reports(ft_t *t, model_t *m, uint32_t *tip, int host)
+{
+    gz_fund_factory_t *x = NULL;
+    gz_event_t e;
+    uint8_t id[32], ins[GZ_FUND_WATCH_INPUTS][36];
+    uint32_t dl, h, depth, conf;
+    size_t n_ins;
+    int j = -1;
+    for (size_t k = 0; k < GZ_FUND_MAX_FACTORIES && !x; k++) {
+        gz_fund_factory_t *y = &t->f.fac[k];
+        if (y->used && y->state == (host ? GZ_FUND_ST_BROADCAST : GZ_FUND_ST_ACKED) && !y->deadline_pending &&
+            y->deadline > *tip + 1)
+            x = y;
+    }
+    if (!x) return;
+    for (int s = 0; s < NSCOPE; s++)
+        if (memcmp(scopes[s], x->scope, 32) == 0) j = s;
+    if (j < 0 || m[j].abandoned || m[j].live || m[j].dead) return;
+    memcpy(id, x->funding.txid, 32);
+    n_ins = x->n_in < GZ_FUND_WATCH_INPUTS ? x->n_in : GZ_FUND_WATCH_INPUTS;
+    if (host) n_ins = 1;
+    memcpy(ins, x->ins, sizeof ins);
+    dl = x->deadline;
+    depth = host || x->exit.B == 0 ? 3 : x->exit.B;
+    h = dl + 1 - depth;   /* buried exactly at the deadline */
+    *tip = dl + 5 + (uint32_t)(rnd() % 10);
+    chain_tip = *tip;
+    e = ev_tip(*tip);
+    step(t, &e, m);
+    for (int i = 0; i < 40; i++) {   /* one change per tick: room for every factory */
+        e = ev_tick();
+        step(t, &e, m);
+    }
+    CHECK(!m[j].abandoned);   /* no decision before the facts */
+    conf = *tip - h + 1;
+    e = ev_conf(id, conf, h);
+    step(t, &e, m);
+    for (size_t k = 0; k < n_ins; k++) {
+        e = ev_spent(ins[k], id, conf);
+        step(t, &e, m);
+    }
+    for (int i = 0; i < 40; i++) {   /* one change per tick: room for every factory */
+        e = ev_tick();
+        step(t, &e, m);
+    }
+    if (host) CHECK(m[j].live && !m[j].abandoned);
+}
+
 static ft_t *run_host(ft_t *t, model_t *m, uint32_t *tip, int steps)
 {
     for (int i = 0; i < steps; i++) {
@@ -191,6 +243,7 @@ static ft_t *run_host(ft_t *t, model_t *m, uint32_t *tip, int steps)
             CHECK(same_state(t, u));                 /* I7 */
             free(t);
             t = u;
+            if (rnd() % 2) late_reports(t, m, tip, 1);
         } else {
             e = ev_tick();
             step(t, &e, m);
@@ -254,6 +307,7 @@ static ft_t *run_member(ft_t *t, model_t *m, uint32_t *tip, int steps)
             CHECK(same_state(t, u));
             free(t);
             t = u;
+            if (rnd() % 2) late_reports(t, m, tip, 0);
         } else {
             e = ev_tick();
             step(t, &e, m);

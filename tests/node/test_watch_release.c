@@ -60,6 +60,11 @@ int main(void)
     a = unwatch_tx(1);
     CHECK(gz_watch_unnote(c, &a, ENG_TEST0) == 0);
     CHECK(gz_watch_unnote(c, &a, ENG_TEST1) == 0);
+    /* Watched again after its release: a new entry, so the WATCH goes out. */
+    a = watch_tx(1);
+    CHECK(gz_watch_note(c, &a, ENG_TEST1) == 1);
+    e = report(1);
+    CHECK(gz_watch_mask(c, &e) == (1u << ENG_TEST1));
     /* Shared by two engines: the entry stays until the last lets go. */
     a = watch_tx(2);
     CHECK(gz_watch_note(c, &a, ENG_TEST1) == 0);    /* already watched: nothing new goes out */

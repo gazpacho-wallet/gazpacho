@@ -79,6 +79,7 @@ typedef struct {
     size_t oversize;          /* plan this many inputs regardless (the 8,192-byte cap) */
     int sb_other_input, sb_to_factory, sb_fee_off, extra_prev, empty_wit, tiny_prev;   /* faults the engine must refuse */
     int no_change, third_output, must_at_1, in1_bigger, adopt_refuse, factory_twice;
+    int sb_two_outputs, zero_prev, scriptsig, factory_at_1;   /* more faults the engine must refuse */
     uint32_t last_sb_index;
     unsigned next_plan;
     ft_plan_t plans[FT_PLANS];   /* memory only: a restart forgets them */
@@ -130,14 +131,31 @@ static inline int ftw_plan(void *ctx, uint64_t amount, const uint8_t script[34],
     if (w->third_output) { amts[1] -= 1000; amts[2] = 1000; ft_script(scr[2], 0xcd); nout = 3; }
     if (w->extra_output) { amts[2] = amount; memcpy(scr[2], script, 34); nout = 3; }
     if (w->no_change) nout = 1;
+    if (w->factory_at_1) {   /* the change first, the factory's output second */
+        uint64_t a0 = amts[0];
+        uint8_t s0[34];
+        memcpy(s0, scr[0], 34);
+        amts[0] = amts[1];
+        memcpy(scr[0], scr[1], 34);
+        amts[1] = a0;
+        memcpy(scr[1], s0, 34);
+    }
     if (w->factory_twice) { amts[1] = amount; memcpy(scr[1], script, 34); }   /* two outputs, both the factory's */
     if (cap < 10 + n * 41 + nout * 43 + 8) return 0;
     *tx_len = ft_tx(tx, ins, n, amts, (const uint8_t(*)[34])scr, nout, 0);
+    if (w->scriptsig && *tx_len + 1 <= cap) {   /* input 0 with a one-byte scriptSig */
+        size_t at = 5 + 36;
+        memmove(tx + at + 2, tx + at + 1, *tx_len - at - 1);
+        tx[at] = 1;
+        tx[at + 1] = 0x51;
+        (*tx_len)++;
+    }
     for (size_t i = 0; i < n; i++) {
         prev[i].amount = ins[i].amount;
         prev[i].script_len = 34;
         ft_script(prev[i].script, 0xdd);
         if (w->legacy_prev && i == 1) { prev[i].script_len = 25; prev[i].script[0] = 0x76; }
+        if (w->zero_prev && i == 1) prev[i].amount = 0;
         if (w->tiny_prev && i == 1) {   /* OP_1 and a 0- or 1-byte program */
             prev[i].script_len = (uint8_t)(1 + w->tiny_prev);
             prev[i].script[0] = 0x51;
@@ -197,7 +215,7 @@ static inline int ftw_sign_plan(void *ctx, const uint8_t txid[32], uint8_t *out,
 
 /* Holds a plan again after a restart, if its outputs are the factory's and
  * this wallet's change (script 0xcc) only. */
-static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, uint32_t vout)
+static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, const uint8_t script[34], uint64_t amount)
 {
     ft_wallet_t *w = (ft_wallet_t *)ctx;
     gz_tx_info_t info;
@@ -205,8 +223,11 @@ static inline int ftw_adopt(void *ctx, const uint8_t *tx, size_t len, uint32_t v
     const uint8_t *scr;
     size_t sl;
     w->held++;
-    if (w->adopt_refuse || len > GZ_FUND_MAX_TX || !gz_tx_parse(tx, len, &info) || info.n_out != 2 || vout > 1) return 0;
-    if (!gz_tx_output(tx, len, &info, 1 - vout, &amt, &scr, &sl) || sl != 34 || scr[2] != 0xcc) return 0;
+    if (w->adopt_refuse || len > GZ_FUND_MAX_TX || !gz_tx_parse(tx, len, &info) || info.n_out != 2) return 0;
+    /* Output 0 the factory's, exactly; output 1 this wallet's change. */
+    if (!gz_tx_output(tx, len, &info, 0, &amt, &scr, &sl) || sl != 34 || amt != amount || memcmp(scr, script, 34) != 0)
+        return 0;
+    if (!gz_tx_output(tx, len, &info, 1, &amt, &scr, &sl) || sl != 34 || scr[2] != 0xcc) return 0;
     ftw_keep(w, tx, len);
     return 1;
 }
@@ -222,22 +243,32 @@ static inline void ftw_release(void *ctx, const uint8_t *tx, size_t len)
     if ((p = ftw_find(w, id)) != NULL) p->used = 0;
 }
 
-static inline int ftw_sb(void *ctx, const uint8_t *tx, size_t tx_len, uint32_t index, uint64_t fee, uint8_t *out, size_t cap,
+/* The spend-back of a plan this wallet holds, by its txid. */
+static inline int ftw_sb(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee, uint8_t *out, size_t cap,
                   size_t *out_len)
 {
     ft_wallet_t *w = (ft_wallet_t *)ctx;
+    ft_plan_t *p = ftw_find(w, txid);
     ft_in_t in;
-    uint64_t amt;
-    uint8_t scr[1][34];
+    uint64_t amt, amts[2];
+    uint8_t scr[2][34];
     size_t at = 5 + 41 * (size_t)index;   /* inputs are 41 bytes: 36 + 1 + 4 */
-    (void)tx_len;
-    if (w->fail_sb || cap < 200) return 0;
+    const uint8_t *tx;
+    if (w->fail_sb || !p || cap < 200 || at + 36 > p->len) return 0;
+    tx = p->tx;
     w->last_sb_index = index;
     memcpy(in.op, tx + at, 36);
     if (w->sb_other_input) in.op[35] ^= 0x40;            /* another outpoint */
     amt = (w->in_amount ? w->in_amount : 600000) - fee - (w->sb_fee_off ? 1 : 0);
     ft_script(scr[0], w->sb_to_factory ? 0x77 : 0xee);   /* 0x77: the factory's script in these tests */
-    *out_len = ft_tx(out, &in, 1, &amt, (const uint8_t(*)[34])scr, 1, 1);
+    if (w->sb_two_outputs) {   /* a second output nobody asked for */
+        amts[0] = amt;   /* output 0 as asked; the second output on top */
+        amts[1] = 1000;
+        memcpy(scr[1], scr[0], 34);
+        *out_len = ft_tx(out, &in, 1, amts, (const uint8_t(*)[34])scr, 2, 1);
+    } else {
+        *out_len = ft_tx(out, &in, 1, &amt, (const uint8_t(*)[34])scr, 1, 1);
+    }
     w->sb_n++;
     w->last_sb_fee = fee;
     return 1;

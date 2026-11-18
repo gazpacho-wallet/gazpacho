@@ -130,22 +130,28 @@ typedef struct {
  *   sign_plan   the signed bytes of the plan the wallet holds under `txid`:
  *               never bytes handed in (docs/notes/signer.md). 0 if it holds
  *               no such plan.
+ *               The factory's output is output 0 (the engine checks it).
  *   adopt       after a restart (the wallet's holds are in its memory
  *               only): hold again a plan from the engine's journal, only if
  *               the wallet finds it its own: every input one of its coins,
- *               the outputs exactly the factory's at `funding_vout` and its
- *               own change. 0 if refused; such a plan is then never signed.
+ *               output 0 exactly `amount` to `script` (the factory's), the
+ *               other its own change. 0 if refused; such a plan is then
+ *               never signed.
  *   release     free the coins of a plan that will never be funded.
- *   spend_back  a transaction spending input `index` of the plan to the
- *               wallet's own script, paying exactly `fee`, signed. */
+ *   spend_back  a transaction spending input `index` of the plan the wallet
+ *               holds under `txid` (never bytes handed in) to the wallet's
+ *               own script, paying exactly `fee`, signed. The engine never
+ *               asks more than the top of its ladder (funding.md 2): the
+ *               funding's fee plus `incremental_high` on the spend-back's
+ *               size, or the ordinary rate when nothing is replaced. */
 typedef struct {
     int (*plan)(void *ctx, uint64_t amount, const uint8_t script[34], uint64_t feerate,
                 const gz_outpoint_t *must_spend, uint8_t *tx, size_t cap, size_t *tx_len,
                 gz_fund_prevout_t *prev, size_t max_prev, size_t *n_prev);
     int (*sign_plan)(void *ctx, const uint8_t txid[32], uint8_t *out, size_t cap, size_t *out_len);
-    int (*adopt)(void *ctx, const uint8_t *tx, size_t tx_len, uint32_t funding_vout);
+    int (*adopt)(void *ctx, const uint8_t *tx, size_t tx_len, const uint8_t script[34], uint64_t amount);
     void (*release)(void *ctx, const uint8_t *tx, size_t tx_len);
-    int (*spend_back)(void *ctx, const uint8_t *tx, size_t tx_len, uint32_t index, uint64_t fee,
+    int (*spend_back)(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee,
                       uint8_t *out, size_t cap, size_t *out_len);
     void *ctx;
 } gz_wallet_port_t;
@@ -251,6 +257,15 @@ typedef struct {
     int seen;                           /* host: the funding was ever seen spending input 0 */
     int due, rebroadcast, escalate;
     int watching;                       /* watches set this incarnation */
+    /* After a start (review B of PR 56, H-1): the chain facts are memory only
+     * and come back through the watches. Until every watch of the factory has
+     * reported since the start, or a block has passed since the first tip of
+     * the start, no deadline decision is taken (abandon, escalate, member
+     * Abandoned). Rebuilt at every start, never saved. */
+    int resyncing;
+    unsigned reported;                  /* bit 0 the txid, bit 1 + k watched input k */
+    uint32_t resync_tip;
+    int resync_tip_seen;
 } gz_fund_factory_t;
 
 typedef struct {
@@ -282,6 +297,7 @@ typedef struct {
     gz_status_t cur_st;
     uint8_t scratch[2u * GZ_FUND_MAX_SIGNED + 32u * 1024u]; /* the records of one save */
     uint8_t work[GZ_FUND_MAX_SIGNED];   /* a signed transaction being checked */
+    gz_fund_factory_t tmp;              /* a factory being decoded: off the stack (review B, L-8) */
 } gz_fund_t;
 
 gz_status_t gz_fund_init(gz_fund_t *f, const gz_fund_config_t *cfg, const gz_ports_t *ports);
