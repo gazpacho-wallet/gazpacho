@@ -86,6 +86,7 @@ typedef struct {
     int used;
     uint8_t scope[32];
     uint8_t digest[32];
+    uint32_t epoch, index;       /* the pair: contribution at index, factory at index + 1 */
     uint8_t factory[32];         /* SECRET */
     uint8_t contribution[32];    /* SECRET */
 } gzp_keys_scope_t;
@@ -159,6 +160,13 @@ int gzp_keys_scope_open(gzp_keys_t *k, const uint8_t scope[32], const uint8_t di
                         uint32_t index, gzp_keys_err_t *err);
 int gzp_keys_scoped(const gzp_keys_t *k, const uint8_t scope[32], const uint8_t digest[32], uint8_t factory[32],
                     uint8_t contribution[32]);
+/* The same table looked up by key position, for the key hook that names a
+ * key by (epoch, index) only (P4.3's keys.secret; keys.md 7, M2): 1 and the
+ * secret only if an open scope holds that pair (the contribution key at its
+ * index, the factory key at index + 1), under the current epoch and not
+ * frozen. So under AT_JOIN a key the person has not readied for is never
+ * handed out, whatever the node asks. */
+int gzp_keys_scoped_at(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32]);
 void gzp_keys_forget(gzp_keys_t *k, const uint8_t scope[32]);
 void gzp_keys_forget_all(gzp_keys_t *k);
 size_t gzp_keys_scopes_held(const gzp_keys_t *k);

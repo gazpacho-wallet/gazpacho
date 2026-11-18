@@ -68,14 +68,19 @@ exec-scan-epoch	program/executor.c	                epoch = gz_get_u32(v.data);\n
 exec-save-epoch	program/executor.c	                gzp_keys_set_epoch(ex->keys, gz_get_u32(v.data));\n	
 exec-unfreeze	program/executor.c	                if (restored) gzp_keys_freeze(ex->keys, 0);\n	
 exec-forget-all	program/executor.c	    gzp_keys_forget_all(ex->keys);\n    gzp_keys_set_epoch	    gzp_keys_set_epoch
-exec-secret-scoped	program/executor.c	    if (ex->keys->scoped_only) {	    if (0) {
+exec-secret-scoped	program/executor.c	if (ex->keys->scoped_only) return gzp_keys_scoped_at(	if (0) return gzp_keys_scoped_at(
+scoped-at-factory-index	program/keys.c	        if (index == s->index + 1) {	        if (index == s->index + 2) {
+scoped-at-any-epoch	program/keys.c	if (!k || !sec || k->frozen || epoch != k->epoch) return 0;	if (!k || !sec || k->frozen) return 0;
+scoped-at-frozen	program/keys.c	if (!k || !sec || k->frozen || epoch != k->epoch) return 0;	if (!k || !sec || epoch != k->epoch) return 0;
+scoped-at-entry-epoch	program/keys.c	        if (!s->used || s->epoch != epoch) continue;	        if (!s->used) continue;
+scoped-at-no-zero	program/keys.c	    if (sec) gzw_wipe(sec, 32);\n    if (!k || !sec || k->frozen	    if (!k || !sec || k->frozen
 exec-forget	program/executor.c	    gzp_keys_forget(ex->keys, scope);\n	
 main-host-key	program/main.c	if (gzp_keys_host(&keys, priv, NULL, NULL, &e)) return 0;	if (gzp_keys_lobby_raw(&keys, 0, 1, priv, NULL, &e)) return 0;
 main-scoped-only	program/main.c	keys.scoped_only = opt.member_signing == 0;	keys.scoped_only = 0;
 main-payout-check	program/main.c	memcmp(spk, first->script_pubkey, sizeof spk) != 0	0
 net-key-fn-ignored	program/net.c	ok = n->key_fn && n->key_fn(n->key_ctx, epoch, index, s, NULL) == 1;	ok = n->key_fn != NULL; memset(s, 1, 32);
 #
-# Triage of the run on 2026-11-18 (75 mutants: 65 killed, 10 survived; main-role, the host on the member branch, is killed by T13 step 6):
+# Triage of the run on 2026-11-18 (80 mutants; see the PR for the counts):
 #   equivalent: raw-no-zero-fail, host-no-zero-fail (the outputs are zeroed on
 #     entry, and keypair_out writes them only on success); pub-wipe (the wiped
 #     value is a public key); scope-index-range (the factory step then refuses
@@ -83,7 +88,7 @@ net-key-fn-ignored	program/net.c	ok = n->key_fn && n->key_fn(n->key_ctx, epoch, 
 #     is derived next under the same policy, so the pair fails together).
 #   not reachable before P4.3: exec-forget-all, exec-forget, exec-secret-scoped,
 #     main-scoped-only. Nothing fills the scoped table and nothing calls
-#     secret() yet. P4.3's key-hook test must kill all four.
+#     secret() yet. The merge after #52 must kill all four (keys.md 7, M2).
 #   self-check: main-payout-check (the payout script from the public route
 #     against the wallet output from the private route; both routes are
 #     covered by the vectors and by the embit cross-check).

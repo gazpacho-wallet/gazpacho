@@ -98,16 +98,13 @@ static void port_forget(void *ctx, const uint8_t scope[32])
     gzp_log("key-forget scope=%02x%02x%02x%02x", scope[0], scope[1], scope[2], scope[3]);
 }
 
-/* A secret for a round (the key hook, P4.3). Under AT_JOIN, none: a round's
- * secrets come only from the scoped table, filled when the person readies
- * (keys.md 7). Otherwise derived now, under the current epoch only. */
+/* A secret for a round (the key hook, P4.3). Under AT_JOIN, only from the
+ * scoped table, by position: the pair of a scope the person readied for
+ * (keys.md 7, audit M2). Otherwise derived now, under the current epoch only. */
 static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
 {
     gzp_exec_t *ex = ctx;
-    if (ex->keys->scoped_only) {
-        memset(sec32, 0, 32);
-        return 0;
-    }
+    if (ex->keys->scoped_only) return gzp_keys_scoped_at(ex->keys, epoch, index, sec32);
     return gzp_net_key(ex->net, epoch, index, sec32, NULL);
 }
 

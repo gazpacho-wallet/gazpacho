@@ -298,6 +298,27 @@ static void scoped(const secp256k1_context *secp)
         for (i = 0; i < GZP_KEYS_MAX_SCOPES; i++)
             if (!k.scopes[i].used) CHECK(all(&k.scopes[i], 0, sizeof k.scopes[i]));
     }
+    /* By key position (M2): only the open scope's pair, current epoch, not frozen. */
+    {
+        uint8_t s4[32], got[32];
+        memset(s4, 0x44, 32);
+        CHECK(gzp_keys_scope_open(&k, s4, digest, 0, 21, &e));
+        CHECK(gzp_keys_lobby_raw(&k, 0, 21, wc, NULL, &e) && gzp_keys_lobby_raw(&k, 0, 22, wf, NULL, &e));
+        CHECK(gzp_keys_scoped_at(&k, 0, 21, got) && !memcmp(got, wc, 32));
+        CHECK(gzp_keys_scoped_at(&k, 0, 22, got) && !memcmp(got, wf, 32));
+        memset(got, 0xaa, 32);
+        CHECK(!gzp_keys_scoped_at(&k, 0, 23, got) && all(got, 0, 32));
+        CHECK(!gzp_keys_scoped_at(&k, 0, 20, got) && !gzp_keys_scoped_at(&k, 1, 21, got));
+        gzp_keys_freeze(&k, 1);
+        CHECK(!gzp_keys_scoped_at(&k, 0, 21, got) && all(got, 0, 32));
+        gzp_keys_freeze(&k, 0);
+        gzp_keys_set_epoch(&k, 5); /* an entry of another epoch answers nothing under the new one */
+        CHECK(!gzp_keys_scoped_at(&k, 5, 21, got) && !gzp_keys_scoped_at(&k, 0, 21, got));
+        gzp_keys_set_epoch(&k, 0);
+        CHECK(!gzp_keys_scoped_at(NULL, 0, 21, got) && !gzp_keys_scoped_at(&k, 0, 21, NULL));
+        gzp_keys_forget(&k, s4);
+        CHECK(!gzp_keys_scoped_at(&k, 0, 21, got) && !gzp_keys_scoped_at(&k, 0, 22, got));
+    }
     /* Eight at most (GZ_NODE_MAX_SLOTS). */
     for (i = 0; i < 7; i++) {
         scope[0] = (uint8_t)(10 + i);

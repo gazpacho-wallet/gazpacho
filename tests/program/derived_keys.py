@@ -122,7 +122,7 @@ def main():
         w.open(h, b, 0)
         check(h.wait_for(r"slot-opened scope=%s .*role=host" % a.tag, timeout=10) is not None and
               h.wait_for(r"slot-opened scope=%s .*role=host" % b.tag, timeout=10) is not None, "2: two lobbies open")
-        m = w.member("m")
+        m = w.member("m", "--member-signing", "auto")
         check(L.started(m), "2: the member starts")
         k01, k03 = lobby_key(0, 1), lobby_key(0, 3)
         w.join(m, a)
@@ -139,6 +139,9 @@ def main():
               m.wait_for(r"lobby scope=%s role=member .*joined=1" % b.tag, timeout=20) is not None,
               "2 (T2 step 3): both lobbies join, each over its own link")
         check(m.count(r" connected peer=") == 2, "2: the member holds exactly two links")
+        check(m.wait_for(r"lobby scope=%s role=member .*joined=1 ready=1" % a.tag, timeout=20) is not None and
+              m.wait_for(r"lobby scope=%s role=member .*joined=1 ready=1" % b.tag, timeout=20) is not None,
+              "2: the member (AUTO) is ready in both lobbies before its journal is copied")
         time.sleep(1)
         check(m.count(r"lobby-note code=0x4c06 a=\d+ b=7") == 0 and m.count(r"slot-closed") == 0,
               "2: neither seat is refused and both slots stay open (no key shared with the host)")
@@ -154,7 +157,7 @@ def main():
 
         # 3. restarted: the same keys ----------------------------------------
         mark = h.mark()
-        m = w.member("m")
+        m = w.member("m", "--member-signing", "auto")
         check(L.started(m), "3: the member restarts")
         check(h.wait_for(r"connected peer=%s key=%s" % (peer(k01), k01), timeout=15, start=mark) is not None and
               h.wait_for(r"connected peer=%s key=%s" % (peer(k03), k03), timeout=15, start=mark) is not None,
@@ -163,7 +166,7 @@ def main():
 
         # 4. restored: a new epoch, old keys never again ----------------------
         mark = h.mark()
-        m = w.member("m", "--test-restore-from", backup)
+        m = w.member("m", "--member-signing", "auto", "--test-restore-from", backup)
         rb = m.wait_for(r"restore-batch seq=\d+ epoch=([0-9a-f]{8})", timeout=20)
         check(rb is not None and int(rb.group(1), 16) != 0, "4: the restore draws a new epoch")
         epoch = int(rb.group(1), 16) if rb else 0
@@ -174,6 +177,9 @@ def main():
         check(h.count(r"connected peer=%s" % peer(k01), start=mark) == 0 and
               h.count(r"connected peer=%s" % peer(k03), start=mark) == 0,
               "4: the host never sees an old key again (R3)")
+        check(m.count(r"lobby scope=(%s|%s) role=member .*joined=1" % (a.tag, b.tag)) == 0,
+              "4 (audit M3): the restored member keeps neither seat nor its readiness in the backup's lobbies")
+        check(m.count(r"sign-begin|round_started") == 0, "4 (audit M3): and starts no round in them")
         c = L.Terms(w.hkey, 602)
         w.open(h, c)
         check(h.wait_for(r"slot-opened scope=%s .*role=host" % c.tag, timeout=10) is not None, "4: a third lobby")
@@ -188,7 +194,7 @@ def main():
         # 5. restarted after the restore: the epoch read back from storage --
         m.stop()
         mark = h.mark()
-        m = w.member("m")
+        m = w.member("m", "--member-signing", "auto")
         check(m.wait_for(r"keys epoch=%08x frozen=0" % epoch, timeout=20) is not None,
               "5: restarted, the key port's epoch is the restore's, read from the journal")
         check(h.wait_for(r"connected peer=%s key=%s" % (peer(ke), ke), timeout=15, start=mark) is not None and

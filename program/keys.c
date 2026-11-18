@@ -298,6 +298,8 @@ int gzp_keys_scope_open(gzp_keys_t *k, const uint8_t scope[32], const uint8_t di
         memcpy(s->digest, digest, 32);
         memcpy(s->contribution, con, 32);
         memcpy(s->factory, fac, 32);
+        s->epoch = epoch;
+        s->index = index;
         s->used = 1;
     }
     gzw_wipe(con, sizeof con);
@@ -316,6 +318,26 @@ int gzp_keys_scoped(const gzp_keys_t *k, const uint8_t scope[32], const uint8_t 
     memcpy(factory, s->factory, 32);
     memcpy(contribution, s->contribution, 32);
     return 1;
+}
+
+int gzp_keys_scoped_at(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32])
+{
+    size_t i;
+    if (sec) gzw_wipe(sec, 32);
+    if (!k || !sec || k->frozen || epoch != k->epoch) return 0;
+    for (i = 0; i < GZP_KEYS_MAX_SCOPES; i++) {
+        const gzp_keys_scope_t *s = &k->scopes[i];
+        if (!s->used || s->epoch != epoch) continue;
+        if (index == s->index) {
+            memcpy(sec, s->contribution, 32);
+            return 1;
+        }
+        if (index == s->index + 1) {
+            memcpy(sec, s->factory, 32);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 void gzp_keys_forget(gzp_keys_t *k, const uint8_t scope[32])
