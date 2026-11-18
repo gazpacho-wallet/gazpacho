@@ -1,0 +1,53 @@
+# Symbols only signer/ may use (docs/notes/signer.md 7.1), for
+# tools/check-signer-boundary.sh. One per line: `sym NAME` for an identifier,
+# `hook NAME` for a struct member that is called, declared as a function
+# pointer or assigned (the generic hooks).
+
+# libsecp256k1-zkp: signing, nonces, ECDH and every call that takes a secret key
+sym secp256k1_schnorrsig_sign32
+sym secp256k1_schnorrsig_sign_custom
+sym secp256k1_schnorrsig_sign
+sym secp256k1_ecdsa_sign
+sym secp256k1_ecdsa_sign_recoverable
+sym secp256k1_musig_nonce_gen
+sym secp256k1_musig_nonce_gen_counter
+sym secp256k1_musig_partial_sign
+sym secp256k1_ecdh
+sym secp256k1_keypair_create
+sym secp256k1_keypair_sec
+sym secp256k1_keypair_xonly_tweak_add
+sym secp256k1_ec_pubkey_create
+sym secp256k1_ec_seckey_verify
+sym secp256k1_ec_seckey_negate
+sym secp256k1_ec_seckey_tweak_add
+sym secp256k1_ec_seckey_tweak_mul
+sym secp256k1_ec_privkey_negate
+sym secp256k1_ec_privkey_tweak_add
+sym secp256k1_ec_privkey_tweak_mul
+
+# The wallet libraries' secret-key and signing entry points
+sym gzw_bip32_master
+sym gzw_bip32_child_priv
+sym gzw_bip32_derive_priv
+sym gzw_bip86_account_xprv
+sym gzw_bip86_tweaked_keypair
+sym gzw_taproot_tweak_seckey
+sym gzt_sign_keypath
+sym gzt_funding_build
+sym gzt_funding_release
+sym gzt_funding_spend_back
+
+# The generic hooks and the secrets they hand out (signer.md 4.1)
+hook secret
+hook sign
+sym host_secret
+sym gate_secret
+sym factory_secret
+sym contribution_secret
+sym static_key
+sym sign_digest
+sym port_sign
+sym port_secret
+sym ls_sign
+sym gzp_net_sign
+sym gzp_net_sign_host

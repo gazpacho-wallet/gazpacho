@@ -1,0 +1,162 @@
+#!/usr/bin/env python3
+"""Test for tools/check-signer-boundary.sh: what counts as a use, and the three modes.
+
+    python3 -I tests/tools/test_check_signer_boundary.py
+
+Builds a throwaway tree with the real symbol list and C files that use, and
+only seem to use, signer-only symbols, and checks the listing, the counts and
+the verdict of --report, --no-growth and --fail against allow lists that
+match, miss a use, or name too many. Standard library only; needs sh, awk,
+find and sort.
+"""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+CHECK = os.path.join(ROOT, "tools", "check-signer-boundary.sh")
+SYMBOLS = os.path.join(ROOT, "tools", "signer-only-symbols.txt")
+failures = []
+
+USES = r'''
+#include <secp256k1.h>
+/* secp256k1_schnorrsig_sign32 in a comment
+   spanning lines: secp256k1_ecdh(ctx, out, p, sec) */
+static const char *s = "secp256k1_keypair_create(ctx, &kp, sec)";
+static const char c = '"'; // secp256k1_musig_partial_sign
+int f(void) {
+    secp256k1_schnorrsig_sign32(ctx, sig, msg, &kp, aux);   /* one */
+    ok = secp256k1_schnorrsig_verify(ctx, sig, msg, 32, &pk) && my_secp256k1_ecdh_x(1) && secp256k1_ecdhx(2);
+    if (k->ports->keys.secret(k->ports->keys.ctx, 1, 2, sec) != 1) return 0;   /* hook:secret */
+    if (c.sign == NULL || c.signature) return 0;              /* not a use */
+    x = secp256k1_keypair_create(a, b, c) + secp256k1_keypair_create(a, b, c);   /* two on one line */
+    return 0;
+}
+typedef struct { int (*sign)(void *ctx, const uint8_t msg32[32], uint8_t sig[64]); int (*secret_count)(void); } hooks_t;
+static hooks_t h = { .sign = port_sign };
+'''
+
+
+def tree():
+    d = tempfile.mkdtemp()
+    os.makedirs(os.path.join(d, "tools"))
+    shutil.copy(SYMBOLS, os.path.join(d, "tools", "signer-only-symbols.txt"))
+    files = {
+        "core/a.c": USES,
+        "program/b.h": "int gzp_net_sign(int x);\n",
+        "signer/s.c": "void f(void) { secp256k1_schnorrsig_sign32(0, 0, 0, 0, 0); }\n",
+        "signer/tests/t.c": "void f(void) { secp256k1_ecdh(0, 0, 0, 0, 0, 0); }\n",
+        "core/superscalar/src/m.c": "void f(void) { secp256k1_musig_partial_sign(0, 0, 0, 0, 0, 0); }\n",
+        "build/x.c": "void f(void) { secp256k1_ecdh(0, 0, 0, 0, 0, 0); }\n",
+        "docs/n.md": "secp256k1_ecdh\n",
+        "tools/z.py": "secp256k1_ecdh()\n",
+    }
+    for rel, text in files.items():
+        path = os.path.join(d, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    return d
+
+
+WANT = {
+    ("core/a.c", "secp256k1_schnorrsig_sign32"): 1,
+    ("core/a.c", "secp256k1_keypair_create"): 2,
+    ("core/a.c", "hook:secret"): 1,
+    ("core/a.c", "hook:sign"): 2,
+    ("core/a.c", "port_sign"): 1,
+    ("program/b.h", "gzp_net_sign"): 1,
+}
+
+
+def run(d, *args):
+    r = subprocess.run(["sh", CHECK, "--root", d] + list(args), capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+
+
+def write_allow(d, entries):
+    path = os.path.join(d, "allow.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# comment\n\n")
+        for (fn, sym), n in sorted(entries.items()):
+            f.write("%s\t%s\t%d\n" % (fn, sym, n))
+    return path
+
+
+def expect(name, cond, out=""):
+    if cond:
+        print("ok   %s" % name)
+    else:
+        failures.append(name)
+        print("FAIL %s\n%s" % (name, out))
+
+
+d = tree()
+
+# --write-allow gives exactly the uses above: the listing is right.
+code, out = run(d, "--write-allow", os.path.join(d, "written.txt"))
+got = {}
+with open(os.path.join(d, "written.txt"), encoding="utf-8") as f:
+    for line in f:
+        if line.startswith("#") or not line.strip():
+            continue
+        fn, sym, n = line.rstrip("\n").split("\t")
+        got[(fn, sym)] = int(n)
+expect("the uses are exactly those in code outside signer/", got == WANT, "%r\n%s" % (got, out))
+expect("report mode exits 0 with uses and no allow list", code == 0, out)
+expect("the report names the totals", "8 uses of signer-only symbols outside signer/, in 2 files" in out, out)
+expect("the report shows each file", "  core/a.c: 7" in out and "  program/b.h: 1" in out, out)
+expect("report mode shows growth", "GROWTH core/a.c: hook:secret used 1 times, allowed 0" in out, out)
+
+# --fail: any use fails.
+code, out = run(d, "--fail")
+expect("--fail fails on any use", code == 1 and "FAIL" in out, out)
+
+# --no-growth: an exact list passes; a missing use or a lower count is growth; an extra one is stale.
+allow = write_allow(d, WANT)
+code, out = run(d, "--no-growth", "--allow", allow)
+expect("--no-growth passes with the exact list", code == 0 and "GROWTH" not in out and "STALE" not in out, out)
+code, out = run(d, "--no-growth", "--allow", os.path.join(d, "written.txt"))
+expect("--no-growth passes with the written list", code == 0, out)
+fewer = dict(WANT)
+del fewer[("program/b.h", "gzp_net_sign")]
+code, out = run(d, "--no-growth", "--allow", write_allow(d, fewer))
+expect("--no-growth fails on a new use", code == 1 and "GROWTH program/b.h: gzp_net_sign" in out, out)
+lower = dict(WANT)
+lower[("core/a.c", "secp256k1_keypair_create")] = 1
+code, out = run(d, "--no-growth", "--allow", write_allow(d, lower))
+expect("--no-growth fails on a higher count", code == 1 and "GROWTH core/a.c: secp256k1_keypair_create used 2" in out, out)
+more = dict(WANT)
+more[("core/a.c", "secp256k1_ecdh")] = 1
+code, out = run(d, "--no-growth", "--allow", write_allow(d, more))
+expect("--no-growth fails on a stale line", code == 1 and "STALE core/a.c: secp256k1_ecdh" in out, out)
+higher = dict(WANT)
+higher[("core/a.c", "hook:sign")] = 3
+code, out = run(d, "--no-growth", "--allow", write_allow(d, higher))
+expect("--no-growth fails on a stale count", code == 1 and "STALE core/a.c: hook:sign allowed 3" in out, out)
+code, out = run(d, "--allow", write_allow(d, more))
+expect("report mode never fails", code == 0 and "STALE" in out, out)
+
+# A tree with no use passes every mode.
+clean = tempfile.mkdtemp()
+os.makedirs(os.path.join(clean, "tools"))
+shutil.copy(SYMBOLS, os.path.join(clean, "tools", "signer-only-symbols.txt"))
+os.makedirs(os.path.join(clean, "core"))
+with open(os.path.join(clean, "core", "ok.c"), "w", encoding="utf-8") as f:
+    f.write("int f(void) { return secp256k1_schnorrsig_verify(0, 0, 0, 0, 0); }\n")
+code, out = run(clean, "--fail")
+expect("--fail passes with no use", code == 0 and "0 uses" in out, out)
+
+# A bad symbol list is an error, not a pass.
+with open(os.path.join(clean, "tools", "signer-only-symbols.txt"), "w", encoding="utf-8") as f:
+    f.write("sym not-an-identifier\n")
+code, out = run(clean)
+expect("a bad symbol list is an error", code == 2, out)
+
+if failures:
+    print("RESULT: FAIL (%d)" % len(failures))
+    sys.exit(1)
+print("RESULT: PASS")

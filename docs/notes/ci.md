@@ -169,6 +169,12 @@ Locally (Linux, clang 18):
     cmake --build build-fuzz -j
     sh tools/run-fuzz.sh build-fuzz 60
 
+### signer boundary (report mode) and signer mutants
+
+Not required for merging. Step S1 of `docs/notes/signer.md` (sections 7 and 9). `tools/check-signer-boundary.sh` lists every signing or secret-key symbol of `tools/signer-only-symbols.txt` used in C code outside `signer/` (comments and strings blanked first; `core/superscalar/` is imported and allowed by name), per file, and compares the counts with `tools/signer-boundary-allowed.txt`, the uses of the day it was written, which may only shrink. It runs with `--report` and never fails until step S4, which empties the list and switches it to `--fail`; `--no-growth` is the mode in between (fails on a new use or a stale line). `tools/check-tags.py` fails on a `gazpacho/` string in code that `spec/PROTOCOL.md` 8.2 does not register; it runs with `--report` while main still has unregistered strings. Both tools have their own tests (`tests/tools/test_check_signer_boundary.py`, `tests/tools/test_check_tags.py`), which do fail the job, as does `tools/signer-vectors.py --check` (the signer's vectors recomputed in pure Python). `signer mutants` runs `tools/mutate-signer.py` over `signer/tests/mutants.txt`: one mutant per check of the signer and of the two tools, each of which a test must kill, or a line `# equivalent NAME: why` must triage. The signer's constant-time test, `signer_ctime`, runs in the first valgrind shard with `storage_ctime` and `signing_ctime`.
+
+Locally: `sh tools/check-signer-boundary.sh`, `python3 -I tools/check-tags.py`.
+
 ## What the second compiler changed in the symbol checks
 
 The first clang runs failed two existing tests on `main`, not because the code changed but because the checks only knew gcc's output:
