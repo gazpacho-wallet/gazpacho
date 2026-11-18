@@ -2240,7 +2240,7 @@ static void test_api_replay_detail(void)
     CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "ReplayDetail000001", "/api/v1/host/lobbiez", 1, a, 3) == 409 && N[0].n_batches == nb);
     CHECK(res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) &&
           !strcmp(q, "{\"first\":{\"method\":\"POST\",\"path\":\"/api/v1/host/lobbies\"}}"));
-    {
+    for (int mi = 0; mi < 2; mi++) { /* another method, and one that is a prefix of the first call's */
         static uint8_t buf[2048];
         uint8_t c2[2], d[32];
         size_t at = 0;
@@ -2248,7 +2248,7 @@ static void test_api_replay_detail(void)
         memset(d, 1, 32);
         gz_put_u16(c2, GZ_CMD_LOBBY_OPEN);
         gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_REQUEST_ID, (const uint8_t *)"ReplayDetail000001", 18);
-        gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_METHOD, (const uint8_t *)"PUT", 3);
+        gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_METHOD, (const uint8_t *)(mi ? "POS" : "PUT"), 3);
         gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_PATH, (const uint8_t *)"/api/v1/host/lobbies", 20);
         gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_DIGEST, d, 32);
         gz_rec_put(buf, sizeof buf, &at, GZ_CMD_REC_COMMAND, c2, 2);
