@@ -658,7 +658,7 @@ The fee rate of the funding transaction is the host's setting, default 0.1 sat/v
 
 ### 14.3 The host's funding deadline
 
-- The host abandons a funding that is not buried by its own deadline: the latest member funding deadline the terms allow (36 blocks after the ack in Slice 1) plus the burial depth.
+- The host abandons a funding that is not buried by its own deadline. **Changed in P4.5, pending the owner** (`docs/notes/funding.md` 5, decision 3): the deadline is the host's tip when the attempt's plan was handed out plus 36 blocks, with no burial depth added, so it is not later than a member's (its ack tip plus 36) whose chain view is not behind the host's; a burial after it is funded late, with no spend-back. Draft 2 said: the latest member funding deadline the terms allow (36 blocks after the ack in Slice 1) plus the burial depth.
 - At that point the lobby ends Failed (reason 4), `cancel` reason 4 goes to every seat, and the slot closes.
 - To keep its coins safe, the host then spends one of the funding's inputs back to its own wallet. Once that is buried, every member's records for the factory end under C4(d).
 - **Its fee is the minimum that can replace the funding** (R2, F3): the fee of the whole package it evicts (the funding plus any child, including a fee child the host made on the funding's change output under H16), plus the incremental relay fee times the spend-back's own size. Being small, the spend-back then also has the higher feerate the replacement rule needs. This keeps the owner's rule of always paying the lowest fee that works. If the host's chain servers no longer see the funding, the spend-back pays the host's ordinary rate (0.1 sat/vB).
