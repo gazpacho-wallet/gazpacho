@@ -141,6 +141,16 @@ if(Python3_Interpreter_FOUND)
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})
   set_tests_properties(program_two_process program_slow_peers program_restore_counter program_networks
                        program_release_build program_storage_failure program_loop_liveness PROPERTIES TIMEOUT 300)
+  # CI runs ctest in parallel (docs/notes/ci.md). These tests pick a port with
+  # free_port() (tests/program/gzp_harness.py and two copies of it): it binds
+  # port 0, reads the number and closes the socket, and the program listens on
+  # that number later, and again after each restart. Two such tests side by
+  # side could be handed the same number in between, so they hold one lock and
+  # run one after another. The other program tests listen on port 0 and keep
+  # the socket the kernel gave them, so they need no lock.
+  set_tests_properties(program_envelope program_links program_loop_liveness program_lobby program_queue_peers
+                       program_refusals program_resend_on_connect program_restart_slots program_start_queue
+                       PROPERTIES RESOURCE_LOCK gzp_free_port)
   if(GZ_LIVE_TESTS AND TARGET gazpacho_chain_curl)
     # Read-only: the public signet servers' block 0 and tip, the wallet's
     # first address, and a refusal of a mainnet server. Needs the network.
