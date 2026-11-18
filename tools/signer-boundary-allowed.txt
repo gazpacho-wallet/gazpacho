@@ -38,6 +38,10 @@ program/net.c	secp256k1_keypair_create	1
 program/net.c	secp256k1_schnorrsig_sign32	1
 program/net.c	static_key	6
 program/net.h	gzp_net_sign	1
+tests/funding/regtest_harness.c	gzt_funding_build	1
+tests/funding/regtest_harness.c	gzt_funding_release	1
+tests/funding/regtest_harness.c	gzt_funding_spend_back	1
+tests/funding/regtest_harness.c	gzw_bip32_master	1
 tests/lobby/lobby_test.h	hook:sign	1
 tests/lobby/lobby_test.h	secp256k1_keypair_create	1
 tests/lobby/lobby_test.h	secp256k1_schnorrsig_sign32	1
@@ -126,11 +130,13 @@ wallet/tests/test_wallet_rare.c	gzw_bip86_tweaked_keypair	2
 wallet/tests/test_wallet_rare.c	secp256k1_ec_seckey_negate	1
 wallet/tx/include/gazpacho/wallet_tx.h	gzt_funding_build	1
 wallet/tx/include/gazpacho/wallet_tx.h	gzt_funding_release	1
+wallet/tx/include/gazpacho/wallet_tx.h	gzt_funding_spend_back	1
 wallet/tx/include/gazpacho/wallet_tx.h	gzt_sign_keypath	1
 wallet/tx/src/funding.c	gzt_funding_build	1
 wallet/tx/src/funding.c	gzt_funding_release	1
-wallet/tx/src/funding.c	gzt_sign_keypath	1
-wallet/tx/src/funding.c	gzw_bip86_tweaked_keypair	1
+wallet/tx/src/funding.c	gzt_funding_spend_back	1
+wallet/tx/src/funding.c	gzt_sign_keypath	2
+wallet/tx/src/funding.c	gzw_bip86_tweaked_keypair	2
 wallet/tx/src/sighash.c	gzt_sign_keypath	1
 wallet/tx/src/sighash.c	secp256k1_schnorrsig_sign32	1
 wallet/tx/tests/test_tx.c	gzt_funding_build	29
@@ -145,6 +151,10 @@ wallet/tx/tests/test_tx_faults.c	gzt_funding_build	2
 wallet/tx/tests/test_tx_faults.c	gzt_funding_release	1
 wallet/tx/tests/test_tx_faults.c	gzt_sign_keypath	1
 wallet/tx/tests/test_tx_faults.c	gzw_taproot_tweak_seckey	1
+wallet/tx/tests/test_tx_funding_port.c	gzt_funding_build	12
+wallet/tx/tests/test_tx_funding_port.c	gzt_funding_release	1
+wallet/tx/tests/test_tx_funding_port.c	gzt_funding_spend_back	8
+wallet/tx/tests/test_tx_funding_port.c	gzw_bip32_master	1
 wallet/tx/tests/test_tx_vectors.c	gzt_sign_keypath	3
 wallet/tx/tests/test_tx_vectors.c	gzw_taproot_tweak_seckey	3
 wallet/tx/tests/test_tx_vectors.c	secp256k1_keypair_create	2
