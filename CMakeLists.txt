@@ -209,6 +209,7 @@ add_test(NAME core_isolation
 string(JOIN " " GZ_NODE_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/node/include
        -I${CMAKE_CURRENT_SOURCE_DIR}/core/node -I${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include
        -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include -I${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/funding/include
        -I${secp256k1-zkp_SOURCE_DIR}/include)
 # With the signing engine (P4.3) the node calls into secp256k1-zkp: the
 # signing engine's exact list of calls, and nothing else.
