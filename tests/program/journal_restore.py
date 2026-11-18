@@ -36,7 +36,8 @@ section 9's R2 and R7):
    epoch, never 0 and never one used before; with the counter kept its
    incarnation is above every one used (with it gone the incarnation can
    start again and the restore rests on the new epoch, as in case 5); with
-   the guard kept, its epochs are kept. The marker changes only
+   the guard kept, its epochs are kept. (d) is (b) with no marker: the
+   plain warning, never the softer words. The marker changes only
    the words: where the counter is gone the person is still told.
 """
 import os
@@ -251,14 +252,16 @@ def main():
         note(dump_journal(folder, exe), "before-7")
         for tag, gone in (("a", ("journal.gzj", "mark.gzm", "starts.gzs")),
                           ("b", ("journal.gzj", "mark.gzm", "starts.gzs", "guard.gzg")),
-                          ("c", ("journal.gzj", "mark.gzm", "guard.gzg"))):
+                          ("c", ("journal.gzj", "mark.gzm", "guard.gzg")),
+                          ("d", ("journal.gzj", "mark.gzm", "starts.gzs", "guard.gzg"))):
             f7 = os.path.join(work, "planted-" + tag)
             shutil.copytree(folder, f7)
             kept_guard = open(os.path.join(f7, "guard.gzg"), "rb").read() if "guard.gzg" not in gone else None
             for n in gone:
                 if os.path.exists(os.path.join(f7, n)):
                     os.unlink(os.path.join(f7, n))
-            open(os.path.join(f7, "setup.gzp"), "wb").close()
+            if tag != "d":
+                open(os.path.join(f7, "setup.gzp"), "wb").close()
             before_epochs = set(seen_epochs)
             runs[0] += 1
             p = Proc("run-%d" % runs[0], [exe, "--data-dir", f7, "--role", "member", "--name", "m", "--no-chain",
@@ -277,7 +280,11 @@ def main():
             e7 = p.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]
             check(e7 is not None and e7.group(1) != "00000000" and bytes.fromhex(e7.group(1)) not in before_epochs,
                   "7%s: a new epoch, not 0 and not used before (%s)" % (tag, e7.group(1) if e7 else None))
-            if "starts.gzs" in gone:
+            if tag == "d":
+                check(p.find(r"restore counter_found=0: the person is told")[0] is not None and
+                      p.find(r"set-up may have been interrupted")[0] is None,
+                      "7d: with no marker the plain warning, never the softer words")
+            elif "starts.gzs" in gone:
                 check(p.find(r"start-counter was not found.*the person is told")[0] is not None,
                       "7%s: the person is still told: a marker never hides the warning" % tag)
             if "starts.gzs" not in gone:

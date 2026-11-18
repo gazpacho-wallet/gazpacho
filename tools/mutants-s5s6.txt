@@ -83,7 +83,7 @@ marker_kept	program/store_unlock.c	    if (setup_marker_clear(w) != 0) {\n      
 # --- review A of PR 54
 setup_told_always	program/store_unlock.c	w->setup_interrupted = k->op == GZP_UNLOCK_OP_UNLOCK && marker_present(w) &&	w->setup_interrupted = k->op == GZP_UNLOCK_OP_UNLOCK &&
 restore_gzr_trusted	ports/storage/journal.c	    j->restored = !sealed_rule && c.marker && !c.answered;\n    if (sealed_rule) {	    j->restored = c.marker && !c.answered;\n    if (sealed_rule && !j->restored) {
-dumps_left_on	program/main.c	    no_dumps();\n\n	\n
+dumps_left_on	program/main.c	    no_dumps();\n	    (void)no_dumps;\n
 journal_mark_unsynced	ports/storage/journal.c	    j->end += ms;\n    if (j->os.sync(j->os.ctx, j->fd) != 0) return 0;\n    j->durable_end = j->end;	    j->end += ms;\n    j->durable_end = j->end;
 replace_dir_unsynced	ports/storage/crypto/sc_files.c	    return sync_dir(s) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DONE_WITH_FAULT;	    return GZ_SC_OK;
 soft_warning_dropped	program/executor.c	        gzp_log("start-counter was not found; set-up may have been interrupted: a restore with a new epoch; "\n                "the person is told");	        (void)0;
