@@ -54,7 +54,7 @@ Get SuperScalar into people's hands. Gazpacho is a professional proof-of-concept
 | **Slice 3** | **Leaving alone:** a member exits on signet with the host stopped | After M3 |
 | M4 | Rotation into the next factory (1.0.0 trees are advanceless: fixed levels only). Timed levels and layer updates are 1.1.0 work, with liquidity sales | |
 | M5 | Hardening of storage, transport and chain view; Electrum backend; a node of our own for controlled-chain tests | |
-| M6 | First release candidate on signet: lobby listings, host service, LND adapter, full local web interface, our public host | |
+| M6 | First release candidate on signet: lobby listings, host service, LND adapter, full local web interface, our public host; reviewed [release engineering](release/README.md): locked inputs, reproducible packages, SPDX SBOM, independent builder signatures, protected publication and dependency monitoring | |
 
 Slices are defined in `SLICES.md`. Each pulls a thin, real version of the outer pieces forward so there is something to run early; the simulator stays the main safety net.
 
