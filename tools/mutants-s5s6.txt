@@ -7,8 +7,8 @@ rule_behind	ports/storage/journal.c	        if (rule == GZ_JOURNAL_START_BEHIND)
 rule_old	ports/storage/journal.c	        if (rule == GZ_JOURNAL_START_POSSIBLY_OLD) { st = GZ_JOURNAL_ERR_POSSIBLY_OLD; goto out; }	
 rule_restore	ports/storage/journal.c	        if (rule == GZ_JOURNAL_START_RESTORE) j->restored = 1;	
 mark_restart	ports/storage/journal.c	(!j->codec.seal->mark_restart || j->codec.seal->mark_restart(j->codec.seal->ctx) != 0)) {	(0)) {
-view_inc	ports/storage/journal.c	    return e.kind == GZ_JOURNAL_KIND_MARK && e.incarnation == incarnation;	    return e.kind == GZ_JOURNAL_KIND_MARK;
-view_kept	ports/storage/journal.c	offset > v->kept_end || v->kept_end - offset < ms) return 0;	offset > v->kept_end + 100000) return 0;
+view_inc	ports/storage/journal.c	    return e.kind == GZ_JOURNAL_KIND_MARK && e.incarnation == incarnation;	    return e.kind == GZ_JOURNAL_KIND_MARK && (e.incarnation == incarnation || e.kind == GZ_JOURNAL_KIND_MARK);
+view_kept	ports/storage/journal.c	offset > v->kept_end || v->kept_end - offset < ms) return 0;	offset > v->kept_end || v->kept_end - offset < 0 * ms) return 0;
 settle_newer	ports/storage/journal.c	get64(fg + 40) < get64(rec + 40);	get64(fg + 40) > get64(rec + 40);
 frame_small_len	ports/storage/journal.c	(f.kind != GZ_JOURNAL_KIND_BATCH && f.payload_len != SMALL_PAYLOAD) ||	
 sealed_create	ports/storage/journal.c	    if (j->codec.seal) return GZ_JOURNAL_ERR_HEADER;	
@@ -24,9 +24,63 @@ counter_not_given	program/store_journal.c	    cfg.start_counter = counter;	    c
 counter_not_written	program/store_journal.c	    if (gz_sc_counter_write(s->sc.sc, s->sc.u->vault, inc) != GZ_SC_OK) return -1;	
 guard_read_none	program/store_journal.c	    *rec = out;\n    *len = REC_HEAD + cl;\n    return 1;	    free(out);\n    return 0;
 append_no_flush	program/store_journal.c	    if (gz_journal_flush(s->j) != GZ_JOURNAL_OK) return -1;	
-behind_flag	program/store_journal.c	        s->behind = st == GZ_JOURNAL_ERR_BEHIND || st == GZ_JOURNAL_ERR_POSSIBLY_OLD;	        s->behind = st == GZ_JOURNAL_ERR_BEHIND;
+behind_flag	program/store_journal.c	st == GZ_JOURNAL_ERR_POSSIBLY_OLD ? 2 : 0;	st == GZ_JOURNAL_ERR_POSSIBLY_OLD ? 1 : 0;
 # --- program/store_unlock.c
 wrong_not_counted	program/store_unlock.c	        if (count_attempt(w, 1, now_ms, r) != 0) set_result(r, GZP_UNLOCK_STORAGE_FAILED, "attempts");\n        else r->status = GZP_UNLOCK_WRONG;	        r->status = GZP_UNLOCK_WRONG;
 attempts_wait	program/store_unlock.c	    if (gz_sc_attempts_wait(&a, now_s) > 0) {	    if (0) {
 free_wrong	program/store_unlock.c	#define FREE_WRONG 5u	#define FREE_WRONG 4u
 right_not_counted	program/store_unlock.c	        (void)count_attempt(w, 0, now_ms, NULL); /* the passphrase was right, whatever follows */	
+#
+# --- Survivors (the build server, after the merge of P7), triaged.
+# Run with the default test set, then the survivors again with
+# program_journal_kill added (GZP_MUT_TESTS). Killed after a test was added:
+#   counter_not_given   program_journal_restore case 6 (storage files put back
+#                       from an older copy, the start counter kept).
+#   behind_flag         program_storage_damage now names which files_behind
+#                       (behind for the cut-back journal, possibly_old for the
+#                       mark and guard files). The test found a bug:
+#                       gzp_journal_store_behind returned a truth value, so
+#                       possibly_old was never said; fixed.
+# Kept, open (a decision is needed):
+#   setup_no_counter    set-up writes the key file first (storage 7.4) and
+#                       starts.gzs after the guard, so a kill between them
+#                       gives a restore (6.3 step 0) that finds no counter and
+#                       tells the person of a loss that did not happen (a check
+#                       "no start after a kill says the counter is missing" in
+#                       program_journal_kill fails at kill points 12 to 21).
+#                       Making the counter before the key file fixes it but
+#                       changes 7.4's order, and storage_files' done_with_fault
+#                       (review B, L1: a folder-sync failure after the key file
+#                       is done with a fault) then fails before the key file.
+#                       Left as it is, with neither change, for a decision.
+# Kept, with the reason; none weakens what a test asserts:
+#   append_no_flush     complete() flushes before it reports any batch, and the
+#                       executor confirms only through complete(), so nothing
+#                       acts on a batch that is not durable. What the mutant
+#                       changes: a failed sync is reported at complete() and
+#                       not at append(). Follow-up: the sync-failure cases of
+#                       program_storage_failure on the journal store (they run
+#                       on the stand-in).
+#   settle_newer        a guard record newer than guard.gzg (a kill between
+#                       the batch's sync and the guard write) no longer
+#                       replaces the file; the next anchored batch writes it.
+#                       Follow-up: a readout of guard.gzg's counter in the
+#                       dump, compared with the journal's after each kill.
+#   view_inc            the start rule's mark lookup ignores the incarnation:
+#                       only another history of the same wallet with a mark at
+#                       the same offset differs (two copies of one folder run
+#                       apart). Follow-up test with forked folders.
+#   view_kept           frame_mark_candidate and entry_at check the length
+#                       again: the removed bound is redundant (no difference
+#                       in behaviour; ASan would show a read past the end).
+#   frame_small_len     post-authentication checks of what the seal table
+#   counter_format      opened: only a holder of the keys can make a frame or
+#                       a counter that fails them (the length and the version
+#                       are under the tag). Defence in depth.
+#   sealed_create       the program never opens a sealed journal that is not
+#                       there (set-up makes it; a missing one is restore step
+#                       0). Follow-up: a journal-level test of
+#                       gz_journal_open_sealed on a missing file.
+#   commit_recheck      a second set-up between derive and commit cannot
+#                       happen under the folder lock. Follow-up: a library
+#                       test (prepare, a key file made, commit refused).

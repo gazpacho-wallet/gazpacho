@@ -24,6 +24,11 @@ section 9's R2 and R7):
    restore (storage 6.3 step 0) with a new epoch, the guard carried on.
 5. starts.gzs removed before an import: the restore goes ahead from the
    journal alone and the person is told (counter missing).
+6. Every storage file but the start counter (journal, mark file, guard file,
+   restore marker) put back from an older copy of the folder, which the
+   start rule cannot tell from a folder that never moved on: the start
+   counter keeps the next incarnation above every one used, or the start is
+   refused; never an incarnation used before.
 """
 import os
 import re
@@ -200,6 +205,34 @@ def main():
               "5: a restore without its counter goes ahead from the journal alone; the person is told")
         m = p.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]
         check(m is not None and bytes.fromhex(m.group(1)) not in seen_epochs, "5: still a new epoch")
+
+        # 6. The folder's storage files put back from an older copy, the start
+        #    counter kept (contract-v2.md section 8).
+        keep = ("starts.gzs", "keys.gzk", "attempts.gza")
+
+        def storage_files():
+            return [n for n in os.listdir(folder) if os.path.isfile(os.path.join(folder, n)) and n not in keep and
+                    "lock" not in n and n != "identity"]
+        snap = os.path.join(work, "snapshot")
+        os.makedirs(snap)
+        for n in storage_files():
+            shutil.copyfile(os.path.join(folder, n), os.path.join(snap, n))
+        used = 0
+        for _ in range(2):
+            p, inc = run()
+            used = max(used, inc or 0)
+        for e in dump_journal(folder, exe):
+            if e[0] == "INCN":
+                used = max(used, e[1])
+        check(used > 0, "6: two more starts (incarnation %d)" % used)
+        for n in storage_files():
+            os.unlink(os.path.join(folder, n))
+        for n in os.listdir(snap):
+            shutil.copyfile(os.path.join(snap, n), os.path.join(folder, n))
+        p, inc = run()
+        check(inc is None or inc > used,
+              "6: an older copy of the storage files: incarnation %s is above every one used (%d), or refused" %
+              (inc, used))
     finally:
         kill_all(procs)
     return check.result("program_journal_restore", logs)

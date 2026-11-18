@@ -23,6 +23,9 @@ SRC, BUILD, WORK = (os.path.abspath(a) for a in sys.argv[1:4])
 ONLY = set(sys.argv[4:])
 TESTS = ("journal_fuzz_sealed|storage_fuzz_sc_counter|^journal$|^journal_restore$|storage_files|"
          "program_unlock|program_storage_damage|program_journal_restore")
+# A wider set for a rerun of the survivors (program_journal_kill, minutes per
+# mutant), e.g. GZP_MUT_TESTS="$DEFAULT|^program_journal_kill$".
+TESTS = os.environ.get("GZP_MUT_TESTS", TESTS)
 
 
 def unescape(t):
