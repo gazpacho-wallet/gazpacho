@@ -128,6 +128,33 @@ static bool await(wx *x, const char *want, unsigned limit_ms) {
   }
 }
 
+/* Waits until the worker has finished a pass after `after` passes; returns the
+ * time it saw that, or 0 at LONG_MS. */
+static uint64_t pass_done(wx *x, uint64_t after, uint64_t *passes) {
+  gz_chainw_stats st;
+  uint64_t end = ms_now() + LONG_MS;
+  do {
+    gz_chainw_stats_get(x->w, &st);
+    if (st.passes > after) {
+      *passes = st.passes;
+      return ms_now();
+    }
+    nap(5);
+  } while (ms_now() < end);
+  return 0;
+}
+
+/* The length of one whole pass at the present pace: from the end of one pass
+ * to the end of the next. On return a new pass has just begun. 0 at LONG_MS. */
+static uint64_t pass_length(wx *x) {
+  gz_chainw_stats st;
+  uint64_t p = 0;
+  gz_chainw_stats_get(x->w, &st);
+  uint64_t t1 = pass_done(x, st.passes, &p);
+  uint64_t t2 = t1 ? pass_done(x, p, &p) : 0;
+  return t1 && t2 > t1 ? t2 - t1 : 0;
+}
+
 static bool readable(wx *x) {
   struct pollfd p = {gz_chainw_fd(x->w), POLLIN, 0};
   return poll(&p, 1, 0) == 1 && (p.revents & POLLIN) != 0;
@@ -836,22 +863,6 @@ static void test_reset_drops_a_pass_in_flight(test_state *T) {
   wx_close(&x);
 }
 
-/* Waits until the worker has finished a pass after `after` passes; returns the
- * time it saw that, or 0 at LONG_MS. */
-static uint64_t pass_done(wx *x, uint64_t after, uint64_t *passes) {
-  gz_chainw_stats st;
-  uint64_t end = ms_now() + LONG_MS;
-  do {
-    gz_chainw_stats_get(x->w, &st);
-    if (st.passes > after) {
-      *passes = st.passes;
-      return ms_now();
-    }
-    nap(5);
-  } while (ms_now() < end);
-  return 0;
-}
-
 /* A reset stops a long pass between two requests, also without an interrupt
  * hook (engine_stop in chainw.c): the new generation's first tip comes about
  * one request after the reset, not after the rest of the old pass. One server
@@ -860,7 +871,6 @@ static uint64_t pass_done(wx *x, uint64_t after, uint64_t *passes) {
 static void test_reset_stops_a_long_pass(test_state *T) {
   wx x;
   uint8_t id[GZ_HASH_LEN];
-  uint64_t p = 0;
   wx_open(&x);
   x.cfg.interrupt = NULL;
   wx_start(&x);
@@ -876,13 +886,7 @@ static void test_reset_stops_a_long_pass(test_state *T) {
   x.net.delay_path = "/tx/";
   x.net.delay_ms = 400;
   sim_unlock(&x.net);
-  /* one whole pass at this pace: from the end of one pass to the end of the next */
-  gz_chainw_stats st;
-  gz_chainw_stats_get(x.w, &st);
-  uint64_t t1 = pass_done(&x, st.passes, &p);
-  uint64_t t2 = t1 ? pass_done(&x, p, &p) : 0;
-  CHECK(t1 != 0 && t2 != 0);
-  uint64_t pass_ms = t2 > t1 ? t2 - t1 : 0;
+  uint64_t pass_ms = pass_length(&x);
   CHECK(pass_ms >= 2000); /* else the pass is too short for the test to tell anything */
   nap((unsigned)(pass_ms / 4));
   uint64_t t0 = ms_now();
@@ -1032,7 +1036,11 @@ static void test_broadcast_handed_over_mid_pass(test_state *T) {
   x.net.delay_path = "/tx/";
   x.net.delay_ms = 400;
   sim_unlock(&x.net);
-  nap(1000); /* well inside a pass of about five seconds */
+  /* a quarter of the way into a pass of a few seconds: a pass that happened to
+   * end just after the broadcast was queued would hand it over anyway */
+  uint64_t pass_ms = pass_length(&x);
+  CHECK(pass_ms >= 2000);
+  nap((unsigned)(pass_ms / 4));
   uint64_t t0 = ms_now();
   const sim_tx *t = &x.net.world.tx[SIM_S1];
   CHECK(gz_chainw_broadcast(x.w, 1, t->raw, t->len) == GZ_CHAINW_OK);
