@@ -64,9 +64,9 @@ static uint64_t port_mono(void *ctx)
     return gzp_mono_ms();
 }
 
-/* The key port (ports.h) over the stand-in transport key, until P8 derives
- * per-lobby keys: every (epoch, index) is the transport's key, and the host
- * key is it too. No secret is handed out before the signing engine needs one. */
+/* The key port (ports.h; docs/notes/keys.md): per-lobby keys derived from
+ * the seed under the current epoch only (keys.h's policy, through
+ * gzp_net_key), the host key the transport's own. */
 static int port_pub(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33])
 {
     gzp_exec_t *ex = ctx;
@@ -87,25 +87,27 @@ static int port_point_ok(void *ctx, const uint8_t pub[33])
 static int port_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
 {
     gzp_exec_t *ex = ctx;
-    if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign(ex->net, 0, 0, msg, sig) : 0;
+    if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign_host(ex->net, msg, sig) : 0;
     return gzp_net_sign(ex->net, epoch, index, msg, sig);
 }
 
-/* A lobby's signing gate closed (AT_JOIN): its scoped factory secret is
- * wiped. The stand-in keys hold none apart; the line shows the moment. */
+/* A lobby's signing gate closed (AT_JOIN): its scoped secrets are wiped
+ * (keys.md 7); the line shows the moment. */
 static void port_forget(void *ctx, const uint8_t scope[32])
 {
-    (void)ctx;
+    gzp_exec_t *ex = ctx;
+    gzp_keys_forget(ex->keys, scope);
     gzp_log("key-forget scope=%02x%02x%02x%02x", scope[0], scope[1], scope[2], scope[3]);
 }
 
-/* The secret at (epoch, index), for the signing engine's key hook (core/node
- * signslot.c), which wipes it when it has made its keypair. */
+/* A secret for a round (the key hook, P4.3). Under AT_JOIN, only from the
+ * scoped table, by position: the pair of a scope the person readied for
+ * (keys.md 7, audit M2). Otherwise derived now, under the current epoch only. */
 static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
 {
     gzp_exec_t *ex = ctx;
-    uint8_t pub[33];
-    return gzp_net_key(ex->net, epoch, index, sec32, pub);
+    if (ex->keys->scoped_only) return gzp_keys_scoped_at(ex->keys, epoch, index, sec32);
+    return gzp_net_key(ex->net, epoch, index, sec32, NULL);
 }
 
 static int port_host_pub(void *ctx, uint8_t pub33[33])
@@ -298,9 +300,14 @@ static void do_save(gzp_exec_t *ex, const gz_action_t *a)
         const gz_record_t *r = &a->u.save.records[i];
         if (r->type == GZ_RECORD_KEY_EPOCH) {
             gz_bytes_t v;
-            if (gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4)
+            if (gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
                 gzp_log("%s seq=%llu epoch=%02x%02x%02x%02x", restored ? "restore-batch" : "key-epoch",
                         (unsigned long long)a->u.save.batch.sequence, v.data[0], v.data[1], v.data[2], v.data[3]);
+                /* Durable: the key port derives under it from now on, and a
+                 * restore batch ends the restore start's freeze (keys.md 3). */
+                gzp_keys_set_epoch(ex->keys, gz_get_u32(v.data));
+                if (restored) gzp_keys_freeze(ex->keys, 0);
+            }
             continue;
         }
         if (!is_ping_record(r)) continue;
@@ -812,6 +819,31 @@ static void rd_rewind(void *ctx)
     ex->store.ops->rewind(ex->store.ctx);
 }
 
+/* The key port's epoch at a start (keys.md 3): that of the newest key_epoch
+ * record in storage, 0 if there is none; with the restore marker, nothing
+ * at all until the restore batch's new epoch is saved (do_save), so the
+ * backup's slots load without their old keys (safety-rule.md C12, R3).
+ * Every scoped secret is gone at a start (composite-node.md 12.2). */
+static void keys_from_storage(gzp_exec_t *ex, int restored)
+{
+    gzp_batch_t sb;
+    uint32_t epoch = 0;
+    size_t i;
+    ex->store.ops->rewind(ex->store.ctx);
+    while (ex->store.ops->next(ex->store.ctx, &sb))
+        for (i = 0; i < sb.n_records; i++) {
+            gz_bytes_t v;
+            if (sb.records[i].type == GZ_RECORD_KEY_EPOCH && gz_rec_find(sb.records[i].bytes, 2, &v) == 1 &&
+                v.len == 4)
+                epoch = gz_get_u32(v.data);
+        }
+    ex->store.ops->rewind(ex->store.ctx);
+    gzp_keys_forget_all(ex->keys);
+    gzp_keys_set_epoch(ex->keys, epoch);
+    gzp_keys_freeze(ex->keys, restored);
+    gzp_log("keys epoch=%08x frozen=%d", (unsigned)ex->keys->epoch, ex->keys->frozen);
+}
+
 /* node.h's stepped start. Between steps, storage confirmations (and only
  * those) are given to the node; GZ_WAITING waits for the next one. */
 static void start_node(gzp_exec_t *ex)
@@ -830,6 +862,7 @@ static void start_node(gzp_exec_t *ex)
     if (rd.restored && ex->store.ops->guard &&
         ex->store.ops->guard(ex->store.ctx, &rd.guard.data, &rd.guard.len) == 1)
         gzp_log("restore-guard-file counter=%llu", (unsigned long long)(rd.guard.len >= 48 ? gz_get_u64(rd.guard.data + 40) : 0));
+    keys_from_storage(ex, rd.restored);
     ex->store.ops->rewind(ex->store.ctx);
     while (more && !ex->fatal) {
         gz_status_t st;
