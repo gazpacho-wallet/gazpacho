@@ -114,6 +114,9 @@ RULES = {
     "EARLY_NONCES": ("early = !count_items(r, j, t);", "early = 0;"),
     "BLAME_RESTART_WITHOUT_NONCES": ("if (!holds_nonces_of(r, j)) return bit(j);", "if (0) return bit(j);"),
     "EXCUSE_RESTART_ONCE": ("if (excused_before(e, r, j)) return bit(j);", "if (0) return bit(j);"),
+    # audit e2e, H1: C7 for rounds in their nonce step, and again at signing (signing-round.md 6 step 5)
+    "C7_NONCE_STEP": ("return GZ_SIGN_WHY_OTHER_TREE;", "continue;"),
+    "C7_AT_SIGNING": ("member_fail(e, r, GZ_SIGN_WHY_OTHER_TREE, em); return;", ";"),
     "EXCUSE_KEPT": ("if (o->used && o->released &&", "if (0 &&"),
     "KEEP_HOST_RESULTS": (")) keep_round(e, best);", ")) (void)0;"),
     "EXPOSURE_PER_ROUND": (" && same(e->exposed[i].round_id, round_id, 32)) break;", ") break;"),

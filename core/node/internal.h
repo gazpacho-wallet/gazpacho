@@ -556,7 +556,7 @@ struct gz_node {
     uint8_t sg_keys[GZ_SIGN_MAX_PARTICIPANTS][33];
     gz_tree_participant_t sg_parts[GZ_SIGN_MAX_PARTICIPANTS];
     gz_tree_proposal_t sg_prop;
-    uint8_t sg_ftx[GZ_SIGN_MAX_FUNDING_TX]; /* the proposal's funding transaction: the plan's bytes (P4.6) */
+    uint8_t sg_ftx[GZ_SIGN_MAX_FUNDING_TX]; /* the proposal's funding transaction: a real plan's, up to the engine's limit */
     gz_tree_t *sg_tree;             /* the builder's work space (large), in the engine's memory */
     gz_tree_import_t *sg_imp;
 
@@ -703,6 +703,10 @@ gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t
 /* signslot.c */
 gz_status_t gz_sg_init(gz_node_t *c);
 void gz_sg_started(gz_node_t *c);   /* at a start, after the engine resumed */
+/* The proposal's funding transaction, copied into the node: 1, or 0 (nothing set) if it is empty or
+ * longer than GZ_SIGN_MAX_FUNDING_TX. */
+int gz_sg_set_funding(gz_node_t *c, gz_tree_proposal_t *p, const uint8_t *tx, size_t len, const uint8_t txid[32],
+                      uint32_t vout);
 void gz_ls_wipe32(uint8_t *p);      /* 32 secret bytes, wiped */
 /* The engine's key hook (signing.h `keys`), for the node's tests too. */
 int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, secp256k1_keypair *f, secp256k1_keypair *kc);

@@ -810,6 +810,19 @@ static uint8_t load_round(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_t 
         for (size_t i = 0; i < e->n_exposures; i++)
             if (same(e->exposures[i].funding.txid, r->def.funding_txid, 32) && e->exposures[i].funding.vout == r->def.funding_vout &&
                 !same(e->exposures[i].tree_digest, r->def.tree_digest, 32)) return GZ_SIGN_WHY_OTHER_TREE;   /* RULE:C7_OTHER_TREE */
+        /* C7 for the rounds still in their nonce step (audit e2e, H1): a round of ours on this outpoint
+         * with another tree, which this proposal does not supersede, refuses it. Otherwise a host could
+         * hold two proposals of one attempt, with end heights a block apart, in flight at once, and
+         * collect partial signatures for both trees: C7 is "one tree per funding output, ever"
+         * (safety-rule.md C7), and the member's lobby accepts one attempt, so neither ends the other. */
+        for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
+            const gz_sign_round_t *o = &e->rounds[i];
+            if (o == r || o->state != GZ_SIGN_ROUND_ACTIVE || !same(o->def.funding_txid, r->def.funding_txid, 32) ||
+                o->def.funding_vout != r->def.funding_vout || same(o->def.tree_digest, r->def.tree_digest, 32)) continue;
+            if (same(o->check_id, pr->check_id, 32) && same(o->def.outer_digest, r->def.outer_digest, 32) &&
+                o->attempt < pr->attempt && !o->ever_partial) continue;               /* superseded below */
+            return GZ_SIGN_WHY_OTHER_TREE;                                                           /* RULE:C7_NONCE_STEP */
+        }
         if (!exposure_room(e, r)) return GZ_SIGN_WHY_CAPACITY;                                      /* RULE:EXPOSURE_ROOM */
     }
     memcpy(r->id, id, 32);
@@ -1332,6 +1345,15 @@ static void member_all_nonces(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_ms
     }
     /* No partial signature without room for its exposure record (F2). */
     if (!exposure_room(e, r)) { member_fail(e, r, GZ_SIGN_WHY_CAPACITY, em); return; }
+    /* signing-round.md 6 step 5: the safe-to-sign checks again before the partial signatures. C7: no
+     * exposure recorded on this outpoint, since the proposal came, for another tree (audit e2e, H1). The
+     * exposures are the journal's (read back at every start), and this round's own record is saved in
+     * the batch that releases its partial signatures. */
+    for (size_t i = 0; i < e->n_exposures; i++)
+        if (same(e->exposures[i].funding.txid, r->def.funding_txid, 32) && e->exposures[i].funding.vout == r->def.funding_vout &&
+            !same(e->exposures[i].tree_digest, r->def.tree_digest, 32)) {
+            member_fail(e, r, GZ_SIGN_WHY_OTHER_TREE, em); return;                                 /* RULE:C7_AT_SIGNING */
+        }
     /* The factory key under the scope for these terms; none now (the gate's scoped secret is gone): this
      * party refuses the round (reason 12), never an error. */
     if (!hold_keys(e, r, 1, &took)) { member_fail(e, r, GZ_SIGN_WHY_NOT_MY_KEY, em); return; }

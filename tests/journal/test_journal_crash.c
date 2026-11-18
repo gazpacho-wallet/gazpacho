@@ -287,9 +287,11 @@ static void n_submit(node_h_t *n, gz_action_list_t *list)
 
 /* Every call gets a list of the node's size (node.h), on its own stack: a
  * confirmation can arrive while another call's list is being carried out. */
+/* Static storage: a list of the node's size (node.h, several MiB) is too big for the stack, and
+ * node_run holds one while n_message holds another. No list's function runs inside itself. */
 #define N_LIST(list)                                    \
-    gz_action_t list##_slots[GZ_NODE_LIST_ACTIONS];     \
-    uint8_t list##_bytes[GZ_NODE_LIST_BYTES];           \
+    static gz_action_t list##_slots[GZ_NODE_LIST_ACTIONS]; \
+    static uint8_t list##_bytes[GZ_NODE_LIST_BYTES];    \
     gz_action_list_t list;                              \
     gz_action_list_init(&list, list##_slots, GZ_NODE_LIST_ACTIONS, list##_bytes, sizeof list##_bytes)
 

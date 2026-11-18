@@ -1173,6 +1173,36 @@ static void test_revived_round_across_restart(void)
     }
 }
 
+/* Audit e2e H1, signing-round.md 6 step 5: before its partial signatures a member checks C7 again. An
+ * exposure for another tree on the round's outpoint, recorded after the proposal was taken (here set
+ * straight into the engine's exposure list, as a start reads one back from the journal), refuses the
+ * round with reason 11, and no partial signature leaves. With the proposal-time check in place no honest
+ * journal reaches this state; the recheck is what the spec asks for, and this test holds it. */
+static void test_c7_at_signing(void)
+{
+    harness_t h;
+    uint8_t other[32], fid[32];
+    gz_sign_msg_t m;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    while (h.nq && q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES) < 0) h_deliver(&h, 0, 0);
+    long k = q_find(&h, 0, 1, GZ_SIGN_MSG_ALL_NONCES);
+    gz_sign_round_t *r = (gz_sign_round_t *)gz_sign_latest(h.p[1].e);
+    CHECK(k >= 0 && r && r->state == GZ_SIGN_ROUND_ACTIVE && !r->ever_partial);
+    if (k < 0 || !r) { h_free(&h); return; }
+    memcpy(other, r->def.tree_digest, 32);
+    other[0] ^= 1;
+    memset(fid, 0x5a, 32);
+    CHECK(add_exposure(h.p[1].e, r->def.funding_txid, r->def.funding_vout, other, fid));
+    size_t partials = h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS), aborts = h_count_kind(&h, 1, GZ_SIGN_MSG_ABORT);
+    h_deliver(&h, (size_t)k, 0);
+    CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == partials);
+    const h_sent_t *a = h_sent_kind(&h, 1, GZ_SIGN_MSG_ABORT, aborts);
+    CHECK(a && gz_sign_decode(a->b, a->len, &m) && m.reason == gz_sign_reason(GZ_SIGN_WHY_OTHER_TREE, 0));
+    CHECK(r->state != GZ_SIGN_ROUND_ACTIVE && !r->ever_partial);
+    h_free(&h);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -1202,6 +1232,7 @@ int main(void)
     test_all_nonces_other_tier();
     test_decode_first();
     test_revived_round_across_restart();
+    test_c7_at_signing();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);

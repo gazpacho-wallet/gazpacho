@@ -528,6 +528,20 @@ static size_t sg_test_funding(const uint8_t scope[32], const uint8_t check[32], 
  * member at once, each member's message holding, for each of its items, every signer's nonce and its
  * signature (130 bytes a signer), with the message's own overhead; the saves of the step are well below
  * the margin left. A round whose step could pass the bound is not begun. */
+_Static_assert(sizeof ((gz_node_t *)0)->sg_ftx == GZ_SIGN_MAX_FUNDING_TX, "the node holds any funding the engine takes");
+
+int gz_sg_set_funding(gz_node_t *c, gz_tree_proposal_t *p, const uint8_t *tx, size_t len, const uint8_t txid[32],
+                      uint32_t vout)
+{
+    if (!tx || len == 0 || len > sizeof c->sg_ftx) return 0;
+    memcpy(c->sg_ftx, tx, len);
+    p->funding_tx = c->sg_ftx;
+    p->funding_tx_len = len;
+    memcpy(p->funding_txid, txid, 32);
+    p->funding_vout = vout;
+    return 1;
+}
+
 static size_t sg_step_bytes(const gz_tree_t *t, uint32_t n_members)
 {
     size_t total = 0;
@@ -602,20 +616,16 @@ static gz_status_t sg_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_li
         memcpy(pi.script, p->funding_script, 34);
         pi.released = si >= 0 && c->fd_released[si];
         if ((fst = gz_fd_plan(c, &pi, out, &po)) != GZ_OK) return fst;
-        if (!po.ok || !po.tx || po.tx_len == 0 || po.tx_len > sizeof c->sg_ftx)
+        if (!po.ok || !gz_sg_set_funding(c, p, po.tx, po.tx_len, po.funding.txid, po.funding.vout))
             return sg_refuse_begin(c, h, "sign-begin-refused-funding", out);
         if (si >= 0) c->fd_released[si] = 0;
-        memcpy(c->sg_ftx, po.tx, po.tx_len);
-        p->funding_tx_len = po.tx_len;
-        p->funding_tx = c->sg_ftx;
-        memcpy(p->funding_txid, po.funding.txid, 32);
-        p->funding_vout = po.funding.vout;
     } else {
 #ifdef GZ_TEST_KINDS
-        p->funding_tx_len = sg_test_funding(h->scope, h->check_id, h->attempt, prm.funding_amount, p->funding_script, c->sg_ftx);
-        p->funding_tx = c->sg_ftx;
-        gz_tx_txid(c->sg_ftx, p->funding_tx_len, p->funding_txid);
-        p->funding_vout = 0;
+        /* A test-build host with no wallet port: the stand-in plan. */
+        uint8_t ftx[128], txid[32];
+        size_t flen = sg_test_funding(h->scope, h->check_id, h->attempt, prm.funding_amount, p->funding_script, ftx);
+        gz_tx_txid(ftx, flen, txid);
+        if (!gz_sg_set_funding(c, p, ftx, flen, txid, 0)) return sg_refuse_begin(c, h, "sign-begin-refused-funding", out);
 #else
         return sg_refuse_begin(c, h, "sign-begin-refused-no-wallet", out);
 #endif
