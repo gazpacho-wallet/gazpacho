@@ -42,7 +42,9 @@ Other fixed strings, which are plain SHA-256 inputs, not tags:
 
 ### 8.3 Feature bits
 
-| `{p}after` | a later table | x |
+| String | Use | Defined in |
+|---|---|---|
+| `{p}after` | a later table, with its own header (the check must stop at 8.3) | x |
 """
 
 

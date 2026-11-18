@@ -28,7 +28,9 @@ env-key	signer/signer.c	    if (!((sg->cfg.role == GZ_SG_ROLE_HOST && key == GZ_
 env-kind	signer/signer.c	    if (!gz_sg_kind_allowed(sg->cfg.role, key, kind, &det_ok) ||	    if ((gz_sg_kind_allowed(sg->cfg.role, key, kind, &det_ok), 0) ||
 env-tag	signer/signer.c	||\n        !gz_sg_may_sign_tag(sg->cfg.role, key, "gazpacho/msg"))	)
 # equivalent env-tag: defence in depth; the role and key checks admit only the two keys whose row has the tag (tag-factory is the table's mutant)
-env-determ	signer/signer.c	    if (!fresh && !det_ok) return GZ_SG_E_KIND;	
+env-determ	signer/signer.c	    if (!fresh && !(SG_FIXED_AUX && det_ok)) return GZ_SG_E_KIND;	
+fixed-aux-production	signer/signer.c	#define SG_FIXED_AUX 0	#define SG_FIXED_AUX 1
+fixed-aux-marked-kinds	signer/signer.c	!(SG_FIXED_AUX && det_ok)	!(SG_FIXED_AUX)
 env-len	signer/signer.c	    if (len > max) return GZ_SG_E_ARG;	
 env-len-round	signer/signer.c	host_round_kind(kind) ?	0 ?
 env-len-host	signer/signer.c	max = sg->cfg.role == GZ_SG_ROLE_HOST && host_round_kind	max = host_round_kind

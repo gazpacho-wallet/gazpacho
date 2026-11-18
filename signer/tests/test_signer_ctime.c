@@ -5,7 +5,7 @@
  * declassified through the signer's GZ_SG_DECLASSIFY hook, and libsecp256k1
  * runs with SECP256K1_CONTEXT_DECLASSIFY, as in its own ctime test.
  *
- * Checked: the host signing an envelope (deterministic and fresh) with its
+ * Checked: the host signing an envelope (fresh aux_rand; fixed aux refused) with its
  * long-term key undefined; a member signing with its contribution key
  * undefined; a refusal after the key is held; dropping a slot and wiping the
  * signer with the keys still undefined. Each must report nothing.
@@ -67,7 +67,8 @@ int main(void)
     gz_signer_t *h = make(ctx, GZ_SG_ROLE_HOST);
     CHECK(gz_sg_slot_add(h, &s, pub, NULL) == GZ_SG_OK);
     VALGRIND_MAKE_MEM_UNDEFINED(&h->host_kp, sizeof h->host_kp);
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, rec, sizeof rec, 0, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, rec, sizeof rec, 1, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, rec, sizeof rec, 0, sig) == GZ_SG_E_KIND);   /* never fixed aux */
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 18, rec, sizeof rec, 1, sig) == GZ_SG_OK);
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 22, rec, sizeof rec, 1, sig) == GZ_SG_E_KIND);
     gz_sg_slot_drop(h, s.scope);

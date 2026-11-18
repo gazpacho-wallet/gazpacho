@@ -464,7 +464,8 @@ static void test_envelope(void)
     gz_rmsg_hash(72, scope, rec, 8, hh);
     CHECK(memcmp(hh, want_h, 32) == 0);
 
-    /* deterministic, for the host's rebuilt kinds: the vectors exactly */
+#ifdef GZ_SG_VECTORS
+    /* the vectors build: fixed aux_rand for the host's rebuilt kinds, the vectors exactly */
     calls = g_rnd.calls;
     vhex("host_sig_72", want_sig, 64);
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, 0, sig) == GZ_SG_OK);
@@ -473,6 +474,38 @@ static void test_envelope(void)
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 78, NULL, 0, 0, sig) == GZ_SG_OK);
     CHECK(memcmp(sig, want_sig, 64) == 0);
     CHECK(g_rnd.calls == calls);   /* nothing drawn */
+#else
+    /* production: fixed aux_rand never, for any kind, key or role */
+    {
+        int bad = 0;
+        for (unsigned k = 0; k <= 0xffffu; k++) {
+            memset(sig, 0xff, 64);
+            if (gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, (uint16_t)k, rec, 8, 0, sig) == GZ_SG_OK || !all(sig, 0, 64))
+                bad++;
+            memset(sig, 0xff, 64);
+            if (gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, (uint16_t)k, rec, 8, 0, sig) == GZ_SG_OK ||
+                !all(sig, 0, 64))
+                bad++;
+        }
+        CHECK(bad == 0);
+    }
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, 0, GZ_SG_E_KIND);
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 78, NULL, 0, 0, GZ_SG_E_KIND);
+    /* the kinds the vectors sign with fixed aux_rand: here one fresh draw
+     * each, a valid signature, never the vector's and never twice the same */
+    calls = g_rnd.calls;
+    vhex("host_sig_72", want_sig, 64);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, 1, sig) == GZ_SG_OK);
+    CHECK(g_rnd.calls == calls + 1);
+    CHECK(verify(sig, want_h, hp) && memcmp(sig, want_sig, 64) != 0);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 72, rec, 8, 1, sig2) == GZ_SG_OK);
+    CHECK(verify(sig2, want_h, hp) && memcmp(sig2, sig, 64) != 0 && memcmp(sig2, want_sig, 64) != 0);
+    vhex("msg_hash_78_empty", hh, 32);
+    vhex("host_sig_78_empty", want_sig, 64);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 78, NULL, 0, 1, sig) == GZ_SG_OK);
+    CHECK(verify(sig, hh, hp) && memcmp(sig, want_sig, 64) != 0);
+    CHECK(g_rnd.calls == calls + 3);
+#endif
 
     /* fresh: one ordinary draw of aux_rand, a valid signature, never twice the same */
     calls = g_rnd.calls;
@@ -551,13 +584,13 @@ static void test_envelope(void)
         ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, past_end, sizeof past_end, 1, GZ_SG_E_ARG);
         ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, cut, sizeof cut, 1, GZ_SG_E_ARG);
         ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, no_len, sizeof no_len, 1, GZ_SG_E_ARG);
-        ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 72, sig240, sizeof sig240, 0, GZ_SG_E_ARG);
+        ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 72, sig240, sizeof sig240, 1, GZ_SG_E_ARG);
         CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, t239, sizeof t239, 1, sig) == GZ_SG_OK);
         CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, zero_type, sizeof zero_type, 1, sig) == GZ_SG_OK);
         CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, rec, 0, 1, sig) == GZ_SG_OK);
     }
     /* 6. a held slot */
-    ENV_REFUSED(h, GZ_SG_KEY_HOST, other, 72, rec, 8, 0, GZ_SG_E_SLOT);
+    ENV_REFUSED(h, GZ_SG_KEY_HOST, other, 72, rec, 8, 1, GZ_SG_E_SLOT);
     ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, other, 22, rec, 8, 1, GZ_SG_E_SLOT);
     /* arguments */
     ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, NULL, 22, rec, 8, 1, GZ_SG_E_ARG);

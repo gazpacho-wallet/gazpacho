@@ -123,7 +123,9 @@ typedef uint32_t gz_sg_round_t;      /* a round handle (2.3, round_open) */
 /* 3.2: 1 if `key` of a party with `role` may sign an envelope of `kind`; and
  * *deterministic_ok (may be NULL) 1 when the kind may be signed with BIP 340's
  * all-zero aux_rand (the messages the engine rebuilds: round_tier_result and
- * round_abort from the host). 0 for every other combination. */
+ * round_abort from the host, as signer.md 3.2 marks them). 0 for every other
+ * combination. The production library signs even those with fresh aux_rand:
+ * the mark is honoured only in the vectors build (gz_sg_sign_envelope). */
 int gz_sg_kind_allowed(gz_sg_role_t role, gz_sg_key_t key, uint16_t kind, int *deterministic_ok);
 
 /* 3.1, one row per key: its derivation, the BIP 340 tags it may sign
@@ -188,7 +190,8 @@ gz_sg_err_t gz_sg_seat_key(gz_signer_t *sg, const uint8_t scope[32], const uint8
  *      member; never FACTORY (the factory key signs no message) and never
  *      WALLET                                                  GZ_SG_E_KIND
  *   2. `kind` is in the key's row of table 3.2                 GZ_SG_E_KIND
- *   3. `fresh` is 1, or 0 only for the kinds that allow it     GZ_SG_E_KIND
+ *   3. `fresh` is 1. In the vectors build only (GZ_SG_VECTORS, never
+ *      linked into a program) it may be 0 for the kinds table 3.2 marks  GZ_SG_E_KIND
  *   4. `len` is at most one envelope's records (65,495), or for the host's
  *      round kinds a reassembled message's (messages.md 5)     GZ_SG_E_ARG
  *   5. `records` is a well-formed record stream (messages.md 4.2: minimal
@@ -196,7 +199,8 @@ gz_sg_err_t gz_sg_seat_key(gz_signer_t *sg, const uint8_t scope[32], const uint8
  *      240: no signature record, which is the signer's to append   GZ_SG_E_ARG
  *   6. `scope` is a held slot (a member's lobby, or a lobby this host has
  *      open)                                                   GZ_SG_E_SLOT
- * `fresh` = 1 draws aux_rand from the random port; 0 uses 32 zero bytes. The
+ * `fresh` = 1 draws aux_rand from the random port: every signature the
+ * production library makes does. 0 (vectors build only) uses 32 zero bytes. The
  * signature is verified before it is returned. */
 gz_sg_err_t gz_sg_sign_envelope(gz_signer_t *sg, gz_sg_key_t key, const uint8_t scope[32], uint16_t kind,
                                 const uint8_t *records, size_t len, int fresh, uint8_t sig[64]);

@@ -22,6 +22,17 @@
 #define SG_BRANCH_HOST 1u
 #define SG_BRANCH_HOST_LOBBY 2u
 
+/* Fixed aux_rand. Every signature of the production library draws fresh
+ * aux_rand from the random port; the all-zero aux_rand of BIP 340's
+ * deterministic variant exists only in the vectors build (GZ_SG_VECTORS,
+ * the library gazpacho_signer_vectors, linked by tests only), so that the
+ * test vectors can be compared byte for byte. */
+#ifdef GZ_SG_VECTORS
+#define SG_FIXED_AUX 1
+#else
+#define SG_FIXED_AUX 0
+#endif
+
 typedef struct {
     int used;
     gz_sg_slot_t slot;
@@ -368,8 +379,9 @@ gz_sg_err_t gz_sg_sign_envelope(gz_signer_t *sg, gz_sg_key_t key, const uint8_t 
     if (!gz_sg_kind_allowed(sg->cfg.role, key, kind, &det_ok) ||
         !gz_sg_may_sign_tag(sg->cfg.role, key, "gazpacho/msg"))
         return GZ_SG_E_KIND;
-    /* 3. deterministic only for the rebuilt kinds */
-    if (!fresh && !det_ok) return GZ_SG_E_KIND;
+    /* 3. fixed aux_rand: never in production; in the vectors build only for
+     *    the kinds table 3.2 marks (the host's rebuilt messages) */
+    if (!fresh && !(SG_FIXED_AUX && det_ok)) return GZ_SG_E_KIND;
     /* 4. length */
     max = sg->cfg.role == GZ_SG_ROLE_HOST && host_round_kind(kind) ? GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER
                                                                     : GZ_RMSG_MAX_RECORDS_ONE;

@@ -8,8 +8,8 @@ OLD must occur exactly once in FILE, or N says which occurrence (1-based).
 In OLD and NEW, \\n is a newline, \\t a tab and \\\\ a backslash.
 
 The repository's tracked files are copied to WORK/src once. A mutant of a
-file under signer/ rebuilds test_signer incrementally in WORK/build
-(configured once, Release) and runs it; a mutant of a file under tools/ runs
+file under signer/ rebuilds test_signer and test_signer_vectors incrementally in WORK/build
+(configured once, Release, GZ_MUTATION_BUILD) and runs both; a mutant of a file under tools/ runs
 that tool's own test (tests/tools/test_check_*.py) on the copy. The file is
 restored after each. A mutant that no test notices is a survivor; one that
 does not compile is reported apart. A survivor the list names in a line
@@ -99,15 +99,20 @@ def main(argv):
     if only:
         mutants = [m for m in mutants if m[0] in only]
     need_build = any(m[1].startswith("signer/") for m in mutants)
-    test_signer = [os.path.join(build, "signer", "test_signer"), os.path.join(src, "signer", "tests", "vectors.txt")]
+    # The production library's test and the vectors build's: a mutant is
+    # killed if either fails.
+    vectors = os.path.join(src, "signer", "tests", "vectors.txt")
+    signer_tests = [[os.path.join(build, "signer", t), vectors] for t in ("test_signer", "test_signer_vectors")]
+    targets = ["--target", "test_signer", "--target", "test_signer_vectors"]
     if need_build:
+        # GZ_MUTATION_BUILD: a variable a fault leaves unused must not stop the build.
         subprocess.run(["cmake", "-S", src, "-B", build, "-DCMAKE_BUILD_TYPE=Release", "-DGZW_BREAK_CHECKS=OFF",
-                        "-DGZ_VALGRIND_TESTS=OFF"], check=True, stdout=subprocess.DEVNULL)
-        subprocess.run(["cmake", "--build", build, "--target", "test_signer", "-j", jobs], check=True,
-                       stdout=subprocess.DEVNULL)
-        r = subprocess.run(test_signer, capture_output=True, text=True)
-        if r.returncode != 0:
-            sys.exit("test_signer fails before any mutant:\n" + r.stdout)
+                        "-DGZ_VALGRIND_TESTS=OFF", "-DGZ_MUTATION_BUILD=ON"], check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(["cmake", "--build", build] + targets + ["-j", jobs], check=True, stdout=subprocess.DEVNULL)
+        for t in signer_tests:
+            r = subprocess.run(t, capture_output=True, text=True)
+            if r.returncode != 0:
+                sys.exit("%s fails before any mutant:\n%s" % (t[0], r.stdout))
     for tool, test in TOOL_TESTS.items():
         if any(m[1] == tool for m in mutants):
             r = subprocess.run([sys.executable, "-I", os.path.join(src, test)], capture_output=True, text=True)
@@ -128,24 +133,27 @@ def main(argv):
             f.write(changed)
         try:
             if rel.startswith("signer/"):
-                b = subprocess.run(["cmake", "--build", build, "--target", "test_signer", "-j", jobs],
+                b = subprocess.run(["cmake", "--build", build] + targets + ["-j", jobs],
                                    capture_output=True, text=True)
                 if b.returncode != 0:
                     bad.append((name, "does not compile"))
                     print("BAD      %s (does not compile)" % name)
+                    print(b.stdout[-2000:])
                     continue
-                cmd = test_signer
+                cmds = signer_tests
             elif rel in TOOL_TESTS:
-                cmd = [sys.executable, "-I", os.path.join(src, TOOL_TESTS[rel])]
+                cmds = [[sys.executable, "-I", os.path.join(src, TOOL_TESTS[rel])]]
             else:
                 bad.append((name, "no test for " + rel))
                 print("BAD      %s (no test for %s)" % (name, rel))
                 continue
-            try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-                dead = r.returncode != 0
-            except subprocess.TimeoutExpired:
-                dead = True
+            dead = False
+            for cmd in cmds:
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                    dead = dead or r.returncode != 0
+                except subprocess.TimeoutExpired:
+                    dead = True
             if dead:
                 killed.append(name)
                 print("killed   %s" % name)
