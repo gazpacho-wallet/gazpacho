@@ -210,6 +210,11 @@ gz_sc_err_t gz_sc_unlock_derive(const gz_sc_store_t *s, const uint8_t *pw_nfc, s
 /* The rest of gz_sc_unlock on a u from gz_sc_unlock_derive: stale .tmp files
  * removed, the journal header opened, or 6.3 step 0. u is cleared on failure. */
 gz_sc_err_t gz_sc_unlock_open(const gz_sc_store_t *s, gz_sc_unlocked_t *u);
+/* In place of gz_sc_unlock_open, where the caller knows set-up was
+ * interrupted before any start (7.4, pending the storage reviewers): with no
+ * journal, mark file or start counter, the missing files are made as a new
+ * wallet (u->restore 0). EXISTS (nothing written, u kept) where any is there. */
+gz_sc_err_t gz_sc_setup_finish(const gz_sc_store_t *s, gz_sc_unlocked_t *u);
 
 /* ---- the start counter starts.gzs (contract-v2.md section 8; 10.3) ---------- */
 gz_sc_err_t gz_sc_counter_seal(const gz_sc_vault_t *v, uint64_t counter, uint8_t out[GZ_SC_STARTS_LEN]);

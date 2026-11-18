@@ -21,7 +21,11 @@ of any storage file of the process (the journal's and the storage layer's).
 After each kill the same folder is started with no hook (twice), and must:
 start (a kill never makes a journal corrupt, behind or possibly old, nor a
 wallet that cannot be opened); hold a journal whose incarnations rise and
-whose batches are 1, 2, 3 ... within each; in the restore life, be a restore
+whose batches are 1, 2, 3 ... within each; never say the start counter is
+missing (a kill during set-up between the key file and the counter is a
+set-up that never started: finished as a new wallet, not a restore, nothing
+told; storage 7.4, pending the storage reviewers), and hold no set-up marker
+(setup.gzp) once started; in the restore life, be a restore
 until the restore batch is durable and an ordinary start after it, with a
 restore epoch other than 0; and stop cleanly.
 """
@@ -129,6 +133,14 @@ def main():
                     ok = m2 is not None and m2.group(0).startswith("ready")
                     check(ok, "%s K=%d start %d after the kill: %s" % (life, k, again + 1, m2.group(0) if m2 else None))
                     restored = q.find(r"start steps=\d+ restored=1")[0] is not None
+                    if ok:
+                        check(q.find(r"start-counter state=missing")[0] is None,
+                              "%s K=%d start %d: no false warning (the start counter is not missing)"
+                              % (life, k, again + 1))
+                        check(not os.path.exists(os.path.join(folder, "setup.gzp")),
+                              "%s K=%d start %d: no set-up marker once started" % (life, k, again + 1))
+                        if q.find(r"setup-finished")[0] is not None:
+                            check(not restored, "%s K=%d: a finished set-up is not a restore" % (life, k))
                     if life == "restore" and again == 0 and restored:
                         restored_after += 1
                         e = q.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]

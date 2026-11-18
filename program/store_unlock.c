@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <openssl/crypto.h>
 
@@ -68,6 +69,34 @@ static int file_exists(const gzp_wallet_t *w, const char *name)
     struct stat st;
     snprintf(p, sizeof p, "%s/%s", w->dir, name);
     return stat(p, &st) == 0;
+}
+
+/* The set-up marker: written before the key file at set-up (not at the
+ * restore from the words) and removed once the first incarnation entry is
+ * durable, so a key file with no start counter beside it is a set-up that
+ * never started (storage 7.4, pending the storage reviewers): finished as a
+ * new wallet, never a restore, nothing told. */
+#define SETUP_MARKER "setup.gzp"
+
+static int setup_marker_write(gzp_wallet_t *w)
+{
+    static const uint8_t body[] = "gazpacho set-up not yet started\n";
+    char p[GZP_PATH_MAX + 64];
+    snprintf(p, sizeof p, "%s/%s.tmp", w->dir, SETUP_MARKER);
+    (void)unlink(p); /* a crashed replace's leftover */
+    return gz_sc_fs_replace(&w->sc, SETUP_MARKER, body, sizeof body - 1) == GZ_SC_OK ? 0 : -1;
+}
+
+static int setup_marker_clear(gzp_wallet_t *w)
+{
+    char p[GZP_PATH_MAX + 64];
+    int fd, rc;
+    snprintf(p, sizeof p, "%s/%s", w->dir, SETUP_MARKER);
+    if (unlink(p) != 0) return errno == ENOENT ? 0 : -1;
+    if ((fd = open(w->dir, O_RDONLY | O_DIRECTORY)) < 0) return -1;
+    rc = fsync(fd);
+    close(fd);
+    return rc;
 }
 
 #ifdef GZP_TEST_BUILD
@@ -574,6 +603,14 @@ static int open_storage(gzp_wallet_t *w, gzp_unlock_result_t *r)
         }
         return r->status;
     }
+    /* The first incarnation entry is durable: no longer a set-up that never
+     * started. Removed before the node starts, so no key is ever used while
+     * the marker could still say so. */
+    if (setup_marker_clear(w) != 0) {
+        w->opened.ops->close(w->opened.ctx);
+        set_result(r, GZP_UNLOCK_STORAGE_FAILED, "setup_marker");
+        return r->status;
+    }
     w->have_opened = 1;
     return GZP_UNLOCK_OK;
 }
@@ -630,7 +667,13 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
         (void)count_attempt(w, 0, now_ms, NULL); /* the passphrase was right, whatever follows */
         w->u = k->u;
         memset(&k->u, 0, sizeof k->u);
-        e = gz_sc_unlock_open(&w->sc, &w->u);
+        e = GZ_SC_EXISTS;
+        if (k->op == GZP_UNLOCK_OP_UNLOCK && file_exists(w, SETUP_MARKER)) {
+            e = gz_sc_setup_finish(&w->sc, &w->u);
+            if (e == GZ_SC_OK)
+                gzp_log("setup-finished: set-up was interrupted before any start; completed as a new wallet");
+        }
+        if (e == GZ_SC_EXISTS) e = gz_sc_unlock_open(&w->sc, &w->u);
         if (e != GZ_SC_OK) {
             map_err(r, e);
             if (r->status == GZP_UNLOCK_OK || r->status == GZP_UNLOCK_WRONG)
@@ -665,6 +708,12 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
          * missing one would refuse every unlock for 15 minutes (12.3). */
         if (count_attempt(w, 0, now_ms, NULL) != 0) {
             set_result(r, GZP_UNLOCK_STORAGE_FAILED, "attempts");
+            goto out;
+        }
+        /* The set-up marker before the key file; a restore from the words
+         * removes any stale one (its interrupted start stays a restore). */
+        if ((k->op == GZP_UNLOCK_OP_CREATE ? setup_marker_write(w) : setup_marker_clear(w)) != 0) {
+            set_result(r, GZP_UNLOCK_STORAGE_FAILED, "setup_marker");
             goto out;
         }
         e = gz_sc_setup_commit(&w->sc, &k->prep, &w->u);

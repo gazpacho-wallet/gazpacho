@@ -41,7 +41,9 @@ right_not_counted	program/store_unlock.c	        (void)count_attempt(w, 0, now_m
 #                       mark and guard files). The test found a bug:
 #                       gzp_journal_store_behind returned a truth value, so
 #                       possibly_old was never said; fixed.
-# Kept, open (a decision is needed):
+# Decided since (pending the storage reviewers, storage 7.4): an interrupted
+# set-up is finished, not restored (setup.gzp, gz_sc_setup_finish); with it,
+# setup_no_counter is killed by program_journal_kill's check. Before:
 #   setup_no_counter    set-up writes the key file first (storage 7.4) and
 #                       starts.gzs after the guard, so a kill between them
 #                       gives a restore (6.3 step 0) that finds no counter and
@@ -84,3 +86,7 @@ right_not_counted	program/store_unlock.c	        (void)count_attempt(w, 0, now_m
 #   commit_recheck      a second set-up between derive and commit cannot
 #                       happen under the folder lock. Follow-up: a library
 #                       test (prepare, a key file made, commit refused).
+# --- the interrupted set-up (storage 7.4, pending the storage reviewers)
+setup_finish_skipped	program/store_unlock.c	if (k->op == GZP_UNLOCK_OP_UNLOCK && file_exists(w, SETUP_MARKER)) {	if (k->op == GZP_UNLOCK_OP_UNLOCK && !file_exists(w, SETUP_MARKER)) {
+marker_kept	program/store_unlock.c	    if (setup_marker_clear(w) != 0) {\n        w->opened.ops->close	    if (0) {\n        w->opened.ops->close
+finish_with_counter	ports/storage/crypto/sc_files.c	    if ((e = gz_sc_counter_read(s, u->vault, &c)) != GZ_SC_MISSING)\n        return e == GZ_SC_OK ? GZ_SC_EXISTS : e;	    (void)gz_sc_counter_read(s, u->vault, &c);
