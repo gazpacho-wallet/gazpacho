@@ -469,7 +469,7 @@ gz_status_t gz_view_status(gz_node_t *c, int force, gz_action_list_t *out)
 /* After a step of slot i (and at the start): its object, its attention items,
  * and the status. A slot without a local id (none saved: a slot opened by a
  * build without the API engine) has no object. */
-gz_status_t gz_view_slot(gz_node_t *c, int i, int force, gz_action_list_t *out)
+static gz_status_t slot_only(gz_node_t *c, int i, int force, gz_action_list_t *out)
 {
     slot_t *s = &c->slots[i];
     gz_status_t st = GZ_OK;
@@ -479,9 +479,13 @@ gz_status_t gz_view_slot(gz_node_t *c, int i, int force, gz_action_list_t *out)
         st = emit(c, s->host ? GZ_VIEW_HOST_LOBBY : GZ_VIEW_LOBBY, s->view.local_id, c->view.body, n, 0,
                   &s->view.hash, force, out);
     }
-    if (st == GZ_OK) st = attention(c, s, force, out);
-    if (st == GZ_OK) st = gz_view_status(c, 0, out);
-    return st;
+    return st == GZ_OK ? attention(c, s, force, out) : st;
+}
+
+gz_status_t gz_view_slot(gz_node_t *c, int i, int force, gz_action_list_t *out)
+{
+    gz_status_t st = slot_only(c, i, force, out);
+    return st == GZ_OK ? gz_view_status(c, 0, out) : st;
 }
 
 /* An ended lobby of the index (np.ended), at a start: its final stage and
@@ -525,7 +529,7 @@ gz_status_t gz_view_start(gz_node_t *c, gz_action_list_t *out, int *done)
         int i = (int)(step - chunks);
         c->slots[i].view.att_code = 0;
         c->slots[i].view.att_count = 0;
-        st = gz_view_slot(c, i, 1, out);
+        st = slot_only(c, i, 1, out); /* the status once, at the end */
     } else {
         st = gz_view_status(c, 1, out);
         *done = 1;
