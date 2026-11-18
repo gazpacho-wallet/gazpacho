@@ -265,6 +265,12 @@ typedef struct {
      * every start, never saved. */
     int resyncing;
     unsigned reported;                  /* synced: bit 0 the txid, bit 1 + k watched input k */
+    /* Watches the chain view can never answer (GZ_CHAIN_WATCH_FAILED; review B
+     * of PR 56, second confirmation, G-1), the same bits. Each is that watch's
+     * answer; the factory then fails closed: a member's Abandoned, a host's
+     * abandoned with no spend-back. Memory only: the watch fails again after
+     * a start. */
+    unsigned failed;
 } gz_fund_factory_t;
 
 typedef struct {
@@ -279,6 +285,7 @@ typedef struct {
     uint32_t tip;
     int tip_known;
     int tip_synced;                     /* GZ_CHAIN_TIP_SYNCED for `tip` came (integration B12) */
+    uint8_t tip_hash[32];               /* the tip block's hash, as NEW_TIP gave it (G-2) */
     uint64_t seq;
     size_t cursor;                      /* round-robin over factories (8.3) */
     size_t resume_at;                   /* the stepped resume: next factory */

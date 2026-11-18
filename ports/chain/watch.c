@@ -61,6 +61,7 @@ typedef struct watch {
   uint32_t reported; /* confirmations in the last report of this confirmation; 0: none */
   bool replaced;     /* the next spend report names a different spender */
   bool undone;       /* the next spend report follows a confirmed spender that left the chain */
+  bool failed;       /* told GZ_CHAINW_WATCH_FAILED: not asked again until set again */
 } watch;
 
 typedef struct bjob {
@@ -118,6 +119,7 @@ const char *gz_chainw_kind_name(gz_chainw_kind k) {
     case GZ_CHAINW_REORG: return "reorg";
     case GZ_CHAINW_SYNCED: return "synced";
     case GZ_CHAINW_TIP_SYNCED: return "tip-synced";
+    case GZ_CHAINW_WATCH_FAILED: return "watch-failed";
   }
   return "unknown";
 }
@@ -978,7 +980,7 @@ gz_chain_result gz_watch_step(gz_watch *e) {
     for (size_t k = 0; k < e->cfg.max_watches && !ended_early; k++) {
       size_t i = (start + k) % e->cfg.max_watches;
       watch *w = &e->w[i];
-      if (!w->used || w->held) continue;
+      if (!w->used || w->held || w->failed) continue;
       /* asked: when new, when a reorganisation touched it, and at every look
        * at the tip while it is not confirmed. A confirmation that stands is
        * only counted, along the headers. */
@@ -988,7 +990,21 @@ gz_chain_result gz_watch_step(gz_watch *e) {
       gz_chain_result r = w->kind == KIND_TX ? poll_tx(e, w, ask) : poll_outpoint(e, w, ask);
       if (stopped(e)) return GZ_CHAIN_OK;
       if (ask) asked = true;
-      if (r == GZ_CHAIN_OK) {
+      if (r == GZ_CHAIN_TOO_LARGE && e->cfg.report_synced) {
+        /* No pass will ever answer it (deeper than max_link, and only ever
+         * deeper): told once as its answer, and left alone until set again,
+         * so that one watch does not hold back TIP_SYNCED, or the sources,
+         * for every other (review B of PR 56, second confirmation, G-1). */
+        gz_chainw_event ev;
+        watch_event(w, &ev, GZ_CHAINW_WATCH_FAILED);
+        ev.outpoint_watch = w->kind != KIND_TX;
+        ev.sources = r;
+        set_none(w);
+        w->failed = true;
+        w->fresh = false;
+        w->recheck = false;
+        emit(e, &ev);
+      } else if (r == GZ_CHAIN_OK) {
         if (was_fresh && e->cfg.report_synced) {
           /* its first answer since it was set: what it found was told above */
           gz_chainw_event ev;

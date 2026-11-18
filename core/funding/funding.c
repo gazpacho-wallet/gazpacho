@@ -1321,13 +1321,15 @@ static gz_status_t host_abandon(gz_fund_t *f, gz_fund_factory_t *x, gz_action_li
     gz_status_t st;
     int was_signed = x->state == GZ_FUND_ST_BROADCAST;
     int late = buried(f, x);   /* buried after the deadline: funded late, nothing to spend back */
-    int ok = late ? 0 : make_spend_back(f, x, was_signed && x->seen ? 1 : 0);
+    int no_sb = x->failed != 0;   /* a watch never answered: no spend-back of what it watched (G-1) */
+    int ok = late || no_sb ? 0 : make_spend_back(f, x, was_signed && x->seen ? 1 : 0);
     if (!ok) x->sb_len = 0;
     if ((st = save_status(f, x, GZ_FUND_ST_ABANDONED, 0, out)) != GZ_OK) return st;
     x->state = GZ_FUND_ST_ABANDONED;
     if ((st = report(f, x, GZ_FUND_R_ABANDONED, out)) != GZ_OK) return st;
     if (!was_signed && (st = attention(f, out, x->scope, 1)) != GZ_OK) return st;
     if (late) return GZ_OK;   /* the next tick: funded late */
+    if (no_sb) return log_note(f, out, "funding-watch-failed", x->scope);
     if (!ok) return log_note(f, out, "funding-spend-back-failed", x->scope);
     if ((st = broadcast(out, x->sb, x->sb_len)) != GZ_OK) return st;
     return set_watches(f, x, out);
@@ -1348,6 +1350,7 @@ static gz_status_t step_host(gz_fund_t *f, gz_fund_factory_t *x, gz_action_list_
         if (buried_in_time(f, x)) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out);
         if (input_dead(f, x, &k)) return end_with(f, x, GZ_FUND_ST_DEAD, GZ_FUND_R_DEAD, out);
         if (!x->deadline_pending && f->tip_known && f->tip > x->deadline && facts_back(f, x)) return host_abandon(f, x, out);
+        if (x->failed && f->tip_known && facts_back(f, x)) return host_abandon(f, x, out);   /* fails closed (G-1) */
         if (x->rebroadcast) {
             x->rebroadcast = 0;
             return broadcast(out, x->signed_tx, x->signed_len);
@@ -1355,11 +1358,13 @@ static gz_status_t step_host(gz_fund_t *f, gz_fund_factory_t *x, gz_action_list_
         break;
     case GZ_FUND_ST_AWAITING:
         if (!x->deadline_pending && f->tip_known && f->tip > x->deadline && facts_back(f, x)) return host_abandon(f, x, out);
+        if (x->failed && f->tip_known && facts_back(f, x)) return host_abandon(f, x, out);   /* fails closed (G-1) */
         break;
     case GZ_FUND_ST_ABANDONED:
         if (buried(f, x)) return end_with(f, x, GZ_FUND_ST_LIVE_LATE, GZ_FUND_R_FUNDED_LATE, out);
         if (input_dead(f, x, &k)) return end_with(f, x, GZ_FUND_ST_DEAD, 0, out);
         if (sb_settled(x)) break;   /* mined: no new level, no re-broadcast */
+        if (x->failed) break;       /* a watch never answered: no spend-back, ever (G-1) */
         if (!facts_back(f, x)) {   /* after a start: the facts first (H-1); what is pending waits */
             *did = 0;
             return GZ_OK;
@@ -1423,7 +1428,7 @@ static gz_status_t step_member(gz_fund_t *f, gz_fund_factory_t *x, gz_action_lis
     c.own_depth = x->own_depth;
     v = gz_tree_c11(&c);
     if (v == GZ_C11_LIVE) return end_with(f, x, GZ_FUND_ST_LIVE, GZ_FUND_R_LIVE, out);
-    if (v == GZ_C11_ABANDONED && x->state == GZ_FUND_ST_ACKED && facts_back(f, x)) {
+    if ((v == GZ_C11_ABANDONED || x->failed) && x->state == GZ_FUND_ST_ACKED && facts_back(f, x)) {   /* G-1 */
         gz_status_t st;
         if ((st = save_status(f, x, GZ_FUND_ST_ABANDONED, 0, out)) != GZ_OK) return st;
         x->state = GZ_FUND_ST_ABANDONED;
@@ -1472,7 +1477,9 @@ static gz_status_t tick(gz_fund_t *f, gz_action_list_t *out)
 
 static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
 {
-    if (c->kind == GZ_CHAIN_TIP_SYNCED && f->tip_known && c->height == f->tip) f->tip_synced = 1;
+    if (c->kind == GZ_CHAIN_TIP_SYNCED && f->tip_known && c->height == f->tip &&
+        memcmp(c->block_hash, f->tip_hash, 32) == 0)   /* not a block replaced at that height (G-2) */
+        f->tip_synced = 1;
     for (size_t i = 0; i < GZ_FUND_MAX_FACTORIES; i++) {
         gz_fund_factory_t *x = &f->fac[i];
         if (x->used && c->kind == GZ_CHAIN_TIP_SYNCED) x->due = 1;
@@ -1497,6 +1504,22 @@ static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
                 if (memcmp(o.txid, c->outpoint.txid, 32) == 0 && o.vout == c->outpoint.vout) x->reported |= 2u << k;
             }
             x->due = 1;
+        }
+        if (c->kind == GZ_CHAIN_WATCH_FAILED) {
+            /* G-1: a watch the chain view can never answer. Its answer, for
+             * this factory only; what it would have told is unknowable. */
+            unsigned bad = 0;
+            if (c->is_tx && memcmp(c->txid, x->funding.txid, 32) == 0) bad |= 1u;
+            for (size_t j = 0; !c->is_tx && j < GZ_FUND_WATCH_INPUTS && j < x->n_in; j++) {
+                gz_outpoint_t q;
+                outpoint_of(x->ins[j], &q);
+                if (memcmp(q.txid, c->outpoint.txid, 32) == 0 && q.vout == c->outpoint.vout) bad |= 2u << j;
+            }
+            if (bad) {
+                x->failed |= bad;
+                x->reported |= bad;
+                x->due = 1;
+            }
         }
         if (c->kind == GZ_CHAIN_OUTPOINT_SPENT) {
             for (size_t k = 0; k < GZ_FUND_WATCH_INPUTS && k < x->n_in; k++) {
@@ -1595,6 +1618,7 @@ static gz_status_t gz_fund_handle_in(void *e, const gz_event_t *ev, gz_action_li
             f->tip = ev->u.chain.height;
             f->tip_known = 1;
             f->tip_synced = 0;   /* its reports may still be coming */
+            memcpy(f->tip_hash, ev->u.chain.block_hash, 32);   /* G-2 */
             for (size_t i = 0; i < GZ_FUND_MAX_FACTORIES; i++)
                 if (f->fac[i].used) {
                     gz_fund_factory_t *y = &f->fac[i];

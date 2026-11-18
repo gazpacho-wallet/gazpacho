@@ -867,6 +867,61 @@ static void test_synced(test_state *T) {
   fx_close(&f);
 }
 
+/* WATCH_FAILED (review B of PR 56, second confirmation, G-1): a watch no
+ * pass can answer, a confirmation more than max_link below the tip, is told
+ * failed once, as its answer, and is not asked again until set again; it
+ * holds back neither TIP_SYNCED nor the other watches, and the sources stay
+ * ok. Without report_synced, the sources say too-large as before. */
+static void test_watch_failed(test_state *T) {
+  fx f;
+  const char *s;
+  /* the reviewer's case: max_link 4, the transaction confirmed 7 deep */
+  fx_open(&f);
+  f.cfg.report_synced = true;
+  f.cfg.header_window = 4;
+  f.cfg.max_catchup = 4;
+  f.cfg.max_link = 4;
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 11);
+  s = go(&f);
+  CHECK(strstr(s, "failed T too-large") != NULL && strstr(s, "tip-synced 1011") != NULL &&
+        strstr(s, "sources") == NULL && strstr(s, "synced T") == NULL);
+  SEQ(go(&f), "");   /* not asked again, told once */
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);   /* set again: asked again */
+  SEQ(go(&f), "failed T too-large");
+  fx_close(&f);
+  /* beside a watch that can be answered: that one is told as ever */
+  fx_open(&f);
+  f.cfg.report_synced = true;
+  f.cfg.header_window = 4;
+  f.cfg.max_catchup = 4;
+  f.cfg.max_link = 4;
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  CHECK(gz_watch_outpoint(f.e, f.net.world.p, 0, 5, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 9);
+  s = go(&f);
+  CHECK(strstr(s, "failed T too-large") != NULL && strstr(s, "spent P:0 by S1 n=4 at a6") != NULL &&
+        strstr(s, "synced P:0") != NULL && strstr(s, "tip-synced 1009") != NULL && strstr(s, "sources") == NULL);
+  both(&f, SIM_A, SIM_H0 + 10);
+  s = go(&f);
+  CHECK(strstr(s, "spent P:0 by S1 n=5 at a6 buried") != NULL && strstr(s, "tip-synced 1010") != NULL &&
+        strstr(s, "failed") == NULL);
+  fx_close(&f);
+  /* without report_synced: the sources say too-large, as before */
+  fx_open(&f);
+  f.cfg.header_window = 4;
+  f.cfg.max_catchup = 4;
+  f.cfg.max_link = 4;
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 11);
+  s = go(&f);
+  CHECK(strstr(s, "sources too-large") != NULL && strstr(s, "failed") == NULL);
+  fx_close(&f);
+}
+
 static void test_config(test_state *T) {
   fx f;
   fx_open(&f);
@@ -1679,6 +1734,7 @@ int main(void) {
   RUN(test_not_before);
   RUN(test_watch_set);
   RUN(test_synced);
+  RUN(test_watch_failed);
   RUN(test_headers);
   RUN(test_retry_backoff);
   RUN(test_false_spender);

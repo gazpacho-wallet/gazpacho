@@ -73,6 +73,15 @@ typedef enum {
  * reports. An engine that decides at a tip on the absence of a fact waits
  * for the TIP_SYNCED of that tip; a later NEW_TIP (a new block, or another
  * block at the same height after a reorganisation) closes it again.
+ * NEW_TIP and TIP_SYNCED carry the tip block's hash: a TIP_SYNCED is for that
+ * block, and one for a block replaced at the same height is not this tip's.
+ *
+ * A watch the chain view can never answer (a confirmation deeper than it
+ * follows) must not hold back every tip: it reports GZ_CHAIN_WATCH_FAILED for
+ * that watch once, which is its answer, and asks no more about it until it is
+ * set again; TIP_SYNCED then counts it as answered. An engine treats what it
+ * waited for from that watch as unknowable and fails closed, for that
+ * factory only (review B of PR 56, second confirmation, G-1).
  *
  * UNWATCH drops a watch (step P4.5): `is_tx` 1 names the transaction watch
  * of `what.txid`, 0 the outpoint watch of `what`. The chain view forgets it,

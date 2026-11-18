@@ -385,6 +385,7 @@ static inline gz_status_t ft_ev(ft_t *t, const gz_event_t *ev)
         s.kind = GZ_EVENT_CHAIN;
         s.u.chain.kind = GZ_CHAIN_TIP_SYNCED;
         s.u.chain.height = ev->u.chain.height;
+        memcpy(s.u.chain.block_hash, ev->u.chain.block_hash, 32);
         st = gz_fund_handle(&t->f, &s, &t->out);
     }
     ft_after(t);
@@ -459,6 +460,19 @@ static inline gz_event_t ev_tip_synced(uint32_t h)
     e.kind = GZ_EVENT_CHAIN;
     e.u.chain.kind = GZ_CHAIN_TIP_SYNCED;
     e.u.chain.height = h;
+    return e;
+}
+/* The chain view can never answer a watch (GZ_CHAIN_WATCH_FAILED, G-1). */
+static inline gz_event_t ev_failed_tx(const uint8_t txid[32])
+{
+    gz_event_t e = ev_synced_tx(txid);
+    e.u.chain.kind = GZ_CHAIN_WATCH_FAILED;
+    return e;
+}
+static inline gz_event_t ev_failed_op(const uint8_t op[36])
+{
+    gz_event_t e = ev_synced_op(op);
+    e.u.chain.kind = GZ_CHAIN_WATCH_FAILED;
     return e;
 }
 static inline gz_event_t ev_bres(const uint8_t txid[32], gz_broadcast_outcome_t o)

@@ -96,7 +96,15 @@ typedef enum gz_chainw_kind {
    * tip last reported (`height`), and what the answers found was told
    * before. Once per tip, after the first pass that answered all of them.
    * Step P4.5 (integration B12). */
-  GZ_CHAINW_TIP_SYNCED = 12
+  GZ_CHAINW_TIP_SYNCED = 12,
+  /* Only with `report_synced`: a watch that no pass can answer (`sources`:
+   * GZ_CHAIN_TOO_LARGE, a confirmation more than `max_link` below the tip).
+   * Told once, as that watch's answer, which TIP_SYNCED then counts; the
+   * watch is not asked about again until it is set again, so that it holds
+   * back neither TIP_SYNCED nor the sources of every other watch.
+   * `outpoint_watch` says which watch, as for SYNCED. Step P4.5 (review B of
+   * PR 56, second confirmation, G-1). */
+  GZ_CHAINW_WATCH_FAILED = 13
 } gz_chainw_kind;
 
 typedef enum gz_chainw_outcome {
@@ -215,7 +223,8 @@ typedef struct gz_chainw_config {
   /* Most block hashes ever kept, which bounds how far below the tip a
    * confirmation can be linked to the checked chain before it counts:
    * header_window..10,000,000. A confirmation further down is not told, and
-   * the sources say GZ_CHAIN_TOO_LARGE. 32 bytes each, held only while a
+   * the sources say GZ_CHAIN_TOO_LARGE; with `report_synced`, the watch is
+   * told failed instead (GZ_CHAINW_WATCH_FAILED). 32 bytes each, held only while a
    * confirmation that deep is being linked. */
   uint32_t max_link;
   /* Report GZ_CHAINW_SYNCED for each watch once its first answer since it
