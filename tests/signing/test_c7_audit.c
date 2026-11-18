@@ -85,11 +85,19 @@ int main(void)
     }
     printf("member 1 abort reason 11: %s\n", reason_ok ? "yes" : "no");
     printf("member 1 abort queued to host: %s\n", ab >= 0 ? "yes" : "no");
-    /* B's nonces from member 1 go to B's host. */
-    i = aud_last_kind(&h, 1, 0, GZ_SIGN_MSG_NONCES);
-    CHECK(i >= 0);
-    nB = aud_take(&h, i);
-    h_inject(&h2, 1, 0, nB.b, nB.len);
+    /* Member 1's nonces for B, if it sent any, go to B's host: only a nonce message that carries B's
+     * round id moves; A's nonces stay in A's world. */
+    nB.b = NULL;
+    for (i = 0; i < (long)h.nq; i++) {
+        gz_sign_msg_t nm;
+        if (h.q[i].from == 1 && h.q[i].to == 0 && h_kind_of(h.q[i].b, h.q[i].len) == GZ_SIGN_MSG_NONCES &&
+            gz_sign_decode(h.q[i].b, h.q[i].len, &nm) && nm.round_id && !memcmp(nm.round_id, rb->id, 32)) {
+            nB = aud_take(&h, i);
+            h_inject(&h2, 1, 0, nB.b, nB.len);
+            break;
+        }
+    }
+    printf("member 1 nonces for B moved to B's host: %s\n", nB.b ? "yes" : "no");
     /* B runs in h2 with its members 2 and 3; whatever goes to party 1 is held. */
     while (h2.nq) {
         if (h2.q[0].to == 1) { if (n_all < 16) all[n_all++] = aud_take(&h2, 0); else h_drop_msg(&h2, 0); }
@@ -97,7 +105,10 @@ int main(void)
     }
     /* A completes in h: member 1 releases its partial signatures for T1. */
     h_flush(&h, 100000);
-    printf("after A: host A state %d, member 1 exposures %zu\n", (int)h_find(&h, 0, ra->id)->state, h.p[1].e->n_exposures);
+    const gz_sign_round_t *fa = h_find(&h, 0, ra->id);
+    printf("after A: host A state %d, member 1 exposures %zu\n", fa ? (int)fa->state : -1, h.p[1].e->n_exposures);
+    CHECK(fa && fa->state == GZ_SIGN_ROUND_DONE);   /* A completes */
+    CHECK(h.p[1].e->n_exposures == 1);               /* with member 1's single exposure, for T1 */
     /* Now B's nonce sets reach member 1. */
     size_t sent_before = h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS);
     for (size_t k = 0; k < n_all; k++)
@@ -113,5 +124,9 @@ int main(void)
     printf("member 1 partial-signature messages sent for B: %zu; exposures %zu; two trees on one outpoint: %s\n",
            sent_after - sent_before, e1->n_exposures, two_trees ? "YES (C7 broken)" : "no");
     printf("RESULT %s\n", two_trees ? "C7-VIOLATED" : "C7-HELD");
-    return two_trees || !reason_ok ? 1 : 0;
+    free(propB.b);
+    free(nB.b);
+    for (size_t k = 0; k < n_all; k++) free(all[k].b);
+    int failed = check_done();
+    return two_trees || !reason_ok || failed ? 1 : 0;
 }
