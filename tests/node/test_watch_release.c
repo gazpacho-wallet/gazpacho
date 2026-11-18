@@ -56,6 +56,12 @@ int main(void)
     CHECK(gz_watch_mask(c, &e) == 0);
     e = report(0x77);
     CHECK(gz_watch_mask(c, &e) == (1u << ENG_TEST0));
+    /* WATCH_SYNCED is routed by its watch, like a report (step P4.5). */
+    e.kind = GZ_CHAIN_WATCH_SYNCED;
+    e.is_tx = 1;
+    CHECK(gz_watch_mask(c, &e) == (1u << ENG_TEST0));
+    e.is_tx = 0;   /* no outpoint watch on that txid */
+    CHECK(gz_watch_mask(c, &e) == 0);
     /* Released twice, or never held: dropped. */
     a = unwatch_tx(1);
     CHECK(gz_watch_unnote(c, &a, ENG_TEST0) == 0);

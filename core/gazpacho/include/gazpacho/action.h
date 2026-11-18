@@ -55,6 +55,25 @@ typedef enum {
  * changes nothing anyone else sees, so it does not wait for earlier saves.
  * Broadcasting a transaction does not watch it.
  *
+ * SYNCED (step P4.5; review B of PR 56, H-1). Once the chain view has asked
+ * its servers about a watch it was given (set, or set again), for the tip
+ * it last reported, it reports GZ_CHAIN_WATCH_SYNCED for that watch, after
+ * any TX_CONFIRMED or OUTPOINT_SPENT that the answer gave. So a watch that
+ * has had its SYNCED and no other report is, at that tip, not in the best
+ * chain or not spent. A WATCH the composite drops as already set gets no
+ * SYNCED of its own: the first one's reaches every engine that asks. While
+ * the servers cannot be asked, no SYNCED comes: an engine that decides on
+ * the absence of a fact (the funding engine's deadline after a start) waits
+ * for it, and no count of tips stands in for it.
+ *
+ * The same holds at every tip, not only after a start (integration B12): a
+ * new tip comes before the reports it brings. So, once the chain view has
+ * answered every watch it holds for a tip it reported, it reports
+ * GZ_CHAIN_TIP_SYNCED with that tip's `height`, once per tip, after those
+ * reports. An engine that decides at a tip on the absence of a fact waits
+ * for the TIP_SYNCED of that tip; a later NEW_TIP (a new block, or another
+ * block at the same height after a reorganisation) closes it again.
+ *
  * UNWATCH drops a watch (step P4.5): `is_tx` 1 names the transaction watch
  * of `what.txid`, 0 the outpoint watch of `what`. The chain view forgets it,
  * and frees its place, so a program that runs for long does not fill up. A

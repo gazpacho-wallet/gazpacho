@@ -32,7 +32,13 @@ typedef enum {
     GZ_CHAIN_TX_UNCONFIRMED,    /* a watched transaction reported as confirmed is no
                                    longer in the best chain */
     GZ_CHAIN_OUTPOINT_SPENT,    /* a watched outpoint is spent, by `txid` */
-    GZ_CHAIN_BROADCAST_RESULT   /* advice about a BROADCAST: accepted, refused or not sent */
+    GZ_CHAIN_BROADCAST_RESULT,  /* advice about a BROADCAST: accepted, refused or not sent */
+    GZ_CHAIN_WATCH_SYNCED,      /* a watch set (or set again) has had its first answer, for the
+                                   tip last reported: what it found was reported just before
+                                   (action.h, WATCHES, SYNCED). Step P4.5 */
+    GZ_CHAIN_TIP_SYNCED         /* every watch held has had its answer for the tip `height`
+                                   last reported, and those reports came before. Once per
+                                   tip (action.h, WATCHES, SYNCED). Step P4.5 */
 } gz_chain_kind_t;
 
 /* Outcome of a broadcast (GZ_CHAIN_BROADCAST_RESULT). Advice only: never
@@ -57,6 +63,8 @@ typedef struct {
                                 block; 0 for a spender not in the best chain */
     uint32_t height;         /* NEW_TIP: the tip's height; otherwise the height of the
                                 block containing the transaction, 0 if none */
+    int is_tx;               /* WATCH_SYNCED: 1 a transaction watch (`txid`), 0 an outpoint
+                                watch (`outpoint`) */
     gz_broadcast_outcome_t outcome; /* BROADCAST_RESULT */
     gz_bytes_t reason;       /* BROADCAST_RESULT, REFUSED: printable ASCII, at most 127
                                 bytes, the first refusing server's words */

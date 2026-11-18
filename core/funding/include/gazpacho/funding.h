@@ -258,14 +258,13 @@ typedef struct {
     int due, rebroadcast, escalate;
     int watching;                       /* watches set this incarnation */
     /* After a start (review B of PR 56, H-1): the chain facts are memory only
-     * and come back through the watches. Until every watch of the factory has
-     * reported since the start, or a block has passed since the first tip of
-     * the start, no deadline decision is taken (abandon, escalate, member
-     * Abandoned). Rebuilt at every start, never saved. */
+     * and come back through the watches. Until the chain view has answered
+     * every watch of the factory set at this start (GZ_CHAIN_WATCH_SYNCED,
+     * event.h), no deadline decision is taken (abandon, a spend-back's level
+     * or one not yet made, member Abandoned). No tip count ends it. Rebuilt at
+     * every start, never saved. */
     int resyncing;
-    unsigned reported;                  /* bit 0 the txid, bit 1 + k watched input k */
-    uint32_t resync_tip;
-    int resync_tip_seen;
+    unsigned reported;                  /* synced: bit 0 the txid, bit 1 + k watched input k */
 } gz_fund_factory_t;
 
 typedef struct {
@@ -279,6 +278,7 @@ typedef struct {
     gz_ports_t ports;
     uint32_t tip;
     int tip_known;
+    int tip_synced;                     /* GZ_CHAIN_TIP_SYNCED for `tip` came (integration B12) */
     uint64_t seq;
     size_t cursor;                      /* round-robin over factories (8.3) */
     size_t resume_at;                   /* the stepped resume: next factory */
@@ -342,6 +342,9 @@ gz_status_t gz_fund_host_plan(gz_fund_t *f, const gz_fund_plan_in_t *in, gz_acti
 #define GZ_FUND_H1_NO_PLAN   100   /* no plan for the scope */
 #define GZ_FUND_H1_SIGN      101   /* the wallet did not sign */
 #define GZ_FUND_H1_SIGNED    102   /* the signed bytes are not the plan */
+#define GZ_FUND_H1_TOO_LATE  103   /* tip + B - 1 past the deadline: a burial by it is no longer
+                                      possible; the lobby's outcome Failed with cancel reason 4
+                                      (review B of PR 56, N-1) */
 typedef struct {
     uint8_t scope[32];
     size_t n_members;

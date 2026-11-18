@@ -245,6 +245,10 @@ int main(void)
         } else if (sscanf(line, "tip %s", a1) == 1) {
             e.kind = GZ_EVENT_CHAIN; e.u.chain.kind = GZ_CHAIN_NEW_TIP; e.u.chain.height = (uint32_t)atoi(a1);
             if (gz_fund_handle(&f, &e, &out) != GZ_OK) return 4;
+        } else if (sscanf(line, "synced %s", a1) == 1) {
+            /* the driver, as the chain view, has told every fact for that tip (B12) */
+            e.kind = GZ_EVENT_CHAIN; e.u.chain.kind = GZ_CHAIN_TIP_SYNCED; e.u.chain.height = (uint32_t)atoi(a1);
+            if (gz_fund_handle(&f, &e, &out) != GZ_OK) return 4;
         } else if (sscanf(line, "conf %s %s %s", a1, a2, a3) == 3) {
             e.kind = GZ_EVENT_CHAIN;
             e.u.chain.kind = atoi(a2) ? GZ_CHAIN_TX_CONFIRMED : GZ_CHAIN_TX_UNCONFIRMED;

@@ -162,8 +162,10 @@ class Run:
                     self.act(self.h.say("spent %s %d %s %d" % (op, vout, txid, c[0])))
 
     def tip(self):
-        self.act(self.h.say("tip %d" % self.n.rpc("getblockcount")))
+        height = self.n.rpc("getblockcount")
+        self.act(self.h.say("tip %d" % height))
         self.facts()
+        self.act(self.h.say("synced %d" % height))   # every fact for this tip told (B12)
         for _ in range(4):
             self.act(self.h.say("tick"))
             self.facts()

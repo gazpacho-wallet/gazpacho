@@ -837,6 +837,36 @@ static void test_watch_set(test_state *T) {
   fx_close(&f);
 }
 
+/* SYNCED (step P4.5): with report_synced, each watch's first answer since
+ * it was set is followed by its SYNCED, also when nothing was found; set
+ * again, it comes again; without report_synced it never comes (every other
+ * scenario here). */
+static void test_synced(test_state *T) {
+  fx f;
+  const char *s;
+  fx_open(&f);
+  f.cfg.report_synced = true;
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 0, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 9);
+  SEQ(go(&f), "tip 1009 | confirmed T n=5 at a5 buried | synced T | tip-synced 1009");
+  SEQ(go(&f), "");   /* once per tip */
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 7, 0) == GZ_CHAINW_OK);
+  SEQ(go(&f), "confirmed T n=5 at a5 | synced T");
+  both(&f, SIM_A, SIM_H0 + 10);
+  SEQ(go(&f), "tip 1010 | confirmed T n=6 at a5 | tip-synced 1010");
+  fx_close(&f);
+  /* not yet in a block: SYNCED with no confirmation before it */
+  fx_open(&f);
+  f.cfg.report_synced = true;
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 0, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 2);
+  s = go(&f);
+  CHECK(strstr(s, "synced T") != NULL && strstr(s, "confirmed") == NULL && strstr(s, "tip-synced 1002") != NULL);
+  fx_close(&f);
+}
+
 static void test_config(test_state *T) {
   fx f;
   fx_open(&f);
@@ -1648,6 +1678,7 @@ int main(void) {
   RUN(test_package_calls);
   RUN(test_not_before);
   RUN(test_watch_set);
+  RUN(test_synced);
   RUN(test_headers);
   RUN(test_retry_backoff);
   RUN(test_false_spender);

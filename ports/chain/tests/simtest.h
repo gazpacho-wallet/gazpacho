@@ -100,6 +100,13 @@ static inline void st_format(const sim_world *w, const gz_chainw_event *ev, char
                  gz_chainw_outcome_name(ev->broadcast.parent_outcome),
                  gz_chainw_outcome_name(ev->broadcast.child_outcome));
       break;
+    case GZ_CHAINW_TIP_SYNCED: snprintf(out, cap, "tip-synced %u", ev->height); break;
+    case GZ_CHAINW_SYNCED:
+      if (ev->outpoint_watch)
+        snprintf(out, cap, "synced %s:%u", st_tx_name(w, ev->outpoint_txid), ev->outpoint_vout);
+      else
+        snprintf(out, cap, "synced %s", st_tx_name(w, ev->txid));
+      break;
     default: snprintf(out, cap, "unknown-kind-%d", (int)ev->kind); break;
   }
 }

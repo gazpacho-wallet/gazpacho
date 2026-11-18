@@ -86,7 +86,17 @@ typedef enum gz_chainw_kind {
   /* Blocks left the best chain. `height` is the lowest height whose block
    * changed, `disconnected` how many blocks were removed. Sent before the
    * new tip and before what the reorganisation did to each watch. */
-  GZ_CHAINW_REORG = 10
+  GZ_CHAINW_REORG = 10,
+  /* Only with `report_synced`: a watch set (or set again) has had its first
+   * answer, for the tip last reported, and what that answer found was told
+   * just before. `outpoint_watch` says which watch: `txid`, or
+   * `outpoint_txid` and `outpoint_vout`. Step P4.5. */
+  GZ_CHAINW_SYNCED = 11,
+  /* Only with `report_synced`: every watch held has had its answer for the
+   * tip last reported (`height`), and what the answers found was told
+   * before. Once per tip, after the first pass that answered all of them.
+   * Step P4.5 (integration B12). */
+  GZ_CHAINW_TIP_SYNCED = 12
 } gz_chainw_kind;
 
 typedef enum gz_chainw_outcome {
@@ -148,6 +158,7 @@ typedef struct gz_chainw_event {
   bool reorg;
   bool replaced;
   bool in_mempool;
+  bool outpoint_watch; /* SYNCED: an outpoint watch, else a transaction watch */
   gz_chain_result sources;
   gz_chainw_broadcast_info broadcast;
 } gz_chainw_event;
@@ -207,6 +218,9 @@ typedef struct gz_chainw_config {
    * the sources say GZ_CHAIN_TOO_LARGE. 32 bytes each, held only while a
    * confirmation that deep is being linked. */
   uint32_t max_link;
+  /* Report GZ_CHAINW_SYNCED for each watch once its first answer since it
+   * was set (or set again) has been told. Off by default. */
+  bool report_synced;
   /* The clock for every wait above: milliseconds, never going backwards.
    * NULL: the system's monotonic clock. */
   uint64_t (*now_ms)(void *clock_ctx);
