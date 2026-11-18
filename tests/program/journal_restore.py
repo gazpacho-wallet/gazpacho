@@ -39,6 +39,10 @@ section 9's R2 and R7):
    the guard kept, its epochs are kept. (d) is (b) with no marker: the
    plain warning, never the softer words. The marker changes only
    the words: where the counter is gone the person is still told.
+8. Start as a restore (storage 6.3 step 4, local-api.md start-as-restore;
+   review B of PR 54, L7): the oldest journal put back is files behind; the
+   start as a restore with the passphrase is a restore with a new epoch, an
+   incarnation above every one used, and the next start is ordinary.
 """
 import os
 import re
@@ -209,8 +213,12 @@ def main():
         note(dump_journal(folder, exe), "step0")
 
         # 5. starts.gzs removed before an import: the person is told.
+        before5 = max_inc[0]
         os.unlink(os.path.join(folder, "starts.gzs"))
         p, inc = run("--test-restore-from", backup)
+        check(inc is not None and inc > before5,
+              "5: the incarnation %s is above every one the replaced journal used (%d): the import carries its "
+              "floor in the sealed start counter (review B of PR 54, R2-1)" % (inc, before5))
         check(inc is not None and p.find(r"restore counter_found=0: the person is told")[0] is not None,
               "5: a restore without its counter goes ahead from the journal alone; the person is told")
         m = p.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]
@@ -297,6 +305,40 @@ def main():
                     old = [struct.unpack(">I", e)[0] for e in before_epochs]
                     ge = guard_epochs(guards7[-1]) if guards7 else []
                     check(all(e in ge for e in old[-15:]), "7%s: the kept guard's epochs are kept: %s" % (tag, ge))
+
+        # 8. Start as a restore, driven end to end.
+        f8 = os.path.join(work, "start-as-restore")
+        shutil.copytree(folder, f8)
+        shutil.copyfile(backup, os.path.join(f8, "journal.gzj"))
+        before_epochs = set(seen_epochs)
+        for e in dump_journal(folder, exe):
+            if e[0] == "INCN":
+                used = max(used, e[1])
+
+        def start8(name, *extra):
+            runs[0] += 1
+            q = Proc("%s-%d" % (name, runs[0]), [exe, "--data-dir", f8, "--role", "member", "--name", "m", "--no-chain",
+                                                 "--no-interface", "--reconnect-ms", "200",
+                                                 "--connect", "%s@127.0.0.1:%d" % (HOST_KEY, port)] + list(extra), logs)
+            procs.append(q)
+            m8 = q.wait_for(r"ready incarnation=(\d+)|unlock op=(?!unlock status=files_behind)\w+ status=(?!ok)\w+.*|"
+                            r"start-refused.*", timeout=90)
+            ok8 = m8 is not None and m8.group(0).startswith("ready")
+            if ok8:
+                q.wait_for(r"connect-kept", timeout=30)
+            q.stop()
+            return q, (int(m8.group(1)) if ok8 else None)
+        q, inc8 = start8("start-as-restore", "--test-start-as-restore")
+        check(q.find(r"unlock op=unlock status=files_behind")[0] is not None, "8: the old journal is files behind")
+        check(q.find(r"unlock op=start_as_restore status=ok")[0] is not None, "8: the start as a restore is accepted")
+        check(inc8 is not None and q.find(r"start steps=\d+ restored=1")[0] is not None, "8: a restore (%s)" % inc8)
+        e8 = q.find(r"restore-batch seq=1 epoch=([0-9a-f]{8})")[1]
+        check(e8 is not None and e8.group(1) != "00000000" and bytes.fromhex(e8.group(1)) not in before_epochs,
+              "8: a new epoch (%s)" % (e8.group(1) if e8 else None))
+        check(inc8 is not None and inc8 > used, "8: incarnation %s above every one used (%d)" % (inc8, used))
+        q, inc8b = start8("after-start-as-restore")
+        check(inc8b is not None and q.find(r"start steps=\d+ restored=0")[0] is not None,
+              "8: the next start is ordinary (%s)" % inc8b)
     finally:
         kill_all(procs)
     return check.result("program_journal_restore", logs)

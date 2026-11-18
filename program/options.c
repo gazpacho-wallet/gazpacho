@@ -148,6 +148,8 @@ void gzp_usage(void)
         "  --test-reveal-check           after the unlock: reveal and words check (statuses only)\n"
         "  --test-seed-check             seed() locked, unlocked and with a storage fault (results only)\n"
         "  --test-check-forged           CHECK against a key file forged with this wallet's ids\n"
+        "  --test-start-as-restore       files behind at the unlock: start as a restore\n"
+        "  --test-cut-after-derive       a power cut when the derivation says wrong\n"
         "  --test-kill-at K              SIGKILL before the K-th storage write, sync or rename\n"
         "  --test-power-cut-at K         the same, what a power cut loses dropped first\n"
         "  --test-append-batch HEX       save one batch of records (type, length, bytes ...), then stop\n"
@@ -250,6 +252,8 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-reveal-check")) { o->test_reveal_check = 1; takes = 0; }
         else if (!strcmp(a, "--test-seed-check")) { o->test_seed_check = 1; takes = 0; }
         else if (!strcmp(a, "--test-check-forged")) { o->test_check_forged = 1; takes = 0; }
+        else if (!strcmp(a, "--test-start-as-restore")) { o->test_start_as_restore = 1; takes = 0; }
+        else if (!strcmp(a, "--test-cut-after-derive")) { o->test_cut_after_derive = 1; takes = 0; }
         else if (!strcmp(a, "--test-commands")) { o->test_commands = 1; takes = 0; }
         else if (!strcmp(a, "--test-exit-after-send")) { o->test_exit_after_send = 1; takes = 0; }
 #endif

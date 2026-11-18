@@ -252,7 +252,7 @@ static void reveal_check(const gzp_options_t *o)
 /* --test-check-forged (review B of PR 54, M1): a wrong CHECK, then keys.gzk
  * forged with this wallet's ids over another passphrase and a CHECK with
  * that passphrase. Statuses and the count only. */
-static void check_forged(void)
+static void check_forged(const gzp_options_t *o)
 {
     static gzp_unlock_job_t job;
     static const char wrong[] = "not this wallet's passphrase at all";
@@ -264,6 +264,28 @@ static void check_forged(void)
     job.passphrase = (const uint8_t *)wrong;
     job.passphrase_len = sizeof wrong - 1;
     gzp_log("test-check wrong status=%s", gzp_unlock_status_name(run_job(&job)));
+    {
+        uint8_t *pw = gz_sc_salloc(GZ_SC_PASS_IN_MAX + 1);
+        int fd = pw ? open(o->test_passphrase_file, O_RDONLY | O_CLOEXEC) : -1;
+        ssize_t r = fd >= 0 ? read(fd, pw, GZ_SC_PASS_IN_MAX + 1) : -1;
+        size_t n = r > 0 ? (size_t)r : 0;
+        if (fd >= 0) close(fd);
+        if (n && pw[n - 1] == 10) n--;
+        memset(&job, 0, sizeof job);
+        job.op = GZP_UNLOCK_OP_CHECK;
+        job.passphrase = pw;
+        job.passphrase_len = n;
+        st = pw && r > 0 ? run_job(&job) : GZP_UNLOCK_NOT_CHECKED;
+        memset(&a, 0, sizeof a);
+        gzp_wallet_attempts(wallet, wall_ms(), &a);
+        gzp_log("test-check right status=%s wrong_in_row=%u", gzp_unlock_status_name(st), a.wrong_in_row);
+        if (pw) gz_sc_sfree(pw);
+        memset(&job, 0, sizeof job);
+        job.op = GZP_UNLOCK_OP_CHECK;
+        job.passphrase = (const uint8_t *)wrong;
+        job.passphrase_len = sizeof wrong - 1;
+        (void)run_job(&job);
+    }
     if (gzp_wallet_test_forge_keyfile(wallet, (const uint8_t *)forged, sizeof forged - 1) != 0) {
         gzp_log("test-check forged status=not-made wrong_in_row=0");
         return;
@@ -350,7 +372,9 @@ static int wait_unlocked(const gzp_options_t *o)
         /* One attempt a second, right or wrong (local-api.md 4.3): a test
          * restarting at once waits that second out, as a client would; a
          * delay after wrong passphrases is reported, not waited for. */
-        if (pre.status == GZP_UNLOCK_BUSY && pre.wrong_in_row == 0 && pre.retry_after_s <= 2) {
+        /* Within the five free tries the only wait is that second (an attempt
+         * a killed start counted before its check, 12.3, included). */
+        if (pre.status == GZP_UNLOCK_BUSY && pre.wrong_in_row < 5 && pre.retry_after_s <= 2) {
             struct timespec d = {(time_t)pre.retry_after_s, 100000000L};
             nanosleep(&d, NULL);
             gzp_wallet_attempts(wallet, wall_ms(), &pre);
@@ -361,17 +385,32 @@ static int wait_unlocked(const gzp_options_t *o)
             gzp_wallet_begin(wallet, &job);
             gzp_wallet_finish(wallet, &job, wall_ms());
         }
+        if (o->test_start_as_restore && job.op == GZP_UNLOCK_OP_UNLOCK &&
+            job.result.status == GZP_UNLOCK_FILES_BEHIND) {
+            /* --test-start-as-restore: files behind, then the start as a
+             * restore with the same passphrase (storage 6.3 step 4), as the
+             * local interface's start-as-restore asks. */
+            gzp_log("unlock op=unlock status=%s wrong_in_row=%u attempts_left=%u retry_after_s=%u reason=%s",
+                    gzp_unlock_status_name(job.result.status), job.result.wrong_in_row, job.result.attempts_left,
+                    job.result.retry_after_s, job.result.reason ? job.result.reason : "-");
+            memset(&job.result, 0, sizeof job.result);
+            job.op = GZP_UNLOCK_OP_START_AS_RESTORE;
+            (void)run_job(&job);
+        }
         gz_sc_sfree(pw);
         OPENSSL_cleanse(job.words, sizeof job.words);
         gzp_log("unlock op=%s status=%s wrong_in_row=%u attempts_left=%u retry_after_s=%u reason=%s",
-                job.op == GZP_UNLOCK_OP_CREATE ? "create" : "unlock", gzp_unlock_status_name(job.result.status),
+                job.op == GZP_UNLOCK_OP_CREATE              ? "create"
+                : job.op == GZP_UNLOCK_OP_START_AS_RESTORE ? "start_as_restore"
+                                                           : "unlock",
+                gzp_unlock_status_name(job.result.status),
                 job.result.wrong_in_row, job.result.attempts_left, job.result.retry_after_s,
                 job.result.reason ? job.result.reason : "-");
         if (job.result.status != GZP_UNLOCK_OK) return GZP_EXIT_LOCKED_OUT;
         gzp_log("wallet state=%s", state_name(gzp_wallet_state(wallet)));
         if (o->test_reveal_check) reveal_check(o);
         if (o->test_seed_check) seed_check(1);
-        if (o->test_check_forged) check_forged();
+        if (o->test_check_forged) check_forged(o);
         return 0;
     }
 #else
@@ -526,6 +565,10 @@ int main(int argc, char **argv)
     if (opt.test_kdf_floor) gzp_wallet_test_kdf_floor(wallet);
     if (opt.test_dump_journal) gzp_wallet_test_keys_only(wallet);
     if (opt.test_kill_at) gzp_store_test_kill_at((unsigned)opt.test_kill_at);
+    if (opt.test_cut_after_derive && wallet) {
+        gzp_store_test_power_cut();
+        gzp_wallet_test_cut_after_derive(wallet);
+    }
     if (opt.test_power_cut_at) {
         gzp_store_test_power_cut();
         gzp_store_test_kill_at((unsigned)opt.test_power_cut_at);

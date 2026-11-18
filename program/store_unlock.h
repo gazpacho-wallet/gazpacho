@@ -107,6 +107,9 @@ void gzp_wallet_test_restore_from(gzp_wallet_t *w, const char *backup);
 void gzp_wallet_test_keys_only(gzp_wallet_t *w);
 /* gazpacho-test: seed() answers -2 (storage failed) while on. */
 void gzp_wallet_test_seed_fault(gzp_wallet_t *w, int on);
+/* gazpacho-test: when the derivation says wrong, a power cut (the power-cut
+ * model of store.h) and SIGKILL, before finish writes anything. */
+void gzp_wallet_test_cut_after_derive(gzp_wallet_t *w);
 /* gazpacho-test: keys.gzk forged with this wallet's ids over passphrase pw. */
 int gzp_wallet_test_forge_keyfile(gzp_wallet_t *w, const uint8_t *pw, size_t len);
 #endif

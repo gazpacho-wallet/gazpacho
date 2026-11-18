@@ -91,3 +91,15 @@ soft_warning_dropped	program/executor.c	        gzp_log("start-counter was not f
 check_ids_only	program/store_unlock.c	 && gz_sc_vault_same(w->u.vault, k->u.vault);	;
 forged_marker_kept	ports/storage/journal.c	(c.answered || (sealed_rule && !j->restored))	c.answered
 foreign_marker_ignored	ports/storage/crypto/sc_files.c	        if (r > 0) {\n            if ((e = gz_sc_mark_restart(s, u)) != GZ_SC_OK)	        if (0) {\n            if ((e = gz_sc_mark_restart(s, u)) != GZ_SC_OK)
+# --- review B of PR 54, L7: its mutants (review-pr54-b.md), run with the tests that close the gaps
+b_counter_readerr_as_missing	program/store_journal.c	        return set_err(err, errlen, "cannot read the start counter");	        counter = 0;
+b_restore_gzr_trusted	ports/storage/journal.c	    j->restored = !sealed_rule && c.marker && !c.answered;	    j->restored = c.marker && !c.answered;
+b_start_as_restore_noop	program/store_unlock.c	if (k->op == GZP_UNLOCK_OP_START_AS_RESTORE && !w->u.restore) {	if (0) {
+b_mark_restored_no_seal	program/store_journal.c	    if (gz_sc_mark_restart(c.sc, c.u) != GZ_SC_OK) return set_err(err, errlen, "cannot mark the restore");	
+b_marker_not_cleared	program/store_unlock.c	    if (setup_marker_clear(w) != 0) {	    if (0) {
+b_setup_interrupted_any	program/store_unlock.c	k->op == GZP_UNLOCK_OP_UNLOCK && marker_present(w) &&	k->op == GZP_UNLOCK_OP_UNLOCK &&
+b_keyfile_mode_unchecked	program/store_unlock.c	(st.st_mode & 077)	(st.st_mode & 0)
+b_floor_trusted	ports/storage/journal.c	    if (sealed_rule && !(j->restored && c.marker && !c.answered)) floor = 0;	
+# --- run 21
+precount_skipped	program/store_unlock.c	        precount(w, job, k) != 0)\n        return;	        0)\n        return;
+r21_floor_not_carried	program/store_journal.c	        if (floor > counter && gz_sc_counter_write(	        if (0 && gz_sc_counter_write(

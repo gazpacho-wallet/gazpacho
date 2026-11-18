@@ -436,6 +436,11 @@ static uint64_t now_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
 }
 
+/* Set by an import that found no start counter (it wrote one from the
+ * replaced journal's highest incarnation, R2-1): the next start still tells
+ * the person that the counter was missing. One wallet per process. */
+static int import_found_no_counter;
+
 static int js_begin(void *ctx, uint64_t *incarnation, char *err, size_t errlen)
 {
     jstore_t *s = ctx;
@@ -447,7 +452,8 @@ static int js_begin(void *ctx, uint64_t *incarnation, char *err, size_t errlen)
     /* The start counter, read before the open (contract-v2.md section 8). */
     ce = gz_sc_counter_read(s->sc.sc, s->sc.u->vault, &counter);
     if (ce == GZ_SC_OK) {
-        s->counter_state = GZP_COUNTER_FOUND;
+        s->counter_state = import_found_no_counter ? GZP_COUNTER_MISSING : GZP_COUNTER_FOUND;
+        import_found_no_counter = 0;
     } else if (ce == GZ_SC_MISSING) {
         s->counter_state = gzp_wallet_setup_interrupted(s->sc.w) ? GZP_COUNTER_SETUP_INTERRUPTED
                                                                   : GZP_COUNTER_MISSING;
@@ -747,7 +753,36 @@ int gzp_journal_store_import(const char *dir, gzp_wallet_t *w, const char *backu
     seal_table(&t, &c);
     snprintf(staged, sizeof staged, "%s/%s.import", dir, GZ_JOURNAL_FILE);
     if (copy_file(backup, staged) != 0) return set_err(err, errlen, "cannot stage the backup");
-    (void)gz_sc_counter_read(c.sc, c.u->vault, &floor);
+    {
+        /* The floor: the start counter and the highest incarnation of the
+         * journal the import replaces, read under KJ, carried by the sealed
+         * start counter before the rename (review B of PR 54, R2-1: the
+         * journal's own floor reaches only restore.gzr, which the sealed open
+         * does not trust). */
+        uint64_t counter = 0, highest = 0;
+        char jp[GZP_PATH_MAX + 64];
+        uint8_t *d = NULL;
+        size_t len = 0;
+        gz_sc_err_t ce = gz_sc_counter_read(c.sc, c.u->vault, &counter);
+        if (ce != GZ_SC_OK && ce != GZ_SC_MISSING) {
+            unlink(staged);
+            return set_err(err, errlen, "cannot read the start counter");
+        }
+        snprintf(jp, sizeof jp, "%s/%s", dir, GZ_JOURNAL_FILE);
+        if (read_file(jp, &d, &len) == 0) {
+            gz_journal_scan_t sc;
+            memset(&sc, 0, sizeof sc);
+            (void)gz_journal_scan_sealed(d, len, c.sc->chain, &t, &sc, NULL, NULL);
+            highest = sc.highest_incarnation;
+            free(d);
+        }
+        floor = highest > counter ? highest : counter;
+        if (floor > counter && gz_sc_counter_write(c.sc, c.u->vault, floor) != GZ_SC_OK) {
+            unlink(staged);
+            return set_err(err, errlen, "cannot write the start counter");
+        }
+        if (ce == GZ_SC_MISSING) import_found_no_counter = 1;
+    }
     {
         /* The sealed restore marker is for the staged journal's file_id
          * (review A of PR 54, M1: restore.gzr is trusted only beside it). The
