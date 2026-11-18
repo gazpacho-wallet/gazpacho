@@ -398,7 +398,7 @@ static uint16_t sg_build(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t 
     if (s->host || in->replay) {
         const gz_terms_outer_t *o = s->host ? &s->lobby.h.terms : &s->lobby.m.terms;
         if (!s->host && !s->lobby.m.have_terms) return 1;
-        if (!sg_tree(c, o, p, &c->sg_tree) || !sg_def(o, scope, &c->sg_tree, out)) return 1;
+        if (!sg_tree(c, o, p, c->sg_tree) || !sg_def(o, scope, c->sg_tree, out)) return 1;
         return 0;
     }
     /* A member: only what its lobby accepted (13), then the safe-to-sign checks. */
@@ -429,9 +429,9 @@ static uint16_t sg_build(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t 
     mi.unresolved = in->unresolved; mi.n_unresolved = in->n_unresolved;
     mi.import_build = sg_import;
     mi.import_ctx = c;
-    mi.import_out = &c->sg_imp;
+    mi.import_out = c->sg_imp;
     mi.crypto = sg_crypto(c);
-    gz_tree_member_check(&mi, p, &c->sg_tree, &v);
+    gz_tree_member_check(&mi, p, c->sg_tree, &v);
     if (v.check != GZ_CHK_OK) {
         /* Refused: the engine answers round_abort with the reason. The person is told which rule. */
         c->sg_refused++;
@@ -442,7 +442,7 @@ static uint16_t sg_build(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t 
         return v.reason ? v.reason : 1;
     }
     s->own_depth = v.own_depth;
-    return sg_def(h.terms, scope, &c->sg_tree, out) ? 0 : 1;
+    return sg_def(h.terms, scope, c->sg_tree, out) ? 0 : 1;
 }
 
 /* ---- the lobby's side of the hand-off (lobby_handoff.h) ------------------------- */
@@ -587,9 +587,9 @@ static gz_status_t sg_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_li
     /* Each step deadline the terms' step timeout (C8 bounds both by it on the member). */
     p->nonces_due_ms = o->step_timeout_ms;
     p->sigs_due_ms = o->step_timeout_ms;
-    if (!sg_tree(c, o, p, &c->sg_tree)) return sg_refuse_begin(c, h, "sign-begin-refused-tree", out);
-    p->tier_sizes[0] = c->sg_tree.n_nodes;
-    if (sg_step_bytes(&c->sg_tree, (uint32_t)n) > SG_MAX_STEP_BYTES - 128u * 1024u)
+    if (!sg_tree(c, o, p, c->sg_tree)) return sg_refuse_begin(c, h, "sign-begin-refused-tree", out);
+    p->tier_sizes[0] = c->sg_tree->n_nodes;
+    if (sg_step_bytes(c->sg_tree, (uint32_t)n) > SG_MAX_STEP_BYTES - 128u * 1024u)
         return sg_refuse_begin(c, h, "sign-begin-refused-size", out);
     memset(&b, 0, sizeof b);
     b.p = p;
@@ -667,9 +667,11 @@ gz_status_t gz_sg_init(gz_node_t *c)
     gz_sign_config_t sc;
     uint64_t tick = c->cfg.sign_tick_ms ? c->cfg.sign_tick_ms : SG_TICK_MS;
     c->sign_on = 0;
-    c->sign = NULL;
-    if (!c->cfg.secp || !c->cfg.sign_mem || c->cfg.sign_mem_size < sizeof(gz_sign_t)) return GZ_OK;
-    c->sign = (gz_sign_t *)c->cfg.sign_mem;
+    c->sign = NULL; c->sg_tree = NULL; c->sg_imp = NULL;
+    if (!c->cfg.secp || !c->cfg.sign_mem || c->cfg.sign_mem_size < sizeof(sg_mem_t)) return GZ_OK;
+    c->sign = &((sg_mem_t *)c->cfg.sign_mem)->sign;
+    c->sg_tree = &((sg_mem_t *)c->cfg.sign_mem)->tree;
+    c->sg_imp = &((sg_mem_t *)c->cfg.sign_mem)->imp;
     memset(&sc, 0, sizeof sc);
     sc.host = c->cfg.host;
     sc.ctx = c->cfg.secp;

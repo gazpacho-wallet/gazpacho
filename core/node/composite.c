@@ -45,7 +45,7 @@ size_t gz_node_size(void)
 
 size_t gz_node_sign_size(void)
 {
-    return sizeof(gz_sign_t);
+    return sizeof(sg_mem_t);
 }
 
 gz_status_t gz_node_init(gz_node_t *c, const gz_ports_t *ports, const gz_node_config_t *cfg, uint64_t incarnation)

@@ -194,6 +194,14 @@ _Static_assert(GZ_SIGN_MAX_ROUNDS >= GZ_NODE_MAX_SLOTS, "one Active round for ea
 #define SG_MAX_STEP_BYTES (2048u * 1024u)
 #define SG_MAX_QUEUED GZ_NODE_MAX_SLOTS     /* outcomes waiting for a lobby's call to return */
 
+/* The caller's memory for the signing engine (node.h sign_mem): the engine and the builders' work
+ * space, so that a node with no engine carries none of it. */
+typedef struct {
+    gz_sign_t sign;
+    gz_tree_t tree;
+    gz_tree_import_t imp;
+} sg_mem_t;
+
 typedef struct {
     int kind;
     uint8_t scope[32], check[32];
@@ -486,8 +494,8 @@ struct gz_node {
     gz_tree_participant_t sg_parts[GZ_SIGN_MAX_PARTICIPANTS];
     gz_tree_proposal_t sg_prop;
     uint8_t sg_ftx[128];
-    gz_tree_t sg_tree;              /* the builder's work space (large) */
-    gz_tree_import_t sg_imp;
+    gz_tree_t *sg_tree;             /* the builder's work space (large), in the engine's memory */
+    gz_tree_import_t *sg_imp;
 
     /* one call */
     int busy[ENG_N];
