@@ -1,6 +1,6 @@
 # The signer boundary
 
-Design note, draft 1, 2026-11-18. **Not itself reviewed.** The owner approved the recommendation of the research note (`notes/signer-policy.md`, local and not in the repository). This note turns it into a design. It changes no code. Paths and names refer to `main` at `9a9d910` and to the open drafts #52 (`composite-p4-3`), #53 (`keys-p8`), #56 (`funding-p45`) and #59 (`k1-ready-binding`).
+Design note, draft 1, 2026-11-18. **Not itself reviewed.** The owner approved the research recommendation of 2026-11-18. This note turns it into a design. It changes no code. Paths and names refer to `main` at `9a9d910` and to the open drafts #52 (`composite-p4-3`), #53 (`keys-p8`), #56 (`funding-p45`) and #59 (`k1-ready-binding`).
 
 ## 0. The rule, in one paragraph
 
@@ -22,6 +22,7 @@ An "inventory" in this note (the table in section 3) is a design and audit list 
 | D6 | Two CI checks: no signing symbol outside `signer/`, and no unregistered tag (section 7). Each signer check has a named mutation (section 8). |
 | D7 | Slice 1: a library in the same process. 1.0.0: the same library inside a separate signer process with capability masks and seccomp, like Core Lightning's `hsmd` (section 10). |
 | D8 | Open: whether to split the host factory key (O2, section 11). |
+| D9 | Slice 1's `round_open` re-checks scripts, amounts, C6 and C10, but not the full C1 rebuild, which moves into the signer at 1.0.0 (section 10); this departs from the research recommendation, which put the C1 rebuild inside `round_open`, and is pending the owner. Slice 1 holds no balance. |
 
 ## 2. The library and its operations
 
@@ -48,7 +49,7 @@ What lives inside `gz_signer_t`:
 
 - **Role:** host or member, fixed per data folder. The epoch and the restore freeze (PR #53 `keys.h` policy, safety rule C12/R3).
 - **Network:** never mainnet; `gzw_network` as `wallet/` refuses it.
-- **Slots:** for each open slot, its scope, epoch, `key_index`, its gate (AT_JOIN), and the saved factory public key (`seat_key`, PR #59 K1-3).
+- **Slots:** for each open slot, its scope, epoch, `key_index`, its gate (AT_JOIN), and the saved factory public key (`seat_key`, PR #59 BD3).
 - **Rounds:** for each open round, the round id, the terms digest it was opened under, and the per-item sighash, tweak and spent output the signer computed itself. It also holds the MuSig2 secret nonces, which live only here.
 - **Held funding plans** (host): `gzt_funding` objects, keyed by txid.
 - **The host's long-term key**, while the program runs. The transport needs it for every handshake.
@@ -87,11 +88,11 @@ Each operation lists its exact inputs, what it computes itself, and the checks i
 **`gz_sg_slot_add(sg, const gz_sg_slot_t *slot, uint8_t contribution_pub[33], uint8_t factory_pub[33] /* may be NULL */)`**
 
 1. The epoch is current and not frozen (C12, R3).
-2. `key_index` is even and below 2^31 − 1.
+2. `key_index + 1` is below 2^31, so both keys of the pair are hardened indexes. (Draft 1 also required `key_index` to be even. No specification says so: `contract-v2.md` 13 allocates pairs (i, i + 1), not even i. The check is dropped until a specification adds the rule.)
 3. The slot is not already held.
 4. The table has room.
 
-Returns the public keys. Before PR #59 lands it also returns the factory public key. After PR #59 the factory public key comes from `gate_open` (K1-2).
+Returns the public keys. Before PR #59 lands it also returns the factory public key. After PR #59 the factory public key comes from `gate_open` (BD2).
 
 **`gz_sg_gate_open(sg, scope, const uint8_t digest[32], uint8_t factory_pub[33])`**
 
@@ -101,13 +102,13 @@ This is the AT_JOIN ready, and under PR #59 the first ready in every mode.
 2. The epoch is current and not frozen.
 3. The seed source gives a seed (the person's passphrase unlocked it).
 
-It derives the factory key at `(epoch, key_index + 1)` and keeps it bound to `(scope, digest)`, replacing and wiping any earlier binding for that scope. If the slot already has a `seat_key`, the derived public key must equal it (K1-5); otherwise `GZ_SG_E_SEAT_KEY` (reason 12). Returns the public key so the node can save `seat_key` before it sends the ready (K1-3).
+It derives the factory key at `(epoch, key_index + 1)` and keeps it bound to `(scope, digest)`, replacing and wiping any earlier binding for that scope. If the slot already has a `seat_key`, the derived public key must equal it (BD5a, at a later ready under AT_JOIN); otherwise `GZ_SG_E_SEAT_KEY`: the ready is not sent, `seat_key` stays unchanged, and the person is told the passphrase differs (`messages.md` 6.4, BD5a). In a round the same mismatch is `round_open` check 3, `round_abort` reason 12. Returns the public key so the node can save `seat_key` before it sends the ready (BD3).
 
 Under AUTO and WHEN_UNLOCKED the node calls it too. The binding then has `digest` set to all zeros, meaning "any terms of this scope".
 
 **`gz_sg_gate_close(sg, scope)`** wipes the scope's factory secret and its binding. **`gz_sg_gate_close_all(sg)`** wipes every gate, at every start and on "lock signing" (`composite-node.md` 12.2).
 
-**`gz_sg_seat_key(sg, scope, const uint8_t seat_key[33])`** gives the signer the saved `seat_key` after a restart (from the journal), so that K1-5 holds across restarts.
+**`gz_sg_seat_key(sg, scope, const uint8_t seat_key[33])`** gives the signer the saved `seat_key` after a restart (from the journal), so that BD5 holds across restarts.
 
 #### Messages
 
@@ -136,11 +137,11 @@ It computes both digests (`gazpacho/terms/outer`, `gazpacho/terms/current`) and 
 
 **`gz_sg_sign_binding(sg, scope, uint8_t sig[64])`**
 
-The signer computes `binding = TH("gazpacho/bind", scope ‖ factory_pub ‖ contribution_pub)` from the slot's own two public keys and signs it with the contribution key (member) or the host key (host). Under PR #59 there is only this one signature, `bind_by_contribution`, carried in the first ready. Before PR #59 a second call with `GZ_SG_KEY_FACTORY` gives `bind_by_factory`. That call is removed when PR #59's code lands (section 9).
+The signer computes `binding = TH("gazpacho/bind", scope ‖ factory_pub ‖ contribution_pub)` from the slot's own two public keys and signs it with the contribution key (member) or the host key (host). Under PR #59 there is only this one signature, `bind_by_contribution`, carried in the first ready. **It is made once per seat**, at the seat's first ready (BD3): the node saves it in `seat_key` field 10 together with the factory public key, and every later ready sends the saved bytes, with no call to this operation and no seed (`messages.md` 6.4, `journal.md` 9.1). The host accepts any valid signature over the same binding and keeps the first it saved, so a re-signature after a crash before the save is harmless; the signer need not reproduce the bytes. Before PR #59 a second call with `GZ_SG_KEY_FACTORY` gives `bind_by_factory`. That call is removed when PR #59's code lands (section 9).
 
 1. The slot is held.
 2. Its factory public key is known (gate opened, or before PR #59, slot added).
-3. Member: the gate is open for this scope.
+3. Member: the gate is open for this scope (true at the first ready, the only time it is called).
 
 #### Rounds
 
@@ -151,8 +152,8 @@ The signing engine (core/signing) keeps doing everything public: decoding, the b
 The `def` is what the engine checked (`check_def` passed).
 
 1. `scope` is a held slot. Member: its gate is open, and the gate's digest equals `def->terms_digest`, or the gate is any-terms (AUTO and WHEN_UNLOCKED).
-2. This party is in `def->participants` with exactly the slot's factory public key and contribution (or host) public key, at one position only (PR #59 K1-4).
-3. Member, after PR #59: the factory public key equals the saved `seat_key` (K1-5); otherwise reason 12.
+2. This party is in `def->participants` with exactly the slot's factory public key and contribution (or host) public key, at one position only (PR #59 BD4).
+3. Member, after PR #59: the factory public key equals the saved `seat_key` (BD5); otherwise reason 12.
 4. For each item:
    - `tx` parses as an unsigned one-input transaction (`gz_sign_tx_parse`, no witness).
    - Its signers are increasing positions among the participants.
@@ -244,7 +245,7 @@ The journal is our own encrypted storage. The check makes adopted bytes as trust
 
 **`gz_sg_fund_release(sg, const uint8_t txid[32])`** drops and wipes a plan.
 
-Later typed wallet operations (sends the person confirmed, exits, timeout sweeps, penalties) are added the same way when their features land. Each gets its own section in this note and its own rows in section 3. **There is never a "sign this transaction" operation.**
+Later typed wallet operations (sends the person confirmed, exits, timeout sweeps, penalties) are added the same way when their features land. Each gets its own section in this note and its own rows in section 3. **There is never a "sign this transaction" operation.** The penalty operation, if `safety-rule.md` C12's proposed exception is adopted, is the only operation that may use an earlier epoch, and only in the revocation-basepoint family (`exit.md` CH-18, PR #61, pending the owner); every other operation refuses another epoch (`GZ_SG_E_EPOCH`).
 
 ### 2.4 Refusal reasons
 
@@ -255,7 +256,7 @@ Later typed wallet operations (sends the person confirmed, exits, timeout sweeps
 | `GZ_SG_E_EPOCH` | Another epoch than the current one, or frozen |
 | `GZ_SG_E_SLOT` | Unknown slot, or slot table full |
 | `GZ_SG_E_GATE` | AT_JOIN gate closed, or opened for another digest |
-| `GZ_SG_E_SEAT_KEY` | Derived factory key differs from `seat_key` (reason 12) |
+| `GZ_SG_E_SEAT_KEY` | Derived factory key differs from `seat_key`. At a `ready`: the ready is not sent (#59 BD5a). In a round: `round_abort` reason 12 |
 | `GZ_SG_E_KIND` | A kind or tag outside the key's row (section 3) |
 | `GZ_SG_E_ROUND` | A round check of 2.3 failed: the round id, a script, an amount, C6, C10, or this party missing or present twice |
 | `GZ_SG_E_NONCE` | No secret nonce, already used, or our own nonce missing from the set |
@@ -267,13 +268,15 @@ Later typed wallet operations (sends the person confirmed, exits, timeout sweeps
 
 ### 3.1 The table
 
-| Key | Path (PR #53) | May sign | May do | Never |
+| Key | Path (`docs/notes/keys.md`, PR #53; no specification yet) | May sign | May do | Never |
 |---|---|---|---|---|
 | Host long-term | `m/254315617'/net'/1'/k'` | BIP 340 over `gazpacho/msg` for the host kinds of 3.2; `gazpacho/terms/outer`; `gazpacho/terms/current`; `gazpacho/bind` (as the host's contribution key); `gazpacho/nonce` (the host is a signer of every item). Later, by its own typed operations: `gazpacho/listing`, `gazpacho/withdrawal`, `gazpacho/index`, `gazpacho/anchor`, `gazpacho/beacon` | BOLT 8 ECDH | Any TapSighash; any untagged value |
-| Host factory, per lobby | `m/254315617'/net'/2'/epoch'/(i+1)'` | MuSig2 partial signatures over the signer's own TapSighash for tree items, `SIGHASH_DEFAULT`, key path. Before PR #59's code: also `gazpacho/bind` (`bind_by_factory`) | — | Any BIP 340 single-key signature after PR #59; any script-path sighash until a typed timeout-sweep operation exists (O2) |
+| Host factory, per lobby | `m/254315617'/net'/2'/epoch'/(i+1)'`, i the lobby's pair index on the host's own branch 2' (`program/keys.h`, PR #53: "its own pairs"); the host's contribution role is taken by its long-term key | MuSig2 partial signatures over the signer's own TapSighash for tree items, `SIGHASH_DEFAULT`, key path. Before PR #59's code: also `gazpacho/bind` (`bind_by_factory`) | — | Any BIP 340 single-key signature after PR #59; any script-path sighash until a typed timeout-sweep operation exists (O2) |
 | Member contribution, per lobby | `m/254315617'/net'/0'/epoch'/i'` | BIP 340 over `gazpacho/msg` for the member kinds of 3.2; `gazpacho/bind`; `gazpacho/nonce` | BOLT 8 ECDH (one link per lobby) | Any TapSighash; any untagged value |
 | Member factory, per lobby | `m/254315617'/net'/0'/epoch'/(i+1)'` | MuSig2 partial signatures as for the host. Before PR #59's code: also `gazpacho/bind` | — | Anything else |
 | Wallet BIP 86 | `m/86'/coin'/0'/{0,1}/j` | BIP 341 key-path `SIGHASH_DEFAULT` signatures of a held funding plan (`fund_sign`) and its spend-backs (`fund_spend_back`) | — | NONE, SINGLE or ANYONECANPAY; any transaction not built or adopted by the signer |
+
+Rows 2 and 4 assume `exit.md` 3.4 (`docs/DECISIONS-WITHOUT-OWNER.md` K10, pending owner) and `exit.md` CH-OP-1 (proposed). The import still pays distribution and penalty outputs to the factory key (`signing-round.md` 2). Row 2's script-path exception is the typed timeout sweep of O2.
 
 No sighash type is ever an input. `SIGHASH_DEFAULT` is the only one any signing operation produces. `gzt_sigmsg` keeps its other types for tests and cross-checks, but no signer operation reaches them, and the CI check of section 7 forbids `gzt_sigmsg` and `gzt_sighash_keypath` with a non-zero type in `signer/`.
 
@@ -281,20 +284,28 @@ No sighash type is ever an input. `SIGHASH_DEFAULT` is the only one any signing 
 
 Kind numbers are from `lobby.h` and `round_msg.h`.
 
+The envelope signature is record 240 of `messages.md` 4.3. A kind marked "— (unsigned)" carries no record 240 in the specification, so the signer refuses `sign_envelope` for it under every key.
+
 | Kind | Host long-term | Member contribution |
 |---|---|---|
-| 16 `hello` | — | yes |
-| 18 `terms_offer` | yes | — |
-| 20 `join` | — | yes |
-| 22 `ready`, 24 `unready` | — | yes |
-| 26 `leave` | — | yes |
-| 28 `lobby_status`, 30 `ready_check`, 32 `start`, 34 `cancel` | yes | — |
-| 64 `round_propose`, 68 `round_all_nonces`, 72 `round_tier_result` (deterministic allowed), 74 `round_complete`, 81 `factory_funded` | yes | — |
-| 66 `round_nonces`, 70 `round_partial_sigs`, 76 `round_ack` | — | yes |
+| 2 `part` | — (unsigned; `messages.md` 5) | — (unsigned) |
+| 16 `hello` | — (unsigned: no records, `messages.md` 6.1) | — (unsigned) |
+| 18 `terms_offer` | — (unsigned as a message; its two records are signed by `sign_terms`, `messages.md` 6.2) | — |
+| 20 `join` | — | — (unsigned: no record 240 in 6.3; after PR #59 no keys and no signatures at all) |
+| 22 `ready` | — | yes |
+| 24 `unready`, 26 `leave` | — | — (unsigned: no record 240, `messages.md` 6.5, 6.6) |
+| 28 `lobby_status` | — (unsigned, `messages.md` 6.7) | — |
+| 30 `ready_check`, 32 `start`, 34 `cancel` | yes | — |
+| 64 `round_propose`, 72 `round_tier_result` (deterministic allowed), 74 `round_complete` | yes | — |
+| 66 `round_nonces` | — | — (no record 240; each entry's `nonce_sig` is made by the round operation under `gazpacho/nonce`, `messages.md` 7.3) |
+| 68 `round_all_nonces` | — (unsigned: "No signature record", `messages.md` 7.4; `signing-round.md` 4, "Carried signatures only") | — |
+| 70 `round_partial_sigs`, 76 `round_ack` | — | yes |
 | 78 `round_abort` | yes (deterministic allowed) | yes |
-| 80 `round_status_request` | — | yes |
+| 80 `round_status_request` | — | — (unsigned: no record 240, `messages.md` 7.10) |
+| 81 `factory_funded` | — (odd and unsigned, `messages.md` 7.11) | — |
+| 32767 `test` | — (test builds only; never signed by a real key) | — |
 
-The engines' code is the reference for who sends what. Drafting this table showed one gap: the specification has no single list of which side sends which kind. Step S4 (section 9) builds the table from `messages.md` and fails a test if the code sends a kind the table does not allow.
+The engines' code is the reference for who sends what. Drafting this table showed one gap: `messages.md` 4.1 lists who sends each kind, but no table says which kinds are signed. Add a 'Signed' column there. (Checked on `main`: the lobby wire table, `core/lobby/wire.c` `ROWS`, gives record 240 only to 22, 30, 32 and 34, and `send_hello` and `send_reason` in `core/lobby/member.c` send 16, 24 and 26 without one.) Step S4 (section 9) builds the table from `messages.md` and fails a test if the code sends a kind the table does not allow.
 
 ### 3.3 Tags
 
@@ -306,7 +317,7 @@ These tags are in the code but missing from 8.2, and are added by this PR's foll
 - `gazpacho/allnonces`
 - `gazpacho/host-random`
 - `gazpacho/known-filter`
-- `gazpacho/test` and `gazpacho/test-funding`, reserved for tests
+- `gazpacho/test`, reserved for tests (registered by PR #60), and `gazpacho/test-funding`, reserved for tests, which is not on `main`: PR #52 adds it (`core/node/signslot.c`), and it is registered when #52 merges
 
 `gazpacho/tree` is in use, not "name reserved". The derivation string `gazpacho keys` goes in 8.2's plain-strings table.
 
@@ -379,18 +390,19 @@ Merged as they stand, every AT_JOIN ready would fail with `no_key`, and `sg_keys
 
 ### 5.3 Option (c), PR #59
 
-PR #59 moves the binding from `join` to the first `ready`. The factory key signs no binding (K1). Its rules map onto the signer like this:
+PR #59 moves the binding from `join` to the first `ready`. The factory key signs no binding (BD). Its rules map onto the signer like this:
 
-| K1 rule | Where it is enforced |
+| BD rule | Where it is enforced |
 |---|---|
-| K1-1, one pair per seat for the lobby's life | The host's lobby engine (unchanged); the signer refuses `slot_add` for a scope already held |
-| K1-2, factory key derived at the first ready, under the seat's saved epoch | `gate_open` derives it, refusing another epoch or frozen. Under AUTO and WHEN_UNLOCKED it is called with the any-terms digest at the first ready |
-| K1-3, `seat_key` saved before that ready is sent | `gate_open` returns `factory_pub`; the node saves `seat_key` and only then calls `sign_envelope(..., kind 22, ...)` and `sign_binding` |
-| K1-4, own pair exactly once | `round_open` check 2 |
-| K1-5, re-derive before the first nonce and compare with `seat_key` | `round_open` check 3, and `gate_open` when `seat_key` is known (after a restart, from `gz_sg_seat_key`) |
-| K1-6, a seat without a factory key is never chosen | The host's lobby engine (unchanged) |
+| BD1, one pair per seat for the lobby's life | The host's lobby engine, extended by #59 code item 6 to every seat ever held in the lobby; the signer refuses `slot_add` for a scope already held |
+| BD2, factory key derived at the first ready, under the seat's saved epoch | `gate_open` derives it, refusing another epoch or frozen. Under AUTO and WHEN_UNLOCKED it is called with the any-terms digest at the first ready |
+| BD3, `seat_key` saved before that ready is sent | `gate_open` returns `factory_pub`; the node calls `sign_binding`, saves `seat_key` with the factory key and the binding signature (field 10), and only then calls `sign_envelope(..., kind 22, ...)`. Later readies reuse the saved binding bytes (#59 H1) |
+| BD4, own pair exactly once | `round_open` check 2 |
+| BD5, re-derive before the first nonce and compare with `seat_key` | `round_open` check 3 |
+| BD5a, compare at every later derivation; at a `ready` a mismatch sends no ready | `gate_open` when `seat_key` is known (after a restart, from `gz_sg_seat_key`): `GZ_SG_E_SEAT_KEY`, and the node sends no ready |
+| BD6, a seat without a factory key is never chosen, standby seats and understudies included | The host's lobby engine (unchanged) |
 
-With option (c) the factory key signs **only** MuSig2 partials. Row 2 of table 3.1 loses `gazpacho/bind`, and so does row 4. That removes the one single-key BIP 340 signature the host factory key made: the key that guards the timeout leaves then never makes a BIP 340 signature of its own, which is the safest place to be short of splitting it (O2).
+With option (c) the factory key signs **only** MuSig2 partials. Row 2 of table 3.1 loses `gazpacho/bind`, and so does row 4. That removes the one single-key BIP 340 signature the host factory key made: the key that guards the timeout leaves then makes no BIP 340 signature of its own except, later, the typed timeout sweep (O2), which is the safest place to be short of splitting it (O2).
 
 ## 6. The funding wallet port (PR #56)
 
@@ -463,8 +475,8 @@ The check runs in report mode from S1 and fails the build from S4 (section 9).
 
 ### 7.2 No unregistered tag (`tools/check-tags.py`, new)
 
-1. It collects every string literal that starts with `gazpacho/` in `core/`, `ports/`, `program/`, `wallet/`, `signer/` and `tools/`, excluding `core/superscalar/`.
-2. Every one must appear in the tag table of `spec/PROTOCOL.md` 8.2, with state "Specified" or "Reserved" (tests).
+1. It collects every string literal that starts with `gazpacho/` and is not the operand of `#include`, in `core/`, `ports/`, `program/`, `wallet/`, `signer/` and `tools/`, excluding `core/superscalar/` and the literals listed with their reason in `tools/tags-allow.txt` (for example the deliberate mutation `gazpacho/v1/storagf` in a test).
+2. Every one must appear in the tag table of `spec/PROTOCOL.md` 8.2, with a state that begins with "Specified" or "Reserved" (PR #60 leaves no "In code" state).
 3. No tag may appear twice in that table.
 4. Every tag the table marks "signed directly" must appear in table 3.1 of this note under some key.
 
@@ -484,7 +496,7 @@ These are in the style of `tests/*/mutants.txt` and `tools/mutate-*.py`. Each mu
 | `slot-epoch` | `slot_add` epoch current, not frozen | `signer_slot_refuses_other_epoch`, `signer_slot_refuses_frozen` |
 | `slot-dup` | `slot_add` refuses a held scope | `signer_slot_refuses_twice` |
 | `gate-epoch` | `gate_open` epoch check | `signer_gate_refuses_other_epoch` |
-| `gate-seat-key` | `gate_open` compares with `seat_key` (K1-5) | `signer_gate_seat_key_mismatch` |
+| `gate-seat-key` | `gate_open` compares with `seat_key` (BD5a) | `signer_gate_seat_key_mismatch` |
 | `gate-digest` | `round_open` gate digest equals `terms_digest` | `signer_round_refuses_other_terms` |
 | `gate-close-wipes` | `gate_close` wipes the secret and closes the rounds | `signer_gate_close_wipes` (valgrind: memory undefined after close) |
 | `env-kind` | Kind in the key's row | `signer_env_refuses_member_kind_on_host`, `..._host_kind_on_member` |
@@ -494,7 +506,7 @@ These are in the style of `tests/*/mutants.txt` and `tools/mutate-*.py`. Each mu
 | `terms-hostkey` | `host_key` is ours | `signer_terms_refuses_other_host_key` |
 | `terms-chain` | Chain is ours | `signer_terms_refuses_other_chain` |
 | `bind-own-keys` | The binding uses the slot's own keys | `signer_bind_uses_own_keys` (vector) |
-| `round-me` | This party present once with its own keys (K1-4) | `signer_round_refuses_missing_me`, `..._me_twice`, `..._other_factory_key` |
+| `round-me` | This party present once with its own keys (BD4) | `signer_round_refuses_missing_me`, `..._me_twice`, `..._other_factory_key` |
 | `round-script` | Spent script is the tweaked aggregate | `signer_round_refuses_wrong_script` |
 | `round-funding` | Funding amount and script match | `signer_round_refuses_wrong_amount` |
 | `round-root-all` | The root needs every participant | `signer_round_refuses_partial_root` |
@@ -532,7 +544,7 @@ Each step is one PR, and each ends with the existing multi-process tests green (
 | S3 | #52 rebased on #53 | The AT_JOIN gate calls the key port's new `gate_open(scope, digest, epoch, index)`, which PR #53's `gzp_keys_scope_open` implements, in place of `secret()` into `gate_secret`. `gate_secret` is deleted. `host_secret` is not added: the key hook reads the host key through PR #53's `gzp_keys_host` inside the program's hook implementation. The `keys` hook stays for now | Merges the composite signing without the second copy of the scoped secret (5.1). The keypair hook is an interim shape removed in S4 |
 | S4 | New: `signer/` | The library (section 2) built from PR #53's `keys.c`, the secret-key parts of `signing.c` (nonce, partial, `sign_digest`) and `program/net.c`'s ECDH key. The ports change as in section 4. `signing-allowed-calls.txt` shrinks. `check-signer-boundary.sh` switches to **fail**. The mutants of section 8 land | The big move, done once, after the code it moves has merged |
 | S5 | #56, rebased on S4 | The wallet port as in 6.2, implemented over `gz_sg_fund_*` | #56 is a draft with no program implementation of its port yet. If #56 must merge before S4, it merges with the 6.2 port shape (txid, not bytes) implemented over `gzt_funding_*` directly in the program, and S4 moves that implementation into the signer. Either order works; the port shape is fixed now |
-| S6 | #59's code step | Binding at the first ready (K1). `sign_binding` loses its factory-key form; `gate_open` gains the `seat_key` compare (K1-5); the factory key's rows in 3.1 shrink to partials only; the mutant `env-factory` widens to cover bindings | #59's note already says its code follows #52. On top of S4 it is smaller: the K1 checks land in one place |
+| S6 | #59's code step | Binding at the first ready (BD). `sign_binding` loses its factory-key form; `gate_open` gains the `seat_key` compare (BD5); the factory key's rows in 3.1 shrink to partials only; the mutant `env-factory` widens to cover bindings | #59's note already says its code follows #52. On top of S4 it is smaller: the BD checks land in one place |
 
 What can slip without harm: S1 can land any time. S5 can go before or after S4 as described. S6 can go before S4 only if it keeps `bind_by_factory` out of the generic hook, which it does by deleting it.
 
@@ -583,7 +595,7 @@ The question is whether the host should use one key for its MuSig2 partials and 
 
 - **Protocol change.** Each host participant entry needs a second public key, or a rule that derives it from the same path at another index. The leaf scripts, the round id preimage, the tree digest and the vectors change, and they are being regenerated anyway for PR #59 and the tag rename of `PROTOCOL.md` 11.
 - **Compatibility with SuperScalar's tree shape.** SuperScalar's own factory uses the LSP's key in the timeout leaf (imported `factory.c`), so a split diverges from the reference implementation and from the shared work. That needs the SuperScalar team's agreement.
-- **More keys.** More to derive, journal (`key_index` pairs become triples on the host) and restore. K1-1's "one pair per seat" grows a third key on the host seat.
+- **More keys.** More to derive, journal (`key_index` pairs become triples on the host) and restore. BD1's "one pair per seat" grows a third key on the host seat.
 - **Less needed after this design.** After S4 and S6 the host factory key signs only MuSig2 partials over the signer's own sighashes. With option (c) no single-key BIP 340 signature is made with it. The residual risk is a bug inside `round_open` or `partial` that lets a caller choose the sighash, and the mutants `round-sighash-own` and `sighash-default` exist to catch exactly that.
 
 **Not decided.** If it is done, it should be decided before the 1.0.0 vectors freeze, together with the tag rename, so that signed bytes change once. Until then the table of 3.1 forbids any script-path signature by the host factory key, and the future timeout-sweep operation is the only one that may make one.
@@ -592,3 +604,4 @@ The question is whether the host should use one key for its MuSig2 partials and 
 
 - Draft 1 (2026-11-18): first draft, from the approved research recommendation.
 - Draft 1, correction (2026-11-18): the spend-back's fee cap (2.3, `fund_spend_back` check 3) admits the whole fee ladder; "ceiling × vsize" refused level 2 (review B of #56, M-3).
+- Draft 1, review fixes (2026-11-18, review of #59 to #63): kind table matches the specification's signed kinds (M1); the tag check skips `#include` paths and an allow list, and accepts states beginning "Specified" or "Reserved" (M2); BD1 is the host engine extended to every seat ever held (M3); the factory key's "Never" rests on K10 and CH-OP-1 and excepts O2's timeout sweep (M4); D9, the C1 rebuild at 1.0.0, pending the owner (M5); `sign_binding` once per seat, its bytes saved in `seat_key` field 10 (#59 H1); the parity check dropped (L1); key paths cited from `docs/notes/keys.md` (L2); `GZ_SG_E_SEAT_KEY` at a ready (L3); no local file cited (L4); `gazpacho/test-funding` from #52 (L5); the penalty operation's epoch exception (L6). The binding rules are named BD1 to BD6 (formerly K1-1 to K1-6), as in #59.
