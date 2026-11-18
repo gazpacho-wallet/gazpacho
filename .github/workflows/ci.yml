@@ -275,7 +275,7 @@ jobs:
         # Registered only where valgrind and its headers are installed: here.
         # Once, in the first shard.
         if: matrix.shard == 0
-        run: ctest --test-dir build -R '^(storage|signing)_ctime$' --output-on-failure --no-tests=error
+        run: ctest --test-dir build -R '^(storage|signing|signer)_ctime$' --output-on-failure --no-tests=error
       - name: Keep the program tests' logs when a test fails
         # As in the build jobs (#64); the program tests are scripts, which
         # memcheck does not run, so this is usually empty.
@@ -365,3 +365,39 @@ jobs:
         run: |
           ln -s ../../web/node_modules node_modules
           GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test
+
+  # The signer boundary, step S1 (docs/notes/signer.md 7, 9). Not required
+  # for merging: both checks report only until main is clean (check-tags
+  # after PROTOCOL.md 8.2 registers today's strings; the boundary at S4).
+  # Their own tests and the signer's mutants do fail the job.
+  signer-boundary:
+    name: signer boundary (report mode)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The checks refuse what they must (their own tests)
+        run: |
+          python3 -I tests/tools/test_check_signer_boundary.py
+          python3 -I tests/tools/test_check_tags.py
+      - name: Signing and secret-key symbols outside signer/ (report only)
+        run: sh tools/check-signer-boundary.sh --report
+      - name: Unregistered gazpacho/ strings (report only)
+        run: python3 -I tools/check-tags.py --report
+      - name: The signer's vectors, recomputed in pure Python
+        run: python3 -I tools/signer-vectors.py --check signer/tests/vectors.txt
+
+  signer-mutants:
+    name: signer mutants
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev
+      - name: Every check of signer/ and of the two S1 tools is killed by a test
+        run: python3 -I tools/mutate-signer.py . "$RUNNER_TEMP/signer-mutants" -j "$(nproc)"

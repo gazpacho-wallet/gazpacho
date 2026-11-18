@@ -638,5 +638,8 @@ endif()
 # --- the local API server (spec/local-api.md), its fake backend and tests ------
 add_subdirectory(ports/api)
 
+# --- the signer (docs/notes/signer.md): the one library that holds secrets and signs ---
+add_subdirectory(signer)
+
 # --- the gazpacho program (stream S11): executor, port adapters, executables ----
 add_subdirectory(program)

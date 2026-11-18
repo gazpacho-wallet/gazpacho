@@ -1,0 +1,3 @@
+# The signer's vectors: the output of `python3 -I tools/signer-vectors.py`
+# (pure Python, independent of the C code). CTest's signer_vectors_py checks
+# this file against it; signer reads it. Test values only, never for coins.

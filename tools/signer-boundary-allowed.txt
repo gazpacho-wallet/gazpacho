@@ -1,0 +1,4 @@
+# Uses of signer-only symbols outside signer/ on the day this list was written
+# (tools/check-signer-boundary.sh). FILE<TAB>SYMBOL<TAB>COUNT. The list may only
+# shrink; step S4 (docs/notes/signer.md 9) empties it and the check then fails
+# on any use.
