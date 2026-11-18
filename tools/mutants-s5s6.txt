@@ -1,0 +1,89 @@
+# Mutants of the S5/S6 program code, run by tools/mutate-s5s6.py.
+# NAME	FILE	OLD	NEW   (tab-separated; \n newline)
+# --- ports/storage/journal.c, the sealed paths
+anchor_dropped	ports/storage/journal.c	        if (anchored && (!j->codec.seal->anchor ||	        if (0 && (!j->codec.seal->anchor ||
+anchored_guard	ports/storage/journal.c	    return type == GZ_RECORD_GUARD || type == 0x00020006u	    return type == 0xffffffffu || type == 0x00020006u
+rule_behind	ports/storage/journal.c	        if (rule == GZ_JOURNAL_START_BEHIND) { st = GZ_JOURNAL_ERR_BEHIND; goto out; }	
+rule_old	ports/storage/journal.c	        if (rule == GZ_JOURNAL_START_POSSIBLY_OLD) { st = GZ_JOURNAL_ERR_POSSIBLY_OLD; goto out; }	
+rule_restore	ports/storage/journal.c	        if (rule == GZ_JOURNAL_START_RESTORE) j->restored = 1;	
+mark_restart	ports/storage/journal.c	(!j->codec.seal->mark_restart || j->codec.seal->mark_restart(j->codec.seal->ctx) != 0)) {	(0)) {
+view_inc	ports/storage/journal.c	    return e.kind == GZ_JOURNAL_KIND_MARK && e.incarnation == incarnation;	    return e.kind == GZ_JOURNAL_KIND_MARK && (e.incarnation == incarnation || e.kind == GZ_JOURNAL_KIND_MARK);
+view_kept	ports/storage/journal.c	offset > v->kept_end || v->kept_end - offset < ms) return 0;	offset > v->kept_end || v->kept_end - offset < 0 * ms) return 0;
+settle_newer	ports/storage/journal.c	get64(fg + 40) < get64(rec + 40);	get64(fg + 40) > get64(rec + 40);
+frame_small_len	ports/storage/journal.c	(f.kind != GZ_JOURNAL_KIND_BATCH && f.payload_len != SMALL_PAYLOAD) ||	
+sealed_create	ports/storage/journal.c	    if (j->codec.seal) return GZ_JOURNAL_ERR_HEADER;	
+batch_size	ports/storage/journal.c	    return clear_size - (FRAME_HEAD + FRAME_TAIL) + c->seal->overhead;	    return clear_size - (FRAME_HEAD + FRAME_TAIL) + c->seal->overhead + 1;
+# --- ports/storage/crypto/sc_counter.c, sc_files.c
+counter_ad	ports/storage/crypto/sc_counter.c	    e = sc_seal(&kc, c, 8, out, 41, out + 41);	    e = sc_seal(&kc, c, 8, out, 9, out + 41);
+counter_damaged_ok	ports/storage/crypto/sc_counter.c	        return GZ_SC_MISSING; /* a file that does not open	        return GZ_SC_OK; /* a file that does not open
+counter_format	ports/storage/crypto/sc_counter.c	memcmp(d, ST_MAGIC, 8) != 0 || d[8] != 1)	memcmp(d, ST_MAGIC, 8) != 0)
+setup_no_counter	ports/storage/crypto/sc_files.c	        if ((e = gz_sc_counter_write(s, u->vault, 0)) != GZ_SC_OK)\n            goto done;	
+commit_recheck	ports/storage/crypto/sc_files.c	    gz_sc_err_t e = p->vault ? folder_free(s, restore) : GZ_SC_ARG;	    gz_sc_err_t e = p->vault ? GZ_SC_OK : GZ_SC_ARG;
+# --- program/store_journal.c
+counter_not_given	program/store_journal.c	    cfg.start_counter = counter;	    cfg.start_counter = 0;
+counter_not_written	program/store_journal.c	    if (gz_sc_counter_write(s->sc.sc, s->sc.u->vault, inc) != GZ_SC_OK) return -1;	
+guard_read_none	program/store_journal.c	    *rec = out;\n    *len = REC_HEAD + cl;\n    return 1;	    free(out);\n    return 0;
+append_no_flush	program/store_journal.c	    if (gz_journal_flush(s->j) != GZ_JOURNAL_OK) return -1;	
+behind_flag	program/store_journal.c	st == GZ_JOURNAL_ERR_POSSIBLY_OLD ? 2 : 0;	st == GZ_JOURNAL_ERR_POSSIBLY_OLD ? 1 : 0;
+# --- program/store_unlock.c
+wrong_not_counted	program/store_unlock.c	        if (count_attempt(w, 1, now_ms, r) != 0) set_result(r, GZP_UNLOCK_STORAGE_FAILED, "attempts");\n        else r->status = GZP_UNLOCK_WRONG;	        r->status = GZP_UNLOCK_WRONG;
+attempts_wait	program/store_unlock.c	    if (gz_sc_attempts_wait(&a, now_s) > 0) {	    if (0) {
+free_wrong	program/store_unlock.c	#define FREE_WRONG 5u	#define FREE_WRONG 4u
+right_not_counted	program/store_unlock.c	        (void)count_attempt(w, 0, now_ms, NULL); /* the passphrase was right, whatever follows */	
+#
+# --- Survivors (the build server, after the merge of P7), triaged.
+# Run with the default test set, then the survivors again with
+# program_journal_kill added (GZP_MUT_TESTS). Killed after a test was added:
+#   counter_not_given   program_journal_restore case 6 (storage files put back
+#                       from an older copy, the start counter kept).
+#   behind_flag         program_storage_damage now names which files_behind
+#                       (behind for the cut-back journal, possibly_old for the
+#                       mark and guard files). The test found a bug:
+#                       gzp_journal_store_behind returned a truth value, so
+#                       possibly_old was never said; fixed.
+# Decided since (pending the storage reviewers, storage 7.4), corrected
+# after review A of PR 54 (H1): the set-up marker setup.gzp changes only what
+# is told; the start is still 6.3 step 0's restore. setup_no_counter is
+# killed by program_journal_kill's check (no start says the counter is
+# missing). The earlier finish_with_counter mutant went with
+# gz_sc_setup_finish; its "harmless" triage was wrong (review A, L5).
+# Kept, with the reason; none weakens what a test asserts:
+#   append_no_flush     complete() flushes before it reports any batch, and the
+#                       executor confirms only through complete(), so nothing
+#                       acts on a batch that is not durable. What the mutant
+#                       changes: a failed sync is reported at complete() and
+#                       not at append(). Follow-up: the sync-failure cases of
+#                       program_storage_failure on the journal store (they run
+#                       on the stand-in).
+#   settle_newer        a guard record newer than guard.gzg (a kill between
+#                       the batch's sync and the guard write) no longer
+#                       replaces the file; the next anchored batch writes it.
+#                       Follow-up: a readout of guard.gzg's counter in the
+#                       dump, compared with the journal's after each kill.
+#   view_inc            the start rule's mark lookup ignores the incarnation:
+#                       only another history of the same wallet with a mark at
+#                       the same offset differs (two copies of one folder run
+#                       apart). Follow-up test with forked folders.
+#   view_kept           frame_mark_candidate and entry_at check the length
+#                       again: the removed bound is redundant (no difference
+#                       in behaviour; ASan would show a read past the end).
+#   frame_small_len     post-authentication checks of what the seal table
+#   counter_format      opened: only a holder of the keys can make a frame or
+#                       a counter that fails them (the length and the version
+#                       are under the tag). Defence in depth.
+#   sealed_create       the program never opens a sealed journal that is not
+#                       there (set-up makes it; a missing one is restore step
+#                       0). Follow-up: a journal-level test of
+#                       gz_journal_open_sealed on a missing file.
+#   commit_recheck      a second set-up between derive and commit cannot
+#                       happen under the folder lock. Follow-up: a library
+#                       test (prepare, a key file made, commit refused).
+# --- the interrupted set-up (storage 7.4, pending the storage reviewers)
+marker_kept	program/store_unlock.c	    if (setup_marker_clear(w) != 0) {\n        w->opened.ops->close	    if (0) {\n        w->opened.ops->close
+# --- review A of PR 54
+setup_told_always	program/store_unlock.c	w->setup_interrupted = k->op == GZP_UNLOCK_OP_UNLOCK && marker_present(w) &&	w->setup_interrupted = k->op == GZP_UNLOCK_OP_UNLOCK &&
+restore_gzr_trusted	ports/storage/journal.c	    j->restored = !sealed_rule && c.marker && !c.answered;\n    if (sealed_rule) {	    j->restored = c.marker && !c.answered;\n    if (sealed_rule && !j->restored) {
+dumps_left_on	program/main.c	    no_dumps();\n	    (void)no_dumps;\n
+journal_mark_unsynced	ports/storage/journal.c	    j->end += ms;\n    if (j->os.sync(j->os.ctx, j->fd) != 0) return 0;\n    j->durable_end = j->end;	    j->end += ms;\n    j->durable_end = j->end;
+replace_dir_unsynced	ports/storage/crypto/sc_files.c	    return sync_dir(s) == GZ_SC_OK ? GZ_SC_OK : GZ_SC_DONE_WITH_FAULT;	    return GZ_SC_OK;
+soft_warning_dropped	program/executor.c	        gzp_log("start-counter was not found; set-up may have been interrupted: a restore with a new epoch; "\n                "the person is told");	        (void)0;

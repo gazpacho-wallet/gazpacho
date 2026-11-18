@@ -143,6 +143,14 @@ void gzp_usage(void)
         "  --test-stop-at-restart        a SIGTERM to itself as an incarnation ends\n"
         "  --test-engines N              test engines in the node, 0 to 2 (default 1)\n"
         "  --test-dump-journal           print the journal's batches and records, then stop\n"
+        "  --test-passphrase-file PATH   unlock with the passphrase in PATH (set up a wallet if none)\n"
+        "  --test-kdf-floor              set up at the storage library's test floor (1 pass, 8 KiB)\n"
+        "  --test-standin-store          the journal stand-in instead of the sealed journal\n"
+        "  --test-reveal-check           after the unlock: reveal and words check (statuses only)\n"
+        "  --test-seed-check             seed() locked, unlocked and with a storage fault (results only)\n"
+        "  --test-kill-at K              SIGKILL before the K-th storage write, sync or rename\n"
+        "  --test-power-cut-at K         the same, what a power cut loses dropped first\n"
+        "  --test-append-batch HEX       save one batch of records (type, length, bytes ...), then stop\n"
         "  --test-drop-kind K            drop every received message of kind K\n"
         "  --test-commands               read test commands from standard input\n"
         "  --test-big-reply BYTES        pad every test reply with BYTES\n"
@@ -237,6 +245,10 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-chain-backlog")) { ok = num(val, 1, 1024, &v); o->test_chain_backlog = (int)v; }
         else if (!strcmp(a, "--test-stop-at-restart")) { o->test_stop_at_restart = 1; takes = 0; }
         else if (!strcmp(a, "--test-dump-journal")) { o->test_dump_journal = 1; takes = 0; }
+        else if (!strcmp(a, "--test-kdf-floor")) { o->test_kdf_floor = 1; takes = 0; }
+        else if (!strcmp(a, "--test-standin-store")) { o->test_standin_store = 1; takes = 0; }
+        else if (!strcmp(a, "--test-reveal-check")) { o->test_reveal_check = 1; takes = 0; }
+        else if (!strcmp(a, "--test-seed-check")) { o->test_seed_check = 1; takes = 0; }
         else if (!strcmp(a, "--test-commands")) { o->test_commands = 1; takes = 0; }
         else if (!strcmp(a, "--test-exit-after-send")) { o->test_exit_after_send = 1; takes = 0; }
 #endif
@@ -292,6 +304,10 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-storage-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_storage_fail_at = (int)v; }
         else if (!strcmp(a, "--test-start-delay-ms")) { ok = num(val, 0, 600000, &v); o->test_start_delay_ms = (int)v; }
         else if (!strcmp(a, "--test-restore-from")) o->test_restore_from = val;
+        else if (!strcmp(a, "--test-passphrase-file")) o->test_passphrase_file = val;
+        else if (!strcmp(a, "--test-append-batch")) o->test_append_batch = val;
+        else if (!strcmp(a, "--test-kill-at")) { ok = num(val, 1, 100000000, &v); o->test_kill_at = (int)v; }
+        else if (!strcmp(a, "--test-power-cut-at")) { ok = num(val, 1, 100000000, &v); o->test_power_cut_at = (int)v; }
         else if (!strcmp(a, "--test-sync-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_sync_fail_at = (int)v; }
         else if (!strcmp(a, "--test-timer-ms")) { ok = num(val, 1, 600000, &v); o->test_timer_ms = (int)v; }
         else if (!strcmp(a, "--test-burst")) {
@@ -351,7 +367,15 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         gzp_usage();
         return GZP_EXIT_USAGE;
     }
-    if (o->role == GZP_ROLE_MEMBER && !o->have_connect && !o->test_dump_journal) {
+#ifdef GZP_TEST_BUILD
+    /* Tests whose launcher passes no unlock option (review B's tests, copied
+     * as written): the passphrase file's path from the environment. */
+    if (!o->test_passphrase_file && getenv("GZP_TEST_PASSPHRASE_FILE") && *getenv("GZP_TEST_PASSPHRASE_FILE")) {
+        o->test_passphrase_file = getenv("GZP_TEST_PASSPHRASE_FILE");
+        if (getenv("GZP_TEST_KDF_FLOOR")) o->test_kdf_floor = 1;
+    }
+#endif
+    if (o->role == GZP_ROLE_MEMBER && !o->have_connect && !o->test_dump_journal && !o->test_append_batch) {
         fprintf(stderr, "gazpacho: a member needs --connect KEY@ADDR:PORT\n");
         return GZP_EXIT_USAGE;
     }

@@ -52,7 +52,8 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gzp_harness import Checks, Proc, cmd, free_port, journal_types, kill_all, parse_journal, tlv  # noqa: E402
+from gzp_harness import (Checks, Proc, cmd, dump_journal, free_port, journal_types, kill_all,  # noqa: E402
+                         parse_journal, tlv)
 
 check = Checks()
 OPEN, JOIN, READY, UNREADY, LEAVE, SET_VALUES, REMOVE, CANCEL = range(0x0101, 0x0109)
@@ -173,6 +174,10 @@ class World:
                 with open(path, "rb") as fh:
                     if fh.read(8) == b"GZJSTAND":
                         return journal_types(path)
+        folder = os.path.join(self.work, who)
+        if os.path.exists(os.path.join(folder, "journal.gzj")):
+            # The sealed journal: read through the program.
+            return [[r[0] for r in e[3]] for e in dump_journal(folder, self.exe) if e[0] == "BTCH"]
         return []
 
     def stop(self):
@@ -531,15 +536,17 @@ def stale_restore(exe, work):
         w.open(h, a)
         w.open(h, b)
         folder = os.path.join(w.work, "m1")
+        # The program's store is the sealed journal: the backup is a copy of
+        # journal.gzj; its records are read through the program (parse_journal).
         journal = os.path.join(folder, "journal.standin")
-        backup = os.path.join(w.work, "m1-backup.standin")
+        backup = os.path.join(w.work, "m1-backup.gzj")
         m = w.member("m1", "--member-signing", "auto")
         started(m)
         w.join(m, a)
         check(m.wait_for(r"slot-opened scope=%s .*index=1\b" % a.tag, timeout=10) is not None and
               state(m, a, "member", 1, timeout=20), "8: the member joins one lobby (key pair 1 and 2)")
         m.stop()
-        shutil.copy(journal, backup)
+        shutil.copy(os.path.join(folder, "journal.gzj"), backup)
         m = w.member("m1", "--member-signing", "auto")
         started(m)
         w.join(m, b)
@@ -549,7 +556,7 @@ def stale_restore(exe, work):
         device = guard_records(journal)
         check(device and device[-1][2] == 2 and device[-1][3].get(0) == 4,
               "8: the device's guard: counter 2, epoch 0 up to index 4 (%r)" % (device[-1:],))
-        check(os.path.exists(os.path.join(folder, "guard.standin")), "8: the stand-in keeps a guard file")
+        check(os.path.exists(os.path.join(folder, "guard.gzg")), "8: storage keeps a guard file (sealed, guard.gzg)")
         m = w.member("m1", "--member-signing", "auto", "--test-restore-from", backup)
         check(started(m), "8: the backup is put back as a restore, and the member starts")
         gf = m.find(r"restore-guard-file counter=(\d+)")[1]
