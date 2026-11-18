@@ -253,7 +253,6 @@ typedef struct {
      * values digest it readied for (12.2); wiped when the gate closes. */
     int gate_have;
     uint8_t gate_digest[32], gate_secret[32];
-    uint8_t own_depth;              /* member: its leaf's depth in the round its builder accepted (may_ack) */
     int told;                       /* the lobby's log line was given, with `last` */
     uint32_t last[5];
     int have_end;                   /* at load: the lobby's own end record was seen */
@@ -627,6 +626,7 @@ int gz_sg_set_funding(gz_node_t *c, gz_tree_proposal_t *p, const uint8_t *tx, si
 void gz_ls_wipe32(uint8_t *p);      /* 32 secret bytes, wiped */
 /* The engine's key hook (signing.h `keys`), for the node's tests too. */
 int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, secp256k1_keypair *f, secp256k1_keypair *kc);
+int gz_sg_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip);   /* 1 ack, 0 no, -1 not yet */
 const gz_engine_ops_t *gz_sg_ops(void);
 gz_status_t gz_sg_after(gz_node_t *c, gz_action_list_t *out);
 gz_status_t gz_sg_drain(gz_node_t *c, gz_action_list_t *out);

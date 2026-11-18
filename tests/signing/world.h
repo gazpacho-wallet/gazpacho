@@ -300,6 +300,7 @@ typedef struct {
     uint32_t no_factory;                        /* bit g: no factory key, the contribution key still (AT_JOIN's gate closed) */
     uint32_t other_factory;                     /* bit g: another factory key than the round's (a hook gone wrong) */
     uint32_t other_contribution;                /* bit g: another contribution key, the links unchanged (likewise) */
+    uint32_t ack_wait;                          /* bit g: party g's may_ack has no tip yet: not yet (-1) */
 } w_builder_t;
 
 /* The hooks' context of one party: the shared builder, and who the party is
@@ -356,6 +357,7 @@ static int w_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip)
         for (int s = 0; s < r->def.items[i].n_signers; s++) items += r->def.items[i].signers[s] == r->me;
     b->may_ack_calls++;
     *ack_tip = b->tip;
+    if (((w_hctx_t *)ctx)->g < 32 && (b->ack_wait >> ((w_hctx_t *)ctx)->g & 1u)) return -1;
     ok = gz_tree_may_ack(r->def.end_height, (uint8_t)(items > 0 ? items - 1 : 0), b->tip, &cond);
     b->may_ack_refused += !ok;
     return ok;

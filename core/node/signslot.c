@@ -203,15 +203,26 @@ static void sg_exit_conditions(gz_tree_conditions_t *cond)
     cond->end_window = 6;
 }
 
-static int sg_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip)
+/* The member's ack-time check (gz_tree_may_ack) at its tip: 1 to ack, 0 not to, -1 not yet. The leaf's
+ * depth is the round's own: from its lobby's terms and the member's place in the round, never something a
+ * builder left in the slot, which a start does not restore and a second attempt overwrites (review B of
+ * PR 52, M1). No tip yet (after a start, before the chain reports): not yet, so that the host's next
+ * round_complete is judged (L4). */
+int gz_sg_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip)
 {
     gz_node_t *c = ctx;
     gz_tree_conditions_t cond;
+    gz_tree_params_t prm;
     int i = sg_slot(c, r->def.outer_digest);
     sg_exit_conditions(&cond);
     *ack_tip = c->tip;
-    if (i < 0 || !c->tip) return 0;   /* no lobby or no tip to judge from: no ack (Abandoned at its deadline) */
-    return gz_tree_may_ack(r->def.end_height, c->slots[i].own_depth, c->tip, &cond);
+    if (i < 0) return 0;                    /* no lobby: no ack (Abandoned at its deadline) */
+    if (!c->tip) return -1;                 /* RULE-NODE:ACK_WAITS_FOR_TIP */
+    const slot_t *s = &c->slots[i];
+    if (s->host || !s->lobby.m.have_terms || r->me < 1 || r->me >= r->def.n_participants ||
+        gz_tree_params(&s->lobby.m.terms, (uint32_t)r->def.n_participants - 1, &prm) != GZ_TREE_P_OK)
+        return 0;
+    return gz_tree_may_ack(r->def.end_height, prm.depth[r->me - 1], c->tip, &cond);   /* RULE-NODE:ACK_OWN_DEPTH */
 }
 
 /* Give an outcome to slot i's lobby, inside the current call. */
@@ -441,7 +452,6 @@ static uint16_t sg_build(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t 
                                     " reason=", v.reason ? v.reason : 1);
         return v.reason ? v.reason : 1;
     }
-    s->own_depth = v.own_depth;
     return sg_def(h.terms, scope, c->sg_tree, out) ? 0 : 1;
 }
 
@@ -712,7 +722,7 @@ gz_status_t gz_sg_init(gz_node_t *c)
     sc.status_ticks = sc.resend_ticks;
     sc.unfinished_ticks = (uint32_t)(SG_UNFINISHED_MS / tick ? SG_UNFINISHED_MS / tick : 1);
     sc.keys = gz_sg_keys;
-    sc.may_ack = sg_may_ack;
+    sc.may_ack = gz_sg_may_ack;
     sc.guard = sg_guard;
     sc.outcome = sg_outcome;
     sc.hook_ctx = c;

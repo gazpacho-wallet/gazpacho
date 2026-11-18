@@ -253,11 +253,14 @@ sg-gate-digest-off	core/node/lobbyslot.c	return m->have_terms && memcmp(now, s->
 sg-gate-not-wiped	core/node/lobbyslot.c	gate_wipe(s);                                                             /* RULE-NODE:GATE_WIPES */	/* RULE-NODE:GATE_WIPES */
 sg-set-keeps-gates	core/node/lobbyslot.c	if ((st = gates_changed(c, 0, out)) != GZ_OK) return st;   /* RULE-NODE:SET_CLOSES_GATES */	/* RULE-NODE:SET_CLOSES_GATES */
 sg-release-without-engine	core/node/lobbyslot.c	if (!c->sign_on) return np_command_result(out, cmd, 503, "signing_unavailable");	if (0) return np_command_result(out, cmd, 503, "signing_unavailable");
-sg-route-held-off	core/node/route.c	if (c->sign_on && gz_sign_holds_scope(&c->sign, scope) && (s < 0 || c->cfg.host)) return mk(RT_SIGNING, s, -1, 0);	if (0) return mk(RT_SIGNING, s, -1, 0);
+sg-route-held-off	core/node/route.c	if (c->sign_on && gz_sign_holds_scope(c->sign, scope) && (s < 0 || c->cfg.host)) return mk(RT_SIGNING, s, -1, 0);	if (0) return mk(RT_SIGNING, s, -1, 0);
 sg-at-join-any-digest	core/node/signslot.c	ok = s && s->gate_have && terms_digest && sg_same(terms_digest, s->gate_digest, 32) &&	ok = s && s->gate_have &&
 sg-accepted-only-off	core/node/signslot.c	if (!gz_lobby_member_accepted(&s->lobby.m, in->msg->check_id, in->msg->attempt, &h)) return GZ_SIGN_BUILD_IGNORE;	(void)gz_lobby_member_accepted(&s->lobby.m, in->msg->check_id, in->msg->attempt, &h);
 sg-keys-any-role	core/node/signslot.c	if (host != (c->cfg.host != 0)) return 0;	(void)host;
-sg-may-ack-without-tip	core/node/signslot.c	if (i < 0 || !c->tip) return 0;	if (i < 0) return 0;
+sg-may-ack-without-tip	core/node/signslot.c	if (!c->tip) return -1;	
+sg-no-tip-refuses	core/node/signslot.c	if (!c->tip) return -1;	if (!c->tip) return 0;
+sg-may-ack-depth-zero	core/node/signslot.c	prm.depth[r->me - 1], c->tip	0, c->tip
+sg-may-ack-depth-deep	core/node/signslot.c	prm.depth[r->me - 1], c->tip	40, c->tip
 sg-outcome-to-member-failed	core/node/signslot.c	if (kind == GZ_SIGN_OUTCOME_FAILED) return GZ_OK;   /* a member waits for the host's cancel */	/* a member waits for the host's cancel */
 sg-outcome-not-queued	core/node/signslot.c	if (c->busy[eng] || c->sg_defer) return sg_queue(c, o) ? GZ_OK : gz_c_bug(c, ENG_SIGN);	(void)sg_queue;
 sg-begin-no-tip	core/node/signslot.c	if (!c->tip) return sg_refuse_begin(c, h, "sign-begin-refused-no-tip", out);	

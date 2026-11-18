@@ -898,7 +898,7 @@ static int sign_item(gz_sign_t *e, gz_sign_round_t *r, int i, uint8_t out32[32])
 {
     secp256k1_musig_partial_sig ps;
     int s = pos_of(&r->def.items[i], r->me), ok;
-    if (s < 0 || !r->secnonce_serial[i] || (r->have_psig[i] >> s & 1u)) return 0;     /* RULE:S2_ONE_PARTIAL */
+    if (s < 0 || !r->secnonce_serial[i] || (r->have_psig[i] >> s & 1u)) return 0;     /* RULE:S2_ONE_PARTIAL RULE:S2_PARTIAL_NEEDS_SECRET */
     ok = e->keys_held == KEYS_BOTH && make_session(e, r, i) &&
          secp256k1_musig_partial_sign(e->cfg.ctx, &ps, &r->secnonce[i], &e->work_fkp, &r->cache[i], &r->session[i]) &&
          secp256k1_musig_partial_sig_serialize(e->cfg.ctx, out32, &ps);
@@ -1480,8 +1480,12 @@ static void member_complete(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_
         if (r->tier_state[t] != GZ_SIGN_TIER_DONE) return;
     if (r->state != GZ_SIGN_ROUND_ACTIVE || r->ack_refused || len > sizeof r->complete_msg ||
         !signed_by(e, m, r->def.participants[0].contribution_key)) return;
-    /* The signing-time check again, at the tip the ack will be judged from (gz_tree_may_ack). */
-    if (e->cfg.may_ack && !e->cfg.may_ack(e->cfg.hook_ctx, r, &tip)) {                 /* RULE:MAY_ACK */
+    /* The signing-time check again, at the tip the ack will be judged from (gz_tree_may_ack). Not yet (the
+     * hook has nothing to judge from, such as no tip after a start): nothing changes, and the host's
+     * round_complete comes again (review B of PR 52, L4). */
+    int may = e->cfg.may_ack ? e->cfg.may_ack(e->cfg.hook_ctx, r, &tip) : 1;
+    if (may < 0) return;                                                                /* RULE:ACK_WAITS_FOR_TIP */
+    if (!may) {                                                                         /* RULE:MAY_ACK */
         r->ack_refused = 1;
         report(e, GZ_SIGN_OUTCOME_RETRY, r, 1, em);    /* its ack refused: Retry at once (9.3) */
         r->state = GZ_SIGN_ROUND_UNFINISHED;           /* Abandoned at its unfinished deadline */
