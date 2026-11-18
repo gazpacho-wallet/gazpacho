@@ -118,14 +118,16 @@ static int port_host_pub(void *ctx, uint8_t pub33[33])
     return 1;
 }
 
-/* The host's long-term secret: the transport key (index 0 of epoch 0), as
- * port_sign signs with it, until P8. */
+/* The host's long-term secret (keys.md 4): the host key that the transport
+ * and port_sign use, m/254315617'/net'/1'/k' (gzp_keys_host), never the
+ * lobby path at (0, 0), which P8's policy derives only under the current
+ * epoch and which is not the key the terms name (audit M2). */
 static int port_host_secret(void *ctx, uint8_t sec32[32])
 {
     gzp_exec_t *ex = ctx;
-    uint8_t pub[33];
+    gzp_keys_err_t e;
     if (ex->opt->role != GZP_ROLE_HOST) return 0;
-    return gzp_net_key(ex->net, 0, 0, sec32, pub);
+    return gzp_keys_host(ex->keys, sec32, NULL, NULL, &e);
 }
 
 /* The imported builder, for a member's checks (tree_import.h). */
