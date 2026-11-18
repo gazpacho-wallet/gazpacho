@@ -1,6 +1,6 @@
 # Integration: Slice 1 end to end (P4.6)
 
-Draft 2, 2026-11-18. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
+Draft 3, 2026-11-18. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
 open pull requests of Slice 1 onto `main`, in this order: #51 (`p5-p6-api`), #52 (`composite-p4-3`), #54
 (`s5-s6-program`), #53 (`keys-p8`), #56 (`funding-p45`), #55 (`composite-p6a`). Then it wires them together so
 that one host and three members, each a separate `gazpacho` process, form a factory on the local test chain
@@ -28,6 +28,8 @@ Base: `main` at `4aab237` (#64). Heads merged: #51 `cd98aed`, #52 `91aa062`, #54
 | #53 | `program/CMakeLists.txt` (sources, tests), `program/executor.c` (`port_secret`), `program/main.c` (statics, the key opening, its call), `tests/program/refusals.py` | Sources: `keys.c` added to the union; `keys_standin.c` in the test build only. Tests: all four sides kept (an `endif()` restored between two blocks). `port_secret`: #53's (under AT_JOIN, from the scoped table only: audit M2). `main.c`: **the key port's seed is the unlocked storage's** (`gzp_keys_seed_from_unlock` over #54's `gzp_wallet_unlock_api`), not `wallet-seed.standin`, which #54 removed: this is #53's own merge blocker 1. #54's stand-in transport key gives way to #53's `transport_key` (the host key, `keys.md` 4); #53's `keys_open` replaces #54's `wallet_open` and makes the same first-address check, and more. `refusals.py`: #53's check that no `transport.key` is written is kept; the key file made world-readable is #54's `keys.gzk` |
 | #56 | none | |
 | #55 | `CMakeLists.txt`, `core/gazpacho/include/gazpacho/ports.h`, `core/node/CMakeLists.txt`, `core/node/internal.h`, `tests/node/mutants.txt` | All unions: #56's `node_watch_release` and #55's `fuzz_api`; #52's `host_secret` and #55's `epoch_ok` in the key port, with both comments; `signslot.c`, `view.c` and `api.c` in both source lists; #52's signing block and #55's view and API block; both sets of mutants |
+| #52 again, `0626b54` (the C7 fix for audit H1; F5 ported as `gz_sg_set_funding`) | `core/node/internal.h` (`sg_ftx`), `core/node/signslot.c` (`sg_begin`) | `sg_ftx`: #52's own 8,192-byte buffer, so F5's line here goes. `sg_begin`: the funding engine's plan (F3) kept, and set through #52's `gz_sg_set_funding`; the stand-in plan of a test-build host with no wallet port is set the same way, as #52 has it |
+| #56 again, `03dacca` (review B) | none textually | Review B changed the wallet port: `adopt` takes the factory's script and amount at output 0, `spend_back` names the plan by txid. `program/wport.c` follows it in the merge commit itself, so that the merge builds |
 
 ## 2. The wiring list: every stand-in still used between components
 
@@ -58,7 +60,8 @@ Base: `main` at `4aab237` (#64). Heads merged: #51 `cd98aed`, #52 `91aa062`, #54
 | F2 | Regtest as a test network (chain port; program and transport in the test build), and `tools/esplora-regtest.py` | `program_slice1` | P4.6 |
 | F3 | The funding engine in the composite (`core/node/fundslot.c`, `ENG_FUNDING`) and the host's wallet port (`program/wport.c`), wired as `funding.md` 7 lists | `program_slice1` (no funding was ever broadcast before) | #56 |
 | F4 | `scoped_only` (AT_JOIN's key routing) only on a member: a host derives its own pairs for every round it proposes (B6) | `program_slice1`; CI's `program_signing` | #53 |
-| F5 | `sg_ftx` holds `GZ_SIGN_MAX_FUNDING_TX` bytes (B7) | `program_slice1` (`sign-begin-refused-funding` before) | #52 |
+| F5 | `sg_ftx` holds `GZ_SIGN_MAX_FUNDING_TX` bytes (B7) | `program_slice1` (`sign-begin-refused-funding` before) | #52: **folded in** (`0626b54`, `gz_sg_set_funding`, with `test_node_sizing`); this branch now uses #52's |
+| F7 | The node's isolation archives (`gazpacho_node_isolation_*`) hold `core/funding`'s sources and include folder, and the node's isolation scan its include folder. Without it every CI job failed to build on `9717cd7` (`gazpacho/funding.h` not found): F3 was built on the build server for the two programs only | Every CI build job on `9717cd7` | #56, with F3 |
 | F6 | The sealed journal's table of known record types holds `journal.md` 9's area 0x000d, Slice 1 rows (B9) | `program_lobby` (every restart refused before; with F6 on the build server only case 7, AT_JOIN with the passphrase, still fails: B2) | #54 |
 
 ## 4. Cross-PR bugs found
@@ -91,8 +94,13 @@ on 127.0.0.1 at a free port, `-listen=0`, stopped at the end) and `tools/esplora
 2. The same with a fourth member whose conditions the terms do not meet (its highest tree fee rate, 1 sat/kvB, is
    below the terms' 100): it refuses, is never seated, signs nothing and follows no funding; the host and the three
    others go Live.
+3. Two lobbies of one host, funded from two coins: m1 in both, m2 and m3 in A, m4 and m5 in B. Both factories go Live
+   on time on the host and on each of their members. Then every process is stopped and started again once on its
+   folder: each comes back with its lobbies Active (m1 both), nothing is judged, begun or refused again, and no
+   node-error.
 
-Not yet in it, from `composite-node.md` P4.6: a host with two lobbies, a member in both, every process restarted once with nothing lost, and `program_slice1_signet` (opt in, `GZ_LIVE_TESTS`, the test coins). Results on the build server (Core 29.1): section 6.
+Not yet in it, from `composite-node.md` P4.6: `program_slice1_signet` (opt in, `GZ_LIVE_TESTS`, the test coins), and
+an AT_JOIN member (it waits for W4). Results on the build server (Core 29.1): section 6.
 
 ## 6. Results on the build server
 
@@ -104,3 +112,12 @@ branch's tree with F1 to F6 and the wiring, its chain worker polling the tip eve
 | First runs | The real plan was refused (`sign-begin-refused-funding`): B7, then F5. The host could make no factory key: B6, then F4. The first wallet scan crashed the host (heap corruption): B11, then the scan's own client |
 | With the default 60 s tip poll and a block a second | Funding broadcast at 0.1 sat/vB (16 sat, 154 vB), confirmed and buried; every member judged it Live (C11), but the host's tip jumped past its funding deadline before the burial was reported: abandoned, a spend-back refused, funded late (B12) |
 | `program_slice1` as committed | **PASS**, both cases, 0 failed checks: in each, the real coin found, the round signed with the three members, the plan from that coin, H1 passed, the funding broadcast (16 sat for 154 vB), buried, Live on time on the host and by each member's own chain view (C11), Active everywhere, no node-error. In case 2 the refusing member was never seated, signed nothing and followed no funding |
+| After the re-merge of #52 `0626b54` and #56 `03dacca`, with F7 (head `81f9ebf`, every target built) | `program_slice1` with case 3: **PASS**, 60 checks, 0 failed: both lobbies Live on time, every process restarted once with both lobbies Active again and nothing judged again. CTest on the build server, node, funding, wallet, isolation and program subset: 33 of 35 pass; `program_lobby` (case 7, B2) and `program_signing` (its AT_JOIN member, B2) fail as section 4 says |
+
+## 7. CI on this branch
+
+| Head | Result |
+|---|---|
+| `7cabf79` (the six merges, F1) | Builds. Red, all as section 4 says: `web_p6a_fixme` (B8), `program_api` and `program_release_build` (B3), `program_lobby` (B9; B2 for case 7), `program_signing` (B6; B2), `program_derived_keys` (B1), `program_keys_ct` (B10, gcc job); `program_p6a_views` not run (it needs `program_lobby`). Valgrind, libFuzzer, vectors, addresses and the interface pass; the ASan and gcc ON jobs were cancelled |
+| `9717cd7` (F2 to F6, the funding wiring, `program_slice1`) | No job built: `core/node/internal.h` includes `gazpacho/funding.h`, which the node's isolation archives did not have on their include path (F3 had been built on the build server for the two programs only). Fixed by F7 |
+| `81f9ebf` (F7, #52 `0626b54`, #56 `03dacca`) | Running when this was written; recorded in the next draft |
