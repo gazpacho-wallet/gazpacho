@@ -20,7 +20,7 @@ Not itself reviewed. Nothing in it changes a number. It records what was merged 
 | `local-api.md` draft 5 (pull request #49): reviewed once ("accept after fixes"), fixes confirmed (C1 to C5) | Documents table |
 | `transport.md` draft 4 is merged and reviewed (pull request #10, two rounds): open point 1 closed | Documents table; 13 |
 | **Proposed (K1, pull request #59, not merged):** the lobby `join` carries no keys, the factory key and the contribution key's binding signature move to the seat's first `ready`, and the factory key signs only group-signature items. The binding becomes one-way | 4; 8.2; 9.1 |
-| `gazpacho/tree` is now defined (`messages.md` 7.12); `gazpacho/session-id` registered (local, never on the wire); discovery vectors now run to D30; `unready` reasons now 1 to 3 | 8.2, 9.1, 10.6 |
+| Every `gazpacho/` tag and fixed string on `main` registered: `gazpacho/session-id`, `gazpacho/host-random`, `gazpacho/allnonces` and `gazpacho/known-filter` (the last three named only in code so far), `gazpacho keys`, the discovery picks, the storage salt, the program's stand-in string and the test strings. A CI check for unregistered tags is planned, not built. `gazpacho/tree` is now defined (`messages.md` 7.12); discovery vectors now run to D30; `unready` reasons now 1 to 3 | 8.2, 9.1, 10.6 |
 
 Documents it maps (drafts as of 2026-11-17, on `main` at `3083d99`):
 
@@ -245,7 +245,7 @@ Kind ranges are in section 10.1. "Acceptance rules" names the checks a receiver 
 
 ### 8.2 Tagged-hash tags and other fixed strings
 
-`TH(tag, bytes)` is BIP 340's tagged hash. A tag is never reused for a second meaning. Every tag is registered here before it is used. All tags will be renamed together if a shared prefix is agreed (section 11).
+`TH(tag, bytes)` is BIP 340's tagged hash. A tag is never reused for a second meaning. Every tag is registered here before it is used. Draft 2 registers every `gazpacho/` tag and fixed string found on `main` at `9a9d910` in the specifications, `core/`, `ports/`, `program/`, `wallet/` and `tools/`. A CI check that refuses a tag or string missing from this section is **planned, not yet built**; until it exists, this list is kept by hand. All tags will be renamed together if a shared prefix is agreed (section 11).
 
 | Tag | Meaning | Layer | Defined in | State |
 |---|---|---|---|---|
@@ -260,6 +260,9 @@ Kind ranges are in section 10.1. "Acceptance rules" names the checks a receiver 
 | `gazpacho/held` | What a member holds, in `round_ack` | 2 | `messages.md` 7.8 | Specified; no vector yet |
 | `gazpacho/nonce-extra` | Extra input to nonce generation (local; never on the wire) | 2 | `signing-round.md` 8 | Specified |
 | `gazpacho/session-id` | The session identifier given to nonce generation (local; never on the wire) | 2 | `signing-round.md` 8 | Specified |
+| `gazpacho/host-random` | The host's random value for an attempt: the randomness port's bytes, the incarnation and the attempt counter (local to the host; only the result travels, as `host_random`) | 2 | Mix in `signing-round.md` S4; the tag is named only in code (`core/signing/signing.c`, `RULE:HOST_RANDOM_MIX`) | In code; **the specification must name the tag** |
+| `gazpacho/allnonces` | Digest of a received `round_all_nonces` record stream, to tell the same bytes again from a different copy (local; never signed or sent) | 2 | Duplicate rule in `messages.md` 7.4; the tag is named only in code (`core/signing/signing.c`) | In code; **the specification must name the tag** |
+| `gazpacho/known-filter` | Bit positions of a refused round identifier in the signing engine's filter of refused identifiers (local; never sent) | 2 | Only in code (`core/signing/signing.c`, `filter_positions`) | In code; **the specification must name the tag and the filter** |
 | `gazpacho/tree` | Digest of a tree for the C7 record (review 3, F7) | 3 | `messages.md` 7.12 | Specified; no vector yet |
 | `gazpacho/evidence` | Digest of a fault evidence bundle | 2 | Not defined | Name reserved |
 | `gazpacho/listing` | Digest a listing signature covers | 5 | `discovery.md` 5.1 | Specified |
@@ -275,7 +278,15 @@ Other fixed strings, which are plain SHA-256 inputs, not tags:
 |---|---|---|
 | `gazpacho factory message` | Derivation of type 52791 (the number is what matters, not the string) | `messages.md` 3 |
 | `SuperScalar/1` | The shared protocol identifier, `SHA256("SuperScalar/1")` = `c3a082d0…c842f1`, also bLIP-56's `factory_protocol_id`. Decided (owner, 2026-11-12) | `messages.md` 10.3 |
+| `gazpacho keys` | The key purpose of every Gazpacho derived key: 254315617 = `SHA256("gazpacho keys")[0..4]` with the top bit cleared, at `m / 254315617' / net' / …` | `messages.md` 2 (member key); `docs/notes/contract-v2.md` section 13 |
+| `gazpacho feature bits` | One pick over 4-aligned blocks, giving the candidate bit pair 448/449 | `discovery.md` 2 |
+| `gazpacho onion payload types` | One pick, giving the candidate onion payload types 106369 to 106385 odd | `discovery.md` 2; `tools/spec-vectors.py` D0 |
+| `gazpacho nostr listing kind` | One pick, giving the candidate Nostr listing kind | `discovery.md` 2; `tools/spec-vectors.py` D0 |
+| `gazpacho host card tlv`, `gazpacho nostr card kind` | Picks for the withdrawn host card (TLV 118685, Nostr kind 37329): **reserved only**, never reused | `discovery.md` 2 |
+| `gazpacho/v1/storage` | The HKDF salt of storage encryption. Not a tagged hash, and **not part of the shared protocol** | `storage-encryption.md` 4.4 |
+| `gazpacho stand-in lobby key` | A stand-in key derivation in the program (`program/net.c`) until the real derived keys (pull request #53). **Not part of the protocol**; to be removed with the stand-in | — |
 | `gazpacho test key: <label>`, `gazpacho test lobby salt` | Test keys and salt for vectors. Never for coins | `terms.md` 11 |
+| `gazpacho test …` (others: `bip39 seed`, `pool token`, `coin txid`, `funding`, `funding input`, `kdf salt 2`, `export kdf salt`, `exit parent`, `watch bundle id`, `watch penalty file id`, `r: <label>`, `key: host coin`, `key: host coin internal`), `gazpacho/test` | Inputs for test vectors and unit tests only (`tools/spec-vectors.py`, `tests/`, `wallet/tests/`). Never for coins, never on the wire | The vector or test that uses each |
 
 ### 8.3 Feature bits
 
