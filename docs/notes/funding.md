@@ -11,7 +11,7 @@ Draft 1, 2026-11-17. The engine of `docs/notes/composite-node.md` 9, 12.1 and 14
 | Host | After the lobby's save: AUTO saves `funding_signed` and a status, broadcasts, watches; CONFIRM saves "awaiting confirmation" and shows the attention item; H1 failed: the plan released, status Failed, a notice | `gz_fund_host_apply` |
 | Host | CONFIRM: the person's command 0x0301 signs, checks, saves, broadcasts | handle, USER_COMMAND |
 | Host | Burial: Live. An input spent elsewhere and buried: Dead (cancel reason 4) | tick |
-| Host | Its funding deadline (tip at the outcome + 36 + B): Abandoned (cancel reason 4), then the spend-back | tick |
+| Host | Its funding deadline (its tip at the plan + 36; buried by it: Live; a burial after it: Abandoned, then funded late, with no spend-back): Abandoned (cancel reason 4), then the spend-back | tick |
 | Host | Abandoned, then the funding buried first: funded late; the spend-back buried: Dead, nothing more reported | tick |
 | Member | From its ack (the first `funding_status`): watches; C11 live, abandoned, late live (`gz_tree_c11`); C4(d) dead (`gz_tree_c4d_dead`) | `gz_fund_member_acked`, tick |
 | Both | The slot end conditions: Live, Dead, abandoned, and the height after which no deadline of the scope can pass | `gz_fund_scope_state` |
@@ -26,7 +26,7 @@ At the host's deadline, if the funding is not buried, the host spends one input 
 
 - **Level 0, the ordinary rate** (0.1 sat/vB): the funding was never signed (CONFIRM), or the chain servers never showed it (no report on input 0 named it). Nothing to replace.
 - **Level 1, the smallest replacing fee**: the funding's fee (the whole evicted package: in Slice 1 the funding has no child; H16's fee child, when it exists, adds its fee here) plus the increment on the spend-back's own size (Core's rules 3 and 4), and above the funding's own rate (rule 6), with the increment of Bitcoin Core 29.1, 100 sat/kvB. `gz_fund_replace_fee`.
-- **Level 2**: the same with 1,000 sat/kvB, the increment of Core 28.x and 29.0. Used only after a server refused level 1 (or level 0 refused, which goes to level 1). No further level.
+- **Level 2**: the same with 1,000 sat/kvB, the increment of Core 28.x and 29.0. Used only after a server refused level 1 (or level 0 refused, which goes to level 1). No further level. Once the funding or a spend of input 0 has a confirmation, no level is raised and nothing is sent again (review A, L10).
 
 The engine checks what the wallet made: one input, the chosen outpoint, one output that does not pay the factory, the exact fee. Its size is measured from the signed bytes and the fee recomputed until they agree.
 
@@ -38,7 +38,7 @@ Fields are TLV streams, every type even (journal.md open point 3, settled for th
 
 | Record | Fields |
 |---|---|
-| `funding_plan` 0x00030002 | 2 scope (32), 4 check (32), 6 attempt (u16), 8 mode (u8: 0 AUTO, 1 CONFIRM), 10 fee rate (u64, sat/kvB), 12 the unsigned transaction, 14 the spent outputs (per input: amount u64, script length u8, script), 16 the factory output's index (u32) |
+| `funding_plan` 0x00030002 | 2 scope (32), 4 check (32), 6 attempt (u16), 8 mode (u8: 0 AUTO, 1 CONFIRM), 10 fee rate (u64, sat/kvB), 12 the unsigned transaction, 14 the spent outputs (per input: amount u64, script length u8, script), 16 the factory output's index (u32), 18 the tip when it was planned (u32, the deadline's basis; absent when no tip was known), 20 released (u8, 1: H11, a partial signature of its attempt was released and no plan spending its input 0 accepted yet; the plan is saved again with it) |
 | `funding_signed` 0x00030004 | 2 scope, 4 txid (32), 6 the signed transaction |
 | `funding_status` 0x00030006 | 2 scope, 4 txid, 6 state (u8: 1 acked, 2 awaiting confirmation, 3 broadcast, 4 live, 5 abandoned, 6 dead, 7 failed, 8 live late), 8 tip at the decision (u32), 10 deadline (u32: the host's abandon height; the member's ack tip + its funding deadline). The member's first write adds 12 the funding transaction, 14 vout, 16 amount, 18 script, 20 ack tip, 22 end height, 24 own depth (u8), 26 holds the whole tree (u8), 28 exit constants A, B, M, M_host (4 × u32), 30 funding deadline in blocks. A host's abandoned status adds 32 the spend-back, 34 its fee (u64), 36 its level (u8), 38 the input index (u32) |
 
@@ -61,7 +61,7 @@ Fields are TLV streams, every type even (journal.md open point 3, settled for th
 ## 5. Decisions for the reviews
 
 1. **A member watches the funding's first two inputs, not every input** (signing-round.md 9 says every input). The host's spend-back and H11's reused input are input 0, so a member sees both. A hostile host that spends another input elsewhere leaves the creation Abandoned at its deadline instead of Dead; Abandoned blocks nothing (C10), and that funding can never be live. Watching up to 197 inputs per creation would not fit any registry.
-2. **The host's funding deadline** is its own tip at the Funding outcome plus 36 plus B. Members' tips at their acks may differ from it by a block or two; B (3) covers that.
+2. **The host's funding deadline: pending the owner.** Draft 1 took the host's tip at the Funding outcome plus 36 plus B. Review A of PR 56 (M3) showed that this makes the host *later* than the members, whose deadline is their ack tip + 36: a burial between the two is Live for the host and late for every member, so the host's lobby is Active while its members may not co-operate. Changed in this PR to the host's tip **at the plan** plus 36, with no B, and a burial after it taken as funded late (Abandoned with no spend-back, then funded late), so the host is never later than a member whose chain view is not behind its own. A member whose view lags the host's still has an earlier deadline. The owner decides the rule (this one, or abandoning at the members' deadline minus B); the code follows this one until then.
 3. **The spend-back's levels** (2): level 0 when the funding was never seen, as 14.3 says ("If the host's chain servers no longer see the funding"), with level 1 after a refusal; level 2 only after level 1 is refused. The incremental fee of the servers is not known in advance, so the lowest that works is found by refusal.
 4. **The engine reads only its own area** (3).
 5. **CONFIRM's "full H1" at the command** is the signature part: the signed bytes without witnesses equal the plan, which H1 already found equal to the proposal at the outcome.
@@ -98,8 +98,8 @@ Everything the composite and the program must add; nothing here is done yet.
 - `nodepart.c` / `lobbyslot.c`: a slot's Closing end uses `gz_fund_scope_state`: LIVE or DEAD ends it at once; otherwise at `until` + `GZ_NODE_CLOSING_GRACE_BLOCKS` on the tip (the members' unfinished deadline is the signing engine's). The index of ended lobbies is filled at that end (P4.2's).
 
 **`program/`**
-- The wallet port over `wallet/` (`gzt_funding_build`, `gzt_funding_unsigned`, `gzt_funding_prevout`, `gzt_funding_release`, `gzt_funding_spend_back`; the holds in memory), the key from the stand-in until P8. `tests/funding/regtest_harness.c` is a working example for one plan at a time.
-- H11's reused input in the wallet: done in this PR (`gzt_funding_request.must_spend`): the coin is input 0 of the new plan; the port passes `must_spend` through.
+- The wallet port over `wallet/` (`gzt_funding_build` with `require_change`, `gzt_funding_unsigned`, `gzt_funding_prevout`, `gzt_funding_release`, `gzt_funding_spend_back`; the holds in memory), the key from the stand-in until P8. `sign_plan` signs only a plan the wallet holds, found by its txid (`docs/notes/signer.md`); `adopt` holds a journal's plan again after a restart only if every input is one of the wallet's coins and the outputs are exactly the factory's and the wallet's change. **The port offers only confirmed coins**, never a coin from a funding (or its change) not yet buried: a plan spending another lobby's unconfirmed change would be evicted with it, and the spend-back's fee would not cover both (review A of PR 56, M5); a test with the port when it is written. The master key is passed by pointer as in the rest of `wallet/tx`, to change with the `signer/` work. `tests/funding/regtest_harness.c` is a working example for one plan at a time.
+- H11's reused input in the wallet: done in this PR (`gzt_funding_request.must_spend`): the coin is input 0 of the new plan (the engine checks input 0); the port passes `must_spend` through. Until a plan spending it is accepted, the released plan is kept in memory and in the journal (field 20), held again by the wallet, and never reused (review A, M1).
 - `--host-funding auto|confirm` and `--funding-feerate` options; the local API's `settings` later (P6).
 - `tests/program/program_funding` (composite-node.md P4.5, cases 1 to 11), against `ports/chain/tests/local_server.py` and on regtest.
 
