@@ -736,6 +736,28 @@ static gz_chain_result es_raw_tx(void *ctx, const uint8_t txid[GZ_HASH_LEN], uin
                                  size_t cap, size_t *len) {
   esplora *es = ctx;
   size_t raw_len;
+  if (cap > GZ_TX_MAX_BYTES && cap > es->cfg.max_response_bytes / 2) {
+    /* The room of a proof (a transaction, or its block's coinbase, can be
+     * most of a block): fetched past the response buffer, into a buffer of
+     * its own for this request only (review of PR 72, P-2). */
+    if (cap > GZ_TX_CONSENSUS_MAX_BYTES) cap = GZ_TX_CONSENSUS_MAX_BYTES;
+    size_t room = 2 * cap + 64;
+    uint8_t *keep = es->buf, *mine = malloc(room);
+    size_t keep_max = es->cfg.max_response_bytes;
+    if (mine == NULL) return GZ_CHAIN_NO_MEMORY;
+    es->buf = mine;
+    es->cfg.max_response_bytes = room;
+    gz_chain_result r = es_fetch_tx(es, txid, cap, &raw_len);
+    if (r == GZ_CHAIN_OK && raw_len > cap) r = GZ_CHAIN_TOO_LARGE;
+    if (r == GZ_CHAIN_OK) {
+      memcpy(buf, mine, raw_len);
+      *len = raw_len;
+    }
+    es->buf = keep;
+    es->cfg.max_response_bytes = keep_max;
+    free(mine);
+    return r;
+  }
   gz_chain_result r = es_fetch_tx(es, txid, cap, &raw_len);
   if (r != GZ_CHAIN_OK) return r;
   if (raw_len > cap) return GZ_CHAIN_TOO_LARGE;

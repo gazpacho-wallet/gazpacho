@@ -109,7 +109,7 @@ struct gz_watch {
   uint64_t hold_until; /* nothing is asked before this, after a failed pass */
   uint32_t failures;   /* failed passes in a row */
   gz_chain_result sources;
-  uint8_t *txbuf; /* GZ_TX_MAX_BYTES, made on first use */
+  uint8_t *txbuf; /* GZ_TX_CONSENSUS_MAX_BYTES, made on first use */
   gz_confirmation conf;
   struct {
     bool used;
@@ -743,10 +743,10 @@ static gz_chain_result check_spender(gz_watch *e, const watch *w, const gz_outsp
   uint32_t vout = 0;
   size_t len = 0;
   if (e->txbuf == NULL) {
-    e->txbuf = malloc(GZ_TX_MAX_BYTES);
+    e->txbuf = malloc(GZ_TX_CONSENSUS_MAX_BYTES);   /* any spender a block can hold (P-2) */
     if (e->txbuf == NULL) return GZ_CHAIN_NO_MEMORY;
   }
-  gz_chain_result r = gz_chain_raw_tx(e->cfg.chain, sp->spender_txid, e->txbuf, GZ_TX_MAX_BYTES, &len);
+  gz_chain_result r = gz_chain_raw_tx(e->cfg.chain, sp->spender_txid, e->txbuf, GZ_TX_CONSENSUS_MAX_BYTES, &len);
   if (r == GZ_CHAIN_NOT_FOUND) return R_LATER; /* named and already gone */
   if (r != GZ_CHAIN_OK) return r;
   if (!gz_watch_tx_input(e->txbuf, len, sp->spender_vin, prev, &vout) ||

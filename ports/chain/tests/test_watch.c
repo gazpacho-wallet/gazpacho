@@ -1071,6 +1071,31 @@ static void test_proof_once(test_state *T) {
   fx_close(&f);
 }
 
+/* Review of PR 72, P-4: the kept proofs across a reorganisation and back.
+ * T in a5, then branch B (T in b6), then A again: each move is told as
+ * ever, and on the way back a5's proof is the one kept (a5 is on the
+ * checked chain again), so no proof is asked for it again. */
+static void test_proof_kept_across_reorg(test_state *T) {
+  fx f;
+  const char *s;
+  unsigned before;
+  fx_open(&f);
+  fx_start(&f);
+  CHECK(gz_watch_tx(f.e, TXID(&f, SIM_T), 3, 0) == GZ_CHAINW_OK);
+  both(&f, SIM_A, SIM_H0 + 6);
+  s = go(&f);
+  CHECK(strstr(s, "confirmed T n=2 at a5") != NULL);
+  both(&f, SIM_B, SIM_H0 + 7);
+  s = go(&f);
+  CHECK(strstr(s, "unconfirmed T") != NULL && strstr(s, "confirmed T n=2 at b6") != NULL);
+  before = log_count(&f, "/merkle-proof");
+  both(&f, SIM_A, SIM_H0 + 8);
+  s = go(&f);
+  CHECK(strstr(s, "unconfirmed T") != NULL && strstr(s, "confirmed T n=4 at a5 buried") != NULL);
+  CHECK(log_count(&f, "/merkle-proof") == before);
+  fx_close(&f);
+}
+
 static void test_headers(test_state *T) {
   fx f;
   /* a tip further ahead than max_catchup is reached over two passes, each
@@ -1822,6 +1847,7 @@ int main(void) {
   RUN(test_watch_failed);
   RUN(test_watch_deferred);
   RUN(test_proof_once);
+  RUN(test_proof_kept_across_reorg);
   RUN(test_headers);
   RUN(test_retry_backoff);
   RUN(test_false_spender);
