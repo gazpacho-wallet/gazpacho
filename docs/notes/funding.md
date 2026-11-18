@@ -26,6 +26,8 @@ Every chain-driven end goes out through the one `report` hook, called inside the
 
 **A watch never answered** (review B's second confirmation, G-1). One watch the chain view can never answer must not freeze every decision on the node: a host can make one on a member by putting into the funding an input spent deeper than the chain view follows (`max_link`). The chain view tells it once, `GZ_CHAIN_WATCH_FAILED`, and leaves it out of TIP_SYNCED, so the other factories decide as ever. For its own factory it is that watch's answer (after a start too), and what it would have told is unknowable, so the factory fails closed at once: a member's is Abandoned (its place in the table is freed); a host's is abandoned with no spend-back, and none is made at later blocks, since what the watch followed cannot be known. Live and Dead, which come from reports, still come first.
 
+**A watch whose answer is put off** (review B's third confirmation). Only a confirmation deeper than the chain view follows fails a watch. An answer put off (a deep confirmation still being linked, an answer too large to fetch) is told pending after a few passes, `GZ_CHAIN_WATCH_PENDING`, and TIP_SYNCED stops waiting for it. The factory it belongs to alone waits: no deadline decision until that watch's WATCH_SYNCED (or WATCH_FAILED), while Live and Dead still come from reports. If the answer never comes, the factory fails closed `GZ_FUND_PENDING_GRACE` (144) blocks past its deadline, as for a failed watch.
+
 ## 2. The spend-back and its fee
 
 At the host's deadline, if the funding is not buried, the host spends one input of the funding back to its own wallet (`gzt_funding_spend_back`): input 0, the wallet's largest coin, unless it cannot pay the fee and dust.
