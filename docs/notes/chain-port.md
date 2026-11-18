@@ -646,3 +646,13 @@ An independent review of head `da3d354` (2026-11-16) returned "merge after the l
 Counts after these changes, on the build server (gcc 15.2, `-Werror`): `chain_watch` 35 test functions, 2,547 checks; `chain_chainw` 17 test functions, 386 checks; all 15 `chain_` tests pass in the Release and the ASan+UBSan builds; `tools/chain-tsan.sh` is clean. Mutation probes: 119, 118 caught. The survivor is `c-stop-on-reset` (section 22: only time is lost). Two of the reviewer survivors were not added because they are equivalent here: `r-release-fresh` (a held watch was never asked, so it is still marked new when released) and an unlinked confirmation counted without being asked (one is always asked: whatever unlinks it also marks it to be asked again).
 
 Follow-ups, not done here: the transport break checks of L1 (a chunked oversized body without a stated length, and the interrupt with a long poll slice) in `chain_local_servers`; signet block signatures (open question 10); an expected-difficulty rule (13); a checkpoint saved by the program to avoid linking a year of headers at start (14).
+
+## UNWATCH (step P4.5)
+
+The contract gained `GZ_ACTION_UNWATCH` (`action.h`): an engine drops a transaction watch (`is_tx` 1) or an outpoint watch it no longer needs. Before it, a watch could not be dropped, and a node-wide engine's watches (the funding engine's, one set per factory) added up over a run until the worker's set was full, which is fatal (exit 7). Now:
+
+- **The composite** (`core/node/watches.c`, `gz_watch_unnote`) clears the engine's bit in the registry and lets the UNWATCH out only when no engine asks for the watch any more; otherwise it is dropped. A report for a released watch reaches nobody.
+- **The program** (`program/executor.c`, `pchain.c`) passes it to the worker's `gz_chainw_unwatch_tx` or `gz_chainw_unwatch_outpoint`, which frees the place in the watch set. BUSY is held in the backlog and asked again, like a watch.
+- **At a restart** the worker forgets everything (`gz_chainw_reset`) and every engine sets again only the watches it still needs (node.h rule 4), so a released watch does not come back.
+- `GZ_NODE_MAX_WATCHES` is 112: the test engines 32, the slots 32, the funding engine 48 (`GZ_NODE_FUNDING_WATCHES`, task T-P45-1), held by the registry's static assertion; the worker holds `GZP_MAX_WATCHES` (256).
+- Not yet: a slot that closes (`gz_watch_forget`) frees its registry entries without an UNWATCH; the worker keeps them until the next start. Slots watch nothing in Slice 1.

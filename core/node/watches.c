@@ -101,6 +101,21 @@ uint16_t gz_watch_mask(const gz_node_t *c, const gz_chain_event_t *ev)
     return i < 0 ? 0 : c->watches[i].mask;
 }
 
+int gz_watch_unnote(gz_node_t *c, const gz_action_t *a, int eng)
+{
+    uint8_t key[36];
+    int i;
+    memset(key, 0, sizeof key);
+    memcpy(key, a->u.unwatch.what.txid, 32);
+    if (!a->u.unwatch.is_tx) gz_put_u32(key + 32, a->u.unwatch.what.vout);
+    i = find(c, a->u.unwatch.is_tx, key);
+    if (i < 0 || !(c->watches[i].mask & (1u << eng))) return 0;
+    c->watches[i].mask &= (uint16_t)~(1u << eng);
+    if (c->watches[i].mask) return 0;
+    c->watches[i].used = 0;
+    return 1;
+}
+
 /* An engine has ended (its slot closed): nothing is reported to it again,
  * and what only it watched is forgotten. */
 void gz_watch_forget(gz_node_t *c, int eng)

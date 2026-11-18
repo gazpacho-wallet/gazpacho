@@ -43,7 +43,8 @@ typedef enum {
     GZ_ACTION_WATCH_OUTPOINT, /* report when an outpoint is spent, and by which transaction */
     GZ_ACTION_CONNECT,      /* keep a connection to a host, with one of our keys */
     GZ_ACTION_DISCONNECT,   /* flush, close a link and stop keeping it */
-    GZ_ACTION_SET_SEATED    /* host: a member's key holds a seat, or no longer does */
+    GZ_ACTION_SET_SEATED,   /* host: a member's key holds a seat, or no longer does */
+    GZ_ACTION_UNWATCH       /* stop a WATCH_TX or WATCH_OUTPOINT: nothing is reported for it again */
 } gz_action_kind_t;
 
 /* WATCHES. A watch asks the chain view to report, through GZ_EVENT_CHAIN
@@ -54,9 +55,16 @@ typedef enum {
  * changes nothing anyone else sees, so it does not wait for earlier saves.
  * Broadcasting a transaction does not watch it.
  *
- * A watch cannot be dropped, and setting it again changes only its depth:
- * there is no "unwatch". An engine must ignore reports it no longer needs,
- * and must not treat a report as meaning the watch is still wanted.
+ * UNWATCH drops a watch (step P4.5): `is_tx` 1 names the transaction watch
+ * of `what.txid`, 0 the outpoint watch of `what`. The chain view forgets it,
+ * and frees its place, so a program that runs for long does not fill up. A
+ * report already on its way may still arrive: an engine must ignore reports
+ * it no longer needs, and must not treat a report as meaning the watch is
+ * still wanted. Dropping a watch that is not set is not an error. UNWATCH is
+ * not outward and does not wait for earlier saves. The composite issues it
+ * only when no engine asks for the watch any more (composite-node.md 7.2).
+ * A watch dropped is not set again at the next start: every engine sets at
+ * start only the watches it still needs (node.h rule 4).
  *
  * Every txid here and in event.h is in the byte order the chain hashes it,
  * as gz_outpoint_t says (types.h): not reversed for display. Servers that
@@ -158,6 +166,7 @@ typedef struct {
         struct { gz_bytes_t tx; } broadcast;
         struct { uint8_t txid[32]; uint32_t depth; } watch_tx;      /* WATCH_TX; txid in hashing order */
         struct { gz_outpoint_t outpoint; uint32_t depth; } watch_outpoint; /* WATCH_OUTPOINT */
+        struct { int is_tx; gz_outpoint_t what; } unwatch;          /* UNWATCH; what.vout unused for a txid */
         /* SET_TIMER: setting an identifier that is already set replaces it. */
         struct { uint64_t timer_id; uint64_t delay_ms; } set_timer;
         struct { uint64_t timer_id; } cancel_timer;                /* CANCEL_TIMER */
@@ -204,7 +213,7 @@ void gz_action_list_reset(gz_action_list_t *list);
  * discarded as soon as this returns.
  * Returns GZ_OK; GZ_ERR_ARGUMENT for an unknown or retired kind
  * (WATCH_SCRIPT), a byte string with a length but no data, a transaction or
- * outpoint watch of depth 0, a SEND of kind 0 or 2 or with records over
+ * outpoint watch of depth 0, an UNWATCH whose `is_tx` is not 0 or 1, a SEND of kind 0 or 2 or with records over
  * GZ_SEND_MAX_RECORDS, a CONNECT whose address fails gz_connect_address_ok
  * (below), a DISCONNECT whose `why` is not a GZ_DISCONNECT_*
  * value, or a SET_SEATED whose `seated` is not 0 or 1; GZ_ERR_NO_SPACE if a

@@ -18,7 +18,7 @@
  * answer would come back at every start (review of PR 50, M2). */
 _Static_assert(GZ_NODE_MAX_WATCHES <= GZP_MAX_WATCHES, "the chain worker holds fewer watches than the node asks for");
 
-enum { REQ_WATCH_TX = 1, REQ_WATCH_OUTPOINT, REQ_BROADCAST };
+enum { REQ_WATCH_TX = 1, REQ_WATCH_OUTPOINT, REQ_BROADCAST, REQ_UNWATCH_TX, REQ_UNWATCH_OUTPOINT };
 
 struct gzp_chain_req {
     int kind;
@@ -65,6 +65,8 @@ static int ask(gzp_chain_t *c, const gzp_chain_req_t *r)
     switch (r->kind) {
     case REQ_WATCH_TX: return gz_chainw_watch_tx(c->w, r->txid, r->depth, 0);
     case REQ_WATCH_OUTPOINT: return gz_chainw_watch_outpoint(c->w, r->txid, r->vout, r->depth, 0);
+    case REQ_UNWATCH_TX: return gz_chainw_unwatch_tx(c->w, r->txid);
+    case REQ_UNWATCH_OUTPOINT: return gz_chainw_unwatch_outpoint(c->w, r->txid, r->vout);
     default: return gz_chainw_broadcast(c->w, r->id, r->tx, r->len);
     }
 }
@@ -160,6 +162,17 @@ int gzp_chain_watch_outpoint(gzp_chain_t *c, const uint8_t txid[32], uint32_t vo
     memcpy(r.txid, txid, 32);
     r.vout = vout;
     r.depth = depth;
+    return submit(c, &r);
+}
+
+int gzp_chain_unwatch(gzp_chain_t *c, int is_tx, const uint8_t txid[32], uint32_t vout)
+{
+    gzp_chain_req_t r;
+    if (!c->active) return 0;
+    memset(&r, 0, sizeof r);
+    r.kind = is_tx ? REQ_UNWATCH_TX : REQ_UNWATCH_OUTPOINT;
+    memcpy(r.txid, txid, 32);
+    r.vout = vout;
     return submit(c, &r);
 }
 
