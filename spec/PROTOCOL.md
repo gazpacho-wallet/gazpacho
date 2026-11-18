@@ -1,6 +1,6 @@
 # The SuperScalar factory protocol: map
 
-Map draft 2, 2026-11-17. Status: not reviewed. Draft 2 brings draft 1 up to date with `main` at `3083d99` (section "Changes in map draft 2"). This document is the map of the whole protocol a SuperScalar channel factory speaks, from the first connection to the last payout, as Gazpacho specifies it. It is a map, not a specification. It fixes the structure, the layers, every message family over a factory's life, the number ranges, and which document and which slice or release specifies each part. The detail lives in the specifications it points to.
+Map draft 2, 2026-11-17. Status: not reviewed. Draft 2 brings draft 1 up to date with `main` at `9a9d910` (the specifications are the same as at `3083d99`, where this draft began) (section "Changes in map draft 2"). This document is the map of the whole protocol a SuperScalar channel factory speaks, from the first connection to the last payout, as Gazpacho specifies it. It is a map, not a specification. It fixes the structure, the layers, every message family over a factory's life, the number ranges, and which document and which slice or release specifies each part. The detail lives in the specifications it points to.
 
 It is written to be portable: a second implementation should be able to read this map, find every document it needs, and know which numbers are taken. It is meant to be offered to the SuperScalar reference as the shared standard. Nothing here is agreed with the SuperScalar session yet (section 11), and nothing here is to be posted anywhere without the owner (section 12).
 
@@ -19,18 +19,19 @@ Not itself reviewed. Nothing in it changes a number. It records what was merged 
 | TRUC: every tree transaction is version 3. Fees at exit are paid through a keyless pay-to-anchor output by a one-parent-one-child TRUC package (`exit.md` 5), as in the re-import of SuperScalar `50f7fa13` (pull request #46) | 5, 6 |
 | `local-api.md` draft 5 (pull request #49): reviewed once ("accept after fixes"), fixes confirmed (C1 to C5) | Documents table |
 | `transport.md` draft 4 is merged and reviewed (pull request #10, two rounds): open point 1 closed | Documents table; 13 |
-| **Proposed (K1, pull request #59, not merged):** the lobby `join` carries no keys, the factory key and the contribution key's binding signature move to the seat's first `ready`, and the factory key signs only group-signature items. The binding becomes one-way | 4; 8.2; 9.1 |
+| **Owner decision of 2026-11-17 (BD, formerly K1), specified in pull request #59, not yet merged**: the lobby `join` carries no keys, the factory key and the contribution key's binding signature move to the seat's first `ready`, and the factory key signs only group-signature items. The binding becomes one-way | 4; 8.2; 9.1 |
 | Every `gazpacho/` tag and fixed string on `main` registered: `gazpacho/session-id`, `gazpacho/host-random`, `gazpacho/allnonces` and `gazpacho/known-filter` (the last three named only in code so far), `gazpacho keys`, the discovery picks, the storage salt, the program's stand-in string and the test strings. A CI check for unregistered tags is planned, not built. `gazpacho/tree` is now defined (`messages.md` 7.12); discovery vectors now run to D30; `unready` reasons now 1 to 3 | 8.2, 9.1, 10.6 |
+| Review of #59 to #63 (2026-11-18): the three local tags defined in `signing-round.md` 8 and marked specified, local to one implementation (L1); `gazpacho/test` moved to the tag table, reserved for tests (L2); BD (formerly K1) described as the owner's decision, specified in #59 (L3); one `main` commit, `9a9d910` (L4); 8.2 is the only registry (L5); the Backup and fee rows marked pending #61 (L6) | 5, 8.1, 8.2, 9.1, 13 |
 
-Documents it maps (drafts as of 2026-11-17, on `main` at `3083d99`):
+Documents it maps (drafts as of 2026-11-17, on `main` at `9a9d910`):
 
 | Document | Draft | Review status | What it is |
 |---|---|---|---|
 | `transport.md` | 4 | **Reviewed** (two rounds of the review of pull request 10, after the code; checklist item 1's exception) | The transport profile of BOLT 8 and BOLT 1: the pinned host key, `init` with `networks` naming one chain, ping and pong keep-alive (15 s and 30 s), the factory envelope and splitting of `messages.md` sections 3 to 5, and admission limits for lobby hosts |
-| `messages.md` | 2, amended 2026-11-17 by K1 in pull request #59 (proposed) | Draft 1 reviewed (review 3); draft 2 not reviewed | The envelope, splitting, the bLIP-56 adapter, the lobby and signing-round messages |
+| `messages.md` | 2, amended 2026-11-17 by BD (formerly K1), an owner decision specified in pull request #59, not yet merged | Draft 1 reviewed (review 3); draft 2 not reviewed | The envelope, splitting, the bLIP-56 adapter, the lobby and signing-round messages |
 | `terms.md` | 2, with the host-paid fee rate (2026-11-16) and the review of #48 (2026-11-17) | Draft 1 reviewed (review 3); draft 2 not reviewed; the 2026-11-16 and 2026-11-17 changes were read by the review of #48 | The signed host terms record: outer rules, ranges, current values, freeze, who pays the tree fees (4.4) |
-| `signing-round.md` | 4, with the fee-rate change (2026-11-16); K1 in pull request #59 (proposed) | Draft 3 reviewed (review 3); draft 4 not reviewed; proof of fault has had no outside review | The multi-party MuSig2 signing round and proof of fault |
-| `safety-rule.md` | 4, with changes of 2026-11-16 and 2026-11-17 (fee rate, review of #48, payout scripts in C2); K1 in pull request #59 (proposed) | Draft 3 reviewed (review 3); draft 4 not reviewed; nothing reviewed outside the project | The checks a member (and a host) runs before it signs. The acceptance rules of this map point here |
+| `signing-round.md` | 4, with the fee-rate change (2026-11-16); BD (formerly K1), an owner decision specified in pull request #59, not yet merged | Draft 3 reviewed (review 3); draft 4 not reviewed; proof of fault has had no outside review | The multi-party MuSig2 signing round and proof of fault |
+| `safety-rule.md` | 4, with changes of 2026-11-16 and 2026-11-17 (fee rate, review of #48, payout scripts in C2); BD (formerly K1), an owner decision specified in pull request #59, not yet merged | Draft 3 reviewed (review 3); draft 4 not reviewed; nothing reviewed outside the project | The checks a member (and a host) runs before it signs. The acceptance rules of this map point here |
 | `exit.md` | 3 (pull request #48) | Reviewed once (`docs/reviews/review-pr48.md`, accept after fixes), fixes confirmed; the fixes are not themselves reviewed. Draft 2 is kept in `docs/specs-history/` | Leaving a factory under design 2: the end-date payouts on every shared output at lock time E, paying members at least their capacity; the host's deadlines (`host_force_by`, `host_spare_by`); fees pre-signed at the tree rate plus a pay-to-anchor output, the real fee paid by a TRUC child; 35 paths; the host rules of section 9 (H6, H7, H14 to H20); the watch-and-exit bundle. Draft 2's host-only-timeout rules are kept and marked INTERIM while the import carries them. The deadline arithmetic and the host's duties are protocol; the engines, the bundle and the strip are Gazpacho's |
 | `journal.md` | 3 | Draft 2 reviewed (review 3) and the code reviewed (PR 29); draft 3 folds in storage encryption | Gazpacho's storage. **Not part of the shared protocol** (section 9) |
 | `storage-encryption.md` | 3 | Draft 2 confirmed by round 2 of its review; draft 3 answers round 2 and review B of the code | Gazpacho's encryption at rest. **Not part of the shared protocol** |
@@ -112,7 +113,7 @@ Application-agnostic. Intended as a separate library: it runs a group of parties
 
 | Part | What it does | Specified in | State |
 |---|---|---|---|
-| Sessions (lobbies) | Seats named by contribution key; states, not changes, so every message survives a reconnect; start rule with target, minimum and deadline. **Proposed (K1, pull request #59):** a seat gets its factory key at its first `ready`, bound one way by the contribution key, and keeps it for the lobby's life | `messages.md` 6, `LOBBY.md` | Specified for Slice 1; K1 proposed |
+| Sessions (lobbies) | Seats named by contribution key; states, not changes, so every message survives a reconnect; start rule with target, minimum and deadline. **Owner decision of 2026-11-17 (BD, formerly K1), specified in pull request #59, not yet merged**: a seat gets its factory key at its first `ready`, bound one way by the contribution key, and keeps it for the lobby's life | `messages.md` 6, `LOBBY.md` | Specified for Slice 1; BD specified in pull request #59, not yet merged |
 | Signed terms | Two records: outer rules (fixed; their digest is the lobby's identity and fingerprint) and current values (versioned, inside signed ranges). Canonical TLV encoding | `terms.md` | Specified (draft 2) |
 | Freeze | The first ready check freezes the current values for every later check and attempt | `terms.md` 8, `messages.md` 6.8 | Specified |
 | Readiness and consent | A `ready` names both digests and is signed by the member; the member's own limits are compared with the whole range by default. A member whose signing gate is closed is not Ready (`unready` reason 3) | `terms.md` 9, `messages.md` 6.4, 6.5 | Specified |
@@ -148,13 +149,13 @@ Everything that knows the tree. Every operation that needs group signatures runs
 
 | Operation | What it is | Round purpose | Specified in | Release |
 |---|---|---|---|---|
-| Tree parameters | The shape table, the split rule, fixed levels D, the tree fee rate (at least 0.1 sat/vB, chosen and paid by the host from the funding), funding amount; every setting that changes a transaction's bytes. Every tree transaction is TRUC (version 3) with a pay-to-anchor output | — | `terms.md` 4 and 4.4, `signing-round.md` 4.1 and 13, `exit.md` 5.9 | Slice 1 |
+| Tree parameters | The shape table, the split rule, fixed levels D, the tree fee rate (at least 0.1 sat/vB, chosen and paid by the host from the funding), funding amount; every setting that changes a transaction's bytes. Every tree transaction is TRUC (version 3) with a pay-to-anchor output; penalties carry no keyless anchor (proposed, `exit.md` CH-17, pull request #61, pending) | — | `terms.md` 4 and 4.4, `signing-round.md` 4.1 and 13, `exit.md` 5.9 | Slice 1 |
 | Creation | Tree built by every party from terms plus proposal; host funds last after every member's ack | 1 | `signing-round.md`, `messages.md` 7, `safety-rule.md` | Slice 1 (1.0.0) |
 | Liquidity sale | **A sale creates a new channel** for the buyer from the shared spare liquidity; existing channels never move. Shared leaves (K > 1) arrive with it. Coverage shown to the member | 2 ("leaf change") | Not specified (`signing-round.md` 14.1, `safety-rule.md` 4.2) | 1.1.0 (owner decision 5) |
 | Layer update | Re-signing a timed layer; every channel below gets a new anchor | 3 | Not specified (`signing-round.md` 14.2, 14.3) | M4 |
 | Moving to the next factory | Pay across over Lightning, or close into the new factory's funding. Partial moves fall back to paying across | 5 | Not specified (`signing-round.md` 5) | M4 |
 | Cooperative close | One tier spending the funding output | 4 | Not specified (`signing-round.md` 5) | Slice 1 option (owner decision open, `safety-rule.md` 12), else M4 |
-| Exit coordination | Leaving alone on every path (35 paths), the host's deadlines and duties (`exit.md` 9: H6, H7, H14 to H20; H6 forces out a silent member before payouts), fees at exit through the pay-to-anchor output and a TRUC child; the recovery procedure after a restore (C12; `exit.md` 5.7 for 1.0.0) | Proposed 6 for a recovery close | `exit.md` draft 3 (paths, deadlines, fees, host rules); the exit messages are not specified | Slice 3 (M3); recovery with the exit engine |
+| Exit coordination | Leaving alone on every path (35 paths), the host's deadlines and duties (`exit.md` 9: H6, H7, H14 to H20; H6 forces out a silent member before payouts), fees at exit through the pay-to-anchor output and a TRUC child (penalties carry no keyless anchor: proposed, `exit.md` CH-17, pull request #61, pending); the recovery procedure after a restore (C12; `exit.md` 5.7 for 1.0.0) | Proposed 6 for a recovery close | `exit.md` draft 3 (paths, deadlines, fees, host rules); the exit messages are not specified | Slice 3 (M3); recovery with the exit engine |
 | End-date payouts | Design 2 (Delving Bitcoin topic 1242): a pre-signed payout at lock time E on **every** shared output (funding, every output into a child tree transaction, every channel output, every spare-liquidity output), paying members at least their capacity and the host nothing. Each payout pays a P2TR script the member names from its own BIP 86 receive chain (`exit.md` 3.4, `safety-rule.md` C2; pending the owner's confirmation) | Signed inside creation, update and move rounds as items | `exit.md` draft 3, sections 0, 1, 3, 4; taken from upstream draft #508 when it lands | Required from Slice 3 and before any real funds |
 | Watch hand-off | Handing pre-signed responses, never keys, to a watcher | — | Not specified (`AWAY.md`, issue 2) | Watch engine M3; outside watcher later |
 | Backups | The member's encrypted backup held by the host through Lightning's peer storage messages; restore epochs | — | `safety-rule.md` 9 (rules); export and format not specified | Release not fixed |
@@ -241,11 +242,11 @@ Kind ranges are in section 10.1. "Acceptance rules" names the checks a receiver 
 | Exit and recovery | 3 | 576 to 639; purpose 6 proposed for a recovery close | C5; `safety-rule.md` 7; C12; H6 | `exit.md`; Slice 3 (M3) | Reserved |
 | End-date payout and destinations | 3 | 640 to 703; `round_propose` record 44 `distribution` and `round_complete` record 3 `payouts` already reserved | C5 (competing claims); C8 (distribution row); `safety-rule.md` 6 item 7; H6; a destination proven before use (owner decision 6) | `payout.md`; before mainnet | Reserved |
 | Watch hand-off | 3 | 704 to 767 | `safety-rule.md` 4.1 rule 3 (every old anchor watched), 8, 11; never hand over keys (`AWAY.md`) | `watch.md`; M3, outside watcher later | Reserved |
-| Backup | 3 | BOLT 1 `peer_storage` and `peer_storage_retrieval` (not ours); 768 to 831 for backup notices | `safety-rule.md` 9, R1 to R7; C12 | `backup.md`; release not fixed | Reserved |
+| Backup | 3 | BOLT 1 `peer_storage` and `peer_storage_retrieval` (not ours); 768 to 831 for backup notices | `safety-rule.md` 9, R1 to R7 (R1 to R8 once pull request #61 merges, pending); C12 | `backup.md`; release not fixed | Reserved |
 
 ### 8.2 Tagged-hash tags and other fixed strings
 
-`TH(tag, bytes)` is BIP 340's tagged hash. A tag is never reused for a second meaning. Every tag is registered here before it is used. Draft 2 registers every `gazpacho/` tag and fixed string found on `main` at `9a9d910` in the specifications, `core/`, `ports/`, `program/`, `wallet/` and `tools/`. A CI check that refuses a tag or string missing from this section is **planned, not yet built**; until it exists, this list is kept by hand. All tags will be renamed together if a shared prefix is agreed (section 11).
+`TH(tag, bytes)` is BIP 340's tagged hash. A tag is never reused for a second meaning. Every tag is registered here before it is used. Draft 2 registers every `gazpacho/` tag and fixed string found on `main` at `9a9d910` in the specifications, `core/`, `ports/`, `program/`, `wallet/` and `tools/`. A CI check that refuses a tag or string missing from this section is **planned, not yet built**; until it exists, this list is kept by hand. This table is the only registry; the table in `messages.md` 4 lists that document's tags and is kept in step with this one. `gazpacho/test-funding`, named by pull request #63, is not on `main`; it is registered when the pull request that uses it merges. All tags will be renamed together if a shared prefix is agreed (section 11).
 
 | Tag | Meaning | Layer | Defined in | State |
 |---|---|---|---|---|
@@ -253,24 +254,25 @@ Kind ranges are in section 10.1. "Acceptance rules" names the checks a receiver 
 | `gazpacho/part` | `transfer_id` of a split message | 1 | `messages.md` 5 | Specified |
 | `gazpacho/terms/outer` | Outer terms digest; the lobby identifier | 2 | `terms.md` 6 | Specified |
 | `gazpacho/terms/current` | Current values digest | 2 | `terms.md` 6 | Specified |
-| `gazpacho/bind` | Binding of factory key and contribution key. Today two-way, in `join`. **Proposed (K1, pull request #59):** signed by the contribution key only, in `ready`; same hash | 2 | `messages.md` 6.3 (6.4 under K1), `signing-round.md` 2 | Specified; K1 proposed |
+| `gazpacho/bind` | Binding of factory key and contribution key. Today two-way, in `join`. **Owner decision of 2026-11-17 (BD, formerly K1), specified in pull request #59, not yet merged**: signed by the contribution key only, in `ready`; same hash | 2 | `messages.md` 6.3 (6.4 under BD), `signing-round.md` 2 | Specified; BD specified in pull request #59, not yet merged |
 | `gazpacho/round_id` | Round identifier | 2 | `messages.md` 7.1 | Specified; no vector yet |
 | `gazpacho/nonce` | A member's signature on its public nonce | 2 | `messages.md` 7.3 | Specified; no vector yet |
 | `gazpacho/nonceset` | Digest of the nonce set a partial signature used | 2 | `messages.md` 7.5 | Specified; no vector yet |
 | `gazpacho/held` | What a member holds, in `round_ack` | 2 | `messages.md` 7.8 | Specified; no vector yet |
 | `gazpacho/nonce-extra` | Extra input to nonce generation (local; never on the wire) | 2 | `signing-round.md` 8 | Specified |
 | `gazpacho/session-id` | The session identifier given to nonce generation (local; never on the wire) | 2 | `signing-round.md` 8 | Specified |
-| `gazpacho/host-random` | The host's random value for an attempt: the randomness port's bytes, the incarnation and the attempt counter (local to the host; only the result travels, as `host_random`) | 2 | Mix in `signing-round.md` S4; the tag is named only in code (`core/signing/signing.c`, `RULE:HOST_RANDOM_MIX`) | In code; **the specification must name the tag** |
-| `gazpacho/allnonces` | Digest of a received `round_all_nonces` record stream, to tell the same bytes again from a different copy (local; never signed or sent) | 2 | Duplicate rule in `messages.md` 7.4; the tag is named only in code (`core/signing/signing.c`) | In code; **the specification must name the tag** |
-| `gazpacho/known-filter` | Bit positions of a refused round identifier in the signing engine's filter of refused identifiers (local; never sent) | 2 | Only in code (`core/signing/signing.c`, `filter_positions`) | In code; **the specification must name the tag and the filter** |
+| `gazpacho/host-random` | The host's random value for an attempt: the randomness port's bytes, the incarnation and the attempt counter (local to the host; only the result travels, as `host_random`) | 2 | `signing-round.md` 8 (`host_random`); the mix of S4 | Specified (local to one implementation; not part of the shared protocol) |
+| `gazpacho/allnonces` | Digest of a received `round_all_nonces` record stream, to tell the same bytes again from a different copy (local; never signed or sent) | 2 | `signing-round.md` 8 (`all_nonces_digest`); the duplicate rule of `messages.md` 7.4 | Specified (local to one implementation; not part of the shared protocol) |
+| `gazpacho/known-filter` | Bit positions of a refused round identifier in the signing engine's filter of refused identifiers (local; never sent) | 2 | `signing-round.md` 8 (the refused-identifier filter) | Specified (local to one implementation; not part of the shared protocol) |
 | `gazpacho/tree` | Digest of a tree for the C7 record (review 3, F7) | 3 | `messages.md` 7.12 | Specified; no vector yet |
-| `gazpacho/evidence` | Digest of a fault evidence bundle | 2 | Not defined | Name reserved |
+| `gazpacho/evidence` | Digest of a fault evidence bundle | 2 | Not defined | Reserved (name only; not yet defined) |
 | `gazpacho/listing` | Digest a listing signature covers | 5 | `discovery.md` 5.1 | Specified |
 | `gazpacho/withdrawal` | Digest a listing withdrawal (tombstone) signature covers | 5 | `discovery.md` 5.3 | Specified (draft 3) |
 | `gazpacho/index` | Digest a lobby index signature covers | 5 | `discovery.md` 6.1 | Specified |
 | `gazpacho/card` | Was the digest of a signed host card | 5 | `discovery.md` 4 | **Reserved**: the card is withdrawn in draft 2; the tag is never reused |
 | `gazpacho/anchor` | A coin anchor statement | 5 | `discovery.md` 9.1 | Specified |
 | `gazpacho/beacon` | A lobby beacon; also its deduplication id | 5 | `discovery.md` 8.1 | Specified |
+| `gazpacho/test` | A tagged hash in a unit test (`wallet/tests/test_wallet_keys.c`). Never for coins, never on the wire | — | The test that uses it | Reserved (tests only) |
 
 Other fixed strings, which are plain SHA-256 inputs, not tags:
 
@@ -286,7 +288,7 @@ Other fixed strings, which are plain SHA-256 inputs, not tags:
 | `gazpacho/v1/storage` | The HKDF salt of storage encryption. Not a tagged hash, and **not part of the shared protocol** | `storage-encryption.md` 4.4 |
 | `gazpacho stand-in lobby key` | A stand-in key derivation in the program (`program/net.c`) until the real derived keys (pull request #53). **Not part of the protocol**; to be removed with the stand-in | — |
 | `gazpacho test key: <label>`, `gazpacho test lobby salt` | Test keys and salt for vectors. Never for coins | `terms.md` 11 |
-| `gazpacho test …` (others: `bip39 seed`, `pool token`, `coin txid`, `funding`, `funding input`, `kdf salt 2`, `export kdf salt`, `exit parent`, `watch bundle id`, `watch penalty file id`, `r: <label>`, `key: host coin`, `key: host coin internal`), `gazpacho/test` | Inputs for test vectors and unit tests only (`tools/spec-vectors.py`, `tests/`, `wallet/tests/`). Never for coins, never on the wire | The vector or test that uses each |
+| `gazpacho test …` (others: `bip39 seed`, `pool token`, `coin txid`, `funding`, `funding input`, `kdf salt 2`, `export kdf salt`, `exit parent`, `watch bundle id`, `watch penalty file id`, `r: <label>`, `key: host coin`, `key: host coin internal`) | Inputs for test vectors and unit tests only (`tools/spec-vectors.py`, `tests/`, `wallet/tests/`). Never for coins, never on the wire | The vector or test that uses each |
 
 ### 8.3 Feature bits
 
@@ -327,7 +329,7 @@ The same procedure applies to our custom type 52791: checked against the bLIP 2 
 |---|---|---|---|---|
 | T1 to T6 | Terms encoding, digests, signatures, refusals, comparison | 2 | `terms.md` 11 | Specified (draft 2) |
 | T7 | The tree T1 builds | 3 | `terms.md` 11 | Specified |
-| M1 | A signed message and the binding | 1, 2 | `messages.md` 11 | Specified. Regenerated under K1 in pull request #59 (proposed): a `ready` with records 12 and 14, 281 bytes; the binding values unchanged |
+| M1 | A signed message and the binding | 1, 2 | `messages.md` 11 | Specified. Regenerated under BD (formerly K1) in pull request #59, an owner decision of 2026-11-17, not yet merged: a `ready` with records 12 and 14, 281 bytes; the binding values unchanged |
 | M2 | Splitting | 1 | `messages.md` 11 | Specified |
 | M3 | The bLIP-56 adapter, same signature as M1 | 1 | `messages.md` 11 | Specified |
 | R | Round identifier preimage and hash for a real tree | 2 | — | Open: needs the tree builder in the engine |
@@ -498,4 +500,4 @@ Nothing below is to be posted, opened or commented on without the owner. Drafts 
 7. **The peer storage messages and feature bit** were not re-read today; check BOLT 1 and BOLT 9 before the backup specification.
 8. **Watchers.** No merged BOLT specifies watchtowers. The hand-off format is ours to write.
 9. **A stand-alone `envelope.md`** and a layer 2 library specification separated from the SuperScalar profile: proposed, after Slice 1.
-10. **K1** (pull request #59): the one-way binding sent at Ready. Proposed; the map will mark it specified when it merges, and the code follows after pull request #52.
+10. **BD, formerly K1** (pull request #59): the one-way binding sent at Ready. **Owner decision of 2026-11-17 (BD, formerly K1), specified in pull request #59, not yet merged**. Its rules are BD1 to BD6 (called K1-1 to K1-6 in the binding check; renamed so as not to clash with K1 of `docs/DECISIONS-WITHOUT-OWNER.md`). If #59 merges first, every such mark here becomes "Specified" before this map merges. The code follows after pull request #52.
