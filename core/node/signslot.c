@@ -510,6 +510,20 @@ static size_t sg_test_funding(const uint8_t scope[32], const uint8_t check[32], 
  * member at once, each member's message holding, for each of its items, every signer's nonce and its
  * signature (130 bytes a signer), with the message's own overhead; the saves of the step are well below
  * the margin left. A round whose step could pass the bound is not begun. */
+_Static_assert(sizeof ((gz_node_t *)0)->sg_ftx == GZ_SIGN_MAX_FUNDING_TX, "the node holds any funding the engine takes");
+
+int gz_sg_set_funding(gz_node_t *c, gz_tree_proposal_t *p, const uint8_t *tx, size_t len, const uint8_t txid[32],
+                      uint32_t vout)
+{
+    if (!tx || len == 0 || len > sizeof c->sg_ftx) return 0;
+    memcpy(c->sg_ftx, tx, len);
+    p->funding_tx = c->sg_ftx;
+    p->funding_tx_len = len;
+    memcpy(p->funding_txid, txid, 32);
+    p->funding_vout = vout;
+    return 1;
+}
+
 static size_t sg_step_bytes(const gz_tree_t *t, uint32_t n_members)
 {
     size_t total = 0;
@@ -569,10 +583,12 @@ static gz_status_t sg_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_li
     memcpy(p->terms_digest, h->current_digest, 32);
     p->funding_amount = prm.funding_amount;
     p->funding_script_len = 34;
-    p->funding_tx_len = sg_test_funding(h->scope, h->check_id, h->attempt, prm.funding_amount, p->funding_script, c->sg_ftx);
-    p->funding_tx = c->sg_ftx;
-    gz_tx_txid(c->sg_ftx, p->funding_tx_len, p->funding_txid);
-    p->funding_vout = 0;
+    {
+        uint8_t ftx[128], txid[32];
+        size_t flen = sg_test_funding(h->scope, h->check_id, h->attempt, prm.funding_amount, p->funding_script, ftx);
+        gz_tx_txid(ftx, flen, txid);
+        if (!gz_sg_set_funding(c, p, ftx, flen, txid, 0)) return sg_refuse_begin(c, h, "sign-begin-refused-funding", out);
+    }
     p->participants = c->sg_parts;
     p->n_participants = h->n_participants;
     p->n_tiers = 1;
