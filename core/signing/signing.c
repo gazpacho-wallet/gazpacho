@@ -593,7 +593,7 @@ static void keep_round(gz_sign_t *e, const gz_sign_round_t *r)
     k->used = 1;
     k->state = r->state; k->why = r->why; k->released = (uint8_t)may_have_released(r, r->why);
     k->n_participants = r->def.n_participants; k->n_tiers = r->def.n_tiers; k->n_items = r->def.n_items;
-    k->blamed = r->blamed; k->acked = r->acked; k->seq = r->seq; k->attempt = r->attempt;
+    k->blamed = r->blamed; k->acked = r->acked; k->seq = r->seq; k->attempt = r->attempt; k->excused = r->excused;
     memcpy(k->id, r->id, 32); memcpy(k->scope, r->def.outer_digest, 32); memcpy(k->check_id, r->check_id, 32);
     memcpy(k->funding_txid, r->def.funding_txid, 32); k->funding_vout = r->def.funding_vout;
     for (int j = 0; j < r->def.n_participants; j++) memcpy(k->ckeys[j], r->def.participants[j].contribution_key, 33);
@@ -1833,9 +1833,35 @@ static int holds_nonces_of(const gz_sign_round_t *r, uint8_t j)
     return any;
 }
 
-static uint32_t abort_blame(gz_sign_t *e, const gz_sign_round_t *r, uint8_t j, uint16_t reason)
+/* 1 if participant j's key had a reason 3 excused already in another round of r's scope, held in full
+ * or kept compactly (review A of PR 52, H1): a signed reason 3 is no proof of a restart, so it is
+ * excused once per (scope, contribution key) for as long as the host holds the scope's rounds. */
+static int excused_before(const gz_sign_t *e, const gz_sign_round_t *r, uint8_t j)
 {
-    if (reason == 3) return holds_nonces_of(r, j) ? 0 : bit(j);                    /* RULE:BLAME_RESTART_WITHOUT_NONCES */
+    const uint8_t *key = r->def.participants[j].contribution_key;
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
+        const gz_sign_round_t *o = &e->rounds[i];
+        if (o == r || o->state == GZ_SIGN_ROUND_FREE || !o->excused || !same(o->def.outer_digest, r->def.outer_digest, 32)) continue;
+        for (uint8_t q = 1; q < o->def.n_participants; q++)
+            if ((o->excused >> q & 1u) && same(o->def.participants[q].contribution_key, key, 33)) return 1;
+    }
+    for (int k = 0; k < GZ_SIGN_MAX_KEPT; k++) {
+        const gz_sign_kept_t *o = &e->kept[k];
+        if (!o->used || !o->excused || !same(o->scope, r->def.outer_digest, 32)) continue;
+        for (uint8_t q = 1; q < o->n_participants; q++)
+            if ((o->excused >> q & 1u) && same(o->ckeys[q], key, 33)) return 1;
+    }
+    return 0;
+}
+
+static uint32_t abort_blame(gz_sign_t *e, gz_sign_round_t *r, uint8_t j, uint16_t reason)
+{
+    if (reason == 3) {
+        if (!holds_nonces_of(r, j)) return bit(j);                                   /* RULE:BLAME_RESTART_WITHOUT_NONCES */
+        if (excused_before(e, r, j)) return bit(j);                                  /* RULE:EXCUSE_RESTART_ONCE */
+        r->excused |= bit(j);
+        return 0;
+    }
     if (reason == 4) return bit(j);                                                /* RULE:BLAME_EARLY_DEADLINE */
     if (reason == 6) {
         for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
@@ -1928,8 +1954,10 @@ static void host_message(gz_sign_t *e, const gz_link_t *link, const gz_sign_msg_
     if (r->state != GZ_SIGN_ROUND_ACTIVE) return;
     if (m->kind == GZ_SIGN_MSG_NONCES) host_nonces(e, r, j, m, em);
     else if (m->kind == GZ_SIGN_MSG_PARTIALS) host_partials(e, r, j, m, em);
-    else if (m->kind == GZ_SIGN_MSG_ABORT && signed_by(e, m, r->def.participants[j].contribution_key))
+    else if (m->kind == GZ_SIGN_MSG_ABORT && signed_by(e, m, r->def.participants[j].contribution_key)) {
+        r->abort_from = j; r->abort_reason = m->reason;
         host_fail(e, r, abort_blame(e, r, j, m->reason), GZ_SIGN_WHY_MEMBER_ABORT, em);
+    }
 }
 
 /* A status request (or an ack) for a round that left the slots: answered from what is kept (H12), at
@@ -2723,6 +2751,13 @@ void gz_sign_forget_scope(gz_sign_t *e, const uint8_t scope[32])
     if (!e || !scope) return;
     for (int k = 0; k < GZ_SIGN_MAX_KEPT; k++)
         if (e->kept[k].used && same(e->kept[k].scope, scope, 32)) memset(&e->kept[k], 0, sizeof e->kept[k]);
+}
+
+void gz_sign_forget_kept_unless(gz_sign_t *e, int (*keep)(void *ctx, const uint8_t scope[32]), void *ctx)
+{
+    if (!e || !keep) return;
+    for (int k = 0; k < GZ_SIGN_MAX_KEPT; k++)
+        if (e->kept[k].used && !keep(ctx, e->kept[k].scope)) memset(&e->kept[k], 0, sizeof e->kept[k]);
 }
 
 int gz_sign_holds_scope(const gz_sign_t *e, const uint8_t scope[32])

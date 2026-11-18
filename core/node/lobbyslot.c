@@ -198,6 +198,7 @@ int gz_ls_init(gz_node_t *c, int i)
         memset(&hc, 0, sizeof hc);
         memcpy(hc.factory_key, fk, 33);
         hc.standbys = s->standbys;
+        hc.max_tree_nodes = c->sign_on ? GZ_SIGN_MAX_ITEMS : 0;   /* the engine signs at most so many (M2) */
         hc.listed = s->listed;
         hc.seat_room = ls_seat_room;
         hc.seat_ctx = s;
@@ -215,6 +216,7 @@ int gz_ls_init(gz_node_t *c, int i)
     mc.key_epoch = s->key_epoch;
     mc.key_index = s->key_index;
     mc.auto_join = s->auto_join;
+    mc.max_tree_nodes = c->sign_on ? GZ_SIGN_MAX_ITEMS : 0;
     gate.may_answer = ls_may_answer;
     gate.ctx = s;
     memcpy(s->link.local.key, ck, 33);
@@ -623,6 +625,12 @@ static gz_status_t gate_closed_inline(gz_node_t *c, int eng, gz_action_list_t *o
 static gz_status_t gate_opened_inline(gz_node_t *c, int eng, gz_action_list_t *out)
 {
     return gz_lobby_member_gate_opened(&c->slots[eng - ENG_SLOT0].lobby.m, out);
+}
+
+void gz_ls_wipe32(uint8_t *p)
+{
+    volatile uint8_t *v = p;
+    for (size_t i = 0; i < 32; i++) v[i] = 0;
 }
 
 static void gate_wipe(slot_t *s)
@@ -1346,33 +1354,51 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
         return np_command_result(out, cmd, 400, "bad_request");
     /* "Ready" given with the passphrase opens that lobby's gate (AT_JOIN): the
      * program has handed the key port the scoped secret before the command. */
-    int opened = 0;
+    int opened = 0, rebound = 0, had = s->gate_have;
+    uint8_t old_secret[32] = {0}, old_digest[32] = {0}, fresh[32];
     if (code == GZ_CMD_LOBBY_READY && c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN && arg(cmd, 14, 1, &v) &&
         v.data[0] == 1) {
         /* AT_JOIN (12.2): the lobby's factory key is derived now, and only now, and bound to the
-         * values digest the person readies for; the key hook gives it for that digest alone. */
+         * values digest the person reviewed, which the ready carries (record 16, local-api.md 14.2's
+         * seen_current_digest): values that changed since the screen open nothing (review A of PR
+         * 52, L5). The key hook gives the key for that digest alone. */
         if (c->sign_on) {
             const gz_lobby_member_t *m = &s->lobby.m;
+            gz_bytes_t seen;
+            if (!arg(cmd, 16, 32, &seen)) return np_command_result(out, cmd, 400, "bad_request");
             if (!m->have_terms) return np_command_result(out, cmd, 409, "refused_now");
-            gate_wipe(s);
-            if (!c->cfg.keys.secret || c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, s->gate_secret) != 1) {
-                gate_wipe(s);
+            if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0)   /* RULE-NODE:READY_SEEN_DIGEST */
+                return np_command_result(out, cmd, 409, "terms_changed");
+            if (!c->cfg.keys.secret || c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) != 1) {
+                gz_ls_wipe32(fresh);
                 return np_command_result(out, cmd, 503, "no_key");
             }
-            memcpy(s->gate_digest, m->frozen ? m->frozen_digest : m->current_digest, 32);
+            memcpy(old_secret, s->gate_secret, 32);
+            memcpy(old_digest, s->gate_digest, 32);
+            memcpy(s->gate_secret, fresh, 32);
+            gz_ls_wipe32(fresh);
+            memcpy(s->gate_digest, seen.data, 32);
             s->gate_have = 1;
+            rebound = 1;
         }
         opened = !s->gate_open;
         s->gate_open = 1;
         s->gate_flight = 0;
     }
     size_t from = out->count;
-    if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, command_inline, out)) != GZ_OK) return st;
+    if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, command_inline, out)) != GZ_OK) { gz_ls_wipe32(old_secret); return st; }
     int refused = c->lc.refused || was_refused(out, from);
-    if ((st = gz_ls_after(c, i, out)) != GZ_OK) return st;
+    if ((st = gz_ls_after(c, i, out)) != GZ_OK) { gz_ls_wipe32(old_secret); return st; }
     /* A refused ready leaves the gate as it found it: the person's own
-     * ready opens it, and there was none (review A of PR 44, L3). */
+     * ready opens it, and there was none (review A of PR 44, L3); a gate that was open keeps the
+     * secret and the digest it had (review A of PR 52, L5). */
     if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);
+    else if (refused && rebound && s->state == SLOT_OPEN) {
+        memcpy(s->gate_secret, old_secret, 32);
+        memcpy(s->gate_digest, old_digest, 32);
+        s->gate_have = had;
+    }
+    gz_ls_wipe32(old_secret);
     return refused ? np_command_result(out, cmd, 409, c->lc.refused ? "bad_values" : "refused_now")
                    : np_command_result(out, cmd, 200, NULL);
 }

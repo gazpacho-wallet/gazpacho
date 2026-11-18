@@ -343,7 +343,13 @@ static void test_crashes(void)
              * the other two. Any other crash ends with all three. */
             int left_out = 0;
             const gz_sign_round_t *fr = w.nodes[0] ? gz_sign_latest(&w.nodes[0]->eng) : NULL;
-            if (fr && node && o.members_in_round == 2 && o.first_failed && o.first_failed->why == GZ_SIGN_WHY_MEMBER_ABORT) {
+            const gz_sign_round_t *ff = o.first_failed;
+            /* that first failure must be the crashed member's own reason 3, blaming it alone (review A of
+             * PR 52, L2) */
+            if (fr && node && o.members_in_round == 2 && ff && ff->why == GZ_SIGN_WHY_MEMBER_ABORT && ff->abort_reason == 3 &&
+                ff->abort_from > 0 && ff->abort_from < ff->def.n_participants &&
+                w_party_of(ff->def.participants[ff->abort_from].contribution_key) == (int)node &&
+                ff->blamed == (1u << ff->abort_from)) {
                 left_out = 1;
                 for (int j = 1; j < fr->def.n_participants; j++)
                     if (w_party_of(fr->def.participants[j].contribution_key) == (int)node) left_out = 0;
@@ -1184,33 +1190,50 @@ static void flush_but(harness_t *h, uint32_t silent, int drop);
  * for the round: then it is excused every time; a member that never sent a
  * nonce is blamed. Reason 6 (another round on its outputs) is blamed unless
  * the host holds another round on that outpoint. */
+/* The keep hook of gz_sign_forget_kept_unless for the tests: every scope's lobby is open when ctx is set. */
+static int keep_scope_open(void *ctx, const uint8_t scope[32])
+{
+    (void)scope;
+    return ctx != NULL;
+}
+
 static void test_abort_blame(void)
 {
     harness_t h;
     uint8_t buf[512], id[32];
     const gz_sign_round_t *r, *f;
     h_init(&h, 3);
-    for (int k = 0; k < 3; k++) {
-        /* member 3 is silent, so the round waits; members 1 and 2 have sent their nonces */
-        if (k == 0) CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
-        r = h_newest(&h, 0);
-        CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->def.n_participants == 4);
-        memcpy(id, r->id, 32);
-        flush_but(&h, 3, 1);
-        h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));             /* party 1 is participant 1 */
-        f = h_find(&h, 0, id);
-        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);  /* excused, each time: no allowance list */
-    }
-    r = h_newest(&h, 0);                                                /* the retry, everyone kept */
+    /* member 3 is silent, so the round waits; members 1 and 2 have sent their nonces; party 1 says it
+     * restarted (reason 3): with its nonces held, excused, once */
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    r = h_newest(&h, 0);
+    CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->def.n_participants == 4);
+    memcpy(id, r->id, 32);
+    flush_but(&h, 3, 1);
+    h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));                 /* party 1 is participant 1 */
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
+    /* the retry, everyone kept: the same again, nonces then reason 3: blamed this time. A signed reason 3
+     * is no proof of a restart; it is excused once per scope and key (review A of PR 52, H1) */
+    r = h_newest(&h, 0);
     CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && memcmp(r->id, id, 32) != 0 && r->def.n_participants == 4);
     memcpy(id, r->id, 32);
-    h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));                 /* a restart before any nonce of it was held */
+    flush_but(&h, 3, 1);
+    h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));
     f = h_find(&h, 0, id);
     CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 2u);
     r = h_newest(&h, 0);                                                /* the retry leaves party 1 out */
     CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && r->def.n_participants == 3 && w_party_of(r->def.participants[1].contribution_key) == 2);
     memcpy(id, r->id, 32);
     h_inject(&h, 2, 0, buf, make_abort(buf, id, 6, 2));                 /* no other round on its outpoint */
+    f = h_find(&h, 0, id);
+    CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 2u);
+    h_free(&h);
+    /* a restart before any of its nonces was held: blamed at once */
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    memcpy(id, h_newest(&h, 0)->id, 32);
+    h_inject(&h, 1, 0, buf, make_abort(buf, id, 3, 1));
     f = h_find(&h, 0, id);
     CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 2u);
     h_free(&h);
@@ -1251,6 +1274,18 @@ static void test_abort_blame(void)
         h_inject(&h, 1, 0, buf, make_abort(buf, id, 6, 1));
         f = h_find(&h, 0, id);
         CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
+        /* At a start, kept rounds of a scope whose lobby is gone are forgotten (review A of PR 52, L3) */
+        int kept = 0;
+        for (int k = 0; k < GZ_SIGN_MAX_KEPT; k++) kept += h.p[0].e->kept[k].used;
+        CHECK(kept > 0);
+        gz_sign_forget_kept_unless(h.p[0].e, keep_scope_open, (void *)"open");
+        kept = 0;
+        for (int k = 0; k < GZ_SIGN_MAX_KEPT; k++) kept += h.p[0].e->kept[k].used;
+        CHECK(kept > 0);                                                  /* its lobby is still open: kept */
+        gz_sign_forget_kept_unless(h.p[0].e, keep_scope_open, NULL);
+        kept = 0;
+        for (int k = 0; k < GZ_SIGN_MAX_KEPT; k++) kept += h.p[0].e->kept[k].used;
+        CHECK(kept == 0);
         h_free(&h);
     }
 }
@@ -1327,6 +1362,25 @@ static void test_proposal_scope(void)
     CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == nonces && h_newest(&h, 1) == NULL);
     h_inject(&h, 0, 1, good, len);
     CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_NONCES) == nonces + 1 && h_newest(&h, 1) != NULL);
+    h_free(&h);
+}
+
+/* A member's keys gone between tiers (its AT_JOIN gate closed, its lobby gone): at the next tier it has
+ * no factory key, says so with reason 12, and makes no partial signature for it (review A of PR 52, M3). */
+static void test_key_gone_mid_round(void)
+{
+    harness_t h;
+    h_init(&h, 3);
+    CHECK(h_begin(&h, 2, 3, 0) == GZ_OK);
+    while (h.nq && h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == 0) h_deliver(&h, 0, 0);
+    CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == 1);
+    h.builder.no_factory = 1u << 1;
+    h_flush(&h, 100000);
+    const h_sent_t *a = h_sent_kind(&h, 1, GZ_SIGN_MSG_ABORT, 0);
+    gz_sign_msg_t m;
+    CHECK(a && gz_sign_decode(a->b, a->len, &m) && m.reason == 12);
+    CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_PARTIALS) == 1 && h_newest(&h, 1)->tier_state[1] != GZ_SIGN_TIER_SIGNED);
+    h.builder.no_factory = 0;
     h_free(&h);
 }
 
@@ -1550,14 +1604,16 @@ static void test_blame_across_attempts(void)
         unblamed += f && f->blamed == 0;
     }
     CHECK(unblamed == 0);
-    /* a member whose nonces the host holds is excused every time: the rule needs no list (mutant H64's list is gone) */
+    /* a member whose nonces the host holds is excused once in the scope, then blamed: nonces then a
+     * signed reason 3, attempt after attempt, would otherwise fail every attempt unblamed (review A of
+     * PR 52, H1) */
     for (int k = 0; k < 3; k++) {
         CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
         memcpy(id, h_newest(&h, 0)->id, 32);
         flush_but(&h, 3, 1);
         h_inject(&h, 2, 0, buf, make_abort(buf, id, 3, 2));
         f = h_find(&h, 0, id);
-        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == 0);
+        CHECK(f && f->state == GZ_SIGN_ROUND_FAILED && f->blamed == (k == 0 ? 0u : 4u));
     }
     h_free(&h);
     /* Reason 6 from an honest member: the host restarts after the nonce sets of attempt 1 went out, which
@@ -1913,7 +1969,7 @@ int main(int argc, char **argv)
     SECTION("t1", test_t1());
     SECTION("crashes", test_crashes());
     SECTION("restores", test_restores());
-    SECTION("errors", (test_errors(), test_eviction_order(), test_restart_keeps_unfinished(), test_handoff_calls(), test_abort_blame(), test_result_foreign_item(), test_proposal_scope(),
+    SECTION("errors", (test_errors(), test_eviction_order(), test_restart_keeps_unfinished(), test_handoff_calls(), test_key_gone_mid_round(), test_abort_blame(), test_result_foreign_item(), test_proposal_scope(),
                        test_blame_across_attempts(), test_deadline_abort(), test_proposal_too_long(), test_ack_signature(), test_released(),
                        test_message_scope(), test_early_partials(), test_bad_ack_rate(), test_many_rounds(g_quick ? 60 : 1000)));
     printf("  illegal-argument callbacks: %d\n", g_illegal);

@@ -153,8 +153,8 @@ static int sg_scope_keys(const gz_node_t *c, const uint8_t scope[32], int *host,
 
 /* ---- the engine's hooks ------------------------------------------------------- */
 
-static int sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, secp256k1_keypair *f,
-                   secp256k1_keypair *kc)
+int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, secp256k1_keypair *f,
+               secp256k1_keypair *kc)
 {
     gz_node_t *c = ctx;
     const secp256k1_context *secp = c->cfg.secp;
@@ -661,6 +661,18 @@ const gz_engine_ops_t *gz_sg_ops(void)
     return &SG_OPS;
 }
 
+/* At a start, after the engine's resume: no Closing survives a start, so a kept host round is kept
+ * only while its scope's lobby is Open (review A of PR 52, L3). */
+static int sg_scope_open(void *ctx, const uint8_t scope[32])
+{
+    return sg_slot((const gz_node_t *)ctx, scope) >= 0;
+}
+
+void gz_sg_started(gz_node_t *c)
+{
+    if (c->sign_on) gz_sign_forget_kept_unless(c->sign, sg_scope_open, c);
+}
+
 /* The engine, at the node's init: only with a secp256k1 context (node.h). */
 gz_status_t gz_sg_init(gz_node_t *c)
 {
@@ -683,7 +695,7 @@ gz_status_t gz_sg_init(gz_node_t *c)
     sc.deadline_ticks = (uint32_t)(SG_STEP_MS / tick ? SG_STEP_MS / tick : 1);
     sc.status_ticks = sc.resend_ticks;
     sc.unfinished_ticks = (uint32_t)(SG_UNFINISHED_MS / tick ? SG_UNFINISHED_MS / tick : 1);
-    sc.keys = sg_keys;
+    sc.keys = gz_sg_keys;
     sc.may_ack = sg_may_ack;
     sc.guard = sg_guard;
     sc.outcome = sg_outcome;

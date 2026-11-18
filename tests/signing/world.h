@@ -294,7 +294,8 @@ typedef struct {
     uint32_t max_attempts, attempts_begun;
     uint64_t budget_end_ms;                     /* the signing budget the host's next begin carries (0: none) */
     uint32_t check_salt;                        /* names the check the host's next begin follows (0: the world's one check) */
-    uint32_t no_keys;                           /* bit g: the key hook gives party g no keys (no lobby, a closed gate) */
+    uint32_t no_keys;                           /* bit g: the key hook gives party g no keys (no lobby for the scope) */
+    uint32_t no_factory;                        /* bit g: no factory key, the contribution key still (AT_JOIN's gate closed) */
 } w_builder_t;
 
 /* The hooks' context of one party: the shared builder, and who the party is
@@ -320,6 +321,7 @@ static inline int w_key_hook(void *ctx, const uint8_t scope[32], const uint8_t *
     uint32_t ep = h->g && h->g < W_MAX_NODES ? h->b->epoch[h->g] : 0, ok = 1;
     (void)terms_digest; (void)scope;
     if (h->g < 32 && (h->b->no_keys >> h->g & 1u)) return 0;
+    if (f && h->g < 32 && (h->b->no_factory >> h->g & 1u)) return 0;
     if (f) { w_secret("test/factory", w_secret_index(h->g, ep), sk); ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), f, sk); }
     if (c) { w_secret("test/contribution", w_secret_index(h->g, ep), sk); ok &= (uint32_t)secp256k1_keypair_create(w_ctx(), c, sk); }
     memset(sk, 0, sizeof sk);
@@ -944,6 +946,7 @@ static void w_keys_wiped(const gz_sign_t *e)
     int left = e->keys_held != 0;
     for (size_t i = 0; i < sizeof e->work_fkp; i++) left |= f[i];
     for (size_t i = 0; i < sizeof e->work_ckp; i++) left |= c[i];
+    for (size_t i = 0; i < sizeof e->work_sk; i++) left |= e->work_sk[i];      /* the factory secret's copy (review A, L1) */
     if (left) {
         fputs("world: the engine kept a key after its call\n", stderr);
         abort();

@@ -618,6 +618,10 @@ gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t
                               gz_action_list_t *out);
 /* signslot.c */
 gz_status_t gz_sg_init(gz_node_t *c);
+void gz_sg_started(gz_node_t *c);   /* at a start, after the engine resumed */
+void gz_ls_wipe32(uint8_t *p);      /* 32 secret bytes, wiped */
+/* The engine's key hook (signing.h `keys`), for the node's tests too. */
+int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, secp256k1_keypair *f, secp256k1_keypair *kc);
 const gz_engine_ops_t *gz_sg_ops(void);
 gz_status_t gz_sg_after(gz_node_t *c, gz_action_list_t *out);
 gz_status_t gz_sg_drain(gz_node_t *c, gz_action_list_t *out);

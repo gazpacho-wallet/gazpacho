@@ -239,6 +239,7 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
             if ((st = gz_c_resume(c, ENG_SIGN, out, &more)) != GZ_OK) return st;
             if (more) return GZ_OK;
             c->resumed[ENG_SIGN] = 1;
+            gz_sg_started(c);
             if ((st = gz_c_release_held(c, ENG_SIGN, out)) != GZ_OK) return st;
         }
         c->resume_at = R_SLOT0;

@@ -10,10 +10,11 @@ builder on every member.
   1. One lobby, four members ready, three of them honest (one of those under
      AT_JOIN, readying with the passphrase) and one whose chain view is 100
      blocks ahead of the host's: its safe-to-sign checks refuse the proposal
-     (the end height is outside its window, reason 9). The host blames it and
-     it leaves; the lobby goes back to its ready check, where the AT_JOIN
-     member, whose gate closed with the attempt, readies again with the
-     passphrase; the next attempt is signed by the host and the three others: every tree transaction, every ack, Funding on every side,
+     (the end height is outside its window, reason 9). The host blames it,
+     and leaves it out of the next check although it readies again (by its
+     key); the AT_JOIN member, whose gate closed with the attempt, readies
+     again with the passphrase and the values digest it saw; the next attempt
+     is signed by the host and the three others: every tree transaction, every ack, Funding on every side,
      in the batch that holds the ack (host) or round_completed (member). The
      AT_JOIN member's scoped factory secret is forgotten after each attempt.
   2. The same lobby again, restarted: nothing is signed twice, the journals
@@ -73,9 +74,7 @@ def sign(exe, work):
         h = w.host("--tip", str(TIP), *tick)
         if not check(started(h) and w.hkey is not None, "1: the host starts"):
             return
-        # The deadline a minute away: the first check starts at the target (four ready); after the
-        # refusing member has left, the next one starts at the deadline with the minimum (three).
-        t = Terms(w.hkey, 60)
+        t = Terms(w.hkey, 900)
         w.open(h, t)
         check(h.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=10) is not None, "1: the lobby opens")
         ms = {}
@@ -91,17 +90,14 @@ def sign(exe, work):
         check(m3.wait_for(r"lobby scope=%s role=member state=\d+ seat=\d+ joined=1" % t.tag, timeout=30) is not None,
               "1: the AT_JOIN member is seated")
         mk3 = m3.mark()
-        m3.send(cmd(READY, (12, t.scope), (14, bytes([1]))))
+        m3.send(cmd(READY, (12, t.scope), (14, bytes([1])), (16, lobby.th("gazpacho/terms/current", t.current))))
         # The first attempt: four chosen; m4 refuses; the host blames it.
         check(ms["m4"].wait_for(r"sign-refused scope=%s .*rule=\d+ reason=9" % t.tag, timeout=90) is not None,
               "1: the member with another chain view refuses the proposal (reason 9)")
         check(h.wait_for(r"sign-outcome scope=%s .*outcome=2 blamed=1" % t.tag, timeout=90) is not None,
               "1: the host blames it: Retry, one member named")
-        # Its person, told the terms do not fit its chain view, leaves (an AUTO member that stayed would
-        # ready again, be chosen again and refuse again).
-        ms["m4"].send(cmd(LEAVE, (12, t.scope)))
-        check(h.wait_for(r"lobby scope=%s role=host state=1 joined=3 " % t.tag, timeout=30) is not None,
-              "1: the refusing member leaves the lobby")
+        # It stays and, under AUTO, readies again; the host leaves it out of the next check, by its key
+        # (review A of PR 52, M1), so it is not chosen, refused and blamed again until the budget ends.
         # AT_JOIN: the attempt over, the gate closes and the scoped secret is forgotten; back at the ready
         # check the seat is locked until the person readies again with the passphrase (12.2).
         i = m3.index_of(r"key-forget scope=%s" % t.tag, timeout=30, start=mk3)
@@ -109,13 +105,14 @@ def sign(exe, work):
         check(m3.wait_for(r"lobby scope=%s role=member state=1 .*ready=0" % t.tag, timeout=30, start=i or 0) is not None,
               "1: back at the ready check the AT_JOIN member is locked")
         mk3 = m3.mark()
-        m3.send(cmd(READY, (12, t.scope), (14, bytes([1]))))
+        m3.send(cmd(READY, (12, t.scope), (14, bytes([1])), (16, lobby.th("gazpacho/terms/current", t.current))))
         # The next attempt, without it: Funding everywhere it signed.
         check(state(h, t, "host", 4, timeout=180), "1: the host reaches Funding")
         for n in ("m1", "m2", "m3"):
             check(state(ms[n], t, "member", 4, timeout=60), "1: %s reaches Funding" % n)
         for n in ("m1", "m2", "m3"):
             check(ms[n].count(r"sign-refused") == 0, "1: %s never refuses" % n)
+        check(ms["m4"].count(r"sign-refused") == 1, "1: the refusing member, still in the lobby, was chosen once only")
         check(h.count(r"sign-begin scope=%s .*members=4" % t.tag) >= 1 and h.count(r"sign-begin scope=%s .*members=3" % t.tag) == 1,
               "1: the first attempt with four members, the one that is signed with three")
         check(h.count(r"sign-outcome scope=%s .*outcome=1 " % t.tag) == 1, "1: one Funding outcome on the host")

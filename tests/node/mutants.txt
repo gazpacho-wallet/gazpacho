@@ -263,3 +263,5 @@ sg-outcome-not-queued	core/node/signslot.c	if (c->busy[eng] || c->sg_defer) retu
 sg-begin-no-tip	core/node/signslot.c	if (!c->tip) return sg_refuse_begin(c, h, "sign-begin-refused-no-tip", out);	
 sg-timer-budget	core/node/timers.c	if (eng == ENG_SIGN) return 1;      /* the engine's one tick timer */	if (eng == ENG_SIGN) return 2;
 sg-init-without-secp	core/node/signslot.c	if (!c->cfg.secp || !c->cfg.sign_mem	if (!c->cfg.sign_mem
+sg-ready-any-digest	core/node/lobbyslot.c	if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0)	if (0)
+sg-refused-ready-rebinds	core/node/lobbyslot.c	        memcpy(s->gate_digest, old_digest, 32);	

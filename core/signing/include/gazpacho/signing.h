@@ -419,6 +419,9 @@ struct gz_sign_round {
     uint8_t all_nonces_digest[GZ_SIGN_MAX_TIERS][32];
     uint8_t have_all_nonces[GZ_SIGN_MAX_TIERS];
     uint32_t acked;                 /* host: bit j = participant j acked */
+    uint32_t excused;               /* host: bit j = participant j's reason 3 was excused in this round (once per scope and key) */
+    uint8_t abort_from;             /* host: the participant whose signed abort failed the round (why MEMBER_ABORT) */
+    uint16_t abort_reason;          /* and its reason */
     uint32_t nonce_ticks;           /* the nonce step's deadline in this party's ticks, from the proposal's nonces_due_ms; a member's with its margin */
     uint64_t status_tick[GZ_SIGN_MAX_PARTICIPANTS];   /* host: the tick a status request was last answered + 1 */
     /* member: its own saved messages and the host's it verified */
@@ -448,7 +451,7 @@ struct gz_sign_round {
 typedef struct {
     uint8_t used, state, why, released, n_participants, n_tiers, tiers_done;
     uint16_t n_items;
-    uint32_t blamed, acked, seq;
+    uint32_t blamed, acked, seq, excused;
     uint64_t answered;              /* the tick (+ 1) of its last status answer */
     uint8_t id[32], scope[32], check_id[32], funding_txid[32];
     uint32_t funding_vout;
@@ -600,6 +603,10 @@ gz_status_t gz_sign_member_left(gz_sign_t *e, const uint8_t scope[32], const uin
 /* Host: the scope's Closing end: its compact rounds are forgotten (H12 is
  * answered while a member can still need it, composite-node.md 2.4). */
 void gz_sign_forget_scope(gz_sign_t *e, const uint8_t scope[32]);
+/* At a start, after gz_sign_resume: forget the kept host rounds of every scope `keep` says is gone
+ * (review A of PR 52, L3: a scope whose Closing ended before the restart is otherwise kept again, and
+ * keeps the tick running, for good). */
+void gz_sign_forget_kept_unless(gz_sign_t *e, int (*keep)(void *ctx, const uint8_t scope[32]), void *ctx);
 
 /* 1 if this engine holds any round under `scope` (in full or compactly, or
  * an exposure entry's round): round kinds under it route here

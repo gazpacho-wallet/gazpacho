@@ -160,7 +160,11 @@
  *                     address ("host:port"), 18 the member's conditions
  *                     (lobbyslot.c; absent: none), 20 auto-join (u8, default 1)
  *   LOBBY_READY       member: 12 scope, 14 unlock (u8: 1 when given with the
- *                     passphrase, which opens that lobby's signing gate)
+ *                     passphrase, which opens that lobby's signing gate), 16
+ *                     the values digest the person reviewed (32; required
+ *                     with 14 under AT_JOIN: the gate binds to it, and a
+ *                     ready for values that have changed since is refused 409
+ *                     terms_changed, the gate untouched)
  *   LOBBY_UNREADY, LOBBY_LEAVE   member: 12 scope
  *   LOBBY_SET_VALUES  host: 12 scope, 14 the values (u64 each)
  *   LOBBY_REMOVE      host: 12 scope, 14 the seat's contribution key (33)
@@ -175,10 +179,15 @@
  * no signing engine: its release build answers LOBBY_OPEN and LOBBY_JOIN
  * with 503 signing_unavailable, since a lobby that could start a round
  * nobody signs must not open.
- * SIGNING_SET (local-api.md 14.3, open point 46) sets member_signing at run
- * time: 12 the setting (u8: 0 AT_JOIN, 1 AUTO, 2 WHEN_UNLOCKED); every gate
- * is closed (the node-wide one locked, each lobby's scoped secret wiped), and
- * a member that is Ready with no check in flight says unready reason 3. */
+ * SIGNING_SET sets member_signing at run time: 12 the setting (u8: 0
+ * AT_JOIN, 1 AUTO, 2 WHEN_UNLOCKED); every gate is closed (the node-wide one
+ * locked, each lobby's scoped secret wiped), and a member that is Ready with
+ * no check in flight says unready reason 3. This is open point 46's runtime
+ * switch, in memory only: nothing is saved, and the node's configuration
+ * gives the setting again at the next start. What applies to the person is
+ * local-api.md 14.3: `PUT /api/v1/signing` saves the setting and it takes
+ * effect at the next start; the program uses this command only once the
+ * runtime switch (open point 46) is decided. */
 #define GZ_CMD_LOBBY_OPEN       0x0101u
 #define GZ_CMD_LOBBY_JOIN       0x0102u
 #define GZ_CMD_LOBBY_READY      0x0103u
