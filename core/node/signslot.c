@@ -226,6 +226,22 @@ int gz_sg_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip)
     return gz_tree_may_ack(r->def.end_height, prm.depth[r->me - 1], c->tip, &cond);   /* RULE-NODE:ACK_OWN_DEPTH */
 }
 
+/* A member's leaf depth in round r, worked out as gz_sg_may_ack does: the round's own, from its lobby's
+ * terms and the member's place, never a slot's leftover (review B of PR 52, M1). 1 with *depth set, or 0
+ * when it cannot be had. For the funding engine's member side (P4.6, F12). */
+int gz_sg_own_depth(const gz_node_t *c, const gz_sign_round_t *r, uint8_t *depth)
+{
+    gz_tree_params_t prm;
+    int i = r ? sg_slot(c, r->def.outer_digest) : -1;
+    if (i < 0) return 0;
+    const slot_t *s = &c->slots[i];
+    if (s->host || !s->lobby.m.have_terms || r->me < 1 || r->me >= r->def.n_participants ||
+        gz_tree_params(&s->lobby.m.terms, (uint32_t)r->def.n_participants - 1, &prm) != GZ_TREE_P_OK)
+        return 0;
+    *depth = prm.depth[r->me - 1];
+    return 1;
+}
+
 /* Give an outcome to slot i's lobby, inside the current call. */
 static gz_status_t sg_deliver(gz_node_t *c, int i, int kind, const uint8_t *check, const uint8_t *blamed, size_t n_blamed,
                               gz_action_list_t *out)
@@ -300,7 +316,7 @@ static gz_status_t sg_outcome(void *ctx, const gz_sign_outcome_t *o, gz_action_l
     /* Funding, after the lobby's save and in the same bracket: the host applies H1's verdict (AUTO signs,
      * saves, broadcasts); a member starts to watch the funding from its ack (P4.6). */
     if (c->fund_on && o->kind == GZ_SIGN_OUTCOME_FUNDING)
-        return c->cfg.host ? gz_fd_apply(c, o->scope, out) : gz_fd_member_acked(c, o, c->slots[i].own_depth, out);
+        return c->cfg.host ? gz_fd_apply(c, o->scope, out) : gz_fd_member_acked(c, o, out);
     return GZ_OK;
 }
 

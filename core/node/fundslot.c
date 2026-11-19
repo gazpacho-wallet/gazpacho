@@ -166,7 +166,7 @@ static gz_status_t fd_acked_call(gz_node_t *c, void *a, gz_action_list_t *out)
     return gz_fund_member_acked(c->fund, (const gz_fund_acked_in_t *)a, out);
 }
 
-gz_status_t gz_fd_member_acked(gz_node_t *c, const gz_sign_outcome_t *o, uint8_t own_depth, gz_action_list_t *out)
+gz_status_t gz_fd_member_acked(gz_node_t *c, const gz_sign_outcome_t *o, gz_action_list_t *out)
 {
     const gz_sign_round_t *r = gz_fd_round(c, o->round_id, o->scope);
     gz_fund_acked_in_t in;
@@ -174,6 +174,9 @@ gz_status_t gz_fd_member_acked(gz_node_t *c, const gz_sign_outcome_t *o, uint8_t
     uint16_t have = 0;
     if (!c->fund_on) return GZ_OK;
     if (!r || !fd_proposed_tx(c, r, &tx)) return fd_line(c, out, "fund-acked-no-round", o->scope, NULL, 0);
+    uint8_t depth = 0;
+    if (!gz_sg_own_depth(c, r, &depth))      /* the round's own depth (review B of PR 52, M1): fail closed */
+        return fd_line(c, out, "fund-acked-no-depth", o->scope, NULL, 0);
     memset(&in, 0, sizeof in);
     memcpy(in.scope, o->scope, 32);
     in.funding_tx = tx.data;
@@ -184,7 +187,7 @@ gz_status_t gz_fd_member_acked(gz_node_t *c, const gz_sign_outcome_t *o, uint8_t
     memcpy(in.script, r->def.funding_script, 34);
     in.ack_tip = r->ack_tip;
     in.end_height = r->def.end_height;
-    in.own_depth = own_depth;
+    in.own_depth = depth;
     for (uint16_t i = 0; i < r->def.n_items; i++) have += r->have_final[i] ? 1 : 0;
     in.whole_tree = have == r->def.n_items;
     in.exit = gz_exit_signet();

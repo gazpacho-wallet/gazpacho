@@ -721,7 +721,8 @@ const gz_engine_ops_t *gz_fd_ops(void);
 gz_status_t gz_fd_plan(gz_node_t *c, const gz_fund_plan_in_t *in, gz_action_list_t *out, gz_fund_plan_out_t *res);
 int gz_fd_h1(gz_node_t *c, const gz_sign_outcome_t *o);
 gz_status_t gz_fd_apply(gz_node_t *c, const uint8_t scope[32], gz_action_list_t *out);
-gz_status_t gz_fd_member_acked(gz_node_t *c, const gz_sign_outcome_t *o, uint8_t own_depth, gz_action_list_t *out);
+gz_status_t gz_fd_member_acked(gz_node_t *c, const gz_sign_outcome_t *o, gz_action_list_t *out);
+int gz_sg_own_depth(const gz_node_t *c, const gz_sign_round_t *r, uint8_t *depth);
 const gz_sign_round_t *gz_fd_round(const gz_node_t *c, const uint8_t *round_id, const uint8_t scope[32]);
 size_t np_guard_for_round(gz_node_t *c, uint8_t *buf);
 
