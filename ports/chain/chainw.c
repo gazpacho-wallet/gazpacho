@@ -288,6 +288,7 @@ gz_chainw *gz_chainw_new(const gz_chainw_config *cfg) {
   ec.header_window = cfg->header_window;
   ec.max_catchup = cfg->max_catchup;
   ec.max_link = cfg->max_link;
+  ec.report_synced = cfg->report_synced;
   ec.now_ms = w->cfg.now_ms;
   ec.clock_ctx = w->cfg.clock_ctx;
   ec.stop = engine_stop;

@@ -2,7 +2,7 @@
 """Run the compiled CTest tests of a build under valgrind's memcheck.
 
     python -I tools/valgrind-tests.py BUILD_DIR [-j N] [--exclude REGEX] [--include REGEX]
-                                      [--args "NAME=ARG ..."]
+                                      [--args "NAME=ARG ..."] [--shard I/N]
 
 Asks CTest for the registered tests (ctest --show-only=json-v1) and runs each
 one whose command is a program built in BUILD_DIR, with the same arguments and
@@ -18,6 +18,10 @@ fails on its own or if valgrind reports a memory error or a definite leak.
 (valgrind is twenty to fifty times slower than the program alone). Tests run
 N at a time (default: the number of processors); each test's own
 output is printed in one piece when it finishes. Exits 1 if any test failed.
+--shard I/N (I from 0) runs only every Nth of the selected tests, by name
+order, starting at the Ith: the N shards together run each selected test
+exactly once. The --args check is made on the whole selection, before the shard
+is taken, so it is as strict as without --shard.
 Standard library only.
 """
 import argparse
@@ -40,6 +44,7 @@ def main():
     ap.add_argument("--include", default=None, help="run only tests whose name matches")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1)
     ap.add_argument("-v", "--verbose", action="store_true", help="print every test's output")
+    ap.add_argument("--shard", default=None, metavar="I/N", help="run only shard I (from 0) of N, by name order")
     ap.add_argument("--args", action="append", default=[], metavar="NAME=ARGS",
                     help="run test NAME with these arguments instead (space-separated)")
     args = ap.parse_args()
@@ -53,7 +58,7 @@ def main():
         ["ctest", "--test-dir", build, "--show-only=json-v1"],
         check=True, capture_output=True, text=True).stdout)
 
-    jobs, skipped = [], []
+    jobs, skipped, changed = [], [], set()
     for t in info.get("tests", []):
         name, cmd = t["name"], t.get("command") or []
         if args.include and not re.search(args.include, name):
@@ -71,12 +76,23 @@ def main():
                 will_fail = str(p.get("value")).upper() in ("1", "ON", "TRUE", "YES", "Y")
         if name in override:
             cmd = cmd[:1] + override.pop(name)
-            print("%s: run as %s" % (name, " ".join(os.path.basename(c) if i == 0 else c
-                                                     for i, c in enumerate(cmd))))
+            changed.add(name)
         jobs.append((name, cmd, cwd, will_fail))
     if override:
         print("FAIL: --args names no test: %s" % ", ".join(sorted(override)))
         return 1
+    if args.shard:
+        m = re.fullmatch(r"(\d+)/(\d+)", args.shard)
+        if not m or int(m.group(2)) < 1 or int(m.group(1)) >= int(m.group(2)):
+            print("FAIL: --shard wants I/N with 0 <= I < N")
+            return 1
+        i, n = int(m.group(1)), int(m.group(2))
+        jobs = [j for k, j in enumerate(sorted(jobs, key=lambda j: j[0])) if k % n == i]
+        print("shard %d of %d: %d tests: %s" % (i, n, len(jobs), " ".join(j[0] for j in jobs)))
+    for name, cmd, _, _ in jobs:
+        if name in changed:
+            print("%s: run as %s" % (name, " ".join(os.path.basename(c) if i == 0 else c
+                                                     for i, c in enumerate(cmd))))
 
     def run(job):
         name, cmd, cwd, will_fail = job

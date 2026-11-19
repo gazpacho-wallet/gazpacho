@@ -382,6 +382,11 @@ gz_status_t gz_c_postprocess(gz_node_t *c, size_t from, int merge_all, gz_action
                 drop_action(c, out, i);
                 continue;
             }
+        } else if (a->kind == GZ_ACTION_UNWATCH) {
+            if (!gz_watch_unnote(c, a, eng)) {
+                drop_action(c, out, i);
+                continue;
+            }
         } else if (a->kind == GZ_ACTION_SET_SEATED && eng >= ENG_SLOT0) {
             if (!seat_note(&c->slots[eng - ENG_SLOT0], &a->u.set_seated.member, a->u.set_seated.seated))
                 return gz_c_bug(c, eng); /* past the seat table: its own cap should have refused */
