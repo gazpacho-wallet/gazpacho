@@ -368,8 +368,9 @@ typedef struct {
                 secp256k1_keypair *contribution);
     /* Member, before every round_ack it would make (gz_tree_may_ack): 1 to
      * ack, with its tip in *ack_tip (saved with the ack, in round_completed);
-     * 0 not to ack (the round is then Abandoned at its unfinished deadline).
-     * NULL: always ack, tip 0. */
+     * 0 not to ack (the round is then Abandoned at its unfinished deadline);
+     * -1 not yet (nothing to judge from, such as no tip: the round_complete
+     * is ignored and the host's next one asks again). NULL: always ack, tip 0. */
     int (*may_ack)(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip);
     /* The node's guard record (journal.md 8.3) for the batch of every
      * round_started: 1 and *rec filled (type GZ_SIGN_REC_GUARD, bytes valid

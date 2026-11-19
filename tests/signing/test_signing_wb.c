@@ -133,6 +133,10 @@ static void test_one_partial(void)
         CHECK(g_illegal == illegal && memcmp(psig, r->psig[i][s], 32) == 0);
         CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == made);
         r->secnonce_serial[i] = 0;
+        r->have_psig[i] &= ~bit((unsigned)s);                            /* no secret, the slot empty (review B, L5) */
+        CHECK(sign_item(h.p[1].e, r, i, out) == 0 && g_illegal == illegal && memcmp(psig, r->psig[i][s], 32) == 0);
+        CHECK(h.p[1].e->counters[GZ_SIGN_COUNT_PARTIALS_MADE] == made);
+        r->have_psig[i] |= bit((unsigned)s);
         put_keys(h.p[1].e, took);
     }
     h_free(&h);
@@ -1425,6 +1429,28 @@ static void test_excuse_only_released(void)
 /* EARLY_NONCES: nonces for a later tier are early (kept) only from a member with no item in any tier from
  * the one under way up to theirs. A round of three tiers: the first item alone in tier 0, the items
  * without member 3 in tier 1, the rest in tier 2; tier 1 under way. */
+/* ACK_WAITS_FOR_TIP (review B of PR 52, L4): a may_ack with nothing to judge from yet answers -1: the
+ * member neither acks nor refuses (no Retry, the round still Active), and once it can judge, the host's
+ * next round_complete is acked and the round completes. */
+static void test_ack_waits_for_tip(void)
+{
+    harness_t h;
+    h_init(&h, 1);
+    h.builder.ack_wait = 1u << 1;
+    CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+    h_flush(&h, 100000);
+    const gz_sign_round_t *r = h_newest(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_ACTIVE && !r->ack_refused && r->why == 0);
+    CHECK(h_count_kind(&h, 1, GZ_SIGN_MSG_ACK) == 0 && h.builder.m_n_outcomes[1] == 0 && h.builder.may_ack_calls >= 1);
+    h.builder.ack_wait = 0;
+    h_ticks(&h, 8);                                                 /* the host's round_complete again */
+    r = h_newest(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_COMPLETE && h_count_kind(&h, 1, GZ_SIGN_MSG_ACK) >= 1);
+    CHECK(h_newest(&h, 0) && h_newest(&h, 0)->state == GZ_SIGN_ROUND_DONE);
+    CHECK(h.builder.m_n_outcomes[1] == 1 && h.builder.m_outcomes[1][0] == GZ_SIGN_OUTCOME_FUNDING);
+    h_free(&h);
+}
+
 static void test_early_nonces(void)
 {
     harness_t h;
@@ -1490,6 +1516,7 @@ int main(void)
     test_exposure_per_round();
     test_excuse_only_released();
     test_early_nonces();
+    test_ack_waits_for_tip();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);

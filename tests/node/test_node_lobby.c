@@ -2032,6 +2032,58 @@ static void test_api_pause_and_signing(void)
     CHECK(w_restart(1) == GZ_OK && N[1].n->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN);
     w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
     CHECK(vf(w, GZ_VST_SIGNING, &v) && v.data[0] == GZ_MEMBER_SIGNING_AT_JOIN && v.data[1] == 0xff);
+/* Review B of PR 52, M1 and L4: the member's ack-time check judges the round's own leaf depth, also after
+ * a start, which restores nothing a builder left in the slot; and with no tip it says not yet, never no.
+ * Member 1 restarts on its storage; the hook is then asked about a round in its lobby, at the last tip its
+ * true depth acks at, one block later (which depth 0 would still ack), and with no tip. */
+static void test_may_ack_depth(void)
+{
+    terms_t t;
+    gz_tree_params_t prm;
+    gz_tree_conditions_t cond;
+    static gz_sign_round_t r;
+    uint32_t tip = 0, good = 0, bad = 0;
+    uint8_t me = 0;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(w_restart(1) == GZ_OK);
+    w_run(2000, 100);
+    slot_t *s = slot(1, &t);
+    CHECK(s && N[1].n->sign_on && s->lobby.m.have_terms);
+    if (!s || gz_tree_params(&s->lobby.m.terms, 3, &prm) != GZ_TREE_P_OK) { CHECK(0); w_free(3); return; }
+    for (uint8_t j = 1; j <= 3; j++) if (!me || prm.depth[j - 1] > prm.depth[me - 1]) me = j;
+    CHECK(prm.depth[me - 1] >= 1);
+    memset(&r, 0, sizeof r);
+    memcpy(r.def.outer_digest, t.scope, 32);
+    r.def.n_participants = 4;
+    r.me = me;
+    r.def.end_height = 100000;
+    memset(&cond, 0, sizeof cond);
+    cond.exit = gz_exit_signet();
+    cond.funding_deadline_blocks = 36;
+    cond.end_window = 6;
+    for (uint32_t x = 1; x < r.def.end_height; x++) {
+        if (!gz_tree_may_ack(r.def.end_height, prm.depth[me - 1], x, &cond)) { bad = x; break; }
+        good = x;
+    }
+    CHECK(good && bad == good + 1 && gz_tree_may_ack(r.def.end_height, 0, bad, &cond));
+    N[1].n->tip = good;
+    CHECK(gz_sg_may_ack(N[1].n, &r, &tip) == 1 && tip == good);
+    N[1].n->tip = bad;
+    CHECK(gz_sg_may_ack(N[1].n, &r, &tip) == 0);
+    N[1].n->tip = 0;
+    CHECK(gz_sg_may_ack(N[1].n, &r, &tip) == -1);
+    r.def.outer_digest[0] ^= 1;                                     /* no lobby for it: no */
+    N[1].n->tip = good;
+    CHECK(gz_sg_may_ack(N[1].n, &r, &tip) == 0);
     no_errors(3);
     w_free(3);
 }
@@ -2103,6 +2155,62 @@ static void test_api_unknown_record(void)
         h_free(x);
         memset(x, 0, sizeof *x);
     }
+/* RULE-NODE:ROUTE_HELD (H12, 2.4): a round message for a scope the signing engine still holds (a round
+ * in a slot, or one kept compactly) goes to the engine, also where the lobby does not take it: no slot
+ * for the scope (a lobby ended), or a member's slot that does not take rounds. One it does not hold is
+ * dropped there. The engine's own memory is set by hand, then cleared. */
+static void test_route_held(void)
+{
+    terms_t t;
+    uint8_t other[32];
+    gz_bytes_t none = {NULL, 0};
+    lt_key_t hk;
+    gz_link_t l;
+    rt_t r;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(2, 2, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node(3, 3, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 4, 3000);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    gz_node_t *c = N[1].n;
+    slot_t *s = slot(1, &t);
+    CHECK(s && c->sign_on && c->sign);
+    if (!s || !c->sign) { w_free(3); return; }
+    whost(&hk);
+    l = h_link(hk.pub, hk.pub);
+    memset(other, 0x5c, 32);
+    /* no slot for the scope */
+    CHECK(gz_route_slot_by_scope(c, other) < 0);
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, other, none);
+    CHECK(r.kind == RT_DROP && r.drop == DROP_NO_SLOT);
+    c->sign->kept[0].used = 1;
+    memcpy(c->sign->kept[0].scope, other, 32);
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, other, none);
+    CHECK(r.kind == RT_SIGNING);
+    memset(&c->sign->kept[0], 0, sizeof c->sign->kept[0]);
+    c->sign->rounds[0].state = GZ_SIGN_ROUND_DEAD;
+    memcpy(c->sign->rounds[0].def.outer_digest, other, 32);
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, other, none);
+    CHECK(r.kind == RT_SIGNING);
+    memset(&c->sign->rounds[0], 0, sizeof c->sign->rounds[0]);
+    /* the member's slot, not taking rounds */
+    int was = s->round_ok;
+    s->round_ok = 0;
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, t.scope, none);
+    CHECK(r.kind == RT_DROP && r.drop == DROP_NO_SLOT);
+    c->sign->kept[0].used = 1;
+    memcpy(c->sign->kept[0].scope, t.scope, 32);
+    r = gz_route_message(c, -1, &l, GZ_MSG_KIND_ROUND_FIRST, t.scope, none);
+    CHECK(r.kind == RT_SIGNING);
+    memset(&c->sign->kept[0], 0, sizeof c->sign->kept[0]);
+    s->round_ok = was;
+    no_errors(3);
+    w_free(3);
 }
 
 int main(int argc, char **argv)
@@ -2117,6 +2225,8 @@ int main(int argc, char **argv)
     test_signing_set();
     test_at_join_key_hook();
     test_tree_cap();
+    test_may_ack_depth();
+    test_route_held();
     test_index();
     test_key_skip();
     test_epoch_ok();

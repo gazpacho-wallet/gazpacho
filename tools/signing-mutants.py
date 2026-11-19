@@ -23,6 +23,7 @@ RULES = {
     "S2_KNOWN_ROUND": ("if (r) {", "if (0) {"),
     "S2_ONE_NONCE": ("if (s < 0 || r->secnonce_serial[i] || (r->have_nonce[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
     "S2_ONE_PARTIAL": ("if (s < 0 || !r->secnonce_serial[i] || (r->have_psig[i] >> s & 1u)) return 0;", "if (s < 0) return 0;"),
+    "S2_PARTIAL_NEEDS_SECRET": ("if (s < 0 || !r->secnonce_serial[i] ||", "if (s < 0 ||"),   # review B, L5
     "S3_RESEND_SAVED": ("send_host(em, r, r->nonces_msg, r->nonces_len);", "{}"),
     "S4_FRESH_ID": ("gz_sign_sha256_write(&s, host_random, 32);", "(void)host_random;"),
     "HOST_RANDOM_MIX": ("hw.n = 32; put64(&hw, e->incarnation); put64(&hw, e->attempt_counter++);", "hw.n = 32;"),
@@ -40,7 +41,9 @@ RULES = {
     "C10_UNRESOLVED": ("return GZ_SIGN_WHY_BUSY;", "{}"),
     "C7_OTHER_TREE": ("!same(e->exposures[i].tree_digest, r->def.tree_digest, 32)) return GZ_SIGN_WHY_OTHER_TREE;", "0) return GZ_SIGN_WHY_OTHER_TREE;"),
     "EXPOSURE_FIRST": ("save_exposure(e, r, t, em);", "if (0) save_exposure(e, r, t, em);"),
-    "MAY_ACK": ("if (e->cfg.may_ack && !e->cfg.may_ack(e->cfg.hook_ctx, r, &tip)) {", "if (0) {"),
+    "MAY_ACK": ("if (!may) {", "if (0) {"),
+    # review B of PR 52, L4: no tip is not yet, never a no
+    "ACK_WAITS_FOR_TIP": ("if (may < 0) return;", "{}"),
     "OLD_EPOCH_REFUSED": ("return refuse_id(e, id);", "return 1;"),
     "UNFINISHED_ABANDONED": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "r->state = GZ_SIGN_ROUND_UNFINISHED;"),
     "PER_ITEM_ANSWER": ("wr32(q, (uint32_t)i); q += 4;", "wr32(q, 0u); q += 4;"),
