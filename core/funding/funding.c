@@ -1543,7 +1543,7 @@ static void chain_event(gz_fund_t *f, const gz_chain_event_t *c)
                 if (memcmp(q.txid, c->outpoint.txid, 32) == 0 && q.vout == c->outpoint.vout) which |= 2u << j;
             }
             if (c->kind == GZ_CHAIN_WATCH_PENDING) {
-                if (!x->pending && which) x->pending_tip = f->tip;   /* the grace counts from here (P-1) */
+                if (!x->pending && which) x->pending_tip = f->tip_known ? f->tip : 0;   /* the grace counts from here (P-1); 0: from the first tip (C-1) */
                 x->pending |= which;
             }
             else x->pending &= ~which;
@@ -1647,6 +1647,8 @@ static gz_status_t gz_fund_handle_in(void *e, const gz_event_t *ev, gz_action_li
             f->tip_known = 1;
             f->tip_synced = 0;   /* its reports may still be coming */
             memcpy(f->tip_hash, ev->u.chain.block_hash, 32);   /* G-2 */
+            for (size_t i = 0; i < GZ_FUND_MAX_FACTORIES; i++)   /* told pending before any tip (C-1) */
+                if (f->fac[i].used && f->fac[i].pending && f->fac[i].pending_tip == 0) f->fac[i].pending_tip = f->tip;
             for (size_t i = 0; i < GZ_FUND_MAX_FACTORIES; i++)
                 if (f->fac[i].used) {
                     gz_fund_factory_t *y = &f->fac[i];
