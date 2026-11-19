@@ -249,6 +249,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_ack_depth
     COMMAND ${GZP_PY} ${GZP_T}/ack_depth.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/ack_depth)
   set_tests_properties(program_ack_depth PROPERTIES TIMEOUT 600)
+  # B17, Slice 1 blocker C1: with partial signatures out, a leave is refused and a pause holds;
+  # the host can still fund the factory.
+  add_test(NAME program_partials_hold
+    COMMAND ${GZP_PY} ${GZP_T}/partials_hold.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/partials_hold)
+  set_tests_properties(program_partials_hold PROPERTIES TIMEOUT 600)
   # Slice 1 on signet, against public servers: opt in (GZ_LIVE_TESTS=1 and GZ_SIGNET_DIR, a folder
   # kept between runs); skipped otherwise, and when the host's address holds no coin.
   add_test(NAME program_slice1_signet
