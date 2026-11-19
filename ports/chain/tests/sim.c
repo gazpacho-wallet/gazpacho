@@ -38,6 +38,14 @@ static void plain_hex(const uint8_t *in, size_t len, char *out) {
 
 /* ---- the world ----------------------------------------------------------- */
 
+/* Which of the world's transactions t is, if a view gives it another
+ * witness; -1 otherwise (a coinbase, or no other witness). */
+static int alt_index(const sim_view *v, const sim_tx *t) {
+  for (int k = 0; k < SIM_NTX; k++)
+    if (t == &v->w->tx[k]) return v->alt_witness[k] ? k : -1;
+  return -1;
+}
+
 static void finish_tx(sim_tx *t) {
   if (!gz_txid_from_raw(t->raw, t->len, t->id)) {
     fprintf(stderr, "sim: a made-up transaction does not parse\n");
@@ -511,6 +519,25 @@ static bool honest(sim_view *v, bool post, const char *path, const uint8_t *body
       if (known == 0) {
         *status = 404;
         *len = (size_t)snprintf(out, cap, "Transaction not found");
+      } else if (alt_index(v, t) >= 0 && t->raw[4] == 1) {
+        /* the same transaction with a witness: marker and flag after the
+         * version, one item for its one input before the lock time */
+        uint8_t wit[sizeof t->raw + 8];
+        char h[2 * sizeof wit + 1];
+        size_t n = 0;
+        memcpy(wit, t->raw, 4);
+        n = 4;
+        wit[n++] = 0;
+        wit[n++] = 1;
+        memcpy(wit + n, t->raw + 4, t->len - 8);
+        n += t->len - 8;
+        wit[n++] = 1;
+        wit[n++] = 1;
+        wit[n++] = 0x77;
+        memcpy(wit + n, t->raw + t->len - 4, 4);
+        n += 4;
+        plain_hex(wit, n, h);
+        *len = (size_t)snprintf(out, cap, "%s", h);
       } else {
         char h[2 * sizeof t->raw + 1];
         plain_hex(t->raw, t->len, h);

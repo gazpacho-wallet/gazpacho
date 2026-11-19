@@ -1183,15 +1183,22 @@ static void test_disagree_raw_tx_and_proof(test_state *T) {
   size_t n = 5, len;
   mfx_open(&x, 2);
   ids_init(&k);
-  /* Server two alters a witness byte. The txid still matches, so only the
-   * byte comparison can notice. */
+  /* Server two alters a witness byte: the same txid, another wtxid. That is
+   * the same transaction (C-2: a host can make two valid witnesses for its
+   * funding and give each server its own), so the servers agree; what is
+   * handed over is one server's bytes, whole, and they are this txid. */
+  uint8_t mine[1024], theirs[1024], check[GZ_HASH_LEN];
+  size_t n_mine = 0, n_theirs = 0;
   char *hex = test_read_data("tx_a_hex.txt", &len);
   hex[len - 20] = hex[len - 20] == '0' ? '1' : '0';
   fake_set(&x.fake[1], false, B1 "/tx/" TX_A "/hex", 200, hex);
   free(hex);
-  CHECK_RESULT(gz_chain_raw_tx(&x.server[1], k.a, raw, sizeof raw, &n), GZ_CHAIN_OK);
-  CHECK_RESULT(gz_chain_raw_tx(&x.multi, k.a, raw, sizeof raw, &n), GZ_CHAIN_DISAGREE);
-  CHECK(n == 0 && raw[0] == 0 && raw[100] == 0); /* nothing handed over */
+  CHECK_RESULT(gz_chain_raw_tx(&x.server[0], k.a, mine, sizeof mine, &n_mine), GZ_CHAIN_OK);
+  CHECK_RESULT(gz_chain_raw_tx(&x.server[1], k.a, theirs, sizeof theirs, &n_theirs), GZ_CHAIN_OK);
+  CHECK(n_mine == n_theirs && memcmp(mine, theirs, n_mine) != 0); /* a witness byte apart */
+  CHECK_RESULT(gz_chain_raw_tx(&x.multi, k.a, raw, sizeof raw, &n), GZ_CHAIN_OK);
+  CHECK((n == n_mine && memcmp(raw, mine, n) == 0) || (n == n_theirs && memcmp(raw, theirs, n) == 0));
+  CHECK(gz_txid_from_raw(raw, n, check) && memcmp(check, k.a, GZ_HASH_LEN) == 0);
 
   /* proofs that differ in one thing each */
   char *json = test_read_data("tx_a_merkle_proof.json", &len);
