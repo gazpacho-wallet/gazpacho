@@ -2219,6 +2219,8 @@ static void test_api_request_keep(void)
     CHECK(w_pause(0, 0, "KeepFill0000000599") == 200 && N[0].n_batches == nb);   /* the newest: a replay */
     CHECK(res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
     CHECK(gz_api_req_kept(N[0].n, "KeepFill0000000000") == 0);                   /* the ring's oldest went */
+    CHECK(gz_api_req_kept(N[0].n, "KeepFill0000000590") == 1 && gz_api_req_kept(N[0].n, "KeepFill0000000568") == 1 &&
+          gz_api_req_kept(N[0].n, "KeepFill0000000567") == 0); /* the newest GZ_API_RING (32) of them, no more */
     /* The open of the live lobby is still kept, and a replay. */
     CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200 && N[0].n_batches == nb);
     CHECK(res_text(0, GZ_RESULT_REC_OBJECT, q, sizeof q) && !strcmp(q, oid));
