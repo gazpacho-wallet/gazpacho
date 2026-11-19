@@ -277,6 +277,17 @@ typedef struct {
        change index of any offered coin.  May be NULL when n_used is 0. */
     const uint32_t *used_change_indexes;
     size_t n_used_change_indexes;
+    /* H11 (safety-rule.md): with must_spend 1 the funding spends the coin
+       must_txid:must_vout, which must be among the offered coins, as its
+       first input (input 0), whatever its amount; GZT_ERR_ARG if it is not
+       offered, GZT_ERR_FUNDS if no selection with it pays.  0: none. */
+    int must_spend;
+    uint8_t must_txid[32];
+    uint32_t must_vout;
+    /* 1: the funding always has a change output (safety-rule.md H16 bumps a
+       funding only by a child on it): a selection that would leave change
+       below dust takes another coin, or GZT_ERR_FUNDS.  0: as before. */
+    int require_change;
 } gzt_funding_request;
 
 typedef struct {
@@ -324,6 +335,28 @@ gzt_err gzt_funding_release(const secp256k1_context *ctx, const gzw_xprv *master
                             const gzt_funding *f, const uint8_t expect_txid[32],
                             const uint8_t aux32[32], uint8_t *out, size_t cap,
                             size_t *len_out);
+
+/* ---- for the funding engine's wallet port (composite-node.md 14.1) ------- */
+
+/* The unsigned funding's bytes, without witnesses: what round_propose record
+   18 carries and H1 compares.  GZT_ERR_STATE unless f was built and still
+   describes it; GZT_ERR_BUFFER if cap is too small. */
+gzt_err gzt_funding_unsigned(const gzt_funding *f, uint8_t *out, size_t cap, size_t *len_out);
+
+/* The output input i of the funding spends: its amount and script (H1 checks
+   that every one is a witness program).  GZT_ERR_ARG for i past the inputs. */
+gzt_err gzt_funding_prevout(const gzt_funding *f, uint32_t i, uint64_t *amount, uint8_t *script,
+                            size_t cap, size_t *len_out);
+
+/* The spend-back (composite-node.md 14.3): a version 2 transaction spending
+   input i of the funding alone to dest (a witness program of this wallet,
+   never the factory's script), paying exactly fee, signed and verified, in
+   the segwit form.  Its nSequence signals replacement.  GZT_ERR_DUST if what
+   is left is below dest's dust limit; GZT_ERR_SCRIPT for a bad dest. */
+gzt_err gzt_funding_spend_back(const secp256k1_context *ctx, const gzw_xprv *master,
+                               const gzt_funding *f, uint32_t i, const uint8_t *dest,
+                               size_t dest_len, uint64_t fee, const uint8_t aux32[32],
+                               uint8_t *out, size_t cap, size_t *len_out);
 
 /* Wipe everything. */
 void gzt_funding_wipe(gzt_funding *f);

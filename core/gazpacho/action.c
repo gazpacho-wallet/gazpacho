@@ -131,6 +131,7 @@ static gz_status_t copy_payload(gz_action_list_t *list, gz_action_t *dst, const 
     case GZ_ACTION_DISCONNECT:   return src->u.disconnect.why <= GZ_DISCONNECT_HOST_FAULT ? GZ_OK : GZ_ERR_ARGUMENT;
     case GZ_ACTION_SET_SEATED:   return src->u.set_seated.seated == 0 || src->u.set_seated.seated == 1
                                         ? GZ_OK : GZ_ERR_ARGUMENT;
+    case GZ_ACTION_UNWATCH:      return src->u.unwatch.is_tx == 0 || src->u.unwatch.is_tx == 1 ? GZ_OK : GZ_ERR_ARGUMENT;
     case GZ_ACTION_SET_TIMER:
     case GZ_ACTION_CANCEL_TIMER: return GZ_OK;
     }
