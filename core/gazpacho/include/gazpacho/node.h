@@ -189,6 +189,10 @@
 #define GZ_TEST_SIGN_RETRY      2u
 #define GZ_TEST_SIGN_FAILED     3u
 #define GZ_TEST_SIGN_UNFINISHED 4u   /* nothing, ever */
+/* Or'ed into test_sign_outcome: the stand-in counts the round as having sent
+ * its partial signatures from the hand-off on, so that a pause holds the
+ * lobby until the outcome (local-api.md 11.3). */
+#define GZ_TEST_SIGN_PARTIALS   0x100u
 
 /* Signatures for the lobbies (lobby.h: the engines hold no secret key). The
  * program supplies them over the keys of its key port.
@@ -307,6 +311,15 @@ gz_status_t gz_node_handle(gz_node_t *node, const gz_event_t *event,
  * the composite itself), and the status it returned; 0 and GZ_OK before any
  * error. For the program's `node-error engine=0x0002 status=...` line. */
 uint16_t gz_node_error_area(const gz_node_t *node);
+
+/* The member_signing in force for this run: cfg.member_signing until the
+ * start's first call has walked storage, then the setting saved through the
+ * local API (local-api.md 14.3, record 0x000d0024) if there is one. The
+ * program sets its key routing from this, not from its own option, after the
+ * first gz_node_start call returns and before it gives that call's list to
+ * the runner (AT_JOIN: secrets for rounds only from the scoped table). No
+ * key port secret is asked for before then. */
+gz_member_signing_t gz_node_member_signing(const gz_node_t *node);
 gz_status_t gz_node_error_status(const gz_node_t *node);
 
 /* The most watches a node asks for at once, over all its engines (action.h,

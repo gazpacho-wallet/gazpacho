@@ -68,6 +68,8 @@
 #define GZ_RESULT_REC_REQUEST_ID 0
 #define GZ_RESULT_REC_STATUS     2
 #define GZ_RESULT_REC_ERROR      4
+#define GZ_RESULT_REC_OBJECT     6
+#define GZ_RESULT_REC_PARAMS     8
 
 #define GZ_CMD_MAX_REQUEST_ID 64
 

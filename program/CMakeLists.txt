@@ -138,6 +138,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_lobby
     COMMAND ${GZP_PY} ${GZP_T}/lobby.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_lobby PROPERTIES TIMEOUT 900)
+  # The signing setting saved through the local API is in force from the next
+  # start over --member-signing (review A of PR 55, H3): host and members.
+  add_test(NAME program_signing_setting
+    COMMAND ${GZP_PY} ${GZP_T}/signing_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/signing_setting)
+  set_tests_properties(program_signing_setting PROPERTIES TIMEOUT 300)
   # T14: no core probes and no old names left.
   add_test(NAME program_no_probes
     COMMAND ${GZP_PY} ${GZP_T}/no_probes.py ${CMAKE_SOURCE_DIR})

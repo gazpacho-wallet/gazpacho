@@ -102,7 +102,11 @@ typedef struct {
  *             if there is none (an epoch this wallet cannot derive);
  *   secret    the 32-byte secret key at (epoch, index): 1, or 0. The caller
  *             wipes it as soon as it is done;
- *   host_pub  the host's long-term public key: 1, or 0 on a member.
+ *   host_pub  the host's long-term public key: 1, or 0 on a member;
+ *   epoch_ok  1 if this wallet can derive keys in `epoch` (P8: the epoch's
+ *             hardened child is valid), 0 if not. NULL: every epoch is.
+ *             A restore draws its new epoch again until this says 1
+ *             (journal.md 8.2; review R2-8).
  *
  * A return of 0 is never a node error: the engine answers as its state
  * requires. Until P8 the program implements this over the stand-in key file:
@@ -112,6 +116,7 @@ typedef struct {
     int (*pub)(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33]);
     int (*secret)(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32]);
     int (*host_pub)(void *ctx, uint8_t pub33[33]);
+    int (*epoch_ok)(void *ctx, uint32_t epoch);
     void *ctx;
 } gz_key_port_t;
 

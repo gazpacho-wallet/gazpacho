@@ -124,6 +124,7 @@ static gz_status_t load_record(gz_node_t *c, const gz_record_t *rec, gz_batch_id
 {
     uint16_t area = (uint16_t)(rec->type >> 16);
     if (area == GZ_AREA_NODE) return np_load(c, rec, at);
+    if (area == GZ_AREA_API) return gz_api_load(c, rec);
     /* A Lobby record goes to the slot its scope names (7.3). */
     if (area == GZ_AREA_LOBBY) return gz_ls_load_record(c, rec);
 #ifdef GZ_TEST_KINDS
@@ -164,6 +165,7 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
             if (st != GZ_OK) return st;
         }
     }
+    gz_api_loaded(c);
     c->loaded = 1;
     c->restored = storage->restored;
     if (c->restored) np_guard_file(c, storage->guard);
@@ -172,7 +174,7 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
 
 /* Phase 2's order (10): the restore batch, the node part, the test engines,
  * then the view (each engine emits its own view objects in its resume). */
-enum { R_RESTORE = 0, R_NODE, R_SIGN, R_SLOT0, R_SLOT_LAST = R_SLOT0 + GZ_NODE_MAX_SLOTS - 1, R_TEST0, R_TEST1, R_DONE };
+enum { R_RESTORE = 0, R_NODE, R_SIGN, R_SLOT0, R_SLOT_LAST = R_SLOT0 + GZ_NODE_MAX_SLOTS - 1, R_TEST0, R_TEST1, R_VIEW, R_DONE };
 
 static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finished)
 {
@@ -188,6 +190,9 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
         c->resume_at++;
         if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);
         if (c->slots[i].state != SLOT_OPEN || c->slots[i].kind != SLOT_KIND_LOBBY) return GZ_OK;
+        /* From its resume on, a saved pause acts on it (lobbyslot.c, pause_apply):
+         * after its CONNECT, before it can join, ready or sign anything. */
+        c->slots[i].awake = 1;
         if ((st = gz_c_resume(c, e, out, &more)) != GZ_OK) return st;
         if (c->slots[i].state != SLOT_OPEN) return GZ_OK; /* its lobby was over: closed in that step */
         c->resumed[e] = 1;
@@ -206,6 +211,7 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
     case R_NODE:
         if ((st = gz_c_node_bracket_begin(c, out)) != GZ_OK) return st;
         if ((st = np_resume(c, out)) != GZ_OK) return st;
+        if ((st = gz_api_resume(c, out)) != GZ_OK) return st; /* local ids for slots without one; held lobbies gone */
         if ((st = gz_c_node_bracket_end(c, out)) != GZ_OK) return st;
         c->resumed[ENG_NODE] = 1;
         c->resume_at = R_SIGN;
@@ -234,6 +240,13 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
             if ((st = gz_c_release_held(c, e, out)) != GZ_OK) return st;
             c->resume_at++;
         }
+        return GZ_OK;
+    }
+    case R_VIEW: {
+        /* 9. View (node rule 7): every object, over several calls. */
+        int done = 0;
+        if ((st = gz_view_start(c, out, &done)) != GZ_OK) return st;
+        if (done) c->resume_at++;
         return GZ_OK;
     }
     default:
@@ -336,6 +349,14 @@ static gz_status_t on_command(gz_node_t *c, const gz_event_t *ev, gz_action_list
     gz_bytes_t v, cmd = ev->u.user.bytes;
     uint16_t code = 0;
     if (gz_rec_find(cmd, GZ_CMD_REC_COMMAND, &v) == 1 && v.len == 2) code = gz_get_u16(v.data);
+    /* An API request's id, and the pause, first (api.c); then the API's own. */
+    if (code && (GZ_CMD_RANGE(code) == GZ_CMD_RANGE_LOBBY || GZ_CMD_RANGE(code) == GZ_CMD_RANGE_NODE ||
+                 GZ_CMD_RANGE(code) == GZ_CMD_RANGE_API)) {
+        int done = 0;
+        gz_status_t st = gz_api_precheck(c, code, cmd, out, &done);
+        if (st != GZ_OK || done) return st;
+    }
+    if (code && GZ_CMD_RANGE(code) == GZ_CMD_RANGE_API) return gz_api_command(c, code, cmd, out);
     /* The lobby's commands and the signing gate's (lobbyslot.c). */
     if (code && (GZ_CMD_RANGE(code) == GZ_CMD_RANGE_LOBBY || GZ_CMD_RANGE(code) == GZ_CMD_RANGE_NODE))
         return np_command(c, code, cmd, out);
