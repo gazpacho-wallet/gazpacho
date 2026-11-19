@@ -52,7 +52,7 @@ typedef struct gz_json_tok {
  * Returns true and sets *count on success. Returns false on any syntax
  * error, any rule above, or more than `cap` tokens.
  */
-bool gz_json_parse(const char *s, size_t len, gz_json_tok *toks, size_t cap, size_t *count);
+bool gz_chain_json_parse(const char *s, size_t len, gz_json_tok *toks, size_t cap, size_t *count);
 
 /* True if the token is a string whose bytes equal the zero-terminated `lit`. */
 bool gz_json_str_eq(const char *s, const gz_json_tok *t, const char *lit);
