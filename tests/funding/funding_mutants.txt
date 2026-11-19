@@ -139,4 +139,7 @@ p-grace-not-failed ## funding.c ## x->failed |= x->pending;\n        x->reported
 # --- review of PR 72, P-1: the grace counts from when the watch went pending
 p1-grace-from-deadline ## funding.c ## uint32_t from = x->pending_tip > x->deadline ? x->pending_tip : x->deadline; ## uint32_t from = x->deadline;
 p1-grace-from-pending-only ## funding.c ## uint32_t from = x->pending_tip > x->deadline ? x->pending_tip : x->deadline; ## uint32_t from = x->pending_tip;
-p1-pending-tip-not-kept ## funding.c ## if (!x->pending && which) x->pending_tip = f->tip; ## (void)0;
+p1-pending-tip-not-kept ## funding.c ## if (!x->pending && which) x->pending_tip = f->tip_known ? f->tip : 0; ## (void)0;
+# --- C-1: told pending before any tip
+c1-first-tip-ignored ## funding.c ## if (f->fac[i].used && f->fac[i].pending && f->fac[i].pending_tip == 0) f->fac[i].pending_tip = f->tip; ## (void)0;
+c1-first-tip-any ## funding.c ## if (f->fac[i].used && f->fac[i].pending && f->fac[i].pending_tip == 0) f->fac[i].pending_tip = f->tip; ## if (f->fac[i].used && f->fac[i].pending) f->fac[i].pending_tip = f->tip;

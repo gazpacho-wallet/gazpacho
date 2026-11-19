@@ -1971,6 +1971,48 @@ static void test_long_absence(void)
     }
 }
 
+/* C-1: after a start, a WATCH_PENDING that comes before the first NEW_TIP.
+ * The grace must count from that first tip (1300), not from the deadline:
+ * nothing is decided at 1300, and the answers give Live. */
+static void test_pending_before_tip(void)
+{
+    ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO), *u;
+    gz_event_t e = ev_tip(1000);
+    gz_fund_plan_out_t p;
+    uint8_t in0[36], id[32];
+    int sb0;
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    p = host_fund(t, SCOPE_A, 0);
+    memcpy(in0, p.tx + 5, 36);
+    memcpy(id, p.funding.txid, 32);
+    u = ft_restart(t);
+    free(t);
+    sb0 = u->w.sb_n;
+    e = ev_pending_tx(id);   /* before any tip */
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_pending_op(in0);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_tip(1300);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    drain(u);
+    CHECK(u->h.n == 0 && u->w.sb_n == sb0);
+    e = ev_tip(1300 + GZ_FUND_PENDING_GRACE);   /* still within the grace from 1300 */
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    drain(u);
+    CHECK(u->h.n == 0);
+    e = ev_conf(id, 442, 1003);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_spent(in0, id, 442);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_synced_tx(id);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_synced_op(in0);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    drain(u);
+    CHECK(u->h.n == 1 && u->h.r[0].kind == GZ_FUND_R_LIVE && u->w.sb_n == sb0);
+    free(u);
+}
+
 static void test_corrupt(void)
 {
     ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
@@ -2170,6 +2212,7 @@ int main(void)
     test_restart_two();
     test_watch_pending();
     test_long_absence();
+    test_pending_before_tip();
     test_corrupt();
     test_journal_replay_steps();
     test_ignored_events();
