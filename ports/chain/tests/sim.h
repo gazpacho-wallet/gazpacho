@@ -127,6 +127,10 @@ typedef struct sim_view {
   int post;
   int package;
   unsigned posts, packages;
+  /* serves this transaction's bytes with a witness added (one item, its
+   * value): the same txid, another wtxid, as a host can make for its own
+   * funding and give each server its own (C-2) */
+  bool alt_witness[SIM_NTX];
 } sim_view;
 
 void sim_view_init(sim_view *v, const sim_world *w, int branch, uint32_t tip);

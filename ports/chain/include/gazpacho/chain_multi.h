@@ -77,10 +77,14 @@
  *    every server lists; unconfirmed_differs is set when any server's list
  *    is not exactly the answer. A list naming one outpoint twice counts as
  *    a malformed reply.
- *  - raw_tx: every byte identical. Each server's bytes must already hash to
- *    the txid, but the txid does not cover witness data, so the full
- *    serializations are compared as well. A transaction one server has and
- *    another lacks is DISAGREE (it has no height to judge lag by).
+ *  - raw_tx: the same transaction. Each server's bytes must hash to the
+ *    txid asked for, and the txid covers every byte but the witness, so the
+ *    servers agree when their txids do: two valid witnesses for one
+ *    transaction (another wtxid, which its maker can produce at will and give
+ *    each server its own) are agreement, not DISAGREE (C-2). The bytes
+ *    handed over are one server's, whole; nothing in the port reads a
+ *    witness. A transaction one server has and another lacks is DISAGREE
+ *    (it has no height to judge lag by).
  *  - broadcast: sent to every server on the right network; GZ_CHAIN_OK if at
  *    least one accepts (or already has it). Every server's result is in the
  *    report. Accepted is not the same as relayed: follow up with tx_status.
@@ -182,7 +186,7 @@ typedef struct gz_multi_answer {
     gz_outspend outspend;
     struct {
       size_t len;
-      uint8_t digest[GZ_HASH_LEN]; /* SHA-256 twice over every byte returned */
+      uint8_t digest[GZ_HASH_LEN]; /* the txid of the bytes returned (every byte but the witness) */
     } raw_tx;
     gz_merkle_proof proof;
     gz_broadcast_result broadcast;
