@@ -365,8 +365,10 @@ static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_
     if (!s->view.local_id[0]) return GZ_OK;
     if (!force && code == s->view.att_code && count == s->view.att_count) return GZ_OK;
     if (!code && !s->view.att_code) return GZ_OK;
+    /* "att_" and the local id after its "lob_": at most 64 characters, one
+     * item per lobby (review A of PR 55, N2: never cut, so never shared). */
     id[k++] = 'a'; id[k++] = 't'; id[k++] = 't'; id[k++] = '_';
-    for (size_t j = 0; s->view.local_id[j] && k < GZ_LOCAL_ID_MAX; j++) id[k++] = s->view.local_id[j];
+    for (size_t j = memcmp(s->view.local_id, "lob_", 4) == 0 ? 4 : 0; s->view.local_id[j]; j++) id[k++] = s->view.local_id[j];
     id[k] = 0;
     s->view.att_code = code;
     s->view.att_count = count;
