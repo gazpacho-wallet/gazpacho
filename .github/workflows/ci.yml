@@ -373,24 +373,37 @@ jobs:
           ln -s ../../web/node_modules node_modules
           GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test
 
-  # The signer boundary, step S1 (docs/notes/signer.md 7, 9). Not required
-  # for merging: both checks report only until main is clean (check-tags
-  # after PROTOCOL.md 8.2 registers today's strings; the boundary at S4).
-  # Their own tests and the signer's mutants do fail the job.
+  # The signer boundary, step S1 (docs/notes/signer.md 7, 9). The boundary
+  # check fails on any growth (review A of #71, M2) and on any hard finding;
+  # check-tags reports only until PROTOCOL.md 8.2 registers today's strings.
+  # Their own tests and the vectors check fail the job too.
   signer-boundary:
-    name: signer boundary (report mode)
+    name: signer boundary
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # the merge commit and its first parent, the base branch: the allow
+          # list is compared with the base's
+          fetch-depth: 2
       - name: The checks refuse what they must (their own tests)
         run: |
           python3 -I tests/tools/test_check_signer_boundary.py
           python3 -I tests/tools/test_check_tags.py
-      - name: Signing and secret-key symbols outside signer/ (report only)
-        run: sh tools/check-signer-boundary.sh --report
+      - name: Signing and secret-key symbols outside signer/ (no growth, and the allow list only shrinks)
+        # A pull request whose allow list must grow says so with the label
+        # signer-boundary-growth, which a reviewer of the signer boundary sets.
+        env:
+          GROWTH_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'signer-boundary-growth') }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$GROWTH_LABEL" != true ] &&
+             git show HEAD^1:tools/signer-boundary-allowed.txt > "$RUNNER_TEMP/base-allow.txt" 2>/dev/null; then
+            sh tools/check-signer-boundary.sh --no-growth --base-allow "$RUNNER_TEMP/base-allow.txt"
+          else
+            sh tools/check-signer-boundary.sh --no-growth
+          fi
       - name: Unregistered gazpacho/ strings (report only)
         run: python3 -I tools/check-tags.py --report
       - name: The signer's vectors, recomputed in pure Python

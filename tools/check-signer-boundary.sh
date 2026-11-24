@@ -2,7 +2,7 @@
 # List every signing or secret-key symbol used in C code outside signer/
 # (docs/notes/signer.md 7.1, step S1).
 #
-# What it looks at: every *.c and *.h file under the root, except signer/
+# What it looks at: every C, C++ and assembly file under the root, except signer/
 # (the one library allowed to hold secrets and sign), core/superscalar/
 # (imported byte for byte; the object check of signer.md 7.1 allows the
 # gazpacho_superscalar library by name), build folders and .git. Comments,
@@ -15,6 +15,12 @@
 #   hook NAME   a struct member NAME called, declared as a function pointer or
 #               assigned: `x.NAME(`, `x->NAME(`, `(*NAME)(`, `x.NAME = ...`,
 #               `.NAME = ...` (the generic hooks: secret(), sign(msg32)).
+#   hard NAME, hardprefix PREFIX
+#               fail in every mode, report included: the fixed-aux test build
+#               (GZ_SG_VECTORS, gz_sgv_*), also in CMakeLists.txt and *.cmake;
+#               and any #include of a .c or .inc file of signer/.
+# Files scanned: *.c, *.h, *.inc, *.cpp, *.cc, *.S. Pruned: signer/,
+# core/superscalar/, and exactly build/, build-*/, _deps/ and .git/ at the root.
 #
 # Modes:
 #   --report     (default) print the uses, per file, and how they compare with
@@ -40,6 +46,7 @@ mode=report
 symbols=
 allow=
 write_allow=
+base_allow=
 while [ $# -gt 0 ]; do
     case "$1" in
         --report) mode=report ;;
@@ -49,7 +56,8 @@ while [ $# -gt 0 ]; do
         --symbols) symbols=$2; shift ;;
         --allow) allow=$2; shift ;;
         --write-allow) write_allow=$2; shift ;;
-        *) echo "usage: $0 [--report|--no-growth|--fail] [--root DIR] [--symbols FILE] [--allow FILE] [--write-allow FILE]" >&2
+        --base-allow) base_allow=$2; shift ;;
+        *) echo "usage: $0 [--report|--no-growth|--fail] [--root DIR] [--symbols FILE] [--allow FILE] [--write-allow FILE] [--base-allow FILE]" >&2
            exit 2 ;;
     esac
     shift
@@ -66,14 +74,15 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 # The files, as paths relative to the root, in a stable order.
-(cd "$root" && find . \( -path ./signer -o -path ./core/superscalar -o -path './build*' -o -path ./.git \
-        -o -name _deps \) -prune -o -type f \( -name '*.c' -o -name '*.h' \) -print) |
+(cd "$root" && find . \( -path ./signer -o -path ./core/superscalar -o -path ./build -o -path './build-*' \
+        -o -path ./_deps -o -path ./.git \) -prune -o -type f \( -name '*.c' -o -name '*.h' -o -name '*.inc' \
+        -o -name '*.cpp' -o -name '*.cc' -o -name '*.S' \) -print) |
     sed 's|^\./||' | LC_ALL=C sort > "$tmp/files"
 
 # One line per use: FILE<TAB>SYMBOL<TAB>LINE.
 (cd "$root" && awk -v SYMS="$symbols" '
 function strip(line,    out, i, c, n) {
-    if (!inblk && line !~ /[\/"'"'"']/) return line
+    if (!inblk && !instr && line !~ /[\/"'"'"']/) return line
     out = ""; n = length(line); i = 1
     while (i <= n) {
         c = substr(line, i, 1)
@@ -91,7 +100,8 @@ function strip(line,    out, i, c, n) {
         if (c == "\"" || c == "'"'"'") { instr = 1; q = c; out = out " "; i++; continue }
         out = out c; i++
     }
-    instr = 0
+    # a literal continued with a backslash-newline stays open on the next line
+    if (!(instr && substr(line, n, 1) == "\\")) instr = 0
     return out
 }
 BEGIN {
@@ -101,18 +111,22 @@ BEGIN {
         if (l ~ /^[ \t]*$/) continue
         k = split(l, f, /[ \t]+/)
         if (f[1] == "") { kind = f[2]; name = f[3] } else { kind = f[1]; name = f[2] }
-        if (name !~ /^[A-Za-z_][A-Za-z0-9_]*$/ || (kind != "sym" && kind != "hook")) {
+        if (name !~ /^[A-Za-z_][A-Za-z0-9_]*$/ || (kind != "sym" && kind != "hook" && kind != "hard" && kind != "hardprefix")) {
             print "check-signer-boundary: bad line in symbol list: " l > "/dev/stderr"; bad = 1; exit 2
         }
         ns++
-        label[ns] = (kind == "hook") ? "hook:" name : name
-        if (kind == "sym") re[ns] = "(^|[^A-Za-z0-9_])" name "($|[^A-Za-z0-9_])"
+        label[ns] = (kind == "hook") ? "hook:" name : (kind ~ /^hard/) ? "hard:" name : name
+        if (kind == "sym" || kind == "hard") re[ns] = "(^|[^A-Za-z0-9_])" name "($|[^A-Za-z0-9_])"
+        else if (kind == "hardprefix") re[ns] = "(^|[^A-Za-z0-9_])" name "[A-Za-z0-9_]*"
         else re[ns] = "((\\.|->)[ \t]*" name "[ \t]*(\\(|=[^=]))|(\\([ \t]*\\*[ \t]*" name "[ \t]*\\)[ \t]*\\()"
     }
     if (ns == 0) { print "check-signer-boundary: empty symbol list" > "/dev/stderr"; bad = 1; exit 2 }
 }
 FNR == 1 { inblk = 0; instr = 0 }
 {
+    # #include of a source file of signer/: a way round the library (H3)
+    if ($0 ~ /^[ \t]*#[ \t]*include[ \t]*["<][^">]*signer\/[^">]*\.(c|inc)[">]/)
+        print FILENAME "\thard:include-signer-source\t" FNR
     s0 = strip($0)
     for (j = 1; j <= ns; j++) {
         s = s0
@@ -126,10 +140,40 @@ FNR == 1 { inblk = 0; instr = 0 }
 END { if (bad) exit 2 }
 ' $(cat "$tmp/files") /dev/null) > "$tmp/uses"
 
+# Hard findings fail in every mode, report included, and no allow list holds
+# them: the fixed-aux test build named outside signer/, and a source file of
+# signer/ included elsewhere (review A of #71, H3). Build files are searched
+# for GZ_SG_VECTORS too.
+grep "	hard:" "$tmp/uses" > "$tmp/hard" || true
+grep -v "	hard:" "$tmp/uses" > "$tmp/uses.soft" || true
+mv "$tmp/uses.soft" "$tmp/uses"
+(cd "$root" && find . \( -path ./signer -o -path ./build -o -path './build-*' -o -path ./_deps -o -path ./.git \) -prune \
+        -o -type f \( -name CMakeLists.txt -o -name '*.cmake' \) -print | sed 's|^\./||' | LC_ALL=C sort |
+    while read -r bf; do grep -n -w GZ_SG_VECTORS "$bf" | sed "s|^\([0-9]*\):.*|$bf	hard:GZ_SG_VECTORS-in-build-file	\1|"; done) >> "$tmp/hard"
+hard_fail=0
+if [ -s "$tmp/hard" ]; then
+    awk -F '\t' '{ printf "HARD %s:%s: %s (never allowed outside signer/)\n", $1, $3, substr($2, 6) }' "$tmp/hard"
+    hard_fail=1
+fi
+
 # FILE<TAB>SYMBOL<TAB>COUNT
 cut -f1,2 "$tmp/uses" | LC_ALL=C sort | uniq -c |
     awk '{ c = $1; sub(/^ *[0-9]+ /, ""); print $0 "\t" c }' | LC_ALL=C sort > "$tmp/counts"
 grep -v '^[[:space:]]*#' "$allow" | grep -v '^[[:space:]]*$' | LC_ALL=C sort > "$tmp/allowed" || true
+
+# --base-allow FILE: the allow list of the merge base. The list may only
+# shrink, so no line may be new and no count higher than there (review A of
+# #71, M2): otherwise a change could add a use together with its own line.
+if [ -n "$base_allow" ]; then
+    [ -f "$base_allow" ] || base_allow=/dev/null
+    grep -v '^[[:space:]]*#' "$base_allow" | grep -v '^[[:space:]]*$' | LC_ALL=C sort > "$tmp/base" || true
+    awk -F '\t' 'FILENAME == ARGV[1] { b[$1 "\t" $2] = $3 + 0; next }
+        { k = $1 "\t" $2
+          if (!(k in b)) { printf "ALLOW-GROWTH %s: %s is a new line of the allow list (%d)\n", $1, $2, $3; g++ }
+          else if ($3 + 0 > b[k]) { printf "ALLOW-GROWTH %s: %s raised from %d to %d\n", $1, $2, b[k], $3; g++ } }
+        END { if (g) { printf "FAIL: the allow list grew against the merge base (%d lines)\n", g; exit 1 }
+              print "allow list: no growth against the merge base" }' "$tmp/base" "$tmp/allowed" || exit 1
+fi
 
 if [ -n "$write_allow" ]; then
     {
@@ -172,3 +216,4 @@ END {
     if (MODE == "no-growth" && (growth || stale)) { printf "FAIL: %d growth, %d stale\n", growth, stale; exit 1 }
     if (MODE == "report") printf "report only: %d growth, %d stale (not a failure until S4)\n", growth, stale
 }' "$tmp/allowed" "$tmp/counts"
+if [ $hard_fail -ne 0 ]; then echo "FAIL: hard findings (in every mode)"; exit 1; fi

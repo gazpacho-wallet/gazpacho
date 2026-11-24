@@ -657,3 +657,35 @@ add_subdirectory(signer)
 
 # --- the gazpacho program (stream S11): executor, port adapters, executables ----
 add_subdirectory(program)
+
+# --- K20 at configure time (review A of #71, H3): only the signer's own
+# vectors test may link gazpacho_signer_vectors, the one build that accepts
+# fixed aux_rand. Every target of every directory is checked, its direct and
+# interface link libraries; a library that links it is refused too, so it
+# cannot reach a program through a transitive link.
+function(gz_signer_vectors_guard dir)
+  get_property(targets DIRECTORY ${dir} PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(t IN LISTS targets)
+    get_target_property(type ${t} TYPE)
+    set(libs "")
+    if(NOT type STREQUAL "INTERFACE_LIBRARY")
+      get_target_property(direct ${t} LINK_LIBRARIES)
+      if(direct)
+        list(APPEND libs ${direct})
+      endif()
+    endif()
+    get_target_property(iface ${t} INTERFACE_LINK_LIBRARIES)
+    if(iface)
+      list(APPEND libs ${iface})
+    endif()
+    if("gazpacho_signer_vectors" IN_LIST libs AND NOT t STREQUAL "test_signer_vectors")
+      message(FATAL_ERROR "${t} links gazpacho_signer_vectors, the fixed-aux test build of the signer: "
+                          "only test_signer_vectors may (docs/notes/signer.md, decision K20)")
+    endif()
+  endforeach()
+  get_property(subdirs DIRECTORY ${dir} PROPERTY SUBDIRECTORIES)
+  foreach(d IN LISTS subdirs)
+    gz_signer_vectors_guard(${d})
+  endforeach()
+endfunction()
+gz_signer_vectors_guard(${CMAKE_CURRENT_SOURCE_DIR})

@@ -29,9 +29,19 @@
  * test vectors can be compared byte for byte. */
 #ifdef GZ_SG_VECTORS
 #define SG_FIXED_AUX 1
+/* Present in the vectors build only; signer_link_guard requires it absent
+ * from gazpacho_signer (review A of #71, H3). */
+const char gz_sg_vectors_build_never_ship[] = "gazpacho signer vectors build: never ship";
 #else
 #define SG_FIXED_AUX 0
 #endif
+
+/* The kinds the vectors build may sign with fixed aux_rand: the host's
+ * round_tier_result and round_abort, which the engine rebuilt before K20. */
+static int fixed_aux_kind(gz_sg_role_t role, uint16_t kind)
+{
+    return SG_FIXED_AUX && role == GZ_SG_ROLE_HOST && (kind == GZ_KIND_ROUND_TIER_RESULT || kind == GZ_KIND_ROUND_ABORT);
+}
 
 typedef struct {
     int used;
@@ -72,11 +82,13 @@ gz_sg_err_t gz_signer_init(gz_signer_t *sg, size_t size, const gz_sg_config_t *c
 {
     uint32_t level = 0;
     if (!sg || size < sizeof *sg) return GZ_SG_E_ARG;
-    memset(sg, 0, sizeof *sg);
+    /* the config is checked first: a refused init leaves `sg` as it was */
     if (!cfg || !cfg->secp || !cfg->seed.seed || !cfg->random.fill ||
         (cfg->role != GZ_SG_ROLE_HOST && cfg->role != GZ_SG_ROLE_MEMBER) || !net_level(cfg->network, &level) ||
-        cfg->epoch >= GZ_SG_INDEX_LIMIT || (cfg->frozen != 0 && cfg->frozen != 1))
+        cfg->epoch >= GZ_SG_INDEX_LIMIT || (cfg->frozen != 0 && cfg->frozen != 1) ||
+        cfg->max_feerate == 0 || cfg->max_feerate > GZ_SG_FEERATE_HARD_MAX)
         return GZ_SG_E_ARG;
+    gzw_wipe(sg, sizeof *sg);
     sg->cfg = *cfg;
     sg->net_level = level;
     sg->magic = SG_MAGIC;
@@ -235,8 +247,8 @@ gz_sg_err_t gz_sg_slot_add(gz_signer_t *sg, const gz_sg_slot_t *slot, uint8_t co
     if (!live(sg) || !slot || !contribution_pub) return GZ_SG_E_ARG;
     /* 1. the current epoch, not frozen */
     if (slot->epoch != sg->cfg.epoch || sg->cfg.frozen) return GZ_SG_E_EPOCH;
-    /* 2. key_index even and below 2^31 - 1, so that the factory key fits */
-    if (slot->key_index % 2 != 0 || slot->key_index >= GZ_SG_INDEX_LIMIT - 1) return GZ_SG_E_ARG;
+    /* 2. key_index + 1 below 2^31, so that the factory key fits (any parity) */
+    if (slot->key_index >= GZ_SG_INDEX_LIMIT - 1) return GZ_SG_E_ARG;
     /* 3. not held */
     if (find(sg, slot->scope)) return GZ_SG_E_SLOT;
     /* 4. room */
@@ -337,7 +349,12 @@ static int records_unsigned(const uint8_t *p, size_t n)
     return 1;
 }
 
-static int host_round_kind(uint16_t kind) { return kind >= GZ_KIND_ROUND_PROPOSE && kind <= GZ_KIND_FACTORY_FUNDED; }
+/* The host's signed round kinds, which may be reassembled (messages.md 5). */
+static int host_round_kind(uint16_t kind)
+{
+    return kind == GZ_KIND_ROUND_PROPOSE || kind == GZ_KIND_ROUND_TIER_RESULT || kind == GZ_KIND_ROUND_COMPLETE ||
+           kind == GZ_KIND_ROUND_ABORT;
+}
 
 /* BIP 340 over `msg` with `kp`, verified under `xonly` before it is returned. */
 static gz_sg_err_t sign32(const gz_signer_t *sg, const secp256k1_keypair *kp, const uint8_t xonly[32],
@@ -347,7 +364,7 @@ static gz_sg_err_t sign32(const gz_signer_t *sg, const secp256k1_keypair *kp, co
     secp256k1_xonly_pubkey pk;
     int ok;
     memset(aux, 0, sizeof aux);
-    if (fresh) sg->cfg.random.fill(sg->cfg.random.ctx, GZ_RANDOM_ORDINARY, aux, sizeof aux);
+    if (fresh) sg->cfg.random.fill(sg->cfg.random.ctx, GZ_RANDOM_SECRET, aux, sizeof aux);
     ok = secp256k1_schnorrsig_sign32(sg->cfg.secp, sig, msg, kp, aux);
     GZ_SG_DECLASSIFY(&ok, sizeof ok);
     GZ_SG_DECLASSIFY(sig, 64);
@@ -364,7 +381,6 @@ static gz_sg_err_t sign32(const gz_signer_t *sg, const secp256k1_keypair *kp, co
 gz_sg_err_t gz_sg_sign_envelope(gz_signer_t *sg, gz_sg_key_t key, const uint8_t scope[32], uint16_t kind,
                                 const uint8_t *records, size_t len, int fresh, uint8_t sig[64])
 {
-    int det_ok = 0;
     size_t max;
     sg_slot_t *s;
     uint8_t h[32];
@@ -376,12 +392,12 @@ gz_sg_err_t gz_sg_sign_envelope(gz_signer_t *sg, gz_sg_key_t key, const uint8_t 
           (sg->cfg.role == GZ_SG_ROLE_MEMBER && key == GZ_SG_KEY_CONTRIBUTION)))
         return GZ_SG_E_KIND;
     /* 2. the kind is in the key's row, and the key may sign this tag at all (D3) */
-    if (!gz_sg_kind_allowed(sg->cfg.role, key, kind, &det_ok) ||
+    if (!gz_sg_kind_allowed(sg->cfg.role, key, kind) ||
         !gz_sg_may_sign_tag(sg->cfg.role, key, "gazpacho/msg"))
         return GZ_SG_E_KIND;
-    /* 3. fixed aux_rand: never in production; in the vectors build only for
-     *    the kinds table 3.2 marks (the host's rebuilt messages) */
-    if (!fresh && !(SG_FIXED_AUX && det_ok)) return GZ_SG_E_KIND;
+    /* 3. fixed aux_rand: never in production (K20); in the vectors build only
+     *    for the host's round_tier_result and round_abort */
+    if (!fresh && !fixed_aux_kind(sg->cfg.role, kind)) return GZ_SG_E_KIND;
     /* 4. length */
     max = sg->cfg.role == GZ_SG_ROLE_HOST && host_round_kind(kind) ? GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER
                                                                     : GZ_RMSG_MAX_RECORDS_ONE;
@@ -411,9 +427,9 @@ uint64_t gz_sg_spend_back_fee_cap(uint64_t plan_fee, uint64_t plan_vsize, uint64
 {
     uint64_t at_ceiling, top, floor_fee;
     if (plan_vsize == 0 || plan_vsize > 4000000u || spend_back_vsize == 0 || spend_back_vsize > 4000000u ||
-        ceiling_rate > 100000000u || plan_fee > UINT64_C(2100000000000000) ||
+        ceiling_rate > GZ_SG_FEERATE_HARD_MAX || plan_fee > UINT64_C(2100000000000000) ||
         plan_fee > UINT64_MAX / spend_back_vsize)
-        return UINT64_MAX;
+        return 0;   /* fails closed: refuses every fee */
     at_ceiling = fee_at(ceiling_rate, spend_back_vsize);
     /* the top of the ladder: level 2, as #56's gz_fund_replace_fee with incremental_high */
     top = plan_fee + fee_at(GZ_SG_INCREMENTAL_HIGH, spend_back_vsize);

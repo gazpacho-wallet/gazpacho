@@ -10,8 +10,6 @@ host-pub-zeroes	signer/signer.c	    if (pub) memset(pub, 0, 33);	    (void)0;
 # --- slot_add
 slot-epoch	signer/signer.c	slot->epoch != sg->cfg.epoch || sg->cfg.frozen	sg->cfg.frozen
 slot-frozen	signer/signer.c	slot->epoch != sg->cfg.epoch || sg->cfg.frozen	slot->epoch != sg->cfg.epoch
-slot-odd	signer/signer.c	slot->key_index % 2 != 0 || 	
-slot-high	signer/signer.c	 || slot->key_index >= GZ_SG_INDEX_LIMIT - 1) return GZ_SG_E_ARG;	) return GZ_SG_E_ARG;
 slot-high-edge	signer/signer.c	slot->key_index >= GZ_SG_INDEX_LIMIT - 1	slot->key_index >= GZ_SG_INDEX_LIMIT - 2
 slot-dup	signer/signer.c	    if (find(sg, slot->scope)) return GZ_SG_E_SLOT;	
 slot-room	signer/signer.c	    if (!free_slot) return GZ_SG_E_SLOT;	    if (!free_slot) free_slot = &sg->slots[0];
@@ -25,12 +23,9 @@ drop-wipes	signer/signer.c	    if (s) gzw_wipe(s, sizeof *s);	    if (s) s->used
 env-zeroes	signer/signer.c	    if (sig) memset(sig, 0, 64);	
 env-key	signer/signer.c	    if (!((sg->cfg.role == GZ_SG_ROLE_HOST && key == GZ_SG_KEY_HOST) ||	    if (0 && !((sg->cfg.role == GZ_SG_ROLE_HOST && key == GZ_SG_KEY_HOST) ||
 # equivalent env-key: defence in depth; gz_sg_kind_allowed refuses every other key and role too (policy-key is its mutant)
-env-kind	signer/signer.c	    if (!gz_sg_kind_allowed(sg->cfg.role, key, kind, &det_ok) ||	    if ((gz_sg_kind_allowed(sg->cfg.role, key, kind, &det_ok), 0) ||
 env-tag	signer/signer.c	||\n        !gz_sg_may_sign_tag(sg->cfg.role, key, "gazpacho/msg"))	)
 # equivalent env-tag: defence in depth; the role and key checks admit only the two keys whose row has the tag (tag-factory is the table's mutant)
-env-determ	signer/signer.c	    if (!fresh && !(SG_FIXED_AUX && det_ok)) return GZ_SG_E_KIND;	
 fixed-aux-production	signer/signer.c	#define SG_FIXED_AUX 0	#define SG_FIXED_AUX 1
-fixed-aux-marked-kinds	signer/signer.c	!(SG_FIXED_AUX && det_ok)	!(SG_FIXED_AUX)
 env-len	signer/signer.c	    if (len > max) return GZ_SG_E_ARG;	
 env-len-round	signer/signer.c	host_round_kind(kind) ?	0 ?
 env-len-host	signer/signer.c	max = sg->cfg.role == GZ_SG_ROLE_HOST && host_round_kind	max = host_round_kind
@@ -50,9 +45,6 @@ fee-cap-ceiling	signer/signer.c	    return at_ceiling > top ? at_ceiling : top;	
 fee-cap-old	signer/signer.c	    return at_ceiling > top ? at_ceiling : top;	    return at_ceiling;
 fee-cap-overflow	signer/signer.c	 ||\n        plan_fee > UINT64_MAX / spend_back_vsize)	)
 # --- the tables (policy.c)
-kind-table	signer/policy.c	    {GZ_KIND_JOIN, 0, 1, 0},	    {GZ_KIND_JOIN, 1, 1, 0},
-kind-det	signer/policy.c	    {GZ_KIND_ROUND_ABORT, 1, 1, 1},	    {GZ_KIND_ROUND_ABORT, 1, 1, 0},
-kind-det-member	signer/policy.c	*deterministic_ok = role == GZ_SG_ROLE_HOST && KINDS[i].deterministic;	*deterministic_ok = KINDS[i].deterministic;
 policy-key	signer/policy.c	    if (!((role == GZ_SG_ROLE_HOST && key == GZ_SG_KEY_HOST) ||	    if (0 && !((role == GZ_SG_ROLE_HOST && key == GZ_SG_KEY_HOST) ||
 tag-factory	signer/policy.c	FACTORY_TAGS[] = {"gazpacho/bind", NULL};	FACTORY_TAGS[] = {"gazpacho/bind", "gazpacho/msg", NULL};
 # --- tools/check-tags.py
@@ -71,3 +63,35 @@ boundary-imported	tools/check-signer-boundary.sh	-path ./core/superscalar -o
 boundary-fail	tools/check-signer-boundary.sh	MODE == "fail" && total > 0	MODE == "fail" && total > 99
 boundary-growth	tools/check-signer-boundary.sh	if (!(k in allowed) || cur[k] > allowed[k]) {	if (!(k in allowed)) {
 boundary-stale	tools/check-signer-boundary.sh	if (!(k in cur) || cur[k] < allowed[k]) {	if (!(k in cur)) {
+# --- review A of #71: the fixes, each with the draft behaviour as a mutant (fail first)
+old-parity	signer/signer.c	    if (slot->key_index >= GZ_SG_INDEX_LIMIT - 1) return GZ_SG_E_ARG;	    if (slot->key_index % 2 != 0 || slot->key_index >= GZ_SG_INDEX_LIMIT - 1) return GZ_SG_E_ARG;
+slot-high	signer/signer.c	    if (slot->key_index >= GZ_SG_INDEX_LIMIT - 1) return GZ_SG_E_ARG;	
+slot-high-edge-up	signer/signer.c	slot->key_index >= GZ_SG_INDEX_LIMIT - 1	slot->key_index >= GZ_SG_INDEX_LIMIT
+old-kind-hello	signer/policy.c	    {GZ_KIND_READY, 0, 1},	    {GZ_KIND_HELLO, 0, 1},\n    {GZ_KIND_READY, 0, 1},
+old-kind-funded	signer/policy.c	    {GZ_KIND_ROUND_ABORT, 1, 1},	    {GZ_KIND_ROUND_ABORT, 1, 1},\n    {GZ_KIND_FACTORY_FUNDED, 1, 0},
+kind-ready-host	signer/policy.c	    {GZ_KIND_READY, 0, 1},	    {GZ_KIND_READY, 1, 1},
+kind-abort-member	signer/policy.c	    {GZ_KIND_ROUND_ABORT, 1, 1},	    {GZ_KIND_ROUND_ABORT, 1, 0},
+env-kind	signer/signer.c	    if (!gz_sg_kind_allowed(sg->cfg.role, key, kind) ||	    if ((gz_sg_kind_allowed(sg->cfg.role, key, kind), 0) ||
+env-determ	signer/signer.c	    if (!fresh && !fixed_aux_kind(sg->cfg.role, kind)) return GZ_SG_E_KIND;	
+fixed-aux-any-kind	signer/signer.c	return SG_FIXED_AUX && role == GZ_SG_ROLE_HOST && (kind == GZ_KIND_ROUND_TIER_RESULT || kind == GZ_KIND_ROUND_ABORT);	(void)role; (void)kind; return SG_FIXED_AUX;
+aux-ordinary	signer/signer.c	GZ_RANDOM_SECRET, aux, sizeof aux	GZ_RANDOM_ORDINARY, aux, sizeof aux
+aux-len16	signer/signer.c	GZ_RANDOM_SECRET, aux, sizeof aux	GZ_RANDOM_SECRET, aux, 16
+round-kind-complete	signer/signer.c	 kind == GZ_KIND_ROUND_COMPLETE ||	
+net-testnet4	signer/signer.c	    case GZW_NET_TESTNET4: *out = 1; return 1;	    case GZW_NET_TESTNET4: *out = 2; return 1;
+net-regtest	signer/signer.c	    case GZW_NET_REGTEST: *out = 4; return 1;	    case GZW_NET_REGTEST: *out = 2; return 1;
+init-feerate-zero	signer/signer.c	        cfg->max_feerate == 0 || cfg->max_feerate > GZ_SG_FEERATE_HARD_MAX)	        cfg->max_feerate > GZ_SG_FEERATE_HARD_MAX)
+init-feerate-max	signer/signer.c	        cfg->max_feerate == 0 || cfg->max_feerate > GZ_SG_FEERATE_HARD_MAX)	        cfg->max_feerate == 0)
+init-checks-first	signer/signer.c	    gzw_wipe(sg, sizeof *sg);\n    sg->cfg = *cfg;	    sg->cfg = *cfg;
+old-fee-cap-open	signer/signer.c	        return 0;   /* fails closed: refuses every fee */	        return UINT64_MAX;
+old-fee-cap-ceiling	signer/signer.c	ceiling_rate > GZ_SG_FEERATE_HARD_MAX || plan_fee	ceiling_rate > 100000000u || plan_fee
+fee-round	signer/signer.c	static uint64_t fee_at(uint64_t rate, uint64_t vsize) { return (rate * vsize + 999) / 1000; }	static uint64_t fee_at(uint64_t rate, uint64_t vsize) { return (rate * vsize) / 1000; }
+fee-max-eq	signer/signer.c	plan_fee > UINT64_C(2100000000000000) ||	plan_fee >= UINT64_C(2100000000000000) ||
+bigsize-w4	signer/signer.c	 || (w == 4 && x <= 0xffffu)	
+bigsize-w8	signer/signer.c	 || (w == 8 && x <= 0xffffffffu)	
+boundary-hard	tools/check-signer-boundary.sh	    hard_fail=1	    hard_fail=0
+boundary-continued	tools/check-signer-boundary.sh	    if (!(instr && substr(line, n, 1) == "\\\\")) instr = 0	    instr = 0
+boundary-ext	tools/check-signer-boundary.sh	 -o -name '*.inc'	
+boundary-base	tools/check-signer-boundary.sh	          else if ($3 + 0 > b[k])	          else if (0)
+boundary-base-new	tools/check-signer-boundary.sh	          if (!(k in b)) {	          if (0) {
+boundary-include	tools/check-signer-boundary.sh	        print FILENAME "\\thard:include-signer-source\\t" FNR	        next
+boundary-prune	tools/check-signer-boundary.sh	-path ./build -o -path './build-*' \\\n        -o -path ./_deps -o -path ./.git \\) -prune -o -type f	-path './build*' -o -path ./.git \\\n        -o -name _deps \\) -prune -o -type f

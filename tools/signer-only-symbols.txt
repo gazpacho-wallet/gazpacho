@@ -1,7 +1,8 @@
 # Symbols only signer/ may use (docs/notes/signer.md 7.1), for
 # tools/check-signer-boundary.sh. One per line: `sym NAME` for an identifier,
 # `hook NAME` for a struct member that is called, declared as a function
-# pointer or assigned (the generic hooks).
+# pointer or assigned (the generic hooks); `hard NAME` and `hardprefix PREFIX`
+# for identifiers that fail the check in every mode and no allow list holds.
 
 # libsecp256k1-zkp: signing, nonces, ECDH and every call that takes a secret key
 sym secp256k1_schnorrsig_sign32
@@ -51,3 +52,28 @@ sym port_secret
 sym ls_sign
 sym gzp_net_sign
 sym gzp_net_sign_host
+
+# Added after review A of #71 (M1): ECDH by ElligatorSwift, the zkp modules
+# that take a secret, the seed and extended private keys as text, and
+# SuperScalar's signing functions that signer.md 7.1 names
+sym secp256k1_ellswift_create
+sym secp256k1_ellswift_xdh
+sym secp256k1_ecdsa_adaptor_encrypt
+sym secp256k1_ecdsa_adaptor_decrypt
+sym secp256k1_ecdsa_s2c_sign
+sym secp256k1_musig_adapt
+sym gzw_phrase_to_seed
+sym gzw_xprv_from_string
+sym gzw_xprv_to_string
+sym musig_sign_taproot
+sym musig_sign_all_local
+sym musig_create_partial_sig
+sym musig_nonce_pool_generate
+sym musig_nonce_pool_next
+sym factory_sign_all
+
+# Never allowed outside signer/, in any mode (review A of #71, H3): the
+# fixed-aux test build of the signer and its names
+hard GZ_SG_VECTORS
+hard gz_sg_vectors_build_never_ship
+hardprefix gz_sgv_

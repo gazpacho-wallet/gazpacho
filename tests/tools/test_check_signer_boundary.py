@@ -140,6 +140,33 @@ expect("--no-growth fails on a stale count", code == 1 and "STALE core/a.c: hook
 code, out = run(d, "--allow", write_allow(d, more))
 expect("report mode never fails", code == 0 and "STALE" in out, out)
 
+
+# Review A of #71, M2: a new use together with its own allow-list line passes
+# --no-growth, but not against the merge base's list.
+base = os.path.join(d, "base.txt")
+shutil.copy(write_allow(d, fewer), base)
+grown = os.path.join(d, "grown.txt")
+shutil.copy(write_allow(d, WANT), grown)
+code, out = run(d, "--no-growth", "--allow", grown, "--base-allow", base)
+expect("a new allow-list line fails against the merge base",
+       code == 1 and "ALLOW-GROWTH program/b.h: gzp_net_sign is a new line" in out, out)
+raised_base = dict(WANT)
+raised_base[("core/a.c", "secp256k1_keypair_create")] = 1
+raised = os.path.join(d, "raised.txt")
+shutil.copy(write_allow(d, raised_base), raised)
+code, out = run(d, "--no-growth", "--allow", grown, "--base-allow", raised)
+expect("a raised count fails against the merge base",
+       code == 1 and "ALLOW-GROWTH core/a.c: secp256k1_keypair_create raised from 1 to 2" in out, out)
+same_base = os.path.join(d, "same.txt")
+shutil.copy(grown, same_base)
+code, out = run(d, "--no-growth", "--allow", grown, "--base-allow", same_base)
+expect("the same list as the merge base passes", code == 0 and "no growth against the merge base" in out, out)
+bigger = dict(WANT)
+bigger[("core/a.c", "secp256k1_ecdh")] = 4
+big = os.path.join(d, "big.txt")
+shutil.copy(write_allow(d, bigger), big)
+code, out = run(d, "--report", "--allow", grown, "--base-allow", big)
+expect("a shrunk list passes against the merge base", code == 0, out)
 # A tree with no use passes every mode.
 clean = tempfile.mkdtemp()
 os.makedirs(os.path.join(clean, "tools"))
@@ -156,6 +183,74 @@ with open(os.path.join(clean, "tools", "signer-only-symbols.txt"), "w", encoding
 code, out = run(clean)
 expect("a bad symbol list is an error", code == 2, out)
 
+
+# Review A of #71, M1: other file types, a top-level folder named like a build
+# folder, a string continued with a backslash-newline, the added symbols.
+m1 = tempfile.mkdtemp()
+os.makedirs(os.path.join(m1, "tools"))
+shutil.copy(SYMBOLS, os.path.join(m1, "tools", "signer-only-symbols.txt"))
+for rel, text in {
+    "core/c.inc": "secp256k1_ecdh(0, 0, 0, 0, 0, 0);\n",
+    "core/d.cpp": "int f() { return secp256k1_ellswift_xdh(0, 0, 0, 0, 0, 0, 0, 0); }\n",
+    "core/e.S": "call secp256k1_schnorrsig_sign32\n",
+    "buildtools/g.c": "void f(void) { factory_sign_all(0, 0); }\n",
+    "build/x.c": "void f(void) { factory_sign_all(0, 0); }\n",
+    "build-asan/x.c": "void f(void) { factory_sign_all(0, 0); }\n",
+    "core/h.c": 'const char *s = "abc\\\ndef"; void f(void) { secp256k1_ecdsa_sign(0, 0, 0, 0, 0, 0); }\n',
+    "program/p.c": "int f(void) { return gzw_phrase_to_seed(0, 0, 0); }\n",
+}.items():
+    path = os.path.join(m1, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+code, out = run(m1, "--write-allow", os.path.join(m1, "w.txt"))
+got = {}
+with open(os.path.join(m1, "w.txt"), encoding="utf-8") as f:
+    for line in f:
+        if not line.startswith("#") and line.strip():
+            fn, sym, n = line.rstrip("\n").split("\t")
+            got[(fn, sym)] = int(n)
+WANT_M1 = {
+    ("core/c.inc", "secp256k1_ecdh"): 1,
+    ("core/d.cpp", "secp256k1_ellswift_xdh"): 1,
+    ("core/e.S", "secp256k1_schnorrsig_sign32"): 1,
+    ("buildtools/g.c", "factory_sign_all"): 1,
+    ("core/h.c", "secp256k1_ecdsa_sign"): 1,
+    ("program/p.c", "gzw_phrase_to_seed"): 1,
+}
+expect(".inc, .cpp, .S, buildtools/, a continued string and the added symbols are seen", got == WANT_M1,
+       "%r\n%s" % (got, out))
+
+# Review A of #71, H3: the fixed-aux test build named outside signer/, or a
+# source of signer/ included elsewhere, fails in every mode.
+for name, rel, text in [
+    ("#define GZ_SG_VECTORS", "program/v.c", "#define GZ_SG_VECTORS 1\n#include \"gazpacho/signer.h\"\n"),
+    ("#ifdef GZ_SG_VECTORS", "core/v.h", "#ifdef GZ_SG_VECTORS\n#endif\n"),
+    ("a gz_sgv_ name", "program/v.c", "int f(void) { return gz_sgv_sign_envelope(0, 0, 0, 0, 0, 0, 0, 0); }\n"),
+    ("the marker", "program/v.c", "extern const char gz_sg_vectors_build_never_ship[];\n"),
+    ("#include of signer.c", "program/v.c", "#include \"../signer/signer.c\"\n"),
+    ("#include of a signer .inc", "core/v.c", "#  include <signer/x.inc>\n"),
+    ("GZ_SG_VECTORS in a CMake file", "program/CMakeLists.txt", "target_compile_definitions(x PRIVATE GZ_SG_VECTORS)\n"),
+]:
+    hd = tempfile.mkdtemp()
+    os.makedirs(os.path.join(hd, "tools"))
+    shutil.copy(SYMBOLS, os.path.join(hd, "tools", "signer-only-symbols.txt"))
+    path = os.path.join(hd, rel)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    for mode in ("--report", "--no-growth"):
+        code, out = run(hd, mode)
+        expect("%s fails %s" % (name, mode), code == 1 and "HARD %s:" % rel in out, out)
+# ... but a comment that names it is no use, and the header's own name is fine
+hd = tempfile.mkdtemp()
+os.makedirs(os.path.join(hd, "tools"))
+shutil.copy(SYMBOLS, os.path.join(hd, "tools", "signer-only-symbols.txt"))
+os.makedirs(os.path.join(hd, "program"))
+with open(os.path.join(hd, "program", "ok.c"), "w", encoding="utf-8") as f:
+    f.write("/* GZ_SG_VECTORS gz_sgv_x */\n#include \"gazpacho/signer.h\"\n")
+code, out = run(hd, "--report")
+expect("a comment naming the test build is not a hard finding", code == 0 and "HARD" not in out, out)
 if failures:
     print("RESULT: FAIL (%d)" % len(failures))
     sys.exit(1)

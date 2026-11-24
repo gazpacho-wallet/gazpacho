@@ -44,6 +44,7 @@ static gz_signer_t *make(secp256k1_context *ctx, gz_sg_role_t role)
     c.epoch = 7;
     c.seed.seed = seed_fn;
     c.random.fill = fill;
+    c.max_feerate = 1000;
     CHECK(sg && gz_signer_init(sg, gz_signer_size(), &c) == GZ_SG_OK);
     return sg;
 }
@@ -62,14 +63,14 @@ int main(void)
 #endif
     for (int i = 0; i < 32; i++) s.scope[i] = (uint8_t)(0x40 + i);
     s.epoch = 7;
-    s.key_index = 4;
+    s.key_index = 1;
 
     gz_signer_t *h = make(ctx, GZ_SG_ROLE_HOST);
     CHECK(gz_sg_slot_add(h, &s, pub, NULL) == GZ_SG_OK);
     VALGRIND_MAKE_MEM_UNDEFINED(&h->host_kp, sizeof h->host_kp);
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, rec, sizeof rec, 1, sig) == GZ_SG_OK);
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 72, rec, sizeof rec, 0, sig) == GZ_SG_E_KIND);   /* never fixed aux */
-    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 18, rec, sizeof rec, 1, sig) == GZ_SG_OK);
+    CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 30, rec, sizeof rec, 1, sig) == GZ_SG_OK);
     CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, s.scope, 22, rec, sizeof rec, 1, sig) == GZ_SG_E_KIND);
     gz_sg_slot_drop(h, s.scope);
     gz_signer_wipe(h);

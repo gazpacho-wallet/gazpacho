@@ -6,51 +6,40 @@
 
 #include <string.h>
 
-/* ---- 3.2 kinds per key ---- */
+/* ---- 3.2 kinds per key ----
+ * signer.md 3.2 as amended by its review (M1): a kind is signable only if
+ * spec/messages.md gives it a signature, record 240. Every other kind,
+ * hello, terms_offer, join, unready, leave, lobby_status, round_nonces,
+ * round_all_nonces, round_status_request and factory_funded among them, is
+ * refused under every key. The test compares this table with one read from
+ * messages.md (tools/signer-vectors.py), never with a copy of it. */
 
 typedef struct {
     uint16_t kind;
     uint8_t host, member;   /* 1: the host's long-term key / a member's contribution key may sign it */
-    uint8_t deterministic;  /* 1: the host may sign it with the all-zero aux_rand (rebuilt messages) */
 } kind_row_t;
 
 static const kind_row_t KINDS[] = {
-    {GZ_KIND_HELLO, 0, 1, 0},
-    {GZ_KIND_TERMS_OFFER, 1, 0, 0},
-    {GZ_KIND_JOIN, 0, 1, 0},
-    {GZ_KIND_READY, 0, 1, 0},
-    {GZ_KIND_UNREADY, 0, 1, 0},
-    {GZ_KIND_LEAVE, 0, 1, 0},
-    {GZ_KIND_LOBBY_STATUS, 1, 0, 0},
-    {GZ_KIND_READY_CHECK, 1, 0, 0},
-    {GZ_KIND_START, 1, 0, 0},
-    {GZ_KIND_CANCEL, 1, 0, 0},
-    {GZ_KIND_ROUND_PROPOSE, 1, 0, 0},
-    {GZ_KIND_ROUND_NONCES, 0, 1, 0},
-    {GZ_KIND_ROUND_ALL_NONCES, 1, 0, 0},
-    {GZ_KIND_ROUND_PARTIAL_SIGS, 0, 1, 0},
-    {GZ_KIND_ROUND_TIER_RESULT, 1, 0, 1},
-    {GZ_KIND_ROUND_COMPLETE, 1, 0, 0},
-    {GZ_KIND_ROUND_ACK, 0, 1, 0},
-    {GZ_KIND_ROUND_ABORT, 1, 1, 1},
-    {GZ_KIND_ROUND_STATUS_REQUEST, 0, 1, 0},
-    {GZ_KIND_FACTORY_FUNDED, 1, 0, 0},
+    {GZ_KIND_READY, 0, 1},
+    {GZ_KIND_READY_CHECK, 1, 0},
+    {GZ_KIND_START, 1, 0},
+    {GZ_KIND_CANCEL, 1, 0},
+    {GZ_KIND_ROUND_PROPOSE, 1, 0},
+    {GZ_KIND_ROUND_PARTIAL_SIGS, 0, 1},
+    {GZ_KIND_ROUND_TIER_RESULT, 1, 0},
+    {GZ_KIND_ROUND_COMPLETE, 1, 0},
+    {GZ_KIND_ROUND_ACK, 0, 1},
+    {GZ_KIND_ROUND_ABORT, 1, 1},
 };
 
-int gz_sg_kind_allowed(gz_sg_role_t role, gz_sg_key_t key, uint16_t kind, int *deterministic_ok)
+int gz_sg_kind_allowed(gz_sg_role_t role, gz_sg_key_t key, uint16_t kind)
 {
     size_t i;
-    if (deterministic_ok) *deterministic_ok = 0;
     if (!((role == GZ_SG_ROLE_HOST && key == GZ_SG_KEY_HOST) ||
           (role == GZ_SG_ROLE_MEMBER && key == GZ_SG_KEY_CONTRIBUTION)))
         return 0;
-    for (i = 0; i < sizeof KINDS / sizeof KINDS[0]; i++) {
-        if (KINDS[i].kind != kind) continue;
-        if (!(role == GZ_SG_ROLE_HOST ? KINDS[i].host : KINDS[i].member)) return 0;
-        /* Only the host's rebuilt messages may be deterministic. */
-        if (deterministic_ok) *deterministic_ok = role == GZ_SG_ROLE_HOST && KINDS[i].deterministic;
-        return 1;
-    }
+    for (i = 0; i < sizeof KINDS / sizeof KINDS[0]; i++)
+        if (KINDS[i].kind == kind) return role == GZ_SG_ROLE_HOST ? KINDS[i].host : KINDS[i].member;
     return 0;
 }
 

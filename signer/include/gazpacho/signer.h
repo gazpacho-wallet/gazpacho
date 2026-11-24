@@ -44,6 +44,10 @@
 #include "gazpacho/wallet_keys.h"  /* gzw_network */
 #include "gazpacho/wallet_tx.h"    /* gzt_funding_request, gzt_coin, gzt_funding_info */
 
+#ifdef GZ_SG_VECTORS   /* the test-only build: other names, so nothing else can link it */
+#include "gazpacho/signer_vectors_names.h"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -88,13 +92,23 @@ typedef struct {
     uint32_t epoch;                 /* the restore epoch (safety rule C12, R3) */
     int frozen;                     /* 1: restore freeze, no per-lobby key is derived */
     gz_sg_seed_source_t seed;
-    gz_random_port_t random;        /* aux_rand of a fresh signature (GZ_RANDOM_ORDINARY) */
+    gz_random_port_t random;        /* aux_rand of every signature: 32 bytes, GZ_RANDOM_SECRET */
+    /* The highest fee rate the signer ever pays, sat/kvB: 1 to
+     * GZ_SG_FEERATE_HARD_MAX. Set by the program from its own policy, never
+     * from a request (review A of #71, M3); fund_plan, fund_adopt and
+     * fund_spend_back use it as the ceiling. */
+    uint64_t max_feerate;
 } gz_sg_config_t;
+
+/* The bound on max_feerate: 5 sat/vB, fifty times the owner's 0.1 sat/vB. */
+#define GZ_SG_FEERATE_HARD_MAX 5000u
 
 /* Bytes the caller allocates for one signer. */
 size_t gz_signer_size(void);
 /* Make a signer in `mem` (`size` >= gz_signer_size(), suitably aligned, as
- * malloc returns). Takes nothing from the seed source yet. */
+ * malloc returns, in pages the program locks or marks MADV_DONTDUMP:
+ * signer.md 7.3). Takes nothing from the seed source yet. A refused init
+ * leaves `mem` as it was. */
 gz_sg_err_t gz_signer_init(gz_signer_t *mem, size_t size, const gz_sg_config_t *cfg);
 /* Wipe every key and every byte of the signer. It must be made again with
  * gz_signer_init before any other use. */
@@ -106,7 +120,10 @@ void gz_signer_wipe(gz_signer_t *sg);
 
 typedef struct {                     /* a slot, as the node part names it */
     uint8_t scope[32];               /* the lobby id: TH("gazpacho/terms/outer", outer) */
-    uint32_t epoch, key_index;       /* contribution key at key_index, factory at +1 */
+    /* key_index is i, the pair's contribution index (core/node's
+     * s->key_index), never the journalled i + 1: the contribution key is at i
+     * and the factory key at i + 1. */
+    uint32_t epoch, key_index;
 } gz_sg_slot_t;
 
 typedef enum {                       /* which of the slot's keys, or the host's */
@@ -120,13 +137,12 @@ typedef uint32_t gz_sg_round_t;      /* a round handle (2.3, round_open) */
 
 /* ---- 3 the tables ---- */
 
-/* 3.2: 1 if `key` of a party with `role` may sign an envelope of `kind`; and
- * *deterministic_ok (may be NULL) 1 when the kind may be signed with BIP 340's
- * all-zero aux_rand (the messages the engine rebuilds: round_tier_result and
- * round_abort from the host, as signer.md 3.2 marks them). 0 for every other
- * combination. The production library signs even those with fresh aux_rand:
- * the mark is honoured only in the vectors build (gz_sg_sign_envelope). */
-int gz_sg_kind_allowed(gz_sg_role_t role, gz_sg_key_t key, uint16_t kind, int *deterministic_ok);
+/* 3.2 (as amended by its review, M1): 1 if `key` of a party with `role` may
+ * sign an envelope of `kind`, which is exactly when spec/messages.md gives
+ * that kind a signature (record 240) from that sender: the host 30, 32, 34,
+ * 64, 72, 74 and 78; a member 22, 70, 76 and 78. 0 for every other
+ * combination. */
+int gz_sg_kind_allowed(gz_sg_role_t role, gz_sg_key_t key, uint16_t kind);
 
 /* 3.1, one row per key: its derivation, the BIP 340 tags it may sign
  * directly (NULL-terminated), the sighashes it may sign, whether it does
@@ -160,7 +176,9 @@ gz_sg_err_t gz_sg_host_pub(gz_signer_t *sg, uint8_t pub[33]);
 
 /* Register a slot before any operation names it.
  *   1. The epoch is current and not frozen (C12, R3)          GZ_SG_E_EPOCH
- *   2. key_index is even and below 2^31 - 1                    GZ_SG_E_ARG
+ *   2. key_index + 1 is below 2^31: both keys are hardened     GZ_SG_E_ARG
+ *      indexes. Any key_index, odd or even: the node part allocates
+ *      pairs (1, 2), (3, 4), ... (review A of #71, H2)
  *   3. The slot's scope is not already held                    GZ_SG_E_SLOT
  *   4. The table has room                                      GZ_SG_E_SLOT
  * A member's contribution key is m/254315617'/net'/0'/epoch'/key_index',
@@ -190,10 +208,12 @@ gz_sg_err_t gz_sg_seat_key(gz_signer_t *sg, const uint8_t scope[32], const uint8
  *      member; never FACTORY (the factory key signs no message) and never
  *      WALLET                                                  GZ_SG_E_KIND
  *   2. `kind` is in the key's row of table 3.2                 GZ_SG_E_KIND
- *   3. `fresh` is 1. In the vectors build only (GZ_SG_VECTORS, never
- *      linked into a program) it may be 0 for the kinds table 3.2 marks  GZ_SG_E_KIND
+ *   3. `fresh` is 1. In the vectors build only (GZ_SG_VECTORS, other
+ *      entry-point names, never linked into a program) it may be 0 for the
+ *      host's round_tier_result and round_abort                GZ_SG_E_KIND
  *   4. `len` is at most one envelope's records (65,495), or for the host's
- *      round kinds a reassembled message's (messages.md 5)     GZ_SG_E_ARG
+ *      signed round kinds (64, 72, 74, 78) a reassembled message's
+ *      (messages.md 5)                                         GZ_SG_E_ARG
  *   5. `records` is a well-formed record stream (messages.md 4.2: minimal
  *      BigSize, increasing types, no length past the end) of types below
  *      240: no signature record, which is the signer's to append   GZ_SG_E_ARG
@@ -261,9 +281,11 @@ void gz_sg_fund_release(gz_signer_t *sg, const uint8_t txid[32]);
  * from the plan it built or adopted (inputs minus outputs; its own size), and
  * `plan_fee` was itself checked against the ceiling when the plan was made,
  * so the cap is bounded by the policy alone; the caller chooses neither.
- * Rates are sat/kvB, sizes vbytes. Returns UINT64_MAX for an out-of-range
- * input (a size above 4,000,000 vB, a rate above 100,000,000 sat/kvB, a fee
- * above 21 million BTC, or a plan size of 0). */
+ * `ceiling_rate` is the signer's own max_feerate (gz_sg_config_t), never a
+ * request's. Rates are sat/kvB, sizes vbytes. Fails closed: returns 0, which
+ * refuses every fee, for an out-of-range input (a size of 0 or above
+ * 4,000,000 vB, a ceiling above GZ_SG_FEERATE_HARD_MAX, a fee above 21
+ * million BTC) (review A of #71, M3). */
 #define GZ_SG_INCREMENTAL_HIGH 1000u
 uint64_t gz_sg_spend_back_fee_cap(uint64_t plan_fee, uint64_t plan_vsize, uint64_t spend_back_vsize,
                                   uint64_t ceiling_rate);

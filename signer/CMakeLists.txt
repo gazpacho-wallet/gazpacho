@@ -77,3 +77,10 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME signer_boundary_selftest
     COMMAND ${Python3_EXECUTABLE} -I ${GZ_ROOT_DIR}/tests/tools/test_check_signer_boundary.py)
 endif()
+
+# The vectors build cannot stand in for the production one (review A of #71,
+# H3): other entry-point names and a marker, checked in the archives here,
+# and (top-level CMakeLists.txt, gz_signer_vectors_guard) refused by CMake if
+# any target but test_signer_vectors links it.
+add_test(NAME signer_link_guard
+  COMMAND sh ${GZ_SIGNER_DIR}/tests/link_guard.sh $<TARGET_FILE:gazpacho_signer> $<TARGET_FILE:gazpacho_signer_vectors>)
