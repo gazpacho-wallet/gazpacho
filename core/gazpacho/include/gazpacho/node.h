@@ -158,13 +158,30 @@
  *                     standbys (u16)
  *   LOBBY_JOIN        member: 12 scope, 14 the host's key (33), 16 its
  *                     address ("host:port"), 18 the member's conditions
- *                     (lobbyslot.c; absent: none), 20 auto-join (u8, default 1)
+ *                     (lobbyslot.c; absent: the saved conditions of
+ *                     GZ_CMD_API_SET_CONDITIONS, view.h, or none), 20
+ *                     auto-join (u8, default 1), 22 confirm_loosens. Own
+ *                     conditions looser than the saved ones need an API
+ *                     request (403 fresh_sign_in_needed) and in 22 exactly
+ *                     what they loosen (409 confirm_mismatch, params.loosens;
+ *                     view.h's codes). A later change of the saved conditions
+ *                     applies to the lobby: one they then fit worse than its
+ *                     copy is left before its round (local-api.md 13.2)
  *   LOBBY_READY       member: 12 scope, 14 unlock (u8: 1 when given with the
  *                     passphrase, which opens that lobby's signing gate)
  *   LOBBY_UNREADY, LOBBY_LEAVE   member: 12 scope
  *   LOBBY_SET_VALUES  host: 12 scope, 14 the values (u64 each)
  *   LOBBY_REMOVE      host: 12 scope, 14 the seat's contribution key (33)
  *   LOBBY_CANCEL      host: 12 scope
+ *   LOBBY_START       host: 12 scope, 14 confirm_funding_max_sat (u64), as an
+ *                     API request only (a digest: POST .../start, behind the
+ *                     fresh sign-in). The person's early start (local-api.md
+ *                     15.2): the ready check now, before the start rule. 202;
+ *                     400 bad_request; 403 fresh_sign_in_needed (no digest);
+ *                     409 not_open, confirm_mismatch (not the lobby's
+ *                     set_aside_sat, gz_fund_set_aside_sat; params
+ *                     set_aside_sat), paused, below_minimum (params ready,
+ *                     minimum)
  * The signing gate's (0x04xx, composite-node.md 12.2): SIGNING_UNLOCK and
  * SIGNING_LOCK, no arguments.
  * Results: 200; 400 bad_request, bad_terms, bad_address, bad_host_key,
@@ -181,6 +198,7 @@
 #define GZ_CMD_LOBBY_SET_VALUES 0x0106u
 #define GZ_CMD_LOBBY_REMOVE     0x0107u
 #define GZ_CMD_LOBBY_CANCEL     0x0108u
+#define GZ_CMD_LOBBY_START      0x0109u
 #define GZ_CMD_SIGNING_UNLOCK   0x0401u
 #define GZ_CMD_SIGNING_LOCK     0x0402u
 

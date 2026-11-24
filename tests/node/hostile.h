@@ -105,7 +105,7 @@ static inline gz_status_t hostile_step(h_t *h, src_t *s)
         /* A user command: a code from the ranges, random arguments. */
         static const uint16_t codes[] = {0x7e01, 0x7e02, 0x7e05, 0x7e06, 0x7e07, 0x7e09, 0x7e0c, 0x7e80, 0x7e81,
                                          0x7e82, 0x7e83, 0x7e84, 0x7e85, 0x7e05, 0x7e0c, 0x7e84, 0x0101, 0x0301,
-                                         0x0401, 0x0d01, 0x0d02, 0x0d7f, 0x7e7f, 0};
+                                         0x0401, 0x0d01, 0x0d02, 0x0d03, 0x0109, 0x0d7f, 0x7e7f, 0};
         /* Addresses a person or an invitation could give: good, and bad in
          * every way the address rule and the program's own parsing refuse. */
         static const char *addrs[] = {"127.0.0.1:1", "not-an-address", "no-port-here", "127.0.0.1", "127.0.0.1:",
@@ -116,6 +116,7 @@ static inline gz_status_t hostile_step(h_t *h, src_t *s)
         const char *addr = (src_byte(s) & 3) ? addrs[0] : addrs[src_byte(s) % (sizeof addrs / sizeof addrs[0])];
         uint16_t code = codes[src_byte(s) % (sizeof codes / sizeof codes[0])];
         uint8_t c2[2], a[64], role = src_byte(s) & 1, mk[33];
+        memset(a, 0, sizeof a); /* field 14 takes 4 bytes of it even when fewer were drawn (MSan) */
         if (bug_command(code)) return GZ_OK;
         gz_put_u16(c2, code);
         /* Now and then an API request (P6a): an id, a method, a path and a

@@ -405,6 +405,18 @@ typedef enum {
  * the burial depth), 0 if none. */
 gz_fund_scope_t gz_fund_scope_state(const gz_fund_t *f, const uint8_t scope[32], uint32_t *until);
 
+/* ---- the set-aside amount (local-api.md 15.2) ---------------------------- */
+
+/* What a hosted lobby sets aside at opening and an early start echoes
+ * (`confirm_funding_max_sat`): the most its funding can pay to the factory,
+ * the funding amount R(root) of terms.md 4.2 at the member count, from the
+ * terms' minimum to their target, that needs the most (the target for every
+ * shape so far). 0 if some count in that range has no tree (terms a reader
+ * refuses on receipt, terms.md 7 step 5): nothing can be confirmed then.
+ * Pure, from the outer terms alone; the node reads it for the host's view
+ * and checks the start's echo against it (setaside.c). */
+uint64_t gz_fund_set_aside_sat(const gz_terms_outer_t *t);
+
 /* ---- fees (14.3) -------------------------------------------------------- */
 
 /* The smallest fee that replaces a package paying `package_fee` with a

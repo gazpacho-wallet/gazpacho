@@ -4437,6 +4437,244 @@ static void test_world_basic(void)
     w_free(&w);
 }
 
+
+/* The host seat of world member i. */
+static const gz_lobby_seat_t *seat_of_member(const world_t *w, int i)
+{
+    const gz_lobby_host_t *h = w->node[0].host;
+    for (uint16_t k = 0; k < h->n_seats; k++)
+        if (memcmp(h->seats[k].ckey, w->node[i].keys.key[2].pub, 33) == 0) return &h->seats[k];
+    return NULL;
+}
+
+static int W_PAUSED;
+static int w_paused(void *ctx) { (void)ctx; return W_PAUSED; }
+
+/* The person's conditions changed while joined (local-api.md 13.2, the
+ * copying rule): gz_lobby_member_tighten. */
+static void test_tighten(void)
+{
+    static world_t w;
+    gz_lobby_conditions_t c;
+    const gz_lobby_seat_t *s;
+    gz_lobby_msg_t g;
+    int i;
+    /* Three members ready in an Open lobby of eight. */
+    w_init(&w, 3, 71, NULL);
+    w_start(&w);
+    w_run(&w, 400, 0);
+    CHECK(w.failures == 0 && w.node[0].host->state == GZ_LOBBY_OPEN);
+    for (i = 1; i <= 3; i++) CHECK(w.node[i].mem->ready);
+    /* Equal or looser: the copy stands, nothing happens. */
+    c = w.node[1].cond;
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[1].mem, &c, &A.l) == GZ_OK && A.l.count == 0);
+    CHECK(!gz_lobby_member_misfits(w.node[1].mem, &c));
+    c.limits.min_channel_sat = 1;
+    LT_ADJ(c, 0) = 100000;
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[1].mem, &c, &A.l) == GZ_OK && A.l.count == 0);
+    CHECK(memcmp(&w.node[1].mem->cond, &w.node[1].cond, sizeof c) == 0);   /* the copy is never changed */
+    /* Tighter, still fitting (fits as well as its copy): nothing. T1's
+     * lifetime is 144 blocks. */
+    c = w.node[1].cond;
+    c.limits.min_lifetime = 144;
+    c.limits.max_lifetime = 144;
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[1].mem, &c, &A.l) == GZ_OK && A.l.count == 0);
+    /* Tighter, refusing the terms (channel below the new minimum): leave
+     * reason 1, saved before it is sent, and the refusal told. */
+    c = w.node[1].cond;
+    c.limits.min_channel_sat = 200000;
+    CHECK(gz_lobby_member_misfits(w.node[1].mem, &c));
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[1].mem, &c, &A.l) == GZ_OK);
+    CHECK(saves(GZ_REC_LOBBY_ENDED) == 1 && sends(GZ_KIND_LEAVE) == 1 && note(GZ_NOTE_REFUSED, GZ_FIT_NO, 30));
+    CHECK(A.s[0].kind == GZ_ACTION_SAVE);
+    {
+        size_t k;
+        for (k = 0; k < A.l.count && kind_of(&A.s[k]) != GZ_KIND_LEAVE; k++) {}
+        CHECK(k < A.l.count && lt_send_decode(&A.s[k], &g) == GZ_DEC_OK && g.has_reason && g.reason == 1);
+    }
+    CHECK(w.node[1].mem->ended && w.node[1].mem->left && w.node[1].mem->leave_reason == 1);
+    w_submit(&w.node[1], &A.l);
+    w_run(&w, 100, 0);
+    /* The host sees a refusal at Open, not a member that left by choice. */
+    s = seat_of_member(&w, 1);
+    CHECK(s && s->state == GZ_SEAT_LEFT && s->refused == 1 && s->refused_stage == 1);
+    CHECK(w.node[0].host->state == GZ_LOBBY_OPEN && gz_lobby_host_ready_count(w.node[0].host) == 2);
+    /* Ended: refused, nothing changed. */
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[1].mem, &c, &A.l) == GZ_OK && refused(GZ_CMD_CONDITIONS) && !any_save());
+    CHECK(!gz_lobby_member_misfits(w.node[1].mem, &c));
+    /* After a restart the end is kept: nothing is sent again. */
+    w_crash(&w, 1);
+    w_boot(&w.node[1]);
+    CHECK(w.node[1].mem->ended && w.node[1].mem->left && w.node[1].mem->leave_reason == 1);
+    w_free(&w);
+
+    /* Fits only now, the default option (joined, not ready): conditions that
+     * keep it there change nothing; ones it does not fit at all leave it. */
+    w_init(&w, 3, 72, NULL);
+    LT_ADJ(w.node[2].cond, 0) = 1000;
+    w_start(&w);
+    w_run(&w, 400, 0);
+    CHECK(w.node[2].mem->joined && !w.node[2].mem->ready);
+    c = w.node[2].cond;
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[2].mem, &c, &A.l) == GZ_OK && A.l.count == 0);
+    /* A ready member whose new conditions make the lobby fit only now: it
+     * fits worse than its copy, so it leaves. */
+    c = w.node[3].cond;
+    LT_ADJ(c, 0) = 1000;
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[3].mem, &c, &A.l) == GZ_OK && sends(GZ_KIND_LEAVE) == 1 &&
+          note(GZ_NOTE_REFUSED, GZ_FIT_NOW, 64));
+    w_submit(&w.node[3], &A.l);
+    c = w.node[2].cond;
+    LT_ADJ(c, 0) = 400;
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[2].mem, &c, &A.l) == GZ_OK && saves(GZ_REC_LOBBY_ENDED) == 1 &&
+          sends(GZ_KIND_LEAVE) == 1 && note(GZ_NOTE_REFUSED, GZ_FIT_NO, 64));
+    w_submit(&w.node[2], &A.l);
+    w_run(&w, 100, 0);
+    CHECK(seat_of_member(&w, 2)->refused == 1 && seat_of_member(&w, 3)->refused == 1);
+    w_free(&w);
+
+    /* In a round (a start with role 1 for its answered check): never left
+     * for its conditions; the round runs to its end. */
+    w_init(&w, 3, 73, NULL);
+    w_start(&w);
+    w_run(&w, 400, 0);
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK);
+    w_submit(&w.node[0], &A.l);
+    w_run(&w, 1000, 0);
+    CHECK(w.node[0].host->state == GZ_LOBBY_SIGNING && w.node[1].n_handoffs == 1);
+    CHECK(gz_lobby_member_in_round(w.node[1].mem));
+    c = w.node[1].cond;
+    c.limits.min_channel_sat = 200000;
+    CHECK(gz_lobby_member_misfits(w.node[1].mem, &c));
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[1].mem, &c, &A.l) == GZ_OK && refused(GZ_CMD_CONDITIONS) && !any_save() &&
+          sends(GZ_KIND_LEAVE) == 0);
+    CHECK(!w.node[1].mem->ended && w.node[1].mem->ready);
+    /* Its outcome saved (Funding): still never left. */
+    acts_reset();
+    CHECK(gz_lobby_member_round_result(w.node[1].mem, GZ_LOBBY_ROUND_FUNDING, NULL, &A.l) == GZ_OK);
+    w_submit(&w.node[1], &A.l);
+    CHECK(!gz_lobby_member_in_round(w.node[1].mem));
+    acts_reset();
+    CHECK(gz_lobby_member_tighten(w.node[1].mem, &c, &A.l) == GZ_OK && refused(GZ_CMD_CONDITIONS) && !any_save());
+    CHECK(gz_lobby_member_tighten(NULL, &c, &A.l) == GZ_ERR_ARGUMENT &&
+          gz_lobby_member_tighten(w.node[1].mem, NULL, &A.l) == GZ_ERR_ARGUMENT &&
+          gz_lobby_member_tighten(w.node[1].mem, &c, NULL) == GZ_ERR_ARGUMENT);
+    CHECK(!gz_lobby_member_misfits(NULL, &c) && !gz_lobby_member_in_round(NULL));
+    CHECK(w.failures == 0);
+    w_free(&w);
+}
+
+/* The person's early start (local-api.md 15.2, "start now"):
+ * gz_lobby_host_start. */
+static void test_start_now(void)
+{
+    static world_t w;
+    /* Three of eight ready, ten minutes before the deadline: the start rule
+     * waits; the person starts now, at the minimum. */
+    w_init(&w, 3, 81, NULL);
+    w_start(&w);
+    w_run(&w, 400, 0);
+    CHECK(w.failures == 0 && w.node[0].host->state == GZ_LOBBY_OPEN && gz_lobby_host_ready_count(w.node[0].host) == 3);
+    w_run(&w, 400, 0);
+    CHECK(w.node[0].host->state == GZ_LOBBY_OPEN && w_count_recs(&w.node[0], GZ_REC_FREEZE) == 0);
+    /* Paused: refused, nothing saved or sent. */
+    W_PAUSED = 1;
+    w.node[0].host->cfg.paused = w_paused;
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && refused(GZ_CMD_START) && A.l.count == 1);
+    W_PAUSED = 0;
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && !refused(GZ_CMD_START));
+    /* The ready check exactly as the rule begins it: the freeze saved first,
+     * then the check to every ready seat, and its window. */
+    CHECK(saves(GZ_REC_FREEZE) == 1 && A.s[0].kind == GZ_ACTION_SAVE && sends(GZ_KIND_READY_CHECK) == 3 &&
+          timers(GZ_LOBBY_TIMER_WINDOW) == 1);
+    CHECK(w.node[0].host->state == GZ_LOBBY_READY_CHECK && w.node[0].host->frozen);
+    w_submit(&w.node[0], &A.l);
+    /* Not Open any more: refused. */
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && refused(GZ_CMD_START) && A.l.count == 1);
+    w_run(&w, 1000, 0);
+    CHECK(w.failures == 0 && w.node[0].host->state == GZ_LOBBY_SIGNING && w.node[0].n_handoffs == 1 &&
+          w.node[0].handoffs[0].n_participants == 4 && w_params_ok(&w.node[0].handoffs[0], 3));
+    CHECK(w.now < 1794441600000ull);   /* long before the deadline */
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && refused(GZ_CMD_START));
+    CHECK(gz_lobby_host_start(NULL, &A.l) == GZ_ERR_ARGUMENT && gz_lobby_host_start(w.node[0].host, NULL) == GZ_ERR_ARGUMENT);
+    w_free(&w);
+    /* Below the minimum (two of three needed): refused, the lobby stays Open. */
+    w_init(&w, 2, 82, NULL);
+    w_start(&w);
+    w_run(&w, 400, 0);
+    CHECK(w.node[0].host->state == GZ_LOBBY_OPEN && gz_lobby_host_ready_count(w.node[0].host) == 2);
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && refused(GZ_CMD_START) && !any_save() &&
+          sends(GZ_KIND_READY_CHECK) == 0);
+    CHECK(w.node[0].host->state == GZ_LOBBY_OPEN && gz_lobby_host_ready_count(NULL) == 0);
+    w_free(&w);
+    /* A seat that is ready but not connected is not counted, as by the rule. */
+    w_init(&w, 3, 83, NULL);
+    w_start(&w);
+    w_run(&w, 400, 0);
+    w_crash(&w, 3);
+    w.node[3].dead = 1;
+    CHECK(gz_lobby_host_ready_count(w.node[0].host) == 2);
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && refused(GZ_CMD_START) && !any_save());
+    w_free(&w);
+}
+
+
+/* Review of #77, L1: the early start follows the start rule's failed-check
+ * guard. After a ready check that ends without a start, a new one needs a
+ * seat event first (decision 8), also when the person starts it. */
+static void test_start_now_guard(void)
+{
+    static world_t w;
+    int i;
+    w_init(&w, 3, 84, NULL);
+    for (i = 1; i <= 3; i++) w.node[i].cond.min_members = 4;   /* each signs only with four: no start at three */
+    w_start(&w);
+    w_run(&w, 400, 0);
+    CHECK(w.node[0].host->state == GZ_LOBBY_OPEN && gz_lobby_host_ready_count(w.node[0].host) == 3);
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && sends(GZ_KIND_READY_CHECK) == 3);
+    w_submit(&w.node[0], &A.l);
+    w_run(&w, 1000, 0);
+    /* The check ended without a start: Open again, the same three seats ready. */
+    CHECK(w.failures == 0 && w.node[0].host->state == GZ_LOBBY_OPEN && w.node[0].host->check_failed &&
+          w.node[0].n_handoffs == 0 && gz_lobby_host_ready_count(w.node[0].host) == 3);
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && refused(GZ_CMD_START) && A.l.count == 1);
+    CHECK(w.node[0].host->state == GZ_LOBBY_OPEN);
+    /* A seat event (a member unreadies and readies again): allowed again. */
+    acts_reset();
+    CHECK(gz_lobby_member_unready(w.node[1].mem, &A.l) == GZ_OK);
+    w_submit(&w.node[1], &A.l);
+    w_run(&w, 50, 0);
+    acts_reset();
+    CHECK(gz_lobby_member_ready(w.node[1].mem, &A.l) == GZ_OK);
+    w_submit(&w.node[1], &A.l);
+    w_run(&w, 100, 0);
+    CHECK(gz_lobby_host_ready_count(w.node[0].host) == 3);
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && !refused(GZ_CMD_START) && sends(GZ_KIND_READY_CHECK) == 3);
+    w_submit(&w.node[0], &A.l);
+    w_run(&w, 1000, 0);
+    CHECK(w.failures == 0);
+    w_free(&w);
+}
+
 /* T6 in a running lobby (messages.md test 16). */
 static void test_world_values(void)
 {
@@ -4570,6 +4808,9 @@ int main(void)
     test_review_b_host();
     test_review_b_member();
     test_review_b_world();
+    test_tighten();
+    test_start_now();
+    test_start_now_guard();
     CHECK(OVERSIZE == 0);
     return check_done();
 }

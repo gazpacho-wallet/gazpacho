@@ -314,6 +314,8 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_CMD_UNREADY      5
 #define GZ_CMD_LEAVE        6
 #define GZ_CMD_READY        7
+#define GZ_CMD_START        8   /* host: the person's early start */
+#define GZ_CMD_CONDITIONS   9   /* member: the person's conditions changed (the copying rule) */
 
 /* Host faults a member records (journal.md host_fault). */
 #define GZ_FAULT_TWO_VALUES   1      /* two current records under one version */
@@ -480,6 +482,19 @@ gz_status_t gz_lobby_host_set_values(gz_lobby_host_t *h, const uint64_t *values,
                                      gz_action_list_t *out);
 gz_status_t gz_lobby_host_remove(gz_lobby_host_t *h, const uint8_t ckey[33], gz_action_list_t *out);
 gz_status_t gz_lobby_host_cancel(gz_lobby_host_t *h, uint16_t reason, gz_action_list_t *out);
+/* The person's early start (local-api.md 15.2, "start now"): the ready check
+ * begins now, before the start rule would begin it, exactly as the rule
+ * begins it (the freeze saved before the first check). Only while Open, not
+ * paused (cfg.paused), with at least the terms' minimum counted as the
+ * start rule counts them (gz_lobby_host_ready_count), and, as for the rule,
+ * not again after a check that ended without a start until a seat event
+ * (the failed-check guard, decision 8). Otherwise
+ * GZ_NOTE_COMMAND_REFUSED (GZ_CMD_START) and nothing else. A check that ends
+ * without a start returns the lobby to Open, under the rule again. */
+gz_status_t gz_lobby_host_start(gz_lobby_host_t *h, gz_action_list_t *out);
+/* The seats the start rule counts now: Ready for the current values,
+ * connected, and with a min_members a start could meet. */
+uint32_t gz_lobby_host_ready_count(const gz_lobby_host_t *h);
 /* The signing engine's outcome (GZ_LOBBY_ROUND_*, lobby_handoff.h), saved
  * (lobby_state) before anything shows it. For GZ_LOBBY_ROUND_RETRY,
  * `failed_ckeys` lists the failed seats' contribution keys, 33 bytes each;
@@ -596,6 +611,28 @@ gz_status_t gz_lobby_member_unready(gz_lobby_member_t *m, gz_action_list_t *out)
 gz_status_t gz_lobby_member_leave(gz_lobby_member_t *m, gz_action_list_t *out);
 gz_status_t gz_lobby_member_set_conditions(gz_lobby_member_t *m, const gz_lobby_conditions_t *c,
                                            gz_action_list_t *out);
+/* The person's conditions changed while this lobby holds its copy
+ * (local-api.md 13.2, the copying rule). The copy stays the one in force
+ * (`m->cond`: the ready check and the signing check compare against it, so
+ * a loosening changes nothing here). If the lobby's latest values (the
+ * frozen ones after the freeze) fit `person` worse than they fit the copy
+ * (gz_lobby_member_misfits), the member leaves before its round: `leave`
+ * reason 1, saved first, and GZ_NOTE_REFUSED with the class and the
+ * deciding term under `person`. A lobby whose round was handed over
+ * (gz_lobby_member_in_round) or is signed (a saved Funding or Active) is
+ * never left for this: GZ_NOTE_COMMAND_REFUSED (GZ_CMD_CONDITIONS), nothing
+ * changed; so is an ended lobby. A lobby that fits as well gets nothing. */
+gz_status_t gz_lobby_member_tighten(gz_lobby_member_t *m, const gz_lobby_conditions_t *person,
+                                    gz_action_list_t *out);
+/* 1 if `person` fits this lobby worse than its copy does: it has terms, has
+ * not ended, and its latest values move down under `person` from "a plain
+ * ready may be given" to "joined, not ready by itself" (fits only now, the
+ * default option) or "does not fit", or from the second to the third. */
+int gz_lobby_member_misfits(const gz_lobby_member_t *m, const gz_lobby_conditions_t *person);
+/* 1 while the lobby's round was handed over and its outcome is not saved:
+ * a start with role 1 for the check the member answered and still holds
+ * (gz_lobby_member_check_in_flight), that no Retry spent. */
+int gz_lobby_member_in_round(const gz_lobby_member_t *m);
 /* The signing gate changed (composite-node.md 12.2).
  *   opened  the member readies again if it was unready only for the lock:
  *           before the freeze for the latest values, after it the plain

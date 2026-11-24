@@ -1061,6 +1061,26 @@ gz_status_t gz_lobby_host_cancel(gz_lobby_host_t *h, uint16_t reason, gz_action_
     return end_lobby(h, reason, out);
 }
 
+uint32_t gz_lobby_host_ready_count(const gz_lobby_host_t *h)
+{
+    uint16_t j, r;
+    uint32_t rc = 0;
+    if (h) counts(h, &j, &r, &rc);
+    return rc;
+}
+
+gz_status_t gz_lobby_host_start(gz_lobby_host_t *h, gz_action_list_t *out)
+{
+    if (!h || !out) return GZ_ERR_ARGUMENT;
+    /* The start rule's failed-check guard (apply_rule): after a check that
+     * ended without a start, a new one needs a seat event first, also when
+     * the person asks (review of #77, L1). */
+    if (h->state != GZ_LOBBY_OPEN || (h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx)) ||
+        gz_lobby_host_ready_count(h) < h->terms.minimum || (h->check_failed && h->seat_epoch == h->failed_epoch))
+        return gz_la_cmd_refused(out, GZ_CMD_START, h->state);
+    return ready_check(h, out);
+}
+
 static gz_status_t save_state(const gz_lobby_host_t *h, uint8_t state, gz_action_list_t *out)
 {
     uint8_t r[GZ_LOBBY_REC_MAX_STATE];
