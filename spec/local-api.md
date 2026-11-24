@@ -654,7 +654,7 @@ Draft 2 had one kind: a 5-minute window, opened by any passphrase entry includin
 | `POST /api/v1/host/lobbies` (open a hosted lobby) | S1 | A | `confirm_funding_sat`: the preview's `funding_at_target_sat`; and `draft_digest` | Sets aside the funding and is the consent to spend it when the start rule is met, the largest spend the program makes |
 | `POST /api/v1/wallet/phrase/reveal`, `POST /api/v1/wallet/phrase/check` | S1 | A | `confirm: "show_words"` (reveal); `check_id` (check) | They open the words, which are sealed under a key from the passphrase (storage 9.1) |
 | `POST /api/v1/wallet/create`, `POST /api/v1/wallet/restore` | S1 | Setup session (4.3) | `confirm: "create_wallet"`; the passphrase twice | They set the passphrase |
-| `POST /api/v1/host/lobbies/{id}/start` | S1 | B | `confirm_funding_max_sat`: the lobby's `set_aside_sat` | An early start of a spend already consented to at opening; the automatic start needs nothing (15.2) |
+| `POST /api/v1/host/lobbies/{id}/start` | S1 | B | `confirm_funding_max_sat`: the lobby's `set_aside_sat` (the factory output; shown "plus the network fee", which is paid on top) | An early start of a spend already consented to at opening; the automatic start needs nothing (15.2) |
 | `PUT /api/v1/pause` with `{ "on": false }` (resume) | S1 | B | `confirm: "resume"` | Turns joining and signing back on. Pausing needs neither |
 | `PUT /api/v1/conditions` when it loosens any value | S1 | B | `confirm_loosens`: the list of loosened fields the preview returned (13.2) | Widens what the app signs without asking |
 | `POST /api/v1/session/revoke-all` | S1 | B | `confirm: "revoke_all"` | Signs everyone out |
@@ -949,13 +949,13 @@ The API needs state that is not protocol bytes. Draft 1 left it without a home (
 | Words checked | `0x000d0004` `words_checked` |
 | Words-check attempts | `0x000d0006` `words_check_attempts` |
 | Conditions | `0x000d0008` `conditions` |
-| Conditions copied at joining | `0x000d000a` `conditions_copy` |
+| Conditions copied at joining (reserved, not written in S1) | `0x000d000a` `conditions_copy` |
 | Pause | `0x000d000c` `pause` |
 | Local ids | `0x000d000e` `local_ids` |
 | Known hosts | `0x000d0010` `known_host` |
 | Activity entries | `0x000d0012` `activity_entry` |
 | Request ids | `0x000d0014` `request_id` |
-| Set-aside funds | `0x000d0016` `set_aside` |
+| Set-aside funds (reserved, not written in S1) | `0x000d0016` `set_aside` |
 | Sign-out setting (1.0.0) | `0x000d0018` `sign_out_setting` |
 | Settings (1.0.0) | `0x000d001a` `settings` |
 | Review and preview ids spent (1.0.0) | `0x000d001c` `review_id_spent` |
@@ -970,13 +970,13 @@ The API needs state that is not protocol bytes. Draft 1 left it without a home (
 | **Words checked** | `checked_at`, or none | Before `phrase/check` answers `ok: true` | S1 |
 | **Words-check attempts** | The time of each check made in the last 24 hours (12.3) | Before `check` compares the words, once the passphrase has opened them, so a restart never resets the limit | S1 |
 | **Conditions** | The member's full conditions, `preset`, `version` | Before `PUT /conditions` answers; in the same batch as any `leave` it causes | S1 |
-| **Conditions copied at joining** | For each joined lobby: the conditions, their `version` and `compare_with`, as they were at joining | **In the same batch as the lobby's `joined` record** (`journal.md` section 9). The fit check at the ready check and at signing uses this copy, never today's conditions (13.2; test 23.1 item 2) | S1 |
+| **Conditions copied at joining** | For each joined lobby: the conditions, their `version` and `compare_with`, as they were at joining. **Reserved, not written in S1**: the copy is `slot_opened` field 20 (and 24, the version), in the slot's first batch, before `joined` | **In the same batch as the lobby's `joined` record** (`journal.md` section 9). The fit check at the ready check and at signing uses this copy, never today's conditions (13.2; test 23.1 item 2) | S1 |
 | **Pause** | `on` or `off`, `since_at`, and the lobbies a pause is held for (`held_for_signing`; several since draft 5) | Before `PUT /pause` answers, and before any `leave` or `round_abort` the pause sends. A locked program cannot read it, and joins and signs nothing anyway (4.7); **at unlock**, a saved `on` is applied **before the node connects to any host** (4.7, step 7), so a restart never resumes joining or signing (11.3) | S1 |
 | **Local ids** | For each lobby joined or hosted and each factory: local id, fingerprint | With the lobby's first record (`terms_received` or `lobby_opened`), and with the factory's first round record | S1 |
 | **Known hosts** | Key, address, source (`built_in`, `added`, `invitation`), `added_at` | Before `discovery/query` answers, when the query adds a host | S1 |
 | **Activity entries** | Id, time, kind, who decided, rule, params, and the **saved copy** (terms object, fit check, conditions as copied), never changed afterwards (section 19) | In the same batch as the record of the event it describes, where there is one (for a refusal, with the round's `round_ended` or the lobby's `leave`); otherwise alone, before the event is shown | S1 |
 | **Request ids** | `request_id`, method, path, body digest, answer status, the local id of the object it acted on (for `POST /api/v1/lobbies/ready`, of every lobby listed, 14.2), `created_at` | In the same batch as the action's first save (7.4) | S1 |
-| **Set-aside funds** | For each hosted lobby: the amount set aside and the echoed `confirm_funding_sat` | Before `POST /host/lobbies` answers; replaced by `funding_plan` when the attempt starts | S1 |
+| **Set-aside funds** | For each hosted lobby: the amount set aside and the echoed `confirm_funding_sat`. **Reserved, not written in S1**: the amount follows from the terms in `lobby_opened` (the funding engine's `gz_fund_set_aside_sat`); a release that changes how it is computed saves it here first | Before `POST /host/lobbies` answers; replaced by `funding_plan` when the attempt starts | 1.0.0 |
 | **Signing setting** | `member_signing` and `host_funding` (14.3), with their `version`. Never a gate or a scoped secret: those live in memory only and close at every start (composite 12.2) | Before `PUT /api/v1/signing` answers | S1 |
 | **Sign-out setting** | `sign_out_after_idle_s` (idle signs the browser out and never locks, 4.7; draft 4 called it `lock_after_idle_s`) | Before the settings call answers (1.0.0; Slice 1 uses the fixed default and saves nothing) | 1.0.0 |
 | **Settings** | Every field of section 20 that is not computed | Before the `PATCH` answers | 1.0.0 |
@@ -1703,7 +1703,7 @@ Two sides of one comparison (options map, scopes 1 and 2). They are never editab
 
 - **Presets** (concept H: `cautious`, `everyday`, `wide`) are starting sets for the member's conditions. "Profile" means only the host's lobby type (`safety`, `standard`, `starter`, `circle`). Changing any number makes `preset` `custom`. The numbers behind each preset are **(open; critique question 13)**; the program is their one source.
 - `compare_with`: `whole_range` (default, decision 1) or `current_value` (the looser choice: ready while the current value fits; un-ready when it moves outside).
-- `editable` is `false` only during the seconds of signing (`signing_now`).
+- `editable` is `true` in S1. A change is refused with `signing_now` only when it would leave a lobby whose round is on (its start held, or its partial signatures out), and the answer names those lobbies; every other change, also while some lobby signs, is saved at once (review of #77). So the interface never greys the form out; it shows the refusal and the lobbies when one comes.
 - Fields marked 1.1.0 (`max_receiving_room_fee_ppm`) or open (`max_move_fee_sat`, `seat_cost`, `host_proof_required`) are present and `null` or default. S1 compares `profiles`, `min_members`, `min_channel_sat`, `max_joining_fee_sat`, `max_fee_base_msat`, `max_fee_ppm`, `min_life_blocks`, `max_life_blocks`, `max_exit_blocks` and `min_confirmations`: the terms Slice 1's record carries (`terms.md` section 3).
 - `people_blocked`, `hosts_trusted`, `hosts_avoided`, `appear_as`: 1.0.0. `appear_as`: `temporary_name`, `nostr_key` (later reserved), `free_text` (later reserved).
 - The routing limit is **not** here; it is in Settings, Wallet (critique question 12).
@@ -2142,7 +2142,7 @@ Answer:
 
 | Call | Release | Request | Answer | Errors |
 |---|---|---|---|---|
-| `POST /api/v1/host/lobbies` | S1 | `{ "request_id", "draft": {…}, "draft_digest": "…", "confirm_funding_sat": 37500000, "passphrase": "…" }`. **The passphrase in the request** (4.8, kind A) | `201`, the host's lobby object (15.3). The program signs the outer rules and current values version 1, saves them (`lobby_opened`, with the set-aside amount, 7.5) and starts answering `hello`. Opening sets aside the funding at the target, and is the host's consent to spend up to that amount when the start rule is met | `draft_changed` (the draft does not match the digest that was previewed), `confirm_mismatch` (`confirm_funding_sat` is not the preview's `funding_at_target_sat`), `wrong_passphrase`, `rate_limited`, every `cannot_open_because` value |
+| `POST /api/v1/host/lobbies` | S1 | `{ "request_id", "draft": {…}, "draft_digest": "…", "confirm_funding_sat": 37500000, "passphrase": "…" }`. **The passphrase in the request** (4.8, kind A) | `201`, the host's lobby object (15.3). The program signs the outer rules and current values version 1, saves them (`lobby_opened`, with the set-aside amount, 7.5) and starts answering `hello`. Opening sets aside the most the funding can pay to the factory: its amount at the member count, from the minimum to the target, that needs the most (the target for every shape so far, so the preview's `funding_at_target_sat`), plus the network fee, which is paid on top. It is the host's consent to spend up to that amount when the start rule is met | `draft_changed` (the draft does not match the digest that was previewed), `confirm_mismatch` (`confirm_funding_sat` is not the preview's `funding_at_target_sat`), `wrong_passphrase`, `rate_limited`, every `cannot_open_because` value |
 | `GET /api/v1/host/lobbies` | S1 | `?state=open\|funding\|running\|ended&cursor` | Page of host lobby rows | |
 | `GET /api/v1/host/lobbies/{id}` | S1 | | 15.3 | `not_found`, `not_host` |
 | `POST /api/v1/host/lobbies/{id}/start` | S1 | `{ "request_id", "confirm_funding_max_sat": 37500000 }`. **Fresh sign-in** (4.8). An **early** start only (below) | `202`, `stage: "ready_check"` | `below_minimum` (`params.ready`, `params.minimum`), `not_open`, `funds_short`, `chain_in_doubt`, `paused`, `confirm_mismatch`, `fresh_sign_in_needed` |

@@ -436,7 +436,8 @@ static gz_status_t closing_add(gz_node_t *c, const slot_t *s, uint64_t budget_ms
 /* slot_opened: 2 serial (u32), 4 scope (32), 6 role (u8: 1 host, 0 member),
  * 8 host key (33) and 10 host address (member), 12 key epoch (u32), 14 key
  * index (u32, the pair's first), 16 listed (u8) and 18 standbys (u16) (host),
- * 20 conditions and 22 auto-join (u8) (member). */
+ * 20 conditions, 22 auto-join (u8) and 24 the version of the saved
+ * conditions when it joined (u32; absent: none were saved) (member). */
 static size_t opened_record(const slot_t *s, const uint8_t *cond, size_t cond_len, uint8_t *buf, size_t cap)
 {
     uint8_t v[4];
@@ -464,6 +465,8 @@ static size_t opened_record(const slot_t *s, const uint8_t *cond, size_t cond_le
         if (st == GZ_OK && cond_len) st = gz_rec_put(buf, cap, &at, 20, cond, cond_len);
         v[0] = s->auto_join ? 1 : 0;
         if (st == GZ_OK) st = gz_rec_put(buf, cap, &at, 22, v, 1);
+        gz_put_u32(v, s->cond_seen);
+        if (st == GZ_OK && s->cond_seen) st = gz_rec_put(buf, cap, &at, 24, v, 4);
     }
     return st == GZ_OK ? at : 0;
 }
@@ -514,7 +517,7 @@ gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
 {
     gz_bytes_t serial, scope, role, epoch, index, v;
     int i, bad_address = 0;
-    if (rec->bytes.len > OPENED_MAX || !gz_rec_valid(rec->bytes) || !node_rec_known(rec->bytes, 0xffeu) ||
+    if (rec->bytes.len > OPENED_MAX || !gz_rec_valid(rec->bytes) || !node_rec_known(rec->bytes, 0x1ffeu) ||
         !arg(rec->bytes, 2, 4, &serial) ||
         !arg(rec->bytes, 4, 32, &scope) || !arg(rec->bytes, 6, 1, &role) || role.data[0] > 1 ||
         !arg(rec->bytes, 12, 4, &epoch) || !arg(rec->bytes, 14, 4, &index) || gz_get_u32(serial.data) == 0 ||
@@ -557,6 +560,10 @@ gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
         if (!gz_ls_cond_decode(v.data, v.len, &s->cond)) return GZ_ERR_CORRUPT;
         if (!arg(rec->bytes, 22, 1, &v)) return GZ_ERR_CORRUPT;
         s->auto_join = v.data[0] != 0;
+        if (gz_rec_find(rec->bytes, 24, &v) == 1) {
+            if (v.len != 4) return GZ_ERR_CORRUPT;
+            s->cond_seen = gz_get_u32(v.data);
+        }
     }
     /* A role other than the data folder's, or a generation of 0: the slot is
      * left out and counted, at every start alike; its records are nobody's. */
@@ -774,6 +781,9 @@ static gz_status_t cond_apply(gz_node_t *c, int i, gz_action_list_t *out)
     const gz_lobby_member_t *m = &s->lobby.m;
     gz_status_t st;
     if (s->host || !c->api.have_cond || !s->awake || m->ended || !m->have_terms) return GZ_OK;
+    /* Only conditions saved after it joined: a join's own conditions, looser
+     * ones confirmed by the person (cmd_join), hold until the next change. */
+    if (s->cond_seen >= c->api.cond_version) return GZ_OK;
     if (!m->connected && (m->joined || m->join_len)) return GZ_OK;
     if (m->lobby_state == GZ_LOBBY_FUNDING || m->lobby_state == GZ_LOBBY_ACTIVE || m->round_state) return GZ_OK;
     if (!gz_lobby_member_misfits(m, &c->api.cond) || round_on(c, s)) return GZ_OK;
@@ -1473,11 +1483,33 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         return np_command_result(out, cmd, 400, "bad_host_key");
     if (gz_rec_find(cmd, 18, &cond) == 1 && cond.len > COND_MAX) return np_command_result(out, cmd, 400, "bad_conditions");
     if (!gz_ls_cond_decode(cond.data, cond.len, &cd)) return np_command_result(out, cmd, 400, "bad_conditions");
-    /* A join that names none copies the person's saved conditions (13.2). */
+    /* A join that names none copies the person's saved conditions (13.2).
+     * One that names its own, looser than them, widens what the app signs:
+     * as PUT /conditions, the person's, freshly (an API request), with the
+     * exact list of what it loosens in field 22 (review of #77, L3). */
     if (gz_rec_find(cmd, 18, &v) != 1 && c->api.have_cond) {
         cond.data = c->api.cond_bytes;
         cond.len = c->api.cond_len;
         cd = c->api.cond;
+    } else if (c->api.have_cond) {
+        uint8_t l[8 + GZ_TERMS_MAX_ADJ];
+        size_t nl = gz_api_loosens(&c->api.cond, &cd, l);
+        gz_bytes_t e, d;
+        if (nl && gz_rec_find(cmd, GZ_CMD_REC_DIGEST, &d) != 1)
+            return np_command_result(out, cmd, 403, "fresh_sign_in_needed");
+        if (gz_rec_find(cmd, 22, &e) != 1) e.len = 0;
+        if (nl && (e.len != nl || memcmp(e.data, l, nl) != 0)) {
+            char p[160];
+            size_t at = 0;
+            p[0] = 0;
+            put_s(p, sizeof p, &at, "{\"loosens\":[");
+            for (size_t j = 0; j < nl; j++) {
+                if (j) put_s(p, sizeof p, &at, ",");
+                put_u(p, sizeof p, &at, l[j]);
+            }
+            put_s(p, sizeof p, &at, "]}");
+            return np_command_result_p(out, cmd, 409, "confirm_mismatch", p);
+        }
     }
     if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */
     if (gz_route_slot_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 409, "lobby_exists");
@@ -1491,6 +1523,7 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     memcpy(s->address, addr.data, addr.len);
     s->address_len = (uint8_t)addr.len;
     s->cond = cd;
+    s->cond_seen = c->api.have_cond ? c->api.cond_version : 0;
     s->auto_join = !(arg(cmd, 20, 1, &v) && v.data[0] == 0);
     s->key_epoch = c->np.have_epoch ? c->np.epoch : 0;
     if (!ls_init_next(c, i)) {

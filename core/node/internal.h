@@ -294,6 +294,7 @@ typedef struct {
     slot_view_t view;               /* P6a */
     int awake;                      /* resumed at this start, or opened in this run: the pause acts on it */
     uint64_t set_aside;             /* host: gz_fund_set_aside_sat of its terms, once known */
+    uint32_t cond_seen;             /* member: the saved conditions' version when it joined (slot_opened 24) */
     int set_aside_known;
 } slot_t;
 
@@ -650,6 +651,7 @@ gz_status_t gz_api_release(gz_node_t *c, const uint8_t scope[32], gz_action_list
 gz_status_t gz_api_precheck(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out, int *done);
 gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_list_t *out);
 gz_status_t gz_api_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out);
+size_t gz_api_loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditions_t *to, uint8_t *l);
 gz_status_t gz_ls_left_out_note(gz_node_t *c, int i, gz_action_list_t *out);
 gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t *, int, gz_action_list_t *),
                               gz_action_list_t *out);

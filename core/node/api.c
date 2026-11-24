@@ -747,7 +747,7 @@ static gz_status_t cmd_signing(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *o
 /* What `to` loosens against `from` (13.2 `loosens`): the codes of view.h's
  * GZ_COND_L_*, increasing, each once, into `l` (room for 8 + GZ_TERMS_MAX_ADJ).
  * A limit at its "no limit" value (terms.h) is the loosest it can be. */
-static size_t loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditions_t *to, uint8_t *l)
+size_t gz_api_loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditions_t *to, uint8_t *l)
 {
     const gz_terms_limits_t *a = &from->limits, *b = &to->limits;
     size_t n = 0;
@@ -825,7 +825,7 @@ static gz_status_t cmd_conditions(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t
         !arg(cmd, 14, 4, &b) || (gz_rec_find(cmd, 18, &pr) == 1 && !preset_ok(pr)))
         return result(c, cmd, 400, "bad_value", NULL, NULL, out);
     if (gz_rec_find(cmd, 18, &pr) != 1) pr.len = 0;
-    nl = loosens(c->api.have_cond ? &c->api.cond : &NONE, &nc, l);
+    nl = gz_api_loosens(c->api.have_cond ? &c->api.cond : &NONE, &nc, l);
     if (nl && gz_rec_find(cmd, GZ_CMD_REC_DIGEST, &d) != 1)
         return result(c, cmd, 403, "fresh_sign_in_needed", NULL, NULL, out);
     if (gz_rec_find(cmd, 16, &e) != 1) e.len = 0;
