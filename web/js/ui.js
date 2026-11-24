@@ -90,6 +90,11 @@
   /* Ask for the wallet passphrase in a dialog and hand it to o.run. The field
      is emptied as soon as the request is sent (12.7). Resolves with run's
      result; rejects with { code: "cancelled" } if the person closes it. */
+  var openDialogs = [];      /* the passphrase dialogs on screen, dropped with the session (12.7) */
+  function dropDialogs() {
+    openDialogs.slice().forEach(function (drop) { drop(); });
+  }
+
   function askPassphrase(o) {
     return new Promise(function (resolve, reject) {
       var f = passField("Wallet passphrase", false);
@@ -99,7 +104,11 @@
       var form = h("form", { novalidate: true },
         h("h2", { id: "ask-title" }, o.title), h("p", {}, o.why), o.extra || null, f.wrap, msg, actions(go, cancel));
       var dlg = h("dialog", { class: "dlg", "aria-labelledby": "ask-title" }, form);
+      function drop() { finish(); reject({ code: "cancelled" }); }
+      openDialogs.push(drop);
       function finish() {
+        var i = openDialogs.indexOf(drop);
+        if (i >= 0) openDialogs.splice(i, 1);
         f.input.value = "";
         if (dlg.open) dlg.close();
         if (dlg.parentNode) dlg.parentNode.removeChild(dlg);
@@ -250,7 +259,7 @@
 
   gz.ui = {
     notice: notice, error: error, toast: toast, actions: actions, button: button, run: run, holdOff: holdOff,
-    field: field, passField: passField, askPassphrase: askPassphrase, confirm: confirm, facts: facts, value: value,
+    field: field, passField: passField, askPassphrase: askPassphrase, dropDialogs: dropDialogs, confirm: confirm, facts: facts, value: value,
     fitTable: fitTable, terms: terms, dates: dates, pill: pill
   };
 })();

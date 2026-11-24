@@ -475,6 +475,19 @@ static inline gz_event_t ev_failed_op(const uint8_t op[36])
     e.u.chain.kind = GZ_CHAIN_WATCH_FAILED;
     return e;
 }
+/* A watch whose answer is put off (GZ_CHAIN_WATCH_PENDING). */
+static inline gz_event_t ev_pending_tx(const uint8_t txid[32])
+{
+    gz_event_t e = ev_synced_tx(txid);
+    e.u.chain.kind = GZ_CHAIN_WATCH_PENDING;
+    return e;
+}
+static inline gz_event_t ev_pending_op(const uint8_t op[36])
+{
+    gz_event_t e = ev_synced_op(op);
+    e.u.chain.kind = GZ_CHAIN_WATCH_PENDING;
+    return e;
+}
 static inline gz_event_t ev_bres(const uint8_t txid[32], gz_broadcast_outcome_t o)
 {
     gz_event_t e;

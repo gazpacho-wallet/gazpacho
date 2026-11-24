@@ -26,12 +26,12 @@ int gz_static_lookup(const char *path, const char **body, size_t *len, int *is_p
 const char *gz_page_headers(void)
 {
     return "Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; "
-           "img-src 'self'; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; "
+           "img-src 'self'; font-src 'self'; connect-src 'self'; worker-src 'none'; manifest-src 'self'; "
            "form-action 'none'; frame-ancestors 'none'; base-uri 'none'; "
            "require-trusted-types-for 'script'; trusted-types 'none'\r\n"
            "Cross-Origin-Opener-Policy: same-origin\r\n"
            "Cross-Origin-Embedder-Policy: require-corp\r\n"
            "X-Frame-Options: DENY\r\n"
            "Permissions-Policy: camera=(), microphone=(), geolocation=(), usb=(), serial=(), "
-           "bluetooth=(), payment=(), clipboard-write=()\r\n";
+           "bluetooth=(), payment=(), clipboard-write=(self)\r\n";
 }
