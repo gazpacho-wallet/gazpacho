@@ -1184,7 +1184,7 @@ static void test_disagree_raw_tx_and_proof(test_state *T) {
   mfx_open(&x, 2);
   ids_init(&k);
   /* Server two alters a witness byte: the same txid, another wtxid. That is
-   * the same transaction (C-2: a host can make two valid witnesses for its
+   * the same transaction (C-2: a host can make two witnesses for its
    * funding and give each server its own), so the servers agree; what is
    * handed over is one server's bytes, whole, and they are this txid. */
   uint8_t mine[1024], theirs[1024], check[GZ_HASH_LEN];

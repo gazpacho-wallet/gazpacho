@@ -83,7 +83,10 @@
  *    transaction (another wtxid, which its maker can produce at will and give
  *    each server its own) are agreement, not DISAGREE (C-2). The bytes
  *    handed over are one server's, whole; nothing in the port reads a
- *    witness. A transaction one server has and another lacks is DISAGREE
+ *    witness. Witness bytes are never authenticated, by one server or by
+ *    this backend: a caller that reads a witness (a preimage, a signature)
+ *    must verify it against the spent output's script itself, or must not
+ *    use it. A transaction one server has and another lacks is DISAGREE
  *    (it has no height to judge lag by).
  *  - broadcast: sent to every server on the right network; GZ_CHAIN_OK if at
  *    least one accepts (or already has it). Every server's result is in the

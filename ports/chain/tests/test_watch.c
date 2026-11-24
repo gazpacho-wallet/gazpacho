@@ -986,7 +986,7 @@ static unsigned log_count(fx *f, const char *needle) {
   return n;
 }
 
-/* C-2: a host gives each of a member's servers its own valid witness for
+/* C-2: a host gives each of a member's servers its own witness for
  * the funding (the same txid). The member's watch on a funding input sees
  * the funding as its spender; the servers' bytes differ only in the
  * witness, which is the same transaction: the spend is told at once, the
