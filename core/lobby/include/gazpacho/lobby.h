@@ -375,6 +375,7 @@ typedef struct {
     /* The member refused (an unready or leave with reason 1, its own
      * conditions): the reason, and the stage (1 Open, 2 a ready check, 3 Signing), until
      * it readies or joins again (local-api.md 15.3). Memory only. */
+    /* (and until the lobby's next ready check: decision K21) */
     uint16_t refused;
     uint8_t refused_stage;
 } gz_lobby_seat_t;

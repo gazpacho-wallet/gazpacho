@@ -627,6 +627,8 @@ gz_status_t np_peer(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out)
             if (i >= 0) conn_gone(c, i);
             if (s >= 0 && c->slots[s].state == SLOT_OPEN) st = gz_c_bracket(c, ENG_SLOT0 + s, ev, out);
         }
+    } else if (gz_dq_link(c, &ev->u.peer.link)) {
+        st = gz_dq_peer(c, ev, out);       /* a query's link (discovery.c) */
     } else {
         int s = gz_route_member_slot_of_link(c, &ev->u.peer.link);
         if (s >= 0) st = gz_c_bracket(c, ENG_SLOT0 + s, ev, out);
@@ -773,6 +775,7 @@ gz_status_t np_message(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out
     }
     case RT_SIGNING:
         return node_only(c, out, DROP_NO_ENGINE, ev->u.message.kind, NULL); /* P4.3 */
+    case RT_DISCOVERY: return gz_dq_message(c, ev, out);
     case RT_TEST:   return gz_c_bracket(c, r.eng, ev, out);
     case RT_LISTING: return limited_hello(c, conn, ev, 0, out);
     case RT_UNKNOWN_HELLO: return limited_hello(c, conn, ev, 1, out);
@@ -788,6 +791,7 @@ gz_status_t np_timer(gz_node_t *c, uint32_t id, gz_action_list_t *out)
 #ifdef GZ_TEST_KINDS
     if (id == NP_TIMER_SIGN) return gz_ss_timer(c, out);
 #endif
+    if (id == NP_TIMER_DISCOVERY) return gz_dq_timer(c, out);
     gz_status_t st = gz_c_node_bracket_begin(c, out);
     if (st != GZ_OK) return st;
     if (id == NP_TIMER_IDLE) {
@@ -1025,6 +1029,7 @@ gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_li
     case 0x7e84: st = slot_watch(c, cmd, out); break;
     case 0x7e85: st = slot_save(c, cmd, out); break;
 #endif
+    case GZ_CMD_LOBBY_QUERY: st = gz_dq_command(c, cmd, out); break; /* a host's lobbies (discovery.c) */
     default: st = gz_ls_command(c, code, cmd, out); break; /* the lobby's, the gate's, or unknown_command */
     }
     if (st == GZ_OK) st = gz_api_after(c, cmd, from, out); /* its request id (api.c) */
@@ -1108,6 +1113,6 @@ gz_status_t np_save_pair(gz_node_t *c, uint32_t first, const gz_record_t *extra,
     recs[n].bytes.data = gb;
     recs[n].bytes.len = guard_record(c, gb);
     n++;
-    recs[n++] = *extra;
+    if (extra) recs[n++] = *extra; /* none: a pair for a query's link (discovery.c) */
     return save_records(out, recs, n);
 }

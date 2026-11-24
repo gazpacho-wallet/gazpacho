@@ -1078,7 +1078,7 @@ static void test_refusals(void)
         memset(x, 0, sizeof *x);
     }
     /* Unknown commands in the lobby's and the node's ranges. */
-    CHECK(w_cmd(1, 0x01ff, NULL, 0) == 404 && w_cmd(1, 0x04ff, NULL, 0) == 404 && w_cmd(0, 0x010a, NULL, 0) == 404);
+    CHECK(w_cmd(1, 0x01ff, NULL, 0) == 404 && w_cmd(1, 0x04ff, NULL, 0) == 404 && w_cmd(0, 0x010b, NULL, 0) == 404);
     /* The test commands for the stand-in's slots do not reach a slot that
      * holds a lobby: it is closed by its lobby alone, with its records. */
     {
@@ -2762,11 +2762,158 @@ static void test_api_start(void)
     w_free(3);
 }
 
+/* A member asks a host for its lobbies (W12: LOBBY_QUERY; messages.md 6.1):
+ * the listed lobby is seen, checked and shown (kind 2 with no seat, its fit,
+ * its signed terms), the unlisted one is not; the query is answered (kind
+ * 10); a join of the seen lobby keeps its local id. A host key that is not
+ * the host's gets nothing (failed, no_answer); a host that is down,
+ * unreachable. The query's key pair is saved before its CONNECT. */
+static void test_discovery(void)
+{
+    terms_t t, u;
+    lt_key_t hk;
+    char qid[32], lob[GZ_LOCAL_ID_MAX + 1];
+    gz_bytes_t v;
+    wview_t *w;
+    size_t nb;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 3100);
+    make_terms(&u, 3, 3, 3101);
+    CHECK(host_open(&t, 1) == 200 && host_open(&u, 0) == 200);
+    {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        nb = N[1].n_batches;
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, "QueryHostLobbies01", "/api/v1/discovery/query", 1, q, 2) == 202);
+        CHECK(N[1].n_batches == nb + 1 && h_records_of(&N[1], GZ_RECORD_KEY_INDEX) >= 1);
+        CHECK(res_text(1, GZ_RESULT_REC_OBJECT, qid, sizeof qid) && !strncmp(qid, "q_", 2));
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, "QueryHostLobbies02", "/api/v1/discovery/query", 1, q, 2) == 409);
+    }
+    w = view_of(1, GZ_VIEW_DISCOVERY, qid);
+    CHECK(w && vf8(w, GZ_VDQ_STATE) == 1);
+    w_run(4000, 100);
+    w = view_of(1, GZ_VIEW_DISCOVERY, qid);
+    CHECK(w && vf8(w, GZ_VDQ_STATE) == 2 && vf(w, GZ_VDQ_LOBBIES, &v) && v.len == 20 && !vf(w, GZ_VDQ_FAILED, &v));
+    lob[0] = 0;
+    if (vf(w, GZ_VDQ_LOBBIES, &v) && v.len < sizeof lob) {
+        memcpy(lob, v.data, v.len);
+        lob[v.len] = 0;
+    }
+    CHECK(gz_api_local_id(N[1].n, t.scope) && !strcmp(gz_api_local_id(N[1].n, t.scope), lob));
+    CHECK(gz_api_local_id(N[1].n, u.scope) == NULL);           /* unlisted: not seen */
+    w = view_of(1, GZ_VIEW_LOBBY, lob);
+    CHECK(w && vf8(w, GZ_VLB_SEAT) == GZ_VSEAT_NONE && vf(w, GZ_VLB_FINGERPRINT, &v) && !memcmp(v.data, t.scope, 32));
+    CHECK(vf(w, GZ_VLB_OUTER, &v) && v.len == t.on && !memcmp(v.data, t.outer, t.on));
+    CHECK(vf(w, GZ_VLB_FIT, &v) && v.len == 18 && v.data[0] == GZ_VFIT_FITS && vf(w, GZ_VLB_SEEN, &v));
+    CHECK(vf(w, GZ_VLB_HOST_KEY, &v) && !memcmp(v.data, hk.pub, 33));
+    /* The link is closed once answered; a join of the seen lobby keeps its id. */
+    CHECK(slot(1, &t) == NULL && member_join(1, &t) == 200 && !strcmp(lid(1, &t), lob));
+    w_run(2000, 100);
+    CHECK(member_ready(1, &t) == 1 && view_of(1, GZ_VIEW_LOBBY, lob) && vf8(view_of(1, GZ_VIEW_LOBBY, lob), GZ_VLB_SEAT) == GZ_VSEAT_READY);
+    /* A restart keeps the joined lobby's id (saved with its slot). */
+    CHECK(w_restart(1) == GZ_OK && !strcmp(lid(1, &t), lob));
+    /* Another host key: the offers do not check out against it; nothing seen. */
+    {
+        lt_key_t other;
+        wkey(5, 0, 900, &other);
+        h_arg_t q[2] = {{12, other.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, "QueryOtherKey00001", "/api/v1/discovery/query", 1, q, 2) == 202);
+        CHECK(res_text(1, GZ_RESULT_REC_OBJECT, qid, sizeof qid));
+        w_run(12000, 250);
+        w = view_of(1, GZ_VIEW_DISCOVERY, qid);
+        CHECK(w && vf8(w, GZ_VDQ_STATE) == 3 && !vf(w, GZ_VDQ_LOBBIES, &v) && vf(w, GZ_VDQ_FAILED, &v) && v.len == 9 &&
+              !memcmp(v.data, "no_answer", 9));
+    }
+    /* The host down: unreachable. */
+    {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        ALIVE[0] = 0;
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, "QueryHostDown00001", "/api/v1/discovery/query", 1, q, 2) == 202);
+        CHECK(res_text(1, GZ_RESULT_REC_OBJECT, qid, sizeof qid));
+        w_run(12000, 250);
+        w = view_of(1, GZ_VIEW_DISCOVERY, qid);
+        CHECK(w && vf8(w, GZ_VDQ_STATE) == 3 && vf(w, GZ_VDQ_FAILED, &v) && v.len == 11 && !memcmp(v.data, "unreachable", 11));
+        ALIVE[0] = 1;
+    }
+    /* A host asks nobody: not a member. */
+    {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        CHECK(w_req(0, GZ_CMD_LOBBY_QUERY, "QueryFromHost00001", "/api/v1/discovery/query", 1, q, 2) == 409);
+    }
+    no_errors(1);
+    w_free(1);
+}
+
+/* AT_JOIN, joined ready with the passphrase (LOBBY_JOIN 24, W12): the gate is
+ * open from the join, so the member readies by itself and is counted; without
+ * it, the member joins, locked, and is not. */
+static void test_join_unlocked(void)
+{
+    terms_t t;
+    lt_key_t hk;
+    uint8_t one = 1;
+    whost(&hk);
+    w_world(2, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3200);
+    CHECK(host_open(&t, 0) == 200);
+    h_arg_t j[4] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}};
+    CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 4) == 200 && member_join(2, &t) == 200);
+    w_run(3000, 100);
+    CHECK(member_ready(1, &t) == 1 && slot(1, &t)->gate_open && host_ready(&t) == 1);
+    CHECK(member_ready(2, &t) != 1 && !slot(2, &t)->gate_open);
+    no_errors(2);
+    w_free(2);
+}
+
+/* Decision K21 (local-api.md 15.3): a seat that refused stays shown as
+ * refused while the member, back as a new seat with a new key, readies; the
+ * lobby's next attempt (its ready check) ends the showing. */
+static void test_refusal_until_next_attempt(void)
+{
+    terms_t t;
+    lt_key_t hk, m3;
+    gz_link_t l3;
+    gz_bytes_t v;
+    wview_t *w;
+    uint8_t rec[4] = {0x01, 0x02, 0x00, 0x01}, e8[8];
+    whost(&hk);
+    w_world(4, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 4, 3, 2100);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200 && member_join(2, &t) == 200 && member_join(3, &t) == 200);
+    w_run(2000, 100);
+    CHECK(host_ready(&t) == 3);
+    /* Member 3 refuses at Open (leave reason 1): its seat is refused, never left. */
+    wkey(3, 0, slot(3, &t)->key_index, &m3);
+    l3 = h_link(hk.pub, m3.pub);
+    w_msg(0, &l3, GZ_KIND_LEAVE, t.scope, rec, sizeof rec);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(w && vf(w, GZ_VHL_COUNTS, &v) && gz_get_u16(v.data + 6) == 1);
+    /* Member 4 comes (as a rejoin does, a new key): ready, and the refused seat is still shown. */
+    CHECK(member_join(4, &t) == 200);
+    w_run(2000, 100);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(host_ready(&t) == 3 && w && vf(w, GZ_VHL_COUNTS, &v) && gz_get_u16(v.data + 6) == 1 && host_state(&t) == GZ_LOBBY_OPEN);
+    /* The early start begins the next attempt: the refusal is no longer shown. */
+    gz_put_u64(e8, gz_fund_set_aside_sat(&slot(0, &t)->lobby.h.terms));
+    h_arg_t a[2] = {{12, t.scope, 32}, {14, e8, 8}};
+    CHECK(w_req(0, GZ_CMD_LOBBY_START, "K21StartAttempt001", "/api/v1/host/lobbies/x/start", 1, a, 2) == 202);
+    w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
+    CHECK(host_state(&t) == GZ_LOBBY_READY_CHECK && w && vf(w, GZ_VHL_COUNTS, &v) && gz_get_u16(v.data + 6) == 0);
+    CHECK(vf(w, GZ_VHL_SEATS, &v));
+    for (size_t k = 0; k + GZ_VHL_SEAT_LEN <= v.len; k += GZ_VHL_SEAT_LEN)
+        CHECK(v.data[k + 33] != GZ_VSEAT_REFUSED && !(v.data[k + 34] & GZ_VHL_F_REFUSED));
+    no_errors(4);
+    w_free(4);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
     uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 10) : 1;
     setvbuf(stdout, NULL, _IONBF, 0);
+    test_discovery();
+    test_refusal_until_next_attempt();
+    test_join_unlocked();
     test_two_lobbies();
     test_cancel_and_tombstone();
     test_refusals();

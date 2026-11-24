@@ -1497,6 +1497,14 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         memset(s, 0, sizeof *s);
         return np_command_result(out, cmd, 503, "no_key");
     }
+    /* Joined ready with the passphrase (AT_JOIN; local-api.md 14.3 rule 2):
+     * the program has handed the key port the scoped secret before the
+     * command, as for a ready with field 14; the gate is open from the join,
+     * so the lobby readies by itself once its terms fit (W12). */
+    if (c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN && arg(cmd, 24, 1, &v) && v.data[0] == 1) {
+        s->gate_open = 1;
+        s->gate_flight = 0;
+    }
     if ((st = slot_begin(c, i, cond, out)) != GZ_OK) return st;
     return np_command_result(out, cmd, 200, NULL);
 }

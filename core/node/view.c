@@ -118,10 +118,9 @@ static uint8_t member_doing(const gz_node_t *c, const slot_t *s)
 
 /* The failing term's two values: the member's limit and the offer (the
  * current value when the term does not fit now, else the range's top). */
-static void fit_values(const gz_lobby_member_t *m, uint8_t term, int cls, uint64_t *yours, uint64_t *offered)
+static void fit_of(const gz_terms_limits_t *l, const gz_terms_outer_t *o, const gz_terms_current_t *cv, uint8_t term,
+                   int cls, uint64_t *yours, uint64_t *offered)
 {
-    const gz_terms_limits_t *l = &m->cond.limits;
-    const gz_terms_outer_t *o = &m->terms;
     *yours = *offered = 0;
     switch (term) {
     case 0: return;
@@ -138,12 +137,17 @@ static void fit_values(const gz_lobby_member_t *m, uint8_t term, int cls, uint64
     for (uint8_t j = 0; j < l->n_max && j < GZ_TERMS_MAX_ADJ; j++)
         if (l->max[j].type == term) *yours = l->max[j].max;
     if (cls == GZ_FIT_NO) {
-        for (uint8_t j = 0; j < m->values.n_values && j < GZ_TERMS_MAX_ADJ; j++)
-            if (m->values.val[j].type == term) *offered = m->values.val[j].value;
+        for (uint8_t j = 0; j < cv->n_values && j < GZ_TERMS_MAX_ADJ; j++)
+            if (cv->val[j].type == term) *offered = cv->val[j].value;
     } else {
         for (uint8_t j = 0; j < o->n_adj && j < GZ_TERMS_MAX_ADJ; j++)
             if (o->adj[j].type == term) *offered = o->adj[j].max;
     }
+}
+
+static void fit_values(const gz_lobby_member_t *m, uint8_t term, int cls, uint64_t *yours, uint64_t *offered)
+{
+    fit_of(&m->cond.limits, &m->terms, &m->values, term, cls, yours, offered);
 }
 
 static uint8_t gate_kind(const gz_node_t *c)
@@ -330,6 +334,70 @@ static size_t host_view(gz_node_t *c, slot_t *s)
     }
     if (gz_ls_set_aside(s)) put64(&w, GZ_VHL_SET_ASIDE, gz_ls_set_aside(s));
     return w.bad ? 0 : w.at;
+}
+
+/* ---- a query to a host, and the lobbies it saw (kind 10, kind 2) --------- */
+
+/* A lobby the query saw (discovery.c), as kind 2 with no seat: its local id
+ * for the run, the host and address asked, the signed terms, its fit
+ * against the member's conditions. None while a slot holds the scope: the
+ * slot's own object is the lobby then. */
+gz_status_t gz_view_seen(gz_node_t *c, int k, gz_action_list_t *out)
+{
+    dq_offer_t *f = &c->dq.offers[k];
+    vw_t w = {c->view.body, sizeof c->view.body, 0, 0};
+    const char *id = gz_api_local_id(c, f->scope);
+    const gz_lobby_conditions_t *cond = gz_api_conditions(c);
+    uint8_t fb[18], term = 0;
+    uint64_t yours, offered;
+    int cls;
+    if (!id || gz_route_slot_by_scope(c, f->scope) >= 0) return GZ_OK;
+    put(&w, GZ_VLB_FINGERPRINT, f->scope, 32);
+    put(&w, GZ_VLB_HOST_KEY, c->dq.host.key, 33);
+    put(&w, GZ_VLB_HOST_ADDRESS, c->dq.address, c->dq.address_len);
+    put8(&w, GZ_VLB_STAGE, GZ_LOBBY_OPEN);  /* a host lists a lobby while it takes joins (messages.md 6.1) */
+    put8(&w, GZ_VLB_SEAT, GZ_VSEAT_NONE);
+    put(&w, GZ_VLB_OUTER, f->outer, f->outer_len);
+    put(&w, GZ_VLB_OUTER_SIG, f->outer_sig, 64);
+    put(&w, GZ_VLB_CURRENT, f->current, f->current_len);
+    put(&w, GZ_VLB_CURRENT_SIG, f->current_sig, 64);
+    cls = gz_lobby_classify(&f->terms, &f->values, cond, &term);
+    fit_of(&cond->limits, &f->terms, &f->values, term, cls, &yours, &offered);
+    fb[0] = cls == GZ_FIT_YES ? GZ_VFIT_FITS : cls == GZ_FIT_NOW ? GZ_VFIT_FITS_NOW_ONLY : GZ_VFIT_DOES_NOT_FIT;
+    fb[1] = term;
+    gz_put_u64(fb + 2, yours);
+    gz_put_u64(fb + 10, offered);
+    put(&w, GZ_VLB_FIT, fb, 18);
+    put8(&w, GZ_VLB_DOING, GZ_DOING_NONE);
+    put64(&w, GZ_VLB_SEEN, c->ports.clock.now_ms(c->ports.clock.ctx));
+    if (w.bad) return gz_c_bug(c, ENG_NODE);
+    return emit(c, GZ_VIEW_LOBBY, id, c->view.body, w.at, 0, &f->hash, 1, out);
+}
+
+/* The query (kind 10, id "q_N"). */
+gz_status_t gz_view_query(gz_node_t *c, gz_action_list_t *out)
+{
+    const dq_t *q = &c->dq;
+    vw_t w = {c->view.body, sizeof c->view.body, 0, 0};
+    size_t pl = 0;
+    if (!q->state) return GZ_OK;
+    put8(&w, GZ_VDQ_STATE, (uint8_t)q->state);
+    put(&w, GZ_VDQ_HOST_KEY, q->host.key, 33);
+    put(&w, GZ_VDQ_ADDRESS, q->address, q->address_len);
+    put64(&w, GZ_VDQ_ASKED, q->asked_ms);
+    if (q->ended_ms) put64(&w, GZ_VDQ_ENDED, q->ended_ms);
+    if (q->why) put(&w, GZ_VDQ_FAILED, q->why, slen(q->why));
+    for (int k = 0; k < q->n; k++) {
+        const char *id = gz_api_local_id(c, q->offers[k].scope);
+        size_t n = id ? slen(id) : 0;
+        if (!n) continue;
+        if (pl) c->view.list[pl++] = ',';
+        memcpy(c->view.list + pl, id, n);
+        pl += n;
+    }
+    if (pl) put(&w, GZ_VDQ_LOBBIES, c->view.list, pl);
+    if (w.bad) return gz_c_bug(c, ENG_NODE);
+    return emit(c, GZ_VIEW_DISCOVERY, q->id, c->view.body, w.at, 0, &c->dq.hash, 0, out);
 }
 
 /* ---- attention (kind 7) --------------------------------------------------- */

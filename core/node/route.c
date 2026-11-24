@@ -197,6 +197,7 @@ static rt_t route_lobby(const gz_node_t *c, int conn, const gz_link_t *link, uin
         if (kind == GZ_MSG_KIND_HELLO && (s = gz_ls_ended_find(c, scope)) >= 0) return mk(RT_ENDED_HELLO, s, -1, 0);
         return kind == GZ_MSG_KIND_HELLO ? mk(RT_UNKNOWN_HELLO, -1, -1, 0) : mk(RT_DROP, -1, -1, DROP_NO_SLOT);
     }
+    if (gz_dq_link(c, link)) return mk(RT_DISCOVERY, -1, -1, 0); /* a query's link: only its answer comes there */
     if (zero) return mk(RT_DROP, -1, -1, DROP_SCOPE_ZERO);
     s = gz_route_slot_by_scope(c, scope);
     if (s < 0) return mk(RT_DROP, -1, -1, DROP_NO_SLOT);

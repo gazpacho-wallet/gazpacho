@@ -13,8 +13,9 @@ the interface does (Host, Origin, fetch metadata, the session header):
      honestly "unreachable" with --no-chain), finish-setup, then ready;
   3. the event stream, read through the program's one poll loop, carries the
      status change that finish-setup makes;
-  4. what waits for the core's view objects (P6a): lobby lists are empty, a
-     lobby is 404, an acting call is 501 not_in_this_release with needs;
+  4. the core's view and command results (W12): lobby lists empty, a lobby
+     404, a discovery query held and answered from the command result, the
+     core's refusal (409 busy) as the call's error, and an unreachable host;
   5. a wrong passphrase: 401 with retry_after_s and wrong_in_row (open point 42);
   6. lock: the wallet reads locked without a session;
   7. the release program serves the API too, without the stand-in: sign-in is
@@ -261,14 +262,33 @@ def main():
         st, s = p.call("GET", "/status")
         check(st == 200 and s.get("wallet") == "ready", "status: ready", s.get("wallet"))
 
-        # 4. what waits for the core's view objects
+        # 4. the core's view and its command results (W12): no lobby yet, a lobby
+        # the view does not hold is 404; a held call answered from the command
+        # result (202, the object it made, read back from the view); a refusal
+        # the core gives (409 busy) arrives as the call's error; a host that is
+        # not there makes the query fail, unreachable
         st, l = p.call("GET", "/lobbies?show=all")
-        check(st == 200 and l and l.get("items") == [], "lobbies: an empty list until the core's views", l)
+        check(st == 200 and l and l.get("items") == [], "lobbies: an empty list before any query", l)
         st, l = p.call("GET", "/lobbies/lob_nothing")
         check(st == 404, "a lobby the view does not hold: 404", l)
-        st, e = p.call("POST", "/discovery/query", {"host": "02" + "11" * 32 + "@127.0.0.1:9736"})
-        check(st == 501 and e and e.get("code") == "not_in_this_release" and e.get("params", {}).get("needs"),
-              "an acting call waits honestly: 501 with needs", e)
+        st, e = p.call("POST", "/discovery/query", {"host": "not a host"})
+        check(st == 400 and e and e.get("code") == "bad_host_address", "a host address that is not one: 400", e)
+        # the generator point: a valid key that no host here holds
+        host = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798@127.0.0.1:9736"
+        st, q = p.call("POST", "/discovery/query", {"host": host})
+        check(st == 202 and q and q.get("query_id", "").startswith("q_") and q.get("state") == "asking",
+              "a query: 202 from the core's command result, the query as the view holds it", (st, q))
+        st, e = p.call("POST", "/discovery/query", {"host": host})
+        check(st == 409 and e and e.get("code") == "busy", "a second query while one asks: the core's 409 busy", (st, e))
+        qid = (q or {}).get("query_id", "q_0")
+        end, g = time.time() + 20, None
+        while time.time() < end:
+            st, g = p.call("GET", "/discovery/queries/" + qid)
+            if g and g.get("state") != "asking":
+                break
+            time.sleep(0.5)
+        check(g and g.get("state") == "failed" and g.get("failed_because") == "unreachable" and g.get("lobbies") == [],
+              "nobody at that address: the query failed, unreachable", g)
 
         # 5. a wrong passphrase: when to try again, and how many in a row
         time.sleep(1.2)

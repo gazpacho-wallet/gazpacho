@@ -11,6 +11,8 @@
 #include "gazpacho/command.h"
 #include "gazpacho/envelope.h"
 #include "api.h"
+#include "api_lobby.h"
+#include "gazpacho/view.h"
 #include "unlock_impl.h"
 
 /* ---- the passphrase layer behind the server's passphrase operations ---------- */
@@ -199,6 +201,30 @@ static const char *jstr(const gz_json *b, const char *k)
     return v && v->type == GZ_JSON_STR ? v->s : NULL;
 }
 
+/* GET /api/v1/signing (14.3), from the status object's GZ_VST_SIGNING. */
+static void signing_get(gzp_api_t *a, gz_jw *w)
+{
+    static const char *const name[] = {"at_join", "auto", "when_unlocked"};
+    const gzp_view_obj_t *o = gzp_view_find(&a->view, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
+    gz_bytes_t all = {o ? o->bytes : NULL, o ? o->len : 0}, v;
+    int now = a->member_signing, pend = 0xff;
+    uint32_t version = 0;
+    if (o && gz_rec_find(all, GZ_VST_SIGNING, &v) == 1 && v.len == 7) {
+        now = v.data[0];
+        pend = v.data[1];
+        version = gz_get_u32(v.data + 2);
+    }
+    gz_jw_obj(w);
+    gz_jw_kstr(w, "member_signing", name[now % 3]);
+    if (pend < 3) gz_jw_kstr(w, "pending", name[pend]);
+    else gz_jw_knull(w, "pending");
+    gz_jw_kraw(w, "available", "[\"at_join\",\"auto\"]");
+    gz_jw_knull(w, "node_gate");
+    gz_jw_kstr(w, "host_funding", "auto");
+    gz_jw_kint(w, "version", version);
+    gz_jw_end_obj(w);
+}
+
 static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int *effect)
 {
     gzp_api_t *a = be;
@@ -266,19 +292,14 @@ static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int
         gz_jw_end_obj(w);
         return 200;
     }
-    case GZ_API_C_LOBBIES:
-    case GZ_API_C_HOST_LOBBIES:
     case GZ_API_C_FACTORIES:
     case GZ_API_C_ACTIVITY:
-        /* Rendered from the core's view objects (P6a); none is emitted yet. */
+        /* Factories (P4.5) and activity entries (P6b) are not in the view yet. */
         empty_page(w, a);
         return 200;
-    case GZ_API_C_LOBBY:
-    case GZ_API_C_HOST_LOBBY:
     case GZ_API_C_FACTORY:
     case GZ_API_C_FACTORY_DATES:
     case GZ_API_C_ACTIVITY_ONE:
-    case GZ_API_C_DISCOVERY_QUERY_GET:
         gz_api_err_set(err, "not_found", NULL, NULL);
         return 404;
     case GZ_API_C_WALLET:
@@ -308,10 +329,20 @@ static int call(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *err, int
     }
     case GZ_API_C_WALLET_ADDRESS:
         return not_yet(err, "wallet");
-    default:
-        /* Conditions, discovery, joining, readying, hosting and pause go to the
-         * core's lobby and API engine through their view objects (P6a). */
-        return not_yet(err, "core-view");
+    case GZ_API_C_SIGNING_GET:
+        signing_get(a, w);
+        return 200;
+    default: {
+        /* Conditions, discovery, joining, readying, hosting, pause and the
+         * signing setting: the core's lobby and API engine (api_calls.c). */
+        int st;
+        if (!unlocked) {
+            gz_api_err_set(err, "locked", NULL, NULL);
+            return 409;
+        }
+        st = gzp_api_lobby_call(a, c, w, err);
+        return st >= 0 ? st : not_yet(err, "core-view");
+    }
     }
 }
 
@@ -358,6 +389,7 @@ int gzp_api_send_command(gzp_api_t *a, const gz_api_call *c, uint16_t code, cons
     a->held[slot].used = 1;
     memcpy(a->held[slot].request_id, c->request_id, n + 1);
     a->held[slot].handle = c->handle;
+    a->held[slot].call = c->id;
     if (!rc || a->command(a->command_ctx, buf, at) != 0) {
         a->held[slot].used = 0;
         free(buf);
@@ -383,19 +415,43 @@ static void command_result(gzp_api_t *a, const uint8_t *bytes, size_t len)
     for (i = 0; i < GZP_API_HELD; i++) {
         if (!a->held[i].used || strcmp(a->held[i].request_id, rid) != 0) continue;
         a->held[i].used = 0;
-        if (st >= 200 && st < 300) {
-            /* The object comes with the core's views (P6a); the client reads it. */
-            gz_api_call_done(a->srv, a->held[i].handle, st, "{}", NULL);
-        } else {
-            memset(&e, 0, sizeof e);
-            code[0] = 0;
-            if (gz_rec_find(all, GZ_RESULT_REC_ERROR, &f) == 1 && f.len < sizeof code) {
-                memcpy(code, f.data, f.len);
-                code[f.len] = 0;
+        {
+            /* The object acted on (result field 6) and the core's params
+             * (field 8): the answer is the object as the view now holds it
+             * (7.4: also for a replay). */
+            char object[GZ_LOCAL_ID_MAX + 1], params[700];
+            object[0] = params[0] = 0;
+            if (gz_rec_find(all, GZ_RESULT_REC_OBJECT, &f) == 1 && f.len <= GZ_LOCAL_ID_MAX) {
+                memcpy(object, f.data, f.len);
+                object[f.len] = 0;
             }
-            gz_api_err_set(&e, code[0] ? code : "internal", NULL, NULL);
-            e.code = code[0] ? code : "internal";
-            gz_api_call_done(a->srv, a->held[i].handle, st, NULL, &e);
+            if (gz_rec_find(all, GZ_RESULT_REC_PARAMS, &f) == 1 && f.len < sizeof params) {
+                memcpy(params, f.data, f.len);
+                params[f.len] = 0;
+            }
+            if (st >= 200 && st < 300) {
+                gz_jw w;
+                gz_jw_init(&w);
+                char *body;
+                gzp_api_answer(a, a->held[i].call, object[0] ? object : NULL, params, &w);
+                body = malloc(w.len + 1);
+                if (!body) abort();
+                if (w.len) memcpy(body, w.buf, w.len);
+                body[w.len] = 0;
+                gz_api_call_done(a->srv, a->held[i].handle, st, w.err ? "{}" : body, NULL);
+                free(body);
+                gz_jw_free(&w);
+            } else {
+                memset(&e, 0, sizeof e);
+                code[0] = 0;
+                if (gz_rec_find(all, GZ_RESULT_REC_ERROR, &f) == 1 && f.len < sizeof code) {
+                    memcpy(code, f.data, f.len);
+                    code[f.len] = 0;
+                }
+                gz_api_err_set(&e, code[0] ? code : "internal", NULL, "%s", params[0] == '{' ? params : "{}");
+                e.code = code[0] ? code : "internal";
+                gz_api_call_done(a->srv, a->held[i].handle, st, NULL, &e);
+            }
         }
         return;
     }

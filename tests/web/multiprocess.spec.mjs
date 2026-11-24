@@ -8,9 +8,8 @@
 // sees the refusal (15.3, seat state refused), not a member that left.
 //
 // TEST ONLY: gazpacho-test, whose passphrase layer is the stand-in. It needs
-// GZ_PROGRAM (the built gazpacho-test) and waits for P6a, the core's view
-// objects (composite-node.md 10): until then the program answers the lobby
-// calls 501 with params.needs, so it is marked fixme unless GZ_P6A is set.
+// GZ_PROGRAM (the built gazpacho-test). It runs on the core's view objects
+// and API engine (P6a, W12): the program answers the lobby calls from them.
 import { test, expect } from '@playwright/test';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -23,7 +22,6 @@ const EXE = process.env.GZ_PROGRAM;
 // In CI it is never skipped for want of the program (review of PR 51, M3).
 if (!EXE && process.env.CI) throw new Error('GZ_PROGRAM is not set in CI: the multi-process test may not be skipped there');
 test.skip(!EXE, 'GZ_PROGRAM is not set');
-test.fixme(!process.env.GZ_P6A, 'waits for P6a: the core emits no lobby view objects yet');
 test.setTimeout(240000);
 
 const PASS = { host: 'host passphrase, test only, long enough', m1: 'member one passphrase, test only', m2: 'member two passphrase, test only' };
@@ -160,15 +158,18 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
     await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(1, { timeout: 20000 });
     await expect(hp.locator('#seats tr[data-seat-state="left"]')).toHaveCount(0);
 
-    // it loosens again (a fresh sign-in) and joins ready: the refusal is shown only until then (review M3.2)
+    // it loosens again (a fresh sign-in) and joins ready, as a new seat with a new key (a rejoin
+    // never uses a key twice): the old seat stays shown as refused until the lobby's next attempt
+    // (decision K21; local-api.md 15.3 and M3)
     await p2.getByLabel('Fewest members').fill('2');
     await p2.locator('#save-conditions').click();
     const fresh = p2.locator('dialog');
     await fresh.getByLabel('Wallet passphrase').fill(PASS.m2);
     await fresh.getByRole('button', { name: 'Continue' }).click();
     await join2();
-    await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(0, { timeout: 20000 });
-    await expect(hp.locator('#host-counts')).toContainText('2 ready of 3');
+    await expect(hp.locator('#host-counts')).toContainText('2 ready of 3', { timeout: 20000 });
+    await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(1);
+    await expect(hp.locator('#seats tr[data-seat-state="left"]')).toHaveCount(0);
 
     // the host starts at the minimum: the ready check. P4.3's signing takes over from here.
     await hp.locator('#start').click();
@@ -178,6 +179,8 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
       await again.getByRole('button').first().click();
     }
     await expect(hp.locator('#host-lobby')).toHaveAttribute('data-stage', /ready_check|signing/, { timeout: 30000 });
+    // the next attempt has begun: the refusal is no longer shown (K21)
+    await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(0, { timeout: 20000 });
     await expect(p1.locator('#lobby')).toHaveAttribute('data-stage', /ready_check|signing/, { timeout: 30000 });
     await expect(p2.locator('#lobby')).toHaveAttribute('data-stage', /ready_check|signing/, { timeout: 30000 });
     for (const p of procs) expect(p.output()).not.toContain(PASS.host);

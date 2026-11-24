@@ -50,6 +50,7 @@
 #define GZ_VIEW_ATTENTION   7
 #define GZ_VIEW_DOING       8
 #define GZ_VIEW_CONNECTION  9
+#define GZ_VIEW_DISCOVERY   10  /* a query to a host for its lobbies (view.h) */
 
 /* Records of a view object. */
 #define GZ_VIEW_REC_ID      0

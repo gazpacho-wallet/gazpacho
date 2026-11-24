@@ -847,6 +847,13 @@ static void start_node(gzp_exec_t *ex)
             static const char *const name[] = {"at-join", "auto", "when-unlocked"};
             int was = ex->opt->member_signing, now = (int)gz_node_member_signing(ex->node);
             ex->member_signing = now;
+            if (ex->api) {                     /* the calls under at_join ask for the passphrase (W12) */
+                ex->api->member_signing = now;
+                if (ex->opt->role == GZP_ROLE_HOST) {
+                    memcpy(ex->api->host_key, ex->net->pub, 33);
+                    ex->api->host_key_set = 1;
+                }
+            }
             gzp_log("member-signing in-force=%s option=%s%s", name[now % 3], name[was % 3],
                     now != was ? " source=saved" : "");
         }

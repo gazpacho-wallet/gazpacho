@@ -48,7 +48,14 @@ typedef struct gzp_api {
         int used;
         char request_id[GZ_CMD_MAX_REQUEST_ID + 1];
         uint64_t handle;
+        int call;                     /* GZ_API_C_*: how its answer is written (api_calls.c) */
     } held[GZP_API_HELD];
+    /* What the program knows of the node for the calls (W12): the member
+     * signing in force (gz_node_member_signing, from the executor), and a
+     * host's long-term key, which a draft's terms name. */
+    int member_signing;
+    uint8_t host_key[33];
+    int host_key_set;
     /* The executor's way to give the node a USER_COMMAND (its TLV stream);
      * 0 delivered, -1 the node is not running. */
     int (*command)(void *ctx, const uint8_t *tlv, size_t len);
@@ -82,5 +89,10 @@ void gzp_api_node_started(gzp_api_t *a);
  * GZ_API_HELD and keeps the handle, or an error status with err filled. */
 int gzp_api_send_command(gzp_api_t *a, const gz_api_call *c, uint16_t code, const uint8_t *args, size_t args_len,
                          gz_api_error *err);
+
+/* api_calls.c: the lobby, hosting, discovery, conditions, pause and signing
+ * calls (-1: not one of them), and the answer of a held one. */
+int gzp_api_lobby_call(gzp_api_t *a, const gz_api_call *c, gz_jw *w, gz_api_error *err);
+void gzp_api_answer(gzp_api_t *a, int call, const char *object, const char *params, gz_jw *w);
 
 #endif

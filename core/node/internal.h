@@ -237,6 +237,38 @@ typedef struct {
 _Static_assert(GZ_API_MAX_REQUESTS >= GZ_NODE_MAX_SLOTS * 64, "request ids: 64 calls for each slot's lobby (7.4)");
 _Static_assert(sizeof(((api_t *)0)->rec) >= COND_MAX + 4u + API_MAX_PRESET + 12u, "the conditions record fits api.rec");
 
+/* ---- a query to a host for its lobbies (discovery.c) ---------------------- */
+#define DQ_MAX_OFFERS 16
+#define DQ_QUIET_MS 1500u              /* answered this long after the last offer */
+#define DQ_LIMIT_MS 10000u             /* failed when nothing came in this long */
+#define DQ_ASKING 1
+#define DQ_ANSWERED 2
+#define DQ_FAILED 3
+typedef struct {
+    uint8_t scope[32];
+    uint8_t outer[GZ_TERMS_OUTER_MAX]; size_t outer_len; uint8_t outer_sig[64];
+    uint8_t current[GZ_TERMS_CURRENT_MAX]; size_t current_len; uint8_t current_sig[64];
+    gz_terms_outer_t terms;
+    gz_terms_current_t values;
+    uint64_t hash;                  /* of its view object, last emitted */
+} dq_offer_t;
+typedef struct {
+    int state;                      /* 0 none yet, DQ_* */
+    const char *why;                /* failed: no_answer, unreachable */
+    uint32_t serial;
+    char id[16];                    /* "q_" and the serial */
+    gz_node_id_t host;
+    uint8_t address[GZ_LOBBY_MAX_ADDRESS]; uint8_t address_len;
+    uint32_t key_epoch, key_index;
+    gz_link_t link;
+    int link_wanted, connected;
+    uint64_t asked_ms, ended_ms;    /* wall clock */
+    uint64_t deadline, quiet;       /* the monotonic clock */
+    dq_offer_t offers[DQ_MAX_OFFERS];
+    int n;
+    uint64_t hash;                  /* of the query's view object */
+} dq_t;
+
 #define VIEW_BODY 12288
 typedef struct {
     uint8_t head[VIEW_BODY + 128];
@@ -339,10 +371,11 @@ _Static_assert(LS_MAX_TIMERS <= TS_MAX_TIMERS, "a lobby's timers are within a sl
  * step's notices, timer and result. Test builds hold every step to it. */
 #define NP_MAX_STEP_ACTIONS (NP_MAX_CONNS + SLOT_MAX_SEATS + SLOT_MAX_TIMERS + 16)
 #define NP_MAX_STEP_BYTES (16u * 1024u)
-#define NP_MAX_TIMERS 3                /* the unbound idle timer, the continuation timer */
+#define NP_MAX_TIMERS 4                /* the unbound idle timer, the continuation timer, ... */
 #define NP_TIMER_IDLE 1u
 #define NP_TIMER_CONTINUE 2u           /* the next thing due later: a Closing slot's end */
 #define NP_TIMER_SIGN 3u               /* test builds: the signing stand-in's outcome */
+#define NP_TIMER_DISCOVERY 4u          /* a query to a host for its lobbies (discovery.c) */
 #define NP_MAX_ENDED 256               /* ended lobbies answered from the index (2.4) */
 
 /* An ended lobby in the index: what a late hello is answered with. */
@@ -490,6 +523,7 @@ struct gz_node {
     size_t n_nw_timers[ENG_SLOT0];
     int unlocked;                   /* the node-wide signing gate (12.2): memory only, closed at a start */
     api_t api;                      /* the local-API engine (P6a) */
+    dq_t dq;                        /* a query to a host for its lobbies (discovery.c, W12) */
     view_t view;                    /* the view objects (P6a) */
     struct {                        /* a lobby command being carried out */
         uint16_t code;
@@ -565,7 +599,8 @@ typedef enum {
     RT_TEST,             /* to test engine `eng` */
     RT_LISTING,          /* host: a scope-zero hello, to every listed slot */
     RT_UNKNOWN_HELLO,    /* host: lobby_status state 0 for an unknown scope */
-    RT_ENDED_HELLO       /* host: a late hello for ended lobby `slot` of the index: its final state and cancel */
+    RT_ENDED_HELLO,      /* host: a late hello for ended lobby `slot` of the index: its final state and cancel */
+    RT_DISCOVERY         /* member: a message on the link of a query for a host's lobbies */
 } rt_kind_t;
 
 typedef struct {
@@ -631,7 +666,16 @@ gz_status_t gz_ls_conditions_changed(gz_node_t *c, gz_action_list_t *out);
 gz_status_t gz_ls_merge_saves(gz_node_t *c, gz_action_list_t *out, size_t from);
 uint64_t gz_ls_set_aside(slot_t *s);
 
+/* discovery.c */
+gz_status_t gz_dq_command(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out);
+int gz_dq_link(const gz_node_t *c, const gz_link_t *link);
+gz_status_t gz_dq_peer(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out);
+gz_status_t gz_dq_message(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out);
+gz_status_t gz_dq_timer(gz_node_t *c, gz_action_list_t *out);
+
 /* view.c */
+gz_status_t gz_view_query(gz_node_t *c, gz_action_list_t *out);
+gz_status_t gz_view_seen(gz_node_t *c, int k, gz_action_list_t *out);
 gz_status_t gz_view_status(gz_node_t *c, int force, gz_action_list_t *out);
 gz_status_t gz_view_slot(gz_node_t *c, int i, int force, gz_action_list_t *out);
 gz_status_t gz_view_start(gz_node_t *c, gz_action_list_t *out, int *done);
@@ -643,6 +687,8 @@ const char *gz_api_local_id(gz_node_t *c, const uint8_t scope[32]);
 int gz_api_held(const gz_node_t *c, const uint8_t scope[32]);
 int gz_api_paused(const gz_node_t *c);
 gz_status_t gz_api_slot_opened(gz_node_t *c, int i, gz_action_list_t *out);
+gz_status_t gz_api_seen_id(gz_node_t *c, const uint8_t scope[32]);
+const gz_lobby_conditions_t *gz_api_conditions(const gz_node_t *c);
 void gz_api_slot_ended(gz_node_t *c, const uint8_t scope[32]);
 gz_status_t gz_api_resume(gz_node_t *c, gz_action_list_t *out);
 gz_status_t gz_api_save_pause(gz_node_t *c, gz_action_list_t *out);

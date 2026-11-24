@@ -190,11 +190,63 @@ static gz_status_t new_local_id(gz_node_t *c, int i, gz_action_list_t *out)
     return gz_action_list_add(out, &a);
 }
 
-/* A new slot's local id, saved right after its slot_opened (one batch). */
+/* A new slot's local id, saved right after its slot_opened (one batch). A
+ * lobby seen in a query already has its id for the run (7.3): the slot
+ * keeps it, so the id the interface holds names the lobby it joined. */
 gz_status_t gz_api_slot_opened(gz_node_t *c, int i, gz_action_list_t *out)
 {
+    slot_t *s = &c->slots[i];
+    api_lid_t *e = lid_find(c, s->scope);
     c->api.opened = i + 1;
+    if (e) {
+        uint8_t rec[120];
+        size_t at = 0, n = slen(e->id);
+        memset(s->view.local_id, 0, sizeof s->view.local_id);
+        memcpy(s->view.local_id, e->id, n);
+        e->ended_ms = 0;
+        if (gz_rec_put(rec, sizeof rec, &at, 2, s->scope, 32) != GZ_OK ||
+            gz_rec_put(rec, sizeof rec, &at, 4, (const uint8_t *)e->id, n) != GZ_OK)
+            return gz_c_bug(c, ENG_NODE);
+        gz_record_t rr = {GZ_RECORD_LOCAL_IDS, {rec, at}};
+        gz_action_t a = {.kind = GZ_ACTION_SAVE};
+        a.u.save.records = &rr;
+        a.u.save.n_records = 1;
+        return gz_action_list_add(out, &a);
+    }
     return new_local_id(c, i, out);
+}
+
+/* A lobby seen in a query for a host's lobbies (discovery.c): a local id
+ * for the run, kept in memory only (7.3: after a restart it gets a new one
+ * when it is seen again). Made like a slot's, mixed with the query serial. */
+gz_status_t gz_api_seen_id(gz_node_t *c, const uint8_t scope[32])
+{
+    static const char x[] = "0123456789abcdef";
+    uint8_t r[8];
+    char id[24];
+    for (int tries = 0;; tries++) {
+        c->ports.random.fill(c->ports.random.ctx, GZ_RANDOM_ORDINARY, r, sizeof r);
+        for (int k = 0; k < 4; k++) r[4 + k] ^= (uint8_t)((0x80000000u + c->dq.serial * 64u + (uint32_t)tries) >> (24 - 8 * k));
+        memcpy(id, "lob_", 4);
+        for (int k = 0; k < 8; k++) {
+            id[4 + 2 * k] = x[r[k] >> 4];
+            id[5 + 2 * k] = x[r[k] & 15];
+        }
+        id[20] = 0;
+        if (!lid_by_id(c, id, 20)) break;
+        if (tries == 64) return gz_c_bug(c, ENG_NODE);
+    }
+    lid_keep(c, scope, id, 20);
+    if (lid_find(c, scope)) lid_find(c, scope)->ended_ms = wall(c); /* no slot: its ids age as an ended lobby's */
+    return GZ_OK;
+}
+
+/* The member's conditions for a lobby it has not joined (a query's fit):
+ * the saved conditions (0x000d0008, GZ_CMD_API_SET_CONDITIONS), or none. */
+const gz_lobby_conditions_t *gz_api_conditions(const gz_node_t *c)
+{
+    static const gz_lobby_conditions_t none;
+    return c->api.have_cond ? &c->api.cond : &none;
 }
 
 /* At a start, in the node part's resume: every lobby slot without a local id

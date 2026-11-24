@@ -281,6 +281,9 @@ static gz_status_t ready_check(gz_lobby_host_t *h, gz_action_list_t *out)
     gz_lr_t w;
     uint16_t i;
     h->rule_dirty = 0;
+    /* A refusal is shown until the lobby's next attempt (local-api.md 15.3,
+     * decision K21): this check is that attempt. */
+    for (i = 0; i < h->n_seats; i++) h->seats[i].refused = 0;
     h->ports.random.fill(h->ports.random.ctx, GZ_RANDOM_ORDINARY, h->check_id, 32);
     gz_lobby_enc_start(&e, h->check_msg, sizeof h->check_msg, GZ_KIND_READY_CHECK, h->scope);
     gz_lobby_enc_record(&e, 2, h->check_id, 32);
