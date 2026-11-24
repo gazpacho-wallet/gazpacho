@@ -946,6 +946,9 @@ static void start_node(gzp_exec_t *ex)
             ex->member_signing = now;
             gzp_log("member-signing in-force=%s option=%s%s", name[now % 3], name[was % 3],
                     now != was ? " source=saved" : "");
+            /* The key routing from the value in force (view-objects.md 6, H3): AT_JOIN takes round secrets
+             * from the scoped table only; a host derives its own (gzp_keys_set_role, #53). */
+            gzp_keys_set_role(ex->keys, ex->opt->role == GZP_ROLE_HOST, ex->member_signing == GZ_MEMBER_SIGNING_AT_JOIN);
         }
         if (st == GZ_WAITING) {
             more = 1;
