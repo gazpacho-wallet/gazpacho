@@ -975,6 +975,64 @@ static void test_small_buffer(test_state *T) {
   fake_free(&fake);
 }
 
+/* ---- review of PR 72, P-2: a transaction larger than the response buffer,
+ * fetched whole when the caller gives it the room of a proof ---- */
+
+static void test_raw_tx_any_size(test_state *T) {
+  fixture x;
+  const size_t extra = 1000000;
+  const size_t len = 4 + 2 + 1 + 41 + 1 + 8 + 2 + 1 + 5 + extra + 4;
+  static const char digits[] = "0123456789abcdef";
+  uint8_t *raw = calloc(1, len), *buf = malloc(GZ_TX_CONSENSUS_MAX_BYTES), id[GZ_HASH_LEN];
+  char *hex = malloc(2 * len + 1), idhex[2 * GZ_HASH_LEN + 1], path[256];
+  size_t p = 0, n = 0;
+  if (raw == NULL || buf == NULL || hex == NULL) exit(2);
+  raw[p] = 2;
+  p += 4;                         /* version */
+  raw[p++] = 0;
+  raw[p++] = 1;                   /* segwit */
+  raw[p++] = 1;                   /* one input */
+  memset(raw + p, 0x22, 36);
+  p += 36;
+  raw[p++] = 0;                   /* no script */
+  memset(raw + p, 0xff, 4);
+  p += 4;
+  raw[p++] = 1;                   /* one output */
+  raw[p] = 0x10;
+  p += 8;
+  raw[p++] = 1;
+  raw[p++] = 0x51;
+  raw[p++] = 1;                   /* one witness item, a megabyte */
+  raw[p++] = 0xfe;
+  raw[p++] = (uint8_t)extra;
+  raw[p++] = (uint8_t)(extra >> 8);
+  raw[p++] = (uint8_t)(extra >> 16);
+  raw[p++] = (uint8_t)(extra >> 24);
+  memset(raw + p, 0x5a, extra);
+  p += extra;
+  p += 4;                         /* locktime */
+  CHECK(p == len);
+  CHECK(gz_txid_from_raw(raw, len, id));
+  for (size_t i = 0; i < len; i++) {
+    hex[2 * i] = digits[raw[i] >> 4];
+    hex[2 * i + 1] = digits[raw[i] & 15];
+  }
+  hex[2 * len] = '\0';
+  gz_hash_to_hex(id, idhex);
+  snprintf(path, sizeof path, BASE "/tx/%s/hex", idhex);
+  fx_open(&x);
+  fake_set(&x.fake, false, path, 200, hex);
+  /* the usual room: refused, as ever */
+  CHECK_RESULT(gz_chain_raw_tx(&x.chain, id, buf, GZ_TX_MAX_BYTES, &n), GZ_CHAIN_TOO_LARGE);
+  /* the room of a proof: fetched whole, past the 512 KiB response buffer */
+  CHECK_RESULT(gz_chain_raw_tx(&x.chain, id, buf, GZ_TX_CONSENSUS_MAX_BYTES, &n), GZ_CHAIN_OK);
+  CHECK(n == len && memcmp(buf, raw, len) == 0);
+  fx_close(&x);
+  free(raw);
+  free(buf);
+  free(hex);
+}
+
 /* ---- block summary ---- */
 
 static void test_block_summary(test_state *T) {
@@ -1697,6 +1755,7 @@ int main(void) {
   RUN(test_utxo_parser_strict);
   RUN(test_outspend);
   RUN(test_raw_tx);
+  RUN(test_raw_tx_any_size);
   RUN(test_merkle_proof_call);
   RUN(test_merkle_parser_strict);
   RUN(test_broadcast);
