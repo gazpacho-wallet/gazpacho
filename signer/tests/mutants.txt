@@ -58,7 +58,7 @@ tags-report	tools/check-tags.py	    return 0 if report or not findings else 1	  
 # --- tools/check-signer-boundary.sh
 boundary-comment	tools/check-signer-boundary.sh	{ inblk = 1; out = out "  "; i += 2; continue }	{ out = out c; i++; continue }
 boundary-string	tools/check-signer-boundary.sh	{ instr = 1; q = c; out = out " "; i++; continue }	{ out = out c; i++; continue }
-boundary-signer	tools/check-signer-boundary.sh	-path ./signer -o 	
+boundary-signer	tools/check-signer-boundary.sh	-path ./signer -o 		1
 boundary-imported	tools/check-signer-boundary.sh	-path ./core/superscalar -o 	
 boundary-fail	tools/check-signer-boundary.sh	MODE == "fail" && total > 0	MODE == "fail" && total > 99
 boundary-growth	tools/check-signer-boundary.sh	if (!(k in allowed) || cur[k] > allowed[k]) {	if (!(k in allowed)) {
