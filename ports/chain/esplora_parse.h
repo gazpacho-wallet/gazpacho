@@ -2,7 +2,7 @@
  * Parsers for Esplora response bodies. Internal to ports/chain; exposed in a
  * header so the unit tests and the mutation tests can call them directly.
  * A real fuzzer (libFuzzer or AFL++) should be attached to exactly these
- * functions, plus gz_json_parse and gz_txid_from_raw.
+ * functions, plus gz_chain_json_parse and gz_txid_from_raw.
  *
  * Every parser takes the body as bytes with a length (no terminating zero is
  * assumed), accepts only the exact shape documented in

@@ -112,7 +112,7 @@ bool gz_es_parse_status(const char *s, size_t len, gz_es_status *out) {
   gz_json_tok toks[16];
   size_t n;
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   return status_object(s, toks, 0, out);
 }
 
@@ -126,7 +126,7 @@ bool gz_es_parse_outspend(const char *s, size_t len, gz_outspend *out) {
   memset(&o, 0, sizeof o);
   memset(&st, 0, sizeof st);
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   if (toks[0].type != GZ_JSON_OBJECT) return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
@@ -181,7 +181,7 @@ gz_es_parse_result gz_es_parse_utxos(const char *s, size_t len, gz_chain_output 
   if (toks == NULL) return GZ_ES_PARSE_NO_MEMORY;
   gz_es_parse_result res = GZ_ES_PARSE_MALFORMED;
   size_t n;
-  if (!gz_json_parse(s, len, toks, tok_cap, &n)) goto done;
+  if (!gz_chain_json_parse(s, len, toks, tok_cap, &n)) goto done;
   if (toks[0].type != GZ_JSON_ARRAY) goto done;
   if (toks[0].size > cap) {
     res = GZ_ES_PARSE_TOO_MANY;
@@ -242,7 +242,7 @@ bool gz_es_parse_merkle_proof(const char *s, size_t len, gz_merkle_proof *out) {
   gz_merkle_proof p;
   memset(&p, 0, sizeof p);
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   if (toks[0].type != GZ_JSON_OBJECT) return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
@@ -283,7 +283,7 @@ bool gz_es_parse_fee_estimates(const char *s, size_t len, gz_fee_estimates *out)
   gz_fee_estimates f;
   memset(&f, 0, sizeof f);
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   if (toks[0].type != GZ_JSON_OBJECT || toks[0].size > GZ_FEE_MAX_TARGETS) return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
@@ -333,7 +333,7 @@ bool gz_es_parse_block(const char *s, size_t len, gz_es_block *out) {
   uint64_t ignored64;
   memset(&b, 0, sizeof b);
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   if (toks[0].type != GZ_JSON_OBJECT) return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
@@ -405,7 +405,7 @@ bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH
   gz_es_package p;
   bool have_msg = false;
   memset(&p, 0, sizeof p);
-  if (!gz_json_parse(s, len, toks, ES_PACKAGE_TOKENS, &n) || toks[0].type != GZ_JSON_OBJECT)
+  if (!gz_chain_json_parse(s, len, toks, ES_PACKAGE_TOKENS, &n) || toks[0].type != GZ_JSON_OBJECT)
     return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
