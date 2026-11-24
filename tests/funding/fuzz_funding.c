@@ -184,6 +184,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
                     memset(op, 0, 36);
                     memcpy(op, txid, 32);
                     e = len & 1 ? ev_failed_tx(txid) : ev_failed_op(op);
+                    if (len & 2) e.u.chain.kind = GZ_CHAIN_WATCH_PENDING;   /* put off, not failed */
                 }
             }
             ft_reset(t);

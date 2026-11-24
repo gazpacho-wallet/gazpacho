@@ -68,6 +68,12 @@ int main(void)
     CHECK(gz_watch_mask(c, &e) == (1u << ENG_TEST0));
     e.is_tx = 0;
     CHECK(gz_watch_mask(c, &e) == 0);
+    /* and WATCH_PENDING (review B of PR 56, third confirmation) */
+    e.kind = GZ_CHAIN_WATCH_PENDING;
+    e.is_tx = 1;
+    CHECK(gz_watch_mask(c, &e) == (1u << ENG_TEST0));
+    e.is_tx = 0;
+    CHECK(gz_watch_mask(c, &e) == 0);
     /* Released twice, or never held: dropped. */
     a = unwatch_tx(1);
     CHECK(gz_watch_unnote(c, &a, ENG_TEST0) == 0);
