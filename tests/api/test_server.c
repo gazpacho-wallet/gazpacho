@@ -2928,6 +2928,67 @@ static void test_b6_shutdown(void)
     fx_stop(&x);
 }
 
+/* Open point 42 (local-api.md draft 5): a wrong passphrase says when the next
+ * attempt is taken and how many were wrong in a row; a junk start token is
+ * bad_code even once a wallet exists, the spent real one wallet_exists;
+ * first_run_launched_at is answered for 10 minutes from the launch, wallet
+ * or not; the pages allow no worker and let the page itself copy. */
+static void op42_launched(void *ctx, const char *path)
+{
+    (void)ctx;
+    (void)path;   /* the program opens the browser on this file; the test needs only the time */
+}
+
+static void test_p5_op42(void)
+{
+    fixture x;
+    resp r;
+    char tok[64], body[200], req[300];
+    const char *v;
+    int n;
+    clock_freeze(1);
+    fx_prepare(&x, GZ_FAKE_FIRST_RUN);
+    x.cfg.on_first_run_file = op42_launched;
+    if (fx_go(&x)) { CHECK(0); clock_freeze(0); return; }
+    start_token_from_file(&x, tok);
+    g_session[0] = 0;
+    snprintf(body, sizeof body, "{\"start_token\":\"%s\"}", tok);
+    api(&x, &r, "POST", "/api/v1/session/start", body, NULL);
+    CHECK(r.status == 200);
+    snprintf(g_session, sizeof g_session, "%s", jfield(&r, "session") ? jfield(&r, "session") : "");
+    resp_free(&r);
+    CHECK(expect(&x, "POST", "/api/v1/wallet/create",
+                 "{\"confirm\":\"create_wallet\",\"passphrase\":\"a long enough passphrase\","
+                 "\"confirm_passphrase\":\"a long enough passphrase\"}", 200, NULL));
+    g_session[0] = 0;
+    CHECK(expect(&x, "POST", "/api/v1/session/start",
+                 "{\"start_token\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}", 401, "bad_code"));
+    CHECK(expect(&x, "POST", "/api/v1/session/start", body, 409, "wallet_exists"));
+    api(&x, &r, "GET", "/api/v1/session", NULL, NULL);
+    v = jfield(&r, "first_run_launched_at");
+    CHECK(r.status == 200 && v && strcmp(v, "null") != 0);
+    resp_free(&r);
+    atomic_fetch_add(&clock_off, 2000);
+    api(&x, &r, "POST", "/api/v1/session", "{\"passphrase\":\"not the passphrase at all\"}", NULL);
+    CHECK(is_code(&r, 401, "wrong_passphrase") && r.body && strstr(r.body, "\"wrong_in_row\":1") &&
+          strstr(r.body, "\"retry_after_s\":"));
+    resp_free(&r);
+    atomic_fetch_add(&clock_off, 601 * 1000);
+    api(&x, &r, "GET", "/api/v1/session", NULL, NULL);
+    v = jfield(&r, "first_run_launched_at");
+    CHECK(r.status == 200 && v && strcmp(v, "null") == 0);
+    resp_free(&r);
+    n = snprintf(req, sizeof req, "GET / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nSec-Fetch-Site: none\r\nConnection: close\r\n\r\n",
+                 x.port);
+    raw(x.port, req, (size_t)n, &r);
+    CHECK(r.status == 200 && hdr(&r, "Content-Security-Policy") &&
+          strstr(hdr(&r, "Content-Security-Policy"), "worker-src 'none'") != NULL);
+    CHECK(hdr(&r, "Permissions-Policy") && strstr(hdr(&r, "Permissions-Policy"), "clipboard-write=(self)") != NULL);
+    resp_free(&r);
+    clock_freeze(0);
+    fx_stop(&x);
+}
+
 int main(void)
 {
     test_binding();
@@ -2965,5 +3026,6 @@ int main(void)
     test_b6_merge_evict();
     test_b6_closing_stream();
     test_b6_shutdown();
+    test_p5_op42();
     return check_done();
 }

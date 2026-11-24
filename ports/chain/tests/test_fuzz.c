@@ -103,7 +103,7 @@ static size_t mutate(uint64_t *rng, char *buf, size_t len, size_t cap) {
 static void run_parsers(fuzz_ctx *fz, const char *in, size_t len) {
   gz_json_tok toks[256];
   size_t n = 0;
-  if (gz_json_parse(in, len, toks, 256, &n)) {
+  if (gz_chain_json_parse(in, len, toks, 256, &n)) {
     fz->accepted[0]++;
     /* token invariants: ranges inside the input, subtree links forward */
     if (n == 0 || n > 256) fz->broken++;
