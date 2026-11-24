@@ -3,6 +3,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue: every job runs on the queued merge, and the signer
+  # boundary compares the allow list with the queue's base.
+  merge_group:
 
 # The token GitHub gives each job can only read the repository. No job here
 # needs more; a job that does must ask for it itself.
@@ -381,6 +384,10 @@ jobs:
     name: signer boundary
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # pull-requests: read, to read the queued pull request's labels
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -395,12 +402,49 @@ jobs:
       - name: Signing and secret-key symbols outside signer/ (no growth, and the allow list only shrinks)
         # A pull request whose allow list must grow says so with the label
         # signer-boundary-growth, which a reviewer of the signer boundary sets.
+        # In the merge queue the base is the queue's base_sha, and the label is
+        # read from the pull request the queue's head ref names (the queue
+        # event carries no labels). If that lookup fails in any way, the
+        # queue fails closed: the list may not grow. A growth PR whose
+        # lookup fails merges outside the queue, after maintainer review
+        # (docs/notes/ci.md).
         env:
-          GROWTH_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'signer-boundary-growth') }}
+          GH_TOKEN: ${{ github.token }}
+          PR_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'signer-boundary-growth') }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$GROWTH_LABEL" != true ] &&
-             git show HEAD^1:tools/signer-boundary-allowed.txt > "$RUNNER_TEMP/base-allow.txt" 2>/dev/null; then
-            sh tools/check-signer-boundary.sh --no-growth --base-allow "$RUNNER_TEMP/base-allow.txt"
+          base=""
+          growth=false
+          case "$GITHUB_EVENT_NAME" in
+          pull_request)
+            base=HEAD^1
+            growth=$PR_LABEL
+            ;;
+          merge_group)
+            git fetch --no-tags --depth=1 origin "$QUEUE_BASE"
+            base=$QUEUE_BASE
+            # refs/heads/gh-readonly-queue/<branch>/pr-<number>-<sha>
+            pr=$(printf '%s\n' "$QUEUE_REF" | sed -n 's|^refs/heads/gh-readonly-queue/.*/pr-\([0-9][0-9]*\)-[0-9a-f]*$|\1|p')
+            if [ -n "$pr" ] &&
+               labels=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.labels[].name' 2>/dev/null); then
+              if printf '%s\n' "$labels" | grep -qx signer-boundary-growth; then growth=true; fi
+            else
+              echo "::warning::could not read the labels of the queued pull request ($QUEUE_REF): the allow list may not grow"
+            fi
+            ;;
+          esac
+          if [ -n "$base" ] && [ "$growth" != true ]; then
+            if git show "$base:tools/signer-boundary-allowed.txt" > "$RUNNER_TEMP/base-allow.txt" 2>/dev/null; then
+              sh tools/check-signer-boundary.sh --no-growth --base-allow "$RUNNER_TEMP/base-allow.txt"
+            elif [ "$GITHUB_EVENT_NAME" = merge_group ] &&
+                 git cat-file -e "$base:tools/check-signer-boundary.sh" 2>/dev/null; then
+              # the base has the check but no allow list: something is wrong
+              echo "::error::the merge queue's base has no allow list"; exit 1
+            else
+              # the base predates the allow list (the pull request that adds it)
+              sh tools/check-signer-boundary.sh --no-growth
+            fi
           else
             sh tools/check-signer-boundary.sh --no-growth
           fi

@@ -192,6 +192,8 @@ Some findings are **hard**: they fail in every mode, and no allow list can hold 
 
 **The label `signer-boundary-growth`** lets a pull request grow the allow list. Only a maintainer who reviews the signer boundary may set it, never the pull request's author, and the review must say why the new use cannot go through `signer/`. GitHub does not enforce this rule; review does.
 
+**In the merge queue** (`merge_group`), the allow list is compared with the queue's `base_sha`. The label is read through the API from the pull request named in the queue's head ref (`gh-readonly-queue/<branch>/pr-<number>-<sha>`), because the queue event carries no labels; the job has `pull-requests: read` for that. If the ref does not parse or the lookup fails, the queue fails closed: the list may not grow. A pull request that must grow the list and cannot pass the queue merges outside it, after a maintainer of the signer boundary has reviewed it. The wallet break-checks workflow does not run on `merge_group`; if it is ever made a required check, it needs the trigger too.
+
 `tools/check-tags.py` fails on a `gazpacho/` string in code that `spec/PROTOCOL.md` 8.2 does not register. It runs with `--report` while main still has unregistered strings.
 
 The job fails on:
