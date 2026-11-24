@@ -46,8 +46,7 @@ jobs:
           [ -n "$BASE" ] || { echo "::error::no base commit for $EVENT"; exit 1; }
           git cat-file -e "$BASE^{commit}" || { echo "::error::the base commit $BASE is not in the checkout"; exit 1; }
           changed=$(git diff --name-only "$BASE" HEAD) || { echo "::error::git diff against $BASE failed"; exit 1; }
-          if printf '%s
-' "$changed" | grep -Eq '^(wallet/|tools/gz-wallet-|CMakeLists\.txt$|\.github/workflows/wallet-break-checks\.yml$)'; then
+          if echo "$changed" | grep -Eq '^(wallet/|tools/gz-wallet-|CMakeLists\.txt$|\.github/workflows/wallet-break-checks\.yml$)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "No change to the wallet, its tools or the build: nothing to check."
