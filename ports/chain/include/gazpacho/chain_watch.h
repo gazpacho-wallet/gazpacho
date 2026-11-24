@@ -104,8 +104,20 @@ typedef enum gz_chainw_kind {
    * back neither TIP_SYNCED nor the sources of every other watch.
    * `outpoint_watch` says which watch, as for SYNCED. Step P4.5 (review B of
    * PR 56, second confirmation, G-1). */
-  GZ_CHAINW_WATCH_FAILED = 13
+  GZ_CHAINW_WATCH_FAILED = 13,
+  /* Only with `report_synced`: a watch whose answer has been put off for
+   * GZ_CHAINW_DEFER_PASSES passes in a row (a confirmation still being
+   * linked to the checked chain, a spender gone between two questions, or
+   * an answer too large to fetch: `sources` GZ_CHAIN_TOO_LARGE, else OK).
+   * Told once; TIP_SYNCED then no longer waits for it. The watch is still
+   * asked at every pass, and its SYNCED follows its answer when it comes.
+   * `outpoint_watch` says which watch, as for SYNCED. Step P4.5 (review B of
+   * PR 56, third confirmation). */
+  GZ_CHAINW_WATCH_PENDING = 14
 } gz_chainw_kind;
+
+/* Passes in a row with a watch's answer put off before it is told pending. */
+#define GZ_CHAINW_DEFER_PASSES 2u
 
 typedef enum gz_chainw_outcome {
   GZ_CHAINW_ACCEPTED = 1,      /* a server took it */

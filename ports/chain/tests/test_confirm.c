@@ -47,6 +47,10 @@ typedef struct fab {
   bool swap;
   uint8_t swap_id[GZ_HASH_LEN];
   size_t swap_to;
+  /* not NULL: these bytes instead of tx[i]'s (the same transaction with a
+   * witness added: the same txid, so the same block) */
+  uint8_t *big[FAB_MAX_TX];
+  size_t big_len[FAB_MAX_TX];
 } fab;
 
 /* ---- the backend ---- */
@@ -106,6 +110,12 @@ static gz_chain_result fab_raw(void *ctx, const uint8_t txid[GZ_HASH_LEN], uint8
   for (size_t i = 0; i < f->n_tx; i++) {
     const fab_tx *t = &f->tx[i];
     if (memcmp(t->id, txid, GZ_HASH_LEN) != 0) continue;
+    if (f->big[i] != NULL && !(f->swap && memcmp(f->swap_id, txid, GZ_HASH_LEN) == 0)) {
+      if (f->big_len[i] > cap) return GZ_CHAIN_TOO_LARGE;
+      memcpy(buf, f->big[i], f->big_len[i]);
+      *len = f->big_len[i];
+      return GZ_CHAIN_OK;
+    }
     if (f->swap && memcmp(f->swap_id, txid, GZ_HASH_LEN) == 0) t = &f->tx[f->swap_to];
     if (t->len > cap) return GZ_CHAIN_TOO_LARGE;
     memcpy(buf, t->raw, t->len);
@@ -420,6 +430,54 @@ static void test_position_below_the_count(test_state *T) {
   CHECK_RESULT(confirm(&f, t->id, 1, &conf), GZ_CHAIN_BAD_PROOF);
 }
 
+/* ---- review of PR 72, P-2: a funding with an inflated witness, in a block
+ * whose coinbase is larger than any old room, is still proved. A witness
+ * leaves the txids, and so the block, as they were. ---- */
+
+static void inflate(test_state *T, fab *f, const fab_tx *t, uint32_t extra) {
+  size_t i = (size_t)(t - f->tx), p = 0;
+  uint8_t *b = malloc(t->len + 8 + extra), id[GZ_HASH_LEN];
+  if (b == NULL) exit(2);
+  memcpy(b, t->raw, 4); /* version */
+  p = 4;
+  b[p++] = 0;
+  b[p++] = 1; /* segwit */
+  memcpy(b + p, t->raw + 4, t->len - 8); /* inputs and outputs (one input) */
+  p += t->len - 8;
+  b[p++] = 1; /* one witness item */
+  b[p++] = 0xfe;
+  put32(b + p, extra);
+  p += 4;
+  memset(b + p, 0x5a, extra);
+  p += extra;
+  memcpy(b + p, t->raw + t->len - 4, 4); /* locktime */
+  p += 4;
+  CHECK(gz_txid_from_raw(b, p, id) && memcmp(id, t->id, GZ_HASH_LEN) == 0);
+  f->big[i] = b;
+  f->big_len[i] = p;
+}
+
+static void test_large_transactions_still_proved(test_state *T) {
+  static fab f;
+  gz_confirmation conf;
+  memset(&f, 0, sizeof f);
+  const fab_tx *cb = add_tx(&f, 1, 0x10), *t = add_tx(&f, 0, 0x11);
+  uint8_t root[GZ_HASH_LEN];
+  node(cb->id, t->id, root);
+  make_chain(T, &f, 0, root, FAB_LONG_CHAIN);
+  f.summary.tx_count = 2;
+  memcpy(f.summary.coinbase_txid, cb->id, GZ_HASH_LEN);
+  add_proof(&f, t->id, 1, 1, (const uint8_t *[]){cb->id});
+  add_proof(&f, cb->id, 0, 1, (const uint8_t *[]){t->id});
+  inflate(T, &f, cb, 1500000); /* a coinbase of 1.5 MB */
+  inflate(T, &f, t, 900000);   /* a funding with an inflated witness */
+  CHECK_RESULT(confirm(&f, t->id, 1, &conf), GZ_CHAIN_OK);
+  CHECK(conf.checked_confirmations == 1);
+  CHECK_RESULT(confirm(&f, cb->id, 1, &conf), GZ_CHAIN_OK);
+  CHECK(conf.checked_confirmations == 1);
+  for (size_t i = 0; i < FAB_MAX_TX; i++) free(f.big[i]);
+}
+
 int main(void) {
   test_state state = {0, 0, 0}, *T = &state;
   const char *g = getenv("GZ_FAB_GRIND");
@@ -429,6 +487,7 @@ int main(void) {
   RUN(test_coinbase_must_be_a_coinbase);
   RUN(test_no_coinbase_after_the_first);
   RUN(test_position_below_the_count);
+  RUN(test_large_transactions_still_proved);
   if (grinding) {
     FILE *out = fopen("fab_nonces.h", "w");
     if (out == NULL) return 2;
