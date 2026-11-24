@@ -98,6 +98,7 @@ typedef struct {
     uint64_t dropped;                      /* pings not saved: the table, or the link's share, was full */
     uint64_t skipped_targets;              /* saved CONNECT targets not issued: a bad address */
     uint8_t watches[TE_MAX_WATCHES][37];   /* the watches asked for: kind (1 tx, 0 outpoint), txid, vout */
+    uint32_t watch_depth[TE_MAX_WATCHES]; /* the largest depth asked for each */
     size_t n_watches;
 } te_t;
 
@@ -420,7 +421,7 @@ typedef struct {
 
 /* ---- the watch registry ------------------------------------------------- */
 
-#define MAX_WATCHES 64
+#define MAX_WATCHES GZ_NODE_MAX_WATCHES
 
 typedef struct {
     int used, is_tx;
@@ -432,7 +433,7 @@ typedef struct {
 /* Each engine's budget of distinct watches (7.2), as for timers: an engine
  * that asks for more broke its own cap (GZ_ERR_BUG), so the registry can
  * never be full. A slot's watches are forgotten when it closes. */
-_Static_assert(2 * TE_MAX_WATCHES + GZ_NODE_MAX_SLOTS * TS_MAX_WATCHES <= MAX_WATCHES,
+_Static_assert(2 * TE_MAX_WATCHES + GZ_NODE_MAX_SLOTS * TS_MAX_WATCHES + GZ_NODE_FUNDING_WATCHES <= MAX_WATCHES,
                "the engines' watch budgets must fit the registry (7.2)");
 
 /* ---- hand-offs ---------------------------------------------------------- */
@@ -539,6 +540,10 @@ size_t gz_timer_budget(const gz_node_t *c, int eng);
 int gz_watch_note(gz_node_t *c, const gz_action_t *a, int eng); /* 1 keep, 0 drop, -1 over the engine's budget */
 uint16_t gz_watch_mask(const gz_node_t *c, const gz_chain_event_t *ev);
 void gz_watch_forget(gz_node_t *c, int eng);
+/* An engine's UNWATCH: its bit leaves the entry. 1 if nobody asks for the
+ * watch any more (the entry is free and the UNWATCH goes out), 0 if others
+ * still ask or it held no such watch (the UNWATCH is dropped). */
+int gz_watch_unnote(gz_node_t *c, const gz_action_t *a, int eng);
 
 /* route.c */
 typedef enum {

@@ -28,6 +28,92 @@
   }
   gz.acting = acting;
 
+  /* The node-wide signing setting (14.3); at_join when it cannot be read, so the
+     page asks for the passphrase rather than promise signing it may not do. */
+  function signingSetting() {
+    return api.get("/signing").catch(function () { return { member_signing: "at_join" }; });
+  }
+  function atJoin(sg) { return !sg || sg.member_signing !== "auto"; }
+
+  /* A seat is locked (14.3 rule 3) while the status holds unlock_to_take_part for it. */
+  function lockedIds() {
+    var s = gz.app.status || {}, ids = [];
+    (s.attention || []).forEach(function (a) {
+      if (a.code === "unlock_to_take_part" && a.lobby_id && ids.indexOf(a.lobby_id) < 0) ids.push(a.lobby_id);
+    });
+    return ids;
+  }
+
+  /* Ready with the passphrase, asked in a dialog and emptied as soon as it is sent (12.7). */
+  function readyWithPassphrase(l, title) {
+    return ui.askPassphrase({
+      title: title, button: "Mark ready", why: W.signing.at_join,
+      run: function (pass) {
+        return acting("ready:" + l.id + ":true:" + l.terms.current.digest, function (rid) {
+          return api.act("PUT", "/lobbies/" + l.id + "/ready", { request_id: rid, ready: true, seen_current_digest: l.terms.current.digest, passphrase: pass });
+        });
+      }
+    });
+  }
+
+  /* "Mark ready in all" (14.4 rule 7), after review M1. The digest sent for
+     each lobby is the one drawn on this screen, beside that lobby's terms. A
+     lobby whose values moved since the seat readied is listed with the change
+     and left out; a change after the drawing is refused by the program
+     (terms_changed) and listed the same way. One request id per press, kept
+     after node busy, so a retry is a replay (7.4). */
+  function changeText(tc) {
+    return (tc && tc.changes || []).map(function (c) {
+      return W.known(W.fitTerms, c.term) + " from " + ui.value(c.from) + " to " + ui.value(c.to);
+    }).join("; ");
+  }
+
+  function readyAll(locked) {
+    var msg = h("div", { id: "ready-all-msg" }), list = h("ul", { class: "log", id: "locked-list" }), send = [], key;
+    var btn = h("button", { type: "button", class: "btn primary", id: "ready-all" }, "Mark ready in all");
+    if (!locked.length) return null;
+    locked.forEach(function (l) {
+      var moved = !!l.terms_change && l.terms_change.effect !== "still_fits", r = l.terms.ranges || {};
+      if (!moved) send.push({ lobby_id: l.id, seen_current_digest: l.terms.current.digest });
+      list.appendChild(h("li", { "data-lobby": l.id, "data-moved": moved ? "yes" : "no" },
+        h("a", { href: "#/lobby/" + l.id }, u.quoted(l.name)), " ",
+        moved ? h("span", { class: "moved" }, "Left out: the terms changed since you readied (" + changeText(l.terms_change) + "). Review them in the lobby.")
+          : h("span", { class: "mute" }, "Joining fee " + ui.value(r.joining_fee_sat) + " sats, a channel of " + u.sats(l.terms.outer.channel_sat) + ".")));
+    });
+    key = "ready-all:" + send.map(function (x) { return x.lobby_id + "=" + x.seen_current_digest; }).join(",");
+    btn.disabled = !send.length;
+    btn.addEventListener("click", function () {
+      ui.run(btn, msg, function () {
+        return ui.askPassphrase({
+          title: "Mark ready in all", button: "Mark ready", why: W.signing.at_join,
+          run: function (pass) {
+            return acting(key, function (rid) { return api.call("POST", "/lobbies/ready", { request_id: rid, passphrase: pass, lobbies: send }); });
+          }
+        }).then(function (r) {
+          var ok = 0, bad = [];
+          (r && r.results || []).forEach(function (x) {
+            var code = x.error && x.error.code;
+            if (x.status === 202) { ok++; return; }
+            bad.push(h("li", { "data-lobby": x.lobby_id, "data-code": code || "error" },
+              h("a", { href: "#/lobby/" + x.lobby_id }, String(x.lobby_id)), ": ",
+              code === "terms_changed" ? "not readied: the terms changed since this page was drawn. Review them in the lobby." : W.errorText(x.error || {})));
+          });
+          ui.toast("Ready again in " + u.plural(ok, "lobby").replace("lobbys", "lobbies") + ".");
+          gz.app.refreshStatus(false).then(function () { gz.app.redraw(); });
+          if (bad.length) {
+            /* a live redraw may have replaced the card meanwhile: write to the one on screen, kept over redraws */
+            var box = msg.isConnected ? msg : document.getElementById("ready-all-msg") || msg;
+            u.add(box, [ui.notice("warn", "Some lobbies were not readied."), h("ul", { id: "ready-all-left" }, bad)]);
+            box.setAttribute("data-keep", "");
+          }
+        });
+      });
+    });
+    return h("section", { class: "card", id: "locked-seats" }, h("h2", {}, "Locked seats"),
+      h("p", {}, u.plural(locked.length, "seat") + " of yours " + (locked.length === 1 ? "is" : "are") + " locked. " + W.LOCKED_SEAT),
+      list, msg, ui.actions(btn));
+  }
+
   function failing(fit) {
     return (fit && fit.rows ? fit.rows : []).filter(function (r) { return r.result === "fails" || r.result === "fits_now_only"; }).map(function (r) {
       return W.known(W.fitTerms, r.term) + ": the lobby offers " + ui.value(r.offered) + "; your limit is " + ui.value(r.yours) + ".";
@@ -94,9 +180,19 @@
   }
 
   gz.screens.lobbies = {
-    title: "Lobbies", nav: "lobbies", topics: ["lobby", "conditions", "discovery"],
+    title: "Lobbies", nav: "lobbies", topics: ["lobby", "conditions", "discovery", "status"],
     render: function () {
-      return api.get("/lobbies?show=all&sort=fit").then(function (page) {
+      /* The status first: it names the locked seats (unlock_to_take_part), and a
+         live redraw may come before the strip's own read of it has returned. */
+      return gz.app.refreshStatus(true).then(lobbiesRender);
+    }
+  };
+
+  function lobbiesRender() {
+      return Promise.all([api.get("/lobbies?show=all&sort=fit"), Promise.all(lockedIds().map(function (id) {
+        return api.get("/lobbies/" + id).catch(function () { return null; });
+      }))]).then(function (both) {
+        var page = both[0], locked = both[1].filter(Boolean);
         var fit = h("ul", { class: "lob", id: "lobbies-fit" }), rest = h("ul", { class: "lob", id: "lobbies-rest" }), nf = 0, nr = 0;
         (page.items || []).forEach(function (l) {
           if (l.fit && l.fit.class === "fits") { nf++; fit.appendChild(row(l)); } else { nr++; rest.appendChild(row(l)); }
@@ -104,13 +200,13 @@
         return h("div", {},
           h("h1", {}, "Lobbies"),
           h("p", { class: "lead" }, "A lobby is where a host gathers members before a factory starts. You can be in several lobbies at once."),
+          readyAll(locked),
           addHost(),
           h("h2", {}, "Lobbies that fit your conditions"),
           nf ? fit : h("p", { class: "mute" }, nr ? "None of the lobbies the app knows fits your conditions." : "The app knows no lobby yet. Add a host by its address."),
           nr ? h("div", {}, h("h2", { class: "sep" }, "Do not fit, or fit only now"), rest) : null);
       });
-    }
-  };
+  }
 
   /* ---- one lobby ---- */
   function outcome(l) {
@@ -168,16 +264,27 @@
       l.factory_id ? h("p", {}, h("a", { class: "btn", href: "#/factory/" + l.factory_id }, "Open the factory")) : null);
   }
 
-  function joinBox(l) {
-    var msg = h("div", { id: "join-msg" }), cls = l.fit.class, r = l.terms.ranges || {};
+  function joinBox(l, sg) {
+    var msg = h("div", { id: "join-msg" }), cls = l.fit.class, r = l.terms.ranges || {}, ask = atJoin(sg);
     var btn = h("button", { type: "button", class: "btn primary", id: "join" }, "Join and be ready");
     var why = failing(l.fit);
     btn.disabled = cls !== "fits" || l.stage !== "open";
     btn.addEventListener("click", function () {
+      var key = "join:" + l.id + ":" + l.terms.current.digest;
+      function send(pass) {
+        return acting(key, function (rid) {
+          var body = { request_id: rid, seen_current_digest: l.terms.current.digest, ready: true };
+          if (pass) body.passphrase = pass;
+          return api.act("POST", "/lobbies/" + l.id + "/join", body);
+        });
+      }
       ui.run(btn, msg, function () {
-        return acting("join:" + l.id + ":" + l.terms.current.digest, function (rid) {
-          return api.act("POST", "/lobbies/" + l.id + "/join", { request_id: rid, seen_current_digest: l.terms.current.digest, ready: true });
-        }).then(function () { ui.toast("Joined. You are ready."); gz.app.refreshStatus(false); gz.app.redraw(); });
+        /* Under at_join the passphrase is asked in a dialog, which sits outside
+           the view that live events redraw, and is emptied as it is sent
+           (review M2; 12.7). A kept request id (after node busy) is sent
+           again without it: a replay may omit it (7.4). */
+        var p = ask && !rids[key] ? ui.askPassphrase({ title: "Join and be ready", button: "Join", why: W.signing.at_join, run: send }) : send(null);
+        return p.then(function () { ui.toast("Joined. You are ready."); gz.app.refreshStatus(false); gz.app.redraw(); });
       });
     });
     return h("section", { class: "mine", id: "review" }, h("h2", {}, "Review and join"),
@@ -186,19 +293,25 @@
         ["You get", "a channel of " + u.sats(l.terms.outer.channel_sat)],
         ["It starts", "at " + u.number(l.start_rule.target) + " ready, or at the deadline with " + u.number(l.start_rule.minimum) + " or more; otherwise it is cancelled"]
       ]),
-      ui.notice("", "Joining is your consent.", "When the lobby starts, the app signs by itself, without asking again. If anything then differs from what you see here, it refuses before sending anything."),
+      ask ? ui.notice("", "Joining is your consent.", "When the lobby starts, the app signs for the terms you readied for, without asking again. If anything then differs from what you see here, it refuses before sending anything.")
+        : ui.notice("", "Joining is your consent.", "When the lobby starts, the app signs by itself, without asking again. If anything then differs from what you see here, it refuses before sending anything."),
+      ask ? h("p", { class: "small", id: "join-gate-words" }, "Joining ready asks for your passphrase. " + W.signing.at_join) : null,
       cls === "does_not_fit" ? ui.notice("bad", "Join is off: this lobby does not fit your conditions.", why.join(" ")) : null,
       cls === "fits_only_now" ? ui.notice("warn", "Join is off: this lobby fits only now.", "The host may move a value outside your limits before the start. " + why.join(" ")) : null,
       l.stage !== "open" ? ui.notice("warn", "This lobby is not open for joining any more.") : null,
       msg, ui.actions(btn, cls !== "fits" ? h("a", { class: "btn", href: "#/conditions" }, "See my conditions") : null));
   }
 
-  function waiting(l) {
+  function waiting(l, sg) {
     var msg = h("div", { id: "seat-msg" }), ready = l.you.seat === "ready", early = l.stage === "open";
-    var toggle = h("button", { type: "button", class: "btn", id: "ready-toggle" }, ready ? "I am not ready" : "I am ready");
+    var locked = !ready && lockedIds().indexOf(l.id) >= 0;
+    var toggle = h("button", { type: "button", class: "btn" + (locked ? " primary" : ""), id: "ready-toggle" }, ready ? "I am not ready" : locked ? "Mark ready" : "I am ready");
     var leaveBtn = h("button", { type: "button", class: "btn danger", id: "leave" }, "Leave this lobby");
     toggle.addEventListener("click", function () {
       ui.run(toggle, msg, function () {
+        if (!ready && atJoin(sg)) {
+          return readyWithPassphrase(l, locked ? "Mark ready again" : "Mark ready").then(function () { gz.app.refreshStatus(false); gz.app.redraw(); });
+        }
         return acting("ready:" + l.id + ":" + !ready + ":" + l.terms.current.digest, function (rid) {
           return api.act("PUT", "/lobbies/" + l.id + "/ready", { request_id: rid, ready: !ready, seen_current_digest: l.terms.current.digest });
         }).then(function () { gz.app.refreshStatus(false); gz.app.redraw(); });
@@ -217,6 +330,7 @@
       h("p", { id: "seat-line" }, h("b", {}, W.known(W.seats, l.you.seat) + ". "),
         l.you.seat === "joining" ? "Waiting for the host's answer." :
         l.you.seat === "chosen" ? "You are one of the members this start signs with." :
+        locked ? W.LOCKED_SEAT :
         ready ? (l.you.counted ? "You are counted." : "You are not counted yet: fewer than " + u.number(l.fit.counted_from) + " are ready.") :
         "You are not counted until you say you are ready."),
       h("p", { id: "counts" }, u.number(l.counts.ready) + " ready of " + u.number(l.start_rule.target) + ". It starts at " + u.number(l.start_rule.target) + ", or at its deadline with " + u.number(l.start_rule.minimum) + " or more; otherwise it is cancelled and nothing is signed."),
@@ -224,19 +338,41 @@
       early && l.start_rule.deadline ? ui.dates([l.start_rule.deadline]) : null,
       l.you.conditions_copied_at ? h("p", { class: "small mute" }, "Your conditions were copied into this lobby when you joined (" + u.dateTime(l.you.conditions_copied_at) + "). The app checks the start against that copy.") : null,
       l.you.appear_as ? h("p", { class: "small mute" }, "You appear here as ", u.quoted(l.you.appear_as), ".") : null,
+      !ready && atJoin(sg) && early ? h("p", { class: "small mute", id: "gate-words" }, W.signing.at_join) : null,
       msg, early ? ui.actions(toggle, leaveBtn) : null);
+  }
+
+  /* 14.6: what this member can know of the host's choices. In Slice 1 nothing
+     is signed: no count, total or "nobody" line, and a removal is what the host said. */
+  function accountability(a) {
+    var body = [], c = a && a.counts;
+    if (!a) return null;
+    if (a.signed === true && c) {
+      [["removed_by_host", "removed"], ["left", "saw leave"], ["refused_at_check", "saw refuse at their own check"]].forEach(function (k) {
+        if (typeof c[k[0]] === "number") body.push(h("p", { "data-count": k[0] }, "The host signed that it " + k[1] + " " + u.count(c[k[0]], "seat", "seats") + "."));
+      });
+    } else {
+      body.push(h("p", { id: "own-view" }, "Your app sees only what happened to your own seat. The host signs nothing about the others in this release, so no count is shown."));
+    }
+    (a.removal_reasons || []).forEach(function (r) {
+      body.push(h("p", { class: "removal" }, (a.signed === true ? "The host signed: " : "The host said: "), u.quoted(r.reason)));
+    });
+    (a.contradictions || []).forEach(function (x) {
+      body.push(ui.notice("bad", "Your app saw something the host's signed counts deny.", x.code === "own_removal_not_counted" ? "Your own removal is not in the host's count." : String(x.code)));
+    });
+    return h("section", { class: "card", id: "accountability" }, h("h2", {}, "What the host did"), body);
   }
 
   gz.screens.lobby = {
     title: "Lobby", nav: "lobbies", topics: ["lobby", "status", "conditions"],
     render: function (params) {
       var id = params[0];
-      return api.get("/lobbies/" + id).catch(function (e) {
+      return Promise.all([api.get("/lobbies/" + id).catch(function (e) {
         if (e.code !== "not_found") throw e;
         /* a lobby this program hosts is under Hosting */
         return api.get("/host/lobbies/" + id).then(function () { gz.app.go("/host/lobby/" + id); return null; }, function () { throw e; });
-      }).then(function (l) {
-        var seat, inIt;
+      }), signingSetting()]).then(function (both) {
+        var seat, inIt, l = both[0], sg = both[1];
         if (!l) return h("p", {}, "Opening…");
         seat = l.you ? l.you.seat : "none";
         inIt = seat === "joining" || seat === "joined_not_ready" || seat === "ready" || seat === "chosen";
@@ -246,13 +382,14 @@
           h("p", {}, ui.pill(W.known(W.stages, l.stage), l.stage === "active" ? "green" : "blue"), " ", ui.pill(W.known(W.seats, seat), inIt ? "green" : "grey"),
             " Host: ", u.quoted(l.host && l.host.alias), " · ", l.host ? String(l.host.address) : ""),
           outcome(l),
-          inIt ? waiting(l) : null,
+          inIt ? waiting(l, sg) : null,
           signing(l),
           fundingCard(l),
+          accountability(l.accountability),
           l.terms_change ? ui.notice("warn", "The host moved a value.", "From version " + u.number(l.terms_change.from_version) + " to " + u.number(l.terms_change.to_version) + ". Read the terms below again.") : null,
           h("div", { class: "cols" },
             h("div", {}, ui.terms(l.terms, "Terms of this lobby")),
-            h("div", {}, h("h2", {}, "Fit check"), ui.fitTable(l.fit), !inIt && l.stage !== "active" && l.stage !== "funding" ? joinBox(l) : null)));
+            h("div", {}, h("h2", {}, "Fit check"), ui.fitTable(l.fit), !inIt && l.stage !== "active" && l.stage !== "funding" ? joinBox(l, sg) : null)));
       });
     }
   };

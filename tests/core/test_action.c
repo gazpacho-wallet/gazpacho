@@ -208,13 +208,31 @@ static void test_bad_arguments(void)
     CHECK(list.slots[0].u.send.records.data == NULL && list.slots[0].u.send.records.len == 0);
 }
 
+/* UNWATCH (step P4.5): held by value, `is_tx` 0 or 1 only. */
+static void test_unwatch(void)
+{
+    gz_action_t slots[2];
+    uint8_t bytes[64];
+    gz_action_list_t list;
+    gz_action_t a = {.kind = GZ_ACTION_UNWATCH};
+    gz_action_list_init(&list, slots, 2, bytes, sizeof bytes);
+    memset(a.u.unwatch.what.txid, 7, 32);
+    a.u.unwatch.what.vout = 3;
+    CHECK(gz_action_list_add(&list, &a) == GZ_OK && list.slots[0].u.unwatch.what.vout == 3 && list.used == 0);
+    a.u.unwatch.is_tx = 1;
+    CHECK(gz_action_list_add(&list, &a) == GZ_OK && list.slots[1].u.unwatch.is_tx == 1);
+    gz_action_list_reset(&list);
+    a.u.unwatch.is_tx = 2;
+    CHECK(gz_action_list_add(&list, &a) == GZ_ERR_ARGUMENT && list.count == 0);
+}
+
 static void test_which_actions_are_outward(void)
 {
     static const struct { gz_action_kind_t kind; int outward; } cases[] = {
         {GZ_ACTION_SAVE, 0}, {GZ_ACTION_SEND, 1}, {GZ_ACTION_BROADCAST, 1}, {GZ_ACTION_WATCH_SCRIPT, 0},
         {GZ_ACTION_CONNECT, 1}, {GZ_ACTION_DISCONNECT, 0}, {GZ_ACTION_SET_SEATED, 0},
         {GZ_ACTION_SET_TIMER, 0}, {GZ_ACTION_CANCEL_TIMER, 0}, {GZ_ACTION_NOTIFY, 1},
-        {GZ_ACTION_WATCH_TX, 0}, {GZ_ACTION_WATCH_OUTPOINT, 0},
+        {GZ_ACTION_WATCH_TX, 0}, {GZ_ACTION_WATCH_OUTPOINT, 0}, {GZ_ACTION_UNWATCH, 0},
     };
     for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         gz_action_t a = {.kind = cases[i].kind};
@@ -277,6 +295,7 @@ int main(void)
     test_save_copies_records();
     test_full_list_is_left_unchanged();
     test_bad_arguments();
+    test_unwatch();
     test_which_actions_are_outward();
     return check_done();
 }

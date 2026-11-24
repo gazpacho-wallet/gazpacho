@@ -322,4 +322,12 @@ uint16_t gz_node_error_area(const gz_node_t *node);
 gz_member_signing_t gz_node_member_signing(const gz_node_t *node);
 gz_status_t gz_node_error_status(const gz_node_t *node);
 
+/* The most watches a node asks for at once, over all its engines (action.h,
+ * WATCHES). A chain backend must hold at least this many: the program checks
+ * it at build time (program/pchain.c). */
+#define GZ_NODE_MAX_WATCHES 112
+/* Of them, the funding engine's budget (core/funding, GZ_FUND_MAX_WATCHES:
+ * task T-P45-1). */
+#define GZ_NODE_FUNDING_WATCHES 48
+
 #endif

@@ -57,6 +57,7 @@ static uint64_t action_id(const gz_action_t *a)
     case GZ_ACTION_SET_SEATED:   return bytes_id((gz_bytes_t){a->u.set_seated.member.key, 8});
     case GZ_ACTION_WATCH_TX:     return bytes_id((gz_bytes_t){a->u.watch_tx.txid, 8});
     case GZ_ACTION_WATCH_OUTPOINT: return bytes_id((gz_bytes_t){a->u.watch_outpoint.outpoint.txid, 8});
+    case GZ_ACTION_UNWATCH:      return bytes_id((gz_bytes_t){a->u.unwatch.what.txid, 8});
     case GZ_ACTION_NOTIFY:       if (a->u.notify.code != (uint32_t)bytes_id(a->u.notify.bytes)) g_payloads_ok = 0;
                                  return bytes_id(a->u.notify.bytes);
     case GZ_ACTION_SET_TIMER:    return a->u.set_timer.timer_id;

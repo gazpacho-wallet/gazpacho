@@ -6,6 +6,15 @@
   "use strict";
   var gz = window.gz, u = gz.util;
 
+  /* 14.3, interface rules 3 to 5: what each signing setting does, in the words the person reads */
+  var LOCKED_SEAT = "Not taking part until you mark ready again: your app told the host this seat is locked.";
+  var signing = {
+    at_join: "Gazpacho asks for your passphrase when you mark ready in a lobby. Only then does it make that lobby's signing key, and only for the terms you readied for; it forgets the key when that check ends. While Gazpacho is unlocked it still holds your wallet's seed, so this stops signing you did not mean, not someone who controls this computer.",
+    auto: "Gazpacho signs in every lobby you are ready in, by itself, whenever it is unlocked."
+  };
+  var signingNames = { at_join: "Ask for my passphrase when I mark ready", auto: "Sign by itself in every lobby I am ready in", when_unlocked: "Sign while signing is unlocked" };
+  var SIGNING_SAVED = "Saved. This takes effect the next time Gazpacho starts; until then it keeps signing as it does now.";
+
   var errors = {
     unreachable: "Gazpacho is not answering. Check that the program is still running on this computer.",
     not_signed_in: "You are signed out. Type your passphrase to go on.",
@@ -150,7 +159,9 @@
   };
   var seats = {
     none: "Not joined", joining: "Joining…", joined_not_ready: "Joined, not ready", ready: "Ready",
-    chosen: "Chosen", not_chosen: "Not chosen", left: "Left", removed: "Removed by the host", refused_by_host: "Refused by the host"
+    chosen: "Chosen", not_chosen: "Not chosen", left: "Left", removed: "Removed by the host", refused_by_host: "Refused by the host",
+    /* the host's side (15.3) */
+    locked: "Locked: out of the count until it marks ready again", refused: "Refused at its own check"
   };
   var rounds = {
     checking: "Checking the proposal", nonces_sent: "First round sent", signed: "Signatures sent", complete: "Complete",
@@ -222,6 +233,7 @@
     storage_nearly_full: "Gazpacho's storage is nearly full.",
     terms_changed: "A host moved a value in a lobby you are in.",
     refused_to_sign: "The app refused to sign for a lobby. Nothing was signed. Nothing moved.",
+    unlock_to_take_part: "A seat of yours is locked: it does not take part until you mark ready again with your passphrase.",
     host_can_start: "Enough members are ready in a lobby you host: you can start it now.",
     host_funds_short: "A lobby you host needs more coins than this wallet has free."
   };
@@ -318,7 +330,9 @@
       return { strong: "Signed. Waiting for the host's funding:", rest: (typeof p.confirmations === "number" ? u.number(p.confirmations) + " of " + u.number(p.needed) + " confirmations. " : "") + "Not live yet." };
     case "paused": return { strong: "Paused.", rest: "The app signs nothing new and joins nothing until you resume. Dates still apply and watching goes on." };
     case "ready_check": return { strong: "Ready check.", rest: "The lobby's start rule was met. Keep the app open: signing follows by itself." };
-    case "in_lobby_not_ready": return { strong: "In a lobby, not ready.", rest: "You are not counted until you say you are ready." };
+    case "in_lobby_not_ready":
+      if ((p.reasons || []).indexOf("not_unlocked") >= 0) return { strong: "In a lobby, locked.", rest: LOCKED_SEAT };
+      return { strong: "In a lobby, not ready.", rest: "You are not counted until you say you are ready." };
     case "in_lobby_not_counted": return { strong: "In a lobby, not counted yet.", rest: "Fewer members are ready than you asked for. If that stays so, the lobby starts without you or is cancelled." };
     case "in_lobby_waiting":
       return { strong: "In a lobby:", rest: (typeof p.ready === "number" ? u.number(p.ready) + " of " + u.number(p.target) + " ready. Starts at " + u.number(p.target) + ", or at its deadline with " + u.number(p.minimum) + " or more; otherwise cancelled. " : "") + "Then the app signs by itself." };
@@ -343,6 +357,6 @@
     funding: funding, factoryStates: factoryStates, chain: chain, watching: watching, dateKinds: dateKinds,
     atZero: atZero, provenance: provenance, attention: attention, tiers: tiers, activityKinds: activityKinds,
     who: who, rules: rules, problems: problems, cannotOpen: cannotOpen, headline: headline, dateText: dateText,
-    doing: doing
+    doing: doing, signing: signing, signingNames: signingNames, SIGNING_SAVED: SIGNING_SAVED, LOCKED_SEAT: LOCKED_SEAT
   };
 })();

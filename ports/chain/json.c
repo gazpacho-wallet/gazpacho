@@ -202,7 +202,7 @@ static bool parse_value(parser *p, unsigned depth) {
   }
 }
 
-bool gz_json_parse(const char *s, size_t len, gz_json_tok *toks, size_t cap, size_t *count) {
+bool gz_chain_json_parse(const char *s, size_t len, gz_json_tok *toks, size_t cap, size_t *count) {
   if (s == NULL || toks == NULL || count == NULL) return false;
   if (len > (size_t)0x7fffffff || cap > (size_t)0x7fffffff) return false;
   parser p = {s, len, 0, toks, cap, 0};
