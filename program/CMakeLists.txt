@@ -254,6 +254,10 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_partials_hold
     COMMAND ${GZP_PY} ${GZP_T}/partials_hold.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/partials_hold)
   set_tests_properties(program_partials_hold PROPERTIES TIMEOUT 600)
+  # F13 (H3): the key routing follows the signing setting in force, not --member-signing; real signing.
+  add_test(NAME program_keys_setting
+    COMMAND ${GZP_PY} ${GZP_T}/keys_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/keys_setting)
+  set_tests_properties(program_keys_setting PROPERTIES TIMEOUT 600)
   # Slice 1 on signet, against public servers: opt in (GZ_LIVE_TESTS=1 and GZ_SIGNET_DIR, a folder
   # kept between runs); skipped otherwise, and when the host's address holds no coin.
   add_test(NAME program_slice1_signet
