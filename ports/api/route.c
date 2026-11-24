@@ -18,7 +18,7 @@ enum { R_S1 = 0, R_100, R_110, R_LATER };
 enum {
     H_CALL = 0, H_VERSION, H_SESSION_GET, H_SESSION_POST, H_SESSION_START, H_SESSION_FRESH, H_SESSION_DELETE,
     H_REVOKE_ALL, H_START_AS_RESTORE, H_UNLOCK, H_FIRST_RUN_CODES, H_EVENTS, H_STATUS, H_CREATE, H_RESTORE,
-    H_REVEAL, H_CHECK_START, H_CHECK, H_HOST_OPEN, H_PAUSE, H_LOCK, H_RESERVED
+    H_REVEAL, H_CHECK_START, H_CHECK, H_HOST_OPEN, H_PAUSE, H_LOCK, H_KINDA_OPT, H_SIGNING_PUT, H_RESERVED
 };
 #define F_NOSESS 0x01   /* no session needed (4.4) */
 #define F_SOCKET 0x02   /* local socket only */
@@ -62,10 +62,17 @@ static const field S_COND_PREVIEW[] = {{"conditions", T_OBJ, 1}, {NULL, 0, 0}};
 static const field S_COND_PUT[] = {{"conditions", T_OBJ, 1}, {"based_on_version", T_INT, 1}, {"preset", T_STR, 0},
                                    {"confirm_loosens", T_ARR, 0}, {NULL, 0, 0}};
 static const field S_QUERY[] = {{"host", T_STR, 1}, {NULL, 0, 0}};
+/* draft 5, 14.3: the passphrase comes with a ready under at_join (kind A when
+ * present); a replay may omit it (7.4), so it is never required here: the
+ * engine answers missing_field or bad_value, knowing member_signing. */
 static const field S_JOIN[] = {{"request_id", T_STR, 1}, {"seen_current_digest", T_STR, 1}, {"ready", T_BOOL, 0},
-                               {NULL, 0, 0}};
+                               {"passphrase", T_STR, 0}, {NULL, 0, 0}};
 static const field S_READY[] = {{"request_id", T_STR, 1}, {"ready", T_BOOL, 1}, {"seen_current_digest", T_STR, 1},
-                                {NULL, 0, 0}};
+                                {"passphrase", T_STR, 0}, {NULL, 0, 0}};
+static const field S_LOBBIES_READY[] = {{"request_id", T_STR, 1}, {"passphrase", T_STR, 0}, {"lobbies", T_ARR, 1},
+                                        {NULL, 0, 0}};
+static const field S_SIGNING[] = {{"based_on_version", T_INT, 1}, {"member_signing", T_STR, 1},
+                                  {"confirm_member_signing", T_STR, 0}, {"host_funding", T_STR, 0}, {NULL, 0, 0}};
 static const field S_RID[] = {{"request_id", T_STR, 1}, {NULL, 0, 0}};
 static const field S_DRAFT[] = {
     {"name", T_STR, 0}, {"description", T_STR, 0}, {"profile", T_STR, 0}, {"target", T_INT, 0},
@@ -121,9 +128,15 @@ static const gz_route ROUTES[] = {
     S1(M_GET, "/api/v1/settings/connections", H_CALL, GZ_API_C_CONNECTIONS_GET, 0, NULL, NULL),
     /* lobbies (14) */
     S1(M_GET, "/api/v1/lobbies", H_CALL, GZ_API_C_LOBBIES, 0, NULL, "show,sort,cursor,limit"),
+    S1(M_POST, "/api/v1/lobbies/ready", H_KINDA_OPT, GZ_API_C_LOBBIES_READY, F_RID | F_ACT, S_LOBBIES_READY, NULL),
     S1(M_GET, "/api/v1/lobbies/{lob}", H_CALL, GZ_API_C_LOBBY, 0, NULL, NULL),
-    S1(M_POST, "/api/v1/lobbies/{lob}/join", H_CALL, GZ_API_C_JOIN, F_RID | F_ACT, S_JOIN, NULL),
-    S1(M_PUT, "/api/v1/lobbies/{lob}/ready", H_CALL, GZ_API_C_READY, F_RID | F_ACT, S_READY, NULL),
+    S1(M_POST, "/api/v1/lobbies/{lob}/join", H_KINDA_OPT, GZ_API_C_JOIN, F_RID | F_ACT, S_JOIN, NULL),
+    S1(M_PUT, "/api/v1/lobbies/{lob}/ready", H_KINDA_OPT, GZ_API_C_READY, F_RID | F_ACT, S_READY, NULL),
+    /* signing gates (14.3): the setting; the node-wide gate's calls are 1.0.0 */
+    S1(M_GET, "/api/v1/signing", H_CALL, GZ_API_C_SIGNING_GET, 0, NULL, NULL),
+    S1(M_PUT, "/api/v1/signing", H_SIGNING_PUT, GZ_API_C_SIGNING_PUT, F_ACT, S_SIGNING, NULL),
+    RES(M_POST, "/api/v1/signing/unlock", R_100),
+    RES(M_POST, "/api/v1/signing/lock", R_100),
     S1(M_POST, "/api/v1/lobbies/{lob}/leave", H_CALL, GZ_API_C_LEAVE, F_RID | F_ACT, S_RID, NULL),
     /* hosting (15) */
     S1(M_POST, "/api/v1/host/preview", H_CALL, GZ_API_C_HOST_PREVIEW, 0, S_DRAFT, NULL),
@@ -896,7 +909,10 @@ static void session_fields(gz_api_server *srv, gz_jw *w, const gz_session *s)
         }
     } else {
         gz_jw_key(w, "first_run_launched_at");
-        if (srv->first_run_launched_at && ws == GZ_API_WALLET_NONE) gz_jw_int(w, srv->first_run_launched_at);
+        /* for 10 minutes from the launch, in this run, whether or not a wallet exists by then
+         * (draft 5, gap 15): the interface words a hijack from it (4.3) */
+        if (srv->first_run_launched_at && gz_now_ms(srv) / 1000 - srv->first_run_launched_at < 600)
+            gz_jw_int(w, srv->first_run_launched_at);
         else gz_jw_null(w);
     }
 }
@@ -1039,7 +1055,15 @@ void gz_job_finished(gz_api_server *srv, gz_job *j)
     if (pp->result == GZ_API_PPR_OK || pp->result == GZ_API_PPR_WORDS_DIFFER || pp->result == GZ_API_PPR_FILES_BEHIND)
         verified = 1;
     if (pp->result == GZ_API_PPR_WRONG) {
-        if (c) gz_respond_error(srv, c, 401, "wrong_passphrase", NULL, NULL);
+        if (c) {
+            /* when the next attempt is taken, and how many wrong in a row (local-api.md 4.3, 8.1;
+             * open point 42): the interface holds the button for that long */
+            char params[96];
+            int64_t left = (srv->att_blocked_until_ms - mono + 999) / 1000;
+            snprintf(params, sizeof params, "{\"retry_after_s\":%lld,\"wrong_in_row\":%lu}",
+                     (long long)(left < 1 ? 1 : left), (unsigned long)srv->att_wrong);
+            gz_respond_error(srv, c, 401, "wrong_passphrase", NULL, params);
+        }
         goto out;
     }
     if (pp->result == GZ_API_PPR_NOT_CHECKED) {
@@ -1515,6 +1539,13 @@ static void handle(gz_api_server *srv, gz_conn *c)
             break;
         }
         if (ws != GZ_API_WALLET_NONE || srv->first_run_closed) {
+            /* The token is checked first (review L1 of draft 5): a junk token is bad_code, so a
+             * page that presents junk never raises the hijack warning (4.3). */
+            const char *te = tok ? gz_start_token_present(srv, tok, &used_at) : NULL;
+            if (te && strcmp(te, "bad_code") == 0) {
+                gz_respond_error(srv, c, 401, "bad_code", NULL, NULL);
+                break;
+            }
             gz_respond_error(srv, c, 409, "wallet_exists", NULL, NULL);
             break;
         }
@@ -1720,6 +1751,28 @@ static void handle(gz_api_server *srv, gz_conn *c)
         if (answered) break;
         if (start_job(srv, c, JP_KIND_A, GZ_API_PP_CHECK, body)) break;
         break;
+    case H_KINDA_OPT:
+        /* 14.2: with the passphrase, kind A (every other check first, then one
+         * derivation); without it, a plain call (a ready: false, the auto
+         * setting, or a replay, which may omit it, 7.4) */
+        if (!gz_json_get(body, "passphrase")) {
+            call_backend(srv, c, 0, &answered);
+            break;
+        }
+        call_backend(srv, c, 1, &answered);
+        if (answered) break;
+        if (start_job(srv, c, JP_KIND_A, GZ_API_PP_CHECK, body)) break;
+        break;
+    case H_SIGNING_PUT: {
+        /* 14.3: only this call results in auto, and only as kind B with the echo (review H1) */
+        const char *ms = jstr(body, "member_signing"), *cf = jstr(body, "confirm_member_signing");
+        if (ms && strcmp(ms, "auto") == 0) {
+            if (!r->fresh && !r->bearer) { gz_respond_error(srv, c, 403, "fresh_sign_in_needed", NULL, NULL); break; }
+            if (!cf || strcmp(cf, "auto") != 0) { confirm_mismatch(srv, c, "/confirm_member_signing", "auto", cf ? cf : ""); break; }
+        }
+        call_backend(srv, c, 0, &answered);
+        break;
+    }
     case H_PAUSE: {
         const gz_json *on = gz_json_get(body, "on");
         if (!on->i) {                                    /* resume: kind B (4.8, D6) */

@@ -78,6 +78,7 @@ static const char *const ATTENTION[][2] = {
     {"exit_step_held_back", "at_risk"}, {"exit_fee_budget_reached", "act_now"}, {"exit_missed", "at_risk"},
     {"funding_double_spent", "at_risk"}, {"restored_commitment_choice", "at_risk"},
     {"unexplained_spend", "at_risk"},
+    {"unlock_to_take_part", "important"},   /* draft 5, 14.3 rule 3: never act_now, no check waits for it */
 };
 
 const char *gz_attention_tier(const char *code, int at_risk_override)
