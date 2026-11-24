@@ -17,13 +17,19 @@ concurrency:
 # Every third-party action is pinned to a full commit SHA; the comment names
 # the release. Update both together. What each job guards: docs/notes/ci.md.
 jobs:
-  build:
+  build-off-shard:
+    name: build (OFF, shard ${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        sanitize: [OFF, ON]
+        include:
+          - shard: 1
+          - shard: 2
+          - shard: serial
+    env:
+      SANITIZE: "OFF"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,7 +39,7 @@ jobs:
       - name: Configure
         # GZ_INTEROP_PY: gz-net against the independent Python peer (BOLT 8,
         # and BOLT 1 init, ping and pong with factory messages).
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=${{ matrix.sanitize }} -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=$SANITIZE -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON
       - name: Build
         run: cmake --build build -j
       - name: Test
@@ -42,14 +48,26 @@ jobs:
         # 1,000 seeds, nine extreme fault profiles); and, in the build without
         # sanitizers, the same tests again under valgrind. The wallet
         # break-checks (label slow) run in wallet-break-checks.yml.
-        run: ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)"
+        # Sharded: shards 1 and 2 take every other test by CTest number
+        # (-I 1,,2 and -I 2,,2), less valgrind_signing, which runs alone
+        # (RUN_SERIAL, about 7.5 min) in the shard "serial" of the build
+        # without sanitizers. So every test runs exactly once.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          case "$SHARD" in
+            serial) sel="-R ^valgrind_signing$ --no-tests=error" ;;
+            *) sel="-I $SHARD,,2 -E ^valgrind_signing$" ;;
+          esac
+          echo "shard $SHARD: $(ctest --test-dir build -N -LE slow $sel | sed -n 's/^Total Tests: //p') tests of $(ctest --test-dir build -N -LE slow | sed -n 's/^Total Tests: //p')"
+          ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)" $sel
       - name: Keep the program tests' logs when a test fails
         # Each process of a tests/program run writes NAME.log in its folder
         # under build/program (gzp_harness.py); they stay on the runner otherwise.
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: program-logs-build-${{ matrix.sanitize }}
+          name: program-logs-build-OFF-${{ matrix.shard }}
           path: build/program/**/*.log
           retention-days: 7
           if-no-files-found: ignore
@@ -57,8 +75,8 @@ jobs:
         # Watches, requests, events, resets and shutdown racing
         # (ports/chain/tests/test_chainw.c). Its own small build: TSan does
         # not mix with the other sanitizers. Fewer address-randomisation bits,
-        # which this kernel's default exceeds what TSan can map.
-        if: matrix.sanitize == 'OFF'
+        # which this kernel's default exceeds what TSan can map. Once, in shard 1.
+        if: matrix.shard == '1'
         run: |
           sudo sysctl -w vm.mmap_rnd_bits=28
           sh tools/chain-tsan.sh "$RUNNER_TEMP/chain-tsan"
@@ -66,10 +84,98 @@ jobs:
         # program/pchain.c: the loop's lookups (--check-chain) while the chain
         # worker polls, against a local Esplora stub. One chain client used by
         # both threads corrupted the heap (docs/notes/integration.md B11).
-        if: matrix.sanitize == 'OFF'
+        if: matrix.shard == '1'
         run: sh tools/pchain-tsan.sh "$RUNNER_TEMP/pchain-tsan"
       - name: Scale check, one small case; the two former builder defects stay gone
+        if: matrix.shard == '1'
         run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
+
+  # The required check "build (OFF)": passes only if every shard passed.
+  build-off:
+    name: build (OFF)
+    needs: build-off-shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          RESULT: ${{ needs.build-off-shard.result }}
+        run: |
+          echo "build (OFF) shards: $RESULT"
+          [ "$RESULT" = success ] || { echo "::error::a build (OFF) shard failed or was cancelled ($RESULT)"; exit 1; }
+
+  build-on-shard:
+    name: build (ON, shard ${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+          - shard: 2
+    env:
+      SANITIZE: "ON"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind python3-cryptography
+      - name: Configure
+        # GZ_INTEROP_PY: gz-net against the independent Python peer (BOLT 8,
+        # and BOLT 1 init, ping and pong with factory messages).
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DGZ_SANITIZE=$SANITIZE -DGZ_WERROR=ON -DGZ_INTEROP_PY=ON
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        # Reference tree; core (action list, runner, node, isolation check and
+        # its negative test); simulator (generator, harness, known trace,
+        # 1,000 seeds, nine extreme fault profiles); and, in the build without
+        # sanitizers, the same tests again under valgrind. The wallet
+        # break-checks (label slow) run in wallet-break-checks.yml.
+        # Sharded: shards 1 and 2 take every other test by CTest number
+        # (-I 1,,2 and -I 2,,2), less valgrind_signing, which runs alone
+        # (RUN_SERIAL, about 7.5 min) in the shard "serial" of the build
+        # without sanitizers. So every test runs exactly once.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          case "$SHARD" in
+            serial) sel="-R ^valgrind_signing$ --no-tests=error" ;;
+            *) sel="-I $SHARD,,2 -E ^valgrind_signing$" ;;
+          esac
+          echo "shard $SHARD: $(ctest --test-dir build -N -LE slow $sel | sed -n 's/^Total Tests: //p') tests of $(ctest --test-dir build -N -LE slow | sed -n 's/^Total Tests: //p')"
+          ctest --test-dir build --output-on-failure --timeout 600 -LE slow -j "$(nproc)" $sel
+      - name: Keep the program tests' logs when a test fails
+        # Each process of a tests/program run writes NAME.log in its folder
+        # under build/program (gzp_harness.py); they stay on the runner otherwise.
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: program-logs-build-ON-${{ matrix.shard }}
+          path: build/program/**/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Scale check, one small case; the two former builder defects stay gone
+        if: matrix.shard == '1'
+        run: ./build/tree_shapes 64 8,ps 0 && ./build/tree_shapes defects
+
+  # The required check "build (ON)": passes only if every shard passed.
+  build-on:
+    name: build (ON)
+    needs: build-on-shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          RESULT: ${{ needs.build-on-shard.result }}
+        run: |
+          echo "build (ON) shards: $RESULT"
+          [ "$RESULT" = success ] || { echo "::error::a build (ON) shard failed or was cancelled ($RESULT)"; exit 1; }
 
   import-check:
     name: imported SuperScalar files unchanged
