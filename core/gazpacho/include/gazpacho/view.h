@@ -20,7 +20,7 @@
 /* ---- kind 1, status: one object, id "status" (local-api.md 11.1) --------- */
 #define GZ_VIEW_STATUS_ID          "status"
 #define GZ_VST_ROLE                6   /* u8: 0 member, 1 host (the data folder's) */
-#define GZ_VST_PAUSE               8   /* u8 state (GZ_PAUSE_*), u64 since ms (0: none) */
+#define GZ_VST_PAUSE               8   /* u8 state (GZ_PAUSE_*), u64 since ms (0: none), u32 version */
 #define GZ_VST_PAUSE_LOBBIES       10  /* the held lobbies' local ids, ASCII, comma-separated */
 #define GZ_VST_SIGNING             12  /* u8 member_signing in force, u8 pending (0xff: none),
                                           u32 version of the saved setting (0: never saved),
@@ -162,13 +162,15 @@
 
 /* ---- the local-API engine (area 0x000d) --------------------------------- */
 /* Commands (command.h; arguments from type 10). */
-#define GZ_CMD_API_PAUSE           0x0d01  /* 12 on (u8 1 on, 0 off) */
+#define GZ_CMD_API_PAUSE           0x0d01  /* 12 on (u8 1 on, 0 off), 14 based_on_version (u32; required
+                                              to resume: another answers 409 changed_elsewhere) */
 #define GZ_CMD_API_SET_SIGNING     0x0d02  /* 12 member_signing (u8), 14 based_on_version (u32),
                                               16 confirm_member_signing (u8; required, equal to 12, for auto).
                                               The one command that sets the signing mode (W11) */
 
 /* Records (journal.md 9.1; local-api.md 7.5). */
-#define GZ_RECORD_PAUSE            0x000d000cu /* 2 state (u8), 4 since ms (u64), 6 held scopes (n x 32) */
+#define GZ_RECORD_PAUSE            0x000d000cu /* 2 state (u8), 4 since ms (u64), 6 held scopes (n x 32),
+                                                  8 version (u32) */
 #define GZ_RECORD_LOCAL_IDS        0x000d000eu /* 2 scope (32), 4 local id (ASCII) */
 #define GZ_RECORD_REQUEST_ID       0x000d0014u /* 2 request_id, 4 method, 6 path, 8 digest (32),
                                                   10 status (u16), 12 the acted-on lobby's local id,

@@ -291,7 +291,11 @@ static int req_droppable(gz_node_t *c, const api_req_t *r)
 static int req_ended(gz_node_t *c, const api_req_t *r)
 {
     const api_lid_t *e = lid_by_id(c, r->object, slen(r->object));
-    return !e || (!slot_holds(c, e->scope) && e->ended_ms);
+    /* During the load no end time is known yet (gz_api_loaded sets them):
+     * a lobby that holds no slot then has ended, and a live lobby's id is
+     * never the one that makes room (review of PR 75: a full table at load
+     * dropped a live lobby's ids). */
+    return !e || (!slot_holds(c, e->scope) && (e->ended_ms || !c->loaded));
 }
 
 /* A place for a new lobby request id: a free one, else the oldest that may
@@ -353,10 +357,12 @@ gz_status_t gz_api_load(gz_node_t *c, const gz_record_t *rec)
     if (!gz_rec_valid(b)) return GZ_ERR_CORRUPT;
     switch (rec->type) {
     case GZ_RECORD_PAUSE:
-        if (!only_fields(b, 0x0eu) || !arg(b, 2, 1, &v) || v.data[0] > GZ_PAUSE_HELD || !arg(b, 4, 8, &w))
+        if (!only_fields(b, 0x1eu) || !arg(b, 2, 1, &v) || v.data[0] > GZ_PAUSE_HELD || !arg(b, 4, 8, &w) ||
+            !arg(b, 8, 4, &y))
             return GZ_ERR_CORRUPT;
         c->api.pause = v.data[0];
         c->api.pause_since = gz_get_u64(w.data);
+        c->api.pause_version = gz_get_u32(y.data);
         c->api.n_held = 0;
         if (gz_rec_find(b, 6, &x) == 1) {
             if (x.len % 32 || x.len / 32 > GZ_NODE_MAX_SLOTS) return GZ_ERR_CORRUPT;
@@ -503,7 +509,8 @@ static int lobby_room(gz_node_t *c, uint16_t code, gz_bytes_t cmd)
 {
     gz_bytes_t scope;
     const char *id;
-    int limit = GZ_API_LOBBY_SHARE + (code == GZ_CMD_LOBBY_LEAVE ? GZ_API_LOBBY_RESERVE : 0);
+    /* The calls that protect funds have the reserve: a member's leave, a host's cancel. */
+    int limit = GZ_API_LOBBY_SHARE + (code == GZ_CMD_LOBBY_LEAVE || code == GZ_CMD_LOBBY_CANCEL ? GZ_API_LOBBY_RESERVE : 0);
     if (arg(cmd, 12, 32, &scope) && (id = gz_api_local_id(c, scope.data)) != NULL && lobby_count(c, id) >= limit)
         return 0;
     return req_slot(c) != NULL;
@@ -650,6 +657,8 @@ gz_status_t gz_api_save_pause(gz_node_t *c, gz_action_list_t *out)
     if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 4, v, 8);
     if (st == GZ_OK && c->api.n_held)
         st = gz_rec_put(rec, sizeof c->api.rec, &at, 6, c->api.held[0], 32 * (size_t)c->api.n_held);
+    gz_put_u32(v, c->api.pause_version);
+    if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 8, v, 4);
     if (st != GZ_OK) return gz_c_bug(c, ENG_NODE);
     gz_record_t rr = {GZ_RECORD_PAUSE, {rec, at}};
     gz_action_t a = {.kind = GZ_ACTION_SAVE};
@@ -701,8 +710,16 @@ static gz_status_t cmd_pause(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out
     unsigned held = 0;
     char *p = c->api.params;
     size_t k = 0;
+    gz_bytes_t bv;
     if (!arg(cmd, 12, 1, &v) || v.data[0] > 1) return result(c, cmd, 400, "bad_value", NULL, NULL, out);
     if ((v.data[0] == 1) == (c->api.pause != GZ_PAUSE_OFF)) return result(c, cmd, 200, NULL, NULL, NULL, out);
+    /* The pause's version (review of PR 75, M1): a resume must name the version
+     * it was made against, so that a stale one, whose request id the ring no
+     * longer keeps, never turns a later pause off. A pause on is never refused:
+     * it only tightens, whatever version it names. */
+    if (v.data[0] == 0 && (!arg(cmd, 14, 4, &bv) || gz_get_u32(bv.data) != c->api.pause_version))
+        return result(c, cmd, 409, "changed_elsewhere", NULL, NULL, out);
+    c->api.pause_version++;
     if (v.data[0] == 0) {
         c->api.pause = GZ_PAUSE_OFF;
         c->api.pause_since = wall(c);

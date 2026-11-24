@@ -203,6 +203,7 @@ typedef struct {
 typedef struct {
     int pause;                      /* GZ_PAUSE_* */
     uint64_t pause_since;
+    uint32_t pause_version;         /* the person's pause changes, saved: a resume names it (M1 of PR 75's review) */
     uint8_t held[GZ_NODE_MAX_SLOTS][32];
     int n_held;
     int have_signing;
