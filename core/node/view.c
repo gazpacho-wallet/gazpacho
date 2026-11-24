@@ -333,21 +333,14 @@ static size_t host_view(gz_node_t *c, slot_t *s)
 
 /* ---- attention (kind 7) --------------------------------------------------- */
 
-static void hex8(char *o, const uint8_t *b)
-{
-    static const char x[] = "0123456789abcdef";
-    for (int i = 0; i < 8; i++) {
-        o[2 * i] = x[b[i] >> 4];
-        o[2 * i + 1] = x[b[i] & 15];
-    }
-    o[16] = 0;
-}
-
 /* A slot's attention item (at most one at a time): unlock_to_take_part for
  * a member whose seat is locked, member_refused for a host with refused
  * seats (their count), lobby_left_out for a slot left out at this start.
  * Emitted when it appears or changes, gone when it clears; id "att_" + the
- * lobby's local id (or 16 hex of its fingerprint when it has none). */
+ * lobby's local id. It never carries the fingerprint, and no id is made from
+ * it (7.3: never in an event; review A of PR 55, M5): every lobby slot has a
+ * local id from its open, or from the start that finds it without one
+ * (api.c, gz_api_resume), and a slot without one has no item until then. */
 static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_t *out)
 {
     char id[GZ_LOCAL_ID_MAX + 8];
@@ -369,22 +362,18 @@ static gz_status_t attention(gz_node_t *c, slot_t *s, int force, gz_action_list_
         for (int q = 0; q < s->lobby.h.n_seats; q++) count += s->lobby.h.seats[q].refused != 0;
         if (count) code = GZ_ATT_MEMBER_REFUSED;
     }
+    if (!s->view.local_id[0]) return GZ_OK;
     if (!force && code == s->view.att_code && count == s->view.att_count) return GZ_OK;
     if (!code && !s->view.att_code) return GZ_OK;
     id[k++] = 'a'; id[k++] = 't'; id[k++] = 't'; id[k++] = '_';
-    if (s->view.local_id[0]) {
-        for (size_t j = 0; s->view.local_id[j] && k < GZ_LOCAL_ID_MAX; j++) id[k++] = s->view.local_id[j];
-        id[k] = 0;
-    } else {
-        hex8(id + k, s->scope);
-    }
+    for (size_t j = 0; s->view.local_id[j] && k < GZ_LOCAL_ID_MAX; j++) id[k++] = s->view.local_id[j];
+    id[k] = 0;
     s->view.att_code = code;
     s->view.att_count = count;
     if (code) {
         put8(&w, GZ_VAT_CODE, code);
-        if (s->view.local_id[0]) put(&w, GZ_VAT_LOBBY, s->view.local_id, slen(s->view.local_id));
+        put(&w, GZ_VAT_LOBBY, s->view.local_id, slen(s->view.local_id));
         put64(&w, GZ_VAT_SINCE, wall(c));
-        put(&w, GZ_VAT_FINGERPRINT, s->scope, 32);
         if (count) put16(&w, GZ_VAT_COUNT, count);
         if (w.bad) return gz_c_bug(c, ENG_NODE);
     }

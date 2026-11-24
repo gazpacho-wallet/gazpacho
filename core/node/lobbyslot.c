@@ -623,16 +623,13 @@ gz_status_t gz_ls_load_record(gz_node_t *c, const gz_record_t *rec)
     return s->host ? gz_lobby_host_restore(&s->lobby.h, rec) : gz_lobby_member_restore(&s->lobby.m, rec);
 }
 
-/* The pause changed (api.c): a member's lobby not held for its round is
- * left; a host applies its start rule again. Each slot in a step of its own
- * inside the API's bracket, its view after it. */
+/* The pause changed (api.c): a host applies its start rule again; a
+ * member's lobby is dealt with by gz_ls_after (pause_apply). Each slot in a
+ * step of its own inside the API's bracket, its view after it. */
 static gz_status_t pause_inline(gz_node_t *c, int eng, gz_action_list_t *out)
 {
     slot_t *s = &c->slots[eng - ENG_SLOT0];
-    if (s->host) return gz_lobby_host_pause_changed(&s->lobby.h, out);
-    if (gz_api_paused(c) && gz_api_held(c, s->scope) < 0 && !s->lobby.m.ended && s->lobby.m.joined)
-        return gz_lobby_member_leave(&s->lobby.m, out);
-    return GZ_OK;
+    return s->host ? gz_lobby_host_pause_changed(&s->lobby.h, out) : GZ_OK;
 }
 
 gz_status_t gz_ls_pause_changed(gz_node_t *c, gz_action_list_t *out)
@@ -644,6 +641,91 @@ gz_status_t gz_ls_pause_changed(gz_node_t *c, gz_action_list_t *out)
         if (st == GZ_OK) st = gz_ls_after(c, i, out);
     }
     return st;
+}
+
+/* 1 if the member's round in this lobby has partial signatures out (11.3:
+ * the pause then holds the lobby). The signing engine's fact; until P4.3
+ * there is none in a release build, so the pause holds nothing there. */
+int gz_ls_partials_out(const gz_node_t *c, const uint8_t scope[32])
+{
+#ifdef GZ_TEST_KINDS
+    for (int k = 0; k < SS_MAX; k++)
+        if (c->ss.r[k].used && !c->ss.r[k].ended && c->ss.r[k].partials && memcmp(c->ss.r[k].scope, scope, 32) == 0)
+            return 1;
+#else
+    (void)c;
+    (void)scope;
+#endif
+    return 0;
+}
+
+#ifdef GZ_TEST_KINDS
+#define SS_REC_BEGUN 0x7e5a0002u      /* the signing stand-in's records (below) */
+#define SS_REC_ENDED 0x7e5a0004u
+static gz_status_t ss_save(gz_action_list_t *out, uint32_t type, const ss_round_t *r);
+static gz_status_t ss_line(gz_node_t *c, gz_action_list_t *out, const char *what, const uint8_t *scope,
+                           const uint8_t *check, const char *k1, uint64_t v1, const char *k2, uint64_t v2);
+#endif
+
+/* The member's round in this lobby, begun and with no partial signature
+ * sent, is aborted (11.3: round_abort for its items, before the leave). The
+ * signing engine's (P4.3), which sends round_abort only where it has items;
+ * in test builds the stand-in ends its round. 1 in *aborted if there was one. */
+static gz_status_t round_abort(gz_node_t *c, const slot_t *s, gz_action_list_t *out, int *aborted)
+{
+    gz_status_t st = GZ_OK;
+    *aborted = 0;
+#ifdef GZ_TEST_KINDS
+    for (int k = 0; k < SS_MAX && st == GZ_OK; k++) {
+        ss_round_t *r = &c->ss.r[k];
+        if (!r->used || r->ended || memcmp(r->scope, s->scope, 32) != 0) continue;
+        r->ended = 1;
+        *aborted = 1;
+        st = ss_save(out, SS_REC_ENDED, r);
+        if (st == GZ_OK) st = ss_line(c, out, "sign-abort", r->scope, r->check, " reason=", 2, NULL, 0);
+    }
+#else
+    (void)c;
+    (void)s;
+    (void)out;
+#endif
+    return st;
+}
+
+static gz_status_t leave_inline(gz_node_t *c, int eng, gz_action_list_t *out)
+{
+    return gz_lobby_member_leave(&c->slots[eng - ENG_SLOT0].lobby.m, out);
+}
+
+/* The pause on a member's lobby (local-api.md 11.3), after each of its
+ * steps. A held lobby whose round no longer has partial signatures out (it
+ * ended: Funding, a Retry, a failure) leaves the hold, which is saved again.
+ * Then, once the slot is awake (resumed at this start, or opened in this
+ * run) and, if the host may hold its seat, connected, a lobby with partial signatures out runs
+ * on, one Awaiting funding or Live is unchanged, and every other one, joined
+ * or still joining, is left (leave reason 2), after a round_abort where its
+ * round had begun. A saved pause is so applied at every start, before the
+ * lobby can join, ready or sign anything. */
+static gz_status_t pause_apply(gz_node_t *c, int i, gz_action_list_t *out)
+{
+    slot_t *s = &c->slots[i];
+    const gz_lobby_member_t *m = &s->lobby.m;
+    int out_now, aborted = 0;
+    gz_status_t st;
+    if (s->host || !gz_api_paused(c)) return GZ_OK;
+    out_now = gz_ls_partials_out(c, s->scope);
+    if (!out_now && gz_api_held(c, s->scope) >= 0 && (st = gz_api_release(c, s->scope, out)) != GZ_OK) return st;
+    if (!s->awake || m->ended || out_now) return GZ_OK;
+    /* A seat the host holds, or may hold (the join was made), is left on a
+     * connection, so that the leave reaches the host: at a start that is the
+     * step its link comes up in. Not connected, it can sign nothing meanwhile. */
+    if (!m->connected && (m->joined || m->join_len)) return GZ_OK;
+    if (m->lobby_state == GZ_LOBBY_FUNDING || m->lobby_state == GZ_LOBBY_ACTIVE || m->round_state) return GZ_OK;
+    if ((st = round_abort(c, s, out, &aborted)) != GZ_OK) return st;
+    if ((st = gz_c_slot_inline(c, ENG_SLOT0 + i, leave_inline, out)) != GZ_OK) return st;
+    if (aborted) c->api.aborted |= 1u << i;
+    else c->api.left |= 1u << i;
+    return GZ_OK;
 }
 
 /* ---- after a lobby's step ----------------------------------------------------- */
@@ -761,6 +843,10 @@ static gz_status_t slot_end(gz_node_t *c, int i, gz_action_list_t *out)
     char text[96];
     gz_status_t st;
     gz_record_t r;
+    /* A lobby held by the pause ends: the hold goes with it, saved in the
+     * batch of its end (merge_into below). Its request ids run their 30 days. */
+    if ((st = gz_api_release(c, s->scope, out)) != GZ_OK) return st;
+    gz_api_slot_ended(c, s->scope);
     if (s->host) {
         const gz_lobby_host_t *h = &s->lobby.h;
         state = (uint8_t)h->state;
@@ -857,11 +943,12 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
     size_t start = out->count;
     gz_status_t st = GZ_OK;
     if (s->state != SLOT_OPEN || s->kind != SLOT_KIND_LOBBY) return GZ_OK;
+    st = pause_apply(c, i, out);
     s->round_ok = s->host ? gz_lobby_host_round_ok(&s->lobby.h) : gz_lobby_member_round_ok(&s->lobby.m);
     /* The per-lobby gate (AT_JOIN) closes when the check it was opened for
      * has had its last attempt: the lobby left Signing for Funding, Open or
      * its end, or the member was not chosen (12.2). */
-    if (!s->host && s->gate_open) {
+    if (st == GZ_OK && !s->host && s->gate_open) {
         if (gz_lobby_member_check_in_flight(&s->lobby.m)) s->gate_flight = 1;
         else if (s->gate_flight) {
             gate_close(c, s);
@@ -870,6 +957,10 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
     }
     if (st == GZ_OK) st = state_line(c, s, out);
     if (st == GZ_OK) st = gz_view_slot(c, i, 0, out); /* its view, after the step's saves (rule 8) */
+    if (st == GZ_OK && c->api.status_dirty) {          /* a hold released in this step */
+        c->api.status_dirty = 0;
+        st = gz_view_status(c, 0, out);
+    }
     if (st == GZ_OK && (s->host ? s->lobby.h.state == GZ_LOBBY_CANCELLED || s->lobby.h.state == GZ_LOBBY_FAILED
                                 : s->lobby.m.ended))
         st = slot_end(c, i, out);
@@ -890,9 +981,7 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
  * check ignored (rule 3), an unfinished attempt failed at a start (H13).
  * It signs nothing. Its outcome is the node's `test_sign_outcome`, reported
  * `test_sign_delay_ms` after begin. Its records (area 0x7e5a): 2 a round
- * begun, 4 a round ended; each scope (32), check (32). */
-#define SS_REC_BEGUN 0x7e5a0002u
-#define SS_REC_ENDED 0x7e5a0004u
+ * begun, 4 a round ended; each scope (32), check (32): SS_REC_*, above. */
 
 static ss_round_t *ss_find(gz_node_t *c, const uint8_t scope[32], const uint8_t check[32])
 {
@@ -969,7 +1058,8 @@ static gz_status_t ss_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_li
         if ((st = ss_save(out, SS_REC_BEGUN, r)) != GZ_OK) return st;
     }
     /* "unfinished": the outcome never comes. */
-    r->due_ms = c->cfg.test_sign_outcome == GZ_TEST_SIGN_UNFINISHED ? 0 : np_mono(c) + c->cfg.test_sign_delay_ms + 1;
+    r->due_ms = (c->cfg.test_sign_outcome & 0xffu) == GZ_TEST_SIGN_UNFINISHED ? 0 : np_mono(c) + c->cfg.test_sign_delay_ms + 1;
+    r->partials = (c->cfg.test_sign_outcome & GZ_TEST_SIGN_PARTIALS) != 0;
     c->ss.arm = 1;
     if ((st = ss_line(c, out, "sign-begin", h->scope, h->check_id, " role=", (uint64_t)h->role, " resume=",
                       (uint64_t)h->resume)) != GZ_OK)
@@ -1022,7 +1112,7 @@ static gz_status_t deliver_inline(gz_node_t *c, int eng, gz_action_list_t *out)
 {
     slot_t *s = &c->slots[eng - ENG_SLOT0];
     ss_round_t *r = &c->ss.r[c->ss.cur];
-    int outcome = (int)(c->ss.force ? GZ_TEST_SIGN_RETRY : c->cfg.test_sign_outcome);
+    int outcome = (int)(c->ss.force ? GZ_TEST_SIGN_RETRY : c->cfg.test_sign_outcome & 0xffu);
     gz_status_t st;
     /* At function scope: gcc's AddressSanitizer guards a large local whose
      * scope ends early with calls the isolation check refuses. */
@@ -1210,6 +1300,7 @@ static gz_status_t slot_begin(gz_node_t *c, int i, gz_bytes_t cond, gz_action_li
     s->serial = c->slot_serial;
     s->gen = (uint16_t)s->serial;
     s->state = SLOT_OPEN;
+    s->awake = 1;
     r.type = GZ_RECORD_SLOT_OPENED;
     r.bytes.data = ob;
     r.bytes.len = opened_record(s, cond.data, cond.len, ob, sizeof ob);

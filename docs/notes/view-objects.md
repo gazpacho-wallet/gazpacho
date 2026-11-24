@@ -56,7 +56,7 @@ This note says, for each field of the answers the API server builds from the vie
 | `name`, `terms` | 10, 12, 14, 16 | The outer rules and the current values as signed |
 | `stage` | 8 | As for kind 2 |
 | `counts` | 18 `GZ_VHL_COUNTS` | u16 `joined`, `ready` (ready for the current values), `locked`, `refused` |
-| `seats[]` | 20 `GZ_VHL_SEATS` | Entries of 52 bytes, in order of joining: contribution key (33; the seat id is the API server's: 16 hex of its SHA-256), state (seat values of 14.1 plus 9 `locked` and 10 `refused`), flags (1 locked, 2 refused, 4 chosen, 8 answered the check, 16 connected), refusal reason (u16, the protocol reason), refusal stage (1 `open`, 2 `ready_check`; `signing` comes with P4.3), join order (u64), ready version (u32), `min_members` (u16) |
+| `seats[]` | 20 `GZ_VHL_SEATS` | Entries of 52 bytes, in order of joining: contribution key (33; the seat id is the API server's: 16 hex of its SHA-256), state (seat values of 14.1 plus 9 `locked` and 10 `refused`), flags (1 locked, 2 refused, 4 chosen, 8 answered the check, 16 connected), refusal reason (u16, the protocol reason), refusal stage (1 `open`, 2 `ready_check`, 3 `signing`: the host's state when the refusal came), join order (u64), ready version (u32), `min_members` (u16) |
 | `seats[].refusal` | 20 | `at_stage` and `protocol_reason` from the entry; `which: "conditions"` for reason 1; `condition`, `yours`, `offered` stay `null` until messages carry them (24.2 item 33); `signed: false` (an `unready` or `leave`); `activity_id` with P6b |
 | `seats[].can_remove` | 8 | `true` while the stage is `open` |
 | `can_start_now`, `start_blocked_by` | 18, 10, 34 | The API server applies the start rule (`gz_lobby_start_rule`) to the counts and the outer rules; `paused` when 34 is present |
@@ -80,28 +80,41 @@ This note says, for each field of the answers the API server builds from the vie
 
 ## 5. `attention[]`: kind 7
 
-Each item is one object; `gone` removes it. Records: 6 code, 8 the lobby's local id, 10 `since_at`, 12 fingerprint, 14 count. Codes: 1 `unlock_to_take_part` (a member's seat is locked by its gate, 14.3 rule 4), 2 `lobby_left_out` (keys not given at this start), 3 `member_refused` (a host: the number of refused seats).
+Each item is one object; `gone` removes it. Records: 6 code, 8 the lobby's local id, 10 `since_at`, 14 count. Codes: 1 `unlock_to_take_part` (a member's seat is locked by its gate, 14.3 rule 4), 2 `lobby_left_out` (keys not given at this start), 3 `member_refused` (a host: the number of refused seats).
+
+- **No fingerprint** (7.3: never in an event). An item's id is `att_` and the lobby's local id; field 12 is not used. Every lobby slot has a local id: from its open, or, for a slot opened before the engine, one made and saved at the start that finds it without one.
 
 ## 6. The API engine (area 0x000d)
 
 - **Commands.**
-  - `0x0d01` pause: 12 `on`, u8 1 or 0.
-  - `0x0d02` set signing: 12 `member_signing` (u8), 14 `based_on_version` (u32).
+  - `0x0d01` pause: 12 `on`, u8 1 or 0 (`400 bad_value` otherwise).
+  - `0x0d02` set signing: 12 `member_signing` (u8), 14 `based_on_version` (u32), 16 `confirm_member_signing` (u8). It is **the one command that sets the signing mode** (W11, coordinator decision K19): `PUT /api/v1/signing` uses it and nothing else. PR 52's `0x0403` is handled apart; a runtime switch, if open point 46 decides one, becomes an "apply now" path of `0x0d02`.
   - Any other `0x0dxx` is answered `404 unknown_command`.
+- **Result notice** (`GZ_NOTIFY_COMMAND_RESULT`): 0 request id, 2 status, 4 error code, 6 `GZ_RESULT_REC_OBJECT` (the acted-on lobby's local id), 8 `GZ_RESULT_REC_PARAMS` (JSON: `params`, or the extra members of the answer).
+- **What the API server sends** (W12, for PR 51). The engine side is complete; the server needs only to send these commands and read the view:
+  - every outward call: `request_id`, method, the path with its local ids filled in, and the RFC 8785 digest with the top-level `passphrase` removed (fields 0, 2, 4, 6), then the command (8) and its arguments; a `lob_` id resolved to the scope (field 12) from the view object's field 6, `404` for an id the view does not hold;
+  - `PUT /pause`: `0x0d01` with an internal id and **no digest** (11.3 has no `request_id`); the fresh sign-in and `confirm: "resume"` for a resume are the server's;
+  - `PUT /signing`: `0x0d02` after the fresh sign-in, **with a digest** and, for `auto`, field 16 = 1;
+  - a replay's body is built from the object's **current** state and the result's field 6.
 - **Request ids** (7.4). A command that carries a digest (record 6) is an API request:
-  - **Validation.** Its id must have 16 to 64 characters of `[A-Za-z0-9_-]`; otherwise `400 bad_value`.
-  - **Replay.** The same id with the same method, path and digest answers the saved status, with `params {"replayed":true}` and `object` set to the local id, and does nothing.
+  - **Validation.** Its id must have 16 to 64 characters of `[A-Za-z0-9_-]`, its method at most 16 and its path at most 192 printable characters without `"` or `\`; otherwise `400 bad_value`. The load checks a saved record the same way.
+  - **Replay.** The same id with the same method, path and digest answers the saved status and error code, with `params {"replayed":true}` and `object` set to the local id, and does nothing. After a restart the object is still there (record field 12).
   - **Reuse.** The same id with another request answers `409 request_id_reused` with `params.first`.
-  - **Saving.** A request that saved something gets record `0x000d0014` right after its first save, in the same batch, before its result notice. A request that saved nothing keeps no id.
-  - **Memory.** The engine keeps the newest 128 ids.
+  - **Saving.** A request that saved something gets record `0x000d0014` right after its first save, in the same batch, before its result notice: 12 the object, 14 created, 15 the error code. A request that saved nothing keeps no id.
+  - **Keeping** (7.4). An id is kept until its object has ended and 30 days have passed: a request with no object (pause, signing) from its making, a lobby from its slot's end (an end before this start counts from this start). The table holds 512 (64 calls for each of the 8 lobbies). A new request that finds every id still kept answers `503 node_busy` and does nothing; no id is ever dropped early.
   - **Not requests.** Commands without a digest (the program's own, tests') keep no id.
 - **Pause** (11.3). The record `0x000d000c` is saved before anything the pause does.
-  - **Members.** A member's lobby whose round was handed over holds the pause (`held_for_signing`), and the others are left (`leave` reason 2). `join` and `ready` then answer `409 paused`.
+  - **Members**, by 11.3's table:
+    - **Held**: a lobby whose round has partial signatures out (the signing engine's fact; until P4.3 none in a release build, and in test builds the stand-in's `GZ_TEST_SIGN_PARTIALS`). The pause is `held_for_signing` with those lobbies, answer `202`. When a held round ends (Funding, a Retry, a failure, the lobby's end) its lobby leaves the hold and the pause is saved again, `on` when none is left; a lobby back before Signing is then left.
+    - **Unchanged**: Awaiting funding and Live.
+    - **Left** (`leave` reason 2): every other lobby, joined or still joining, ready or in a check; after a `round_abort` where its round had begun.
+    - The answer's `params`: `left_lobbies`, `aborted_lobbies`, `held_lobbies` (local ids). `join` and `ready` answer `409 paused`.
   - **Hosts.** A host runs no ready check while paused and cancels at the deadline with reason 2, through the host's new `paused` port. Pausing off applies the start rule again.
-  - **Restarts.** A saved pause is in force from the load, before any CONNECT.
+  - **Restarts.** A saved pause is in force from the load: no lobby joins or readies. Each member lobby is dealt with in its own resume step, after its CONNECT; one whose seat the host holds is left once its link is up, so that the leave reaches the host.
 - **Signing setting** (14.3).
-  - **Saving.** Record `0x000d0024` holds `member_signing`, `host_funding` and `version`. A wrong `based_on_version` answers `409 changed_elsewhere`.
+  - **Saving.** Record `0x000d0024` holds `member_signing`, `host_funding` and `version`. Checks in order: a value outside 0 to 2 or no version, `400 bad_value`; `when_unlocked`, `501 not_in_this_release`; to `auto`, a command without a digest (not the API server's `PUT /signing`), `403 fresh_sign_in_needed`, and field 16 not 1, `409 confirm_mismatch`; a wrong `based_on_version`, `409 changed_elsewhere`. A narrowing to `at_join` needs neither digest nor echo.
   - **Taking effect.** The saved value is in force from the next start: it replaces the configuration's at load, and the result says `takes_effect: "next_start"`.
+  - **One source of truth** (H3). `gz_node_member_signing(node)` gives the value in force once the start's first call has walked storage. The program reads it there, before it hands that call's list to the runner and before any key secret is asked for, logs `member-signing in-force=… option=…`, and sets its key routing from it, not from `opt.member_signing`. With PR 53 that is one line where the executor logs the value: `gzp_keys_set_role(ex->keys, ex->opt->role == GZP_ROLE_HOST, ex->member_signing == GZ_MEMBER_SIGNING_AT_JOIN)`; `port_secret` reads `scoped_only` at each call, so the routing follows from the first resume step on. `program_signing_setting` checks it with a host and three members across restarts.
 
 ## 7. Not in P6a
 

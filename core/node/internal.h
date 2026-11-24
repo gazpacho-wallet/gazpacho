@@ -152,6 +152,7 @@ const gz_engine_ops_t *gz_ls_ops(void);
 #define SS_MAX 32
 typedef struct {
     int used, ended;
+    int partials;                      /* GZ_TEST_SIGN_PARTIALS: counted as having sent partial signatures */
     uint64_t seq, due_ms;              /* due_ms 0: no outcome is coming */
     uint8_t scope[32], check[32];
 } ss_round_t;
@@ -228,7 +229,10 @@ typedef struct {
 #define API_MAX_IDS (GZ_NODE_MAX_SLOTS + GZ_NODE_MAX_TOMBSTONES + 256)
 #define API_MAX_METHOD 16
 #define API_MAX_PATH 192
-typedef struct { int used; uint64_t seq; uint8_t scope[32]; char id[GZ_LOCAL_ID_MAX + 1]; } api_lid_t;
+#define API_MAX_ERROR 32
+/* A lobby's local id; ended_ms: when its slot ended (0 while it holds one,
+ * or not yet known: an ended lobby counts from the start that loads it). */
+typedef struct { int used; uint64_t seq, ended_ms; uint8_t scope[32]; char id[GZ_LOCAL_ID_MAX + 1]; } api_lid_t;
 typedef struct {
     int used;
     uint64_t seq;
@@ -237,7 +241,9 @@ typedef struct {
     char path[API_MAX_PATH]; uint16_t path_len;
     uint8_t digest[32];
     uint16_t status;
+    uint64_t created_ms;
     char object[GZ_LOCAL_ID_MAX + 1];
+    char error[API_MAX_ERROR + 1];  /* the first answer's error code, "" on success */
 } api_req_t;
 typedef struct {
     int pause;                      /* GZ_PAUSE_* */
@@ -252,9 +258,13 @@ typedef struct {
     api_req_t reqs[GZ_API_MAX_REQUESTS];
     uint64_t req_seq;
     int opened;                     /* the slot a command opened, plus one */
-    uint8_t res[640], rec[640];
-    char params[400];
+    unsigned left, aborted;         /* a pause's answer: the slots it left, and aborted (bit i) */
+    int status_dirty;               /* the pause changed inside a slot's step: the status object follows it */
+    char pids[GZ_NODE_MAX_SLOTS][GZ_LOCAL_ID_MAX + 1]; /* their ids, before the pause */
+    uint8_t res[2400], rec[640];
+    char params[2048];              /* a pause's three lists of at most 8 ids each, or a 409's first call */
 } api_t;
+_Static_assert(GZ_API_MAX_REQUESTS >= GZ_NODE_MAX_SLOTS * 64, "request ids: 64 calls for each slot's lobby (7.4)");
 
 #define VIEW_BODY 12288
 typedef struct {
@@ -315,6 +325,7 @@ typedef struct {
     size_t end_cancel_len;
     slot_lobby_t lobby;
     slot_view_t view;               /* P6a */
+    int awake;                      /* resumed at this start, or opened in this run: the pause acts on it */
 } slot_t;
 
 _Static_assert(SLOT_MAX_SEATS >= GZ_LOBBY_MAX_SEATS, "a slot notes every seat its lobby can mark (T-P42-2)");
@@ -680,6 +691,7 @@ gz_status_t gz_ls_ended_answer(const gz_node_t *c, int idx, const gz_link_t *lin
 gz_status_t gz_ls_closing_timer(gz_node_t *c, gz_action_list_t *out);
 int gz_ls_closing_count(const gz_node_t *c);
 gz_status_t gz_ls_pause_changed(gz_node_t *c, gz_action_list_t *out);
+int gz_ls_partials_out(const gz_node_t *c, const uint8_t scope[32]);
 
 /* view.c */
 gz_status_t gz_view_status(gz_node_t *c, int force, gz_action_list_t *out);
@@ -693,6 +705,10 @@ const char *gz_api_local_id(gz_node_t *c, const uint8_t scope[32]);
 int gz_api_held(const gz_node_t *c, const uint8_t scope[32]);
 int gz_api_paused(const gz_node_t *c);
 gz_status_t gz_api_slot_opened(gz_node_t *c, int i, gz_action_list_t *out);
+void gz_api_slot_ended(gz_node_t *c, const uint8_t scope[32]);
+gz_status_t gz_api_resume(gz_node_t *c, gz_action_list_t *out);
+gz_status_t gz_api_save_pause(gz_node_t *c, gz_action_list_t *out);
+gz_status_t gz_api_release(gz_node_t *c, const uint8_t scope[32], gz_action_list_t *out);
 gz_status_t gz_api_precheck(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out, int *done);
 gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_list_t *out);
 gz_status_t gz_api_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out);

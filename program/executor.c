@@ -708,8 +708,6 @@ static int api_command(void *ctx, const uint8_t *tlv, size_t len)
 
 #ifdef GZP_TEST_BUILD
 
-/* A USER_COMMAND: request_id, command code, then the arguments (already a
- * TLV stream of records 10 and up). */
 /* A ready given with the passphrase (record 14 = 1) on a member under
  * AT_JOIN. The passphrase was checked before the command came here (the
  * local API checks it), so the key port opens that lobby's scope now, before
@@ -730,20 +728,29 @@ static void keys_ready_gate(gzp_exec_t *ex, const uint8_t *args, size_t len)
     gzp_log("key-scope-open scope=%02x%02x%02x%02x ok=%d held=%zu", scope.data[0], scope.data[1], scope.data[2],
             scope.data[3], ok, gzp_keys_scopes_held(ex->keys));
 }
-
-static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, size_t args_len)
+/* A USER_COMMAND: request_id, command code, then the arguments (already a
+ * TLV stream of records 10 and up). With `api_rid`, it is shaped as the API
+ * server sends a request (local-api.md 7.4): that id, a method, a path and a
+ * digest (here 32 bytes derived from the arguments, not RFC 8785's). */
+static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, size_t args_len, const char *api_rid)
 {
-    uint8_t *buf = malloc(args_len + 64), c2[2];
-    char rid[32];
-    size_t at = 0;
+    uint8_t *buf = malloc(args_len + 192), c2[2], dig[32];
+    char rid[72];
+    size_t at = 0, cap = args_len + 192;
     gz_event_t ev;
     if (!buf) abort();
     if (code == GZ_CMD_LOBBY_READY) keys_ready_gate(ex, args, args_len);
-    snprintf(rid, sizeof rid, "p-%llu-%llu", (unsigned long long)ex->incarnation,
-             (unsigned long long)++ex->next_request);
+    if (api_rid) snprintf(rid, sizeof rid, "%s", api_rid);
+    else snprintf(rid, sizeof rid, "p-%llu-%llu", (unsigned long long)ex->incarnation,
+                  (unsigned long long)++ex->next_request);
     gz_put_u16(c2, code);
-    if (gz_rec_put(buf, args_len + 64, &at, GZ_CMD_REC_REQUEST_ID, (const uint8_t *)rid, strlen(rid)) != GZ_OK ||
-        gz_rec_put(buf, args_len + 64, &at, GZ_CMD_REC_COMMAND, c2, 2) != GZ_OK) {
+    memset(dig, 0x5a, sizeof dig);
+    for (size_t i = 0; i < args_len; i++) dig[i % 32] ^= args[i];
+    if (gz_rec_put(buf, cap, &at, GZ_CMD_REC_REQUEST_ID, (const uint8_t *)rid, strlen(rid)) != GZ_OK ||
+        (api_rid && (gz_rec_put(buf, cap, &at, GZ_CMD_REC_METHOD, (const uint8_t *)"PUT", 3) != GZ_OK ||
+                     gz_rec_put(buf, cap, &at, GZ_CMD_REC_PATH, (const uint8_t *)"/api/v1/test", 12) != GZ_OK ||
+                     gz_rec_put(buf, cap, &at, GZ_CMD_REC_DIGEST, dig, 32) != GZ_OK)) ||
+        gz_rec_put(buf, cap, &at, GZ_CMD_REC_COMMAND, c2, 2) != GZ_OK) {
         free(buf);
         return;
     }
@@ -760,6 +767,7 @@ static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, 
 
 /* Test commands from standard input (--test-commands), one per line:
  *   cmd CODE [ARGS-HEX]   a USER_COMMAND (CODE hex, ARGS a TLV stream of records 10 and up)
+ *   api CODE RID [ARGS-HEX]       the same as an API request with id RID (method, path, digest)
  *   chain-tx TXID-HEX CONF        a GZ_CHAIN_TX_CONFIRMED report
  *   tip HEIGHT                    a GZ_CHAIN_NEW_TIP
  *   chain-broadcast TX-HEX        bytes straight to the chain adapter's broadcast (pchain.c), as a
@@ -770,10 +778,14 @@ static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, 
  * and the other lines wait. */
 static void test_line(gzp_exec_t *ex, char *line)
 {
-    char *w = strtok(line, " "), *a1 = strtok(NULL, " "), *a2 = strtok(NULL, " ");
+    char *w = strtok(line, " "), *a1 = strtok(NULL, " "), *a2 = strtok(NULL, " "), *api = NULL;
     gz_event_t ev;
     if (!w) return;
-    if (!strcmp(w, "cmd") && a1) {
+    if (!strcmp(w, "api") && a1 && a2) {
+        api = a2;
+        a2 = strtok(NULL, " ");
+    }
+    if ((api || !strcmp(w, "cmd")) && a1) {
         unsigned long code = strtoul(a1, NULL, 16);
         size_t n = a2 ? strlen(a2) / 2 : 0;
         uint8_t *args = malloc(n + 1);
@@ -781,7 +793,7 @@ static void test_line(gzp_exec_t *ex, char *line)
         if (ex->starting) {
             gzp_log("command-answer status=503 code=node_stopped reason=rebuilding");
         } else if (code <= 0xffff && (!a2 || gzp_unhex(a2, strlen(a2), args, n))) {
-            deliver_command(ex, (uint16_t)code, args, n);
+            deliver_command(ex, (uint16_t)code, args, n, api);
         } else {
             gzp_log("test-command bad line");
         }
@@ -924,6 +936,17 @@ static void start_node(gzp_exec_t *ex)
         gz_action_list_reset(&ex->list);
         st = gz_node_start(ex->node, &rd, &ex->list, &more);
         steps++;
+        if (steps == 1 && (st == GZ_OK || st == GZ_WAITING)) {
+            /* The walk is done: the signing setting in force is known before
+             * the first list goes to the runner and before any key secret is
+             * asked for. The key routing is set from it, never from the
+             * option alone (review A of PR 55, H3). */
+            static const char *const name[] = {"at-join", "auto", "when-unlocked"};
+            int was = ex->opt->member_signing, now = (int)gz_node_member_signing(ex->node);
+            ex->member_signing = now;
+            gzp_log("member-signing in-force=%s option=%s%s", name[now % 3], name[was % 3],
+                    now != was ? " source=saved" : "");
+        }
         if (st == GZ_WAITING) {
             more = 1;
             /* A synchronous store has already reported every durable batch
@@ -1088,7 +1111,7 @@ static void after_start(gzp_exec_t *ex)
         snprintf(addr, sizeof addr, "%s:%u", ex->opt->connect_host, (unsigned)ex->opt->connect_port);
         if (gz_rec_put(args, sizeof args, &at, 12, ex->opt->connect_key, 33) == GZ_OK &&
             gz_rec_put(args, sizeof args, &at, 14, (const uint8_t *)addr, strlen(addr)) == GZ_OK)
-            deliver_command(ex, GZ_TE_CMD_CONNECT, args, at);
+            deliver_command(ex, GZ_TE_CMD_CONNECT, args, at, NULL);
     }
     for (a = 0; ex->opt->test_big_reply && a < ex->opt->test_engines && !ex->fatal; a++) {
         uint8_t ar[2], v[4];
@@ -1096,7 +1119,7 @@ static void after_start(gzp_exec_t *ex)
         gz_put_u16(ar, (uint16_t)(GZ_AREA_TEST + (unsigned)a));
         gz_put_u32(v, (uint32_t)ex->opt->test_big_reply);
         if (gz_rec_put(args, sizeof args, &at, 10, ar, 2) == GZ_OK && gz_rec_put(args, sizeof args, &at, 12, v, 4) == GZ_OK)
-            deliver_command(ex, GZ_TE_CMD_BIG_REPLY, args, at);
+            deliver_command(ex, GZ_TE_CMD_BIG_REPLY, args, at, NULL);
     }
     if (ex->opt->test_commands && !ex->fatal) read_commands(ex);
 #else
@@ -1277,7 +1300,8 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.tip = (uint32_t)ex->opt->tip;
     cfg.host_funding = GZ_HOST_FUNDING_AUTO;
     cfg.wallet = ex->wallet_port; /* the host's coins (wport.h; P4.6) */
-    cfg.member_signing = (gz_member_signing_t)ex->opt->member_signing;
+    cfg.member_signing = (gz_member_signing_t)ex->opt->member_signing; /* until the load: gz_node_member_signing */
+    ex->member_signing = -1;
     cfg.crypto.verify = port_verify;
     cfg.crypto.point_ok = port_point_ok;
     cfg.crypto.sign = port_sign;
