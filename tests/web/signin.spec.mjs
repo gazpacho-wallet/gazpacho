@@ -90,7 +90,10 @@ test('lock during a call: the page ends on the unlock screen, not on a broken on
   await page.goto(fake.url + '#/lobby/lob_7k2q');
   await expect(page.locator('#join')).toBeEnabled();
   await fake.cmd('hold on'); // the join's save is not confirmed: the call stays open
+  await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
   await page.locator('#join').click();
+  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
   await expect(page.locator('#join')).toBeDisabled();
   // meanwhile the wallet is locked from another session
   await page.waitForTimeout(1100);
@@ -102,6 +105,7 @@ test('lock during a call: the page ends on the unlock screen, not on a broken on
   expect(l.status()).toBe(202);
   await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
   await fake.cmd('hold off');
+  await expect(page.locator('dialog')).toHaveCount(0); // the join's passphrase dialog went with the session
   await expect(page.getByLabel('Wallet passphrase')).toBeVisible();
   await page.waitForTimeout(1100);
   await page.getByLabel('Wallet passphrase').fill(PASS);
