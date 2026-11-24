@@ -29,6 +29,10 @@ program/executor.c	hook:secret	1
 program/executor.c	hook:sign	1
 program/executor.c	port_secret	2
 program/executor.c	port_sign	2
+# MUST MOVE TO signer/ AT S4/S5 (review A of #71, re-review): wallet_open derives the master key from the
+# words outside the signer to check the first receive address, a second path from the words to the master
+# key. At S4 (S5 for the funding wallet) the address check becomes a signer call, or is dropped; the next two
+# lines then go (the third, key_ok's seckey_verify, checks the transport key: it goes with S4's ECDH move).
 program/main.c	gzw_bip32_master	1
 program/main.c	gzw_phrase_to_seed	1
 program/main.c	secp256k1_ec_seckey_verify	1
@@ -39,6 +43,9 @@ program/net.c	secp256k1_keypair_create	1
 program/net.c	secp256k1_schnorrsig_sign32	1
 program/net.c	static_key	6
 program/net.h	gzp_net_sign	1
+# MUST MOVE TO signer/ AT S4 (review A of #71, re-review): the stand-in unlock turns the words into the
+# seed here, outside the signer. At S4 the signer reads the words or seed only through its seed source and
+# does this step itself; this line then goes.
 program/unlock_standin.c	gzw_phrase_to_seed	1
 tests/funding/regtest_harness.c	gzt_funding_build	1
 tests/funding/regtest_harness.c	gzt_funding_release	1

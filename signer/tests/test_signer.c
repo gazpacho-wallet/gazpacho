@@ -648,6 +648,30 @@ static void test_envelope(void)
                               1, sig) == GZ_SG_OK);
     ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, big, one_record(big, GZ_RMSG_MAX_WHOLE - GZ_RMSG_HEADER + 1), 1,
                 GZ_SG_E_ARG);
+    /* BigSize lengths at each width's edge (review A of #71, N5), with the
+     * bytes present, so only minimality decides */
+    {
+        /* 2 bytes: 0xfc is not minimal there, 0xfd is */
+        memset(big, 0x5a, 3 + 253);
+        big[0] = 2; big[1] = 0xfd; big[2] = 0x00; big[3] = 0xfc;
+        ENV_REFUSED(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, 4 + 0xfc, 1, GZ_SG_E_ARG);
+        big[3] = 0xfd;
+        CHECK(gz_sg_sign_envelope(m, GZ_SG_KEY_CONTRIBUTION, scope, 22, big, 4 + 0xfd, 1, sig) == GZ_SG_OK);
+        /* 4 bytes: 0xffff is not minimal there, 0x10000 is (a host round kind, for the size) */
+        memset(big, 0x5a, 6 + 0x10000);
+        big[0] = 2; big[1] = 0xfe; big[2] = 0x00; big[3] = 0x00; big[4] = 0xff; big[5] = 0xff;
+        ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, big, 6 + 0xffff, 1, GZ_SG_E_ARG);
+        big[2] = 0x00; big[3] = 0x01; big[4] = 0x00; big[5] = 0x00;
+        CHECK(gz_sg_sign_envelope(h, GZ_SG_KEY_HOST, scope, 64, big, 6 + 0x10000, 1, sig) == GZ_SG_OK);
+        /* 8 bytes: 0xffffffff is not minimal there; 0x100000000 is minimal but
+         * longer than any message, so both are refused */
+        {
+            static const uint8_t w8_max[] = {0x02, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xaa};
+            static const uint8_t w8_min[] = {0x02, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0xaa};
+            ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, w8_max, sizeof w8_max, 1, GZ_SG_E_ARG);
+            ENV_REFUSED(h, GZ_SG_KEY_HOST, scope, 64, w8_min, sizeof w8_min, 1, GZ_SG_E_ARG);
+        }
+    }
     /* 5. a well-formed stream, without the signature record */
     {
         static const uint8_t sig240[] = {0x02, 0x01, 0xaa, 0xf0, 0x00};

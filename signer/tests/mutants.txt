@@ -95,3 +95,12 @@ boundary-base	tools/check-signer-boundary.sh	          else if ($3 + 0 > b[k])	 
 boundary-base-new	tools/check-signer-boundary.sh	          if (!(k in b)) {	          if (0) {
 boundary-include	tools/check-signer-boundary.sh	        print FILENAME "\\thard:include-signer-source\\t" FNR	        next
 boundary-prune	tools/check-signer-boundary.sh	-path ./build -o -path './build-*' \\\n        -o -path ./_deps -o -path ./.git \\) -prune -o -type f	-path './build*' -o -path ./.git \\\n        -o -name _deps \\) -prune -o -type f
+# --- review A of #71, re-review: N1 and N5
+bigsize-w2-edge	signer/signer.c	(w == 2 && x < 0xfd)	(w == 2 && x < 0xfc)
+bigsize-w4-edge	signer/signer.c	(w == 4 && x <= 0xffffu)	(w == 4 && x < 0xffffu)
+bigsize-w8-edge	signer/signer.c	(w == 8 && x <= 0xffffffffu)	(w == 8 && x < 0xffffffffu)
+# equivalent bigsize-w8-edge: an 8-byte value of 0xffffffff is either a type at or above 240 or a length beyond any message (1 MiB), refused either way
+boundary-build-flag	tools/check-signer-boundary.sh	            if (l ~ /GZ_SG_VECTORS/) print	            if (l ~ /(^|[^A-Za-z0-9_])GZ_SG_VECTORS([^A-Za-z0-9_]|$)/ && l !~ /-DGZ_SG_VECTORS/) print
+boundary-build-lib	tools/check-signer-boundary.sh	            if (l ~ /gazpacho_signer_vectors/) print	            if (0) print
+boundary-build-source	tools/check-signer-boundary.sh	            if (l ~ /signer\\/[A-Za-z0-9_.\\/${}-]*\\.(c|inc)([^A-Za-z0-9_]|$)/) print	            if (0) print
+boundary-token-paste	tools/check-signer-boundary.sh	    if (s0 ~ /gz_sg[A-Za-z0-9_]*[ \\t]*##/ || s0 ~ /##[ \\t]*gz_sg/)	    if (0)

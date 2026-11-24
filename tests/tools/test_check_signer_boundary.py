@@ -231,6 +231,20 @@ for name, rel, text in [
     ("#include of signer.c", "program/v.c", "#include \"../signer/signer.c\"\n"),
     ("#include of a signer .inc", "core/v.c", "#  include <signer/x.inc>\n"),
     ("GZ_SG_VECTORS in a CMake file", "program/CMakeLists.txt", "target_compile_definitions(x PRIVATE GZ_SG_VECTORS)\n"),
+    # review A of #71, N1: the build-flag routes
+    ("-DGZ_SG_VECTORS in target_compile_options", "program2/CMakeLists.txt",
+     "add_executable(prog2 main.c)\ntarget_compile_options(prog2 PRIVATE -DGZ_SG_VECTORS)\n"),
+    ("-DGZ_SG_VECTORS=1 in CMAKE_C_FLAGS", "CMakeLists.txt",
+     "set(CMAKE_C_FLAGS \"${CMAKE_C_FLAGS} -DGZ_SG_VECTORS=1\")\n"),
+    ("a flag in a .cmake file", "cmake/flags.cmake", "add_compile_definitions(GZ_SG_VECTORS)\n"),
+    ("an ALIAS of the vectors build", "program/CMakeLists.txt", "add_library(sv ALIAS gazpacho_signer_vectors)\n"),
+    ("$<TARGET_FILE:gazpacho_signer_vectors>", "program/CMakeLists.txt",
+     "target_link_libraries(p PRIVATE $<TARGET_FILE:gazpacho_signer_vectors>)\n"),
+    ("signer sources listed in a build file", "program2/CMakeLists.txt",
+     "add_executable(prog2 main.c ../signer/signer.c ../signer/policy.c)\n"),
+    ("a signer source by variable", "core/CMakeLists.txt", "set(S ${CMAKE_SOURCE_DIR}/signer/signer.c)\n"),
+    ("gz_sg##v_ token pasting", "program/t.c", "#define V(x) gz_sg##v_##x\nint f(void) { return V(sign_envelope)(0); }\n"),
+    ("## gz_sg token pasting", "program/t.c", "#define W(x) x ## gz_sgv\n"),
 ]:
     hd = tempfile.mkdtemp()
     os.makedirs(os.path.join(hd, "tools"))
@@ -249,6 +263,10 @@ shutil.copy(SYMBOLS, os.path.join(hd, "tools", "signer-only-symbols.txt"))
 os.makedirs(os.path.join(hd, "program"))
 with open(os.path.join(hd, "program", "ok.c"), "w", encoding="utf-8") as f:
     f.write("/* GZ_SG_VECTORS gz_sgv_x */\n#include \"gazpacho/signer.h\"\n")
+with open(os.path.join(hd, "CMakeLists.txt"), "w", encoding="utf-8") as f:
+    f.write("# GZ_SG_VECTORS and gazpacho_signer_vectors in a comment\nadd_subdirectory(signer)\n"
+            "include(${CMAKE_CURRENT_SOURCE_DIR}/signer/vectors_guard.cmake)\n"
+            "add_executable(x core/signing/signing.c)\n")
 code, out = run(hd, "--report")
 expect("a comment naming the test build is not a hard finding", code == 0 and "HARD" not in out, out)
 if failures:

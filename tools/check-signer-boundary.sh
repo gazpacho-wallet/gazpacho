@@ -128,6 +128,9 @@ FNR == 1 { inblk = 0; instr = 0 }
     if ($0 ~ /^[ \t]*#[ \t]*include[ \t]*["<][^">]*signer\/[^">]*\.(c|inc)[">]/)
         print FILENAME "\thard:include-signer-source\t" FNR
     s0 = strip($0)
+    # token pasting onto a gz_sg name: gz_sg##v_sign_envelope (N1)
+    if (s0 ~ /gz_sg[A-Za-z0-9_]*[ \t]*##/ || s0 ~ /##[ \t]*gz_sg/)
+        print FILENAME "\thard:token-paste-gz_sg\t" FNR
     for (j = 1; j <= ns; j++) {
         s = s0
         while (match(s, re[j])) {
@@ -149,7 +152,17 @@ grep -v "	hard:" "$tmp/uses" > "$tmp/uses.soft" || true
 mv "$tmp/uses.soft" "$tmp/uses"
 (cd "$root" && find . \( -path ./signer -o -path ./build -o -path './build-*' -o -path ./_deps -o -path ./.git \) -prune \
         -o -type f \( -name CMakeLists.txt -o -name '*.cmake' \) -print | sed 's|^\./||' | LC_ALL=C sort |
-    while read -r bf; do grep -n -w GZ_SG_VECTORS "$bf" | sed "s|^\([0-9]*\):.*|$bf	hard:GZ_SG_VECTORS-in-build-file	\1|"; done) >> "$tmp/hard"
+    while read -r bf; do
+        # Substrings, not words: -DGZ_SG_VECTORS, CMAKE_C_FLAGS, an ALIAS of
+        # the library, $<TARGET_FILE:...> and a list of signer/ sources all
+        # count (review A of #71, N1). A comment is not a use.
+        awk -v F="$bf" '{
+            l = $0; sub(/#.*/, "", l)
+            if (l ~ /GZ_SG_VECTORS/) print F "\thard:GZ_SG_VECTORS-in-build-file\t" FNR
+            if (l ~ /gazpacho_signer_vectors/) print F "\thard:gazpacho_signer_vectors-in-build-file\t" FNR
+            if (l ~ /signer\/[A-Za-z0-9_.\/${}-]*\.(c|inc)([^A-Za-z0-9_]|$)/) print F "\thard:signer-source-in-build-file\t" FNR
+        }' "$bf"
+    done) >> "$tmp/hard"
 hard_fail=0
 if [ -s "$tmp/hard" ]; then
     awk -F '\t' '{ printf "HARD %s:%s: %s (never allowed outside signer/)\n", $1, $3, substr($2, 6) }' "$tmp/hard"

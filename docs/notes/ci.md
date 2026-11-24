@@ -169,9 +169,38 @@ Locally (Linux, clang 18):
     cmake --build build-fuzz -j
     sh tools/run-fuzz.sh build-fuzz 60
 
-### signer boundary (report mode) and signer mutants
+### signer boundary and signer mutants
 
-Not required for merging. Step S1 of `docs/notes/signer.md` (sections 7 and 9). `tools/check-signer-boundary.sh` lists every signing or secret-key symbol of `tools/signer-only-symbols.txt` used in C code outside `signer/` (comments and strings blanked first; `core/superscalar/` is imported and allowed by name), per file, and compares the counts with `tools/signer-boundary-allowed.txt`, the uses of the day it was written, which may only shrink. It runs with `--report` and never fails until step S4, which empties the list and switches it to `--fail`; `--no-growth` is the mode in between (fails on a new use or a stale line). `tools/check-tags.py` fails on a `gazpacho/` string in code that `spec/PROTOCOL.md` 8.2 does not register; it runs with `--report` while main still has unregistered strings. Both tools have their own tests (`tests/tools/test_check_signer_boundary.py`, `tests/tools/test_check_tags.py`), which do fail the job, as does `tools/signer-vectors.py --check` (the signer's vectors recomputed in pure Python). `signer mutants` runs `tools/mutate-signer.py` over `signer/tests/mutants.txt`: one mutant per check of the signer and of the two tools, each of which a test must kill, or a line `# equivalent NAME: why` must triage. The signer's constant-time test, `signer_ctime`, runs in the first valgrind shard with `storage_ctime` and `signing_ctime`.
+Neither job is yet a required check; making them required is the owner's call in the repository settings. Steps S1 and the S4 skeleton of `docs/notes/signer.md` (sections 7 and 9).
+
+`tools/check-signer-boundary.sh` lists every signing or secret-key symbol of `tools/signer-only-symbols.txt` used outside `signer/`:
+- in `*.c`, `*.h`, `*.inc`, `*.cpp`, `*.cc` and `*.S` files;
+- with comments and strings blanked first;
+- with `core/superscalar/` (imported, allowed by name) and exactly `build/`, `build-*/`, `_deps/` and `.git/` at the root left out.
+
+It counts the uses per file and compares them with `tools/signer-boundary-allowed.txt`, which may only shrink. CI runs it with `--no-growth`, so a new use or a stale line fails. On a pull request it also runs `--base-allow` against the merge base's copy of the list, so a change cannot add a use together with its own allow-list line. Step S4 empties the list and switches the check to `--fail`.
+
+Some findings are **hard**: they fail in every mode, and no allow list can hold them. They all name the fixed-aux test build of the signer (decision K20) outside `signer/`:
+- `GZ_SG_VECTORS`, `gz_sgv_*` or the marker `gz_sg_vectors_build_never_ship` in code;
+- token pasting onto a `gz_sg` name;
+- an `#include` of a `signer/*.c` or `*.inc` file;
+- in a `CMakeLists.txt` or `*.cmake` file, `GZ_SG_VECTORS` (as a substring, so `-DGZ_SG_VECTORS` counts), `gazpacho_signer_vectors`, or any `signer/*.c` path.
+
+`signer/vectors_guard.cmake` adds two more guards:
+- at configure time, it refuses any target other than `test_signer_vectors` that links that build;
+- the CTest `signer_never_ship` runs `nm` on every program the build makes (test and fuzz programs excepted) and requires the marker to be absent.
+
+**The label `signer-boundary-growth`** lets a pull request grow the allow list. Only a maintainer who reviews the signer boundary may set it, never the pull request's author, and the review must say why the new use cannot go through `signer/`. GitHub does not enforce this rule; review does.
+
+`tools/check-tags.py` fails on a `gazpacho/` string in code that `spec/PROTOCOL.md` 8.2 does not register. It runs with `--report` while main still has unregistered strings.
+
+The job fails on:
+- the tools' own tests (`tests/tools/test_check_signer_boundary.py`, `tests/tools/test_check_tags.py`);
+- `tools/signer-vectors.py --check`, the signer's vectors recomputed in pure Python.
+
+`signer mutants` runs `tools/mutate-signer.py` over `signer/tests/mutants.txt`: one mutant per check of the signer and of the two tools. A test must kill each one, or a line `# equivalent NAME: why` must triage it.
+
+The signer's constant-time test, `signer_ctime`, runs in the first valgrind shard, with `storage_ctime` and `signing_ctime`.
 
 Locally: `sh tools/check-signer-boundary.sh`, `python3 -I tools/check-tags.py`.
 
