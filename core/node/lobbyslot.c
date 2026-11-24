@@ -781,9 +781,10 @@ static gz_status_t cond_apply(gz_node_t *c, int i, gz_action_list_t *out)
     const gz_lobby_member_t *m = &s->lobby.m;
     gz_status_t st;
     if (s->host || !c->api.have_cond || !s->awake || m->ended || !m->have_terms) return GZ_OK;
-    /* Only conditions saved after it joined: a join's own conditions, looser
-     * ones confirmed by the person (cmd_join), hold until the next change. */
-    if (s->cond_seen >= c->api.cond_version) return GZ_OK;
+    /* Only a save that tightened something after it joined: a join's own
+     * conditions, looser ones confirmed by the person (cmd_join), hold until
+     * then; the same conditions saved anew, or a loosening, never reach it. */
+    if (s->cond_seen >= c->api.cond_tightened) return GZ_OK;
     if (!m->connected && (m->joined || m->join_len)) return GZ_OK;
     if (m->lobby_state == GZ_LOBBY_FUNDING || m->lobby_state == GZ_LOBBY_ACTIVE || m->round_state) return GZ_OK;
     if (!gz_lobby_member_misfits(m, &c->api.cond) || round_on(c, s)) return GZ_OK;

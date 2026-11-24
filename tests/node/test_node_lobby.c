@@ -2876,11 +2876,23 @@ static void test_api_join_looser(void)
     CHECK(w_restart(1) == GZ_OK);
     w_run(2000, 100);
     CHECK(slot(1, &t) && member_ready(1, &t) == 1);
-    /* The person's conditions change again (the same, saved anew): now they
-     * are applied to it, and it is left. */
+    /* Confirmation of #77, N2: the same conditions saved anew, and a
+     * loosening, tighten nothing: the confirmed looser copy stays. */
     CHECK(set_cond(1, NULL, &tight, 1, NULL, 0) == 200);
     w_run(1000, 100);
-    CHECK(slot(1, &t) == NULL && host_refused(&t) == 1);
+    CHECK(slot(1, &t) && member_ready(1, &t) == 1 && !slot(1, &t)->lobby.m.ended);
+    {
+        gz_lobby_conditions_t looser = tight;
+        looser.limits.min_channel_sat = 150000;
+        CHECK(set_cond(1, "CondLoosenAfterJn1", &looser, 2, &ch, 1) == 200);
+        w_run(1000, 100);
+        CHECK(slot(1, &t) && member_ready(1, &t) == 1);
+        /* A change that tightens something reaches it: it is left. */
+        looser.limits.min_channel_sat = 250000;
+        CHECK(set_cond(1, NULL, &looser, 3, NULL, 0) == 200);
+        w_run(1000, 100);
+        CHECK(slot(1, &t) == NULL && host_refused(&t) == 1);
+    }
     no_errors(1);
     w_free(1);
 }
@@ -2922,6 +2934,68 @@ static void test_harness_flush(void)
     w_free(1);
 }
 
+
+/* Confirmation of #77, N1: a slot's field 24 (the saved conditions' version
+ * when it joined) above the loaded conditions' version, or a conditions
+ * record whose field 8 (the last tightening) is above its own version, is a
+ * corrupt journal; checked once the walk is over, whatever the order. */
+static void test_cond_seen_load(void)
+{
+    lt_key_t hk;
+    terms_t t;
+    whost(&hk);
+    w_reset();
+    make_terms(&t, 3, 3, 710);
+    for (int k = 0; k < 5; k++) {
+        h_t *x = &N[SCRATCH];
+        uint8_t rec[300], v[4], cr[64];
+        size_t at = 0, cat = 0;
+        gz_status_t st;
+        w_node(SCRATCH, 5, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+        gz_put_u32(v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 2, v, 4);
+        gz_rec_put(rec, sizeof rec, &at, 4, t.scope, 32);
+        v[0] = 0;
+        gz_rec_put(rec, sizeof rec, &at, 6, v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 8, hk.pub, 33);
+        gz_rec_put(rec, sizeof rec, &at, 10, (const uint8_t *)ADDR, sizeof ADDR - 1);
+        gz_put_u32(v, 0);
+        gz_rec_put(rec, sizeof rec, &at, 12, v, 4);
+        gz_put_u32(v, 1);
+        gz_rec_put(rec, sizeof rec, &at, 14, v, 4);
+        v[0] = 1;
+        gz_rec_put(rec, sizeof rec, &at, 22, v, 1);
+        gz_put_u32(v, 5);
+        gz_rec_put(rec, sizeof rec, &at, 24, v, 4);      /* joined under conditions version 5 */
+        /* k 0: no conditions saved; 1: version 4; 2: version 5; 3: version 5,
+         * last tightening 6; 4: version 5, last tightening 5. */
+        gz_rec_put(cr, sizeof cr, &cat, 2, v, 0);
+        gz_put_u32(v, k == 1 ? 4 : 5);
+        gz_rec_put(cr, sizeof cr, &cat, 4, v, 4);
+        if (k >= 3) {
+            gz_put_u32(v, k == 3 ? 6 : 5);
+            gz_rec_put(cr, sizeof cr, &cat, 8, v, 4);
+        }
+        h_add_batch(x, 1, 1, GZ_RECORD_SLOT_OPENED, rec, at);
+        if (k) h_add_batch(x, 1, 2, GZ_RECORD_CONDITIONS, cr, cat);
+        x->incarnation = 1;
+        h_new_node(x);
+        st = w_start(SCRATCH);
+        CHECK(k == 2 || k == 4 ? st == GZ_OK : st == GZ_ERR_CORRUPT);
+        if (k == 2) {
+            int i = gz_route_slot_by_scope(x->n, t.scope);
+            CHECK(i >= 0 && x->n->slots[i].cond_seen == 5);
+        }
+        ALIVE[SCRATCH] = 0;
+        NT[SCRATCH] = 0;
+        for (int i = 0; i < 64; i++)
+            if (C[i].used && C[i].node == SCRATCH) C[i].used = 0;
+        h_free(x);
+        memset(x, 0, sizeof *x);
+    }
+    CHECK(ERRORS == 0);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -2949,6 +3023,7 @@ int main(int argc, char **argv)
     test_api_start_guard();
     test_api_join_looser();
     test_harness_flush();
+    test_cond_seen_load();
     test_api_records();
     test_api_ids_kept();
     test_seat_capacity();

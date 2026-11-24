@@ -221,6 +221,7 @@ typedef struct {
     uint8_t cond_bytes[COND_MAX];
     size_t cond_len;
     uint32_t cond_version;
+    uint32_t cond_tightened;        /* the version of the last save that tightened anything (record field 8) */
     char preset[API_MAX_PRESET + 1];
     unsigned cond_left;             /* the slots a conditions change left (bit i) */
     api_lid_t ids[API_MAX_IDS];
@@ -639,7 +640,7 @@ gz_status_t gz_view_start(gz_node_t *c, gz_action_list_t *out, int *done);
 
 /* api.c */
 gz_status_t gz_api_load(gz_node_t *c, const gz_record_t *rec);
-void gz_api_loaded(gz_node_t *c);
+gz_status_t gz_api_loaded(gz_node_t *c);
 const char *gz_api_local_id(gz_node_t *c, const uint8_t scope[32]);
 int gz_api_held(const gz_node_t *c, const uint8_t scope[32]);
 int gz_api_paused(const gz_node_t *c);

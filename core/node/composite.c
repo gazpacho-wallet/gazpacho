@@ -165,7 +165,10 @@ static gz_status_t load(gz_node_t *c, const gz_storage_reader_t *storage)
             if (st != GZ_OK) return st;
         }
     }
-    gz_api_loaded(c);
+    {
+        gz_status_t st = gz_api_loaded(c);
+        if (st != GZ_OK) return st;
+    }
     c->loaded = 1;
     c->restored = storage->restored;
     if (c->restored) np_guard_file(c, storage->guard);
