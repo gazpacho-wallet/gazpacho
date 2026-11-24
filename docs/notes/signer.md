@@ -206,7 +206,7 @@ It computes BOLT 8's `ecdh(k, point)` (SHA-256 of the compressed shared point, l
 
 1. Every coin's script is the BIP 86 output of its `(change, index)`, derived here.
 2. `req->funding_script` is `OP_1 <32 bytes>`.
-3. The fee rate is at most the request's ceiling.
+3. The fee rate is at most the request's ceiling, and at most the signer's own `max_feerate` (set by the program in the signer's configuration, at most 5,000 sat/kvB, never by a request; review A of #71, M3).
 4. The change index is not among the used ones.
 
 It runs `gzt_funding_build` with the master key, derived and wiped inside the call, and holds the plan under its txid. It returns the plan's public parts: `gzt_funding_unsigned` and `gzt_funding_prevout`.
@@ -222,11 +222,11 @@ It signs every input, verifies each signature, and returns the signed bytes.
 
 1. A plan is held under `txid`.
 2. `input` is one of its inputs.
-3. `fee` ≤ the spend-back's fee cap, which admits the whole fee ladder of the funding engine (`funding.md` 2; PR #56) and nothing above it. With the spend-back's own virtual size `v` (`gzt_keypath_vsize`), the held plan's fee `F` and size `V` (computed by the signer from the plan it built or adopted, inputs minus outputs, never taken from the caller), the policy's ceiling rate `c` and `I` = 1,000 sat/kvB (the incremental relay fee of Core 28.x and 29.0, a signer constant), the cap is the larger of:
+3. `fee` ≤ the spend-back's fee cap, which admits the whole fee ladder of the funding engine (`funding.md` 2; PR #56) and nothing above it. With the spend-back's own virtual size `v` (`gzt_keypath_vsize`), the held plan's fee `F` and size `V` (computed by the signer from the plan it built or adopted, inputs minus outputs, never taken from the caller), the signer's own ceiling rate `c` (`max_feerate`, never a request's) and `I` = 1,000 sat/kvB (the incremental relay fee of Core 28.x and 29.0, a signer constant), the cap is the larger of:
    - `ceil(c × v / 1000)`, the ceiling on the spend-back's own size (level 0: the funding was never seen, so the spend-back pays the ordinary rate);
    - `F + ceil(I × v / 1000)`, raised if needed to `F × v / V + 1` (Core's rule 6: a higher rate than the transaction it replaces), which is the top of the ladder (level 2; level 1 is the same with Core 29.1's 100 sat/kvB and is always below it).
 
-   `F` was itself checked against the ceiling when the plan was made (`fund_plan` check 3, `fund_adopt` check 5), so the cap is bounded by the policy alone. When a fee child of the funding exists (H16; none in Slice 1), `F` and `V` are the evicted package's, counting only a child this signer signed. "Ceiling × `v`" alone, as draft 1 had it, refuses level 2: a 16 sat funding of 154 vB and a 111 vB spend-back give 127 sat against a cap of 111 at 1 sat/vB (review B of #56, M-3). The formula is `gz_sg_spend_back_fee_cap` in `signer/` (stage 1, PR #71), with its vectors.
+   `F` was itself checked against the ceiling when the plan was made (`fund_plan` check 3, `fund_adopt` check 5), so the cap is bounded by the policy alone. When a fee child of the funding exists (H16; none in Slice 1), `F` and `V` are the evicted package's, counting only a child this signer signed. "Ceiling × `v`" alone, as draft 1 had it, refuses level 2: a 16 sat funding of 154 vB and a 111 vB spend-back give 127 sat against a cap of 111 at 1 sat/vB (review B of #56, M-3). The formula is `gz_sg_spend_back_fee_cap` in `signer/` (stage 1, PR #71), with its vectors. It fails closed: any input out of range gives a cap of 0, which refuses every fee.
 4. What is left is above the dust limit.
 
 The destination is the next unused receive script of this wallet, chosen here and never taken from the caller (`composite-node.md` 14.3).
@@ -239,7 +239,7 @@ After a restart, it takes back a plan from the funding engine's journal record (
 2. Output 0 is exactly `amount` to `funding_script`.
 3. Every other output is a change output to this wallet's BIP 86 change branch, at an index the signer derives and finds.
 4. Every input spends a coin of this wallet, given with its derivation in the journal record and checked by deriving its script.
-5. The fee rate is at most the ceiling.
+5. The fee rate is at most the signer's `max_feerate`.
 
 The journal is our own encrypted storage. The check makes adopted bytes as trustworthy as built ones, and costs little.
 
@@ -606,3 +606,4 @@ The question is whether the host should use one key for its MuSig2 partials and 
 - Draft 1, correction (2026-11-18): the spend-back's fee cap (2.3, `fund_spend_back` check 3) admits the whole fee ladder; "ceiling × vsize" refused level 2 (review B of #56, M-3).
 - Draft 1, review fixes (2026-11-18, review of #59 to #63): kind table matches the specification's signed kinds (M1); the tag check skips `#include` paths and an allow list, and accepts states beginning "Specified" or "Reserved" (M2); BD1 is the host engine extended to every seat ever held (M3); the factory key's "Never" rests on K10 and CH-OP-1 and excepts O2's timeout sweep (M4); D9, the C1 rebuild at 1.0.0, pending the owner (M5); `sign_binding` once per seat, its bytes saved in `seat_key` field 10 (#59 H1); the parity check dropped (L1); key paths cited from `docs/notes/keys.md` (L2); `GZ_SG_E_SEAT_KEY` at a ready (L3); no local file cited (L4); `gazpacho/test-funding` from #52 (L5); the penalty operation's epoch exception (L6). The binding rules are named BD1 to BD6 (formerly K1-1 to K1-6), as in #59.
 - Draft 1, decision K20 (2026-11-18): no deterministic signing. `sign_envelope` always draws fresh `aux_rand`; the host's rebuilt `round_tier_result` and `round_abort` are saved once signed and resent (2.3, 3.2, 8, 9 S4).
+- Draft 1, review A of #71 (2026-11-24): the spend-back cap fails closed and its ceiling is the signer's own `max_feerate`, never a request's (2.3).
