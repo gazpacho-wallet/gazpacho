@@ -51,6 +51,45 @@
       msg, ui.actions(out, all, lock));
   }
 
+  /* GET/PUT /signing. A change takes effect at the next start (confirmation C1);
+     to auto only behind a fresh sign-in, with the echo (review H1). */
+  function signingBox(sg) {
+    var box = h("section", { class: "card", id: "signing-box" }), msg = h("div", { id: "signing-msg" });
+    function draw(g, saved) {
+      var list = h("div", { class: "choices", role: "radiogroup", "aria-label": "How Gazpacho signs in lobbies" }), want = g.pending || g.member_signing;
+      var save = h("button", { type: "button", class: "btn", id: "signing-save" }, "Save");
+      u.clear(box);
+      (g.available || ["at_join", "auto"]).forEach(function (v) {
+        var id = "signing-" + v, r = h("input", { type: "radio", name: "member_signing", id: id, value: v });
+        r.checked = v === want;
+        list.appendChild(h("div", { class: "choice" }, r, " ", h("label", { for: id }, W.known(W.signingNames, v)),
+          h("p", { class: "small mute" }, W.signing[v] || "")));
+      });
+      save.addEventListener("click", function () {
+        var pick = list.querySelector("input:checked"), v = pick ? pick.value : null, body;
+        if (!v || v === want) return;
+        body = { based_on_version: g.version, member_signing: v };
+        if (v === "auto") body.confirm_member_signing = "auto";
+        ui.run(save, msg, function () {
+          return api.act("PUT", "/signing", body, { why: "Letting Gazpacho sign by itself changes what it does for you, so it asks for your passphrase again." })
+            .then(function (r) { draw(r, true); });
+        });
+      });
+      u.add(box, [h("h2", {}, "Signing in lobbies"),
+        h("p", { id: "signing-now" }, h("b", {}, "In force now: "), W.known(W.signingNames, g.member_signing) + "."),
+        g.pending ? h("p", { id: "signing-pending" }, h("b", {}, "From the next start: "), W.known(W.signingNames, g.pending) + ".") : null,
+        h("p", { class: "small" }, W.signing[g.member_signing] || ""),
+        list, msg, ui.actions(save)]);
+      if (saved) {
+        u.add(msg, ui.notice("ok", W.SIGNING_SAVED));
+        msg.setAttribute("data-keep", "");
+      }
+    }
+    if (!sg) return null;
+    draw(sg, false);
+    return box;
+  }
+
   function chainBox(c) {
     var rows = h("tbody", {}), hosts = h("ul", { class: "log" });
     ((c.chain && c.chain.servers) || []).forEach(function (s) {
@@ -90,7 +129,8 @@
   gz.screens.settings = {
     title: "Settings", nav: "settings", topics: ["status", "chain", "settings", "wallet"],
     render: function () {
-      return Promise.all([api.get("/backup"), api.get("/wallet"), api.get("/settings/connections")]).then(function (r) {
+      return Promise.all([api.get("/backup"), api.get("/wallet"), api.get("/settings/connections"),
+        api.get("/signing").catch(function () { return null; })]).then(function (r) {
         var b = r[0].words || {}, s = gz.app.status || {}, wt = s.watching || {};
         return h("div", {},
           h("h1", {}, "Settings"),
@@ -101,6 +141,7 @@
           h("section", { class: "card", id: "watching" }, h("h2", {}, "Watching"),
             h("p", {}, h("b", {}, "Who watches: "), W.known(W.watching, wt.state) + "."),
             h("p", { class: "small mute" }, "Watching runs only while the app runs, unlocked. In this build nothing of yours is inside a factory, so there is nothing to take out.")),
+          signingBox(r[3]),
           chainBox(r[2]),
           lockBox(s),
           s.interface && s.interface.peer_check === "unavailable" ? ui.notice("warn", "Other accounts on this computer can reach Gazpacho's page;", "your passphrase is what keeps them out.") : null,

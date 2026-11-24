@@ -104,6 +104,11 @@ endforeach()
 if(Python3_FOUND)
   add_test(NAME web_static_check COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tests/web/check_static.py)
   set_tests_properties(web_static_check PROPERTIES LABELS api)
+  # The multi-process interface test is off only while it waits for P6a: this
+  # fails once the core uses GZ_VIEW_LOBBY and the test is still marked fixme.
+  add_test(NAME web_p6a_fixme COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tests/web/check_p6a_fixme.py ${PROJECT_SOURCE_DIR})
+  add_test(NAME web_p6a_fixme_self COMMAND ${Python3_EXECUTABLE} -I ${PROJECT_SOURCE_DIR}/tests/web/check_p6a_fixme.py --self-test)
+  set_tests_properties(web_p6a_fixme web_p6a_fixme_self PROPERTIES LABELS api)
 endif()
 
 # The vendored parser has not changed.

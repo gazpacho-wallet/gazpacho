@@ -171,15 +171,15 @@
       } else if (m.type === "signed_out") {
         signedOut("signed_out", true);
       } else if (m.type === "event") {
-        if (stream.state === "too_many" && typeof m.topic === "string") {
-          stream.relayHeard = Date.now();
+        if (following() && typeof m.topic === "string") {
+          relayed();
           deliver({ topic: m.topic, id: m.id || null, seq: m.seq });
         }
       } else if (m.type === "tick" || m.type === "leader") {
-        if (stream.state === "too_many") stream.relayHeard = Date.now();
+        if (following()) relayed();
       } else if (m.type === "leader_gone") {
         /* take over at once; a 429 (the old stream not closed yet) is tried again with a growing delay */
-        if (stream.state === "too_many") { stream.takeover = true; stream.tryAt = Date.now(); }
+        if (following()) { stream.takeover = true; stream.tryAt = Date.now(); }
       }
     };
     window.addEventListener("pagehide", function () {
@@ -189,6 +189,15 @@
       if (ctrl) ctrl.abort();         /* free this tab's slot before the others try for it */
       say({ type: "leader_gone", tab: tabId });
     });
+  }
+
+  /* Over the cap, this tab follows what other tabs relay ("too_many"), or,
+     once a take-over was answered 429 with nothing relayed since, it says it is
+     not following ("not_following", 10.3, review M5). A relay brings it back. */
+  function following() { return stream.state === "too_many" || stream.state === "not_following"; }
+  function relayed() {
+    stream.relayHeard = Date.now();
+    if (stream.state === "not_following") setStream("too_many");
   }
 
   /* Ask the other tabs for a session; null after 500 ms without an offer. */
@@ -260,10 +269,11 @@
           /* Over the cap (10.3): follow the events other tabs relay. Tried again only to take
              over from a tab that is gone (leader_gone, or 30 s with nothing relayed), with a
              growing delay, so two tabs never push each other out in a loop. */
-          if (stream.state !== "too_many") stream.relayHeard = Date.now();
+          var tookOver = following();     /* this was a take-over, and it was refused */
+          if (!tookOver) stream.relayHeard = Date.now();
           stream.tryAt = Date.now() + stream.busyDelay;
           stream.busyDelay = Math.min(stream.busyDelay * 2, 60000);
-          setStream("too_many");
+          setStream(tookOver ? "not_following" : "too_many");
           return null;
         }
         if (res.status === 401) { signedOut("signed_out"); return null; }
@@ -331,7 +341,7 @@
   /* A tab over the cap whose relaying tabs are gone takes the stream over (4.4). */
   setInterval(function () {
     var now = Date.now();
-    if (stream.state !== "too_many" || !token || stream.ctrl || now < stream.tryAt) return;
+    if (!following() || !token || stream.ctrl || now < stream.tryAt) return;
     if (!stream.takeover && now - stream.relayHeard < TAKEOVER_MS) return;
     stream.dropped = true;            /* events may have been missed: draw again from nothing when it opens */
     startEvents();
