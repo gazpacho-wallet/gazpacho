@@ -19,6 +19,12 @@
  * - the signing setting: saved with a version; in force from the next start.
  *   A widening to `auto` needs an API request and the echo; `when_unlocked`
  *   is 501 in this release (14.3).
+ * - the conditions (13.2): saved with a version, in force at once. A change
+ *   that loosens anything needs an API request and the exact list of what it
+ *   loosens; one that would leave a lobby whose round is on is refused
+ *   (signing_now). Every member lobby they fit worse than its own copy is
+ *   left, reason 1, in the batch of the save where its link is up, else once
+ *   it is (lobbyslot.c, cond_apply), and at every start from the record.
  * - local ids: "lob_" and 16 random hex digits, saved with the slot's first
  *   batch; kept for the ended lobbies of the index. */
 #include "internal.h"
@@ -290,6 +296,15 @@ static int req_fill(api_req_t *r, gz_bytes_t rid, gz_bytes_t method, gz_bytes_t 
     return 1;
 }
 
+/* A preset's id: 1 to 16 of a-z and _ (13.1: cautious, everyday, wide). */
+static int preset_ok(gz_bytes_t p)
+{
+    if (!p.len || p.len > API_MAX_PRESET) return 0;
+    for (size_t k = 0; k < p.len; k++)
+        if (!((p.data[k] >= 'a' && p.data[k] <= 'z') || p.data[k] == '_')) return 0;
+    return 1;
+}
+
 /* The local id field of local_ids: "lob_" and 1 to 60 id characters (7.3). */
 static int lob_id_ok(gz_bytes_t w)
 {
@@ -359,6 +374,21 @@ gz_status_t gz_api_load(gz_node_t *c, const gz_record_t *rec)
                 if (c->api.reqs[k].created_ms < r->created_ms) r = &c->api.reqs[k];
         }
         *r = tmp;
+        return GZ_OK;
+    case GZ_RECORD_CONDITIONS:
+        if (!only_fields(b, 0x0eu) || gz_rec_find(b, 2, &v) != 1 || v.len > COND_MAX || !arg(b, 4, 4, &w))
+            return GZ_ERR_CORRUPT;
+        if (!gz_ls_cond_decode(v.data, v.len, &c->api.cond)) return GZ_ERR_CORRUPT;
+        memcpy(c->api.cond_bytes, v.data, v.len);
+        c->api.cond_len = v.len;
+        c->api.cond_version = gz_get_u32(w.data);
+        c->api.preset[0] = 0;
+        if (gz_rec_find(b, 6, &x) == 1) {
+            if (!preset_ok(x)) return GZ_ERR_CORRUPT;
+            memcpy(c->api.preset, x.data, x.len);
+            c->api.preset[x.len] = 0;
+        }
+        c->api.have_cond = 1;
         return GZ_OK;
     case GZ_RECORD_SIGNING_SETTING:
         if (!only_fields(b, 0x0eu) || !arg(b, 2, 1, &v) || v.data[0] > GZ_MEMBER_SIGNING_WHEN_UNLOCKED ||
@@ -714,6 +744,142 @@ static gz_status_t cmd_signing(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *o
     return result(c, cmd, 200, NULL, NULL, "{\"takes_effect\":\"next_start\"}", out);
 }
 
+/* What `to` loosens against `from` (13.2 `loosens`): the codes of view.h's
+ * GZ_COND_L_*, increasing, each once, into `l` (room for 8 + GZ_TERMS_MAX_ADJ).
+ * A limit at its "no limit" value (terms.h) is the loosest it can be. */
+static size_t loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditions_t *to, uint8_t *l)
+{
+    const gz_terms_limits_t *a = &from->limits, *b = &to->limits;
+    size_t n = 0;
+    uint8_t adj[256];
+    if (!from->current_only && to->current_only) l[n++] = GZ_COND_L_COMPARE;
+    if (to->min_members < from->min_members) l[n++] = GZ_COND_L_HINT;
+    if (a->profiles && (!b->profiles || (b->profiles & (uint8_t)~a->profiles))) l[n++] = GZ_TT_PROFILE;
+    if (b->min_members < a->min_members) l[n++] = GZ_TT_MINIMUM;
+    if (b->min_lifetime < a->min_lifetime || (a->max_lifetime && (!b->max_lifetime || b->max_lifetime > a->max_lifetime)))
+        l[n++] = GZ_TT_LIFETIME;
+    if (b->min_channel_sat < a->min_channel_sat) l[n++] = GZ_TT_CHANNEL;
+    if (a->max_tree_feerate && (!b->max_tree_feerate || b->max_tree_feerate > a->max_tree_feerate)) l[n++] = GZ_TT_FEERATE;
+    /* An adjustable maximum raised, or no longer named (no limit). A type
+     * named twice compares as its strictest (gz_terms_classify). */
+    memset(adj, 0, sizeof adj);
+    for (uint8_t i = 0; i < a->n_max && i < GZ_TERMS_MAX_ADJ; i++) {
+        uint64_t am = a->max[i].max, bm = UINT64_MAX;
+        int named = 0;
+        for (uint8_t j = 0; j < a->n_max && j < GZ_TERMS_MAX_ADJ; j++)
+            if (a->max[j].type == a->max[i].type && a->max[j].max < am) am = a->max[j].max;
+        for (uint8_t j = 0; j < b->n_max && j < GZ_TERMS_MAX_ADJ; j++)
+            if (b->max[j].type == a->max[i].type) {
+                named = 1;
+                if (b->max[j].max < bm) bm = b->max[j].max;
+            }
+        if (!named || bm > am) adj[a->max[i].type] = 1;
+    }
+    for (int t = GZ_TT_FEERATE + 1; t < 256 && n < 8 + GZ_TERMS_MAX_ADJ; t++)
+        if (adj[t]) l[n++] = (uint8_t)t;
+    return n;
+}
+
+/* Text: s, then n as decimal digits. */
+static size_t put_text(char *p, size_t k, const char *s)
+{
+    while (*s) p[k++] = *s++;
+    return k;
+}
+
+static size_t put_dec(char *p, size_t k, uint64_t v)
+{
+    char d[24];
+    int m = 0;
+    do {
+        d[m++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    while (m) p[k++] = d[--m];
+    return k;
+}
+
+/* PUT /api/v1/conditions's core (13.2). In order: the form (400 bad_value),
+ * the authority of a loosening (an API request, 403 fresh_sign_in_needed),
+ * the echo (field 16 exactly what the change loosens, nothing when it
+ * loosens nothing: 409 confirm_mismatch with params.loosens), the version
+ * (409 changed_elsewhere), a lobby it would leave while that lobby's round
+ * is on (409 signing_now, params.lobby_ids: nothing is changed, so no slot
+ * whose partial signatures may be out is ever dropped). Then saved and in
+ * force at once: every member lobby the new conditions fit worse than its
+ * own copy is left, reason 1, its saves in the batch of this save (journal.md
+ * 9), or, where its link is down, once it is up (lobbyslot.c, cond_apply).
+ * A copy is never changed: a loosening applies to the next join only. The
+ * answer's params: the new `version` and `left_lobbies`. */
+static gz_status_t cmd_conditions(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
+{
+    static const gz_lobby_conditions_t NONE;
+    gz_lobby_conditions_t nc;
+    gz_bytes_t v, b, e, d, pr = {NULL, 0};
+    uint8_t *rec = c->api.rec, x[4], l[8 + GZ_TERMS_MAX_ADJ];
+    size_t at = 0, nl, k = 0, from;
+    char *p = c->api.params;
+    unsigned blocked;
+    gz_status_t st;
+    if (gz_rec_find(cmd, 12, &v) != 1 || v.len > COND_MAX || !gz_ls_cond_decode(v.data, v.len, &nc) ||
+        !arg(cmd, 14, 4, &b) || (gz_rec_find(cmd, 18, &pr) == 1 && !preset_ok(pr)))
+        return result(c, cmd, 400, "bad_value", NULL, NULL, out);
+    if (gz_rec_find(cmd, 18, &pr) != 1) pr.len = 0;
+    nl = loosens(c->api.have_cond ? &c->api.cond : &NONE, &nc, l);
+    if (nl && gz_rec_find(cmd, GZ_CMD_REC_DIGEST, &d) != 1)
+        return result(c, cmd, 403, "fresh_sign_in_needed", NULL, NULL, out);
+    if (gz_rec_find(cmd, 16, &e) != 1) e.len = 0;
+    if (e.len != nl || (nl && memcmp(e.data, l, nl) != 0)) {
+        k = put_text(p, 0, "{\"loosens\":[");
+        for (size_t j = 0; j < nl; j++) {
+            if (j) p[k++] = ',';
+            k = put_dec(p, k, l[j]);
+        }
+        k = put_text(p, k, "]}");
+        p[k] = 0;
+        return result(c, cmd, 409, "confirm_mismatch", NULL, p, out);
+    }
+    if (gz_get_u32(b.data) != c->api.cond_version) return result(c, cmd, 409, "changed_elsewhere", NULL, NULL, out);
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++) memcpy(c->api.pids[i], c->slots[i].view.local_id, sizeof c->api.pids[i]);
+    if (gz_ls_conditions_blocked(c, &nc, &blocked)) {
+        p[k++] = '{';
+        k = id_list(p, k, "lobby_ids", blocked, c->api.pids);
+        p[k++] = '}';
+        p[k] = 0;
+        return result(c, cmd, 409, "signing_now", NULL, p, out);
+    }
+    st = gz_rec_put(rec, sizeof c->api.rec, &at, 2, v.data, v.len);
+    gz_put_u32(x, c->api.cond_version + 1);
+    if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 4, x, 4);
+    if (st == GZ_OK && pr.len) st = gz_rec_put(rec, sizeof c->api.rec, &at, 6, pr.data, pr.len);
+    if (st != GZ_OK) return gz_c_bug(c, ENG_NODE);
+    gz_record_t rr = {GZ_RECORD_CONDITIONS, {rec, at}};
+    gz_action_t a = {.kind = GZ_ACTION_SAVE};
+    a.u.save.records = &rr;
+    a.u.save.n_records = 1;
+    from = out->count;
+    if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
+    c->owner[out->count - 1 - c->base] = (int8_t)ENG_NODE;
+    c->api.have_cond = 1;
+    c->api.cond = nc;
+    memcpy(c->api.cond_bytes, v.data, v.len);
+    c->api.cond_len = v.len;
+    c->api.cond_version++;
+    if (pr.len) memcpy(c->api.preset, pr.data, pr.len);
+    c->api.preset[pr.len] = 0;
+    c->api.cond_left = 0;
+    if ((st = gz_ls_conditions_changed(c, out)) != GZ_OK) return st;
+    /* One batch: the conditions and every leave they caused. */
+    if ((st = gz_ls_merge_saves(c, out, from)) != GZ_OK) return st;
+    k = put_text(p, 0, "{\"version\":");
+    k = put_dec(p, k, c->api.cond_version);
+    p[k++] = ',';
+    k = id_list(p, k, "left_lobbies", c->api.cond_left, c->api.pids);
+    p[k++] = '}';
+    p[k] = 0;
+    return result(c, cmd, 200, NULL, NULL, p, out);
+}
+
 gz_status_t gz_api_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out)
 {
     gz_status_t st = gz_c_node_bracket_begin(c, out);
@@ -723,6 +889,7 @@ gz_status_t gz_api_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_actio
     switch (code) {
     case GZ_CMD_API_PAUSE: st = cmd_pause(c, cmd, out); break;
     case GZ_CMD_API_SET_SIGNING: st = cmd_signing(c, cmd, out); break;
+    case GZ_CMD_API_SET_CONDITIONS: st = cmd_conditions(c, cmd, out); break;
     default: st = result(c, cmd, 404, "unknown_command", NULL, NULL, out); break;
     }
     if (st == GZ_OK) st = gz_api_after(c, cmd, from, out);

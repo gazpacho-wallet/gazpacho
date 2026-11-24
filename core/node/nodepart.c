@@ -103,7 +103,14 @@ gz_status_t np_drop(gz_node_t *c, int why, uint16_t kind, gz_action_list_t *out)
 
 gz_status_t np_command_result(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error)
 {
-    uint8_t buf[200], st2[2];
+    return np_command_result_p(out, cmd, status, error, NULL);
+}
+
+/* With the answer's params (JSON, at most 160 bytes), as the API engine gives them. */
+gz_status_t np_command_result_p(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error,
+                                const char *params)
+{
+    uint8_t buf[400], st2[2];
     size_t at = 0;
     gz_bytes_t rid;
     gz_status_t st = GZ_OK;
@@ -116,6 +123,8 @@ gz_status_t np_command_result(gz_action_list_t *out, gz_bytes_t cmd, uint16_t st
     if (st == GZ_OK) st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_STATUS, st2, 2);
     if (st == GZ_OK && error)
         st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_ERROR, (const uint8_t *)error, cstr_len(error));
+    if (st == GZ_OK && params)
+        st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_PARAMS, (const uint8_t *)params, cstr_len(params));
     if (st != GZ_OK) return st;
     gz_action_t a = {.kind = GZ_ACTION_NOTIFY};
     a.u.notify.code = GZ_NOTIFY_COMMAND_RESULT;

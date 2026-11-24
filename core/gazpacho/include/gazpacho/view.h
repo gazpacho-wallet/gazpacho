@@ -31,6 +31,9 @@
 #define GZ_VST_LOBBIES             18  /* entries, each: u8 role, u8 stage, u8 doing, u64 since ms,
                                           u8 id length, the local id */
 #define GZ_VST_LEFT_OUT            20  /* u16: lobbies left out at this start (no keys) */
+#define GZ_VST_CONDITIONS          22  /* u32 version of the saved conditions (0: never saved), then
+                                          the conditions as GZ_CMD_API_SET_CONDITIONS carries them */
+#define GZ_VST_PRESET              24  /* ASCII: the saved preset; absent: custom or never saved */
 
 #define GZ_PAUSE_OFF               0
 #define GZ_PAUSE_ON                1
@@ -136,6 +139,8 @@
 #define GZ_VHL_SINCE               32  /* u64 ms */
 #define GZ_VHL_PAUSED              34  /* u8 1: the pause holds the start rule */
 #define GZ_VHL_FROZEN              36  /* u32 version, 32 digest */
+#define GZ_VHL_SET_ASIDE           38  /* u64: set_aside_sat, what an early start echoes
+                                          (gz_fund_set_aside_sat; absent: none can be confirmed) */
 
 #define GZ_VHL_SEAT_LEN            52
 #define GZ_VHL_F_LOCKED            0x01
@@ -166,6 +171,18 @@
 #define GZ_CMD_API_SET_SIGNING     0x0d02  /* 12 member_signing (u8), 14 based_on_version (u32),
                                               16 confirm_member_signing (u8; required, equal to 12, for auto).
                                               The one command that sets the signing mode (W11) */
+#define GZ_CMD_API_SET_CONDITIONS  0x0d03  /* 12 the conditions (LOBBY_JOIN's encoding, node.h; empty: no
+                                              limits), 14 based_on_version (u32), 16 confirm_loosens (the
+                                              GZ_COND_L_* codes the change loosens, u8 each, increasing;
+                                              required, exactly, when it loosens any), 18 preset (ASCII,
+                                              1 to 16 of a-z and _; absent: custom). PUT /api/v1/conditions */
+
+/* What a conditions change loosens (local-api.md 13.2 `loosens`): the
+ * terms.md type of the term it compares, or one of these two. */
+#define GZ_COND_L_COMPARE          1   /* compare_with: whole_range to current_value */
+#define GZ_COND_L_HINT             2   /* the ready hint (min_members of `ready`) lowered */
+/* and GZ_TT_PROFILE (8), GZ_TT_MINIMUM (12), GZ_TT_LIFETIME (26, either bound),
+ * GZ_TT_CHANNEL (30), GZ_TT_FEERATE (32), an adjustable type (64 and up). */
 
 /* Records (journal.md 9.1; local-api.md 7.5). */
 #define GZ_RECORD_PAUSE            0x000d000cu /* 2 state (u8), 4 since ms (u64), 6 held scopes (n x 32) */
@@ -174,6 +191,8 @@
                                                   10 status (u16), 12 the acted-on lobby's local id,
                                                   14 created ms (u64), 15 the answer's error code */
 #define GZ_RECORD_SIGNING_SETTING  0x000d0024u /* 2 member_signing (u8), 4 host_funding (u8), 6 version (u32) */
+#define GZ_RECORD_CONDITIONS       0x000d0008u /* 2 the conditions (GZ_CMD_API_SET_CONDITIONS's 12; may be
+                                                  empty), 4 version (u32), 6 preset (ASCII; absent: custom) */
 
 #define GZ_LOCAL_ID_MAX            64
 /* Request ids kept (7.4: until the object ended and 30 days passed): 64

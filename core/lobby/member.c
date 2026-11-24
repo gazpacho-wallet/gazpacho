@@ -903,6 +903,56 @@ gz_status_t gz_lobby_member_set_conditions(gz_lobby_member_t *m, const gz_lobby_
     return evaluate(m, out);
 }
 
+/* How well the lobby's latest values (the frozen ones after the freeze) fit
+ * conditions `c`: 2 a plain ready may be given (plain_ok), 1 it may stay
+ * joined but not ready by itself (fits only now, the default option), 0 it
+ * does not fit. */
+static int grade(const gz_lobby_member_t *m, const gz_lobby_conditions_t *c, int *cls, uint8_t *term)
+{
+    *cls = gz_lobby_classify(&m->terms, &m->values, c, term);
+    if (m->frozen ? *cls != GZ_FIT_NO : gz_lobby_ready_ok(*cls, c)) return 2;
+    return *cls == GZ_FIT_NOW ? 1 : 0;
+}
+
+/* The person's conditions fit this lobby worse than its own copy does. */
+static int misfits(const gz_lobby_member_t *m, const gz_lobby_conditions_t *c, int *cls, uint8_t *term)
+{
+    int ccls;
+    uint8_t cterm;
+    return grade(m, c, cls, term) < grade(m, &m->cond, &ccls, &cterm);
+}
+
+int gz_lobby_member_misfits(const gz_lobby_member_t *m, const gz_lobby_conditions_t *person)
+{
+    int cls;
+    uint8_t term;
+    return m && person && m->have_terms && !m->ended && misfits(m, person, &cls, &term);
+}
+
+int gz_lobby_member_in_round(const gz_lobby_member_t *m)
+{
+    return m && check_in_flight(m) && m->start_len && m->role == 1;   /* a start for the answered check */
+}
+
+gz_status_t gz_lobby_member_tighten(gz_lobby_member_t *m, const gz_lobby_conditions_t *person,
+                                    gz_action_list_t *out)
+{
+    int cls;
+    uint8_t term;
+    if (!m || !person || !out) return GZ_ERR_ARGUMENT;
+    if (m->ended) return gz_la_cmd_refused(out, GZ_CMD_CONDITIONS, m->lobby_state);
+    if (!m->have_terms || !misfits(m, person, &cls, &term)) return GZ_OK;   /* the copy stands */
+    /* Handed over, or signed: the round runs to its end (11.3's rule for the
+     * pause, local-api.md 13.2 "before it starts"). */
+    if (m->round_state >= GZ_LOBBY_FUNDING || gz_lobby_member_in_round(m))
+        return gz_la_cmd_refused(out, GZ_CMD_CONDITIONS, m->lobby_state);
+    m->never_joined = !m->joined;
+    m->last_class = cls;
+    m->last_term = term;
+    TRY(leave(m, 0, NULL, 0, NULL, 0, 1, out));
+    return note2(out, GZ_NOTE_REFUSED, (uint8_t)cls, term);
+}
+
 gz_status_t gz_lobby_member_gate_opened(gz_lobby_member_t *m, gz_action_list_t *out)
 {
     if (!m || !out) return GZ_ERR_ARGUMENT;

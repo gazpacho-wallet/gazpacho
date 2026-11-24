@@ -328,6 +328,7 @@ static size_t host_view(gz_node_t *c, slot_t *s)
         memcpy(z + 4, h->current_digest, 32);
         put(&w, GZ_VHL_FROZEN, z, 36);
     }
+    if (gz_ls_set_aside(s)) put64(&w, GZ_VHL_SET_ASIDE, gz_ls_set_aside(s));
     return w.bad ? 0 : w.at;
 }
 
@@ -443,6 +444,13 @@ static size_t status_view(gz_node_t *c)
     }
     if (n) put(&w, GZ_VST_LOBBIES, e, n);
     if (left_out) put16(&w, GZ_VST_LEFT_OUT, (uint16_t)left_out);
+    if (c->api.have_cond) {
+        uint8_t cv[4 + COND_MAX];
+        gz_put_u32(cv, c->api.cond_version);
+        memcpy(cv + 4, c->api.cond_bytes, c->api.cond_len);
+        put(&w, GZ_VST_CONDITIONS, cv, 4 + c->api.cond_len);
+        if (c->api.preset[0]) put(&w, GZ_VST_PRESET, c->api.preset, slen(c->api.preset));
+    }
     return w.bad ? 0 : w.at;
 }
 

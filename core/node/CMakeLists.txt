@@ -29,7 +29,7 @@ foreach(variant release test)
   set_target_properties(${lib} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
                                     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC gazpacho_core gazpacho_lobby)
+  target_link_libraries(${lib} PUBLIC gazpacho_core gazpacho_lobby gazpacho_funding)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PRIVATE GZ_TEST_KINDS)
@@ -48,12 +48,14 @@ foreach(variant release test)
               ${CMAKE_SOURCE_DIR}/core/lobby/wire.c
               ${CMAKE_SOURCE_DIR}/core/tree/sha256.c ${CMAKE_SOURCE_DIR}/core/tree/terms.c
               ${CMAKE_SOURCE_DIR}/core/tree/shape.c ${CMAKE_SOURCE_DIR}/core/tree/model.c
-              ${CMAKE_SOURCE_DIR}/core/tree/checks.c ${CMAKE_SOURCE_DIR}/core/tree/exit.c)
+              ${CMAKE_SOURCE_DIR}/core/tree/checks.c ${CMAKE_SOURCE_DIR}/core/tree/exit.c
+              ${CMAKE_SOURCE_DIR}/core/funding/setaside.c)
   set_target_properties(${lib} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
   target_include_directories(${lib} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}
                                             ${CMAKE_SOURCE_DIR}/core/gazpacho/include
                                             ${CMAKE_SOURCE_DIR}/core/lobby/include
-                                            ${CMAKE_SOURCE_DIR}/core/tree/include)
+                                            ${CMAKE_SOURCE_DIR}/core/tree/include
+                                            ${CMAKE_SOURCE_DIR}/core/funding/include)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PRIVATE GZ_TEST_KINDS)
