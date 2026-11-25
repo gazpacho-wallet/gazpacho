@@ -4395,6 +4395,33 @@ static void test_funds_auto_start(void)
     w_free(3);
 }
 
+/* Review B of PR 95, L-4: the lobby's signing hook cannot sign with the factory key at all, on the
+ * member's slot or the host's: the call is refused and the key port is never asked. */
+static void test_k1_ls_sign_no_factory(void)
+{
+    terms_t t;
+    uint8_t msg[32], sig[64];
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    w_node(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 4, 3, 3110);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(3000, 100);
+    slot_t *m = slot(1, &t), *h = slot(0, &t);
+    CHECK(m && h);
+    if (!m || !h) { w_free(1); return; }
+    memset(msg, 0x42, sizeof msg);
+    int before = SIGNS[1];
+    CHECK(m->lobby.m.crypto.sign(m->lobby.m.crypto.ctx, GZ_LOBBY_KEY_FACTORY, msg, sig) == 0 && SIGNS[1] == before);
+    CHECK(h->lobby.h.crypto.sign(h->lobby.h.crypto.ctx, GZ_LOBBY_KEY_FACTORY, msg, sig) == 0);
+    /* the contribution key still signs (the ready) */
+    CHECK(m->lobby.m.crypto.sign(m->lobby.m.crypto.ctx, GZ_LOBBY_KEY_CONTRIBUTION, msg, sig) == 1 && SIGNS[1] == before + 1);
+    no_errors(1);
+    w_free(1);
+}
+
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -4455,5 +4482,6 @@ int main(int argc, char **argv)
     test_gate_refused_ready();
     test_hostile(events, seed);
     test_ready_over_limit();
+    test_k1_ls_sign_no_factory();
     return check_done();
 }

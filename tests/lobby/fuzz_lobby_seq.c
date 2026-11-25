@@ -440,26 +440,43 @@ static void seats_saved(void)
                 memcmp(gz_lf_fixed(&f, 4, 33), t->ckey, 33) == 0)
                 last = &RECS[i];
         MUST(last != NULL && gz_lf_read(last->b, last->n, SCOPE, &f));
-        /* seat: 6 fkey, 12 state, 14 min_members, 16 ready_version */
-        MUST(gz_lf_fixed(&f, 6, 33) && gz_lf_fixed(&f, 12, 1) && gz_lf_fixed(&f, 14, 2) && gz_lf_fixed(&f, 16, 4));
+        /* seat: 6 fkey (K1: from the first ready on; absent while it has only joined, and then its key in
+         * memory is none), 12 state, 14 min_members, 16 ready_version */
+        MUST(gz_lf_fixed(&f, 12, 1) && gz_lf_fixed(&f, 14, 2) && gz_lf_fixed(&f, 16, 4));
+        {
+            static const uint8_t none[33];
+            const uint8_t *fk = gz_lf_fixed(&f, 6, 33);
+            MUST(fk ? memcmp(fk, t->fkey, 33) == 0 : memcmp(t->fkey, none, 33) == 0);
+        }
         MUST(gz_lf_fixed(&f, 12, 1)[0] == t->state && gz_lw_get(gz_lf_fixed(&f, 14, 2), 2) == t->min_members &&
-             gz_lw_get(gz_lf_fixed(&f, 16, 4), 4) == t->ready_version && memcmp(gz_lf_fixed(&f, 6, 33), t->fkey, 33) == 0);
+             gz_lw_get(gz_lf_fixed(&f, 16, 4), 4) == t->ready_version);
     }
 }
 
+/* K1: a join is the envelope alone. What the draft-2 join carried (whose factory key, a spoiled binding) is
+ * kept for that member's readies, which now carry the factory key (12) and its binding (14). */
+static int FK_OF[NK], SPOIL[NK];
+
 static size_t join_msg(uint8_t *buf, size_t cap, int who, int fkey_of, int bad)
 {
-    uint8_t b[32], sf[64], sc[64];
     gz_lobby_enc_t e;
-    gz_lobby_binding(SCOPE, K[fkey_of].key[3].pub, K[who].key[2].pub, b);
-    lt_sign(&K[fkey_of], 3, b, sf);
-    lt_sign(&K[who], 2, b, sc);
-    if (bad) sf[bad % 64] ^= 1;
+    FK_OF[who] = fkey_of;
+    SPOIL[who] = bad;
     gz_lobby_enc_start(&e, buf, cap, GZ_KIND_JOIN, SCOPE);
-    gz_lobby_enc_record(&e, 2, K[fkey_of].key[3].pub, 33);
-    gz_lobby_enc_record(&e, 4, sf, 64);
-    gz_lobby_enc_record(&e, 6, sc, 64);
     return gz_lobby_enc_done(&e);
+}
+
+/* Records 12 and 14 of member `who`'s ready: the factory key its join meant, the binding signed by its
+ * contribution key (spoiled if its join was to be invalid). */
+static void ready_keys(gz_lobby_enc_t *e, int who)
+{
+    uint8_t b[32], sc[64];
+    int f = FK_OF[who];
+    gz_lobby_binding(SCOPE, K[f].key[3].pub, K[who].key[2].pub, b);
+    lt_sign(&K[who], 2, b, sc);
+    if (SPOIL[who]) sc[SPOIL[who] % 64] ^= 1;
+    gz_lobby_enc_record(e, 12, K[f].key[3].pub, 33);
+    gz_lobby_enc_record(e, 14, sc, 64);
 }
 
 static void host_script(const uint8_t *d, size_t n)
@@ -471,6 +488,7 @@ static void host_script(const uint8_t *d, size_t n)
     gz_status_t st;
     drop_recs();
     model_reset();
+    for (int i = 0; i < NK; i++) { FK_OF[i] = i; SPOIL[i] = 0; }
     host_boot(0, (uint16_t)(d[0] % 3));
     memset(CONN, 0, sizeof CONN);
     for (at = 1; at + 3 <= n; at += 3) {
@@ -539,6 +557,7 @@ static void host_script(const uint8_t *d, size_t n)
             gz_lobby_enc_record(&e, 6, ver == H.values.version ? H.current_digest : CD[ver <= 2 ? ver : 1], 32);
             if (arg & 8) gz_lobby_enc_record(&e, 8, H.check_id, 32);
             if (arg & 16) gz_lobby_enc_u16(&e, 11, (uint16_t)(arg >> 5) * 2);
+            ready_keys(&e, who);                                      /* K1: every ready names the factory key */
             bn = gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
             st = h_in(GZ_LIN_MESSAGE, who, buf, bn, 0);
             break;
