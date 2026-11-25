@@ -201,6 +201,152 @@ static void test_burial_from_config(void)
     gzp_wport_close(&w);
 }
 
+/* L-1 (review B of PR 83): a hold belongs to the plan, not to the coin list. A
+ * list that misses the held coin (one lookup failed), then a list with it again:
+ * the coin is still held, and never offered to a second plan. */
+static void test_hold_survives_a_gap(void)
+{
+    gzp_wport_t w;
+    gzt_coin cs[2];
+    uint32_t hs[2] = {100, 100};
+    uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len, n;
+    uint64_t have;
+    open_w(&w);
+    cs[0] = coin(&w, 0, 0, 500000, 0xf1);
+    cs[1] = coin(&w, 0, 1, 400000, 0xf2);
+    CHECK(gzp_wport_publish(&w, cs, hs, 1, 110) == 0);         /* f1 only */
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    CHECK(held_by_txid_tag(&w, 0xf1) > 0);
+    CHECK(gzp_wport_publish(&w, cs + 1, hs, 1, 111) == 0);     /* f2 only: f1 missed */
+    CHECK(gzp_wport_publish(&w, cs, hs, 2, 112) == 0);         /* both again */
+    CHECK(held_by_txid_tag(&w, 0xf1) > 0);
+    CHECK(held_by_txid_tag(&w, 0xf2) == 0);
+    CHECK(w.port.can_plan(w.port.ctx, 100000, 100, &have, &n) == 1 && have == 400000 && n == 1);
+    /* and a release frees it in whatever list is current */
+    w.port.release(w.port.ctx, tx, len);
+    CHECK(held_by_txid_tag(&w, 0xf1) == 0);
+    gzp_wport_close(&w);
+}
+
+/* L-1: a held change coin that a tip moving back drops, and the tip moving forward
+ * brings back, is still held. */
+static void test_hold_survives_a_reorg(void)
+{
+    gzp_wport_t w;
+    gzt_coin c;
+    uint32_t h = 108;
+    uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    open_w(&w);
+    c = coin(&w, 1, 0, 500000, 0xf3);
+    CHECK(gzp_wport_publish(&w, &c, &h, 1, 110) == 0);         /* 3 deep: offered */
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    CHECK(gzp_wport_publish(&w, &c, &h, 1, 109) == 0);         /* 2 deep: not listed */
+    CHECK(w.n_coins == 0);
+    CHECK(gzp_wport_publish(&w, &c, &h, 1, 110) == 0);
+    CHECK(held_by_txid_tag(&w, 0xf3) > 0);
+    gzp_wport_close(&w);
+}
+
+/* A chain view for the scan: outputs by script, a tip that can fail, and a tip
+ * that moves once the first output lookup has been made (L-2). */
+typedef struct {
+    uint8_t script[8][34];
+    gz_chain_output out[8];
+    int n;
+    int tip_fails;          /* this many tip reads fail first */
+    int tip_calls, outputs_calls, tip_after_outputs;
+    uint32_t tip_before, tip_later;
+} fake_chain;
+
+static gz_chain_result fk_tip(void *ctx, gz_chain_tip *out)
+{
+    fake_chain *f = ctx;
+    f->tip_calls++;
+    if (f->outputs_calls) f->tip_after_outputs = 1;
+    if (f->tip_fails > 0) {
+        f->tip_fails--;
+        return GZ_CHAIN_UNREACHABLE;
+    }
+    memset(out, 0, sizeof *out);
+    out->height = f->outputs_calls ? f->tip_later : f->tip_before;
+    return GZ_CHAIN_OK;
+}
+
+static gz_chain_result fk_outputs(void *ctx, const uint8_t *script, size_t script_len, gz_chain_output *out,
+                                  size_t cap, size_t *count, bool *unconfirmed_differs)
+{
+    fake_chain *f = ctx;
+    (void)unconfirmed_differs;
+    f->outputs_calls++;
+    *count = 0;
+    for (int i = 0; i < f->n && *count < cap; i++)
+        if (script_len == 34 && memcmp(f->script[i], script, 34) == 0) out[(*count)++] = f->out[i];
+    return GZ_CHAIN_OK;
+}
+
+static const gz_chain_ops fk_ops = {.tip = fk_tip, .script_outputs = fk_outputs};
+
+static void fk_add(fake_chain *f, const gzt_coin *c, uint32_t height)
+{
+    memcpy(f->script[f->n], c->script, 34);
+    memset(&f->out[f->n], 0, sizeof f->out[f->n]);
+    memcpy(f->out[f->n].txid, c->txid, 32);
+    f->out[f->n].vout = c->vout;
+    f->out[f->n].value = c->amount;
+    f->out[f->n].confirmed = true;
+    f->out[f->n].height = height;
+    f->n++;
+}
+
+/* L-2: the tip is read before the coin heights, so a block found during the
+ * scan never makes an unburied change coin look buried. */
+static void test_tip_read_first(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin c;
+    open_w(&w);
+    w.gap = 3;
+    memset(&f, 0, sizeof f);
+    f.tip_before = 110;   /* the change coin at 109 is 2 deep: not buried at B = 3 */
+    f.tip_later = 120;    /* a tip read after the lookups would call it 12 deep */
+    c = coin(&w, 1, 0, 500000, 0xa7);
+    fk_add(&f, &c, 109);
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(f.tip_calls == 1 && !f.tip_after_outputs);
+    CHECK(w.n_coins == 0);
+    gzp_wport_close(&w);
+}
+
+/* L-2: a tip that cannot be read is asked again, and the coins are then published. */
+static void test_tip_retried(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin c;
+    uint64_t have;
+    size_t n;
+    open_w(&w);
+    w.gap = 2;
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    f.tip_fails = 2;
+    c = coin(&w, 0, 0, 500000, 0xa8);
+    fk_add(&f, &c, 100);
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_until(&w, &view, 1) == 1);
+    CHECK(f.tip_calls == 3);
+    CHECK(w.port.can_plan(w.port.ctx, 100000, 100, &have, &n) == 1 && have == 500000);
+    gzp_wport_close(&w);
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -212,6 +358,10 @@ int main(void)
     test_holds_across_publish();
     test_unconfirmed_and_unburied();
     test_burial_from_config();
+    test_hold_survives_a_gap();
+    test_hold_survives_a_reorg();
+    test_tip_read_first();
+    test_tip_retried();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
