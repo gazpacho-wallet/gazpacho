@@ -2048,6 +2048,59 @@ static void test_sign_needs_secp(void)
     h_free(x);
     memset(x, 0, sizeof *x);
 }
+
+/* The real engine's begin at the host refuses with no chain tip (review of
+ * #89, L1; kills sg-begin-no-tip). The host runs the signing engine itself
+ * (outcome 0: no stand-in); the members need none, since the host stops
+ * before any proposal. Nothing in this world gives the host a tip. */
+static void test_begin_needs_tip(void)
+{
+    terms_t t;
+    w_reset();
+    w_node_engine(0, 0, GZ_MEMBER_SIGNING_AUTO, 0);
+    for (int n = 1; n <= 3; n++) w_node(n, n, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
+    CHECK(N[0].n->sign_on && N[0].n->tip == 0);
+    make_terms(&t, 4, 4, 5100);
+    CHECK(host_open(&t, 0) == 200);
+    for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
+    w_run(4000, 100);
+    CHECK(host_ready(&t) == 3);
+    w_run(40000, 500);   /* the ready window, the start, the hand-off to the engine */
+    CHECK(said(0, 0, "sign-begin-refused-no-tip") >= 1);
+    w_free(3);
+}
+
+/* gz_sg_keys answers only for a scope of this node's own role (review of #89,
+ * L1; kills sg-keys-any-role). Load never keys a lobby of the other role (a
+ * slot_opened of the other role is left out and wiped before its slot_closed
+ * could key it), so the check is a second guard: the test forges the keyed
+ * entry of an ended lobby with the other role directly. */
+static void test_keys_own_role_only(void)
+{
+    terms_t t;
+    secp256k1_keypair f, kc;
+    np_keyed_t *e;
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    w_node_engine(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    make_terms(&t, 3, 3, 5200);
+    e = &N[1].n->np.keyed[0];
+    memset(e, 0, sizeof *e);
+    e->used = 1;
+    e->seq = ++N[1].n->np.keyed_seq;
+    memcpy(e->scope, t.scope, 32);
+    e->epoch = 0;
+    e->index = 1;
+    e->host = 0;   /* the member's own role: the keys are given (the control) */
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 1);
+    e->host = 1;   /* a host's ended lobby on a member: none */
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 0);
+    CHECK(gz_sg_keys(N[1].n, t.scope, NULL, &f, &kc) == 0);
+    memset(e, 0, sizeof *e);
+    w_free(1);
+}
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -2073,6 +2126,8 @@ int main(int argc, char **argv)
     test_timer_of_ended_lobby();
     test_gate_refused_ready();
     test_gate_bound_to_terms();
+    test_begin_needs_tip();
+    test_keys_own_role_only();
     test_hostile(events, seed);
     return check_done();
 }
