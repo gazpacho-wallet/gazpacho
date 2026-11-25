@@ -32,7 +32,10 @@ FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp
 IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
 TEST_STRINGS = (b"--test-pings", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at",
                 b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload",
-                b"--test-plan-once", b"--test-cut-after-mark", b"test-plan ok=", b"test-cut after=")
+                b"--test-plan-once", b"--test-cut-after-mark", b"test-plan ok=", b"test-cut after=",
+                # the host's timeout sweep and the one-coin spend (program/sweep.c, test build only)
+                b"--test-sweep", b"--test-sweep-force", b"--test-sweep-to", b"--test-owed",
+                b"--test-spend-coin", b"sweep-spend", b"spend-coin")
 
 VECTORS_NAME = re.compile(r"^(gz_sg_vectors_build_never_ship|gz_sgv_)")
 VECTORS_TEXT = b"gazpacho signer vectors build: never ship"
