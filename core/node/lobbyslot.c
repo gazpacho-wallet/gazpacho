@@ -119,7 +119,8 @@ static int ls_may_answer(void *ctx, const uint8_t scope[32])
     }
 }
 
-static int ls_funds_ok(void *ctx);   /* the host lobby's funds hook, below */
+static int ls_funds_ok(void *ctx);   /* the host lobby's funds hooks, below */
+static void ls_funds_idle(void *ctx);
 
 #ifdef GZ_TEST_KINDS
 static gz_status_t ss_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_list_t *out);
@@ -232,6 +233,7 @@ int gz_ls_init(gz_node_t *c, int i)
         hc.seat_room = ls_seat_room;
         hc.paused = ls_paused;
         hc.funds_ok = ls_funds_ok;
+        hc.funds_idle = ls_funds_idle;
         hc.seat_ctx = s;
         return gz_lobby_host_init(&s->lobby.h, &c->ports, &cr, &sg, &hc) == GZ_OK;
     }
@@ -1561,6 +1563,15 @@ static int ls_funds_ok(void *ctx)
     int r = funds_ask(c, self, gz_ls_set_aside(s), &s->funds_need, &s->funds_have);
     s->funds_blocked = r != 0;
     return r == 0;
+}
+
+/* ... and when the rule asks for no start (paused, or not CHECK): the wait is
+ * over, so host_funds_short goes and the tip recheck stops (review B of #55,
+ * the Low). */
+static void ls_funds_idle(void *ctx)
+{
+    slot_t *s = ctx;
+    s->funds_blocked = 0;
 }
 
 static gz_status_t funds_recheck_inline(gz_node_t *c, int eng, gz_action_list_t *out)

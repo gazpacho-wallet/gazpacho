@@ -323,21 +323,26 @@ static gz_status_t apply_rule(gz_lobby_host_t *h, int at_deadline, gz_action_lis
 {
     uint16_t j, r;
     uint32_t rc;
-    int rule;
+    int rule, paused;
     if (h->state != GZ_LOBBY_OPEN || (!h->rule_dirty && !at_deadline)) return GZ_OK;
     /* After a check without a start, the next needs a seat event in between
      * (or the deadline): an unsatisfiable set never loops (review A, F6). */
     if (!at_deadline && h->check_failed && h->seat_epoch == h->failed_epoch) return GZ_OK;
     counts(h, &j, &r, &rc);
     rule = gz_lobby_start_rule(h->terms.target, h->terms.minimum, h->terms.deadline, now_ms(h) / 1000, rc);
+    paused = h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx);
+    /* No start asked for: nothing waits for the host's funds (review B of #55, the Low). */
+    if ((paused || rule != GZ_RULE_CHECK) && h->cfg.funds_idle) h->cfg.funds_idle(h->cfg.seat_ctx);
     /* Paused (local-api.md 11.3): no ready check; at the deadline the lobby
      * is cancelled, the host's choice. */
-    if (h->cfg.paused && h->cfg.paused(h->cfg.seat_ctx))
-        return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;
+    if (paused) return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;
     /* The host's funds, as at its own early start (review B of #55, M-1): a
      * start the wallet cannot fund waits Open; rule_dirty stays, so the next
-     * seat event or a recheck asks again. */
-    if (rule == GZ_RULE_CHECK && h->cfg.funds_ok && !h->cfg.funds_ok(h->cfg.seat_ctx)) return GZ_OK;
+     * seat event or a recheck asks again. At or after the deadline it ends as
+     * a paused lobby does, reason 2 (M-2): never a start past the date the
+     * members agreed it would start by. */
+    if (rule == GZ_RULE_CHECK && h->cfg.funds_ok && !h->cfg.funds_ok(h->cfg.seat_ctx))
+        return now_ms(h) / 1000 >= h->terms.deadline ? end_lobby(h, 2, out) : GZ_OK;   /* M-2 */
     if (rule == GZ_RULE_CHECK) return ready_check(h, out);
     if (rule == GZ_RULE_CANCEL) return end_lobby(h, 1, out);
     return GZ_OK;

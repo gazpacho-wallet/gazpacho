@@ -407,7 +407,13 @@ join-key-not-derived	core/node/lobbyslot.c	            if (c->cfg.keys.secret &&
 gate-secret-not-wiped	core/node/lobbyslot.c	    for (size_t i = 0; i < sizeof s->gate_secret; i++) v[i] = 0;	    (void)v;
 seat-end-gate-kept	core/node/lobbyslot.c	        !gz_lobby_member_check_in_flight(&s->lobby.m))\n        gate_close(c, s);	        !gz_lobby_member_check_in_flight(&s->lobby.m))\n        (void)0;
 # --- review B of #55: the automatic start's funds check (M-1), and review A's L2
-funds-auto-unchecked	core/lobby/host.c	    if (rule == GZ_RULE_CHECK && h->cfg.funds_ok && !h->cfg.funds_ok(h->cfg.seat_ctx)) return GZ_OK;	    if (0) return GZ_OK;
+funds-auto-unchecked	core/lobby/host.c	    if (rule == GZ_RULE_CHECK && h->cfg.funds_ok && !h->cfg.funds_ok(h->cfg.seat_ctx))
+        return now_ms(h)	    if (0)
+        return now_ms(h)
+funds-deadline-kept	core/lobby/host.c	? end_lobby(h, 2, out) : GZ_OK;   /* M-2 */	? GZ_OK : GZ_OK;   /* M-2 */
+funds-idle-never	core/lobby/host.c	    if ((paused || rule != GZ_RULE_CHECK) && h->cfg.funds_idle)	    if (0 && h->cfg.funds_idle)
+funds-idle-not-paused	core/lobby/host.c	    if ((paused || rule != GZ_RULE_CHECK) && h->cfg.funds_idle)	    if ((rule != GZ_RULE_CHECK) && h->cfg.funds_idle)
+funds-idle-hook-off	core/node/lobbyslot.c	        hc.funds_idle = ls_funds_idle;	        hc.funds_idle = NULL;
 funds-recheck-off	core/node/composite.c	        if (st == GZ_OK && c->cfg.host) st = gz_ls_funds_recheck(c, out);\n	
 funds-attention-off	core/node/view.c	        if (s->funds_blocked && s->lobby.h.state == GZ_LOBBY_OPEN) code = GZ_ATT_HOST_FUNDS_SHORT;   /* the more pressing */\n	
 funds-blocked-never-cleared	core/node/lobbyslot.c	    s->funds_blocked = r != 0;	    s->funds_blocked |= r != 0;
