@@ -2,27 +2,66 @@
 # (tools/check-signer-boundary.sh). FILE<TAB>SYMBOL<TAB>COUNT. The list may only
 # shrink; step S4 (docs/notes/signer.md 9) empties it and the check then fails
 # on any use.
-core/gazpacho/include/gazpacho/node.h	hook:sign	1
-core/gazpacho/include/gazpacho/ports.h	hook:secret	1
+
+# ---- BEGIN S3: #52's interim shape, merged to main (review B of #71, L2).
+# The slot's gate_secret, the key port's secret() and host_secret(), the key
+# pairs gz_sg_keys builds in core/node, the signing engine's keypair_sec, and
+# the tests that drive them. Step S3 (docs/notes/signer.md 9) removes them
+# and every line of this block goes with it. Two lines mix in older uses:
+# tests/node/test_node_lobby.c hook:sign (1 of 2 is #52's; the other goes at
+# S4) and tests/signing/world.h secp256k1_keypair_create (2 of 6 are #52's;
+# the other 4 go at S4).
 core/gazpacho/include/gazpacho/ports.h	host_secret	1
-core/lobby/host.c	hook:sign	5
-core/lobby/include/gazpacho/lobby.h	hook:sign	1
-core/lobby/member.c	hook:sign	2
-core/lobby/wire.c	hook:sign	1
-# #52's interim shape (merged to main): the slot's gate_secret, the key port's
-# secret() and host_secret(), and gz_sg_keys' key pairs in core/node. Step S3
-# removes them (docs/notes/signer.md 9); these lines go with them.
 core/node/internal.h	gate_secret	1
 core/node/lobbyslot.c	gate_secret	5
 core/node/lobbyslot.c	hook:secret	1
-core/node/lobbyslot.c	hook:sign	4
-core/node/lobbyslot.c	ls_sign	2
 core/node/signslot.c	gate_secret	1
 core/node/signslot.c	hook:secret	2
 core/node/signslot.c	hook:sign	2
 core/node/signslot.c	host_secret	2
 core/node/signslot.c	secp256k1_keypair_create	3
 core/signing/signing.c	secp256k1_keypair_sec	1
+program/executor.c	host_secret	1
+tests/node/test_node_lobby.c	hook:secret	1
+tests/node/test_node_lobby.c	hook:sign	2
+tests/signing/world.h	secp256k1_keypair_create	6
+# ---- END S3
+
+# ---- BEGIN S4/S5, must move to signer/ (review A of #71, re-review).
+# program/main.c: wallet_open, which derived the master key from the words a second time,
+# is gone with #53 (P8): keys_open asks program/keys.c, the derivation layer the signer will
+# wrap (signer.md S2); keys.c moves into signer/ at S4. program/keys_standin.c: the STAND-IN
+# seed source turns its words into the seed until #54's storage gives it through unlock.h.
+# (Original note on wallet_open:)
+# program/main.c: wallet_open derives the master key from the words outside
+# the signer to check the first receive address, a second path from the words
+# to the master key. At S4 (S5 for the funding wallet) the check becomes a
+# signer call, or is dropped: gzw_bip32_master and gzw_phrase_to_seed go.
+# Its secp256k1_ec_seckey_verify is key_ok's check of the transport key, which
+# goes with S4's ECDH move.
+# program/unlock_standin.c: the stand-in unlock turns the words into the seed
+# outside the signer. At S4 the signer reads the seed only through its seed
+# source and does this step itself.
+program/keys.c	gzw_bip32_child_priv	2
+program/keys.c	gzw_bip32_master	1
+program/keys_standin.c	gzw_phrase_to_seed	1
+program/main.c	secp256k1_ec_seckey_verify	1
+program/unlock_standin.c	gzw_phrase_to_seed	1
+# ---- END S4/S5
+
+# ---- S4: everything else. The signing engine's, the lobby's and the
+# transport's own keys and hooks move into signer/ at S4; the wallet
+# libraries, SuperScalar's tests and the other test code are allowed there by
+# target name instead. #80's can_plan test added two gzt_funding_build uses
+# to wallet/tx/tests/test_tx_funding_port.c (12 to 14) after #71's list.
+core/gazpacho/include/gazpacho/node.h	hook:sign	1
+core/gazpacho/include/gazpacho/ports.h	hook:secret	1
+core/lobby/host.c	hook:sign	5
+core/lobby/include/gazpacho/lobby.h	hook:sign	1
+core/lobby/member.c	hook:sign	2
+core/lobby/wire.c	hook:sign	1
+core/node/lobbyslot.c	hook:sign	4
+core/node/lobbyslot.c	ls_sign	2
 core/signing/signing.c	secp256k1_musig_nonce_gen	1
 core/signing/signing.c	secp256k1_musig_partial_sign	1
 core/signing/signing.c	secp256k1_schnorrsig_sign32	1
@@ -35,19 +74,8 @@ ports/net/peers.h	static_key	2
 program/executor.c	gzp_net_sign	2
 program/executor.c	hook:secret	1
 program/executor.c	hook:sign	1
-program/executor.c	host_secret	1
 program/executor.c	port_secret	3
 program/executor.c	port_sign	2
-# MUST MOVE TO signer/ AT S4 (signer.md S2, #53): program/keys.c is the derivation layer the signer
-# will wrap; it derives from the seed source's seed and keeps nothing (docs/notes/keys.md). main.c's
-# wallet_open, which derived the master key a second time, is gone: keys_open asks keys.c. At S4 these
-# lines go into signer/ with keys.c.
-program/keys.c	gzw_bip32_child_priv	2
-program/keys.c	gzw_bip32_master	1
-# MUST MOVE TO signer/ AT S4: the STAND-IN seed source (wallet-seed.standin) turns its words into the seed
-# outside the signer until #54's storage gives the seed through unlock.h; this line then goes.
-program/keys_standin.c	gzw_phrase_to_seed	1
-program/main.c	secp256k1_ec_seckey_verify	1
 program/net.c	gzp_net_sign	1
 program/net.c	secp256k1_ec_pubkey_create	2
 program/net.c	secp256k1_ec_seckey_verify	1
@@ -55,10 +83,6 @@ program/net.c	secp256k1_keypair_create	1
 program/net.c	secp256k1_schnorrsig_sign32	1
 program/net.c	static_key	5
 program/net.h	gzp_net_sign	1
-# MUST MOVE TO signer/ AT S4 (review A of #71, re-review): the stand-in unlock turns the words into the
-# seed here, outside the signer. At S4 the signer reads the words or seed only through its seed source and
-# does this step itself; this line then goes.
-program/unlock_standin.c	gzw_phrase_to_seed	1
 tests/funding/regtest_harness.c	gzt_funding_build	1
 tests/funding/regtest_harness.c	gzt_funding_release	1
 tests/funding/regtest_harness.c	gzt_funding_spend_back	1
@@ -78,8 +102,6 @@ tests/net/test_peers.c	static_key	1
 tests/net/test_testkind.c	secp256k1_ec_pubkey_create	1
 tests/net/test_testkind.c	static_key	1
 tests/net/test_wipes.c	secp256k1_ec_pubkey_create	1
-tests/node/test_node_lobby.c	hook:secret	1
-tests/node/test_node_lobby.c	hook:sign	2
 tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	3
 tests/program/fuzz_keys.c	secp256k1_ec_pubkey_create	1
 tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
@@ -96,7 +118,6 @@ tests/signing/scenarios.h	secp256k1_musig_nonce_gen	1
 tests/signing/test_bip327.c	secp256k1_keypair_create	3
 tests/signing/test_bip327.c	secp256k1_musig_nonce_gen	3
 tests/signing/test_bip327.c	secp256k1_musig_partial_sign	3
-tests/signing/world.h	secp256k1_keypair_create	6
 tests/signing/world.h	secp256k1_musig_nonce_gen	1
 tests/signing/world.h	secp256k1_schnorrsig_sign32	2
 tests/test_reference_tree.c	secp256k1_keypair_create	1
@@ -176,7 +197,6 @@ wallet/tx/tests/test_tx_faults.c	gzt_funding_build	2
 wallet/tx/tests/test_tx_faults.c	gzt_funding_release	1
 wallet/tx/tests/test_tx_faults.c	gzt_sign_keypath	1
 wallet/tx/tests/test_tx_faults.c	gzw_taproot_tweak_seckey	1
-# main's own tree uses it 14 times (the list said 12 when #53 merged main at 5e0c378).
 wallet/tx/tests/test_tx_funding_port.c	gzt_funding_build	14
 wallet/tx/tests/test_tx_funding_port.c	gzt_funding_release	1
 wallet/tx/tests/test_tx_funding_port.c	gzt_funding_spend_back	8

@@ -271,3 +271,10 @@ sg-timer-budget	core/node/timers.c	if (eng == ENG_SIGN) return 1;      /* the en
 sg-init-without-secp	core/node/signslot.c	if (!c->cfg.secp || !c->cfg.sign_mem	if (!c->cfg.sign_mem
 sg-ready-any-digest	core/node/lobbyslot.c	if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0)	if (0)
 sg-refused-ready-rebinds	core/node/lobbyslot.c	        memcpy(s->gate_digest, old_digest, 32);	
+sg-leave-partials-out-off	core/node/lobbyslot.c	if (held_out == GZ_SIGN_OUT_THIS) return	if (0) return
+sg-partials-out-never	core/node/lobbyslot.c	return c->sign_on ? gz_sign_partials_out(c->sign, scope) : GZ_SIGN_OUT_NONE;	return GZ_SIGN_OUT_NONE;
+sg-unready-gated	core/node/lobbyslot.c	int held_out = code == GZ_CMD_LOBBY_LEAVE ?	int held_out = (code == GZ_CMD_LOBBY_LEAVE || code == GZ_CMD_LOBBY_UNREADY) ?
+sg-unknown-as-this	core/node/lobbyslot.c	return np_command_result(out, cmd, 409, "too_late_unknown_round");	return np_command_result(out, cmd, 409, "too_late");
+sg-unknown-not-refused	core/node/lobbyslot.c	if (held_out == GZ_SIGN_OUT_UNKNOWN) return	if (0) return
+sg-tip-not-to-signing	core/node/composite.c	if (st == GZ_OK && c->sign_on && !c->cfg.host) st = gz_c_bracket(c, ENG_SIGN, ev, out);	
+sg-no-funding-deadline	core/node/signslot.c	sc.funding_deadline_blocks = fc.funding_deadline_blocks;	sc.funding_deadline_blocks = 0;

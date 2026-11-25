@@ -631,6 +631,11 @@ void gz_ls_wipe32(uint8_t *p);      /* 32 secret bytes, wiped */
 /* The engine's key hook (signing.h `keys`), for the node's tests too. */
 int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, secp256k1_keypair *f, secp256k1_keypair *kc);
 int gz_sg_may_ack(void *ctx, const gz_sign_round_t *r, uint32_t *ack_tip);   /* 1 ack, 0 no, -1 not yet */
+/* GZ_SIGN_OUT_THIS if the member's round in lobby `scope` has partial signatures out and is not resolved,
+ * GZ_SIGN_OUT_UNKNOWN for such a round whose lobby is not known, else GZ_SIGN_OUT_NONE (the signing
+ * engine's fact, gz_sign_partials_out): the person's leave is then refused, Slice 1 blocker C1. The pause
+ * (local-api.md 11.3, PR 55) and a conditions change (PR 77) must ask the same. */
+int gz_ls_partials_out(const gz_node_t *c, const uint8_t scope[32]);
 const gz_engine_ops_t *gz_sg_ops(void);
 gz_status_t gz_sg_after(gz_node_t *c, gz_action_list_t *out);
 gz_status_t gz_sg_drain(gz_node_t *c, gz_action_list_t *out);

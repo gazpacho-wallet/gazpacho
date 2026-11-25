@@ -721,6 +721,11 @@ gz_status_t gz_sg_init(gz_node_t *c)
     sc.deadline_ticks = (uint32_t)(SG_STEP_MS / tick ? SG_STEP_MS / tick : 1);
     sc.status_ticks = sc.resend_ticks;
     sc.unfinished_ticks = (uint32_t)(SG_UNFINISHED_MS / tick ? SG_UNFINISHED_MS / tick : 1);
+    {
+        gz_tree_conditions_t fc;
+        sg_exit_conditions(&fc);
+        sc.funding_deadline_blocks = fc.funding_deadline_blocks;   /* C11, the deadline may_ack judged the ack at */
+    }
     sc.keys = gz_sg_keys;
     sc.may_ack = gz_sg_may_ack;
     sc.guard = sg_guard;
