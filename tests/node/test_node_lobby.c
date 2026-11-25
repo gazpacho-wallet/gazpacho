@@ -384,7 +384,7 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
  * secrets; its hand-offs still go to the stand-in (`outcome`), so only the key hook and the gate are the
  * engine's here. */
 static secp256k1_context *TCTX;
-static void *TMEM[4];
+static void *TMEM[NN];          /* one engine memory per node, the scratch node included */
 static int w_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32])
 {
     (void)ctx; (void)epoch;
@@ -2028,6 +2028,26 @@ static void test_index_ceiling(void)
     CHECK(w_restart(1) == GZ_OK && slot(1, &t[3]) && slot(1, &t[3])->key_index == GZ_LS_KEY_INDEX_MAX);
     w_free(1);
 }
+
+/* The signing engine runs only with a secp256k1 context (node.h): a node
+ * given the engine's memory but no context starts without it, and never
+ * reaches the engine with a NULL context (mutant sg-init-without-secp). */
+static void test_sign_needs_secp(void)
+{
+    h_t *x = &N[SCRATCH];
+    w_reset();
+    w_node_engine(SCRATCH, 5, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    CHECK(w_start(SCRATCH) == GZ_OK && x->n->sign_on && x->n->sign != NULL);   /* the control: with a context */
+    x->cfg.secp = NULL;
+    h_new_node(x);
+    CHECK(w_start(SCRATCH) == GZ_OK && !x->n->sign_on && x->n->sign == NULL);
+    ALIVE[SCRATCH] = 0;
+    NT[SCRATCH] = 0;
+    for (int i = 0; i < 64; i++)
+        if (C[i].used && C[i].node == SCRATCH) C[i].used = 0;
+    h_free(x);
+    memset(x, 0, sizeof *x);
+}
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -2049,6 +2069,7 @@ int main(int argc, char **argv)
     test_left_out();
     test_node_record_fields();
     test_index_ceiling();
+    test_sign_needs_secp();
     test_timer_of_ended_lobby();
     test_gate_refused_ready();
     test_gate_bound_to_terms();
