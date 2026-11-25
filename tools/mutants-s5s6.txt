@@ -104,3 +104,6 @@ b_floor_trusted	ports/storage/journal.c	    if (sealed_rule) floor = 0;	    (voi
 precount_skipped	program/store_unlock.c	        precount(w, job, k) != 0)	        0 && precount(w, job, k) != 0)
 r21_floor_not_carried	program/store_journal.c	        if (floor > counter && gz_sc_counter_write(	        if (0 && gz_sc_counter_write(
 attempts_cap_removed	ports/storage/crypto/sc_misc.c	    if (a->blocked_until_s > sat_add(now_s, STRICT_S))	    if (0)
+# --- review A of PR 54, M-2
+node_mem_not_wiped	program/executor.c	    if (ex->node) OPENSSL_cleanse(ex->node, gz_node_size());	    (void)0;
+sign_mem_not_wiped	program/executor.c	    if (ex->sign_mem) OPENSSL_cleanse(ex->sign_mem, gz_node_sign_size());	    (void)0;

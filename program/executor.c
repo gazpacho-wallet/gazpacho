@@ -36,6 +36,9 @@
 #include "gazpacho/envelope.h"
 #include "gazpacho/tree_import.h"
 #include "executor.h"
+#ifdef GZP_TEST_BUILD
+static unsigned test_ok_results; /* commands answered 200 (--test-lock-after-command) */
+#endif
 #include "store_unlock.h"
 #ifdef GZP_TEST_BUILD
 #include "gazpacho/test_engine.h"
@@ -376,6 +379,9 @@ static void show_notify(uint32_t code, gz_bytes_t b)
             err[w.len] = 0;
         }
         gzp_log("command-result id=%s status=%u error=%s", id, (unsigned)gz_get_u16(v.data), err);
+#ifdef GZP_TEST_BUILD
+        if (gz_get_u16(v.data) == 200) test_ok_results++;
+#endif
     } else if ((code >> 16) == 1 && gz_rec_find(b, GZ_VIEW_REC_ID, &v) == 1 && v.len < 65) {
         char id[70];
         for (i = 0; i < v.len; i++) id[i] = v.data[i] > 32 && v.data[i] < 127 ? (char)v.data[i] : '?';
@@ -940,7 +946,9 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     /* A lock stops the node (unlock.h; local-api.md 4.7): this incarnation ends. */
     if (ex->api && gzp_api_lock_pending(ex->api)) return GZP_RUN_LOCKED;
 #ifdef GZP_TEST_BUILD
-    if (ex->opt->test_lock_after_drop && ex->net->test_drops > 0 && !ex->test_locked_once) {
+    if (((ex->opt->test_lock_after_drop && ex->net->test_drops > 0) ||
+         (ex->opt->test_lock_after_command && test_ok_results >= (unsigned)ex->opt->test_lock_after_command)) &&
+        !ex->test_locked_once) {
         ex->test_locked_once = 1;
         gzp_log("test-lock after-drop");
         return GZP_RUN_LOCKED;
@@ -1064,6 +1072,9 @@ int gzp_exec_wait_unlocked(gzp_exec_t *ex)
 
 int gzp_exec_test_memory_zero(const gzp_exec_t *ex, int *node_zero, int *sign_zero)
 {
+#ifdef GZP_TEST_BUILD
+    (void)test_ok_results;
+#endif
     const unsigned char *p;
     unsigned char acc = 0;
     size_t i;

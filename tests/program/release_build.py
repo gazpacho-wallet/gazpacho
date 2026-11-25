@@ -37,7 +37,8 @@ FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp
 # that each half of the check can fail (review of PR 27, M5).
 IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
 TEST_STRINGS = (b"--test-pings", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at",
-                b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload")
+                b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload",
+                b"--test-lock-after-drop", b"--test-lock-after-command", b"locked-memory node-zero")
 
 VECTORS_NAME = re.compile(r"^(gz_sg_vectors_build_never_ship|gz_sgv_)")
 VECTORS_TEXT = b"gazpacho signer vectors build: never ship"

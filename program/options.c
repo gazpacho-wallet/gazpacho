@@ -157,6 +157,7 @@ void gzp_usage(void)
         "  --test-append-batch HEX       save one batch of records (type, length, bytes ...), then stop\n"
         "  --test-drop-kind K            drop every received message of kind K\n"
         "  --test-lock-after-drop        lock once after the first dropped message, then unlock again\n"
+        "  --test-lock-after-command N   lock once after the N-th command answered 200, then unlock again\n"
         "  --test-commands               read test commands from standard input\n"
         "  --test-big-reply BYTES        pad every test reply with BYTES\n"
         "  --test-crash-after-save K     exit once the K-th batch is durable\n"
@@ -338,6 +339,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-max-conns")) { ok = num(val, 1, 64, &v); o->test_max_conns = (int)v; }
         else if (!strcmp(a, "--test-drop-kind")) { ok = num(val, 1, 65535, &v); o->test_drop_kind = (int)v; }
         else if (!strcmp(a, "--test-lock-after-drop")) { o->test_lock_after_drop = 1; takes = 0; }
+        else if (!strcmp(a, "--test-lock-after-command")) { ok = num(val, 1, 1000, &v); o->test_lock_after_command = (int)v; }
         else if (!strcmp(a, "--test-sign-outcome")) {
             if (!strcmp(val, "funding")) o->test_sign_outcome = 1;
             else if (!strcmp(val, "retry")) o->test_sign_outcome = 2;

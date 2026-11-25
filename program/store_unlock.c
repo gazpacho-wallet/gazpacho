@@ -62,6 +62,7 @@ typedef struct {
     gz_sc_prepared_t prep;       /* CREATE, RESTORE: the key file's bytes */
     int have_prep;
     int precounted;              /* counted wrong, durably, before the passphrase was checked */
+    int64_t answer_ms;           /* when the derivation answered (the delay runs from it) */
 } job_keys_t;
 
 static const char *const STATUS_NAMES[] = {"ok", "wrong", "busy", "not_checked", "no_wallet", "exists",
@@ -517,6 +518,14 @@ out:
 #define READ_ONLY_UNLOCK(w) 0
 #endif
 
+/* The wall clock, in ms (the attempts persist across restarts). */
+static int64_t wall_ms_now(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static int precount(gzp_wallet_t *w, gzp_unlock_job_t *job, job_keys_t *k)
 {
     struct timespec ts;
@@ -579,11 +588,13 @@ void gzp_wallet_begin(gzp_wallet_t *w, gzp_unlock_job_t *job)
     case GZP_UNLOCK_OP_START_AS_RESTORE:
     case GZP_UNLOCK_OP_CHECK:
         k->err = gz_sc_unlock_derive(&w->sc, job->passphrase, job->passphrase_len, &w->params, &k->u);
+        k->answer_ms = wall_ms_now();
         map_err(&job->result, k->err);
         return;
     case GZP_UNLOCK_OP_REVEAL:
     case GZP_UNLOCK_OP_WORDS_CHECK:
         reveal_or_check(w, job);
+        k->answer_ms = wall_ms_now();
         return;
     case GZP_UNLOCK_OP_CREATE:
     case GZP_UNLOCK_OP_RESTORE:
@@ -749,7 +760,7 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
 #endif
     if (r->status == GZP_UNLOCK_WRONG) {
         if (k->precounted) {
-            report_attempts(w, now_ms, r); /* counted already, before the check */
+            report_attempts(w, k->answer_ms ? k->answer_ms : now_ms, r); /* counted already, before the check */
             r->status = GZP_UNLOCK_WRONG;
         } else if (count_attempt(w, 1, now_ms, r) != 0) {
             set_result(r, GZP_UNLOCK_STORAGE_FAILED, "attempts");
@@ -778,7 +789,7 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
         if (!same) {
             set_result(r, GZP_UNLOCK_WRONG, NULL);
             if (k->precounted) {
-                report_attempts(w, now_ms, r);
+                report_attempts(w, k->answer_ms ? k->answer_ms : now_ms, r);
                 r->status = GZP_UNLOCK_WRONG;
             } else if (count_attempt(w, 1, now_ms, r) != 0) {
                 set_result(r, GZP_UNLOCK_STORAGE_FAILED, "attempts");

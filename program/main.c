@@ -423,6 +423,37 @@ static int wait_unlocked(const gzp_options_t *o)
             static gzp_unlock_job_t bj;
             gzp_unlock_result_t b0, b1;
             static const char bw[] = "not this wallet's passphrase, in the delay";
+            {
+                /* A finish taken late (the API's loop takes the job when it next
+                 * runs): the wrong answer's delay runs from the answer, so a try
+                 * after it is checked, whenever the finish ran. */
+                struct timespec d1 = {1, 200000000L}, d2 = {2, 200000000L};
+                uint8_t *pw = gz_sc_salloc(GZ_SC_PASS_IN_MAX + 1);
+                int fd = pw ? open(o->test_passphrase_file, O_RDONLY | O_CLOEXEC) : -1;
+                ssize_t r = fd >= 0 ? read(fd, pw, GZ_SC_PASS_IN_MAX + 1) : -1;
+                size_t n = r > 0 ? (size_t)r : 0;
+                if (fd >= 0) close(fd);
+                if (n && pw[n - 1] == 10) n--;
+                nanosleep(&d1, NULL);
+                memset(&bj, 0, sizeof bj);
+                bj.op = GZP_UNLOCK_OP_CHECK;
+                bj.passphrase = (const uint8_t *)bw;
+                bj.passphrase_len = sizeof bw - 1;
+                gzp_wallet_begin(wallet, &bj);
+                nanosleep(&d2, NULL);
+                gzp_wallet_finish(wallet, &bj, wall_ms());
+                memset(&bj, 0, sizeof bj);
+                bj.op = GZP_UNLOCK_OP_CHECK;
+                bj.passphrase = pw;
+                bj.passphrase_len = n;
+                if (pw && r > 0) {
+                    gzp_wallet_begin(wallet, &bj);
+                    gzp_wallet_finish(wallet, &bj, wall_ms());
+                }
+                gzp_log("test-deferred-finish right status=%s", gzp_unlock_status_name(bj.result.status));
+                if (pw) gz_sc_sfree(pw);
+                OPENSSL_cleanse(&bj, sizeof bj);
+            }
             check_forged(o);
             memset(&b0, 0, sizeof b0);
             gzp_wallet_attempts(wallet, wall_ms(), &b0);
@@ -763,7 +794,7 @@ int main(int argc, char **argv)
             gzp_net_forget_key(&net);
             gzp_log("transport-key wiped zero=%d peers=%d", gzp_net_key_is_zero(&net), net.peers != NULL);
 #ifdef GZP_TEST_BUILD
-            if (opt.test_lock_after_drop) {
+            if (opt.test_lock_after_drop || opt.test_lock_after_command) {
                 int nz, sz;
                 gzp_wallet_lock(wallet);
                 gzp_exec_test_memory_zero(&ex, &nz, &sz);

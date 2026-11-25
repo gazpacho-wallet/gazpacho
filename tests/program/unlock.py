@@ -204,6 +204,10 @@ def main():
         wr = p.find(r"test-check wrong status=(\S+)")[1]
         rt = p.find(r"test-check right status=(\S+) wrong_in_row=(\d+)")[1]
         bd = p.find(r"test-begin-in-delay status=(\S+) before=(\d+) after=(\d+)")[1]
+        df = p.wait_for(r"test-deferred-finish right status=(\S+)", timeout=30)
+        check(df is not None and df.group(1) == "ok",
+              "9: a wrong answer's delay runs from the answer, not from a late finish: the next try is checked (%s)"
+              % (df.group(0) if df else None))
         check(bd is not None and bd.group(1) == "busy" and bd.group(2) == bd.group(3) and bd.group(2) != "0",
               "9: begin itself refuses a try inside the delay, not counted (review A's L3; %s)" % (bd.group(0) if bd else None))
         check(rt is not None and rt.group(1) == "ok" and rt.group(2) == "0",

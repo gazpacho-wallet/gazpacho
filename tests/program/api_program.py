@@ -281,6 +281,17 @@ def main():
         par = (e or {}).get("params", {})
         check(st == 401 and e.get("code") == "wrong_passphrase" and par.get("wrong_in_row") == 1 and par.get("retry_after_s", 0) >= 1,
               "wrong passphrase: retry_after_s and wrong_in_row", e)
+        # One owner of attempts.gza (storage 12.3): the wallet. The API server
+        # keeps no count of its own in it (two writers left a block the
+        # wallet read as running at the next try: review A's re-confirmation
+        # follow-up, run 32).
+        check(not any("wrong passphrase (" in l for l in p.lines),
+              "the API server keeps no attempts count of its own: the wallet's is the one", [l for l in p.lines if "wrong passphrase (" in l][:2])
+        # Obeying retry_after_s exactly, the next try is checked: here, the right
+        # password signs in (the server's view of the delay and the wallet's are one).
+        time.sleep(par.get("retry_after_s", 1) + 0.05)
+        st, s2 = p.call("POST", "/session", {"passphrase": PASS})
+        check(st == 200 and s2 and s2.get("session"), "after retry_after_s the right password is checked and signs in", (st, s2))
         p.session = keep
 
         # 6. lock
