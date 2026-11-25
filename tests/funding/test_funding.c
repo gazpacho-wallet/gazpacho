@@ -1803,6 +1803,216 @@ static void test_restart_two(void)
     free(u);
 }
 
+/* Review B's third confirmation: a watch told pending (its answer put off)
+ * makes its own factory wait, never another; Live still comes from the
+ * report; its WATCH_SYNCED ends the wait; and a factory never answered
+ * fails closed GZ_FUND_PENDING_GRACE blocks past its deadline. */
+static void test_watch_pending(void)
+{
+    for (int end = 0; end < 3; end++) {
+        /* members A (input 0 pending) and B (honest), both past their deadline */
+        ft_t *t = ft_new(0, GZ_HOST_FUNDING_AUTO);
+        uint8_t txa[400], txb[400], op[36];
+        size_t la, lb;
+        gz_fund_acked_in_t a = acked_in(t, SCOPE_A, 0x40, 1000, &txa, &la);
+        gz_fund_acked_in_t b = acked_in(t, SCOPE_B, 0x50, 1000, &txb, &lb);
+        gz_event_t e;
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &a, &t->out) == GZ_OK);
+        ft_after(t);
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &b, &t->out) == GZ_OK);
+        ft_after(t);
+        e = ev_tip(1001);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        ft_op(op, 0x40, 0);
+        e = ev_pending_op(op);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 0);   /* put off is not failed */
+        e = ev_tip(1045);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[0].scope, SCOPE_B, 32) == 0);
+        if (end == 0) {
+            /* the answer comes: nothing found, so A is decided */
+            e = ev_synced_op(op);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[1].scope, SCOPE_A, 32) == 0);
+        } else if (end == 1) {
+            /* a report still decides: Live */
+            e = ev_conf(a.funding.txid, 43, 1003);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_LIVE && memcmp(t->h.r[1].scope, SCOPE_A, 32) == 0);
+        } else {
+            /* never answered: waits to the grace, then fails closed */
+            e = ev_tip(1036 + GZ_FUND_PENDING_GRACE);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 1);
+            e = ev_tip(1036 + GZ_FUND_PENDING_GRACE + 1);
+            CHECK(ft_ev(t, &e) == GZ_OK);
+            drain(t);
+            CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[1].scope, SCOPE_A, 32) == 0);
+        }
+        free(t);
+    }
+    {
+        /* a host: A's funding put off, B fine; past the deadline B is abandoned
+         * with its spend-back, A waits; past the grace A is abandoned with no
+         * spend-back, as for a failed watch */
+        ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+        gz_event_t e = ev_tip(1000);
+        gz_fund_plan_out_t p;
+        int sb0;
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        p = host_fund(t, SCOPE_A, 0);
+        (void)host_fund(t, SCOPE_B, 0);
+        sb0 = t->w.sb_n;
+        e = ev_pending_tx(p.funding.txid);   /* its funding's answer put off */
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        e = ev_tip(1040);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 1 && t->h.r[0].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[0].scope, SCOPE_B, 32) == 0);
+        CHECK(t->w.sb_n == sb0 + 1);
+        e = ev_tip(1036 + GZ_FUND_PENDING_GRACE + 1);
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        drain(t);
+        CHECK(t->h.n == 2 && t->h.r[1].kind == GZ_FUND_R_ABANDONED && memcmp(t->h.r[1].scope, SCOPE_A, 32) == 0);
+        CHECK(t->w.sb_n == sb0 + 1);
+        free(t);
+    }
+}
+
+/* Review of PR 72, P-1: back after a long absence. Funded at 1000 (deadline
+ * 1036), buried at 1003, and the node starts again at 1300, more than the
+ * grace past the deadline: its watches are told pending while the old
+ * confirmation is linked. Nothing is decided until the answers, then Live;
+ * the grace counts from when the watch went pending, not from the deadline. */
+static void test_long_absence(void)
+{
+    {
+        /* a host */
+        ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO), *u;
+        gz_event_t e = ev_tip(1000);
+        gz_fund_plan_out_t p;
+        uint8_t in0[36], id[32];
+        int sb0;
+        CHECK(ft_ev(t, &e) == GZ_OK);
+        p = host_fund(t, SCOPE_A, 0);
+        memcpy(in0, p.tx + 5, 36);
+        memcpy(id, p.funding.txid, 32);
+        u = ft_restart(t);
+        free(t);
+        sb0 = u->w.sb_n;
+        e = ev_tip(1300);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        e = ev_pending_tx(id);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        e = ev_pending_op(in0);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        drain(u);
+        CHECK(u->h.n == 0 && u->w.sb_n == sb0);
+        e = ev_conf(id, 298, 1003);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        e = ev_spent(in0, id, 298);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        e = ev_synced_tx(id);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        e = ev_synced_op(in0);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        drain(u);
+        CHECK(u->h.n == 1 && u->h.r[0].kind == GZ_FUND_R_LIVE && u->w.sb_n == sb0);
+        free(u);
+    }
+    for (int answered = 0; answered <= 1; answered++) {
+        /* a member: Live once answered; never answered, the grace from 1300 */
+        ft_t *t = ft_new(0, GZ_HOST_FUNDING_AUTO), *u;
+        uint8_t tx[400], op[36];
+        size_t len;
+        gz_fund_acked_in_t a = acked_in(t, SCOPE_A, 0x40, 1000, &tx, &len);
+        gz_event_t e;
+        ft_reset(t);
+        CHECK(gz_fund_member_acked(&t->f, &a, &t->out) == GZ_OK);
+        ft_after(t);
+        u = ft_restart(t);
+        free(t);
+        e = ev_tip(1300);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        e = ev_pending_tx(a.funding.txid);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        ft_op(op, 0x40, 0);
+        e = ev_pending_op(op);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        ft_op(op, 0x41, 1);
+        e = ev_pending_op(op);
+        CHECK(ft_ev(u, &e) == GZ_OK);
+        drain(u);
+        CHECK(u->h.n == 0);
+        if (answered) {
+            e = ev_conf(a.funding.txid, 298, 1003);
+            CHECK(ft_ev(u, &e) == GZ_OK);
+            drain(u);
+            CHECK(u->h.n == 1 && u->h.r[0].kind == GZ_FUND_R_LIVE);
+        } else {
+            e = ev_tip(1300 + GZ_FUND_PENDING_GRACE);
+            CHECK(ft_ev(u, &e) == GZ_OK);
+            drain(u);
+            CHECK(u->h.n == 0);
+            e = ev_tip(1300 + GZ_FUND_PENDING_GRACE + 1);
+            CHECK(ft_ev(u, &e) == GZ_OK);
+            drain(u);
+            CHECK(u->h.n == 1 && u->h.r[0].kind == GZ_FUND_R_ABANDONED);
+        }
+        free(u);
+    }
+}
+
+/* C-1: after a start, a WATCH_PENDING that comes before the first NEW_TIP.
+ * The grace must count from that first tip (1300), not from the deadline:
+ * nothing is decided at 1300, and the answers give Live. */
+static void test_pending_before_tip(void)
+{
+    ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO), *u;
+    gz_event_t e = ev_tip(1000);
+    gz_fund_plan_out_t p;
+    uint8_t in0[36], id[32];
+    int sb0;
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    p = host_fund(t, SCOPE_A, 0);
+    memcpy(in0, p.tx + 5, 36);
+    memcpy(id, p.funding.txid, 32);
+    u = ft_restart(t);
+    free(t);
+    sb0 = u->w.sb_n;
+    e = ev_pending_tx(id);   /* before any tip */
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_pending_op(in0);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_tip(1300);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    drain(u);
+    CHECK(u->h.n == 0 && u->w.sb_n == sb0);
+    e = ev_tip(1300 + GZ_FUND_PENDING_GRACE);   /* still within the grace from 1300 */
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    drain(u);
+    CHECK(u->h.n == 0);
+    e = ev_conf(id, 442, 1003);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_spent(in0, id, 442);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_synced_tx(id);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    e = ev_synced_op(in0);
+    CHECK(ft_ev(u, &e) == GZ_OK);
+    drain(u);
+    CHECK(u->h.n == 1 && u->h.r[0].kind == GZ_FUND_R_LIVE && u->w.sb_n == sb0);
+    free(u);
+}
+
 static void test_corrupt(void)
 {
     ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
@@ -2000,6 +2210,9 @@ int main(void)
     test_watch_failed();
     test_tip_hash();
     test_restart_two();
+    test_watch_pending();
+    test_long_absence();
+    test_pending_before_tip();
     test_corrupt();
     test_journal_replay_steps();
     test_ignored_events();

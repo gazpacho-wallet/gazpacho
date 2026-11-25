@@ -73,6 +73,12 @@ extern "C" {
 /* Largest transaction, in bytes, that gz_chain_confirm_tx will fetch and
  * that the backends will broadcast. */
 #define GZ_TX_MAX_BYTES 400000
+/* The largest transaction a block can hold: a block weighs at most 4,000,000
+ * units and a byte weighs at least one, so no transaction in a block is
+ * longer. What a proof of a confirmation fetches (the transaction and its
+ * block's coinbase) is given this much room: a size limit there could never
+ * clear (review of PR 72, P-2). */
+#define GZ_TX_CONSENSUS_MAX_BYTES 4000000
 /* Most confirmations gz_chain_confirm_tx will check by following headers. */
 #define GZ_CONFIRM_MAX_DEPTH 144
 /* Sizes of the text fields in gz_chain_info, including the final zero. */
@@ -372,9 +378,12 @@ gz_chain_result gz_chain_outspend(const gz_chain *c, const uint8_t txid[GZ_HASH_
 
 /* The serialized transaction, written to buf[0..*len). OK only if the bytes
  * parse as a transaction whose txid is `txid`, so inputs, outputs and
- * locktime cannot be forged. The txid does not cover witness data: a single
- * server can alter or strip witnesses undetected (the comparing backend
- * compares every byte). GZ_CHAIN_TOO_LARGE if it does not fit in `cap`;
+ * locktime cannot be forged. The txid does not cover witness data, and
+ * witness bytes are never authenticated, by one server or by the comparing
+ * backend: two servers may hand over different witnesses for one txid. A
+ * caller that reads a witness (a preimage, a signature) must verify it
+ * against the spent output's script itself, or must not use it.
+ * GZ_CHAIN_TOO_LARGE if it does not fit in `cap`;
  * GZ_CHAIN_NOT_FOUND if the server does not have it. */
 gz_chain_result gz_chain_raw_tx(const gz_chain *c, const uint8_t txid[GZ_HASH_LEN], uint8_t *buf,
                                 size_t cap, size_t *len);

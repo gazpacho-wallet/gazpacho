@@ -253,6 +253,13 @@ def happy(exe, work, name):
         check(h.count(r"sign-begin scope=%s" % a.tag) == 1 and h.count(r"sign-begin scope=%s" % b.tag) == 1 and
               ms["m1"].count(r"sign-begin scope=") == 2 and ms["m4"].count(r"sign-begin scope=") == 1,
               "1 (%s): one hand-off to the stand-in per lobby and node" % name)
+        for p in (h, ms["m2"]):
+            # the outcomes come back after the hand-offs, one per lobby: wait
+            # for the second before counting (a slow build can be counting
+            # while it is still on its way)
+            i = p.index_of(r"sign-outcome scope=", timeout=40)
+            if i is not None:
+                p.wait_for(r"sign-outcome scope=", timeout=40, start=i + 1)
         check(h.count(r"sign-outcome scope=") == 2 and ms["m2"].count(r"sign-outcome scope=") == 2,
               "1 (%s): and its outcome back, once" % name)
         w.clean("1 (%s)" % name)

@@ -96,7 +96,8 @@ uint16_t gz_watch_mask(const gz_node_t *c, const gz_chain_event_t *ev)
         memcpy(key, ev->outpoint.txid, 32);
         gz_put_u32(key + 32, ev->outpoint.vout);
         i = find(c, 0, key);
-    } else if (ev->kind == GZ_CHAIN_WATCH_SYNCED || ev->kind == GZ_CHAIN_WATCH_FAILED) {
+    } else if (ev->kind == GZ_CHAIN_WATCH_SYNCED || ev->kind == GZ_CHAIN_WATCH_FAILED ||
+               ev->kind == GZ_CHAIN_WATCH_PENDING) {
         memcpy(key, ev->is_tx ? ev->txid : ev->outpoint.txid, 32);
         if (!ev->is_tx) gz_put_u32(key + 32, ev->outpoint.vout);
         i = find(c, ev->is_tx ? 1 : 0, key);

@@ -81,7 +81,16 @@ typedef enum {
  * that watch once, which is its answer, and asks no more about it until it is
  * set again; TIP_SYNCED then counts it as answered. An engine treats what it
  * waited for from that watch as unknowable and fails closed, for that
- * factory only (review B of PR 56, second confirmation, G-1).
+ * factory only (review B of PR 56, second confirmation, G-1). Only a
+ * depth fails a watch: a confirmation more than the chain view follows can
+ * only get deeper. An answer that is put off (a confirmation still being
+ * linked to the checked chain, a spender gone between two questions, an
+ * answer too large to fetch) may come later: after a few passes put off, the
+ * chain view reports GZ_CHAIN_WATCH_PENDING for that watch once, and
+ * TIP_SYNCED stops waiting for it, so one creation chosen by a counterparty
+ * cannot hold back every other. Its WATCH_SYNCED follows its answer when it
+ * comes. An engine that decides on the absence of a fact makes that factory
+ * alone wait meanwhile (review B of PR 56, third confirmation).
  *
  * UNWATCH drops a watch (step P4.5): `is_tx` 1 names the transaction watch
  * of `what.txid`, 0 the outpoint watch of `what`. The chain view forgets it,
