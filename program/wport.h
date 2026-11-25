@@ -47,9 +47,10 @@
 
 /* The change mark (M-3, review of PR 91): the lowest change index never handed
  * out, kept where a restart finds it. load gives it (0 when none was saved)
- * and whether the scan must read the change chain wide (the mark is missing
- * or the wallet was restored, so it may be behind); save keeps a new one
- * durably, before the index below it is used. 0, or -1. */
+ * and whether the scan must read the change chain wide: 0 no; 1 the mark is
+ * missing, a wide read is pending, or the wallet was restored; 2 the file did
+ * not open (read as missing, and told). save keeps a mark and the pending
+ * flag durably, before the index below it is used. 0, or -1. */
 typedef struct {
     int (*load)(void *ctx, uint32_t *mark, int *wide);
     int (*save)(void *ctx, uint32_t mark, int wide);
@@ -95,8 +96,10 @@ typedef struct {
     uint32_t mark;                /* the change mark as last loaded or saved */
     int wide;                     /* the next scan reads the change chain wide, then saves the mark */
     int need_marks;               /* a host's port: no plan without a kept mark */
-    uint8_t sent[GZP_WPORT_PLANS]; /* the plan was signed: its change index may be on the chain */
-    uint8_t refusals[2][GZP_WPORT_GAP_MAX];   /* an address's refusals in a row, under the scan */
+    uint8_t refusals[2][GZP_WPORT_CHANGE_MAX]; /* an address's refusals in a row, under the scan */
+    uint8_t hist_refusals[GZP_WPORT_CHANGE_MAX]; /* the same for a change address's history */
+    uint8_t (*chg)[32];           /* change keys derived so far (M-4), n_chg of them */
+    uint32_t n_chg;
 } gzp_wport_t;
 
 /* The master key from the unlocked seed. `burial` is the funding engine's B, as the node

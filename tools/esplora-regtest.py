@@ -194,6 +194,27 @@ def answer(path, body=None):
                         res.append({"txid": t, "vout": v, "status": status(h), "value": val})
         res.sort(key=lambda r: (r["txid"], r["vout"]))
         return 200, "application/json", json.dumps(res).encode()
+    if len(p) == 2 and p[0] == "scripthash":
+        # the address's stats (chain_stats, mempool_stats): every transaction
+        # that paid or spent it, as electrs gives them
+        spk = IDX.scripts.get(p[1].lower())
+        moutputs, mspent = IDX.mempool()
+
+        def stats(funded, spent):
+            # funded: [((txid, vout), value)]; spent: [((txid, vout), value, spender txid)]
+            txs = {t for (t, _v), _val in funded} | {sp for _k, _val, sp in spent}
+            return {"funded_txo_count": len(funded), "funded_txo_sum": sum(val for _k, val in funded),
+                    "spent_txo_count": len(spent), "spent_txo_sum": sum(val for _k, val, _sp in spent),
+                    "tx_count": len(txs)}
+        cf, mf, cs, ms = [], [], [], []
+        if spk is not None:
+            cf = [((t, v), val) for (t, v), (s, val, h) in IDX.outputs.items() if s == spk]
+            mf = [((t, v), val) for (t, v), (s, val, h) in moutputs.items() if s == spk]
+            vals = dict(cf + mf)
+            cs = [(k, vals[k], IDX.spent[k][0]) for k in vals if k in IDX.spent]
+            ms = [(k, vals[k], mspent[k][0]) for k in vals if k in mspent and k not in IDX.spent]
+        body = {"scripthash": p[1].lower(), "chain_stats": stats(cf, cs), "mempool_stats": stats(mf, ms)}
+        return 200, "application/json", json.dumps(body).encode()
     if p == ["fee-estimates"]:
         return 200, "application/json", b'{"1":1.0,"6":1.0,"144":1.0}'
     return 404, "text/plain", b"Not found"

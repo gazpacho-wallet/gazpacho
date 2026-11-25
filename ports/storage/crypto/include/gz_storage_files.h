@@ -221,8 +221,10 @@ gz_sc_err_t gz_sc_counter_seal(const gz_sc_vault_t *v, uint64_t counter, uint8_t
 /* NOT_THIS_FORMAT, OTHER_NETWORK, DAMAGED (the tag) or OK. */
 gz_sc_err_t gz_sc_counter_open(const gz_sc_vault_t *v, const uint8_t *data, size_t len, uint64_t *counter);
 /* The wallet port's change mark, change.gzm (10.4): the same layout as the
- * start counter's, its own magic and key. Results as the counter's. */
-#define GZ_SC_CHANGE_MARK_LEN GZ_SC_STARTS_LEN
+ * start counter's header, its own magic and key; the plaintext is the mark
+ * and a flag, a wide read pending (`wide`, bit 0; any other bit is damage).
+ * Results as the counter's. */
+#define GZ_SC_CHANGE_MARK_LEN 90   /* 41 + seal(u64 mark || u8 flags): 24 + 9 + 16 */
 gz_sc_err_t gz_sc_change_mark_seal(const gz_sc_vault_t *v, uint64_t mark, int wide,
                                    uint8_t out[GZ_SC_CHANGE_MARK_LEN]);
 gz_sc_err_t gz_sc_change_mark_open(const gz_sc_vault_t *v, const uint8_t *data, size_t len, uint64_t *mark,

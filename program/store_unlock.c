@@ -917,23 +917,29 @@ int gzp_wallet_change_mark_read(gzp_wallet_t *w, uint32_t *mark, int *wide)
     uint8_t *data = NULL;
     size_t len = 0;
     uint64_t v = 0;
+    int flag = 0;
     gz_sc_err_t e;
     *mark = 0;
     *wide = w->change_wide;
     if (!s || !u || !u->vault) return -1;
-    e = gz_sc_fs_read(s, GZP_CHANGE_MARK_FILE, GZ_SC_CHANGE_MARK_LEN, &data, &len);
+    e = gz_sc_fs_read(s, GZP_CHANGE_MARK_FILE, GZ_SC_CHANGE_MARK_LEN + 1, &data, &len);
     if (e == GZ_SC_MISSING) {
         *wide = 1;   /* lost, or a folder made by a restore: the mark may be anywhere */
         return 0;
     }
-    if (e != GZ_SC_OK) return -1;
-    {
-        int flag = 0;
-        e = gz_sc_change_mark_open(u->vault, data, len, &v, &flag);
-    }
+    if (e != GZ_SC_OK) return -1;   /* it could not be read: a storage failure */
+    e = gz_sc_change_mark_open(u->vault, data, len, &v, &flag);
     free(data);
-    if (e != GZ_SC_OK || v > UINT32_MAX) return -1;
+    if (e == GZ_SC_NOMEM || e == GZ_SC_LIBRARY) return -1;
+    if (e != GZ_SC_OK || v > UINT32_MAX) {
+        /* short, long, another file or network, a failed tag: treated as
+         * missing (storage 10.4, as 10.3 for the start counter), and the
+         * person is told (M-2, review B of PR 93) */
+        *wide = 2;
+        return 0;
+    }
     *mark = (uint32_t)v;
+    if (flag && !*wide) *wide = 1;   /* a wide read still pending (M-1) */
     return 0;
 }
 

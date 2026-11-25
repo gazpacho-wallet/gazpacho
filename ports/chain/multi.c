@@ -524,6 +524,39 @@ static gz_chain_result multi_script_outputs(void *ctx, const uint8_t *script, si
   return finish(m, GZ_CHAIN_OK);
 }
 
+/* ---- script history -------------------------------------------------------
+ * The confirmed count must be the same on every server: a difference is lag
+ * only when the tips show a server behind, else disagreement. The mempool
+ * count is the highest any server gives (more "used" is the safe side). */
+static gz_chain_result multi_script_history(void *ctx, const uint8_t *script, size_t script_len,
+                                            gz_script_history *out) {
+  multi *m = ctx;
+  gz_multi_answer *a = m->report.answers;
+  bool in[GZ_MULTI_MAX_SERVERS] = {false};
+  size_t first = m->n;
+  uint64_t mem = 0;
+  begin(m, GZ_CALL_SCRIPT_HISTORY);
+  for (size_t i = 0; i < m->n; i++) {
+    if (!ready(m, i)) continue;
+    a[i].result = gz_chain_script_history(&m->servers[i], script, script_len, &a[i].u.history);
+    if (a[i].result != GZ_CHAIN_OK) continue;
+    in[i] = true;
+    if (first == m->n) first = i;
+  }
+  if (operators_among(m, in) < m->cfg.quorum) return finish(m, no_quorum(m));
+  for (size_t i = 0; i < m->n; i++) {
+    if (!in[i]) continue;
+    if (a[i].u.history.confirmed_txs != a[first].u.history.confirmed_txs) {
+      gz_chain_tip tips[GZ_MULTI_MAX_SERVERS];
+      return finish(m, tips_show_lag(m, in, tips) && lag_still_allowed(m) ? GZ_CHAIN_LAG : GZ_CHAIN_DISAGREE);
+    }
+    if (a[i].u.history.mempool_txs > mem) mem = a[i].u.history.mempool_txs;
+  }
+  out->confirmed_txs = a[first].u.history.confirmed_txs;
+  out->mempool_txs = mem;
+  return finish(m, GZ_CHAIN_OK);
+}
+
 /* ---- outspend ------------------------------------------------------------ */
 
 static bool same_spender(const gz_outspend *x, const gz_outspend *y) {
@@ -863,6 +896,7 @@ static const gz_chain_ops multi_ops = {
     .block_summary = multi_block_summary,
     .tx_status = multi_tx_status,
     .script_outputs = multi_script_outputs,
+    .script_history = multi_script_history,
     .outspend = multi_outspend,
     .raw_tx = multi_raw_tx,
     .merkle_proof = multi_merkle_proof,
