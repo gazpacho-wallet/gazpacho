@@ -44,6 +44,8 @@ typedef struct gzp_api {
     uint64_t views_received[8];       /* view NOTIFYs by kind (kinds 0-6, 7 = any other), said at close in the test build */
     int setup_done;                   /* finish-setup in this run, or a wallet that existed at start */
     const char *network;              /* "signet" or "testnet4" */
+    void *wport;                      /* host: the wallet port (wport.h), for status.coins; NULL otherwise */
+    char coins_json[256];             /* status.coins, written at each status */
     struct {                          /* calls held until the node's command result (contract-v2.md 11) */
         int used;
         char request_id[GZ_CMD_MAX_REQUEST_ID + 1];

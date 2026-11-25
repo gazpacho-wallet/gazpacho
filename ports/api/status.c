@@ -72,7 +72,7 @@ static const char *const ATTENTION[][2] = {
     {"restored_factories_unknown", "important"}, {"storage_nearly_full", "important"},
     {"restored_seats_lost", "important"}, {"terms_changed", "heads_up"}, {"date_near", "heads_up"},
     {"refused_to_sign", "record"}, {"use_own_chain_server", "recommended"}, {"choose_watching", "recommended"},
-    {"host_can_start", "important"}, {"host_funds_short", "important"}, {"host_members_not_moved", "important"},
+    {"host_can_start", "important"}, {"host_funds_short", "important"}, {"coins_incomplete", "important"}, {"host_members_not_moved", "important"},
     {"host_listing_renew", "important"}, {"host_node_missing", "important"}, {"exit_needs_fee_coin", "important"},
     {"payments_stopped_for_exit", "important"}, {"exit_step_late", "at_risk"},
     {"exit_step_held_back", "at_risk"}, {"exit_fee_budget_reached", "act_now"}, {"exit_missed", "at_risk"},
@@ -363,6 +363,7 @@ static int write_unlocked(gz_api_server *srv, gz_api_status_facts *f, gz_jw *w)
     gz_jw_kstr(w, "state", "off");
     gz_jw_end_obj(w);
     gz_jw_kraw(w, "hosting", f->hosting_json);
+    gz_jw_kraw(w, "coins", f->coins_json);
     gz_jw_key(w, "money");
     gz_jw_obj(w);
     gz_jw_kint(w, "can_send_sat", f->can_send_sat);

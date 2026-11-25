@@ -95,8 +95,12 @@ int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap);
  * read at. The coin list `plan` and `can_plan` offer. 0, or -1. */
 int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *heights, size_t n, uint32_t tip);
 /* One scan of the first `gap` receive and change addresses over `view`, published
- * through gzp_wport_publish with the tip. 1: published; 0: the tip or an address
- * lookup could not be read, nothing is published; -1: stopped. The scan thread's core, for tests too. */
+ * through gzp_wport_publish with the tip. 1: published (complete, or incomplete
+ * with the address left out: too many outputs even at the chain port's cap, or
+ * refused 3 scans in a row; or more coins than the list holds); 0: the tip or
+ * an address could not be asked (unreachable, a 5xx, a malformed answer), or a
+ * refusal not yet repeated, nothing is published; -1: stopped. Each call is an
+ * attempt of gzp_wport_coins. The scan thread's core, for tests too. */
 int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view);
 /* gzp_wport_scan_view until it publishes or the port is stopped, `wait_ms` apart:
  * 1, or -1 when stopped. */

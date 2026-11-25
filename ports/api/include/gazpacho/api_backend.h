@@ -165,6 +165,7 @@ typedef struct gz_api_status_facts {
     int64_t last_check_height, last_check_at, safe_absence_blocks;
     int factories_watched;
     const char *open_by_json, *unlock_by_json, *next_date_json, *hosting_json, *take_out_alone_json;
+    const char *coins_json;           /* status.coins (11.2), or NULL for null */
     int64_t can_send_sat, can_receive_sat, on_chain_free_sat, set_aside_sat, inside_factories_sat,
             forming_sat, hosted_factories_sat, as_of_height;
     gz_api_doing doing[GZ_API_MAX_DOING];

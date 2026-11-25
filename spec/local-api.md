@@ -1038,6 +1038,7 @@ A failed call answers a non-2xx status with:
 | 409 | `signing_now` | Conditions, pause or the network cannot change during the seconds of signing |
 | 409 | `chain_in_doubt` | The chain servers disagree, or fewer than two answer; the action needs a trusted chain view |
 | 409 | `no_wallet`, `wallet_restoring` | The wallet does not exist yet, or is waiting for current data after a restore |
+| 409 | `coins_unknown` | A host's open or start: the program cannot yet tell what coins the wallet holds, because its coin list is still being read or reading it keeps failing (`status.coins`, 11.2). Not a locked wallet (`no_wallet`) and not too few coins (`funds_short`). `params`: the coin list's `state`, `reason`, `params` and `attempts` |
 | 411, 413, 415, 421, 431 | `length_required`, `too_large`, `bad_content_type`, `bad_host`, `headers_too_large` | Sections 3, 5 |
 | 429 | `rate_limited` | `params.retry_after_s` |
 | 501 | `not_in_this_release` | `params.release`: `1.1.0` or `later` |
@@ -1196,6 +1197,7 @@ One call gives everything that is on every screen: the strip, the attention list
   "next_date": { "...": "a date (7.2)" },
   "auto_join": { "state": "off" },
   "hosting": null,
+  "coins": null,
   "money": {
     "can_send_sat": 182400,
     "can_receive_sat": 317600,
@@ -1328,6 +1330,13 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 
 **`hosting`**: `null` until this program has a lobby or factory of its own (decision 4: the strip shows hosting only then). Otherwise `{ "lobbies_open": 1, "factories": 2, "next_date": { a date } }`.
 
+**`coins`** (S1, review of PR 88): the host's list of its wallet's coins, which funding uses. `null` for a member. Otherwise `{ "state", "reason", "params", "attempts" }`:
+
+- `state`: `scanning` (not read yet, or being asked again), `complete`, or `incomplete` (published without some coins).
+- `reason`: `null`; `tip` or `lookup` while `scanning` after a failure; `address_too_large` (more unspent outputs at one address than a chain server gives, for example dust sent to a known address), `address_refused` (the server refused that address three times in a row) or `too_many_coins` (more than the 256 the list holds) when `incomplete`.
+- `params`: `chain` (0 receive, 1 change) and `index` of the address, and `error`, the chain port's answer (`unreachable`, `malformed`, `too_large`, `rejected`, `not_found`); `kept` for `too_many_coins`.
+- `attempts`: the scans so far. An unreachable server and a malformed answer are asked again every 15 s. While `scanning`, a host's open or start answers `coins_unknown` (8.1); with `incomplete` the coins that were read fund as usual, and the attention item `coins_incomplete` stays (11.4).
+
 **`money`**
 
 | Field | Meaning | Slice 1 |
@@ -1418,6 +1427,7 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 | `use_own_chain_server`, `choose_watching` | recommended | | 1.0.0 |
 | `host_can_start` | important | `lobby_id` (host) | S1 |
 | `host_funds_short` | important | `lobby_id`, `need_sat`, `have_sat` (host) | S1 |
+| `coins_incomplete` | important | `status.coins`' `state`, `reason`, `params`, `attempts` (host): the coin list was not read after 3 attempts, or was published without an address it could not read (11.2) | S1 |
 | `host_members_not_moved` | important | `factory_id`, `count`, `due` (host) | 1.0.0 |
 | `host_listing_renew` | important | `lobby_id`, `due` (host) | 1.0.0 |
 | `host_node_missing` | important | Only while hosting needs one (host) | 1.0.0 |
@@ -2133,7 +2143,7 @@ Answer:
 | `on_shortfall_not_in_slice` | Slice 1 accepts `cancel` only |
 | `reserved_term_set` | A `reserved` field is not `null` |
 
-`cannot_open_because`: `problems`, `funds_short` (counting what other hosted lobbies have set aside, `set_aside_elsewhere_sat`), `no_wallet`, `chain_in_doubt`, `lobby_limit_reached` (`max_hosted`, 14.4), `host_node_missing` (1.0.0, once payments need the host's Lightning node; not in Slice 1). Draft 4's `already_hosting` is withdrawn (owner decision 16b).
+`cannot_open_because`: `problems`, `funds_short` (counting what other hosted lobbies have set aside, `set_aside_elsewhere_sat`), `no_wallet`, `coins_unknown` (the coin list cannot be read yet, 11.2 `coins`), `chain_in_doubt`, `lobby_limit_reached` (`max_hosted`, 14.4), `host_node_missing` (1.0.0, once payments need the host's Lightning node; not in Slice 1). Draft 4's `already_hosting` is withdrawn (owner decision 16b).
 
 
 `shape`: `default` lets the program choose shapes by `terms.md` section 4 and the scale-check rules (`DESIGN.md` section 7); an explicit table is accepted in the same form as `outer.shape`.
@@ -2145,7 +2155,7 @@ Answer:
 | `POST /api/v1/host/lobbies` | S1 | `{ "request_id", "draft": {…}, "draft_digest": "…", "confirm_funding_sat": 37500000, "passphrase": "…" }`. **The passphrase in the request** (4.8, kind A) | `201`, the host's lobby object (15.3). The program signs the outer rules and current values version 1, saves them (`lobby_opened`, with the set-aside amount, 7.5) and starts answering `hello`. Opening sets aside the funding at the target, and is the host's consent to spend up to that amount when the start rule is met | `draft_changed` (the draft does not match the digest that was previewed), `confirm_mismatch` (`confirm_funding_sat` is not the preview's `funding_at_target_sat`), `wrong_passphrase`, `rate_limited`, every `cannot_open_because` value |
 | `GET /api/v1/host/lobbies` | S1 | `?state=open\|funding\|running\|ended&cursor` | Page of host lobby rows | |
 | `GET /api/v1/host/lobbies/{id}` | S1 | | 15.3 | `not_found`, `not_host` |
-| `POST /api/v1/host/lobbies/{id}/start` | S1 | `{ "request_id", "confirm_funding_max_sat": 37500000 }`. **Fresh sign-in** (4.8). An **early** start only (below) | `202`, `stage: "ready_check"` | `below_minimum` (`params.ready`, `params.minimum`), `not_open`, `funds_short`, `chain_in_doubt`, `paused`, `confirm_mismatch`, `fresh_sign_in_needed` |
+| `POST /api/v1/host/lobbies/{id}/start` | S1 | `{ "request_id", "confirm_funding_max_sat": 37500000 }`. **Fresh sign-in** (4.8). An **early** start only (below) | `202`, `stage: "ready_check"` | `below_minimum` (`params.ready`, `params.minimum`), `not_open`, `funds_short`, `coins_unknown`, `chain_in_doubt`, `paused`, `confirm_mismatch`, `fresh_sign_in_needed` |
 | `POST /api/v1/host/lobbies/{id}/cancel` | S1 | `{ "request_id" }` | `202`, `stage: "cancelled"`; set-aside funds are free again | `too_late` (signing has begun: a round runs to its end within its budget; the host cannot take back what members signed) |
 | `POST /api/v1/host/lobbies/{id}/values` | 1.0.0 | `{ "request_id", "based_on_version": 3, "values": { "joining_fee_sat": 1200 } }` | The lobby, with the new current version, signed and sent to every seat | `frozen`, `outside_range`, `changed_elsewhere` |
 | `DELETE /api/v1/host/lobbies/{id}/seats/{seat}` | S1 (**provisional**, 2.1) | `{ "request_id", "confirm_seat": "<the seat>", "reason": "…" }` in body. Fresh sign-in (4.8, kind B) | `202`; the seat goes to state 6, "removed" (`messages.md`), the member is told through `lobby_status`, and, once standby seats have their messages, the first standby takes the place | `frozen` (no removal after the ready check, critique H.3), `not_host`, `confirm_mismatch`, `fresh_sign_in_needed` |

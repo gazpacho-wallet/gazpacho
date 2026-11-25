@@ -274,6 +274,7 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     w->port.release = w_release;
     w->port.spend_back = w_spend_back;
     w->port.can_plan = w_can_plan;
+    w->coin_list.chain = w->coin_list.index = -1;
     {
         gz_fund_config_t fc;   /* the engine's default B, as fundslot.c falls back to it */
         gz_fund_config_default(&fc, 1);
@@ -292,44 +293,104 @@ void gzp_wport_coins(gzp_wport_t *w, gzp_wport_coins_t *out)
 
 int gzp_wport_coins_json(const gzp_wport_coins_t *c, char *buf, size_t cap)
 {
+    static const char *const STATE[] = {"scanning", "complete", "incomplete"};
+    char reason[48], params[160];
     int n;
-    (void)c;
-    n = snprintf(buf, cap, "{\"state\":\"scanning\",\"reason\":null,\"params\":{},\"attempts\":0}");
+    if (c->state < 0 || c->state > GZP_COINS_INCOMPLETE) return -1;
+    if (c->reason) snprintf(reason, sizeof reason, "\"%s\"", c->reason);
+    else snprintf(reason, sizeof reason, "null");
+    if (c->chain >= 0 && c->error)
+        snprintf(params, sizeof params, "{\"chain\":%d,\"index\":%d,\"error\":\"%s\"}", c->chain, c->index,
+                 c->error);
+    else if (c->chain >= 0)
+        snprintf(params, sizeof params, "{\"chain\":%d,\"index\":%d}", c->chain, c->index);
+    else if (c->error)
+        snprintf(params, sizeof params, "{\"error\":\"%s\"}", c->error);
+    else if (c->reason && !strcmp(c->reason, "too_many_coins"))
+        snprintf(params, sizeof params, "{\"kept\":%d}", GZP_WPORT_COINS);
+    else
+        snprintf(params, sizeof params, "{}");
+    n = snprintf(buf, cap, "{\"state\":\"%s\",\"reason\":%s,\"params\":%s,\"attempts\":%u}", STATE[c->state],
+                 reason, params, c->attempts);
     return n < 0 || (size_t)n >= cap ? -1 : n;
 }
 
+/* After this many attempts without a complete list, status tells the person (11.4). */
+#define GZP_WPORT_ATTENTION_AFTER 3
+
 int gzp_wport_coins_attention(const gzp_wport_coins_t *c)
 {
-    (void)c;
-    return 0;
+    return c->state == GZP_COINS_INCOMPLETE ||
+           (c->state == GZP_COINS_SCANNING && c->attempts >= GZP_WPORT_ATTENTION_AFTER);
 }
 
+/* can_plan's -1 is not a locked wallet and not too few coins: its own code
+ * (review of PR 88, M-1; local-api.md 8.1). */
 const char *gzp_wport_funds_error(gz_fund_funds_t r)
 {
-    return r == GZ_FUND_FUNDS_OK ? NULL : r == GZ_FUND_FUNDS_SHORT ? "funds_short" : "no_wallet";
+    return r == GZ_FUND_FUNDS_OK ? NULL : r == GZ_FUND_FUNDS_SHORT ? "funds_short" : "coins_unknown";
 }
 
 int gzp_wport_log_attempt(unsigned n)
 {
-    (void)n;
-    return 1;
+    return n == 1 || n % 10 == 0;
 }
+
+static const char *result_name(gz_chain_result r)
+{
+    switch (r) {
+    case GZ_CHAIN_UNREACHABLE: return "unreachable";
+    case GZ_CHAIN_MALFORMED: return "malformed";
+    case GZ_CHAIN_TOO_LARGE: return "too_large";
+    case GZ_CHAIN_REJECTED: return "rejected";
+    case GZ_CHAIN_NOT_FOUND: return "not_found";
+    default: return "failed";
+    }
+}
+
+static void set_coins(gzp_wport_t *w, int state, const char *reason, int chain, int index, const char *error)
+{
+    pthread_mutex_lock(&w->mu);
+    w->coin_list.state = state;
+    w->coin_list.reason = reason;
+    w->coin_list.chain = chain;
+    w->coin_list.index = index;
+    w->coin_list.error = error;
+    pthread_mutex_unlock(&w->mu);
+}
+
+/* The most outputs one address is asked for: the chain port's own cap
+ * (GZ_ES_MAX_UTXOS, within its 512 KiB answer buffer). A first lookup asks for
+ * GZP_WPORT_FIRST_ASK; only an address with more is asked again at this cap. */
+#define GZP_WPORT_ADDR_MAX 1024
+#define GZP_WPORT_FIRST_ASK 32
+/* A refusal repeated this many scans in a row leaves the address out. */
+#define GZP_WPORT_REFUSALS 3
 
 int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
 {
-    static gz_chain_output outs[32];
+    static gz_chain_output outs[GZP_WPORT_ADDR_MAX];
     static gzt_coin found[GZP_WPORT_COINS];
     static uint32_t heights[GZP_WPORT_COINS];
     gz_chain_tip tip;
     uint64_t total = 0;
     size_t nf = 0;
     uint32_t next_change = 100;
-    int failed = 0;
+    int failed = 0, truncated = 0;
+    const char *left_out = NULL, *left_error = NULL;   /* the first address left out, and why */
+    int left_chain = -1, left_index = -1;
+    unsigned attempt;
+    gz_chain_result tr;
+    pthread_mutex_lock(&w->mu);
+    attempt = ++w->coin_list.attempts;
+    pthread_mutex_unlock(&w->mu);
     /* the tip first, then the heights: a block found during the scan cannot make
      * a change coin look deeper than it is (review B of PR 83, L-2) */
     memset(&tip, 0, sizeof tip);
-    if (gz_chain_tip_get(view, &tip) != GZ_CHAIN_OK || tip.height == 0) {
-        gzp_log("wallet-coins incomplete why=tip");
+    tr = gz_chain_tip_get(view, &tip);
+    if (tr != GZ_CHAIN_OK || tip.height == 0) {
+        set_coins(w, GZP_COINS_SCANNING, "tip", -1, -1, tr != GZ_CHAIN_OK ? result_name(tr) : "malformed");
+        if (gzp_wport_log_attempt(attempt)) gzp_log("wallet-coins incomplete why=tip attempt=%u", attempt);
         return 0;
     }
     for (uint32_t change = 0; change < 2 && !w->stop; change++)
@@ -340,16 +401,47 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
                 failed = 1;
                 break;
             }
-            if (gz_chain_script_outputs(view, o.script_pubkey, sizeof o.script_pubkey, outs, 32, &n, NULL) !=
-                GZ_CHAIN_OK) {
-                /* a list short of this address's coins is never published: it
-                 * would be a funds_short refusal; asked again, like the tip
+            gz_chain_result r = gz_chain_script_outputs(view, o.script_pubkey, sizeof o.script_pubkey, outs,
+                                                        GZP_WPORT_FIRST_ASK, &n, NULL);
+            /* more outputs than a first lookup takes (33 dust outputs anyone
+             * can send): asked again at the chain port's own cap (review of PR 88, M-1) */
+            if (r == GZ_CHAIN_TOO_LARGE)
+                r = gz_chain_script_outputs(view, o.script_pubkey, sizeof o.script_pubkey, outs, GZP_WPORT_ADDR_MAX,
+                                            &n, NULL);
+            uint8_t *refused = j < GZP_WPORT_GAP_MAX ? &w->refusals[change][j] : NULL;
+            if (r == GZ_CHAIN_OK) {
+                if (refused) *refused = 0;
+            } else if (r == GZ_CHAIN_TOO_LARGE ||
+                       ((r == GZ_CHAIN_REJECTED || r == GZ_CHAIN_NOT_FOUND) &&
+                        (!refused || ++*refused >= GZP_WPORT_REFUSALS))) {
+                /* an address that will not be read, too many outputs even at
+                 * the cap, or a refusal again and again: left out, and the list
+                 * is published marked incomplete, never held back for good (M-1) */
+                if (!left_out) {
+                    left_out = r == GZ_CHAIN_TOO_LARGE ? "address_too_large" : "address_refused";
+                    left_error = result_name(r);
+                    left_chain = (int)change;
+                    left_index = (int)j;
+                }
+                gzp_log("wallet-coins left-out chain=%u index=%u error=%s", (unsigned)change, (unsigned)j,
+                        result_name(r));
+                continue;
+            } else {
+                /* could not ask (unreachable, a 5xx, a malformed answer), or a
+                 * refusal not yet repeated: nothing published, asked again
                  * (review of PR 85) */
-                gzp_log("wallet-coins incomplete why=lookup chain=%u index=%u", (unsigned)change, (unsigned)j);
+                set_coins(w, GZP_COINS_SCANNING, "lookup", (int)change, (int)j, result_name(r));
+                if (gzp_wport_log_attempt(attempt))
+                    gzp_log("wallet-coins incomplete why=lookup chain=%u index=%u error=%s attempt=%u",
+                            (unsigned)change, (unsigned)j, result_name(r), attempt);
                 OPENSSL_cleanse(found, sizeof found);
                 return w->stop ? -1 : 0;
             }
-            for (size_t i = 0; i < n && nf < GZP_WPORT_COINS; i++) {
+            for (size_t i = 0; i < n; i++) {
+                if (nf == GZP_WPORT_COINS) {
+                    truncated = 1;   /* more coins than the list holds: incomplete, not complete (M-1) */
+                    break;
+                }
                 gzt_coin *c = &found[nf];
                 if (!outs[i].confirmed) continue;   /* confirmed coins only (review A of PR 56, M5) */
                 heights[nf] = outs[i].height;
@@ -372,7 +464,14 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
     if (next_change > w->next_change) w->next_change = next_change;
     pthread_mutex_unlock(&w->mu);
     (void)gzp_wport_publish(w, found, heights, nf, tip.height);
-    gzp_log("wallet-coins count=%zu total_sat=%llu lookups-failed=%d", nf, (unsigned long long)total, failed);
+    if (left_out)
+        set_coins(w, GZP_COINS_INCOMPLETE, left_out, left_chain, left_index, left_error);
+    else if (truncated)
+        set_coins(w, GZP_COINS_INCOMPLETE, "too_many_coins", -1, -1, NULL);
+    else
+        set_coins(w, GZP_COINS_COMPLETE, NULL, -1, -1, NULL);
+    gzp_log("wallet-coins count=%zu total_sat=%llu lookups-failed=%d%s%s", nf, (unsigned long long)total, failed,
+            left_out || truncated ? " incomplete=" : "", left_out ? left_out : truncated ? "too_many_coins" : "");
     OPENSSL_cleanse(found, sizeof found);
     return 1;
 }
@@ -384,8 +483,9 @@ int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
         if (r != 0) return r;
         /* no coin list without the tip and every address: every lobby would be
          * refused, so say so and ask again (review B of PR 83, L-2; review of PR 85) */
-        gzp_log("wallet-coins retry attempt=%u retry_ms=%u (funding waits for the coin list)", tries,
-                (unsigned)wait_ms);
+        if (gzp_wport_log_attempt(tries))
+            gzp_log("wallet-coins retry attempt=%u retry_ms=%u (funding waits for the coin list; logged at the "
+                    "first and every 10th attempt)", tries, (unsigned)wait_ms);
         for (uint32_t t = 0; t < wait_ms && !w->stop; t += 100) {
             struct timespec ts = {0, (long)(wait_ms - t < 100 ? wait_ms - t : 100) * 1000000L};
             nanosleep(&ts, NULL);
@@ -455,6 +555,7 @@ int gzp_wport_invent(gzp_wport_t *w)
     c->index = 0;
     memcpy(c->script, o.script_pubkey, 34);
     w->published = 1;
+    w->coin_list.state = GZP_COINS_COMPLETE;
     gzp_log("wallet-coins invented=1 (test build, no chain)");
     return 0;
 }
