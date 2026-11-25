@@ -115,6 +115,13 @@ def main():
     source, work, only = os.path.abspath(args[0]), os.path.abspath(args[1]), set(args[2:])
     src, build = os.path.join(work, "src"), os.path.join(work, "build")
     mutants, triaged = load(os.path.join(source, "tests/node/mutants.txt"))
+    # A triage line whose mutant is not in the list is stale (review of #89,
+    # L2): in a full run (no names given; a shard is still the full list) it
+    # fails the run.
+    names = set(m[0] for m in mutants)
+    orphans = sorted(n for n in triaged if n not in names)
+    for n in orphans:
+        print("ORPHAN   %s (a triage line with no such mutant)" % n, flush=True)
     if only:
         mutants = [m for m in mutants if m[0] in only]
     if shard:
@@ -171,6 +178,8 @@ def main():
             if by:
                 killed.append((name, by))
                 print("killed   %s (by %s)" % (name, by), flush=True)
+                if name in triaged:   # review of #89, L2: its triage line is now wrong
+                    print("NOTE     %s is killed but still triaged: drop its triage line" % name, flush=True)
             else:
                 survivors.append(name)
                 print("SURVIVED %s%s" % (name, " (triaged: %s)" % triaged[name] if name in triaged else ""), flush=True)
@@ -182,7 +191,9 @@ def main():
     print("mutants %d: killed %d, survived %d (triaged %d), not applied or not compiled %d, %.0f s"
           % (len(mutants), len(killed), len(survivors), len(survivors) - len(untriaged), len(broken),
              time.time() - start))
-    return 1 if untriaged or broken else 0
+    if orphans and not only:
+        print("%d orphaned triage lines" % len(orphans))
+    return 1 if untriaged or broken or (orphans and not only) else 0
 
 
 if __name__ == "__main__":
