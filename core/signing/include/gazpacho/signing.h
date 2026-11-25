@@ -614,6 +614,15 @@ void gz_sign_forget_kept_unless(gz_sign_t *e, int (*keep)(void *ctx, const uint8
  * (composite-node.md section 4). */
 int gz_sign_holds_scope(const gz_sign_t *e, const uint8_t scope[32]);
 
+/* 1 if a partial signature of this party may be out for a round that is not
+ * resolved and could be the lobby's `scope`: a round of the scope in memory
+ * that ever sent one (Active, Unfinished or Complete), or an exposure entry
+ * whose round left memory unresolved (its scope is not kept: fail closed,
+ * whatever the scope). While it holds, the lobby must not be given up: the
+ * round's ack, and the factory, depend on it (Slice 1 blocker C1; local-api.md,
+ * leave: too_late). Resolved rounds (Live, Dead, Abandoned) do not count. */
+int gz_sign_partials_out(const gz_sign_t *e, const uint8_t scope[32]);
+
 /* Member: the round's end as the embedding judged it from the chain
  * (safety-rule.md C11, C4(d)): GZ_SIGN_END_LIVE, _DEAD or _ABANDONED, saved as
  * round_ended. Rounds that are Complete, Unfinished or Abandoned only; for a

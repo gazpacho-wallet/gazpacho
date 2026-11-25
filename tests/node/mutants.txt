@@ -271,3 +271,5 @@ sg-timer-budget	core/node/timers.c	if (eng == ENG_SIGN) return 1;      /* the en
 sg-init-without-secp	core/node/signslot.c	if (!c->cfg.secp || !c->cfg.sign_mem	if (!c->cfg.sign_mem
 sg-ready-any-digest	core/node/lobbyslot.c	if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0)	if (0)
 sg-refused-ready-rebinds	core/node/lobbyslot.c	        memcpy(s->gate_digest, old_digest, 32);	
+sg-leave-partials-out-off	core/node/lobbyslot.c	if (code == GZ_CMD_LOBBY_LEAVE && gz_ls_partials_out(c, s->scope))	if (code == GZ_CMD_LOBBY_LEAVE && 0)
+sg-partials-out-never	core/node/lobbyslot.c	return c->sign_on && gz_sign_partials_out(c->sign, scope);	return 0;

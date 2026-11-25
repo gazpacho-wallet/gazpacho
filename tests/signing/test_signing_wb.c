@@ -1478,6 +1478,52 @@ static void test_early_nonces(void)
     h_free(&h);
 }
 
+/* PARTIALS_OUT_HELD, PARTIALS_OUT_FAIL_CLOSED (Slice 1 blocker C1): the partials-out fact. A round of the
+ * scope that sent a partial signature, while Active, Unfinished or Complete; not once resolved, not before
+ * any was sent, not for another scope. An exposure whose round left memory unresolved: every scope (its
+ * scope is not kept); resolved: none. */
+static void test_partials_out(void)
+{
+    harness_t h;
+    static const uint8_t open_states[] = {GZ_SIGN_ROUND_ACTIVE, GZ_SIGN_ROUND_UNFINISHED, GZ_SIGN_ROUND_COMPLETE};
+    static const uint8_t ended[] = {GZ_SIGN_ROUND_LIVE, GZ_SIGN_ROUND_DEAD, GZ_SIGN_ROUND_ABANDONED};
+    uint8_t scope[32], other[32];
+    h_init(&h, 1);
+    gz_sign_t *e = h.p[1].e;
+    gz_sign_round_t *r = &e->rounds[GZ_SIGN_MAX_ROUNDS - 1];
+    memset(scope, 0x31, 32); memset(other, 0x32, 32);
+    CHECK(gz_sign_partials_out(e, scope) == 0 && gz_sign_partials_out(NULL, scope) == 0 && gz_sign_partials_out(e, NULL) == 0);
+    memset(r, 0, sizeof *r);
+    memcpy(r->def.outer_digest, scope, 32);
+    for (size_t k = 0; k < sizeof open_states; k++) {
+        r->state = open_states[k];
+        r->ever_partial = 1;
+        CHECK(gz_sign_partials_out(e, scope) == 1 && gz_sign_partials_out(e, other) == 0);
+        r->ever_partial = 0;
+        CHECK(gz_sign_partials_out(e, scope) == 0);
+    }
+    r->ever_partial = 1;
+    for (size_t k = 0; k < sizeof ended; k++) { r->state = ended[k]; CHECK(gz_sign_partials_out(e, scope) == 0); }
+    memset(r, 0, sizeof *r);
+    size_t n0 = e->n_exposures;
+    CHECK(n0 < GZ_SIGN_MAX_EXPOSURES);
+    if (n0 < GZ_SIGN_MAX_EXPOSURES) {
+        memset(&e->exposed[n0], 0, sizeof e->exposed[n0]);
+        e->n_exposures = n0 + 1;
+        e->exposed[n0].state = GZ_SIGN_ROUND_FREE;                   /* held in a slot: the round's own test */
+        CHECK(gz_sign_partials_out(e, scope) == 0);
+        for (size_t k = 0; k < sizeof open_states; k++) {
+            if (open_states[k] == GZ_SIGN_ROUND_ACTIVE) continue;     /* a round leaving memory Active is Unfinished */
+            e->exposed[n0].state = open_states[k];
+            CHECK(gz_sign_partials_out(e, scope) == 1 && gz_sign_partials_out(e, other) == 1);
+        }
+        for (size_t k = 0; k < sizeof ended; k++) { e->exposed[n0].state = ended[k]; CHECK(gz_sign_partials_out(e, scope) == 0); }
+        memset(&e->exposed[n0], 0, sizeof e->exposed[n0]);
+        e->n_exposures = n0;
+    }
+    h_free(&h);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -1517,6 +1563,7 @@ int main(void)
     test_excuse_only_released();
     test_early_nonces();
     test_ack_waits_for_tip();
+    test_partials_out();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);

@@ -2794,6 +2794,24 @@ void gz_sign_forget_kept_unless(gz_sign_t *e, int (*keep)(void *ctx, const uint8
         if (e->kept[k].used && !keep(ctx, e->kept[k].scope)) memset(&e->kept[k], 0, sizeof e->kept[k]);
 }
 
+/* A round's state that is not resolved, for gz_sign_partials_out. */
+static int unresolved_state(uint8_t s)
+{
+    return s == GZ_SIGN_ROUND_ACTIVE || s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE;
+}
+
+int gz_sign_partials_out(const gz_sign_t *e, const uint8_t scope[32])
+{
+    if (!e || !scope) return 0;
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
+        const gz_sign_round_t *r = &e->rounds[i];
+        if (r->ever_partial && unresolved_state(r->state) && same(r->def.outer_digest, scope, 32)) return 1;   /* RULE:PARTIALS_OUT_HELD */
+    }
+    for (size_t i = 0; i < e->n_exposures; i++)
+        if (e->exposed[i].state != GZ_SIGN_ROUND_FREE && unresolved_state(e->exposed[i].state)) return 1;   /* RULE:PARTIALS_OUT_FAIL_CLOSED */
+    return 0;
+}
+
 int gz_sign_holds_scope(const gz_sign_t *e, const uint8_t scope[32])
 {
     if (!e || !scope) return 0;

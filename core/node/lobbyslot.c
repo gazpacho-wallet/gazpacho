@@ -1291,6 +1291,11 @@ static gz_status_t gates_changed(gz_node_t *c, int opened, gz_action_list_t *out
     return GZ_OK;
 }
 
+int gz_ls_partials_out(const gz_node_t *c, const uint8_t scope[32])
+{
+    return c->sign_on && gz_sign_partials_out(c->sign, scope);
+}
+
 gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out)
 {
     gz_bytes_t scope, v;
@@ -1344,6 +1349,10 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
     if (!arg(cmd, 12, 32, &scope) || (i = lobby_slot_by_scope(c, scope.data)) < 0 || c->slots[i].host != want_host)
         return np_command_result(out, cmd, 404, "no_such_lobby");
     slot_t *s = &c->slots[i];
+    /* Slice 1 blocker C1 (local-api.md, leave): once a partial signature has left, the lobby is not given
+     * up while its round is unresolved, so that the member's ack, and the factory, are not abandoned. */
+    if (code == GZ_CMD_LOBBY_LEAVE && gz_ls_partials_out(c, s->scope))
+        return np_command_result(out, cmd, 409, "too_late");                    /* RULE-NODE:LEAVE_PARTIALS_OUT */
     c->lc.code = code;
     c->lc.refused = 0;
     c->lc.a.data = NULL;

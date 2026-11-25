@@ -44,6 +44,9 @@ RULES = {
     "MAY_ACK": ("if (!may) {", "if (0) {"),
     # review B of PR 52, L4: no tip is not yet, never a no
     "ACK_WAITS_FOR_TIP": ("if (may < 0) return;", "{}"),
+    # Slice 1 blocker C1: the partials-out fact
+    "PARTIALS_OUT_HELD": ("same(r->def.outer_digest, scope, 32)) return 1;", "same(r->def.outer_digest, scope, 32)) return 0;"),
+    "PARTIALS_OUT_FAIL_CLOSED": ("unresolved_state(e->exposed[i].state)) return 1;", "unresolved_state(e->exposed[i].state)) return 0;"),
     "OLD_EPOCH_REFUSED": ("return refuse_id(e, id);", "return 1;"),
     "UNFINISHED_ABANDONED": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "r->state = GZ_SIGN_ROUND_UNFINISHED;"),
     "PER_ITEM_ANSWER": ("wr32(q, (uint32_t)i); q += 4;", "wr32(q, 0u); q += 4;"),
