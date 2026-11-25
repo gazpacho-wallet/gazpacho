@@ -244,7 +244,7 @@ closing-newcomer-unseated	core/node/nodepart.c	    int seat = s >= 0 || gz_route
 refused-ready-keeps-gate	core/node/lobbyslot.c	    if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);\n	
 ls-left-out-is-corrupt	core/node/lobbyslot.c	        c->np.skipped_slots++;\n        return GZ_OK;	        c->np.skipped_slots++;\n        return GZ_ERR_CORRUPT;	2
 ls-left-out-place-free	core/node/lobbyslot.c	        memset(&s->lobby, 0, sizeof s->lobby);\n        s->state = SLOT_LEFT_OUT;	        memset(s, 0, sizeof *s);
-ls-left-out-rejoin	core/node/lobbyslot.c	        if (!c->slots[i].stale) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
+ls-left-out-rejoin	core/node/lobbyslot.c	    if (stale_i >= 0 && !c->slots[stale_i].stale) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
 ls-stale-resumed	core/node/composite.c	        if (gz_ls_stale(c, i)) return gz_ls_stale_out(c, i, out);	
 ls-factory-at-init	core/node/lobbyslot.c	    cr.factory_pub = ls_factory_pub;	    cr.factory_pub = NULL; memcpy(mc.factory_key, ck, 33);
 bd5-no-compare	core/node/signslot.c	sg_same(pub, c->slots[slot].lobby.m.factory_key, 33);	1;
@@ -417,3 +417,5 @@ funds-blocked-never-cleared	core/node/lobbyslot.c	    s->funds_blocked = r != 0;
 set-aside-zero-taken	core/node/lobbyslot.c	    if (gz_fund_set_aside_sat(&s->lobby.h.terms) == 0) {	    if (0) {
 # untested set-aside-zero-taken: no terms that gz_lobby_host_open accepts give a set-aside of 0 (terms.md 7's fundability check refuses them first); the guard is defence in depth, review A of #55, L2
 join-key-early	core/node/lobbyslot.c	        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0) {\n            s->gate_derive = 0;	        if (1) {\n            s->gate_derive = 0;
+keys-old-epoch	core/node/signslot.c	    if (!host && epoch != (c->np.have_epoch ? c->np.epoch : 0)) return 0;	    if (0) return 0;
+stale-marked-late	core/node/composite.c	        if (!c->stale_marked) {	        if (0) {

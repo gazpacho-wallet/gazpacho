@@ -1108,12 +1108,14 @@ gz_status_t gz_ls_stale_out(gz_node_t *c, int i, gz_action_list_t *out)
     return gz_ls_left_out_note(c, i, out);
 }
 
-/* The stale slot `i` ends as the person joins its lobby again: slot_closed (never joined, reason 0) in a
- * batch of its own before the new slot's, so that a later start frees it before the new slot_opened. */
+/* The stale slot `i` ends as the person joins its lobby again: slot_closed (state 6, Cancelled for this
+ * member as its own leave would be; reason GZ_LS_CLOSED_STALE, journal.md 9) in a batch of its own before
+ * the new slot's, so that a later start frees it before the new slot_opened. It no longer counts as left
+ * out (review A of #98, L1 and L2). */
 static gz_status_t stale_close(gz_node_t *c, int i, gz_action_list_t *out)
 {
     slot_t *s = &c->slots[i];
-    uint8_t rec[32], v[4], state = 0;
+    uint8_t rec[32], v[4], state = GZ_LOBBY_CANCELLED;
     size_t at = 0;
     char text[128];
     gz_status_t st;
@@ -1121,11 +1123,12 @@ static gz_status_t stale_close(gz_node_t *c, int i, gz_action_list_t *out)
     gz_put_u32(v, s->serial);
     if (gz_rec_put(rec, sizeof rec, &at, 2, v, 4) != GZ_OK || gz_rec_put(rec, sizeof rec, &at, 4, &state, 1) != GZ_OK)
         return gz_c_bug(c, ENG_NODE);
-    gz_put_u16(v, 0);
+    gz_put_u16(v, GZ_LS_CLOSED_STALE);
     if (gz_rec_put(rec, sizeof rec, &at, 6, v, 2) != GZ_OK) return gz_c_bug(c, ENG_NODE);
     r.type = GZ_RECORD_SLOT_CLOSED;
     r.bytes.data = rec;
     r.bytes.len = at;
+    if (c->np.skipped_slots) c->np.skipped_slots--;
     gz_action_t a = {.kind = GZ_ACTION_SAVE};
     a.u.save.records = &r;
     a.u.save.n_records = 1;
@@ -1793,12 +1796,8 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
             return np_command_result_p(out, cmd, 409, "confirm_mismatch", p);
         }
     }
-    if ((i = left_out_by_scope(c, scope.data)) >= 0) {
-        if (!c->slots[i].stale) return np_command_result(out, cmd, 503, "no_key"); /* H1 */
-        /* BD2: a stale seat is given up; the join makes a new slot with a new pair of the current epoch, so
-         * the host sees a new contribution key (BD1 would refuse a new factory key under the old one). */
-        if ((st = stale_close(c, i, out)) != GZ_OK) return st;
-    }
+    int stale_i = left_out_by_scope(c, scope.data);
+    if (stale_i >= 0 && !c->slots[stale_i].stale) return np_command_result(out, cmd, 503, "no_key"); /* H1 */
     if (gz_route_slot_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 409, "lobby_exists");
     if ((i = free_slot(c)) < 0) return np_command_result(out, cmd, 409, "too_many_lobbies");
     if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");   /* the next index would not load (#87, L1) */
@@ -1832,6 +1831,10 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         s->gate_have = 1;                      /* bound to the values the person saw (26, checked above) */
         memcpy(s->gate_digest, seen.data, 32);
     }
+    /* BD2: a stale seat is given up only now that the join is taken (review A of #98, L1); the new slot
+     * has a new pair of the current epoch, so the host sees a new contribution key (BD1 would refuse a new
+     * factory key under the old one). */
+    if (stale_i >= 0 && (st = stale_close(c, stale_i, out)) != GZ_OK) return st;
     if ((st = slot_begin(c, i, cond, out)) != GZ_OK) {
         gz_ls_wipe32(s->gate_secret);         /* nothing of the gate outlives a failed join (L-4) */
         s->gate_have = 0;

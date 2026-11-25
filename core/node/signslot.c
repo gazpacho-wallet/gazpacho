@@ -163,6 +163,10 @@ int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, 
     int host, slot, ok = 1;
     if (!sg_scope_keys(c, scope, &host, &epoch, &index, &slot)) return 0;
     if (host != (c->cfg.host != 0)) return 0;
+    /* BD2 (review A of #98, M1): a member's keys of an older epoch than the node's current one are never
+     * given, for a slot or an ended lobby's entry alike: nothing is derived under a saved epoch that a
+     * restore has replaced. (The restore batch runs before the signing engine resumes.) */
+    if (!host && epoch != (c->np.have_epoch ? c->np.epoch : 0)) return 0;                /* RULE-NODE:KEYS_CURRENT_EPOCH */
     if (kc) {
         /* the host's long-term key, or the member's contribution key of the lobby */
         int got = host ? (c->cfg.keys.host_secret && c->cfg.keys.host_secret(c->cfg.keys.ctx, sec) == 1)
