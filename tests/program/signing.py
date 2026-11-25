@@ -40,6 +40,7 @@ OPEN, JOIN, READY, LEAVE = 0x0101, 0x0102, 0x0103, 0x0105
 ROUND_STARTED, ROUND_PROPOSAL, EXPOSURE, ROUND_SIGNED, ROUND_COMPLETED, ACK_RECEIVED, ROUND_ENDED = (
     0x00020002, 0x00020004, 0x00020006, 0x00020008, 0x0002000a, 0x0002000c, 0x0002000e)
 LOBBY_STATE, GUARD = 0x00010018, 0x0004000a
+FUNDING_STATUS = 0x00030006
 TIP = 200000
 
 
@@ -135,8 +136,11 @@ def sign(exe, work):
                   "1: %s saved its round: proposal, nonces' round_started with the guard, exposure, the finals" % n)
             check(has_batch(mj, [ROUND_COMPLETED, LOBBY_STATE]),
                   "1: %s: round_completed (its ack) and the lobby's Funding in one batch (rule 2)" % n)
-            check(all(0x00030006 not in b for b in mj), "1: %s writes no funding_status (the funding engine's, P4.5)" % n)
+            # With the funding engine wired (P4.6), a member's engine writes its first funding_status
+            # (state 1, acked) from its ack, as funding.md's member row says (integration B13).
+            check(any(FUNDING_STATUS in b for b in mj), "1: %s's funding engine writes funding_status from its ack" % n)
         m4j = w.journal("m4")
+        check(all(FUNDING_STATUS not in b for b in m4j), "1: the refusing member writes no funding_status")
         check(all(EXPOSURE not in b and ROUND_STARTED not in b for b in m4j),
               "1: the refusing member saved no round and released nothing")
 
