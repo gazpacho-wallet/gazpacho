@@ -449,7 +449,7 @@ jobs:
         # Registered only where valgrind and its headers are installed: here.
         # Once, in the first shard.
         if: matrix.shard == 0
-        run: ctest --test-dir build -R '^(storage|signing)_ctime$' --output-on-failure --no-tests=error
+        run: ctest --test-dir build -R '^(storage|signing|signer)_ctime$' --output-on-failure --no-tests=error
       - name: Keep the program tests' logs when a test fails
         # As in the build jobs (#64); the program tests are scripts, which
         # memcheck does not run, so this is usually empty.
@@ -540,3 +540,97 @@ jobs:
         run: |
           ln -s ../../web/node_modules node_modules
           GZ_API_FAKE="$GITHUB_WORKSPACE/build/ports/api/gz-api-fake" npx playwright test
+
+  # The signer boundary, step S1 (docs/notes/signer.md 7, 9). The boundary
+  # check fails on any growth (review A of #71, M2) and on any hard finding;
+  # check-tags reports only until PROTOCOL.md 8.2 registers today's strings.
+  # Their own tests and the vectors check fail the job too.
+  signer-boundary:
+    name: signer boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # pull-requests: read, to read the queued pull request's labels
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # the merge commit and its first parent, the base branch: the allow
+          # list is compared with the base's
+          fetch-depth: 2
+      - name: The checks refuse what they must (their own tests)
+        run: |
+          python3 -I tests/tools/test_check_signer_boundary.py
+          python3 -I tests/tools/test_check_tags.py
+      - name: Signing and secret-key symbols outside signer/ (no growth, and the allow list only shrinks)
+        # A pull request whose allow list must grow says so with the label
+        # signer-boundary-growth, which a reviewer of the signer boundary sets.
+        # In the merge queue the base is the queue's base_sha, and the label is
+        # read from the pull request the queue's head ref names (the queue
+        # event carries no labels). If that lookup fails in any way, the
+        # queue fails closed: the list may not grow. A growth PR whose
+        # lookup fails merges outside the queue, after maintainer review
+        # (docs/notes/ci.md).
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'signer-boundary-growth') }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          base=""
+          growth=false
+          case "$GITHUB_EVENT_NAME" in
+          pull_request)
+            base=HEAD^1
+            growth=$PR_LABEL
+            ;;
+          merge_group)
+            git fetch --no-tags --depth=1 origin "$QUEUE_BASE"
+            base=$QUEUE_BASE
+            # refs/heads/gh-readonly-queue/<branch>/pr-<number>-<sha>
+            pr=$(printf '%s\n' "$QUEUE_REF" | sed -n 's|^refs/heads/gh-readonly-queue/.*/pr-\([0-9][0-9]*\)-[0-9a-f]*$|\1|p')
+            if [ -n "$pr" ] &&
+               labels=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.labels[].name' 2>/dev/null); then
+              if printf '%s\n' "$labels" | grep -qx signer-boundary-growth; then growth=true; fi
+            else
+              echo "::warning::could not read the labels of the queued pull request ($QUEUE_REF): the allow list may not grow"
+            fi
+            ;;
+          esac
+          if [ -n "$base" ] && [ "$growth" != true ]; then
+            if git show "$base:tools/signer-boundary-allowed.txt" > "$RUNNER_TEMP/base-allow.txt" 2>/dev/null; then
+              # the symbol list may only grow: a symbol deleted in the same
+              # change as a new use of it is growth too
+              git show "$base:tools/signer-only-symbols.txt" > "$RUNNER_TEMP/base-symbols.txt"
+              sh tools/check-signer-boundary.sh --no-growth --base-allow "$RUNNER_TEMP/base-allow.txt" \
+                --base-symbols "$RUNNER_TEMP/base-symbols.txt"
+            elif [ "$GITHUB_EVENT_NAME" = merge_group ] &&
+                 git cat-file -e "$base:tools/check-signer-boundary.sh" 2>/dev/null; then
+              # the base has the check but no allow list: something is wrong
+              echo "::error::the merge queue's base has no allow list"; exit 1
+            else
+              # the base predates the allow list (the pull request that adds it)
+              sh tools/check-signer-boundary.sh --no-growth
+            fi
+          else
+            sh tools/check-signer-boundary.sh --no-growth
+          fi
+      - name: Unregistered gazpacho/ strings (report only)
+        run: python3 -I tools/check-tags.py --report
+      - name: The signer's vectors, recomputed in pure Python
+        run: python3 -I tools/signer-vectors.py --check signer/tests/vectors.txt
+
+  signer-mutants:
+    name: signer mutants
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind
+      - name: Every check of signer/ and of the two S1 tools is killed by a test
+        run: python3 -I tools/mutate-signer.py . "$RUNNER_TEMP/signer-mutants" -j "$(nproc)"

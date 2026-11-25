@@ -169,9 +169,9 @@ mut index-byte-order $B 's/out\[0\] = (unsigned char)(v >> 24);/out[0] = (unsign
 mut depth-limit $B 's/if (parent->depth == 255) goto done;//' "derivation past depth 255 (depth wraps to 0)"
 mut seed-min $B 's/seed_len < 16/seed_len < 15/' "15-byte seed accepted"
 mut seed-max $B 's/seed_len > 64/seed_len > 65/' "65-byte seed accepted"
-mut master-range-check $B 's/    if (!secp256k1_ec_seckey_verify(ctx, I)) goto done;//' \
+mut master-range-check $B 's/    if (!declassified(secp256k1_ec_seckey_verify(ctx, I))) goto done;//' \
   "master key not checked for 0 or >= n"
-mut parent-key-check $B 's/    if (!secp256k1_ec_seckey_verify(ctx, parent->key)) goto done;//' \
+mut parent-key-check $B 's/    if (!declassified(secp256k1_ec_seckey_verify(ctx, parent->key))) goto done;//' \
   "an invalid parent key is no longer told apart from an invalid child"
 mut invalid-child-reason $B '/which this index has no key/,/seckey_tweak_add/s/r = GZW_REASON_INVALID_CHILD;/r = GZW_REASON_INTERNAL;/' \
   "BIP 32 invalid child reported as an internal error instead of 'use the next index'"
