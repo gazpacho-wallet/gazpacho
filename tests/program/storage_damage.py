@@ -252,6 +252,20 @@ def main():
         check(st == "refused" and p.find(r"start-counter state=missing")[0] is None,
               "counter-unreadable: refused, not taken as missing (%s)" % (info,))
 
+        # The clock set back a day during a delay (storage 12.3): the delay
+        # still holds, and never more than the 15-minute cap.
+        import time as _t
+        fa = os.path.join(work, "clock-back")
+        shutil.copytree(base, fa)
+        chain = open(os.path.join(fa, J), "rb").read(41)[9:41]
+        now = int(_t.time())
+        body = (b"GZTRIES1" + chain + struct.pack(">QIQQ", 9, 6, now + 86400, now + 86400 + 2) + bytes([1]))
+        open(os.path.join(fa, "attempts.gza"), "wb").write(body + hashlib.sha256(body).digest()[:16])
+        st, info, p = outcome(fa)
+        ra = p.find(r"unlock op=\w+ status=busy .*retry_after_s=(\d+)")[1]
+        check(st == "refused" and ra is not None and 1 <= int(ra.group(1)) <= 900,
+              "clock-back: the delay holds, at most the 15-minute cap (%s)" % (ra.group(0) if ra else info))
+
         # A key file open to others is refused (storage 4.5; L7).
         fk = os.path.join(work, "keyfile-open")
         shutil.copytree(base, fk)
