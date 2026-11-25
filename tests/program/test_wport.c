@@ -911,6 +911,14 @@ static int ms_save(void *ctx, uint32_t mark)
     return 0;
 }
 
+/* The plan in slot 0 signed: from here its change index may be on the chain. */
+static int sign0(gzp_wport_t *w)
+{
+    static uint8_t out[GZ_FUND_MAX_TX];
+    size_t n = 0;
+    return w->port.sign_plan(w->port.ctx, w->plans[0].info.txid, out, sizeof out, &n);
+}
+
 static void open_marked(gzp_wport_t *w, mark_store *ms)
 {
     gzp_wport_marks_t m = {ms_load, ms_save, ms};
@@ -956,6 +964,7 @@ static void test_change_after_released_plans(void)
     CHECK(gzp_wport_scan_view(&w, &view) == 1);
     for (int i = 0; i < 20; i++) {
         CHECK(plan(&w, 300000, tx, &len) == 1);
+        CHECK(sign0(&w) == 1);   /* signed and never funded (a broadcast that failed): the index stays taken */
         w.port.release(w.port.ctx, tx, len);
     }
     CHECK(plan(&w, 300000, tx, &len) == 1);   /* the one that is funded */
@@ -992,6 +1001,7 @@ static void test_chained_change_after_restart(void)
         CHECK(gzp_wport_publish(&w, &cur, &h, 1, 110) == 0);
         CHECK(plan(&w, 20000, tx, &len) == 1);
         cur = change_of(&w.plans[0], i);
+        CHECK(sign0(&w) == 1);
         w.port.release(w.port.ctx, tx, len);   /* broadcast and done: the plan is no longer held */
     }
     gzp_wport_close(&w);
@@ -1026,6 +1036,104 @@ static void test_mark_saved_before_use(void)
     ms.fail = 0;
     CHECK(plan(&w, 300000, tx, &len) == 1);
     CHECK(ms.v == 1 && ms.saves == 1 && w.next_change == 1);
+    gzp_wport_close(&w);
+}
+
+/* Follow-up of the review of PR 91: a change index never sent (its plan
+ * refused, or released unsigned) is handed back, so 20 abandoned plans do not
+ * push the next change 20 addresses on; the mark is saved once. */
+static void test_unsent_index_handed_back(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    gzt_coin k;
+    uint32_t h = 100;
+    uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    memset(&ms, 0, sizeof ms);
+    open_marked(&w, &ms);
+    k = coin(&w, 0, 0, 500000, 0xe2);
+    CHECK(gzp_wport_publish(&w, &k, &h, 1, 110) == 0);
+    CHECK(plan(&w, 5000000, tx, &len) == 0);   /* refused: more than the wallet holds */
+    CHECK(w.next_change == 0);
+    for (int i = 0; i < 20; i++) {
+        CHECK(plan(&w, 300000, tx, &len) == 1);
+        w.port.release(w.port.ctx, tx, len);   /* never signed */
+    }
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    CHECK(w.plans[0].info.change_index == 0);
+    CHECK(ms.v == 1 && ms.saves == 1 && w.next_change == 1);
+    gzp_wport_close(&w);
+}
+
+/* A signed plan's change index is never handed back, released or not. */
+static void test_sent_index_kept(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    gzt_coin k;
+    uint32_t h = 100;
+    uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    memset(&ms, 0, sizeof ms);
+    open_marked(&w, &ms);
+    k = coin(&w, 0, 0, 500000, 0xe3);
+    CHECK(gzp_wport_publish(&w, &k, &h, 1, 110) == 0);
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    CHECK(sign0(&w) == 1);
+    w.port.release(w.port.ctx, tx, len);
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    CHECK(w.plans[0].info.change_index == 1);
+    gzp_wport_close(&w);
+}
+
+/* Follow-up of the review of PR 91: a host's port with no kept mark plans
+ * nothing (its change index could be handed out again after a restart). */
+static void test_no_marks_refused(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    gzp_wport_marks_t m = {ms_load, ms_save, &ms};
+    gzt_coin k;
+    uint32_t h = 100;
+    uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    memset(&ms, 0, sizeof ms);
+    open_w(&w);
+    gzp_wport_require_marks(&w);
+    k = coin(&w, 0, 0, 500000, 0xe4);
+    CHECK(gzp_wport_publish(&w, &k, &h, 1, 110) == 0);
+    CHECK(plan(&w, 300000, tx, &len) == 0);
+    CHECK(w.next_change == 0);
+    CHECK(gzp_wport_set_marks(&w, &m) == 0);
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    CHECK(ms.v == 1);
+    gzp_wport_close(&w);
+}
+
+/* Follow-up of the review of PR 91, the restore case: with no mark (a restore
+ * from the words into a new folder, or the file lost) the change chain is read
+ * wide, so change past 20 unused addresses, spent ones between, is still
+ * found; the mark is then saved past it, and the next start is not wide. */
+static void test_wide_scan_without_mark(void)
+{
+    gzp_wport_t w;
+    mark_store ms;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin c;
+    memset(&ms, 0, sizeof ms);
+    ms.wide = 1;
+    open_marked(&w, &ms);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    c = coin(&w, 1, 300, 40000, 0xe5);
+    fk_add(&f, &c, 100);
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.n_coins == 1 && w.coins[0].change == 1 && w.coins[0].index == 300);
+    CHECK(ms.v == 301 && w.next_change == 301 && w.wide == 0);
     gzp_wport_close(&w);
 }
 
@@ -1067,6 +1175,10 @@ int main(void)
     test_change_after_released_plans();
     test_chained_change_after_restart();
     test_mark_saved_before_use();
+    test_unsent_index_handed_back();
+    test_sent_index_kept();
+    test_no_marks_refused();
+    test_wide_scan_without_mark();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
