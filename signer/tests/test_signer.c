@@ -888,7 +888,7 @@ static void test_fee_cap(void)
         CHECK(cap_at(a, b, c, d) == want);
         seen++;
     }
-    CHECK(seen == 13);
+    CHECK(seen == 14);
     /* review B of #56, M-3: a 16 sat, 154 vB funding; a 111 vB spend-back;
      * the harness's ceiling of 1 sat/vB. Level 0 at 0.1 sat/vB is 12 sat,
      * level 1 is 28, level 2 is 127; "ceiling x vsize" would be 111. */
