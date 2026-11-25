@@ -16,6 +16,25 @@
 #endif
 #include "gzp.h"
 
+/* The next change index, the lowest never handed out: the kept mark moves
+ * past it first, so a crash between this and the address's use never hands
+ * the same index out again, and a restart reads the change chain that far
+ * (M-3, review of PR 91). 0, or -1 if the mark could not be kept. */
+static int take_change(gzp_wport_t *w, uint32_t *index)
+{
+    uint32_t i = w->next_change;
+    if (w->marks.save && i + 1 > w->mark) {
+        if (w->marks.save(w->marks.ctx, i + 1) != 0) {
+            gzp_log("wallet-change-mark-not-kept index=%u (nothing handed out)", (unsigned)i);
+            return -1;
+        }
+        w->mark = i + 1;
+    }
+    w->next_change = i + 1;
+    *index = i;
+    return 0;
+}
+
 static int out_of(gzp_wport_t *w, uint32_t change, uint32_t j, gzw_bip86_output *o)
 {
     gzw_reason why;
@@ -86,7 +105,7 @@ static int plan_locked(void *ctx, uint64_t amount, const uint8_t script[34], uin
     req.funding_script = script;
     req.funding_script_len = 34;
     req.amount = amount;
-    req.change_index = w->next_change++;
+    if (take_change(w, &req.change_index) != 0) return 0;
     req.require_change = 1;              /* H16: change for a child */
     req.fee = policy(feerate);
     if (must) {                          /* H11: the previous plan's input 0 */
@@ -184,7 +203,15 @@ static int w_spend_back(void *ctx, const uint8_t txid[32], uint32_t index, uint6
     gzt_funding *f = by_txid(w, txid);
     gzw_bip86_output dest;
     uint8_t aux[32];
-    if (!f || !out_of(w, 1, w->next_change++, &dest)) return 0;
+    uint32_t ci;
+    if (!f) return 0;
+    pthread_mutex_lock(&w->mu);
+    if (take_change(w, &ci) != 0) {
+        pthread_mutex_unlock(&w->mu);
+        return 0;
+    }
+    pthread_mutex_unlock(&w->mu);
+    if (!out_of(w, 1, ci, &dest)) return 0;
     gzp_os_random(aux, sizeof aux);
     return gzt_funding_spend_back(w->secp, &w->master, f, index, dest.script_pubkey, sizeof dest.script_pubkey, fee,
                                   aux, out, cap, out_len) == GZT_OK;
@@ -377,6 +404,8 @@ static void set_coins(gzp_wport_t *w, int state, const char *reason, int chain, 
 #define GZP_WPORT_FIRST_ASK 32
 /* A refusal repeated this many scans in a row leaves the address out. */
 #define GZP_WPORT_REFUSALS 3
+/* The most change addresses a scan reads. */
+#define GZP_WPORT_CHANGE_MAX 4096
 
 int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
 {
@@ -409,7 +438,9 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
          * row, a gap limit, since the wallet takes change indexes one after
          * another and a fixed range would stop seeing them (N-2, review of PR 90) */
         for (uint32_t j = 0, unused = 0;
-             !w->stop && (change == 0 ? j < w->gap : (unused < w->gap && j < GZP_WPORT_GAP_MAX)); j++) {
+             !w->stop && (change == 0 ? j < w->gap
+                                      : ((unused < w->gap || j < w->mark + w->gap) && j < GZP_WPORT_CHANGE_MAX));
+             j++) {
             gzw_bip86_output o;
             size_t n = 0;
             if (!out_of(w, change, j, &o)) {
@@ -496,6 +527,12 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
         OPENSSL_cleanse(found, sizeof found);
         return -1;
     }
+    if (!left_out && w->mark + w->gap > GZP_WPORT_CHANGE_MAX) {
+        left_out = "too_many_addresses";   /* change handed out past what a scan reads (M-3) */
+        left_error = NULL;
+        left_chain = 1;
+        left_index = GZP_WPORT_CHANGE_MAX;
+    }
     pthread_mutex_lock(&w->mu);
     if (next_change > w->next_change) w->next_change = next_change;
     pthread_mutex_unlock(&w->mu);
@@ -580,9 +617,14 @@ int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap)
 
 int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m)
 {
-    (void)w;
-    (void)m;
-    return 0;   /* step 1: nothing kept */
+    uint32_t mark = 0;
+    if (!m || !m->load || !m->save || m->load(m->ctx, &mark) != 0) return -1;
+    pthread_mutex_lock(&w->mu);
+    w->marks = *m;
+    w->mark = mark;
+    if (mark > w->next_change) w->next_change = mark;
+    pthread_mutex_unlock(&w->mu);
+    return 0;
 }
 
 int gzp_wport_invent(gzp_wport_t *w)

@@ -81,6 +81,10 @@ static gzp_testping_t tp;
 static gzp_datadir_t dir;
 static gzp_api_t api;          /* the local API server (P5): one per process */
 static gzp_wallet_t *wallet;
+
+/* The wallet port's change mark, kept sealed in the wallet's folder (M-3). */
+static int change_mark_load(void *ctx, uint32_t *mark) { return gzp_wallet_change_mark_read(ctx, mark); }
+static int change_mark_save(void *ctx, uint32_t mark) { return gzp_wallet_change_mark_write(ctx, mark); }
 static gzp_keys_t keys;        /* the key port's keys (keys.h) */
 static gzp_unlock_t unlock_tab; /* the unlocked storage's unlock.h table: the key port's seed source */
 static gzp_wport_t wport;     /* host: the funding engine's wallet port (wport.h) */
@@ -660,6 +664,15 @@ int main(int argc, char **argv)
             fprintf(stderr, "gazpacho: cannot open the wallet's coins\n");
             rc = GZP_EXIT_DATA;
             goto out;
+        }
+        if (wallet) {
+            gzp_wport_marks_t marks = {change_mark_load, change_mark_save, wallet};
+            if (gzp_wport_set_marks(&wport, &marks) != 0) {
+                OPENSSL_cleanse(priv, sizeof priv);
+                fprintf(stderr, "gazpacho: cannot read the wallet's change mark\n");
+                rc = GZP_EXIT_DATA;
+                goto out;
+            }
         }
         if (chain.active) gzp_wport_scan_start(&wport, opt.chain_urls[0], 20);
 #ifdef GZP_TEST_BUILD

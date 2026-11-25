@@ -98,7 +98,7 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
                    uint32_t burial);
 /* The confirmed coins of the first `gap` receive addresses, and of the change addresses up to `gap`
  * unused in a row (a gap limit: change indexes are taken one after another from the lowest unused,
- * N-2), asked of the Esplora server
+ * N-2) and at least to the kept change mark plus `gap` (M-3), asked of the Esplora server
  * at `url` through a client of its own: the chain worker's, which runs in its own thread, is never
  * used from the loop's. Starts a thread for it and returns: 0, or -1. A plan made
  * before the scan has published finds no coin (outcome Failed, as with an empty wallet). */

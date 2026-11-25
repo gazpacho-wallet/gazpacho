@@ -897,3 +897,37 @@ void gzp_wallet_test_restore_from(gzp_wallet_t *w, const char *backup)
     snprintf(w->restore_from, sizeof w->restore_from, "%s", backup);
 }
 #endif
+
+/* ---- the wallet port's change mark (M-3, review of PR 91) ------------------- */
+#define GZP_CHANGE_MARK_FILE "change.gzm"
+
+int gzp_wallet_change_mark_read(gzp_wallet_t *w, uint32_t *mark)
+{
+    const gz_sc_store_t *s = gzp_wallet_sc_store(w);
+    gz_sc_unlocked_t *u = gzp_wallet_sc_unlocked(w);
+    uint8_t *data = NULL;
+    size_t len = 0;
+    uint64_t v = 0;
+    gz_sc_err_t e;
+    *mark = 0;
+    if (!s || !u || !u->vault) return -1;
+    e = gz_sc_fs_read(s, GZP_CHANGE_MARK_FILE, GZ_SC_STARTS_LEN, &data, &len);
+    if (e == GZ_SC_MISSING) return 0;
+    if (e != GZ_SC_OK) return -1;
+    e = gz_sc_counter_open(u->vault, data, len, &v);
+    free(data);
+    if (e != GZ_SC_OK || v > UINT32_MAX) return -1;
+    *mark = (uint32_t)v;
+    return 0;
+}
+
+int gzp_wallet_change_mark_write(gzp_wallet_t *w, uint32_t mark)
+{
+    const gz_sc_store_t *s = gzp_wallet_sc_store(w);
+    gz_sc_unlocked_t *u = gzp_wallet_sc_unlocked(w);
+    uint8_t out[GZ_SC_STARTS_LEN];
+    if (!s || !u || !u->vault || gz_sc_counter_seal(u->vault, mark, out) != GZ_SC_OK) return -1;
+    /* DONE_WITH_FAULT: the folder sync failed and a power cut may bring the
+     * old mark back, so it is not kept, and the index is not handed out */
+    return gz_sc_fs_replace(s, GZP_CHANGE_MARK_FILE, out, sizeof out) == GZ_SC_OK ? 0 : -1;
+}
