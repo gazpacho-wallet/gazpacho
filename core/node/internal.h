@@ -404,6 +404,9 @@ typedef struct {
     slot_view_t view;               /* P6a */
     int awake;                      /* resumed at this start, or opened in this run: the pause acts on it */
     uint64_t set_aside;             /* host: gz_fund_set_aside_sat of its terms, once known */
+    int funds_blocked;              /* host: its automatic start waits for funds (host_funds_short) */
+    uint64_t funds_need, funds_have; /* ... what the wallet's dry run said */
+    int gate_derive;                /* member: a join ready's factory key, derived once its terms check */
     uint32_t cond_seen;             /* member: the saved conditions' version when it joined (slot_opened 24) */
     int set_aside_known;
     int stale;                      /* member: left out as a seat of an older epoch (BD2): nothing is sent for it */
@@ -776,6 +779,7 @@ gz_status_t gz_ls_ended_answer(const gz_node_t *c, int idx, const gz_link_t *lin
 gz_status_t gz_ls_closing_timer(gz_node_t *c, gz_action_list_t *out);
 int gz_ls_closing_count(const gz_node_t *c);
 gz_status_t gz_ls_pause_changed(gz_node_t *c, gz_action_list_t *out);
+gz_status_t gz_ls_funds_recheck(gz_node_t *c, gz_action_list_t *out);
 int gz_ls_cond_decode(const uint8_t *p, size_t n, gz_lobby_conditions_t *c);
 size_t gz_ls_cond_encode(const gz_lobby_conditions_t *c, uint8_t *p, size_t cap);
 int gz_ls_conditions_blocked(const gz_node_t *c, const gz_lobby_conditions_t *person, unsigned *slots);

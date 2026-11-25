@@ -296,15 +296,14 @@ typedef struct {
     size_t sign_mem_size;
     gz_key_port_t keys;                /* per-lobby keys and the host key */
     gz_host_funding_t host_funding;    /* composite-node.md 12.1; AUTO by default */
-    /* Host: the wallet port's dry run of a funding plan (funding.h, can_plan)
-     * and the host's funding rate (sat/kvB; 0: 100), for local-api.md 15.2's
-     * funds check at LOBBY_OPEN and LOBBY_START. A NULL can_plan is no wallet
-     * port: both are refused, no_wallet (fail closed). */
-    struct {
-        void *ctx;
-        int (*can_plan)(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins);
-        uint64_t feerate;
-    } funds;
+    /* Host: the funding engine's wallet port (a gz_wallet_port_t, funding.h),
+     * the program's, for the node's whole life, as on integration-slice1. Its
+     * can_plan is local-api.md 15.2's funds check, asked at the funding
+     * engine's own rate (gz_fund_config_default: one rate, review B of #55,
+     * L-2) before an open, an early start and an automatic start. NULL, or no
+     * can_plan: no wallet port, and all three are refused (no_wallet; the
+     * automatic start waits). Members need none. */
+    const void *wallet;
     gz_member_signing_t member_signing;/* composite-node.md 12.2; AT_JOIN by default */
     gz_node_crypto_t crypto;           /* signatures for the lobbies; all NULL: no lobby opens */
     uint32_t test_sign_outcome;        /* test builds only: GZ_TEST_SIGN_* (0: funding) */

@@ -33,6 +33,7 @@
 #include "view.h"
 
 #define GZP_API_HELD 64
+#define GZP_API_HELD_MS 30000  /* the longest a call waits for the core's answer */
 
 typedef struct gzp_api {
     gz_api_server *srv;               /* NULL: no interface (--no-interface, or the port refused) */
@@ -55,6 +56,7 @@ typedef struct gzp_api {
          * waits for that object, or for the end of the node's batch. */
         int waiting, status;
         uint64_t waiting_since;       /* the monotonic clock, ms */
+        uint64_t held_since;          /* ... when it was held: no held call outlives GZP_API_HELD_MS */
         char object[GZ_LOCAL_ID_MAX + 1], params[700];
     } held[GZP_API_HELD];
     /* What the program knows of the node for the calls (W12): the member

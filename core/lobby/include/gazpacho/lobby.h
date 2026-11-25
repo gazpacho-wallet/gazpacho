@@ -421,6 +421,11 @@ typedef struct {
      * by the start rule; at the deadline the lobby is cancelled, reason 2.
      * NULL: never paused. Called with seat_ctx. */
     int (*paused)(void *ctx);
+    /* 1 if the host's wallet can fund this lobby now (local-api.md 15.2): asked
+     * before the start rule's ready check, the automatic start. 0: no check;
+     * the lobby stays Open and is asked again at its next seat event, or when
+     * its node asks the rule again (a tip). NULL: always. With seat_ctx. */
+    int (*funds_ok)(void *ctx);
     void *seat_ctx;
     /* The most tree transactions its signer signs (0: no limit): terms whose target needs more do not
      * open (terms.md 7, gz_terms_policy_t.max_tree_nodes). */
