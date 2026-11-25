@@ -501,6 +501,14 @@ static int node_rec_known(gz_bytes_t b, uint32_t known)
     return 1;
 }
 
+/* The highest key_index a slot_opened may name. Allocation counts up from 1
+ * (highest_index + 1) and never comes near it; an index above it is damage:
+ * the factory index (key_index + 1) would wrap, or the pair would meet the
+ * indexes the program reserves at the top. A second defence after the sealed
+ * journal (L4; core-slot-index-bounds). */
+#define GZ_LS_KEY_INDEX_MAX 0xfffffff0u
+
+
 /* A slot_opened record at load: the slot is Open again, with its lobby
  * engine made anew for the Lobby records that follow. */
 gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
@@ -511,7 +519,7 @@ gz_status_t gz_ls_load_opened(gz_node_t *c, const gz_record_t *rec)
         !arg(rec->bytes, 2, 4, &serial) ||
         !arg(rec->bytes, 4, 32, &scope) || !arg(rec->bytes, 6, 1, &role) || role.data[0] > 1 ||
         !arg(rec->bytes, 12, 4, &epoch) || !arg(rec->bytes, 14, 4, &index) || gz_get_u32(serial.data) == 0 ||
-        gz_get_u32(index.data) == 0xffffffffu) /* the pair's second index would wrap (L4) */
+        gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)
         return GZ_ERR_CORRUPT;
     if (gz_get_u32(serial.data) > c->slot_serial) c->slot_serial = gz_get_u32(serial.data);
     if (gz_get_u32(index.data) + 1 > c->np.highest_index && gz_get_u32(epoch.data) == (c->np.have_epoch ? c->np.epoch : 0))

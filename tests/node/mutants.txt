@@ -246,7 +246,9 @@ ls-left-out-place-free	core/node/lobbyslot.c	        memset(&s->lobby, 0, sizeof
 ls-left-out-rejoin	core/node/lobbyslot.c	    if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */\n	
 ls-left-out-not-told	core/node/composite.c	        if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);\n	
 ls-unknown-field-taken	core/node/lobbyslot.c	        if (!(t & 1) && (t >= 64 || !(known & (1u << (t / 2))))) return 0;\n	
-ls-index-wraps	core/node/lobbyslot.c	 ||\n        gz_get_u32(index.data) == 0xffffffffu)	)
+ls-index-wraps	core/node/lobbyslot.c	 ||\n        gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)	)
+ls-index-bound-high	core/node/lobbyslot.c	#define GZ_LS_KEY_INDEX_MAX 0xfffffff0u	#define GZ_LS_KEY_INDEX_MAX 0xfffffffeu
+ls-index-bound-edge	core/node/lobbyslot.c	gz_get_u32(index.data) > GZ_LS_KEY_INDEX_MAX)	gz_get_u32(index.data) >= GZ_LS_KEY_INDEX_MAX)
 timer-of-ended-slot-kept	core/node/handoff.c	            drop_action(c, out, i);\n            continue;\n        }\n        if (a->kind == GZ_ACTION_SET_TIMER || a->kind == GZ_ACTION_CANCEL_TIMER) {	        }\n        if (a->kind == GZ_ACTION_SET_TIMER || a->kind == GZ_ACTION_CANCEL_TIMER) {
 # --- P4.3: the signing engine in the composite (signslot.c and its hooks)
 sg-gate-digest-off	core/node/lobbyslot.c	return m->have_terms && memcmp(now, s->gate_digest, 32) == 0;	return m->have_terms;
