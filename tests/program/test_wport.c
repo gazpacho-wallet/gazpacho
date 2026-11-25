@@ -263,6 +263,7 @@ typedef struct {
     uint8_t bad_script[34];  /* an address always answered bad_as, or none */
     gz_chain_result bad_as;
     size_t max_cap;          /* the largest cap a lookup asked for */
+    size_t reject_over;      /* the dust address is refused (400) past this many outputs, as electrs's utxos limit */
     int tip_calls, outputs_calls, tip_after_outputs;
     uint32_t tip_before, tip_later;
 } fake_chain;
@@ -295,6 +296,7 @@ static gz_chain_result fk_outputs(void *ctx, const uint8_t *script, size_t scrip
     if (cap > f->max_cap) f->max_cap = cap;
     if (f->bad_as != GZ_CHAIN_OK && script_len == 34 && memcmp(f->bad_script, script, 34) == 0) return f->bad_as;
     if (f->dust_n && script_len == 34 && memcmp(f->dust_script, script, 34) == 0) {
+        if (f->reject_over && f->dust_n > f->reject_over) return GZ_CHAIN_REJECTED;   /* electrs: 400 */
         if (f->dust_n > cap) return GZ_CHAIN_TOO_LARGE;   /* as the chain port does past its cap */
         for (size_t i = 0; i < f->dust_n; i++) {
             memset(&out[i], 0, sizeof out[i]);
@@ -650,6 +652,83 @@ static void test_log_rate(void)
     CHECK(gzp_wport_log_attempt(10) == 1 && gzp_wport_log_attempt(11) == 0 && gzp_wport_log_attempt(20) == 1);
 }
 
+/* M-2 (review of PR 88, second round): the reviewer's probe. 300 dust outputs at
+ * receive index 0 come before the real coin at index 1; the list keeps the 256
+ * largest coins, so the real one is listed and can fund (the wallet spends
+ * its 64 largest anyway), and the list says it is incomplete. */
+static void test_dust_does_not_push_out_real_coins(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzp_wport_coins_t c;
+    gzt_coin k;
+    uint64_t have;
+    size_t n;
+    int listed = 0;
+    open_w(&w);
+    w.gap = 2;
+    dust_view(&w, &f, &view, 0, 0, 300);
+    k = coin(&w, 0, 1, 500000, 0xe9);
+    fk_add(&f, &k, 100);
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.n_coins == GZP_WPORT_COINS);
+    for (size_t i = 0; i < w.n_coins; i++)
+        if (w.coins[i].txid[0] == 0xe9) listed = 1;
+    CHECK(listed);
+    gzp_wport_coins(&w, &c);
+    CHECK(c.state == GZP_COINS_INCOMPLETE && c.reason && !strcmp(c.reason, "too_many_coins"));
+    CHECK(w.port.can_plan(w.port.ctx, 400000, 100, &have, &n) == 1);
+    gzp_wport_close(&w);
+}
+
+/* L-2 (second round): on an incomplete list, "not enough" is not known: the
+ * coins left out might cover it, so can_plan cannot tell (coins_unknown),
+ * and the error carries the list's state. Enough is still enough. */
+static void test_incomplete_short_is_unknown(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin k;
+    uint64_t have;
+    size_t n;
+    open_w(&w);
+    w.gap = 1;
+    dust_view(&w, &f, &view, 0, 0, 1025);       /* left out: address_too_large */
+    k = coin(&w, 1, 0, 500000, 0xea);
+    fk_add(&f, &k, 100);
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.port.can_plan(w.port.ctx, 100000, 100, &have, &n) == 1);
+    CHECK(w.port.can_plan(w.port.ctx, 900000, 100, &have, &n) == -1);
+    gzp_wport_close(&w);
+}
+
+/* L-2 (second round): Blockstream's electrs answers an address past its
+ * utxos limit (--utxos-limit, 500 by default) with HTTP 400, which the chain
+ * port gives as REJECTED. That is refused again at every scan: after 3 the
+ * address is left out (address_refused), never a retry loop. */
+static void test_electrs_utxo_limit(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzp_wport_coins_t c;
+    gzt_coin k;
+    open_w(&w);
+    w.gap = 1;
+    dust_view(&w, &f, &view, 0, 0, 600);
+    f.reject_over = 500;
+    k = coin(&w, 1, 0, 500000, 0xeb);
+    fk_add(&f, &k, 100);
+    CHECK(gzp_wport_scan_until(&w, &view, 1) == 1);
+    gzp_wport_coins(&w, &c);
+    CHECK(c.state == GZP_COINS_INCOMPLETE && c.reason && !strcmp(c.reason, "address_refused") &&
+          c.error && !strcmp(c.error, "rejected") && c.attempts == 3);
+    CHECK(w.n_coins == 1);
+    gzp_wport_close(&w);
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -677,6 +756,9 @@ int main(void)
     test_coins_before_and_invented();
     test_funds_error_codes();
     test_log_rate();
+    test_dust_does_not_push_out_real_coins();
+    test_incomplete_short_is_unknown();
+    test_electrs_utxo_limit();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
