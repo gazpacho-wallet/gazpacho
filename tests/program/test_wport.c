@@ -256,6 +256,7 @@ typedef struct {
     gz_chain_output out[8];
     int n;
     int tip_fails;          /* this many tip reads fail first */
+    int outputs_fails;      /* this many output lookups fail first */
     int tip_calls, outputs_calls, tip_after_outputs;
     uint32_t tip_before, tip_later;
 } fake_chain;
@@ -281,6 +282,10 @@ static gz_chain_result fk_outputs(void *ctx, const uint8_t *script, size_t scrip
     (void)unconfirmed_differs;
     f->outputs_calls++;
     *count = 0;
+    if (f->outputs_fails > 0) {
+        f->outputs_fails--;
+        return GZ_CHAIN_UNREACHABLE;
+    }
     for (int i = 0; i < f->n && *count < cap; i++)
         if (script_len == 34 && memcmp(f->script[i], script, 34) == 0) out[(*count)++] = f->out[i];
     return GZ_CHAIN_OK;
@@ -347,6 +352,46 @@ static void test_tip_retried(void)
     gzp_wport_close(&w);
 }
 
+/* Review of PR 85: a failed address lookup is asked again, like a failed tip
+ * read; a list short of the coins behind that address is never published (it
+ * would turn into a funds_short refusal). */
+static void test_lookup_retried(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin c;
+    uint64_t have;
+    size_t n;
+    open_w(&w);
+    w.gap = 2;
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    c = coin(&w, 0, 0, 500000, 0xa9);
+    fk_add(&f, &c, 100);
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    f.outputs_fails = 1;                                     /* the first lookup, the coin's address */
+    CHECK(gzp_wport_scan_view(&w, &view) == 0);              /* incomplete: nothing published */
+    CHECK(w.published == 0);
+    CHECK(w.port.can_plan(w.port.ctx, 100000, 100, &have, &n) == -1);
+    f.outputs_fails = 2;
+    CHECK(gzp_wport_scan_until(&w, &view, 1) == 1);          /* asked again until every lookup answered */
+    CHECK(f.outputs_fails == 0);
+    CHECK(w.n_coins == 1);
+    CHECK(w.port.can_plan(w.port.ctx, 100000, 100, &have, &n) == 1 && have == 500000);
+    gzp_wport_close(&w);
+}
+
+/* Review of PR 85: the stop flag is read by the scan thread without the mutex
+ * and written by close under it, so it is an atomic. */
+static void test_stop_is_atomic(void)
+{
+    gzp_wport_t w;
+    memset(&w, 0, sizeof w);
+    CHECK(_Generic(&w.stop, _Atomic int *: 1, default: 0) == 1);
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -362,6 +407,8 @@ int main(void)
     test_hold_survives_a_reorg();
     test_tip_read_first();
     test_tip_retried();
+    test_lookup_retried();
+    test_stop_is_atomic();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
