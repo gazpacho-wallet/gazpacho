@@ -59,7 +59,7 @@ import time
 BUILD = sys.argv[1] if len(sys.argv) > 1 else "build"
 PASS = "a long enough passphrase, test only"
 SEED_TAG = "gazpacho program_api test seed "
-SEED_N = 1   # chosen by --choose-seed (docstring)
+SEED_N = 3   # chosen by --choose-seed (docstring)
 fails = []
 DUMP = []       # --dump-vocab: every output line and API answer
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -358,6 +358,8 @@ def main():
         finally:
             m.stop()
         mtexts = ["\n".join(m.lines)] + [a for i, a in enumerate(m.answers) if i != m.create_answer]
+        if DUMP_FILE:                         # the member's words count in the vocabulary too
+            DUMP.extend(mtexts)
         check(not any(PASS in t for t in mtexts), "the member: the passphrase is in no output line and no answer")
         if fixed is not None:
             check(getattr(m, "words", None) == fixed, "the member's words are the fixed phrase's")
@@ -462,7 +464,10 @@ def main():
     DUMP.extend(q.lines)
 
     if DUMP_FILE:
-        vocab = set(re.findall(r"[a-z]+", "\n".join(DUMP).lower())) - set(words)
+        # Every word of every answer and line but the create answer's: the run's own
+        # random phrase is not taken away, so a fixed word of the program (a key such
+        # as switches.chat) counts even when the run's phrase happens to hold it.
+        vocab = set(re.findall(r"[a-z]+", "\n".join(t for i, t in enumerate(DUMP) if i != create_answer).lower()))
         with open(DUMP_FILE, "w", encoding="utf-8") as fh:
             fh.write("\n".join(sorted(vocab)) + "\n")
         print("wrote %d words to %s" % (len(vocab), DUMP_FILE))
