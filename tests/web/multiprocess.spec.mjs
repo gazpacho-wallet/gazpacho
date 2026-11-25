@@ -25,6 +25,9 @@ const EXE = process.env.GZ_PROGRAM;
 if (!EXE && process.env.CI) throw new Error('GZ_PROGRAM is not set in CI: the multi-process test may not be skipped there');
 test.skip(!EXE, 'GZ_PROGRAM is not set');
 test.setTimeout(240000);
+// Every click, fill and navigation fails on its own after 20 s, naming its step, instead of
+// waiting out the whole test's limit (a wait with no timeout of its own hid where it hung).
+test.use({ actionTimeout: 20000, navigationTimeout: 20000 });
 
 const PASS = { host: 'host passphrase, test only, long enough', m1: 'member one passphrase, test only', m2: 'member two passphrase, test only',
   m3: 'member three passphrase, test only' };
@@ -223,9 +226,16 @@ test('a host and three members: one lobby opened, joined and readied up to the r
     // (decision K21; local-api.md 15.3 and M3)
     await p2.getByLabel('Fewest members').fill('2');
     await p2.locator('#save-conditions').click();
+    // a loosening is kind B (13.2): the passphrase is asked only when the sign-in is not
+    // fresh (4.8's 5-minute window). Signed in a minute ago, m2 is fresh, so the save goes
+    // through without the dialog; when it does come, it is answered.
     const fresh = p2.locator('dialog');
-    await fresh.getByLabel('Wallet passphrase').fill(PASS.m2);
-    await fresh.getByRole('button', { name: 'Continue' }).click();
+    const asked = await fresh.waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false);
+    if (asked) {
+      await fresh.getByLabel('Wallet passphrase').fill(PASS.m2);
+      await fresh.getByRole('button', { name: 'Continue' }).click();
+    }
+    await expect(p2.locator('#cond-msg [data-code]')).toHaveCount(0);
     await join2();
     await expect(hp.locator('#host-counts')).toContainText('3 ready of 4', { timeout: 20000 });
     await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(1);

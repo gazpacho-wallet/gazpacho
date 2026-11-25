@@ -174,12 +174,15 @@ static int w_verify(void *ctx, const uint8_t pub[33], const uint8_t msg[32], con
 
 static int w_point(void *ctx, const uint8_t pub[33]) { return lt_point_ok(ctx, pub); }
 
+static int SIGNS[NN];          /* member signatures of each node (w_sign) */
+
 static int w_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
 {
     static const uint8_t aux[32];
     lt_key_t k;
     int n = node_of(ctx);
     if (SIGN_FAIL[n]) return 0;
+    if (!host) SIGNS[n]++;
     if (host) {
         if (IDENT[n] != 0) return 0;
         whost(&k);
@@ -3613,6 +3616,65 @@ static void test_index_unique(void)
     w_free(1);
 }
 
+/* Review of #79 (local-api.md 14.3 rule 1): the per-lobby gate closes when the
+ * seat ends, not only when the slot closes. A member that joined ready with the
+ * passphrase and then leaves, and one whose tightened conditions make it refuse:
+ * each gate is closed at once, its scoped secret wiped, the view says closed,
+ * and nothing more is signed for it. */
+static void test_gate_closes_with_seat(void)
+{
+    terms_t t;
+    lt_key_t hk;
+    gz_bytes_t v;
+    wview_t *w;
+    int forgets, signs;
+    char l1[GZ_LOCAL_ID_MAX + 1], l2[GZ_LOCAL_ID_MAX + 1];
+    whost(&hk);
+    w_world(2, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 4, 3, 3700);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200 && member_join(2, &t) == 200);
+    w_run(3000, 100);
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_READY, &t, 1) == 200 && scope_cmd(2, GZ_CMD_LOBBY_READY, &t, 1) == 200);
+    w_run(2000, 100);
+    CHECK(slot(1, &t) && slot(1, &t)->gate_open && slot(2, &t) && slot(2, &t)->gate_open);
+    snprintf(l1, sizeof l1, "%s", lid(1, &t));
+    snprintf(l2, sizeof l2, "%s", lid(2, &t));
+    /* 1 leaves */
+    forgets = FORGETS[1];
+    CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 200);
+    w_run(500, 100);
+    if (slot(1, &t)) CHECK(slot(1, &t)->lobby.m.left && !slot(1, &t)->gate_open && !slot(1, &t)->gate_have);
+    /* the lobby object as the program last holds it, whether the slot is still there or not */
+    w = view_of(1, GZ_VIEW_LOBBY, l1);
+    CHECK(w && (!vf(w, GZ_VLB_GATE, &v) || (v.len == 10 && v.data[1] == 0)));  /* closed, opened for nothing */
+    CHECK(FORGETS[1] == forgets + 1);                                          /* the scoped secret wiped */
+    /* 2's conditions tighten past the lobby's minimum: it refuses (leaves, reason 1) */
+    forgets = FORGETS[2];
+    signs = SIGNS[2];
+    {
+        uint8_t cb[64];
+        size_t n = 27;
+        memset(cb, 0, sizeof cb);
+        gz_put_u16(cb + 1, 4);                      /* min_members, the ready hint */
+        gz_put_u16(cb + 23, 4);                     /* limits.min_members */
+        h_arg_t a[2] = {{12, cb, n}, {14, (const uint8_t *)"\0\0\0\0", 4}};
+        CHECK(w_req(2, GZ_CMD_API_SET_CONDITIONS, "GateClosesRefused01", "/api/v1/conditions", 3, a, 2) == 200);
+    }
+    w_run(2000, 100);
+    if (slot(2, &t))
+        CHECK((slot(2, &t)->lobby.m.left || slot(2, &t)->lobby.m.ended) && !slot(2, &t)->gate_open && !slot(2, &t)->gate_have);
+    w = view_of(2, GZ_VIEW_LOBBY, l2);
+    CHECK(w && (!vf(w, GZ_VLB_GATE, &v) || (v.len == 10 && v.data[1] == 0)));
+    CHECK(FORGETS[2] == forgets + 1);
+    w_run(20000, 500);
+    CHECK(SIGNS[2] == signs + 1 || SIGNS[2] == signs);   /* its leave at most; nothing after */
+    signs = SIGNS[2];
+    w_run(20000, 500);
+    CHECK(SIGNS[2] == signs && SIGNS[1] >= 0);
+    no_errors(2);
+    w_free(2);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -3625,6 +3687,7 @@ int main(int argc, char **argv)
     test_ready_replay_without_passphrase();
     test_discovery_repeat();
     test_index_unique();
+    test_gate_closes_with_seat();
     test_two_lobbies();
     test_cancel_and_tombstone();
     test_refusals();

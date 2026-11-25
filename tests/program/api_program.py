@@ -142,7 +142,7 @@ def free_port():
 
 
 class Prog:
-    def __init__(self, exe, extra=(), seed=None, role="host", dump=True):
+    def __init__(self, exe, extra=(), seed=None, role="host", dump=True, connect=None):
         self.dir = tempfile.mkdtemp(prefix="gzapi-")
         self.data = os.path.join(self.dir, "d")
         if seed is not None:              # the stand-in seed file, as the program writes it (datadir.c)
@@ -159,7 +159,7 @@ class Prog:
             args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % self.listen, "--no-chain",
                     "--interface-port", str(self.port), "--name", "h1"] + list(extra)
         else:                             # a member names a host to connect to: one nobody listens at
-            args = [exe, "--data-dir", self.data, "--role", "member", "--connect", NOBODY_KEY + "@127.0.0.1:%d" % self.listen,
+            args = [exe, "--data-dir", self.data, "--role", "member", "--connect", connect or NOBODY_KEY + "@127.0.0.1:%d" % self.listen,
                     "--no-chain", "--interface-port", str(self.port), "--name", "m1"] + list(extra)
         env = dict(os.environ, XDG_RUNTIME_DIR=self.dir)
         self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
@@ -236,6 +236,83 @@ def member_queries(p, host):
         time.sleep(0.5)
     check(g and g.get("state") == "failed" and g.get("failed_because") == "unreachable" and g.get("lobbies") == [],
           "nobody at that address: the query failed, unreachable", g)
+
+
+def gate_after_seat_ends(exe):
+    """14.3 rule 1 through the programs: a member's per-lobby gate is closed once its
+    seat ends, after a leave and after a refusal (review of #79; the core used to keep
+    it open, with its scoped secret, until the slot closed). A host and two members,
+    with --test-engines 0 (net.h, single_key)."""
+    te0 = ["--test-engines", "0"]
+    dl = int(time.time()) + 3600
+    h = Prog(exe, extra=te0, dump=False)
+    ms = []
+    try:
+        check(set_up(h), "gate: the host, set up", h.lines[-5:])
+        k = h.wait_line(r"host key=([0-9a-f]{66})")
+        addr = "%s@127.0.0.1:%d" % (k.group(1) if k else NOBODY_KEY, h.listen)
+        draft = {"name": "g", "target": 4, "minimum": 3, "listed": True, "deadline_at": dl}
+        st, pv = h.call("POST", "/host/preview", draft)
+        st, op = h.call("POST", "/host/lobbies", {"request_id": "GateSeatEndsOpen001", "draft": draft,
+                                                 "draft_digest": (pv or {}).get("draft_digest"),
+                                                 "confirm_funding_sat": (pv or {}).get("funding_at_target_sat"), "passphrase": PASS})
+        check(200 <= st < 300, "gate: the host opens a lobby", (st, op))
+        lids = []
+        for n in range(2):
+            m = Prog(exe, role="member", extra=te0, dump=False, connect=addr)
+            ms.append(m)
+            check(set_up(m), "gate: member %d, set up" % (n + 1), m.lines[-5:])
+            st, q = m.call("POST", "/discovery/query", {"host": addr})
+            g = None
+            for _ in range(30):
+                st, g = m.call("GET", "/discovery/queries/" + str((q or {}).get("query_id")))
+                if g and g.get("state") != "asking":
+                    break
+                time.sleep(0.5)
+            lid = ((g or {}).get("lobbies") or ["lob_none"])[0]
+            lids.append(lid)
+            st, lo = m.call("GET", "/lobbies/" + lid)
+            digest = ((lo or {}).get("terms") or {}).get("current", {}).get("digest")
+            st, j = m.call("POST", "/lobbies/%s/join" % lid, {"request_id": "GateSeatEndsJoin%03d" % n, "seen_current_digest": digest,
+                                                               "ready": True, "passphrase": PASS})
+            you = {}
+            for _ in range(40):
+                st, lo = m.call("GET", "/lobbies/" + lid)
+                you = (lo or {}).get("you") or {}
+                if you.get("seat") == "ready":
+                    break
+                time.sleep(0.25)
+            check(you.get("seat") == "ready" and (you.get("gate") or {}).get("state") == "open",
+                  "gate: member %d joined ready, its gate open" % (n + 1), you)
+
+        def closed_soon(m, lid):
+            you = {}
+            for _ in range(4):                    # within about a second: the step that ends the seat
+                time.sleep(0.25)
+                st, lo = m.call("GET", "/lobbies/" + lid)
+                you = (lo or {}).get("you") or {}
+                if you.get("seat") in ("left", "none", "refused") and (you.get("gate") is None or you["gate"].get("state") == "closed"):
+                    return True, you
+            return False, you
+
+        st, e = ms[0].call("POST", "/lobbies/%s/leave" % lids[0], {"request_id": "GateSeatEndsLeave01"})
+        ok, you = closed_soon(ms[0], lids[0])
+        check(200 <= st < 300 and ok, "gate: after a leave, you.gate is closed (14.3 rule 1)", (st, you))
+        st, c = ms[1].call("GET", "/conditions")
+        tight = {k2: v for k2, v in ((c or {}).get("conditions") or {}).items()}
+        tight["min_members"] = 4                  # past the lobby's minimum of 3: its own check refuses
+        st, r = ms[1].call("PUT", "/conditions", {"conditions": tight, "based_on_version": (c or {}).get("version"),
+                                                  "preset": (c or {}).get("preset"), "confirm_loosens": []})
+        ok, you = closed_soon(ms[1], lids[1])
+        check(st == 200 and ok, "gate: after a refusal, you.gate is closed (14.3 rule 1)", (st, r, you))
+    finally:
+        for m in ms:
+            m.stop()
+        h.stop()
+    for m in ms:
+        check(not any(PASS in l for l in m.lines), "gate: a member's passphrase is in no output line")
+        shutil.rmtree(m.dir, ignore_errors=True)
+    shutil.rmtree(h.dir, ignore_errors=True)
 
 
 def events(prog, until_topic, timeout=10):
@@ -415,6 +492,8 @@ def main():
             v.stop()
         check(not any(PASS in l for l in v.lines), "the third program: the passphrase is in no output line")
         shutil.rmtree(v.dir, ignore_errors=True)
+
+        gate_after_seat_ends(exe_t)
 
         # 5. a wrong passphrase: when to try again, and how many in a row
         time.sleep(1.2)

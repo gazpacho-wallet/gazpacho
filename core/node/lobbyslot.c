@@ -1044,6 +1044,12 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
     /* The per-lobby gate (AT_JOIN) closes when the check it was opened for
      * has had its last attempt: the lobby left Signing for Funding, Open or
      * its end, or the member was not chosen (12.2). */
+    /* ... and when the seat ends (14.3 rule 1): left, refused, removed or the lobby
+     * cancelled. The signing permission and the scoped secret behind it do not outlive
+     * the seat (review of #79), unless an answered check is still running (rule 4). */
+    if (st == GZ_OK && !s->host && (s->gate_open || s->gate_have) && (s->lobby.m.left || s->lobby.m.ended) &&
+        !gz_lobby_member_check_in_flight(&s->lobby.m))
+        gate_close(c, s);
     if (st == GZ_OK && !s->host && s->gate_open) {
         if (gz_lobby_member_check_in_flight(&s->lobby.m)) s->gate_flight = 1;
         else if (s->gate_flight) {
