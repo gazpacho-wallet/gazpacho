@@ -100,13 +100,15 @@ static void port_forget(void *ctx, const uint8_t scope[32])
             gzp_keys_scopes_held(ex->keys));
 }
 
-/* A secret for a round (the key hook, P4.3). Under AT_JOIN, only from the
- * scoped table, by position: the pair of a scope the person readied for
- * (keys.md 7, audit M2). Otherwise derived now, under the current epoch only. */
+/* A secret for the node (the key hook, P4.3), by position. Under AT_JOIN the
+ * factory key comes only from a scope the person's ready or join opened for
+ * that one command, and the contribution key of a known member slot is
+ * derived, as composite-node.md 12.2 says (keys.md 7, audit M2). Otherwise
+ * derived now, under the current epoch only. */
 static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
 {
     gzp_exec_t *ex = ctx;
-    if (ex->keys->scoped_only) return gzp_keys_scoped_at(ex->keys, epoch, index, sec32);
+    if (ex->keys->scoped_only) return gzp_keys_at_join_secret(ex->keys, epoch, index, sec32);
     return gzp_net_key(ex->net, epoch, index, sec32, NULL);
 }
 
@@ -279,8 +281,9 @@ static void keys_note_record(gzp_exec_t *ex, const gz_record_t *r, int saved)
             gzp_log("key-slots full");
     } else if (r->type == GZ_RECORD_SLOT_CLOSED && gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
         gzp_keys_drop_slot(ex->keys, gz_get_u32(v.data));
-    } else if (saved && r->type == GZ_RECORD_KEY_INDEX && gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
-        gzp_log("key-index value=%u", (unsigned)gz_get_u32(v.data));
+    } else if (r->type == GZ_RECORD_KEY_INDEX && gz_rec_find(r->bytes, 2, &v) == 1 && v.len == 4) {
+        gzp_keys_note_index(ex->keys, gz_get_u32(v.data));
+        if (saved) gzp_log("key-index value=%u", (unsigned)gz_get_u32(v.data));
     }
 }
 
@@ -709,35 +712,54 @@ static int api_command(void *ctx, const uint8_t *tlv, size_t len)
 
 /* A USER_COMMAND: request_id, command code, then the arguments (already a
  * TLV stream of records 10 and up). */
-/* A ready given with the passphrase (record 14 = 1) on a member under
- * AT_JOIN. The passphrase was checked before the command came here (the
- * local API checks it), so the key port opens that lobby's scope now, before
- * the node gets the command (node.h, LOBBY_READY; keys.md 7, integration W4).
- * Without it the node's gate would open on the flag alone with no key behind
- * it (audit M4): it fails safe, signing nothing. */
-static void keys_ready_gate(gzp_exec_t *ex, const uint8_t *args, size_t len)
+/* LOBBY_JOIN's unlock record (#79: given with the passphrase under AT_JOIN,
+ * the gate is open from the join; local-api.md 14.3). */
+#define GZP_JOIN_REC_UNLOCK 24
+
+/* A ready (record 14 = 1) or a join (record 24 = 1, #79) given with the
+ * passphrase, on a member under AT_JOIN. The passphrase was checked before
+ * the command came here (the local API checks it), so the key port opens
+ * that lobby's scope now, before the node gets the command (node.h,
+ * LOBBY_READY; keys.md 7, integration W4): for a ready, the slot's pair; for
+ * a join, whose pair the node allocates inside the command, the join is
+ * armed for one fresh factory key (gzp_keys_arm_join). Either way the scope
+ * lives for that one command only: the node keeps the gate's secret itself
+ * (gate_secret), so afterwards the key port holds no factory key. Returns 1
+ * (ready) or 2 (join) with the scope, or 0. Without it the node's gate would
+ * open on the flag alone with no key behind it (audit M4): it fails safe,
+ * signing nothing. */
+static int keys_command_gate(gzp_exec_t *ex, uint16_t code, const uint8_t *args, size_t len, uint8_t sc[32])
 {
     gz_bytes_t all, scope, flag;
     gzp_keys_err_t e;
+    unsigned field = code == GZ_CMD_LOBBY_READY ? 14u : code == GZ_CMD_LOBBY_JOIN ? GZP_JOIN_REC_UNLOCK : 0u;
     int ok;
     all.data = args;
     all.len = len;
-    if (!ex->keys->scoped_only || gz_rec_find(all, 12, &scope) != 1 || scope.len != 32 ||
-        gz_rec_find(all, 14, &flag) != 1 || flag.len != 1 || flag.data[0] != 1)
-        return;
-    ok = gzp_keys_open_ready(ex->keys, scope.data, &e);
-    gzp_log("key-scope-open scope=%02x%02x%02x%02x ok=%d held=%zu", scope.data[0], scope.data[1], scope.data[2],
-            scope.data[3], ok, gzp_keys_scopes_held(ex->keys));
+    if (!field || !ex->keys->scoped_only || gz_rec_find(all, 12, &scope) != 1 || scope.len != 32 ||
+        gz_rec_find(all, field, &flag) != 1 || flag.len != 1 || flag.data[0] != 1)
+        return 0;
+    memcpy(sc, scope.data, 32);
+    if (code == GZ_CMD_LOBBY_JOIN) {
+        gzp_keys_arm_join(ex->keys, sc);
+        gzp_log("key-join-armed scope=%02x%02x%02x%02x", sc[0], sc[1], sc[2], sc[3]);
+        return 2;
+    }
+    ok = gzp_keys_open_ready(ex->keys, sc, &e);
+    gzp_log("key-scope-open scope=%02x%02x%02x%02x ok=%d held=%zu", sc[0], sc[1], sc[2], sc[3], ok,
+            gzp_keys_scopes_held(ex->keys));
+    return ok;
 }
 
 static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, size_t args_len)
 {
-    uint8_t *buf = malloc(args_len + 64), c2[2];
+    uint8_t *buf = malloc(args_len + 64), c2[2], gscope[32];
+    int gate;
     char rid[32];
     size_t at = 0;
     gz_event_t ev;
     if (!buf) abort();
-    if (code == GZ_CMD_LOBBY_READY) keys_ready_gate(ex, args, args_len);
+    gate = keys_command_gate(ex, code, args, args_len, gscope);
     snprintf(rid, sizeof rid, "p-%llu-%llu", (unsigned long long)ex->incarnation,
              (unsigned long long)++ex->next_request);
     gz_put_u16(c2, code);
@@ -754,6 +776,12 @@ static void deliver_command(gzp_exec_t *ex, uint16_t code, const uint8_t *args, 
     gzp_log("command id=%s code=0x%04x", rid, (unsigned)code);
     deliver(ex, &ev);
     drain(ex);
+    if (gate) {
+        int used = gate == 2 ? gzp_keys_disarm_join(ex->keys) : 1;
+        gzp_keys_forget(ex->keys, gscope);
+        gzp_log("key-scope-closed scope=%02x%02x%02x%02x %s used=%d held=%zu", gscope[0], gscope[1], gscope[2],
+                gscope[3], gate == 2 ? "join" : "ready", used, gzp_keys_scopes_held(ex->keys));
+    }
     free(buf);
 }
 
@@ -813,6 +841,11 @@ static void test_line(gzp_exec_t *ex, char *line)
         free(tx);
     } else if (!strcmp(w, "raw-kind") && a1) {
         gzp_net_test_raw(ex->net, (uint16_t)strtoul(a1, NULL, 10), a2 && !strcmp(a2, "zero"));
+    } else if (!strcmp(w, "key-secret") && a1 && a2) {
+        uint8_t sk[32];
+        int ok = port_secret(ex, (uint32_t)strtoul(a1, NULL, 10), (uint32_t)strtoul(a2, NULL, 10), sk);
+        gzw_wipe(sk, sizeof sk);
+        gzp_log("test-key-secret epoch=%s index=%s ok=%d", a1, a2, ok);
     } else if (!strcmp(w, "sync-fail-ping")) {
         gzp_standin_fail_next_ping(&ex->store);
         gzp_log("test-sync-fail armed for the next ping record");
@@ -882,14 +915,18 @@ static void keys_from_storage(gzp_exec_t *ex, int restored)
     uint32_t epoch = 0;
     size_t i;
     memset(ex->keys->slots, 0, sizeof ex->keys->slots);
+    gzp_keys_set_epoch(ex->keys, 0);
+    ex->keys->highest_index = 0;
     ex->store.ops->rewind(ex->store.ctx);
     while (ex->store.ops->next(ex->store.ctx, &sb))
         for (i = 0; i < sb.n_records; i++) {
             gz_bytes_t v;
             keys_note_record(ex, &sb.records[i], 0);
             if (sb.records[i].type == GZ_RECORD_KEY_EPOCH && gz_rec_find(sb.records[i].bytes, 2, &v) == 1 &&
-                v.len == 4)
+                v.len == 4) {
                 epoch = gz_get_u32(v.data);
+                gzp_keys_set_epoch(ex->keys, epoch); /* key_index records after it are this epoch's */
+            }
         }
     ex->store.ops->rewind(ex->store.ctx);
     gzp_keys_forget_all(ex->keys);

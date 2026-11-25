@@ -238,6 +238,74 @@ static void epochs(const secp256k1_context *secp)
     gzp_keys_free(&k);
 }
 
+/* A join with the passphrase (#79 field 24), and the contribution key by slot
+ * under AT_JOIN (keys.md 7; composite-node.md 12.2). */
+static void join_gate(const secp256k1_context *secp)
+{
+    gzp_keys_t k;
+    raw_t r;
+    gzp_keys_err_t e;
+    uint8_t a[32], b[32], got[32], want[32];
+    CHECK(keys_over(&k, &r, secp, 0, GZW_NET_SIGNET));
+    gzp_keys_set_role(&k, 0, 1);
+    memset(a, 0xa1, 32);
+    memset(b, 0xb2, 32);
+    gzp_keys_note_index(&k, 4); /* pairs (1, 2) and (3, 4) used */
+    gzp_keys_note_index(&k, 2);
+    CHECK(k.highest_index == 4);
+    /* Not armed: no factory key without a scope. */
+    CHECK(!gzp_keys_scoped_at(&k, 0, 6, got) && gzp_keys_scopes_held(&k) == 0);
+    gzp_keys_arm_join(&k, a);
+    CHECK(!gzp_keys_scoped_at(&k, 0, 4, got) && !gzp_keys_scoped_at(&k, 0, 2, got)); /* not fresh: nothing */
+    CHECK(!gzp_keys_scoped_at(&k, 1, 6, got) && !gzp_keys_scoped_at(&k, 0, 1, got) && gzp_keys_scopes_held(&k) == 0);
+    /* The pair (4, 5) would reuse index 4, the last pair's factory key: not fresh. */
+    CHECK(!gzp_keys_scoped_at(&k, 0, 5, got) && gzp_keys_scopes_held(&k) == 0);
+    CHECK(gzp_keys_scoped_at(&k, 0, 6, got) && gzp_keys_lobby_raw(&k, 0, 6, want, NULL, &e) && !memcmp(got, want, 32));
+    CHECK(gzp_keys_scopes_held(&k) == 1);
+    CHECK(!gzp_keys_scoped_at(&k, 0, 8, got) && gzp_keys_scopes_held(&k) == 1); /* one answer only */
+    CHECK(gzp_keys_scoped_at(&k, 0, 5, got) && gzp_keys_lobby_raw(&k, 0, 5, want, NULL, &e) && !memcmp(got, want, 32));
+    CHECK(gzp_keys_disarm_join(&k) == 1 && !k.join_armed && gzp_keys_disarm_join(&k) == 0);
+    /* The saved slot names the pair: kept. Another pair: wiped. */
+    CHECK(gzp_keys_note_slot(&k, 1, a, 0, 5) && gzp_keys_scopes_held(&k) == 1);
+    gzp_keys_arm_join(&k, b);
+    gzp_keys_note_index(&k, 6);
+    CHECK(gzp_keys_scoped_at(&k, 0, 8, got) && gzp_keys_scopes_held(&k) == 2);
+    CHECK(gzp_keys_disarm_join(&k) == 1);
+    CHECK(gzp_keys_note_slot(&k, 2, b, 0, 9) && gzp_keys_scopes_held(&k) == 1 && !gzp_keys_scoped_at(&k, 0, 8, got));
+    /* Armed and never asked: disarm says so; a frozen or other-epoch port answers nothing. */
+    gzp_keys_arm_join(&k, b);
+    gzp_keys_freeze(&k, 1);
+    CHECK(!gzp_keys_scoped_at(&k, 0, 12, got));
+    gzp_keys_freeze(&k, 0);
+    CHECK(gzp_keys_disarm_join(&k) == 0 && gzp_keys_scopes_held(&k) == 1);
+    gzp_keys_arm_join(NULL, b);
+    gzp_keys_arm_join(&k, NULL);
+    CHECK(!k.join_armed && gzp_keys_disarm_join(NULL) == 0);
+    /* A new epoch starts its indexes again. */
+    gzp_keys_set_epoch(&k, 3);
+    CHECK(k.highest_index == 0);
+    gzp_keys_set_epoch(&k, 3);
+    gzp_keys_note_index(&k, 2);
+    gzp_keys_set_epoch(&k, 3);
+    CHECK(k.highest_index == 2);
+    gzp_keys_note_index(NULL, 9);
+    gzp_keys_set_epoch(&k, 0);
+    /* The contribution key of a known slot without a scope; its factory key never. */
+    gzp_keys_forget_all(&k);
+    gzp_keys_drop_slot(&k, 2); /* the lobby b's earlier slot: one slot per lobby from here */
+    CHECK(gzp_keys_note_slot(&k, 3, b, 0, 11));
+    CHECK(gzp_keys_at_join_secret(&k, 0, 11, got) && gzp_keys_lobby_raw(&k, 0, 11, want, NULL, &e) && !memcmp(got, want, 32));
+    memset(got, 0xaa, 32);
+    CHECK(!gzp_keys_at_join_secret(&k, 0, 12, got) && all(got, 0, 32));
+    CHECK(!gzp_keys_at_join_secret(&k, 0, 13, got) && !gzp_keys_at_join_secret(&k, 4, 11, got));
+    CHECK(gzp_keys_note_slot(&k, 4, a, 6, 1) && !gzp_keys_at_join_secret(&k, 6, 1, got)); /* an old epoch's slot */
+    CHECK(gzp_keys_open_ready(&k, b, &e) && gzp_keys_at_join_secret(&k, 0, 12, got) &&
+          gzp_keys_lobby_raw(&k, 0, 12, want, NULL, &e) && !memcmp(got, want, 32));
+    CHECK(!gzp_keys_at_join_secret(NULL, 0, 11, got) && !gzp_keys_at_join_secret(&k, 0, 11, NULL));
+    gzp_keys_free(&k);
+    CHECK(all(&k, 0, sizeof k));
+}
+
 /* The member slots and a ready with the passphrase (keys.md 7, integration W4). */
 static void ready_gate(const secp256k1_context *secp)
 {
@@ -482,6 +550,7 @@ int main(void)
     roles(secp);
     epochs(secp);
     ready_gate(secp);
+    join_gate(secp);
     policy(secp);
     scoped(secp);
     standin(secp);

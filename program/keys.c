@@ -6,6 +6,8 @@
 
 #define H GZW_HARDENED
 
+static gzp_keys_scope_t *find_scope(const gzp_keys_t *k, const uint8_t scope[32]);
+
 static void set_err(gzp_keys_err_t *err, gzp_keys_why_t why, unsigned level)
 {
     if (err) {
@@ -253,7 +255,30 @@ int gzp_keys_wallet_output(const gzp_keys_t *k, uint32_t change, uint32_t j, gzw
 
 void gzp_keys_set_epoch(gzp_keys_t *k, uint32_t epoch)
 {
+    if (epoch != k->epoch) k->highest_index = 0; /* a new epoch starts its indexes again */
     k->epoch = epoch;
+}
+
+void gzp_keys_note_index(gzp_keys_t *k, uint32_t value)
+{
+    if (k && value > k->highest_index) k->highest_index = value;
+}
+
+void gzp_keys_arm_join(gzp_keys_t *k, const uint8_t scope[32])
+{
+    if (!k || !scope) return;
+    memcpy(k->join_scope, scope, 32);
+    k->join_armed = 1;
+}
+
+int gzp_keys_disarm_join(gzp_keys_t *k)
+{
+    int used;
+    if (!k) return 0;
+    used = k->join_armed == 2;
+    k->join_armed = 0;
+    memset(k->join_scope, 0, 32);
+    return used;
 }
 
 void gzp_keys_set_role(gzp_keys_t *k, int host, int at_join)
@@ -285,6 +310,10 @@ int gzp_keys_note_slot(gzp_keys_t *k, uint32_t serial, const uint8_t scope[32], 
     }
     if (i == GZP_KEYS_MAX_SLOTS) i = free_i;
     if (i == GZP_KEYS_MAX_SLOTS) return 0;
+    {
+        gzp_keys_scope_t *s = find_scope(k, scope);
+        if (s && (s->epoch != epoch || s->index != index)) gzw_wipe(s, sizeof *s); /* not this slot's pair */
+    }
     k->slots[i].used = 1;
     k->slots[i].serial = serial;
     k->slots[i].epoch = epoch;
@@ -374,8 +403,9 @@ int gzp_keys_scoped(const gzp_keys_t *k, const uint8_t scope[32], const uint8_t 
     return 1;
 }
 
-int gzp_keys_scoped_at(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32])
+int gzp_keys_scoped_at(gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32])
 {
+    static const uint8_t zero[32];
     size_t i;
     if (sec) gzw_wipe(sec, 32);
     if (!k || !sec || k->frozen || epoch != k->epoch) return 0;
@@ -391,6 +421,22 @@ int gzp_keys_scoped_at(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint
             return 1;
         }
     }
+    /* An armed join: one factory key of a fresh pair (keys.h). */
+    if (k->join_armed == 1 && index >= 2 && index - 1 > k->highest_index &&
+        gzp_keys_scope_open(k, k->join_scope, zero, epoch, index - 1, NULL)) {
+        k->join_armed = 2;
+        return gzp_keys_scoped_at(k, epoch, index, sec);
+    }
+    return 0;
+}
+
+int gzp_keys_at_join_secret(gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32])
+{
+    size_t i;
+    if (gzp_keys_scoped_at(k, epoch, index, sec)) return 1;
+    for (i = 0; k && sec && i < GZP_KEYS_MAX_SLOTS; i++)
+        if (k->slots[i].used && k->slots[i].epoch == epoch && k->slots[i].index == index)
+            return gzp_keys_lobby(k, epoch, index, sec, NULL, NULL); /* the contribution key: not scoped */
     return 0;
 }
 

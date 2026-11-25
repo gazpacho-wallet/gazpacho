@@ -110,6 +110,9 @@ typedef struct {
     int frozen;                  /* a restore start: no per-lobby key until the new epoch is saved */
     int scoped_only;             /* AT_JOIN: secrets for rounds only from the scoped table */
     uint32_t lobby_branch;       /* 0' on a member, 2' on a host (gzp_keys_set_role) */
+    uint32_t highest_index;      /* the highest key_index seen under the current epoch */
+    int join_armed;              /* a join with the passphrase is being delivered (keys.md 7) */
+    uint8_t join_scope[32];
     gzp_keys_scope_t scopes[GZP_KEYS_MAX_SCOPES];
     gzp_keys_slot_t slots[GZP_KEYS_MAX_SLOTS];
 } gzp_keys_t;
@@ -178,7 +181,8 @@ int gzp_keys_epoch_ok(const gzp_keys_t *k, uint32_t epoch);
  * slot's pair, before the node gets the ready command (node.h, LOBBY_READY);
  * 1, or 0 with *err (no such slot: GZP_KEYS_BAD_ARGUMENT). The digest is the
  * node's to bind (#52's gate); the table is opened with a zero digest and the
- * key hook reads it by position (gzp_keys_scoped_at). */
+ * key hook reads it by position (gzp_keys_scoped_at). note also wipes an open
+ * scope of that lobby whose pair is not the slot's (an armed join's check). */
 int gzp_keys_note_slot(gzp_keys_t *k, uint32_t serial, const uint8_t scope[32], uint32_t epoch, uint32_t index);
 void gzp_keys_drop_slot(gzp_keys_t *k, uint32_t serial);
 int gzp_keys_open_ready(gzp_keys_t *k, const uint8_t scope[32], gzp_keys_err_t *err);
@@ -199,7 +203,32 @@ int gzp_keys_scoped(const gzp_keys_t *k, const uint8_t scope[32], const uint8_t 
  * index, the factory key at index + 1), under the current epoch and not
  * frozen. So under AT_JOIN a key the person has not readied for is never
  * handed out, whatever the node asks. */
-int gzp_keys_scoped_at(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32]);
+int gzp_keys_scoped_at(gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32]);
+
+/* A join given with the passphrase under AT_JOIN (#79: LOBBY_JOIN field 24).
+ * The node allocates the join's pair inside the command and asks for its
+ * factory key there, before the slot_opened record is saved, so the key port
+ * cannot know the pair in advance. While a join is armed (only for the one
+ * command's delivery), gzp_keys_scoped_at answers ONE request for a factory
+ * key it holds no scope for, at (current epoch, f), if the pair (f - 1, f) is
+ * fresh: f - 1 above every key_index seen under this epoch. It opens the
+ * armed scope with that pair and disarms. The slot_opened record that the
+ * join then saves must name the same pair, or the scope is wiped
+ * (gzp_keys_note_slot). disarm: 1 if the armed join was used. */
+void gzp_keys_arm_join(gzp_keys_t *k, const uint8_t scope[32]);
+int gzp_keys_disarm_join(gzp_keys_t *k);
+
+/* The key_index records the node saves or reads back: the highest index
+ * allocated under the current epoch (journal.md 8). */
+void gzp_keys_note_index(gzp_keys_t *k, uint32_t value);
+
+/* The key hook's answer for a member under AT_JOIN (composite-node.md 12.2:
+ * "AT_JOIN protects the factory key only"). From the scoped table first (the
+ * pair of a scope the person readied or joined for); otherwise the
+ * contribution key of a member slot the key port knows, under the policy,
+ * since the contribution key is not scoped. A factory key is never given
+ * without a scope. */
+int gzp_keys_at_join_secret(gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32]);
 void gzp_keys_forget(gzp_keys_t *k, const uint8_t scope[32]);
 void gzp_keys_forget_all(gzp_keys_t *k);
 size_t gzp_keys_scopes_held(const gzp_keys_t *k);
