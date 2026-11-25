@@ -219,6 +219,71 @@ static void test_must_reach(void)
     }
 }
 
+/* gzt_funding_can_plan answers what gzt_funding_build with require_change
+ * does (review of PR 80, M-1, M-2): the change's dust floor and the input
+ * limit count. Through the real builder, on the same coins. */
+static void agree(const gzt_coin *cs, size_t n, uint64_t amount, gzt_err want)
+{
+    static gzt_funding f;
+    gzt_funding_request r = request(amount);
+    gzt_selection sel;
+    uint8_t aux[32];
+    gzt_err built, dry;
+    memset(aux, 3, 32);
+    r.require_change = 1;
+    built = gzt_funding_build(ctx, &master, &r, cs, n, aux, &f);
+    dry = gzt_funding_can_plan(cs, n, amount, r.fee, &sel);
+    CHECK(built == want);
+    CHECK(dry == want);
+    if (built == GZT_OK && dry == GZT_OK) {
+        CHECK(sel.n_selected == f.info.selection.n_selected && sel.fee == f.info.fee);
+        CHECK(sel.has_change && sel.change == f.info.change && f.info.change >= 330);
+    }
+    if (built == GZT_OK) gzt_funding_wipe(&f);
+}
+
+static void test_can_plan(void)
+{
+    static gzt_funding f;
+    static gzt_coin many[100];
+    gzt_funding_request r = request(200000);
+    uint8_t aux[32], p2tr[34];
+    uint64_t exact;
+    memset(aux, 2, 32);
+    memset(p2tr, 0, sizeof p2tr);
+    p2tr[0] = 0x51;
+    p2tr[1] = 0x20;
+    CHECK(gzt_dust_limit(p2tr, 34) == 330);   /* GZ_FUND_CHANGE_DUST (core/funding) */
+    /* One coin of 300,000: find the amount that leaves exactly 330 of change */
+    r.require_change = 1;
+    CHECK(gzt_funding_build(ctx, &master, &r, coins, 1, aux, &f) == GZT_OK && f.info.has_change);
+    exact = 200000 + f.info.change - 330;
+    gzt_funding_wipe(&f);
+    agree(coins, 1, exact, GZT_OK);            /* change exactly 330: enough */
+    agree(coins, 1, exact + 1, GZT_ERR_FUNDS); /* change 329: the wallet refuses, so must the check */
+    agree(coins, 1, 300000, GZT_ERR_FUNDS);    /* the coin alone, no fee: short */
+    /* with all three coins, the next coin is taken instead */
+    agree(coins, 3, exact + 1, GZT_OK);
+    /* no coins: short, not an argument error */
+    {
+        gzt_selection sel;
+        CHECK(gzt_funding_can_plan(coins, 0, 1000, r.fee, &sel) == GZT_ERR_FUNDS);
+    }
+    /* Many small coins: 100 of 2,000 sat. The 64 largest hold 128,000. */
+    for (int i = 0; i < 100; i++) {
+        gzw_bip86_output o;
+        CHECK(gzw_bip86_output_from_master(ctx, &master, GZW_NET_SIGNET, 0, 0, (uint32_t)(100 + i), &o, NULL));
+        memset(many[i].txid, 0x60, 32);
+        many[i].txid[0] = (uint8_t)i;
+        many[i].vout = 0;
+        many[i].amount = 2000;
+        many[i].index = (uint32_t)(100 + i);
+        memcpy(many[i].script, o.script_pubkey, 34);
+    }
+    agree(many, 100, 120000, GZT_OK);          /* within 64 inputs */
+    agree(many, 100, 150000, GZT_ERR_LIMIT);   /* the sum (200,000) is enough; 64 coins are not */
+}
+
 int main(void)
 {
     setup();
@@ -227,6 +292,7 @@ int main(void)
     test_spend_back();
     test_require_change();
     test_must_reach();
+    test_can_plan();
     secp256k1_context_destroy(ctx);
     if (fails) return 1;
     printf("wallet funding port: all passed\n");

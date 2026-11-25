@@ -8,7 +8,7 @@ apply-no-release ## funding.c ## f->cfg.wallet.release(f->cfg.wallet.ctx, x->tx,
 confirm-broadcasts ## funding.c ## if (x->mode == GZ_HOST_FUNDING_CONFIRM) { ## if (0) {
 cap-tx ## funding.c ## if (x->tx_len > GZ_FUND_MAX_TX || !gz_tx_parse(x->tx, x->tx_len, &info)) return 0;\n    if (info.n_in == 0 || info.n_in > GZ_FUND_MAX_INPUTS || info.n_in != x->n_in) return 0; ## if (!gz_tx_parse(x->tx, x->tx_len, &info)) return 0;
 plan-output-twice ## funding.c ## if (found) return 0; ## (void)0;
-plan-legacy-prev ## funding.c ## if (p->script_len < 4 || ## if (0 &&
+plan-legacy-prev ## funding.c ## if (p->script_len != 34 || p->script[0] != 0x51 || p->script[1] != 0x20)\n            return 0; ## if (0)\n            return 0;
 plan-must-ignored ## funding.c ## return have_must; ## return 1;
 plan-reuse-after-release ## funding.c ## if (old && !in->released && ## if (old &&
 h11-no-must ## funding.c ## use_must = 1; ## use_must = 0;
@@ -144,9 +144,15 @@ p1-pending-tip-not-kept ## funding.c ## if (!x->pending && which) x->pending_tip
 c1-first-tip-ignored ## funding.c ## if (f->fac[i].used && f->fac[i].pending && f->fac[i].pending_tip == 0) f->fac[i].pending_tip = f->tip; ## (void)0;
 c1-first-tip-any ## funding.c ## if (f->fac[i].used && f->fac[i].pending && f->fac[i].pending_tip == 0) f->fac[i].pending_tip = f->tip; ## if (f->fac[i].used && f->fac[i].pending) f->fac[i].pending_tip = f->tip;
 # --- funds_short (local-api 15.2; review of PR 77, L2)
-fs-fee-left-out ## txsize.c ## need = fee == UINT64_MAX || set_aside_sat > UINT64_MAX - fee ? UINT64_MAX : set_aside_sat + fee; ## need = set_aside_sat;
-fs-exact-short ## txsize.c ## return sat < need ? 1 : 0; ## return sat <= need ? 1 : 0;
-fs-unknown-enough ## txsize.c ## return -1;\n    fee = gz_fund_funding_fee_bound ## return 0;\n    fee = gz_fund_funding_fee_bound
 fs-no-input-floor ## txsize.c ## uint64_t n = n_coins == 0 ? 1 : ## uint64_t n = n_coins == 0 ? 0 :
 fs-no-input-cap ## txsize.c ## n_coins > GZ_FUND_MAX_INPUTS ? GZ_FUND_MAX_INPUTS : n_coins; ## n_coins;
 fs-no-witness ## txsize.c ## uint64_t wit = 2 + 67 * n; ## uint64_t wit = 0;
+fs-dust-left-out ## txsize.c ## : set_aside_sat + fee + GZ_FUND_CHANGE_DUST; ## : set_aside_sat + fee;
+fs-fee-left-out ## txsize.c ## : set_aside_sat + fee + GZ_FUND_CHANGE_DUST; ## : set_aside_sat + GZ_FUND_CHANGE_DUST;
+fs-sum-not-dry-run ## txsize.c ## return r == 1 ? GZ_FUND_FUNDS_OK : GZ_FUND_FUNDS_SHORT; ## return sat >= need ? GZ_FUND_FUNDS_OK : GZ_FUND_FUNDS_SHORT;
+fs-unknown-enough ## txsize.c ## if (r != 0 && r != 1) return GZ_FUND_FUNDS_UNKNOWN; ## if (r < 0) return GZ_FUND_FUNDS_OK;
+fs-other-answer ## txsize.c ## if (r != 0 && r != 1) return GZ_FUND_FUNDS_UNKNOWN; ## if (r < 0) return GZ_FUND_FUNDS_UNKNOWN;
+fs-no-port-enough ## txsize.c ## if (cfg == NULL || cfg->wallet.can_plan == NULL) return GZ_FUND_FUNDS_UNKNOWN; ## if (cfg == NULL) return GZ_FUND_FUNDS_UNKNOWN;\n    if (cfg->wallet.can_plan == NULL) return GZ_FUND_FUNDS_OK;
+fs-other-rate ## txsize.c ## set_aside_sat, cfg->feerate, &sat, &n); ## set_aside_sat, 1000, &sat, &n);
+plan-any-prevout ## funding.c ## p->script_len != 34 || p->script[0] != 0x51 || p->script[1] != 0x20) ## p->script[1] != p->script_len - 2u)
+plan-any-change ## funding.c ## slen != 34 || scr[0] != 0x51 ||\n        scr[1] != 0x20) ## slen != 34)

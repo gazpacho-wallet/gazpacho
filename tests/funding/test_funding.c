@@ -2044,28 +2044,69 @@ static void test_funds_short(void)
         CHECK(gz_fund_tx_vsize(sig, sig_len, &vsize, NULL) == 1);
         CHECK(gz_fund_fee(t->cfg.feerate, vsize) <= bound2);
     }
-    /* the wallet cannot tell: -1 */
-    t->w.spendable_n = 0;
-    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == -1);
-    /* exactly enough, then one sat short */
-    t->w.spendable_n = 2;
-    t->w.spendable_sat = aside + bound2;
-    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == 0);
-    CHECK(need == aside + bound2 && have == aside + bound2);
-    t->w.spendable_sat = aside + bound2 - 1;
-    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == 1);
-    CHECK(need == aside + bound2 && have == aside + bound2 - 1);
-    /* the set-aside alone is short: the fee is on top (review of PR 77, L2) */
-    t->w.spendable_sat = aside;
-    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == 1);
-    /* more coins, a larger bound */
-    t->w.spendable_n = 40;
-    t->w.spendable_sat = aside + bound2;
-    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == 1);
-    CHECK(need == aside + gz_fund_funding_fee_bound(&t->cfg, 40));
-    /* no port at all */
-    t->cfg.wallet.spendable = NULL;
-    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == -1);
+    CHECK(GZ_FUND_CHANGE_DUST == 330u);   /* wallet/tx's P2TR_DUST; test_tx_funding_port checks it there */
+    /* The answer is the wallet's dry run (review of PR 80, M-1, M-2; the
+     * dry run itself is tested through the real wallet builder in
+     * wallet_tx_funding_port, test_can_plan). It is asked for the set-aside
+     * at the host's rate. */
+    t->w.can_plan = 1;
+    t->w.can_have = aside + bound2 + 330;
+    t->w.can_n = 2;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == GZ_FUND_FUNDS_OK);
+    CHECK(t->w.can_amount == aside && t->w.can_feerate == t->cfg.feerate);
+    CHECK(need == aside + bound2 + GZ_FUND_CHANGE_DUST && have == aside + bound2 + 330);
+    /* the dry run says no: short, whatever the sum says (the coins may hold
+     * enough but not within the input limit, or not with change) */
+    t->w.can_plan = 0;
+    t->w.can_have = aside + bound2 + 1000;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == GZ_FUND_FUNDS_SHORT);
+    CHECK(need == aside + bound2 + GZ_FUND_CHANGE_DUST && have == aside + bound2 + 1000);
+    /* more coins, a larger need */
+    t->w.can_n = 40;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == GZ_FUND_FUNDS_SHORT);
+    CHECK(need == aside + gz_fund_funding_fee_bound(&t->cfg, 40) + GZ_FUND_CHANGE_DUST);
+    /* no coins at all: short, with zeros (the floor of one input in need) */
+    t->w.can_have = 0;
+    t->w.can_n = 0;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == GZ_FUND_FUNDS_SHORT);
+    CHECK(have == 0 && need == aside + bound1 + GZ_FUND_CHANGE_DUST);
+    /* L-2: the wallet cannot tell (it answers -1), or there is no dry run:
+     * unknown, never enough, and nothing reported as had */
+    t->w.can_plan = -1;
+    t->w.can_have = aside * 2;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == GZ_FUND_FUNDS_UNKNOWN);
+    CHECK(have == 0);
+    t->w.can_plan = 1;
+    t->cfg.wallet.can_plan = NULL;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == GZ_FUND_FUNDS_UNKNOWN);
+    CHECK(gz_fund_funds_short(NULL, aside, &need, &have) == GZ_FUND_FUNDS_UNKNOWN);
+    /* an answer that is neither 1 nor 0 is not enough either */
+    t->cfg.wallet.can_plan = ftw_can_plan;
+    t->w.can_plan = 7;
+    CHECK(gz_fund_funds_short(&t->cfg, aside, &need, &have) == GZ_FUND_FUNDS_UNKNOWN);
+    free(t);
+}
+
+/* Review of PR 80, L-1: the fee bound assumes key-path P2TR inputs and a
+ * P2TR change; a plan with anything else is refused. */
+static void test_plan_key_path(void)
+{
+    ft_t *t = ft_new(1, GZ_HOST_FUNDING_AUTO);
+    gz_fund_plan_in_t in = plan_in(SCOPE_A, 0);
+    gz_fund_plan_out_t r;
+    gz_event_t e = ev_tip(1000);
+    CHECK(ft_ev(t, &e) == GZ_OK);
+    for (int k = 0; k < 2; k++) {
+        t->w.p2wpkh_prev = k == 0;
+        t->w.p2wsh_change = k == 1;
+        ft_reset(t);
+        CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r) == GZ_OK && !r.ok);
+        ft_after(t);
+    }
+    t->w.p2wpkh_prev = t->w.p2wsh_change = 0;
+    ft_reset(t);
+    CHECK(gz_fund_host_plan(&t->f, &in, &t->out, &r) == GZ_OK && r.ok);
+    ft_after(t);
     free(t);
 }
 
@@ -2270,6 +2311,7 @@ int main(void)
     test_long_absence();
     test_pending_before_tip();
     test_funds_short();
+    test_plan_key_path();
     test_corrupt();
     test_journal_replay_steps();
     test_ignored_events();

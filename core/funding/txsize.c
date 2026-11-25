@@ -179,18 +179,22 @@ uint64_t gz_fund_funding_fee_bound(const gz_fund_config_t *cfg, size_t n_coins)
     return gz_fund_fee(cfg->feerate, vsize);
 }
 
-int gz_fund_funds_short(const gz_fund_config_t *cfg, uint64_t set_aside_sat, uint64_t *need_sat,
-                        uint64_t *have_sat)
+gz_fund_funds_t gz_fund_funds_short(const gz_fund_config_t *cfg, uint64_t set_aside_sat,
+                                    uint64_t *need_sat, uint64_t *have_sat)
 {
     uint64_t sat = 0, fee, need;
     size_t n = 0;
+    int r;
     if (need_sat) *need_sat = 0;
     if (have_sat) *have_sat = 0;
-    if (cfg == NULL || cfg->wallet.spendable == NULL || !cfg->wallet.spendable(cfg->wallet.ctx, &sat, &n))
-        return -1;
+    if (cfg == NULL || cfg->wallet.can_plan == NULL) return GZ_FUND_FUNDS_UNKNOWN;
+    r = cfg->wallet.can_plan(cfg->wallet.ctx, set_aside_sat, cfg->feerate, &sat, &n);
+    if (r != 0 && r != 1) return GZ_FUND_FUNDS_UNKNOWN;   /* -1, or anything else: never enough */
     fee = gz_fund_funding_fee_bound(cfg, n);
-    need = fee == UINT64_MAX || set_aside_sat > UINT64_MAX - fee ? UINT64_MAX : set_aside_sat + fee;
+    need = fee == UINT64_MAX || set_aside_sat > UINT64_MAX - fee - GZ_FUND_CHANGE_DUST
+               ? UINT64_MAX
+               : set_aside_sat + fee + GZ_FUND_CHANGE_DUST;
     if (need_sat) *need_sat = need;
     if (have_sat) *have_sat = sat;
-    return sat < need ? 1 : 0;
+    return r == 1 ? GZ_FUND_FUNDS_OK : GZ_FUND_FUNDS_SHORT;
 }
