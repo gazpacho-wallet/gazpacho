@@ -81,6 +81,10 @@ static gzp_testping_t tp;
 static gzp_datadir_t dir;
 static gzp_api_t api;          /* the local API server (P5): one per process */
 static gzp_wallet_t *wallet;
+
+/* The wallet port's change mark, kept sealed in the wallet's folder (M-3). */
+static int change_mark_load(void *ctx, uint32_t *mark) { return gzp_wallet_change_mark_read(ctx, mark); }
+static int change_mark_save(void *ctx, uint32_t mark) { return gzp_wallet_change_mark_write(ctx, mark); }
 static gzp_keys_t keys;        /* the key port's keys (keys.h) */
 static gzp_unlock_t unlock_tab; /* the unlocked storage's unlock.h table: the key port's seed source */
 static gzp_wport_t wport;     /* host: the funding engine's wallet port (wport.h) */
@@ -302,7 +306,6 @@ static void check_forged(void)
     static gzp_unlock_job_t job;
     static const char wrong[] = "not this wallet's passphrase at all";
     static const char forged[] = "the passphrase of a forged key file";
-    gzp_unlock_result_t a;
     int st;
     memset(&job, 0, sizeof job);
     job.op = GZP_UNLOCK_OP_CHECK;
@@ -318,9 +321,10 @@ static void check_forged(void)
     job.passphrase = (const uint8_t *)forged;
     job.passphrase_len = sizeof forged - 1;
     st = run_job(&job);
-    memset(&a, 0, sizeof a);
-    gzp_wallet_attempts(wallet, wall_ms(), &a);
-    gzp_log("test-check forged status=%s wrong_in_row=%u", gzp_unlock_status_name(st), a.wrong_in_row);
+    /* the count as the CHECK left it (unlock.h: WRONG carries wrong_in_row).
+     * gzp_wallet_attempts gives it only while the one-second delay runs, so
+     * read after it, past a second's turn, it said 0 (CI of PR 91) */
+    gzp_log("test-check forged status=%s wrong_in_row=%u", gzp_unlock_status_name(st), job.result.wrong_in_row);
     OPENSSL_cleanse(&job, sizeof job);
 }
 #endif
@@ -665,6 +669,15 @@ int main(int argc, char **argv)
             fprintf(stderr, "gazpacho: cannot open the wallet's coins\n");
             rc = GZP_EXIT_DATA;
             goto out;
+        }
+        if (wallet) {
+            gzp_wport_marks_t marks = {change_mark_load, change_mark_save, wallet};
+            if (gzp_wport_set_marks(&wport, &marks) != 0) {
+                OPENSSL_cleanse(priv, sizeof priv);
+                fprintf(stderr, "gazpacho: cannot read the wallet's change mark\n");
+                rc = GZP_EXIT_DATA;
+                goto out;
+            }
         }
         if (chain.active) gzp_wport_scan_start(&wport, opt.chain_urls[0], 20);
 #ifdef GZP_TEST_BUILD
