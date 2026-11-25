@@ -348,6 +348,8 @@ static gz_status_t on_chain(gz_node_t *c, const gz_event_t *ev, gz_action_list_t
         c->tip = ev->u.chain.height;
         for (int e = ENG_TEST0; e < ENG_TEST0 + c->n_test && st == GZ_OK; e++) st = gz_c_bracket(c, e, ev, out);
         if (st == GZ_OK && c->fund_on) st = gz_c_bracket(c, ENG_FUNDING, ev, out);
+        /* A member's signing engine: C11's funding deadline of its Complete rounds (review B of PR 81, B-1). */
+        if (st == GZ_OK && c->sign_on && !c->cfg.host) st = gz_c_bracket(c, ENG_SIGN, ev, out);   /* RULE-NODE:TIP_TO_SIGNING */
         return st;
     case GZ_CHAIN_TX_CONFIRMED:
     case GZ_CHAIN_TX_UNCONFIRMED:

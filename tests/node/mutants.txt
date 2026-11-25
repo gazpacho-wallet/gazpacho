@@ -361,3 +361,10 @@ lid-duplicate-taken	core/node/api.c	        if ((have = lid_by_id(c, (const char
 lid-prefix-unchecked	core/node/api.c	memcmp(w.data, "lob_", 4) == 0 && 	
 req-load-parts-unchecked	core/node/api.c	    if (!parts_ok(rid, method, path) || digest.len != 32) return 0;	    if (digest.len != 32) return 0;
 member-signing-from-option	core/node/api.c	    return c ? c->cfg.member_signing : GZ_MEMBER_SIGNING_AT_JOIN;	    return c ? GZ_MEMBER_SIGNING_AT_JOIN : GZ_MEMBER_SIGNING_AT_JOIN;
+sg-leave-partials-out-off	core/node/lobbyslot.c	if (held_out == GZ_SIGN_OUT_THIS) return	if (0) return
+sg-partials-out-never	core/node/lobbyslot.c	return c->sign_on ? gz_sign_partials_out(c->sign, scope) : GZ_SIGN_OUT_NONE;	return GZ_SIGN_OUT_NONE;
+sg-unready-gated	core/node/lobbyslot.c	int held_out = code == GZ_CMD_LOBBY_LEAVE ?	int held_out = (code == GZ_CMD_LOBBY_LEAVE || code == GZ_CMD_LOBBY_UNREADY) ?
+sg-unknown-as-this	core/node/lobbyslot.c	return np_command_result(out, cmd, 409, "too_late_unknown_round");	return np_command_result(out, cmd, 409, "too_late");
+sg-unknown-not-refused	core/node/lobbyslot.c	if (held_out == GZ_SIGN_OUT_UNKNOWN) return	if (0) return
+sg-tip-not-to-signing	core/node/composite.c	if (st == GZ_OK && c->sign_on && !c->cfg.host) st = gz_c_bracket(c, ENG_SIGN, ev, out);	
+sg-no-funding-deadline	core/node/signslot.c	sc.funding_deadline_blocks = fc.funding_deadline_blocks;	sc.funding_deadline_blocks = 0;

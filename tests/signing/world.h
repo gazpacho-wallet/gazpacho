@@ -301,6 +301,7 @@ typedef struct {
     uint32_t other_factory;                     /* bit g: another factory key than the round's (a hook gone wrong) */
     uint32_t other_contribution;                /* bit g: another contribution key, the links unchanged (likewise) */
     uint32_t ack_wait;                          /* bit g: party g's may_ack has no tip yet: not yet (-1) */
+    int refuse_replay;                          /* every builder refuses to rebuild a saved round (an earlier epoch's) */
 } w_builder_t;
 
 /* The hooks' context of one party: the shared builder, and who the party is
@@ -473,6 +474,7 @@ static uint16_t w_build(void *ctx, const gz_sign_build_in_t *in, gz_sign_def_t *
     const gz_tree_proposal_t *p = &in->msg->p;
     w_tree_in_t t;
     if (b->refuse && in->scope && !in->replay) return b->refuse;   /* a member's checks refuse (not the host's own build) */
+    if (b->refuse_replay && in->replay) return 1;
     w_tree_in(p, b->damage, &t);
     if (b->mutate) {
         if (b->which == 27) {
