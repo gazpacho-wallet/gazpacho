@@ -23,9 +23,12 @@
         function values() {
           var out = {}, k;
           for (k in c.conditions) out[k] = c.conditions[k];
+          /* An empty field is no limit: null, as GET /conditions gives it (13.1). A field that
+             is not a whole number is sent as -1, which the program refuses (bad_value), and the
+             refusal is shown: a save that did not happen must never look like one that did. */
           FIELDS.forEach(function (f) {
             var v = inputs[f].value.trim();
-            out[f] = /^\d+$/.test(v) ? Number(v) : -1;
+            out[f] = v === "" ? null : /^\d+$/.test(v) ? Number(v) : -1;
           });
           return out;
         }

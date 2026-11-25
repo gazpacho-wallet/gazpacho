@@ -1301,14 +1301,14 @@ static int examine(gz_fake *f, const gz_json *cond, const char *names[12], gz_ap
     }
     for (i = 0; i < sizeof MAX_FIELDS / sizeof MAX_FIELDS[0]; i++) {
         const gz_json *v = gz_json_get(cond, MAX_FIELDS[i]);
-        if (!v) continue;
+        if (!v || v->type == GZ_JSON_NULL) continue;     /* null: no limit (13.1) */
         snprintf(field, sizeof field, "/conditions/%s", MAX_FIELDS[i]);
         if (v->type != GZ_JSON_INT || v->i < 0) { gz_api_err_set(err, "bad_value", field, NULL); return -1; }
         if (v->i > current_cond(f, MAX_FIELDS[i])) names[n++] = MAX_FIELDS[i];
     }
     for (i = 0; i < sizeof MIN_FIELDS / sizeof MIN_FIELDS[0]; i++) {
         const gz_json *v = gz_json_get(cond, MIN_FIELDS[i]);
-        if (!v) continue;
+        if (!v || v->type == GZ_JSON_NULL) continue;     /* null: no limit (13.1) */
         snprintf(field, sizeof field, "/conditions/%s", MIN_FIELDS[i]);
         if (v->type != GZ_JSON_INT || v->i < 0) { gz_api_err_set(err, "bad_value", field, NULL); return -1; }
         if (strcmp(MIN_FIELDS[i], "min_members") == 0 && (v->i < 2 || v->i > 512)) {

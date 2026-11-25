@@ -205,8 +205,15 @@ test('a host and three members: one lobby opened, joined and readied up to the r
     // its conditions tighten below the lobby's terms while Open: its own check
     // refuses (leave reason 1), and the host sees a refusal, not a member that left
     await p2.goto(m2.url + '#/conditions');
+    // a value the program refuses is shown as refused, and nothing changes
+    await p2.getByLabel('Fewest members').fill('-5');
+    await p2.locator('#save-conditions').click();
+    await expect(p2.locator('#cond-msg [data-code="bad_value"]')).toBeVisible({ timeout: 10000 });
+    await expect(hp.locator('#host-counts')).toContainText('3 ready of 4');
+    await p2.goto(m2.url + '#/conditions');
     await p2.getByLabel('Fewest members').fill('4');
     await p2.locator('#save-conditions').click();
+    await expect(p2.locator('#cond-msg [data-code]')).toHaveCount(0);
     await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(1, { timeout: 20000 });
     await expect(hp.locator('#seats tr[data-seat-state="left"]')).toHaveCount(0);
     await expect(hp.locator('#host-counts')).toContainText('2 ready of 4', { timeout: 20000 });
