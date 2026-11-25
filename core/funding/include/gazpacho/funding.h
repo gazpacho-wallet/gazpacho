@@ -51,7 +51,8 @@
 #define GZ_FUND_MAX_SIGNED   (GZ_FUND_MAX_TX + 2u + 67u * GZ_FUND_MAX_INPUTS)
 /* The spend-back: one input, one output. */
 #define GZ_FUND_MAX_SPEND_BACK 512u
-/* A spent output's script: a witness program, 4 to 42 bytes. */
+/* Room for a spent output's script (the longest witness program, 42 bytes).
+ * plan_ok takes only key-path P2TR, OP_1 <32>, 34 bytes (review of PR 80, L-1). */
 #define GZ_FUND_MAX_SCRIPT   42u
 /* The change's dust floor: a funding's change, a P2TR output, is at least
  * this, or the wallet takes another coin (wallet/tx's P2TR_DUST, which a
