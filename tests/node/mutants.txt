@@ -174,6 +174,7 @@ ls-factory-signs-with-contribution	core/node/lobbyslot.c	return k->sign(k->ctx, 
 ls-gate-auto-closed	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_AUTO: return 1;	case GZ_MEMBER_SIGNING_AUTO: return 0;
 ls-gate-unlocked-ignored	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return s->node->unlocked;	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return 1;
 ls-gate-at-join-open	core/node/lobbyslot.c	        if (!s->gate_open || !s->gate_have) return 0;	        if (!s->gate_have) return 0;
+# untested ls-gate-at-join-open: equivalent: every path that sets gate_have sets gate_open too (the join, the ready), and gate_close clears both, so gate_have alone never answers for a closed gate; the check of gate_open stays as defence in depth
 ls-factory-key-is-contribution	core/node/lobbyslot.c	c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fk) != 1)	c->cfg.keys.pub(c->cfg.keys.ctx, s->key_epoch, s->key_index, fk) != 1)
 ls-every-hello-a-listing	core/node/lobbyslot.c	if (s->host && ev->u.message.kind == GZ_MSG_KIND_HELLO && all_zero(ev->u.message.scope, 32))	if (s->host && ev->u.message.kind == GZ_MSG_KIND_HELLO)
 ls-index-forgets-newest	core/node/lobbyslot.c	if (c->np.ended[i].seq < c->np.ended[oldest].seq) oldest = i;	if (c->np.ended[i].seq > c->np.ended[oldest].seq) oldest = i;
@@ -396,3 +397,12 @@ ls-alloc-ceiling-member	core/node/lobbyslot.c	    if (c->np.highest_index >= GZ_
 # untested sg-keys-any-role: gz_sg_keys' role check; slots of the other role are left out at load and cannot be opened, so it is reached only through an ended lobby's keyed record of the other role, which no unit test here forges. Follow-up test: #89's list
 # untested sg-outcome-not-queued: the real engine's outcome while the slot is busy or deferred (sg_queue); the stand-in never reports into a busy slot. Follow-up test: #89's list
 # untested sg-begin-no-tip: the real engine's host-side begin with no chain tip (sg_begin); the node's unit tests here run rounds through the signing stand-in, which does not call it. Follow-up test: #89's list
+# --- #55's merge of main: the host's funds check (#80) and the join-ready factory key
+funds-open-unchecked	core/node/lobbyslot.c	    if (funds_refused(c, i, gz_fund_set_aside_sat(&s->lobby.h.terms), cmd, out, &st)) {	    if (0 && funds_refused(c, i, gz_fund_set_aside_sat(&s->lobby.h.terms), cmd, out, &st)) {
+funds-start-unchecked	core/node/lobbyslot.c	    if (funds_refused(c, i, aside, cmd, out, &st)) return st;	    if (0 && funds_refused(c, i, aside, cmd, out, &st)) return st;
+funds-unknown-as-ok	core/node/lobbyslot.c	    case GZ_FUND_FUNDS_OK:\n        return 0;	    case GZ_FUND_FUNDS_OK:\n    case GZ_FUND_FUNDS_UNKNOWN:\n        return 0;
+funds-others-dropped	core/node/lobbyslot.c	        amount = add == UINT64_MAX || amount > UINT64_MAX - add ? UINT64_MAX : amount + add;	        (void)add;
+join-key-other-digest	core/node/lobbyslot.c	/* bound to the values the person saw (26, checked above) */\n        memcpy(s->gate_digest, seen.data, 32);	/* bound to the values the person saw (26, checked above) */\n        memcpy(s->gate_digest, seen.data, 32);\n        s->gate_digest[0] ^= 1;
+join-key-not-derived	core/node/lobbyslot.c	            memcpy(s->gate_secret, fresh, 32);\n            gz_ls_wipe32(fresh);\n        }\n        s->gate_open = 1;	            gz_ls_wipe32(fresh);\n        }\n        s->gate_open = 1;
+gate-secret-not-wiped	core/node/lobbyslot.c	    for (size_t i = 0; i < sizeof s->gate_secret; i++) v[i] = 0;	    (void)v;
+seat-end-gate-kept	core/node/lobbyslot.c	        !gz_lobby_member_check_in_flight(&s->lobby.m))\n        gate_close(c, s);	        !gz_lobby_member_check_in_flight(&s->lobby.m))\n        (void)0;

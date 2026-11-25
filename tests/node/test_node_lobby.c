@@ -1375,6 +1375,14 @@ static void test_join_ready_key_hook(void)
     CHECK(s && N[1].n->sign_on && s->gate_open && s->gate_have && !memcmp(s->gate_digest, d, 32));
     CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 1);          /* the factory key, for the values joined for */
     CHECK(gz_sg_keys(N[1].n, t.scope, other, &f, &kc) == 0);      /* and for no other */
+    /* a lock closes the gate: the secret is wiped, every byte, and the key is gone */
+    CHECK(w_cmd(1, GZ_CMD_SIGNING_LOCK, NULL, 0) == 200);
+    w_run(1000, 100);
+    if (s) {
+        uint8_t zero[32] = {0};
+        CHECK(!s->gate_have && !memcmp(s->gate_secret, zero, 32));
+    }
+    CHECK(gz_sg_keys(N[1].n, t.scope, d, &f, &kc) == 0);
     w_free(1);
 }
 
