@@ -1082,11 +1082,20 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
     if (st == GZ_OK && !s->host && s->gate_derive && s->gate_open && s->gate_have && s->lobby.m.have_terms) {
         const gz_lobby_member_t *m = &s->lobby.m;
         uint8_t fresh[32];
-        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0) {
-            s->gate_derive = 0;
-            if (c->cfg.keys.secret && c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) == 1)
-                memcpy(s->gate_secret, fresh, 32);
-            gz_ls_wipe32(fresh);
+        int derived = 0;
+        s->gate_derive = 0;
+        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0 &&
+            c->cfg.keys.secret && c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) == 1) {
+            memcpy(s->gate_secret, fresh, 32);
+            derived = 1;
+        }
+        gz_ls_wipe32(fresh);
+        /* Other values than the ones joined for, or no secret from the port: the gate
+         * never claims a key it does not have (review of #55's boundary, Low). It closes
+         * as at a lock, and the lobby is told; the person readies again. */
+        if (!derived) {
+            gate_close(c, s);
+            st = gz_c_slot_inline(c, ENG_SLOT0 + i, gate_closed_inline, out);
         }
     }
     /* ... and when the seat ends (14.3 rule 1): left, refused, removed or the lobby

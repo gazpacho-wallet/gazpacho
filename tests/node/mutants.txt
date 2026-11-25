@@ -405,7 +405,8 @@ funds-start-unchecked	core/node/lobbyslot.c	    if (funds_refused(c, i, aside, c
 funds-unknown-as-ok	core/node/lobbyslot.c	    case GZ_FUND_FUNDS_OK:\n        return 0;\n    case GZ_FUND_FUNDS_SHORT:\n        return 1;	    case GZ_FUND_FUNDS_OK:\n    case GZ_FUND_FUNDS_UNKNOWN:\n        return 0;\n    case GZ_FUND_FUNDS_SHORT:\n        return 1;
 funds-others-dropped	core/node/lobbyslot.c	        amount = add == UINT64_MAX || amount > UINT64_MAX - add ? UINT64_MAX : amount + add;	        (void)add;
 join-key-other-digest	core/node/lobbyslot.c	/* bound to the values the person saw (26, checked above) */\n        memcpy(s->gate_digest, seen.data, 32);	/* bound to the values the person saw (26, checked above) */\n        memcpy(s->gate_digest, seen.data, 32);\n        s->gate_digest[0] ^= 1;
-join-key-not-derived	core/node/lobbyslot.c	            if (c->cfg.keys.secret && c->cfg.keys.secret(c->cfg.keys.ctx, s->key_epoch, s->key_index + 1, fresh) == 1)\n                memcpy(s->gate_secret, fresh, 32);	            if (0)\n                memcpy(s->gate_secret, fresh, 32);
+join-key-not-derived	core/node/lobbyslot.c	            memcpy(s->gate_secret, fresh, 32);\n            derived = 1;	            derived = 1;
+derive-fail-gate-open	core/node/lobbyslot.c	        if (!derived) {\n            gate_close(c, s);	        if (0) {\n            gate_close(c, s);
 gate-secret-not-wiped	core/node/lobbyslot.c	    for (size_t i = 0; i < sizeof s->gate_secret; i++) v[i] = 0;	    (void)v;
 seat-end-gate-kept	core/node/lobbyslot.c	        !gz_lobby_member_check_in_flight(&s->lobby.m))\n        gate_close(c, s);	        !gz_lobby_member_check_in_flight(&s->lobby.m))\n        (void)0;
 # --- review B of #55: the automatic start's funds check (M-1), and review A's L2
@@ -414,4 +415,4 @@ funds-recheck-off	core/node/composite.c	        if (st == GZ_OK && c->cfg.host) 
 funds-attention-off	core/node/view.c	        if (s->funds_blocked && s->lobby.h.state == GZ_LOBBY_OPEN) code = GZ_ATT_HOST_FUNDS_SHORT;   /* the more pressing */\n	
 funds-blocked-never-cleared	core/node/lobbyslot.c	    s->funds_blocked = r != 0;	    s->funds_blocked |= r != 0;
 set-aside-zero-taken	core/node/lobbyslot.c	    if (gz_fund_set_aside_sat(&s->lobby.h.terms) == 0) {	    if (0) {
-join-key-early	core/node/lobbyslot.c	        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0) {\n            s->gate_derive = 0;	        if (1) {\n            s->gate_derive = 0;
+join-key-early	core/node/lobbyslot.c	        if (memcmp(m->frozen ? m->frozen_digest : m->current_digest, s->gate_digest, 32) == 0 &&\n            c->cfg.keys.secret	        if (1 &&\n            c->cfg.keys.secret
