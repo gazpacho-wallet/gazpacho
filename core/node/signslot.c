@@ -193,6 +193,7 @@ int gz_sg_keys(void *ctx, const uint8_t scope[32], const uint8_t *terms_digest, 
                  sg_same(pub, c->slots[slot].lobby.m.factory_key, 33);                     /* RULE-NODE:BD5_SEAT_KEY */
             if (!ok) {
                 memset(f, 0, sizeof *f);
+                c->slots[slot].bd5_mismatch = 1;              /* the seat is unreadied after this step (B of #98, L-2) */
                 if (c->sg_out && c->sg_line_st == GZ_OK)
                     c->sg_line_st = sg_line(c, c->sg_out, "attention factory-key-mismatch", scope, NULL,
                                             " reason=", 12, NULL, 0);

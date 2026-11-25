@@ -345,7 +345,6 @@ enum { GZ_SEAT_NONE = 0, GZ_SEAT_JOINED, GZ_SEAT_READY, GZ_SEAT_CHOSEN, GZ_SEAT_
 #define GZ_LOBBY_MAX_TIMERS     6             /* the ids above: a slot's timer budget (composite-node.md 7.1) */
 #define GZ_LOBBY_MAX_LINKS      64            /* member keys whose hello limits are kept */
 #define GZ_LOBBY_BAD_JOINS      3             /* joins refused as invalid on one connection: closed */
-#define GZ_LOBBY_BAD_READIES    6             /* a seat's invalid readies in the lobby's life past which each closes at once */
 #define GZ_LOBBY_REFUSED_JOINS  32            /* joins refused for a limit on one connection: closed */
 
 /* An input to an engine. The time is read from the clock port, whose epoch

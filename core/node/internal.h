@@ -410,6 +410,7 @@ typedef struct {
     uint32_t cond_seen;             /* member: the saved conditions' version when it joined (slot_opened 24) */
     int set_aside_known;
     int stale;                      /* member: left out as a seat of an older epoch (BD2): nothing is sent for it */
+    int bd5_mismatch;               /* member: the key hook found the factory key unlike seat_key (BD5); unready at the next step */
 } slot_t;
 
 _Static_assert(SLOT_MAX_SEATS >= GZ_LOBBY_MAX_SEATS, "a slot notes every seat its lobby can mark (T-P42-2)");

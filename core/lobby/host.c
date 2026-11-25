@@ -613,15 +613,15 @@ static gz_status_t join_refused(gz_lobby_host_t *h, gz_lobby_conn_t *c, int inva
 
 /* A ready refused as invalid (BD1, a binding that does not verify): lobby_status with reason 5 and the
  * seat's own state, which is kept (messages.md 6.4; review A of #95, L1). Counted towards the close
- * (review A, F8) on the connection, and on the seat for the lobby's life (memory only): past
- * GZ_LOBBY_BAD_READIES of them, every further one closes its connection at once, so reconnecting does not
- * buy three more each time (review B of #95, L-2). Only the seat's owner can send them (record 240 is its
+ * (review A, F8) on the connection and on the seat, for the lobby's life (memory only): the seat's third
+ * closes its connection, and so does each one after it, on any connection, so reconnecting buys nothing
+ * (review B of #95, L-2; B of #98, L-3). Only the seat's owner can send them (record 240 is its
  * contribution key's). */
 static gz_status_t ready_refused(gz_lobby_host_t *h, gz_lobby_conn_t *c, gz_lobby_seat_t *s, gz_action_list_t *out)
 {
     int n = ++c->bad_joins;
     if (s->bad_readies < 255) s->bad_readies++;
-    if (n >= GZ_LOBBY_BAD_JOINS || s->bad_readies > GZ_LOBBY_BAD_READIES) {
+    if (n >= GZ_LOBBY_BAD_JOINS || s->bad_readies >= GZ_LOBBY_BAD_JOINS) {
         c->closed = 1;
         return gz_la_refuse(out, &c->link);
     }

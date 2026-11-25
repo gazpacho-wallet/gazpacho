@@ -870,6 +870,14 @@ static gz_status_t gate_closed_inline(gz_node_t *c, int eng, gz_action_list_t *o
     return gz_lobby_member_gate_closed(&c->slots[eng - ENG_SLOT0].lobby.m, out);
 }
 
+/* BD5 (review B of #98, L-2): a member whose factory key is not its seat's (another passphrase or seed)
+ * is unreadied, as by the person, so that its seat is not chosen again at each check until the person
+ * readies again with the right one. */
+static gz_status_t bd5_unready_inline(gz_node_t *c, int eng, gz_action_list_t *out)
+{
+    return gz_lobby_member_unready(&c->slots[eng - ENG_SLOT0].lobby.m, out);
+}
+
 static gz_status_t gate_opened_inline(gz_node_t *c, int eng, gz_action_list_t *out)
 {
     return gz_lobby_member_gate_opened(&c->slots[eng - ENG_SLOT0].lobby.m, out);
@@ -1175,6 +1183,10 @@ gz_status_t gz_ls_after(gz_node_t *c, int i, gz_action_list_t *out)
             gate_close(c, s);
             st = gz_c_slot_inline(c, ENG_SLOT0 + i, gate_closed_inline, out);
         }
+    }
+    if (st == GZ_OK && !s->host && s->bd5_mismatch) {
+        s->bd5_mismatch = 0;
+        if (s->lobby.m.ready && !s->lobby.m.ended) st = gz_c_slot_inline(c, ENG_SLOT0 + i, bd5_unready_inline, out);
     }
     if (st == GZ_OK && !s->host && s->lobby.m.factory_fresh) {
         char text[128];
