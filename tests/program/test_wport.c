@@ -264,6 +264,10 @@ typedef struct {
     gz_chain_result bad_as;
     size_t max_cap;          /* the largest cap a lookup asked for */
     size_t reject_over;      /* the dust address is refused (400) past this many outputs, as electrs's utxos limit */
+    uint8_t dust2_script[34]; /* a second dust address: dust2_n outputs of dust2_value at dust2_height */
+    size_t dust2_n;
+    uint64_t dust2_value;
+    uint32_t dust2_height;
     int tip_calls, outputs_calls, tip_after_outputs;
     uint32_t tip_before, tip_later;
 } fake_chain;
@@ -295,6 +299,20 @@ static gz_chain_result fk_outputs(void *ctx, const uint8_t *script, size_t scrip
     }
     if (cap > f->max_cap) f->max_cap = cap;
     if (f->bad_as != GZ_CHAIN_OK && script_len == 34 && memcmp(f->bad_script, script, 34) == 0) return f->bad_as;
+    if (f->dust2_n && script_len == 34 && memcmp(f->dust2_script, script, 34) == 0) {
+        if (f->dust2_n > cap) return GZ_CHAIN_TOO_LARGE;
+        for (size_t i = 0; i < f->dust2_n; i++) {
+            memset(&out[i], 0, sizeof out[i]);
+            memset(out[i].txid, 0xc7, 32);
+            out[i].txid[1] = (uint8_t)(i >> 8);
+            out[i].txid[2] = (uint8_t)i;
+            out[i].value = f->dust2_value;
+            out[i].confirmed = true;
+            out[i].height = f->dust2_height;
+        }
+        *count = f->dust2_n;
+        return GZ_CHAIN_OK;
+    }
     if (f->dust_n && script_len == 34 && memcmp(f->dust_script, script, 34) == 0) {
         if (f->reject_over && f->dust_n > f->reject_over) return GZ_CHAIN_REJECTED;   /* electrs: 400 */
         if (f->dust_n > cap) return GZ_CHAIN_TOO_LARGE;   /* as the chain port does past its cap */
@@ -729,6 +747,55 @@ static void test_electrs_utxo_limit(void)
     gzp_wport_close(&w);
 }
 
+/* L-3 (third review of PR 88): too_many_coins drops only coins smaller than
+ * the 256 kept, so "not enough" is exact there: can_plan answers 0
+ * (funds_short), not -1. Only an address left out makes it unknown. */
+static void test_too_many_short_is_exact(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzp_wport_coins_t c;
+    uint64_t have;
+    size_t n;
+    open_w(&w);
+    w.gap = 1;
+    dust_view(&w, &f, &view, 0, 0, GZP_WPORT_COINS + 44);
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    gzp_wport_coins(&w, &c);
+    CHECK(c.state == GZP_COINS_INCOMPLETE && c.reason && !strcmp(c.reason, "too_many_coins"));
+    CHECK(w.port.can_plan(w.port.ctx, 900000, 100, &have, &n) == 0);
+    gzp_wport_close(&w);
+}
+
+/* Third review of PR 88 (optional): change not yet buried, and coins above
+ * the tip, never make the list, so they are left out before the 256 largest
+ * are chosen: 300 larger unburied change outputs do not push out 255 buried
+ * receive coins and a real one, and the list is complete. */
+static void test_unburied_change_not_ranked(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzp_wport_coins_t c;
+    gzt_coin k, ch;
+    open_w(&w);
+    w.gap = 2;
+    dust_view(&w, &f, &view, 0, 0, GZP_WPORT_COINS - 1);   /* 255 x 330 sat, buried */
+    k = coin(&w, 0, 1, 500000, 0xec);
+    fk_add(&f, &k, 100);
+    ch = coin(&w, 1, 0, 1, 0xed);
+    memcpy(f.dust2_script, ch.script, 34);
+    f.dust2_n = 300;
+    f.dust2_value = 10000;
+    f.dust2_height = 109;                                  /* 2 deep at 110: not buried at B = 3 */
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.n_coins == GZP_WPORT_COINS);
+    gzp_wport_coins(&w, &c);
+    CHECK(c.state == GZP_COINS_COMPLETE);
+    gzp_wport_close(&w);
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -759,6 +826,8 @@ int main(void)
     test_dust_does_not_push_out_real_coins();
     test_incomplete_short_is_unknown();
     test_electrs_utxo_limit();
+    test_too_many_short_is_exact();
+    test_unburied_change_not_ranked();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
