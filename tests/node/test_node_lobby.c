@@ -2061,13 +2061,18 @@ static void test_begin_needs_tip(void)
     for (int n = 1; n <= 3; n++) w_node(n, n, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
     for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
     CHECK(N[0].n->sign_on && N[0].n->tip == 0);
-    make_terms(&t, 4, 4, 5100);
+    make_terms(&t, 4, 4, 11);   /* the deadline, and so the start, within the run below */
     CHECK(host_open(&t, 0) == 200);
     for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
     w_run(4000, 100);
     CHECK(host_ready(&t) == 3);
-    w_run(40000, 500);   /* the ready window, the start, the hand-off to the engine */
+    w_run(60000, 500);   /* to the deadline: the ready window, the start, the hand-off to the engine */
     CHECK(said(0, 0, "sign-begin-refused-no-tip") >= 1);
+    if (!said(0, 0, "sign-begin-refused-no-tip")) {   /* what the host said instead, to see why */
+        printf("  host state %d; its sign- lines:\n", host_state(&t));
+        for (size_t i = 0; i < N[0].n_log; i++)
+            if (N[0].log[i].a.kind == GZ_ACTION_NOTIFY && strstr(N[0].log[i].text, "sign")) printf("    %s\n", N[0].log[i].text);
+    }
     w_free(3);
 }
 
