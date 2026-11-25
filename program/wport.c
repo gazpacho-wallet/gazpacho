@@ -223,6 +223,11 @@ static int w_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *ha
     *n_coins = nt;
     e = gzt_funding_can_plan(offer, n, amount, policy(feerate), &sel);
     r = e == GZT_OK ? 1 : (e == GZT_ERR_FUNDS || e == GZT_ERR_LIMIT || e == GZT_ERR_DUST) ? 0 : -1;
+    /* the coins left out of an incomplete list might cover what these do not:
+     * "not enough" is not known, so the open answers coins_unknown, with the
+     * list's state, rather than a funds_short that does not explain itself
+     * (L-2, second review of PR 88) */
+    if (r == 0 && w->coin_list.state == GZP_COINS_INCOMPLETE) r = -1;
     pthread_mutex_unlock(&w->mu);
     return r;
 }
@@ -438,13 +443,26 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
                 return w->stop ? -1 : 0;
             }
             for (size_t i = 0; i < n; i++) {
-                if (nf == GZP_WPORT_COINS) {
-                    truncated = 1;   /* more coins than the list holds: incomplete, not complete (M-1) */
-                    break;
-                }
-                gzt_coin *c = &found[nf];
+                size_t at = nf;
                 if (!outs[i].confirmed) continue;   /* confirmed coins only (review A of PR 56, M5) */
-                heights[nf] = outs[i].height;
+                if (nf == GZP_WPORT_COINS) {
+                    /* more coins than the list holds: incomplete, not complete
+                     * (M-1), and the list keeps the largest, not the first met,
+                     * so dust at an early address cannot push the real coins
+                     * out (M-2, second review of PR 88; the wallet spends its
+                     * 64 largest anyway) */
+                    size_t m = 0;
+                    truncated = 1;
+                    for (size_t q = 1; q < nf; q++)
+                        if (found[q].amount < found[m].amount) m = q;
+                    if (outs[i].value <= found[m].amount) continue;
+                    total -= found[m].amount;
+                    at = m;
+                } else {
+                    nf++;
+                }
+                gzt_coin *c = &found[at];
+                heights[at] = outs[i].height;
                 memcpy(c->txid, outs[i].txid, 32);
                 c->vout = outs[i].vout;
                 c->amount = outs[i].value;
@@ -452,7 +470,6 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
                 c->index = j;
                 memcpy(c->script, o.script_pubkey, 34);
                 total += c->amount;
-                nf++;
                 if (change == 1 && j + 100 > next_change) next_change = j + 100;
             }
         }

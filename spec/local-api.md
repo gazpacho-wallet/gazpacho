@@ -1335,7 +1335,7 @@ The example shows a 1.0.0 member with a live channel. **In Slice 1**, which has 
 - `state`: `scanning` (not read yet, or being asked again), `complete`, or `incomplete` (published without some coins).
 - `reason`: `null`; `tip` or `lookup` while `scanning` after a failure; `address_too_large` (more unspent outputs at one address than a chain server gives, for example dust sent to a known address), `address_refused` (the server refused that address three times in a row) or `too_many_coins` (more than the 256 the list holds) when `incomplete`.
 - `params`: `chain` (0 receive, 1 change) and `index` of the address, and `error`, the chain port's answer (`unreachable`, `malformed`, `too_large`, `rejected`, `not_found`); `kept` for `too_many_coins`.
-- `attempts`: the scans so far. An unreachable server and a malformed answer are asked again every 15 s. While `scanning`, a host's open or start answers `coins_unknown` (8.1); with `incomplete` the coins that were read fund as usual, and the attention item `coins_incomplete` stays (11.4).
+- `attempts`: the scans so far. An unreachable server and a malformed answer are asked again every 15 s. While `scanning`, a host's open or start answers `coins_unknown` (8.1). With `incomplete`, the coins that were read fund as usual (the list keeps the 256 largest), but when they are not enough the answer is `coins_unknown`, not `funds_short`: the coins left out might cover it. The attention item `coins_incomplete` stays (11.4). An Esplora server past its per-address limit (electrs's `--utxos-limit`, 500 by default) answers HTTP 400; three in a row leave that address out as `address_refused`.
 
 **`money`**
 
