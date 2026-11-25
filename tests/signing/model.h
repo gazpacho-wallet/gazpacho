@@ -88,7 +88,7 @@ static void model_watch(harness_t *h, uint32_t g, const gz_action_t *a)
                     if (!m_find(m, MF_STARTED, g, id, (uint32_t)tier[0] << 16 | be32p(items + 4 * i)))
                         m_add(m, MF_STARTED, g, id, (uint32_t)tier[0] << 16 | be32p(items + 4 * i), NULL, 0, inc);
             } else if (r->type == GZ_SIGN_REC_EXPOSURE) {
-                const uint8_t *tier = rec_field(&hr, 4, NULL), *pm = rec_field(&hr, 14, &pl);
+                const uint8_t *tier = rec_field(&hr, 4, NULL), *pm = rec_field(&hr, 16, &pl);
                 if (tier && pm && !m_find(m, MF_SAVED_PARTIALS, g, id, tier[0])) m_add(m, MF_SAVED_PARTIALS, g, id, tier[0], pm, pl, inc);
             } else if (r->type == GZ_SIGN_REC_ACK_RECEIVED) {
                 const uint8_t *key = rec_field(&hr, 4, NULL);

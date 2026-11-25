@@ -982,22 +982,22 @@ static void test_definitions(int print)
  * and attempt, keys come per round from the hook, and the saved round state
  * changed (composite-node.md, P4.3 as built). */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
-    0x36c444acf31e3b91ull, /* honest-1 */
-    0xcbbe74ddbded89bbull, /* honest-2 */
-    0x0782ee5fc8dbe844ull, /* duplicates */
-    0x93aed5765621f44dull, /* member-restart-nonces */
-    0x6183551b3e0bab48ull, /* member-restart-signed */
-    0x83926ec0e6a8b580ull, /* tier-abort */
-    0x3652358b9b99b558ull, /* host-restarts */
-    0x48b858dd662a87c3ull, /* timers */
-    0xcb1af652bb620495ull, /* host-faults */
-    0xbb4d87a2e72ab4cbull, /* member-faults */
-    0xe8074e25ac6874eaull, /* proposals */
-    0x7a4ad947129fab60ull, /* journal */
-    0xf605a899dc4dc4daull, /* edges */
-    0xfb515f71f3c56ecbull, /* reconnect */
-    0xc2a1b812722ffaecull, /* records */
-    0x5cb190a761e8a6dfull, /* exposure */
+    0x45548b768d0a8386ull, /* honest-1 */
+    0xf01d80b08eb52c90ull, /* honest-2 */
+    0x7800225d56ce9758ull, /* duplicates */
+    0x83ef3cab569d54e8ull, /* member-restart-nonces */
+    0x6b2625ca716d0324ull, /* member-restart-signed */
+    0xb997a6ef069ccf2bull, /* tier-abort */
+    0x502588be87f931f6ull, /* host-restarts */
+    0x08fbf04f6371a87aull, /* timers */
+    0x2a509d772a16d64cull, /* host-faults */
+    0xba0523ba0d0f198dull, /* member-faults */
+    0x26763a4407e303deull, /* proposals */
+    0x4304cec468f9924cull, /* journal */
+    0xdc7b1ddd96cb598bull, /* edges */
+    0x5cce5782b67c4137ull, /* reconnect */
+    0x0ad763eb119c9e23ull, /* records */
+    0x0fcfba8e29684c90ull, /* exposure */
 };
 
 static void test_golden(int print)
