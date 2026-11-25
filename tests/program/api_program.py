@@ -14,8 +14,10 @@ the interface does (Host, Origin, fetch metadata, the session header):
   3. the event stream, read through the program's one poll loop, carries the
      status change that finish-setup makes;
   4. the core's view and command results (W12): lobby lists empty, a lobby
-     404, a discovery query held and answered from the command result, the
-     core's refusal (409 busy) as the call's error, and an unreachable host;
+     404, the core's refusal of a member's call on a host (409 not_a_member)
+     as the call's error; then a member program (its own data folder, set up
+     the same way): a discovery query held and answered from the command
+     result, the core's 409 busy, and an unreachable host;
   5. a wrong passphrase: 401 with retry_after_s and wrong_in_row (open point 42);
   6. lock: the wallet reads locked without a session;
   7. the release program serves the API too, without the stand-in: sign-in is
@@ -110,6 +112,25 @@ def check(cond, what, extra=""):
             print("     " + str(extra)[:500])
 
 
+# the generator point: a valid key that no host here holds
+NOBODY_KEY = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+
+
+def set_up(prog):
+    """First run for a second program: the start token, create, finish-setup."""
+    if prog.wait_line(r"interface listening") is None:
+        return False
+    page = open(os.path.join(prog.data, "first-run.html")).read()
+    tok = re.search(r"#start=([A-Za-z0-9_-]{43})", page).group(1)
+    st, s = prog.call("POST", "/session/start", {"start_token": tok})
+    prog.session = s["session"] if st == 200 and s else None
+    st, c = prog.call("POST", "/wallet/create", {"confirm": "create_wallet", "passphrase": PASS, "confirm_passphrase": PASS})
+    if st != 200:
+        return False
+    st, f = prog.call("POST", "/wallet/finish-setup", {"preset": "everyday", "find": "browse"})
+    return st == 200 and f and f.get("state") == "ready"
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -119,7 +140,7 @@ def free_port():
 
 
 class Prog:
-    def __init__(self, exe, extra=(), seed=None):
+    def __init__(self, exe, extra=(), seed=None, role="host", dump=True):
         self.dir = tempfile.mkdtemp(prefix="gzapi-")
         self.data = os.path.join(self.dir, "d")
         if seed is not None:              # the stand-in seed file, as the program writes it (datadir.c)
@@ -129,8 +150,13 @@ class Prog:
             os.close(fd)
         self.port = free_port()
         self.listen = free_port()
-        args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % self.listen, "--no-chain",
-                "--interface-port", str(self.port), "--name", "h1"] + list(extra)
+        self.dump = dump                  # its answers go into DUMP (the phrase checks are the host's)
+        if role == "host":
+            args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % self.listen, "--no-chain",
+                    "--interface-port", str(self.port), "--name", "h1"] + list(extra)
+        else:                             # a member names a host to connect to: one nobody listens at
+            args = [exe, "--data-dir", self.data, "--role", "member", "--connect", NOBODY_KEY + "@127.0.0.1:%d" % self.listen,
+                    "--no-chain", "--interface-port", str(self.port), "--name", "m1"] + list(extra)
         env = dict(os.environ, XDG_RUNTIME_DIR=self.dir)
         self.p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True)
         self.lines = []
@@ -169,7 +195,8 @@ class Prog:
         r = c.getresponse()
         raw = r.read()
         c.close()
-        DUMP.append(raw.decode("utf-8", "replace"))
+        if self.dump:
+            DUMP.append(raw.decode("utf-8", "replace"))
         try:
             j = json.loads(raw) if raw else None
         except ValueError:
@@ -186,6 +213,24 @@ class Prog:
                 self.p.wait()
         self.t.join(5)
         return self.p.returncode
+
+
+def member_queries(p, host):
+    """Section 4 on a member: a query held and answered, busy, unreachable."""
+    st, q = p.call("POST", "/discovery/query", {"host": host})
+    check(st == 202 and q and q.get("query_id", "").startswith("q_") and q.get("state") == "asking",
+          "a query: 202 from the core's command result, the query as the view holds it", (st, q))
+    st, e = p.call("POST", "/discovery/query", {"host": host})
+    check(st == 409 and e and e.get("code") == "busy", "a second query while one asks: the core's 409 busy", (st, e))
+    qid = (q or {}).get("query_id", "q_0")
+    end, g = time.time() + 20, None
+    while time.time() < end:
+        st, g = p.call("GET", "/discovery/queries/" + qid)
+        if g and g.get("state") != "asking":
+            break
+        time.sleep(0.5)
+    check(g and g.get("state") == "failed" and g.get("failed_because") == "unreachable" and g.get("lobbies") == [],
+          "nobody at that address: the query failed, unreachable", g)
 
 
 def events(prog, until_topic, timeout=10):
@@ -263,32 +308,28 @@ def main():
         check(st == 200 and s.get("wallet") == "ready", "status: ready", s.get("wallet"))
 
         # 4. the core's view and its command results (W12): no lobby yet, a lobby
-        # the view does not hold is 404; a held call answered from the command
-        # result (202, the object it made, read back from the view); a refusal
-        # the core gives (409 busy) arrives as the call's error; a host that is
-        # not there makes the query fail, unreachable
+        # the view does not hold is 404; a refusal the core gives arrives as the
+        # call's error (a query is a member's call: on this host, 409
+        # not_a_member). On a member program: a held call answered from the
+        # command result (202, the object it made, read back from the view), the
+        # core's 409 busy, and a host that is not there: the query fails, unreachable
         st, l = p.call("GET", "/lobbies?show=all")
         check(st == 200 and l and l.get("items") == [], "lobbies: an empty list before any query", l)
         st, l = p.call("GET", "/lobbies/lob_nothing")
         check(st == 404, "a lobby the view does not hold: 404", l)
         st, e = p.call("POST", "/discovery/query", {"host": "not a host"})
         check(st == 400 and e and e.get("code") == "bad_host_address", "a host address that is not one: 400", e)
-        # the generator point: a valid key that no host here holds
-        host = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798@127.0.0.1:9736"
-        st, q = p.call("POST", "/discovery/query", {"host": host})
-        check(st == 202 and q and q.get("query_id", "").startswith("q_") and q.get("state") == "asking",
-              "a query: 202 from the core's command result, the query as the view holds it", (st, q))
+        host = NOBODY_KEY + "@127.0.0.1:%d" % free_port()
         st, e = p.call("POST", "/discovery/query", {"host": host})
-        check(st == 409 and e and e.get("code") == "busy", "a second query while one asks: the core's 409 busy", (st, e))
-        qid = (q or {}).get("query_id", "q_0")
-        end, g = time.time() + 20, None
-        while time.time() < end:
-            st, g = p.call("GET", "/discovery/queries/" + qid)
-            if g and g.get("state") != "asking":
-                break
-            time.sleep(0.5)
-        check(g and g.get("state") == "failed" and g.get("failed_because") == "unreachable" and g.get("lobbies") == [],
-              "nobody at that address: the query failed, unreachable", g)
+        check(st == 409 and e and e.get("code") == "not_a_member",
+              "a query on a host: the core's refusal (409 not_a_member) as the call's error", (st, e))
+        m = Prog(exe_t, role="member", dump=False)
+        try:
+            check(set_up(m), "a member program, set up", m.lines[-5:])
+            member_queries(m, host)
+        finally:
+            m.stop()
+        shutil.rmtree(m.dir, ignore_errors=True)
 
         # 5. a wrong passphrase: when to try again, and how many in a row
         time.sleep(1.2)
