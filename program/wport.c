@@ -578,6 +578,13 @@ int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap)
 #endif
 }
 
+int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m)
+{
+    (void)w;
+    (void)m;
+    return 0;   /* step 1: nothing kept */
+}
+
 int gzp_wport_invent(gzp_wport_t *w)
 {
     gzw_bip86_output o;

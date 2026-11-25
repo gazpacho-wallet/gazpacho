@@ -43,6 +43,15 @@
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
 #define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
 
+/* The change mark (M-3, review of PR 91): the lowest change index never handed
+ * out, kept where a restart finds it. load gives it (0 when none was saved);
+ * save keeps a new one durably, before the index below it is used. 0, or -1. */
+typedef struct {
+    int (*load)(void *ctx, uint32_t *mark);
+    int (*save)(void *ctx, uint32_t mark);
+    void *ctx;
+} gzp_wport_marks_t;
+
 /* The coin list's state (local-api.md 11.2, `coins`). */
 enum { GZP_COINS_SCANNING = 0, GZP_COINS_COMPLETE, GZP_COINS_INCOMPLETE };
 typedef struct {
@@ -77,6 +86,8 @@ typedef struct {
     uint32_t gap;
     void *http_live;              /* the scan's HTTP client while it runs, to interrupt it */
     gzp_wport_coins_t coin_list;  /* the coin list's state, under mu */
+    gzp_wport_marks_t marks;      /* where the change mark is kept, or none */
+    uint32_t mark;                /* the change mark as last loaded or saved */
     uint8_t refusals[2][GZP_WPORT_GAP_MAX];   /* an address's refusals in a row, under the scan */
 } gzp_wport_t;
 
@@ -119,6 +130,10 @@ int gzp_wport_coins_attention(const gzp_wport_coins_t *c);
 const char *gzp_wport_funds_error(gz_fund_funds_t r);
 /* 1 if the scan's attempt `n` is logged (the first, then every 10th). */
 int gzp_wport_log_attempt(unsigned n);
+/* Where the change mark is kept: loads it now (next_change goes past it, and
+ * the scan reads the change chain to it plus `gap`); every change index
+ * handed out afterwards saves the mark first. Before the scan starts. 0, or -1. */
+int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m);
 /* Test build, no chain: one invented coin paying the first receive address. */
 int gzp_wport_invent(gzp_wport_t *w);
 void gzp_wport_close(gzp_wport_t *w);
