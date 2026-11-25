@@ -384,7 +384,7 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
  * secrets; its hand-offs still go to the stand-in (`outcome`), so only the key hook and the gate are the
  * engine's here. */
 static secp256k1_context *TCTX;
-static void *TMEM[4];
+static void *TMEM[NN];          /* one engine memory per node, the scratch node included */
 static int w_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32])
 {
     (void)ctx; (void)epoch;
