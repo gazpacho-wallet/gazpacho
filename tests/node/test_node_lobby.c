@@ -2076,6 +2076,15 @@ static void test_begin_needs_tip(void)
     w_free(3);
 }
 
+/* A key port that hands out a host key to anyone who asks: a member's node
+ * must still never take one (test_keys_own_role_only). */
+static int w_any_host_secret(void *ctx, uint8_t sec[32])
+{
+    (void)ctx;
+    memset(sec, 0x42, 32);
+    return 1;
+}
+
 /* gz_sg_keys answers only for a scope of this node's own role (review of #89,
  * L1; kills sg-keys-any-role). Load never keys a lobby of the other role (a
  * slot_opened of the other role is left out and wiped before its slot_closed
@@ -2100,9 +2109,13 @@ static void test_keys_own_role_only(void)
     e->index = 1;
     e->host = 0;   /* the member's own role: the keys are given (the control) */
     CHECK(gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 1);
-    e->host = 1;   /* a host's ended lobby on a member: none */
+    /* a host's ended lobby on a member: none, even though this port would hand
+     * out a host key (without the role check, gz_sg_keys would take it) */
+    N[1].n->cfg.keys.host_secret = w_any_host_secret;
+    e->host = 1;
     CHECK(gz_sg_keys(N[1].n, t.scope, NULL, NULL, &kc) == 0);
     CHECK(gz_sg_keys(N[1].n, t.scope, NULL, &f, &kc) == 0);
+    N[1].n->cfg.keys.host_secret = NULL;
     memset(e, 0, sizeof *e);
     w_free(1);
 }
