@@ -32,6 +32,7 @@
 
 #include "gazpacho/command.h"
 #include "gazpacho/envelope.h"
+#include "gazpacho/funding.h"
 #include "gazpacho/tree_import.h"
 #include "executor.h"
 #include "store_unlock.h"
@@ -90,6 +91,26 @@ static int port_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const 
     if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign_host(ex->net, msg, sig) : 0;
     return gzp_net_sign(ex->net, epoch, index, msg, sig);
 }
+
+#ifdef GZP_TEST_BUILD
+/* --test-funds short|unknown (test build): the funds check's answer
+ * overridden, for the tests of a short or an unsure wallet. The port is
+ * otherwise the program's own (wport.h): its plan, signing and spend-backs
+ * stay the real ones and only can_plan answers as the test asks. Without
+ * the option the node asks the host's own wallet (P4.6). */
+static gz_wallet_port_t TEST_WALLET;
+static gzp_exec_t *TEST_WALLET_EX;
+
+static int port_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins)
+{
+    (void)ctx;
+    (void)feerate;
+    if (TEST_WALLET_EX->opt->test_funds == 2) return -1;
+    *n_coins = 1;
+    *have_sat = amount / 2;
+    return 0;
+}
+#endif
 
 /* A lobby's signing gate closed (AT_JOIN): its scoped secrets are wiped
  * (keys.md 7); the line shows the moment. */
@@ -507,6 +528,11 @@ static void execute(void *ctx, const gz_action_t *a)
         timer_cancel(ex, a->u.cancel_timer.timer_id);
         break;
     case GZ_ACTION_NOTIFY:
+#ifdef GZP_TEST_BUILD
+        if (ex->opt->test_drop_view && (a->u.notify.code >> 16) == 1 &&
+            (a->u.notify.code & 0xffffu) == (uint32_t)ex->opt->test_drop_view)
+            break;                                    /* --test-drop-view: as if never emitted */
+#endif
         ex->notify.emit(ex->notify.ctx, a->u.notify.code, a->u.notify.bytes.data, a->u.notify.bytes.len);
 #ifdef GZP_TEST_BUILD
         show_notify(a->u.notify.code, a->u.notify.bytes);
@@ -944,6 +970,13 @@ static void start_node(gzp_exec_t *ex)
             static const char *const name[] = {"at-join", "auto", "when-unlocked"};
             int was = ex->opt->member_signing, now = (int)gz_node_member_signing(ex->node);
             ex->member_signing = now;
+            if (ex->api) {                     /* the calls under at_join ask for the passphrase (W12) */
+                ex->api->member_signing = now;
+                if (ex->opt->role == GZP_ROLE_HOST) {
+                    memcpy(ex->api->host_key, ex->net->pub, 33);
+                    ex->api->host_key_set = 1;
+                }
+            }
             gzp_log("member-signing in-force=%s option=%s%s", name[now % 3], name[was % 3],
                     now != was ? " source=saved" : "");
             /* The key routing from the value in force (view-objects.md 6, H3): AT_JOIN takes round secrets
@@ -1316,6 +1349,12 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.test_sign_delay_ms = (uint32_t)ex->opt->test_sign_delay_ms;
     cfg.sign_tick_ms = (uint32_t)ex->opt->test_sign_tick_ms;
     cfg.test_engines = (uint32_t)ex->opt->test_engines;
+    if (ex->opt->test_funds && ex->wallet_port) {   /* --test-funds short|unknown */
+        TEST_WALLET = *(const gz_wallet_port_t *)ex->wallet_port;
+        TEST_WALLET.can_plan = port_can_plan;
+        TEST_WALLET_EX = ex;
+        cfg.wallet = &TEST_WALLET;
+    }
 #endif
     if (!ex->node && !(ex->node = malloc(gz_node_size()))) abort();
     if (gz_node_init(ex->node, &ports, &cfg, ex->incarnation) != GZ_OK ||

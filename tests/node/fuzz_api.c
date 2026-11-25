@@ -32,6 +32,7 @@ static size_t boundary(src_t *s, uint32_t *type, uint8_t *rec, size_t cap)
         gz_rec_put(rec, cap, &at, 2, &two, 1);
         gz_rec_put(rec, cap, &at, 4, v, 8);
         gz_rec_put(rec, cap, &at, 6, v, 32 * (8 + over));
+        gz_rec_put(rec, cap, &at, 8, v, 4);
         break;
     case 1: /* local_ids: an id of 64 or 65 */
         *type = 0x000d000eu;
@@ -59,8 +60,8 @@ static size_t boundary(src_t *s, uint32_t *type, uint8_t *rec, size_t cap)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-    static const uint32_t types[] = {0x000d000cu, 0x000d000eu, 0x000d0014u, 0x000d0024u, 0x000d0040u, 0x000d0041u,
-                                     0x0004000cu, 0x0004000eu};
+    static const uint32_t types[] = {0x000d0008u, 0x000d000cu, 0x000d000eu, 0x000d0014u, 0x000d0024u, 0x000d0040u,
+                                     0x000d0041u, 0x0004000cu, 0x0004000eu};
     h_t h;
     src_t s = {data, size, 0, 0x9e3779b97f4a7c15ull};
     gz_status_t st;

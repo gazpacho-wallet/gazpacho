@@ -85,6 +85,10 @@ typedef struct gz_fake {
      * on, one step per gz_fake_cmd("step"), through a whole start. Off (0), the
      * fake answers the one fixed picture the server's tests expect. */
     int story;
+    /* gz-api-fake --loosen-extra-after N: from the N-th conditions preview on, a change
+     * that loosens anything also loosens max_fee_ppm (the save-time preview then differs
+     * from the one on screen: the interface must show the new list and ask again). */
+    int loosen_extra_after, previews;
     int m_stage, m_round, m_outcome;  /* the member in lob_7k2q (fake_backend.c: MS_, MO_) */
     int m_refuse_next;                /* the app's own check fails at the next signing */
     int m_refuse_kind;                /* 0 on min_members, 1 on a list and a range, 2 at a safety check */

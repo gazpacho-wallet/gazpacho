@@ -50,7 +50,7 @@ static const field S_LOCK[] = {{"confirm", T_STR, 1}, {"confirm_locked", T_STR, 
                                {"confirm_unlock_by_height", T_INT, 0}, {NULL, 0, 0}};
 static const field S_CONFIRM[] = {{"confirm", T_STR, 1}, {NULL, 0, 0}};
 static const field S_CONFIRM_PASS[] = {{"confirm", T_STR, 1}, {"passphrase", T_STR, 1}, {NULL, 0, 0}};
-static const field S_PAUSE[] = {{"on", T_BOOL, 1}, {"confirm", T_STR, 0}, {NULL, 0, 0}};
+static const field S_PAUSE[] = {{"on", T_BOOL, 1}, {"confirm", T_STR, 0}, {"based_on_version", T_INT, 0}, {NULL, 0, 0}};
 static const field S_CREATE[] = {{"confirm", T_STR, 1}, {"passphrase", T_STR, 1}, {"confirm_passphrase", T_STR, 1},
                                  {NULL, 0, 0}};
 static const field S_CHECK[] = {{"check_id", T_STR, 1}, {"passphrase", T_STR, 1}, {"words", T_ARR, 1},
@@ -123,7 +123,7 @@ static const gz_route ROUTES[] = {
     S1(M_POST, "/api/v1/conditions/preview", H_CALL, GZ_API_C_CONDITIONS_PREVIEW, 0, S_COND_PREVIEW, NULL),
     S1(M_PUT, "/api/v1/conditions", H_CALL, GZ_API_C_CONDITIONS_PUT, F_ACT, S_COND_PUT, NULL),
     /* finding the host (21, 20.3) */
-    S1(M_POST, "/api/v1/discovery/query", H_CALL, GZ_API_C_DISCOVERY_QUERY, 0, S_QUERY, NULL),
+    S1(M_POST, "/api/v1/discovery/query", H_CALL, GZ_API_C_DISCOVERY_QUERY, F_ACT, S_QUERY, NULL), /* held: the core makes the query (W12) */
     S1(M_GET, "/api/v1/discovery/queries/{q}", H_CALL, GZ_API_C_DISCOVERY_QUERY_GET, 0, NULL, NULL),
     S1(M_GET, "/api/v1/settings/connections", H_CALL, GZ_API_C_CONNECTIONS_GET, 0, NULL, NULL),
     /* lobbies (14) */

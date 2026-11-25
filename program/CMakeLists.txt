@@ -10,7 +10,7 @@
 # The release binary's symbols are checked (program_release_build, T12).
 
 set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c keys.c net.c pchain.c notify.c executor.c testping.c
-                view.c api.c wport.c sweep.c)
+                view.c api.c api_lobby.c api_calls.c wport.c sweep.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -242,6 +242,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_p6a_views
     COMMAND ${GZP_PY} ${CMAKE_SOURCE_DIR}/tests/web/check_p6a_fixme.py ${CMAKE_SOURCE_DIR} --views ${CMAKE_CURRENT_BINARY_DIR}/lobby)
   set_tests_properties(program_p6a_views PROPERTIES FIXTURES_REQUIRED lobby_run)
+  # The person's conditions on a joined lobby and the host's early start
+  # (local-api.md 13.2, 15.2): a host and four members.
+  add_test(NAME program_conditions_start
+    COMMAND ${GZP_PY} ${GZP_T}/conditions_start.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/conditions_start)
+  set_tests_properties(program_conditions_start PROPERTIES TIMEOUT 300)
   # The signing engine in the composite, P4.3: a host and four members sign
   # a real tree from the terms (one member's chain view makes it refuse);
   # every process restarted.
@@ -267,6 +272,11 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_partials_hold
     COMMAND ${GZP_PY} ${GZP_T}/partials_hold.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/partials_hold)
   set_tests_properties(program_partials_hold PROPERTIES TIMEOUT 600)
+  # The host's funds check asks the host's own wallet (P4.6, #55's can_plan from the wallet port):
+  # an empty wallet is refused funds_short, a funded one opens; never no_wallet.
+  add_test(NAME program_host_funds
+    COMMAND ${GZP_PY} ${GZP_T}/host_funds.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/host_funds)
+  set_tests_properties(program_host_funds PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77)
   # F13 (H3): the key routing follows the signing setting in force, not --member-signing; real signing.
   add_test(NAME program_keys_setting
     COMMAND ${GZP_PY} ${GZP_T}/keys_setting.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/keys_setting)
@@ -314,7 +324,7 @@ if(Python3_Interpreter_FOUND)
   # the kernel gave them, so they need no lock.
   set_tests_properties(program_envelope program_links program_loop_liveness program_lobby program_queue_peers
                        program_refusals program_resend_on_connect program_restart_slots program_start_queue
-                       program_two_process program_api program_api_limits
+                       program_two_process program_api program_api_limits program_conditions_start
                        PROPERTIES RESOURCE_LOCK gzp_free_port)
   if(GZ_LIVE_TESTS AND TARGET gazpacho_chain_curl)
     # Read-only: the public signet servers' block 0 and tip, the wallet's

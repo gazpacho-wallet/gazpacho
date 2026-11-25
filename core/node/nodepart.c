@@ -103,7 +103,23 @@ gz_status_t np_drop(gz_node_t *c, int why, uint16_t kind, gz_action_list_t *out)
 
 gz_status_t np_command_result(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error)
 {
-    uint8_t buf[200], st2[2];
+    return np_command_result_p(out, cmd, status, error, NULL);
+}
+
+/* With the answer's params (JSON, at most 160 bytes), as the API engine gives them. */
+gz_status_t np_command_result_p(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error,
+                                const char *params)
+{
+    return np_command_result_o(out, cmd, status, error, params, NULL);
+}
+
+/* ... and the object it acted on (6: a lobby's local id), when made: the
+ * program answers the call with that object as its view holds it (W12;
+ * review of #79, L: put in when the result is made, never written in after). */
+gz_status_t np_command_result_o(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error,
+                                const char *params, const char *object)
+{
+    uint8_t buf[400], st2[2];
     size_t at = 0;
     gz_bytes_t rid;
     gz_status_t st = GZ_OK;
@@ -116,6 +132,10 @@ gz_status_t np_command_result(gz_action_list_t *out, gz_bytes_t cmd, uint16_t st
     if (st == GZ_OK) st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_STATUS, st2, 2);
     if (st == GZ_OK && error)
         st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_ERROR, (const uint8_t *)error, cstr_len(error));
+    if (st == GZ_OK && object && object[0])
+        st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_OBJECT, (const uint8_t *)object, cstr_len(object));
+    if (st == GZ_OK && params)
+        st = gz_rec_put(buf, sizeof buf, &at, GZ_RESULT_REC_PARAMS, (const uint8_t *)params, cstr_len(params));
     if (st != GZ_OK) return st;
     gz_action_t a = {.kind = GZ_ACTION_NOTIFY};
     a.u.notify.code = GZ_NOTIFY_COMMAND_RESULT;
@@ -627,6 +647,8 @@ gz_status_t np_peer(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out)
             if (i >= 0) conn_gone(c, i);
             if (s >= 0 && c->slots[s].state == SLOT_OPEN) st = gz_c_bracket(c, ENG_SLOT0 + s, ev, out);
         }
+    } else if (gz_dq_link(c, &ev->u.peer.link)) {
+        st = gz_dq_peer(c, ev, out);       /* a query's link (discovery.c) */
     } else {
         int s = gz_route_member_slot_of_link(c, &ev->u.peer.link);
         if (s >= 0) st = gz_c_bracket(c, ENG_SLOT0 + s, ev, out);
@@ -777,6 +799,7 @@ gz_status_t np_message(gz_node_t *c, const gz_event_t *ev, gz_action_list_t *out
     case RT_SIGNING:
         if (!c->sign_on) return node_only(c, out, DROP_NO_ENGINE, ev->u.message.kind, NULL);
         return gz_c_bracket(c, ENG_SIGN, ev, out);
+    case RT_DISCOVERY: return gz_dq_message(c, ev, out);
     case RT_TEST:   return gz_c_bracket(c, r.eng, ev, out);
     case RT_LISTING: return limited_hello(c, conn, ev, 0, out);
     case RT_UNKNOWN_HELLO: return limited_hello(c, conn, ev, 1, out);
@@ -792,6 +815,7 @@ gz_status_t np_timer(gz_node_t *c, uint32_t id, gz_action_list_t *out)
 #ifdef GZ_TEST_KINDS
     if (id == NP_TIMER_SIGN) return gz_ss_timer(c, out);
 #endif
+    if (id == NP_TIMER_DISCOVERY) return gz_dq_timer(c, out);
     gz_status_t st = gz_c_node_bracket_begin(c, out);
     if (st != GZ_OK) return st;
     if (id == NP_TIMER_IDLE) {
@@ -1029,6 +1053,7 @@ gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_li
     case 0x7e84: st = slot_watch(c, cmd, out); break;
     case 0x7e85: st = slot_save(c, cmd, out); break;
 #endif
+    case GZ_CMD_LOBBY_QUERY: st = gz_dq_command(c, cmd, out); break; /* a host's lobbies (discovery.c) */
     default: st = gz_ls_command(c, code, cmd, out); break; /* the lobby's, the gate's, or unknown_command */
     }
     if (st == GZ_OK) st = gz_api_after(c, cmd, from, out); /* its request id (api.c) */
@@ -1085,6 +1110,44 @@ gz_status_t np_slot_freed(gz_node_t *c, int i, gz_action_list_t *out)
  * key_index; its epochs and highest indexes are the union the restore batch
  * made, T-P42-3), then `extra` (slot_opened). The lobby's own first record
  * follows it in the list and joins the batch. */
+/* The first index of a fresh pair, at or after `from` (which the caller takes
+ * above np.highest_index: np_save_pair keeps the highest given, and the load
+ * restores it from the key_index records and the guard). Every pair the node
+ * part gives comes from here, so no two links share a key (discovery's fresh
+ * pair exists so that a query cannot be tied to the member's other links).
+ * Test builds also have engines that choose their own indexes outside it (the
+ * test engine's CONNECT targets, 2(n + 1), and the stand-in slot's 2 * serial):
+ * a pair that would meet one of those is passed over (review of #79: the
+ * multi-process spec's --connect target and the query had the same key). */
+uint32_t np_next_first(const gz_node_t *c, uint32_t from)
+{
+    uint32_t f = from;
+#ifdef GZ_TEST_KINDS
+    for (int again = 1; again && f <= 0xfffffff0u;) {
+        again = 0;
+        for (int i = 0; i < c->n_test; i++)
+            for (size_t k = 0; k < c->test[i].n_targets; k++) {
+                uint32_t x = c->test[i].targets[k].index;
+                if (x == f || x == f + 1 || x + 1 == f) {
+                    f = x + 2;
+                    again = 1;
+                }
+            }
+        for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++) {
+            uint32_t x = c->slots[i].key_index;
+            if (c->slots[i].state == SLOT_FREE || c->slots[i].kind != SLOT_KIND_STANDIN || c->slots[i].host) continue;
+            if (x == f || x == f + 1 || x + 1 == f) {
+                f = x + 2;
+                again = 1;
+            }
+        }
+    }
+#else
+    (void)c;
+#endif
+    return f;
+}
+
 gz_status_t np_save_pair(gz_node_t *c, uint32_t first, const gz_record_t *extra, gz_action_list_t *out)
 {
     uint8_t eb[16], kb[16], gb[NP_GUARD_HEAD + 8 * (NP_MAX_OLD_EPOCHS + 1)], v[4];
@@ -1112,6 +1175,6 @@ gz_status_t np_save_pair(gz_node_t *c, uint32_t first, const gz_record_t *extra,
     recs[n].bytes.data = gb;
     recs[n].bytes.len = guard_record(c, gb);
     n++;
-    recs[n++] = *extra;
+    if (extra) recs[n++] = *extra; /* none: a pair for a query's link (discovery.c) */
     return save_records(out, recs, n);
 }
