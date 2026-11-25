@@ -4759,6 +4759,369 @@ static void test_world_standbys(void)
     w_free(&w);
 }
 
+/* ---- K1: the factory key signs no binding (docs/notes/k1-join-binding-check.md) ---------------------- */
+
+#define K1_REC_SEAT_KEY 0x0001001cu                /* the member's seat_key record (lobby.md 1) */
+
+/* Record `type` of the envelope `env`, read off the wire: the envelope starts at its tag 67 7a 66 01, and its
+ * records (BigSize type, BigSize length, value: wire.c) follow the tag, the kind and the scope. 1 and set
+ * if present, 0 if absent from a well-formed record stream, -1 if there is no tag or the stream is
+ * malformed (so that neither a presence nor an absence check passes on bytes that are no envelope). */
+static int k1_field(const uint8_t *env, size_t n, unsigned type, const uint8_t **v, size_t *vn)
+{
+    static const uint8_t tag[4] = {0x67, 0x7a, 0x66, 0x01};
+    size_t at, start = n;
+    int found = 0;
+    for (size_t i = 0; i + 4 <= n; i++)
+        if (memcmp(env + i, tag, 4) == 0) { start = i; break; }
+    if (start == n || n - start < GZ_LOBBY_ENV_HDR) return -1;
+    at = start + GZ_LOBBY_ENV_HDR;
+    while (at < n) {
+        uint64_t t, len;
+        if (!gz_lw_bigsize(env, n, &at, &t) || !gz_lw_bigsize(env, n, &at, &len) || len > n - at) return -1;
+        if (t == type && !found) { *v = env + at; *vn = (size_t)len; found = 1; }
+        at += (size_t)len;
+    }
+    return found;
+}
+
+/* The last message of `kind` the engine sent, as envelope bytes; 0 if none. */
+static size_t k1_sent(int kind, uint8_t *out, size_t cap)
+{
+    size_t got = 0;
+    for (size_t i = 0; i < A.l.count; i++)
+        if (A.s[i].kind == GZ_ACTION_SEND && kind_of(&A.s[i]) == kind) got = lt_send_env(&A.s[i], out, cap);
+    return got;
+}
+
+/* Position of the first action: a SAVE holding a record of `type`, or a SEND of `kind`; -1 if none. */
+static long k1_save_at(uint32_t type)
+{
+    for (size_t i = 0; i < A.l.count; i++)
+        if (A.s[i].kind == GZ_ACTION_SAVE)
+            for (size_t k = 0; k < A.s[i].u.save.n_records; k++)
+                if (A.s[i].u.save.records[k].type == type) return (long)i;
+    return -1;
+}
+static long k1_send_at(int kind)
+{
+    for (size_t i = 0; i < A.l.count; i++)
+        if (A.s[i].kind == GZ_ACTION_SEND && kind_of(&A.s[i]) == kind) return (long)i;
+    return -1;
+}
+
+/* The bytes of the first saved record of `type` in the last action list; NULL if none. */
+static const uint8_t *k1_saved(uint32_t type, size_t *n)
+{
+    for (size_t i = 0; i < A.l.count; i++)
+        if (A.s[i].kind == GZ_ACTION_SAVE)
+            for (size_t k = 0; k < A.s[i].u.save.n_records; k++)
+                if (A.s[i].u.save.records[k].type == type) {
+                    *n = A.s[i].u.save.records[k].bytes.len;
+                    return A.s[i].u.save.records[k].bytes.data;
+                }
+    return NULL;
+}
+
+/* A signature by `key` over `msg` with auxiliary randomness `aux_byte` repeated: valid, and for a nonzero
+ * aux_byte other bytes than lt_sign's (which uses zeros). */
+static int k1_sign_aux(const lt_key_t *key, const uint8_t msg[32], uint8_t aux_byte, uint8_t sig[64])
+{
+    uint8_t aux[32];
+    memset(aux, aux_byte, sizeof aux);
+    return secp256k1_schnorrsig_sign32(lt_ctx(), sig, msg, &key->kp, aux);
+}
+
+/* A signer that counts what each key signed. */
+static unsigned long K1_SIGNED[4];
+static int k1_sign(void *ctx, uint32_t which, const uint8_t msg[32], uint8_t sig[64])
+{
+    if (which < 4) K1_SIGNED[which]++;
+    return lt_sign(ctx, which, msg, sig);
+}
+
+/* The member: its join names no factory key and carries no signature, and the factory key signs nothing.
+ * Its first ready carries the factory key and the contribution key's binding over (scope, F, C), and the
+ * seat's key is saved before that ready leaves. */
+static void test_k1_member(void)
+{
+    gz_lobby_member_t m;
+    gz_lobby_conditions_t cond = lt_cond_fits();
+    gz_ports_t p = ports();
+    gz_lobby_crypto_t cr = lt_crypto(&M1);
+    uint8_t buf[2000], env[GZ_LOBBY_MAX_SAVED_MSG], b[32];
+    const uint8_t *v;
+    size_t n, en, vn;
+    cr.sign = k1_sign;
+    memset(K1_SIGNED, 0, sizeof K1_SIGNED);
+    lt_member_init(&m, &p, &cr, NULL, NULL, &cond, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 1);
+    m_in(&m, GZ_LIN_CONNECTED);
+    n = offer(buf, sizeof buf, SCOPE, T1, T1N, T2, T2N, &HOST);
+    CHECK(feed(&m, buf, n) == GZ_OK && sends(GZ_KIND_JOIN) == 1 && sends(GZ_KIND_READY) == 1);
+    en = k1_sent(GZ_KIND_JOIN, env, sizeof env);
+    CHECK(en > 0);
+    CHECK(k1_field(env, en, 2, &v, &vn) == 0 && k1_field(env, en, 4, &v, &vn) == 0 && k1_field(env, en, 6, &v, &vn) == 0);
+    CHECK(K1_SIGNED[GZ_LOBBY_KEY_FACTORY] == 0);                    /* the factory key signs nothing */
+    en = k1_sent(GZ_KIND_READY, env, sizeof env);
+    CHECK(en > 0 && k1_field(env, en, 12, &v, &vn) == 1 && vn == 33 && memcmp(v, M1.key[3].pub, 33) == 0);
+    gz_lobby_binding(SCOPE, M1.key[3].pub, M1.key[2].pub, b);
+    CHECK(k1_field(env, en, 14, &v, &vn) == 1 && vn == 64 && lt_verify(NULL, M1.key[2].pub, b, v) == 1);
+    CHECK(k1_save_at(K1_REC_SEAT_KEY) >= 0 && k1_save_at(K1_REC_SEAT_KEY) < k1_send_at(GZ_KIND_READY));
+    /* seat_key: the factory key (4) and the ready's bind_by_contribution (10), byte for byte (review H1) */
+    {
+        size_t rn = 0, fn;
+        const uint8_t *r = k1_saved(K1_REC_SEAT_KEY, &rn), *f;
+        CHECK(r && lt_rec_field(r, rn, 4, &f, &fn) == 1 && fn == 33 && memcmp(f, M1.key[3].pub, 33) == 0);
+        CHECK(r && lt_rec_field(r, rn, 10, &f, &fn) == 1 && fn == 64 && k1_field(env, en, 14, &v, &vn) == 1 &&
+              memcmp(f, v, 64) == 0);
+    }
+}
+
+/* A join of K1's form: no records. */
+static size_t k1_join(uint8_t *buf, size_t cap)
+{
+    gz_lobby_enc_t e;
+    gz_lobby_enc_start(&e, buf, cap, GZ_KIND_JOIN, SCOPE);
+    return gz_lobby_enc_done(&e);
+}
+
+/* A ready of K1's form: record 12 the factory key, record 14 the binding signed by member `sign_c`'s
+ * contribution key; signed by member `who`. */
+static size_t k1_ready(uint8_t *buf, size_t cap, int who, uint32_t version, const uint8_t *digest, const uint8_t *fkey,
+                       int sign_c)
+{
+    uint8_t b[32], sc[64];
+    gz_lobby_enc_t e;
+    gz_lobby_crypto_t cr = lt_crypto(&MEM[who]);
+    gz_lobby_binding(SCOPE, fkey, MEM[who].key[2].pub, b);
+    lt_sign(&MEM[sign_c], 2, b, sc);
+    gz_lobby_enc_start(&e, buf, cap, GZ_KIND_READY, SCOPE);
+    gz_lobby_enc_record(&e, 2, SCOPE, 32);
+    gz_lobby_enc_u32(&e, 4, version);
+    gz_lobby_enc_record(&e, 6, digest, 32);
+    gz_lobby_enc_record(&e, 12, fkey, 33);
+    gz_lobby_enc_record(&e, 14, sc, 64);
+    return gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
+}
+
+static const gz_lobby_seat_t *k1_seat(int who)
+{
+    for (uint16_t i = 0; i < H.n_seats; i++)
+        if (memcmp(H.seats[i].ckey, MEM[who].key[2].pub, 33) == 0) return &H.seats[i];
+    return NULL;
+}
+
+/* The host: a join with no records is a seat with no factory key yet; the first ready fixes it, with only
+ * the contribution key's binding checked; a bad binding, a factory key another seat holds or held, and a
+ * later ready with another factory key are refused; a join of the old form (records 2, 4, 6) is refused. */
+static void test_k1_host(void)
+{
+    uint8_t buf[600], zero[33] = {0};
+    size_t n;
+    const gz_lobby_seat_t *s;
+    host_open(0);
+    fresh(1);
+    n = k1_join(buf, sizeof buf);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
+    s = k1_seat(1);
+    CHECK(s && memcmp(s->fkey, zero, 33) == 0);                      /* no factory key at join */
+    /* a ready whose binding another key signed: Refused, reason 5, nothing saved; the seat has no factory key */
+    n = k1_ready(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[1].key[3].pub, 2);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_REFUSED && !any_save());
+    {
+        gz_lobby_msg_t g5;
+        CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
+    }
+    s = k1_seat(1);
+    CHECK(s && s->state != GZ_SEAT_READY && memcmp(s->fkey, zero, 33) == 0);
+    /* review A's F8 at the first ready: three invalid ones on a connection close it */
+    fresh(7);
+    n = k1_join(buf, sizeof buf);
+    CHECK(hin(GZ_LIN_MESSAGE, 7, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
+    for (int k = 0; k < 3; k++) {
+        n = k1_ready(buf, sizeof buf, 7, H.values.version, H.current_digest, MEM[7].key[3].pub, 8);
+        CHECK(hin(GZ_LIN_MESSAGE, 7, buf, n) == GZ_OK && (k < 2 ? status_seat() == GZ_SEAT_REFUSED && refusals() == 0
+                                                                : refusals() == 1));
+    }
+    fresh(1);
+    /* the first good ready fixes the factory key */
+    n = k1_ready(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[1].key[3].pub, 1);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_READY);
+    s = k1_seat(1);
+    CHECK(s && memcmp(s->fkey, MEM[1].key[3].pub, 33) == 0);
+    /* a later ready with another factory key: refused, the key unchanged */
+    n = k1_ready(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[5].key[3].pub, 1);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK);
+    s = k1_seat(1);
+    CHECK(s && memcmp(s->fkey, MEM[1].key[3].pub, 33) == 0);
+    /* another seat naming member 1's factory key: refused */
+    fresh(2);
+    n = k1_join(buf, sizeof buf);
+    CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
+    n = k1_ready(buf, sizeof buf, 2, H.values.version, H.current_digest, MEM[1].key[3].pub, 2);
+    CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK);
+    s = k1_seat(2);
+    CHECK(s && s->state != GZ_SEAT_READY && memcmp(s->fkey, zero, 33) == 0);
+    /* member 1 leaves; its factory key stays used in this lobby: member 3 cannot take it */
+    {
+        gz_lobby_enc_t e;
+        gz_lobby_crypto_t cr = lt_crypto(&MEM[1]);
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_LEAVE, SCOPE);
+        gz_lobby_enc_record(&e, 2, SCOPE, 32);
+        n = gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
+        CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK);
+    }
+    fresh(3);
+    n = k1_join(buf, sizeof buf);
+    CHECK(hin(GZ_LIN_MESSAGE, 3, buf, n) == GZ_OK);
+    n = k1_ready(buf, sizeof buf, 3, H.values.version, H.current_digest, MEM[1].key[3].pub, 3);
+    CHECK(hin(GZ_LIN_MESSAGE, 3, buf, n) == GZ_OK);
+    s = k1_seat(3);
+    CHECK(!s || (s->state != GZ_SEAT_READY && memcmp(s->fkey, zero, 33) == 0));
+    /* a join of the old form, with the factory key and two bindings: refused */
+    fresh(4);
+    n = join_msg(buf, sizeof buf, 4, MEM[4].key[3].pub, 4, 4);
+    CHECK(hin(GZ_LIN_MESSAGE, 4, buf, n) == GZ_OK);
+    s = k1_seat(4);
+    CHECK(!s || s->state != GZ_SEAT_JOINED);
+}
+
+/* A ready of K1's form with record 14 given (`sc`), signed by member `who`. */
+static size_t k1_ready_sig(uint8_t *buf, size_t cap, int who, uint32_t version, const uint8_t *digest,
+                           const uint8_t *fkey, const uint8_t sc[64])
+{
+    gz_lobby_enc_t e;
+    gz_lobby_crypto_t cr = lt_crypto(&MEM[who]);
+    gz_lobby_enc_start(&e, buf, cap, GZ_KIND_READY, SCOPE);
+    gz_lobby_enc_record(&e, 2, SCOPE, 32);
+    gz_lobby_enc_u32(&e, 4, version);
+    gz_lobby_enc_record(&e, 6, digest, 32);
+    gz_lobby_enc_record(&e, 12, fkey, 33);
+    gz_lobby_enc_record(&e, 14, sc, 64);
+    return gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
+}
+
+/* Review H1 of the binding decision (messages.md 6.4, test 60), the host: record 14 is verified in every
+ * ready. A later ready whose binding signature differs in bytes but verifies over the same binding is taken,
+ * and the host keeps the first one it saved; one that does not verify, or one over another binding, is
+ * refused with reason 5, nothing saved, and the seat keeps its state. */
+static void test_k1_later_binding(void)
+{
+    uint8_t buf[600], b[32], first[64], other[64];
+    size_t n, rn = 0, fn;
+    const gz_lobby_seat_t *s;
+    const uint8_t *r, *f;
+    gz_lobby_msg_t g5;
+    host_open(0);
+    fresh(1);
+    n = k1_join(buf, sizeof buf);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
+    gz_lobby_binding(SCOPE, MEM[1].key[3].pub, MEM[1].key[2].pub, b);
+    CHECK(lt_sign(&MEM[1], 2, b, first) == 1 && k1_sign_aux(&MEM[1].key[2], b, 0x5a, other) == 1 &&
+          memcmp(first, other, 64) != 0 && lt_verify(NULL, MEM[1].key[2].pub, b, other) == 1);
+    n = k1_ready_sig(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[1].key[3].pub, first);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_READY);
+    s = k1_seat(1);
+    CHECK(s && memcmp(s->bind_c, first, 64) == 0);
+    /* the same version again, the other valid signature: not refused, nothing changed */
+    n = k1_ready_sig(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[1].key[3].pub, other);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() != GZ_SEAT_REFUSED);
+    s = k1_seat(1);
+    CHECK(s && s->state == GZ_SEAT_READY && memcmp(s->bind_c, first, 64) == 0);
+    /* a new version: the ready with the other valid signature is taken and saved, with the first binding */
+    {
+        uint64_t v[3] = {1500, 1000, 1000};
+        acts_reset();
+        CHECK(gz_lobby_host_set_values(&H, v, 3, &A.l) == GZ_OK && H.values.version == 2);
+    }
+    n = k1_ready_sig(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[1].key[3].pub, other);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_READY && saves(GZ_REC_SEAT) == 1);
+    r = k1_saved(GZ_REC_SEAT, &rn);
+    CHECK(r && lt_rec_field(r, rn, 10, &f, &fn) == 1 && fn == 64 && memcmp(f, first, 64) == 0);
+    s = k1_seat(1);
+    CHECK(s && s->state == GZ_SEAT_READY && memcmp(s->bind_c, first, 64) == 0);
+    /* one that does not verify: refused, reason 5, the seat still Ready */
+    other[63] ^= 1;
+    n = k1_ready_sig(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[1].key[3].pub, other);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_REFUSED && !any_save());
+    CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
+    s = k1_seat(1);
+    CHECK(s && s->state == GZ_SEAT_READY && memcmp(s->bind_c, first, 64) == 0);
+    /* one by the seat's key over another binding (another factory key): refused the same way */
+    {
+        uint8_t b2[32], sig2[64];
+        gz_lobby_binding(SCOPE, MEM[5].key[3].pub, MEM[1].key[2].pub, b2);
+        CHECK(lt_sign(&MEM[1], 2, b2, sig2) == 1);
+        n = k1_ready_sig(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[1].key[3].pub, sig2);
+        CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_REFUSED && !any_save());
+        CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
+    }
+    s = k1_seat(1);
+    CHECK(s && s->state == GZ_SEAT_READY && memcmp(s->bind_c, first, 64) == 0);
+}
+
+/* Review H1, the member (messages.md 6.4 and journal.md 9.1, test 60): every later ready sends seat_key's
+ * field 10 byte for byte, with no new signature over the binding. A member restored with another valid
+ * signature in field 10 sends that one at its next ready; a field 10 that does not verify is damaged
+ * storage. */
+static void test_k1_member_resends(void)
+{
+    static gz_lobby_member_t m, mb;
+    static uint8_t buf[2000], recb[8][GZ_LOBBY_REC_MAX + 8];
+    gz_lobby_conditions_t cond = lt_cond_fits();
+    gz_ports_t p = ports();
+    gz_lobby_crypto_t cr = lt_crypto(&M1);
+    gz_record_t recs[8];
+    uint8_t env[GZ_LOBBY_MAX_SAVED_MSG], b[32], alt[64], rw[256];
+    const uint8_t *v;
+    size_t n, en, vn, nrec = 0, q, j, at = 8;
+    lt_member_init(&m, &p, &cr, NULL, NULL, &cond, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 1);
+    m_in(&m, GZ_LIN_CONNECTED);
+    n = offer(buf, sizeof buf, SCOPE, T1, T1N, T2, T2N, &HOST);
+    CHECK(feed(&m, buf, n) == GZ_OK && sends(GZ_KIND_READY) == 1);
+    for (q = 0; q < A.l.count; q++)
+        if (A.s[q].kind == GZ_ACTION_SAVE)
+            for (j = 0; j < A.s[q].u.save.n_records && nrec < 8; j++) {
+                recs[nrec] = A.s[q].u.save.records[j];
+                CHECK(recs[nrec].bytes.len <= sizeof recb[0]);
+                if (recs[nrec].bytes.len > sizeof recb[0]) return;
+                memcpy(recb[nrec], recs[nrec].bytes.data, recs[nrec].bytes.len);
+                recs[nrec].bytes.data = recb[nrec];
+                if (recs[nrec].type == K1_REC_SEAT_KEY) at = nrec;
+                nrec++;
+            }
+    CHECK(at < nrec);
+    if (at >= nrec) return;
+    gz_lobby_binding(SCOPE, M1.key[3].pub, M1.key[2].pub, b);
+    CHECK(k1_sign_aux(&M1.key[2], b, 0x5a, alt) == 1);
+    en = k1_sent(GZ_KIND_READY, env, sizeof env);
+    CHECK(k1_field(env, en, 14, &v, &vn) == 1 && vn == 64 && memcmp(v, alt, 64) != 0);
+    /* field 10 replaced by the other valid signature: the restored member's next ready sends it */
+    n = lt_rec_with(recs[at].bytes.data, recs[at].bytes.len, 10, alt, 64, rw, sizeof rw);
+    CHECK(n > 0 && n == recs[at].bytes.len);
+    if (n == 0 || n != recs[at].bytes.len) return;
+    memcpy(recb[at], rw, n);
+    lt_member_init(&mb, &p, &cr, NULL, NULL, &cond, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 1);
+    for (q = 0; q < nrec; q++) CHECK(gz_lobby_member_restore(&mb, &recs[q]) == GZ_OK);
+    CHECK(mb.joined && mb.ready);
+    m_in(&mb, GZ_LIN_CONNECTED);
+    n = offer(buf, sizeof buf, SCOPE, T1, T1N, T3, T3N, &HOST);                 /* version 2: a new ready */
+    CHECK(feed(&mb, buf, n) == GZ_OK && sends(GZ_KIND_READY) == 1);
+    en = k1_sent(GZ_KIND_READY, env, sizeof env);
+    CHECK(k1_field(env, en, 12, &v, &vn) == 1 && vn == 33 && memcmp(v, M1.key[3].pub, 33) == 0);
+    CHECK(k1_field(env, en, 14, &v, &vn) == 1 && vn == 64 && memcmp(v, alt, 64) == 0);
+    CHECK(k1_saved(K1_REC_SEAT_KEY, &vn) == NULL);                              /* never replaced */
+    /* a field 10 that does not verify over (scope, F, C): damaged storage */
+    alt[5] ^= 1;
+    n = lt_rec_with(recs[at].bytes.data, recs[at].bytes.len, 10, alt, 64, rw, sizeof rw);
+    CHECK(n == recs[at].bytes.len);
+    if (n != recs[at].bytes.len) return;
+    memcpy(recb[at], rw, n);
+    lt_member_init(&mb, &p, &cr, NULL, NULL, &cond, SCOPE, HOST.key[1].pub, M1.key[2].pub, M1.key[3].pub, 1);
+    for (q = 0; q < at; q++) CHECK(gz_lobby_member_restore(&mb, &recs[q]) == GZ_OK);
+    CHECK(gz_lobby_member_restore(&mb, &recs[at]) == GZ_ERR_CORRUPT);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -4812,5 +5175,9 @@ int main(void)
     test_start_now();
     test_start_now_guard();
     CHECK(OVERSIZE == 0);
+    test_k1_member();
+    test_k1_host();
+    test_k1_later_binding();
+    test_k1_member_resends();
     return check_done();
 }
