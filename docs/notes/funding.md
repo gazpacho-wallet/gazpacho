@@ -48,7 +48,7 @@ Fields are TLV streams, every type even (journal.md open point 3, settled for th
 |---|---|
 | `funding_plan` 0x00030002 | 2 scope (32), 4 check (32), 6 attempt (u16), 8 mode (u8: 0 AUTO, 1 CONFIRM), 10 fee rate (u64, sat/kvB), 12 the unsigned transaction, 14 the spent outputs (per input: amount u64, script length u8, script), 16 the factory output's index (u32), 18 the tip when it was planned (u32, the deadline's basis; absent when no tip was known), 20 released (u8, 1: H11, a partial signature of its attempt was released and no plan spending its input 0 accepted yet; the plan is saved again with it) |
 | `funding_signed` 0x00030004 | 2 scope, 4 txid (32), 6 the signed transaction |
-| `funding_status` 0x00030006 | 2 scope, 4 txid, 6 state (u8: 1 acked, 2 awaiting confirmation, 3 broadcast, 4 live, 5 abandoned, 6 dead, 7 failed, 8 live late), 8 tip at the decision (u32), 10 deadline (u32: the host's abandon height; the member's ack tip + its funding deadline). The member's first write adds 12 the funding transaction, 14 vout, 16 amount, 18 script, 20 ack tip, 22 end height, 24 own depth (u8), 26 holds the whole tree (u8), 28 exit constants A, B, M, M_host (4 × u32), 30 funding deadline in blocks. A host's abandoned status adds 32 the spend-back, 34 its fee (u64), 36 its level (u8), 38 the input index (u32) |
+| `funding_status` 0x00030006 | 2 scope, 4 txid, 6 state (u8: 1 acked, 2 awaiting confirmation, 3 broadcast, 4 live, 5 abandoned, 6 dead, 7 failed, 8 live late), 8 tip at the decision (u32), 10 deadline (u32: the host's abandon height; the member's ack tip + its funding deadline). The member's first write adds 12 the funding transaction, 14 vout, 16 amount, 18 script, 20 ack tip, 22 end height, 24 own depth (u8), 26 holds the whole tree (u8), 28 exit constants A, B, M, M_host (4 Ã— u32), 30 funding deadline in blocks. A host's abandoned status adds 32 the spend-back, 34 its fee (u64), 36 its level (u8), 38 the input index (u32) |
 
 - A status is saved at each decision, not at each confirmation. The chain facts are memory only; the watches report them again at start (node.h rule 4).
 - **The member's first status is the anchored-batch write** of journal.md (it changes the watch bundle), saved in the member's outcome bracket with `round_completed`. It carries everything C11 and C4(d) need, so the engine reads **its own area only**: it does not parse the signing engine's records, which P4.3 is changing. composite-node.md 7.3 listed Round records as read by funding; this is the simpler choice, for the reviews to confirm.
@@ -62,9 +62,9 @@ Fields are TLV streams, every type even (journal.md open point 3, settled for th
 | Factories followed | 16 | Host: an open plan per slot, and fundings in flight. Member: creations awaiting funding; past 16, the oldest Abandoned stops being followed; with none abandoned, the new one is followed to its deadline only and then reported Abandoned (never live: the safe side) |
 | Ended factories remembered | 64 | `GZ_NODE_MAX_TOMBSTONES` |
 | Inputs a member watches | the first 2 | See 5 |
-| **Watch budget (T-P45-1)** | 48 = 16 × (1 + 2) | Host 2 per factory (txid, input 0, which also shows the spend-back); member 1 + 2. Counted as distinct keys: a watch two factories share (H11's input 0) counts once and is given back only when the last one ends |
+| **Watch budget (T-P45-1)** | 48 = 16 Ã— (1 + 2) | Host 2 per factory (txid, input 0, which also shows the spend-back); member 1 + 2. Counted as distinct keys: a watch two factories share (H11's input 0) counts once and is given back only when the last one ends |
 | Timers | 1 | The tick, id 0x46540001 |
-| Worst step | 12 actions, 2 × 21,393 + 16 KiB bytes | One save (the signed funding and its status), one broadcast, its watches, a notice, the tick |
+| Worst step | 12 actions, 2 Ã— 21,393 + 16 KiB bytes | One save (the signed funding and its status), one broadcast, its watches, a notice, the tick |
 
 ## 5. Decisions for the reviews
 
