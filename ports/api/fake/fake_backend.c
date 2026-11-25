@@ -1536,6 +1536,12 @@ static int call_inner(void *be, const gz_api_call *c, gz_jw *w, gz_api_error *er
         const gz_json *cond = gz_json_get(b, "conditions");
         int n = examine(f, cond, names, err);
         if (n < 0) { status = strcmp(err->code, "below_floor") == 0 ? 409 : 400; break; }
+        if (c->id == GZ_API_C_CONDITIONS_PREVIEW) f->previews++;
+        if (n > 0 && n < 12 && f->loosen_extra_after && f->previews >= f->loosen_extra_after) {
+            int have = 0;
+            for (i = 0; i < n; i++) have |= strcmp(names[i], "max_fee_ppm") == 0;
+            if (!have) names[n++] = "max_fee_ppm";
+        }
         if (c->id == GZ_API_C_CONDITIONS_PREVIEW) {
             int64_t fee = jint(cond, "max_joining_fee_sat", f->cond_max_joining_fee_sat);
             gz_jw_obj(w);

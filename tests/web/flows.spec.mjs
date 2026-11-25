@@ -236,6 +236,27 @@ test('conditions: the live fit line, tightening leaves a lobby, loosening asks f
   await expect(page.locator('#review [data-code="paused"]')).toBeVisible();
 });
 
+test('conditions: a loosening whose list changed at saving is shown again, and only the shown list is sent', async ({ page }, info) => {
+  // the fake's second preview on loosens max_fee_ppm too (gz-api-fake --loosen-extra-after 2):
+  // the save-time preview then differs from the one on screen (local-api.md 13.2)
+  await start(info, ['--loosen-extra-after', '2']);
+  await signIn(page, fake);
+  await page.goto(fake.url + '#/conditions');
+  const puts = [];
+  page.on('request', (r) => { if (r.method() === 'PUT' && r.url().endsWith('/api/v1/conditions')) puts.push(JSON.parse(r.postData())); });
+  await page.getByLabel('Joining fee, at most').fill('5000');
+  await expect(page.locator('#cond-warn')).toContainText('This loosens: joining fee, at most.');    // on screen
+  await page.locator('#save-conditions').click();
+  const loosen = page.locator('dialog').filter({ has: page.locator('#loosen-confirm') });
+  await expect(loosen).toContainText('What this saves loosens has changed');
+  await expect(loosen).toContainText('This loosens: joining fee, at most, payment fee, share, at most.');
+  expect(puts).toHaveLength(0);                                                                 // nothing sent before the person says yes
+  await loosen.getByRole('button', { name: 'Loosen and save' }).click();
+  await expect(page.locator('#toasts')).toContainText('Saved');
+  expect(puts).toHaveLength(1);
+  expect(puts[0].confirm_loosens).toEqual(['max_joining_fee_sat', 'max_fee_ppm']);                 // exactly the list shown
+});
+
 test('host a lobby: terms with a live preview, open with the passphrase, seats, a member seen to refuse, start, funding by itself, live', async ({ page }, info) => {
   await start(info);
   await signIn(page, fake);

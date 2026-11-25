@@ -127,7 +127,7 @@ int main(int argc, char **argv)
     gz_api_config cfg;
     gz_fake fake;
     const char *err = NULL;
-    int i, locked = 0, quiet = 0, fresh = 0, story = 0, auto_ms = 0, rc;
+    int i, locked = 0, quiet = 0, fresh = 0, story = 0, auto_ms = 0, rc, loosen_extra = 0;
     pthread_t script, ticker;
     struct sigaction sa;
     memset(&cfg, 0, sizeof cfg);
@@ -141,13 +141,15 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "--no-ipv6") == 0) cfg.no_ipv6 = 1;
         else if (strcmp(argv[i], "--quiet") == 0) quiet = 1;
         else if (strcmp(argv[i], "--story") == 0) story = 1;
+        else if (strcmp(argv[i], "--loosen-extra-after") == 0 && i + 1 < argc) loosen_extra = atoi(argv[++i]);
         else if (strcmp(argv[i], "--auto-ms") == 0 && i + 1 < argc) auto_ms = atoi(argv[++i]);
         else if (strcmp(argv[i], "--held-ms") == 0 && i + 1 < argc) cfg.limits.held_ms = atoi(argv[++i]);
         else if (strcmp(argv[i], "--fresh-ms") == 0 && i + 1 < argc) cfg.limits.fresh_ms = atoi(argv[++i]);
         else if (strcmp(argv[i], "--idle-ms") == 0 && i + 1 < argc) cfg.limits.idle_sign_out_ms = atoi(argv[++i]);
         else {
             fprintf(stderr, "usage: gz-api-fake --data-dir DIR [--port N] [--locked] [--fresh-attempts] [--no-ipv6] [--tunnel-port N] [--quiet]\n"
-                            "                   [--story] [--auto-ms N] [--held-ms N] [--fresh-ms N] [--idle-ms N]\n");
+                            "                   [--story] [--auto-ms N] [--held-ms N] [--fresh-ms N] [--idle-ms N]\n"
+                            "                   [--loosen-extra-after N]\n");
             return 2;
         }
     }
@@ -165,6 +167,7 @@ int main(int argc, char **argv)
         return 1;
     }
     gz_fake_init(&fake, locked ? GZ_FAKE_LOCKED : GZ_FAKE_FIRST_RUN);
+    fake.loosen_extra_after = loosen_extra;
     if (story) {
         fake.story = 1;
         fake.has_factory = 0;                           /* the story makes its own */
