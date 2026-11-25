@@ -73,6 +73,9 @@ target_compile_options(gzp_silent_peer PRIVATE ${GZ_NEW_CODE_WARNINGS})
 gz_add_test(program_store ${CMAKE_SOURCE_DIR}/tests/program/test_store.c gazpacho_program_test)
 gz_add_test(program_options ${CMAKE_SOURCE_DIR}/tests/program/test_options.c gazpacho_program_test)
 gz_add_test(program_net ${CMAKE_SOURCE_DIR}/tests/program/test_net.c gazpacho_program_test)
+# The funding engine's wallet port (wport.c): holds across a publish, change
+# only once buried, can_plan as plan does (review of PR 80, N-1).
+gz_add_test(program_wport ${CMAKE_SOURCE_DIR}/tests/program/test_wport.c gazpacho_program_test)
 # P8, the key port (docs/notes/keys.md 10): vectors, policy, the scoped table;
 # BIP 32's rare cases forced and the wipes recorded (HMAC and gzw_wipe
 # wrapped at link time); a randomized run of the interface; under valgrind;
