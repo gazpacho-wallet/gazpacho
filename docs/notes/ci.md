@@ -172,6 +172,44 @@ Locally (Linux, clang 18):
     cmake --build build-fuzz -j
     sh tools/run-fuzz.sh build-fuzz 60
 
+### signer boundary and signer mutants
+
+Neither job is yet a required check; making them required is the owner's call in the repository settings. Steps S1 and the S4 skeleton of `docs/notes/signer.md` (sections 7 and 9).
+
+`tools/check-signer-boundary.sh` lists every signing or secret-key symbol of `tools/signer-only-symbols.txt` used outside `signer/`:
+- in every file git tracks with one of the endings `.c`, `.h`, `.inc`, `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh`, `.S` and `.s` (build output is never tracked, so no folder is left out by name; a tracked `build-*/` folder is scanned);
+- with backslash-newlines spliced first, as the preprocessor does, then comments and strings blanked (a digit separator such as `1'000` is not a quote);
+- with `signer/` and `core/superscalar/` (imported, allowed by name) left out.
+
+It counts the uses per file and compares them with `tools/signer-boundary-allowed.txt`, which may only shrink. CI runs it with `--no-growth`, so a new use or a stale line fails. On a pull request it also runs `--base-allow` against the merge base's copy of the list, so a change cannot add a use together with its own allow-list line. Step S4 empties the list and switches the check to `--fail`.
+
+Some findings are **hard**: they fail in every mode, and no allow list can hold them. They all name the fixed-aux test build of the signer (decision K20) outside `signer/`:
+- `GZ_SG_VECTORS`, `gz_sgv_*` or the marker `gz_sg_vectors_build_never_ship` in code;
+- token pasting onto a `gz_sg` name;
+- an `#include` of a `signer/*.c` or `*.inc` file;
+- a computed `#include` (a macro, not a literal);
+- in a tracked `CMakeLists.txt`, `*.cmake`, `*.yml`, `*.yaml`, `*.sh`, `*.json` or `Dockerfile` (a release recipe or preset included), `GZ_SG_VECTORS` (as a substring, so `-DGZ_SG_VECTORS` counts), `gazpacho_signer_vectors`, or any `signer/*.c` path.
+
+`signer/vectors_guard.cmake` adds two more guards:
+- at configure time, it refuses any target other than `test_signer_vectors` that links that build;
+- the CTest `signer_never_ship` runs `nm` on every program the build makes (test and fuzz programs excepted) and requires the marker to be absent.
+
+**The label `signer-boundary-growth`** lets a pull request grow the allow list or drop a line of the symbol list (`--base-symbols` compares `tools/signer-only-symbols.txt` with the merge base's: a symbol deleted in the same change as a new use of it is growth). Only a maintainer who reviews the signer boundary may set it, never the pull request's author, and the review must say why the new use cannot go through `signer/`. GitHub does not enforce this rule; review does.
+
+**In the merge queue** (`merge_group`), the allow list is compared with the queue's `base_sha`. The label is read through the API from the pull request named in the queue's head ref (`gh-readonly-queue/<branch>/pr-<number>-<sha>`), because the queue event carries no labels; the job has `pull-requests: read` for that. If the ref does not parse or the lookup fails, the queue fails closed: the list may not grow. A pull request that must grow the list and cannot pass the queue merges outside it, after a maintainer of the signer boundary has reviewed it.
+
+`tools/check-tags.py` fails on a `gazpacho/` string in code that `spec/PROTOCOL.md` 8.2 does not register. It runs with `--report` while main still has unregistered strings.
+
+The job fails on:
+- the tools' own tests (`tests/tools/test_check_signer_boundary.py`, `tests/tools/test_check_tags.py`);
+- `tools/signer-vectors.py --check`, the signer's vectors recomputed in pure Python.
+
+`signer mutants` runs `tools/mutate-signer.py` over `signer/tests/mutants.txt`: one mutant per check of the signer and of the two tools. A test must kill each one, or a line `# equivalent NAME: why` must triage it.
+
+The signer's constant-time test, `signer_ctime`, runs in the first valgrind shard, with `storage_ctime` and `signing_ctime`.
+
+Locally: `sh tools/check-signer-boundary.sh`, `python3 -I tools/check-tags.py`.
+
 ## What the second compiler changed in the symbol checks
 
 The first clang runs failed two existing tests on `main`, not because the code changed but because the checks only knew gcc's output:
