@@ -174,7 +174,7 @@ Locally (Linux, clang 18):
 
 ### constant time (Debug build)
 
-Not required. The constant-time tests (`signing_ctime`, `signer_ctime`, and `program_keys_ct` once the program's key layer lands) run under memcheck in a Debug build, with no optimisation. Every other job optimises, and optimisation can turn a branch on a secret into straight-line code, so a Release run can pass where the code is not constant time: unoptimised, `a && b` on two secret-dependent results is a branch. Locally: `cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug`, build, then `ctest --test-dir build-debug -R '^(signing_ctime|signer_ctime|program_keys_ct)$'`.
+Not required. The constant-time tests (`signing_ctime` and `signer_ctime`; `program_keys_ct` is added to the list when the program's key layer, #53, merges) run under memcheck in a Debug build, with no optimisation. Every other job optimises, and optimisation can turn a branch on a secret into straight-line code, so a Release run can pass where the code is not constant time: unoptimised, `a && b` on two secret-dependent results is a branch. The job first checks that each expected test is registered exactly once (`ctest -N -R "^name$"`), so a test that silently stopped being registered fails it. Locally: `cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug`, build, then `ctest --test-dir build-debug -R '^(signing_ctime|signer_ctime|program_keys_ct)$'`.
 
 ### signer boundary and signer mutants
 
@@ -229,3 +229,4 @@ The negative tests of both checks (the sneaky object, the five bad libraries) st
 - **A pull request with merge conflicts gets no run.** GitHub runs `pull_request` workflows on the merge of the branch into its base; while the pull request conflicts there is no merge to test, and no run starts, however many commits are pushed. Rebase on `main` to get a result.
 - **Pushes to other branches do not run CI** on their own (the `push` trigger is `main` only); a branch is tested through its pull request.
 - **No Windows or macOS build**, no 32-bit build, no regtest node, no reproducible-build check, no mutation testing (the storage layer's runner, `tools/mutate-storage.py`, runs on the build server; its results are in `docs/notes/storage-crypto.md`).
+- **No job runs the node's mutants.** `tests/node/mutants.txt` (`tools/mutate-node.py`) runs only by hand, so a node mutant that survives, or stops applying after an edit, is seen only when someone runs it. Only `signer/tests/mutants.txt` has a CI job (`signer mutants`). Follow-up: a sharded node-mutants job, as for the signer (review of PR 87).
