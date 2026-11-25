@@ -172,6 +172,10 @@ Locally (Linux, clang 18):
     cmake --build build-fuzz -j
     sh tools/run-fuzz.sh build-fuzz 60
 
+### constant time (Debug build)
+
+Not required. The constant-time tests (`signing_ctime`, `signer_ctime`, and `program_keys_ct` once the program's key layer lands) run under memcheck in a Debug build, with no optimisation. Every other job optimises, and optimisation can turn a branch on a secret into straight-line code, so a Release run can pass where the code is not constant time: unoptimised, `a && b` on two secret-dependent results is a branch. Locally: `cmake -B build-debug -DCMAKE_BUILD_TYPE=Debug`, build, then `ctest --test-dir build-debug -R '^(signing_ctime|signer_ctime|program_keys_ct)$'`.
+
 ### signer boundary and signer mutants
 
 Neither job is yet a required check; making them required is the owner's call in the repository settings. Steps S1 and the S4 skeleton of `docs/notes/signer.md` (sections 7 and 9).
