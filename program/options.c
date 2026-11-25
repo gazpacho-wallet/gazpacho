@@ -154,6 +154,8 @@ void gzp_usage(void)
         "  --test-reveal-check           after the unlock: reveal and words check (statuses only)\n"
         "  --test-seed-check             seed() locked, unlocked and with a storage fault (results only)\n"
         "  --test-check-forged           CHECK against a key file forged with this wallet's ids\n"
+        "  --test-plan-once SAT          host: one plan of SAT to the first address, printed, then stop\n"
+        "  --test-cut-after-mark         a power cut once a change mark is kept\n"
         "  --test-kill-at K              SIGKILL before the K-th storage write, sync or rename\n"
         "  --test-power-cut-at K         the same, what a power cut loses dropped first\n"
         "  --test-append-batch HEX       save one batch of records (type, length, bytes ...), then stop\n"
@@ -258,6 +260,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-reveal-check")) { o->test_reveal_check = 1; takes = 0; }
         else if (!strcmp(a, "--test-seed-check")) { o->test_seed_check = 1; takes = 0; }
         else if (!strcmp(a, "--test-check-forged")) { o->test_check_forged = 1; takes = 0; }
+        else if (!strcmp(a, "--test-cut-after-mark")) { o->test_cut_after_mark = 1; takes = 0; }
         else if (!strcmp(a, "--test-commands")) { o->test_commands = 1; takes = 0; }
         else if (!strcmp(a, "--test-exit-after-send")) { o->test_exit_after_send = 1; takes = 0; }
 #endif
@@ -307,6 +310,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--tip")) { ok = num(val, 1, 499999999, &v); o->tip = (int)v; }
 #ifdef GZP_TEST_BUILD
         else if (!strcmp(a, "--test-sign-tick-ms")) { ok = num(val, 1, 60000, &v); o->test_sign_tick_ms = (int)v; }
+        else if (!strcmp(a, "--test-plan-once")) { ok = num(val, 1, 100000000, &v); o->test_plan_once = (int)v; }
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
         else if (!strcmp(a, "--test-crash-at-ping")) { ok = num(val, 1, 1000000, &v); o->test_crash_at_ping = (int)v; }

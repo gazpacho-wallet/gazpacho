@@ -892,12 +892,13 @@ static void test_unconfirmed_change_counts(void)
 /* A change mark kept in memory, as the sealed file keeps it across restarts. */
 typedef struct {
     uint32_t v;
-    int fail, saves;
+    int fail, saves, wide;
 } mark_store;
 
-static int ms_load(void *ctx, uint32_t *mark)
+static int ms_load(void *ctx, uint32_t *mark, int *wide)
 {
     *mark = ((mark_store *)ctx)->v;
+    *wide = ((mark_store *)ctx)->wide;
     return 0;
 }
 

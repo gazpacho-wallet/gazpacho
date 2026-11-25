@@ -42,12 +42,15 @@
 #define GZP_WPORT_PLANS 8
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
 #define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
+#define GZP_WPORT_CHANGE_WIDE 1000     /* a wide scan reads the change chain at least this far */
 
 /* The change mark (M-3, review of PR 91): the lowest change index never handed
- * out, kept where a restart finds it. load gives it (0 when none was saved);
- * save keeps a new one durably, before the index below it is used. 0, or -1. */
+ * out, kept where a restart finds it. load gives it (0 when none was saved)
+ * and whether the scan must read the change chain wide (the mark is missing
+ * or the wallet was restored, so it may be behind); save keeps a new one
+ * durably, before the index below it is used. 0, or -1. */
 typedef struct {
-    int (*load)(void *ctx, uint32_t *mark);
+    int (*load)(void *ctx, uint32_t *mark, int *wide);
     int (*save)(void *ctx, uint32_t mark);
     void *ctx;
 } gzp_wport_marks_t;
@@ -88,6 +91,9 @@ typedef struct {
     gzp_wport_coins_t coin_list;  /* the coin list's state, under mu */
     gzp_wport_marks_t marks;      /* where the change mark is kept, or none */
     uint32_t mark;                /* the change mark as last loaded or saved */
+    int wide;                     /* the next scan reads the change chain wide, then saves the mark */
+    int need_marks;               /* a host's port: no plan without a kept mark */
+    uint8_t sent[GZP_WPORT_PLANS]; /* the plan was signed: its change index may be on the chain */
     uint8_t refusals[2][GZP_WPORT_GAP_MAX];   /* an address's refusals in a row, under the scan */
 } gzp_wport_t;
 
@@ -134,6 +140,8 @@ int gzp_wport_log_attempt(unsigned n);
  * the scan reads the change chain to it plus `gap`); every change index
  * handed out afterwards saves the mark first. Before the scan starts. 0, or -1. */
 int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m);
+/* A host's port: plans and spend-backs are refused until marks are set. */
+void gzp_wport_require_marks(gzp_wport_t *w);
 /* Test build, no chain: one invented coin paying the first receive address. */
 int gzp_wport_invent(gzp_wport_t *w);
 void gzp_wport_close(gzp_wport_t *w);

@@ -108,3 +108,14 @@ gz_sc_err_t gz_sc_vault_derive(const gz_sc_vault_t *v, const char *label, uint8_
     sodium_memzero(kp, sizeof kp);
     return e;
 }
+
+/* step 1: the start counter's seal */
+gz_sc_err_t gz_sc_change_mark_seal(const gz_sc_vault_t *v, uint64_t mark, uint8_t out[GZ_SC_CHANGE_MARK_LEN])
+{
+    return gz_sc_counter_seal(v, mark, out);
+}
+
+gz_sc_err_t gz_sc_change_mark_open(const gz_sc_vault_t *v, const uint8_t *d, size_t len, uint64_t *mark)
+{
+    return gz_sc_counter_open(v, d, len, mark);
+}

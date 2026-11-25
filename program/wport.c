@@ -618,13 +618,20 @@ int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap)
 int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m)
 {
     uint32_t mark = 0;
-    if (!m || !m->load || !m->save || m->load(m->ctx, &mark) != 0) return -1;
+    int wide = 0;
+    if (!m || !m->load || !m->save || m->load(m->ctx, &mark, &wide) != 0) return -1;
+    gzp_log("wallet-change-mark mark=%u wide=%d", (unsigned)mark, wide);
     pthread_mutex_lock(&w->mu);
     w->marks = *m;
     w->mark = mark;
     if (mark > w->next_change) w->next_change = mark;
     pthread_mutex_unlock(&w->mu);
     return 0;
+}
+
+void gzp_wport_require_marks(gzp_wport_t *w)
+{
+    w->need_marks = 1;   /* step 1: kept, not yet enforced */
 }
 
 int gzp_wport_invent(gzp_wport_t *w)
