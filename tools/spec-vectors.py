@@ -385,9 +385,11 @@ show("current v3", cur_out)
 # --------------------------------------------- the ready message --------------
 KIND_READY = 22
 binding = tagged_hash("gazpacho/bind", outer_digest + compressed(mem_factory_sk) + compressed(mem_contrib_sk))
-binding_sig = schnorr_sign(binding, mem_factory_sk, AUX)
+# messages.md 6.4 (BD, option c): the factory key signs no binding; the
+# contribution key's binding signature and the factory key travel in `ready`.
 binding_sig_c = schnorr_sign(binding, mem_contrib_sk, AUX)
-ready_body = tlv([(2, outer_digest), (4, u32(1)), (6, cur1_digest)])
+ready_body = tlv([(2, outer_digest), (4, u32(1)), (6, cur1_digest),
+                  (12, compressed(mem_factory_sk)), (14, binding_sig_c)])
 header = MAGIC + u16(KIND_READY) + outer_digest
 msg_hash = tagged_hash("gazpacho/msg", header + ready_body)
 ready_sig = schnorr_sign(msg_hash, mem_contrib_sk, AUX)
@@ -396,13 +398,13 @@ wire = u16(custom_type) + ready_env
 adapted = piggyback(ready_env[4:])   # the tag is dropped; TLV 0 carries the id
 print("\n== messages.md: vector M1, member 1 'ready' for T1 / T2, no ready check")
 print("binding = tagged_hash('gazpacho/bind', lobby_id||factory_key||contribution_key) =", binding.hex())
-print("bind_by_factory      =", binding_sig.hex())
 print("bind_by_contribution =", binding_sig_c.hex())
 print("signed hash = tagged_hash('gazpacho/msg', tag||kind||scope||records before 240) =", msg_hash.hex())
 show("Lightning message, native (52791, tag, kind, scope, records)", wire)
 print("\n== vector M3, the same message through the bLIP-56 adapter (same signature)")
 show("Lightning message, adapter (32800, submessage 4, TLV 0, TLV 1024)", adapted)
-assert MAGIC + adapted[2 + 2 + 34 + 4:] == ready_env
+# type, submessage, TLV 0 (34), TLV 1024's type (fd0400) and its BigSize length
+assert MAGIC + adapted[2 + 2 + 34 + 3 + len(bigsize(len(ready_env) - 4)):] == ready_env
 
 # --------------------------------------------- a part --------------------------
 inner = bytes(range(256)) * 300   # 76,800 bytes of test data as an inner body
