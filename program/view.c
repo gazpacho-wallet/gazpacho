@@ -6,6 +6,7 @@
 
 #include "gazpacho/command.h"
 #include "gazpacho/envelope.h"
+#include "gazpacho/view.h"
 #include "view.h"
 
 static int printable_id(const uint8_t *p, size_t n)
@@ -106,4 +107,91 @@ const char *gzp_view_topic(uint32_t kind)
 int gzp_view_lobby_class(uint32_t kind)
 {
     return kind == GZ_VIEW_LOBBY ? 1 : kind == GZ_VIEW_HOST_LOBBY ? 2 : 0;
+}
+
+/* ---- attention (local-api.md 11.4) ---------------------------------------- */
+
+static const char *att_code(uint8_t code)
+{
+    switch (code) {
+    case GZ_ATT_UNLOCK_TO_TAKE_PART: return "unlock_to_take_part";
+    case GZ_ATT_LOBBY_LEFT_OUT: return "lobby_left_out";
+    case GZ_ATT_MEMBER_REFUSED: return "member_refused";
+    case GZ_ATT_HOST_FUNDS_SHORT: return "host_funds_short";
+    default: return NULL;
+    }
+}
+
+/* The lobby's role: its own view says it (kind 2 joined, kind 3 hosted);
+ * without one, the codes that only one role raises. */
+static const char *att_role(const gzp_view_t *v, const char *lobby, uint8_t code)
+{
+    if (gzp_view_find(v, GZ_VIEW_HOST_LOBBY, lobby)) return "hosted";
+    if (gzp_view_find(v, GZ_VIEW_LOBBY, lobby)) return "joined";
+    if (code == GZ_ATT_MEMBER_REFUSED || code == GZ_ATT_HOST_FUNDS_SHORT) return "hosted";
+    if (code == GZ_ATT_UNLOCK_TO_TAKE_PART) return "joined";
+    return NULL;
+}
+
+typedef struct {
+    const gzp_view_obj_t *o;
+    uint64_t since;
+} att_ref_t;
+
+void gzp_view_attention(const gzp_view_t *v, gzp_attention_t *out)
+{
+    att_ref_t ref[GZP_VIEW_MAX];
+    size_t n = 0, i, j;
+    memset(out, 0, sizeof *out);
+    for (i = 0; i < v->n; i++) {
+        gz_bytes_t all = {v->obj[i].bytes, v->obj[i].len}, f;
+        if (v->obj[i].kind != GZ_VIEW_ATTENTION) continue;
+        ref[n].o = &v->obj[i];
+        ref[n].since = gz_rec_find(all, GZ_VAT_SINCE, &f) == 1 && f.len == 8 ? gz_get_u64(f.data) : 0;
+        n++;
+    }
+    for (i = 1; i < n; i++)                           /* oldest first, then by id: stable across calls */
+        for (j = i; j > 0 && (ref[j - 1].since > ref[j].since ||
+                              (ref[j - 1].since == ref[j].since && strcmp(ref[j - 1].o->id, ref[j].o->id) > 0)); j--) {
+            att_ref_t t = ref[j];
+            ref[j] = ref[j - 1];
+            ref[j - 1] = t;
+        }
+    for (i = 0; i < n; i++) {
+        gz_bytes_t all = {ref[i].o->bytes, ref[i].o->len}, f;
+        int k = out->n, w;
+        uint8_t code = gz_rec_find(all, GZ_VAT_CODE, &f) == 1 && f.len == 1 ? f.data[0] : 0;
+        const char *name = att_code(code), *role;
+        if (!name || k == GZ_API_MAX_ATTENTION || gz_rec_find(all, GZ_VAT_LOBBY, &f) != 1 || !printable_id(f.data, f.len)) {
+            out->skipped++;
+            continue;
+        }
+        memcpy(out->lobby[k], f.data, f.len);
+        out->lobby[k][f.len] = 0;
+        role = att_role(v, out->lobby[k], code);
+        if (!role) {
+            out->skipped++;
+            continue;
+        }
+        snprintf(out->id[k], sizeof out->id[k], "%s", ref[i].o->id);
+        w = snprintf(out->params[k], sizeof out->params[k], "{\"lobby_id\":\"%s\",\"lobby_role\":\"%s\"", out->lobby[k], role);
+        if (code == GZ_ATT_HOST_FUNDS_SHORT) {
+            gz_bytes_t nd, hv;
+            if (gz_rec_find(all, GZ_VAT_NEED, &nd) != 1 || nd.len != 8 || gz_rec_find(all, GZ_VAT_HAVE, &hv) != 1 || hv.len != 8) {
+                out->skipped++;
+                continue;
+            }
+            w += snprintf(out->params[k] + w, sizeof out->params[k] - (size_t)w, ",\"need_sat\":%llu,\"have_sat\":%llu",
+                          (unsigned long long)gz_get_u64(nd.data), (unsigned long long)gz_get_u64(hv.data));
+        }
+        if (code == GZ_ATT_MEMBER_REFUSED && gz_rec_find(all, GZ_VAT_COUNT, &f) == 1 && f.len == 2)
+            w += snprintf(out->params[k] + w, sizeof out->params[k] - (size_t)w, ",\"count\":%u", (unsigned)gz_get_u16(f.data));
+        snprintf(out->params[k] + w, sizeof out->params[k] - (size_t)w, "}");
+        out->item[k].id = out->id[k];
+        out->item[k].code = name;
+        out->item[k].lobby_id = out->lobby[k];
+        out->item[k].lobby_role = role;
+        out->item[k].params_json = out->params[k];
+        out->n++;
+    }
 }

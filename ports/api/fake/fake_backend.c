@@ -963,7 +963,7 @@ static void story_status(gz_fake *f, gz_api_status_facts *s)
 #define ATT(i_, c, lob, fac, pj) do { \
         s->attention[s->nattention].id = (i_); \
         s->attention[s->nattention].code = (c); \
-        s->attention[s->nattention].lobby_id = (lob); \
+        s->attention[s->nattention].lobby_id = (lob);         s->attention[s->nattention].lobby_role = (lob) ? (strcmp((lob), HOST_LOBBY_ID) == 0 ? "hosted" : "joined") : NULL; \
         s->attention[s->nattention].factory_id = (fac); \
         s->attention[s->nattention].params_json = (pj); \
         s->nattention++; \
