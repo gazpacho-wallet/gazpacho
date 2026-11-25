@@ -241,6 +241,8 @@ int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *hei
     static gzt_coin keep[GZP_WPORT_COINS];
     size_t nk = 0;
     pthread_mutex_lock(&w->mu);
+    for (size_t i = 0; i < n; i++)   /* every change coin given is a used index (N-2) */
+        if (coins[i].change == 1 && coins[i].index + 1 > w->next_change) w->next_change = coins[i].index + 1;
     for (size_t i = 0; i < n && nk < GZP_WPORT_COINS; i++) {
         /* confirmed only (review A of PR 56, M5); change once buried (B deep),
          * which a funding's change is not before it is buried (N-1) */
@@ -276,7 +278,7 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     OPENSSL_cleanse(seed, sizeof seed);
     if (!w->have_master) return -1;
     pthread_mutex_init(&w->mu, NULL);
-    w->next_change = 100;
+    w->next_change = 0;                  /* the lowest unused change index; the scan moves it past the used (N-2) */
     w->port.plan = w_plan;
     w->port.sign_plan = w_sign_plan;
     w->port.adopt = w_adopt;
@@ -384,7 +386,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
     gz_chain_tip tip;
     uint64_t total = 0;
     size_t nf = 0;
-    uint32_t next_change = 100;
+    uint32_t next_change = 0;
     int failed = 0, truncated = 0;
     const char *left_out = NULL, *left_error = NULL;   /* the first address left out, and why */
     int left_chain = -1, left_index = -1;
@@ -403,7 +405,11 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
         return 0;
     }
     for (uint32_t change = 0; change < 2 && !w->stop; change++)
-        for (uint32_t j = 0; j < w->gap && !w->stop; j++) {
+        /* receive: the first `gap` addresses; change: until `gap` unused in a
+         * row, a gap limit, since the wallet takes change indexes one after
+         * another and a fixed range would stop seeing them (N-2, review of PR 90) */
+        for (uint32_t j = 0, unused = 0;
+             !w->stop && (change == 0 ? j < w->gap : (unused < w->gap && j < GZP_WPORT_GAP_MAX)); j++) {
             gzw_bip86_output o;
             size_t n = 0;
             if (!out_of(w, change, j, &o)) {
@@ -420,6 +426,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
             uint8_t *refused = j < GZP_WPORT_GAP_MAX ? &w->refusals[change][j] : NULL;
             if (r == GZ_CHAIN_OK) {
                 if (refused) *refused = 0;
+                unused = n == 0 ? unused + 1 : 0;
             } else if (r == GZ_CHAIN_TOO_LARGE ||
                        ((r == GZ_CHAIN_REJECTED || r == GZ_CHAIN_NOT_FOUND) &&
                         (!refused || ++*refused >= GZP_WPORT_REFUSALS))) {
@@ -434,6 +441,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
                 }
                 gzp_log("wallet-coins left-out chain=%u index=%u error=%s", (unsigned)change, (unsigned)j,
                         result_name(r));
+                unused = 0;   /* an address with outputs, unread: used */
                 continue;
             } else {
                 /* could not ask (unreachable, a 5xx, a malformed answer), or a
@@ -448,8 +456,10 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
             }
             for (size_t i = 0; i < n; i++) {
                 size_t at = nf;
+                /* any output, in the mempool too, makes its change index used:
+                 * the next one goes past it, never reused (N-2) */
+                if (change == 1 && j + 1 > next_change) next_change = j + 1;
                 if (!outs[i].confirmed) continue;   /* confirmed coins only (review A of PR 56, M5) */
-                if (change == 1 && j + 100 > next_change) next_change = j + 100;   /* never reuse a change index */
                 /* what gzp_wport_publish would drop anyway (above the tip, change
                  * not yet buried) is left out before the largest are chosen, so it
                  * cannot push out coins the list keeps (third review of PR 88) */
