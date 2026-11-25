@@ -796,6 +796,99 @@ static void test_unburied_change_not_ranked(void)
     gzp_wport_close(&w);
 }
 
+/* N-2 (review of PR 90): a plan's change, confirmed, is the wallet's own coin
+ * after a restart, and the next plan takes another change index. */
+static void test_change_seen_after_restart(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin k, ch, c1;
+    uint8_t tx[GZ_FUND_MAX_TX];
+    size_t len;
+    uint64_t change_value;
+    open_w(&w);
+    w.gap = 20;
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    k = coin(&w, 0, 0, 500000, 0xf5);
+    fk_add(&f, &k, 100);
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(plan(&w, 300000, tx, &len) == 1);
+    CHECK(w.plans[0].info.has_change && w.plans[0].priv_tx.n_out == 2);
+    ch = coin(&w, 1, 0, 1, 0);
+    CHECK(memcmp(w.plans[0].priv_tx.out[1].script, ch.script, 34) == 0);   /* the lowest unused change index */
+    /* the funding confirms: its change is a coin of the wallet's, buried */
+    change_value = w.plans[0].priv_tx.out[1].value;
+    memset(&ch, 0, sizeof ch);
+    memcpy(ch.txid, w.plans[0].info.txid, 32);
+    ch.vout = 1;
+    ch.amount = change_value;
+    memcpy(ch.script, w.plans[0].priv_tx.out[1].script, 34);
+    gzp_wport_close(&w);
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 120;
+    fk_add(&f, &ch, 112);
+    /* the program starts again */
+    open_w(&w);
+    w.gap = 20;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.n_coins == 1 && w.coins[0].change == 1 && w.coins[0].index == 0 && w.coins[0].amount == change_value);
+    CHECK(plan(&w, 100000, tx, &len) == 1);
+    c1 = coin(&w, 1, 1, 1, 0);
+    CHECK(w.plans[0].info.has_change && memcmp(w.plans[0].priv_tx.out[1].script, c1.script, 34) == 0);
+    gzp_wport_close(&w);
+}
+
+/* N-2: the change chain is read until 20 unused addresses in a row (a gap
+ * limit), not a fixed 0 to 19, and next_change goes past the highest used. */
+static void test_change_gap_limit(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    open_w(&w);
+    w.gap = 20;
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    for (uint32_t j = 0; j <= 30; j += 10) {
+        gzt_coin c = coin(&w, 1, j, 10000 + j, (uint8_t)(0x80 + j));
+        fk_add(&f, &c, 100);
+    }
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.n_coins == 4);
+    CHECK(w.next_change == 31);
+    gzp_wport_close(&w);
+}
+
+/* N-2: a change output still in the mempool is not a coin, but its index is
+ * used: the next change index goes past it. */
+static void test_unconfirmed_change_counts(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    gzt_coin c;
+    open_w(&w);
+    w.gap = 20;
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;
+    c = coin(&w, 1, 5, 40000, 0x95);
+    fk_add(&f, &c, 100);
+    f.out[f.n - 1].confirmed = false;
+    f.out[f.n - 1].height = 0;
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(w.n_coins == 0);
+    CHECK(w.next_change == 6);
+    gzp_wport_close(&w);
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -828,6 +921,9 @@ int main(void)
     test_electrs_utxo_limit();
     test_too_many_short_is_exact();
     test_unburied_change_not_ranked();
+    test_change_seen_after_restart();
+    test_change_gap_limit();
+    test_unconfirmed_change_counts();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
