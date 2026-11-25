@@ -2061,7 +2061,7 @@ static void test_begin_needs_tip(void)
     for (int n = 1; n <= 3; n++) w_node(n, n, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_UNFINISHED);
     for (int n = 0; n <= 3; n++) CHECK(w_start(n) == GZ_OK);
     CHECK(N[0].n->sign_on && N[0].n->tip == 0);
-    make_terms(&t, 4, 4, 11);   /* the deadline, and so the start, within the run below */
+    make_terms(&t, 3, 3, 11);   /* three members fill it (target and minimum count members); the deadline within the run */
     CHECK(host_open(&t, 0) == 200);
     for (int n = 1; n <= 3; n++) CHECK(member_join(n, &t) == 200);
     w_run(4000, 100);
