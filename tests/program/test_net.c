@@ -144,7 +144,13 @@ int main(void)
         notkey[0] = 2;
         CHECK(gzp_net_point_ok(&n, k1) && gzp_net_point_ok(&n, k3) && !gzp_net_point_ok(&n, notkey));
         CHECK(gzp_net_sign(&n, 0, 1, msg, sig) && gzp_net_verify(&n, k1, msg, sig) && !gzp_net_verify(&n, k3, msg, sig));
-        CHECK(gzp_net_sign_host(&n, msg, sig) && gzp_net_verify(&n, n.pub, msg, sig));
+        CHECK(gzp_net_sign(&n, 0, GZP_NET_KEY_STATIC, msg, sig) && gzp_net_verify(&n, n.pub, msg, sig));
+        CHECK(gzp_net_key(&n, 0, GZP_NET_KEY_STATIC, NULL, k0) && !memcmp(k0, n.pub, 33));
+        /* No CONNECT can name the static key, nor any index of 2^31 or more. */
+        n.connect_failed = 0;
+        CHECK(gzp_net_connect(&n, host, (const uint8_t *)"127.0.0.1:9", 11, 0, GZP_NET_KEY_STATIC) == 1 &&
+              gzp_net_connect(&n, host, (const uint8_t *)"127.0.0.1:9", 11, 0, 0x80000000u) == 1 &&
+              n.connect_failed == 2 && targets(&n) == 0);
         msg[0] ^= 1;
         CHECK(!gzp_net_verify(&n, n.pub, msg, sig));
         CHECK(gzp_net_connect(&n, host, (const uint8_t *)"127.0.0.1:9", 11, 0, 1) == 0 &&

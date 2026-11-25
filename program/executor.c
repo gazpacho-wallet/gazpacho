@@ -86,7 +86,7 @@ static int port_point_ok(void *ctx, const uint8_t pub[33])
 static int port_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
 {
     gzp_exec_t *ex = ctx;
-    if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign_host(ex->net, msg, sig) : 0;
+    if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign(ex->net, 0, GZP_NET_KEY_STATIC, msg, sig) : 0;
     return gzp_net_sign(ex->net, epoch, index, msg, sig);
 }
 

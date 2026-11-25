@@ -108,8 +108,11 @@ exec-done-missing	program/executor.c	    submit(ex);\n    keys_command_done(ex, 
 exec-gate-code	program/executor.c	    code = gz_get_u16(cv.data);\n	    code = GZ_CMD_LOBBY_READY;\n
 join-window	program/keys.c	        index - 1 <= k->highest_index + 1 + 2u * (GZP_KEYS_JOIN_TRIES - 1) &&\n	
 join-window-wide	program/keys.c	index - 1 <= k->highest_index + 1 + 2u * (GZP_KEYS_JOIN_TRIES - 1) &&	index - 1 <= k->highest_index + 1 + 2u * GZP_KEYS_JOIN_TRIES &&
+net-static-connect-allowed	program/net.c	    if (key_index >= 0x80000000u) return connect_failed(n, host_key, "no-key");
+	
+net-static-key	program/net.c	if (n->single_key || index == GZP_NET_KEY_STATIC) {	if (n->single_key) {
 #
-# Triage, 2026-11-25, after the review of PR 53 (109 mutants):
+# Triage, 2026-11-25, after the review of PR 53 (111 mutants):
 #   equivalent: raw-no-zero-fail, host-no-zero-fail (the outputs are zeroed on
 #     entry, and keypair_out writes them only on success); pub-wipe (the wiped
 #     value is a public key); scope-index-range (the factory step then refuses
