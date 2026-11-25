@@ -29,15 +29,18 @@ import os
 import re
 import subprocess
 import sys
+import struct
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gzp_harness import Proc, kill_all, passphrase_file  # noqa: E402
-from lobby import World, started, state  # noqa: E402
+import lobby  # noqa: E402
+from lobby import World, parse_tlv, started, state, tlv  # noqa: E402
 import slice1  # noqa: E402
 
 check = slice1.check
 FUNDING, ACTIVE = slice1.FUNDING, slice1.ACTIVE
+CHANNEL_SAT = 10000   # each member's smallest channel: the factory fits one 0.001 coin (terms.md 3, field 30)
 SERVERS = ("https://mempool.space/signet/api", "https://blockstream.info/signet/api")
 
 
@@ -80,6 +83,15 @@ class SignetWorld(World):
         return m.group(1) if m else None
 
 
+def small_channels(t, sat):
+    """The terms with channel_sat (field 30) set to `sat`; the scope and the current record follow."""
+    t.outer = tlv(*[(k, struct.pack(">Q", sat) if k == 30 else v) for k, v in parse_tlv(t.outer)])
+    t.scope = lobby.th("gazpacho/terms/outer", t.outer)
+    t.current = tlv(*[(k, t.scope if k == 2 else v) for k, v in parse_tlv(t.current)])
+    t.tag = t.scope[:4].hex()
+    return t
+
+
 def main():
     exe, work = os.path.abspath(sys.argv[1]), os.path.abspath(sys.argv[2])
     keep = os.environ.get("GZ_SIGNET_DIR", "")
@@ -106,14 +118,18 @@ def main():
             return 77
         print("the host's coins: %s, %s sat" % (m.group(1), m.group(2)))
         # A day's lifetime (T1's own, 144 blocks, and its 36 of wind-down): the coins come back soon.
-        t = slice1.Terms(w.hkey, 1800, lifetime=144)
+        t = small_channels(slice1.Terms(w.hkey, 1800, lifetime=144), CHANNEL_SAT)
         w.open(h, t)
         check(h.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=30) is not None, "the lobby opens")
         ms = {n: w.member(n, "--member-signing", "auto") for n in ("m1", "m2", "m3")}
         check(all(started(p) for p in ms.values()), "three members start on signet")
         for p in ms.values():
             w.join(p, t)
-        check(state(h, t, "host", FUNDING, timeout=900), "the round is signed: Funding")
+        if not check(state(h, t, "host", FUNDING, timeout=900), "the round is signed: Funding"):
+            r = h.wait_for(r"wallet-plan-refused coins=(\d+) amount=(\d+)", timeout=1)
+            if r:
+                print("the host's coins cannot fund the factory: it needs %s sat" % r.group(2))
+            return check.result("program_slice1_signet", work)
         f = h.wait_for(r"broadcast-queued id=\d+ txid=([0-9a-f]{64})", timeout=300)
         check(f is not None, "the funding is broadcast")
         if f:
