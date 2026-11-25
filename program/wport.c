@@ -24,7 +24,7 @@ static int take_change(gzp_wport_t *w, uint32_t *index)
 {
     uint32_t i = w->next_change;
     if (w->marks.save && i + 1 > w->mark) {
-        if (w->marks.save(w->marks.ctx, i + 1) != 0) {
+        if (w->marks.save(w->marks.ctx, i + 1, 0) != 0) {
             gzp_log("wallet-change-mark-not-kept index=%u (nothing handed out)", (unsigned)i);
             return -1;
         }
@@ -440,8 +440,6 @@ static void set_coins(gzp_wport_t *w, int state, const char *reason, int chain, 
 #define GZP_WPORT_FIRST_ASK 32
 /* A refusal repeated this many scans in a row leaves the address out. */
 #define GZP_WPORT_REFUSALS 3
-/* The most change addresses a scan reads. */
-#define GZP_WPORT_CHANGE_MAX 4096
 
 int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
 {
@@ -577,7 +575,7 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
         /* read wide (no mark, or a restore): the mark goes past what was
          * found, so the next start reads that far without reading wide */
         uint32_t m = w->next_change > w->mark ? w->next_change : w->mark;
-        if (w->marks.save(w->marks.ctx, m) == 0) {
+        if (w->marks.save(w->marks.ctx, m, 0) == 0) {
             w->mark = m;
             w->wide = 0;
         } else {

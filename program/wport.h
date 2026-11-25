@@ -43,6 +43,7 @@
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
 #define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
 #define GZP_WPORT_CHANGE_WIDE 1000     /* a wide scan reads the change chain at least this far */
+#define GZP_WPORT_CHANGE_MAX 4096      /* the most change addresses a scan reads */
 
 /* The change mark (M-3, review of PR 91): the lowest change index never handed
  * out, kept where a restart finds it. load gives it (0 when none was saved)
@@ -51,7 +52,7 @@
  * durably, before the index below it is used. 0, or -1. */
 typedef struct {
     int (*load)(void *ctx, uint32_t *mark, int *wide);
-    int (*save)(void *ctx, uint32_t mark);
+    int (*save)(void *ctx, uint32_t mark, int wide);
     void *ctx;
 } gzp_wport_marks_t;
 
@@ -63,6 +64,7 @@ typedef struct {
     int chain, index;         /* the address, for lookup, address_too_large, address_refused; -1 otherwise */
     const char *error;        /* the chain port's answer for it (unreachable, malformed, ...), or NULL */
     unsigned attempts;        /* scans made so far */
+    const char *change_mark;  /* kept, reading (a wide read pending) or not_opened; NULL: not shown */
 } gzp_wport_coins_t;
 
 typedef struct {

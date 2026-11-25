@@ -96,4 +96,12 @@ bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH
  * (in a block, in its mempool, or its outputs already exist). */
 bool gz_es_reason_is_already_known(const char *reason);
 
+/* The body of GET /scripthash/{hash}: exactly "scripthash" (this script's
+ * hash, lowercase hex, not reversed), "chain_stats" and "mempool_stats", each
+ * with exactly funded_txo_count, funded_txo_sum, spent_txo_count,
+ * spent_txo_sum and tx_count, integers that agree (a transaction count needs
+ * an output funded or spent; in blocks no more spent than funded). */
+bool gz_es_parse_script_stats(const char *s, size_t len, const uint8_t script_hash[GZ_HASH_LEN],
+                              gz_script_history *out);
+
 #endif /* GAZPACHO_CHAIN_ESPLORA_PARSE_H */

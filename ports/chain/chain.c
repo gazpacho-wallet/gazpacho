@@ -415,6 +415,15 @@ gz_chain_result gz_chain_script_outputs(const gz_chain *c, const uint8_t *script
   return r;
 }
 
+gz_chain_result gz_chain_script_history(const gz_chain *c, const uint8_t *script, size_t script_len,
+                                        gz_script_history *out) {
+  if (out != NULL) memset(out, 0, sizeof *out);
+  if (!usable(c) || script == NULL || script_len == 0 || script_len > GZ_SCRIPT_MAX_LEN || out == NULL)
+    return GZ_CHAIN_INVALID_ARG;
+  if (c->ops->script_history == NULL) return GZ_CHAIN_INVALID_ARG;
+  return c->ops->script_history(c->ctx, script, script_len, out);
+}
+
 gz_chain_result gz_chain_outspend(const gz_chain *c, const uint8_t txid[GZ_HASH_LEN],
                                   uint32_t vout, gz_outspend *out) {
   if (!usable(c) || txid == NULL || out == NULL) return GZ_CHAIN_INVALID_ARG;

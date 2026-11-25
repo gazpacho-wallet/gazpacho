@@ -87,9 +87,9 @@ static int change_mark_load(void *ctx, uint32_t *mark, int *wide) { return gzp_w
 #ifdef GZP_TEST_BUILD
 static int test_cut_after_mark; /* --test-cut-after-mark */
 #endif
-static int change_mark_save(void *ctx, uint32_t mark)
+static int change_mark_save(void *ctx, uint32_t mark, int wide)
 {
-    int r = gzp_wallet_change_mark_write(ctx, mark);
+    int r = gzp_wallet_change_mark_write(ctx, mark, wide);
 #ifdef GZP_TEST_BUILD
     /* a power cut once the mark is kept, before its index is used (follow-up
      * of the review of PR 91): what a disk keeps is put back, then SIGKILL */

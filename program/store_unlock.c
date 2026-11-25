@@ -774,7 +774,7 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
          * the change chain wide. A restore from the words reads it wide. If
          * this write fails the next start reads wide: slower, never blind. */
         w->change_wide = k->op == GZP_UNLOCK_OP_RESTORE || w->u.restore;
-        if (k->op == GZP_UNLOCK_OP_CREATE && gzp_wallet_change_mark_write(w, 0) != 0)
+        if (k->op == GZP_UNLOCK_OP_CREATE && gzp_wallet_change_mark_write(w, 0, 0) != 0)
             gzp_log("wallet-change-mark-not-kept at set-up (the first start reads the change chain wide)");
         if (open_storage(w, r) != GZP_UNLOCK_OK) gzp_wallet_lock(w);
         goto out;
@@ -927,19 +927,22 @@ int gzp_wallet_change_mark_read(gzp_wallet_t *w, uint32_t *mark, int *wide)
         return 0;
     }
     if (e != GZ_SC_OK) return -1;
-    e = gz_sc_change_mark_open(u->vault, data, len, &v);
+    {
+        int flag = 0;
+        e = gz_sc_change_mark_open(u->vault, data, len, &v, &flag);
+    }
     free(data);
     if (e != GZ_SC_OK || v > UINT32_MAX) return -1;
     *mark = (uint32_t)v;
     return 0;
 }
 
-int gzp_wallet_change_mark_write(gzp_wallet_t *w, uint32_t mark)
+int gzp_wallet_change_mark_write(gzp_wallet_t *w, uint32_t mark, int wide)
 {
     const gz_sc_store_t *s = gzp_wallet_sc_store(w);
     gz_sc_unlocked_t *u = gzp_wallet_sc_unlocked(w);
     uint8_t out[GZ_SC_CHANGE_MARK_LEN];
-    if (!s || !u || !u->vault || gz_sc_change_mark_seal(u->vault, mark, out) != GZ_SC_OK) return -1;
+    if (!s || !u || !u->vault || gz_sc_change_mark_seal(u->vault, mark, wide, out) != GZ_SC_OK) return -1;
     /* DONE_WITH_FAULT: the folder sync failed and a power cut may bring the
      * old mark back, so it is not kept, and the index is not handed out */
     return gz_sc_fs_replace(s, GZP_CHANGE_MARK_FILE, out, sizeof out) == GZ_SC_OK ? 0 : -1;

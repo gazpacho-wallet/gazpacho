@@ -234,6 +234,15 @@ done:
   return res;
 }
 
+bool gz_es_parse_script_stats(const char *s, size_t len, const uint8_t script_hash[GZ_HASH_LEN],
+                              gz_script_history *out) {
+  (void)s;
+  (void)len;
+  (void)script_hash;
+  (void)out;
+  return false; /* step 1: not read yet */
+}
+
 bool gz_es_parse_merkle_proof(const char *s, size_t len, gz_merkle_proof *out) {
   enum { F_HEIGHT = 1, F_MERKLE = 2, F_POS = 4 };
   gz_json_tok toks[GZ_MERKLE_MAX_DEPTH + 16];

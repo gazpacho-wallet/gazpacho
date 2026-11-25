@@ -509,14 +509,15 @@ static void e5_to_e9m(void)
     {
         uint8_t cm[GZ_SC_CHANGE_MARK_LEN], sb[GZ_SC_STARTS_LEN];
         uint64_t x = 0;
-        CHECK_ERR(gz_sc_change_mark_seal(v, 7, cm), GZ_SC_OK);
-        CHECK_ERR(gz_sc_change_mark_open(v, cm, sizeof cm, &x), GZ_SC_OK);
+        int wf = 0;
+        CHECK_ERR(gz_sc_change_mark_seal(v, 7, 0, cm), GZ_SC_OK);
+        CHECK_ERR(gz_sc_change_mark_open(v, cm, sizeof cm, &x, &wf), GZ_SC_OK);
         CHECK(x == 7);
         CHECK_ERR(gz_sc_counter_open(v, cm, sizeof cm, &x), GZ_SC_NOT_THIS_FORMAT);
         CHECK_ERR(gz_sc_counter_seal(v, 7, sb), GZ_SC_OK);
-        CHECK_ERR(gz_sc_change_mark_open(v, sb, sizeof sb, &x), GZ_SC_NOT_THIS_FORMAT);
+        CHECK_ERR(gz_sc_change_mark_open(v, sb, sizeof sb, &x, &wf), GZ_SC_NOT_THIS_FORMAT);
         memcpy(sb, cm, 9);   /* the change mark's magic and format on a start counter */
-        CHECK_ERR(gz_sc_change_mark_open(v, sb, sizeof sb, &x), GZ_SC_DAMAGED);
+        CHECK_ERR(gz_sc_change_mark_open(v, sb, sizeof sb, &x, &wf), GZ_SC_DAMAGED);
     }
 
     /* E9m: the mark file. */

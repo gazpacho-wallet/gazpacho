@@ -893,6 +893,7 @@ static void test_unconfirmed_change_counts(void)
 typedef struct {
     uint32_t v;
     int fail, saves, wide;
+    int wv, cleared;   /* the last save's wide flag; saves with it 0 */
 } mark_store;
 
 static int ms_load(void *ctx, uint32_t *mark, int *wide)
@@ -902,11 +903,13 @@ static int ms_load(void *ctx, uint32_t *mark, int *wide)
     return 0;
 }
 
-static int ms_save(void *ctx, uint32_t mark)
+static int ms_save(void *ctx, uint32_t mark, int wide)
 {
     mark_store *s = ctx;
     if (s->fail) return -1;
     s->v = mark;
+    s->wv = wide;
+    if (!wide) s->cleared++;
     s->saves++;
     return 0;
 }

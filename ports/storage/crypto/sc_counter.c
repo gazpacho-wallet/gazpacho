@@ -122,8 +122,10 @@ static gz_sc_err_t mark_keys(const gz_sc_vault_t *v, sc_keypair_t *km)
     return e;
 }
 
-gz_sc_err_t gz_sc_change_mark_seal(const gz_sc_vault_t *v, uint64_t mark, uint8_t out[GZ_SC_CHANGE_MARK_LEN])
+gz_sc_err_t gz_sc_change_mark_seal(const gz_sc_vault_t *v, uint64_t mark, int wide,
+                                   uint8_t out[GZ_SC_CHANGE_MARK_LEN])
 {
+    (void)wide; /* step 1: not kept */
     uint8_t c[8];
     sc_keypair_t km;
     gz_sc_err_t e = mark_keys(v, &km);
@@ -138,8 +140,10 @@ gz_sc_err_t gz_sc_change_mark_seal(const gz_sc_vault_t *v, uint64_t mark, uint8_
     return e;
 }
 
-gz_sc_err_t gz_sc_change_mark_open(const gz_sc_vault_t *v, const uint8_t *d, size_t len, uint64_t *mark)
+gz_sc_err_t gz_sc_change_mark_open(const gz_sc_vault_t *v, const uint8_t *d, size_t len, uint64_t *mark,
+                                   int *wide)
 {
+    *wide = 0; /* step 1: not kept */
     uint8_t c[8];
     sc_keypair_t km;
     if (len != GZ_SC_CHANGE_MARK_LEN || memcmp(d, CM_MAGIC, 8) != 0 || d[8] != 1)

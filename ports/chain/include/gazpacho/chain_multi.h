@@ -167,7 +167,8 @@ typedef enum gz_chain_call {
   GZ_CALL_RAW_TX,
   GZ_CALL_MERKLE_PROOF,
   GZ_CALL_BROADCAST,
-  GZ_CALL_FEE_ESTIMATES
+  GZ_CALL_FEE_ESTIMATES,
+  GZ_CALL_SCRIPT_HISTORY
 } gz_chain_call;
 
 /* One server's reply to the last call. The union member matching the call is
@@ -194,6 +195,7 @@ typedef struct gz_multi_answer {
     gz_merkle_proof proof;
     gz_broadcast_result broadcast;
     gz_fee_estimates fees;
+    gz_script_history history;
   } u;
 } gz_multi_answer;
 
