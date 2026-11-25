@@ -1498,7 +1498,7 @@ static void test_left_out(void)
     {   /* and its attention item, emitted at the start (P6a) */
         char aid[80];
         const char *id = gz_api_local_id(N[1].n, t[0].scope);
-        snprintf(aid, sizeof aid, "att_%s", id ? id : "");
+        snprintf(aid, sizeof aid, "att_%s", id ? id + 4 : "");
         CHECK(id && vf8(view_of(1, GZ_VIEW_ATTENTION, aid), GZ_VAT_CODE) == GZ_ATT_LOBBY_LEFT_OUT);
     }
     CHECK(member_join(1, &t[0]) == 503 && scope_cmd(1, GZ_CMD_LOBBY_READY, &t[0], 0) == 503);
@@ -1757,7 +1757,7 @@ static void test_view_seats(void)
     w = view_of(1, GZ_VIEW_LOBBY, lid(1, &t));
     CHECK(w && vf8(w, GZ_VLB_SEAT) == GZ_VSEAT_JOINED && vf(w, GZ_VLB_LOCKED_SINCE, &v) && vf(w, GZ_VLB_GATE, &v) &&
           v.data[0] == GZ_GATE_PER_LOBBY && v.data[1] == 0 && vf8(w, GZ_VLB_DOING) == GZ_DOING_IN_LOBBY_NOT_COUNTED);
-    snprintf(aid, sizeof aid, "att_%s", lid(1, &t));
+    snprintf(aid, sizeof aid, "att_%s", lid(1, &t) + 4);
     w = view_of(1, GZ_VIEW_ATTENTION, aid);
     CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_UNLOCK_TO_TAKE_PART);
     w = view_of(0, GZ_VIEW_HOST_LOBBY, lid(0, &t));
@@ -1779,7 +1779,7 @@ static void test_view_seats(void)
     CHECK(v.len == 2 * GZ_VHL_SEAT_LEN && v.data[GZ_VHL_SEAT_LEN + 33] == GZ_VSEAT_REFUSED &&
           (v.data[GZ_VHL_SEAT_LEN + 34] & GZ_VHL_F_REFUSED) && gz_get_u16(v.data + GZ_VHL_SEAT_LEN + 35) == 1 &&
           v.data[GZ_VHL_SEAT_LEN + 37] == GZ_STAGE_OPEN);
-    snprintf(aid, sizeof aid, "att_%s", lid(0, &t));
+    snprintf(aid, sizeof aid, "att_%s", lid(0, &t) + 4);
     w = view_of(0, GZ_VIEW_ATTENTION, aid);
     CHECK(w && !w->gone && vf8(w, GZ_VAT_CODE) == GZ_ATT_MEMBER_REFUSED);
     no_errors(2);
@@ -1850,8 +1850,13 @@ static void test_api_pause_and_signing(void)
     CHECK(w_restart(1) == GZ_OK && member_join(1, &u) == 409);
     CHECK(vf(view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID), GZ_VST_PAUSE, &v) && v.data[0] == GZ_PAUSE_ON);
     {
+        uint8_t pv[4];
         h_arg_t p0[1] = {{12, &off, 1}};
-        CHECK(w_req(1, GZ_CMD_API_PAUSE, "Rq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0, 1) == 200);
+        /* A resume names the pause's version (review of PR 75, M1): without it, 409. */
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "Rq4mT9cV2xE7nR0aW5zJ", "/api/v1/pause", 1, p0, 1) == 409);
+        gz_put_u32(pv, N[1].n->api.pause_version);
+        h_arg_t p0v[2] = {{12, &off, 1}, {14, pv, 4}};
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "Rq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0v, 2) == 200);
     }
     CHECK(member_join(1, &u) == 200);
     /* A paused host runs no ready check, even with its target ready. */
@@ -1874,8 +1879,10 @@ static void test_api_pause_and_signing(void)
         CHECK(vf8(w, GZ_VHL_STAGE) == GZ_LOBBY_CANCELLED && vf(w, GZ_VHL_END_REASON, &v) && gz_get_u16(v.data) == 2);
     }
     {
-        h_arg_t p0[1] = {{12, &off, 1}};
-        CHECK(w_req(0, GZ_CMD_API_PAUSE, "Tq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0, 1) == 200);
+        uint8_t pv[4];
+        gz_put_u32(pv, N[0].n->api.pause_version);
+        h_arg_t p0[2] = {{12, &off, 1}, {14, pv, 4}};
+        CHECK(w_req(0, GZ_CMD_API_PAUSE, "Tq4mT9cV2xE7nR0aW5zK", "/api/v1/pause", 1, p0, 2) == 200);
     }
     w_run(3000, 100);
     CHECK(host_state(&u) >= GZ_LOBBY_READY_CHECK || host_state(&u) == -1);
@@ -1979,11 +1986,13 @@ static int res_text(int n, uint64_t type, char *out, size_t cap)
     return 1;
 }
 
+/* A pause or resume as the interface sends it: with the version it read. */
 static int w_pause(int n, int on, const char *rid)
 {
-    uint8_t v = (uint8_t)on;
-    h_arg_t a[1] = {{12, &v, 1}};
-    return w_req(n, GZ_CMD_API_PAUSE, rid, "/api/v1/pause", 1, a, 1);
+    uint8_t v = (uint8_t)on, pv[4];
+    gz_put_u32(pv, N[n].n->api.pause_version);
+    h_arg_t a[2] = {{12, &v, 1}, {14, pv, 4}};
+    return w_req(n, GZ_CMD_API_PAUSE, rid, "/api/v1/pause", 1, a, 2);
 }
 
 /* The member's running stand-in round in lobby t, or NULL. */
@@ -2124,7 +2133,8 @@ static void test_pause_rows(void)
         uint64_t since = N[1].n->api.pause_since;
         CHECK(since != 0 && w_restart(1) == GZ_OK);
         w = view_of(1, GZ_VIEW_STATUS, GZ_VIEW_STATUS_ID);
-        CHECK(vf(w, GZ_VST_PAUSE, &v) && v.len == 9 && v.data[0] == GZ_PAUSE_ON && gz_get_u64(v.data + 1) == since);
+        CHECK(vf(w, GZ_VST_PAUSE, &v) && v.len == 13 && v.data[0] == GZ_PAUSE_ON && gz_get_u64(v.data + 1) == since &&
+              gz_get_u32(v.data + 9) == N[1].n->api.pause_version && N[1].n->api.pause_version == 1);
         CHECK(slot(1, &t) != NULL && member_round(1, &t) == GZ_LOBBY_FUNDING); /* Awaiting funding: unchanged */
     }
     no_errors(3);
@@ -2173,12 +2183,14 @@ static void test_pause_rows(void)
     w_run(2000, 100);
     CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 1);
     {
-        uint8_t rec[16];
+        uint8_t rec[24];
         size_t at = 0;
-        uint8_t on = GZ_PAUSE_ON, since[8];
+        uint8_t on = GZ_PAUSE_ON, since[8], ver[4];
         gz_put_u64(since, NOW);
+        gz_put_u32(ver, 1);
         gz_rec_put(rec, sizeof rec, &at, 2, &on, 1);
         gz_rec_put(rec, sizeof rec, &at, 4, since, 8);
+        gz_rec_put(rec, sizeof rec, &at, 8, ver, 4);
         h_add_batch(&N[1], N[1].incarnation, ++N[1].seq, GZ_RECORD_PAUSE, rec, at);
     }
     mark = NSENT;
@@ -2201,41 +2213,276 @@ static void test_pause_rows(void)
     w_free(1);
 }
 
-/* Request ids are kept by the 30-day rule (M1): a live object's never goes;
- * a table full of kept ids answers 503 and does nothing; a 31 days old id of
- * an ended object makes room. */
+/* Request ids are kept by 7.4 without ever blocking the wallet (review A of
+ * PR 55, M1 and N1):
+ * - the reviewer's RV4, 600 API requests in a row: none is refused, and
+ *   the ring keeps the newest of the ids with no object;
+ * - a lobby whose share is full refuses only its own next call; a leave, which
+ *   protects the member's funds, still goes, and other lobbies are untouched;
+ * - a live lobby's id is never dropped, and stays a replay;
+ * - the 30 days run on a clock that a wall clock set back cannot stretch. */
 static void test_api_request_keep(void)
+{
+    terms_t t, u, v;
+    char rid[40], q[64];
+    size_t nb;
+    uint8_t l = 0;
+    lt_key_t hk;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 1500);
+    make_terms(&u, 3, 3, 1501);
+    make_terms(&v, 3, 3, 1502);
+    h_arg_t a[3] = {{12, t.outer, t.on}, {14, t.current, t.cn}, {16, &l, 1}};
+    char oid[GZ_LOCAL_ID_MAX + 1];
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200);
+    CHECK(host_open(&u, 0) == 200);
+    snprintf(oid, sizeof oid, "%s", lid(0, &t));
+    /* RV4: 600 requests with a digest, none refused. */
+    for (int k = 0; k < 600; k++) {
+        snprintf(rid, sizeof rid, "KeepFill%010d", k);
+        CHECK(w_pause(0, (k & 1) == 0, rid) == 200);
+    }
+    CHECK(N[0].n->api.pause == GZ_PAUSE_OFF);
+    nb = N[0].n_batches;
+    CHECK(w_pause(0, 0, "KeepFill0000000599") == 200 && N[0].n_batches == nb);   /* the newest: a replay */
+    CHECK(res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
+    CHECK(gz_api_req_kept(N[0].n, "KeepFill0000000000") == 0);                   /* the ring's oldest went */
+    CHECK(gz_api_req_kept(N[0].n, "KeepFill0000000590") == 1 && gz_api_req_kept(N[0].n, "KeepFill0000000568") == 1 &&
+          gz_api_req_kept(N[0].n, "KeepFill0000000567") == 0); /* the newest GZ_API_RING (32) of them, no more */
+    /* The open of the live lobby is still kept, and a replay. */
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200 && N[0].n_batches == nb);
+    CHECK(res_text(0, GZ_RESULT_REC_OBJECT, q, sizeof q) && !strcmp(q, oid));
+    /* The member's share of lobby t: its join and 63 calls that save. */
+    {
+        h_arg_t j[3] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}};
+        h_arg_t s1[1] = {{12, t.scope, 32}};
+        CHECK(w_req(1, GZ_CMD_LOBBY_JOIN, "JoinShareLobby0001", "/api/v1/lobbies/join", 1, j, 3) == 200);
+        w_run(2000, 100);
+        CHECK(member_ready(1, &t) == 1);
+        for (int k = 0; k < GZ_API_LOBBY_SHARE - 1; k++) {
+            snprintf(rid, sizeof rid, "ShareToggle%07d", k);
+            CHECK(w_req(1, (k & 1) == 0 ? GZ_CMD_LOBBY_UNREADY : GZ_CMD_LOBBY_READY, rid, "/api/v1/lobbies/x/ready", 1,
+                        s1, 1) == 200);
+        }
+        CHECK(member_ready(1, &t) == 0);
+        nb = N[1].n_batches;
+        CHECK(w_req(1, GZ_CMD_LOBBY_READY, "ShareOneTooMany001", "/api/v1/lobbies/x/ready", 1, s1, 1) == 503 &&
+              N[1].n_batches == nb && member_ready(1, &t) == 0);
+        CHECK(res_text(1, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "node_busy"));
+        /* Another lobby's join is not touched; nor is a pause. */
+        h_arg_t j2[3] = {{12, u.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}};
+        CHECK(w_req(1, GZ_CMD_LOBBY_JOIN, "JoinOtherLobby0001", "/api/v1/lobbies/join", 1, j2, 3) == 200 && slot(1, &u));
+        CHECK(w_pause(1, 0, "PauseOffWhileFull1") == 200);
+        /* The leave protects the member: it has the reserve. */
+        CHECK(w_req(1, GZ_CMD_LOBBY_LEAVE, "LeaveWhileFull0001", "/api/v1/lobbies/x/leave", 1, s1, 1) == 200 &&
+              slot(1, &t) == NULL);
+    }
+    /* A wall clock set back a year does not stretch the 30 days: they run on. */
+    {
+        h_arg_t o[3] = {{12, v.outer, v.on}, {14, v.current, v.cn}, {16, &l, 1}};
+        CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenClockBack00001", "/api/v1/host/lobbies", 1, o, 3) == 200);
+        CHECK(scope_cmd(0, GZ_CMD_LOBBY_CANCEL, &v, 0) == 200 && slot(0, &v) == NULL);
+        CHECK(gz_api_req_kept(N[0].n, "OpenClockBack00001") == 1);
+        NOW -= 365ull * 24 * 3600 * 1000;
+        N[0].clock = NOW;
+        CHECK(gz_api_req_kept(N[0].n, "OpenClockBack00001") == 1);
+        NOW += 29ull * 24 * 3600 * 1000;
+        N[0].clock = NOW;
+        CHECK(gz_api_req_kept(N[0].n, "OpenClockBack00001") == 1);
+        NOW += 2ull * 24 * 3600 * 1000;
+        N[0].clock = NOW;
+        CHECK(gz_api_req_kept(N[0].n, "OpenClockBack00001") == 2);
+        NOW += 365ull * 24 * 3600 * 1000;
+    }
+    /* 31 days on, the live lobby's open is still kept, and a replay (M2). */
+    NOW += 31ull * 24 * 3600 * 1000;
+    N[0].clock = NOW;
+    CHECK(slot(0, &t) != NULL && gz_api_req_kept(N[0].n, "OpenKeptLobby00001") == 1);
+    nb = N[0].n_batches;
+    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200 && N[0].n_batches == nb);
+    CHECK(res_text(0, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
+    no_errors(1);
+    w_free(1);
+}
+
+/* A request_id record as an earlier run saved it: `object` may be "". */
+static void add_req_record(int n, const char *rid, const char *object, uint64_t created)
+{
+    uint8_t r[200], st[2], cr[8], d[32];
+    size_t at = 0;
+    memset(d, 9, 32);
+    gz_put_u16(st, 200);
+    gz_put_u64(cr, created);
+    gz_rec_put(r, sizeof r, &at, 2, (const uint8_t *)rid, strlen(rid));
+    gz_rec_put(r, sizeof r, &at, 4, (const uint8_t *)"POST", 4);
+    gz_rec_put(r, sizeof r, &at, 6, (const uint8_t *)"/api/v1/x", 9);
+    gz_rec_put(r, sizeof r, &at, 8, d, 32);
+    gz_rec_put(r, sizeof r, &at, 10, st, 2);
+    if (object[0]) gz_rec_put(r, sizeof r, &at, 12, (const uint8_t *)object, strlen(object));
+    gz_rec_put(r, sizeof r, &at, 14, cr, 8);
+    h_add_batch(&N[n], N[n].incarnation, ++N[n].seq, GZ_RECORD_REQUEST_ID, r, at);
+}
+
+/* The review of PR 75: M1, a stale resume never turns a later pause off, and
+ * M2, the guarantees N1 rests on, each tested. */
+static void test_api_request_keep_more(void)
 {
     terms_t t;
     char rid[40], q[64];
     size_t nb;
-    uint8_t l = 0;
+    lt_key_t hk;
+    whost(&hk);
     w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
-    make_terms(&t, 3, 3, 1500);
-    h_arg_t a[3] = {{12, t.outer, t.on}, {14, t.current, t.cn}, {16, &l, 1}};
-    char oid[GZ_LOCAL_ID_MAX + 1];
-    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200);
-    snprintf(oid, sizeof oid, "%s", lid(0, &t));
-    for (int k = 0; k < GZ_API_MAX_REQUESTS - 1; k++) {
-        snprintf(rid, sizeof rid, "KeepFill%010d", k);
-        CHECK(w_pause(0, (k & 1) == 0, rid) == 200);
+    /* M1: pause (A), resume (B), 40 more no-object calls, pause again (C);
+     * then B, pushed out of the ring, arrives again: 409, the pause stays on. */
+    {
+        uint8_t off = 0, pvb[4];
+        CHECK(w_pause(1, 1, "StalePauseA0000001") == 200);
+        gz_put_u32(pvb, N[1].n->api.pause_version);
+        h_arg_t b[2] = {{12, &off, 1}, {14, pvb, 4}};
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "StaleResumeB000001", "/api/v1/pause", 1, b, 2) == 200);
+        for (int k = 0; k < 40; k++) {
+            snprintf(rid, sizeof rid, "StaleToggle%07d", k);
+            CHECK(w_pause(1, (k & 1) == 0, rid) == 200);
+        }
+        CHECK(w_pause(1, 1, "StalePauseC0000001") == 200 && N[1].n->api.pause == GZ_PAUSE_ON);
+        CHECK(gz_api_req_kept(N[1].n, "StaleResumeB000001") == 0);
+        nb = N[1].n_batches;
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "StaleResumeB000001", "/api/v1/pause", 1, b, 2) == 409 &&
+              N[1].n->api.pause == GZ_PAUSE_ON && N[1].n_batches == nb);
+        CHECK(res_text(1, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "changed_elsewhere"));
+        CHECK(w_pause(1, 0, "ResumeAgain0000001") == 200 && N[1].n->api.pause == GZ_PAUSE_OFF);
+        /* A stale pause on is not refused: it only tightens. */
+        uint8_t on = 1, pv0[4];
+        gz_put_u32(pv0, 0);
+        h_arg_t s[2] = {{12, &on, 1}, {14, pv0, 4}};
+        CHECK(w_req(1, GZ_CMD_API_PAUSE, "StalePauseOn000001", "/api/v1/pause", 1, s, 2) == 200 &&
+              N[1].n->api.pause == GZ_PAUSE_ON);
+        CHECK(w_pause(1, 0, "ResumeAgain0000002") == 200 && N[1].n->api.pause == GZ_PAUSE_OFF);
     }
-    CHECK(N[0].n->api.pause == GZ_PAUSE_ON);
-    nb = N[0].n_batches;
-    CHECK(w_pause(0, 0, "KeepFillOneTooMany") == 503 && N[0].n_batches == nb && N[0].n->api.pause == GZ_PAUSE_ON);
-    CHECK(res_text(0, GZ_RESULT_REC_ERROR, q, sizeof q) && !strcmp(q, "node_busy"));
-    /* The first pause, retried, is still a replay (RV4): it does nothing. */
-    CHECK(w_pause(0, 1, "KeepFill0000000000") == 200 && N[0].n_batches == nb && N[0].n->api.pause == GZ_PAUSE_ON);
-    /* 31 days on (no timer has run: the lobby is still Open), the pauses' ids
-     * may go, the open's may not: its lobby is live. The resume applies the
-     * start rule, so the lobby, past its deadline, ends now; its id still
-     * stays, for 30 days from this end. */
-    NOW += 31ull * 24 * 3600 * 1000;
-    CHECK(slot(0, &t) != NULL);
-    CHECK(w_pause(0, 0, "KeepAfterThirtyOne") == 200 && N[0].n->api.pause == GZ_PAUSE_OFF);
-    nb = N[0].n_batches;
-    CHECK(w_req(0, GZ_CMD_LOBBY_OPEN, "OpenKeptLobby00001", "/api/v1/host/lobbies", 1, a, 3) == 200 && N[0].n_batches == nb);
-    CHECK(res_text(0, GZ_RESULT_REC_OBJECT, q, sizeof q) && !strcmp(q, oid));
+    /* The ring after a restart: the newest 32 ids with no object come back,
+     * no more (p75-ring-not-loaded). */
+    {
+        for (int k = 0; k < 40; k++) {
+            snprintf(rid, sizeof rid, "RingRestart%07d", k);
+            CHECK(w_pause(1, (k & 1) == 0, rid) == 200);
+        }
+        CHECK(w_restart(1) == GZ_OK);
+        CHECK(gz_api_req_kept(N[1].n, "RingRestart0000039") == 1 && gz_api_req_kept(N[1].n, "RingRestart0000008") == 1 &&
+              gz_api_req_kept(N[1].n, "RingRestart0000007") == 0);
+        nb = N[1].n_batches;
+        CHECK(w_pause(1, 0, "RingRestart0000039") == 200 && N[1].n_batches == nb);
+        CHECK(res_text(1, GZ_RESULT_REC_PARAMS, q, sizeof q) && !strcmp(q, "{\"replayed\":true}"));
+    }
+    /* The ended-lobby fallback (p75-ended-fallback-off): the table full of ids
+     * of lobbies ended within 30 days, a new join and its leave still go. */
+    {
+        int k = 0, refused = 0;
+        for (; k < GZ_API_MAX_REQUESTS / 2 + 1; k++) {
+            make_terms(&t, 3, 3, 20000 + (uint32_t)k);
+            h_arg_t j[3] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}};
+            h_arg_t s1[1] = {{12, t.scope, 32}};
+            snprintf(rid, sizeof rid, "FillJoin%010d", k);
+            refused += w_req(1, GZ_CMD_LOBBY_JOIN, rid, "/api/v1/lobbies/join", 1, j, 3) != 200;
+            snprintf(rid, sizeof rid, "FillLeave%09d", k);
+            refused += w_req(1, GZ_CMD_LOBBY_LEAVE, rid, "/api/v1/lobbies/x/leave", 1, s1, 1) != 200;
+        }
+        CHECK(refused == 0);
+        make_terms(&t, 3, 3, 29999);
+        h_arg_t j[3] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}};
+        h_arg_t s1[1] = {{12, t.scope, 32}};
+        CHECK(w_req(1, GZ_CMD_LOBBY_JOIN, "FillJoinTheLast001", "/api/v1/lobbies/join", 1, j, 3) == 200 && slot(1, &t));
+        CHECK(w_req(1, GZ_CMD_LOBBY_LEAVE, "FillLeaveTheLast01", "/api/v1/lobbies/x/leave", 1, s1, 1) == 200 &&
+              slot(1, &t) == NULL);
+    }
+    /* The reserve's upper bound (p75-reserve-unbounded): a live lobby with its
+     * share and reserve all kept (as an earlier run saved them) refuses its
+     * leave too; a lobby is never given more than its place in the table. */
+    {
+        char id[GZ_LOCAL_ID_MAX + 1];
+        make_terms(&t, 3, 3, 30001);
+        CHECK(member_join(1, &t) == 200 && slot(1, &t));
+        snprintf(id, sizeof id, "%s", lid(1, &t));
+        for (int k = 0; k < GZ_API_LOBBY_SHARE + GZ_API_LOBBY_RESERVE; k++) {
+            snprintf(rid, sizeof rid, "Bound%013d", k);
+            add_req_record(1, rid, id, NOW);
+        }
+        CHECK(w_restart(1) == GZ_OK && slot(1, &t));
+        h_arg_t s1[1] = {{12, t.scope, 32}};
+        nb = N[1].n_batches;
+        CHECK(w_req(1, GZ_CMD_LOBBY_LEAVE, "BoundLeave00000001", "/api/v1/lobbies/x/leave", 1, s1, 1) == 503 &&
+              slot(1, &t) && N[1].n_batches == nb);
+    }
+    /* A host's cancel protects its set-aside funds: it has the reserve too
+     * (review of PR 75, L1); another call of the full lobby is refused. */
+    {
+        char id[GZ_LOCAL_ID_MAX + 1];
+        uint8_t vals[24];
+        make_terms(&t, 3, 3, 30002);
+        CHECK(host_open(&t, 0) == 200 && slot(0, &t));
+        snprintf(id, sizeof id, "%s", lid(0, &t));
+        for (int k = 0; k < GZ_API_LOBBY_SHARE; k++) {
+            snprintf(rid, sizeof rid, "HostShare%09d", k);
+            add_req_record(0, rid, id, NOW);
+        }
+        CHECK(w_restart(0) == GZ_OK && slot(0, &t));
+        gz_put_u64(vals, 600);
+        gz_put_u64(vals + 8, 1000);
+        gz_put_u64(vals + 16, 1000);
+        h_arg_t sv[2] = {{12, t.scope, 32}, {14, vals, 24}};
+        h_arg_t s1[1] = {{12, t.scope, 32}};
+        CHECK(w_req(0, GZ_CMD_LOBBY_SET_VALUES, "HostShareFull00001", "/api/v1/host/lobbies/x", 1, sv, 2) == 503);
+        CHECK(w_req(0, GZ_CMD_LOBBY_CANCEL, "HostCancelFull0001", "/api/v1/host/lobbies/x/cancel", 1, s1, 1) == 200 &&
+              slot(0, &t) == NULL);
+    }
+    /* The keep clock across a restart (p75-keep-load-ignored): the clock set
+     * back a year, then a restart; the ids still age on from their making. */
+    {
+        uint64_t made = NOW;
+        add_req_record(1, "KeepAcross00000001", "", made);
+        CHECK(w_restart(1) == GZ_OK);
+        NOW -= 365ull * 24 * 3600 * 1000;
+        N[1].clock = NOW;
+        CHECK(w_restart(1) == GZ_OK);
+        NOW += 31ull * 24 * 3600 * 1000;
+        N[1].clock = NOW;
+        CHECK(gz_api_req_kept(N[1].n, "KeepAcross00000001") == 2);
+        NOW += 365ull * 24 * 3600 * 1000;
+    }
+    no_errors(1);
+    w_free(1);
+}
+
+/* An attention item's id is whole for the longest local id (N2): two lobbies
+ * whose 64-character ids share their first 63 get two items. */
+static void test_attention_long_ids(void)
+{
+    terms_t t, u;
+    char a1[80], a2[80], x[GZ_LOCAL_ID_MAX + 1];
+    w_world(1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 1510);
+    make_terms(&u, 3, 3, 1511);
+    CHECK(host_open(&t, 0) == 200 && host_open(&u, 0) == 200 && member_join(1, &t) == 200 && member_join(1, &u) == 200);
+    w_run(2000, 100);
+    for (int k = 0; k < 2; k++) {
+        uint8_t r[120];
+        size_t at = 0;
+        memcpy(x, "lob_", 4);
+        memset(x + 4, 'q', 59);
+        x[63] = k ? 'b' : 'a';
+        x[64] = 0;
+        gz_rec_put(r, sizeof r, &at, 2, (k ? u : t).scope, 32);
+        gz_rec_put(r, sizeof r, &at, 4, (const uint8_t *)x, 64);
+        h_add_batch(&N[1], N[1].incarnation, ++N[1].seq, GZ_RECORD_LOCAL_IDS, r, at);
+    }
+    CHECK(w_restart(1) == GZ_OK);
+    CHECK(strlen(lid(1, &t)) == 64 && strlen(lid(1, &u)) == 64 && strcmp(lid(1, &t), lid(1, &u)) != 0);
+    snprintf(a1, sizeof a1, "att_%s", lid(1, &t) + 4);
+    snprintf(a2, sizeof a2, "att_%s", lid(1, &u) + 4);
+    CHECK(strlen(a1) == 64 && strcmp(a1, a2) != 0);
+    CHECK(vf8(view_of(1, GZ_VIEW_ATTENTION, a1), GZ_VAT_CODE) == GZ_ATT_UNLOCK_TO_TAKE_PART &&
+          vf8(view_of(1, GZ_VIEW_ATTENTION, a2), GZ_VAT_CODE) == GZ_ATT_UNLOCK_TO_TAKE_PART);
     no_errors(1);
     w_free(1);
 }
@@ -2396,6 +2643,7 @@ static void test_api_records(void)
         gz_rec_put(r, sizeof r, &at, 2, &st, 1);
         gz_rec_put(r, sizeof r, &at, 4, x8, 8);
         gz_rec_put(r, sizeof r, &at, 6, held, 32 * (size_t)n);
+        gz_rec_put(r, sizeof r, &at, 8, x8, 4);
         CHECK(start_on(GZ_RECORD_PAUSE, r, at) == (n == 8 ? GZ_OK : GZ_ERR_CORRUPT));
         if (n == 8) /* none of them holds a slot: released at the start, saved on */
             CHECK(N[SCRATCH].n->api.pause == GZ_PAUSE_ON && N[SCRATCH].n->api.n_held == 0 &&
@@ -2407,14 +2655,27 @@ static void test_api_records(void)
         at = 0;
         gz_rec_put(r, sizeof r, &at, 2, &st, 1);
         gz_rec_put(r, sizeof r, &at, 4, x8, 8);
-        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);
+        gz_rec_put(r, sizeof r, &at, 8, x8, 4);
+        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);   /* held, with no lobby */
         scratch_free();
         st = GZ_PAUSE_ON;
         at = 0;
         gz_rec_put(r, sizeof r, &at, 2, &st, 1);
         gz_rec_put(r, sizeof r, &at, 4, x8, 8);
-        gz_rec_put(r, sizeof r, &at, 8, &st, 1);
-        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);
+        gz_rec_put(r, sizeof r, &at, 8, x8, 4);
+        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_OK);            /* the control: a good record */
+        scratch_free();
+        at = 0;
+        gz_rec_put(r, sizeof r, &at, 2, &st, 1);
+        gz_rec_put(r, sizeof r, &at, 4, x8, 8);
+        gz_rec_put(r, sizeof r, &at, 8, x8, 4);
+        gz_rec_put(r, sizeof r, &at, 10, &st, 1);
+        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);   /* an unknown even field */
+        scratch_free();
+        at = 0;
+        gz_rec_put(r, sizeof r, &at, 2, &st, 1);
+        gz_rec_put(r, sizeof r, &at, 4, x8, 8);
+        CHECK(start_on(GZ_RECORD_PAUSE, r, at) == GZ_ERR_CORRUPT);   /* no version */
         scratch_free();
     }
     /* local_ids: no "lob_", or an unknown even field */
@@ -2520,7 +2781,7 @@ static void test_api_ids_kept(void)
         const wview_t *w = &VW[1][k];
         gz_bytes_t v;
         if (!w->used || w->kind != GZ_VIEW_ATTENTION) continue;
-        CHECK(!strncmp(w->id, "att_lob_", 8) && !vf(w, 12, &v));
+        CHECK(!strncmp(w->id, "att_", 4) && strlen(w->id) == 20 && !vf(w, 12, &v)); /* "att_" and the 16 hex of the id */
     }
     CHECK(view_of(1, GZ_VIEW_ATTENTION, "att_x") == NULL);
     no_errors(1);
@@ -3016,6 +3277,8 @@ int main(int argc, char **argv)
     test_api_pause_and_signing();
     test_pause_rows();
     test_api_request_keep();
+    test_api_request_keep_more();
+    test_attention_long_ids();
     test_api_replay_detail();
     test_api_signing_authority();
     test_api_conditions();
