@@ -9,7 +9,7 @@
 #                  the placeholder's bytes until P4), and the --test-* hooks
 # The release binary's symbols are checked (program_release_build, T12).
 
-set(GZP_SOURCES options.c datadir.c journal_standin.c net.c pchain.c notify.c executor.c testping.c view.c api.c)
+set(GZP_SOURCES options.c datadir.c journal_standin.c net.c pchain.c notify.c executor.c testping.c view.c api.c api_lobby.c api_calls.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")

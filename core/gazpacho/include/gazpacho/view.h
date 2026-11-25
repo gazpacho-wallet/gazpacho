@@ -153,6 +153,18 @@
 #define GZ_STAGE_READY_CHECK       2
 #define GZ_STAGE_SIGNING           3
 
+/* ---- kind 10, discovery: a query to a host, id "q_N" (local-api.md 14.2) ----
+ * The lobbies it found are kind 2 objects with no seat (GZ_VSEAT_NONE), each
+ * with a local id for the run (7.3) that its slot keeps if the person joins. */
+#define GZ_VDQ_STATE               6   /* u8: 1 asking, 2 answered, 3 failed */
+#define GZ_VDQ_HOST_KEY            8   /* 33 */
+#define GZ_VDQ_ADDRESS             10  /* ASCII */
+#define GZ_VDQ_ASKED               12  /* u64 ms */
+#define GZ_VDQ_ENDED               14  /* u64 ms: answered or failed */
+#define GZ_VDQ_FAILED              16  /* ASCII: no_answer, unreachable */
+#define GZ_VDQ_LOBBIES             18  /* the lobbies' local ids, ASCII, comma-separated */
+#define GZ_VLB_SEEN                44  /* u64 ms: a lobby seen in a query (no slot), the query's last answer */
+
 /* ---- kind 7, attention: one item, id "att_" ... (11.4) -------------------- */
 #define GZ_VAT_CODE                6   /* u8: GZ_ATT_* */
 #define GZ_VAT_LOBBY               8   /* the lobby's local id */

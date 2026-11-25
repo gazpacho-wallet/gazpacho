@@ -156,7 +156,7 @@ static void test_budgets(void)
         CHECK(gz_timer_note(&c, e[k].eng, gz_timer_pack(7, 1, 99), 1));      /* and its place is free */
         CHECK(!gz_timer_note(&c, e[k].eng, gz_timer_pack(7, 1, 98), 1));
     }
-    CHECK(LS_MAX_TIMERS == 6 && NP_MAX_TIMERS == 3 && TE_MAX_TIMERS == 4);
+    CHECK(LS_MAX_TIMERS == 6 && NP_MAX_TIMERS == 4 && TE_MAX_TIMERS == 4); /* the node part: idle, continue, sign, discovery */
 }
 
 int main(void)

@@ -150,7 +150,8 @@ void gzp_usage(void)
         "  --test-sign-outcome funding|retry|failed|unfinished   what the signing stand-in reports\n"
         "  --test-sign-delay-ms MS       ... this long after the hand-off\n"
         "  --test-crash-before-confirm K exit just before the K-th confirmation\n"
-        "  --test-exit-after-send        exit once the first test ping has left\n");
+        "  --test-exit-after-send        exit once the first test ping has left\n"
+        "  --test-drop-view KIND         view objects of this kind never reach the API\n");
 #endif
 }
 
@@ -283,6 +284,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         }
 #ifdef GZP_TEST_BUILD
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
+        else if (!strcmp(a, "--test-drop-view")) { ok = num(val, 1, 255, &v); o->test_drop_view = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
         else if (!strcmp(a, "--test-crash-at-ping")) { ok = num(val, 1, 1000000, &v); o->test_crash_at_ping = (int)v; }
         else if (!strcmp(a, "--test-storage-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_storage_fail_at = (int)v; }

@@ -25,6 +25,7 @@
 
 #include "gazpacho/api.h"
 #include "gazpacho/command.h"
+#include "gazpacho/view.h"
 #include "datadir.h"
 #include "gzp.h"
 #include "pchain.h"
@@ -48,7 +49,23 @@ typedef struct gzp_api {
         int used;
         char request_id[GZ_CMD_MAX_REQUEST_ID + 1];
         uint64_t handle;
+        int call;                     /* GZ_API_C_*: how its answer is written (api_calls.c) */
+        /* The core's result came before the object it names reached the view
+         * (the node emits a bracket's views after its result): the answer
+         * waits for that object, or for the end of the node's batch. */
+        int waiting, status;
+        uint64_t waiting_since;       /* the monotonic clock, ms */
+        char object[GZ_LOCAL_ID_MAX + 1], params[700];
     } held[GZP_API_HELD];
+    /* What the program knows of the node for the calls (W12): the member
+     * signing in force (gz_node_member_signing, from the executor), and a
+     * host's long-term key, which a draft's terms name. */
+    int member_signing;
+    uint8_t host_key[33];
+    int host_key_set;
+    /* While a held call's answer is written: the core said it is a replay,
+     * so the object carries "replayed": true (7.4; review of #79, L1). */
+    int answer_replayed;
     /* The executor's way to give the node a USER_COMMAND (its TLV stream);
      * 0 delivered, -1 the node is not running. */
     int (*command)(void *ctx, const uint8_t *tlv, size_t len);
@@ -82,5 +99,10 @@ void gzp_api_node_started(gzp_api_t *a);
  * GZ_API_HELD and keeps the handle, or an error status with err filled. */
 int gzp_api_send_command(gzp_api_t *a, const gz_api_call *c, uint16_t code, const uint8_t *args, size_t args_len,
                          gz_api_error *err);
+
+/* api_calls.c: the lobby, hosting, discovery, conditions, pause and signing
+ * calls (-1: not one of them), and the answer of a held one. */
+int gzp_api_lobby_call(gzp_api_t *a, const gz_api_call *c, gz_jw *w, gz_api_error *err);
+void gzp_api_answer(gzp_api_t *a, int call, const char *object, const char *params, gz_jw *w);
 
 #endif

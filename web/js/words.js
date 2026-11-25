@@ -121,7 +121,8 @@
     max_exit_blocks: "Leaving alone takes, at most",
     min_confirmations: "Confirmations before live",
     payment_sizes_sat: "Payment sizes",
-    compare_with: "Compare with"
+    compare_with: "Compare with",
+    ready_hint: "Fewest members I sign with"
   };
   var conditionUnits = {
     min_members: "members", min_channel_sat: "sats", max_joining_fee_sat: "sats", max_fee_base_msat: "msat",

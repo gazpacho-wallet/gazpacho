@@ -105,6 +105,21 @@ static api_lid_t *lid_by_id(gz_node_t *c, const char *id, size_t len)
     return NULL;
 }
 
+/* A query's seen lobby (discovery.c), by scope or by id. */
+static dq_seen_t *seen_find(gz_node_t *c, const uint8_t scope[32])
+{
+    for (int k = 0; k < DQ_MAX_OFFERS; k++)
+        if (c->dq.seen[k].used && memcmp(c->dq.seen[k].scope, scope, 32) == 0) return &c->dq.seen[k];
+    return NULL;
+}
+
+static int seen_by_id(const gz_node_t *c, const char *id, size_t len)
+{
+    for (int k = 0; k < DQ_MAX_OFFERS; k++)
+        if (c->dq.seen[k].used && slen(c->dq.seen[k].id) == len && memcmp(c->dq.seen[k].id, id, len) == 0) return 1;
+    return 0;
+}
+
 static int slot_holds(const gz_node_t *c, const uint8_t scope[32])
 {
     for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
@@ -155,7 +170,10 @@ static void lid_keep(gz_node_t *c, const uint8_t scope[32], const char *id, size
 const char *gz_api_local_id(gz_node_t *c, const uint8_t scope[32])
 {
     api_lid_t *e = lid_find(c, scope);
-    return e ? e->id : NULL;
+    dq_seen_t *q;
+    if (e) return e->id;
+    q = seen_find(c, scope);
+    return q ? q->id : NULL;
 }
 
 /* The lobby's slot ended: from now its request ids run their 30 days. */
@@ -187,7 +205,7 @@ static gz_status_t new_local_id(gz_node_t *c, int i, gz_action_list_t *out)
             id[5 + 2 * k] = x[r[k] & 15];
         }
         id[20] = 0;
-        if (!lid_by_id(c, id, 20)) break;
+        if (!lid_by_id(c, id, 20) && !seen_by_id(c, id, 20)) break;
         if (tries == 64) return gz_c_bug(c, ENG_NODE); /* a random source that repeats itself */
     }
     memset(s->view.local_id, 0, sizeof s->view.local_id);
@@ -203,11 +221,93 @@ static gz_status_t new_local_id(gz_node_t *c, int i, gz_action_list_t *out)
     return gz_action_list_add(out, &a);
 }
 
-/* A new slot's local id, saved right after its slot_opened (one batch). */
+/* A new slot's local id, saved right after its slot_opened (one batch). A
+ * lobby seen in a query already has its id for the run (7.3): the slot
+ * keeps it, so the id the interface holds names the lobby it joined. */
 gz_status_t gz_api_slot_opened(gz_node_t *c, int i, gz_action_list_t *out)
 {
+    slot_t *s = &c->slots[i];
+    api_lid_t *e = lid_find(c, s->scope);
+    dq_seen_t *q = e ? NULL : seen_find(c, s->scope);
     c->api.opened = i + 1;
+    if (q) {                                   /* seen in a query: the id moves to the saved ones */
+        lid_keep(c, s->scope, q->id, slen(q->id));
+        memset(q, 0, sizeof *q);
+        e = lid_find(c, s->scope);
+    }
+    if (e) {
+        uint8_t rec[120];
+        size_t at = 0, n = slen(e->id);
+        memset(s->view.local_id, 0, sizeof s->view.local_id);
+        memcpy(s->view.local_id, e->id, n);
+        e->ended_ms = 0;
+        if (gz_rec_put(rec, sizeof rec, &at, 2, s->scope, 32) != GZ_OK ||
+            gz_rec_put(rec, sizeof rec, &at, 4, (const uint8_t *)e->id, n) != GZ_OK)
+            return gz_c_bug(c, ENG_NODE);
+        gz_record_t rr = {GZ_RECORD_LOCAL_IDS, {rec, at}};
+        gz_action_t a = {.kind = GZ_ACTION_SAVE};
+        a.u.save.records = &rr;
+        a.u.save.n_records = 1;
+        return gz_action_list_add(out, &a);
+    }
     return new_local_id(c, i, out);
+}
+
+/* 1 if the lobby's id is a query's seen one, not a saved one. */
+int gz_api_seen_only(gz_node_t *c, const uint8_t scope[32])
+{
+    return !lid_find(c, scope) && seen_find(c, scope) != NULL;
+}
+
+/* A lobby seen in a query for a host's lobbies (discovery.c): a local id
+ * for the run, kept in memory only (7.3: after a restart it gets a new one
+ * when it is seen again). Made like a slot's, mixed with the query serial. */
+gz_status_t gz_api_seen_id(gz_node_t *c, const uint8_t scope[32])
+{
+    static const char x[] = "0123456789abcdef";
+    uint8_t r[8];
+    char id[24];
+    for (int tries = 0;; tries++) {
+        c->ports.random.fill(c->ports.random.ctx, GZ_RANDOM_ORDINARY, r, sizeof r);
+        for (int k = 0; k < 4; k++) r[4 + k] ^= (uint8_t)((0x80000000u + c->dq.serial * 64u + (uint32_t)tries) >> (24 - 8 * k));
+        memcpy(id, "lob_", 4);
+        for (int k = 0; k < 8; k++) {
+            id[4 + 2 * k] = x[r[k] >> 4];
+            id[5 + 2 * k] = x[r[k] & 15];
+        }
+        id[20] = 0;
+        if (!lid_by_id(c, id, 20) && !seen_by_id(c, id, 20)) break;
+        if (tries == 64) return gz_c_bug(c, ENG_NODE);
+    }
+    {
+        /* A free place, or the oldest not offered in this query (one exists:
+         * this query holds at most DQ_MAX_OFFERS, this one among them). */
+        dq_seen_t *e = NULL;
+        for (int k = 0; k < DQ_MAX_OFFERS && !e; k++)
+            if (!c->dq.seen[k].used) e = &c->dq.seen[k];
+        dq_seen_t *old = NULL;
+        for (int k = 0; k < DQ_MAX_OFFERS && !e; k++) {
+            int offered = 0;
+            for (int j = 0; j < c->dq.n; j++) offered |= memcmp(c->dq.offers[j].scope, c->dq.seen[k].scope, 32) == 0;
+            if (!offered && (!old || c->dq.seen[k].seq < old->seq)) old = &c->dq.seen[k];
+        }
+        if (!e) e = old;
+        if (!e) return gz_c_bug(c, ENG_NODE);
+        memset(e, 0, sizeof *e);
+        e->used = 1;
+        e->seq = ++c->dq.seen_seq;
+        memcpy(e->scope, scope, 32);
+        memcpy(e->id, id, 20);
+    }
+    return GZ_OK;
+}
+
+/* The member's conditions for a lobby it has not joined (a query's fit):
+ * the saved conditions (0x000d0008, GZ_CMD_API_SET_CONDITIONS), or none. */
+const gz_lobby_conditions_t *gz_api_conditions(const gz_node_t *c)
+{
+    static const gz_lobby_conditions_t none;
+    return c->api.have_cond ? &c->api.cond : &none;
 }
 
 /* At a start, in the node part's resume: every lobby slot without a local id
@@ -629,18 +729,62 @@ static void move_after(gz_node_t *c, gz_action_list_t *out, size_t to)
     c->owner[to + 1 - c->base] = o;
 }
 
-/* Inside the command's bracket, before it ends: if the command saved
- * anything, its request id goes right after the first save (one batch,
- * local-api.md 7.4), with the status and error of the result notice it gave. */
+/* A 2xx result notice the command gave without the object it acted on
+ * gets it (field 6), as a replay's has: the program answers a call with that
+ * object as its view holds it (W12; review of #79). The notice is written
+ * again in field order and put in the old one's place. */
+static gz_status_t name_object(gz_node_t *c, const char *object, size_t from, gz_action_list_t *out)
+{
+    gz_bytes_t f, b;
+    size_t at = 0, k;
+    uint8_t *buf = c->api.res;
+    gz_status_t st = GZ_OK;
+    static const uint64_t order[] = {GZ_RESULT_REC_REQUEST_ID, GZ_RESULT_REC_STATUS, GZ_RESULT_REC_ERROR,
+                                     GZ_RESULT_REC_OBJECT, GZ_RESULT_REC_PARAMS};
+    for (k = out->count; k > from; k--) {
+        const gz_action_t *a = &out->slots[k - 1];
+        if (a->kind == GZ_ACTION_NOTIFY && a->u.notify.code == GZ_NOTIFY_COMMAND_RESULT) break;
+    }
+    if (k == from) return GZ_OK;
+    k--;
+    b = out->slots[k].u.notify.bytes;
+    if (gz_rec_find(b, GZ_RESULT_REC_OBJECT, &f) == 1 || gz_rec_find(b, GZ_RESULT_REC_STATUS, &f) != 1 || f.len != 2 ||
+        gz_get_u16(f.data) < 200 || gz_get_u16(f.data) >= 300)
+        return GZ_OK;
+    for (size_t j = 0; j < sizeof order / sizeof order[0] && st == GZ_OK; j++) {
+        if (order[j] == GZ_RESULT_REC_OBJECT) st = gz_rec_put(buf, sizeof c->api.res, &at, order[j], (const uint8_t *)object, slen(object));
+        else if (gz_rec_find(b, order[j], &f) == 1) st = gz_rec_put(buf, sizeof c->api.res, &at, order[j], f.data, f.len);
+    }
+    if (st != GZ_OK) return gz_c_bug(c, ENG_NODE);
+    gz_action_t a = {.kind = GZ_ACTION_NOTIFY};
+    a.u.notify.code = GZ_NOTIFY_COMMAND_RESULT;
+    a.u.notify.bytes.data = buf;
+    a.u.notify.bytes.len = at;
+    if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;   /* copied into the list's block */
+    out->slots[k].u.notify.bytes = out->slots[out->count - 1].u.notify.bytes;
+    out->count--;                                                 /* the copy's slot, not its bytes */
+    return GZ_OK;
+}
+
+/* Inside the command's bracket, before it ends: the result notice names the
+ * object acted on; and if the command saved anything, its request id goes
+ * right after the first save (one batch, local-api.md 7.4), with the status
+ * and error of the result notice it gave. */
 gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_list_t *out)
 {
-    gz_bytes_t rid, method, path, digest, sb, eb = {NULL, 0};
-    size_t first = out->count, at = 0, i;
+    gz_bytes_t rid, method, path, digest, sb, eb = {NULL, 0}, scope;
+    size_t first, at = 0, i;
     uint16_t status = 0;
     uint8_t *rec = c->api.rec, v[8];
     const char *object = "";
     gz_status_t st;
     api_req_t *r;
+    /* The object acted on: the lobby the command names, or the one it opened. */
+    if (c->api.opened) object = c->slots[c->api.opened - 1].view.local_id;
+    else if (arg(cmd, 12, 32, &scope) && gz_api_local_id(c, scope.data)) object = gz_api_local_id(c, scope.data);
+    c->api.opened = 0;
+    if (object[0] && (st = name_object(c, object, from, out)) != GZ_OK) return st;
+    first = out->count;
     if (request_parts(cmd, &rid, &method, &path, &digest) != 1) return GZ_OK;
     for (i = from; i < out->count; i++) {
         const gz_action_t *a = &out->slots[i];
@@ -653,11 +797,6 @@ gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_li
         }
     }
     if (first == out->count || !status) return GZ_OK; /* nothing saved: no id (7.4) */
-    /* The object acted on: the lobby the command names, or the one it opened. */
-    gz_bytes_t scope;
-    if (c->api.opened) object = c->slots[c->api.opened - 1].view.local_id;
-    else if (arg(cmd, 12, 32, &scope) && gz_api_local_id(c, scope.data)) object = gz_api_local_id(c, scope.data);
-    c->api.opened = 0;
     gz_put_u16(v, status);
     st = gz_rec_put(rec, sizeof c->api.rec, &at, 2, rid.data, rid.len);
     if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 4, method.data, method.len);
