@@ -1433,7 +1433,7 @@ static void test_not_opened_told(void)
  * the pending read by hand after the plan.) */
 static void test_spend_back_during_pending_read(void)
 {
-    gzp_wport_t w;
+    static gzp_wport_t w;
     mark_store ms;
     gzt_coin k;
     uint32_t h = 100;
@@ -1454,7 +1454,7 @@ static void test_spend_back_during_pending_read(void)
  * not only at the next start: three refusals, then answers. */
 static void test_pending_read_asked_again(void)
 {
-    gzp_wport_t w;
+    static gzp_wport_t w;
     mark_store ms;
     fake_chain f;
     gz_chain view;
@@ -1480,7 +1480,7 @@ static void test_pending_read_asked_again(void)
  * plan does not pay its change address again. */
 static void test_journaled_spend_back_raises_mark(void)
 {
-    gzp_wport_t a, b;
+    static gzp_wport_t a, b;
     mark_store ma, mb;
     fake_chain f;
     gz_chain view;
@@ -1520,7 +1520,7 @@ static void test_journaled_spend_back_raises_mark(void)
  * the read is not settled. Change address 3, and receive address 0. */
 static void test_history_zero_with_outputs(void)
 {
-    gzp_wport_t w;
+    static gzp_wport_t w;
     mark_store ms;
     fake_chain f;
     gz_chain view;
@@ -1550,7 +1550,7 @@ static void test_history_zero_with_outputs(void)
  * call says that, not "reading" for ever (review A, round 2). */
 static void test_can_plan_while_pending(void)
 {
-    gzp_wport_t w;
+    static gzp_wport_t w;
     mark_store ms;
     fake_chain f;
     gz_chain view;
@@ -1578,7 +1578,7 @@ static void test_can_plan_while_pending(void)
  * the change after them. Change used at 1,150 only. */
 static void test_wide_gap_past_1000(void)
 {
-    gzp_wport_t w;
+    static gzp_wport_t w;
     mark_store ms;
     fake_chain f;
     gz_chain view;
