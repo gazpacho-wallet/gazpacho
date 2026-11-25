@@ -77,6 +77,12 @@ The drafts that code is built from today are all marked unreviewed: signing-roun
 | `THREAT-MODEL.md` | — | None | 1 | — | Not reviewed | Built from section 8 of `spec-review-2.md`; checked for gaps by the cross-specification review |
 | `web/API.md` (branch `ui-prototype`) | — | None | — | — | Not reviewed | Contradicts owner decision 4 (`roles`, `host_node_missing`) |
 
+## Audits across documents
+
+| Subject | File | Date | Verdict |
+|---|---|---|---|
+| Deviation audit: Gazpacho against SuperScalar's design posts (Delving Bitcoin 1143, 1242, 2705) and code (pin `50f7fa13`, upstream #508). It covers `exit.md` draft 3, `local-api.md` draft 5, PRs #52, #53, #54 and #56, the penalty check (PR #61) and K1 | `deviation-audit-2026-11-18.md` | 2026-11-18 | Nothing to revert; no merged code is cryptographically unsound. **Fix now:** the 64-item cap against the 32-seat lobby (9c). **Pause:** code shaped by #508, and standby seats (K4). **Owner decisions needed:** the penalty rules 8b, 8d and 8e, and the signing modes (10). **Record:** the pending decisions, now `../DECISIONS-WITHOUT-OWNER.md` K9 to K18 and section 1a. Read-only; no test was run |
+
 ## Reviews of SuperScalar's work
 
 | Subject | File | Date | Verdict |
