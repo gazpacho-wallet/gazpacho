@@ -280,3 +280,5 @@ sg-unknown-as-this	core/node/lobbyslot.c	return np_command_result(out, cmd, 409,
 sg-unknown-not-refused	core/node/lobbyslot.c	if (held_out == GZ_SIGN_OUT_UNKNOWN) return	if (0) return
 sg-tip-not-to-signing	core/node/composite.c	if (st == GZ_OK && c->sign_on && !c->cfg.host) st = gz_c_bracket(c, ENG_SIGN, ev, out);	
 sg-no-funding-deadline	core/node/signslot.c	sc.funding_deadline_blocks = fc.funding_deadline_blocks;	sc.funding_deadline_blocks = 0;
+ls-alloc-ceiling-host	core/node/lobbyslot.c	    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	    if (c->np.highest_index > GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	1
+ls-alloc-ceiling-member	core/node/lobbyslot.c	    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	    if (c->np.highest_index > GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");	2

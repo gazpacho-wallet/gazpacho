@@ -1198,7 +1198,7 @@ static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         outer.len > GZ_TERMS_OUTER_MAX || current.len > GZ_TERMS_CURRENT_MAX)
         return np_command_result(out, cmd, 400, "bad_request");
     if ((i = free_slot(c)) < 0) return np_command_result(out, cmd, 409, "too_many_lobbies"); /* a ninth: refused */
-    if (c->np.highest_index > 0xfffffff0u) return np_command_result(out, cmd, 503, "no_key");
+    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");   /* the next index would not load (#87, L1) */
     slot_t *s = &c->slots[i];
     memset(s, 0, sizeof *s);
     s->kind = SLOT_KIND_LOBBY;
@@ -1257,7 +1257,7 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     if (left_out_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 503, "no_key"); /* H1 */
     if (gz_route_slot_by_scope(c, scope.data) >= 0) return np_command_result(out, cmd, 409, "lobby_exists");
     if ((i = free_slot(c)) < 0) return np_command_result(out, cmd, 409, "too_many_lobbies");
-    if (c->np.highest_index > 0xfffffff0u) return np_command_result(out, cmd, 503, "no_key");
+    if (c->np.highest_index >= GZ_LS_KEY_INDEX_MAX) return np_command_result(out, cmd, 503, "no_key");   /* the next index would not load (#87, L1) */
     slot_t *s = &c->slots[i];
     memset(s, 0, sizeof *s);
     s->kind = SLOT_KIND_LOBBY;
