@@ -205,7 +205,8 @@ def main():
                       amt == out + fee and fee >= vs * 0.1 and fee < vs * 0.2 + 2,
                       "mined, all of it to the first address less %d sat (%d vB, 0.1 sat/vB)" % (fee, vs))
             other = "%s:%d:%d:%s" % (ftx["txid"], c["n"], 1000, rt.cli("-rpcwallet=miner", "getaddressinfo",
-                                                                    rt.miner)["scriptPubKey"])
+                                                                    rt.cli("-rpcwallet=miner", "getnewaddress", "",
+                                                                           "bech32m"))["scriptPubKey"])
             a[a.index("--test-spend-coin") + 1] = other
             a[a.index("--data-dir") + 1] = fresh_copy(w, 6)
             r = subprocess.run(a, capture_output=True, text=True, timeout=120)
