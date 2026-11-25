@@ -90,7 +90,8 @@ typedef enum {
     GZ_TERMS_E_OUTER_SIG,         /* step 3 */
     GZ_TERMS_E_CURRENT_SIG,       /* step 3 */
     GZ_TERMS_E_OUTER_DIGEST,      /* step 6: the current record names another outer digest */
-    GZ_TERMS_E_ARGUMENT           /* a NULL pointer or a buffer too small */
+    GZ_TERMS_E_ARGUMENT,          /* a NULL pointer or a buffer too small */
+    GZ_TERMS_E_TREE_SIZE          /* the target's tree has more transactions than the signer signs (gz_terms_check_tree_size; last: the numbers above are unchanged) */
 } gz_terms_err_t;
 
 typedef struct {
@@ -193,6 +194,10 @@ void gz_terms_current_digest(const uint8_t *current, size_t n, uint8_t out[32]);
 
 /* The section 4.3 check alone, on a decoded table (used by the decoder). */
 gz_terms_err_t gz_terms_check_shapes(const gz_shape_entry_t *e, size_t n_entries, uint16_t target);
+/* GZ_TERMS_E_TREE_SIZE if the target's tree needs more than `max_nodes` transactions: a signer that
+ * signs at most so many refuses such terms when the lobby opens and when a member receives them, never
+ * at the first check (review A of PR 52, M2). Run after the terms' own checks. */
+gz_terms_err_t gz_terms_check_tree_size(const gz_terms_outer_t *t, uint32_t max_nodes);
 
 struct gz_tree_crypto;  /* tree.h */
 

@@ -197,6 +197,7 @@ gz_status_t te_init(te_t *t, uint16_t area, int host, const gz_ports_t *ports, c
 }
 
 static int own_watch(te_t *t, int is_tx, const uint8_t txid[32], uint32_t vout, uint32_t depth);
+static int own_unwatch(te_t *t, int is_tx, const uint8_t txid[32], uint32_t vout);
 
 static gz_status_t te_load(void *e, const gz_record_t *rec, gz_batch_id_t at)
 {
@@ -243,6 +244,10 @@ static gz_status_t te_load(void *e, const gz_record_t *rec, gz_batch_id_t at)
         memcpy(g->addr, b + 41, n - 41);
         return GZ_OK;
     }
+    case GZ_TE_UNWATCH:
+        if (n != 37 || b[0] > 1) return GZ_ERR_CORRUPT;
+        own_unwatch(t, b[0], b + 1, gz_get_u32(b + 33));
+        return GZ_OK;
     case GZ_TE_WATCH:
         if (n != 41 || b[0] > 1 || gz_get_u32(b + 37) == 0) return GZ_ERR_CORRUPT;
         /* At most TE_MAX_WATCHES distinct ones were ever saved. */
@@ -511,6 +516,25 @@ static int own_watch(te_t *t, int is_tx, const uint8_t txid[32], uint32_t vout, 
     return 2;
 }
 
+/* Release (UNWATCH, step P4.5): 1 if it was held (it is forgotten), 0 if not. */
+static int own_unwatch(te_t *t, int is_tx, const uint8_t txid[32], uint32_t vout)
+{
+    uint8_t key[37];
+    key[0] = (uint8_t)is_tx;
+    memcpy(key + 1, txid, 32);
+    gz_put_u32(key + 33, vout);
+    for (size_t i = 0; i < t->n_watches; i++) {
+        if (memcmp(t->watches[i], key, sizeof key)) continue;
+        for (size_t j = i + 1; j < t->n_watches; j++) {
+            memcpy(t->watches[j - 1], t->watches[j], sizeof key);
+            t->watch_depth[j - 1] = t->watch_depth[j];
+        }
+        t->n_watches--;
+        return 1;
+    }
+    return 0;
+}
+
 /* A watch saved, so a later start sets it again (rule 4): the 37-byte key
  * and the depth. */
 static gz_status_t save_watch(te_t *t, int is_tx, const uint8_t txid[32], uint32_t vout, uint32_t depth,
@@ -609,6 +633,25 @@ static gz_status_t on_command(te_t *t, gz_bytes_t cmd, gz_action_list_t *out)
         /* Saved only when it changes what a start sets again: a repeated
          * command does not grow the journal (review of PR 50, L4). */
         if (fresh == 2 && (st = save_watch(t, 1, v.data, 0, a.u.watch_tx.depth, out)) != GZ_OK) return st;
+        if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
+        return result(out, cmd, 200, NULL);
+    }
+    case GZ_TE_CMD_UNWATCH: {
+        gz_bytes_t z;
+        uint8_t rec[37];
+        if (!cmd_arg(cmd, 12, 32, &v) || !cmd_arg(cmd, 14, 4, &w) || !cmd_arg(cmd, 16, 1, &z) || z.data[0] > 1)
+            return result(out, cmd, 400, "bad_request");
+        gz_action_t a = {.kind = GZ_ACTION_UNWATCH};
+        a.u.unwatch.is_tx = z.data[0];
+        memcpy(a.u.unwatch.what.txid, v.data, 32);
+        a.u.unwatch.what.vout = z.data[0] ? 0 : gz_get_u32(w.data);
+        if (!own_unwatch(t, a.u.unwatch.is_tx, v.data, a.u.unwatch.what.vout))
+            return result(out, cmd, 404, "no_such_watch");
+        /* Saved, so the next start does not set it again (rule 4). */
+        rec[0] = z.data[0];
+        memcpy(rec + 1, v.data, 32);
+        gz_put_u32(rec + 33, a.u.unwatch.what.vout);
+        if ((st = save1(t, GZ_TE_UNWATCH, rec, sizeof rec, out)) != GZ_OK) return st;
         if ((st = gz_action_list_add(out, &a)) != GZ_OK) return st;
         return result(out, cmd, 200, NULL);
     }

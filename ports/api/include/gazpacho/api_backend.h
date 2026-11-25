@@ -202,6 +202,9 @@ enum gz_api_call_id {
     GZ_API_C_FACTORIES, GZ_API_C_FACTORY, GZ_API_C_FACTORY_DATES,
     GZ_API_C_WALLET, GZ_API_C_WALLET_ADDRESS,
     GZ_API_C_ACTIVITY, GZ_API_C_ACTIVITY_ONE,
+    GZ_API_C_SIGNING_GET,          /* GET /signing (14.3) */
+    GZ_API_C_SIGNING_PUT,          /* PUT /signing: takes effect at the next start */
+    GZ_API_C_LOBBIES_READY,        /* POST /lobbies/ready: several lobbies, one passphrase (14.2) */
     GZ_API_C_COUNT
 };
 

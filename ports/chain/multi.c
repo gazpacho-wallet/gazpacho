@@ -595,8 +595,12 @@ static gz_chain_result multi_outspend(void *ctx, const uint8_t txid[GZ_HASH_LEN]
 
 /* ---- raw transaction ----------------------------------------------------- */
 
+/* The same transaction: the same txid, which covers every byte but the
+ * witness. Two valid witnesses for one transaction (another wtxid, which its
+ * maker can produce at will and give each server its own) are agreement,
+ * not a disagreement: nothing here reads the witness (C-2). */
 static bool same_raw_tx(const gz_multi_answer *a, const gz_multi_answer *b) {
-  return a->u.raw_tx.len == b->u.raw_tx.len && hash_eq(a->u.raw_tx.digest, b->u.raw_tx.digest);
+  return hash_eq(a->u.raw_tx.digest, b->u.raw_tx.digest);
 }
 
 static gz_chain_result multi_raw_tx(void *ctx, const uint8_t txid[GZ_HASH_LEN], uint8_t *buf,
@@ -604,9 +608,8 @@ static gz_chain_result multi_raw_tx(void *ctx, const uint8_t txid[GZ_HASH_LEN], 
   multi *m = ctx;
   size_t which = 0, last_len = 0;
   begin(m, GZ_CALL_RAW_TX);
-  /* Each server writes into the caller's buffer in turn; a digest of every
-   * byte (witness included, which the txid does not cover) is kept for the
-   * comparison. */
+  /* Each server writes into the caller's buffer in turn; its txid (every
+   * byte but the witness) is kept for the comparison. */
   for (size_t i = 0; i < m->n; i++) {
     gz_multi_answer *a = &m->report.answers[i];
     uint8_t check[GZ_HASH_LEN];
@@ -620,22 +623,22 @@ static gz_chain_result multi_raw_tx(void *ctx, const uint8_t txid[GZ_HASH_LEN], 
       continue;
     }
     a->u.raw_tx.len = got;
-    gz_sha256d(buf, got, a->u.raw_tx.digest);
+    memcpy(a->u.raw_tx.digest, check, GZ_HASH_LEN);
     last_len = got;
   }
   /* a transaction has no height to judge lag by: one lacking it disagrees */
   gz_chain_result v = compare_all(m, same_raw_tx, 0, NULL, &which);
   if (v == GZ_CHAIN_OK) {
     /* A server that failed after the last good one may have left its own
-     * bytes in the buffer. Make sure the buffer holds the agreed bytes. */
+     * bytes in the buffer. Make sure the buffer holds a whole agreed answer:
+     * bytes that are this transaction (one server's witness, whichever). */
     const gz_multi_answer *a = &m->report.answers[which];
-    uint8_t digest[GZ_HASH_LEN];
-    gz_sha256d(buf, last_len <= cap ? last_len : 0, digest);
-    if (last_len != a->u.raw_tx.len || !hash_eq(digest, a->u.raw_tx.digest)) {
+    uint8_t check[GZ_HASH_LEN];
+    if (last_len > cap || !gz_txid_from_raw(buf, last_len, check) || !hash_eq(check, a->u.raw_tx.digest)) {
       size_t got = 0;
       gz_chain_result r = gz_chain_raw_tx(&m->servers[which], txid, buf, cap, &got);
-      if (r == GZ_CHAIN_OK && got <= cap) gz_sha256d(buf, got, digest);
-      if (r != GZ_CHAIN_OK || got != a->u.raw_tx.len || !hash_eq(digest, a->u.raw_tx.digest))
+      if (r != GZ_CHAIN_OK || got > cap || !gz_txid_from_raw(buf, got, check) ||
+          !hash_eq(check, a->u.raw_tx.digest))
         v = GZ_CHAIN_NO_QUORUM;
       last_len = got;
     }

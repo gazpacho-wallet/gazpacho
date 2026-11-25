@@ -72,7 +72,7 @@ TX_CB39 = "bfe8f6f98a4052d3e0c3989ab13cb9744d724b2905a4de15f4366be0ba77eb16"
 GEN = {"signet": "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6",
        "mainnet": "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"}
 A = 0x7e57
-TE_WATCH, TE_WATCH_OUTPOINT = 0x7e05, 0x7e0c
+TE_WATCH, TE_WATCH_OUTPOINT, TE_UNWATCH = 0x7e05, 0x7e0c, 0x7e10
 KIND_CONFIRMED, KIND_TIP, KIND_SPENT = 2, 3, 5
 
 
@@ -291,6 +291,29 @@ try:
           "2: and reported again, with no command")
     check(requests_for(TX_A, before) > 0, "2: the worker asked the server again")
     no_trouble(h, "2")
+
+    # 2b. (P4.5, UNWATCH) a released watch is not set again at the next start --
+    sp_le = bytes.fromhex(TX_SP)[::-1]
+    check(h.wait_for(r"watch-tx txid=%s depth=1" % sp_le.hex()) is not None, "2b: the spender's watch came back too")
+    mk = h.mark()
+    h.send(cmd(TE_UNWATCH, area(A), (12, sp_le), (14, struct.pack(">I", 0)), (16, b"\x01")))
+    check(h.wait_for(r"unwatch txid=%s vout=0 tx=1" % sp_le.hex(), start=mk) is not None,
+          "2b: the release reached the chain worker")
+    h.send(cmd(TE_UNWATCH, area(A), (12, sp_le), (14, struct.pack(">I", 0)), (16, b"\x01")))
+    check(h.wait_for(r"command-result id=\S+ status=404 error=no_such_watch", start=mk) is not None, "2b: released twice: refused, not fatal")
+    h.p.send_signal(signal.SIGKILL)
+    h.exit_code(10)
+    h = start("host", "host")
+    check(h.wait_for(r" ready incarnation=") is not None, "2b: started again")
+    check(h.wait_for(r"watch-tx txid=%s depth=2" % bytes.fromhex(TX_A)[::-1].hex()) is not None,
+          "2b: the watch still wanted is set again")
+    check(h.wait_for(r"chain-synced tx=%s" % TX_A) is not None,
+          "2b: the worker reports the watch synced once it has answered it (WATCH_SYNCED, H-1)")
+    check(h.wait_for(r"chain-tip-synced height=\d+") is not None,
+          "2b: and the tip synced once every watch has its answer for it (TIP_SYNCED, B12)")
+    time.sleep(2.0)
+    check(h.count(r"watch-tx txid=%s" % sp_le.hex()) == 0, "2b: the released watch is not set again")
+    no_trouble(h, "2b")
     h.stop()
 
     # 3. a node error in the middle: restart from storage in the same process ---

@@ -151,6 +151,14 @@ target_link_libraries(fuzz_node PRIVATE gazpacho_node_test)
 target_include_directories(fuzz_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
 target_compile_definitions(fuzz_node PRIVATE GZ_TEST_KINDS)
 target_compile_options(fuzz_node PRIVATE ${GZ_NEW_CODE_WARNINGS})
+
+# The registry's release (UNWATCH, step P4.5).
+add_executable(test_watch_release tests/node/test_watch_release.c)
+target_link_libraries(test_watch_release PRIVATE gazpacho_node_test)
+target_include_directories(test_watch_release PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/core/node)
+target_compile_definitions(test_watch_release PRIVATE GZ_TEST_KINDS)
+target_compile_options(test_watch_release PRIVATE ${GZ_NEW_CODE_WARNINGS})
+add_test(NAME node_watch_release COMMAND test_watch_release)
 gz_add_test(rng       tests/sim/test_rng.c        gazpacho_sim)
 gz_add_test(sim       tests/sim/test_sim.c        gazpacho_sim)
 # One fixed seed must give the trace digest written in the test: compares
@@ -188,13 +196,18 @@ add_test(NAME core_isolation
 # archive (its calls into the core are calls inside the library).
 string(JOIN " " GZ_NODE_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/node/include
        -I${CMAKE_CURRENT_SOURCE_DIR}/core/node -I${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include
-       -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include)
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include -I${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
+       -I${secp256k1-zkp_SOURCE_DIR}/include)
+# With the signing engine (P4.3) the node calls into secp256k1-zkp: the
+# signing engine's exact list of calls, and nothing else.
 add_test(NAME node_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          --allow ${CMAKE_CURRENT_SOURCE_DIR}/tools/signing-allowed-calls.txt
           $<TARGET_FILE:gazpacho_node_isolation_release> --sources ${CMAKE_C_COMPILER} ${GZ_NODE_SCAN_FLAGS}
           ${GZ_NODE_SOURCES})
 add_test(NAME node_test_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
+          --allow ${CMAKE_CURRENT_SOURCE_DIR}/tools/signing-allowed-calls.txt
           $<TARGET_FILE:gazpacho_node_isolation_test> --sources ${CMAKE_C_COMPILER}
           "${GZ_NODE_SCAN_FLAGS} -DGZ_TEST_KINDS" ${GZ_NODE_SOURCES})
 add_library(isolation_sneaky OBJECT tests/isolation/sneaky.c)
@@ -213,8 +226,7 @@ add_test(NAME core_isolation_refuses_sneaky_object
 set(GZ_SIGNING_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing.c
   ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/sign_tx.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/round_msg.c
-  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/signing_node.c)
+  ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/round_msg.c)
 add_library(gazpacho_signing STATIC ${GZ_SIGNING_SOURCES})
 set_target_properties(gazpacho_signing PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
 target_include_directories(gazpacho_signing PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include
@@ -280,6 +292,11 @@ if(GZ_VALGRIND AND GZ_VALGRIND_TESTS AND NOT GZ_SANITIZE)
   add_test(NAME valgrind_sim_seeds COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 20 300 1 0)
   add_test(NAME valgrind_sim_profile_3 COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_sim_seeds> 10 200 1 3)
   add_test(NAME valgrind_signing COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_signing> tiny)
+  # Alone: about 450 s on a CI runner by itself, and over its 600 s limit when
+  # ctest -j runs three other tests beside it (docs/notes/ci.md, tests in
+  # parallel). The other valgrind_ tests take under a minute each and run
+  # beside the rest.
+  set_tests_properties(valgrind_signing PROPERTIES RUN_SERIAL TRUE)
   add_test(NAME valgrind_round_msg COMMAND ${GZ_MEMCHECK} $<TARGET_FILE:test_round_msg>)
 endif()
 
@@ -555,6 +572,7 @@ endif()
 
 # --- trees from terms and the creation checks (core/tree) ---
 add_subdirectory(core/tree)
+add_subdirectory(core/funding)
 
 # --- storage encryption (ports/storage/crypto): libsodium, outside the core ---
 add_subdirectory(ports/storage/crypto)
@@ -569,12 +587,6 @@ target_include_directories(test_signing_wb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/c
 target_link_libraries(test_signing_wb PRIVATE gazpacho_core secp256k1 gazpacho_sim gazpacho_superscalar gazpacho_tree)
 target_compile_options(test_signing_wb PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
 add_test(NAME signing_wb COMMAND test_signing_wb)
-
-# The engine behind the node's two calls, for the program's composite node (adapter only, PR 27).
-add_executable(test_signing_node tests/signing/test_signing_node.c)
-target_link_libraries(test_signing_node PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
-target_compile_options(test_signing_node PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
-add_test(NAME signing_node COMMAND test_signing_node)
 
 # BIP 327's vectors (the pinned library's copy, src/modules/musig/vectors.h)
 # through the calls the engine makes.
@@ -623,20 +635,14 @@ else()
 endif()
 target_link_libraries(fuzz_signing_replay PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
 target_compile_options(fuzz_signing_replay PRIVATE ${GZ_NEW_CODE_WARNINGS} -Wno-unused-function)
-if(TARGET gazpacho_lobby)
-  add_library(gazpacho_signing_lobby STATIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/lobby_outcome.c)
-  set_target_properties(gazpacho_signing_lobby PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
-  target_include_directories(gazpacho_signing_lobby PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/signing/include)
-  target_link_libraries(gazpacho_signing_lobby PUBLIC gazpacho_lobby gazpacho_core)
-  target_compile_options(gazpacho_signing_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
-  add_executable(test_signing_lobby tests/signing/test_signing_lobby.c)
-  target_link_libraries(test_signing_lobby PRIVATE gazpacho_signing_lobby)
-  target_compile_options(test_signing_lobby PRIVATE ${GZ_NEW_CODE_WARNINGS})
-  add_test(NAME signing_lobby COMMAND test_signing_lobby)
-endif()
 
 # --- the local API server (spec/local-api.md), its fake backend and tests ------
 add_subdirectory(ports/api)
 
 # --- the gazpacho program (stream S11): executor, port adapters, executables ----
 add_subdirectory(program)
+
+# Audit e2e, H1: the auditor's two-trees-on-one-outpoint scenario (tests/signing/test_c7_audit.c).
+add_executable(test_c7_audit tests/signing/test_c7_audit.c)
+target_link_libraries(test_c7_audit PRIVATE gazpacho_signing gazpacho_sim gazpacho_superscalar gazpacho_tree)
+add_test(NAME signing_c7_audit COMMAND test_c7_audit)

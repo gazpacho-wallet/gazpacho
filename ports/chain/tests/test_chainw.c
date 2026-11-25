@@ -95,10 +95,10 @@ static void stall(wx *x, bool on) {
   sim_unlock(&x->net);
 }
 
-/* Takes every waiting event into the log. */
-static void drain(wx *x) {
-  gz_chainw_event ev;
-  while (gz_chainw_take(x->w, &ev)) {
+/* One event into the log. */
+static void log_event(wx *x, const gz_chainw_event *ev_in) {
+  gz_chainw_event ev = *ev_in;
+  {
     size_t at = strlen(x->log);
     /* a change of the servers between two requests of one pass can show as
      * a moment of lag; it delays what is told and changes nothing else */
@@ -110,6 +110,12 @@ static void drain(wx *x) {
     x->n_events++;
     x->last_generation = ev.generation;
   }
+}
+
+/* Takes every waiting event into the log. */
+static void drain(wx *x) {
+  gz_chainw_event ev;
+  while (gz_chainw_take(x->w, &ev)) log_event(x, &ev);
 }
 
 /* Waits, as a loop would (poll on the descriptor), until the log ends with
@@ -434,8 +440,15 @@ static void test_reset(test_state *T) {
   CHECK(gz_chainw_broadcast(x.w, 9, x.net.world.tx[SIM_S1].raw, x.net.world.tx[SIM_S1].len) ==
         GZ_CHAINW_OK);
   CHECK(gz_chainw_reset(x.w) == 2);
-  /* gone: the events, the wake-up, the watches, the broadcast */
-  CHECK(!readable(&x) || gz_chainw_take(x.w, &ev) == 1);
+  /* gone: the events, the wake-up, the watches, the broadcast. The worker
+   * may already have told the new generation's tip: then that is what is
+   * readable, it is of generation 2, and it is kept for the log below (it
+   * used to be taken and dropped here, so the tip never reached the log) */
+  if (readable(&x)) {
+    CHECK(gz_chainw_take(x.w, &ev) == 1);
+    CHECK(ev.generation == 2);
+    log_event(&x, &ev);
+  }
   gz_chainw_stats_get(x.w, &st);
   CHECK(st.watches == 0 && st.broadcasts == 0 && st.generation == 2);
   /* the new generation starts with the tip and knows no watch */
