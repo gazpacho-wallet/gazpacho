@@ -83,9 +83,37 @@ static void test_worst_steps(void)
     h_free(&h);
 }
 
+/* The proposal's funding transaction (integration F5): the node held 128 bytes, room for the test
+ * funding only, and refused every real plan. A real one (154 bytes, one input) and one at the engine's
+ * limit are taken whole; one byte past the limit, or nothing, is refused and sets nothing. */
+static void test_funding_room(void)
+{
+    static uint8_t tx[GZ_SIGN_MAX_FUNDING_TX + 1];
+    uint8_t txid[32];
+    gz_tree_proposal_t p;
+    h_t h;
+    h_init(&h, 1, 1);
+    for (size_t i = 0; i < sizeof tx; i++) tx[i] = (uint8_t)(i * 7 + 1);
+    memset(txid, 0x5a, sizeof txid);
+    memset(&p, 0, sizeof p);
+    CHECK(gz_sg_set_funding(h.n, &p, tx, 154, txid, 1) == 1);
+    CHECK(p.funding_tx == h.n->sg_ftx && p.funding_tx_len == 154 && !memcmp(p.funding_tx, tx, 154));
+    CHECK(!memcmp(p.funding_txid, txid, 32) && p.funding_vout == 1);
+    memset(&p, 0, sizeof p);
+    CHECK(gz_sg_set_funding(h.n, &p, tx, GZ_SIGN_MAX_FUNDING_TX, txid, 0) == 1);
+    CHECK(p.funding_tx_len == GZ_SIGN_MAX_FUNDING_TX && !memcmp(p.funding_tx, tx, GZ_SIGN_MAX_FUNDING_TX));
+    memset(&p, 0, sizeof p);
+    CHECK(gz_sg_set_funding(h.n, &p, tx, GZ_SIGN_MAX_FUNDING_TX + 1, txid, 0) == 0);
+    CHECK(p.funding_tx == NULL && p.funding_tx_len == 0);
+    CHECK(gz_sg_set_funding(h.n, &p, tx, 0, txid, 0) == 0);
+    CHECK(p.funding_tx == NULL && p.funding_tx_len == 0);
+    h_free(&h);
+}
+
 int main(void)
 {
     test_room();
+    test_funding_room();
     test_worst_steps();
     return check_done();
 }

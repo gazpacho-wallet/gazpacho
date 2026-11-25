@@ -51,8 +51,18 @@
 #define GZ_FUND_MAX_SIGNED   (GZ_FUND_MAX_TX + 2u + 67u * GZ_FUND_MAX_INPUTS)
 /* The spend-back: one input, one output. */
 #define GZ_FUND_MAX_SPEND_BACK 512u
-/* A spent output's script: a witness program, 4 to 42 bytes. */
+/* Room for a spent output's script (the longest witness program, 42 bytes).
+ * plan_ok takes only key-path P2TR, OP_1 <32>, 34 bytes (review of PR 80, L-1). */
 #define GZ_FUND_MAX_SCRIPT   42u
+/* The change's dust floor: a funding's change, a P2TR output, is at least
+ * this, or the wallet takes another coin (wallet/tx's P2TR_DUST, which a
+ * build-time check keeps equal). */
+#define GZ_FUND_CHANGE_DUST  330u
+#if defined(__GNUC__) || defined(__clang__)
+#define GZ_FUND_MUST_CHECK __attribute__((warn_unused_result))
+#else
+#define GZ_FUND_MUST_CHECK
+#endif
 
 /* Factories followed at once (plans, signed fundings, acked creations). */
 #define GZ_FUND_MAX_FACTORIES 16u
@@ -120,8 +130,10 @@ typedef struct {
  * failure returns 0 and is an outcome, never an error. Byte buffers are the
  * engine's; `cap` is their size.
  *   plan        a new funding paying exactly `amount` to `script` (34 bytes,
- *               OP_1 <32>) at `feerate` sat/kvB, with exactly one other
- *               output, the wallet's own change (H16 bumps a funding only by
+ *               OP_1 <32>) at `feerate` sat/kvB, spending only key-path
+ *               P2TR coins (OP_1 <32>), with exactly one other output, the
+ *               wallet's own P2TR change (what gz_fund_funding_fee_bound
+ *               counts; the engine refuses anything else) (H16 bumps a funding only by
  *               a child on it); with `must_spend` set, input 0 spends that
  *               outpoint (H11). The wallet offers only confirmed coins, never
  *               the change of a funding not yet buried. Fills the unsigned
@@ -143,7 +155,19 @@ typedef struct {
  *               own script, paying exactly `fee`, signed. The engine never
  *               asks more than the top of its ladder (funding.md 2): the
  *               funding's fee plus `incremental_high` on the spend-back's
- *               size, or the ordinary rate when nothing is replaced. */
+ *               size, or the ordinary rate when nothing is replaced.
+ *   can_plan    optional, for the host's funds check (local-api 15.2,
+ *               `funds_short`; gz_fund_funds_short): would `plan` of
+ *               `amount` at `feerate` succeed now? A dry run of the same coin
+ *               selection over the same coins (confirmed, held by no plan,
+ *               never the change of a funding not yet buried), with change
+ *               required, no must-spend and nothing held or signed: the
+ *               change's dust floor, the wallet's input limit and its real
+ *               fee all count (wallet/tx: gzt_funding_can_plan). 1 yes, 0 no;
+ *               `*have_sat` and `*n_coins`: the sum and count of the coins a
+ *               plan could use (the largest, up to the wallet's input
+ *               limit). -1 only when it cannot tell (its coin list not known
+ *               yet); a wallet with no coins answers 0 with zeros. */
 typedef struct {
     int (*plan)(void *ctx, uint64_t amount, const uint8_t script[34], uint64_t feerate,
                 const gz_outpoint_t *must_spend, uint8_t *tx, size_t cap, size_t *tx_len,
@@ -153,6 +177,7 @@ typedef struct {
     void (*release)(void *ctx, const uint8_t *tx, size_t tx_len);
     int (*spend_back)(void *ctx, const uint8_t txid[32], uint32_t index, uint64_t fee,
                       uint8_t *out, size_t cap, size_t *out_len);
+    int (*can_plan)(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins);
     void *ctx;
 } gz_wallet_port_t;
 
@@ -271,6 +296,15 @@ typedef struct {
      * abandoned with no spend-back. Memory only: the watch fails again after
      * a start. */
     unsigned failed;
+    /* Watches whose answer is put off (GZ_CHAIN_WATCH_PENDING; review B of PR
+     * 56, third confirmation), the same bits, until their WATCH_SYNCED (or
+     * WATCH_FAILED). This factory alone waits meanwhile: no deadline
+     * decision, for at most GZ_FUND_PENDING_GRACE blocks past its deadline,
+     * after which it fails closed as for a failed watch. Memory only. */
+    unsigned pending;
+    uint32_t pending_tip;               /* the tip when `pending` last became non-empty: the
+                                           grace counts from it, or from the deadline if later
+                                           (review of PR 72, P-1) */
 } gz_fund_factory_t;
 
 typedef struct {
@@ -349,6 +383,10 @@ gz_status_t gz_fund_host_plan(gz_fund_t *f, const gz_fund_plan_in_t *in, gz_acti
 #define GZ_FUND_H1_NO_PLAN   100   /* no plan for the scope */
 #define GZ_FUND_H1_SIGN      101   /* the wallet did not sign */
 #define GZ_FUND_H1_SIGNED    102   /* the signed bytes are not the plan */
+/* Blocks past a factory's deadline that it waits for a watch told pending
+ * before it fails closed (a day of blocks: linking the deepest confirmation
+ * the chain view follows takes far less). */
+#define GZ_FUND_PENDING_GRACE 144u
 #define GZ_FUND_H1_TOO_LATE  103   /* tip + B - 1 past the deadline: a burial by it is no longer
                                       possible; the lobby's outcome Failed with cancel reason 4
                                       (review B of PR 56, N-1) */
@@ -425,6 +463,33 @@ uint64_t gz_fund_set_aside_sat(const gz_terms_outer_t *t);
  * (`package_fee` over `package_vsize`, rule 6). UINT64_MAX on overflow. */
 uint64_t gz_fund_replace_fee(uint64_t package_fee, uint64_t package_vsize, uint64_t vsize,
                              uint64_t incremental);
+/* The most a funding plan can pay in fee when it spends at most `n_coins`
+ * coins (at most GZ_FUND_MAX_INPUTS), at the host's funding rate
+ * (cfg->feerate, the only rate a funding pays: H16 never bumps a funding
+ * itself): the size of n key-path inputs, each with the largest witness
+ * (GZ_FUND_MAX_SIGNED's 67 bytes), the factory's output and the change, at
+ * that rate. At least one input. UINT64_MAX on overflow. */
+uint64_t gz_fund_funding_fee_bound(const gz_fund_config_t *cfg, size_t n_coins);
+
+/* Local-api 15.2's `funds_short` for a host opening or starting a lobby. */
+typedef enum {
+    GZ_FUND_FUNDS_OK = 1,      /* the wallet can plan the set-aside, with change, now */
+    GZ_FUND_FUNDS_SHORT,       /* it cannot: refuse with `funds_short` */
+    GZ_FUND_FUNDS_UNKNOWN      /* it cannot tell (no can_plan, or it answers -1): refuse as
+                                  for `no_wallet`. Never treat it as enough */
+} gz_fund_funds_t;
+/* Asks the wallet port's dry run (can_plan) whether a funding of
+ * `set_aside_sat` (gz_fund_set_aside_sat of the lobby's terms, plus what
+ * other hosted lobbies hold set aside but whose plans hold no coins yet:
+ * the caller's sum) at the host's rate (cfg->feerate) can be planned now.
+ * `*need_sat` and `*have_sat`, when not NULL, are set for the error's
+ * `params` and `host_funds_short`: need is the set-aside, the fee bound for
+ * the coins a plan could use and the change's dust floor (UINT64_MAX on
+ * overflow); have is what those coins hold. The answer is the dry run's,
+ * not a comparison of the two. */
+gz_fund_funds_t gz_fund_funds_short(const gz_fund_config_t *cfg, uint64_t set_aside_sat,
+                                    uint64_t *need_sat, uint64_t *have_sat) GZ_FUND_MUST_CHECK;
+
 /* ceil(rate x vsize / 1000), UINT64_MAX on overflow. */
 uint64_t gz_fund_fee(uint64_t rate, uint64_t vsize);
 

@@ -135,8 +135,8 @@ static void test_tracking(void)
 
 /* T-P42-6: every engine is held to its own budget of timers, not only a
  * slot's engine to the table's size: the node part to NP_MAX_TIMERS, a test
- * engine to TE_MAX_TIMERS, a lobby to the lobby's six, the stand-in to its
- * own. Setting a set timer replaces it; a fired or cancelled one frees its
+ * engine to TE_MAX_TIMERS, the signing engine to its one tick (P4.3), a lobby
+ * to the lobby's six, the stand-in to its own. Setting a set timer replaces it; a fired or cancelled one frees its
  * place. */
 static void test_budgets(void)
 {
@@ -157,6 +157,13 @@ static void test_budgets(void)
         CHECK(!gz_timer_note(&c, e[k].eng, gz_timer_pack(7, 1, 98), 1));
     }
     CHECK(LS_MAX_TIMERS == 6 && NP_MAX_TIMERS == 4 && TE_MAX_TIMERS == 4); /* the node part: idle, continue, sign, discovery */
+    /* The signing engine: its one tick timer (P4.3). */
+    CHECK(gz_timer_budget(&c, ENG_SIGN) == 1);
+    CHECK(gz_timer_note(&c, ENG_SIGN, gz_timer_pack(7, 1, 0), 1));
+    CHECK(gz_timer_note(&c, ENG_SIGN, gz_timer_pack(7, 1, 0), 1));         /* set again: replaces */
+    CHECK(!gz_timer_note(&c, ENG_SIGN, gz_timer_pack(7, 1, 99), 1));       /* a second: over its budget */
+    CHECK(gz_timer_note(&c, ENG_SIGN, gz_timer_pack(7, 1, 0), 0));         /* it fires */
+    CHECK(gz_timer_note(&c, ENG_SIGN, gz_timer_pack(7, 1, 99), 1));        /* and its place is free */
 }
 
 int main(void)

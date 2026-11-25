@@ -119,7 +119,8 @@ void gzp_usage(void)
         "  --reconnect-ms MS             member: first reconnect delay, doubling to 60 s (default 1000)\n"
         "  --max-per-address N           host: accepted connections per address (0: no cap)\n"
         "  --max-queue BYTES             bytes queued for sending per connection (default 4 MiB)\n"
-        "  --member-signing at-join|auto|when-unlocked   member: when it may sign (default at-join)\n");
+        "  --member-signing at-join|auto|when-unlocked   member: when it may sign (default at-join)\n"
+        "  --tip N                    the chain tip to judge rounds from until the chain reports one\n");
 #ifdef GZP_TEST_BUILD
     fprintf(stderr,
         "tests only (gazpacho-test):\n"
@@ -147,6 +148,7 @@ void gzp_usage(void)
         "  --test-big-reply BYTES        pad every test reply with BYTES\n"
         "  --test-crash-after-save K     exit once the K-th batch is durable\n"
         "  --test-crash-after-record T   exit once a batch with a record of type T (hex) is durable\n"
+        "  --test-funds ok|short|unknown  the stand-in wallet's answer to a host's funds check\n"
         "  --test-sign-outcome funding|retry|failed|unfinished   what the signing stand-in reports\n"
         "  --test-sign-delay-ms MS       ... this long after the hand-off\n"
         "  --test-crash-before-confirm K exit just before the K-th confirmation\n"
@@ -282,7 +284,10 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
             else if (!strcmp(val, "when-unlocked")) o->member_signing = 2;
             else ok = 0;
         }
+        /* The tip to judge rounds from until the chain reports one (the builders' end height, may_ack). */
+        else if (!strcmp(a, "--tip")) { ok = num(val, 1, 499999999, &v); o->tip = (int)v; }
 #ifdef GZP_TEST_BUILD
+        else if (!strcmp(a, "--test-sign-tick-ms")) { ok = num(val, 1, 60000, &v); o->test_sign_tick_ms = (int)v; }
         else if (!strcmp(a, "--test-pings")) { ok = num(val, 0, 20000, &v); o->test_pings = (int)v; }
         else if (!strcmp(a, "--test-drop-view")) { ok = num(val, 1, 255, &v); o->test_drop_view = (int)v; }
         else if (!strcmp(a, "--test-ping-ms")) { ok = num(val, 1, 600000, &v); o->test_ping_ms = (int)v; }
@@ -310,6 +315,12 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-engines")) { ok = num(val, 0, 2, &v); o->test_engines = (int)v; }
         else if (!strcmp(a, "--test-max-conns")) { ok = num(val, 1, 64, &v); o->test_max_conns = (int)v; }
         else if (!strcmp(a, "--test-drop-kind")) { ok = num(val, 1, 65535, &v); o->test_drop_kind = (int)v; }
+        else if (!strcmp(a, "--test-funds")) {
+            if (!strcmp(val, "ok")) o->test_funds = 0;
+            else if (!strcmp(val, "short")) o->test_funds = 1;
+            else if (!strcmp(val, "unknown")) o->test_funds = 2;
+            else ok = 0;
+        }
         else if (!strcmp(a, "--test-sign-outcome")) {
             if (!strcmp(val, "funding")) o->test_sign_outcome = 1;
             else if (!strcmp(val, "retry")) o->test_sign_outcome = 2;
