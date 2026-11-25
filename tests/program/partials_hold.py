@@ -52,7 +52,7 @@ def leave_held(exe, work):
         m1 = ms["m1"]
         check(m1.wait_for(r"test-drop kind=%d" % ROUND_COMPLETE_KIND, timeout=120) is not None,
               "%s: m1's partial signatures are out (the host's round_complete reached it, and was dropped)" % name)
-        mk = m1.mark()
+        mk, hk = m1.mark(), h.mark()
         m1.send(cmd(LEAVE, (12, t.scope)))
         r = m1.wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk)
         check(r is not None and r.group(1) == "409", "%s: a leave while partials are out: answered 409 (got %s)"
@@ -60,11 +60,19 @@ def leave_held(exe, work):
         check(m1.count(r"too_late", start=mk) >= 1, "%s: the refusal says too_late" % name)
         time.sleep(2)
         check(m1.count(r"slot-closed scope=%s" % t.tag, start=mk) == 0, "%s: m1's slot stays open" % name)
-        check(h.count(r"slot-closed scope=%s" % t.tag) == 0 and h.count(r"sign-member-left scope=%s" % t.tag) == 0,
-              "%s: the host's lobby goes on, m1 still in it" % name)
+        # What the host received: no leave (its seat count would drop: joined below 3), and its lobby goes on.
+        check(h.count(r"lobby scope=%s\S* role=host state=\d+ joined=[012] " % t.tag, start=hk) == 0,
+              "%s: the host received no leave: m1 is still seated" % name)
+        check(h.count(r"slot-closed scope=%s" % t.tag) == 0, "%s: the host's lobby goes on" % name)
         m1.stop()
         m1 = w.member("m1", "--member-signing", "auto", "--tip", str(TIP), *tick)
         check(started(m1), "%s: m1 starts again, without the drop" % name)
+        # Right after the start, from the journal: still refused.
+        mk2 = m1.mark()
+        m1.send(cmd(LEAVE, (12, t.scope)))
+        r2 = m1.wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk2)
+        check(r2 is not None and r2.group(1) == "409", "%s: a leave right after the restart: answered 409 (got %s)"
+              % (name, r2.group(1) if r2 else None))
         check(m1.wait_for(r"sign-outcome scope=%s .*outcome=1 " % t.tag, timeout=90) is not None,
               "%s: m1 acks: Funding" % name)
         check(state(h, t, "host", FUNDING, timeout=60), "%s: the host reaches Funding: the factory is not abandoned" % name)

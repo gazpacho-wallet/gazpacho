@@ -45,8 +45,19 @@ RULES = {
     # review B of PR 52, L4: no tip is not yet, never a no
     "ACK_WAITS_FOR_TIP": ("if (may < 0) return;", "{}"),
     # Slice 1 blocker C1: the partials-out fact
-    "PARTIALS_OUT_HELD": ("same(r->def.outer_digest, scope, 32)) return 1;", "same(r->def.outer_digest, scope, 32)) return 0;"),
-    "PARTIALS_OUT_FAIL_CLOSED": ("unresolved_state(e->exposed[i].state)) return 1;", "unresolved_state(e->exposed[i].state)) return 0;"),
+    "PARTIALS_OUT_HELD": ("same(r->def.outer_digest, scope, 32)) return GZ_SIGN_OUT_THIS;", "same(r->def.outer_digest, scope, 32)) return GZ_SIGN_OUT_NONE;"),
+    # reviews A and B of PR 81
+    "PARTIALS_OUT_HELD_SCOPE": ("unresolved_state(r->state) && same(r->def.outer_digest, scope, 32))", "unresolved_state(r->state))"),
+    "PARTIALS_OUT_EVER_PARTIAL": ("if (r->ever_partial && unresolved_state(r->state)", "if (unresolved_state(r->state)"),
+    "PARTIALS_OUT_FAIL_CLOSED": ("if (!x->has_scope) unknown = 1;", "if (!x->has_scope) {}"),
+    "PARTIALS_OUT_EVICTED": ("else if (same(x->scope, scope, 32)) return GZ_SIGN_OUT_THIS;", "else if (same(x->scope, scope, 32)) {}"),
+    "PARTIALS_OUT_EVICTED_SCOPE": ("else if (same(x->scope, scope, 32)) return", "else if (1) return"),
+    "UNRESOLVED_STATES": ("|| s == GZ_SIGN_ROUND_COMPLETE;", ";"),
+    "UNRESOLVED_ENDED": ("return s == GZ_SIGN_ROUND_ACTIVE ||", "return s == GZ_SIGN_ROUND_ABANDONED || s == GZ_SIGN_ROUND_LIVE || s == GZ_SIGN_ROUND_DEAD || s == GZ_SIGN_ROUND_ACTIVE ||"),
+    "UNFINISHED_SAVED_TIME": ("return now > x->since_ms &&", "return 0 && now > x->since_ms &&"),
+    "REPLAY_UNHELD_COMPLETE": ("x->state = GZ_SIGN_ROUND_COMPLETE;", "(void)0;"),
+    "FUNDING_DEADLINE_HELD": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "(void)0;"),
+    "FUNDING_DEADLINE_EVICTED": ("x->state = GZ_SIGN_ROUND_ABANDONED;", "(void)0;"),
     "OLD_EPOCH_REFUSED": ("return refuse_id(e, id);", "return 1;"),
     "UNFINISHED_ABANDONED": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "r->state = GZ_SIGN_ROUND_UNFINISHED;"),
     "PER_ITEM_ANSWER": ("wr32(q, (uint32_t)i); q += 4;", "wr32(q, 0u); q += 4;"),

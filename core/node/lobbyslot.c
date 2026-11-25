@@ -1293,7 +1293,7 @@ static gz_status_t gates_changed(gz_node_t *c, int opened, gz_action_list_t *out
 
 int gz_ls_partials_out(const gz_node_t *c, const uint8_t scope[32])
 {
-    return c->sign_on && gz_sign_partials_out(c->sign, scope);
+    return c->sign_on ? gz_sign_partials_out(c->sign, scope) : GZ_SIGN_OUT_NONE;
 }
 
 gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out)
@@ -1351,8 +1351,10 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
     slot_t *s = &c->slots[i];
     /* Slice 1 blocker C1 (local-api.md, leave): once a partial signature has left, the lobby is not given
      * up while its round is unresolved, so that the member's ack, and the factory, are not abandoned. */
-    if (code == GZ_CMD_LOBBY_LEAVE && gz_ls_partials_out(c, s->scope))
-        return np_command_result(out, cmd, 409, "too_late");                    /* RULE-NODE:LEAVE_PARTIALS_OUT */
+    int held_out = code == GZ_CMD_LOBBY_LEAVE ? gz_ls_partials_out(c, s->scope) : GZ_SIGN_OUT_NONE;   /* RULE-NODE:LEAVE_ONLY */
+    if (held_out == GZ_SIGN_OUT_THIS) return np_command_result(out, cmd, 409, "too_late");     /* RULE-NODE:LEAVE_PARTIALS_OUT */
+    /* A round whose lobby is not known (fail closed): its own reason, not this lobby's (review B of PR 81, B-3). */
+    if (held_out == GZ_SIGN_OUT_UNKNOWN) return np_command_result(out, cmd, 409, "too_late_unknown_round");
     c->lc.code = code;
     c->lc.refused = 0;
     c->lc.a.data = NULL;

@@ -147,7 +147,7 @@
 #define GZ_SIGN_FIELD(n)             (1u + ((n) < 253u ? 1u : 3u) + (n))
 #define GZ_SIGN_REC_STARTED_MAX      (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(36u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(2u) + GZ_SIGN_FIELD(1u) +                                       GZ_SIGN_FIELD(4u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(33u))
 #define GZ_SIGN_REC_PROPOSAL_MAX     (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_PROPOSAL))
-#define GZ_SIGN_REC_EXPOSURE_MAX     (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(36u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_FUNDING_TX) +                                       GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(72u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(GZ_SIGN_MAX_LIST68_MSG))
+#define GZ_SIGN_REC_EXPOSURE_MAX     (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(36u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_FUNDING_TX) +                                       GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(72u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(GZ_SIGN_MAX_LIST68_MSG) + GZ_SIGN_FIELD(8u))
 #define GZ_SIGN_REC_SIGNED_MAX       (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(1u) + GZ_SIGN_FIELD(68u * GZ_SIGN_MAX_ITEMS) + GZ_SIGN_FIELD(GZ_SIGN_MAX_LIST68_MSG))
 #define GZ_SIGN_REC_COMPLETED_MAX    (GZ_SIGN_FIELD(32u) + 2u * GZ_SIGN_FIELD(GZ_SIGN_MAX_SMALL_MSG) + GZ_SIGN_FIELD(4u))
 #define GZ_SIGN_REC_ACK_MAX          (GZ_SIGN_FIELD(32u) + GZ_SIGN_FIELD(33u) + GZ_SIGN_FIELD(GZ_SIGN_MAX_SMALL_MSG))
@@ -185,7 +185,8 @@
  *                    8 attempt u16, 10 tier u8, 12 items u32 each (1 to 256), 14 own contribution key 33
  *   round_proposal:  2 round_id, 4 the round_propose
  *   exposure:        2 round_id, 4 tier u8, 6 funding 36, 8 funding transaction, 10 tree digest 32,
- *                    12 items of 72 (u32 index, spent 36, sighash 32), 14 the round_partial_sigs
+ *                    12 items of 72 (u32 index, spent 36, sighash 32), 14 saved at u64 (ms, the keep
+ *                    clock), 16 the round_partial_sigs (last: the record ends in its signature)
  *   round_signed:    2 round_id, 4 tier u8, 6 finals of 68 (u32 index, 64), 8 member: the round_tier_result
  *   round_completed: 2 round_id, 4 the round_complete, 6 member: the round_ack, 8 member: ack tip u32
  *   ack_received:    2 round_id, 4 the member's contribution key 33, 6 the round_ack
@@ -329,6 +330,10 @@ typedef struct {
     uint8_t round_id[32];
     uint8_t state, why;
     uint32_t ticks;                 /* timer ticks since it left memory Unfinished (the unfinished deadline: review B, B5) */
+    uint8_t scope[32];              /* its lobby: the scope of the round_partial_sigs it saved (review of PR 81, S1) */
+    uint8_t has_scope;              /* 0: not known (fail closed) */
+    uint32_t ack_tip;               /* the member's tip when it acked, if it did (its C11 funding deadline counts from it) */
+    uint64_t since_ms;              /* the keep clock when its exposure record was saved (the unfinished deadline counts from it) */
 } gz_sign_exposed_t;
 
 /* Host only: the next attempt after a failed one. `blamed` (bit i =
@@ -354,7 +359,11 @@ typedef struct {
     uint32_t resend_ticks;          /* resend what is unanswered every this many ticks */
     uint32_t deadline_ticks;        /* a step not finished after this many ticks fails (but the nonce step: the proposal's nonces_due_ms) */
     uint32_t status_ticks;          /* host: at most one status answer per round and member in this many ticks */
-    uint32_t unfinished_ticks;      /* member: an Unfinished creation round is Abandoned after this many more ticks (0: never) */
+    uint32_t unfinished_ticks;      /* member: an Unfinished creation round is Abandoned after this many more ticks (0: never),
+                                     * or once this many ticks of tick_ms have passed on the keep clock since its exposure
+                                     * record was saved, whichever comes first: a start does not begin the count again */
+    uint32_t funding_deadline_blocks; /* member: a Complete round is Abandoned once a tip reaches its ack tip plus this
+                                     * (C11's funding deadline: a host that never funds does not keep it for good); 0: never */
     /* THE KEY HOOK (composite-node.md 2.5): this party's keypairs under
      * `scope`, the lobby the round belongs to. `factory` and `contribution`
      * are filled when not NULL; `terms_digest` (32, the round's frozen terms
@@ -471,6 +480,10 @@ typedef struct {
     gz_sign_config_t cfg;
     gz_ports_t ports;
     uint64_t incarnation;
+    /* The keep clock (the unfinished deadline): wall time while it is ahead, else the monotonic clock's
+     * progress; never back, and at a start never before the newest time the journal holds. */
+    uint64_t keep_now, keep_mono;
+    int keep_mono_set;
     uint64_t session_counter;       /* session_id32s made in this incarnation (S4, section 8) */
     uint64_t attempt_counter;       /* host: attempts proposed in this incarnation (S4) */
     uint64_t next_serial;           /* secret nonces made in this incarnation */
@@ -614,13 +627,20 @@ void gz_sign_forget_kept_unless(gz_sign_t *e, int (*keep)(void *ctx, const uint8
  * (composite-node.md section 4). */
 int gz_sign_holds_scope(const gz_sign_t *e, const uint8_t scope[32]);
 
-/* 1 if a partial signature of this party may be out for a round that is not
- * resolved and could be the lobby's `scope`: a round of the scope in memory
- * that ever sent one (Active, Unfinished or Complete), or an exposure entry
- * whose round left memory unresolved (its scope is not kept: fail closed,
- * whatever the scope). While it holds, the lobby must not be given up: the
- * round's ack, and the factory, depend on it (Slice 1 blocker C1; local-api.md,
- * leave: too_late). Resolved rounds (Live, Dead, Abandoned) do not count. */
+/* Whether a partial signature of this party may be out for a round of lobby
+ * `scope` that is not resolved: GZ_SIGN_OUT_THIS for a round of the scope
+ * that ever sent one (Active, Unfinished or Complete), in memory or through
+ * its exposure entry after it left memory; GZ_SIGN_OUT_UNKNOWN for an
+ * unresolved exposure entry whose lobby is not known (fail closed, whatever
+ * the scope; not made by this engine, which saves the scope with the
+ * record); else GZ_SIGN_OUT_NONE. While it holds, the lobby must not be
+ * given up: the round's ack, and the factory, depend on it (Slice 1 blocker
+ * C1; local-api.md, leave). Resolved rounds (Live, Dead, Abandoned) do not
+ * count. What ends it: the round's resolution; the unfinished deadline for
+ * an Unfinished round; the funding deadline for a Complete one. */
+#define GZ_SIGN_OUT_NONE    0
+#define GZ_SIGN_OUT_THIS    1
+#define GZ_SIGN_OUT_UNKNOWN 2
 int gz_sign_partials_out(const gz_sign_t *e, const uint8_t scope[32]);
 
 /* Member: the round's end as the embedding judged it from the chain

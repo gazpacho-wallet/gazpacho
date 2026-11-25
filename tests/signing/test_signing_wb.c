@@ -1498,9 +1498,9 @@ static void test_partials_out(void)
     for (size_t k = 0; k < sizeof open_states; k++) {
         r->state = open_states[k];
         r->ever_partial = 1;
-        CHECK(gz_sign_partials_out(e, scope) == 1 && gz_sign_partials_out(e, other) == 0);
+        CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_THIS && gz_sign_partials_out(e, other) == GZ_SIGN_OUT_NONE);
         r->ever_partial = 0;
-        CHECK(gz_sign_partials_out(e, scope) == 0);
+        CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_NONE);
     }
     r->ever_partial = 1;
     for (size_t k = 0; k < sizeof ended; k++) { r->state = ended[k]; CHECK(gz_sign_partials_out(e, scope) == 0); }
@@ -1511,13 +1511,23 @@ static void test_partials_out(void)
         memset(&e->exposed[n0], 0, sizeof e->exposed[n0]);
         e->n_exposures = n0 + 1;
         e->exposed[n0].state = GZ_SIGN_ROUND_FREE;                   /* held in a slot: the round's own test */
-        CHECK(gz_sign_partials_out(e, scope) == 0);
+        CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_NONE);
         for (size_t k = 0; k < sizeof open_states; k++) {
             if (open_states[k] == GZ_SIGN_ROUND_ACTIVE) continue;     /* a round leaving memory Active is Unfinished */
             e->exposed[n0].state = open_states[k];
-            CHECK(gz_sign_partials_out(e, scope) == 1 && gz_sign_partials_out(e, other) == 1);
+            /* its lobby not known: fail closed, for every lobby, with its own answer */
+            e->exposed[n0].has_scope = 0;
+            CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_UNKNOWN && gz_sign_partials_out(e, other) == GZ_SIGN_OUT_UNKNOWN);
+            /* its lobby known (the saved scope): that lobby only */
+            e->exposed[n0].has_scope = 1;
+            memcpy(e->exposed[n0].scope, scope, 32);
+            CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_THIS && gz_sign_partials_out(e, other) == GZ_SIGN_OUT_NONE);
         }
-        for (size_t k = 0; k < sizeof ended; k++) { e->exposed[n0].state = ended[k]; CHECK(gz_sign_partials_out(e, scope) == 0); }
+        for (size_t k = 0; k < sizeof ended; k++) {
+            e->exposed[n0].state = ended[k];
+            e->exposed[n0].has_scope = 0;
+            CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_NONE);
+        }
         memset(&e->exposed[n0], 0, sizeof e->exposed[n0]);
         e->n_exposures = n0;
     }
@@ -1543,6 +1553,8 @@ static void test_partials_out_clears(void)
         memset(&e->exposed[n0], 0, sizeof e->exposed[n0]);
         e->exposed[n0].round_id[0] = 0xc3;
         e->exposed[n0].state = GZ_SIGN_ROUND_UNFINISHED;
+        e->exposed[n0].has_scope = 1;
+        memcpy(e->exposed[n0].scope, scope, 32);
         e->n_exposures = n0 + 1;
         size_t recs = h.p[1].n_recs;
         CHECK(gz_sign_partials_out(e, scope) == 1);
@@ -1553,6 +1565,122 @@ static void test_partials_out_clears(void)
         CHECK(e->exposed[n0].state == GZ_SIGN_ROUND_ABANDONED && gz_sign_partials_out(e, scope) == 0);
         CHECK(h.p[1].n_recs > recs && h.p[1].recs[h.p[1].n_recs - 1].type == GZ_SIGN_REC_ROUND_ENDED);   /* saved */
     }
+    h_free(&h);
+}
+
+/* Review A of PR 81, M1: the unfinished deadline counts from the time the exposure record was saved, on the
+ * keep clock, so a start does not begin it again. Member 1's partial signatures are out, its round goes
+ * Unfinished at the step deadline, and the member restarts 50 minutes later: the round is still out then, and
+ * Abandoned (the lobby leavable) at 60 minutes, not 110. */
+static void test_unfinished_deadline_across_restart(void)
+{
+    harness_t h;
+    const uint64_t t0 = 1700000000000ull, minute = 60000ull;
+    uint8_t scope[32];
+    g_h_now = t0;
+    h_init(&h, 3);
+    h.unfinished_ticks = 3600000;                                  /* an hour of 1 ms ticks */
+    for (uint32_t g = 0; g < h.n; g++) h.p[g].e->cfg.unfinished_ticks = h.unfinished_ticks;
+    CHECK(h_begin(&h, 1, 3, 0) == GZ_OK);
+    deliver_until_sent(&h, 1, GZ_SIGN_MSG_PARTIALS);
+    gz_sign_round_t *r = round_of(&h, 1);
+    CHECK(r && r->ever_partial);
+    if (!r) { h_free(&h); g_h_now = 0; return; }
+    memcpy(scope, r->def.outer_digest, 32);
+    h.drop_to |= 1u << 1;                                            /* the results never reach it */
+    for (uint32_t k = 0; k <= h.deadline_ticks + 2; k++) h_tick(&h, 1);
+    r = round_of(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_UNFINISHED && gz_sign_partials_out(h.p[1].e, scope) == GZ_SIGN_OUT_THIS);
+    g_h_now = t0 + 50 * minute;
+    CHECK(h_restart(&h, 1) == GZ_OK);
+    h_tick(&h, 1);
+    CHECK(gz_sign_partials_out(h.p[1].e, scope) == GZ_SIGN_OUT_THIS);     /* 50 minutes: still out */
+    g_h_now = t0 + 60 * minute + 1000;
+    for (uint32_t k = 0; k <= h.deadline_ticks + 2; k++) h_tick(&h, 1);   /* (Active again at the start: its step first) */
+    r = round_of(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_ABANDONED && gz_sign_partials_out(h.p[1].e, scope) == GZ_SIGN_OUT_NONE);
+    CHECK(h.errors == 0);
+    h_free(&h);
+    g_h_now = 0;
+}
+
+/* Review A of PR 81: a round this start does not hold (here its builder no longer rebuilds it, as for an
+ * earlier epoch's) whose ack was saved comes back Complete, not Unfinished: the host may fund it, so it is
+ * never Abandoned at the unfinished deadline and its lobby stays unleavable. */
+static void test_unheld_complete_stays_complete(void)
+{
+    harness_t h;
+    uint8_t id[32], scope[32];
+    h_init(&h, 1);
+    h.builder.tip = 1000;
+    CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+    h_flush(&h, 100000);
+    const gz_sign_round_t *r = h_newest(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_COMPLETE);
+    if (!r) { h_free(&h); return; }
+    memcpy(id, r->id, 32); memcpy(scope, r->def.outer_digest, 32);
+    h.unfinished_ticks = 3;
+    h.builder.refuse_replay = 1;
+    CHECK(h_restart(&h, 1) == GZ_OK);
+    gz_sign_t *e = h.p[1].e;
+    gz_sign_exposed_t *x = evicted(e, id);
+    CHECK(h_find(&h, 1, id) == NULL && x != NULL);
+    if (x) {
+        CHECK(x->state == GZ_SIGN_ROUND_COMPLETE && x->ack_tip == 1000 && x->has_scope && !memcmp(x->scope, scope, 32));
+        for (int k = 0; k < 6; k++) h_tick(&h, 1);
+        CHECK(x->state == GZ_SIGN_ROUND_COMPLETE && gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_THIS);
+    }
+    h.builder.refuse_replay = 0;
+    h_free(&h);
+}
+
+static void tip_to(harness_t *h, uint32_t g, uint32_t height)
+{
+    gz_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_CHAIN;
+    ev.u.chain.kind = GZ_CHAIN_NEW_TIP;
+    ev.u.chain.height = height;
+    h_event(h, g, &ev);
+}
+
+/* Through the real flow (review B of PR 81, B-4; review A, S1): a member acks a round, and GZ_SIGN_MAX_ROUNDS
+ * newer rounds push it out of memory Complete. Its exposure entry knows its lobby: that lobby's leave is
+ * refused, another lobby's is not. Then C11's funding deadline (B-1): a host that never funds keeps it until
+ * a tip reaches the ack tip plus funding_deadline_blocks, no longer; every Complete round, held or not, is
+ * Abandoned and saved so, and after a restart the lobby can be left. */
+static void test_partials_out_real_flow(void)
+{
+    harness_t h;
+    uint8_t first[32], scope[32], other[32];
+    memset(other, 0x7d, 32);
+    h_init(&h, 1);
+    h.builder.tip = 1000;
+    gz_sign_t *e = h.p[1].e;
+    e->cfg.funding_deadline_blocks = 36;
+    CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+    h_flush(&h, 100000);
+    const gz_sign_round_t *r = h_newest(&h, 1);
+    CHECK(r && r->state == GZ_SIGN_ROUND_COMPLETE);
+    if (!r) { h_free(&h); return; }
+    memcpy(first, r->id, 32); memcpy(scope, r->def.outer_digest, 32);
+    for (int k = 0; k < GZ_SIGN_MAX_ROUNDS; k++) {
+        CHECK(h_begin(&h, 1, 1, 0) == GZ_OK);
+        h_flush(&h, 100000);
+    }
+    gz_sign_exposed_t *x = evicted(e, first);
+    CHECK(h_find(&h, 1, first) == NULL && x != NULL);
+    if (x) CHECK(x->state == GZ_SIGN_ROUND_COMPLETE && x->has_scope && !memcmp(x->scope, scope, 32) && x->ack_tip == 1000);
+    CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_THIS && gz_sign_partials_out(e, other) == GZ_SIGN_OUT_NONE);
+    tip_to(&h, 1, 1035);                                             /* before the deadline */
+    CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_THIS && (!x || x->state == GZ_SIGN_ROUND_COMPLETE));
+    for (int k = 0; k < 4; k++) tip_to(&h, 1, 1036 + (uint32_t)k);    /* at it: a few each step */
+    if (x) CHECK(x->state == GZ_SIGN_ROUND_ABANDONED);
+    CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_NONE);
+    CHECK(h_restart(&h, 1) == GZ_OK);                                /* saved: it stays so */
+    e = h.p[1].e;
+    CHECK(gz_sign_partials_out(e, scope) == GZ_SIGN_OUT_NONE);
+    CHECK(h.errors == 0);
     h_free(&h);
 }
 
@@ -1597,6 +1725,9 @@ int main(void)
     test_ack_waits_for_tip();
     test_partials_out();
     test_partials_out_clears();
+    test_unfinished_deadline_across_restart();
+    test_unheld_complete_stays_complete();
+    test_partials_out_real_flow();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);

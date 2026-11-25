@@ -238,10 +238,12 @@ static void honest_counts(harness_t *h, uint8_t tiers)
             size_t fl, il, pl;
             const h_rec_t *xr = h->p[j].n_recs == 6 ? &h->p[j].recs[3] : NULL;
             const uint8_t *ftx = xr ? rec_field(xr, 8, &fl) : NULL, *dig = xr ? rec_field(xr, 10, NULL) : NULL;
-            const uint8_t *its = xr ? rec_field(xr, 12, &il) : NULL, *pms = xr ? rec_field(xr, 14, &pl) : NULL;
+            const uint8_t *its = xr ? rec_field(xr, 12, &il) : NULL, *pms = xr ? rec_field(xr, 16, &pl) : NULL;
             const h_sent_t *ps0 = h_sent_kind(h, j, GZ_SIGN_MSG_PARTIALS, 0);
             CHECK(ftx && fl == 94 && dig && memcmp(dig, r->def.tree_digest, 32) == 0 && its && il == 72u * (size_t)mine);
             CHECK(pms && ps0 && pl == ps0->len && memcmp(pms, ps0->b, pl) == 0);
+            size_t tl = 0;
+            CHECK(xr && rec_field(xr, 14, &tl) && tl == 8);                  /* the time it was saved */
         }
     }
     /* the host: one proposal, one nonce set and one result per member per tier, one complete each */

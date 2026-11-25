@@ -469,6 +469,19 @@ void gz_sign_tree_digest(const gz_sign_def_t *d, const uint8_t (*digest)[32], co
     gz_sign_sha256_done(&s, out);
 }
 
+/* The keep clock (gz_sign_t keep_now): never back. Wall time while the wall clock runs ahead of it, else the
+ * monotonic clock's progress; a start raises it to the newest time its records hold. */
+static uint64_t keep_clock(gz_sign_t *e)
+{
+    uint64_t m = e->ports.clock.mono_ms ? e->ports.clock.mono_ms(e->ports.clock.ctx) : 0;
+    uint64_t w = e->ports.clock.now_ms ? e->ports.clock.now_ms(e->ports.clock.ctx) : 0;
+    if (e->keep_mono_set && m > e->keep_mono) e->keep_now += m - e->keep_mono;
+    e->keep_mono = m;
+    e->keep_mono_set = 1;
+    if (w > e->keep_now) e->keep_now = w;
+    return e->keep_now;
+}
+
 /* ---- rounds held in memory ---- */
 
 static gz_sign_round_t *find(gz_sign_t *e, const uint8_t id[32])
@@ -541,7 +554,7 @@ static void keep_exposed_state(gz_sign_t *e, const gz_sign_round_t *r)
      * here will finish it, and Unfinished is what gz_sign_resolve and the unfinished deadline take (review B, B5). */
     uint8_t state = r->state == GZ_SIGN_ROUND_ACTIVE ? GZ_SIGN_ROUND_UNFINISHED : r->state;
     for (size_t i = 0; i < e->n_exposures; i++)
-        if (same(e->exposed[i].round_id, r->id, 32)) { e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }   /* RULE:KEEP_EVICTED */
+        if (same(e->exposed[i].round_id, r->id, 32)) { e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; e->exposed[i].ack_tip = r->ack_tip; }   /* RULE:KEEP_EVICTED */
 }
 
 /* The exposure entry of a round, whether it is held in a slot or has left memory, or NULL. */
@@ -676,11 +689,24 @@ static int add_exposure(gz_sign_t *e, const uint8_t txid[32], uint32_t vout, con
         e->exposures[i].funding.vout = vout;
         memcpy(e->exposures[i].tree_digest, digest, 32);
         e->n_exposures++;
+        e->exposed[i].has_scope = 0; e->exposed[i].since_ms = 0; e->exposed[i].ack_tip = 0;
     }
     memcpy(e->exposed[i].round_id, round_id, 32);
     e->exposed[i].state = GZ_SIGN_ROUND_FREE;                   /* held in a slot */
     e->exposed[i].why = 0; e->exposed[i].ticks = 0;
     return 1;
+}
+
+/* What an exposure entry knows of its round besides C7: its lobby, and when its first record was saved. */
+static void exposure_meta(gz_sign_t *e, const uint8_t round_id[32], const uint8_t scope[32], uint64_t since_ms)
+{
+    for (size_t i = 0; i < e->n_exposures; i++) {
+        gz_sign_exposed_t *x = &e->exposed[i];
+        if (!same(x->round_id, round_id, 32)) continue;
+        if (!x->has_scope || since_ms < x->since_ms) x->since_ms = since_ms;   /* the round's first tier */
+        memcpy(x->scope, scope, 32);
+        x->has_scope = 1;
+    }
 }
 
 /* Room for round r's exposure record: the round has its entry, or there is space (F2). */
@@ -1275,7 +1301,13 @@ static int exposure_record(gz_sign_t *e, const gz_sign_round_t *r, uint8_t t, co
             if (!gz_sign_tx_parse(r->def.items[i].tx, r->def.items[i].tx_len, &tx)) return 0;
             wr32(q, (uint32_t)i); spent_of(&tx, q + 4); memcpy(q + 40, r->digest[i], 32); q += 72;
         }
-    gz_rmsg_put(w, 14, r->partials_msg[t], r->partials_len[t]);
+    {
+        uint8_t at[8];
+        uint64_t now = keep_clock(e);
+        for (int k = 0; k < 8; k++) at[k] = (uint8_t)(now >> (56 - 8 * k));
+        gz_rmsg_put(w, 14, at, 8);
+    }
+    gz_rmsg_put(w, 16, r->partials_msg[t], r->partials_len[t]);   /* last: the record ends in its signature */
     return 1;
 }
 
@@ -1294,6 +1326,7 @@ static void save_exposure(gz_sign_t *e, gz_sign_round_t *r, uint8_t t, emit_t *e
     /* The in-memory C7 set follows the saved record, never runs ahead of it (review A, F1). */
     if (em->st == GZ_OK && !add_exposure(e, r->def.funding_txid, r->def.funding_vout, r->def.tree_digest, r->id))   /* RULE:C7_AFTER_SAVE */
         em->st = GZ_ERR_FAILED;
+    if (em->st == GZ_OK) exposure_meta(e, r->id, r->def.outer_digest, e->keep_now);   /* the time the record holds */
 }
 
 static void member_all_nonces(gz_sign_t *e, gz_sign_round_t *r, const gz_sign_msg_t *m, emit_t *em)
@@ -2237,7 +2270,7 @@ static void host_tick_resend(gz_sign_t *e, gz_sign_round_t *r, emit_t *em)
 static const gz_rmsg_field_t T_STARTED[] = {FX(2, 32), FX(4, 36), FX(6, 1), FX(8, 2), FX(10, 1), FL(12, 4, 1, GZ_SIGN_MAX_ITEMS), FX(14, 33)};
 static const gz_rmsg_field_t T_PROPOSAL[] = {FX(2, 32), FV(4, GZ_RMSG_HEADER, GZ_SIGN_MAX_PROPOSAL)};
 static const gz_rmsg_field_t T_EXPOSURE[] = {FX(2, 32), FX(4, 1), FX(6, 36), FV(8, 60, GZ_SIGN_MAX_FUNDING_TX), FX(10, 32),
-                                             FL(12, 72, 1, GZ_SIGN_MAX_ITEMS), FV(14, GZ_RMSG_HEADER, GZ_SIGN_MAX_LIST68_MSG)};
+                                             FL(12, 72, 1, GZ_SIGN_MAX_ITEMS), FX(14, 8), FV(16, GZ_RMSG_HEADER, GZ_SIGN_MAX_LIST68_MSG)};
 static const gz_rmsg_field_t T_SIGNED[] = {FX(2, 32), FX(4, 1), FL(6, 68, 1, GZ_SIGN_MAX_ITEMS), OV(8, GZ_RMSG_HEADER, GZ_SIGN_MAX_LIST68_MSG)};
 static const gz_rmsg_field_t T_COMPLETED[] = {FX(2, 32), FV(4, GZ_RMSG_HEADER, GZ_SIGN_MAX_SMALL_MSG),
                                               OV(6, GZ_RMSG_HEADER, GZ_SIGN_MAX_SMALL_MSG), OX(8, 4)};
@@ -2371,6 +2404,12 @@ static int replay(gz_sign_t *e, const gz_record_t *rec, const uint8_t **pending_
     case GZ_SIGN_REC_EXPOSURE: {
         if (e->cfg.host || gz_rmsg_fields(b, len, T_EXPOSURE, NFIELDS(T_EXPOSURE), g, NULL) != GZ_RMSG_OK) return 0;
         (void)add_exposure(e, g[2].v, be32(g[2].v + 32), g[4].v, g[0].v);   /* C7: whatever epoch it was made in; none lost silently */
+        {
+            uint64_t at = 0;
+            for (int k = 0; k < 8; k++) at = at << 8 | g[6].v[k];
+            exposure_meta(e, g[0].v, g[7].v + 6, at);               /* the saved round_partial_sigs' scope */
+            if (at > e->keep_now) e->keep_now = at;                 /* the keep clock never goes back across a start */
+        }
         r = find(e, g[0].v);
         if (!r) {
             /* Partial signatures out for a round this start does not hold (an earlier epoch, one the builder
@@ -2380,10 +2419,10 @@ static int replay(gz_sign_t *e, const gz_record_t *rec, const uint8_t **pending_
             return is_known(e, g[0].v);
         }
         t = g[1].v[0];
-        if (t >= r->def.n_tiers || g[6].len > sizeof r->partials_msg[t] || !same(g[4].v, r->def.tree_digest, 32) ||
-            !saved_msg(e, r, g[6].v, g[6].len, GZ_SIGN_MSG_PARTIALS, r->me, &m) || m.tier != t) return 0;
+        if (t >= r->def.n_tiers || g[7].len > sizeof r->partials_msg[t] || !same(g[4].v, r->def.tree_digest, 32) ||
+            !saved_msg(e, r, g[7].v, g[7].len, GZ_SIGN_MSG_PARTIALS, r->me, &m) || m.tier != t) return 0;
         r->tier_state[t] = GZ_SIGN_TIER_SIGNED; r->ever_partial = 1; r->tier = t;
-        memcpy(r->partials_msg[t], g[6].v, g[6].len); r->partials_len[t] = (uint32_t)g[6].len;
+        memcpy(r->partials_msg[t], g[7].v, g[7].len); r->partials_len[t] = (uint32_t)g[7].len;
         return 1;
     }
     case GZ_SIGN_REC_ROUND_SIGNED: {
@@ -2420,7 +2459,16 @@ static int replay(gz_sign_t *e, const gz_record_t *rec, const uint8_t **pending_
     case GZ_SIGN_REC_ROUND_COMPLETED:
         if (gz_rmsg_fields(b, len, T_COMPLETED, NFIELDS(T_COMPLETED), g, NULL) != GZ_RMSG_OK) return 0;
         r = find(e, g[0].v);
-        if (!r) return is_known(e, g[0].v);
+        if (!r) {
+            /* A round this start does not hold whose ack was saved: Complete, as it was (the host may fund it),
+             * never Unfinished and so Abandoned an hour later (review A of PR 81). */
+            gz_sign_exposed_t *x = e->cfg.host ? NULL : evicted(e, g[0].v);
+            if (x && x->state == GZ_SIGN_ROUND_UNFINISHED && g[2].present && g[3].present) {
+                x->state = GZ_SIGN_ROUND_COMPLETE;                                    /* RULE:REPLAY_UNHELD_COMPLETE */
+                x->ack_tip = be32(g[3].v);
+            }
+            return is_known(e, g[0].v);
+        }
         if (g[2].present == e->cfg.host || g[3].present == e->cfg.host) return 0;   /* a member's carries its ack and tip */
         if (!saved_msg(e, r, g[1].v, g[1].len, GZ_SIGN_MSG_COMPLETE, 0, &m)) return 0;
         for (int k = 0; k < r->def.n_tiers; k++) if (r->tier_state[k] != GZ_SIGN_TIER_DONE && count_items(r, r->me, k)) return 0;
@@ -2593,6 +2641,48 @@ gz_status_t gz_sign_init(gz_sign_t *e, const gz_sign_config_t *cfg, const gz_por
 /* The tick (composite-node.md 8.3, R3): every round counts it; then at most one round's deadline action
  * and one round's resends, each found round-robin from where the last tick stopped, so that a step stays
  * bounded whatever the number of rounds. The rest wait for the next tick. */
+/* The unfinished deadline of a member's round: its ticks in this run, or the time since its exposure record
+ * was saved on the keep clock, which a start does not set back (review A of PR 81, M1). */
+static int unfinished_due(gz_sign_t *e, uint32_t ticks, const uint8_t round_id[32])
+{
+    const gz_sign_exposed_t *x = NULL;
+    uint64_t now;
+    if (!e->cfg.unfinished_ticks) return 0;
+    if (ticks >= e->cfg.unfinished_ticks) return 1;
+    for (size_t i = 0; i < e->n_exposures && !x; i++)
+        if (same(e->exposed[i].round_id, round_id, 32)) x = &e->exposed[i];
+    if (!x || !x->has_scope || !x->since_ms) return 0;
+    now = keep_clock(e);
+    return now > x->since_ms && now - x->since_ms >= (uint64_t)e->cfg.unfinished_ticks * e->cfg.tick_ms;   /* RULE:UNFINISHED_SAVED_TIME */
+}
+
+/* C11's funding deadline for a member (review B of PR 81, B-1): a Complete round, in memory or not, whose
+ * funding has not been resolved by the time a tip reaches its ack tip plus funding_deadline_blocks is
+ * Abandoned and saved so; a funding seen buried later still makes it Live (gz_sign_resolve). A few in a
+ * step, so that their records fit one step's actions. */
+static void funding_deadline(gz_sign_t *e, uint32_t tip, emit_t *em)
+{
+    int ended = 0;
+    if (e->cfg.host || !e->cfg.funding_deadline_blocks) return;
+    for (int i = 0; i < GZ_SIGN_MAX_ROUNDS && ended < GZ_SIGN_MAX_ROUNDS && em->st == GZ_OK; i++) {
+        gz_sign_round_t *r = &e->rounds[i];
+        if (r->state != GZ_SIGN_ROUND_COMPLETE || !r->ack_tip ||
+            (uint64_t)tip < (uint64_t)r->ack_tip + e->cfg.funding_deadline_blocks) continue;
+        wipe_secrets(r);
+        save_ended(e, r, GZ_SIGN_END_ABANDONED, 0, em);
+        r->state = GZ_SIGN_ROUND_ABANDONED;                                          /* RULE:FUNDING_DEADLINE_HELD */
+        ended++;
+    }
+    for (size_t i = 0; i < e->n_exposures && ended < GZ_SIGN_MAX_ROUNDS && em->st == GZ_OK; i++) {
+        gz_sign_exposed_t *x = &e->exposed[i];
+        if (x->state != GZ_SIGN_ROUND_COMPLETE || !x->ack_tip ||
+            (uint64_t)tip < (uint64_t)x->ack_tip + e->cfg.funding_deadline_blocks) continue;
+        save_ended_of(e, x->round_id, 0, x->why, NULL, 0, GZ_SIGN_END_ABANDONED, 0, em);
+        x->state = GZ_SIGN_ROUND_ABANDONED;                                          /* RULE:FUNDING_DEADLINE_EVICTED */
+        ended++;
+    }
+}
+
 static void tick(gz_sign_t *e, emit_t *em)
 {
     uint64_t now = e->ports.clock.now_ms ? e->ports.clock.now_ms(e->ports.clock.ctx) : 0;
@@ -2627,7 +2717,7 @@ static void tick(gz_sign_t *e, emit_t *em)
             r->state = GZ_SIGN_ROUND_UNFINISHED; r->why = GZ_SIGN_WHY_DEADLINE; r->ticks = 0;
             member_resend(e, r, em);
             acted = 1; e->rr = start + (uint32_t)k + 1;
-        } else if (!acted && r->state == GZ_SIGN_ROUND_UNFINISHED && e->cfg.unfinished_ticks && r->ticks >= e->cfg.unfinished_ticks) {
+        } else if (!acted && r->state == GZ_SIGN_ROUND_UNFINISHED && unfinished_due(e, r->ticks, r->id)) {
             /* a creation round with nothing to exit: Abandoned (spec section 7) */
             r->state = GZ_SIGN_ROUND_ABANDONED;                                          /* RULE:UNFINISHED_ABANDONED */
             save_ended(e, r, GZ_SIGN_END_ABANDONED, gz_sign_reason(r->why, 0), em);
@@ -2643,7 +2733,7 @@ static void tick(gz_sign_t *e, emit_t *em)
         gz_sign_exposed_t *x = &e->exposed[i];
         if (x->state != GZ_SIGN_ROUND_UNFINISHED) continue;
         if (x->ticks < e->cfg.unfinished_ticks) x->ticks++;
-        if (x->ticks < e->cfg.unfinished_ticks || ended == GZ_SIGN_MAX_ROUNDS) continue;
+        if (!unfinished_due(e, x->ticks, x->round_id) || ended == GZ_SIGN_MAX_ROUNDS) continue;
         x->state = GZ_SIGN_ROUND_ABANDONED;                                          /* RULE:EVICTED_ABANDONED */
         save_ended_of(e, x->round_id, 0, x->why, NULL, 0, GZ_SIGN_END_ABANDONED, gz_sign_reason(x->why, 0), em);
         ended++;
@@ -2680,6 +2770,9 @@ gz_status_t gz_sign_handle(gz_sign_t *e, const gz_event_t *ev, gz_action_list_t 
         else member_message(e, &ev->u.message.link, &m, b, len, &em);
     } else if (ev->kind == GZ_EVENT_TIMER_FIRED && ev->u.timer.timer_id == TIMER_ID) {
         tick(e, &em);
+    } else if (ev->kind == GZ_EVENT_CHAIN && !e->cfg.host &&
+               (ev->u.chain.kind == GZ_CHAIN_NEW_TIP || ev->u.chain.kind == GZ_CHAIN_TIP_SYNCED)) {
+        funding_deadline(e, ev->u.chain.height, &em);
     } else if (ev->kind == GZ_EVENT_PEER_CONNECTED && !e->cfg.host) {
         /* The reconnect step (contract v2 node rule 6) for every round held on this link. */
         for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++)
@@ -2797,19 +2890,24 @@ void gz_sign_forget_kept_unless(gz_sign_t *e, int (*keep)(void *ctx, const uint8
 /* A round's state that is not resolved, for gz_sign_partials_out. */
 static int unresolved_state(uint8_t s)
 {
-    return s == GZ_SIGN_ROUND_ACTIVE || s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE;
+    return s == GZ_SIGN_ROUND_ACTIVE || s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE;   /* RULE:UNRESOLVED_STATES RULE:UNRESOLVED_ENDED */
 }
 
 int gz_sign_partials_out(const gz_sign_t *e, const uint8_t scope[32])
 {
-    if (!e || !scope) return 0;
+    if (!e || !scope) return GZ_SIGN_OUT_NONE;
     for (int i = 0; i < GZ_SIGN_MAX_ROUNDS; i++) {
         const gz_sign_round_t *r = &e->rounds[i];
-        if (r->ever_partial && unresolved_state(r->state) && same(r->def.outer_digest, scope, 32)) return 1;   /* RULE:PARTIALS_OUT_HELD */
+        if (r->ever_partial && unresolved_state(r->state) && same(r->def.outer_digest, scope, 32)) return GZ_SIGN_OUT_THIS;   /* RULE:PARTIALS_OUT_HELD RULE:PARTIALS_OUT_HELD_SCOPE RULE:PARTIALS_OUT_EVER_PARTIAL */
     }
-    for (size_t i = 0; i < e->n_exposures; i++)
-        if (e->exposed[i].state != GZ_SIGN_ROUND_FREE && unresolved_state(e->exposed[i].state)) return 1;   /* RULE:PARTIALS_OUT_FAIL_CLOSED */
-    return 0;
+    int unknown = 0;
+    for (size_t i = 0; i < e->n_exposures; i++) {
+        const gz_sign_exposed_t *x = &e->exposed[i];
+        if (x->state == GZ_SIGN_ROUND_FREE || !unresolved_state(x->state)) continue;   /* held: the round's own test above */
+        if (!x->has_scope) unknown = 1;                                                  /* RULE:PARTIALS_OUT_FAIL_CLOSED */
+        else if (same(x->scope, scope, 32)) return GZ_SIGN_OUT_THIS;                    /* RULE:PARTIALS_OUT_EVICTED RULE:PARTIALS_OUT_EVICTED_SCOPE */
+    }
+    return unknown ? GZ_SIGN_OUT_UNKNOWN : GZ_SIGN_OUT_NONE;
 }
 
 int gz_sign_holds_scope(const gz_sign_t *e, const uint8_t scope[32])
