@@ -137,9 +137,13 @@ int gzp_keys_init(gzp_keys_t *k, const secp256k1_context *secp, gzw_network net,
 /* Wipe everything, the scoped table included. */
 void gzp_keys_free(gzp_keys_t *k);
 
-/* The per-lobby key at (epoch, index), no policy. sec or pub may be NULL. */
+#ifdef GZP_TEST_BUILD
+/* The per-lobby key at (epoch, index), no policy: the test build only (the
+ * vectors, the test engines' single key). The release library has no such
+ * symbol (program_release_build checks it). sec or pub may be NULL. */
 int gzp_keys_lobby_raw(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33],
                        gzp_keys_err_t *err);
+#endif
 
 /* The same under the policy: the current epoch only, nothing while frozen. */
 int gzp_keys_lobby(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33],

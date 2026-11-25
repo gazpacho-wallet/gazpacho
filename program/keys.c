@@ -95,8 +95,10 @@ static void zero_out(uint8_t sec[32], uint8_t pub[33])
     if (pub) memset(pub, 0, 33);
 }
 
-int gzp_keys_lobby_raw(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33],
-                       gzp_keys_err_t *err)
+/* No policy: the release program reaches it only through gzp_keys_lobby and
+ * the scoped table (review of PR 53's boundary, L1). */
+static int lobby_raw(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33],
+                     gzp_keys_err_t *err)
 {
     uint32_t path[5];
     gzw_xprv x;
@@ -124,7 +126,7 @@ int gzp_keys_lobby(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t 
         set_err(err, k ? GZP_KEYS_POLICY : GZP_KEYS_BAD_ARGUMENT, 0);
         return 0;
     }
-    return gzp_keys_lobby_raw(k, epoch, index, sec, pub, err);
+    return lobby_raw(k, epoch, index, sec, pub, err);
 }
 
 int gzp_keys_host(const gzp_keys_t *k, uint8_t sec[32], uint8_t pub[33], uint32_t *k_out, gzp_keys_err_t *err)
@@ -481,3 +483,13 @@ int gzp_keys_net_fn(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32], 
 {
     return gzp_keys_lobby((const gzp_keys_t *)ctx, epoch, index, sec, pub, NULL);
 }
+
+#ifdef GZP_TEST_BUILD
+/* The test build's window on the raw derivation, for the vectors and the
+ * test engines' single key. Not in the release library. */
+int gzp_keys_lobby_raw(const gzp_keys_t *k, uint32_t epoch, uint32_t index, uint8_t sec[32], uint8_t pub[33],
+                       gzp_keys_err_t *err)
+{
+    return lobby_raw(k, epoch, index, sec, pub, err);
+}
+#endif

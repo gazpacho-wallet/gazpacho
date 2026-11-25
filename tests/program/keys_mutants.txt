@@ -49,7 +49,7 @@ find-scope-31	program/keys.c	!memcmp(k->scopes[i].scope, scope, 32)	!memcmp(k->s
 scope-index-range	program/keys.c	index >= GZP_KEYS_INDEX_LIMIT - 1) {	index >= GZP_KEYS_INDEX_LIMIT) {
 scope-no-replace-wipe	program/keys.c	if ((s = find_scope(k, scope)) != NULL) gzw_wipe(s, sizeof *s);	s = find_scope(k, scope);
 scope-factory-index	program/keys.c	gzp_keys_lobby(k, epoch, index + 1, fac, NULL, err)	gzp_keys_lobby(k, epoch, index, fac, NULL, err)
-scope-raw	program/keys.c	ok = gzp_keys_lobby(k, epoch, index, con, NULL, err)	ok = gzp_keys_lobby_raw(k, epoch, index, con, NULL, err)
+scope-raw	program/keys.c	ok = gzp_keys_lobby(k, epoch, index, con, NULL, err)	ok = lobby_raw(k, epoch, index, con, NULL, err)
 scope-no-wipe-locals	program/keys.c	    gzw_wipe(con, sizeof con);\n    gzw_wipe(fac, sizeof fac);\n	
 scoped-digest-ignored	program/keys.c	    if (gzw_ct_equal(s->digest, digest, 32) != 1) return 0;	
 scoped-no-zero	program/keys.c	    if (factory) gzw_wipe(factory, 32);\n    if (contribution) gzw_wipe(contribution, 32);\n	
@@ -59,7 +59,7 @@ free-nothing	program/keys.c	if (k) gzw_wipe(k, sizeof *k);	if (k) k->frozen = 0;
 held-count	program/keys.c	n += k->scopes[i].used != 0;	n += 1;
 unlock-negative-only	program/keys.c	u->seed(u->ctx, out) != 0) {	u->seed(u->ctx, out) < 0) {
 unlock-no-wipe	program/keys.c	        gzw_wipe(out, 64);\n        return 0;\n    }\n    return 1;\n}\n\ngzp_seed_source_t gzp_keys_seed_from_unlock	        return 0;\n    }\n    return 1;\n}\n\ngzp_seed_source_t gzp_keys_seed_from_unlock
-net-fn-raw	program/keys.c	return gzp_keys_lobby((const gzp_keys_t *)ctx	return gzp_keys_lobby_raw((const gzp_keys_t *)ctx
+net-fn-raw	program/keys.c	return gzp_keys_lobby((const gzp_keys_t *)ctx	return lobby_raw((const gzp_keys_t *)ctx
 standin-passphrase	program/keys_standin.c	gzw_phrase_to_seed(phrase, "", s->seed)	gzw_phrase_to_seed(phrase, "x", s->seed)
 standin-no-wipe-out	program/keys_standin.c	    if (!s || !s->have) {\n        gzw_wipe(out, 64);	    if (!s || !s->have) {
 standin-close	program/keys_standin.c	if (s) gzw_wipe(s, sizeof *s);	if (s) s->have = 0;
@@ -74,7 +74,7 @@ scoped-at-frozen	program/keys.c	if (!k || !sec || k->frozen || epoch != k->epoch
 scoped-at-entry-epoch	program/keys.c	        if (!s->used || s->epoch != epoch) continue;	        if (!s->used) continue;
 scoped-at-no-zero	program/keys.c	    if (sec) gzw_wipe(sec, 32);\n    if (!k || !sec || k->frozen	    if (!k || !sec || k->frozen
 exec-forget	program/executor.c	    gzp_keys_forget(ex->keys, scope);\n	
-main-host-key	program/main.c	if (gzp_keys_host(&keys, priv, NULL, NULL, &e)) return 0;	if (gzp_keys_lobby_raw(&keys, 0, 1, priv, NULL, &e)) return 0;
+main-host-key	program/main.c	if (gzp_keys_host(&keys, priv, NULL, NULL, &e)) return 0;	if (gzp_keys_lobby(&keys, 0, 1, priv, NULL, &e)) return 0;
 main-scoped-only	program/main.c	gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST, opt.member_signing == 0);	gzp_keys_set_role(&keys, opt.role == GZP_ROLE_HOST, 0);
 role-scoped-host	program/keys.c	k->scoped_only = !host && at_join;	k->scoped_only = at_join;
 role-scoped-never	program/keys.c	k->scoped_only = !host && at_join;	k->scoped_only = 0;
@@ -101,7 +101,7 @@ epoch-reset	program/keys.c	    if (epoch != k->epoch) k->highest_index = 0; /* a
 note-slot-check	program/keys.c	if (s && (s->epoch != epoch || s->index != index)) gzw_wipe(s, sizeof *s);	(void)s;
 at-join-factory-by-slot	program/keys.c	k->slots[i].index == index)\n            return gzp_keys_lobby(	(k->slots[i].index == index || k->slots[i].index + 1 == index))\n            return gzp_keys_lobby(
 at-join-no-contribution	program/keys.c	            return gzp_keys_lobby(k, epoch, index, sec, NULL, NULL);	            return 0;
-at-join-raw	program/keys.c	return gzp_keys_lobby(k, epoch, index, sec, NULL, NULL);	return gzp_keys_lobby_raw(k, epoch, index, sec, NULL, NULL);
+at-join-raw	program/keys.c	return gzp_keys_lobby(k, epoch, index, sec, NULL, NULL);	return lobby_raw(k, epoch, index, sec, NULL, NULL);
 disarm-used	program/keys.c	used = k->join_armed == 2;	used = k->join_armed != 0;
 exec-done-on-error-missing	program/executor.c	        fail(ex, "node-error");\n        keys_command_done(ex, gate, gscope);\n	        fail(ex, "node-error");\n
 exec-done-missing	program/executor.c	    submit(ex);\n    keys_command_done(ex, gate, gscope);\n	    submit(ex);\n
@@ -110,8 +110,11 @@ join-window	program/keys.c	        index - 1 <= k->highest_index + 1 + 2u * (GZP
 join-window-wide	program/keys.c	index - 1 <= k->highest_index + 1 + 2u * (GZP_KEYS_JOIN_TRIES - 1) &&	index - 1 <= k->highest_index + 1 + 2u * GZP_KEYS_JOIN_TRIES &&
 net-static-connect-allowed	program/net.c	    if (key_index >= 0x80000000u) return connect_failed(n, host_key, "no-key");\n	
 net-static-key	program/net.c	if (n->single_key || index == GZP_NET_KEY_STATIC) {	if (n->single_key) {
+exec-sign-range	program/executor.c	    if (!host && index >= 0x80000000u) return 0;\n	
+exec-secret-range	program/executor.c	    if (index >= 0x80000000u) { /* a lobby index only (L2) */	    if (0) { /* a lobby index only (L2) */
+exec-pub-range	program/executor.c	    if (index >= 0x80000000u) {\n        memset(pub33, 0, 33);\n        return 0;\n    }\n	
 #
-# Triage, 2026-11-25, after the review of PR 53 (111 mutants):
+# Triage, 2026-11-25, after the review of PR 53 (114 mutants):
 #   equivalent: raw-no-zero-fail, host-no-zero-fail (the outputs are zeroed on
 #     entry, and keypair_out writes them only on success); pub-wipe (the wiped
 #     value is a public key); scope-index-range (the factory step then refuses
@@ -130,3 +133,11 @@ net-static-key	program/net.c	if (n->single_key || index == GZP_NET_KEY_STATIC) {
 #     #79's node, which asks for the join's factory key; step 8 must then
 #     assert used=1 and the member ready. #79's node test (test_node_lobby)
 #     does not run the executor.
+#   defence in depth: exec-sign-range and exec-pub-range. No node path reaches
+#     a generic key hook with an index of 2^31 or more. The node signs
+#     (crypto.sign, host 0) and asks keys.pub only with a slot's pair. The core
+#     refuses a slot_opened record naming 0xffffffff (whose contribution index
+#     would be the sentinel) as corrupt, and a slot naming any other index of
+#     2^31 or more gets no key from the key port's epoch policy, with or
+#     without port_pub's own refusal. T13 step 10 shows both. The refusals
+#     stay as a second line; PR #87 adds the core's bound at load.

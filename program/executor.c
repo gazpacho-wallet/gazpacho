@@ -69,6 +69,14 @@ static uint64_t port_mono(void *ctx)
 static int port_pub(void *ctx, uint32_t epoch, uint32_t index, uint8_t pub33[33])
 {
     gzp_exec_t *ex = ctx;
+    /* A lobby index only (L2), as gzp_net_connect: never GZP_NET_KEY_STATIC.
+     * A second line: the core refuses a slot naming 0xffffffff, and a slot
+     * naming any other index of 2^31 or more gets no key from the key port's
+     * policy anyway (T13 step 10). */
+    if (index >= 0x80000000u) {
+        memset(pub33, 0, 33);
+        return 0;
+    }
     return gzp_net_key(ex->net, epoch, index, NULL, pub33);
 }
 
@@ -86,6 +94,9 @@ static int port_point_ok(void *ctx, const uint8_t pub[33])
 static int port_sign(void *ctx, int host, uint32_t epoch, uint32_t index, const uint8_t msg[32], uint8_t sig[64])
 {
     gzp_exec_t *ex = ctx;
+    /* A lobby index only: never GZP_NET_KEY_STATIC or anything at or above 2^31
+     * (review of PR 53's boundary, L2; as gzp_net_connect). */
+    if (!host && index >= 0x80000000u) return 0;
     if (host) return ex->opt->role == GZP_ROLE_HOST ? gzp_net_sign(ex->net, 0, GZP_NET_KEY_STATIC, msg, sig) : 0;
     return gzp_net_sign(ex->net, epoch, index, msg, sig);
 }
@@ -108,6 +119,10 @@ static void port_forget(void *ctx, const uint8_t scope[32])
 static int port_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec32[32])
 {
     gzp_exec_t *ex = ctx;
+    if (index >= 0x80000000u) { /* a lobby index only (L2) */
+        memset(sec32, 0, 32);
+        return 0;
+    }
     if (ex->keys->scoped_only) return gzp_keys_at_join_secret(ex->keys, epoch, index, sec32);
     return gzp_net_key(ex->net, epoch, index, sec32, NULL);
 }

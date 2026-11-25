@@ -34,6 +34,12 @@ with tools/keys_ref.py, which shares no code with the program.
      (--test-node-error-on-command 0103): the scope it opened is wiped on that
      path, the incarnation restarts from storage holding no scope, and the
      key port gives the slot's factory key to no one (review of PR 53).
+  10. A forged slot_opened record naming a key index of 2^31 or more (only a
+      damaged or forged journal can). 0xffffffff, whose contribution index would
+      be the sentinel GZP_NET_KEY_STATIC, is refused by the core as corrupt, so
+      the member does not start. 0x80000000 loads, gets no keys and is left out:
+      it never comes back as a lobby and never connects. No node path reaches a
+      generic key hook with such an index; their refusals (L2) are a second line.
   6. One set of words as host and as member (keys.md 3, K2): a member made
      from the host's own words joins the host's lobby with two others; every
      seat is accepted and the lobby reaches Funding on the host and on that
@@ -88,6 +94,44 @@ def key_index_values(proc):
     "key-index" lines (the executor logs each durable key_index record), so the
     test reads no journal file: it holds for any journal format (integration B1)."""
     return [int(x) for ln in proc.lines for x in re.findall(r"key-index value=(\d+)", ln)]
+
+
+def forge_slot_index(folder, tag, value):
+    """Rewrite the key index (field 14) of the slot_opened record of lobby `tag`
+    in the member's journal stand-in, and the entry's SHA-256, as a damaged or
+    forged journal could. True if it was found."""
+    import struct
+    path = os.path.join(folder, "journal.standin")
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    off, done = 16, False
+    while off + 8 <= len(data):
+        tag4, ln = struct.unpack(">II", data[off:off + 8])
+        body = off + 8
+        if tag4 == 0x42544348:
+            n = struct.unpack(">I", data[body + 16:body + 20])[0]
+            p = body + 20
+            for _ in range(n):
+                t, l = struct.unpack(">II", data[p:p + 8])
+                rec = p + 8
+                if t == L.SLOT_OPENED:
+                    fields, q = {}, rec
+                    while q < rec + l:  # TLV with one-byte types and lengths (all of slot_opened's are small)
+                        ft, fl = data[q], data[q + 1]
+                        fields[ft] = (q + 2, fl)
+                        q += 2 + fl
+                    sc = fields.get(4)
+                    if sc and bytes(data[sc[0]:sc[0] + 4]).hex() == tag and fields.get(14, (0, 0))[1] == 4:
+                        data[fields[14][0]:fields[14][0] + 4] = struct.pack(">I", value)
+                        done = True
+                p = rec + l
+            if done:
+                data[body + ln:body + ln + 32] = hashlib.sha256(bytes(data[off:off + 8 + ln])).digest()
+                break
+        off += 8 + ln + 32
+    with open(path, "wb") as f:
+        f.write(bytes(data))
+    return done
 
 
 def main():
@@ -206,6 +250,16 @@ def main():
         check(h.wait_for(r"connected peer=%s key=%s" % (peer(ke), ke), timeout=15, start=mark) is not None and
               h.count(r"connected peer=%s" % peer(k01), start=mark) == 0,
               "5: it reconnects with the (E, %d) key, never an old one" % idx)
+
+        def ask(what, e, i):
+            mk = m.mark()
+            m.send("%s %d %d" % (what, e, i))
+            got = m.wait_for(r"test-%s epoch=%d index=%d ok=(\d)" % (what, e, i), timeout=10, start=mk)
+            return got.group(1) if got else None
+        check(ask("key-secret", epoch, idx) == "1",
+              "5: the key hook gives the (E, %d) key (an AUTO member)" % idx)
+        check(ask("key-secret", epoch, 4294967295) == "0" and ask("key-secret", epoch, 2147483648) == "0",
+              "5: the key hook reaches neither the transport's own key nor any index of 2^31 or more (L2)")
         # 6. one seed, both roles (K2) ------------------------------------------
         # Fresh folders, so the host's first lobby pair and the member's are
         # both (1, 2): with both on one branch they would be the same keys.
@@ -312,8 +366,41 @@ def main():
         check(i9 > 0 and got9 is not None and got9.group(1) == "0",
               "9: after the restart the slot's factory key is given to no one")
         check(rj.count(r"lobby scope=%s role=member .*ready=1" % e9.tag) == 0, "9: and the failed ready counted for nothing")
+        # 10. Forged slot_opened records (indexes of 2^31 or more) ----------------
+        def forged(name, port_tag, value):
+            t = L.Terms(w6.hkey, port_tag)
+            w6.open(h6, t)
+            check(h6.wait_for(r"slot-opened scope=%s .*role=host" % t.tag, timeout=10) is not None, "10: a lobby")
+            p = w6.member(name, "--member-signing", "auto")
+            procs.append(p)
+            check(L.started(p), "10: an AUTO member starts")
+            w6.join(p, t)
+            check(p.wait_for(r"lobby scope=%s role=member .*joined=1" % t.tag, timeout=20) is not None, "10: it joins")
+            p.stop()
+            check(forge_slot_index(os.path.join(w6.work, name), t.tag, value),
+                  "10: its slot_opened record now names key index 0x%08x" % value)
+            mk = h6.mark()
+            p = w6.member(name, "--member-signing", "auto")
+            procs.append(p)
+            return t, p, mk
+        t10, cj, mk = forged("cj", 607, 0x80000000)
+        check(L.started(cj) and cj.wait_for(r"lobby-left-out scope=%s" % t10.tag, timeout=20) is not None,
+              "10: key index 0x80000000 loads, gets no keys and is left out")
+        time.sleep(2)
+        check(cj.count(r"lobby scope=%s role=member" % t10.tag) == 0 and cj.count(r" connected peer=") == 0,
+              "10: it never comes back as a lobby and never connects")
+        t11, cs, mk = forged("cs", 608, 0xFFFFFFFF)
+        check(cs.wait_for(r"node-error engine=0x0004 status=corrupt", timeout=20) is not None and
+              cs.wait_for(r"start-storage-corrupt", timeout=20) is not None,
+              "10: key index 0xffffffff, the sentinel's, is refused by the core as corrupt (lobbyslot.c L4)")
+        time.sleep(2)
+        check(cs.count(r"ready incarnation=") == 0 and cs.count(r" connected peer=") == 0,
+              "10: that member never starts, and never connects")
+        cs.stop()
         # Step 9's member fails once on purpose (--test-node-error-on-command); every other process never.
-        bad = [(p.name, ln) for p in procs if p is not rj for ln in p.lines if "node-error" in ln or " fatal" in ln]
+        # Step 9's and step 10's forged member fail on purpose; every other process never.
+        bad = [(p.name, ln) for p in procs if p is not rj and not p.name.startswith("cs-")
+               for ln in p.lines if "node-error" in ln or " fatal" in ln]
         check(not bad, "no node-error or fatal line in any other process %r" % bad[:2])
         check(rj.count(r"node-error engine=") == 1 and rj.count(r"fatal why=node-error ") == 1,
               "9: exactly the one induced node error in step 9's member")

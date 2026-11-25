@@ -26,13 +26,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gzp_harness import Checks, Proc, kill_all, parse_journal, peer_id, ping_payloads, run  # noqa: E402
 
 check = Checks()
-FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp_standin_put_restore|gzp_standin_test_hooks")
+FORBIDDEN = re.compile(r"sim_rng|sim_chacha|gzp_testping|gzp_standin_fail_at|gzp_standin_put_restore|gzp_standin_test_hooks|gzp_keys_lobby_raw")
 # Each name the release check looks for, and that the test build does have, so
 # that each half of the check can fail (review of PR 27, M5).
-IN_TEST = ("gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
+IN_TEST = ("gzp_keys_lobby_raw", "gzp_testping", "gzp_standin_fail_at", "gzp_standin_put_restore", "gzp_standin_test_hooks")
 TEST_STRINGS = (b"--test-pings", b"--test-timer-ms", b"--test-start-delay-ms", b"--test-node-error-at",
                 b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload",
-                b"test-key-secret epoch=")  # P8: the key port's position check, gazpacho-test only
+                b"test-key-secret epoch=", b"--test-node-error-on-command")  # P8: the key port's position check, gazpacho-test only
 # In both builds: the key port's command gate runs on every USER_COMMAND (review of PR 53, H1).
 BOTH_STRINGS = (b"key-scope-open scope=", b"key-join-armed scope=", b"key-scope-closed scope=")
 
