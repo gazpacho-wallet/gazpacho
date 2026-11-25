@@ -60,8 +60,11 @@ static const rule_t R_PART[] = {FIX(2, 32, 1), FIX(4, 2, 1), FIX(6, 4, 1), FIX(8
 /* Section 6. */
 static const rule_t R_TERMS[] = {RANGE(2, 1, 4096, 1, CHK_NONE), FIX(4, 64, 1), RANGE(6, 1, 1024, 1, CHK_NONE),
                                  FIX(8, 64, 1)};
-static const rule_t R_JOIN[] = {FIX(2, 33, 1), FIX(4, 64, 1), FIX(6, 64, 1), RANGE(7, 1, 32, 0, CHK_UTF8)};
-static const rule_t R_READY[] = {FIX(2, 32, 1), FIX(4, 4, 1), FIX(6, 32, 1), FIX(8, 32, 0), FIX(11, 2, 0), SIG};
+/* BD (K1): a join carries no factory key and no binding; records 2, 4 and 6 are retired, so refused as
+ * unknown even records. The factory key (12) and the contribution key's binding (14) are in every ready. */
+static const rule_t R_JOIN[] = {RANGE(7, 1, 32, 0, CHK_UTF8)};
+static const rule_t R_READY[] = {FIX(2, 32, 1), FIX(4, 4, 1), FIX(6, 32, 1), FIX(8, 32, 0), FIX(11, 2, 0),
+                                 FIX(12, 33, 1), FIX(14, 64, 1), SIG};
 static const rule_t R_REASON[] = {FIX(1, 2, 0)};
 static const rule_t R_STATUS[] = {FIX(2, 1, 1), FIX(4, 1, 1), FIX(6, 4, 1), FIX(8, 2, 1), FIX(10, 2, 1),
                                   FIX(13, 2, 0)};
@@ -74,7 +77,7 @@ static const rule_t R_CANCEL[] = {FIX(2, 2, 1), SIG};
  * listed: a slice 1 member refuses it as an unknown even record. */
 static const rule_t R_PROPOSE[] = {
     FIX(2, 32, 1), FIX(4, 32, 1), FIX(6, 1, 1), FIX(7, 2, 0), FIX(8, 4, 1), FIX(10, 32, 1), FIX(12, 36, 1),
-    FIX(14, 8, 1), FIX(16, 34, 1), RANGE(18, 60, 100000, 1, CHK_NONE), LIST(20, 194, 2, 1001, 1),
+    FIX(14, 8, 1), FIX(16, 34, 1), RANGE(18, 60, 100000, 1, CHK_NONE), LIST(20, 130, 2, 1001, 1),   /* BD: 130 per participant */
     LIST(22, 4, 1, 8, 1), FIX(24, 4, 1), FIX(28, 1, 1), FIX(30, 8, 1), FIX(32, 4, 1), LIST(34, 36, 0, 4096, 1),
     FIX(36, 1, 1), FIX(38, 1, 1), FIX(40, 2, 1), FIX(42, 2, 1), FIX(46, 32, 1), FIX(48, 4, 1), FIX(50, 4, 1), SIG};
 static const rule_t R_NONCES[] = {FIX(2, 32, 1), FIX(4, 1, 1), LIST(6, 134, 1, 256, 1)};

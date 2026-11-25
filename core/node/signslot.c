@@ -578,7 +578,6 @@ static gz_status_t sg_begin(void *ctx, const gz_lobby_handoff_t *h, gz_action_li
         gz_tree_participant_t *q = &c->sg_parts[k];
         memcpy(q->factory_key, h->participants[k].factory_key, 33);
         memcpy(q->contribution_key, h->participants[k].contribution_key, 33);
-        memcpy(q->bind_by_factory, h->participants[k].bind_by_factory, 64);
         memcpy(q->bind_by_contribution, h->participants[k].bind_by_contribution, 64);
         if (k) memcpy(c->sg_keys[k - 1], h->participants[k].factory_key, 33);
     }

@@ -41,7 +41,7 @@ static void bind_one(const uint8_t od[32], uint32_t i, const char *ff, const cha
     tr_sha256_done(&t, h);
     snprintf(a, sizeof a, ff, i);
     snprintf(b, sizeof b, cf, i);
-    test_sign(a, h, PARTS[i].bind_by_factory);
+    (void)a;                                   /* K1: the factory key signs no binding */
     test_sign(b, h, PARTS[i].bind_by_contribution);
 }
 
