@@ -208,7 +208,7 @@ add_test(NAME core_isolation
 # archive (its calls into the core are calls inside the library).
 string(JOIN " " GZ_NODE_SCAN_FLAGS ${GZ_CORE_SCAN_FLAGS} -I${CMAKE_CURRENT_SOURCE_DIR}/core/node/include
        -I${CMAKE_CURRENT_SOURCE_DIR}/core/node -I${CMAKE_CURRENT_SOURCE_DIR}/core/lobby/include
-       -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include)
+       -I${CMAKE_CURRENT_SOURCE_DIR}/core/tree/include -I${CMAKE_CURRENT_SOURCE_DIR}/core/funding/include)
 add_test(NAME node_isolation
   COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/check-core-isolation.sh ${GZ_ISOLATION_MODE}
           $<TARGET_FILE:gazpacho_node_isolation_release> --sources ${CMAKE_C_COMPILER} ${GZ_NODE_SCAN_FLAGS}

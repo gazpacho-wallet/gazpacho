@@ -181,6 +181,11 @@ typedef struct {
     uint16_t att_count;
 } slot_view_t;
 
+/* A member's conditions as LOBBY_JOIN, slot_opened and the conditions
+ * record carry them (lobbyslot.c, gz_ls_cond_decode). */
+#define COND_HEAD 27u
+#define COND_MAX (COND_HEAD + 9u * GZ_TERMS_MAX_ADJ)
+#define API_MAX_PRESET 16
 #define API_MAX_IDS (GZ_NODE_MAX_SLOTS + GZ_NODE_MAX_TOMBSTONES + 256)
 #define API_MAX_METHOD 16
 #define API_MAX_PATH 192
@@ -209,6 +214,17 @@ typedef struct {
     int have_signing;
     uint8_t signing_saved, host_funding_saved;
     uint32_t signing_version;
+    /* The person's conditions (local-api.md 13; record 0x000d0008): in force
+     * for every member lobby against its own copy (lobbyslot.c, cond_apply)
+     * and copied into a join that names none. */
+    int have_cond;
+    gz_lobby_conditions_t cond;
+    uint8_t cond_bytes[COND_MAX];
+    size_t cond_len;
+    uint32_t cond_version;
+    uint32_t cond_tightened;        /* the version of the last save that tightened anything (record field 8) */
+    char preset[API_MAX_PRESET + 1];
+    unsigned cond_left;             /* the slots a conditions change left (bit i) */
     api_lid_t ids[API_MAX_IDS];
     uint64_t id_seq;
     api_req_t reqs[GZ_API_MAX_REQUESTS]; /* ids with an object (a lobby): each lobby's share, kept by 7.4 */
@@ -229,6 +245,7 @@ typedef struct {
 } api_t;
 _Static_assert(GZ_API_MAX_REQUESTS == GZ_NODE_MAX_SLOTS * (GZ_API_LOBBY_SHARE + GZ_API_LOBBY_RESERVE),
                "request ids: every slot's lobby its share and its reserve (7.4; review A of PR 55, N1)");
+_Static_assert(sizeof(((api_t *)0)->rec) >= COND_MAX + 4u + API_MAX_PRESET + 12u, "the conditions record fits api.rec");
 
 #define VIEW_BODY 12288
 typedef struct {
@@ -286,6 +303,9 @@ typedef struct {
     slot_lobby_t lobby;
     slot_view_t view;               /* P6a */
     int awake;                      /* resumed at this start, or opened in this run: the pause acts on it */
+    uint64_t set_aside;             /* host: gz_fund_set_aside_sat of its terms, once known */
+    uint32_t cond_seen;             /* member: the saved conditions' version when it joined (slot_opened 24) */
+    int set_aside_known;
 } slot_t;
 
 _Static_assert(SLOT_MAX_SEATS >= GZ_LOBBY_MAX_SEATS, "a slot notes every seat its lobby can mark (T-P42-2)");
@@ -591,6 +611,8 @@ gz_status_t np_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_li
 gz_status_t np_log(gz_node_t *c, gz_action_list_t *out, const char *text);
 gz_status_t np_drop(gz_node_t *c, int why, uint16_t kind, gz_action_list_t *out);
 gz_status_t np_command_result(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error);
+gz_status_t np_command_result_p(gz_action_list_t *out, gz_bytes_t cmd, uint16_t status, const char *error,
+                                const char *params);
 int np_conn_find(const gz_node_t *c, const gz_link_t *link);
 int np_same_key(const gz_node_id_t *a, const gz_node_id_t *b);
 int np_same_link(const gz_link_t *a, const gz_link_t *b);
@@ -613,6 +635,12 @@ gz_status_t gz_ls_closing_timer(gz_node_t *c, gz_action_list_t *out);
 int gz_ls_closing_count(const gz_node_t *c);
 gz_status_t gz_ls_pause_changed(gz_node_t *c, gz_action_list_t *out);
 int gz_ls_partials_out(const gz_node_t *c, const uint8_t scope[32]);
+int gz_ls_cond_decode(const uint8_t *p, size_t n, gz_lobby_conditions_t *c);
+size_t gz_ls_cond_encode(const gz_lobby_conditions_t *c, uint8_t *p, size_t cap);
+int gz_ls_conditions_blocked(const gz_node_t *c, const gz_lobby_conditions_t *person, unsigned *slots);
+gz_status_t gz_ls_conditions_changed(gz_node_t *c, gz_action_list_t *out);
+gz_status_t gz_ls_merge_saves(gz_node_t *c, gz_action_list_t *out, size_t from);
+uint64_t gz_ls_set_aside(slot_t *s);
 
 /* view.c */
 gz_status_t gz_view_status(gz_node_t *c, int force, gz_action_list_t *out);
@@ -621,7 +649,7 @@ gz_status_t gz_view_start(gz_node_t *c, gz_action_list_t *out, int *done);
 
 /* api.c */
 gz_status_t gz_api_load(gz_node_t *c, const gz_record_t *rec);
-void gz_api_loaded(gz_node_t *c);
+gz_status_t gz_api_loaded(gz_node_t *c);
 const char *gz_api_local_id(gz_node_t *c, const uint8_t scope[32]);
 int gz_api_held(const gz_node_t *c, const uint8_t scope[32]);
 int gz_api_paused(const gz_node_t *c);
@@ -634,6 +662,7 @@ int gz_api_req_kept(gz_node_t *c, const char *rid);
 gz_status_t gz_api_precheck(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out, int *done);
 gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_list_t *out);
 gz_status_t gz_api_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out);
+size_t gz_api_loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditions_t *to, uint8_t *l);
 gz_status_t gz_ls_left_out_note(gz_node_t *c, int i, gz_action_list_t *out);
 gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t *, int, gz_action_list_t *),
                               gz_action_list_t *out);
