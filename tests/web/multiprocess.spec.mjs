@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Real gazpacho processes driven through their own interfaces (P6): a host
-// and two members on signet with no chain, each with its own data folder and
-// its own local API, the members connected to the host. One lobby is opened
-// by the host, joined and readied by both members with their passphrases, up
-// to the ready check, where P4.3's signing takes over. On the way, one
-// member's own conditions stop fitting while Open: it refuses, and the host
-// sees the refusal (15.3, seat state refused), not a member that left.
+// and three members on signet with no chain, each with its own data folder and
+// its own local API, the members connected to the host. One lobby (target 4,
+// minimum 3: terms.md type 12 allows no minimum below 3) is opened by the
+// host, joined and readied by the three members with their passphrases, and
+// started at the minimum, up to the ready check, where P4.3's signing takes
+// over. On the way, one member's own conditions stop fitting while Open: it
+// refuses, and the host sees the refusal (15.3, seat state refused), not a
+// member that left.
 //
 // TEST ONLY: gazpacho-test, whose passphrase layer is the stand-in. It needs
 // GZ_PROGRAM (the built gazpacho-test). It runs on the core's view objects
@@ -24,7 +26,8 @@ if (!EXE && process.env.CI) throw new Error('GZ_PROGRAM is not set in CI: the mu
 test.skip(!EXE, 'GZ_PROGRAM is not set');
 test.setTimeout(240000);
 
-const PASS = { host: 'host passphrase, test only, long enough', m1: 'member one passphrase, test only', m2: 'member two passphrase, test only' };
+const PASS = { host: 'host passphrase, test only, long enough', m1: 'member one passphrase, test only', m2: 'member two passphrase, test only',
+  m3: 'member three passphrase, test only' };
 
 function freePort() {
   return new Promise((resolve) => {
@@ -96,7 +99,7 @@ async function signIn(page, p, pass) {
   await expect(page.locator('body')).toHaveAttribute('data-chrome', 'app');
 }
 
-test('a host and two members: one lobby opened, joined and readied up to the ready check; a refusal seen by the host', async ({ browser, request }) => {
+test('a host and three members: one lobby opened, joined and readied up to the ready check; a refusal seen by the host', async ({ browser, request }) => {
   const procs = [];
   try {
     const listen = await freePort();
@@ -106,18 +109,21 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
     const connect = ['--connect', `${key}@127.0.0.1:${listen}`];
     const m1 = await program('m1', 'member', connect);
     const m2 = await program('m2', 'member', connect);
-    procs.push(m1, m2);
+    const m3 = await program('m3', 'member', connect);
+    procs.push(m1, m2, m3);
     await setUp(request, host, PASS.host);
     await setUp(request, m1, PASS.m1);
     await setUp(request, m2, PASS.m2);
+    await setUp(request, m3, PASS.m3);
 
-    // the host opens a lobby of two, with the passphrase
+    // the host opens a lobby of four seats that may start with three, with the passphrase
     const hp = await (await browser.newContext()).newPage();
     await signIn(hp, host, PASS.host);
     await hp.goto(host.url + '#/host/new');
-    await hp.getByLabel('Lobby name').fill('Three seats');
-    await hp.getByLabel(/^Target/).fill('3');
-    await hp.getByLabel(/^Minimum/).fill('2');
+    await hp.getByLabel('Lobby name').fill('Four seats');
+    await hp.getByLabel(/^Target/).fill('4');
+    await hp.getByLabel(/^Minimum/).fill('3');
+    await expect(hp.locator('#preview')).toContainText('These terms can be opened.');
     await expect(hp.locator('#open-lobby')).toBeEnabled();
     await hp.waitForTimeout(1100);
     await hp.locator('#open-lobby').click();
@@ -140,7 +146,7 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
     await p1.locator('dialog').getByLabel('Wallet passphrase').fill(PASS.m1);
     await p1.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
     await expect(p1.locator('#lobby')).toHaveAttribute('data-seat', 'ready', { timeout: 20000 });
-    await expect(hp.locator('#host-counts')).toContainText('1 ready of 3', { timeout: 20000 });
+    await expect(hp.locator('#host-counts')).toContainText('1 ready of 4', { timeout: 20000 });
 
     // the API's lobby: the gate open for the digest the person readied for (you.gate, 14.1;
     // review of #79, L2), and the join replayed without the passphrase, which the interface
@@ -161,23 +167,28 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
     expect(rj.replayed).toBe(true);
     expect(rj.you.seat).toBe('ready');
 
-    // member 2 joins ready too: 2 of 3, the minimum
+    // members 2 and 3 join ready too: 3 of 4, the minimum
+    const joinReady = async (pg, m, pass) => {
+      await pg.goto(m.url + '#/lobbies');
+      await pg.getByLabel('Add a host by its address').fill(`${key}@127.0.0.1:${listen}`);
+      await pg.getByRole('button', { name: 'Ask this host' }).click();
+      await expect(pg.locator('#query-note')).toContainText('The host answered.');
+      await pg.locator('#lobbies-fit li a').first().click();
+      await pg.waitForTimeout(1100);
+      await pg.locator('#join').click();
+      await pg.locator('dialog').getByLabel('Wallet passphrase').fill(pass);
+      await pg.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
+      await expect(pg.locator('#lobby')).toHaveAttribute('data-seat', 'ready', { timeout: 20000 });
+    };
     const p2 = await (await browser.newContext()).newPage();
     await signIn(p2, m2, PASS.m2);
-    const join2 = async () => {
-      await p2.goto(m2.url + '#/lobbies');
-      await p2.getByLabel('Add a host by its address').fill(`${key}@127.0.0.1:${listen}`);
-      await p2.getByRole('button', { name: 'Ask this host' }).click();
-      await expect(p2.locator('#query-note')).toContainText('The host answered.');
-      await p2.locator('#lobbies-fit li a').first().click();
-      await p2.waitForTimeout(1100);
-      await p2.locator('#join').click();
-      await p2.locator('dialog').getByLabel('Wallet passphrase').fill(PASS.m2);
-      await p2.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
-      await expect(p2.locator('#lobby')).toHaveAttribute('data-seat', 'ready', { timeout: 20000 });
-    };
+    const join2 = () => joinReady(p2, m2, PASS.m2);
     await join2();
-    await expect(hp.locator('#host-counts')).toContainText('2 ready of 3', { timeout: 20000 });
+    await expect(hp.locator('#host-counts')).toContainText('2 ready of 4', { timeout: 20000 });
+    const p3 = await (await browser.newContext()).newPage();
+    await signIn(p3, m3, PASS.m3);
+    await joinReady(p3, m3, PASS.m3);
+    await expect(hp.locator('#host-counts')).toContainText('3 ready of 4', { timeout: 20000 });
 
     // its conditions tighten below the lobby's terms while Open: its own check
     // refuses (leave reason 1), and the host sees a refusal, not a member that left
@@ -186,6 +197,7 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
     await p2.locator('#save-conditions').click();
     await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(1, { timeout: 20000 });
     await expect(hp.locator('#seats tr[data-seat-state="left"]')).toHaveCount(0);
+    await expect(hp.locator('#host-counts')).toContainText('2 ready of 4', { timeout: 20000 });
 
     // it loosens again (a fresh sign-in) and joins ready, as a new seat with a new key (a rejoin
     // never uses a key twice): the old seat stays shown as refused until the lobby's next attempt
@@ -196,7 +208,7 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
     await fresh.getByLabel('Wallet passphrase').fill(PASS.m2);
     await fresh.getByRole('button', { name: 'Continue' }).click();
     await join2();
-    await expect(hp.locator('#host-counts')).toContainText('2 ready of 3', { timeout: 20000 });
+    await expect(hp.locator('#host-counts')).toContainText('3 ready of 4', { timeout: 20000 });
     await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(1);
     await expect(hp.locator('#seats tr[data-seat-state="left"]')).toHaveCount(0);
 
@@ -212,7 +224,8 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
     await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(0, { timeout: 20000 });
     await expect(p1.locator('#lobby')).toHaveAttribute('data-stage', /ready_check|signing/, { timeout: 30000 });
     await expect(p2.locator('#lobby')).toHaveAttribute('data-stage', /ready_check|signing/, { timeout: 30000 });
-    for (const p of procs) expect(p.output()).not.toContain(PASS.host);
+    await expect(p3.locator('#lobby')).toHaveAttribute('data-stage', /ready_check|signing/, { timeout: 30000 });
+    for (const p of procs) for (const pass of Object.values(PASS)) expect(p.output()).not.toContain(pass);
   } finally {
     for (const p of procs) p.stop();
     await new Promise((r) => setTimeout(r, 500));
