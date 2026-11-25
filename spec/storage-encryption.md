@@ -188,6 +188,7 @@ In the data folder unless stated.
 | `journal.gzj` | Every record of `journal.md` 9 and the API's records | Header authenticated, every entry sealed (5) |
 | `guard.gzg` | Epochs, key indexes, rounds started | Sealed under a key from the seed (10.1) |
 | `starts.gzs`, the start counter | The highest incarnation this device has used for this wallet; outside the journal's backup set | Sealed under a key from the seed (10.3) |
+| `change.gzm`, the change mark | The host wallet port's lowest change index never handed out, and a pending wide read; outside the journal's backup set | Sealed under a key from the seed (10.4) |
 | `mark.gzm`, the mark file | The journal's high-water mark, one entry per anchored batch, appended | Sealed entries under a key from MSK (10.2) |
 | `watch.gzw`, the watch-and-exit bundle | Tree paths, dates, fee children, known txids (8.7.2) | Sealed under a subkey of KB (8.7.3) |
 | `watch.gzp`, the penalty file | Fully signed penalties against the host's revoked states, each with the journal position that recorded it, appended | Sealed entries under another subkey of KB (8.7.6) |
@@ -291,6 +292,7 @@ Implemented with libsodium's `crypto_kdf_hkdf_sha256_extract` and `_expand` (13)
 | KR | seed | `journal recovery` | chain, file_id | MSK in the journal header |
 | KG | seed | `guard` | chain | The guard file |
 | KC | seed | `start counter` | chain | The start counter (10.3) |
+| KM | seed | `change mark` | chain | The wallet port's change mark (10.4) |
 | KP | seed | `program keys` | chain | Not a sealing key: the root of the program's own keys from the seed, derive(KP, label, chain), so that none is a storage key (review B of PR 54, M2) |
 | BK | seed | `backup` | chain | Root of every export (not a sealing key) |
 | XR | BK | `export key` | chain, export_id | A profile 1 export's own key (not a sealing key; storage-crypto review B, L4) |
@@ -756,6 +758,26 @@ Vector E9m.
 
 KC = keys(seed, `start counter`, chain) (4.4), so a restore from the words can read it. Replaced (write `starts.gzs.tmp`, sync, rename, sync the folder) at every start, before the incarnation entry. A file that is short, of another format or network, or fails its tag is treated as missing, and the person is told. Vector E9c.
 
+
+### 10.4 The change mark
+
+`change.gzm` (not the journal's mark file `mark.gzm`; their magic tells them apart), beside the start counter, outside the journal's backup set: the host wallet port's change mark, the lowest change index (m/86'/coin'/0'/1/i) never handed out, and whether a wide read of the change chain is pending.
+
+| Offset | Field | Size |
+|---|---|---|
+| 0 | magic `GZCHMRK1` | 8 |
+| 8 | format, 1 | 1 |
+| 9 | chain | 32 |
+| 41 | `seal(KM, u64 mark \|\| u8 flags, ad = bytes 0..40)` | 24 + 9 + 16 |
+
+90 bytes. KM = keys(seed, `change mark`, chain) (4.4): neither this file nor the start counter opens as the other, and a restore from the words can read it. Flags: bit 0, a wide read pending; any other bit is damage. Vector E9d.
+
+- **Kept first.** Replaced (temporary name, sync, rename, folder sync) before any index below the mark is used. Set-up writes mark 0, no flag.
+- **Read wide** when the file is missing, when it does not open (short, long, another format or network, a failed tag: **treated as missing, and the person is told**, as the start counter in 10.3; `status.coins.change_mark` is `not_opened`), when its flag is set, or when the start is a restore. The start writes the flag first, so a stop before the read is done leaves it pending.
+- **A wide read** asks each change address's history (`gz_chain_script_history`: every transaction that paid or spent it, so spent change counts), to index 1,000 and then until 20 unused in a row. It writes the mark past the highest used address and clears the flag only when every address was settled: no lookup failed, none was refused three times in a row, no key derivation failed. Until then the host refuses plans and spend-backs.
+- **From the journal.** At the start each plan in the funding engine's journal (its plan and signed records) raises the mark past its change output's index, so a plan saved and not yet on chain is never paid to again.
+- **Not defended:** a snapshot of the whole folder, or an older copy of this file alone, brings back an older mark (6.4); fundings compacted out of the journal are seen only through the chain.
+
 ## 11. Exports and the host's copy
 
 `DESIGN.md` 9: the journal is the backup; the person may export it and the host keeps a copy. Two profiles of one format, `.gzb`. (Owner decision 13 says "a backup export is the file as encrypted on disk"; this separate format needs the owner's amendment, open point 1.)
@@ -982,6 +1004,14 @@ Against E7g and E7h, offset 400 is not a sync mark of the journal: refused as ro
 475a53544152543101f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c42
 25e9739881080000003e1548311c3b6d3514c42130359d6d276e7ec4f8cab128
 9bd7436585cc222346a83020831e7b5eed7bda6cf75aaca1a1
+```
+
+**E9d. Change mark** (90 bytes): mark 7, flags 0. KM `9b9fe6e16c81147271a5e0f5d3f0c72eb9c37f88daef9dea28a96508bfa9558e` (nonce key `6978689495db1f048a34a90029e91570f40b9e812b670d76e6179698918ecb86`); nonce input label `change mark`:
+
+```
+475a43484d524b3101f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c42
+25e97398810800000079cebbd79ec2092af2412c3b914b27485314b29878f33b
+7a5fa9165c0e39467504470e29aa7a25f5423d220b16d8ebb1b9
 ```
 
 **E10. Exports**, `export_id` `eba594bd30df323ee7faf88bd4e4bf81`, slot salt `sha256("gazpacho test export kdf salt")[0:16]`, E2's test parameters, created 1,794,000,100,000 ms, flags 0 (no words), body the entries of E6 and the guard of E9. BK `9a4617d2c2e8fb4163ddbe6b6b1968302c0a65114f261b444605aef8cf4e1b00`, EK (profile 2) `e172f2dabc7650d0a79495a05dc2736ae37151ef116fcc2f10dd9d590244ac1f`; profile 1's own key XR `5ce2ebd98c1cff355685984c9d5b8e2769eeead5132d21569cddbc78d83c894b` and its EK `d7f9ef583afd0bef0bc891b87dc820597def130f0964f0238c26191a16e9fcb3` (11; changed after the storage-crypto review B, L4: the slot wraps XR, not BK). E10a (profile 1, slot with commitment, 396 bytes) is printed by the tool. E10b, profile 2, 266 bytes (both changed in draft 3 because E9's guard is shorter):

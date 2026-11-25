@@ -98,6 +98,8 @@ typedef struct {
     const char *test_append_batch; /* save this batch (hex: type, len, bytes ...) and stop */
     int test_kill_at;
     int test_power_cut_at;         /* as --test-kill-at, the folder first put back to what a disk keeps */
+    int test_plan_once;            /* host: one plan of this many sat, printed, then stop */
+    int test_cut_after_mark;       /* a power cut once a change mark is kept */
     int test_check_forged;         /* CHECK against a key file forged with this wallet's ids: statuses only */
     int test_seed_check;           /* seed() locked, unlocked and with a storage fault: results only */
     int test_reveal_check;         /* after the unlock: reveal and words check, statuses only */              /* SIGKILL before the K-th storage write, sync or rename (store.h) */

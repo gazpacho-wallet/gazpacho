@@ -42,13 +42,18 @@
 #define GZP_WPORT_PLANS 8
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
 #define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
+#define GZP_WPORT_CHANGE_WIDE 1000     /* a wide scan reads the change chain at least this far */
+#define GZP_WPORT_CHANGE_MAX 4096      /* the most change addresses a scan reads */
 
 /* The change mark (M-3, review of PR 91): the lowest change index never handed
- * out, kept where a restart finds it. load gives it (0 when none was saved);
- * save keeps a new one durably, before the index below it is used. 0, or -1. */
+ * out, kept where a restart finds it. load gives it (0 when none was saved)
+ * and whether the scan must read the change chain wide: 0 no; 1 the mark is
+ * missing, a wide read is pending, or the wallet was restored; 2 the file did
+ * not open (read as missing, and told). save keeps a mark and the pending
+ * flag durably, before the index below it is used. 0, or -1. */
 typedef struct {
-    int (*load)(void *ctx, uint32_t *mark);
-    int (*save)(void *ctx, uint32_t mark);
+    int (*load)(void *ctx, uint32_t *mark, int *wide);
+    int (*save)(void *ctx, uint32_t mark, int wide);
     void *ctx;
 } gzp_wport_marks_t;
 
@@ -60,6 +65,7 @@ typedef struct {
     int chain, index;         /* the address, for lookup, address_too_large, address_refused; -1 otherwise */
     const char *error;        /* the chain port's answer for it (unreachable, malformed, ...), or NULL */
     unsigned attempts;        /* scans made so far */
+    const char *change_mark;  /* kept, reading (a wide read pending) or not_opened; NULL: not shown */
 } gzp_wport_coins_t;
 
 typedef struct {
@@ -88,7 +94,12 @@ typedef struct {
     gzp_wport_coins_t coin_list;  /* the coin list's state, under mu */
     gzp_wport_marks_t marks;      /* where the change mark is kept, or none */
     uint32_t mark;                /* the change mark as last loaded or saved */
-    uint8_t refusals[2][GZP_WPORT_GAP_MAX];   /* an address's refusals in a row, under the scan */
+    int wide;                     /* the next scan reads the change chain wide, then saves the mark */
+    int need_marks;               /* a host's port: no plan without a kept mark */
+    uint8_t refusals[2][GZP_WPORT_CHANGE_MAX]; /* an address's refusals in a row, under the scan */
+    uint8_t hist_refusals[GZP_WPORT_CHANGE_MAX]; /* the same for a change address's history */
+    uint8_t (*chg)[32];           /* change keys derived so far (M-4), n_chg of them */
+    uint32_t n_chg;
 } gzp_wport_t;
 
 /* The master key from the unlocked seed. `burial` is the funding engine's B, as the node
@@ -98,7 +109,8 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
                    uint32_t burial);
 /* The confirmed coins of the first `gap` receive addresses, and of the change addresses up to `gap`
  * unused in a row (a gap limit: change indexes are taken one after another from the lowest unused,
- * N-2) and at least to the kept change mark plus `gap` (M-3), asked of the Esplora server
+ * N-2) and at least to the kept change mark plus `gap` (M-3), or to GZP_WPORT_CHANGE_WIDE when
+ * the mark's load said wide (no mark, or a restore), asked of the Esplora server
  * at `url` through a client of its own: the chain worker's, which runs in its own thread, is never
  * used from the loop's. Starts a thread for it and returns: 0, or -1. A plan made
  * before the scan has published finds no coin (outcome Failed, as with an empty wallet). */
@@ -134,6 +146,8 @@ int gzp_wport_log_attempt(unsigned n);
  * the scan reads the change chain to it plus `gap`); every change index
  * handed out afterwards saves the mark first. Before the scan starts. 0, or -1. */
 int gzp_wport_set_marks(gzp_wport_t *w, const gzp_wport_marks_t *m);
+/* A host's port: plans and spend-backs are refused until marks are set. */
+void gzp_wport_require_marks(gzp_wport_t *w);
 /* Test build, no chain: one invented coin paying the first receive address. */
 int gzp_wport_invent(gzp_wport_t *w);
 void gzp_wport_close(gzp_wport_t *w);

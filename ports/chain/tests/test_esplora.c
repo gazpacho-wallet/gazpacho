@@ -32,6 +32,16 @@ static void fx_close(fixture *x) {
   fake_free(&x->fake);
 }
 
+/* The body of GET /scripthash/{hash} with these counts, consistent. */
+static const char *stats_body(char *buf, size_t cap, const char *hash, unsigned confirmed, unsigned mempool) {
+  snprintf(buf, cap,
+           "{\"scripthash\":\"%s\",\"chain_stats\":{\"funded_txo_count\":%u,\"funded_txo_sum\":%u,"
+           "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":%u},\"mempool_stats\":{\"funded_txo_count\":%u,"
+           "\"funded_txo_sum\":%u,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":%u}}",
+           hash, confirmed, confirmed * 1000u, confirmed, mempool, mempool * 1000u, mempool);
+  return buf;
+}
+
 /* ---- creation ---- */
 
 static void test_create_validates(test_state *T) {
@@ -347,6 +357,96 @@ static void test_script_outputs(test_state *T) {
   CHECK_RESULT(gz_chain_script_outputs(&x.chain, script, script_len, outs, 1, &n, NULL),
                GZ_CHAIN_TOO_LARGE);
   CHECK(n == 0);
+  fx_close(&x);
+}
+
+/* Follow-up of review B of PR 93, H-1: whether an address was ever used,
+ * spent outputs too, from GET /scripthash/{hash}; strict, and size-capped. */
+static void test_script_history(test_state *T) {
+  fixture x;
+  gz_script_history h;
+  uint8_t script[64];
+  size_t script_len = 0;
+  char body[600];
+  static char huge[4000];
+  const char *url = BASE "/scripthash/" SCRIPT_A2_HASH;
+  fx_open(&x);
+  CHECK(gz_hex_decode(SCRIPT_A2, strlen(SCRIPT_A2), script, sizeof script, &script_len));
+  /* used: two transactions in blocks (one spent what the other paid), one in the mempool */
+  fake_set(&x.fake, false, url, 200,
+           "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"chain_stats\":{\"funded_txo_count\":1,\"funded_txo_sum\":43000,"
+           "\"spent_txo_count\":1,\"spent_txo_sum\":43000,\"tx_count\":2},\"mempool_stats\":{\"funded_txo_count\":1,"
+           "\"funded_txo_sum\":5,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":1}}");
+  CHECK_RESULT(gz_chain_script_history(&x.chain, script, script_len, &h), GZ_CHAIN_OK);
+  CHECK(h.confirmed_txs == 2 && h.mempool_txs == 1);
+  CHECK(strcmp(x.fake.last_url, url) == 0);   /* the hash in hash order, as for /utxo */
+  CHECK(x.fake.last_cap <= 1024);
+  /* never used */
+  fake_set(&x.fake, false, url, 200, stats_body(body, sizeof body, SCRIPT_A2_HASH, 0, 0));
+  CHECK_RESULT(gz_chain_script_history(&x.chain, script, script_len, &h), GZ_CHAIN_OK);
+  CHECK(h.confirmed_txs == 0 && h.mempool_txs == 0);
+  /* hostile or broken answers */
+  static const char *const bad[] = {
+      /* another script's stats */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH_OTHER "\",\"chain_stats\":{\"funded_txo_count\":0,\"funded_txo_sum\":0,"
+      "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0},\"mempool_stats\":{\"funded_txo_count\":0,"
+      "\"funded_txo_sum\":0,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      /* no tx_count */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"chain_stats\":{\"funded_txo_count\":0,\"funded_txo_sum\":0,"
+      "\"spent_txo_count\":0,\"spent_txo_sum\":0},\"mempool_stats\":{\"funded_txo_count\":0,"
+      "\"funded_txo_sum\":0,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      /* no mempool_stats */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"chain_stats\":{\"funded_txo_count\":0,\"funded_txo_sum\":0,"
+      "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      /* a key nobody sends */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"extra\":1,\"chain_stats\":{\"funded_txo_count\":0,\"funded_txo_sum\":0,"
+      "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0},\"mempool_stats\":{\"funded_txo_count\":0,"
+      "\"funded_txo_sum\":0,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      /* a count as a string */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"chain_stats\":{\"funded_txo_count\":0,\"funded_txo_sum\":0,"
+      "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":\"1\"},\"mempool_stats\":{\"funded_txo_count\":0,"
+      "\"funded_txo_sum\":0,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      /* a negative count */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"chain_stats\":{\"funded_txo_count\":0,\"funded_txo_sum\":0,"
+      "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":-1},\"mempool_stats\":{\"funded_txo_count\":0,"
+      "\"funded_txo_sum\":0,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      /* transactions with no output funded or spent */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"chain_stats\":{\"funded_txo_count\":0,\"funded_txo_sum\":0,"
+      "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":3},\"mempool_stats\":{\"funded_txo_count\":0,"
+      "\"funded_txo_sum\":0,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      /* in blocks, more spent than was ever funded */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"chain_stats\":{\"funded_txo_count\":1,\"funded_txo_sum\":5,"
+      "\"spent_txo_count\":2,\"spent_txo_sum\":5,\"tx_count\":2},\"mempool_stats\":{\"funded_txo_count\":0,"
+      "\"funded_txo_sum\":0,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      /* a key twice */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"chain_stats\":{\"funded_txo_count\":0,\"funded_txo_count\":0,"
+      "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0},\"mempool_stats\":{\"funded_txo_count\":0,"
+      "\"funded_txo_sum\":0,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      /* the hash in upper case */
+      "{\"scripthash\":\"" SCRIPT_A2_HASH_UPPER "\",\"chain_stats\":{\"funded_txo_count\":0,\"funded_txo_sum\":0,"
+      "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0},\"mempool_stats\":{\"funded_txo_count\":0,"
+      "\"funded_txo_sum\":0,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":0}}",
+      "[]",
+      "",
+  };
+  for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+    fake_set(&x.fake, false, url, 200, bad[i]);
+    T->checks++;
+    if (gz_chain_script_history(&x.chain, script, script_len, &h) != GZ_CHAIN_MALFORMED) {
+      T->failed++;
+      fprintf(stderr, "  accepted bad stats #%zu: %s\n", i, bad[i]);
+    }
+    CHECK(h.confirmed_txs == 0 && h.mempool_txs == 0);
+  }
+  /* refused, unknown path, too large */
+  fake_set(&x.fake, false, url, 400, "Invalid scripthash");
+  CHECK_RESULT(gz_chain_script_history(&x.chain, script, script_len, &h), GZ_CHAIN_REJECTED);
+  fake_set(&x.fake, false, url, 404, "Not found");
+  CHECK_RESULT(gz_chain_script_history(&x.chain, script, script_len, &h), GZ_CHAIN_MALFORMED);
+  memset(huge, ' ', sizeof huge - 1);
+  huge[sizeof huge - 1] = '\0';
+  fake_set(&x.fake, false, url, 200, huge);
+  CHECK_RESULT(gz_chain_script_history(&x.chain, script, script_len, &h), GZ_CHAIN_TOO_LARGE);
   fx_close(&x);
 }
 
@@ -1767,6 +1867,7 @@ int main(void) {
   RUN(test_status_parser_strict);
   RUN(test_script_outputs);
   RUN(test_utxo_parser_strict);
+  RUN(test_script_history);
   RUN(test_outspend);
   RUN(test_raw_tx);
   RUN(test_raw_tx_any_size);

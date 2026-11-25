@@ -108,3 +108,56 @@ gz_sc_err_t gz_sc_vault_derive(const gz_sc_vault_t *v, const char *label, uint8_
     sodium_memzero(kp, sizeof kp);
     return e;
 }
+
+/* The wallet port's change mark change.gzm (10.4), 90 bytes: the start
+ * counter's header under magic "GZCHMRK1" and KM = keys(seed, "change mark", chain), so
+ * a start counter never opens as a change mark, nor the other way. The
+ * plaintext is u64 mark || u8 flags (bit 0: a wide read pending). */
+#define CM_MAGIC "GZCHMRK1"
+
+static gz_sc_err_t mark_keys(const gz_sc_vault_t *v, sc_keypair_t *km)
+{
+    sodium_mprotect_readonly(v->seed);
+    gz_sc_err_t e = sc_keys(v->seed, 64, "change mark", v->chain, 32, km);
+    sodium_mprotect_noaccess(v->seed);
+    return e;
+}
+
+gz_sc_err_t gz_sc_change_mark_seal(const gz_sc_vault_t *v, uint64_t mark, int wide,
+                                   uint8_t out[GZ_SC_CHANGE_MARK_LEN])
+{
+    uint8_t c[9];
+    sc_keypair_t km;
+    gz_sc_err_t e = mark_keys(v, &km);
+    if (e != GZ_SC_OK)
+        return e;
+    memcpy(out, CM_MAGIC, 8);
+    out[8] = 1;
+    memcpy(out + 9, v->chain, 32);
+    sc_put64(c, mark);
+    c[8] = wide ? 1 : 0;
+    e = sc_seal(&km, c, 9, out, 41, out + 41);
+    sc_keys_free(&km);
+    return e;
+}
+
+gz_sc_err_t gz_sc_change_mark_open(const gz_sc_vault_t *v, const uint8_t *d, size_t len, uint64_t *mark,
+                                   int *wide)
+{
+    uint8_t c[9];
+    sc_keypair_t km;
+    if (len != GZ_SC_CHANGE_MARK_LEN || memcmp(d, CM_MAGIC, 8) != 0 || d[8] != 1)
+        return GZ_SC_NOT_THIS_FORMAT;
+    if (memcmp(d + 9, v->chain, 32) != 0)
+        return GZ_SC_OTHER_NETWORK;
+    gz_sc_err_t e = mark_keys(v, &km);
+    if (e != GZ_SC_OK)
+        return e;
+    int r = sc_unseal(&km, d + 41, GZ_SC_CHANGE_MARK_LEN - 41, d, 41, c);
+    sc_keys_free(&km);
+    if (r != 0 || c[8] > 1)
+        return GZ_SC_DAMAGED;
+    *mark = sc_get64(c);
+    *wide = c[8];
+    return GZ_SC_OK;
+}

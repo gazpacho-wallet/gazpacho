@@ -83,8 +83,25 @@ static gzp_api_t api;          /* the local API server (P5): one per process */
 static gzp_wallet_t *wallet;
 
 /* The wallet port's change mark, kept sealed in the wallet's folder (M-3). */
-static int change_mark_load(void *ctx, uint32_t *mark) { return gzp_wallet_change_mark_read(ctx, mark); }
-static int change_mark_save(void *ctx, uint32_t mark) { return gzp_wallet_change_mark_write(ctx, mark); }
+static int change_mark_load(void *ctx, uint32_t *mark, int *wide) { return gzp_wallet_change_mark_read(ctx, mark, wide); }
+#ifdef GZP_TEST_BUILD
+static int test_cut_after_mark; /* --test-cut-after-mark */
+#endif
+static int change_mark_save(void *ctx, uint32_t mark, int wide)
+{
+    int r = gzp_wallet_change_mark_write(ctx, mark, wide);
+#ifdef GZP_TEST_BUILD
+    /* a power cut once the mark is kept, before its index is used (follow-up
+     * of the review of PR 91): what a disk keeps is put back, then SIGKILL */
+    if (r == 0 && test_cut_after_mark) {
+        printf("test-cut after=change-mark mark=%u\n", (unsigned)mark);
+        fflush(stdout);
+        gzp_pc_cut();
+        kill(getpid(), SIGKILL);
+    }
+#endif
+    return r;
+}
 static gzp_keys_t keys;        /* the key port's keys (keys.h) */
 static gzp_unlock_t unlock_tab; /* the unlocked storage's unlock.h table: the key port's seed source */
 static gzp_wport_t wport;     /* host: the funding engine's wallet port (wport.h) */
@@ -581,6 +598,10 @@ int main(int argc, char **argv)
     if (opt.test_kdf_floor) gzp_wallet_test_kdf_floor(wallet);
     if (opt.test_dump_journal) gzp_wallet_test_keys_only(wallet);
     if (opt.test_kill_at) gzp_store_test_kill_at((unsigned)opt.test_kill_at);
+    if (opt.test_cut_after_mark) {
+        gzp_store_test_power_cut();
+        test_cut_after_mark = 1;
+    }
     if (opt.test_power_cut_at) {
         gzp_store_test_power_cut();
         gzp_store_test_kill_at((unsigned)opt.test_power_cut_at);
@@ -679,12 +700,31 @@ int main(int argc, char **argv)
                 goto out;
             }
         }
+        gzp_wport_require_marks(&wport);
         if (chain.active) gzp_wport_scan_start(&wport, opt.chain_urls[0], 20);
 #ifdef GZP_TEST_BUILD
         else gzp_wport_invent(&wport);
 #endif
         ex.wallet_port = &wport.port;
     }
+#ifdef GZP_TEST_BUILD
+    /* --test-plan-once SAT: one plan paying the first address, its change
+     * index and the mark printed, the plan released unsigned, then stop */
+    if (opt.test_plan_once && opt.role == GZP_ROLE_HOST) {
+        static uint8_t ptx[GZ_FUND_MAX_TX];
+        gz_fund_prevout_t pv[GZ_FUND_MAX_INPUTS];
+        size_t pl = 0, np = 0;
+        int ok = wport.port.plan(wport.port.ctx, (uint64_t)opt.test_plan_once, first.script_pubkey, 100, NULL, ptx,
+                                 sizeof ptx, &pl, pv, GZ_FUND_MAX_INPUTS, &np);
+        printf("test-plan ok=%d change=%u mark=%u\n", ok, ok ? (unsigned)wport.plans[0].info.change_index : 0u,
+               (unsigned)wport.mark);
+        if (ok) wport.port.release(wport.port.ctx, ptx, pl);
+        fflush(stdout);
+        OPENSSL_cleanse(priv, sizeof priv);
+        rc = 0;
+        goto out;
+    }
+#endif
 
     /* The transport (peers.h). Nothing listens or connects until the start. */
     lim.handshake_ms = opt.handshake_ms;

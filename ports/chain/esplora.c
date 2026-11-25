@@ -11,6 +11,7 @@
  *   GET  /tx/{txid}/merkle-proof        JSON
  *   GET  /tx/{txid}/outspend/{vout}     JSON
  *   GET  /scripthash/{sha256(script)}/utxo   JSON; the hash is NOT reversed
+ *   GET  /scripthash/{sha256(script)}        JSON: chain_stats, mempool_stats (tx_count)
  *   GET  /fee-estimates                 JSON
  *   POST /tx                            body: hex; answer: text txid
  *
@@ -232,6 +233,73 @@ gz_es_parse_result gz_es_parse_utxos(const char *s, size_t len, gz_chain_output 
 done:
   free(toks);
   return res;
+}
+
+/* One of chain_stats and mempool_stats at toks[idx]: exactly the five
+ * counts, consistent. `in_blocks`: no more spent than funded. */
+static bool stats_object(const char *s, const gz_json_tok *toks, size_t idx, bool in_blocks, uint64_t *tx_count) {
+  enum { F_FC = 1, F_FS = 2, F_SC = 4, F_SS = 8, F_TX = 16 };
+  static const char *const keys[5] = {"funded_txo_count", "funded_txo_sum", "spent_txo_count", "spent_txo_sum",
+                                      "tx_count"};
+  uint64_t v[5] = {0, 0, 0, 0, 0};
+  unsigned seen = 0;
+  const gz_json_tok *o = &toks[idx];
+  if (o->type != GZ_JSON_OBJECT) return false;
+  size_t i = idx + 1;
+  for (uint32_t m = 0; m < o->size; m++) {
+    const gz_json_tok *key = &toks[i], *val = &toks[i + 1];
+    size_t k = 0;
+    while (k < 5 && !gz_json_str_eq(s, key, keys[k])) k++;
+    if (k == 5 || (seen & (1u << k)) || !gz_json_u64(s, val, &v[k])) return false;
+    seen |= 1u << k;
+    i = val->next;
+  }
+  if (seen != (F_FC | F_FS | F_SC | F_SS | F_TX)) return false;
+  /* a transaction counts only through an output it funded or spent */
+  if (v[4] > v[0] + v[2] || (v[4] == 0 && (v[0] != 0 || v[2] != 0))) return false;
+  if (in_blocks && (v[2] > v[0] || v[3] > v[1])) return false;
+  *tx_count = v[4];
+  return true;
+}
+
+bool gz_es_parse_script_stats(const char *s, size_t len, const uint8_t script_hash[GZ_HASH_LEN],
+                              gz_script_history *out) {
+  enum { F_SH = 1, F_CHAIN = 2, F_MEM = 4 };
+  static const char digits[] = "0123456789abcdef";
+  gz_json_tok toks[48];
+  char want[2 * GZ_HASH_LEN + 1];
+  size_t n;
+  unsigned seen = 0;
+  uint64_t chain = 0, mem = 0;
+  if (s == NULL || script_hash == NULL || out == NULL) return false;
+  for (size_t i = 0; i < GZ_HASH_LEN; i++) {
+    want[2 * i] = digits[script_hash[i] >> 4];
+    want[2 * i + 1] = digits[script_hash[i] & 15];
+  }
+  want[2 * GZ_HASH_LEN] = '\0';
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (toks[0].type != GZ_JSON_OBJECT) return false;
+  size_t i = 1;
+  for (uint32_t m = 0; m < toks[0].size; m++) {
+    const gz_json_tok *key = &toks[i], *val = &toks[i + 1];
+    if (gz_json_str_eq(s, key, "scripthash")) {
+      if ((seen & F_SH) || val->type != GZ_JSON_STRING || !gz_json_str_eq(s, val, want)) return false;
+      seen |= F_SH;
+    } else if (gz_json_str_eq(s, key, "chain_stats")) {
+      if ((seen & F_CHAIN) || !stats_object(s, toks, i + 1, true, &chain)) return false;
+      seen |= F_CHAIN;
+    } else if (gz_json_str_eq(s, key, "mempool_stats")) {
+      if ((seen & F_MEM) || !stats_object(s, toks, i + 1, false, &mem)) return false;
+      seen |= F_MEM;
+    } else {
+      return false;
+    }
+    i = val->next;
+  }
+  if (seen != (F_SH | F_CHAIN | F_MEM)) return false;
+  out->confirmed_txs = chain;
+  out->mempool_txs = mem;
+  return true;
 }
 
 bool gz_es_parse_merkle_proof(const char *s, size_t len, gz_merkle_proof *out) {
@@ -503,6 +571,7 @@ bool gz_es_reason_is_already_known(const char *reason) {
 #define ES_CAP_BROADCAST 4096
 #define ES_UTXO_BYTES_EACH 320
 #define ES_CAP_BLOCK 1024
+#define ES_CAP_HISTORY 1024
 
 typedef struct esplora {
   gz_http http;
@@ -802,6 +871,26 @@ static gz_chain_result es_script_outputs(void *ctx, const uint8_t *script, size_
   return GZ_CHAIN_MALFORMED;
 }
 
+static gz_chain_result es_script_history(void *ctx, const uint8_t *script, size_t script_len,
+                                         gz_script_history *out) {
+  esplora *es = ctx;
+  uint8_t sh[GZ_HASH_LEN];
+  char hex[2 * GZ_HASH_LEN + 1], path[ES_PATH_MAX];
+  long status;
+  size_t len;
+  gz_script_hash(script, script_len, sh);
+  hex_plain(sh, GZ_HASH_LEN, hex); /* not reversed, as for /utxo */
+  snprintf(path, sizeof path, "/scripthash/%s", hex);
+  gz_chain_result r = es_get(es, path, ES_CAP_HISTORY, &status, &len);
+  if (r != GZ_CHAIN_OK) return r;
+  if (status != 200) return status == 404 ? GZ_CHAIN_MALFORMED : status_meaning(status);
+  if (!gz_es_parse_script_stats(body_of(es), len, sh, out)) {
+    memset(out, 0, sizeof *out);
+    return GZ_CHAIN_MALFORMED;
+  }
+  return GZ_CHAIN_OK;
+}
+
 static gz_chain_result es_outspend(void *ctx, const uint8_t txid[GZ_HASH_LEN], uint32_t vout,
                                    gz_outspend *out) {
   esplora *es = ctx;
@@ -1068,6 +1157,7 @@ static const gz_chain_ops es_ops = {
     .block_summary = es_block_summary,
     .tx_status = es_tx_status,
     .script_outputs = es_script_outputs,
+    .script_history = es_script_history,
     .outspend = es_outspend,
     .raw_tx = es_raw_tx,
     .merkle_proof = es_merkle_proof,

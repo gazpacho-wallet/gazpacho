@@ -467,7 +467,8 @@ static void e5_to_e9m(void)
      * storage key: no label gives KG, its nonce key or BK (E9, E10). */
     {
         static const char *const labels[] = {"guard", "guard nonce", "backup", "start counter",
-                                              "start counter nonce", "high water", "journal recovery"};
+                                              "start counter nonce", "high water", "journal recovery",
+                                              "change mark", "change mark nonce"};
         static const char *const storage_hex[] = {
             "339b2585661fdf58c0d401e63d10bb836bb3b272b6b7dbb5f3d9e417fb630deb",
             "9a4617d2c2e8fb4163ddbe6b6b1968302c0a65114f261b444605aef8cf4e1b00"};
@@ -501,6 +502,49 @@ static void e5_to_e9m(void)
         CHECK(sv == 6);
         sb[50] ^= 1;
         CHECK_ERR(gz_sc_counter_open(v, sb, sizeof sb, &sv), GZ_SC_DAMAGED);
+    }
+
+    /* 10.4: the change mark has its own magic and key: a start counter never
+     * opens as a change mark, nor the other way, even with the magic changed. */
+    {
+        uint8_t cm[GZ_SC_CHANGE_MARK_LEN], sb[GZ_SC_STARTS_LEN];
+        uint64_t x = 0;
+        int wf = 0;
+        CHECK_ERR(gz_sc_change_mark_seal(v, 7, 0, cm), GZ_SC_OK);
+        CHECK_ERR(gz_sc_change_mark_open(v, cm, sizeof cm, &x, &wf), GZ_SC_OK);
+        CHECK(x == 7);
+        CHECK_ERR(gz_sc_counter_open(v, cm, sizeof cm, &x), GZ_SC_NOT_THIS_FORMAT);
+        CHECK_ERR(gz_sc_counter_seal(v, 7, sb), GZ_SC_OK);
+        CHECK_ERR(gz_sc_change_mark_open(v, sb, sizeof sb, &x, &wf), GZ_SC_NOT_THIS_FORMAT);
+        memcpy(sb, cm, 9);   /* the change mark's magic and format on a start counter: not even its length */
+        CHECK_ERR(gz_sc_change_mark_open(v, sb, sizeof sb, &x, &wf), GZ_SC_NOT_THIS_FORMAT);
+        {   /* the right length and header, a start counter's sealed bytes: the key differs */
+            uint8_t fx[GZ_SC_CHANGE_MARK_LEN];
+            memset(fx, 0, sizeof fx);
+            memcpy(fx, cm, 41);
+            memcpy(fx + 41, sb + 41, GZ_SC_STARTS_LEN - 41);
+            CHECK_ERR(gz_sc_change_mark_open(v, fx, sizeof fx, &x, &wf), GZ_SC_DAMAGED);
+        }
+    }
+
+    /* E9d: the change mark (10.4), mark 7, no wide read pending; the flag kept
+     * (review B of PR 93, M-1). */
+    derive_hex("E9d KM", SEED64, 64, "change mark", SIGNET, 32, "9b9fe6e16c81147271a5e0f5d3f0c72eb9c37f88daef9dea28a96508bfa9558e");
+    {
+        uint8_t cm[GZ_SC_CHANGE_MARK_LEN];
+        uint64_t x = 0;
+        int wf = 1;
+        CHECK(GZ_SC_CHANGE_MARK_LEN == 90);
+        r_queue("change mark", NULL);
+        CHECK_ERR(gz_sc_change_mark_seal(v, 7, 0, cm), GZ_SC_OK);
+        eq_hex("E9d change mark", cm, sizeof cm, "475a43484d524b3101f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c4225e97398810800000079cebbd79ec2092af2412c3b914b27485314b29878f33b7a5fa9165c0e39467504470e29aa7a25f5423d220b16d8ebb1b9");
+        CHECK_ERR(gz_sc_change_mark_open(v, cm, sizeof cm, &x, &wf), GZ_SC_OK);
+        CHECK(x == 7 && wf == 0);
+        CHECK_ERR(gz_sc_change_mark_seal(v, 9, 1, cm), GZ_SC_OK);
+        CHECK_ERR(gz_sc_change_mark_open(v, cm, sizeof cm, &x, &wf), GZ_SC_OK);
+        CHECK(x == 9 && wf == 1);
+        cm[60] ^= 1;
+        CHECK_ERR(gz_sc_change_mark_open(v, cm, sizeof cm, &x, &wf), GZ_SC_DAMAGED);
     }
 
     /* E9m: the mark file. */

@@ -1385,6 +1385,45 @@ static void test_invented_tip_does_not_raise_confirmations(test_state *T) {
 
 /* ---- servers that are down ---- */
 
+static const char *mstats(char *buf, size_t cap, unsigned confirmed, unsigned mempool) {
+  snprintf(buf, cap,
+           "{\"scripthash\":\"" SCRIPT_A2_HASH "\",\"chain_stats\":{\"funded_txo_count\":%u,\"funded_txo_sum\":%u,"
+           "\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":%u},\"mempool_stats\":{\"funded_txo_count\":%u,"
+           "\"funded_txo_sum\":%u,\"spent_txo_count\":0,\"spent_txo_sum\":0,\"tx_count\":%u}}",
+           confirmed, confirmed * 1000u, confirmed, mempool, mempool * 1000u, mempool);
+  return buf;
+}
+
+/* Follow-up of review B of PR 93, H-1: an address's history, compared: the
+ * confirmed count the same on both servers, the highest mempool count; a
+ * difference with the same tips is disagreement; one server refusing or down
+ * is no quorum. */
+static void test_script_history_compared(test_state *T) {
+  mfx x;
+  ids k;
+  gz_script_history h;
+  char b0[600], b1[600];
+  mfx_open(&x, 2);
+  ids_init(&k);
+  const gz_multi_report *rep = gz_multi_last_report(&x.multi);
+  fake_set(&x.fake[0], false, B0 "/scripthash/" SCRIPT_A2_HASH, 200, mstats(b0, sizeof b0, 3, 0));
+  fake_set(&x.fake[1], false, B1 "/scripthash/" SCRIPT_A2_HASH, 200, mstats(b1, sizeof b1, 3, 2));
+  CHECK_RESULT(gz_chain_script_history(&x.multi, k.script, k.script_len, &h), GZ_CHAIN_OK);
+  CHECK(h.confirmed_txs == 3 && h.mempool_txs == 2);
+  CHECK(rep->call == GZ_CALL_SCRIPT_HISTORY && rep->answers[0].u.history.confirmed_txs == 3 &&
+        rep->answers[1].u.history.mempool_txs == 2);
+  fake_set(&x.fake[1], false, B1 "/scripthash/" SCRIPT_A2_HASH, 200, mstats(b1, sizeof b1, 4, 0));
+  CHECK_RESULT(gz_chain_script_history(&x.multi, k.script, k.script_len, &h), GZ_CHAIN_DISAGREE);
+  CHECK(h.confirmed_txs == 0 && h.mempool_txs == 0);
+  fake_set(&x.fake[1], false, B1 "/scripthash/" SCRIPT_A2_HASH, 400, "Invalid scripthash");
+  CHECK_RESULT(gz_chain_script_history(&x.multi, k.script, k.script_len, &h), GZ_CHAIN_NO_QUORUM);
+  CHECK(rep->answers[0].result == GZ_CHAIN_OK && rep->answers[1].result == GZ_CHAIN_REJECTED);
+  fake_set(&x.fake[1], false, B1 "/scripthash/" SCRIPT_A2_HASH, 200, mstats(b1, sizeof b1, 3, 0));
+  x.fake[1].down = true;
+  CHECK_RESULT(gz_chain_script_history(&x.multi, k.script, k.script_len, &h), GZ_CHAIN_NO_QUORUM);
+  mfx_close(&x);
+}
+
 static void test_one_down_of_two(test_state *T) {
   mfx x;
   ids k;
@@ -1768,6 +1807,7 @@ int main(void) {
   RUN(test_lying_server_invents_a_confirmation);
   RUN(test_invented_tip_does_not_raise_confirmations);
   RUN(test_one_down_of_two);
+  RUN(test_script_history_compared);
   RUN(test_one_down_of_three);
   RUN(test_three_servers_one_wrong);
   RUN(test_broadcast);

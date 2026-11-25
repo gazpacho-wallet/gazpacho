@@ -294,6 +294,12 @@ typedef struct gz_chain_info {
 
 /* ---- the interface ---------------------------------------------------- */
 
+/* An address's history (gz_chain_script_history, below). */
+typedef struct gz_script_history {
+  uint64_t confirmed_txs;
+  uint64_t mempool_txs;
+} gz_script_history;
+
 typedef struct gz_chain_ops {
   gz_chain_result (*tip)(void *ctx, gz_chain_tip *out);
   gz_chain_result (*block_hash)(void *ctx, uint32_t height, uint8_t out[GZ_HASH_LEN]);
@@ -316,6 +322,9 @@ typedef struct gz_chain_ops {
   gz_chain_result (*broadcast_package)(void *ctx, const uint8_t *parent, size_t parent_len,
                                        const uint8_t *child, size_t child_len,
                                        gz_package_result *out);
+  /* Optional (may be NULL): gz_chain_script_history. */
+  gz_chain_result (*script_history)(void *ctx, const uint8_t *script, size_t script_len,
+                                    gz_script_history *out);
   /* Optional (may be NULL): who this backend talks to. */
   bool (*describe)(void *ctx, gz_chain_info *out);
   void (*destroy)(void *ctx);
@@ -367,6 +376,18 @@ gz_chain_result gz_chain_tx_status(const gz_chain *c, const uint8_t txid[GZ_HASH
 gz_chain_result gz_chain_script_outputs(const gz_chain *c, const uint8_t *script,
                                         size_t script_len, gz_chain_output *out, size_t cap,
                                         size_t *count, bool *unconfirmed_differs);
+
+/* Whether `script` was ever used: the number of transactions that paid or
+ * spent it, in blocks and in the mempool (Esplora GET /scripthash/{hash}:
+ * chain_stats.tx_count, mempool_stats.tx_count). Unlike
+ * gz_chain_script_outputs it counts spent outputs too, so a wallet can tell an
+ * address it used from one it never used (BIP 44's gap limit). The comparing
+ * backend requires the confirmed count to be the same on every server
+ * (GZ_CHAIN_LAG when the tips show a server behind, GZ_CHAIN_DISAGREE
+ * otherwise) and answers the highest mempool count. Optional for a backend:
+ * GZ_CHAIN_INVALID_ARG from one without it. */
+gz_chain_result gz_chain_script_history(const gz_chain *c, const uint8_t *script, size_t script_len,
+                                        gz_script_history *out);
 
 /* Whether output `vout` of `txid` is spent, and by which input of which
  * transaction. A server answers "not spent" for an output that does not
