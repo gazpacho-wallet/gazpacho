@@ -488,7 +488,7 @@ def gates(exe, work):
         check(h.wait_for(r"scope=%s role=host state=1 joined=3 ready=2\b" % a.tag, timeout=10, start=mk) is not None,
               "7: unlocked, it readies again")
         # AT_JOIN: ready with the passphrase, in lobby A only.
-        m1.send(cmd(READY, (12, a.scope), (14, b"\x01")))
+        m1.send(cmd(READY, (12, a.scope), (14, b"\x01"), (16, th("gazpacho/terms/current", a.current))))
         check(state(h, a, "host", 4) and state(m1, a, "member", 4), "7: ready with the passphrase in one lobby: its check runs, to Funding")
         check(m1.wait_for(r"key-forget scope=%s" % a.tag, timeout=10) is not None,
               "7: after its round the scoped secret is forgotten")
@@ -500,7 +500,7 @@ def gates(exe, work):
         check(started(m1), "7: the member restarts")
         time.sleep(2.5)
         check(h.count(r"scope=%s role=host state=2" % b.tag) == 0, "7: after a restart the lobby waits for the person")
-        m1.send(cmd(READY, (12, b.scope), (14, b"\x01")))
+        m1.send(cmd(READY, (12, b.scope), (14, b"\x01"), (16, th("gazpacho/terms/current", b.current))))
         check(state(h, b, "host", 4) and state(m1, b, "member", 4) and
               m1.wait_for(r"key-forget scope=%s" % b.tag, timeout=10) is not None,
               "7: readied with the passphrase, that lobby runs its check too, and its secret is forgotten after")

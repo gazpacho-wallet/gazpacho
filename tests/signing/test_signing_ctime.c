@@ -59,19 +59,21 @@ int main(void)
     CHECK(r0 && r0->secnonce_serial[0]);
     if (r0 && r0->secnonce_serial[0]) {
         const secp256k1_context *saved = e0->cfg.ctx;
+        CHECK(take_keys(e0, r0->def.outer_digest, r0->def.terms_digest, 1));   /* the keys the hook gives, as in an operation */
         e0->cfg.ctx = dctx;
         VALGRIND_MAKE_MEM_UNDEFINED(r0->secnonce[0].data + 4, 64);      /* k1, k2 (the magic and public key are public) */
-        VALGRIND_MAKE_MEM_UNDEFINED(&e0->factory_kp, 32);              /* the keypair's secret half */
+        VALGRIND_MAKE_MEM_UNDEFINED(&e0->work_fkp, 32);                /* the keypair's secret half */
         before = VALGRIND_COUNT_ERRORS;
         int ok = sign_item(e0, r0, 0, out);
         VALGRIND_MAKE_MEM_DEFINED(out, 32);                            /* a partial signature is public */
         after = VALGRIND_COUNT_ERRORS;
-        VALGRIND_MAKE_MEM_DEFINED(&e0->factory_kp, sizeof e0->factory_kp);
+        VALGRIND_MAKE_MEM_DEFINED(&e0->work_fkp, sizeof e0->work_fkp);
         e0->cfg.ctx = saved;
+        drop_keys(e0);
         printf("  sign_item: ok %d, reports %lu\n", ok, after - before);
         CHECK(ok && after == before);
     }
-    /* a member's nonce: the secret port's bytes, the factory secret and both keypairs undefined */
+    /* a member's nonce: the secret port's bytes and both keypairs the key hook gave undefined */
     gz_sign_t *e1 = h.p[1].e;
     gz_sign_round_t *r1 = round_of(&h, 1);
     CHECK(r1 != NULL);
@@ -85,12 +87,12 @@ int main(void)
             scratch.have_nonce[i] &= ~bit((unsigned)s);
             scratch.secnonce_serial[i] = 0;
             const secp256k1_context *saved = e1->cfg.ctx;
+            CHECK(take_keys(e1, scratch.def.outer_digest, scratch.def.terms_digest, 1));
             e1->cfg.ctx = dctx;
             g_fill_orig = e1->ports.random.fill;
             e1->ports.random.fill = fill_secret_undefined;
-            VALGRIND_MAKE_MEM_UNDEFINED(e1->cfg.factory_secret, 32);
-            VALGRIND_MAKE_MEM_UNDEFINED(&e1->factory_kp, 32);
-            VALGRIND_MAKE_MEM_UNDEFINED(&e1->contribution_kp, 32);
+            VALGRIND_MAKE_MEM_UNDEFINED(&e1->work_fkp, 32);
+            VALGRIND_MAKE_MEM_UNDEFINED(&e1->work_ckp, 32);
             before = VALGRIND_COUNT_ERRORS;
             int ok = make_nonce(e1, &scratch, i);
             VALGRIND_MAKE_MEM_DEFINED(scratch.nonce[i][s], 66);           /* the public nonce and its signature are public */
@@ -103,11 +105,12 @@ int main(void)
             after = VALGRIND_COUNT_ERRORS;
             printf("  wipe_secrets: reports %lu\n", after - before);
             CHECK(after == before);
-            VALGRIND_MAKE_MEM_DEFINED(e1->cfg.factory_secret, 32);
-            VALGRIND_MAKE_MEM_DEFINED(&e1->factory_kp, sizeof e1->factory_kp);
-            VALGRIND_MAKE_MEM_DEFINED(&e1->contribution_kp, sizeof e1->contribution_kp);
+            VALGRIND_MAKE_MEM_DEFINED(&e1->work_fkp, sizeof e1->work_fkp);
+            VALGRIND_MAKE_MEM_DEFINED(&e1->work_ckp, sizeof e1->work_ckp);
+            VALGRIND_MAKE_MEM_DEFINED(e1->work_sk, sizeof e1->work_sk);
             e1->ports.random.fill = g_fill_orig;
             e1->cfg.ctx = saved;
+            drop_keys(e1);
         }
     }
     h_free(&h);

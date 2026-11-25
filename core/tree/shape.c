@@ -158,6 +158,23 @@ static uint32_t max_children(const uint8_t *levels, size_t nl, uint32_t m, uint3
     return best;
 }
 
+static uint32_t node_count(const uint8_t *levels, size_t nl, uint32_t m, uint32_t d)
+{
+    uint32_t sizes[16], n, i, total = 1;
+    if (d >= GZ_TREE_MAX_DEPTH) return 0;
+    if (tr_level(levels, nl, d) == GZ_TERMS_LEAF_PS && m == 1) return 2;   /* the leaf's kickoff and state */
+    n = tr_children(levels, nl, m, d, sizes);
+    if (n == 0) return 0;
+    for (i = 0; i < n; i++) total += node_count(levels, nl, sizes[i], d + 1);
+    return total;
+}
+
+uint32_t gz_tree_node_count(const gz_tree_params_t *p)
+{
+    if (!p || !p->n_levels) return 0;
+    return node_count(p->levels, p->n_levels, p->n_members, 0);
+}
+
 gz_tree_p_err_t gz_tree_params(const gz_terms_outer_t *t, uint32_t n, gz_tree_params_t *p)
 {
     const gz_shape_entry_t *e;
