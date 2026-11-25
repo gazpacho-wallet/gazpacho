@@ -1172,6 +1172,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
 #ifdef GZP_TEST_BUILD
     cfg.test_sign_outcome = (uint32_t)ex->opt->test_sign_outcome;
     cfg.test_sign_delay_ms = (uint32_t)ex->opt->test_sign_delay_ms;
+    cfg.test_ready_cap = (uint32_t)ex->opt->test_ready_cap;
     cfg.test_engines = (uint32_t)ex->opt->test_engines;
 #endif
     if (!ex->node && !(ex->node = malloc(gz_node_size()))) abort();

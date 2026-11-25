@@ -5,7 +5,7 @@
  * envelope (tag, kind, scope, records):
  *   LOBBY_OPENED   4 outer, 6 outer_sig (64), 8 current, 10 current_sig (64)
  *   TERMS_VERSION  4 current, 6 current_sig (64)
- *   SEAT           4 ckey (33), 6 fkey (33), 8 bind_f (64), 10 bind_c (64),
+ *   SEAT           4 ckey (33), 6 fkey (33), 10 bind_c (64) (6 and 10 from the seat's first ready, K1),
  *                  12 state (u8), 14 min_members (u16), 16 ready_version (u32),
  *                  18 join_seq (u64), 20 the seat's latest ready (absent: none)
  *   FREEZE         4 check_id (32), 6 version (u32), 8 digest (32), 10 the ready_check
@@ -136,15 +136,24 @@ static gz_status_t broadcast(gz_lobby_host_t *h, gz_action_list_t *out)
     return wait ? gz_la_timer(out, GZ_LOBBY_TIMER_STATUS, 1000) : GZ_OK;
 }
 
+/* 1 once the seat's first ready fixed its factory key (K1). */
+static int has_fkey(const gz_lobby_seat_t *s)
+{
+    uint8_t acc = 0;
+    for (int i = 0; i < 33; i++) acc |= s->fkey[i];
+    return acc != 0;
+}
+
 static gz_status_t save_seat(const gz_lobby_host_t *h, const gz_lobby_seat_t *s, gz_action_list_t *out)
 {
     uint8_t r[GZ_LOBBY_REC_MAX_SEAT];
     gz_lr_t w;
     gz_lr_start(&w, r, sizeof r, h->scope);
     gz_lr_put(&w, 4, s->ckey, 33);
-    gz_lr_put(&w, 6, s->fkey, 33);
-    gz_lr_put(&w, 8, s->bind_f, 64);
-    gz_lr_put(&w, 10, s->bind_c, 64);
+    if (has_fkey(s)) {                                /* K1: fixed at the seat's first ready */
+        gz_lr_put(&w, 6, s->fkey, 33);
+        gz_lr_put(&w, 10, s->bind_c, 64);
+    }
     gz_lr_int(&w, 12, s->state, 1);
     gz_lr_int(&w, 14, s->min_members, 2);
     gz_lr_int(&w, 16, s->ready_version, 4);
@@ -357,7 +366,7 @@ static gz_status_t handoff(gz_lobby_host_t *h, int resume, gz_action_list_t *out
     /* Without the host's own binding there is no round to hand over: the
      * signing engine fails the unfinished attempt of a restarted host
      * anyway (H13). */
-    if (!h->bound && !self_bind(h)) return gz_la_no_key(out, GZ_LOBBY_KEY_FACTORY);
+    if (!h->bound && !self_bind(h)) return gz_la_no_key(out, GZ_LOBBY_KEY_HOST);
     for (i = 0; i < h->n_seats; i++)
         if (h->seats[i].chosen) {
             for (j = k; j > 0 && order[j - 1]->join_seq > h->seats[i].join_seq; j--) order[j] = order[j - 1];
@@ -369,7 +378,6 @@ static gz_status_t handoff(gz_lobby_host_t *h, int resume, gz_action_list_t *out
     for (i = 0; i < k; i++) {
         memcpy(ps[i + 1].factory_key, order[i]->fkey, 33);
         memcpy(ps[i + 1].contribution_key, order[i]->ckey, 33);
-        memcpy(ps[i + 1].bind_by_factory, order[i]->bind_f, 64);
         memcpy(ps[i + 1].bind_by_contribution, order[i]->bind_c, 64);
     }
     ho.role = 1;
@@ -578,15 +586,12 @@ static gz_status_t on_join(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lobb
                            gz_action_list_t *out)
 {
     gz_lobby_seat_t *s = seat_of(h, c->key);
-    uint8_t b[32];
     uint16_t i, taken = 0;
     uint64_t now = now_ms(h);
     gz_status_t st = GZ_OK;
     int bad;
-    if (s && is_in(s)) {                              /* a duplicate, or another factory key */
-        if (memcmp(s->fkey, m->factory_key, 33) == 0) return status(h, c, out);
-        return join_refused(h, c, 1, out);
-    }
+    (void)m;
+    if (s && is_in(s)) return status(h, c, out);      /* a duplicate */
     if (s && s->state == GZ_SEAT_REMOVED) return status(h, c, out);
     /* A seat chosen in the running attempt keeps the keys it was chosen with
      * until the round is resolved, also after its leave: it cannot join again
@@ -603,28 +608,17 @@ static gz_status_t on_join(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lobb
         !creation_due(h, now) || (!s && h->n_seats >= GZ_LOBBY_MAX_SEATS) ||
         (h->cfg.seat_room && !h->cfg.seat_room(h->cfg.seat_ctx, c->key)))
         return join_refused(h, c, 0, out);
-    gz_lobby_binding(h->scope, m->factory_key, c->key, b);
-    bad = !h->crypto.point_ok(h->crypto.ctx, m->factory_key) ||
-          memcmp(m->factory_key, h->me.factory_key, 33) == 0 || memcmp(m->factory_key, h->terms.host_key, 33) == 0 ||
-          memcmp(c->key, h->me.factory_key, 33) == 0 || memcmp(c->key, h->terms.host_key, 33) == 0 ||
-          memcmp(m->factory_key, c->key, 33) == 0;
-    for (i = 0; i < h->n_seats && !bad; i++) {
-        const gz_lobby_seat_t *o = &h->seats[i];
-        if (o != s && is_in(o) && (memcmp(o->fkey, m->factory_key, 33) == 0 || memcmp(o->ckey, m->factory_key, 33) == 0 ||
-                                   memcmp(o->fkey, c->key, 33) == 0))
-            bad = 1;
-    }
-    bad = bad || h->crypto.verify(h->crypto.ctx, m->factory_key, b, m->bind_by_factory) != 1 ||
-          h->crypto.verify(h->crypto.ctx, c->key, b, m->bind_by_contribution) != 1;
+    /* K1: the join carries no keys; the contribution key (the link's) is no factory key used in the lobby. */
+    bad = memcmp(c->key, h->me.factory_key, 33) == 0 || memcmp(c->key, h->terms.host_key, 33) == 0;
+    for (i = 0; i < h->n_seats && !bad; i++)
+        if (memcmp(h->seats[i].fkey, c->key, 33) == 0) bad = 1;
     if (bad) return join_refused(h, c, 1, out);
     if (!s) {
         s = &h->seats[h->n_seats++];
         memset(s, 0, sizeof *s);
         memcpy(s->ckey, c->key, 33);
     }
-    memcpy(s->fkey, m->factory_key, 33);
-    memcpy(s->bind_f, m->bind_by_factory, 64);
-    memcpy(s->bind_c, m->bind_by_contribution, 64);
+    /* The factory key, once a first ready fixed it, stays the seat's in this lobby (K1, BD1). */
     s->ready_len = 0;
     s->ready_version = 0;
     s->min_members = 0;
@@ -653,6 +647,28 @@ static gz_status_t on_ready(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lob
     if (!gz_la_verified(&h->crypto, m, c->key)) { c->closed = 1; return gz_la_refuse(out, &c->link); }
     if (!s || !is_in(s) || h->state > GZ_LOBBY_SIGNING || (h->state == GZ_LOBBY_SIGNING && s->chosen))
         return status(h, c, out);
+    /* K1: every ready names the seat's factory key. At the first one it is checked and fixed: a valid point,
+     * none of the host's keys, not the contribution key, used by no other seat ever in this lobby, and bound
+     * to the contribution key by its signature over (scope, F, C). Later it must be the same. */
+    int fix = 0;
+    if (has_fkey(s)) {
+        if (memcmp(s->fkey, m->factory_key, 33) != 0) return join_refused(h, c, 1, out);   /* RULE-LOBBY:FKEY_FIXED */
+    } else {
+        uint8_t b[32];
+        int bad = !h->crypto.point_ok(h->crypto.ctx, m->factory_key) ||
+                  memcmp(m->factory_key, h->me.factory_key, 33) == 0 || memcmp(m->factory_key, h->terms.host_key, 33) == 0 ||
+                  memcmp(m->factory_key, c->key, 33) == 0;
+        for (uint16_t i = 0; i < h->n_seats && !bad; i++) {
+            const gz_lobby_seat_t *o = &h->seats[i];
+            if (o != s && (memcmp(o->fkey, m->factory_key, 33) == 0 || memcmp(o->ckey, m->factory_key, 33) == 0))
+                bad = 1;                                                            /* RULE-LOBBY:FKEY_EVER */
+        }
+        gz_lobby_binding(h->scope, m->factory_key, c->key, b);
+        if (!bad && h->crypto.verify(h->crypto.ctx, c->key, b, m->bind_by_contribution) != 1) bad = 1;   /* RULE-LOBBY:BIND_C */
+        /* Refused as invalid, reason 5, and counted towards the close of the connection (review A, F8). */
+        if (bad) return join_refused(h, c, 1, out);
+        fix = 1;                                      /* fixed with the first ready taken, and saved with it */
+    }
     len = gz_la_env(m->kind, m->scope, m->records, m->records_len, env, sizeof env);
     if (m->version == h->values.version && memcmp(m->current_digest, h->current_digest, 32) == 0 && len) {
         if (!is_ready(h, s) || s->min_members != mins) {
@@ -663,6 +679,10 @@ static gz_status_t on_ready(gz_lobby_host_t *h, gz_lobby_conn_t *c, const gz_lob
             /* Applied whole or not at all: a change the limit refuses leaves
              * memory as the saved seat (review A, F5). */
             before = *s;
+            if (fix) {
+                memcpy(s->fkey, m->factory_key, 33);
+                memcpy(s->bind_c, m->bind_by_contribution, 64);
+            }
             s->ready_version = h->values.version;
             s->min_members = mins;
             memcpy(s->ready_msg, env, len);
@@ -813,8 +833,7 @@ static int self_bind(gz_lobby_host_t *h)
     memcpy(h->me.factory_key, h->cfg.factory_key, 33);
     memcpy(h->me.contribution_key, h->terms.host_key, 33);
     gz_lobby_binding(h->scope, h->me.factory_key, h->me.contribution_key, b);
-    h->bound = h->crypto.sign(h->crypto.ctx, GZ_LOBBY_KEY_FACTORY, b, h->me.bind_by_factory) == 1 &&
-               h->crypto.sign(h->crypto.ctx, GZ_LOBBY_KEY_HOST, b, h->me.bind_by_contribution) == 1;
+    h->bound = h->crypto.sign(h->crypto.ctx, GZ_LOBBY_KEY_HOST, b, h->me.bind_by_contribution) == 1;   /* K1: the host key only */
     return h->bound;
 }
 
@@ -903,9 +922,11 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
         memcpy(h->current_sig, x, 64);
         return GZ_OK;
     case GZ_REC_SEAT:
-        if (!(p = gz_lf_fixed(&f, 4, 33)) || !gz_lf_fixed(&f, 6, 33) || !gz_lf_fixed(&f, 8, 64) ||
-            !gz_lf_fixed(&f, 10, 64) || !gz_lf_fixed(&f, 12, 1) || !gz_lf_fixed(&f, 14, 2) ||
+        if (!(p = gz_lf_fixed(&f, 4, 33)) || !gz_lf_fixed(&f, 12, 1) || !gz_lf_fixed(&f, 14, 2) ||
             !gz_lf_fixed(&f, 16, 4) || !gz_lf_fixed(&f, 18, 8))
+            return GZ_ERR_CORRUPT;
+        /* K1: the factory key and its binding, together, from the seat's first ready on */
+        if ((f.v[3] != NULL) != (f.v[5] != NULL) || (f.v[3] && (!gz_lf_fixed(&f, 6, 33) || !gz_lf_fixed(&f, 10, 64))))
             return GZ_ERR_CORRUPT;
         a = NULL;
         an = 0;
@@ -920,8 +941,13 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
         /* Each creation took the next join_seq, so the largest one restored is
          * the number of seats ever created, rejoins included (messages.md 6). */
         /* The keys of a seat chosen in the running attempt never change (B1). */
-        if (h->state == GZ_LOBBY_SIGNING && s->chosen && memcmp(s->fkey, f.v[3], 33) != 0) return GZ_ERR_CORRUPT;
-        memcpy(s->fkey, f.v[3], 33); memcpy(s->bind_f, f.v[4], 64); memcpy(s->bind_c, f.v[5], 64);
+        {
+            uint8_t none[33] = {0};
+            const uint8_t *fk = f.v[3] ? f.v[3] : none;
+            if (h->state == GZ_LOBBY_SIGNING && s->chosen && memcmp(s->fkey, fk, 33) != 0) return GZ_ERR_CORRUPT;
+            memcpy(s->fkey, fk, 33);
+            if (f.v[5]) memcpy(s->bind_c, f.v[5], 64); else memset(s->bind_c, 0, 64);
+        }
         if (f.v[6][0] > GZ_SEAT_REFUSED) return GZ_ERR_CORRUPT; /* damaged storage (review B, L4) */
         s->state = f.v[6][0];
         s->min_members = (uint16_t)gz_lw_get(f.v[7], 2);

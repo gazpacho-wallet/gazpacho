@@ -235,6 +235,9 @@ int gz_ls_init(gz_node_t *c, int i)
     mc.address_len = s->address_len;
     mc.key_epoch = s->key_epoch;
     mc.key_index = s->key_index;
+#ifdef GZ_TEST_KINDS
+    mc.test_ready_cap = c->cfg.test_ready_cap;          /* tests only: an over-limit ready (K1) */
+#endif
     mc.auto_join = s->auto_join;
     gate.may_answer = ls_may_answer;
     gate.ctx = s;

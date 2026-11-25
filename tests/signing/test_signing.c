@@ -21,7 +21,7 @@
 static int g_quick;
 /* The digest of fixed-generator outputs (test_definitions). After an intended
  * change: run "test_signing known", check, update. */
-#define KNOWN_ANSWERS 0x671cd81e2969bae5ull
+#define KNOWN_ANSWERS 0xef4ea9f2b53e3a25ull
 
 typedef struct {
     int done;                   /* the host's newest round has every ack */
@@ -953,22 +953,22 @@ static void test_definitions(int print)
 /* Transcript digests of the scenarios (scenarios.h). After an intended change:
  * run "test_signing golden-print", check what changed, update. */
 static const uint64_t SC_KNOWN[N_SCENARIOS] = {
-    0x12eb4decd3975df7ull, /* honest-1 */
-    0xc6793ba3675bd718ull, /* honest-2 */
-    0xaac115c2c4321ea6ull, /* duplicates */
-    0x232a237a8bed387cull, /* member-restart-nonces */
-    0x5aba521818acdcbbull, /* member-restart-signed */
-    0x9a154823001e739full, /* tier-abort */
-    0x39f49d1b3ac44777ull, /* host-restarts */
-    0x9d1b272bfa8bc5d2ull, /* timers */
-    0x24adabf73fe03273ull, /* host-faults */
-    0xd8b7a80063b3e926ull, /* member-faults */
-    0x8db197b0d914c837ull, /* proposals */
-    0x0648268c9c9a8eeaull, /* journal */
-    0x239c2636f395ba87ull, /* edges */
-    0x763fc3edad7b0615ull, /* reconnect */
-    0xb12aa72c11d46449ull, /* records */
-    0xcbc8d8d42e8f7b8dull, /* exposure */
+    0x66612ed5d3665c32ull, /* honest-1 */
+    0x0609fb7c32cab9b5ull, /* honest-2 */
+    0x3c2546d19d90d428ull, /* duplicates */
+    0x3d2b035c3136d1e9ull, /* member-restart-nonces */
+    0x09df378156c22e49ull, /* member-restart-signed */
+    0x6630ad7df5fcbdfdull, /* tier-abort */
+    0x2be9bd3f245ca15dull, /* host-restarts */
+    0x46c115623eed9299ull, /* timers */
+    0xa35aa10916bea08aull, /* host-faults */
+    0x29d74425fbd8d2e8ull, /* member-faults */
+    0x6b10097a4c6ec1c1ull, /* proposals */
+    0xcf7055d2bb68c7e5ull, /* journal */
+    0x23aa02b6154cd9aeull, /* edges */
+    0x399cd232ed44ca20ull, /* reconnect */
+    0xc64e246627977160ull, /* records */
+    0x2585e2c385093221ull, /* exposure */
 };
 
 static void test_golden(int print)

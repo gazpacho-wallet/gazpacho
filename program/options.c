@@ -149,6 +149,7 @@ void gzp_usage(void)
         "  --test-crash-after-record T   exit once a batch with a record of type T (hex) is durable\n"
         "  --test-sign-outcome funding|retry|failed|unfinished   what the signing stand-in reports\n"
         "  --test-sign-delay-ms MS       ... this long after the hand-off\n"
+        "  --test-ready-cap N            build a member's ready in N bytes (an over-limit ready is a node error)\n"
         "  --test-crash-before-confirm K exit just before the K-th confirmation\n"
         "  --test-exit-after-send        exit once the first test ping has left\n"
         "  --test-drop-view KIND         view objects of this kind never reach the API\n");
@@ -322,6 +323,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
             ok = o->test_crash_after_record != 0;
         }
         else if (!strcmp(a, "--test-sign-delay-ms")) { ok = num(val, 0, 600000, &v); o->test_sign_delay_ms = (int)v; }
+        else if (!strcmp(a, "--test-ready-cap")) { ok = num(val, 1, 100000, &v); o->test_ready_cap = (int)v; }
         else if (!strcmp(a, "--test-big-reply")) { ok = num(val, 1, 60000, &v); o->test_big_reply = (int)v; }
         else if (!strcmp(a, "--test-crash-after-save")) { ok = num(val, 1, 1000000, &v); o->test_crash_after_save = (int)v; }
         else if (!strcmp(a, "--test-crash-before-confirm")) { ok = num(val, 1, 1000000, &v); o->test_crash_before_confirm = (int)v; }

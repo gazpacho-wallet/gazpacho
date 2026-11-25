@@ -267,6 +267,9 @@ typedef struct {
     uint32_t test_sign_outcome;        /* test builds only: GZ_TEST_SIGN_* (0: funding) */
     uint32_t test_sign_delay_ms;       /* test builds only: how long after begin */
     uint32_t test_engines;             /* test builds only: 0, 1 or 2 test engines */
+    uint32_t test_ready_cap;           /* test builds only: a member's ready is built in this many bytes (0: the
+                                        * whole GZ_LOBBY_MAX_SAVED_MSG), so that an over-limit ready, a bug, is
+                                        * seen as the node error it is (K1) */
 } gz_node_config_t;
 
 /* Opaque, caller-allocated: gz_node_size() bytes, aligned for any object

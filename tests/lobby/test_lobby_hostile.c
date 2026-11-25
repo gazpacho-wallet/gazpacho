@@ -175,18 +175,14 @@ static void e_hello(const uint8_t *scope)
     ENVN = gz_lobby_enc_done(&e);
 }
 
+/* K1: a join carries no factory key and no binding. The faults the join used to carry (another member's
+ * factory key, a spoiled binding) are kept for that member's next ready, which now names them. */
+static int K1_FKEY_OF[NMEM], K1_SPOIL[NMEM], K1_SET[NMEM];
 static void e_join(const uint8_t *scope, int who, int fkey_of, int spoil)
 {
-    uint8_t b[32], sf[64], sc[64];
     gz_lobby_enc_t e;
-    gz_lobby_binding(scope, MEM[fkey_of].key[3].pub, MEM[who].key[2].pub, b);
-    lt_sign(&MEM[fkey_of], 3, b, sf);
-    lt_sign(&MEM[who], 2, b, sc);
-    if (spoil) sf[rnd(64)] ^= 1;
+    K1_FKEY_OF[who] = fkey_of; K1_SPOIL[who] = spoil; K1_SET[who] = 1;
     gz_lobby_enc_start(&e, ENV, sizeof ENV, GZ_KIND_JOIN, scope);
-    gz_lobby_enc_record(&e, 2, MEM[fkey_of].key[3].pub, 33);
-    gz_lobby_enc_record(&e, 4, sf, 64);
-    gz_lobby_enc_record(&e, 6, sc, 64);
     if (one_in(5)) gz_lobby_enc_record(&e, 7, (const uint8_t *)"a name", 6);
     ENVN = gz_lobby_enc_done(&e);
 }
@@ -204,6 +200,16 @@ static void e_ready(const uint8_t *scope, lt_signer_t *signer, uint32_t version,
     if (check) gz_lobby_enc_record(&e, 8, check, 32);
     if (pad) gz_lobby_enc_record(&e, 9, padb, pad);
     if (min) gz_lobby_enc_u16(&e, 11, min);
+    {   /* K1: the factory key (the one the member's join meant, maybe another's) and the binding (maybe spoiled) */
+        int who = signer >= MEM && signer < MEM + NMEM ? (int)(signer - MEM) : 0;
+        int f = K1_SET[who] ? K1_FKEY_OF[who] : who;
+        uint8_t b[32], sc[64];
+        gz_lobby_binding(scope, MEM[f].key[3].pub, signer->key[2].pub, b);
+        lt_sign(signer, 2, b, sc);
+        if (K1_SET[who] && K1_SPOIL[who]) sc[rnd(64)] ^= 1;
+        gz_lobby_enc_record(&e, 12, MEM[f].key[3].pub, 33);
+        gz_lobby_enc_record(&e, 14, sc, 64);
+    }
     ENVN = gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
 }
 

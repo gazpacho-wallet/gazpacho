@@ -380,14 +380,19 @@ static void test_kinds(lt_signer_t *member)
     memset(a, 0x33, sizeof a);
     memset(k32, 0x44, 32);
     for (opt = 0; opt < 2; opt++) {
+        /* K1: a join carries no factory key and no binding, only the optional display name */
+        gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, od);
+        if (opt) gz_lobby_enc_record(&e, 7, (const uint8_t *)"Ana", 3);
+        n = gz_lobby_enc_done(&e);
+        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_JOIN && m.factory_key == NULL);
+        CHECK(opt ? m.display_name_len == 3 && memcmp(m.display_name, "Ana", 3) == 0 : m.display_name == NULL);
+        /* a join of the old form (the factory key, its two bindings): unknown even records, refused */
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_JOIN, od);
         gz_lobby_enc_record(&e, 2, member->key[3].pub, 33);
         gz_lobby_enc_record(&e, 4, a, 64);
         gz_lobby_enc_record(&e, 6, a, 64);
-        if (opt) gz_lobby_enc_record(&e, 7, (const uint8_t *)"Ana", 3);
         n = gz_lobby_enc_done(&e);
-        CHECK(gz_lobby_decode_env(buf, n, &m) == GZ_DEC_OK && m.kind == GZ_KIND_JOIN && memcmp(m.factory_key, member->key[3].pub, 33) == 0);
-        CHECK(m.bind_by_factory == buf + 38 + 35 + 2 && (opt ? m.display_name_len == 3 && memcmp(m.display_name, "Ana", 3) == 0 : m.display_name == NULL));
+        CHECK(gz_lobby_decode_env(buf, n, &m) != GZ_DEC_OK);
         gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_UNREADY, od);
         if (opt) gz_lobby_enc_u16(&e, 1, 2);
         n = gz_lobby_enc_done(&e);

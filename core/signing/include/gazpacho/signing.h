@@ -138,7 +138,7 @@ static inline uint64_t gz_sign_link_peer(const gz_link_t *link)
 /* Message sizes (envelope included). A record's type and length take at
  * most 8 bytes here; 240, the signature, is 67. */
 #define GZ_SIGN_REC_OVERHEAD     8
-#define GZ_SIGN_MAX_PROPOSAL     (GZ_RMSG_HEADER + 1024 + GZ_SIGN_MAX_FUNDING_TX + 194 * GZ_SIGN_MAX_PARTICIPANTS)
+#define GZ_SIGN_MAX_PROPOSAL     (GZ_RMSG_HEADER + 1024 + GZ_SIGN_MAX_FUNDING_TX + 130 * GZ_SIGN_MAX_PARTICIPANTS)
 #define GZ_SIGN_MAX_NONCES_MSG   (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * 134)
 #define GZ_SIGN_MAX_LIST68_MSG   (GZ_RMSG_HEADER + 64 + GZ_SIGN_MAX_ITEMS * 68 + 67)
 #define GZ_SIGN_MAX_SMALL_MSG    (GZ_RMSG_HEADER + 128 + 67)

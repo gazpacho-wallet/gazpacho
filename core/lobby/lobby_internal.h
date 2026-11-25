@@ -40,6 +40,11 @@ gz_status_t gz_la_seated(gz_action_list_t *o, const uint8_t key[33], int seated)
 gz_status_t gz_la_cmd_refused(gz_action_list_t *o, uint8_t cmd, int lobby_state);
 /* GZ_NOTE_NO_KEY for key `which`. */
 gz_status_t gz_la_no_key(gz_action_list_t *o, uint32_t which);
+/* Sign the envelope being built with key `which`: GZ_OK with its length in *len; GZ_OK, *len 0 and the
+ * GZ_NOTE_NO_KEY notice when the port will not sign; GZ_ERR_BUG with *len 0 and nothing appended when the
+ * message does not fit its buffer (a limit set too low: an error of its own, never "no key"). */
+gz_status_t gz_la_sign_env(gz_lobby_enc_t *e, const gz_lobby_crypto_t *c, uint32_t which, gz_action_list_t *o,
+                           size_t *len);
 /* A decoded message signed by `key` (record 240). */
 int gz_la_verified(const gz_lobby_crypto_t *c, const gz_lobby_msg_t *m, const uint8_t key[33]);
 /* The envelope of a received message, to save it: its length, or 0 if it

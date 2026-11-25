@@ -336,7 +336,11 @@ static void test_member_hostile(void)
     /* honest offer: join and ready, saved first */
     member_up(&m, &cond);
     n = offer(buf, sizeof buf, SCOPE, T1, T1N, T2, T2N, &HOST);
-    CHECK(feed(&m, buf, n) == GZ_OK);
+    {
+        gz_status_t fst = feed(&m, buf, n);
+        CHECK(fst == GZ_OK);
+        if (fst != GZ_OK) return;                /* what follows reads the join and ready it made */
+    }
     CHECK(saves(GZ_REC_TERMS_RECEIVED) == 1 && saves(GZ_REC_JOINED) == 1 && saves(GZ_REC_READY_SENT) == 1);
     CHECK(sends(GZ_KIND_JOIN) == 1 && sends(GZ_KIND_READY) == 1);
     CHECK(before(GZ_KIND_JOIN, GZ_REC_JOINED) && before(GZ_KIND_JOIN, GZ_REC_TERMS_RECEIVED) && before(GZ_KIND_READY, GZ_REC_READY_SENT));
@@ -398,7 +402,7 @@ static void test_member_hostile(void)
     xn = host_msg(x, sizeof x, GZ_KIND_READY_CHECK, check, 2, cd3, 30000, 0, &HOST);
     {
         const uint8_t *r1; size_t r1n;
-        uint8_t keep[300]; size_t keepn;
+        uint8_t keep[GZ_LOBBY_MAX_SAVED_MSG]; size_t keepn;
         last_sent(GZ_KIND_READY, &g, &r1, &r1n);
         memcpy(keep, r1, r1n); keepn = r1n;
         feed(&m, b2, n);
@@ -942,7 +946,9 @@ static gz_status_t hin(int kind, int who, const uint8_t *b, size_t n)
     return hin_on(&H, kind, &l, b, n);
 }
 
-static size_t join_msg(uint8_t *buf, size_t cap, int who, const uint8_t *fkey, int sign_f, int sign_c)
+/* A join the old way (records 2, 4, 6: the factory key and both bindings), which K1 refuses; kept for the
+ * tests that show it refused. */
+static size_t join_msg_old(uint8_t *buf, size_t cap, int who, const uint8_t *fkey, int sign_f, int sign_c)
 {
     uint8_t b[32], sf[64], sc[64];
     gz_lobby_enc_t e;
@@ -953,6 +959,16 @@ static size_t join_msg(uint8_t *buf, size_t cap, int who, const uint8_t *fkey, i
     gz_lobby_enc_record(&e, 2, fkey, 33);
     gz_lobby_enc_record(&e, 4, sf, 64);
     gz_lobby_enc_record(&e, 6, sc, 64);
+    return gz_lobby_enc_done(&e);
+}
+
+/* K1: a join is the envelope alone (the link proves the contribution key); the arguments the old join took
+ * are kept so that the call sites read as before, and unused. */
+static size_t join_msg(uint8_t *buf, size_t cap, int who, const uint8_t *fkey, int sign_f, int sign_c)
+{
+    gz_lobby_enc_t e;
+    (void)who; (void)fkey; (void)sign_f; (void)sign_c;
+    gz_lobby_enc_start(&e, buf, cap, GZ_KIND_JOIN, SCOPE);
     return gz_lobby_enc_done(&e);
 }
 
@@ -967,6 +983,33 @@ static size_t ready_msg(uint8_t *buf, size_t cap, int who, uint32_t version, con
     gz_lobby_enc_record(&e, 6, digest, 32);
     if (check) gz_lobby_enc_record(&e, 8, check, 32);
     if (min) gz_lobby_enc_u16(&e, 11, min);
+    {   /* K1: the member's factory key and the contribution key's binding of it */
+        uint8_t b[32], sc[64];
+        gz_lobby_binding(SCOPE, MEM[who].key[3].pub, MEM[who].key[2].pub, b);
+        lt_sign(&MEM[who], 2, b, sc);
+        gz_lobby_enc_record(&e, 12, MEM[who].key[3].pub, 33);
+        gz_lobby_enc_record(&e, 14, sc, 64);
+    }
+    return gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
+}
+
+/* A K1 ready naming factory key `fkey`, its binding signed by member `sign_c`'s contribution key (`flip`: one
+ * byte of that signature flipped); signed by member `who`. */
+static size_t ready_k1_bad(uint8_t *buf, size_t cap, int who, uint32_t version, const uint8_t *digest,
+                           const uint8_t *fkey, int sign_c, int flip)
+{
+    uint8_t b[32], sc[64];
+    gz_lobby_enc_t e;
+    gz_lobby_crypto_t cr = lt_crypto(&MEM[who]);
+    gz_lobby_binding(SCOPE, fkey, MEM[who].key[2].pub, b);
+    lt_sign(&MEM[sign_c], 2, b, sc);
+    if (flip) sc[63] ^= 1;
+    gz_lobby_enc_start(&e, buf, cap, GZ_KIND_READY, SCOPE);
+    gz_lobby_enc_record(&e, 2, SCOPE, 32);
+    gz_lobby_enc_u32(&e, 4, version);
+    gz_lobby_enc_record(&e, 6, digest, 32);
+    gz_lobby_enc_record(&e, 12, fkey, 33);
+    gz_lobby_enc_record(&e, 14, sc, 64);
     return gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
 }
 
@@ -1060,29 +1103,12 @@ static void test_host_hostile(void)
     CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && saves(GZ_REC_SEAT) == 1 && status_seat() == GZ_SEAT_JOINED);
     CHECK(before(GZ_KIND_LOBBY_STATUS, GZ_REC_SEAT));
     CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_JOINED);   /* duplicate */
-    n = join_msg(buf, sizeof buf, 1, MEM[2].key[3].pub, 2, 1);
-    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED); /* other fkey */
-    {
-        gz_lobby_msg_t g5;
-        CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
-    }
+    /* K1: the old join's form (a factory key and both bindings) is refused outright */
+    n = join_msg_old(buf, sizeof buf, 1, MEM[1].key[3].pub, 1, 1);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() != GZ_SEAT_READY);
+    fresh(1);
     CLOCK += 1000;
-    n = join_msg(buf, sizeof buf, 2, MEM[1].key[3].pub, 1, 2);                  /* another seat's factory key */
-    CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
-    {   /* refused as invalid: reason 5 */
-        gz_lobby_msg_t g5;
-        CHECK(status_to(2, &g5) && g5.has_reason && g5.reason == 5);
-    }
-    n = join_msg(buf, sizeof buf, 2, HOST.key[3].pub, 0, 2);                    /* the host's factory key */
-    CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
-    fresh(2);                                         /* three refused as invalid close a connection (F8) */
-    n = join_msg(buf, sizeof buf, 2, MEM[2].key[3].pub, 3, 2);                  /* bad bind_by_factory */
-    CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
-    n = join_msg(buf, sizeof buf, 2, MEM[2].key[3].pub, 2, 3);                  /* bad bind_by_contribution */
-    CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
-    fresh(2);
-    n = join_msg(buf, sizeof buf, 2, MEM[1].key[2].pub, 1, 2);                  /* another seat's contribution key */
-    CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
+    /* the key checks of tests 22 and 43 are at each seat's first ready (K1): below for members 1 and 2 */
     n = join_msg(buf, sizeof buf, 2, MEM[2].key[3].pub, 2, 2);
     CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && saves(GZ_REC_SEAT) == 1);
     CLOCK += 1000;
@@ -1093,26 +1119,62 @@ static void test_host_hostile(void)
         n = ready_msg(buf, sizeof buf, 1, 1, wrong, NULL, 0);
         CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_JOINED);
     }
-    /* the largest ready a seat keeps is an envelope of 256 bytes; one byte more is not kept, so not taken */
+    /* K1, tests 22 and 43 at member 1's first ready: each refused as invalid (reason 5), nothing saved; the
+     * third on one connection closes it (F8) */
+    {
+        gz_lobby_msg_t g5;
+        n = ready_k1_bad(buf, sizeof buf, 1, 1, cd2, HOST.key[3].pub, 1, 0);        /* the host's factory key */
+        CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
+        CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
+        /* was "bad bind_by_factory": the factory key signs no binding now; a binding another key signed */
+        n = ready_k1_bad(buf, sizeof buf, 1, 1, cd2, MEM[1].key[3].pub, 3, 0);
+        CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
+        CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
+        /* was "bad bind_by_contribution": the binding's signature damaged; the third invalid one closes */
+        n = ready_k1_bad(buf, sizeof buf, 1, 1, cd2, MEM[1].key[3].pub, 1, 1);
+        CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && refusals() == 1);
+        fresh(1);
+        /* was "another seat's contribution key" as a factory key (member 2's) */
+        n = ready_k1_bad(buf, sizeof buf, 1, 1, cd2, MEM[2].key[2].pub, 1, 0);
+        CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
+        CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
+        fresh(1);
+    }
+    /* the largest ready a seat keeps is an envelope of GZ_LOBBY_MAX_SAVED_MSG (384) bytes; one byte more is not
+     * kept, so not taken (K1: with its factory key and binding, 281 bytes besides the padding) */
     {
         size_t L;
-        for (L = 77; L >= 76; L--) {
+        for (L = 104; L >= 103; L--) {
             gz_lobby_enc_t e;
             gz_lobby_crypto_t cr = lt_crypto(&MEM[1]);
-            uint8_t pad[80];
+            uint8_t pad[110];
             memset(pad, 0x20, sizeof pad);
             gz_lobby_enc_start(&e, buf, sizeof buf, GZ_KIND_READY, SCOPE);
             gz_lobby_enc_record(&e, 2, SCOPE, 32);
             gz_lobby_enc_u32(&e, 4, 1);
             gz_lobby_enc_record(&e, 6, cd2, 32);
             gz_lobby_enc_record(&e, 9, pad, L);
+            {
+                uint8_t b[32], sc[64];
+                gz_lobby_binding(SCOPE, MEM[1].key[3].pub, MEM[1].key[2].pub, b);
+                lt_sign(&MEM[1], 2, b, sc);
+                gz_lobby_enc_record(&e, 12, MEM[1].key[3].pub, 33);
+                gz_lobby_enc_record(&e, 14, sc, 64);
+            }
             n = gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION);
-            CHECK(n == 180 + L && (n == GZ_LOBBY_MAX_SAVED_MSG) == (L == 76));
-            CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == (L == 76 ? GZ_SEAT_READY : GZ_SEAT_JOINED));
-            CHECK(saves(GZ_REC_SEAT) == (L == 76));
+            CHECK(n == 281 + L && (n == GZ_LOBBY_MAX_SAVED_MSG) == (L == 103));
+            CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == (L == 103 ? GZ_SEAT_READY : GZ_SEAT_JOINED));
+            CHECK(saves(GZ_REC_SEAT) == (L == 103));
         }
         hin(GZ_LIN_MESSAGE, 1, un0, un0n);              /* back to Joined for what follows */
         CHECK(saves(GZ_REC_SEAT) == 1);
+    }
+    {   /* K1, "other fkey": its factory key is fixed now; a ready naming another is refused as invalid */
+        gz_lobby_msg_t g5;
+        n = ready_k1_bad(buf, sizeof buf, 1, 1, cd2, MEM[2].key[3].pub, 1, 0);
+        CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
+        CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
+        fresh(1);
     }
     /* test 23: ready naming an old version during a change */
     n = ready_msg(buf, sizeof buf, 1, 1, cd2, NULL, 0);
@@ -1145,6 +1207,13 @@ static void test_host_hostile(void)
     n = host_msg(buf, sizeof buf, GZ_KIND_CANCEL, NULL, 2, NULL, 0, 0, &HOST);
     CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && refusals() == 1 && closed_who(2) && H.state == GZ_LOBBY_OPEN);
     fresh(2);                                         /* the host asked for that connection to close */
+    {   /* K1, test 43 at member 2's first ready: another seat's factory key (member 1's, fixed now) */
+        gz_lobby_msg_t g5;
+        n = ready_k1_bad(buf, sizeof buf, 2, 2, cd3, MEM[1].key[3].pub, 2, 0);
+        CHECK(hin(GZ_LIN_MESSAGE, 2, buf, n) == GZ_OK && !any_save() && status_seat() == GZ_SEAT_REFUSED);
+        CHECK(status_to(2, &g5) && g5.has_reason && g5.reason == 5);
+        fresh(2);
+    }
     /* test 56: a seat that loops ready/unready: past 10 changes in 10 minutes a
      * move into Ready is refused; moves out are always saved */
     {
@@ -1361,7 +1430,7 @@ static void test_host_restart(void)
     for (i = 0; i < 3; i++) {
         const gz_lobby_seat_t *a = &H.seats[i], *b = &H2.seats[i];
         CHECK(memcmp(a->ckey, b->ckey, 33) == 0 && memcmp(a->fkey, b->fkey, 33) == 0);
-        CHECK(memcmp(a->bind_f, b->bind_f, 64) == 0 && memcmp(a->bind_c, b->bind_c, 64) == 0);
+        CHECK(memcmp(a->bind_c, b->bind_c, 64) == 0);                     /* K1: no factory binding */
         CHECK(a->state == b->state && a->min_members == b->min_members && a->ready_version == b->ready_version);
         CHECK(a->join_seq == b->join_seq && a->join_seq == i + 1 && a->ready_len == b->ready_len && a->ready_len > 0);
         CHECK(memcmp(a->ready_msg, b->ready_msg, a->ready_len) == 0 && b->ready_version == 2);
@@ -4880,11 +4949,25 @@ static void test_k1_host(void)
     CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
     s = k1_seat(1);
     CHECK(s && memcmp(s->fkey, zero, 33) == 0);                      /* no factory key at join */
-    /* a ready whose binding another key signed: refused, the seat still has no factory key */
+    /* a ready whose binding another key signed: Refused, reason 5, nothing saved; the seat has no factory key */
     n = k1_ready(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[1].key[3].pub, 2);
-    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK);
+    CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_REFUSED && !any_save());
+    {
+        gz_lobby_msg_t g5;
+        CHECK(status_to(1, &g5) && g5.has_reason && g5.reason == 5);
+    }
     s = k1_seat(1);
     CHECK(s && s->state != GZ_SEAT_READY && memcmp(s->fkey, zero, 33) == 0);
+    /* review A's F8 at the first ready: three invalid ones on a connection close it */
+    fresh(7);
+    n = k1_join(buf, sizeof buf);
+    CHECK(hin(GZ_LIN_MESSAGE, 7, buf, n) == GZ_OK && status_seat() == GZ_SEAT_JOINED);
+    for (int k = 0; k < 3; k++) {
+        n = k1_ready(buf, sizeof buf, 7, H.values.version, H.current_digest, MEM[7].key[3].pub, 8);
+        CHECK(hin(GZ_LIN_MESSAGE, 7, buf, n) == GZ_OK && (k < 2 ? status_seat() == GZ_SEAT_REFUSED && refusals() == 0
+                                                                : refusals() == 1));
+    }
+    fresh(1);
     /* the first good ready fixes the factory key */
     n = k1_ready(buf, sizeof buf, 1, H.values.version, H.current_digest, MEM[1].key[3].pub, 1);
     CHECK(hin(GZ_LIN_MESSAGE, 1, buf, n) == GZ_OK && status_seat() == GZ_SEAT_READY);
@@ -4921,10 +5004,54 @@ static void test_k1_host(void)
     CHECK(!s || (s->state != GZ_SEAT_READY && memcmp(s->fkey, zero, 33) == 0));
     /* a join of the old form, with the factory key and two bindings: refused */
     fresh(4);
-    n = join_msg(buf, sizeof buf, 4, MEM[4].key[3].pub, 4, 4);
+    n = join_msg_old(buf, sizeof buf, 4, MEM[4].key[3].pub, 4, 4);
     CHECK(hin(GZ_LIN_MESSAGE, 4, buf, n) == GZ_OK);
     s = k1_seat(4);
     CHECK(!s || s->state != GZ_SEAT_JOINED);
+}
+
+/* A message that does not fit its buffer is refused (0, and the encoder marked bad), never written past the
+ * end: the buffer is exactly GZ_LOBBY_MAX_SAVED_MSG bytes on the heap, so ASan sees any byte beyond it. */
+static void test_k1_encoder_bound(void)
+{
+    uint8_t *buf = malloc(GZ_LOBBY_MAX_SAVED_MSG), big[GZ_LOBBY_MAX_SAVED_MSG];
+    gz_lobby_enc_t e;
+    gz_lobby_crypto_t cr = lt_crypto(&M1);
+    CHECK(buf != NULL);
+    if (!buf) return;
+    memset(big, 0x5a, sizeof big);
+    gz_lobby_enc_start(&e, buf, GZ_LOBBY_MAX_SAVED_MSG, GZ_KIND_READY, SCOPE);
+    gz_lobby_enc_record(&e, 2, SCOPE, 32);
+    gz_lobby_enc_record(&e, 12, big, GZ_LOBBY_MAX_SAVED_MSG - 120);   /* room left for less than the rest */
+    gz_lobby_enc_record(&e, 14, big, 64);
+    CHECK(gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION) == 0 && e.bad && e.len <= GZ_LOBBY_MAX_SAVED_MSG);
+    /* the ready path's helper: too large is GZ_ERR_BUG with nothing appended, never the no-key notice */
+    {
+        size_t len = 99;
+        acts_reset();
+        CHECK(gz_la_sign_env(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION, &A.l, &len) == GZ_ERR_BUG && len == 0 && A.l.count == 0);
+        /* a port that will not sign, on a message that fits: GZ_OK, no length, the notice */
+        gz_lobby_enc_start(&e, buf, GZ_LOBBY_MAX_SAVED_MSG, GZ_KIND_READY, SCOPE);
+        gz_lobby_enc_record(&e, 2, SCOPE, 32);
+        M1.fail_sign = 1;
+        acts_reset();
+        CHECK(gz_la_sign_env(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION, &A.l, &len) == GZ_OK && len == 0 &&
+              note(GZ_NOTE_NO_KEY, GZ_LOBBY_KEY_CONTRIBUTION, -1));
+        M1.fail_sign = 0;
+    }
+    /* the largest ready K1 sends (check id, min_members, factory key, binding, signature) fits */
+    uint8_t d[32] = {0}, f[33], sc[64] = {0};
+    memcpy(f, M1.key[3].pub, 33);
+    gz_lobby_enc_start(&e, buf, GZ_LOBBY_MAX_SAVED_MSG, GZ_KIND_READY, SCOPE);
+    gz_lobby_enc_record(&e, 2, SCOPE, 32);
+    gz_lobby_enc_u32(&e, 4, 1);
+    gz_lobby_enc_record(&e, 6, d, 32);
+    gz_lobby_enc_record(&e, 8, d, 32);
+    gz_lobby_enc_u16(&e, 11, 3);
+    gz_lobby_enc_record(&e, 12, f, 33);
+    gz_lobby_enc_record(&e, 14, sc, 64);
+    CHECK(gz_lobby_enc_sign(&e, &cr, GZ_LOBBY_KEY_CONTRIBUTION) == 317);
+    free(buf);
 }
 
 int main(void)
@@ -4950,6 +5077,9 @@ int main(void)
     T3N = lt_unhex(LT_T3, T3, sizeof T3);
     lt_outer(T1, T1N, &T1O);
     gz_terms_outer_digest(T1, T1N, SCOPE);
+    test_k1_member();
+    test_k1_host();
+    test_k1_encoder_bound();
     test_member_hostile();
     test_member_classes();
     test_member_details();
@@ -4980,7 +5110,5 @@ int main(void)
     test_start_now();
     test_start_now_guard();
     CHECK(OVERSIZE == 0);
-    test_k1_member();
-    test_k1_host();
     return check_done();
 }

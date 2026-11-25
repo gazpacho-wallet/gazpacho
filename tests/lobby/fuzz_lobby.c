@@ -126,7 +126,7 @@ static void fields_inside(const gz_lobby_msg_t *m, const uint8_t *rec, size_t n)
     MUST(m->records == rec && m->records_len == n && m->signed_len <= n);
     MUST(inside(rec, n, m->sig, 64) && inside(rec, n, m->outer, m->outer_len) && inside(rec, n, m->outer_sig, 64) &&
          inside(rec, n, m->current, m->current_len) && inside(rec, n, m->current_sig, 64) &&
-         inside(rec, n, m->factory_key, 33) && inside(rec, n, m->bind_by_factory, 64) &&
+         inside(rec, n, m->factory_key, 33) &&
          inside(rec, n, m->bind_by_contribution, 64) && inside(rec, n, m->check_id, 32) &&
          inside(rec, n, m->outer_digest, 32) && inside(rec, n, m->current_digest, 32) &&
          inside(rec, n, m->display_name, m->display_name_len));

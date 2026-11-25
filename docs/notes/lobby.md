@@ -141,8 +141,8 @@ field its type does not have, and a record over its largest size
     17th such connection, or any connection when the table is full, pushes
     out a connection without a seat, never a seated one: one that has said
     nothing yet first, then the oldest, as the transport does (review A, F7;
-    review B, B7). A saved `ready`, `start`, `ready_check` or `cancel` is at most 256
-    bytes (a ready larger than that is not taken; a larger signed `cancel` is
+    review B, B7). A saved `ready`, `start`, `ready_check` or `cancel` is at most 384
+    bytes (K1: a `ready` with its factory key and binding is 317 bytes at most; a ready larger than that is not taken; a larger signed `cancel` is
     not taken either, review A, m17).
 13. **Any error from an engine call is fatal for the node**, like a refused
     action list (runner.h): the program stops the node and rebuilds it from
