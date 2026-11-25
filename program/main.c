@@ -32,6 +32,7 @@
 #include "datadir.h"
 #include "executor.h"
 #include "gzp.h"
+#include "sweep.h"
 #include "keys.h"
 #include "keys_standin.h"
 #include "net.h"
@@ -618,6 +619,33 @@ int main(int argc, char **argv)
     if ((rc = transport_key(secp, &opt, priv)) != 0) goto out;
     gzp_log("wallet network=%s first-address=%s", opt.network, first.address);
 
+#ifdef GZP_TEST_BUILD
+    if (opt.test_sweep) {
+        uint8_t to[64];
+        size_t to_len = sizeof first.script_pubkey;
+        memcpy(to, first.script_pubkey, to_len);
+        if (opt.test_sweep_to) {
+            size_t hl = strlen(opt.test_sweep_to);
+            to_len = hl / 2;
+            if (hl % 2 || to_len < 4 || to_len > sizeof to) to_len = 0;
+            for (size_t k = 0; k < to_len; k++) {
+                unsigned v;
+                if (sscanf(opt.test_sweep_to + 2 * k, "%2x", &v) != 1) to_len = 0;
+                else to[k] = (uint8_t)v;
+            }
+        }
+        OPENSSL_cleanse(priv, sizeof priv);
+        if (opt.role != GZP_ROLE_HOST || !to_len) {
+            fprintf(stderr, "gazpacho: --test-sweep: a host, and a destination script\n");
+            rc = GZP_EXIT_USAGE;
+            goto out;
+        }
+        gzp_sweep_in_t sw = {dir.dir, wallet, &keys, secp, (uint32_t)opt.test_sweep, opt.test_sweep_force,
+                             opt.test_owed, to, to_len, 100};
+        rc = gzp_sweep_run(&sw);
+        goto out;
+    }
+#endif
     if (opt.check_chain) {
         OPENSSL_cleanse(priv, sizeof priv);
         if (chain.active) gzp_chain_show_outputs(&chain, first.script_pubkey, sizeof first.script_pubkey);

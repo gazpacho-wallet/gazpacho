@@ -10,7 +10,7 @@
 # The release binary's symbols are checked (program_release_build, T12).
 
 set(GZP_SOURCES options.c datadir.c store_journal.c store_unlock.c keys.c net.c pchain.c notify.c executor.c testping.c
-                view.c api.c wport.c)
+                view.c api.c wport.c sweep.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")

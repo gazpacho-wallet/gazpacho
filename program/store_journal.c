@@ -656,6 +656,54 @@ static int read_file(const char *path, uint8_t **data, size_t *len)
     return 0;
 }
 
+int gzp_journal_walk(const char *dir, gzp_wallet_t *w, void (*fn)(void *ctx, const gz_record_t *rec), void *ctx,
+                     char *err, size_t errlen)
+{
+    char path[GZP_PATH_MAX + 64];
+    uint8_t *d = NULL, *pl = NULL;
+    size_t len = 0, p;
+    seal_ctx_t c;
+    gz_journal_seal_t t;
+    int rc = -1;
+    if (!fn) return set_err(err, errlen, "no callback");
+    if (seal_ctx(&c, w) != 0) return set_err(err, errlen, "the wallet is locked");
+    seal_table(&t, &c);
+    snprintf(path, sizeof path, "%s/%s", dir, GZ_JOURNAL_FILE);
+    if (read_file(path, &d, &len) != 0) return set_err(err, errlen, "cannot read the journal");
+    if (sl_header_open(&c, d, len, c.sc->chain) != GZ_JOURNAL_OK) {
+        set_err(err, errlen, "the journal header does not open");
+        goto out;
+    }
+    pl = malloc(len ? len : 1);
+    if (!pl) {
+        set_err(err, errlen, "out of memory");
+        goto out;
+    }
+    /* As gzp_journal_dump: every valid entry in file order, stopping at the first invalid one. */
+    for (p = GZ_SC_JHEADER_LEN; p < len;) {
+        gz_journal_frame_t f;
+        if (!sl_frame_open(&c, d + p, len - p, p, &f, pl, len)) break;
+        if (f.kind == GZ_JOURNAL_KIND_BATCH) {
+            gz_record_t *recs;
+            size_t kept = 0;
+            long nr = gz_journal_parse_batch(pl, f.payload_len, NULL, 0, NULL);
+            if (nr < 0) break;
+            recs = calloc((size_t)nr + 1, sizeof *recs);
+            if (!recs) break;
+            gz_journal_parse_batch(pl, f.payload_len, recs, (size_t)nr, &kept);
+            for (size_t i = 0; i < kept; i++) fn(ctx, &recs[i]);
+            free(recs);
+        }
+        p += f.size;
+    }
+    rc = 0;
+out:
+    if (pl) OPENSSL_cleanse(pl, len ? len : 1);
+    free(pl);
+    free(d);
+    return rc;
+}
+
 int gzp_journal_dump(const char *dir, gzp_wallet_t *w, char *err, size_t errlen)
 {
     char path[GZP_PATH_MAX + 64];

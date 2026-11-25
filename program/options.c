@@ -143,6 +143,10 @@ void gzp_usage(void)
         "  --test-stop-at-restart        a SIGTERM to itself as an incarnation ends\n"
         "  --test-engines N              test engines in the node, 0 to 2 (default 1)\n"
         "  --test-dump-journal           print the journal's batches and records, then stop\n"
+        "  --test-sweep HEIGHT           host: print the factory's timeout sweep at HEIGHT, then stop\n"
+        "  --test-sweep-force            with --test-sweep: build the spends below their heights too\n"
+        "  --test-owed N                 with --test-sweep: member N (tree order) is owed: its outputs are refused\n"
+        "  --test-sweep-to HEX           with --test-sweep: the destination script (default: the first address)\n"
         "  --test-passphrase-file PATH   unlock with the passphrase in PATH (set up a wallet if none)\n"
         "  --test-kdf-floor              set up at the storage library's test floor (1 pass, 8 KiB)\n"
         "  --test-standin-store          the journal stand-in instead of the sealed journal\n"
@@ -246,6 +250,7 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-chain-backlog")) { ok = num(val, 1, 1024, &v); o->test_chain_backlog = (int)v; }
         else if (!strcmp(a, "--test-stop-at-restart")) { o->test_stop_at_restart = 1; takes = 0; }
         else if (!strcmp(a, "--test-dump-journal")) { o->test_dump_journal = 1; takes = 0; }
+        else if (!strcmp(a, "--test-sweep-force")) { o->test_sweep_force = 1; takes = 0; }
         else if (!strcmp(a, "--test-kdf-floor")) { o->test_kdf_floor = 1; takes = 0; }
         else if (!strcmp(a, "--test-regtest")) { o->test_regtest = 1; o->network = "regtest"; takes = 0; }
         else if (!strcmp(a, "--test-standin-store")) { o->test_standin_store = 1; takes = 0; }
@@ -309,6 +314,9 @@ int gzp_options_parse(gzp_options_t *o, int argc, char **argv)
         else if (!strcmp(a, "--test-restore-from")) o->test_restore_from = val;
         else if (!strcmp(a, "--test-passphrase-file")) o->test_passphrase_file = val;
         else if (!strcmp(a, "--test-append-batch")) o->test_append_batch = val;
+        else if (!strcmp(a, "--test-sweep")) { ok = num(val, 1, 100000000, &v); o->test_sweep = v; }
+        else if (!strcmp(a, "--test-owed")) { ok = num(val, 1, 256, &v); o->test_owed = (int)v; }
+        else if (!strcmp(a, "--test-sweep-to")) o->test_sweep_to = val;
         else if (!strcmp(a, "--test-kill-at")) { ok = num(val, 1, 100000000, &v); o->test_kill_at = (int)v; }
         else if (!strcmp(a, "--test-power-cut-at")) { ok = num(val, 1, 100000000, &v); o->test_power_cut_at = (int)v; }
         else if (!strcmp(a, "--test-sync-fail-at")) { ok = num(val, 1, 1000000, &v); o->test_sync_fail_at = (int)v; }

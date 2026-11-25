@@ -79,6 +79,10 @@ typedef struct {
     int test_stop_at_restart;      /* SIGTERM to itself as an incarnation ends (a stop during a restart) */
     int test_engines;              /* test engines in the node, 0 to 2 (default 1) */
     int test_dump_journal;         /* print the journal and stop */
+    long test_sweep;               /* host: print the timeout sweep at this height and stop (sweep.h); 0: none */
+    int test_sweep_force;          /* build the spends below their heights too (the node must refuse them) */
+    int test_owed;                 /* the sweep counts this member (1-based, tree order) as owed */
+    const char *test_sweep_to;     /* hex of the destination script (default: the first receive address) */
     int test_drop_kind;            /* drop received messages of this kind (0: none) */
     int test_commands;             /* read test commands from standard input */
     int test_big_reply;            /* pad every test reply with this many bytes */
