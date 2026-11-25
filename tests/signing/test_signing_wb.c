@@ -1524,6 +1524,38 @@ static void test_partials_out(void)
     h_free(&h);
 }
 
+/* The fail-closed case of gz_sign_partials_out clears: an exposure whose round left memory Unfinished is
+ * Abandoned at the unfinished deadline (RULE:EVICTED_ABANDONED, saved as round_ended), and then counts
+ * for no lobby. (One that left memory Complete is cleared only by gz_sign_resolve, from the funding
+ * engine's Live or Dead: P4.6.) */
+static void test_partials_out_clears(void)
+{
+    harness_t h;
+    uint8_t scope[32];
+    h_init(&h, 1);
+    gz_sign_t *e = h.p[1].e;
+    memset(scope, 0x33, 32);
+    e->cfg.unfinished_ticks = 3;
+    size_t n0 = e->n_exposures;
+    CHECK(n0 < GZ_SIGN_MAX_EXPOSURES);
+    if (n0 < GZ_SIGN_MAX_EXPOSURES) {
+        memset(&e->exposures[n0], 0, sizeof e->exposures[n0]);
+        memset(&e->exposed[n0], 0, sizeof e->exposed[n0]);
+        e->exposed[n0].round_id[0] = 0xc3;
+        e->exposed[n0].state = GZ_SIGN_ROUND_UNFINISHED;
+        e->n_exposures = n0 + 1;
+        size_t recs = h.p[1].n_recs;
+        CHECK(gz_sign_partials_out(e, scope) == 1);
+        h_tick(&h, 1);
+        h_tick(&h, 1);
+        CHECK(gz_sign_partials_out(e, scope) == 1);                 /* before the deadline: still out */
+        h_tick(&h, 1);
+        CHECK(e->exposed[n0].state == GZ_SIGN_ROUND_ABANDONED && gz_sign_partials_out(e, scope) == 0);
+        CHECK(h.p[1].n_recs > recs && h.p[1].recs[h.p[1].n_recs - 1].type == GZ_SIGN_REC_ROUND_ENDED);   /* saved */
+    }
+    h_free(&h);
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -1564,6 +1596,7 @@ int main(void)
     test_early_nonces();
     test_ack_waits_for_tip();
     test_partials_out();
+    test_partials_out_clears();
     printf("  illegal-argument callbacks: %d\n", g_illegal);
     CHECK(g_illegal == 0);
     if (g_ctx) secp256k1_context_destroy(g_ctx);
