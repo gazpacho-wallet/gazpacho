@@ -201,7 +201,12 @@ test('conditions: the live fit line, tightening leaves a lobby, loosening asks f
   await expect(page.locator('#fitline')).toContainText('2 of 2 lobbies');
   await page.waitForTimeout(600);
   await page.locator('#save-conditions').click();
+  // before anything is sent, what this change loosens is shown and confirmed (13.2)
+  const loosen = page.locator('dialog').filter({ has: page.locator('#loosen-confirm') });
+  await expect(loosen).toContainText('This loosens: joining fee, at most.');
+  await loosen.getByRole('button', { name: 'Loosen and save' }).click();
   const dlg = page.locator('dialog');
+  await expect(dlg).toContainText('This loosens: joining fee, at most.');   // next to the passphrase box
   await dlg.getByLabel('Wallet passphrase').fill(PASS);
   await dlg.getByRole('button', { name: 'Continue' }).click();
   await expect(dlg).toHaveCount(0);

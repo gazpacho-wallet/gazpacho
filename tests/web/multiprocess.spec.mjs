@@ -216,6 +216,7 @@ test('a host and three members: one lobby opened, joined and readied up to the r
     await p2.goto(m2.url + '#/conditions');
     await p2.getByLabel('Fewest members').fill('4');
     await p2.locator('#save-conditions').click();
+    await expect(p2.locator('#toasts')).toContainText('Saved');           // the save's own answer, not a race
     await expect(p2.locator('#cond-msg [data-code]')).toHaveCount(0);
     await expect(hp.locator('#seats tr[data-seat-state="refused"]')).toHaveCount(1, { timeout: 20000 });
     await expect(hp.locator('#seats tr[data-seat-state="left"]')).toHaveCount(0);
@@ -224,17 +225,26 @@ test('a host and three members: one lobby opened, joined and readied up to the r
     // it loosens again (a fresh sign-in) and joins ready, as a new seat with a new key (a rejoin
     // never uses a key twice): the old seat stays shown as refused until the lobby's next attempt
     // (decision K21; local-api.md 15.3 and M3)
+    await expect(p2.locator('#toasts .toast')).toHaveCount(0, { timeout: 10000 });   // the last save's toast gone
+    await p2.goto(m2.url + '#/conditions');
     await p2.getByLabel('Fewest members').fill('2');
     await p2.locator('#save-conditions').click();
-    // a loosening is kind B (13.2): the passphrase is asked only when the sign-in is not
-    // fresh (4.8's 5-minute window). Signed in a minute ago, m2 is fresh, so the save goes
-    // through without the dialog; when it does come, it is answered.
-    const fresh = p2.locator('dialog');
+    // a loosening is the person's, item by item (13.2): before anything is sent, the screen
+    // shows what this exact change loosens and asks; only that list goes as confirm_loosens
+    const confirmLoosen = p2.locator('dialog').filter({ has: p2.locator('#loosen-confirm') });
+    await expect(confirmLoosen).toContainText('This loosens: fewest members');
+    await confirmLoosen.getByRole('button', { name: 'Loosen and save' }).click();
+    // it is kind B: the passphrase is asked only when the sign-in is not fresh (4.8's
+    // 5-minute window). Signed in a minute ago, m2 is fresh, so the save goes through
+    // without it; when it does come, it names what is loosened and is answered.
+    const fresh = p2.locator('dialog').filter({ has: p2.getByLabel('Wallet passphrase') });
     const asked = await fresh.waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false);
     if (asked) {
+      await expect(fresh).toContainText('This loosens: fewest members');
       await fresh.getByLabel('Wallet passphrase').fill(PASS.m2);
       await fresh.getByRole('button', { name: 'Continue' }).click();
     }
+    await expect(p2.locator('#toasts')).toContainText('Saved');
     await expect(p2.locator('#cond-msg [data-code]')).toHaveCount(0);
     await join2();
     await expect(hp.locator('#host-counts')).toContainText('3 ready of 4', { timeout: 20000 });

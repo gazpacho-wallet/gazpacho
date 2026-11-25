@@ -102,8 +102,28 @@
         form.addEventListener("submit", function (ev) {
           ev.preventDefault();
           ui.run(save, msg, function () {
-            return api.act("PUT", "/conditions", { conditions: values(), based_on_version: c.version, preset: preset, confirm_loosens: loosens },
-              { why: "These conditions let the app sign more than before, so it asks for your passphrase." }).then(function (r) {
+            /* What this exact change loosens, asked again now: a save made before the
+               preview of the last keystroke came back would otherwise echo an older list
+               and be refused (confirm_mismatch), leaving the old conditions in force. */
+            var now = values(), shown = loosens.slice();
+            clearTimeout(timer);
+            seq++;
+            return api.call("POST", "/conditions/preview", { conditions: now }).then(function (p) {
+              var list = p.loosens || [], names = list.map(function (f) { return W.known(W.conditionNames, f).toLowerCase(); }).join(", ");
+              loosens = list;
+              /* 13.2: a loosening is the person's, item by item. The list of this exact change
+                 is shown and confirmed before anything is sent, and only that list is sent as
+                 confirm_loosens; if it is not the one on screen, the screen says so. */
+              var ask = !list.length ? Promise.resolve(true) : ui.confirm({
+                title: list.join(",") === shown.join(",") ? "Loosen these conditions?" : "What this saves loosens has changed",
+                body: h("div", { id: "loosen-confirm" }, h("p", {}, "This loosens: " + names + "."),
+                  h("p", {}, "It widens what the app signs without asking. It applies to lobbies you join from now on.")),
+                yes: "Loosen and save", no: "Cancel"
+              });
+              return ask.then(function (yes) {
+                if (!yes) throw { code: "cancelled" };
+                return api.act("PUT", "/conditions", { conditions: now, based_on_version: c.version, preset: preset, confirm_loosens: list },
+              { why: "This loosens: " + names + ". It lets the app sign more than before, so it asks for your passphrase." }).then(function (r) {
               var left = r.left_lobbies || [];
               ui.toast(left.length ? "Saved. The app left " + u.count(left.length, "lobby", "lobbies") + " that no longer fit." : "Saved.");
               gz.app.refreshStatus(false);
@@ -111,6 +131,8 @@
             }, function (e) {
               if (e.code === "changed_elsewhere" || e.code === "confirm_mismatch") setTimeout(function () { gz.app.go("/conditions"); }, 2500);
               throw e;
+            });
+              });
             });
           });
         });
