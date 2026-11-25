@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <openssl/rand.h>
 #include <openssl/sha.h>
@@ -371,7 +372,12 @@ static int draft_terms(gzp_api_t *a, const gz_json *d, gz_terms_outer_t *o, gz_t
     RAND_bytes(o->lobby_salt, sizeof o->lobby_salt);
     o->target = (uint16_t)jint(d, "target", o->target);
     o->minimum = (uint16_t)jint(d, "minimum", o->minimum);
-    o->deadline = (uint64_t)jint(d, "deadline_at", (int64_t)o->deadline);
+    /* The deadline is the person's, and in the future (local-api.md 15.1's
+     * deadline_missing and deadline_past): T1's own is a fixed example date,
+     * and a lobby opened with a past deadline ends at once. */
+    if (!d || !gz_json_get(d, "deadline_at")) { *why = "deadline_missing"; return 0; }
+    o->deadline = (uint64_t)jint(d, "deadline_at", 0);
+    if (o->deadline <= (uint64_t)time(NULL)) { *why = "deadline_past"; return 0; }
     o->ready_window_ms = (uint32_t)jint(d, "ready_window_ms", o->ready_window_ms);
     o->signing_budget_ms = (uint32_t)jint(d, "signing_budget_ms", o->signing_budget_ms);
     o->step_timeout_ms = (uint32_t)jint(d, "step_timeout_ms", o->step_timeout_ms);
@@ -422,14 +428,23 @@ static int host_preview(gzp_api_t *a, const gz_json *d, gz_jw *w, gz_api_error *
     const char *why;
     char dg[65];
     if (!draft_terms(a, d, &o, &c, &why)) {
+        int deadline = !strcmp(why, "deadline_missing") || !strcmp(why, "deadline_past");
         gz_jw_obj(w);
         gz_jw_knull(w, "draft_digest");
         gz_jw_knull(w, "as_members_see_it");        /* terms that cannot be made have no view */
-        gz_jw_kraw(w, "problems", "[]");
+        gz_jw_key(w, "problems");
+        gz_jw_arr(w);
+        if (deadline) {                              /* 15.1: a problem of the draft, by field */
+            gz_jw_obj(w);
+            gz_jw_kstr(w, "field", "/deadline_at");
+            gz_jw_kstr(w, "code", why);
+            gz_jw_end_obj(w);
+        }
+        gz_jw_end_arr(w);
         gz_jw_kbool(w, "can_open", 0);
         gz_jw_key(w, "cannot_open_because");
         gz_jw_arr(w);
-        gz_jw_str(w, why);
+        gz_jw_str(w, deadline ? "problems" : why);
         gz_jw_end_arr(w);
         gz_jw_end_obj(w);
         (void)err;

@@ -465,11 +465,13 @@ static gz_status_t w_start(int n)
     return more ? GZ_ERR_BUG : GZ_OK;
 }
 
+static uint32_t W_TEST_ENGINES; /* test engines in the next w_node (test_index_unique) */
+
 static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outcome)
 {
     h_t *h = &N[n];
     memset(VW[n], 0, sizeof VW[n]); /* a new program: its view starts empty */
-    h_init(h, ident == 0, 0);
+    h_init(h, ident == 0, W_TEST_ENGINES);
     IDENT[n] = ident;
     h->confirm_auto = 0;
     h->clock = NOW;
@@ -3547,6 +3549,70 @@ static void test_discovery_repeat(void)
     w_free(1);
 }
 
+/* Review of #79: no two links get the same key index (a query's fresh pair
+ * must not tie it to the member's other links). A member with a test engine
+ * target (the program's --connect, which picks its own index), then queries,
+ * a join, a restart, more of each: every pair is apart from every other. */
+static uint32_t PAIRS[32];
+static int NPAIRS;
+
+static void pair_note(uint32_t first)
+{
+    if (NPAIRS < 32) PAIRS[NPAIRS++] = first;
+}
+
+static void test_index_unique(void)
+{
+    terms_t t, u;
+    lt_key_t hk;
+    char rid[40];
+    int ok = 1;
+    whost(&hk);
+    w_reset();
+    w_node(0, 0, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    W_TEST_ENGINES = 1;                                        /* the member has the program's --connect engine */
+    w_node(1, 1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    W_TEST_ENGINES = 0;
+    for (int n = 0; n <= 1; n++) CHECK(w_start(n) == GZ_OK);
+    NPAIRS = 0;
+    {
+        h_arg_t a[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        /* the test engine answers no result notice; its saved target is the check */
+        CHECK(w_cmd(1, GZ_TE_CMD_CONNECT, a, 2) >= 0 && N[1].n->n_test == 1 && N[1].n->test[0].n_targets == 1);
+        if (N[1].n->test[0].n_targets) pair_note(N[1].n->test[0].targets[0].index);
+    }
+    make_terms(&t, 3, 3, 3600);
+    make_terms(&u, 3, 3, 3601);
+    CHECK(host_open(&t, 1) == 200 && host_open(&u, 1) == 200);
+    for (int round = 0; round < 2; round++) {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        snprintf(rid, sizeof rid, "QueryIndexUnique%02d", round);
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, rid, "/api/v1/discovery/query", (uint8_t)(40 + round), q, 2) == 202);
+        pair_note(N[1].n->dq.key_index);
+        w_run(4000, 100);
+        CHECK(member_join(1, round ? &u : &t) == 200 && slot(1, round ? &u : &t));
+        if (slot(1, round ? &u : &t)) pair_note(slot(1, round ? &u : &t)->key_index);
+        w_run(2000, 100);
+        if (!round) {
+            /* The test engine's own view object (test builds only, id "test-...") starts at
+             * version 0 at every start; it alone is forgotten here, so the version rule still
+             * holds for every other object the member emits across this restart. */
+            for (int k = 0; k < NV; k++)
+                if (VW[1][k].used && !strncmp(VW[1][k].id, "test-", 5)) memset(&VW[1][k], 0, sizeof VW[1][k]);
+            CHECK(w_restart(1) == GZ_OK);                     /* the allocator comes back from the journal */
+        }
+    }
+    CHECK(NPAIRS == 5);
+    for (int i = 0; i < NPAIRS; i++)
+        for (int j = i + 1; j < NPAIRS; j++)
+            if (PAIRS[i] == PAIRS[j] || PAIRS[i] == PAIRS[j] + 1 || PAIRS[i] + 1 == PAIRS[j]) ok = 0;
+    if (!ok)
+        for (int i = 0; i < NPAIRS; i++) printf("  pair %d: %u\n", i, (unsigned)PAIRS[i]);
+    CHECK(ok);
+    no_errors(1);
+    w_free(1);
+}
+
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -3558,6 +3624,7 @@ int main(int argc, char **argv)
     test_gate_bound_to_seen();
     test_ready_replay_without_passphrase();
     test_discovery_repeat();
+    test_index_unique();
     test_two_lobbies();
     test_cancel_and_tombstone();
     test_refusals();

@@ -1424,7 +1424,7 @@ static gz_status_t slot_begin(gz_node_t *c, int i, gz_bytes_t cond, gz_action_li
 static int ls_init_next(gz_node_t *c, int i)
 {
     for (uint32_t k = 0; k < LS_KEY_TRIES; k++) {
-        uint32_t first = c->np.highest_index + 1 + 2 * k;
+        uint32_t first = np_next_first(c, c->np.highest_index + 1 + 2 * k);
         if (first > 0xfffffff0u) return 0;
         c->slots[i].key_index = first;
         if (gz_ls_init(c, i)) return 1;

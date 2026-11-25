@@ -1086,6 +1086,44 @@ gz_status_t np_slot_freed(gz_node_t *c, int i, gz_action_list_t *out)
  * key_index; its epochs and highest indexes are the union the restore batch
  * made, T-P42-3), then `extra` (slot_opened). The lobby's own first record
  * follows it in the list and joins the batch. */
+/* The first index of a fresh pair, at or after `from` (which the caller takes
+ * above np.highest_index: np_save_pair keeps the highest given, and the load
+ * restores it from the key_index records and the guard). Every pair the node
+ * part gives comes from here, so no two links share a key (discovery's fresh
+ * pair exists so that a query cannot be tied to the member's other links).
+ * Test builds also have engines that choose their own indexes outside it (the
+ * test engine's CONNECT targets, 2(n + 1), and the stand-in slot's 2 * serial):
+ * a pair that would meet one of those is passed over (review of #79: the
+ * multi-process spec's --connect target and the query had the same key). */
+uint32_t np_next_first(const gz_node_t *c, uint32_t from)
+{
+    uint32_t f = from;
+#ifdef GZ_TEST_KINDS
+    for (int again = 1; again && f <= 0xfffffff0u;) {
+        again = 0;
+        for (int i = 0; i < c->n_test; i++)
+            for (size_t k = 0; k < c->test[i].n_targets; k++) {
+                uint32_t x = c->test[i].targets[k].index;
+                if (x == f || x == f + 1 || x + 1 == f) {
+                    f = x + 2;
+                    again = 1;
+                }
+            }
+        for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++) {
+            uint32_t x = c->slots[i].key_index;
+            if (c->slots[i].state == SLOT_FREE || c->slots[i].kind != SLOT_KIND_STANDIN || c->slots[i].host) continue;
+            if (x == f || x == f + 1 || x + 1 == f) {
+                f = x + 2;
+                again = 1;
+            }
+        }
+    }
+#else
+    (void)c;
+#endif
+    return f;
+}
+
 gz_status_t np_save_pair(gz_node_t *c, uint32_t first, const gz_record_t *extra, gz_action_list_t *out)
 {
     uint8_t eb[16], kb[16], gb[NP_GUARD_HEAD + 8 * (NP_MAX_OLD_EPOCHS + 1)], v[4];

@@ -117,7 +117,7 @@ gz_status_t gz_dq_command(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     if (!c->cfg.crypto.point_ok || c->cfg.crypto.point_ok(c->cfg.crypto.ctx, hk.data) != 1)
         return dq_result(c, cmd, 400, "bad_host_key", NULL, out);
     if (q->state == DQ_ASKING) return dq_result(c, cmd, 409, "busy", q->id, out);
-    first = c->np.highest_index + 1;
+    first = np_next_first(c, c->np.highest_index + 1);
     if (first > 0xfffffff0u || !c->cfg.keys.pub || c->cfg.keys.pub(c->cfg.keys.ctx, c->np.epoch, first, pub) != 1)
         return dq_result(c, cmd, 503, "no_key", NULL, out);
     /* The pair is saved (and never used again) before the CONNECT shows its key. */

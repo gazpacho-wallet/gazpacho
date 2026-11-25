@@ -670,6 +670,7 @@ gz_status_t np_set_timer(gz_action_list_t *out, uint32_t id, uint64_t delay);
 gz_status_t np_disconnect(gz_action_list_t *out, const gz_link_t *link, uint16_t why);
 gz_status_t np_slot_freed(gz_node_t *c, int i, gz_action_list_t *out);
 gz_status_t np_save_pair(gz_node_t *c, uint32_t first, const gz_record_t *extra, gz_action_list_t *out);
+uint32_t np_next_first(const gz_node_t *c, uint32_t from);
 
 /* lobbyslot.c */
 int gz_ls_init(gz_node_t *c, int i);

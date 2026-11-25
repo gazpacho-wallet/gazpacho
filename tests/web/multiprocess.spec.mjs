@@ -45,7 +45,11 @@ async function program(name, role, extra) {
   const seed = createHash('sha256').update('gazpacho multiprocess test seed ' + name).digest('hex');
   writeFileSync(join(data, 'wallet-seed.standin'), seed + '\n', { mode: 0o600, flag: 'wx' });
   const port = await freePort();
-  const args = ['--data-dir', data, '--role', role, '--name', name, '--no-chain', '--interface-port', String(port), ...extra];
+  // --test-engines 0, as tests/program/lobby.py runs its lobbies: with a test engine the test
+  // build gives every link the transport key (net.h, single_key), so a member's query link
+  // and its lobby links to one host would share a key and replace each other at the host.
+  const args = ['--data-dir', data, '--role', role, '--name', name, '--no-chain', '--interface-port', String(port),
+    '--test-engines', '0', ...extra];
   const proc = spawn(EXE, args, { env: { ...process.env, XDG_RUNTIME_DIR: dir }, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   proc.stdout.on('data', (b) => { out += b; });

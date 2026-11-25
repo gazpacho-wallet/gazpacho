@@ -324,13 +324,28 @@ def main():
         check(st == 404, "a lobby the view does not hold: 404", l)
         st, e = p.call("POST", "/discovery/query", {"host": "not a host"})
         check(st == 400 and e and e.get("code") == "bad_host_address", "a host address that is not one: 400", e)
+        # a deadline is the person's and in the future (15.1): none, or one past, is a problem of
+        # the draft and it cannot be opened (T1's own deadline is a fixed date, long past)
+        DL = int(time.time()) + 3600
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3})
+        check(st == 200 and pv and pv.get("can_open") is False and pv.get("cannot_open_because") == ["problems"] and
+              pv.get("problems") == [{"field": "/deadline_at", "code": "deadline_missing"}],
+              "a draft with no deadline: deadline_missing", (st, pv))
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3, "deadline_at": int(time.time()) - 60})
+        check(st == 200 and pv and pv.get("can_open") is False and
+              pv.get("problems") == [{"field": "/deadline_at", "code": "deadline_past"}],
+              "a draft whose deadline has passed: deadline_past", (st, pv))
+        st, e = p.call("POST", "/host/lobbies", {"request_id": "OpenDeadlinePast0001",
+                                                "draft": {"name": "x", "target": 3, "minimum": 3, "deadline_at": int(time.time()) - 60},
+                                                "draft_digest": "0" * 64, "confirm_funding_sat": 0, "passphrase": PASS})
+        check(st == 409 and e and e.get("code") == "deadline_past", "opening it is refused: 409 deadline_past", (st, e))
         # a draft the terms refuse (terms.md type 12: the minimum is 3 to target) cannot be
         # opened, and says why; the same draft with a minimum of 3 can
-        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 2})
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 2, "deadline_at": DL})
         check(st == 200 and pv and pv.get("can_open") is False and pv.get("cannot_open_because") == ["bad_terms"] and
               "as_members_see_it" in pv and pv["as_members_see_it"] is None,
               "a draft with minimum 2: can_open false, bad_terms, no terms to show", (st, pv))
-        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3})
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL})
         seen = (pv or {}).get("as_members_see_it") or {}
         check(st == 200 and pv and pv.get("can_open") is True and pv.get("draft_digest"),
               "the same draft with minimum 3: can_open", (st, pv))
@@ -342,7 +357,7 @@ def main():
               "the preview's as_members_see_it: the draft's terms, unsigned", seen)
         # opening it answers the hosted lobby as the view holds it (15.2), though the core
         # gives its result before the view object: the answer waits for that object
-        draft = {"name": "x", "target": 3, "minimum": 3}
+        draft = {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL}
         st, op = p.call("POST", "/host/lobbies", {"request_id": "OpenFromProgramApi01", "draft": draft,
                                                  "draft_digest": (pv or {}).get("draft_digest"),
                                                  "confirm_funding_sat": (pv or {}).get("funding_at_target_sat"),
@@ -385,8 +400,8 @@ def main():
         v = Prog(exe_t, extra=["--test-drop-view", "3"], dump=False)
         try:
             check(set_up(v), "a host whose hosted-lobby views are dropped, set up", v.lines[-5:])
-            st, pv3 = v.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3})
-            body = {"request_id": "OpenViewNeverComes01", "draft": {"name": "x", "target": 3, "minimum": 3},
+            st, pv3 = v.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL})
+            body = {"request_id": "OpenViewNeverComes01", "draft": {"name": "x", "target": 3, "minimum": 3, "deadline_at": DL},
                     "draft_digest": (pv3 or {}).get("draft_digest"),
                     "confirm_funding_sat": (pv3 or {}).get("funding_at_target_sat"), "passphrase": PASS}
             t0 = time.time()
