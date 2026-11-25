@@ -143,7 +143,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n)
                 for (size_t r = 0; r < g_store.n && !found; r++) {
                     size_t pl;
                     const uint8_t *pm;
-                    if (g_store.recs[r].type != GZ_SIGN_REC_EXPOSURE || !(pm = field(&g_store.recs[r], 14, &pl))) continue;
+                    if (g_store.recs[r].type != GZ_SIGN_REC_EXPOSURE || !(pm = field(&g_store.recs[r], 16, &pl))) continue;
                     found = pl == elen && memcmp(pm, env, pl) == 0;
                 }
                 REQUIRE(found);

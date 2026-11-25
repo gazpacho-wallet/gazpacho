@@ -44,6 +44,20 @@ RULES = {
     "MAY_ACK": ("if (!may) {", "if (0) {"),
     # review B of PR 52, L4: no tip is not yet, never a no
     "ACK_WAITS_FOR_TIP": ("if (may < 0) return;", "{}"),
+    # Slice 1 blocker C1: the partials-out fact
+    "PARTIALS_OUT_HELD": ("same(r->def.outer_digest, scope, 32)) return GZ_SIGN_OUT_THIS;", "same(r->def.outer_digest, scope, 32)) return GZ_SIGN_OUT_NONE;"),
+    # reviews A and B of PR 81
+    "PARTIALS_OUT_HELD_SCOPE": ("unresolved_state(r->state) && same(r->def.outer_digest, scope, 32))", "unresolved_state(r->state))"),
+    "PARTIALS_OUT_EVER_PARTIAL": ("if (r->ever_partial && unresolved_state(r->state)", "if (unresolved_state(r->state)"),
+    "PARTIALS_OUT_FAIL_CLOSED": ("if (!x->has_scope) unknown = 1;", "if (!x->has_scope) {}"),
+    "PARTIALS_OUT_EVICTED": ("else if (same(x->scope, scope, 32)) return GZ_SIGN_OUT_THIS;", "else if (same(x->scope, scope, 32)) {}"),
+    "PARTIALS_OUT_EVICTED_SCOPE": ("else if (same(x->scope, scope, 32)) return", "else if (1) return"),
+    "UNRESOLVED_STATES": ("|| s == GZ_SIGN_ROUND_COMPLETE;", ";"),
+    "UNRESOLVED_ENDED": ("return s == GZ_SIGN_ROUND_ACTIVE ||", "return s == GZ_SIGN_ROUND_ABANDONED || s == GZ_SIGN_ROUND_LIVE || s == GZ_SIGN_ROUND_DEAD || s == GZ_SIGN_ROUND_ACTIVE ||"),
+    "UNFINISHED_SAVED_TIME": ("return now > x->since_ms &&", "return 0 && now > x->since_ms &&"),
+    "REPLAY_UNHELD_COMPLETE": ("x->state = GZ_SIGN_ROUND_COMPLETE;", "(void)0;"),
+    "FUNDING_DEADLINE_HELD": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "(void)0;"),
+    "FUNDING_DEADLINE_EVICTED": ("x->state = GZ_SIGN_ROUND_ABANDONED;", "(void)0;"),
     "OLD_EPOCH_REFUSED": ("return refuse_id(e, id);", "return 1;"),
     "UNFINISHED_ABANDONED": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "r->state = GZ_SIGN_ROUND_UNFINISHED;"),
     "PER_ITEM_ANSWER": ("wr32(q, (uint32_t)i); q += 4;", "wr32(q, 0u); q += 4;"),
@@ -71,7 +85,7 @@ RULES = {
     "C7_AFTER_SAVE": ("if (em->st == GZ_OK && !add_exposure(", "if (!add_exposure("),
     "EXPOSURE_ROOM": ("if (!exposure_room(e, r)) return GZ_SIGN_WHY_CAPACITY;", ""),
     "EXPOSURE_NOT_DROPPED": ("{ e->exposures_lost = 1; return 0; }", "return 0;"),
-    "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; }", "{ (void)state; }"),
+    "KEEP_EVICTED": ("{ e->exposed[i].state = state; e->exposed[i].why = r->why; e->exposed[i].ticks = 0; e->exposed[i].ack_tip = r->ack_tip; }", "{ (void)state; }"),
     "C10_EVICTED": ("if (s == GZ_SIGN_ROUND_UNFINISHED || s == GZ_SIGN_ROUND_COMPLETE || s == GZ_SIGN_ROUND_ACTIVE)", "if (s && 0)"),
     "DECODE_FIRST": ("if (!len || !gz_sign_decode(b, len, &m))", "if (!len || (gz_sign_decode(b, len, &m), 0))"),
     "WIPE_NONCE_INPUTS": ("wipe(rnd, sizeof e->work_rnd); ", ""),
@@ -226,6 +240,7 @@ def main():
         else: builds.append(a)
     if mode == "rules":
         variants, args, timeout = rule_variants(src), [], 5400
+        if names is not None: variants = [v for v in variants if v[0] in names]
     else:
         variants, args, timeout = mutant_variants(src, only), [], 5400   # the full suite, stopping at the first failing section
         if names is not None: variants = [v for v in variants if v[0] in names]
@@ -255,6 +270,10 @@ def main():
     print("SUMMARY %s: %s in %.0f s" % (mode, counts, time.time() - start))
     for name, (k, _) in sorted(results):
         if k in ("survived", "marker-missing"): print("SURVIVOR" if k == "survived" else "MISSING", name)
+    # A rule whose marker or text no longer matches the code is not checked at all: never a quiet pass.
+    if counts.get("marker-missing"):
+        print("FAIL: %d rule(s) whose marker or text no longer matches the code" % counts["marker-missing"])
+        sys.exit(1)
 
 
 if __name__ == "__main__":

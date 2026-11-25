@@ -47,6 +47,7 @@ from lobby import World, cmd, conditions, parse_tlv, started, state, tlv  # noqa
 check = Checks()
 lobby.check = check
 FUNDING, ACTIVE = 4, 5
+LEAVE, PAUSE = lobby.LEAVE, 0x0d01
 FUNDED_SAT = 5000000   # 0.05 coins to the host's first address
 TOOLS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "tools")
 
@@ -266,6 +267,19 @@ def run_case(exe, work, rt, name, refusing):
         check(has(h, r"fund-report scope=%s kind=1" % t.tag), "%s: the host's funding engine reports Live" % name)
         check(not any(has(p, r"fund-report scope=%s kind=[234]" % t.tag) for p in honest),
               "%s: on time: nobody judged it abandoned, dead or live late" % name)
+        # Live resolves each member's round (gz_sign_resolve from the funding report): nothing of it holds
+        # the member any more (Slice 1 blocker C1's end, integration B19). A leave is not refused too_late,
+        # and a pause holds no lobby (200, not 202 held_for_signing).
+        mk = ms["m1"].mark()
+        ms["m1"].send(cmd(LEAVE, (12, t.scope)))
+        r = ms["m1"].wait_for(r"command-result id=\S+ status=(\d+) error=(\S+)", timeout=10, start=mk)
+        check(r is not None and r.group(1) != "409",
+              "%s: after Live, m1's leave is not refused too_late (got %s)" % (name, r.group(0) if r else None))
+        mk = ms["m2"].mark()
+        ms["m2"].send(cmd(PAUSE, (12, bytes([1]))))
+        r = ms["m2"].wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk)
+        check(r is not None and r.group(1) == "200",
+              "%s: after Live, m2's pause holds nothing: 200 (got %s)" % (name, r.group(1) if r else None))
         if refusing:
             mr = ms["mr"]
             check(mr.count(r"role=member .*joined=1") == 0 and not has(mr, r"sign-begin|sign-outcome|fund-"),
@@ -334,6 +348,12 @@ def two_lobbies(exe, work, rt, name="3 two lobbies, restarts"):
         check(not any(has(p, r"fund-report scope=\S+ kind=[234]|sign-begin|funding-adopt-refused")
                       for p in [h2] + list(ms2.values())),
               "%s: nothing judged, begun or refused again after the restart" % name)
+        # After the restart too, from the journal: m1's two Live rounds hold nothing.
+        mk = ms2["m1"].mark()
+        ms2["m1"].send(cmd(PAUSE, (12, bytes([1]))))
+        r = ms2["m1"].wait_for(r"command-result id=\S+ status=(\d+)", timeout=10, start=mk)
+        check(r is not None and r.group(1) == "200",
+              "%s: after the restart, m1's pause holds neither Live lobby: 200 (got %s)" % (name, r.group(1) if r else None))
         w.clean(name)
     finally:
         w.stop()
