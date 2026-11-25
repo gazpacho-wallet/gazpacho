@@ -271,35 +271,16 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     return 0;
 }
 
-#ifdef GZP_HAVE_CURL
-/* The scan, in a thread of its own (it may wait on a slow server; the loop never does): the coins found
- * are published at the end, under the mutex. */
-static void *scan_thread(void *arg)
+int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
 {
-    gzp_wport_t *w = arg;
     static gz_chain_output outs[32];
     static gzt_coin found[GZP_WPORT_COINS];
     static uint32_t heights[GZP_WPORT_COINS];
     gz_chain_tip tip;
-    gz_http http;
-    gz_http_curl_config hc;
-    gz_esplora_config cfg;
-    gz_chain view;
     uint64_t total = 0;
     size_t nf = 0;
     uint32_t next_change = 100;
     int failed = 0;
-    memset(&hc, 0, sizeof hc);
-    if (!gz_http_curl_create(&http, &hc)) return NULL;
-    gz_esplora_config_default(&cfg);
-    cfg.base_url = w->url;
-    if (gz_esplora_create(&cfg, &http, &view) != GZ_CHAIN_OK) {
-        gz_http_curl_destroy(&http);
-        return NULL;
-    }
-    pthread_mutex_lock(&w->mu);
-    w->http_live = &http;
-    pthread_mutex_unlock(&w->mu);
     for (uint32_t change = 0; change < 2 && !w->stop; change++)
         for (uint32_t j = 0; j < w->gap && !w->stop; j++) {
             gzw_bip86_output o;
@@ -308,7 +289,7 @@ static void *scan_thread(void *arg)
                 failed = 1;
                 break;
             }
-            if (gz_chain_script_outputs(&view, o.script_pubkey, sizeof o.script_pubkey, outs, 32, &n, NULL) !=
+            if (gz_chain_script_outputs(view, o.script_pubkey, sizeof o.script_pubkey, outs, 32, &n, NULL) !=
                 GZ_CHAIN_OK) {
                 failed = 1;
                 continue;
@@ -328,20 +309,53 @@ static void *scan_thread(void *arg)
                 if (change == 1 && j + 100 > next_change) next_change = j + 100;
             }
         }
+    if (w->stop) return -1;
     memset(&tip, 0, sizeof tip);
-    if (!w->stop && gz_chain_tip_get(&view, &tip) != GZ_CHAIN_OK) failed = 1;
+    if (gz_chain_tip_get(view, &tip) != GZ_CHAIN_OK || tip.height == 0) {
+        OPENSSL_cleanse(found, sizeof found);
+        return 0;
+    }
+    pthread_mutex_lock(&w->mu);
+    if (next_change > w->next_change) w->next_change = next_change;
+    pthread_mutex_unlock(&w->mu);
+    (void)gzp_wport_publish(w, found, heights, nf, tip.height);
+    gzp_log("wallet-coins count=%zu total_sat=%llu lookups-failed=%d", nf, (unsigned long long)total, failed);
+    OPENSSL_cleanse(found, sizeof found);
+    return 1;
+}
+
+int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
+{
+    (void)wait_ms;   /* step 1: one attempt, as today */
+    return gzp_wport_scan_view(w, view) == 1 ? 1 : -1;
+}
+
+#ifdef GZP_HAVE_CURL
+/* The scan, in a thread of its own (it may wait on a slow server; the loop never does). */
+static void *scan_thread(void *arg)
+{
+    gzp_wport_t *w = arg;
+    gz_http http;
+    gz_http_curl_config hc;
+    gz_esplora_config cfg;
+    gz_chain view;
+    memset(&hc, 0, sizeof hc);
+    if (!gz_http_curl_create(&http, &hc)) return NULL;
+    gz_esplora_config_default(&cfg);
+    cfg.base_url = w->url;
+    if (gz_esplora_create(&cfg, &http, &view) != GZ_CHAIN_OK) {
+        gz_http_curl_destroy(&http);
+        return NULL;
+    }
+    pthread_mutex_lock(&w->mu);
+    w->http_live = &http;
+    pthread_mutex_unlock(&w->mu);
+    (void)gzp_wport_scan_until(w, &view, GZP_WPORT_TIP_RETRY_MS);
     pthread_mutex_lock(&w->mu);
     w->http_live = NULL;
-    if (!w->stop && next_change > w->next_change) w->next_change = next_change;
     pthread_mutex_unlock(&w->mu);
-    /* without the tip no depth can be counted: nothing is published, and
-     * can_plan keeps answering that it cannot tell */
-    if (!w->stop && tip.height != 0) (void)gzp_wport_publish(w, found, heights, nf, tip.height);
     gz_chain_destroy(&view);
     gz_http_curl_destroy(&http);
-    if (!w->stop)
-        gzp_log("wallet-coins count=%zu total_sat=%llu lookups-failed=%d", nf, (unsigned long long)total, failed);
-    OPENSSL_cleanse(found, sizeof found);
     return NULL;
 }
 #endif

@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "gazpacho/chain.h"
 #include "gazpacho/funding.h"
 #include "gazpacho/wallet_keys.h"
 #include "gazpacho/wallet_tx.h"
@@ -39,6 +40,7 @@
 
 #define GZP_WPORT_COINS 256
 #define GZP_WPORT_PLANS 8
+#define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
 
 typedef struct {
     const secp256k1_context *secp;
@@ -79,6 +81,13 @@ int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap);
  * coin with the height of its block (0: in the mempool) and the tip it was
  * read at. The coin list `plan` and `can_plan` offer. 0, or -1. */
 int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *heights, size_t n, uint32_t tip);
+/* One scan of the first `gap` receive and change addresses over `view`, published
+ * through gzp_wport_publish with the tip. 1: published; 0: the tip could not be
+ * read, nothing is published; -1: stopped. The scan thread's core, for tests too. */
+int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view);
+/* gzp_wport_scan_view until it publishes or the port is stopped, `wait_ms` apart:
+ * 1, or -1 when stopped. */
+int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms);
 /* Test build, no chain: one invented coin paying the first receive address. */
 int gzp_wport_invent(gzp_wport_t *w);
 void gzp_wport_close(gzp_wport_t *w);
