@@ -324,6 +324,16 @@ gzt_err gzt_funding_build(const secp256k1_context *ctx, const gzw_xprv *master,
                           const gzt_funding_request *req, const gzt_coin *coins,
                           size_t n_coins, const uint8_t aux32[32], gzt_funding *out);
 
+/* The funding engine's funds check (local-api 15.2, funds_short): would
+   gzt_funding_build with require_change pay `amount` at `fee` from these
+   coins?  The same selection, without keys, holds or signing, and with no
+   must_spend (an opening or a start has no previous attempt): GZT_OK and
+   *out, GZT_ERR_FUNDS (no coins, or not enough with change at least its
+   dust), GZT_ERR_LIMIT (enough only with more than GZT_MAX_INPUTS coins),
+   or as gzt_select_coins for bad arguments. */
+gzt_err gzt_funding_can_plan(const gzt_coin *coins, size_t n_coins, uint64_t amount,
+                             gzt_fee_policy fee, gzt_selection *out);
+
 /* Sign and serialise the funding.  Call it after the whole tree is signed.
    Refused (GZT_ERR_STATE) unless f was built, its transaction is within the
    caps, and the txid recomputed from it equals both expect_txid and

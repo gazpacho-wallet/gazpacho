@@ -5,6 +5,8 @@
 
 #define P2TR_LEN 34
 #define P2TR_DUST 330
+/* The funding engine names it GZ_FUND_CHANGE_DUST (core/funding/funding.h). */
+_Static_assert(P2TR_DUST == 330, "GZ_FUND_CHANGE_DUST in core/funding/include/gazpacho/funding.h");
 
 /* Order: amount descending, then txid bytes, then vout. */
 static int coin_before(const gzt_coin *a, const gzt_coin *b) {
@@ -225,6 +227,16 @@ static gzt_err build(const secp256k1_context *ctx, const gzw_xprv *master,
     f->info.change_index = req->change_index;
     f->priv_state = 1;
     return GZT_OK;
+}
+
+gzt_err gzt_funding_can_plan(const gzt_coin *coins, size_t n_coins, uint64_t amount,
+                             gzt_fee_policy fee, gzt_selection *out) {
+    /* the factory's script is OP_1 <32 bytes>: only its length counts here */
+    static const uint8_t p2tr[P2TR_LEN] = {0x51, 0x20};
+    if (!out) return GZT_ERR_ARG;
+    memset(out, 0, sizeof *out);
+    if (coins && n_coins == 0) return GZT_ERR_FUNDS; /* no coins: short, not an argument error */
+    return select_coins(coins, n_coins, p2tr, P2TR_LEN, amount, fee, -1, 1, out);
 }
 
 gzt_err gzt_funding_build(const secp256k1_context *ctx, const gzw_xprv *master,
