@@ -249,8 +249,9 @@ def main():
         os.unlink(os.path.join(fu, "starts.gzs"))
         os.mkdir(os.path.join(fu, "starts.gzs"))
         st, info, p = outcome(fu)
-        check(st == "refused" and p.find(r"start-counter state=missing")[0] is None,
-              "counter-unreadable: refused, not taken as missing (%s)" % (info,))
+        check(st == "refused" and p.find(r"start-counter state=missing")[0] is None and
+              p.find(r"cannot read the start counter")[0] is not None,
+              "counter-unreadable: refused at its read, not taken as missing (%s)" % (info,))
 
         # The clock set back a day during a delay (storage 12.3): the delay
         # still holds, and never more than the 15-minute cap.
