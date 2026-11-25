@@ -257,6 +257,7 @@ typedef struct {
     int n;
     int tip_fails;          /* this many tip reads fail first */
     int outputs_fails;      /* this many output lookups fail first */
+    gz_chain_result fail_as; /* how they fail (0: GZ_CHAIN_UNREACHABLE) */
     int tip_calls, outputs_calls, tip_after_outputs;
     uint32_t tip_before, tip_later;
 } fake_chain;
@@ -284,7 +285,7 @@ static gz_chain_result fk_outputs(void *ctx, const uint8_t *script, size_t scrip
     *count = 0;
     if (f->outputs_fails > 0) {
         f->outputs_fails--;
-        return GZ_CHAIN_UNREACHABLE;
+        return f->fail_as != GZ_CHAIN_OK ? f->fail_as : GZ_CHAIN_UNREACHABLE;
     }
     for (int i = 0; i < f->n && *count < cap; i++)
         if (script_len == 34 && memcmp(f->script[i], script, 34) == 0) out[(*count)++] = f->out[i];
@@ -392,6 +393,59 @@ static void test_stop_is_atomic(void)
     CHECK(_Generic(&w.stop, _Atomic int *: 1, default: 0) == 1);
 }
 
+/* PR 88: an address with no outputs is what a real server answers for an
+ * unused address (200 [], which the chain port gives as OK with none): no
+ * coins, the list is complete and published at once, never asked again. A
+ * fresh wallet's list is empty, and can_plan says no, not "cannot tell". */
+static void test_unused_addresses_are_no_coins(void)
+{
+    gzp_wport_t w;
+    fake_chain f;
+    gz_chain view;
+    uint64_t have = 1;
+    size_t n = 1;
+    open_w(&w);
+    w.gap = 3;
+    memset(&f, 0, sizeof f);
+    f.tip_before = f.tip_later = 110;   /* no outputs at all: a fresh wallet */
+    view.ctx = &f;
+    view.ops = &fk_ops;
+    CHECK(gzp_wport_scan_view(&w, &view) == 1);
+    CHECK(f.outputs_calls == 6 && f.tip_calls == 1);       /* every address asked once */
+    CHECK(w.published == 1 && w.n_coins == 0);
+    CHECK(w.port.can_plan(w.port.ctx, 100000, 100, &have, &n) == 0 && have == 0 && n == 0);
+    gzp_wport_close(&w);
+}
+
+/* PR 88: every real failure of a lookup is asked again, not only an
+ * unreachable server: a 5xx or a malformed answer (both GZ_CHAIN_MALFORMED
+ * from the chain port), a 404 or a refusal (NOT_FOUND, REJECTED: a real
+ * server answers an unused address 200 []), an answer too large. */
+static void test_lookup_failures_retried(void)
+{
+    static const gz_chain_result kinds[] = {GZ_CHAIN_MALFORMED, GZ_CHAIN_NOT_FOUND, GZ_CHAIN_REJECTED,
+                                            GZ_CHAIN_TOO_LARGE, GZ_CHAIN_UNREACHABLE};
+    for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+        gzp_wport_t w;
+        fake_chain f;
+        gz_chain view;
+        gzt_coin c;
+        open_w(&w);
+        w.gap = 1;
+        memset(&f, 0, sizeof f);
+        f.tip_before = f.tip_later = 110;
+        c = coin(&w, 0, 0, 500000, 0xaa);
+        fk_add(&f, &c, 100);
+        f.outputs_fails = 1;
+        f.fail_as = kinds[k];
+        view.ctx = &f;
+        view.ops = &fk_ops;
+        CHECK(gzp_wport_scan_view(&w, &view) == 0 && w.published == 0);
+        CHECK(gzp_wport_scan_view(&w, &view) == 1 && w.n_coins == 1);
+        gzp_wport_close(&w);
+    }
+}
+
 int main(void)
 {
     secp = secp256k1_context_create(SECP256K1_CONTEXT_NONE);
@@ -409,6 +463,8 @@ int main(void)
     test_tip_retried();
     test_lookup_retried();
     test_stop_is_atomic();
+    test_unused_addresses_are_no_coins();
+    test_lookup_failures_retried();
     secp256k1_context_destroy(secp);
     printf("program_wport: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
