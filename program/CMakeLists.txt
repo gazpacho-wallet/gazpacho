@@ -247,6 +247,10 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME program_slice1
     COMMAND ${GZP_PY} ${GZP_T}/slice1.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/slice1)
   set_tests_properties(program_slice1 PROPERTIES TIMEOUT 1500 SKIP_RETURN_CODE 77)
+  # The host's timeout sweep of a Live factory (exit.md 3.2, H15; the signet run's recovery), on regtest.
+  add_test(NAME program_sweep
+    COMMAND ${GZP_PY} ${GZP_T}/sweep.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/sweep)
+  set_tests_properties(program_sweep PROPERTIES TIMEOUT 1200 SKIP_RETURN_CODE 77)
   # B16 (review B of PR 52, M1): a member restarted between its partial signatures and
   # round_complete judges its ack at its real depth in the tree.
   add_test(NAME program_ack_depth
