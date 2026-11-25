@@ -38,6 +38,7 @@ struct gzp_wallet {
     int have_opened;
     atomic_int deriving;         /* a begin is under way (one derivation at a time, 8.2) */
     int setup_interrupted;       /* this unlock found the set-up marker and no journal (told only) */
+    int change_wide;             /* this start is a restore: the change mark may be behind (wport.h) */
 #ifdef GZP_TEST_BUILD
     char restore_from[GZP_PATH_MAX];
     int keys_only;
@@ -714,6 +715,7 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
             gzp_wallet_lock(w);
             goto out;
         }
+        w->change_wide = w->u.restore || k->op == GZP_UNLOCK_OP_START_AS_RESTORE;
         if (k->op == GZP_UNLOCK_OP_START_AS_RESTORE && !w->u.restore) {
             uint64_t floor = 0;
             char err[200] = "";
@@ -767,6 +769,13 @@ void gzp_wallet_finish(gzp_wallet_t *w, gzp_unlock_job_t *job, int64_t now_ms)
             goto out;
         }
         w->unlocked = 1;
+        /* A new wallet has handed out no change: its mark, 0, is kept, so
+         * only a missing file (lost, or a restore into a new folder) reads
+         * the change chain wide. A restore from the words reads it wide. If
+         * this write fails the next start reads wide: slower, never blind. */
+        w->change_wide = k->op == GZP_UNLOCK_OP_RESTORE || w->u.restore;
+        if (k->op == GZP_UNLOCK_OP_CREATE && gzp_wallet_change_mark_write(w, 0) != 0)
+            gzp_log("wallet-change-mark-not-kept at set-up (the first start reads the change chain wide)");
         if (open_storage(w, r) != GZP_UNLOCK_OK) gzp_wallet_lock(w);
         goto out;
     default:
@@ -910,10 +919,13 @@ int gzp_wallet_change_mark_read(gzp_wallet_t *w, uint32_t *mark, int *wide)
     uint64_t v = 0;
     gz_sc_err_t e;
     *mark = 0;
-    *wide = 0;   /* step 1: never wide */
+    *wide = w->change_wide;
     if (!s || !u || !u->vault) return -1;
     e = gz_sc_fs_read(s, GZP_CHANGE_MARK_FILE, GZ_SC_CHANGE_MARK_LEN, &data, &len);
-    if (e == GZ_SC_MISSING) return 0;
+    if (e == GZ_SC_MISSING) {
+        *wide = 1;   /* lost, or a folder made by a restore: the mark may be anywhere */
+        return 0;
+    }
     if (e != GZ_SC_OK) return -1;
     e = gz_sc_change_mark_open(u->vault, data, len, &v);
     free(data);

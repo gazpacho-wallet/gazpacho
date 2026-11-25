@@ -291,6 +291,7 @@ Implemented with libsodium's `crypto_kdf_hkdf_sha256_extract` and `_expand` (13)
 | KR | seed | `journal recovery` | chain, file_id | MSK in the journal header |
 | KG | seed | `guard` | chain | The guard file |
 | KC | seed | `start counter` | chain | The start counter (10.3) |
+| KM | seed | `change mark` | chain | The wallet port's change mark (10.4) |
 | KP | seed | `program keys` | chain | Not a sealing key: the root of the program's own keys from the seed, derive(KP, label, chain), so that none is a storage key (review B of PR 54, M2) |
 | BK | seed | `backup` | chain | Root of every export (not a sealing key) |
 | XR | BK | `export key` | chain, export_id | A profile 1 export's own key (not a sealing key; storage-crypto review B, L4) |
@@ -756,6 +757,10 @@ Vector E9m.
 
 KC = keys(seed, `start counter`, chain) (4.4), so a restore from the words can read it. Replaced (write `starts.gzs.tmp`, sync, rename, sync the folder) at every start, before the incarnation entry. A file that is short, of another format or network, or fails its tag is treated as missing, and the person is told. Vector E9c.
 
+
+### 10.4 The change mark
+
+`change.gzm`, beside the start counter, outside the journal's backup set: the host wallet port's change mark, the lowest change index (m/86'/coin'/0'/1/i) never handed out. It is the start counter's layout (89 bytes) under the magic `GZCHMRK1` and **KM** = keys(seed, `change mark`, chain), so neither file opens as the other. The mark is replaced (temporary name, sync, rename, folder sync) before any index below it is used, and set-up writes mark 0. A start that finds no file, or that is a restore, reads the change chain wide (1,000 addresses, `program/wport.h`) and then writes the mark past what it found. A snapshot of the whole folder can bring back an older mark, as it can an older start counter (6.4).
 ## 11. Exports and the host's copy
 
 `DESIGN.md` 9: the journal is the backup; the person may export it and the host keeps a copy. Two profiles of one format, `.gzb`. (Owner decision 13 says "a backup export is the file as encrypted on disk"; this separate format needs the owner's amendment, open point 1.)

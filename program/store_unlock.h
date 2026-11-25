@@ -92,7 +92,8 @@ int gzp_wallet_transport_key(gzp_wallet_t *w, int (*valid)(const uint8_t key[32]
 /* The wallet port's change mark (wport.h, M-3 of the review of PR 91): the
  * lowest change index never handed out, sealed with the vault in change.gzm
  * (the start counter's seal), replaced atomically and synced. read: 0 and the
- * mark (0 when there is none) and whether the change chain is read wide;
+ * mark (0 when there is none) and whether the change chain is read wide
+ * (no file, or this start is a restore: the mark may be behind);
  * -1 if it cannot be read or does not open.
  * write: 0 once it is on disk with its folder synced; -1 otherwise. */
 int gzp_wallet_change_mark_read(gzp_wallet_t *w, uint32_t *mark, int *wide);
