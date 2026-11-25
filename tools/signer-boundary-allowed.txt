@@ -36,21 +36,24 @@ program/executor.c	gzp_net_sign	2
 program/executor.c	hook:secret	1
 program/executor.c	hook:sign	1
 program/executor.c	host_secret	1
-program/executor.c	port_secret	2
+program/executor.c	port_secret	3
 program/executor.c	port_sign	2
-# MUST MOVE TO signer/ AT S4/S5 (review A of #71, re-review): wallet_open derives the master key from the
-# words outside the signer to check the first receive address, a second path from the words to the master
-# key. At S4 (S5 for the funding wallet) the address check becomes a signer call, or is dropped; the next two
-# lines then go (the third, key_ok's seckey_verify, checks the transport key: it goes with S4's ECDH move).
-program/main.c	gzw_bip32_master	1
-program/main.c	gzw_phrase_to_seed	1
+# MUST MOVE TO signer/ AT S4 (signer.md S2, #53): program/keys.c is the derivation layer the signer
+# will wrap; it derives from the seed source's seed and keeps nothing (docs/notes/keys.md). main.c's
+# wallet_open, which derived the master key a second time, is gone: keys_open asks keys.c. At S4 these
+# lines go into signer/ with keys.c.
+program/keys.c	gzw_bip32_child_priv	2
+program/keys.c	gzw_bip32_master	1
+# MUST MOVE TO signer/ AT S4: the STAND-IN seed source (wallet-seed.standin) turns its words into the seed
+# outside the signer until #54's storage gives the seed through unlock.h; this line then goes.
+program/keys_standin.c	gzw_phrase_to_seed	1
 program/main.c	secp256k1_ec_seckey_verify	1
 program/net.c	gzp_net_sign	1
 program/net.c	secp256k1_ec_pubkey_create	2
 program/net.c	secp256k1_ec_seckey_verify	1
 program/net.c	secp256k1_keypair_create	1
 program/net.c	secp256k1_schnorrsig_sign32	1
-program/net.c	static_key	6
+program/net.c	static_key	5
 program/net.h	gzp_net_sign	1
 # MUST MOVE TO signer/ AT S4 (review A of #71, re-review): the stand-in unlock turns the words into the
 # seed here, outside the signer. At S4 the signer reads the words or seed only through its seed source and
@@ -78,7 +81,10 @@ tests/net/test_wipes.c	secp256k1_ec_pubkey_create	1
 tests/node/test_node_lobby.c	hook:secret	1
 tests/node/test_node_lobby.c	hook:sign	2
 tests/node/test_node_lobby.c	secp256k1_schnorrsig_sign32	3
+tests/program/fuzz_keys.c	secp256k1_ec_pubkey_create	1
 tests/program/silent_peer.c	secp256k1_ec_seckey_verify	1
+tests/program/test_keys_rare.c	gzw_bip32_derive_priv	1
+tests/program/test_keys_rare.c	gzw_bip32_master	1
 tests/program/test_net.c	gzp_net_sign	2
 tests/regtest/tree_regtest.c	factory_sign_all	1
 tests/regtest/tree_regtest.c	secp256k1_keypair_create	1
@@ -170,7 +176,8 @@ wallet/tx/tests/test_tx_faults.c	gzt_funding_build	2
 wallet/tx/tests/test_tx_faults.c	gzt_funding_release	1
 wallet/tx/tests/test_tx_faults.c	gzt_sign_keypath	1
 wallet/tx/tests/test_tx_faults.c	gzw_taproot_tweak_seckey	1
-wallet/tx/tests/test_tx_funding_port.c	gzt_funding_build	12
+# main's own tree uses it 14 times (the list said 12 when #53 merged main at 5e0c378).
+wallet/tx/tests/test_tx_funding_port.c	gzt_funding_build	14
 wallet/tx/tests/test_tx_funding_port.c	gzt_funding_release	1
 wallet/tx/tests/test_tx_funding_port.c	gzt_funding_spend_back	8
 wallet/tx/tests/test_tx_funding_port.c	gzw_bip32_master	1
