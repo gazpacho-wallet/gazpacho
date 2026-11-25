@@ -406,6 +406,7 @@ typedef struct {
     uint64_t set_aside;             /* host: gz_fund_set_aside_sat of its terms, once known */
     uint32_t cond_seen;             /* member: the saved conditions' version when it joined (slot_opened 24) */
     int set_aside_known;
+    int stale;                      /* member: left out as a seat of an older epoch (BD2): nothing is sent for it */
 } slot_t;
 
 _Static_assert(SLOT_MAX_SEATS >= GZ_LOBBY_MAX_SEATS, "a slot notes every seat its lobby can mark (T-P42-2)");
@@ -817,6 +818,8 @@ gz_status_t gz_api_after(gz_node_t *c, gz_bytes_t cmd, size_t from, gz_action_li
 gz_status_t gz_api_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action_list_t *out);
 size_t gz_api_loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditions_t *to, uint8_t *l);
 gz_status_t gz_ls_left_out_note(gz_node_t *c, int i, gz_action_list_t *out);
+int gz_ls_stale(const gz_node_t *c, int i);
+gz_status_t gz_ls_stale_out(gz_node_t *c, int i, gz_action_list_t *out);
 gz_status_t gz_c_slot_bracket(gz_node_t *c, int eng, gz_status_t (*fn)(gz_node_t *, int, gz_action_list_t *),
                               gz_action_list_t *out);
 /* signslot.c */

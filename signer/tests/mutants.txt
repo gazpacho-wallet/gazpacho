@@ -45,7 +45,8 @@ fee-cap-old	signer/signer.c	    return at_ceiling > top ? at_ceiling : top;	    
 fee-cap-overflow	signer/signer.c	 ||\n        plan_fee > UINT64_MAX / spend_back_vsize)	)
 # --- the tables (policy.c)
 policy-key	signer/policy.c	    if (!((role == GZ_SG_ROLE_HOST && key == GZ_SG_KEY_HOST) ||	    if (0 && !((role == GZ_SG_ROLE_HOST && key == GZ_SG_KEY_HOST) ||
-tag-factory	signer/policy.c	FACTORY_TAGS[] = {"gazpacho/bind", NULL};	FACTORY_TAGS[] = {"gazpacho/bind", "gazpacho/msg", NULL};
+tag-factory	signer/policy.c	FACTORY_TAGS[] = {NULL};	FACTORY_TAGS[] = {"gazpacho/msg", NULL};
+tag-factory-bind	signer/policy.c	FACTORY_TAGS[] = {NULL};	FACTORY_TAGS[] = {"gazpacho/bind", NULL};
 # --- tools/check-tags.py
 tags-comment	tools/check-tags.py	        if text.startswith("/*", i):	        if False:
 tags-include	tools/check-tags.py	                i += m.end()\n                continue	                pass

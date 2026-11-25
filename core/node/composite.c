@@ -208,6 +208,8 @@ static gz_status_t resume_step(gz_node_t *c, gz_action_list_t *out, int *finishe
         int i = c->resume_at - R_SLOT0, e = ENG_SLOT0 + i;
         c->resume_at++;
         if (c->slots[i].state == SLOT_LEFT_OUT) return gz_ls_left_out_note(c, i, out);
+        /* BD2: a member's seat of an older epoch (a restore from the words since) is never resumed. */
+        if (gz_ls_stale(c, i)) return gz_ls_stale_out(c, i, out);
         if (c->slots[i].state != SLOT_OPEN || c->slots[i].kind != SLOT_KIND_LOBBY) return GZ_OK;
         /* From its resume on, a saved pause acts on it (lobbyslot.c, pause_apply):
          * after its CONNECT, before it can join, ready or sign anything. */

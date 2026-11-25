@@ -133,6 +133,13 @@ static gz_status_t send_ready(gz_lobby_member_t *m, const uint8_t *check_id, con
      * saved signature (seat_key field 10) byte for byte (messages.md 6.4, review H1). */
     if (m->seat_key_saved) memcpy(sc, m->seat_bind_c, 64);
     else {
+        /* K1 stage 3: the factory key is derived here, at the seat's first ready, and never before. */
+        if (m->crypto.factory_pub) {
+            uint8_t f[33];
+            if (m->crypto.factory_pub(m->crypto.ctx, f) != 1) return gz_la_no_key(out, GZ_LOBBY_KEY_FACTORY);
+            memcpy(m->factory_key, f, 33);
+            m->factory_fresh = 1;
+        }
         gz_lobby_binding(m->scope, m->factory_key, m->ckey, b);
         if (m->crypto.sign(m->crypto.ctx, GZ_LOBBY_KEY_CONTRIBUTION, b, sc) != 1) return gz_la_no_key(out, GZ_LOBBY_KEY_CONTRIBUTION);
     }
@@ -620,6 +627,9 @@ static gz_status_t on_status(gz_lobby_member_t *m, const gz_lobby_msg_t *g, gz_a
     }
     if (m->have_terms && g->version > m->values.version) return send_hello(m, out);
     if (!m->joined) return GZ_OK;
+    /* A refused ready (messages.md 6.4): reason 5 with the seat's own state. The seat is kept, on both
+     * sides, and nothing is resent for it: the person was told by the seat notice (review A of #95, L1). */
+    if (in && g->has_reason && g->reason == 5) return GZ_OK;
     if (g->seat_state == GZ_SEAT_REMOVED || (g->seat_state == GZ_SEAT_REFUSED && g->has_reason))
         return end_self(m, g->seat_state == GZ_SEAT_REMOVED ? GZ_LOBBY_END_REMOVED : GZ_LOBBY_END_REFUSED,
                         g->has_reason ? g->reason : 0, out);   /* final, and saved */
@@ -782,6 +792,11 @@ gz_status_t gz_lobby_member_restore(gz_lobby_member_t *m, const gz_record_t *rec
             !gz_lf_fixed(&f, 10, 64))
             return GZ_ERR_CORRUPT;
         m->seat_key_saved = 1;
+        /* K1 stage 3: a member whose factory key comes from the port at the first ready holds none before
+         * it; the saved one is the seat's. Otherwise (the config gave one) the two must agree. The epoch
+         * and index are the slot's; that the slot's epoch is the node's current one is the node's check
+         * (BD2, lobbyslot.c), made before this engine is resumed. */
+        if (m->crypto.factory_pub) memcpy(m->factory_key, a, 33);
         m->stale_seat = memcmp(a, m->factory_key, 33) != 0 || (uint32_t)gz_lw_get(b, 4) != m->key_epoch ||
                         (uint32_t)gz_lw_get(x, 4) != m->key_index;
         if (m->stale_seat) { m->joined = 0; m->join_len = 0; m->seat_key_saved = 0; return GZ_OK; }   /* an older epoch's seat: join again */
