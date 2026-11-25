@@ -324,6 +324,14 @@ def main():
         check(st == 404, "a lobby the view does not hold: 404", l)
         st, e = p.call("POST", "/discovery/query", {"host": "not a host"})
         check(st == 400 and e and e.get("code") == "bad_host_address", "a host address that is not one: 400", e)
+        # a draft the terms refuse (terms.md type 12: the minimum is 3 to target) cannot be
+        # opened, and says why; the same draft with a minimum of 3 can
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 2})
+        check(st == 200 and pv and pv.get("can_open") is False and pv.get("cannot_open_because") == ["bad_terms"],
+              "a draft with minimum 2: can_open false, bad_terms", (st, pv))
+        st, pv = p.call("POST", "/host/preview", {"name": "x", "target": 3, "minimum": 3})
+        check(st == 200 and pv and pv.get("can_open") is True and pv.get("draft_digest"),
+              "the same draft with minimum 3: can_open", (st, pv))
         host = NOBODY_KEY + "@127.0.0.1:%d" % free_port()
         st, e = p.call("POST", "/discovery/query", {"host": host})
         check(st == 409 and e and e.get("code") == "not_a_member",

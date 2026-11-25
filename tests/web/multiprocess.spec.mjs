@@ -121,6 +121,14 @@ test('a host and three members: one lobby opened, joined and readied up to the r
     await signIn(hp, host, PASS.host);
     await hp.goto(host.url + '#/host/new');
     await hp.getByLabel('Lobby name').fill('Four seats');
+    // terms the rules refuse (terms.md type 12: a minimum of 3 to target): the preview says
+    // bad_terms and "Sign and open" stays disabled (the spec's own first run asked for these)
+    await hp.getByLabel(/^Target/).fill('3');
+    await hp.getByLabel(/^Minimum/).fill('2');
+    await expect(hp.locator('#cannot-open li[data-cannot="bad_terms"]')).toHaveCount(1);
+    await expect(hp.locator('#open-lobby')).toBeDisabled();
+    await hp.waitForTimeout(1000);
+    await expect(hp.locator('#open-lobby')).toBeDisabled();
     await hp.getByLabel(/^Target/).fill('4');
     await hp.getByLabel(/^Minimum/).fill('3');
     await expect(hp.locator('#preview')).toContainText('These terms can be opened.');
