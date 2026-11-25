@@ -295,7 +295,10 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
     /* the tip first, then the heights: a block found during the scan cannot make
      * a change coin look deeper than it is (review B of PR 83, L-2) */
     memset(&tip, 0, sizeof tip);
-    if (gz_chain_tip_get(view, &tip) != GZ_CHAIN_OK || tip.height == 0) return 0;
+    if (gz_chain_tip_get(view, &tip) != GZ_CHAIN_OK || tip.height == 0) {
+        gzp_log("wallet-coins incomplete why=tip");
+        return 0;
+    }
     for (uint32_t change = 0; change < 2 && !w->stop; change++)
         for (uint32_t j = 0; j < w->gap && !w->stop; j++) {
             gzw_bip86_output o;
@@ -306,8 +309,12 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
             }
             if (gz_chain_script_outputs(view, o.script_pubkey, sizeof o.script_pubkey, outs, 32, &n, NULL) !=
                 GZ_CHAIN_OK) {
-                failed = 1;
-                continue;
+                /* a list short of this address's coins is never published: it
+                 * would be a funds_short refusal; asked again, like the tip
+                 * (review of PR 85) */
+                gzp_log("wallet-coins incomplete why=lookup chain=%u index=%u", (unsigned)change, (unsigned)j);
+                OPENSSL_cleanse(found, sizeof found);
+                return w->stop ? -1 : 0;
             }
             for (size_t i = 0; i < n && nf < GZP_WPORT_COINS; i++) {
                 gzt_coin *c = &found[nf];
@@ -342,9 +349,9 @@ int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
     for (unsigned tries = 1;; tries++) {
         int r = gzp_wport_scan_view(w, view);
         if (r != 0) return r;
-        /* no coin list without a tip: every lobby would be refused as no_wallet,
-         * so say so and ask again (review B of PR 83, L-2) */
-        gzp_log("wallet-coins tip-unreadable attempt=%u retry_ms=%u (funding waits for the coin list)", tries,
+        /* no coin list without the tip and every address: every lobby would be
+         * refused, so say so and ask again (review B of PR 83, L-2; review of PR 85) */
+        gzp_log("wallet-coins retry attempt=%u retry_ms=%u (funding waits for the coin list)", tries,
                 (unsigned)wait_ms);
         for (uint32_t t = 0; t < wait_ms && !w->stop; t += 100) {
             struct timespec ts = {0, (long)(wait_ms - t < 100 ? wait_ms - t : 100) * 1000000L};

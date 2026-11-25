@@ -61,7 +61,7 @@ typedef struct {
     pthread_mutex_t mu;           /* coins, n_coins, held and next_change, between the scan and the port */
     pthread_t th;
     int th_on;
-    volatile int stop;
+    _Atomic int stop;             /* read by the scan without the mutex, set by close under it */
     const char *url;
     uint32_t gap;
     void *http_live;              /* the scan's HTTP client while it runs, to interrupt it */
@@ -82,8 +82,8 @@ int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap);
  * read at. The coin list `plan` and `can_plan` offer. 0, or -1. */
 int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *heights, size_t n, uint32_t tip);
 /* One scan of the first `gap` receive and change addresses over `view`, published
- * through gzp_wport_publish with the tip. 1: published; 0: the tip could not be
- * read, nothing is published; -1: stopped. The scan thread's core, for tests too. */
+ * through gzp_wport_publish with the tip. 1: published; 0: the tip or an address
+ * lookup could not be read, nothing is published; -1: stopped. The scan thread's core, for tests too. */
 int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view);
 /* gzp_wport_scan_view until it publishes or the port is stopped, `wait_ms` apart:
  * 1, or -1 when stopped. */
