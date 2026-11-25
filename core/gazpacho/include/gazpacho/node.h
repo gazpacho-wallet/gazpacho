@@ -162,7 +162,12 @@
  *                     GZ_CMD_API_SET_CONDITIONS, view.h, or none), 20
  *                     auto-join (u8, default 1), 24 unlock (u8: 1 when given
  *                     with the passphrase under AT_JOIN: the lobby's gate is
- *                     open from the join, as LOBBY_READY's 14), 22 confirm_loosens. Own
+ *                     open from the join, as LOBBY_READY's 14), 26 the
+ *                     seen_current_digest (32, required with 24: the gate is
+ *                     bound to it, so values that differ open nothing), 28
+ *                     no_passphrase (u8: the API request wanted 24 but came
+ *                     without the passphrase: 400 missing_field unless the
+ *                     request id is a replay, local-api.md 7.4), 22 confirm_loosens. Own
  *                     conditions looser than the saved ones need an API
  *                     request (403 fresh_sign_in_needed) and in 22 exactly
  *                     what they loosen (409 confirm_mismatch, params.loosens;
@@ -170,7 +175,11 @@
  *                     applies to the lobby: one they then fit worse than its
  *                     copy is left before its round (local-api.md 13.2)
  *   LOBBY_READY       member: 12 scope, 14 unlock (u8: 1 when given with the
- *                     passphrase, which opens that lobby's signing gate)
+ *                     passphrase, which opens that lobby's signing gate), 16
+ *                     the seen_current_digest (32, required with 14, as #52:
+ *                     400 without it, 409 refused_now before the terms,
+ *                     409 terms_changed when it is not the current one), 28
+ *                     no_passphrase as for LOBBY_JOIN
  *   LOBBY_UNREADY, LOBBY_LEAVE   member: 12 scope
  *   LOBBY_SET_VALUES  host: 12 scope, 14 the values (u64 each)
  *   LOBBY_REMOVE      host: 12 scope, 14 the seat's contribution key (33)

@@ -331,6 +331,24 @@ void gzp_api_lobby_json(gzp_api_t *a, gz_jw *w, const gzp_view_obj_t *o, int row
     gz_jw_obj(w);
     gz_jw_kstr(w, "seat", seat_name(seat));
     gz_jw_kbool(w, "counted", seat == GZ_VSEAT_READY && !field(o, GZ_VLB_LOCKED_SINCE, &v));
+    /* you.gate (14.1; 14.3 MUST 4): the gate as the core holds it; null with no seat. */
+    if (seat != GZ_VSEAT_NONE && field(o, GZ_VLB_GATE, &v) && (v.len == 10 || v.len == 42)) {
+        char dg[65];
+        gz_jw_key(w, "gate");
+        gz_jw_obj(w);
+        gz_jw_kstr(w, "kind", v.data[0] == GZ_GATE_NONE ? "none" : v.data[0] == GZ_GATE_NODE ? "node" : "per_lobby");
+        gz_jw_kstr(w, "state", v.data[1] ? "open" : "closed");
+        if (v.len == 42) {
+            hex(v.data + 10, 32, dg);
+            gz_jw_kstr(w, "opened_for_digest", dg);
+        } else {
+            gz_jw_knull(w, "opened_for_digest");
+        }
+        gz_jw_kint(w, "since_at", (int64_t)(gz_get_u64(v.data + 2) / 1000));
+        gz_jw_end_obj(w);
+    } else {
+        gz_jw_knull(w, "gate");
+    }
     if (field(o, GZ_VLB_OUTCOME, &v) && v.len == 3) gz_jw_kraw(w, "outcome", "{\"code\":\"ended\"}");
     else gz_jw_knull(w, "outcome");
     gz_jw_end_obj(w);
@@ -344,6 +362,7 @@ void gzp_api_lobby_json(gzp_api_t *a, gz_jw *w, const gzp_view_obj_t *o, int row
         gz_jw_knull(w, "factory_id");
         gz_jw_knull(w, "terms_change");
     }
+    if (a->answer_replayed) gz_jw_kbool(w, "replayed", 1);
     gz_jw_end_obj(w);
 }
 
@@ -431,6 +450,7 @@ void gzp_api_host_lobby_json(gzp_api_t *a, gz_jw *w, const gzp_view_obj_t *o, in
         gz_jw_knull(w, "funding_tx");
         gz_jw_knull(w, "factory_id");
     }
+    if (a->answer_replayed) gz_jw_kbool(w, "replayed", 1);
     gz_jw_end_obj(w);
 }
 

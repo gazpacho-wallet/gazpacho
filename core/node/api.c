@@ -92,6 +92,21 @@ static api_lid_t *lid_by_id(gz_node_t *c, const char *id, size_t len)
     return NULL;
 }
 
+/* A query's seen lobby (discovery.c), by scope or by id. */
+static dq_seen_t *seen_find(gz_node_t *c, const uint8_t scope[32])
+{
+    for (int k = 0; k < DQ_MAX_OFFERS; k++)
+        if (c->dq.seen[k].used && memcmp(c->dq.seen[k].scope, scope, 32) == 0) return &c->dq.seen[k];
+    return NULL;
+}
+
+static int seen_by_id(const gz_node_t *c, const char *id, size_t len)
+{
+    for (int k = 0; k < DQ_MAX_OFFERS; k++)
+        if (c->dq.seen[k].used && slen(c->dq.seen[k].id) == len && memcmp(c->dq.seen[k].id, id, len) == 0) return 1;
+    return 0;
+}
+
 static int slot_holds(const gz_node_t *c, const uint8_t scope[32])
 {
     for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++)
@@ -142,7 +157,10 @@ static void lid_keep(gz_node_t *c, const uint8_t scope[32], const char *id, size
 const char *gz_api_local_id(gz_node_t *c, const uint8_t scope[32])
 {
     api_lid_t *e = lid_find(c, scope);
-    return e ? e->id : NULL;
+    dq_seen_t *q;
+    if (e) return e->id;
+    q = seen_find(c, scope);
+    return q ? q->id : NULL;
 }
 
 /* The lobby's slot ended: from now its request ids run their 30 days. */
@@ -174,7 +192,7 @@ static gz_status_t new_local_id(gz_node_t *c, int i, gz_action_list_t *out)
             id[5 + 2 * k] = x[r[k] & 15];
         }
         id[20] = 0;
-        if (!lid_by_id(c, id, 20)) break;
+        if (!lid_by_id(c, id, 20) && !seen_by_id(c, id, 20)) break;
         if (tries == 64) return gz_c_bug(c, ENG_NODE); /* a random source that repeats itself */
     }
     memset(s->view.local_id, 0, sizeof s->view.local_id);
@@ -197,7 +215,13 @@ gz_status_t gz_api_slot_opened(gz_node_t *c, int i, gz_action_list_t *out)
 {
     slot_t *s = &c->slots[i];
     api_lid_t *e = lid_find(c, s->scope);
+    dq_seen_t *q = e ? NULL : seen_find(c, s->scope);
     c->api.opened = i + 1;
+    if (q) {                                   /* seen in a query: the id moves to the saved ones */
+        lid_keep(c, s->scope, q->id, slen(q->id));
+        memset(q, 0, sizeof *q);
+        e = lid_find(c, s->scope);
+    }
     if (e) {
         uint8_t rec[120];
         size_t at = 0, n = slen(e->id);
@@ -214,6 +238,12 @@ gz_status_t gz_api_slot_opened(gz_node_t *c, int i, gz_action_list_t *out)
         return gz_action_list_add(out, &a);
     }
     return new_local_id(c, i, out);
+}
+
+/* 1 if the lobby's id is a query's seen one, not a saved one. */
+int gz_api_seen_only(gz_node_t *c, const uint8_t scope[32])
+{
+    return !lid_find(c, scope) && seen_find(c, scope) != NULL;
 }
 
 /* A lobby seen in a query for a host's lobbies (discovery.c): a local id
@@ -233,11 +263,29 @@ gz_status_t gz_api_seen_id(gz_node_t *c, const uint8_t scope[32])
             id[5 + 2 * k] = x[r[k] & 15];
         }
         id[20] = 0;
-        if (!lid_by_id(c, id, 20)) break;
+        if (!lid_by_id(c, id, 20) && !seen_by_id(c, id, 20)) break;
         if (tries == 64) return gz_c_bug(c, ENG_NODE);
     }
-    lid_keep(c, scope, id, 20);
-    if (lid_find(c, scope)) lid_find(c, scope)->ended_ms = wall(c); /* no slot: its ids age as an ended lobby's */
+    {
+        /* A free place, or the oldest not offered in this query (one exists:
+         * this query holds at most DQ_MAX_OFFERS, this one among them). */
+        dq_seen_t *e = NULL;
+        for (int k = 0; k < DQ_MAX_OFFERS && !e; k++)
+            if (!c->dq.seen[k].used) e = &c->dq.seen[k];
+        dq_seen_t *old = NULL;
+        for (int k = 0; k < DQ_MAX_OFFERS && !e; k++) {
+            int offered = 0;
+            for (int j = 0; j < c->dq.n; j++) offered |= memcmp(c->dq.offers[j].scope, c->dq.seen[k].scope, 32) == 0;
+            if (!offered && (!old || c->dq.seen[k].seq < old->seq)) old = &c->dq.seen[k];
+        }
+        if (!e) e = old;
+        if (!e) return gz_c_bug(c, ENG_NODE);
+        memset(e, 0, sizeof *e);
+        e->used = 1;
+        e->seq = ++c->dq.seen_seq;
+        memcpy(e->scope, scope, 32);
+        memcpy(e->id, id, 20);
+    }
     return GZ_OK;
 }
 

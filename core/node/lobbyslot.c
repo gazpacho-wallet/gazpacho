@@ -104,7 +104,17 @@ static int ls_may_answer(void *ctx, const uint8_t scope[32])
     switch (s->node->cfg.member_signing) {
     case GZ_MEMBER_SIGNING_AUTO: return 1;
     case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return s->node->unlocked;
-    default: return s->gate_open;
+    default:
+        /* AT_JOIN: open for the values the person readied for, and only those
+         * (local-api.md 14.3 rule 1; #52's RULE-NODE:GATE_DIGEST). Values that
+         * changed since are not what the person agreed to: the person readies
+         * again. */
+        if (!s->gate_open || !s->gate_have) return 0;
+        {
+            const gz_lobby_member_t *m = &s->lobby.m;
+            const uint8_t *now = m->frozen ? m->frozen_digest : m->current_digest;
+            return m->have_terms && memcmp(now, s->gate_digest, 32) == 0;
+        }
     }
 }
 
@@ -831,9 +841,11 @@ static gz_status_t gate_opened_inline(gz_node_t *c, int eng, gz_action_list_t *o
 
 static void gate_close(gz_node_t *c, slot_t *s)
 {
-    if (!s->gate_open) return;
+    if (!s->gate_open && !s->gate_have) return;
     s->gate_open = 0;
     s->gate_flight = 0;
+    s->gate_have = 0;
+    memset(s->gate_digest, 0, sizeof s->gate_digest);
     if (c->cfg.crypto.forget) c->cfg.crypto.forget(c->cfg.crypto.ctx, s->scope); /* the scoped secret is wiped */
 }
 
@@ -1469,12 +1481,17 @@ static gz_status_t cmd_open(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
 
 static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
 {
-    gz_bytes_t scope, hk, addr, cond = {NULL, 0}, v;
+    gz_bytes_t scope, hk, addr, cond = {NULL, 0}, v, seen = {NULL, 0};
     gz_lobby_conditions_t cd;
     gz_status_t st;
     int i;
     if (c->cfg.host) return np_command_result(out, cmd, 409, "not_a_member");
+    /* As LOBBY_READY: a new request without the passphrase it wanted (28). */
+    if (gz_rec_find(cmd, 28, &v) == 1) return np_command_result(out, cmd, 400, "missing_field");
     if (!arg(cmd, 12, 32, &scope) || all_zero(scope.data, 32) || !arg(cmd, 14, 33, &hk) || !arg(cmd, 16, 0, &addr))
+        return np_command_result(out, cmd, 400, "bad_request");
+    /* The gate opened from the join is bound to the values the person saw (26). */
+    if (arg(cmd, 24, 1, &v) && v.data[0] == 1 && !arg(cmd, 26, 32, &seen))
         return np_command_result(out, cmd, 400, "bad_request");
     /* The invitation's address and key are anyone's words: checked before
      * anything is kept, and refused, so that no saved slot can ever stop a
@@ -1538,6 +1555,8 @@ static gz_status_t cmd_join(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
     if (c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN && arg(cmd, 24, 1, &v) && v.data[0] == 1) {
         s->gate_open = 1;
         s->gate_flight = 0;
+        s->gate_have = 1;                      /* bound to the values the person saw (26, checked above) */
+        memcpy(s->gate_digest, seen.data, 32);
     }
     if ((st = slot_begin(c, i, cond, out)) != GZ_OK) return st;
     return np_command_result(out, cmd, 200, NULL);
@@ -1665,10 +1684,37 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
         (!arg(cmd, 14, 0, &c->lc.a) || c->lc.a.len == 0 || c->lc.a.len % 8 || c->lc.a.len > 8 * GZ_TERMS_MAX_ADJ))
         return np_command_result(out, cmd, 400, "bad_request");
     /* "Ready" given with the passphrase opens that lobby's gate (AT_JOIN): the
-     * program has handed the key port the scoped secret before the command. */
-    int opened = 0;
+     * program has handed the key port the scoped secret before the command.
+     * The gate is bound to the values digest the person reviewed, which the
+     * ready carries in 16 (local-api.md 14.2's seen_current_digest; #52's
+     * RULE-NODE:READY_SEEN_DIGEST): values that changed since open nothing. */
+    int opened = 0, rebound = 0, had = s->gate_have;
+    uint8_t old_digest[32];
+    /* A new API request that wanted the passphrase and came without it (28):
+     * a replay was answered by the precheck before this (7.4), so this one is
+     * new, and nothing is done. */
+    if (code == GZ_CMD_LOBBY_READY && gz_rec_find(cmd, 28, &v) == 1)
+        return np_command_result(out, cmd, 400, "missing_field");
+    memcpy(old_digest, s->gate_digest, 32);
     if (code == GZ_CMD_LOBBY_READY && c->cfg.member_signing == GZ_MEMBER_SIGNING_AT_JOIN && arg(cmd, 14, 1, &v) &&
         v.data[0] == 1) {
+        const gz_lobby_member_t *m = &s->lobby.m;
+        gz_bytes_t seen;
+        const char *why = NULL;
+        uint16_t code_st = 409;
+        if (!arg(cmd, 16, 32, &seen)) { why = "bad_request"; code_st = 400; }
+        else if (!m->have_terms) why = "refused_now";
+        else if (memcmp(seen.data, m->frozen ? m->frozen_digest : m->current_digest, 32) != 0) why = "terms_changed";
+        if (why) {
+            /* Refused before the gate: as any refused ready, it leaves the
+             * gate as it found it, and a closed one has the scoped secret the
+             * program handed over wiped (review A of PR 44, L3). */
+            if (!s->gate_open && c->cfg.crypto.forget) c->cfg.crypto.forget(c->cfg.crypto.ctx, s->scope);
+            return np_command_result(out, cmd, code_st, why);
+        }
+        memcpy(s->gate_digest, seen.data, 32);
+        s->gate_have = 1;
+        rebound = 1;
         opened = !s->gate_open;
         s->gate_open = 1;
         s->gate_flight = 0;
@@ -1678,8 +1724,13 @@ gz_status_t gz_ls_command(gz_node_t *c, uint16_t code, gz_bytes_t cmd, gz_action
     int refused = c->lc.refused || was_refused(out, from);
     if ((st = gz_ls_after(c, i, out)) != GZ_OK) return st;
     /* A refused ready leaves the gate as it found it: the person's own
-     * ready opens it, and there was none (review A of PR 44, L3). */
+     * ready opens it, and there was none (review A of PR 44, L3); a gate that
+     * was open keeps the digest it had (#52's review A, L5). */
     if (refused && opened && s->state == SLOT_OPEN) gate_close(c, s);
+    else if (refused && rebound && s->state == SLOT_OPEN) {
+        memcpy(s->gate_digest, old_digest, 32);
+        s->gate_have = had;
+    }
     return refused ? np_command_result(out, cmd, 409, c->lc.refused ? "bad_values" : "refused_now")
                    : np_command_result(out, cmd, 200, NULL);
 }

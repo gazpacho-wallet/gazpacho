@@ -599,11 +599,21 @@ static int member_join(int n, const terms_t *t)
     return w_cmd(n, GZ_CMD_LOBBY_JOIN, a, 3);
 }
 
+static slot_t *slot(int n, const terms_t *t);
+
+/* With `unlock`: the ready given with the passphrase, for the values the
+ * member holds (16, the seen_current_digest; review of #79, M1), or the
+ * terms' own before it has any. */
 static int scope_cmd(int n, uint16_t code, const terms_t *t, int unlock)
 {
-    uint8_t u = 1;
-    h_arg_t a[2] = {{12, t->scope, 32}, {14, &u, 1}};
-    return w_cmd(n, code, a, unlock ? 2 : 1);
+    uint8_t u = 1, d[32];
+    const slot_t *s = slot(n, t);
+    if (s && !s->host && s->lobby.m.have_terms)
+        memcpy(d, s->lobby.m.frozen ? s->lobby.m.frozen_digest : s->lobby.m.current_digest, 32);
+    else
+        gz_terms_current_digest(t->current, t->cn, d);
+    h_arg_t a[3] = {{12, t->scope, 32}, {14, &u, 1}, {16, d, 32}};
+    return w_cmd(n, code, a, unlock ? 3 : 1);
 }
 
 static slot_t *slot(int n, const terms_t *t)
@@ -3131,13 +3141,145 @@ static void test_join_unlocked(void)
     w_world(2, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
     make_terms(&t, 3, 3, 3200);
     CHECK(host_open(&t, 0) == 200);
-    h_arg_t j[4] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}};
-    CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 4) == 200 && member_join(2, &t) == 200);
+    uint8_t d[32];
+    gz_terms_current_digest(t.current, t.cn, d);
+    h_arg_t j[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}, {26, d, 32}};
+    CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 5) == 200 && member_join(2, &t) == 200);
     w_run(3000, 100);
     CHECK(member_ready(1, &t) == 1 && slot(1, &t)->gate_open && host_ready(&t) == 1);
     CHECK(member_ready(2, &t) != 1 && !slot(2, &t)->gate_open);
     no_errors(2);
     w_free(2);
+}
+
+/* Review of #79, M1: the gate opened by a join or a ready under AT_JOIN is
+ * bound to the values the person reviewed (local-api.md 14.3 rule 2). The
+ * host changes its values between the query and the join: the member does
+ * not ready under values it never saw, and the person must ready again. */
+static void test_gate_bound_to_seen(void)
+{
+    terms_t t;
+    lt_key_t hk;
+    uint8_t one = 1, d0[32], d1[32], vals[24];
+    gz_bytes_t v;
+    wview_t *w;
+    slot_t *s;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3300);
+    CHECK(host_open(&t, 0) == 200);
+    gz_terms_current_digest(t.current, t.cn, d0);            /* what the person reviewed */
+    {
+        h_arg_t j[4] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 4) == 400 && slot(1, &t) == NULL);   /* no digest: refused */
+    }
+    gz_put_u64(vals, 600);
+    gz_put_u64(vals + 8, 1000);
+    gz_put_u64(vals + 16, 1000);
+    {
+        h_arg_t sv[2] = {{12, t.scope, 32}, {14, vals, 24}};
+        CHECK(w_cmd(0, GZ_CMD_LOBBY_SET_VALUES, sv, 2) == 200);
+    }
+    {
+        h_arg_t j[5] = {{12, t.scope, 32}, {14, hk.pub, 33}, {16, ADDR, sizeof ADDR - 1}, {24, &one, 1}, {26, d0, 32}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_JOIN, j, 5) == 200);
+    }
+    w_run(3000, 100);
+    s = slot(1, &t);
+    CHECK(s && s->gate_open && s->lobby.m.have_terms && memcmp(s->lobby.m.current_digest, d0, 32) != 0);
+    CHECK(member_ready(1, &t) != 1 && host_ready(&t) == 0);  /* not under values the person never saw */
+    w = view_of(1, GZ_VIEW_LOBBY, lid(1, &t));
+    CHECK(w && vf(w, GZ_VLB_GATE, &v) && v.len == 42 && !memcmp(v.data + 10, d0, 32));   /* opened for d0 */
+    if (s) {
+        h_arg_t r0[2] = {{12, t.scope, 32}, {14, &one, 1}};
+        h_arg_t r1[3] = {{12, t.scope, 32}, {14, &one, 1}, {16, d0, 32}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_READY, r0, 2) == 400);   /* a ready names what it was for */
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_READY, r1, 3) == 409);   /* terms_changed */
+        w_run(1000, 100);
+        CHECK(member_ready(1, &t) != 1 && host_ready(&t) == 0);
+        memcpy(d1, s->lobby.m.current_digest, 32);
+        h_arg_t r2[3] = {{12, t.scope, 32}, {14, &one, 1}, {16, d1, 32}};
+        CHECK(w_cmd(1, GZ_CMD_LOBBY_READY, r2, 3) == 200);   /* the person readies again, for the new values */
+        w_run(2000, 100);
+        CHECK(member_ready(1, &t) == 1 && host_ready(&t) == 1);
+        w = view_of(1, GZ_VIEW_LOBBY, lid(1, &t));
+        CHECK(w && vf(w, GZ_VLB_GATE, &v) && v.len == 42 && !memcmp(v.data + 10, d1, 32));
+    }
+    no_errors(1);
+    w_free(1);
+}
+
+/* Review of #79, M3 (local-api.md 7.4): a ready replayed without the
+ * passphrase is looked up first and answered from the first answer; a new
+ * request without it (28) is refused, keeps no id, and does nothing. */
+static void test_ready_replay_without_passphrase(void)
+{
+    terms_t t;
+    uint8_t one = 1, d[32];
+    char e[64];
+    const char *path = "/api/v1/lobbies/lob_x/ready";
+    w_world(1, GZ_MEMBER_SIGNING_AT_JOIN, GZ_TEST_SIGN_UNFINISHED);
+    make_terms(&t, 3, 3, 3400);
+    CHECK(host_open(&t, 0) == 200 && member_join(1, &t) == 200);
+    w_run(3000, 100);
+    CHECK(slot(1, &t) && slot(1, &t)->lobby.m.have_terms && member_ready(1, &t) != 1);
+    memset(d, 0, sizeof d);
+    if (slot(1, &t)) memcpy(d, slot(1, &t)->lobby.m.current_digest, 32);
+    h_arg_t with[3] = {{12, t.scope, 32}, {14, &one, 1}, {16, d, 32}};
+    h_arg_t without[3] = {{12, t.scope, 32}, {16, d, 32}, {28, &one, 1}};
+    CHECK(w_req(1, GZ_CMD_LOBBY_READY, "ReadyNoPassNew0001", path, 8, without, 3) == 400);
+    CHECK(res_text(1, GZ_RESULT_REC_ERROR, e, sizeof e) && !strcmp(e, "missing_field"));
+    w_run(1000, 100);
+    CHECK(member_ready(1, &t) != 1 && slot(1, &t) && !slot(1, &t)->gate_open);    /* nothing done */
+    CHECK(w_req(1, GZ_CMD_LOBBY_READY, "ReadyWithPass00001", path, 7, with, 3) == 200);
+    w_run(2000, 100);
+    CHECK(member_ready(1, &t) == 1);
+    CHECK(w_req(1, GZ_CMD_LOBBY_READY, "ReadyWithPass00001", path, 7, without, 3) == 200);
+    CHECK(res_text(1, GZ_RESULT_REC_PARAMS, e, sizeof e) && !strcmp(e, "{\"replayed\":true}"));
+    no_errors(1);
+    w_free(1);
+}
+
+/* Review of #79, M2: a query's seen lobbies live in a table of their own
+ * and end at the next query, so repeated queries neither fill the
+ * program's view table nor churn the saved ids (an ended lobby's id stays). */
+static void test_discovery_repeat(void)
+{
+    terms_t t, x;
+    lt_key_t hk;
+    char xid[GZ_LOCAL_ID_MAX + 1], tid[GZ_LOCAL_ID_MAX + 1], rid[40];
+    int used = 0, live = 0, now = 0;
+    whost(&hk);
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    make_terms(&t, 3, 3, 3500);
+    make_terms(&x, 3, 3, 3501);
+    CHECK(host_open(&t, 1) == 200 && host_open(&x, 0) == 200 && member_join(1, &x) == 200);
+    w_run(2000, 100);
+    snprintf(xid, sizeof xid, "%s", lid(1, &x));
+    CHECK(xid[0] && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &x, 0) == 200);
+    w_run(5000, 100);
+    CHECK(slot(1, &x) == NULL && gz_api_local_id(N[1].n, x.scope) && !strcmp(gz_api_local_id(N[1].n, x.scope), xid));
+    for (int k = 0; k < API_MAX_IDS; k++) used += N[1].n->api.ids[k].used;
+    tid[0] = 0;
+    for (int i = 0; i < 40; i++) {
+        h_arg_t q[2] = {{12, hk.pub, 33}, {14, ADDR, sizeof ADDR - 1}};
+        const char *id;
+        snprintf(rid, sizeof rid, "QueryRepeat%08d", i);
+        CHECK(w_req(1, GZ_CMD_LOBBY_QUERY, rid, "/api/v1/discovery/query", (uint8_t)(i + 1), q, 2) == 202);
+        w_run(4000, 100);
+        id = gz_api_local_id(N[1].n, t.scope);
+        CHECK(id != NULL);
+        if (id && !tid[0]) snprintf(tid, sizeof tid, "%s", id);
+        CHECK(id && !strcmp(id, tid));                           /* seen again: the same id for the run */
+    }
+    for (int k = 0; k < NV; k++)
+        live += VW[1][k].used && !VW[1][k].stale && !VW[1][k].gone && VW[1][k].kind == GZ_VIEW_DISCOVERY;
+    CHECK(live == 1);                                            /* only the last query */
+    for (int k = 0; k < API_MAX_IDS; k++) now += N[1].n->api.ids[k].used;
+    CHECK(now == used);                                          /* the seen lobby is not among the saved ids */
+    CHECK(gz_api_local_id(N[1].n, x.scope) && !strcmp(gz_api_local_id(N[1].n, x.scope), xid));
+    no_errors(1);
+    w_free(1);
 }
 
 int main(int argc, char **argv)
@@ -3148,6 +3290,9 @@ int main(int argc, char **argv)
     test_discovery();
     test_refusal_until_next_attempt();
     test_join_unlocked();
+    test_gate_bound_to_seen();
+    test_ready_replay_without_passphrase();
+    test_discovery_repeat();
     test_two_lobbies();
     test_cancel_and_tombstone();
     test_refusals();

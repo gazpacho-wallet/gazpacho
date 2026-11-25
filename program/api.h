@@ -56,6 +56,9 @@ typedef struct gzp_api {
     int member_signing;
     uint8_t host_key[33];
     int host_key_set;
+    /* While a held call's answer is written: the core said it is a replay,
+     * so the object carries "replayed": true (7.4; review of #79, L1). */
+    int answer_replayed;
     /* The executor's way to give the node a USER_COMMAND (its TLV stream);
      * 0 delivered, -1 the node is not running. */
     int (*command)(void *ctx, const uint8_t *tlv, size_t len);

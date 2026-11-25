@@ -448,7 +448,10 @@ static void command_result(gzp_api_t *a, const uint8_t *bytes, size_t len)
                     memcpy(code, f.data, f.len);
                     code[f.len] = 0;
                 }
-                gz_api_err_set(&e, code[0] ? code : "internal", NULL, "%s", params[0] == '{' ? params : "{}");
+                /* The core's missing_field is a new request that wanted the
+                 * passphrase and came without it (field 28, api_calls.c). */
+                gz_api_err_set(&e, code[0] ? code : "internal", strcmp(code, "missing_field") ? NULL : "/passphrase", "%s",
+                               params[0] == '{' ? params : "{}");
                 e.code = code[0] ? code : "internal";
                 gz_api_call_done(a->srv, a->held[i].handle, st, NULL, &e);
             }

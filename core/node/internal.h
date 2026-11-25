@@ -253,6 +253,16 @@ typedef struct {
     gz_terms_current_t values;
     uint64_t hash;                  /* of its view object, last emitted */
 } dq_offer_t;
+/* A lobby seen in a query, not joined: its local id for the run (7.3), in a
+ * table of its own, so that queries never fill or churn the saved ids of
+ * api.ids (review of #79, M2). One query's worth; the oldest not in the
+ * current query goes. */
+typedef struct {
+    int used;
+    uint32_t seq;
+    uint8_t scope[32];
+    char id[GZ_LOCAL_ID_MAX + 1];
+} dq_seen_t;
 typedef struct {
     int state;                      /* 0 none yet, DQ_* */
     const char *why;                /* failed: no_answer, unreachable */
@@ -268,6 +278,8 @@ typedef struct {
     dq_offer_t offers[DQ_MAX_OFFERS];
     int n;
     uint64_t hash;                  /* of the query's view object */
+    dq_seen_t seen[DQ_MAX_OFFERS];
+    uint32_t seen_seq;
 } dq_t;
 
 #define VIEW_BODY 12288
@@ -318,6 +330,8 @@ typedef struct {
     int auto_join;
     gz_lobby_conditions_t cond;
     int gate_open, gate_flight;     /* the per-lobby signing gate (12.2), and: its check was seen in flight */
+    int gate_have;                  /* the gate is bound to gate_digest (#52's fields; review of #79, M1) */
+    uint8_t gate_digest[32];        /* the current values digest the person readied for (local-api.md 14.3 rule 1) */
     int told;                       /* the lobby's log line was given, with `last` */
     uint32_t last[5];
     int have_end;                   /* at load: the lobby's own end record was seen */
@@ -678,6 +692,7 @@ gz_status_t gz_dq_timer(gz_node_t *c, gz_action_list_t *out);
 /* view.c */
 gz_status_t gz_view_query(gz_node_t *c, gz_action_list_t *out);
 gz_status_t gz_view_seen(gz_node_t *c, int k, gz_action_list_t *out);
+gz_status_t gz_view_gone(gz_node_t *c, uint8_t kind, const char *id, uint64_t *last, gz_action_list_t *out);
 gz_status_t gz_view_status(gz_node_t *c, int force, gz_action_list_t *out);
 gz_status_t gz_view_slot(gz_node_t *c, int i, int force, gz_action_list_t *out);
 gz_status_t gz_view_start(gz_node_t *c, gz_action_list_t *out, int *done);
@@ -690,6 +705,7 @@ int gz_api_held(const gz_node_t *c, const uint8_t scope[32]);
 int gz_api_paused(const gz_node_t *c);
 gz_status_t gz_api_slot_opened(gz_node_t *c, int i, gz_action_list_t *out);
 gz_status_t gz_api_seen_id(gz_node_t *c, const uint8_t scope[32]);
+int gz_api_seen_only(gz_node_t *c, const uint8_t scope[32]);
 const gz_lobby_conditions_t *gz_api_conditions(const gz_node_t *c);
 void gz_api_slot_ended(gz_node_t *c, const uint8_t scope[32]);
 gz_status_t gz_api_resume(gz_node_t *c, gz_action_list_t *out);

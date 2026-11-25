@@ -14,7 +14,8 @@
  * lobbies' local ids, why it failed; kind 2, each lobby seen, with a local id
  * for the run (local-api.md 7.3) that its slot keeps if the person joins it,
  * its outer rules and current values as signed, and its fit against the
- * member's conditions. */
+ * member's conditions. The next query ends both (gone), apart from a lobby
+ * a slot holds by then. */
 #include "internal.h"
 #include <string.h>
 #include "gazpacho/view.h"
@@ -121,6 +122,18 @@ gz_status_t gz_dq_command(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *out)
         return dq_result(c, cmd, 503, "no_key", NULL, out);
     /* The pair is saved (and never used again) before the CONNECT shows its key. */
     if ((st = np_save_pair(c, first, NULL, out)) != GZ_OK) return st;
+    /* The last query and the lobbies it saw end in the view (review of #79,
+     * M2): a host giving fresh lobbies at every query cannot fill the
+     * program's table. A lobby a slot now holds is the slot's object. A
+     * lobby seen again keeps its id (dq.seen) and comes back. */
+    for (int k = 0; k < q->n; k++) {
+        const uint8_t *scope = q->offers[k].scope;
+        const char *id = gz_api_local_id(c, scope);
+        if (!id || gz_route_slot_by_scope(c, scope) >= 0 || !gz_api_seen_only(c, scope)) continue;
+        if ((st = gz_view_gone(c, GZ_VIEW_LOBBY, id, &q->offers[k].hash, out)) != GZ_OK) return st;
+    }
+    if (q->state && (st = gz_view_gone(c, GZ_VIEW_DISCOVERY, q->id, &q->hash, out)) != GZ_OK) return st;
+    q->hash = 0;
     memset(q->offers, 0, sizeof q->offers);
     q->n = 0;
     q->serial++;

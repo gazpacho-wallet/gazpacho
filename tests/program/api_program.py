@@ -125,6 +125,8 @@ def set_up(prog):
     st, s = prog.call("POST", "/session/start", {"start_token": tok})
     prog.session = s["session"] if st == 200 and s else None
     st, c = prog.call("POST", "/wallet/create", {"confirm": "create_wallet", "passphrase": PASS, "confirm_passphrase": PASS})
+    prog.create_answer = len(prog.answers) - 1
+    prog.words = (c or {}).get("words", [])
     if st != 200:
         return False
     st, f = prog.call("POST", "/wallet/finish-setup", {"preset": "everyday", "find": "browse"})
@@ -150,7 +152,9 @@ class Prog:
             os.close(fd)
         self.port = free_port()
         self.listen = free_port()
-        self.dump = dump                  # its answers go into DUMP (the phrase checks are the host's)
+        self.dump = dump                  # its answers go into DUMP (the host's phrase checks)
+        self.answers = []                 # every answer, for its own secrets scan (review of #79, L3)
+        self.create_answer = None
         if role == "host":
             args = [exe, "--data-dir", self.data, "--role", "host", "--listen", "127.0.0.1:%d" % self.listen, "--no-chain",
                     "--interface-port", str(self.port), "--name", "h1"] + list(extra)
@@ -197,6 +201,7 @@ class Prog:
         c.close()
         if self.dump:
             DUMP.append(raw.decode("utf-8", "replace"))
+        self.answers.append(raw.decode("utf-8", "replace"))
         try:
             j = json.loads(raw) if raw else None
         except ValueError:
@@ -323,12 +328,26 @@ def main():
         st, e = p.call("POST", "/discovery/query", {"host": host})
         check(st == 409 and e and e.get("code") == "not_a_member",
               "a query on a host: the core's refusal (409 not_a_member) as the call's error", (st, e))
-        m = Prog(exe_t, role="member", dump=False)
+        # the member has the same fixed phrase (its own data folder), so the
+        # same whole-word scan holds for it: its output and every answer but
+        # its create's carry no word of the 24 and never the passphrase
+        m = Prog(exe_t, role="member", dump=False, seed=None if fixed is None else seed_of(SEED_N))
         try:
             check(set_up(m), "a member program, set up", m.lines[-5:])
             member_queries(m, host)
+            # PUT /conditions names the version it changes (7.4; review of #79, L4)
+            st, e = m.call("PUT", "/conditions", {"conditions": {"min_members": 2}})
+            check(st == 400 and e and e.get("code") == "missing_field" and e.get("field") == "/based_on_version",
+                  "conditions without based_on_version: 400, never the current version", (st, e))
         finally:
             m.stop()
+        mtexts = ["\n".join(m.lines)] + [a for i, a in enumerate(m.answers) if i != m.create_answer]
+        check(not any(PASS in t for t in mtexts), "the member: the passphrase is in no output line and no answer")
+        if fixed is not None:
+            check(getattr(m, "words", None) == fixed, "the member's words are the fixed phrase's")
+            mflat = [" " + re.sub(r"[^a-z]+", " ", t.lower()) + " " for t in mtexts]
+            found = sorted({w for t in mflat for w in set(fixed) if " %s " % w in t})
+            check(not found, "the member: no word of the 24 in its output or any answer but create's", found)
         shutil.rmtree(m.dir, ignore_errors=True)
 
         # 5. a wrong passphrase: when to try again, and how many in a row

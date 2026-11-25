@@ -81,6 +81,14 @@ async function setUp(request, p, pass) {
   expect(f.status()).toBe(200);
 }
 
+// A session of the program's own API (POST /session with the passphrase).
+async function apiSession(request, p, pass) {
+  const h = { Origin: p.origin, 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' };
+  const s = await request.post(p.url + 'api/v1/session', { headers: h, data: { passphrase: pass } });
+  expect(s.status()).toBe(200);
+  return { ...h, 'X-Gazpacho-Session': (await s.json()).session };
+}
+
 async function signIn(page, p, pass) {
   await page.goto(p.url);
   await page.getByLabel('Wallet passphrase').fill(pass);
@@ -126,11 +134,32 @@ test('a host and two members: one lobby opened, joined and readied up to the rea
     await expect(p1.locator('#query-note')).toContainText('The host answered.');
     await p1.locator('#lobbies-fit li a').first().click();
     await p1.waitForTimeout(1100);
+    const joins = [];
+    p1.on('request', (r) => { if (r.url().endsWith('/join')) joins.push({ url: r.url(), body: JSON.parse(r.postData()) }); });
     await p1.locator('#join').click();
     await p1.locator('dialog').getByLabel('Wallet passphrase').fill(PASS.m1);
     await p1.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
     await expect(p1.locator('#lobby')).toHaveAttribute('data-seat', 'ready', { timeout: 20000 });
     await expect(hp.locator('#host-counts')).toContainText('1 ready of 3', { timeout: 20000 });
+
+    // the API's lobby: the gate open for the digest the person readied for (you.gate, 14.1;
+    // review of #79, L2), and the join replayed without the passphrase, which the interface
+    // never keeps: the first answer, from the object's current state, with "replayed": true
+    // (7.4; review of #79, M3 and L1)
+    expect(joins.length).toBe(1);
+    const lid = joins[0].url.match(/\/lobbies\/([^/]+)\/join$/)[1];
+    const s1 = await apiSession(request, m1, PASS.m1);
+    const lo = await (await request.get(m1.url + 'api/v1/lobbies/' + lid, { headers: s1 })).json();
+    expect(lo.you.gate).toEqual(expect.objectContaining({ kind: 'per_lobby', state: 'open', opened_for_digest: joins[0].body.seen_current_digest }));
+    expect(lo.terms.current.digest).toBe(joins[0].body.seen_current_digest);
+    const rbody = { ...joins[0].body };
+    delete rbody.passphrase;
+    const rp = await request.post(joins[0].url, { headers: s1, data: rbody });
+    expect(rp.status()).toBeLessThan(300);
+    const rj = await rp.json();
+    expect(rj.id).toBe(lid);
+    expect(rj.replayed).toBe(true);
+    expect(rj.you.seat).toBe('ready');
 
     // member 2 joins ready too: 2 of 3, the minimum
     const p2 = await (await browser.newContext()).newPage();

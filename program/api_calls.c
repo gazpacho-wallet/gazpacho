@@ -503,13 +503,14 @@ static int query_json(gzp_api_t *a, gz_jw *w, const char *id)
     } else {
         gz_jw_knull(w, "failed_because");
     }
+    if (a->answer_replayed) gz_jw_kbool(w, "replayed", 1);
     gz_jw_end_obj(w);
     return 1;
 }
 
 /* A held call's answer, once the core's result came (api.c): the object it
  * acted on, as it is now (7.4: a replay answers the current state). */
-void gzp_api_answer(gzp_api_t *a, int call, const char *object, const char *params, gz_jw *w)
+static void answer(gzp_api_t *a, int call, const char *object, const char *params, gz_jw *w)
 {
     const gzp_view_obj_t *o;
     switch (call) {
@@ -542,12 +543,48 @@ void gzp_api_answer(gzp_api_t *a, int call, const char *object, const char *para
     gz_jw_raw(w, params && params[0] == '{' ? params : "{}");
 }
 
+/* With "replayed": true added to the object when the core answered from
+ * the first answer (7.4; review of #79, L1). */
+void gzp_api_answer(gzp_api_t *a, int call, const char *object, const char *params, gz_jw *w)
+{
+    a->answer_replayed = params && strstr(params, "\"replayed\":true") != NULL;
+    answer(a, call, object, params, w);
+    a->answer_replayed = 0;
+}
+
+/* seen_current_digest: 64 hex when given; required when `need`. */
+static int seen_digest(const char *seen, int need, uint8_t out[32], gz_api_error *err)
+{
+    memset(out, 0, 32);
+    if (!seen && need) {
+        gz_api_err_set(err, "missing_field", "/seen_current_digest", NULL);
+        return 400;
+    }
+    if (seen && !gzp_api_unhex32(seen, out)) {
+        gz_api_err_set(err, "bad_value", "/seen_current_digest", NULL);
+        return 400;
+    }
+    return 0;
+}
+
+/* A ready under at_join without the passphrase: with a request id the core
+ * looks the id up first and answers a replay (7.4, "MUST look the
+ * request_id up before it checks the body"; review of #79, M3), and
+ * refuses a new one (field 28); without one, missing_field here. */
+static int passphrase_or_replay(const gz_api_call *c, int unlock, gz_api_error *err)
+{
+    if (!unlock || jstr(c->body, "passphrase") || c->request_id) return 0;
+    gz_api_err_set(err, "missing_field", "/passphrase", NULL);
+    return 400;
+}
+
 int gzp_api_lobby_call(gzp_api_t *a, const gz_api_call *c, gz_jw *w, gz_api_error *err)
 {
     const gzp_view_obj_t *o;
     uint8_t scope[32], key[33];
     char addr[80];
     args_t x;
+    int st;
     memset(&x, 0, sizeof x);
     switch (c->id) {
     case GZ_API_C_LOBBIES:
@@ -578,43 +615,56 @@ int gzp_api_lobby_call(gzp_api_t *a, const gz_api_call *c, gz_jw *w, gz_api_erro
         gz_bytes_t v, all;
         const char *seen = jstr(c->body, "seen_current_digest");
         int ready = jbool(c->body, "ready", 1), at_join = a->member_signing == GZ_MEMBER_SIGNING_AT_JOIN;
+        int unlock = at_join && ready;
+        uint8_t sd[32];
         if (!gzp_api_scope_of(a, c->path_id, 0, scope, &o)) return not_found(err);
         all.data = o->bytes;
         all.len = o->len;
+        /* The gate is opened for exactly the values the person reviewed
+         * (14.3 rule 2): required with a ready under at_join, and sent to the
+         * core, which binds the gate to it (review of #79, M1). */
+        if ((st = seen_digest(seen, unlock, sd, err)) != 0) return st;
         if (gz_rec_find(all, GZ_VLB_CURRENT, &v) == 1 && seen) {
-            uint8_t d[32], s[32];
+            uint8_t d[32];
             gz_terms_current_digest(v.data, v.len, d);
-            if (!gzp_api_unhex32(seen, s) || memcmp(s, d, 32) != 0) {
-                gz_api_err_set(err, "changed_elsewhere", "/seen_current_digest", NULL);
+            if (memcmp(sd, d, 32) != 0) {
+                gz_api_err_set(err, "terms_changed", "/seen_current_digest", NULL);
                 return 409;
             }
         }
         /* 14.3 rule 2: under at_join a ready join gives the passphrase; kind
          * A checks it before this phase (the server's derivation). */
         if (c->phase == GZ_API_PHASE_CHECK) return 0;
-        if (at_join && ready && !jstr(c->body, "passphrase")) {
-            gz_api_err_set(err, "missing_field", "/passphrase", NULL);
-            return 400;
-        }
+        if ((st = passphrase_or_replay(c, unlock, err)) != 0) return st;
         put(&x, 12, scope, 32);
         if (gz_rec_find(all, GZ_VLB_HOST_KEY, &v) != 1 || v.len != 33) return not_found(err);
         put(&x, 14, v.data, 33);
         if (gz_rec_find(all, GZ_VLB_HOST_ADDRESS, &v) != 1) return not_found(err);
         put(&x, 16, v.data, v.len);
         put8(&x, 20, (uint8_t)(ready ? 1 : 0));
-        if (at_join && ready) put8(&x, 24, 1);   /* the gate open from the join (the passphrase checked) */
+        if (unlock && jstr(c->body, "passphrase")) {
+            put8(&x, 24, 1);                     /* the gate open from the join (the passphrase checked) */
+            put(&x, 26, sd, 32);                 /* for these values only */
+        } else if (unlock) {
+            put8(&x, 28, 1);                     /* no passphrase: only a replay is answered (7.4) */
+        }
         return send(a, c, GZ_CMD_LOBBY_JOIN, &x, 1, err);
     }
     case GZ_API_C_READY: {
         int ready = jbool(c->body, "ready", 1), at_join = a->member_signing == GZ_MEMBER_SIGNING_AT_JOIN;
+        int unlock = at_join && ready;
+        uint8_t sd[32];
         if (!gzp_api_scope_of(a, c->path_id, 0, scope, NULL)) return not_found(err);
+        if ((st = seen_digest(jstr(c->body, "seen_current_digest"), unlock, sd, err)) != 0) return st;
         if (c->phase == GZ_API_PHASE_CHECK) return 0;
-        if (at_join && ready && !jstr(c->body, "passphrase")) {
-            gz_api_err_set(err, "missing_field", "/passphrase", NULL);
-            return 400;
-        }
+        if ((st = passphrase_or_replay(c, unlock, err)) != 0) return st;
         put(&x, 12, scope, 32);
-        if (ready && at_join) put8(&x, 14, 1);
+        if (unlock && jstr(c->body, "passphrase")) {
+            put8(&x, 14, 1);
+            put(&x, 16, sd, 32);                 /* the gate bound to it (#52's field 16) */
+        } else if (unlock) {
+            put8(&x, 28, 1);
+        }
         return send(a, c, ready ? GZ_CMD_LOBBY_READY : GZ_CMD_LOBBY_UNREADY, &x, 1, err);
     }
     case GZ_API_C_LEAVE:
@@ -711,7 +761,7 @@ int gzp_api_lobby_call(gzp_api_t *a, const gz_api_call *c, gz_jw *w, gz_api_erro
         uint8_t l[16], cb[400];
         size_t nl, n;
         char preset[24];
-        uint32_t version = saved_conditions(a, &now, preset, sizeof preset);
+        (void)saved_conditions(a, &now, preset, sizeof preset);
         if (!conditions_from(c->body ? gz_json_get(c->body, "conditions") : NULL, &nc, &bad)) {
             gz_api_err_set(err, "bad_value", bad, NULL);
             return 400;
@@ -745,7 +795,17 @@ int gzp_api_lobby_call(gzp_api_t *a, const gz_api_call *c, gz_jw *w, gz_api_erro
         }
         n = cond_encode(&nc, cb, sizeof cb);
         put(&x, 12, cb, n);
-        put32(&x, 14, (uint32_t)jint(c->body, "based_on_version", (int64_t)version));
+        {
+            /* No fallback to the current version: a PUT that names none would
+             * overwrite another tab's change (7.4; review of #79, L4). */
+            int64_t based = jint(c->body, "based_on_version", -1);
+            if (based < 0 || based > 0xffffffffll) {
+                gz_api_err_set(err, based < 0 && !gz_json_get(c->body, "based_on_version") ? "missing_field" : "bad_value",
+                               "/based_on_version", NULL);
+                return 400;
+            }
+            put32(&x, 14, (uint32_t)based);
+        }
         if (nl) put(&x, 16, l, nl);
         if (jstr(c->body, "preset") && strlen(jstr(c->body, "preset")) <= 16 && strcmp(jstr(c->body, "preset"), "custom"))
             put(&x, 18, jstr(c->body, "preset"), strlen(jstr(c->body, "preset")));

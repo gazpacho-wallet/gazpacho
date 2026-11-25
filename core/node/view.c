@@ -208,8 +208,10 @@ static size_t member_view(gz_node_t *c, slot_t *s)
         g[0] = gate_kind(c);
         g[1] = (uint8_t)gate;
         gz_put_u64(g + 2, s->view.gate_ms);
-        if (g[0] == GZ_GATE_PER_LOBBY && gate && m->ready && m->have_terms && m->ready_version == m->values.version) {
-            memcpy(g + 10, m->current_digest, 32);
+        /* opened_for_digest: what the gate is bound to, the values the person
+         * readied for, never the lobby's current values (14.3; review of #79, M1). */
+        if (g[0] == GZ_GATE_PER_LOBBY && gate && s->gate_have) {
+            memcpy(g + 10, s->gate_digest, 32);
             n = 42;
         }
         put(&w, GZ_VLB_GATE, g, n);
@@ -372,6 +374,12 @@ gz_status_t gz_view_seen(gz_node_t *c, int k, gz_action_list_t *out)
     put64(&w, GZ_VLB_SEEN, c->ports.clock.now_ms(c->ports.clock.ctx));
     if (w.bad) return gz_c_bug(c, ENG_NODE);
     return emit(c, GZ_VIEW_LOBBY, id, c->view.body, w.at, 0, &f->hash, 1, out);
+}
+
+/* An object that has ended (a query's, at the next query: discovery.c). */
+gz_status_t gz_view_gone(gz_node_t *c, uint8_t kind, const char *id, uint64_t *last, gz_action_list_t *out)
+{
+    return emit(c, kind, id, NULL, 0, 1, last, 0, out);
 }
 
 /* The query (kind 10, id "q_N"). */
