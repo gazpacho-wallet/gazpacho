@@ -1146,6 +1146,13 @@ gz_status_t gz_fund_resume(void *e, gz_action_list_t *out, int *more)
             if (x->state == GZ_FUND_ST_AWAITING && (st = attention(f, out, x->scope, 0)) != GZ_OK) return st;
             if (x->state == GZ_FUND_ST_BROADCAST && (st = broadcast(out, x->signed_tx, x->signed_len)) != GZ_OK)
                 return st;
+            if (x->state == GZ_FUND_ST_ABANDONED && x->sb_len && f->cfg.wallet.note_tx) {
+                /* the spend-back's change raises the wallet's mark before it is
+                 * sent again (B2-3, review B of PR 93) */
+                size_t sn;
+                if (gz_fund_tx_strip(x->sb, x->sb_len, f->work, sizeof f->work, &sn))
+                    f->cfg.wallet.note_tx(f->cfg.wallet.ctx, f->work, sn);
+            }
             if (x->state == GZ_FUND_ST_ABANDONED && x->sb_len && (st = broadcast(out, x->sb, x->sb_len)) != GZ_OK)
                 return st;
             if ((x->state == GZ_FUND_ST_AWAITING || x->state == GZ_FUND_ST_BROADCAST) && !x->deadline) x->deadline_pending = 1;

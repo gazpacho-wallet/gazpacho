@@ -130,7 +130,8 @@ int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *hei
  * refusal not yet repeated, nothing is published; -1: stopped. Each call is an
  * attempt of gzp_wport_coins. The scan thread's core, for tests too. */
 int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view);
-/* gzp_wport_scan_view until it publishes or the port is stopped, `wait_ms` apart:
+/* gzp_wport_scan_view until it publishes, and while a wide read is pending
+ * until that read is settled, or the port is stopped, `wait_ms` apart:
  * 1, or -1 when stopped. */
 int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms);
 /* The coin list's state, under the mutex. */
