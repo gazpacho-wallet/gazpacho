@@ -762,6 +762,12 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view)
     return 1;
 }
 
+uint32_t gzp_wport_retry_ms(uint32_t base, unsigned n)
+{
+    (void)n;
+    return base;   /* step 1: no backoff */
+}
+
 int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms)
 {
     for (unsigned tries = 1;; tries++) {

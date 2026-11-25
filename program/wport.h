@@ -41,6 +41,8 @@
 #define GZP_WPORT_COINS 256
 #define GZP_WPORT_PLANS 8
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
+#define GZP_WPORT_RETRY_CAP_MS 600000  /* a wide read not settled is asked again at most this far apart */
+#define GZP_WPORT_UNSETTLED_MAX 10     /* and this many times, then not until the next start */
 #define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
 #define GZP_WPORT_CHANGE_WIDE 1000     /* a wide scan reads the change chain at least this far */
 #define GZP_WPORT_CHANGE_MAX 4096      /* the most change addresses a scan reads */
@@ -97,6 +99,7 @@ typedef struct {
     gzp_wport_marks_t marks;      /* where the change mark is kept, or none */
     uint32_t mark;                /* the change mark as last loaded or saved */
     int wide;                     /* the next scan reads the change chain wide, then saves the mark */
+    int wide_final;               /* the wide read cannot settle with this view: not asked again this run */
     int need_marks;               /* a host's port: no plan without a kept mark */
     uint8_t refusals[2][GZP_WPORT_CHANGE_MAX]; /* an address's refusals in a row, under the scan */
     uint8_t hist_refusals[GZP_WPORT_CHANGE_MAX]; /* the same for a change address's history */
@@ -134,6 +137,9 @@ int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view);
  * until that read is settled, or the port is stopped, `wait_ms` apart:
  * 1, or -1 when stopped. */
 int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms);
+/* How long after the n-th wide read in a row that did not settle (from 0)
+ * the next is asked: `base` doubled n times, at most GZP_WPORT_RETRY_CAP_MS. */
+uint32_t gzp_wport_retry_ms(uint32_t base, unsigned n);
 /* The coin list's state, under the mutex. */
 void gzp_wport_coins(gzp_wport_t *w, gzp_wport_coins_t *out);
 /* It as the JSON of status.coins (local-api.md 11.2): the length written, or -1. */
