@@ -461,6 +461,30 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # The constant-time checks again in a Debug build (-O0). Optimisation can
+  # turn a branch on a secret into straight-line code, so a Release build can
+  # pass where the code is not constant time: unoptimised, `a && b` on two
+  # secret-dependent results is a branch (signing.c's make_nonce did this).
+  # Every other job builds with optimisation.
+  ctime-debug:
+    name: constant time (Debug build)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake build-essential libssl-dev libcurl4-openssl-dev valgrind
+      - name: Configure (Debug, no optimisation)
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Debug -DGZW_BREAK_CHECKS=OFF
+      - name: Build
+        run: cmake --build build -j
+      - name: The constant-time tests under memcheck, unoptimised
+        # program_keys_ct joins when the program's key layer (#53) lands; the
+        # regex names it already, and --no-tests=error still needs the others.
+        run: ctest --test-dir build -R '^(signing_ctime|signer_ctime|program_keys_ct)$' --output-on-failure --no-tests=error
+
   valgrind:
     name: valgrind
     needs: valgrind-shard
