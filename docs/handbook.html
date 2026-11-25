@@ -207,6 +207,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="ch" href="#c15">Review ledger</a>
 <a class="sec" href="#c15-pull-requests" title="Pull requests">Pull requests</a>
 <a class="sec" href="#c15-specifications" title="Specifications">Specifications</a>
+<a class="sec" href="#c15-audits-across-documents" title="Audits across documents">Audits across documents</a>
 <a class="sec" href="#c15-reviews-of-superscalar-s-work" title="Reviews of SuperScalar&#x27;s work">Reviews of SuperScalar&#x27;s work</a>
 <a class="sec" href="#c15-not-in-the-repository" title="Not in the repository">Not in the repository</a>
 <a class="ch" href="#c16">SIPs: the process</a>
@@ -259,6 +260,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c20-5-waiting-on-the-superscalar-repository" title="5. Waiting on the SuperScalar repository">5. Waiting on the SuperScalar repository</a>
 <a class="ch" href="#c21">Decisions without the owner</a>
 <a class="sec" href="#c21-1-made-by-the-coordinator" title="1. Made by the coordinator">1. Made by the coordinator</a>
+<a class="sec" href="#c21-1a-conflicts-with-owner-decision-16h-lis" title="1a. Conflicts with owner decision 16h (listed, not resolved)">1a. Conflicts with owner decision 16h (listed, not resolved)</a>
 <a class="sec" href="#c21-2-made-by-the-lobby-engine-s-builder" title="2. Made by the lobby engine&#x27;s builder">2. Made by the lobby engine&#x27;s builder</a>
 <a class="sec" href="#c21-3-made-by-other-builders-in-tables-of-th" title="3. Made by other builders, in tables of their own">3. Made by other builders, in tables of their own</a>
 <a class="sec" href="#c21-4-answered-by-the-owner-kept-for-the-rec" title="4. Answered by the owner (kept for the record)">4. Answered by the owner (kept for the record)</a>
@@ -355,7 +357,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <a class="sec" href="#c27-rough-totals" title="Rough totals">Rough totals</a>
 <a class="sec" href="#c27-biggest-unknowns" title="Biggest unknowns">Biggest unknowns</a></nav>
 <main>
-<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-18 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
+<p class="lead">Every project document in one file. Closed, it is a list of contents; open a line to read that part, or use "Open all" for the complete text. Built on 2026-11-24 from the repository's documents. The illustrated summary with diagrams is <a href="design.html">design.html</a>.</p>
 <section class="chapter" id="c1"><h2>Start here</h2><p class="desc">Terms, facts, decisions in force, and how sure we are of each claim.</p><p class="file">Gazpacho knowledge base · <code>docs/KNOWLEDGE-BASE.md</code></p>
 <div class="intro"><p>The single place to start. It gathers what has been learned and decided, says how sure we are of each thing, and points to the document that holds the detail. Updated 2026-11-12. Update it whenever a decision is made or a fact is checked.</p></div>
 <details id="c1-1-where-everything-is"><summary>1. Where everything is</summary><div class="body"><div class="tw"><table>
@@ -2121,13 +2123,13 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <p><strong>H9. A member who never completes the first channel exchange</strong> is treated as absent from the start: its seat gets no credit and is forced out under H6.</p>
 <p><strong>H10. A cap on HTLCs.</strong> The host refuses an HTLC that would take its commitment beyond the relay size limit for its transaction version. Otherwise a member can fill the commitment with small HTLCs, go silent, and leave the host with a commitment it cannot relay (review 2, N19, from the SuperScalar payout review).</p>
 <p><strong>H11. A new funding outpoint after any release.</strong> An attempt that follows one in which any partial signature was released uses a new funding transaction. The new one spends at least one input of the previous one, so that once it is buried the previous outpoint can never exist and every member's records for it end under C4(d).</p>
-<p><strong>H12. Results are kept and answered.</strong> The host keeps, for each member and round, the bytes of every <code>round_tier_result</code> and <code>round_complete</code> it sent, until the factory's funding output is spent or the creation is dead under C4(d). It answers <code>round_status_request</code> with them.</p>
+<p><strong>H12. Results are kept and answered.</strong> The host keeps, for each member and round, the bytes of every <code>round_tier_result</code> and <code>round_complete</code> it sent, while a member can still need them: until the creation is live (its funding buried), dead under C4(d), or, after a failed or cancelled lobby, past the latest member deadline (the unfinished deadline, and the funding deadline plus the burial depth) and a grace (<code>docs/notes/composite-node.md</code> 2.4, F1). It answers <code>round_status_request</code> with them. After that a status request for the round is ignored, as for an unknown round (<code>messages.md</code> 7.10). (Rewritten in step P4.5: "until the funding output is spent" kept results for a factory's whole life, which no member needs once its creation is resolved.)</p>
 <p><strong>H13. A restored host never resumes a round.</strong> A host loaded from a backup starts new attempts only, with new random values; it never contributes again to a round identifier found in its records.</p>
 <p><strong>H14 to H18</strong> are specified in <code>spec/exit.md</code> section 9 (proposed, owner to confirm), and listed here so that this section names every host rule:</p>
 <ul>
 <li><strong>H14.</strong> The host watches every member's channel output and answers a member's revoked commitment with the penalty by <code>penalty_send_by</code>, at its own constants.</li>
 <li><strong>H15.</strong> The host's sweeps of outputs it may take alone follow a schedule; it never sweeps an unpublished tree output with an owed member below it.</li>
-<li><strong>H16.</strong> The host never replaces the funding transaction by fee; it bumps it only by a child on its own change output (or a P2A of the funding's own), which the funding must therefore have.</li>
+<li><strong>H16.</strong> The host never replaces the funding transaction by fee; it bumps it only by a child on its own change output (or a P2A of the funding's own), which the funding must therefore have. <strong>The one exception is abandoning</strong> (<code>docs/notes/composite-node.md</code> 14.3; <code>exit.md</code> C-5): at the host's funding deadline, a funding not yet buried is replaced on purpose by the <strong>spend-back</strong>, which spends one funding input back to the host's own wallet, pays nothing to the factory, and pays the smallest fee that replaces the funding and any child of it (the evicted package's fee plus the incremental relay fee on its own size). Once it is buried every member's records for the factory end under C4(d).</li>
 <li><strong>H17.</strong> <strong>INTERIM</strong> (while the import has host-only timeouts and no payouts: Slices 1, 1.5 and 2; replaced by H6 under design 2). The host's software never takes a member's balance through a timeout: it forces a silent owed member out with its own latest commitment by <code>host_force_by</code> (<code>exit.md</code> 4.5). A policy of honest host software, not a protection.</li>
 <li><strong>H18.</strong> The host's expiry delta toward a factory member, and its go-on-chain height for each payment it offers that member, cover that member's whole path, its own commitment and its HTLC-timeout transaction: (n + 1)·A + (B − 1) + M_host with n = d + 3.</li>
 </ul></div></details>
@@ -5634,6 +5636,24 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 </tbody>
 </table></div></div></details>
+<details id="c15-audits-across-documents"><summary>Audits across documents</summary><div class="body"><div class="tw"><table>
+<thead>
+<tr>
+<th>Subject</th>
+<th>File</th>
+<th>Date</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Deviation audit: Gazpacho against SuperScalar's design posts (Delving Bitcoin 1143, 1242, 2705) and code (pin <code>50f7fa13</code>, upstream #508). It covers <code>exit.md</code> draft 3, <code>local-api.md</code> draft 5, PRs #52, #53, #54 and #56, the penalty check (PR #61) and K1</td>
+<td><code>deviation-audit-2026-11-18.md</code></td>
+<td>2026-11-18</td>
+<td>Nothing to revert; no merged code is cryptographically unsound. <strong>Fix now:</strong> the 64-item cap against the 32-seat lobby (9c). <strong>Pause:</strong> code shaped by #508, and standby seats (K4). <strong>Owner decisions needed:</strong> the penalty rules 8b, 8d and 8e, and the signing modes (10). <strong>Record:</strong> the pending decisions, now <code>../DECISIONS-WITHOUT-OWNER.md</code> K9 to K18 and section 1a. Read-only; no test was run</td>
+</tr>
+</tbody>
+</table></div></div></details>
 <details id="c15-reviews-of-superscalar-s-work"><summary>Reviews of SuperScalar&#x27;s work</summary><div class="body"><div class="tw"><table>
 <thead>
 <tr>
@@ -6272,7 +6292,8 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <div class="intro"><p>Every choice the coordinator or a builder made on the owner's behalf that the owner should be able to overrule. Started 2026-11-12 (truth pass). The owner's own decisions are in <code>ux/decisions.md</code>; questions still waiting for an answer are in <code>OPEN-QUESTIONS.md</code>.</p>
 <p><strong>To overrule one,</strong> say which and what instead. The document named in the "Where" column is then changed, with the owner's answer recorded in <code>ux/decisions.md</code>, and any code that follows it is changed in its own pull request. Nothing here is settled by being written down.</p>
 <p><strong>Keep it current.</strong> A builder or reviewer who decides something a specification left open adds a row here in the same pull request. A row leaves this file when the owner confirms or overrules it; it moves to "Answered" at the end.</p></div>
-<details id="c21-1-made-by-the-coordinator"><summary>1. Made by the coordinator</summary><div class="body"><div class="tw"><table>
+<details id="c21-1-made-by-the-coordinator"><summary>1. Made by the coordinator</summary><div class="body"><p><strong>Numbering.</strong> The K numbers of this table name only these entries. The binding rules of the owner's decision of 2026-11-17 (PR #59), called "K1" and "K1-1 to K1-6" in the binding check, are renamed BD1 to BD6 (BD: the binding decision) so that they do not clash with K1 here (the chain lag limits). J1 to J6 was not used, because it already names the journal's vectors (<code>spec/journal.md</code> 11).</p>
+<div class="tw"><table>
 <thead>
 <tr>
 <th>#</th>
@@ -6306,7 +6327,7 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 </tr>
 <tr>
 <td>K4</td>
-<td><strong>Invitation-only lobbies, seat removal and standby seats are built in Slice 1.</strong> Owner decision 10 names them for 1.0.0; the coordinator brought them into Slice 1</td>
+<td><strong>Invitation-only lobbies, seat removal and standby seats are built in Slice 1.</strong> <strong>Pending owner.</strong> The deviation audit of 2026-11-18 (<code>reviews/deviation-audit-2026-11-18.md</code>, item 15) calls this the clearest case of scope added without the owner, and recommends pausing standby and understudy work until it is answered. Owner decision 10 names them for 1.0.0; the coordinator brought them into Slice 1</td>
 <td><code>docs/notes/lobby.md</code> decisions 1, 6 and 7, on the lobby branch (build server only)</td>
 <td>The lobby engine's states and <code>messages.md</code> 6.3 (standby joins are accepted during a ready check and during signing, which 6.3 does not yet allow)</td>
 <td>Leave them for 1.0.0; Slice 1's lobby becomes simpler</td>
@@ -6338,6 +6359,108 @@ mark{background:var(--gold-soft);color:inherit;border-radius:3px}
 <td><code>spec/exit.md</code> section 12, open point 1</td>
 <td>Slice 3 tests of rotation with a balance</td>
 <td>Another name</td>
+</tr>
+<tr>
+<td>K9</td>
+<td><strong>End-date placement: E is placed <code>host_spare_by</code> after the wind-down, 178, 184 and 190 blocks at D = 1, 2, 3; forcing starts at <code>host_spare_by</code>.</strong> <strong>Pending owner.</strong> Reason: without it a member forced out is paid the leaf's spare liquidity, which rewards going silent (review of PR #48, H2)</td>
+<td><code>spec/exit.md</code> 4.4 and H6 (section 9); audit item 3 (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>About 144 more blocks of host capital per factory</td>
+<td>The audit (item 3) proposes a short <code>l_stock_csv</code> for 1.0.0, since 1.0.0 has no poison: S = 6 gives 40, 46 and 52 blocks at D = 1, 2, 3, with the same guarantee (<code>relitigate-chain.md</code> Q1 and Q5a corrected the audit's 46 to 60). A minimal leaf stock would remove the race: 34, 40 and 46. Owner questionnaire open</td>
+</tr>
+<tr>
+<td>K10</td>
+<td><strong>Payout scripts from the member's own BIP 86 receive chain</strong>, a fresh index per factory, named by the member and carried unchanged by the host. <strong>Pending owner.</strong> Reason: under R3 a restored wallet never derives an old-epoch factory key, so payouts to the factory key would be lost after a restore (confirmation of the review of PR #48, N1)</td>
+<td><code>spec/exit.md</code> 3.4; <code>spec/safety-rule.md</code> C2; audit item 4 (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>Every payout and the distribution transaction; needs an upstream API for a per-member script</td>
+<td>Payouts to the factory key, as upstream #508 does, with a recovery path for restored wallets. Also (<code>relitigate-chain.md</code> Q5c): a dedicated payout account (m/86'/coin'/1'/0/i) with a scan driven by the journal; or reuse of an index whose factory can provably never be funded. Cost of the chosen design: failed creations burn indexes, which can pass the scan's gap limit (open point 32)</td>
+</tr>
+<tr>
+<td>K11</td>
+<td><strong>The host's tree-rate bound ⌊175,000 / V_occ⌋ sat/kvB</strong> (1,047 in T1): the host MUST NOT choose a higher rate, and the member refuses one. <strong>Pending owner.</strong> Reason: above it the free pin by the next pre-signed level cannot be evicted by the member's anchor-only child on Core 28.x and 29.0</td>
+<td><code>spec/exit.md</code> 5.9 and open point 26; <code>spec/safety-rule.md</code> C8; audit item 2c (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>Which tree rates a host may offer</td>
+<td>No bound, a different bound, or Core 29.1's ⌊233,000 / V_occ⌋. Or <code>nSequence</code> = 1 on every tree-transaction and payout input, which removes the free pin at any rate (upstream change; <code>relitigate-chain.md</code> Q5b). Keep the cap until it lands</td>
+</tr>
+<tr>
+<td>K12</td>
+<td><strong>The default tree rate is 0.1 sat/vB, and term 32's floor is 100 sat/kvB.</strong> <strong>Pending owner.</strong> Reason: it follows the owner's 0.1 sat/vB preference, written down as a protocol default and floor</td>
+<td><code>spec/exit.md</code> 5.9 ("SHOULD keep the default rate of 0.1 sat/vB"); <code>spec/terms.md</code> term 32 and 4.4; audit item 2d (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>Rules out upstream's rate-0 ephemeral-anchor mode</td>
+<td>Another default, or a floor of 0</td>
+</tr>
+<tr>
+<td>K13</td>
+<td><strong>An interrupted set-up finishes as a new wallet, not a restore.</strong> The program writes <code>setup.gzp</code> before the key file and removes it once the first incarnation is durable; a start that finds it is not told of a lost start counter. <strong>Pending owner</strong> (and the storage reviewers). Reason: a kill between the key file and <code>starts.gzs</code> otherwise reported a loss that never happened, and a set-up seed has signed nothing</td>
+<td>PR #54 (<code>spec/storage-encryption.md</code> section 7 on that branch; <code>program/store_unlock.c</code>); audit item 12 (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>What a person is told after a crash during set-up</td>
+<td>Treat it as a restore, with the warning</td>
+</tr>
+<tr>
+<td>K14</td>
+<td><strong>The node-wide signing mode WHEN_UNLOCKED</strong> exists beside AUTO and AT_JOIN, with fixed API shapes (<code>POST /api/v1/signing/unlock</code> and <code>lock</code>, error <code>not_when_unlocked</code>). <strong>Pending owner.</strong> Reason: it came from the composite node's design of the gates; owner decision 16d did not ask for it</td>
+<td><code>docs/notes/composite-node.md</code> 12.2; <code>spec/local-api.md</code> 14.3; audit item 10 (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>The API and the core's gates</td>
+<td>The audit (item 10) proposes dropping WHEN_UNLOCKED until the owner asks for it</td>
+</tr>
+<tr>
+<td>K15</td>
+<td><strong>Slice 1 signing: the node default <code>member_signing = at_join</code>; AUTO only through <code>PUT /api/v1/signing</code>, behind a fresh sign-in</strong> (D24). <strong>Pending owner.</strong> Reason: the per-lobby modes A, B and C of decision 16d had no core counterpart; the review of PR #49 (H2) aligned the API on the core's gates</td>
+<td><code>spec/local-api.md</code> 14.3 and 24.1 D24, 24.2 item 36; audit item 10 (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>How a member consents to signing</td>
+<td>Per-lobby modes as 16d describes them</td>
+</tr>
+<tr>
+<td>K16</td>
+<td><strong>Decision 16d's mode B is not built, and mode C opens at each <code>ready</code>, not "once at join"</strong>: after a Retry to Open, a new check needs the ready again. <strong>Pending owner.</strong> Reason: the core's gate is bound to the values digest readied for and wiped when the check's last attempt ends</td>
+<td><code>spec/local-api.md</code> 14.3 rule 2, 24.1 D21 (withdrawn) and 24.2 items 36 and 44; <code>docs/notes/composite-node.md</code> 12.2; audit item 10 (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>The owner's words in 16d</td>
+<td>Build B; keep C open for 10 minutes after a failed attempt (24.2 item 44)</td>
+</tr>
+<tr>
+<td>K17</td>
+<td><strong>The API defaults D21 to D25.</strong> <strong>Pending owner.</strong> D21: withdrawn after the review (H2); the core asks for the ready again after a Retry. D22: at most 8 joined and 4 hosted lobbies at once (14.4). D23: "starts soon" 15 minutes before the deadline, or one seat short of the target (11.4). D24: as K15. D25: at most 20 passphrase suggestions a minute per session (12.9). Reason: values the specification needed to build Slice 1, chosen for the owner's yes</td>
+<td><code>spec/local-api.md</code> 24.1; audit item 10 (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>Limits and timings the interface shows</td>
+<td>Other numbers</td>
+</tr>
+<tr>
+<td>K18</td>
+<td><strong>The penalty recommendations of PR #61</strong> (draft, not merged, under audit). <strong>Pending owner.</strong> Reason for each in <code>docs/reviews/penalty-check.md</code> on that branch. They are: keep H19; a shachain penalty record of about 2.3 KB per channel (CH-19); a restored wallet assumes every channel stale and sends only <code>close_request</code> (CH-21); option A (a copy the host does not control before any balance), B (only warn) or C (a small cap before any independent copy, then each update counted only after the copy acknowledges; added from <code>relitigate-chain.md</code> Q4) for the owner (CH-20, P7); a C12 exception for revocation-basepoint secrets, single-signer penalties only (CH-18); penalties bump by replacement only, with no keyless anchor (CH-17); single-stage or two-stage payment outputs left open (CH-OP-2)</td>
+<td>PR #61: <code>spec/exit.md</code> 1.1, 5.4, 6.7, H14, CH-17 to CH-21, open points 36 to 39; <code>spec/safety-rule.md</code> C12; <code>docs/DESIGN.md</code>; audit item 8 (<code>reviews/deviation-audit-2026-11-18.md</code>)</td>
+<td>The channel specification, restore and backup</td>
+<td>Each item separately. CH-17 and CH-OP-2 conflict with decision 16h (section 1a). <code>relitigate-chain.md</code> (2026-11-18) revises several of these. Each revision is pending the owner: P1 to P8 of the review of #59 to #63</td>
+</tr>
+<tr>
+<td>K19</td>
+<td><strong>One command sets the member-signing mode: <code>GZ_CMD_API_SET_SIGNING</code> of PR #55.</strong> It is versioned (field 14 <code>based_on_version</code>; a stale version is answered <code>409 changed_elsewhere</code>), saves the setting, and takes effect at the next start (<code>takes_effect: "next_start"</code>, <code>spec/local-api.md</code> 14.3, confirmation C1). PR #52's <code>GZ_CMD_SIGNING_SET</code>, which switches the mode at once, becomes internal-only (tests and the future runtime setter of 24.2 item 46) or is removed after #52 merges. <strong>Pending owner.</strong> Reason: two commands for one setting, one versioned and one not, would let a stale screen overwrite a newer choice and would disagree on when the change takes effect</td>
+<td><code>spec/local-api.md</code> 14.3 (<code>PUT /api/v1/signing</code>) and 24.2 item 46; PR #55 <code>core/node/api.c</code> (<code>cmd_signing</code>); PR #52 <code>core/node/lobbyslot.c</code> (<code>GZ_CMD_SIGNING_SET</code>)</td>
+<td>How a member's choice of signing mode reaches the core, and when</td>
+<td>Keep #52's immediate switch as the public command (and make it versioned), or keep both with one documented as the API's</td>
+</tr>
+</tbody>
+</table></div></div></details>
+<details id="c21-1a-conflicts-with-owner-decision-16h-lis"><summary>1a. Conflicts with owner decision 16h (listed, not resolved)</summary><div class="body"><p>Found by the deviation audit of 2026-11-18 (<code>reviews/deviation-audit-2026-11-18.md</code>, item 8e and the "related drift" note under item 8). Both come from the penalty recommendations of PR #61 (K18). Nothing is written into <code>channel.md</code> until the owner answers.</p>
+<div class="tw"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>Owner decision 16h says</th>
+<th>The recommendation says</th>
+<th>Where</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>X1</td>
+<td>Item 6: "P2A anchors on everything a tower might publish, even at 0.1 sat/vB". A penalty is the main thing a tower publishes</td>
+<td>Penalties carry no keyless anchor and bump by replacement only, through a pre-signed fee ladder (CH-17). Reason given: a keyless anchor on a time-critical transaction lets anyone take its child slot</td>
+<td>PR #61, <code>spec/exit.md</code> 5.4 and CH-17</td>
+</tr>
+<tr>
+<td>X2</td>
+<td>Item 3: "HTLC second-stage txids are fixed when <code>channel.md</code> is written"</td>
+<td>Follow upstream's single-stage HTLC outputs (penalty check, M3); whether payment outputs are single-stage or two-stage is left open as CH-OP-2. Both lead to pre-signable penalties, but they are different designs. The later re-check (<code>relitigate-chain.md</code> Q3) recommends two stages with fixed txids (its option C), which agrees with 16h item 3; single-stage is its fallback only if W is short. Decide together with W (CH-15). Owner questionnaire open</td>
+<td>PR #61, <code>spec/exit.md</code> CH-OP-2; <code>docs/reviews/penalty-check.md</code></td>
 </tr>
 </tbody>
 </table></div></div></details>
@@ -8856,7 +8979,7 @@ docs/      plan, assessment, user guides
 {
  "about": "Not displayed. Sources and conventions for readers working from this file alone. The full text of every document is in the page itself, inside the collapsed sections.",
  "repository": "https://github.com/gazpacho-wallet/gazpacho",
- "built": "2026-11-18",
+ "built": "2026-11-24",
  "wording": "Say host (the papers say LSP) and member (client). Never say staking; say hosting, providing liquidity, fees.",
  "authoritative": "The Markdown files in the repository. This page is generated from them by tools/build-handbook.py.",
  "chapters": [

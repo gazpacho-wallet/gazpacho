@@ -443,6 +443,15 @@ static void execute(void *ctx, const gz_action_t *a)
                      "chain-watch-refused");
         break;
     }
+    case GZ_ACTION_UNWATCH: {
+        char hex[65];
+        gzp_hex(a->u.unwatch.what.txid, 32, hex);
+        gzp_log("unwatch txid=%s vout=%u tx=%d", hex, (unsigned)a->u.unwatch.what.vout, a->u.unwatch.is_tx);
+        chain_answer(ex, gzp_chain_unwatch(ex->chain, a->u.unwatch.is_tx, a->u.unwatch.what.txid,
+                                           a->u.unwatch.what.vout),
+                     "chain-watch-refused");
+        break;
+    }
     case GZ_ACTION_SET_TIMER:
         timer_set(ex, a->u.set_timer.timer_id, a->u.set_timer.delay_ms);
         break;
@@ -628,6 +637,23 @@ static void on_message(void *ctx, const gz_link_t *link, uint16_t kind, const ui
     ev.u.message.records.len = len;
     deliver(ex, &ev);
     drain(ex);
+}
+
+/* A command for a call the API holds (contract-v2.md 11): given to the node
+ * as a USER_COMMAND, at once; its outcome comes back as a command-result
+ * NOTIFY. -1 while the node starts or after a fatal error. */
+static int api_command(void *ctx, const uint8_t *tlv, size_t len)
+{
+    gzp_exec_t *ex = ctx;
+    gz_event_t ev;
+    if (ex->starting || ex->fatal || !ex->node) return -1;
+    memset(&ev, 0, sizeof ev);
+    ev.kind = GZ_EVENT_USER_COMMAND;
+    ev.u.user.bytes.data = tlv;
+    ev.u.user.bytes.len = len;
+    deliver(ex, &ev);
+    drain(ex);
+    return 0;
 }
 
 /* ---- user commands ------------------------------------------------------ */
@@ -834,7 +860,7 @@ static int min_timeout(int a, int b)
 static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_ms)
 {
     uint64_t now = gzp_mono_ms();
-    size_t nfds, nnet;
+    size_t nfds, n_net, n_api, api_at;
     int timeout = -1, t, i;
     if (*ex->stop) return GZP_RUN_STOP;
     if (ex->fatal) return GZP_RUN_RESTART;
@@ -857,8 +883,8 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
 #ifdef GZP_TEST_BUILD
     if (ex->opt->test_commands && !ex->in_eof) fds[1].fd = 0;
 #endif
-    nnet = gzp_net_pollfds(ex->net, fds + 2, cap - 3, &t, now);
-    nfds = 2 + nnet;
+    n_net = gzp_net_pollfds(ex->net, fds + 2, cap - 3, &t, now);
+    nfds = 2 + n_net;
     /* The chain worker's wake fd: readable when it has events. Not while
      * waiting for a batch to be stored (until_ms): events wait in its queue. */
     if (!until_ms && gzp_chain_fd(ex->chain) >= 0) {
@@ -868,6 +894,11 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
         nfds++;
     }
     timeout = min_timeout(timeout, t);
+    /* The local API server's descriptors and deadline (contract-v2.md 4; P5). */
+    api_at = nfds;
+    n_api = ex->api ? gzp_api_pollfds(ex->api, fds + api_at, cap - api_at, &t) : 0;
+    if (n_api || t >= 0) timeout = min_timeout(timeout, t);
+    nfds += n_api;
     if (until_ms) {
         timeout = min_timeout(timeout, until_ms > now ? (int)(until_ms - now) : 0);
     } else {
@@ -883,7 +914,10 @@ static int turn(gzp_exec_t *ex, struct pollfd *fds, size_t cap, uint64_t until_m
     }
     if (fds[0].revents || *ex->stop) return GZP_RUN_STOP;
     now = gzp_mono_ms();
-    gzp_net_dispatch(ex->net, fds + 2, nnet, now);
+    gzp_net_dispatch(ex->net, fds + 2, n_net, now);
+    if (ex->api) gzp_api_dispatch(ex->api, fds + api_at, n_api);
+    /* A lock stops the node (unlock.h; local-api.md 4.7): this incarnation ends. */
+    if (ex->api && gzp_api_lock_pending(ex->api)) return GZP_RUN_LOCKED;
 #ifdef GZP_TEST_BUILD
     if (fds[1].revents && !ex->fatal) read_commands(ex);
 #endif
@@ -968,6 +1002,33 @@ static void after_start(gzp_exec_t *ex)
     if (ex->number == 1 && ex->opt->have_connect)
         gzp_log("connect: no engine in this build makes the connection yet (the lobby, P4.2)");
 #endif
+}
+
+int gzp_exec_wait_unlocked(gzp_exec_t *ex)
+{
+    size_t cap = 1 + (ex->api ? gzp_api_max_fds(ex->api) : 0), n;
+    struct pollfd *fds = calloc(cap, sizeof *fds);
+    int t, rc = GZP_RUN_STOP;
+    if (!fds) abort();
+    if (ex->api) gzp_api_node_starting(ex->api);   /* no node: held calls answered, the view emptied */
+    gzp_log("node-stopped-locked incarnation=%llu", (unsigned long long)ex->incarnation);
+    for (;;) {
+        if (*ex->stop) break;
+        if (!ex->api || gzp_api_unlocked(ex->api)) { rc = ex->api ? GZP_RUN_RESTART : GZP_RUN_STOP; break; }
+        fds[0].fd = ex->stop_fd;
+        fds[0].events = POLLIN;
+        fds[0].revents = 0;
+        n = gzp_api_pollfds(ex->api, fds + 1, cap - 1, &t);
+        if (poll(fds, (nfds_t)(1 + n), t) < 0 && errno != EINTR) {
+            gzp_log("poll-failed errno=%d", errno);
+            break;
+        }
+        if (fds[0].revents) break;
+        gzp_api_dispatch(ex->api, fds + 1, n);
+    }
+    free(fds);
+    if (rc == GZP_RUN_RESTART) gzp_log("node-starting-unlocked");
+    return rc;
 }
 
 void gzp_exec_close_storage(gzp_exec_t *ex)
@@ -1084,12 +1145,20 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     }
     gz_action_list_init(&ex->list, ex->lslots, GZP_LIST_SLOTS, ex->lbytes, GZP_LIST_BYTES);
 
-    cap = 3 + gzp_net_max_fds(ex->net);
+    /* the stop pipe, standard input, the chain worker's wake fd, the network, the API server */
+    cap = 3 + gzp_net_max_fds(ex->net) + (ex->api ? gzp_api_max_fds(ex->api) : 0);
     fds = calloc(cap, sizeof *fds);
     if (!fds) abort();
+    gzp_log("poll-set cap=%zu net=%zu api=%zu", cap, gzp_net_max_fds(ex->net), ex->api ? gzp_api_max_fds(ex->api) : 0);
 
     ex->starting = 1;
     ex->delivered = 0;
+    if (ex->api) {
+        /* The view is rebuilt by this start's notices (node rule 7); held calls are answered 503 rebuilding. */
+        gzp_api_node_starting(ex->api);
+        ex->api->command = api_command;
+        ex->api->command_ctx = ex;
+    }
 #ifdef GZP_TEST_BUILD
     /* Set before the start, so that with a held start it comes due during it. */
     if (ex->opt->test_timer_ms)
@@ -1108,6 +1177,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
 #endif
     if (rc < 0) start_node(ex);
     ex->starting = 0;
+    if (ex->api) gzp_api_node_started(ex->api);
     if (ex->fatal && gzp_standin_poisoned(&ex->store)) rc = GZP_RUN_RESTART; /* turned into POISONED below */
     if (rc < 0 && !ex->fatal) {
         gzp_log("ready incarnation=%llu resent=%u", (unsigned long long)ex->incarnation, ex->resent);

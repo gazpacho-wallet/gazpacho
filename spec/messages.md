@@ -28,6 +28,12 @@ Specification draft 2, 2026-11-12, amended 2026-11-17 (BD: the binding moves to 
 | Review M4: rules renamed BD1 to BD6 (formerly K1-1 to K1-6) | All |
 | Review L1, L2, L4, L6: standbys and understudies named in BD6; the host's entry key equals the terms' `host_key`; host-binding vector owed; a refused later `ready` is answered with reason 5 and the seat keeps its state | 6.4, 7.2 |
 
+## Changes after draft 2
+
+| Change | Why | Where |
+|---|---|---|
+| A member sends `hello` again when it gets no answer: after 1.5 s, every 1.5 s, at most 5 times per connection | 2026-11-18: `program_lobby` case 3 failed now and then. A member restarted in process reconnected within a second of its first `hello`; the host's one-a-second limit ignored the second, and the member, which sends `hello` only on connect, never asked again, so the join it had saved but not sent never reached the host. Test: `test_hello_again` in `tests/lobby/test_lobby_v2.c` | 6.1 |
+
 ## Changes after review 3
 
 | Finding | How it was handled | Where |
@@ -296,7 +302,7 @@ Sent first after `init`, and after every reconnect.
 
 - `scope` all zero: the host answers with one `terms_offer` for each **listed** lobby it has open, at most 4 (the same cap as a host's live listings in `discovery.md`). An unlisted lobby is never named in this answer; a member reaches it only with its identifier, from an invitation. A slice 1 host has one. Finding lobbies without connecting first is specified in `discovery.md` (beacons, store nodes, the pool request, the Nostr annex); this answer serves a member already connected to the host.
 - `scope` a lobby identifier: the host answers with that lobby's `terms_offer`, then `lobby_status` for this key's seat. For an unknown lobby, `lobby_status` with lobby state 0 alone.
-- Duplicates: answered again, at most once per second **per link (per member key)**, counted across that key's connections, so reconnecting does not reset the limit; more are ignored. A member key that sends more than 20 ignored `hello`s within 10 minutes, across its connections, has its connection closed. One `hello` per connection is normal; the limits stop a peer from making the host send terms in a loop. Answers to scope-zero `hello`s are also limited across all connections to 4 per second (review 3, F13: up to 16 offers of about 5 KB each per small request).
+- Duplicates: answered again, at most once per second **per link (per member key)**, counted across that key's connections, so reconnecting does not reset the limit; more are ignored. A member key that sends more than 20 ignored `hello`s within 10 minutes, across its connections, has its connection closed. One `hello` per connection is normal; the limits stop a peer from making the host send terms in a loop. **A `hello` with no answer is sent again**: a member whose `hello` gets no message of that lobby on that connection within 1.5 s sends it again, every 1.5 s, at most 5 times on that connection; the count starts again on each new connection. A reconnect within a second of the last answered `hello`, as after a restart in process, falls inside the limit above and is ignored; without the second `hello` the member would wait for an answer that never comes, and a join it saved but never sent would never reach the host. Answers to scope-zero `hello`s are also limited across all connections to 4 per second (review 3, F13: up to 16 offers of about 5 KB each per small request).
 
 ### 6.2 `terms_offer` (18), host → member
 
@@ -472,10 +478,12 @@ Member with role 1: waits for `round_propose`, up to the terms' step timeout. Me
 
 | Type | Field | Size | Required |
 |---|---|---|---|
-| 2 | `reason` | `u16` | Yes. 1 deadline below the minimum, 2 host's choice, 3 signing failed within its time budget |
+| 2 | `reason` | `u16` | Yes. 1 deadline below the minimum, 2 host's choice, 3 signing failed within its time budget, 4 the funding did not confirm: the host's funding deadline passed, or a funding input was spent elsewhere and buried (step P4.5) |
 | 240 | `sig` | 64 | Yes. Host's long-term key |
 
 Ends the lobby. Signed so that a member's history can show the host's own reason. The member saves the end, erases any secret nonces, and keeps every round identifier it saved (they stay refused). Duplicate: ignore.
+
+Reason 4 comes after `Funding`: the creation was signed, but the host gives it up (`docs/notes/composite-node.md` 9.3, 14.3). A member that never gets it reaches the same end at its own funding deadline (Abandoned), or when a funding input is spent elsewhere and buried (Dead).
 
 A `cancel` does not undo partial signatures already sent. A member with an unresolved creation round keeps watching that round's funding outpoint, as section 7.9 says.
 
