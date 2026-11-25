@@ -1303,6 +1303,7 @@ int gzp_exec_incarnation(gzp_exec_t *ex, int number)
     cfg.tip = (uint32_t)ex->opt->tip;
     cfg.host_funding = GZ_HOST_FUNDING_AUTO;
     cfg.wallet = ex->wallet_port; /* the host's coins (wport.h; P4.6) */
+    cfg.funding_burial = ex->funding_burial; /* the wallet port was opened with the same B */
     cfg.member_signing = (gz_member_signing_t)ex->opt->member_signing; /* until the load: gz_node_member_signing */
     ex->member_signing = -1;
     cfg.crypto.verify = port_verify;

@@ -163,7 +163,32 @@ static int w_spend_back(void *ctx, const uint8_t txid[32], uint32_t index, uint6
                                   aux, out, cap, out_len) == GZT_OK;
 }
 
-int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlock_t *unlock, gzw_network wnet)
+static int w_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins)
+{
+    (void)ctx;
+    (void)amount;
+    (void)feerate;
+    *have_sat = 0;
+    *n_coins = 0;
+    return -1;   /* step 1: not yet */
+}
+
+int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *heights, size_t n, uint32_t tip)
+{
+    (void)heights;
+    (void)tip;
+    if (n > GZP_WPORT_COINS) n = GZP_WPORT_COINS;
+    pthread_mutex_lock(&w->mu);
+    memcpy(w->coins, coins, n * sizeof coins[0]);
+    memset(w->held, 0, sizeof w->held);   /* step 1: today's publication */
+    w->n_coins = n;
+    w->published = 1;
+    pthread_mutex_unlock(&w->mu);
+    return 0;
+}
+
+int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlock_t *unlock, gzw_network wnet,
+                   uint32_t burial)
 {
     uint8_t seed[64];
     gzw_reason why;
@@ -187,6 +212,9 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     w->port.adopt = w_adopt;
     w->port.release = w_release;
     w->port.spend_back = w_spend_back;
+    w->port.can_plan = w_can_plan;
+    (void)burial;
+    w->burial = 3;   /* step 1: `burial` not read yet */
     w->port.ctx = w;
     return 0;
 }
