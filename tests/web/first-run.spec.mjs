@@ -245,3 +245,19 @@ test('a start link used before: the hijack warning, in place of every other scre
   await expect(page.getByRole('button')).toHaveCount(1); // the theme switch only
   await other.close();
 });
+
+// Owner, 2026-11-25: the step says once, plainly, what the password is and is not.
+test('the password step: called a password, said once to lock the files here and not to be part of the seed', async ({ page }) => {
+  await openFromProgram(page);
+  await expect(page.locator('ol.steps h2').nth(1)).toHaveText('Choose a password');
+  await page.getByRole('button', { name: 'Make a new wallet' }).click();
+  const step = page.locator('ol.steps li.cur');
+  await expect(step.locator('h2')).toHaveText('Choose a password');
+  await expect(step).toContainText('Gazpacho made a password for you: six words.');
+  const about = 'Your password opens Gazpacho and locks its files on this computer. It is not part of your seed: your 24 words alone restore your wallet.';
+  await expect(step.getByText(about, { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Choose my own' }).click();
+  await expect(step.getByText(about, { exact: true })).toBeVisible(); // the same once, whichever way is chosen
+  await expect(step.getByText(about, { exact: true })).toHaveCount(1);
+  expect(await page.locator('body').innerText()).not.toMatch(/passphrase/i);
+});

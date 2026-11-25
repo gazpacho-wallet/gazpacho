@@ -186,3 +186,56 @@ test('a second tab takes the session from the first; signing out in one signs ou
   await expect(second.getByRole('heading', { name: 'Sign in' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
 });
+
+// Owner, 2026-11-25: the secret is a password, as in Sparrow, Electrum, Ledger
+// Live and Trezor Suite. "Passphrase" means the BIP39 seed extension in
+// Bitcoin, and the sign-in screen must not read as asking for the seed.
+test('the sign-in screen is minimal: one field named Password, no seed wording, the empty-field error', async ({ page }, info) => {
+  await start(info);
+  await page.goto(fake.url);
+  await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
+  await expect(page.locator('#locked-headline')).toContainText('Locked.');
+  const text = await page.locator('body').innerText();
+  expect(text).not.toMatch(/passphrase/i);
+  expect(text).not.toMatch(/seed/i);
+  expect(text).not.toMatch(/24 words/i);
+  const inputs = page.locator('input');
+  await expect(inputs).toHaveCount(1);
+  await expect(inputs).toHaveAttribute('type', 'password');
+  await expect(inputs).toHaveAccessibleName('Password');
+  await expect(page.getByRole('link', { name: 'Forgot your password?' })).toBeVisible();
+  await page.getByRole('button', { name: 'Unlock' }).click();
+  await expect(page.getByText('Enter your password.', { exact: true })).toBeVisible();
+  expect(await page.locator('body').innerText()).not.toMatch(/passphrase|seed|24 words/i);
+});
+
+test('"Forgot your password?" leads to restoring from the 24 words, and the restore it names is there at first run', async ({ page }, info) => {
+  await start(info);
+  await page.goto(fake.url);
+  await page.getByLabel('Password', { exact: true }).fill('typed, then left');
+  await page.getByRole('link', { name: 'Forgot your password?' }).click();
+  await expect(page.getByRole('heading', { name: 'Forgot your password?' })).toBeVisible();
+  const forgot = page.locator('#forgot-page');
+  await expect(forgot).toContainText('Your 24 words restore the wallet on this computer, with a new password.');
+  await expect(forgot).toContainText('choose Restore from 24 words');
+  await expect(forgot).toContainText('not your place in a factory');
+  await expect(page.locator('input')).toHaveCount(0); // no field for the words, or anything else, here (5.7)
+  expect(await page.evaluate(() => document.documentElement.outerHTML)).not.toContain('typed, then left');
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('heading', { name: 'Unlock Gazpacho' })).toBeVisible();
+  await expect(page.getByLabel('Password', { exact: true })).toHaveValue('');
+
+  // the way it names: a data folder with no wallet opens on first run, with "Restore from 24 words"
+  const fresh = await startFake();
+  allow(info, fresh);
+  try {
+    await page.goto('file://' + fresh.redirectFile);
+    await expect(page.getByRole('heading', { name: 'Welcome to Gazpacho' })).toBeVisible();
+    await page.getByRole('button', { name: 'Restore from 24 words' }).click();
+    await expect(page.locator('input[data-word]')).toHaveCount(24);
+    await expect(page.getByText(/Gazpacho asks for your 24 words only when you restore a wallet/)).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Next: choose a password' })).toBeVisible();
+  } finally {
+    fresh.stop();
+  }
+});
