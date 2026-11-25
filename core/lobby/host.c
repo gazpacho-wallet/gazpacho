@@ -387,6 +387,28 @@ static gz_status_t budget_timer(gz_lobby_host_t *h, gz_action_list_t *out)
     return gz_la_timer(out, GZ_LOBBY_TIMER_BUDGET, now < end ? end - now : 0);
 }
 
+/* 1 if the member of `key` was blamed by the attempt before and sits out this check (review A of PR
+ * 52, M1). */
+static int skipped(const gz_lobby_host_t *h, const uint8_t key[33])
+{
+    for (int i = 0; i < GZ_LOBBY_MAX_SEATS; i++)
+        if (h->skip[i].left && memcmp(h->skip[i].key, key, 33) == 0) return 1;
+    return 0;
+}
+
+/* A blamed member: out of the next check that starts. */
+static void skip_add(gz_lobby_host_t *h, const uint8_t key[33])
+{
+    int free_at = -1;
+    for (int i = 0; i < GZ_LOBBY_MAX_SEATS; i++) {
+        if (h->skip[i].left && memcmp(h->skip[i].key, key, 33) == 0) return;
+        if (!h->skip[i].left && free_at < 0) free_at = i;
+    }
+    if (free_at < 0) free_at = 0;                     /* full: one more member blamed than seats; replace */
+    memcpy(h->skip[free_at].key, key, 33);
+    h->skip[free_at].left = 1;
+}
+
 /* The ready window closed: choose the signers (messages.md 6.9). */
 static gz_status_t window_closed(gz_lobby_host_t *h, gz_action_list_t *out)
 {
@@ -405,6 +427,7 @@ static gz_status_t window_closed(gz_lobby_host_t *h, gz_action_list_t *out)
             /* A min_members above the target can never be met: such a seat is
              * left out before the cut, so it takes no one's place (review B, B5). */
             if (h->seats[i].min_members > h->terms.target) continue;
+            if (skipped(h, h->seats[i].ckey)) continue;           /* blamed in the attempt before (M1) */
             for (j = n; j > 0 && order[j - 1]->join_seq > h->seats[i].join_seq; j--) order[j] = order[j - 1];
             order[j] = &h->seats[i];
             n++;
@@ -438,6 +461,8 @@ static gz_status_t window_closed(gz_lobby_host_t *h, gz_action_list_t *out)
         TRY(broadcast(h, out));
         return apply_rule(h, 0, out);
     }
+    /* The members blamed by the attempt before have sat out this check: free again (M1). */
+    for (i = 0; i < GZ_LOBBY_MAX_SEATS; i++) h->skip[i].left = 0;
     first = h->budget_ms == 0;
     if (first) h->budget_ms = now_ms(h);              /* terms.md 3: one budget for all attempts */
     for (i = 0; i < n; i++) {
@@ -766,13 +791,13 @@ gz_status_t gz_lobby_host_init(gz_lobby_host_t *h, const gz_ports_t *ports, cons
 
 /* Take the records as the host's own: decode and check them as a member does
  * (core/tree's policy), with a host key that is a point. */
-static int adopt(gz_lobby_host_t *h, const uint8_t *outer, size_t olen, const uint8_t *cur, size_t clen)
+static int adopt(gz_lobby_host_t *h, const uint8_t *outer, size_t olen, const uint8_t *cur, size_t clen, uint32_t cap)
 {
     gz_terms_outer_t t;
     gz_terms_current_t v;
     uint8_t od[32], cd[32];
     if (!outer || !cur || olen > GZ_TERMS_OUTER_MAX || clen > GZ_TERMS_CURRENT_MAX ||
-        !gz_la_decode_terms(outer, olen, cur, clen, &t, od, &v, cd) ||
+        !gz_la_decode_terms_cap(outer, olen, cur, clen, cap, &t, od, &v, cd) ||
         h->crypto.point_ok(h->crypto.ctx, t.host_key) != 1 || t.target + h->cfg.standbys > GZ_LOBBY_MAX_SEATS)
         return 0;
     if (outer != h->outer) memcpy(h->outer, outer, olen);
@@ -823,7 +848,7 @@ gz_status_t gz_lobby_host_open(gz_lobby_host_t *h, const uint8_t *outer, size_t 
 {
     uint8_t r[GZ_LOBBY_REC_MAX_OPENED];
     gz_lr_t w;
-    if (!h || !out || h->state != GZ_LOBBY_UNKNOWN || !adopt(h, outer, outer_len, current, current_len))
+    if (!h || !out || h->state != GZ_LOBBY_UNKNOWN || !adopt(h, outer, outer_len, current, current_len, h->cfg.max_tree_nodes))   /* M2: at the open only */
         return GZ_ERR_ARGUMENT;
     if (h->crypto.sign(h->crypto.ctx, GZ_LOBBY_KEY_HOST, h->scope, h->outer_sig) != 1 ||
         h->crypto.sign(h->crypto.ctx, GZ_LOBBY_KEY_HOST, h->current_digest, h->current_sig) != 1 ||
@@ -867,7 +892,7 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
             !gz_lf_blob(&f, 8, GZ_TERMS_CURRENT_MAX, &b, &bn) || !gz_lf_fixed(&f, 6, 64) || !gz_lf_fixed(&f, 10, 64))
             return GZ_ERR_CORRUPT;
         gz_terms_outer_digest(a, an, od);
-        if (memcmp(od, f.v[1], 32) != 0 || !adopt(h, a, an, b, bn)) return GZ_ERR_CORRUPT;
+        if (memcmp(od, f.v[1], 32) != 0 || !adopt(h, a, an, b, bn, 0)) return GZ_ERR_CORRUPT;
         memcpy(h->outer_sig, gz_lf_fixed(&f, 6, 64), 64);
         memcpy(h->current_sig, gz_lf_fixed(&f, 10, 64), 64);
         h->state = GZ_LOBBY_OPEN;
@@ -878,7 +903,7 @@ gz_status_t gz_lobby_host_restore(gz_lobby_host_t *h, const gz_record_t *rec)
         return GZ_OK;
     case GZ_REC_TERMS_VERSION:
         if (!gz_lf_blob(&f, 4, GZ_TERMS_CURRENT_MAX, &b, &bn) || !(x = gz_lf_fixed(&f, 6, 64)) ||
-            !adopt(h, h->outer, h->outer_len, b, bn))
+            !adopt(h, h->outer, h->outer_len, b, bn, 0))
             return GZ_ERR_CORRUPT;
         memcpy(h->current_sig, x, 64);
         return GZ_OK;
@@ -1009,7 +1034,7 @@ gz_status_t gz_lobby_host_set_values(gz_lobby_host_t *h, const uint64_t *values,
      * or a port that will not sign, leave the lobby as it was. */
     if (!cn || !gz_la_decode_terms(h->outer, h->outer_len, cur, cn, &t, od, &v, cd)) return GZ_ERR_ARGUMENT;
     if (h->crypto.sign(h->crypto.ctx, GZ_LOBBY_KEY_HOST, cd, sig) != 1) return gz_la_no_key(out, GZ_LOBBY_KEY_HOST);
-    if (!adopt(h, h->outer, h->outer_len, cur, cn)) return GZ_ERR_BUG;
+    if (!adopt(h, h->outer, h->outer_len, cur, cn, 0)) return GZ_ERR_BUG;
     memcpy(h->current_sig, sig, 64);
     gz_lr_start(&w, r, sizeof r, h->scope);
     gz_lr_put(&w, 4, cur, cn);
@@ -1080,6 +1105,7 @@ gz_status_t gz_lobby_host_round_result(gz_lobby_host_t *h, int outcome, const ui
     if (outcome == GZ_LOBBY_ROUND_FAILED) return end_lobby(h, 3, out);
     for (i = 0; i < n_failed; i++) {                  /* no-shows must ready again */
         gz_lobby_seat_t *s = seat_of(h, failed + 33 * i);
+        skip_add(h, failed + 33 * i);                 /* and sit out the next check, by key (M1) */
         if (s && is_in(s)) {
             seat_change(h, s, GZ_SEAT_JOINED, 1, &st, out);
             TRY(st);

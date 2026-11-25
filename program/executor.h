@@ -18,6 +18,7 @@
 
 #include "gazpacho/node.h"
 #include "gazpacho/runner.h"
+#include "gazpacho/tree.h"
 
 #include "api.h"
 #include "datadir.h"
@@ -67,6 +68,8 @@ typedef struct {
     int store_open;
     uint64_t incarnation;
     gz_node_t *node;             /* gz_node_size() bytes, made once per process */
+    void *sign_mem;              /* gz_node_sign_size() bytes, the signing engine's, made once per process */
+    gz_tree_crypto_t tree_crypto;  /* the signing engine's builders' provider (tree.h) */
     gz_runner_t runner;
     gz_runner_slot_t rslots[GZP_RUNNER_SLOTS];
     uint8_t rbytes[GZP_RUNNER_BYTES];
