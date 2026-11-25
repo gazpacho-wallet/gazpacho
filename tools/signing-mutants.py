@@ -58,6 +58,9 @@ RULES = {
     "REPLAY_UNHELD_COMPLETE": ("x->state = GZ_SIGN_ROUND_COMPLETE;", "(void)0;"),
     "FUNDING_DEADLINE_HELD": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "(void)0;"),
     "FUNDING_DEADLINE_EVICTED": ("x->state = GZ_SIGN_ROUND_ABANDONED;", "(void)0;"),
+    # B-6: past the deadline, as C11, not at it
+    "FUNDING_DEADLINE_PAST": ("(uint64_t)tip <= (uint64_t)r->ack_tip", "(uint64_t)tip < (uint64_t)r->ack_tip"),
+    "FUNDING_DEADLINE_PAST_EVICTED": ("(uint64_t)tip <= (uint64_t)x->ack_tip", "(uint64_t)tip < (uint64_t)x->ack_tip"),
     "OLD_EPOCH_REFUSED": ("return refuse_id(e, id);", "return 1;"),
     "UNFINISHED_ABANDONED": ("r->state = GZ_SIGN_ROUND_ABANDONED;", "r->state = GZ_SIGN_ROUND_UNFINISHED;"),
     "PER_ITEM_ANSWER": ("wr32(q, (uint32_t)i); q += 4;", "wr32(q, 0u); q += 4;"),

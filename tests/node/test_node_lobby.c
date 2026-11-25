@@ -1863,8 +1863,9 @@ static void test_leave_partials_out(void)
 }
 
 /* Review B of PR 81, B-1: a host that takes the member's ack and never funds does not keep the lobby for good.
- * The member's round is Complete (acked at tip 1000); the tips reach the member's signing engine, and at the
- * ack tip plus C11's funding deadline the round is Abandoned and the leave goes through. */
+ * The member's round is Complete (acked at tip 1000); the tips reach the member's signing engine, and once a tip
+ * is past the ack tip plus C11's funding deadline (B-6: past, not at) the round is Abandoned and the leave goes
+ * through. */
 static void test_leave_after_funding_deadline(void)
 {
     terms_t t;
@@ -1898,7 +1899,11 @@ static void test_leave_after_funding_deadline(void)
     CHECK(w_event(1, &ev) == GZ_OK);
     size_t mark = N[1].n_log;
     CHECK(r->state == GZ_SIGN_ROUND_COMPLETE && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
-    ev.u.chain.height = 1000 + dl;
+    ev.u.chain.height = 1000 + dl;                                  /* at the deadline: not yet (C11: past it) */
+    CHECK(w_event(1, &ev) == GZ_OK);
+    mark = N[1].n_log;
+    CHECK(r->state == GZ_SIGN_ROUND_COMPLETE && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
+    ev.u.chain.height = 1000 + dl + 1;
     CHECK(w_event(1, &ev) == GZ_OK);
     CHECK(r->state == GZ_SIGN_ROUND_ABANDONED);
     CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 200);
