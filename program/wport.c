@@ -38,6 +38,15 @@ static void unhold(gzp_wport_t *w, int k)
         if (w->held[i] == k + 1) w->held[i] = 0;
 }
 
+/* The fee policy of every plan: the engine's rate, a ceiling of ten times it. */
+static gzt_fee_policy policy(uint64_t feerate)
+{
+    gzt_fee_policy p;
+    p.rate.sat_per_kvb = feerate;
+    p.ceiling.sat_per_kvb = feerate * 10;
+    return p;
+}
+
 static int plan_locked(void *ctx, uint64_t amount, const uint8_t script[34], uint64_t feerate, const gz_outpoint_t *must,
                   uint8_t *tx, size_t cap, size_t *tx_len, gz_fund_prevout_t *prev, size_t max_prev, size_t *n_prev)
 {
@@ -60,8 +69,7 @@ static int plan_locked(void *ctx, uint64_t amount, const uint8_t script[34], uin
     req.amount = amount;
     req.change_index = w->next_change++;
     req.require_change = 1;              /* H16: change for a child */
-    req.fee.rate.sat_per_kvb = feerate;
-    req.fee.ceiling.sat_per_kvb = feerate * 10;
+    req.fee = policy(feerate);
     if (must) {                          /* H11: the previous plan's input 0 */
         req.must_spend = 1;
         memcpy(req.must_txid, must->txid, 32);
@@ -163,27 +171,68 @@ static int w_spend_back(void *ctx, const uint8_t txid[32], uint32_t index, uint6
                                   aux, out, cap, out_len) == GZT_OK;
 }
 
+/* The funds check's dry run (funding.h, can_plan): the coins plan would
+ * offer, the selection plan makes, with change, under the same policy. */
 static int w_can_plan(void *ctx, uint64_t amount, uint64_t feerate, uint64_t *have_sat, size_t *n_coins)
 {
-    (void)ctx;
-    (void)amount;
-    (void)feerate;
+    gzp_wport_t *w = ctx;
+    static gzt_coin offer[GZP_WPORT_COINS];
+    uint64_t top[GZT_MAX_INPUTS];
+    size_t n = 0, nt = 0;
+    gzt_selection sel;
+    gzt_err e;
+    int r;
     *have_sat = 0;
     *n_coins = 0;
-    return -1;   /* step 1: not yet */
+    pthread_mutex_lock(&w->mu);
+    if (!w->have_master || !w->published) {
+        pthread_mutex_unlock(&w->mu);
+        return -1;   /* no coin list yet: cannot tell */
+    }
+    for (size_t i = 0; i < w->n_coins; i++)
+        if (!w->held[i]) offer[n++] = w->coins[i];
+    /* what a plan could use: the largest GZT_MAX_INPUTS coins */
+    for (size_t i = 0; i < n; i++) {
+        size_t pos = nt;
+        while (pos > 0 && offer[i].amount > top[pos - 1]) pos--;
+        if (pos >= GZT_MAX_INPUTS) continue;
+        if (nt < GZT_MAX_INPUTS) nt++;
+        for (size_t k = nt - 1; k > pos; k--) top[k] = top[k - 1];
+        top[pos] = offer[i].amount;
+    }
+    for (size_t k = 0; k < nt; k++) *have_sat += top[k];
+    *n_coins = nt;
+    e = gzt_funding_can_plan(offer, n, amount, policy(feerate), &sel);
+    r = e == GZT_OK ? 1 : (e == GZT_ERR_FUNDS || e == GZT_ERR_LIMIT || e == GZT_ERR_DUST) ? 0 : -1;
+    pthread_mutex_unlock(&w->mu);
+    return r;
 }
 
 int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *heights, size_t n, uint32_t tip)
 {
-    (void)heights;
-    (void)tip;
-    if (n > GZP_WPORT_COINS) n = GZP_WPORT_COINS;
+    static gzt_coin keep[GZP_WPORT_COINS];
+    uint8_t held[GZP_WPORT_COINS];
+    size_t nk = 0;
     pthread_mutex_lock(&w->mu);
-    memcpy(w->coins, coins, n * sizeof coins[0]);
-    memset(w->held, 0, sizeof w->held);   /* step 1: today's publication */
-    w->n_coins = n;
+    memset(held, 0, sizeof held);
+    for (size_t i = 0; i < n && nk < GZP_WPORT_COINS; i++) {
+        /* confirmed only (review A of PR 56, M5); change once buried (B deep),
+         * which a funding's change is not before it is buried (N-1) */
+        if (heights[i] == 0 || heights[i] > tip) continue;
+        if (coins[i].change == 1 && tip - heights[i] + 1 < w->burial) continue;
+        keep[nk] = coins[i];
+        /* a plan's holds survive the new list, by outpoint (N-1) */
+        for (size_t j = 0; j < w->n_coins; j++)
+            if (w->held[j] && w->coins[j].vout == coins[i].vout && memcmp(w->coins[j].txid, coins[i].txid, 32) == 0)
+                held[nk] = w->held[j];
+        nk++;
+    }
+    memcpy(w->coins, keep, nk * sizeof keep[0]);
+    memcpy(w->held, held, sizeof held);
+    w->n_coins = nk;
     w->published = 1;
     pthread_mutex_unlock(&w->mu);
+    OPENSSL_cleanse(keep, sizeof keep);
     return 0;
 }
 
@@ -213,8 +262,11 @@ int gzp_wport_open(gzp_wport_t *w, const secp256k1_context *secp, const gzp_unlo
     w->port.release = w_release;
     w->port.spend_back = w_spend_back;
     w->port.can_plan = w_can_plan;
-    (void)burial;
-    w->burial = 3;   /* step 1: `burial` not read yet */
+    {
+        gz_fund_config_t fc;   /* the engine's default B, as fundslot.c falls back to it */
+        gz_fund_config_default(&fc, 1);
+        w->burial = burial ? burial : fc.burial;
+    }
     w->port.ctx = w;
     return 0;
 }
@@ -227,6 +279,8 @@ static void *scan_thread(void *arg)
     gzp_wport_t *w = arg;
     static gz_chain_output outs[32];
     static gzt_coin found[GZP_WPORT_COINS];
+    static uint32_t heights[GZP_WPORT_COINS];
+    gz_chain_tip tip;
     gz_http http;
     gz_http_curl_config hc;
     gz_esplora_config cfg;
@@ -262,6 +316,7 @@ static void *scan_thread(void *arg)
             for (size_t i = 0; i < n && nf < GZP_WPORT_COINS; i++) {
                 gzt_coin *c = &found[nf];
                 if (!outs[i].confirmed) continue;   /* confirmed coins only (review A of PR 56, M5) */
+                heights[nf] = outs[i].height;
                 memcpy(c->txid, outs[i].txid, 32);
                 c->vout = outs[i].vout;
                 c->amount = outs[i].value;
@@ -273,15 +328,15 @@ static void *scan_thread(void *arg)
                 if (change == 1 && j + 100 > next_change) next_change = j + 100;
             }
         }
+    memset(&tip, 0, sizeof tip);
+    if (!w->stop && gz_chain_tip_get(&view, &tip) != GZ_CHAIN_OK) failed = 1;
     pthread_mutex_lock(&w->mu);
     w->http_live = NULL;
-    if (!w->stop) {
-        memcpy(w->coins, found, nf * sizeof found[0]);
-        memset(w->held, 0, sizeof w->held);
-        w->n_coins = nf;
-        if (next_change > w->next_change) w->next_change = next_change;
-    }
+    if (!w->stop && next_change > w->next_change) w->next_change = next_change;
     pthread_mutex_unlock(&w->mu);
+    /* without the tip no depth can be counted: nothing is published, and
+     * can_plan keeps answering that it cannot tell */
+    if (!w->stop && tip.height != 0) (void)gzp_wport_publish(w, found, heights, nf, tip.height);
     gz_chain_destroy(&view);
     gz_http_curl_destroy(&http);
     if (!w->stop)
@@ -321,6 +376,7 @@ int gzp_wport_invent(gzp_wport_t *w)
     c->change = 0;
     c->index = 0;
     memcpy(c->script, o.script_pubkey, 34);
+    w->published = 1;
     gzp_log("wallet-coins invented=1 (test build, no chain)");
     return 0;
 }

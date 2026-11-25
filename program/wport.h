@@ -10,6 +10,12 @@
  * restarts of one run. The master key is derived from the unlocked seed
  * (unlock.h) and wiped at close.
  *
+ * The funds check's dry run (can_plan, funding.h) runs the wallet's own
+ * selection over the coins plan would offer, with the same fee policy; a
+ * new coin list keeps every plan's holds, by outpoint; coins in the mempool
+ * are never offered, and change (the change chain: a funding's change, a
+ * spend-back) only once it is `burial` deep (review of PR 80, N-1).
+ *
  * STAND-INS (docs/notes/integration.md): coins are read once, at the start
  * (a coin received later is seen at the next start); `adopt` holds again only
  * a plan this run made (after a process restart, a journal's plan is
