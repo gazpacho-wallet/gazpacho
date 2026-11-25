@@ -93,6 +93,8 @@ def main():
         for m in ms:
             w.join(m, t)
         check(state(h, t, "host", slice1.FUNDING, timeout=300), "the round is signed: Funding")
+        fm = h.wait_for(r"broadcast-queued id=\d+ txid=([0-9a-f]{64})", timeout=60)
+        funding_txid = fm.group(1) if fm else None
         check(slice1.bury(rt, [h] + ms, t), "the factory goes Live on the host and every member")
         w.clean("before the sweep")
         w.stop()
@@ -176,6 +178,39 @@ def main():
             r = rt.esplora("/tx/%s/outspend/%s" % (root["txid"], k["vout"]))
             good = good and ('"spent":true' in r.replace(" ", "")) and spenders.get(int(k["vout"]), "?") in r
         check(good, "each root output is spent by the host's timeout spend, nothing else")
+
+        # 5. The funding's change (the wallet's change at index 100), spent whole to the first address.
+        ftx = slice1.chain_tx(rt, funding_txid) if funding_txid else {}
+        ch = [v for v in ftx.get("vout", []) if v["n"] != 0]
+        if check(len(ch) == 1, "the funding has one change output"):
+            c = ch[0]
+            spec = "%s:%d:%d:%s" % (ftx["txid"], c["n"], round(c["value"] * 1e8), c["scriptPubKey"]["hex"])
+            a = w.args("host", "host")
+            a[a.index("--data-dir") + 1] = fresh_copy(w, 5)
+            a += ["--test-spend-coin", spec, "--test-passphrase-file", passphrase_file(), "--test-kdf-floor"]
+            r = subprocess.run(a, capture_output=True, text=True, timeout=120)
+            m = re.search(r"spend-coin change=(\d+) index=(\d+)", r.stdout)
+            check(m is not None and m.group(1) == "1" and m.group(2) == "100",
+                  "the tool finds the coin at change index 100 (%s)" % (m.group(0) if m else r.stdout[-200:]))
+            m = re.search(r"spend-tx amount=(\d+) fee=(\d+) out=(\d+) vsize=(\d+) tx=([0-9a-f]+)", r.stdout)
+            if check(m is not None, "and builds the spend"):
+                amt, fee, out, vs, txh = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)), m.group(5)
+                acc = accept(rt, txh)
+                check(acc.get("allowed"), "the node accepts it: %s" % acc.get("reject-reason"))
+                rt.cli("sendrawtransaction", txh)
+                rt.mine(1)
+                d = rt.cli("decoderawtransaction", txh)
+                check(slice1.chain_tx(rt, d["txid"]).get("confirmations", 0) >= 1 and
+                      d["vout"][0]["scriptPubKey"]["hex"] == host_spk and len(d["vout"]) == 1 and
+                      amt == out + fee and fee >= vs * 0.1 and fee < vs * 0.2 + 2,
+                      "mined, all of it to the first address less %d sat (%d vB, 0.1 sat/vB)" % (fee, vs))
+            other = "%s:%d:%d:%s" % (ftx["txid"], c["n"], 1000, rt.cli("-rpcwallet=miner", "getaddressinfo",
+                                                                    rt.miner)["scriptPubKey"])
+            a[a.index("--test-spend-coin") + 1] = other
+            a[a.index("--data-dir") + 1] = fresh_copy(w, 6)
+            r = subprocess.run(a, capture_output=True, text=True, timeout=120)
+            check("spend-refused why=not-this-wallet" in r.stdout and "spend-tx" not in r.stdout,
+                  "a coin of another wallet is refused")
     finally:
         w.stop()
         kill_all(w.procs)
