@@ -17,7 +17,11 @@ see) or "# untested NAME: why" (a real fault these tests do not reach, with
 where it is covered or why not) has been triaged; the run exits 1 if any
 survivor is not triaged, or any mutant does not apply or compile.
 
-usage: tools/mutate-node.py SOURCE-DIR WORK-DIR [-j N] [NAME...]
+usage: tools/mutate-node.py SOURCE-DIR WORK-DIR [-j N] [--shard I/N] [NAME...]
+
+--shard I/N (I from 0) runs only every Nth mutant of the list, in file order,
+starting at the Ith: the N shards together run each mutant exactly once (CI's
+node-mutants job runs them in parallel).
 """
 import os
 import shutil
@@ -95,6 +99,17 @@ def main():
         i = args.index("-j")
         jobs = args[i + 1]
         del args[i:i + 2]
+    shard = None
+    if "--shard" in args:
+        i = args.index("--shard")
+        try:
+            k, n = (int(x) for x in args[i + 1].split("/"))
+        except (ValueError, IndexError):
+            sys.exit("--shard wants I/N, as 0/4")
+        if not (n > 0 and 0 <= k < n):
+            sys.exit("--shard wants 0 <= I < N")
+        shard = (k, n)
+        del args[i:i + 2]
     if len(args) < 2:
         sys.exit(__doc__)
     source, work, only = os.path.abspath(args[0]), os.path.abspath(args[1]), set(args[2:])
@@ -102,6 +117,9 @@ def main():
     mutants, triaged = load(os.path.join(source, "tests/node/mutants.txt"))
     if only:
         mutants = [m for m in mutants if m[0] in only]
+    if shard:
+        mutants = [m for j, m in enumerate(mutants) if j % shard[1] == shard[0]]
+        print("shard %d of %d: %d mutants" % (shard[0], shard[1], len(mutants)), flush=True)
     shutil.rmtree(src, ignore_errors=True)
     os.makedirs(src)
     code, files = run(["git", "ls-files", "-co", "--exclude-standard"], cwd=source)

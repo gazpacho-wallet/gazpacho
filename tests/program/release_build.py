@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """T12 (second half), program_release_build (contract-v2.md section 12).
 
-    python3 -I release_build.py PATH_TO_GAZPACHO PATH_TO_GAZPACHO_TEST WORK_DIR
+    python3 -I release_build.py PATH_TO_GAZPACHO PATH_TO_GAZPACHO_TEST WORK_DIR [PATH_TO_TEST_SIGNER_VECTORS]
 
 The release `gazpacho`:
   - its symbols hold no seeded random source (the simulator's sim_rng_*), no
     test traffic (gzp_testping_*) and no test-kind code;
+  - neither it nor gazpacho-test holds the signer's fixed-aux vectors build
+    (decision K20): not the marker gz_sg_vectors_build_never_ship by name or
+    by content, and no gz_sgv_* symbol. The fourth argument, a program that
+    does link that build, shows the check would see it (review B of #71, L8);
   - it refuses every --test-* option;
   - kind 32767 is never delivered: a test-build member's pings to a release
     host stay unanswered while the connection stays up.
@@ -30,6 +34,9 @@ TEST_STRINGS = (b"--test-pings", b"--test-timer-ms", b"--test-start-delay-ms", b
                 b"tests only (gazpacho-test)", b"test-timer fired", b"payload=%s", b"ping-payload",
                 b"--test-plan-once", b"--test-cut-after-mark", b"test-plan ok=", b"test-cut after=")
 
+VECTORS_NAME = re.compile(r"^(gz_sg_vectors_build_never_ship|gz_sgv_)")
+VECTORS_TEXT = b"gazpacho signer vectors build: never ship"
+
 
 def symbols(path):
     r = subprocess.run(["nm", "-C", path], capture_output=True, text=True)
@@ -40,6 +47,7 @@ def symbols(path):
 
 def main():
     rel, tst, work = (os.path.abspath(a) for a in sys.argv[1:4])
+    vect = os.path.abspath(sys.argv[4]) if len(sys.argv) > 4 else None
     shutil.rmtree(work, ignore_errors=True)
     logs = os.path.join(work, "logs")
     os.makedirs(logs)
@@ -62,6 +70,20 @@ def main():
                           "payload format %s" % leaked)
         unseen = [n.decode() for n in TEST_STRINGS if n not in tstb]
         check(not unseen, "the check would see them: the test build has each (missing %s)" % unseen)
+        # The signer's vectors build, by symbol and by the marker's text, in
+        # the release program and in the test program alike.
+        for name, syms, blob in (("gazpacho", rs, relb), ("gazpacho-test", ts, tstb)):
+            hits = sorted(s for s in syms if VECTORS_NAME.match(s))
+            check(not hits and VECTORS_TEXT not in blob,
+                  "%s holds no part of the signer's vectors build %s" % (name, hits[:5]))
+        if vect:
+            with open(vect, "rb") as f:
+                vb = f.read()
+            vs = symbols(vect)
+            check(any(VECTORS_NAME.match(s) for s in vs) and VECTORS_TEXT in vb,
+                  "the check would see it: test_signer_vectors holds the marker by name and by text")
+        else:
+            check(False, "no vectors-build program given: the check cannot show it would see one")
         code, out = run(rel, "--data-dir", os.path.join(work, "x"), "--role", "host", "--no-chain",
                         "--test-pings", "1")
         check(code == 2 and "only in the test build" in out and not os.path.exists(os.path.join(work, "x")),

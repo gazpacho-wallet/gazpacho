@@ -477,7 +477,7 @@ static void w_node(int n, int ident, gz_member_signing_t signing, uint32_t outco
  * secrets; its hand-offs still go to the stand-in (`outcome`), so only the key hook and the gate are the
  * engine's here. */
 static secp256k1_context *TCTX;
-static void *TMEM[4];
+static void *TMEM[NN];          /* one engine memory per node, the scratch node included */
 static int w_secret(void *ctx, uint32_t epoch, uint32_t index, uint8_t sec[32])
 {
     (void)ctx; (void)epoch;
@@ -1687,7 +1687,10 @@ static void test_left_out(void)
 /* slot_opened with an even field this program does not know (a newer
  * program requires it), or a key index whose pair would wrap: damage, so the
  * start refuses it. An odd unknown field is skipped (review B of PR 44, L3,
- * L4). */
+ * L4). A key index above 0xfffffff0, which allocation never reaches, is
+ * refused too, as a second defence after the sealed journal: near the top
+ * the contribution index would meet the program's reserved indexes and the
+ * factory index wrap (cases 4 and 5; 0xfffffff0 itself still loads, case 6). */
 static void test_node_record_fields(void)
 {
     lt_key_t hk;
@@ -1695,7 +1698,8 @@ static void test_node_record_fields(void)
     whost(&hk);
     w_reset();
     make_terms(&t, 3, 3, 700);
-    for (int k = 0; k < 4; k++) {
+    static const uint32_t index_of[7] = {1, 0xffffffffu, 1, 1, 0xfffffffeu, 0xfffffff1u, 0xfffffff0u};
+    for (int k = 0; k < 7; k++) {
         h_t *x = &N[SCRATCH];
         uint8_t rec[300], v[4];
         size_t at = 0;
@@ -1710,7 +1714,7 @@ static void test_node_record_fields(void)
         gz_rec_put(rec, sizeof rec, &at, 10, (const uint8_t *)ADDR, sizeof ADDR - 1);
         gz_put_u32(v, 0);
         gz_rec_put(rec, sizeof rec, &at, 12, v, 4);
-        gz_put_u32(v, k == 1 ? 0xffffffffu : 1);
+        gz_put_u32(v, index_of[k]);
         gz_rec_put(rec, sizeof rec, &at, 14, v, 4);
         v[0] = 1;
         gz_rec_put(rec, sizeof rec, &at, 22, v, 1);
@@ -1720,8 +1724,12 @@ static void test_node_record_fields(void)
         x->incarnation = 1;
         h_new_node(x);
         st = w_start(SCRATCH);
-        CHECK(k == 1 || k == 2 ? st == GZ_ERR_CORRUPT : st == GZ_OK);
-        if (k == 0 || k == 3) CHECK(gz_route_slot_by_scope(x->n, t.scope) >= 0);
+        if (k == 1 || k == 2 || k == 4 || k == 5) {
+            CHECK(st == GZ_ERR_CORRUPT);   /* the start refuses: no slot is loaded */
+        } else {
+            CHECK(st == GZ_OK);
+            CHECK(gz_route_slot_by_scope(x->n, t.scope) >= 0);
+        }
         ALIVE[SCRATCH] = 0;
         NT[SCRATCH] = 0;
         for (int i = 0; i < 64; i++)
@@ -2890,8 +2898,9 @@ static void test_leave_partials_out(void)
 }
 
 /* Review B of PR 81, B-1: a host that takes the member's ack and never funds does not keep the lobby for good.
- * The member's round is Complete (acked at tip 1000); the tips reach the member's signing engine, and at the
- * ack tip plus C11's funding deadline the round is Abandoned and the leave goes through. */
+ * The member's round is Complete (acked at tip 1000); the tips reach the member's signing engine, and once a tip
+ * is past the ack tip plus C11's funding deadline (B-6: past, not at) the round is Abandoned and the leave goes
+ * through. */
 static void test_leave_after_funding_deadline(void)
 {
     terms_t t;
@@ -2925,7 +2934,11 @@ static void test_leave_after_funding_deadline(void)
     CHECK(w_event(1, &ev) == GZ_OK);
     size_t mark = N[1].n_log;
     CHECK(r->state == GZ_SIGN_ROUND_COMPLETE && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
-    ev.u.chain.height = 1000 + dl;
+    ev.u.chain.height = 1000 + dl;                                  /* at the deadline: not yet (C11: past it) */
+    CHECK(w_event(1, &ev) == GZ_OK);
+    mark = N[1].n_log;
+    CHECK(r->state == GZ_SIGN_ROUND_COMPLETE && scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 409 && said(1, mark, "too_late"));
+    ev.u.chain.height = 1000 + dl + 1;
     CHECK(w_event(1, &ev) == GZ_OK);
     CHECK(r->state == GZ_SIGN_ROUND_ABANDONED);
     CHECK(scope_cmd(1, GZ_CMD_LOBBY_LEAVE, &t, 0) == 200);
@@ -2936,6 +2949,52 @@ static void test_leave_after_funding_deadline(void)
     w_free(3);
 }
 
+
+/* The index ceiling at allocation (review of PR 87, L1): a slot never takes a
+ * key index the next start would refuse as damage. Allocation gives
+ * highest_index + 1, so it must stop once highest_index reaches
+ * GZ_LS_KEY_INDEX_MAX: at 0xfffffff0 the next index would be 0xfffffff1.
+ * Both open paths, the host's and the member's; one below, the last index
+ * is still given and loads again after a restart. */
+static void test_index_ceiling(void)
+{
+    terms_t t[4];
+    w_world(1, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    for (int i = 0; i < 4; i++) make_terms(&t[i], 3, 3, 1900 + (uint32_t)i);
+    size_t hb = N[0].n_batches, mb = N[1].n_batches;
+    N[0].n->np.highest_index = GZ_LS_KEY_INDEX_MAX;
+    CHECK(host_open(&t[0], 0) == 503 && slot(0, &t[0]) == NULL && N[0].n_batches == hb);
+    N[1].n->np.highest_index = GZ_LS_KEY_INDEX_MAX;
+    CHECK(member_join(1, &t[1]) == 503 && slot(1, &t[1]) == NULL && N[1].n_batches == mb);
+    N[0].n->np.highest_index = GZ_LS_KEY_INDEX_MAX - 1;
+    CHECK(host_open(&t[2], 0) == 200 && slot(0, &t[2]) && slot(0, &t[2])->key_index == GZ_LS_KEY_INDEX_MAX);
+    N[1].n->np.highest_index = GZ_LS_KEY_INDEX_MAX - 1;
+    CHECK(member_join(1, &t[3]) == 200 && slot(1, &t[3]) && slot(1, &t[3])->key_index == GZ_LS_KEY_INDEX_MAX);
+    /* what was given loads again */
+    CHECK(w_restart(0) == GZ_OK && slot(0, &t[2]) && slot(0, &t[2])->key_index == GZ_LS_KEY_INDEX_MAX);
+    CHECK(w_restart(1) == GZ_OK && slot(1, &t[3]) && slot(1, &t[3])->key_index == GZ_LS_KEY_INDEX_MAX);
+    w_free(1);
+}
+
+/* The signing engine runs only with a secp256k1 context (node.h): a node
+ * given the engine's memory but no context starts without it, and never
+ * reaches the engine with a NULL context (mutant sg-init-without-secp). */
+static void test_sign_needs_secp(void)
+{
+    h_t *x = &N[SCRATCH];
+    w_reset();
+    w_node_engine(SCRATCH, 5, GZ_MEMBER_SIGNING_AUTO, GZ_TEST_SIGN_FUNDING);
+    CHECK(w_start(SCRATCH) == GZ_OK && x->n->sign_on && x->n->sign != NULL);   /* the control: with a context */
+    x->cfg.secp = NULL;
+    h_new_node(x);
+    CHECK(w_start(SCRATCH) == GZ_OK && !x->n->sign_on && x->n->sign == NULL);
+    ALIVE[SCRATCH] = 0;
+    NT[SCRATCH] = 0;
+    for (int i = 0; i < 64; i++)
+        if (C[i].used && C[i].node == SCRATCH) C[i].used = 0;
+    h_free(x);
+    memset(x, 0, sizeof *x);
+}
 int main(int argc, char **argv)
 {
     unsigned long events = argc > 1 ? strtoul(argv[1], NULL, 10) : 20000;
@@ -2970,6 +3029,8 @@ int main(int argc, char **argv)
     test_seat_capacity();
     test_left_out();
     test_node_record_fields();
+    test_index_ceiling();
+    test_sign_needs_secp();
     test_timer_of_ended_lobby();
     test_gate_refused_ready();
     test_hostile(events, seed);

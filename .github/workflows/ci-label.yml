@@ -1,0 +1,28 @@
+name: CI (label)
+# Adding full-ci (the heavy tier) or signer-boundary-growth to a pull request
+# runs ci.yml again with that label in the event. Any other label starts
+# nothing but the skipped job below, and cancels nothing: the pull request's
+# own run (ci.yml, on its pushes) is never touched. The checks of this run are
+# named "label / <job>"; the required checks stay those of the pull
+# request's own run and of the merge queue (docs/notes/ci.md, "Tiers").
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-label-${{ github.event.pull_request.number }}-${{ github.event.label.name }}
+  cancel-in-progress: true
+
+jobs:
+  label:
+    name: label
+    if: github.event.label.name == 'full-ci' || github.event.label.name == 'signer-boundary-growth'
+    # signer boundary reads the queued pull request's labels; nothing else
+    # needs more than contents: read
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/ci.yml

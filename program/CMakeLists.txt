@@ -145,7 +145,7 @@ if(Python3_Interpreter_FOUND)
   # kind 32767 never delivered.
   add_test(NAME program_release_build
     COMMAND ${GZP_PY} ${GZP_T}/release_build.py $<TARGET_FILE:gazpacho> $<TARGET_FILE:gazpacho-test>
-            ${CMAKE_CURRENT_BINARY_DIR}/release_build)
+            ${CMAKE_CURRENT_BINARY_DIR}/release_build $<TARGET_FILE:test_signer_vectors>)
   # Storage and node failures, the in-process restart (review of PR 27: H1, M5).
   add_test(NAME program_storage_failure
     COMMAND ${GZP_PY} ${GZP_T}/storage_failure.py $<TARGET_FILE:gazpacho-test> ${CMAKE_CURRENT_BINARY_DIR}/storage_failure)
