@@ -120,3 +120,6 @@ boundary-splice	tools/check-signer-boundary.sh	    if (line ~ /\\\\$/) { pend	  
 boundary-digit-sep	tools/check-signer-boundary.sh	            if (j < i - 1 && substr(line, j + 1, 1) ~ /[0-9]/) { out = out c; i++; continue }	
 boundary-recipes	tools/check-signer-boundary.sh	|[^/]*\\.(cmake|yml|yaml|sh|json)|	|[^/]*\\.(cmake)|
 boundary-base-symbols	tools/check-signer-boundary.sh	    if [ -s "$tmp/gone-syms" ]; then	    if false; then
+# equivalent fee-cap-overflow: since review B's M1 a plan fee above fee_at(max_feerate, plan_vsize) <= 20,000,000 sat is refused next, so a fee large enough to overflow plan_fee * spend_back_vsize never reaches the product
+# equivalent old-fee-cap-ceiling: the ceiling is the signer's max_feerate, which gz_signer_init bounds by GZ_SG_FEERATE_HARD_MAX; no live signer has a larger one
+# equivalent fee-max-eq: a plan fee of 21 million BTC is far above fee_at(max_feerate, plan_vsize) and refused by the plan bound either way
