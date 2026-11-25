@@ -170,7 +170,7 @@ address-no-port	core/gazpacho/action.c	    if (colon < 2 || colon == n || n - co
 address-names-taken	core/gazpacho/action.c	        if ((p[i] < '0' || p[i] > '9') && p[i] != '.') return 0;	        if (p[i] == ' ') return 0;
 address-list-unchecked	core/gazpacho/action.c	    if (!gz_connect_address_ok(src->u.connect.address)) return GZ_ERR_ARGUMENT;	    if (!src->u.connect.address.len) return GZ_ERR_ARGUMENT;
 # --- P4.2: a slot's lobby (lobbyslot.c), its records, gates, commands, the index, Closing; the node part's additions
-ls-factory-signs-with-contribution	core/node/lobbyslot.c	return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);	return k->sign(k->ctx, 0, s->key_epoch, s->key_index, msg, sig);
+ls-factory-signs	core/node/lobbyslot.c	    return 0;                                         /* RULE-NODE:LS_NO_FACTORY */	    if (which == GZ_LOBBY_KEY_FACTORY) return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);\n    return 0;
 ls-gate-auto-closed	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_AUTO: return 1;	case GZ_MEMBER_SIGNING_AUTO: return 0;
 ls-gate-unlocked-ignored	core/node/lobbyslot.c	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return s->node->unlocked;	case GZ_MEMBER_SIGNING_WHEN_UNLOCKED: return 1;
 ls-gate-at-join-open	core/node/lobbyslot.c	        if (!s->gate_open || !s->gate_have) return 0;	        if (!s->gate_have) return 0;

@@ -83,7 +83,10 @@ static int ls_point_ok(void *ctx, const uint8_t pub[33])
 /* The slot's pair: the contribution key at key_index, the factory key at
  * key_index + 1; the host signs with its long-term key and has no
  * contribution key. A key the port will not sign with is 0: the lobby
- * gives a notice and does nothing (lobby.h, ERRORS). */
+ * gives a notice and does nothing (lobby.h, ERRORS). The factory key signs
+ * nothing in the lobby (BD): this hook refuses it outright, without asking
+ * the port; its only signatures are the signing engine's MuSig2 partials
+ * (review B of PR 95, L-4). */
 static int ls_sign(void *ctx, uint32_t which, const uint8_t msg[32], uint8_t sig[64])
 {
     const slot_t *s = ctx;
@@ -91,8 +94,7 @@ static int ls_sign(void *ctx, uint32_t which, const uint8_t msg[32], uint8_t sig
     if (!k->sign) return 0;
     if (which == GZ_LOBBY_KEY_HOST) return s->host ? k->sign(k->ctx, 1, 0, 0, msg, sig) : 0;
     if (which == GZ_LOBBY_KEY_CONTRIBUTION) return s->host ? 0 : k->sign(k->ctx, 0, s->key_epoch, s->key_index, msg, sig);
-    if (which == GZ_LOBBY_KEY_FACTORY) return k->sign(k->ctx, 0, s->key_epoch, s->key_index + 1, msg, sig);
-    return 0;
+    return 0;                                         /* RULE-NODE:LS_NO_FACTORY */
 }
 
 /* The signing gate (12.2): none with AUTO, the node-wide gate with
