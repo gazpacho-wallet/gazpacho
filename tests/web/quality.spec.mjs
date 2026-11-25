@@ -99,7 +99,7 @@ test('mainnet is refused: the interface opens no wallet on a network with real b
   await page.route('**/api/v1/version', (r) => r.fulfill({ json: { api: '1.0', program: '0.1.0', network: 'mainnet', run_id: 'x' } }));
   await page.goto(fake.url);
   await expect(page.getByRole('heading', { name: 'Gazpacho does not run on mainnet' })).toBeVisible();
-  await expect(page.getByLabel('Wallet passphrase')).toHaveCount(0);
+  await expect(page.getByLabel('Password', { exact: true })).toHaveCount(0);
 });
 
 test('a state this page does not know is shown as unknown, never as success', async ({ page }, info) => {
@@ -122,7 +122,7 @@ test('a state this page does not know is shown as unknown, never as success', as
 test('keyboard: skip link first, sign in without a mouse, focus is always visible', async ({ page }, info) => {
   await start(info);
   await page.goto(fake.url);
-  await expect(page.getByLabel('Wallet passphrase')).toBeFocused();
+  await expect(page.getByLabel('Password', { exact: true })).toBeFocused();
   await page.keyboard.type(PASS);
   await page.keyboard.press('Enter');
   await expect(page.locator('body')).toHaveAttribute('data-chrome', 'app');

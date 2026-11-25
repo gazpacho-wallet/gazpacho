@@ -22,7 +22,7 @@
     var all = ui.button("Sign out everywhere", function () {
       var btn = this;
       ui.run(btn, msg, function () {
-        return api.act("POST", "/session/revoke-all", { confirm: "revoke_all" }, { why: "This signs out every window and cancels every code, so Gazpacho asks for your passphrase." })
+        return api.act("POST", "/session/revoke-all", { confirm: "revoke_all" }, { why: "This signs out every window and cancels every code, so Gazpacho asks for your password." })
           .then(function () { api.dropSession("you"); });
       });
     });
@@ -31,14 +31,14 @@
       ui.confirm({
         title: "Lock the wallet?", yes: "Lock", danger: true,
         body: h("div", {},
-          h("p", {}, "While locked, Gazpacho joins nothing, signs nothing and answers no host until you type your passphrase."),
+          h("p", {}, "While locked, Gazpacho joins nothing, signs nothing and answers no host until you type your password."),
           watch ? h("p", { id: "lock-warning" }, h("b", {}, "While locked, nobody watches your factories and nothing leaves in time. "), "Nothing of yours is inside them to take out; Gazpacho checks what happened when you unlock.") : null)
       }).then(function (yes) {
         var body = { confirm: "lock_wallet" };
         if (!yes) return;
         if (watch) body.confirm_locked = "nobody_watching";
         ui.run(lock, msg, function () {
-          return api.act("POST", "/wallet/lock", body, { why: "Locking while something needs watching is like going offline, so Gazpacho asks for your passphrase." }).then(function (r) {
+          return api.act("POST", "/wallet/lock", body, { why: "Locking while something needs watching is like going offline, so Gazpacho asks for your password." }).then(function (r) {
             if (r && r.wallet === "locked") { api.dropSession("locked"); return; }
             ui.toast("Your signatures are out, so the lock waits until signing ends.");
             gz.app.refreshStatus(false);
@@ -71,7 +71,7 @@
         body = { based_on_version: g.version, member_signing: v };
         if (v === "auto") body.confirm_member_signing = "auto";
         ui.run(save, msg, function () {
-          return api.act("PUT", "/signing", body, { why: "Letting Gazpacho sign by itself changes what it does for you, so it asks for your passphrase again." })
+          return api.act("PUT", "/signing", body, { why: "Letting Gazpacho sign by itself changes what it does for you, so it asks for your password again." })
             .then(function (r) { draw(r, true); });
         });
       });
@@ -144,7 +144,7 @@
           signingBox(r[3]),
           chainBox(r[2]),
           lockBox(s),
-          s.interface && s.interface.peer_check === "unavailable" ? ui.notice("warn", "Other accounts on this computer can reach Gazpacho's page;", "your passphrase is what keeps them out.") : null,
+          s.interface && s.interface.peer_check === "unavailable" ? ui.notice("warn", "Other accounts on this computer can reach Gazpacho's page;", "your password is what keeps them out.") : null,
           h("p", {}, h("a", { href: "#/about" }, "About Gazpacho")));
       });
     }
@@ -241,7 +241,7 @@
         h("h2", {}, "Dedication"),
         h("p", {}, "Gazpacho is dedicated to the developers who paid for our freedom to hold our own keys."),
         h("h2", {}, "Credits"),
-        h("p", {}, "The SuperScalar design by ZmnSCPxj and its reference code; libsecp256k1 and libsecp256k1-zkp; OpenSSL's libcrypto; libsodium; llhttp; the Lightning and Bitcoin specifications; the EFF's large word list for the suggested passphrase (CC BY 3.0 US); the BIP 39 English word list."),
+        h("p", {}, "The SuperScalar design by ZmnSCPxj and its reference code; libsecp256k1 and libsecp256k1-zkp; OpenSSL's libcrypto; libsodium; llhttp; the Lightning and Bitcoin specifications; the EFF's large word list for the suggested password (CC BY 3.0 US); the BIP 39 English word list."),
         h("h2", {}, "Licences"),
         h("p", {}, "Gazpacho is under the MIT licence. The licence texts of the libraries it is built on come with the program's source.")));
     }

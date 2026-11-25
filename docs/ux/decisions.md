@@ -202,3 +202,9 @@ Order and shape:
 4. Watch data never contains anything revocable or superseded.
 5. The watcher's status fields can hold more than one watcher.
 6. P2A anchors go on everything a tower might publish, even at 0.1 sat/vB.
+
+## 2026-11-25
+
+### 17. The person's secret is called a password, not a passphrase (owner, 2026-11-25)
+
+In Bitcoin a "passphrase" is the BIP39 seed extension, which changes which wallet the words open; Gazpacho uses none. Its secret is a password that locks Gazpacho's files on this computer and signs the person in; the 24 words alone restore the wallet. So every shown text says "password", and the sign-in screen is kept minimal, as in Sparrow, Electrum, Ledger Live and Trezor Suite. The API's field names, error codes and paths (`passphrase`, `wrong_passphrase`, ...) are protocol and keep their names for now; renaming them is a separate decision.

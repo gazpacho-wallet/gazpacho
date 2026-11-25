@@ -126,7 +126,7 @@ export function allow(info, fake, extra) {
 
 export async function signIn(page, fake, pass = PASS, base) {
   await page.goto(base || fake.url);
-  await page.getByLabel('Wallet passphrase').fill(pass);
+  await page.getByLabel('Password', { exact: true }).fill(pass);
   await page.getByRole('button', { name: /^(Unlock|Sign in)$/ }).click();
   await expect(page.locator('body')).toHaveAttribute('data-chrome', 'app');
   await expect(page.locator('#doing')).not.toBeEmpty();

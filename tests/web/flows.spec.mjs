@@ -18,7 +18,7 @@ async function start(info, args) {
 async function joinClick(page) {
   await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
   await page.locator('#join').click();
-  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByLabel('Password', { exact: true }).fill(PASS);
   await page.locator('dialog').getByRole('button', { name: 'Join', exact: true }).click();
 }
 
@@ -26,7 +26,7 @@ async function joinClick(page) {
 async function readyAgain(page) {
   await page.locator('#ready-toggle').click();
   await page.waitForTimeout(1100);
-  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByLabel('Password', { exact: true }).fill(PASS);
   await page.locator('dialog').getByRole('button', { name: 'Mark ready' }).click();
 }
 
@@ -178,7 +178,7 @@ test('signing that did not finish is never called "nothing was signed"', async (
   await expect(page.locator('#leave')).toHaveCount(0);
 });
 
-test('conditions: the live fit line, tightening leaves a lobby, loosening asks for the passphrase; several lobbies at once', async ({ page }, info) => {
+test('conditions: the live fit line, tightening leaves a lobby, loosening asks for the password; several lobbies at once', async ({ page }, info) => {
   await start(info, ['--fresh-ms', '500']);
   await signIn(page, fake);
   await join(page);
@@ -207,7 +207,7 @@ test('conditions: the live fit line, tightening leaves a lobby, loosening asks f
   await loosen.getByRole('button', { name: 'Loosen and save' }).click();
   const dlg = page.locator('dialog');
   await expect(dlg).toContainText('This loosens: joining fee, at most.');   // next to the passphrase box
-  await dlg.getByLabel('Wallet passphrase').fill(PASS);
+  await dlg.getByLabel('Password', { exact: true }).fill(PASS);
   await dlg.getByRole('button', { name: 'Continue' }).click();
   await expect(dlg).toHaveCount(0);
   await expect(page.getByLabel('Joining fee, at most')).toHaveValue('5000');
@@ -257,7 +257,7 @@ test('conditions: a loosening whose list changed at saving is shown again, and o
   expect(puts[0].confirm_loosens).toEqual(['max_joining_fee_sat', 'max_fee_ppm']);                 // exactly the list shown
 });
 
-test('host a lobby: terms with a live preview, open with the passphrase, seats, a member seen to refuse, start, funding by itself, live', async ({ page }, info) => {
+test('host a lobby: terms with a live preview, open with the password, seats, a member seen to refuse, start, funding by itself, live', async ({ page }, info) => {
   await start(info);
   await signIn(page, fake);
   await page.goto(fake.url + '#/host');
@@ -278,11 +278,11 @@ test('host a lobby: terms with a live preview, open with the passphrase, seats, 
   const dlg = page.locator('dialog');
   await expect(dlg).toContainText('Opening sets aside 3,000,000 sats');
   await expect(dlg).toContainText('publishes the funding by itself');
-  await dlg.getByLabel('Wallet passphrase').fill('not the passphrase at all');
+  await dlg.getByLabel('Password', { exact: true }).fill('not the passphrase at all');
   await dlg.getByRole('button', { name: 'Sign and open' }).click();
   await expect(dlg.locator('[data-code="wrong_passphrase"]')).toBeVisible();
   await page.waitForTimeout(1100);
-  await dlg.getByLabel('Wallet passphrase').fill(PASS);
+  await dlg.getByLabel('Password', { exact: true }).fill(PASS);
   await dlg.getByRole('button', { name: 'Sign and open' }).click();
 
   await expect(page.locator('#host-lobby')).toHaveAttribute('data-stage', 'open');
@@ -353,7 +353,7 @@ test('a hosted lobby can be cancelled before signing; the coins set aside are fr
   await expect(page.locator('#open-lobby')).toBeEnabled();
   await page.waitForTimeout(1100);
   await page.locator('#open-lobby').click();
-  await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+  await page.locator('dialog').getByLabel('Password', { exact: true }).fill(PASS);
   await page.locator('dialog').getByRole('button', { name: 'Sign and open' }).click();
   await expect(page.locator('#host-funding')).toContainText('3,000,000 sats');
   await page.locator('#cancel').click();
@@ -528,7 +528,7 @@ test('L2: the 24 words shown from Settings stay through a dropped and resumed st
     await page.goto(base + '/#/settings/words');
     await page.getByRole('button', { name: 'Show the 24 words' }).click();
     await page.waitForTimeout(1100); // one passphrase attempt a second (4.3)
-    await page.locator('dialog').getByLabel('Wallet passphrase').fill(PASS);
+    await page.locator('dialog').getByLabel('Password', { exact: true }).fill(PASS);
     await page.locator('dialog').getByRole('button', { name: 'Show the words' }).click();
     await page.getByRole('button', { name: 'Show the words' }).click();
     await expect(page.locator('ol.words li')).toHaveCount(24);
