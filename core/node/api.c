@@ -428,12 +428,19 @@ gz_status_t gz_api_load(gz_node_t *c, const gz_record_t *rec)
         *r = tmp;
         return GZ_OK;
     case GZ_RECORD_CONDITIONS:
-        if (!only_fields(b, 0x0eu) || gz_rec_find(b, 2, &v) != 1 || v.len > COND_MAX || !arg(b, 4, 4, &w))
+        if (!only_fields(b, 0x1eu) || gz_rec_find(b, 2, &v) != 1 || v.len > COND_MAX || !arg(b, 4, 4, &w))
             return GZ_ERR_CORRUPT;
         if (!gz_ls_cond_decode(v.data, v.len, &c->api.cond)) return GZ_ERR_CORRUPT;
-        memcpy(c->api.cond_bytes, v.data, v.len);
+        if (v.len) memcpy(c->api.cond_bytes, v.data, v.len); /* none saved: no bytes, and v.data may be NULL */
         c->api.cond_len = v.len;
         c->api.cond_version = gz_get_u32(w.data);
+        /* The last tightening (8): absent in an older record, which counts every
+         * save as one; never after the record's own version. */
+        c->api.cond_tightened = c->api.cond_version;
+        if (gz_rec_find(b, 8, &x) == 1) {
+            if (x.len != 4 || gz_get_u32(x.data) > c->api.cond_version) return GZ_ERR_CORRUPT;
+            c->api.cond_tightened = gz_get_u32(x.data);
+        }
         c->api.preset[0] = 0;
         if (gz_rec_find(b, 6, &x) == 1) {
             if (!preset_ok(x)) return GZ_ERR_CORRUPT;
@@ -459,9 +466,17 @@ gz_status_t gz_api_load(gz_node_t *c, const gz_record_t *rec)
 /* After the walk: the saved signing setting is the one in force for this
  * run (local-api.md 14.3: a change takes effect at the next start), and
  * gz_node_member_signing gives it to the program for its key routing. An
- * ended lobby's ids run their 30 days from this start. */
-void gz_api_loaded(gz_node_t *c)
+ * ended lobby's ids run their 30 days from this start. A member slot that
+ * joined under a conditions version the journal does not hold (slot_opened
+ * 24 above the conditions record's version, or with none) is corrupt. */
+gz_status_t gz_api_loaded(gz_node_t *c)
 {
+    for (int i = 0; i < GZ_NODE_MAX_SLOTS; i++) {
+        const slot_t *s = &c->slots[i];
+        if ((s->state == SLOT_OPEN || s->state == SLOT_LEFT_OUT) && s->kind == SLOT_KIND_LOBBY && !s->host &&
+            s->cond_seen > (c->api.have_cond ? c->api.cond_version : 0))
+            return GZ_ERR_CORRUPT;
+    }
     if (c->api.have_signing) {
         c->cfg.member_signing = (gz_member_signing_t)c->api.signing_saved;
         c->cfg.host_funding = (gz_host_funding_t)c->api.host_funding_saved;
@@ -469,6 +484,7 @@ void gz_api_loaded(gz_node_t *c)
     for (int k = 0; k < API_MAX_IDS; k++)
         if (c->api.ids[k].used && !c->api.ids[k].ended_ms && !slot_holds(c, c->api.ids[k].scope))
             c->api.ids[k].ended_ms = wall(c);
+    return GZ_OK;
 }
 
 int gz_api_held(const gz_node_t *c, const uint8_t scope[32])
@@ -799,7 +815,7 @@ static gz_status_t cmd_signing(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t *o
 /* What `to` loosens against `from` (13.2 `loosens`): the codes of view.h's
  * GZ_COND_L_*, increasing, each once, into `l` (room for 8 + GZ_TERMS_MAX_ADJ).
  * A limit at its "no limit" value (terms.h) is the loosest it can be. */
-static size_t loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditions_t *to, uint8_t *l)
+size_t gz_api_loosens(const gz_lobby_conditions_t *from, const gz_lobby_conditions_t *to, uint8_t *l)
 {
     const gz_terms_limits_t *a = &from->limits, *b = &to->limits;
     size_t n = 0;
@@ -872,12 +888,13 @@ static gz_status_t cmd_conditions(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t
     size_t at = 0, nl, k = 0, from;
     char *p = c->api.params;
     unsigned blocked;
+    uint32_t tightened;
     gz_status_t st;
     if (gz_rec_find(cmd, 12, &v) != 1 || v.len > COND_MAX || !gz_ls_cond_decode(v.data, v.len, &nc) ||
         !arg(cmd, 14, 4, &b) || (gz_rec_find(cmd, 18, &pr) == 1 && !preset_ok(pr)))
         return result(c, cmd, 400, "bad_value", NULL, NULL, out);
     if (gz_rec_find(cmd, 18, &pr) != 1) pr.len = 0;
-    nl = loosens(c->api.have_cond ? &c->api.cond : &NONE, &nc, l);
+    nl = gz_api_loosens(c->api.have_cond ? &c->api.cond : &NONE, &nc, l);
     if (nl && gz_rec_find(cmd, GZ_CMD_REC_DIGEST, &d) != 1)
         return result(c, cmd, 403, "fresh_sign_in_needed", NULL, NULL, out);
     if (gz_rec_find(cmd, 16, &e) != 1) e.len = 0;
@@ -904,6 +921,14 @@ static gz_status_t cmd_conditions(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t
     gz_put_u32(x, c->api.cond_version + 1);
     if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 4, x, 4);
     if (st == GZ_OK && pr.len) st = gz_rec_put(rec, sizeof c->api.rec, &at, 6, pr.data, pr.len);
+    /* Whether it tightens anything (what the old conditions loosen against
+     * the new): only such a save reaches the lobbies joined before it, so the
+     * same conditions saved anew, or a loosening, never leave a lobby joined
+     * with confirmed looser conditions (confirmation of #77, N2). */
+    tightened = gz_api_loosens(&nc, c->api.have_cond ? &c->api.cond : &NONE, l) ? c->api.cond_version + 1
+                                                                                  : c->api.cond_tightened;
+    gz_put_u32(x, tightened);
+    if (st == GZ_OK) st = gz_rec_put(rec, sizeof c->api.rec, &at, 8, x, 4);
     if (st != GZ_OK) return gz_c_bug(c, ENG_NODE);
     gz_record_t rr = {GZ_RECORD_CONDITIONS, {rec, at}};
     gz_action_t a = {.kind = GZ_ACTION_SAVE};
@@ -914,9 +939,10 @@ static gz_status_t cmd_conditions(gz_node_t *c, gz_bytes_t cmd, gz_action_list_t
     c->owner[out->count - 1 - c->base] = (int8_t)ENG_NODE;
     c->api.have_cond = 1;
     c->api.cond = nc;
-    memcpy(c->api.cond_bytes, v.data, v.len);
+    if (v.len) memcpy(c->api.cond_bytes, v.data, v.len);
     c->api.cond_len = v.len;
     c->api.cond_version++;
+    c->api.cond_tightened = tightened;
     if (pr.len) memcpy(c->api.preset, pr.data, pr.len);
     c->api.preset[pr.len] = 0;
     c->api.cond_left = 0;

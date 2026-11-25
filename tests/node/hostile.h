@@ -116,6 +116,7 @@ static inline gz_status_t hostile_step(h_t *h, src_t *s)
         const char *addr = (src_byte(s) & 3) ? addrs[0] : addrs[src_byte(s) % (sizeof addrs / sizeof addrs[0])];
         uint16_t code = codes[src_byte(s) % (sizeof codes / sizeof codes[0])];
         uint8_t c2[2], a[64], role = src_byte(s) & 1, mk[33];
+        memset(a, 0, sizeof a); /* field 14 takes 4 bytes of it even when fewer were drawn (MSan) */
         if (bug_command(code)) return GZ_OK;
         gz_put_u16(c2, code);
         /* Now and then an API request (P6a): an id, a method, a path and a

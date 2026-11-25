@@ -204,7 +204,9 @@
                                                   14 created ms (u64), 15 the answer's error code */
 #define GZ_RECORD_SIGNING_SETTING  0x000d0024u /* 2 member_signing (u8), 4 host_funding (u8), 6 version (u32) */
 #define GZ_RECORD_CONDITIONS       0x000d0008u /* 2 the conditions (GZ_CMD_API_SET_CONDITIONS's 12; may be
-                                                  empty), 4 version (u32), 6 preset (ASCII; absent: custom) */
+                                                  empty), 4 version (u32), 6 preset (ASCII; absent: custom),
+                                                  8 the version of the last save that tightened anything
+                                                  (u32, at most 4; absent: 4) */
 
 #define GZ_LOCAL_ID_MAX            64
 /* Request ids kept (7.4: until the object ended and 30 days passed): 64

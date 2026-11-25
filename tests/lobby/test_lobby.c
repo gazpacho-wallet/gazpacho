@@ -4634,6 +4634,47 @@ static void test_start_now(void)
     w_free(&w);
 }
 
+
+/* Review of #77, L1: the early start follows the start rule's failed-check
+ * guard. After a ready check that ends without a start, a new one needs a
+ * seat event first (decision 8), also when the person starts it. */
+static void test_start_now_guard(void)
+{
+    static world_t w;
+    int i;
+    w_init(&w, 3, 84, NULL);
+    for (i = 1; i <= 3; i++) w.node[i].cond.min_members = 4;   /* each signs only with four: no start at three */
+    w_start(&w);
+    w_run(&w, 400, 0);
+    CHECK(w.node[0].host->state == GZ_LOBBY_OPEN && gz_lobby_host_ready_count(w.node[0].host) == 3);
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && sends(GZ_KIND_READY_CHECK) == 3);
+    w_submit(&w.node[0], &A.l);
+    w_run(&w, 1000, 0);
+    /* The check ended without a start: Open again, the same three seats ready. */
+    CHECK(w.failures == 0 && w.node[0].host->state == GZ_LOBBY_OPEN && w.node[0].host->check_failed &&
+          w.node[0].n_handoffs == 0 && gz_lobby_host_ready_count(w.node[0].host) == 3);
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && refused(GZ_CMD_START) && A.l.count == 1);
+    CHECK(w.node[0].host->state == GZ_LOBBY_OPEN);
+    /* A seat event (a member unreadies and readies again): allowed again. */
+    acts_reset();
+    CHECK(gz_lobby_member_unready(w.node[1].mem, &A.l) == GZ_OK);
+    w_submit(&w.node[1], &A.l);
+    w_run(&w, 50, 0);
+    acts_reset();
+    CHECK(gz_lobby_member_ready(w.node[1].mem, &A.l) == GZ_OK);
+    w_submit(&w.node[1], &A.l);
+    w_run(&w, 100, 0);
+    CHECK(gz_lobby_host_ready_count(w.node[0].host) == 3);
+    acts_reset();
+    CHECK(gz_lobby_host_start(w.node[0].host, &A.l) == GZ_OK && !refused(GZ_CMD_START) && sends(GZ_KIND_READY_CHECK) == 3);
+    w_submit(&w.node[0], &A.l);
+    w_run(&w, 1000, 0);
+    CHECK(w.failures == 0);
+    w_free(&w);
+}
+
 /* T6 in a running lobby (messages.md test 16). */
 static void test_world_values(void)
 {
@@ -4769,6 +4810,7 @@ int main(void)
     test_review_b_world();
     test_tighten();
     test_start_now();
+    test_start_now_guard();
     CHECK(OVERSIZE == 0);
     return check_done();
 }

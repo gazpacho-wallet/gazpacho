@@ -162,9 +162,13 @@
  *                     GZ_CMD_API_SET_CONDITIONS, view.h, or none), 20
  *                     auto-join (u8, default 1), 24 unlock (u8: 1 when given
  *                     with the passphrase under AT_JOIN: the lobby's gate is
- *                     open from the join, as LOBBY_READY's 14). The saved conditions stay
- *                     in force over a lobby's own: one they fit worse is
- *                     left before its round (local-api.md 13.2)
+ *                     open from the join, as LOBBY_READY's 14), 22 confirm_loosens. Own
+ *                     conditions looser than the saved ones need an API
+ *                     request (403 fresh_sign_in_needed) and in 22 exactly
+ *                     what they loosen (409 confirm_mismatch, params.loosens;
+ *                     view.h's codes). A later change of the saved conditions
+ *                     applies to the lobby: one they then fit worse than its
+ *                     copy is left before its round (local-api.md 13.2)
  *   LOBBY_READY       member: 12 scope, 14 unlock (u8: 1 when given with the
  *                     passphrase, which opens that lobby's signing gate)
  *   LOBBY_UNREADY, LOBBY_LEAVE   member: 12 scope

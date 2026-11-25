@@ -486,8 +486,10 @@ gz_status_t gz_lobby_host_cancel(gz_lobby_host_t *h, uint16_t reason, gz_action_
 /* The person's early start (local-api.md 15.2, "start now"): the ready check
  * begins now, before the start rule would begin it, exactly as the rule
  * begins it (the freeze saved before the first check). Only while Open, not
- * paused (cfg.paused), and with at least the terms' minimum counted as the
- * start rule counts them (gz_lobby_host_ready_count). Otherwise
+ * paused (cfg.paused), with at least the terms' minimum counted as the
+ * start rule counts them (gz_lobby_host_ready_count), and, as for the rule,
+ * not again after a check that ended without a start until a seat event
+ * (the failed-check guard, decision 8). Otherwise
  * GZ_NOTE_COMMAND_REFUSED (GZ_CMD_START) and nothing else. A check that ends
  * without a start returns the lobby to Open, under the rule again. */
 gz_status_t gz_lobby_host_start(gz_lobby_host_t *h, gz_action_list_t *out);

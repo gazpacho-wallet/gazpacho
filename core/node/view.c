@@ -457,6 +457,9 @@ static size_t status_view(gz_node_t *c)
 {
     vw_t w = {c->view.body, sizeof c->view.body, 0, 0};
     uint8_t p[9], sg[7], d[11 + GZ_LOCAL_ID_MAX], *e = c->view.seats;
+    /* at the function's scope: a block's array this large makes an ASan build
+     * call __asan_(un)poison_stack_memory, outside calls the isolation check refuses */
+    uint8_t cv[4 + COND_MAX];
     size_t n = 0, pl = 0;
     int best = -1, left_out = 0;
     uint8_t best_doing = 0;
@@ -513,7 +516,6 @@ static size_t status_view(gz_node_t *c)
     if (n) put(&w, GZ_VST_LOBBIES, e, n);
     if (left_out) put16(&w, GZ_VST_LEFT_OUT, (uint16_t)left_out);
     if (c->api.have_cond) {
-        uint8_t cv[4 + COND_MAX];
         gz_put_u32(cv, c->api.cond_version);
         memcpy(cv + 4, c->api.cond_bytes, c->api.cond_len);
         put(&w, GZ_VST_CONDITIONS, cv, 4 + c->api.cond_len);
