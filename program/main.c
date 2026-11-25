@@ -417,7 +417,26 @@ static int wait_unlocked(const gzp_options_t *o)
         gzp_log("wallet state=%s", state_name(gzp_wallet_state(wallet)));
         if (o->test_reveal_check) reveal_check(o);
         if (o->test_seed_check) seed_check(1);
-        if (o->test_check_forged) check_forged(o);
+        if (o->test_check_forged) {
+            /* review A's L3: right after check_forged's last wrong CHECK, begin
+             * at once, inside that answer's delay */
+            static gzp_unlock_job_t bj;
+            gzp_unlock_result_t b0, b1;
+            static const char bw[] = "not this wallet's passphrase, in the delay";
+            check_forged(o);
+            memset(&b0, 0, sizeof b0);
+            gzp_wallet_attempts(wallet, wall_ms(), &b0);
+            memset(&bj, 0, sizeof bj);
+            bj.op = GZP_UNLOCK_OP_CHECK;
+            bj.passphrase = (const uint8_t *)bw;
+            bj.passphrase_len = sizeof bw - 1;
+            gzp_wallet_begin(wallet, &bj);
+            gzp_wallet_finish(wallet, &bj, wall_ms());
+            memset(&b1, 0, sizeof b1);
+            gzp_wallet_attempts(wallet, wall_ms(), &b1);
+            gzp_log("test-begin-in-delay status=%s before=%u after=%u", gzp_unlock_status_name(bj.result.status),
+                    b0.wrong_in_row, b1.wrong_in_row);
+        }
         return 0;
     }
 #else
@@ -739,11 +758,25 @@ int main(int argc, char **argv)
                 rc = GZP_EXIT_FAILED;
                 break;
             }
+            /* The transport's static key comes from the seed: it goes with the
+             * lock, as MSK and the seed do (review A's confirmation of PR 54, M-1). */
+            gzp_net_forget_key(&net);
+            gzp_log("transport-key wiped zero=%d peers=%d", gzp_net_key_is_zero(&net), net.peers != NULL);
             if (gzp_exec_wait_unlocked(&ex) == GZP_RUN_STOP) {
                 rc = 0;
                 stopped = 1;
                 break;
             }
+            /* Derived again from the unlocked seed; the same wallet's, or no start. */
+            if (gzp_wallet_transport_key(wallet, key_ok, secp, priv) != 0 || gzp_net_rekey(&net, priv) != 0) {
+                OPENSSL_cleanse(priv, sizeof priv);
+                fprintf(stderr, "gazpacho: the unlocked wallet does not give this transport's key\n");
+                rc = GZP_EXIT_DATA;
+                break;
+            }
+            OPENSSL_cleanse(priv, sizeof priv);
+            gzp_hex(net.pub, 33, hex);
+            gzp_log("transport-key restored key=%s", hex);
             continue;
         }
         if (r == GZP_RUN_POISONED) {

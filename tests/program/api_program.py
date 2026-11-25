@@ -293,6 +293,12 @@ def main():
         # 6b. lock stops the node (unlock.h; local-api.md 4.7): a locked program
         # answers no host, and an unlock starts the node again (review M5)
         check(p.wait_line(r"node-stopped-locked") is not None, "lock stops the node", p.lines[-6:])
+        # The transport's static key (from the seed; the host's long-term key)
+        # goes with the lock and comes back the same at the unlock (review A's
+        # confirmation of PR 54, M-1).
+        hk = p.wait_line(r"host key=([0-9a-f]{66})", timeout=1)
+        check(p.wait_line(r"transport-key wiped zero=1 peers=0", timeout=5) is not None,
+              "lock wipes the transport's static key; no transport holds it")
         check(p.wait_line(r"ready incarnation=1 ") is not None and not can_connect(p.listen),
               "a locked program answers no host: its listener is closed")
         time.sleep(1.2)
@@ -305,6 +311,9 @@ def main():
             time.sleep(0.2)
         check(can_connect(p.listen), "the listener is open again after the unlock")
         check(p.wait_line(r"ready incarnation=2 ") is not None, "the node started as a new incarnation")
+        rk = p.wait_line(r"transport-key restored key=([0-9a-f]{66})", timeout=1)
+        check(hk is not None and rk is not None and rk.group(1) == hk.group(1),
+              "the unlock derives the same transport key again from the seed", (hk and hk.group(1), rk and rk.group(1)))
         st, s = p.call("GET", "/status")
         check(st == 200 and s and s.get("wallet") == "ready", "status after the unlock: ready", s and s.get("wallet"))
     finally:

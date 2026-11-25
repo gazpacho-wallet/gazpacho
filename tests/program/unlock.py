@@ -203,6 +203,9 @@ def main():
         fg = p.wait_for(r"test-check forged status=(\S+) wrong_in_row=(\d+)", timeout=90)
         wr = p.find(r"test-check wrong status=(\S+)")[1]
         rt = p.find(r"test-check right status=(\S+) wrong_in_row=(\d+)")[1]
+        bd = p.find(r"test-begin-in-delay status=(\S+) before=(\d+) after=(\d+)")[1]
+        check(bd is not None and bd.group(1) == "busy" and bd.group(2) == bd.group(3) and bd.group(2) != "0",
+              "9: begin itself refuses a try inside the delay, not counted (review A's L3; %s)" % (bd.group(0) if bd else None))
         check(rt is not None and rt.group(1) == "ok" and rt.group(2) == "0",
               "9: the right passphrase passes CHECK and clears the count (%s)" % (rt.group(0) if rt else None))
         check(wr is not None and wr.group(1) == "wrong", "9: a wrong passphrase: CHECK says wrong")

@@ -521,8 +521,18 @@ static int precount(gzp_wallet_t *w, gzp_unlock_job_t *job, job_keys_t *k)
 {
     struct timespec ts;
     int64_t now_ms;
+    gz_sc_attempts_t a;
     clock_gettime(CLOCK_REALTIME, &ts);
     now_ms = (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    /* Inside the delay begin itself refuses, counting nothing (review A, L3):
+     * the caller's attempts() is the first check, this the second. */
+    gz_sc_attempts_load(&w->sc, secs(now_ms), &a);
+    if (gz_sc_attempts_wait(&a, secs(now_ms)) > 0) {
+        set_result(&job->result, GZP_UNLOCK_BUSY, NULL);
+        fill_attempts(&job->result, &a, secs(now_ms));
+        job->result.status = GZP_UNLOCK_BUSY;
+        return -1;
+    }
     if (count_attempt(w, 1, now_ms, NULL) != 0) {
         set_result(&job->result, GZP_UNLOCK_STORAGE_FAILED, "attempts");
         return -1;

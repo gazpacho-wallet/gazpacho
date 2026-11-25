@@ -627,6 +627,33 @@ int gzp_net_reset(gzp_net_t *n)
     return n->peers ? 0 : -1;
 }
 
+void gzp_net_forget_key(gzp_net_t *n)
+{
+    gz_peers_free(n->peers); /* its copy of the configuration, the key in it, is wiped */
+    n->peers = NULL;
+    OPENSSL_cleanse(n->cfg.static_key, sizeof n->cfg.static_key);
+}
+
+int gzp_net_key_is_zero(const gzp_net_t *n)
+{
+    unsigned char acc = 0;
+    for (size_t i = 0; i < sizeof n->cfg.static_key; i++) acc |= n->cfg.static_key[i];
+    return acc == 0;
+}
+
+int gzp_net_rekey(gzp_net_t *n, const uint8_t priv[32])
+{
+    secp256k1_pubkey pk;
+    uint8_t pub[33];
+    size_t len = sizeof pub;
+    if (!secp256k1_ec_pubkey_create(n->secp, &pk, priv) ||
+        !secp256k1_ec_pubkey_serialize(n->secp, pub, &len, &pk, SECP256K1_EC_COMPRESSED) || memcmp(pub, n->pub, 33) != 0)
+        return -1; /* another wallet's key: this transport's identity is n->pub */
+    memcpy(n->cfg.static_key, priv, 32);
+    if (!n->peers) n->peers = gz_peers_new(&n->cfg);
+    return n->peers ? 0 : -1;
+}
+
 void gzp_net_free(gzp_net_t *n)
 {
     size_t i;
