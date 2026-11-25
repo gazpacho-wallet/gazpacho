@@ -463,8 +463,8 @@ uint64_t gz_fund_funding_fee_bound(const gz_fund_config_t *cfg, size_t n_coins);
 typedef enum {
     GZ_FUND_FUNDS_OK = 1,      /* the wallet can plan the set-aside, with change, now */
     GZ_FUND_FUNDS_SHORT,       /* it cannot: refuse with `funds_short` */
-    GZ_FUND_FUNDS_UNKNOWN      /* it cannot tell (no can_plan, or it answers -1): refuse as
-                                  for `no_wallet`. Never treat it as enough */
+    GZ_FUND_FUNDS_UNKNOWN      /* it cannot tell (no can_plan, or it answers -1): refuse with
+                                  `coins_unknown` (local-api 8.1). Never treat it as enough */
 } gz_fund_funds_t;
 /* Asks the wallet port's dry run (can_plan) whether a funding of
  * `set_aside_sat` (gz_fund_set_aside_sat of the lobby's terms, plus what

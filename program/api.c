@@ -12,6 +12,7 @@
 #include "gazpacho/envelope.h"
 #include "api.h"
 #include "unlock_impl.h"
+#include "wport.h"
 
 /* ---- the passphrase layer behind the server's passphrase operations ---------- */
 
@@ -167,6 +168,23 @@ static int status(void *be, gz_api_status_facts *f)
     f->watcher_runs = 0;
     f->watching_reason = "no_bundle";
     f->as_of_height = f->chain_height;
+    /* The host's coin list (11.2 coins; review of PR 88, M-1): its state, and
+     * coins_incomplete while it cannot be read or was published without an
+     * address (11.4). */
+    if (a->wport) {
+        gzp_wport_coins_t c;
+        gzp_wport_coins(a->wport, &c);
+        if (gzp_wport_coins_json(&c, a->coins_json, sizeof a->coins_json) > 0) {
+            f->coins_json = a->coins_json;
+            if (gzp_wport_coins_attention(&c) && f->nattention < GZ_API_MAX_ATTENTION) {
+                gz_api_attention *t = &f->attention[f->nattention++];
+                memset(t, 0, sizeof *t);
+                t->id = "att_coins";
+                t->code = "coins_incomplete";
+                t->params_json = a->coins_json;
+            }
+        }
+    }
     return 0;
 }
 

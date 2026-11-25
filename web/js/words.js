@@ -235,7 +235,9 @@
     refused_to_sign: "The app refused to sign for a lobby. Nothing was signed. Nothing moved.",
     unlock_to_take_part: "A seat of yours is locked: it does not take part until you mark ready again with your passphrase.",
     host_can_start: "Enough members are ready in a lobby you host: you can start it now.",
-    host_funds_short: "A lobby you host needs more coins than this wallet has free."
+    host_funds_short: "A lobby you host needs more coins than this wallet has free.",
+    coins_unknown: "Gazpacho cannot yet tell which coins this wallet holds, so it cannot fund a lobby. It keeps asking the chain server.",
+    coins_incomplete: "Gazpacho could not read all of this wallet's coins. Some may be missing from what it can spend on a lobby."
   };
   var tiers = { at_risk: "At risk", act_now: "Act now", important: "Important", recommended: "Recommended", heads_up: "Heads-up", record: "Record" };
   var activityKinds = {
@@ -265,6 +267,7 @@
   var cannotOpen = {
     problems: "The terms have problems (listed above).", funds_short: "This wallet does not hold enough free coins to fund the lobby at its target.",
     no_wallet: "There is no wallet yet.", chain_in_doubt: "Gazpacho cannot trust its view of the chain right now.",
+    coins_unknown: "Gazpacho cannot yet tell which coins this wallet holds.",
     already_hosting: "This build allows one hosted lobby at a time, and you are hosting one.", host_node_missing: "Hosting needs a Lightning node, which is not set up."
   };
   var headlines = {

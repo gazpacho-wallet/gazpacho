@@ -41,6 +41,17 @@
 #define GZP_WPORT_COINS 256
 #define GZP_WPORT_PLANS 8
 #define GZP_WPORT_TIP_RETRY_MS 15000   /* a tip that could not be read is asked again */
+#define GZP_WPORT_GAP_MAX 256          /* the most addresses of one chain a scan reads */
+
+/* The coin list's state (local-api.md 11.2, `coins`). */
+enum { GZP_COINS_SCANNING = 0, GZP_COINS_COMPLETE, GZP_COINS_INCOMPLETE };
+typedef struct {
+    int state;                /* GZP_COINS_* */
+    const char *reason;       /* NULL, tip, lookup, address_too_large, address_refused, too_many_coins */
+    int chain, index;         /* the address, for lookup, address_too_large, address_refused; -1 otherwise */
+    const char *error;        /* the chain port's answer for it (unreachable, malformed, ...), or NULL */
+    unsigned attempts;        /* scans made so far */
+} gzp_wport_coins_t;
 
 typedef struct {
     const secp256k1_context *secp;
@@ -61,10 +72,12 @@ typedef struct {
     pthread_mutex_t mu;           /* coins, n_coins, held and next_change, between the scan and the port */
     pthread_t th;
     int th_on;
-    volatile int stop;
+    _Atomic int stop;             /* read by the scan without the mutex, set by close under it */
     const char *url;
     uint32_t gap;
     void *http_live;              /* the scan's HTTP client while it runs, to interrupt it */
+    gzp_wport_coins_t coin_list;  /* the coin list's state, under mu */
+    uint8_t refusals[2][GZP_WPORT_GAP_MAX];   /* an address's refusals in a row, under the scan */
 } gzp_wport_t;
 
 /* The master key from the unlocked seed. `burial` is the funding engine's B, as the node
@@ -82,12 +95,28 @@ int gzp_wport_scan_start(gzp_wport_t *w, const char *url, uint32_t gap);
  * read at. The coin list `plan` and `can_plan` offer. 0, or -1. */
 int gzp_wport_publish(gzp_wport_t *w, const gzt_coin *coins, const uint32_t *heights, size_t n, uint32_t tip);
 /* One scan of the first `gap` receive and change addresses over `view`, published
- * through gzp_wport_publish with the tip. 1: published; 0: the tip could not be
- * read, nothing is published; -1: stopped. The scan thread's core, for tests too. */
+ * through gzp_wport_publish with the tip, keeping the GZP_WPORT_COINS largest
+ * confirmed coins of the scan. 1: published (complete, or incomplete
+ * with the address left out: too many outputs even at the chain port's cap, or
+ * refused 3 scans in a row; or more coins than the list holds); 0: the tip or
+ * an address could not be asked (unreachable, a 5xx, a malformed answer), or a
+ * refusal not yet repeated, nothing is published; -1: stopped. Each call is an
+ * attempt of gzp_wport_coins. The scan thread's core, for tests too. */
 int gzp_wport_scan_view(gzp_wport_t *w, const gz_chain *view);
 /* gzp_wport_scan_view until it publishes or the port is stopped, `wait_ms` apart:
  * 1, or -1 when stopped. */
 int gzp_wport_scan_until(gzp_wport_t *w, const gz_chain *view, uint32_t wait_ms);
+/* The coin list's state, under the mutex. */
+void gzp_wport_coins(gzp_wport_t *w, gzp_wport_coins_t *out);
+/* It as the JSON of status.coins (local-api.md 11.2): the length written, or -1. */
+int gzp_wport_coins_json(const gzp_wport_coins_t *c, char *buf, size_t cap);
+/* 1 while status should carry the coins_incomplete attention item (11.4). */
+int gzp_wport_coins_attention(const gzp_wport_coins_t *c);
+/* The error code a host open or start answers for the funds check's result
+ * (local-api.md 8.1, 15.2): NULL for OK. */
+const char *gzp_wport_funds_error(gz_fund_funds_t r);
+/* 1 if the scan's attempt `n` is logged (the first, then every 10th). */
+int gzp_wport_log_attempt(unsigned n);
 /* Test build, no chain: one invented coin paying the first receive address. */
 int gzp_wport_invent(gzp_wport_t *w);
 void gzp_wport_close(gzp_wport_t *w);

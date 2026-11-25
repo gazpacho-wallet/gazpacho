@@ -89,6 +89,11 @@ def answer(path):
     tip = state["tip"]
     if path == "/blocks/tip/height":
         return 200, str(tip).encode()
+    if path.startswith("/scripthash/") and path.endswith("/utxo"):
+        # what a real Esplora server answers for an address with no unspent
+        # output (ports/chain/tests/data/README.md): the wallet port's scan
+        # finds no coins, its list is complete and it asks nothing again
+        return 200, b"[]"
     if path == "/block-height/0":
         return 200, state["genesis"].encode()
     if path.startswith("/block-height/"):

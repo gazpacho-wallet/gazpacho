@@ -59,6 +59,8 @@ class H(http.server.BaseHTTPRequestHandler):
             body = HASH[int(self.path.rsplit("/", 1)[1])]
         elif self.path.startswith("/block/") and self.path.endswith("/header") and self.path[7:71] in HEADER:
             body = HEADER[self.path[7:71]]
+        elif self.path.startswith("/scripthash/") and self.path.endswith("/utxo"):
+            body = "[]"   # an address with no unspent output, as a real Esplora server answers
         else:
             self.send_response(404)
             self.end_headers()

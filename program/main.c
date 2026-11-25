@@ -702,6 +702,7 @@ int main(int argc, char **argv)
      * node's notices. It outlives every incarnation, as the transport does. */
     if ((rc = gzp_api_open(&api, &opt, &dir, network == GZ_NET_TESTNET4 ? "testnet4" : "signet", &chain)) != 0) goto out;
     have_api = 1;
+    if (opt.role == GZP_ROLE_HOST) api.wport = &wport;   /* status.coins (local-api.md 11.2) */
 
 #ifdef GZP_TEST_BUILD
     gzp_testping_init(&tp, opt.test_pings, opt.test_ping_ms, opt.name, opt.test_engines);
