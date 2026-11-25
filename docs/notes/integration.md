@@ -1,6 +1,6 @@
 # Integration: Slice 1 end to end (P4.6)
 
-Draft 9, 2026-11-24. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
+Draft 10, 2026-11-24. Branch `integration-slice1`, a draft pull request (#66) that is **never merged**. It merges the
 open pull requests of Slice 1 onto `main`, in this order: #51 (`p5-p6-api`), #52 (`composite-p4-3`), #54
 (`s5-s6-program`), #53 (`keys-p8`), #56 (`funding-p45`), #55 (`composite-p6a`). Then it wires them together so
 that one host and three members, each a separate `gazpacho` process, form a factory on the local test chain
@@ -44,6 +44,7 @@ Base: `main` at `4aab237` (#64). Heads merged: #51 `cd98aed`, #52 `91aa062`, #54
 | #52 again, `8f00241` (`main` merged in; `aa90174`, review B's M1: the ack-time depth is the round's own; `4b2faad`, routing of held scopes) | `tests/node/test_node_lobby.c`, two hunks | Both sides added node tests after `test_timer_of_ended_lobby` and to `main`'s list (this branch: #55's view and API tests; #52: `test_may_ack_depth`, `test_route_held`). The union taken first cut through a function and the file no longer compiled; repaired in its own commit (this branch's file with #52's own change to it applied on top). The merged tree also did not build: #52 drops the slot's `own_depth`, which F3 read; F12 |
 | `main` at `a75d4ac` (#51 merged into `main`) | none | |
 | #55 again, `397fadb` (review A: the pause by 11.3's table, the signing setting in force for the program, request ids kept by 7.4; `main` merged in) | `CMakeLists.txt`, `program/CMakeLists.txt`, `program/executor.c`, `tests/node/test_node_lobby.c` | `node_watch_release`, which both sides moved: kept once. `program/CMakeLists.txt`: this branch's tests and #55's `program_signing_setting`. `executor.c`: #53's `keys_ready_gate` (W4) kept before `deliver_command`, which takes #55's `api_rid`; the gate's call kept beside #55's request id; `cfg.wallet` (F3) kept beside #55's `member_signing` until the load. `test_node_lobby.c`: #52's two tests and #55's review-A tests, each function closed |
+| `main` at `02aaea8` (#62, #72, #73, #74, #76) | none | |
 
 ## 2. The wiring list: every stand-in still used between components
 
@@ -83,6 +84,7 @@ Base: `main` at `4aab237` (#64). Heads merged: #51 `cd98aed`, #52 `91aa062`, #54
 | F11 | `program_slice1` mines until every process shows Active and its own funding engine has judged the factory Live (`bury` and case 3), within the same time limits; it stopped at Active, which a member shows from the host's status, and checked Live at once (B15). No check changed | `program_slice1` case 3 (two of four runs before) | P4.6 |
 | F12 | The funding engine's member side (`gz_fd_member_acked`, F3) takes the member's leaf depth from the round itself (`gz_sg_own_depth`, worked out as #52's `gz_sg_may_ack` now does) instead of the slot's `own_depth`, which #52 removed; no depth fails closed (`fund-acked-no-depth`, no watch). The old field had M1's flaw here too: 0 after a restart, a lenient C11 | The merged tree's build (`signslot.c`: no member `own_depth`); then `program_slice1` and `program_ack_depth` | #56's engine is `main`'s now: P4.6 keeps it until the composite's funding wiring (F3) is owned |
 | F13 | H3's one line (view-objects.md 6): once the start has walked storage, the executor sets the key routing from the signing setting in force (`gzp_keys_set_role(ex->keys, host, ex->member_signing == AT_JOIN)`), where it logs `member-signing in-force`; `main.c` set it from `--member-signing` alone | `program_keys_setting` (this branch): without F13 it fails three checks (case 1, option at-join and saved auto: m1 cannot sign, no Funding; case 2, option auto and saved at_join: a ready with the passphrase opens no scope, and m1 signs anyway, with secrets AT_JOIN should have withheld); with F13 every check passes. `program_signing_setting` (#55) passes both ways: it never signs for real | #55 with #53, once both are on `main` |
+| F14 | `program_slice1_signet` uses channels of 10,000 sat (terms field 30), so that the factory fits one 0.001 coin, and says what the funding needs when the host's coins fall short. Not a product fix: a test parameter | The first signet run (section 8): T1's 100,000-sat channels need 802,811 sat | P4.6 |
 
 ## 4. Cross-PR bugs found
 
@@ -180,7 +182,7 @@ branch's tree with F1 to F6 and the wiring, its chain worker polling the tip eve
 | `72fbf10` (#51 `d0414c2`, #52 `bb4cdfe`, #56 `2b9905a`, `program_ack_depth`, `program_slice1_signet`) | Every job finished, libFuzzer and the valgrind shards included. Red only as expected, in every build job: `web_p6a_fixme` and `program_p6a_views` (B8), `program_api` and `program_release_build` (B3), `program_derived_keys` (B1), `program_signing` (B13) and `program_ack_depth` (B16, before #52's fix). `signing_ctime` and `program_keys_ct` pass (gcc, Release, valgrind 3.22). `program_slice1_signet` skipped |
 | This draft's head | Running when this draft was pushed; recorded in the next draft |
 
-## 8. Next: the signet run (test built; first pass run, no coin moved)
+## 8. The signet run
 
 `program_slice1_signet` (opt in, `GZ_LIVE_TESTS`), case 1's shape first: one host and three AUTO members on the build
 server, each a `gazpacho-test` process with `--network signet`.
@@ -200,3 +202,12 @@ server, each a `gazpacho-test` process with `--network signet`.
 - **First pass (2026-11-24):** the host's folder is on the build server, kept between runs; its first receive
   address is `tb1pu8fw2r7wtre52tkdsvtg93ufhs9jcn0qgw6qnqgm5rhz5yq8fn0sg5y6gz`. It holds no coin; the funding transfer
   (0.001 from test wallet 1, 0.1 sat/vB) is the owner's to make, and is recorded in the funds record when it is.
+- **Funded (2026-11-24, by the coordinator, owner approved):** 0.001 (100,000 sat) from test wallet 1 to the host's
+  address, `ceab0e5acfefe9665d4ecdcbc9a8794d1ea17b9032cf8277b5e828248a90791c`, fee 16 sat (154 vB, 0.1 sat/vB),
+  confirmed in signet block 332363; recorded in the funds record.
+- **First run (22:38 UTC): failed before any broadcast.** The host found its coin (1, 100,000 sat), the three members
+  joined and readied, and the begin was refused: `wallet-plan-refused coins=1 amount=802811`, then
+  `sign-begin-refused-funding` and a Failed outcome. T1's `channel_sat` of 100,000 makes a factory of about 0.008
+  for three members, eight times the coin. Nothing was signed or broadcast; the coin is still the host's. The test,
+  left waiting, was stopped. F14 sets 10,000-sat channels (about 83,000 sat with fees, if the fees stay as they were: inside the coin); the next run
+  waits for the coordinator's word.
