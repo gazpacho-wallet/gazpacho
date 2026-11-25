@@ -293,7 +293,7 @@ static void test_member_hostile(void)
     gz_terms_current_digest(T3, T3N, cd3);
     /* hello first */
     member_up(&m, &cond);
-    CHECK(sends(GZ_KIND_HELLO) == 1 && A.l.count == 1);
+    CHECK(sends(GZ_KIND_HELLO) == 1 && timers(GZ_LOBBY_TIMER_RETRY) == 1 && A.l.count == 2);   /* and asks again if unanswered */
     /* test 18: other key; scope not the outer digest; mainnet; value out of range.
      * Terms refused before any seat: the host is refused (DISCONNECT), the
      * member never got in (ended, saved, told once) and asks for no

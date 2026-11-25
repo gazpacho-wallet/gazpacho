@@ -29,6 +29,12 @@
 /* "Not yet": the answer names a block above the checked headers. Not a
  * failure of the servers; the watch is looked at again after a short wait. */
 #define R_LATER ((gz_chain_result)1000)
+/* A confirmation more than max_link below the tip: only ever deeper, so no
+ * pass will answer it. Told as GZ_CHAIN_TOO_LARGE outside this file. */
+#define R_TOO_DEEP ((gz_chain_result)1001)
+/* Proofs kept: "this transaction is in this block" stays true, and the
+ * block is checked against the headers at every use. */
+#define PROVED_KEPT 16u
 /* The short wait. */
 #define SETTLE_MS 1000u
 /* The longest wait gz_watch_wait_ms reports. */
@@ -61,6 +67,9 @@ typedef struct watch {
   uint32_t reported; /* confirmations in the last report of this confirmation; 0: none */
   bool replaced;     /* the next spend report names a different spender */
   bool undone;       /* the next spend report follows a confirmed spender that left the chain */
+  bool failed;       /* told GZ_CHAINW_WATCH_FAILED: not asked again until set again */
+  uint32_t deferred; /* passes in a row with its answer put off */
+  bool pending_told; /* told GZ_CHAINW_WATCH_PENDING since its last answer */
 } watch;
 
 typedef struct bjob {
@@ -95,12 +104,20 @@ struct gz_watch {
   size_t next_watch; /* where the next pass starts, after one that ended early */
   bool network_ok;
   bool tell_tip;
+  bool tip_synced_told; /* GZ_CHAINW_TIP_SYNCED told for the tip last told */
   uint64_t next_sync;  /* when the tip is next due */
   uint64_t hold_until; /* nothing is asked before this, after a failed pass */
   uint32_t failures;   /* failed passes in a row */
   gz_chain_result sources;
-  uint8_t *txbuf; /* GZ_TX_MAX_BYTES, made on first use */
+  uint8_t *txbuf; /* GZ_TX_CONSENSUS_MAX_BYTES, made on first use */
   gz_confirmation conf;
+  struct {
+    bool used;
+    uint8_t subject[GZ_HASH_LEN];
+    uint8_t block[GZ_HASH_LEN];
+    uint32_t height;
+  } proved[PROVED_KEPT];
+  unsigned proved_next;
 };
 
 const char *gz_chainw_kind_name(gz_chainw_kind k) {
@@ -115,6 +132,10 @@ const char *gz_chainw_kind_name(gz_chainw_kind k) {
     case GZ_CHAINW_TX_EVICTED: return "tx-evicted";
     case GZ_CHAINW_OUTPOINT_UNSPENT: return "outpoint-unspent";
     case GZ_CHAINW_REORG: return "reorg";
+    case GZ_CHAINW_SYNCED: return "synced";
+    case GZ_CHAINW_TIP_SYNCED: return "tip-synced";
+    case GZ_CHAINW_WATCH_FAILED: return "watch-failed";
+    case GZ_CHAINW_WATCH_PENDING: return "watch-pending";
   }
   return "unknown";
 }
@@ -291,6 +312,7 @@ void gz_watch_clear(gz_watch *e) {
   e->tell_tip = true;
   e->next_sync = 0;
   e->next_watch = 0;
+  memset(e->proved, 0, sizeof e->proved);   /* a new generation proves again from nothing */
 }
 
 /* ---- transactions -------------------------------------------------------- */
@@ -349,6 +371,7 @@ static void emit_tip(gz_watch *e) {
   ev.height = top_height(e);
   memcpy(ev.block_hash, hash_at(e, ev.height), GZ_HASH_LEN);
   e->tell_tip = false;
+  e->tip_synced_told = false;
   emit(e, &ev);
 }
 
@@ -531,7 +554,7 @@ static gz_chain_result sync_headers(gz_watch *e) {
 static gz_chain_result place(gz_watch *e, uint32_t height, const uint8_t block[GZ_HASH_LEN]) {
   uint32_t top = top_height(e);
   if (height > top) return R_LATER;
-  if (top - height + 1 > e->cfg.max_link) return GZ_CHAIN_TOO_LARGE;
+  if (top - height + 1 > e->cfg.max_link) return R_TOO_DEEP;
   if (height < e->hbase) {
     uint32_t n = e->hbase - height;
     if (n > e->cfg.max_catchup) n = e->cfg.max_catchup;
@@ -572,11 +595,25 @@ static gz_chain_result confirm(gz_watch *e, const uint8_t subject[GZ_HASH_LEN], 
                                const uint8_t block[GZ_HASH_LEN]) {
   gz_chain_result r = place(e, height, block);
   if (r != GZ_CHAIN_OK) return r;
+  /* proved before (a funding watched itself and as a watched input's
+   * spender): the block is on the checked chain again, which is all that
+   * can have changed (integration B15) */
+  for (unsigned i = 0; i < PROVED_KEPT; i++)
+    if (e->proved[i].used && e->proved[i].height == height && hash_eq(e->proved[i].subject, subject) &&
+        hash_eq(e->proved[i].block, block))
+      return GZ_CHAIN_OK;
   r = gz_chain_confirm_tx(e->cfg.chain, e->cfg.network, subject, 1, &e->conf);
   if (r != GZ_CHAIN_OK) return r;
   if (e->conf.status.state != GZ_TX_CONFIRMED || e->conf.status.height != height ||
       !hash_eq(e->conf.status.block_hash, block))
     return R_LATER; /* it moved between the two questions */
+  {
+    unsigned i = e->proved_next++ % PROVED_KEPT;
+    e->proved[i].used = true;
+    memcpy(e->proved[i].subject, subject, GZ_HASH_LEN);
+    memcpy(e->proved[i].block, block, GZ_HASH_LEN);
+    e->proved[i].height = height;
+  }
   return GZ_CHAIN_OK;
 }
 
@@ -706,10 +743,10 @@ static gz_chain_result check_spender(gz_watch *e, const watch *w, const gz_outsp
   uint32_t vout = 0;
   size_t len = 0;
   if (e->txbuf == NULL) {
-    e->txbuf = malloc(GZ_TX_MAX_BYTES);
+    e->txbuf = malloc(GZ_TX_CONSENSUS_MAX_BYTES);   /* any spender a block can hold (P-2) */
     if (e->txbuf == NULL) return GZ_CHAIN_NO_MEMORY;
   }
-  gz_chain_result r = gz_chain_raw_tx(e->cfg.chain, sp->spender_txid, e->txbuf, GZ_TX_MAX_BYTES, &len);
+  gz_chain_result r = gz_chain_raw_tx(e->cfg.chain, sp->spender_txid, e->txbuf, GZ_TX_CONSENSUS_MAX_BYTES, &len);
   if (r == GZ_CHAIN_NOT_FOUND) return R_LATER; /* named and already gone */
   if (r != GZ_CHAIN_OK) return r;
   if (!gz_watch_tx_input(e->txbuf, len, sp->spender_vin, prev, &vout) ||
@@ -933,7 +970,7 @@ static void run_due(gz_watch *e) {
 gz_chain_result gz_watch_step(gz_watch *e) {
   uint64_t now = now_ms(e);
   gz_chain_result worst = GZ_CHAIN_OK;
-  bool synced = false, asked = false, later = false, ended_early = false;
+  bool synced = false, asked = false, later = false, ended_early = false, retry_soon = false;
 
   /* releases that have come due */
   for (size_t i = 0; i < e->cfg.max_watches; i++) {
@@ -974,18 +1011,62 @@ gz_chain_result gz_watch_step(gz_watch *e) {
     for (size_t k = 0; k < e->cfg.max_watches && !ended_early; k++) {
       size_t i = (start + k) % e->cfg.max_watches;
       watch *w = &e->w[i];
-      if (!w->used || w->held) continue;
+      if (!w->used || w->held || w->failed) continue;
       /* asked: when new, when a reorganisation touched it, and at every look
        * at the tip while it is not confirmed. A confirmation that stands is
        * only counted, along the headers. */
       bool ask = w->fresh || w->recheck || (synced && w->state != ST_CONFIRMED);
       if (!ask && !(synced && w->state == ST_CONFIRMED && w->linked)) continue;
+      bool was_fresh = w->fresh;
       gz_chain_result r = w->kind == KIND_TX ? poll_tx(e, w, ask) : poll_outpoint(e, w, ask);
       if (stopped(e)) return GZ_CHAIN_OK;
       if (ask) asked = true;
-      if (r == GZ_CHAIN_OK) {
+      if (r == R_TOO_DEEP && !e->cfg.report_synced) r = GZ_CHAIN_TOO_LARGE;   /* as ever */
+      if (r == R_TOO_DEEP) {
+        /* No pass will ever answer it (deeper than max_link, and only ever
+         * deeper): told once as its answer, and left alone until set again,
+         * so that one watch does not hold back TIP_SYNCED, or the sources,
+         * for every other (review B of PR 56, second confirmation, G-1). */
+        gz_chainw_event ev;
+        watch_event(w, &ev, GZ_CHAINW_WATCH_FAILED);
+        ev.outpoint_watch = w->kind != KIND_TX;
+        ev.sources = GZ_CHAIN_TOO_LARGE;
+        set_none(w);
+        w->failed = true;
+        w->deferred = 0;
+        w->pending_told = false;
         w->fresh = false;
         w->recheck = false;
+        emit(e, &ev);
+      } else if (r == GZ_CHAIN_OK) {
+        if ((was_fresh || w->pending_told) && e->cfg.report_synced) {
+          /* its first answer since it was set, or since it was told
+           * pending: what it found was told above */
+          gz_chainw_event ev;
+          watch_event(w, &ev, GZ_CHAINW_SYNCED);
+          ev.outpoint_watch = w->kind != KIND_TX;
+          emit(e, &ev);
+        }
+        w->fresh = false;
+        w->recheck = false;
+        w->deferred = 0;
+        w->pending_told = false;
+      } else if (e->cfg.report_synced && (r == R_LATER || r == GZ_CHAIN_TOO_LARGE)) {
+        /* Put off: a confirmation still being linked, a spender gone between
+         * two questions, or an answer too large to fetch (a size, not a
+         * depth: it may come later). Asked again soon; after a few passes
+         * told pending, once, so that it holds back TIP_SYNCED only for its
+         * own factory (review B of PR 56, third confirmation). */
+        retry_soon = true;
+        if (!w->pending_told && ++w->deferred >= GZ_CHAINW_DEFER_PASSES) {
+          gz_chainw_event ev;
+          watch_event(w, &ev, GZ_CHAINW_WATCH_PENDING);
+          ev.outpoint_watch = w->kind != KIND_TX;
+          ev.sources = r == GZ_CHAIN_TOO_LARGE ? GZ_CHAIN_TOO_LARGE : GZ_CHAIN_OK;
+          w->pending_told = true;
+          emit(e, &ev);
+        }
+        if (!w->pending_told) later = true;
       } else if (r == R_LATER) {
         later = true;
       } else if (worst == GZ_CHAIN_OK) {
@@ -1005,6 +1086,17 @@ gz_chain_result gz_watch_step(gz_watch *e) {
       }
     }
     if (ended_early && was_descending) e->descending = true;
+    if (e->cfg.report_synced && synced && worst == GZ_CHAIN_OK && !ended_early && !later &&
+        !e->tip_synced_told && !e->tell_tip) {
+      /* every watch held has had its answer for this tip, told above, but
+       * those told failed or pending */
+      gz_chainw_event ev;
+      event_init(&ev, GZ_CHAINW_TIP_SYNCED);
+      ev.height = top_height(e);
+      memcpy(ev.block_hash, hash_at(e, ev.height), GZ_HASH_LEN);
+      e->tip_synced_told = true;
+      emit(e, &ev);
+    }
   }
   if (!asked) return e->sources;
   /* waits are counted from the end of the pass, which can be long */
@@ -1017,7 +1109,7 @@ gz_chain_result gz_watch_step(gz_watch *e) {
     if (e->next_sync > e->hold_until || !synced) e->next_sync = e->hold_until;
   } else {
     e->failures = 0;
-    if (later) {
+    if (later || retry_soon) {
       e->hold_until = end + SETTLE_MS;
       if (e->next_sync > e->hold_until) e->next_sync = e->hold_until;
     }

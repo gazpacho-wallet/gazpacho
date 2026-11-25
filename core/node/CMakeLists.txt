@@ -15,9 +15,10 @@ set(GZ_NODE_SOURCES
   ${CMAKE_CURRENT_SOURCE_DIR}/test_engine.c
   ${CMAKE_CURRENT_SOURCE_DIR}/test_slot.c
   ${CMAKE_CURRENT_SOURCE_DIR}/lobbyslot.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/signslot.c
   PARENT_SCOPE)
 set(GZ_NODE_SOURCES_HERE
-  composite.c handoff.c route.c timers.c watches.c nodepart.c test_engine.c test_slot.c lobbyslot.c)
+  composite.c handoff.c route.c timers.c watches.c nodepart.c test_engine.c test_slot.c lobbyslot.c signslot.c)
 
 foreach(variant release test)
   if(variant STREQUAL "release")
@@ -29,7 +30,7 @@ foreach(variant release test)
   set_target_properties(${lib} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
   target_include_directories(${lib} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
                                     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-  target_link_libraries(${lib} PUBLIC gazpacho_core gazpacho_lobby)
+  target_link_libraries(${lib} PUBLIC gazpacho_core gazpacho_lobby gazpacho_signing gazpacho_tree)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PRIVATE GZ_TEST_KINDS)
@@ -48,12 +49,16 @@ foreach(variant release test)
               ${CMAKE_SOURCE_DIR}/core/lobby/wire.c
               ${CMAKE_SOURCE_DIR}/core/tree/sha256.c ${CMAKE_SOURCE_DIR}/core/tree/terms.c
               ${CMAKE_SOURCE_DIR}/core/tree/shape.c ${CMAKE_SOURCE_DIR}/core/tree/model.c
-              ${CMAKE_SOURCE_DIR}/core/tree/checks.c ${CMAKE_SOURCE_DIR}/core/tree/exit.c)
+              ${CMAKE_SOURCE_DIR}/core/tree/checks.c ${CMAKE_SOURCE_DIR}/core/tree/exit.c
+              ${CMAKE_SOURCE_DIR}/core/signing/signing.c ${CMAKE_SOURCE_DIR}/core/signing/sign_tx.c
+              ${CMAKE_SOURCE_DIR}/core/signing/round_msg.c)
   set_target_properties(${lib} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
   target_include_directories(${lib} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}
                                             ${CMAKE_SOURCE_DIR}/core/gazpacho/include
                                             ${CMAKE_SOURCE_DIR}/core/lobby/include
-                                            ${CMAKE_SOURCE_DIR}/core/tree/include)
+                                            ${CMAKE_SOURCE_DIR}/core/tree/include
+                                            ${CMAKE_SOURCE_DIR}/core/signing/include
+                                            ${secp256k1-zkp_SOURCE_DIR}/include)
   target_compile_options(${lib} PRIVATE ${GZ_NEW_CODE_WARNINGS} ${GZ_CORE_FLAGS})
   if(variant STREQUAL "test")
     target_compile_definitions(${lib} PRIVATE GZ_TEST_KINDS)

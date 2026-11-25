@@ -112,7 +112,7 @@ bool gz_es_parse_status(const char *s, size_t len, gz_es_status *out) {
   gz_json_tok toks[16];
   size_t n;
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   return status_object(s, toks, 0, out);
 }
 
@@ -126,7 +126,7 @@ bool gz_es_parse_outspend(const char *s, size_t len, gz_outspend *out) {
   memset(&o, 0, sizeof o);
   memset(&st, 0, sizeof st);
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   if (toks[0].type != GZ_JSON_OBJECT) return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
@@ -181,7 +181,7 @@ gz_es_parse_result gz_es_parse_utxos(const char *s, size_t len, gz_chain_output 
   if (toks == NULL) return GZ_ES_PARSE_NO_MEMORY;
   gz_es_parse_result res = GZ_ES_PARSE_MALFORMED;
   size_t n;
-  if (!gz_json_parse(s, len, toks, tok_cap, &n)) goto done;
+  if (!gz_chain_json_parse(s, len, toks, tok_cap, &n)) goto done;
   if (toks[0].type != GZ_JSON_ARRAY) goto done;
   if (toks[0].size > cap) {
     res = GZ_ES_PARSE_TOO_MANY;
@@ -242,7 +242,7 @@ bool gz_es_parse_merkle_proof(const char *s, size_t len, gz_merkle_proof *out) {
   gz_merkle_proof p;
   memset(&p, 0, sizeof p);
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   if (toks[0].type != GZ_JSON_OBJECT) return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
@@ -283,7 +283,7 @@ bool gz_es_parse_fee_estimates(const char *s, size_t len, gz_fee_estimates *out)
   gz_fee_estimates f;
   memset(&f, 0, sizeof f);
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   if (toks[0].type != GZ_JSON_OBJECT || toks[0].size > GZ_FEE_MAX_TARGETS) return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
@@ -333,7 +333,7 @@ bool gz_es_parse_block(const char *s, size_t len, gz_es_block *out) {
   uint64_t ignored64;
   memset(&b, 0, sizeof b);
   if (s == NULL || out == NULL) return false;
-  if (!gz_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
+  if (!gz_chain_json_parse(s, len, toks, sizeof toks / sizeof toks[0], &n)) return false;
   if (toks[0].type != GZ_JSON_OBJECT) return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
@@ -405,7 +405,7 @@ bool gz_es_parse_package(const char *s, size_t len, const uint8_t parent[GZ_HASH
   gz_es_package p;
   bool have_msg = false;
   memset(&p, 0, sizeof p);
-  if (!gz_json_parse(s, len, toks, ES_PACKAGE_TOKENS, &n) || toks[0].type != GZ_JSON_OBJECT)
+  if (!gz_chain_json_parse(s, len, toks, ES_PACKAGE_TOKENS, &n) || toks[0].type != GZ_JSON_OBJECT)
     return false;
   size_t i = 1;
   for (uint32_t m = 0; m < toks[0].size; m++) {
@@ -736,6 +736,28 @@ static gz_chain_result es_raw_tx(void *ctx, const uint8_t txid[GZ_HASH_LEN], uin
                                  size_t cap, size_t *len) {
   esplora *es = ctx;
   size_t raw_len;
+  if (cap > GZ_TX_MAX_BYTES && cap > es->cfg.max_response_bytes / 2) {
+    /* The room of a proof (a transaction, or its block's coinbase, can be
+     * most of a block): fetched past the response buffer, into a buffer of
+     * its own for this request only (review of PR 72, P-2). */
+    if (cap > GZ_TX_CONSENSUS_MAX_BYTES) cap = GZ_TX_CONSENSUS_MAX_BYTES;
+    size_t room = 2 * cap + 64;
+    uint8_t *keep = es->buf, *mine = malloc(room);
+    size_t keep_max = es->cfg.max_response_bytes;
+    if (mine == NULL) return GZ_CHAIN_NO_MEMORY;
+    es->buf = mine;
+    es->cfg.max_response_bytes = room;
+    gz_chain_result r = es_fetch_tx(es, txid, cap, &raw_len);
+    if (r == GZ_CHAIN_OK && raw_len > cap) r = GZ_CHAIN_TOO_LARGE;
+    if (r == GZ_CHAIN_OK) {
+      memcpy(buf, mine, raw_len);
+      *len = raw_len;
+    }
+    es->buf = keep;
+    es->cfg.max_response_bytes = keep_max;
+    free(mine);
+    return r;
+  }
   gz_chain_result r = es_fetch_tx(es, txid, cap, &raw_len);
   if (r != GZ_CHAIN_OK) return r;
   if (raw_len > cap) return GZ_CHAIN_TOO_LARGE;
