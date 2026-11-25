@@ -53,6 +53,7 @@ foreach(variant release test)
               ${CMAKE_SOURCE_DIR}/core/tree/shape.c ${CMAKE_SOURCE_DIR}/core/tree/model.c
               ${CMAKE_SOURCE_DIR}/core/tree/checks.c ${CMAKE_SOURCE_DIR}/core/tree/exit.c
               ${CMAKE_SOURCE_DIR}/core/funding/setaside.c ${CMAKE_SOURCE_DIR}/core/funding/txsize.c
+              ${CMAKE_SOURCE_DIR}/core/funding/funding.c
               ${CMAKE_SOURCE_DIR}/core/signing/signing.c ${CMAKE_SOURCE_DIR}/core/signing/sign_tx.c
               ${CMAKE_SOURCE_DIR}/core/signing/round_msg.c)
   set_target_properties(${lib} PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
