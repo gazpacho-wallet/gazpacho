@@ -8,7 +8,7 @@ It is written to be portable: a second implementation should be able to read thi
 
 ## Changes in map draft 2
 
-Not itself reviewed. Nothing in it changes a number. It records what was merged after draft 1, and one proposal still under review.
+Not itself reviewed. Nothing in it changes a number. It records what was merged after draft 1, BD (pull request #59) included.
 
 | Change | Where in the map |
 |---|---|
@@ -19,7 +19,7 @@ Not itself reviewed. Nothing in it changes a number. It records what was merged 
 | TRUC: every tree transaction is version 3. Fees at exit are paid through a keyless pay-to-anchor output by a one-parent-one-child TRUC package (`exit.md` 5), as in the re-import of SuperScalar `50f7fa13` (pull request #46) | 5, 6 |
 | `local-api.md` draft 5 (pull request #49): reviewed once ("accept after fixes"), fixes confirmed (C1 to C5) | Documents table |
 | `transport.md` draft 4 is merged and reviewed (pull request #10, two rounds): open point 1 closed | Documents table; 13 |
-| **Owner decision of 2026-11-17 (BD, formerly K1), specified in pull request #59, not yet merged**: the lobby `join` carries no keys, the factory key and the contribution key's binding signature move to the seat's first `ready`, and the factory key signs only group-signature items. The binding becomes one-way | 4; 8.2; 9.1 |
+| **Specified (BD, formerly K1; owner decision of 2026-11-17, pull request #59)**: the lobby `join` carries no keys, the factory key and the contribution key's binding signature move to the seat's first `ready`, and the factory key signs only group-signature items. The binding becomes one-way | 4; 8.2; 9.1 |
 | Every `gazpacho/` tag and fixed string on `main` registered: `gazpacho/session-id`, `gazpacho/host-random`, `gazpacho/allnonces` and `gazpacho/known-filter` (the last three named only in code so far), `gazpacho keys`, the discovery picks, the storage salt, the program's stand-in string and the test strings. A CI check for unregistered tags is planned, not built. `gazpacho/tree` is now defined (`messages.md` 7.12); discovery vectors now run to D30; `unready` reasons now 1 to 3 | 8.2, 9.1, 10.6 |
 | Review of #59 to #63 (2026-11-18): the three local tags defined in `signing-round.md` 8 and marked specified, local to one implementation (L1); `gazpacho/test` moved to the tag table, reserved for tests (L2); BD (formerly K1) described as the owner's decision, specified in #59 (L3); one `main` commit, `9a9d910` (L4); 8.2 is the only registry (L5); the Backup and fee rows marked pending #61 (L6) | 5, 8.1, 8.2, 9.1, 13 |
 
@@ -28,10 +28,10 @@ Documents it maps (drafts as of 2026-11-17, on `main` at `9a9d910`):
 | Document | Draft | Review status | What it is |
 |---|---|---|---|
 | `transport.md` | 4 | **Reviewed** (two rounds of the review of pull request 10, after the code; checklist item 1's exception) | The transport profile of BOLT 8 and BOLT 1: the pinned host key, `init` with `networks` naming one chain, ping and pong keep-alive (15 s and 30 s), the factory envelope and splitting of `messages.md` sections 3 to 5, and admission limits for lobby hosts |
-| `messages.md` | 2, amended 2026-11-17 by BD (formerly K1), an owner decision specified in pull request #59, not yet merged | Draft 1 reviewed (review 3); draft 2 not reviewed | The envelope, splitting, the bLIP-56 adapter, the lobby and signing-round messages |
+| `messages.md` | 2, amended 2026-11-17 by BD (formerly K1; owner decision of 2026-11-17, pull request #59, merged) | Draft 1 reviewed (review 3); draft 2 not reviewed | The envelope, splitting, the bLIP-56 adapter, the lobby and signing-round messages |
 | `terms.md` | 2, with the host-paid fee rate (2026-11-16) and the review of #48 (2026-11-17) | Draft 1 reviewed (review 3); draft 2 not reviewed; the 2026-11-16 and 2026-11-17 changes were read by the review of #48 | The signed host terms record: outer rules, ranges, current values, freeze, who pays the tree fees (4.4) |
-| `signing-round.md` | 4, with the fee-rate change (2026-11-16); BD (formerly K1), an owner decision specified in pull request #59, not yet merged | Draft 3 reviewed (review 3); draft 4 not reviewed; proof of fault has had no outside review | The multi-party MuSig2 signing round and proof of fault |
-| `safety-rule.md` | 4, with changes of 2026-11-16 and 2026-11-17 (fee rate, review of #48, payout scripts in C2); BD (formerly K1), an owner decision specified in pull request #59, not yet merged | Draft 3 reviewed (review 3); draft 4 not reviewed; nothing reviewed outside the project | The checks a member (and a host) runs before it signs. The acceptance rules of this map point here |
+| `signing-round.md` | 4, with the fee-rate change (2026-11-16); BD (formerly K1; owner decision of 2026-11-17, pull request #59, merged) | Draft 3 reviewed (review 3); draft 4 not reviewed; proof of fault has had no outside review | The multi-party MuSig2 signing round and proof of fault |
+| `safety-rule.md` | 4, with changes of 2026-11-16 and 2026-11-17 (fee rate, review of #48, payout scripts in C2); BD (formerly K1; owner decision of 2026-11-17, pull request #59, merged) | Draft 3 reviewed (review 3); draft 4 not reviewed; nothing reviewed outside the project | The checks a member (and a host) runs before it signs. The acceptance rules of this map point here |
 | `exit.md` | 3 (pull request #48) | Reviewed once (`docs/reviews/review-pr48.md`, accept after fixes), fixes confirmed; the fixes are not themselves reviewed. Draft 2 is kept in `docs/specs-history/` | Leaving a factory under design 2: the end-date payouts on every shared output at lock time E, paying members at least their capacity; the host's deadlines (`host_force_by`, `host_spare_by`); fees pre-signed at the tree rate plus a pay-to-anchor output, the real fee paid by a TRUC child; 35 paths; the host rules of section 9 (H6, H7, H14 to H20); the watch-and-exit bundle. Draft 2's host-only-timeout rules are kept and marked INTERIM while the import carries them. The deadline arithmetic and the host's duties are protocol; the engines, the bundle and the strip are Gazpacho's |
 | `journal.md` | 3 | Draft 2 reviewed (review 3) and the code reviewed (PR 29); draft 3 folds in storage encryption | Gazpacho's storage. **Not part of the shared protocol** (section 9) |
 | `storage-encryption.md` | 3 | Draft 2 confirmed by round 2 of its review; draft 3 answers round 2 and review B of the code | Gazpacho's encryption at rest. **Not part of the shared protocol** |
@@ -113,7 +113,7 @@ Application-agnostic. Intended as a separate library: it runs a group of parties
 
 | Part | What it does | Specified in | State |
 |---|---|---|---|
-| Sessions (lobbies) | Seats named by contribution key; states, not changes, so every message survives a reconnect; start rule with target, minimum and deadline. **Owner decision of 2026-11-17 (BD, formerly K1), specified in pull request #59, not yet merged**: a seat gets its factory key at its first `ready`, bound one way by the contribution key, and keeps it for the lobby's life | `messages.md` 6, `LOBBY.md` | Specified for Slice 1; BD specified in pull request #59, not yet merged |
+| Sessions (lobbies) | Seats named by contribution key; states, not changes, so every message survives a reconnect; start rule with target, minimum and deadline. **Specified (BD, formerly K1; owner decision of 2026-11-17, pull request #59)**: a seat gets its factory key at its first `ready`, bound one way by the contribution key, and keeps it for the lobby's life | `messages.md` 6, `LOBBY.md` | Specified for Slice 1, BD included |
 | Signed terms | Two records: outer rules (fixed; their digest is the lobby's identity and fingerprint) and current values (versioned, inside signed ranges). Canonical TLV encoding | `terms.md` | Specified (draft 2) |
 | Freeze | The first ready check freezes the current values for every later check and attempt | `terms.md` 8, `messages.md` 6.8 | Specified |
 | Readiness and consent | A `ready` names both digests and is signed by the member; the member's own limits are compared with the whole range by default. A member whose signing gate is closed is not Ready (`unready` reason 3) | `terms.md` 9, `messages.md` 6.4, 6.5 | Specified |
@@ -254,7 +254,7 @@ Kind ranges are in section 10.1. "Acceptance rules" names the checks a receiver 
 | `gazpacho/part` | `transfer_id` of a split message | 1 | `messages.md` 5 | Specified |
 | `gazpacho/terms/outer` | Outer terms digest; the lobby identifier | 2 | `terms.md` 6 | Specified |
 | `gazpacho/terms/current` | Current values digest | 2 | `terms.md` 6 | Specified |
-| `gazpacho/bind` | Binding of factory key and contribution key. Today two-way, in `join`. **Owner decision of 2026-11-17 (BD, formerly K1), specified in pull request #59, not yet merged**: signed by the contribution key only, in `ready`; same hash | 2 | `messages.md` 6.3 (6.4 under BD), `signing-round.md` 2 | Specified; BD specified in pull request #59, not yet merged |
+| `gazpacho/bind` | Binding of factory key and contribution key: signed by the contribution key only, in the seat's first `ready`, since BD (formerly K1; owner decision of 2026-11-17, pull request #59); draft 2 had it two-way in `join`; same hash | 2 | `messages.md` 6.4, `signing-round.md` 2 | Specified |
 | `gazpacho/round_id` | Round identifier | 2 | `messages.md` 7.1 | Specified; no vector yet |
 | `gazpacho/nonce` | A member's signature on its public nonce | 2 | `messages.md` 7.3 | Specified; no vector yet |
 | `gazpacho/nonceset` | Digest of the nonce set a partial signature used | 2 | `messages.md` 7.5 | Specified; no vector yet |
@@ -329,7 +329,7 @@ The same procedure applies to our custom type 52791: checked against the bLIP 2 
 |---|---|---|---|---|
 | T1 to T6 | Terms encoding, digests, signatures, refusals, comparison | 2 | `terms.md` 11 | Specified (draft 2) |
 | T7 | The tree T1 builds | 3 | `terms.md` 11 | Specified |
-| M1 | A signed message and the binding | 1, 2 | `messages.md` 11 | Specified. Regenerated under BD (formerly K1) in pull request #59, an owner decision of 2026-11-17, not yet merged: a `ready` with records 12 and 14, 281 bytes; the binding values unchanged |
+| M1 | A signed message and the binding | 1, 2 | `messages.md` 11 | Specified. Regenerated under BD (formerly K1; pull request #59, owner decision of 2026-11-17): a `ready` with records 12 and 14, 281 bytes; the binding values unchanged |
 | M2 | Splitting | 1 | `messages.md` 11 | Specified |
 | M3 | The bLIP-56 adapter, same signature as M1 | 1 | `messages.md` 11 | Specified |
 | R | Round identifier preimage and hash for a real tree | 2 | — | Open: needs the tree builder in the engine |
@@ -500,4 +500,4 @@ Nothing below is to be posted, opened or commented on without the owner. Drafts 
 7. **The peer storage messages and feature bit** were not re-read today; check BOLT 1 and BOLT 9 before the backup specification.
 8. **Watchers.** No merged BOLT specifies watchtowers. The hand-off format is ours to write.
 9. **A stand-alone `envelope.md`** and a layer 2 library specification separated from the SuperScalar profile: proposed, after Slice 1.
-10. **BD, formerly K1** (pull request #59): the one-way binding sent at Ready. **Owner decision of 2026-11-17 (BD, formerly K1), specified in pull request #59, not yet merged**. Its rules are BD1 to BD6 (called K1-1 to K1-6 in the binding check; renamed so as not to clash with K1 of `docs/DECISIONS-WITHOUT-OWNER.md`). If #59 merges first, every such mark here becomes "Specified" before this map merges. The code follows after pull request #52.
+10. **BD, formerly K1** (pull request #59): the one-way binding sent at Ready. **Specified (BD, formerly K1; owner decision of 2026-11-17, pull request #59)**. Its rules are BD1 to BD6 (called K1-1 to K1-6 in the binding check; renamed so as not to clash with K1 of `docs/DECISIONS-WITHOUT-OWNER.md`) #59 has merged, so every such mark here reads "Specified". The code follows after pull request #52.
